@@ -1,0 +1,714 @@
+/*
+ * LBBS -- The Lightweight Bulletin Board System
+ *
+ * Copyright (C) 2023, Naveen Albert
+ *
+ * Naveen Albert <bbs@phreaknet.org>
+ *
+ * This program is free software, distributed under the terms of
+ * the GNU General Public License Version 2. See the LICENSE file
+ * at the top of the source tree.
+ */
+
+/*! \file
+ *
+ * \brief Module loader and unloader
+ *
+ * \author Naveen Albert <bbs@phreaknet.org>
+ */
+
+#include "include/bbs.h"
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <dlfcn.h>
+#include <linux/limits.h> /* use PATH_MAX */
+#include <unistd.h> /* use usleep */
+
+#include "include/linkedlists.h"
+#include "include/stringlist.h"
+#include "include/module.h"
+#include "include/config.h"
+#include "include/utils.h" /* use bbs_dir_traverse */
+
+#define BBS_MODULE_DIR DIRCAT("/usr/lib", DIRCAT(BBS_NAME, "modules"))
+
+struct bbs_module {
+	const struct bbs_module_info *info;
+	/*! The shared lib. */
+	void *lib;
+	/*! Number of 'users' and other references currently holding the module. */
+	int usecount;
+	/*! Position in module array */
+	int pos;
+	struct {
+		/*! This module is awaiting a reload. */
+		unsigned int reloadpending:1;
+	} flags;
+	/* Next entry */
+	RWLIST_ENTRY(bbs_module) entry;
+	/*! The name of the module. */
+	char resource[0];
+};
+
+static RWLIST_HEAD_STATIC(modules, bbs_module);
+
+/*! \brief Autoload all modules by default */
+#define DEFAULT_AUTOLOAD_SETTING 1
+
+static int autoload_setting = DEFAULT_AUTOLOAD_SETTING;
+
+struct stringlist modules_load;
+struct stringlist modules_noload;
+
+/*! \brief Number of modules we plan to autoload */
+static int autoload_planned = 0;
+
+/*! \brief Number of modules successfully autoloaded */
+static int autoload_loaded = 0;
+
+/*!
+ * \internal
+ *
+ * This variable is set by load_dynamic_module so bbs_module_register
+ * can know what pointer is being registered.
+ *
+ * This is protected by the module list lock.
+ */
+static struct bbs_module * volatile resource_being_loaded;
+
+void bbs_module_register(const struct bbs_module_info *info)
+{
+	struct bbs_module *mod;
+
+	mod = resource_being_loaded;
+	if (!mod) {
+		bbs_error("No module being loaded while registering %s?\n", info->name);
+		return;
+	}
+
+	bbs_verb(2, "Registering module %s\n", info->name);
+
+	/* This tells load_dynamic_module that we're registered. */
+	resource_being_loaded = NULL;
+	mod->info = info;
+
+	/* Give the module a copy of its own handle, for later use in registrations and the like */
+	*((struct bbs_module **) &(info->self)) = mod;
+	return;
+}
+
+void bbs_module_unregister(const struct bbs_module_info *info)
+{
+	char *curname;
+	struct bbs_module *mod = NULL;
+	int len = strlen(info->name);
+	char buf[len + 4];
+
+	buf[0] = '\0';
+	if (len >= 3 && info->name[len - 3] != '.') {
+		snprintf(buf, sizeof(buf), "%s.so", info->name);
+	}
+
+	RWLIST_TRAVERSE_SAFE_BEGIN(&modules, mod, entry) {
+		curname = mod->resource;
+		if (!strcasecmp(curname, info->name) || (*buf && !strcasecmp(curname, buf))) {
+			RWLIST_REMOVE_CURRENT(entry);
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+
+	if (mod) {
+		bbs_verb(2, "Unregistering module %s\n", info->name);
+		free(mod);
+	} else {
+		bbs_debug(1, "Unable to unregister module %s\n", info->name);
+	}
+}
+
+struct bbs_module *bbs_module_ref(struct bbs_module *mod)
+{
+	bbs_atomic_fetchadd_int(&mod->usecount, +1);
+	bbs_assert(mod->usecount > 0);
+	return mod;
+}
+
+void bbs_module_unref(struct bbs_module *mod)
+{
+	bbs_atomic_fetchadd_int(&mod->usecount, -1);
+	bbs_assert(mod->usecount >= 0);
+
+	/* If a reload was pending, reload the module now */
+	if (mod->usecount == 0 && mod->flags.reloadpending) {
+		/* No guarantees that we're not trying to reload the module that called us here,
+		 * so have the main thread do it instead. */
+		bbs_debug(3, "Requesting reload of module '%s', now that use count is 0\n", mod->resource);
+		bbs_request_module_unload(mod->resource, 1);
+	}
+}
+
+/*! \note modules list must be locked */
+static struct bbs_module *find_resource(const char *resource)
+{
+	char *curname;
+	struct bbs_module *mod = NULL;
+	int len = strlen(resource);
+	char buf[len + 4];
+
+	buf[0] = '\0';
+	if (len >= 3 && resource[len - 3] != '.') {
+		snprintf(buf, sizeof(buf), "%s.so", resource);
+	}
+
+	RWLIST_TRAVERSE(&modules, mod, entry) {
+		curname = mod->resource;
+		if (!strcasecmp(curname, resource) || (*buf && !strcasecmp(curname, buf))) {
+			break;
+		}
+	}
+
+	return mod;
+}
+
+static int queue_reload(const char *resource)
+{
+	int res = -1;
+	struct bbs_module *mod;
+
+	RWLIST_RDLOCK(&modules);
+	mod = find_resource(resource);
+	if (mod) {
+		res = 0;
+		mod->flags.reloadpending = 1;
+	}
+	RWLIST_UNLOCK(&modules);
+	return res;
+}
+
+/*! \brief dlclose(), with failure logging. */
+static void logged_dlclose(const char *name, void *lib)
+{
+	if (!lib) {
+		return;
+	}
+	dlerror(); /* Clear any existing error */
+	bbs_debug(5, "dlclose: %s\n", name);
+	if (dlclose(lib)) {
+		char *error = dlerror();
+		bbs_error("Failure in dlclose for module '%s': %s\n", name ? name : "unknown", error ? error : "Unknown error");
+	}
+}
+
+/*!
+ * \internal
+ * \brief Attempt to dlopen a module.
+ *
+ * \param resource_in The module name to load.
+ * \param so_ext ".so" or blank if ".so" is already part of resource_in.
+ * \param filename Passed directly to dlopen.
+ * \param flags Passed directly to dlopen.
+ * \param suppress_logging Do not log any error from dlopen.
+ *
+ * \return Pointer to opened module, NULL on error.
+ *
+ * \warning module_list must be locked before calling this function.
+ */
+static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ext,
+	const char *filename, int flags, unsigned int suppress_logging)
+{
+	struct bbs_module *mod;
+	int bytes;
+
+	bbs_assert(!resource_being_loaded);
+
+	bytes = sizeof(*mod) + strlen(resource_in) + strlen(so_ext) + 1; /* + just enough for resource name + null term. */
+
+	mod = calloc(1, bytes);
+	if (!mod) {
+		return NULL;
+	}
+
+	bbs_assert_exists(mod->resource);
+	snprintf(mod->resource, bytes, "%s%s", resource_in, so_ext); /* safe */
+
+	resource_being_loaded = mod;
+	mod->lib = dlopen(filename, flags);
+
+	if (resource_being_loaded) {
+		const char *dlerror_msg = strdupa(S_IF(dlerror()));
+
+		bbs_warning("Module %s didn't register itself during load?\n", resource_in);
+
+		resource_being_loaded = NULL;
+		if (mod->lib) {
+			bbs_error("Module '%s' did not register itself during load\n", resource_in);
+			logged_dlclose(resource_in, mod->lib);
+		} else if (suppress_logging) {
+			bbs_error("Failed to load module %s, aborting\n", resource_in);
+		} else {
+			bbs_error("Error loading module '%s': %s\n", resource_in, dlerror_msg);
+			return NULL;
+		}
+
+		free(mod);
+		return NULL;
+	}
+
+	return mod;
+}
+
+static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned int suppress_logging)
+{
+	char fn[PATH_MAX];
+	size_t resource_in_len = strlen(resource_in);
+	const char *so_ext = "";
+
+	if (resource_in_len < 4 || strcasecmp(resource_in + resource_in_len - 3, ".so")) {
+		so_ext = ".so";
+	}
+
+	snprintf(fn, sizeof(fn), "%s/%s%s", BBS_MODULE_DIR, resource_in, so_ext);
+
+	return load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_LOCAL, suppress_logging);
+}
+
+const char *bbs_module_name(const struct bbs_module *mod)
+{
+	if (!mod || !mod->info) {
+		return NULL;
+	}
+
+	return mod->info->name;
+}
+
+/*!
+ * \brief Check to see if the given resource is loaded.
+ *
+ * \param resource_name Name of the resource, including .so suffix.
+ * \return False (0) if module is not loaded.
+ * \return True (non-zero) if module is loaded.
+ */
+static int is_module_loaded(const char *resource_name)
+{
+	char fn[PATH_MAX] = "";
+	void *lib;
+
+	snprintf(fn, sizeof(fn), "%s/%s", BBS_MODULE_DIR, resource_name);
+	lib = dlopen(fn, RTLD_LAZY | RTLD_NOLOAD);
+
+	if (lib) {
+		logged_dlclose(resource_name, lib);
+		return 1;
+	}
+
+	return 0;
+}
+
+static void unload_dynamic_module(struct bbs_module *mod)
+{
+	char *name = strdupa(bbs_module_name(mod));
+	void *lib = mod->lib;
+
+	/* WARNING: the structure pointed to by mod is going to
+	   disappear when this operation succeeds, so we can't
+	   dereference it */
+	logged_dlclose(bbs_module_name(mod), lib);
+
+	/* There are several situations where the module might still be resident
+	 * in memory.
+	 *
+	 * If somehow there was another dlopen() on the same module (unlikely,
+	 * since that all is supposed to happen in module.c).
+	 *
+	 * Avoid the temptation of repeating the dlclose(). The other code that
+	 * dlopened the module still has its module reference, and should close
+	 * it itself. In other situations, dlclose() will happily return success
+	 * for as many times as you wish to call it.
+	 */
+	if (is_module_loaded(name)) {
+		bbs_error("Module '%s' could not be completely unloaded\n", name);
+	}
+}
+
+/*! \note modules list must be locked */
+static int start_resource(struct bbs_module *mod)
+{
+	int res;
+
+	if (!mod->info->load) {
+		bbs_error("Module %s contains no load function?\n", mod->resource);
+		return -1;
+	}
+
+	res = mod->info->load();
+	if (res) {
+		return res;
+	}
+
+	/* Make sure the newly started module is at the end of the list */
+	RWLIST_INSERT_TAIL(&modules, mod, entry);
+	return 0;
+}
+
+/*! \brief loads a resource based upon resource_name. */
+static int load_resource(const char *resource_name, unsigned int suppress_logging)
+{
+	int res;
+	struct bbs_module *mod;
+
+	if ((mod = find_resource(resource_name))) {
+		bbs_warning("Module '%s' already loaded and running.\n", resource_name);
+		return -1;
+	}
+
+	mod = load_dynamic_module(resource_name, suppress_logging);
+	if (!mod) {
+		bbs_warning("Could not load dynamic module %s\n", resource_name);
+		return -1;
+	}
+
+	res = start_resource(mod);
+
+	if (res) {
+		/* If success, log in start_resource, otherwise, log here */
+		bbs_error("Module '%s' could not be loaded.\n", resource_name);
+		unload_dynamic_module(mod);
+		free(mod); /* bbs_module_unregister isn't called if the module declined to load, so free to avoid a leak */
+		return -1;
+	}
+	return res;
+}
+
+static int unload_resource(const char *resource_name, int force)
+{
+	struct bbs_module *mod;
+	int res = -1;
+	int error = 0;
+
+	RWLIST_WRLOCK(&modules);
+
+	if (!(mod = find_resource(resource_name))) {
+		RWLIST_UNLOCK(&modules);
+		bbs_warning("Unload failed, '%s' could not be found\n", resource_name);
+		return -1;
+	}
+
+	bbs_debug(2, "Module %s has use count %d\n", resource_name, mod->usecount);
+
+	if (!error && (mod->usecount > 0)) {
+		if (force) {
+			bbs_warning("Warning:  Forcing removal of module '%s' with use count %d\n", resource_name, mod->usecount);
+		} else {
+			bbs_warning("Soft unload failed, '%s' has use count %d\n", resource_name, mod->usecount);
+			error = 1;
+		}
+	}
+
+	if (!error) {
+		/*! \todo Enhancement: Request any nodes attached to the module to disconnect (once we have a mechanism to do this). */
+
+		bbs_debug(1, "Unloading %s\n", mod->resource);
+		res = mod->info->unload();
+		if (res) {
+			bbs_warning("Firm unload failed for %s\n", resource_name);
+			if (force <= 2) {
+				error = 1;
+			} else {
+				bbs_warning("** Dangerous **: Unloading resource anyway, at user request\n");
+			}
+		}
+	}
+
+	RWLIST_UNLOCK(&modules);
+
+	if (!error) {
+		unload_dynamic_module(mod);
+	} else {
+		res = mod->usecount;
+	}
+
+	return res;
+}
+
+static int on_file_plan(const char *dir_name, const char *filename, void *obj)
+{
+	UNUSED(dir_name);
+	UNUSED(obj);
+
+	autoload_planned++;
+	bbs_debug(7, "Detected dynamic module %s\n", filename);
+	return 0;
+}
+
+static int on_file_autoload(const char *dir_name, const char *filename, void *obj)
+{
+	struct bbs_module *mod = find_resource(filename);
+
+	UNUSED(dir_name);
+	UNUSED(obj);
+
+	if (mod) {
+		bbs_error("Module %s is already loaded\n", filename);
+		return 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
+	}
+
+	/* If explicit noload, bail now */
+	if (stringlist_contains(&modules_noload, filename)) {
+		bbs_debug(5, "Not loading dynamic module %s, since it's explicitly noloaded\n", filename);
+		autoload_planned--;
+		return 0;
+	} else if (!autoload_setting) {
+		if (!stringlist_contains(&modules_load, filename)) {
+			bbs_debug(5, "Not loading dynamic module %s, not explicitly loaded and autoload=no\n", filename);
+			autoload_planned--;
+			return 0;
+		}
+		bbs_debug(5, "Autoloading dynamic module %s, since explicitly loaded\n", filename);
+	} else {
+		/* If autoload=yes and not in the noload list, then don't even bother checking the load list. Just load it. */
+		bbs_debug(5, "Autoloading dynamic module %s (autoload=yes)\n", filename);
+	}
+
+	if (load_resource(filename, 0)) {
+		bbs_error("Failed to autoload %s\n", filename);
+	} else {
+		autoload_loaded++;
+	}
+
+	return 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
+}
+
+static int load_config(void)
+{
+	/* modules.conf is only used on startup. */
+	struct bbs_config_section *section = NULL;
+	struct bbs_keyval *keyval = NULL;
+	struct bbs_config *cfg = bbs_config_load("modules.conf", 0);
+
+	if (!cfg) {
+		return 0;
+	}
+
+	bbs_config_val_set_true(cfg, "general", "autoload", &autoload_setting);
+
+	RWLIST_WRLOCK(&modules_load);
+	RWLIST_WRLOCK(&modules_noload);
+	while ((section = bbs_config_walk(cfg, section))) {
+		if (!strcmp(bbs_config_section_name(section), "general")) {
+			continue; /* Skip general, already handled */
+		} else if (strcmp(bbs_config_section_name(section), "modules")) {
+			bbs_warning("Unknown section name '%s', skipping\n", bbs_config_section_name(section));
+			continue;
+		}
+		/* [modules] section */
+		while ((keyval = bbs_config_section_walk(section, keyval))) {
+			const char *key = bbs_keyval_key(keyval), *value = bbs_keyval_val(keyval);
+			if (!strcmp(key, "load")) {
+				bbs_debug(7, "Explicitly planning to load '%s'\n", value);
+				stringlist_push(&modules_load, value);
+			} else if (!strcmp(key, "noload")) {
+				bbs_debug(7, "Explicitly planning to not load '%s'\n", value);
+				stringlist_push(&modules_noload, value);
+			} else {
+				bbs_warning("Invalid directive %s=%s, ignoring\n", key, value);
+			}
+		}
+	}
+	RWLIST_UNLOCK(&modules_load);
+	RWLIST_UNLOCK(&modules_noload);
+	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
+	return 0;
+}
+
+static int autoload_modules(void)
+{
+	bbs_debug(1, "Autoloading modules\n");
+
+	/* Check config for load settings. */
+	load_config();
+
+	RWLIST_WRLOCK(&modules);
+	/* Check what modules exist in the first place. */
+	bbs_dir_traverse(BBS_MODULE_DIR, on_file_plan, NULL, -1);
+
+	bbs_debug(1, "Detected %d dynamic module%s\n", autoload_planned, ESS(autoload_planned));
+	/* Now, actually try to load them. */
+	bbs_dir_traverse(BBS_MODULE_DIR, on_file_autoload, NULL, -1);
+
+	if (autoload_planned != autoload_loaded) {
+		/* Some modules failed to autoload */
+		bbs_warning("Planned to autoload %d module%s, but only loaded %d\n", autoload_planned, ESS(autoload_planned), autoload_loaded);
+	} else {
+		bbs_debug(1, "Successfully autoloaded %d module%s\n", autoload_planned, ESS(autoload_planned));
+	}
+
+	stringlist_empty(&modules_load);
+	stringlist_empty(&modules_noload);
+
+	RWLIST_UNLOCK(&modules);
+	return 0;
+}
+
+int load_modules(void)
+{
+	int res, c = 0; /* XXX If this is not uninitialized, gcc does not throw a warning, why not??? */
+	struct bbs_module *mod;
+
+	/* No modules should be registered on startup. */
+	RWLIST_WRLOCK(&modules);
+	RWLIST_TRAVERSE(&modules, mod, entry) {
+		bbs_assert(0);
+	}
+	RWLIST_UNLOCK(&modules);
+
+	res = autoload_modules();
+
+	RWLIST_WRLOCK(&modules);
+	RWLIST_TRAVERSE(&modules, mod, entry) {
+		c++;
+	}
+	RWLIST_UNLOCK(&modules);
+
+	bbs_assert(c == autoload_loaded);
+	return res;
+}
+
+int bbs_module_load(const char *name)
+{
+	int res;
+	RWLIST_WRLOCK(&modules);
+	res = load_resource(name, 0);
+	RWLIST_UNLOCK(&modules);
+	return res;
+}
+
+int bbs_module_unload(const char *name)
+{
+	int res;
+	res = unload_resource(name, 0);
+	if (res) {
+		return -1;
+	}
+	return res;
+}
+
+int bbs_module_reload(const char *name, int try_delayed)
+{
+	int res = bbs_module_unload(name);
+	if (!res) {
+		res = bbs_module_load(name);
+	} else if (try_delayed) {
+		if (!queue_reload(name)) { /* Can't reload now, queue for reload when possible */
+			bbs_verb(4, "Queued reload of module '%s'\n", name);
+		}
+	}
+	return res;
+}
+
+int bbs_list_modules(int fd)
+{
+	int c = 0;
+	struct bbs_module *mod;
+
+	bbs_dprintf(fd, "%-25s %3s %s\n", "Module Name", "Use", "Description");
+
+	RWLIST_RDLOCK(&modules);
+	RWLIST_TRAVERSE(&modules, mod, entry) {
+		bbs_dprintf(fd, "%-25s %3d %s\n", mod->resource, mod->usecount, mod->info->description);
+		c++;
+	}
+	RWLIST_UNLOCK(&modules);
+	bbs_dprintf(fd, "%d module%s loaded\n", c, ESS(c));
+	return 0;
+}
+
+/*! \brief Cleanly unload everything we can */
+static void unload_modules_helper(void)
+{
+	struct bbs_module *mod, *lastmod = NULL;
+	int passes, skipped = 0;
+
+	bbs_debug(3, "Auto unloading modules\n");
+
+/* Try 50 times * 0.2 seconds = up to 10 seconds to unload everything cleanly */
+#define MAX_PASSES 50
+
+	RWLIST_WRLOCK(&modules);
+	/* Run the loop a max of 5 times. Always do it at least once, but then only if there are still skipped modules remaining.
+	 * We really try our best here to unload all modules cleanly, but we can't try forever in case a module is just not unloading. */
+	for (passes = 0 ; (passes == 0 || skipped) && passes < MAX_PASSES ; passes++) {
+		lastmod = NULL; /* If passes > 0, do this so we don't try dlclosing a module twice */
+		RWLIST_TRAVERSE(&modules, mod, entry) {
+			if (lastmod) {
+				/* Because we're using a singly linked list, instead of a doubly linked list,
+				 * we must advance to the next item in the list before actually calling
+				 * unload_dynamic_module on it, since that will result in calling
+				 * bbs_module_unregister, which will remove the module completely from the list,
+				 * such that trying to advance to the next element at that point is an invalid
+				 * memory access.
+				 *
+				 * Traversing a doubly linked list in a reverse would also work.
+				 *
+				 * Note that bbs_module_unregister doesn't WRLOCK the module list again so this is safe.
+				 */
+				unload_dynamic_module(lastmod);
+			}
+			lastmod = NULL; /* If we call continue in the loop, make sure this is NULL so we don't process a module twice. */
+			if (mod->usecount) {
+				bbs_debug(2, "Skipping unload of %s with use count %d on pass %d\n", mod->resource, mod->usecount, passes + 1); /* Pass # when printed out is 1-indexed for sanity */
+				if (passes == 0) {
+					skipped++; /* Only add to our count the first time. */
+				}
+				continue;
+			}
+			/* Module doesn't appear to still be in use (though internally it may be), so try to unload the module. */
+			bbs_debug(2, "Attempting to unload %s\n", mod->resource);
+			if (mod->info->unload()) {
+				/* Could actually still be cleaning up. Skip on this pass. */
+				bbs_debug(2, "Module %s declined to unload, skipping on pass %d\n", mod->resource, passes + 1);
+				if (passes == 0) {
+					skipped++; /* Only add to our count the first time. */
+				}
+				continue; /* Don't actually dlclose a module that refused to unload. */
+			}
+			lastmod = mod; /* Actually go ahead and dlclose the module. */
+			if (passes > 0) {
+				/* We previously skipped the module because it had a positive use count, but now we're good. */
+				bbs_debug(2, "Module %s previously was in use but unloaded on pass %d\n", mod->resource, passes + 1);
+				skipped--;
+			}
+		}
+		if (lastmod) {
+			/* Don't forget to unload the last module. See comment above. */
+			unload_dynamic_module(lastmod);
+		}
+		if (passes > 0) {
+			/* The first 2 passes (between 1st and 2nd), don't sleep.
+			 * Modules may just have needed a teeny bit more time.
+			 * Afterwards, sleep a bit to increase the chances of successful unload. */
+			usleep(200000); /* Wait 200 ms and try again */
+		}
+	}
+	RWLIST_UNLOCK(&modules);
+	if (skipped) {
+		bbs_error("%d module%s could not be unloaded after %d passes\n", skipped, ESS(skipped), passes);
+	}
+}
+
+int unload_modules(void)
+{
+	struct bbs_module *mod;
+
+	unload_modules_helper();
+
+	/* Check for any modules still registered. */
+	RWLIST_WRLOCK(&modules);
+	RWLIST_TRAVERSE(&modules, mod, entry) {
+		bbs_warning("Module %s still registered during BBS shutdown\n", mod->resource);
+	}
+	RWLIST_UNLOCK(&modules);
+
+	return 0;
+}

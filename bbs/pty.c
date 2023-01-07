@@ -1,0 +1,518 @@
+/*
+ * LBBS -- The Lightweight Bulletin Board System
+ *
+ * Copyright (C) 2023, Naveen Albert
+ *
+ * Naveen Albert <bbs@phreaknet.org>
+ *
+ * This program is free software, distributed under the terms of
+ * the GNU General Public License Version 2. See the LICENSE file
+ * at the top of the source tree.
+ */
+
+/*! \file
+ *
+ * \brief Pseudoterminals
+ *
+ * \author Naveen Albert <bbs@phreaknet.org>
+ */
+
+#include "include/bbs.h"
+
+/* #define DEBUG_PTY */
+
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <termios.h>
+#include <pthread.h>
+#include <sys/ioctl.h> /* use winsize */
+#include <signal.h> /* use kill */
+
+#ifdef DEBUG_PTY
+#include <ctype.h>
+#endif
+
+/* Can you believe it?
+ * #include <pty.h>
+ * is not necessary!
+ * (It's for the old BSD ptys)
+ */
+
+#include "include/node.h"
+#include "include/pty.h"
+#include "include/term.h"
+#include "include/alertpipe.h"
+#include "include/utils.h" /* use bbs_pthread_create */
+
+/*!
+ * \brief Roughly equivalent to BSD openpty, but use the POSIX (UNIX 98) functions
+ * \param amaster Will be set to the fd of the master side of the PTY
+ * \param slavename Buffer that will contain slave name
+ * \param slen Size of ptsname buffer
+ * \retval 0 on success, -1 on failure
+ */
+static int posix_openpty(int *amaster, char *slavename, size_t slen)
+{
+	int master_fd;
+	master_fd = posix_openpt(O_RDWR | O_NOCTTY);
+	if (master_fd == -1) {
+		bbs_error("posix_openpt failed: %s\n", strerror(errno));
+		return -1;
+	}
+	if (grantpt(master_fd)) { /* Grant access to slave */
+		/* Note: for non-forked, main BBS process and spawn process should run as the same user */
+		bbs_error("grantpt failed: %s\n", strerror(errno));
+		close(master_fd);
+		return -1;
+	}
+	if (unlockpt(master_fd)) { /* Unlock slave */
+		bbs_error("unlockpt failed: %s\n", strerror(errno));
+		close(master_fd);
+		return -1;
+	}
+	if (ptsname_r(master_fd, slavename, slen)) { /* Get slave name, and use the thread safe version of ptsname */
+		bbs_error("ptsname_r failed: %s\n", strerror(errno));
+		close(master_fd);
+		return -1;
+	}
+	/* No need to check for truncation: ptsname_r will return -1 (ERANGE) in that case. */
+	*amaster = master_fd; /* All is well. */
+
+	return 0;
+}
+
+int bbs_openpty(int *amaster, int *aslave, char *name, const struct termios *termp, const struct winsize *winp)
+{
+	char slavename[48];
+	/* Assume the buffer is size 48 */
+	int slave, res;
+
+	res = posix_openpty(amaster, slavename, sizeof(slavename));
+	if (!res && name) {
+		/* XXX Note this is not actually safe. We have no idea how big the name buffer is. Just hope for the best.
+		 * The one module that calls this function currently (the SSH network driver) passes NULL
+		 * for name, so this is theoretical at this point anyways. Since we're setting aslave with the slave fd,
+		 * callers generally shouldn't need to know or care what the slave name is.
+		 */
+		safe_strncpy(name, slavename, sizeof(slavename));
+	}
+
+	/* Open the slave here and just return the file descriptor of the slave,
+	 * rather than returning its name and making the caller open the slave. */
+	slave = open(slavename, O_RDWR);
+	if (slave == -1) {
+		return -1;
+	}
+	*aslave = slave;
+
+	/* Set slave TTY attributes */
+	if (termp && tcsetattr(slave, TCSANOW, termp)) {
+		bbs_error("tcsetattr failed: %s\n", strerror(errno));
+		close(slave);
+		return -1;
+	}
+
+	/* Set slave window size */
+	if (winp && ioctl(slave, TIOCSWINSZ, winp) == -1) {
+		bbs_error("ioctl failed: %s\n", strerror(errno));
+		close(slave);
+		return -1;
+	}
+
+	return 0;
+}
+
+int bbs_pty_allocate(struct bbs_node *node)
+{
+	/* We store the slavename on the node struct, but
+	 * technically this isn't necessary since it's only used in this function. */
+	if (posix_openpty(&node->amaster, node->slavename, sizeof(node->slavename))) {
+		return -1;
+	}
+
+	/* Launch a PTY master thread to relay data between network socket and PTY master. */
+	if (bbs_pthread_create(&node->ptythread, NULL, pty_master, node)) {
+		return -1;
+	}
+
+	/* We are the PTY slave */
+	node->slavefd = open(node->slavename, O_RDWR);
+	if (node->slavefd == -1) {
+		return -1;
+	}
+
+	bbs_assert(isatty(node->amaster));
+	bbs_assert(isatty(node->slavefd));
+	return 0;
+}
+
+static int spy_node = 0;
+static int spy_in = -1;
+static int spy_out = -1;
+
+int bbs_node_spy(int fdin, int fdout, int nodenum)
+{
+	int spy_alert_pipe[2] = { -1, -1 };
+	struct bbs_node *node;
+
+	if (bbs_alertpipe_create(spy_alert_pipe)) {
+		return -1;
+	}
+
+	node = bbs_node_get(nodenum); /* This returns node locked */
+	if (!node) {
+		bbs_dprintf(fdout, "No such node: %d\n", nodenum);
+		return 0;
+	}
+
+	/* Clear the screen to start. */
+	SWRITE(STDOUT_FILENO, COLOR_RESET); /* Reset color too, just in case */
+	SWRITE(STDOUT_FILENO, TERM_CLEAR);
+
+	node->spy = 1;
+	bbs_sigint_set_alertpipe(spy_alert_pipe);
+	spy_in = fdin;
+	spy_out = fdout;
+	spy_node = nodenum;
+	bbs_fd_unbuffer_input(fdin, 0); /* Unbuffer input, so that sysop can type on the node's TTY in real time, not just flushed after line breaks. */
+	bbs_node_unlock(node); /* We're done with the node. */
+
+	bbs_verb(3, "Spying begun on node %d\n", nodenum);
+
+	/* pty_master is responsible for our input and output as long as we're spying.
+	 *
+	 * Another way of potentially doing this would be to read from STDIN in this thread
+	 * and relay that to the amaster fd, but I think pty_master thread is better off
+	 * dealing with the PTY file descriptors all on its own, without interference.
+	 * The way it is now, all the I/O is handled in that thread.
+	 *
+	 * So, just wait indefinitely for ^C to stop spying.
+	 */
+	if (bbs_alertpipe_poll(spy_alert_pipe) > 0) {
+		bbs_alertpipe_read(spy_alert_pipe);
+	}
+
+	/* Restore the original handler for ^C */
+	bbs_sigint_set_alertpipe(NULL); /* Unsubscribe, restore default SIGINT handling */
+	bbs_alertpipe_close(spy_alert_pipe);
+
+	/* Reset the terminal. */
+	bbs_fd_buffer_input(fdin, 1); /* Rebuffer input */
+	SWRITE(STDOUT_FILENO, COLOR_RESET);
+	SWRITE(STDOUT_FILENO, TERM_CLEAR);
+
+	/* Log this message after the screen was cleared, as the sysop will likely see it,
+	 * and this serves as a visual indication that spying has really stopped. */
+	bbs_verb(3, "Spying stopped on node %d\n", nodenum);
+
+	spy_node = 0;
+	spy_in = spy_out = -1;
+
+	node = bbs_node_get(nodenum);
+	if (!node) {
+		return 0;
+	}
+	node->spy = 0;
+	bbs_node_unlock(node); /* We're done with the node. */
+	return 0;
+}
+
+/*! \brief Emulated speed control for non-serial file descriptors */
+static int slow_write(int fd, int fd2, const char *__restrict buf, int len, int sleepms)
+{
+	int c, res, res2 = 0, total_bytes = 0;
+
+	/* This function exists because it is not possible to use termios
+	 * to set the speed of non-serial terminals.
+	 * In other words, you can't do this:
+	 *
+	 * struct termios slow;
+	 * tcgetattr(STDOUT_FILENO, &slow);
+	 * cfsetispeed(&slow, B300);
+	 * cfsetospeed(&slow, B1200);
+	 * tcsetattr(STDOUT_FILENO, TCSANOW, &slow);
+	 *
+	 * These calls will all succeed, but they don't have any effect, unless STDOUT_FILENO
+	 * is a file descriptor for a serial terminal. So, none of this works with Internet Protocol.
+	 * This is actually pretty useless for that.
+	 *
+	 * So, we have to get a little creative. Hence, this is why the slow_write function exists.
+	 * There may be other ways of achieving similar things,
+	 * e.g. see https://unix.stackexchange.com/questions/669232/how-to-throttle-bandwidth-of-ssh-connection
+	 *
+	 * However, even though methods such as proxying sessions through pv(1) may be more efficient,
+	 * these are not as flexible since you cannot change the speed on the fly during a session,
+	 * which we want to be able to do.
+	 */
+
+	/* Write entire buffer one character at a time, with appropriate delay inbetween.
+	 * Downside of doing it this way is that it's not very efficient (e.g. CPU usage) */
+
+	/* XXX Another downside, since PTY master is one thread for both PTY input and output,
+	 * this function will take time, which means we can't receive any INPUT
+	 * while we're writing output, until we're all done writing all the output.
+	 * We should have a way to interrupt output from the terminal, e.g. if this is taking too long.
+	 */
+
+	for (c = 0; c < len; c++) {
+		if (c) {
+			usleep(sleepms); /* delay in us between each character for I/O */
+		}
+		res = write(fd, buf, 1);
+		if (fd2 != -1) {
+			res2 = write(fd2, buf, 1);
+		}
+		if (res <= 0 || (fd2 != -1 && res2 <= 0)) {
+			return res;
+		}
+		total_bytes += res;
+		buf++;
+	}
+	return total_bytes;
+}
+
+void *pty_master(void *varg)
+{
+	struct bbs_node *node = varg;
+	int pres;
+	struct pollfd fds[3];
+	char buf[4096]; /* According to termios(3) man page, the canonical mode buffer of the PTY is 4096, so this should always be large enough */
+	int bytes_read, bytes_wrote;
+	int numfds;
+
+	/* Save relevant fields. */
+	int nodeid = node->id;
+	int amaster = node->amaster;
+	int sfd = node->fd;
+
+	bbs_debug(10, "Starting PTY master for node %d: %d => %s\n", nodeid, amaster, node->slavename);
+
+	/* We don't need to call tty_set_raw on any file descriptor. */
+
+	/* If the node gets shut down,
+	 * then node is no longer valid memory to access,
+	 * so save what we need from it (above)
+	 * and use our local copies of the file descriptor numbers instead.
+	 *
+	 * Since a shutdown closes the file descriptors, we only
+	 * need to close amaster in this thread if we exit due to our own volition,
+	 * and since we never do that, we don't need to.
+	 */
+
+	/* Relay data between terminal (socket side) and pty master */
+	for (;;) {
+		fds[0].fd = sfd;
+		fds[1].fd = amaster;
+		fds[0].events = fds[1].events = POLLIN;
+		fds[0].revents = fds[1].revents = 0;
+		numfds = 2;
+		if (spy_node == nodeid) {
+			/* You might think that a limitation of this is that we only check this at the begining of
+			 * each poll loop here, i.e. if the sysop attaches to a node mid-poll,
+			 * then the spying won't take effect until the next loop.
+			 * But if we're mid-poll, nothing's happening, silly!
+			 * As soon as something happens, we'll loop again. Remember that we're reading char by char,
+			 * so effectively as soon as there is a single character of input or output,
+			 * spying should take effect here.
+			 */
+			fds[2].fd = spy_in;
+			fds[2].events = POLLIN;
+			fds[2].revents = 0;
+			numfds++;
+		}
+
+		pres = poll(fds, numfds, -1);
+		pthread_testcancel();
+		if (pres < 0) {
+			if (errno != EINTR) {
+				bbs_error("poll returned %d: %s\n", pres, strerror(errno));
+			}
+			continue;
+		}
+
+		if (fds[0].revents & POLLIN) { /* Got input on socket -> pty */
+			bytes_read = read(sfd, buf, sizeof(buf));
+			if (bytes_read <= 0) {
+				bbs_debug(10, "socket read returned %d\n", bytes_read);
+				/* If the PTY master exits, need to get rid of the node. This should do the trick. Same logic as in the else statement. */
+				bbs_node_lock(node);
+				close(node->slavefd);
+				node->slavefd = -1;
+				bbs_node_unlock(node);
+				break; /* We'll read 0 bytes upon disconnect */
+			}
+#ifdef DEBUG_PTY
+			if (isprint(*buf)) {
+				bbs_debug(10, "Node %d: master->slave(%d): %.*s (%d %d)\n", nodeid, bytes_read, bytes_read, buf, *buf, bytes_read > 1 ? *(buf + 1) : -1);
+			} else {
+				bbs_debug(10, "Node %d: master->slave(%d): (%d %d)\n", nodeid, bytes_read, *buf, bytes_read > 1 ? *(buf + 1) : -1);
+			}
+#endif
+			if (bytes_read == 2 && *buf == '\r' && *(buf + 1) == '\0') { /* Probably faster than strncmp, and performance really matters here */
+				/* This is needed for PuTTY/KiTTY. SyncTERM/Windows Telnet don't need this, since they do CR LF,
+				 * but according to RFC 854, CR NUL is also valid for Telnet and so we handle that here.
+				 * An important reason for that is if the slave fd is in canonical mode, then the buffer won't
+				 * get flushed until there's a LF, so we must do this here to flush output to the slave immediately.
+				 */
+				bbs_debug(9, "Got CR NUL, translating to CR LF for slave\n");
+				*(buf + 1) = '\n';
+			} else if (bytes_read == 1 && *buf == '\r') {
+				/* RLogin clients (at least SyncTERM) seem to do this */
+				/* XXX Technically, very small chance we might've read LF on the next poll/read,
+				 * but they most likely would arrive together, if there was one,
+				 * since they'd be transmitted at the same time. */
+				bbs_debug(9, "Got CR, translating to CR LF for slave\n");
+				*(buf + 1) = '\n'; /* We must have a LF for input to work in canonical mode! */
+				bytes_read = 2;
+			}
+			/* We only slow output, not input, so don't use slow_write here, regardless of the speed */
+			bytes_wrote = write(amaster, buf, bytes_read);
+			/* Don't relay user input to sysop for spying here. If we're supposed to, it'll get echoed back in the output. */
+			if (bytes_wrote != bytes_read) {
+				bbs_error("Expected to write %d bytes, only wrote %d\n", bytes_read, bytes_wrote);
+				return NULL;
+			}
+			if (bytes_read == 1 && *buf == 3) {
+				/* In general, we should not intercept messages between 1 and 26 (^A through ^Z).
+				 * They'll pass through fine to children on their own, i.e. ^D, etc. do what you'd expect.
+				 * Handle ^C explicitly here though in case in the future we want to things when we *don't* have a child,
+				 * and because we need to actually generate SIGINT, not write ^C as input (which happens otherwise).
+				 * All other CTRL keys can just pass through directly.
+				 */
+				/* 3 = ETX (^C / SIGINT) */
+				if (node->childpid) {
+					/* If executing a child process, also pass SIGINT on, in addition to writing it to the PTY slave */
+#if 0
+					/* Never mind, this doesn't work (even when run as root)
+					 * Possibly because it's been disabled due to being a "security risk",
+					 * e.g. https://undeadly.org/cgi?action=article;sid=20170701132619
+					 * But that only happened on BSD, not Linux, so dunno...
+					 */
+					char c = 1; /* termios.c_cc[VINTR] */
+					if (ioctl(amaster, TIOCSTI, &c)) {
+						bbs_error("TIOCSTI failed: %s\n", strerror(errno));
+					}
+#endif
+					/* This does work. It sends a SIGINT to the child process,
+					 * just as if you hit ^C in a shell session.
+					 * How it handles it is up to the child process.
+					 * It may not necessarily exit. That's okay.
+					 *
+					 * That said, I feel like this is not some of my best work here...
+					 * it just feels hacky to manually detect ETX (decimal 3 ASCI)
+					 * and intercept it like this to send the signal.
+					 * We should make this work in a more elegant manner, this is
+					 * just the first thing I tried that seems to work properly.
+					 *
+					 * On the flip side, maybe this is a good way to handle it.
+					 * The PTY doesn't know if there's a child PID or not.
+					 * However, we do (by checking node->childpid).
+					 * This way, we can also use ^C within the BBS itself,
+					 * depending on certain things, i.e. we can make it
+					 * cause a module or door to abort, by writing to the node pipe or something
+					 * and returning -1.
+					 */
+					bbs_debug(3, "Sending SIGINT to process %d\n", node->childpid);
+					if (kill(node->childpid, SIGINT)) {
+						bbs_error("SIGINT failed: %s\n", strerror(errno));
+					}
+				} else {
+					bbs_debug(3, "Ignoring ^C and not forwarding it\n");
+					continue;
+				}
+			}
+		} else if (fds[1].revents & POLLIN) { /* Got input from pty -> socket */
+			bytes_read = read(amaster, buf, sizeof(buf));
+			if (bytes_read <= 0) {
+				bbs_debug(10, "pty master read returned %d (%s)\n", bytes_read, strerror(errno));
+				break; /* We'll read 0 bytes upon disconnect */
+			}
+#ifdef DEBUG_PTY
+			/* We're not generally concerned with what we're sending (server -> client),
+			 * we're usually trying to debug what we're receiving (client -> server),
+			 * so this is disabled unless absolutely needed, even with DEBUG_PTY.
+			 */
+#if 0
+			bbs_debug(10, "Node %d: slave->master(%d): %.*s\n", nodeid, bytes_read, bytes_read, buf);
+#endif
+#endif /* DEBUG_PTY */
+			if (node->speed) {
+				/* Slow write to both real socket and spying fd simultaneously */
+				bytes_wrote = slow_write(sfd, spy_node == nodeid ? spy_out : -1, buf, bytes_read, node->speed);
+			} else {
+				bytes_wrote = write(sfd, buf, bytes_read);
+				if (spy_node == nodeid && bytes_wrote == bytes_read) {
+					bytes_wrote = write(spy_out, buf, bytes_read);
+				}
+			}
+			if (bytes_wrote != bytes_read) {
+				bbs_error("Expected to write %d bytes, only wrote %d\n", bytes_read, bytes_wrote);
+			}
+		} else if (numfds == 3 && fds[2].revents & POLLIN) { /* Got input from sysop (node spying) -> pty */
+			bytes_read = read(spy_in, buf, sizeof(buf));
+			if (bytes_read <= 0) {
+				bbs_debug(10, "pty spy_in read returned %d (%s)\n", bytes_read, strerror(errno));
+				break; /* We'll read 0 bytes upon disconnect */
+			}
+#ifdef DEBUG_PTY
+			if (isprint(*buf)) {
+				bbs_debug(10, "Node %d: spy_in->slave(%d): %.*s (%d %d)\n", nodeid, bytes_read, bytes_read, buf, *buf, bytes_read > 1 ? *(buf + 1) : -1);
+			} else {
+				bbs_debug(10, "Node %d: spy_in->slave(%d): (%d %d)\n", nodeid, bytes_read, *buf, bytes_read > 1 ? *(buf + 1) : -1);
+			}
+#endif
+			if (bytes_read == 2 && *buf == '\r' && *(buf + 1) == '\0') { /* Probably faster than strncmp, and performance really matters here */
+				/* This is needed for PuTTY/KiTTY. SyncTERM/Windows Telnet don't need this, since they do CR LF,
+				 * but according to RFC 854, CR NUL is also valid for Telnet and so we handle that here.
+				 * An important reason for that is if the slave fd is in canonical mode, then the buffer won't
+				 * get flushed until there's a LF, so we must do this here to flush output to the slave immediately.
+				 */
+				bbs_debug(9, "Got CR NUL, translating to CR LF for slave\n");
+				*(buf + 1) = '\n';
+			}
+			if (spy_node == nodeid) {
+				/* Spoof sysop input (spy) to system.
+				 * One great thing about the way we're doing this: notice that we're not using TIOCSTI, which requires CAP_SYS_ADMIN (see man terminal(7)) */
+				bytes_wrote = write(amaster, buf, bytes_read);
+				if (bytes_wrote != bytes_read) {
+					bbs_error("Expected to write %d bytes, only wrote %d\n", bytes_read, bytes_wrote);
+					return NULL;
+				}
+			} else {
+				bbs_warning("Got spy input for node %d, but not a spy target?\n", nodeid);
+			}
+		} else {
+			int x = fds[0].revents ? 0 : fds[1].revents ? 1 : numfds == 3 ? 2 : -1;
+			bbs_assert(x >= 0);
+			bbs_debug(4, "poll returned %d (revent[%d] = %s)\n", pres, x, poll_revent_name(fds[x].revents));
+			if (fds[0].revents & BBS_POLL_QUIT || fds[1].revents & BBS_POLL_QUIT) {
+				bbs_debug(2, "PTY %s closed the connection\n", x == 0 ? "master (client)" : "slave (server)");
+				if (x == 0) {
+					bbs_node_lock(node);
+					/* Client disconnected */
+					/* Close the slave, this will cause bbs_poll, bbs_read, bbs_write, etc. to return -1.
+					 * That will cause the node to exit and it will subsequently join this thread. */
+					close(node->slavefd);
+					/* XXX If we don't check the return values of bbs_poll everywhere, the slavefd != -1 assertion might be triggered.
+					 * Also bbs_poll will wait for ms to expire (so if ms == -1, very bad!!!)
+					 * You'd think poll would get a POLLHUP immediately... but nope! Not sure why.
+					 * Need to find a way to make this immediate.
+					 * In the meantime, the node threads will exit eventually, just not immediately.
+					 */
+					node->slavefd = -1;
+					/* Resist the urge to also close node->fd here. bbs_poll will assert it's not -1,
+					 * so just wait for cleanup to happen, and we'll close node->fd there in due course. */
+					bbs_node_unlock(node);
+				} /* else, slave closed, i.e. node shutdown is probably already ongoing, we don't need to do anything further */
+				break;
+			}
+			bbs_error("poll returned %d (revent %s), but no POLLIN?\n", pres, poll_revent_name(fds[x].revents));
+		}
+	}
+
+	bbs_debug(10, "PTY master exiting for node %d\n", nodeid);
+	return NULL;
+}
