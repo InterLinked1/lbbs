@@ -4,6 +4,7 @@
 
 apt-get install -y libncurses-dev # ncurses
 apt-get install -y libcrypt-dev # crypt_r
+apt-get install -y libcurl4-openssl-dev # <curl/curl.h> - cURL, OpenSSL variant
 apt-get install -y binutils-dev # <bfd.h>
 apt-get install -y libcap-dev # <sys/capability.h>
 
