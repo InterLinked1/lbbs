@@ -101,7 +101,16 @@ extinstall:
 	fi
 	$(SUBMAKE) --no-builtin-rules -C external install
 
-install : all bininstall modinstall extinstall
+scripts :
+	@if [ ! -d /var/lib/lbbs ]; then\
+		mkdir /var/lib/lbbs;\
+	fi
+	@if [ ! -d /var/lib/lbbs/scripts ]; then\
+		mkdir /var/lib/lbbs/scripts;\
+	fi
+	cp scripts/*.sh /var/lib/lbbs/scripts
+
+install : all bininstall modinstall extinstall scripts
 	@echo " +--- LBBS and associated modules have been installed ---+"
 
 samples :
@@ -126,6 +135,7 @@ helgrind :
 .PHONY: bbs
 .PHONY: $(MOD_SUBDIR)
 .PHONY: external
+.PHONY: scripts
 .PHONY: clean
 .PHONY: install
 .PHONY: samples

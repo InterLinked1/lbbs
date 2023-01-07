@@ -173,6 +173,8 @@ Most code is documented using doxygen, and each source file describes its purpos
 
 - `nets` - Network login services / communication driver modules
 
+- `scripts` - Useful scripts for use with LBBS
+
 - `terms` - Reserved for possible future terminal modules, not yet used
 
 LBBS, once installed, uses several system directories:
@@ -186,6 +188,7 @@ LBBS, once installed, uses several system directories:
 - `/var/lib/lbbs/` - General LBBS resources
 
   - `/var/lib/lbbs/external` - External programs
+  - `/var/lib/lbbs/scripts` - Useful scripts for use with LBBS
 
 - `/var/log/lbbs/` - log directory
 
@@ -226,6 +229,22 @@ LBBS includes a number of builtin tools to assist with debugging, in addition to
 From the sysop console, you can run `/threads` to show running threads, helpful if you suspect threading-related issues. Running `/fds` will show all open file descriptors.
 
 LBBS includes unit tests for functionality that can be tested individually. These can be run using `/runtests` from the sysop console.
+
+**Dumper Script**
+
+The `/var/lib/lbbs/scripts/bbs_dumper.sh` script can be helpful when trying to get backtraces of LBBS.
+
+Usage:
+
+- `./bbs_dumper.sh pid` - Get PID of running BBS process
+
+- `./bbs_dumper.sh term` - Terminate running BBS process (SIGKILL)
+
+- `./bbs_dumper.sh term` - Quit running BBS process (SIGQUIT)
+
+- `./bbs_dumper.sh postdump` - Obtain a backtrace from a core dump file
+
+- `./bbs_dumper.sh livedump` - Obtain a backtrace from a currently running LBBS process
 
 ### Coding Guidelines
 
