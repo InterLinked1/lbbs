@@ -295,7 +295,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 
 	if (!strlen_zero(menu->display)) {
 		/* menus.conf tells us what to draw to the screen. */
-		char disp[2 * strlen(menu->display)];
+		char disp[2 * 1920]; /* An 80x24 screen is 1920, so twice that ought to be plenty. Avoid using strlen(menu->display) for gcc -Wstack-protector */
 		bbs_substitute_vars(node, menu->display, disp, sizeof(disp));
 		bbs_writef(node, "%s\n", disp); /* Add LF after last line */
 		bbs_reset_color(node);
@@ -668,7 +668,7 @@ static int load_config(int reload)
 			} else {
 #define menuopt_allowed(c) (isalnum(c) || c == '?')
 				/* Add menu item */
-				char *tmp, *s;
+				char *tmporig, *tmp, *s;
 				struct bbs_menu_item *menuitem;
 				if (strlen(key) != 1) {
 					bbs_warning("'%s' cannot be used as a menu option (too long)\n", key);
@@ -682,7 +682,11 @@ static int load_config(int reload)
 					bbs_error("calloc failure\n");
 					continue;
 				}
-				tmp = strdupa(value);
+				tmporig = tmp = strdup(value); /* Avoid strdupa, we're in a loop */
+				if (!tmp) {
+					bbs_error("strdup failure\n");
+					continue;
+				}
 				menuitem->opt = *key; /* It's only a single letter */
 				if (!case_sensitive) {
 					menuitem->opt = toupper(menuitem->opt); /* If not case sensitive, store internally as uppercase */
@@ -691,6 +695,7 @@ static int load_config(int reload)
 				s = strsep(&tmp, "|");
 				if (strlen_zero(s)) {
 					menuitem_free(menuitem);
+					free(tmporig);
 					continue;
 				}
 
@@ -700,12 +705,14 @@ static int load_config(int reload)
 				if (strlen_zero(s)) {
 					bbs_warning("Missing | (menu item '%s' has no name, ignoring)\n", menuitem->action);
 					menuitem_free(menuitem);
+					free(tmporig);
 					continue;
 				}
 				menuitem->name = strdup(s);
 				/* These are mandatory */
 				if (!menuitem->opt || !menuitem->action || !menuitem->name) {
 					menuitem_free(menuitem);
+					free(tmporig);
 					continue;
 				}
 				/* Now, process any optional modifiers */
@@ -722,6 +729,7 @@ static int load_config(int reload)
 						bbs_warning("Unrecognized menu item modifier '%s'\n", k);
 					}
 				}
+				free(tmporig);
 				menu_item_link(menu, menuitem);
 			}
 		}

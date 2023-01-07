@@ -92,7 +92,7 @@ static int calc_exec(struct bbs_node *node, const char *args)
 		 * bc thinks we're interactive STDIN, and it'll wait forever for a quit command,
 		 * just like in an interactive session.
 		 * So in addition to LF, send it quit LF to make sure we don't hang. */
-		if (write(stdin[1], "quit\n", 9) < 0) {
+		if (SWRITE(stdin[1], "quit\n") < 0) {
 			bbs_error("write failed: %s\n", strerror(errno));
 			continue;
 		}

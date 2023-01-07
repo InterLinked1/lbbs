@@ -969,7 +969,13 @@ int bbs_reset_color(struct bbs_node *node)
 int bbs_draw_line(struct bbs_node *node, char c)
 {
 	int i, cols = node->cols ? node->cols : 80; /* Assume 80x24 if not available */
-	char buf[cols + 2];
+	char buf[384]; /* Avoid cols + 2 for gcc -Wstack-protector */
+
+	if (cols + 2 >= (int) (sizeof(buf) - 1)) {
+		bbs_warning("Truncation occured of line for node with %d cols\n", node->cols);
+		/* Not fatal */
+	}
+
 	for (i = 0; i < cols; i++) {
 		buf[i] = c;
 	}

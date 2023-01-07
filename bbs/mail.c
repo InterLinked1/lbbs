@@ -94,7 +94,7 @@ static void make_email_file(FILE *p, const char *subject, const char *body, cons
 	char who[257];
 	char bound[256];
 	char filename[256];
-	char *attachmentsbuf, *attachment;
+	char *attachmentsbuf, *attachmentlist, *attachment;
 	struct timeval when;
 	time_t t = time(NULL);
 
@@ -136,8 +136,13 @@ static void make_email_file(FILE *p, const char *subject, const char *body, cons
 	if (strlen_zero(attachments)) {
 		return;
 	}
-	attachmentsbuf = strdupa(attachments);
-	while ((attachment = strsep(&attachmentsbuf, "|"))) {
+	/* Use strdup instead of strdupa, as we don't know how long the list is, and to make gcc happy with -Wstack-protector */
+	attachmentlist = attachmentsbuf = strdup(attachments); /* Dup pointer for strsep so we can still free() it */
+	if (!attachmentsbuf) {
+		bbs_error("strdup failed\n");
+		return;
+	}
+	while ((attachment = strsep(&attachmentlist, "|"))) {
 		char *fullname, *friendlyname, *mimetype;
 		snprintf(filename, sizeof(filename), "%s", basename(attachment));
 
@@ -171,6 +176,7 @@ static void make_email_file(FILE *p, const char *subject, const char *body, cons
 			unlink(fullname);
 		}
 	}
+	free(attachmentsbuf);
 	fprintf(p, ENDL ENDL "--%s--" ENDL "." ENDL, bound); /* After the last attachment */
 }
 

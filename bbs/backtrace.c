@@ -232,6 +232,8 @@ static void bt_get_symbols(void **addresses, int num_frames, char *retstrings[])
 	}
 }
 
+/* retstrings takes a variable, which makes gcc unhappy with this option */
+#pragma GCC diagnostic ignored "-Wstack-protector"
 static void bbs_log_backtrace(void)
 {
 	char **bt_syms;
@@ -247,6 +249,7 @@ static void bbs_log_backtrace(void)
 	{
 		/* Scope for retstrings, since size is not known at beginning of function */
 		char *retstrings[size];
+#pragma GCC diagnostic pop
 		memset(retstrings, 0, sizeof(*retstrings));
 		bt_get_symbols(array, size, retstrings); /* Get backtraces with friendly symbols */
 		for (i = 0; i < size; i++) {

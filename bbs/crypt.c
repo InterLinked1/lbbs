@@ -235,28 +235,29 @@ int bbs_password_verify(const char *password, const char *salt, const char *hash
 		if (uhash[b] != hash[b]) {
 			res = -1; /* don't leak (time wise) by aborting early! */
 		}
-	}
+		}
 
 	free(uhash);
 	return res;
 }
 
+#define BCRYPT_FULL_HASH_LEN 60
 int bbs_password_verify_bcrypt(const char *password, char *combined)
 {
 	int res;
-	char *salt;
+	char salt[BCRYPT_FULL_HASH_LEN + 1];
 	char *pos, *ohash;
 	char orig;
 	int len;
 
 	/* For bcrypt, it's $2b$<COST>$ + 22 char salt + 31 char hash */
 	len = strlen(combined);
-	/* Length should be 7 + 22 + 31 = 60 */
-	if (len != 60) {
-		bbs_warning("Expected input length to be 60, but it's %d?\n", len);
+	/* Length should be 7 + 22 + 31 = 60 (BCRYPT_FULL_HASH_LEN) */
+	if (len != BCRYPT_FULL_HASH_LEN) {
+		bbs_warning("Expected input length to be %d, but it's %d?\n", BCRYPT_FULL_HASH_LEN, len);
 		return -1;
 	}
-	salt = strdupa(combined);
+	safe_strncpy(salt, combined, sizeof(salt));
 	/* XXX When I originally wrote this code, with NEED_CRYPTO_IMPL, I had pos = salt + len - 1 - 31 here.
 	 * When incorporating this code into the BBS, I found that the salt was only 21 characters
 	 * with this calculation, as opposed to 22, as it should be.

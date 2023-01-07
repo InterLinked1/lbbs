@@ -226,6 +226,7 @@ static int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND 
 	return 0;
 }
 
+#pragma GCC diagnostic ignored "-Wstack-protector"
 static int sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *fmt, ...)
 {
 	int i, num_args = strlen(fmt);
@@ -238,6 +239,7 @@ static int sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *f
 	char *bind_strings[num_args];
 	my_bool bind_null[num_args];
 	const char *cur = fmt;
+#pragma GCC diagnostic pop
 
 	if (sql_prepare(stmt, fmt, query)) {
 		return -1;
@@ -346,10 +348,11 @@ cleanup:
  * \param password
  * \retval 0 on successful login, -1 on failure
  */
+#pragma GCC diagnostic ignored "-Wstack-protector"
 static int provider(AUTH_PROVIDER_PARAMS)
 {
 	char sql[128];
-	unsigned int num_fields;
+	const unsigned int num_fields = 5;
 	MYSQL *mysql = NULL;
 	MYSQL_STMT *stmt;
 	int founduser = 0, res = -1;
@@ -361,7 +364,6 @@ static int provider(AUTH_PROVIDER_PARAMS)
 	if (!stmt) {
 		goto cleanup;
 	}
-	num_fields = 5;
 
 	snprintf(sql, sizeof(sql), "SELECT id, username, password, priv, email FROM %s%susers WHERE username = ? LIMIT 1", DB_NAME_ARGS);
 
@@ -374,6 +376,7 @@ static int provider(AUTH_PROVIDER_PARAMS)
 		int bind_ints[num_fields];
 		char *bind_strings[num_fields];
 		my_bool bind_null[num_fields];
+#pragma GCC diagnostic pop
 
 		memset(results, 0, sizeof(results));
 		memset(lengths, 0, sizeof(lengths));

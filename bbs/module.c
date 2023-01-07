@@ -104,7 +104,7 @@ void bbs_module_unregister(const struct bbs_module_info *info)
 	char *curname;
 	struct bbs_module *mod = NULL;
 	int len = strlen(info->name);
-	char buf[len + 4];
+	char buf[256]; /* Avoid using len + 4, for -Wstack-protector */
 
 	buf[0] = '\0';
 	if (len >= 3 && info->name[len - 3] != '.') {
@@ -155,7 +155,7 @@ static struct bbs_module *find_resource(const char *resource)
 	char *curname;
 	struct bbs_module *mod = NULL;
 	int len = strlen(resource);
-	char buf[len + 4];
+	char buf[256]; /* Avoid using len + 4, for -Wstack-protector */
 
 	buf[0] = '\0';
 	if (len >= 3 && resource[len - 3] != '.') {
@@ -215,8 +215,7 @@ static void logged_dlclose(const char *name, void *lib)
  *
  * \warning module_list must be locked before calling this function.
  */
-static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ext,
-	const char *filename, int flags, unsigned int suppress_logging)
+static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ext, const char *filename, int flags, unsigned int suppress_logging)
 {
 	struct bbs_module *mod;
 	int bytes;
@@ -237,7 +236,7 @@ static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ex
 	mod->lib = dlopen(filename, flags);
 
 	if (resource_being_loaded) {
-		const char *dlerror_msg = strdupa(S_IF(dlerror()));
+		const char *dlerror_msg = S_IF(dlerror());
 
 		bbs_warning("Module %s didn't register itself during load?\n", resource_in);
 
@@ -308,8 +307,10 @@ static int is_module_loaded(const char *resource_name)
 
 static void unload_dynamic_module(struct bbs_module *mod)
 {
-	char *name = strdupa(bbs_module_name(mod));
+	char name[256]; /* Avoid strdupa for gcc -Wstack-protector */
 	void *lib = mod->lib;
+
+	safe_strncpy(name, bbs_module_name(mod), sizeof(name)); /* Save a copy of the module name */
 
 	/* WARNING: the structure pointed to by mod is going to
 	   disappear when this operation succeeds, so we can't
