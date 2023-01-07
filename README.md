@@ -222,6 +222,8 @@ Some targets are also included to aid developers in debugging the BBS or sysops 
 
 - `make helgrind` - Run helgrind in the foreground. This is useful for debugging locking.
 
+Most stuff is commented for doxygen. You can generate the doxygen docs by running `make doxygen` (you may need to run `apt-get install -y doxygen graphviz` first)
+
 ### Debugging
 
 LBBS includes a number of builtin tools to assist with debugging, in addition to using `valgrind` as described above. You can turn on debugging by using the `-d` option on startup (up to 10 `d`'s), setting a debug level in `bbs.conf`, or changing the debug level at runtime using the `/debug` command. **If you submit an issue, you must provide full debug (`debug=10`)**.

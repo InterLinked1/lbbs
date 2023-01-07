@@ -66,15 +66,20 @@ external :
 	$(SUBMAKE) --no-builtin-rules -C $@ all
 
 clean :
-	$(RM) lbbs
-	$(RM) bbs/*.i bbs/*.o
+	$(RM) bbs/$(EXE) bbs/*.i bbs/*.o
 	$(RM) include/*.gch
 	$(SUBMAKE) --no-builtin-rules -C external clean
 	@for i in $(MOD_SUBDIR); do \
 		$(RM) $${i}/*.i $${i}/*.o $${i}/*.so; \
 	done
-	$(RM) /usr/lib/lbbs/modules/*.so
+	$(RM) doxygen.log
+	$(RM) -r doc/html
+	$(RM) -r doc/latex
+
+uninstall :
 	$(RM) /var/lib/lbbs/external/*
+	$(RM) /usr/lib/lbbs/modules/*.so
+	$(RM) /usr/sbin/$(EXE)
 
 bininstall: bbs
 	$(INSTALL) -m 755 bbs/$(EXE) "/usr/sbin/lbbs"
@@ -119,6 +124,10 @@ samples :
 	fi
 	cp -n configs/*.conf /etc/lbbs
 
+doxygen :
+# apt-get install -y doxygen graphviz
+	doxygen Doxyfile.in
+
 valgrindfg :
 	$(VALGRIND) --leak-check=full --show-leak-kinds=all --suppressions=valgrind.supp /usr/sbin/$(EXE) -c
 
@@ -139,6 +148,7 @@ helgrind :
 .PHONY: clean
 .PHONY: install
 .PHONY: samples
+.PHONY: doxygen
 .PHONY: valgrindfg
 .PHONY: valgrind
 .PHONY: valgrindsupp

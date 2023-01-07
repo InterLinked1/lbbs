@@ -16,3 +16,6 @@ apt-get install -y libssh-dev # libssh
 
 # mod_mysql_auth
 apt-get install -y libmariadb-dev libmariadb-dev-compat # MariaDB (MySQL) dev headers
+
+# doxygen only:
+# apt-get install -y doxygen graphviz
