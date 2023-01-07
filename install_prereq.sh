@@ -1,7 +1,9 @@
 #/bin/sh
 
-# Install pre-reqs
+# Update
+apt-get update
 
+# Install pre-reqs
 apt-get install -y libncurses-dev # ncurses
 apt-get install -y libcrypt-dev # crypt_r
 apt-get install -y libcurl4-openssl-dev # <curl/curl.h> - cURL, OpenSSL variant
