@@ -88,6 +88,7 @@ void bbs_tcp_comm_listener(int socket, const char *name, int (*handshake)(struct
 	int sfd, res;
 	struct pollfd pfd;
 	struct bbs_node *node;
+	char new_ip[56];
 
 	pfd.fd = socket;
 	pfd.events = POLLIN;
@@ -105,9 +106,10 @@ void bbs_tcp_comm_listener(int socket, const char *name, int (*handshake)(struct
 			continue;
 		}
 		if (pfd.revents) {
-			bbs_debug(1, "Accepting new %s connection\n", name);
 			len = sizeof(sinaddr);
 			sfd = accept(socket, (struct sockaddr *) &sinaddr, &len);
+			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
+			bbs_debug(1, "Accepting new %s connection from %s\n", name, new_ip);
 		} else {
 			continue; /* Shouldn't happen? */
 		}
