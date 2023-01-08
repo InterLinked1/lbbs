@@ -763,9 +763,9 @@ static int authenticate(struct bbs_node *node)
 					char guestname[64], guestemail[64], guestlocation[64];
 					/* No newlines necessary inbetween reads, since echo is on
 					 * and input is terminated by a return. */
-					NONZERO_RETURN(bbs_get_response(node, 0, "Please enter your name or alias:  ", MIN_MS(1), guestname, sizeof(guestname), &tries, 2, NULL));
-					NONZERO_RETURN(bbs_get_response(node, 0, "Please enter your e-mail address: ", MIN_MS(1), guestemail, sizeof(guestemail), &tries, 5, "@."));
-					NONZERO_RETURN(bbs_get_response(node, 0, "Please enter your location (City, State): ", MIN_MS(1), guestlocation, sizeof(guestlocation), &tries, 5, ","));
+					NONZERO_NEGRETURN(bbs_get_response(node, 0, "Please enter your name or alias:  ", MIN_MS(1), guestname, sizeof(guestname), &tries, 2, NULL));
+					NONZERO_NEGRETURN(bbs_get_response(node, 0, "Please enter your e-mail address: ", MIN_MS(1), guestemail, sizeof(guestemail), &tries, 5, "@."));
+					NONZERO_NEGRETURN(bbs_get_response(node, 0, "Please enter your location (City, State): ", MIN_MS(1), guestlocation, sizeof(guestlocation), &tries, 5, ","));
 					NEG_RETURN(bbs_authenticate(node, NULL, NULL)); /* Authenticate as guest */
 					bbs_user_guest_info_set(node->user, guestname, guestemail, guestlocation);
 				} else {

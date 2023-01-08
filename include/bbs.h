@@ -163,6 +163,9 @@ int bbs_fd_dump(int fd);
 /*! \brief Return -1 if a function returns a non-positive value */
 #define NONPOS_RETURN(x) if ((x) <= 0) { return -1; }
 
+/*! \brief Return -1 if a function returns a non-zero value */
+#define NONZERO_NEGRETURN(x) if ((x) != 0) { return -1; }
+
 /*!
  * \brief Return x if a function returns a non-zero value
  * \warning Do not directly call this with a function call, since this a macro.
