@@ -290,6 +290,10 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		 * will only be relevant from the time between fork() and exec(), and my intuition suggests that
 		 * signal will execute faster than sigaction. I have not actually verified this though. */
 		signal(SIGWINCH, SIG_DFL);
+		/* Reset other signal handlers */
+		signal(SIGTERM, SIG_DFL);
+		signal(SIGINT, SIG_DFL);
+		signal(SIGPIPE, SIG_DFL);
 
 		if (fdout == -1) {
 			close(pfd[0]); /* Close read end of pipe */

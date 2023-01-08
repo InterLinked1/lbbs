@@ -498,12 +498,18 @@ static void __sigint_handler(int num)
 {
 	UNUSED(num);
 
+	if (getpid() != bbs_pid) {
+		/* __sigint_handler triggered from child process before it was removed in system.c (race condition). Just abort.
+		 * Remember, must NEVER call bbs_log within a child, it will deadlock waiting for the log lock. */
+		return;
+	}
+
 	/* If somebody is subscribed to the SIGINT handler, dispatch it to them and ignore it. */
 	/* XXX Currently we allow 1 external subscriber at a time. In theory if we wanted more than one possible,
 	 * we could maintain a linked list of subscribers, but that seems like overkill right now,
 	 * especially since we're inside a signal handler. */
 	if (sigint_alert_pipe) {
-		bbs_debug(2, "Got SIGINT with subscriber, skipping built-in handling\n");
+		bbs_debug(2, "Got SIGINT with subscriber, skipping built-in handling\n"); /* XXX not safe */
 		if (bbs_alertpipe_write(sigint_alert_pipe)) {
 			/* Don't use BBS log functions within a signal handler */
 			if (option_nofork) {
@@ -513,6 +519,7 @@ static void __sigint_handler(int num)
 		/* XXX Should we go ahead and automatically remove the subscriber? (set sigint_alert_pipe to NULL?)
 		 * Right now we rely on the subscriber to do this manually. If someone forgets, this could be bad. */
 	} else if (bbs_alertpipe_write(sig_alert_pipe)) {
+		bbs_debug(2, "Got SIGINT, requesting shutdown\n"); /* XXX not safe */
 		/* Don't use BBS log functions within a signal handler */
 		if (option_nofork) {
 			fprintf(stderr, "%s: write() failed: %s\n", __FUNCTION__, strerror(errno));
@@ -528,6 +535,12 @@ static void __sigwinch_handler(int num)
 	UNUSED(num);
 
 	memset(&ws, 0, sizeof(ws));
+
+	if (getpid() != bbs_pid) {
+		/* __sigwinch_handler triggered from child process before it was removed in system.c (race condition). Just abort.
+		 * Remember, must NEVER call bbs_log within a child, it will deadlock waiting for the log lock. */
+		return;
+	}
 
 	/*
 	 * We could get a SIGWINCH for a few reasons, but mainly:
@@ -554,6 +567,7 @@ static void __sigwinch_handler(int num)
 
 void bbs_request_shutdown(int restart)
 {
+	bbs_debug(5, "Requesting shutdown\n");
 	pthread_mutex_lock(&sig_lock);
 	shutdown_restart = restart;
 	if (bbs_alertpipe_write(sig_alert_pipe)) {

@@ -416,6 +416,7 @@ void *pty_master(void *varg)
 					 * and returning -1.
 					 */
 					bbs_debug(3, "Sending SIGINT to process %d\n", node->childpid);
+					bbs_assert(node->childpid != getpid());
 					if (kill(node->childpid, SIGINT)) {
 						bbs_error("SIGINT failed: %s\n", strerror(errno));
 					}
