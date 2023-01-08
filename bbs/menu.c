@@ -263,7 +263,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 		rows_used += print_header(node, menu->title, COLOR(COLOR_GREEN), sub_name, sizeof(sub_name));
 	}
 	if (!strlen_zero(menu->subtitle)) { /* Menu has a subtitle, print it */
-		rows_used += print_header(node, menu->title, COLOR(COLOR_BLUE), sub_name, sizeof(sub_name));
+		rows_used += print_header(node, menu->subtitle, COLOR(COLOR_BLUE), sub_name, sizeof(sub_name));
 	}
 	if (!strlen_zero(menu->title) || !strlen_zero(menu->subtitle)) {
 		/* If either title or subtitle, add additional empty line for visual separation from the options */
