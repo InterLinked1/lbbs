@@ -15,7 +15,7 @@ elif [ "$1" = "term" ]; then
 elif [ "$1" = "quit" ]; then
 	kill -3 $bbspid
 elif [ "$1" = "postdump" ]; then
-	gdb lbbs core -ex "thread apply all bt full" -ex "quit" > full.txt
+	gdb /usr/sbin/lbbs core -ex "thread apply all bt full" -ex "quit" > full.txt
 	printf "Backtrace saved to full.txt\n"
 elif [ "$1" = "livedump" ]; then
 	gdb --batch -q -p $bbspid -ex 'thread apply all bt full' -ex 'quit' > full.txt
