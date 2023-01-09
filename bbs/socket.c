@@ -963,6 +963,16 @@ int bbs_clear_line(struct bbs_node *node)
 	return bbs_write(node, TERM_RESET_LINE, STRLEN(TERM_RESET_LINE));
 }
 
+int bbs_set_term_title(struct bbs_node *node, const char *s)
+{
+	return bbs_writef(node, "\033]2;%s\007", s); /* for xterm, screen, etc. */
+}
+
+int bbs_set_term_icon(struct bbs_node *node, const char *s)
+{
+	return bbs_writef(node, "\033]1;%s\007", s);
+}
+
 int bbs_reset_color(struct bbs_node *node)
 {
 	return bbs_write(node, COLOR_RESET, STRLEN(COLOR_RESET));

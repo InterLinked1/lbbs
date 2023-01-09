@@ -336,6 +336,22 @@ int bbs_clear_screen(struct bbs_node *node);
 int bbs_clear_line(struct bbs_node *node);
 
 /*!
+ * \brief Set the terminal title
+ * \param node
+ * \param Title text. This is what will show up in the terminal emulator's window title, taskbar, etc.
+ * \retval Same as write()
+ */
+int bbs_set_term_title(struct bbs_node *node, const char *s);
+
+/*!
+ * \brief Set the terminal icon
+ * \param node
+ * \param s Icon text
+ * \retval Same as write()
+ */
+int bbs_set_term_icon(struct bbs_node *node, const char *s);
+
+/*!
  * \brief Reset color to normal on a node's connected TTY
  * \param node
  * \retval Same as write()

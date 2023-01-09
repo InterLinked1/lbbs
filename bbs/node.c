@@ -964,6 +964,8 @@ void *bbs_node_handler(void *varg)
 		bbs_node_set_speed(node, defaultbps);
 	}
 
+	bbs_set_term_title(node, bbs_name);
+
 	if (tty_set_line_discipline(node->slavefd) || _bbs_intro(node)) {
 		goto exit;
 	}
