@@ -24,10 +24,11 @@
 #include "include/module.h"
 #include "include/test.h"
 #include "include/variables.h"
+#include "include/ansi.h"
 #include "include/utils.h"
 
 #define bbs_test_assert(x) if (!(x)) { bbs_warning("Test assertion failed: %s\n", #x); goto cleanup; }
-#define bbs_test_assert_equals(x, y) if (!((x) == (y))) { bbs_warning("Test assertion failed: %s (%d != %d)\n", #x, (x), (y)); goto cleanup; }
+#define bbs_test_assert_equals(x, y) if (!((x) == (y))) { bbs_warning("Test assertion failed: (%d != %d)\n", (x), (y)); goto cleanup; }
 #define bbs_test_assert_str_equals(x, y) if (strcmp(x, y)) { bbs_warning("Test assertion failed: '%s' != '%s'\n", x, y); goto cleanup; }
 
 static int test_substitution(void)
@@ -85,6 +86,32 @@ cleanup:
 	return res;
 }
 
+static int test_ansi_strip(void)
+{
+	int res = -1;
+	int outlen;
+	const char *s = COLOR(COLOR_GREEN) " abc";
+	const char *s2 = COLOR_RESET COLOR(COLOR_GREEN) "abc 123 " COLOR(COLOR_RED) "456" COLOR_RESET;
+	const char *s3 = TERM_CLEAR;
+	char outbuf[strlen(s2) + 1];
+
+	bbs_test_assert_equals(0, bbs_ansi_strip(s, strlen(s), outbuf, sizeof(outbuf), &outlen));
+	bbs_test_assert_equals(4, outlen);
+	bbs_test_assert_str_equals(outbuf, " abc");
+
+	bbs_test_assert_equals(0, bbs_ansi_strip(s2, strlen(s2), outbuf, sizeof(outbuf), NULL));
+	bbs_test_assert_str_equals(outbuf, "abc 123 456");
+
+	bbs_test_assert_equals(0, bbs_ansi_strip(s3, strlen(s3), outbuf, sizeof(outbuf), &outlen));
+	bbs_test_assert_equals(0, outlen);
+	bbs_test_assert_str_equals(outbuf, "");
+
+	return 0;
+
+cleanup:
+	return res;
+}
+
 static struct unit_tests {
 	const char *name;
 	int (*callback)(void);
@@ -93,6 +120,7 @@ static struct unit_tests {
 	{ "Variable Substitution", test_substitution },
 	{ "Safe Print", test_safe_print },
 	{ "Printable String Length", test_printable_strlen },
+	{ "ANSI Stripping", test_ansi_strip },
 };
 
 static int load_module(void)

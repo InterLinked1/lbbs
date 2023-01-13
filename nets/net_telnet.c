@@ -12,7 +12,7 @@
 
 /*! \file
  *
- * \brief Telnet network driver
+ * \brief Telnet and TTY/TDD network driver
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -41,13 +41,14 @@
 #include "include/config.h"
 #include "include/net.h"
 
-static int tcp_socket = -1; /*!< TCP Socket for allowing incoming network connections */
-static pthread_t telnet_thread;
+static int telnet_socket = -1, tty_socket = -1; /*!< TCP Socket for allowing incoming network connections */
+static pthread_t telnet_thread, tty_thread;
 
 /*! \brief Telnet port is 23 */
 #define DEFAULT_TELNET_PORT 23
 
 static int telnet_port = DEFAULT_TELNET_PORT;
+static int tty_port = 0; /* Disabled by default */
 
 static int telnet_send_command(int fd, unsigned char cmd, unsigned char opt)
 {
@@ -170,10 +171,27 @@ static int telnet_handshake(struct bbs_node *node)
 	return 0;
 }
 
+static int tty_handshake(struct bbs_node *node)
+{
+	/* Not really a handshake, just use this as a callback to set a few things */
+	node->ansi = 0; /* TDDs don't support ANSI escape sequences, disable them */
+	/* Assume standard TDD screen size */
+	node->rows = 24;
+	node->cols = 1;
+	return 0;
+}
+
 static void *telnet_listener(void *unused)
 {
 	UNUSED(unused);
-	bbs_tcp_comm_listener(tcp_socket, "Telnet", telnet_handshake, BBS_MODULE_SELF);
+	bbs_tcp_comm_listener(telnet_socket, "Telnet", telnet_handshake, BBS_MODULE_SELF);
+	return NULL;
+}
+
+static void *tty_listener(void *unused)
+{
+	UNUSED(unused);
+	bbs_tcp_comm_listener(tty_socket, "TDD", tty_handshake, BBS_MODULE_SELF);
 	return NULL;
 }
 
@@ -200,6 +218,18 @@ static int load_config(void)
 		telnet_port = DEFAULT_TELNET_PORT;
 	}
 
+	val = bbs_config_val(cfg, "telnet", "ttyport");
+	if (val) {
+		tmp = atoi(val);
+		if (PORT_VALID(tmp)) {
+			tty_port = tmp;
+		} else {
+			bbs_warning("Invalid TTY port: %s\n", val);
+		}
+	} else {
+		tty_port = 0;
+	}
+
 	return 0;
 }
 
@@ -209,14 +239,24 @@ static int load_module(void)
 		return -1;
 	}
 	/* If we can't start the TCP listener, decline to load */
-	if (bbs_make_tcp_socket(&tcp_socket, telnet_port)) {
+	if (bbs_make_tcp_socket(&telnet_socket, telnet_port)) {
 		return -1;
 	}
-	bbs_assert(tcp_socket >= 0);
+	bbs_assert(telnet_socket >= 0);
 	if (bbs_pthread_create(&telnet_thread, NULL, telnet_listener, NULL)) {
-		close(tcp_socket);
-		tcp_socket = -1;
+		close(telnet_socket);
+		telnet_socket = -1;
 		return -1;
+	}
+	if (tty_port) {
+		if (bbs_make_tcp_socket(&tty_socket, tty_port)) {
+			return -1;
+		}
+		if (bbs_pthread_create(&tty_thread, NULL, tty_listener, NULL)) {
+			close(tty_socket);
+			tty_socket = -1;
+			return -1;
+		}
 	}
 	bbs_register_network_protocol("Telnet", telnet_port);
 	return 0;
@@ -224,10 +264,17 @@ static int load_module(void)
 
 static int unload_module(void)
 {
-	if (tcp_socket > -1) {
+	if (tty_socket > -1) {
+		close(tty_socket);
+		tty_socket = -1;
+		pthread_cancel(tty_thread);
+		pthread_kill(tty_thread, SIGURG);
+		bbs_pthread_join(tty_thread, NULL);
+	}
+	if (telnet_socket > -1) {
 		bbs_unregister_network_protocol(telnet_port);
-		close(tcp_socket);
-		tcp_socket = -1;
+		close(telnet_socket);
+		telnet_socket = -1;
 		pthread_cancel(telnet_thread);
 		pthread_kill(telnet_thread, SIGURG);
 		bbs_pthread_join(telnet_thread, NULL);
@@ -237,4 +284,4 @@ static int unload_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_STANDARD("RFC854 Telnet");
+BBS_MODULE_INFO_STANDARD("RFC854 Telnet and TTY/TDD");

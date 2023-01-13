@@ -202,6 +202,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 	node->echo = 1;
 	node->buffered = 1;
 	node->protname = protname;
+	node->ansi = 1; /* Assume nodes support ANSI escape sequences by default. */
 
 	/* This prevents this module from being unloaded as long as there are nodes using it.
 	 * For example, since node->protname is constant in this module, if we unload it,

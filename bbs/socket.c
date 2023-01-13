@@ -955,26 +955,41 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(struct bbs_node *node
 
 int bbs_clear_screen(struct bbs_node *node)
 {
+	if (!node->ansi) {
+		return 0;
+	}
 	return bbs_write(node, TERM_CLEAR, STRLEN(TERM_CLEAR));
 }
 
 int bbs_clear_line(struct bbs_node *node)
 {
+	if (!node->ansi) {
+		return 0;
+	}
 	return bbs_write(node, TERM_RESET_LINE, STRLEN(TERM_RESET_LINE));
 }
 
 int bbs_set_term_title(struct bbs_node *node, const char *s)
 {
+	if (!node->ansi) {
+		return 0;
+	}
 	return bbs_writef(node, "\033]2;%s\007", s); /* for xterm, screen, etc. */
 }
 
 int bbs_set_term_icon(struct bbs_node *node, const char *s)
 {
+	if (!node->ansi) {
+		return 0;
+	}
 	return bbs_writef(node, "\033]1;%s\007", s);
 }
 
 int bbs_reset_color(struct bbs_node *node)
 {
+	if (!node->ansi) {
+		return 0;
+	}
 	return bbs_write(node, COLOR_RESET, STRLEN(COLOR_RESET));
 }
 
@@ -999,6 +1014,9 @@ int bbs_draw_line(struct bbs_node *node, char c)
 
 int bbs_ring_bell(struct bbs_node *node)
 {
+	if (!node->ansi) {
+		return 0;
+	}
 	/* This function should be sparingly used. Users are annoyed if the bell goes off all the time.
 	 * So log every time it's used. */
 	bbs_debug(7, "Ringing bell for node %d\n", node->id);

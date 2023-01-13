@@ -52,20 +52,10 @@ struct bbs_node {
 	unsigned int spy:1;			/*!< Target of active node spy */
 	unsigned int skipjoin:1;	/*!< If node_shutdown should not join the node thread */
 	unsigned int inmenu:1;		/*!< Whether actively displaying a menu */
+	unsigned int ansi:1;		/*!< Terminal supports ANSI escape sequences */
 	/* Next entry */
 	RWLIST_ENTRY(bbs_node) entry;
 };
-
-/*! \brief Clear screen */
-#define TERM_CLEAR "\e[1;1H\e[2J"
-
-#define TERM_ERASE_LINE "\33[2K"
-
-/*! \brief Clear and reset cursor to beginning of current line */
-#define TERM_RESET_LINE TERM_ERASE_LINE "\r"
-
-/*! \brief Ring the bell on the TTY/terminal */
-#define TERM_BELL "\a"
 
 /*! \brief Whether guest login is allowed */
 int bbs_guest_login_allowed(void);

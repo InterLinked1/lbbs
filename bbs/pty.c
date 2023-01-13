@@ -44,6 +44,7 @@
 #include "include/node.h"
 #include "include/pty.h"
 #include "include/term.h"
+#include "include/ansi.h"
 #include "include/alertpipe.h"
 #include "include/utils.h" /* use bbs_pthread_create */
 
@@ -280,8 +281,10 @@ void *pty_master(void *varg)
 	int pres;
 	struct pollfd fds[3];
 	char buf[4096]; /* According to termios(3) man page, the canonical mode buffer of the PTY is 4096, so this should always be large enough */
+	char strippedbuf[sizeof(buf)];
 	int bytes_read, bytes_wrote;
 	int numfds;
+	int emulated_crlf = 0;
 
 	/* Save relevant fields. */
 	int nodeid = node->id;
@@ -359,20 +362,25 @@ void *pty_master(void *varg)
 				 */
 				bbs_debug(9, "Got CR NUL, translating to CR LF for slave\n");
 				*(buf + 1) = '\n';
+				emulated_crlf = 0;
 			} else if (bytes_read == 1 && *buf == '\r') {
-				/* RLogin clients (at least SyncTERM) seem to do this */
-				/* Only do this on RLogin, because for TTYs/TDDs, this will mutate
-				 * CR LF into CR LF LF since the CR and LF arrive separately */
-				if (!strcmp(node->protname, "RLogin")) {
-					/* XXX Technically, very small chance we might've read LF on the next poll/read,
-					 * but they most likely would arrive together, if there was one,
-					 * since they'd be transmitted at the same time. */
-					bbs_debug(9, "Got CR, translating to CR LF for slave\n");
-					*(buf + 1) = '\n'; /* We must have a LF for input to work in canonical mode! */
-					bytes_read = 2;
-				} else {
-					bbs_debug(9, "Letting lone CR pass unaltered\n");
-				}
+				/* RLogin clients (at least SyncTERM) seem to do this.
+				 * This can also happen with Telnet, so always convert,
+				 * and if we happen to get a LF next, ignore it. */
+				/* XXX Technically, very small chance we might've read LF on the next poll/read,
+				 * but they most likely would arrive together, if there was one,
+				 * since they'd be transmitted at the same time. */
+				bbs_debug(9, "Got CR, translating to CR LF for slave\n");
+				*(buf + 1) = '\n'; /* We must have a LF for input to work in canonical mode! */
+				bytes_read = 2;
+				emulated_crlf = 1;
+			} else if (bytes_read == 1 && *buf == '\n' && emulated_crlf) {
+				/* The last thing we read was just a CR, and that was it. We treated it as a CR LF, so ignore the LF now. */
+				emulated_crlf = 0;
+				bbs_debug(7, "Ignoring LF due to previous emulated CR LF\n");
+				continue;
+			} else {
+				emulated_crlf = 0;
 			}
 			/* We only slow output, not input, so don't use slow_write here, regardless of the speed */
 			bytes_wrote = write(amaster, buf, bytes_read);
@@ -432,7 +440,8 @@ void *pty_master(void *varg)
 				}
 			}
 		} else if (fds[1].revents & POLLIN) { /* Got input from pty -> socket */
-			bytes_read = read(amaster, buf, sizeof(buf));
+			char *relaybuf = buf;
+			bytes_read = read(amaster, buf, sizeof(buf) - 1);
 			if (bytes_read <= 0) {
 				bbs_debug(10, "pty master read returned %d (%s)\n", bytes_read, strerror(errno));
 				break; /* We'll read 0 bytes upon disconnect */
@@ -446,13 +455,22 @@ void *pty_master(void *varg)
 			bbs_debug(10, "Node %d: slave->master(%d): %.*s\n", nodeid, bytes_read, bytes_read, buf);
 #endif
 #endif /* DEBUG_PTY */
+			if (!node->ansi) {
+				int strippedlen;
+				/* Strip ANSI escape sequences from output for terminal, e.g. TTY/TDD */
+				buf[bytes_read] = '\0'; /* NUL terminate for bbs_ansi_strip */
+				if (!bbs_ansi_strip(buf, bytes_read, strippedbuf, sizeof(strippedbuf), &strippedlen)) {
+					bytes_read = strippedlen;
+					relaybuf = strippedbuf;
+				} /* else, failed to strip, just write the original data (possibly containing ANSI escape sequences) */
+			}
 			if (node->speed) {
 				/* Slow write to both real socket and spying fd simultaneously */
-				bytes_wrote = slow_write(sfd, spy_node == nodeid ? spy_out : -1, buf, bytes_read, node->speed);
+				bytes_wrote = slow_write(sfd, spy_node == nodeid ? spy_out : -1, relaybuf, bytes_read, node->speed);
 			} else {
-				bytes_wrote = write(sfd, buf, bytes_read);
+				bytes_wrote = write(sfd, relaybuf, bytes_read);
 				if (spy_node == nodeid && bytes_wrote == bytes_read) {
-					bytes_wrote = write(spy_out, buf, bytes_read);
+					bytes_wrote = write(spy_out, relaybuf, bytes_read);
 				}
 			}
 			if (bytes_wrote != bytes_read) {

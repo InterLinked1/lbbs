@@ -71,6 +71,17 @@ void __attribute__ ((format (gnu_printf, 2, 3))) bbs_dprintf(int fd, const char 
 
 void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level loglevel, int level, const char *file, int lineno, const char *func, const char *fmt, ...);
 
+/*! \brief Clear screen */
+#define TERM_CLEAR "\e[1;1H\e[2J"
+
+#define TERM_ERASE_LINE "\33[2K"
+
+/*! \brief Clear and reset cursor to beginning of current line */
+#define TERM_RESET_LINE TERM_ERASE_LINE "\r"
+
+/*! \brief Ring the bell on the TTY/terminal */
+#define TERM_BELL "\a"
+
 /*! \brief Format string for a specified color, that can be used directly as a string argument to a printf-style function */
 #define COLOR(color) COLOR_START color COLOR_BEGIN
 
