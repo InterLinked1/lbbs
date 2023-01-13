@@ -93,7 +93,7 @@ static int test_ansi_strip(void)
 	const char *s = COLOR(COLOR_GREEN) " abc";
 	const char *s2 = COLOR_RESET COLOR(COLOR_GREEN) "abc 123 " COLOR(COLOR_RED) "456" COLOR_RESET;
 	const char *s3 = TERM_CLEAR;
-	char outbuf[strlen(s2) + 1];
+	char outbuf[32];
 
 	bbs_test_assert_equals(0, bbs_ansi_strip(s, strlen(s), outbuf, sizeof(outbuf), &outlen));
 	bbs_test_assert_equals(4, outlen);
