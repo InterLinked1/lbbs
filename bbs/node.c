@@ -334,6 +334,12 @@ static void node_shutdown(struct bbs_node *node, int unique)
 		pthread_cancel(node->ptythread);
 		pthread_kill(node->ptythread, SIGURG);
 		bbs_pthread_join(node->ptythread, NULL); /* Wait for the PTY master thread to exit, and then clean it up. */
+		if (node->spy) {
+			/* The sysop was spying on this node when it got disconnected.
+			 * Let the sysop know this node is dead. */
+			bbs_dprintf(STDOUT_FILENO, COLOR_RESET "\nNode %d has disconnected.\nPress ^C to exit spy mode.\n", node->id);
+			node->spy = 0;
+		}
 	}
 
 	close_if(node->amaster);

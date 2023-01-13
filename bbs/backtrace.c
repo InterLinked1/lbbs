@@ -117,8 +117,8 @@ static void process_section(bfd *bfdobj, asection *section, void *obj)
 		/* file can possibly be null even with a success result from bfd_find_nearest_line */
 		file = file ? file : "";
 		fn = strrchr(file, '/');
-#define FMT_INLINED     "[%10s] %-17s %24s:%-5u %s()"
-#define FMT_NOT_INLINED "[%10p] %-17s %24s:%-5u %s()"
+#define FMT_INLINED     "[%14s] %-17s %24s:%-5u %s()"
+#define FMT_NOT_INLINED "[%14p] %-17s %24s:%-5u %s()"
 
 		snprintf(data->msg, BT_MSG_BUFF_LEN, inlined ? FMT_INLINED : FMT_NOT_INLINED,
 			inlined ? "inlined" : (char *)(uintptr_t) data->pc,

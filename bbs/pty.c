@@ -361,12 +361,18 @@ void *pty_master(void *varg)
 				*(buf + 1) = '\n';
 			} else if (bytes_read == 1 && *buf == '\r') {
 				/* RLogin clients (at least SyncTERM) seem to do this */
-				/* XXX Technically, very small chance we might've read LF on the next poll/read,
-				 * but they most likely would arrive together, if there was one,
-				 * since they'd be transmitted at the same time. */
-				bbs_debug(9, "Got CR, translating to CR LF for slave\n");
-				*(buf + 1) = '\n'; /* We must have a LF for input to work in canonical mode! */
-				bytes_read = 2;
+				/* Only do this on RLogin, because for TTYs/TDDs, this will mutate
+				 * CR LF into CR LF LF since the CR and LF arrive separately */
+				if (!strcmp(node->protname, "RLogin")) {
+					/* XXX Technically, very small chance we might've read LF on the next poll/read,
+					 * but they most likely would arrive together, if there was one,
+					 * since they'd be transmitted at the same time. */
+					bbs_debug(9, "Got CR, translating to CR LF for slave\n");
+					*(buf + 1) = '\n'; /* We must have a LF for input to work in canonical mode! */
+					bytes_read = 2;
+				} else {
+					bbs_debug(9, "Letting lone CR pass unaltered\n");
+				}
 			}
 			/* We only slow output, not input, so don't use slow_write here, regardless of the speed */
 			bytes_wrote = write(amaster, buf, bytes_read);
