@@ -284,7 +284,7 @@ void *pty_master(void *varg)
 	char strippedbuf[sizeof(buf)];
 	int bytes_read, bytes_wrote;
 	int numfds;
-	int emulated_crlf = 0;
+	int emulated_crlf = 0, just_did_emulated_crlf = 0;
 
 	/* Save relevant fields. */
 	int nodeid, amaster, sfd, ansi;
@@ -369,6 +369,7 @@ void *pty_master(void *varg)
 				bbs_debug(9, "Got CR NUL, translating to CR LF for slave\n");
 				*(buf + 1) = '\n';
 				emulated_crlf = 0;
+				just_did_emulated_crlf = 0;
 			} else if (bytes_read == 1 && *buf == '\r') {
 				/* RLogin clients (at least SyncTERM) seem to do this.
 				 * This can also happen with Telnet, so always convert,
@@ -376,17 +377,33 @@ void *pty_master(void *varg)
 				/* XXX Technically, very small chance we might've read LF on the next poll/read,
 				 * but they most likely would arrive together, if there was one,
 				 * since they'd be transmitted at the same time. */
-				bbs_debug(9, "Got CR, translating to CR LF for slave\n");
-				*(buf + 1) = '\n'; /* We must have a LF for input to work in canonical mode! */
-				bytes_read = 2;
-				emulated_crlf = 1;
+				if (just_did_emulated_crlf) {
+					/* TDDs seem to send CR LF CR when you hit RETURN, rather than CR LF as specified in V.18.
+					 * At least, mine does.
+					 * Since Bauduot code will be sent to us byte by byte, that means on 3 separate
+					 * reads from the PTY master, we'll read CR, then LF, then CR.
+					 * First, we'll end up emulating CR LF when we see the CR.
+					 * Next, we'll end up ignoring the LF due to the emulated CR LF.
+					 * Finally, we need to ignore the trailing CR completely.
+					 */
+					bbs_debug(7, "Ignoring spurious CR, since we just emulated CR LF\n");
+					emulated_crlf = 0;
+					just_did_emulated_crlf = 0;
+				} else {
+					bbs_debug(9, "Got CR, translating to CR LF for slave\n");
+					*(buf + 1) = '\n'; /* We must have a LF for input to work in canonical mode! */
+					bytes_read = 2;
+					emulated_crlf = 1;
+					just_did_emulated_crlf = 0;
+				}
 			} else if (bytes_read == 1 && *buf == '\n' && emulated_crlf) {
 				/* The last thing we read was just a CR, and that was it. We treated it as a CR LF, so ignore the LF now. */
 				emulated_crlf = 0;
+				just_did_emulated_crlf = 1;
 				bbs_debug(7, "Ignoring LF due to previous emulated CR LF\n");
 				continue;
 			} else {
-				emulated_crlf = 0;
+				emulated_crlf = just_did_emulated_crlf = 0;
 			}
 			/* We only slow output, not input, so don't use slow_write here, regardless of the speed */
 			bytes_wrote = write(amaster, buf, bytes_read);

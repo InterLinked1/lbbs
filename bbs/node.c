@@ -825,8 +825,6 @@ static int node_intro(struct bbs_node *node)
 {
 	char timebuf[29];
 
-	bbs_time_friendly_now(timebuf, sizeof(timebuf));
-
 	if (!NODE_IS_TDD(node)) {
 		NEG_RETURN(bbs_clear_screen(node));
 		NEG_RETURN(bbs_writef(node, "%s %d.%d.%d  %s\n\n", BBS_TAGLINE, BBS_MAJOR_VERSION, BBS_MINOR_VERSION, BBS_PATCH_VERSION, BBS_COPYRIGHT));
@@ -836,6 +834,11 @@ static int node_intro(struct bbs_node *node)
 		/* Print some spaces as TDD carrier starts up, so we don't clip the beginning of output,
 		 * and because the TDD could be in FIGS mode and this gives it a chance to get into LTRS mode. */
 		NEG_RETURN(bbs_writef(node, "%10s", ""));
+		/* Since the server will keep going until we block (hit a key),
+		 * sleep explicitly as it will take some for the TDD to print the output anyways.
+		 * This will allow the sysop to begin spying on the node here and catch the next output.
+		 * Really, mainly to help with testing and debugging. */
+		usleep(2500000);
 	}
 
 	NEG_RETURN(bbs_writef(node, "%s\n", bbs_name)); /* Print BBS name */
@@ -844,6 +847,7 @@ static int node_intro(struct bbs_node *node)
 	}
 
 	if (!NODE_IS_TDD(node)) {
+		bbs_time_friendly_now(timebuf, sizeof(timebuf));
 		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "CLIENT", COLOR(COLOR_BLUE), "CONN", COLOR(COLOR_GREEN), node->protname));
 		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_BLUE), "ADDR", COLOR(COLOR_GREEN), node->ip));
 		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%dx%d\n", "", "", COLOR(COLOR_BLUE), "TERM", COLOR(COLOR_GREEN), node->cols, node->rows));
@@ -858,6 +862,7 @@ static int node_intro(struct bbs_node *node)
 			NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_BLUE), "ADMN", COLOR(COLOR_GREEN), bbs_sysop));
 		}
 	} else {
+		bbs_time_friendly_short_now(timebuf, sizeof(timebuf)); /* Use condensed date for TDDs */
 		NEG_RETURN(bbs_writef(node, "Node %d - %s\n", node->id, timebuf));
 	}
 
@@ -888,6 +893,7 @@ static int node_intro(struct bbs_node *node)
 	bbs_var_set(node, "BBS_USERNAME", bbs_username(node->user));
 
 	/*! \todo Notify user's friends that s/he's logged on now */
+	/*! \todo Notify the sysop (sysop console), via BELL, that a new user has logged in, if and only if the sysop console is idle */
 
 	NEG_RETURN(bbs_writef(node, COLOR_RESET "\r\n"));
 	return 0;
@@ -918,18 +924,25 @@ static int bbs_node_splash(struct bbs_node *node)
 #endif
 
 	/* System stats */
-	NEG_RETURN(bbs_writef(node, "%s%-20s: %s%s\n", COLOR(COLOR_BLUE), "System", COLOR(COLOR_GREEN), bbs_name));
-	NEG_RETURN(bbs_writef(node, "%s%6s%s %4u%9s%s: %s%s\n", COLOR(COLOR_BLUE), "User #", COLOR(COLOR_GREEN), node->user->id, "", COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), bbs_username(node->user)));
+	if (!NODE_IS_TDD(node)) {
+		NEG_RETURN(bbs_writef(node, "%s%-20s: %s%s\n", COLOR(COLOR_BLUE), "System", COLOR(COLOR_GREEN), bbs_name));
+		NEG_RETURN(bbs_writef(node, "%s%6s%s %4u%9s%s: %s%s\n", COLOR(COLOR_BLUE), "User #", COLOR(COLOR_GREEN), node->user->id, "", COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), bbs_username(node->user)));
+	} else {
+		NEG_RETURN(bbs_writef(node, "User #%d - %s\n", node->user->id, bbs_username(node->user)));
+	}
 
 	/*! \todo Add more stats here, e.g. num logins today, since started, lifetime, etc. */
 
 	if (bbs_starttime() > (int) minuptimedisplayed) {
 		char timebuf[24], daysbuf[36];
 		int now = time(NULL);
-		print_time_elapsed(bbs_starttime(), now, timebuf, sizeof(timebuf));
-		print_days_elapsed(bbs_starttime(), now, daysbuf, sizeof(daysbuf));
-		/* Formatting for timebuf (11 chars) should be enough for 11 years uptime, I think that's good enough */
-		NEG_RETURN(bbs_writef(node, "%s%6s%s %2s%-11s%s: %s%s\n", COLOR(COLOR_BLUE), "Uptime", COLOR(COLOR_GREEN), "", timebuf, COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), daysbuf));
+		print_time_elapsed(bbs_starttime(), now, timebuf, sizeof(timebuf)); /* Formatting for timebuf (11 chars) should be enough for 11 years uptime, I think that's good enough */
+		if (!NODE_IS_TDD(node)) {
+			print_days_elapsed(bbs_starttime(), now, daysbuf, sizeof(daysbuf));
+			NEG_RETURN(bbs_writef(node, "%s%6s%s %2s%-11s%s: %s%s\n", COLOR(COLOR_BLUE), "Uptime", COLOR(COLOR_GREEN), "", timebuf, COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), daysbuf));
+		} else {
+			NEG_RETURN(bbs_writef(node, "Uptime %s\n", timebuf)); /* Only print the condensed uptime */
+		}
 	}
 
 #if 0
@@ -938,7 +951,7 @@ static int bbs_node_splash(struct bbs_node *node)
 	NEG_RETURN(bbs_writef(node, "%s%-20s: %s%5d %s%-9s%s%6d%s%s\n", COLOR(COLOR_BLUE), "Time on Today", COLOR(COLOR_GREEN), 26, COLOR(COLOR_BLUE), "(Max ", COLOR(COLOR_GREEN), 86, COLOR(COLOR_BLUE), ")"));
 	NEG_RETURN(bbs_writef(node, "%s%-20s: %s%5d %s%-9s%s%6d%s%s\n", COLOR(COLOR_BLUE), "Mail Waiting", COLOR(COLOR_GREEN), 0, COLOR(COLOR_BLUE), "(Unread ", COLOR(COLOR_GREEN), 0, COLOR(COLOR_BLUE), ")"));
 #endif
-	if (!s_strlen_zero(bbs_sysop)) {
+	if (!s_strlen_zero(bbs_sysop) && !NODE_IS_TDD(node)) {
 		NEG_RETURN(bbs_writef(node, "%s%-20s: %s%s\n", COLOR(COLOR_BLUE), "Sysop is", COLOR(COLOR_GREEN), bbs_sysop));
 	}
 
@@ -965,7 +978,7 @@ void *bbs_node_handler(void *varg)
 
 	bbs_assert_exists(node);
 	bbs_assert(node->thread);
-	bbs_assert_exists(node->protname); /* Will fail if a socket driver forgets to set before calling bbs_node_handler */
+	bbs_assert_exists(node->protname); /* Will fail if a network comm driver forgets to set before calling bbs_node_handler */
 
 	bbs_debug(1, "Running BBS for node %d\n", node->id);
 	bbs_auth("New %s connection to node %d from %s\n", node->protname, node->id, node->ip);
