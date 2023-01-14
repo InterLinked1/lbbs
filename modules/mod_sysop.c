@@ -176,6 +176,8 @@ static void *sysop_handler(void *varg)
 
 	UNUSED(varg);
 
+	bbs_printf(TERM_TITLE_FMT, "Sysop Console");
+
 	for (;;) {
 		pfd.fd = STDIN_FILENO;
 		pfd.events = POLLIN;

@@ -101,7 +101,9 @@ int bbs_ansi_strip(const char *in, int inlen, char *out, size_t outlen, int *str
 		}
 	}
 
+#ifdef ANSI_DEBUG
 	bbs_debug(7, "insize: %d, outsize: %lu, outlen: %d\n", inlen, outlen, outindex);
+#endif
 
 	if (outindex >= (int) outlen) {
 		bbs_error("Truncation occured\n");

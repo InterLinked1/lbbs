@@ -79,6 +79,8 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 /*! \brief Clear and reset cursor to beginning of current line */
 #define TERM_RESET_LINE TERM_ERASE_LINE "\r"
 
+#define TERM_TITLE_FMT "\033]2;%s\007"
+
 /*! \brief Ring the bell on the TTY/terminal */
 #define TERM_BELL "\a"
 

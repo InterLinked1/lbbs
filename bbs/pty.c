@@ -287,9 +287,15 @@ void *pty_master(void *varg)
 	int emulated_crlf = 0;
 
 	/* Save relevant fields. */
-	int nodeid = node->id;
-	int amaster = node->amaster;
-	int sfd = node->fd;
+	int nodeid, amaster, sfd, ansi;
+
+	/* Not that these are expected to change, but it makes helgrind happy */
+	bbs_node_lock(node);
+	nodeid = node->id;
+	amaster = node->amaster;
+	sfd = node->fd;
+	ansi = node->ansi;
+	bbs_node_unlock(node);
 
 	bbs_debug(10, "Starting PTY master for node %d: %d => %s\n", nodeid, amaster, node->slavename);
 
@@ -455,7 +461,7 @@ void *pty_master(void *varg)
 			bbs_debug(10, "Node %d: slave->master(%d): %.*s\n", nodeid, bytes_read, bytes_read, buf);
 #endif
 #endif /* DEBUG_PTY */
-			if (!node->ansi) {
+			if (!ansi) {
 				int strippedlen;
 				/* Strip ANSI escape sequences from output for terminal, e.g. TTY/TDD */
 				buf[bytes_read] = '\0'; /* NUL terminate for bbs_ansi_strip */

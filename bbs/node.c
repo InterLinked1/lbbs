@@ -813,7 +813,7 @@ static int authenticate(struct bbs_node *node)
 
 static int _bbs_intro(struct bbs_node *node)
 {
-	bbs_clear_screen(node);
+	NEG_RETURN(bbs_clear_screen(node));
 	NEG_RETURN(bbs_reset_color(node));
 	NEG_RETURN(bbs_writef(node, "%s  Version %d.%d.%d\n", BBS_TAGLINE, BBS_MAJOR_VERSION, BBS_MINOR_VERSION, BBS_PATCH_VERSION));
 	NEG_RETURN(bbs_writef(node, "%s connection from: %s\n", node->protname, node->ip));
@@ -827,29 +827,38 @@ static int node_intro(struct bbs_node *node)
 
 	bbs_time_friendly_now(timebuf, sizeof(timebuf));
 
-	bbs_clear_screen(node);
-	NEG_RETURN(bbs_writef(node, "%s %d.%d.%d  %s\n\n", BBS_TAGLINE, BBS_MAJOR_VERSION, BBS_MINOR_VERSION, BBS_PATCH_VERSION, BBS_COPYRIGHT));
+	if (!NODE_IS_TDD(node)) {
+		NEG_RETURN(bbs_clear_screen(node));
+		NEG_RETURN(bbs_writef(node, "%s %d.%d.%d  %s\n\n", BBS_TAGLINE, BBS_MAJOR_VERSION, BBS_MINOR_VERSION, BBS_PATCH_VERSION, BBS_COPYRIGHT));
+		usleep(150000);
+		NEG_RETURN(bbs_writef(node, COLOR(COLOR_GREEN)));
+	} else {
+		/* Print some spaces as TDD carrier starts up, so we don't clip the beginning of output,
+		 * and because the TDD could be in FIGS mode and this gives it a chance to get into LTRS mode. */
+		NEG_RETURN(bbs_writef(node, "%10s", ""));
+	}
 
-	usleep(150000);
-
-	NEG_RETURN(bbs_writef(node, COLOR(COLOR_GREEN)));
 	NEG_RETURN(bbs_writef(node, "%s\n", bbs_name)); /* Print BBS name */
 	if (!s_strlen_zero(bbs_tagline)) {
 		NEG_RETURN(bbs_writef(node, "%s\n\n", bbs_tagline)); /* Print BBS tagline */
 	}
 
-	NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "CLIENT", COLOR(COLOR_BLUE), "CONN", COLOR(COLOR_GREEN), node->protname));
-	NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_BLUE), "ADDR", COLOR(COLOR_GREEN), node->ip));
-	NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%dx%d\n", "", "", COLOR(COLOR_BLUE), "TERM", COLOR(COLOR_GREEN), node->cols, node->rows));
-	NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "SERVER", COLOR(COLOR_BLUE), "NAME", COLOR(COLOR_WHITE), bbs_name));
-	if (!s_strlen_zero(bbs_hostname_buf)) {
-		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_BLUE), "ADDR", COLOR(COLOR_GREEN), bbs_hostname_buf));
-	}
-	NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%d %s(of %s%d%s) - %s%s\n", "", "", COLOR(COLOR_BLUE), "NODE", COLOR(COLOR_GREEN),
-		node->id, COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), bbs_maxnodes(), COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), bbs_get_osver()));
-	NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_BLUE), "TIME", COLOR(COLOR_GREEN), timebuf));
-	if (!s_strlen_zero(bbs_hostname_buf)) {
-		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_BLUE), "ADMN", COLOR(COLOR_GREEN), bbs_sysop));
+	if (!NODE_IS_TDD(node)) {
+		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "CLIENT", COLOR(COLOR_BLUE), "CONN", COLOR(COLOR_GREEN), node->protname));
+		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_BLUE), "ADDR", COLOR(COLOR_GREEN), node->ip));
+		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%dx%d\n", "", "", COLOR(COLOR_BLUE), "TERM", COLOR(COLOR_GREEN), node->cols, node->rows));
+		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "SERVER", COLOR(COLOR_BLUE), "NAME", COLOR(COLOR_WHITE), bbs_name));
+		if (!s_strlen_zero(bbs_hostname_buf)) {
+			NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_BLUE), "ADDR", COLOR(COLOR_GREEN), bbs_hostname_buf));
+		}
+		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%d %s(of %s%d%s) - %s%s\n", "", "", COLOR(COLOR_BLUE), "NODE", COLOR(COLOR_GREEN),
+			node->id, COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), bbs_maxnodes(), COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), bbs_get_osver()));
+		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_BLUE), "TIME", COLOR(COLOR_GREEN), timebuf));
+		if (!s_strlen_zero(bbs_hostname_buf)) {
+			NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_BLUE), "ADMN", COLOR(COLOR_GREEN), bbs_sysop));
+		}
+	} else {
+		NEG_RETURN(bbs_writef(node, "Node %d - %s\n", node->id, timebuf));
 	}
 
 	usleep(300000);
@@ -901,7 +910,7 @@ static int bbs_node_statuses(struct bbs_node *node)
 static int bbs_node_splash(struct bbs_node *node)
 {
 	node->menu = "welcome"; /* Not really a menu, but it's a page and we should give it a name */
-	bbs_clear_screen(node);
+	NEG_RETURN(bbs_clear_screen(node));
 
 #if 0
 	NEG_RETURN(bbs_writef(node, "%sLast few callers:\n\n", COLOR(COLOR_GREEN)));
@@ -943,7 +952,7 @@ static int bbs_goodbye(struct bbs_node *node)
 {
 	char sub[512];
 
-	bbs_clear_screen(node);
+	NEG_RETURN(bbs_clear_screen(node));
 	bbs_substitute_vars(node, bbs_exitmsg, sub, sizeof(sub));
 	NEG_RETURN(bbs_writef(node, "%s", sub));
 	NEG_RETURN(bbs_wait_key(node, SEC_MS(12)));
@@ -963,6 +972,7 @@ void *bbs_node_handler(void *varg)
 
 	/* Set up the psuedoterminal */
 	if (bbs_pty_allocate(node)) {
+		bbs_debug(5, "Exiting\n");
 		goto exit;
 	}
 
@@ -971,13 +981,23 @@ void *bbs_node_handler(void *varg)
 		bbs_node_set_speed(node, defaultbps);
 	}
 
-	bbs_set_term_title(node, bbs_name);
+	if (!NODE_IS_TDD(node) && bbs_set_term_title(node, bbs_name) <= 0) {
+		bbs_debug(5, "Exiting\n");
+		goto exit;
+	}
 
-	if (tty_set_line_discipline(node->slavefd) || _bbs_intro(node)) {
+	if (tty_set_line_discipline(node->slavefd)) {
+		bbs_debug(5, "Exiting\n");
+		goto exit;
+	}
+
+	if (!NODE_IS_TDD(node) && _bbs_intro(node)) {
+		bbs_debug(5, "Exiting\n");
 		goto exit;
 	}
 
 	if (node_intro(node)) {
+		bbs_debug(5, "Exiting\n");
 		goto exit;
 	}
 
@@ -986,6 +1006,7 @@ void *bbs_node_handler(void *varg)
 
 	/* Display welcome updates and alerts */
 	if (bbs_node_splash(node)) {
+		bbs_debug(5, "Exiting\n");
 		goto exit;
 	}
 

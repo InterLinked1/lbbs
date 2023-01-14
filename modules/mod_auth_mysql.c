@@ -511,7 +511,7 @@ static int user_register(struct bbs_node *node)
 #define get_response(node, qlen, fmt, q, pollms, buf, len, tries, minlen, reqchars) bbs_get_response(node, qlen, fmt q, pollms, buf, len, tries, minlen, reqchars)
 
 	/* Registration notice */
-	bbs_clear_screen(node);
+	NEG_RETURN(bbs_clear_screen(node));
 	NONPOS_RETURN(bbs_writef(node, "%s%s%s\n", COLOR(COLOR_GREEN), "New User Registration", COLOR(COLOR_WHITE))); /* Use white for the questions to stand out */
 
 	for (; tries > 0; tries -= 2) {

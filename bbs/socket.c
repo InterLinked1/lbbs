@@ -306,12 +306,19 @@ static int bbs_multi_poll(struct pollfd pfds[], int numfds, int ms)
 	return res;
 }
 
+/* This is not an assertion, since it can legitimately happen sometimes and that would be overkill. */
+#define REQUIRE_SLAVE_FD(node) \
+	if (node->slavefd == -1) { \
+		bbs_warning("Node %d has no active slave fd\n", node->id); \
+		return -1; \
+	}
+
 /*! \note fd is the last arg in case in the future, we want to expand this to accept variadic args of fds */
 int bbs_poll2(struct bbs_node *node, int ms, int fd)
 {
 	struct pollfd pfds[2];
 
-	bbs_assert(node->fd != -1);
+	REQUIRE_SLAVE_FD(node);
 
 	/* Watch for data written from the master end of the PTY to the slave end. */
 	/* The lock/unlock to get node->slavefd here is a little silly. It just makes helgrind happy. */
@@ -328,7 +335,7 @@ int bbs_poll(struct bbs_node *node, int ms)
 	struct pollfd pfd;
 	int res;
 
-	bbs_assert(node->fd != -1);
+	REQUIRE_SLAVE_FD(node);
 
 	/* We should never be polling indefinitely for a BBS node. */
 	bbs_assert(ms >= 0);
@@ -446,9 +453,14 @@ int bbs_tpoll(struct bbs_node *node, int ms)
 					 * Finally, don't end with a LF. */
 					NEG_RETURN(bbs_writef(node, "\n"));
 				}
-				NEG_RETURN(bbs_writef(node, "%sAre you still there? []%s", COLOR(COLOR_RED), COLOR_RESET));
-				/* Ring the bell to get the user's attention. */
-				NEG_RETURN(bbs_ring_bell(node));
+				if (!NODE_IS_TDD(node)) {
+					NEG_RETURN(bbs_writef(node, "%sAre you still there? []%s", COLOR(COLOR_RED), COLOR_RESET));
+					/* Ring the bell to get the user's attention. */
+					NEG_RETURN(bbs_ring_bell(node));
+				} else {
+					NEG_RETURN(bbs_writef(node, "Still there?"));
+				}
+
 				ms = MIN_WARNING_MS;
 				everwarned = warned = 1;
 				/* If wasbuffered, then we don't actually know if the next bbs_poll returned 1
@@ -508,7 +520,7 @@ int bbs_read(struct bbs_node *node, char *buf, size_t len)
 {
 	int res;
 
-	bbs_assert(node->slavefd != -1);
+	REQUIRE_SLAVE_FD(node);
 
 	bbs_node_lock(node);
 	res = read(node->slavefd, buf, len);
@@ -693,7 +705,7 @@ int bbs_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 	char *nterm = 0;
 	int keep_trying = 0;
 
-	bbs_assert(node->slavefd != -1);
+	REQUIRE_SLAVE_FD(node);
 
 	/* Do not call bbs_buffer(node) here,
 	 * calling functions should do that if needed.
@@ -906,7 +918,7 @@ int bbs_write(struct bbs_node *node, const char *buf, unsigned int len)
 {
 	int res;
 	unsigned int written = 0;
-	bbs_assert(node->slavefd != -1);
+	REQUIRE_SLAVE_FD(node);
 	for (;;) {
 		/* So helgrind doesn't complain about data race if node is shut down
 		 * and slavefd closed during write */
@@ -974,7 +986,7 @@ int bbs_set_term_title(struct bbs_node *node, const char *s)
 	if (!node->ansi) {
 		return 0;
 	}
-	return bbs_writef(node, "\033]2;%s\007", s); /* for xterm, screen, etc. */
+	return bbs_writef(node, TERM_TITLE_FMT, s); /* for xterm, screen, etc. */
 }
 
 int bbs_set_term_icon(struct bbs_node *node, const char *s)
@@ -1023,14 +1035,19 @@ int bbs_ring_bell(struct bbs_node *node)
 	return bbs_write(node, TERM_BELL, STRLEN(TERM_BELL));
 }
 
-#define HIT_KEY_PROMPT "Hit a key, any key..."
+#define HIT_KEY_PROMPT_LONG "Hit a key, any key..."
+#define HIT_KEY_PROMPT_SHORT "Hit key:"
 
 int bbs_wait_key(struct bbs_node *node, int ms)
 {
 	bbs_debug(6, "Waiting %d ms for any input\n", ms);
 	NEG_RETURN(bbs_unbuffer(node));
 	NEG_RETURN(bbs_flush_input(node)); /* Discard anything that may be pending so bbs_tpoll doesn't return immediately. */
-	NEG_RETURN(bbs_writef(node, "\r\n%s%s%s", COLOR(COLOR_RED), "[" HIT_KEY_PROMPT "]", COLOR_RESET));
+	if (!NODE_IS_TDD(node)) {
+		NEG_RETURN(bbs_writef(node, "\r\n%s%s%s", COLOR(COLOR_RED), "[" HIT_KEY_PROMPT_LONG "]", COLOR_RESET));
+	} else {
+		NEG_RETURN(bbs_writef(node, "\r\n%s", "[" HIT_KEY_PROMPT_SHORT "]"));
+	}
 
 	/* Wait up to ms for any key, doesn't matter what key so discard input if/when received. */
 	if (bbs_tpoll(node, ms) <= 0 || bbs_flush_input(node) < 0) {

@@ -176,8 +176,13 @@ static int tty_handshake(struct bbs_node *node)
 	/* Not really a handshake, just use this as a callback to set a few things */
 	node->ansi = 0; /* TDDs don't support ANSI escape sequences, disable them */
 	/* Assume standard TDD screen size */
-	node->rows = 24;
-	node->cols = 1;
+	node->cols = NUM_TDD_COLS;
+	node->rows = 1;
+	/* Note that because we don't actually call telnet_handshake,
+	 * as we assume an actual TDD is on the other end of the connection,
+	 * things like echo and input buffering which require Telnet commands
+	 * will not be sent, so using a telnet client with the TTY port
+	 * will be completely unsuitable. */
 	return 0;
 }
 

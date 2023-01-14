@@ -57,6 +57,23 @@ struct bbs_node {
 	RWLIST_ENTRY(bbs_node) entry;
 };
 
+/*!
+ * \brief Number of columns on a TDD's screen
+ * \note Yes, I counted on mine
+ */
+#define NUM_TDD_COLS 20
+
+/*!
+ * \brief Whether, based on terminal dimensions, the node is a TDD
+ *        (telecommunications device for the deaf),
+ *        also sometimes but less correctly known as a TTY
+ * \note This macro is mainly used when choosing whether to print more or less "stuff".
+ *       For example, colors and other escape sequences aren't useful for TDDs.
+ *       Additionally, shorter output is often desired for TDDs due to their limited
+ *       screen size and the slow data rate (45.45 or 50 bps) of the connection.
+ */
+#define NODE_IS_TDD(node) (node->rows == 1 && node->cols == NUM_TDD_COLS)
+
 /*! \brief Whether guest login is allowed */
 int bbs_guest_login_allowed(void);
 
