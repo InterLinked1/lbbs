@@ -93,6 +93,11 @@ static int bbs_node_set_input(struct bbs_node *node, int buffered, int echo)
 	 * You can't perform terminal operations directly on socket file descriptors. */
 	bbs_assert(node->slavefd != -1);
 
+	if (NODE_IS_TDD(node) && echo) {
+		bbs_debug(6, "Overriding echo to OFF for TDD on node %d\n", node->id); /* See comment in bbs_echo about TDDs and echo */
+		echo = 0;
+	}
+
 	if (node->buffered == buffered && node->echo == echo) {
 		bbs_debug(6, "Buffering/echo settings (%d/%d) have not changed for node %d\n", node->buffered, node->echo, node->id);
 		return 0; /* Nothing is changing. */
@@ -121,6 +126,16 @@ int bbs_buffer_input(struct bbs_node *node, int echo)
 int bbs_echo(struct bbs_node *node, int echo)
 {
 	int res;
+
+	if (NODE_IS_TDD(node) && echo) {
+		/* Echo should always be disabled for TDDs, since they *always* do a local echo.
+		 * If we also echo, then the pseudoterminal echoing back input will lead to double input.
+		 * Furthermore, because TDDs are half duplex, we'll start sending "output" (the echo)
+		 * while the user is inputting stuff, and that will totally screw everything up.
+		 * (For one, it causes TDDs to stop input, send a CR LF, and wait for output to stop) */
+		bbs_debug(6, "Not setting echo on for TDD on node %d\n", node->id);
+		return 0;
+	}
 
 	if (node->echo == echo) {
 		bbs_debug(6, "Echo setting (%d) has not changed for node %d\n", echo, node->id);

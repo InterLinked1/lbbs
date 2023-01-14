@@ -403,6 +403,9 @@ void *pty_master(void *varg)
 				bbs_debug(7, "Ignoring LF due to previous emulated CR LF\n");
 				continue;
 			} else {
+				if (bytes_read == 1 && NODE_IS_TDD(node)) {
+					*buf = bbs_node_input_translate(node, *buf); /* Translate characters if needed for a TDD */
+				}
 				emulated_crlf = just_did_emulated_crlf = 0;
 			}
 			/* We only slow output, not input, so don't use slow_write here, regardless of the speed */

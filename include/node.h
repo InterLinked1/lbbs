@@ -53,6 +53,9 @@ struct bbs_node {
 	unsigned int skipjoin:1;	/*!< If node_shutdown should not join the node thread */
 	unsigned int inmenu:1;		/*!< Whether actively displaying a menu */
 	unsigned int ansi:1;		/*!< Terminal supports ANSI escape sequences */
+	/* TDD stuff */
+	char ioreplace[10][2];		/*!< Character replacement for TDDs and other keyboard input-limited endpoints. 2D list with 10 slots. */
+	unsigned int ioreplaces;	/*!< Number of characters currently being replaced. Purely for speed of access in pty.c */
 	/* Next entry */
 	RWLIST_ENTRY(bbs_node) entry;
 };
@@ -113,12 +116,6 @@ const char *bbs_hostname(void);
  */
 struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod);
 
-/*! Lock a BBS node */
-int bbs_node_lock(struct bbs_node *node);
-
-/*! Unlock a BBS node */
-int bbs_node_unlock(struct bbs_node *node);
-
 /*!
  * \brief Used by socket drivers to request a BBS node
  * \param fd Socket file descriptor
@@ -126,6 +123,37 @@ int bbs_node_unlock(struct bbs_node *node);
  * \retval Node on success, NULL on failure
  */
 #define bbs_node_request(fd, protname) __bbs_node_request(fd, protname, BBS_MODULE_SELF) 
+
+/*! Lock a BBS node */
+int bbs_node_lock(struct bbs_node *node);
+
+/*! Unlock a BBS node */
+int bbs_node_unlock(struct bbs_node *node);
+
+/*!
+ * \brief Translate input characters from a node
+ * \param node
+ * \param c Input character
+ * \retval New input character
+ */
+char bbs_node_input_translate(struct bbs_node *node, char c);
+
+/*!
+ * \brief Add a character to a node's input replacement table
+ * \param node
+ * \param in Input character
+ * \param out Character to which in should be translated
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_node_input_replace(struct bbs_node *node, char in, char out);
+
+/*!
+ * \brief Remove a character from a node's input replacement table
+ * \param node
+ * \param in Character that was being replaced
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_node_input_unreplace(struct bbs_node *node, char in);
 
 /*!
  * \brief Remove and free a BBS node

@@ -712,6 +712,10 @@ int bbs_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 	 * This allows to read with echo on or off (e.g. passwords),
 	 * we don't know what's appropriate here. */
 
+	if (!node->buffered) {
+		bbs_warning("Node %d is not buffered when calling %s\n", node->id, __FUNCTION__);
+	}
+
 	for (;;) {
 		if (keep_trying) {
 			res = bbs_poll(node, 5);
@@ -786,6 +790,9 @@ int bbs_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 	}
 
 	bbs_debug(10, "Node %d: read(%d) %.*s\n", node->id, bytes_read, bytes_read, startbuf);
+	if (!node->buffered) {
+		bbs_warning("Node %d is not buffered when ending %s?\n", node->id, __FUNCTION__); /* Not as bad if not buffered when starting, but strange... */
+	}
 	return bytes_read;
 }
 
@@ -819,20 +826,36 @@ int bbs_get_response(struct bbs_node *node, int qlen, const char *q, int pollms,
 			NONPOS_RETURN(bbs_writef(node, "%sPlease try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
 			continue; /* Empty responses not allowed. Try again, eventually we'll hit max attempts */
 		} if (res - 1 < minlen) {
-			NONPOS_RETURN(bbs_writef(node, "%sInadequate response, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+			if (NODE_IS_TDD(node)) {
+				NONPOS_RETURN(bbs_writef(node, "Inadequate, try again.\n"));
+			} else {
+				NONPOS_RETURN(bbs_writef(node, "%sInadequate response, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+			}
 			continue; /* Too short */
 		} else if (res - 1 >= len) {
-			NONPOS_RETURN(bbs_writef(node, "%sResponse is too long, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+			if (NODE_IS_TDD(node)) {
+				NONPOS_RETURN(bbs_writef(node, "Too long, try again.\n"));
+			} else {
+				NONPOS_RETURN(bbs_writef(node, "%sResponse is too long, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+			}
 			continue;
 		} else if (!bbs_str_isprint(buf)) {
 			/* Contains nonprintable characters. Reject. */
-			NONPOS_RETURN(bbs_writef(node, "%sResponse contains invalid characters, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+			if (NODE_IS_TDD(node)) {
+				NONPOS_RETURN(bbs_writef(node, "Invalid, try again.\n"));
+			} else {
+				NONPOS_RETURN(bbs_writef(node, "%sResponse contains invalid characters, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+			}
 			continue;
 		}
 		if (reqchars) {
 			for (c = reqchars; *c; c++) {
 				if (!strchr(buf, *c)) {
-					NONPOS_RETURN(bbs_writef(node, "%sInadequate response, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+					if (NODE_IS_TDD(node)) {
+						NONPOS_RETURN(bbs_writef(node, "Inadequate, try again.\n"));
+					} else {
+						NONPOS_RETURN(bbs_writef(node, "%sInadequate response, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+					}
 					/* We're in a double loop, we want to continue the outer loop */
 					goto continueloop; /* Missing required chars */
 				}

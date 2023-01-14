@@ -42,6 +42,7 @@
 #include "include/definitions.h"
 
 #define BBS_COPYRIGHT STRCAT("Copyright 2023 ", BBS_AUTHOR)
+#define BBS_COPYRIGHT_SHORT STRCAT("(C) 2023 ", BBS_AUTHOR)
 #define BBS_VERSION "BBS_MAJOR_VERSION.BBS_MINOR_VERSION.BBS_PATCH_VERSION"
 
 /* Needed (only) by bbs.c and logger.c */

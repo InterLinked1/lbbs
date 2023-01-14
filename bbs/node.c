@@ -239,6 +239,78 @@ int bbs_node_unlock(struct bbs_node *node)
 	return pthread_mutex_unlock(&node->lock);
 }
 
+char bbs_node_input_translate(struct bbs_node *node, char c)
+{
+	long unsigned int i;
+	char ret = c;
+
+	bbs_node_lock(node);
+	if (node->ioreplaces) {
+		for (i = 0; i < ARRAY_LEN(node->ioreplace); i++) {
+			if (node->ioreplace[i][0] == c) {
+				ret = node->ioreplace[i][1];
+				bbs_debug(6, "Translating %c (%d) to %c (%d)\n", c, c, ret, ret);
+				break;
+			}
+		}
+	}
+	bbs_node_unlock(node);
+	return ret;
+}
+
+int bbs_node_input_replace(struct bbs_node *node, char in, char out)
+{
+	long unsigned int i;
+	int res = -1;
+
+	bbs_node_lock(node);
+	/* Make sure it's not already being replaced */
+	for (i = 0; i < ARRAY_LEN(node->ioreplace); i++) {
+		if (node->ioreplace[i][0] == in) {
+			bbs_error("Character '%c' (%d) is currently being replaced by %c (%d)\n", in, in, node->ioreplace[i][1], node->ioreplace[i][1]);
+			bbs_node_unlock(node);
+			return -1;
+		}
+	}
+
+	for (i = 0; i < ARRAY_LEN(node->ioreplace); i++) {
+		if (!node->ioreplace[i][0]) {
+			node->ioreplace[i][0] = in;
+			node->ioreplace[i][1] = out;
+			res = 0;
+			node->ioreplaces++;
+			break;
+		}
+	}
+	bbs_node_unlock(node);
+	if (res) {
+		bbs_error("Character replacement table for node %d is full\n", node->id);
+	}
+	return res;
+}
+
+int bbs_node_input_unreplace(struct bbs_node *node, char in)
+{
+	long unsigned int i;
+	int res = -1;
+
+	bbs_node_lock(node);
+	for (i = 0; i < ARRAY_LEN(node->ioreplace); i++) {
+		if (node->ioreplace[i][0] == in) {
+			node->ioreplace[i][0] = 0;
+			node->ioreplace[i][1] = 0;
+			res = 0;
+			node->ioreplaces--;
+			break;
+		}
+	}
+	bbs_node_unlock(node);
+	if (res) {
+		bbs_error("Character '%c' (%d) is not currently being translated\n", in, in);
+	}
+	return res;
+}
+
 static int kill_pid(pid_t *pidptr)
 {
 	int i;
@@ -771,7 +843,14 @@ static int authenticate(struct bbs_node *node)
 					/* No newlines necessary inbetween reads, since echo is on
 					 * and input is terminated by a return. */
 					NONZERO_NEGRETURN(bbs_get_response(node, 0, "Please enter your name or alias:  ", MIN_MS(1), guestname, sizeof(guestname), &tries, 2, NULL));
-					NONZERO_NEGRETURN(bbs_get_response(node, 0, "Please enter your e-mail address: ", MIN_MS(1), guestemail, sizeof(guestemail), &tries, 5, "@."));
+					if (NODE_IS_TDD(node)) {
+						bbs_node_input_replace(node, '!', '@');
+						/* Don't print out @ explicitly, because ASCII @ is converted to the same encoding as X. */
+						NONZERO_NEGRETURN(bbs_get_response(node, 0, "Please enter your e-mail address (use ! for at): ", MIN_MS(1), guestemail, sizeof(guestemail), &tries, 5, "@."));
+						bbs_node_input_unreplace(node, '!');
+					} else {
+						NONZERO_NEGRETURN(bbs_get_response(node, 0, "Please enter your e-mail address: ", MIN_MS(1), guestemail, sizeof(guestemail), &tries, 5, "@."));
+					}
 					NONZERO_NEGRETURN(bbs_get_response(node, 0, "Please enter your location (City, State): ", MIN_MS(1), guestlocation, sizeof(guestlocation), &tries, 5, ","));
 					NEG_RETURN(bbs_authenticate(node, NULL, NULL)); /* Authenticate as guest */
 					bbs_user_guest_info_set(node->user, guestname, guestemail, guestlocation);
@@ -839,6 +918,7 @@ static int node_intro(struct bbs_node *node)
 		 * This will allow the sysop to begin spying on the node here and catch the next output.
 		 * Really, mainly to help with testing and debugging. */
 		usleep(2500000);
+		NEG_RETURN(bbs_writef(node, "%s %d.%d.%d  %s\n\n", BBS_SHORTNAME, BBS_MAJOR_VERSION, BBS_MINOR_VERSION, BBS_PATCH_VERSION, BBS_COPYRIGHT_SHORT));
 	}
 
 	NEG_RETURN(bbs_writef(node, "%s\n", bbs_name)); /* Print BBS name */
@@ -928,7 +1008,8 @@ static int bbs_node_splash(struct bbs_node *node)
 		NEG_RETURN(bbs_writef(node, "%s%-20s: %s%s\n", COLOR(COLOR_BLUE), "System", COLOR(COLOR_GREEN), bbs_name));
 		NEG_RETURN(bbs_writef(node, "%s%6s%s %4u%9s%s: %s%s\n", COLOR(COLOR_BLUE), "User #", COLOR(COLOR_GREEN), node->user->id, "", COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), bbs_username(node->user)));
 	} else {
-		NEG_RETURN(bbs_writef(node, "User #%d - %s\n", node->user->id, bbs_username(node->user)));
+		/* Omit the # sign since TDDs display # as $ */
+		NEG_RETURN(bbs_writef(node, "User %d - %s\n", node->user->id, bbs_username(node->user)));
 	}
 
 	/*! \todo Add more stats here, e.g. num logins today, since started, lifetime, etc. */

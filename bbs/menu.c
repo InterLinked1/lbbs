@@ -232,7 +232,7 @@ static int print_header(struct bbs_node *node, const char *s, const char *color,
 	/* Check for exceeding dimensions */
 	plen = bbs_printable_strlen(buf);
 	bbs_debug(6, "plen: %u, cols: %u\n", plen, node->cols);
-	if (node->cols && plen > node->cols) {
+	if (!NODE_IS_TDD(node) && node->cols && plen > node->cols) {
 		int real_rows = (int) ceil(1.0 * plen / node->cols);
 		bbs_warning("Menu title length (%d) exceeds node %d's terminal width (%dx%d), actually occupies %d rows\n", plen, node->id, node->cols, node->rows, real_rows);
 		rows_used += (real_rows - 1); /* Add additional rows it actually took up */
@@ -308,7 +308,8 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 
 	/* Too wide? */
 	longest += 5; /* Add 1 for the option itself and the 2 separating spaces, plus 2 spaces dividing inbetween groups */
-	if (node->cols && (unsigned int) longest > node->cols) {
+	/* Things are definitely going to be too long for a TDD. But TDDs can scroll! Either way, ignore them here. */
+	if (!NODE_IS_TDD(node) && node->cols && (unsigned int) longest > node->cols) {
 		/* The option name won't even fit on 1 line. There is no way to print it nicely. This is bad. Maybe your names are too long? */
 		/* We don't know which option here it was (we could keep track, but eh, why bother?) */
 		bbs_warning("Menu '%s' contains option too long to fit on a single line for node %d (%dx%d)\n", menu->name, node->id, node->cols, node->rows);
@@ -329,7 +330,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 		}
 	} /* else default to just a single col, since the terminal size is unknown */
 
-	if (node->rows && i > (int) (numcols * (node->rows - rows_used))) {
+	if (!NODE_IS_TDD(node) && node->rows && i > (int) (numcols * (node->rows - rows_used))) {
 		/* There's so many options that they're not all going to fit on the screen */
 		bbs_warning("Not all options for menu '%s' (%d total options) will not fit for node %d (%dx%d)\n", menu->name, i, node->id, node->cols, node->rows);
 	}
