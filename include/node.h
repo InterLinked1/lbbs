@@ -108,7 +108,7 @@ unsigned int bbs_maxnodes(void);
 const char *bbs_hostname(void);
 
 /*!
- * \brief Used by socket drivers to request a BBS node
+ * \brief Used by network comm drivers to request a BBS node
  * \param fd Socket file descriptor
  * \param protname Protocol name
  * \param mod Module reference
@@ -117,7 +117,7 @@ const char *bbs_hostname(void);
 struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod);
 
 /*!
- * \brief Used by socket drivers to request a BBS node
+ * \brief Used by network comm drivers to request a BBS node
  * \param fd Socket file descriptor
  * \param protname Protocol name
  * \retval Node on success, NULL on failure
@@ -154,6 +154,13 @@ int bbs_node_input_replace(struct bbs_node *node, char in, char out);
  * \retval 0 on success, -1 on failure
  */
 int bbs_node_input_unreplace(struct bbs_node *node, char in);
+
+/*!
+ * \brief Kill the child process associated with a node
+ * \param node
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_node_kill_child(struct bbs_node *node);
 
 /*!
  * \brief Remove and free a BBS node

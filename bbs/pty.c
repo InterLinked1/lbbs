@@ -275,6 +275,29 @@ static int slow_write(int fd, int fd2, const char *__restrict buf, int len, int 
 	return total_bytes;
 }
 
+static void trigger_node_disconnect(struct bbs_node *node)
+{
+	bbs_node_lock(node);
+	/* Client disconnected */
+	/* Close the slave, this will cause bbs_poll, bbs_read, bbs_write, etc. to return -1.
+	 * That will cause the node to exit and it will subsequently join this thread. */
+	close(node->slavefd);
+	/* bbs_poll will wait for ms to expire (so if ms == -1, very bad!!!)
+	 * You'd think poll would get a POLLHUP immediately... but nope! Not sure why.
+	 * Need to find a way to make this immediate.
+	 * In the meantime, the node threads will exit eventually, just not immediately.
+	 */
+	node->slavefd = -1;
+	/* Resist the urge to also close node->fd here.
+	 * Just wait for cleanup to happen, and we'll close node->fd there in due course. */
+
+	/* If there's a child process running for this node, then this might not be sufficient.
+	 * Go ahead and make it exit. */
+	bbs_node_kill_child(node);
+
+	bbs_node_unlock(node);
+}
+
 void *pty_master(void *varg)
 {
 	struct bbs_node *node = varg;
@@ -346,11 +369,8 @@ void *pty_master(void *varg)
 			bytes_read = read(sfd, buf, sizeof(buf));
 			if (bytes_read <= 0) {
 				bbs_debug(10, "socket read returned %d\n", bytes_read);
-				/* If the PTY master exits, need to get rid of the node. This should do the trick. Same logic as in the else statement. */
-				bbs_node_lock(node);
-				close(node->slavefd);
-				node->slavefd = -1;
-				bbs_node_unlock(node);
+				/* If the PTY master exits, need to get rid of the node. This should do the trick. */
+				trigger_node_disconnect(node);
 				break; /* We'll read 0 bytes upon disconnect */
 			}
 #ifdef DEBUG_PTY
@@ -542,21 +562,7 @@ void *pty_master(void *varg)
 			if (fds[0].revents & BBS_POLL_QUIT || fds[1].revents & BBS_POLL_QUIT) {
 				bbs_debug(2, "PTY %s closed the connection\n", x == 0 ? "master (client)" : "slave (server)");
 				if (x == 0) {
-					bbs_node_lock(node);
-					/* Client disconnected */
-					/* Close the slave, this will cause bbs_poll, bbs_read, bbs_write, etc. to return -1.
-					 * That will cause the node to exit and it will subsequently join this thread. */
-					close(node->slavefd);
-					/* XXX If we don't check the return values of bbs_poll everywhere, the slavefd != -1 assertion might be triggered.
-					 * Also bbs_poll will wait for ms to expire (so if ms == -1, very bad!!!)
-					 * You'd think poll would get a POLLHUP immediately... but nope! Not sure why.
-					 * Need to find a way to make this immediate.
-					 * In the meantime, the node threads will exit eventually, just not immediately.
-					 */
-					node->slavefd = -1;
-					/* Resist the urge to also close node->fd here. bbs_poll will assert it's not -1,
-					 * so just wait for cleanup to happen, and we'll close node->fd there in due course. */
-					bbs_node_unlock(node);
+					trigger_node_disconnect(node);
 				} /* else, slave closed, i.e. node shutdown is probably already ongoing, we don't need to do anything further */
 				break;
 			}

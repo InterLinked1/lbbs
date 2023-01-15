@@ -365,6 +365,14 @@ static int kill_pid(pid_t *pidptr)
 	return 0;
 }
 
+int bbs_node_kill_child(struct bbs_node *node)
+{
+	if (node->childpid) {
+		return kill_pid(&node->childpid);
+	}
+	return -1;
+}
+
 static void node_shutdown(struct bbs_node *node, int unique)
 {
 	pthread_t node_thread;
@@ -381,9 +389,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	node->active = 0;
 	bbs_debug(2, "Terminating node %d\n", node->id);
 
-	if (node->childpid) {
-		kill_pid(&node->childpid);
-	}
+	bbs_node_kill_child(node);
 
 	/* Destroy the user */
 	if (node->user) {
