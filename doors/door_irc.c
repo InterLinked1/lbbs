@@ -513,7 +513,9 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 		if (!strlen_zero(channel) && strcmp(p->channel, channel)) {
 			continue; /* Channel filter doesn't match for this participant */
 		}
-		res = write(p->chatpipe[1], datestr, timelen);
+		if (!NODE_IS_TDD(p->node)) {
+			res = write(p->chatpipe[1], datestr, timelen); /* Don't send timestamps to TDDs, for brevity */
+		}
 		if (res > 0) {
 			res = write(p->chatpipe[1], msg, len);
 		}

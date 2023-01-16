@@ -813,11 +813,13 @@ static int authenticate(struct bbs_node *node)
 
 	for (attempts = 0; attempts < MAX_AUTH_ATTEMPTS; attempts++) {
 		NEG_RETURN(bbs_buffer(node));
-		NEG_RETURN(bbs_writef(node, "%s%s %s%s %s%s %s%s", COLOR(COLOR_GREEN), "Enter", COLOR(COLOR_WHITE), "Username", COLOR(COLOR_GREEN), "or", COLOR(COLOR_WHITE), "New"));
-		if (allow_guest) {
-			NEG_RETURN(bbs_writef(node, " %s%s %s%s\n", COLOR(COLOR_GREEN), "or", COLOR(COLOR_WHITE), "Guest"));
+		if (!NODE_IS_TDD(node)) {
+			NEG_RETURN(bbs_writef(node, "%s%s %s%s %s%s %s%s", COLOR(COLOR_GREEN), "Enter", COLOR(COLOR_WHITE), "Username", COLOR(COLOR_GREEN), "or", COLOR(COLOR_WHITE), "New"));
+			if (allow_guest) {
+				NEG_RETURN(bbs_writef(node, " %s%s %s%s\n", COLOR(COLOR_GREEN), "or", COLOR(COLOR_WHITE), "Guest"));
+			}
+			NEG_RETURN(bbs_writef(node, "\n"));
 		}
-		NEG_RETURN(bbs_writef(node, "\n"));
 
 		NEG_RETURN(bbs_writef(node, "%s%-10s%s", COLOR(COLOR_GREEN), "Login: ", COLOR(COLOR_WHITE)));
 		NONPOS_RETURN(bbs_readline(node, MIN_MS(1), username, sizeof(username)));
@@ -848,16 +850,16 @@ static int authenticate(struct bbs_node *node)
 					char guestname[64], guestemail[64], guestlocation[64];
 					/* No newlines necessary inbetween reads, since echo is on
 					 * and input is terminated by a return. */
-					NONZERO_NEGRETURN(bbs_get_response(node, 0, "Please enter your name or alias:  ", MIN_MS(1), guestname, sizeof(guestname), &tries, 2, NULL));
+					NONZERO_NEGRETURN(bbs_get_response(node, 0, NODE_IS_TDD(node) ? "Name/alias: " : "Please enter your name or alias:  ", MIN_MS(1), guestname, sizeof(guestname), &tries, 2, NULL));
 					if (NODE_IS_TDD(node)) {
 						bbs_node_input_replace(node, '!', '@');
 						/* Don't print out @ explicitly, because ASCII @ is converted to the same encoding as X. */
-						NONZERO_NEGRETURN(bbs_get_response(node, 0, "Please enter your e-mail address (use ! for at): ", MIN_MS(1), guestemail, sizeof(guestemail), &tries, 5, "@."));
+						NONZERO_NEGRETURN(bbs_get_response(node, 0, "E-Mail (use ! for at): ", MIN_MS(1), guestemail, sizeof(guestemail), &tries, 5, "@."));
 						bbs_node_input_unreplace(node, '!');
 					} else {
 						NONZERO_NEGRETURN(bbs_get_response(node, 0, "Please enter your e-mail address: ", MIN_MS(1), guestemail, sizeof(guestemail), &tries, 5, "@."));
 					}
-					NONZERO_NEGRETURN(bbs_get_response(node, 0, "Please enter your location (City, State): ", MIN_MS(1), guestlocation, sizeof(guestlocation), &tries, 5, ","));
+					NONZERO_NEGRETURN(bbs_get_response(node, 0, NODE_IS_TDD(node) ? "Location (City,St): " : "Please enter your location (City, State): ", MIN_MS(1), guestlocation, sizeof(guestlocation), &tries, 5, ","));
 					NEG_RETURN(bbs_authenticate(node, NULL, NULL)); /* Authenticate as guest */
 					bbs_user_guest_info_set(node->user, guestname, guestemail, guestlocation);
 				} else {
