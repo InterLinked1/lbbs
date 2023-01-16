@@ -28,6 +28,14 @@ struct bbs_keyval;
 const char *bbs_config_val(struct bbs_config *cfg, const char *section_name, const char *key);
 
 /*!
+ * \brief Retrieve a config setting
+ * \param section
+ * \param key Name of key
+ * \retval value on success, NULL if section or key not found
+ */
+const char *bbs_config_sect_val(struct bbs_config_section *section, const char *key);
+
+/*!
  * \brief Set a string buffer with a value from a config setting
  * \param cfg
  * \param section_name Name of section

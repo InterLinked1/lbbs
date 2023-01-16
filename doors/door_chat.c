@@ -124,8 +124,8 @@ static struct participant *join_channel(struct bbs_node *node, const char *name)
 			return NULL;
 		}
 		newchan = 1;
+		strcpy(channel->name, name); /* Safe */
 	}
-	strcpy(channel->name, name); /* Safe */
 	/* Okay, we have the channel. Add the newcomer to it. */
 	p = calloc(1, sizeof(*p));
 	if (!p) {
@@ -387,7 +387,7 @@ static int chat_run(struct bbs_node *node, struct participant *p)
 				break;
 			}
 			buf[res] = '\0'; /* Safe */
-			/* Don't add a trailing LF, if the sent message should already had one.
+			/* Don't add a trailing LF, the sent message should already had one.
 			 * Even if it doesn't, don't blindly add one. Because we write the time and message in 2 separate calls to write(),
 			 * in __chat_send, we could end up doing 2 disjoint reads here, and the first one will only have the timestamp.
 			 */

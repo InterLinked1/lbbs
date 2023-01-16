@@ -18,4 +18,18 @@ all: $(MOD_SO)
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^
 
+irc.o : lirc/irc.c
+	@echo "== Compiling $@"
+	$(CC) $(CFLAGS) -fPIC $(INC) -c $^
+
+lirc :
+	@if [ ! -d lirc ]; then\
+		git clone https://github.com/InterLinked1/lirc.git lirc;\
+	fi
+
+door_irc.so : lirc door_irc.o irc.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o door_irc.so door_irc.o irc.o -lssl -lcrypto
+
+.PHONY: lirc
 .PHONY: all

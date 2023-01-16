@@ -18,7 +18,11 @@ Key features and capabilities include:
 
 - Emulated slow baud rate support
 
-- Realtime chat
+- Native realtime chat
+
+- Internet Relay Chat client
+
+- TDD/TTY (telecommunications device for the deaf) support
 
 - Sysop capabilities
   - Node spying

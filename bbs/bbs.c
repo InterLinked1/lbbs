@@ -423,6 +423,11 @@ static int fully_started = 0;
 /* used extern by logger.c */
 int shutdown_finished = 0;
 
+int bbs_is_fully_started(void)
+{
+	return fully_started;
+}
+
 static void cleanup(void)
 {
 	/* Close alertpipe */

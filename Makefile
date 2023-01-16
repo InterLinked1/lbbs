@@ -72,6 +72,7 @@ clean :
 	@for i in $(MOD_SUBDIR); do \
 		$(RM) $${i}/*.i $${i}/*.o $${i}/*.so; \
 	done
+	$(RM) -r doors/lirc
 	$(RM) doxygen.log
 	$(RM) -r doc/html
 	$(RM) -r doc/latex

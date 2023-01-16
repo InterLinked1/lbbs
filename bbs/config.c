@@ -62,7 +62,6 @@ static RWLIST_HEAD_STATIC(configs, bbs_config);
 const char *bbs_config_val(struct bbs_config *cfg, const char *section_name, const char *key)
 {
 	struct bbs_config_section *section;
-	struct bbs_keyval *keyval;
 
 	RWLIST_TRAVERSE(&cfg->sections, section, entry) {
 		if (!strcmp(section->name, section_name)) {
@@ -72,6 +71,13 @@ const char *bbs_config_val(struct bbs_config *cfg, const char *section_name, con
 	if (!section) {
 		return NULL;
 	}
+	return bbs_config_sect_val(section, key);
+}
+
+const char *bbs_config_sect_val(struct bbs_config_section *section, const char *key)
+{
+	struct bbs_keyval *keyval;
+
 	RWLIST_TRAVERSE(&section->keyvals, keyval, entry) {
 		if (!strcmp(keyval->key, key)) {
 			break;
