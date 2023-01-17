@@ -740,7 +740,7 @@ int main(int argc, char *argv[])
 
 	/* If BBS already running, don't start another one. */
 	if ((current_pid = bbs_is_running())) {
-		startup_error("BBS already running on PID %ld\n", current_pid);
+		startup_error("BBS already running on PID %ld. Use rsysop for remote sysop console.\n", current_pid);
 		cleanup();
 		exit(EXIT_FAILURE);
 	}
@@ -759,6 +759,7 @@ int main(int argc, char *argv[])
 	 * and we have determined that the BBS isn't already running.
 	 * We are now multi-thread safe. */
 
+	bbs_pid = getpid(); /* If we daemonized, the PID changed. */
 	if (write_pid()) {
 		bbs_shutdown();
 		exit(EXIT_FAILURE);

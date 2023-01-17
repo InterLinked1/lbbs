@@ -468,7 +468,7 @@ int bbs_tpoll(struct bbs_node *node, int ms)
 	int pollms = ms;
 	int attempts = 0;
 
-bbs_assert(ms > 0); /* There would be no reason to use bbs_tpoll over bbs_poll unless ms > 0. */
+	bbs_assert(ms > 0); /* There would be no reason to use bbs_tpoll over bbs_poll unless ms > 0. */
 
 	/* If the poll is long enough, we do a preliminary poll first.
 	 * If this poll expires, give the user a warning that s/he's about to be disconnected.
