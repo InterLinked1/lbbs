@@ -28,6 +28,14 @@ int __bbs_pthread_create_detached(pthread_t *thread, pthread_attr_t *attr, void 
  */
 #define bbs_pthread_create_detached(thread, attr, start_routine, data) __bbs_pthread_create_detached(thread, attr, start_routine, data, __FILE__, __FUNCTION__, __LINE__, #start_routine)
 
+int __bbs_pthread_create_detached_killable(pthread_t *thread, pthread_attr_t *attr, void *(*start_routine)(void *), void *data, const char *file, const char *func, int line, const char *start_fn);
+
+/*!
+ * \brief Create a detached pthread that can be killed using bbs_thread_cleanup
+ * \retval 0 on success, -1 on failure
+ */
+#define bbs_pthread_create_detached_killable(thread, attr, start_routine, data) __bbs_pthread_create_detached_killable(thread, attr, start_routine, data, __FILE__, __FUNCTION__, __LINE__, #start_routine)
+
 int __bbs_pthread_create(pthread_t *thread, pthread_attr_t *attr, void *(*start_routine)(void *), void *data, const char *file, const char *func, int line, const char *start_fn);
 
 /*!
@@ -35,6 +43,14 @@ int __bbs_pthread_create(pthread_t *thread, pthread_attr_t *attr, void *(*start_
  * \retval 0 on success, -1 on failure
  */
 #define bbs_pthread_create(thread, attr, start_routine, data) __bbs_pthread_create(thread, attr, start_routine, data, __FILE__, __FUNCTION__, __LINE__, #start_routine)
+
+/*!
+ * \brief Kill detached threads that were created by this file that are marked as killable
+ * \retval Number of threads killed
+ */
+#define bbs_thread_cancel_killable() __bbs_thread_cancel_killable(__FILE__)
+
+int __bbs_thread_cancel_killable(const char *filename);
 
 /*! \brief Destroy thread registrations (on shutdown) */
 void bbs_thread_cleanup(void);
@@ -44,6 +60,17 @@ void bbs_thread_cleanup(void);
  * \warning This may not include all threads, such as those that do not use the BBS pthread creation wrappers (external libraries, etc.)
  */
 int bbs_dump_threads(int fd);
+
+/*!
+ * \brief Create a UNIX domain socket
+ * \param sock Pointer to socket
+ * \param sockfile Socket file path
+ * \param perm Permissions for socket
+ * \param uid User ID. -1 to not change.
+ * \param gid Group ID. -1 to not change.
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_t uid, gid_t gid);
 
 /*!
  * \brief Create a TCP socket

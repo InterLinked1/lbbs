@@ -28,6 +28,14 @@ struct termios;
  */
 int bbs_openpty(int *amaster, int *aslave, char *name, const struct termios *termp, const struct winsize *winp);
 
+/*!
+ * \brief Create and spawn a generic PTY master relay for arbitrary file descriptors
+ * \param fd Socket file descriptor
+ * \note This thread will continue until either file descriptor closes. It should be created detached.
+ * \retval -1 on failure, slave file descriptor on success
+ */
+int bbs_spawn_pty_master(int fd);
+
 /*! \brief Allocate and set up a pseudoterminal for a BBS node */
 int bbs_pty_allocate(struct bbs_node *node);
 

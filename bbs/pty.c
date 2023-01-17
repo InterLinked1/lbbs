@@ -126,6 +126,96 @@ int bbs_openpty(int *amaster, int *aslave, char *name, const struct termios *ter
 	return 0;
 }
 
+struct pty_fds {
+	int amaster;
+	int fd;
+};
+
+static void *pty_master_fd(void *varg)
+{
+	struct pty_fds *ptyfds = varg;
+	int pres;
+	struct pollfd fds[2];
+	char buf[4096]; /* According to termios(3) man page, the canonical mode buffer of the PTY is 4096, so this should always be large enough */
+	int bytes_read, bytes_wrote;
+
+	/* Save relevant fields. */
+	fds[0].fd = ptyfds->fd;
+	fds[1].fd = ptyfds->amaster;
+	fds[0].events = fds[1].events = POLLIN;
+	free(ptyfds);
+
+	bbs_debug(10, "Starting generic PTY master for %d <=> %d\n", fds[1].fd, fds[0].fd);
+
+	/* We don't need to call tty_set_raw on any file descriptor. */
+
+	/* Relay data between master and slave */
+	for (;;) {
+		fds[0].revents = fds[1].revents = 0;
+		pres = poll(fds, 2, -1);
+		pthread_testcancel();
+		if (pres < 0) {
+			if (errno != EINTR) {
+				bbs_error("poll returned %d: %s\n", pres, strerror(errno));
+			}
+			continue;
+		}
+		if (fds[0].revents & POLLIN) { /* Got input on socket -> pty */
+			bytes_read = read(fds[0].fd, buf, sizeof(buf));
+			if (bytes_read <= 0) {
+				close(fds[1].fd); /* Close the other side */
+				break; /* We'll read 0 bytes upon disconnect */
+			}
+			bytes_wrote = write(fds[1].fd, buf, bytes_read);
+			if (bytes_wrote != bytes_read) {
+				bbs_error("Expected to write %d bytes, only wrote %d\n", bytes_read, bytes_wrote);
+			}
+		} else if (fds[1].revents & POLLIN) { /* Got input from pty -> socket */
+			bytes_read = read(fds[1].fd, buf, sizeof(buf) - 1);
+			if (bytes_read <= 0) {
+				bbs_debug(10, "pty master read returned %d (%s)\n", bytes_read, strerror(errno));
+				close(fds[0].fd); /* Close the other side */
+				break; /* We'll read 0 bytes upon disconnect */
+			}
+			bytes_wrote = write(fds[0].fd, buf, bytes_read);
+			if (bytes_wrote != bytes_read) {
+				bbs_error("Expected to write %d bytes, only wrote %d\n", bytes_read, bytes_wrote);
+			}
+		} else {
+			break;
+		}
+	}
+
+	bbs_debug(10, "PTY master exiting for %d <=> %d\n", fds[1].fd, fds[0].fd);
+	return NULL;
+}
+
+int bbs_spawn_pty_master(int fd)
+{
+	pthread_t masterthread;
+	struct pty_fds *ptyfds;
+	int aslave, amaster;
+
+	if (bbs_openpty(&amaster, &aslave, NULL, NULL, NULL) != 0) {
+		bbs_error("Failed to openpty\n");
+		return -1;
+	}
+	bbs_fd_unbuffer_input(aslave, 0); /* Disable canonical mode and echo on this PTY slave */
+	bbs_term_makeraw(amaster); /* Make the master side raw */
+
+	ptyfds = calloc(1, sizeof(*ptyfds));
+	if (!ptyfds) {
+		return -1;
+	}
+	ptyfds->amaster = amaster;
+	ptyfds->fd = fd;
+	if (bbs_pthread_create_detached(&masterthread, NULL, pty_master_fd, ptyfds)) {
+		free(ptyfds);
+		return -1;
+	}
+	return aslave;
+}
+
 int bbs_pty_allocate(struct bbs_node *node)
 {
 	/* We store the slavename on the node struct, but

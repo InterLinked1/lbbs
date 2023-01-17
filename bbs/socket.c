@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h> /* use sockaddr_in */
+#include <sys/un.h>	/* use struct sockaddr_un */
 #include <arpa/inet.h> /* use inet_ntop */
 #include <poll.h>
 
@@ -41,6 +42,58 @@
 #include "include/node.h"
 
 #include "include/term.h" /* use bbs_unbuffer */
+
+int bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_t uid, gid_t gid)
+{
+	struct sockaddr_un sunaddr; /* UNIX socket */
+	int res;
+	int uds_socket;
+
+	/* Remove any existing socket file */
+	*sock = -1;
+	unlink(sockfile);
+
+	/* Set up the UNIX domain socket. */
+	uds_socket = socket(PF_LOCAL, SOCK_STREAM, 0);
+	if (uds_socket < 0) {
+		bbs_error("Unable to create UNIX domain socket: %s\n", strerror(errno));
+		return -1;
+	}
+
+	memset(&sunaddr, 0, sizeof(sunaddr));
+	sunaddr.sun_family = AF_LOCAL;
+	safe_strncpy(sunaddr.sun_path, sockfile, sizeof(sunaddr.sun_path));
+
+	res = bind(uds_socket, (struct sockaddr *) &sunaddr, sizeof(sunaddr));
+	if (res) {
+		bbs_error("Unable to bind UNIX domain socket to %s: %s\n", sockfile, strerror(errno));
+		close(uds_socket);
+		return -1;
+	}
+	res = listen(uds_socket, 2);
+	if (res < 0) {
+		bbs_error("Unable to listen on UNIX domain socket %s: %s\n", sockfile, strerror(errno));
+		close(uds_socket);
+		return -1;
+	}
+
+	if (chown(sockfile, uid, gid) < 0) {
+		bbs_error("Unable to change ownership of %s: %s\n", sockfile, strerror(errno));
+	}
+
+	if (!strlen_zero(perm)) {
+		unsigned int p1;
+		mode_t p;
+		sscanf(perm, "%30o", &p1);
+		p = p1;
+		if ((chmod(sockfile, p)) < 0) {
+			bbs_error("Unable to change file permissions of %s: %s\n", sockfile, strerror(errno));
+		}
+	}
+
+	*sock = uds_socket;
+	return 0;
+}
 
 int bbs_make_tcp_socket(int *sock, int port)
 {
@@ -415,7 +468,7 @@ int bbs_tpoll(struct bbs_node *node, int ms)
 	int pollms = ms;
 	int attempts = 0;
 
-	bbs_assert(ms > 0); /* There would be no reason to use bbs_tpoll over bbs_poll unless ms > 0. */
+bbs_assert(ms > 0); /* There would be no reason to use bbs_tpoll over bbs_poll unless ms > 0. */
 
 	/* If the poll is long enough, we do a preliminary poll first.
 	 * If this poll expires, give the user a warning that s/he's about to be disconnected.
