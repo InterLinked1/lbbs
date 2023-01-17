@@ -99,6 +99,20 @@ int bbs_config_val_set_str(struct bbs_config *cfg, const char *section_name, con
 	return -1;
 }
 
+int bbs_config_val_set_dstr(struct bbs_config *cfg, const char *section_name, const char *key, char **str)
+{
+	const char *s = bbs_config_val(cfg, section_name, key);
+	if (!strlen_zero(s)) {
+		char *dup = strdup(s);
+		if (!dup) {
+			return -1;
+		}
+		*str = dup;
+		return 0;
+	}
+	return -1;
+}
+
 int bbs_config_val_set_int(struct bbs_config *cfg, const char *section_name, const char *key, int *var)
 {
 	const char *s = bbs_config_val(cfg, section_name, key);

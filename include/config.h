@@ -47,6 +47,16 @@ const char *bbs_config_sect_val(struct bbs_config_section *section, const char *
 int bbs_config_val_set_str(struct bbs_config *cfg, const char *section_name, const char *key, char *buf, size_t len);
 
 /*!
+ * \brief Allocate a string with a value from a config setting
+ * \param cfg
+ * \param section_name Name of section
+ * \param key Name of key
+ * \param str Pointer to string variable to allocate if key exists
+ * \retval 0 if set, -1 if not set (config value not found)
+ */
+int bbs_config_val_set_dstr(struct bbs_config *cfg, const char *section_name, const char *key, char **str);
+
+/*!
  * \brief Set an integer with a value from a config setting
  * \param cfg
  * \param section_name Name of section

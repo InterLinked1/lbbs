@@ -114,7 +114,8 @@ scripts :
 	@if [ ! -d /var/lib/lbbs/scripts ]; then\
 		mkdir /var/lib/lbbs/scripts;\
 	fi
-	cp scripts/*.sh /var/lib/lbbs/scripts
+	cp scripts/* /var/lib/lbbs/scripts
+	chmod +x /var/lib/lbbs/scripts/*
 
 install : all bininstall modinstall extinstall scripts
 	@echo " +--- LBBS and associated modules have been installed ---+"

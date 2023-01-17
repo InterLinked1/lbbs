@@ -125,7 +125,8 @@ static void waitpidexit(pid_t pid, const char *filename, int *res)
 	} while (!WIFEXITED(status) && !WIFSIGNALED(status));
 
 	if (*res > 0) {
-		bbs_warning("Command failed (%d - %s): %s\n", *res, strerror(*res), filename);
+		/* Sometimes it can be legitimate for programs to exit nonzero, and that's not our fault. */
+		bbs_debug(1, "Command failed (%d - %s): %s\n", *res, strerror(*res), filename);
 	} else {
 		bbs_debug(4, "Command execution finished (%s): res = %d\n", filename, *res);
 	}

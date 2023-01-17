@@ -34,6 +34,7 @@
 #include "include/utils.h"
 #include "include/config.h"
 #include "include/startup.h"
+#include "include/system.h"
 
 #include "lirc/irc.h"
 
@@ -54,6 +55,7 @@ struct client {
 	struct participants participants; 	/* List of participants */
 	struct irc_client *client;			/* IRC client */
 	pthread_t thread;					/* Thread for relay */
+	char *msgscript;					/* Message handler hook script (e.g. for bot actions) */
 	unsigned int log:1;					/* Log to log file */
 	FILE *logfile;						/* Log file */
 	char name[0];						/* Unique client name */
@@ -95,6 +97,7 @@ static int load_config(void)
 		struct client *client;
 		int flags = 0;
 		struct irc_client *ircl;
+		char *msgscript = NULL;
 		const char *hostname, *username, *password, *autojoin;
 		unsigned int port = 0;
 		int tls = 0, tlsverify = 0, sasl = 0, logfile;
@@ -112,6 +115,7 @@ static int load_config(void)
 		bbs_config_val_set_true(cfg, bbs_config_section_name(section), "tlsverify", &tlsverify);
 		bbs_config_val_set_true(cfg, bbs_config_section_name(section), "sasl", &sasl);
 		bbs_config_val_set_true(cfg, bbs_config_section_name(section), "logfile", &logfile);
+		bbs_config_val_set_dstr(cfg, bbs_config_section_name(section), "msgscript", &msgscript);
 		client = calloc(1, sizeof(*client) + strlen(bbs_config_section_name(section)) + 1);
 		if (!client) {
 			bbs_error("calloc failed\n");
@@ -136,10 +140,23 @@ static int load_config(void)
 		irc_client_set_flags(ircl, flags);
 		client->client = ircl;
 		client->log = logfile;
+		client->msgscript = msgscript;
+		/* Go ahead and warn now if it doesn't exist. Set it either way, as it could be fixed during runtime. */
+		if (client->msgscript && access(client->msgscript, X_OK)) {
+			bbs_warning("File %s does not exist or is not executable\n", client->msgscript);
+		}
 		RWLIST_INSERT_TAIL(&clients, client, entry);
 	}
 	RWLIST_UNLOCK(&clients);
 	return 0;
+}
+
+static void client_free(struct client *client)
+{
+	if (client->msgscript) {
+		free(client->msgscript);
+	}
+	free(client);
 }
 
 /* Forward declaration */
@@ -165,7 +182,7 @@ static int start_clients(void)
 			bbs_error("Failed to start IRC client '%s'\n", client->name);
 			irc_client_destroy(client->client);
 			RWLIST_REMOVE_CURRENT(entry);
-			free(client);
+			client_free(client);
 		} else {
 			started++;
 			/* Now, start the event loop to receive messages from the server */
@@ -250,8 +267,108 @@ static struct participant *join_client(struct bbs_node *node, const char *name)
 	return p;
 }
 
-/* Forward declaration */
+/* Forward declarations */
 static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client *client, struct participant *sender, const char *channel, int dorelay, const char *fmt, ...);
+static int __chat_send(struct client *client, struct participant *sender, const char *channel, int dorelay, const char *msg, int len);
+
+/*! \brief Optional hook for bots for user messages and PRIVMSGs from channel */
+static void bot_handler(struct client *client, int fromirc, const char *channel, const char *sender, const char *body)
+{
+	char *dest, *outmsg;
+	char buf[IRC_MAX_MSG_LEN + 1];
+	char *argv[6] = { (char*) client->msgscript, fromirc ? "1" : "0", (char*) channel, (char*) sender, (char*) body, NULL };
+	int res;
+	int stdout[2];
+
+	/* If fromirc, then it's a message from IRC.
+	 * Otherwise, it's a message to IRC, sent from a BBS user.
+	 * They're both PRIVMSGs, it's just the direction.
+	 */
+
+	if (strlen_zero(client->msgscript)) {
+		return;
+	}
+	if (access(client->msgscript, X_OK)) {
+		bbs_error("File %s does not exist or is not executable\n", client->msgscript); /* If not caught by now, this is fatal for script execution */
+		return;
+	}
+
+	/* Create a pipe for receiving output. */
+	if (pipe(stdout)) {
+		bbs_error("pipe failed: %s\n", strerror(errno)); /* Log first, since close may change errno */
+		return;
+	}
+
+	/* Invoke the script synchronously.
+	 *
+	 * Before some criticizes this as having a lot of overhead, private messages in IRC channels
+	 * aren't something that occurs frequently enough for this to be an issue, generally speaking.
+	 * Several forks a minute is fine. Several forks a second, maybe that would not be so fine.
+	 *
+	 * Also, even if this blocks for some reason, this thread can be killed using pthread_cancel during unload.
+	 * The nice thing about this being a separate script is it can be updated while the BBS is running,
+	 * and it doesn't matter what language it's using. A little flavor of CGI :)
+	 */
+
+	res = bbs_execvpe_fd(NULL, -1, stdout[1], client->msgscript, argv); /* No STDIN, only STDOUT */
+	bbs_debug(5, "Script '%s' returned %d\n", client->msgscript, res);
+	if (res) {
+		goto cleanup; /* Ignore non-zero return values */
+	}
+
+	/* If there's output in the pipe, send it to the channel */
+	/* Poll first, in case there's no data in the pipe or this would block. */
+	if (bbs_std_poll(stdout[0], 0) == 0) {
+		bbs_debug(4, "No data in script's STDOUT pipe\n"); /* Not necessarily an issue, the script could have returned 0 but printed nothing */
+		goto cleanup;
+	}
+	res = read(stdout[0], buf, sizeof(buf) - 1); /* Luckily, we are bounded by the max length of an IRC message anyways */
+	if (res <= 0) {
+		bbs_error("read returned %d\n", res);
+		goto cleanup;
+	}
+	buf[res] = '\0';
+	outmsg = buf;
+
+	if (strlen_zero(outmsg)) {
+		goto cleanup; /* Output is empty. Do nothing. */
+	}
+
+	/* First word of output is the target channel or username.
+	 * In most cases, this will be the same, but for example,
+	 * we might want to message the sender privately, rather than
+	 * posting to the channel publicly.
+	 * Or maybe we should post to a different channel.
+	 * The possibilities are endless!
+	 */
+	dest = strsep(&outmsg, " ");
+	if (strlen_zero(outmsg)) {
+		bbs_warning("Script output contained a target but no message, ignoring\n");
+		goto cleanup;
+	}
+
+	bbs_debug(4, "Sending to %s: %s\n", dest, outmsg);
+
+	/* Relay the message to wherever it should go */
+	if (!strcmp(channel, dest)) {
+		/* It's going back to the same channel. Send it to everyone. */
+		__chat_send(client, NULL, dest, 1, outmsg, strlen(outmsg));
+	} else {
+		/* It's going to a different channel, or to a user. */
+		/* Call irc_client_msg directly, and don't relay it to local users.
+		 * Note that according to the IRC specs, PRIVMSG may solicit automated replies
+		 * whereas NOTICE may not (and NOTICE is indeed ignored for bot handling).
+		 * We reply using a PRIVMSG rather than a NOTICE because in practice,
+		 * NOTICEs are also more disruptive.
+		 */
+		irc_client_msg(client->client, dest, outmsg); /* XXX This only works for targeting IRC users, not local BBS users */
+	}
+
+cleanup:
+	close(stdout[0]);
+	close(stdout[1]);
+	return;
+}
 
 #define relay_to_local(client, channel, fmt, ...) _chat_send(client, NULL, channel, 0, fmt, __VA_ARGS__)
 
@@ -313,6 +430,7 @@ static void handle_irc_msg(struct client *client, struct irc_msg *msg)
 				switch (ctcp) {
 				case CTCP_ACTION: /* /me, /describe */
 					relay_to_local(client, channel, "[ACTION] <%s> %s\n", msg->prefix, body);
+					bot_handler(client, 1, channel, msg->prefix, body);
 					break;
 				case CTCP_VERSION:
 					irc_client_ctcp_reply(client->client, msg->prefix, ctcp, BBS_SHORTNAME " / LIRC 0.1.0");
@@ -344,6 +462,9 @@ static void handle_irc_msg(struct client *client, struct irc_msg *msg)
 				*tmp = '\0'; /* Strip everything except the nickname from the prefix */
 			}
 			relay_to_local(client, channel, "<%s> %s\n", msg->prefix, body);
+			if (!strcmp(msg->command, "PRIVMSG")) {
+				bot_handler(client, 1, channel, msg->prefix, body);
+			}
 		}
 	} else if (!strcmp(msg->command, "PING")) {
 		/* Reply with the same data that it sent us (some servers may actually require that) */
@@ -604,6 +725,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 				bbs_warning("Doesn't end in LF? (%d)\n", buf[res - 1]); /* If it doesn't send in a LF for some reason, tack one on so it displays properly to recipients */
 			}
 			chat_send(c, p, channel, buf[res - 1] == '\n' ? "<%s@%d> %s" : "<%s@%d> %s\n", bbs_username(node->user), node->id, buf); /* buf already contains a newline from the user pressing ENTER, so don't add another one */
+			bot_handler(c, 0, channel, bbs_username(node->user), buf);
 		} else if (res == 2) {
 			/* Pipe has activity: Received a message */
 			res = 0;
@@ -708,7 +830,7 @@ static int unload_module(void)
 		if (client->logfile) {
 			fclose(client->logfile);
 		}
-		free(client);
+		client_free(client);
 	}
 	RWLIST_UNLOCK(&clients);
 
