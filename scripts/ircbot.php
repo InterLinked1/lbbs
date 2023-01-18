@@ -25,6 +25,9 @@ $prefix = ((substr($channel, 0, 1) === "#" || substr($channel, 0, 1) === "&") ? 
 $handlers = array(
 	'help' => array('help [<command>]. Shows command help.', 'handler_help'),
 	'echo' => array('echo [<args>]. Echoes input text back to the sender', 'handler_echo'),
+	'hello' => array('hello. Says hello', 'handler_hello'),
+	'time' => array('time. Provides current time.', 'handler_time'),
+	'define' => array('define <word>. Defines a word.', 'handler_define'),
 );
 
 if (substr($message, 0, 1) === "!") {
@@ -75,4 +78,36 @@ function handler_echo(String $prefix, bool $fromIRC, String $channel, String $se
 	echo $prefix . $message; /* Echo remainder */
 }
 
+function handler_hello(String $prefix, bool $fromIRC, String $channel, String $sender, String $message) {
+	echo $prefix . "Hello world!";
+}
+
+function handler_time(String $prefix, bool $fromIRC, String $channel, String $sender, String $message) {
+	echo $prefix . date("l F d, h:i:s A", time());
+}
+
+function handler_define(String $prefix, bool $fromIRC, String $channel, String $sender, String $message) {
+	$ch = curl_init();
+	curl_setopt($ch, CURLOPT_URL, "dict://dict.org/define:($message):english:exact");
+	curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+	$definition = curl_exec($ch);
+	curl_close($ch);
+
+	/* Skip to the first definition. */
+	$definition = strstr($definition, " 1. ");
+	$definition = substr($definition, 4); /* Skip " 1. " */
+
+	/* Strip out any remaining protocol headers and metadata */
+	$s = "";
+	$response = explode("\r\n", $definition);
+	foreach($response as $r) {
+		$first = strtok($r, ' ');
+		if (strlen($first) === 3 && ((int) $first) > 0) {
+			continue;
+		}
+		$s .= $r . " "; /* Put everything on a single line */
+	}
+
+	echo $prefix . $s; /* XXX Could be truncated if longer than 512 chars */
+}
 ?>

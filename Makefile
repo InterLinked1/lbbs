@@ -37,7 +37,8 @@ MAIN_SOURCES := $(wildcard *.c) $(cami/wildcard *.c)
 INCLUDE_FILES := $(wildcard include/*.h)
 MAIN_OBJ = $(MAIN_SOURCES:.c=.o)
 
-VALGRIND = valgrind -s --keep-debuginfo=yes
+# --show-error-list is only available in valgrind 3.15.0+: https://valgrind.org/docs/manual/dist.news.html
+VALGRIND = valgrind --show-error-list=yes --keep-debuginfo=yes
 
 # ALL_C_MODS+=$(foreach p,$(MOD_SUBDIR)/$(MODULE_PREFIX),$(patsubst %.c,%.so,$(wildcard $(p)_*.c)))
 
@@ -114,7 +115,7 @@ scripts :
 	@if [ ! -d /var/lib/lbbs/scripts ]; then\
 		mkdir /var/lib/lbbs/scripts;\
 	fi
-	cp scripts/* /var/lib/lbbs/scripts
+	cp -n scripts/* /var/lib/lbbs/scripts
 	chmod +x /var/lib/lbbs/scripts/*
 
 install : all bininstall modinstall extinstall scripts

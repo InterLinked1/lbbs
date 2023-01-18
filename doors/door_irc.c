@@ -274,7 +274,7 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 /*! \brief Optional hook for bots for user messages and PRIVMSGs from channel */
 static void bot_handler(struct client *client, int fromirc, const char *channel, const char *sender, const char *body)
 {
-	char *dest, *outmsg;
+	char *line, *dest, *outmsg;
 	char buf[IRC_MAX_MSG_LEN + 1];
 	char *argv[6] = { (char*) client->msgscript, fromirc ? "1" : "0", (char*) channel, (char*) sender, (char*) body, NULL };
 	int res;
@@ -350,18 +350,25 @@ static void bot_handler(struct client *client, int fromirc, const char *channel,
 	bbs_debug(4, "Sending to %s: %s\n", dest, outmsg);
 
 	/* Relay the message to wherever it should go */
-	if (!strcmp(channel, dest)) {
-		/* It's going back to the same channel. Send it to everyone. */
-		__chat_send(client, NULL, dest, 1, outmsg, strlen(outmsg));
-	} else {
-		/* It's going to a different channel, or to a user. */
-		/* Call irc_client_msg directly, and don't relay it to local users.
-		 * Note that according to the IRC specs, PRIVMSG may solicit automated replies
-		 * whereas NOTICE may not (and NOTICE is indeed ignored for bot handling).
-		 * We reply using a PRIVMSG rather than a NOTICE because in practice,
-		 * NOTICEs are also more disruptive.
-		 */
-		irc_client_msg(client->client, dest, outmsg); /* XXX This only works for targeting IRC users, not local BBS users */
+	while ((line = strsep(&outmsg, "\n"))) { /* If response contains multiple lines, we need to send multiple messages */
+		char *cr = strchr(line, '\r');
+		if (cr) {
+			*cr = '\0';
+		}
+		/* Can't be over 512 characters since that's as large as the buffer is anyways. (We ignore anything over that) */
+		if (!strcmp(channel, dest)) {
+			/* It's going back to the same channel. Send it to everyone. */
+			__chat_send(client, NULL, dest, 1, line, strlen(line));
+		} else {
+			/* It's going to a different channel, or to a user. */
+			/* Call irc_client_msg directly, and don't relay it to local users.
+			 * Note that according to the IRC specs, PRIVMSG may solicit automated replies
+			 * whereas NOTICE may not (and NOTICE is indeed ignored for bot handling).
+			 * We reply using a PRIVMSG rather than a NOTICE because in practice,
+			 * NOTICEs are also more disruptive.
+			 */
+			irc_client_msg(client->client, dest, line); /* XXX This only works for targeting IRC users, not local BBS users */
+		}
 	}
 
 cleanup:
