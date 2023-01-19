@@ -794,11 +794,12 @@ int main(int argc, char *argv[])
 	}
 	CHECK_INIT(load_modules());
 
+	fully_started = 1;
+	bbs_verb(1, "%s\n", COLOR(COLOR_GREEN) "BBS is fully started" COLOR_RESET);
+
 	/* Run any callbacks registered during startup, now that we're fully started. */
 	bbs_run_startup_callbacks();
 
-	fully_started = 1;
-	bbs_verb(1, "%s\n", COLOR(COLOR_GREEN) "BBS is fully started" COLOR_RESET);
 	if (!bbs_num_auth_providers()) {
 		bbs_warning("There are no auth providers currently registered. User login will fail.\n");
 	}

@@ -31,11 +31,12 @@
 #include "include/utils.h"
 
 /*! \note This function is used by autoload_modules */
-int bbs_dir_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, void *obj), void *obj, int max_depth)
+static int __bbs_dir_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, void *obj), void *obj, int max_depth, int dironly)
 {
 	DIR *dir;
 	struct dirent *entry;
 	int res;
+	int isroot;
 
 	/* Since we'll be using errno to check for problems, zero it out now. That said, a module we load could set it while we're loading modules. */
 	if (errno) {
@@ -49,8 +50,8 @@ int bbs_dir_traverse(const char *path, int (*on_file)(const char *dir_name, cons
 	}
 
 	--max_depth;
-
 	res = 0;
+	isroot = !strcmp(path, "/") ? 1 : 0;
 
 	while ((entry = readdir(dir)) != NULL) { /* Don't just bail out if errno becomes set, modules could set errno when we load them. */
 		int is_file = 0;
@@ -67,10 +68,10 @@ int bbs_dir_traverse(const char *path, int (*on_file)(const char *dir_name, cons
 			is_file = entry->d_type == DT_REG;
 			is_dir = entry->d_type == DT_DIR;
 		} else {
-			bbs_assert(0);
+			continue; /* Something else? Skip it */
 		}
 
-		if (is_file) {
+		if (is_file && !dironly) {
 			/* If the handler returns non-zero then stop */
 			if ((res = on_file(path, entry->d_name, obj))) {
 				break;
@@ -80,7 +81,7 @@ int bbs_dir_traverse(const char *path, int (*on_file)(const char *dir_name, cons
 		}
 
 		if (!is_dir) {
-			bbs_debug(3, "Skipping %s: not a regular file or directory\n", full_path);
+			bbs_debug(6, "Skipping %s: not a regular file or directory\n", entry->d_name);
 			continue;
 		}
 
@@ -93,13 +94,15 @@ int bbs_dir_traverse(const char *path, int (*on_file)(const char *dir_name, cons
 					return -1;
 				}
 #undef sprintf /* This is safe */
-				sprintf(full_path, "%s/%s", path, entry->d_name);
+				sprintf(full_path, "%s/%s", isroot ? "" : path, entry->d_name);
 			}
-			bbs_debug(5, "Recursing into %s\n", full_path);
-			if ((res = bbs_dir_traverse(full_path, on_file, obj, max_depth))) {
+			bbs_debug(4, "Recursing into %s\n", full_path);
+			if ((res = __bbs_dir_traverse(full_path, on_file, obj, max_depth, dironly))) {
 				free(full_path);
 				break;
 			}
+		} else {
+			bbs_error("Recursion depth maxed out for recursive directory traversal\n");
 		}
 		free(full_path);
 	}
@@ -112,6 +115,16 @@ int bbs_dir_traverse(const char *path, int (*on_file)(const char *dir_name, cons
 	}
 
 	return res;
+}
+
+int bbs_dir_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, void *obj), void *obj, int max_depth)
+{
+	return __bbs_dir_traverse(path, on_file, obj, max_depth, 0);
+}
+
+int bbs_dir_traverse_dirs(const char *path, int (*on_file)(const char *dir_name, const char *filename, void *obj), void *obj, int max_depth)
+{
+	return __bbs_dir_traverse(path, on_file, obj, max_depth, 1);
 }
 
 FILE *bbs_mkftemp(char *template, mode_t mode)

@@ -113,7 +113,26 @@ int bbs_save_remote_ip(struct sockaddr_in *sinaddr, struct bbs_node *node);
 /*! \brief Get the name of a poll revent */
 const char *poll_revent_name(int revents);
 
+/*!
+ * \brief Traverse all the files in a directory, recursively
+ * \param path Directory to traverse recursively
+ * \param bbs_file_on_file Callback function to execute for each file. Should return 0 to continue iterating and non-zero to stop.
+ * \param obj Argument to callback function
+ * \param max_depth
+ * \retval 0 on success, -1 on failure
+ */
 int bbs_dir_traverse(const char *path, int (*bbs_file_on_file)(const char *dir_name, const char *filename, void *obj), void *obj, int max_depth);
+
+/*!
+ * \brief Traverse all the directories in a directory, recursively
+ * \param path Directory to traverse recursively
+ * \param bbs_file_on_file Callback function to execute for each file. Should return 0 to continue iterating and non-zero to stop.
+ * \param obj Argument to callback function
+ * \param max_depth
+ * \retval 0 on success, -1 on failure
+ * \note This function serves no useful functional purpose. It's mainly present to list directories recursively by watching the debug messages.
+ */
+int bbs_dir_traverse_dirs(const char *path, int (*on_file)(const char *dir_name, const char *filename, void *obj), void *obj, int max_depth);
 
 /*!
  * \brief Create a temporary FILE*

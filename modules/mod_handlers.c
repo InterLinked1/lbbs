@@ -81,7 +81,7 @@ static int door_handler(struct bbs_node *node, char *args)
 }
 
 /*! \brief Execute a system command / program */
-static int exec_handler(struct bbs_node *node, char *args)
+static int __exec_handler(struct bbs_node *node, char *args, int isolated)
 {
 	unsigned int i;
 	int res;
@@ -102,7 +102,11 @@ static int exec_handler(struct bbs_node *node, char *args)
 
 	bbs_clear_screen(node);
 	bbs_buffer(node); /* Assume that exec'd processes will want the terminal to be buffered: in canonical mode with echo on. */
-	res = bbs_execvpe(node, argv[0], argv); /* Prog name is simply argv[0]. */
+	if (isolated) {
+		res = bbs_execvpe_isolated(node, argv[0], argv); /* Prog name is simply argv[0]. */
+	} else {
+		res = bbs_execvpe(node, argv[0], argv); /* Prog name is simply argv[0]. */
+	}
 	if (res < 0) {
 		return res;
 	}
@@ -132,6 +136,18 @@ static int exec_handler(struct bbs_node *node, char *args)
 	return bbs_wait_key(node, MIN_MS(2));
 }
 
+/*! \brief Execute a system command / program */
+static int exec_handler(struct bbs_node *node, char *args)
+{
+	return __exec_handler(node, args, 0);
+}
+
+/*! \brief Execute a system command / program in an isolated environment */
+static int iso_exec_handler(struct bbs_node *node, char *args)
+{
+	return __exec_handler(node, args, 1);
+}
+
 static int file_handler(struct bbs_node *node, char *args)
 {
 	return bbs_node_term_browse(node, args);
@@ -148,6 +164,7 @@ static struct menu_handlers {
 	{ "return", return_handler, 0 },
 	{ "door", door_handler, 1 },
 	{ "exec", exec_handler, 1 },
+	{ "isoexec", iso_exec_handler, 1 },
 	{ "file", file_handler, 1 },
 };
 

@@ -26,6 +26,16 @@ struct bbs_node;
  */
 int bbs_execvpe(struct bbs_node *node, const char *filename, char *const argv[]);
 
+/*!
+ * \brief Wrapper around execvpe() that creates a process in an isolated container. This will clone(), then call execvp(), then wait for the child to exit.
+ * \param node Node to use for I/O. If NULL, output will be written to a temporary pipe and logged, but otherwise discarded
+ * \param filename Filename of program to execute (path is optional)
+ * \param argv
+ * \retval 0 on success, -1 on failure
+ * \warning Do not call bbs_execvpe from a node thread with NULL for node. Use bbs_execvpe_headless.
+ */
+int bbs_execvpe_isolated(struct bbs_node *node, const char *filename, char *const argv[]);
+
 /*! \brief Same as bbs_execvpe, but node will not be used for I/O. */
 int bbs_execvpe_headless(struct bbs_node *node, const char *filename, char *const argv[]);
 

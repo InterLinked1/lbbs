@@ -28,6 +28,8 @@
 #include <sys/wait.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
+#include <sched.h> /* use clone */
+#include <syscall.h>
 
 #include "include/node.h"
 #include "include/system.h"
@@ -192,11 +194,16 @@ static int exec_pre(int fdin, int fdout)
 }
 
 /* Forward declaration */
-static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[]);
+static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[], int isolated);
 
 int bbs_execvpe(struct bbs_node *node, const char *filename, char *const argv[])
 {
-	return __bbs_execvpe_fd(node, 1, -1, -1, filename, argv);
+	return __bbs_execvpe_fd(node, 1, -1, -1, filename, argv, 0);
+}
+
+int bbs_execvpe_isolated(struct bbs_node *node, const char *filename, char *const argv[])
+{
+	return __bbs_execvpe_fd(node, 1, -1, -1, filename, argv, 1);
 }
 
 int bbs_execvpe_headless(struct bbs_node *node, const char *filename, char *const argv[])
@@ -204,12 +211,12 @@ int bbs_execvpe_headless(struct bbs_node *node, const char *filename, char *cons
 	if (!node) {
 		bbs_warning("It is not necessary to use %s if node is NULL\n", __FUNCTION__);
 	}
-	return __bbs_execvpe_fd(node, 0, -1, -1, filename, argv);
+	return __bbs_execvpe_fd(node, 0, -1, -1, filename, argv, 0);
 }
 
 int bbs_execvpe_fd(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[])
 {
-	return __bbs_execvpe_fd(node, 1, fdin, fdout, filename, argv);
+	return __bbs_execvpe_fd(node, 1, fdin, fdout, filename, argv, 0);
 }
 
 int bbs_execvpe_fd_headless(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[])
@@ -217,10 +224,10 @@ int bbs_execvpe_fd_headless(struct bbs_node *node, int fdin, int fdout, const ch
 	if (!node) {
 		bbs_warning("It is not necessary to use %s if node is NULL\n", __FUNCTION__);
 	}
-	return __bbs_execvpe_fd(node, 0, fdin, fdout, filename, argv);
+	return __bbs_execvpe_fd(node, 0, fdin, fdout, filename, argv, 0);
 }
 
-static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[])
+static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[], int isolated)
 {
 	pid_t pid;
 
@@ -236,7 +243,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		snprintf(fullpath, sizeof(fullpath), "PATH=%s", parentpath);
 	}
 
-	bbs_debug(6, "node: %p, usenode: %d, fdin: %d, fdout: %d, filename: %s\n", node, usenode, fdin, fdout, filename);
+	bbs_debug(6, "node: %p, usenode: %d, fdin: %d, fdout: %d, filename: %s, isolated: %s\n", node, usenode, fdin, fdout, filename, isolated ? "yes" : "no");
 	if (node && usenode && (fdin != -1 || fdout != -1)) {
 		bbs_warning("fdin/fdout should not be provided if usenode == 1 (node is preferred, fdin/fdout will be ignored)\n");
 	}
@@ -266,35 +273,59 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		}
 	}
 
-	pid = fork();
+	/* If we have flags, we need to use clone(2). Otherwise, just use fork(2) */
+	if (isolated) {
+		int flags = 0;
+		/* We need to do more than fork() allows */
+		flags |= SIGCHLD; /* fork() uses this flag implicitly. */
+#if 0
+		flags |= CLONE_CLEAR_SIGHAND; /* Don't inherit any signals from parent. */
+#else
+		flags &= ~CLONE_SIGHAND;
+#endif
+		/* We use the clone syscall directly, rather than the clone(2) glibc function.
+		 * The reason for this is clone launches a function for the child,
+		 * whereas the raw syscall is similar to fork and continues in the child as well.
+		 * This allows us to use the same logic for fork and clone.
+		 * Using the syscall is not as portable as using the function,
+		 * but our usage here is portable to x86-64, which is pretty much everything anyways.
+		 */
+		pid = syscall(SYS_clone, flags, NULL, NULL, NULL, 0);
+	} else {
+		pid = fork(); /* fork has an implicit SIGCHLD */
+	}
+
 	if (pid == -1) {
-		bbs_error("fork failed (%s): %s\n", filename, strerror(errno));
+		bbs_error("%s failed (%s): %s\n", isolated ? "clone" : "fork", filename, strerror(errno));
 		return -1;
 	} else if (pid == 0) { /* Child */
-		/* Immediately install a dummy signal handler for SIGWINCH.
-		 * Until we call exec, the child retains the parent's signal handlers.
-		 * However, if we have a node, we immediately call bbs_node_update_winsize
-		 * to force send a SIGWINCH to the child immediately, to give it its current dimensions.
-		 * If we don't block SIGWINCH in the child, then it'll run __sigwinch_handler
-		 * from bbs.c, which will print out a log message if parent has option_nofork (bad!)
-		 * This still reeks of a race condition, but in practice we're able to block the signal
-		 * here ASAP before the parent does the SIGWINCH (but if we didn't do this, we would
-		 * send the SIGWINCH before the child executes exec).
-		 * It's actually a GOOD thing the SIGWINCH is sent prior to exec, this way the child
-		 * process has the dimensions available immediately when the program starts. So this
-		 * is probably the best thing to do here.
-		 */
+		if (!isolated) {
+			/* Immediately install a dummy signal handler for SIGWINCH.
+			 * Until we call exec, the child retains the parent's signal handlers.
+			 * However, if we have a node, we immediately call bbs_node_update_winsize
+			 * to force send a SIGWINCH to the child immediately, to give it its current dimensions.
+			 * If we don't block SIGWINCH in the child, then it'll run __sigwinch_handler
+			 * from bbs.c, which will print out a log message if parent has option_nofork (bad!)
+			 * This still reeks of a race condition, but in practice we're able to block the signal
+			 * here ASAP before the parent does the SIGWINCH (but if we didn't do this, we would
+			 * send the SIGWINCH before the child executes exec).
+			 * It's actually a GOOD thing the SIGWINCH is sent prior to exec, this way the child
+			 * process has the dimensions available immediately when the program starts. So this
+			 * is probably the best thing to do here.
+			 */
 
-		/* SIG_IGN will survive exec, so we must avoid that.
-		 * We could install an empty handler since we want this to go away with exec(), or just use SIG_DFL to reset to default.
-		 * Normally we should use sigaction over signal, and probably here too, but this signal handler
-		 * will only be relevant from the time between fork() and exec(), and my intuition suggests that
-		 * signal will execute faster than sigaction. I have not actually verified this though. */
-		signal(SIGWINCH, SIG_DFL);
-		/* Reset other signal handlers */
-		signal(SIGTERM, SIG_DFL);
-		signal(SIGINT, SIG_DFL);
-		signal(SIGPIPE, SIG_DFL);
+			/* SIG_IGN will survive exec, so we must avoid that.
+			 * We could install an empty handler since we want this to go away with exec(), or just use SIG_DFL to reset to default.
+			 * Normally we should use sigaction over signal, and probably here too, but this signal handler
+			 * will only be relevant from the time between fork() and exec(), and my intuition suggests that
+			 * signal will execute faster than sigaction. I have not actually verified this though. */
+			/* XXX Maybe we should just always use clone() and always pass CLONE_CLEAR_SIGHAND */
+			signal(SIGWINCH, SIG_DFL);
+			/* Reset other signal handlers */
+			signal(SIGTERM, SIG_DFL);
+			signal(SIGINT, SIG_DFL);
+			signal(SIGPIPE, SIG_DFL);
+		} /* else, if CLONE_CLEAR_SIGHAND was provided to clone, then the signal handlers didn't carry over, we're good. */
 
 		if (fdout == -1) {
 			close(pfd[0]); /* Close read end of pipe */
