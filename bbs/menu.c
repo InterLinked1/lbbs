@@ -240,6 +240,13 @@ static int print_header(struct bbs_node *node, const char *s, const char *color,
 	return rows_used;
 }
 
+static int print_menu_title(struct bbs_node *node, struct bbs_menu *menu)
+{
+	char sub_name[256];
+	print_header(node, menu->title, COLOR(COLOR_PRIMARY), sub_name, sizeof(sub_name));
+	return 0;
+}
+
 /*! \brief Build and display menu to a node */
 /*! \note Must be called with RDLOCK on menu list */
 static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf, size_t len)
@@ -262,7 +269,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 	if (!strlen_zero(menu->title)) { /* Menu has a title, print it */
 		rows_used += print_header(node, menu->title, COLOR(COLOR_PRIMARY), sub_name, sizeof(sub_name));
 	}
-	if (!strlen_zero(menu->subtitle)) { /* Menu has a subtitle, print it */
+	if (!NODE_IS_TDD(node) && !strlen_zero(menu->subtitle)) { /* Menu has a subtitle, print it, unless it's a TDD, in which case skip it */
 		rows_used += print_header(node, menu->subtitle, COLOR(COLOR_SECONDARY), sub_name, sizeof(sub_name));
 	}
 	if (!strlen_zero(menu->title) || !strlen_zero(menu->subtitle)) {
@@ -271,7 +278,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 		rows_used++;
 	}
 
-	/* First, find the length of the longest option name */
+	/* First, find the length of the longest option name. Even for TDDs, we still need the count of options from here. */
 	RWLIST_TRAVERSE(&menu->menuitems, menuitem, entry) {
 		int slen;
 		if (MENUITEM_NOT_APPLICABLE(node, menuitem)) {
@@ -335,59 +342,71 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 		bbs_warning("Not all options for menu '%s' (%d total options) will not fit for node %d (%dx%d)\n", menu->name, i, node->id, node->cols, node->rows);
 	}
 
-	RWLIST_TRAVERSE(&menu->menuitems, menuitem, entry) {
-		int real_len;
-		int byte_len;
-		int chunk_len;
-		if (MENUITEM_NOT_APPLICABLE(node, menuitem)) {
-			bbs_debug(6, "Skipping item '%c' as not applicable to node %d\n", menuitem->opt, node->id);
-			continue;
-		}
-		/* Manually substitute any variables, since we don't substitute until the menu handler is called */
-		bbs_substitute_vars(node, menuitem->name, sub_name, sizeof(sub_name));
+	if (!NODE_IS_TDD(node)) {
+		RWLIST_TRAVERSE(&menu->menuitems, menuitem, entry) {
+			int real_len;
+			int byte_len;
+			int chunk_len;
+			if (MENUITEM_NOT_APPLICABLE(node, menuitem)) {
+				bbs_debug(6, "Skipping item '%c' as not applicable to node %d\n", menuitem->opt, node->id);
+				continue;
+			}
+			/* Manually substitute any variables, since we don't substitute until the menu handler is called */
+			bbs_substitute_vars(node, menuitem->name, sub_name, sizeof(sub_name));
 
-		/* Resist the urge to directly snprintf the whole chunk into a buffer and then format that using %.*s.
-		 * It won't work because the string includes non-printable characters, and *.*s doesn't care about printable length, it cares about bytes.
-		 * For our purposes, the color formatting doesn't count towards the length, so we ignore those.
-		 * We'll manually compute the printable length.
-		 */
-		real_len = (outcol > 1 ? 2 : 0) + 1 + 2 + bbs_printable_strlen(sub_name); /* Use bbs_printable_strlen, since the option name could contain formatting, e.g. escape sequences */
-		byte_len = snprintf(sub_full, sizeof(sub_full), "%s%s%c  %s%s", outcol > 1 ? "  " : "", COLOR(COLOR_PRIMARY), menuitem->opt, COLOR(COLOR_SECONDARY), sub_name);
-		/* real_len is going to be smaller than byte_len because of the colors not being counted.
-		 * In order to format with the desired printable length, we need to add the difference between these to the target.
-		 * i.e. desired = longest + (byte_len - real_len) */
-		if (real_len > longest) {
-			/* Something is wrong with our calculations. This shouldn't happen. The item name is going to get truncated, which is really bad. */
-			bbs_error("Needed %d characters to display option '%c', but we only have %d?\n", real_len, menuitem->opt, longest);
-		}
-		chunk_len = longest + (byte_len - real_len); /* In theory, byte_len - real_len should be constant for ALL menu items */
-		bbs_writef(node, "%-*s", chunk_len, sub_full);
+			/* Resist the urge to directly snprintf the whole chunk into a buffer and then format that using %.*s.
+			 * It won't work because the string includes non-printable characters, and *.*s doesn't care about printable length, it cares about bytes.
+			 * For our purposes, the color formatting doesn't count towards the length, so we ignore those.
+			 * We'll manually compute the printable length.
+			 */
+			real_len = (outcol > 1 ? 2 : 0) + 1 + 2 + bbs_printable_strlen(sub_name); /* Use bbs_printable_strlen, since the option name could contain formatting, e.g. escape sequences */
+			byte_len = snprintf(sub_full, sizeof(sub_full), "%s%s%c  %s%s", outcol > 1 ? "  " : "", COLOR(COLOR_PRIMARY), menuitem->opt, COLOR(COLOR_SECONDARY), sub_name);
+			/* real_len is going to be smaller than byte_len because of the colors not being counted.
+			 * In order to format with the desired printable length, we need to add the difference between these to the target.
+			 * i.e. desired = longest + (byte_len - real_len) */
+			if (real_len > longest) {
+				/* Something is wrong with our calculations. This shouldn't happen. The item name is going to get truncated, which is really bad. */
+				bbs_error("Needed %d characters to display option '%c', but we only have %d?\n", real_len, menuitem->opt, longest);
+			}
+			chunk_len = longest + (byte_len - real_len); /* In theory, byte_len - real_len should be constant for ALL menu items */
+			bbs_writef(node, "%-*s", chunk_len, sub_full);
 #ifdef DEBUG_MENU_DRAW
-		bbs_debug(7, "Displaying option '%c' in row group %d, col group %d, total size %d bytes (%d cols)\n", menuitem->opt, rows_used, outcol, chunk_len, longest);
+			bbs_debug(7, "Displaying option '%c' in row group %d, col group %d, total size %d bytes (%d cols)\n", menuitem->opt, rows_used, outcol, chunk_len, longest);
 #endif
-		if (++outcol > numcols) {
-			/* End of what we can fit on this line. Move to a new line */
+			if (++outcol > numcols) {
+				/* End of what we can fit on this line. Move to a new line */
+				bbs_writef(node, "\n");
+				outcol = 1; /* Yes, this is a 1-indexed variable */
+				rows_used++;
+			}
+		}
+		if (outcol > 1) {
+			/* We're in the middle of the screen. Final newline so the cursor is now at the beginning of a line */
 			bbs_writef(node, "\n");
-			outcol = 1; /* Yes, this is a 1-indexed variable */
+			outcol = 1;
 			rows_used++;
 		}
-		
-	}
-
-	if (outcol > 1) {
-		/* We're in the middle of the screen. Final newline so the cursor is now at the beginning of a line */
-		bbs_writef(node, "\n");
-		outcol = 1;
-		rows_used++;
-	}
-
-	bbs_reset_color(node); /* We didn't reset the color after each item, for efficiency. Now that we're all done, reset it. */
-
-	bbs_debug(6, "Built menu with %d option%s in %d row group%s, %d col group%s for %dx%d terminal\n",
-		i, ESS(i), rows_used, ESS(rows_used), numcols, ESS(numcols), node->cols, node->rows);
-	if (i > numopts) {
-		/* It's not necessarily going to be equal, if some options weren't applicable, but it should never be greater than */
-		bbs_error("Built menu with %d option%s, but menu '%s' contains %d?\n", i, ESS(i), menu->name, numopts);
+		bbs_reset_color(node); /* We didn't reset the color after each item, for efficiency. Now that we're all done, reset it. */
+		bbs_debug(6, "Built full menu with %d option%s in %d row group%s, %d col group%s for %dx%d terminal\n",
+			i, ESS(i), rows_used, ESS(rows_used), numcols, ESS(numcols), node->cols, node->rows);
+		if (i > numopts) {
+			/* It's not necessarily going to be equal, if some options weren't applicable, but it should never be greater than */
+			bbs_error("Built full menu with %d option%s, but menu '%s' contains %d?\n", i, ESS(i), menu->name, numopts);
+		}
+	} else {
+		/* TDDs only have one row, and we just want to list the options as concisely as possible, with no formatting.
+		 * If we do it the normal way, then there'll be a bunch of additional whitespace from aligning everything in column groups. */
+		RWLIST_TRAVERSE(&menu->menuitems, menuitem, entry) {
+			if (MENUITEM_NOT_APPLICABLE(node, menuitem)) {
+				bbs_debug(6, "Skipping item '%c' as not applicable to node %d\n", menuitem->opt, node->id);
+				continue;
+			}
+			/* Manually substitute any variables, since we don't substitute until the menu handler is called */
+			bbs_substitute_vars(node, menuitem->name, sub_name, sizeof(sub_name));
+			snprintf(sub_full, sizeof(sub_full), "%s%s%c  %s%s", outcol > 1 ? "  " : "", COLOR(COLOR_PRIMARY), menuitem->opt, COLOR(COLOR_SECONDARY), sub_name);
+			bbs_writef(node, " %s ", sub_full);
+		}
+		bbs_debug(6, "Built compact menu with %d option%s for %dx%d terminal\n", i, ESS(i), node->cols, node->rows);
 	}
 
 	return 0;
@@ -439,6 +458,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 	char options[64]; /* No menu will ever have more than this many options... */
 	char menusequence[BBS_MAX_MENUSTACK + 1]; /* No point in reading more options than we can recuse */
 	int neederror = 0;
+	int forcedrawmenu = 0;
 
 	/* Ensure we're within the stack limit */
 	if (++stack > BBS_MAX_MENUSTACK) {
@@ -476,13 +496,29 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 			bbs_verb(5, "Node %d executing menu(%d) '%s'\n", node->id, stack, node->menu);
 			if (!opt) {
 				/* Draw the menu */
-				display_menu(node, menu, options, sizeof(options));
-				if (neederror) {
-					/* We chose an invalid option before the menu was displayed (for skip menu nav) */
-					neederror = 0;
-					bbs_writef(node, "\r%sInvalid option!%s", COLOR(COLOR_RED), COLOR_RESET);
+				if (!NODE_IS_TDD(node) || forcedrawmenu) {
+					forcedrawmenu = 0;
+					display_menu(node, menu, options, sizeof(options));
+					if (neederror) {
+						/* We chose an invalid option before the menu was displayed (for skip menu nav) */
+						neederror = 0;
+						bbs_writef(node, "\r%sInvalid option!%s", COLOR(COLOR_RED), COLOR_RESET);
+					}
+				} else {
+					/* For TDDs, don't draw the menu initially,
+					 * as it's much faster if the user already knows
+					 * the desired option to not have to wait for
+					 * a printout of all the options.
+					 * Simply inform the user how to get the option list.
+					 */
+					bbs_clear_screen(node); /* Won't have any effect for real TDDs, call this just in case */
+					/* Don't draw the whole menu, just print the title initially so we know which menu we're on. */
+					print_menu_title(node, menu); /* Make a function call, because we don't want to allocate a buffer on THIS stack. */
+					bbs_writef(node, "Opt (SPACE for list): \n");
+					build_options(node, menu, options, sizeof(options)); /* Since we didn't display the menu, get the option list */
 				}
 			}
+			/* Wait for user to choose an option from the menu */
 			bbs_unbuffer(node); /* Unbuffer input and disable echo, so we can read a single-char selection */
 			opt = bbs_tread(node, MIN_MS(3));
 			if (opt <= 0) {
@@ -527,6 +563,13 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 			if (!case_sensitive) {
 				opt = toupper(opt);
 			}
+		} else if (opt == ' ') {
+			/* Force redraw the menu (or maybe, for TDDs, draw it for the first time) */
+			optreq = NULL;
+			opt = 0;
+			forcedrawmenu = 1;
+			bbs_debug(3, "Requesting force menu draw/redraw\n");
+			continue;
 		} else if (!strchr(options, opt)) {
 			bbs_debug(3, "Node %d chose option '%c', but this is not a valid option for menu '%s'\n", node->id, opt, menuname);
 			/* Leave opt != 0 so that we don't display the menu again */

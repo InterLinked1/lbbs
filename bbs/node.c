@@ -1045,7 +1045,9 @@ static int bbs_node_splash(struct bbs_node *node)
 	}
 
 	NEG_RETURN(bbs_writef(node, "\n")); /* Separation before next section */
-	NEG_RETURN(bbs_node_statuses(node));
+	if (!NODE_IS_TDD(node)) {
+		NEG_RETURN(bbs_node_statuses(node));
+	}
 	NEG_RETURN(bbs_wait_key(node, MIN_MS(2)));
 	return 0;
 }

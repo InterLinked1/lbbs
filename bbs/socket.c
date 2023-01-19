@@ -546,6 +546,10 @@ int bbs_tpoll(struct bbs_node *node, int ms)
 					bbs_clear_line(node); /* Erase prompt */
 					NEG_RETURN(bbs_writef(node, "\r"));
 					bbs_buffer_input(node, hadecho); /* Canonical mode, same echo */
+				} else {
+					/* Prevent "Are you still there?" from lingering on menus after confirmation */
+					bbs_clear_line(node); /* Erase prompt */
+					NEG_RETURN(bbs_writef(node, "\r"));
 				}
 				continue; /* Start the poll over again, now that the user confirmed s/he's still there */
 			} else if (!res && warned && wasbuffered) {
