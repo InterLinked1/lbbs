@@ -512,7 +512,7 @@ static int user_register(struct bbs_node *node)
 
 	/* Registration notice */
 	NEG_RETURN(bbs_clear_screen(node));
-	NONPOS_RETURN(bbs_writef(node, "%s%s%s\n", COLOR(COLOR_GREEN), "New User Registration", COLOR(COLOR_WHITE))); /* Use white for the questions to stand out */
+	NONPOS_RETURN(bbs_writef(node, "%s%s%s\n", COLOR(COLOR_PRIMARY), "New User Registration", COLOR(COLOR_WHITE))); /* Use white for the questions to stand out */
 
 	for (; tries > 0; tries -= 2) {
 		/* No newlines necessary inbetween reads, since echo is on
@@ -589,7 +589,7 @@ static int user_register(struct bbs_node *node)
 	}
 #undef REG_FMT
 
-	NEG_RETURN(bbs_writef(node, "\n%sProcessing...\n", COLOR(COLOR_GREEN)));
+	NEG_RETURN(bbs_writef(node, "\n%sProcessing...\n", COLOR(COLOR_SUCCESS)));
 	bbs_auth("New registration attempt for user %s from IP %s\n", username, node->ip);
 
 	/* How heard is logged but not passed to make_user */
@@ -600,7 +600,7 @@ static int user_register(struct bbs_node *node)
 	res = make_user(username, password, fullname, email, phone, address, city, state, zip, dob, gender);
 
 	if (res) {
-		NEG_RETURN(bbs_writef(node, "%s%s%s\n", COLOR(COLOR_RED), "Your registration was rejected.", COLOR_RESET));
+		NEG_RETURN(bbs_writef(node, "%s%s%s\n", COLOR(COLOR_FAILURE), "Your registration was rejected.", COLOR_RESET));
 		NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
 		return 1;
 	}
@@ -608,13 +608,13 @@ static int user_register(struct bbs_node *node)
 	res = bbs_authenticate(node, username, password);
 	if (res) {
 		/* Something went wrong */
-		NEG_RETURN(bbs_writef(node, "%s%s%s\n", COLOR(COLOR_RED), "An error occured in processing your registration.\n", COLOR_RESET));
+		NEG_RETURN(bbs_writef(node, "%s%s%s\n", COLOR(COLOR_FAILURE), "An error occured in processing your registration.\n", COLOR_RESET));
 		NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
 		return 1;
 	}
 
 	/* If successful, no need to log, auth.c will do that */
-	NEG_RETURN(bbs_writef(node, "\n%sRegistration successful. Welcome aboard!%s\n", COLOR(COLOR_GREEN), COLOR_RESET));
+	NEG_RETURN(bbs_writef(node, "\n%sRegistration successful. Welcome aboard!%s\n", COLOR(COLOR_SUCCESS), COLOR_RESET));
 	/* Wait for user to confirm, otherwise the message will disappear since the screen will clear after we return */
 	NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
 

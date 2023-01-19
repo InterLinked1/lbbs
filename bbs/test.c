@@ -73,7 +73,7 @@ int bbs_run_tests(int fd)
 		}
 		if (fd != -1) {
 			bbs_dprintf(fd, "%s%-7s%s %-32s %1s%4ums\n",
-				test->result || !test->executed ? COLOR(COLOR_RED) : COLOR(COLOR_GREEN),
+				test->result || !test->executed ? COLOR(COLOR_FAILURE) : COLOR(COLOR_SUCCESS),
 				test->executed ? test->result ? "FAIL" : "PASS" : "NOT RUN",
 				COLOR_RESET,
 				test->name,
@@ -86,7 +86,7 @@ int bbs_run_tests(int fd)
 		bbs_dprintf(fd, " == Tests Complete == \n");
 		RWLIST_TRAVERSE(&tests, test, entry) {
 			bbs_dprintf(fd, "%s%-7s%s %-32s %1s%4ums\n",
-				test->result || !test->executed ? COLOR(COLOR_RED) : COLOR(COLOR_GREEN),
+				test->result || !test->executed ? COLOR(COLOR_FAILURE) : COLOR(COLOR_SUCCESS),
 				test->executed ? test->result ? "FAIL" : "PASS" : "NOT RUN",
 				COLOR_RESET,
 				test->name,
@@ -94,7 +94,7 @@ int bbs_run_tests(int fd)
 				test->time ? test->time : 1);
 		}
 		/* Stats */
-		bbs_dprintf(fd, "%s%d%%%s tests passed\n", passed == total ? COLOR(COLOR_GREEN) : COLOR(COLOR_RED), (int) (100.0 * passed / total), COLOR_RESET);
+		bbs_dprintf(fd, "%s%d%%%s tests passed\n", passed == total ? COLOR(COLOR_SUCCESS) : COLOR(COLOR_FAILURE), (int) (100.0 * passed / total), COLOR_RESET);
 	}
 	RWLIST_UNLOCK(&tests);
 

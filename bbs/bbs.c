@@ -795,7 +795,7 @@ int main(int argc, char *argv[])
 	CHECK_INIT(load_modules());
 
 	fully_started = 1;
-	bbs_verb(1, "%s\n", COLOR(COLOR_GREEN) "BBS is fully started" COLOR_RESET);
+	bbs_verb(1, "%s\n", COLOR(COLOR_SUCCESS) "BBS is fully started" COLOR_RESET);
 
 	/* Run any callbacks registered during startup, now that we're fully started. */
 	bbs_run_startup_callbacks();

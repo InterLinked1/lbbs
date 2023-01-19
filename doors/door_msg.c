@@ -45,7 +45,7 @@ static int msg_sysop_exec(struct bbs_node *node, const char *args)
 	}
 
 	if (strlen(buf) < 10 || !bbs_str_isprint(buf)) {
-		bbs_writef(node, "%sMessage rejected, aborting%s\n", COLOR(COLOR_RED), COLOR_RESET);
+		bbs_writef(node, "%sMessage rejected, aborting%s\n", COLOR(COLOR_FAILURE), COLOR_RESET);
 		NEG_RETURN(bbs_wait_key(node, MIN_MS(2)));
 		return 0;
 	}
@@ -56,11 +56,11 @@ static int msg_sysop_exec(struct bbs_node *node, const char *args)
 		res = bbs_sysop_email(node->user, "New Sysop Inquiry", "User %s (#%d) has just messaged you:\r\n\r\n%s\r\n", bbs_username(node->user), node->user->id, buf);
 	}
 	if (res) {
-		bbs_writef(node, "%sSystem error, message not sent.%s\n", COLOR(COLOR_RED), COLOR_RESET);
+		bbs_writef(node, "%sSystem error, message not sent.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET);
 		NEG_RETURN(bbs_wait_key(node, MIN_MS(2)));
 		return 0;
 	}
-	bbs_writef(node, "%sYour message has been sent!%s\n", COLOR(COLOR_GREEN), COLOR_RESET);
+	bbs_writef(node, "%sYour message has been sent!%s\n", COLOR(COLOR_SUCCESS), COLOR_RESET);
 	NEG_RETURN(bbs_wait_key(node, MIN_MS(2)));
 	return 0;
 }

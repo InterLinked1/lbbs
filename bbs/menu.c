@@ -260,10 +260,10 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 	bbs_debug(2, "Menu has %d total option%s\n", numopts, ESS(numopts));
 
 	if (!strlen_zero(menu->title)) { /* Menu has a title, print it */
-		rows_used += print_header(node, menu->title, COLOR(COLOR_GREEN), sub_name, sizeof(sub_name));
+		rows_used += print_header(node, menu->title, COLOR(COLOR_PRIMARY), sub_name, sizeof(sub_name));
 	}
 	if (!strlen_zero(menu->subtitle)) { /* Menu has a subtitle, print it */
-		rows_used += print_header(node, menu->subtitle, COLOR(COLOR_BLUE), sub_name, sizeof(sub_name));
+		rows_used += print_header(node, menu->subtitle, COLOR(COLOR_SECONDARY), sub_name, sizeof(sub_name));
 	}
 	if (!strlen_zero(menu->title) || !strlen_zero(menu->subtitle)) {
 		/* If either title or subtitle, add additional empty line for visual separation from the options */
@@ -352,7 +352,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 		 * We'll manually compute the printable length.
 		 */
 		real_len = (outcol > 1 ? 2 : 0) + 1 + 2 + bbs_printable_strlen(sub_name); /* Use bbs_printable_strlen, since the option name could contain formatting, e.g. escape sequences */
-		byte_len = snprintf(sub_full, sizeof(sub_full), "%s%s%c  %s%s", outcol > 1 ? "  " : "", COLOR(COLOR_GREEN), menuitem->opt, COLOR(COLOR_BLUE), sub_name);
+		byte_len = snprintf(sub_full, sizeof(sub_full), "%s%s%c  %s%s", outcol > 1 ? "  " : "", COLOR(COLOR_PRIMARY), menuitem->opt, COLOR(COLOR_SECONDARY), sub_name);
 		/* real_len is going to be smaller than byte_len because of the colors not being counted.
 		 * In order to format with the desired printable length, we need to add the difference between these to the target.
 		 * i.e. desired = longest + (byte_len - real_len) */

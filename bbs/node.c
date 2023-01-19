@@ -814,14 +814,14 @@ static int authenticate(struct bbs_node *node)
 	for (attempts = 0; attempts < MAX_AUTH_ATTEMPTS; attempts++) {
 		NEG_RETURN(bbs_buffer(node));
 		if (!NODE_IS_TDD(node)) {
-			NEG_RETURN(bbs_writef(node, "%s%s %s%s %s%s %s%s", COLOR(COLOR_GREEN), "Enter", COLOR(COLOR_WHITE), "Username", COLOR(COLOR_GREEN), "or", COLOR(COLOR_WHITE), "New"));
+			NEG_RETURN(bbs_writef(node, "%s%s %s%s %s%s %s%s", COLOR(COLOR_PRIMARY), "Enter", COLOR(COLOR_WHITE), "Username", COLOR(COLOR_PRIMARY), "or", COLOR(COLOR_WHITE), "New"));
 			if (allow_guest) {
-				NEG_RETURN(bbs_writef(node, " %s%s %s%s\n", COLOR(COLOR_GREEN), "or", COLOR(COLOR_WHITE), "Guest"));
+				NEG_RETURN(bbs_writef(node, " %s%s %s%s\n", COLOR(COLOR_PRIMARY), "or", COLOR(COLOR_WHITE), "Guest"));
 			}
 			NEG_RETURN(bbs_writef(node, "\n"));
 		}
 
-		NEG_RETURN(bbs_writef(node, "%s%-10s%s", COLOR(COLOR_GREEN), "Login: ", COLOR(COLOR_WHITE)));
+		NEG_RETURN(bbs_writef(node, "%s%-10s%s", COLOR(COLOR_PRIMARY), "Login: ", COLOR(COLOR_WHITE)));
 		NONPOS_RETURN(bbs_readline(node, MIN_MS(1), username, sizeof(username)));
 		if (!strcasecmp(username, "Quit") || !strcasecmp(username, "Exit")) {
 			bbs_debug(3, "User entered '%s', exiting\n", username);
@@ -838,7 +838,7 @@ static int authenticate(struct bbs_node *node)
 			if (res == 0) {
 				break;
 			} else if (res > 0) {
-				bbs_writef(node, "%sUser registration aborted by system.\n", COLOR(COLOR_RED));
+				bbs_writef(node, "%sUser registration aborted by system.\n", COLOR(COLOR_FAILURE));
 				/* Don't even bother resetting the color, we're hanging up now */
 			}
 			return -1;
@@ -874,7 +874,7 @@ static int authenticate(struct bbs_node *node)
 			int res;
 			/* Don't echo the password, duh... */
 			NEG_RETURN(bbs_echo_off(node));
-			NEG_RETURN(bbs_writef(node, "%s%-10s%s", COLOR(COLOR_GREEN), "Password: ", COLOR(COLOR_WHITE)));
+			NEG_RETURN(bbs_writef(node, "%s%-10s%s", COLOR(COLOR_PRIMARY), "Password: ", COLOR(COLOR_WHITE)));
 			NONPOS_RETURN(bbs_readline(node, 20000, password, sizeof(password)));
 			res = bbs_authenticate(node, username, password);
 			memset(password, 0, sizeof(password)); /* Overwrite (zero out) the plain text password before we return */
@@ -916,7 +916,7 @@ static int node_intro(struct bbs_node *node)
 		NEG_RETURN(bbs_clear_screen(node));
 		NEG_RETURN(bbs_writef(node, "%s %d.%d.%d  %s\n\n", BBS_TAGLINE, BBS_MAJOR_VERSION, BBS_MINOR_VERSION, BBS_PATCH_VERSION, BBS_COPYRIGHT));
 		usleep(150000);
-		NEG_RETURN(bbs_writef(node, COLOR(COLOR_GREEN)));
+		NEG_RETURN(bbs_writef(node, COLOR(COLOR_PRIMARY)));
 	} else {
 		/* Print some spaces as TDD carrier starts up, so we don't clip the beginning of output,
 		 * and because the TDD could be in FIGS mode and this gives it a chance to get into LTRS mode. */
@@ -936,18 +936,18 @@ static int node_intro(struct bbs_node *node)
 
 	if (!NODE_IS_TDD(node)) {
 		bbs_time_friendly_now(timebuf, sizeof(timebuf));
-		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "CLIENT", COLOR(COLOR_BLUE), "CONN", COLOR(COLOR_GREEN), node->protname));
-		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_BLUE), "ADDR", COLOR(COLOR_GREEN), node->ip));
-		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%dx%d\n", "", "", COLOR(COLOR_BLUE), "TERM", COLOR(COLOR_GREEN), node->cols, node->rows));
-		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "SERVER", COLOR(COLOR_BLUE), "NAME", COLOR(COLOR_WHITE), bbs_name));
+		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "CLIENT", COLOR(COLOR_SECONDARY), "CONN", COLOR(COLOR_PRIMARY), node->protname));
+		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "ADDR", COLOR(COLOR_PRIMARY), node->ip));
+		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%dx%d\n", "", "", COLOR(COLOR_SECONDARY), "TERM", COLOR(COLOR_PRIMARY), node->cols, node->rows));
+		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "SERVER", COLOR(COLOR_SECONDARY), "NAME", COLOR(COLOR_WHITE), bbs_name));
 		if (!s_strlen_zero(bbs_hostname_buf)) {
-			NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_BLUE), "ADDR", COLOR(COLOR_GREEN), bbs_hostname_buf));
+			NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "ADDR", COLOR(COLOR_PRIMARY), bbs_hostname_buf));
 		}
-		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%d %s(of %s%d%s) - %s%s\n", "", "", COLOR(COLOR_BLUE), "NODE", COLOR(COLOR_GREEN),
-			node->id, COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), bbs_maxnodes(), COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), bbs_get_osver()));
-		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_BLUE), "TIME", COLOR(COLOR_GREEN), timebuf));
+		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%d %s(of %s%d%s) - %s%s\n", "", "", COLOR(COLOR_SECONDARY), "NODE", COLOR(COLOR_PRIMARY),
+			node->id, COLOR(COLOR_SECONDARY), COLOR(COLOR_PRIMARY), bbs_maxnodes(), COLOR(COLOR_SECONDARY), COLOR(COLOR_PRIMARY), bbs_get_osver()));
+		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "TIME", COLOR(COLOR_PRIMARY), timebuf));
 		if (!s_strlen_zero(bbs_hostname_buf)) {
-			NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_BLUE), "ADMN", COLOR(COLOR_GREEN), bbs_sysop));
+			NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "ADMN", COLOR(COLOR_PRIMARY), bbs_sysop));
 		}
 	} else {
 		bbs_time_friendly_short_now(timebuf, sizeof(timebuf)); /* Use condensed date for TDDs */
@@ -995,7 +995,7 @@ static int bbs_node_statuses(struct bbs_node *node)
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
 		bbs_writef(node, "%s%3d  %s%s%s at %s menu via %s\n",
-			COLOR(COLOR_WHITE), n->id, COLOR(COLOR_GREEN), bbs_username(n->user), COLOR(COLOR_BLUE), S_IF(n->menu), n->protname);
+			COLOR(COLOR_WHITE), n->id, COLOR(COLOR_PRIMARY), bbs_username(n->user), COLOR(COLOR_SECONDARY), S_IF(n->menu), n->protname);
 	}
 	RWLIST_UNLOCK(&nodes);
 	return 0;
@@ -1007,14 +1007,14 @@ static int bbs_node_splash(struct bbs_node *node)
 	NEG_RETURN(bbs_clear_screen(node));
 
 #if 0
-	NEG_RETURN(bbs_writef(node, "%sLast few callers:\n\n", COLOR(COLOR_GREEN)));
+	NEG_RETURN(bbs_writef(node, "%sLast few callers:\n\n", COLOR(COLOR_PRIMARY)));
 	/*! \todo Finish this: need to be able to retrieve past authentication info, e.g. from DB */
 #endif
 
 	/* System stats */
 	if (!NODE_IS_TDD(node)) {
-		NEG_RETURN(bbs_writef(node, "%s%-20s: %s%s\n", COLOR(COLOR_BLUE), "System", COLOR(COLOR_GREEN), bbs_name));
-		NEG_RETURN(bbs_writef(node, "%s%6s%s %4u%9s%s: %s%s\n", COLOR(COLOR_BLUE), "User #", COLOR(COLOR_GREEN), node->user->id, "", COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), bbs_username(node->user)));
+		NEG_RETURN(bbs_writef(node, "%s%-20s: %s%s\n", COLOR(COLOR_SECONDARY), "System", COLOR(COLOR_PRIMARY), bbs_name));
+		NEG_RETURN(bbs_writef(node, "%s%6s%s %4u%9s%s: %s%s\n", COLOR(COLOR_SECONDARY), "User #", COLOR(COLOR_PRIMARY), node->user->id, "", COLOR(COLOR_SECONDARY), COLOR(COLOR_PRIMARY), bbs_username(node->user)));
 	} else {
 		/* Omit the # sign since TDDs display # as $ */
 		NEG_RETURN(bbs_writef(node, "User %d - %s\n", node->user->id, bbs_username(node->user)));
@@ -1028,7 +1028,7 @@ static int bbs_node_splash(struct bbs_node *node)
 		print_time_elapsed(bbs_starttime(), now, timebuf, sizeof(timebuf)); /* Formatting for timebuf (11 chars) should be enough for 11 years uptime, I think that's good enough */
 		if (!NODE_IS_TDD(node)) {
 			print_days_elapsed(bbs_starttime(), now, daysbuf, sizeof(daysbuf));
-			NEG_RETURN(bbs_writef(node, "%s%6s%s %2s%-11s%s: %s%s\n", COLOR(COLOR_BLUE), "Uptime", COLOR(COLOR_GREEN), "", timebuf, COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), daysbuf));
+			NEG_RETURN(bbs_writef(node, "%s%6s%s %2s%-11s%s: %s%s\n", COLOR(COLOR_SECONDARY), "Uptime", COLOR(COLOR_PRIMARY), "", timebuf, COLOR(COLOR_SECONDARY), COLOR(COLOR_PRIMARY), daysbuf));
 		} else {
 			NEG_RETURN(bbs_writef(node, "Uptime %s\n", timebuf)); /* Only print the condensed uptime */
 		}
@@ -1036,12 +1036,12 @@ static int bbs_node_splash(struct bbs_node *node)
 
 #if 0
 	/*! \todo Finish these and make them work */
-	NEG_RETURN(bbs_writef(node, "%s%-20s: %s%5d %s%-9s%s%6d%s%s\n", COLOR(COLOR_BLUE), "Logons Today", COLOR(COLOR_GREEN), 1, COLOR(COLOR_BLUE), "(Max ", COLOR(COLOR_GREEN), 22, COLOR(COLOR_BLUE), ")"));
-	NEG_RETURN(bbs_writef(node, "%s%-20s: %s%5d %s%-9s%s%6d%s%s\n", COLOR(COLOR_BLUE), "Time on Today", COLOR(COLOR_GREEN), 26, COLOR(COLOR_BLUE), "(Max ", COLOR(COLOR_GREEN), 86, COLOR(COLOR_BLUE), ")"));
-	NEG_RETURN(bbs_writef(node, "%s%-20s: %s%5d %s%-9s%s%6d%s%s\n", COLOR(COLOR_BLUE), "Mail Waiting", COLOR(COLOR_GREEN), 0, COLOR(COLOR_BLUE), "(Unread ", COLOR(COLOR_GREEN), 0, COLOR(COLOR_BLUE), ")"));
+	NEG_RETURN(bbs_writef(node, "%s%-20s: %s%5d %s%-9s%s%6d%s%s\n", COLOR(COLOR_SECONDARY), "Logons Today", COLOR(COLOR_PRIMARY), 1, COLOR(COLOR_SECONDARY), "(Max ", COLOR(COLOR_PRIMARY), 22, COLOR(COLOR_SECONDARY), ")"));
+	NEG_RETURN(bbs_writef(node, "%s%-20s: %s%5d %s%-9s%s%6d%s%s\n", COLOR(COLOR_SECONDARY), "Time on Today", COLOR(COLOR_PRIMARY), 26, COLOR(COLOR_SECONDARY), "(Max ", COLOR(COLOR_PRIMARY), 86, COLOR(COLOR_SECONDARY), ")"));
+	NEG_RETURN(bbs_writef(node, "%s%-20s: %s%5d %s%-9s%s%6d%s%s\n", COLOR(COLOR_SECONDARY), "Mail Waiting", COLOR(COLOR_PRIMARY), 0, COLOR(COLOR_SECONDARY), "(Unread ", COLOR(COLOR_PRIMARY), 0, COLOR(COLOR_SECONDARY), ")"));
 #endif
 	if (!s_strlen_zero(bbs_sysop) && !NODE_IS_TDD(node)) {
-		NEG_RETURN(bbs_writef(node, "%s%-20s: %s%s\n", COLOR(COLOR_BLUE), "Sysop is", COLOR(COLOR_GREEN), bbs_sysop));
+		NEG_RETURN(bbs_writef(node, "%s%-20s: %s%s\n", COLOR(COLOR_SECONDARY), "Sysop is", COLOR(COLOR_PRIMARY), bbs_sysop));
 	}
 
 	NEG_RETURN(bbs_writef(node, "\n")); /* Separation before next section */

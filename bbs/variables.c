@@ -80,6 +80,9 @@ static int load_config(void)
 	bbs_var_set_user("COLOR_WHITE", COLOR(COLOR_WHITE));
 	bbs_var_set_user("COLOR_NONE", COLOR_RESET);
 
+	bbs_var_set_user("COLOR_PRIMARY", COLOR(COLOR_PRIMARY));
+	bbs_var_set_user("COLOR_SECONDARY", COLOR(COLOR_SECONDARY));
+
 	/* Predefine other useful formatting sequences for menus.conf */
 	bbs_var_set_user("TAB", "\t");
 	bbs_var_set_user("CRLF", "\r\n");

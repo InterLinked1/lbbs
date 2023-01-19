@@ -36,7 +36,7 @@ int bbs_line_editor(struct bbs_node *node, const char *instr, char *buf, size_t 
 	int otherdata = 0, nlflag = 0;
 
 	bbs_clear_screen(node);
-	bbs_writef(node, "%s%s LINE EDITOR - %sENTER 2x to process/abort%s\n", COLOR(COLOR_GREEN), BBS_SHORTNAME, COLOR(COLOR_BLUE), COLOR_RESET);
+	bbs_writef(node, "%s%s LINE EDITOR - %sENTER 2x to process/abort%s\n", COLOR(COLOR_PRIMARY), BBS_SHORTNAME, COLOR(COLOR_SECONDARY), COLOR_RESET);
 	if (instr) {
 		bbs_writef(node, "%s%s%s\n", COLOR(COLOR_WHITE), instr, COLOR_RESET);
 	}
