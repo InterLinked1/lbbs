@@ -54,6 +54,16 @@ LBBS is best run on a modern version of Debian Linux (Debian 10 or Debian 11). N
 
 **WARNING: Do not run the BBS as root!** Create a non-root user and configure the BBS to run as that instead. See `lbbs -?` or `/etc/lbbs/bbs.conf` to configure the run user and run group.
 
+### Sysoping
+
+Sysops can monitor and control the BBS using the sysop console provided by the `mod_sysop` module. For example, you can list information about configured BBS menus, spy on nodes, or restart the entire BBS. Most commands are available by typing `/` followed by a string, although some common commands are available by single-press hotkeys. Press `?` in the console for a list of available options and commands.
+
+If the BBS is started in the foreground, a sysop console is available on STDIN/STDOUT.
+
+Additionally, regardless of how the BBS is started, the sysop console can be accessed remotely (so called since the access originates from outside the BBS process) by running the `rsysop` program. This program is part of the external utilities and is installed to `/var/lib/lbbs/external/rsysop`.
+
+**WARNING:** Note that anyone that can access the `rsysop` program is able to perform sysop tasks on the BBS. Even if the BBS is not running as root, it should be running under an account that is secured to the sysop.
+
 ### Configuration
 
 Configuration of LBBS and modules are done entirely through INI config files. Different parts of LBBS have their own config files, as does each module that uses one.
@@ -62,13 +72,15 @@ Config files go in `/etc/lbbs` and are as follows:
 
 - `bbs.conf` - key startup settings
 
+- `door_irc.conf` - IRC clients
+
 - `mail.conf` - Email configuration
 
 - `menus.conf` - BBS menus, menu items and options. **This is the heart of LBBS configuration.**
 
-- `modules.conf` - module loading settings (to disable a module, you do it here)
-
 - `mod_auth_mysql.conf` - MySQL/MariaDB auth provider module config
+
+- `modules.conf` - module loading settings (to disable a module, you do it here)
 
 - `net_rlogin`.conf` - RLogin network comm driver module config
 
