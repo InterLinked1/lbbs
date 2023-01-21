@@ -149,6 +149,7 @@ static int sysop_command(int fdin, int fdout, const char *s)
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_node_shutdown_node(atoi(s));
 	} else if (!strcmp(s, "kickall")) {
+		my_set_stdout_logging(fdout, 1);
 		bbs_node_shutdown_all(0);
 	} else if (STARTS_WITH(s, "node ")) {
 		s += 5;
