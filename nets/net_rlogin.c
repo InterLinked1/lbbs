@@ -35,10 +35,10 @@
 #include "include/config.h"
 #include "include/net.h"
 
-static int tcp_socket = -1; /*!< TCP Socket for allowing incoming network connections */
+static int rlogin_socket = -1; /*!< TCP Socket for allowing incoming network connections */
 static pthread_t rlogin_thread;
 
-/*! \brief RLogin port is 513 */
+/*! \brief Default RLogin port is 513 */
 #define DEFAULT_RLOGIN_PORT 513
 
 static int rlogin_port = DEFAULT_RLOGIN_PORT;
@@ -148,7 +148,7 @@ static int rlogin_handshake(struct bbs_node *node)
 static void *rlogin_listener(void *unused)
 {
 	UNUSED(unused);
-	bbs_tcp_comm_listener(tcp_socket, "RLogin", rlogin_handshake, BBS_MODULE_SELF);
+	bbs_tcp_comm_listener(rlogin_socket, "RLogin", rlogin_handshake, BBS_MODULE_SELF);
 	return NULL;
 }
 
@@ -184,25 +184,25 @@ static int load_module(void)
 		return -1;
 	}
 	/* If we can't start the TCP listener, decline to load */
-	if (bbs_make_tcp_socket(&tcp_socket, rlogin_port)) {
+	if (bbs_make_tcp_socket(&rlogin_socket, rlogin_port)) {
 		return -1;
 	}
-	bbs_assert(tcp_socket >= 0);
+	bbs_assert(rlogin_socket >= 0);
 	if (bbs_pthread_create(&rlogin_thread, NULL, rlogin_listener, NULL)) {
-		close(tcp_socket);
-		tcp_socket = -1;
+		close(rlogin_socket);
+		rlogin_socket = -1;
 		return -1;
 	}
-	bbs_register_network_protocol("RLogin", DEFAULT_RLOGIN_PORT);
+	bbs_register_network_protocol("RLogin", rlogin_port);
 	return 0;
 }
 
 static int unload_module(void)
 {
-	if (tcp_socket > -1) {
-		bbs_unregister_network_protocol(DEFAULT_RLOGIN_PORT);
-		close(tcp_socket);
-		tcp_socket = -1;
+	if (rlogin_socket > -1) {
+		bbs_unregister_network_protocol(rlogin_port);
+		close(rlogin_socket);
+		rlogin_socket = -1;
 		pthread_cancel(rlogin_thread);
 		pthread_kill(rlogin_thread, SIGURG);
 		bbs_pthread_join(rlogin_thread, NULL);
