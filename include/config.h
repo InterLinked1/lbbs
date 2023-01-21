@@ -77,6 +77,16 @@ int bbs_config_val_set_int(struct bbs_config *cfg, const char *section_name, con
 int bbs_config_val_set_uint(struct bbs_config *cfg, const char *section_name, const char *key, unsigned int *var);
 
 /*!
+ * \brief Set a TCP/UDP port number from a config setting
+ * \param cfg
+ * \param section_name Name of section
+ * \param key Name of key
+ * \param var int variable to set
+ * \retval 0 if set, -1 if not set (config value not found)
+ */
+int bbs_config_val_set_port(struct bbs_config *cfg, const char *section_name, const char *key, int *var);
+
+/*!
  * \brief Set a true/false integer flag with a value from a config setting
  * \param cfg
  * \param section_name Name of section

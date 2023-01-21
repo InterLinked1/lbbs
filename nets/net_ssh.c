@@ -687,8 +687,6 @@ static void *ssh_listener(void *unused)
 
 static int load_config(void)
 {
-	const char *val;
-	int tmp;
 	struct bbs_config *cfg = bbs_config_load("net_ssh.conf", 0);
 
 	if (!cfg) {
@@ -696,17 +694,8 @@ static int load_config(void)
 		return 0;
 	}
 
-	val = bbs_config_val(cfg, "ssh", "port");
-	if (val) {
-		tmp = atoi(val);
-		if (PORT_VALID(tmp)) {
-			ssh_port = tmp;
-		} else {
-			bbs_warning("Invalid SSH port: %s\n", val);
-		}
-	} else {
-		ssh_port = DEFAULT_SSH_PORT;
-	}
+	ssh_port = DEFAULT_SSH_PORT;
+	bbs_config_val_set_port(cfg, "ssh", "port", &ssh_port);
 
 	bbs_config_val_set_true(cfg, "keys", "rsa", &load_key_rsa);
 	bbs_config_val_set_true(cfg, "keys", "dsa", &load_key_dsa);

@@ -154,8 +154,6 @@ static void *rlogin_listener(void *unused)
 
 static int load_config(void)
 {
-	const char *val;
-	int tmp;
 	struct bbs_config *cfg = bbs_config_load("net_rlogin.conf", 0);
 
 	if (!cfg) {
@@ -163,17 +161,8 @@ static int load_config(void)
 		return 0;
 	}
 
-	val = bbs_config_val(cfg, "rlogin", "port");
-	if (val) {
-		tmp = atoi(val);
-		if (PORT_VALID(tmp)) {
-			rlogin_port = tmp;
-		} else {
-			bbs_warning("Invalid RLogin port: %s\n", val);
-		}
-	} else {
-		rlogin_port = DEFAULT_RLOGIN_PORT;
-	}
+	rlogin_port = DEFAULT_RLOGIN_PORT;
+	bbs_config_val_set_port(cfg, "rlogin", "port", &rlogin_port);
 
 	return 0;
 }

@@ -133,6 +133,22 @@ int bbs_config_val_set_uint(struct bbs_config *cfg, const char *section_name, co
 	return -1;
 }
 
+int bbs_config_val_set_port(struct bbs_config *cfg, const char *section_name, const char *key, int *var)
+{
+	int tmp;
+	const char *s = bbs_config_val(cfg, section_name, key);
+	if (!strlen_zero(s)) {
+		tmp = atoi(s);
+		if (PORT_VALID(tmp)) {
+			*var = tmp;
+		} else {
+			bbs_warning("Invalid port number: %s\n", s);
+		}
+		return 0;
+	}
+	return -1;
+}
+
 int bbs_config_val_set_true(struct bbs_config *cfg, const char *section_name, const char *key, int *var)
 {
 	const char *s = bbs_config_val(cfg, section_name, key);

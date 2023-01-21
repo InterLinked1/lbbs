@@ -202,8 +202,6 @@ static void *tty_listener(void *unused)
 
 static int load_config(void)
 {
-	const char *val;
-	int tmp;
 	struct bbs_config *cfg = bbs_config_load("net_telnet.conf", 0);
 
 	if (!cfg) {
@@ -211,29 +209,11 @@ static int load_config(void)
 		return 0;
 	}
 
-	val = bbs_config_val(cfg, "telnet", "port");
-	if (val) {
-		tmp = atoi(val);
-		if (PORT_VALID(tmp)) {
-			telnet_port = tmp;
-		} else {
-			bbs_warning("Invalid Telnet port: %s\n", val);
-		}
-	} else {
-		telnet_port = DEFAULT_TELNET_PORT;
-	}
+	telnet_port = DEFAULT_TELNET_PORT;
+	bbs_config_val_set_port(cfg, "telnet", "port", &telnet_port);
 
-	val = bbs_config_val(cfg, "telnet", "ttyport");
-	if (val) {
-		tmp = atoi(val);
-		if (PORT_VALID(tmp)) {
-			tty_port = tmp;
-		} else {
-			bbs_warning("Invalid TTY port: %s\n", val);
-		}
-	} else {
-		tty_port = 0;
-	}
+	tty_port = 0; /* Disabled by default */
+	bbs_config_val_set_port(cfg, "telnet", "ttyport", &tty_port);
 
 	return 0;
 }
