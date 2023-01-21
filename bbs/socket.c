@@ -346,6 +346,7 @@ int bbs_std_poll(int fd, int ms)
 				bbs_warning("poll returned error: %s\n", strerror(errno));
 				break;
 			}
+			bbs_debug(7, "poll interrupted\n");
 			continue;
 		}
 		if (res > 0) {
@@ -419,6 +420,7 @@ static int bbs_multi_poll(struct pollfd pfds[], int numfds, int ms)
 				bbs_warning("poll returned error: %s\n", strerror(errno));
 				break;
 			}
+			bbs_debug(7, "poll interrupted\n");
 			continue;
 		}
 		if (res > 0) {
@@ -530,6 +532,7 @@ int bbs_poll(struct bbs_node *node, int ms)
 				bbs_warning("poll returned error: %s\n", strerror(errno));
 				break;
 			}
+			bbs_debug(7, "poll interrupted\n");
 			continue;
 		}
 		if (res > 0) {

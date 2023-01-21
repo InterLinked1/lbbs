@@ -264,6 +264,7 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 	SWRITE(STDOUT_FILENO, TERM_CLEAR);
 
 	node->spy = 1;
+	node->spyfd = fdout;
 	bbs_sigint_set_alertpipe(spy_alert_pipe);
 	spy_in = fdin;
 	spy_out = fdout;
@@ -307,6 +308,7 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 		return 0;
 	}
 	node->spy = 0;
+	node->spyfd = -1;
 	bbs_node_unlock(node); /* We're done with the node. */
 	return 0;
 }

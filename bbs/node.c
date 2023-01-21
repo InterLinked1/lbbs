@@ -205,6 +205,8 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 	node->amaster = -1;
 	node->slavefd = -1;
 
+	node->spyfd = -1;
+
 	node->user = NULL; /* No user exists yet. We calloc'd so this is already NULL, but this documents that user may not exist at first. */
 	node->active = 1;
 	node->created = time(NULL);
@@ -432,9 +434,14 @@ static void node_shutdown(struct bbs_node *node, int unique)
 		if (node->spy) {
 			/* The sysop was spying on this node when it got disconnected.
 			 * Let the sysop know this node is dead. */
-			bbs_dprintf(STDOUT_FILENO, COLOR_RESET "\nNode %d has disconnected.\nPress ^C to exit spy mode.\n", node->id);
+			bbs_dprintf(node->spyfd, COLOR_RESET "\nNode %d has disconnected.\nPress ^C to exit spy mode.\n", node->id);
 			node->spy = 0;
 		}
+	}
+
+	if (node->fd) { /* Properly shut down */
+		/* If we just close our end of the socket, poll doesn't see that */
+		shutdown(node->fd, SHUT_RDWR); /* XXX Using for PTY fds could fix poll not waking up on node disconnect? */
 	}
 
 	close_if(node->amaster);

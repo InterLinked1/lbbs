@@ -212,7 +212,7 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 	int res;
 	res = pthread_join(thread, retval ? retval : &tmp);
 	if (res) {
-		bbs_error("pthread_join(%lu): %s\n", thread, strerror(errno));
+		bbs_error("pthread_join(%lu): %s\n", thread, strerror(res));
 		return res;
 	}
 	res = __thread_unregister(thread, file, line, func);

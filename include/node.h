@@ -28,6 +28,7 @@ struct bbs_node {
 	int amaster;				/*!< PTY master file descriptor */
 	int slavefd;				/*!< PTY slave file descriptor */
 	char slavename[84];			/*!< PTY slave name */
+	int spyfd;					/*!< Sysop's STDOUT file descriptor */
 	unsigned int rows;			/*!< Screen size: number of rows */
 	unsigned int cols;			/*!< Screen size: number of columns */
 	pthread_t thread;			/*!< Thread handling socket I/O */
