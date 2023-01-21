@@ -248,7 +248,7 @@ int bbs_node_attach_user(struct bbs_node *node, struct bbs_user *user)
 		return -1;
 	}
 	node->user = user;
-	bbs_auth("Node %d now logged in as %s\n", node->id, bbs_username(user));
+	bbs_auth("Node %d now logged in as %s (via %s)\n", node->id, bbs_username(user), node->protname);
 	return 0;
 }
 

@@ -59,7 +59,7 @@ static int allow_guest = DEFAULT_ALLOW_GUEST;
 static int guest_ask_info = DEFAULT_GUEST_ASK_INFO;
 static unsigned int defaultbps = 0;
 
-static char bbs_name[32] = "BBS"; /* A simple default so this is never empty. */
+static char bbs_name_buf[32] = "BBS"; /* A simple default so this is never empty. */
 static char bbs_tagline[84] = "";
 static char bbs_hostname_buf[92] = "";
 static char bbs_sysop[16] = "";
@@ -79,7 +79,7 @@ static int load_config(void)
 		return 0;
 	}
 
-	if (bbs_config_val_set_str(cfg, "bbs", "name", bbs_name, sizeof(bbs_name))) {
+	if (bbs_config_val_set_str(cfg, "bbs", "name", bbs_name_buf, sizeof(bbs_name_buf))) {
 		bbs_warning("No name is configured for this BBS in nodes.conf - BBS will be impersonal!\n");
 	}
 	bbs_config_val_set_str(cfg, "bbs", "tagline", bbs_tagline, sizeof(bbs_tagline));
@@ -142,13 +142,18 @@ const char *bbs_hostname(void)
 	return bbs_hostname_buf;
 }
 
+const char *bbs_name(void)
+{
+	return bbs_name_buf;
+}
+
 struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 {
 	struct bbs_node *node = NULL, *prev = NULL;
 	unsigned int count = 0;
 	unsigned int newnodenumber = 1, keeplooking = 1;
 
-	if (fd <= 2) {
+	if (fd <= 2) { /* Should not be STDIN, STDOUT, or STDERR, or negative */
 		bbs_error("Invalid file descriptor for BBS node: %d\n", fd);
 		return NULL;
 	}
@@ -195,6 +200,11 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 	pthread_mutex_init(&node->lock, NULL);
 	node->id = newnodenumber;
 	node->fd = fd;
+
+	/* Not all nodes will get a pseudoterminal, so initialize to -1 so if not, we don't try to close STDIN erroneously on shutdown */
+	node->amaster = -1;
+	node->slavefd = -1;
+
 	node->user = NULL; /* No user exists yet. We calloc'd so this is already NULL, but this documents that user may not exist at first. */
 	node->active = 1;
 	node->created = time(NULL);
@@ -373,6 +383,13 @@ int bbs_node_kill_child(struct bbs_node *node)
 	return -1;
 }
 
+int bbs_node_logout(struct bbs_node *node)
+{
+	bbs_user_destroy(node->user);
+	node->user = NULL;
+	return 0;
+}
+
 static void node_shutdown(struct bbs_node *node, int unique)
 {
 	pthread_t node_thread;
@@ -393,8 +410,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 
 	/* Destroy the user */
 	if (node->user) {
-		bbs_user_destroy(node->user);
-		node->user = NULL;
+		bbs_node_logout(node);
 	}
 
 	/* If the node is still connected, be nice and reset it. If it's gone already, forget about it. */
@@ -688,7 +704,7 @@ int bbs_node_update_winsize(struct bbs_node *node, int cols, int rows)
 	ws.ws_col = node->cols;
 
 	if (node->amaster == -1) {
-		bbs_debug(3, "Skipping TIOCSWINSZ for initial winsize prior to PTY allocation\n");
+		bbs_debug(3, "Skipping TIOCSWINSZ for winsize on node %d (no active PTY allocation)\n", node->id);
 		return 0;
 	}
 
@@ -929,7 +945,7 @@ static int node_intro(struct bbs_node *node)
 		NEG_RETURN(bbs_writef(node, "%s %d.%d.%d  %s\n\n", BBS_SHORTNAME, BBS_MAJOR_VERSION, BBS_MINOR_VERSION, BBS_PATCH_VERSION, BBS_COPYRIGHT_SHORT));
 	}
 
-	NEG_RETURN(bbs_writef(node, "%s\n", bbs_name)); /* Print BBS name */
+	NEG_RETURN(bbs_writef(node, "%s\n", bbs_name_buf)); /* Print BBS name */
 	if (!s_strlen_zero(bbs_tagline)) {
 		NEG_RETURN(bbs_writef(node, "%s\n\n", bbs_tagline)); /* Print BBS tagline */
 	}
@@ -939,7 +955,7 @@ static int node_intro(struct bbs_node *node)
 		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "CLIENT", COLOR(COLOR_SECONDARY), "CONN", COLOR(COLOR_PRIMARY), node->protname));
 		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "ADDR", COLOR(COLOR_PRIMARY), node->ip));
 		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%dx%d\n", "", "", COLOR(COLOR_SECONDARY), "TERM", COLOR(COLOR_PRIMARY), node->cols, node->rows));
-		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "SERVER", COLOR(COLOR_SECONDARY), "NAME", COLOR(COLOR_WHITE), bbs_name));
+		NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "SERVER", COLOR(COLOR_SECONDARY), "NAME", COLOR(COLOR_WHITE), bbs_name_buf));
 		if (!s_strlen_zero(bbs_hostname_buf)) {
 			NEG_RETURN(bbs_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "ADDR", COLOR(COLOR_PRIMARY), bbs_hostname_buf));
 		}
@@ -1013,7 +1029,7 @@ static int bbs_node_splash(struct bbs_node *node)
 
 	/* System stats */
 	if (!NODE_IS_TDD(node)) {
-		NEG_RETURN(bbs_writef(node, "%s%-20s: %s%s\n", COLOR(COLOR_SECONDARY), "System", COLOR(COLOR_PRIMARY), bbs_name));
+		NEG_RETURN(bbs_writef(node, "%s%-20s: %s%s\n", COLOR(COLOR_SECONDARY), "System", COLOR(COLOR_PRIMARY), bbs_name_buf));
 		NEG_RETURN(bbs_writef(node, "%s%6s%s %4u%9s%s: %s%s\n", COLOR(COLOR_SECONDARY), "User #", COLOR(COLOR_PRIMARY), node->user->id, "", COLOR(COLOR_SECONDARY), COLOR(COLOR_PRIMARY), bbs_username(node->user)));
 	} else {
 		/* Omit the # sign since TDDs display # as $ */
@@ -1063,46 +1079,30 @@ static int bbs_goodbye(struct bbs_node *node)
 	return 0;
 }
 
-void *bbs_node_handler(void *varg)
+static int node_handler_term(struct bbs_node *node)
 {
-	struct bbs_node *node = varg;
-
-	bbs_assert_exists(node);
-	bbs_assert(node->thread);
-	bbs_assert_exists(node->protname); /* Will fail if a network comm driver forgets to set before calling bbs_node_handler */
-
-	bbs_debug(1, "Running BBS for node %d\n", node->id);
-	bbs_auth("New %s connection to node %d from %s\n", node->protname, node->id, node->ip);
-
 	/* Set up the psuedoterminal */
 	if (bbs_pty_allocate(node)) {
 		bbs_debug(5, "Exiting\n");
-		goto exit;
+		return -1;
 	}
-
 	if (defaultbps) {
 		/* If there's a default speed to emulate, set it */
 		bbs_node_set_speed(node, defaultbps);
 	}
 
-	if (!NODE_IS_TDD(node) && bbs_set_term_title(node, bbs_name) <= 0) {
+	if (!NODE_IS_TDD(node) && bbs_set_term_title(node, bbs_name_buf) <= 0) {
 		bbs_debug(5, "Exiting\n");
-		goto exit;
-	}
-
-	if (tty_set_line_discipline(node->slavefd)) {
+		return -1;
+	} else if (tty_set_line_discipline(node->slavefd)) {
 		bbs_debug(5, "Exiting\n");
-		goto exit;
-	}
-
-	if (!NODE_IS_TDD(node) && _bbs_intro(node)) {
+		return -1;
+	} else if (!NODE_IS_TDD(node) && _bbs_intro(node)) {
 		bbs_debug(5, "Exiting\n");
-		goto exit;
-	}
-
-	if (node_intro(node)) {
+		return -1;
+	} else if (node_intro(node)) {
 		bbs_debug(5, "Exiting\n");
-		goto exit;
+		return -1;
 	}
 
 	/* Should be authenticated by now (either as a user or continuing as guest) */
@@ -1111,20 +1111,31 @@ void *bbs_node_handler(void *varg)
 	/* Display welcome updates and alerts */
 	if (bbs_node_splash(node)) {
 		bbs_debug(5, "Exiting\n");
-		goto exit;
-	}
-
-	/* Run the BBS on this node. */
-	if (bbs_node_menuexec(node)) {
-		goto exit;
+		return -1;
+	} else if (bbs_node_menuexec(node)) { /* Run the BBS on this node. */
+		return -1;
 	}
 
 	/* Display goodbye message (if node TTY still active)
 	 * At this point, it's only a matter of time until the node is going away,
 	 * there's nothing the user can do at this point to keep the link active. */
 	bbs_goodbye(node);
+	return 0; /* Normal user-initiated exit */
+}
 
-exit:
+void bbs_node_begin(struct bbs_node *node)
+{
+	bbs_assert_exists(node);
+	bbs_assert(node->thread);
+	bbs_assert(node->fd);
+	bbs_assert_exists(node->protname); /* Will fail if a network comm driver forgets to set before calling bbs_node_handler */
+
+	bbs_debug(1, "Running BBS for node %d\n", node->id);
+	bbs_auth("New %s connection to node %d from %s\n", node->protname, node->id, node->ip);
+}
+
+void bbs_node_exit(struct bbs_node *node)
+{
 	bbs_node_lock(node);
 	if (node->active) {
 		bbs_node_unlock(node);
@@ -1139,5 +1150,15 @@ exit:
 		 */
 		node_free(node);
 	}
+}
+
+void *bbs_node_handler(void *varg)
+{
+	struct bbs_node *node = varg;
+
+	bbs_node_begin(node);
+	node_handler_term(node); /* Run the normal terminal handler */
+	bbs_node_exit(node);
+
 	return NULL;
 }

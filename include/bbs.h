@@ -133,6 +133,9 @@ int bbs_fd_dump(int fd);
 #undef MAX
 #define MAX(a, b) ({ typeof(a) __a = (a); typeof(b) __b = (b); ((__a < __b) ? __b : __a);})
 
+#define bbs_rand(min, max) (min + rand() % (max + 1 - min))
+#define bbs_maxrand(max) bbs_rand(0, max)
+
 #define STARTS_WITH(s, start) (!strncasecmp(s, start, STRLEN(start)))
 
 /*!

@@ -107,6 +107,9 @@ unsigned int bbs_maxnodes(void);
 /*! \brief Get configured BBS hostname */
 const char *bbs_hostname(void);
 
+/*! \brief Get configured BBS name */
+const char *bbs_name(void);
+
 /*!
  * \brief Used by network comm drivers to request a BBS node
  * \param fd Socket file descriptor
@@ -161,6 +164,13 @@ int bbs_node_input_unreplace(struct bbs_node *node, char in);
  * \retval 0 on success, -1 on failure
  */
 int bbs_node_kill_child(struct bbs_node *node);
+
+/*!
+ * \brief Log out of a node
+ * \param node
+ * \retval 0 on success, -1 on failure
+*/
+int bbs_node_logout(struct bbs_node *node);
 
 /*!
  * \brief Remove and free a BBS node
@@ -355,6 +365,9 @@ int bbs_flush_input(struct bbs_node *node);
  */
 int bbs_write(struct bbs_node *node, const char *buf, unsigned int len);
 
+/*! \brief Same as bbs_write, but directly on a file descriptor */
+int bbs_std_write(int fd, const char *buf, unsigned int len);
+
 /*!
  * \brief printf-style wrapper for bbs_write.
  * \param node
@@ -362,6 +375,12 @@ int bbs_write(struct bbs_node *node, const char *buf, unsigned int len);
  * \retval Same as write()
  */
 int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(struct bbs_node *node, const char *fmt, ...);
+
+/*!
+ * \brief Same as bbs_writef, but directly on a file descriptor
+ * \note This is not exactly the same thing as a function like dprintf, since it returns the value returned by write()
+ */
+int __attribute__ ((format (gnu_printf, 2, 3))) bbs_std_writef(int fd, const char *fmt, ...);
 
 /*!
  * \brief Clear the terminal screen on a node's connected TTY
@@ -422,6 +441,16 @@ int bbs_ring_bell(struct bbs_node *node);
  * \retval 0 on success, -1 on failure
  */
 int bbs_wait_key(struct bbs_node *node, int ms);
+
+/*! \brief Begin handling a node
+ * \note Not needed if you use bbs_node_handler
+ */
+void bbs_node_begin(struct bbs_node *node);
+
+/*! \brief Stop handling a node
+ * \note Not needed if you use bbs_node_handler
+ */
+void bbs_node_exit(struct bbs_node *node);
 
 /*!
  * \brief Top-level node handler

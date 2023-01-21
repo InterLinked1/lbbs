@@ -768,6 +768,8 @@ int main(int argc, char *argv[])
 	bbs_debug(1, "Starting BBS on PID %d, running as user '%s' and group '%s'\n", bbs_pid, S_IF(runuser), S_IF(rungroup));
 	bbs_start_time = time(NULL);
 
+	srand(time(NULL)); /* Seed the random number generator */
+
 	/* Initialize alert pipe before installing any signal handlers. */
 	pthread_mutex_init(&sig_lock, NULL);
 	if (bbs_alertpipe_create(sig_alert_pipe)) {

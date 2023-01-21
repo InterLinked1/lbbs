@@ -28,6 +28,7 @@
 #include <netinet/in.h> /* use sockaddr_in */
 #include <sys/un.h>	/* use struct sockaddr_un */
 #include <arpa/inet.h> /* use inet_ntop */
+#include <ifaddrs.h>
 #include <poll.h>
 
 /* #define DEBUG_TEXT_IO */
@@ -134,7 +135,57 @@ int bbs_make_tcp_socket(int *sock, int port)
 	return 0;
 }
 
-void bbs_tcp_comm_listener(int socket, const char *name, int (*handshake)(struct bbs_node *node), void *module)
+int bbs_timed_accept(int socket, int ms, const char *ip)
+{
+	struct sockaddr_in sinaddr;
+	socklen_t len;
+	int sfd, res;
+	struct pollfd pfd;
+	char new_ip[56];
+
+	pfd.fd = socket;
+	pfd.events = POLLIN;
+
+	for (;;) {
+		res = poll(&pfd, 1, ms);
+		pthread_testcancel();
+		if (res < 0) {
+			if (errno == EINTR) {
+				continue;
+			}
+			bbs_warning("poll returned error: %s\n", strerror(errno));
+			return -1;
+		}
+		if (pfd.revents) {
+			len = sizeof(sinaddr);
+			sfd = accept(socket, (struct sockaddr *) &sinaddr, &len);
+			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
+			bbs_debug(1, "Accepting new TCP connection from %s\n", new_ip);
+			if (!strlen_zero(ip) && strcmp(ip, new_ip)) {
+				bbs_warning("Rejecting connection from %s\n", new_ip);
+				close(sfd);
+				return -1;
+			}
+		} else {
+			bbs_debug(5, "poll expired without accept()\n");
+			return -1; /* Nobody connected to us before poll expired. Return -1 since 0 is technically a valid file descriptor. */
+		}
+		if (sfd < 0) {
+			if (errno == EINTR) {
+				continue;
+			}
+			bbs_warning("accept returned %d: %s\n", sfd, strerror(errno));
+			return -1;
+		}
+		bbs_debug(7, "accepted fd = %d\n", sfd);
+		return sfd;
+	}
+	/* Normally, we never get here, as pthread_cancel snuffs out the thread ungracefully */
+	bbs_warning("TCP listener thread exiting abnormally\n");
+	return -1;
+}
+
+static void __bbs_tcp_listener(int socket, const char *name, int (*handshake)(struct bbs_node *node), void *(*handler)(void *varg), void *module)
 {
 	struct sockaddr_in sinaddr;
 	socklen_t len;
@@ -164,6 +215,7 @@ void bbs_tcp_comm_listener(int socket, const char *name, int (*handshake)(struct
 			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
 			bbs_debug(1, "Accepting new %s connection from %s\n", name, new_ip);
 		} else {
+			bbs_error("No revents?\n");
 			continue; /* Shouldn't happen? */
 		}
 		if (sfd < 0) {
@@ -174,34 +226,73 @@ void bbs_tcp_comm_listener(int socket, const char *name, int (*handshake)(struct
 			continue;
 		}
 
+		bbs_debug(7, "accepted fd = %d\n", sfd);
+
 		node = __bbs_node_request(sfd, name, module);
 		if (!node) {
 			close(sfd);
-			continue;
-		}
-		if (bbs_save_remote_ip(&sinaddr, node)) {
+		} else if (bbs_save_remote_ip(&sinaddr, node)) {
 			bbs_node_unlink(node);
-			continue;
-		}
-		if (handshake(node)) {
+		} else if (handshake && handshake(node)) {
 			bbs_node_unlink(node);
-			continue;
-		}
-
-		/* Run the BBS on this node */
-		if (bbs_pthread_create_detached(&node->thread, NULL, bbs_node_handler, node)) {
+		} else if (bbs_pthread_create_detached(&node->thread, NULL, handler, node)) { /* Run the BBS on this node */
 			bbs_node_unlink(node);
-			continue;
 		}
 	}
 	/* Normally, we never get here, as pthread_cancel snuffs out the thread ungracefully */
 	bbs_warning("%s listener thread exiting abnormally\n", name);
 }
 
+void bbs_tcp_comm_listener(int socket, const char *name, int (*handshake)(struct bbs_node *node), void *module)
+{
+	return __bbs_tcp_listener(socket, name, handshake, bbs_node_handler, module);
+}
+
+void bbs_tcp_listener(int socket, const char *name, void *(*handler)(void *varg), void *module)
+{
+	return __bbs_tcp_listener(socket, name, NULL, handler, module);
+}
+
+int bbs_get_local_ip(char *buf, size_t len)
+{
+	int af, res = -1;
+	struct sockaddr_in *sinaddr;
+	struct ifaddrs *iflist, *iface;
+	if (getifaddrs(&iflist)) {
+		bbs_error("getifaddrs failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	for (iface = iflist; res && iface; iface = iface->ifa_next) {
+		af = iface->ifa_addr->sa_family;
+		switch (af) {
+			case AF_INET:
+				sinaddr = ((struct sockaddr_in *) iface->ifa_addr);
+				bbs_get_remote_ip(sinaddr, buf, len);
+				if (!strcmp(buf, "127.0.0.1")) {
+					break; /* Skip the loopback interface, we want the (a) real one */
+				}
+				bbs_debug(5, "Local IP: %s\n", buf);
+				res = 0; /* for loop condition will now be false */
+				break;
+			case AF_INET6:
+			default:
+				break;
+		}
+	}
+
+	if (res) {
+		bbs_error("Failed to determine local IP address\n");
+	}
+
+	freeifaddrs(iflist);
+	return res;
+}
+
 int bbs_get_remote_ip(struct sockaddr_in *sinaddr, char *buf, size_t len)
 {
 	struct in_addr ip_addr = sinaddr->sin_addr;
-	inet_ntop(AF_INET, &ip_addr, buf, len);
+	inet_ntop(AF_INET, &ip_addr, buf, len); /* XXX Assumes IPv4 */
 	return 0;
 }
 
@@ -1019,6 +1110,26 @@ int bbs_write(struct bbs_node *node, const char *buf, unsigned int len)
 	return written;
 }
 
+int bbs_std_write(int fd, const char *buf, unsigned int len)
+{
+	int res;
+	unsigned int written = 0;
+	for (;;) {
+		res = write(fd, buf, len);
+		if (res <= 0) {
+			bbs_debug(5, "fd %d: write returned %d\n", fd, res);
+			return res;
+		}
+		buf += res;
+		written += res;
+		len -= res;
+		if (len <= 0) {
+			break;
+		}
+	}
+	return written;
+}
+
 int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(struct bbs_node *node, const char *fmt, ...)
 {
 	char *buf;
@@ -1041,6 +1152,32 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(struct bbs_node *node
 	}
 
 	res = bbs_write(node, buf, len);
+	free(buf);
+	return res;
+}
+
+int __attribute__ ((format (gnu_printf, 2, 3))) bbs_std_writef(int fd, const char *fmt, ...)
+{
+	char *buf;
+	int len, res;
+	va_list ap;
+
+	if (!strchr(fmt, '%')) {
+		/* If the format string doesn't contain any %'s, there are no variadic arguments.
+		 * Just write it directly, to avoid allocating memory unnecessarily. */
+		return bbs_std_write(fd, fmt, strlen(fmt));
+	}
+
+	va_start(ap, fmt);
+	len = vasprintf(&buf, fmt, ap);
+	va_end(ap);
+
+	if (len < 0) {
+		bbs_error("vasprintf failure\n");
+		return -1;
+	}
+
+	res = bbs_std_write(fd, buf, len);
 	free(buf);
 	return res;
 }

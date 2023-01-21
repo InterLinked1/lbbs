@@ -85,13 +85,39 @@ struct bbs_node;
 struct sockaddr_in;
 
 /*!
- * \brief Run a generic TCP network login service thread
+ * \brief Wrapper around accept(), with poll timeout
+ * \param socket Socket fd
+ * \param ms poll time in ms
+ * \param ip Optional IP restriction. NULL to allow any IP address.
+ * \retval -1 on failure, socket file descriptor otherwise
+ */
+int bbs_timed_accept(int socket, int ms, const char *ip);
+
+/*!
+ * \brief Run a terminal services TCP network login service listener thread
  * \param socket Socket fd
  * \param name Name of network login service, e.g. Telnet, RLogin, etc.
  * \param handshake Handshake callback function. It should return 0 to proceed and -1 to abort.
  * \param module Module reference
  */
 void bbs_tcp_comm_listener(int socket, const char *name, int (*handshake)(struct bbs_node *node), void *module);
+
+/*!
+ * \brief Run a generic TCP network login service thread
+ * \param socket Socket fd
+ * \param name Name of network login service, e.g. Telnet, RLogin, etc.
+ * \param handler Service handler function
+ * \param module Module reference
+ */
+void bbs_tcp_listener(int socket, const char *name, void *(*handler)(void *varg), void *module);
+
+/*!
+ * \brief Get local IP address
+ * \param buf
+ * \param len
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_get_local_ip(char *buf, size_t len);
 
 /*!
  * \brief Get remote IP address
