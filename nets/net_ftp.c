@@ -551,9 +551,8 @@ static void *ftp_handler(void *varg)
 			/* We use the control connection */
 			/* It may be desirable to allow HELP prior to USER, but RFC 959 does not say this is mandatory. */
 			if (strlen_zero(rest)) {
-				res = ftp_write(node, 211, "Help follows\r\n");
 				/* List all available commands at this site */
-				res = ftp_write(node, "USER PASS QUIT CWD PASV EPSV TYPE RETR STOR APPE DELE RNFR RNTO RMD MKD PWD LIST SYST HELP NOOP\r\n");
+				res = ftp_write(node, 211, "USER PASS QUIT CWD PASV EPSV TYPE RETR STOR APPE DELE RNFR RNTO RMD MKD PWD LIST SYST HELP NOOP\r\n");
 			} else {
 				res = ftp_write(node, 502, "Command Not Implemented\r\n"); /* 214 reply if we have help for a specific command */
 			}
