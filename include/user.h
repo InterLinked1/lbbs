@@ -42,6 +42,9 @@ struct bbs_user {
 /*! \brief Email address of registered or guest user */
 #define bbs_user_email(user) (bbs_user_is_guest(user) ? user->guestemail : user->email)
 
+/*! \brief Privilege level of user */
+#define bbs_user_priv(user) user->priv
+
 /*!
  * \brief Get username of a BBS user.
  * \param user. It is okay if user is NULL, so it is always safe to pass node->user, for example.
