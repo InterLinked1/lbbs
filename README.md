@@ -82,6 +82,8 @@ Config files go in `/etc/lbbs` and are as follows:
 
 - `modules.conf` - module loading settings (to disable a module, you do it here)
 
+- `net_ftp.conf` - FTP (File Transfer Protocol) server config
+
 - `net_rlogin`.conf` - RLogin network comm driver module config
 
 - `net_ssh.conf` - SSH network comm driver module config
@@ -119,6 +121,10 @@ Each comm driver handles window resizing in its own way.
 None of the network comm drivers are mutually exclusive - you can enable as many or few as you want, and users can use whatever protocol they want to.
 
 Generally speaking, for the reasons listed above, SSH is the recommended protocol. Apart from being the only protocol secure to use over the Internet, it also fully handles terminal resizing.
+
+The BBS also comes with some network services that aren't intended for terminal usage, e.g.:
+
+- `net_ftp` - File Transfer Protocol server
 
 ### Using mod_auth_mysql
 
