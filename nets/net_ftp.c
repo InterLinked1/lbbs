@@ -175,6 +175,7 @@ static void *ftp_handler(void *varg)
 	int invalids = 0;
 	int pasv_port, pasv_fd = -1;
 	char our_ip[48];
+	char rename_from[256] = "";
 	char type = 'A'; /* Default is ASCII */
 
 	/* This thread is running instead of the normal node handler thread */
@@ -235,6 +236,7 @@ static void *ftp_handler(void *varg)
 				/* Try to authenticate. */
 				res = bbs_authenticate(node, username, next);
 				memset(buf, 0, sizeof(buf)); /* Overwrite (zero out) the plain text password from memory */
+				username[0] = '\0'; /* Delete the username too so it's not preset if we reauthenticate */
 				if (res) {
 					invalids++;
 					if (invalids > 1) {
@@ -447,11 +449,36 @@ static void *ftp_handler(void *varg)
 		} else if (!strcasecmp(command, "REST")) { /* Restart */
 			res = ftp_write(node, 502, "Command Not Implemented\r\n");
 		} else if (!strcasecmp(command, "RNFR")) { /* Rename From */
+			char fullfile[386];
 			MIN_FTP_PRIV(delete_priv);
-			res = ftp_write(node, 502, "Command Not Implemented\r\n");
+			rename_from[0] = '\0'; /* In case we issue a successful RNFR, then issue a failed one (nonexistent target), then try to rename, that should fail, so always reset */
+			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
+			if (eaccess(fullfile, R_OK) || UNSAFE_FILEPATH(rest)) {
+				res = ftp_write(node, 450, "File \"%s\" does not exist\n", rest);
+			} else {
+				safe_strncpy(rename_from, rest, sizeof(rename_from)); /* Save the target name */
+				res = ftp_write(node, 226, "Filename accepted\r\n");
+			}
 		} else if (!strcasecmp(command, "RNTO")) { /* Rename To */
+			char fullfile[596];
+			char newfullfile[596];
 			MIN_FTP_PRIV(delete_priv);
-			res = ftp_write(node, 502, "Command Not Implemented\r\n");
+			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rename_from);
+			snprintf(newfullfile, sizeof(newfullfile), "%s/%s", fulldir, rest);
+			if (s_strlen_zero(rename_from)) {
+				res = ftp_write(node, 503, "Bad sequence of commands\r\n");
+			} else if (eaccess(fullfile, R_OK) || UNSAFE_FILEPATH(rename_from)) {
+				res = ftp_write(node, 450, "File \"%s\" does not exist\n", rename_from);
+			} else if (!eaccess(newfullfile, R_OK)) {
+				res = ftp_write(node, 450, "File \"%s\" already exists\n", rest);
+			} else {
+				if (rename(fullfile, newfullfile)) {
+					res = ftp_write(node, 450, "Failed to rename \"%s\"\n", rename_from);
+				} else {
+					res = ftp_write(node, 226, "File renamed to \"%s\"\r\n", rest);
+				}
+			}
+			rename_from[0] = '\0'; /* Can't be reused */
 		} else if (!strcasecmp(command, "ABOR")) { /* Abort */
 			/* This is technically unreachable/unexecutable, since we use a single thread currently
 			 * for both the control and data channels.
@@ -521,11 +548,19 @@ static void *ftp_handler(void *varg)
 		} else if (!strcasecmp(command, "STAT")) { /* Status */
 			res = ftp_write(node, 502, "Command Not Implemented\r\n");
 		} else if (!strcasecmp(command, "HELP")) { /* Help */
-			res = ftp_write(node, 502, "Command Not Implemented\r\n"); /* XXX 211, 214 replies */
+			/* We use the control connection */
+			/* It may be desirable to allow HELP prior to USER, but RFC 959 does not say this is mandatory. */
+			if (strlen_zero(rest)) {
+				res = ftp_write(node, 211, "Help follows\r\n");
+				/* List all available commands at this site */
+				res = ftp_write(node, "USER PASS QUIT CWD PASV EPSV TYPE RETR STOR APPE DELE RNFR RNTO RMD MKD PWD LIST SYST HELP NOOP\r\n");
+			} else {
+				res = ftp_write(node, 502, "Command Not Implemented\r\n"); /* 214 reply if we have help for a specific command */
+			}
 		} else if (!strcasecmp(command, "NOOP")) { /* No Op */
 			res = ftp_write(node, 200, "OK\r\n");
 		} else {
-			bbs_warning("Unimplemented FTP command: %s\n", command);
+			bbs_warning("Unimplemented FTP command: %s (%s %s)\n", command, command, S_IF(rest)); /* Show the full command as well */
 			res = ftp_write(node, 502, "Command Not Implemented\r\n");
 		}
 		if (res <= 0) {
