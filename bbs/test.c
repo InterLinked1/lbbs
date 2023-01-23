@@ -94,7 +94,7 @@ int bbs_run_tests(int fd)
 				test->time ? test->time : 1);
 		}
 		/* Stats */
-		bbs_dprintf(fd, "%s%d%%%s tests passed\n", passed == total ? COLOR(COLOR_SUCCESS) : COLOR(COLOR_FAILURE), (int) (100.0 * passed / total), COLOR_RESET);
+		bbs_dprintf(fd, "%s%d%%%s of tests passed\n", passed == total ? COLOR(COLOR_SUCCESS) : COLOR(COLOR_FAILURE), (int) (100.0 * passed / total), COLOR_RESET);
 	}
 	RWLIST_UNLOCK(&tests);
 

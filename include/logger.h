@@ -58,6 +58,29 @@ int bbs_set_debug(int newlevel);
 int bbs_set_stdout_logging(int enabled);
 
 /*!
+ * \brief Enable or disable logging on a file descriptor, previously registered using bbs_add_logging_fd
+ * \param fd File descriptor number
+ * \param enabled 1 to enable, 0 to disable
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_set_fd_logging(int fd, int enabled);
+
+/*!
+ * \brief Register a file descriptor for logging
+ * \param fd File descriptor number
+ * \retval 0 on success, -1 on failure
+ * \note Added file descriptors are automatically enabled for logging. Disable manually using bbs_set_fd_logging if desired.
+ */
+int bbs_add_logging_fd(int fd);
+
+/*!
+ * \brief Unregister a file descriptor for logging
+ * \param fd File descriptor number
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_remove_logging_fd(int fd);
+
+/*!
  * \brief Thread-safe printf wrapper
  * \note This will always flush stdout if fd == STDOUT_FILENO
  */

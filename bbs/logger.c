@@ -34,6 +34,7 @@
 #include <pthread.h>
 
 #include "include/utils.h" /* use bbs_gettid */
+#include "include/linkedlists.h"
 
 /* bbs.c */
 extern int option_debug;
@@ -128,6 +129,85 @@ int bbs_set_stdout_logging(int enabled)
 	logstdout = enabled;
 	pthread_mutex_unlock(&termlock);
 	return 0;
+}
+
+/*! \note int lists, anyone? */
+struct remote_log_fd {
+	int fd;
+	RWLIST_ENTRY(remote_log_fd) entry; /* Next entry */
+};
+
+static RWLIST_HEAD_STATIC(remote_log_fds, remote_log_fd);
+
+/*! \note Assumes all remote consoles are going to use a fd within the first 1024 */
+static int fd_logging[1024]; /* Array for constant time access instead of a linked list. Even though we traverse the list for writing, to set logging on/off, we don't need to. */
+
+int bbs_set_fd_logging(int fd, int enabled)
+{
+	if (!IN_BOUNDS(fd, 0, (int) ARRAY_LEN(fd_logging))) {
+		bbs_error("Cannot set logging for fd %d: out of bounds\n", fd);
+		return -1;
+	}
+	RWLIST_RDLOCK(&remote_log_fds); /* We're not modifying the list itself. */
+	fd_logging[fd] = enabled;
+	RWLIST_UNLOCK(&remote_log_fds);
+	return 0;
+}
+
+int bbs_add_logging_fd(int fd)
+{
+	struct remote_log_fd *rfd;
+
+	if (fd >= (int) ARRAY_LEN(fd_logging)) {
+		bbs_error("Cannot register file descriptors greater than %lu\n", ARRAY_LEN(fd_logging));
+		return -1;
+	}
+
+	RWLIST_WRLOCK(&remote_log_fds);
+	RWLIST_TRAVERSE(&remote_log_fds, rfd, entry) {
+		if (rfd->fd == fd) {
+			break;
+		}
+	}
+	if (rfd) {
+		bbs_error("File descriptor %d already has logging\n", fd);
+		RWLIST_UNLOCK(&remote_log_fds);
+		return -1;
+	}
+	rfd = calloc(1, sizeof(*rfd));
+	if (!fd) {
+		bbs_error("calloc failed\n");
+		RWLIST_UNLOCK(&remote_log_fds);
+		return -1;
+	}
+	rfd->fd = fd;
+	RWLIST_INSERT_HEAD(&remote_log_fds, rfd, entry);
+	fd_logging[fd] = 1; /* Initialize to enabled */
+	RWLIST_UNLOCK(&remote_log_fds);
+	bbs_debug(5, "Registered file descriptor %d for logging\n", fd);
+	return 0;
+}
+
+int bbs_remove_logging_fd(int fd)
+{
+	struct remote_log_fd *rfd;
+
+	RWLIST_WRLOCK(&remote_log_fds);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&remote_log_fds, rfd, entry) {
+		if (rfd->fd == fd) {
+			RWLIST_REMOVE_CURRENT(entry);
+			free(rfd);
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(&remote_log_fds);
+	if (!rfd) {
+		bbs_error("File descriptor %d did not have logging\n", fd);
+	} else {
+		bbs_debug(5, "Unregistered file descriptor %d from logging\n", fd);
+	}
+	return rfd ? 0 : -1;
 }
 
 int bbs_log_close(void)
@@ -333,9 +413,18 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 			}
 			if (bytes < 0) {
 				term_puts("ERROR: Logging vasprintf failure\n"); /* Can't use bbs_log functions! */
-				log_puts(buf); /* Just put what we had */
+				term_puts(buf); /* Just put what we had */
 			} else {
+				struct remote_log_fd *rfd;
 				term_puts(fullbuf);
+				RWLIST_RDLOCK(&remote_log_fds);
+				RWLIST_TRAVERSE(&remote_log_fds, rfd, entry) {
+					if (fd_logging[rfd->fd]) {
+#undef dprintf
+						dprintf(rfd->fd, "%s", fullbuf);
+					}
+				}
+				RWLIST_UNLOCK(&remote_log_fds);
 				free(fullbuf);
 			}
 		}

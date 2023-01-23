@@ -48,9 +48,7 @@ extern int option_nofork;
 
 static pthread_t sysop_thread = -1;
 
-/*! \note Currently only the foreground sysop console (STDOUT) supports receiving logging at all,
- * but this abstracts that away in case support were added for remote consoles in the future. */
-#define my_set_stdout_logging(fdout, setting) if (fdout == STDOUT_FILENO) { bbs_set_stdout_logging(setting); }
+#define my_set_stdout_logging(fdout, setting) if (fdout == STDOUT_FILENO) { bbs_set_stdout_logging(setting); } else { bbs_set_fd_logging(fdout, setting); }
 
 /* Since we now support remote consoles, bbs_printf is not logical to use in this module */
 #ifdef bbs_printf
@@ -186,6 +184,7 @@ static void rsysop_cleanup(void *varg)
 {
 	struct sysop_fd *fds = varg;
 	if (fds->fdin != STDIN_FILENO) {
+		bbs_remove_logging_fd(fds->fdout);
 		close(fds->fdin);
 	}
 	free(fds);
@@ -205,6 +204,9 @@ static void *sysop_handler(void *varg)
 	sysopfdout = fds->fdout;
 
 	pthread_cleanup_push(rsysop_cleanup, fds); /* When remote console exits or is killed, close PTY slave */
+	if (sysopfdout != STDOUT_FILENO) {
+		bbs_add_logging_fd(sysopfdout);
+	}
 
 	bbs_dprintf(sysopfdout, TERM_TITLE_FMT, "Sysop Console");
 
