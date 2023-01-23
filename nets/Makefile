@@ -25,4 +25,8 @@ net_ssh.so : net_ssh.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(SSHLIB)
 
+net_sftp.so : net_sftp.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ $(SSHLIB)
+
 .PHONY: all

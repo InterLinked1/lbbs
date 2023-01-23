@@ -687,7 +687,7 @@ static void *ssh_listener(void *unused)
 
 static int load_config(void)
 {
-	struct bbs_config *cfg = bbs_config_load("net_ssh.conf", 0);
+	struct bbs_config *cfg = bbs_config_load("net_ssh.conf", 1);
 
 	if (!cfg) {
 		/* Assume defaults if we failed to load the config (e.g. file doesn't exist). */
