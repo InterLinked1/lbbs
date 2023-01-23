@@ -8,7 +8,9 @@ Key features and capabilities include:
 
 - Fast and lightweight, written entirely in C
 
-- Telnet, RLogin, SSH, and UNIX domain socket support *(note that Telnet and RLogin are plain text protocols and thus insecure)*
+- Terminal access via Telnet, RLogin, SSH, and UNIX domain socket support *(note that Telnet and RLogin are plain text protocols and thus insecure)*
+
+- File transfers via FTP and SFTP
 
 - Config-file driven configuration
 
@@ -84,13 +86,15 @@ Config files go in `/etc/lbbs` and are as follows:
 
 - `net_ftp.conf` - FTP (File Transfer Protocol) server config
 
-- `net_rlogin`.conf` - RLogin network comm driver module config
+- `net_rlogin`.conf` - RLogin server configuration
 
-- `net_ssh.conf` - SSH network comm driver module config
+- `net_ssh.conf` - SSH and SFTP server configuration
 
-- `net_telnet.conf` - Telnet network comm driver module config
+- `net_telnet.conf` - Telnet server configuration
 
 - `nodes.conf` - Node-related configuration
+
+- `transfers.conf` - File transfer configuration
 
 - `variables.conf` - Global variable configuration
 
@@ -125,6 +129,8 @@ Generally speaking, for the reasons listed above, SSH is the recommended protoco
 The BBS also comes with some network services that aren't intended for terminal usage, e.g.:
 
 - `net_ftp` - File Transfer Protocol server
+
+- `net_sftp` - Secure File Transfer Protocol server
 
 ### Using mod_auth_mysql
 
