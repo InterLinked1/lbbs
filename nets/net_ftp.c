@@ -35,14 +35,11 @@
 #include "include/net.h"
 #include "include/auth.h"
 #include "include/system.h"
+#include "include/transfer.h"
 
 static int ftp_socket = -1; /*!< TCP Socket for allowing incoming network connections */
 static pthread_t ftp_thread;
-
-static char rootdir[84];
-static int access_priv, download_priv, upload_priv, delete_priv, newdir_priv;
 static int minport, maxport;
-static int idletimeout;
 
 /*! \brief Default FTP port is 21 */
 #define DEFAULT_FTP_PORT 21
@@ -58,7 +55,7 @@ static int ftp_port = DEFAULT_FTP_PORT;
 /*! \note Not sure if accessing parent directories is an issue with all functions, but just in case */
 #define UNSAFE_FILEPATH(path) strstr(path, "..")
 
-#define FTP_UPDATE_DIR(dir) safe_strncpy(ftpdir, dir, sizeof(ftpdir)); snprintf(fulldir, sizeof(fulldir), "%s%s", rootdir, ftpdir); bbs_debug(5, "Updated FTP directory to %s\n", ftpdir)
+#define FTP_UPDATE_DIR(dir) safe_strncpy(ftpdir, dir, sizeof(ftpdir)); snprintf(fulldir, sizeof(fulldir), "%s%s", bbs_transfer_rootdir(), ftpdir); bbs_debug(5, "Updated FTP directory to %s\n", ftpdir)
 #define REQUIRE_PASV_FD() \
 	if (pasv_fd == -1) { \
 		res = ftp_write(node, 501, "Invalid command sequence\r\n"); \
@@ -67,7 +64,7 @@ static int ftp_port = DEFAULT_FTP_PORT;
 	}
 
 #define MIN_FTP_PRIV(priv) \
-	if (bbs_user_priv(node->user) < download_priv) { \
+	if (!bbs_transfer_operation_allowed(node, priv)) { \
 		res = ftp_write(node, 450, "Insufficient privileges for operation\n"); \
 		IO_ABORT(res); \
 		continue; \
@@ -77,7 +74,7 @@ static int ftp_pasv_new(int *sockfd)
 {
 	int sfd;
 	int res = -1, port;
-	int attempts_left = MAX((maxport - minport), 250);
+	int attempts_left = MIN((maxport - minport), 250);
 
 	/* There are some security issues with passive mode.
 	 * http://cr.yp.to/ftp/security.html
@@ -111,7 +108,7 @@ static int ftp_put(struct bbs_node *node, int *pasv_fd_ptr, const char *fulldir,
 	FILE *fp;
 	int x, bytes = 0;
 
-	if (bbs_user_priv(node->user) < upload_priv) {
+	if (!bbs_transfer_canwrite(node)) {
 		return ftp_write(node, 450, "File uploads denied for user\n");
 	}
 
@@ -121,7 +118,7 @@ static int ftp_put(struct bbs_node *node, int *pasv_fd_ptr, const char *fulldir,
 	}
 
 	/* Overwriting is basically deleting and then writing, unless we're appending */
-	if (bbs_user_priv(node->user) < delete_priv && strcmp(flags, "a") && !eaccess(fullfile, R_OK)) {
+	if (!bbs_transfer_candelete(node) && strcmp(flags, "a") && !eaccess(fullfile, R_OK)) {
 		return ftp_write(node, 450, "File \"%s\" already exists and may not be overwritten\n", file);
 	}
 
@@ -168,7 +165,7 @@ static void *ftp_handler(void *varg)
 	char buf[512];
 	char username[64] = "";
 	char ftpdir[256] = ""; /* FTP relative directory */
-	char fulldir[sizeof(rootdir) + sizeof(ftpdir)];
+	char fulldir[256];
 	char *command, *rest, *next;
 	int res;
 	struct bbs_node *node = varg;
@@ -193,7 +190,7 @@ static void *ftp_handler(void *varg)
 	FTP_UPDATE_DIR("/"); /* Must be called whenever ftpdir is updated (rootdir doesn't change) */
 
 	for (;;) {
-		res = ftp_poll(node, node->user ? idletimeout : 15000); /* After some number of seconds of inactivity, a client times out */
+		res = ftp_poll(node, node->user ? bbs_transfer_timeout() : 15000); /* After some number of seconds of inactivity, a client times out */
 		if (res <= 0) {
 			break;
 		}
@@ -246,7 +243,7 @@ static void *ftp_handler(void *varg)
 						res = ftp_write(node, 430, "Invalid username or password\r\n");
 					}
 				} else {
-					MIN_FTP_PRIV(access_priv);
+					MIN_FTP_PRIV(TRANSFER_ACCESS);
 					res = ftp_write(node, 230, "Login successful\r\n"); /* If ACCT needed, reply 332 instead */
 				}
 			}
@@ -275,12 +272,12 @@ static void *ftp_handler(void *varg)
 			}
 			continue;
 		} else if (!strcasecmp(command, "CWD")) { /* Change working directory */
-			char newdir[sizeof(fulldir)];
+			char newdir[sizeof(fulldir) + 1];
 			bbs_debug(7, "Current FTP dir is '%s' and request is '%s'\n", ftpdir, rest);
 			if (*rest == '/') {
-				snprintf(newdir, sizeof(newdir), "%s%s", rootdir, rest);
+				snprintf(newdir, sizeof(newdir), "%s%s", bbs_transfer_rootdir(), rest);
 			} else {
-				snprintf(newdir, sizeof(newdir), "%s%s/%s", rootdir, ftpdir, rest); /* Relative to current directory */
+				snprintf(newdir, sizeof(newdir), "%s%s/%s", bbs_transfer_rootdir(), ftpdir, rest); /* Relative to current directory */
 			}
 			bbs_debug(5, "Checking if directory exists: %s\n", newdir);
 			if (eaccess(newdir, R_OK) || UNSAFE_FILEPATH(rest)) {
@@ -388,7 +385,7 @@ static void *ftp_handler(void *varg)
 		} else if (!strcasecmp(command, "RETR")) { /* Download file from server */
 			char fullfile[386];
 			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
-			MIN_FTP_PRIV(download_priv);
+			MIN_FTP_PRIV(TRANSFER_DOWNLOAD);
 			if (eaccess(fullfile, R_OK) || UNSAFE_FILEPATH(rest)) {
 				res = ftp_write(node, 450, "File \"%s\" does not exist\n", rest);
 			} else {
@@ -434,7 +431,7 @@ static void *ftp_handler(void *varg)
 			res = ftp_write(node, 202, "Command Not Relevant\r\n"); /* Ignore, don't need */
 		} else if (!strcasecmp(command, "DELE")) { /* Delete */
 			char fullfile[386];
-			MIN_FTP_PRIV(delete_priv);
+			MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE);
 			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
 			if (eaccess(fullfile, R_OK) || UNSAFE_FILEPATH(rest)) {
 				res = ftp_write(node, 450, "File \"%s\" does not exist\n", rest);
@@ -450,7 +447,7 @@ static void *ftp_handler(void *varg)
 			res = ftp_write(node, 502, "Command Not Implemented\r\n");
 		} else if (!strcasecmp(command, "RNFR")) { /* Rename From */
 			char fullfile[386];
-			MIN_FTP_PRIV(delete_priv);
+			MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE);
 			rename_from[0] = '\0'; /* In case we issue a successful RNFR, then issue a failed one (nonexistent target), then try to rename, that should fail, so always reset */
 			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
 			if (eaccess(fullfile, R_OK) || UNSAFE_FILEPATH(rest)) {
@@ -462,7 +459,7 @@ static void *ftp_handler(void *varg)
 		} else if (!strcasecmp(command, "RNTO")) { /* Rename To */
 			char fullfile[596];
 			char newfullfile[596];
-			MIN_FTP_PRIV(delete_priv);
+			MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE);
 			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rename_from);
 			snprintf(newfullfile, sizeof(newfullfile), "%s/%s", fulldir, rest);
 			if (s_strlen_zero(rename_from)) {
@@ -489,7 +486,7 @@ static void *ftp_handler(void *varg)
 			res = ftp_write(node, 226, "Closed data connection\r\n");
 		} else if (!strcasecmp(command, "RMD")) { /* Remove Directory */
 			char fullfile[386];
-			MIN_FTP_PRIV(delete_priv);
+			MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE);
 			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
 			if (eaccess(fullfile, R_OK)) {
 				res = ftp_write(node, 450, "\"%s\" does not exist\n", rest);
@@ -503,7 +500,7 @@ static void *ftp_handler(void *varg)
 			}
 		} else if (!strcasecmp(command, "MKD")) { /* Make Directory */
 			char fullfile[386];
-			MIN_FTP_PRIV(newdir_priv);
+			MIN_FTP_PRIV(TRANSFER_NEWDIR);
 			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
 			if (!eaccess(fullfile, R_OK)) {
 				res = ftp_write(node, 450, "\"%s\" already exists\n", rest);
@@ -582,53 +579,23 @@ static void *ftp_listener(void *unused)
 
 static int load_config(void)
 {
-	char *tmp;
-	struct bbs_config *cfg = bbs_config_load("net_ftp.conf", 0);
+	struct bbs_config *cfg;
 
+	if (bbs_transfer_config_load()) {
+		return -1;
+	}
+
+	cfg = bbs_config_load("net_ftp.conf", 0);
 	if (!cfg) {
 		return -1; /* Decline to load if there is no config. */
 	}
 
 	ftp_port = DEFAULT_FTP_PORT;
-	idletimeout = 60000;
 	bbs_config_val_set_port(cfg, "ftp", "port", &ftp_port);
-	if (!bbs_config_val_set_int(cfg, "ftp", "timeout", &access_priv)) {
-		idletimeout *= 1000; /* convert s to ms */
-	}
-	if (bbs_config_val_set_str(cfg, "ftp", "rootdir", rootdir, sizeof(rootdir))) { /* Must explicitly specify */
-		bbs_error("No rootdir specified, FTP server will be disabled\n");
-		return -1;
-	}
-
-	/* rootdir should not contain a trailing slash */
-	tmp = strrchr(rootdir, '/');
-	if (!tmp) {
-		bbs_error("Invalid root directory: %s\n", rootdir);
-		return -1;
-	}
-	if (*(tmp + 1) == '\0') {
-		*tmp = '\0'; /* Strip trailing slash since there's nothing afterwards */
-	}
-
-	if (eaccess(rootdir, R_OK)) {
-		bbs_error("Directory '%s' is not readable\n", rootdir);
-		return -1;
-	}
 
 	minport = maxport = 0;
 	bbs_config_val_set_port(cfg, "pasv", "minport", &minport);
 	bbs_config_val_set_port(cfg, "pasv", "maxport", &maxport);
-
-	access_priv = 0;
-	download_priv = 0;
-	upload_priv = 1;
-	delete_priv = 2;
-	newdir_priv = 2;
-	bbs_config_val_set_int(cfg, "privs", "access", &access_priv);
-	bbs_config_val_set_int(cfg, "privs", "download", &download_priv);
-	bbs_config_val_set_int(cfg, "privs", "upload", &upload_priv);
-	bbs_config_val_set_int(cfg, "privs", "delete", &delete_priv);
-	bbs_config_val_set_int(cfg, "privs", "newdirs", &newdir_priv);
 
 	return 0;
 }
