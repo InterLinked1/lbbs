@@ -229,6 +229,16 @@ void print_days_elapsed(int start, int end, char *buf, size_t len);
 int bbs_printable_strlen(const char *s);
 
 /*!
+ * \brief Process backspaces and deletes in a stream of characters and output the new result
+ * \note Mainly needed because not all terminal emulators behave the same way, some like SyncTERM are more broken when it comes to backspace handling. PuTTY/KiTTY don't need this.
+ * \param s Original input string
+ * \param buf Output buffer
+ * \param len Size of buf. Should be exactly as large as the original length of s, but larger is unnecessary
+ * \retval 0 on success, -1 on failure (truncation)
+ */
+int bbs_str_process_backspaces(const char *s, char *buf, size_t len);
+
+/*!
  * \brief Create a safely printable representation of a string (for debugging or dumping).
  *        The string created, when printed, will not contain any escape sequences or formatting.
  * \param s Original string (containing potentially "unsafe" characters, e.g. CR, LF, ESC, and other formatting or control chars)

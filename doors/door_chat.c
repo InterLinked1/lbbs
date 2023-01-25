@@ -12,7 +12,7 @@
 
 /*! \file
  *
- * \brief Realtime chat
+ * \brief Standalone realtime chat
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -297,6 +297,7 @@ static int __attribute__ ((format (gnu_printf, 3, 4))) chat_send(struct channel 
 static int chat_run(struct bbs_node *node, struct participant *p)
 {
 	char buf[384];
+	char buf2[sizeof(buf)];
 	int res;
 	int participants;
 	struct channel *c = p->channel;
@@ -341,12 +342,15 @@ static int chat_run(struct bbs_node *node, struct participant *p)
 			}
 			res++; /* Add 1, since we read 1 char prior to the last read */
 			buf[res] = '\0'; /* Now we can use strcasecmp */
+
+			bbs_str_process_backspaces(buf, buf2, sizeof(buf2));
+
 			/* strcasecmp will fail because the buffer has a LF at the end. Use strncasecmp, so anything starting with /help or /quit will technically match too */
-			if (STARTS_WITH(buf, "/quit")) {
+			if (STARTS_WITH(buf2, "/quit")) {
 				break; /* Quit */
-			} else if (STARTS_WITH(buf, "/users")) {
+			} else if (STARTS_WITH(buf2, "/users")) {
 				print_channel_participants(node, c);
-			} else if (STARTS_WITH(buf, "/help")) {
+			} else if (STARTS_WITH(buf2, "/help")) {
 				bbs_writef(node, "== LBBS Chat ==\n");
 				bbs_writef(node, "/help Help\n");
 				bbs_writef(node, "/quit Quit\n");
@@ -357,24 +361,21 @@ static int chat_run(struct bbs_node *node, struct participant *p)
 
 			/* Message contains non-printable characters. Reject it.
 			 * It's not great for security if any user can send arbitrary ASCII characters to anyone else's terminal. */
-			if (!bbs_str_anyprint(buf)) {
+			if (!bbs_str_anyprint(buf2)) {
 				/* For example, reject messages that contain only spaces. */
 				bbs_writef(node, "%s%s%s\n", COLOR(COLOR_RED), "Sorry, message is empty.", COLOR_RESET);
 				continue;
-			} else if (!bbs_str_isprint(buf)) {
+			} else if (!bbs_str_isprint(buf2)) {
 				bbs_writef(node, "%s%s%s\n", COLOR(COLOR_RED), "Sorry, message contains invalid characters.", COLOR_RESET);
 				continue;
 			}
 
-			if (buf[res - 1] != '\n') {
-				bbs_warning("Doesn't end in LF? (%d)\n", buf[res - 1]); /* If it doesn't send in a LF for some reason, tack one on so it displays properly to recipients */
-			}
 			/* Provide p so we don't relay the message to ourself. */
 			/* The node number is needed to uniquely identify a participant, not just the username.
 			 * For example, the same user could be logged into 2 terminals at once.
 			 * Or, multiple guest users might be logged in.
 			 */
-			chat_send(c, p, buf[res - 1] == '\n' ? "%s@%d: %s" : "%s@%d: %s\n", bbs_username(node->user), node->id, buf); /* buf already contains a newline from the user pressing ENTER, so don't add another one */
+			chat_send(c, p, "%s@%d: %s", bbs_username(node->user), node->id, buf2); /* buf already contains a newline from the user pressing ENTER, so don't add another one */
 		} else if (res == 2) {
 			/* Pipe has activity: Received a message */
 			/* The nice thing is since it's in a pipe, we won't
@@ -461,4 +462,4 @@ static int unload_module(void)
 	return bbs_unregister_door("chat");
 }
 
-BBS_MODULE_INFO_STANDARD("Realtime Chat");
+BBS_MODULE_INFO_STANDARD("Standalone Realtime Chat");

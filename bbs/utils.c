@@ -281,6 +281,31 @@ int bbs_printable_strlen(const char *s)
 	return c;
 }
 
+int bbs_str_process_backspaces(const char *s, char *buf, size_t len)
+{
+	int i = 0;
+	while (*s) {
+		if (len <= 1) {
+			bbs_error("Truncation occured\n");
+			return -1;
+		}
+		if (*s == 8 || *s == 127) { /* BACKSPACE or DELETE character */
+			if (i > 0) {
+				*--buf = '\0';
+				len++;
+				i--;
+			} /* else, ignore backspaces at beginning of line */
+			s++;
+		} else {
+			*buf++ = *s++;
+			i++;
+			len--;
+		}
+	}
+	*buf = '\0';
+	return 0;
+}
+
 int bbs_str_safe_print(const char *s, char *buf, size_t len)
 {
 	char ascii_num[7];

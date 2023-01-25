@@ -686,6 +686,7 @@ static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client 
 static int participant_relay(struct bbs_node *node, struct participant *p, const char *channel)
 {
 	char buf[384];
+	char buf2[sizeof(buf)];
 	int res;
 	struct client *c = p->client;
 
@@ -721,18 +722,17 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 				break;
 			}
 			res++; /* Add 1, since we read 1 char prior to the last read */
-			buf[res] = '\0'; /* Now we can use strcasecmp */
+			buf[res] = '\0'; /* Now we can use strcasecmp, et al. */
+
+			bbs_str_process_backspaces(buf, buf2, sizeof(buf2));
+
 			/* strcasecmp will fail because the buffer has a LF at the end. Use strncasecmp, so anything starting with /help or /quit will technically match too */
-			if (STARTS_WITH(buf, "/quit")) {
+			if (STARTS_WITH(buf2, "/quit")) {
 				break; /* Quit */
 			}
 			bbs_unbuffer(node);
-
-			if (buf[res - 1] != '\n') {
-				bbs_warning("Doesn't end in LF? (%d)\n", buf[res - 1]); /* If it doesn't send in a LF for some reason, tack one on so it displays properly to recipients */
-			}
-			chat_send(c, p, channel, buf[res - 1] == '\n' ? "<%s@%d> %s" : "<%s@%d> %s\n", bbs_username(node->user), node->id, buf); /* buf already contains a newline from the user pressing ENTER, so don't add another one */
-			bot_handler(c, 0, channel, bbs_username(node->user), buf);
+			chat_send(c, p, channel, "<%s@%d> %s", bbs_username(node->user), node->id, buf2); /* buf2 already contains a newline from the user pressing ENTER, so don't add another one */
+			bot_handler(c, 0, channel, bbs_username(node->user), buf2);
 		} else if (res == 2) {
 			/* Pipe has activity: Received a message */
 			res = 0;

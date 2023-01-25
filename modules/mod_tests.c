@@ -112,6 +112,26 @@ cleanup:
 	return res;
 }
 
+static int test_backspace_processing(void)
+{
+	int res = -1;
+	const char *s = "Ted" "\b" "st";
+	const char *s2 = "\b\b" " Ted" "\b" "st";
+	char outbuf[32];
+
+	bbs_test_assert_equals(0, bbs_str_process_backspaces(s, outbuf, sizeof(outbuf)));
+	bbs_test_assert_str_equals(outbuf, "Test");
+
+	/* Make sure leading backspaces are ignored */
+	bbs_test_assert_equals(0, bbs_str_process_backspaces(s2, outbuf, sizeof(outbuf)));
+	bbs_test_assert_str_equals(outbuf, " Test");
+
+	return 0;
+
+cleanup:
+	return res;
+}
+
 static struct unit_tests {
 	const char *name;
 	int (*callback)(void);
@@ -121,6 +141,7 @@ static struct unit_tests {
 	{ "Safe Print", test_safe_print },
 	{ "Printable String Length", test_printable_strlen },
 	{ "ANSI Stripping", test_ansi_strip },
+	{ "Backspace Processing", test_backspace_processing },
 };
 
 static int load_module(void)
