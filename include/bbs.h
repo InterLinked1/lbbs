@@ -43,7 +43,7 @@
 
 #define BBS_COPYRIGHT STRCAT("Copyright 2023 ", BBS_AUTHOR)
 #define BBS_COPYRIGHT_SHORT STRCAT("(C) 2023 ", BBS_AUTHOR)
-#define BBS_VERSION "BBS_MAJOR_VERSION.BBS_MINOR_VERSION.BBS_PATCH_VERSION"
+#define BBS_VERSION XSTR(BBS_MAJOR_VERSION) "." XSTR(BBS_MINOR_VERSION) "." XSTR(BBS_PATCH_VERSION)
 
 /* Needed (only) by bbs.c and logger.c */
 #define BBS_LOG_DIR DIRCAT("/var/log", BBS_NAME)
@@ -116,6 +116,8 @@ int bbs_fd_dump(int fd);
 #endif /* DEBUG_FD_LEAKS */
 
 /* Convenience macros */
+#define STR(s) #s
+#define XSTR(s) STR(s)
 #define DIRCAT(a, b) a "/" b
 #define STRCAT(a, b) a b
 #define ARRAY_LEN(a) (size_t) (sizeof(a) / sizeof(a[0]))
