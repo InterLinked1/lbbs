@@ -480,15 +480,15 @@ static void handle_irc_msg(struct client *client, struct irc_msg *msg)
 			return;
 		}
 	} else if (!strcmp(msg->command, "JOIN")) {
-		relay_to_local(client, msg->body, "%s has %sjoined%s\n", msg->prefix, COLOR_GREEN, COLOR_RESET);
+		relay_to_local(client, msg->body, "%s has %sjoined%s\n", msg->prefix, COLOR(COLOR_GREEN), COLOR_RESET);
 	} else if (!strcmp(msg->command, "PART")) {
-		relay_to_local(client, msg->body, "%s has %sleft%s\n", msg->prefix, COLOR_RED, COLOR_RESET);
+		relay_to_local(client, msg->body, "%s has %sleft%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
 	} else if (!strcmp(msg->command, "QUIT")) {
-		relay_to_local(client, msg->body, "%s has %squit%s\n", msg->prefix, COLOR_RED, COLOR_RESET);
+		relay_to_local(client, msg->body, "%s has %squit%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
 	} else if (!strcmp(msg->command, "KICKED")) {
-		relay_to_local(client, msg->body, "%s has been %skicked%s\n", msg->prefix, COLOR_RED, COLOR_RESET);
+		relay_to_local(client, msg->body, "%s has been %skicked%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
 	} else if (!strcmp(msg->command, "NICK")) {
-		relay_to_local(client, NULL, "%s is %snow known as%s %s\n", msg->prefix, COLOR_CYAN, COLOR_RESET, msg->body);
+		relay_to_local(client, NULL, "%s is %snow known as%s %s\n", msg->prefix, COLOR(COLOR_CYAN), COLOR_RESET, msg->body);
 	} else if (!strcmp(msg->command, "MODE")) {
 		/* Ignore */
 	} else if (!strcmp(msg->command, "ERROR")) {
