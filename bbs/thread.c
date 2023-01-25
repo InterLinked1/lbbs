@@ -274,7 +274,7 @@ static int create_thread(pthread_t *thread, pthread_attr_t *attr, void *(*start_
 	a->detached = detached ? 1 : 0;
 	a->killable = detached == 2 ? 1 : 0;
 	start_routine = thread_run;
-	if (asprintf(&a->name, "%-20s started by thread %d at %s:%d %s()", start_fn, bbs_gettid(), file, line, func) < 0) {
+	if (asprintf(&a->name, "%-21s started by thread %d at %s:%d %s()", start_fn, bbs_gettid(), file, line, func) < 0) {
 		a->name = NULL;
 	}
 	data = a;

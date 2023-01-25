@@ -12,7 +12,7 @@
 
 /*! \file
  *
- * \brief FTP (File Transfer Protocol) Server
+ * \brief FTP (File Transfer Protocol) server
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -532,7 +532,7 @@ static void *ftp_handler(void *varg)
 			 * Should be something like:
 			 * -rw-r--r-- 1 owner group           213 Aug 26 16:31 README
 			 */
-			res = bbs_execvpe_fd_headless(node, -1, pasv_fd, "/bin/ls", argv); /* Just use ls, since that's the right format */
+			res = bbs_execvp_fd_headless(node, -1, pasv_fd, "/bin/ls", argv); /* Just use ls, since that's the right format */
 			if (res) { /* Listing failed, just disconnect */
 				break;
 			}

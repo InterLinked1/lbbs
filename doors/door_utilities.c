@@ -46,7 +46,7 @@ static int calc_exec(struct bbs_node *node, const char *args)
 #if 0
 	/* Just use the bc shell */
 	char *argv[3] = { "bc", "-q", NULL }; /* -q = quiet: disable initial banner */
-	return bbs_execvpe(node, "bc", argv);
+	return bbs_execvp(node, "bc", argv);
 #endif
 
 	/* Create a pipe for passing input and output to/from bc */
@@ -96,7 +96,7 @@ static int calc_exec(struct bbs_node *node, const char *args)
 			bbs_error("write failed: %s\n", strerror(errno));
 			continue;
 		}
-		res = bbs_execvpe_fd_headless(node, stdin[0], stdout[1], "bc", argv);
+		res = bbs_execvp_fd_headless(node, stdin[0], stdout[1], "bc", argv);
 		if (res) {
 			bbs_writef(node, "Execution Error\n");
 			continue;

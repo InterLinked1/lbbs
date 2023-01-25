@@ -22,9 +22,9 @@ struct bbs_node;
  * \param filename Filename of program to execute (path is optional)
  * \param argv
  * \retval 0 on success, -1 on failure
- * \warning Do not call bbs_execvpe from a node thread with NULL for node. Use bbs_execvpe_headless.
+ * \warning Do not call bbs_execvp from a node thread with NULL for node. Use bbs_execvp_headless.
  */
-int bbs_execvpe(struct bbs_node *node, const char *filename, char *const argv[]);
+int bbs_execvp(struct bbs_node *node, const char *filename, char *const argv[]);
 
 /*!
  * \brief Wrapper around execvpe() that creates a process in an isolated container. This will clone(), then call execvp(), then wait for the child to exit.
@@ -32,12 +32,12 @@ int bbs_execvpe(struct bbs_node *node, const char *filename, char *const argv[])
  * \param filename Filename of program to execute (path is optional)
  * \param argv
  * \retval 0 on success, -1 on failure
- * \warning Do not call bbs_execvpe from a node thread with NULL for node. Use bbs_execvpe_headless.
+ * \warning Do not call bbs_execvp from a node thread with NULL for node. Use bbs_execvp_headless.
  */
-int bbs_execvpe_isolated(struct bbs_node *node, const char *filename, char *const argv[]);
+int bbs_execvp_isolated(struct bbs_node *node, const char *filename, char *const argv[]);
 
-/*! \brief Same as bbs_execvpe, but node will not be used for I/O. */
-int bbs_execvpe_headless(struct bbs_node *node, const char *filename, char *const argv[]);
+/*! \brief Same as bbs_execvp, but node will not be used for I/O. */
+int bbs_execvp_headless(struct bbs_node *node, const char *filename, char *const argv[]);
 
 /*!
  * \brief Wrapper around execvpe(). This will fork(), then call execvp(), then wait for the child to exit.
@@ -47,9 +47,12 @@ int bbs_execvpe_headless(struct bbs_node *node, const char *filename, char *cons
  * \param filename Filename of program to execute (path is optional)
  * \param argv
  * \retval 0 on success, -1 on failure
- * \warning Do not call bbs_execvpe_fd from a node thread with NULL for node. Use bbs_execvpe_fd_headless.
+ * \warning Do not call bbs_execvp_fd from a node thread with NULL for node. Use bbs_execvp_fd_headless.
  */
-int bbs_execvpe_fd(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[]);
+int bbs_execvp_fd(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[]);
 
-/*! \brief Same as bbs_execvpe_fd, but node will not be used for I/O. */
-int bbs_execvpe_fd_headless(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[]);
+/*! \brief Same as bbs_execvp_fd, but node will not be used for I/O. */
+int bbs_execvp_fd_headless(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[]);
+
+/*! \brief Same as bbs_execvp_fd_headless, but allow passing an envp */
+int bbs_execvpe_fd_headless(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[], char *const envp[]);

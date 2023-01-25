@@ -194,40 +194,48 @@ static int exec_pre(int fdin, int fdout)
 }
 
 /* Forward declaration */
-static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[], int isolated);
+static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[], char *const envp[], int isolated);
 
-int bbs_execvpe(struct bbs_node *node, const char *filename, char *const argv[])
+int bbs_execvp(struct bbs_node *node, const char *filename, char *const argv[])
 {
-	return __bbs_execvpe_fd(node, 1, -1, -1, filename, argv, 0);
+	return __bbs_execvpe_fd(node, 1, -1, -1, filename, argv, NULL, 0);
 }
 
-int bbs_execvpe_isolated(struct bbs_node *node, const char *filename, char *const argv[])
+int bbs_execvp_isolated(struct bbs_node *node, const char *filename, char *const argv[])
 {
-	return __bbs_execvpe_fd(node, 1, -1, -1, filename, argv, 1);
+	return __bbs_execvpe_fd(node, 1, -1, -1, filename, argv, NULL, 1);
 }
 
-int bbs_execvpe_headless(struct bbs_node *node, const char *filename, char *const argv[])
-{
-	if (!node) {
-		bbs_warning("It is not necessary to use %s if node is NULL\n", __FUNCTION__);
-	}
-	return __bbs_execvpe_fd(node, 0, -1, -1, filename, argv, 0);
-}
-
-int bbs_execvpe_fd(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[])
-{
-	return __bbs_execvpe_fd(node, 1, fdin, fdout, filename, argv, 0);
-}
-
-int bbs_execvpe_fd_headless(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[])
+int bbs_execvp_headless(struct bbs_node *node, const char *filename, char *const argv[])
 {
 	if (!node) {
 		bbs_warning("It is not necessary to use %s if node is NULL\n", __FUNCTION__);
 	}
-	return __bbs_execvpe_fd(node, 0, fdin, fdout, filename, argv, 0);
+	return __bbs_execvpe_fd(node, 0, -1, -1, filename, argv, NULL, 0);
 }
 
-static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[], int isolated)
+int bbs_execvp_fd(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[])
+{
+	return __bbs_execvpe_fd(node, 1, fdin, fdout, filename, argv, NULL, 0);
+}
+
+int bbs_execvp_fd_headless(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[])
+{
+	if (!node) {
+		bbs_warning("It is not necessary to use %s if node is NULL\n", __FUNCTION__);
+	}
+	return __bbs_execvpe_fd(node, 0, fdin, fdout, filename, argv, NULL, 0);
+}
+
+int bbs_execvpe_fd_headless(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[], char *const envp[])
+{
+	if (!node) {
+		bbs_warning("It is not necessary to use %s if node is NULL\n", __FUNCTION__);
+	}
+	return __bbs_execvpe_fd(node, 0, fdin, fdout, filename, argv, envp, 0);
+}
+
+static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[], char *const envp[], int isolated)
 {
 	pid_t pid;
 
@@ -236,7 +244,11 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 	int pfd[2];
 	char fullpath[256] = "", fullterm[32] = "";
 	char *parentpath;
-	char *envp[3] = { fullpath, fullterm, NULL };
+	char *myenvp[3] = { fullpath, fullterm, NULL };
+
+	if (!envp) {
+		envp = myenvp;
+	}
 
 	parentpath = getenv("PATH"); /* Use $PATH with which BBS was started, for execvpe */
 	if (parentpath) {

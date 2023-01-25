@@ -71,7 +71,7 @@ static int ibbs_exec(struct bbs_node *node, const char *args)
 		 * Even though we have a handle to the node, pass NULL for node since we don't need to link STDIN/STDOUT to the unzip command.
 		 * We just need it to execute, and this is more efficient (and safer!) than using system()
 		 */
-		if (bbs_execvpe_headless(node, "unzip", argv)) {
+		if (bbs_execvp_headless(node, "unzip", argv)) {
 			return 0; /* Don't return -1 or the node will abort */
 		} 
 	} /* else, file already exists */

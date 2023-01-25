@@ -310,7 +310,7 @@ static void bot_handler(struct client *client, int fromirc, const char *channel,
 	 * and it doesn't matter what language it's using. A little flavor of CGI :)
 	 */
 
-	res = bbs_execvpe_fd(NULL, -1, stdout[1], client->msgscript, argv); /* No STDIN, only STDOUT */
+	res = bbs_execvp_fd(NULL, -1, stdout[1], client->msgscript, argv); /* No STDIN, only STDOUT */
 	bbs_debug(5, "Script '%s' returned %d\n", client->msgscript, res);
 	if (res) {
 		goto cleanup; /* Ignore non-zero return values */
