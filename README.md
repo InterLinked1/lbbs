@@ -10,7 +10,7 @@ Key features and capabilities include:
 
 - Terminal access via Telnet, RLogin, SSH, and UNIX domain socket support *(note that Telnet and RLogin are plain text protocols and thus insecure)*
 
-- File transfers via FTP and SFTP
+- File transfers via FTP, SFTP, and HTTP/HTTPS
 
 - Config-file driven configuration
 
@@ -88,6 +88,8 @@ Config files go in `/etc/lbbs` and are as follows:
 
 - `net_ftp.conf` - FTP (File Transfer Protocol) server config
 
+- `net_http.conf` - HTTP/HTTPS web server config
+
 - `net_rlogin`.conf` - RLogin server configuration
 
 - `net_ssh.conf` - SSH and SFTP server configuration
@@ -133,6 +135,8 @@ The BBS also comes with some network services that aren't intended for terminal 
 - `net_finger` - Finger server
 
 - `net_ftp` - File Transfer Protocol server
+
+- `net_http` - HTTP/HTTPS web server
 
 - `net_sftp` - Secure File Transfer Protocol server
 
