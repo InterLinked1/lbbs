@@ -454,6 +454,7 @@ cleanup:
 }
 
 /* XXX This is very similar to provider, except we're just filling in the user struct without doing a password check */
+#pragma GCC diagnostic ignored "-Wstack-protector"
 static struct bbs_user *get_user_info(const char *username)
 {
 	char sql[128];
