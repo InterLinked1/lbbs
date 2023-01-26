@@ -43,6 +43,54 @@ int bbs_unregister_user_registration_provider(int (*regprovider)(struct bbs_node
 int bbs_user_register(struct bbs_node *node);
 
 /*!
+ * \brief Register a password reset handler
+ * \param handler Callback function to execute that will reset a password. The function should return 0 on success and nonzero on failure.
+ * \note Only one password reset handler may be registered system-wide.
+ */
+#define bbs_register_password_reset_handler(handler) __bbs_register_password_reset_handler(handler, BBS_MODULE_SELF)
+
+int __bbs_register_password_reset_handler(int (*handler)(const char *username, const char *password), void *mod);
+
+/*!
+ * \brief Unregister a previously registered password reset handler
+ * \param handler Callback function to execute that will reset a user's password to the provided one. The function should return 0 on success and nonzero on failure.
+ * \note Only one password reset handler may be registered system-wide.
+ */
+int bbs_unregister_password_reset_handler(int (*handler)(const char *username, const char *password));
+
+/*!
+ * \brief Attempt to reset a user's password. This may be used for user password change and sysop/self-service password resets
+ * \param username Username of user whose password should be changed
+ * \param password The new password
+ * \retval 0 if password updated successfully, nonzero on failure.
+ * \warning This function assumes that any invocation of it is authorized. This must be properly wrapped.
+ */
+int bbs_user_reset_password(const char *username, const char *password);
+
+/*!
+ * \brief Register a user info handler
+ * \param handler Callback function to execute that will return a BBS user with details about the specified user. The callback should return NULL if no such user or failure.
+ * \note Only one user info handler may be registered system-wide.
+ */
+#define bbs_register_user_info_handler(handler) __bbs_register_user_info_handler(handler, BBS_MODULE_SELF)
+
+int __bbs_register_user_info_handler(struct bbs_user* (*handler)(const char *username), void *mod);
+
+/*!
+ * \brief Unregister a previously registered user info handler
+ * \param handler Callback function to execute that will return a BBS user with details about the specified user. The callback should return NULL if no such user or failure.
+ * \note Only one password reset handler may be registered system-wide.
+ */
+int bbs_unregister_user_info_handler(struct bbs_user* (*handler)(const char *username));
+
+/*!
+ * \brief Retrieve the bbs_user struct corresponding to a user, e.g. for looking up details of a user that is not currently logged in.
+ * \param username
+ * \retval user on success, NULL on failure. The returned struct must be freed using bbs_user_destroy.
+ */
+struct bbs_user *bbs_user_info_by_username(const char *username);
+
+/*!
  * \brief Attempt to authenticate a user
  * \param node
  * \param username User-attempted username. NULL for guest.

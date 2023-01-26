@@ -63,6 +63,7 @@
 #define select(nfds, readfds, writefds, exceptfds, timeout) Do_not_use_select__use_poll
 /* Force usage of thread-safe functions */
 #define localtime(a) Do_not_use_localtime__use_localtime_r
+#define gmtime(a) Do_not_use_gmtime__use_gmtime_r
 #define ctime(a) Do_not_use_ctime__use_ctime_r
 #define ptsname(fd) Do_not_use_ptsname__use_ptsname_r
 #define strncpy(dest, src, size) Do_not_use_strncpy__use_safe_strncpy

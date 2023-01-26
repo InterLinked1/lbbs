@@ -29,6 +29,11 @@
 #include "include/notify.h"
 #include "include/module.h" /* use bbs_module_name */
 
+/*! \note Even though multiple auth providers are technically allowed, in general only 1 should be registered.
+ * The original thinking behind allowing multiple is to allow alternates for authentication
+ * in case there are multiple authentication sources or the main was down, but this doesn't really play nicely
+ * with the rest of the architecture since it wouldn't be synchronized necessarily.
+ */
 struct auth_provider {
 	/*! Door function */
 	int (*execute)(AUTH_PROVIDER_PARAMS);
@@ -44,6 +49,12 @@ static RWLIST_HEAD_STATIC(providers, auth_provider);
 
 static int (*registerprovider)(struct bbs_node *node) = NULL;
 void *registermod = NULL;
+
+static int (*pwresethandler)(const char *username, const char *password) = NULL;
+void *pwresetmod = NULL;
+
+static struct bbs_user* (*userinfohandler)(const char *username) = NULL;
+void *userinfomod = NULL;
 
 int __bbs_register_user_registration_provider(int (*regprovider)(struct bbs_node *node), void *mod)
 {
@@ -67,6 +78,56 @@ int bbs_unregister_user_registration_provider(int (*regprovider)(struct bbs_node
 
 	registerprovider = NULL;
 	registermod = NULL;
+	return 0;
+}
+
+int __bbs_register_password_reset_handler(int (*handler)(const char *username, const char *password), void *mod)
+{
+	/* Only one password reset handler */
+	if (pwresethandler) {
+		bbs_error("A password reset handler is already registered.\n");
+		return -1;
+	}
+
+	pwresethandler = handler;
+	pwresetmod = mod;
+	return 0;
+}
+
+int bbs_unregister_password_reset_handler(int (*handler)(const char *username, const char *password))
+{
+	if (handler != pwresethandler) {
+		bbs_error("Password reset handler %p does not match registered handler %p\n", handler, pwresethandler);
+		return -1;
+	}
+
+	pwresethandler = NULL;
+	pwresetmod = NULL;
+	return 0;
+}
+
+int __bbs_register_user_info_handler(struct bbs_user* (*handler)(const char *username), void *mod)
+{
+	/* Only one user info handler */
+	if (userinfohandler) {
+		bbs_error("A user info handler is already registered.\n");
+		return -1;
+	}
+
+	userinfohandler = handler;
+	userinfomod = mod;
+	return 0;
+}
+
+int bbs_unregister_user_info_handler(struct bbs_user* (*handler)(const char *username))
+{
+	if (handler != userinfohandler) {
+		bbs_error("User info handler %p does not match registered handler %p\n", handler, userinfohandler);
+		return -1;
+	}
+
+	userinfohandler = NULL;
+	userinfomod = NULL;
 	return 0;
 }
 
@@ -330,4 +391,42 @@ int bbs_user_register(struct bbs_node *node)
 			bbs_username(node->user), node->user->id, node->ip);
 	}
 	return res;
+}
+
+int bbs_user_reset_password(const char *username, const char *password)
+{
+	int res;
+
+	if (!pwresethandler) {
+		bbs_error("No password reset handler is currently registered\n");
+		return -1;
+	}
+
+	bbs_assert_exists(pwresetmod);
+	bbs_module_ref(pwresetmod);
+	res = pwresethandler(username, password);
+	bbs_module_unref(pwresetmod);
+
+	if (!res) {
+		bbs_auth("Password changed for user '%s'\n", username);
+	}
+
+	return res;
+}
+
+struct bbs_user *bbs_user_info_by_username(const char *username)
+{
+	struct bbs_user *user = NULL;
+
+	if (!userinfohandler) {
+		bbs_error("No user info handler is currently registered\n");
+		return NULL;
+	}
+
+	bbs_assert_exists(userinfomod);
+	bbs_module_ref(userinfomod);
+	user = userinfohandler(username);
+	bbs_module_unref(userinfomod);
+
+	return user;
 }

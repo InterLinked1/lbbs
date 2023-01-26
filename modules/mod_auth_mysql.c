@@ -453,6 +453,118 @@ cleanup:
 	return res;
 }
 
+/* XXX This is very similar to provider, except we're just filling in the user struct without doing a password check */
+static struct bbs_user *get_user_info(const char *username)
+{
+	char sql[128];
+	const unsigned int num_fields = 4;
+	MYSQL *mysql = NULL;
+	MYSQL_STMT *stmt;
+	struct bbs_user *user;
+
+	mysql = sql_connect();
+	if (!mysql) {
+		return NULL;
+	}
+
+	stmt = mysql_stmt_init(mysql);
+	if (!stmt) {
+		goto cleanup;
+	}
+
+	snprintf(sql, sizeof(sql), "SELECT id, username, priv, email FROM %s%susers WHERE username = ? LIMIT 1", DB_NAME_ARGS);
+
+	if (sql_prep_bind_exec(stmt, sql, "s", username)) {
+		goto cleanup;
+	} else {
+		/* Indented a block since we need num_fields */
+		MYSQL_BIND results[num_fields]; /* should be equal to number of selected cols */
+		unsigned long int lengths[num_fields]; /* Only needed for string result fields */
+		int bind_ints[num_fields];
+		char *bind_strings[num_fields];
+		my_bool bind_null[num_fields];
+#pragma GCC diagnostic pop
+
+		memset(results, 0, sizeof(results));
+		memset(lengths, 0, sizeof(lengths));
+		memset(bind_strings, 0, sizeof(bind_strings));
+
+		/* XXX Rather than dynamically allocating memory, there should be a variant of
+		 * sql_string_prep that uses stack allocated buffers, and just assigns pointers and lengths from those */
+
+		/* Initialize our only string fields for storing a result. */
+		if (sql_string_prep(num_fields, bind_strings, lengths, 1, 24)) { /* username */
+			goto stmtcleanup; /* Bail out on malloc failures */
+		}
+		if (sql_string_prep(num_fields, bind_strings, lengths, 3, 84)) { /* email */
+			goto stmtcleanup; /* Bail out on malloc failures */
+		}
+
+		if (sql_bind_result(stmt, "dsds", results, lengths, bind_ints, bind_strings, bind_null)) {
+			goto stmtcleanup;
+		}
+
+		/* if mysql_stmt_fetch returns 1 or MYSQL_NO_DATA, break */
+		while (!mysql_stmt_fetch(stmt)) {
+			int id, priv;
+			char *real_username = bind_strings[1], *email = bind_strings[3];
+			id = bind_ints[0];
+			priv = bind_ints[2];
+			user = bbs_user_request();
+			if (!user) {
+				break;
+			}
+			/* Set user info */
+			user->id = id;
+			user->username = strdup(real_username);
+			user->priv = priv;
+			user->email = email ? strdup(email) : NULL;
+		}
+
+stmtcleanup:
+		sql_free_result_strings(num_fields, lengths, bind_strings);
+		mysql_stmt_close(stmt);
+	}
+
+cleanup:
+	mysql_close(mysql);
+	return user;
+}
+
+static int change_password(const char *username, const char *password)
+{
+	char pw_hash[61];
+	MYSQL *mysql = NULL;
+	MYSQL_STMT *stmt;
+	int res = -1;
+	char sql[96];
+	const char *types = "ss";
+
+	if (bbs_password_salt_and_hash(password, pw_hash, sizeof(pw_hash))) {
+		return -1;
+	}
+
+	/* We expect that the users table has a UNIQUE constraint on the username column
+	 * Columns like date_registered and priv should be set automatically on INSERT. */
+	snprintf(sql, sizeof(sql), "UPDATE %s%susers SET password = ? WHERE username = ?", DB_NAME_ARGS);
+
+	mysql = sql_connect();
+	NULL_RETURN(mysql);
+	stmt = mysql_stmt_init(mysql);
+	if (!stmt || sql_prep_bind_exec(stmt, sql, types, pw_hash, username)) { /* Bind parameters and execute */
+		goto cleanup;
+	}
+	/* XXX Do we still return 0 even if we updated 0 records? If so, should we return -1 instead? */
+	res = 0;
+
+cleanup:
+	if (stmt) {
+		mysql_stmt_close(stmt);
+	}
+	mysql_close(mysql);
+	return res;
+}
+
 static int make_user(const char *username, const char *password, const char *fullname, const char *email, const char *phone,
 	const char *address, const char *city, const char *state, const char *zip, const char *dob, char gender)
 {
@@ -490,8 +602,6 @@ cleanup:
 	mysql_close(mysql);
 	return res;
 }
-
-
 
 static int user_register(struct bbs_node *node)
 {
@@ -531,10 +641,13 @@ static int user_register(struct bbs_node *node)
 			NONPOS_RETURN(bbs_readline(node, MIN_MS(1), password, sizeof(password)));
 			NEG_RETURN(bbs_writef(node, "%-*s", REG_QLEN, REG_FMT "\nConfirm Password: ")); /* Begin with new line since wasn't echoed */
 			NONPOS_RETURN(bbs_readline(node, MIN_MS(1), password2, sizeof(password2)));
-			if (!s_strlen_zero(password) && !strcmp(password, password2)) {
+			if (s_strlen_zero(password) || strcmp(password, password2)) {
+				NEG_RETURN(bbs_writef(node, "\n%sPasswords do not match%s\n", COLOR(COLOR_RED), COLOR_RESET));
+			} else if (strlen(password) < 8) {
+				NEG_RETURN(bbs_writef(node, "\n%sPassword is too short%s\n", COLOR(COLOR_RED), COLOR_RESET));
+			} else {
 				break;
 			}
-			NEG_RETURN(bbs_writef(node, "\n%sPasswords do not match%s\n", COLOR(COLOR_RED), COLOR_RESET));
 		}
 		if (tries <= 0) {
 			return 1;
@@ -653,6 +766,8 @@ static int load_module(void)
 		return -1;
 	}
 	bbs_register_user_registration_provider(user_register);
+	bbs_register_password_reset_handler(change_password);
+	bbs_register_user_info_handler(get_user_info);
 	return bbs_register_auth_provider("MySQL/MariaDB", provider);
 }
 
@@ -660,6 +775,8 @@ static int unload_module(void)
 {
 	int res = bbs_unregister_auth_provider(provider);
 	bbs_unregister_user_registration_provider(user_register);
+	bbs_unregister_password_reset_handler(change_password);
+	bbs_unregister_user_info_handler(get_user_info);
 	mysql_library_end();
 	return res;
 }
