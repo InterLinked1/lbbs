@@ -84,6 +84,8 @@ Config files go in `/etc/lbbs` and are as follows:
 
 - `modules.conf` - module loading settings (to disable a module, you do it here)
 
+- `net_finger.conf` - Finger protocol config
+
 - `net_ftp.conf` - FTP (File Transfer Protocol) server config
 
 - `net_rlogin`.conf` - RLogin server configuration
@@ -127,6 +129,8 @@ None of the network comm drivers are mutually exclusive - you can enable as many
 Generally speaking, for the reasons listed above, SSH is the recommended protocol. Apart from being the only protocol secure to use over the Internet, it also fully handles terminal resizing.
 
 The BBS also comes with some network services that aren't intended for terminal usage, e.g.:
+
+- `net_finger` - Finger server
 
 - `net_ftp` - File Transfer Protocol server
 
