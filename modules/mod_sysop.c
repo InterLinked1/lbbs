@@ -335,6 +335,7 @@ static void *sysop_handler(void *varg)
 							break;
 						case KEY_ESC:
 							bbs_history_reset();
+							histentry = NULL;
 							break;
 						default:
 							/* Ignore */
