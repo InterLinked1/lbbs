@@ -29,4 +29,8 @@ net_sftp.so : net_sftp.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(SSHLIB)
 
+net_http.so : net_http.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lmagic
+
 .PHONY: all
