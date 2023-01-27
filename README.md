@@ -10,7 +10,7 @@ Key features and capabilities include:
 
 - Terminal access via Telnet, RLogin, SSH, and UNIX domain socket support *(note that Telnet and RLogin are plain text protocols and thus insecure)*
 
-- File transfers via FTP, SFTP, and HTTP/HTTPS
+- File transfers via FTP, SFTP, Gopher, and HTTP/HTTPS
 
 - Config-file driven configuration
 
@@ -87,6 +87,8 @@ Config files go in `/etc/lbbs` and are as follows:
 - `net_finger.conf` - Finger protocol config
 
 - `net_ftp.conf` - FTP (File Transfer Protocol) server config
+
+- `net_gopher.conf` - Gopher server config
 
 - `net_http.conf` - HTTP/HTTPS web server config
 
