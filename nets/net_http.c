@@ -224,7 +224,8 @@ struct http_req {
 	struct tm modsince; /* If-Modified-Since */
 
 	/* Request Flags */
-	unsigned int secure:1;			/* HTTP? */
+	unsigned int dir:1;				/* Request is for a directory */
+	unsigned int secure:1;			/* HTTPS? */
 	unsigned int keepalive:1;		/* Connection: keep-alive */
 	unsigned int upgradeinsecure:1;	/* Upgrade-Insecure-Requests: 1 */
 	unsigned int ifmodsince:1;		/* If we got a valid If-Modified-Since request header */
@@ -419,9 +420,9 @@ static inline int parse_header(struct http_req *req, char *s)
 		if (!*(tmp + 1)) {
 			/* The / was the last character in the path.
 			 * This implies the default document in this location. */
-			req->file = "index.html";
+			req->dir = 1;
 		} else {
-			req->file = NULL;
+			req->dir = 0;
 		}
 
 		if (query && !strlen_zero(++query)) {
@@ -686,6 +687,79 @@ static int range_parse(char *range, int size, int *a, int *b)
 	return *b - *a + 1; /* Number of bytes */
 }
 
+static inline int path_file_exists(const char *dir, const char *file)
+{
+	char buf[256];
+	snprintf(buf, sizeof(buf), "%s%s", dir, file);
+	if (eaccess(buf, F_OK)) { /* It doesn't even exist. */
+		return 0;
+	}
+	return 1;
+}
+
+/*! \brief 80 columns of spaces */
+#define SPACE_STRING "                                                                                "
+
+static int dir_listing(const char *dir_name, const char *filename, int dir, void *obj)
+{
+	struct stat st;
+	struct http_req *req = obj;
+	char fullpath[256];
+	char timebuf[30];
+	char sizebuf[15]; /* This has to be at least this large to avoid snprintf truncation warnings, but the space allotted for printing this is actually less than this */
+	struct tm modtime;
+	int paddinglen;
+	int bytes;
+	char prefix;
+	double kb, mb;
+	char *tmp;
+	const char *parent = dir_name + strlen(http_docroot);
+
+	snprintf(fullpath, sizeof(fullpath), "%s/%s", dir_name, filename);
+
+	if (stat(fullpath, &st)) {
+		bbs_error("stat failed (%s): %s\n", fullpath, strerror(errno));
+		return -1;
+	}
+	gmtime_r(&st.st_mtim.tv_sec, &modtime); /* Times are always in GMT (UTC) */
+	if (strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M", &modtime) <= 0) { /* returns 0 on failure, o/w number of bytes written */
+		bbs_error("strftime failed\n"); /* errno is not set according to strftime(3) man page */
+		return -1;
+	}
+
+	paddinglen = 80 - strlen(filename);
+	bytes = st.st_size;
+	mb = 1.0 * bytes / (1024 * 1024);
+
+	if (mb >= 1) {
+		if (mb >= 1024) {
+			double gb = 1.0 * bytes / (1024 * 1024 * 1024);
+			snprintf(sizebuf, sizeof(sizebuf), "%.1fG", gb);
+			prefix = 'G';
+		} else {
+			snprintf(sizebuf, sizeof(sizebuf), "%.1fM", mb);
+			prefix = 'M';
+		}
+	} else if ((kb = 1.0 * bytes / 1024) >= 1) {
+		snprintf(sizebuf, sizeof(sizebuf), "%.1fK", kb);
+		prefix = 'K';
+	} else {
+		snprintf(sizebuf, sizeof(sizebuf), "%dB", bytes);
+		prefix = '\0';
+	}
+	/* g format character is like f, expect don't print decimal places if they are 0. Unfortunately, it loses precision.
+	 * If the number after the decimal point is 0, manually fix that up here and remove it. */
+	tmp = strchr(sizebuf, '.');
+	if (tmp && *(tmp + 1) == '0') {
+		/* Easier (and faster) than doing memmove and other tricks */
+		*tmp = prefix;
+		*(tmp + 1) = '\0';
+	}
+	/* We need at least 7 characters for the size: potentially 4 numbers + period + decimal digit + suffix */
+	dprintf(req->wfd, "<a href='%s/%s%s'>%s</a>%.*s <span>%s</span> <span style='text-align: right;'>%8s</span><br>\r\n", parent, filename, dir ? "/" : "", filename, paddinglen, SPACE_STRING, timebuf, sizebuf);
+	return 0;
+}
+
 /*! \brief Thread to handle a single HTTP/HTTPS client */
 static void http_handler(struct bbs_node *node, int secure)
 {
@@ -818,6 +892,29 @@ static void http_handler(struct bbs_node *node, int secure)
 			continue;
 		}
 
+		/* If the path exists but it's a directory, check for a default document to use */
+		snprintf(fullpath, sizeof(fullpath), "%s%s", http_docroot, req.path);
+		req.file = NULL;
+		/* Directory root (not necessarily the root directory, but of some directory) */
+		if (!eaccess(fullpath, F_OK)) {
+			if (stat(fullpath, &st)) {
+				bbs_error("stat failed for %s: %s\n", fullpath, strerror(errno));
+				send_response(&req, HTTP_INTERNAL_SERVER_ERROR); /* How can eaccess succeed but stat fail? */
+				break;
+			}
+			/* If index.html or index.htm exists in the current directory, use that.
+			 * Otherwise, display the directory. */
+			snprintf(fullpath, sizeof(fullpath), "%s%s", http_docroot, req.path);
+			if (path_file_exists(fullpath, "index.html")) {
+				bbs_debug(3, "%s%s exists\n", fullpath, req.path);
+				req.file = "index.html";
+			} else if (path_file_exists(fullpath, "index.htm")) {
+				req.file = "index.htm";
+			}
+		}
+
+		bbs_debug(3, "%s || %s || %s\n", http_docroot, req.path, req.file);
+
 		/* File exists? */
 		snprintf(fullpath, sizeof(fullpath), "%s%s%s", http_docroot, req.path, S_IF(req.file));
 		bbs_debug(6, "Full path: %s\n", fullpath);
@@ -829,13 +926,46 @@ static void http_handler(struct bbs_node *node, int secure)
 			continue;
 		}
 
-		if (!eaccess(fullpath, X_OK)) { /* File is executable */
+		/* stat again, fullpath could have changed */
+		memset(&st, 0, sizeof(st));
+		if (stat(fullpath, &st)) {
+			bbs_error("stat failed for %s: %s\n", fullpath, strerror(errno));
+			send_response(&req, HTTP_INTERNAL_SERVER_ERROR); /* How can eaccess succeed but stat fail? */
+			break;
+		}
+
+		if (S_ISREG(st.st_mode) && !eaccess(fullpath, X_OK)) { /* File is executable (directories may be executable, ignore those) */
 			if (!cgi) {
 				bbs_warning("File '%s' is executable, but CGI is disabled. For security reasons, this request is blocked.\n", fullpath);
 				send_response(&req, HTTP_FORBIDDEN);
 				continue;
 			}
 			run_cgi(&req, fullpath); /* Run a dynamic script or binary */
+			continue;
+		} else if (S_ISDIR(st.st_mode)) {
+			/* Dump the directory */
+			bbs_debug(5, "Neither index.html nor index.htm exists, producing a directory listing\n");
+			req.responsecode = 200;
+			dprintf(req.wfd, "HTTP/1.1 %d %s\r\n", req.responsecode, "OK");
+			dprintf(req.wfd, "Server: %s\r\n", SERVER_NAME);
+			dprintf(req.wfd, "Connection: %s\r\n", "close"); /* No content length, we don't know what it'll be */
+			dprintf(req.wfd, "\r\n");  /* End of response headers */
+			dprintf(req.wfd, "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 3.2 Final//EN\">");
+			dprintf(req.wfd, "<html><head><title>Index of %s</title></head>\r\n", req.path);
+			dprintf(req.wfd, "<body><h1>Index of %s</h1>\r\n", req.path);
+			dprintf(req.wfd, "<pre>");
+			dprintf(req.wfd, "<b>%-80s</b> <b>%-16s</b> <b>%-8s</b>\n", "Name", "Last modified", "Size");
+			dprintf(req.wfd, "<hr>");
+			bbs_dir_traverse_items(fullpath, dir_listing, &req); /* Dump the directory */
+			dprintf(req.wfd, "<hr></pre></body></html>");
+			/* Close the connection, since we didn't send a Content-Length.
+			 * Generally speaking, not ideal, but it works fine in this case,
+			 * and it's not really a big deal since we don't expect the client to send any extra requests
+			 * (the auto-generated webpage doesn't reference any other resources). */
+			break;
+		} else if (!S_ISREG(st.st_mode)) {
+			bbs_warning("'%s' is not a file or directory, ignoring\n", fullpath);
+			send_response(&req, HTTP_FORBIDDEN);
 			continue;
 		}
 
@@ -845,15 +975,9 @@ static void http_handler(struct bbs_node *node, int secure)
 			continue;
 		}
 
-		memset(&st, 0, sizeof(st));
 		memset(&nowtime, 0, sizeof(nowtime));
 		memset(&modtime, 0, sizeof(modtime));
 
-		if (stat(fullpath, &st)) {
-			bbs_error("stat failed for %s: %s\n", fullpath, strerror(errno));
-			send_response(&req, HTTP_INTERNAL_SERVER_ERROR); /* How can eaccess succeed but stat fail? */
-			break;
-		}
 		timenow = time(NULL);
 		gmtime_r(&timenow, &nowtime);
 		gmtime_r(&st.st_mtim.tv_sec, &modtime); /* Times are always in GMT (UTC) */
