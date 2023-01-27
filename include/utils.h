@@ -140,6 +140,16 @@ int bbs_save_remote_ip(struct sockaddr_in *sinaddr, struct bbs_node *node);
 const char *poll_revent_name(int revents);
 
 /*!
+ * \brief Traverse all the files and directories in a directory, non-recursively
+ * \param path Directory to traverse
+ * \param bbs_file_on_file Callback function to execute for each file or directory. Should return 0 to continue iterating and non-zero to stop.
+ * \param obj Argument to callback function
+ * \param max_depth
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_dir_traverse_items(const char *path, int (*on_file)(const char *dir_name, const char *filename, int dir, void *obj), void *obj);
+
+/*!
  * \brief Traverse all the files in a directory, recursively
  * \param path Directory to traverse recursively
  * \param bbs_file_on_file Callback function to execute for each file. Should return 0 to continue iterating and non-zero to stop.

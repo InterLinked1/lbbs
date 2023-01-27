@@ -30,6 +30,61 @@
 
 #include "include/utils.h"
 
+int bbs_dir_traverse_items(const char *path, int (*on_file)(const char *dir_name, const char *filename, int dir, void *obj), void *obj)
+{
+	DIR *dir;
+	struct dirent *entry;
+	int res;
+
+	/* Since we'll be using errno to check for problems, zero it out now. That said, a module we load could set it while we're loading modules. */
+	if (errno) {
+		bbs_debug(10, "errno was %s, ignoring\n", strerror(errno));
+		errno = 0;
+	}
+
+	if (!(dir = opendir(path))) {
+		bbs_error("Error opening directory - %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+
+	res = 0;
+
+	while ((entry = readdir(dir)) != NULL) { /* Don't just bail out if errno becomes set, modules could set errno when we load them. */
+		int is_file = 0;
+		int is_dir = 0;
+
+		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		/* If the dirent structure has a d_type use it to determine if we are dealing with
+		 * a file or directory. Unfortunately if it doesn't have it, or if the type is
+		 * unknown, or a link then we'll need to use the stat function instead. */
+		if (entry->d_type != DT_UNKNOWN && entry->d_type != DT_LNK) {
+			is_file = entry->d_type == DT_REG;
+			is_dir = entry->d_type == DT_DIR;
+		} else {
+			continue; /* Something else? Skip it */
+		}
+
+		if (is_file || is_dir) {
+			/* If the handler returns non-zero then stop */
+			if ((res = on_file(path, entry->d_name , is_dir, obj))) {
+				break;
+			}
+			/* Otherwise move on to next item in directory */
+		}
+	}
+
+	closedir(dir);
+
+	if (res && errno) {
+		bbs_error("Error while reading directories (%d) - %s: %s\n", res, path, strerror(errno));
+		res = -1;
+	}
+
+	return res;
+}
+
 /*! \note This function is used by autoload_modules */
 static int __bbs_dir_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, void *obj), void *obj, int max_depth, int dironly)
 {
