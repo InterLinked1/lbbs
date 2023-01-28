@@ -132,13 +132,13 @@ doxygen :
 	doxygen Doxyfile.in
 
 valgrindfg :
-	$(VALGRIND) --leak-check=full --show-leak-kinds=all --suppressions=valgrind.supp /usr/sbin/$(EXE) -c
+	$(VALGRIND) --leak-check=full --track-origins=yes --show-leak-kinds=all --suppressions=valgrind.supp /usr/sbin/$(EXE) -c
 
 valgrind :
-	$(VALGRIND) --leak-check=full --show-leak-kinds=all --suppressions=valgrind.supp --log-fd=9 /usr/sbin/$(EXE) -c 9>valgrind.txt
+	$(VALGRIND) --leak-check=full --track-origins=yes --show-leak-kinds=all --suppressions=valgrind.supp --log-fd=9 /usr/sbin/$(EXE) -c 9>valgrind.txt
 
 valgrindsupp :
-	$(VALGRIND) --leak-check=full --show-leak-kinds=all --gen-suppressions=all --log-fd=9 /usr/sbin/$(EXE) -c 9>valgrind.txt
+	$(VALGRIND) --leak-check=full --track-origins=yes --show-leak-kinds=all --gen-suppressions=all --log-fd=9 /usr/sbin/$(EXE) -c 9>valgrind.txt
 
 helgrind :
 	$(VALGRIND) --tool=helgrind /usr/sbin/$(EXE) -c

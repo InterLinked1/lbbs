@@ -77,6 +77,11 @@ void bbs_user_destroy(struct bbs_user *user)
 	free_if(user->state);
 	free_if(user->zip);
 
+	/* Date/time fields */
+	free_if(user->dob);
+	free_if(user->registered);
+	free_if(user->lastlogin);
+
 	free_if(user->email);
 	free_if(user->username);
 	free(user);

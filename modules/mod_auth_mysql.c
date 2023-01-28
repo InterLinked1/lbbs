@@ -228,6 +228,8 @@ static int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND 
 /* see ctime(3) */
 #define TM_MONTH(m) (m + 1)
 #define TM_YEAR(y) (y + 1900)
+#define TO_TM_MONTH(m) (m - 1)
+#define TO_TM_YEAR(y) (y - 1900)
 
 	case 't': /* Date */
 		tm = va_arg(ap, struct tm *);
@@ -382,7 +384,7 @@ static int sql_alloc_bind_strings(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND 
 	return res;
 }
 
-static int sql_bind_result(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND bind[], unsigned long int lengths[], int bind_ints[], char *bind_strings[], my_bool bind_null[])
+static int sql_bind_result(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND bind[], unsigned long int lengths[], int bind_ints[], char *bind_strings[], MYSQL_TIME bind_dates[], my_bool bind_null[])
 {
 	int num_cols, num_rows, expect_cols;
 	int i, res = -1;
@@ -427,6 +429,13 @@ static int sql_bind_result(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND bind[],
 			bind[i].is_null = &bind_null[i];
 			bind[i].length = &lengths[i]; /* For strings, we actually do need the length. We'll be able to find it in the array. */
 			break;
+		case 't': /* Date */
+			bind[i].buffer_type = MYSQL_TYPE_DATE;
+			bind[i].buffer = (char *) &bind_dates[i];
+			bind[i].buffer_length = lengths[i];
+			bind[i].is_null = &bind_null[i];
+			bind[i].length = 0;
+			break;
 		case 'b': /* Blob */
 			bbs_warning("Blobs are currently unsupported\n");
 			goto cleanup;
@@ -461,6 +470,62 @@ cleanup:
 	return res;
 }
 
+static int sql_fetch_columns(int bind_ints[], long long bind_longs[], char *bind_strings[], MYSQL_TIME bind_dates[], my_bool bind_null[], const char *fmt, ...)
+{
+	int i, num_args = strlen(fmt);
+	va_list ap;
+	const char *cur = fmt;
+	char format_char;
+	int *tmpint;
+	long long *tmplong;
+	char **tmpstr;
+	struct tm *tmptm;
+	MYSQL_TIME datetime;
+
+	va_start(ap, fmt);
+	for (i = 0; i < num_args; i++, cur++) { /* Bind the parameters themselves for this round */
+		format_char = tolower(*cur);
+		switch (format_char) {
+		case 'i': /* Integer */
+		case 'd': /* Double */
+			tmpint = va_arg(ap, int *);
+			*tmpint = bind_ints[i];
+			break;
+		case 'l': /* Long int */
+			tmplong = va_arg(ap, long long *);
+			*tmplong = bind_longs[i];
+			break;
+		case 's': /* String */
+			tmpstr = va_arg(ap, char **);
+			*tmpstr = bind_strings[i];
+			break;
+		case 't': /* Date */
+			if (bind_null[i]) { /* It's all good that we memset tmptm, but if we don't check for NULL, we'll set the clean memory to uninitialized bytes */
+				bbs_debug(3, "Index %d is NULL\n", i);
+			} else {
+				tmptm = va_arg(ap, struct tm *);
+				datetime = bind_dates[i];
+				tmptm->tm_year = TO_TM_YEAR(datetime.year);
+				tmptm->tm_mon = TO_TM_MONTH(datetime.month);
+				tmptm->tm_mday = datetime.day;
+				tmptm->tm_hour = datetime.hour;
+				tmptm->tm_min = datetime.minute;
+				tmptm->tm_sec = datetime.second;
+			}
+			break;
+		case 'b': /* Blob */
+			bbs_warning("Blobs are currently unsupported\n");
+			return -1;
+		default:
+			bbs_warning("Unknown SQL format type specifier: %c\n", *cur);
+			return -1;
+		}
+	}
+	va_end(ap);
+
+	return 0;
+}
+
 /*! \brief Common function to handle user authentication and info retrieval */
 #pragma GCC diagnostic ignored "-Wstack-protector"
 static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username, const char *password)
@@ -471,7 +536,7 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 	int mysqlres;
 	struct bbs_user *user = NULL;
 	/* SQL SELECT */
-	const char *fmt = "dssdssssssss";
+	const char *fmt = "dssdsssssssst";
 	const unsigned int num_fields = strlen(fmt);
 
 	mysql = sql_connect();
@@ -484,7 +549,7 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 		goto cleanup;
 	}
 
-	snprintf(sql, sizeof(sql), "SELECT id, username, password, priv, email, name, phone, address, city, state, zip, gender FROM %s%susers WHERE username = ? LIMIT 1", DB_NAME_ARGS);
+	snprintf(sql, sizeof(sql), "SELECT id, username, password, priv, email, name, phone, address, city, state, zip, gender, last_login FROM %s%susers WHERE username = ? LIMIT 1", DB_NAME_ARGS);
 
 	if (sql_prep_bind_exec(stmt, sql, "s", username)) {
 		goto cleanup;
@@ -495,13 +560,14 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 		int bind_ints[num_fields];
 		char *bind_strings[num_fields];
 		my_bool bind_null[num_fields];
+		MYSQL_TIME bind_dates[num_fields];
 #pragma GCC diagnostic pop
 
 		memset(results, 0, sizeof(results));
 		memset(lengths, 0, sizeof(lengths));
 		memset(bind_strings, 0, sizeof(bind_strings));
 
-		if (sql_bind_result(stmt, fmt, results, lengths, bind_ints, bind_strings, bind_null)) {
+		if (sql_bind_result(stmt, fmt, results, lengths, bind_ints, bind_strings, bind_dates, bind_null)) {
 			goto stmtcleanup;
 		}
 
@@ -509,24 +575,16 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 		while (MYSQL_NEXT_ROW(stmt)) {
 			int id, priv;
 			char *real_username, *pw_hash, *email, *fullname, *phone, *address, *city, *state, *zip, *gender;
+			struct tm lastlogin;
+
+			memset(&lastlogin, 0, sizeof(lastlogin)); /* We must do this since we might not fill in the whole struct, even on success. */
 
 			/* Must allocate string results before attempting to use them */
 			if (sql_alloc_bind_strings(stmt, fmt, results, lengths, bind_strings)) { /* Needs to be called if we don't use sql_string_prep in advance for all strings. */
 				break; /* If we fail for some reason, don't crash attempting to access NULL strings */
+			} else if (sql_fetch_columns(bind_ints, NULL, bind_strings, bind_dates, bind_null, fmt, &id, &real_username, &pw_hash, &priv, &email, &fullname, &phone, &address, &city, &state, &zip, &gender, &lastlogin)) { /* We have no longs, so NULL is fine */
+				break;
 			}
-			/*! \todo Make variadic function that does this for us */
-			id = bind_ints[0];
-			real_username = bind_strings[1];
-			pw_hash = bind_strings[2];
-			priv = bind_ints[3];
-			email = bind_strings[4];
-			fullname = bind_strings[5];
-			phone = bind_strings[6];
-			address = bind_strings[7];
-			city = bind_strings[8];
-			state = bind_strings[9];
-			zip = bind_strings[10];
-			gender = bind_strings[11];
 
 			/* Must verify if we have one in order to check out */
 			if (!password || !bbs_password_verify_bcrypt(password, pw_hash)) { /* XXX We're explicitly assuming here that the hashes are bcrypt hashes */
@@ -554,7 +612,13 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 				user->state = strdup_if(state);
 				user->zip = strdup_if(zip);
 				user->gender = !strlen_zero(gender) ? *gender : 0;
-				/* XXX First, retrieve last login before this (before we update) */
+				/* Retrieve last login before we update it (in the case of a user login) */
+				user->lastlogin = bind_null[12] ? NULL : malloc(sizeof(*user->lastlogin)); /* Only allocate if field was non-NULL */
+				if (user->lastlogin) {
+					char timebuf[30];
+					strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M %P %Z", &lastlogin);
+					memcpy(user->lastlogin, &lastlogin, sizeof(*user->lastlogin));
+				}
 
 				if (password) { /* Update last_login timestamp to NOW, if this was an actual login vs. just user info retrieval */
 					bbs_debug(3, "Successful password auth for %s\n", real_username);

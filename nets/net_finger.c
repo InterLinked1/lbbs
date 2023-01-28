@@ -68,14 +68,14 @@ static void *finger_handler(void *varg)
 	if (res <= 0) {
 		goto cleanup;
 	}
-	usleep(1000); /* For clients sending the -l switch, read will return incomplete, dirty hack to make sure we read the full query */
 	buf[res] = '\0'; /* Safe */
 	tmp = strstr(buf, "\r\n");
 	if (!tmp) {
-		bbs_debug(1, "Incomplete finger query?\n");
-		goto cleanup; /* No CR LF */
+		bbs_debug(1, "Incomplete finger query? (%s)\n", buf);
+		/* Just assume CR LF was next and try to parse it, sometimes this happens, so we'll be liberal with what we accept */
+	} else {
+		*tmp = '\0';
 	}
-	*tmp = '\0';
 	query = buf;
 	bbs_debug(1, "Finger query from %s: %s\n", node->ip, query); /* Raw query, without CR LF */
 	if (!strlen_zero(query)) {
@@ -85,11 +85,9 @@ static void *finger_handler(void *varg)
 			verbose = 1; /* -l or long list format switch */
 			tmp = strsep(&query, " ");
 		}
-		bbs_debug(3, "tmp: %s\n", tmp);
 		if (hashost) {
 			query = tmp;
 			tmp = strsep(&query, "@");
-			bbs_debug(3, "tmp: %s\n", tmp);
 			if (!strlen_zero(tmp)) {
 				username = tmp;
 			}
@@ -111,6 +109,16 @@ static void *finger_handler(void *varg)
 		} else {
 #undef dprintf
 			dprintf(node->fd, "User: %s #%d\r\n", bbs_username(user), user->id);
+			dprintf(node->fd, "From: %s, %s\r\n", user->city, user->state);
+			if (user->gender) {
+				dprintf(node->fd, "Gender: %c\r\n", user->gender);
+			}
+			if (user->lastlogin) {
+				char timebuf[30];
+				if (strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M %P %Z", user->lastlogin) > 0) { /* bbs_time_friendly does this internally */
+					dprintf(node->fd, "Last Login: %s\n", timebuf);
+				}
+			}
 			/*! \todo Add more information here */
 			bbs_user_destroy(user);
 		}
