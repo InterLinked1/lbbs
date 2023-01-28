@@ -43,6 +43,7 @@
 #include "include/history.h"
 #include "include/utils.h" /* use bbs_dump_threads */
 #include "include/auth.h" /* use bbs_list_auth_providers */
+#include "include/user.h" /* use bbs_user_dump */
 
 extern int option_nofork;
 
@@ -153,6 +154,12 @@ static int sysop_command(int fdin, int fdout, const char *s)
 		s += 5;
 		ENSURE_STRLEN(s);
 		bbs_node_info(fdout, atoi(s));
+	} else if (STARTS_WITH(s, "user ")) {
+		s += 5;
+		ENSURE_STRLEN(s);
+		if (bbs_user_dump(fdout, s, 10)) {
+			bbs_dprintf(fdout, "No such user '%s'\n", s);
+		}
 	} else if (STARTS_WITH(s, "spy ")) {
 		s += 4;
 		ENSURE_STRLEN(s);
@@ -255,6 +262,7 @@ static void *sysop_handler(void *varg)
 					bbs_dprintf(sysopfdout, "/kickall          - Kick all connected nodes\n");
 					bbs_dprintf(sysopfdout, "/kick <nodenum>   - Kick specified node\n");
 					bbs_dprintf(sysopfdout, "/node <nodenum>   - View information about a node\n");
+					bbs_dprintf(sysopfdout, "/user <username>  - View information about a user\n");
 					bbs_dprintf(sysopfdout, "/spy <nodenum>    - Spy on a node (^C to stop)\n");
 					bbs_dprintf(sysopfdout, "/menureload       - Reload menus\n");
 					bbs_dprintf(sysopfdout, " == Operational ==\n");

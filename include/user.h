@@ -86,5 +86,14 @@ struct bbs_user *bbs_user_request(void);
  */
 int bbs_user_guest_info_set(struct bbs_user *user, const char *guestname, const char *guestemail, const char *guestlocation);
 
+/*!
+ * \brief Print out information about a user
+ * \param fd File descriptor to which to print output
+ * \param username Username of user
+ * \param verbose Verbosity level of information to dump. 10 for everything (sysops only)
+ * \retval 0 on success, -1 on failure (no such user)
+ */
+int bbs_user_dump(int fd, const char *username, int verbose);
+
 /*! \brief Free a user */
 void bbs_user_destroy(struct bbs_user *user);

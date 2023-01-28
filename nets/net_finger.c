@@ -31,7 +31,6 @@
 #include "include/utils.h"
 #include "include/node.h"
 #include "include/user.h"
-#include "include/auth.h"
 
 #define DEFAULT_FINGER_PORT 79
 
@@ -45,7 +44,6 @@ static void *finger_handler(void *varg)
 {
 	char buf[256];
 	struct bbs_node *node = varg;
-	struct bbs_user *user = NULL;
 	char *tmp, *query;
 	char *username = NULL;
 	char *hostname = NULL;
@@ -103,29 +101,13 @@ static void *finger_handler(void *varg)
 	}
 
 	if (!strlen_zero(username)) {
-		user = bbs_user_info_by_username(username);
-		if (!user) {
+		if (bbs_user_dump(node->fd, username, 4)) {
 			bbs_debug(1, "No such user: %s\n", username);
-		} else {
-#undef dprintf
-			dprintf(node->fd, "User: %s #%d\r\n", bbs_username(user), user->id);
-			dprintf(node->fd, "From: %s, %s\r\n", user->city, user->state);
-			if (user->gender) {
-				dprintf(node->fd, "Gender: %c\r\n", user->gender);
-			}
-			if (user->lastlogin) {
-				char timebuf[30];
-				if (strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M %P %Z", user->lastlogin) > 0) { /* bbs_time_friendly does this internally */
-					dprintf(node->fd, "Last Login: %s\n", timebuf);
-				}
-			}
-			/*! \todo Add more information here */
-			bbs_user_destroy(user);
 		}
 	} else {
 		/* All users */
 		if (!allusersallowed) {
-			dprintf(node->fd, "Finger online user list denied\r\n"); /* Other finger servers don't seem to do this, but the RFC says to... */
+			bbs_dprintf(node->fd, "Finger online user list denied\r\n"); /* Other finger servers don't seem to do this, but the RFC says to... */
 		} else {
 			/*! \todo Implement */
 		}
