@@ -138,6 +138,8 @@ The BBS also comes with some network services that aren't intended for terminal 
 
 - `net_ftp` - File Transfer Protocol server
 
+- `net_gopher` - Gopher server
+
 - `net_http` - HTTP/HTTPS web server
 
 - `net_sftp` - Secure File Transfer Protocol server

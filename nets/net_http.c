@@ -111,10 +111,10 @@ static void hash_sha256(const char *s, char buf[SHA256_BUFSIZE])
     unsigned char hash[SHA256_DIGEST_LENGTH];
 
 	/* We already use OpenSSL, just use that */
-    SHA256_CTX sha256;
-    SHA256_Init(&sha256);
-    SHA256_Update(&sha256, s, strlen(s));
-    SHA256_Final(hash, &sha256);
+	SHA256_CTX sha256;
+	SHA256_Init(&sha256);
+	SHA256_Update(&sha256, s, strlen(s));
+	SHA256_Final(hash, &sha256);
 
     for(i = 0; i < SHA256_DIGEST_LENGTH; i++) {
 #undef sprintf
