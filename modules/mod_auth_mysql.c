@@ -132,6 +132,7 @@ static int sql_prepare(MYSQL_STMT *stmt, const char *fmt, const char *query)
 		case 'l': /* Long */
 		case 'd': /* Double */
 		case 's': /* String */
+		case 't': /* Date */
 			break;
 		/* Not supported */
 		case 'b': /* Blob */
@@ -171,8 +172,9 @@ static void sql_free_result_strings(int num_fields, unsigned long int lengths[],
 	}
 }
 
-static int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[], unsigned long int lengths[], int bind_ints[], long long bind_longs[], char *bind_strings[], my_bool bind_null[])
+static int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[], unsigned long int lengths[], int bind_ints[], long long bind_longs[], char *bind_strings[], MYSQL_TIME bind_dates[], my_bool bind_null[])
 {
+	struct tm *tm;
 	char format_char = tolower(*cur);
 	bind_null[i] = (my_bool) isupper(format_char); /* Uppercase format char means it's NULL */
 
@@ -209,12 +211,33 @@ static int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND 
 		break;
 	case 's': /* String */
 		bind_strings[i] = va_arg(ap, char *);
-		lengths[i] = strlen(bind_strings[i]);
+		lengths[i] = strlen(S_IF(bind_strings[i]));
+		if (!bind_strings[i] && !bind_null[i]) {
+			bbs_warning("String at index %d is NULL, but not specified?\n", i);
+		}
 		bind[i].buffer_type = MYSQL_TYPE_STRING;
 		bind[i].buffer = (char *) bind_strings[i];
 		bind[i].buffer_length = lengths[i];
 		bind[i].is_null = &bind_null[i];
 		bind[i].length = &lengths[i]; /* For strings, we actually do need the length. We'll be able to find it in the array. */
+		break;
+
+/* see ctime(3) */
+#define TM_MONTH(m) (m + 1)
+#define TM_YEAR(y) (y + 1900)
+
+	case 't': /* Date */
+		tm = va_arg(ap, struct tm *);
+		bind_dates[i].year = TM_YEAR(tm->tm_year);
+		bind_dates[i].month = TM_MONTH(tm->tm_mon);
+		bind_dates[i].day = tm->tm_mday;
+		bind_dates[i].hour = tm->tm_hour;
+		bind_dates[i].minute = tm->tm_min;
+		bind_dates[i].second = tm->tm_sec;
+		bind[i].buffer_type = MYSQL_TYPE_DATE;
+		bind[i].buffer = (char *) &bind_dates[i];
+		bind[i].is_null = &bind_null[i];
+		bind[i].length = 0;
 		break;
 	case 'b': /* Blob */
 		bbs_warning("Blobs are currently unsupported\n");
@@ -238,6 +261,7 @@ static int sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *f
 	long long bind_longs[num_args];
 	char *bind_strings[num_args];
 	my_bool bind_null[num_args];
+	MYSQL_TIME bind_dates[num_args];
 	const char *cur = fmt;
 #pragma GCC diagnostic pop
 
@@ -246,10 +270,11 @@ static int sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *f
 	}
 
 	memset(bind, 0, sizeof(bind));
+	memset(bind_dates, 0, sizeof(bind_dates)); ////
 
 	va_start(ap, fmt); 
 	for (i = 0; i < num_args; i++, cur++) { /* Bind the parameters themselves for this round */
-		if (sql_bind_param_single(ap, i, cur, bind, lengths, bind_ints, bind_longs, bind_strings, bind_null)) {
+		if (sql_bind_param_single(ap, i, cur, bind, lengths, bind_ints, bind_longs, bind_strings, bind_dates, bind_null)) {
 			va_end(ap);
 			return -1;
 		}
@@ -266,6 +291,93 @@ static int sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *f
 		return -1;
 	}
 	return 0;
+}
+
+/* If we use sql_alloc_bind_strings instead of sql_string_prep in advance, then the result will initially be truncated, until we call sql_alloc_bind_strings */
+/* if mysql_stmt_fetch returns 1 or MYSQL_NO_DATA, break */
+#define MYSQL_NEXT_ROW(stmt) (!(mysqlres = sql_stmt_fetch(stmt)) || (mysqlres == MYSQL_DATA_TRUNCATED))
+
+static int sql_stmt_fetch(MYSQL_STMT *stmt)
+{
+	int res = mysql_stmt_fetch(stmt);
+	switch (res) {
+	case 0: /* Success */
+		break;
+	case 1: /* Failure */
+		bbs_error("SQL STMT fetch failed: %s\n", mysql_stmt_error(stmt));
+		break;
+	case MYSQL_NO_DATA:
+		bbs_debug(3, "SQL STMT fetch returned no more data\n");
+		break;
+	case MYSQL_DATA_TRUNCATED:
+		bbs_debug(3, "SQL STMT fetch data truncated\n"); /* Caller needs to allocate bigger buffer(s), *OR* this is okay, if we're using sql_alloc_bind_strings */
+		break;
+	default:
+		bbs_error("Unexpected SQL STMT fetch return code: %d\n", res);
+	}
+	return res;
+}
+
+/*! \brief Automatically allocate any memory needed to hold string results */
+/*! \note You must call sql_stmt_fetch BEFORE calling this */
+static int sql_alloc_bind_strings(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND bind[], unsigned long int lengths[], char *bind_strings[])
+{
+	int i, res = 0;
+	int nullstrings = 0;
+	const char *cur = fmt;
+	int num_cols = strlen(fmt);
+
+	for (i = 0; i < num_cols; i++) {
+		switch (*cur++) {
+		case 's': /* String */
+			if (bind[i].buffer_length == 0 && lengths[i] > 0) {
+				nullstrings++;
+			}
+			break;
+		default:
+			break;
+		}
+	}
+
+	if (nullstrings) {
+		/* If we have a string and the buffer length is 0, dynamically allocate memory now. */
+		bbs_debug(5, "%d string field%s must be dynamically allocated\n", nullstrings, ESS(nullstrings));
+		for (i = 0; i < num_cols; i++) {
+			if (bind[i].buffer_type == MYSQL_TYPE_STRING && bind[i].buffer == NULL && lengths[i] > 0) {
+				res = -1;
+				bbs_debug(6, "Allocating dynamic buffer at index %d for string of length %lu\n", i, lengths[i]);
+				bind[i].buffer = calloc(1, lengths[i] + 1); /* Add 1 for null terminator, even though MySQL won't add one. */
+				if (!bind[i].buffer) {
+					bbs_error("malloc failed\n");
+					lengths[i] = 0; /* Set back to 0 so we don't attempt to free unallocated memory in sql_free_result_strings */
+				} else {
+					bind_strings[i] = bind[i].buffer; /* Make sure we have a reference to the allocated memory */
+					bind[i].buffer_length = lengths[i];
+					/* The official documentation for this function has a typo in it that has never been corrected: https://dev.mysql.com/doc/c-api/8.0/en/mysql-stmt-fetch.html
+					 * See: https://bugs.mysql.com/bug.php?id=33086
+					 * If there's one thing I really hate, it's documentation that is wrong or not maintained... argh... */
+					res = mysql_stmt_fetch_column(stmt, &bind[i], i, 0);
+					if (res) { /* ith column, offset 0 to start at beginning */
+						bbs_error("mysql_stmt_fetch_column(%d) failed (%d): %s\n", i, res, mysql_stmt_error(stmt));
+						/* Free now since this buffer is useless anyways */
+						free(bind_strings[i]);
+						bind_strings[i] = NULL;
+						lengths[i] = 0;
+					} else {
+						if (strlen(bind_strings[i]) != lengths[i]) {
+							bbs_warning("Column %d: expected length %lu but have %lu\n", i, lengths[i], strlen(bind_strings[i]));
+						} else {
+							res = 0;
+						}
+						/* No need to null terminate here since we used calloc above */
+					}
+				}
+			}
+		}
+	} else {
+		bbs_warning("No string fields need to be dynamically allocated, this function invocation was unnecessary!\n"); /* No harm done, but not necessary */
+	}
+	return res;
 }
 
 static int sql_bind_result(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND bind[], unsigned long int lengths[], int bind_ints[], char *bind_strings[], my_bool bind_null[])
@@ -328,10 +440,16 @@ static int sql_bind_result(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND bind[],
 		bbs_warning("mysql_stmt_bind_result failed: %s\n", mysql_stmt_error(stmt));
 		goto cleanup;
 	}
+
+	/* Don't call sql_alloc_bind_strings here, because then we've already fetched the first row of results before we enter the while loop.
+	 * And generally speaking, sql_alloc_bind_strings needs to be called (and the allocated strings freed) once per row,
+	 * so that's the more general way to handle it. */
+
 	if (mysql_stmt_store_result(stmt)) {
 		bbs_warning("mysql_stmt_store_result failed: %s\n", mysql_stmt_error(stmt));
 		goto cleanup;
 	}
+
 	num_rows = mysql_stmt_num_rows(stmt);
 	bbs_debug(10, "Query returned %d rows\n", num_rows);
 
@@ -356,6 +474,8 @@ static int provider(AUTH_PROVIDER_PARAMS)
 	MYSQL *mysql = NULL;
 	MYSQL_STMT *stmt;
 	int founduser = 0, res = -1;
+	int mysqlres;
+	const char *fmt = "dssds";
 
 	mysql = sql_connect();
 	NULL_RETURN(mysql);
@@ -382,9 +502,7 @@ static int provider(AUTH_PROVIDER_PARAMS)
 		memset(lengths, 0, sizeof(lengths));
 		memset(bind_strings, 0, sizeof(bind_strings));
 
-		/* XXX Rather than dynamically allocating memory, there should be a variant of
-		 * sql_string_prep that uses stack allocated buffers, and just assigns pointers and lengths from those */
-
+#if 0
 		/* Initialize our only string fields for storing a result. */
 		if (sql_string_prep(num_fields, bind_strings, lengths, 1, 24)) { /* username */
 			goto stmtcleanup; /* Bail out on malloc failures */
@@ -395,20 +513,30 @@ static int provider(AUTH_PROVIDER_PARAMS)
 		if (sql_string_prep(num_fields, bind_strings, lengths, 4, 84)) { /* email */
 			goto stmtcleanup; /* Bail out on malloc failures */
 		}
+#endif
 
-		if (sql_bind_result(stmt, "dssds", results, lengths, bind_ints, bind_strings, bind_null)) {
+		if (sql_bind_result(stmt, fmt, results, lengths, bind_ints, bind_strings, bind_null)) {
 			goto stmtcleanup;
 		}
 
-		/* if mysql_stmt_fetch returns 1 or MYSQL_NO_DATA, break */
-		while (!mysql_stmt_fetch(stmt)) {
+		/* XXX this works but the next MYSQL_NEXT_ROW call fails with commands out of sync - this problem may have previously existed though */
+		while (MYSQL_NEXT_ROW(stmt)) {
 			int id, priv;
-			char *real_username = bind_strings[1], *pw_hash = bind_strings[2], *email = bind_strings[4];
+			char *real_username, *pw_hash, *email;
+
 			id = bind_ints[0];
 			priv = bind_ints[3];
+
+			/* Must allocate string results before attempting to use them */
+			if (sql_alloc_bind_strings(stmt, fmt, results, lengths, bind_strings)) { /* Needs to be called if we don't use sql_string_prep in advance for all strings. */
+				break; /* If we fail for some reason, don't crash attempting to access NULL strings */
+			}
+			real_username = bind_strings[1];
+			pw_hash = bind_strings[2];
+			email = bind_strings[4];
+
 			founduser++;
-			/* XXX We're explicitly assuming here that the hashes are bcrypt hashes */
-			if (!bbs_password_verify_bcrypt(password, pw_hash)) {
+			if (!bbs_password_verify_bcrypt(password, pw_hash)) { /* XXX We're explicitly assuming here that the hashes are bcrypt hashes */
 				res = 0;
 				/* Set user info */
 				user->id = id;
@@ -432,10 +560,11 @@ static int provider(AUTH_PROVIDER_PARAMS)
 			} else {
 				bbs_debug(3, "Failed password auth for %s\n", real_username);
 			}
+			sql_free_result_strings(num_fields, lengths, bind_strings); /* Call inside the while loop, since strings only need to be freed per row */
 		}
 
 stmtcleanup:
-		sql_free_result_strings(num_fields, lengths, bind_strings);
+		sql_free_result_strings(num_fields, lengths, bind_strings); /* Won't hurt anything, clean up in case we break from the loop */
 		mysql_stmt_close(stmt);
 		if (!founduser) {
 			/* If we didn't find a user, do a dummy call to bbs_password_verify_bcrypt
@@ -489,9 +618,6 @@ static struct bbs_user *get_user_info(const char *username)
 		memset(results, 0, sizeof(results));
 		memset(lengths, 0, sizeof(lengths));
 		memset(bind_strings, 0, sizeof(bind_strings));
-
-		/* XXX Rather than dynamically allocating memory, there should be a variant of
-		 * sql_string_prep that uses stack allocated buffers, and just assigns pointers and lengths from those */
 
 		/* Initialize our only string fields for storing a result. */
 		if (sql_string_prep(num_fields, bind_strings, lengths, 1, 24)) { /* username */
@@ -566,6 +692,23 @@ cleanup:
 	return res;
 }
 
+static int invalid_birthday(struct tm *tm)
+{
+	struct tm nowtime;
+	time_t timenow = time(NULL);
+
+	gmtime_r(&timenow, &nowtime);
+
+	bbs_debug(3, "Analyzing date: %d/%d/%d\n", TM_MONTH(tm->tm_mon), tm->tm_mday, TM_YEAR(tm->tm_year));
+
+	/* Can't be older than the oldest person alive or younger than now. Even this is very conservative, how many infants and centenarians are BBSing? */
+	if (TM_YEAR(tm->tm_year) < 1903 || tm->tm_year > nowtime.tm_year) {
+		bbs_debug(3, "Year not valid: %d\n", TM_YEAR(tm->tm_year));
+		return -1;
+	}
+	return 0;
+}
+
 static int make_user(const char *username, const char *password, const char *fullname, const char *email, const char *phone,
 	const char *address, const char *city, const char *state, const char *zip, const char *dob, char gender)
 {
@@ -574,24 +717,27 @@ static int make_user(const char *username, const char *password, const char *ful
 	MYSQL_STMT *stmt;
 	int res = -1;
 	char sql[184];
-	const char *types = "sssssssss";
+	char genderbuf[2] = { gender, '\0' }; /* We can't pass a char directly into sql_prep_bind_exec, we must pass a char* */
+	struct tm birthday;
+	const char *types = "sssssssssts";
 
-	/* XXX Not currently used */
-	UNUSED(dob);
-	UNUSED(gender);
+	memset(&birthday, 0, sizeof(birthday));
 
 	if (bbs_password_salt_and_hash(password, pw_hash, sizeof(pw_hash))) {
 		return -1;
+	} else if (strptime(dob, "%m/%d/%Y", &birthday) == NULL || invalid_birthday(&birthday)) { /* Don't use %D since uses 2-digit years */
+		bbs_debug(3, "Rejecting '%s' due to invalid DOB\n", dob);
+		return -1; /* Invalid date */
 	}
 
 	/* We expect that the users table has a UNIQUE constraint on the username column
 	 * Columns like date_registered and priv should be set automatically on INSERT. */
-	snprintf(sql, sizeof(sql), "INSERT INTO %s%susers (username, password, name, email, phone, address, city, state, zip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", DB_NAME_ARGS);
+	snprintf(sql, sizeof(sql), "INSERT INTO %s%susers (username, password, name, email, phone, address, city, state, zip, dob, gender) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", DB_NAME_ARGS);
 
 	mysql = sql_connect();
 	NULL_RETURN(mysql);
 	stmt = mysql_stmt_init(mysql);
-	if (!stmt || sql_prep_bind_exec(stmt, sql, types, username, pw_hash, fullname, email, phone, address, city, state, zip)) { /* Bind parameters and execute */
+	if (!stmt || sql_prep_bind_exec(stmt, sql, types, username, pw_hash, fullname, email, phone, address, city, state, zip, &birthday, genderbuf)) { /* Bind parameters and execute */
 		goto cleanup;
 	}
 	res = 0;
@@ -676,7 +822,7 @@ static int user_register(struct bbs_node *node)
 		NONZERO_RETURN(res);
 
 		bbs_unbuffer(node); /* We need to be unbuffered for tread */
-		for (; tries < MAX_REG_ATTEMPTS; tries++) { /* Retries here count less than retries of the main loop */
+		for (; tries > 0; tries--) { /* Retries here count less than retries of the main loop */
 			NEG_RETURN(bbs_writef(node, "%-*s", REG_QLEN, REG_FMT "\rGender (MFX): ")); /* Erase existing line in case we're retrying */
 			gender = bbs_tread(node, MIN_MS(1));
 			NONPOS_RETURN(gender);
