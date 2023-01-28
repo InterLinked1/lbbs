@@ -500,10 +500,10 @@ static int sql_fetch_columns(int bind_ints[], long long bind_longs[], char *bind
 			*tmpstr = bind_strings[i];
 			break;
 		case 't': /* Date */
+			tmptm = va_arg(ap, struct tm *); /* If we don't call va_arg for each argument, that will throw subsequent ones off */
 			if (bind_null[i]) { /* It's all good that we memset tmptm, but if we don't check for NULL, we'll set the clean memory to uninitialized bytes */
 				bbs_debug(3, "Index %d is NULL\n", i);
 			} else {
-				tmptm = va_arg(ap, struct tm *);
 				datetime = bind_dates[i];
 				tmptm->tm_year = TO_TM_YEAR(datetime.year);
 				tmptm->tm_mon = TO_TM_MONTH(datetime.month);
@@ -526,6 +526,13 @@ static int sql_fetch_columns(int bind_ints[], long long bind_longs[], char *bind
 	return 0;
 }
 
+/*! \brief malloc some memory if data is present and and memcpy into it if malloc succeeds */
+#define MALLOC_MEMCPY(field, isnull, data) \
+	field = isnull ? NULL : malloc(sizeof(*field)); \
+	if (field) { \
+		memcpy(field, data, sizeof(*field)); \
+	}
+
 /*! \brief Common function to handle user authentication and info retrieval */
 #pragma GCC diagnostic ignored "-Wstack-protector"
 static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username, const char *password)
@@ -536,7 +543,7 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 	int mysqlres;
 	struct bbs_user *user = NULL;
 	/* SQL SELECT */
-	const char *fmt = "dssdsssssssst";
+	const char *fmt = "dssdssssssssttt";
 	const unsigned int num_fields = strlen(fmt);
 
 	mysql = sql_connect();
@@ -549,7 +556,7 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 		goto cleanup;
 	}
 
-	snprintf(sql, sizeof(sql), "SELECT id, username, password, priv, email, name, phone, address, city, state, zip, gender, last_login FROM %s%susers WHERE username = ? LIMIT 1", DB_NAME_ARGS);
+	snprintf(sql, sizeof(sql), "SELECT id, username, password, priv, email, name, phone, address, city, state, zip, gender, dob, date_registered, last_login FROM %s%susers WHERE username = ? LIMIT 1", DB_NAME_ARGS);
 
 	if (sql_prep_bind_exec(stmt, sql, "s", username)) {
 		goto cleanup;
@@ -571,18 +578,20 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 			goto stmtcleanup;
 		}
 
-		/* XXX this works but the next MYSQL_NEXT_ROW call fails with commands out of sync - this problem may have previously existed though */
 		while (MYSQL_NEXT_ROW(stmt)) {
 			int id, priv;
 			char *real_username, *pw_hash, *email, *fullname, *phone, *address, *city, *state, *zip, *gender;
-			struct tm lastlogin;
+			struct tm dob, registered, lastlogin;
 
-			memset(&lastlogin, 0, sizeof(lastlogin)); /* We must do this since we might not fill in the whole struct, even on success. */
+			/* We must do this since we might not fill in the whole struct, even on success. */
+			memset(&dob, 0, sizeof(dob));
+			memset(&registered, 0, sizeof(registered));
+			memset(&lastlogin, 0, sizeof(lastlogin));
 
 			/* Must allocate string results before attempting to use them */
 			if (sql_alloc_bind_strings(stmt, fmt, results, lengths, bind_strings)) { /* Needs to be called if we don't use sql_string_prep in advance for all strings. */
 				break; /* If we fail for some reason, don't crash attempting to access NULL strings */
-			} else if (sql_fetch_columns(bind_ints, NULL, bind_strings, bind_dates, bind_null, fmt, &id, &real_username, &pw_hash, &priv, &email, &fullname, &phone, &address, &city, &state, &zip, &gender, &lastlogin)) { /* We have no longs, so NULL is fine */
+			} else if (sql_fetch_columns(bind_ints, NULL, bind_strings, bind_dates, bind_null, fmt, &id, &real_username, &pw_hash, &priv, &email, &fullname, &phone, &address, &city, &state, &zip, &gender, &dob, &registered, &lastlogin)) { /* We have no longs, so NULL is fine */
 				break;
 			}
 
@@ -612,13 +621,9 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 				user->state = strdup_if(state);
 				user->zip = strdup_if(zip);
 				user->gender = !strlen_zero(gender) ? *gender : 0;
-				/* Retrieve last login before we update it (in the case of a user login) */
-				user->lastlogin = bind_null[12] ? NULL : malloc(sizeof(*user->lastlogin)); /* Only allocate if field was non-NULL */
-				if (user->lastlogin) {
-					char timebuf[30];
-					strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M %P %Z", &lastlogin);
-					memcpy(user->lastlogin, &lastlogin, sizeof(*user->lastlogin));
-				}
+				MALLOC_MEMCPY(user->dob, bind_null[12], &dob);
+				MALLOC_MEMCPY(user->registered, bind_null[13], &registered);
+				MALLOC_MEMCPY(user->lastlogin, bind_null[14], &lastlogin); /* Retrieve last login before we update it (in the case of a user login) */
 
 				if (password) { /* Update last_login timestamp to NOW, if this was an actual login vs. just user info retrieval */
 					bbs_debug(3, "Successful password auth for %s\n", real_username);

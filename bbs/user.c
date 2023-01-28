@@ -65,7 +65,9 @@ int bbs_user_guest_info_set(struct bbs_user *user, const char *guestname, const 
 
 int bbs_user_dump(int fd, const char *username, int verbose)
 {
+	char timebuf[30];
 	struct bbs_user *user = bbs_user_info_by_username(username);
+
 	if (!user) {
 		return -1;
 	}
@@ -80,15 +82,18 @@ int bbs_user_dump(int fd, const char *username, int verbose)
 	if (user->gender) {
 		bbs_dprintf(fd, "Gender: %c\r\n", user->gender);
 	}
+	if (verbose >= 8 && user->dob && strftime(timebuf, sizeof(timebuf), "%a %b %e %Y", user->dob) > 0) {
+		bbs_dprintf(fd, "DOB: %s\n", timebuf);
+	}
 	if (verbose >= 10) {
 		bbs_dprintf(fd, "Phone Number: %s\r\n", S_IF(user->phone));
 		bbs_dprintf(fd, "Address: %s\r\n", S_IF(user->address));
 	}
-	if (user->lastlogin) {
-		char timebuf[30];
-		if (strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M %P %Z", user->lastlogin) > 0) { /* bbs_time_friendly does this internally */
-			bbs_dprintf(fd, "Last Login: %s\n", timebuf);
-		}
+	if (user->registered && strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M %P %Z", user->registered) > 0) { /* bbs_time_friendly does this internally */
+		bbs_dprintf(fd, "Registered: %s\n", timebuf);
+	}
+	if (user->lastlogin && strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M %P %Z", user->lastlogin) > 0) { /* bbs_time_friendly does this internally */
+		bbs_dprintf(fd, "Last Login: %s\n", timebuf);
 	}
 	/*! \todo Add more information here */
 	bbs_user_destroy(user);
