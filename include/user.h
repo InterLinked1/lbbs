@@ -13,11 +13,28 @@
  *
  */
 
+/* Forward declarations */
+struct tm;
+
 struct bbs_user {
 	unsigned int id;			/*!< User ID */
 	char *username;				/*!< Username */
 	int priv;					/*!< User privilege. -1 if no user, 0 = guest, > 0 = logged in as a registered user. */
 	char *email;				/*!< Email Address */
+	/* Additional info fields */
+	char *fullname;
+	char *phone;
+	char *address;
+	char *city;
+	char *state;
+	char *zip;
+	char gender;
+	/* Dates */
+	/* These are declared as pointers so we can just forward declare struct tm, rather than having
+	 * everything that includes user.h be aware of its type. */
+	struct tm *dob;
+	struct tm *registered;
+	struct tm *lastlogin;
 	/* Guest users only */
 	char *guestname;			/*!< Guest's real name/alias */
 	char *guestemail;			/*!< Guest's email address */

@@ -68,6 +68,15 @@ void bbs_user_destroy(struct bbs_user *user)
 		free_if(user->guestemail);
 		free_if(user->guestlocation);
 	}
+
+	/* Additional info fields */
+	free_if(user->fullname);
+	free_if(user->phone);
+	free_if(user->address);
+	free_if(user->city);
+	free_if(user->state);
+	free_if(user->zip);
+
 	free_if(user->email);
 	free_if(user->username);
 	free(user);

@@ -146,6 +146,8 @@ static int sql_prepare(MYSQL_STMT *stmt, const char *fmt, const char *query)
 	return 0;
 }
 
+#if 0
+/*! \note Not currently being used, because sql_alloc_bind_strings is more convenient */
 static int sql_string_prep(int num_fields, char *bind_strings[], unsigned long int lengths[], int index, int size)
 {
 	if (index >= num_fields) {
@@ -160,6 +162,7 @@ static int sql_string_prep(int num_fields, char *bind_strings[], unsigned long i
 	}
 	return 0;
 }
+#endif
 
 static void sql_free_result_strings(int num_fields, unsigned long int lengths[], char *bind_strings[])
 {
@@ -270,7 +273,6 @@ static int sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *f
 	}
 
 	memset(bind, 0, sizeof(bind));
-	memset(bind_dates, 0, sizeof(bind_dates)); ////
 
 	va_start(ap, fmt); 
 	for (i = 0; i < num_args; i++, cur++) { /* Bind the parameters themselves for this round */
@@ -459,33 +461,30 @@ cleanup:
 	return res;
 }
 
-/*!
- * \brief Attempt to authenticate user from MySQL/MariaDB database
- * \param user BBS user struct
- * \param username
- * \param password
- * \retval 0 on successful login, -1 on failure
- */
+/*! \brief Common function to handle user authentication and info retrieval */
 #pragma GCC diagnostic ignored "-Wstack-protector"
-static int provider(AUTH_PROVIDER_PARAMS)
+static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username, const char *password)
 {
-	char sql[128];
-	const unsigned int num_fields = 5;
+	char sql[184];
 	MYSQL *mysql = NULL;
 	MYSQL_STMT *stmt;
-	int founduser = 0, res = -1;
 	int mysqlres;
-	const char *fmt = "dssds";
+	struct bbs_user *user = NULL;
+	/* SQL SELECT */
+	const char *fmt = "dssdssssssss";
+	const unsigned int num_fields = strlen(fmt);
 
 	mysql = sql_connect();
-	NULL_RETURN(mysql);
+	if (!mysql) {
+		return NULL;
+	}
 
 	stmt = mysql_stmt_init(mysql);
 	if (!stmt) {
 		goto cleanup;
 	}
 
-	snprintf(sql, sizeof(sql), "SELECT id, username, password, priv, email FROM %s%susers WHERE username = ? LIMIT 1", DB_NAME_ARGS);
+	snprintf(sql, sizeof(sql), "SELECT id, username, password, priv, email, name, phone, address, city, state, zip, gender FROM %s%susers WHERE username = ? LIMIT 1", DB_NAME_ARGS);
 
 	if (sql_prep_bind_exec(stmt, sql, "s", username)) {
 		goto cleanup;
@@ -502,19 +501,6 @@ static int provider(AUTH_PROVIDER_PARAMS)
 		memset(lengths, 0, sizeof(lengths));
 		memset(bind_strings, 0, sizeof(bind_strings));
 
-#if 0
-		/* Initialize our only string fields for storing a result. */
-		if (sql_string_prep(num_fields, bind_strings, lengths, 1, 24)) { /* username */
-			goto stmtcleanup; /* Bail out on malloc failures */
-		}
-		if (sql_string_prep(num_fields, bind_strings, lengths, 2, 84)) { /* password (bcrypt len = 60) */
-			goto stmtcleanup; /* Bail out on malloc failures */
-		}
-		if (sql_string_prep(num_fields, bind_strings, lengths, 4, 84)) { /* email */
-			goto stmtcleanup; /* Bail out on malloc failures */
-		}
-#endif
-
 		if (sql_bind_result(stmt, fmt, results, lengths, bind_ints, bind_strings, bind_null)) {
 			goto stmtcleanup;
 		}
@@ -522,42 +508,64 @@ static int provider(AUTH_PROVIDER_PARAMS)
 		/* XXX this works but the next MYSQL_NEXT_ROW call fails with commands out of sync - this problem may have previously existed though */
 		while (MYSQL_NEXT_ROW(stmt)) {
 			int id, priv;
-			char *real_username, *pw_hash, *email;
-
-			id = bind_ints[0];
-			priv = bind_ints[3];
+			char *real_username, *pw_hash, *email, *fullname, *phone, *address, *city, *state, *zip, *gender;
 
 			/* Must allocate string results before attempting to use them */
 			if (sql_alloc_bind_strings(stmt, fmt, results, lengths, bind_strings)) { /* Needs to be called if we don't use sql_string_prep in advance for all strings. */
 				break; /* If we fail for some reason, don't crash attempting to access NULL strings */
 			}
+			/*! \todo Make variadic function that does this for us */
+			id = bind_ints[0];
 			real_username = bind_strings[1];
 			pw_hash = bind_strings[2];
+			priv = bind_ints[3];
 			email = bind_strings[4];
+			fullname = bind_strings[5];
+			phone = bind_strings[6];
+			address = bind_strings[7];
+			city = bind_strings[8];
+			state = bind_strings[9];
+			zip = bind_strings[10];
+			gender = bind_strings[11];
 
-			founduser++;
-			if (!bbs_password_verify_bcrypt(password, pw_hash)) { /* XXX We're explicitly assuming here that the hashes are bcrypt hashes */
-				res = 0;
+			/* Must verify if we have one in order to check out */
+			if (!password || !bbs_password_verify_bcrypt(password, pw_hash)) { /* XXX We're explicitly assuming here that the hashes are bcrypt hashes */
+				if (!myuser) { /* Info request, allocate a new user */
+					user = bbs_user_request();
+					if (!user) {
+						break;
+					}
+				} else { /* Login request, we already have a user */
+					user = myuser;
+				}
 				/* Set user info */
 				user->id = id;
-				if (user->username) {
-					/* XXX Why would this ever be non-NULL here? */
+				if (password && user->username) { /* XXX Why would this ever be non-NULL here? */
 					bbs_warning("Already had a username?\n");
 					free_if(user->username);
 				}
 				user->username = strdup(real_username);
 				user->priv = priv;
-				user->email = email ? strdup(email) : NULL;
-				bbs_debug(3, "Successful password auth for %s\n", real_username);
+				user->email = strdup_if(email);
+				user->fullname = strdup_if(fullname);
+				user->phone = strdup_if(phone);
+				user->address = strdup_if(address);
+				user->city = strdup_if(city);
+				user->state = strdup_if(state);
+				user->zip = strdup_if(zip);
+				user->gender = !strlen_zero(gender) ? *gender : 0;
 				/* XXX First, retrieve last login before this (before we update) */
-				/* Update last_login timestamp to NOW */
-				snprintf(sql, sizeof(sql), "UPDATE %s%susers SET last_login = NOW() WHERE username = ? LIMIT 1", DB_NAME_ARGS);
-				if (!sql_prep_bind_exec(stmt, sql, "s", username)) {
-					bbs_debug(6, "Updated last_login timestamp\n");
-				} else {
-					bbs_warning("Failed to update last_login timestamp\n");
+
+				if (password) { /* Update last_login timestamp to NOW, if this was an actual login vs. just user info retrieval */
+					bbs_debug(3, "Successful password auth for %s\n", real_username);
+					snprintf(sql, sizeof(sql), "UPDATE %s%susers SET last_login = NOW() WHERE username = ? LIMIT 1", DB_NAME_ARGS);
+					if (!sql_prep_bind_exec(stmt, sql, "s", username)) {
+						bbs_debug(6, "Updated last_login timestamp\n");
+					} else {
+						bbs_warning("Failed to update last_login timestamp\n");
+					}
 				}
-			} else {
+			} else if (password) {
 				bbs_debug(3, "Failed password auth for %s\n", real_username);
 			}
 			sql_free_result_strings(num_fields, lengths, bind_strings); /* Call inside the while loop, since strings only need to be freed per row */
@@ -566,7 +574,7 @@ static int provider(AUTH_PROVIDER_PARAMS)
 stmtcleanup:
 		sql_free_result_strings(num_fields, lengths, bind_strings); /* Won't hurt anything, clean up in case we break from the loop */
 		mysql_stmt_close(stmt);
-		if (!founduser) {
+		if (!user && password) {
 			/* If we didn't find a user, do a dummy call to bbs_password_verify_bcrypt
 			 * to prevent timing attacks (user exists or doesn't exist) */
 #define DUMMY_PASSWORD "P@ssw0rd123"
@@ -579,83 +587,25 @@ stmtcleanup:
 
 cleanup:
 	mysql_close(mysql);
-	return res;
+	return user;
 }
 
-/* XXX This is very similar to provider, except we're just filling in the user struct without doing a password check */
-#pragma GCC diagnostic ignored "-Wstack-protector"
+/*!
+ * \brief Attempt to authenticate user from MySQL/MariaDB database
+ * \param user BBS user struct
+ * \param username
+ * \param password
+ * \retval 0 on successful login, -1 on failure
+ */
+static int provider(AUTH_PROVIDER_PARAMS)
+{
+	struct bbs_user *myuser = fetch_user(user, username, password);
+	return myuser ? 0 : -1; /* Returns same user on success, NULL on failure */
+}
+
 static struct bbs_user *get_user_info(const char *username)
 {
-	char sql[128];
-	const unsigned int num_fields = 4;
-	MYSQL *mysql = NULL;
-	MYSQL_STMT *stmt;
-	struct bbs_user *user;
-
-	mysql = sql_connect();
-	if (!mysql) {
-		return NULL;
-	}
-
-	stmt = mysql_stmt_init(mysql);
-	if (!stmt) {
-		goto cleanup;
-	}
-
-	snprintf(sql, sizeof(sql), "SELECT id, username, priv, email FROM %s%susers WHERE username = ? LIMIT 1", DB_NAME_ARGS);
-
-	if (sql_prep_bind_exec(stmt, sql, "s", username)) {
-		goto cleanup;
-	} else {
-		/* Indented a block since we need num_fields */
-		MYSQL_BIND results[num_fields]; /* should be equal to number of selected cols */
-		unsigned long int lengths[num_fields]; /* Only needed for string result fields */
-		int bind_ints[num_fields];
-		char *bind_strings[num_fields];
-		my_bool bind_null[num_fields];
-#pragma GCC diagnostic pop
-
-		memset(results, 0, sizeof(results));
-		memset(lengths, 0, sizeof(lengths));
-		memset(bind_strings, 0, sizeof(bind_strings));
-
-		/* Initialize our only string fields for storing a result. */
-		if (sql_string_prep(num_fields, bind_strings, lengths, 1, 24)) { /* username */
-			goto stmtcleanup; /* Bail out on malloc failures */
-		}
-		if (sql_string_prep(num_fields, bind_strings, lengths, 3, 84)) { /* email */
-			goto stmtcleanup; /* Bail out on malloc failures */
-		}
-
-		if (sql_bind_result(stmt, "dsds", results, lengths, bind_ints, bind_strings, bind_null)) {
-			goto stmtcleanup;
-		}
-
-		/* if mysql_stmt_fetch returns 1 or MYSQL_NO_DATA, break */
-		while (!mysql_stmt_fetch(stmt)) {
-			int id, priv;
-			char *real_username = bind_strings[1], *email = bind_strings[3];
-			id = bind_ints[0];
-			priv = bind_ints[2];
-			user = bbs_user_request();
-			if (!user) {
-				break;
-			}
-			/* Set user info */
-			user->id = id;
-			user->username = strdup(real_username);
-			user->priv = priv;
-			user->email = email ? strdup(email) : NULL;
-		}
-
-stmtcleanup:
-		sql_free_result_strings(num_fields, lengths, bind_strings);
-		mysql_stmt_close(stmt);
-	}
-
-cleanup:
-	mysql_close(mysql);
-	return user;
+	return fetch_user(NULL, username, NULL);
 }
 
 static int change_password(const char *username, const char *password)

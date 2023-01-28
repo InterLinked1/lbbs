@@ -158,10 +158,14 @@ char *bbs_password_hash(const char *password, const char *salt)
 
 	/* We do not use crypt, as it's not thread-safe. Use crypt_r instead. */
 #ifndef NEED_CRYPTO_IMPL
+#ifdef CRYPT_DEBUG
 	bbs_debug(9, "Using real crypt_r\n");
+#endif
 	hash = crypt_r(password, salt, &data); /* Use the real crypt_r */
 #else
+#ifdef CRYPT_DEBUG
 	bbs_debug(9, "Using alternate crypt_r\n");
+#endif
 	data.current_salt[0] = '$';
 	data.current_salt[1] = '2';
 	hash = __crypt_r(password, salt, &data); /* Use our custom implementation of crypt_r */
@@ -235,7 +239,7 @@ int bbs_password_verify(const char *password, const char *salt, const char *hash
 		if (uhash[b] != hash[b]) {
 			res = -1; /* don't leak (time wise) by aborting early! */
 		}
-		}
+	}
 
 	free(uhash);
 	return res;
