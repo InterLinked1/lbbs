@@ -109,7 +109,7 @@ static void *finger_handler(void *varg)
 		if (!allusersallowed) {
 			bbs_dprintf(node->fd, "Finger online user list denied\r\n"); /* Other finger servers don't seem to do this, but the RFC says to... */
 		} else {
-			/*! \todo Implement */
+			bbs_users_dump(node->fd, 4);
 		}
 	}
 

@@ -100,6 +100,40 @@ int bbs_user_dump(int fd, const char *username, int verbose)
 	return 0;
 }
 
+int bbs_users_dump(int fd, int verbose)
+{
+	int index = 0;
+	struct bbs_user *user, **userlist = bbs_user_list();
+	if (!userlist) {
+		return -1;
+	}
+
+	/* Use CR LF instead of just LF since Finger also uses it */
+	while ((user = userlist[index++])) {
+		if (index == 1) {
+			bbs_dprintf(fd, " %4s %-15s %-15s %3s %s\r\n", "#", "USERNAME", "FULL NAME", "PRV", "LOCATION");
+		}
+		if (verbose >= 10) {
+			bbs_dprintf(fd, " %4d %-15s %-15s %3d %s, %s\r\n", user->id, bbs_username(user), verbose >= 10 ? S_IF(user->fullname) : "", user->priv, S_IF(user->city), S_IF(user->state));
+		} else {
+			bbs_dprintf(fd, " %4d %-15s\r\n", user->id, bbs_username(user));
+		}
+	}
+
+	bbs_user_list_destroy(userlist);
+	return 0;
+}
+
+void bbs_user_list_destroy(struct bbs_user **userlist)
+{
+	int index = 0;
+	struct bbs_user *user;
+	while ((user = userlist[index++])) {
+		bbs_user_destroy(user);
+	}
+	free(userlist); /* Free the list itself */
+}
+
 void bbs_user_destroy(struct bbs_user *user)
 {
 	if (bbs_user_is_guest(user)) {

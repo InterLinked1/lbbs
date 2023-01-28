@@ -79,7 +79,7 @@ int __bbs_register_user_info_handler(struct bbs_user* (*handler)(const char *use
 /*!
  * \brief Unregister a previously registered user info handler
  * \param handler Callback function to execute that will return a BBS user with details about the specified user. The callback should return NULL if no such user or failure.
- * \note Only one password reset handler may be registered system-wide.
+ * \note Only one user info handler may be registered system-wide.
  */
 int bbs_unregister_user_info_handler(struct bbs_user* (*handler)(const char *username));
 
@@ -89,6 +89,28 @@ int bbs_unregister_user_info_handler(struct bbs_user* (*handler)(const char *use
  * \retval user on success, NULL on failure. The returned struct must be freed using bbs_user_destroy.
  */
 struct bbs_user *bbs_user_info_by_username(const char *username);
+
+/*!
+ * \brief Register a user list handler
+ * \param handler Callback function to execute that will return an array of BBS users.
+ * \note Only one user list handler may be registered system-wide.
+ */
+#define bbs_register_user_list_handler(handler) __bbs_register_user_list_handler(handler, BBS_MODULE_SELF)
+
+int __bbs_register_user_list_handler(struct bbs_user** (*handler)(void), void *mod);
+
+/*!
+ * \brief Unregister a previously registered user list handler
+ * \param handler Callback function to execute that will return an array of BBS users.
+ * \note Only one user list handler may be registered system-wide.
+ */
+int bbs_unregister_user_list_handler(struct bbs_user** (*handler)(void));
+
+/*!
+ * \brief Retrieve an array of all registered BBS users. The array is NULL terminated.
+ * \retval user list on success, NULL on failure. The user list must be freed using bbs_user_list_destroy (see user.h).
+ */
+struct bbs_user **bbs_user_list(void);
 
 /*!
  * \brief Attempt to authenticate a user

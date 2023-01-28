@@ -256,6 +256,7 @@ static void *sysop_handler(void *varg)
 					bbs_dprintf(sysopfdout, "n - List active nodes\n");
 					bbs_dprintf(sysopfdout, "q - Shut down the BBS (with confirmation)\n");
 					bbs_dprintf(sysopfdout, "s - Show BBS system status\n");
+					bbs_dprintf(sysopfdout, "u - Show list of users\n");
 					bbs_dprintf(sysopfdout, "UP -> Previous command\n");
 					bbs_dprintf(sysopfdout, "DN -> More recent command\n");
 					bbs_dprintf(sysopfdout, " == Sysoping ==\n");
@@ -298,6 +299,9 @@ static void *sysop_handler(void *varg)
 					break;
 				case 's':
 					bbs_view_settings(sysopfdout);
+					break;
+				case 'u':
+					bbs_users_dump(sysopfdout, 10);
 					break;
 				case 'q':
 					{

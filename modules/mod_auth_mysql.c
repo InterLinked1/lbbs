@@ -164,17 +164,6 @@ static int sql_string_prep(int num_fields, char *bind_strings[], unsigned long i
 }
 #endif
 
-static void sql_free_result_strings(int num_fields, unsigned long int lengths[], char *bind_strings[])
-{
-	int i;
-	for (i = 0; i < num_fields; i++) {
-		if (lengths[i] && bind_strings[i]) {
-			free(bind_strings[i]);
-			bind_strings[i] = NULL;
-		}
-	}
-}
-
 static int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[], unsigned long int lengths[], int bind_ints[], long long bind_longs[], char *bind_strings[], MYSQL_TIME bind_dates[], my_bool bind_null[])
 {
 	struct tm *tm;
@@ -322,8 +311,27 @@ static int sql_stmt_fetch(MYSQL_STMT *stmt)
 	return res;
 }
 
+static void sql_free_result_strings(int num_fields, MYSQL_BIND bind[], unsigned long int lengths[], char *bind_strings[])
+{
+	int i;
+	for (i = 0; i < num_fields; i++) {
+		if (lengths[i] && bind[i].buffer_type == MYSQL_TYPE_STRING && bind_strings[i]) {
+			/* Some additional cleanup necessary if we're going to
+			 * process multiple results and repeatedly call sql_alloc_bind_strings and sql_free_result_strings */
+			free(bind_strings[i]);
+			bind_strings[i] = NULL;
+			bind[i].buffer = NULL; /* This was the same thiing as bind_strings[i], which we've just freed */
+			bind[i].buffer_length = 0;
+			lengths[i] = 0;
+#ifdef DEBUG_SQL
+			bbs_debug(6, "Freed string field at index %d\n", i);
+#endif
+		}
+	}
+}
+
 /*! \brief Automatically allocate any memory needed to hold string results */
-/*! \note You must call sql_stmt_fetch BEFORE calling this */
+/*! \note You must call sql_stmt_fetch BEFORE calling this and sql_free_result_strings AFTER calling done with the results */
 static int sql_alloc_bind_strings(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND bind[], unsigned long int lengths[], char *bind_strings[])
 {
 	int i, res = 0;
@@ -349,7 +357,9 @@ static int sql_alloc_bind_strings(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND 
 		for (i = 0; i < num_cols; i++) {
 			if (bind[i].buffer_type == MYSQL_TYPE_STRING && bind[i].buffer == NULL && lengths[i] > 0) {
 				res = -1;
+#ifdef DEBUG_SQL
 				bbs_debug(6, "Allocating dynamic buffer at index %d for string of length %lu\n", i, lengths[i]);
+#endif
 				bind[i].buffer = calloc(1, lengths[i] + 1); /* Add 1 for null terminator, even though MySQL won't add one. */
 				if (!bind[i].buffer) {
 					bbs_error("malloc failed\n");
@@ -379,7 +389,8 @@ static int sql_alloc_bind_strings(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND 
 			}
 		}
 	} else {
-		bbs_warning("No string fields need to be dynamically allocated, this function invocation was unnecessary!\n"); /* No harm done, but not necessary */
+		/* Could happen legitimately if we're querying multiple rows (or even a single one), and some records have NULL for all the string fields that would've been dynamically allocated */
+		bbs_debug(1, "No string fields need to be dynamically allocated, this function invocation was unnecessary!\n"); /* No harm done, but not necessary */
 	}
 	return res;
 }
@@ -535,12 +546,13 @@ static int sql_fetch_columns(int bind_ints[], long long bind_longs[], char *bind
 
 /*! \brief Common function to handle user authentication and info retrieval */
 #pragma GCC diagnostic ignored "-Wstack-protector"
-static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username, const char *password)
+static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username, const char *password, struct bbs_user ***userlistptr)
 {
 	char sql[184];
 	MYSQL *mysql = NULL;
 	MYSQL_STMT *stmt;
 	int mysqlres;
+	struct bbs_user **userlist = NULL;
 	struct bbs_user *user = NULL;
 	/* SQL SELECT */
 	const char *fmt = "dssdssssssssttt";
@@ -556,9 +568,14 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 		goto cleanup;
 	}
 
-	snprintf(sql, sizeof(sql), "SELECT id, username, password, priv, email, name, phone, address, city, state, zip, gender, dob, date_registered, last_login FROM %s%susers WHERE username = ? LIMIT 1", DB_NAME_ARGS);
+	if (username) { /* Specific user */
+		snprintf(sql, sizeof(sql), "SELECT id, username, password, priv, email, name, phone, address, city, state, zip, gender, dob, date_registered, last_login FROM %s%susers WHERE username = ? LIMIT 1", DB_NAME_ARGS);
+	} else { /* All users */
+		/* We should really have a sql_exec function, but since we don't currently, just bind a dummy argument that will cause the query to return all records */
+		snprintf(sql, sizeof(sql), "SELECT id, username, password, priv, email, name, phone, address, city, state, zip, gender, dob, date_registered, last_login FROM %s%susers WHERE id > ?", DB_NAME_ARGS);
+	}
 
-	if (sql_prep_bind_exec(stmt, sql, "s", username)) {
+	if ((username && sql_prep_bind_exec(stmt, sql, "s", username)) || (!username && sql_prep_bind_exec(stmt, sql, "i", 0))) {
 		goto cleanup;
 	} else {
 		/* Indented a block since we need num_fields */
@@ -568,6 +585,7 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 		char *bind_strings[num_fields];
 		my_bool bind_null[num_fields];
 		MYSQL_TIME bind_dates[num_fields];
+		int numrows, rownum = 0;
 #pragma GCC diagnostic pop
 
 		memset(results, 0, sizeof(results));
@@ -576,6 +594,14 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 
 		if (sql_bind_result(stmt, fmt, results, lengths, bind_ints, bind_strings, bind_dates, bind_null)) {
 			goto stmtcleanup;
+		}
+
+		if (!username) { /* Only needed if fetching all users */
+			numrows = mysql_stmt_num_rows(stmt);
+			userlist = malloc((numrows + 1) * sizeof(*user)); /* The list will be NULL terminated, so add 1 */
+			if (!userlist) {
+				goto stmtcleanup;
+			}
 		}
 
 		while (MYSQL_NEXT_ROW(stmt)) {
@@ -610,6 +636,9 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 				if (password && user->username) { /* XXX Why would this ever be non-NULL here? */
 					bbs_warning("Already had a username?\n");
 					free_if(user->username);
+				} else if (strlen_zero(real_username)) {
+					bbs_error("Username for row %d is null or empty? (%p)\n", rownum, real_username); /* Remember the row number is 0-indexed here */
+					break; /* Zoinks, don't crash. But this shouldn't happen as we expect username is a required field. */
 				}
 				user->username = strdup(real_username);
 				user->priv = priv;
@@ -634,14 +663,22 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 						bbs_warning("Failed to update last_login timestamp\n");
 					}
 				}
+				/* Store all users in a linked list (really just an array) */
+				if (!username) {
+					userlist[rownum] = user;
+				}
+				rownum++;
 			} else if (password) {
 				bbs_debug(3, "Failed password auth for %s\n", real_username);
 			}
-			sql_free_result_strings(num_fields, lengths, bind_strings); /* Call inside the while loop, since strings only need to be freed per row */
+			sql_free_result_strings(num_fields, results, lengths, bind_strings); /* Call inside the while loop, since strings only need to be freed per row */
+		}
+		if (!username) {
+			userlist[rownum] = NULL; /* NULL terminate the array of users */
 		}
 
 stmtcleanup:
-		sql_free_result_strings(num_fields, lengths, bind_strings); /* Won't hurt anything, clean up in case we break from the loop */
+		sql_free_result_strings(num_fields, results, lengths, bind_strings); /* Won't hurt anything, clean up in case we break from the loop */
 		mysql_stmt_close(stmt);
 		if (!user && password) {
 			/* If we didn't find a user, do a dummy call to bbs_password_verify_bcrypt
@@ -656,6 +693,9 @@ stmtcleanup:
 
 cleanup:
 	mysql_close(mysql);
+	if (!username && userlistptr) {
+		*userlistptr = userlist;
+	}
 	return user;
 }
 
@@ -668,13 +708,22 @@ cleanup:
  */
 static int provider(AUTH_PROVIDER_PARAMS)
 {
-	struct bbs_user *myuser = fetch_user(user, username, password);
+	struct bbs_user *myuser = fetch_user(user, username, password, NULL);
 	return myuser ? 0 : -1; /* Returns same user on success, NULL on failure */
 }
 
 static struct bbs_user *get_user_info(const char *username)
 {
-	return fetch_user(NULL, username, NULL);
+	return fetch_user(NULL, username, NULL, NULL);
+}
+
+static struct bbs_user **get_users(void)
+{
+	struct bbs_user **userlist;
+	if (!fetch_user(NULL, NULL, NULL, &userlist)) {
+		return NULL;
+	}
+	return userlist;
 }
 
 static int change_password(const char *username, const char *password)
@@ -934,6 +983,7 @@ static int load_module(void)
 	bbs_register_user_registration_provider(user_register);
 	bbs_register_password_reset_handler(change_password);
 	bbs_register_user_info_handler(get_user_info);
+	bbs_register_user_list_handler(get_users);
 	return bbs_register_auth_provider("MySQL/MariaDB", provider);
 }
 
@@ -943,6 +993,7 @@ static int unload_module(void)
 	bbs_unregister_user_registration_provider(user_register);
 	bbs_unregister_password_reset_handler(change_password);
 	bbs_unregister_user_info_handler(get_user_info);
+	bbs_unregister_user_list_handler(get_users);
 	mysql_library_end();
 	return res;
 }

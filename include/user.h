@@ -95,5 +95,16 @@ int bbs_user_guest_info_set(struct bbs_user *user, const char *guestname, const 
  */
 int bbs_user_dump(int fd, const char *username, int verbose);
 
+/*!
+ * \brief Print out information about all users
+ * \param fd File descriptor to which to print output
+ * \param verbose Verbosity level of information to dump. 10 for everything (sysops only)
+ * \retval 0 on success, -1 on failure (no such user)
+*/
+int bbs_users_dump(int fd, int verbose);
+
+/*! \brief Free a list of BBS users, including all the users in the list */
+void bbs_user_list_destroy(struct bbs_user **userlist);
+
 /*! \brief Free a user */
 void bbs_user_destroy(struct bbs_user *user);

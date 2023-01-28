@@ -56,6 +56,9 @@ void *pwresetmod = NULL;
 static struct bbs_user* (*userinfohandler)(const char *username) = NULL;
 void *userinfomod = NULL;
 
+static struct bbs_user** (*userlisthandler)(void) = NULL;
+void *userlistmod = NULL;
+
 int __bbs_register_user_registration_provider(int (*regprovider)(struct bbs_node *node), void *mod)
 {
 	/* Unlike auth providers, there is only 1 user registration handler */
@@ -128,6 +131,31 @@ int bbs_unregister_user_info_handler(struct bbs_user* (*handler)(const char *use
 
 	userinfohandler = NULL;
 	userinfomod = NULL;
+	return 0;
+}
+
+int __bbs_register_user_list_handler(struct bbs_user** (*handler)(void), void *mod)
+{
+	/* Only one user list handler */
+	if (userlisthandler) {
+		bbs_error("A user list handler is already registered.\n");
+		return -1;
+	}
+
+	userlisthandler = handler;
+	userlistmod = mod;
+	return 0;
+}
+
+int bbs_unregister_user_list_handler(struct bbs_user** (*handler)(void))
+{
+	if (handler != userlisthandler) {
+		bbs_error("User list handler %p does not match registered handler %p\n", handler, userlisthandler);
+		return -1;
+	}
+
+	userlisthandler = NULL;
+	userlistmod = NULL;
 	return 0;
 }
 
@@ -429,4 +457,21 @@ struct bbs_user *bbs_user_info_by_username(const char *username)
 	bbs_module_unref(userinfomod);
 
 	return user;
+}
+
+struct bbs_user **bbs_user_list(void)
+{
+	struct bbs_user **userlist = NULL;
+
+	if (!userlisthandler) {
+		bbs_error("No user list handler is currently registered\n");
+		return NULL;
+	}
+
+	bbs_assert_exists(userlistmod);
+	bbs_module_ref(userlistmod);
+	userlist = userlisthandler();
+	bbs_module_unref(userlistmod);
+
+	return userlist;
 }
