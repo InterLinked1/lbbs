@@ -20,7 +20,7 @@ all: $(MOD_SO)
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^
 
-mod_auth_mysql.so : mod_auth_mysql.o
+mod_mysql.so : mod_mysql.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(MYSQL_LIBS)
 

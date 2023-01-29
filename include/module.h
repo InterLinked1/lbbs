@@ -13,6 +13,11 @@
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
+enum bbs_module_flags {
+	MODFLAG_DEFAULT = 0,
+	MODFLAG_GLOBAL_SYMBOLS = (1 << 0), /* Module exports global symbols */
+};
+
 struct bbs_module_info {
 	/*!
 	 * The 'self' pointer for a module; it will be set by the loader before
@@ -30,7 +35,7 @@ struct bbs_module_info {
 	const char *name;
 	/*! User friendly description of the module. */
 	const char *description;
-	/*! \note Not currently used */
+	/*! Module loading flags */
 	unsigned int flags;
 };
 
@@ -42,6 +47,16 @@ struct bbs_module *bbs_module_ref(struct bbs_module *mod);
 
 /*! \brief Decrement ref count of a module */
 void bbs_module_unref(struct bbs_module *mod);
+
+/*!
+ * \brief Indicate that the calling module is dependent on the specified module.
+ * \retval module reference on success, NULL on failure
+ * \note On module close, you must call bbs_unrequire_module with the returned reference
+ */
+struct bbs_module *bbs_require_module(const char *module);
+
+/*! \brief Indicate that this module is no longer dependent on the specified module. */
+void bbs_unrequire_module(struct bbs_module *mod);
 
 /*! \brief Register a module */
 void bbs_module_register(const struct bbs_module_info *modinfo);
@@ -112,6 +127,12 @@ static const __attribute__((unused)) struct bbs_module_info *bbs_module_info;
 
 #define BBS_MODULE_INFO_STANDARD(desc)	 \
 	BBS_MODULE_INFO(0, desc,   			\
+		.load = load_module,				\
+		.unload = unload_module,			\
+	)
+
+#define BBS_MODULE_INFO_FLAGS(desc, flags)	 \
+	BBS_MODULE_INFO(flags, desc,   			\
 		.load = load_module,				\
 		.unload = unload_module,			\
 	)

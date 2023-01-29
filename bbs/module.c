@@ -59,6 +59,7 @@ static RWLIST_HEAD_STATIC(modules, bbs_module);
 
 static int autoload_setting = DEFAULT_AUTOLOAD_SETTING;
 
+struct stringlist modules_preload;
 struct stringlist modules_load;
 struct stringlist modules_noload;
 
@@ -172,6 +173,23 @@ static struct bbs_module *find_resource(const char *resource)
 	return mod;
 }
 
+struct bbs_module *bbs_require_module(const char *module)
+{
+	struct bbs_module *mod = find_resource(module);
+	if (mod) {
+		bbs_debug(5, "Module dependency '%s' is satisfied\n", module);
+		bbs_module_ref(mod);
+	} else {
+		bbs_warning("Module %s dependency is not satisfied\n", module);
+	}
+	return mod;
+}
+
+void bbs_unrequire_module(struct bbs_module *mod)
+{
+	bbs_module_unref(mod);
+}
+
 static int queue_reload(const char *resource)
 {
 	int res = -1;
@@ -263,6 +281,7 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 	char fn[PATH_MAX];
 	size_t resource_in_len = strlen(resource_in);
 	const char *so_ext = "";
+	struct bbs_module *mod;
 
 	if (resource_in_len < 4 || strcasecmp(resource_in + resource_in_len - 3, ".so")) {
 		so_ext = ".so";
@@ -270,7 +289,15 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 
 	snprintf(fn, sizeof(fn), "%s/%s%s", BBS_MODULE_DIR, resource_in, so_ext);
 
-	return load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_LOCAL, suppress_logging);
+	mod = load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_LOCAL, suppress_logging);
+	if (mod && mod->info->flags & MODFLAG_GLOBAL_SYMBOLS) {
+		/* Close the module so we can reopen with correct flags. */
+		logged_dlclose(resource_in, mod->lib);
+		bbs_debug(3, "Module '%s' contains global symbols, reopening\n", resource_in);
+		mod = load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_GLOBAL, 0);
+	}
+
+	return mod;
 }
 
 const char *bbs_module_name(const struct bbs_module *mod)
@@ -443,7 +470,7 @@ static int on_file_plan(const char *dir_name, const char *filename, void *obj)
 	return 0;
 }
 
-static int on_file_autoload(const char *dir_name, const char *filename, void *obj)
+static int on_file_preload(const char *dir_name, const char *filename, void *obj)
 {
 	struct bbs_module *mod = find_resource(filename);
 
@@ -452,6 +479,36 @@ static int on_file_autoload(const char *dir_name, const char *filename, void *ob
 
 	if (mod) {
 		bbs_error("Module %s is already loaded\n", filename);
+		return 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
+	}
+
+	/* Only load if it's a preload module */
+	if (!stringlist_contains(&modules_preload, filename)) {
+		return 0;
+	}
+
+	bbs_debug(5, "Preloading dynamic module %s (autoload=yes)\n", filename);
+
+	if (load_resource(filename, 0)) {
+		bbs_error("Failed to autoload %s\n", filename);
+	} else {
+		autoload_loaded++;
+	}
+
+	return 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
+}
+
+static int on_file_autoload(const char *dir_name, const char *filename, void *obj)
+{
+	struct bbs_module *mod = find_resource(filename);
+
+	UNUSED(dir_name);
+	UNUSED(obj);
+
+	if (mod) {
+		if (!stringlist_contains(&modules_preload, filename)) { /* If it was preloaded, then it's legitimate */
+			bbs_error("Module %s is already loaded\n", filename);
+		}
 		return 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
 	}
 
@@ -496,6 +553,7 @@ static int load_config(void)
 
 	RWLIST_WRLOCK(&modules_load);
 	RWLIST_WRLOCK(&modules_noload);
+	RWLIST_WRLOCK(&modules_preload);
 	while ((section = bbs_config_walk(cfg, section))) {
 		if (!strcmp(bbs_config_section_name(section), "general")) {
 			continue; /* Skip general, already handled */
@@ -512,6 +570,9 @@ static int load_config(void)
 			} else if (!strcmp(key, "noload")) {
 				bbs_debug(7, "Explicitly planning to not load '%s'\n", value);
 				stringlist_push(&modules_noload, value);
+			} else if (!strcmp(key, "preload")) {
+				bbs_debug(7, "Explicitly planning to preload '%s'\n", value);
+				stringlist_push(&modules_preload, value);
 			} else {
 				bbs_warning("Invalid directive %s=%s, ignoring\n", key, value);
 			}
@@ -519,6 +580,7 @@ static int load_config(void)
 	}
 	RWLIST_UNLOCK(&modules_load);
 	RWLIST_UNLOCK(&modules_noload);
+	RWLIST_UNLOCK(&modules_preload);
 	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
 	return 0;
 }
@@ -536,6 +598,7 @@ static int autoload_modules(void)
 
 	bbs_debug(1, "Detected %d dynamic module%s\n", autoload_planned, ESS(autoload_planned));
 	/* Now, actually try to load them. */
+	bbs_dir_traverse(BBS_MODULE_DIR, on_file_preload, NULL, -1);
 	bbs_dir_traverse(BBS_MODULE_DIR, on_file_autoload, NULL, -1);
 
 	if (autoload_planned != autoload_loaded) {
@@ -547,6 +610,7 @@ static int autoload_modules(void)
 
 	stringlist_empty(&modules_load);
 	stringlist_empty(&modules_noload);
+	stringlist_empty(&modules_preload);
 
 	RWLIST_UNLOCK(&modules);
 	return 0;
