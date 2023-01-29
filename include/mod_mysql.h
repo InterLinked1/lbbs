@@ -1,3 +1,17 @@
+/*
+ * LBBS -- The Lightweight Bulletin Board System
+ *
+ * Copyright (C) 2023, Naveen Albert
+ *
+ * Naveen Albert <bbs@phreaknet.org>
+ */
+
+/*! \file
+ *
+ * \brief MySQL/MariaDB interface
+ *
+ * \author Naveen Albert <bbs@phreaknet.org>
+ */
 
 /*
  * Full MySQL/MariaDB C API documentation available here:
