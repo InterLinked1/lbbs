@@ -1436,6 +1436,10 @@ static int load_config(void)
 	bbs_config_val_set_str(cfg, "https", "cert", ssl_cert, sizeof(ssl_cert));
 	bbs_config_val_set_str(cfg, "https", "key", ssl_key, sizeof(ssl_key));
 
+	if (!http_enabled && !https_enabled) {
+		return -1; /* Nothing is enabled. */
+	}
+
 	if (eaccess(http_docroot, R_OK)) {
 		bbs_error("Document root %s does not exist\n", http_docroot);
 		return -1;
