@@ -185,6 +185,82 @@ int bbs_timed_accept(int socket, int ms, const char *ip)
 	return -1;
 }
 
+void bbs_tcp_listener2(int socket, int socket2, const char *name, const char *name2, void *(*handler)(void *varg), void *module)
+{
+	struct sockaddr_in sinaddr;
+	socklen_t len;
+	int sfd, res;
+	struct pollfd pfds[2];
+	int nfds = 0;
+	struct bbs_node *node;
+	char new_ip[56];
+
+	if (socket != -1) {
+		pfds[nfds].fd = socket;
+		pfds[nfds].events = POLLIN;
+		nfds++;
+	}
+	if (socket2 != -1) {
+		pfds[nfds].fd = socket2;
+		pfds[nfds].events = POLLIN;
+		nfds++;
+	}
+
+	if (!nfds) { /* No sockets on which to listen? Then time to check out. */
+		bbs_warning("This thread is useless\n");
+		return; /* Peace out, folks */
+	}
+
+	bbs_debug(1, "Started %s/%s listener thread\n", S_IF(name), S_IF(name2));
+
+	for (;;) {
+		int sock2;
+		res = poll(pfds, nfds, -1); /* Wait forever for an incoming connection. */
+		pthread_testcancel();
+		if (res < 0) {
+			if (errno != EINTR) {
+				bbs_warning("poll returned error: %s\n", strerror(errno));
+				break;
+			}
+			continue;
+		}
+		if (pfds[0].revents) {
+			len = sizeof(sinaddr);
+			sfd = accept(pfds[0].fd, (struct sockaddr *) &sinaddr, &len);
+			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
+			bbs_debug(1, "Accepting new %s connection from %s\n", pfds[0].fd == socket ? name : name2, new_ip);
+			sock2 = pfds[0].fd == socket2;
+		} else if (pfds[1].revents) {
+			len = sizeof(sinaddr);
+			sfd = accept(pfds[1].fd, (struct sockaddr *) &sinaddr, &len);
+			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
+			bbs_debug(1, "Accepting new %s connection from %s\n", pfds[1].fd == socket ? name : name2, new_ip); /* Must be HTTPS, technically */
+			sock2 = pfds[1].fd == socket2;
+		} else {
+			bbs_error("No revents?\n");
+			continue; /* Shouldn't happen? */
+		}
+		if (sfd < 0) {
+			if (errno != EINTR) {
+				bbs_warning("accept returned %d: %s\n", sfd, strerror(errno));
+				break;
+			}
+			continue;
+		}
+
+		node = __bbs_node_request(sfd, sock2 ? name2 : name, module);
+		if (!node) {
+			close(sfd);
+		} else if (bbs_save_remote_ip(&sinaddr, node)) {
+			bbs_node_unlink(node);
+		} else if (bbs_pthread_create_detached(&node->thread, NULL, handler, node)) { /* Run the BBS on this node */
+			bbs_node_unlink(node);
+		}
+	}
+	/* Normally, we never get here, as pthread_cancel snuffs out the thread ungracefully */
+	bbs_warning("%s/%s listener thread exiting abnormally\n", S_IF(name), S_IF(name2));
+}
+
 static void __bbs_tcp_listener(int socket, const char *name, int (*handshake)(struct bbs_node *node), void *(*handler)(void *varg), void *module)
 {
 	struct sockaddr_in sinaddr;

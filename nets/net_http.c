@@ -1201,80 +1201,8 @@ static void *__http_handler(void *varg)
 /*! \brief Single listener thread for HTTP and/or HTTPS */
 static void *http_listener(void *unused)
 {
-	/* Avoid using the bbs_tcp_listener function, even though it's convenient,
-	 * because HTTP requests are stateless, and bbs_tcp_listener would
-	 * create and destroy a node for every single HTTP request. */
-
-	struct sockaddr_in sinaddr;
-	socklen_t len;
-	int sfd, res;
-	struct pollfd pfds[2];
-	int nfds = 0;
-	struct bbs_node *node;
-	char new_ip[56];
-
 	UNUSED(unused);
-
-	if (http_socket != -1) {
-		pfds[nfds].fd = http_socket;
-		pfds[nfds].events = POLLIN;
-		nfds++;
-	}
-	if (https_socket != -1) {
-		pfds[nfds].fd = https_socket;
-		pfds[nfds].events = POLLIN;
-		nfds++;
-	}
-
-	bbs_assert(nfds); /* Why would we have spawned a listener if we're not listening? */
-	bbs_debug(1, "Started HTTP/HTTPS listener thread\n");
-
-	for (;;) {
-		int secure;
-		res = poll(pfds, nfds, -1); /* Wait forever for an incoming connection. */
-		pthread_testcancel();
-		if (res < 0) {
-			if (errno != EINTR) {
-				bbs_warning("poll returned error: %s\n", strerror(errno));
-				break;
-			}
-			continue;
-		}
-		if (pfds[0].revents) {
-			len = sizeof(sinaddr);
-			sfd = accept(pfds[0].fd, (struct sockaddr *) &sinaddr, &len);
-			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
-			bbs_debug(1, "Accepting new %s connection from %s\n", pfds[0].fd == http_socket ? "HTTP" : "HTTPS", new_ip);
-			secure = pfds[0].fd == https_socket;
-		} else if (pfds[1].revents) {
-			len = sizeof(sinaddr);
-			sfd = accept(pfds[1].fd, (struct sockaddr *) &sinaddr, &len);
-			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
-			bbs_debug(1, "Accepting new %s connection from %s\n", pfds[1].fd == http_socket ? "HTTP" : "HTTPS", new_ip); /* Must be HTTPS, technically */
-			secure = pfds[1].fd == https_socket;
-		} else {
-			bbs_error("No revents?\n");
-			continue; /* Shouldn't happen? */
-		}
-		if (sfd < 0) {
-			if (errno != EINTR) {
-				bbs_warning("accept returned %d: %s\n", sfd, strerror(errno));
-				break;
-			}
-			continue;
-		}
-
-		node = bbs_node_request(sfd, secure ? "HTTPS" : "HTTP");
-		if (!node) {
-			close(sfd);
-		} else if (bbs_save_remote_ip(&sinaddr, node)) {
-			bbs_node_unlink(node);
-		} else if (bbs_pthread_create_detached(&node->thread, NULL, __http_handler, node)) { /* Run the BBS on this node */
-			bbs_node_unlink(node);
-		}
-	}
-	/* Normally, we never get here, as pthread_cancel snuffs out the thread ungracefully */
-	bbs_warning("HTTP/HTTPS listener thread exiting abnormally\n");
+	bbs_tcp_listener2(http_socket, https_socket, "HTTP", "HTTPS", __http_handler, BBS_MODULE_SELF);
 	return NULL;
 }
 
@@ -1343,7 +1271,6 @@ static int load_module(void)
 		bbs_error("Unable to create HTTP listener thread.\n");
 		close_if(http_socket);
 		close_if(https_socket);
-		ssl_server_shutdown();
 		return -1;
 	}
 

@@ -103,13 +103,24 @@ int bbs_timed_accept(int socket, int ms, const char *ip);
 void bbs_tcp_comm_listener(int socket, const char *name, int (*handshake)(struct bbs_node *node), void *module);
 
 /*!
- * \brief Run a generic TCP network login service thread
+ * \brief Run a generic TCP network login service listener thread
  * \param socket Socket fd
  * \param name Name of network login service, e.g. Telnet, RLogin, etc.
  * \param handler Service handler function
  * \param module Module reference
  */
 void bbs_tcp_listener(int socket, const char *name, void *(*handler)(void *varg), void *module);
+
+/*!
+ * \brief Run a generic TCP network login service listener thread for up to 2 sockets
+ * \param socket Socket fd (typically the insecure socket). -1 if not needed.
+ * \param socket2 Optional 2nd fd (typically the secure socket). -1 if not needed.
+ * \param name Name of network login service corresponding to socket
+ * \param name2 Name of network login service corresponding to socket2
+ * \param handler Common service handler function (for both sockets)
+ * \param module Module reference
+ */
+void bbs_tcp_listener2(int socket, int socket2, const char *name, const char *name2, void *(*handler)(void *varg), void *module);
 
 /*!
  * \brief Get local IP address
