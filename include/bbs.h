@@ -165,6 +165,9 @@ int bbs_fd_dump(int fd);
 /*! \brief Break if a function returns a negative value */
 #define NEG_BREAK(x) if ((x) < 0) { break; }
 
+/*! \brief Break if a function returns a non-positive value */
+#define NONPOS_BREAK(x) if ((x) <= 0) { break; }
+
 /*! \brief Return -1 if a value is NULL */
 #define NULL_RETURN(x) if (!(x)) { return -1; }
 

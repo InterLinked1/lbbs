@@ -59,6 +59,7 @@
 #include "include/utils.h" /* use print_time_elapsed, print_days_elapsed */
 #include "include/variables.h"
 #include "include/startup.h"
+#include "include/tls.h"
 
 #define BBS_RUN_DIR DIRCAT("/var/run", BBS_NAME)
 #define BBS_PID_FILE DIRCAT(BBS_RUN_DIR, "bbs.pid")
@@ -480,6 +481,7 @@ static void bbs_shutdown(void)
 	bbs_node_shutdown_all(shutting_down);
 	unload_modules();
 	bbs_curl_shutdown(); /* Clean up cURL */
+	ssl_server_shutdown(); /* Shut down SSL/TLS */
 	bbs_free_menus(); /* Clean up menus */
 	bbs_configs_free_all(); /* Clean up any remaining configs that modules didn't. */
 	bbs_vars_cleanup();
@@ -792,6 +794,9 @@ int main(int argc, char *argv[])
 	CHECK_INIT(bbs_mail_init());
 	CHECK_INIT(bbs_load_menus(0));
 	CHECK_INIT(bbs_load_nodes());
+
+	ssl_server_init(); /* If this fails for some reason, that's okay. Other failures will ensue, but this is not fatal. */
+
 	CHECK_INIT(bbs_curl_init());
 	if (!is_root()) {
 		check_cap(0); /* Check before modules load, which may try to bind to privileged ports. */

@@ -36,17 +36,7 @@
 #include <sys/sendfile.h>
 #include <magic.h>
 
-#define HAVE_OPENSSL
-
-#ifdef HAVE_OPENSSL
-#include <openssl/bio.h>
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-
-/* For hashing: */
-#include <openssl/evp.h>
-#include <openssl/hmac.h>
-#endif
+#include "include/tls.h"
 
 #include "include/module.h"
 #include "include/config.h"
@@ -71,8 +61,6 @@ static int https_port = DEFAULT_HTTPS_PORT;
 
 static pthread_t http_listener_thread = -1;
 static char http_docroot[256] = "";
-static char ssl_cert[256] = "";
-static char ssl_key[256] = "";
 
 static int http_enabled = 0, https_enabled = 0;
 static int cgi = 0;
@@ -102,26 +90,6 @@ struct http_user {
 };
 
 static RWLIST_HEAD_STATIC(users, http_user);
-
-#define SHA256_BUFSIZE 65
-
-static void hash_sha256(const char *s, char buf[SHA256_BUFSIZE])
-{
-	int i;
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-
-	/* We already use OpenSSL, just use that */
-	SHA256_CTX sha256;
-	SHA256_Init(&sha256);
-	SHA256_Update(&sha256, s, strlen(s));
-	SHA256_Final(hash, &sha256);
-
-    for(i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-#undef sprintf
-        sprintf(buf + (i * 2), "%02x", hash[i]); /* Safe */
-    }
-    buf[SHA256_BUFSIZE - 1] = '\0';
-}
 
 static void http_user_cache_purge(void)
 {
@@ -213,90 +181,6 @@ static int http_user_cache_check(const char *username, const char *password)
 	RWLIST_UNLOCK(&users);
 	return match;
 }
-
-#ifdef HAVE_OPENSSL
-SSL_CTX *ssl_ctx = NULL;
-#endif
-
-/*! \todo is there an OpenSSL function for this? */
-static const char *ssl_strerror(int err)
-{
-	switch (err) {
-	case SSL_ERROR_NONE:
-		return "SSL_ERROR_NONE";
-	case SSL_ERROR_ZERO_RETURN:
-		return "SSL_ERROR_ZERO_RETURN";
-	case SSL_ERROR_WANT_READ:
-		return "SSL_ERROR_WANT_READ";
-	case SSL_ERROR_WANT_WRITE:
-		return "SSL_ERROR_WANT_WRITE";
-	case SSL_ERROR_WANT_CONNECT:
-		return "SSL_ERROR_WANT_CONNECT";
-	case SSL_ERROR_WANT_ACCEPT:
-		return "SSL_ERROR_WANT_ACCEPT";
-	case SSL_ERROR_WANT_X509_LOOKUP:
-		return "SSL_ERROR_WANT_X509_LOOKUP";
-	case SSL_ERROR_SYSCALL:
-		return "SSL_ERROR_SYSCALL";
-	case SSL_ERROR_SSL:
-		return "SSL_ERROR_SSL";
-	default:
-		break;
-	}
-	return "Undefined";
-}
-
-static int ssl_server_init(void)
-{
-#ifdef HAVE_OPENSSL
-	const SSL_METHOD *method;
-
-	method = TLS_server_method(); /* Server method, not client method! */
-	ssl_ctx = SSL_CTX_new(method);
-
-	if (!ssl_ctx) {
-		bbs_error("Failed to create SSL context\n");
-		return -1;
-	}
-
-	SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_NONE, NULL); /* Server is not verifying the client, the client will verify the server */
-
-	if (SSL_CTX_use_certificate_file(ssl_ctx, ssl_cert, SSL_FILETYPE_PEM) <= 0) {
-        bbs_error("Could not load certificate file %s: %s\n", ssl_cert, ERR_error_string(ERR_get_error(), NULL));
-        return -1;
-    }
-    if (SSL_CTX_use_PrivateKey_file(ssl_ctx, ssl_key, SSL_FILETYPE_PEM) <= 0) {
-        bbs_error("Could not load private key file %s: %s\n", ssl_key, ERR_error_string(ERR_get_error(), NULL));
-        return -1;
-    }
-    if (SSL_CTX_check_private_key(ssl_ctx) != 1) {
-        bbs_error("Private key does not match public certificate\n");
-        return -1;
-    }
-
-	return 0;
-#else
-	return -1; /* Won't happen */
-#endif
-}
-
-static void ssl_server_shutdown(void)
-{
-#ifdef HAVE_OPENSSL
-	if (ssl_ctx) {
-		SSL_CTX_free(ssl_ctx);
-		ssl_ctx = NULL;
-	}
-#endif
-}
-
-/* Helper macros to automatically handle writing/reading with SSL */
-#ifdef HAVE_SSL_RECV
-#define my_recv(ssl, fd, buf, len, flags) (ssl ? SSL_recv(ssl, buf, len, flags) : recv(fd, buf, len, flags)
-#endif
-#define my_read(ssl, fd, buf, len) (ssl ? SSL_read(ssl, buf, len) : read(fd, buf, len))
-#define my_write(ssl, fd, buf, len) (ssl ? SSL_write(ssl, buf, len) : write(fd, buf, len))
-#define my_readline(ssl, fd, buf, len) SSL_readline(ssl, buf, len)
 
 /* These functions are not safe to use */
 #undef read
@@ -936,25 +820,13 @@ static void http_handler(struct bbs_node *node, int secure)
 
 	/* Start TLS if we need to */
 	if (secure) {
-#ifdef HAVE_OPENSSL
-		ssl = SSL_new(ssl_ctx);
+		ssl = ssl_new_accept(node->fd);
 		if (!ssl) {
-			bbs_error("Failed to create SSL\n");
-			return;
-		}
-		SSL_set_fd(ssl, node->fd);
-		res = SSL_accept(ssl);
-		if (res != 1) {
-			int sslerr = SSL_get_error(ssl, res);
-			bbs_error("SSL error %d: %d (%s = %s)\n", res, sslerr, ssl_strerror(sslerr), ERR_error_string(ERR_get_error(), NULL));
 			goto cleanup; /* Disconnect. */
 		}
 		req.ssl = ssl;
 		rfd = req.rfd = SSL_get_rfd(ssl);
 		wfd = req.wfd = SSL_get_wfd(ssl);
-#else
-		bbs_assert(0); /* Can't happen */
-#endif
 	} else {
 		rfd = wfd = req.rfd = req.wfd = node->fd;
 	}
@@ -1433,8 +1305,6 @@ static int load_config(void)
 	/* HTTPS */
 	bbs_config_val_set_true(cfg, "https", "enabled", &https_enabled);
 	bbs_config_val_set_port(cfg, "https", "port", &https_port);
-	bbs_config_val_set_str(cfg, "https", "cert", ssl_cert, sizeof(ssl_cert));
-	bbs_config_val_set_str(cfg, "https", "key", ssl_key, sizeof(ssl_key));
 
 	if (!http_enabled && !https_enabled) {
 		return -1; /* Nothing is enabled. */
@@ -1445,16 +1315,9 @@ static int load_config(void)
 		return -1;
 	}
 
-	if (https_port) {
-#ifndef HAVE_OPENSSL
-		bbs_error("HTTP module was compiled without OpenSSL, HTTPS may not be used\n");
+	if (https_enabled && !ssl_available()) {
+		bbs_error("TLS is not available, HTTPS may not be used\n");
 		return -1;
-#else
-		if (s_strlen_zero(ssl_cert) || s_strlen_zero(ssl_key)) {
-			bbs_error("An SSL certificate and private key must be provided to use HTTPS\n");
-			return -1;
-		}
-#endif
 	}
 
 	return 0;
@@ -1470,17 +1333,10 @@ static int load_module(void)
 	if (http_enabled && bbs_make_tcp_socket(&http_socket, http_port)) {
 		return -1;
 	}
+	/* If we get this far, and HTTPS is enabled, we're allowed to use it. */
 	if (https_enabled && bbs_make_tcp_socket(&https_socket, https_port)) {
 		close_if(http_socket);
 		return -1;
-	}
-
-	if (https_enabled) {
-		if (ssl_server_init()) {
-			close_if(http_socket);
-			close_if(https_socket);
-			return -1;
-		}
 	}
 
 	if (bbs_pthread_create(&http_listener_thread, NULL, http_listener, NULL)) {
@@ -1510,7 +1366,6 @@ static int unload_module(void)
 	}
 	if (https_enabled) {
 		bbs_unregister_network_protocol(https_port);
-		ssl_server_shutdown();
 	}
 	http_user_cache_purge();
 	return 0;
