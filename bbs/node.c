@@ -486,6 +486,7 @@ static void node_free(struct bbs_node *node)
 	bbs_debug(4, "Node %d now freed\n", node->id);
 	bbs_verb(3, "Node %d has exited\n", node->id);
 	bbs_node_unlock(node);
+	pthread_mutex_destroy(&node->lock);
 	free(node);
 }
 
