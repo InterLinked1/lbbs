@@ -100,7 +100,7 @@ static int load_config(void)
 		char *msgscript = NULL;
 		const char *hostname, *username, *password, *autojoin;
 		unsigned int port = 0;
-		int tls = 0, tlsverify = 0, sasl = 0, logfile;
+		int tls = 0, tlsverify = 0, sasl = 0, logfile = 0;
 		if (!strcmp(bbs_config_section_name(section), "general")) {
 			continue; /* Skip [general] */
 		}
