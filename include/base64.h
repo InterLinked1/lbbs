@@ -21,3 +21,12 @@
  * \retval -1 on failure, 0 on success *
  */
 int base64_encode_file(const char *filename, FILE *outputfile, const char *endl);
+
+/*!
+ * \brief base64 decode a string
+ * \param data Data to decode
+ * \param input_length Size of input
+ * \param outlen Pointer to int in which output length will be stored
+ * \returns decoded string on success, NULL on failure
+ */
+unsigned char *base64_decode(const unsigned char *data, int input_length, int *outlen);
