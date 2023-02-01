@@ -488,6 +488,8 @@ int sql_fetch_columns(int bind_ints[], long long bind_longs[], char *bind_string
 			if (bind_null[i]) { /* It's all good that we memset tmptm, but if we don't check for NULL, we'll set the clean memory to uninitialized bytes */
 				bbs_debug(3, "Index %d is NULL\n", i);
 			} else {
+				time_t tmptime;
+				struct tm tmptm2;
 				datetime = bind_dates[i];
 				tmptm->tm_year = TO_TM_YEAR(datetime.year);
 				tmptm->tm_mon = TO_TM_MONTH(datetime.month);
@@ -495,6 +497,16 @@ int sql_fetch_columns(int bind_ints[], long long bind_longs[], char *bind_string
 				tmptm->tm_hour = datetime.hour;
 				tmptm->tm_min = datetime.minute;
 				tmptm->tm_sec = datetime.second;
+				/* Note that we haven't filled in tm_wday at this point (MYSQL_TIME doesn't have a field for it), so the day of the week is defaulted to Sunday
+				 * Hack to recover this information from what we have: */
+				tmptime = mktime(tmptm); /* Convert to epoch */
+				localtime_r(&tmptime, &tmptm2); /* Now convert back to a tm. */
+				/* Thanks, localtime, now we can fill in the day of the week,
+				 * and other fields that weren't available to us before,
+				 * to actually fully fill out the struct.
+				 * Keep the original tm, just in case there are other differences. */
+				tmptm->tm_wday = tmptm2.tm_wday;
+				tmptm->tm_yday = tmptm2.tm_yday;
 			}
 			break;
 		case 'b': /* Blob */
