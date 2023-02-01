@@ -426,11 +426,14 @@ void *pty_master(void *varg)
 
 	/* Relay data between terminal (socket side) and pty master */
 	for (;;) {
+		int speed = 0, spy = 0, spyfdin, spyfdout;
 		fds[0].fd = sfd;
 		fds[1].fd = amaster;
 		fds[0].events = fds[1].events = POLLIN;
 		fds[0].revents = fds[1].revents = 0;
 		numfds = 2;
+		bbs_node_lock(node);
+		speed = node->spy;
 		if (node->spy) {
 			/* You might think that a limitation of this is that we only check this at the begining of
 			 * each poll loop here, i.e. if the sysop attaches to a node mid-poll,
@@ -444,7 +447,12 @@ void *pty_master(void *varg)
 			fds[2].events = POLLIN;
 			fds[2].revents = 0;
 			numfds++;
+			/* "Cache" these on this thread's stack so we don't have to grab the node lock.
+			 * This is updated each loop so it won't get stale. */
+			spyfdin = node->spyfdin;
+			spyfdout = node->spyfd;
 		}
+		bbs_node_unlock(node);
 
 		pres = poll(fds, numfds, -1);
 		pthread_testcancel();
@@ -600,20 +608,20 @@ void *pty_master(void *varg)
 					relaybuf = strippedbuf;
 				} /* else, failed to strip, just write the original data (possibly containing ANSI escape sequences) */
 			}
-			if (node->speed) {
+			if (speed) {
 				/* Slow write to both real socket and spying fd simultaneously */
-				bytes_wrote = slow_write(sfd, node->spy ? node->spyfd : -1, relaybuf, bytes_read, node->speed);
+				bytes_wrote = slow_write(sfd, spy ? spyfdout : -1, relaybuf, bytes_read, speed);
 			} else {
 				bytes_wrote = write(sfd, relaybuf, bytes_read);
-				if (node->spy && bytes_wrote == bytes_read) {
-					bytes_wrote = write(node->spyfd, relaybuf, bytes_read);
+				if (spy && bytes_wrote == bytes_read) {
+					bytes_wrote = write(spyfdout, relaybuf, bytes_read);
 				}
 			}
 			if (bytes_wrote != bytes_read) {
 				bbs_error("Expected to write %d bytes, only wrote %d\n", bytes_read, bytes_wrote);
 			}
 		} else if (numfds == 3 && fds[2].revents & POLLIN) { /* Got input from sysop (node spying) -> pty */
-			bytes_read = read(node->spyfdin, buf, sizeof(buf));
+			bytes_read = read(spyfdin, buf, sizeof(buf));
 			if (bytes_read <= 0) {
 				bbs_debug(10, "pty spy_in read returned %d (%s)\n", bytes_read, strerror(errno));
 				break; /* We'll read 0 bytes upon disconnect */
@@ -634,7 +642,7 @@ void *pty_master(void *varg)
 				bbs_debug(9, "Got CR NUL, translating to CR LF for slave\n");
 				*(buf + 1) = '\n';
 			}
-			if (node->spy) {
+			if (spy) {
 				/* Spoof sysop input (spy) to system.
 				 * One great thing about the way we're doing this: notice that we're not using TIOCSTI, which requires CAP_SYS_ADMIN (see man terminal(7)) */
 				bytes_wrote = write(amaster, buf, bytes_read);

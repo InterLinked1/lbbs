@@ -89,6 +89,8 @@ static int bbs_node_set_input(struct bbs_node *node, int buffered, int echo)
 {
 	int res;
 
+	/* Don't lock the node in this function, node_shutdown calls this with the lock held */
+
 	/* We're going to disable/enable buffering on the slave end of the node's PTY.
 	 * You can't perform terminal operations directly on socket file descriptors. */
 	if (node->slavefd == -1) {
@@ -118,11 +120,13 @@ static int bbs_node_set_input(struct bbs_node *node, int buffered, int echo)
 
 int bbs_unbuffer_input(struct bbs_node *node, int echo)
 {
+	/* Do not lock the node here: node_shutdown already holds it */
 	return bbs_node_set_input(node, 0, echo);
 }
 
 int bbs_buffer_input(struct bbs_node *node, int echo)
 {
+	/* Do not lock the node here: node_shutdown already holds it */
 	return bbs_node_set_input(node, 1, echo);
 }
 
