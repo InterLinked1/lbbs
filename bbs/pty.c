@@ -240,10 +240,6 @@ int bbs_pty_allocate(struct bbs_node *node)
 	return 0;
 }
 
-static int spy_node = 0;
-static int spy_in = -1;
-static int spy_out = -1;
-
 int bbs_node_spy(int fdin, int fdout, int nodenum)
 {
 	int spy_alert_pipe[2] = { -1, -1 };
@@ -266,15 +262,13 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 	}
 
 	/* Clear the screen to start. */
-	SWRITE(STDOUT_FILENO, COLOR_RESET); /* Reset color too, just in case */
-	SWRITE(STDOUT_FILENO, TERM_CLEAR);
+	SWRITE(fdout, COLOR_RESET); /* Reset color too, just in case */
+	SWRITE(fdout, TERM_CLEAR);
 
 	node->spy = 1;
 	node->spyfd = fdout;
+	node->spyfdin = fdin;
 	bbs_sigint_set_alertpipe(spy_alert_pipe);
-	spy_in = fdin;
-	spy_out = fdout;
-	spy_node = nodenum;
 	bbs_fd_unbuffer_input(fdin, 0); /* Unbuffer input, so that sysop can type on the node's TTY in real time, not just flushed after line breaks. */
 	bbs_node_unlock(node); /* We're done with the node. */
 
@@ -299,15 +293,12 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 
 	/* Reset the terminal. */
 	bbs_fd_buffer_input(fdin, 1); /* Rebuffer input */
-	SWRITE(STDOUT_FILENO, COLOR_RESET);
-	SWRITE(STDOUT_FILENO, TERM_CLEAR);
+	SWRITE(fdout, COLOR_RESET);
+	SWRITE(fdout, TERM_CLEAR);
 
 	/* Log this message after the screen was cleared, as the sysop will likely see it,
 	 * and this serves as a visual indication that spying has really stopped. */
 	bbs_verb(3, "Spying stopped on node %d\n", nodenum);
-
-	spy_node = 0;
-	spy_in = spy_out = -1;
 
 	node = bbs_node_get(nodenum);
 	if (!node) {
@@ -315,6 +306,7 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 	}
 	node->spy = 0;
 	node->spyfd = -1;
+	node->spyfdin = -1;
 	bbs_node_unlock(node); /* We're done with the node. */
 	return 0;
 }
@@ -439,7 +431,7 @@ void *pty_master(void *varg)
 		fds[0].events = fds[1].events = POLLIN;
 		fds[0].revents = fds[1].revents = 0;
 		numfds = 2;
-		if (spy_node == nodeid) {
+		if (node->spy) {
 			/* You might think that a limitation of this is that we only check this at the begining of
 			 * each poll loop here, i.e. if the sysop attaches to a node mid-poll,
 			 * then the spying won't take effect until the next loop.
@@ -448,7 +440,7 @@ void *pty_master(void *varg)
 			 * so effectively as soon as there is a single character of input or output,
 			 * spying should take effect here.
 			 */
-			fds[2].fd = spy_in;
+			fds[2].fd = node->spyfdin;
 			fds[2].events = POLLIN;
 			fds[2].revents = 0;
 			numfds++;
@@ -610,18 +602,18 @@ void *pty_master(void *varg)
 			}
 			if (node->speed) {
 				/* Slow write to both real socket and spying fd simultaneously */
-				bytes_wrote = slow_write(sfd, spy_node == nodeid ? spy_out : -1, relaybuf, bytes_read, node->speed);
+				bytes_wrote = slow_write(sfd, node->spy ? node->spyfd : -1, relaybuf, bytes_read, node->speed);
 			} else {
 				bytes_wrote = write(sfd, relaybuf, bytes_read);
-				if (spy_node == nodeid && bytes_wrote == bytes_read) {
-					bytes_wrote = write(spy_out, relaybuf, bytes_read);
+				if (node->spy && bytes_wrote == bytes_read) {
+					bytes_wrote = write(node->spyfd, relaybuf, bytes_read);
 				}
 			}
 			if (bytes_wrote != bytes_read) {
 				bbs_error("Expected to write %d bytes, only wrote %d\n", bytes_read, bytes_wrote);
 			}
 		} else if (numfds == 3 && fds[2].revents & POLLIN) { /* Got input from sysop (node spying) -> pty */
-			bytes_read = read(spy_in, buf, sizeof(buf));
+			bytes_read = read(node->spyfdin, buf, sizeof(buf));
 			if (bytes_read <= 0) {
 				bbs_debug(10, "pty spy_in read returned %d (%s)\n", bytes_read, strerror(errno));
 				break; /* We'll read 0 bytes upon disconnect */
@@ -642,7 +634,7 @@ void *pty_master(void *varg)
 				bbs_debug(9, "Got CR NUL, translating to CR LF for slave\n");
 				*(buf + 1) = '\n';
 			}
-			if (spy_node == nodeid) {
+			if (node->spy) {
 				/* Spoof sysop input (spy) to system.
 				 * One great thing about the way we're doing this: notice that we're not using TIOCSTI, which requires CAP_SYS_ADMIN (see man terminal(7)) */
 				bytes_wrote = write(amaster, buf, bytes_read);

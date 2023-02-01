@@ -206,6 +206,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 	node->slavefd = -1;
 
 	node->spyfd = -1;
+	node->spyfdin = -1;
 
 	node->user = NULL; /* No user exists yet. We calloc'd so this is already NULL, but this documents that user may not exist at first. */
 	node->active = 1;
