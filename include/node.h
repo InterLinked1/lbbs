@@ -61,6 +61,8 @@ struct bbs_node {
 	RWLIST_ENTRY(bbs_node) entry;
 };
 
+#define NODE_HAS_PTY(node) (node->slavefd != -1)
+
 /*!
  * \brief Number of columns on a TDD's screen
  * \note Yes, I counted on mine

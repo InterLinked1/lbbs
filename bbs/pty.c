@@ -259,6 +259,12 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 		return 0;
 	}
 
+	if (!NODE_HAS_PTY(node)) {
+		bbs_dprintf(fdout, "Node %d does not have a PTY attached (protocol: %s)\n", node->id, node->protname);
+		bbs_node_unlock(node);
+		return 0;
+	}
+
 	/* Clear the screen to start. */
 	SWRITE(STDOUT_FILENO, COLOR_RESET); /* Reset color too, just in case */
 	SWRITE(STDOUT_FILENO, TERM_CLEAR);
