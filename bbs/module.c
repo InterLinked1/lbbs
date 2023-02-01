@@ -293,6 +293,7 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 	if (mod && mod->info->flags & MODFLAG_GLOBAL_SYMBOLS) {
 		/* Close the module so we can reopen with correct flags. */
 		logged_dlclose(resource_in, mod->lib);
+		free(mod);
 		bbs_debug(3, "Module '%s' contains global symbols, reopening\n", resource_in);
 		mod = load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_GLOBAL, 0);
 	}
