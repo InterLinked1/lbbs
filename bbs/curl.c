@@ -54,6 +54,7 @@ void bbs_curl_free(struct bbs_curl *c)
 
 struct curl_response_data {
 	char *str;
+	char *resp;	/* XXX This is a total hack. For some reason str is NULL when we get back to main func so dup the pointer */
 	int len;
 };
 
@@ -89,6 +90,7 @@ static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *da
 		return 0; /* Fail */
 	}
 
+	respdata->resp = respdata->str; /* XXX Hack: Dup the pointer because for some reason response.str is NULL in curl_common_run? */
 	respdata->len += realsize;
 	bbs_debug(8, "curl response now %d bytes\n", respdata->len);
 	return realsize;
@@ -129,6 +131,7 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 	int http_code;
 
 	response.len = 0; /* Initialize */
+	response.str = response.resp = NULL;
 
 	if (fp) {
 		/* Write response body to a file */
@@ -147,8 +150,11 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 		bbs_warning("curl_easy_perform() failed for %s: %s\n", c->url, curl_easy_strerror(res));
 		if (response.len && response.str) {
 			free(response.str); /* Free response if we're not going to return it */
+			response.str = NULL;
 		}
 	} else {
+		int failed;
+		/* Some of this code assumes HTTP, but is really generic to other protocols, too */
 		curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
 		if (fp) {
 			/* We're already at the end of the file, so we can get the file size
@@ -159,11 +165,24 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 			bbs_debug(4, "CURL Response Code: %d - %d bytes (%s)\n", http_code, response.len, c->url);
 		}
 		c->http_code = http_code;
-		if (c->forcefail && !HTTP_RESPONSE_SUCCESS(http_code)) {
+		failed = STARTS_WITH(c->url, "http") ? !HTTP_RESPONSE_SUCCESS(http_code) : http_code != 0;
+		if (c->forcefail && failed) {
+			bbs_debug(4, "Response failed, freeing response\n");
 			free(response.str); /* Free response if we're not going to return it */
+			response.str = NULL;
 		} else {
 			if (response.len) {
-				c->response = response.str; /* Caller is now responsible for freeing this when done */
+				if (!response.str && response.resp) {
+					bbs_debug(3, "Strange, str was NULL but resp was not?\n"); /* XXX See comments above */
+					response.str = response.resp;
+				} else {
+					response.str = response.resp; /* XXX Do it anyways, since response.str can be an invalid reference at this point */
+				}
+				if (!response.str) {
+					bbs_warning("Response string is NULL?\n");
+				} else {
+					c->response = response.str; /* Caller is now responsible for freeing this when done */
+				}
 			} else {
 				/* We don't want to read response and get garbage, so make it null terminated */
 				c->response = strdup(""); /* This way, response is never NULL */
@@ -176,7 +195,7 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 
 	if (!c->response) {
 		bbs_warning("c->response was still NULL?\n");
-		c->response = strdup("");
+		c->response = strdup(""); /* Guarantee to caller that response will always be non-NULL */
 	}
 
 	return cres;
