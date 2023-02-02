@@ -279,7 +279,6 @@ static void *ssl_io_thread(void *unused)
 			bbs_warning("poll returned %d (%s)\n", res, res == -1 ? strerror(errno) : "");
 			break;
 		}
-		bbs_debug(8, "poll returned %d\n", res);
 		for (i = 0; res > 0 && i < numfds; i++) {
 			int ores, wres;
 			if (pfds[i].revents == 0) {
@@ -300,6 +299,9 @@ static void *ssl_io_thread(void *unused)
 				ores = SSL_read(ssl, buf, sizeof(buf));
 				if (ores <= 0) {
 					bbs_debug(3, "SSL_read returned %d\n", ores);
+					/* Socket closed the connection, pass it on. */
+					close(readpipe);
+					needcreate = 1;
 					continue;
 				}
 				wres = write(readpipe, buf, ores);
@@ -312,6 +314,8 @@ static void *ssl_io_thread(void *unused)
 				ores = read(pfds[i].fd, buf, sizeof(buf));
 				if (ores <= 0) {
 					bbs_debug(3, "read returned %d\n", ores);
+					/* Application closed the connection,
+					 * but it will close the node fd (socket) so we don't need to close here. */
 					continue;
 				}
 				wres = SSL_write(ssl, buf, ores);

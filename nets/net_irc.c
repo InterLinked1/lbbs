@@ -1490,7 +1490,7 @@ static int client_welcome(struct irc_user *user)
 
 	motd(user);
 
-	if (user->node->user->lastlogin && strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M %P %Z", user->node->user->lastlogin) > 0) { /* bbs_time_friendly does this internally */
+	if (bbs_user_is_registered(user->node->user) && user->node->user->lastlogin && strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M %P %Z", user->node->user->lastlogin) > 0) { /* bbs_time_friendly does this internally */
 		send_reply(user, "%s NOTICE %s :Last login was %s\r\n", bbs_hostname(), user->username, timebuf);
 	}
 
