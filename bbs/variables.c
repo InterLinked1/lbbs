@@ -371,6 +371,10 @@ int bbs_substitute_vars(struct bbs_node *node, const char *sub, char *buf, size_
 	const char *s = sub;
 
 	/* Don't think we can optimize by returning early if !strchr(sub, '$'). The while loop below does no extra work in that case anyways */
+	if (strlen_zero(sub)) {
+		*buf = '\0';
+		return 0;
+	}
 
 	while (*s) {
 		const char *end;
