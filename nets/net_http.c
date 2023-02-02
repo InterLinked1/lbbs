@@ -755,13 +755,13 @@ static void http_handler(struct bbs_node *node, int secure)
 
 	/* Start TLS if we need to */
 	if (secure) {
-		ssl = ssl_new_accept(node->fd);
+		ssl = ssl_new_accept(node->fd, &rfd, &wfd);
 		if (!ssl) {
 			return; /* Disconnect. */
 		}
 		req.ssl = ssl;
-		rfd = req.rfd = SSL_get_rfd(ssl);
-		wfd = req.wfd = SSL_get_wfd(ssl);
+		req.rfd = rfd;
+		req.wfd = wfd;
 	} else {
 		rfd = wfd = req.rfd = req.wfd = node->fd;
 	}
@@ -1113,7 +1113,7 @@ cleanup:
 	}
 #ifdef HAVE_OPENSSL
 	if (secure) { /* implies ssl */
-		SSL_free(ssl);
+		ssl_close(ssl);
 		ssl = NULL;
 	}
 #endif

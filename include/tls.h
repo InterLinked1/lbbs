@@ -38,9 +38,17 @@ const char *ssl_strerror(int err);
 /*!
  * \brief Create a new SSL structure for a file descriptor
  * \param fd File descriptor returned previously by accept()
+ * \param[out] rfd File descriptor for reading from connection (data has been decrypted)
+ * \param[out] wfd File descriptor for writing to connection (data will be encrypted)
  * \retval ssl on success, NULL on failure
  */
-SSL *ssl_new_accept(int fd);
+SSL *ssl_new_accept(int fd, int *rfd, int *wfd);
+
+/*!
+ * \brief Close and free an OpenSSL connection
+ * \retval 0 on success, -1 on failure
+ */
+int ssl_close(SSL *ssl);
 
 /*!
  * \brief Whether SSL is available. Modules requiring SSL/TLS functionality should ensure this returns true
