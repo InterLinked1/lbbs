@@ -54,6 +54,8 @@
 #define DEFAULT_HTTP_PORT 80
 #define DEFAULT_HTTPS_PORT 443
 
+#define DEFAULT_MIME_TYPE "application/octet-stream"
+
 #define STRPTIME_FMT "%a, %d %b %Y %T %Z"
 #define STRFTIME_FMT "%a, %d %b %Y %T %Z"
 
@@ -500,7 +502,12 @@ static int mime_type(const char *filename, char *buf, size_t len)
 	magic_load(magic, NULL);
 	magic_compile(magic, NULL);
 	mime = magic_file(magic, filename);
-	safe_strncpy(buf, mime, len);
+	if (mime) {
+		safe_strncpy(buf, mime, len);
+	} else {
+		bbs_warning("Could not determine MIME type of %s\n", filename);
+		*buf = '\0';
+	}
 	magic_close(magic);
 
 	bbs_debug(7, "magic mimetype(%s): %s\n", filename, buf);
