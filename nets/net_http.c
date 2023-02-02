@@ -379,7 +379,7 @@ static inline int parse_header(struct http_req *req, char *s)
 		tmp = strsep(&query, "?");
 		req->path = strdup(tmp);
 		tmp = strrchr(req->path, '/');
-		if (!*(tmp + 1)) {
+		if (strlen_zero(tmp) || strlen_zero(tmp + 1)) {
 			/* The / was the last character in the path.
 			 * This implies the default document in this location. */
 			req->dir = 1;

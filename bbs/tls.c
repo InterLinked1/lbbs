@@ -205,7 +205,7 @@ static pthread_t ssl_thread;
 static void *ssl_io_thread(void *unused)
 {
 	struct ssl_fd *sfd;
-	int i, res, ores, wres;
+	int i, res;
 	struct pollfd *pfds = NULL; /* Will dynamically allocate */
 	int *readpipes = NULL;
 	SSL **ssl_list = NULL;
@@ -273,11 +273,15 @@ static void *ssl_io_thread(void *unused)
 		}
 		res = poll(pfds, numfds, -1);
 		if (res <= 0) {
-			bbs_warning("poll returned %d\n", res);
+			if (res == -1 && errno == EINTR) {
+				continue;
+			}
+			bbs_warning("poll returned %d (%s)\n", res, res == -1 ? strerror(errno) : "");
 			break;
 		}
 		bbs_debug(8, "poll returned %d\n", res);
 		for (i = 0; res > 0 && i < numfds; i++) {
+			int ores, wres;
 			if (pfds[i].revents == 0) {
 				continue;
 			}
@@ -288,6 +292,7 @@ static void *ssl_io_thread(void *unused)
 			if (i == 0) {
 				bbs_alertpipe_read(ssl_alert_pipe);
 				needcreate = 1;
+				break; /* Skip everything else, in case something no longer exists */
 			} else if (i % 2 == 1) { /* sfd->fd has activity */
 				/* Read from socket using SSL_read and write to readpipe */
 				SSL *ssl = ssl_list[i / 2];
