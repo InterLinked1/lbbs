@@ -10,6 +10,12 @@ INC = -I..
 # SSHLIB=$(pkg-config --libs libssh)
 SSHLIB=-lssh
 
+SFTP_SERVER_FREE_EXISTS = $(shell objdump -T /lib/x86_64-linux-gnu/libssh.so | grep "sftp_server_free" | wc -l)
+
+ifeq ($(SFTP_SERVER_FREE_EXISTS),1)
+	CFLAGS += -DHAVE_SFTP_SERVER_FREE
+endif
+
 all: $(MOD_SO)
 	@echo "== Compiling nets"
 

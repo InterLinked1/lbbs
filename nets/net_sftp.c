@@ -538,6 +538,89 @@ static int handle_write(sftp_client_message msg)
 		break; \
 	}
 
+/* Duplicate code from libssh if needed since sftp_server_free isn't available in older versions */
+#ifndef HAVE_SFTP_SERVER_FREE
+#define SAFE_FREE(x) do { if ((x) != NULL) {free(x); x=NULL;} } while(0)
+
+struct sftp_ext_struct {
+	uint32_t count;
+	char **name;
+	char **data;
+};
+
+static void sftp_ext_free(sftp_ext ext)
+{
+	size_t i;
+
+	if (ext == NULL) {
+		return;
+	}
+
+	if (ext->count > 0) {
+		if (ext->name != NULL) {
+			for (i = 0; i < ext->count; i++) {
+				SAFE_FREE(ext->name[i]);
+			}
+			SAFE_FREE(ext->name);
+		}
+
+		if (ext->data != NULL) {
+			for (i = 0; i < ext->count; i++) {
+				SAFE_FREE(ext->data[i]);
+			}
+			SAFE_FREE(ext->data);
+		}
+	}
+
+	SAFE_FREE(ext);
+}
+
+static void sftp_message_free(sftp_message msg)
+{
+	if (msg == NULL) {
+		return;
+	}
+
+	SSH_BUFFER_FREE(msg->payload);
+	SAFE_FREE(msg);
+}
+
+/*!
+ * \brief sftp_server_free from libssh's sftp.c (unmodified)
+ * \note Licensed under the GNU Lesser GPL
+ * \note This was only added to libssh in commit cc536377f9711d9883678efe4fcf4cb6449c3b1a
+ *       LIBSFTP_VERSION is 3 both before/after this commit, so unfortunately
+ *       we don't have any good way of detecting whether or not this function
+ *       exists in the version of libssh installed.
+ *       Therefore, we just duplicate the function here to guarantee its availability.
+ */
+static void sftp_server_free(sftp_session sftp)
+{
+	sftp_request_queue ptr;
+
+	if (sftp == NULL) {
+		return;
+	}
+
+	ptr = sftp->queue;
+	while(ptr) {
+		sftp_request_queue old;
+		sftp_message_free(ptr->message);
+		old = ptr->next;
+		SAFE_FREE(ptr);
+		ptr = old;
+	}
+
+	SAFE_FREE(sftp->handles);
+	SSH_BUFFER_FREE(sftp->read_packet->payload);
+	SAFE_FREE(sftp->read_packet);
+
+	sftp_ext_free(sftp->ext);
+
+	SAFE_FREE(sftp);
+}
+#endif
+
 static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel channel)
 {
 	char buf[PATH_MAX], mypath[PATH_MAX];
