@@ -244,8 +244,12 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 {
 	int spy_alert_pipe[2] = { -1, -1 };
 	struct bbs_node *node;
+	int fgconsole;
 
-	if (bbs_alertpipe_create(spy_alert_pipe)) {
+	fgconsole = fdout == STDOUT_FILENO; /* foreground console if using STDIN/STDOUT */
+	/* There can only be 1 foreground console, so there's no possibility
+	 * of race conditions here, only one thread could ever have fgconsole be true. */
+	if (fgconsole && bbs_alertpipe_create(spy_alert_pipe)) {
 		return -1;
 	}
 
@@ -268,7 +272,9 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 	node->spy = 1;
 	node->spyfd = fdout;
 	node->spyfdin = fdin;
-	bbs_sigint_set_alertpipe(spy_alert_pipe);
+	if (fgconsole) {
+		bbs_sigint_set_alertpipe(spy_alert_pipe);
+	}
 	bbs_fd_unbuffer_input(fdin, 0); /* Unbuffer input, so that sysop can type on the node's TTY in real time, not just flushed after line breaks. */
 	bbs_node_unlock(node); /* We're done with the node. */
 
@@ -276,25 +282,49 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 
 	/* pty_master is responsible for our input and output as long as we're spying.
 	 *
-	 * Another way of potentially doing this would be to read from STDIN in this thread
+	 * Another way of potentially doing this would be to read from spyfdin in this thread
 	 * and relay that to the amaster fd, but I think pty_master thread is better off
 	 * dealing with the PTY file descriptors all on its own, without interference.
 	 * The way it is now, all the I/O is handled in that thread.
 	 *
 	 * So, just wait indefinitely for ^C to stop spying.
+	 * Except, we only get signals from ^C on the foreground console.
 	 */
-	if (bbs_alertpipe_poll(spy_alert_pipe) > 0) {
-		bbs_alertpipe_read(spy_alert_pipe);
+	if (fgconsole) {
+		if (bbs_alertpipe_poll(spy_alert_pipe) > 0) {
+			bbs_alertpipe_read(spy_alert_pipe);
+		}
+		/* Restore the original handler for ^C */
+		bbs_sigint_set_alertpipe(NULL); /* Unsubscribe, restore default SIGINT handling */
+		bbs_alertpipe_close(spy_alert_pipe);
+
+		/* Reset the terminal. */
+		bbs_fd_buffer_input(fdin, 1); /* Rebuffer input */
+		SWRITE(fdout, COLOR_RESET);
+		SWRITE(fdout, TERM_CLEAR);
+	} else {
+		int res;
+		struct pollfd pfd;
+		pfd.fd = fdin;
+		pfd.events = POLLIN;
+		/* If remote console, and the sysop quits using ^C,
+		 * that will just quit the remote console.
+		 * That's fine. For foreground consoles, we explicitly intercept ^C
+		 * because otherwise it would pass through and terminate the BBS.
+		 * For remote consoles, it's fine if ^C terminates the remote console,
+		 * the sysop can just open it again.
+		 * Therefore, all we really need to do here is just wait indefinitely
+		 * for fdin/fdout (which are sockets) to close. */
+		do {
+			pfd.revents = 0;
+			res = poll(&pfd, 1, -1); /* Use poll directly instead of just bbs_std_poll, so that we know what event we get */
+			/* Careful! poll will return 1 when the remote console disconnects, not -1. Use the revents to figure out what really happened. */
+			if (res == 1 && pfd.revents & BBS_POLL_QUIT) {
+				break;
+			}
+		} while (res >= 0); /* poll should not return 0, since we passed -1 for ms */
+		/* Remote console socket is now closed */
 	}
-
-	/* Restore the original handler for ^C */
-	bbs_sigint_set_alertpipe(NULL); /* Unsubscribe, restore default SIGINT handling */
-	bbs_alertpipe_close(spy_alert_pipe);
-
-	/* Reset the terminal. */
-	bbs_fd_buffer_input(fdin, 1); /* Rebuffer input */
-	SWRITE(fdout, COLOR_RESET);
-	SWRITE(fdout, TERM_CLEAR);
 
 	/* Log this message after the screen was cleared, as the sysop will likely see it,
 	 * and this serves as a visual indication that spying has really stopped. */
@@ -433,7 +463,8 @@ void *pty_master(void *varg)
 		fds[0].revents = fds[1].revents = 0;
 		numfds = 2;
 		bbs_node_lock(node);
-		speed = node->spy;
+		speed = node->speed;
+		spy = node->spy;
 		if (node->spy) {
 			/* You might think that a limitation of this is that we only check this at the begining of
 			 * each poll loop here, i.e. if the sysop attaches to a node mid-poll,

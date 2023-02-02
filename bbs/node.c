@@ -562,7 +562,7 @@ int bbs_nodes_print(int fd)
 	int c = 0;
 	int now = time(NULL);
 
-	bbs_dprintf(fd, "%3s %8s %9s %7s %-15s %-15s %15s %1s %1s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "USER", "MENU/PAGE", "IP ADDRESS", "E", "B", "FD", "MST", "SLV", "SLV NAME");
+	bbs_dprintf(fd, "%3s %8s %9s %7s %-15s %-15s %15s %1s %1s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "USER", "MENU/PAGE", "IP ADDRESS", "E", "B", "FD", "MST", "SLV", "SPY", "SLV NAME");
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
@@ -570,9 +570,9 @@ int bbs_nodes_print(int fd)
 		bbs_node_lock(n);
 		print_time_elapsed(n->created, now, elapsed, sizeof(elapsed));
 		snprintf(menufull, sizeof(menufull), "%s%s%s%s", S_IF(n->menu), n->menuitem ? " (" : "", S_IF(n->menuitem), n->menuitem ? ")" : "");
-		bbs_dprintf(fd, "%3d %8s %9s %3dx%3d %-15s %-15s %15s %1s %1s %3d %3d %3d %s\n",
+		bbs_dprintf(fd, "%3d %8s %9s %3dx%3d %-15s %-15s %15s %1s %1s %3d %3d %3d %3d %s\n",
 			n->id, n->protname, elapsed, n->cols, n->rows, bbs_username(n->user), menufull, n->ip, BBS_YN(n->echo), BBS_YN(n->buffered),
-			n->fd, n->amaster, n->slavefd, n->slavename);
+			n->fd, n->amaster, n->slavefd, n->spyfd, n->slavename);
 		bbs_node_unlock(n);
 		c++;
 	}
