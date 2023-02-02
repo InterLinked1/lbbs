@@ -757,7 +757,7 @@ static void http_handler(struct bbs_node *node, int secure)
 	if (secure) {
 		ssl = ssl_new_accept(node->fd);
 		if (!ssl) {
-			goto cleanup; /* Disconnect. */
+			return; /* Disconnect. */
 		}
 		req.ssl = ssl;
 		rfd = req.rfd = SSL_get_rfd(ssl);
