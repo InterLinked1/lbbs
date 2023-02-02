@@ -37,9 +37,6 @@ MAIN_SOURCES := $(wildcard *.c) $(cami/wildcard *.c)
 INCLUDE_FILES := $(wildcard include/*.h)
 MAIN_OBJ = $(MAIN_SOURCES:.c=.o)
 
-# --show-error-list is only available in valgrind 3.15.0+: https://valgrind.org/docs/manual/dist.news.html
-VALGRIND = valgrind --show-error-list=yes --keep-debuginfo=yes
-
 # ALL_C_MODS+=$(foreach p,$(MOD_SUBDIR)/$(MODULE_PREFIX),$(patsubst %.c,%.so,$(wildcard $(p)_*.c)))
 
 export CC
@@ -131,16 +128,27 @@ doxygen :
 # apt-get install -y doxygen graphviz
 	doxygen Doxyfile.in
 
-valgrindfg :
+# only do these checks if we're actually running a valgrind target
+valgrindver:
+# --show-error-list is only available in valgrind 3.15.0+: https://valgrind.org/docs/manual/dist.news.html
+VALGRIND_VERSION_MAJOR = $(shell valgrind --version | cut -d'-' -f2 | cut -d'.' -f1)
+VALGRIND_VERSION_MINOR = $(shell valgrind --version | cut -d'-' -f2 | cut -d'.' -f2)
+ifeq ($(shell test $(VALGRIND_VERSION_MAJOR) -ge 3 -a $(VALGRIND_VERSION_MINOR) -ge 15; echo $$?),0)
+VALGRIND = valgrind --show-error-list=yes --keep-debuginfo=yes
+else
+VALGRIND = valgrind --keep-debuginfo=yes
+endif
+
+valgrindfg : valgrindver
 	$(VALGRIND) --leak-check=full --track-origins=yes --show-leak-kinds=all --suppressions=valgrind.supp /usr/sbin/$(EXE) -c
 
-valgrind :
+valgrind : valgrindver
 	$(VALGRIND) --leak-check=full --track-origins=yes --show-leak-kinds=all --suppressions=valgrind.supp --log-fd=9 /usr/sbin/$(EXE) -c 9>valgrind.txt
 
-valgrindsupp :
+valgrindsupp : valgrindver
 	$(VALGRIND) --leak-check=full --track-origins=yes --show-leak-kinds=all --gen-suppressions=all --log-fd=9 /usr/sbin/$(EXE) -c 9>valgrind.txt
 
-helgrind :
+helgrind : valgrindver
 	$(VALGRIND) --tool=helgrind /usr/sbin/$(EXE) -c
 
 .PHONY: all
