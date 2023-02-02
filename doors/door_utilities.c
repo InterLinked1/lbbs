@@ -20,6 +20,7 @@
 #include "include/bbs.h"
 
 #include <string.h>
+#include <ctype.h>
 
 #include "include/module.h"
 #include "include/node.h"
@@ -27,6 +28,8 @@
 #include "include/user.h"
 #include "include/door.h"
 #include "include/system.h"
+#include "include/curl.h"
+#include "include/editor.h"
 
 /*! \brief Calculator utility */
 static int calc_exec(struct bbs_node *node, const char *args)
@@ -129,14 +132,101 @@ static int calc_exec(struct bbs_node *node, const char *args)
 	return res;
 }
 
+/*! \brief Dictionary utility */
+static int dict_exec(struct bbs_node *node, const char *args)
+{
+	int res = -1;
+	char buf[56]; /* Long enough for the longest word (reasonably) */
+
+	UNUSED(args);
+
+	bbs_clear_screen(node); /* Didn't really want to, but the pager will clear the screen anyways so this is consistent with that */
+
+	bbs_writef(node, "\r");
+	for (;;) {
+		char url[256];
+		struct pager_info pginfo;
+		struct bbs_curl c = {
+			.forcefail = 1,
+		};
+
+		bbs_buffer(node); /* The pager will disable buffering (including echo), so do this each loop */
+		bbs_writef(node, "DICT> ");
+		res = bbs_readline(node, MIN_MS(5), buf, sizeof(buf) - 2);
+		if (res <= 0) {
+			res = -1;
+			break;
+		}
+		res = 0;
+		if (s_strlen_zero(buf)) { /* No empty words */
+			continue;
+		}
+		/* Allow quit... kind of important */
+		if (!strcasecmp(buf, "quit")) {
+			res = 0;
+			break;
+		}
+
+		/* Use the DICT protocol (RFC 2229) to look up the word. */
+		memset(&c, 0, sizeof(c));
+		snprintf(url, sizeof(url), "dict://dict.org/d:%s", buf);
+		c.url = url;
+
+		if (!bbs_curl_get(&c)) { /* This isn't an HTTP GET request, technically, but this works just fine for this */
+			char *line, *resp = c.response;
+			if (strlen_zero(resp)) {
+				bbs_debug(2, "No response for '%s'?\n", buf);
+				continue;
+			}
+			memset(&pginfo, 0, sizeof(pginfo));
+			pginfo.header = NULL; /* No header is necessary, the output will repeat the word at the beginning */
+			while ((line = strsep(&resp, "\n"))) {
+				/* Just skip the first few lines, and the last - anything starting with a response code. (super primitive, but it works):
+				 * 220 dict.dict.org dictd 1.12.1/rf on Linux 4.19.0-10-amd64 <auth.mime> <128117509.2275.1657921565@dict.dict.org>
+				 * 250 ok
+				 * 150 1 definitions retrieved
+				 * 151 "hamburger" wn "WordNet (r) 3.0 (2006)"
+				 * .....
+				 * 250 ok [d/m/c = 1/0/16; 0.000r 0.000u 0.000s]
+				 * 221 bye [d/m/c = 0/0/0; 0.000r 0.000u 0.000s]
+				 */
+				if (isdigit(*line) && isdigit(*(line + 1)) && isdigit(*(line + 2)) && isspace(*(line + 3))) {
+					continue;
+				}
+				if (STARTS_WITH(line, ".\r")) {
+					break; /* End of response */
+				}
+#define USE_PAGING
+#ifdef USE_PAGING
+				res = bbs_pager(node, &pginfo, MIN_MS(5), line, strlen(line));
+				if (res) {
+					break; /* Stop if anything exceptional happens */
+				}
+#else
+				bbs_writef(node, "%s\n", line);
+#endif
+			}
+			bbs_curl_free(&c);
+			res = res < 0 ? -1 : 0;
+		}
+	}
+	return res;
+}
+
 static int load_module(void)
 {
-	return bbs_register_door("calc", calc_exec);
+	int res = 0;
+	res |= bbs_register_door("calc", calc_exec);
+	res |= bbs_register_door("dict", dict_exec);
+	return res;
 }
 
 static int unload_module(void)
 {
-	return bbs_unregister_door("calc");
+	int res = 0;
+	res |= bbs_unregister_door("calc");
+	res |= bbs_unregister_door("dict");
+	return res;
 }
 
 BBS_MODULE_INFO_STANDARD("Utilities");
