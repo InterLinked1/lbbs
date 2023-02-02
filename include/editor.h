@@ -29,5 +29,24 @@ struct bbs_node;
  */
 int bbs_line_editor(struct bbs_node *node, const char *instr, char *buf, size_t len);
 
+struct pager_info {
+	int line;
+	int want;
+	char *header;
+	char *footer;
+};
+
+/*!
+ * \brief Page through lines
+ * \param node BBS node
+ * \param pginfo pginfo struct
+ * \param ms poll timeout
+ * \param s Single line of output to display. Should not contain a new line. NULL if end of file.
+ * \param len Length of s
+ * \retval 2 on quit, 1 on timeout, 0 if input received, -1 on failure
+ * \note The return values from this function are non-standard, please pay attention!
+ */
+int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const char *s, int len);
+
 /*! \brief Display a file to a node */
 int bbs_node_term_browse(struct bbs_node *node, const char *filename);
