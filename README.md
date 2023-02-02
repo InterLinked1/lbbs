@@ -22,7 +22,7 @@ Key features and capabilities include:
 
 - Native realtime chat
 
-- Internet Relay Chat client
+- Internet Relay Chat client and server
 
 - TDD/TTY (telecommunications device for the deaf) support
 
@@ -92,6 +92,8 @@ Config files go in `/etc/lbbs` and are as follows:
 
 - `net_http.conf` - HTTP/HTTPS web server config
 
+- `net_irc.conf` - Internet Relay Chat server config
+
 - `net_rlogin`.conf` - RLogin server configuration
 
 - `net_ssh.conf` - SSH and SFTP server configuration
@@ -99,6 +101,8 @@ Config files go in `/etc/lbbs` and are as follows:
 - `net_telnet.conf` - Telnet server configuration
 
 - `nodes.conf` - Node-related configuration
+
+- `tls.conf` - SSL/TLS configuration
 
 - `transfers.conf` - File transfer configuration
 
@@ -141,6 +145,8 @@ The BBS also comes with some network services that aren't intended for terminal 
 - `net_gopher` - Gopher server
 
 - `net_http` - HTTP/HTTPS web server
+
+- `net_irc` - Internet Relay Chat server
 
 - `net_sftp` - Secure File Transfer Protocol server
 
