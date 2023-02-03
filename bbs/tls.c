@@ -461,6 +461,7 @@ int ssl_server_init(void)
 
 void ssl_server_shutdown(void)
 {
+	int ssl_was_available = ssl_is_available;
 	ssl_is_available = 0;
 #ifdef HAVE_OPENSSL
 	if (ssl_ctx) {
@@ -468,9 +469,11 @@ void ssl_server_shutdown(void)
 		ssl_ctx = NULL;
 	}
 	/* Do not use pthread_cancel, let the thread clean up */
-	bbs_alertpipe_write(ssl_alert_pipe); /* Tell thread to exit */
-	bbs_pthread_join(ssl_thread, NULL);
-	bbs_alertpipe_close(ssl_alert_pipe);
+	if (ssl_was_available) {
+		bbs_alertpipe_write(ssl_alert_pipe); /* Tell thread to exit */
+		bbs_pthread_join(ssl_thread, NULL);
+		bbs_alertpipe_close(ssl_alert_pipe);
+	}
 	ssl_cleanup_fds();
 #endif
 }
