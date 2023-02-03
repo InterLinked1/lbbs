@@ -42,6 +42,9 @@ static int hist_added = 0;
 int bbs_history_reset(void)
 {
 	int pos, len = history_length; /* Set to length, rather than index of length - 1, because we'll call bbs_history_older which calls previous_history */
+	if (!hist_added) {
+		return 0; /* Nothing to reset */
+	}
 #ifdef DEBUG_HISTORY
 	bbs_debug(5, "Setting history index to %d\n", len);
 #endif
