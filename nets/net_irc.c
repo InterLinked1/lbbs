@@ -37,6 +37,8 @@
 #include "include/stringlist.h"
 #include "include/base64.h"
 
+#include "include/net_irc.h"
+
 #define DEFAULT_IRC_PORT 6667
 #define DEFAULT_IRCS_PORT 6697
 
@@ -111,54 +113,6 @@ static const char *paramchannelmodes = "qahov";
 /* https://modern.ircdocs.horse/#mode-message */
 static const char *chanmodes = ",,jl,mnprstzS"; /* I think this is the correct categorization into the A,B,C,D modes... */
 
-/*! \brief Channel modes (apply to all users) */
-enum channel_modes {
-	CHANNEL_MODE_NONE =					0,
-	/*! \todo add invite only (i) */
-	/*! \todo implement throttled */
-	CHANNEL_MODE_THROTTLED =			(1 << 0), /* j<n:t>: Channel is throttled. Only n users may join each t seconds. */
-	CHANNEL_MODE_LIMIT =				(1 << 1), /* l<max>: Channel capacity limited to max. */
-	CHANNEL_MODE_MODERATED =			(1 << 2), /* m: Channel moderated: only opped and voiced users can send */
-	CHANNEL_MODE_NO_EXTERNAL =			(1 << 3), /* n: No external messages */
-	/* See https://www.irchelp.org/misc/ccosmos.html#sec3-5-3 for difference between private and secret.
-	 * This implementation makes a distinction between the two, unlike many servers nowadays which treat them identically.
-	 * Secret does everything private does, but is even more secret.
-	 */
-	CHANNEL_MODE_PRIVATE =				(1 << 4), /* p: Private channel: membership is private outside of the channel, but channel shows up in lists */
-	CHANNEL_MODE_REGISTERED_ONLY =		(1 << 5), /* r: Registered users only */
-	CHANNEL_MODE_SECRET =				(1 << 6), /* s: Secret channel: membership and listing are private */
-	CHANNEL_MODE_TOPIC_PROTECTED =		(1 << 7), /* t: Topic protected: only half ops or above can change the topic */
-	CHANNEL_MODE_REDUCED_MODERATION =	(1 << 8), /* z: Reduced moderation. Normally blocked messages will be sent to half operators and above. */
-	CHANNEL_MODE_TLS_ONLY =				(1 << 9), /* S: Only users connected via TLS may join */
-};
-
-/*! \brief Channel "hidden" from queries unless the user is also in it */
-#define CHANNEL_HIDDEN (CHANNEL_MODE_PRIVATE | CHANNEL_MODE_SECRET)
-
-/*! \brief Channel modes that apply to users (on a per-user basis) */
-enum channel_user_modes {
-	CHANNEL_USER_MODE_NONE =	0,
-	/* Note that founder and admin don't confer any of the privileges of operator.
-	 * Therefore, in most cases, you'll want to assign founder and op (or admin an op),
-	 * if you want to assign these top 2 privileges.
-	 * Think of these as "enhancements" to op, rather than inherently higher privilege levels,
-	 * much the same way Flash Override in AUTOVON is not technically its own priority level.
-	 */
-	CHANNEL_USER_MODE_FOUNDER =	(1 << 0), /* q: Founder: total and complete control */
-	CHANNEL_USER_MODE_ADMIN =	(1 << 1), /* a: Admin/Protected: can only be demoted by founders */
-	CHANNEL_USER_MODE_HALFOP =	(1 << 2), /* h: Half operator: can kick users, set most channel modes, grant voice */
-	CHANNEL_USER_MODE_OP =		(1 << 3), /* o: Operator: is an op */
-	CHANNEL_USER_MODE_VOICE =	(1 << 4), /* v: Voice: has voice */
-};
-
-/*! \brief User modes */
-enum user_modes {
-	USER_MODE_NONE =		0,
-	USER_MODE_INVISIBLE =	(1 << 0), /* i: User hidden from global WHO */
-	USER_MODE_OPERATOR =	(1 << 1), /* o: Global server operator */
-	USER_MODE_SECURE =		(1 << 2), /* Z: Connected via SSL/TLS */
-};
-
 /*! \brief A single IRC user */
 struct irc_user {
 	struct bbs_node *node;			/* Node that is handling this user. 1:1 mapping. */
@@ -204,35 +158,114 @@ struct irc_channel {
 	unsigned int limit;					/* Limit on number of users in channel (only enforced on joins) */
 	FILE *fp;							/* Optional log file to which to log all channel activity */
 	RWLIST_ENTRY(irc_channel) entry;	/* Next channel */
+	unsigned int relay:1;				/* Enable relaying */
 	char data[0];						/* Flexible struct member for channel name */
 };
 
 static RWLIST_HEAD_STATIC(channels, irc_channel);	/* Container for all channels */
+
+struct irc_relay {
+	int (*relay_send)(const char *channel, const char *sender, const char *msg);
+	void *mod;
+	RWLIST_ENTRY(irc_relay) entry;
+};
+
+static RWLIST_HEAD_STATIC(relays, irc_relay); /* Container for all relays */
+
+/*
+ * Yes, we really are exporting global symbols, just for these three functions.
+ * I thought about adding a relay.c/relay.h in the core that could then call these instead,
+ * but the problem is modules could load before this module anyways and then consequently
+ * fail to register their relay functions since this module hasn't loaded yet and registered
+ * its callbacks. So, a dependency chain is inevitable and we'll have to preload this module
+ * in modules.conf to guarantee things will work properly. So, whatever...
+ */
+
+int irc_relay_register(int (*relay_send)(const char *channel, const char *sender, const char *msg), void *mod)
+{
+	struct irc_relay *relay;
+
+	RWLIST_WRLOCK(&relays);
+	RWLIST_TRAVERSE(&relays, relay, entry) {
+		if (relay_send == relay->relay_send) {
+			break;
+		}
+	}
+	if (relay) {
+		bbs_error("Relay %p is already registered\n", relay_send);
+		RWLIST_UNLOCK(&relays);
+		return -1;
+	}
+	relay = calloc(1, sizeof(*relay));
+	if (!relay) {
+		RWLIST_UNLOCK(&relays);
+		return -1;
+	}
+	relay->relay_send = relay_send;
+	relay->mod = mod;
+	RWLIST_INSERT_HEAD(&relays, relay, entry);
+	bbs_module_ref(BBS_MODULE_SELF); /* Bump our module ref count */
+	RWLIST_UNLOCK(&relays);
+	return 0;
+}
+
+/* No need for a separate cleanup function since this module cannot be unloaded until all relays have unregistered */
+
+int irc_relay_unregister(int (*relay_send)(const char *channel, const char *sender, const char *msg))
+{
+	struct irc_relay *relay;
+
+	RWLIST_WRLOCK(&relays);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&relays, relay, entry) {
+		if (relay_send == relay->relay_send) {
+			RWLIST_REMOVE_CURRENT(entry);
+			free(relay);
+			bbs_module_unref(BBS_MODULE_SELF); /* And decrement the module ref count back again */
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(&relays);
+	if (!relay) {
+		bbs_error("Relay %p was not previously registered\n", relay_send);
+		return -1;
+	}
+	return 0;
+}
+
+static int authorized_atleast_bymode(enum channel_user_modes modes, int atleast)
+{
+	int auth = 0;
+
+	switch (atleast) {
+		case CHANNEL_USER_MODE_VOICE:
+			auth |= modes & CHANNEL_USER_MODE_VOICE;
+			/* Fall through */
+		case CHANNEL_USER_MODE_HALFOP:
+			auth |= modes & CHANNEL_USER_MODE_HALFOP;
+			/* Fall through */
+		case CHANNEL_USER_MODE_OP:
+			auth |= modes & CHANNEL_USER_MODE_OP;
+			/* Fall through */
+		case CHANNEL_USER_MODE_ADMIN:
+			auth |= modes & CHANNEL_USER_MODE_ADMIN;
+			/* Fall through */
+		case CHANNEL_USER_MODE_FOUNDER:
+			auth |= modes & CHANNEL_USER_MODE_FOUNDER;
+			/* Fall through */
+		default:
+			break;
+	}
+
+	return auth;
+}
 
 static int authorized_atleast(struct irc_member *member, int atleast)
 {
 	int auth = 0;
 
 	pthread_mutex_lock(&member->lock);
-	switch (atleast) {
-		case CHANNEL_USER_MODE_VOICE:
-			auth |= member->modes & CHANNEL_USER_MODE_VOICE;
-			/* Fall through */
-		case CHANNEL_USER_MODE_HALFOP:
-			auth |= member->modes & CHANNEL_USER_MODE_HALFOP;
-			/* Fall through */
-		case CHANNEL_USER_MODE_OP:
-			auth |= member->modes & CHANNEL_USER_MODE_OP;
-			/* Fall through */
-		case CHANNEL_USER_MODE_ADMIN:
-			auth |= member->modes & CHANNEL_USER_MODE_ADMIN;
-			/* Fall through */
-		case CHANNEL_USER_MODE_FOUNDER:
-			auth |= member->modes & CHANNEL_USER_MODE_FOUNDER;
-			/* Fall through */
-		default:
-			break;
-	}
+	auth = authorized_atleast_bymode(member->modes, atleast);
 	pthread_mutex_unlock(&member->lock);
 
 	return auth;
@@ -546,6 +579,76 @@ static void user_setactive(struct irc_user *user)
 	pthread_mutex_unlock(&user->lock);
 }
 
+/*! \brief Somewhat condensed version of privmsg, for relay integration */
+int irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *msg)
+{
+	char hostname[84];
+	struct irc_channel *c;
+	enum channel_user_modes minmode = CHANNEL_USER_MODE_NONE;
+
+	/*! \todo need to respond with appropriate numerics here */
+	if (strlen_zero(msg)) {
+		return -1;
+	}
+	if (strlen(msg) >= 510) { /* Include CR LF */
+		return -1;
+	}
+
+	/* It's not our job to filter messages, clients can do that. For example, decimal 1 is legitimate for CTCP commands. */
+
+	if (!IS_CHANNEL_NAME(channel)) {
+		bbs_error("Relays cannot be used to send messages to non-channels\n");
+		return -1;
+	}
+
+	/*! \todo simplify using get_channel, get_member? But then we may have more locking issues... */
+	RWLIST_RDLOCK(&channels);
+	RWLIST_TRAVERSE(&channels, c, entry) {
+		if (!strcmp(c->name, channel)) {
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&channels);
+	if (!c) {
+		return -1;
+	}
+
+	/* There's no actual irc_user for the relay, but we do get member modes passed in that we can use. */
+	if (c->modes & CHANNEL_MODE_MODERATED && !authorized_atleast_bymode(modes, CHANNEL_USER_MODE_VOICE)) {
+		if (c->modes & CHANNEL_MODE_REDUCED_MODERATION) {
+			minmode = CHANNEL_USER_MODE_HALFOP;
+		} else {
+			bbs_debug(3, "You're neither voiced nor a channel operator\r\n"); /* Channel moderated, unable to send */
+			return -1;
+		}
+	}
+
+	snprintf(hostname, sizeof(hostname), "%s/%s", relayname, sender);
+
+	channel_broadcast_selective(c, NULL, minmode, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, "PRIVMSG", c->name, msg);
+	return 0;
+}
+
+/*! \param user Should be NULL for "system" generated messages and provided for messages actually sent by that user. */
+static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, const char *buf)
+{
+	/* Now, relay it to any other external integrations that may exist. */
+	struct irc_relay *relay;
+
+	if (channel->relay) {
+		RWLIST_RDLOCK(&relays);
+		RWLIST_TRAVERSE(&relays, relay, entry) {
+			bbs_module_ref(relay->mod);
+			if (relay->relay_send(channel->name, user ? user->nickname : NULL, buf)) {
+				bbs_module_unref(relay->mod);
+				break;
+			}
+			bbs_module_unref(relay->mod);
+		}
+		RWLIST_UNLOCK(&relays);
+	}
+}
+
 static int privmsg(struct irc_user *user, const char *channame, int notice, const char *message)
 {
 	struct irc_channel *channel;
@@ -622,6 +725,9 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, cons
 
 	/*! \todo By default, don't echo messages to ourself, but could if enabled: https://ircv3.net/specs/extensions/echo-message */
 	channel_broadcast_selective(channel, user, minmode, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), notice ? "NOTICE" : "PRIVMSG", channel->name, message);
+	if (channel->relay && !notice) {
+		relay_broadcast(channel, user, message);
+	}
 	return 0;
 }
 
@@ -1259,6 +1365,7 @@ static int join_channel(struct irc_user *user, const char *name)
 			 * For example, Ambassador won't let you perform op operations unless you're an op. */
 			member->modes |= CHANNEL_USER_MODE_FOUNDER; /* Automatically make the sysop a founder of any channel s/he creates */
 		}
+		channel->relay = 1; /* XXX Not currently configurable in any way, always allowing relaying for now. */
 	}
 	RWLIST_INSERT_HEAD(&channel->members, member, entry);
 	channel->membercount += 1;
@@ -1270,6 +1377,11 @@ static int join_channel(struct irc_user *user, const char *name)
 
 	/* These MUST be in this order: https://modern.ircdocs.horse/#join-message */
 	channel_broadcast(channel, NULL, ":" IDENT_PREFIX_FMT " JOIN %s\r\n", IDENT_PREFIX_ARGS(user), channel->name); /* Send join message to everyone, including us */
+	if (channel->relay) {
+		char joinmsg[92];
+		snprintf(joinmsg, sizeof(joinmsg), IDENT_PREFIX_FMT " has joined %s", IDENT_PREFIX_ARGS(user), channel->name);
+		relay_broadcast(channel, NULL, joinmsg);
+	}
 	/* Don't send the mode now, because the client will just send a MODE command on its own anyways regardless */
 	if (channel->topic) {
 		channel_print_topic(user, channel);
@@ -1320,6 +1432,11 @@ static int leave_channel(struct irc_user *user, const char *name)
 	RWLIST_TRAVERSE_SAFE_BEGIN(&channel->members, member, entry) {
 		if (member->user == user) {
 			channel_broadcast_nolock(channel, NULL, ":" IDENT_PREFIX_FMT " PART %s\r\n", IDENT_PREFIX_ARGS(user), channel->name); /* Make sure leaver gets his/her own PART message! */
+			if (channel->relay) {
+				char partmsg[92];
+				snprintf(partmsg, sizeof(partmsg), IDENT_PREFIX_FMT " has left %s", IDENT_PREFIX_ARGS(user), channel->name);
+				relay_broadcast(channel, NULL, partmsg);
+			}
 			RWLIST_REMOVE_CURRENT(entry);
 			channel->membercount -= 1;
 			member->user->channelcount -= 1;
@@ -1357,6 +1474,11 @@ static void drop_member_if_present(struct irc_channel *channel, struct irc_user 
 			free(member);
 			/* Already locked, so don't try to recursively lock: */
 			channel_broadcast_nolock(channel, user, ":" IDENT_PREFIX_FMT " QUIT %s :%s\r\n", IDENT_PREFIX_ARGS(user), channel->name, S_IF(message));
+			if (channel->relay) {
+				char quitmsg[92];
+				snprintf(quitmsg, sizeof(quitmsg), IDENT_PREFIX_FMT " has quit %s%s%s%s", IDENT_PREFIX_ARGS(user), channel->name, message ? " (" : "", S_IF(message), message ? ")" : "");
+				relay_broadcast(channel, NULL, quitmsg);
+			}
 			break;
 		}
 	}
@@ -2070,4 +2192,4 @@ static int unload_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_STANDARD("RFC1459 Internet Relay Chat Server");
+BBS_MODULE_INFO_FLAGS("RFC1459 Internet Relay Chat Server", MODFLAG_GLOBAL_SYMBOLS);
