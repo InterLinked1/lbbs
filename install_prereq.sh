@@ -23,5 +23,8 @@ apt-get install -y libmariadb-dev libmariadb-dev-compat # MariaDB (MySQL) dev he
 # net_http
 apt-get install -y libmagic-dev
 
+# libdiscord
+scripts/concord.sh
+
 # doxygen only:
 # apt-get install -y doxygen graphviz

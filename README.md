@@ -22,7 +22,7 @@ Key features and capabilities include:
 
 - Native realtime chat
 
-- Internet Relay Chat client and server
+- Internet Relay Chat client and server, with native Discord relay
 
 - TDD/TTY (telecommunications device for the deaf) support
 
@@ -81,6 +81,8 @@ Config files go in `/etc/lbbs` and are as follows:
 - `menus.conf` - BBS menus, menu items and options. **This is the heart of LBBS configuration.**
 
 - `mod_auth_mysql.conf` - MySQL/MariaDB auth provider module config
+
+- `mod_discord.conf` - Discord/IRC relay configuration
 
 - `modules.conf` - module loading settings (to disable a module, you do it here)
 

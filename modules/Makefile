@@ -20,8 +20,13 @@ all: $(MOD_SO)
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^
 
+mod_discord.so : mod_discord.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -ldiscord
+
 mod_mysql.so : mod_mysql.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(MYSQL_LIBS)
 
+.PHONY: concord
 .PHONY: all
