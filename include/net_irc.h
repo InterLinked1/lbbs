@@ -15,6 +15,10 @@
  *
  */
 
+#define PUBLIC_CHANNEL_PREFIX "="
+#define PRIVATE_CHANNEL_PREFIX "*"
+#define SECRET_CHANNEL_PREFIX "@"
+
 /*! \brief Channel modes (apply to all users) */
 enum channel_modes {
 	CHANNEL_MODE_NONE =					0,
@@ -67,10 +71,12 @@ enum user_modes {
  * \brief Register a relay function that will be used to receive messages sent on IRC channels for rebroadcast on other protocols.
  * \param relay_send. Callback function. Note that sender could be NULL, but will contain the sending user's nickname, if available.
  *                    The function should return 0 to continue processing any other relays and nonzero to stop immediately.
+ * \param nicklist. Callback function to obtain an IRC NAMES or WHO format of any users that should be displayed as channel members. NULL if not applicable.
+ *                  If channel is non-NULL, function should return all members in channel. Otherwise, it should return the specified user.
  * \param mod Module reference.
  * \retval 0 on success, -1 on failure
  */
-int irc_relay_register(int (*relay_send)(const char *channel, const char *sender, const char *msg), void *mod);
+int irc_relay_register(int (*relay_send)(const char *channel, const char *sender, const char *msg), int (*nicklist)(int fd, int numeric, const char *requsername, const char *channel, const char *user), void *mod);
 
 /*! \brief Unregister a relay previously registered using irc_relay_register */
 int irc_relay_unregister(int (*relay_send)(const char *channel, const char *sender, const char *msg));

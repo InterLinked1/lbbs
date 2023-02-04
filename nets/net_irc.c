@@ -93,9 +93,7 @@ static int irc_socket = -1, ircs_socket = -1;
 static int require_sasl = 1;
 static int log_channels = 0;
 
-#define PUBLIC_CHANNEL_PREFIX "="
-#define PRIVATE_CHANNEL_PREFIX "*"
-#define SECRET_CHANNEL_PREFIX "@"
+static int loadtime = 0;
 
 /* ChatZilla/Ambassador interface guide: http://chatzilla.hacksrus.com/intro */
 #define PREFIX_FOUNDER "~"
@@ -166,6 +164,7 @@ static RWLIST_HEAD_STATIC(channels, irc_channel);	/* Container for all channels 
 
 struct irc_relay {
 	int (*relay_send)(const char *channel, const char *sender, const char *msg);
+	int (*nicklist)(int fd, int numeric, const char *requsername, const char *channel, const char *user);
 	void *mod;
 	RWLIST_ENTRY(irc_relay) entry;
 };
@@ -181,7 +180,7 @@ static RWLIST_HEAD_STATIC(relays, irc_relay); /* Container for all relays */
  * in modules.conf to guarantee things will work properly. So, whatever...
  */
 
-int irc_relay_register(int (*relay_send)(const char *channel, const char *sender, const char *msg), void *mod)
+int irc_relay_register(int (*relay_send)(const char *channel, const char *sender, const char *msg), int (*nicklist)(int fd, int numeric, const char *requsername, const char *channel, const char *user), void *mod)
 {
 	struct irc_relay *relay;
 
@@ -202,6 +201,7 @@ int irc_relay_register(int (*relay_send)(const char *channel, const char *sender
 		return -1;
 	}
 	relay->relay_send = relay_send;
+	relay->nicklist = nicklist;
 	relay->mod = mod;
 	RWLIST_INSERT_HEAD(&relays, relay, entry);
 	bbs_module_ref(BBS_MODULE_SELF); /* Bump our module ref count */
@@ -610,6 +610,11 @@ int irc_relay_send(const char *channel, enum channel_user_modes modes, const cha
 	}
 	RWLIST_UNLOCK(&channels);
 	if (!c) {
+		return -1;
+	}
+
+	/* If channel doesn't allow relaying, don't do it. */
+	if (!c->relay) {
 		return -1;
 	}
 
@@ -1043,11 +1048,14 @@ static int channels_in_common(struct irc_user *u1, struct irc_user *u2)
 {
 	UNUSED(u1);
 	UNUSED(u2);
-	return 1; /*! \todo implement */
+	return 1; /*! \todo BUGBUG FIXME implement */
 }
 
 static void handle_who(struct irc_user *user, char *s)
 {
+	struct irc_relay *relay;
+	int res = 0;
+
 	if (IS_CHANNEL_NAME(s)) {
 		struct irc_member *member;
 		struct irc_channel *channel = get_channel(s);
@@ -1063,9 +1071,48 @@ static void handle_who(struct irc_user *user, char *s)
 			dump_who(user, member->user);
 		}
 		RWLIST_UNLOCK(&channel->members);
+		if (channel->relay) {
+			/* Now, pull in any "unreal" members from other protocols */
+			pthread_mutex_lock(&user->lock); /* Lock the user here so the relay module can use dprintf without worrying about race conditions */
+			RWLIST_RDLOCK(&relays);
+			RWLIST_TRAVERSE(&relays, relay, entry) {
+				if (relay->nicklist) {
+					bbs_module_ref(relay->mod);
+					res = relay->nicklist(user->wfd, 352, user->username, s, NULL);
+					bbs_module_unref(relay->mod);
+				}
+				if (res) {
+					break;
+				}
+			}
+			RWLIST_UNLOCK(&relays);
+			pthread_mutex_unlock(&user->lock);
+		}
 	} else {
 		struct irc_user *whouser = get_user(s);
-		dump_who(user, whouser);
+		if (whouser) {
+			dump_who(user, whouser);
+		} else {
+			/* Check relays, we don't have a channel handle so we don't really know if the user exists in a relay */
+			pthread_mutex_lock(&user->lock);
+			RWLIST_RDLOCK(&relays);
+			RWLIST_TRAVERSE(&relays, relay, entry) {
+				if (relay->nicklist) {
+					bbs_module_ref(relay->mod);
+					res = relay->nicklist(user->wfd, 352, user->username, NULL, s);
+					bbs_module_unref(relay->mod);
+				}
+				if (res) {
+					break;
+				}
+			}
+			RWLIST_UNLOCK(&relays);
+			pthread_mutex_unlock(&user->lock);
+		}
+		if (!whouser && !res) {
+			send_numeric2(user, 401, "%s :No such nick/channel\r\n", s);
+			return;
+		}
 	}
 	send_numeric(user, 315, "%s: End of WHO list\r\n", s);
 }
@@ -1097,7 +1144,27 @@ static void handle_whois(struct irc_user *user, char *s)
 	struct irc_member *member;
 	struct irc_user *u = get_user(s);
 	if (!u) {
-		send_numeric2(user, 401, "%s :No such nick/channel\r\n", s);
+		int res = 0;
+		struct irc_relay *relay;
+		pthread_mutex_lock(&user->lock);
+		RWLIST_RDLOCK(&relays);
+		RWLIST_TRAVERSE(&relays, relay, entry) {
+			if (relay->nicklist) {
+				bbs_module_ref(relay->mod);
+				res = relay->nicklist(user->wfd, 318, user->username, NULL, s);
+				bbs_module_unref(relay->mod);
+			}
+			if (res) {
+				break;
+			}
+		}
+		RWLIST_UNLOCK(&relays);
+		pthread_mutex_unlock(&user->lock);
+		if (!res) {
+			send_numeric2(user, 401, "%s :No such nick/channel\r\n", s);
+		} else {
+			send_numeric2(user, 318, "%s :End of /WHOIS list\r\n", s); /* case must be preserved, so use s instead of u->nickname */
+		}
 		return;
 	}
 
@@ -1255,6 +1322,24 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 	RWLIST_UNLOCK(&channel->members);
 	if (len > 0) { /* Last one */
 		send_numeric2(user, 353, "%s %s :%s\r\n", symbol, channel->name, buf);
+	}
+	if (channel->relay) {
+		int res = 0;
+		struct irc_relay *relay;
+		RWLIST_RDLOCK(&relays);
+		pthread_mutex_lock(&user->lock);
+		RWLIST_TRAVERSE(&relays, relay, entry) {
+			if (relay->nicklist) {
+				bbs_module_ref(relay->mod);
+				res = relay->nicklist(user->wfd, 353, user->username, channel->name, NULL);
+				bbs_module_unref(relay->mod);
+			}
+			if (res) {
+				break;
+			}
+		}
+		pthread_mutex_unlock(&user->lock);
+		RWLIST_UNLOCK(&relays);
 	}
 	send_numeric2(user, 366, "%s :End of /NAMES list.\r\n", channel->name);
 	return 0;
@@ -1569,7 +1654,7 @@ static int client_welcome(struct irc_user *user)
 	struct irc_user *u;
 	char timebuf[30];
 
-	bbs_time_friendly(bbs_starttime(), starttime, sizeof(starttime));
+	bbs_time_friendly(loadtime, starttime, sizeof(starttime));
 
 	RWLIST_WRLOCK(&users);
 	RWLIST_TRAVERSE(&users, u, entry) {
@@ -2151,6 +2236,8 @@ static int load_module(void)
 		close_if(irc_socket);
 		return -1;
 	}
+
+	loadtime = time(NULL);
 
 	if (bbs_pthread_create(&irc_ping_thread, NULL, ping_thread, NULL)) {
 		bbs_error("Unable to create IRC ping thread.\n");
