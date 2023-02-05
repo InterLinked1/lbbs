@@ -132,6 +132,21 @@ cleanup:
 	return res;
 }
 
+static int test_strcpy_nospaces(void)
+{
+	int res = -1;
+	const char *s = "a string with spaces";
+	char outbuf[32];
+
+	bbs_test_assert_equals(0, bbs_strcpy_nospaces(s, outbuf, sizeof(outbuf)));
+	bbs_test_assert_str_equals(outbuf, "astringwithspaces");
+
+	return 0;
+
+cleanup:
+	return res;
+}
+
 static struct unit_tests {
 	const char *name;
 	int (*callback)(void);
@@ -142,6 +157,7 @@ static struct unit_tests {
 	{ "Printable String Length", test_printable_strlen },
 	{ "ANSI Stripping", test_ansi_strip },
 	{ "Backspace Processing", test_backspace_processing },
+	{ "String Copy w/o Spaces", test_strcpy_nospaces },
 };
 
 static int load_module(void)

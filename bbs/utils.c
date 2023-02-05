@@ -393,6 +393,19 @@ int bbs_str_safe_print(const char *s, char *buf, size_t len)
 	return 0;
 }
 
+int bbs_strcpy_nospaces(const char *s, char *buf, size_t len)
+{
+	/* Copy the username, not including spaces */
+	while (*s && --len > 1) {
+		if (isprint(*s) && !isspace(*s)) {
+			*buf++ = *s;
+		}
+		s++;
+	}
+	*buf = '\0'; /* Null terminate */
+	return len > 1 ? 0 : -1;
+}
+
 int bbs_str_isprint(const char *s)
 {
 	while (*s) {

@@ -1006,6 +1006,9 @@ static void handle_modes(struct irc_user *user, char *s)
 						SET_MODE_FORCE(channel->modes, set, CHANNEL_MODE_PASSWORD); /* Arguments could have changed, even if mode not toggled */
 						if (set) {
 							channel->password = strdup(target);
+							/* Broadcast the new password to the channel. */
+							channel_broadcast(channel, NULL, ":%s MODE %s %c%c %s\r\n", user->nickname, channel->name, set ? '+' : '-', mode, target);
+							broadcast_if_change = 0; /* Don't do it again */
 						} else {
 							free_if(channel->password);
 						}

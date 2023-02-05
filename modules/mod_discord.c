@@ -42,6 +42,7 @@ static pthread_t discord_thread;
 
 static int expose_members = 1;
 static char token[84];
+static char configfile[84];
 
 /* Note: only a single client is supported (multiple guilds and multiple channels within the guild are supported) */
 
@@ -147,7 +148,7 @@ static int add_pair(u64snowflake guild_id, const char *discord_channel, const ch
 	/* channel_id is not yet known. Once we call fetch_channels, we'll be able to get the channel_id if it matches a name. */
 	RWLIST_INSERT_HEAD(&mappings, cp, entry);
 	RWLIST_UNLOCK(&mappings);
-	bbs_debug(3, "Adding 1:1 channel mapping for (%lu) %s <=> %s\n", guild_id, discord_channel, irc_channel);
+	bbs_debug(2, "Adding 1:1 channel mapping for (%lu) %s <=> %s\n", guild_id, discord_channel, irc_channel);
 	return 0;
 }
 
@@ -222,6 +223,16 @@ static int add_user(struct discord_user *user, u64snowflake guild_id, const char
 {
 	struct user *u;
 	int ulen, dlen;
+	char simpleusername[64];
+	const char *username = user->username;
+
+	if (strchr(username, ' ')) {
+		/* Gaa... username contains spaces (not allowed with IRC) */
+		if (bbs_strcpy_nospaces(username, simpleusername, sizeof(simpleusername))) {
+			return -1; /* Skip, if we can't make it fit */
+		}
+		username = simpleusername;
+	}
 
 	RWLIST_WRLOCK(&users);
 	RWLIST_TRAVERSE(&users, u, entry) {
@@ -241,7 +252,7 @@ static int add_user(struct discord_user *user, u64snowflake guild_id, const char
 		RWLIST_UNLOCK(&users);
 		return -1;
 	}
-	strcpy(u->data, user->username); /* Safe */
+	strcpy(u->data, username); /* Safe */
 	strcpy(u->data + ulen + 1, user->discriminator); /* Safe */
 	u->username = u->data;
 	u->discriminator = u->data + ulen + 1;
@@ -370,12 +381,11 @@ static void fetch_channels(struct discord *client, u64snowflake guild_id)
 				continue;
 			}
 			bbs_assert(dchannel.id == channel->id);
-			/*! \todo XXX It's always NULL here */
+			/*! \todo XXX It's always NULL here. We need to be able to figure out what channels contain what members. */
 			if (!dchannel.member) {
 				bbs_error("Failed to fetch member list for channel %lu (%s)\n", channel->id, cp->discord_channel);
 				continue;
 			}
-			/*! \todo store a list of u64snowflake user IDs on the channel, for WHO lookups */
 		}
 	}
 	/* Make sure all channels have a channel ID */
@@ -661,6 +671,7 @@ static void *discord_relay(void *varg)
 
 static int load_config(void)
 {
+	int res = 0;
 	struct bbs_config_section *section = NULL;
 	struct bbs_keyval *keyval = NULL;
 	struct bbs_config *cfg = bbs_config_load("mod_discord.conf", 1);
@@ -670,8 +681,10 @@ static int load_config(void)
 		return -1;
 	}
 
-	if (bbs_config_val_set_str(cfg, "discord", "token", token, sizeof(token))) {
-		bbs_error("Missing token in mod_discord.conf, declining to load\n");
+	res |= !bbs_config_val_set_str(cfg, "discord", "token", token, sizeof(token));
+	res |= !bbs_config_val_set_str(cfg, "discord", "concordconfig", configfile, sizeof(configfile));
+	if (!res) {
+		bbs_error("Missing token in mod_discord.conf, and no JSON config specified, declining to load\n");
 		return -1; /* Things won't work without the token */
 	}
 
@@ -695,7 +708,7 @@ static int load_config(void)
 			} else if (!strcasecmp(key, "discord_guild")) {
 				guild = value;
 			} else if (!strcasecmp(key, "relaysystem")) {
-				relaysystem = atoi(value);
+				relaysystem = S_TRUE(value);
 			} else {
 				bbs_warning("Unknown directive: %s\n", key);
 			}
@@ -717,9 +730,13 @@ static int load_module(void)
 	}
 
 	ccord_global_init();
-	discord_client = discord_init(token);
+	if (!s_strlen_zero(configfile)) {
+		discord_client = discord_config_init(configfile);
+	} else {
+		discord_client = discord_init(token);
+	}
 	if (!discord_client) {
-		bbs_error("Failed to initialize Discord client\n");
+		bbs_error("Failed to initialize Discord client using %s\n", !s_strlen_zero(configfile) ? "config file" : "token");
 		return -1;
 	}
 
@@ -753,6 +770,7 @@ static int unload_module(void)
 	discord_ready = 0;
 	irc_relay_unregister(discord_send);
 
+	/*! \todo BUGBUG This is not multithread safe. Pending resolution in libdiscord. */
 	discord_shutdown(discord_client);
 	discord_cleanup(discord_client);
 	bbs_pthread_join(discord_thread, NULL);

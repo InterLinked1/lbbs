@@ -270,6 +270,15 @@ int bbs_str_process_backspaces(const char *s, char *buf, size_t len);
 int bbs_str_safe_print(const char *s, char *buf, size_t len);
 
 /*!
+ * \brief Copy s into buf, except for any whitespace characters
+ * \param s Original string
+ * \param[out] buf
+ * \param len Length of bug
+ * \retval 0 on success, -1 on failure (truncation)
+ */
+int bbs_strcpy_nospaces(const char *s, char *buf, size_t len);
+
+/*!
  * \brief Whether all characters in a string are printable (spaces are included)
  * \param s String to check
  * \retval 1 if yes, 0 if no
