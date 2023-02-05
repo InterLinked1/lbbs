@@ -22,23 +22,27 @@
 /*! \brief Channel modes (apply to all users) */
 enum channel_modes {
 	CHANNEL_MODE_NONE =					0,
-	CHANNEL_MODE_FREE_INVITE =			(1 << 0), /* g: Free invite. Anyone in the channel can invite (not just ops) */
-	CHANNEL_MODE_INVITE_ONLY =			(1 << 1), /* i: Invite only */
+	CHANNEL_MODE_COLOR_FILTER =			(1 << 0), /* c: Strip color and formatting codes from channel messages */
+	CHANNEL_MODE_FREE_INVITE =			(1 << 1), /* g: Free invite. Anyone in the channel can invite (not just ops) */
+	CHANNEL_MODE_INVITE_ONLY =			(1 << 2), /* i: Invite only */
 	/*! \todo implement throttled */
-	CHANNEL_MODE_THROTTLED =			(1 << 2), /* j<n:t>: Channel is throttled. Only n users may join each t seconds. */
-	CHANNEL_MODE_LIMIT =				(1 << 3), /* l<max>: Channel capacity limited to max. */
-	CHANNEL_MODE_MODERATED =			(1 << 4), /* m: Channel moderated: only opped and voiced users can send */
-	CHANNEL_MODE_NO_EXTERNAL =			(1 << 5), /* n: No external messages */
+	CHANNEL_MODE_THROTTLED =			(1 << 3), /* j <n:t>: Channel is throttled. Only n users may join each t seconds. */
+	CHANNEL_MODE_PASSWORD =				(1 << 4), /* k <password>: Password required to join channel */
+	CHANNEL_MODE_LIMIT =				(1 << 5), /* l<max>: Channel capacity limited to max. */
+	CHANNEL_MODE_MODERATED =			(1 << 6), /* m: Channel moderated: only opped and voiced users can send */
+	CHANNEL_MODE_NO_EXTERNAL =			(1 << 7), /* n: No external messages */
 	/* See https://www.irchelp.org/misc/ccosmos.html#sec3-5-3 for difference between private and secret.
 	 * This implementation makes a distinction between the two, unlike many servers nowadays which treat them identically.
 	 * Secret does everything private does, but is even more secret.
 	 */
-	CHANNEL_MODE_PRIVATE =				(1 << 6), /* p: Private channel: membership is private outside of the channel, but channel shows up in lists */
-	CHANNEL_MODE_REGISTERED_ONLY =		(1 << 7), /* r: Registered users only */
-	CHANNEL_MODE_SECRET =				(1 << 8), /* s: Secret channel: membership and listing are private */
-	CHANNEL_MODE_TOPIC_PROTECTED =		(1 << 9), /* t: Topic protected: only half ops or above can change the topic */
-	CHANNEL_MODE_REDUCED_MODERATION =	(1 << 10), /* z: Reduced moderation. Normally blocked messages will be sent to half operators and above. */
-	CHANNEL_MODE_TLS_ONLY =				(1 << 11), /* S: Only users connected via TLS may join */
+	CHANNEL_MODE_PRIVATE =				(1 << 8), /* p: Private channel: membership is private outside of the channel, but channel shows up in lists */
+	CHANNEL_MODE_REGISTERED_ONLY =		(1 << 9), /* r: Registered users only */
+	CHANNEL_MODE_SECRET =				(1 << 10), /* s: Secret channel: membership and listing are private */
+	CHANNEL_MODE_TOPIC_PROTECTED =		(1 << 11), /* t: Topic protected: only half ops or above can change the topic */
+	CHANNEL_MODE_REDUCED_MODERATION =	(1 << 12), /* z: Reduced moderation. Normally blocked messages will be sent to half operators and above. */
+	CHANNEL_MODE_CTCP_BLOCK =			(1 << 13), /* C: Block CTCP commands, other than /me actions */
+	CHANNEL_MODE_TLS_ONLY =				(1 << 14), /* S: Only users connected via TLS may join */
+	CHANNEL_MODE_NOTICE_BLOCK =			(1 << 15), /* T: Block channel notices (other than CTCP replies) */
 };
 
 /*! \brief Channel "hidden" from queries unless the user is also in it */

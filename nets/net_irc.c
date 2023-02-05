@@ -36,6 +36,7 @@
 #include "include/user.h"
 #include "include/stringlist.h"
 #include "include/base64.h"
+#include "include/ansi.h"
 
 #include "include/net_irc.h"
 
@@ -148,16 +149,22 @@ RWLIST_HEAD(channel_members, irc_member);
 struct irc_channel {
 	const char *name;					/* Name of channel */
 	unsigned int membercount;			/* Current member count, for constant-time member count access */
+	char *password;						/* Channel password */
 	char *topic;						/* Channel topic */
 	char *topicsetby;					/* Ident of who set the channel topic */
 	unsigned int topicsettime;			/* Epoch time of when the topic was last set */
 	struct channel_members members;		/* List of users currently in this channel */
 	enum channel_modes modes;			/* Channel modes (non-user specific) */
 	unsigned int limit;					/* Limit on number of users in channel (only enforced on joins) */
+	unsigned int throttleusers;			/* Users allowed to join per interval */
+	unsigned int throttleinterval;		/* Throttle interval duration (s) */
+	unsigned int throttlebegin;			/* When last throttle interval began */
+	unsigned int throttlecount;			/* # of users that joined in the last throttle interval */
 	struct stringlist invited;			/* String list of invited nicks */
 	FILE *fp;							/* Optional log file to which to log all channel activity */
 	RWLIST_ENTRY(irc_channel) entry;	/* Next channel */
 	unsigned int relay:1;				/* Enable relaying */
+	pthread_mutex_t lock;				/* Channel lock */
 	char data[0];						/* Flexible struct member for channel name */
 };
 
@@ -304,10 +311,14 @@ static void get_channel_modes(char *buf, size_t len, struct irc_channel *channel
 	}
 	buf[pos++] = '+';
 	/* Capitals come before lowercase */
+	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_CTCP_BLOCK, 'C');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_TLS_ONLY, 'S');
+	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_NOTICE_BLOCK, 'T');
+	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_COLOR_FILTER, 'c');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_FREE_INVITE, 'g');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_INVITE_ONLY, 'i');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_THROTTLED, 'j');
+	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_PASSWORD, 'k');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_LIMIT, 'l');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_MODERATED, 'm');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_NO_EXTERNAL, 'n');
@@ -481,10 +492,12 @@ static void channel_free(struct irc_channel *channel)
 {
 	bbs_assert(channel->membercount == 0);
 	stringlist_empty(&channel->invited);
+	pthread_mutex_destroy(&channel->lock);
 	if (channel->fp) {
 		fclose(channel->fp);
 		channel->fp = NULL;
 	}
+	free_if(channel->password);
 	free_if(channel->topicsetby);
 	free_if(channel->topic);
 	free(channel);
@@ -662,22 +675,22 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, cons
 {
 	struct irc_channel *channel;
 	struct irc_member *m;
+	char stripbuf[513];
+	int msglen;
 	enum channel_user_modes minmode = CHANNEL_USER_MODE_NONE;
 
 	user_setactive(user);
 
-	/*! \todo need to respond with appropriate numerics here */
 	if (strlen_zero(message)) {
 		send_numeric(user, 412, "No text to send\r\n");
 		return -1;
 	}
 
-	if (strlen(message) >= 510) { /* Include CR LF */
+	msglen = strlen(message);
+	if (msglen >= 510) { /* Include CR LF */
 		send_numeric(user, 416, "Input too large\r\n"); /* XXX Not really the right numeric */
 		return -1;
 	}
-
-	/* It's not our job to filter messages, clients can do that. For example, decimal 1 is legitimate for CTCP commands. */
 
 	if (!IS_CHANNEL_NAME(channame)) {
 		struct irc_user *user2 = get_user(channame);
@@ -730,6 +743,30 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, cons
 			send_numeric(user, 489, "You're neither voiced nor a channel operator\r\n"); /* Channel moderated, unable to send */
 			return -1;
 		}
+	}
+
+	/* It's not our job to filter messages, clients can do that. For example, decimal 1 is legitimate for CTCP commands.
+	 * Unless we've specifically been told we should do some filtering. */
+	if (channel->modes & CHANNEL_MODE_CTCP_BLOCK) {
+		if (*message == 0x01 && !STARTS_WITH(message + 1, "ACTION ")) { /* Denotes beginning of CTCP message */
+			send_numeric2(user, 404, "%s :Cannot send to nick/channel\r\n", channame);
+			return -1;
+		}
+	}
+	if (channel->modes & CHANNEL_MODE_NOTICE_BLOCK) {
+		if (notice && *message != 0x01) { /* Denotes beginning of CTCP reply */
+			send_numeric2(user, 404, "%s :Cannot send to nick/channel\r\n", channame);
+			return -1;
+		}
+	}
+	if (channel->modes & CHANNEL_MODE_COLOR_FILTER) {
+		int newlen;
+		if (bbs_ansi_strip(message, msglen, stripbuf, sizeof(stripbuf), &newlen)) {
+			/* Our fault */
+			send_numeric2(user, 404, "%s :Cannot send to nick/channel\r\n", channame);
+			return -1;
+		}
+		message = stripbuf; /* Send the message, stripped of all color/formatting/etc. */
 	}
 
 	/*! \todo By default, don't echo messages to ourself, but could if enabled: https://ircv3.net/specs/extensions/echo-message */
@@ -792,6 +829,17 @@ static int print_user_mode(struct irc_user *user)
 		changed++; \
 	} else { \
 		bbs_debug(6, "Not %sting mode %s (no change)\n", set ? "set" : "unset", #mode); \
+	}
+
+#define SET_MODE_FORCE(modes, set, mode) \
+	if (set) { \
+		bbs_debug(6, "Set mode %s\n", #mode); \
+		modes |= mode; \
+		changed++; \
+	} else if (!set) { \
+		bbs_debug(6, "Cleared mode %s\n", #mode); \
+		modes &= ~mode; \
+		changed++; \
 	}
 
 #define MIN_MODE(member, mode, str) \
@@ -875,9 +923,17 @@ static void handle_modes(struct irc_user *user, char *s)
 			mode = *modes;
 			bbs_debug(5, "Requesting %s mode %c for %s (%s)\n", set ? "set" : "unset", mode, target, S_IF(channel_name));
 			if (IS_CHANNEL_NAME(channel_name)) { /* Channel, and it's a channel operator */
+				char *args;
+				int broadcast_if_change = 1;
 				switch (mode) {
+					case 'C':
+						SET_MODE(channel->modes, set, CHANNEL_MODE_CTCP_BLOCK);
+						break;
 					case 'S':
 						SET_MODE(channel->modes, set, CHANNEL_MODE_TLS_ONLY);
+						break;
+					case 'T':
+						SET_MODE(channel->modes, set, CHANNEL_MODE_NOTICE_BLOCK);
 						break;
 					case 'q':
 					case 'a':
@@ -886,6 +942,7 @@ static void handle_modes(struct irc_user *user, char *s)
 					case 'o':
 					case 'h':
 					case 'v':
+						broadcast_if_change = 0; /* We'll handle the broadcast within this case itself */
 						if (!target) {
 							send_numeric(user, 461, "Not enough parameters\r\n");
 							continue;
@@ -912,18 +969,53 @@ static void handle_modes(struct irc_user *user, char *s)
 							channel_broadcast(channel, NULL, ":%s MODE %s %c%c %s\r\n", user->nickname, channel->name, set ? '+' : '-', mode, targetmember->user->nickname);
 						}
 						break;
+					case 'c':
+						SET_MODE(channel->modes, set, CHANNEL_MODE_COLOR_FILTER);
+						break;
 					case 'g':
 						SET_MODE(channel->modes, set, CHANNEL_MODE_FREE_INVITE);
 						break;
 					case 'i':
 						SET_MODE(channel->modes, set, CHANNEL_MODE_INVITE_ONLY);
 						break;
+					case 'j': /* Throttled */
+						if (set && strlen_zero(target)) {
+							send_numeric(user, 461, "Not enough parameters\r\n");
+							continue;
+						}
+						args = strchr(target, ':'); /* Must have users:interval */
+						if (!args) {
+							send_numeric(user, 461, "Not enough parameters\r\n");
+							continue;
+						}
+						if (set) {
+							*args++ = '\0';
+							channel->throttleusers = atoi(target);
+							channel->throttleinterval = atoi(S_IF(args));
+							SET_MODE_FORCE(channel->modes, set, CHANNEL_MODE_THROTTLED); /* It's possible the arguments changed, even if it wasn't toggled. */
+						} else {
+							SET_MODE(channel->modes, set, CHANNEL_MODE_THROTTLED);
+							channel->throttleusers = channel->throttleinterval = 0;
+						}
+						break;
+					case 'k':
+						if (set && strlen_zero(target)) {
+							send_numeric(user, 461, "Not enough parameters\r\n");
+							continue;
+						}
+						SET_MODE_FORCE(channel->modes, set, CHANNEL_MODE_PASSWORD); /* Arguments could have changed, even if mode not toggled */
+						if (set) {
+							channel->password = strdup(target);
+						} else {
+							free_if(channel->password);
+						}
+						break;
 					case 'l':
 						if (set && strlen_zero(target)) {
 							send_numeric(user, 461, "Not enough parameters\r\n");
 							continue;
 						}
-						SET_MODE(channel->modes, set, CHANNEL_MODE_LIMIT);
+						SET_MODE_FORCE(channel->modes, set, CHANNEL_MODE_LIMIT); /* Arguments could have changed, even if mode not toggled */
 						channel->limit = set ? atoi(target) : 0; /* If this fails, the limit will be 0 (turned off), so not super dangerous... */
 						break;
 					case 'm':
@@ -947,13 +1039,11 @@ static void handle_modes(struct irc_user *user, char *s)
 					case 'z':
 						SET_MODE(channel->modes, set, CHANNEL_MODE_REDUCED_MODERATION);
 						break;
-					case 'j': /* Throttled */
-						/*! \todo Not implemented yet */
 					default:
 						bbs_warning("Unknown channel mode '%c'\n", isprint(mode) ? mode : ' ');
 						send_numeric2(user, 472, "%c :is an unknown mode char to me\r\n", mode);
 				}
-				if (!target && changed) {
+				if (broadcast_if_change && changed) {
 					channel_broadcast(channel, NULL, ":%s MODE %s %c%c\r\n", user->nickname, channel->name, set ? '+' : '-', mode);
 				}
 			} else { /* Same user */
@@ -1086,6 +1176,9 @@ static void handle_invite(struct irc_user *user, char *s)
 	send_numeric2(user, 341, "%s %s\r\n", nick, channame); /* Confirm to inviter */
 }
 
+/*! \brief Advance a string one character if the first character matches */
+#define SKIP_CHAR(str, c) if (!strlen_zero(str) && *str == c) { str++; }
+
 static void handle_knock(struct irc_user *user, char *s)
 {
 	char *msg, *channame;
@@ -1095,9 +1188,7 @@ static void handle_knock(struct irc_user *user, char *s)
 	/* KNOCK <channel> [<message>] */
 	channame = strsep(&s, " ");
 	msg = s;
-	if (!strlen_zero(msg) && *msg == ':') {
-		msg++;
-	}
+	SKIP_CHAR(msg, ':');
 
 	channel = get_channel(channame);
 	if (!channel) {
@@ -1114,7 +1205,7 @@ static void handle_knock(struct irc_user *user, char *s)
 		return;
 	}
 	/* Notify ops about the KNOCK */
-	channel_broadcast_selective(channel, NULL, CHANNEL_USER_MODE_OP, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), "KNOCK", channel->name, msg);
+	channel_broadcast_selective(channel, NULL, CHANNEL_USER_MODE_OP, ":%s %d %s " IDENT_PREFIX_FMT " :has asked for an invite\r\n", bbs_hostname(), 710, channel->name, IDENT_PREFIX_ARGS(user)); /* XXX msg is not used, seems there's no place for it in this numeric? */
 	send_numeric(user, 711, "Your KNOCK has been delivered.\r\n");
 }
 
@@ -1433,13 +1524,19 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 	return 0;
 }
 
-static int join_channel(struct irc_user *user, const char *name)
+static int join_channel(struct irc_user *user, char *name)
 {
 	struct irc_channel *channel;
 	struct irc_member *member, *m;
 	int newchan = 0;
 	char modestr[16];
 	int chanlen = strlen(name);
+	char *password;
+
+	password = strchr(name, ' ');
+	if (password) {
+		*password++ = '\0';
+	}
 
 	/* Nip junk right in the bud before we even bother locking the list */
 	if (!VALID_CHANNEL_NAME(name) || chanlen > MAX_CHANNEL_LENGTH || !valid_channame(name)) {
@@ -1476,6 +1573,7 @@ static int join_channel(struct irc_user *user, const char *name)
 			channel->modes |= CHANNEL_MODE_REGISTERED_ONLY;
 		}
 		channel->fp = NULL;
+		pthread_mutex_init(&channel->lock, NULL);
 		if (log_channels) {
 			char logfile[256];
 			snprintf(logfile, sizeof(logfile), "%s/irc_channel_%s.txt", BBS_LOG_DIR, name);
@@ -1498,10 +1596,36 @@ static int join_channel(struct irc_user *user, const char *name)
 			send_numeric(user, 477, "Cannot join channel (+r) - you need to be logged into your account\r\n");
 			return -1;
 		}
+		if (channel->modes & CHANNEL_MODE_PASSWORD && !strlen_zero(channel->password) && (strlen_zero(password) || strcmp(password, channel->password))) {
+			RWLIST_UNLOCK(&channels);
+			send_numeric(user, 475, "Cannot join channel (+k) - bad key\r\n");
+			return -1;
+		}
 		if (channel->modes & CHANNEL_MODE_LIMIT && channel->limit && channel->membercount >= channel->limit) {
 			RWLIST_UNLOCK(&channels);
 			send_numeric(user, 471, "Cannot join channel (+l) - channel is full, try again later\r\n");
 			return -1;
+		}
+		if (channel->modes & CHANNEL_MODE_THROTTLED && channel->throttleusers > 0 && channel->throttleinterval > 0) {
+			unsigned int now = time(NULL);
+
+			pthread_mutex_lock(&channel->lock);
+			if (channel->throttlebegin < now - channel->throttleinterval) {
+				/* It's been at least the entire interval at this point, so start fresh. */
+				channel->throttlebegin = now;
+				channel->throttlecount = 1; /* Reset, but then add us, so set directly to 1 */
+				pthread_mutex_unlock(&channel->lock);
+				/* We're allowed to proceed. */
+			} else {
+				if (channel->throttlecount >= channel->throttleusers) {
+					pthread_mutex_unlock(&channel->lock);
+					RWLIST_UNLOCK(&channels);
+					send_numeric(user, 480, "Cannot join channel (+j) - throttle exceeded, try again later\r\n");
+					return -1;
+				}
+				channel->throttlecount += 1;
+				pthread_mutex_unlock(&channel->lock);
+			}
 		}
 	}
 
