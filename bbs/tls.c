@@ -279,6 +279,7 @@ static void *ssl_io_thread(void *unused)
 			bbs_warning("poll returned %d (%s)\n", res, res == -1 ? strerror(errno) : "");
 			break;
 		}
+		RWLIST_RDLOCK(&sslfds);
 		for (i = 0; res > 0 && i < numfds; i++) {
 			int ores, wres;
 			if (pfds[i].revents == 0) {
@@ -324,6 +325,7 @@ static void *ssl_io_thread(void *unused)
 				}
 			}
 		}
+		RWLIST_UNLOCK(&sslfds);
 	}
 	free_if(pfds);
 	free_if(ssl_list);

@@ -25,6 +25,7 @@
 #include <signal.h>
 #include <unistd.h>
 
+/* libdiscord: https://github.com/Cogmasters/concord */
 #include <concord/discord.h>
 
 #include "include/linkedlists.h"
@@ -624,6 +625,10 @@ static void on_message_update(struct discord *client, const struct discord_messa
 	struct discord_user *author;
 
 	UNUSED(client);
+	if (!event->author) {
+		bbs_error("Event has no author?\n");
+		return;
+	}
 	if (event->author->bot) {
 		bbs_debug(3, "Ignoring updated message from bot: %s\n", event->content);
 		return;
