@@ -106,10 +106,10 @@ static int loadtime = 0;
 /* Reference for channel modes: https://github.com/solanum-ircd/solanum/blob/main/help/opers/cmode */
 
 static const char *usermodes = "ioZ";
-static const char *channelmodes = "jlmnprstzS";
+static const char *channelmodes = "gijlmnprstzS";
 static const char *paramchannelmodes = "qahov";
 /* https://modern.ircdocs.horse/#mode-message */
-static const char *chanmodes = ",,jl,mnprstzS"; /* I think this is the correct categorization into the A,B,C,D modes... */
+static const char *chanmodes = ",,jl,gimnprstzS"; /* I think this is the correct categorization into the A,B,C,D modes... */
 
 /*! \brief A single IRC user */
 struct irc_user {
@@ -154,6 +154,7 @@ struct irc_channel {
 	struct channel_members members;		/* List of users currently in this channel */
 	enum channel_modes modes;			/* Channel modes (non-user specific) */
 	unsigned int limit;					/* Limit on number of users in channel (only enforced on joins) */
+	struct stringlist invited;			/* String list of invited nicks */
 	FILE *fp;							/* Optional log file to which to log all channel activity */
 	RWLIST_ENTRY(irc_channel) entry;	/* Next channel */
 	unsigned int relay:1;				/* Enable relaying */
@@ -304,6 +305,8 @@ static void get_channel_modes(char *buf, size_t len, struct irc_channel *channel
 	buf[pos++] = '+';
 	/* Capitals come before lowercase */
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_TLS_ONLY, 'S');
+	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_FREE_INVITE, 'g');
+	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_INVITE_ONLY, 'i');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_THROTTLED, 'j');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_LIMIT, 'l');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_MODERATED, 'm');
@@ -477,6 +480,7 @@ static int valid_channame(const char *s)
 static void channel_free(struct irc_channel *channel)
 {
 	bbs_assert(channel->membercount == 0);
+	stringlist_empty(&channel->invited);
 	if (channel->fp) {
 		fclose(channel->fp);
 		channel->fp = NULL;
@@ -908,17 +912,19 @@ static void handle_modes(struct irc_user *user, char *s)
 							channel_broadcast(channel, NULL, ":%s MODE %s %c%c %s\r\n", user->nickname, channel->name, set ? '+' : '-', mode, targetmember->user->nickname);
 						}
 						break;
+					case 'g':
+						SET_MODE(channel->modes, set, CHANNEL_MODE_FREE_INVITE);
+						break;
+					case 'i':
+						SET_MODE(channel->modes, set, CHANNEL_MODE_INVITE_ONLY);
+						break;
 					case 'l':
 						if (set && strlen_zero(target)) {
 							send_numeric(user, 461, "Not enough parameters\r\n");
 							continue;
 						}
 						SET_MODE(channel->modes, set, CHANNEL_MODE_LIMIT);
-						if (set) {
-							channel->limit = atoi(target); /* If this fails, the limit will be 0 (turned off), so not super dangerous... */
-						} else {
-							channel->limit = 0;
-						}
+						channel->limit = set ? atoi(target) : 0; /* If this fails, the limit will be 0 (turned off), so not super dangerous... */
 						break;
 					case 'm':
 						SET_MODE(channel->modes, set, CHANNEL_MODE_MODERATED);
@@ -1028,6 +1034,88 @@ static void handle_topic(struct irc_user *user, char *s)
 			channel_print_topic(NULL, channel);
 		}
 	}
+}
+
+static void handle_invite(struct irc_user *user, char *s)
+{
+	char *nick, *channame;
+	struct irc_member *member, *member2;
+	struct irc_channel *channel;
+	struct irc_user *inviteduser;
+	nick = strsep(&s, " ");
+	channame = s;
+	if (!nick || !channame) {
+		send_numeric(user, 461, "Not enough parameters\r\n");
+		return;
+	}
+	channel = get_channel(channame);
+	if (!channel) {
+		send_numeric2(user, 403, "%s :No such channel\r\n", channame);
+		return;
+	}
+	member = get_member_by_channel_name(user, channame);
+	if (!member) {
+		send_numeric(user, 442, "You're not on that channel\r\n");
+		return;
+	}
+	member2 = get_member_by_username(nick, channame);
+	if (member2) {
+		send_numeric2(user, 443, "%s %s :is already on channel\r\n", nick, channame);
+		return;
+	}
+	if (channel->modes & CHANNEL_MODE_INVITE_ONLY) {
+		/* Must be at least an op to invite people *or* channel must have free invite enabled */
+		if (!authorized_atleast(member, CHANNEL_USER_MODE_OP) && !(channel->modes & CHANNEL_MODE_FREE_INVITE)) {
+			send_numeric2(user, 482, "%s: You're not a channel operator\r\n", channame);
+			return;
+		}
+	}
+	inviteduser = get_user(nick);
+	if (!inviteduser) {
+		send_numeric2(user, 401, "%s :No such nick/channel\r\n", nick);
+		return;
+	}
+
+	RWLIST_WRLOCK(&channel->invited);
+	if (!stringlist_contains(&channel->invited, nick)) {
+		stringlist_push(&channel->invited, nick); /* Add nick to invite list so we can keep track of the invite */
+	}
+	RWLIST_UNLOCK(&channel->invited);
+
+	send_reply(inviteduser, ":" IDENT_PREFIX_FMT " INVITE %s %s\r\n", IDENT_PREFIX_ARGS(user), inviteduser->nickname, channame);
+	send_numeric2(user, 341, "%s %s\r\n", nick, channame); /* Confirm to inviter */
+}
+
+static void handle_knock(struct irc_user *user, char *s)
+{
+	char *msg, *channame;
+	struct irc_channel *channel;
+	struct irc_member *member;
+
+	/* KNOCK <channel> [<message>] */
+	channame = strsep(&s, " ");
+	msg = s;
+	if (!strlen_zero(msg) && *msg == ':') {
+		msg++;
+	}
+
+	channel = get_channel(channame);
+	if (!channel) {
+		send_numeric2(user, 403, "%s :No such channel\r\n", channame);
+		return;
+	}
+	member = get_member_by_channel_name(user, channame);
+	if (member) {
+		send_numeric(user, 714, "You're already on that channel\r\n"); /*! \todo Don't think this is the right format */
+		return;
+	}
+	if (channel->modes & CHANNEL_HIDDEN) {
+		send_numeric(user, 715, "KNOCKs are disabled.\r\n");
+		return;
+	}
+	/* Notify ops about the KNOCK */
+	channel_broadcast_selective(channel, NULL, CHANNEL_USER_MODE_OP, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), "KNOCK", channel->name, msg);
+	send_numeric(user, 711, "Your KNOCK has been delivered.\r\n");
 }
 
 static void dump_who(struct irc_user *user, struct irc_user *whouser)
@@ -1431,6 +1519,15 @@ static int join_channel(struct irc_user *user, const char *name)
 		return -1;
 	}
 
+	if (channel->modes & CHANNEL_MODE_INVITE_ONLY) {
+		if (!stringlist_contains(&channel->invited, user->nickname)) {
+			RWLIST_UNLOCK(&channel->members);
+			RWLIST_UNLOCK(&channels);
+			send_numeric(user, 473, "Cannot join channel (+i) - you must be invited\r\n");
+			return -1;
+		}
+	}
+
 	/* Add ourself to the channel members */
 	member = calloc(1, sizeof(*member));
 	if (!member) {
@@ -1686,7 +1783,7 @@ static int client_welcome(struct irc_user *user)
 	 */
 	/* MAX_CHANNELS applies to both # and &, but seems the spec doesn't allow providing a "combined" value for all channels? */
 	send_numeric2(user, 5, "SAFELIST CHANTYPES=#& CHANMODES=%s CHANLIMIT=#:%d,&:%d :are supported by this server\r\n", chanmodes, MAX_CHANNELS, MAX_CHANNELS);
-	send_numeric2(user, 5, "PREFIX=%s MAXLIST=%s MODES=26 CASEMAPPING=rfc1459 :are supported by this server\r\n", "(qaohv)~&@%+", DEF_MAXLIST); /* Ambassador ignores ascii for some reason but accepts rfc1459 */
+	send_numeric2(user, 5, "PREFIX=%s KNOCK MAXLIST=%s MODES=26 CASEMAPPING=rfc1459 :are supported by this server\r\n", "(qaohv)~&@%+", DEF_MAXLIST); /* Ambassador ignores ascii for some reason but accepts rfc1459 */
 	send_numeric2(user, 5, "NICKLEN=%d MAXNICKLEN=%d USERLEN=%d ELIST=TU AWAYLEN=%d CHANNELLEN=%d HOSTLEN=%d NETWORK=%s STATUSMSG=%s TOPICLEN=%d :are supported by this server\r\n",
 		MAX_NICKLEN, MAX_NICKLEN, MAX_NICKLEN, MAX_AWAY_LEN, MAX_CHANNEL_LENGTH, MAX_HOSTLEN, bbs_name(), "&@%+", MAX_TOPIC_LENGTH);
 
@@ -1899,7 +1996,8 @@ static void handle_client(struct irc_user *user)
 				 * e.g. you don't create accounts using IRC, so we don't need to support guest access at all. */
 				} else if (!sasl_auth && !bbs_user_is_registered(user->node->user) && require_sasl) {
 					send_reply(user, "NOTICE AUTH :*** This server requires SASL for authentication. Please reconnect with SASL enabled.\r\n");
-				/* We can't necessarily use %s (user->username) instead of %p (user), since if !require_sasl, we might not have a username still. */
+					break; /* Disconnect at this point, there's no point in lingering around further. */
+				/* We can't necessarily use %s (user->username) instead of %p (user), since if require_sasl == false, we might not have a username still. */
 				} else if (!started) {
 					send_numeric(user, 451, "You have not registered\r\n");
 				} else if (!strcasecmp(command, "PRIVMSG")) { /* List this as high up as possible, since this is the most common command */
@@ -1992,39 +2090,9 @@ static void handle_client(struct irc_user *user)
 						kick_member(kickchan, user, kickuser->user, reason);
 					}
 				} else if (!strcasecmp(command, "INVITE")) {
-					char *nick, *channame;
-					struct irc_member *member;
-					struct irc_channel *channel;
-					struct irc_user *inviteduser;
-					nick = strsep(&s, " ");
-					channame = s;
-					if (!nick || !channame) {
-						send_numeric(user, 461, "Not enough parameters\r\n");
-						continue;
-					}
-					channel = get_channel(channame);
-					if (!channel) {
-						send_numeric2(user, 403, "%s :No such channel\r\n", channame);
-						continue;
-					}
-					member = get_member_by_channel_name(user, channame);
-					if (!member) {
-						send_numeric(user, 442, "You're not on that channel\r\n");
-						continue;
-					}
-					member = get_member_by_username(nick, channame);
-					if (member) {
-						send_numeric2(user, 443, "%s %s :is already on channel\r\n", nick, channame);
-						continue;
-					}
-					/*! \todo if invite only, then only channel ops can invite */
-					inviteduser = get_user(nick);
-					if (!inviteduser) {
-						send_numeric2(user, 401, "%s :No such nick/channel\r\n", nick);
-						continue;
-					}
-					send_reply(inviteduser, ":" IDENT_PREFIX_FMT " INVITE %s %s\r\n", IDENT_PREFIX_ARGS(user), inviteduser->nickname, channame);
-					send_numeric2(user, 341, "%s %s\r\n", nick, channame); /* Confirm to inviter */
+					handle_invite(user, s);
+				} else if (!strcasecmp(command, "KNOCK")) {
+					handle_knock(user, s);
 				} else if (!strcasecmp(command, "NAMES")) {
 					struct irc_channel *channel = get_channel(s);
 					/* Many servers don't allow NAMES unless you're in the channel: we do... */
