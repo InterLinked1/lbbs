@@ -80,6 +80,7 @@ int main(int argc, char *argv[])
 
 	res = connect(sockfd, (struct sockaddr *)&sunaddr, sizeof(sunaddr));
 	if (res) {
+		fprintf(stderr, "Unable to connect to BBS, socket error: %s\n", strerror(errno));
 		close(sockfd);
 		sockfd = -1;
 		return -1;
@@ -94,6 +95,7 @@ int main(int argc, char *argv[])
 
 	/* Make the terminal nonblocking */
 	if (term_makeraw(STDIN_FILENO)) {
+		fprintf(stderr, "Unable to set terminal\n");
 		close(sockfd);
 		return -1;
 	}
