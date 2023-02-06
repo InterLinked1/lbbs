@@ -1310,9 +1310,40 @@ static void dump_who(struct irc_user *user, struct irc_user *whouser)
 /*! \brief Whether two users share any IRC channels in common */
 static int channels_in_common(struct irc_user *u1, struct irc_user *u2)
 {
-	UNUSED(u1);
-	UNUSED(u2);
-	return 1; /*! \todo BUGBUG FIXME implement */
+	/* XXX This is not the most efficient algorithm. It's just the easiest implementation that works now.
+	 * It's O(n^2), since traversing all members of all channels is expensive.
+	 * It would be a lot cheaper to cache the channels of which a user is a member
+	 * on the user struct itself, and make comparisons between those,
+	 * since users are not generally in many channels. */
+	struct irc_channel *channel;
+	struct irc_member *m1, *m2, *m;
+
+	RWLIST_RDLOCK(&channels);
+	RWLIST_TRAVERSE(&channels, channel, entry) {
+		m1 = m2 = NULL;
+		RWLIST_RDLOCK(&channel->members);
+		RWLIST_TRAVERSE(&channel->members, m, entry) {
+			if (m->user == u1) {
+				m1 = m;
+			} else if (m->user == u2) {
+				m2 = m;
+			}
+		}
+		RWLIST_UNLOCK(&channel->members);
+		if (m1 && m2) {
+			/* Both u1 and u2 are members of this channel. */
+			break;
+		}
+	}
+	if (channel) {
+		bbs_debug(5, "Users share channel %s in common\n", channel->name);
+	} else {
+		bbs_debug(5, "Users do not share any common channels\n");
+	}
+	RWLIST_UNLOCK(&channels);
+
+	/* If channel is not NULL here, then we found a common channel. */
+	return channel ? 1 : 0;
 }
 
 static void handle_who(struct irc_user *user, char *s)
@@ -1642,6 +1673,9 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 
 	RWLIST_RDLOCK(&channel->members);
 	RWLIST_TRAVERSE(&channel->members, member, entry) {
+		if (member->user->modes & USER_MODE_INVISIBLE && !channels_in_common(member->user, user)) {
+			continue; /* Hide from NAMES */
+		}
 		if (user->multiprefix) {
 			len += snprintf(buf + len, sizeof(buf) - len, "%s" MULTIPREFIX_FMT "%s", len ? " " : "", MULTIPREFIX_ARGS(member), member->user->nickname);
 		} else {
