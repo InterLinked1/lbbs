@@ -717,8 +717,15 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 			/* XXX ESC should cancel */
 			/* XXX All this would be handled once we have a terminal line editor that works with unbuffered input */
 			bbs_buffer(node);
-			res = bbs_poll_read(node, SEC_MS(30), buf + 1, sizeof(buf) - 2); /* Leave the first char in the buffer alone, -1 for null termination, and -1 for the first char */
+			res = bbs_poll_read(node, MIN_MS(3), buf + 1, sizeof(buf) - 2); /* Leave the first char in the buffer alone, -1 for null termination, and -1 for the first char */
 			if (res <= 0) {
+				bbs_debug(3, "bbs_poll_read returned %d\n", res);
+				if (res == 0) {
+					/* User started a message, but didn't finish before timeout */
+					bbs_writef(node, "\n*** TIMEOUT ***\n");
+					bbs_flush_input(node); /* Discard any pending input */
+					continue;
+				}
 				break;
 			}
 			res++; /* Add 1, since we read 1 char prior to the last read */
