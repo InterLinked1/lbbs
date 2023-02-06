@@ -379,6 +379,12 @@ int bbs_authenticate(struct bbs_node *node, const char *username, const char *pa
 		return -1;
 	}
 
+	if (strchr(username, ' ')) {
+		/* mod_auth_mysql doesn't allow registration of usernames with spaces,
+		 * but that doesn't guarantee there aren't already usernames with spaces, etc. */
+		bbs_warning("Username '%s' contains space (may not be compatible with all services)\n", username); /* e.g. IRC */
+	}
+
 	/* Do not run any callbacks for user login here, since this function isn't always
 	 * called on authentication (SSH for example could call bbs_user_authenticate
 	 * and then bbs_node_attach_user).

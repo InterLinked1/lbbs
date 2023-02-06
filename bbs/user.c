@@ -118,6 +118,11 @@ int bbs_users_dump(int fd, int verbose)
 		} else {
 			bbs_dprintf(fd, " %4d %-15s\r\n", user->id, bbs_username(user));
 		}
+		if (strchr(bbs_username(user), ' ')) {
+			/* mod_auth_mysql doesn't allow registration of usernames with spaces,
+			 * but that doesn't guarantee there aren't already usernames with spaces, etc. */
+			bbs_warning("Username '%s' contains space (may not be compatible with all services)\n", bbs_username(user)); /* e.g. IRC */
+		}
 	}
 
 	bbs_user_list_destroy(userlist);

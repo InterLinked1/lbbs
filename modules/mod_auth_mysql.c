@@ -340,8 +340,21 @@ static int user_register(struct bbs_node *node)
 		NONZERO_RETURN(res);
 		res = get_response(node, REG_QLEN, REG_FMT, "Please enter your full real name: ", MIN_MS(1), fullname, sizeof(fullname), &tries, 4, " "); /* If there's no space, we don't have at least 2 names */
 		NONZERO_RETURN(res); 
-		res = get_response(node, REG_QLEN, REG_FMT, "Desired username: ", MIN_MS(1), username, sizeof(username), &tries, 2, NULL);
-		NONZERO_RETURN(res);
+
+		for (; tries > 0; tries--) { /* Retries here count less than retries of the main loop */
+			res = get_response(node, REG_QLEN, REG_FMT, "Desired username: ", MIN_MS(1), username, sizeof(username), &tries, 2, NULL);
+			NONZERO_RETURN(res);
+			if (strchr(username, ' ')) {
+				NEG_RETURN(bbs_writef(node, "\n%sUsername cannot contain spaces%s\n", COLOR(COLOR_RED), COLOR_RESET));
+			} else if (!bbs_str_isprint(username)) {
+				NEG_RETURN(bbs_writef(node, "\n%sUsername contains disallowed characters%s\n", COLOR(COLOR_RED), COLOR_RESET));
+			} else {
+				break;
+			}
+		}
+		if (tries <= 0) {
+			return 1;
+		}
 
 		bbs_echo_off(node); /* Don't display password */
 		for (; tries > 0; tries--) { /* Retries here count less than retries of the main loop */
