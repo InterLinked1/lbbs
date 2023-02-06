@@ -187,6 +187,23 @@ static void thread_unregister(void *id)
 	__thread_unregister(*thread, NULL, 0, NULL);
 }
 
+int bbs_pthread_tid(pthread_t thread)
+{
+	struct thread_list_t *x;
+	int lwp = -1;
+
+	RWLIST_RDLOCK(&thread_list);
+	RWLIST_TRAVERSE(&thread_list, x, list) {
+		if (thread == x->id) {
+			lwp = x->lwp;
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&thread_list);
+
+	return lwp;
+}
+
 int bbs_dump_threads(int fd)
 {
 	char elapsed[24];

@@ -560,9 +560,10 @@ int bbs_nodes_print(int fd)
 	char elapsed[24];
 	struct bbs_node *n;
 	int c = 0;
+	int lwp;
 	int now = time(NULL);
 
-	bbs_dprintf(fd, "%3s %8s %9s %7s %-15s %-15s %15s %1s %1s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "USER", "MENU/PAGE", "IP ADDRESS", "E", "B", "FD", "MST", "SLV", "SPY", "SLV NAME");
+	bbs_dprintf(fd, "%3s %8s %9s %7s %-15s %-15s %15s %1s %1s %6s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "USER", "MENU/PAGE", "IP ADDRESS", "E", "B", "TID", "FD", "MST", "SLV", "SPY", "SLV NAME");
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
@@ -570,9 +571,10 @@ int bbs_nodes_print(int fd)
 		bbs_node_lock(n);
 		print_time_elapsed(n->created, now, elapsed, sizeof(elapsed));
 		snprintf(menufull, sizeof(menufull), "%s%s%s%s", S_IF(n->menu), n->menuitem ? " (" : "", S_IF(n->menuitem), n->menuitem ? ")" : "");
-		bbs_dprintf(fd, "%3d %8s %9s %3dx%3d %-15s %-15s %15s %1s %1s %3d %3d %3d %3d %s\n",
+		lwp = bbs_pthread_tid(n->thread);
+		bbs_dprintf(fd, "%3d %8s %9s %3dx%3d %-15s %-15s %15s %1s %1s %6d %3d %3d %3d %3d %s\n",
 			n->id, n->protname, elapsed, n->cols, n->rows, bbs_username(n->user), menufull, n->ip, BBS_YN(n->echo), BBS_YN(n->buffered),
-			n->fd, n->amaster, n->slavefd, n->spyfd, n->slavename);
+			lwp, n->fd, n->amaster, n->slavefd, n->spyfd, n->slavename);
 		bbs_node_unlock(n);
 		c++;
 	}
@@ -589,6 +591,7 @@ int bbs_node_info(int fd, unsigned int nodenum)
 	char connecttime[29];
 	struct bbs_node *n;
 	char menufull[16];
+	int lwp;
 	int now = time(NULL);
 
 	RWLIST_RDLOCK(&nodes);
@@ -623,6 +626,8 @@ int bbs_node_info(int fd, unsigned int nodenum)
 		bbs_dprintf(fd, BBS_FMT_S, title,fallback); \
 	}
 
+	lwp = bbs_pthread_tid(n->thread);
+
 	pthread_mutex_lock(&n->lock);
 	bbs_dprintf(fd, BBS_FMT_D, "#", n->id);
 	bbs_dprintf(fd, BBS_FMT_S, "Protocol", n->protname);
@@ -636,6 +641,9 @@ int bbs_node_info(int fd, unsigned int nodenum)
 	bbs_dprintf(fd, BBS_FMT_D, "Node PTY Master FD", n->amaster);
 	bbs_dprintf(fd, BBS_FMT_D, "Node PTY Slave FD", n->slavefd);
 	bbs_dprintf(fd, BBS_FMT_S, "Node PTY Slave Name", n->slavename);
+	if (lwp != -1) {
+		bbs_dprintf(fd, BBS_FMT_D, "Node Thread ID", lwp);
+	}
 	bbs_dprintf(fd, BBS_FMT_S, "User", bbs_username(n->user));
 	if (bbs_user_is_guest(n->user)) {
 		bbs_dprintf(fd, BBS_FMT_S, "Guest Name/Alias",  S_IF(n->user->guestname));

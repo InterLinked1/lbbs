@@ -56,6 +56,13 @@ int __bbs_thread_cancel_killable(const char *filename);
 void bbs_thread_cleanup(void);
 
 /*!
+ * \brief Get the thread ID (LWP) of a registered thread
+ * \param pid pthread_t handle
+ * \retval -1 if thread not currently registered, LWP/thread ID otherwise
+ */
+int bbs_pthread_tid(pthread_t thread);
+
+/*!
  * \brief Print list of active BBS threads
  * \warning This may not include all threads, such as those that do not use the BBS pthread creation wrappers (external libraries, etc.)
  */
