@@ -27,6 +27,7 @@ jobs:
      - name: Start build
        run: |
           echo Beginning build
+          sudo sed -i 's/azure\.//' /etc/apt/sources.list
           sudo ./install_prereq.sh
           sudo make
           sudo make install
