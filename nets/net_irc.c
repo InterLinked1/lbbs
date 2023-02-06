@@ -145,6 +145,7 @@ struct irc_user {
 	pthread_mutex_t lock;			/* User lock */
 	char *awaymsg;					/* Away message */
 	unsigned int away:1;			/* User is currently away (default is 0, i.e. user is here) */
+	unsigned int multiprefix:1;		/* Supports multi-prefix */
 	RWLIST_ENTRY(irc_user) entry;	/* Next user */
 	/* Avoid using a flexible struct member since we'll probably strdup both the username and nickname beforehand anyways */
 };
@@ -399,6 +400,9 @@ static int get_user_modes(char *buf, size_t len, struct irc_user *user)
 	buf[pos] = '\0';
 	return 0;
 }
+
+#define MULTIPREFIX_FMT "%s%s%s%s%s"
+#define MULTIPREFIX_ARGS(member) member->modes & CHANNEL_USER_MODE_FOUNDER ? PREFIX_FOUNDER : "", member->modes & CHANNEL_USER_MODE_ADMIN ? PREFIX_ADMIN : "", member->modes & CHANNEL_USER_MODE_OP ? PREFIX_OP : "", member->modes & CHANNEL_USER_MODE_HALFOP ? PREFIX_HALFOP : "", member->modes & CHANNEL_USER_MODE_VOICE ? PREFIX_VOICE : ""
 
 static const char *top_channel_membership_prefix(struct irc_member *member)
 {
@@ -1453,7 +1457,11 @@ static void handle_whois(struct irc_user *user, char *s)
 						continue;
 					}
 				}
-				len += snprintf(buf + len, sizeof(buf) - len, "%s%s%s", len ? " " : "", top_channel_membership_prefix(member), channel->name);
+				if (user->multiprefix) {
+					len += snprintf(buf + len, sizeof(buf) - len, "%s" MULTIPREFIX_FMT "%s", len ? " " : "", MULTIPREFIX_ARGS(member), channel->name);
+				} else {
+					len += snprintf(buf + len, sizeof(buf) - len, "%s%s%s", len ? " " : "", top_channel_membership_prefix(member), channel->name);
+				}
 				if (len >= 200) {
 					send_numeric2(user, 319, "%s :%s\r\n", u->nickname, buf);
 					len = 0;
@@ -1634,7 +1642,11 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 
 	RWLIST_RDLOCK(&channel->members);
 	RWLIST_TRAVERSE(&channel->members, member, entry) {
-		len += snprintf(buf + len, sizeof(buf) - len, "%s%s%s", len ? " " : "", top_channel_membership_prefix(member), member->user->nickname);
+		if (user->multiprefix) {
+			len += snprintf(buf + len, sizeof(buf) - len, "%s" MULTIPREFIX_FMT "%s", len ? " " : "", MULTIPREFIX_ARGS(member), member->user->nickname);
+		} else {
+			len += snprintf(buf + len, sizeof(buf) - len, "%s%s%s", len ? " " : "", top_channel_membership_prefix(member), member->user->nickname);
+		}
 		if (len >= 400) { /* Stop well short of the 512 character message limit and clear the buffer */
 			len = 0;
 			send_numeric2(user, 353, "%s %s :%s\r\n", symbol, channel->name, buf);
@@ -2202,11 +2214,17 @@ static void handle_client(struct irc_user *user)
 						bbs_warning("Unhandled message: %s %s\n", command, s);
 					}
 				} else if (capnegotiate == 2) {
-					if (!strcmp(s, "CAP REQ :multi-prefix")) {
+					if (!strcmp(s, "CAP REQ :multi-prefix")) { /* See https://ircv3.net/specs/extensions/multi-prefix */
 						send_reply(user, "CAP * ACK :multi-prefix\r\n"); /* Colon technically optional, since there's only one capability */
-						capnegotiate++;
+						/* SASL *not* supported */
+						/* Don't increment capnegotiate, just wait for the client to send CAP END */
+						user->multiprefix = 1;
 					} else if (!strcmp(s, "CAP REQ :multi-prefix sasl")) {
 						send_reply(user, "CAP * ACK :multi-prefix sasl\r\n");
+						capnegotiate++;
+						user->multiprefix = 1;
+					} else if (!strcmp(s, "CAP REQ :sasl")) {
+						send_reply(user, "CAP * ACK :sasl\r\n");
 						capnegotiate++;
 					} else {
 						bbs_warning("Unhandled message: %s\n", s);
