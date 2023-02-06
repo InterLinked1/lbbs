@@ -753,6 +753,7 @@ static int load_module(void)
 	/* JOIN, PART/QUIT/KICK */
 	discord_set_on_guild_member_add(discord_client, &on_guild_member_add);
 	discord_set_on_guild_member_remove(discord_client, &on_guild_member_remove);
+	/*! \todo Probably need on_user_update as well, for nick changes */
 
 	if (bbs_pthread_create(&discord_thread, NULL, discord_relay, discord_client)) {
 		bbs_error("Unable to create Discord thread.\n");

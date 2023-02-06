@@ -95,6 +95,9 @@ static int require_sasl = 1;
 static int log_channels = 0;
 
 static int loadtime = 0;
+static int need_restart = 0;
+
+static int load_config(void);
 
 /* ChatZilla/Ambassador interface guide: http://chatzilla.hacksrus.com/intro */
 #define PREFIX_FOUNDER "~"
@@ -111,6 +114,18 @@ static const char *channelmodes = "gijlmnprstzS";
 static const char *paramchannelmodes = "qahov";
 /* https://modern.ircdocs.horse/#mode-message */
 static const char *chanmodes = ",,jl,gimnprstzS"; /* I think this is the correct categorization into the A,B,C,D modes... */
+
+/*! \brief An IRC operator */
+struct irc_operator {
+	const char *name;
+	const char *password;
+	RWLIST_ENTRY(irc_operator) entry;	/* Next operator */
+	char data[0];
+};
+
+static RWLIST_HEAD_STATIC(operators, irc_operator);	/* Container for all operators */
+
+static int operators_online = 0;
 
 /*! \brief A single IRC user */
 struct irc_user {
@@ -178,6 +193,41 @@ struct irc_relay {
 };
 
 static RWLIST_HEAD_STATIC(relays, irc_relay); /* Container for all relays */
+
+static int add_operator(const char *name, const char *password)
+{
+	struct irc_operator *operator;
+	int namelen, pwlen;
+
+	namelen = strlen(name);
+	pwlen = password ? strlen(password) : 0;
+
+	RWLIST_WRLOCK(&operators);
+	RWLIST_TRAVERSE(&operators, operator, entry) {
+		if (!strcmp(name, operator->name)) {
+			break;
+		}
+	}
+	if (operator) {
+		RWLIST_UNLOCK(&operators);
+		bbs_warning("Operator with name '%s' already exist\n", name);
+		return -1;
+	}
+	operator = calloc(1, sizeof(*operator) + namelen + pwlen + 2);
+	if (!operator) {
+		RWLIST_UNLOCK(&operators);
+		return -1;
+	}
+	strcpy(operator->data, name); /* Safe */
+	operator->name = operator->data;
+	if (password) {
+		strcpy(operator->data + namelen + 1, password); /* Safe */
+		operator->password = operator->data + namelen + 1;
+	}
+	RWLIST_INSERT_HEAD(&operators, operator, entry);
+	RWLIST_UNLOCK(&operators);
+	return 0;
+}
 
 /*
  * Yes, we really are exporting global symbols, just for these three functions.
@@ -343,6 +393,7 @@ static int get_user_modes(char *buf, size_t len, struct irc_user *user)
 	buf[pos++] = '+';
 	APPEND_MODE(buf, len, user->modes, USER_MODE_INVISIBLE, 'i');
 	APPEND_MODE(buf, len, user->modes, USER_MODE_OPERATOR, 'o');
+	APPEND_MODE(buf, len, user->modes, USER_MODE_WALLOPS, 'w');
 	APPEND_MODE(buf, len, user->modes, USER_MODE_SECURE, 'Z');
 	pthread_mutex_unlock(&user->lock);
 	buf[pos] = '\0';
@@ -368,6 +419,11 @@ static const char *top_channel_membership_prefix(struct irc_member *member)
 
 static void user_free(struct irc_user *user)
 {
+	if (user->modes & USER_MODE_OPERATOR) {
+		RWLIST_WRLOCK(&operators);
+		operators_online--;
+		RWLIST_UNLOCK(&operators);
+	}
 	pthread_mutex_destroy(&user->lock);
 	free_if(user->hostname);
 	free_if(user->awaymsg);
@@ -519,6 +575,17 @@ static void destroy_channels(void)
 		channel_free(channel);
 	}
 	RWLIST_UNLOCK(&channels);
+}
+
+static void destroy_operators(void)
+{
+	struct irc_operator *operator;
+
+	RWLIST_WRLOCK(&operators);
+	while ((operator = RWLIST_REMOVE_HEAD(&operators, entry))) {
+		free(operator);
+	}
+	RWLIST_UNLOCK(&operators);
 }
 
 #define channel_broadcast(channel, user, fmt, ...) __channel_broadcast(1, channel, user, 0, fmt, ## __VA_ARGS__)
@@ -691,6 +758,8 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, cons
 		send_numeric(user, 416, "Input too large\r\n"); /* XXX Not really the right numeric */
 		return -1;
 	}
+
+	/* XXX Could be multiple channels, comma-separated (not currently supported) */
 
 	if (!IS_CHANNEL_NAME(channame)) {
 		struct irc_user *user2 = get_user(channame);
@@ -904,7 +973,7 @@ static void handle_modes(struct irc_user *user, char *s)
 		/* Find the member for this channel */
 		if (IS_CHANNEL_NAME(channel_name)) {
 			member = get_member_by_channel_name(user, channel_name);
-			if (!member || !authorized_atleast(member, CHANNEL_USER_MODE_OP)) { /* Must be at least an op */
+			if (!member || !authorized_atleast(member, CHANNEL_USER_MODE_OP) || user->modes & USER_MODE_OPERATOR) { /* Must be at least an op */
 				send_numeric2(user, 482, "%s: You're not a channel operator\r\n", channel_name);
 				return;
 			}
@@ -937,7 +1006,9 @@ static void handle_modes(struct irc_user *user, char *s)
 						break;
 					case 'q':
 					case 'a':
-						MIN_MODE(member, CHANNEL_USER_MODE_FOUNDER, "founder"); /* Only founders can change 'a' (whereas ops can deop other ops) */
+						if (!(user->modes & USER_MODE_OPERATOR)) {
+							MIN_MODE(member, CHANNEL_USER_MODE_FOUNDER, "founder"); /* Only founders can change 'a' (whereas ops can deop other ops) */
+						}
 						/* Fall through */
 					case 'o':
 					case 'h':
@@ -1055,11 +1126,18 @@ static void handle_modes(struct irc_user *user, char *s)
 						SET_MODE(user->modes, set, USER_MODE_INVISIBLE);
 						break;
 					case 'o': /* Channel operator */
-						if (user->node->user->id == 1) { /* Allow the sysop to become a server operator */
-							SET_MODE(user->modes, set, USER_MODE_OPERATOR);
-						} else {
-							send_numeric(user, 491, "No appropriate operator blocks were found for your host\r\n");
+						/* +o cannot be done using MODE, must use the OPER command instead */
+						if (set) {
+							send_numeric2(user, 472, "%c :is an unknown mode char to me\r\n", mode);
+							continue;
 						}
+						RWLIST_WRLOCK(&operators);
+						SET_MODE(user->modes, set, USER_MODE_OPERATOR); /* Operators can do-op themselves using -o, however */
+						operators_online--;
+						RWLIST_UNLOCK(&operators);
+						break;
+					case 'w':
+						SET_MODE(user->modes, set, USER_MODE_WALLOPS);
 						break;
 					case 'Z': /* Valid mode but is read only */
 					default:
@@ -1486,6 +1564,67 @@ static void handle_help(struct irc_user *user, char *s)
 	send_numeric(user, 524, "I don't know anything about that\r\n");
 }
 
+static void handle_oper(struct irc_user *user, char *s)
+{
+	struct irc_operator *operator;
+	char *name, *pw;
+
+	if (user->modes & USER_MODE_OPERATOR) { /* If already an operator, don't erroneously increment operators_online */
+		/* Already an operator */
+		send_numeric(user, 381, "You are now an IRC operator\r\n"); /* XXX Shouldn't there be an "You are already an operator"? */
+		return;
+	}
+
+	if (!s) {
+		send_numeric(user, 461, "Not enough parameters\r\n");
+		return;
+	}
+	pw = s;
+	name = strsep(&pw, " ");
+	if (!name || !pw) {
+		send_numeric(user, 461, "Not enough parameters\r\n");
+		return;
+	}
+
+	RWLIST_WRLOCK(&operators); /* Must be atomic (WRLOCK, not RDLOCK) for incrementing operators_online */
+	RWLIST_TRAVERSE(&operators, operator, entry) {
+		if (!strcmp(name, operator->name)) {
+			if (!operator->password) { /* nativeopers: authenticate "natively" using BBS credentials */
+				if (!strcmp(operator->name, bbs_username(user->node->user))) {
+					int res;
+					struct bbs_user *u = bbs_user_request();
+					if (!u) {
+						return; /* Not much we can do... */
+					}
+					res = bbs_user_authenticate(u, name, pw);
+					bbs_user_destroy(u);
+					if (!res) {
+						break; /* Authentication succeeded */
+					}
+				}
+			} else { /* opers */
+				if (!strcmp(pw, operator->password)) {
+					break;
+				}
+			}
+		}
+	}
+
+	memset(pw, 0, strlen(pw)); /* Destroy the password... doesn't make much difference, since it's not obfuscated in command processing, but doesn't hurt... */
+
+	if (!operator) {
+		RWLIST_UNLOCK(&operators);
+		send_numeric(user, 491, "No appropriate operator blocks were found for your host\r\n");
+		/* send_numeric(user, 464, "Password incorrect\r\n"); */
+		return;
+	}
+
+	operators_online++; /* The only reason we need a WRLOCK, let alone a lock at all, is for atomic incrementing here */
+	RWLIST_UNLOCK(&operators);
+	user->modes |= USER_MODE_OPERATOR;
+	send_numeric(user, 381, "You are now an IRC operator\r\n");
+}
+
 static int send_channel_members(struct irc_user *user, struct irc_channel *channel)
 {
 	struct irc_member *member;
@@ -1673,6 +1812,9 @@ static int join_channel(struct irc_user *user, char *name)
 			/* OP still needs to be granted to founders (as we do above), higher prefixes don't implicitly grant lower ones.
 			 * For example, Ambassador won't let you perform op operations unless you're an op. */
 			member->modes |= CHANNEL_USER_MODE_FOUNDER; /* Automatically make the sysop a founder of any channel s/he creates */
+			/* Note that this only applies to the first user (typically the sysop),
+			 * but other IRC operators can always use OPER themselves,
+			 * and then set any of these modes for any channel. */
 		}
 		channel->relay = 1; /* XXX Not currently configurable in any way, always allowing relaying for now. */
 	}
@@ -1767,7 +1909,7 @@ static int leave_channel(struct irc_user *user, const char *name)
 	return 0;
 }
 
-static void drop_member_if_present(struct irc_channel *channel, struct irc_user *user, const char *message)
+static void drop_member_if_present(struct irc_channel *channel, struct irc_user *user, const char *leavecmd, const char *message)
 {
 	struct irc_member *member;
 
@@ -1782,7 +1924,7 @@ static void drop_member_if_present(struct irc_channel *channel, struct irc_user 
 			member->user->channelcount -= 1;
 			free(member);
 			/* Already locked, so don't try to recursively lock: */
-			channel_broadcast_nolock(channel, user, ":" IDENT_PREFIX_FMT " QUIT %s :%s\r\n", IDENT_PREFIX_ARGS(user), channel->name, S_IF(message));
+			channel_broadcast_nolock(channel, user, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), leavecmd, channel->name, S_IF(message));
 			if (channel->relay) {
 				char quitmsg[92];
 				snprintf(quitmsg, sizeof(quitmsg), IDENT_PREFIX_FMT " has quit %s%s%s%s", IDENT_PREFIX_ARGS(user), channel->name, message ? " (" : "", S_IF(message), message ? ")" : "");
@@ -1823,7 +1965,7 @@ static void kick_member(struct irc_channel *channel, struct irc_user *kicker, st
 	}
 }
 
-static void leave_all_channels(struct irc_user *user, const char *message)
+static void leave_all_channels(struct irc_user *user, const char *leavecmd, const char *message)
 {
 	struct irc_channel *channel;
 
@@ -1834,7 +1976,7 @@ static void leave_all_channels(struct irc_user *user, const char *message)
 	 * so simply traversing them all and seeing if the user is a member of each
 	 * isn't as bad when you think about it that way. */
 	RWLIST_TRAVERSE_SAFE_BEGIN(&channels, channel, entry) { /* We must use a safe traversal, since drop_member_if_present could cause the channel to be removed if it's now empty */
-		drop_member_if_present(channel, user, message);
+		drop_member_if_present(channel, user, leavecmd, message);
 	}
 	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&channels);
@@ -1917,6 +2059,7 @@ static int client_welcome(struct irc_user *user)
 	chancount = channel_count();
 
 	send_numeric(user, 251, "There %s %d user%s on %d server%s\r\n", count == 1 ? "is" : "are", count, ESS(count), 1, ESS(1));
+	send_numeric2(user, 252, "%d :IRC Operator%s online\r\n", operators_online, ESS(operators_online));
 	send_numeric2(user, 254, "%d :channel%s formed\r\n", chancount, ESS(chancount));
 
 	motd(user);
@@ -1979,6 +2122,12 @@ static int do_sasl_auth(struct irc_user *user, char *s)
 	send_numeric(user, 900, IDENT_PREFIX_FMT " %s You are now logged in as %s\r\n", IDENT_PREFIX_ARGS(user), user->username, user->username);
 	return 0;
 }
+
+#define REQUIRE_OPER(user) \
+	if (!(user->modes & USER_MODE_OPERATOR)) { \
+		send_numeric(user, 481, "You're not an IRC operator\r\n"); \
+		continue; \
+	}
 
 static void handle_client(struct irc_user *user)
 {
@@ -2171,7 +2320,7 @@ static void handle_client(struct irc_user *user)
 				} else if (!strcasecmp(command, "QUIT")) {
 					bbs_debug(3, "User %p wants to quit: %s\n", user, S_IF(s));
 					rtrim(s);
-					leave_all_channels(user, s);
+					leave_all_channels(user, "QUIT", s);
 					graceful_close = 1; /* Defaults to 1 anyways, but this is definitely graceful */
 					break; /* We're done. */
 				} else if (!strcasecmp(command, "AWAY")) {
@@ -2216,6 +2365,26 @@ static void handle_client(struct irc_user *user)
 						}
 						kick_member(kickchan, user, kickuser->user, reason);
 					}
+				} else if (!strcasecmp(command, "KILL")) {
+					struct irc_user *u;
+					char *killusername, *reason;
+					killusername = strsep(&s, " ");
+					reason = s;
+					if (!killusername) {
+						send_numeric(user, 461, "Not enough parameters\r\n");
+						continue;
+					}
+					REQUIRE_OPER(user);
+					/* KILL jsmith :Reason for kicking user */
+					u = get_user(killusername);
+					if (!u) {
+						send_numeric2(user, 401, "%s :No such nick/channel\r\n", killusername);
+						continue;
+					}
+					/* Kill the user */
+					leave_all_channels(u, "QUIT", reason); /* Just use QUIT for now, KILL doesn't render properly in Ambassador. */
+					send_reply(u, "KILL %s%s\r\n", !strlen_zero(reason) ? ":" : "", S_IF(reason));
+					shutdown(u->node->fd, SHUT_RDWR); /* Make the client handler thread break */
 				} else if (!strcasecmp(command, "INVITE")) {
 					handle_invite(user, s);
 				} else if (!strcasecmp(command, "KNOCK")) {
@@ -2246,8 +2415,43 @@ static void handle_client(struct irc_user *user)
 					motd(user);
 				} else if (!strcasecmp(command, "HELP")) {
 					handle_help(user, s);
+				} else if (!strcasecmp(command, "VERSION")) {
+					send_numeric(user, 351, "%s %s :%s\r\n", BBS_VERSION, bbs_hostname(), IRC_SERVER_VERSION);
+				} else if (!strcasecmp(command, "TIME")) {
+					time_t lognow;
+					struct tm logdate;
+					char datestr[20];
+					lognow = time(NULL);
+					localtime_r(&lognow, &logdate);
+					strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
+					send_numeric(user, 391, "%s\r\n", datestr);
+				} else if (!strcasecmp(command, "OPER")) {
+					handle_oper(user, s);
+				} else if (!strcasecmp(command, "WALLOPS")) {
+					struct irc_user *u;
+					REQUIRE_OPER(user);
+					RWLIST_RDLOCK(&users);
+					RWLIST_TRAVERSE(&users, u, entry) {
+						if (u->modes & USER_MODE_WALLOPS) {
+							pthread_mutex_lock(&u->lock); /* Serialize writes to this user */
+							dprintf(u->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), "WALLOPS", u->nickname, s);
+							pthread_mutex_unlock(&u->lock);
+						}
+					}
+					RWLIST_UNLOCK(&users);
+				} else if (!strcasecmp(command, "REHASH")) {
+					REQUIRE_OPER(user);
+					/* Reread the config, although not everything can be updated this way. */
+					send_numeric(user, 382, "%s :Rehashing\r\n", bbs_hostname());
+					destroy_operators(); /* Remove any existing operators */
+					load_config();
+				} else if (!strcasecmp(command, "RESTART")) {
+					REQUIRE_OPER(user);
+					/* Restart the IRC server */
+					need_restart = 1; /* This will get processed by the ping thread, so that we can be disconnected. */
+					send_reply(user, "NOTICE :Server will restart momentarily\r\n");
+				/* Ignore SQUIT for now, since this is a single-server network */
 				} else {
-					/*! \todo add support for remaining missing commands, e.g. KNOCK */
 					send_numeric2(user, 421, "%s :Unknown command\r\n", command);
 					bbs_warning("%p: Unhandled message: %s %s\n", user, command, s);
 				}
@@ -2255,7 +2459,7 @@ static void handle_client(struct irc_user *user)
 		}
 	}
 	if (!graceful_close) {
-		leave_all_channels(user, "Remote user closed the connection"); /* poll or read failed */
+		leave_all_channels(user, "QUIT", "Remote user closed the connection"); /* poll or read failed */
 	}
 	if (started) {
 		unlink_user(user);
@@ -2287,18 +2491,23 @@ static void *ping_thread(void *unused)
 	for (;;) {
 		int now, clients = 0;
 		usleep(PING_TIME * 1000); /* convert ms to us */
+
 		now = time(NULL);
 		RWLIST_RDLOCK(&users);
 		RWLIST_TRAVERSE(&users, user, entry) {
 			/* Prevent concurrent writes to a user */
 			pthread_mutex_lock(&user->lock);
-			if (user->lastping && user->lastpong < now - PING_TIME) {
+			if (need_restart || (user->lastping && user->lastpong < now - PING_TIME)) {
 				char buf[32];
 				/* Client never responded to the last ping. Disconnect it. */
-				bbs_debug(3, "Ping expired for %p: last ping=%d, last pong=%d (now %d)\n", user, user->lastping, user->lastpong, now);
-				snprintf(buf, sizeof(buf), "Ping timeout: %d seconds", now - user->lastpong); /* No CR LF */
-				leave_all_channels(user, buf);
-				send_reply(user, "ERROR :Connection timeout\r\n");
+				if (!need_restart) {
+					bbs_debug(3, "Ping expired for %p: last ping=%d, last pong=%d (now %d)\n", user, user->lastping, user->lastpong, now);
+					snprintf(buf, sizeof(buf), "Ping timeout: %d seconds", now - user->lastpong); /* No CR LF */
+				}
+				leave_all_channels(user, "QUIT", need_restart ? "Server restart" : buf);
+				if (!need_restart) {
+					send_reply(user, "ERROR :Connection timeout\r\n");
+				}
 				shutdown(user->node->fd, SHUT_RDWR); /* Make the client handler thread break */
 			} else {
 				dprintf(user->wfd, "PING :%d\r\n", now);
@@ -2310,6 +2519,21 @@ static void *ping_thread(void *unused)
 		RWLIST_UNLOCK(&users);
 		if (clients) {
 			bbs_debug(5, "Performed periodic ping of %d client%s\n", clients, ESS(clients));
+		}
+		if (need_restart) {
+			static char file_without_ext[] = __FILE__;
+			bbs_strterm(file_without_ext, '.'); /* There's no macro like __FILE__ w/o ext, so this is what we gotta do. */
+			bbs_debug(1, "Ping thread exiting due to pending restart\n");
+			/* Okay, at this point, all the users should be kicked and gone.
+			 * There shouldn't be any users left of this module.
+			 * Now, request the BBS core unload and load us again. */
+
+			/*! \todo BUGBUG FIXME mod_discord won't load again once we do, this is a crummy solution.
+			 * We need something in module.c that will unload any dependencies,
+			 * reload us, and then load all the dependencies again. */
+			bbs_module_unload("mod_discord"); /* mod_discord depends on net_irc, so we can't unload while it's loaded. */
+			bbs_request_module_unload(file_without_ext, 0);
+			break;
 		}
 	}
 	return NULL;
@@ -2323,6 +2547,10 @@ static void irc_handler(struct bbs_node *node, int secure)
 #endif
 	int rfd, wfd;
 	struct irc_user *user;
+
+	if (need_restart) {
+		return; /* Reject new connections. */
+	}
 
 	user = calloc(1, sizeof(*user));
 	if (!user) {
@@ -2347,6 +2575,7 @@ static void irc_handler(struct bbs_node *node, int secure)
 	user->modes = USER_MODE_NONE;
 	user->joined = time(NULL);
 	user->hostname = strdup(node->ip);
+	user->modes |= USER_MODE_WALLOPS; /* Receive wallops by default */
 	if (secure) {
 		user->modes |= USER_MODE_SECURE;
 	}
@@ -2387,8 +2616,10 @@ static void *irc_listener(void *unused)
 static int load_config(void)
 {
 	struct bbs_config *cfg;
+	struct bbs_config_section *section = NULL;
+	struct bbs_keyval *keyval = NULL;
 
-	cfg = bbs_config_load("net_irc.conf", 0);
+	cfg = bbs_config_load("net_irc.conf", 1);
 	if (!cfg) {
 		return 0;
 	}
@@ -2404,9 +2635,41 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "ircs", "enabled", &ircs_enabled);
 	bbs_config_val_set_port(cfg, "ircs", "port", &ircs_port);
 
+	/* Do this check before we start dynamically allocating memory */
 	if (ircs_enabled && !ssl_available()) {
 		bbs_error("TLS is not available, IRCS may not be used\n");
 		return -1;
+	}
+
+	while ((section = bbs_config_walk(cfg, section))) {
+		/* Already processed */
+		if (!strcmp(bbs_config_section_name(section), "general") || !strcmp(bbs_config_section_name(section), "irc") || !strcmp(bbs_config_section_name(section), "ircs")) {
+			continue;
+		}
+
+		if (!strcmp(bbs_config_section_name(section), "opers")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				/* Format is simple:
+				 * [opers]
+				 * admin=P@ssw0rd
+				 *
+				 * Currently doesn't allow specifying host/range(s), more granular permissions, etc.
+				 */
+				const char *key = bbs_keyval_key(keyval), *value = bbs_keyval_val(keyval);
+				add_operator(key, value);
+			}
+		} else if (!strcmp(bbs_config_section_name(section), "nativeopers")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				/* Format is simple:
+				 * [opers]
+				 * admin=P@ssw0rd
+				 *
+				 * Currently doesn't allow specifying host/range(s), more granular permissions, etc.
+				 */
+				const char *key = bbs_keyval_key(keyval);
+				add_operator(key, NULL);
+			}
+		}
 	}
 
 	return 0;
@@ -2471,6 +2734,7 @@ static int unload_module(void)
 		bbs_unregister_network_protocol(ircs_port);
 	}
 	destroy_channels();
+	destroy_operators();
 	return 0;
 }
 

@@ -69,7 +69,8 @@ enum user_modes {
 	USER_MODE_NONE =		0,
 	USER_MODE_INVISIBLE =	(1 << 0), /* i: User hidden from global WHO */
 	USER_MODE_OPERATOR =	(1 << 1), /* o: Global server operator */
-	USER_MODE_SECURE =		(1 << 2), /* Z: Connected via SSL/TLS */
+	USER_MODE_WALLOPS =		(1 << 2), /* w: Wallops: receive WALLOPS messages */
+	USER_MODE_SECURE =		(1 << 3), /* Z: Connected via SSL/TLS */
 };
 
 /*!

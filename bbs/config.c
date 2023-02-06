@@ -451,8 +451,10 @@ struct bbs_config *bbs_config_load(const char *name, int usecache)
 					return cfg;
 				}
 			}
+			bbs_debug(5, "Reparsing config %s again since it has changed\n", name);
+		} else {
+			bbs_debug(5, "Reparsing config %s again since caching is disabled\n", name);
 		}
-		bbs_debug(5, "Reparsing config %s again since it has changed\n", name);
 		/* We're reparsing the config. Destroy the existing copy. */
 		if (bbs_config_free(cfg)) {
 			return NULL;
