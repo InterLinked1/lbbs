@@ -211,12 +211,12 @@ int bbs_dump_threads(int fd)
 	struct thread_list_t *cur;
 	int now = time(NULL);
 
-	bbs_dprintf(fd, "%3d %d (%s)\n", 0, getpid(), "PID / main thread");
+	bbs_dprintf(fd, "%3d %6d (%s)\n", 0, getpid(), "PID / main thread");
 	RWLIST_RDLOCK(&thread_list);
 	RWLIST_TRAVERSE(&thread_list, cur, list) {
 		threads++;
 		print_time_elapsed(cur->waitingjoin ? cur->end : cur->start, now, elapsed, sizeof(elapsed));
-		bbs_dprintf(fd, "%3d %d (%9lu) [%p] (%s %s) %s\n", threads, cur->lwp, cur->id, (void *) cur->id, thread_state_name(cur), elapsed, cur->name);
+		bbs_dprintf(fd, "%3d %6d (%9lu) [%12p] (%s %10s) %s\n", threads, cur->lwp, cur->id, (void *) cur->id, thread_state_name(cur), elapsed, cur->name);
 	}
 	RWLIST_UNLOCK(&thread_list);
 	bbs_dprintf(fd, "%d active threads registered (may be incomplete).\n", threads);
