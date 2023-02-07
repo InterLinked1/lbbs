@@ -363,6 +363,7 @@ static void get_channel_modes(char *buf, size_t len, struct irc_channel *channel
 	buf[pos++] = '+';
 	/* Capitals come before lowercase */
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_CTCP_BLOCK, 'C');
+	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_PERMANENT, 'P');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_TLS_ONLY, 'S');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_NOTICE_BLOCK, 'T');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_COLOR_FILTER, 'c');
@@ -921,6 +922,12 @@ static int print_user_mode(struct irc_user *user)
 		continue; \
 	}
 
+#define REQUIRE_OPER(user) \
+	if (!(user->modes & USER_MODE_OPERATOR)) { \
+		send_numeric(user, 481, "You're not an IRC operator\r\n"); \
+		continue; \
+	}
+
 static void handle_modes(struct irc_user *user, char *s)
 {
 	struct irc_member *member = NULL, *targetmember = NULL;
@@ -977,7 +984,7 @@ static void handle_modes(struct irc_user *user, char *s)
 		/* Find the member for this channel */
 		if (IS_CHANNEL_NAME(channel_name)) {
 			member = get_member_by_channel_name(user, channel_name);
-			if (!member || !authorized_atleast(member, CHANNEL_USER_MODE_OP) || user->modes & USER_MODE_OPERATOR) { /* Must be at least an op */
+			if ((!member || !authorized_atleast(member, CHANNEL_USER_MODE_OP)) && !(user->modes & USER_MODE_OPERATOR)) { /* Must be at least an op */
 				send_numeric2(user, 482, "%s: You're not a channel operator\r\n", channel_name);
 				return;
 			}
@@ -1001,6 +1008,12 @@ static void handle_modes(struct irc_user *user, char *s)
 				switch (mode) {
 					case 'C':
 						SET_MODE(channel->modes, set, CHANNEL_MODE_CTCP_BLOCK);
+						break;
+					case 'P':
+						if (set) {
+							REQUIRE_OPER(user);
+						}
+						SET_MODE(channel->modes, set, CHANNEL_MODE_PERMANENT);
 						break;
 					case 'S':
 						SET_MODE(channel->modes, set, CHANNEL_MODE_TLS_ONLY);
@@ -1943,7 +1956,7 @@ static int leave_channel(struct irc_user *user, const char *name)
 	}
 	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&channel->members);
-	if (RWLIST_EMPTY(&channel->members)) {
+	if (RWLIST_EMPTY(&channel->members) && !(channel->modes & CHANNEL_MODE_PERMANENT)) {
 		remove_channel(channel);
 	}
 	RWLIST_UNLOCK(&channels);
@@ -1981,7 +1994,7 @@ static void drop_member_if_present(struct irc_channel *channel, struct irc_user 
 	}
 	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&channel->members);
-	if (RWLIST_EMPTY(&channel->members)) {
+	if (RWLIST_EMPTY(&channel->members) && !(channel->modes & CHANNEL_MODE_PERMANENT)) {
 		remove_channel(channel);
 	}
 }
@@ -2006,7 +2019,7 @@ static void kick_member(struct irc_channel *channel, struct irc_user *kicker, st
 	}
 	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&channel->members);
-	if (RWLIST_EMPTY(&channel->members)) {
+	if (RWLIST_EMPTY(&channel->members) && !(channel->modes & CHANNEL_MODE_PERMANENT)) {
 		remove_channel(channel);
 	}
 }
@@ -2169,12 +2182,6 @@ static int do_sasl_auth(struct irc_user *user, char *s)
 	return 0;
 }
 
-#define REQUIRE_OPER(user) \
-	if (!(user->modes & USER_MODE_OPERATOR)) { \
-		send_numeric(user, 481, "You're not an IRC operator\r\n"); \
-		continue; \
-	}
-
 static void handle_client(struct irc_user *user)
 {
 	int capnegotiate = 0;
@@ -2211,7 +2218,12 @@ static void handle_client(struct irc_user *user)
 				continue;
 			}
 			mcount++;
-			bbs_debug(8, "%p => %s\n", user, s); /* No trailing LF, so addding one here is fine */
+			/* Don't fully print out commands containing sensitive info */
+			if (STARTS_WITH(s, "OPER ")) {
+				bbs_debug(8, "%p => OPER *****\n", user); /* No trailing LF, so addding one here is fine */
+			} else {
+				bbs_debug(8, "%p => %s\n", user, s); /* No trailing LF, so addding one here is fine */
+			}
 			if (capnegotiate) {
 				int sasl_failed = 0;
 				/* XXX This is pretty rudimentary CAP support, it doesn't really support anything besides PLAIN SASL auth.

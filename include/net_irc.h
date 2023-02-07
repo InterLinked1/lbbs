@@ -41,8 +41,9 @@ enum channel_modes {
 	CHANNEL_MODE_TOPIC_PROTECTED =		(1 << 11), /* t: Topic protected: only half ops or above can change the topic */
 	CHANNEL_MODE_REDUCED_MODERATION =	(1 << 12), /* z: Reduced moderation. Normally blocked messages will be sent to half operators and above. */
 	CHANNEL_MODE_CTCP_BLOCK =			(1 << 13), /* C: Block CTCP commands, other than /me actions */
-	CHANNEL_MODE_TLS_ONLY =				(1 << 14), /* S: Only users connected via TLS may join */
-	CHANNEL_MODE_NOTICE_BLOCK =			(1 << 15), /* T: Block channel notices (other than CTCP replies) */
+	CHANNEL_MODE_PERMANENT =			(1 << 14), /* P: Permanent channel (not removed on empty). Can only be set by IRC operators. */
+	CHANNEL_MODE_TLS_ONLY =				(1 << 15), /* S: Only users connected via TLS may join */
+	CHANNEL_MODE_NOTICE_BLOCK =			(1 << 16), /* T: Block channel notices (other than CTCP replies) */
 };
 
 /*! \brief Channel "hidden" from queries unless the user is also in it */
