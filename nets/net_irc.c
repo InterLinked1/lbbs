@@ -2475,6 +2475,17 @@ static void handle_client(struct irc_user *user)
 					handle_userhost(user, s);
 				} else if (!strcasecmp(command, "LIST")) {
 					handle_list(user, s);
+				} else if (!strcasecmp(command, "ISON")) {
+					char *name, *names = s;
+					if (!s) {
+						send_numeric(user, 461, "Not enough parameters\r\n");
+						continue;
+					}
+					while ((name = strsep(&names, " "))) {
+						if (get_user(name)) {
+							send_numeric(user, 303, "%s\r\n", name);
+						}
+					}
 				} else if (!strcasecmp(command, "MOTD")) {
 					motd(user);
 				} else if (!strcasecmp(command, "HELP")) {
@@ -2489,6 +2500,19 @@ static void handle_client(struct irc_user *user)
 					localtime_r(&lognow, &logdate);
 					strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 					send_numeric(user, 391, "%s\r\n", datestr);
+				} else if (!strcasecmp(command, "INFO")) {
+					char starttime[30];
+					bbs_time_friendly(loadtime, starttime, sizeof(starttime));
+					send_numeric(user, 371, "%s (%s) v%s - Integrated IRC Server\r\n", BBS_SHORTNAME, BBS_TAGLINE, BBS_VERSION);
+					send_numeric(user, 371, "Copyright (C) 2023 %s\r\n", BBS_AUTHOR);
+					send_numeric(user, 371, "%s\r\n", BBS_SOURCE_URL);
+					send_numeric(user, 371, "\r\n");
+					send_numeric(user, 371, "This program is free software; you can redistribute it and/or\r\n");
+					send_numeric(user, 371, "modify it under the terms of the GNU General Public License\r\n");
+					send_numeric(user, 371, "Version 2 as published by the Free Software Foundation.\r\n");
+					send_numeric(user, 371, "\r\n");
+					send_numeric(user, 371, "On-line since %s\r\n", starttime);
+					send_numeric(user, 374, "End of /INFO list.\r\n");
 				} else if (!strcasecmp(command, "OPER")) {
 					handle_oper(user, s);
 				} else if (!strcasecmp(command, "WALLOPS")) {
@@ -2512,8 +2536,13 @@ static void handle_client(struct irc_user *user)
 				} else if (!strcasecmp(command, "RESTART")) {
 					REQUIRE_OPER(user);
 					/* Restart the IRC server */
-					need_restart = 1; /* This will get processed by the ping thread, so that we can be disconnected. */
+					need_restart = 2; /* This will get processed by the ping thread, so that we can be disconnected. */
 					send_reply(user, "NOTICE :Server will restart momentarily\r\n");
+				} else if (!strcasecmp(command, "DIE")) {
+					REQUIRE_OPER(user);
+					/* Stop the IRC server */
+					need_restart = 1; /* This will get processed by the ping thread, so that we can be disconnected. */
+					send_reply(user, "NOTICE :Server will halt momentarily\r\n");
 				/* Ignore SQUIT for now, since this is a single-server network */
 				} else {
 					send_numeric2(user, 421, "%s :Unknown command\r\n", command);
@@ -2596,7 +2625,7 @@ static void *ping_thread(void *unused)
 			 * We need something in module.c that will unload any dependencies,
 			 * reload us, and then load all the dependencies again. */
 			bbs_module_unload("mod_discord"); /* mod_discord depends on net_irc, so we can't unload while it's loaded. */
-			bbs_request_module_unload(file_without_ext, 0);
+			bbs_request_module_unload(file_without_ext, need_restart - 1);
 			break;
 		}
 	}
