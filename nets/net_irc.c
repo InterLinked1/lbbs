@@ -109,11 +109,14 @@ static int load_config(void);
 /* Reference for numeric message strings: https://github.com/solanum-ircd/solanum/blob/main/include/messages.h */
 /* Reference for channel modes: https://github.com/solanum-ircd/solanum/blob/main/help/opers/cmode */
 
-static const char *usermodes = "ioZ";
-static const char *channelmodes = "gijlmnprstzS";
+static const char *usermodes = "iowZ";
+static const char *channelmodes = "cgijklmnprstzCPST";
 static const char *paramchannelmodes = "qahov";
 /* https://modern.ircdocs.horse/#mode-message */
-static const char *chanmodes = ",,jl,gimnprstzS"; /* I think this is the correct categorization into the A,B,C,D modes... */
+static const char *chanmodes = ",,jkl,cgimnprstzCPST"; /* I think this is the correct categorization into the A,B,C,D modes... */
+
+/*! \brief Channel "hidden" from queries unless the user is also in it */
+#define CHANNEL_HIDDEN (CHANNEL_MODE_PRIVATE | CHANNEL_MODE_SECRET)
 
 /*! \brief An IRC operator */
 struct irc_operator {
@@ -146,6 +149,7 @@ struct irc_user {
 	char *awaymsg;					/* Away message */
 	unsigned int away:1;			/* User is currently away (default is 0, i.e. user is here) */
 	unsigned int multiprefix:1;		/* Supports multi-prefix */
+	unsigned int registered:1;		/* Fully registered */
 	RWLIST_ENTRY(irc_user) entry;	/* Next user */
 	/* Avoid using a flexible struct member since we'll probably strdup both the username and nickname beforehand anyways */
 };
@@ -928,6 +932,12 @@ static int print_user_mode(struct irc_user *user)
 		continue; \
 	}
 
+#define REQUIRE_PARAMETER(user, var) \
+	if (!var) { \
+		send_numeric(user,  461, "Not enough parameters\r\n"); \
+		continue; \
+	}
+
 static void handle_modes(struct irc_user *user, char *s)
 {
 	struct irc_member *member = NULL, *targetmember = NULL;
@@ -1031,10 +1041,7 @@ static void handle_modes(struct irc_user *user, char *s)
 					case 'h':
 					case 'v':
 						broadcast_if_change = 0; /* We'll handle the broadcast within this case itself */
-						if (!target) {
-							send_numeric(user, 461, "Not enough parameters\r\n");
-							continue;
-						}
+						REQUIRE_PARAMETER(user, target);
 						if (!targetmember) {
 							send_numeric(user, 441, "They aren't on that channel\r\n");
 							continue;
@@ -1072,10 +1079,7 @@ static void handle_modes(struct irc_user *user, char *s)
 							continue;
 						}
 						args = strchr(target, ':'); /* Must have users:interval */
-						if (!args) {
-							send_numeric(user, 461, "Not enough parameters\r\n");
-							continue;
-						}
+						REQUIRE_PARAMETER(user, args);
 						if (set) {
 							*args++ = '\0';
 							channel->throttleusers = atoi(target);
@@ -1232,6 +1236,7 @@ static void handle_invite(struct irc_user *user, char *s)
 	struct irc_user *inviteduser;
 	nick = strsep(&s, " ");
 	channame = s;
+
 	if (!nick || !channame) {
 		send_numeric(user, 461, "Not enough parameters\r\n");
 		return;
@@ -1616,6 +1621,131 @@ static void handle_help(struct irc_user *user, char *s)
 	send_numeric(user, 524, "I don't know anything about that\r\n");
 }
 
+static int add_user(struct irc_user *user)
+{
+	struct irc_user *u;
+
+	if (user->registered) {
+		bbs_error("Trying to add already registered user?\n");
+		return -1;
+	} else if (strlen_zero(user->username)) {
+		bbs_error("User lacks a username\n");
+		return -1;
+	} else if (strlen_zero(user->nickname)) {
+		bbs_error("User lacks a nickname\n");
+		return -1;
+	}
+
+	RWLIST_WRLOCK(&users);
+	RWLIST_TRAVERSE(&users, u, entry) {
+		if (!strcasecmp(u->nickname, user->nickname)) {
+			break;
+		}
+	}
+	if (u) {
+		send_numeric(user, 433, "Nickname is already in use\r\n");
+		RWLIST_UNLOCK(&users);
+		return -1;
+	}
+	user->registered = 1;
+	RWLIST_INSERT_HEAD(&users, user, entry);
+	RWLIST_UNLOCK(&users);
+	return 0;
+}
+
+static void broadcast_nick_change(struct irc_user *user, const char *oldnick)
+{
+	struct irc_channel *channel;
+	struct irc_member *member;
+
+	RWLIST_RDLOCK(&channels);
+	RWLIST_TRAVERSE(&channels, channel, entry) {
+		RWLIST_RDLOCK(&channel->members);
+		RWLIST_TRAVERSE(&channel->members, member, entry) {
+			if (member->user == user) {
+				channel_broadcast_nolock(channel, NULL, ":%s NICK %s\r\n", oldnick, user->nickname);
+				break;
+			}
+		}
+		RWLIST_UNLOCK(&channel->members);
+	}
+	RWLIST_UNLOCK(&channels);
+}
+
+static void handle_nick(struct irc_user *user, char *s)
+{
+	if (user->node->user) {
+		/* Don't allow changing nick if already logged in */
+		send_numeric(user, 902, "You must use a nick assigned to you\r\n");
+	} else if (bbs_user_exists(s)) {
+		send_numeric(user, 433, "%s :Nickname is already in use.\r\n", s);
+		send_reply(user, "NOTICE AUTH :*** This nickname is registered. Please choose a different nickname, or identify using NickServ\r\n");
+		/* Client will need to send NS IDENTIFY <password> or PRIVMSG NickServ :IDENTIFY <password> */
+	} else { /* Nickname is not claimed. It's fine. */
+		char oldnick[64];
+		char *newnick = strdup(s);
+		if (!newnick) {
+			return;
+		}
+		/* Now, the nick change can't fail. */
+		RWLIST_WRLOCK(&users);
+		bbs_debug(5, "Nickname changed from %s to %s\n", user->nickname, s);
+		safe_strncpy(oldnick, user->nickname, sizeof(oldnick));
+		free_if(user->nickname);
+		user->nickname = newnick;
+		RWLIST_UNLOCK(&users);
+		send_reply(user, ":%s NICK %s\r\n", oldnick, user->nickname);
+		broadcast_nick_change(user, oldnick); /* XXX Won't actually traverse, if registered users aren't allowed to change nicks? */
+	}
+}
+
+static void handle_identify(struct irc_user *user, char *s)
+{
+	int res;
+	char *username, *pw;
+
+	username = strsep(&s, " ");
+	pw = s;
+	if (!username) {
+		send_numeric(user, 461, "Not enough parameters\r\n");
+		return;
+	}
+	/* Format is password or username password */
+	if (!pw) {
+		pw = username;
+		username = user->nickname;
+	}
+	res = bbs_authenticate(user->node, username, pw);
+	memset(pw, 0, strlen(pw));
+	if (res) {
+		send_numeric(user, 464, "Password incorrect\r\n");
+	} else {
+		free_if(user->username);
+		user->username = strdup(username);
+		/* Just in case it was different here. */
+		if (strlen_zero(user->nickname) || strcasecmp(username, user->nickname)) {
+			free_if(user->nickname);
+			user->nickname = strdup(s);
+		}
+		add_user(user);
+		send_numeric(user, 900, IDENT_PREFIX_FMT " %s You are now logged in as %s\r\n", IDENT_PREFIX_ARGS(user), user->username, user->username);
+	}
+}
+
+static void nickserv(struct irc_user *user, char *s)
+{
+	char *target = strsep(&s, " ");
+
+	/* This is all we need from NickServ, we don't need "it" to handle registration or anything else */
+	if (!strcasecmp(target, "IDENTIFY") && !user->registered) {
+		handle_identify(user, s);
+	/* LOGOUT is not supported, since we need all users in the users list to have a name */
+	} else {
+		bbs_debug(3, "Unsupported NickServ command: %s\n", target);
+		send_reply(user, "NOTICE AUTH :*** NickServ does not support registration on this server. Please register interactively via a terminal session.\r\n");
+	}
+}
+
 static void handle_oper(struct irc_user *user, char *s)
 {
 	struct irc_operator *operator;
@@ -1667,7 +1797,6 @@ static void handle_oper(struct irc_user *user, char *s)
 	if (!operator) {
 		RWLIST_UNLOCK(&operators);
 		send_numeric(user, 491, "No appropriate operator blocks were found for your host\r\n");
-		/* send_numeric(user, 464, "Password incorrect\r\n"); */
 		return;
 	}
 
@@ -2081,21 +2210,13 @@ static int client_welcome(struct irc_user *user)
 
 	bbs_time_friendly(loadtime, starttime, sizeof(starttime));
 
-	RWLIST_WRLOCK(&users);
-	RWLIST_TRAVERSE(&users, u, entry) {
-		if (!strcasecmp(u->nickname, user->nickname)) {
-			break;
-		}
-	}
-	if (u) {
-		send_numeric(user, 433, "Nickname is already in use\r\n");
-		RWLIST_UNLOCK(&users);
-		return -1;
-	}
-
 	hostmask(user); /* Cloak the user before adding to users list, so our IP doesn't leak on WHO/WHOIS */
 
-	RWLIST_INSERT_HEAD(&users, user, entry);
+	if (user->node->user) {
+		add_user(user);
+	}
+
+	RWLIST_RDLOCK(&users);
 	count = RWLIST_SIZE(&users, u, entry);
 	RWLIST_UNLOCK(&users);
 
@@ -2125,6 +2246,14 @@ static int client_welcome(struct irc_user *user)
 
 	if (bbs_user_is_registered(user->node->user) && user->node->user->lastlogin && strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M %P %Z", user->node->user->lastlogin) > 0) { /* bbs_time_friendly does this internally */
 		send_reply(user, "%s NOTICE %s :Last login was %s\r\n", bbs_hostname(), user->username, timebuf);
+	}
+
+	if (!user->node->user) {
+		if (bbs_user_exists(user->nickname)) {
+			send_reply(user, "NOTICE AUTH :*** This nickname is registered. Please choose a different nickname, or identify...\r\n");
+		} else {
+			add_user(user); /* Nickname is not claimed. It's fine. */
+		}
 	}
 
 	return 0;
@@ -2220,7 +2349,11 @@ static void handle_client(struct irc_user *user)
 			mcount++;
 			/* Don't fully print out commands containing sensitive info */
 			if (STARTS_WITH(s, "OPER ")) {
-				bbs_debug(8, "%p => OPER *****\n", user); /* No trailing LF, so addding one here is fine */
+				bbs_debug(8, "%p => OPER *****\n", user);
+			} else if (STARTS_WITH(s, "NS IDENTIFY")) {
+				bbs_debug(8, "%p => NS IDENTIFY *****\n", user);
+			} else if (STARTS_WITH(s, "PRIVMSG NickServ")) {
+				bbs_debug(8, "%p => PRIVMSG NickServ *****\n", user);
 			} else {
 				bbs_debug(8, "%p => %s\n", user, s); /* No trailing LF, so addding one here is fine */
 			}
@@ -2236,8 +2369,12 @@ static void handle_client(struct irc_user *user)
 					}
 					/* Client will send a NICK, then USER: https://ircv3.net/specs/extensions/capability-negotiation.html */
 					if (!strcasecmp(command, "NICK")) {
-						user->nickname = strdup(s);
-						bbs_debug(5, "Nickname is %s\n", user->nickname);
+						if (!started) {
+							/* Users that aren't started, and more importantly, in the user list, (!started, !user->registered)
+							 * can change their nickname arbitrarily, but can't use it without identifying. */
+							user->nickname = strdup(s);
+							bbs_debug(5, "Nickname is %s\n", user->nickname);
+						}
 					} else if (!strcasecmp(command, "USER")) { /* Whole message is something like 'ambassador * * :New Now Know How' */
 						char *realname;
 						bbs_debug(5, "Username data is %s\n", s);
@@ -2254,7 +2391,6 @@ static void handle_client(struct irc_user *user)
 						send_reply(user, "NOTICE AUTH :*** No Ident response\r\n");
 						send_reply(user, "NOTICE AUTH :*** Found your hostname: %s\r\n", user->node->ip);
 						send_reply(user, "CAP * LS :multi-prefix sasl=PLAIN\r\n");
-						/*! \todo We don't really support multi-prefix currently */
 						capnegotiate++;
 					} else {
 						bbs_warning("Unhandled message: %s %s\n", command, s);
@@ -2272,14 +2408,14 @@ static void handle_client(struct irc_user *user)
 					} else if (!strcmp(s, "CAP REQ :sasl")) {
 						send_reply(user, "CAP * ACK :sasl\r\n");
 						capnegotiate++;
-					} else {
+					} else if (strcmp(s, "CAP END")) {
 						bbs_warning("Unhandled message: %s\n", s);
 					}
 				} else if (capnegotiate == 3) {
 					if (!strcmp(s, "AUTHENTICATE PLAIN")) {
 						send_reply(user, "AUTHENTICATE +\r\n");
 						capnegotiate++;
-					} else {
+					} else if (strcmp(s, "CAP END")) {
 						bbs_warning("Unhandled message: %s\n", s);
 					}
 				} else if (capnegotiate == 4) {
@@ -2299,7 +2435,7 @@ static void handle_client(struct irc_user *user)
 						} else {
 							bbs_error("Client %p already started?\n", user);
 						}
-					} else {
+					} else if (strcmp(s, "CAP END")) {
 						bbs_warning("Unhandled message: %s\n", s);
 					}
 				} else {
@@ -2315,14 +2451,19 @@ static void handle_client(struct irc_user *user)
 					if (!started) {
 						if (!client_welcome(user)) {
 							started = 1;
+							/*! \todo once we auth, need to explicitly call add_user */
 						}
 					} else {
 						bbs_error("Client %p already started?\n", user);
 					}
 				}
 			} else if (!strcasecmp(s, "CAP LS 302")) {
-				bbs_debug(5, "Client wants to negotiate\n"); /* Technically, a client could also just start with an unsolicited CAP REQ */
-				capnegotiate = 1; /* Begin negotiation */
+				if (started) {
+					send_numeric(user, 462, "You are already connected and cannot handshake again\r\n");
+				} else {
+					bbs_debug(5, "Client wants to negotiate\n"); /* Technically, a client could also just start with an unsolicited CAP REQ */
+					capnegotiate = 1; /* Begin negotiation */
+				}
 			} else { /* Post-CAP/SASL */
 				char *current, *command = strsep(&s, " ");
 				if (!strcasecmp(command, "PONG")) {
@@ -2334,11 +2475,32 @@ static void handle_client(struct irc_user *user)
 				/* Any remaining commands require authentication.
 				 * The nice thing about this IRC server is we authenticate using the BBS user,
 				 * e.g. you don't create accounts using IRC, so we don't need to support guest access at all. */
+				} else if (!strcasecmp(command, "NICK")) {
+					handle_nick(user, s);
 				} else if (!sasl_auth && !bbs_user_is_registered(user->node->user) && require_sasl) {
 					send_reply(user, "NOTICE AUTH :*** This server requires SASL for authentication. Please reconnect with SASL enabled.\r\n");
-					break; /* Disconnect at this point, there's no point in lingering around further. */
+					goto quit; /* Disconnect at this point, there's no point in lingering around further. */
 				/* We can't necessarily use %s (user->username) instead of %p (user), since if require_sasl == false, we might not have a username still. */
-				} else if (!started) {
+				} else if (!user->node->user) {
+					char *target;
+					/* Okay to message NickServ without being registered, but nobody else. */
+					/* Can be NS IDENTIFY <password> or a regular PRIVMSG */
+					if (!strcasecmp(command, "NS")) {
+						REQUIRE_PARAMETER(user, s);
+						nickserv(user, s);
+						continue;
+					} else if (!strcasecmp(command, "PRIVMSG")) {
+						target = strsep(&s, " ");
+						REQUIRE_PARAMETER(user, s);
+						REQUIRE_PARAMETER(user, target);
+						if (s && *s == ':') {
+							s++; /* Skip leading : */
+						}
+						if (!strcmp(target, "NickServ")) {
+							nickserv(user, s);
+							continue;
+						}
+					}
 					send_numeric(user, 451, "You have not registered\r\n");
 				} else if (!strcasecmp(command, "PRIVMSG")) { /* List this as high up as possible, since this is the most common command */
 					char *channel;
@@ -2407,10 +2569,7 @@ static void handle_client(struct irc_user *user)
 					char *reason, *kickusername, *channame = strsep(&s, " ");
 					kickusername = strsep(&s, " ");
 					reason = s;
-					if (!kickusername) {
-						send_numeric(user, 461, "Not enough parameters\r\n");
-						continue;
-					}
+					REQUIRE_PARAMETER(user, kickusername);
 					/* KICK #channel jsmith :Reason for kicking user */
 					member = get_member_by_channel_name(user, channame);
 					if (!member || !authorized_atleast(member, CHANNEL_USER_MODE_HALFOP)) { /* Need at least half op to kick */
@@ -2434,10 +2593,7 @@ static void handle_client(struct irc_user *user)
 					char *killusername, *reason;
 					killusername = strsep(&s, " ");
 					reason = s;
-					if (!killusername) {
-						send_numeric(user, 461, "Not enough parameters\r\n");
-						continue;
-					}
+					REQUIRE_PARAMETER(user, killusername);
 					REQUIRE_OPER(user);
 					/* KILL jsmith :Reason for kicking user */
 					u = get_user(killusername);
@@ -2454,7 +2610,9 @@ static void handle_client(struct irc_user *user)
 				} else if (!strcasecmp(command, "KNOCK")) {
 					handle_knock(user, s);
 				} else if (!strcasecmp(command, "NAMES")) {
-					struct irc_channel *channel = get_channel(s);
+					struct irc_channel *channel;
+					REQUIRE_PARAMETER(user, s);
+					channel = get_channel(s);
 					/* Many servers don't allow NAMES unless you're in the channel: we do... */
 					if (!channel) {
 						send_numeric2(user, 403, "%s :No such channel\r\n", s);
@@ -2477,10 +2635,7 @@ static void handle_client(struct irc_user *user)
 					handle_list(user, s);
 				} else if (!strcasecmp(command, "ISON")) {
 					char *name, *names = s;
-					if (!s) {
-						send_numeric(user, 461, "Not enough parameters\r\n");
-						continue;
-					}
+					REQUIRE_PARAMETER(user, s);
 					while ((name = strsep(&names, " "))) {
 						if (get_user(name)) {
 							send_numeric(user, 303, "%s\r\n", name);
@@ -2551,6 +2706,8 @@ static void handle_client(struct irc_user *user)
 			}
 		}
 	}
+
+quit:
 	if (!graceful_close) {
 		leave_all_channels(user, "QUIT", "Remote user closed the connection"); /* poll or read failed */
 	}

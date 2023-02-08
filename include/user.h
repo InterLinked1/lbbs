@@ -103,6 +103,13 @@ int bbs_user_dump(int fd, const char *username, int verbose);
 */
 int bbs_users_dump(int fd, int verbose);
 
+/*!
+ * \brief Whether a user exists or not
+ * \param username
+ * \retval 1 if exists, 0 if doesn't exist
+ */
+int bbs_user_exists(const char *username);
+
 /*! \brief Free a list of BBS users, including all the users in the list */
 void bbs_user_list_destroy(struct bbs_user **userlist);
 

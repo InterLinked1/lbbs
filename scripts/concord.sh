@@ -13,6 +13,8 @@ else
 	git stash
 	git pull
 fi
+# Use the dev branch for latest bug fixes
+git checkout dev
 printf "Compiling libdiscord\n"
 CFLAGS="-fPIC" make shared
 make install

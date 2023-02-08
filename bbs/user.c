@@ -129,6 +129,18 @@ int bbs_users_dump(int fd, int verbose)
 	return 0;
 }
 
+int bbs_user_exists(const char *username)
+{
+	struct bbs_user *user;
+	user = bbs_user_info_by_username(username); /* Does this user exist on the BBS? */
+	if (user) {
+		/* Yup, sure does. */
+		bbs_user_destroy(user);
+		return 1;
+	}
+	return 0;
+}
+
 void bbs_user_list_destroy(struct bbs_user **userlist)
 {
 	int index = 0;
