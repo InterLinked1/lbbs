@@ -48,11 +48,16 @@ const char *sql_dbname(void)
 	return buf_dbname;
 }
 
-MYSQL *sql_connect(void)
+MYSQL *sql_connect_db(const char *hostname, const char *username, const char *password, const char *database)
 {
 	MYSQL *mysql;
 
-	if (strlen_zero(dbhostname) || strlen_zero(dbusername) || strlen_zero(dbpassword)) {
+	hostname = S_OR(hostname, dbhostname);
+	username = S_OR(username, dbusername);
+	password = S_OR(password, dbpassword);
+	database = S_OR(database, dbname);
+
+	if (strlen_zero(hostname) || strlen_zero(username) || strlen_zero(password)) {
 		bbs_error("One or more necessary DB config options is missing\n"); /* ^ DB name is optional.... */
 		return NULL;
 	}
@@ -63,7 +68,7 @@ MYSQL *sql_connect(void)
 	if (mysql_optionsv(mysql, MYSQL_SET_CHARSET_NAME, (void *) "utf8")) {
 		goto fail;
 	}
-	if (!mysql_real_connect(mysql, dbhostname, dbusername, dbpassword, dbname, 0, NULL, 0)) {
+	if (!mysql_real_connect(mysql, hostname, username, password, dbname, 0, NULL, 0)) {
 		goto fail;
 	}
 	if (mysql_set_character_set(mysql, "utf8")) { /* Make sure that mysql_real_escape_string can always do its job. */
@@ -75,6 +80,11 @@ fail:
 	log_mysqli_error(mysql);
 	mysql_close(mysql);
 	return NULL;
+}
+
+MYSQL *sql_connect(void)
+{
+	return sql_connect_db(NULL, NULL, NULL, NULL);
 }
 
 int sql_prepare(MYSQL_STMT *stmt, const char *fmt, const char *query)

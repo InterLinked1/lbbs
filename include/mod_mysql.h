@@ -29,6 +29,10 @@
 
 const char *sql_dbname(void);
 
+/*! \brief Connect to a database with the provided connection information. If any parameters are NULL, the default will be used. */
+MYSQL *sql_connect_db(const char *hostname, const char *username, const char *password, const char *database);
+
+/*! \brief Connect to the default database (using the default parameters, as configured in mod_auth_mysql.conf) */
 MYSQL *sql_connect(void);
 
 int sql_prepare(MYSQL_STMT *stmt, const char *fmt, const char *query);
