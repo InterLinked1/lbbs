@@ -256,7 +256,7 @@ static inline void safe_strncpy(char *dst, const char *src, size_t size)
 #define BBS_YN(x) (x ? "Y" : "N")
 
 /*! \brief Return TRUE/FALSE from string value */
-#define S_TRUE(x) (!strcasecmp(x, "y") || !strcasecmp(x, "yes") || !strcasecmp(x, "true"))
+#define S_TRUE(x) (!strcasecmp(x, "y") || !strcasecmp(x, "yes") || !strcasecmp(x, "true") || !strcasecmp(x, "on"))
 
 /*! Atomic += */
 #define bbs_atomic_fetch_add(ptr, val, memorder)  __atomic_fetch_add((ptr), (val), (memorder))

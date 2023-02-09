@@ -75,6 +75,14 @@ enum user_modes {
 };
 
 /*!
+ * \brief Get the channel user modes for a user
+ * \param channel Channel name
+ * \param username Nickname
+ * \retval CHANNEL_USER_MODE_NONE if not in channel, modes if in the channel
+ */
+enum channel_user_modes irc_get_channel_member_modes(const char *channel, const char *username);
+
+/*!
  * \brief Register a relay function that will be used to receive messages sent on IRC channels for rebroadcast on other protocols.
  * \param relay_send. Callback function. Note that sender could be NULL, but will contain the sending user's nickname, if available.
  *                    The function should return 0 to continue processing any other relays and nonzero to stop immediately.
@@ -93,3 +101,14 @@ int irc_relay_unregister(int (*relay_send)(const char *channel, const char *send
  * \retval 0 on success, -1 on failure (message not relayed)
  */
 int irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *msg);
+
+/*! \brief Register a ChanServ (channel services) provider */
+int irc_chanserv_register(void (*privmsg)(const char *username, char *msg), void *mod);
+
+/*! \brief Unregister ChanServ */
+int irc_chanserv_unregister(void (*privmsg)(const char *username, char *msg));
+
+#define chanserv_exec(s) __chanserv_exec(BBS_MODULE_SELF, s)
+
+/*! \brief Execute an IRC command as ChanServ */
+int __chanserv_exec(void *mod, char *s);

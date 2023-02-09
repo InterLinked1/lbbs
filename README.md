@@ -165,7 +165,7 @@ GRANT ALL PRIVILEGES ON bbs.* TO 'bbs'@'localhost';
 FLUSH PRIVILEGES;
 ```
 
-Then, create a database called `bbs` and a table called `users` - the sample SQL to do so is in `mod_auth_mysql.conf`.
+Then, create a database called `bbs` and a table called `users` - the SQL to do so is in `scripts/dbcreate.sql`.
 
 Don't forget to also add your DB connection info to `mod_auth_mysql.conf`!
 

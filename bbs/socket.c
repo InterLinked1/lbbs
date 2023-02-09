@@ -116,7 +116,7 @@ int bbs_make_tcp_socket(int *sock, int port)
 	}
 	memset(&sinaddr, 0, sizeof(sinaddr));
 	sinaddr.sin_family = AF_INET;
-	sinaddr.sin_addr.s_addr=INADDR_ANY;
+	sinaddr.sin_addr.s_addr = INADDR_ANY;
 	sinaddr.sin_port = htons(port); /* Public TCP port on which to listen */
 
 	if (bind(*sock, (struct sockaddr *)&sinaddr, sizeof(sinaddr))) {

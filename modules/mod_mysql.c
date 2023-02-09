@@ -68,7 +68,7 @@ MYSQL *sql_connect_db(const char *hostname, const char *username, const char *pa
 	if (mysql_optionsv(mysql, MYSQL_SET_CHARSET_NAME, (void *) "utf8")) {
 		goto fail;
 	}
-	if (!mysql_real_connect(mysql, hostname, username, password, dbname, 0, NULL, 0)) {
+	if (!mysql_real_connect(mysql, hostname, username, password, database, 0, NULL, 0)) {
 		goto fail;
 	}
 	if (mysql_set_character_set(mysql, "utf8")) { /* Make sure that mysql_real_escape_string can always do its job. */

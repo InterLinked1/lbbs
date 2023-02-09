@@ -92,6 +92,7 @@ static pthread_t irc_ping_thread = -1;
 static int irc_enabled = 1, ircs_enabled = 1;
 static int irc_socket = -1, ircs_socket = -1;
 static int require_sasl = 1;
+static int require_chanserv = 1;
 static int log_channels = 0;
 
 static int loadtime = 0;
@@ -152,6 +153,15 @@ struct irc_user {
 	unsigned int registered:1;		/* Fully registered */
 	RWLIST_ENTRY(irc_user) entry;	/* Next user */
 	/* Avoid using a flexible struct member since we'll probably strdup both the username and nickname beforehand anyways */
+};
+
+/*! \brief Static user struct for ChanServ operations */
+static struct irc_user user_chanserv = {
+	.node = NULL,
+	.channelcount = 0,
+	.username = "ChanServ",
+	.nickname = "ChanServ",
+	.modes = USER_MODE_OPERATOR, /* Grant ChanServ permissions to do whatever it wants */
 };
 
 static RWLIST_HEAD_STATIC(users, irc_user);	/* Container for all users */
@@ -294,6 +304,51 @@ int irc_relay_unregister(int (*relay_send)(const char *channel, const char *send
 		return -1;
 	}
 	return 0;
+}
+
+/* ChanServ interface */
+
+static void (*chanserv_privmsg)(const char *username, char *msg);
+static void *chanserv_mod;
+
+int irc_chanserv_register(void (*privmsg)(const char *username, char *msg), void *mod)
+{
+	if (chanserv_mod) {
+		bbs_error("ChanServ is already registered\n");
+		return -1;
+	}
+	/* This is the right order for these operations. Use reverse order for unregister. */
+	bbs_module_ref(BBS_MODULE_SELF); /* Bump our module ref count */
+	chanserv_mod = mod;
+	chanserv_privmsg = privmsg;
+	return 0;
+}
+
+int irc_chanserv_unregister(void (*privmsg)(const char *username, char *msg))
+{
+	if (privmsg != chanserv_privmsg) {
+		bbs_error("ChanServ unregistration mismatch\n");
+		return -1;
+	}
+	chanserv_privmsg = NULL;
+	chanserv_mod = NULL;
+	bbs_module_unref(BBS_MODULE_SELF);
+	return 0;
+}
+
+static int chanserv_msg(struct irc_user *user, char *s)
+{
+	/* There is no mechanism here for writing output back to user.
+	 * ChanServ will send a PRIVMSG if it needs to.
+	 * It may very well do other things, too. */
+	if (chanserv_privmsg) {
+		bbs_module_ref(chanserv_mod);
+		chanserv_privmsg(user->nickname, s);
+		bbs_module_unref(chanserv_mod);
+		return 0;
+	} else {
+		return -1;
+	}
 }
 
 static int authorized_atleast_bymode(enum channel_user_modes modes, int atleast)
@@ -522,6 +577,16 @@ static struct irc_member *get_member_by_username(const char *username, const cha
 		return NULL;
 	}
 	return get_member_by_channel_name(user, channame);
+}
+
+/*! \note Mainly exists so that ChanServ can easily get the modes of channel members */
+enum channel_user_modes irc_get_channel_member_modes(const char *channel, const char *username)
+{
+	struct irc_member *member = get_member_by_username(username, channel);
+	if (!member) {
+		return CHANNEL_USER_MODE_NONE;
+	}
+	return member->modes;
 }
 
 /*! \note This returns a channel with no locks */
@@ -770,6 +835,11 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, cons
 
 	/* XXX Could be multiple channels, comma-separated (not currently supported) */
 
+	if (!strcasecmp(channame, "ChanServ")) {
+		if (!chanserv_msg(user, (char*) message)) {
+			return 0;
+		} /* else, fall through to IS_CHANNEL_NAME so we can send a 401 response. */
+	}
 	if (!IS_CHANNEL_NAME(channame)) {
 		struct irc_user *user2 = get_user(channame);
 		/* Private message to another user. This is super simple, there's no other overhead or anything involved. */
@@ -853,6 +923,21 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, cons
 		relay_broadcast(channel, user, message);
 	}
 	return 0;
+}
+
+static void handle_privmsg(struct irc_user *user, char *s, int notice)
+{
+	char *channel;
+	/* Format for channel messages:
+	 * PRIVMSG #channel :my message
+	 */
+	channel = strsep(&s, " ");
+	if (channel) {
+		if (*s == ':') {
+			s++; /* Skip leading : */
+		}
+		privmsg(user, channel, notice, s);
+	}
 }
 
 static int print_channel_mode(struct irc_user *user, struct irc_channel *channel)
@@ -2502,30 +2587,12 @@ static void handle_client(struct irc_user *user)
 						}
 					}
 					send_numeric(user, 451, "You have not registered\r\n");
+				} else if (!strcasecmp(command, "CS")) { /* ChanServ alias (much like NS ~ NickServ) */
+					chanserv_msg(user, s);
 				} else if (!strcasecmp(command, "PRIVMSG")) { /* List this as high up as possible, since this is the most common command */
-					char *channel;
-					/* Format for channel messages:
-					 * PRIVMSG #channel :my message
-					 */
-					channel = strsep(&s, " ");
-					if (channel) {
-						if (*s == ':') {
-							s++; /* Skip leading : */
-						}
-						privmsg(user, channel, 0, s);
-					}
+					handle_privmsg(user, s, 0);
 				} else if (!strcasecmp(command, "NOTICE")) { /* List this as high up as possible, since this is the most common command */
-					char *channel;
-					/* Format for channel messages:
-					 * PRIVMSG #channel :my message
-					 */
-					channel = strsep(&s, " ");
-					if (channel) {
-						if (*s == ':') {
-							s++; /* Skip leading : */
-						}
-						privmsg(user, channel, 1, s);
-					}
+					handle_privmsg(user, s, 1);
 				} else if (!strcasecmp(command, "MODE")) {
 					handle_modes(user, s);
 				} else if (!strcasecmp(command, "TOPIC")) { /* Get or set the topic */
@@ -2716,6 +2783,30 @@ quit:
 	}
 }
 
+int __chanserv_exec(void *mod, char *s)
+{
+	struct irc_user *user = &user_chanserv;
+	char *command = strsep(&s, " ");
+
+	if (mod != chanserv_mod) {
+		/* Limit this function to being called from the module that registered as ChanServ. */
+		bbs_error("Caller is not authorized to operate as ChanServ\n");
+		return -1;
+	}
+	/* Execute command as ChanServ. Thankfully, there are a limited number of commands that we need to support. */
+	if (!strcasecmp(command, "PRIVMSG")) { /* List this as high up as possible, since this is the most common command */
+		handle_privmsg(user, s, 0);
+	} else if (!strcasecmp(command, "NOTICE")) {
+		handle_privmsg(user, s, 1);
+	} else if (!strcasecmp(command, "MODE")) {
+		handle_modes(user, s);
+	} else {
+		bbs_error("Command '%s' is unsupported for ChanServ\n", command);
+		return -1;
+	}
+	return 0;
+}
+
 /* The threading model here is pretty basic.
  * We have one thread per client.
  * Each of these threads will wait for activity from the client.
@@ -2802,6 +2893,11 @@ static void irc_handler(struct bbs_node *node, int secure)
 		return; /* Reject new connections. */
 	}
 
+	if (require_chanserv && !chanserv_mod) {
+		bbs_warning("Received IRC client connection prior to ChanServ initialization, rejecting\n");
+		return;
+	}
+
 	user = calloc(1, sizeof(*user));
 	if (!user) {
 		return;
@@ -2876,6 +2972,7 @@ static int load_config(void)
 
 	bbs_config_val_set_true(cfg, "general", "logchannels", &log_channels);
 	bbs_config_val_set_true(cfg, "general", "requiresasl", &require_sasl);
+	bbs_config_val_set_true(cfg, "general", "requirechanserv", &require_chanserv);
 
 	/* IRC */
 	bbs_config_val_set_true(cfg, "irc", "enabled", &irc_enabled);
