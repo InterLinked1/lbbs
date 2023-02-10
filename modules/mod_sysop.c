@@ -359,6 +359,8 @@ static void *sysop_handler(void *varg)
 						bbs_dprintf(sysopfdout, "\n"); /* Print new line since we had history on the line */
 						safe_strncpy(cmdbuf, histentry, sizeof(cmdbuf));
 						bbs_history_add(cmdbuf);
+						bbs_history_reset();
+						histentry = NULL;
 						my_set_stdout_logging(sysopfdout, 0); /* Disable logging so other stuff isn't trying to write to STDOUT at the same time. */
 						bbs_fd_buffer_input(sysopfdin, 1);
 						res = sysop_command(sysopfdin, sysopfdout, cmdbuf);
