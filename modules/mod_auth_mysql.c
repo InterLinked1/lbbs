@@ -312,7 +312,7 @@ cleanup:
 }
 
 /*! \note Sysop can always manually adjust the database if needed to override */
-#define USERNAME_RESERVED(u) (!strcasecmp(u, "root") || !strcasecmp(u, "sysop") || !strcasecmp(u, "root") || !strcasecmp(u, "bbs") || !strcasecmp(u, "ChanServ") || !strcasecmp(u, "NickServ") || !strcasecmp(u, "services")
+#define USERNAME_RESERVED(u) (!strcasecmp(u, "root") || !strcasecmp(u, "sysop") || !strcasecmp(u, "root") || !strcasecmp(u, "bbs") || !strcasecmp(u, "ChanServ") || !strcasecmp(u, "NickServ") || !strcasecmp(u, "services"))
 
 static int user_register(struct bbs_node *node)
 {
