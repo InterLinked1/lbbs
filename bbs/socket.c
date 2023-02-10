@@ -28,6 +28,7 @@
 #include <netinet/in.h> /* use sockaddr_in */
 #include <sys/un.h>	/* use struct sockaddr_un */
 #include <arpa/inet.h> /* use inet_ntop */
+#include <netdb.h> /* use getnameinfo */
 #include <ifaddrs.h>
 #include <poll.h>
 
@@ -363,6 +364,17 @@ int bbs_get_local_ip(char *buf, size_t len)
 
 	freeifaddrs(iflist);
 	return res;
+}
+
+int bbs_get_hostname(const char *ip, char *buf, size_t len)
+{
+	struct sockaddr_in address;
+
+	memset(&address, 0, sizeof(address));
+	address.sin_family = AF_INET;
+	address.sin_addr.s_addr = inet_addr(ip);
+
+	return getnameinfo((struct sockaddr*) &address, sizeof(address), buf, len, NULL, 0, 0);
 }
 
 int bbs_get_remote_ip(struct sockaddr_in *sinaddr, char *buf, size_t len)

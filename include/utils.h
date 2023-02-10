@@ -138,6 +138,16 @@ void bbs_tcp_listener2(int socket, int socket2, const char *name, const char *na
 int bbs_get_local_ip(char *buf, size_t len);
 
 /*!
+ * \brief Get the hostname of an IP address
+ * \param ip IP address
+ * \param[out] buf
+ * \param len Size of buf
+ * \retval 0 on success, -1 on failure
+ * \note If no hostname is determinable, the IP address may be returned and this will count as success.
+ */
+int bbs_get_hostname(const char *ip, char *buf, size_t len);
+
+/*!
  * \brief Get remote IP address
  * \param sinaddr
  * \param buf

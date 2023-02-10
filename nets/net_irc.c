@@ -2522,6 +2522,7 @@ static void handle_client(struct irc_user *user)
 							bbs_debug(5, "Nickname is %s\n", user->nickname);
 						}
 					} else if (!strcasecmp(command, "USER")) { /* Whole message is something like 'ambassador * * :New Now Know How' */
+						char hostname[260];
 						char *realname;
 						bbs_debug(5, "Username data is %s\n", s);
 						realname = strsep(&s, " ");
@@ -2532,10 +2533,18 @@ static void handle_client(struct irc_user *user)
 							break;
 						}
 						send_reply(user, "NOTICE AUTH :*** Processing connection to %s\r\n", bbs_hostname());
-						send_reply(user, "NOTICE AUTH :*** Looking up your hostname...\r\n"); /* Not really, but everyone says this... */
-						send_reply(user, "NOTICE AUTH :*** Checking Ident\r\n");
+						send_reply(user, "NOTICE AUTH :*** Looking up your hostname...\r\n");
+						/* Resolve IP address to hostname */
+						if (!bbs_get_hostname(user->hostname, hostname, sizeof(hostname))) {
+							bbs_debug(3, "Resolved IP %s to hostname %s\n", user->node->ip, hostname);
+							free_if(user->hostname);
+							user->hostname = strdup(hostname);
+						} else {
+							send_reply(user, "NOTICE AUTH :*** Couldn't look up your hostname\r\n");
+						}
+						send_reply(user, "NOTICE AUTH :*** Checking Ident\r\n"); /* XXX Not really, we're not */
 						send_reply(user, "NOTICE AUTH :*** No Ident response\r\n");
-						send_reply(user, "NOTICE AUTH :*** Found your hostname: %s\r\n", user->node->ip);
+						send_reply(user, "NOTICE AUTH :*** Found your hostname: %s\r\n", user->hostname);
 						send_reply(user, "CAP * LS :multi-prefix sasl=PLAIN\r\n");
 						capnegotiate++;
 					} else {
