@@ -83,6 +83,13 @@ enum user_modes {
 enum channel_user_modes irc_get_channel_member_modes(const char *channel, const char *username);
 
 /*!
+ * \brief Get the topic of a channel
+ * \param channel Channel name
+ * \returns Channel topic, or NULL if no topic or channel does not exist
+ */
+const char *irc_channel_topic(const char *channel);
+
+/*!
  * \brief Register a relay function that will be used to receive messages sent on IRC channels for rebroadcast on other protocols.
  * \param relay_send. Callback function. Note that sender could be NULL, but will contain the sending user's nickname, if available.
  *                    The function should return 0 to continue processing any other relays and nonzero to stop immediately.
@@ -102,8 +109,14 @@ int irc_relay_unregister(int (*relay_send)(const char *channel, const char *send
  */
 int irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *msg);
 
+/*!
+ * \brief Send a raw message to an IRC channel (e.g. for system messages)
+ * \retval 0 on success, -1 on failure (message not relayed)
+ */
+int irc_relay_raw_send(const char *channel, const char *msg);
+
 /*! \brief Register a ChanServ (channel services) provider */
-int irc_chanserv_register(void (*privmsg)(const char *username, char *msg), void *mod);
+int irc_chanserv_register(void (*privmsg)(const char *username, char *msg), void (*eventcb)(const char *command, const char *channel, const char *username, const char *data), void *mod);
 
 /*! \brief Unregister ChanServ */
 int irc_chanserv_unregister(void (*privmsg)(const char *username, char *msg));

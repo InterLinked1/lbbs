@@ -311,6 +311,9 @@ cleanup:
 	return res;
 }
 
+/*! \note Sysop can always manually adjust the database if needed to override */
+#define USERNAME_RESERVED(u) (!strcasecmp(u, "root") || !strcasecmp(u, "sysop") || !strcasecmp(u, "root") || !strcasecmp(u, "bbs") || !strcasecmp(u, "ChanServ") || !strcasecmp(u, "NickServ") || !strcasecmp(u, "services")
+
 static int user_register(struct bbs_node *node)
 {
 	/* bcrypt caps password lengths at 72, so that's where that came from */
@@ -350,6 +353,8 @@ static int user_register(struct bbs_node *node)
 				NEG_RETURN(bbs_writef(node, "\n%sUsername contains disallowed characters%s\n", COLOR(COLOR_RED), COLOR_RESET));
 			} else if (strlen(username) > 15) {
 				NEG_RETURN(bbs_writef(node, "\n%sUsername is too long%s\n", COLOR(COLOR_RED), COLOR_RESET));
+			} else if (USERNAME_RESERVED(username)) {
+				NEG_RETURN(bbs_writef(node, "\n%sThat username is not allowed%s\n", COLOR(COLOR_RED), COLOR_RESET));
 			} else {
 				break;
 			}

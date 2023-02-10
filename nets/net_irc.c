@@ -63,7 +63,7 @@
 #define DEF_MAXLIST "b:1"
 
 /* Hostmask stuff */
-#define IDENT_PREFIX_FMT "%s!~%s@%s"
+#define IDENT_PREFIX_FMT "%s!%s@%s"
 #define IDENT_PREFIX_ARGS(user) user->nickname, user->username, user->hostname
 
 #define send_reply(user, fmt, ...) bbs_debug(3, "%p <= " fmt, user, ## __VA_ARGS__); pthread_mutex_lock(&user->lock); dprintf(user->wfd, fmt, ## __VA_ARGS__); pthread_mutex_unlock(&user->lock);
@@ -161,8 +161,12 @@ static struct irc_user user_chanserv = {
 	.channelcount = 0,
 	.username = "ChanServ",
 	.nickname = "ChanServ",
+	.realname = "Channel Services",
+	.hostname = "services",
 	.modes = USER_MODE_OPERATOR, /* Grant ChanServ permissions to do whatever it wants */
 };
+
+#define IS_SERVICE(user) (user == &user_chanserv)
 
 static RWLIST_HEAD_STATIC(users, irc_user);	/* Container for all users */
 
@@ -309,9 +313,12 @@ int irc_relay_unregister(int (*relay_send)(const char *channel, const char *send
 /* ChanServ interface */
 
 static void (*chanserv_privmsg)(const char *username, char *msg);
+static void (*chanserv_eventcb)(const char *command, const char *channel, const char *username, const char *data);
 static void *chanserv_mod;
 
-int irc_chanserv_register(void (*privmsg)(const char *username, char *msg), void *mod)
+#define chanserv_broadcast(cmd, chan, username, data) if (chanserv_eventcb) { chanserv_eventcb(cmd, chan, username, data); }
+
+int irc_chanserv_register(void (*privmsg)(const char *username, char *msg), void (*eventcb)(const char *command, const char *channel, const char *username, const char *data), void *mod)
 {
 	if (chanserv_mod) {
 		bbs_error("ChanServ is already registered\n");
@@ -321,6 +328,7 @@ int irc_chanserv_register(void (*privmsg)(const char *username, char *msg), void
 	bbs_module_ref(BBS_MODULE_SELF); /* Bump our module ref count */
 	chanserv_mod = mod;
 	chanserv_privmsg = privmsg;
+	chanserv_eventcb = eventcb;
 	return 0;
 }
 
@@ -331,6 +339,7 @@ int irc_chanserv_unregister(void (*privmsg)(const char *username, char *msg))
 		return -1;
 	}
 	chanserv_privmsg = NULL;
+	chanserv_eventcb = NULL;
 	chanserv_mod = NULL;
 	bbs_module_unref(BBS_MODULE_SELF);
 	return 0;
@@ -560,6 +569,10 @@ static struct irc_user *get_user(const char *username)
 {
 	struct irc_user *user;
 
+	if (!strcasecmp(username, "ChanServ") && chanserv_mod) {
+		return &user_chanserv;
+	}
+
 	RWLIST_RDLOCK(&users);
 	RWLIST_TRAVERSE(&users, user, entry) {
 		if (!strcmp(user->username, username)) {
@@ -602,6 +615,15 @@ static struct irc_channel *get_channel(const char *channame)
 	}
 	RWLIST_UNLOCK(&channels);
 	return channel;
+}
+
+const char *irc_channel_topic(const char *channel)
+{
+	struct irc_channel *c = get_channel(channel);
+	if (!c) {
+		return NULL;
+	}
+	return c->topic;
 }
 
 static int valid_channame(const char *s)
@@ -792,6 +814,16 @@ int irc_relay_send(const char *channel, enum channel_user_modes modes, const cha
 	return 0;
 }
 
+int irc_relay_raw_send(const char *channel, const char *msg)
+{
+	struct irc_channel *c = get_channel(channel);
+	if (!c) {
+		return -1;
+	}
+	channel_broadcast_nolock(c, NULL, "%s\r\n", msg);
+	return 0;
+}
+
 /*! \param user Should be NULL for "system" generated messages and provided for messages actually sent by that user. */
 static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, const char *buf)
 {
@@ -835,7 +867,7 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, cons
 
 	/* XXX Could be multiple channels, comma-separated (not currently supported) */
 
-	if (!strcasecmp(channame, "ChanServ")) {
+	if (!notice && !strcasecmp(channame, "ChanServ")) {
 		if (!chanserv_msg(user, (char*) message)) {
 			return 0;
 		} /* else, fall through to IS_CHANNEL_NAME so we can send a 401 response. */
@@ -933,7 +965,7 @@ static void handle_privmsg(struct irc_user *user, char *s, int notice)
 	 */
 	channel = strsep(&s, " ");
 	if (channel) {
-		if (*s == ':') {
+		if (s && *s == ':') {
 			s++; /* Skip leading : */
 		}
 		privmsg(user, channel, notice, s);
@@ -1087,7 +1119,7 @@ static void handle_modes(struct irc_user *user, char *s)
 				send_numeric2(user, 403, "%s :No such channel\r\n", channel_name);
 				return;
 			}
-		} else if (strcmp(user->nickname, channel_name)) {
+		} else if (!IS_SERVICE(user) && strcmp(user->nickname, channel_name)) {
 			send_numeric(user, 502, "Can't change mode for other users\r\n");
 			return;
 		}
@@ -1138,6 +1170,10 @@ static void handle_modes(struct irc_user *user, char *s)
 						} else if (mode == 'a') {
 							SET_MODE(targetmember->modes, set, CHANNEL_USER_MODE_ADMIN);
 						} else if (mode == 'o') {
+							if (!set && IS_SERVICE(targetmember->user)) {
+								send_numeric(user, 484, "%s %s :Cannot kick or deop a network service\r\n", targetmember->user->nickname, channel->name);
+								continue;
+							}
 							SET_MODE(targetmember->modes, set, CHANNEL_USER_MODE_OP);
 						} else if (mode == 'h') {
 							SET_MODE(targetmember->modes, set, CHANNEL_USER_MODE_HALFOP);
@@ -1309,6 +1345,7 @@ static void handle_topic(struct irc_user *user, char *s)
 			channel->topicsetby = strdup(buf);
 			channel->topicsettime = time(NULL);
 			channel_print_topic(NULL, channel);
+			chanserv_broadcast("TOPIC", channel->name, user->nickname, s);
 		}
 	}
 }
@@ -1420,6 +1457,10 @@ static int channels_in_common(struct irc_user *u1, struct irc_user *u2)
 	 * since users are not generally in many channels. */
 	struct irc_channel *channel;
 	struct irc_member *m1, *m2, *m;
+
+	if (u1 == u2) {
+		return 1; /* Same user */
+	}
 
 	RWLIST_RDLOCK(&channels);
 	RWLIST_TRAVERSE(&channels, channel, entry) {
@@ -1569,50 +1610,59 @@ static void handle_whois(struct irc_user *user, char *s)
 	now = time(NULL);
 	get_user_modes(umodes, sizeof(umodes), u);
 
-	send_numeric2(user, 307, "%s :has identified for this nick\r\n", u->nickname); /* Everyone has, and nicks can't be changed, so... */
+	if (!IS_SERVICE(u)) {
+		send_numeric2(user, 307, "%s :has identified for this nick\r\n", u->nickname); /* Everyone has, and nicks can't be changed, so... */
+	}
 	send_numeric2(user, 311, "%s %s %s * :%s\r\n", u->nickname, u->username, u->hostname, u->realname);
-	send_numeric2(user, 312, "%s %s :%s\r\n", u->nickname, bbs_hostname(), "Root IRC Server");
+	send_numeric2(user, 312, "%s %s :%s\r\n", u->nickname, IS_SERVICE(u) ? "services" : bbs_hostname(), IS_SERVICE(u) ? "IRC Services" : "Root IRC Server");
 	if (user->modes & USER_MODE_OPERATOR) {
 		send_numeric2(user, 313, "%s :is an IRC operator\r\n", u->nickname);
 	}
 
-	/* Channel memberships */
-	RWLIST_RDLOCK(&channels);
-	RWLIST_TRAVERSE(&channels, channel, entry) {
-		if (channel->modes & CHANNEL_HIDDEN && suppress_channel(user, channel)) {
-			continue;
-		}
-		RWLIST_RDLOCK(&channel->members);
-		RWLIST_TRAVERSE(&channel->members, member, entry) {
-			if (member->user == u) {
-				if (member->user->modes & USER_MODE_INVISIBLE) {
-					/* Include channels only if user is in them too (show only shared channels) */
-					if (!get_member(user, channel)) {
-						continue;
-					}
-				}
-				if (user->multiprefix) {
-					len += snprintf(buf + len, sizeof(buf) - len, "%s" MULTIPREFIX_FMT "%s", len ? " " : "", MULTIPREFIX_ARGS(member), channel->name);
-				} else {
-					len += snprintf(buf + len, sizeof(buf) - len, "%s%s%s", len ? " " : "", top_channel_membership_prefix(member), channel->name);
-				}
-				if (len >= 200) {
-					send_numeric2(user, 319, "%s :%s\r\n", u->nickname, buf);
-					len = 0;
-				}
-			}
-		}
-		RWLIST_UNLOCK(&channel->members);
-	}
-	RWLIST_UNLOCK(&channels);
-	if (len > 0) {
-		send_numeric2(user, 319, "%s :%s\r\n", u->nickname, buf);
+	if (IS_SERVICE(u)) {
+		send_numeric2(user, 309, "%s :is a Network Service\r\n", u->nickname);
 	}
 
+	if (!IS_SERVICE(u)) {
+		/* Channel memberships */
+		RWLIST_RDLOCK(&channels);
+		RWLIST_TRAVERSE(&channels, channel, entry) {
+			if (channel->modes & CHANNEL_HIDDEN && suppress_channel(user, channel)) {
+				continue;
+			}
+			RWLIST_RDLOCK(&channel->members);
+			RWLIST_TRAVERSE(&channel->members, member, entry) {
+				if (member->user == u) {
+					if (member->user->modes & USER_MODE_INVISIBLE) {
+						/* Include channels only if user is in them too (show only shared channels) */
+						if (!get_member(user, channel)) {
+							continue;
+						}
+					}
+					if (user->multiprefix) {
+						len += snprintf(buf + len, sizeof(buf) - len, "%s" MULTIPREFIX_FMT "%s", len ? " " : "", MULTIPREFIX_ARGS(member), channel->name);
+					} else {
+						len += snprintf(buf + len, sizeof(buf) - len, "%s%s%s", len ? " " : "", top_channel_membership_prefix(member), channel->name);
+					}
+					if (len >= 200) {
+						send_numeric2(user, 319, "%s :%s\r\n", u->nickname, buf);
+						len = 0;
+					}
+				}
+			}
+			RWLIST_UNLOCK(&channel->members);
+		}
+		RWLIST_UNLOCK(&channels);
+		if (len > 0) {
+			send_numeric2(user, 319, "%s :%s\r\n", u->nickname, buf);
+		}
+	}
 	if (u->modes) {
 		send_numeric2(user, 379, "%s :is using modes %s\r\n", u->nickname, umodes);
 	}
-	send_numeric2(user, 317, "%s %d %d :seconds idle, signon time\r\n", u->nickname, now - u->lastactive, u->joined);
+	if (!IS_SERVICE(u)) {
+		send_numeric2(user, 317, "%s %d %d :seconds idle, signon time\r\n", u->nickname, now - u->lastactive, u->joined);
+	}
 	if (user->modes & USER_MODE_SECURE) {
 		send_numeric2(user, 671, "%s :is using a secure connection\r\n", u->nickname);
 	}
@@ -1984,7 +2034,7 @@ static int join_channel(struct irc_user *user, char *name)
 		channel->modes = CHANNEL_MODE_NONE;
 		/* Set some default flags. */
 		channel->modes |= CHANNEL_MODE_NO_EXTERNAL | CHANNEL_MODE_TOPIC_PROTECTED;
-		if (bbs_user_is_registered(user->node->user)) {
+		if (user->node && bbs_user_is_registered(user->node->user)) {
 			channel->modes |= CHANNEL_MODE_REGISTERED_ONLY;
 		}
 		channel->fp = NULL;
@@ -2006,7 +2056,7 @@ static int join_channel(struct irc_user *user, char *name)
 			send_numeric(user, 477, "Cannot join channel (+S) - you need to use a secure connection\r\n"); /* XXX This is not the right numeric code, what is? */
 			return -1;
 		}
-		if (channel->modes & CHANNEL_MODE_REGISTERED_ONLY && !bbs_user_is_registered(user->node->user)) {
+		if (channel->modes & CHANNEL_MODE_REGISTERED_ONLY && user->node && !bbs_user_is_registered(user->node->user)) {
 			RWLIST_UNLOCK(&channels);
 			send_numeric(user, 477, "Cannot join channel (+r) - you need to be logged into your account\r\n");
 			return -1;
@@ -2081,7 +2131,7 @@ static int join_channel(struct irc_user *user, char *name)
 	member->modes = CHANNEL_USER_MODE_NONE;
 	if (newchan) {
 		member->modes |= CHANNEL_USER_MODE_OP; /* If you created it, you're the op. */
-		if (user->node->user->id == 1) {
+		if (user->node && user->node->user->id == 1) {
 			/* OP still needs to be granted to founders (as we do above), higher prefixes don't implicitly grant lower ones.
 			 * For example, Ambassador won't let you perform op operations unless you're an op. */
 			member->modes |= CHANNEL_USER_MODE_FOUNDER; /* Automatically make the sysop a founder of any channel s/he creates */
@@ -2090,6 +2140,9 @@ static int join_channel(struct irc_user *user, char *name)
 			 * and then set any of these modes for any channel. */
 		}
 		channel->relay = 1; /* XXX Not currently configurable in any way, always allowing relaying for now. */
+	}
+	if (IS_SERVICE(user)) {
+		member->modes |= CHANNEL_USER_MODE_OP; /* Always op ChanServ */
 	}
 	RWLIST_INSERT_HEAD(&channel->members, member, entry);
 	channel->membercount += 1;
@@ -2112,8 +2165,11 @@ static int join_channel(struct irc_user *user, char *name)
 	}
 	send_channel_members(user, channel);
 	if (!get_channel_user_modes(modestr, sizeof(modestr), member)) {
-		channel_broadcast(channel, NULL, ":%s MODE %s %s %s\r\n", "ChanServ", channel->name, modestr, user->nickname);
+		channel_broadcast(channel, NULL, ":%s MODE %s %s %s\r\n", IS_SERVICE(user) ? "services" : "ChanServ", channel->name, modestr, user->nickname);
 	}
+
+	chanserv_broadcast("JOIN", channel->name, user->nickname, NULL);
+
 	return 0;
 }
 
@@ -2216,6 +2272,11 @@ static void drop_member_if_present(struct irc_channel *channel, struct irc_user 
 static void kick_member(struct irc_channel *channel, struct irc_user *kicker, struct irc_user *kicked, const char *message)
 {
 	struct irc_member *member;
+
+	if (IS_SERVICE(kicked)) {
+		send_numeric(kicker, 484, "%s %s :Cannot kick or deop a network service\r\n", kicked->nickname, channel->name);
+		return;
+	}
 
 	/* If we're going to remove the user, we need a WRLOCK, so grab it from the get go. */
 	RWLIST_WRLOCK(&channel->members);
@@ -2788,7 +2849,7 @@ int __chanserv_exec(void *mod, char *s)
 	struct irc_user *user = &user_chanserv;
 	char *command = strsep(&s, " ");
 
-	if (mod != chanserv_mod) {
+	if (!chanserv_mod || mod != chanserv_mod) {
 		/* Limit this function to being called from the module that registered as ChanServ. */
 		bbs_error("Caller is not authorized to operate as ChanServ\n");
 		return -1;
@@ -2798,8 +2859,14 @@ int __chanserv_exec(void *mod, char *s)
 		handle_privmsg(user, s, 0);
 	} else if (!strcasecmp(command, "NOTICE")) {
 		handle_privmsg(user, s, 1);
+	} else if (!strcasecmp(command, "JOIN")) {
+		join_channel(user, s); /* ChanServ will only join one channel at a time */
+	} else if (!strcasecmp(command, "PART")) {
+		leave_channel(user, s);
 	} else if (!strcasecmp(command, "MODE")) {
 		handle_modes(user, s);
+	} else if (!strcasecmp(command, "TOPIC")) {
+		handle_topic(user, s);
 	} else {
 		bbs_error("Command '%s' is unsupported for ChanServ\n", command);
 		return -1;

@@ -22,7 +22,7 @@ Key features and capabilities include:
 
 - Native realtime chat
 
-- Internet Relay Chat client and server, with native Discord relay
+- Internet Relay Chat client and server, with native IRC and Discord relays
 
 - TDD/TTY (telecommunications device for the deaf) support
 
@@ -82,7 +82,11 @@ Config files go in `/etc/lbbs` and are as follows:
 
 - `mod_auth_mysql.conf` - MySQL/MariaDB auth provider module config
 
+- `mod_chanserv.conf` - ChanServ IRC service config
+
 - `mod_discord.conf` - Discord/IRC relay configuration
+
+- `mod_relay_irc.conf` - IRC/IRC relay configuration
 
 - `modules.conf` - module loading settings (to disable a module, you do it here)
 

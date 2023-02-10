@@ -36,6 +36,8 @@
 #include "include/startup.h"
 #include "include/system.h"
 
+#include "include/door_irc.h"
+
 #include "lirc/irc.h"
 
 static int unloading = 0;
@@ -57,11 +59,77 @@ struct client {
 	pthread_t thread;					/* Thread for relay */
 	char *msgscript;					/* Message handler hook script (e.g. for bot actions) */
 	unsigned int log:1;					/* Log to log file */
+	unsigned int callbacks:1;			/* Execute callbacks for messages received by this client */
 	FILE *logfile;						/* Log file */
 	char name[0];						/* Unique client name */
 };
 
 RWLIST_HEAD_STATIC(clients, client);
+
+struct irc_msg_callback {
+	void (*msg_cb)(const char *clientname, const char *channel, const char *msg);
+	void (*numeric_cb)(const char *clientname, const char *prefix, int numeric, const char *msg);
+	void *mod;
+	RWLIST_ENTRY(irc_msg_callback) entry;
+};
+
+static RWLIST_HEAD_STATIC(msg_callbacks, irc_msg_callback); /* Container for all message callbacks */
+
+/* Export global symbols for these 3 functions */
+
+int bbs_irc_client_msg_callback_register(void (*msg_cb)(const char *clientname, const char *channel, const char *msg), void (*numeric_cb)(const char *clientname, const char *prefix, int numeric, const char *msg), void *mod)
+{
+	struct irc_msg_callback *cb;
+
+	RWLIST_WRLOCK(&msg_callbacks);
+	RWLIST_TRAVERSE(&msg_callbacks, cb, entry) {
+		if (msg_cb == cb->msg_cb) {
+			break;
+		}
+	}
+	if (cb) {
+		bbs_error("Callback %p is already registered\n", msg_cb);
+		RWLIST_UNLOCK(&msg_callbacks);
+		return -1;
+	}
+	cb = calloc(1, sizeof(*cb));
+	if (!cb) {
+		RWLIST_UNLOCK(&msg_callbacks);
+		return -1;
+	}
+	cb->msg_cb = msg_cb;
+	cb->numeric_cb = numeric_cb;
+	cb->mod = mod;
+	RWLIST_INSERT_HEAD(&msg_callbacks, cb, entry);
+	bbs_module_ref(BBS_MODULE_SELF); /* Bump our module ref count */
+	RWLIST_UNLOCK(&msg_callbacks);
+	return 0;
+}
+
+/* No need for a separate cleanup function since this module cannot be unloaded until all relays have unregistered */
+
+int bbs_irc_client_msg_callback_unregister(void (*msg_cb)(const char *clientname, const char *channel, const char *msg))
+{
+	struct irc_msg_callback *cb;
+
+	RWLIST_WRLOCK(&msg_callbacks);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&msg_callbacks, cb, entry) {
+		bbs_debug(3, "Analyzing callback %p\n", cb->msg_cb);
+		if (msg_cb == cb->msg_cb) {
+			RWLIST_REMOVE_CURRENT(entry);
+			free(cb);
+			bbs_module_unref(BBS_MODULE_SELF); /* And decrement the module ref count back again */
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(&msg_callbacks);
+	if (!cb) {
+		bbs_error("Callback %p was not previously registered\n", msg_cb);
+		return -1;
+	}
+	return 0;
+}
 
 static void __client_log(enum irc_log_level level, int sublevel, const char *file, int line, const char *func, const char *msg)
 {
@@ -100,7 +168,7 @@ static int load_config(void)
 		char *msgscript = NULL;
 		const char *hostname, *username, *password, *autojoin;
 		unsigned int port = 0;
-		int tls = 0, tlsverify = 0, sasl = 0, logfile = 0;
+		int tls = 0, tlsverify = 0, sasl = 0, logfile = 0, callbacks = 1;
 		if (!strcmp(bbs_config_section_name(section), "general")) {
 			continue; /* Skip [general] */
 		}
@@ -115,6 +183,7 @@ static int load_config(void)
 		bbs_config_val_set_true(cfg, bbs_config_section_name(section), "tlsverify", &tlsverify);
 		bbs_config_val_set_true(cfg, bbs_config_section_name(section), "sasl", &sasl);
 		bbs_config_val_set_true(cfg, bbs_config_section_name(section), "logfile", &logfile);
+		bbs_config_val_set_true(cfg, bbs_config_section_name(section), "callbacks", &callbacks);
 		bbs_config_val_set_dstr(cfg, bbs_config_section_name(section), "msgscript", &msgscript);
 		client = calloc(1, sizeof(*client) + strlen(bbs_config_section_name(section)) + 1);
 		if (!client) {
@@ -140,12 +209,13 @@ static int load_config(void)
 		irc_client_set_flags(ircl, flags);
 		client->client = ircl;
 		client->log = logfile;
+		client->callbacks = callbacks;
 		client->msgscript = msgscript;
 		/* Go ahead and warn now if it doesn't exist. Set it either way, as it could be fixed during runtime. */
 		if (client->msgscript && access(client->msgscript, X_OK)) {
 			bbs_warning("File %s does not exist or is not executable\n", client->msgscript);
 		}
-		RWLIST_INSERT_TAIL(&clients, client, entry);
+		RWLIST_INSERT_TAIL(&clients, client, entry); /* Tail insert so first client is always first */
 	}
 	RWLIST_UNLOCK(&clients);
 	return 0;
@@ -384,6 +454,32 @@ static void handle_irc_msg(struct client *client, struct irc_msg *msg)
 	if (msg->numeric) {
 		/* Just ignore all these */
 		switch (msg->numeric) {
+		/* Needed by mod_relay_irc: */
+		case 311:
+		case 312:
+		case 317:
+		case 318:
+		case 319:
+		case 330:
+		case 352:
+		case 353:
+		case 366:
+		case 671:
+		/* XXX Missing any numeric for WHO, WHOIS, NAMES replies? */
+			if (client->callbacks) {
+				struct irc_msg_callback *cb;
+				/* Reconstruct the raw response */
+				RWLIST_RDLOCK(&msg_callbacks);
+				RWLIST_TRAVERSE(&msg_callbacks, cb, entry) {
+					if (cb->numeric_cb) {
+						bbs_module_ref(cb->mod);
+						cb->numeric_cb(client->name, msg->prefix, msg->numeric, msg->body);
+						bbs_module_unref(cb->mod);
+					}
+				}
+				RWLIST_UNLOCK(&msg_callbacks);
+			}
+			break;
 		default:
 			bbs_debug(5, "Got numeric: prefix: %s, num: %d, body: %s\n", msg->prefix, msg->numeric, msg->body);
 		}
@@ -627,6 +723,18 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 	RWLIST_RDLOCK(&client->participants);
 	if (dorelay) {
 		irc_client_msg(client->client, channel, msg); /* Actually send to IRC */
+	} else {
+		if (client->callbacks) {
+			struct irc_msg_callback *cb;
+			/* Only execute callback on messages received *FROM* IRC client, not messages *TO* it. */
+			RWLIST_RDLOCK(&msg_callbacks);
+			RWLIST_TRAVERSE(&msg_callbacks, cb, entry) {
+				bbs_module_ref(cb->mod);
+				cb->msg_cb(client->name, channel, msg);
+				bbs_module_unref(cb->mod);
+			}
+			RWLIST_UNLOCK(&msg_callbacks);
+		}
 	}
 	RWLIST_TRAVERSE(&client->participants, p, entry) {
 		/* We intentionally relaying to other BBS nodes ourselves, separately from IRC, rather than
@@ -679,6 +787,84 @@ static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client 
 		return -1;
 	}
 	res = __chat_send(client, sender, channel, dorelay, buf, len);
+	free(buf);
+	return res;
+}
+
+int __attribute__ ((format (gnu_printf, 2, 3))) bbs_irc_client_send(const char *clientname, const char *fmt, ...)
+{
+	struct client *client;
+	char *buf;
+	int res, len;
+	va_list ap;
+
+	RWLIST_RDLOCK(&clients);
+	RWLIST_TRAVERSE(&clients, client, entry) {
+		if (!clientname) {
+			break; /* Just use the first one (default) */
+		}
+		if (!strcasecmp(client->name, clientname)) {
+			break;
+		}
+	}
+	if (!client) {
+		bbs_warning("IRC client %s doesn't exist\n", S_IF(clientname));
+		RWLIST_UNLOCK(&clients);
+		return -1;
+	}
+
+	va_start(ap, fmt);
+	len = vasprintf(&buf, fmt, ap);
+	va_end(ap);
+
+	if (len < 0) {
+		bbs_error("vasprintf failure\n");
+		RWLIST_UNLOCK(&clients);
+		return -1;
+	}
+
+	/* Directly send raw message to IRC (don't relay locally) */
+	res = irc_send(client->client, "%s", buf);
+	RWLIST_UNLOCK(&clients);
+	free(buf);
+	return res;
+}
+
+int __attribute__ ((format (gnu_printf, 3, 4))) bbs_irc_client_msg(const char *clientname, const char *channel, const char *fmt, ...)
+{
+	struct client *client;
+	char *buf;
+	int res, len;
+	va_list ap;
+
+	RWLIST_RDLOCK(&clients);
+	RWLIST_TRAVERSE(&clients, client, entry) {
+		if (!clientname) {
+			break; /* Just use the first one (default) */
+		}
+		if (!strcasecmp(client->name, clientname)) {
+			break;
+		}
+	}
+	if (!client) {
+		bbs_warning("IRC client %s doesn't exist\n", S_IF(clientname));
+		RWLIST_UNLOCK(&clients);
+		return -1;
+	}
+
+	va_start(ap, fmt);
+	len = vasprintf(&buf, fmt, ap);
+	va_end(ap);
+
+	if (len < 0) {
+		bbs_error("vasprintf failure\n");
+		RWLIST_UNLOCK(&clients);
+		return -1;
+	}
+
+	/* Send to IRC */
+	res = __chat_send(client, NULL, channel, 1, buf, len);
+	RWLIST_UNLOCK(&clients);
 	free(buf);
 	return res;
 }
@@ -851,4 +1037,4 @@ static int unload_module(void)
 	return bbs_unregister_door("irc");
 }
 
-BBS_MODULE_INFO_STANDARD("Internet Relay Chat Client");
+BBS_MODULE_INFO_FLAGS("Internet Relay Chat Client", MODFLAG_GLOBAL_SYMBOLS);

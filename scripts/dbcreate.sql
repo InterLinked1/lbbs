@@ -43,7 +43,16 @@ CREATE TABLE `channels` (
   `topic` varchar(390) DEFAULT NULL,
   `registered` datetime NOT NULL DEFAULT current_timestamp(),
   `guard` tinyint(1) NOT NULL DEFAULT 0,
+  `keeptopic` tinyint(1) NOT NULL DEFAULT 0,
   PRIMARY KEY (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `channel_flags` (
+  `channel` varchar(64) NOT NULL,
+  `nickname` varchar(512) NOT NULL,
+  `flag` char(1) NOT NULL,
+  PRIMARY KEY (`channel`,`nickname`,`flag`),
+  CONSTRAINT `channel_flags_ibfk_1` FOREIGN KEY (`channel`) REFERENCES `channels` (`name`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 GRANT ALL PRIVILEGES ON irc.* TO 'bbs'@'localhost';
