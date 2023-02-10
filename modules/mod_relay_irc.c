@@ -190,6 +190,7 @@ static void numeric_cb(const char *clientname, const char *prefix, int numeric, 
 	write(nickpipe[1], mybuf, len);
 }
 
+/*! \todo This info should be cached locally for a while (there could be lots of these requests in a busy channel...) */
 static int wait_response(int fd, const char *requsername, int numeric, const char *clientname, const char *channel, const char *origchan, const char *fullnick, const char *nick)
 {
 	char buf[3092];
@@ -254,11 +255,12 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 	/* Now, parse the response, and send the results back. */
 	bufpos = buf;
 	while ((line = strsep(&bufpos, "\n"))) {
-		char *w1, *w2, *w3, *w4, *w5, *rest;
+		char *w1, *w2, *w3, *w4, *w5, *w6, *w7, *w8, *rest;
 		int mynumeric;
 #ifdef PREFIX_NAMES
 		char restbuf[512] = "";
 		char *restptr;
+		char newnick[64];
 #endif
 		if (strlen_zero(line)) {
 			continue; /* It happens... */
@@ -291,8 +293,15 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 				}
 				w3 = (char*) requsername; /* Replace client username with requsername */
 				w4 = (char*) origchan; /* Replace channel name */
+				/* The 8th word contains the nick */
+				w5 = strsep(&rest, " ");
+				w6 = strsep(&rest, " ");
+				w7 = strsep(&rest, " ");
+				w8 = strsep(&rest, " ");
+				snprintf(newnick, sizeof(newnick), "%s/%s", clientname, w8); /* Add the prefix to the beginning of the nick */
+				w8 = newnick;
 				res = 0;
-				SEND_RESP(fd, "%s %s %s %s %s\r\n", w1, w2, w3, w4, rest);
+				SEND_RESP(fd, "%s %s %s %s %s %s %s %s %s\r\n", w1, w2, w3, w4, w5, w6, w7, w8, rest);
 				break;
 			case 353: /* NAMES replies are super important: IRC clients use this to construct the nicklist sidebar */
 				/* Pass it on if it matches the numeric (skip end of) */
@@ -310,7 +319,6 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 					strncat(restbuf, ":", sizeof(restbuf) - 1);
 
 					while ((restptr = strsep(&rest, " "))) {
-						char newnick[64];
 						/* Use clientname rather than channel name on the other network (channel names could be the same, and are longer)
 						 * Benefit of "prefixing" like this is also that any channel prefixes like @ or + will no longer be at the beginning,
 						 * so those modes/flags from other channels won't mean anything here (as they don't). */

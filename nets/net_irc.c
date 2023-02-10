@@ -883,7 +883,7 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, cons
 		dprintf(user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), notice ? "NOTICE" : "PRIVMSG", user2->nickname, message);
 		pthread_mutex_unlock(&user2->lock);
 		if (user2->away) {
-			send_numeric(user, 301, "%s\r\n", S_IF(user2->awaymsg));
+			send_numeric(user, 301, "%s :%s\r\n", user2->nickname, S_IF(user2->awaymsg));
 		}
 		return 0;
 	}
@@ -1434,17 +1434,25 @@ static void handle_knock(struct irc_user *user, char *s)
 	send_numeric(user, 711, "Your KNOCK has been delivered.\r\n");
 }
 
-static void dump_who(struct irc_user *user, struct irc_user *whouser)
+static void dump_who(struct irc_user *user, struct irc_user *whouser, struct irc_member *member)
 {
 	const char *chan = "*"; /* https://modern.ircdocs.horse/#rplwhoreply-352 */
 	int hopcount = 0;
-	char userflags[3];
+	char prefixes[6] = "";
+	char userflags[3 + sizeof(prefixes)];
 
 	pthread_mutex_lock(&whouser->lock);
-	snprintf(userflags, sizeof(userflags), "%c%s", whouser->away ? 'G' : 'H', whouser->modes & USER_MODE_OPERATOR ? "*" : "");
+	if (member) {
+		if (user->multiprefix) {
+			snprintf(prefixes, sizeof(prefixes), MULTIPREFIX_FMT, MULTIPREFIX_ARGS(member));
+		} else {
+			snprintf(prefixes, sizeof(prefixes), "%s", top_channel_membership_prefix(member));
+		}
+	}
+	snprintf(userflags, sizeof(userflags), "%c%s%s", whouser->away ? 'G' : 'H', whouser->modes & USER_MODE_OPERATOR ? "*" : "", prefixes);
 	pthread_mutex_unlock(&whouser->lock);
 
-	send_numeric(user, 352, "%s %s %s %s %s %s :%d %s\r\n", chan, whouser->username, whouser->hostname, bbs_hostname(), whouser->nickname, userflags, hopcount, whouser->realname);
+	send_numeric2(user, 352, "%s %s %s %s %s %s :%d %s\r\n", chan, whouser->username, whouser->hostname, bbs_hostname(), whouser->nickname, userflags, hopcount, whouser->realname);
 }
 
 /*! \brief Whether two users share any IRC channels in common */
@@ -1507,7 +1515,7 @@ static void handle_who(struct irc_user *user, char *s)
 			if (member->user->modes & USER_MODE_INVISIBLE && !channels_in_common(member->user, user)) {
 				continue;
 			}
-			dump_who(user, member->user);
+			dump_who(user, member->user, member);
 		}
 		RWLIST_UNLOCK(&channel->members);
 		if (channel->relay) {
@@ -1530,7 +1538,7 @@ static void handle_who(struct irc_user *user, char *s)
 	} else {
 		struct irc_user *whouser = get_user(s);
 		if (whouser) {
-			dump_who(user, whouser);
+			dump_who(user, whouser, NULL);
 		} else {
 			/* Check relays, we don't have a channel handle so we don't really know if the user exists in a relay */
 			pthread_mutex_lock(&user->lock);
