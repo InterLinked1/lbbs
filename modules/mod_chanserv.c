@@ -685,7 +685,7 @@ static void chanserv_flags(const char *username, char *msg)
 		while (*flags) {
 			/*! \todo People who are operators (but not the/a founder),
 			 * should be able to add the +O flag for themselves. */
-			if (strchr("FO", *flags)) { /* Valid flag? */
+			if (strchr("FOV", *flags)) { /* Valid flag? */
 				attempted++;
 				res = channel_userflags_set(username, channel, nickname, *flags, enabled);
 				if (!res && --left > 1) { /* Cheaper than strncat, works with a char (instead of a string), and buffer safe */
@@ -773,7 +773,8 @@ static struct chanserv_cmd chanserv_cmds[] =
 		"Syntax: FLAGS <#channel> [nickname]\r\n"
 		"Permissions:\r\n"
 		"+F - Grants full founder access.\r\n"
-		"+O - Enables automatic op."
+		"+O - Enables automatic op.\r\n"
+		"+V - Enables automatic voice."
 		},
 	{ "HELP", chanserv_help, NULL, 0, "Displays contextual help information.", "HELP displays help information on all commands in services.\r\n"
 		"Syntax: HELP <command> [parameters]" },
@@ -908,6 +909,9 @@ static void join_flags_cb(const char *username, const char *fields[], int row, v
 			chanserv_send("MODE %s +q %s", channel, nickname);
 		}
 	}
+	if (strchr(flags, 'V')) { /* Auto-voice the user */
+		chanserv_send("MODE %s +v %s", channel, nickname);
+	}
 }
 
 /*! \brief Respond to channel events, such as JOIN, TOPIC change, etc. */
@@ -921,6 +925,7 @@ static void event_cb(const char *cmd, const char *channel, const char *username,
 	} else if (!strcmp(cmd, "TOPIC")) {
 		/* If KEEPTOPIC enabled, remember the topic */
 		/*! \todo ONLY if KEEPTOPIC enabled, remember the topic */
+		/*! \todo Only do this when we're first creating the channel... not each time mod_chanserv is reloaded (disruptive to members of the channel) */
 		update_colval(username, channel, "topic", !strlen_zero(data) ? data : NULL); /* Kind of an inverted S_IF here */
 	}
 }
