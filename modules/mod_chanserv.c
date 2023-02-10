@@ -290,6 +290,43 @@ stmtcleanup:
 	return res;
 }
 
+static int channel_unauthorized(const char *channel, const char *username, enum channel_user_modes mode)
+{
+	MYSQL *mysql = NULL;
+	MYSQL_STMT *stmt;
+	char existingfounder[64];
+	int res = -1;
+
+	mysql = sql_connect_db(buf_dbhostname, buf_dbusername, buf_dbpassword, buf_dbname);
+	if (!mysql) {
+		return 0;
+	}
+	stmt = mysql_stmt_init(mysql);
+	if (!stmt) {
+		chanserv_notice(username, "ChanServ failure - please contact an IRC operator.");
+		goto cleanup;
+	}
+
+	/* Must be authorized to make the change */
+	if (!fetch_channel_owner(stmt, channel, existingfounder, sizeof(existingfounder))) {
+		res = 1; /* Channel exists, but may not be authorized */
+		/* Channel is already registered with ChanServ */
+		if (!strcmp(existingfounder, username)) {
+			res = 0; /* Authorized */
+		}
+		/* XXX Need other checks here, depending on authorized for what. */
+		/* XXX e.g. anyone with the +F flag is authorized. */
+		UNUSED(mode);
+	}
+
+cleanup:
+	if (stmt) {
+		mysql_stmt_close(stmt);
+	}
+	mysql_close(mysql);
+	return res;
+}
+
 static int channel_set_flag(const char *username, const char *channel, const char *column, int enabled)
 {
 	MYSQL *mysql = NULL;
@@ -666,11 +703,69 @@ static void chanserv_flags(const char *username, char *msg)
 	}
 }
 
+static void chanserv_chan_user_mode(const char *username, enum channel_user_modes mode, int set, char *msg)
+{
+	int res;
+	const char *channel, *nickname;
+
+	if (strlen_zero(msg)) {
+		chanserv_notice(username, "	Insufficient parameters for %s.", mode & CHANNEL_USER_MODE_OP ? "OP" : "VOICE");
+		chanserv_notice(username, "Syntax: %s <#channel> [nickname] [...]", mode & CHANNEL_USER_MODE_OP ? "OP" : "VOICE");
+		return;
+	}
+	channel = strsep(&msg, " ");
+	nickname = strsep(&msg, " ");
+
+	if (strlen_zero(nickname)) {
+		nickname = username;
+	}
+
+	/* Must be authorized to make the change */
+	res = channel_unauthorized(channel, username, CHANNEL_USER_MODE_OP);
+	if (res > 0) {
+		/* Channel is already registered with ChanServ */
+		chanserv_notice(username, "You are not authorized to perform this operation.");
+		return;
+	} else if (res < 0) {
+		chanserv_notice(username, "%s is not registered.", channel);
+		return;
+	}
+
+	/* This is not persistent, it's just a one time thing... e.g. can use +O flag on user for persistence. */
+	chanserv_send("MODE %s %c%c %s", channel, set ? '+' : '-', mode & CHANNEL_USER_MODE_OP ? 'o' : 'v', nickname);
+}
+
+static void chanserv_op(const char *username, char *msg)
+{
+	return chanserv_chan_user_mode(username, CHANNEL_USER_MODE_OP, 1, msg);
+}
+
+static void chanserv_deop(const char *username, char *msg)
+{
+	return chanserv_chan_user_mode(username, CHANNEL_USER_MODE_OP, 0, msg);
+}
+
+static void chanserv_voice(const char *username, char *msg)
+{
+	return chanserv_chan_user_mode(username, CHANNEL_USER_MODE_VOICE, 1, msg);
+}
+
+static void chanserv_devoice(const char *username, char *msg)
+{
+	return chanserv_chan_user_mode(username, CHANNEL_USER_MODE_VOICE, 0, msg);
+}
+
 /* Forward declaration, since chanserv_help references chanserv_cmds */
 static void chanserv_help(const char *username, char *msg);
 
 static struct chanserv_cmd chanserv_cmds[] =
 {
+	{ "DEOP", chanserv_deop, NULL, 0, "Removes channel ops from a user.", "These commands perform status mode changes on a channel.\r\n"
+		"If the last parameter is omitted the action is performed on the person requesting the command.\r\n"
+		"Syntax: DEOP <#channel> [nickname]" },
+	{ "DEVOICE", chanserv_devoice, NULL, 0, "Removes channel voice from a user.", "These commands perform status mode changes on a channel.\r\n"
+		"If the last parameter is omitted the action is performed on the person requesting the command.\r\n"
+		"Syntax: DEVOICE <#channel> [nickname]" },
 	{ "FLAGS", chanserv_flags, NULL, 0, "Manipulates specific permissions on a channel.", "The FLAGS command allows for the granting/removal of channel privileges on a more specific, non-generalized level.\r\n"
 		"It supports nicknames as targets.\r\n"
 		"When only the channel argument is given, a listing of permissions granted to users will be displayed.\r\n"
@@ -684,12 +779,18 @@ static struct chanserv_cmd chanserv_cmds[] =
 		"Syntax: HELP <command> [parameters]" },
 	{ "INFO", chanserv_info, NULL, 0, "Displays information on registrations.", "INFO displays channel information such as registration time, flags, and other details.\r\n"
 		"Syntax: INFO <#channel>" },
+	{ "OP", chanserv_op, NULL, 0, "Gives channel ops to a user.", "These commands perform status mode changes on a channel.\r\n"
+		"If the last parameter is omitted the action is performed on the person requesting the command.\r\n"
+		"Syntax: OP <#channel> [nickname]" },
 	{ "REGISTER", chanserv_register, NULL, 0, "Registers a channel.", "REGISTER allows you to register a channel so that you have better control.\r\n"
 		"Registration allows you to maintain a channel access list and other functions that are normally provided by IRC bots.\r\n"
 		"Syntax: REGISTER <#channel>" },
 	{ "SET", chanserv_set, chanserv_set_cmds, ARRAY_LEN(chanserv_set_cmds), "Sets various control flags.",
 		"SET allows you to set various control flags for channels that change the way certain operations are performed on them.\r\n"
 		"Syntax: SET <#channel> <setting> [parameters]" },
+	{ "VOICE", chanserv_voice, NULL, 0, "Gives channel voice to a user.", "These commands perform status mode changes on a channel.\r\n"
+		"If the last parameter is omitted the action is performed on the person requesting the command.\r\n"
+		"Syntax: VOICE <#channel> [nickname]" }
 };
 
 static void send_help(const char *username, const char *cmd, const char *subcmd, const char *s)
