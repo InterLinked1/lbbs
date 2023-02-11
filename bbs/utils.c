@@ -393,6 +393,41 @@ int bbs_str_safe_print(const char *s, char *buf, size_t len)
 	return 0;
 }
 
+void bbs_dump_string(const char *s)
+{
+	char buf[1024];
+	char *pos = buf;
+	int len = sizeof(buf) - 4;
+
+	while (*s) {
+		if (len <= 6) {
+			break;
+		}
+		if (isprint(*s)) {
+			*pos++ = *s;
+			len--;
+		} else {
+			if (*s == '\r') {
+				strcpy(pos, "<CR>"); /* Safe */
+				pos += 4;
+				len -= 4;
+			} else if (*s == '\n') {
+				strcpy(pos, "<LF>");
+				pos += 4;
+				len -= 4;
+			} else {
+				int b = snprintf(pos, len, "<%d>", *s);
+				pos += b;
+				len -= b;
+			}
+		}
+		s++;
+	}
+
+	*pos = '\0';
+	bbs_debug(8, "String Dump: '%s'\n", buf);
+}
+
 int bbs_strcpy_nospaces(const char *s, char *buf, size_t len)
 {
 	/* Copy the username, not including spaces */

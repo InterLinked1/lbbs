@@ -942,6 +942,33 @@ static int discord_send(const char *channel, const char *sender, const char *msg
 				}
 			}
 		}
+		/* Manually format CTCP ACTIONs */
+		if (strstr(msg, ":\001ACTION")) {
+			char newmsg[512];
+			char *realsender, *action;
+			/* Turn PRIVMSG #channel :<1>ACTION <sender> does something<1> into <sender> *does something* */
+			msg = strchr(msg, ' '); /* Skip to 2nd word (channel) */
+			if (msg) {
+				msg = strchr(msg + 1, ' '); /* Skip to 3rd word */
+			}
+			if (msg) {
+				msg = strchr(msg + 1, ' '); /* Skip to 4th word */
+			}
+
+			if (msg) {
+				msg += 1; /* Skip space */
+				safe_strncpy(newmsg, msg, sizeof(newmsg));
+				action = newmsg;
+				realsender = strsep(&action, " ");
+				bbs_strterm(action, 0x01); /* Skip the trailing 0x01 */
+				/* Turn 0x01ACTION action0x01 into  <sender> *action* */
+				snprintf(mbuf, sizeof(mbuf), "%s *%s*", realsender, action); /* realsender already contains <> */
+				bbs_dump_string(mbuf);
+				handled = 1;
+			}
+		} else {
+			bbs_dump_string(msg);
+		}
 		if (!handled) {
 			/* Use ** (markdown) to bold the username, just like many IRC clients do. For system messages, italicize them. */
 			snprintf(mbuf, sizeof(mbuf), sender ? "**<%s>** %s" : "*%s%s*", S_IF(sender), msg);

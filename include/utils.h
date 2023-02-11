@@ -286,6 +286,9 @@ int bbs_str_process_backspaces(const char *s, char *buf, size_t len);
  */
 int bbs_str_safe_print(const char *s, char *buf, size_t len);
 
+/*! \brief Dump an ASCII representation of a string to the BBS debug log level */
+void bbs_dump_string(const char *s);
+
 /*!
  * \brief Copy s into buf, except for any whitespace characters
  * \param s Original string

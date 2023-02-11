@@ -36,6 +36,9 @@
 #include "include/door_irc.h"
 
 static int expose_members = 1;
+static unsigned int ignore_join_start = 0;
+
+static int modstart;
 
 struct chan_pair {
 	const char *client1;
@@ -463,6 +466,8 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 /*! \brief Callback for messages received on native IRC server (from our server to the channel) */
 static int netirc_cb(const char *channel, const char *sender, const char *msg)
 {
+	char fullmsg[510];
+	int ctcp = 0;
 	struct chan_pair *cp;
 	const char *clientname = NULL; /* Came from native IRC server. We need a pointer, can't use NULL directly. */
 
@@ -478,14 +483,37 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 
 	/*! \todo Is there the potential for loops here, currently? If it's a NOTICE, drop it and don't relay?  */
 
+	if ((int) ignore_join_start && time(NULL) < modstart + (int) ignore_join_start && strstr(msg, "has joined")) {
+		bbs_debug(2, "Not relaying JOIN message '%s' due to startupjoinignore setting.\n", msg);
+		return 0;
+	}
+
+	/* Account for CTCP messages: need to relay these properly. */
+	if (*msg == 0x01) {
+		const char *ctcpactionend;
+		int ctcpactionbytes;
+
+		msg++; /* CTCP message ends in 0x01 so we don't have to add 0x01 to the end using snprintf */
+		ctcpactionend = strchr(msg, ' ');
+		if (ctcpactionend) {
+			ctcpactionbytes = ctcpactionend - msg + 1;
+			ctcp = 1;
+			/* Turn 0x01ACTION action0x01 into 0x01ACTION <sender> action0x01 */
+			snprintf(fullmsg, sizeof(fullmsg), "%c%.*s <%s> %s", 0x01, ctcpactionbytes, msg, sender, msg + ctcpactionbytes);
+		} else {
+			bbs_warning("CTCP message is invalid\n");
+		}
+	}
+
 	/* Relay it to the other side of the mapping */
 	if (MAP1_MATCH(cp, clientname, channel)) {
 		/* It came from channel1, so send to channel2 */
-		bbs_debug(8, "Relaying from %s/%s => %s/%s\n", S_IF(cp->client1), cp->channel1, S_IF(cp->client2), cp->channel2);
+		bbs_debug(8, "Relaying from %s/%s => %s/%s: %s\n", S_IF(cp->client1), cp->channel1, S_IF(cp->client2), cp->channel2, msg);
 		if (cp->client2) {
-			char fullmsg[510];
 			if (sender) { /* We're sending to a real IRC channel using a client, so we need to pack the sender name into the message itself, if present. */
-				snprintf(fullmsg, sizeof(fullmsg), "<%s> %s", sender, msg);
+				if (!ctcp) {
+					snprintf(fullmsg, sizeof(fullmsg), "<%s> %s", sender, msg);
+				}
 				msg = fullmsg;
 			}
 			bbs_irc_client_msg(cp->client2, cp->channel2, "%s", msg); /* Don't call bbs_irc_client_msg with a NULL client or it will use the default (first) one in door_irc */
@@ -494,11 +522,12 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 		}
 	} else {
 		/* It came from channel2, so send to channel1 */
-		bbs_debug(8, "Relaying from %s/%s => %s/%s\n", S_IF(cp->client2), cp->channel2, S_IF(cp->client1), cp->channel1);
+		bbs_debug(8, "Relaying from %s/%s => %s/%s: %s\n", S_IF(cp->client2), cp->channel2, S_IF(cp->client1), cp->channel1, msg);
 		if (cp->client1) {
-			char fullmsg[510];
 			if (sender) { /* We're sending to a real IRC channel using a client, so we need to pack the sender name into the message itself, if present. */
-				snprintf(fullmsg, sizeof(fullmsg), "<%s> %s", sender, msg);
+				if (!ctcp) {
+					snprintf(fullmsg, sizeof(fullmsg), "<%s> %s", sender, msg);
+				}
 				msg = fullmsg;
 			}
 			bbs_irc_client_msg(cp->client1, cp->channel1, "%s", msg);
@@ -537,7 +566,9 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		 * Worst case scenario, the same nick might be in use on both sides, and this will really confuse clients if they're told they did something they didn't. */
 		snprintf(sysmsg, sizeof(sysmsg), ":%s/%s JOIN %s", clientname, nick, ourchan);
 		bbs_debug(3, "Intercepting JOIN by %s/%s (%s -> %s)\n", clientname, nick, channel, ourchan);
-		if (MAP1_MATCH(cp, clientname, channel)) {
+		if (ignore_join_start && time(NULL) < modstart + ignore_join_start) {
+			bbs_debug(2, "Not relaying JOIN by %s/%s (%s -> %s) due to startupjoinignore setting.\n", clientname, nick, channel, ourchan);
+		} else if (MAP1_MATCH(cp, clientname, channel)) {
 			irc_relay_raw_send(cp->channel2, sysmsg);
 		} else {
 			irc_relay_raw_send(cp->channel1, sysmsg);
@@ -557,7 +588,44 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 			irc_relay_raw_send(cp->channel1, sysmsg);
 		}
 		return;
-	} /* XXX Need to do the same thing for quit? */
+	} else if (w && STARTS_WITH(w, " has " COLOR(COLOR_RED) "quit" COLOR_RESET "\n")) {
+		char sysmsg[92];
+		char nick[64];
+		const char *ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
+		safe_strncpy(nick, msg, sizeof(nick));
+		bbs_strterm(nick, ' '); /* cut off " has left" */
+		snprintf(sysmsg, sizeof(sysmsg), ":%s/%s QUIT %s", clientname, nick, ourchan);
+		bbs_debug(3, "Intercepting QUIT by %s/%s (%s -> %s)\n", clientname, nick, channel, ourchan);
+		if (MAP1_MATCH(cp, clientname, channel)) {
+			irc_relay_raw_send(cp->channel2, sysmsg);
+		} else {
+			irc_relay_raw_send(cp->channel1, sysmsg);
+		}
+		return;
+	} else if (w && STARTS_WITH(msg, "[ACTION] ")) { /* Hack to detect CTCP messages, since we've lost the 0x01 and all that */
+		char sysmsg[512];
+		char actionmsg[493];
+		char nick[64];
+		const char *meaction;
+		const char *ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
+		safe_strncpy(nick, msg, sizeof(nick));
+		bbs_strterm(nick, ' ');
+		meaction = strstr(msg, "[ACTION] ");
+		if (meaction) {
+			meaction += STRLEN("[ACTION] ");
+			safe_strncpy(actionmsg, meaction, sizeof(actionmsg));
+			bbs_strterm(actionmsg, '\n'); /* XXX Seems to be a LF in the message, get rid of it */
+			snprintf(sysmsg, sizeof(sysmsg), "PRIVMSG %s :%cACTION %s%c", ourchan, 0x01, actionmsg, 0x01);
+			bbs_dump_string(sysmsg);
+			bbs_debug(3, "Intercepting CTCP action by %s/%s (%s -> %s) - '%s'\n", clientname, nick, channel, ourchan, actionmsg);
+			if (MAP1_MATCH(cp, clientname, channel)) {
+				irc_relay_raw_send(cp->channel2, sysmsg);
+			} else {
+				irc_relay_raw_send(cp->channel1, sysmsg);
+			}
+			return;
+		}
+	}
 
 	/* Relay it to the other side of the mapping */
 	if (MAP1_MATCH(cp, clientname, channel)) {
@@ -629,6 +697,7 @@ static int load_config(void)
 	}
 
 	bbs_config_val_set_true(cfg, "general", "exposemembers", &expose_members);
+	bbs_config_val_set_uint(cfg, "general", "startupjoinignore", &ignore_join_start);
 
 	while ((section = bbs_config_walk(cfg, section))) {
 		const char *client1 = NULL, *client2 = NULL, *channel1 = NULL, *channel2 = NULL;
@@ -672,6 +741,7 @@ static int load_module(void)
 	}
 
 	pthread_mutex_init(&nicklock, NULL);
+	modstart = time(NULL);
 
 	irc_relay_register(netirc_cb, nicklist, BBS_MODULE_SELF);
 	bbs_irc_client_msg_callback_register(doormsg_cb, numeric_cb, BBS_MODULE_SELF);
