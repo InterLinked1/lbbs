@@ -734,7 +734,7 @@ static void chanserv_flags(const char *username, char *msg)
 	/* If a channel exists, there should always be at least one entry in channel_flags for it, so no results ~ channel not registered */
 
 	if (!nickname) { /* Just view existing flags */
-		int res = sql_fetch_strings(username, channel, flag_view_cb, NULL, "sss", "SELECT channel, nickname, GROUP_CONCAT(flag ORDER BY flag '' SEPARATOR '') AS flags FROM channel_flags WHERE channel = ? GROUP BY channel, nickname");
+		int res = sql_fetch_strings(username, channel, flag_view_cb, NULL, "sss", "SELECT channel, nickname, GROUP_CONCAT(flag ORDER BY flag SEPARATOR '') AS flags FROM channel_flags WHERE channel = ? GROUP BY channel, nickname");
 		if (res == -1) {
 			chanserv_notice(username, "ChanServ could not fulfill your request. Please contact an IRC operator.");
 		} else if (res == 1) {
@@ -743,7 +743,7 @@ static void chanserv_flags(const char *username, char *msg)
 			chanserv_notice(username, "End of %s FLAGS listing.", channel);
 		}
 	} else if (strlen_zero(flags)) { /* View flags for a single user */
-		int res = sql_fetch_strings2(username, channel, nickname, flag_view_cb, nickname, "sss", "SELECT channel, nickname, GROUP_CONCAT(flag ORDER BY flag  SEPARATOR '') AS flags FROM channel_flags WHERE channel = ? AND nickname = ? GROUP BY channel, nickname");
+		int res = sql_fetch_strings2(username, channel, nickname, flag_view_cb, nickname, "sss", "SELECT channel, nickname, GROUP_CONCAT(flag ORDER BY flag SEPARATOR '') AS flags FROM channel_flags WHERE channel = ? AND nickname = ? GROUP BY channel, nickname");
 		if (res == -1) {
 			chanserv_notice(username, "ChanServ could not fulfill your request. Please contact an IRC operator.");
 		} else if (res == 1) {
@@ -995,7 +995,7 @@ static void event_cb(const char *cmd, const char *channel, const char *username,
 	/* Case-sensitive comparisons fine here */
 	if (!strcmp(cmd, "JOIN")) {
 		char entrymsg[256] = "";
-		sql_fetch_strings2(username, channel, username, join_flags_cb, (char*) username, "sss", "SELECT channel, nickname, GROUP_CONCAT(flag ORDER BY flag '' SEPARATOR '') AS flags FROM channel_flags WHERE channel = ? AND nickname = ? GROUP BY channel, nickname");
+		sql_fetch_strings2(username, channel, username, join_flags_cb, (char*) username, "sss", "SELECT channel, nickname, GROUP_CONCAT(flag ORDER BY flag SEPARATOR '') AS flags FROM channel_flags WHERE channel = ? AND nickname = ? GROUP BY channel, nickname");
 		if (!channel_get_entrymsg(NULL, channel, entrymsg, sizeof(entrymsg)) && !s_strlen_zero(entrymsg)) {
 			/* Channel has an entry message. Send it to the newcomer. */
 			chanserv_notice(username, "[%s] %s", channel, entrymsg);

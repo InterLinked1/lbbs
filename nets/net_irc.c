@@ -98,11 +98,6 @@ static int need_restart = 0;
 static int load_config(void);
 
 /* ChatZilla/Ambassador interface guide: http://chatzilla.hacksrus.com/intro */
-#define PREFIX_FOUNDER "~"
-#define PREFIX_ADMIN "&"
-#define PREFIX_OP "@"
-#define PREFIX_HALFOP "%"
-#define PREFIX_VOICE "+"
 
 /* Reference for numeric message strings: https://github.com/solanum-ircd/solanum/blob/main/include/messages.h */
 /* Reference for channel modes: https://github.com/solanum-ircd/solanum/blob/main/help/opers/cmode */
@@ -756,8 +751,45 @@ static void user_setactive(struct irc_user *user)
 	pthread_mutex_unlock(&user->lock);
 }
 
+int irc_relay_raw_send(const char *channel, const char *msg)
+{
+	struct irc_channel *c = get_channel(channel);
+	if (!c) {
+		return -1;
+	}
+	channel_broadcast_nolock(c, NULL, "%s\r\n", msg);
+	return 0;
+}
+
+/*! \param user Should be NULL for "system" generated messages and provided for messages actually sent by that user. */
+static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, const char *username, const char *buf, void *sendingmod)
+{
+	/* Now, relay it to any other external integrations that may exist. */
+	struct irc_relay *relay;
+
+	if (channel->relay) {
+		RWLIST_RDLOCK(&relays);
+		RWLIST_TRAVERSE(&relays, relay, entry) {
+			if (sendingmod == relay->mod) {
+				/* Don't relay messages from a module back to itself! */
+#ifdef EXTRA_DEBUG
+				bbs_debug(8, "Not relaying message back to module %p\n", sendingmod);
+#endif
+				continue;
+			}
+			bbs_module_ref(relay->mod);
+			if (relay->relay_send(channel->name, user ? user->nickname : username ? username : NULL, buf)) {
+				bbs_module_unref(relay->mod);
+				break;
+			}
+			bbs_module_unref(relay->mod);
+		}
+		RWLIST_UNLOCK(&relays);
+	}
+}
+
 /*! \brief Somewhat condensed version of privmsg, for relay integration */
-int irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *msg)
+int _irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *msg, void *mod)
 {
 	char hostname[84];
 	struct irc_channel *c;
@@ -808,37 +840,10 @@ int irc_relay_send(const char *channel, enum channel_user_modes modes, const cha
 	snprintf(hostname, sizeof(hostname), "%s/%s", relayname, sender);
 
 	channel_broadcast_selective(c, NULL, minmode, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, "PRIVMSG", c->name, msg);
-	return 0;
-}
-
-int irc_relay_raw_send(const char *channel, const char *msg)
-{
-	struct irc_channel *c = get_channel(channel);
-	if (!c) {
-		return -1;
+	if (c->relay) {
+		relay_broadcast(c, NULL, sender, msg, mod);
 	}
-	channel_broadcast_nolock(c, NULL, "%s\r\n", msg);
 	return 0;
-}
-
-/*! \param user Should be NULL for "system" generated messages and provided for messages actually sent by that user. */
-static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, const char *buf)
-{
-	/* Now, relay it to any other external integrations that may exist. */
-	struct irc_relay *relay;
-
-	if (channel->relay) {
-		RWLIST_RDLOCK(&relays);
-		RWLIST_TRAVERSE(&relays, relay, entry) {
-			bbs_module_ref(relay->mod);
-			if (relay->relay_send(channel->name, user ? user->nickname : NULL, buf)) {
-				bbs_module_unref(relay->mod);
-				break;
-			}
-			bbs_module_unref(relay->mod);
-		}
-		RWLIST_UNLOCK(&relays);
-	}
 }
 
 static int privmsg(struct irc_user *user, const char *channame, int notice, const char *message)
@@ -949,7 +954,7 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, cons
 	/*! \todo By default, don't echo messages to ourself, but could if enabled: https://ircv3.net/specs/extensions/echo-message */
 	channel_broadcast_selective(channel, user, minmode, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), notice ? "NOTICE" : "PRIVMSG", channel->name, message);
 	if (channel->relay && !notice) {
-		relay_broadcast(channel, user, message);
+		relay_broadcast(channel, user, NULL, message, NULL);
 	}
 	return 0;
 }
@@ -2055,7 +2060,7 @@ static int join_channel(struct irc_user *user, char *name)
 			}
 		}
 		RWLIST_INSERT_HEAD(&channels, channel, entry);
-	} else {
+	} else if (!IS_SERVICE(user)) {
 		if (channel->modes & CHANNEL_MODE_TLS_ONLY && !(user->modes & USER_MODE_SECURE)) {
 			RWLIST_UNLOCK(&channels);
 			/* Channel requires secure connections, but user isn't using one. Reject. */
@@ -2136,7 +2141,9 @@ static int join_channel(struct irc_user *user, char *name)
 	member->user = user;
 	member->modes = CHANNEL_USER_MODE_NONE;
 	if (newchan) {
-		member->modes |= CHANNEL_USER_MODE_FOUNDER; /* If you created it, you're the founder. */
+		if (!IS_SERVICE(user)) { /* Don't count ChanServ recreating the channel */
+			member->modes |= CHANNEL_USER_MODE_FOUNDER; /* If you created it, you're the founder. */
+		}
 		member->modes |= CHANNEL_USER_MODE_OP; /* If you created it, you're an op. */
 		/* OP still needs to be granted to founders (as we do above), higher prefixes don't implicitly grant lower ones.
 		 * For example, Ambassador won't let you perform op operations unless you're an op. */
@@ -2158,7 +2165,7 @@ static int join_channel(struct irc_user *user, char *name)
 	if (channel->relay) {
 		char joinmsg[92];
 		snprintf(joinmsg, sizeof(joinmsg), IDENT_PREFIX_FMT " has joined %s", IDENT_PREFIX_ARGS(user), channel->name);
-		relay_broadcast(channel, NULL, joinmsg);
+		relay_broadcast(channel, NULL, NULL, joinmsg, NULL);
 	}
 	/* Don't send the mode now, because the client will just send a MODE command on its own anyways regardless */
 	if (channel->topic) {
@@ -2216,7 +2223,7 @@ static int leave_channel(struct irc_user *user, const char *name)
 			if (channel->relay) {
 				char partmsg[92];
 				snprintf(partmsg, sizeof(partmsg), IDENT_PREFIX_FMT " has left %s", IDENT_PREFIX_ARGS(user), channel->name);
-				relay_broadcast(channel, NULL, partmsg);
+				relay_broadcast(channel, NULL, NULL, partmsg, NULL);
 			}
 			RWLIST_REMOVE_CURRENT(entry);
 			channel->membercount -= 1;
@@ -2258,7 +2265,7 @@ static void drop_member_if_present(struct irc_channel *channel, struct irc_user 
 			if (channel->relay) {
 				char quitmsg[92];
 				snprintf(quitmsg, sizeof(quitmsg), IDENT_PREFIX_FMT " has quit %s%s%s%s", IDENT_PREFIX_ARGS(user), channel->name, message ? " (" : "", S_IF(message), message ? ")" : "");
-				relay_broadcast(channel, NULL, quitmsg);
+				relay_broadcast(channel, NULL, NULL, quitmsg, NULL);
 			}
 			break;
 		}

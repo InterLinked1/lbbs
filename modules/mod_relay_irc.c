@@ -321,7 +321,13 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 					while ((restptr = strsep(&rest, " "))) {
 						/* Use clientname rather than channel name on the other network (channel names could be the same, and are longer)
 						 * Benefit of "prefixing" like this is also that any channel prefixes like @ or + will no longer be at the beginning,
-						 * so those modes/flags from other channels won't mean anything here (as they don't). */
+						 * so those modes/flags from other channels won't mean anything here (as they don't).
+						 * Update: Turns out though that this messes with other things, like being able to directly use these nicknames,
+						 * so stip the prefixes anyways, leaving just the username.
+						 */
+						while (*restptr == PREFIX_FOUNDER[0] || *restptr == PREFIX_ADMIN[0] || *restptr == PREFIX_OP[0] || *restptr == PREFIX_HALFOP[0] || *restptr == PREFIX_VOICE[0]) {
+							restptr++;
+						}
 						snprintf(newnick, sizeof(newnick), "%s%s/%s", n ? " " : "", clientname, restptr);
 						strncat(restbuf, newnick, sizeof(restbuf) - 1);
 						n++;
@@ -571,6 +577,8 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		/* It came from channel2, so send to channel1 */
 		bbs_debug(8, "Relaying from %s/%s => %s/%s\n", S_IF(cp->client2), cp->channel2, S_IF(cp->client1), cp->channel1);
 		if (cp->client1) {
+			bbs_irc_client_msg(cp->client1, cp->channel1, "%s", msg);
+		} else {
 			char nativenick[64];
 			char msgbuf[512];
 			char *tmp;
@@ -590,9 +598,7 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 					/* Now we have a unique nick that doesn't conflict with this same nick on our local IRC server */
 				}
 			}
-			bbs_irc_client_msg(cp->client1, cp->channel1, "%s", msg);
-		} else {
-			irc_relay_send(cp->channel1, CHANNEL_USER_MODE_NONE, S_OR(cp->client2, clientname), cp->channel2, msg);
+			irc_relay_send(cp->channel1, CHANNEL_USER_MODE_NONE, S_OR(cp->client2, clientname), sendnick, msg);
 		}
 	}
 }

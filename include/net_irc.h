@@ -19,6 +19,12 @@
 #define PRIVATE_CHANNEL_PREFIX "*"
 #define SECRET_CHANNEL_PREFIX "@"
 
+#define PREFIX_FOUNDER "~"
+#define PREFIX_ADMIN "&"
+#define PREFIX_OP "@"
+#define PREFIX_HALFOP "%"
+#define PREFIX_VOICE "+"
+
 /*! \brief Channel modes (apply to all users) */
 enum channel_modes {
 	CHANNEL_MODE_NONE =					0,
@@ -103,11 +109,13 @@ int irc_relay_register(int (*relay_send)(const char *channel, const char *sender
 /*! \brief Unregister a relay previously registered using irc_relay_register */
 int irc_relay_unregister(int (*relay_send)(const char *channel, const char *sender, const char *msg));
 
+#define irc_relay_send(channel, modes, relayname, sender, msg) _irc_relay_send(channel, modes, relayname, sender, msg, BBS_MODULE_SELF)
+
 /*!
  * \brief Send a message to an IRC channel
  * \retval 0 on success, -1 on failure (message not relayed)
  */
-int irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *msg);
+int _irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *msg, void *mod);
 
 /*!
  * \brief Send a raw message to an IRC channel (e.g. for system messages)
