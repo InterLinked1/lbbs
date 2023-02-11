@@ -279,7 +279,9 @@ static struct user *add_user(struct discord_user *user, u64snowflake guild_id, c
 	if (u) {
 		/* XXX Could happen if in multiple guilds? */
 		/* Can also happen if we're updating a user, because we failed to get the presence for this user the first time */
+#ifdef EXTRA_DISCORD_DEBUG
 		bbs_debug(6, "User %lu already exists\n", user->id);
+#endif
 	}
 	if (!u) {
 		new = 1;
@@ -298,7 +300,7 @@ static struct user *add_user(struct discord_user *user, u64snowflake guild_id, c
 		u->guild_id = guild_id;
 		u->guild_joined = joined_at;
 	}
-	if (!strlen_zero(status)) {
+	if (!strlen_zero(status) && u->status == STATUS_NONE) {
 		u->status = status_from_str(status);
 	}
 	if (new) {
@@ -306,6 +308,22 @@ static struct user *add_user(struct discord_user *user, u64snowflake guild_id, c
 	}
 	RWLIST_UNLOCK(&users);
 	return u;
+}
+
+static int num_presence_failures(void)
+{
+	struct user *u;
+	int presencefails = 0;
+
+	RWLIST_RDLOCK(&users);
+	RWLIST_TRAVERSE(&users, u, entry) {
+		if (u->status == STATUS_NONE) {
+			presencefails++;
+		}
+	}
+	RWLIST_UNLOCK(&users);
+
+	return presencefails;
 }
 
 static void on_guild_members_chunk(struct discord *client, const struct discord_guild_members_chunk *event)
@@ -373,25 +391,42 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 	if (presencefails) {
 		/* XXX For some reason, this happens, and we fail to get the remaining presences */
 		static int last_fails = 0;
-		int retry_now = presencefails;
+		int totalfails, retry_now;
 		struct snowflakes missed; /* Must be dynamically allocated, not stack allocated, since discord_request_guild_members is async */
 		/* Retry to get the missing presences */
-		bbs_warning("Guild %lu chunk has %d members, but only %d presences? Failed to fetch %d presence%s\n", event->guild_id, members->size, presences->size, presencefails, ESS(presencefails));
+		totalfails = num_presence_failures();
+		bbs_warning("Guild %lu chunk has %d members, but only %d presences? Failed to fetch %d presence%s (%d total)\n", event->guild_id, members->size, presences->size, presencefails, ESS(presencefails), totalfails);
+
+		/* Recalculate, since presencefails will be too low if this is an additional round (since we only retry max 35 at a time, we need to reinclude those we didn't retry this round) */
+
+		/*! \todo Returned presence data with user_id filter seems to not obey the user_id filter in the request.
+		 * The limit applies, so we just get data we already had.
+		 * So setting retry_now = totalfails will just cause an immediate abort, effectively.
+		 * And more importantly, the below doesn't actually work right now. */
+
+		if (presences->size == 0) {
+			bbs_error("Giving up presence retries, %d failure(s) outstanding\n", presencefails);
+			return;
+		}
 		if (presencefails == last_fails) {
 			/* Some presences might never be fetchable, so don't retry forever and ever if that's the case. Stop once
 			 * we're not longer decreasing the number of missing presences. */
 			bbs_error("Giving up presence retries, %d failure(s) outstanding\n", presencefails);
 			return;
 		}
+		retry_now = presencefails;
 
 		/*! \todo XXX Workaround for libdiscord JSON serialization truncation bug, remove once no longer needed */
-		retry_now = MIN(25, presencefails); /* Don't retry more than 25 in a single request */
+		/* The API itself limits this to 100: https://ptb.discord.com/developers/docs/topics/gateway-events#request-guild-members */
+		retry_now = MIN(1, retry_now); /* Don't retry too many in a single request */
+
+#define BUGGY_USER_IDS
 
 		missed.array = calloc(retry_now, sizeof(u64snowflake *));
 		if (missed.array) {
 			struct discord_request_guild_members params = {
-				.guild_id = u->guild_id,
-				.query = "", /* Empty string to return all members */
+				.guild_id = event->guild_id,
+				.query = "",
 				.limit = retry_now, /* All members */
 				.user_ids = &missed, /* Filter to only users whose status we failed to get the first time */
 				.presences = true, /* Include presences */
@@ -401,12 +436,18 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 			RWLIST_TRAVERSE(&users, u, entry) {
 				if (u->status == STATUS_NONE) {
 					if (i >= retry_now) {
-						bbs_error("Indexing out of bounds: i=%d, presencefails=%d\n", i, retry_now); /* This is a bug if it happens, should probably be an assertion */
+						/* This can happen since there may be more users with STATUS_NONE than we're going to retry in this request. */
 						break;
 					}
 					missed.array[i++] = u->user_id;
-#ifdef EXTRA_DISCORD_DEBUG
-					bbs_debug(7, "Retrying to get presence for user %s#%s\n", u->username, u->discriminator);
+#ifdef BUGGY_USER_IDS
+					params.query = (char*) u->username;
+					i = 1;
+					break;
+#endif
+//#ifdef EXTRA_DISCORD_DEBUG
+#if 1
+					bbs_debug(7, "Retrying to get presence for user %lu: %s#%s\n", u->user_id, u->username, u->discriminator);
 #endif
 				}
 			}
@@ -416,6 +457,7 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 			bbs_debug(7, "Retrying %d presence request%s\n", i, ESS(i));
 
 			last_fails = presencefails;
+			usleep(100000);
 			discord_request_guild_members(client, &params); /* on_guild_members_chunk callback will fire */
 			free(missed.array); /* discord_request_guild_members is done using missed by the time it returns (it'll serialize it into JSON before making the request) */
 		}
@@ -511,7 +553,9 @@ static int channel_contains_user(struct chan_pair *cp, struct user *u)
 		if (!(RWLIST_EMPTY(&cp->members) && RWLIST_EMPTY(&cp->roles))) {
 			bbs_debug(3, "Channel is not private, but there are roles/members added?\n");
 		}
+#ifdef EXTRA_DISCORD_DEBUG
 		bbs_debug(5, "Channel %lu (%s) is open to everyone\n", cp->channel_id, cp->discord_channel);
+#endif
 		return 1;
 	}
 
@@ -755,10 +799,10 @@ static void dump_user(int fd, const char *requsername, struct user *u)
 	snprintf(combined, sizeof(combined), "%s#%s", u->username, u->discriminator);
 	snprintf(mask, sizeof(mask), "%s/%s", "Discord", combined);
 	/* We consider users to be active in a channel as long as they're in it, so offline is the equivalent of "away" in IRC */
-	snprintf(userflags, sizeof(userflags), "%c%s", u->status == STATUS_OFFLINE ? 'G' : 'H', "");
+	snprintf(userflags, sizeof(userflags), "%c%s", u->status == STATUS_IDLE || u->status == STATUS_OFFLINE ? 'G' : 'H', "");
 #undef dprintf
 	/* IRC numeric 352: see the 352 numeric in net_irc for more info. */
-	fdprint_log(fd, "%03d %s :" "%s %s %s %s %s %s :%d %lu\r\n", 352, requsername, "*", combined, mask, bbs_hostname(), u->username, userflags, hopcount, u->user_id);
+	fdprint_log(fd, "%03d %s " "%s %s %s %s %s %s :%d %lu\r\n", 352, requsername, "*", combined, mask, bbs_hostname(), combined, userflags, hopcount, u->user_id);
 }
 
 /*!
@@ -806,9 +850,7 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 			}
 			/* User is in the same guild that the channel is in, just assume match for now */
 			if (u->status == STATUS_NONE) {
-#ifdef EXTRA_DISCORD_DEBUG
 				bbs_debug(9, "Skipping user %s#%s (no status information)\n", u->username, u->discriminator);
-#endif
 				continue;
 			}
 			if (numeric == 352) {
@@ -972,6 +1014,13 @@ static int load_config(void)
 		return -1; /* Things won't work without the token */
 	}
 
+	if (!s_strlen_zero(configfile)) {
+		if (eaccess(configfile, R_OK)) {
+			bbs_error("Config file %s is not readable\n", configfile);
+			return -1;
+		}
+	}
+
 	bbs_config_val_set_true(cfg, "discord", "exposemembers", &expose_members);
 
 	while ((section = bbs_config_walk(cfg, section))) {
@@ -1026,8 +1075,6 @@ static int load_module(void)
 
 	discord_add_intents(discord_client, DISCORD_GATEWAY_MESSAGE_CONTENT | DISCORD_GATEWAY_GUILD_MESSAGES | DISCORD_GATEWAY_GUILD_PRESENCES | DISCORD_GATEWAY_GUILDS | DISCORD_GATEWAY_GUILD_MEMBERS | DISCORD_GATEWAY_DIRECT_MESSAGES | DISCORD_GATEWAY_PRESENCE_UPDATE);
 
-	discord_cache_enable(discord_client, DISCORD_CACHE_GUILDS); /* So we can get the guild owner later */
-
 	discord_set_on_ready(discord_client, &on_ready);
 	/* PRIVMSG */
 	discord_set_on_message_create(discord_client, &on_message_create);
@@ -1057,10 +1104,9 @@ static int unload_module(void)
 	discord_ready = 0;
 	irc_relay_unregister(discord_send);
 
-	/*! \todo BUGBUG This is not multithread safe. Pending resolution in libdiscord. */
-	discord_shutdown(discord_client);
-	discord_cleanup(discord_client);
+	ccord_shutdown_async();
 	bbs_pthread_join(discord_thread, NULL);
+	discord_cleanup(discord_client);
 
 	ccord_global_cleanup();
 	list_cleanup();
