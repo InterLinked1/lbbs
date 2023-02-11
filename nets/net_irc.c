@@ -69,7 +69,7 @@
 #define send_reply(user, fmt, ...) bbs_debug(3, "%p <= " fmt, user, ## __VA_ARGS__); pthread_mutex_lock(&user->lock); dprintf(user->wfd, fmt, ## __VA_ARGS__); pthread_mutex_unlock(&user->lock);
 #define send_numeric(user, numeric, fmt, ...) send_reply(user, "%03d %s :" fmt, numeric, user->nickname, ## __VA_ARGS__)
 #define send_numeric2(user, numeric, fmt, ...) send_reply(user, "%03d %s " fmt, numeric, user->nickname, ## __VA_ARGS__)
-#define send_numeric_broadcast(channel, user, numeric, fmt, ...) channel_broadcast(channel, user, "%03d %s " fmt, numeric, bbs_hostname(), ## __VA_ARGS__)
+#define send_numeric_broadcast(channel, user, numeric, fmt, ...) channel_broadcast(channel, user, "%03d %s " fmt, numeric, irc_hostname, ## __VA_ARGS__)
 
 /*! \note Currently this is a single-server network, so there is no difference in practice between # and & channels. */
 /*! \todo Make this IRC network daemon multi-server capable somehow? Perhaps linkable with other servers running the same IRC module? Would also allow sharing state... */
@@ -94,6 +94,8 @@ static int log_channels = 0;
 
 static int loadtime = 0;
 static int need_restart = 0;
+
+static char irc_hostname[84];
 
 static int load_config(void);
 
@@ -986,9 +988,9 @@ static int print_channel_mode(struct irc_user *user, struct irc_channel *channel
 	}
 	get_channel_modes(chanmode, sizeof(chanmode), channel);
 	if (user) {
-		send_reply(user, ":%s MODE %s %s\r\n", bbs_hostname(), channel->name, chanmode);
+		send_reply(user, ":%s MODE %s %s\r\n", irc_hostname, channel->name, chanmode);
 	} else {
-		channel_broadcast(channel, user, ":%s MODE %s %s\r\n", bbs_hostname(), channel->name, chanmode);
+		channel_broadcast(channel, user, ":%s MODE %s %s\r\n", irc_hostname, channel->name, chanmode);
 	}
 	return 0;
 }
@@ -1001,7 +1003,7 @@ static int print_member_mode(struct irc_member *member, struct irc_channel *chan
 		return -1;
 	}
 	get_channel_user_modes(chanmode, sizeof(chanmode), member);
-	channel_broadcast(channel, NULL, ":%s MODE %s %s %s\r\n", bbs_hostname(), channel->name, chanmode, member->user->nickname);
+	channel_broadcast(channel, NULL, ":%s MODE %s %s %s\r\n", irc_hostname, channel->name, chanmode, member->user->nickname);
 	return 0;
 }
 #endif
@@ -1436,7 +1438,7 @@ static void handle_knock(struct irc_user *user, char *s)
 		return;
 	}
 	/* Notify ops about the KNOCK */
-	channel_broadcast_selective(channel, NULL, CHANNEL_USER_MODE_OP, ":%s %d %s " IDENT_PREFIX_FMT " :has asked for an invite\r\n", bbs_hostname(), 710, channel->name, IDENT_PREFIX_ARGS(user)); /* XXX msg is not used, seems there's no place for it in this numeric? */
+	channel_broadcast_selective(channel, NULL, CHANNEL_USER_MODE_OP, ":%s %d %s " IDENT_PREFIX_FMT " :has asked for an invite\r\n", irc_hostname, 710, channel->name, IDENT_PREFIX_ARGS(user)); /* XXX msg is not used, seems there's no place for it in this numeric? */
 	send_numeric(user, 711, "Your KNOCK has been delivered.\r\n");
 }
 
@@ -1458,7 +1460,7 @@ static void dump_who(struct irc_user *user, struct irc_user *whouser, struct irc
 	snprintf(userflags, sizeof(userflags), "%c%s%s", whouser->away ? 'G' : 'H', whouser->modes & USER_MODE_OPERATOR ? "*" : "", prefixes);
 	pthread_mutex_unlock(&whouser->lock);
 
-	send_numeric2(user, 352, "%s %s %s %s %s %s :%d %s\r\n", chan, whouser->username, whouser->hostname, bbs_hostname(), whouser->nickname, userflags, hopcount, whouser->realname);
+	send_numeric2(user, 352, "%s %s %s %s %s %s :%d %s\r\n", chan, whouser->username, whouser->hostname, irc_hostname, whouser->nickname, userflags, hopcount, whouser->realname);
 }
 
 /*! \brief Whether two users share any IRC channels in common */
@@ -1628,7 +1630,7 @@ static void handle_whois(struct irc_user *user, char *s)
 		send_numeric2(user, 307, "%s :has identified for this nick\r\n", u->nickname); /* Everyone has, and nicks can't be changed, so... */
 	}
 	send_numeric2(user, 311, "%s %s %s * :%s\r\n", u->nickname, u->username, u->hostname, u->realname);
-	send_numeric2(user, 312, "%s %s :%s\r\n", u->nickname, IS_SERVICE(u) ? "services" : bbs_hostname(), IS_SERVICE(u) ? "IRC Services" : "Root IRC Server");
+	send_numeric2(user, 312, "%s %s :%s\r\n", u->nickname, IS_SERVICE(u) ? "services" : irc_hostname, IS_SERVICE(u) ? "IRC Services" : "Root IRC Server");
 	if (user->modes & USER_MODE_OPERATOR) {
 		send_numeric2(user, 313, "%s :is an IRC operator\r\n", u->nickname);
 	}
@@ -2340,7 +2342,7 @@ static int channel_count(void)
 /*! \brief Message of the Day */
 static void motd(struct irc_user *user)
 {
-	send_numeric(user, 375, "- %s Message of the Day -\r\n", bbs_hostname());
+	send_numeric(user, 375, "- %s Message of the Day -\r\n", irc_hostname);
 	/*! \todo Make this configurable or unique, more interesting in some way... */
 	send_numeric(user, 372, "- This server powered by the Lightweight Bulletin Board System\r\n");
 	send_numeric(user, 372, "- Visit us at %s\r\n", BBS_SOURCE_URL);
@@ -2378,9 +2380,9 @@ static int client_welcome(struct irc_user *user)
 	RWLIST_UNLOCK(&users);
 
 	send_numeric(user, 1, "Welcome to the %s Internet Relay Chat Network %s\r\n", bbs_name(), user->nickname);
-	send_numeric(user, 2, "Your host is %s, running version %s\r\n", bbs_hostname(), IRC_SERVER_VERSION);
+	send_numeric(user, 2, "Your host is %s, running version %s\r\n", irc_hostname, IRC_SERVER_VERSION);
 	send_numeric(user, 3, "This server was created %s\r\n", starttime);
-	send_numeric2(user, 4, "%s %s %s %s %s\r\n", bbs_hostname(), IRC_SERVER_VERSION, usermodes, channelmodes, paramchannelmodes);
+	send_numeric2(user, 4, "%s %s %s %s %s\r\n", irc_hostname, IRC_SERVER_VERSION, usermodes, channelmodes, paramchannelmodes);
 	/* We must explicitly advertise what prefixes we support or clients won't support them:
 	 * https://modern.ircdocs.horse/#rplisupport-parameters
 	 * https://defs.ircdocs.horse/defs/isupport.html
@@ -2402,7 +2404,7 @@ static int client_welcome(struct irc_user *user)
 	motd(user);
 
 	if (bbs_user_is_registered(user->node->user) && user->node->user->lastlogin && strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M %P %Z", user->node->user->lastlogin) > 0) { /* bbs_time_friendly does this internally */
-		send_reply(user, "%s NOTICE %s :Last login was %s\r\n", bbs_hostname(), user->username, timebuf);
+		send_reply(user, "%s NOTICE %s :Last login was %s\r\n", irc_hostname, user->username, timebuf);
 	}
 
 	if (!user->node->user) {
@@ -2543,7 +2545,7 @@ static void handle_client(struct irc_user *user)
 							bbs_warning("Received USER without NICK?\n");
 							break;
 						}
-						send_reply(user, "NOTICE AUTH :*** Processing connection to %s\r\n", bbs_hostname());
+						send_reply(user, "NOTICE AUTH :*** Processing connection to %s\r\n", irc_hostname);
 						send_reply(user, "NOTICE AUTH :*** Looking up your hostname...\r\n");
 						/* Resolve IP address to hostname */
 						if (!bbs_get_hostname(user->hostname, hostname, sizeof(hostname))) {
@@ -2794,7 +2796,7 @@ static void handle_client(struct irc_user *user)
 				} else if (!strcasecmp(command, "HELP")) {
 					handle_help(user, s);
 				} else if (!strcasecmp(command, "VERSION")) {
-					send_numeric(user, 351, "%s %s :%s\r\n", BBS_VERSION, bbs_hostname(), IRC_SERVER_VERSION);
+					send_numeric(user, 351, "%s %s :%s\r\n", BBS_VERSION, irc_hostname, IRC_SERVER_VERSION);
 				} else if (!strcasecmp(command, "TIME")) {
 					time_t lognow;
 					struct tm logdate;
@@ -2833,7 +2835,7 @@ static void handle_client(struct irc_user *user)
 				} else if (!strcasecmp(command, "REHASH")) {
 					REQUIRE_OPER(user);
 					/* Reread the config, although not everything can be updated this way. */
-					send_numeric(user, 382, "%s :Rehashing\r\n", bbs_hostname());
+					send_numeric(user, 382, "%s :Rehashing\r\n", irc_hostname);
 					destroy_operators(); /* Remove any existing operators */
 					load_config();
 				} else if (!strcasecmp(command, "RESTART")) {
@@ -3060,6 +3062,18 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "general", "logchannels", &log_channels);
 	bbs_config_val_set_true(cfg, "general", "requiresasl", &require_sasl);
 	bbs_config_val_set_true(cfg, "general", "requirechanserv", &require_chanserv);
+	irc_hostname[0] = '\0';
+	bbs_config_val_set_str(cfg, "general", "hostname", irc_hostname, sizeof(irc_hostname));
+
+	if (s_strlen_zero(irc_hostname)) {
+		safe_strncpy(irc_hostname, bbs_hostname(), sizeof(irc_hostname)); /* Default to BBS hostname */
+		if (s_strlen_zero(irc_hostname)) {
+			if (bbs_get_local_ip(irc_hostname, sizeof(irc_hostname))) {
+				bbs_error("No IRC or BBS hostname specified, and unable to determine local IP address. Aborting.\n");
+				return -1;
+			}
+		}
+	}
 
 	/* IRC */
 	bbs_config_val_set_true(cfg, "irc", "enabled", &irc_enabled);
