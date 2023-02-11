@@ -234,7 +234,7 @@ cleanup:
 
 /*! \todo Since multiple users can have the F flag in a channel, we should really be comparing with that, than using the original founder exclusively */
 #pragma GCC diagnostic ignored "-Wstack-protector"
-static int fetch_channel_owner(MYSQL_STMT *stmt, const char *channel, char *buf, size_t len)
+static int get_channel_colval(MYSQL_STMT *stmt, const char *channel, const char *column, char *buf, size_t len)
 {
 	char sql[184];
 	int mysqlres;
@@ -245,7 +245,7 @@ static int fetch_channel_owner(MYSQL_STMT *stmt, const char *channel, char *buf,
 
 	*buf = '\0';
 
-	snprintf(sql, sizeof(sql), "SELECT founder FROM %s.channels WHERE name = ? LIMIT 1", buf_dbname);
+	snprintf(sql, sizeof(sql), "SELECT %s FROM %s.channels WHERE name = ? LIMIT 1", column, buf_dbname);
 
 	if (sql_prep_bind_exec(stmt, sql, "s", channel)) {
 		return -1;
@@ -268,17 +268,17 @@ static int fetch_channel_owner(MYSQL_STMT *stmt, const char *channel, char *buf,
 		}
 
 		while (MYSQL_NEXT_ROW(stmt)) {
-			char *founder;
+			char *colval;
 
 			/* Must allocate string results before attempting to use them */
 			if (sql_alloc_bind_strings(stmt, fmt, results, lengths, bind_strings)) { /* Needs to be called if we don't use sql_string_prep in advance for all strings. */
 				break; /* If we fail for some reason, don't crash attempting to access NULL strings */
-			} else if (sql_fetch_columns(bind_ints, NULL, bind_strings, bind_dates, bind_null, fmt, &founder)) { /* We have no longs, so NULL is fine */
+			} else if (sql_fetch_columns(bind_ints, NULL, bind_strings, bind_dates, bind_null, fmt, &colval)) { /* We have no longs, so NULL is fine */
 				break;
 			}
-
-			bbs_debug(3, "Founder of %s is %s\n", channel, founder);
-			safe_strncpy(buf, founder, len);
+			if (colval) {
+				safe_strncpy(buf, colval, len);
+			}
 			sql_free_result_strings(num_fields, results, lengths, bind_strings); /* Call inside the while loop, since strings only need to be freed per row */
 			res = 0;
 		}
@@ -287,6 +287,38 @@ stmtcleanup:
 		sql_free_result_strings(num_fields, results, lengths, bind_strings); /* Won't hurt anything, clean up in case we break from the loop */
 	}
 
+	return res;
+}
+
+static int fetch_channel_owner(MYSQL_STMT *stmt, const char *channel, char *buf, size_t len)
+{
+	return get_channel_colval(stmt, channel, "founder", buf, len);
+}
+
+static int channel_get_entrymsg(MYSQL_STMT *stmt, const char *channel, char *buf, size_t len)
+{
+	int res = -1;
+	int connlocal = 0;
+	MYSQL *mysql = NULL;
+
+	if (!stmt) {
+		connlocal = 1;
+		mysql = sql_connect_db(buf_dbhostname, buf_dbusername, buf_dbpassword, buf_dbname);
+		stmt = mysql_stmt_init(mysql);
+		if (!stmt) {
+			goto cleanup;
+		}
+	}
+	res = get_channel_colval(stmt, channel, "entrymsg", buf, len);
+	if (!connlocal) {
+		return res;
+	}
+
+cleanup:
+	if (stmt) {
+		mysql_stmt_close(stmt);
+	}
+	mysql_close(mysql);
 	return res;
 }
 
@@ -556,7 +588,13 @@ static void info_cb(const char *username, const char *fields[], int row, void *d
 	chanserv_notice(username, "Information on %s:", fields[0]);
 	chanserv_notice(username, "Founder  : %s", fields[1]);
 	chanserv_notice(username, "Registered  : %s", fields[2]);
-	chanserv_notice(username, "Flags  :%s%s", fields[3], fields[4]);
+	if (fields[3]) {
+		chanserv_notice(username, "Mode lock  : %s", fields[3]);
+	}
+	if (fields[4]) {
+		chanserv_notice(username, "Entrymsg  : %s", fields[4]);
+	}
+	chanserv_notice(username, "Flags  :%s%s", fields[5], fields[6]);
 	UNUSED(row);
 	UNUSED(data);
 }
@@ -570,7 +608,7 @@ static void chanserv_info(const char *username, char *msg)
 		return;
 	}
 	/* XXX %b format doesn't seem to work? */
-	res = sql_fetch_strings(username, msg, info_cb, NULL, "sssss", "SELECT name, founder, DATE_FORMAT(registered, '%b %e %H:%i:%S %Y') AS date, IF(guard = 1, ' GUARD ', '') AS guardflag, IF(keeptopic = 1, ' KEEPTOPIC ', '') AS keeptopicflag FROM channels WHERE name = ?");
+	res = sql_fetch_strings(username, msg, info_cb, NULL, "sssssss", "SELECT name, founder, DATE_FORMAT(registered, '%b %e %H:%i:%S %Y') AS date, modelock, entrymsg, IF(guard = 1, ' GUARD ', '') AS guardflag, IF(keeptopic = 1, ' KEEPTOPIC ', '') AS keeptopicflag FROM channels WHERE name = ?");
 	if (res == -1) {
 		chanserv_notice(username, "ChanServ could not fulfill your request. Please contact an IRC operator.");
 	} else if (res == 1) {
@@ -580,13 +618,23 @@ static void chanserv_info(const char *username, char *msg)
 
 static struct chanserv_subcmd chanserv_set_cmds[] =
 {
+	{ "ENTRYMSG", "Sets the channel entry message.", "SET ENTRYMSG allows you to change or set a message sent to all users joining the channel.\r\n" "Syntax: SET <#channel> ENTRYMSG [message]" },
 	{ "GUARD", "Sets whether or not services will inhabit the channel.", "SET GUARD allows you to have ChanServ join your channel.\r\nSyntax: SET <#channel> GUARD ON|OFF" },
+	{ "MLOCK", "Sets channel mode lock.", "MLOCK (or \"mode lock\") allows you to enforce a set of modes on a channel." },
 	{ "KEEPTOPIC", "Enables topic retention.", "SET KEEPTOPIC enables restoration of the old topic after the channel has become empty.\r\nIn some cases, it may revert topic changes after services outages, so it is\r\nnot recommended to turn this on if your channel tends to never empty." }
 };
+
+#define REQUIRE_SET_PARAMS() \
+	if (!params) { \
+		chanserv_notice(username, "Insufficient parameters for SET."); \
+		chanserv_notice(username, "Syntax: SET <#channel> <setting> [parameters]"); \
+		return; \
+	}
 
 static void chanserv_set(const char *username, char *msg)
 {
 	char *channel, *setting, *params;
+	int enabled;
 
 	if (strlen_zero(msg)) {
 		chanserv_notice(username, "Insufficient parameters for SET.");
@@ -596,14 +644,22 @@ static void chanserv_set(const char *username, char *msg)
 	channel = strsep(&msg, " ");
 	setting = strsep(&msg, " ");
 	params = msg;
-	if (!params) {
-		chanserv_notice(username, "Insufficient parameters for SET.");
-		chanserv_notice(username, "Syntax: SET <#channel> <setting> [parameters]");
-		return;
-	}
 
-	if (!strcasecmp(setting, "GUARD")) {
-		int enabled = S_TRUE(params);
+	if (!strcasecmp(setting, "ENTRYMSG")) {
+		/* XXX 3 cases:
+		 * The entry message for #channel has been cleared.
+		 * The entry message for #channel was not set.
+		 * The entry message for #channel has been set to <params>. */
+		if (!update_colval(username, channel, "entrymsg", S_OR(params, NULL))) { /* Use explicit NULL if empty */
+			if (!strlen_zero(params)) {
+				chanserv_notice(username, "The entry message for %s has been set to %s.", channel, S_OR(params, NULL));
+			} else {
+				chanserv_notice(username, "The entry message for %s has been cleared.", channel);
+			}
+		}
+	} else if (!strcasecmp(setting, "GUARD")) {
+		REQUIRE_SET_PARAMS();
+		enabled = S_TRUE(params);
 		if (!channel_set_flag(username, channel, "guard", enabled)) {
 			chanserv_notice(username, "The GUARD flag has been %s for channel %s", enabled ? "set" : "removed", channel);
 			/* Actually join or leave the channel */
@@ -614,7 +670,8 @@ static void chanserv_set(const char *username, char *msg)
 			}
 		}
 	} else if (!strcasecmp(setting, "KEEPTOPIC")) {
-		int enabled = S_TRUE(params);
+		REQUIRE_SET_PARAMS();
+		enabled = S_TRUE(params);
 		if (!channel_set_flag(username, channel, "keeptopic", enabled)) {
 			chanserv_notice(username, "The KEEPTOPIC flag has been %s for channel %s", enabled ? "set" : "removed", channel);
 			/* Actually update our copy of the topic */
@@ -626,6 +683,22 @@ static void chanserv_set(const char *username, char *msg)
 			} else {
 				update_colval(username, channel, "topic", NULL);
 			}
+		}
+	} else if (!strcasecmp(setting, "MLOCK")) {
+		/* 2 cases:
+		 * The MLOCK for #channel has been set to <params>
+		 * The MLOCK for #channel has been removed. */
+		if (!update_colval(username, channel, "modelock", S_OR(params, NULL))) { /* Use explicit NULL if empty */
+			if (!strlen_zero(params)) {
+				chanserv_notice(username, "The MLOCK for %s has been set to %s.", channel, params);
+			} else {
+				chanserv_notice(username, "The MLOCK for %s has been cleared.", channel);
+			}
+			/*! \todo XXX MLOCK is actually supposed to enforce the modes in the MLOCK at all times, not just on channel recreate.
+			 * Therefore, sending these modes now is a start, but net_irc also needs to prevent any modes in the mlock from being unset. */
+			if (!strlen_zero(params)) {
+				chanserv_send("MODE %s %s", channel, params);
+			} /* else, leave any existing modes intact if MLOCK if removed. */
 		}
 	} else {
 		chanserv_notice(username, "Invalid ChanServ SET subcommand.");
@@ -921,7 +994,12 @@ static void event_cb(const char *cmd, const char *channel, const char *username,
 
 	/* Case-sensitive comparisons fine here */
 	if (!strcmp(cmd, "JOIN")) {
-		sql_fetch_strings2(username, channel, username, join_flags_cb, (char*) username, "sss", "SELECT channel, nickname, GROUP_CONCAT(flag ORDER BY flag, '' SEPARATOR '') AS flags FROM channel_flags WHERE channel = ? AND nickname = ? GROUP BY channel, nickname");
+		char entrymsg[256] = "";
+		sql_fetch_strings2(username, channel, username, join_flags_cb, (char*) username, "sss", "SELECT channel, nickname, GROUP_CONCAT(flag ORDER BY flag '' SEPARATOR '') AS flags FROM channel_flags WHERE channel = ? AND nickname = ? GROUP BY channel, nickname");
+		if (!channel_get_entrymsg(NULL, channel, entrymsg, sizeof(entrymsg)) && !s_strlen_zero(entrymsg)) {
+			/* Channel has an entry message. Send it to the newcomer. */
+			chanserv_notice(username, "[%s] %s", channel, entrymsg);
+		}
 	} else if (!strcmp(cmd, "TOPIC")) {
 		/* If KEEPTOPIC enabled, remember the topic */
 		/*! \todo ONLY if KEEPTOPIC enabled, remember the topic */
@@ -933,12 +1011,12 @@ static void event_cb(const char *cmd, const char *channel, const char *username,
 #pragma GCC diagnostic ignored "-Wstack-protector"
 static void chanserv_init(void)
 {
-	const char *sql = "SELECT name, topic, guard, keeptopic FROM channels WHERE guard > ?";
+	const char *sql = "SELECT name, topic, modelock, guard, keeptopic FROM channels WHERE guard > ?";
 	MYSQL *mysql = NULL;
 	MYSQL_STMT *stmt;
 	int mysqlres;
 	/* SQL SELECT */
-	const char *fmt = "ssii";
+	const char *fmt = "sssii";
 	const unsigned int num_fields = strlen(fmt);
 
 	mysql = sql_connect_db(buf_dbhostname, buf_dbusername, buf_dbpassword, buf_dbname);
@@ -975,12 +1053,12 @@ static void chanserv_init(void)
 
 		while (MYSQL_NEXT_ROW(stmt)) {
 			int guard, keeptopic;
-			char *channame, *topic;
+			char *channame, *topic, *mlock;
 
 			/* Must allocate string results before attempting to use them */
 			if (sql_alloc_bind_strings(stmt, fmt, results, lengths, bind_strings)) { /* Needs to be called if we don't use sql_string_prep in advance for all strings. */
 				break; /* If we fail for some reason, don't crash attempting to access NULL strings */
-			} else if (sql_fetch_columns(bind_ints, NULL, bind_strings, bind_dates, bind_null, fmt, &channame, &topic, &guard, &keeptopic)) { /* We have no longs, so NULL is fine */
+			} else if (sql_fetch_columns(bind_ints, NULL, bind_strings, bind_dates, bind_null, fmt, &channame, &topic, &mlock, &guard, &keeptopic)) { /* We have no longs, so NULL is fine */
 				break;
 			}
 
@@ -990,9 +1068,12 @@ static void chanserv_init(void)
 				bbs_debug(4, "Joining channel %s\n", channame);
 				chanserv_send("JOIN %s", channame);
 			}
-
-			/* XXX Only will work when guard is enabled? */
-			if (keeptopic && !strlen_zero(topic)) {
+			/* XXX These will only work when guard is enabled? Reconcile this... */
+			/* Set channel modes from MLOCK */
+			if (!strlen_zero(mlock)) {
+				chanserv_send("MODE %s %s", channame, mlock);
+			}
+			if (keeptopic && !strlen_zero(topic)) { /* These should both be true or both be false, but just in case, check both */
 				chanserv_send("TOPIC %s :%s", channame, topic);
 			}
 

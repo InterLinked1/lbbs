@@ -76,11 +76,8 @@
 #define IS_CHANNEL_NAME(s) (*s == '#' || *s == '&')
 #define VALID_CHANNEL_NAME(s) (!strlen_zero(s) && IS_CHANNEL_NAME(s))
 
-/*! \todo implement ChanServ, to help with persistence of channel data across restarts as well as auto-opping, etc. */
-
 /*! \todo include irc.h from LIRC, so we can use macro names for numerics, at least */
 /*! \todo Make MOTD more dynamic? Perhaps read from a file? */
-/*! \todo add guest support (low priority, since it obviously won't work if SASL is globally required... and it's easy to register anyways) */
 /*! \todo add IRC integration with the BBS, e.g. for a BBS user's friends, ping 'em on IRC on login (for nodes with a PTY only, obviously) */
 
 static int irc_port = DEFAULT_IRC_PORT;
@@ -249,7 +246,7 @@ static int add_operator(const char *name, const char *password)
 }
 
 /*
- * Yes, we really are exporting global symbols, just for these three functions.
+ * Yes, we really are exporting global symbols, just for a few important functions.
  * I thought about adding a relay.c/relay.h in the core that could then call these instead,
  * but the problem is modules could load before this module anyways and then consequently
  * fail to register their relay functions since this module hasn't loaded yet and registered
@@ -1259,6 +1256,7 @@ static void handle_modes(struct irc_user *user, char *s)
 						bbs_warning("Unknown channel mode '%c'\n", isprint(mode) ? mode : ' ');
 						send_numeric2(user, 472, "%c :is an unknown mode char to me\r\n", mode);
 				}
+				/*! \todo Improvement would be rather than doing one at a time, broadcast all the changes at once (storing changed modes in a tmp buffer) */
 				if (broadcast_if_change && changed) {
 					channel_broadcast(channel, NULL, ":%s MODE %s %c%c\r\n", user->nickname, channel->name, set ? '+' : '-', mode);
 				}
@@ -2138,15 +2136,10 @@ static int join_channel(struct irc_user *user, char *name)
 	member->user = user;
 	member->modes = CHANNEL_USER_MODE_NONE;
 	if (newchan) {
-		member->modes |= CHANNEL_USER_MODE_OP; /* If you created it, you're the op. */
-		if (user->node && user->node->user->id == 1) {
-			/* OP still needs to be granted to founders (as we do above), higher prefixes don't implicitly grant lower ones.
-			 * For example, Ambassador won't let you perform op operations unless you're an op. */
-			member->modes |= CHANNEL_USER_MODE_FOUNDER; /* Automatically make the sysop a founder of any channel s/he creates */
-			/* Note that this only applies to the first user (typically the sysop),
-			 * but other IRC operators can always use OPER themselves,
-			 * and then set any of these modes for any channel. */
-		}
+		member->modes |= CHANNEL_USER_MODE_FOUNDER; /* If you created it, you're the founder. */
+		member->modes |= CHANNEL_USER_MODE_OP; /* If you created it, you're an op. */
+		/* OP still needs to be granted to founders (as we do above), higher prefixes don't implicitly grant lower ones.
+		 * For example, Ambassador won't let you perform op operations unless you're an op. */
 		channel->relay = 1; /* XXX Not currently configurable in any way, always allowing relaying for now. */
 	}
 	if (IS_SERVICE(user)) {

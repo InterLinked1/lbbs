@@ -334,9 +334,9 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 	int len;
 	va_list ap;
 	time_t lognow;
-    struct tm logdate;
+	struct tm logdate;
 	struct timeval now;
-    char datestr[20];
+	char datestr[20];
 	int thread_id;
 
 	switch (loglevel) {
@@ -381,7 +381,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 
 	now = tvnow();
 	lognow = time(NULL);
-    localtime_r(&lognow, &logdate);
+	localtime_r(&lognow, &logdate);
 	strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 
 	thread_id = bbs_gettid();
