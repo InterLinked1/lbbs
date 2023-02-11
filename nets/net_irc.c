@@ -1510,6 +1510,15 @@ static void handle_who(struct irc_user *user, char *s)
 {
 	struct irc_relay *relay;
 	int res = 0;
+	char *flags;
+	int opersonly = 0;
+
+	/* Format is WHO [<name> ["o"]] */
+	flags = s;
+	s = strsep(&flags, " ");
+	if (!strlen_zero(flags) && !strcmp(flags, "o")) {
+		opersonly = 1;
+	}
 
 	if (IS_CHANNEL_NAME(s)) {
 		struct irc_member *member;
@@ -1545,9 +1554,9 @@ static void handle_who(struct irc_user *user, char *s)
 		}
 	} else {
 		struct irc_user *whouser = get_user(s);
-		if (whouser) {
+		if (whouser && (!opersonly || whouser->modes & USER_MODE_OPERATOR)) {
 			dump_who(user, whouser, NULL);
-		} else {
+		} else if (!opersonly) { /* Relays don't have any operators */
 			/* Check relays, we don't have a channel handle so we don't really know if the user exists in a relay */
 			pthread_mutex_lock(&user->lock);
 			RWLIST_RDLOCK(&relays);
@@ -1754,6 +1763,29 @@ static void handle_list(struct irc_user *user, char *s)
 	}
 	RWLIST_UNLOCK(&channels);
 	send_numeric(user, 323, "End of /LIST\r\n");
+}
+
+static void handle_stats(struct irc_user *user, char *s)
+{
+	struct irc_operator *operator;
+	char *query, *target = s;
+
+	query = strsep(&target, " ");
+	switch (*query) {
+		/* There's not really any sensitive info here, just a list of operators, so allow anyone to query it */
+		case 'o':
+			RWLIST_RDLOCK(&operators);
+			RWLIST_TRAVERSE(&operators, operator, entry) {
+				send_numeric(user, 243, "O %s@%s * %s %d\r\n", operator->name, "*", operator->name, -1);
+			}
+			RWLIST_UNLOCK(&operators);
+			break;
+		/*! \todo implement other queries */
+		default:
+			break;
+	}
+
+	send_numeric(user, 219, "%c :End of /STATS report\r\n", *query);
 }
 
 static void handle_help(struct irc_user *user, char *s)
@@ -2783,6 +2815,9 @@ static void handle_client(struct irc_user *user)
 					handle_userhost(user, s);
 				} else if (!strcasecmp(command, "LIST")) {
 					handle_list(user, s);
+				} else if (!strcasecmp(command, "STATS")) {
+					REQUIRE_PARAMETER(user, s);
+					handle_stats(user, s);
 				} else if (!strcasecmp(command, "ISON")) {
 					char *name, *names = s;
 					REQUIRE_PARAMETER(user, s);
