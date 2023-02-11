@@ -468,6 +468,8 @@ static inline int parse_header(struct http_req *req, char *s)
 		HEADER_DUP(req->range);
 	} else if (!strcasecmp(header, "DNT")) {
 		/* Do Not Track header: ignore, we don't track people anyways */
+	} else if (!strcasecmp(header, "X-Forwarded-For") || !strcasecmp(header, " X-Forwarded-Proto")) {
+		/* Ignore these headers, don't care */
 	} else {
 		bbs_warning("Unhandled HTTP header: %s (%s)\n", header, S_IF(value)); /* This is fine, maybe bad on us, but the client didn't do anything wrong */
 	}
