@@ -41,6 +41,8 @@ CREATE TABLE `channels` (
   `name` varchar(64) NOT NULL,
   `founder` varchar(64) NOT NULL,
   `topic` varchar(390) DEFAULT NULL,
+  `entrymsg` varchar(256) DEFAULT NULL,
+  `modelock` varchar(64) DEFAULT NULL,
   `registered` datetime NOT NULL DEFAULT current_timestamp(),
   `guard` tinyint(1) NOT NULL DEFAULT 0,
   `keeptopic` tinyint(1) NOT NULL DEFAULT 0,

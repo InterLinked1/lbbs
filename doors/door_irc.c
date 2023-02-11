@@ -173,6 +173,10 @@ static int load_config(void)
 			continue; /* Skip [general] */
 		}
 		/* It's a client section */
+		if (strchr(bbs_config_section_name(section), ' ')) {
+			bbs_warning("Config section name '%s' contains spaces, please avoid this\n", bbs_config_section_name(section));
+			continue; /* Client names will get used in IRC relays, and IRC doesn't permit spaces in nicknames */
+		}
 		hostname = bbs_config_sect_val(section, "hostname");
 		username = bbs_config_sect_val(section, "username");
 		password = bbs_config_sect_val(section, "password");
