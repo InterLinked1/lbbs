@@ -289,6 +289,9 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 			case 352:
 				/* Pass it on if it matches the numeric (skip end of) */
 				if (mynumeric != numeric) {
+#ifdef RELAY_DEBUG
+					bbs_debug(5, "Skipping numeric %d\n", mynumeric);
+#endif
 					break;
 				}
 				w3 = (char*) requsername; /* Replace client username with requsername */
@@ -306,6 +309,9 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 			case 353: /* NAMES replies are super important: IRC clients use this to construct the nicklist sidebar */
 				/* Pass it on if it matches the numeric (skip end of) */
 				if (mynumeric != numeric) {
+#ifdef RELAY_DEBUG
+					bbs_debug(5, "Skipping numeric %d\n", mynumeric);
+#endif
 					break;
 				}
 				w3 = (char*) requsername; /* Replace client username with requsername */
@@ -368,8 +374,14 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 	const char *clientname = NULL; /* Came from native IRC server. We need a pointer, can't use NULL directly. */
 
 	if (numeric == 318 && !user) {
+#ifdef RELAY_DEBUG
+		bbs_debug(7, "Ignoring numeric %d\n", numeric);
+#endif
 		return 0; /* Don't even care. Certainly, don't crash. */
 	} else if (numeric != 318 && !channel) {
+#ifdef RELAY_DEBUG
+		bbs_debug(7, "Ignoring numeric %d\n", numeric);
+#endif
 		return 0;
 	}
 
@@ -428,7 +440,8 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 		}
 		/* Determine who's in the "real" channel using our client */
 		/* Only one request at a time, to prevent interleaving of responses */
-		return !wait_response(fd, requsername, numeric, cp->client2, channel, origchan, fullnick, nick);
+		wait_response(fd, requsername, numeric, cp->client2, channel, origchan, fullnick, nick);
+		return 0; /* Even though we matched, there could be matches in other relays */
 	} else if (!cp->client2) {
 		/* It came from channel1, so provide names from channel1 */
 		bbs_debug(8, "Relaying nicknames from %s/%s\n", S_IF(cp->client1), cp->channel1);
@@ -436,7 +449,8 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 			bbs_warning("Both clients are NULL?\n");
 			return 0; /* See comments above in first map case */
 		}
-		return !wait_response(fd, requsername, numeric, cp->client1, channel, origchan, fullnick, nick);
+		wait_response(fd, requsername, numeric, cp->client1, channel, origchan, fullnick, nick);
+		return 0; /* Even though we matched, there could be matches in other relays */
 	} else {
 		bbs_debug(8, "Case we don't care about\n");
 	}

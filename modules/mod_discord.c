@@ -867,7 +867,7 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 		if (len > 0) {
 			fdprint_log(fd, "%03d %s " "%s %s :%s\r\n", numeric, requsername, PUBLIC_CHANNEL_PREFIX, cp->irc_channel, buf); /* Last one */
 		}
-		return 1;
+		return 0; /* Other modules could contain matches as well */
 	} else if (user && (numeric == 353 || numeric == 318)) { /* Only for WHO and WHOIS, not NAMES */
 		struct user *u = find_user_by_username(user);
 
@@ -889,7 +889,7 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 			fdprint_log(fd, "%03d %s " "%s %s :%s\r\n", 312, requsername, combined, "Discord", "Discord Relay");
 			fdprint_log(fd, "%03d %s " "%s %d %u :seconds idle, signon time\r\n", 317, requsername, combined, idle, signon);
 		}
-		return 1; /* Success, stop traversal */
+		return 1; /* Success, stop traversal, since only one module will have a match, and it's us. */
 	}
 	return 0;
 }
