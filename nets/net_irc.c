@@ -751,16 +751,6 @@ static void user_setactive(struct irc_user *user)
 	pthread_mutex_unlock(&user->lock);
 }
 
-int irc_relay_raw_send(const char *channel, const char *msg)
-{
-	struct irc_channel *c = get_channel(channel);
-	if (!c) {
-		return -1;
-	}
-	channel_broadcast_nolock(c, NULL, "%s\r\n", msg);
-	return 0;
-}
-
 /*! \param user Should be NULL for "system" generated messages and provided for messages actually sent by that user. */
 static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, const char *username, const char *buf, void *sendingmod)
 {
@@ -786,6 +776,19 @@ static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, 
 		}
 		RWLIST_UNLOCK(&relays);
 	}
+}
+
+int _irc_relay_raw_send(const char *channel, const char *msg, void *mod)
+{
+	struct irc_channel *c = get_channel(channel);
+	if (!c) {
+		return -1;
+	}
+	channel_broadcast_nolock(c, NULL, "%s\r\n", msg);
+	if (c->relay) {
+		relay_broadcast(c, NULL, NULL, msg, mod);
+	}
+	return 0;
 }
 
 /*! \brief Somewhat condensed version of privmsg, for relay integration */

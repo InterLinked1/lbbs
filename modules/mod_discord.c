@@ -897,6 +897,7 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 static int discord_send(const char *channel, const char *sender, const char *msg)
 {
 	struct chan_pair *cp;
+	int handled = 0;
 
 	if (!discord_ready) {
 		bbs_debug(1, "Discord is not yet ready, dropping message\n");
@@ -918,8 +919,33 @@ static int discord_send(const char *channel, const char *sender, const char *msg
 			},
 			.components = NULL,
 		};
-		/* Use ** (markdown) to bold the username, just like many IRC clients do. For system messages, italicize them. */
-		snprintf(mbuf, sizeof(mbuf), sender ? "**<%s>** %s" : "*%s%s*", S_IF(sender), msg);
+		/* Manually parse system messages for join/part/etc. */
+		if (!sender && *msg == ':') {
+			char tmpbuf[128];
+			char *username, *action, *channame;
+			safe_strncpy(tmpbuf, msg + 1, sizeof(tmpbuf)); /* Skip leading : */
+			channame = tmpbuf;
+			username = strsep(&channame, " ");
+			action = strsep(&channame, " ");
+			if (!strlen_zero(channame)) {
+				/* Prettify messages for Discord so we're not relaying raw IRC messages */
+				/* For direct IRC to Discord, we don't strip the hostmasks, so for IRC-IRC-Discord, don't do that either */
+				if (!strcmp(action, "JOIN")) {
+					snprintf(mbuf, sizeof(mbuf), "*%s has joined %s*", username, channame);
+					handled = 1;
+				} else if (!strcmp(action, "PART")) {
+					snprintf(mbuf, sizeof(mbuf), "*%s has left %s*", username, channame);
+					handled = 1;
+				} else if (!strcmp(action, "QUIT")) {
+					snprintf(mbuf, sizeof(mbuf), "*%s has quit %s*", username, channame);
+					handled = 1;
+				}
+			}
+		}
+		if (!handled) {
+			/* Use ** (markdown) to bold the username, just like many IRC clients do. For system messages, italicize them. */
+			snprintf(mbuf, sizeof(mbuf), sender ? "**<%s>** %s" : "*%s%s*", S_IF(sender), msg);
+		}
 		discord_create_message(discord_client, cp->channel_id, &params, NULL);
 	}
 	return 0;
@@ -1105,6 +1131,7 @@ static int unload_module(void)
 	irc_relay_unregister(discord_send);
 
 	ccord_shutdown_async();
+	bbs_debug(3, "Waiting for Discord thread to exit...\n"); /* This may take a moment */
 	bbs_pthread_join(discord_thread, NULL);
 	discord_cleanup(discord_client);
 

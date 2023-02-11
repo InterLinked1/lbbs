@@ -117,11 +117,13 @@ int irc_relay_unregister(int (*relay_send)(const char *channel, const char *send
  */
 int _irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *msg, void *mod);
 
+#define irc_relay_raw_send(channel, msg) _irc_relay_raw_send(channel, msg, BBS_MODULE_SELF)
+
 /*!
  * \brief Send a raw message to an IRC channel (e.g. for system messages)
  * \retval 0 on success, -1 on failure (message not relayed)
  */
-int irc_relay_raw_send(const char *channel, const char *msg);
+int _irc_relay_raw_send(const char *channel, const char *msg, void *mod);
 
 /*! \brief Register a ChanServ (channel services) provider */
 int irc_chanserv_register(void (*privmsg)(const char *username, char *msg), void (*eventcb)(const char *command, const char *channel, const char *username, const char *data), void *mod);
