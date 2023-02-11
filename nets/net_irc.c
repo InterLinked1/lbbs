@@ -133,6 +133,7 @@ struct irc_user {
 	char *nickname;					/* Client nickname. Can change. */
 	char *realname;					/* "Real name", typically the client name */
 	char *hostname;					/* Hostname: defaults to IP, but can use a host mask or "cloak" instead */
+	char *password;					/* Password for PASS command */
 	enum user_modes modes;			/* User's modes (apply to the user globally, not just a specific channel) */
 	int rfd;						/* Read file descriptor */
 	int wfd;						/* Write file descriptor */
@@ -492,6 +493,7 @@ static void user_free(struct irc_user *user)
 		RWLIST_UNLOCK(&operators);
 	}
 	pthread_mutex_destroy(&user->lock);
+	free_if(user->password);
 	free_if(user->hostname);
 	free_if(user->awaymsg);
 	free_if(user->realname);
@@ -2502,6 +2504,29 @@ static int do_sasl_auth(struct irc_user *user, char *s)
 	return 0;
 }
 
+static int handle_user(struct irc_user *user)
+{
+	char hostname[260];
+	if (!user->nickname) {
+		bbs_warning("Received USER without NICK?\n"); /* Invalid command sequence */
+		return -1;
+	}
+	send_reply(user, "NOTICE AUTH :*** Processing connection to %s\r\n", irc_hostname);
+	send_reply(user, "NOTICE AUTH :*** Looking up your hostname...\r\n");
+	/* Resolve IP address to hostname */
+	if (!bbs_get_hostname(user->hostname, hostname, sizeof(hostname))) {
+		bbs_debug(3, "Resolved IP %s to hostname %s\n", user->node->ip, hostname);
+		free_if(user->hostname);
+		user->hostname = strdup(hostname);
+		send_reply(user, "NOTICE AUTH :*** Checking Ident\r\n"); /* XXX Not really, we're not */
+		send_reply(user, "NOTICE AUTH :*** No Ident response\r\n");
+		send_reply(user, "NOTICE AUTH :*** Found your hostname: %s\r\n", user->hostname);
+	} else {
+		send_reply(user, "NOTICE AUTH :*** Couldn't look up your hostname\r\n");
+	}
+	return 0;
+}
+
 static void handle_client(struct irc_user *user)
 {
 	int capnegotiate = 0;
@@ -2541,6 +2566,8 @@ static void handle_client(struct irc_user *user)
 			/* Don't fully print out commands containing sensitive info */
 			if (STARTS_WITH(s, "OPER ")) {
 				bbs_debug(8, "%p => OPER *****\n", user);
+			} else if (STARTS_WITH(s, "PASS ")) {
+				bbs_debug(8, "%p => PASS *****\n", user);
 			} else if (STARTS_WITH(s, "NS IDENTIFY")) {
 				bbs_debug(8, "%p => NS IDENTIFY *****\n", user);
 			} else if (STARTS_WITH(s, "PRIVMSG NickServ")) {
@@ -2567,29 +2594,14 @@ static void handle_client(struct irc_user *user)
 							bbs_debug(5, "Nickname is %s\n", user->nickname);
 						}
 					} else if (!strcasecmp(command, "USER")) { /* Whole message is something like 'ambassador * * :New Now Know How' */
-						char hostname[260];
 						char *realname;
 						bbs_debug(5, "Username data is %s\n", s);
 						realname = strsep(&s, " ");
+						free_if(user->realname);
 						user->realname = strdup(realname);
-						/* This is not actually user->username, ignore the message, but begin negotiating. */
-						if (!user->nickname) {
-							bbs_warning("Received USER without NICK?\n");
+						if (handle_user(user)) {
 							break;
 						}
-						send_reply(user, "NOTICE AUTH :*** Processing connection to %s\r\n", irc_hostname);
-						send_reply(user, "NOTICE AUTH :*** Looking up your hostname...\r\n");
-						/* Resolve IP address to hostname */
-						if (!bbs_get_hostname(user->hostname, hostname, sizeof(hostname))) {
-							bbs_debug(3, "Resolved IP %s to hostname %s\n", user->node->ip, hostname);
-							free_if(user->hostname);
-							user->hostname = strdup(hostname);
-						} else {
-							send_reply(user, "NOTICE AUTH :*** Couldn't look up your hostname\r\n");
-						}
-						send_reply(user, "NOTICE AUTH :*** Checking Ident\r\n"); /* XXX Not really, we're not */
-						send_reply(user, "NOTICE AUTH :*** No Ident response\r\n");
-						send_reply(user, "NOTICE AUTH :*** Found your hostname: %s\r\n", user->hostname);
 						send_reply(user, "CAP * LS :multi-prefix sasl=PLAIN\r\n");
 						capnegotiate++;
 					} else {
@@ -2672,11 +2684,37 @@ static void handle_client(struct irc_user *user)
 					pthread_mutex_unlock(&user->lock);
 				} else if (!strcasecmp(command, "PING")) { /* Usually servers ping clients, but clients can ping servers too */
 					send_reply(user, "PONG %s\r\n", S_IF(s)); /* Don't add another : because it's still in s, if present. */
+				} else if (!strcasecmp(command, "PASS")) {
+					REQUIRE_PARAMETER(user, s);
+					free_if(user->password);
+					user->password = strdup(s);
+				} else if (!strcasecmp(command, "NICK")) {
+					REQUIRE_PARAMETER(user, s);
+					handle_nick(user, s);
+				} else if (!strcasecmp(command, "USER")) {
+					int authres;
+					char *realname;
+					REQUIRE_PARAMETER(user, s);
+					realname = strsep(&s, " ");
+					free_if(user->realname);
+					user->realname = strdup(realname);
+					if (handle_user(user)) {
+						break;
+					}
+					authres = bbs_authenticate(user->node, user->nickname, user->password);
+					memset(user->password, 0, strlen(user->password)); /* Destroy password before freeing it */
+					free(user->password);
+					if (authres) {
+						send_numeric(user, 464, "Password incorrect\r\n");
+					} else {
+						free_if(user->username);
+						user->username = strdup(user->nickname);
+						add_user(user);
+						send_numeric(user, 900, IDENT_PREFIX_FMT " %s You are now logged in as %s\r\n", IDENT_PREFIX_ARGS(user), user->username, user->username);
+					}
 				/* Any remaining commands require authentication.
 				 * The nice thing about this IRC server is we authenticate using the BBS user,
 				 * e.g. you don't create accounts using IRC, so we don't need to support guest access at all. */
-				} else if (!strcasecmp(command, "NICK")) {
-					handle_nick(user, s);
 				} else if (!sasl_auth && !bbs_user_is_registered(user->node->user) && require_sasl) {
 					send_reply(user, "NOTICE AUTH :*** This server requires SASL for authentication. Please reconnect with SASL enabled.\r\n");
 					goto quit; /* Disconnect at this point, there's no point in lingering around further. */
@@ -2997,6 +3035,7 @@ static void *ping_thread(void *unused)
 			 * We need something in module.c that will unload any dependencies,
 			 * reload us, and then load all the dependencies again. */
 			bbs_module_unload("mod_discord"); /* mod_discord depends on net_irc, so we can't unload while it's loaded. */
+			bbs_module_unload("mod_relay_irc"); /* Ditto */
 			bbs_request_module_unload(file_without_ext, need_restart - 1);
 			break;
 		}
