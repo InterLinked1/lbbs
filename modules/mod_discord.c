@@ -999,13 +999,41 @@ static void on_message_create(struct discord *client, const struct discord_messa
 	if (!cp) {
 		bbs_debug(7, "Ignoring message from channel %lu (no mapping): %s\n", event->channel_id, event->content);
 	} else { /* Relay to IRC */
+		char sendertmp[84];
 		char sender[84];
+		char *dup, *line, *lines;
 		author = event->author;
-		snprintf(sender, sizeof(sender), "%s#%s", author->username, author->discriminator);
+		snprintf(sendertmp, sizeof(sendertmp), "%s#%s", author->username, author->discriminator);
+		/* Ditch the spaces, since IRC doesn't allow them.
+		 * Most other places in this module we use user->username, user->discriminator, etc.
+		 * and that is fine since we remove spaces once up front when we create the user.
+		 * Here, we're reparsing this info separately, so we need to do it here as well. */
+		if (bbs_strcpy_nospaces(sendertmp, sender, sizeof(sender))) {
+			return;
+		}
 		bbs_debug(4, "Relaying message from channel %lu by %s to %s: %s\n", event->channel_id, sender, cp->irc_channel, event->content);
-		irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, event->content);
+		if (strlen_zero(event->content)) {
+			bbs_warning("Message sent by %s is empty?\n", sender);
+			/* Probably won't actually relay through in this case... */
+			return;
+		}
+		if (!strchr(event->content, '\n')) { /* Avoid unnecessarily allocating memory if we don't have to. */
+			irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, event->content);
+			return;
+		}
+		/* event->content could contain multiple lines. We need to relay each of them to IRC separately. */
+		dup = strdup(event->content);
+		if (!dup) {
+			bbs_error("strdup failed\n");
+			return;
+		}
+		lines = dup;
+		while ((line = strsep(&lines, "\n"))) {
+			bbs_strterm(line, '\n');
+			irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, line);
+		}
+		free(dup);
 	}
-	return;
 }
 
 static void on_message_update(struct discord *client, const struct discord_message *event)
