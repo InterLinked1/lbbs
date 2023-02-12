@@ -135,7 +135,7 @@ static int add_pair(const char *client1, const char *channel1, const char *clien
 	RWLIST_INSERT_HEAD(&mappings, cp, entry);
 	RWLIST_UNLOCK(&mappings);
 
-	bbs_debug(3, "Added mapping for %s/%s <=> %s/%s\n", S_IF(cp->client1), cp->channel1, S_IF(cp->client2), cp->channel2);
+	bbs_debug(3, "Added mapping for %s/%s <=> %s/%s (relaysystem: %s)\n", S_IF(cp->client1), cp->channel1, S_IF(cp->client2), cp->channel2, cp->relaysystem ? "yes" : "no");
 	return 0;
 }
 
@@ -483,6 +483,11 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 
 	/*! \todo Is there the potential for loops here, currently? If it's a NOTICE, drop it and don't relay?  */
 
+	if (!sender && !cp->relaysystem) {
+		bbs_debug(8, "Not relaying system message\n");
+		return 0;
+	}
+
 	if ((int) ignore_join_start && time(NULL) < modstart + (int) ignore_join_start && strstr(msg, "has joined")) {
 		bbs_debug(2, "Not relaying JOIN message '%s' due to startupjoinignore setting.\n", msg);
 		return 0;
@@ -566,7 +571,10 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		 * Worst case scenario, the same nick might be in use on both sides, and this will really confuse clients if they're told they did something they didn't. */
 		snprintf(sysmsg, sizeof(sysmsg), ":%s/%s JOIN %s", clientname, nick, ourchan);
 		bbs_debug(3, "Intercepting JOIN by %s/%s (%s -> %s)\n", clientname, nick, channel, ourchan);
-		if (ignore_join_start && time(NULL) < modstart + ignore_join_start) {
+		if (!cp->relaysystem) {
+			bbs_debug(8, "Not relaying system message\n");
+			return;
+		} else if (ignore_join_start && time(NULL) < modstart + ignore_join_start) {
 			bbs_debug(2, "Not relaying JOIN by %s/%s (%s -> %s) due to startupjoinignore setting.\n", clientname, nick, channel, ourchan);
 		} else if (MAP1_MATCH(cp, clientname, channel)) {
 			irc_relay_raw_send(cp->channel2, sysmsg);
@@ -582,7 +590,10 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		bbs_strterm(nick, ' '); /* cut off " has left" */
 		snprintf(sysmsg, sizeof(sysmsg), ":%s/%s PART %s", clientname, nick, ourchan);
 		bbs_debug(3, "Intercepting PART by %s/%s (%s -> %s)\n", clientname, nick, channel, ourchan);
-		if (MAP1_MATCH(cp, clientname, channel)) {
+		if (!cp->relaysystem) {
+			bbs_debug(8, "Not relaying system message\n");
+			return;
+		} else if (MAP1_MATCH(cp, clientname, channel)) {
 			irc_relay_raw_send(cp->channel2, sysmsg);
 		} else {
 			irc_relay_raw_send(cp->channel1, sysmsg);
@@ -596,7 +607,10 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		bbs_strterm(nick, ' '); /* cut off " has left" */
 		snprintf(sysmsg, sizeof(sysmsg), ":%s/%s QUIT %s", clientname, nick, ourchan);
 		bbs_debug(3, "Intercepting QUIT by %s/%s (%s -> %s)\n", clientname, nick, channel, ourchan);
-		if (MAP1_MATCH(cp, clientname, channel)) {
+		if (!cp->relaysystem) {
+			bbs_debug(8, "Not relaying system message\n");
+			return;
+		} else if (MAP1_MATCH(cp, clientname, channel)) {
 			irc_relay_raw_send(cp->channel2, sysmsg);
 		} else {
 			irc_relay_raw_send(cp->channel1, sysmsg);
