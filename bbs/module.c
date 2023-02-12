@@ -410,55 +410,121 @@ static int load_resource(const char *resource_name, unsigned int suppress_loggin
 	return res;
 }
 
-static int unload_resource(const char *resource_name, int force)
+/* Forward declaration */
+static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int force, int *usecount, struct stringlist *removed);
+
+/*! \note modules list must be locked when calling */
+static int unload_dependencies(struct bbs_module *mod, struct stringlist *removed)
 {
-	struct bbs_module *mod;
+	int usecount;
+	struct bbs_module *m;
+	int res = 0;
+
+	/* I thought about perhaps checking how many dependencies exist,
+	 * and only going ahead with unloading them if the number of dependencies
+	 * is equal to the use count (the logic being, if the use count is greater
+	 * than the number of dependencies, than even if we unload all the dependencies,
+	 * other stuff will still be using the module (e.g. nodes, etc.) and then parent
+	 * unload operation will fail anyways, so why bother unloading other stuff
+	 * and then potentially leaving the system in an undesirable state if we meant
+	 * to reload rather than merely unload?
+	 *
+	 * But, ideally we should be able to boot nodes from a module if we really
+	 * want to unload it, and I'm not sure at this time if adding the logic
+	 * described above would be good or bad. */
+
+	/* One reason we require each module's dependency strings to contain the full module name
+	 * (i.e. including the .so extension), is so that we can just make direct comparisons
+	 * with the module names as they exist in the list. No need to build the full name
+	 * in a buffer each time. */
+
+	/* Use a safe traversal since the list may get modified while we're traversing it. */
+	RWLIST_TRAVERSE_SAFE_BEGIN(&modules, m, entry) {
+		if (mod == m) {
+			continue; /* Skip ourself, we're already working on it... (and if it happened to specify itself, for whatever reason, that would result in infinite recursion) */
+		}
+		if (strlen_zero(m->info->dependencies)) {
+			continue; /* Module doesn't have any dependencies, let alone on the relevant module. */
+		}
+		if (!strstr(m->info->dependencies, mod->resource)) {
+			continue;
+		}
+		bbs_verb(5, "Unloading %s, since it depends on %s\n", m->resource, mod->resource);
+		if (!unload_resource_nolock(m, 0, &usecount, removed)) {
+			res = -1;
+			bbs_warning("Failed to unload module %s, which depends on %s\n", m->resource, mod->resource);
+			continue;
+		}
+		/* Keep track of any modules that were removed. */
+		if (removed) {
+			stringlist_push(removed, m->resource);
+		}
+		/* Actually unload the dependent. */
+		unload_dynamic_module(m);
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	return res;
+}
+
+static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int force, int *usecount, struct stringlist *removed)
+{
 	int res = -1;
 	int error = 0;
 
-	RWLIST_WRLOCK(&modules);
+	bbs_debug(2, "Module %s has use count %d\n", mod->resource, mod->usecount);
+	*usecount = mod->usecount;
 
-	if (!(mod = find_resource(resource_name))) {
-		RWLIST_UNLOCK(&modules);
-		bbs_warning("Unload failed, '%s' could not be found\n", resource_name);
-		return -1;
+	/* Automatically unload any other modules that may depend on this module. */
+	if (mod->usecount) {
+		unload_dependencies(mod, removed);
 	}
-
-	bbs_debug(2, "Module %s has use count %d\n", resource_name, mod->usecount);
 
 	if (!error && (mod->usecount > 0)) {
 		if (force) {
-			bbs_warning("Warning:  Forcing removal of module '%s' with use count %d\n", resource_name, mod->usecount);
+			bbs_warning("Warning:  Forcing removal of module '%s' with use count %d\n", mod->resource, mod->usecount);
 		} else {
-			bbs_warning("Soft unload failed, '%s' has use count %d\n", resource_name, mod->usecount);
-			error = 1;
+			bbs_warning("Soft unload failed, '%s' has use count %d\n", mod->resource, mod->usecount);
+			return NULL;
 		}
 	}
 
 	if (!error) {
 		/*! \todo Enhancement: Request any nodes attached to the module to disconnect (once we have a mechanism to do this). */
-
 		bbs_debug(1, "Unloading %s\n", mod->resource);
 		res = mod->info->unload();
 		if (res) {
-			bbs_warning("Firm unload failed for %s\n", resource_name);
+			bbs_warning("Firm unload failed for %s\n", mod->resource);
 			if (force <= 2) {
-				error = 1;
+				return NULL;
 			} else {
 				bbs_warning("** Dangerous **: Unloading resource anyway, at user request\n");
 			}
 		}
 	}
 
+	return mod;
+}
+
+static int unload_resource(const char *resource_name, int force, struct stringlist *removed)
+{
+	struct bbs_module *mod;
+	int usecount = 0;
+
+	RWLIST_WRLOCK(&modules);
+	if (!(mod = find_resource(resource_name))) {
+		bbs_warning("Unload failed, '%s' could not be found\n", resource_name);
+		RWLIST_UNLOCK(&modules);
+		return -1;
+	}
+	mod = unload_resource_nolock(mod, force, &usecount, removed);
 	RWLIST_UNLOCK(&modules);
 
-	if (!error) {
-		unload_dynamic_module(mod);
-	} else {
-		res = mod->usecount;
+	if (!mod) {
+		return usecount;
 	}
 
-	return res;
+	unload_dynamic_module(mod);
+	return 0;
 }
 
 static int on_file_plan(const char *dir_name, const char *filename, void *obj)
@@ -653,7 +719,8 @@ int bbs_module_load(const char *name)
 int bbs_module_unload(const char *name)
 {
 	int res;
-	res = unload_resource(name, 0);
+
+	res = unload_resource(name, 0, NULL);
 	if (res) {
 		return -1;
 	}
@@ -662,14 +729,40 @@ int bbs_module_unload(const char *name)
 
 int bbs_module_reload(const char *name, int try_delayed)
 {
-	int res = bbs_module_unload(name);
+	struct stringlist unloaded;
+	int res;
+
+	memset(&unloaded, 0, sizeof(unloaded));
+	RWLIST_WRLOCK(&unloaded);
+	res = unload_resource(name, 0, &unloaded);
 	if (!res) {
 		res = bbs_module_load(name);
+		if (!res) {
+			int lres = 0;
+			char *module;
+			/* Load any modules that we automatically unloaded so that we could do the unload.
+			 * Note that unloaded was filled recursively, if certain modules were unloaded
+			 * as a result of unloads, those are also included.
+			 * Normal pop operations will remove the element most recently added to the list.
+			 * The most recently added modules are modules that may have unloaded after their dependents.
+			 * Therefore, this is the correct order to use since the most recently unloaded modules
+			 * also need to be loaded again first to guarantee that any modules dependent on them
+			 * can load properly when we try to load them afterwards.
+			 */
+			while ((module = stringlist_pop(&unloaded))) {
+				lres |= load_resource(module, 0);
+			}
+			if (lres) {
+				bbs_warning("Not all automatically unloaded modules could be successfully loaded again\n");
+			}
+		}
 	} else if (try_delayed) {
+		/* XXX If we do this, then any automatically unloaded modules will not get automatically loaded again. */
 		if (!queue_reload(name)) { /* Can't reload now, queue for reload when possible */
 			bbs_verb(4, "Queued reload of module '%s'\n", name);
 		}
 	}
+	RWLIST_UNLOCK(&unloaded);
 	return res;
 }
 

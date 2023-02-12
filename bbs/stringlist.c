@@ -28,9 +28,7 @@
 /*! \brief Opaque structure for a single string in a stringlist */
 struct stringitem {
 	RWLIST_ENTRY(stringitem) entry;
-	/* Use a FSM, so we can do 1 allocation per item, rather than 2.
-	 * Must be last, since it's a flexible struct member */
-	char s[0];
+	char *s; /* Avoid a FSM, so that we can return the separately allocated string to the caller in stringlist_pop */
 };
 
 int stringlist_contains(struct stringlist *list, const char *s)
@@ -56,14 +54,37 @@ void stringlist_empty(struct stringlist *list)
 	RWLIST_UNLOCK(list);
 }
 
+char *stringlist_pop(struct stringlist *list)
+{
+	struct stringitem *i;
+	char *s;
+
+	i = RWLIST_REMOVE_HEAD(list, entry);
+	if (!i) {
+		return NULL; /* Nothing left */
+	}
+	s = i->s;
+	free(i); /* Free the stringitem, but not the string itself. Caller's job to do that, once done with it. */
+	return s;
+}
+
 int stringlist_push(struct stringlist *list, const char *s)
 {
-	struct stringitem *i = calloc(1, sizeof(*i) + strlen(s) + 1);
-	if (!i) {
-		bbs_error("calloc failed\n");
+	struct stringitem *i;
+	char *sdup = strdup(s);
+
+	if (!sdup) {
+		bbs_error("strdup failed\n");
 		return -1;
 	}
-	strcpy(i->s, s); /* Safe */
+
+	i = calloc(1, sizeof(*i));
+	if (!i) {
+		bbs_error("calloc failed\n");
+		free(sdup);
+		return -1;
+	}
+	i->s = sdup;
 	RWLIST_INSERT_HEAD(list, i, entry);
 	return 0;
 }

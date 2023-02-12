@@ -1136,4 +1136,4 @@ static int unload_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_STANDARD("ChanServ for IRC");
+BBS_MODULE_INFO_DEPENDENT("ChanServ for IRC", "net_irc.so,mod_mysql.so");

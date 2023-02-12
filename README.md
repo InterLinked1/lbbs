@@ -300,6 +300,25 @@ Usage:
 
 - `./bbs_dumper.sh livedump` - Obtain a backtrace from a currently running LBBS process
 
+### A Note About ABI (Application Binary Interface) Compatibility
+
+Some projects strive to preserve ABI as much as possible when making changes (e.g. no breaking ABI changes allowed within a major revision).
+
+While it is certainly not an objective to break ABI, it should be preferred to break ABI if necessary when making changes (e.g. adding
+arguments to a function) when doing it a different way would result in less maintainable or clunkier code in the long run.
+
+For example, if the original function is still useful, it can still call the new function under the hood (which would preserve ABI), but if not,
+the original prototype should simply be expanded.
+
+Likewise, when adding members to a struct (which can break ABI if not placed at the end), members should be added at the most logical place,
+not necessarily at the end.
+
+In essence, changes will not strive to preserve ABI if that is the sole purpose of making a change a particular way.
+
+The implication of this development philosophy is that users *should **not** expect* any ABI compatibility between versions from different points in time.
+Mixing files from different source revisions may result in an unstable system. You should always fully recompile LBBS from source when building
+a new or updated version.
+
 ### Coding Guidelines
 
 Please follow the coding guidelines used in this repository. They are by and large K&R C, importantly:

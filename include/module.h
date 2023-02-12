@@ -35,6 +35,8 @@ struct bbs_module_info {
 	const char *name;
 	/*! User friendly description of the module. */
 	const char *description;
+	/*! Module dependencies */
+	const char *dependencies;
 	/*! Module loading flags */
 	unsigned int flags;
 };
@@ -125,14 +127,31 @@ static const __attribute__((unused)) struct bbs_module_info *bbs_module_info;
 	}                                                                  \
 	static const struct bbs_module_info *bbs_module_info = &__mod_info
 
+/* In theory, the 2 dependency cases are not mutually exclusive.
+ * For example, a module could have a dependency on another module,
+ * and itself also have dependents (other modules depend on it).
+ * But so far, that case hasn't happened, so this simplifies things for now. */
+
+/* For most modules */
 #define BBS_MODULE_INFO_STANDARD(desc)	 \
 	BBS_MODULE_INFO(0, desc,   			\
-		.load = load_module,				\
-		.unload = unload_module,			\
+		.load = load_module,			\
+		.unload = unload_module,		\
+		.dependencies = NULL,			\
 	)
 
+/* For modules that depend on other modules */
+#define BBS_MODULE_INFO_DEPENDENT(desc, dependencylist)	 \
+	BBS_MODULE_INFO(0, desc,   				\
+		.load = load_module,				\
+		.unload = unload_module,			\
+		.dependencies = dependencylist,		\
+	)
+
+/* For modules that are depended upon by other modules */
 #define BBS_MODULE_INFO_FLAGS(desc, flags)	 \
 	BBS_MODULE_INFO(flags, desc,   			\
 		.load = load_module,				\
 		.unload = unload_module,			\
+		.dependencies = NULL,				\
 	)

@@ -29,6 +29,14 @@ int stringlist_contains(struct stringlist *list, const char *s);
 void stringlist_empty(struct stringlist *list);
 
 /*!
+ * \brief Pop the most recently added item to a string list
+ * \retval string if list is non-empty, NULL if list is empty.
+ * \note Assumes list is WRLOCKed
+ * \note The returned string must be freed using free()
+ */
+char *stringlist_pop(struct stringlist *list);
+
+/*!
  * \brief Add an item to a stringlist
  * \param list
  * \param s String to add

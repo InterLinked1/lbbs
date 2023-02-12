@@ -771,4 +771,4 @@ static int unload_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_STANDARD("IRC/IRC Relay");
+BBS_MODULE_INFO_DEPENDENT("IRC/IRC Relay", "net_irc.so,door_irc.so");

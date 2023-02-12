@@ -1195,4 +1195,4 @@ static int unload_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_STANDARD("Discord/IRC Relay");
+BBS_MODULE_INFO_DEPENDENT("Discord/IRC Relay", "net_irc.so");

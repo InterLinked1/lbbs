@@ -493,4 +493,4 @@ static int unload_module(void)
 	return res;
 }
 
-BBS_MODULE_INFO_STANDARD("MySQL/MariaDB User Authentication");
+BBS_MODULE_INFO_DEPENDENT("MySQL/MariaDB User Authentication", "mod_mysql.so");
