@@ -556,6 +556,19 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		return;
 	}
 
+	/* In the unfortunate event that either configuration or a bug has allowed
+	 * some kind of loop to happen, messages might bounce back and forth between
+	 * two channels in perpetuity. However, because all the relay modules prefix
+	 * nicknames with some identifier (the client name, in this case), we can
+	 * easily detect something like this happening since the username will
+	 * grow longer and longer when this happens until it is longer than the buffer size
+	 * and then stays truncated forever.
+	 * Therefore, if we detect an unreasonable long nickname, just drop it.
+	 * Since this is coming from IRC, and IRC doesn't allow super long nicks,
+	 * this is pretty reliable.
+	 * This is done for the interception cases below.
+	 */
+
 	/* XXX This is klunky... we're getting JOIN/PART messages through the PRIVMSG callback, due to how door_irc is structured (which is really an issue there, not here) */
 	w = strchr(msg, ' ');
 	if (w && !strcmp(w, " has " COLOR(COLOR_GREEN) "joined" COLOR_RESET "\n")) {
@@ -563,7 +576,11 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		char nick[64];
 		const char *ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
 		safe_strncpy(nick, msg, sizeof(nick));
-		bbs_strterm(nick, ' '); /* cut off " has left" */
+		bbs_strterm(nick, ' '); /* cut off " has joined" */
+		if (strlen(nick) >= sizeof(nick)) {
+			bbs_warning("Potential IRC loop detected, dropping message\n");
+			return;
+		}
 		/* Leave the hostmask (stuff after ~) intact... I guess? */
 		/* The channel name to use is not channel, which is what the channel name is on the other side (client side).
 		 * We need to use the name on OUR side. */
@@ -588,6 +605,10 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		const char *ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
 		safe_strncpy(nick, msg, sizeof(nick));
 		bbs_strterm(nick, ' '); /* cut off " has left" */
+		if (strlen(nick) >= sizeof(nick)) {
+			bbs_warning("Potential IRC loop detected, dropping message\n");
+			return;
+		}
 		snprintf(sysmsg, sizeof(sysmsg), ":%s/%s PART %s", clientname, nick, ourchan);
 		bbs_debug(3, "Intercepting PART by %s/%s (%s -> %s)\n", clientname, nick, channel, ourchan);
 		if (!cp->relaysystem) {
@@ -604,7 +625,11 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		char nick[64];
 		const char *ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
 		safe_strncpy(nick, msg, sizeof(nick));
-		bbs_strterm(nick, ' '); /* cut off " has left" */
+		bbs_strterm(nick, ' '); /* cut off " has quit" */
+		if (strlen(nick) >= sizeof(nick)) {
+			bbs_warning("Potential IRC loop detected, dropping message\n");
+			return;
+		}
 		snprintf(sysmsg, sizeof(sysmsg), ":%s/%s QUIT %s", clientname, nick, ourchan);
 		bbs_debug(3, "Intercepting QUIT by %s/%s (%s -> %s)\n", clientname, nick, channel, ourchan);
 		if (!cp->relaysystem) {
