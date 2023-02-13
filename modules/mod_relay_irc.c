@@ -146,6 +146,8 @@ static struct chan_pair *find_chanpair(const char *client, const char *channel)
 {
 	struct chan_pair *cp = NULL;
 
+	bbs_assert_exists(channel);
+
 	RWLIST_WRLOCK(&mappings);
 	RWLIST_TRAVERSE(&mappings, cp, entry) {
 		if (MAP1_MATCH(cp, client, channel) || MAP2_MATCH(cp, client, channel)) {
@@ -549,6 +551,11 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 {
 	struct chan_pair *cp;
 	const char *w;
+
+	if (strlen_zero(channel)) {
+		bbs_debug(9, "No channel for message from %s\n", clientname); /* Includes things like nick changes */
+		return;
+	}
 
 	cp = find_chanpair(clientname, channel);
 	if (!cp) { /* Not something we care about */
