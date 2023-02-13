@@ -1865,7 +1865,7 @@ static void handle_nick(struct irc_user *user, char *s)
 		send_reply(user, "NOTICE AUTH :*** This nickname is registered. Please choose a different nickname, or identify using NickServ\r\n");
 		/* Client will need to send NS IDENTIFY <password> or PRIVMSG NickServ :IDENTIFY <password> */
 	} else { /* Nickname is not claimed. It's fine. */
-		char oldnick[64];
+		char oldnick[64] = "";
 		char *newnick = strdup(s);
 		if (!newnick) {
 			return;
@@ -1873,12 +1873,16 @@ static void handle_nick(struct irc_user *user, char *s)
 		/* Now, the nick change can't fail. */
 		RWLIST_WRLOCK(&users);
 		bbs_debug(5, "Nickname changed from %s to %s\n", user->nickname, s);
-		safe_strncpy(oldnick, user->nickname, sizeof(oldnick));
-		free_if(user->nickname);
+		if (user->nickname) {
+			safe_strncpy(oldnick, user->nickname, sizeof(oldnick));
+			free_if(user->nickname);
+		}
 		user->nickname = newnick;
 		RWLIST_UNLOCK(&users);
-		send_reply(user, ":%s NICK %s\r\n", oldnick, user->nickname);
-		broadcast_nick_change(user, oldnick); /* XXX Won't actually traverse, if registered users aren't allowed to change nicks? */
+		if (!s_strlen_zero(oldnick)) {
+			send_reply(user, ":%s NICK %s\r\n", oldnick, user->nickname);
+			broadcast_nick_change(user, oldnick); /* XXX Won't actually traverse, if registered users aren't allowed to change nicks? */
+		}
 	}
 }
 
