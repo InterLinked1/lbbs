@@ -618,9 +618,11 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 			node->inmenu = 1;
 		}
 		/* Intercept -3 and -2 return values from "return" */
-		if (res == -3 && stack == 1) { /* Quit */
+		if (res == -3) { /* Quit */
 			/* Keep returning -3 until we get to the top-level menu (stack == 1). Only then do we return from the menu system completely and exit normally. */
-			res = 0;
+			if (stack == 1) {
+				res = 0;
+			}
 			break;
 		} else if (res == -2) { /* Return */
 			res = 0;

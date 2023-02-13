@@ -172,8 +172,9 @@ int menu_handler_exec(struct bbs_node *node, const char *name, char *args)
 	if (args) {
 		bbs_substitute_vars(node, args, subargs, sizeof(subargs));
 	}
-	bbs_debug(5, "Executing menu handler %s (%s)\n", name, args ? subargs : args); /* Yes, this looks backwards but this is right. If no args, pass NULL */
-	res = handler->execute(node, args);
+	bbs_debug(5, "Executing menu handler %s (%s)\n", name, args ? subargs : ""); /* Yes, this looks backwards but this is right. If no args, pass NULL */
+	res = handler->execute(node, args ? subargs : NULL); /* Yes, this looks backwards but this is right. If no args, pass NULL */
+	bbs_debug(5, "Menu handler %s returned %d\n", name, res);
 	bbs_module_unref(handler->module);
 	return res;
 }
