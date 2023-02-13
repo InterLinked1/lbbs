@@ -751,6 +751,7 @@ int bbs_module_reload(const char *name, int try_delayed)
 			 */
 			while ((module = stringlist_pop(&unloaded))) {
 				lres |= load_resource(module, 0);
+				free(module);
 			}
 			if (lres) {
 				bbs_warning("Not all automatically unloaded modules could be successfully loaded again\n");

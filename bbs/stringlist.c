@@ -49,6 +49,7 @@ void stringlist_empty(struct stringlist *list)
 	struct stringitem *i;
 	RWLIST_WRLOCK(list);
 	while ((i = RWLIST_REMOVE_HEAD(list, entry))) {
+		free(i->s);
 		free(i);
 	}
 	RWLIST_UNLOCK(list);

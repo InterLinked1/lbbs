@@ -847,9 +847,7 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 	snprintf(hostname, sizeof(hostname), "%s/%s", relayname, sender);
 
 	channel_broadcast_selective(c, NULL, minmode, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, "PRIVMSG", c->name, msg);
-	if (c->relay) {
-		relay_broadcast(c, NULL, sender, msg, mod);
-	}
+	relay_broadcast(c, NULL, sender, msg, mod);
 	return 0;
 }
 
@@ -2533,7 +2531,7 @@ static void handle_client(struct irc_user *user)
 	int res, started = 0;
 	char buf[513];
 	int mcount = 0;
-	int sasl_auth = 0;
+	int sasl_attempted = 0;
 	int graceful_close = 0;
 
 	for (;;) {
@@ -2542,6 +2540,7 @@ static void handle_client(struct irc_user *user)
 		if (res <= 0) {
 			/* Don't set graceful_close to 0 here, since after a QUIT, the client may close the connection first.
 			 * The QUIT message should be whatever the client sent, since it was grateful, not connection closed by remote host. */
+			bbs_debug(3, "read returned %d\n", res);
 			break;
 		}
 		buf[res] = '\0'; /* Safe */
@@ -2632,10 +2631,8 @@ static void handle_client(struct irc_user *user)
 					}
 				} else if (capnegotiate == 4) {
 					capnegotiate++;
+					sasl_attempted = 1;
 					sasl_failed = do_sasl_auth(user, s);
-					if (!sasl_failed) {
-						sasl_auth = 1;
-					}
 				} else if (capnegotiate == 5) {
 					if (!strcmp(s, "CAP END")) {
 						capnegotiate = 0; /* Done with CAP */
@@ -2715,7 +2712,7 @@ static void handle_client(struct irc_user *user)
 				/* Any remaining commands require authentication.
 				 * The nice thing about this IRC server is we authenticate using the BBS user,
 				 * e.g. you don't create accounts using IRC, so we don't need to support guest access at all. */
-				} else if (!sasl_auth && !bbs_user_is_registered(user->node->user) && require_sasl) {
+				} else if (!sasl_attempted && !bbs_user_is_registered(user->node->user) && require_sasl) {
 					send_reply(user, "NOTICE AUTH :*** This server requires SASL for authentication. Please reconnect with SASL enabled.\r\n");
 					goto quit; /* Disconnect at this point, there's no point in lingering around further. */
 				/* We can't necessarily use %s (user->username) instead of %p (user), since if require_sasl == false, we might not have a username still. */
@@ -2934,7 +2931,7 @@ quit:
 	if (!graceful_close) {
 		leave_all_channels(user, "QUIT", "Remote user closed the connection"); /* poll or read failed */
 	}
-	if (started) {
+	if (user->node->user) {
 		unlink_user(user);
 	}
 }
@@ -3000,7 +2997,7 @@ static void *ping_thread(void *unused)
 		RWLIST_TRAVERSE(&users, user, entry) {
 			/* Prevent concurrent writes to a user */
 			pthread_mutex_lock(&user->lock);
-			if (need_restart || (user->lastping && user->lastpong < now - PING_TIME)) {
+			if (need_restart || (user->lastping && user->lastpong < now - 2 * PING_TIME)) {
 				char buf[32];
 				/* Client never responded to the last ping. Disconnect it. */
 				if (!need_restart) {
