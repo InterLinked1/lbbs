@@ -110,6 +110,13 @@ int bbs_users_dump(int fd, int verbose);
  */
 int bbs_user_exists(const char *username);
 
+/*!
+ * \brief Get a user ID from a username
+ * \param username Username to query
+ * \retval 0 if user does not exist, positive user ID if user exists
+ */
+unsigned int bbs_userid_from_username(const char *username);
+
 /*! \brief Free a list of BBS users, including all the users in the list */
 void bbs_user_list_destroy(struct bbs_user **userlist);
 

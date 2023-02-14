@@ -141,6 +141,37 @@ int bbs_user_exists(const char *username)
 	return 0;
 }
 
+unsigned int bbs_userid_from_username(const char *username)
+{
+	unsigned int res;
+	struct bbs_user *user;
+
+	/* XXX Rather than fetching an entire user
+	 * just to extract the user ID, then destroying it,
+	 * it would be more efficient if there was a user callback
+	 * that auth providers registered to query user IDs from usernames,
+	 * since a single-column SELECT will be more efficient than
+	 * doing SELECT * (which is effectively what bbs_user_info_by_username does).
+	 *
+	 * Even better, it would be more efficient
+	 * to cache all the users in memory with a mapping from
+	 * usernames to user IDs, and only perform a DB query
+	 * in the case of no match (which would actually eliminate
+	 * the majority of queries, for most use cases).
+	 *
+	 * Either of these would be a welcome improvement, and at least
+	 * there is one place to change the code in the future.
+	 */
+
+	user = bbs_user_info_by_username(username);
+	if (!user) {
+		return 0;
+	}
+	res = user->id;
+	bbs_user_destroy(user);
+	return res;
+}
+
 void bbs_user_list_destroy(struct bbs_user **userlist)
 {
 	int index = 0;
