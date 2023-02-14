@@ -3252,9 +3252,11 @@ static int unload_module(void)
 	bbs_pthread_join(irc_listener_thread, NULL);
 	if (irc_enabled) {
 		bbs_unregister_network_protocol(irc_port);
+		close_if(irc_socket);
 	}
 	if (ircs_enabled) {
 		bbs_unregister_network_protocol(ircs_port);
+		close_if(ircs_socket);
 	}
 	destroy_channels();
 	destroy_operators();

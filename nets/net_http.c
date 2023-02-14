@@ -1233,9 +1233,11 @@ static int unload_module(void)
 	pthread_kill(http_listener_thread, SIGURG);
 	bbs_pthread_join(http_listener_thread, NULL);
 	if (http_enabled) {
+		close_if(http_socket);
 		bbs_unregister_network_protocol(http_port);
 	}
 	if (https_enabled) {
+		close_if(https_socket);
 		bbs_unregister_network_protocol(https_port);
 	}
 	http_user_cache_purge();
