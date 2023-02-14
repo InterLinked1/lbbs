@@ -59,6 +59,8 @@ static RWLIST_HEAD_STATIC(modules, bbs_module);
 
 static int autoload_setting = DEFAULT_AUTOLOAD_SETTING;
 
+static int really_register = 0;
+
 struct stringlist modules_preload;
 struct stringlist modules_load;
 struct stringlist modules_noload;
@@ -89,7 +91,9 @@ void bbs_module_register(const struct bbs_module_info *info)
 		return;
 	}
 
-	bbs_verb(2, "Registering module %s\n", info->name);
+	if (really_register) {
+		bbs_verb(2, "Registering module %s\n", info->name);
+	}
 
 	/* This tells load_dynamic_module that we're registered. */
 	resource_being_loaded = NULL;
@@ -106,6 +110,10 @@ void bbs_module_unregister(const struct bbs_module_info *info)
 	struct bbs_module *mod = NULL;
 	int len = strlen(info->name);
 	char buf[256]; /* Avoid using len + 4, for -Wstack-protector */
+
+	if (!really_register) {
+		return; /* If this is prior to really registering modules, then we never called start_resource, so it won't be in the list. */
+	}
 
 	buf[0] = '\0';
 	if (len >= 3 && info->name[len - 3] != '.') {
@@ -212,7 +220,9 @@ static void logged_dlclose(const char *name, void *lib)
 		return;
 	}
 	dlerror(); /* Clear any existing error */
-	bbs_debug(5, "dlclose: %s\n", name);
+	if (really_register) {
+		bbs_debug(5, "dlclose: %s\n", name);
+	}
 	if (dlclose(lib)) {
 		char *error = dlerror();
 		bbs_error("Failure in dlclose for module '%s': %s\n", name ? name : "unknown", error ? error : "Unknown error");
@@ -266,7 +276,6 @@ static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ex
 			bbs_error("Failed to load module %s, aborting\n", resource_in);
 		} else {
 			bbs_error("Error loading module '%s': %s\n", resource_in, dlerror_msg);
-			return NULL;
 		}
 
 		free(mod);
@@ -299,6 +308,50 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 	}
 
 	return mod;
+}
+
+static void check_dependencies(const char *resource_in, unsigned int suppress_logging)
+{
+	char fn[PATH_MAX];
+	size_t resource_in_len = strlen(resource_in);
+	const char *so_ext = "";
+	struct bbs_module *mod;
+
+	if (resource_in_len < 4 || strcasecmp(resource_in + resource_in_len - 3, ".so")) {
+		so_ext = ".so";
+	}
+
+	snprintf(fn, sizeof(fn), "%s/%s%s", BBS_MODULE_DIR, resource_in, so_ext);
+
+	/* Lazy load won't perform symbol resolution, so we can successfully load a module that is missing dependencies */
+	mod = load_dlopen(resource_in, so_ext, fn, RTLD_LAZY | RTLD_LOCAL, suppress_logging);
+	if (!mod) {
+		bbs_error("Failed to check dependencies for %s\n", resource_in);
+		return;
+	}
+
+	if (!strlen_zero(mod->info->dependencies)) {
+		char dependencies_buf[256];
+		char *dependencies, *dependency;
+		safe_strncpy(dependencies_buf, mod->info->dependencies, sizeof(dependencies_buf));
+		dependencies = dependencies_buf;
+		while ((dependency = strsep(&dependencies, ","))) {
+			if (stringlist_contains(&modules_noload, dependency)) {
+				bbs_warning("Module %s depends on noloaded module %s\n", resource_in, dependency);
+				continue;
+			}
+			if (!stringlist_contains(&modules_preload, dependency)) {
+				bbs_debug(2, "Marking %s for preload since %s depends on it\n", dependency, resource_in);
+				stringlist_push(&modules_preload, dependency);
+			} else {
+				bbs_debug(4, "Module %s is already marked for preload\n", dependency);
+			}
+		}
+	}
+
+	logged_dlclose(resource_in, mod->lib);
+	free(mod);
+	return;
 }
 
 const char *bbs_module_name(const struct bbs_module *mod)
@@ -534,6 +587,7 @@ static int on_file_plan(const char *dir_name, const char *filename, void *obj)
 
 	autoload_planned++;
 	bbs_debug(7, "Detected dynamic module %s\n", filename);
+	check_dependencies(filename, 0); /* Check if we need to load any dependencies for this module. */
 	return 0;
 }
 
@@ -554,7 +608,7 @@ static int on_file_preload(const char *dir_name, const char *filename, void *obj
 		return 0;
 	}
 
-	bbs_debug(5, "Preloading dynamic module %s (autoload=yes)\n", filename);
+	bbs_debug(5, "Preloading dynamic module %s (autoload=yes or dependency)\n", filename);
 
 	if (load_resource(filename, 0)) {
 		bbs_error("Failed to autoload %s\n", filename);
@@ -660,10 +714,12 @@ static int autoload_modules(void)
 	load_config();
 
 	RWLIST_WRLOCK(&modules);
-	/* Check what modules exist in the first place. */
+	/* Check what modules exist in the first place. Additionally, check for dependencies. */
 	bbs_dir_traverse(BBS_MODULE_DIR, on_file_plan, NULL, -1);
 
 	bbs_debug(1, "Detected %d dynamic module%s\n", autoload_planned, ESS(autoload_planned));
+	really_register = 1;
+
 	/* Now, actually try to load them. */
 	bbs_dir_traverse(BBS_MODULE_DIR, on_file_preload, NULL, -1);
 	bbs_dir_traverse(BBS_MODULE_DIR, on_file_autoload, NULL, -1);
