@@ -99,6 +99,26 @@ int bbs_config_val_set_str(struct bbs_config *cfg, const char *section_name, con
 	return -1;
 }
 
+int bbs_config_val_set_path(struct bbs_config *cfg, const char *section_name, const char *key, char *buf, size_t len)
+{
+	char *tmp;
+	int res = bbs_config_val_set_str(cfg, section_name, key, buf, len);
+	if (res) {
+		return res;
+	}
+	/* Paths must not contain trailing slash */
+	tmp = strrchr(buf, '/');
+	if (tmp && !*(tmp + 1)) {
+		*tmp = '\0';
+	}
+	/* Check that the directory exists (it needs to be executable as well) */
+	if (eaccess(buf, X_OK)) {
+		bbs_warning("Cannot read directory %s\n", buf);
+		return -1;
+	}
+	return 0;
+}
+
 int bbs_config_val_set_dstr(struct bbs_config *cfg, const char *section_name, const char *key, char **str)
 {
 	const char *s = bbs_config_val(cfg, section_name, key);

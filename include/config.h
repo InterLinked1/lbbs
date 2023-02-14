@@ -47,6 +47,18 @@ const char *bbs_config_sect_val(struct bbs_config_section *section, const char *
 int bbs_config_val_set_str(struct bbs_config *cfg, const char *section_name, const char *key, char *buf, size_t len);
 
 /*!
+ * \brief Set a string buffer with a directory path from a config setting
+ * \param cfg
+ * \param section_name Name of section
+ * \param key Name of key
+ * \param buf Buffer to fill
+ * \param len Size of buffer
+ * \retval 0 if set, -1 if not set (config value not found)
+ * \note Trailing slash, if present, will be trimmed
+ */
+int bbs_config_val_set_path(struct bbs_config *cfg, const char *section_name, const char *key, char *buf, size_t len);
+
+/*!
  * \brief Allocate a string with a value from a config setting
  * \param cfg
  * \param section_name Name of section

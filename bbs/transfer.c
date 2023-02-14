@@ -56,7 +56,6 @@ int bbs_transfer_operation_allowed(struct bbs_node *node, int operation)
 
 int bbs_transfer_config_load(void)
 {
-	char *tmp;
 	struct bbs_config *cfg = bbs_config_load("transfers.conf", 1); /* Load cached version, since multiple transfer protocols may use this config */
 
 	if (!cfg) {
@@ -67,23 +66,8 @@ int bbs_transfer_config_load(void)
 	if (!bbs_config_val_set_int(cfg, "transfers", "timeout", &idletimeout)) {
 		idletimeout *= 1000; /* convert s to ms */
 	}
-	if (bbs_config_val_set_str(cfg, "transfers", "rootdir", rootdir, sizeof(rootdir))) { /* Must explicitly specify */
+	if (bbs_config_val_set_path(cfg, "transfers", "rootdir", rootdir, sizeof(rootdir))) { /* Must explicitly specify */
 		bbs_error("No rootdir specified, transfers will be disabled\n");
-		return -1;
-	}
-
-	/* rootdir should not contain a trailing slash */
-	tmp = strrchr(rootdir, '/');
-	if (!tmp) {
-		bbs_error("Invalid root directory: %s\n", rootdir);
-		return -1;
-	}
-	if (*(tmp + 1) == '\0') {
-		*tmp = '\0'; /* Strip trailing slash since there's nothing afterwards */
-	}
-
-	if (eaccess(rootdir, R_OK)) {
-		bbs_error("Directory '%s' is not readable\n", rootdir);
 		return -1;
 	}
 

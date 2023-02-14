@@ -1152,7 +1152,6 @@ static void *http_listener(void *unused)
 
 static int load_config(void)
 {
-	char *tmp;
 	struct bbs_config *cfg;
 
 	cfg = bbs_config_load("net_http.conf", 0);
@@ -1161,14 +1160,11 @@ static int load_config(void)
 	}
 
 	/* General */
-	bbs_config_val_set_str(cfg, "general", "docroot", http_docroot, sizeof(http_docroot));
+	if (bbs_config_val_set_path(cfg, "general", "docroot", http_docroot, sizeof(http_docroot))) {
+		return -1;
+	}
 	bbs_config_val_set_true(cfg, "general", "cgi", &cgi); /* Allow Common Gateway Interface? */
 	bbs_config_val_set_true(cfg, "general", "authonly", &authonly);
-	/* Must not contain trailing slash */
-	tmp = strrchr(http_docroot, '/');
-	if (tmp && !*(tmp + 1)) {
-		*tmp = '\0';
-	}
 
 	/* HTTP */
 	bbs_config_val_set_true(cfg, "http", "enabled", &http_enabled);
@@ -1180,11 +1176,6 @@ static int load_config(void)
 
 	if (!http_enabled && !https_enabled) {
 		return -1; /* Nothing is enabled. */
-	}
-
-	if (eaccess(http_docroot, R_OK)) {
-		bbs_error("Document root %s does not exist\n", http_docroot);
-		return -1;
 	}
 
 	if (https_enabled && !ssl_available()) {

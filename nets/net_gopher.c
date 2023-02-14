@@ -143,22 +143,13 @@ static void *gopher_listener(void *unused)
 
 static int load_config(void)
 {
-	char *tmp;
 	struct bbs_config *cfg = bbs_config_load("net_gopher.conf", 0);
 	if (!cfg) {
 		return 0;
 	}
 
 	bbs_config_val_set_port(cfg, "gopher", "port", &gopher_port);
-	bbs_config_val_set_str(cfg, "gopher", "root", gopher_root, sizeof(gopher_root));
-	/* Must not contain trailing slash */
-	tmp = strrchr(gopher_root, '/');
-	if (tmp && !*(tmp + 1)) {
-		*tmp = '\0';
-	}
-
-	if (eaccess(gopher_root, R_OK)) {
-		bbs_error("Document root '%s' does not exist\n", gopher_root);
+	if (bbs_config_val_set_path(cfg, "gopher", "root", gopher_root, sizeof(gopher_root))) {
 		return -1;
 	}
 
