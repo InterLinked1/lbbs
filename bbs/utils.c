@@ -29,6 +29,67 @@
 #include <sys/time.h> /* use gettimeofday */
 
 #include "include/utils.h"
+#include "include/node.h" /* use bbs_fd_poll_read */
+
+void bbs_readline_init(struct readline_data *rldata, char *buf, int len)
+{
+	memset(rldata, 0, sizeof(*rldata));
+	rldata->buf = buf;
+	rldata->len = len;
+	/* Initialize internals: start at the beginning */
+	rldata->pos = rldata->buf;
+	rldata->left = rldata->len;
+	rldata->leftover = 0;
+}
+
+/*! \brief Helper function to read a single line from a file descriptor, with a timeout (for any single read) */
+int bbs_fd_readline(int fd, struct readline_data *rldata, const char *delim, int timeout)
+{
+	int res;
+	char *firstdelim = NULL;
+	int delimlen;
+	int used;
+
+	if (rldata->leftover) { /* Data from previous read still in the buffer */
+		/* Shift contents of buffer back to beginning, which simplifies some things over potentially circling around until we wrap. */
+		memmove(rldata->buf, rldata->pos, rldata->leftover);
+		res = rldata->leftover; /* Pretend like we just read this many bytes, just now. */
+		rldata->buf[res] = '\0';
+		bbs_debug(3, "Shifted buffer now contains: %s\n", rldata->buf);
+		/* Update our position to where we need to be. */
+		rldata->pos = rldata->buf + res;
+		rldata->left = rldata->len + res;
+		/* If we already have a delimiter, no need to proceed further. */
+		firstdelim = strstr(rldata->buf, delim); /* Use buf, not pos, since pos is the beginning of the buffer that remains at this point. */
+		res = rldata->leftover = 0;
+	}
+
+	while (!firstdelim) {
+		res = bbs_fd_poll_read(fd, timeout, rldata->pos, rldata->left - 1); /* Subtract 1 for NUL */
+		if (res <= 0) {
+			bbs_debug(3, "read returned %d\n", res);
+			return res;
+		}
+		rldata->pos[res] = '\0'; /* Safe. Null terminate so we can use string functions. */
+		firstdelim = strstr(rldata->pos, delim); /* Find the first occurence of the delimiter, if present. */
+		/* Update our position */
+		rldata->pos += res;
+		rldata->left -= res;
+	}
+
+	delimlen = strlen(delim);
+
+	/* We have at least 1 complete command, and maybe more. */
+	*firstdelim = '\0'; /* Null terminate here so the caller can just read from the buffer and get a full line (up to and not including the delimiter). */
+	used = firstdelim - rldata->buf; /* Number of bytes, NOT including the trimmed delimiter. */
+	firstdelim += delimlen; /* There is the beginning of the rest of the buffer. No, we do not need to add 1 here. */
+	rldata->leftover = rldata->pos - firstdelim; /* Number of bytes leftover. */
+	bbs_debug(6, "Read %lu bytes (%d just now), processing %d and leaving %d leftover\n", rldata->pos - rldata->buf, res, used, rldata->leftover);
+	rldata->pos = firstdelim; /* Update pos to point to the beginning, not the end, of the remaining data in the buffer. leftover tells us how much is left, we don't need a pointer to it directly. */
+
+	firstdelim += 2; /* There is no guarantee that this doesn't contain garbage, but this is our next position. */
+	return used; /* Return number of bytes that we're actually returning, not however many are really in the buffer, since the caller won't care about that anyways. */
+}
 
 int bbs_dir_traverse_items(const char *path, int (*on_file)(const char *dir_name, const char *filename, int dir, void *obj), void *obj)
 {

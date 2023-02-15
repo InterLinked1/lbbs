@@ -147,6 +147,47 @@ cleanup:
 	return res;
 }
 
+static int test_readline_helper(void)
+{
+	int res = -1;
+	char buf[256];
+	int pfd[2];
+	struct readline_data rldata;
+
+	if (pipe(pfd)) {
+		bbs_error("pipe failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	bbs_readline_init(&rldata, buf, sizeof(buf));
+
+	SWRITE(pfd[1], "abcd\r\nefg");
+	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
+	bbs_test_assert_equals(4, res);
+	bbs_test_assert_str_equals(buf, "abcd");
+	SWRITE(pfd[1], "hi\r\nj");
+	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
+	bbs_test_assert_equals(5, res);
+	bbs_test_assert_str_equals(buf, "efghi");
+	SWRITE(pfd[1], "k\r\nlmno\r\npqrs\r\n");
+	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
+	bbs_test_assert_equals(2, res);
+	bbs_test_assert_str_equals(buf, "jk");
+	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
+	bbs_test_assert_equals(4, res);
+	bbs_test_assert_str_equals(buf, "lmno");
+	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
+	bbs_test_assert_equals(4, res);
+	bbs_test_assert_str_equals(buf, "pqrs");
+
+	res = 0;
+
+cleanup:
+	close(pfd[0]);
+	close(pfd[1]);
+	return res;
+}
+
 static struct unit_tests {
 	const char *name;
 	int (*callback)(void);
@@ -158,6 +199,7 @@ static struct unit_tests {
 	{ "ANSI Stripping", test_ansi_strip },
 	{ "Backspace Processing", test_backspace_processing },
 	{ "String Copy w/o Spaces", test_strcpy_nospaces },
+	{ "Readline Helper", test_readline_helper },
 };
 
 static int load_module(void)
