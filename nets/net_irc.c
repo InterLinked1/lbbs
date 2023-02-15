@@ -1912,7 +1912,7 @@ static void handle_identify(struct irc_user *user, char *s)
 		/* Just in case it was different here. */
 		if (strlen_zero(user->nickname) || strcasecmp(username, user->nickname)) {
 			free_if(user->nickname);
-			user->nickname = strdup(s);
+			user->nickname = strdup(username);
 		}
 		add_user(user);
 		send_numeric(user, 900, IDENT_PREFIX_FMT " %s You are now logged in as %s\r\n", IDENT_PREFIX_ARGS(user), user->username, user->username);
@@ -2935,7 +2935,7 @@ quit:
 	if (!graceful_close) {
 		leave_all_channels(user, "QUIT", "Remote user closed the connection"); /* poll or read failed */
 	}
-	if (user->node->user) {
+	if (user->registered) {
 		unlink_user(user);
 	}
 }
