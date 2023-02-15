@@ -30,6 +30,7 @@
 
 #include "include/utils.h"
 #include "include/node.h" /* use bbs_fd_poll_read */
+#include "include/base64.h"
 
 void bbs_readline_init(struct readline_data *rldata, char *buf, int len)
 {
@@ -89,6 +90,40 @@ int bbs_fd_readline(int fd, struct readline_data *rldata, const char *delim, int
 
 	firstdelim += 2; /* There is no guarantee that this doesn't contain garbage, but this is our next position. */
 	return used; /* Return number of bytes that we're actually returning, not however many are really in the buffer, since the caller won't care about that anyways. */
+}
+
+unsigned char *bbs_sasl_decode(const char *s, char **authorization, char **authentication, char **passwd)
+{
+	int outlen;
+	unsigned char *decoded;
+	int runlen = 0;
+	char *authorization_id, *authentication_id, *password;
+
+	decoded = base64_decode((unsigned char*) s, strlen(s), &outlen);
+	/* If you were to dump decoded here using a printf-style function, you would just see the username, since the string is separated by NULs. We need the outlen. */
+	if (!decoded) {
+		return NULL;
+	}
+	authorization_id = (char*) decoded;
+	runlen += strlen(authorization_id) + 1;
+	if (runlen >= outlen) {
+		bbs_warning("No data after nickname?\n");
+		free(decoded);
+		return NULL;
+	}
+	authentication_id = (char*) decoded + runlen;
+	runlen += strlen(authentication_id) + 1;
+	if (runlen >= outlen) {
+		bbs_warning("No data after username?\n");
+		free(decoded);
+		return NULL;
+	}
+	password = (char*) decoded + runlen;
+
+	*authorization = authorization_id;
+	*authentication = authentication_id;
+	*passwd = password;
+	return decoded;
 }
 
 int bbs_dir_traverse_items(const char *path, int (*on_file)(const char *dir_name, const char *filename, int dir, void *obj), void *obj)

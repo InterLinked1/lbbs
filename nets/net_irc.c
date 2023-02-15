@@ -35,7 +35,6 @@
 #include "include/auth.h"
 #include "include/user.h"
 #include "include/stringlist.h"
-#include "include/base64.h"
 #include "include/ansi.h"
 
 #include "include/net_irc.h"
@@ -2456,37 +2455,21 @@ static int client_welcome(struct irc_user *user)
 
 static int do_sasl_auth(struct irc_user *user, char *s)
 {
-	int res, outlen;
+	int res;
 	unsigned char *decoded;
 	char *nickname, *username, *password;
 	char *encoded;
-	int runlen = 0;
+
 	if (!STARTS_WITH(s, "AUTHENTICATE ")) {
 		bbs_warning("Unhandled message: %s\n", s);
 		return -1;
 	}
 	encoded = s + STRLEN("AUTHENTICATE ");
 	/* AUTHENTICATE <BASE64(nick NUL username NUL password)> */
-	decoded = base64_decode((unsigned char*) encoded, strlen(encoded), &outlen);
-	/* If you were to dump decoded here using a printf-style function, you would just see the username, since the string is separated by NULs. We need the outlen. */
+	decoded = bbs_sasl_decode(encoded, &nickname, &username, &password);
 	if (!decoded) {
 		return -1;
 	}
-	nickname = (char*) decoded;
-	runlen += strlen(nickname) + 1;
-	if (runlen >= outlen) {
-		bbs_warning("No data after nickname?\n");
-		free(decoded);
-		return -1;
-	}
-	username = (char*) decoded + runlen;
-	runlen += strlen(username) + 1;
-	if (runlen >= outlen) {
-		bbs_warning("No data after username?\n");
-		free(decoded);
-		return -1;
-	}
-	password = (char*) decoded + runlen;
 	if (strcmp(nickname, user->nickname)) {
 		bbs_warning("Nickname received '%s' does not match initial nick '%s'\n", nickname, user->nickname);
 		free(decoded);
@@ -2494,7 +2477,7 @@ static int do_sasl_auth(struct irc_user *user, char *s)
 	}
 	user->username = strdup(username);
 	res = bbs_authenticate(user->node, username, password);
-	memset(decoded, 0, outlen); /* Destroy the password from memory before we free it */
+	memset(password, 0, strlen(password)); /* Destroy the password from memory before we free it */
 	free(decoded);
 	if (res) {
 		send_numeric(user, 904, "SASL authentication failed\r\n");

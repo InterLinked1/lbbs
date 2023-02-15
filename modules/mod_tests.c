@@ -19,6 +19,7 @@
 
 #include "include/bbs.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "include/module.h"
@@ -188,6 +189,26 @@ cleanup:
 	return res;
 }
 
+static int test_sasl_decode(void)
+{
+	int res = -1;
+	unsigned char *decoded = NULL;
+	char *authorization, *authentication, *password;
+	const char *s = "amlsbGVzAGppbGxlcwBzZXNhbWU="; /* Example from https://ircv3.net/specs/extensions/sasl-3.1 */
+
+	decoded = bbs_sasl_decode(s, &authorization, &authentication, &password);
+	bbs_test_assert(decoded != NULL);
+	bbs_test_assert_str_equals(authorization, "jilles");
+	bbs_test_assert_str_equals(authentication, "jilles");
+	bbs_test_assert_str_equals(password, "sesame");
+
+	res = 0;
+
+cleanup:
+	free_if(decoded);
+	return res;
+}
+
 static struct unit_tests {
 	const char *name;
 	int (*callback)(void);
@@ -200,6 +221,7 @@ static struct unit_tests {
 	{ "Backspace Processing", test_backspace_processing },
 	{ "String Copy w/o Spaces", test_strcpy_nospaces },
 	{ "Readline Helper", test_readline_helper },
+	{ "SASL Decoding", test_sasl_decode },
 };
 
 static int load_module(void)

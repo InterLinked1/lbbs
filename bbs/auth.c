@@ -28,6 +28,7 @@
 #include "include/user.h"
 #include "include/notify.h"
 #include "include/module.h" /* use bbs_module_name */
+#include "include/utils.h"
 
 /*! \note Even though multiple auth providers are technically allowed, in general only 1 should be registered.
  * The original thinking behind allowing multiple is to allow alternates for authentication
@@ -392,6 +393,23 @@ int bbs_authenticate(struct bbs_node *node, const char *username, const char *pa
 
 	bbs_auth("Node %d now logged in as %s\n", node->id, bbs_username(node->user));
 	return 0;
+}
+
+int bbs_sasl_authenticate(struct bbs_node *node, const char *s)
+{
+	int res;
+	unsigned char *decoded;
+	char *authorization_id, *authentication_id, *password;
+
+	decoded = bbs_sasl_decode(s, &authorization_id, &authentication_id, &password);
+	if (!decoded) {
+		return -1;
+	}
+
+	res = bbs_authenticate(node, authentication_id, password);
+	memset(password, 0, strlen(password)); /* Destroy the password from memory before we free it */
+	free(decoded);
+	return res;
 }
 
 int bbs_user_register(struct bbs_node *node)

@@ -47,6 +47,17 @@ void bbs_readline_init(struct readline_data *rldata, char *buf, int len);
  */
 int bbs_fd_readline(int fd, struct readline_data *rldata, const char *delim, int timeout);
 
+/*!
+ * \brief Decode an base64-encoded RFC4616 SASL PLAIN response into its components
+ * \param s SASL PLAIN response from client
+ * \param[out] authorization Authorization ID (may be empty)
+ * \param[out] authentication Authentication ID
+ * \param[out] passwd Password
+ * \retval base64-decoded string, which must be freed, or NULL on failure.
+ * \note Use bbs_sasl_authenticate if possible instead of using this function directly.
+ */
+unsigned char *bbs_sasl_decode(const char *s, char **authorization, char **authentication, char **passwd);
+
 /*! \brief Get thread ID of current thread */
 int bbs_gettid(void);
 

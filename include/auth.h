@@ -124,6 +124,14 @@ struct bbs_user **bbs_user_list(void);
 int bbs_user_authenticate(struct bbs_user *user, const char *username, const char *password);
 
 /*!
+ * \brief Authenticate a user using an RFC4616 SASL PLAIN response
+ * \param node
+ * \param s SASL PLAIN response from client
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_sasl_authenticate(struct bbs_node *node, const char *s);
+
+/*!
  * \brief Attach a BBS user to a BBS node
  * \param node
  * \param user
