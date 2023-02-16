@@ -459,6 +459,18 @@ static int load_resource(const char *resource_name, unsigned int suppress_loggin
 		unload_dynamic_module(mod);
 		free(mod); /* bbs_module_unregister isn't called if the module declined to load, so free to avoid a leak */
 		return -1;
+	} else {
+		/* Bump the ref count of any modules upon which we depend. */
+		if (!strlen_zero(mod->info->dependencies)) {
+			char dependencies_buf[256];
+			char *dependencies, *dependency;
+			safe_strncpy(dependencies_buf, mod->info->dependencies, sizeof(dependencies_buf));
+			dependencies = dependencies_buf;
+			while ((dependency = strsep(&dependencies, ","))) {
+				bbs_debug(9, "%s requires module %s\n", mod->resource, dependency);
+				bbs_require_module(dependency);
+			}
+		}
 	}
 	return res;
 }
@@ -551,6 +563,23 @@ static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int for
 				return NULL;
 			} else {
 				bbs_warning("** Dangerous **: Unloading resource anyway, at user request\n");
+			}
+		} else {
+			/* Decrement the ref count of any modules upon which we depend. */
+			if (!strlen_zero(mod->info->dependencies)) {
+				char dependencies_buf[256];
+				char *dependencies, *dependency;
+				safe_strncpy(dependencies_buf, mod->info->dependencies, sizeof(dependencies_buf));
+				dependencies = dependencies_buf;
+				while ((dependency = strsep(&dependencies, ","))) {
+					struct bbs_module *m = find_resource(dependency);
+					bbs_debug(9, "No longer depend on module %s\n", dependency);
+					if (m) {
+						bbs_unrequire_module(m);
+					} else {
+						bbs_warning("Dependency %s not currently loaded?\n", dependency);
+					}
+				}
 			}
 		}
 	}
