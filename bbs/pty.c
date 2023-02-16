@@ -157,6 +157,7 @@ static void *pty_master_fd(void *varg)
 		if (pres < 0) {
 			if (errno != EINTR) {
 				bbs_error("poll returned %d: %s\n", pres, strerror(errno));
+				break;
 			}
 			continue;
 		}
@@ -164,6 +165,7 @@ static void *pty_master_fd(void *varg)
 			bytes_read = read(fds[0].fd, buf, sizeof(buf));
 			if (bytes_read <= 0) {
 				close(fds[1].fd); /* Close the other side */
+				close(fds[0].fd); /* Close our side, since nobody else will */
 				break; /* We'll read 0 bytes upon disconnect */
 			}
 			bytes_wrote = write(fds[1].fd, buf, bytes_read);
@@ -175,6 +177,7 @@ static void *pty_master_fd(void *varg)
 			if (bytes_read <= 0) {
 				bbs_debug(10, "pty master read returned %d (%s)\n", bytes_read, strerror(errno));
 				close(fds[0].fd); /* Close the other side */
+				close(fds[1].fd); /* Close our side, since nobody else will */
 				break; /* We'll read 0 bytes upon disconnect */
 			}
 			bytes_wrote = write(fds[0].fd, buf, bytes_read);
