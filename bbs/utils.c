@@ -56,20 +56,25 @@ int bbs_fd_readline(int fd, struct readline_data *rldata, const char *delim, int
 		memmove(rldata->buf, rldata->pos, rldata->leftover);
 		res = rldata->leftover; /* Pretend like we just read this many bytes, just now. */
 		rldata->buf[res] = '\0';
-		bbs_debug(3, "Shifted buffer now contains: %s\n", rldata->buf);
+#if 0
+		bbs_debug(8, "Shifted buffer now contains: %s\n", rldata->buf);
+#endif
 		/* Update our position to where we need to be. */
 		rldata->pos = rldata->buf + res;
 		rldata->left = rldata->len + res;
 		/* If we already have a delimiter, no need to proceed further. */
 		firstdelim = strstr(rldata->buf, delim); /* Use buf, not pos, since pos is the beginning of the buffer that remains at this point. */
 		res = rldata->leftover = 0;
+	} else {
+		rldata->pos = rldata->buf;
+		rldata->left = rldata->len;
 	}
 
 	while (!firstdelim) {
 		res = bbs_fd_poll_read(fd, timeout, rldata->pos, rldata->left - 1); /* Subtract 1 for NUL */
 		if (res <= 0) {
 			bbs_debug(3, "read returned %d\n", res);
-			return res;
+			return res - 1; /* see the doxygen notes: we should return 0 only if we read just the delimiter. */
 		}
 		rldata->pos[res] = '\0'; /* Safe. Null terminate so we can use string functions. */
 		firstdelim = strstr(rldata->pos, delim); /* Find the first occurence of the delimiter, if present. */

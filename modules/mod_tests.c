@@ -28,10 +28,6 @@
 #include "include/ansi.h"
 #include "include/utils.h"
 
-#define bbs_test_assert(x) if (!(x)) { bbs_warning("Test assertion failed: %s\n", #x); goto cleanup; }
-#define bbs_test_assert_equals(x, y) if (!((x) == (y))) { bbs_warning("Test assertion failed: (%d != %d)\n", (x), (y)); goto cleanup; }
-#define bbs_test_assert_str_equals(x, y) if (strcmp(x, y)) { bbs_warning("Test assertion failed: '%s' != '%s'\n", x, y); goto cleanup; }
-
 static int test_substitution(void)
 {
 	int res = -1;
@@ -180,6 +176,14 @@ static int test_readline_helper(void)
 	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(4, res);
 	bbs_test_assert_str_equals(buf, "pqrs");
+	SWRITE(pfd[1], "tuv\r\n");
+	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
+	bbs_test_assert_equals(3, res);
+	bbs_test_assert_str_equals(buf, "tuv");
+	SWRITE(pfd[1], "wxyz\r\n");
+	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
+	bbs_test_assert_equals(4, res);
+	bbs_test_assert_str_equals(buf, "wxyz");
 
 	res = 0;
 
