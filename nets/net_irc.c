@@ -2523,11 +2523,11 @@ static void handle_client(struct irc_user *user)
 
 	for (;;) {
 		char *s, *m = buf;
-		res = bbs_fd_poll_read(user->rfd, PING_TIME, buf, sizeof(buf) - 1); /* Wait up to the ping interval time for something, anything, otherwise disconnect. */
+		res = bbs_fd_poll_read(user->rfd, 2 * PING_TIME, buf, sizeof(buf) - 1); /* Wait up to the ping interval time for something, anything, otherwise disconnect. */
 		if (res <= 0) {
 			/* Don't set graceful_close to 0 here, since after a QUIT, the client may close the connection first.
-			 * The QUIT message should be whatever the client sent, since it was grateful, not connection closed by remote host. */
-			bbs_debug(3, "read returned %d\n", res);
+			 * The QUIT message should be whatever the client sent, since it was graceful, not connection closed by remote host. */
+			bbs_debug(3, "poll/read returned %d\n", res);
 			break;
 		}
 		buf[res] = '\0'; /* Safe */
@@ -2808,6 +2808,7 @@ static void handle_client(struct irc_user *user)
 					/* Kill the user */
 					leave_all_channels(u, "QUIT", reason); /* Just use QUIT for now, KILL doesn't render properly in Ambassador. */
 					send_reply(u, "KILL %s%s\r\n", !strlen_zero(reason) ? ":" : "", S_IF(reason));
+					bbs_debug(5, "Shutting down client on node %d\n", user->node->id);
 					shutdown(u->node->fd, SHUT_RDWR); /* Make the client handler thread break */
 				} else if (!strcasecmp(command, "INVITE")) {
 					handle_invite(user, s);
@@ -2995,6 +2996,7 @@ static void *ping_thread(void *unused)
 				if (!need_restart) {
 					send_reply(user, "ERROR :Connection timeout\r\n");
 				}
+				bbs_debug(5, "Shutting down client on node %d\n", user->node->id);
 				shutdown(user->node->fd, SHUT_RDWR); /* Make the client handler thread break */
 			} else {
 				dprintf(user->wfd, "PING :%d\r\n", now);
