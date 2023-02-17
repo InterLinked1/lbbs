@@ -137,6 +137,15 @@ struct bbs_node;
 struct sockaddr_in;
 
 /*!
+ * \brief Open a TCP socket to another server
+ * \param hostname DNS hostname of server
+ * \param port Destination port number
+ * \retval -1 on failure, socket file descriptor otherwise
+ * \note This does not perform TLS negotiation, use ssl_client_new immediately or later in the session for encryption.
+ */
+int bbs_tcp_connect(const char *hostname, int port);
+
+/*!
  * \brief Wrapper around accept(), with poll timeout
  * \param socket Socket fd
  * \param ms poll time in ms

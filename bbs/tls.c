@@ -127,6 +127,7 @@ static int ssl_register_fd(SSL *ssl, int fd, int *rfd, int *wfd)
 	}
 	sfd = calloc(1, sizeof(*sfd));
 	if (!sfd) {
+		bbs_error("calloc failed\n");
 		RWLIST_UNLOCK(&sslfds);
 		return -1;
 	}
@@ -297,6 +298,13 @@ static void *ssl_io_thread(void *unused)
 				/* Read from socket using SSL_read and write to readpipe */
 				SSL *ssl = ssl_list[i / 2];
 				int readpipe = readpipes[i / 2];
+				/*! \todo BUGBUG If we get stuck here with a WRLOCK, all TLS traffic will get blocked.
+				 * Kicking the node that's stuck here will get things unstuck, but that's hardly ideal.
+				 * Locking around this entire loop was added to avoid crashes if the list is modified while we're traversing it.
+				 * This really needs to be nonblocking, and if we block on SSL_read after poll, that's really, really bad.
+				 * Holding up the list lock is bad, of course, but since this is a single thread for all registered TLS I/O,
+				 * it blocks all TLS traffic, regardless.
+				 * This needs some thought. */
 				ores = SSL_read(ssl, buf, sizeof(buf));
 				if (ores <= 0) {
 					bbs_debug(3, "SSL_read returned %d\n", ores);
@@ -369,6 +377,85 @@ SSL *ssl_new_accept(int fd, int *rfd, int *wfd)
 	}
 
 	return ssl;
+}
+
+SSL *ssl_client_new(int fd, int *rfd, int *wfd)
+{
+	SSL *ssl;
+	SSL_CTX *ctx;
+	X509 *server_cert;
+	long verify_result;
+	char *str;
+
+	OpenSSL_add_ssl_algorithms();
+	SSL_load_error_strings();
+	ctx = SSL_CTX_new(TLS_client_method());
+	if (!ctx) {
+		bbs_error("Failed to setup new SSL context\n");
+		return NULL;
+	}
+	SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3); /* Only use TLS */
+	ssl = SSL_new(ctx);
+	if (!ssl) {
+		bbs_error("Failed to create new SSL\n");
+		SSL_CTX_free(ctx);
+		return NULL;
+	}
+
+	if (SSL_set_fd(ssl, fd) != 1) {
+		bbs_error("Failed to connect SSL: %s\n", ERR_error_string(ERR_get_error(), NULL));
+		goto sslcleanup;
+	}
+	if (SSL_connect(ssl) == -1) {
+		bbs_error("Failed to connect SSL: %s\n", ERR_error_string(ERR_get_error(), NULL));
+		goto sslcleanup;
+	}
+	/* Verify cert */
+	server_cert = SSL_get_peer_certificate(ssl);
+	if (!server_cert) {
+		bbs_error("Failed to get peer certificate\n");
+		goto sslcleanup;
+	}
+	str = X509_NAME_oneline(X509_get_subject_name(server_cert), 0, 0);
+	if (!str) {
+		bbs_error("Failed to get peer certificate\n");
+		goto sslcleanup;
+	}
+	bbs_debug(8, "TLS SN: %s\n", str);
+	OPENSSL_free(str);
+	str = X509_NAME_oneline(X509_get_issuer_name (server_cert), 0, 0);
+	if (!str) {
+		bbs_error("Failed to get peer certificate\n");
+		goto sslcleanup;
+	}
+	bbs_debug(8, "TLS Issuer: %s\n", str);
+	OPENSSL_free(str);
+	X509_free(server_cert);
+	verify_result = SSL_get_verify_result(ssl);
+	if (verify_result != X509_V_OK) {
+		/* XXX Verification always fails, so do debug for now, rather than warning log */
+		bbs_debug(1, "SSL verify failed: %ld (%s)\n", verify_result, X509_verify_cert_error_string(verify_result));
+	} else {
+		bbs_debug(4, "TLS verification successful\n");
+	}
+
+	SSL_CTX_free(ctx);
+	if (rfd && wfd) {
+		if (ssl_register_fd(ssl, fd, rfd, wfd)) {
+			SSL_free(ssl);
+			return NULL;
+		}
+	}
+	return ssl;
+
+sslcleanup:
+#ifdef HAVE_OPENSSL
+	SSL_CTX_free(ctx);
+	SSL_free(ssl);
+	ctx = NULL;
+	ssl = NULL;
+#endif
+	return NULL;
 }
 
 int ssl_close(SSL *ssl)

@@ -293,6 +293,17 @@ int bbs_poll_read(struct bbs_node *node, int ms, char *buf, size_t len);
 int bbs_fd_poll_read(int fd, int ms, char *buf, size_t len);
 
 /*!
+ * \brief wrapper around bbs_fd_poll_read that expects a substring to appear in the read response
+ * \param fd
+ * \param ms for poll
+ * \param buf Buffer for data
+ * \param len Size of buf
+ * \param str String that should appear (checked using strstr)
+ * \retval -1 on error, 0 if found, 1 if got a response that didn't contain str
+ */
+int bbs_expect(int fd, int ms, char *buf, size_t len, const char *str);
+
+/*!
  * \brief wrapper around poll() and read() for BBS node
  * \param node
  * \param buf Buffer for data

@@ -136,6 +136,59 @@ int bbs_make_tcp_socket(int *sock, int port)
 	return 0;
 }
 
+int bbs_tcp_connect(const char *hostname, int port)
+{
+	char ip[256];
+	int e;
+	struct addrinfo hints, *res, *ai;
+	struct sockaddr_in *saddr_in; /* IPv4 */
+	struct sockaddr_in6 *saddr_in6; /* IPv6 */
+	int sfd = -1;
+
+	/* Resolve the hostname */
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_UNSPEC; /* IPv4 or IPv6 */
+	hints.ai_socktype = SOCK_STREAM; /* TCP */
+
+	e = getaddrinfo(hostname, NULL, &hints, &res);
+	if (e) {
+		bbs_error("getaddrinfo (%s): %s\n", hostname, gai_strerror(e));
+		return -1;
+	}
+
+	for (ai = res; ai; ai = ai->ai_next) {
+		if (ai->ai_family == AF_INET) {
+			saddr_in = (struct sockaddr_in *) ai->ai_addr;
+			saddr_in->sin_port = htons(port);
+			inet_ntop(ai->ai_family, &saddr_in->sin_addr, ip, sizeof(ip)); /* Print IPv4*/
+		} else if (ai->ai_family == AF_INET6) {
+			saddr_in6 = (struct sockaddr_in6 *) ai->ai_addr;
+			saddr_in6->sin6_port = htons(port);
+			inet_ntop(ai->ai_family, &saddr_in6->sin6_addr, ip, sizeof(ip)); /* Print IPv6 */
+		}
+		sfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+		if (sfd == -1) {
+			bbs_error("socket: %s\n", strerror(errno));
+			continue;
+		}
+		bbs_debug(3, "Attempting connection to %s:%d\n", ip, port);
+		if (connect(sfd, ai->ai_addr, ai->ai_addrlen)) {
+			bbs_error("connect: %s\n", strerror(errno));
+			close(sfd);
+			sfd = -1;
+			continue;
+		}
+		break; /* Use the 1st one that works */
+	}
+	freeaddrinfo(res);
+	if (sfd == -1) {
+		return -1;
+	}
+
+	bbs_debug(1, "Connected to %s:%d\n", hostname, port);
+	return sfd;
+}
+
 int bbs_timed_accept(int socket, int ms, const char *ip)
 {
 	struct sockaddr_in sinaddr;
@@ -794,6 +847,26 @@ int bbs_fd_poll_read(int fd, int ms, char *buf, size_t len)
 	}
 	res = read(fd, buf, len);
 	return res;
+}
+
+int bbs_expect(int fd, int ms, char *buf, size_t len, const char *str)
+{
+	int res;
+
+	*buf = '\0'; /* Clear the buffer, in case we don't read anything at all. */
+	res = bbs_fd_poll_read(fd, ms, buf, len - 1);
+	if (res <= 0) {
+		return -1;
+	}
+
+	buf[res] = '\0'; /* Safe */
+	bbs_debug(6, "Read: %s%s", buf, res > 1 && buf[res - 1] == '\n' ? "" : "\n"); /* Don't add an additional LF if there's already one. */
+
+	if (!strstr(buf, str)) {
+		bbs_debug(1, "Expected '%s', got: %s\n", str, buf);
+		return 1;
+	}
+	return 0;
 }
 
 static char bbs_fd_tread(int fd, int ms)
