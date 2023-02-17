@@ -544,7 +544,6 @@ static int try_send(const char *hostname, const char *sender, const char *recipi
 	if (supports_starttls) {
 		smtp_client_send(wfd, "STARTTLS\r\n");
 		SMTP_EXPECT(rfd, 2500, "220");
-		buf[0] = '\0'; ///////////////
 		bbs_debug(3, "Starting TLS\n");
 		ssl = ssl_client_new(sfd, &rfd, &wfd);
 		if (!ssl) {
@@ -552,7 +551,6 @@ static int try_send(const char *hostname, const char *sender, const char *recipi
 			goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
 		}
 		/* Start over again. */
-		usleep(1000000); /*! \todo BUGBUG tls.c will deadlock if we write to a new SSL fd before it's been registered - register will block on WRLOCK and thus all TLS I/O will block */
 		smtp_client_send(wfd, "EHLO %s\r\n", bbs_hostname());
 		SMTP_EXPECT(rfd, 2500, "250");
 	} else if (require_starttls_out) {
