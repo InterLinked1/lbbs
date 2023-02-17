@@ -103,6 +103,7 @@ struct ssl_fd {
 	int fd;
 	int readpipe[2];
 	int writepipe[2];
+	unsigned int dead:1;
 	RWLIST_ENTRY(ssl_fd) entry;
 };
 
@@ -148,6 +149,7 @@ static int ssl_register_fd(SSL *ssl, int fd, int *rfd, int *wfd)
 	}
 	*rfd = sfd->readpipe[0];
 	*wfd = sfd->writepipe[1];
+
 	RWLIST_INSERT_HEAD(&sslfds, sfd, entry);
 	RWLIST_UNLOCK(&sslfds);
 	bbs_alertpipe_write(ssl_alert_pipe); /* Notify I/O thread that we added an fd */
@@ -210,6 +212,7 @@ static void *ssl_io_thread(void *unused)
 	struct pollfd *pfds = NULL; /* Will dynamically allocate */
 	int *readpipes = NULL;
 	SSL **ssl_list = NULL;
+	int prevfds = 0;
 	int numfds = 0;
 	int numssl = 0;
 	int needcreate = 1;
@@ -220,6 +223,7 @@ static void *ssl_io_thread(void *unused)
 	/* Only recreate pfds when we read from the alertpipe, otherwise, it's the same file descriptors the next round */
 	for (;;) {
 		if (needcreate) {
+			int numdead = 0;
 			if (!ssl_is_available) {
 				bbs_debug(4, "SSL I/O thread has been instructed to exit\n");
 				break; /* We're shutting down. */
@@ -259,15 +263,28 @@ static void *ssl_io_thread(void *unused)
 			RWLIST_TRAVERSE(&sslfds, sfd, entry) {
 				ssl_list[i / 2] = sfd->ssl;
 				readpipes[i / 2] = sfd->readpipe[1]; /* Write end of read pipe */
+				if (sfd->dead) {
+					readpipes[i / 2] = -2; /* Indicate this SSL is dead, don't read from it. */
+				}
 				pfds[i].fd = sfd->fd;
 				pfds[i].events = POLLIN;
 				i++;
 				pfds[i].fd = sfd->writepipe[0];
 				pfds[i].events = POLLIN;
 				i++;
+				if (sfd->dead) {
+					numdead++;
+				}
 			}
 			RWLIST_UNLOCK(&sslfds);
-			bbs_debug(7, "SSL I/O thread now polling %d fd%s\n", numfds, ESS(numfds));
+			if (numfds != prevfds) {
+				char tmpbuf[20] = "";
+				if (numdead) {
+					snprintf(tmpbuf, sizeof(tmpbuf), " (%d dead)", numdead);
+				}
+				bbs_debug(7, "SSL I/O thread now polling %d fd%s%s\n", numfds, ESS(numfds), tmpbuf);
+			}
+			prevfds = numfds;
 		}
 		for (i = 0; i < numfds; i++) {
 			pfds[i].revents = 0;
@@ -298,16 +315,38 @@ static void *ssl_io_thread(void *unused)
 				/* Read from socket using SSL_read and write to readpipe */
 				SSL *ssl = ssl_list[i / 2];
 				int readpipe = readpipes[i / 2];
-				/*! \todo BUGBUG If we get stuck here with a WRLOCK, all TLS traffic will get blocked.
-				 * Kicking the node that's stuck here will get things unstuck, but that's hardly ideal.
-				 * Locking around this entire loop was added to avoid crashes if the list is modified while we're traversing it.
-				 * This really needs to be nonblocking, and if we block on SSL_read after poll, that's really, really bad.
-				 * Holding up the list lock is bad, of course, but since this is a single thread for all registered TLS I/O,
-				 * it blocks all TLS traffic, regardless.
-				 * This needs some thought. */
+				if (readpipe == -2) {
+					/* Don't bother trying to call SSL_read again, we'll just get the error we got last time (SYSCALL or ZERO_RETURN) */
+					bbs_debug(10, "Skipping dead SSL connection\n"); /* This may spam the debug logs until whatever is using this SSL fd cleans it up */
+					continue;
+				}
+				/* This will not block, since we unblocked the file descriptor prior to registration.
+				 * This is important because we're holding a RDLOCK on the list, which prevents other
+				 * stuff from getting added, and this is a single thread for all TLS I/O, so if
+				 * we block here for any reason, that is really, really, really, really bad.
+				 * This loop must finish as quickly as possible.*/
 				ores = SSL_read(ssl, buf, sizeof(buf));
 				if (ores <= 0) {
-					bbs_debug(3, "SSL_read returned %d\n", ores);
+					int err = SSL_get_error(ssl, ores);
+					switch (err) {
+						case SSL_ERROR_NONE:
+						case SSL_ERROR_WANT_READ:
+							continue;
+						case SSL_ERROR_SYSCALL:
+						case SSL_ERROR_ZERO_RETURN:
+							/* This socket is done for, do not retry to read more data, e.g. client has closed the connection but server has yet to close its end, and we're in the middle */
+							/* XXX Ideally, we should mark this as dead and skip it in future loops */
+							/* Fall through */
+							RWLIST_TRAVERSE(&sslfds, sfd, entry) {
+								if (sfd->ssl == ssl) {
+									sfd->dead = 1;
+									break;
+								}
+							}
+						default:
+							break;
+					}
+					bbs_debug(6, "SSL_read returned %d (%s)\n", ores, ssl_strerror(err));
 					/* Socket closed the connection, pass it on. */
 					close(readpipe);
 					needcreate = 1;
@@ -341,6 +380,21 @@ static void *ssl_io_thread(void *unused)
 	return NULL;
 }
 
+static int unblock_fd(int fd)
+{
+	int flags = fcntl(fd, F_GETFL, 0);
+	if (flags < 0) {
+		bbs_error("fcntl failed: %s\n", strerror(errno));
+		return -1;
+	}
+	flags |= O_NONBLOCK;
+	if (fcntl(fd, F_SETFL, flags)) {
+		bbs_error("fcntl failed: %s\n", strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
 SSL *ssl_new_accept(int fd, int *rfd, int *wfd)
 {
 	int res;
@@ -351,15 +405,24 @@ SSL *ssl_new_accept(int fd, int *rfd, int *wfd)
 		return NULL;
 	}
 
+	if (rfd && wfd && unblock_fd(fd)) { /* Make the TLS reads from the client nonblocking */
+		return NULL;
+	}
+
 	ssl = SSL_new(ssl_ctx);
 	if (!ssl) {
 		bbs_error("Failed to create SSL\n");
 		return NULL;
 	}
 	SSL_set_fd(ssl, fd);
+accept:
 	res = SSL_accept(ssl);
 	if (res != 1) {
 		int sslerr = SSL_get_error(ssl, res);
+		if (sslerr == SSL_ERROR_WANT_READ) {
+			usleep(1000);
+			goto accept; /* This just works out to be cleaner than using any kind of loop here */
+		}
 		bbs_error("SSL error %d: %d (%s = %s)\n", res, sslerr, ssl_strerror(sslerr), ERR_error_string(ERR_get_error(), NULL));
 		return NULL;
 	}
@@ -387,6 +450,10 @@ SSL *ssl_client_new(int fd, int *rfd, int *wfd)
 	long verify_result;
 	char *str;
 
+	if (rfd && wfd && unblock_fd(fd)) { /* Make the TLS reads from the client nonblocking */
+		return NULL;
+	}
+
 	OpenSSL_add_ssl_algorithms();
 	SSL_load_error_strings();
 	ctx = SSL_CTX_new(TLS_client_method());
@@ -406,7 +473,14 @@ SSL *ssl_client_new(int fd, int *rfd, int *wfd)
 		bbs_error("Failed to connect SSL: %s\n", ERR_error_string(ERR_get_error(), NULL));
 		goto sslcleanup;
 	}
+connect:
 	if (SSL_connect(ssl) == -1) {
+		int sslerr = SSL_get_error(ssl, -1);
+		if (sslerr == SSL_ERROR_WANT_READ) {
+			usleep(1000);
+			goto connect;
+		}
+		bbs_debug(4, "SSL error: %s\n", ssl_strerror(sslerr));
 		bbs_error("Failed to connect SSL: %s\n", ERR_error_string(ERR_get_error(), NULL));
 		goto sslcleanup;
 	}
