@@ -22,6 +22,8 @@ Key features and capabilities include:
 
 - Native realtime chat
 
+- Electronic mail
+
 - Internet Relay Chat client and server, with native IRC and Discord relays
 
 - TDD/TTY (telecommunications device for the deaf) support
@@ -86,6 +88,8 @@ Config files go in `/etc/lbbs` and are as follows:
 
 - `mod_discord.conf` - Discord/IRC relay configuration
 
+- `mod_mail.conf ` - General email server configuration
+
 - `mod_relay_irc.conf` - IRC/IRC relay configuration
 
 - `modules.conf` - module loading settings (to disable a module, you do it here)
@@ -101,6 +105,8 @@ Config files go in `/etc/lbbs` and are as follows:
 - `net_irc.conf` - Internet Relay Chat server config
 
 - `net_rlogin`.conf` - RLogin server configuration
+
+- `net_smtp.conf` - SMTP server configuration
 
 - `net_ssh.conf` - SSH and SFTP server configuration
 
@@ -153,6 +159,8 @@ The BBS also comes with some network services that aren't intended for terminal 
 - `net_http` - HTTP/HTTPS web server
 
 - `net_irc` - Internet Relay Chat server
+
+- `net_smtp` - Simple Mail Transfer Protocol (SMTP) server
 
 - `net_sftp` - Secure File Transfer Protocol server
 
