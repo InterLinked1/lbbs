@@ -31,6 +31,7 @@
 #include "include/module.h"
 #include "include/config.h"
 #include "include/utils.h" /* use bbs_dir_traverse */
+#include "include/node.h"
 
 #define BBS_MODULE_DIR DIRCAT("/usr/lib", DIRCAT(BBS_NAME, "modules"))
 
@@ -40,8 +41,6 @@ struct bbs_module {
 	void *lib;
 	/*! Number of 'users' and other references currently holding the module. */
 	int usecount;
-	/*! Position in module array */
-	int pos;
 	struct {
 		/*! This module is awaiting a reload. */
 		unsigned int reloadpending:1;
@@ -49,7 +48,7 @@ struct bbs_module {
 	/* Next entry */
 	RWLIST_ENTRY(bbs_module) entry;
 	/*! The name of the module. */
-	char resource[0];
+	char name[0];
 };
 
 static RWLIST_HEAD_STATIC(modules, bbs_module);
@@ -121,7 +120,7 @@ void bbs_module_unregister(const struct bbs_module_info *info)
 	}
 
 	RWLIST_TRAVERSE_SAFE_BEGIN(&modules, mod, entry) {
-		curname = mod->resource;
+		curname = mod->name;
 		if (!strcasecmp(curname, info->name) || (*buf && !strcasecmp(curname, buf))) {
 			RWLIST_REMOVE_CURRENT(entry);
 			break;
@@ -153,8 +152,8 @@ void bbs_module_unref(struct bbs_module *mod)
 	if (mod->usecount == 0 && mod->flags.reloadpending) {
 		/* No guarantees that we're not trying to reload the module that called us here,
 		 * so have the main thread do it instead. */
-		bbs_debug(3, "Requesting reload of module '%s', now that use count is 0\n", mod->resource);
-		bbs_request_module_unload(mod->resource, 1);
+		bbs_debug(3, "Requesting reload of module '%s', now that use count is 0\n", mod->name);
+		bbs_request_module_unload(mod->name, 1);
 	}
 }
 
@@ -172,7 +171,7 @@ static struct bbs_module *find_resource(const char *resource)
 	}
 
 	RWLIST_TRAVERSE(&modules, mod, entry) {
-		curname = mod->resource;
+		curname = mod->name;
 		if (!strcasecmp(curname, resource) || (*buf && !strcasecmp(curname, buf))) {
 			break;
 		}
@@ -257,8 +256,8 @@ static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ex
 		return NULL;
 	}
 
-	bbs_assert_exists(mod->resource);
-	snprintf(mod->resource, bytes, "%s%s", resource_in, so_ext); /* safe */
+	bbs_assert_exists(mod->name);
+	snprintf(mod->name, bytes, "%s%s", resource_in, so_ext); /* safe */
 
 	resource_being_loaded = mod;
 	mod->lib = dlopen(filename, flags);
@@ -420,7 +419,7 @@ static int start_resource(struct bbs_module *mod)
 	int res;
 
 	if (!mod->info->load) {
-		bbs_error("Module %s contains no load function?\n", mod->resource);
+		bbs_error("Module %s contains no load function?\n", mod->name);
 		return -1;
 	}
 
@@ -467,7 +466,7 @@ static int load_resource(const char *resource_name, unsigned int suppress_loggin
 			safe_strncpy(dependencies_buf, mod->info->dependencies, sizeof(dependencies_buf));
 			dependencies = dependencies_buf;
 			while ((dependency = strsep(&dependencies, ","))) {
-				bbs_debug(9, "%s requires module %s\n", mod->resource, dependency);
+				bbs_debug(9, "%s requires module %s\n", mod->name, dependency);
 				bbs_require_module(dependency);
 			}
 		}
@@ -511,18 +510,18 @@ static int unload_dependencies(struct bbs_module *mod, struct stringlist *remove
 		if (strlen_zero(m->info->dependencies)) {
 			continue; /* Module doesn't have any dependencies, let alone on the relevant module. */
 		}
-		if (!strstr(m->info->dependencies, mod->resource)) {
+		if (!strstr(m->info->dependencies, mod->name)) {
 			continue;
 		}
-		bbs_verb(5, "Unloading %s, since it depends on %s\n", m->resource, mod->resource);
+		bbs_verb(5, "Unloading %s, since it depends on %s\n", m->name, mod->name);
 		if (!unload_resource_nolock(m, 0, &usecount, removed)) {
 			res = -1;
-			bbs_warning("Failed to unload module %s, which depends on %s\n", m->resource, mod->resource);
+			bbs_warning("Failed to unload module %s, which depends on %s\n", m->name, mod->name);
 			continue;
 		}
 		/* Keep track of any modules that were removed. */
 		if (removed) {
-			stringlist_push(removed, m->resource);
+			stringlist_push(removed, m->name);
 		}
 		/* Actually unload the dependent. */
 		unload_dynamic_module(m);
@@ -536,29 +535,45 @@ static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int for
 	int res = -1;
 	int error = 0;
 
-	bbs_debug(2, "Module %s has use count %d\n", mod->resource, mod->usecount);
+	bbs_debug(2, "Module %s has use count %d\n", mod->name, mod->usecount);
 	*usecount = mod->usecount;
 
 	/* Automatically unload any other modules that may depend on this module. */
 	if (mod->usecount) {
+		if (force) {
+			unsigned int nodes_usecount = bbs_node_mod_count(mod);
+			/* Kick any nodes that were registered using this module, or otherwise unload will fail.
+			 * This increases the chances that an unload operation actually succeeds while it's in use.
+			 * Note that this only applies to network modules (e.g. modules in the nets directory).
+			 * If a node is executing a door, for example, that won't apply: the module will have
+			 * a refcount due to the usage, but we won't be able to kick the node in this manner here. */
+			if (nodes_usecount > 0) {
+				unsigned int kicked = bbs_node_shutdown_mod(mod); /* Kick all the nodes created by this module. */
+				if (kicked != nodes_usecount) {
+					bbs_warning("Wanted to kick %u nodes but only kicked %u?\n", nodes_usecount, kicked);
+				} else if (kicked) {
+					usleep(10000); /* Wait for actual node exits to complete, to increase chance of success */
+					bbs_debug(3, "Kicked %d node%s\n", kicked, ESS(kicked));
+				}
+			}
+		}
 		unload_dependencies(mod, removed);
 	}
 
 	if (!error && (mod->usecount > 0)) {
-		if (force) {
-			bbs_warning("Warning:  Forcing removal of module '%s' with use count %d\n", mod->resource, mod->usecount);
+		if (force > 1) {
+			bbs_warning("Warning:  Forcing removal of module '%s' with use count %d\n", mod->name, mod->usecount);
 		} else {
-			bbs_warning("Soft unload failed, '%s' has use count %d\n", mod->resource, mod->usecount);
+			bbs_warning("Soft unload failed, '%s' has use count %d\n", mod->name, mod->usecount);
 			return NULL;
 		}
 	}
 
 	if (!error) {
-		/*! \todo Enhancement: Request any nodes attached to the module to disconnect (once we have a mechanism to do this). */
-		bbs_debug(1, "Unloading %s\n", mod->resource);
+		bbs_debug(1, "Unloading %s\n", mod->name);
 		res = mod->info->unload();
 		if (res) {
-			bbs_warning("Firm unload failed for %s\n", mod->resource);
+			bbs_warning("Firm unload failed for %s\n", mod->name);
 			if (force <= 2) {
 				return NULL;
 			} else {
@@ -819,7 +834,10 @@ int bbs_module_reload(const char *name, int try_delayed)
 
 	memset(&unloaded, 0, sizeof(unloaded));
 	RWLIST_WRLOCK(&unloaded);
-	res = unload_resource(name, 0, &unloaded);
+	/* On a reload, also kick any nodes registered by this module, if the reload isn't delayed.
+	 * XXX Maybe this should be a separate sysop command? Could be confusing that reload will
+	 * autokick nodes created by the module, whereas unload won't try to do that and will fail immediately. */
+	res = unload_resource(name, !try_delayed, &unloaded);
 	if (!res) {
 		res = bbs_module_load(name);
 		if (!res) {
@@ -861,7 +879,7 @@ int bbs_list_modules(int fd)
 
 	RWLIST_RDLOCK(&modules);
 	RWLIST_TRAVERSE(&modules, mod, entry) {
-		bbs_dprintf(fd, "%-25s %3d %s\n", mod->resource, mod->usecount, mod->info->description);
+		bbs_dprintf(fd, "%-25s %3d %s\n", mod->name, mod->usecount, mod->info->description);
 		c++;
 	}
 	RWLIST_UNLOCK(&modules);
@@ -902,17 +920,17 @@ static void unload_modules_helper(void)
 			}
 			lastmod = NULL; /* If we call continue in the loop, make sure this is NULL so we don't process a module twice. */
 			if (mod->usecount) {
-				bbs_debug(2, "Skipping unload of %s with use count %d on pass %d\n", mod->resource, mod->usecount, passes + 1); /* Pass # when printed out is 1-indexed for sanity */
+				bbs_debug(2, "Skipping unload of %s with use count %d on pass %d\n", mod->name, mod->usecount, passes + 1); /* Pass # when printed out is 1-indexed for sanity */
 				if (passes == 0) {
 					skipped++; /* Only add to our count the first time. */
 				}
 				continue;
 			}
 			/* Module doesn't appear to still be in use (though internally it may be), so try to unload the module. */
-			bbs_debug(2, "Attempting to unload %s\n", mod->resource);
+			bbs_debug(2, "Attempting to unload %s\n", mod->name);
 			if (mod->info->unload()) {
 				/* Could actually still be cleaning up. Skip on this pass. */
-				bbs_debug(2, "Module %s declined to unload, skipping on pass %d\n", mod->resource, passes + 1);
+				bbs_debug(2, "Module %s declined to unload, skipping on pass %d\n", mod->name, passes + 1);
 				if (passes == 0) {
 					skipped++; /* Only add to our count the first time. */
 				}
@@ -921,7 +939,7 @@ static void unload_modules_helper(void)
 			lastmod = mod; /* Actually go ahead and dlclose the module. */
 			if (passes > 0) {
 				/* We previously skipped the module because it had a positive use count, but now we're good. */
-				bbs_debug(2, "Module %s previously was in use but unloaded on pass %d\n", mod->resource, passes + 1);
+				bbs_debug(2, "Module %s previously was in use but unloaded on pass %d\n", mod->name, passes + 1);
 				skipped--;
 			}
 		}
@@ -951,7 +969,7 @@ int unload_modules(void)
 	/* Check for any modules still registered. */
 	RWLIST_WRLOCK(&modules);
 	RWLIST_TRAVERSE(&modules, mod, entry) {
-		bbs_warning("Module %s still registered during BBS shutdown\n", mod->resource);
+		bbs_warning("Module %s still registered during BBS shutdown\n", mod->name);
 	}
 	RWLIST_UNLOCK(&modules);
 

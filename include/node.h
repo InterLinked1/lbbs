@@ -97,6 +97,13 @@ int bbs_load_nodes(void);
 unsigned int bbs_node_count(void);
 
 /*!
+ * \brief Get number of allocated nodes created by a certain module
+ * \param mod Module reference
+ * \retval Number of current nodes created by mod
+ */
+unsigned int bbs_node_mod_count(void *mod);
+
+/*!
  * \brief Get the highest-numbered node's number
  * \retval 0 if no nodes, positive node number otherwise
  */
@@ -190,6 +197,13 @@ int bbs_node_unlink(struct bbs_node *node);
  * \retval 0 on success, -1 on failure
  */
 int bbs_node_shutdown_node(unsigned int nodenum);
+
+/*!
+ * \brief Request a shut down of all nodes created using a particular module
+ * \param mod Module reference
+ * \return Number of nodes kicked
+ */
+unsigned int bbs_node_shutdown_mod(void *mod);
 
 /*!
  * \brief Shut down and cleanup any active nodes

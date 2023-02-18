@@ -118,6 +118,22 @@ unsigned int bbs_node_count(void)
 	return count;
 }
 
+unsigned int bbs_node_mod_count(void *mod)
+{
+	struct bbs_node *node;
+	unsigned int count = 0;
+
+	RWLIST_RDLOCK(&nodes);
+	RWLIST_TRAVERSE(&nodes, node, entry) {
+		if (node->module == mod) {
+			count++;
+		}
+	}
+	RWLIST_UNLOCK(&nodes);
+
+	return count;
+}
+
 unsigned int bbs_max_nodenum(void)
 {
 	struct bbs_node *node;
@@ -538,6 +554,28 @@ int bbs_node_shutdown_node(unsigned int nodenum)
 	}
 
 	return n ? 0 : -1;
+}
+
+unsigned int bbs_node_shutdown_mod(void *mod)
+{
+	struct bbs_node *n;
+	unsigned int count = 0;
+
+	RWLIST_WRLOCK(&nodes);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&nodes, n, entry) {
+		if (n->module != mod) {
+			continue;
+		}
+		RWLIST_REMOVE_CURRENT(entry);
+		/* Wait for shutdown of node to finish. */
+		node_shutdown(n, 0);
+		count++;
+		break;
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(&nodes);
+
+	return count;
 }
 
 int bbs_node_shutdown_all(int shutdown)

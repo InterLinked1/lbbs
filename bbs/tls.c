@@ -335,13 +335,13 @@ static void *ssl_io_thread(void *unused)
 						case SSL_ERROR_SYSCALL:
 						case SSL_ERROR_ZERO_RETURN:
 							/* This socket is done for, do not retry to read more data, e.g. client has closed the connection but server has yet to close its end, and we're in the middle */
-							/* Fall through */
 							RWLIST_TRAVERSE(&sslfds, sfd, entry) {
 								if (sfd->ssl == ssl) {
 									sfd->dead = 1;
 									break;
 								}
 							}
+							/* Fall through */
 						default:
 							break;
 					}
