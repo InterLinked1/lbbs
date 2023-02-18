@@ -368,7 +368,11 @@ static inline int parse_header(struct http_req *req, char *s)
 		} else if (!strcasecmp(tmp, "DELETE")) {
 			req->method = HTTP_DELETE;
 		} else {
-			bbs_warning("Unknown HTTP request method: %s\n", tmp);
+			if (!strcasecmp(tmp, "CONNECT")) {
+				bbs_debug(3, "Unsupported HTTP method: %s\n", tmp);
+			} else {
+				bbs_warning("Unknown HTTP request method: %s\n", tmp);
+			}
 			return HTTP_NOT_IMPLEMENTED;
 		}
 		tmp = strsep(&header, " ");
