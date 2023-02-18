@@ -60,12 +60,6 @@
 /* Mainly for message submission agents, not encrypted by default, but may use STARTTLS */
 #define DEFAULT_SMTP_MSA_PORT 587
 
-#define SIZE_MB(bytes) (bytes * 1024 * 1024)
-#define SIZE_KB(bytes) (bytes * 1024)
-
-/*! \brief Max message size, in bytes */
-#define MAX_MESSAGE_SIZE SIZE_KB(300)
-
 #define MAX_RECIPIENTS 100
 #define MAX_LOCAL_RECIPIENTS 100
 #define MAX_EXTERNAL_RECIPIENTS 10
@@ -87,6 +81,10 @@ static int queue_outgoing = 1;
 static int always_queue = 0;
 static int require_starttls = 1;
 static int require_starttls_out = 0;
+static int requirefromhelomatch = 1;
+
+/*! \brief Max message size, in bytes */
+static unsigned int max_message_size = 300000;
 
 static unsigned int queue_interval = 900;
 static unsigned int max_retries = 10;
@@ -205,7 +203,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 			smtp_reply0_nostatus(smtp, 250, "AUTH LOGIN PLAIN"); /* RFC-complaint way */
 			smtp_reply0_nostatus(smtp, 250, "AUTH=LOGIN PLAIN"); /* For non-compliant user agents, e.g. Outlook 2003 and older */
 		}
-		smtp_reply0_nostatus(smtp, 250, "SIZE %d", MAX_MESSAGE_SIZE); /* RFC 1870 */
+		smtp_reply0_nostatus(smtp, 250, "SIZE %u", max_message_size); /* RFC 1870 */
 		smtp_reply0_nostatus(smtp, 250, "ENHANCEDSTATUSCODES");
 		smtp_reply_nostatus(smtp, 250, "STARTTLS");
 	} else {
@@ -633,7 +631,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 {
 	FILE *fp;
 	char fullname[256], newname[sizeof(fullname) + 11];
-	char from[1024], recipient[1024], todup[256];
+	char from[1000], recipient[1000], todup[256];
 	char hostname[256];
 	char *realfrom, *realto;
 	char *user, *domain;
@@ -849,7 +847,7 @@ static int do_deliver(struct smtp_session *smtp)
 	char *recipient;
 	int res = 0;
 
-	if (smtp->datalen >= MAX_MESSAGE_SIZE) {
+	if (smtp->datalen >= max_message_size) {
 		/* XXX Should this only apply for local deliveries? */
 		smtp_reply(smtp, 552, 5.3.4, "Message too large");
 		return 0;
@@ -934,7 +932,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 			smtp->datalen += dlen + 2;
 			smtp->data = newstr;
 		}
-		if (smtp->datalen >= MAX_MESSAGE_SIZE) {
+		if (smtp->datalen >= max_message_size) {
 			smtp->datafail = 1;
 		}
 		return 0;
@@ -961,7 +959,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 			smtp->dostarttls = 1;
 			smtp->gothelo = 0; /* Client will need to start over. */
 		} else {
-			smtp_reply_nostatus(smtp, 454, "TLS already started");
+			smtp_reply(smtp, 454, 5.5.1, "STARTTLS may not be repeated");
 		}
 	} else if (smtp->msa && !smtp->secure && require_starttls) {
 		smtp_reply(smtp, 504, 5.5.4, "Must issue a STARTTLS command first.");
@@ -1018,8 +1016,8 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 			/* Part of the SIZE extension. For ESMTP, something like SIZE=XXX */
 			sizestring = strchr(s, '=');
 			if (sizestring && !strlen_zero(sizestring + 1)) {
-				int sizebytes = atoi(sizestring);
-				if (sizebytes >= MAX_MESSAGE_SIZE) {
+				unsigned int sizebytes = atoi(sizestring);
+				if (sizebytes >= max_message_size) {
 					smtp_reply(smtp, 552, 5.3.4, "Message too large");
 					return 0;
 				}
@@ -1053,7 +1051,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 			smtp->fromlocal = 1;
 		} else {
 			smtp->fromlocal = 0; /* It's not something that belongs to us. No authentication required. */
-			if (strlen_zero(smtp->helohost) || strcmp(tmp, smtp->helohost)) {
+			if (strlen_zero(smtp->helohost) || (requirefromhelomatch && strcmp(tmp, smtp->helohost))) {
 				smtp_reply(smtp, 530, 5.7.0, "HELO/EHLO domain does not match MAIL FROM domain");
 				return 0;
 			}
@@ -1100,7 +1098,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 
 static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 {
-	char buf[1024];
+	char buf[1001]; /* Maximum length, including CR LF, is 1000 */
 	int res;
 	struct readline_data rldata;
 
@@ -1241,6 +1239,8 @@ static int load_config(void)
 	bbs_config_val_set_uint(cfg, "general", "queueinterval", &queue_interval);
 	bbs_config_val_set_uint(cfg, "general", "maxretries", &max_retries);
 	bbs_config_val_set_uint(cfg, "general", "maxage", &max_age);
+	bbs_config_val_set_uint(cfg, "general", "maxsize", &max_message_size);
+	bbs_config_val_set_true(cfg, "general", "requirefromhelomatch", &requirefromhelomatch);
 
 	if (queue_interval < 60) {
 		queue_interval = 60;

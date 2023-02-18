@@ -150,6 +150,9 @@ int bbs_fd_dump(int fd);
  */
 #define IN_BOUNDS(x, min, max) (x >= min && x <= max)
 
+#define SIZE_MB(bytes) (bytes * 1024 * 1024)
+#define SIZE_KB(bytes) (bytes * 1024)
+
 /*! \brief Number of ms in given seconds */
 #define SEC_MS(x) (1000 * x)
 
