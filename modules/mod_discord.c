@@ -59,6 +59,7 @@ struct chan_pair {
 	u64snowflake channel_id;
 	unsigned int relaysystem:1;		/* Whether to relay non PRIVMSGs */
 	unsigned int defaultdeny:1;		/* Default denied */
+	unsigned int multiline:2;		/* Multiline: 0 = allowed, 1 = warn, 2 = block/drop */
 	const char *discord_channel;	/* Should not include leading # */
 	const char *irc_channel;		/* Should including leading # (or other prefix) */
 	struct u64snowflake_list members;	/* Members with permission to view channel */
@@ -136,7 +137,7 @@ static void list_cleanup(void)
 	RWLIST_UNLOCK(&users);
 }
 
-static int add_pair(u64snowflake guild_id, const char *discord_channel, const char *irc_channel, unsigned int relaysystem)
+static int add_pair(u64snowflake guild_id, const char *discord_channel, const char *irc_channel, unsigned int relaysystem, unsigned int multiline)
 {
 	struct chan_pair *cp;
 	int dlen, ilen;
@@ -179,6 +180,7 @@ static int add_pair(u64snowflake guild_id, const char *discord_channel, const ch
 	cp->irc_channel = cp->data + dlen + 1;
 	cp->guild_id = guild_id;
 	cp->relaysystem = relaysystem;
+	cp->multiline = multiline;
 	/* channel_id is not yet known. Once we call fetch_channels, we'll be able to get the channel_id if it matches a name. */
 	RWLIST_INSERT_HEAD(&mappings, cp, entry);
 	RWLIST_UNLOCK(&mappings);
@@ -978,10 +980,76 @@ static int discord_send(const char *channel, const char *sender, const char *msg
 	return 0;
 }
 
+static void relay_message(struct discord *client, struct chan_pair *cp, const struct discord_message *event)
+{
+	struct discord_user *author;
+	char sendertmp[84];
+	char sender[84];
+	char *dup, *line, *lines;
+
+	author = event->author;
+	snprintf(sendertmp, sizeof(sendertmp), "%s#%s", author->username, author->discriminator);
+
+	/* Ditch the spaces, since IRC doesn't allow them.
+	 * Most other places in this module we use user->username, user->discriminator, etc.
+	 * and that is fine since we remove spaces once up front when we create the user.
+	 * Here, we're reparsing this info separately, so we need to do it here as well. */
+	if (bbs_strcpy_nospaces(sendertmp, sender, sizeof(sender))) {
+		return;
+	}
+	bbs_debug(4, "Relaying message from channel %lu by %s to %s: %s\n", event->channel_id, sender, cp->irc_channel, event->content);
+	if (strlen_zero(event->content)) {
+		bbs_warning("Message sent by %s is empty?\n", sender);
+		/* Probably won't actually relay through in this case... */
+		return;
+	}
+	if (!strchr(event->content, '\n')) { /* Avoid unnecessarily allocating memory if we don't have to. */
+		irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, event->content);
+		return;
+	}
+	/* event->content could contain multiple lines. We need to relay each of them to IRC separately. */
+	if (cp->multiline) {
+		char mbuf[256];
+		struct discord_create_message params = {
+			.content = mbuf,
+			.message_reference = &(struct discord_message_reference) {
+				.message_id = 0, /* Irrelevant, we're not replying to a channel thread (IRC doesn't have the concept of threads anyways) */
+				.channel_id = cp->channel_id,
+				.guild_id = cp->guild_id,
+				.fail_if_not_exists = false, /* Send as a normal message, not an in-thread reply */
+			},
+			.components = NULL,
+		};
+		/* Drop or warn depending on setting.
+		 * This logic has to be in this module (not mod_relay_irc),
+		 * because only this module knows whether the original message was multiple lines.
+		 * Once we relay a message for each line, that information is lost. */
+		if (cp->multiline == 2) {
+			snprintf(mbuf, sizeof(mbuf), "%s: Your multi-line message has been dropped. Consider using a paste (e.g. https://paste.interlinked.us/) instead.", author->username);
+		} else {
+			snprintf(mbuf, sizeof(mbuf), "%s: Please avoid multi-line messages. Consider using a paste (e.g. https://paste.interlinked.us/) instead.", author->username);
+		}
+		discord_create_message(client, cp->channel_id, &params, NULL);
+		if (cp->multiline == 2) {
+			return; /* Don't relay the message if set to block/drop */
+		}
+	}
+	dup = strdup(event->content);
+	if (!dup) {
+		bbs_error("strdup failed\n");
+		return;
+	}
+	lines = dup;
+	while ((line = strsep(&lines, "\n"))) {
+		bbs_strterm(line, '\n');
+		irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, line);
+	}
+	free(dup);
+}
+
 static void on_message_create(struct discord *client, const struct discord_message *event)
 {
 	struct chan_pair *cp;
-	struct discord_user *author;
 
 	UNUSED(client);
 
@@ -999,47 +1067,13 @@ static void on_message_create(struct discord *client, const struct discord_messa
 	if (!cp) {
 		bbs_debug(7, "Ignoring message from channel %lu (no mapping): %s\n", event->channel_id, event->content);
 	} else { /* Relay to IRC */
-		char sendertmp[84];
-		char sender[84];
-		char *dup, *line, *lines;
-		author = event->author;
-		snprintf(sendertmp, sizeof(sendertmp), "%s#%s", author->username, author->discriminator);
-		/* Ditch the spaces, since IRC doesn't allow them.
-		 * Most other places in this module we use user->username, user->discriminator, etc.
-		 * and that is fine since we remove spaces once up front when we create the user.
-		 * Here, we're reparsing this info separately, so we need to do it here as well. */
-		if (bbs_strcpy_nospaces(sendertmp, sender, sizeof(sender))) {
-			return;
-		}
-		bbs_debug(4, "Relaying message from channel %lu by %s to %s: %s\n", event->channel_id, sender, cp->irc_channel, event->content);
-		if (strlen_zero(event->content)) {
-			bbs_warning("Message sent by %s is empty?\n", sender);
-			/* Probably won't actually relay through in this case... */
-			return;
-		}
-		if (!strchr(event->content, '\n')) { /* Avoid unnecessarily allocating memory if we don't have to. */
-			irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, event->content);
-			return;
-		}
-		/* event->content could contain multiple lines. We need to relay each of them to IRC separately. */
-		dup = strdup(event->content);
-		if (!dup) {
-			bbs_error("strdup failed\n");
-			return;
-		}
-		lines = dup;
-		while ((line = strsep(&lines, "\n"))) {
-			bbs_strterm(line, '\n');
-			irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, line);
-		}
-		free(dup);
+		relay_message(client, cp, event);
 	}
 }
 
 static void on_message_update(struct discord *client, const struct discord_message *event)
 {
 	struct chan_pair *cp;
-	struct discord_user *author;
 
 	UNUSED(client);
 	if (!event->author) {
@@ -1056,16 +1090,12 @@ static void on_message_update(struct discord *client, const struct discord_messa
 	if (!cp) {
 		bbs_debug(7, "Ignoring updated message from channel %lu (no mapping): %s\n", event->channel_id, event->content);
 	} else { /* Relay to IRC */
-		char sender[84];
-		author = event->author;
-		snprintf(sender, sizeof(sender), "%s#%s", author->username, author->discriminator);
-		bbs_debug(4, "Relaying updated message from channel %lu by %s to %s: %s\n", event->channel_id, sender, cp->irc_channel, event->content);
+		bbs_debug(4, "Relaying updated message from channel %lu by %s to %s: %s\n", event->channel_id, event->author->username, cp->irc_channel, event->content);
 		/* If we wanted to be really fancy, we could turn the update into a sed style string, but we'd need the original message for that...
 		 * which in theory we could keep track of, but we don't store messages, that would be ridiculous overhead...
 		 * so, just pass it on as a new message */
-		irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, event->content);
+		relay_message(client, cp, event);
 	}
-	return;
 }
 
 static void *discord_relay(void *varg)
@@ -1107,6 +1137,7 @@ static int load_config(void)
 	while ((section = bbs_config_walk(cfg, section))) {
 		const char *irc = NULL, *discord = NULL, *guild = NULL;
 		unsigned int relaysystem = 1;
+		unsigned int multiline = 0;
 		if (!strcmp(bbs_config_section_name(section), "discord")) {
 			continue; /* Not a channel mapping section, skip */
 		}
@@ -1123,6 +1154,17 @@ static int load_config(void)
 				guild = value;
 			} else if (!strcasecmp(key, "relaysystem")) {
 				relaysystem = S_TRUE(value);
+			} else if (!strcasecmp(key, "multiline")) {
+				if (!strcasecmp(value, "allow")) {
+					multiline = 0;
+				} else if (!strcasecmp(value, "warn")) {
+					multiline = 1;
+				} else if (!strcasecmp(value, "drop")) {
+					multiline = 2;
+				} else {
+					bbs_warning("Unknown value '%s' for setting 'multiline'\n", value);
+					multiline = 0;
+				}
 			} else {
 				bbs_warning("Unknown directive: %s\n", key);
 			}
@@ -1131,7 +1173,7 @@ static int load_config(void)
 			bbs_warning("Section %s is incomplete, ignoring\n", bbs_config_section_name(section));
 			continue;
 		}
-		add_pair(atol(guild), discord, irc, relaysystem);
+		add_pair(atol(guild), discord, irc, relaysystem, multiline);
 	}
 
 	return 0;
