@@ -41,6 +41,12 @@ int mailbox_wrlock(struct mailbox *mbox);
 /*! \brief Unlock a previously locked mailbox */
 void mailbox_unlock(struct mailbox *mbox);
 
+/*! \brief Grab an exclusive lock on UID operations for this mailbox */
+int mailbox_uid_lock(struct mailbox *mbox);
+
+/*! \brief Unlock a previously acquired UID lock on this mailbox */
+void mailbox_uid_unlock(struct mailbox *mbox);
+
 /*!
  * \brief Get the maildir of a mailbox
  * \param mbox Mailbox. If NULL, the top-level maildir path will be returned.

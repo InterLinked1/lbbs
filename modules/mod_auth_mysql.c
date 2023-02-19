@@ -37,6 +37,8 @@
 #include "include/crypt.h" /* use bbs_password_verify_bcrypt */
 #include "include/utils.h" /* use bbs_str_isprint */
 
+static int register_phone = 1, register_address = 1, register_zip = 1, register_dob = 1, register_gender = 1, register_howheard = 1;
+
 /*! \brief Common function to handle user authentication and info retrieval */
 #pragma GCC diagnostic ignored "-Wstack-protector"
 static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username, const char *password, struct bbs_user ***userlistptr)
@@ -280,13 +282,13 @@ static int make_user(const char *username, const char *password, const char *ful
 	char sql[184];
 	char genderbuf[2] = { gender, '\0' }; /* We can't pass a char directly into sql_prep_bind_exec, we must pass a char* */
 	struct tm birthday;
-	const char *types = "sssssssssts";
+	char types[16] = "sssssssssts";
 
 	memset(&birthday, 0, sizeof(birthday));
 
 	if (bbs_password_salt_and_hash(password, pw_hash, sizeof(pw_hash))) {
 		return -1;
-	} else if (strptime(dob, "%m/%d/%Y", &birthday) == NULL || invalid_birthday(&birthday)) { /* Don't use %D since uses 2-digit years */
+	} else if (!strlen_zero(dob) && (strptime(dob, "%m/%d/%Y", &birthday) == NULL || invalid_birthday(&birthday))) { /* Don't use %D since uses 2-digit years */
 		bbs_debug(3, "Rejecting '%s' due to invalid DOB\n", dob);
 		return -1; /* Invalid date */
 	}
@@ -298,7 +300,13 @@ static int make_user(const char *username, const char *password, const char *ful
 	mysql = sql_connect();
 	NULL_RETURN(mysql);
 	stmt = mysql_stmt_init(mysql);
-	if (!stmt || sql_prep_bind_exec(stmt, sql, types, username, pw_hash, fullname, email, phone, address, city, state, zip, &birthday, genderbuf)) { /* Bind parameters and execute */
+	if (!stmt) {
+		goto cleanup;
+	}
+
+	/* Bind parameters and execute */
+	sql_fmt_autonull(types, username, pw_hash, fullname, email, phone, address, city, state, zip, dob ? &birthday : NULL, genderbuf);
+	if (sql_prep_bind_exec(stmt, sql, types, username, pw_hash, fullname, email, phone, address, city, state, zip, dob ? &birthday : NULL, genderbuf)) {
 		goto cleanup;
 	}
 	res = 0;
@@ -318,9 +326,9 @@ static int user_register(struct bbs_node *node)
 {
 	/* bcrypt caps password lengths at 72, so that's where that came from */
 	char fullname[64], username[64], password[72], password2[72];
-	char email[64], phone[16], address[64], city[64], state[32], zip[10], dob[11];
-	char how_heard[256];
-	char gender, correct;
+	char email[64], phone[16] = "", address[64] = "", city[64], state[32], zip[10] = "", dob[11] = "";
+	char how_heard[256] = "";
+	char gender = 0, correct;
 	int res;
 #define MAX_REG_ATTEMPTS 6
 	int tries = MAX_REG_ATTEMPTS;
@@ -339,8 +347,10 @@ static int user_register(struct bbs_node *node)
 		/* No newlines necessary inbetween reads, since echo is on
 		 * and input is terminated by a return. */
 		/* NONZERO_RETURN is a macro that returns x, so we must NOT call it directly with the function itself */
-		res = get_response(node, REG_QLEN, REG_FMT, "How did you hear about this BBS? ", MIN_MS(1), how_heard, sizeof(how_heard), &tries, 0, NULL);
-		NONZERO_RETURN(res);
+		if (register_howheard) {
+			res = get_response(node, REG_QLEN, REG_FMT, "How did you hear about this BBS? ", MIN_MS(1), how_heard, sizeof(how_heard), &tries, 0, NULL);
+			NONZERO_RETURN(res);
+		}
 		res = get_response(node, REG_QLEN, REG_FMT, "Please enter your full real name: ", MIN_MS(1), fullname, sizeof(fullname), &tries, 4, " "); /* If there's no space, we don't have at least 2 names */
 		NONZERO_RETURN(res); 
 
@@ -389,33 +399,43 @@ static int user_register(struct bbs_node *node)
 
 		res = get_response(node, REG_QLEN, REG_FMT, "Network mail address (user@domain): ", MIN_MS(1), email, sizeof(email), &tries, 5, "@.");
 		NONZERO_RETURN(res);
-		res = get_response(node, REG_QLEN, REG_FMT, "Telephone Number: ", MIN_MS(1), phone, sizeof(phone), &tries, 7, NULL);
-		NONZERO_RETURN(res);
-		res = get_response(node, REG_QLEN, REG_FMT, "Street Address (Line 1/2): ", MIN_MS(1), address, sizeof(address), &tries, 6, " "); /* e.g. 1 E St */
-		NONZERO_RETURN(res);
+		if (register_phone) {
+			res = get_response(node, REG_QLEN, REG_FMT, "Telephone Number: ", MIN_MS(1), phone, sizeof(phone), &tries, 7, NULL);
+			NONZERO_RETURN(res);
+		}
+		if (register_address) {
+			res = get_response(node, REG_QLEN, REG_FMT, "Street Address (Line 1/2): ", MIN_MS(1), address, sizeof(address), &tries, 6, " "); /* e.g. 1 E St */
+			NONZERO_RETURN(res);
+		}
 		res = get_response(node, REG_QLEN, REG_FMT, "City: ", MIN_MS(1), city, sizeof(city), &tries, 2, NULL);
 		NONZERO_RETURN(res);
 		res = get_response(node, REG_QLEN, REG_FMT, "State: ", MIN_MS(1), state, sizeof(state), &tries, 2, NULL);
 		NONZERO_RETURN(res);
-		res = get_response(node, REG_QLEN, REG_FMT, "ZIP/Postal Code: ", MIN_MS(1), zip, sizeof(zip), &tries, 3, NULL); /* US = 5, other countries??? */
-		NONZERO_RETURN(res);
-		res = get_response(node, REG_QLEN, REG_FMT, "Birthday (MM/DD/YYYY): ", MIN_MS(1), dob, sizeof(dob), &tries, 10, "/");
-		NONZERO_RETURN(res);
+		if (register_zip) {
+			res = get_response(node, REG_QLEN, REG_FMT, "ZIP/Postal Code: ", MIN_MS(1), zip, sizeof(zip), &tries, 3, NULL); /* US = 5, other countries??? */
+			NONZERO_RETURN(res);
+		}
+		if (register_dob) {
+			res = get_response(node, REG_QLEN, REG_FMT, "Birthday (MM/DD/YYYY): ", MIN_MS(1), dob, sizeof(dob), &tries, 10, "/");
+			NONZERO_RETURN(res);
+		}
 
 		bbs_unbuffer(node); /* We need to be unbuffered for tread */
-		for (; tries > 0; tries--) { /* Retries here count less than retries of the main loop */
-			NEG_RETURN(bbs_writef(node, "%-*s", REG_QLEN, REG_FMT "\rGender (MFX): ")); /* Erase existing line in case we're retrying */
-			gender = bbs_tread(node, MIN_MS(1));
-			NONPOS_RETURN(gender);
-			gender = tolower(gender);
-			if (gender == 'm' || gender == 'f' || gender == 'x') {
-				NEG_RETURN(bbs_writef(node, "%c\n", gender)); /* Print response + newline */
-				break; /* Got a valid response */
+		if (register_gender) {
+			for (; tries > 0; tries--) { /* Retries here count less than retries of the main loop */
+				NEG_RETURN(bbs_writef(node, "%-*s", REG_QLEN, REG_FMT "\rGender (MFX): ")); /* Erase existing line in case we're retrying */
+				gender = bbs_tread(node, MIN_MS(1));
+				NONPOS_RETURN(gender);
+				gender = tolower(gender);
+				if (gender == 'm' || gender == 'f' || gender == 'x') {
+					NEG_RETURN(bbs_writef(node, "%c\n", gender)); /* Print response + newline */
+					break; /* Got a valid response */
+				}
+				/* Invalid, try again */
 			}
-			/* Invalid, try again */
-		}
-		if (tries <= 0) {
-			return 1;
+			if (tries <= 0) {
+				return 1;
+			}
 		}
 
 		NEG_RETURN(bbs_writef(node, "%-*s", REG_QLEN, REG_FMT "Is the above information correct? "));
@@ -435,10 +455,12 @@ static int user_register(struct bbs_node *node)
 
 	/* How heard is logged but not passed to make_user */
 	bbs_debug(1, "New registration attempt: name = %s, username = %s, email = %s, phone = %s, address = %s, city = %s, state = %s, zip = %s, dob = %s, gender = %c, how heard = %s\n",
-		fullname, username, email, phone, address, city, state, zip, dob, gender, how_heard);
+		fullname, username, email, S_IF(phone), S_IF(address), city, state, S_IF(zip), S_IF(dob), gender ? gender : ' ', S_IF(how_heard));
+
+#define NULL_IFEMPTY(s) (!*s ? NULL : s)
 
 	/* Actually create the user */
-	res = make_user(username, password, fullname, email, phone, address, city, state, zip, dob, gender);
+	res = make_user(username, password, fullname, email, NULL_IFEMPTY(phone), NULL_IFEMPTY(address), city, state, NULL_IFEMPTY(zip), NULL_IFEMPTY(dob), gender);
 
 	if (res) {
 		NEG_RETURN(bbs_writef(node, "%s%s%s\n", COLOR(COLOR_FAILURE), "Your registration was rejected.", COLOR_RESET));
@@ -462,6 +484,25 @@ static int user_register(struct bbs_node *node)
 	return res;
 }
 
+static int load_config(void)
+{
+	struct bbs_config *cfg = bbs_config_load("mod_auth_mysql.conf", 0);
+
+	if (!cfg) {
+		return 0;
+	}
+
+	bbs_config_val_set_true(cfg, "registration", "phone", &register_phone);
+	bbs_config_val_set_true(cfg, "registration", "address", &register_address);
+	bbs_config_val_set_true(cfg, "registration", "zip", &register_zip);
+	bbs_config_val_set_true(cfg, "registration", "dob", &register_dob);
+	bbs_config_val_set_true(cfg, "registration", "gender", &register_gender);
+	bbs_config_val_set_true(cfg, "registration", "howheard", &register_howheard);
+
+	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
+	return 0;
+}
+
 static struct bbs_module *depmod = NULL;
 
 static int load_module(void)
@@ -471,6 +512,9 @@ static int load_module(void)
 	 * It still serves a purpose, because we ensure that the dependency can't be unloaded
 	 * while there are things that are dependent on it.
 	 */
+	if (load_config()) {
+		return -1;
+	}
 	depmod = bbs_require_module("mod_mysql");
 	if (!depmod) {
 		return -1;

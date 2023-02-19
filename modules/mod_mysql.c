@@ -120,7 +120,7 @@ int sql_prepare(MYSQL_STMT *stmt, const char *fmt, const char *query)
 
 	/* No point in really doing much at this point... just check that our format string is good. */
 	for (i = 0; i < num_args; i++) {
-		switch (*cur) {
+		switch (tolower(*cur)) {
 		/* Supported */
 		case 'i': /* Integer */
 		case 'l': /* Long */
@@ -158,11 +158,78 @@ static int sql_string_prep(int num_fields, char *bind_strings[], unsigned long i
 }
 #endif
 
+int sql_fmt_autonull(char *fmt, ...)
+{
+	int intarg;
+	long long longarg;
+	double doublearg;
+	char *stringarg;
+	struct tm *tmarg;
+	char *cur = fmt;
+	va_list ap;
+	int i;
+	int num_args = strlen(fmt);
+
+	va_start(ap, fmt); 
+	for (i = 0; i < num_args; i++, cur++) { /* Bind the parameters themselves for this round */
+		switch (*cur) {
+		case 'i': /* Integer */
+			intarg = va_arg(ap, int);
+			if (!intarg) {
+				fmt[i] = toupper(fmt[i]);
+			}
+			break;
+		case 'l': /* Long int */
+			longarg = va_arg(ap, long long);
+			if (!longarg) {
+				fmt[i] = toupper(fmt[i]);
+			}
+			break;
+		case 'd': /* Double */
+			doublearg = va_arg(ap, double);
+			if (!doublearg) {
+				fmt[i] = toupper(fmt[i]);
+			}
+			break;
+		case 's': /* String */
+			stringarg = va_arg(ap, char *);
+			if (!stringarg) {
+				fmt[i] = toupper(fmt[i]);
+			}
+			break;
+		case 't': /* Date */
+			tmarg = va_arg(ap, struct tm*);
+			if (!tmarg) {
+				fmt[i] = toupper(fmt[i]);
+			}
+			break;
+		case 'b': /* Blob */
+			bbs_warning("Blobs are currently unsupported\n");
+			return -1;
+		default:
+			bbs_warning("Unknown SQL format type specifier: %c\n", *cur);
+			return -1;
+		}
+		if (isupper(fmt[i])) {
+			bbs_debug(5, "Argument at index %d (%c) is NULL\n", i, *cur);
+		}
+	}
+	va_end(ap);
+
+	bbs_debug(5, "Final format string: %s\n", fmt);
+	return 0;
+}
+
 int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[], unsigned long int lengths[], int bind_ints[], long long bind_longs[], char *bind_strings[], MYSQL_TIME bind_dates[], my_bool bind_null[])
 {
 	struct tm *tm;
 	char format_char = tolower(*cur);
-	bind_null[i] = (my_bool) isupper(format_char); /* Uppercase format char means it's NULL */
+	/* Uppercase format char means it's NULL */
+	bind_null[i] = isupper(*cur) ? 1 : 0; /* Simply casting to my_bool doesn't work here */
+	if (!bind_null[i] && isupper(*cur)) {
+		bbs_error("Format character was uppercase, but we didn't detect this as a NULL indicator?\n");
+		bbs_assert(0); /* We'd crash anyways below. */
+	}
 
 #if 0
 	bbs_debug(10, "Executing fmt char: %c\n", format_char);
@@ -199,7 +266,7 @@ int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[],
 		bind_strings[i] = va_arg(ap, char *);
 		lengths[i] = strlen(S_IF(bind_strings[i]));
 		if (!bind_strings[i] && !bind_null[i]) {
-			bbs_warning("String at index %d is NULL, but not specified?\n", i);
+			bbs_warning("String at index %d is NULL, but not specified? (Format char: %c)\n", i, *cur);
 		}
 		bind[i].buffer_type = MYSQL_TYPE_STRING;
 		bind[i].buffer = (char *) bind_strings[i];
@@ -209,12 +276,14 @@ int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[],
 		break;
 	case 't': /* Date */
 		tm = va_arg(ap, struct tm *);
-		bind_dates[i].year = TM_YEAR(tm->tm_year);
-		bind_dates[i].month = TM_MONTH(tm->tm_mon);
-		bind_dates[i].day = tm->tm_mday;
-		bind_dates[i].hour = tm->tm_hour;
-		bind_dates[i].minute = tm->tm_min;
-		bind_dates[i].second = tm->tm_sec;
+		if (!bind_null[i]) {
+			bind_dates[i].year = TM_YEAR(tm->tm_year);
+			bind_dates[i].month = TM_MONTH(tm->tm_mon);
+			bind_dates[i].day = tm->tm_mday;
+			bind_dates[i].hour = tm->tm_hour;
+			bind_dates[i].minute = tm->tm_min;
+			bind_dates[i].second = tm->tm_sec;
+		}
 		bind[i].buffer_type = MYSQL_TYPE_DATE;
 		bind[i].buffer = (char *) &bind_dates[i];
 		bind[i].is_null = &bind_null[i];
@@ -554,7 +623,8 @@ static int load_config(void)
 		bbs_warning("No database name specified in mod_auth_mysql.conf\n");
 	}
 
-	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
+	/* Don't destroy the config, mod_auth_mysql will read it again to parse some settings that apply only to it.
+	 * XXX These things should really be in separate config files? Need a mod_mysql.conf */
 	return 0;
 }
 
