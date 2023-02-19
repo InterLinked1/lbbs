@@ -34,12 +34,14 @@
 #include "include/mod_mail.h"
 
 static char maildir[248] = "";
+static char catchall[256] = "";
 
 /*! \brief Opaque structure for a user's mailbox */
 struct mailbox {
 	unsigned int id;					/* Mailbox ID. Corresponds with user ID. */
 	char maildir[256];					/* User's mailbox directory, on disk. */
-	pthread_rwlock_t lock;				/* R/W lock for mailbox. R/W instead of a mutex, because POP write locks the entire mailbox, IMAP can just read lock. */
+	pthread_rwlock_t lock;				/* R/W lock for entire mailbox. R/W instead of a mutex, because POP write locks the entire mailbox, IMAP can just read lock. */
+	pthread_mutex_t uidlock;			/* Mutex for UID operations. */
 	RWLIST_ENTRY(mailbox) entry;		/* Next mailbox */
 };
 
@@ -63,6 +65,7 @@ static RWLIST_HEAD_STATIC(aliases, alias);
 static void mailbox_free(struct mailbox *mbox)
 {
 	pthread_rwlock_destroy(&mbox->lock);
+	pthread_mutex_destroy(&mbox->uidlock);
 	free(mbox);
 }
 
@@ -187,6 +190,7 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid)
 			return NULL;
 		}
 		pthread_rwlock_init(&mbox->lock, NULL);
+		pthread_mutex_init(&mbox->uidlock, NULL);
 		mbox->id = userid;
 		snprintf(mbox->maildir, sizeof(mbox->maildir), "%s/%u", maildir, userid);
 		RWLIST_INSERT_HEAD(&mailboxes, mbox, entry);
@@ -221,6 +225,7 @@ struct mailbox *mailbox_get(unsigned int userid, const char *name)
 
 	/* If we had a user ID or were able to translate the name to one, lookup the mailbox by user ID. */
 	if (userid) {
+		bbs_debug(5, "Found mailbox mapping via username directly\n");
 		mbox = mailbox_find_or_create(userid);
 	}
 
@@ -228,7 +233,21 @@ struct mailbox *mailbox_get(unsigned int userid, const char *name)
 	if (!mbox && !strlen_zero(name)) {
 		userid = resolve_alias(name);
 		if (userid) {
+			bbs_debug(5, "Found mailbox mapping via alias\n");
 			mbox = mailbox_find_or_create(userid);
+		}
+	}
+
+	if (!mbox && !s_strlen_zero(catchall)) {
+		static int catch_all_userid = 0; /* This won't change, so until we having caching of user ID to usernames in the core, don't look this up again after we find a match. */
+		if (!catch_all_userid) {
+			catch_all_userid = bbs_userid_from_username(catchall);
+		}
+		if (catch_all_userid) {
+			bbs_debug(5, "Found mailbox mapping via catch all\n");
+			mbox = mailbox_find_or_create(catch_all_userid);
+		} else {
+			bbs_warning("No user exists for catch all mailbox '%s'\n", catchall); /* If a catch all address was explicitly specified, it was probably intended that it works. */
 		}
 	}
 
@@ -248,6 +267,16 @@ int mailbox_wrlock(struct mailbox *mbox)
 void mailbox_unlock(struct mailbox *mbox)
 {
 	pthread_rwlock_unlock(&mbox->lock);
+}
+
+int mailbox_uid_lock(struct mailbox *mbox)
+{
+	return pthread_mutex_lock(&mbox->uidlock);
+}
+
+void mailbox_uid_unlock(struct mailbox *mbox)
+{
+	pthread_mutex_unlock(&mbox->uidlock);
 }
 
 static int create_if_nexist(const char *path)
@@ -334,6 +363,7 @@ static int load_config(void)
 	if (bbs_config_val_set_str(cfg, "general", "maildir", maildir, sizeof(maildir))) {
 		return -1;
 	}
+	bbs_config_val_set_str(cfg, "general", "catchall", catchall, sizeof(catchall));
 
 	if (eaccess(maildir, X_OK)) { /* This is a directory, so we better have execute permissions on it */
 		bbs_error("Directory %s does not exist\n", maildir);
