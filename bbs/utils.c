@@ -56,7 +56,7 @@ int bbs_fd_readline(int fd, struct readline_data *rldata, const char *delim, int
 		memmove(rldata->buf, rldata->pos, rldata->leftover);
 		res = rldata->leftover; /* Pretend like we just read this many bytes, just now. */
 		rldata->buf[res] = '\0';
-#if 0
+#if 1
 		bbs_debug(8, "Shifted buffer now contains: %s\n", rldata->buf);
 #endif
 		/* Update our position to where we need to be. */
@@ -284,6 +284,119 @@ int bbs_dir_traverse(const char *path, int (*on_file)(const char *dir_name, cons
 int bbs_dir_traverse_dirs(const char *path, int (*on_file)(const char *dir_name, const char *filename, void *obj), void *obj, int max_depth)
 {
 	return __bbs_dir_traverse(path, on_file, obj, max_depth, 1);
+}
+
+/*! \note Skips using bbs_dir_traverse and does it directly since executing a callback for every single file is an expensive way to calculate the quota */
+static int __bbs_dir_size(const char *path, long *size, int max_depth)
+{
+	DIR *dir;
+	struct dirent *entry;
+	int res;
+	int isroot;
+	struct stat st;
+
+	/* Since we'll be using errno to check for problems, zero it out now. */
+	if (errno) {
+		errno = 0;
+	}
+
+	if (!(dir = opendir(path))) {
+		bbs_error("Error opening directory - %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+
+	--max_depth;
+	res = 0;
+	isroot = !strcmp(path, "/") ? 1 : 0;
+
+	/* Include the directory itself. */
+#if 0
+	if (stat(path, &st)) {
+		bbs_error("stat(%s) failed: %s\n", path, strerror(errno));
+	} else {
+		*size = *size + st.st_size;
+	}
+#else
+	*size += 4096; /* Each directory should add 4096 bytes */
+#endif
+
+	while ((entry = readdir(dir)) != NULL) { /* Don't just bail out if errno becomes set, modules could set errno when we load them. */
+		int is_file = 0;
+		int is_dir = 0;
+		char *full_path = NULL;
+
+		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		/* If the dirent structure has a d_type use it to determine if we are dealing with
+		 * a file or directory. Unfortunately if it doesn't have it, or if the type is
+		 * unknown, or a link then we'll need to use the stat function instead. */
+		if (entry->d_type != DT_UNKNOWN && entry->d_type != DT_LNK) {
+			is_file = entry->d_type == DT_REG;
+			is_dir = entry->d_type == DT_DIR;
+		} else {
+			continue; /* Something else? Skip it */
+		}
+
+		if (is_file) {
+			char fullname[512];
+			snprintf(fullname, sizeof(fullname), "%s/%s", path, entry->d_name);
+			if (stat(fullname, &st)) {
+				bbs_error("stat(%s) failed: %s\n", fullname, strerror(errno));
+			} else {
+#ifdef EXTRA_DEBUG
+				bbs_debug(10, "File %s is %ld bytes\n", fullname, st.st_size);
+#endif
+				*size = *size + st.st_size;
+			}
+			continue;
+		} else if (!is_dir) { /* Not a regular file or directory */
+			bbs_debug(7, "Skipping non-regular file/directory: %s\n", entry->d_name);
+			continue;
+		}
+
+		/* Only recurse into sub-directories if not at the max depth */
+		if (max_depth != 0) {
+			if (!full_path) {
+				/* Don't use alloca or allocate on the stack, because we're in a loop */
+				full_path = malloc(strlen(path) + strlen(entry->d_name) + 2);
+				if (!full_path) {
+					return -1;
+				}
+				sprintf(full_path, "%s/%s", isroot ? "" : path, entry->d_name); /* Safe */
+			}
+			bbs_debug(4, "Recursing into %s\n", full_path);
+			res = __bbs_dir_size(full_path, size, max_depth);
+			if (res) {
+				free(full_path);
+				break;
+			}
+		} else {
+			bbs_error("Recursion depth maxed out for recursive directory traversal\n");
+		}
+		free(full_path);
+	}
+
+	closedir(dir);
+
+	if (res && errno) {
+		bbs_error("Error while reading directories (%d) - %s: %s\n", res, path, strerror(errno));
+		res = -1;
+	}
+
+	return res;
+}
+
+long bbs_dir_size(const char *path)
+{
+	int res;
+	long size = 0;
+	res = __bbs_dir_size(path, &size, 32);
+	if (res) {
+		return res;
+	}
+	bbs_debug(6, "Directory %s size is %ld bytes\n", path, size);
+	return size;
 }
 
 FILE *bbs_mkftemp(char *template, mode_t mode)

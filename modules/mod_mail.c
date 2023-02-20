@@ -35,6 +35,7 @@
 
 static char maildir[248] = "";
 static char catchall[256] = "";
+static unsigned int maxquota = 10000000;
 
 /*! \brief Opaque structure for a user's mailbox */
 struct mailbox {
@@ -279,6 +280,31 @@ void mailbox_uid_unlock(struct mailbox *mbox)
 	pthread_mutex_unlock(&mbox->uidlock);
 }
 
+unsigned long mailbox_quota(struct mailbox *mbox)
+{
+	UNUSED(mbox); /* Not currently per-mailbox, but leave the possibility open of being more granular in the future. */
+	return (unsigned long) maxquota;
+}
+
+unsigned long mailbox_quota_remaining(struct mailbox *mbox)
+{
+	long quota, quotaused;
+
+	quota = mailbox_quota(mbox);
+	quotaused = bbs_dir_size(mailbox_maildir(mbox));
+	if (quotaused < 0) {
+		/* An error occured, so we have no idea how much space is used.
+		 * Err on the side of assuming no quota for now. */
+		bbs_warning("Unable to calculate quota usage for mailbox %p\n", mbox);
+		return quota;
+	}
+	quota -= quotaused;
+	if (quota <= 0) {
+		return 0; /* Quota already exceeded. Don't cast to unsigned or it will underflow and be huge. */
+	}
+	return (unsigned long) (quota - quotaused);
+}
+
 static int create_if_nexist(const char *path)
 {
 	if (eaccess(path, R_OK)) {
@@ -364,6 +390,7 @@ static int load_config(void)
 		return -1;
 	}
 	bbs_config_val_set_str(cfg, "general", "catchall", catchall, sizeof(catchall));
+	bbs_config_val_set_uint(cfg, "general", "quota", &maxquota);
 
 	if (eaccess(maildir, X_OK)) { /* This is a directory, so we better have execute permissions on it */
 		bbs_error("Directory %s does not exist\n", maildir);

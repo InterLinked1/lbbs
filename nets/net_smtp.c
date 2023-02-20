@@ -18,6 +18,7 @@
  * \note Supports RFC4954 AUTH
  * \note Supports RFC1893 Enhanced Status Codes
  * \note Supports RFC1870 Size Declarations
+ * \note Supports RFC6409 Message Submission
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -405,14 +406,14 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 	} else {
 		free(address);
 		if (!smtp->fromlocal) { /* External user trying to send us mail that's not for us. */
-			smtp_reply(smtp, 550, 5.7.0, "Mail relay denied. Forwarding to remote hosts disabled."); /* We're not an open relay. */
+			smtp_reply(smtp, 550, 5.7.0, "Mail relay denied. Forwarding to remote hosts disabled"); /* We're not an open relay. */
 			return 0;
 		}
 		/* It's a submission of outgoing mail, do no further validation here. */
 	}
 
 	if (smtp->numlocalrecipients >= MAX_LOCAL_RECIPIENTS || smtp->numexternalrecipients >= MAX_EXTERNAL_RECIPIENTS || smtp->numrecipients >= MAX_RECIPIENTS) {
-		smtp_reply(smtp, 452, 4.5.3, "Your message has too many recipients.");
+		smtp_reply(smtp, 452, 4.5.3, "Your message has too many recipients");
 		return 0;
 	}
 
@@ -593,6 +594,7 @@ static int do_local_delivery(const char *user, const char *data, unsigned long d
 {
 	struct mailbox *mbox;
 	char tmpfile[256], newfile[256];
+	unsigned long quotaleft;
 	int fd, res;
 
 	mbox = mailbox_get(0, user);
@@ -606,6 +608,15 @@ static int do_local_delivery(const char *user, const char *data, unsigned long d
 	if (mailbox_maildir_init(mailbox_maildir(mbox))) {
 		return -1;
 	}
+
+	/* Enforce mail quota for message delivery. */
+	quotaleft = mailbox_quota_remaining(mbox);
+	bbs_debug(5, "Mailbox '%s' has %lu bytes quota remaining (need %lu)\n", user, quotaleft, datalen);
+	if (quotaleft < datalen) {
+		/* Mailbox is full, insufficient quota remaining for this message. */
+		return -2;
+	}
+
 	fd = maildir_mktemp(mailbox_maildir(mbox), tmpfile, sizeof(tmpfile), newfile);
 	if (fd < 0) {
 		return -1;
@@ -846,6 +857,8 @@ static int do_deliver(struct smtp_session *smtp)
 {
 	char *recipient;
 	int res = 0;
+	int quotaexceeded = 0;
+	int mres;
 
 	if (smtp->datalen >= max_message_size) {
 		/* XXX Should this only apply for local deliveries? */
@@ -866,7 +879,11 @@ static int do_deliver(struct smtp_session *smtp)
 			goto next;
 		}
 		if (local) {
-			res |= local_delivery(smtp, recipient, user);
+			mres = local_delivery(smtp, recipient, user);
+			if (mres == -2) {
+				quotaexceeded = 1;
+			}
+			res |= mres;
 		} else {
 			res |= external_delivery(smtp, recipient, domain);
 		}
@@ -877,7 +894,11 @@ next:
 
 	if (res) {
 		/*! \todo BUGBUG FIXME Could be multiple responses */
-		smtp_reply_nostatus(smtp, 451, "Delivery failed");
+		if (quotaexceeded) {
+			smtp_reply(smtp, 552, 5.2.2, "The mailbox you've tried to reach is full (over quota)");
+		} else {
+			smtp_reply_nostatus(smtp, 451, "Delivery failed");
+		}
 	} else {
 		smtp_reply(smtp, 250, 2.6.0, "Message accepted");
 	}
@@ -896,8 +917,13 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 		if (!strcmp(s, ".")) {
 			smtp->indata = 0;
 			if (smtp->datafail) {
-				/* Message not successfully received in totality, so reject it. */
-				smtp_reply(smtp, 451, 4.3.0, "Message not received successfully, try again.");
+				if (smtp->datalen >= max_message_size) {
+					/* Message too large. */
+					smtp_reply(smtp, 552, 5.2.3, "Your message exceeded our message size limits");
+				} else {
+					/* Message not successfully received in totality, so reject it. */
+					smtp_reply(smtp, 451, 4.3.0, "Message not received successfully, try again");
+				}
 				return 0;
 			}
 			return do_deliver(smtp);
@@ -962,7 +988,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 			smtp_reply(smtp, 454, 5.5.1, "STARTTLS may not be repeated");
 		}
 	} else if (smtp->msa && !smtp->secure && require_starttls) {
-		smtp_reply(smtp, 504, 5.5.4, "Must issue a STARTTLS command first.");
+		smtp_reply(smtp, 504, 5.5.4, "Must issue a STARTTLS command first");
 	} else if (!strcasecmp(command, "AUTH")) {
 		/* https://www.samlogic.net/articles/smtp-commands-reference-auth.htm */
 		if (smtp->inauth) { /* Already in authorization */
@@ -971,7 +997,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 			smtp_reply(smtp, 503, 5.7.0, "Already authenticated, no identity changes permitted");
 		} else if (!smtp->secure) {
 			/* Must not offer PLAIN or LOGIN on insecure connections. */
-			smtp_reply(smtp, 504, 5.5.4, "Must issue a STARTTLS command first.");
+			smtp_reply(smtp, 504, 5.5.4, "Must issue a STARTTLS command first");
 		} else {
 			command = strsep(&s, " ");
 			if (!strcasecmp(command, "PLAIN")) {
@@ -988,7 +1014,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 				smtp->inauth = 2;
 				smtp_reply(smtp, 334, "VXNlciBOYW1lAA==", ""); /* Prompt for username (base64 encoded) */
 			} else {
-				smtp_reply(smtp, 504, 5.7.4, "Unrecognized Authentication Type.");
+				smtp_reply(smtp, 504, 5.7.4, "Unrecognized Authentication Type");
 			}
 		}
 	} else if (!strcasecmp(command, "MAIL")) {
@@ -1088,7 +1114,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 		/* Begin reading data. */
 		smtp_reply_nostatus(smtp, 354, "Start mail input; end with a period on a line by itself");
 	} else {
-		smtp_reply(smtp, 502, 5.5.1, "Unrecognized command.");
+		smtp_reply(smtp, 502, 5.5.1, "Unrecognized command");
 	}
 
 	return 0;
@@ -1112,7 +1138,7 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {
 				/* Timeout occured. */
-				smtp_reply(smtp, 451, 4.4.2, "Timeout - closing connection."); /* XXX Should do only if poll returns 0, not if read returns 0 */
+				smtp_reply(smtp, 451, 4.4.2, "Timeout - closing connection"); /* XXX Should do only if poll returns 0, not if read returns 0 */
 			}
 			break;
 		}

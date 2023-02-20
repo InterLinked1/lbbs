@@ -47,6 +47,12 @@ int mailbox_uid_lock(struct mailbox *mbox);
 /*! \brief Unlock a previously acquired UID lock on this mailbox */
 void mailbox_uid_unlock(struct mailbox *mbox);
 
+/*! \brief Get the quota of a mailbox in bytes */
+unsigned long mailbox_quota(struct mailbox *mbox);
+
+/*! \brief Get the quota remaining (available) of a mailbox in bytes */
+unsigned long mailbox_quota_remaining(struct mailbox *mbox);
+
 /*!
  * \brief Get the maildir of a mailbox
  * \param mbox Mailbox. If NULL, the top-level maildir path will be returned.

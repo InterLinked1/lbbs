@@ -253,6 +253,13 @@ int bbs_dir_traverse(const char *path, int (*bbs_file_on_file)(const char *dir_n
 int bbs_dir_traverse_dirs(const char *path, int (*on_file)(const char *dir_name, const char *filename, void *obj), void *obj, int max_depth);
 
 /*!
+ * \brief Get the size of all the files in a directory, recursively to all subdirectories (up to 32 levels)
+ * \param path Directory to traverse recursively
+ * \retval -1 on failure, size in bytes on success
+ */
+long bbs_dir_size(const char *path);
+
+/*!
  * \brief Create a temporary FILE*
  * \param template template ending in XXXXXX to pass to mkstemp
  * \param mode File mode for chmod
