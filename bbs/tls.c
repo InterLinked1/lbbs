@@ -217,6 +217,8 @@ static void *ssl_io_thread(void *unused)
 	int numssl = 0;
 	int needcreate = 1;
 	char buf[2048];
+	int pending;
+	int inovertime = 0, overtime = 0;
 
 	UNUSED(unused);
 
@@ -289,25 +291,34 @@ static void *ssl_io_thread(void *unused)
 		for (i = 0; i < numfds; i++) {
 			pfds[i].revents = 0;
 		}
-		res = poll(pfds, numfds, -1);
-		if (res <= 0) {
-			if (res == -1 && errno == EINTR) {
-				continue;
+		if (!overtime) {
+			res = poll(pfds, numfds, -1);
+			if (res <= 0) {
+				if (res == -1 && errno == EINTR) {
+					continue;
+				}
+				bbs_warning("poll returned %d (%s)\n", res, res == -1 ? strerror(errno) : "");
+				break;
 			}
-			bbs_warning("poll returned %d (%s)\n", res, res == -1 ? strerror(errno) : "");
-			break;
+			inovertime = 0;
+		} else {
+			bbs_debug(6, "%d TLS connection%s in overtime\n", overtime, ESS(overtime));
+			res = overtime;
+			inovertime = 1;
 		}
 		RWLIST_RDLOCK(&sslfds);
 		for (i = 0; res > 0 && i < numfds; i++) {
 			int ores, wres;
-			if (pfds[i].revents == 0) {
-				continue;
+			if (!inovertime) {
+				if (pfds[i].revents == 0) {
+					continue;
+				}
+				res--; /* Processed one event. Break the loop as soon as there are no more, to avoid traversing all like with select(). */
 			}
-			res--; /* Processed one event. Break the loop as soon as there are no more, to avoid traversing all like with select(). */
-			if (pfds[i].revents != POLLIN) { /* Something exceptional happened, probably something going away */
+			if (!inovertime && pfds[i].revents != POLLIN) { /* Something exceptional happened, probably something going away */
 				bbs_debug(3, "SSL at index %d / %d = %s\n", i, i/2, poll_revent_name(pfds[i].revents));
 			}
-			if (i == 0) {
+			if (!inovertime && i == 0) {
 				bbs_alertpipe_read(ssl_alert_pipe);
 				needcreate = 1;
 				break; /* Skip everything else, in case something no longer exists */
@@ -319,6 +330,14 @@ static void *ssl_io_thread(void *unused)
 					/* Don't bother trying to call SSL_read again, we'll just get the error we got last time (SYSCALL or ZERO_RETURN) */
 					bbs_debug(10, "Skipping dead SSL connection\n"); /* This may spam the debug logs until whatever is using this SSL fd cleans it up */
 					continue;
+				} else if (inovertime) {
+					pending = SSL_pending(ssl);
+					if (pending <= 0) {
+						continue;
+					}
+					bbs_debug(10, "Reading from SSL connection in overtime with %d bytes pending\n", pending);
+					res--; /* Processed an overtime event */
+					overtime--;
 				}
 				/* This will not block, since we unblocked the file descriptor prior to registration.
 				 * This is important because we're holding a RDLOCK on the list, which prevents other
@@ -331,6 +350,7 @@ static void *ssl_io_thread(void *unused)
 					switch (err) {
 						case SSL_ERROR_NONE:
 						case SSL_ERROR_WANT_READ:
+							bbs_debug(10, "SSL_read returned %d (%s)\n", ores, ssl_strerror(err));
 							continue;
 						case SSL_ERROR_SYSCALL:
 						case SSL_ERROR_ZERO_RETURN:
@@ -355,7 +375,20 @@ static void *ssl_io_thread(void *unused)
 				if (wres != ores) {
 					bbs_error("Wanted to write %d bytes but wrote %d?\n", ores, wres);
 				}
-			} else { /* sfd->writepipe has activity */
+				/* We're polling the raw socket file descriptor,
+				 * but reading from ssl. Therefore, it's possible
+				 * that's polling the socket would return 0,
+				 * because we can't keep up with reading the decrypted data,
+				 * and thus everything is already buffered in the OpenSSL BIO.
+				 * Explicitly check, because we'll need to read again
+				 * if that's the case, since there's data available to relay
+				 * even though poll() doesn't think there is anymore. */
+				pending = SSL_pending(ssl);
+				if (pending > 0) {
+					bbs_debug(6, "SSL %p has %d pending bytes\n", ssl, pending);
+					overtime++;
+				}
+			} else if (!overtime) { /* sfd->writepipe has activity */
 				/* Read from writepipe and relay to socket using SSL_write */
 				SSL *ssl = ssl_list[(i - 1) / 2];
 				ores = read(pfds[i].fd, buf, sizeof(buf));
