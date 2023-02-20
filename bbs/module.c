@@ -647,6 +647,12 @@ static int on_file_preload(const char *dir_name, const char *filename, void *obj
 		return 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
 	}
 
+	/* noload trumps preload if both are present */
+	if (stringlist_contains(&modules_noload, filename)) {
+		bbs_warning("Conflicting directives 'noload' and 'preload' for module %s. Skipping preload.\n", filename);
+		return 0;
+	}
+
 	/* Only load if it's a preload module */
 	if (!stringlist_contains(&modules_preload, filename)) {
 		return 0;
