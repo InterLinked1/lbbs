@@ -286,6 +286,83 @@ int bbs_dir_traverse_dirs(const char *path, int (*on_file)(const char *dir_name,
 	return __bbs_dir_traverse(path, on_file, obj, max_depth, 1);
 }
 
+int bbs_dir_has_file_prefix(const char *path, const char *prefix)
+{
+	DIR *dir;
+	struct dirent *entry;
+	int res;
+	int prefixlen = strlen(prefix);
+
+	/* Since we'll be using errno to check for problems, zero it out now. */
+	if (errno) {
+		errno = 0;
+	}
+
+	if (!(dir = opendir(path))) {
+		bbs_error("Error opening directory - %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+
+	res = 0;
+
+	while ((entry = readdir(dir)) != NULL) { /* Don't just bail out if errno becomes set, modules could set errno when we load them. */
+		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		} else if (entry->d_type == DT_REG) {
+			if (!strncmp(entry->d_name, prefix, prefixlen)) {
+				res = 1;
+				break;
+			}
+		}
+	}
+
+	closedir(dir);
+
+	if (res < 0 && errno) {
+		bbs_error("Error while reading directories (%d) - %s: %s\n", res, path, strerror(errno));
+		res = -1;
+	}
+
+	return res;
+}
+
+int bbs_dir_has_subdirs(const char *path)
+{
+	DIR *dir;
+	struct dirent *entry;
+	int res;
+
+	/* Since we'll be using errno to check for problems, zero it out now. */
+	if (errno) {
+		errno = 0;
+	}
+
+	if (!(dir = opendir(path))) {
+		bbs_error("Error opening directory - %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+
+	res = 0;
+
+	while ((entry = readdir(dir)) != NULL) { /* Don't just bail out if errno becomes set, modules could set errno when we load them. */
+		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		} else if (entry->d_type == DT_DIR) {
+			res = 1;
+			break;
+		}
+	}
+
+	closedir(dir);
+
+	if (res < 0 && errno) {
+		bbs_error("Error while reading directories (%d) - %s: %s\n", res, path, strerror(errno));
+		res = -1;
+	}
+
+	return res;
+}
+
 /*! \note Skips using bbs_dir_traverse and does it directly since executing a callback for every single file is an expensive way to calculate the quota */
 static int __bbs_dir_size(const char *path, long *size, int max_depth)
 {
@@ -656,6 +733,16 @@ int bbs_strcpy_nospaces(const char *s, char *buf, size_t len)
 	}
 	*buf = '\0'; /* Null terminate */
 	return len > 1 ? 0 : -1;
+}
+
+void bbs_strreplace(char *s, char find, char repl)
+{
+	while (*s) {
+		if (*s == find) {
+			*s = repl;
+		}
+		s++;
+	}
 }
 
 int bbs_str_isprint(const char *s)

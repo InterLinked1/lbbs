@@ -253,6 +253,21 @@ int bbs_dir_traverse(const char *path, int (*bbs_file_on_file)(const char *dir_n
 int bbs_dir_traverse_dirs(const char *path, int (*on_file)(const char *dir_name, const char *filename, void *obj), void *obj, int max_depth);
 
 /*!
+ * \brief Determine whether a directory has any files starting with a named prefix
+ * \param path Directory to check, non-recursively
+ * \param prefix Prefix with which a file must start for there to be a "match"
+ * \retval -1 on failure, 0 if no match, 1 if at least one match
+ */
+int bbs_dir_has_file_prefix(const char *path, const char *prefix);
+
+/*!
+ * \brief Determine whether a directory has any subdirectories
+ * \param path Directory to check, non-recursively
+ * \retval -1 on failure, 0 if no subdirectories, 1 if at least one subdirectory
+ */
+int bbs_dir_has_subdirs(const char *path);
+
+/*!
  * \brief Get the size of all the files in a directory, recursively to all subdirectories (up to 32 levels)
  * \param path Directory to traverse recursively
  * \retval -1 on failure, size in bytes on success
@@ -358,6 +373,14 @@ void bbs_dump_string(const char *s);
  * \retval 0 on success, -1 on failure (truncation)
  */
 int bbs_strcpy_nospaces(const char *s, char *buf, size_t len);
+
+/*!
+ * \brief Replace all instances of character in a string with another character
+ * \param s String in which to perform replacements
+ * \param find Character that should be replaced
+ * \param repl Character that will replace any matched characters
+ */
+void bbs_strreplace(char *s, char find, char repl);
 
 /*!
  * \brief Whether all characters in a string are printable (spaces are included)
