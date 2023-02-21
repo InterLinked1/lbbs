@@ -117,6 +117,13 @@ int bbs_user_exists(const char *username);
  */
 unsigned int bbs_userid_from_username(const char *username);
 
+/*!
+ * \brief Get a user's privilege level by username
+ * \param userid User ID
+ * \retval -1 if user does not exist, user privilege level if user exists
+ */
+int bbs_user_priv_from_userid(unsigned int userid);
+
 /*! \brief Free a list of BBS users, including all the users in the list */
 void bbs_user_list_destroy(struct bbs_user **userlist);
 

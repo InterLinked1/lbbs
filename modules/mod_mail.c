@@ -163,6 +163,17 @@ static void add_alias(const char *aliasname, const char *target)
 	RWLIST_UNLOCK(&aliases);
 }
 
+static int create_if_nexist(const char *path)
+{
+	if (eaccess(path, R_OK)) {
+		if (mkdir(path, 0700)) {
+			bbs_error("mkdir(%s) failed: %s\n", path, strerror(errno));
+			return -1;
+		}
+	}
+	return 0;
+}
+
 /*!
  * \brief Retrieve a mailbox, creating it if it does not already exist
  * \retval mailbox on success, NULL on failure
@@ -183,6 +194,7 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid)
 		}
 	}
 	if (!mbox) {
+		char newdirname[265];
 		bbs_debug(3, "Creating mailbox for user %u for the first time\n", userid);
 		mbox = calloc(1, sizeof(*mbox));
 		if (!mbox) {
@@ -199,12 +211,24 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid)
 		 * make sure that the user's mail directory actually exists. */
 		if (eaccess(mbox->maildir, R_OK)) {
 			/* Can't even read this directory, so it probably doesn't exist. Try creating it. */
-			if (mkdir(mbox->maildir, 0600)) {
+			if (mkdir(mbox->maildir, 0700)) {
 				bbs_error("mkdir(%s) failed: %s\n", mbox->maildir, strerror(errno));
 			} else {
 				bbs_verb(5, "Created mail directory %s\n", mbox->maildir);
 			}
 		}
+		/* Create any needed special directories for the user. */
+		/* directories are prefixed with a . for maildir++ format */
+		snprintf(newdirname, sizeof(newdirname), "%s/.%s", mbox->maildir, "Drafts");
+		create_if_nexist(newdirname);
+		snprintf(newdirname, sizeof(newdirname), "%s/.%s", mbox->maildir, "Junk");
+		create_if_nexist(newdirname);
+		snprintf(newdirname, sizeof(newdirname), "%s/.%s", mbox->maildir, "Sent");
+		create_if_nexist(newdirname);
+		snprintf(newdirname, sizeof(newdirname), "%s/.%s", mbox->maildir, "Trash");
+		create_if_nexist(newdirname);
+		/* Skip All and Flagged (virtual folders) */
+		/* Skip Archive */
 	}
 	RWLIST_UNLOCK(&mailboxes);
 	return mbox;
@@ -282,7 +306,7 @@ void mailbox_uid_unlock(struct mailbox *mbox)
 
 unsigned long mailbox_quota(struct mailbox *mbox)
 {
-	UNUSED(mbox); /* Not currently per-mailbox, but leave the possibility open of being more granular in the future. */
+	UNUSED(mbox); /* Not currently per-mailbox, but leave open the possibility of being more granular in the future. */
 	return (unsigned long) maxquota;
 }
 
@@ -303,17 +327,6 @@ unsigned long mailbox_quota_remaining(struct mailbox *mbox)
 		return 0; /* Quota already exceeded. Don't cast to unsigned or it will underflow and be huge. */
 	}
 	return (unsigned long) (quota - quotaused);
-}
-
-static int create_if_nexist(const char *path)
-{
-	if (eaccess(path, R_OK)) {
-		if (mkdir(path, 0700)) {
-			bbs_error("mkdir(%s) failed: %s\n", path, strerror(errno));
-			return -1;
-		}
-	}
-	return 0;
 }
 
 int mailbox_maildir_init(const char *path)
@@ -338,6 +351,11 @@ const char *mailbox_maildir(struct mailbox *mbox)
 		return maildir;
 	}
 	return mbox->maildir;
+}
+
+int mailbox_id(struct mailbox *mbox)
+{
+	return mbox->id;
 }
 
 int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf)

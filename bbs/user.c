@@ -172,6 +172,30 @@ unsigned int bbs_userid_from_username(const char *username)
 	return res;
 }
 
+int bbs_user_priv_from_userid(unsigned int userid)
+{
+	int priv = -1;
+	int index = 0;
+	struct bbs_user *user, **userlist = bbs_user_list();
+	if (!userlist) {
+		return -1;
+	}
+
+	/*! \todo FIXME This is a horrible implementation (linear instead of constant). Apparently,
+	 * we have no way to get a user by user ID (only by username) right now,
+	 * so that API needs to be added, and then this should be rewritten to use that.
+	 * Horrible kludge for now. */
+	while ((user = userlist[index++])) {
+		if (user->id == userid) {
+			priv = user->priv;
+			break;
+		}
+	}
+
+	bbs_user_list_destroy(userlist);
+	return priv;
+}
+
 void bbs_user_list_destroy(struct bbs_user **userlist)
 {
 	int index = 0;

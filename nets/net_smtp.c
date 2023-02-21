@@ -78,6 +78,8 @@ static int smtp_socket = -1, smtps_socket = -1, msa_socket = -1;
 
 static int accept_relay_in = 1;
 static int accept_relay_out = 1;
+static int minpriv_relay_in = 0;
+static int minpriv_relay_out = 0;
 static int queue_outgoing = 1;
 static int always_queue = 0;
 static int require_starttls = 1;
@@ -192,11 +194,20 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 #endif
 	} else {
 		smtp->helohost = strdup(s);
+		/* Note that enforcing that helohost matches sending IP is noncompliant with RFC 2821:
+		 * "An SMTP server MAY verify that the domain name parameter in the EHLO command
+		 * actually corresponds to the IP address of the client.
+		 * However, the server MUST NOT refuse to accept a message for this reason if the verification fails:
+		 * the information about verification failure is for logging and tracing only. */
+		/* Another reason to not enforce: many IPs may be authorized to send mail for a domain,
+		 * but hostname will resolve only to one of those IPs. In other words, we can't assume
+		 * any relationship between hostname resolution and authorized IPs for sending mail.
+		 * This is the kind of problem SPF records are better off at handling anyways.
+		 */
 	}
 
 	smtp->gothelo = 1;
 	smtp->ehlo = ehlo;
-	
 
 	if (ehlo) {
 		smtp_reply0_nostatus(smtp, 250, "%s at your service [%s]", bbs_hostname(), smtp->node->ip);
@@ -403,6 +414,13 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 			return 0;
 		}
 		/* User exists, great! */
+		if (!smtp->fromlocal && minpriv_relay_in) {
+			int userpriv = bbs_user_priv_from_userid(mailbox_id(mbox));
+			if (userpriv < minpriv_relay_in) {
+				smtp_reply(smtp, 550, 5.1.1, "User unauthorized to receive external mail");
+				return 0;
+			}
+		}
 	} else {
 		free(address);
 		if (!smtp->fromlocal) { /* External user trying to send us mail that's not for us. */
@@ -786,6 +804,11 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 	if (!accept_relay_out) {
 		smtp_reply(smtp, 550, 5.7.0, "Mail relay denied.");
 		return 0;
+	} else if (smtp->fromlocal && minpriv_relay_out) {
+		if (smtp->node->user->priv < minpriv_relay_out) {
+			smtp_reply(smtp, 550, 5.7.0, "Mail relay denied. Unauthorized to relay external mail.");
+			return 0;
+		}
 	}
 
 	if (!always_queue) {
@@ -1114,6 +1137,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 		/* Begin reading data. */
 		smtp_reply_nostatus(smtp, 354, "Start mail input; end with a period on a line by itself");
 	} else {
+		/* Deliberately not supported: VRFY, EXPN */
 		smtp_reply(smtp, 502, 5.5.1, "Unrecognized command");
 	}
 
@@ -1260,6 +1284,8 @@ static int load_config(void)
 
 	bbs_config_val_set_true(cfg, "general", "relayin", &accept_relay_in);
 	bbs_config_val_set_true(cfg, "general", "relayout", &accept_relay_out);
+	bbs_config_val_set_true(cfg, "general", "minprivrelayin", &minpriv_relay_in);
+	bbs_config_val_set_true(cfg, "general", "minprivrelayout", &minpriv_relay_out);
 	bbs_config_val_set_true(cfg, "general", "mailqueue", &queue_outgoing);
 	bbs_config_val_set_true(cfg, "general", "alwaysqueue", &always_queue);
 	bbs_config_val_set_uint(cfg, "general", "queueinterval", &queue_interval);
@@ -1267,6 +1293,9 @@ static int load_config(void)
 	bbs_config_val_set_uint(cfg, "general", "maxage", &max_age);
 	bbs_config_val_set_uint(cfg, "general", "maxsize", &max_message_size);
 	bbs_config_val_set_true(cfg, "general", "requirefromhelomatch", &requirefromhelomatch);
+
+	bbs_config_val_set_true(cfg, "privs", "relayin", &minpriv_relay_in);
+	bbs_config_val_set_true(cfg, "privs", "relayout", &minpriv_relay_out);
 
 	if (queue_interval < 60) {
 		queue_interval = 60;

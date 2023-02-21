@@ -60,6 +60,13 @@ unsigned long mailbox_quota_remaining(struct mailbox *mbox);
 const char *mailbox_maildir(struct mailbox *mbox);
 
 /*!
+ * \brief Get the mailbox ID of a mailbox (same as the user ID of the user that owns this mailbox)
+ * \param mbox Mailbox. Must not be NULL.
+ * \retval positive mailbox ID
+ */
+int mailbox_id(struct mailbox *mbox);
+
+/*!
  * \brief Ensure that maildir directories exist in the specified directory
  * \retval 0 on success, -1 on failure
  */
