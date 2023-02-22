@@ -608,7 +608,44 @@ cleanup:
 	return res;
 }
 
-static int do_local_delivery(const char *user, const char *data, unsigned long datalen)
+/*! \brief Prepend a Received header to the received email */
+/*! \note Don't call this for message submission agents, since that would leak the real sender's IP address */
+static int prepend_received(struct smtp_session *smtp, const char *recipient, int fd)
+{
+	char hostname[256];
+	char timestamp[40];
+	const char *prot;
+	time_t smtpnow;
+    struct tm smtpdate;
+
+	bbs_get_hostname(smtp->node->ip, hostname, sizeof(hostname)); /* Look up the sending IP */
+
+	/* Timestamp is something like Wed, 22 Feb 2023 03:02:22 +0300 */
+	smtpnow = time(NULL);
+    localtime_r(&smtpnow, &smtpdate);
+	strftime(timestamp, sizeof(timestamp), "%a, %b %e %Y %H:%M:%S %z", &smtpdate);
+
+	/* RFC 2822, RFC 3848, RFC 2033 */
+	if (smtp->ehlo) {
+		if (smtp->secure) {
+			if (bbs_user_is_registered(smtp->node->user)) {
+				prot = "ESMTPSA";
+			} else {
+				prot = "ESMTPS";
+			}
+		} else {
+			prot = "ESMTP";
+		}
+	} else {
+		prot = "SMTP";
+	}
+	/* We don't include a message ID since we don't generate/use any internally (even though the queue probably should...). */
+	dprintf(fd, "Received: from %s (%s [%s])\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
+		hostname, hostname, smtp->node->ip, bbs_hostname(), prot, recipient, timestamp); /* recipient already in <> */
+	return 0;
+}
+
+static int do_local_delivery(struct smtp_session *smtp, const char *recipient, const char *user, const char *data, unsigned long datalen)
 {
 	struct mailbox *mbox;
 	char tmpfile[256], newfile[256];
@@ -638,6 +675,10 @@ static int do_local_delivery(const char *user, const char *data, unsigned long d
 	fd = maildir_mktemp(mailbox_maildir(mbox), tmpfile, sizeof(tmpfile), newfile);
 	if (fd < 0) {
 		return -1;
+	}
+
+	if (!smtp->msa) {
+		prepend_received(smtp, recipient, fd);
 	}
 
 	/* Write the entire body of the message. */
@@ -850,6 +891,9 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		 * The metadata is LF terminated (not CR LF) to make it easier to parse back using fread (we won't have a stray CR present).
 		 */
 		dprintf(fd, "MAIL FROM:<%s>\nRCPT TO:%s\n", smtp->from, recipient); /* First 2 lines contain metadata, and recipient is already enclosed in <> */
+		if (!smtp->msa) {
+			prepend_received(smtp, recipient, fd);
+		}
 		/* Write the entire body of the message. */
 		res = bbs_std_write(fd, smtp->data, smtp->datalen); /* Faster than fwrite since we're writing a lot of data, don't need buffering, and know the length. */
 		if (res != (int) smtp->datalen) {
@@ -871,8 +915,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 
 static int local_delivery(struct smtp_session *smtp, const char *recipient, const char *user)
 {
-	UNUSED(recipient); /* Mailboxes implicitly only support a single domain */
-	return do_local_delivery(user, smtp->data, smtp->datalen);
+	return do_local_delivery(smtp, recipient, user, smtp->data, smtp->datalen);
 }
 
 /*! \brief Actually send an email or queue it for delivery */
