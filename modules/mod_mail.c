@@ -23,6 +23,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <pthread.h>
 
 #include "include/linkedlists.h"
@@ -382,6 +383,217 @@ int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf)
 		bbs_error("open failed: %s\n", strerror(errno));
 	}
 	return fd;
+}
+
+unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, int allocate, unsigned int *newuidvalidity, unsigned int *newuidnext)
+{
+	FILE *fp = NULL;
+	char uidfile[256];
+	unsigned int uidvalidity = 0, uidnext = 0;
+
+	/* If the directory is not executable, any files created will be owned by root, which is bad.
+	 * We won't be able to write to these files, and mailbox corruption will ensue. */
+	if (eaccess(directory, X_OK)) {
+		if (chmod(directory, 0700)) {
+			bbs_error("chmod(%s) failed: %s\n", directory, strerror(errno));
+		}
+	}
+
+	/* A single file that stores the UIDVALIDITY and UIDNEXT for this folder.
+	 * We can't use a single file since the UIDNEXT for each directory has to be unique.
+	 * We probably wouldn't want to use the same UIDVALIDITY globally either for the entire mailbox,
+	 * as invalidating one folder would have to invalidate all of them.
+	 * So we do it per folder, and since we don't have a data structure for individual mailbox folders,
+	 * just the top-level mailbox structure for the entire mailbox,
+	 * we have to read and write from disk every time.
+	 *
+	 * The impact of this is hopefully limited since UIDs are only allocated once per message anyways.
+	 */
+	snprintf(uidfile, sizeof(uidfile), "%s/.uidvalidity", directory);
+
+	mailbox_uid_lock(mbox);
+	/* In theory, since fp will only be accessed atomically, we could leave fp open for writing
+	 * while the module is running.
+	 * In practice, clients could have many folders, so if even with 100 users with 10 folders each,
+	 * that's 1000 file descriptors open, all the time, while the BBS is running, with very little benefit.
+	 * Just open and close the files as needed. */
+	if (eaccess(uidfile, R_OK)) {
+		bbs_debug(3, "No UID file yet exists for directory %s\n", directory);
+		fp = fopen(uidfile, "w"); /* Nothing to read, open write only */
+		if (!fp) {
+			bbs_error("fopen(%s) failed: %s\n", uidfile, strerror(errno));
+		}
+	} else {
+		/* If it exists, we better be able to write to this file, too. */
+		if (eaccess(uidfile, W_OK)) {
+			bbs_error("UID file %s is readable but not writable!\n", uidfile);
+			/* Well, this is awkward.
+			 * The only sane thing we can really do is invalidate all the UIDs
+			 * and start over at this point.
+			 */
+		} else {
+			fp = fopen(uidfile, "r+"); /* Open for reading and writing */
+			if (!fp) {
+				bbs_error("fopen(%s) failed: %s\n", uidfile, strerror(errno));
+			} else {
+				char uidv[32] = "";
+				char *uidvaliditystr, *tmp = uidv;
+				if (!fgets(uidv, sizeof(uidv), fp) || s_strlen_zero(uidv)) {
+					bbs_error("Failed to read UID from %s (read: %s)\n", uidfile, uidv);
+				} else if (!(uidvaliditystr = strsep(&tmp, "/")) || !(uidvalidity = atoi(uidvaliditystr)) || !(uidnext = atoi(tmp))) {
+					bbs_error("Failed to parse UIDVALIDITY/UIDNEXT from %s (%s/%s)\n", uidfile, S_IF(uidvaliditystr), S_IF(tmp));
+				}
+				rewind(fp);
+			}
+		}
+	}
+
+	if (!fp || !uidvalidity || !uidnext) {
+		/* UIDVALIDITY must be strictly increasing, so time is a good thing to use. */
+		uidvalidity = time(NULL); /* If this isn't the first access to this folder, this will invalidate the client's cache of this entire folder. */
+		uidnext = 1;
+		/* Since we're starting over, we must broadcast the new UIDVALIDITY value (we always do for SELECTs). */
+	} else {
+		/* See RFC 3501 2.3.1.1. The next UID must be at least UIDNEXT, but it could be greater than it, too. */
+		if (allocate) {
+			uidnext++; /* Increment and write back */
+		} /* else, we just wanted to read the current values */
+	}
+
+	/* Write updated UID to persistent storage. It's super important that this succeed. */
+	if (fprintf(fp, "%u/%u", uidvalidity, uidnext) < 0) { /* Would need to do if we created the directory anyways */
+		bbs_error("Failed to write data to UID file\n");
+	}
+	fflush(fp);
+	if (fclose(fp)) {
+		bbs_error("fclose(%s) failed: %s\n", uidfile, strerror(errno));
+	}
+
+	if (allocate) {
+		bbs_debug(5, "Assigned UIDNEXT %u (UIDVALIDITY %u)\n", uidnext, uidvalidity);
+	}
+
+	/* These are only valid for this folder: */
+	*newuidvalidity = uidvalidity;
+	*newuidnext = uidnext;
+	mailbox_uid_unlock(mbox);
+	return *newuidnext;
+}
+
+int maildir_move_new_to_cur(struct mailbox *mbox, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext)
+{
+	char oldname[256];
+	char newname[272];
+	struct stat st;
+	int bytes;
+	unsigned int uid;
+	unsigned int newuidvalidity, newuidnext;
+
+	snprintf(oldname, sizeof(oldname), "%s/%s", newdir, filename);
+
+	/* dovecot adds a couple pieces of info as well to optimize future access
+	 * since it can get relevant info right from the filename, rather than needing to use stat(2)
+	 * https://doc.dovecot.org/admin_manual/mailbox_formats/maildir/
+	 * Since this is a one-time operation, this is an excellent time to do this kind of thing,
+	 * since nobody else even knows about this message yet.
+	 *
+	 * Additionally, we may as well create the UID at this point in time.
+	 * mbsync(1) has a suggestion on a good way of doing this:
+	 * "The native scheme is stolen from the latest Maildir patches to c-client and
+	 * is therefore compatible with pine. The UID validity is stored in a file named .uidvalidity;
+	 * the UIDs are encoded in the file names of the messages...
+	 * The native scheme is faster, more space efficient, endianess independent and "human readable",
+	 * but will be disrupted if a message is copied from another mailbox without getting a new file name;
+	 * this would result in duplicated UIDs sooner or later, which in turn results in a UID validity change..."
+	 *
+	 * Our invariant is that no process outside of the BBS is allowed to manipulate the maildir directories,
+	 * in particular, the cur directory (if adhering to our naming convention, adding files to new might be okay).
+	 * If this is satisfied, UID corruption should not occur.
+	 *
+	 * Just as dovecot extends maildir by using S= to store size, use U= to store the UID of this file.
+	 */
+	if (stat(oldname, &st)) {
+		bbs_error("stat(%s) failed: %s\n", oldname, strerror(errno));
+		return -1;
+	}
+	bytes = st.st_size;
+
+	/* XXX Calling this once per every file, if there are a lot of files, is not efficient.
+	 * Would be better to read the file at the beginning of the directory traversal,
+	 * update in memory only as we traverse the directory, and then write the final value
+	 * to the file and close it after the traversal ends. */
+	uid = mailbox_get_next_uid(mbox, dir, 1, &newuidvalidity, &newuidnext);
+	if (!uid) {
+		return -1; /* Don't continue if we failed to get a UID */
+	}
+	if (uidvalidity) {
+		*uidvalidity = newuidvalidity;
+	}
+	if (uidnext) {
+		*uidnext = newuidnext; /* Should be same as uid as well */
+	}
+
+	/* XXX maildir example shows S= and W= are different,
+	 * but I'm not sure why the number of bytes in the file
+	 * would not be st_size? So just use S= for now and skip W=. */
+	snprintf(newname, sizeof(newname), "%s/%s,S=%d,U=%u:2,", curdir, filename, bytes, uid); /* Add no flags now, but anticipate them being added */
+	if (rename(oldname, newname)) {
+		bbs_error("rename %s -> %s failed: %s\n", oldname, newname, strerror(errno));
+		return -1;
+	}
+	return bytes;
+}
+
+int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext)
+{
+	char newname[156];
+	char newpath[272];
+	unsigned int uid;
+	unsigned int newuidvalidity, newuidnext;
+	char *tmp, *next;
+
+	/* Keep all the message's flags when moving.
+	 * The only thing we change is the UID.
+	 * The message's old UID (from the original location) isn't (and cannot be) reused. It's just gone now. */
+
+	/* If moving to .Trash, we do NOT set the Deleted flag.
+	 * That is set by the client when it requests to delete messages from the Trash folder. */
+
+	uid = mailbox_get_next_uid(mbox, destmaildir, 1, &newuidvalidity, &newuidnext);
+	if (!uid) {
+		return -1; /* Failed to get a UID, don't move it */
+	}
+	if (uidvalidity) {
+		*uidvalidity = newuidvalidity;
+	}
+	if (uidnext) {
+		*uidnext = newuidnext; /* Should be same as uid as well */
+	}
+
+	safe_strncpy(newname, curfilename, sizeof(newname));
+	tmp = strstr(newname, ",U=");
+	if (tmp) { /* Message already had a UID (was in cur, as opposed to new) */
+		/* Replace old UID with new UID */
+		tmp += STRLEN(",U=");
+		next = tmp;
+		while (isdigit(*next)) {
+			next++; /* Skip all the digits of the UID */
+		}
+		/* Now, next points to the remainder of the filename. Need to do it this way and concatenate, since UIDs could be of different lengths */
+		*tmp = '\0';
+		/* Move to cur, because messages in new are always inferred to be unseen, and would also get renamed again erroneously */
+		snprintf(newpath, sizeof(newpath), "%s/cur/%s%u%s", destmaildir, newname, uid, next);
+	} else {
+		bbs_error("Trying to move a message that had no previous UID?\n");
+		return -1;
+	}
+
+	if (rename(curfile, newpath)) {
+		bbs_error("rename %s -> %s failed: %s\n", curfile, newpath, strerror(errno));
+		return -1;
+	}
+	bbs_debug(6, "Renamed %s -> %s\n", curfile, newpath);
+	return uid;
 }
 
 /*

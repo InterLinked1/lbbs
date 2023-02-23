@@ -81,3 +81,42 @@ int mailbox_maildir_init(const char *path);
  * \retval -1 on failure, file descriptor on success
  */
 int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf);
+
+/*!
+ * \brief Get the next or current UID value of a mailbox directory, atomically
+ * \param mbox Mailbox
+ * \param directory Full system path of directory
+ * \param allocate Whether to generate a new valid message UID or simply returning the current maximum UID value
+ * \param[out] newuidvalidity The UIDVALIDITY of this directory
+ * \param[out] newuidnext The current maximum UID in this directory (this is somewhat of a misnomer, you need to add 1 to compute the actual UIDNEXT)
+ * \retval 0 on failure, otherwise the current maximum or newly allocated UID (depending on the allocate argument)
+ * \note This operation is used by both the IMAP and POP3 servers, although UIDs are only relevant for IMAP.
+ *       POP3 calls this function to ensure consistency for IMAP operations.
+ * \note This operation internally maintains the .uidvalidity of a maildir directory.
+ */
+unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, int allocate, unsigned int *newuidvalidity, unsigned int *newuidnext);
+
+/*!
+ * \brief Move a message from the new directory to the cur directory, atomically
+ * \param mbox Mailbox
+ * \param dir Full system path to the active maildir directory
+ * \param curdir Full system path to cur directory (should be an immediate subdirectory of dir)
+ * \param newdir Full system path to new directory (should be an immediate subdirectory of dir)
+ * \param filename The original name (just the name, not the full path) of the message file in the new directory
+ * \param[out] newuidvalidity The UIDVALIDITY of this directory
+ * \param[out] newuidnext The current maximum UID in this directory (this is somewhat of a misnomer, you need to add 1 to compute the actual UIDNEXT)
+ * \retval -1 on failure, number of bytes in file on success (useful for POP3)
+ */
+int maildir_move_new_to_cur(struct mailbox *mbox, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext);
+
+/*!
+ * \brief Move a message from one maildir to another maildir (including a subdirectory of the same account)
+ * \param mbox Mailbox
+ * \param curfile Full path to current file
+ * \param curfilename The base name of the current file
+ * \param destmaildir The directory path of the maildir to which the message should be moved (do not include new or cur at the end)
+ * \param[out] uidvalidity The new UIDVALIDITY of the destination maildir
+ * \param[out] uidnext The new max UID of the destination maildir
+ * \retval 0 on success, -1 on failure
+ */
+int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext);
