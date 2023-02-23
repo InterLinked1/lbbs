@@ -22,7 +22,7 @@ Key features and capabilities include:
 
 - Native realtime chat
 
-- Electronic mail
+- Electronic mail (SMTP, IMAP4)
 
 - Internet Relay Chat client and server, with native IRC and Discord relays
 
@@ -102,6 +102,8 @@ Config files go in `/etc/lbbs` and are as follows:
 
 - `net_http.conf` - HTTP/HTTPS web server config
 
+- `net_imap.conf` - IMAP4 server config
+
 - `net_irc.conf` - Internet Relay Chat server config
 
 - `net_rlogin`.conf` - RLogin server configuration
@@ -157,6 +159,8 @@ The BBS also comes with some network services that aren't intended for terminal 
 - `net_gopher` - Gopher server
 
 - `net_http` - HTTP/HTTPS web server
+
+- `net_imap` - IMAP server
 
 - `net_irc` - Internet Relay Chat server
 
