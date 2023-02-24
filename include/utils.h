@@ -15,6 +15,23 @@
  */
 
 /*! \note This really should be opaque, but it's declared here so that callers can stack allocate it */
+struct dyn_str {
+	char *buf;
+	int len;
+	int used;
+};
+
+/*!
+ * \brief Append to a dyn_str
+ * \param dynstr
+ * \param s Data to append. The buffer will be dynamically expanded if needed.
+ * \param len Length of s (use strlen if needed first)
+ * \retval -1 on failure
+ * \retval on success, actual length of the string currently in the dyn_str buffer (not the current allocation size)
+ */
+int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len);
+
+/*! \note This really should be opaque, but it's declared here so that callers can stack allocate it */
 struct readline_data {
 	/* Global data */
 	char *buf;

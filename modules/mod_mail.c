@@ -482,6 +482,11 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 
 int maildir_move_new_to_cur(struct mailbox *mbox, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext)
 {
+	return maildir_move_new_to_cur_file(mbox, dir, curdir, newdir, filename, uidvalidity, uidnext, NULL, 0);
+}
+
+int maildir_move_new_to_cur_file(struct mailbox *mbox, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext, char *newpath, size_t len)
+{
 	char oldname[256];
 	char newname[272];
 	struct stat st;
@@ -541,13 +546,15 @@ int maildir_move_new_to_cur(struct mailbox *mbox, const char *dir, const char *c
 		bbs_error("rename %s -> %s failed: %s\n", oldname, newname, strerror(errno));
 		return -1;
 	}
+	if (newpath) {
+		safe_strncpy(newpath, newname, len);
+	}
 	return bytes;
 }
 
-int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext)
+static int gen_newname(struct mailbox *mbox, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newpath, size_t newpathlen)
 {
 	char newname[156];
-	char newpath[272];
 	unsigned int uid;
 	unsigned int newuidvalidity, newuidnext;
 	char *tmp, *next;
@@ -582,17 +589,74 @@ int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curf
 		/* Now, next points to the remainder of the filename. Need to do it this way and concatenate, since UIDs could be of different lengths */
 		*tmp = '\0';
 		/* Move to cur, because messages in new are always inferred to be unseen, and would also get renamed again erroneously */
-		snprintf(newpath, sizeof(newpath), "%s/cur/%s%u%s", destmaildir, newname, uid, next);
+		snprintf(newpath, newpathlen, "%s/cur/%s%u%s", destmaildir, newname, uid, next);
 	} else {
 		bbs_error("Trying to move a message that had no previous UID?\n");
 		return -1;
 	}
+	return uid;
+}
 
+int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext)
+{
+	char newpath[272];
+	unsigned int uid;
+
+	uid = gen_newname(mbox, curfilename, destmaildir, uidvalidity, uidnext, newpath, sizeof(newpath));
+	if (!uid) {
+		return -1;
+	}
 	if (rename(curfile, newpath)) {
 		bbs_error("rename %s -> %s failed: %s\n", curfile, newpath, strerror(errno));
 		return -1;
 	}
 	bbs_debug(6, "Renamed %s -> %s\n", curfile, newpath);
+	return uid;
+}
+
+int maildir_copy_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext)
+{
+	char newpath[272];
+	unsigned int uid;
+	int origfd, newfd;
+	unsigned int size, copied;
+
+	uid = gen_newname(mbox, curfilename, destmaildir, uidvalidity, uidnext, newpath, sizeof(newpath));
+	if (!uid) {
+		return -1;
+	}
+
+	newfd = open(newpath, O_WRONLY | O_CREAT, 0600);
+	if (newfd < 0) {
+		bbs_error("open(%s) failed: %s\n", newpath, strerror(errno));
+		return -1;
+	}
+
+	origfd = open(newpath, O_RDONLY, 0600);
+	if (origfd < 0) {
+		bbs_error("open(%s) failed: %s\n", newpath, strerror(errno));
+		close(newfd);
+		return -1;
+	}
+
+	size = lseek(origfd, 0, SEEK_END); /* Don't blindly trust the size in the filename's S= */
+	lseek(origfd, 0, SEEK_SET); /* rewind to beginning */
+
+	/* This is not a POSIX function, it exists only in Linux.
+	 * Like sendfile, it's more efficient than moving data between kernel and userspace,
+	 * since the kernel can do the copy directly.
+	 * Closest we can get to a system call that will copy a file for us. */
+	copied = copy_file_range(origfd, NULL, newfd, NULL, size, 0);
+	close(newfd);
+	close(origfd);
+	if (copied != size) {
+		bbs_error("Wanted to copy %d bytes but only copied %d?\n", size, copied);
+		if (unlink(newpath)) {
+			bbs_error("Failed to delete %s: %s\n", newpath, strerror(errno));
+		}
+		return -1;
+	}
+	bbs_debug(6, "Copied %s -> %s\n", curfile, newpath);
 	return uid;
 }
 

@@ -32,6 +32,37 @@
 #include "include/node.h" /* use bbs_fd_poll_read */
 #include "include/base64.h"
 
+int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
+{
+	int newlen;
+
+	if (!dynstr->buf) {
+		dynstr->buf = strdup(s);
+		if (!dynstr->buf) {
+			bbs_error("strdup failed\n");
+			return -1;
+		}
+		dynstr->len = len;
+		dynstr->used = len;
+		return len;
+	}
+
+	/* Do we have enough room in the existing buffer? */
+	newlen = dynstr->used + len;
+	if (newlen >= dynstr->len) {
+		char *newbuf = realloc(dynstr->buf, newlen);
+		if (!newbuf) {
+			bbs_error("realloc failed\n");
+			return -1;
+		}
+		dynstr->buf = newbuf;
+		dynstr->len = newlen;
+	}
+	memcpy(dynstr->buf + dynstr->used, s, len);
+	dynstr->used = newlen;
+	return newlen;
+}
+
 void bbs_readline_init(struct readline_data *rldata, char *buf, int len)
 {
 	memset(rldata, 0, sizeof(*rldata));
@@ -56,7 +87,7 @@ int bbs_fd_readline(int fd, struct readline_data *rldata, const char *delim, int
 		memmove(rldata->buf, rldata->pos, rldata->leftover);
 		res = rldata->leftover; /* Pretend like we just read this many bytes, just now. */
 		rldata->buf[res] = '\0';
-#if 1
+#if 0
 		bbs_debug(8, "Shifted buffer now contains: %s\n", rldata->buf);
 #endif
 		/* Update our position to where we need to be. */

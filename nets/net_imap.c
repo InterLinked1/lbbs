@@ -55,6 +55,9 @@ static pthread_t imap_listener_thread = -1;
 static int imap_enabled = 0, imaps_enabled = 1;
 static int imap_socket = -1, imaps_socket = -1;
 
+/*! \brief Allow storage of messages up to 5MB. User can decide if that's really a good use of mail quota or not... */
+#define MAX_APPEND_SIZE 5000000
+
 static int imap_debug_level = 10;
 #define imap_debug(level, fmt, ...) if (imap_debug_level >= level) { bbs_debug(level, fmt, ## __VA_ARGS__); }
 
@@ -80,24 +83,40 @@ struct imap_session {
 	struct bbs_node *node;
 	struct mailbox *mbox;
 	char *folder;
+	char *savedtag;
 	/* maildir */
 	char dir[256];
 	char newdir[260]; /* 4 more, for /new and /cur */
 	char curdir[260];
 	unsigned int uidvalidity;
 	unsigned int uidnext;
+	/* APPEND */
+	char appenddir[212];		/* APPEND directory */
+	char appendtmp[260];		/* APPEND tmp name */
+	char appendnew[260];		/* APPEND new name */
+	char *appenddate;			/* APPEND optional date */
+	int appendflags;			/* APPEND optional flags */
+	int appendfile;				/* File descriptor of current APPEND file */
+	unsigned int appendsize;	/* Expected size of APPEND */
+	unsigned int appendcur;		/* Bytes received so far in APPEND transfer */
+	unsigned int appendfail:1;
 	/* Traversal flags */
 	unsigned int totalnew;		/* In "new" maildir. Will be moved to "cur" when seen. */
 	unsigned int totalcur;		/* In "cur" maildir. */
 	unsigned int totalunseen;	/* Messages with Unseen flag (or more rather, without the Seen flag). */
 	unsigned int firstunseen;	/* Oldest message that is not Seen. */
+	unsigned int expungeindex;	/* Index for EXPUNGE */
 	unsigned int innew:1; /* So we can use the same callback for both new and cur */
 	unsigned int readonly:1;	/* SELECT vs EXAMINE */
+	unsigned int inauth:1;
 };
 
 static void imap_destroy(struct imap_session *imap)
 {
+	close_if(imap->appendfile);
+	free_if(imap->appenddate);
 	/* Do not free tag, since it's stack allocated */
+	free_if(imap->savedtag);
 	free_if(imap->folder);
 }
 
@@ -158,7 +177,7 @@ static void imap_destroy(struct imap_session *imap)
 
 #define IMAP_REV "IMAP4rev1"
 /*! \todo need to add actual capabilities here too */
-#define IMAP_CAPABILITIES IMAP_REV
+#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN"
 #define IMAP_FLAGS FLAG_NAME_FLAGGED " " FLAG_NAME_SEEN " " FLAG_NAME_ANSWERED " " FLAG_NAME_DELETED " " FLAG_NAME_DRAFT
 #define HIERARCHY_DELIMITER "."
 
@@ -204,7 +223,9 @@ static int parse_flags_letters(const char *f)
 	while (*f) {
 		if (!isalpha(*f)) {
 			/* This way we can pass in the start of flags in the filename, and it will stop parsing at the appropriate point */
-			imap_debug(6," Stopping flags parsing since encountered non-alpha char %d\n", *f);
+#if 0
+			imap_debug(8, "Stopping flags parsing since encountered non-alpha char %d\n", *f);
+#endif
 			break;
 		}
 		switch (*f) {
@@ -251,6 +272,7 @@ static void gen_flag_names(const char *flagstr, char *fullbuf, size_t len)
 	SAFE_FAST_COND_APPEND(fullbuf, buf, left, strchr(flagstr, FLAG_DRAFT), FLAG_NAME_DRAFT);
 	SAFE_FAST_COND_APPEND(fullbuf, buf, left, strchr(flagstr, FLAG_FLAGGED), FLAG_NAME_FLAGGED);
 	SAFE_FAST_COND_APPEND(fullbuf, buf, left, strchr(flagstr, FLAG_SEEN), FLAG_NAME_SEEN);
+	SAFE_FAST_COND_APPEND(fullbuf, buf, left, strchr(flagstr, FLAG_TRASHED), FLAG_NAME_DELETED);
 }
 
 static int test_flags_parsing(void)
@@ -301,6 +323,24 @@ cleanup:
 		return 0; \
 	}
 
+/*! \brief Translate an IMAP directory path to the full path of the IMAP mailbox on disk */
+static int imap_translate_dir(struct imap_session *imap, const char *directory, char *buf, size_t len)
+{
+	/* With the maildir format, the INBOX is the top-level maildir for a user.
+	 * Other directories are subdirectories */
+	if (!strcasecmp(directory, "INBOX")) {
+		safe_strncpy(buf, mailbox_maildir(imap->mbox), len);
+	} else {
+		/* For subdirectories, if they don't exist, don't automatically create them. */
+		/* need to prefix with . for maildir++ format */
+		snprintf(buf, len, "%s/.%s", mailbox_maildir(imap->mbox), directory);
+		if (eaccess(buf, R_OK)) {
+			return -1;
+		}
+	}
+	return 0;
+}
+
 static int set_maildir(struct imap_session *imap, const char *mailbox)
 {
 	if (strlen_zero(mailbox)) {
@@ -308,19 +348,9 @@ static int set_maildir(struct imap_session *imap, const char *mailbox)
 		return -1;
 	}
 
-	/* With the maildir format, the INBOX is the top-level maildir for a user.
-	 * Other directories are subdirectories */
-	if (!strcasecmp(mailbox, "INBOX")) {
-		safe_strncpy(imap->dir, mailbox_maildir(imap->mbox), sizeof(imap->dir));
-	} else {
-		/*! \todo Add support for subdirectories (translate to periods for maildir) */
-		/* For subdirectories, if they don't exist, don't automatically create them. */
-		/* need to prefix with . for maildir++ format */
-		snprintf(imap->dir, sizeof(imap->dir), "%s/.%s", mailbox_maildir(imap->mbox), mailbox);
-		if (eaccess(imap->dir, R_OK)) {
-			imap_reply(imap, "NO No such mailbox '%s'", mailbox);
-			return -1;
-		}
+	if (imap_translate_dir(imap, mailbox, imap->dir, sizeof(imap->dir))) {
+		imap_reply(imap, "NO No such mailbox '%s'", mailbox);
+		return -1;
 	}
 
 	imap_debug(3, "New effective maildir is %s\n", imap->dir);
@@ -335,7 +365,7 @@ static int on_select(const char *dir_name, const char *filename, struct imap_ses
 {
 	char *flags;
 
-	imap_debug(4, "Analyzing file %s/%s\n", dir_name, filename);
+	imap_debug(7, "Analyzing file %s/%s\n", dir_name, filename);
 
 	/* RECENT is not the same as UNSEEN.
 	 * In the context of maildir, RECENT refers to messages in the new directory.
@@ -380,6 +410,70 @@ static int on_select(const char *dir_name, const char *filename, struct imap_ses
 	}
 
 	return 0;
+}
+
+static int expunge_helper(const char *dir_name, const char *filename, struct imap_session *imap, int expunge)
+{
+	char *flags;
+	int oldflags;
+	char fullpath[256];
+
+	/* This is the final stage of deletions.
+	 * What clients generally do when you "delete" an item is
+	 * they COPY it to the Trash folder, then set the Deleted flag on the message.
+	 * They fetch the flags for the message to confirm the Deleted flag is present,
+	 * and then the message "disappears" from the UI. However, the message still exists.
+	 * When the mail client exits, it will issue a "CLOSE" command,
+	 * which will actually go ahead and remove the messages, deleting them permanently from the original folder.
+	 * Of course, they're still in the Trash directory, until they're auto-deleted or removed from there
+	 * using the same process.
+	 */
+
+	imap->expungeindex += 1;
+
+	imap_debug(7, "Analyzing file %s/%s\n", dir_name, filename);
+	flags = strchr(filename, ':');
+	if (!flags++) {
+		bbs_error("File %s/%s is noncompliant with maildir\n", dir_name, filename);
+		return 0;
+	}
+	oldflags = parse_flags_letters(flags + 2); /* Skip first 2 since it's always just "2," and real flags come after that */
+	if (!(oldflags & FLAG_BIT_DELETED)) {
+		return 0;
+	}
+
+	/* Marked as deleted. Remove message, permanently. */
+	snprintf(fullpath, sizeof(fullpath), "%s/%s", dir_name, filename);
+	imap_debug(4, "Permanently removing message %s\n", fullpath);
+	MAILBOX_TRYRDLOCK(imap);
+	if (unlink(fullpath)) {
+		bbs_error("Failed to delete %s: %s\n", fullpath, strerror(errno));
+	}
+	mailbox_unlock(imap->mbox);
+	if (expunge) {
+		imap_send(imap, "%d EXPUNGE", imap->expungeindex); /* Send for EXPUNGE, but not CLOSE */
+	}
+	/* EXPUNGE indexes update as we actively expunge messages.
+	 * i.e. if we were to delete all the messages in a directory,
+	 * the responses might look like:
+	 * 1 EXPUNGE
+	 * 1 EXPUNGE
+	 * 1 EXPUNGE
+	 * etc...
+	 *
+	 * So every time we delete a message, decrement 1 so we're where we should be. */
+	imap->expungeindex -= 1;
+	return 0;
+}
+
+static int on_close(const char *dir_name, const char *filename, struct imap_session *imap)
+{
+	return expunge_helper(dir_name, filename, imap, 0);
+}
+
+static int on_expunge(const char *dir_name, const char *filename, struct imap_session *imap)
+{
+	return expunge_helper(dir_name, filename, imap, 1);
 }
 
 static int imap_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, struct imap_session *imap), struct imap_session *imap)
@@ -881,13 +975,364 @@ cleanup:
 	return -1;
 }
 
+/*! \retval 0 if not in range, UID if in range */
+static inline int msg_in_range(int seqno, const char *filename, const char *sequences, int usinguid)
+{
+	char *uidstr;
+	unsigned int msguid;
+
+	if (!usinguid) {
+		/* XXX UIDs aren't guaranteed to be in order (see comment below), so we can't break if seqno > max */
+		if (!in_range(sequences, seqno)) {
+			return 0;
+		}
+	}
+
+	/* Since we use scandir, msg sequence #s should be in order of oldest to newest */
+
+	/* Parse UID */
+	uidstr = strstr(filename, ",U=");
+	if (!uidstr) {
+		bbs_error("Missing UID for file %s?\n", filename);
+		return 0;
+	}
+	uidstr += STRLEN(",U=");
+	msguid = atoi(uidstr); /* Should stop as soon we encounter the first nonnumeric character, whether , or : */
+	if (msguid <= 0) {
+		bbs_error("Unexpected UID: %u\n", msguid);
+		return 0;
+	}
+	if (usinguid) {
+		if (!in_range(sequences, msguid)) {
+			return 0;
+		}
+	}
+	return msguid;
+}
+
+static int uintlist_append2(unsigned int **a, unsigned int **b, int *lengths, int *allocsizes, unsigned int vala, unsigned int valb)
+{
+	int curlen;
+
+	if (!*a) {
+		*a = malloc(32 * sizeof(unsigned int));
+		if (!*a) {
+			bbs_error("malloc failed\n");
+			return -1;
+		}
+		*b = malloc(32 * sizeof(unsigned int));
+		if (!*b) {
+			bbs_error("malloc failed\n");
+			free_if(*a);
+			return -1;
+		}
+		*allocsizes = 32;
+	} else {
+		if (*lengths >= *allocsizes) {
+			unsigned int *newb, *newa = realloc(*a, *allocsizes + 32 * sizeof(unsigned int)); /* Increase by 32 each chunk */
+			if (!newa) {
+				bbs_error("realloc failed\n");
+				return -1;
+			}
+			newb = realloc(*b, *allocsizes + 32 * sizeof(unsigned int));
+			if (!newb) {
+				/* This is tricky. We expanded a but failed to expand b. Keep the smaller size for our records. */
+				bbs_error("realloc failed\n");
+				return -1;
+			}
+			*allocsizes = *allocsizes + 32 * sizeof(unsigned int);
+		}
+	}
+
+	curlen = *lengths;
+	(*a)[curlen] = vala;
+	(*b)[curlen] = valb;
+	*lengths = curlen + 1;
+	return 0;
+}
+
+static int copyuid_str_append(struct dyn_str *dynstr, unsigned int a, unsigned int b)
+{
+	char range[32];
+	int len;
+	if (a == b) {
+		len = snprintf(range, sizeof(range), "%s%u", dynstr->used ? "," : "", a);
+	} else {
+		len = snprintf(range, sizeof(range), "%s%u:%u", dynstr->used ? "," : "", a, b);
+	}
+	return dyn_str_append(dynstr, range, len);
+}
+
+static char *gen_uintlist(unsigned int *l, int lengths)
+{
+	int i;
+	unsigned int begin, last;
+	struct dyn_str dynstr;
+
+	if (!lengths) {
+		return NULL;
+	}
+
+	memset(&dynstr, 0, sizeof(dynstr));
+
+	last = begin = l[0];
+	for (i = 1; i < lengths; i++) {
+		if (l[i] != last + 1) {
+			/* Last one ended a range */
+			copyuid_str_append(&dynstr, begin, last);
+			begin = l[i]; /* Start of next range */
+		}
+		last = l[i];
+	}
+	/* Last one */
+	copyuid_str_append(&dynstr, begin, last);
+	return dynstr.buf; /* This is dynamically allocated, so okay */
+}
+
+static int test_copyuid_generation(void)
+{
+	unsigned int *a = NULL, *b = NULL;
+	char *s = NULL;
+	int lengths = 0, allocsizes = 0;
+
+	uintlist_append2(&a, &b, &lengths, &allocsizes, 1, 11);
+	uintlist_append2(&a, &b, &lengths, &allocsizes, 3, 13);
+	uintlist_append2(&a, &b, &lengths, &allocsizes, 4, 14);
+	uintlist_append2(&a, &b, &lengths, &allocsizes, 6, 16);
+
+	s = gen_uintlist(a, lengths);
+	bbs_test_assert_str_equals(s, "1,3:4,6");
+	free_if(s);
+
+	s = gen_uintlist(b, lengths);
+	bbs_test_assert_str_equals(s, "11,13:14,16");
+	free_if(s);
+
+	return 0;
+
+cleanup:
+	free_if(a);
+	free_if(b);
+	free_if(s);
+	return -1;
+}
+
+static int handle_copy(struct imap_session *imap, char *s, int usinguid)
+{
+	struct dirent *entry, **entries;
+	char *sequences, *newbox;
+	char newboxdir[256];
+	char srcfile[516];
+	int files, fno = 0;
+	int seqno = 0;
+	int numcopies = 0;
+	unsigned int *olduids = NULL, *newuids = NULL;
+	int lengths = 0, allocsizes = 0;
+	unsigned int uidvalidity, uidnext, uidres;
+	char *olduidstr = NULL, *newuidstr = NULL;
+
+	sequences = strsep(&s, " "); /* Messages, specified by sequence number or by UID (if usinguid) */
+	newbox = strsep(&s, " ");
+	REQUIRE_ARGS(sequences);
+	REQUIRE_ARGS(newbox);
+	STRIP_QUOTES(newbox);
+
+	/* We'll be moving into the cur directory. Don't specify here, maildir_copy_msg tacks on the /cur implicitly. */
+	if (imap_translate_dir(imap, newbox, newboxdir, sizeof(newboxdir))) { /* Destination directory doesn't exist. */
+		imap_reply(imap, "NO [TRYCREATE] No such mailbox");
+		return 0;
+	}
+
+	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
+	files = scandir(imap->curdir, &entries, NULL, alphasort);
+	if (files < 0) {
+		bbs_error("scandir(%s) failed: %s\n", imap->curdir, strerror(errno));
+		return -1;
+	}
+	while (fno < files && (entry = entries[fno++])) {
+		unsigned int msguid;
+
+		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		msguid = msg_in_range(++seqno, entry->d_name, sequences, usinguid);
+		if (!msguid) {
+			continue;
+		}
+
+		snprintf(srcfile, sizeof(srcfile), "%s/%s", imap->curdir, entry->d_name);
+		uidres = maildir_copy_msg(imap->mbox, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext);
+		if (!uidres) {
+			continue;
+		}
+		if (!uintlist_append2(&olduids, &newuids, &lengths, &allocsizes, msguid, uidres)) {
+			numcopies++;
+		}
+	}
+	free(entries);
+	/* UIDVALIDITY of dest mailbox, src UIDs, dest UIDs (in same order as src messages) */
+	if (olduids || newuids) {
+		olduidstr = gen_uintlist(olduids, lengths);
+		newuidstr = gen_uintlist(newuids, lengths);
+		free_if(olduids);
+		free_if(newuids);
+	}
+	imap_reply(imap, "OK [COPYUID %u %s %s] COPY completed", uidvalidity, S_IF(olduidstr), S_IF(newuidstr));
+	free_if(olduidstr);
+	free_if(newuidstr);
+	return 0;
+}
+
+static int handle_append(struct imap_session *imap, char *s)
+{
+	int appendsize;
+	char *mailbox, *flags, *date, *size;
+
+	/* Format is mailbox [flags] [date] message literal
+	 * The message literal begins with {size} on the same line
+	 * See also RFC 3502. */
+
+	mailbox = strsep(&s, " ");
+	size = strchr(s, '{');
+	if (!size) {
+		imap_reply(imap, "NO Missing message literal size");
+		return 0;
+	}
+	*size++ = '\0';
+
+	/* These are both optional arguments */
+	flags = strsep(&s, " ");
+	date = strsep(&s, " ");
+
+	imap->appendflags = 0;
+	free_if(imap->appenddate);
+
+	if (flags) {
+		bbs_strterm(flags, ')');
+		imap->appendflags = parse_flags_string(S_IF(flags + 1)); /* Skip () */
+	}
+	if (date) {
+		imap->appenddate = strdup(date);
+	}
+
+	STRIP_QUOTES(mailbox);
+	if (imap_translate_dir(imap, mailbox, imap->appenddir, sizeof(imap->appenddir))) { /* Destination directory doesn't exist. */
+		imap_reply(imap, "NO [TRYCREATE] No such mailbox");
+		return 0;
+	}
+
+	appendsize = atoi(size); /* Read this many bytes */
+	if (appendsize <= 0) {
+		imap_reply(imap, "NO Invalid message literal size");
+		return 0;
+	} else if (appendsize >= MAX_APPEND_SIZE) {
+		imap_reply(imap, "NO Message too large");
+		return 0;
+	}
+
+	_imap_reply(imap, "+ Ready for literal data\r\n");
+	imap->appendsize = appendsize; /* Bytes we expect to receive */
+	imap->appendcur = 0; /* Bytes received so far */
+	imap->appendfile = maildir_mktemp(imap->appenddir, imap->appendtmp, sizeof(imap->appendtmp), imap->appendnew);
+	if (imap->appendfile < 0) {
+		return -1;
+	}
+	return 0;
+}
+
+static int maildir_msg_setflags(const char *origname, const char *newflagletters)
+{
+	char fullfilename[524];
+	char dirpath[256];
+	char *tmp, *filename;
+
+	/* Generate new filename and do the rename */
+	safe_strncpy(dirpath, origname, sizeof(dirpath));
+	tmp = strrchr(dirpath, '/');
+	if (tmp) {
+		*tmp++ = '\0';
+		filename = tmp;
+		bbs_strterm(filename, ':');
+	} else {
+		bbs_error("Invalid filename: %s\n", origname);
+		return -1;
+	}
+	snprintf(fullfilename, sizeof(fullfilename), "%s/%s:2,%s", dirpath, filename, newflagletters);
+	bbs_debug(4, "Renaming %s -> %s\n", origname, fullfilename);
+	if (rename(origname, fullfilename)) {
+		bbs_error("rename %s -> %s failed: %s\n", origname, fullfilename, strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+static int finish_append(struct imap_session *imap)
+{
+	char curdir[260];
+	char newdir[260];
+	char newfilename[256];
+	char *filename;
+	int res;
+	unsigned int uidvalidity, uidnext;
+
+	if (imap->appendcur != imap->appendsize) {
+		bbs_warning("Client wanted to append %d bytes, but sent %d?\n", imap->appendsize, imap->appendcur);
+	}
+	imap->appendsize = 0; /* APPEND is over now */
+	close_if(imap->appendfile);
+	filename = strrchr(imap->appendnew, '/');
+	if (!filename) {
+		bbs_error("Invalid filename: %s\n", imap->appendnew);
+		imap_reply(imap, "NO Append failed");
+		return 0;
+	}
+	filename++; /* Just the base name now */
+	if (rename(imap->appendtmp, imap->appendnew)) {
+		bbs_error("rename %s -> %s failed: %s\n", imap->appendtmp, imap->appendnew, strerror(errno));
+		imap_reply(imap, "NO Append failed");
+		return 0;
+	}
+
+	/* File has been moved from tmp to new.
+	 * Now, move it to cur.
+	 * This is a 2-stage rename because we don't have a function to move an arbitrary
+	 * file into a mailbox folder, only one that's already in cur,
+	 * and the only function that properly initializes a filename is maildir_move_new_to_cur. */
+	snprintf(curdir, sizeof(curdir), "%s/cur", imap->appenddir);
+	snprintf(newdir, sizeof(newdir), "%s/new", imap->appenddir);
+	res = maildir_move_new_to_cur_file(imap->mbox, imap->appenddir, curdir, newdir, filename, &uidvalidity, &uidnext, newfilename, sizeof(newfilename));
+	if (res < 0) {
+		imap_reply(imap, "NO Append failed");
+		return 0;
+	}
+
+	/* Now, apply any flags to the message... (yet a third rename, potentially) */
+	if (imap->appendflags) {
+		char newflagletters[27];
+		/* Generate flag letters from flag bits */
+		gen_flag_letters(imap->appendflags, newflagletters, sizeof(newflagletters));
+		imap->appendflags = 0;
+		if (maildir_msg_setflags(newfilename, newflagletters)) {
+			bbs_warning("Failed to set flags for %s\n", newfilename);
+		}
+	}
+
+	/* Set the internal date */
+	/*! \todo Set the file creation/modified time (strptime)? */
+	UNUSED(imap->appenddate);
+
+	/* APPENDUID response */
+	imap_reply(imap, "OK [APPENDUID %u %u] APPEND completed", uidvalidity, uidnext); /* Don't add 1, this is the current message UID, not UIDNEXT */
+	return 0;
+}
+
 static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_request *fetchreq, const char *sequences)
 {
 	struct dirent *entry, **entries;
 	int files, fno = 0;
 	int seqno = 0;
 	char response[512];
-	char headers[4096]; /* XXX Large enough for all headers, etc.? */
+	char headers[4096] = ""; /* XXX Large enough for all headers, etc.? */
 	char *buf;
 	int len;
 	int multiline = 0;
@@ -900,7 +1345,6 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		return -1;
 	}
 	while (fno < files && (entry = entries[fno++])) {
-		char *uidstr;
 		unsigned int msguid;
 		const char *flags;
 		FILE *fp;
@@ -912,32 +1356,9 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			continue;
 		}
-		seqno++;
-		if (!usinguid) {
-			/* XXX UIDs aren't guaranteed to be in order (see comment below), so we can't break if seqno > max */
-			if (!in_range(sequences, seqno)) {
-				continue;
-			}
-		}
-
-		/* Since we use scandir, msg sequence #s should be in order of oldest to newest */
-
-		/* Parse UID */
-		uidstr = strstr(entry->d_name, ",U=");
-		if (!uidstr) {
-			bbs_error("Missing UID for file %s?\n", entry->d_name);
+		msguid = msg_in_range(++seqno, entry->d_name, sequences, usinguid);
+		if (!msguid) {
 			continue;
-		}
-		uidstr += STRLEN(",U=");
-		msguid = atoi(uidstr); /* Should stop as soon we encounter the first nonnumeric character, whether , or : */
-		if (msguid <= 0) {
-			bbs_error("Unexpected UID: %u\n", msguid);
-			continue;
-		}
-		if (usinguid) {
-			if (!in_range(sequences, msguid)) {
-				continue;
-			}
 		}
 		/* At this point, the message is a match. Fetch everything we're supposed to for it. */
 		buf = response;
@@ -1073,7 +1494,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				if (res != size) {
 					bbs_error("sendfile failed (%d != %ld): %s\n", res, size, strerror(errno));
 				} else {
-					imap_debug(5, "Sent %d-byte body\n", res);
+					imap_debug(5, "Sent %d-byte body for %s\n", res, fullname);
 				}
 				dprintf(imap->wfd, "\r\n)\r\n"); /* And the finale (don't use imap_send for this) */
 			} else {
@@ -1196,43 +1617,19 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 		return -1;
 	}
 	while (fno < files && (entry = entries[fno++])) {
-		char *uidstr;
 		unsigned int msguid;
 		const char *flags;
-		char oldname[516];
-		char fullfilename[524];
-		char fullname[256];
-		char newflagletters[NUM_FLAG_BITS + 1];
+		char newflagletters[256];
 		int i;
 		int newflags;
+		int changes = 0;
 
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			continue;
 		}
-		seqno++;
-		if (!usinguid) {
-			/* XXX UIDs aren't guaranteed to be in order (see comment below), so we can't break if seqno > max */
-			if (!in_range(sequences, seqno)) {
-				continue;
-			}
-		}
-
-		/* XXX See comments in handle_fetch */
-		uidstr = strstr(entry->d_name, ",U=");
-		if (!uidstr) {
-			bbs_error("Missing UID for file %s?\n", entry->d_name);
+		msguid = msg_in_range(++seqno, entry->d_name, sequences, usinguid);
+		if (!msguid) {
 			continue;
-		}
-		uidstr += STRLEN(",U=");
-		msguid = atoi(uidstr); /* Should stop as soon we encounter the first nonnumeric character, whether , or : */
-		if (msguid <= 0) {
-			bbs_error("Unexpected UID: %u\n", msguid);
-			continue;
-		}
-		if (usinguid) {
-			if (!in_range(sequences, msguid)) {
-				continue;
-			}
 		}
 		/* Get the message's current flags. */
 		flags = strchr(entry->d_name, ':'); /* maildir flags */
@@ -1249,6 +1646,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			for (i = 0; i < NUM_FLAG_BITS; i++) {
 				if (opflags & (1 << i)) {
 					newflags |= (1 << i);
+					changes++;
 				}
 			}
 		} else if (flagop == -1) { /* Remove */
@@ -1256,24 +1654,24 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			for (i = 0; i < NUM_FLAG_BITS; i++) {
 				if (opflags & (1 << i)) {
 					newflags &= ~(1 << i);
+					changes++;
 				}
 			}
 		} else {
 			newflags = opflags; /* Just replace. That was easy. */
+			changes++;
 		}
 
-		/* Generate flag letters from flag bits */
-		gen_flag_letters(newflags, newflagletters, sizeof(newflagletters));
-
-		/* Generate new filename and do the rename */
-		snprintf(oldname, sizeof(oldname), "%s/%s", imap->curdir, entry->d_name);
-		safe_strncpy(fullname, entry->d_name, sizeof(fullname));
-		bbs_strterm(fullname, ':');
-		snprintf(fullfilename, sizeof(fullfilename), "%s/%s:2,%s", imap->curdir, fullname, newflagletters);
-		bbs_debug(3, "Renaming %s -> %s\n", oldname, fullfilename);
-		if (rename(oldname, fullfilename)) {
-			bbs_error("rename %s -> %s failed: %s\n", oldname, fullfilename, strerror(errno));
-			continue;
+		if (changes) {
+			char oldname[516];
+			/* Generate flag letters from flag bits */
+			gen_flag_letters(newflags, newflagletters, sizeof(newflagletters));
+			snprintf(oldname, sizeof(oldname), "%s/%s", imap->curdir, entry->d_name);
+			if (maildir_msg_setflags(oldname, newflagletters)) {
+				continue;
+			}
+		} else {
+			imap_debug(5, "No changes in flags for message %s/%s\n", imap->curdir, entry->d_name);
 		}
 
 		/* Send the response if not silent */
@@ -1346,7 +1744,7 @@ static int handle_create(struct imap_session *imap, char *s)
 		return 0;
 	}
 
-	snprintf(path, sizeof(path), "%s/.%s", mailbox_maildir(imap->mbox), s); /* maildir subdirectories start with . */
+	imap_translate_dir(imap, s, path, sizeof(path)); /* Don't care about return value, since it probably doesn't exist right now and that's fine. */
 	bbs_debug(3, "IMAP client wants to create directory %s\n", path);
 	if (!eaccess(path, R_OK)) {
 		imap_reply(imap, "NO Mailbox already exists");
@@ -1378,9 +1776,7 @@ static int handle_delete(struct imap_session *imap, char *s)
 		return 0;
 	}
 
-	snprintf(path, sizeof(path), "%s/.%s", mailbox_maildir(imap->mbox), s); /* maildir subdirectories start with . */
-
-	if (eaccess(path, R_OK)) {
+	if (imap_translate_dir(imap, s, path, sizeof(path))) {
 		imap_reply(imap, "NO No such mailbox with that name");
 		return 0;
 	}
@@ -1476,12 +1872,12 @@ static int handle_rename(struct imap_session *imap, char *s)
 		return 0;
 	}
 
-	snprintf(oldpath, sizeof(oldpath), "%s/.%s", mailbox_maildir(imap->mbox), old); /* maildir subdirectories start with . */
-	snprintf(newpath, sizeof(newpath), "%s/.%s", mailbox_maildir(imap->mbox), new);
-	if (eaccess(oldpath, R_OK)) {
+	if (imap_translate_dir(imap, old, oldpath, sizeof(oldpath))) {
 		imap_reply(imap, "NO No such mailbox with that name");
 		return 0;
-	} else if (!eaccess(newpath, R_OK)) {
+	}
+	imap_translate_dir(imap, new, newpath, sizeof(newpath)); /* Don't care about return value since if it already exists, we'll abort. */
+	if (!eaccess(newpath, R_OK)) {
 		imap_reply(imap, "NO Mailbox already exists");
 		return 0;
 	}
@@ -1509,6 +1905,58 @@ static int imap_process(struct imap_session *imap, char *s)
 	int res;
 	char *command;
 
+	if (imap->appendsize) {
+		/* We're in the middle of an append at the moment.
+		 * This is kind of like the DATA command with SMTP. */
+		int dlen;
+
+		if (imap->appendfail) {
+			return 0; /* Corruption already happened, just ignore the rest of the message for now. */
+		}
+
+		dlen = strlen(s); /* s may be empty but will not be NULL */
+		bbs_std_write(imap->appendfile, s, dlen);
+		bbs_std_write(imap->appendfile, "\r\n", 2);
+		imap->appendcur += dlen + 2;
+		imap_debug(6, "Received %d/%d bytes of APPEND so far\n", imap->appendcur, imap->appendsize);
+
+		if (imap->appendcur >= imap->appendsize) {
+			finish_append(imap);
+		}
+		return 0;
+	} else if (imap->inauth) {
+		/* AUTH=PLAIN - got a combined encoded username/password */
+		unsigned char *decoded;
+		char *authorization_id, *authentication_id, *password;
+
+		imap->inauth = 0;
+		decoded = bbs_sasl_decode(s, &authorization_id, &authentication_id, &password);
+		if (!decoded) {
+			return -1;
+		}
+
+		/* Can't use bbs_sasl_authenticate directly since we need to strip the domain */
+		bbs_strterm(authentication_id, '@');
+		res = bbs_authenticate(imap->node, authentication_id, password);
+		memset(password, 0, strlen(password)); /* Destroy the password from memory before we free it */
+		free(decoded);
+
+		/* Have a combined username and password */
+		if (res) {
+			imap_reply(imap, "NO Invalid username or password"); /* No such mailbox, since wrong domain! */
+		} else {
+			imap->mbox = mailbox_get(imap->node->user->id, NULL); /* Retrieve the mailbox for this user */
+			if (!imap->mbox) {
+				bbs_error("Successful authentication, but unable to retrieve mailbox for user %d\n", imap->node->user->id);
+				imap_reply(imap, "BYE System error");
+				return -1; /* Just disconnect, we probably won't be able to proceed anyways. */
+			}
+			_imap_reply(imap, "%s OK Success\r\n", imap->savedtag); /* Use tag from AUTHENTICATE request */
+		}
+		free_if(imap->savedtag);
+		return 0;
+	}
+
 	imap->tag = strsep(&s, " "); /* Tag for client to identify responses to its request */
 	command = strsep(&s, " ");
 
@@ -1527,9 +1975,22 @@ static int imap_process(struct imap_session *imap, char *s)
 		/* Some clients send a CAPABILITY after login, too,
 		 * even though the RFC says clients shouldn't,
 		 * since capabilities don't change during sessions. */
-		/* XXX AUTH=PLAIN => AUTHENTICATE, which we don't support currently. */
 		imap_send(imap, "CAPABILITY " IMAP_CAPABILITIES);
 		imap_reply(imap, "OK CAPABILITY completed");
+	} else if (!strcasecmp(command, "AUTHENTICATE")) {
+		if (bbs_user_is_registered(imap->node->user)) {
+			imap_reply(imap, "NO Already logged in");
+			return 0;
+		}
+		/* AUTH=PLAIN => AUTHENTICATE, which is preferred to LOGIN. */
+		command = strsep(&s, " ");
+		if (!strcasecmp(command, "PLAIN")) {
+			_imap_reply(imap, "+\r\n");
+			imap->inauth = 1;
+			imap->savedtag = strdup(imap->tag);
+		} else {
+			imap_reply(imap, "NO Auth method not supported");
+		}
 	} else if (!strcasecmp(command, "LOGIN")) {
 		char *user, *pass, *domain;
 		user = strsep(&s, " ");
@@ -1590,8 +2051,22 @@ static int imap_process(struct imap_session *imap, char *s)
 		return handle_rename(imap, s);
 	} else if (!strcasecmp(command, "CHECK")) {
 		imap_reply(imap, "OK CHECK Completed"); /* Nothing we need to do now */
+	/* Selected state */
+	} else if (!strcasecmp(command, "CLOSE")) {
+		if (imap->folder) {
+			imap_traverse(imap->curdir, on_close, imap);
+		}
+		imap_reply(imap, "OK CLOSE completed");
+	} else if (!strcasecmp(command, "EXPUNGE")) {
+		if (imap->folder) {
+			imap->expungeindex = 0;
+			imap_traverse(imap->curdir, on_expunge, imap);
+		}
+		imap_reply(imap, "OK EXPUNGE completed");
 	} else if (!strcasecmp(command, "FETCH")) {
 		return handle_fetch(imap, s, 0);
+	} else if (!strcasecmp(command, "COPY")) {
+		return handle_copy(imap, s, 0);
 	} else if (!strcasecmp(command, "STORE")) {
 		return handle_store(imap, s, 0);
 	} else if (!strcasecmp(command, "UID")) {
@@ -1601,12 +2076,14 @@ static int imap_process(struct imap_session *imap, char *s)
 		if (!strcasecmp(command, "FETCH")) {
 			return handle_fetch(imap, s, 1);
 		} else if (!strcasecmp(command, "COPY")) {
-			/*! \todo implement */
+			return handle_copy(imap, s, 1);
 		} else if (!strcasecmp(command, "STORE")) {
 			return handle_store(imap, s, 1);
 		} else {
 			imap_reply(imap, "BAD Invalid UID command");
 		}
+	} else if (!strcasecmp(command, "APPEND")) {
+		handle_append(imap, s);
 	} else {
 		/*! \todo capabilities to support:
 		 * https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml
@@ -1614,19 +2091,15 @@ static int imap_process(struct imap_session *imap, char *s)
 		 * Outlook logged in: * CAPABILITY IMAP4 IMAP4rev1 AUTH=PLAIN AUTH=XOAUTH2 SASL-IR UIDPLUS MOVE ID UNSELECT CLIENTACCESSRULES CLIENTNETWORKPRESENCELOCATION BACKENDAUTHENTICATE CHILDREN IDLE NAMESPACE LITERAL+
 		 * Google: * CAPABILITY IMAP4rev1 UNSELECT IDLE NAMESPACE QUOTA ID XLIST CHILDREN X-GM-EXT-1 XYZZY SASL-IR AUTH=XOAUTH2 AUTH=PLAIN AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH
 		 * Yandex: * CAPABILITY IMAP4rev1 CHILDREN UNSELECT LITERAL+ NAMESPACE XLIST BINARY UIDPLUS ENABLE ID AUTH=PLAIN AUTH=XOAUTH2 IDLE MOVE
-		 *
-		 * As far as RFC 6154 goes, nobody seems to support SPECIAL-USE 
 		 */
 
-		/*! \todo add CLOSE */
-		/*! \todo add COPY */
 		/*! \todo add RFC 2177 IDLE - need to have a linked list of all IMAP sessions for a mailbox, and send any updates to all connected clients */
 
-		/*! \todo handle CLOSE/EXPUNGE */
-		/*! \todo add SUBSCRIBE, LSUB */
-		/*! \todo add APPEND */
+		/*! \todo handle EXPUNGE */
+		/*! \todo add SUBSCRIBE, LSUB (deprecated in RFC 9051, but clients still use it) */
 		/*! \todo Need to add IDLE +only allow the longer IDLE timeout (30 mins) when in an idle, time out earlier otherwise */
 		/*! \todo add SEARCH */
+		/*! \todo add ability to send a message + store in Sent in one-step */
 
 		bbs_warning("Unsupported IMAP command: %s\n", command);
 		imap_reply(imap, "BAD Command not supported.");
@@ -1757,6 +2230,7 @@ static struct unit_tests {
 	{ "IMAP FETCH Item Parsing", test_parse_fetch_items },
 	{ "IMAP FETCH Sequence Ranges", test_sequence_in_range },
 	{ "IMAP STORE Flags Parsing", test_flags_parsing },
+	{ "IMAP COPYUID Generation", test_copyuid_generation },
 };
 
 static int load_module(void)

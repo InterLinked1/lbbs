@@ -110,13 +110,31 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 int maildir_move_new_to_cur(struct mailbox *mbox, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext);
 
 /*!
- * \brief Move a message from one maildir to another maildir (including a subdirectory of the same account)
+ * \brief Move a message from the new directory to the cur directory, atomically
+ * \param mbox Mailbox
+ * \param dir Full system path to the active maildir directory
+ * \param curdir Full system path to cur directory (should be an immediate subdirectory of dir)
+ * \param newdir Full system path to new directory (should be an immediate subdirectory of dir)
+ * \param filename The original name (just the name, not the full path) of the message file in the new directory
+ * \param[out] newuidvalidity The UIDVALIDITY of this directory
+ * \param[out] newuidnext The current maximum UID in this directory (this is somewhat of a misnomer, you need to add 1 to compute the actual UIDNEXT)
+ * \param[out] newpath The resulting new filename
+ * \param len Length of newpath
+ * \retval -1 on failure, number of bytes in file on success (useful for POP3)
+ */
+int maildir_move_new_to_cur_file(struct mailbox *mbox, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext, char *newpath, size_t len);
+
+/*!
+ * \brief Move a message from one maildir to another maildir (including a subdirectory of the same account), adjusting the UID as needed
  * \param mbox Mailbox
  * \param curfile Full path to current file
  * \param curfilename The base name of the current file
  * \param destmaildir The directory path of the maildir to which the message should be moved (do not include new or cur at the end)
  * \param[out] uidvalidity The new UIDVALIDITY of the destination maildir
  * \param[out] uidnext The new max UID of the destination maildir
- * \retval 0 on success, -1 on failure
+ * \retval 0 on failure, UID of new message file on success
  */
 int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext);
+
+/*! \brief Same as maildir_move_msg, but deep copy the message instead of moving it. The original file is left intact. */
+int maildir_copy_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext);

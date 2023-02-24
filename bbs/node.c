@@ -170,7 +170,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 	unsigned int newnodenumber = 1, keeplooking = 1;
 
 	if (fd <= 2) { /* Should not be STDIN, STDOUT, or STDERR, or negative */
-		bbs_error("Invalid file descriptor for BBS node: %d\n", fd);
+		bbs_error("Invalid file descriptor for BBS node: %d\n", fd); /* This would happen if a bug results in calling close on 0, 1, or 2 */
 		return NULL;
 	}
 
