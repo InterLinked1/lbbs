@@ -2166,6 +2166,7 @@ static void imap_handler(struct bbs_node *node, int secure)
 	imap.rfd = rfd;
 	imap.wfd = wfd;
 	imap.node = node;
+	imap.appendfile = -1;
 
 	handle_client(&imap);
 

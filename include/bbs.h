@@ -94,7 +94,7 @@
 #define socketpair(a,b,c,d)	__fdleak_socketpair(a, b, c, d, __FILE__,__LINE__,__PRETTY_FUNCTION__)
 #define socket(a,b,c)	__fdleak_socket(a, b, c, __FILE__,__LINE__,__PRETTY_FUNCTION__)
 #define accept(a,b,c)	__fdleak_accept(a, b, c, __FILE__,__LINE__,__PRETTY_FUNCTION__)
-#define close(a)	__fdleak_close(a)
+#define close(a)	__fdleak_close(a, __FILE__,__LINE__,__PRETTY_FUNCTION__)
 #define	fopen(a,b)	__fdleak_fopen(a, b, __FILE__,__LINE__,__PRETTY_FUNCTION__)
 #define	fclose(a)	__fdleak_fclose(a)
 #define	dup2(a,b)	__fdleak_dup2(a, b, __FILE__,__LINE__,__PRETTY_FUNCTION__)
@@ -107,7 +107,7 @@ int __fdleak_socketpair(int domain, int type, int protocol, int sv[2], const cha
 int __fdleak_socket(int domain, int type, int protocol, const char *file, int line, const char *func);
 int __fdleak_accept(int socket, struct sockaddr *address, socklen_t *address_len, const char *file, int line, const char *func);
 int __fdleak_eventfd(unsigned int initval, int flags, const char *file, int line, const char *func);
-int __fdleak_close(int fd);
+int __fdleak_close(int fd, const char *file, int line, const char *func);
 FILE *__fdleak_fopen(const char *path, const char *mode, const char *file, int line, const char *func);
 int __fdleak_fclose(FILE *ptr);
 int __fdleak_dup2(int oldfd, int newfd, const char *file, int line, const char *func);

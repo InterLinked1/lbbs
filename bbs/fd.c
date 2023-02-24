@@ -225,9 +225,16 @@ int __fdleak_socket(int domain, int type, int protocol, const char *file, int li
 	return res;
 }
 
-int __fdleak_close(int fd)
+int __fdleak_close(int fd, const char *file, int line, const char *func)
 {
-	int res = close(fd);
+	int res;
+
+	/* Detect attempts to close file descriptors we shouldn't be closing
+	 * (e.g. can happen if a file descriptor variable is initialized to 0 instead of -1) */
+	if (fd <= 2) {
+		bbs_warning("Attempting to close file descriptor %d at %s:%d (%s)\n", fd, file, line, func);
+	}
+	res = close(fd);
 	if (!res && fd > -1 && fd < (int) ARRAY_LEN(fdleaks)) {
 		fdleaks[fd].isopen = 0;
 	}
