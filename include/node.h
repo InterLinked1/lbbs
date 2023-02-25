@@ -223,6 +223,13 @@ int bbs_nodes_print(int fd);
 int bbs_node_info(int fd, unsigned int nodenum);
 
 /*!
+ * \brief Check whether a user is active on any nodes
+ * \param userid User ID of user to check for activity
+ * \retval 1 if user is online (logged into at least one node), 0 otherwise
+ */
+int bbs_user_online(unsigned int userid);
+
+/*!
  * \brief Retrieve a node by node number
  * \param nodenum Node number
  * \note If a node is returned, it is returned locked and must be unlocked by the caller.
@@ -248,6 +255,9 @@ int bbs_node_update_winsize(struct bbs_node *node, int cols, int rows);
  * \retval 0 on success, -1 on failure.
  */
 int bbs_node_set_speed(struct bbs_node *node, unsigned int bps);
+
+/*! \brief Display status of all nodes */
+int bbs_node_statuses(struct bbs_node *node);
 
 /*!
  * \brief wrapper around poll()
