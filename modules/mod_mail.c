@@ -25,6 +25,8 @@
 #include <string.h>
 #include <ctype.h>
 #include <pthread.h>
+#include <signal.h>
+#include <dirent.h>
 
 #include "include/linkedlists.h"
 #include "include/module.h"
@@ -37,6 +39,9 @@
 static char maildir[248] = "";
 static char catchall[256] = "";
 static unsigned int maxquota = 10000000;
+static unsigned int trashdays = 7;
+
+static pthread_t trash_thread = -1;
 
 /*! \brief Opaque structure for a user's mailbox */
 struct mailbox {
@@ -669,6 +674,80 @@ int maildir_copy_msg(struct mailbox *mbox, const char *curfile, const char *curf
  * For exmaple, mkstemp safely returns a unique temporary filename.
  */
 
+static int on_mailbox_trash(const char *dir_name, const char *filename, void *obj)
+{
+	struct stat st;
+	char fullname[256];
+	int tstamp;
+	int trashsec = 86400 * trashdays;
+	int elapsed, now = time(NULL);
+
+	UNUSED(obj);
+
+	/* For autopurging, we don't care if the Deleted flag is set or not.
+	 * (If it were set, an IMAP user already flagged it for permanent deletion.) */
+
+	snprintf(fullname, sizeof(fullname), "%s/%s", dir_name, filename);
+	if (stat(fullname, &st)) {
+		bbs_error("stat(%s) failed: %s\n", fullname, strerror(errno));
+		return 0;
+	}
+	tstamp = st.st_ctime;
+	elapsed = now - tstamp;
+	bbs_debug(7, "Encountered in trash: %s (%d s ago)\n", fullname, elapsed);
+	if (elapsed > trashsec) {
+		if (unlink(fullname)) {
+			bbs_error("unlink(%s) failed: %s\n", fullname, strerror(errno));
+		} else {
+			bbs_debug(4, "Permanently deleted %s\n", fullname);
+		}
+	}
+	return 0;
+}
+
+static void scan_mailboxes(void)
+{
+	DIR *dir;
+	struct dirent *entry;
+	char trashdir[515];
+	int mboxnum;
+
+	/* Traverse each mailbox top-level maildir */
+	if (!(dir = opendir(maildir))) {
+		bbs_error("Error opening directory - %s: %s\n", maildir, strerror(errno));
+		return;
+	}
+	while ((entry = readdir(dir)) != NULL) {
+		if (entry->d_type != DT_DIR || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		mboxnum = atoi(entry->d_name);
+		if (!mboxnum) {
+			continue; /* Ignore non-numeric directories, these are other things (e.g. mailq) */
+		}
+		snprintf(trashdir, sizeof(trashdir), "%s/%s/.Trash/cur", maildir, entry->d_name);
+		if (eaccess(trashdir, R_OK)) {
+			bbs_debug(2, "Directory %s doesn't exist?\n", trashdir); /* It should if it's a maildir we created, unless user has never accessed it yet. */
+			continue;
+		}
+		bbs_debug(3, "Analyzing trash folder %s\n", trashdir);
+		bbs_dir_traverse(trashdir, on_mailbox_trash, NULL, -1); /* Traverse files in the Trash folder */
+	}
+
+	closedir(dir);
+}
+
+static void *trash_monitor(void *unused)
+{
+	UNUSED(unused);
+	for (;;) {
+		scan_mailboxes();
+		/* Not necessary to run more frequently than once per hour. */
+		sleep(60 * 60); /* use sleep instead of usleep since the argument to usleep would overflow an int */
+	}
+	return NULL;
+}
+
 static int load_config(void)
 {
 	struct bbs_config *cfg;
@@ -685,6 +764,7 @@ static int load_config(void)
 	}
 	bbs_config_val_set_str(cfg, "general", "catchall", catchall, sizeof(catchall));
 	bbs_config_val_set_uint(cfg, "general", "quota", &maxquota);
+	bbs_config_val_set_uint(cfg, "general", "trashdays", &trashdays);
 
 	if (eaccess(maildir, X_OK)) { /* This is a directory, so we better have execute permissions on it */
 		bbs_error("Directory %s does not exist\n", maildir);
@@ -715,11 +795,20 @@ static int load_module(void)
 		return -1;
 	}
 
+	if (trashdays && bbs_pthread_create(&trash_thread, NULL, trash_monitor, NULL)) {
+		return -1;
+	}
+
 	return 0;
 }
 
 static int unload_module(void)
 {
+	if (trashdays) {
+		pthread_cancel(trash_thread);
+		pthread_kill(trash_thread, SIGURG);
+		bbs_pthread_join(trash_thread, NULL);
+	}
 	mailbox_cleanup();
 	return 0;
 }
