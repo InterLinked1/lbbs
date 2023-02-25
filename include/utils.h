@@ -14,6 +14,12 @@
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
+/*!
+ * \brief Generate a UUID (universally unique identifier), all lowercase
+ * \returns UUID on success, NULL on failure
+ */
+char *bbs_uuid(void);
+
 /*! \note This really should be opaque, but it's declared here so that callers can stack allocate it */
 struct dyn_str {
 	char *buf;

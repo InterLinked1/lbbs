@@ -10,6 +10,7 @@ apt-get install -y libcurl4-openssl-dev # <curl/curl.h> - cURL, OpenSSL variant
 apt-get install -y binutils-dev # <bfd.h>
 apt-get install -y libcap-dev # <sys/capability.h>
 apt-get install -y libedit-dev # <histedit.h>
+apt-get install -y libuuid1 uuid-dev # <uuid/uuid.h>
 
 # net_ssh and net_sftp
 apt-get install -y libssh-dev # libssh

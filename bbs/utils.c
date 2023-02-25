@@ -27,10 +27,25 @@
 #include <dirent.h>
 #include <time.h> /* use time */
 #include <sys/time.h> /* use gettimeofday */
+#include <uuid/uuid.h> /* use uuid_generate, uuid_unparse */
 
 #include "include/utils.h"
 #include "include/node.h" /* use bbs_fd_poll_read */
 #include "include/base64.h"
+
+char *bbs_uuid(void)
+{
+	char *uuid;
+	uuid_t binary_uuid;
+
+	uuid_generate_random(binary_uuid);
+	uuid = malloc(UUID_STR_LEN + 1);
+	if (!uuid) {
+		return NULL;
+	}
+	uuid_unparse_lower(binary_uuid, uuid);
+	return uuid;
+}
 
 int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
 {

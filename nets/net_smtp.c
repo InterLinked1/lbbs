@@ -983,6 +983,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 		if (!strcmp(s, ".")) {
 			smtp->indata = 0;
 			if (smtp->datafail) {
+				smtp->datafail = 0;
 				if (smtp->datalen >= max_message_size) {
 					/* Message too large. */
 					smtp_reply(smtp, 552, 5.2.3, "Your message exceeded our message size limits");
