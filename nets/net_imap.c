@@ -90,6 +90,7 @@ struct imap_session {
 	char curdir[260];
 	unsigned int uidvalidity;
 	unsigned int uidnext;
+	unsigned long quotaleft;	/* Cached value of mailbox quota */
 	/* APPEND */
 	char appenddir[212];		/* APPEND directory */
 	char appendtmp[260];		/* APPEND tmp name */
@@ -1130,6 +1131,7 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 	int lengths = 0, allocsizes = 0;
 	unsigned int uidvalidity, uidnext, uidres;
 	char *olduidstr = NULL, *newuidstr = NULL;
+	unsigned long quotaleft;
 
 	sequences = strsep(&s, " "); /* Messages, specified by sequence number or by UID (if usinguid) */
 	newbox = strsep(&s, " ");
@@ -1143,6 +1145,8 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 		return 0;
 	}
 
+	quotaleft = mailbox_quota_remaining(imap->mbox);
+
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
 	files = scandir(imap->curdir, &entries, NULL, alphasort);
 	if (files < 0) {
@@ -1151,6 +1155,7 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 	}
 	while (fno < files && (entry = entries[fno++])) {
 		unsigned int msguid;
+		struct stat st;
 
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			continue;
@@ -1161,6 +1166,15 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 		}
 
 		snprintf(srcfile, sizeof(srcfile), "%s/%s", imap->curdir, entry->d_name);
+		if (stat(srcfile, &st)) {
+			bbs_error("stat(%s) failed: %s\n", srcfile, strerror(errno));
+		} else {
+			quotaleft -= st.st_size; /* Determine if we would be about to exceed our current quota. */
+			if (quotaleft <= 0) {
+				bbs_verb(5, "Mailbox %d has insufficient quota remaining for COPY operation\n", mailbox_id(imap->mbox));
+				break; /* Insufficient quota remaining */
+			}
+		}
 		uidres = maildir_copy_msg(imap->mbox, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext);
 		if (!uidres) {
 			continue;
@@ -1187,6 +1201,7 @@ static int handle_append(struct imap_session *imap, char *s)
 {
 	int appendsize;
 	char *mailbox, *flags, *date, *size;
+	unsigned long quotaleft;
 
 	/* Format is mailbox [flags] [date] message literal
 	 * The message literal begins with {size} on the same line
@@ -1221,12 +1236,17 @@ static int handle_append(struct imap_session *imap, char *s)
 		return 0;
 	}
 
+	quotaleft = mailbox_quota_remaining(imap->mbox); /* Calculate current quota remaining to determine acceptance. */
+
 	appendsize = atoi(size); /* Read this many bytes */
 	if (appendsize <= 0) {
 		imap_reply(imap, "NO Invalid message literal size");
 		return 0;
 	} else if (appendsize >= MAX_APPEND_SIZE) {
 		imap_reply(imap, "NO Message too large");
+		return 0;
+	} else if ((unsigned long) appendsize >= quotaleft) {
+		imap_reply(imap, "NO Insufficient quota remaining");
 		return 0;
 	}
 
