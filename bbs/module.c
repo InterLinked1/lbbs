@@ -530,6 +530,26 @@ static int unload_dependencies(struct bbs_module *mod, struct stringlist *remove
 	return res;
 }
 
+static void dec_refcounts(struct bbs_module *mod)
+{
+	/* Decrement the ref count of any modules upon which we depend. */
+	if (!strlen_zero(mod->info->dependencies)) {
+		char dependencies_buf[256];
+		char *dependencies, *dependency;
+		safe_strncpy(dependencies_buf, mod->info->dependencies, sizeof(dependencies_buf));
+		dependencies = dependencies_buf;
+		while ((dependency = strsep(&dependencies, ","))) {
+			struct bbs_module *m = find_resource(dependency);
+			bbs_debug(9, "No longer depend on module %s\n", dependency);
+			if (m) {
+				bbs_unrequire_module(m);
+			} else {
+				bbs_warning("Dependency %s not currently loaded?\n", dependency);
+			}
+		}
+	}
+}
+
 static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int force, int *usecount, struct stringlist *removed)
 {
 	int res = -1;
@@ -582,19 +602,7 @@ static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int for
 		} else {
 			/* Decrement the ref count of any modules upon which we depend. */
 			if (!strlen_zero(mod->info->dependencies)) {
-				char dependencies_buf[256];
-				char *dependencies, *dependency;
-				safe_strncpy(dependencies_buf, mod->info->dependencies, sizeof(dependencies_buf));
-				dependencies = dependencies_buf;
-				while ((dependency = strsep(&dependencies, ","))) {
-					struct bbs_module *m = find_resource(dependency);
-					bbs_debug(9, "No longer depend on module %s\n", dependency);
-					if (m) {
-						bbs_unrequire_module(m);
-					} else {
-						bbs_warning("Dependency %s not currently loaded?\n", dependency);
-					}
-				}
+				dec_refcounts(mod);
 			}
 		}
 	}
@@ -922,6 +930,9 @@ static void unload_modules_helper(void)
 				 *
 				 * Note that bbs_module_unregister doesn't WRLOCK the module list again so this is safe.
 				 */
+				if (!strlen_zero(lastmod->info->dependencies)) {
+					dec_refcounts(lastmod);
+				}
 				unload_dynamic_module(lastmod);
 			}
 			lastmod = NULL; /* If we call continue in the loop, make sure this is NULL so we don't process a module twice. */
@@ -951,6 +962,9 @@ static void unload_modules_helper(void)
 		}
 		if (lastmod) {
 			/* Don't forget to unload the last module. See comment above. */
+			if (!strlen_zero(lastmod->info->dependencies)) {
+				dec_refcounts(lastmod);
+			}
 			unload_dynamic_module(lastmod);
 		}
 		if (passes > 0) {
