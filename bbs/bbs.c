@@ -482,6 +482,7 @@ static void bbs_shutdown(void)
 	unload_modules();
 	bbs_curl_shutdown(); /* Clean up cURL */
 	ssl_server_shutdown(); /* Shut down SSL/TLS */
+	login_cache_cleanup(); /* Clean up any remaining cached logins */
 	bbs_free_menus(); /* Clean up menus */
 	bbs_configs_free_all(); /* Clean up any remaining configs that modules didn't. */
 	bbs_vars_cleanup();

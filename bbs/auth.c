@@ -22,6 +22,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <openssl/sha.h>
+
 #include "include/linkedlists.h"
 #include "include/auth.h"
 #include "include/node.h" /* use bbs_node_logged_in */
@@ -29,6 +31,7 @@
 #include "include/notify.h"
 #include "include/module.h" /* use bbs_module_name */
 #include "include/utils.h"
+#include "include/tls.h" /* use hash_sha256 */
 
 /*! \note Even though multiple auth providers are technically allowed, in general only 1 should be registered.
  * The original thinking behind allowing multiple is to allow alternates for authentication
@@ -286,6 +289,173 @@ static int do_authenticate(struct bbs_user *user, const char *username, const ch
 	return res;
 }
 
+#define MAX_CACHE_SIZE 10
+#define MAX_CACHE_AGE 3600
+
+struct cached_login {
+	char *username;
+	char *ip;
+	int added;
+	char hash[65];
+	RWLIST_ENTRY(cached_login) entry;
+};
+
+static RWLIST_HEAD_STATIC(cached_logins, cached_login);
+
+static void cached_login_destroy(struct cached_login *l)
+{
+	free_if(l->username);
+	free_if(l->ip);
+	free(l);
+}
+
+void login_cache_cleanup(void)
+{
+	struct cached_login *l;
+
+	RWLIST_WRLOCK(&cached_logins);
+	while ((l = RWLIST_REMOVE_HEAD(&cached_logins, entry))) {
+		cached_login_destroy(l);
+	}
+	RWLIST_UNLOCK(&cached_logins);
+}
+
+/*! \retval 1 if successful, 0 if not found or unsuccessful */
+static int login_is_cached(struct bbs_node *node, const char *username, const char *hash)
+{
+	struct cached_login *l;
+	int now, cutoff;
+	int remaining = 0;
+	int i;
+
+	now = time(NULL);
+	cutoff = now - MAX_CACHE_AGE;
+
+	/* Purge any stale cached logins. */
+	RWLIST_WRLOCK(&cached_logins);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&cached_logins, l, entry) {
+		if (l->added < cutoff) {
+			RWLIST_REMOVE_CURRENT(entry);
+			cached_login_destroy(l);
+		} else {
+			remaining++;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+
+	/* If we still have more than MAX_CACHE_SIZE, purge the oldest ones. */
+	if (remaining > MAX_CACHE_SIZE) {
+		i = 0;
+		RWLIST_TRAVERSE_SAFE_BEGIN(&cached_logins, l, entry) {
+			if (i++ < MAX_CACHE_SIZE) { /* Oldest cached logins are all at the end of the list */
+				continue;
+			}
+			RWLIST_REMOVE_CURRENT(entry);
+			cached_login_destroy(l);
+		}
+		RWLIST_TRAVERSE_SAFE_END;
+	}
+
+	/* Now, check for a match. */
+	RWLIST_TRAVERSE(&cached_logins, l, entry) {
+		if (strlen_zero(l->username) || strlen_zero(l->ip)) {
+			continue; /* Allocation failure when l was allocated */
+		}
+		if (strcasecmp(l->username, username)) { /* Usernames are not case sensitive */
+			continue;
+		}
+		if (strcmp(l->ip, node->ip)) { /* Cached logins only good from same IP */
+			bbs_debug(3, "Cached login denied (different IP address)\n");
+			continue;
+		}
+		if (strcmp(l->hash, hash)) {
+			bbs_debug(3, "Cached login denied (hash mismatch)\n");
+			continue; /* Wrong password */
+		}
+		break;
+	}
+	RWLIST_UNLOCK(&cached_logins);
+	return l ? 1 : 0;
+}
+
+static int login_cache(struct bbs_node *node, const char *username, const char *hash)
+{
+	struct cached_login *l;
+
+	/*
+	 * Recent logins are cached for performance reasons, since using bcrypt is expensive and slow.
+	 * This is good for security against offline and brute force attacks, but because many
+	 * BBS services (e.g. email, web) require frequent reauthentication over many
+	 * sessions, this can slow down the user experience noticably for these services.
+	 *
+	 * This cached login mechanism comes with several security implications that are outlined here.
+	 *
+	 * Cached logins are stored using the SHA256 of the original password.
+	 * The main reason for using SHA256 is to get an irreversible hash so the password
+	 * cannot be recovered from memory.
+	 * There are a number of problems with this scheme (SHA256 is still secure in some ways, not in others),
+	 * but fundamentally you can't get good password security and performance at the same time.
+	 *
+	 * Therefore:
+	 *
+	 * Cached logins expire after an hour, regardless of if they are used.
+	 * Thus, if a password is changed, any old password hash will expire after at most an hour.
+	 * Note that if a password is changed through the BBS, the cached password will expire immediately
+	 * as a security measure. However, if the password is changed directly (e.g. direct DB modification),
+	 * then we won't know about that. Still, a cached password will persist for at most an hour in this case.
+	 *
+	 * To limit the scope of any attacks, cached logins may only be used from the same
+	 * IP address as the initial login. Therefore, an attacker would need to be at the same
+	 * IP address and guess the right password (or generate a collision) within an hour
+	 * of a normal, uncached login. This is an unlikely scenario for the typical BBS.
+	 *
+	 * These offer a reasonable tradeoff between security and performance.
+	 */
+
+	if (!strcmp(node->ip, "127.0.0.1")) {
+		return -1; /* Don't allow cached logins from localhost, this combines attack surfaces */
+	}
+
+	l = calloc(1, sizeof(*l));
+	if (!l) {
+		return -1;
+	}
+	l->added = time(NULL);
+	l->username = strdup(username);
+	safe_strncpy(l->hash, hash, sizeof(l->hash)); /* Could just use strcpy too, if we trust the hash is legitimate. */
+	l->ip = strdup(node->ip);
+	RWLIST_WRLOCK(&cached_logins);
+	RWLIST_INSERT_HEAD(&cached_logins, l, entry);
+	RWLIST_UNLOCK(&cached_logins);
+	return 0;
+}
+
+static int bbs_node_authenticate(struct bbs_node *node, const char *username, const char *password)
+{
+	int res;
+	char sha256_hash[65];
+
+	hash_sha256(password, sha256_hash);
+
+	/* Fast authentication for previously and recently successful logins */
+	if (login_is_cached(node, username, sha256_hash)) {
+		node->user = bbs_user_info_by_username(username); /* Get the actual user from the DB */
+		if (!node->user) {
+			bbs_warning("Login cached for nonexistent user %s?\n", username);
+		} else {
+			bbs_auth("User %s successfully authenticated (cached)\n", bbs_username(node->user));
+			return 0;
+		}
+	}
+
+	/* Normal (full) authentication */
+	res = bbs_user_authenticate(node->user, username, password);
+	if (!res) {
+		login_cache(node, username, sha256_hash);
+	}
+	return res;
+}
+
 int bbs_user_authenticate(struct bbs_user *user, const char *username, const char *password)
 {
 	bbs_assert(user != NULL);
@@ -376,7 +546,7 @@ int bbs_authenticate(struct bbs_node *node, const char *username, const char *pa
 	}
 
 	/* Not a guest, somebody needs to actual verify the username and password. */
-	if (bbs_user_authenticate(node->user, username, password)) {
+	if (bbs_node_authenticate(node, username, password)) {
 		return -1;
 	}
 
@@ -460,6 +630,7 @@ int bbs_user_reset_password(const char *username, const char *password)
 	bbs_module_unref(pwresetmod);
 
 	if (!res) {
+		login_cache_cleanup(); /* Purge any cached passwords. Here we purge all of them, but could probably just do the relevant user only... */
 		bbs_auth("Password changed for user '%s'\n", username);
 	}
 

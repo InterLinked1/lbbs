@@ -70,121 +70,6 @@ static int cgi = 0;
 static int authonly = 0;
 static int http_socket = -1, https_socket = -1;
 
-/* Basic Authentication performance optimizations.
- * Calling bbs_authenticate on every HTTP request using Basic Authentication is extremely slow.
- * To speed this up, if an authentication is *successful*, we will hash the
- * the password using a fast (but not as secure) one-way hash function
- * and store the username along with this hash in a linked list.
- * Then, on future requests, we can check if the username is in the linked list and, if so,
- * hash the password and see if we get a match.
- * If we do, then we can go ahead and authenticate without actually calling the slow crypt_r.
- * To prevent these hashes from building up in memory, we'll limit the number of hashes
- * we retain to a small number, since this is only relevant for immediate session reuse,
- * and stale hashes can safely be purged.
- *
- * Obviously, using cookies is more robust, but we're trying to keep it simple here.
- */
-
-struct http_user {
-	const char *username;
-	const char *pwhash;
-	RWLIST_ENTRY(http_user) entry;
-	char data[0];
-};
-
-static RWLIST_HEAD_STATIC(users, http_user);
-
-static void http_user_cache_purge(void)
-{
-	struct http_user *user;
-	while ((user = RWLIST_REMOVE_HEAD(&users, entry))) {
-		free(user);
-	}
-}
-
-static int http_user_cache_add(const char *username, const char *password)
-{
-	int i = 0;
-	char sha256[SHA256_BUFSIZE];
-	int usernamelen, sha256len;
-	struct http_user *user, *last;
-
-	RWLIST_WRLOCK(&users);
-	RWLIST_TRAVERSE(&users, user, entry) {
-		i++;
-		if (!strcasecmp(user->username, username)) {
-			break;
-		}
-		last = user;
-	}
-	if (user) {
-		/* User already exists */
-		bbs_warning("User '%s' already exists in user list?\n", username); /* Shouldn't be calling this function in this case */
-		RWLIST_UNLOCK(&users);
-		return -1;
-	}
-
-	bbs_debug(5, "Currently have %d cached user%s\n", i, ESS(i));
-
-	/* It's a new user we need to add. */
-	if (i >= 10) {
-		/* If we're at capacity, remove the oldest item from the list to prevent this from growing to oblivion. */
-		RWLIST_TRAVERSE_SAFE_BEGIN(&users, user, entry) {
-			if (user == last) { /* It's the last one */
-				RWLIST_REMOVE_CURRENT(entry);
-				free(user);
-			}
-		}
-		RWLIST_TRAVERSE_SAFE_END;
-	}
-
-	usernamelen = strlen(username);
-	hash_sha256(password, sha256);
-	sha256len = strlen(sha256); /* length should be 64 */
-	if (sha256len != SHA256_BUFSIZE - 1) {
-		bbs_warning("SHA256 result has length %d?\n", sha256len);
-	}
-
-	/* Push new user into the queue. */
-	user = calloc(1, sizeof(*user) + usernamelen + sha256len + 2); /* Plus 2 NUL terminators */
-	if (!user) {
-		bbs_error("calloc failed\n");
-		return -1;
-		RWLIST_UNLOCK(&users);
-	}
-
-	user->username = user->data;
-	strcpy(user->data, username);
-	user->pwhash = user->data + usernamelen + 1;
-	strcpy(user->data + usernamelen + 1, sha256);
-
-	RWLIST_INSERT_HEAD(&users, user, entry); /* Insert at beginning of list for fastest access */
-	RWLIST_UNLOCK(&users);
-	return 0;
-}
-
-static int http_user_cache_check(const char *username, const char *password)
-{
-	struct http_user *user;
-	int match = 0;
-
-	RWLIST_RDLOCK(&users);
-	RWLIST_TRAVERSE(&users, user, entry) {
-		if (!strcasecmp(user->username, username)) {
-			break;
-		}
-	}
-	if (user) {
-		char sha256[SHA256_BUFSIZE];
-		hash_sha256(password, sha256);
-		if (!strcmp(sha256, user->pwhash)) {
-			match = 1;
-		}
-	} /* else, not found in cache */
-	RWLIST_UNLOCK(&users);
-	return match;
-}
-
 /* These functions are not safe to use */
 #undef read
 #undef write
@@ -443,18 +328,7 @@ static inline int parse_header(struct http_req *req, char *s)
 				/* Always set, even if incorrect password, so we know that we attempted Basic Auth */
 				free_if(req->remoteuser);
 				req->remoteuser = strdup(username);
-
-				if (http_user_cache_check(username, password)) {
-					/* Manually attach a user to this node.
-					 * This won't update last_login, but that's probably fine, since this is cached. */
-					if (req->node->user) {
-						bbs_user_destroy(req->node->user);
-					}
-					req->node->user = bbs_user_info_by_username(username);
-					bbs_debug(3, "User reauthenticated as %s using cache\n", username);
-				} else if (!bbs_authenticate(req->node, username, password)) {
-					http_user_cache_add(username, password); /* Successful auth? Cache it */
-				}
+				bbs_authenticate(req->node, username, password);
 				/* Destroy the password before freeing it */
 				memset(decoded, 0, outlen);
 				free(decoded);
@@ -1235,7 +1109,6 @@ static int unload_module(void)
 		close_if(https_socket);
 		bbs_unregister_network_protocol(https_port);
 	}
-	http_user_cache_purge();
 	return 0;
 }
 

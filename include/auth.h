@@ -112,6 +112,9 @@ int bbs_unregister_user_list_handler(struct bbs_user** (*handler)(void));
  */
 struct bbs_user **bbs_user_list(void);
 
+/*! \brief Clean up any cached logins */
+void login_cache_cleanup(void);
+
 /*!
  * \brief Attempt to authenticate a user
  * \param node
