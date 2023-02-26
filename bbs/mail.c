@@ -85,8 +85,9 @@ int bbs_mail_init(void)
  * \param errorsto Errors-To address. If NULL, not added.
  * \param attachments Pipe (|) separated list of full file paths of attachments to attach.
  * \param delete Whether to delete attachments afterwards
+ * \retval 0 on total success and -1 on partial or total failure to generate the message properly
  */
-static void make_email_file(FILE *p, const char *subject, const char *body, const char *to, const char *from, const char *replyto, const char *errorsto, const char *attachments, int delete)
+int bbs_make_email_file(FILE *p, const char *subject, const char *body, const char *to, const char *from, const char *replyto, const char *errorsto, const char *attachments, int deleteafter)
 {
 	struct tm tm;
 	char date[256];
@@ -96,6 +97,7 @@ static void make_email_file(FILE *p, const char *subject, const char *body, cons
 	char filename[256];
 	char *attachmentsbuf, *attachmentlist, *attachment;
 	struct timeval when;
+	int res = 0;
 	time_t t = time(NULL);
 
 	gettimeofday(&when, NULL);
@@ -134,13 +136,13 @@ static void make_email_file(FILE *p, const char *subject, const char *body, cons
 	fprintf(p, ENDL);
 	fprintf(p, "%s", body);
 	if (strlen_zero(attachments)) {
-		return;
+		return 0;
 	}
 	/* Use strdup instead of strdupa, as we don't know how long the list is, and to make gcc happy with -Wstack-protector */
 	attachmentlist = attachmentsbuf = strdup(attachments); /* Dup pointer for strsep so we can still free() it */
 	if (!attachmentsbuf) {
 		bbs_error("strdup failed\n");
-		return;
+		return -1;
 	}
 	while ((attachment = strsep(&attachmentlist, "|"))) {
 		char *fullname, *friendlyname, *mimetype;
@@ -156,6 +158,7 @@ static void make_email_file(FILE *p, const char *subject, const char *body, cons
 
 		if (eaccess(fullname, R_OK)) {
 			bbs_error("Failed to open file: %s\n", fullname);
+			res = -1;
 			continue;
 		}
 		bbs_debug(5, "Creating attachment: %s (named %s)\n", fullname, friendlyname);
@@ -171,13 +174,16 @@ static void make_email_file(FILE *p, const char *subject, const char *body, cons
 		fprintf(p, "Content-Disposition: attachment; filename=\"%s\"" ENDL ENDL, friendlyname);
 		if (base64_encode_file(fullname, p, ENDL)) {
 			bbs_error("Failed to add attachment (base64 encoding failure)\n");
+			res = -1;
+			continue;
 		}
-		if (delete) {
+		if (deleteafter) {
 			unlink(fullname);
 		}
 	}
 	free(attachmentsbuf);
 	fprintf(p, ENDL ENDL "--%s--" ENDL "." ENDL, bound); /* After the last attachment */
+	return res;
 }
 
 int __attribute__ ((format (gnu_printf, 6, 7))) bbs_mail_fmt(int async, const char *to, const char *from, const char *replyto, const char *subject, const char *fmt, ...)
@@ -245,7 +251,7 @@ int bbs_mail(int async, const char *to, const char *from, const char *replyto, c
 		bbs_error("Unable to launch '%s' (can't create temporary file)\n", SENDMAIL_CMD);
 		return -1;
 	}
-	make_email_file(p, subject, body, to, from, replyto, errorsto, NULL, 0);
+	bbs_make_email_file(p, subject, body, to, from, replyto, errorsto, NULL, 0);
 
 	/* XXX We could be calling this function from a node thread.
 	 * If it's async, it's totally fine and there's no problem, but if not, we're really hoping sendmail doesn't block very long or it will block shutdown.

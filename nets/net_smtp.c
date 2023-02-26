@@ -49,6 +49,7 @@
 #include "include/user.h"
 #include "include/stringlist.h"
 #include "include/test.h"
+#include "include/mail.h"
 
 #include "include/mod_mail.h"
 
@@ -216,8 +217,10 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 			smtp_reply0_nostatus(smtp, 250, "AUTH=LOGIN PLAIN"); /* For non-compliant user agents, e.g. Outlook 2003 and older */
 		}
 		smtp_reply0_nostatus(smtp, 250, "SIZE %u", max_message_size); /* RFC 1870 */
-		smtp_reply0_nostatus(smtp, 250, "ENHANCEDSTATUSCODES");
-		smtp_reply_nostatus(smtp, 250, "STARTTLS");
+		if (ssl_available()) {
+			smtp_reply0_nostatus(smtp, 250, "STARTTLS");
+		}
+		smtp_reply_nostatus(smtp, 250, "ENHANCEDSTATUSCODES");
 	} else {
 		smtp_reply_nostatus(smtp, 250, "%s at your service [%s]", bbs_hostname(), smtp->node->ip);
 	}
@@ -308,14 +311,16 @@ static int parse_email_address(char *addr, char **name, char **user, char **host
 	}
 
 	start = strchr(addr, '<');
-	if (!start++ || strlen_zero(start)) {
-		return -1; /* Email address must be enclosed in <> */
+	if (start++ && !strlen_zero(start)) {
+		end = strchr(start, '>');
+		if (!end) {
+			return -1; /* Email address must be enclosed in <> */
+		}
+		*end = '\0'; /* Now start refers to just the portion in the <> */
+	} else {
+		start = addr; /* Not enclosed in <> */
 	}
-	end = strchr(start, '>');
-	if (!end) {
-		return -1; /* Email address must be enclosed in <> */
-	}
-	*end = '\0'; /* Now start refers to just the portion in the <> */
+
 	domain = strchr(start, '@');
 	if (!domain) {
 		return -1; /* Email address must be enclosed in <> */
@@ -327,7 +332,11 @@ static int parse_email_address(char *addr, char **name, char **user, char **host
 	}
 
 	if (name) {
-		*name = addr;
+		if (addr != start) {
+			*name = addr;
+		} else {
+			*name = NULL;
+		}
 	}
 	if (user) {
 		*(start - 1) = '\0';
@@ -355,6 +364,12 @@ static int test_parse_email(void)
 
 	bbs_test_assert_equals(0, parse_email_address(s, &name, &user, &domain, &local));
 	bbs_test_assert_str_equals(name, "John Smith");
+	bbs_test_assert_str_equals(user, "test");
+	bbs_test_assert_str_equals(domain, "example.com");
+
+	safe_strncpy(s, "test@example.com", sizeof(s));
+	bbs_test_assert_equals(0, parse_email_address(s, &name, &user, &domain, &local));
+	bbs_test_assert_equals(1, name == NULL); /* Clunky since bbs_test_assert_equals is only for integer comparisons */
 	bbs_test_assert_str_equals(user, "test");
 	bbs_test_assert_str_equals(domain, "example.com");
 
@@ -506,16 +521,16 @@ static int lookup_mx(const char *domain, char *buf, size_t len)
 	return 0;
 }
 
-#define SMTP_EXPECT(fd, ms, str) res = bbs_expect(fd, ms, buf, sizeof(buf), str); if (res) { bbs_warning("Expected '%s', got: %s\n", str, buf); goto cleanup; }
+/* BUGBUG XXX Small delay added because bbs_expect doesn't wait for a full line (terminated by CR LF), so make sure everything we want is ready when we call it */
+#define SMTP_EXPECT(fd, ms, str) usleep(100000); res = bbs_expect(fd, ms, buf, len, str); if (res) { bbs_warning("Expected '%s', got: %s\n", str, buf); goto cleanup; }
 
 #define smtp_client_send(fd, fmt, ...) dprintf(fd, fmt, ## __VA_ARGS__); bbs_debug(3, " => " fmt, ## __VA_ARGS__);
 
-static int try_send(const char *hostname, const char *sender, const char *recipient, const char *data, unsigned long datalen, int datafd, int offset, unsigned long writelen)
+static int try_send(const char *hostname, const char *sender, const char *recipient, const char *data, unsigned long datalen, int datafd, int offset, unsigned long writelen, char *buf, size_t len)
 {
 	SSL *ssl = NULL;
 	int sfd, res;
 	int rfd, wfd;
-	char buf[256];
 	int supports_starttls = 0;
 
 	/* Connect on port 25, and don't set up TLS initially. */
@@ -697,6 +712,110 @@ static int do_local_delivery(struct smtp_session *smtp, const char *recipient, c
 	return 0;
 }
 
+/*! \brief Generate "Undelivered Mail Returned to Sender" email and send it to the sending user using do_local_delivery (then delete the message) */
+static int return_dead_letter(const char *from, const char *to, const char *msgfile, int msgsize, int metalen, const char *error)
+{
+	int res;
+	char fromaddr[256];
+	char body[256];
+	int origfd, attachfd, msgfd;
+	struct mailbox *mbox;
+	char dupaddr[256];
+	char tmpattach[256] = "/tmp/bouncemsgXXXXXX";
+	char tmpfile[256];
+	char newfile[256];
+	char *user, *domain;
+	int local, copied;
+	off_t off_in;
+	FILE *fp;
+
+	/* This server does not relay mail from the outside,
+	 * so we're only responsible for dispatching Delivery Failure notices
+	 * to local users. */
+	safe_strncpy(dupaddr, from, sizeof(dupaddr));
+	if (parse_email_address(dupaddr, NULL, &user, &domain, &local)) {
+		bbs_error("Invalid email address: %s\n", from);
+		return -1;
+	}
+	if (!local) {
+		bbs_error("Address %s is not local (user: %s, host: %s)\n", from, user, domain);
+		return -1;
+	}
+	mbox = mailbox_get(0, user);
+	if (!mbox) {
+		bbs_error("Couldn't find mailbox for '%s'\n", user);
+		return -1;
+	}
+
+	origfd = open(msgfile, O_RDONLY, 0600);
+	if (origfd < 0) {
+		bbs_error("open(%s) failed: %s\n", msgfile, strerror(errno));
+		return -1;
+	}
+
+	/* Make a copy of the original email, with the first two lines removed (contains queue metadata just for us) */
+	attachfd = mkstemp(tmpattach); /* In practice, most mail servers will name the attachment with the name of the original subject, with a .eml extension */
+	if (attachfd < 0) {
+		bbs_error("mkstemp failed: %s\n", strerror(errno));
+		close(origfd);
+		return -1;
+	}
+
+	/* Skip first metalen characters, and send msgsize - metalen, to copy over just the message itself. */
+	off_in = metalen;
+	copied = copy_file_range(origfd, &off_in, attachfd, NULL, msgsize - metalen, 0);
+	if (copied != (msgsize - metalen)) {
+		bbs_error("Wanted to copy %d bytes but only copied %d?\n", msgsize - metalen, copied);
+	}
+	close(origfd);
+	close(attachfd);
+
+	snprintf(fromaddr, sizeof(fromaddr), "mailer-daemon@%s", bbs_hostname()); /* We can be whomever we want to say we are... but let's be a mailer daemon. */
+
+	/* XXX This is not a standard bounce message format (we need multipart/report for that)
+	 * See RFC 3461 Section 6. */
+	snprintf(body, sizeof(body),
+		"This is the mail system at %s.\r\n\r\n"
+		"I'm sorry to inform you that your message could not\r\nbe delivered to one or more recipients. It's attached below.\r\n\r\n"
+		"Please, do not reply to this message.\r\n\r\n\r\n"
+		"%s: %s\r\n", /* from already has <> */
+		/* The original from is the new to. */
+		bbs_hostname(), to, error);
+
+	/* We'll deliver the bounce message to the user's INBOX. */
+	msgfd = maildir_mktemp(mailbox_maildir(mbox), tmpfile, sizeof(tmpfile), newfile);
+	if (msgfd < 0) {
+		unlink(tmpattach);
+		return -1;
+	}
+
+	fp = fdopen(msgfd, "w");
+	if (!fp) {
+		bbs_error("fdopen failed: %s\n", strerror(errno));
+		unlink(tmpattach);
+		return -1;
+	}
+	/* Don't have bbs_make_email_file delete the message, since we always want it deleted. */
+	res = bbs_make_email_file(fp, "Undelivered Message Returned to Sender", body, from, fromaddr, NULL, NULL, tmpattach, 0);
+	fclose(fp);
+
+	/* Deliver the message. */
+	if (rename(tmpfile, newfile)) {
+		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
+		return -1;
+	}
+
+	if (unlink(tmpattach)) {
+		bbs_error("unlink(%s) failed: %s\n", tmpattach, strerror(errno));
+	}
+	if (!res) {
+		if (unlink(msgfile)) { /* Delete queue file if we successfully returned the message to sender. */
+			bbs_error("unlink(%s) failed: %s\n", msgfile, strerror(errno));
+		}
+	}
+	return res;
+}
+
 static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 {
 	FILE *fp;
@@ -711,6 +830,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	int res;
 	unsigned long size;
 	int metalen;
+	char buf[256] = "";
 
 	UNUSED(dir_name);
 	UNUSED(obj);
@@ -775,10 +895,10 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 		goto cleanup; /* XXX Should just treat as undeliverable at this point and return to sender */
 	}
 
-	res = try_send(hostname, realfrom, realto, NULL, 0, fileno(fp), metalen, size - metalen);
+	res = try_send(hostname, realfrom, realto, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
+	fclose(fp);
 	if (!res) {
 		/* Successful delivery. */
-		fclose(fp);
 		if (unlink(fullname)) {
 			bbs_error("Failed to remove file %s\n", fullname);
 		}
@@ -786,17 +906,11 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	}
 
 	newretries = atoi(retries) + 1;
-	fclose(fp);
 	bbs_debug(3, "Delivery of %s to %s has been attempted %d/%d times\n", fullname, realto, newretries, max_retries);
 	if (newretries >= (int) max_retries) {
 		/* Send a delivery failure response, then delete the file. */
 		bbs_warning("Delivery of message %s from %s to %s has failed permanently after %d retries\n", fullname, realfrom, realto, newretries);
-		/*! \todo Implement: generate "Undelivered Mail Returned to Sender" email and send it to the sending user using do_local_delivery (then delete the message) */
-#if 0
-		if (unlink(fullname)) {
-			bbs_error("Failed to remove file %s\n", fullname);
-		}
-#endif
+		return_dead_letter(realfrom, realto, fullname, size, metalen, buf);
 	} else {
 		char tmpbuf[256];
 		safe_strncpy(tmpbuf, fullname, sizeof(tmpbuf));
@@ -822,6 +936,7 @@ static void *queue_handler(void *unused)
 	UNUSED(unused);
 
 	if (!queue_outgoing) {
+		bbs_debug(4, "Outgoing queue is disabled, queue handler exiting\n");
 		return NULL; /* Not needed, queuing disabled */
 	}
 
@@ -840,6 +955,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 {
 	char hostname[256];
 	int res = -1;
+	char buf[256] = "";
 
 	bbs_assert(smtp->fromlocal);
 	if (!accept_relay_out) {
@@ -858,7 +974,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 			smtp_reply(smtp, 553, 5.1.2, "Recipient domain not found.");
 			return 0;
 		}
-		res = try_send(domain, smtp->from, recipient, smtp->data, smtp->datalen, -1, 0, 0);
+		res = try_send(domain, smtp->from, recipient, smtp->data, smtp->datalen, -1, 0, 0, buf, sizeof(buf));
 	}
 	if (res && !queue_outgoing) {
 		bbs_debug(3, "Delivery failed and can't queue message, rejecting\n");
@@ -889,6 +1005,8 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		 * The queue files are mostly just RFC 822 messages.
 		 *
 		 * The metadata is LF terminated (not CR LF) to make it easier to parse back using fread (we won't have a stray CR present).
+		 * Note that this means this file contains mixed line endings (both LF and CR LF), so if manually edited in a text editor,
+		 * it will probably get screwed up. Don't do it!
 		 */
 		dprintf(fd, "MAIL FROM:<%s>\nRCPT TO:%s\n", smtp->from, recipient); /* First 2 lines contain metadata, and recipient is already enclosed in <> */
 		if (!smtp->msa) {
