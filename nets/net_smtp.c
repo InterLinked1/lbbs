@@ -167,6 +167,8 @@ static void smtp_destroy(struct smtp_session *smtp)
 	stringlist_empty(&smtp->recipients);
 }
 
+static struct stringlist blacklist;
+
 /*
  * Status code references:
  * - https://www.iana.org/assignments/smtp-enhanced-status-codes/smtp-enhanced-status-codes.xhtml
@@ -1267,6 +1269,13 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 				return 0;
 			}
 		}
+		if (stringlist_contains(&blacklist, tmp)) { /* Entire domain is blacklisted */
+			smtp_reply(smtp, 554, 5.7.1, "This domain is blacklisted");
+			return 0;
+		} else if (stringlist_contains(&blacklist, from)) { /* This user is blacklisted */
+			smtp_reply(smtp, 554, 5.7.1, "This email address is blacklisted");
+			return 0;
+		}
 		free_if(smtp->from);
 		smtp->from = strdup(from);
 		smtp_reply(smtp, 250, 2.0.0, "OK");
@@ -1438,6 +1447,7 @@ static void *msa_listener(void *unused)
 static int load_config(void)
 {
 	struct bbs_config *cfg;
+	struct bbs_config_section *section = NULL;
 
 	cfg = bbs_config_load("net_smtp.conf", 1);
 	if (!cfg) {
@@ -1477,12 +1487,29 @@ static int load_config(void)
 	bbs_config_val_set_port(cfg, "msa", "port", &msa_port);
 	bbs_config_val_set_true(cfg, "msa", "requirestarttls", &require_starttls);
 
+	/* Blacklist */
+	while ((section = bbs_config_walk(cfg, section))) {
+		struct bbs_keyval *keyval = NULL;
+		if (strcmp(bbs_config_section_name(section), "blacklist")) {
+			continue; /* Not the blacklist section */
+		}
+		while ((keyval = bbs_config_section_walk(section, keyval))) {
+			const char *key = bbs_keyval_key(keyval);
+			if (!stringlist_contains(&blacklist, key)) {
+				stringlist_push(&blacklist, key);
+			}
+		}
+	}
+
 	return 0;
 }
 
 static int load_module(void)
 {
 	long unsigned int i;
+
+	memset(&blacklist, 0, sizeof(blacklist));
+
 	if (load_config()) {
 		return -1;
 	}
@@ -1587,6 +1614,7 @@ static int unload_module(void)
 		bbs_unregister_network_protocol(msa_port);
 		close_if(msa_socket);
 	}
+	stringlist_empty(&blacklist);
 	return 0;
 }
 
