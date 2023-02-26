@@ -60,6 +60,7 @@
 #include "include/variables.h"
 #include "include/startup.h"
 #include "include/tls.h"
+#include "include/event.h"
 
 #define BBS_RUN_DIR DIRCAT("/var/run", BBS_NAME)
 #define BBS_PID_FILE DIRCAT(BBS_RUN_DIR, "bbs.pid")
@@ -472,6 +473,7 @@ static void bbs_shutdown(void)
 		return;
 	}
 	shutting_down = 1;
+	bbs_event_dispatch(NULL, EVENT_SHUTDOWN);
 	if (shutdown_restart == -1) {
 		bbs_warning("Halting BBS\n");
 		/* Fast exit (halt), don't clean up */
@@ -806,6 +808,7 @@ int main(int argc, char *argv[])
 
 	fully_started = 1;
 	bbs_verb(1, "%s\n", COLOR(COLOR_SUCCESS) "BBS is fully started" COLOR_RESET);
+	bbs_event_dispatch(NULL, EVENT_STARTUP);
 
 	/* Run any callbacks registered during startup, now that we're fully started. */
 	bbs_run_startup_callbacks();

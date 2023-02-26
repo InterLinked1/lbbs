@@ -28,10 +28,10 @@
 #include "include/auth.h"
 #include "include/node.h" /* use bbs_node_logged_in */
 #include "include/user.h"
-#include "include/notify.h"
 #include "include/module.h" /* use bbs_module_name */
 #include "include/utils.h"
 #include "include/tls.h" /* use hash_sha256 */
+#include "include/event.h"
 
 /*! \note Even though multiple auth providers are technically allowed, in general only 1 should be registered.
  * The original thinking behind allowing multiple is to allow alternates for authentication
@@ -562,6 +562,7 @@ int bbs_authenticate(struct bbs_node *node, const char *username, const char *pa
 	 * Any such stuff should be done in node.c after user login */
 
 	bbs_auth("Node %d now logged in as %s\n", node->id, bbs_username(node->user));
+	bbs_event_dispatch(node, EVENT_USER_LOGIN); /* XXX If bbs_user_authenticate is called directly, this event isn't emitted */
 	return 0;
 }
 
@@ -607,10 +608,7 @@ int bbs_user_register(struct bbs_node *node)
 		}
 		/* If we got here, then the user was able to self-register (or the sysop-enabled registration process completed before the reg provider returned) */
 		bbs_auth("New user registration successful for %s\n", bbs_username(node->user));
-		/* Relatively speaking, it's a pretty big deal whenever a new user registers.
-		 * Notify the sysop. */
-		bbs_sysop_email(NULL, "New User Registration", "Greetings, sysop,\r\n\tA new user, %s (#%d), just registered on your BBS from IP %s.",
-			bbs_username(node->user), node->user->id, node->ip);
+		bbs_event_dispatch(node, EVENT_USER_REGISTRATION);
 	}
 	return res;
 }
@@ -630,8 +628,13 @@ int bbs_user_reset_password(const char *username, const char *password)
 	bbs_module_unref(pwresetmod);
 
 	if (!res) {
+		struct bbs_event event;
 		login_cache_cleanup(); /* Purge any cached passwords. Here we purge all of them, but could probably just do the relevant user only... */
 		bbs_auth("Password changed for user '%s'\n", username);
+		memset(&event, 0, sizeof(event));
+		event.type = EVENT_USER_PASSWORD_CHANGE;
+		safe_strncpy(event.username, username, sizeof(event.username));
+		bbs_event_broadcast(&event);
 	}
 
 	return res;
