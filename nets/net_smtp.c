@@ -389,11 +389,37 @@ static struct unit_tests {
 	{ "Parse Email Addresses", test_parse_email },
 };
 
+static int add_recipient(struct smtp_session *smtp, int local, const char *s, int assumelocal)
+{
+	char buf[256];
+	const char *recipient = s;
+
+	/* Assume local user if no domain present */
+	if (assumelocal && !strchr(recipient, '@')) {
+		snprintf(buf, sizeof(buf), "%s@%s", recipient, bbs_hostname());
+		recipient = buf;
+	}
+
+	if (stringlist_contains(&smtp->recipients, recipient)) {
+		/* Recipient was already added. */
+		return 1;
+	}
+	stringlist_push(&smtp->recipients, recipient);
+	smtp->numrecipients += 1;
+	if (local) {
+		smtp->numlocalrecipients += 1;
+	} else {
+		smtp->numexternalrecipients += 1;
+	}
+	return 0;
+}
+
 static int handle_rcpt(struct smtp_session *smtp, char *s)
 {
-	int local;
+	int local, res;
 	char *user, *domain;
 	char *address;
+	const char *recipients;
 
 	/* If MAIL FROM is an address that belongs to us,
 	 * then authentication is required. Any recipients are allowed.
@@ -424,7 +450,100 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 	}
 
 	if (local) {
-		struct mailbox *mbox = mailbox_get(0, user);
+		struct mailbox *mbox;
+
+		/* Check if it's a mailing list. */
+		recipients = mailbox_expand_list(user);
+		if (recipients) { /* It's a mailing list */
+			int added = 0;
+			char *senders, *recip, *recips, *dup = strdup(recipients);
+			if (!dup) {
+				smtp_reply(smtp, 451, "Local error in processing", "");
+				return 0;
+			}
+			bbs_debug(8, "List %s: %s\n", user, dup);
+			recips = dup;
+			senders = strchr(recips, '|');
+			if (senders) {
+				int authorized = 0;
+				char *sender;
+				*senders++ = '\0';
+				bbs_debug(6, "List %s (recipients: %s) (senders: %s)\n", user, recips, senders);
+				/* Check if sender is authorized to send to this list. */
+				/* Could be multiple authorizations, so check against all of them. */
+				while ((sender = strsep(&senders, ","))) {
+					if (!strcmp(sender, "*") && smtp->fromlocal) { /* Any local user? */
+						authorized = 1;
+						bbs_debug(6, "Message authorized via local user membership\n");
+						break;
+					} else if (!strchr(sender, '@') && smtp->fromlocal && !strcmp(bbs_username(smtp->node->user), sender)) { /* Local user match? */
+						authorized = 1;
+						bbs_debug(6, "Message authorized via explicit local mapping\n");
+						break;
+					} else if (!strcmp(smtp->from, sender)) { /* Any arbitrary match? (including external senders) */
+						authorized = 1;
+						bbs_debug(6, "Message authorized via explicit generic mapping\n");
+						break;
+					}
+				}
+				if (!authorized) {
+					bbs_warning("Unauthorized attempt to post to list %s by %s\n", user, smtp->from);
+					smtp_reply(smtp, 550, 5.7.1, "You are not authorized to post to this list");
+					return 0;
+				}
+			} else {
+				bbs_debug(6, "List %s (recipients: %s)\n", user, recips);
+			}
+			/* Send a copy of the message to everyone the list. */
+			while ((recip = strsep(&recips, ","))) {
+				if (strlen_zero(recip)) {
+					continue;
+				}
+				/* We intentionally don't check if the recipient limit here, since lists may have more than that many recipients. */
+				/* also local is true when adding the recipient, even if the recipient is not actually local (doesn't count against external limit) */
+				if (!strcmp(recip, "*")) { /* Expands to all local users */
+					/* We'll deliver a copy to every user that actually has an active mailbox at the moment.
+					 * In other words, if there are 50 users on the BBS, but only 15 have mailbox directories,
+					 * we'll only deliver 15, to avoid the hassle of creating mailboxes for users that may
+					 * not check them anyways. */
+					int index = 0;
+					struct bbs_user *bbsuser, **users = bbs_user_list();
+					if (users) {
+						while ((bbsuser = users[index++])) {
+							char maildir[256];
+							snprintf(maildir, sizeof(maildir), "%s/%d", mailbox_maildir(NULL), bbsuser->id);
+							if (eaccess(maildir, R_OK)) {
+								continue; /* User doesn't have a mailbox, skip */
+							}
+							bbs_debug(5, "Adding recipient %s (user %d)\n", bbs_username(bbsuser), bbsuser->id);
+							if (!add_recipient(smtp, local, bbs_username(bbsuser), 1)) {
+								added++;
+							}
+						}
+						bbs_user_list_destroy(users);
+					} else {
+						bbs_error("Failed to fetch user list\n");
+					}
+					/* Don't break from the loop just yet: list may contain external users too (in other words, may expand to more than just '*') */
+				} else {
+					bbs_debug(5, "Adding recipient %s\n", recip);
+					if (!add_recipient(smtp, local, recip, 1)) {
+						added++;
+					}
+				}
+			}
+			free(dup);
+			if (!added) {
+				smtp_reply(smtp, 550, 5.7.1, "This mailing list contained no recipients when expanded");
+				return 0;
+			}
+			bbs_debug(3, "Message expanded to %d recipient%s on mailing list %s\n", added, ESS(added), user);
+			smtp_reply(smtp, 250, 2.0.0, "OK");
+			return 0;
+		}
+
+		/* It's not a mailing list, check if it's a real mailbox (or an alias that maps to one) */
+		mbox = mailbox_get(0, user);
 		free(address);
 		if (!mbox) {
 			smtp_reply(smtp, 550, 5.1.1, "No such user here");
@@ -453,20 +572,12 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 	}
 
 	/* Actually add the recipient to the recipient list. */
-	if (stringlist_contains(&smtp->recipients, s)) {
-		/* Recipient was already added. */
+	res = add_recipient(smtp, local, s, 0);
+	if (res == 1) {
 		smtp_reply(smtp, 250, 2.0.0, "Duplicate recipient ignored"); /* XXX Appropriate response code? */
-		return 0;
-	}
-
-	stringlist_push(&smtp->recipients, s);
-	smtp->numrecipients += 1;
-	if (local) {
-		smtp->numlocalrecipients += 1;
 	} else {
-		smtp->numexternalrecipients += 1;
+		smtp_reply(smtp, 250, 2.0.0, "OK");
 	}
-	smtp_reply(smtp, 250, 2.0.0, "OK");
 	return 0;
 }
 
@@ -1083,7 +1194,7 @@ next:
 		if (quotaexceeded) {
 			smtp_reply(smtp, 552, 5.2.2, "The mailbox you've tried to reach is full (over quota)");
 		} else {
-			smtp_reply_nostatus(smtp, 451, "Delivery failed");
+			smtp_reply_nostatus(smtp, 451, "Delivery failed"); /*! \todo add a more specific code */
 		}
 	} else {
 		smtp_reply(smtp, 250, 2.6.0, "Message accepted");

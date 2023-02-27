@@ -69,6 +69,15 @@ struct alias {
 
 static RWLIST_HEAD_STATIC(aliases, alias);
 
+struct listserv {
+	const char *name;
+	const char *target;
+	RWLIST_ENTRY(listserv) entry;		/* Next alias */
+	char data[0];
+};
+
+static RWLIST_HEAD_STATIC(listservs, listserv);
+
 static void mailbox_free(struct mailbox *mbox)
 {
 	pthread_rwlock_destroy(&mbox->lock);
@@ -80,6 +89,7 @@ static void mailbox_cleanup(void)
 {
 	struct mailbox *mbox;
 	struct alias *alias;
+	struct listserv *l;
 
 	/* Clean up mailboxes */
 	RWLIST_WRLOCK(&mailboxes);
@@ -93,6 +103,12 @@ static void mailbox_cleanup(void)
 		free(alias);
 	}
 	RWLIST_UNLOCK(&aliases);
+
+	RWLIST_WRLOCK(&listservs);
+	while ((l = RWLIST_REMOVE_HEAD(&listservs, entry))) {
+		free(l);
+	}
+	RWLIST_UNLOCK(&listservs);
 }
 
 /*!
@@ -139,6 +155,11 @@ static void add_alias(const char *aliasname, const char *target)
 	struct alias *alias;
 	int aliaslen, targetlen;
 
+	if (strlen_zero(target)) {
+		bbs_error("Empty translation for alias %s\n", aliasname);
+		return;
+	}
+
 	RWLIST_WRLOCK(&aliases);
 	RWLIST_TRAVERSE(&aliases, alias, entry) {
 		if (!strcmp(alias->alias, aliasname)) {
@@ -162,11 +183,68 @@ static void add_alias(const char *aliasname, const char *target)
 	strcpy(alias->data + aliaslen + 1, target);
 	alias->alias = alias->data;
 	/* Store the actual target name directly, instead of converting to a username immediately, since mod_mysql might not be loaded when the config is parsed. */
-	alias->target = alias->data + aliaslen;
+	alias->target = alias->data + aliaslen + 1;
 	alias->userid = 0; /* Not known yet, will get the first time we access this. */
 	RWLIST_INSERT_HEAD(&aliases, alias, entry);
 	bbs_debug(3, "Added alias mapping %s => %s\n", alias->alias, alias->target);
 	RWLIST_UNLOCK(&aliases);
+}
+
+static void add_listserv(const char *listname, const char *target)
+{
+	struct listserv *l;
+	int listlen, targetlen;
+
+	if (strlen_zero(target)) {
+		bbs_error("Empty membership for listserv %s\n", listname);
+		return;
+	}
+
+	RWLIST_WRLOCK(&listservs);
+	RWLIST_TRAVERSE(&listservs, l, entry) {
+		if (!strcmp(l->name, listname)) {
+			break;
+		}
+	}
+	if (l) {
+		bbs_warning("List %s already defined: %s\n", l->name, l->target);
+		RWLIST_UNLOCK(&listservs);
+		return;
+	}
+	listlen = strlen(listname);
+	targetlen = strlen(target);
+	l = calloc(1, sizeof(*l) + listlen + targetlen + 2);
+	if (!l) {
+		bbs_error("calloc failed\n");
+		RWLIST_UNLOCK(&listservs);
+		return;
+	}
+	strcpy(l->data, listname);
+	strcpy(l->data + listlen + 1, target);
+	l->name = l->data;
+	/* Store the actual target name directly, instead of converting to a username immediately, since mod_mysql might not be loaded when the config is parsed. */
+	l->target = l->data + listlen + 1;
+	RWLIST_INSERT_HEAD(&listservs, l, entry);
+	bbs_debug(3, "Added listserv mapping %s => %s\n", l->name, l->target);
+	RWLIST_UNLOCK(&listservs);
+}
+
+const char *mailbox_expand_list(const char *listname)
+{
+	struct listserv *l;
+
+	RWLIST_RDLOCK(&listservs);
+	RWLIST_TRAVERSE(&listservs, l, entry) {
+		if (!strcmp(l->name, listname)) {
+			break;
+		}
+	}
+	if (!l) {
+		RWLIST_UNLOCK(&listservs);
+		return NULL;
+	}
+	RWLIST_UNLOCK(&listservs);
+	return l->target; /* l cannot be removed until mod_mail is unloaded, at which point its dependents would no longer be running, so this is safe. */
 }
 
 static int create_if_nexist(const char *path)
@@ -781,6 +859,11 @@ static int load_config(void)
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				const char *key = bbs_keyval_key(keyval), *value = bbs_keyval_val(keyval);
 				add_alias(key, value);
+			}
+		} else if (!strcmp(bbs_config_section_name(section), "lists")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				const char *key = bbs_keyval_key(keyval), *value = bbs_keyval_val(keyval);
+				add_listserv(key, value);
 			}
 		} else {
 			bbs_warning("Unknown section name, ignoring: %s\n", bbs_config_section_name(section));

@@ -25,6 +25,13 @@ struct mailbox;
 struct mailbox *mailbox_get(unsigned int userid, const char *name);
 
 /*!
+ * \brief Get all the destination addresses for a listserv
+ * \param listname User portion of address
+ * \returns list of addresses, NULL if address does not resolve to a mailing list
+ */
+const char *mailbox_expand_list(const char *listname);
+
+/*!
  * \brief Attempt to obtain a read lock on mailbox
  * \retval 0 on success (lock obtained), error number otherwise
  * \note IMAP operations may use this function
