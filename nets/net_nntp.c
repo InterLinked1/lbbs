@@ -14,6 +14,9 @@
  *
  * \brief RFC 3977 Network News Transfer Protocol (NNTP)
  *
+ * \note Supports RFC 4642 STARTTLS
+ * \note Supports RFC 4643 AUTHINFO
+ *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
@@ -95,6 +98,7 @@ struct nntp_session {
 	unsigned int inpost:1;
 	unsigned int postfail:1;
 	unsigned int secure:1;
+	unsigned int dostarttls:1;
 };
 
 static void nntp_destroy(struct nntp_session *nntp)
@@ -515,14 +519,31 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 		if (nntp->mode == NNTP_MODE_READER) {
 			_nntp_send(nntp, "READER\r\n");
 			_nntp_send(nntp, "POST\r\n");
+			if (!nntp->secure) {
+				_nntp_send(nntp, "STARTTLS\r\n");
+			}
+			_nntp_send(nntp, "LIST ACTIVE\r\n");
 		} /*! \todo else if transit */
 		_nntp_send(nntp, "XSECRET\r\n");
 		if ((nntp->secure || !require_secure_login) && !bbs_user_is_registered(nntp->node->user)) {
 			_nntp_send(nntp, "AUTHINFO USER\r\n");
+			_nntp_send(nntp, "SASL PLAIN\r\n");
 		}
 		_nntp_send(nntp, "IMPLEMENTATION %s\r\n", BBS_SHORTNAME);
 		_nntp_send(nntp, ".\r\n");
+	} else if (!strcasecmp(command, "STARTTLS")) {
+		if (!ssl_available()) {
+			nntp_send(nntp, 580, "STARTTLS may not be used");
+		} else if (!nntp->secure) {
+			nntp_send(nntp, 382, "Ready to start TLS");
+			nntp->dostarttls = 1;
+		} else {
+			nntp_send(nntp, 502, "Already using TLS");
+		}
 	} else if (!strcasecmp(command, "XSECRET")) {
+		/* XSECRET appears in RFC 3977, in passing, but there is no actual documentation anywhere of it that I can find.
+		 * My newsreader seems to use AUTHINFO instead, so if XSECRET/XENCRYPT are not widely used
+		 * or are long deprecated, this can probably be removed. */
 		int res;
 		char *user, *pass, *domain;
 		if (bbs_user_is_registered(nntp->node->user)) {
@@ -596,6 +617,33 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 				return 0;
 			}
 			nntp_send(nntp, 281, "Authentication accepted");
+		} else if (!strcasecmp(command, "SASL")) {
+			/* RFC 4643 SASL */
+			command = strsep(&s, " ");
+			if (!strcasecmp(command, "PLAIN")) {
+				unsigned char *decoded;
+				char *authorization_id, *authentication_id, *password;
+
+				decoded = bbs_sasl_decode(s, &authorization_id, &authentication_id, &password);
+				if (!decoded) {
+					return -1;
+				}
+
+				/* Can't use bbs_sasl_authenticate directly since we need to strip the domain */
+				bbs_strterm(authentication_id, '@');
+				res = bbs_authenticate(nntp->node, authentication_id, password);
+				memset(password, 0, strlen(password)); /* Destroy the password from memory before we free it */
+				free(decoded);
+
+				if (res) {
+					nntp_send(nntp, 481, "Authentication failed");
+					return 0;
+				}
+				nntp_send(nntp, 281, "Authentication accepted");
+			} else {
+				/* RFC 4643 says we MUST implement the DIGEST-MD5 mechanism, but, well, we don't. */
+				nntp_send(nntp, 503, "Mechanism not recognized");
+			}
 		} else {
 			nntp_send(nntp, 501, "Unknown AUTHINFO command");
 		}
@@ -685,9 +733,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 		parse_min_max(s, &min, &max, '-');
 #endif
 		/*! \todo add:
-		 * RFC 4642 STARTTLS
 		 * RFC 2980 extensions
-		 *
 		 * Also see RFC 5536
 		 */
 	} else {
@@ -696,7 +742,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 	return 0;
 }
 
-static void handle_client(struct nntp_session *nntp)
+static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 {
 	char buf[1001];
 	int res;
@@ -715,13 +761,31 @@ static void handle_client(struct nntp_session *nntp)
 			break;
 		}
 		word2 = strchr(buf, ' ');
-		if (word2++ && !strlen_zero(word2) && !strncasecmp(word2, "XSECRET", STRLEN("XSECRET"))) {
-			bbs_debug(6, "%p => XSECRET ******\n", nntp); /* Mask login to avoid logging passwords */
+		if (word2++ && !strlen_zero(word2) && (!strncasecmp(word2, "XSECRET", STRLEN("XSECRET") || !strncasecmp(word2, "AUTHINFO PASS", STRLEN("AUTHINFO PASS"))))) {
+			/* Mask login to avoid logging passwords */
+			if (*word2 == 'X') {
+				bbs_debug(6, "%p => XSECRET ******\n", nntp);
+			} else {
+				bbs_debug(6, "%p => AUTHINFO PASS ******\n", nntp);
+			}
 		} else {
 			bbs_debug(6, "%p => %s\n", nntp, buf);
 		}
 		if (nntp_process(nntp, buf)) {
 			break;
+		}
+		if (nntp->dostarttls) {
+			/* RFC 4642 */
+			bbs_debug(3, "Starting TLS\n");
+			nntp->dostarttls = 0;
+			*sslptr = ssl_new_accept(nntp->node->fd, &nntp->rfd, &nntp->wfd);
+			if (!*sslptr) {
+				bbs_error("Failed to create SSL\n");
+				break; /* Just abort */
+			}
+			nntp->secure = 1;
+			free_if(nntp->currentgroup);
+			nntp->currentarticle = 0;
 		}
 	}
 }
@@ -753,7 +817,7 @@ static void nntp_handler(struct bbs_node *node, int secure, int reader)
 	nntp.secure = secure;
 	nntp.mode = reader;
 
-	handle_client(&nntp);
+	handle_client(&nntp, &ssl);
 
 #ifdef HAVE_OPENSSL
 	if (nntp.secure) { /* implies ssl */
