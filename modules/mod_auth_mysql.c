@@ -38,6 +38,7 @@
 #include "include/utils.h" /* use bbs_str_isprint */
 
 static int register_phone = 1, register_address = 1, register_zip = 1, register_dob = 1, register_gender = 1, register_howheard = 1;
+static char *reserved_usernames = NULL;
 
 /*! \brief Common function to handle user authentication and info retrieval */
 #pragma GCC diagnostic ignored "-Wstack-protector"
@@ -320,7 +321,15 @@ cleanup:
 }
 
 /*! \note Sysop can always manually adjust the database if needed to override */
-#define USERNAME_RESERVED(u) (!strcasecmp(u, "root") || !strcasecmp(u, "sysop") || !strcasecmp(u, "root") || !strcasecmp(u, "bbs") || !strcasecmp(u, "ChanServ") || !strcasecmp(u, "NickServ") || !strcasecmp(u, "services"))
+#define USERNAME_RESERVED(u) (!strcasecmp(u, "root") || !strcasecmp(u, "sysop") || !strcasecmp(u, "bbs") || !strcasecmp(u, "ChanServ") || !strcasecmp(u, "NickServ") || !strcasecmp(u, "services") || !strcasecmp(u, "postmaster"))
+
+static int username_reserved(const char *username)
+{
+	char teststr[84];
+
+	snprintf(teststr, sizeof(teststr), ",%s,", username);
+	return strstr(reserved_usernames, teststr) ? 1 : 0;
+}
 
 static int user_register(struct bbs_node *node)
 {
@@ -364,6 +373,8 @@ static int user_register(struct bbs_node *node)
 			} else if (strlen(username) > 15) {
 				NEG_RETURN(bbs_writef(node, "\n%sUsername is too long%s\n", COLOR(COLOR_RED), COLOR_RESET));
 			} else if (USERNAME_RESERVED(username)) {
+				NEG_RETURN(bbs_writef(node, "\n%sThat username is not allowed%s\n", COLOR(COLOR_RED), COLOR_RESET));
+			} else if (username_reserved(username)) {
 				NEG_RETURN(bbs_writef(node, "\n%sThat username is not allowed%s\n", COLOR(COLOR_RED), COLOR_RESET));
 			} else {
 				break;
@@ -486,6 +497,7 @@ static int user_register(struct bbs_node *node)
 
 static int load_config(void)
 {
+	const char *varval;
 	struct bbs_config *cfg = bbs_config_load("mod_auth_mysql.conf", 0);
 
 	if (!cfg) {
@@ -499,11 +511,26 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "registration", "gender", &register_gender);
 	bbs_config_val_set_true(cfg, "registration", "howheard", &register_howheard);
 
+	varval = bbs_config_val(cfg, "registration", "reservedusernames");
+	if (!strlen_zero(varval)) {
+		int len = strlen(varval); /* Don't use strdup, since we need to surround in ,, for easy (and accurate, not confounded by prefixes) searching */
+		len += 3; /* , before and after + NUL */
+		free_if(reserved_usernames); /* Should always be NULL at this point, but if reloads during runtime were permitted in the future, might not be. */
+		reserved_usernames = malloc(len); /* Don't know in advance how many usernames the sysop wants to reserve, this could be arbitrarily long. */
+		if (!reserved_usernames) {
+			bbs_error("malloc failed\n");
+			bbs_config_free(cfg);
+			return -1;
+		}
+		*reserved_usernames = ',';
+		strcpy(reserved_usernames + 1, varval); /* Safe */
+		*(reserved_usernames + len - 2) = ','; /* Do after do the NUL from strcpy doesn't clobber this */
+		*(reserved_usernames + len - 1) = '\0';
+	}
+
 	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
 	return 0;
 }
-
-static struct bbs_module *depmod = NULL;
 
 static int load_module(void)
 {
@@ -513,10 +540,6 @@ static int load_module(void)
 	 * while there are things that are dependent on it.
 	 */
 	if (load_config()) {
-		return -1;
-	}
-	depmod = bbs_require_module("mod_mysql");
-	if (!depmod) {
 		return -1;
 	}
 	bbs_register_user_registration_provider(user_register);
@@ -533,7 +556,7 @@ static int unload_module(void)
 	bbs_unregister_password_reset_handler(change_password);
 	bbs_unregister_user_info_handler(get_user_info);
 	bbs_unregister_user_list_handler(get_users);
-	bbs_unrequire_module(depmod);
+	free_if(reserved_usernames);
 	return res;
 }
 
