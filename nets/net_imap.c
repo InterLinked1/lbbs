@@ -14,6 +14,8 @@
  *
  * \brief RFC9051 Internet Message Access Protocol (IMAP) version 4rev2 (updates RFC3501 IMAP 4rev1)
  *
+ * \note Supports RFC2177 IDLE
+ *
  * \note STARTTLS is not supported for cleartext IMAP, as proposed in RFC2595, as this guidance
  *       is obsoleted by RFC8314. Implicit TLS (IMAPS) should be preferred.
  *
@@ -55,6 +57,8 @@ static pthread_t imap_listener_thread = -1;
 static int imap_enabled = 0, imaps_enabled = 1;
 static int imap_socket = -1, imaps_socket = -1;
 
+static int allow_idle = 1;
+
 /*! \brief Allow storage of messages up to 5MB. User can decide if that's really a good use of mail quota or not... */
 #define MAX_APPEND_SIZE 5000000
 
@@ -62,19 +66,11 @@ static int imap_debug_level = 10;
 #define imap_debug(level, fmt, ...) if (imap_debug_level >= level) { bbs_debug(level, fmt, ## __VA_ARGS__); }
 
 #undef dprintf
-#define _imap_reply(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); dprintf(imap->wfd, fmt, ## __VA_ARGS__);
+#define _imap_broadcast(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); __imap_broadcast(imap, fmt, ## __VA_ARGS__);
+#define _imap_reply(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); pthread_mutex_lock(&imap->lock); dprintf(imap->wfd, fmt, ## __VA_ARGS__); pthread_mutex_unlock(&imap->lock);
+#define imap_send_broadcast(imap, fmt, ...) _imap_broadcast(imap, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
 #define imap_send(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
 #define imap_reply(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", S_IF(imap->tag), ## __VA_ARGS__)
-
-/* All IMAP traversals must be ordered, so we can't use these functions or we'll get a ~random (at least incorrect) order */
-/* Sequence numbers must strictly be in order, if they aren't, all sorts of weird stuff will happened.
- * I know this because I tried using these functions first, and it didn't really work.
- * Because scandir allocates memory for all the files in a directory up front, it could result in a lot of memory usage.
- * Technically, for this reason, may want to limit the number of messages in a single mailbox (folder) for this reason.
- */
-#define opendir __Do_not_use_readdir_or_opendir_use_scandir
-#define readdir __Do_not_use_readdir_or_opendir_use_scandir
-#define closedir __Do_not_use_readdir_or_opendir_use_scandir
 
 struct imap_session {
 	int rfd;
@@ -90,7 +86,6 @@ struct imap_session {
 	char curdir[260];
 	unsigned int uidvalidity;
 	unsigned int uidnext;
-	unsigned long quotaleft;	/* Cached value of mailbox quota */
 	/* APPEND */
 	char appenddir[212];		/* APPEND directory */
 	char appendtmp[260];		/* APPEND tmp name */
@@ -107,18 +102,146 @@ struct imap_session {
 	unsigned int totalunseen;	/* Messages with Unseen flag (or more rather, without the Seen flag). */
 	unsigned int firstunseen;	/* Oldest message that is not Seen. */
 	unsigned int expungeindex;	/* Index for EXPUNGE */
-	unsigned int innew:1; /* So we can use the same callback for both new and cur */
+	unsigned int innew:1;		/* So we can use the same callback for both new and cur */
 	unsigned int readonly:1;	/* SELECT vs EXAMINE */
 	unsigned int inauth:1;
+	unsigned int idle:1;		/* Whether IDLE is active */
+	pthread_mutex_t lock;		/* Lock for IMAP session */
+	RWLIST_ENTRY(imap_session) entry;	/* Next active session */
 };
+
+static RWLIST_HEAD_STATIC(sessions, imap_session);
+
+static int __attribute__ ((format (gnu_printf, 2, 3))) __imap_broadcast(struct imap_session *imap, const char *fmt, ...)
+{
+	struct imap_session *s;
+	char *buf;
+	int len;
+	va_list ap;
+
+	va_start(ap, fmt);
+	len = vasprintf(&buf, fmt, ap);
+	va_end(ap);
+
+	if (len < 0) {
+		bbs_error("vasprintf failure\n");
+		return -1;
+	}
+
+	/* Write to this IMAP session first, since the client that expected a response should get it before any unsolicited replies go out. */
+	pthread_mutex_lock(&imap->lock);
+	dprintf(imap->wfd, "%s", buf);
+	pthread_mutex_unlock(&imap->lock);
+
+	/* Write to all IMAP sessions that share the same mailbox and current folder (imap->dir), excluding ourselves since we already went first. */
+	/* Note that we do this regardless of whether or not the client is idling.
+	 * This functionality actually doesn't have anything to do with IDLE.
+	 * From RFC 2177, even without idle: the client MUST continue to be able to accept unsolicited untagged responses to ANY command
+	 * So in theory, anything using imap_send could use imap_send_broadcast, if we wanted.
+	 * EXPUNGE and EXISTS are just specifically called out in the RFC for such unsolicited responses. */
+	RWLIST_RDLOCK(&sessions);
+	RWLIST_TRAVERSE(&sessions, s, entry) {
+		if (s == imap) {
+			continue; /* Already did ourself first, above, don't do us again. */
+		}
+		if (s->mbox != imap->mbox) {
+			continue; /* Different mailbox (account) */
+		}
+		if (strcmp(s->dir, imap->dir)) {
+			continue; /* Different folders. */
+		}
+		/* Hey, this client is on the same exact folder right now! Send it an unsolicited, untagged response. */
+		pthread_mutex_lock(&s->lock);
+		dprintf(s->wfd, "%s", buf);
+		pthread_mutex_unlock(&s->lock);
+	}
+	RWLIST_UNLOCK(&sessions);
+
+	free(buf);
+	return 0;
+}
+
+static int num_messages(const char *path)
+{
+	DIR *dir;
+	struct dirent *entry;
+	int num = 0;
+
+	/* Order doesn't matter here, we just want the total number of messages, so fine (and faster) to use opendir instead of scandir */
+	if (!(dir = opendir(path))) {
+		bbs_error("Error opening directory - %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+
+	while ((entry = readdir(dir)) != NULL) {
+		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		num++;
+	}
+
+	closedir(dir);
+	return num;
+}
+
+/* All IMAP traversals must be ordered, so we can't use these functions or we'll get a ~random (at least incorrect) order */
+/* Sequence numbers must strictly be in order, if they aren't, all sorts of weird stuff will happened.
+ * I know this because I tried using these functions first, and it didn't really work.
+ * Because scandir allocates memory for all the files in a directory up front, it could result in a lot of memory usage.
+ * Technically, for this reason, may want to limit the number of messages in a single mailbox (folder) for this reason.
+ */
+#define opendir __Do_not_use_readdir_or_opendir_use_scandir
+#define readdir __Do_not_use_readdir_or_opendir_use_scandir
+#define closedir __Do_not_use_readdir_or_opendir_use_scandir
+
+/*! \brief Callback for new messages (delivered by SMTP to the INBOX) */
+static void imap_mbox_watcher(struct mailbox *mbox, const char *newfile)
+{
+	int numtotal = -1;
+	struct imap_session *s;
+
+	UNUSED(newfile);
+
+	/* Notify anyone watching this mailbox, specifically the INBOX. */
+	RWLIST_RDLOCK(&sessions);
+	RWLIST_TRAVERSE(&sessions, s, entry) {
+		if (s->mbox != mbox) {
+			continue; /* Different mailbox (account) */
+		}
+		if (strcmp(s->dir, mailbox_maildir(mbox))) {
+			continue; /* Different folders. */
+		}
+		/* Hey, this client is on the same exact folder right now! Send it an unsolicited, untagged response. */
+		if (numtotal == -1) {
+			/* Compute how many messages exist. */
+			numtotal = num_messages(s->newdir) + num_messages(s->curdir);
+			bbs_debug(4, "Calculated %d message%s in INBOX %d currently\n", numtotal, ESS(numtotal), mailbox_id(mbox));
+		}
+		if (numtotal < 1) { /* Calculate the number of messages "just in time", only if somebody is actually in the INBOX right now. */
+			/* Should be at least 1, because this callback is triggered when we get a NEW message. So there's at least that one. */
+			bbs_error("Expected at least %d message, but calculated %d?\n", 1, numtotal);
+			continue; /* Don't send the client something clearly bogus */
+		}
+		pthread_mutex_lock(&s->lock);
+		imap_debug(4, "%p <= * %d EXISTS\r\n", s, numtotal);
+		dprintf(s->wfd, "* %d EXISTS\r\n", numtotal); /* Number of messages in the mailbox. */
+		pthread_mutex_unlock(&s->lock);
+	}
+	RWLIST_UNLOCK(&sessions);
+}
 
 static void imap_destroy(struct imap_session *imap)
 {
+	if (imap->mbox) {
+		mailbox_unwatch(imap->mbox); /* We previously started watching it, so stop watching it now. */
+		imap->mbox = NULL;
+	}
 	close_if(imap->appendfile);
 	free_if(imap->appenddate);
 	/* Do not free tag, since it's stack allocated */
 	free_if(imap->savedtag);
 	free_if(imap->folder);
+	pthread_mutex_destroy(&imap->lock);
 }
 
 /*! \brief Faster than strncat, since we store our position between calls, but maintain its safety */
@@ -177,8 +300,8 @@ static void imap_destroy(struct imap_session *imap)
 #define FLAG_NAME_DRAFT "\\Draft"
 
 #define IMAP_REV "IMAP4rev1"
-/*! \todo need to add actual capabilities here too */
-#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN"
+/* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
+#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN IDLE"
 #define IMAP_FLAGS FLAG_NAME_FLAGGED " " FLAG_NAME_SEEN " " FLAG_NAME_ANSWERED " " FLAG_NAME_DELETED " " FLAG_NAME_DRAFT
 #define HIERARCHY_DELIMITER "."
 
@@ -452,7 +575,7 @@ static int expunge_helper(const char *dir_name, const char *filename, struct ima
 	}
 	mailbox_unlock(imap->mbox);
 	if (expunge) {
-		imap_send(imap, "%d EXPUNGE", imap->expungeindex); /* Send for EXPUNGE, but not CLOSE */
+		imap_send_broadcast(imap, "%d EXPUNGE", imap->expungeindex); /* Send for EXPUNGE, but not CLOSE */
 	}
 	/* EXPUNGE indexes update as we actively expunge messages.
 	 * i.e. if we were to delete all the messages in a directory,
@@ -518,10 +641,11 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 	if (readonly == 1) {
 		imap->readonly = readonly;
 	}
+	mailbox_has_activity(imap->mbox); /* Clear any activity flag since we're about to do a traversal. */
 	IMAP_TRAVERSAL(imap, on_select);
 	if (readonly <= 1) { /* SELECT, EXAMINE */
 		imap_send(imap, "FLAGS (%s)", IMAP_FLAGS);
-		imap_send(imap, "%u EXISTS", imap->totalnew + imap->totalcur); /* Number of messages in the mailbox. */
+		imap_send_broadcast(imap, "%u EXISTS", imap->totalnew + imap->totalcur); /* Number of messages in the mailbox. */
 		imap_send(imap, "%u RECENT", imap->totalnew); /* Number of messages with \Recent flag (maildir: new, instead of cur). */
 		if (imap->firstunseen) {
 			/* Both of these are supposed to be firstunseen (the first one is NOT totalunseen) */
@@ -833,11 +957,15 @@ static int handle_list(struct imap_session *imap, char *s)
 			}
 			/* This is an instance where maildir format is nice, we don't have to recurse in this subdirectory. */
 			if (strncmp(entry->d_name, reference, reflen)) {
+#ifdef EXTRA_DEBUG
 				imap_debug(10, "Directory %s doesn't start with prefix %s\n", entry->d_name, reference);
+#endif
 				continue; /* It doesn't start with the same prefix as the reference */
 			} else if (!list_match(entry->d_name + reflen + 1, mailbox)) { /* Didn't match the mailbox (folder) query */
 				/* Need to add 1 since all subdirectories start with . (maildir++ format) */
+#ifdef EXTRA_DEBUG
 				imap_debug(10, "Name '%s' doesn't match query '%s'\n", entry->d_name + reflen + 1, mailbox);
+#endif
 				continue;
 			}
 
@@ -1510,6 +1638,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				}
 				offset = 0;
 				/* XXX Doesn't handle partial bodies */
+				pthread_mutex_lock(&imap->lock);
 				res = sendfile(imap->wfd, fileno(fp), &offset, size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
 				if (res != size) {
 					bbs_error("sendfile failed (%d != %ld): %s\n", res, size, strerror(errno));
@@ -1517,6 +1646,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 					imap_debug(5, "Sent %d-byte body for %s\n", res, fullname);
 				}
 				dprintf(imap->wfd, "\r\n)\r\n"); /* And the finale (don't use imap_send for this) */
+				pthread_mutex_unlock(&imap->lock);
 			} else {
 				/* Need to add 2 for last CR LF we tack on before ) */
 				imap_send(imap, "%d FETCH (%s {%d}\r\n%s\r\n)", seqno, response, bodylen + 2, headers);
@@ -1545,6 +1675,13 @@ static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 	if (s_strlen_zero(imap->dir)) {
 		imap_reply(imap, "NO Must select a mailbox first");
 		return 0;
+	}
+
+	if (mailbox_has_activity(imap->mbox)) {
+		/* There are new messages since we last checked. */
+		/* Move any new messages from new to cur so we can find them. */
+		imap_debug(4, "Doing traversal again since our view of %s is stale\n", imap->dir);
+		IMAP_TRAVERSAL(imap, on_select);
 	}
 
 	REQUIRE_ARGS(s);
@@ -1925,6 +2062,17 @@ static int imap_process(struct imap_session *imap, char *s)
 	int res;
 	char *command;
 
+	if (imap->idle) {
+		/* Command should be "DONE" */
+		if (strlen_zero(s) || strcasecmp(s, "DONE")) {
+			bbs_warning("Improper IDLE termination (received '%s')\n", S_IF(s));
+		}
+		imap->idle = 0;
+		_imap_reply(imap, "%s OK IDLE terminated\r\n", imap->savedtag); /* Use tag from IDLE request */
+		free_if(imap->savedtag);
+		return 0;
+	}
+
 	if (imap->appendsize) {
 		/* We're in the middle of an append at the moment.
 		 * This is kind of like the DATA command with SMTP. */
@@ -1972,6 +2120,8 @@ static int imap_process(struct imap_session *imap, char *s)
 				return -1; /* Just disconnect, we probably won't be able to proceed anyways. */
 			}
 			_imap_reply(imap, "%s OK Success\r\n", imap->savedtag); /* Use tag from AUTHENTICATE request */
+			free_if(imap->savedtag);
+			mailbox_watch(imap->mbox);
 		}
 		free_if(imap->savedtag);
 		return 0;
@@ -2007,6 +2157,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		if (!strcasecmp(command, "PLAIN")) {
 			_imap_reply(imap, "+\r\n");
 			imap->inauth = 1;
+			free_if(imap->savedtag);
 			imap->savedtag = strdup(imap->tag);
 		} else {
 			imap_reply(imap, "NO Auth method not supported");
@@ -2047,6 +2198,7 @@ static int imap_process(struct imap_session *imap, char *s)
 			return -1; /* Just disconnect, we probably won't be able to proceed anyways. */
 		}
 		imap_reply(imap, "OK Login completed");
+		mailbox_watch(imap->mbox);
 	/* Past this point, must be logged in. */
 	} else if (!bbs_user_is_registered(imap->node->user)) {
 		imap_reply(imap, "BAD Not logged in");
@@ -2104,6 +2256,18 @@ static int imap_process(struct imap_session *imap, char *s)
 		}
 	} else if (!strcasecmp(command, "APPEND")) {
 		handle_append(imap, s);
+	} else if (allow_idle && !strcasecmp(command, "IDLE")) {
+		/* RFC 2177 IDLE */
+		_imap_reply(imap, "+ idling\r\n");
+		free_if(imap->savedtag);
+		imap->savedtag = strdup(imap->tag);
+		imap->idle = 1;
+		/* Note that IDLE only applies to the currently selected mailbox (folder).
+		 * Thus, in traversing all the IMAP sessions, simply sharing the same mbox isn't enough.
+		 * imap->dir also needs to match (same currently selected folder).
+		 *
+		 * One simplification this implementation makes is that
+		 * IDLE only works for the INBOX, since that's probably the only folder most people care about much. */
 	} else {
 		/*! \todo capabilities to support:
 		 * https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml
@@ -2113,11 +2277,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		 * Yandex: * CAPABILITY IMAP4rev1 CHILDREN UNSELECT LITERAL+ NAMESPACE XLIST BINARY UIDPLUS ENABLE ID AUTH=PLAIN AUTH=XOAUTH2 IDLE MOVE
 		 */
 
-		/*! \todo add RFC 2177 IDLE - need to have a linked list of all IMAP sessions for a mailbox, and send any updates to all connected clients */
-
-		/*! \todo handle EXPUNGE */
 		/*! \todo add SUBSCRIBE, LSUB (deprecated in RFC 9051, but clients still use it) */
-		/*! \todo Need to add IDLE +only allow the longer IDLE timeout (30 mins) when in an idle, time out earlier otherwise */
 		/*! \todo add SEARCH */
 		/*! \todo add ability to send a message + store in Sent in one-step */
 
@@ -2169,7 +2329,7 @@ static void imap_handler(struct bbs_node *node, int secure)
 	SSL *ssl;
 #endif
 	int rfd, wfd;
-	struct imap_session imap;
+	struct imap_session imap, *s;
 
 	/* Start TLS if we need to */
 	if (secure) {
@@ -2188,7 +2348,29 @@ static void imap_handler(struct bbs_node *node, int secure)
 	imap.node = node;
 	imap.appendfile = -1;
 
+	pthread_mutex_init(&imap.lock, NULL);
+
+	/* Add to session list (for IDLE) */
+	RWLIST_WRLOCK(&sessions);
+	RWLIST_INSERT_HEAD(&sessions, &imap, entry);
+	RWLIST_UNLOCK(&sessions);
+
 	handle_client(&imap);
+
+	/* Remove from session list */
+	RWLIST_WRLOCK(&sessions);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&sessions, s, entry) {
+		if (s == &imap) {
+			RWLIST_REMOVE_CURRENT(entry);
+			/* imap is stack allocated, don't free it */
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(&sessions);
+	if (!s) {
+		bbs_error("Failed to remove IMAP session %p from session list?\n", &imap);
+	}
 
 #ifdef HAVE_OPENSSL
 	if (secure) { /* implies ssl */
@@ -2229,6 +2411,8 @@ static int load_config(void)
 	if (!cfg) {
 		return 0;
 	}
+
+	bbs_config_val_set_true(cfg, "general", "allowidle", &allow_idle);
 
 	/* IMAP */
 	bbs_config_val_set_true(cfg, "imap", "enabled", &imap_enabled);
@@ -2296,6 +2480,7 @@ static int load_module(void)
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		bbs_register_test(tests[i].name, tests[i].callback);
 	}
+	mailbox_register_watcher(imap_mbox_watcher);
 	return 0;
 }
 
@@ -2305,6 +2490,7 @@ static int unload_module(void)
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		bbs_unregister_test(tests[i].callback);
 	}
+	mailbox_unregister_watcher(imap_mbox_watcher);
 	pthread_cancel(imap_listener_thread);
 	pthread_kill(imap_listener_thread, SIGURG);
 	bbs_pthread_join(imap_listener_thread, NULL);

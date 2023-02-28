@@ -54,6 +54,33 @@ int mailbox_uid_lock(struct mailbox *mbox);
 /*! \brief Unlock a previously acquired UID lock on this mailbox */
 void mailbox_uid_unlock(struct mailbox *mbox);
 
+/*! \brief Start watching a mailbox for new messages */
+void mailbox_watch(struct mailbox *mbox);
+
+/*! \brief Stop watching a mailbox for new messages. This SHOULD be called at some point during execution if mailbox_watch is called. */
+void mailbox_unwatch(struct mailbox *mbox);
+
+/*!
+ * \brief Called by producer applications (e.g. SMTP) to indicate new messages are available for subscribers actively watching the mailbox
+ * \note This will also set the activity flag for the mailbox.
+ */
+void mailbox_notify(struct mailbox *mbox, const char *newfile);
+
+/*!
+ * \brief Check if a mailbox has activity
+ * \retval 1 if mailbox has activity, 0 if not
+ * \note Calling this function will clear the activity flag so multiple simultaneous calls will not all return 1
+ */
+int mailbox_has_activity(struct mailbox *mbox);
+
+#define mailbox_register_watcher(callback) __mailbox_register_watcher(callback, BBS_MODULE_SELF)
+
+/*! \brief Register a mailbox watching application (intended for IMAP) */
+int __mailbox_register_watcher(void (*callback)(struct mailbox *mbox, const char *newfile), void *mod);
+
+/*! \brief Unregister a mailbox watching application */
+int mailbox_unregister_watcher(void (*callback)(struct mailbox *mbox, const char *newfile));
+
 /*! \brief Get the quota of a mailbox in bytes */
 unsigned long mailbox_quota(struct mailbox *mbox);
 

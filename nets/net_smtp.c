@@ -219,7 +219,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 			smtp_reply0_nostatus(smtp, 250, "AUTH=LOGIN PLAIN"); /* For non-compliant user agents, e.g. Outlook 2003 and older */
 		}
 		smtp_reply0_nostatus(smtp, 250, "SIZE %u", max_message_size); /* RFC 1870 */
-		if (ssl_available()) {
+		if (!smtp->secure && ssl_available()) {
 			smtp_reply0_nostatus(smtp, 250, "STARTTLS");
 		}
 		smtp_reply_nostatus(smtp, 250, "ENHANCEDSTATUSCODES");
@@ -821,6 +821,8 @@ static int do_local_delivery(struct smtp_session *smtp, const char *recipient, c
 	if (rename(tmpfile, newfile)) {
 		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
 		return -1;
+	} else {
+		mailbox_notify(mbox, newfile);
 	}
 	return 0;
 }
@@ -916,6 +918,8 @@ static int return_dead_letter(const char *from, const char *to, const char *msgf
 	if (rename(tmpfile, newfile)) {
 		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
 		return -1;
+	} else {
+		mailbox_notify(mbox, newfile);
 	}
 
 	if (unlink(tmpattach)) {

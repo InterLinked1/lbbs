@@ -52,16 +52,16 @@ struct auth_provider {
 static RWLIST_HEAD_STATIC(providers, auth_provider);
 
 static int (*registerprovider)(struct bbs_node *node) = NULL;
-void *registermod = NULL;
+static void *registermod = NULL;
 
 static int (*pwresethandler)(const char *username, const char *password) = NULL;
-void *pwresetmod = NULL;
+static void *pwresetmod = NULL;
 
 static struct bbs_user* (*userinfohandler)(const char *username) = NULL;
-void *userinfomod = NULL;
+static void *userinfomod = NULL;
 
 static struct bbs_user** (*userlisthandler)(void) = NULL;
-void *userlistmod = NULL;
+static void *userlistmod = NULL;
 
 int __bbs_register_user_registration_provider(int (*regprovider)(struct bbs_node *node), void *mod)
 {

@@ -46,10 +46,12 @@ static pthread_t trash_thread = -1;
 /*! \brief Opaque structure for a user's mailbox */
 struct mailbox {
 	unsigned int id;					/* Mailbox ID. Corresponds with user ID. */
+	unsigned int watchers;				/* Number of watchers for this mailbox. */
 	char maildir[256];					/* User's mailbox directory, on disk. */
 	pthread_rwlock_t lock;				/* R/W lock for entire mailbox. R/W instead of a mutex, because POP write locks the entire mailbox, IMAP can just read lock. */
 	pthread_mutex_t uidlock;			/* Mutex for UID operations. */
 	RWLIST_ENTRY(mailbox) entry;		/* Next mailbox */
+	unsigned int activity:1;			/* Mailbox has activity */
 };
 
 /* Once created, mailboxes are not destroyed until module unload,
@@ -57,6 +59,35 @@ struct mailbox {
  * mailboxes unlocked and use them in the net modules,
  * since they bump the refcount of this module itself. */
 static RWLIST_HEAD_STATIC(mailboxes, mailbox);
+
+static void (*watchcallback)(struct mailbox *mbox, const char *newfile) = NULL;
+static void *watchmod = NULL;
+
+int __mailbox_register_watcher(void (*callback)(struct mailbox *mbox, const char *newfile), void *mod)
+{
+	/* Can only be one (IMAP). Could support more, but that's all we need this for,
+	 * so no need to add complexity by maintaining a list of callbacks at the moment. */
+	if (watchcallback) {
+		bbs_error("A mailbox watcher is already registered.\n");
+		return -1;
+	}
+
+	watchcallback = callback;
+	watchmod = mod;
+	return 0;
+}
+
+int mailbox_unregister_watcher(void (*callback)(struct mailbox *mbox, const char *newfile))
+{
+	if (watchcallback != callback) {
+		bbs_error("Mailbox watcher %p does not match registered provider %p\n", callback, watchcallback);
+		return -1;
+	}
+
+	watchcallback = NULL;
+	watchmod = NULL;
+	return 0;
+}
 
 /* E-Mail Address Alias */
 struct alias {
@@ -386,6 +417,47 @@ int mailbox_uid_lock(struct mailbox *mbox)
 void mailbox_uid_unlock(struct mailbox *mbox)
 {
 	pthread_mutex_unlock(&mbox->uidlock);
+}
+
+void mailbox_watch(struct mailbox *mbox)
+{
+	mailbox_uid_lock(mbox); /* Borrow the UID lock since we need to do this atomically */
+	mbox->watchers += 1;
+	mailbox_uid_unlock(mbox);
+}
+
+void mailbox_unwatch(struct mailbox *mbox)
+{
+	mailbox_uid_lock(mbox); /* Borrow the UID lock since we need to do this atomically */
+	mbox->watchers -= 1;
+	mailbox_uid_unlock(mbox);
+}
+
+void mailbox_notify(struct mailbox *mbox, const char *newfile)
+{
+	if (!mbox->watchers) {
+		return; /* Nobody is watching the mailbox right now, so no need to bother notifying any watchers. */
+	}
+
+	mailbox_uid_lock(mbox); /* Borrow the UID lock since we need to do this atomically */
+	mbox->activity = 1;
+	mailbox_uid_unlock(mbox);
+
+	if (watchcallback) {
+		bbs_module_ref(watchmod);
+		watchcallback(mbox, newfile);
+		bbs_module_unref(watchmod);
+	}
+}
+
+int mailbox_has_activity(struct mailbox *mbox)
+{
+	int res;
+	mailbox_uid_lock(mbox); /* Borrow the UID lock since we need to do this atomically */
+	res = mbox->activity;
+	mbox->activity = 0; /* If it was, we ate it */
+	mailbox_uid_unlock(mbox);
+	return res;
 }
 
 unsigned long mailbox_quota(struct mailbox *mbox)
