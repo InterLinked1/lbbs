@@ -15,6 +15,9 @@
  * \brief RFC9051 Internet Message Access Protocol (IMAP) version 4rev2 (updates RFC3501 IMAP 4rev1)
  *
  * \note Supports RFC2177 IDLE
+ * \note Supports RFC9208 QUOTA
+ * \note Supports RFC2971 ID
+ * \note Supports RFC4959 SASL-IR
  *
  * \note STARTTLS is not supported for cleartext IMAP, as proposed in RFC2595, as this guidance
  *       is obsoleted by RFC8314. Implicit TLS (IMAPS) should be preferred.
@@ -300,8 +303,9 @@ static void imap_destroy(struct imap_session *imap)
 #define FLAG_NAME_DRAFT "\\Draft"
 
 #define IMAP_REV "IMAP4rev1"
+/* List of capabilities: https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml */
 /* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
-#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN IDLE"
+#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR"
 #define IMAP_FLAGS FLAG_NAME_FLAGGED " " FLAG_NAME_SEEN " " FLAG_NAME_ANSWERED " " FLAG_NAME_DELETED " " FLAG_NAME_DRAFT
 #define HIERARCHY_DELIMITER "."
 
@@ -1319,7 +1323,12 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 		free_if(olduids);
 		free_if(newuids);
 	}
-	imap_reply(imap, "OK [COPYUID %u %s %s] COPY completed", uidvalidity, S_IF(olduidstr), S_IF(newuidstr));
+	if (!numcopies && quotaleft <= 0) {
+		imap_send(imap, "NO [OVERQUOTA] Quota has been exceeded");
+		imap_reply(imap, "NO Insufficient quota remaining");
+	} else {
+		imap_reply(imap, "OK [COPYUID %u %s %s] COPY completed", uidvalidity, S_IF(olduidstr), S_IF(newuidstr));
+	}
 	free_if(olduidstr);
 	free_if(newuidstr);
 	return 0;
@@ -1374,6 +1383,7 @@ static int handle_append(struct imap_session *imap, char *s)
 		imap_reply(imap, "NO Message too large");
 		return 0;
 	} else if ((unsigned long) appendsize >= quotaleft) {
+		imap_send(imap, "NO [OVERQUOTA] Quota has been exceeded");
 		imap_reply(imap, "NO Insufficient quota remaining");
 		return 0;
 	}
@@ -2057,6 +2067,57 @@ static int handle_rename(struct imap_session *imap, char *s)
 	return 0;
 }
 
+static int handle_getquota(struct imap_session *imap)
+{
+	unsigned int quotatotal, quotaleft, quotaused;
+
+	quotatotal = mailbox_quota(imap->mbox);
+	quotaleft = mailbox_quota_remaining(imap->mbox);
+	quotaused = quotatotal - quotaleft;
+
+	/* The RFC doesn't say this explicitly, but quota values are in KB, not bytes. */
+	imap_send(imap, "QUOTA \"\" (STORAGE %u %u)", quotaused / 1024, quotatotal / 1024);
+	return 0;
+}
+
+static int handle_auth(struct imap_session *imap, char *s)
+{
+	int res;
+
+	/* AUTH=PLAIN - got a combined encoded username/password */
+	unsigned char *decoded;
+	char *authorization_id, *authentication_id, *password;
+
+	imap->inauth = 0;
+	decoded = bbs_sasl_decode(s, &authorization_id, &authentication_id, &password);
+	if (!decoded) {
+		return -1;
+	}
+
+	/* Can't use bbs_sasl_authenticate directly since we need to strip the domain */
+	bbs_strterm(authentication_id, '@');
+	res = bbs_authenticate(imap->node, authentication_id, password);
+	memset(password, 0, strlen(password)); /* Destroy the password from memory before we free it */
+	free(decoded);
+
+	/* Have a combined username and password */
+	if (res) {
+		imap_reply(imap, "NO Invalid username or password"); /* No such mailbox, since wrong domain! */
+	} else {
+		imap->mbox = mailbox_get(imap->node->user->id, NULL); /* Retrieve the mailbox for this user */
+		if (!imap->mbox) {
+			bbs_error("Successful authentication, but unable to retrieve mailbox for user %d\n", imap->node->user->id);
+			imap_reply(imap, "BYE System error");
+			return -1; /* Just disconnect, we probably won't be able to proceed anyways. */
+		}
+		_imap_reply(imap, "%s OK Success\r\n", imap->savedtag); /* Use tag from AUTHENTICATE request */
+		free_if(imap->savedtag);
+		mailbox_watch(imap->mbox);
+	}
+	free_if(imap->savedtag);
+	return 0;
+}
+
 static int imap_process(struct imap_session *imap, char *s)
 {
 	int res;
@@ -2093,38 +2154,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		}
 		return 0;
 	} else if (imap->inauth) {
-		/* AUTH=PLAIN - got a combined encoded username/password */
-		unsigned char *decoded;
-		char *authorization_id, *authentication_id, *password;
-
-		imap->inauth = 0;
-		decoded = bbs_sasl_decode(s, &authorization_id, &authentication_id, &password);
-		if (!decoded) {
-			return -1;
-		}
-
-		/* Can't use bbs_sasl_authenticate directly since we need to strip the domain */
-		bbs_strterm(authentication_id, '@');
-		res = bbs_authenticate(imap->node, authentication_id, password);
-		memset(password, 0, strlen(password)); /* Destroy the password from memory before we free it */
-		free(decoded);
-
-		/* Have a combined username and password */
-		if (res) {
-			imap_reply(imap, "NO Invalid username or password"); /* No such mailbox, since wrong domain! */
-		} else {
-			imap->mbox = mailbox_get(imap->node->user->id, NULL); /* Retrieve the mailbox for this user */
-			if (!imap->mbox) {
-				bbs_error("Successful authentication, but unable to retrieve mailbox for user %d\n", imap->node->user->id);
-				imap_reply(imap, "BYE System error");
-				return -1; /* Just disconnect, we probably won't be able to proceed anyways. */
-			}
-			_imap_reply(imap, "%s OK Success\r\n", imap->savedtag); /* Use tag from AUTHENTICATE request */
-			free_if(imap->savedtag);
-			mailbox_watch(imap->mbox);
-		}
-		free_if(imap->savedtag);
-		return 0;
+		return handle_auth(imap, s);
 	}
 
 	imap->tag = strsep(&s, " "); /* Tag for client to identify responses to its request */
@@ -2155,6 +2185,10 @@ static int imap_process(struct imap_session *imap, char *s)
 		/* AUTH=PLAIN => AUTHENTICATE, which is preferred to LOGIN. */
 		command = strsep(&s, " ");
 		if (!strcasecmp(command, "PLAIN")) {
+			if (!strlen_zero(s)) {
+				/* RFC 4959 SASL-IR extension */
+				return handle_auth(imap, s);
+			}
 			_imap_reply(imap, "+\r\n");
 			imap->inauth = 1;
 			free_if(imap->savedtag);
@@ -2213,6 +2247,9 @@ static int imap_process(struct imap_session *imap, char *s)
 			return 0;
 		}
 		return handle_select(imap, s, 2);
+	} else if (!strcasecmp(command, "NAMESPACE")) {
+		imap_send(imap, "NAMESPACE ((\"\" \".\")) NIL NIL"); /* Single personal namespace */
+		imap_reply(imap, "NAMESPACE command completed");
 	} else if (!strcasecmp(command, "LIST")) {
 		return handle_list(imap, s);
 	} else if (!strcasecmp(command, "CREATE")) {
@@ -2228,6 +2265,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		if (imap->folder) {
 			imap_traverse(imap->curdir, on_close, imap);
 		}
+		imap->dir[0] = imap->curdir[0] = imap->newdir[0] = '\0';
 		imap_reply(imap, "OK CLOSE completed");
 	} else if (!strcasecmp(command, "EXPUNGE")) {
 		if (imap->folder) {
@@ -2235,6 +2273,9 @@ static int imap_process(struct imap_session *imap, char *s)
 			imap_traverse(imap->curdir, on_expunge, imap);
 		}
 		imap_reply(imap, "OK EXPUNGE completed");
+	} else if (!strcasecmp(command, "UNSELECT")) { /* Same as CLOSE, without the implicit auto-expunging */
+		imap->dir[0] = imap->curdir[0] = imap->newdir[0] = '\0';
+		imap_reply(imap, "OK UNSELECT completed");
 	} else if (!strcasecmp(command, "FETCH")) {
 		return handle_fetch(imap, s, 0);
 	} else if (!strcasecmp(command, "COPY")) {
@@ -2268,18 +2309,26 @@ static int imap_process(struct imap_session *imap, char *s)
 		 *
 		 * One simplification this implementation makes is that
 		 * IDLE only works for the INBOX, since that's probably the only folder most people care about much. */
+	} else if (!strcasecmp(command, "SETQUOTA")) {
+		/* Requires QUOTASET, which we don't advertise in our capabilities, so clients shouldn't call this anyways... */
+		imap_reply(imap, "NO Permission Denied"); /* Users cannot adjust their own quotas, nice try... */
+	} else if (!strcasecmp(command, "GETQUOTA")) {
+		/* RFC 2087 / 9208 QUOTA */
+		handle_getquota(imap);
+		imap_reply(imap, "OK GETQUOTA complete");
+	} else if (!strcasecmp(command, "GETQUOTAROOT")) {
+		imap_send(imap, "QUOTAROOT %s \"\"", s);
+		handle_getquota(imap);
+		imap_reply(imap, "OK GETQUOTAROOT complete");
+	} else if (!strcasecmp(command, "ID")) {
+		/* RFC 2971 (ID extension) */
+		REQUIRE_ARGS(s); /* We don't care what the client's capabilities are (we don't make use of them), but must be some argument (e.g. NIL) */
+		imap_send(imap, "ID (\"name\" \"%s.Imap4Server\" \"version\" \"%s\")", BBS_SHORTNAME, BBS_VERSION);
+		imap_reply(imap, "OK ID completed");
 	} else {
-		/*! \todo capabilities to support:
-		 * https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml
-		 * Outlook: * CAPABILITY IMAP4 IMAP4rev1 AUTH=PLAIN AUTH=XOAUTH2 SASL-IR UIDPLUS MOVE ID UNSELECT CHILDREN IDLE NAMESPACE LITERAL+
-		 * Outlook logged in: * CAPABILITY IMAP4 IMAP4rev1 AUTH=PLAIN AUTH=XOAUTH2 SASL-IR UIDPLUS MOVE ID UNSELECT CLIENTACCESSRULES CLIENTNETWORKPRESENCELOCATION BACKENDAUTHENTICATE CHILDREN IDLE NAMESPACE LITERAL+
-		 * Google: * CAPABILITY IMAP4rev1 UNSELECT IDLE NAMESPACE QUOTA ID XLIST CHILDREN X-GM-EXT-1 XYZZY SASL-IR AUTH=XOAUTH2 AUTH=PLAIN AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH
-		 * Yandex: * CAPABILITY IMAP4rev1 CHILDREN UNSELECT LITERAL+ NAMESPACE XLIST BINARY UIDPLUS ENABLE ID AUTH=PLAIN AUTH=XOAUTH2 IDLE MOVE
-		 */
-
-		/*! \todo add SUBSCRIBE, LSUB (deprecated in RFC 9051, but clients still use it) */
-		/*! \todo add SEARCH */
-		/*! \todo add ability to send a message + store in Sent in one-step */
+		/*! \todo These commands are not currently implemented: SEARCH, MOVE, SUBSCRIBE, LSUB (deprecated in RFC 9051, but clients still use it) */
+		/*! \todo The following common capabilities are not currently supported: AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH AUTH=XOAUTH2 UIDPLUS MOVE LITERAL+ BINARY ENABLE */
+		/*! \todo Add BURL SMTP / IMAP integration (to allow message to be uploaded only once, instead of twice) */
 
 		bbs_warning("Unsupported IMAP command: %s\n", command);
 		imap_reply(imap, "BAD Command not supported.");
@@ -2290,7 +2339,7 @@ static int imap_process(struct imap_session *imap, char *s)
 
 static void handle_client(struct imap_session *imap)
 {
-	char buf[1001]; /* Maximum length, including CR LF, is 1000 */
+	char buf[1001];
 	int res;
 	struct readline_data rldata;
 
