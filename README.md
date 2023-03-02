@@ -34,6 +34,12 @@ Key features and capabilities include:
   - Node spying
   - Kick nodes
 
+## Donations
+
+LBBS is developed entirely by volunteers on their own time.
+
+If LBBS is useful to you, please [consider donating](https://interlinked.us/donate) to fund further development and features. Thank you!
+
 ## Usage
 
 ### Installation

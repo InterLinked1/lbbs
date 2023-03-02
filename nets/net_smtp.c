@@ -137,6 +137,7 @@ struct smtp_session {
 	char *helohost;			/* Hostname for HELO/EHLO */
 	/* AUTH: Temporary */
 	char *authuser;			/* Authentication username */
+	char *fromheaderaddress;	/* Address in the From: header */
 	unsigned int msa:1;		/* Whether connection was to the Message Submission Agent port (as opposed to the Mail Transfer Agent port) */
 	unsigned int secure:1;	/* Whether session is secure (TLS, STARTTLS) */
 	unsigned int dostarttls:1;	/* Whether we are initiating STARTTLS */
@@ -144,6 +145,7 @@ struct smtp_session {
 	unsigned int ehlo:1;	/* Client supports ESMTP (EHLO) */
 	unsigned int fromlocal:1;	/* Sender is local */
 	unsigned int indata:1;	/* Whether client is currently sending email body (DATA) */
+	unsigned int indataheaders:1;	/* Whether client is currently sending headers for the message */
 	unsigned int datafail:1;	/* Data failure */
 	unsigned int inauth:2;	/* Whether currently doing AUTH (1 = need PLAIN, 2 = need LOGIN user, 3 = need LOGIN pass) */
 };
@@ -154,9 +156,11 @@ static void smtp_destroy(struct smtp_session *smtp)
 	smtp->ehlo = 0;
 	smtp->gothelo = 0;
 	smtp->indata = 0;
+	smtp->indataheaders = 0;
 	smtp->inauth = 0;
 	free_if(smtp->helohost);
 	free_if(smtp->authuser);
+	free_if(smtp->fromheaderaddress);
 	free_if(smtp->from);
 	free_if(smtp->data);
 	smtp->datalen = 0;
@@ -822,6 +826,12 @@ static int do_local_delivery(struct smtp_session *smtp, const char *recipient, c
 		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
 		return -1;
 	} else {
+		/* Because the notification is delivered before we actually return success to the sending client,
+		 * this can result in the somewhat strange experience of receiving an email send to yourself
+		 * before it seems that the email has been fully sent.
+		 * This is just a side effect of processing the email completely synchronously
+		 * "real" mail servers typically queue the message to decouple it. We just deliver it immediately.
+		 */
 		mailbox_notify(mbox, newfile);
 	}
 	return 0;
@@ -1161,10 +1171,52 @@ static int do_deliver(struct smtp_session *smtp)
 	int quotaexceeded = 0;
 	int mres;
 
+	bbs_debug(7, "Processing message from %s for delivery: local=%d, size=%lu, from=%s\n", smtp->msa ? "MSA" : "MTA", smtp->fromlocal, smtp->datalen, smtp->from);
+
 	if (smtp->datalen >= max_message_size) {
 		/* XXX Should this only apply for local deliveries? */
 		smtp_reply(smtp, 552, 5.3.4, "Message too large");
 		return 0;
+	}
+
+	if (smtp->fromlocal || smtp->msa) {
+		/* Verify the address in the From header is one the sender is authorized to use. */
+		char *user, *domain;
+		int local;
+		struct mailbox *sendingmbox;
+
+		bbs_assert(smtp->node->user->id > 0); /* Must be logged in for MSA. */
+
+		if (!smtp->fromheaderaddress) { /* Didn't get a From address at all. According to RFC 6409, we COULD add a Sender header, but just reject. */
+			smtp_reply(smtp, 550, 5.7.1, "Missing From header");
+			return 0;
+		}
+		/* Must use parse_email_address for sure, since From header could contain a name, not just the address that's in the <> */
+		if (parse_email_address(smtp->fromheaderaddress, NULL, &user, &domain, &local)) {
+			smtp_reply(smtp, 550, 5.7.1, "Malformed From header");
+			return 0;
+		}
+		if (!domain) { /* Missing domain altogether, yikes */
+			smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
+			return 0;
+		}
+		if (!local) { /* Wrong domain */
+			smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
+			return 0;
+		}
+		/* Check what mailbox the sending username resolves to.
+		 * One corner case is the catch all address. This user is allowed to send email as any address,
+		 * which makes sense since the catch all is going to be the sysop, if it exists. */
+		sendingmbox = mailbox_get(0, smtp->fromheaderaddress);
+		if (!sendingmbox || !mailbox_id(sendingmbox) || (mailbox_id(sendingmbox) != (int) smtp->node->user->id)) {
+			/* It resolved to something else (or maybe nothing at all, if NULL). Reject. */
+			bbs_warning("Rejected attempt by %s to send email as %s@%s\n", bbs_username(smtp->node->user), user, domain);
+			smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
+			return 0;
+		}
+		/* We're good: the From header is either the actual username, or an alias that maps to it. */
+		bbs_debug(5, "User %s authorized to send mail as %s@%s\n", bbs_username(smtp->node->user), user, domain);
+		free_if(smtp->fromheaderaddress);
 	}
 
 	while ((recipient = stringlist_pop(&smtp->recipients))) {
@@ -1239,6 +1291,11 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 
 		dlen = strlen(s); /* s may be empty but will not be NULL */
 
+		if ((smtp->fromlocal || smtp->msa) && smtp->indataheaders && STARTS_WITH(s, "From:")) {
+			free_if(smtp->fromheaderaddress);
+			smtp->fromheaderaddress = strdup(S_IF(s + 5));
+		}
+
 		if (!smtp->data) { /* First line */
 			smtp->data = malloc(dlen + 3); /* Use malloc instead of strdup so we can tack on a CR LF */
 			if (!smtp->data) {
@@ -1259,6 +1316,9 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 			strcpy(newstr + smtp->datalen + dlen, "\r\n");
 			smtp->datalen += dlen + 2;
 			smtp->data = newstr;
+		}
+		if (smtp->indataheaders && dlen == 2) {
+			smtp->indataheaders = 0; /* CR LF on its own indicates end of headers */
 		}
 		if (smtp->datalen >= max_message_size) {
 			smtp->datafail = 1;
@@ -1420,6 +1480,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 		}
 		free_if(smtp->data);
 		smtp->indata = 1;
+		smtp->indataheaders = 1;
 		/* Begin reading data. */
 		smtp_reply_nostatus(smtp, 354, "Start mail input; end with a period on a line by itself");
 	} else {
