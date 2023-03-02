@@ -241,6 +241,14 @@ int bbs_get_remote_ip(struct sockaddr_in *sinaddr, char *buf, size_t len);
  */
 int bbs_save_remote_ip(struct sockaddr_in *sinaddr, struct bbs_node *node);
 
+/*!
+ * \brief Check if an IP address is within a specified CIDR range
+ * \param ip IP address to check, e.g. 192.168.1.1
+ * \param cidr CIDR range, e.g. 192.168.1.1/24
+ * \retval 1 if in range, 0 if error or not in range
+ */
+int bbs_cidr_match_ipv4(const char *ip, const char *cidr);
+
 /*! \brief Get the name of a poll revent */
 const char *poll_revent_name(int revents);
 
@@ -305,6 +313,18 @@ long bbs_dir_size(const char *path);
  */
 FILE *bbs_mkftemp(char *template, mode_t mode);
 
+/*!
+ * \brief Efficiently copy part (or all) of a file between two file descriptors
+ * \param srcfd File descriptor from which to copy
+ * \param destfd Destination file descriptor
+ * \param start Offset from start, in bytes, from which to start copying
+ * \param bytes Number of bytes to copy, starting from start
+ * \retval -1 on failure, number of bytes copied on success
+ * \note srcfd and destfd are closed by this function, regardless of outcome
+ */
+int bbs_copy_file(int srcfd, int destfd, int start, int bytes);
+
+/*! \brief Get a timeval for the current time */
 struct timeval bbs_tvnow(void);
 
 /*! \brief Get difference, in ms, between 2 times */

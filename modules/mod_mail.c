@@ -774,7 +774,7 @@ int maildir_copy_msg(struct mailbox *mbox, const char *curfile, const char *curf
 	char newpath[272];
 	unsigned int uid;
 	int origfd, newfd;
-	unsigned int size, copied;
+	int size, copied;
 
 	uid = gen_newname(mbox, curfilename, destmaildir, uidvalidity, uidnext, newpath, sizeof(newpath));
 	if (!uid) {
@@ -787,9 +787,9 @@ int maildir_copy_msg(struct mailbox *mbox, const char *curfile, const char *curf
 		return -1;
 	}
 
-	origfd = open(newpath, O_RDONLY, 0600);
+	origfd = open(curfile, O_RDONLY, 0600);
 	if (origfd < 0) {
-		bbs_error("open(%s) failed: %s\n", newpath, strerror(errno));
+		bbs_error("open(%s) failed: %s\n", curfile, strerror(errno));
 		close(newfd);
 		return -1;
 	}
@@ -797,15 +797,8 @@ int maildir_copy_msg(struct mailbox *mbox, const char *curfile, const char *curf
 	size = lseek(origfd, 0, SEEK_END); /* Don't blindly trust the size in the filename's S= */
 	lseek(origfd, 0, SEEK_SET); /* rewind to beginning */
 
-	/* This is not a POSIX function, it exists only in Linux.
-	 * Like sendfile, it's more efficient than moving data between kernel and userspace,
-	 * since the kernel can do the copy directly.
-	 * Closest we can get to a system call that will copy a file for us. */
-	copied = copy_file_range(origfd, NULL, newfd, NULL, size, 0);
-	close(newfd);
-	close(origfd);
+	copied = bbs_copy_file(origfd, newfd, 0, size);
 	if (copied != size) {
-		bbs_error("Wanted to copy %d bytes but only copied %d?\n", size, copied);
 		if (unlink(newpath)) {
 			bbs_error("Failed to delete %s: %s\n", newpath, strerror(errno));
 		}

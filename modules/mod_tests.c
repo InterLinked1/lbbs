@@ -213,6 +213,27 @@ cleanup:
 	return res;
 }
 
+static int test_cidr_ipv4(void)
+{
+	bbs_test_assert_equals(1, bbs_cidr_match_ipv4("1.1.1.1", "1.1.1.1/32"));
+	bbs_test_assert_equals(1, bbs_cidr_match_ipv4("1.0.0.0", "1.0.0.0/32"));
+	bbs_test_assert_equals(1, bbs_cidr_match_ipv4("1.0.0.1", "1.0.0.1/24"));
+	bbs_test_assert_equals(1, bbs_cidr_match_ipv4("192.168.1.1", "192.168.1.1/32"));
+	bbs_test_assert_equals(0, bbs_cidr_match_ipv4("192.168.1.1", "192.168.1.2/32"));
+	bbs_test_assert_equals(1, bbs_cidr_match_ipv4("192.168.1.1", "192.168.1.0/24"));
+	bbs_test_assert_equals(1, bbs_cidr_match_ipv4("192.168.1.1", "192.168.1.0/16"));
+	bbs_test_assert_equals(1, bbs_cidr_match_ipv4("192.168.1.1", "192.168.1.0/8"));
+	bbs_test_assert_equals(1, bbs_cidr_match_ipv4("192.168.1.1", "0.0.0.0/0"));
+	bbs_test_assert_equals(1, bbs_cidr_match_ipv4("192.168.1.1", "192.0.0.0/8"));
+	bbs_test_assert_equals(0, bbs_cidr_match_ipv4("192.168.1.1", "192.168.2.0/24"));
+	bbs_test_assert_equals(1, bbs_cidr_match_ipv4("192.168.1.1", "192.168.2.0/16"));
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
 static struct unit_tests {
 	const char *name;
 	int (*callback)(void);
@@ -226,6 +247,7 @@ static struct unit_tests {
 	{ "String Copy w/o Spaces", test_strcpy_nospaces },
 	{ "Readline Helper", test_readline_helper },
 	{ "SASL Decoding", test_sasl_decode },
+	{ "IPv4 CIDR Range Matching", test_cidr_ipv4 },
 };
 
 static int load_module(void)

@@ -850,8 +850,7 @@ static int return_dead_letter(const char *from, const char *to, const char *msgf
 	char tmpfile[256];
 	char newfile[256];
 	char *user, *domain;
-	int local, copied;
-	off_t off_in;
+	int local;
 	FILE *fp;
 
 	/* This server does not relay mail from the outside,
@@ -887,14 +886,7 @@ static int return_dead_letter(const char *from, const char *to, const char *msgf
 	}
 
 	/* Skip first metalen characters, and send msgsize - metalen, to copy over just the message itself. */
-	off_in = metalen;
-	copied = copy_file_range(origfd, &off_in, attachfd, NULL, msgsize - metalen, 0);
-	if (copied != (msgsize - metalen)) {
-		bbs_error("Wanted to copy %d bytes but only copied %d?\n", msgsize - metalen, copied);
-	}
-	close(origfd);
-	close(attachfd);
-
+	bbs_copy_file(origfd, attachfd, metalen, msgsize - metalen);
 	snprintf(fromaddr, sizeof(fromaddr), "mailer-daemon@%s", bbs_hostname()); /* We can be whomever we want to say we are... but let's be a mailer daemon. */
 
 	/* XXX This is not a standard bounce message format (we need multipart/report for that)
@@ -1207,10 +1199,11 @@ static int do_deliver(struct smtp_session *smtp)
 		/* Check what mailbox the sending username resolves to.
 		 * One corner case is the catch all address. This user is allowed to send email as any address,
 		 * which makes sense since the catch all is going to be the sysop, if it exists. */
-		sendingmbox = mailbox_get(0, smtp->fromheaderaddress);
+		sendingmbox = mailbox_get(0, user);
 		if (!sendingmbox || !mailbox_id(sendingmbox) || (mailbox_id(sendingmbox) != (int) smtp->node->user->id)) {
 			/* It resolved to something else (or maybe nothing at all, if NULL). Reject. */
-			bbs_warning("Rejected attempt by %s to send email as %s@%s\n", bbs_username(smtp->node->user), user, domain);
+			bbs_warning("Rejected attempt by %s to send email as %s@%s (%d != %u)\n", bbs_username(smtp->node->user), user, domain,
+				sendingmbox ? mailbox_id(sendingmbox) : 0, smtp->node->user->id);
 			smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
 			return 0;
 		}

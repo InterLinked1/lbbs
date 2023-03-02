@@ -28,6 +28,8 @@
 #include <time.h> /* use time */
 #include <sys/time.h> /* use gettimeofday */
 #include <uuid/uuid.h> /* use uuid_generate, uuid_unparse */
+#include <syscall.h>
+#include <sys/sendfile.h>
 
 #include "include/utils.h"
 #include "include/node.h" /* use bbs_fd_poll_read */
@@ -543,6 +545,47 @@ FILE *bbs_mkftemp(char *template, mode_t mode)
 		return NULL;
 	}
 	return p;
+}
+
+int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
+{
+	int copied;
+	off_t offset;
+
+	if (!bytes) { /* Something's not right. */
+		bbs_warning("Wanted to copy 0 bytes from file descriptor %d?\n", srcfd);
+		return -1;
+	}
+
+	/* Skip first metalen characters, and send msgsize - metalen, to copy over just the message itself. */
+	offset = start;
+	/* This is not a POSIX function, it exists only in Linux.
+	 * Like sendfile, it's more efficient than moving data between kernel and userspace,
+	 * since the kernel can do the copy directly.
+	 * Closest we can get to a system call that will copy a file for us. */
+	copied = copy_file_range(srcfd, &offset, destfd, NULL, bytes, 0);
+	/* If copy_file_range fails, the syscall probably isn't available on this system. */
+#if 0
+	if (copied == -1 && errno == ENOSYS) {
+		/* copy_file_range glibc function doesn't exist on this function. */
+		bbs_debug(5, "copy_file_range glibc wrapper doesn't exist?\n");
+		copied = syscall(__NR_copy_file_range, srcfd, &offset, destfd, NULL, bytes, 0);
+	}
+#endif
+	if (copied == -1 && errno == ENOSYS) {
+		/* Okay, the actual syscall doesn't even exist. Fall back to sendfile. */
+		copied = sendfile(destfd, srcfd, &offset, bytes);
+	}
+	if (copied == -1) {
+		bbs_error("copy %d -> %d failed: %s\n", srcfd, destfd, strerror(errno));
+		return -1;
+	} else if (copied != bytes) {
+		bbs_error("Wanted to copy %d bytes but only copied %d?\n", bytes, copied);
+		return -1;
+	}
+	close(srcfd);
+	close(destfd);
+	return copied;
 }
 
 struct timeval bbs_tvnow(void)

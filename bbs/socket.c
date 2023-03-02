@@ -450,6 +450,56 @@ int bbs_save_remote_ip(struct sockaddr_in *sinaddr, struct bbs_node *node)
 	return 0;
 }
 
+int bbs_cidr_match_ipv4(const char *ip, const char *cidr)
+{
+	char cidr_dup[64];
+	char *tmp;
+	int netbits;
+	struct in_addr addr, netmask;
+	int a, b;
+
+	safe_strncpy(cidr_dup, cidr, sizeof(cidr_dup));
+	tmp = strchr(cidr_dup, '/');
+	if (tmp) {
+		*tmp++ = '\0';
+		if (!*tmp) {
+			bbs_error("Malformed CIDR range: %s\n", cidr);
+			return 0;
+		}
+		netbits = atoi(tmp);
+	} else {
+		/* Assume it's a /32 (single IP) */
+		netbits = 32;
+	}
+	if (!inet_aton(ip, &addr)) {
+		bbs_error("IP address invalid: %s\n", ip);
+		return 0;
+	}
+	if (!inet_aton(cidr_dup, &netmask)) {
+		bbs_error("CIDR range invalid: %s\n", cidr);
+		return 0;
+	}
+	if (netbits < 0 || netbits > 32) {
+		bbs_error("Invalid CIDR range: %s\n", cidr);
+		return 0;
+	}
+
+	if (netbits == 0) {
+		return 1; /* Short-circuit, since we can't shift a 32-bit value by 32 bits. /0 allows everything. */
+	}
+
+	/* Discard anything except the last 32 bits, if there are more. */
+	/* Oh, also make sure we use big endian so all the bits are in order. */
+	a = htonl(addr.s_addr & 0xFFFFFFFF);
+	b = htonl(netmask.s_addr & 0xFFFFFFFF);
+
+	a = a >> (32 - netbits);
+	b = b >> (32 - netbits);
+
+	bbs_debug(7, "IP comparison (%d): %08x/%08x\n", netbits, a, b);
+	return a == b;
+}
+
 const char *poll_revent_name(int revents)
 {
 	if (revents & POLLIN) {
@@ -1281,7 +1331,7 @@ int bbs_std_write(int fd, const char *buf, unsigned int len)
 	for (;;) {
 		res = write(fd, buf, len);
 		if (res <= 0) {
-			bbs_debug(5, "fd %d: write returned %d\n", fd, res);
+			bbs_debug(5, "fd %d: write returned %d: %s\n", fd, res, strerror(errno));
 			return res;
 		}
 		buf += res;
