@@ -86,6 +86,7 @@ static int always_queue = 0;
 static int require_starttls = 1;
 static int require_starttls_out = 0;
 static int requirefromhelomatch = 1;
+static int archivelists = 1;
 
 /*! \brief Max message size, in bytes */
 static unsigned int max_message_size = 300000;
@@ -138,6 +139,7 @@ struct smtp_session {
 	/* AUTH: Temporary */
 	char *authuser;			/* Authentication username */
 	char *fromheaderaddress;	/* Address in the From: header */
+	char *listname;				/* Name of mailing list */
 	unsigned int msa:1;		/* Whether connection was to the Message Submission Agent port (as opposed to the Mail Transfer Agent port) */
 	unsigned int secure:1;	/* Whether session is secure (TLS, STARTTLS) */
 	unsigned int dostarttls:1;	/* Whether we are initiating STARTTLS */
@@ -345,7 +347,9 @@ static int parse_email_address(char *addr, char **name, char **user, char **host
 		}
 	}
 	if (user) {
-		*(start - 1) = '\0';
+		if (start > addr) {
+			*(start - 1) = '\0';
+		}
 		*user = start;
 		if (name) {
 			rtrim(*name);
@@ -543,6 +547,8 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 			}
 			bbs_debug(3, "Message expanded to %d recipient%s on mailing list %s\n", added, ESS(added), user);
 			smtp_reply(smtp, 250, 2.0.0, "OK");
+			free_if(smtp->listname);
+			smtp->listname = strdup(user);
 			return 0;
 		}
 
@@ -1155,6 +1161,59 @@ static int local_delivery(struct smtp_session *smtp, const char *recipient, cons
 	return do_local_delivery(smtp, recipient, user, smtp->data, smtp->datalen);
 }
 
+static int archive_list_msg(struct smtp_session *smtp)
+{
+	char listsdir[256];
+	char listdir[384];
+	int fd, res;
+	char tmpfile[256], newfile[256];
+
+	/* Archive a copy of the message sent to this mailing list. */
+
+	snprintf(listsdir, sizeof(listsdir), "%s/lists", mailbox_maildir(NULL));
+	if (eaccess(listsdir, R_OK)) {
+		if (mkdir(listsdir, 0700)) {
+			bbs_error("mkdir(%s) failed: %s\n", listsdir, strerror(errno));
+			return -1;
+		}
+	}
+
+	snprintf(listdir, sizeof(listdir), "%s/%s", listsdir, smtp->listname);
+	if (eaccess(listdir, R_OK)) {
+		if (mkdir(listdir, 0700)) {
+			bbs_error("mkdir(%s) failed: %s\n", listdir, strerror(errno));
+			return -1;
+		}
+	}
+
+	/* This isn't really a mailbox, but just use the maildir functions for convenience. */
+	if (mailbox_maildir_init(listdir)) {
+		return -1;
+	}
+
+	fd = maildir_mktemp(listdir, tmpfile, sizeof(tmpfile), newfile);
+	if (fd < 0) {
+		return -1;
+	}
+
+	/* Write the entire body of the message. */
+	res = bbs_std_write(fd, smtp->data, smtp->datalen); /* Faster than fwrite since we're writing a lot of data, don't need buffering, and know the length. */
+	if (res != (int) smtp->datalen) {
+		bbs_error("Failed to write %lu bytes to %s, only wrote %d\n", smtp->datalen, tmpfile, res);
+		close(fd);
+		return -1;
+	}
+
+	close(fd);
+	if (rename(tmpfile, newfile)) {
+		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
+		return -1;
+	}
+
+	bbs_debug(7, "Archived list message to %s\n", newfile);
+	return 0;
+}
+
 /*! \brief Actually send an email or queue it for delivery */
 static int do_deliver(struct smtp_session *smtp)
 {
@@ -1210,6 +1269,11 @@ static int do_deliver(struct smtp_session *smtp)
 		/* We're good: the From header is either the actual username, or an alias that maps to it. */
 		bbs_debug(5, "User %s authorized to send mail as %s@%s\n", bbs_username(smtp->node->user), user, domain);
 		free_if(smtp->fromheaderaddress);
+	}
+
+	if (smtp->listname && archivelists) {
+		archive_list_msg(smtp);
+		free_if(smtp->listname);
 	}
 
 	while ((recipient = stringlist_pop(&smtp->recipients))) {
@@ -1634,6 +1698,7 @@ static int load_config(void)
 	bbs_config_val_set_uint(cfg, "general", "maxage", &max_age);
 	bbs_config_val_set_uint(cfg, "general", "maxsize", &max_message_size);
 	bbs_config_val_set_true(cfg, "general", "requirefromhelomatch", &requirefromhelomatch);
+	bbs_config_val_set_true(cfg, "general", "archivelists", &archivelists);
 
 	bbs_config_val_set_true(cfg, "privs", "relayin", &minpriv_relay_in);
 	bbs_config_val_set_true(cfg, "privs", "relayout", &minpriv_relay_out);
