@@ -235,6 +235,7 @@ static int pop3_traverse(const char *path, int (*on_file)(const char *dir_name, 
 	}
 	while (fno < files && (entry = entries[fno++])) {
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			free(entry);
 			continue;
 		}
 		msgno++;
@@ -242,12 +243,15 @@ static int pop3_traverse(const char *path, int (*on_file)(const char *dir_name, 
 		if (is_deleted(pop3, msgno)) {
 			if (msgfilter) {
 				pop3_err(pop3, "No such message");
+				free(entry);
 				continue;
 			}
 		}
 		if ((res = on_file(path, entry->d_name, pop3, msgno, msgfilter))) {
+			free(entry);
 			break; /* If the handler returns non-zero then stop */
 		}
+		free(entry);
 	}
 	free(entries);
 	return res;

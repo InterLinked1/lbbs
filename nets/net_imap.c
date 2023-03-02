@@ -618,11 +618,14 @@ static int imap_traverse(const char *path, int (*on_file)(const char *dir_name, 
 	}
 	while (fno < files && (entry = entries[fno++])) {
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			free(entry);
 			continue;
 		}
 		if ((res = on_file(path, entry->d_name, imap))) {
+			free(entry);
 			break; /* If the handler returns non-zero then stop */
 		}
+		free(entry);
 	}
 	free(entries);
 	return res;
@@ -753,15 +756,18 @@ static int imap_dir_has_subfolders(const char *path, const char *prefix)
 	}
 	while (fno < files && (entry = entries[fno++])) {
 		if (entry->d_type != DT_DIR || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			free(entry);
 			continue;
 		} else if (!strncmp(entry->d_name, prefix, prefixlen)) {
 			const char *rest = entry->d_name + prefixlen; /* do not add these within the strlen_zero macro! */
 			/* XXX Check entire code tree for strlen_zero with + inside adding arguments. That's a bug!!! */
 			if (!strlen_zero(rest)) {
 				res = 1;
+				free(entry);
 				break;
 			}
 		}
+		free(entry);
 	}
 	free(entries);
 	return res;
@@ -957,26 +963,28 @@ static int handle_list(struct imap_session *imap, char *s, int lsub)
 			int flags = 0;
 			if (*entry->d_name != '.') {
 				/* maildir subdirectories start with . (maildir++ standard) */
-				continue;
+				goto cleanup;
 			}
 			/* This is an instance where maildir format is nice, we don't have to recurse in this subdirectory. */
 			if (strncmp(entry->d_name, reference, reflen)) {
 #ifdef EXTRA_DEBUG
 				imap_debug(10, "Directory %s doesn't start with prefix %s\n", entry->d_name, reference);
 #endif
-				continue; /* It doesn't start with the same prefix as the reference */
+				goto cleanup; /* It doesn't start with the same prefix as the reference */
 			} else if (!list_match(entry->d_name + reflen + 1, mailbox)) { /* Didn't match the mailbox (folder) query */
 				/* Need to add 1 since all subdirectories start with . (maildir++ format) */
 #ifdef EXTRA_DEBUG
 				imap_debug(10, "Name '%s' doesn't match query '%s'\n", entry->d_name + reflen + 1, mailbox);
 #endif
-				continue;
+				goto cleanup;
 			}
 
 			flags = get_attributes(imap, entry->d_name);
 			build_attributes_string(attributes, sizeof(attributes), flags);
 			/* Skip first character of directory name since it's . */
 			imap_send(imap, "%s (%s) \"%s\" \"%s\"", lsub ? "LSUB" : "LIST", attributes, HIERARCHY_DELIMITER, entry->d_name + 1); /* Always send the delimiter */
+cleanup:
+			free(entry);
 		}
 	}
 	free(entries);
@@ -1290,11 +1298,11 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 		struct stat st;
 
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
-			continue;
+			goto cleanup;
 		}
 		msguid = msg_in_range(++seqno, entry->d_name, sequences, usinguid);
 		if (!msguid) {
-			continue;
+			goto cleanup;
 		}
 
 		snprintf(srcfile, sizeof(srcfile), "%s/%s", imap->curdir, entry->d_name);
@@ -1304,16 +1312,19 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 			quotaleft -= st.st_size; /* Determine if we would be about to exceed our current quota. */
 			if (quotaleft <= 0) {
 				bbs_verb(5, "Mailbox %d has insufficient quota remaining for COPY operation\n", mailbox_id(imap->mbox));
+				free(entry);
 				break; /* Insufficient quota remaining */
 			}
 		}
 		uidres = maildir_copy_msg(imap->mbox, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext);
 		if (!uidres) {
-			continue;
+			goto cleanup;
 		}
 		if (!uintlist_append2(&olduids, &newuids, &lengths, &allocsizes, msguid, uidres)) {
 			numcopies++;
 		}
+cleanup:
+		free(entry);
 	}
 	free(entries);
 	/* UIDVALIDITY of dest mailbox, src UIDs, dest UIDs (in same order as src messages) */
@@ -1512,11 +1523,11 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		int peek = 0;
 
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
-			continue;
+			goto cleanup;
 		}
 		msguid = msg_in_range(++seqno, entry->d_name, sequences, usinguid);
 		if (!msguid) {
-			continue;
+			goto cleanup;
 		}
 		/* At this point, the message is a match. Fetch everything we're supposed to for it. */
 		buf = response;
@@ -1528,7 +1539,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			flags = strchr(entry->d_name, ':'); /* maildir flags */
 			if (!flags) {
 				bbs_error("Message file %s contains no flags?\n", entry->d_name);
-				continue;
+				goto cleanup;
 			}
 			/* If we wanted to microptimize, we could set flags = current flag on a match, since these must appear in order (for maildir) */
 			gen_flag_names(flags, flagsbuf, sizeof(flagsbuf));
@@ -1539,7 +1550,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			const char *sizestr = strstr(entry->d_name, ",S=");
 			if (!sizestr) {
 				bbs_error("Missing size in file %s\n", entry->d_name);
-				continue;
+				goto cleanup;
 			}
 			sizestr += STRLEN(",S=");
 			size = atoi(sizestr);
@@ -1563,7 +1574,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				fp = fopen(fullname, "r");
 				if (!fp) {
 					bbs_error("Failed to open %s: %s\n", fullname, strerror(errno));
-					continue;
+					goto cleanup;
 				}
 				/* The RFC says no line should be more than 1,000 octets (bytes).
 				 * Most clients will wrap at 72 characters, but we shouldn't rely on this. */
@@ -1600,7 +1611,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			fp = fopen(fullname, "r");
 			if (!fp) {
 				bbs_error("Failed to open %s: %s\n", fullname, strerror(errno));
-				continue;
+				goto cleanup;
 			}
 			/* The RFC says no line should be more than 1,000 octets (bytes).
 			 * Most clients will wrap at 72 characters, but we shouldn't rely on this. */
@@ -1632,7 +1643,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				fp = fopen(fullname, "r");
 				if (!fp) {
 					bbs_error("Failed to open %s: %s\n", fullname, strerror(errno));
-					continue;
+					goto cleanup;
 				}
 				fseek(fp, 0L, SEEK_END); /* Go to EOF */
 				size = ftell(fp);
@@ -1650,6 +1661,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				/* XXX Doesn't handle partial bodies */
 				pthread_mutex_lock(&imap->lock);
 				res = sendfile(imap->wfd, fileno(fp), &offset, size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
+				fclose(fp);
 				if (res != size) {
 					bbs_error("sendfile failed (%d != %ld): %s\n", res, size, strerror(errno));
 				} else {
@@ -1668,6 +1680,8 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 
 		/*! \todo mark as read if !peek (in reality, not critical, since most clients will manually set the flags, and use peek extensively) */
 		UNUSED(peek);
+cleanup:
+		free(entry);
 	}
 	free(entries);
 	imap_reply(imap, "OK %sFETCH Completed", usinguid ? "UID " : "");
@@ -1792,17 +1806,17 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 		int changes = 0;
 
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
-			continue;
+			goto cleanup;
 		}
 		msguid = msg_in_range(++seqno, entry->d_name, sequences, usinguid);
 		if (!msguid) {
-			continue;
+			goto cleanup;
 		}
 		/* Get the message's current flags. */
 		flags = strchr(entry->d_name, ':'); /* maildir flags */
 		if (!flags) {
 			bbs_error("Message file %s contains no flags?\n", entry->d_name);
-			continue;
+			goto cleanup;
 		}
 		oldflags = parse_flags_letters(flags + 2); /* Skip first 2 since it's always just "2," and real flags come after that */
 		/* If we wanted to microptimize, we could set flags = current flag on a match, since these must appear in order (for maildir) */
@@ -1835,7 +1849,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			gen_flag_letters(newflags, newflagletters, sizeof(newflagletters));
 			snprintf(oldname, sizeof(oldname), "%s/%s", imap->curdir, entry->d_name);
 			if (maildir_msg_setflags(oldname, newflagletters)) {
-				continue;
+				goto cleanup;
 			}
 		} else {
 			imap_debug(5, "No changes in flags for message %s/%s\n", imap->curdir, entry->d_name);
@@ -1847,6 +1861,8 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			gen_flag_names(newflagletters, flagstr, sizeof(flagstr));
 			imap_send(imap, "%d FETCH (FLAGS (%s))", seqno, flagstr);
 		}
+cleanup:
+		free(entry);
 	}
 	free(entries);
 	imap_reply(imap, "OK %sFETCH Completed", usinguid ? "UID " : "");
@@ -1985,6 +2001,7 @@ static int sub_rename(const char *path, const char *prefix, const char *newprefi
 	}
 	while (fno < files && (entry = entries[fno++])) {
 		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			free(entry);
 			continue;
 		} else if (entry->d_type == DT_DIR) { /* We only care about directories, not files. */
 			if (!strncmp(entry->d_name, prefix, prefixlen)) {
@@ -2003,10 +2020,12 @@ static int sub_rename(const char *path, const char *prefix, const char *newprefi
 					 * then we shouldn't have changed anything.
 					 * For this reason, better to rename the subdirs before the main dir itself. */
 					res = -1;
+					free(entry);
 					break;
 				}
 			}
 		}
+		free(entry);
 	}
 
 	free(entries);

@@ -197,6 +197,7 @@ static int scan_newsgroups(void)
 		int min, max, total;
 		char perm = 'y'; /* posting allowed: y, n, m (moderated) */
 		if (entry->d_type != DT_DIR || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			free(entry);
 			continue;
 		}
 		snprintf(fullpath, sizeof(fullpath), "%s/%s", newsdir, entry->d_name);
@@ -204,6 +205,7 @@ static int scan_newsgroups(void)
 		snprintf(groupinfo, sizeof(groupinfo), "%s %d %d %c", entry->d_name, min, max, perm);
 		bbs_debug(4, "Loading newsgroup: %s\n", groupinfo);
 		fprintf(fp, "%s\r\n", groupinfo);
+		free(entry);
 	}
 	free(entries);
 	fclose(fp);
@@ -225,13 +227,16 @@ static int nntp_traverse(const char *path, int (*on_file)(const char *dir_name, 
 	}
 	while (fno < files && (entry = entries[fno++])) {
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			free(entry);
 			continue;
 		}
 		/* Filename format is ARTICLEID_MESSAGEID */
 		msgno = atoi(entry->d_name); /* atoi should stop at the _ */
 		if ((res = on_file(path, entry->d_name, nntp, msgno, msgfilter, msgidfilter))) {
+			free(entry);
 			break; /* If the handler returns non-zero then stop */
 		}
+		free(entry);
 	}
 	free(entries);
 	return res;
