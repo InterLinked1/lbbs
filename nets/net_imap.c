@@ -855,7 +855,7 @@ cleanup:
 	return -1;
 }
 
-static int handle_list(struct imap_session *imap, char *s)
+static int handle_list(struct imap_session *imap, char *s, int lsub)
 {
 	char *reference, *mailbox;
 	int reflen;
@@ -907,8 +907,8 @@ static int handle_list(struct imap_session *imap, char *s)
 	if (strlen_zero(mailbox)) {
 		/* Just return hierarchy delimiter and root name of reference */
 		/* When testing other servers, the reference argument doesn't even seem to matter, I always get something like this: */
-		imap_send(imap, "LIST (%s %s) %s %s", ATTR_NOSELECT, ATTR_HAS_CHILDREN, QUOTED_ROOT, EMPTY_QUOTES);
-		imap_reply(imap, "OK LIST completed.");
+		imap_send(imap, "%s (%s %s) %s %s", lsub ? "LSUB" : "LIST", ATTR_NOSELECT, ATTR_HAS_CHILDREN, QUOTED_ROOT, EMPTY_QUOTES);
+		imap_reply(imap, "OK %s completed.", lsub ? "LSUB" : "LIST");
 		return 0;
 	}
 
@@ -936,13 +936,13 @@ static int handle_list(struct imap_session *imap, char *s)
 	/* XXX Hack for INBOX (since it's the top level maildir folder for the user), though this feels very klunky (but it's the target of the dir traversal, so...) */
 	if (strlen_zero(reference) && (strlen_zero(mailbox) || !strcmp(mailbox, "*") || !strcmp(mailbox, "%"))) {
 		build_attributes_string(attributes, sizeof(attributes), DIR_NO_CHILDREN);
-		imap_send(imap, "LIST (%s) \"%s\" \"%s\"", attributes, HIERARCHY_DELIMITER, "INBOX");
+		imap_send(imap, "%s (%s) \"%s\" \"%s\"", lsub ? "LSUB" : "LIST", attributes, HIERARCHY_DELIMITER, "INBOX");
 	} else if (!strcmp(mailbox, "INBOX")) {
 		build_attributes_string(attributes, sizeof(attributes), DIR_NO_CHILDREN);
-		imap_send(imap, "LIST (%s) \"%s\" \"%s\"", attributes, HIERARCHY_DELIMITER, "INBOX");
+		imap_send(imap, "%s (%s) \"%s\" \"%s\"", lsub ? "LSUB" : "LIST", attributes, HIERARCHY_DELIMITER, "INBOX");
 		/* This was just for INBOX, so nothing else can possibly match. */
 		/* XXX Again, the special handling of this feels clunky here */
-		imap_reply(imap, "OK LIST completed.");
+		imap_reply(imap, "OK %s completed.", lsub ? "LSUB" : "LIST");
 		return 0;
 	}
 
@@ -976,11 +976,11 @@ static int handle_list(struct imap_session *imap, char *s)
 			flags = get_attributes(imap, entry->d_name);
 			build_attributes_string(attributes, sizeof(attributes), flags);
 			/* Skip first character of directory name since it's . */
-			imap_send(imap, "LIST (%s) \"%s\" \"%s\"", attributes, HIERARCHY_DELIMITER, entry->d_name + 1); /* Always send the delimiter */
+			imap_send(imap, "%s (%s) \"%s\" \"%s\"", lsub ? "LSUB" : "LIST", attributes, HIERARCHY_DELIMITER, entry->d_name + 1); /* Always send the delimiter */
 		}
 	}
 	free(entries);
-	imap_reply(imap, "OK LIST completed.");
+	imap_reply(imap, "OK %s completed.", lsub ? "LSUB" : "LIST");
 	return 0;
 }
 
@@ -2251,7 +2251,17 @@ static int imap_process(struct imap_session *imap, char *s)
 		imap_send(imap, "NAMESPACE ((\"\" \".\")) NIL NIL"); /* Single personal namespace */
 		imap_reply(imap, "NAMESPACE command completed");
 	} else if (!strcasecmp(command, "LIST")) {
-		return handle_list(imap, s);
+		return handle_list(imap, s, 0);
+	} else if (!strcasecmp(command, "LSUB")) { /* Deprecated in RFC 9051 (IMAP4rev2), but clients still use it */
+		/* Bit of a hack: just assume all folders are subscribed
+		 * All clients share the subscription list, so clients should try to LSUB before they SUBSCRIBE to anything.
+		 * For example, to check if the Sent folder is subscribed, for storing sent emails.
+		 * This is because they don't know if other clients have already subscribed to these folders
+		 * (and with this setup, it will appear that, indeed, some other client already has).
+		 * We have stubs for SUBSCRIBE and UNSUBSCRIBE as well, but the LSUB response is actually the only important one.
+		 * Since we return all folders as subscribed, clients shouldn't try to subscribe to anything.
+		 */
+		return handle_list(imap, s, 1);
 	} else if (!strcasecmp(command, "CREATE")) {
 		return handle_create(imap, s);
 	} else if (!strcasecmp(command, "DELETE")) {
@@ -2325,8 +2335,18 @@ static int imap_process(struct imap_session *imap, char *s)
 		REQUIRE_ARGS(s); /* We don't care what the client's capabilities are (we don't make use of them), but must be some argument (e.g. NIL) */
 		imap_send(imap, "ID (\"name\" \"%s.Imap4Server\" \"version\" \"%s\")", BBS_SHORTNAME, BBS_VERSION);
 		imap_reply(imap, "OK ID completed");
+	/* We don't store subscriptions. We just automatically treat all available folders as subscribed.
+	 * Implement for the sake of completeness, even though these commands are really pointless.
+	 * LSUB will return all folders, so clients *shouldn't* try to SUBSCRIBE to something, but if they do, accept it.
+	 * If they try to UNSUBSCRIBE, definitely reject that. */
+	} else if (!strcasecmp(command, "SUBSCRIBE")) {
+		bbs_warning("Subscription attempt for %s for mailbox %d\n", S_IF(s), mailbox_id(imap->mbox));
+		imap_reply(imap, "OK SUBSCRIBE completed"); /* Everything available is already subscribed anyways, so can't hurt */
+	} else if (!strcasecmp(command, "UNSUBSCRIBE")) {
+		bbs_warning("Unsubscription attempt for %s for mailbox %d\n", S_IF(s), mailbox_id(imap->mbox));
+		imap_reply(imap, "NO Permission denied");
 	} else {
-		/*! \todo These commands are not currently implemented: SEARCH, MOVE, SUBSCRIBE, LSUB (deprecated in RFC 9051, but clients still use it) */
+		/*! \todo These commands are not currently implemented: SEARCH, MOVE */
 		/*! \todo The following common capabilities are not currently supported: AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH AUTH=XOAUTH2 UIDPLUS MOVE LITERAL+ BINARY ENABLE */
 		/*! \todo Add BURL SMTP / IMAP integration (to allow message to be uploaded only once, instead of twice) */
 
