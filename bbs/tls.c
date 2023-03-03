@@ -456,6 +456,7 @@ accept:
 			goto accept; /* This just works out to be cleaner than using any kind of loop here */
 		}
 		bbs_error("SSL error %d: %d (%s = %s)\n", res, sslerr, ssl_strerror(sslerr), ERR_error_string(ERR_get_error(), NULL));
+		SSL_free(ssl);
 		return NULL;
 	}
 	readfd = SSL_get_rfd(ssl);
