@@ -547,6 +547,7 @@ int bbs_authenticate(struct bbs_node *node, const char *username, const char *pa
 
 	/* Not a guest, somebody needs to actual verify the username and password. */
 	if (bbs_node_authenticate(node, username, password)) {
+		bbs_event_dispatch(node, EVENT_NODE_LOGIN_FAILED);
 		return -1;
 	}
 

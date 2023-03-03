@@ -40,6 +40,7 @@
 #include "include/config.h"
 #include "include/module.h" /* use bbs_module_unref */
 #include "include/utils.h" /* use print_time_elapsed */
+#include "include/event.h"
 
 #define DEFAULT_MAX_NODES 64
 
@@ -414,6 +415,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	pthread_t node_thread;
 	unsigned int nodeid;
 	int skipjoin;
+	int now;
 
 	/* Prevent node from being freed until we release the lock. */
 	bbs_node_lock(node);
@@ -424,6 +426,8 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	}
 	node->active = 0;
 	bbs_debug(2, "Terminating node %d\n", node->id);
+
+	now = time(NULL);
 
 	bbs_node_kill_child(node);
 
@@ -483,6 +487,10 @@ static void node_shutdown(struct bbs_node *node, int unique)
 		/* node_thread is what called this, so don't join ourself. Just go ahead and call node_free.
 		 * It is safe to use node here since it will be freed in this thread after we return, no race condition. */
 		bbs_debug(3, "Shutdown pending finalization for node %d\n", node->id);
+	}
+
+	if (!shutting_down && now < node->created + 5) {
+		bbs_event_dispatch(node, EVENT_NODE_SHORT_SESSION);
 	}
 }
 

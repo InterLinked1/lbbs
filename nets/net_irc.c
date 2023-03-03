@@ -575,7 +575,7 @@ static struct irc_user *get_user(const char *username)
 
 	RWLIST_RDLOCK(&users);
 	RWLIST_TRAVERSE(&users, user, entry) {
-		if (!strcmp(user->username, username)) {
+		if (!strcasecmp(user->username, username)) {
 			break;
 		}
 	}

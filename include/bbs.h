@@ -189,6 +189,9 @@ int bbs_fd_dump(int fd);
  */
 #define NONZERO_RETURN(x) if ((x) != 0) { return x; }
 
+/*! \brief Whether currently running as root */
+#define is_root() (geteuid() == 0)
+
 #define strdup_if(x) (x ? strdup(x) : NULL)
 
 /*! \note In theory, free(NULL) is okay, but using this macro also documents that x could be NULL */

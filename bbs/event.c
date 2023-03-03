@@ -92,6 +92,10 @@ const char *bbs_event_name(enum bbs_event_type type)
 			return "STARTUP";
 		case EVENT_SHUTDOWN:
 			return "SHUTDOWN";
+		case EVENT_NODE_SHORT_SESSION:
+			return "NODE_SHORT_SESSION";
+		case EVENT_NODE_LOGIN_FAILED:
+			return "NODE_LOGIN_FAILED";
 		case EVENT_USER_REGISTRATION:
 			return "USER_REGISTRATION";
 		case EVENT_USER_LOGIN:
@@ -137,6 +141,17 @@ int bbs_event_dispatch(struct bbs_node *node, enum bbs_event_type type)
 	switch (type) {
 		case EVENT_STARTUP:
 		case EVENT_SHUTDOWN:
+			break;
+		case EVENT_NODE_SHORT_SESSION:
+		case EVENT_NODE_LOGIN_FAILED:
+			if (!node) {
+				bbs_error("Can't create an event without a node\n");
+				return -1;
+			}
+			event.nodenum = node->id;
+			/* Copy over some of the useful node/user information. */
+			safe_strncpy(event.protname, node->protname, sizeof(event.protname));
+			safe_strncpy(event.ipaddr, node->ip, sizeof(event.ipaddr));
 			break;
 		case EVENT_USER_REGISTRATION:
 		case EVENT_USER_LOGIN:

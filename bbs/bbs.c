@@ -87,8 +87,6 @@ static int shutdown_restart = 0;
 
 static pthread_mutex_t sig_lock;
 
-#define is_root() (geteuid() == 0)
-
 /*! \brief Save original args for restart */
 static void saveopts(int argc, char *argv[])
 {
