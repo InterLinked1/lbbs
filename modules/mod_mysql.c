@@ -339,6 +339,9 @@ int sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *fmt, ...
 		bbs_error("mysql_stmt_execute failed: %s\n", mysql_stmt_error(stmt));
 		return -1;
 	}
+	if (!STARTS_WITH(query, "SELECT")) {
+		bbs_debug(5, "Number of rows changed/deleted/inserted: %llu\n", mysql_stmt_affected_rows(stmt));
+	}
 	return 0;
 }
 

@@ -491,6 +491,9 @@ static int update_colval(const char *username, const char *channel, const char *
 			chanserv_notice(username, "You are not authorized to perform this operation.");
 			goto cleanup;
 		}
+	} else {
+		chanserv_notice(username, "%s is not registered.", channel);
+		goto cleanup;
 	}
 
 	if (value) {
@@ -652,7 +655,7 @@ static void chanserv_set(const char *username, char *msg)
 		 * The entry message for #channel has been set to <params>. */
 		if (!update_colval(username, channel, "entrymsg", S_OR(params, NULL))) { /* Use explicit NULL if empty */
 			if (!strlen_zero(params)) {
-				chanserv_notice(username, "The entry message for %s has been set to %s.", channel, S_OR(params, NULL));
+				chanserv_notice(username, "The entry message for %s has been set to %s.", channel, params);
 			} else {
 				chanserv_notice(username, "The entry message for %s has been cleared.", channel);
 			}
