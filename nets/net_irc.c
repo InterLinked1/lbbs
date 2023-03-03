@@ -201,6 +201,7 @@ static RWLIST_HEAD_STATIC(channels, irc_channel);	/* Container for all channels 
 struct irc_relay {
 	int (*relay_send)(const char *channel, const char *sender, const char *msg);
 	int (*nicklist)(int fd, int numeric, const char *requsername, const char *channel, const char *user);
+	int (*privmsg)(const char *recipient, const char *sender, const char *user);
 	void *mod;
 	RWLIST_ENTRY(irc_relay) entry;
 };
@@ -251,7 +252,10 @@ static int add_operator(const char *name, const char *password)
  * in modules.conf to guarantee things will work properly. So, whatever...
  */
 
-int irc_relay_register(int (*relay_send)(const char *channel, const char *sender, const char *msg), int (*nicklist)(int fd, int numeric, const char *requsername, const char *channel, const char *user), void *mod)
+int irc_relay_register(int (*relay_send)(const char *channel, const char *sender, const char *msg),
+	int (*nicklist)(int fd, int numeric, const char *requsername, const char *channel, const char *user),
+	int (*privmsg)(const char *recipient, const char *sender, const char *user),
+	void *mod)
 {
 	struct irc_relay *relay;
 
@@ -273,6 +277,7 @@ int irc_relay_register(int (*relay_send)(const char *channel, const char *sender
 	}
 	relay->relay_send = relay_send;
 	relay->nicklist = nicklist;
+	relay->privmsg = privmsg;
 	relay->mod = mod;
 	RWLIST_INSERT_HEAD(&relays, relay, entry);
 	bbs_module_ref(BBS_MODULE_SELF); /* Bump our module ref count */
@@ -809,11 +814,22 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 		return -1;
 	}
 
+	snprintf(hostname, sizeof(hostname), "%s/%s", relayname, sender);
+
 	/* It's not our job to filter messages, clients can do that. For example, decimal 1 is legitimate for CTCP commands. */
 
 	if (!IS_CHANNEL_NAME(channel)) {
-		bbs_error("Relays cannot be used to send messages to non-channels\n");
-		return -1;
+		struct irc_user *user2 = get_user(channel);
+		/* Private message to another user. This is super simple, there's no other overhead or anything involved. */
+		if (!user2) {
+			bbs_debug(7, "No such user: %s\n", channel);
+			return -1;
+		}
+		pthread_mutex_lock(&user2->lock); /* Serialize writes to this user */
+		dprintf(user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, "PRIVMSG", user2->nickname, msg);
+		pthread_mutex_unlock(&user2->lock);
+		/* Don't care if user is away in this case */
+		return 0;
 	}
 
 	/*! \todo simplify using get_channel, get_member? But then we may have more locking issues... */
@@ -842,8 +858,6 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 			return -1;
 		}
 	}
-
-	snprintf(hostname, sizeof(hostname), "%s/%s", relayname, sender);
 
 	channel_broadcast_selective(c, NULL, minmode, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, "PRIVMSG", c->name, msg);
 	relay_broadcast(c, NULL, sender, msg, mod);
@@ -882,14 +896,32 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, cons
 		struct irc_user *user2 = get_user(channame);
 		/* Private message to another user. This is super simple, there's no other overhead or anything involved. */
 		if (!user2) {
-			send_numeric2(user, 401, "%s :No such nick/channel\r\n", channame);
-			return -1;
-		}
-		pthread_mutex_lock(&user2->lock); /* Serialize writes to this user */
-		dprintf(user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), notice ? "NOTICE" : "PRIVMSG", user2->nickname, message);
-		pthread_mutex_unlock(&user2->lock);
-		if (user2->away) {
-			send_numeric(user, 301, "%s :%s\r\n", user2->nickname, S_IF(user2->awaymsg));
+			struct irc_relay *relay;
+			/* Check if the user exists in any callbacks. */
+			RWLIST_RDLOCK(&relays);
+			RWLIST_TRAVERSE(&relays, relay, entry) {
+				if (!relay->privmsg) {
+					continue;
+				}
+				bbs_module_ref(relay->mod);
+				if (relay->privmsg(channame, user->nickname, message)) {
+					bbs_module_unref(relay->mod);
+					break;
+				}
+				bbs_module_unref(relay->mod);
+			}
+			RWLIST_UNLOCK(&relays);
+			if (!relay) { /* Didn't exist in a relay either */
+				send_numeric2(user, 401, "%s :No such nick/channel\r\n", channame);
+				return -1;
+			}
+		} else {
+			pthread_mutex_lock(&user2->lock); /* Serialize writes to this user */
+			dprintf(user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), notice ? "NOTICE" : "PRIVMSG", user2->nickname, message);
+			pthread_mutex_unlock(&user2->lock);
+			if (user2->away) {
+				send_numeric(user, 301, "%s :%s\r\n", user2->nickname, S_IF(user2->awaymsg));
+			}
 		}
 		return 0;
 	}

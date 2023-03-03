@@ -758,17 +758,15 @@ static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 	nntp_send(nntp, 200, "%s Newsgroup Service Ready, posting permitted", bbs_hostname());
 
 	for (;;) {
-		const char *word2;
 		res = bbs_fd_readline(nntp->rfd, &rldata, "\r\n", MIN_MS(5));
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			/* We should NOT send any response to the client when terminating a connection due to timeout. */
 			break;
 		}
-		word2 = strchr(buf, ' ');
-		if (word2++ && !strlen_zero(word2) && (!strncasecmp(word2, "XSECRET", STRLEN("XSECRET") || !strncasecmp(word2, "AUTHINFO PASS", STRLEN("AUTHINFO PASS"))))) {
+		if ((!strncasecmp(buf, "XSECRET", STRLEN("XSECRET")) || !strncasecmp(buf, "AUTHINFO PASS", STRLEN("AUTHINFO PASS")))) {
 			/* Mask login to avoid logging passwords */
-			if (*word2 == 'X') {
+			if (*buf == 'X') {
 				bbs_debug(6, "%p => XSECRET ******\n", nntp);
 			} else {
 				bbs_debug(6, "%p => AUTHINFO PASS ******\n", nntp);

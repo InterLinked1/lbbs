@@ -461,6 +461,7 @@ static void handle_irc_msg(struct client *client, struct irc_msg *msg)
 		/* Needed by mod_relay_irc: */
 		case 311:
 		case 312:
+		case 315:
 		case 317:
 		case 318:
 		case 319:
@@ -585,7 +586,7 @@ static void handle_irc_msg(struct client *client, struct irc_msg *msg)
 		relay_to_local(client, msg->body, "%s has %sleft%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
 	} else if (!strcmp(msg->command, "QUIT")) {
 		relay_to_local(client, msg->body, "%s has %squit%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
-	} else if (!strcmp(msg->command, "KICKED")) {
+	} else if (!strcmp(msg->command, "KICK")) {
 		relay_to_local(client, msg->body, "%s has been %skicked%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
 	} else if (!strcmp(msg->command, "NICK")) {
 		relay_to_local(client, NULL, "%s is %snow known as%s %s\n", msg->prefix, COLOR(COLOR_CYAN), COLOR_RESET, msg->body);
@@ -741,7 +742,7 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 		}
 	}
 	RWLIST_TRAVERSE(&client->participants, p, entry) {
-		/* We intentionally relaying to other BBS nodes ourselves, separately from IRC, rather than
+		/* We're intentionally relaying to other BBS nodes ourselves, separately from IRC, rather than
 		 * just enabling echo on the IRC client and letting that bounce back for other participants.
 		 * This is because we don't want our own messages to echo back to ourselves,
 		 * and rather than parse messages to figure out if we should ignore something we just sent,
@@ -756,9 +757,7 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 		if (!NODE_IS_TDD(p->node)) {
 			res = write(p->chatpipe[1], datestr, timelen); /* Don't send timestamps to TDDs, for brevity */
 		}
-		if (res > 0) {
-			res = write(p->chatpipe[1], msg, len);
-		}
+		res = write(p->chatpipe[1], msg, len);
 		if (res <= 0) {
 			bbs_error("write failed: %s\n", strerror(errno));
 			continue; /* Even if one send fails, don't fail all of them */

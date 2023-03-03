@@ -231,7 +231,7 @@ int __fdleak_close(int fd, const char *file, int line, const char *func)
 
 	/* Detect attempts to close file descriptors we shouldn't be closing
 	 * (e.g. can happen if a file descriptor variable is initialized to 0 instead of -1) */
-	if (fd <= 2) {
+	if (fd <= 2 && strcmp(file, "system.c")) { /* It's legitimate to close file descriptors 0, 1, and 2 when calling exec */
 		bbs_warning("Attempting to close file descriptor %d at %s:%d (%s)\n", fd, file, line, func);
 	}
 	res = close(fd);

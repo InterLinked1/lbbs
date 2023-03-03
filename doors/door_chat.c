@@ -257,9 +257,7 @@ static int __chat_send(struct channel *channel, struct participant *sender, cons
 		if (!NODE_IS_TDD(p->node)) {
 			res = write(p->chatpipe[1], datestr, timelen); /* Don't send timestamps to TDDs, for brevity */
 		}
-		if (res > 0) {
-			res = write(p->chatpipe[1], msg, len);
-		}
+		res = write(p->chatpipe[1], msg, len);
 		if (res <= 0) {
 			bbs_error("write failed: %s\n", strerror(errno));
 			continue; /* Even if one send fails, don't fail all of them */

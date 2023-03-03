@@ -423,6 +423,7 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 		retry_now = MIN(1, retry_now); /* Don't retry too many in a single request */
 
 #define BUGGY_USER_IDS
+#define BUGGY_PRESENCE_FETCH
 
 		missed.array = calloc(retry_now, sizeof(u64snowflake *));
 		if (missed.array) {
@@ -501,7 +502,7 @@ static void on_presence_update(struct discord *client, const struct discord_pres
 	/* the discord_user struct here doesn't always have username and discriminator set (such as for non-online presence updates.
 	 * Thus, refer to our local user struct for this info. */
 
-	bbs_debug(3, "Presence update: guild=%lu, user=%lu (%s#%s), status=%s (desktop: %s, mobile: %s, web: %s)\n",
+	bbs_debug(9, "Presence update: guild=%lu, user=%lu (%s#%s), status=%s (desktop: %s, mobile: %s, web: %s)\n",
 		event->guild_id, user->id, u->username, u->discriminator, event->status, S_IF(client_status->desktop), S_IF(client_status->mobile), S_IF(client_status->web));
 
 	u->status = status_from_str(event->status);
@@ -789,7 +790,7 @@ static struct chan_pair *find_mapping_irc(const char *channel)
 	return cp; /* It's okay to return unlocked since at this point, items can't be removed from the list until the module is unloaded anyways. */
 }
 
-#define fdprint_log(fd, fmt, ...) dprintf(fd, fmt, ## __VA_ARGS__); bbs_debug(6, fmt, ## __VA_ARGS__);
+#define fdprint_log(fd, fmt, ...) dprintf(fd, fmt, ## __VA_ARGS__); bbs_debug(9, fmt, ## __VA_ARGS__);
 
 static void dump_user(int fd, const char *requsername, struct user *u)
 {
@@ -851,10 +852,12 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 				continue; /* User not in this channel */
 			}
 			/* User is in the same guild that the channel is in, just assume match for now */
+#ifndef BUGGY_PRESENCE_FETCH
 			if (u->status == STATUS_NONE) {
 				bbs_debug(9, "Skipping user %s#%s (no status information)\n", u->username, u->discriminator);
 				continue;
 			}
+#endif
 			if (numeric == 352) {
 				dump_user(fd, requsername, u); /* Include in WHO response */
 			} else if (numeric == 353) {
@@ -894,6 +897,68 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 		return 1; /* Success, stop traversal, since only one module will have a match, and it's us. */
 	}
 	return 0;
+}
+
+/*! \brief Deliver direct messages from native IRC server to Discord */
+static int privmsg(const char *recipient, const char *sender, const char *msg)
+{
+	struct user *u = find_user_by_username(recipient);
+
+	if (!u) {
+		return 0;
+	} else { /* User exists! */
+		char fullmsg[524];
+		u64snowflake dm_channel_id;
+		struct discord_channel ret_channel = { 0 };
+		struct discord_ret_channel ret = { .sync = &ret_channel };
+		struct discord_create_message params = { .content = fullmsg };
+		struct discord_create_dm dmparams = { .recipient_id = u->user_id };
+		struct discord_ret_message msgret = { .sync = DISCORD_SYNC_FLAG };
+
+		if (discord_create_dm(discord_client, &dmparams, &ret) != CCORD_OK) {
+			bbs_error("Failed to create DM for user %lu\n", u->user_id);
+			return 0;
+		}
+
+		dm_channel_id = ret_channel.id;
+		discord_channel_cleanup(&ret_channel);
+
+		snprintf(fullmsg, sizeof(fullmsg), "**<%s>** %s", sender, msg);
+		discord_create_message(discord_client, dm_channel_id, &params, &msgret);
+	}
+
+	return 1;
+}
+
+/*! \brief Deliver direct messages from Discord to native IRC user */
+/*! \note This only handles initial messages, not messages updated on Discord. Those will go to the normal on_message_update handler, and are ignored. */
+static void on_dm_receive(struct discord *client, const struct discord_message *event)
+{
+	char dup[512];
+	char sendername[84];
+	char *message, *recipient;
+	const char *msg;
+
+	UNUSED(client);
+	msg = event->content;
+
+	if (event->author->bot) {
+		bbs_debug(5, "Ignoring message from bot: %s\n", msg);
+		return;
+	}
+
+	safe_strncpy(dup, msg, sizeof(dup));
+	message = dup;
+	recipient = strsep(&message, " ");
+	if (strlen_zero(recipient) || strlen_zero(message)) {
+		bbs_debug(8, "Private message is not properly addressed, ignoring\n");
+		/* Don't send an autoresponse saying "please use this messaging format", since there may be other consumers */
+		return;
+	}
+	bbs_strterm(recipient, ':'); /* strip : */
+	snprintf(sendername, sizeof(sendername), "%s#%s", event->author->username, event->author->discriminator);
+	bbs_debug(8, "Received private message: %s -> %s: %s\n", sendername, recipient, message);
+	irc_relay_send(recipient, CHANNEL_USER_MODE_NONE, "Discord", sendername, message);
 }
 
 static int discord_send(const char *channel, const char *sender, const char *msg)
@@ -1203,6 +1268,8 @@ static int load_module(void)
 	discord_set_on_message_create(discord_client, &on_message_create);
 	discord_set_on_message_update(discord_client, &on_message_update);
 
+	discord_set_on_message_create(discord_client, &on_dm_receive);
+
 	discord_set_on_presence_update(discord_client, &on_presence_update);
 	discord_set_on_guild_members_chunk(discord_client, &on_guild_members_chunk);
 
@@ -1218,7 +1285,7 @@ static int load_module(void)
 		ccord_global_cleanup();
 		return -1;
 	}
-	irc_relay_register(discord_send, nicklist, BBS_MODULE_SELF);
+	irc_relay_register(discord_send, nicklist, privmsg, BBS_MODULE_SELF);
 	return 0;
 }
 

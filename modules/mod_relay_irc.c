@@ -158,6 +158,22 @@ static struct chan_pair *find_chanpair(const char *client, const char *channel)
 	return cp;
 }
 
+static struct chan_pair *client_exists(const char *client)
+{
+	struct chan_pair *cp = NULL;
+
+	RWLIST_WRLOCK(&mappings);
+	RWLIST_TRAVERSE(&mappings, cp, entry) {
+		if (!strlen_zero(cp->client1) && !strcmp(client, cp->client1)) {
+			break;
+		} else if (!strlen_zero(cp->client2) && !strcmp(client, cp->client2)) {
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&mappings);
+	return cp;
+}
+
 static struct chan_pair *find_chanpair_reverse(const char *clientname)
 {
 	struct chan_pair *cp = NULL;
@@ -192,6 +208,7 @@ static void numeric_cb(const char *clientname, const char *prefix, int numeric, 
 	}
 	/* Since we have to format it here anyways, do all the formatting here */
 	len = snprintf(mybuf, sizeof(mybuf), ":%s %d %s\n", S_OR(prefix, bbs_hostname()), numeric, msg); /* Use LF to delimit on the other end */
+	bbs_debug(9, "Numeric %s\n", prefix);
 	write(nickpipe[1], mybuf, len);
 }
 
@@ -251,7 +268,7 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 #define PREFIX_NAMES
 
 #ifdef RELAY_DEBUG
-#define SEND_RESP(fd, fmt, ...) bbs_debug(5, fmt, ## __VA_ARGS__); dprintf(fd, fmt, ## __VA_ARGS__);
+#define SEND_RESP(fd, fmt, ...) bbs_debug(9, fmt, ## __VA_ARGS__); dprintf(fd, fmt, ## __VA_ARGS__);
 #else
 #define SEND_RESP(fd, fmt, ...) dprintf(fd, fmt, ## __VA_ARGS__)
 #endif
@@ -463,6 +480,26 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 	return 0;
 }
 
+static int privmsg_cb(const char *recipient, const char *sender, const char *msg)
+{
+	char buf[128];
+	char *clientname, *destrecip;
+
+	safe_strncpy(buf, recipient, sizeof(buf));
+	/* Format is clientname/recipient */
+	destrecip = buf;
+	clientname = strsep(&destrecip, "/");
+
+	if (!client_exists(clientname)) { /* Not something we care about */
+		bbs_debug(9, "No relay match for client %s (%s -> %s)\n", clientname, sender, recipient);
+		return 0;
+	}
+
+	/* Something with this client name exists, in door_irc. */
+	bbs_irc_client_msg(clientname, destrecip, "<%s> %s", sender, msg);
+	return 1;
+}
+
 /* XXX Lots of duplicated code follows */
 
 /*! \brief Callback for messages received on native IRC server (from our server to the channel) */
@@ -558,7 +595,36 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 	}
 
 	cp = find_chanpair(clientname, channel);
-	if (!cp) { /* Not something we care about */
+	if (!cp) { /* Probably not something we care about. It could be a private message, though. */
+		if (*msg == '<') {
+			/* Format is <sender> message.
+			 * Our expected format is <sender> <recipient>: message, so we can actually route it the right user on the IRC server.
+			 * Message will appear to be sent by clientname/<sender>. */
+			char dup[512];
+			char sendername[84];
+			char *message, *sender, *recipient;
+			safe_strncpy(dup, msg, sizeof(dup));
+			message = dup;
+			sender = strsep(&message, " ");
+			recipient = strsep(&message, " ");
+			if (strlen_zero(recipient) || strlen_zero(message)) {
+				bbs_debug(8, "Private message is not properly addressed, ignoring\n");
+				/* Don't send an autoresponse saying "please use this messaging format", since there may be other consumers */
+				return;
+			}
+			/* Strip <> */
+			if (*sender == '<') {
+				sender++;
+			} else {
+				return;
+			}
+			bbs_strterm(sender, '>');
+			bbs_strterm(recipient, ':'); /* strip : */
+			snprintf(sendername, sizeof(sendername), "%s/%s", clientname, sender);
+			bbs_debug(8, "Received private message: %s -> %s: %s\n", sendername, recipient, message);
+			irc_relay_send(recipient, CHANNEL_USER_MODE_NONE, clientname, sendername, message);
+			return;
+		}
 		bbs_debug(9, "No relay match for channel %s/%s\n", clientname, channel);
 		return;
 	}
@@ -570,7 +636,7 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 	 * easily detect something like this happening since the username will
 	 * grow longer and longer when this happens until it is longer than the buffer size
 	 * and then stays truncated forever.
-	 * Therefore, if we detect an unreasonable long nickname, just drop it.
+	 * Therefore, if we detect an unreasonably long nickname, just drop it.
 	 * Since this is coming from IRC, and IRC doesn't allow super long nicks,
 	 * this is pretty reliable.
 	 * This is done for the interception cases below.
@@ -789,7 +855,7 @@ static int load_module(void)
 	pthread_mutex_init(&nicklock, NULL);
 	modstart = time(NULL);
 
-	irc_relay_register(netirc_cb, nicklist, BBS_MODULE_SELF);
+	irc_relay_register(netirc_cb, nicklist, privmsg_cb, BBS_MODULE_SELF);
 	bbs_irc_client_msg_callback_register(doormsg_cb, numeric_cb, BBS_MODULE_SELF);
 	return 0;
 }
