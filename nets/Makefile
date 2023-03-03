@@ -37,7 +37,7 @@ net_sftp.so : net_sftp.o
 
 net_smtp.so : net_smtp.o
 	@echo "== Linking $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lresolv
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lresolv -lspf2
 
 net_http.so : net_http.o
 	@echo "== Linking $@"

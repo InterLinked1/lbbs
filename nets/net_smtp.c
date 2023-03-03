@@ -19,6 +19,7 @@
  * \note Supports RFC1893 Enhanced Status Codes
  * \note Supports RFC1870 Size Declarations
  * \note Supports RFC6409 Message Submission
+ * \note Supports RFC7208 Sender Policy Framework (SPF) Validation
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -36,6 +37,10 @@
 #include <netdb.h>
 #include <arpa/nameser.h>
 #include <resolv.h>
+
+/* Don't redeclare things from arpa/nameser.h */
+#define HAVE_NS_TYPE
+#include <spf2/spf.h>
 
 #include "include/tls.h"
 
@@ -86,6 +91,8 @@ static int always_queue = 0;
 static int require_starttls = 1;
 static int require_starttls_out = 0;
 static int requirefromhelomatch = 1;
+static int validatespf = 1;
+static int add_received_msa = 0;
 static int archivelists = 1;
 
 /*! \brief Max message size, in bytes */
@@ -783,6 +790,85 @@ static int prepend_received(struct smtp_session *smtp, const char *recipient, in
 	return 0;
 }
 
+SPF_server_t *spf_server;
+
+/*! \brief RFC 7208 SPF verification */
+static int prepend_spf(struct smtp_session *smtp, const char *recipient, int fd)
+{
+	SPF_request_t *spf_request;
+	SPF_response_t *spf_response = NULL;
+	const char *domain;
+	const char *spfresult;
+
+	UNUSED(recipient);
+
+	/* Only MAIL FROM and HELO identities are within scope of SPF. */
+	domain = strchr(smtp->from, '@');
+	if (!domain) {
+		bbs_error("Invalid domain: %s\n", smtp->from);
+		return -1;
+	}
+	domain++;
+
+	/* use libspf2's SPF validation... no need to reinvent the wheel here. */
+	spf_request = SPF_request_new(spf_server);
+	if (!spf_request) {
+		bbs_error("Failed to request new SPF\n");
+		return -1;
+	}
+	SPF_request_set_ipv4_str(spf_request, smtp->node->ip);
+	SPF_request_set_env_from(spf_request, domain);
+
+#define VALID_SPF(s) (!strcmp(s, "pass") || !strcmp(s, "fail") || !strcmp(s, "softfail") || !strcmp(s, "neutral") || !strcmp(s, "none") || !strcmp(s, "temperror") || !strcmp(s, "permerror"))
+
+	SPF_request_query_mailfrom(spf_request, &spf_response);
+	if (spf_response) {
+		spfresult = SPF_strresult(SPF_response_result(spf_response));
+		bbs_debug(5, "Received-SPF: %s\n", SPF_response_get_received_spf_value(spf_response));
+		if (VALID_SPF(spfresult)) {
+			dprintf(fd, "%s\r\n", SPF_response_get_received_spf(spf_response));
+		} else {
+			bbs_warning("Unexpected SPF result: %s\n", spfresult);
+		}
+		SPF_response_free(spf_response);
+		/*! \todo If SPF result is fail, automatically move to Junk folder? (as opposed to INBOX) */
+	} else {
+		bbs_warning("Failed to get SPF response for %s\n", smtp->from);
+	}
+	SPF_request_free(spf_request);
+	return 0;
+}
+
+static int prepend_incoming(struct smtp_session *smtp, const char *recipient, int fd)
+{
+	/* Additional headers added during final delivery.
+	 * The Received headers must be newest to oldest.
+	 * Not sure about the other headers: by convention, they usually appear after the original ones, but not sure it really matters. */
+
+	if (!smtp->msa || add_received_msa) {
+		prepend_received(smtp, recipient, fd);
+	}
+	if (validatespf) {
+		prepend_spf(smtp, recipient, fd);
+	}
+
+	/* This is a good place to tack on Return-Path as well (receiving MTA does this) */
+	dprintf(fd, "Return-Path: %s\r\n", smtp->from); /* Envelope From - smtp-> doesn't have <> so this works out just fine. */
+	return 0;
+}
+
+static int prepend_outgoing(struct smtp_session *smtp, const char *recipient, int fd)
+{
+	UNUSED(recipient);
+
+	if (smtp->listname) {
+		/* If sent to a mailing list (or more rather, any of the recipients was a mailing list), indicate bulk precedence.
+		 * Discouraged by RFC 2076, but this is common practice nonetheless. */
+		dprintf(fd, "Precedence: bulk\r\n");
+	}
+	return 0;
+}
+
 static int do_local_delivery(struct smtp_session *smtp, const char *recipient, const char *user, const char *data, unsigned long datalen)
 {
 	struct mailbox *mbox;
@@ -815,9 +901,7 @@ static int do_local_delivery(struct smtp_session *smtp, const char *recipient, c
 		return -1;
 	}
 
-	if (!smtp->msa) {
-		prepend_received(smtp, recipient, fd);
-	}
+	prepend_incoming(smtp, recipient, fd);
 
 	/* Write the entire body of the message. */
 	res = bbs_std_write(fd, data, datalen); /* Faster than fwrite since we're writing a lot of data, don't need buffering, and know the length. */
@@ -1134,9 +1218,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		 * it will probably get screwed up. Don't do it!
 		 */
 		dprintf(fd, "MAIL FROM:<%s>\nRCPT TO:%s\n", smtp->from, recipient); /* First 2 lines contain metadata, and recipient is already enclosed in <> */
-		if (!smtp->msa) {
-			prepend_received(smtp, recipient, fd);
-		}
+		prepend_outgoing(smtp, recipient, fd);
 		/* Write the entire body of the message. */
 		res = bbs_std_write(fd, smtp->data, smtp->datalen); /* Faster than fwrite since we're writing a lot of data, don't need buffering, and know the length. */
 		if (res != (int) smtp->datalen) {
@@ -1273,7 +1355,6 @@ static int do_deliver(struct smtp_session *smtp)
 
 	if (smtp->listname && archivelists) {
 		archive_list_msg(smtp);
-		free_if(smtp->listname);
 	}
 
 	while ((recipient = stringlist_pop(&smtp->recipients))) {
@@ -1451,6 +1532,8 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 			smtp_reply(smtp, 530, 5.7.0, "Authentication required");
 			return 0;
 		}
+
+		/* XXX If MAIL FROM is empty (<>), it's implicitly postermaster [at] (HELO domain), according to RFC 5321 4.5.5 */
 
 		REQUIRE_ARGS(s);
 		ltrim(s);
@@ -1698,6 +1781,8 @@ static int load_config(void)
 	bbs_config_val_set_uint(cfg, "general", "maxage", &max_age);
 	bbs_config_val_set_uint(cfg, "general", "maxsize", &max_message_size);
 	bbs_config_val_set_true(cfg, "general", "requirefromhelomatch", &requirefromhelomatch);
+	bbs_config_val_set_true(cfg, "general", "validatespf", &validatespf);
+	bbs_config_val_set_true(cfg, "general", "addreceivedmsa", &add_received_msa);
 	bbs_config_val_set_true(cfg, "general", "archivelists", &archivelists);
 
 	bbs_config_val_set_true(cfg, "privs", "relayin", &minpriv_relay_in);
@@ -1776,11 +1861,20 @@ static int load_module(void)
 		return -1;
 	}
 
+	spf_server = SPF_server_new(SPF_DNS_CACHE, 0);
+	if (!spf_server) {
+		bbs_error("Failed to create SPF server\n");
+		close_if(smtps_socket);
+		close_if(smtp_socket);
+		return -1;
+	}
+
 	if (bbs_pthread_create(&smtp_listener_thread, NULL, smtp_listener, NULL)) {
 		bbs_error("Unable to create SMTP listener thread.\n");
 		close_if(msa_socket);
 		close_if(smtp_socket);
 		close_if(smtps_socket);
+		SPF_server_free(spf_server);
 		return -1;
 	} else if (bbs_pthread_create(&msa_listener_thread, NULL, msa_listener, NULL)) {
 		bbs_error("Unable to create SMTP MSA listener thread.\n");
@@ -1790,6 +1884,7 @@ static int load_module(void)
 		pthread_cancel(smtp_listener_thread);
 		pthread_kill(smtp_listener_thread, SIGURG);
 		bbs_pthread_join(smtp_listener_thread, NULL);
+		SPF_server_free(spf_server);
 		return -1;
 	}
 
@@ -1803,6 +1898,7 @@ static int load_module(void)
 		pthread_cancel(msa_listener_thread);
 		pthread_kill(msa_listener_thread, SIGURG);
 		bbs_pthread_join(msa_listener_thread, NULL);
+		SPF_server_free(spf_server);
 		return -1;
 	}
 
@@ -1824,6 +1920,7 @@ static int load_module(void)
 static int unload_module(void)
 {
 	long unsigned int i;
+
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		bbs_unregister_test(tests[i].callback);
 	}
@@ -1848,6 +1945,7 @@ static int unload_module(void)
 		bbs_unregister_network_protocol(msa_port);
 		close_if(msa_socket);
 	}
+	SPF_server_free(spf_server);
 	stringlist_empty(&blacklist);
 	return 0;
 }

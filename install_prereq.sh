@@ -24,6 +24,9 @@ apt-get install -y libmariadb-dev libmariadb-dev-compat # MariaDB (MySQL) dev he
 # net_http
 apt-get install -y libmagic-dev
 
+# net_smtp
+apt-get install -y libspf2-dev
+
 # libdiscord
 scripts/concord.sh
 
