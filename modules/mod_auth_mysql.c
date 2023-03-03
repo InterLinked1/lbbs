@@ -36,8 +36,10 @@
 #include "include/term.h" /* needed for user registration */
 #include "include/crypt.h" /* use bbs_password_verify_bcrypt */
 #include "include/utils.h" /* use bbs_str_isprint */
+#include "include/mail.h"
 
 static int register_phone = 1, register_address = 1, register_zip = 1, register_dob = 1, register_gender = 1, register_howheard = 1;
+static int verifyregisteremail = 0;
 static char *reserved_usernames = NULL;
 
 /*! \brief Common function to handle user authentication and info retrieval */
@@ -327,6 +329,10 @@ static int username_reserved(const char *username)
 {
 	char teststr[84];
 
+	if (!reserved_usernames) {
+		return 0;
+	}
+
 	snprintf(teststr, sizeof(teststr), ",%s,", username);
 	return strstr(reserved_usernames, teststr) ? 1 : 0;
 }
@@ -470,6 +476,32 @@ static int user_register(struct bbs_node *node)
 
 #define NULL_IFEMPTY(s) (!*s ? NULL : s)
 
+	if (verifyregisteremail) {
+		char usercode[10] = "";
+		char randcode[10];
+		snprintf(randcode, sizeof(randcode), "%05ld", random() % 8192 + rand() % 8192);
+		/* Verify that the user owns the provided email address. */
+		res = bbs_mail_fmt(0, email, NULL, NULL, "BBS Registration", "Greetings,\r\n\tYour verification code for your BBS account registration is %s.\r\nIf you did not request this code, you should ignore this email.\r\n", randcode);
+		if (res) {
+			NEG_RETURN(bbs_writef(node, "%s%s%s\n", COLOR(COLOR_FAILURE), "Your registration could not be completed due to a processing error.\nContact the sysop.", COLOR_RESET));
+			NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
+			return 1;
+		}
+		NEG_RETURN(bbs_writef(node, "\n%sWe just emailed you a verification code. Continue once you've received it.%s\n", COLOR(COLOR_SUCCESS), COLOR_RESET));
+		NEG_RETURN(bbs_wait_key(node, SEC_MS(600))); /* Wait a bit longer, up to 10 minutes in case email is delayed */
+
+		bbs_buffer(node);
+
+		res = bbs_get_response(node, 20, COLOR(COLOR_WHITE) "\nVerification Code: ", MIN_MS(3), usercode, sizeof(usercode), &tries, 1, NULL);
+		if (strcmp(usercode, randcode)) {
+			NEG_RETURN(bbs_writef(node, "\n%sSorry, the verification code you provided was incorrect.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
+			NEG_RETURN(bbs_writef(node, "\nPlease try again later...\n"));
+			NEG_RETURN(bbs_wait_key(node, SEC_MS(20)));
+			return 1;
+		}
+		/* Allow registration to continue. */
+	}
+
 	/* Actually create the user */
 	res = make_user(username, password, fullname, email, NULL_IFEMPTY(phone), NULL_IFEMPTY(address), city, state, NULL_IFEMPTY(zip), NULL_IFEMPTY(dob), gender);
 
@@ -510,6 +542,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "registration", "dob", &register_dob);
 	bbs_config_val_set_true(cfg, "registration", "gender", &register_gender);
 	bbs_config_val_set_true(cfg, "registration", "howheard", &register_howheard);
+	bbs_config_val_set_true(cfg, "registration", "verifyemail", &verifyregisteremail);
 
 	varval = bbs_config_val(cfg, "registration", "reservedusernames");
 	if (!strlen_zero(varval)) {

@@ -70,7 +70,7 @@ static int event_cb(struct bbs_event *event)
 		/* Relatively speaking, it's a pretty big deal whenever a new user registers.
 			 * Notify the sysop. */
 			bbs_sysop_email(NULL, "New User Registration", "Greetings, sysop,\r\n\tA new user, %s (#%d), just registered on your BBS from IP %s.",
-				event->username, event->nodenum, event->ipaddr);
+				event->username, event->userid, event->ipaddr);
 			return 1;
 		default:
 			return 0;

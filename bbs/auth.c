@@ -602,7 +602,7 @@ int bbs_user_register(struct bbs_node *node)
 	bbs_module_unref(registermod);
 	node->menu = NULL;
 
-	if (!res) {
+	if (bbs_user_is_registered(node->user)) { /* we might have returned -1 after registration succeeded on timeout */
 		if (!bbs_node_logged_in(node)) {
 			bbs_error("User registration callback returned 0, but node %d is not logged in\n", node->id);
 			return -1; /* Abort */
