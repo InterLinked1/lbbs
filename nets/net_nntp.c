@@ -93,9 +93,11 @@ struct nntp_session {
 	char grouppath[512];
 	char *user;
 	char *post;
+	char *fromheader;
 	unsigned int postlen;
 	unsigned int mode:1;	/* MODE (0 = transit, 1 = reader) */
 	unsigned int inpost:1;
+	unsigned int inpostheaders:1;
 	unsigned int postfail:1;
 	unsigned int secure:1;
 	unsigned int dostarttls:1;
@@ -103,6 +105,7 @@ struct nntp_session {
 
 static void nntp_destroy(struct nntp_session *nntp)
 {
+	free_if(nntp->fromheader);
 	free_if(nntp->user);
 	free_if(nntp->post);
 	free_if(nntp->currentgroup);
@@ -242,6 +245,38 @@ static int nntp_traverse(const char *path, int (*on_file)(const char *dir_name, 
 	return res;
 }
 
+static int nntp_traverse2(const char *path, int (*on_file)(const char *dir_name, const char *filename, struct nntp_session *nntp, int number), struct nntp_session *nntp, int min, int max)
+{
+	struct dirent *entry, **entries;
+	int files, fno = 0;
+	int res, msgno;
+
+	/* use scandir instead of opendir/readdir, so the listing is ordered */
+	files = scandir(path, &entries, NULL, alphasort);
+	if (files < 0) {
+		bbs_error("scandir(%s) failed: %s\n", path, strerror(errno));
+		return -1;
+	}
+	while (fno < files && (entry = entries[fno++])) {
+		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			goto cleanup;
+		}
+		/* Filename format is ARTICLEID_MESSAGEID */
+		msgno = atoi(entry->d_name); /* atoi should stop at the _ */
+		if (msgno < min || msgno > max) {
+			goto cleanup;
+		}
+		if ((res = on_file(path, entry->d_name, nntp, msgno))) {
+			free(entry);
+			break; /* If the handler returns non-zero then stop */
+		}
+cleanup:
+		free(entry);
+	}
+	free(entries);
+	return res;
+}
+
 static int sendfile_full(const char *filepath, int wfd)
 {
 	int fd, sent;
@@ -339,13 +374,76 @@ static int on_article(const char *dir_name, const char *filename, struct nntp_se
 	return 1; /* Stop traversal */
 }
 
+static int find_header(FILE *fp, const char *header, char **ptr, char *buf, size_t len)
+{
+	int hdrlen = strlen(header);
+
+	*ptr = NULL;
+	rewind(fp);
+
+	while (fgets(buf, len, fp)) {
+		if (!strncasecmp(buf, header, hdrlen)) {
+			char *start;
+			start = buf + hdrlen;
+			while (*start && isspace(*start)) { /* ltrim doesn't work here */
+				start++;
+			}
+			bbs_strterm(start, '\r'); /* This should be sufficient, but do LF as well just in case */
+			bbs_strterm(start, '\n');
+			*ptr = start;
+			return 0;
+		}
+	}
+	/* Didn't find it */
+	*buf = '\0';
+	bbs_debug(3, "Didn't find any lines starting with '%s'\n", header);
+	return -1;
+}
+
+static int on_xover(const char *dir_name, const char *filename, struct nntp_session *nntp, int number)
+{
+	FILE *fp;
+	char fullpath[256];
+	char subjbuf[256], authorbuf[256], datebuf[256], bytecountbuf[12] = "";
+	char *subject = subjbuf, *author = authorbuf, *date = datebuf, *msgid = NULL, *references = NULL, *bytecount = bytecountbuf, *linecount = NULL;
+	struct stat st;
+
+	msgid = strchr(filename, '_');
+	if (!msgid++) {
+		bbs_error("Invalid newsgroup article filename: %s\n", filename);
+		return 0;
+	}
+
+	snprintf(fullpath, sizeof(fullpath), "%s/%s", dir_name, filename);
+
+	fp = fopen(fullpath, "r");
+	if (!fp) {
+		bbs_error("fopen(%s) failed: %s\n", fullpath, strerror(errno));
+		return 0;
+	}
+
+	find_header(fp, "Subject:", &subject, subjbuf, sizeof(subjbuf));
+	find_header(fp, "From:", &author, authorbuf, sizeof(authorbuf));
+	find_header(fp, "Date:", &date, datebuf, sizeof(datebuf));
+
+	if (!stat(fullpath, &st)) {
+		snprintf(bytecountbuf, sizeof(bytecountbuf), "%ld", st.st_size);
+	}
+
+	/* subject, author, date, message ID, references, byte count, line count */
+	_nntp_send(nntp, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\r\n", number, S_IF(subject), S_IF(author), S_IF(date), S_IF(msgid), S_IF(references), S_IF(bytecount), S_IF(linecount));
+	return 0;
+}
+
 static int do_post(struct nntp_session *nntp)
 {
 	char *newsgroups_header, *end;
 	char *newsgroup, *newsgroups = NULL;
 	char *dup, *uuid = NULL;
 	int res = -1;
+	const char *from;
 
+	/* Carefully extract just the Newsgroups header, without duplicating the entire message */
 	newsgroups_header = strcasestr(nntp->post, "Newsgroups:");
 	if (!newsgroups_header) {
 		goto cleanup;
@@ -362,6 +460,30 @@ static int do_post(struct nntp_session *nntp)
 	newsgroups = strndup(newsgroups_header, end - newsgroups_header);
 	if (!newsgroups) {
 		goto cleanup;
+	}
+
+	/* Check the From header. */
+	if (!nntp->fromheader) {
+		goto cleanup;
+	} else {
+		char matchstr[32];
+		snprintf(matchstr, sizeof(matchstr), "%s@%s>", bbs_username(nntp->node->user), bbs_hostname());
+		from = nntp->fromheader + 5; /* Skip From: */
+		ltrim(from);
+		/* Skip name, if present. */
+		while (*from) {
+			if (*from != '<') {
+				from++;
+			} else {
+				from++;
+				break;
+			}
+		}
+		if (strlen_zero(from) || (bbs_user_is_registered(nntp->node->user) && strcasecmp(from, matchstr))) {
+			bbs_warning("Rejected NNTP post by user %d with identity %s\n", nntp->node->user ? nntp->node->user->id : 0, S_IF(from));
+			nntp_send(nntp, 441, "Identity not allowed for posting");
+			goto cleanup2;
+		}
 	}
 
 	uuid = bbs_uuid(); /* Use same UUID for all newsgroups */
@@ -415,8 +537,6 @@ static int do_post(struct nntp_session *nntp)
 	}
 
 cleanup:
-	free_if(uuid);
-	free_if(newsgroups);
 	if (res) {
 		nntp_send(nntp, 441, "Posting failed");
 	} else {
@@ -424,10 +544,12 @@ cleanup:
 		nntp_send(nntp, 240, "Article received OK");
 		scan_newsgroups(); /* Rebuild the newsgroups file so that LIST responses are accurate. */
 	}
+cleanup2:
+	free_if(uuid);
+	free_if(newsgroups);
 	return 0;
 }
 
-#if 0
 static int parse_min_max(char *s, int *min, int *max, char sep)
 {
 	char *tmp;
@@ -442,7 +564,6 @@ static int parse_min_max(char *s, int *min, int *max, char sep)
 	*max = atoi(tmp);
 	return 0;
 }
-#endif
 
 #define REQUIRE_GROUP() \
 	if (!nntp->currentgroup) { \
@@ -475,6 +596,11 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 
 		dlen = strlen(s); /* s may be empty but will not be NULL */
 
+		if (nntp->inpostheaders && STARTS_WITH(s, "From:")) {
+			free_if(nntp->fromheader);
+			nntp->fromheader = strdup(s);
+		}
+
 		if (!nntp->post) { /* First line */
 			nntp->post = malloc(dlen + 3); /* Use malloc instead of strdup so we can tack on a CR LF */
 			if (!nntp->post) {
@@ -495,6 +621,9 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 			strcpy(newstr + nntp->postlen + dlen, "\r\n");
 			nntp->postlen += dlen + 2;
 			nntp->post = newstr;
+		}
+		if (nntp->inpostheaders && dlen == 2) {
+			nntp->inpostheaders = 0; /* Got CR LF, end of headers */
 		}
 		if (nntp->postlen >= max_post_size) {
 			nntp->postfail = 1;
@@ -728,20 +857,34 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 		/* Group not required, the headers will say groups() to which message should be posted. */
 		nntp_send(nntp, 340, "Input article; end with a period on its own line");
 		nntp->inpost = 1;
-#if 0
+		nntp->inpostheaders = 1;
 	} else if (!strcasecmp(command, "XOVER")) {
+		/* RFC 2980 XOVER */
+		/* Thunderbird-based clients prefer XOVER to HEAD, and will only issue a HEAD if XOVER is not available. */
+		/* XXX For some reason, Thunderbird-based clients bork on HEAD and don't show any body (and don't ask for it),
+		 * but with XOVER, no matter how complete/incomplete the response, it'll issue an ARTICLE and get the whole thing properly.
+		 * Personally, I think this command is especially stupid. HEAD ought to have been sufficient enough for everyone.
+		 * Either way, this really needs to work properly: */
 		int min, max;
 
 		REQUIRE_GROUP();
-		REQUIRE_ARGS(s);
-
-		parse_min_max(s, &min, &max, '-');
-#endif
+		if (strlen_zero(s)) {
+			parse_min_max(s, &min, &max, '-');
+		} else {
+			if (!nntp->currentarticle) {
+				nntp_send(nntp, 420, "No article(s) selected");
+				return 0;
+			}
+			min = max = nntp->currentarticle;
+		}
+		nntp_send(nntp, 224, "Overview information follows");
+		nntp_traverse2(nntp->grouppath, on_xover, nntp, min, max);
+		_nntp_send(nntp, ".\r\n");
+	} else {
 		/*! \todo add:
 		 * RFC 2980 extensions
 		 * Also see RFC 5536
 		 */
-	} else {
 		nntp_send(nntp, 500, "Unknown command");
 	}
 	return 0;

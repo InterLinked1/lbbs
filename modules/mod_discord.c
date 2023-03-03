@@ -930,37 +930,6 @@ static int privmsg(const char *recipient, const char *sender, const char *msg)
 	return 1;
 }
 
-/*! \brief Deliver direct messages from Discord to native IRC user */
-/*! \note This only handles initial messages, not messages updated on Discord. Those will go to the normal on_message_update handler, and are ignored. */
-static void on_dm_receive(struct discord *client, const struct discord_message *event)
-{
-	char dup[512];
-	char sendername[84];
-	char *message, *recipient;
-	const char *msg;
-
-	UNUSED(client);
-	msg = event->content;
-
-	if (event->author->bot) {
-		bbs_debug(5, "Ignoring message from bot: %s\n", msg);
-		return;
-	}
-
-	safe_strncpy(dup, msg, sizeof(dup));
-	message = dup;
-	recipient = strsep(&message, " ");
-	if (strlen_zero(recipient) || strlen_zero(message)) {
-		bbs_debug(8, "Private message is not properly addressed, ignoring\n");
-		/* Don't send an autoresponse saying "please use this messaging format", since there may be other consumers */
-		return;
-	}
-	bbs_strterm(recipient, ':'); /* strip : */
-	snprintf(sendername, sizeof(sendername), "%s#%s", event->author->username, event->author->discriminator);
-	bbs_debug(8, "Received private message: %s -> %s: %s\n", sendername, recipient, message);
-	irc_relay_send(recipient, CHANNEL_USER_MODE_NONE, "Discord", sendername, message);
-}
-
 static int discord_send(const char *channel, const char *sender, const char *msg)
 {
 	struct chan_pair *cp;
@@ -1112,6 +1081,37 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 	free(dup);
 }
 
+/*! \brief Deliver direct messages from Discord to native IRC user */
+static int on_dm_receive(struct discord *client, const struct discord_message *event)
+{
+	char dup[512];
+	char sendername[84];
+	char *message, *recipient;
+	const char *msg;
+	char *colon;
+
+	UNUSED(client);
+	msg = event->content;
+
+	safe_strncpy(dup, msg, sizeof(dup));
+	message = dup;
+	recipient = strsep(&message, " ");
+	if (strlen_zero(recipient) || strlen_zero(message)) {
+		bbs_debug(8, "Private message is not properly addressed, ignoring\n");
+		/* Don't send an autoresponse saying "please use this messaging format", since there may be other consumers */
+		return -1;
+	}
+	colon = strchr(recipient, ':');
+	if (!colon) {
+		return -1; /* Not a private message */
+	}
+	*colon = '\0'; /* strip : */
+	snprintf(sendername, sizeof(sendername), "%s#%s", event->author->username, event->author->discriminator);
+	bbs_debug(8, "Received private message: %s -> %s: %s\n", sendername, recipient, message);
+	irc_relay_send(recipient, CHANNEL_USER_MODE_NONE, "Discord", sendername, message);
+	return 0;
+}
+
 static void on_message_create(struct discord *client, const struct discord_message *event)
 {
 	struct chan_pair *cp;
@@ -1130,7 +1130,9 @@ static void on_message_create(struct discord *client, const struct discord_messa
 	/* Check if there's a channel that matches. */
 	cp = find_mapping(event->guild_id, event->channel_id);
 	if (!cp) {
-		bbs_debug(7, "Ignoring message from channel %lu (no mapping): %s\n", event->channel_id, event->content);
+		if (on_dm_receive(client, event)) { /* Maybe it's a DM? */
+			bbs_debug(7, "Ignoring message from channel %lu (no mapping): %s\n", event->channel_id, event->content);
+		}
 	} else { /* Relay to IRC */
 		relay_message(client, cp, event);
 	}
@@ -1153,7 +1155,9 @@ static void on_message_update(struct discord *client, const struct discord_messa
 	/* Check if there's a channel that matches. */
 	cp = find_mapping(event->guild_id, event->channel_id);
 	if (!cp) {
-		bbs_debug(7, "Ignoring updated message from channel %lu (no mapping): %s\n", event->channel_id, event->content);
+		if (on_dm_receive(client, event)) { /* Maybe it's a DM? */
+			bbs_debug(7, "Ignoring updated message from channel %lu (no mapping): %s\n", event->channel_id, event->content);
+		}
 	} else { /* Relay to IRC */
 		bbs_debug(4, "Relaying updated message from channel %lu by %s to %s: %s\n", event->channel_id, event->author->username, cp->irc_channel, event->content);
 		/* If we wanted to be really fancy, we could turn the update into a sed style string, but we'd need the original message for that...
@@ -1267,8 +1271,6 @@ static int load_module(void)
 	/* PRIVMSG */
 	discord_set_on_message_create(discord_client, &on_message_create);
 	discord_set_on_message_update(discord_client, &on_message_update);
-
-	discord_set_on_message_create(discord_client, &on_dm_receive);
 
 	discord_set_on_presence_update(discord_client, &on_presence_update);
 	discord_set_on_guild_members_chunk(discord_client, &on_guild_members_chunk);
