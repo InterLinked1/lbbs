@@ -412,21 +412,6 @@ static void *ssl_io_thread(void *unused)
 	return NULL;
 }
 
-static int unblock_fd(int fd)
-{
-	int flags = fcntl(fd, F_GETFL, 0);
-	if (flags < 0) {
-		bbs_error("fcntl failed: %s\n", strerror(errno));
-		return -1;
-	}
-	flags |= O_NONBLOCK;
-	if (fcntl(fd, F_SETFL, flags)) {
-		bbs_error("fcntl failed: %s\n", strerror(errno));
-		return -1;
-	}
-	return 0;
-}
-
 SSL *ssl_new_accept(int fd, int *rfd, int *wfd)
 {
 	int res;
@@ -437,7 +422,7 @@ SSL *ssl_new_accept(int fd, int *rfd, int *wfd)
 		return NULL;
 	}
 
-	if (rfd && wfd && unblock_fd(fd)) { /* Make the TLS reads from the client nonblocking */
+	if (rfd && wfd && bbs_unblock_fd(fd)) { /* Make the TLS reads from the client nonblocking */
 		return NULL;
 	}
 
@@ -483,7 +468,7 @@ SSL *ssl_client_new(int fd, int *rfd, int *wfd)
 	long verify_result;
 	char *str;
 
-	if (rfd && wfd && unblock_fd(fd)) { /* Make the TLS reads from the client nonblocking */
+	if (rfd && wfd && bbs_unblock_fd(fd)) { /* Make the TLS reads from the client nonblocking */
 		return NULL;
 	}
 

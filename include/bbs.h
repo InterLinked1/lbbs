@@ -340,7 +340,11 @@ struct bbs_module *BBS_MODULE_SELF_SYM(void);
 #error "Externally compiled modules must declare BBS_MODULE_SELF_SYM."
 #endif
 
+/*! \brief Whether the BBS is fully started */
 int bbs_is_fully_started(void);
+
+/*! \brief Whether the BBS is currently shutting down */
+int bbs_is_shutting_down(void);
 
 /*! \brief Get BBS startup time */
 int bbs_starttime(void);

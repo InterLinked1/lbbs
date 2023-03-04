@@ -72,7 +72,7 @@ int bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_
 		close(uds_socket);
 		return -1;
 	}
-	res = listen(uds_socket, 2);
+	res = listen(uds_socket, 5);
 	if (res < 0) {
 		bbs_error("Unable to listen on UNIX domain socket %s: %s\n", sockfile, strerror(errno));
 		close(uds_socket);
@@ -101,18 +101,11 @@ int bbs_make_tcp_socket(int *sock, int port)
 {
 	struct sockaddr_in sinaddr; /* Internet socket */
 	const int enable = 1;
+	int res;
 
 	*sock = socket(AF_INET, SOCK_STREAM, 0);
 	if (*sock < 0) {
 		bbs_error("Unable to create TCP socket: %s\n", strerror(errno));
-		return -1;
-	}
-	if (setsockopt(*sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
-		bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
-		return -1;
-	}
-	if (setsockopt(*sock, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(int)) < 0) {
-		bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
 		return -1;
 	}
 	memset(&sinaddr, 0, sizeof(sinaddr));
@@ -120,19 +113,83 @@ int bbs_make_tcp_socket(int *sock, int port)
 	sinaddr.sin_addr.s_addr = INADDR_ANY;
 	sinaddr.sin_port = htons(port); /* Public TCP port on which to listen */
 
-	if (bind(*sock, (struct sockaddr *)&sinaddr, sizeof(sinaddr))) {
-		bbs_error("Unable to bind TCP socket to port %d: %s\n", port, strerror(errno));
-		close(*sock);
-		*sock = -1;
-		return -1;
+	res = bind(*sock, (struct sockaddr *)&sinaddr, sizeof(sinaddr));
+	if (res) {
+		if (errno == EADDRINUSE) {
+			/* Don't do this by default.
+			 * If somehow multiple instances of the BBS are running,
+			 * then weird things can happen as a result of multiple BBS processes
+			 * running on the same port. Sometimes things will work, usually they won't.
+			 *
+			 * (We do try really hard in bbs.c to prevent multiple instances of the BBS
+			 *  from being run at the same time, mostly accidentally, and this usually
+			 *  works, but it's not foolproof.)
+			 *
+			 * Therefore, try to bind without reusing first, and only if that fails,
+			 * reuse the port, but make some noise about this just in case. */
+			bbs_warning("Port %d was already in use, retrying with reuse\n", port);
+
+			/* We can't reuse the original socket after bind fails, make a new one. */
+			close(*sock);
+			*sock = socket(AF_INET, SOCK_STREAM, 0);
+			if (*sock < 0) {
+				bbs_error("Unable to recreate TCP socket: %s\n", strerror(errno));
+				return -1;
+			}
+			if (setsockopt(*sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
+				bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
+				return -1;
+			}
+			if (setsockopt(*sock, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(int)) < 0) {
+				bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
+				return -1;
+			}
+			res = bind(*sock, (struct sockaddr *)&sinaddr, sizeof(sinaddr));
+		}
+		if (res) {
+			bbs_error("Unable to bind TCP socket to port %d: %s\n", port, strerror(errno));
+			close(*sock);
+			*sock = -1;
+			return -1;
+		}
 	}
-	if (listen(*sock, 2) < 0) {
+	if (listen(*sock, 10) < 0) {
 		bbs_error("Unable to listen on TCP socket on port %d: %s\n", port, strerror(errno));
 		close(*sock);
 		*sock = -1;
 		return -1;
 	}
 	bbs_debug(1, "Started %s listener on port %d\n", "TCP", port);
+	return 0;
+}
+
+int bbs_unblock_fd(int fd)
+{
+	int flags = fcntl(fd, F_GETFL, 0);
+	if (flags < 0) {
+		bbs_error("fcntl failed: %s\n", strerror(errno));
+		return -1;
+	}
+	flags |= O_NONBLOCK;
+	if (fcntl(fd, F_SETFL, flags)) {
+		bbs_error("fcntl failed: %s\n", strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+int bbs_block_fd(int fd)
+{
+	int flags = fcntl(fd, F_GETFL, 0);
+	if (flags < 0) {
+		bbs_error("fcntl failed: %s\n", strerror(errno));
+		return -1;
+	}
+	flags &= ~O_NONBLOCK;
+	if (fcntl(fd, F_SETFL, flags)) {
+		bbs_error("fcntl failed: %s\n", strerror(errno));
+		return -1;
+	}
 	return 0;
 }
 
@@ -144,6 +201,7 @@ int bbs_tcp_connect(const char *hostname, int port)
 	struct sockaddr_in *saddr_in; /* IPv4 */
 	struct sockaddr_in6 *saddr_in6; /* IPv6 */
 	int sfd = -1;
+	struct timeval timeout;
 
 	/* Resolve the hostname */
 	memset(&hints, 0, sizeof(hints));
@@ -172,6 +230,11 @@ int bbs_tcp_connect(const char *hostname, int port)
 			continue;
 		}
 		bbs_debug(3, "Attempting connection to %s:%d\n", ip, port);
+		/* Put the socket in nonblocking mode to prevent connect from blocking for a long time.
+		 * Using SO_SNDTIMEO works on Linux and is easier than doing bbs_unblock_fd before and bbs_block_fd after. */
+		timeout.tv_sec = 4; /* Wait up to 4 seconds to connect */
+		timeout.tv_usec = 0;
+		setsockopt(sfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 		if (connect(sfd, ai->ai_addr, ai->ai_addrlen)) {
 			bbs_error("connect: %s\n", strerror(errno));
 			close(sfd);
@@ -180,9 +243,13 @@ int bbs_tcp_connect(const char *hostname, int port)
 		}
 		break; /* Use the 1st one that works */
 	}
+
 	freeaddrinfo(res);
 	if (sfd == -1) {
 		return -1;
+	} else {
+		timeout.tv_sec = 0; /* Change back to fully blocking */
+		setsockopt(sfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 	}
 
 	bbs_debug(1, "Connected to %s:%d\n", hostname, port);
@@ -914,6 +981,23 @@ int bbs_expect(int fd, int ms, char *buf, size_t len, const char *str)
 
 	if (!strstr(buf, str)) {
 		bbs_debug(1, "Expected '%s', got: %s\n", str, buf);
+		return 1;
+	}
+	return 0;
+}
+
+int bbs_expect_line(int fd, int ms, struct readline_data *rldata, const char *str)
+{
+	int res;
+
+	rldata->buf[0] = '\0'; /* Clear the buffer, in case we don't read anything at all. */
+	res = bbs_fd_readline(fd, rldata, "\r\n", ms);
+	if (res <= 0) {
+		return -1;
+	}
+
+	if (!strstr(rldata->buf, str)) {
+		bbs_debug(1, "Expected '%s', got: %s\n", str, rldata->buf);
 		return 1;
 	}
 	return 0;

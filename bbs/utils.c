@@ -557,7 +557,6 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 		return -1;
 	}
 
-	/* Skip first metalen characters, and send msgsize - metalen, to copy over just the message itself. */
 	offset = start;
 	/* This is not a POSIX function, it exists only in Linux.
 	 * Like sendfile, it's more efficient than moving data between kernel and userspace,

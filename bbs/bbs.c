@@ -50,13 +50,13 @@
 #include "include/module.h" /* use load_modules */
 #include "include/alertpipe.h"
 #include "include/os.h"
-#include "include/node.h"
 #include "include/config.h"
 #include "include/menu.h"
 #include "include/mail.h"
 #include "include/curl.h"
 #include "include/auth.h" /* use bbs_num_auth_providers */
 #include "include/utils.h" /* use print_time_elapsed, print_days_elapsed */
+#include "include/node.h"
 #include "include/variables.h"
 #include "include/startup.h"
 #include "include/tls.h"
@@ -426,6 +426,11 @@ int shutdown_finished = 0;
 int bbs_is_fully_started(void)
 {
 	return fully_started;
+}
+
+int bbs_is_shutting_down(void)
+{
+	return shutting_down;
 }
 
 static void cleanup(void)

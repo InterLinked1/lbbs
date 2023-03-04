@@ -159,6 +159,12 @@ int bbs_make_tcp_socket(int *sock, int port);
 struct bbs_node;
 struct sockaddr_in;
 
+/*! \brief Put a socket in nonblocking mode */
+int bbs_unblock_fd(int fd);
+
+/*! \brief Put a socket in blocking mode */
+int bbs_block_fd(int fd);
+
 /*!
  * \brief Open a TCP socket to another server
  * \param hostname DNS hostname of server

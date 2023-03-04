@@ -21,6 +21,7 @@
 struct bbs_module;
 struct bbs_user;
 struct bbs_vars;
+struct readline_data;
 
 struct bbs_node {
 	unsigned int id;			/*!< Node number, 1-indexed for user-friendliness */
@@ -324,8 +325,19 @@ int bbs_fd_poll_read(int fd, int ms, char *buf, size_t len);
  * \param len Size of buf
  * \param str String that should appear (checked using strstr)
  * \retval -1 on error, 0 if found, 1 if got a response that didn't contain str
+ * \warning This function will not wait for a full line of input if less is read initially. Use bbs_expect_line if you need stronger guarantees.
  */
 int bbs_expect(int fd, int ms, char *buf, size_t len, const char *str);
+
+/*!
+ * \brief wrapper around bbs_fd_poll_read that expects a substring to appear in the read response
+ * \param fd
+ * \param ms for poll
+ * \param rldata A readline data structure
+ * \param str String that should appear (checked using strstr)
+ * \retval -1 on error, 0 if found, 1 if got a response that didn't contain str
+ */
+int bbs_expect_line(int fd, int ms, struct readline_data *rldata, const char *str);
 
 /*!
  * \brief wrapper around poll() and read() for BBS node

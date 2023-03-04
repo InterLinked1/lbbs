@@ -652,15 +652,20 @@ static int lookup_mx(const char *domain, char *buf, size_t len)
 }
 
 /* BUGBUG XXX Small delay added because bbs_expect doesn't wait for a full line (terminated by CR LF), so make sure everything we want is ready when we call it */
-#define SMTP_EXPECT(fd, ms, str) usleep(100000); res = bbs_expect(fd, ms, buf, len, str); if (res) { bbs_warning("Expected '%s', got: %s\n", str, buf); goto cleanup; }
+#define SMTP_EXPECT(fd, ms, str) \
+	usleep(100000); \
+	res = bbs_expect_line(fd, ms, &rldata, str); \
+	if (res) { bbs_warning("Expected '%s', got: %s\n", str, buf); goto cleanup; } else { bbs_debug(9, "Found '%s': %s\n", str, buf); }
 
 #define smtp_client_send(fd, fmt, ...) dprintf(fd, fmt, ## __VA_ARGS__); bbs_debug(3, " => " fmt, ## __VA_ARGS__);
 
+/*! \retval -1 on temporary error, 1 on permanent error, 0 on success */
 static int try_send(const char *hostname, const char *sender, const char *recipient, const char *data, unsigned long datalen, int datafd, int offset, unsigned long writelen, char *buf, size_t len)
 {
 	SSL *ssl = NULL;
 	int sfd, res;
 	int rfd, wfd;
+	struct readline_data rldata;
 	int supports_starttls = 0;
 
 	/* Connect on port 25, and don't set up TLS initially. */
@@ -676,12 +681,15 @@ static int try_send(const char *hostname, const char *sender, const char *recipi
 	}
 
 	wfd = rfd = sfd;
-	bbs_debug(3, "Attempting delivery of %lu-byte message from %s -> %s via %s\n", datalen, sender, recipient, hostname);
+	bbs_debug(3, "Attempting delivery of %lu-byte message from %s -> %s via %s\n", datalen ? datalen : writelen, sender, recipient, hostname);
+
+	bbs_readline_init(&rldata, buf, len);
 
 	/* The logic for being an SMTP client with an SMTP MTA is pretty straightforward. */
 	SMTP_EXPECT(rfd, 1000, "220");
+
 	smtp_client_send(wfd, "EHLO %s\r\n", bbs_hostname());
-	res = bbs_expect(rfd, 1000, buf, sizeof(buf), "250");
+	res = bbs_expect_line(rfd, 1000, &rldata, "250");
 	if (res) { /* Fall back to HELO if EHLO not supported */
 		if (require_starttls_out) { /* STARTTLS is only supported by EHLO, not HELO */
 			bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
@@ -693,16 +701,20 @@ static int try_send(const char *hostname, const char *sender, const char *recipi
 		SMTP_EXPECT(rfd, 1000, "250");
 	} else {
 		/* Keep reading the rest of the multiline EHLO */
+		bbs_debug(9, "Read: %s\n", buf);
 		while (strstr(buf, "250-")) {
 			if (!supports_starttls && strstr(buf, "STARTTLS")) {
 				supports_starttls = 1;
 			}
-			res = bbs_expect(rfd, 1000, buf, sizeof(buf), "250");
+			res = bbs_expect_line(rfd, 1000, &rldata, "250");
+			bbs_debug(9, "Read: %s\n", buf);
 		}
 		if (!supports_starttls && strstr(buf, "STARTTLS")) { /* For last line */
 			supports_starttls = 1;
 		}
+		bbs_debug(6, "Finished processing multiline EHLO\n");
 	}
+
 	if (supports_starttls) {
 		smtp_client_send(wfd, "STARTTLS\r\n");
 		SMTP_EXPECT(rfd, 2500, "220");
@@ -713,8 +725,34 @@ static int try_send(const char *hostname, const char *sender, const char *recipi
 			goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
 		}
 		/* Start over again. */
+
 		smtp_client_send(wfd, "EHLO %s\r\n", bbs_hostname());
-		SMTP_EXPECT(rfd, 2500, "250");
+		res = bbs_expect_line(rfd, 1000, &rldata, "250");
+		if (res) { /* Fall back to HELO if EHLO not supported */
+			if (require_starttls_out) { /* STARTTLS is only supported by EHLO, not HELO */
+				bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
+				res = 1;
+				goto cleanup;
+			}
+			bbs_debug(3, "SMTP server %s does not support ESMTP, falling back to regular SMTP\n", hostname);
+			smtp_client_send(wfd, "HELO %s\r\n", bbs_hostname());
+			SMTP_EXPECT(rfd, 1000, "250");
+		} else {
+			/* Keep reading the rest of the multiline EHLO */
+			bbs_debug(9, "Read: %s\n", buf);
+			while (strstr(buf, "250-")) {
+				if (!supports_starttls && strstr(buf, "STARTTLS")) {
+					supports_starttls = 1;
+				}
+				res = bbs_expect_line(rfd, 1000, &rldata, "250");
+				bbs_debug(9, "Read: %s\n", buf);
+			}
+			if (!supports_starttls && strstr(buf, "STARTTLS")) { /* For last line */
+				supports_starttls = 1;
+			}
+			bbs_debug(6, "Finished processing multiline EHLO\n");
+		}
+
 	} else if (require_starttls_out) {
 		bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
 		res = 1;
@@ -750,11 +788,18 @@ cleanup:
 		ssl_close(ssl);
 	}
 	close(sfd);
+
+	/* Check if it's a permanent error, if it's not, return -1 instead of 1 */
+	if (res > 0) {
+		res = -1; /* Assume temporary unless we're sure it's not. */
+		if (STARTS_WITH(buf, "5")) {
+			res = 1; /* Permanent error. */
+		}
+	}
 	return res;
 }
 
 /*! \brief Prepend a Received header to the received email */
-/*! \note Don't call this for message submission agents, since that would leak the real sender's IP address */
 static int prepend_received(struct smtp_session *smtp, const char *recipient, int fd)
 {
 	char hostname[256];
@@ -785,8 +830,14 @@ static int prepend_received(struct smtp_session *smtp, const char *recipient, in
 		prot = "SMTP";
 	}
 	/* We don't include a message ID since we don't generate/use any internally (even though the queue probably should...). */
-	dprintf(fd, "Received: from %s (%s [%s])\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
-		hostname, hostname, smtp->node->ip, bbs_hostname(), prot, recipient, timestamp); /* recipient already in <> */
+	if (smtp->fromlocal && !add_received_msa) {
+		/* For messages received by message submission agents, mask the sender's real IP address */
+		dprintf(fd, "Received: from [HIDDEN] (Authenticated sender: %s)\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
+			smtp->from, bbs_hostname(), prot, recipient, timestamp);
+	} else {
+		dprintf(fd, "Received: from %s (%s [%s])\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
+			hostname, hostname, smtp->node->ip, bbs_hostname(), prot, recipient, timestamp); /* recipient already in <> */
+	}
 	return 0;
 }
 
@@ -839,34 +890,33 @@ static int prepend_spf(struct smtp_session *smtp, const char *recipient, int fd)
 	return 0;
 }
 
-static int prepend_incoming(struct smtp_session *smtp, const char *recipient, int fd)
+static int prepend_both(struct smtp_session *smtp, const char *recipient, int fd)
 {
 	/* Additional headers added during final delivery.
 	 * The Received headers must be newest to oldest.
 	 * Not sure about the other headers: by convention, they usually appear after the original ones, but not sure it really matters. */
-
-	if (!smtp->msa || add_received_msa) {
-		prepend_received(smtp, recipient, fd);
-	}
-	if (validatespf) {
+	if (validatespf && !smtp->fromlocal) { /* Don't do SPF if the message was just submitted... that would definitely fail. */
 		prepend_spf(smtp, recipient, fd);
 	}
-
-	/* This is a good place to tack on Return-Path as well (receiving MTA does this) */
-	dprintf(fd, "Return-Path: %s\r\n", smtp->from); /* Envelope From - smtp-> doesn't have <> so this works out just fine. */
-	return 0;
-}
-
-static int prepend_outgoing(struct smtp_session *smtp, const char *recipient, int fd)
-{
-	UNUSED(recipient);
-
 	if (smtp->listname) {
 		/* If sent to a mailing list (or more rather, any of the recipients was a mailing list), indicate bulk precedence.
 		 * Discouraged by RFC 2076, but this is common practice nonetheless. */
 		dprintf(fd, "Precedence: bulk\r\n");
 	}
+	prepend_received(smtp, recipient, fd);
 	return 0;
+}
+
+static int prepend_incoming(struct smtp_session *smtp, const char *recipient, int fd)
+{
+	/* This is a good place to tack on Return-Path (receiving MTA does this) */
+	dprintf(fd, "Return-Path: %s\r\n", smtp->from); /* Envelope From - smtp-> doesn't have <> so this works out just fine. */
+	return prepend_both(smtp, recipient, fd);
+}
+
+static int prepend_outgoing(struct smtp_session *smtp, const char *recipient, int fd)
+{
+	return prepend_both(smtp, recipient, fd);
 }
 
 static int do_local_delivery(struct smtp_session *smtp, const char *recipient, const char *user, const char *data, unsigned long datalen)
@@ -1116,7 +1166,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 
 	newretries = atoi(retries) + 1;
 	bbs_debug(3, "Delivery of %s to %s has been attempted %d/%d times\n", fullname, realto, newretries, max_retries);
-	if (newretries >= (int) max_retries) {
+	if (res > 0 || newretries >= (int) max_retries) {
 		/* Send a delivery failure response, then delete the file. */
 		bbs_warning("Delivery of message %s from %s to %s has failed permanently after %d retries\n", fullname, realfrom, realto, newretries);
 		return_dead_letter(realfrom, realto, fullname, size, metalen, buf);
@@ -1184,6 +1234,16 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 			return 0;
 		}
 		res = try_send(domain, smtp->from, recipient, smtp->data, smtp->datalen, -1, 0, 0, buf, sizeof(buf));
+		if (res > 0) { /* Permanent error */
+			/* We've still got the sender on the socket, just relay the error. */
+			_smtp_reply(smtp, "%s\r\n", buf);
+			return -1;
+		} else if (res) { /* Temporary error */
+			/* This can happen legitimately, if a mail server is unavailable, but it's generally unusual and could mean there are issues. */
+			bbs_warning("Initial delivery of message to %s failed\n", domain);
+			/*! \todo If we got a fatal error in our last response (as opposed to e.g. unable to make TCP connection),
+			 * then we shouldn't queue the message, we should abort now. */
+		}
 	}
 	if (res && !queue_outgoing) {
 		bbs_debug(3, "Delivery failed and can't queue message, rejecting\n");

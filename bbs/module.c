@@ -316,6 +316,11 @@ static void check_dependencies(const char *resource_in, unsigned int suppress_lo
 	const char *so_ext = "";
 	struct bbs_module *mod;
 
+	/* Module isn't going to load anyways, so who cares? */
+	if (stringlist_contains(&modules_noload, resource_in)) {
+		return;
+	}
+
 	if (resource_in_len < 4 || strcasecmp(resource_in + resource_in_len - 3, ".so")) {
 		so_ext = ".so";
 	}
@@ -336,7 +341,12 @@ static void check_dependencies(const char *resource_in, unsigned int suppress_lo
 		dependencies = dependencies_buf;
 		while ((dependency = strsep(&dependencies, ","))) {
 			if (stringlist_contains(&modules_noload, dependency)) {
-				bbs_warning("Module %s depends on noloaded module %s\n", resource_in, dependency);
+				/* The module might try to load later (if autoload or explicitly loaded),
+				 * but if it does, it WILL fail anyways, so just noload it now. */
+				if (!stringlist_contains(&modules_noload, resource_in)) {
+					bbs_error("Module %s depends on noloaded module %s\n", resource_in, dependency);
+					stringlist_push(&modules_noload, resource_in);
+				}
 				continue;
 			}
 			if (!stringlist_contains(&modules_preload, dependency)) {
@@ -657,7 +667,7 @@ static int on_file_preload(const char *dir_name, const char *filename, void *obj
 
 	/* noload trumps preload if both are present */
 	if (stringlist_contains(&modules_noload, filename)) {
-		bbs_warning("Conflicting directives 'noload' and 'preload' for module %s. Skipping preload.\n", filename);
+		bbs_warning("Conflicting directives 'noload' and 'preload' for %s, not preloading\n", filename);
 		return 0;
 	}
 

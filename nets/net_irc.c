@@ -46,7 +46,6 @@
 #undef dprintf
 
 #define IRC_SERVER_VERSION BBS_NAME "-" BBS_VERSION "-irc"
-#define BBS_SOURCE_URL "https://github.com/InterLinked1/lbbs"
 
 /*! \brief Clients will be pinged every 2 minutes, and have 2 minutes to respond. */
 #define PING_TIME MIN_MS(2)
@@ -77,7 +76,6 @@
 
 /*! \todo include irc.h from LIRC, so we can use macro names for numerics, at least */
 /*! \todo Make MOTD more dynamic? Perhaps read from a file? */
-/*! \todo add IRC integration with the BBS, e.g. for a BBS user's friends, ping 'em on IRC on login (for nodes with a PTY only, obviously) */
 
 static int irc_port = DEFAULT_IRC_PORT;
 static int ircs_port = DEFAULT_IRCS_PORT;
@@ -2334,7 +2332,7 @@ static void drop_member_if_present(struct irc_channel *channel, struct irc_user 
 			free(member);
 			/* Already locked, so don't try to recursively lock: */
 			channel_broadcast_nolock(channel, user, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), leavecmd, channel->name, S_IF(message));
-			if (channel->relay) {
+			if (channel->relay && !bbs_is_shutting_down()) { /* If BBS shutting down, don't relay a bunch of quit messages */
 				char quitmsg[92];
 				snprintf(quitmsg, sizeof(quitmsg), IDENT_PREFIX_FMT " has quit %s%s%s%s", IDENT_PREFIX_ARGS(user), channel->name, message ? " (" : "", S_IF(message), message ? ")" : "");
 				relay_broadcast(channel, NULL, NULL, quitmsg, NULL);

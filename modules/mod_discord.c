@@ -422,7 +422,10 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 		/* The API itself limits this to 100: https://ptb.discord.com/developers/docs/topics/gateway-events#request-guild-members */
 		retry_now = MIN(1, retry_now); /* Don't retry too many in a single request */
 
+/*! \brief Always returned 0 for guild owner (appears to be a concord issue) */
 #define BUGGY_USER_IDS
+
+/*! \brief Can't get all the presences on startup (does not appear to be a concord issue, but perhaps an API issue?) */
 #define BUGGY_PRESENCE_FETCH
 
 		missed.array = calloc(retry_now, sizeof(u64snowflake *));
@@ -448,8 +451,7 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 					i = 1;
 					break;
 #endif
-//#ifdef EXTRA_DISCORD_DEBUG
-#if 1
+#if defined(EXTRA_DISCORD_DEBUG) || defined(BUGGY_PRESENCE_FETCH)
 					bbs_debug(7, "Retrying to get presence for user %lu: %s#%s\n", u->user_id, u->username, u->discriminator);
 #endif
 				}
