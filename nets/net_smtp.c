@@ -82,11 +82,14 @@ static pthread_t queue_thread = -1;
 static int smtp_enabled = 1, smtps_enabled = 1, msa_enabled = 1;
 static int smtp_socket = -1, smtps_socket = -1, msa_socket = -1;
 
+static pthread_mutex_t queue_lock;
+
 static int accept_relay_in = 1;
 static int accept_relay_out = 1;
 static int minpriv_relay_in = 0;
 static int minpriv_relay_out = 0;
 static int queue_outgoing = 1;
+static int send_async = 1;
 static int always_queue = 0;
 static int require_starttls = 1;
 static int require_starttls_out = 0;
@@ -1203,9 +1206,52 @@ static void *queue_handler(void *unused)
 	usleep(10000000); /* Wait 10 seconds after the module loads, then try to flush anything in the queue. */
 
 	for (;;) {
+		pthread_mutex_lock(&queue_lock);
 		bbs_dir_traverse(qdir, on_queue_file, NULL, -1);
+		pthread_mutex_unlock(&queue_lock);
 		usleep(1000000 * queue_interval);
 	}
+	return NULL;
+}
+
+/*! \note Enable a workaround for socket connects to mail servers failing if we try to send them synchronously. This effectively always enables sendasync=yes. */
+#define BUGGY_SEND_IMMEDIATE
+
+static void *smtp_async_send(void *varg)
+{
+	char mailnewdir[260];
+	char fullname[512];
+	char *filename = varg;
+
+	snprintf(mailnewdir, sizeof(mailnewdir), "%s/mailq/new", mailbox_maildir(NULL));
+
+	/* Acquiring this lock is not guaranteed to happen immediately,
+	 * but that's okay since this thread is running asynchronously. */
+	pthread_mutex_lock(&queue_lock);
+	/* We could move it to the tmp dir to prevent a conflict with the periodic queue thread,
+	 * but the nice thing about doing it exactly the same way is that if delivery fails temporarily
+	 * this first round, it'll be automatically handled by the queue retry logic.
+	 * So we can always report 250 success here immediately.
+	 * In fact, this doesn't even need to be done in this thread.
+	 * The downside, of course, is that locking is needed to ensure
+	 * we don't try to send the same message twice.
+	 */
+
+	snprintf(fullname, sizeof(fullname), "%s/%s", mailnewdir, filename);
+	if (eaccess(fullname, R_OK)) {
+		/* If we couldn't acquire the lock immediately,
+		 * that means the queue thread was already running.
+		 * It may or may not have already picked up this file,
+		 * depending on how the timing worked out.
+		 * If it was processed, then the file was already renamed,
+		 * so we can detect that and bail. */
+		bbs_debug(5, "Ooh, file %s was already handled before its owner got a chance to send it asynchronously\n", fullname);
+	} else {
+		on_queue_file(mailnewdir, filename, NULL);
+	}
+
+	pthread_mutex_unlock(&queue_lock);
+	free(filename);
 	return NULL;
 }
 
@@ -1214,7 +1260,9 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 {
 	char hostname[256];
 	int res = -1;
+#ifndef BUGGY_SEND_IMMEDIATE
 	char buf[256] = "";
+#endif
 
 	bbs_assert(smtp->fromlocal);
 	if (!accept_relay_out) {
@@ -1227,12 +1275,13 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		}
 	}
 
-	if (!always_queue) {
+	if (!always_queue && !send_async) {  /* Try to send it synchronously */
 		/* Start by trying to deliver it directly, immediately, right now. */
 		if (lookup_mx(domain, hostname, sizeof(hostname))) {
 			smtp_reply(smtp, 553, 5.1.2, "Recipient domain not found.");
 			return 0;
 		}
+#ifndef BUGGY_SEND_IMMEDIATE
 		res = try_send(domain, smtp->from, recipient, smtp->data, smtp->datalen, -1, 0, 0, buf, sizeof(buf));
 		if (res > 0) { /* Permanent error */
 			/* We've still got the sender on the socket, just relay the error. */
@@ -1240,10 +1289,9 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 			return -1;
 		} else if (res) { /* Temporary error */
 			/* This can happen legitimately, if a mail server is unavailable, but it's generally unusual and could mean there are issues. */
-			bbs_warning("Initial delivery of message to %s failed\n", domain);
-			/*! \todo If we got a fatal error in our last response (as opposed to e.g. unable to make TCP connection),
-			 * then we shouldn't queue the message, we should abort now. */
+			bbs_warning("Initial synchronous delivery of message to %s failed\n", domain);
 		}
+#endif
 	}
 	if (res && !queue_outgoing) {
 		bbs_debug(3, "Delivery failed and can't queue message, rejecting\n");
@@ -1252,6 +1300,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		int fd;
 		char qdir[256];
 		char tmpfile[256], newfile[256];
+		int doasync = send_async;
 		if (!queue_outgoing) {
 			return -1;
 		}
@@ -1292,7 +1341,28 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 			return -1;
 		}
 		close(fd);
-		bbs_debug(4, "Successfully queued message for delayed delivery\n");
+#ifdef BUGGY_SEND_IMMEDIATE
+		doasync = 1;
+#endif
+		if (doasync) {
+			pthread_t sendthread;
+			const char *filename;
+			char *filenamedup;
+			/* For some reason, this works, even though calling try_send on the smtp structure directly above did not. */
+			filename = strrchr(newfile, '/');
+			filenamedup = strdup(filename + 1); /* Need to duplicate since filename is on the stack and we're returning now */
+			if (filenamedup) {
+				/* Yes, I know spawning a thread for every email is not very efficient.
+				 * If this were a high traffic mail server, this might be architected differently.
+				 * Do note that this is mainly a WORKAROUND for BUGGY_SEND_IMMEDIATE. */
+				if (bbs_pthread_create_detached(&sendthread, NULL, smtp_async_send, filenamedup)) {
+					free(filenamedup);
+				}
+			}
+			bbs_debug(4, "Successfully queued message for delivery\n");
+		} else {
+			bbs_debug(4, "Successfully queued message for delayed delivery\n");
+		}
 		return 0;
 	}
 	return 0;
@@ -1451,7 +1521,7 @@ next:
 			smtp_reply_nostatus(smtp, 451, "Delivery failed"); /*! \todo add a more specific code */
 		}
 	} else {
-		smtp_reply(smtp, 250, 2.6.0, "Message accepted");
+		smtp_reply(smtp, 250, 2.6.0, "Message accepted for delivery");
 	}
 	return 0;
 }
@@ -1835,6 +1905,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "general", "minprivrelayin", &minpriv_relay_in);
 	bbs_config_val_set_true(cfg, "general", "minprivrelayout", &minpriv_relay_out);
 	bbs_config_val_set_true(cfg, "general", "mailqueue", &queue_outgoing);
+	bbs_config_val_set_true(cfg, "general", "sendasync", &send_async);
 	bbs_config_val_set_true(cfg, "general", "alwaysqueue", &always_queue);
 	bbs_config_val_set_uint(cfg, "general", "queueinterval", &queue_interval);
 	bbs_config_val_set_uint(cfg, "general", "maxretries", &max_retries);
@@ -1906,6 +1977,8 @@ static int load_module(void)
 		bbs_error("A BBS hostname in nodes.conf is required for mail services\n");
 		return -1;
 	}
+
+	pthread_mutex_init(&queue_lock, NULL);
 
 	/* If we can't start the TCP listeners, decline to load */
 	if (smtp_enabled && bbs_make_tcp_socket(&smtp_socket, smtp_port)) {
@@ -2007,6 +2080,7 @@ static int unload_module(void)
 	}
 	SPF_server_free(spf_server);
 	stringlist_empty(&blacklist);
+	pthread_mutex_destroy(&queue_lock);
 	return 0;
 }
 

@@ -116,6 +116,7 @@ int bbs_make_tcp_socket(int *sock, int port)
 	res = bind(*sock, (struct sockaddr *)&sinaddr, sizeof(sinaddr));
 	if (res) {
 		if (errno == EADDRINUSE) {
+			int i;
 			/* Don't do this by default.
 			 * If somehow multiple instances of the BBS are running,
 			 * then weird things can happen as a result of multiple BBS processes
@@ -129,22 +130,30 @@ int bbs_make_tcp_socket(int *sock, int port)
 			 * reuse the port, but make some noise about this just in case. */
 			bbs_warning("Port %d was already in use, retrying with reuse\n", port);
 
-			/* We can't reuse the original socket after bind fails, make a new one. */
-			close(*sock);
-			*sock = socket(AF_INET, SOCK_STREAM, 0);
-			if (*sock < 0) {
-				bbs_error("Unable to recreate TCP socket: %s\n", strerror(errno));
-				return -1;
+			/* Retry if needed, since just doing it once can also fail? */
+			for (i = 0; errno == EADDRINUSE && i < 20; i++) {
+				/* We can't reuse the original socket after bind fails, make a new one. */
+				close(*sock);
+				*sock = socket(AF_INET, SOCK_STREAM, 0);
+				if (*sock < 0) {
+					bbs_error("Unable to recreate TCP socket: %s\n", strerror(errno));
+					return -1;
+				}
+				if (setsockopt(*sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
+					bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
+					return -1;
+				}
+				if (setsockopt(*sock, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(int)) < 0) {
+					bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
+					return -1;
+				}
+				res = bind(*sock, (struct sockaddr *)&sinaddr, sizeof(sinaddr));
+				if (!res) {
+					break;
+				}
+				usleep(250000);
+				bbs_debug(5, "Retrying binding to port %d (attempt #%d)\n", port, i + 2);
 			}
-			if (setsockopt(*sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
-				bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
-				return -1;
-			}
-			if (setsockopt(*sock, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(int)) < 0) {
-				bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
-				return -1;
-			}
-			res = bind(*sock, (struct sockaddr *)&sinaddr, sizeof(sinaddr));
 		}
 		if (res) {
 			bbs_error("Unable to bind TCP socket to port %d: %s\n", port, strerror(errno));
