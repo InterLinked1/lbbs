@@ -142,6 +142,14 @@ int bbs_event_dispatch(struct bbs_node *node, enum bbs_event_type type)
 		case EVENT_STARTUP:
 		case EVENT_SHUTDOWN:
 			break;
+		case EVENT_USER_REGISTRATION:
+		case EVENT_USER_LOGIN:
+		case EVENT_USER_LOGOFF:
+		case EVENT_USER_PASSWORD_CHANGE:
+			if (node && node->user) {
+				safe_strncpy(event.username, bbs_username(node->user), sizeof(event.username));
+			}
+			/* Fall through */
 		case EVENT_NODE_SHORT_SESSION:
 		case EVENT_NODE_LOGIN_FAILED:
 			if (!node) {
@@ -149,23 +157,11 @@ int bbs_event_dispatch(struct bbs_node *node, enum bbs_event_type type)
 				return -1;
 			}
 			event.nodenum = node->id;
-			/* Copy over some of the useful node/user information. */
-			safe_strncpy(event.protname, node->protname, sizeof(event.protname));
-			safe_strncpy(event.ipaddr, node->ip, sizeof(event.ipaddr));
-			break;
-		case EVENT_USER_REGISTRATION:
-		case EVENT_USER_LOGIN:
-		case EVENT_USER_LOGOFF:
-		case EVENT_USER_PASSWORD_CHANGE:
-			if (!node) {
-				bbs_error("Can't create an event without a node\n");
-				return -1;
+			if (node->user) {
+				event.userid = node->user->id;
 			}
-			event.nodenum = node->id;
-			event.userid = node->user->id;
 			/* Copy over some of the useful node/user information. */
 			safe_strncpy(event.protname, node->protname, sizeof(event.protname));
-			safe_strncpy(event.username, bbs_username(node->user), sizeof(event.username));
 			safe_strncpy(event.ipaddr, node->ip, sizeof(event.ipaddr));
 			break;
 		/* No default, so we'll have to explicitly handle any newly added events. */

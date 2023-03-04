@@ -416,6 +416,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	unsigned int nodeid;
 	int skipjoin;
 	int now;
+	int wasloggedin = 0;
 
 	/* Prevent node from being freed until we release the lock. */
 	bbs_node_lock(node);
@@ -433,6 +434,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 
 	/* Destroy the user */
 	if (node->user) {
+		wasloggedin = 1;
 		bbs_node_logout(node);
 	}
 
@@ -489,7 +491,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 		bbs_debug(3, "Shutdown pending finalization for node %d\n", node->id);
 	}
 
-	if (!shutting_down && now < node->created + 5) {
+	if (!wasloggedin && !shutting_down && now < node->created + 5) {
 		bbs_event_dispatch(node, EVENT_NODE_SHORT_SESSION);
 	}
 }
