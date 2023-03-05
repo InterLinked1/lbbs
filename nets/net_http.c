@@ -234,7 +234,6 @@ static inline int parse_header(struct http_req *req, char *s)
 {
 	char *tmp, *query, *header, *value = s;
 
-	bbs_strterm(s, '\r');
 	header = strsep(&value, ":");
 
 	if (req->method == HTTP_UNDEF) {
@@ -630,6 +629,7 @@ static void http_handler(struct bbs_node *node, int secure)
 #endif
 	int res;
 	char buf[MAX_HTTP_REQUEST_SIZE];
+	struct readline_data rldata;
 	FILE *clientfp;
 	struct http_req req;
 	char fullpath[PATH_MAX];
@@ -658,6 +658,8 @@ static void http_handler(struct bbs_node *node, int secure)
 		bbs_error("fdopen failed: %s\n", strerror(errno));
 		goto cleanup;
 	}
+
+	bbs_readline_init(&rldata, buf, sizeof(buf));
 
 	for (nreq = 0;; nreq++) {
 		FILE *fp;
@@ -694,14 +696,13 @@ static void http_handler(struct bbs_node *node, int secure)
 		req.secure = secure;
 
 		/* Start processing headers... yes, this limits on LF, but the CR should immediately precede it. */
-		while ((fgets(buf, sizeof(buf), clientfp))) {
-#if 0
-			bbs_debug(10, "Got: %s", buf); /* Don't add another LF */
-#endif
-			if (!strcmp(buf, "\r\n")) { /* End of request headers */
+		for (;;) {
+			res = bbs_fd_readline(req.rfd, &rldata, "\r\n", MIN_MS(1));
+			if (s_strlen_zero(buf)) { /* End of request headers */
 				complete = 1;
 				break;
 			}
+			bbs_debug(8, "Parsing header: %s\n", buf);
 			res = parse_header(&req, buf);
 			if (res > 0) {
 				send_response(&req, res);

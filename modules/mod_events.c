@@ -20,6 +20,7 @@
 #include "include/bbs.h"
 
 #include <string.h>
+#include <sys/time.h>
 
 #include "include/module.h"
 #include "include/node.h"
@@ -27,25 +28,33 @@
 #include "include/notify.h"
 #include "include/system.h"
 
-static int last_badnode_time = 0;
 static char last_badnode_ip[64] = "";
+
+static struct timeval last_badnode_time;
 
 static int event_cb(struct bbs_event *event)
 {
-	int now;
+	struct timeval nowtime;
+	unsigned long diff;
 
 	switch (event->type) {
 		case EVENT_NODE_LOGIN_FAILED:
 		case EVENT_NODE_SHORT_SESSION:
-			now = time(NULL);
-#define BAD_CONNECT_THRESHOLD 3
-			/* If we get two bad attempts in a row from the same IP, within 3 seconds, block it.
+#define BAD_CONNECT_THRESHOLD 250000
+			/* If we get two bad attempts in a row from the same IP, within the same second, block it.
 			 * Far from comprehensive, this is mainly to drop garbage traffic, not sophisticated brute force attempts. */
 			if (!strcmp(event->ipaddr, "127.0.0.1")) {
 				return 1; /* Ignore localhost */
 			}
-			if (!last_badnode_time || last_badnode_time < now - BAD_CONNECT_THRESHOLD || strcmp(last_badnode_ip, event->ipaddr)) {
-				last_badnode_time = now;
+			gettimeofday(&nowtime, NULL);
+			diff = (nowtime.tv_sec - last_badnode_time.tv_sec) * 1000000 + nowtime.tv_usec - last_badnode_time.tv_usec;
+			if (diff > BAD_CONNECT_THRESHOLD) {
+				bbs_debug(5, "%lu ms elapsed since last short session\n", diff / 1000);
+				last_badnode_time = nowtime;
+				safe_strncpy(last_badnode_ip, event->ipaddr, sizeof(last_badnode_ip));
+				return 1;
+			} else if (strcmp(last_badnode_ip, event->ipaddr)) {
+				last_badnode_time = nowtime;
 				safe_strncpy(last_badnode_ip, event->ipaddr, sizeof(last_badnode_ip));
 				return 1;
 			} else {
@@ -79,6 +88,7 @@ static int event_cb(struct bbs_event *event)
 
 static int load_module(void)
 {
+	gettimeofday(&last_badnode_time, NULL);
 	return bbs_register_event_consumer(event_cb);
 }
 
