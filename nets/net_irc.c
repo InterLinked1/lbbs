@@ -75,7 +75,6 @@
 #define VALID_CHANNEL_NAME(s) (!strlen_zero(s) && IS_CHANNEL_NAME(s))
 
 /*! \todo include irc.h from LIRC, so we can use macro names for numerics, at least */
-/*! \todo Make MOTD more dynamic? Perhaps read from a file? */
 
 static int irc_port = DEFAULT_IRC_PORT;
 static int ircs_port = DEFAULT_IRCS_PORT;
@@ -93,6 +92,8 @@ static int loadtime = 0;
 static int need_restart = 0;
 
 static char irc_hostname[84];
+static char motd_file[256];
+static char *motdstring = NULL;
 
 static int load_config(void);
 
@@ -2404,14 +2405,48 @@ static int channel_count(void)
 	return c;
 }
 
+static int motd_last_read = 0;
+static pthread_mutex_t motd_lock;
+
 /*! \brief Message of the Day */
 static void motd(struct irc_user *user)
 {
 	send_numeric(user, 375, "- %s Message of the Day -\r\n", irc_hostname);
-	/*! \todo Make this configurable or unique, more interesting in some way... */
 	send_numeric(user, 372, "- This server powered by the Lightweight Bulletin Board System\r\n");
 	send_numeric(user, 372, "- Visit us at %s\r\n", BBS_SOURCE_URL);
-	send_numeric(user, 372, "- Welcome to %s chat\r\n", bbs_name());
+
+	pthread_mutex_lock(&motd_lock);
+	if (!s_strlen_zero(motd_file)) { /* Custom MOTD text */
+		/* Reread the MOTD from disk at most once an hour. */
+		int now = time(NULL);
+		if (!motd_last_read || motd_last_read < now - 3600) {
+			free_if(motdstring);
+			motdstring = bbs_file_to_string(motd_file, 0);
+		}
+		motd_last_read = now;
+		if (!strlen_zero(motdstring)) {
+			/* File could have multiple lines, and have either LF or CR LF line endings,
+			 * and have or not have a newline at the EOF.
+			 * Try to accomodate all of these possibilities. */
+			char motdlines[2048];
+			char *line, *lines = motdlines;
+			safe_strncpy(motdlines, motdstring, sizeof(motdlines));
+			pthread_mutex_unlock(&motd_lock);
+			while ((line = strsep(&lines, "\n"))) {
+				if (strlen_zero(line)) {
+					continue;
+				}
+				bbs_strterm(line, '\r'); /* In case using CR LF */
+				send_numeric(user, 372, "- %s\r\n", line);
+			}
+		} else {
+			pthread_mutex_unlock(&motd_lock);
+			send_numeric(user, 372, "- Welcome to %s chat\r\n", bbs_name());
+		}
+	} else {
+		pthread_mutex_unlock(&motd_lock);
+	}
+
 	send_numeric(user, 376, "End of /MOTD command.\r\n");
 }
 
@@ -3154,6 +3189,9 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "general", "requirechanserv", &require_chanserv);
 	irc_hostname[0] = '\0';
 	bbs_config_val_set_str(cfg, "general", "hostname", irc_hostname, sizeof(irc_hostname));
+	motd_file[0] = '\0';
+	bbs_config_val_set_str(cfg, "general", "motdfile", motd_file, sizeof(motd_file));
+	motd_last_read = 0; /* Force rereading MOTD from disk */
 
 	if (s_strlen_zero(irc_hostname)) {
 		safe_strncpy(irc_hostname, bbs_hostname(), sizeof(irc_hostname)); /* Default to BBS hostname */
@@ -3224,6 +3262,8 @@ static int load_module(void)
 		return -1; /* Nothing is enabled */
 	}
 
+	pthread_mutex_init(&motd_lock, NULL);
+
 	/* If we can't start the TCP listeners, decline to load */
 	if (irc_enabled && bbs_make_tcp_socket(&irc_socket, irc_port)) {
 		return -1;
@@ -3275,6 +3315,8 @@ static int unload_module(void)
 	}
 	destroy_channels();
 	destroy_operators();
+	pthread_mutex_destroy(&motd_lock);
+	free_if(motdstring);
 	return 0;
 }
 

@@ -131,7 +131,7 @@ int bbs_make_tcp_socket(int *sock, int port)
 			bbs_warning("Port %d was already in use, retrying with reuse\n", port);
 
 			/* Retry if needed, since just doing it once can also fail? */
-			for (i = 0; errno == EADDRINUSE && i < 20; i++) {
+			for (i = 0; errno == EADDRINUSE && i < 100; i++) {
 				/* We can't reuse the original socket after bind fails, make a new one. */
 				close(*sock);
 				*sock = socket(AF_INET, SOCK_STREAM, 0);
@@ -151,7 +151,7 @@ int bbs_make_tcp_socket(int *sock, int port)
 				if (!res) {
 					break;
 				}
-				usleep(250000);
+				usleep(1000000);
 				bbs_debug(5, "Retrying binding to port %d (attempt #%d)\n", port, i + 2);
 			}
 		}

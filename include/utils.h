@@ -330,6 +330,14 @@ FILE *bbs_mkftemp(char *template, mode_t mode);
  */
 int bbs_copy_file(int srcfd, int destfd, int start, int bytes);
 
+/*!
+ * \brief Load the contents of a file into a string
+ * \param filename Full path to file
+ * \param maxsize Maximum file size to load into a string (for safety reasons, to avoid allocating enormous amounts of memory). 0 for no limit.
+ * \returns string on success, NULL on failure
+ */
+char *bbs_file_to_string(const char *filename, size_t maxsize);
+
 /*! \brief Get a timeval for the current time */
 struct timeval bbs_tvnow(void);
 

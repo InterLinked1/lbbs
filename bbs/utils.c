@@ -587,6 +587,41 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 	return copied;
 }
 
+char *bbs_file_to_string(const char *filename, size_t maxsize)
+{
+	char *s;
+	FILE *fp;
+	size_t size;
+	size_t res;
+
+	fp = fopen(filename, "r");
+	if (!fp) {
+		bbs_error("fopen(%s) failed: %s\n", filename, strerror(errno));
+		return NULL;
+	}
+
+	fseek(fp, 0, SEEK_END);
+	size = ftell(fp);
+	rewind(fp); /* Be kind, rewind. */
+
+	if (maxsize && size > maxsize) {
+		bbs_warning("File %s is %lu bytes (only wanted max %lu)\n", filename, size, maxsize);
+		return NULL;
+	}
+
+	s = malloc(size + 1); /* Add 1 for NUL */
+	if (!s) {
+		bbs_error("malloc failed\n");
+		return NULL;
+	}
+	res = fread(s, 1, size, fp);
+	if (res != size) {
+		bbs_error("Wanted to read %lu bytes but only read %lu\n", size, res);
+	}
+	s[res] = '\0'; /* Safe */
+	return s;
+}
+
 struct timeval bbs_tvnow(void)
 {
 	struct timeval t;
