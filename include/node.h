@@ -111,6 +111,14 @@ unsigned int bbs_node_mod_count(void *mod);
 unsigned int bbs_max_nodenum(void);
 
 /*!
+ * \brief Get the configured idle timeout in ms
+ * \note Certain scenarios warrant using a custom or specified value,
+ *       but for screens where a user may be expected to idle,
+ *       it is preferable to use this value.
+ */
+unsigned int bbs_idle_ms(void);
+
+/*!
  * \brief Get the maximum number of nodes allowed
  * \retval non-negative max nodes allowed
  */

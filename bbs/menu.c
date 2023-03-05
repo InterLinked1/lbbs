@@ -520,7 +520,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 			}
 			/* Wait for user to choose an option from the menu */
 			bbs_unbuffer(node); /* Unbuffer input and disable echo, so we can read a single-char selection */
-			opt = bbs_tread(node, MIN_MS(3));
+			opt = bbs_tread(node, bbs_idle_ms());
 			if (opt <= 0) {
 				RWLIST_UNLOCK(&menus);
 				return opt;

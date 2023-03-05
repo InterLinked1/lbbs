@@ -28,6 +28,7 @@
 #include <signal.h> /* use pthread_kill */
 #include <math.h> /* use ceil, floor */
 #include <sys/ioctl.h>
+#include <limits.h>
 
 #include "include/node.h"
 #include "include/user.h"
@@ -59,6 +60,7 @@ static unsigned int minuptimedisplayed = 0;
 static int allow_guest = DEFAULT_ALLOW_GUEST;
 static int guest_ask_info = DEFAULT_GUEST_ASK_INFO;
 static unsigned int defaultbps = 0;
+static unsigned int idlemins = 0;
 
 static char bbs_name_buf[32] = "BBS"; /* A simple default so this is never empty. */
 static char bbs_tagline[84] = "";
@@ -75,6 +77,7 @@ static int load_config(void)
 	allow_guest = DEFAULT_ALLOW_GUEST;
 	guest_ask_info = DEFAULT_GUEST_ASK_INFO;
 	defaultbps = 0;
+	idlemins = 30;
 
 	if (!cfg) {
 		return 0;
@@ -90,8 +93,16 @@ static int load_config(void)
 	bbs_config_val_set_str(cfg, "bbs", "exitmsg", bbs_exitmsg, sizeof(bbs_exitmsg));
 	bbs_config_val_set_uint(cfg, "nodes", "maxnodes", &maxnodes);
 	bbs_config_val_set_uint(cfg, "nodes", "defaultbps", &defaultbps);
+	bbs_config_val_set_uint(cfg, "nodes", "idlemins", &idlemins);
 	bbs_config_val_set_true(cfg, "guests", "allow", &allow_guest);
 	bbs_config_val_set_true(cfg, "guests", "askinfo", &guest_ask_info);
+
+	if (!idlemins) {
+		idlemins = INT_MAX; /* If 0, disable */
+	} else {
+		idlemins = idlemins * 60000; /* Convert minutes to milliseconds just once, up front */
+	}
+
 	return 0;
 }
 
@@ -147,6 +158,11 @@ unsigned int bbs_max_nodenum(void)
 	RWLIST_UNLOCK(&nodes);
 
 	return maxnodenum;
+}
+
+unsigned int bbs_idle_ms(void)
+{
+	return idlemins;
 }
 
 unsigned int bbs_maxnodes(void)
