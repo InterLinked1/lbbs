@@ -91,6 +91,7 @@ static int minpriv_relay_out = 0;
 static int queue_outgoing = 1;
 static int send_async = 1;
 static int always_queue = 0;
+static int notify_queue = 0;
 static int require_starttls = 1;
 static int require_starttls_out = 0;
 static int requirefromhelomatch = 1;
@@ -985,7 +986,7 @@ static int return_dead_letter(const char *from, const char *to, const char *msgf
 {
 	int res;
 	char fromaddr[256];
-	char body[256];
+	char body[512];
 	int origfd, attachfd, msgfd;
 	struct mailbox *mbox;
 	char dupaddr[256];
@@ -1078,6 +1079,70 @@ static int return_dead_letter(const char *from, const char *to, const char *msgf
 	return res;
 }
 
+static int notify_stalled_delivery(const char *from, const char *to, const char *error)
+{
+	int res;
+	char fromaddr[256];
+	char body[768];
+	int msgfd;
+	struct mailbox *mbox;
+	char dupaddr[256];
+	char tmpfile[256];
+	char newfile[256];
+	char *user, *domain;
+	int local;
+	FILE *fp;
+
+	safe_strncpy(dupaddr, from, sizeof(dupaddr));
+	if (parse_email_address(dupaddr, NULL, &user, &domain, &local)) {
+		bbs_error("Invalid email address: %s\n", from);
+		return -1;
+	}
+	if (!local) {
+		bbs_error("Address %s is not local (user: %s, host: %s)\n", from, user, domain);
+		return -1;
+	}
+	mbox = mailbox_get(0, user);
+	if (!mbox) {
+		bbs_error("Couldn't find mailbox for '%s'\n", user);
+		return -1;
+	}
+
+	snprintf(fromaddr, sizeof(fromaddr), "mailer-daemon@%s", bbs_hostname()); /* We can be whomever we want to say we are... but let's be a mailer daemon. */
+	snprintf(body, sizeof(body),
+		"This is the mail system at %s.\r\n\r\n"
+		"This is an informational notice that a message you recently sent has not yet been successfully delivered.\r\n\r\n"
+		"It is possible that delivery will succeed on future attempts to deliver this message. "
+		"If all subsequent attempts fail, you will receive a final delivery notice detailing the failure.\r\n\r\n"
+		"Please, do not reply to this message.\r\n\r\n\r\n"
+		"%s: %s\r\n", /* from already has <> */
+		/* The original from is the new to. */
+		bbs_hostname(), to, error);
+
+	/* Deliver to INBOX. */
+	msgfd = maildir_mktemp(mailbox_maildir(mbox), tmpfile, sizeof(tmpfile), newfile);
+	if (msgfd < 0) {
+		return -1;
+	}
+
+	fp = fdopen(msgfd, "w");
+	if (!fp) {
+		bbs_error("fdopen failed: %s\n", strerror(errno));
+		return -1;
+	}
+	res = bbs_make_email_file(fp, "Message Delivery Delayed", body, from, fromaddr, NULL, NULL, NULL, 0);
+	fclose(fp);
+
+	/* Deliver the message. */
+	if (rename(tmpfile, newfile)) {
+		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
+		return -1;
+	} else {
+		mailbox_notify(mbox, newfile);
+	}
+	return res;
+}
+
 static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 {
 	FILE *fp;
@@ -1154,7 +1219,11 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 
 	if (lookup_mx(domain, hostname, sizeof(hostname))) {
 		bbs_error("Recipient domain does not have any MX records: %s\n", domain);
-		goto cleanup; /* XXX Should just treat as undeliverable at this point and return to sender */
+		/* Just treat as undeliverable at this point and return to sender (if no MX records now, probably won't be any the next time we try) */
+		/* Send a delivery failure response, then delete the file. */
+		bbs_warning("Delivery of message %s from %s to %s has failed permanently (no MX records)\n", fullname, realfrom, realto);
+		return_dead_letter(realfrom, realto, fullname, size, metalen, buf);
+		goto cleanup;
 	}
 
 	res = try_send(hostname, realfrom, realto, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
@@ -1181,6 +1250,11 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 		snprintf(newname, sizeof(newname), "%s.%d", tmpbuf, newretries);
 		if (rename(fullname, newname)) {
 			bbs_error("Failed to rename %s to %s\n", fullname, newname);
+		}
+		/* Optionally notify the sender that we haven't successfully delivered this message yet,
+		 * since most people nowadays will assume email is delivered immediately. */
+		if (notify_queue) {
+			notify_stalled_delivery(realfrom, realto, buf);
 		}
 	}
 	return 0; /* Already closed fp */
@@ -1300,7 +1374,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		int fd;
 		char qdir[256];
 		char tmpfile[256], newfile[256];
-		int doasync = send_async;
+		int doasync;
 		if (!queue_outgoing) {
 			return -1;
 		}
@@ -1343,6 +1417,8 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		close(fd);
 #ifdef BUGGY_SEND_IMMEDIATE
 		doasync = 1;
+#else
+		doasync = send_async;
 #endif
 		if (doasync) {
 			pthread_t sendthread;
@@ -1359,11 +1435,10 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 					free(filenamedup);
 				}
 			}
-			bbs_debug(4, "Successfully queued message for delivery\n");
+			bbs_debug(4, "Successfully queued message for immediate delivery\n");
 		} else {
 			bbs_debug(4, "Successfully queued message for delayed delivery\n");
 		}
-		return 0;
 	}
 	return 0;
 }
@@ -1908,6 +1983,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "general", "sendasync", &send_async);
 	bbs_config_val_set_true(cfg, "general", "alwaysqueue", &always_queue);
 	bbs_config_val_set_uint(cfg, "general", "queueinterval", &queue_interval);
+	bbs_config_val_set_true(cfg, "general", "notifyqueue", &notify_queue);
 	bbs_config_val_set_uint(cfg, "general", "maxretries", &max_retries);
 	bbs_config_val_set_uint(cfg, "general", "maxage", &max_age);
 	bbs_config_val_set_uint(cfg, "general", "maxsize", &max_message_size);
