@@ -196,14 +196,45 @@ int bbs_user_priv_from_userid(unsigned int userid)
 	return priv;
 }
 
-void bbs_user_list_destroy(struct bbs_user **userlist)
+static void bbs_user_list_destroy_except(struct bbs_user **userlist, struct bbs_user *except)
 {
 	int index = 0;
 	struct bbs_user *user;
 	while ((user = userlist[index++])) {
-		bbs_user_destroy(user);
+		if (user != except) {
+			bbs_user_destroy(user);
+		}
 	}
 	free(userlist); /* Free the list itself */
+}
+
+void bbs_user_list_destroy(struct bbs_user **userlist)
+{
+	return bbs_user_list_destroy_except(userlist, NULL);
+}
+
+struct bbs_user *bbs_user_from_userid(unsigned int userid)
+{
+	int index = 0;
+	struct bbs_user *retuser = NULL;
+	struct bbs_user *user, **userlist = bbs_user_list();
+	if (!userlist) {
+		return NULL;
+	}
+
+	/*! \todo FIXME This is a horrible implementation (linear instead of constant). Apparently,
+	 * we have no way to get a user by user ID (only by username) right now,
+	 * so that API needs to be added, and then this should be rewritten to use that.
+	 * Horrible kludge for now. */
+	while ((user = userlist[index++])) {
+		if (user->id == userid) {
+			retuser = user;
+			break;
+		}
+	}
+
+	bbs_user_list_destroy_except(userlist, retuser); /* Free all users except the one we want */
+	return retuser;
 }
 
 void bbs_user_destroy(struct bbs_user *user)

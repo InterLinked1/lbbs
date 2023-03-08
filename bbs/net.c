@@ -107,3 +107,20 @@ int bbs_list_network_protocols(int fd)
 
 	return 0;
 }
+
+int bbs_protocol_port(const char *name)
+{
+	int port = 0;
+	struct net_prot *prot;
+
+	RWLIST_RDLOCK(&prots);
+	RWLIST_TRAVERSE(&prots, prot, entry) {
+		if (!strcmp(name, prot->name)) {
+			port = prot->port;
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&prots);
+
+	return port;
+}

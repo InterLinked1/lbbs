@@ -98,6 +98,7 @@ static int requirefromhelomatch = 1;
 static int validatespf = 1;
 static int add_received_msa = 0;
 static int archivelists = 1;
+static int notify_external_firstmsg = 1;
 
 /*! \brief Max message size, in bytes */
 static unsigned int max_message_size = 300000;
@@ -637,7 +638,10 @@ static int lookup_mx(const char *domain, char *buf, size_t len)
 	bbs_debug(8, "NS answer: %s\n", dispbuf);
 
 	/*! \todo BUGBUG This is very rudimentary and needs to be made much more robust.
-	 * For example, this doesn't correctly parse results that don't have an MX record. */
+	 * For example, this doesn't correctly parse results that don't have an MX record.
+	 * We also need to pick the mail server with the LOWEST score,
+	 * and potentially try multiple if the first one fails.
+	 */
 	hostname = dispbuf;
 	while (isspace(*hostname)) {
 		hostname++;
@@ -655,9 +659,7 @@ static int lookup_mx(const char *domain, char *buf, size_t len)
 	return 0;
 }
 
-/* BUGBUG XXX Small delay added because bbs_expect doesn't wait for a full line (terminated by CR LF), so make sure everything we want is ready when we call it */
 #define SMTP_EXPECT(fd, ms, str) \
-	usleep(100000); \
 	res = bbs_expect_line(fd, ms, &rldata, str); \
 	if (res) { bbs_warning("Expected '%s', got: %s\n", str, buf); goto cleanup; } else { bbs_debug(9, "Found '%s': %s\n", str, buf); }
 
@@ -923,6 +925,58 @@ static int prepend_outgoing(struct smtp_session *smtp, const char *recipient, in
 	return prepend_both(smtp, recipient, fd);
 }
 
+static void notify_firstmsg(struct mailbox *mbox)
+{
+	char newdir[256];
+
+	snprintf(newdir, sizeof(newdir), "%s/new", mailbox_maildir(mbox));
+	if (eaccess(newdir, R_OK)) {
+		struct bbs_user *user;
+		const char *email;
+		char popstr[32] = "", imapstr[32] = "";
+		int port_imap, port_pop3;
+		/* Doesn't exist yet. So this is the first message for the user. */
+		/* Send a message to the user's off-net address. */
+		user = bbs_user_from_userid(mailbox_id(mbox));
+		if (!user) {
+			bbs_error("Couldn't find any user for mailbox %d?\n", mailbox_id(mbox));
+			return;
+		}
+		email = bbs_user_email(user);
+		port_imap = bbs_protocol_port("IMAPS");
+		port_pop3 = bbs_protocol_port("POP3S");
+		if (port_imap) {
+			snprintf(imapstr, sizeof(imapstr), "IMAP: %d (TLS)\r\n", port_imap);
+		} else {
+			port_imap = bbs_protocol_port("IMAP");
+			if (port_imap) {
+				snprintf(imapstr, sizeof(imapstr), "IMAP: %d (plaintext)\r\n", port_imap);
+			}
+		}
+		if (port_pop3) {
+			snprintf(popstr, sizeof(popstr), "POP3: %d (TLS)\r\n", port_pop3);
+		} else {
+			port_pop3 = bbs_protocol_port("POP3");
+			if (port_pop3) {
+				snprintf(popstr, sizeof(popstr), "POP3: %d (plaintext)\r\n", port_pop3);
+			}
+		}
+		if (!port_pop3 && !port_imap) {
+			bbs_warning("No message retrieval protocols are currently enabled, user cannot retrieve mail\n");
+			return;
+		}
+		bbs_debug(3, "Notifying %s via %s since this is the first message delivered to this user\n", bbs_username(user), email);
+		bbs_mail_fmt(1, email, NULL, NULL, "You Have Mail",
+			"Hello, %s\r\n\tYou just received your first email in your BBS email account.\r\n"
+			"To check your messages, you can connect your mail client client to %s.\r\n"
+			"== Connection Details: ==\r\n"
+			"%s"
+			"%s"
+			,bbs_username(user), bbs_hostname(), imapstr, popstr);
+		bbs_user_destroy(user);
+	}
+}
+
 static int do_local_delivery(struct smtp_session *smtp, const char *recipient, const char *user, const char *data, unsigned long datalen)
 {
 	struct mailbox *mbox;
@@ -935,6 +989,14 @@ static int do_local_delivery(struct smtp_session *smtp, const char *recipient, c
 		/* We should've caught this before. */
 		bbs_warning("Mailbox '%s' does not exist locally\n", user);
 		return -1;
+	}
+
+	/* .Drafts, .Sent, .Trash etc. are auto-created by mailbox_get if needed.
+	 * However, new, cur, and tmp aren't created until we called mailbox_maildir_init.
+	 * So if they don't exist right now, this is a mailbox whose maildir we just created.
+	 * In other words, this is the first message this user has ever received. */
+	if (notify_external_firstmsg) {
+		notify_firstmsg(mbox);
 	}
 
 	/* No need to get a mailbox lock, really. */
@@ -1991,6 +2053,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "general", "validatespf", &validatespf);
 	bbs_config_val_set_true(cfg, "general", "addreceivedmsa", &add_received_msa);
 	bbs_config_val_set_true(cfg, "general", "archivelists", &archivelists);
+	bbs_config_val_set_true(cfg, "general", "notifyextfirstmsg", &notify_external_firstmsg);
 
 	bbs_config_val_set_true(cfg, "privs", "relayin", &minpriv_relay_in);
 	bbs_config_val_set_true(cfg, "privs", "relayout", &minpriv_relay_out);
