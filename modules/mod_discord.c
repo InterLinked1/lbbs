@@ -1016,11 +1016,45 @@ static int discord_send(const char *channel, const char *sender, const char *msg
 	return 0;
 }
 
+static void substitute_nicks(char *line, char *buf, size_t len)
+{
+	char *pos = buf;
+	int left = len - 1;
+	char *start = NULL, *c = line;
+
+	/* Need to substitute stuff like <@1234567890> to @jsmith */
+	while (*c) {
+		if (!start && *c == '<' && *(c + 1) == '@' && *(c + 2) && strchr(c + 2, '>')) {
+			start = c + 2;
+			bbs_debug(5, "Found the start of a sub string\n");
+		} else if (start && *c == '>') {
+			struct user *u;
+			unsigned long userid;
+			*c = '\0';
+			userid = atol(start);
+			u = find_user(userid);
+			bbs_debug(5, "Substituted %s (%lu) -> %s\n", start, userid, u ? u->username : "");
+			if (u) {
+				int bytes = snprintf(pos, left, "@%s", u->username);
+				pos += bytes;
+				left -= bytes;
+			}
+			start = NULL;
+		} else if (!start) {
+			*pos++ = *c;
+			left--;
+		}
+		c++;
+	}
+	*pos = '\0';
+}
+
 static void relay_message(struct discord *client, struct chan_pair *cp, const struct discord_message *event)
 {
 	struct discord_user *author;
 	char sendertmp[84];
 	char sender[84];
+	char subline[512];
 	char *dup, *line, *lines;
 
 	author = event->author;
@@ -1040,7 +1074,8 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 		return;
 	}
 	if (!strchr(event->content, '\n')) { /* Avoid unnecessarily allocating memory if we don't have to. */
-		irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, event->content);
+		substitute_nicks(event->content, subline, sizeof(subline));
+		irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, subline);
 		return;
 	}
 	/* event->content could contain multiple lines. We need to relay each of them to IRC separately. */
@@ -1078,7 +1113,8 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 	lines = dup;
 	while ((line = strsep(&lines, "\n"))) {
 		bbs_strterm(line, '\n');
-		irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, line);
+		substitute_nicks(line, subline, sizeof(subline));
+		irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, subline);
 	}
 	free(dup);
 }
