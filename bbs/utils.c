@@ -33,6 +33,7 @@
 
 #include "include/utils.h"
 #include "include/node.h" /* use bbs_fd_poll_read */
+#include "include/user.h"
 #include "include/base64.h"
 
 char *bbs_uuid(void)
@@ -180,6 +181,91 @@ unsigned char *bbs_sasl_decode(const char *s, char **authorization, char **authe
 	*authentication = authentication_id;
 	*passwd = password;
 	return decoded;
+}
+
+int bbs_parse_email_address(char *addr, char **name, char **user, char **host, int *local)
+{
+	char address_buf[256]; /* Our mailbox names are definitely not super long, so using a small buffer is okay. */
+	char *start, *end, *domain;
+
+	if (!name && !user && !host) { /* If we don't want to keep the parsed result, make a stack copy and leave the original intact. */
+		safe_strncpy(address_buf, addr, sizeof(address_buf));
+		addr = address_buf;
+	}
+
+	start = strchr(addr, '<');
+	if (start++ && !strlen_zero(start)) {
+		end = strchr(start, '>');
+		if (!end) {
+			return -1; /* Email address must be enclosed in <> */
+		}
+		*end = '\0'; /* Now start refers to just the portion in the <> */
+	} else {
+		start = addr; /* Not enclosed in <> */
+	}
+
+	domain = strchr(start, '@');
+	if (!domain) {
+		return -1; /* Email address must be enclosed in <> */
+	}
+	domain++;
+
+	if (!user && !host) {
+		return 0; /* We only confirmed that this was a valid address. */
+	}
+
+	if (name) {
+		if (addr != start) {
+			*name = addr;
+		} else {
+			*name = NULL;
+		}
+	}
+	if (user) {
+		if (start > addr) {
+			*(start - 1) = '\0';
+		}
+		*user = start;
+		if (name) {
+			rtrim(*name);
+		}
+	}
+	if (host) {
+		*(domain - 1) = '\0';
+		*host = domain;
+	}
+	if (local) {
+		*local = !strcmp(domain, bbs_hostname());
+	}
+	return 0;
+}
+
+int bbs_user_identity_mismatch(struct bbs_user *user, const char *from)
+{
+	char matchstr[32];
+
+	if (!user) {
+		return -1;
+	}
+
+	ltrim(from);
+	/* Skip name, if present. */
+	while (*from) {
+		if (*from != '<') {
+			from++;
+		} else {
+			from++;
+			break;
+		}
+	}
+
+	snprintf(matchstr, sizeof(matchstr), "%s@%s>", bbs_username(user), bbs_hostname());
+
+	if (strlen_zero(from) || (bbs_user_is_registered(user) && strcasecmp(from, matchstr))) {
+		return 1;
+	}
+
+	return 0;
 }
 
 int bbs_dir_traverse_items(const char *path, int (*on_file)(const char *dir_name, const char *filename, int dir, void *obj), void *obj)

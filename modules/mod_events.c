@@ -76,10 +76,11 @@ static int event_cb(struct bbs_event *event)
 			}
 			return 1;
 		case EVENT_USER_REGISTRATION:
-		/* Relatively speaking, it's a pretty big deal whenever a new user registers.
+			/* Relatively speaking, it's a pretty big deal whenever a new user registers.
 			 * Notify the sysop. */
 			bbs_sysop_email(NULL, "New User Registration", "Greetings, sysop,\r\n\tA new user, %s (#%d), just registered on your BBS from IP %s.",
 				event->username, event->userid, event->ipaddr);
+			/*! \todo Also send the user a new user greeting, to his/her BBS email account? (need to add API to/with net_smtp) */
 			return 1;
 		default:
 			return 0;

@@ -390,6 +390,13 @@ static int user_register(struct bbs_node *node)
 			return 1;
 		}
 
+		/* Users logging in from a TDD can only send uppercase letters, not lowercase.
+		 * So if their password contains lowercase letters, they're screwed.
+		 * We can't just do a case-insensitive comparison since we never store the password anywhere, only the hash.
+		 * Therefore, we must obtain the exact password for authentication,
+		 * and the user must explicitly set a compatible password if TTY/TDD compatibility is desired. */
+		bbs_writef(node, COLOR(COLOR_RED) "If you want to be able to log in from a TTY/TDD, your password should not contain lowercase letters.\n" COLOR_RESET);
+
 		bbs_echo_off(node); /* Don't display password */
 		for (; tries > 0; tries--) { /* Retries here count less than retries of the main loop */
 			NEG_RETURN(bbs_writef(node, "%-*s", REG_QLEN, REG_FMT "Password: "));

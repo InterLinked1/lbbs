@@ -320,63 +320,6 @@ static int handle_auth(struct smtp_session *smtp, char *s)
 	return 0;
 }
 
-static int parse_email_address(char *addr, char **name, char **user, char **host, int *local)
-{
-	char address_buf[256]; /* Our mailbox names are definitely not super long, so using a small buffer is okay. */
-	char *start, *end, *domain;
-
-	if (!name && !user && !host) { /* If we don't want to keep the parsed result, make a stack copy and leave the original intact. */
-		safe_strncpy(address_buf, addr, sizeof(address_buf));
-		addr = address_buf;
-	}
-
-	start = strchr(addr, '<');
-	if (start++ && !strlen_zero(start)) {
-		end = strchr(start, '>');
-		if (!end) {
-			return -1; /* Email address must be enclosed in <> */
-		}
-		*end = '\0'; /* Now start refers to just the portion in the <> */
-	} else {
-		start = addr; /* Not enclosed in <> */
-	}
-
-	domain = strchr(start, '@');
-	if (!domain) {
-		return -1; /* Email address must be enclosed in <> */
-	}
-	domain++;
-
-	if (!user && !host) {
-		return 0; /* We only confirmed that this was a valid address. */
-	}
-
-	if (name) {
-		if (addr != start) {
-			*name = addr;
-		} else {
-			*name = NULL;
-		}
-	}
-	if (user) {
-		if (start > addr) {
-			*(start - 1) = '\0';
-		}
-		*user = start;
-		if (name) {
-			rtrim(*name);
-		}
-	}
-	if (host) {
-		*(domain - 1) = '\0';
-		*host = domain;
-	}
-	if (local) {
-		*local = !strcmp(domain, bbs_hostname());
-	}
-	return 0;
-}
-
 static int test_parse_email(void)
 {
 	int res = -1;
@@ -384,13 +327,13 @@ static int test_parse_email(void)
 	char *name, *user, *domain;
 	int local;
 
-	bbs_test_assert_equals(0, parse_email_address(s, &name, &user, &domain, &local));
+	bbs_test_assert_equals(0, bbs_parse_email_address(s, &name, &user, &domain, &local));
 	bbs_test_assert_str_equals(name, "John Smith");
 	bbs_test_assert_str_equals(user, "test");
 	bbs_test_assert_str_equals(domain, "example.com");
 
 	safe_strncpy(s, "test@example.com", sizeof(s));
-	bbs_test_assert_equals(0, parse_email_address(s, &name, &user, &domain, &local));
+	bbs_test_assert_equals(0, bbs_parse_email_address(s, &name, &user, &domain, &local));
 	bbs_test_assert_equals(1, name == NULL); /* Clunky since bbs_test_assert_equals is only for integer comparisons */
 	bbs_test_assert_str_equals(user, "test");
 	bbs_test_assert_str_equals(domain, "example.com");
@@ -463,7 +406,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 		smtp_reply(smtp, 451, "Local error in processing", "");
 		return 0;
 	}
-	if (parse_email_address(address, NULL, &user, &domain, &local)) {
+	if (bbs_parse_email_address(address, NULL, &user, &domain, &local)) {
 		free(address);
 		smtp_reply(smtp, 501, 5.1.7, "Syntax error in RCPT command"); /* Email address must be enclosed in <> */
 		return 0;
@@ -1063,7 +1006,7 @@ static int return_dead_letter(const char *from, const char *to, const char *msgf
 	 * so we're only responsible for dispatching Delivery Failure notices
 	 * to local users. */
 	safe_strncpy(dupaddr, from, sizeof(dupaddr));
-	if (parse_email_address(dupaddr, NULL, &user, &domain, &local)) {
+	if (bbs_parse_email_address(dupaddr, NULL, &user, &domain, &local)) {
 		bbs_error("Invalid email address: %s\n", from);
 		return -1;
 	}
@@ -1156,7 +1099,7 @@ static int notify_stalled_delivery(const char *from, const char *to, const char 
 	FILE *fp;
 
 	safe_strncpy(dupaddr, from, sizeof(dupaddr));
-	if (parse_email_address(dupaddr, NULL, &user, &domain, &local)) {
+	if (bbs_parse_email_address(dupaddr, NULL, &user, &domain, &local)) {
 		bbs_error("Invalid email address: %s\n", from);
 		return -1;
 	}
@@ -1271,7 +1214,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	}
 	realfrom++;
 	safe_strncpy(todup, realto, sizeof(todup));
-	if (strlen_zero(realfrom) || parse_email_address(todup, NULL, &user, &domain, &local)) {
+	if (strlen_zero(realfrom) || bbs_parse_email_address(todup, NULL, &user, &domain, &local)) {
 		bbs_error("Address parsing error\n");
 		goto cleanup;
 	}
@@ -1591,8 +1534,8 @@ static int do_deliver(struct smtp_session *smtp)
 			smtp_reply(smtp, 550, 5.7.1, "Missing From header");
 			return 0;
 		}
-		/* Must use parse_email_address for sure, since From header could contain a name, not just the address that's in the <> */
-		if (parse_email_address(smtp->fromheaderaddress, NULL, &user, &domain, &local)) {
+		/* Must use bbs_parse_email_address for sure, since From header could contain a name, not just the address that's in the <> */
+		if (bbs_parse_email_address(smtp->fromheaderaddress, NULL, &user, &domain, &local)) {
 			smtp_reply(smtp, 550, 5.7.1, "Malformed From header");
 			return 0;
 		}
@@ -1633,7 +1576,7 @@ static int do_deliver(struct smtp_session *smtp)
 			goto next;
 		}
 		/* We already did this when we got RCPT TO, so hopefully we're all good here. */
-		if (parse_email_address(dup, NULL, &user, &domain, &local)) {
+		if (bbs_parse_email_address(dup, NULL, &user, &domain, &local)) {
 			goto next;
 		}
 		if (local) {

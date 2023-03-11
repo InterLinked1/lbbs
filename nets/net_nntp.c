@@ -441,7 +441,6 @@ static int do_post(struct nntp_session *nntp)
 	char *newsgroup, *newsgroups = NULL;
 	char *dup, *uuid = NULL;
 	int res = -1;
-	const char *from;
 
 	/* Carefully extract just the Newsgroups header, without duplicating the entire message */
 	newsgroups_header = strcasestr(nntp->post, "Newsgroups:");
@@ -466,20 +465,8 @@ static int do_post(struct nntp_session *nntp)
 	if (!nntp->fromheader) {
 		goto cleanup;
 	} else {
-		char matchstr[32];
-		snprintf(matchstr, sizeof(matchstr), "%s@%s>", bbs_username(nntp->node->user), bbs_hostname());
-		from = nntp->fromheader + 5; /* Skip From: */
-		ltrim(from);
-		/* Skip name, if present. */
-		while (*from) {
-			if (*from != '<') {
-				from++;
-			} else {
-				from++;
-				break;
-			}
-		}
-		if (strlen_zero(from) || (bbs_user_is_registered(nntp->node->user) && strcasecmp(from, matchstr))) {
+		const char *from = nntp->fromheader + 5; /* Skip From: */
+		if (bbs_user_identity_mismatch(nntp->node->user, from)) {
 			bbs_warning("Rejected NNTP post by user %d with identity %s\n", nntp->node->user ? nntp->node->user->id : 0, S_IF(from));
 			nntp_send(nntp, 441, "Identity not allowed for posting");
 			goto cleanup2;
