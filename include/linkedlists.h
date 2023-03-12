@@ -353,4 +353,27 @@ struct {								\
 		__elm;													\
 	})
 
+/*!
+ * \brief Removes all the entries from a list and invokes a destructor on each entry
+ * \param head This is a pointer to the list head structure
+ * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * used to link entries of this list together.
+ * \param destructor A destructor function to call on each element (e.g. free)
+ *
+ * This macro is safe to call on an empty list.
+ */
+#define RWLIST_REMOVE_ALL(head, field, destructor) { \
+	typeof((head)) __list_head = head; \
+	typeof(__list_head->first) __list_current; \
+	while ((__list_current = RWLIST_REMOVE_HEAD(head, field))) { \
+		destructor(__list_current); \
+	} \
+}
+
+/*! \brief Same as RWLIST_REMOVE_ALL, but WRLOCK list beforehand and UNLOCK afterwards */
+#define RWLIST_WRLOCK_REMOVE_ALL(head, field, destructor) \
+	RWLIST_WRLOCK(head); \
+	RWLIST_REMOVE_ALL(head, field, destructor); \
+	RWLIST_UNLOCK(head);
+
 #endif /* _LINKEDLISTS_H */

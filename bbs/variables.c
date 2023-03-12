@@ -50,12 +50,7 @@ static inline void bbs_var_destroy(struct bbs_var *var)
 
 void bbs_vars_destroy(struct bbs_vars *vars)
 {
-	struct bbs_var *v;
-	RWLIST_WRLOCK(vars);
-	while ((v = RWLIST_REMOVE_HEAD(vars, entry))) {
-		bbs_var_destroy(v);
-	}
-	RWLIST_UNLOCK(vars);
+	RWLIST_WRLOCK_REMOVE_ALL(vars, entry, bbs_var_destroy);
 }
 
 void bbs_vars_cleanup(void)

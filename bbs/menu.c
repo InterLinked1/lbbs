@@ -70,12 +70,8 @@ static void menuitem_free(struct bbs_menu_item *menuitem)
 
 static void menu_free(struct bbs_menu *menu)
 {
-	struct bbs_menu_item *menuitem;
-
 	bbs_debug(5, "Destroying menu %s\n", menu->name);
-	while ((menuitem = RWLIST_REMOVE_HEAD(&menu->menuitems, entry))) {
-		menuitem_free(menuitem);
-	}
+	RWLIST_REMOVE_ALL(&menu->menuitems, entry, menuitem_free);
 	free_if(menu->title);
 	free_if(menu->subtitle);
 	free_if(menu->display);
@@ -85,13 +81,7 @@ static void menu_free(struct bbs_menu *menu)
 
 void bbs_free_menus(void)
 {
-	struct bbs_menu *menu;
-
-	RWLIST_WRLOCK(&menus);
-	while ((menu = RWLIST_REMOVE_HEAD(&menus, entry))) {
-		menu_free(menu);
-	}
-	RWLIST_UNLOCK(&menus);
+	RWLIST_REMOVE_ALL(&menus, entry, menu_free);
 }
 
 static int menu_item_link(struct bbs_menu *menu, struct bbs_menu_item *menuitem)
@@ -666,9 +656,7 @@ static int load_config(int reload)
 			return -1;
 		}
 		/* Destroy all existing menus */
-		while ((menu = RWLIST_REMOVE_HEAD(&menus, entry))) {
-			menu_free(menu);
-		}
+		RWLIST_REMOVE_ALL(&menus, entry, menu_free);
 	} else {
 		RWLIST_WRLOCK(&menus);
 	}

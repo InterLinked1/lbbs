@@ -311,13 +311,7 @@ static void cached_login_destroy(struct cached_login *l)
 
 void login_cache_cleanup(void)
 {
-	struct cached_login *l;
-
-	RWLIST_WRLOCK(&cached_logins);
-	while ((l = RWLIST_REMOVE_HEAD(&cached_logins, entry))) {
-		cached_login_destroy(l);
-	}
-	RWLIST_UNLOCK(&cached_logins);
+	RWLIST_WRLOCK_REMOVE_ALL(&cached_logins, entry, cached_login_destroy);
 }
 
 /*! \retval 1 if successful, 0 if not found or unsuccessful */

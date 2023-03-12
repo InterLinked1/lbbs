@@ -236,12 +236,8 @@ static void config_keyval_free(struct bbs_keyval *keyval)
 
 static void config_section_free(struct bbs_config_section *section)
 {
-	struct bbs_keyval *keyval;
-
 	/* No need to bother locking individual config sections */
-	while ((keyval = RWLIST_REMOVE_HEAD(&section->keyvals, entry))) {
-		config_keyval_free(keyval);
-	}
+	RWLIST_REMOVE_ALL(&section->keyvals, entry, config_keyval_free);
 	free(section->name);
 	free(section);
 }

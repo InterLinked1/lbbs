@@ -674,13 +674,7 @@ static void destroy_channels(void)
 
 static void destroy_operators(void)
 {
-	struct irc_operator *operator;
-
-	RWLIST_WRLOCK(&operators);
-	while ((operator = RWLIST_REMOVE_HEAD(&operators, entry))) {
-		free(operator);
-	}
-	RWLIST_UNLOCK(&operators);
+	RWLIST_WRLOCK_REMOVE_ALL(&operators, entry, free);
 }
 
 #define channel_broadcast(channel, user, fmt, ...) __channel_broadcast(1, channel, user, 0, fmt, ## __VA_ARGS__)

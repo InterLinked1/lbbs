@@ -574,11 +574,6 @@ static int load_config(void)
 
 static int load_module(void)
 {
-	/* In reality, this should always succeed if we actually get to executing this.
-	 * If the dependency is not satisfied, symbols won't resolve and dlopen will fail.
-	 * It still serves a purpose, because we ensure that the dependency can't be unloaded
-	 * while there are things that are dependent on it.
-	 */
 	if (load_config()) {
 		return -1;
 	}

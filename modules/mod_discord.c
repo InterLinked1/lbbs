@@ -100,41 +100,19 @@ static void free_user(struct user *user)
 	free(user);
 }
 
-static void empty_u64snowflake_list(struct u64snowflake_list *list)
-{
-	struct u64snowflake_entry *e;
-
-	RWLIST_WRLOCK(list);
-	while ((e = RWLIST_REMOVE_HEAD(list, entry))) {
-		free(e);
-	}
-	RWLIST_UNLOCK(list);
-}
-
 static void free_cp(struct chan_pair *cp)
 {
-	empty_u64snowflake_list(&cp->members);
-	empty_u64snowflake_list(&cp->roles);
+	RWLIST_WRLOCK_REMOVE_ALL(&cp->members, entry, free);
+	RWLIST_WRLOCK_REMOVE_ALL(&cp->roles, entry, free);
 	free(cp);
 }
 
 static void list_cleanup(void)
 {
-	struct chan_pair *cp;
-	struct user *u;
-
 	/* Clean up mappings */
-	RWLIST_WRLOCK(&mappings);
-	while ((cp = RWLIST_REMOVE_HEAD(&mappings, entry))) {
-		free_cp(cp);
-	}
-	RWLIST_UNLOCK(&mappings);
+	RWLIST_WRLOCK_REMOVE_ALL(&mappings, entry, free_cp);
 	/* Clean up users */
-	RWLIST_WRLOCK(&users);
-	while ((u = RWLIST_REMOVE_HEAD(&users, entry))) {
-		free_user(u);
-	}
-	RWLIST_UNLOCK(&users);
+	RWLIST_WRLOCK_REMOVE_ALL(&users, entry, free_user);
 }
 
 static int add_pair(u64snowflake guild_id, const char *discord_channel, const char *irc_channel, unsigned int relaysystem, unsigned int multiline)

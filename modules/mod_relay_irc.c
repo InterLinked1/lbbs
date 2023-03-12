@@ -54,14 +54,8 @@ static RWLIST_HEAD_STATIC(mappings, chan_pair);
 
 static void list_cleanup(void)
 {
-	struct chan_pair *cp;
-
 	/* Clean up mappings */
-	RWLIST_WRLOCK(&mappings);
-	while ((cp = RWLIST_REMOVE_HEAD(&mappings, entry))) {
-		free(cp);
-	}
-	RWLIST_UNLOCK(&mappings);
+	RWLIST_WRLOCK_REMOVE_ALL(&mappings, entry, free);
 }
 
 static int add_pair(const char *client1, const char *channel1, const char *client2, const char *channel2, int relaysystem)

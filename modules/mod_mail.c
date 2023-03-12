@@ -118,28 +118,10 @@ static void mailbox_free(struct mailbox *mbox)
 
 static void mailbox_cleanup(void)
 {
-	struct mailbox *mbox;
-	struct alias *alias;
-	struct listserv *l;
-
 	/* Clean up mailboxes */
-	RWLIST_WRLOCK(&mailboxes);
-	while ((mbox = RWLIST_REMOVE_HEAD(&mailboxes, entry))) {
-		mailbox_free(mbox);
-	}
-	RWLIST_UNLOCK(&mailboxes);
-
-	RWLIST_WRLOCK(&aliases);
-	while ((alias = RWLIST_REMOVE_HEAD(&aliases, entry))) {
-		free(alias);
-	}
-	RWLIST_UNLOCK(&aliases);
-
-	RWLIST_WRLOCK(&listservs);
-	while ((l = RWLIST_REMOVE_HEAD(&listservs, entry))) {
-		free(l);
-	}
-	RWLIST_UNLOCK(&listservs);
+	RWLIST_WRLOCK_REMOVE_ALL(&mailboxes, entry, mailbox_free);
+	RWLIST_WRLOCK_REMOVE_ALL(&aliases, entry, free);
+	RWLIST_WRLOCK_REMOVE_ALL(&listservs, entry, free);
 }
 
 /*!
