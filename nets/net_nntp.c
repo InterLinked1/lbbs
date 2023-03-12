@@ -32,6 +32,7 @@
 
 #include "include/tls.h"
 
+#include "include/stringlist.h"
 #include "include/module.h"
 #include "include/config.h"
 #include "include/net.h"
@@ -75,6 +76,13 @@ static pthread_mutex_t nntp_lock;
 static char newsdir[256] = "";
 static char newsgroups_file[sizeof(newsdir) + STRLEN("/newsgroups")] = "";
 
+/* Relay in */
+static int requirerelaytls = 1;
+
+/* Relay out */
+static unsigned int relayfrequency = 3600;
+static unsigned int relaymaxage = 86400;
+
 static int require_login = 1;
 static int require_secure_login = 0;
 static int require_login_posting = 1;
@@ -84,16 +92,22 @@ static unsigned int max_post_size = 100000; /* 100 KB should be plenty */
 #define NNTP_MODE_TRANSIT 0
 #define NNTP_MODE_READER 1
 
+static struct stringlist inpeers;
+static struct stringlist outpeers;
+
 struct nntp_session {
 	int rfd;
 	int wfd;
 	struct bbs_node *node;
 	char *currentgroup;
 	int currentarticle;
+	int nextlastarticle;
 	char grouppath[512];
 	char *user;
 	char *post;
 	char *fromheader;
+	char *articleid;
+	char *rxarticleid;
 	unsigned int postlen;
 	unsigned int mode:1;	/* MODE (0 = transit, 1 = reader) */
 	unsigned int inpost:1;
@@ -105,6 +119,8 @@ struct nntp_session {
 
 static void nntp_destroy(struct nntp_session *nntp)
 {
+	free_if(nntp->rxarticleid);
+	free_if(nntp->articleid);
 	free_if(nntp->fromheader);
 	free_if(nntp->user);
 	free_if(nntp->post);
@@ -188,7 +204,7 @@ static int scan_newsgroups(void)
 		pthread_mutex_unlock(&nntp_lock);
 		return -1;
 	}
-	/* Conduct an ordered traversal of all the directorys in the newsdir. */
+	/* Conduct an ordered traversal of all the directories in the newsdir. */
 	subs = scandir(newsdir, &entries, NULL, alphasort);
 	if (subs < 0) {
 		bbs_error("scandir(%s) failed: %s\n", newsdir, strerror(errno));
@@ -275,6 +291,101 @@ cleanup:
 	}
 	free(entries);
 	return res;
+}
+
+static int on_last(const char *dir_name, const char *filename, struct nntp_session *nntp, int number)
+{
+	UNUSED(dir_name);
+	UNUSED(filename);
+	/* Keep going since each match is higher than the previous one. */
+	if (nntp->currentarticle != number) {
+		nntp->nextlastarticle = number;
+	}
+	return 0;
+}
+
+static int on_next(const char *dir_name, const char *filename, struct nntp_session *nntp, int number)
+{
+	UNUSED(dir_name);
+	UNUSED(filename);
+	/* We go in order, so stop on first match */
+	if (number > nntp->currentarticle) {
+		nntp->nextlastarticle = number;
+		return 1;
+	}
+	return 0;
+}
+
+static int on_find_article(const char *dir_name, const char *filename, struct nntp_session *nntp, int number)
+{
+	const char *msgid = strchr(filename, '_');
+	UNUSED(dir_name);
+	UNUSED(number);
+	if (!msgid) {
+		bbs_error("Invalid filename: %s\n", filename);
+		return -1;
+	}
+	nntp->articleid = strdup(filename); /* This callback should only execute at most once for any traversal */
+	return 1;
+}
+
+/*! \brief Check if any newsgroup(s) contains an article with the specified article ID */
+static int article_id_exists(const char *articleid)
+{
+	DIR *dir, *dir2;
+	struct dirent *entry;
+	char fulldir[512];
+	int exists = 0;
+
+	/* Order of newsgroup traversal doesn't matter.
+	 * In fact, order of traversal within each newsgroup doesn't matter either.
+	 * So use opendir instead of scandir. */
+
+	bbs_debug(3, "Checking if article <%s> already exists\n", articleid);
+	if (*articleid == '<') {
+		bbs_warning("Malformed article ID: %s\n", articleid); /* Bug in calling function */
+	}
+
+	if (!(dir = opendir(newsdir))) {
+		bbs_error("Error opening directory - %s: %s\n", newsdir, strerror(errno));
+		return -1;
+	}
+
+	while ((entry = readdir(dir)) != NULL) {
+		if (entry->d_type != DT_DIR || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		/* Check this directory */
+		snprintf(fulldir, sizeof(fulldir), "%s/%s", newsdir, entry->d_name);
+		dir2 = opendir(fulldir);
+		if (!dir2) {
+			bbs_error("Error opening directory - %s: %s\n", fulldir, strerror(errno));
+			continue;
+		}
+		while ((entry = readdir(dir2)) != NULL) {
+			if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+				continue;
+			}
+			if (strstr(entry->d_name, articleid)) {
+				exists = 1;
+				break;
+			}
+		}
+		closedir(dir2);
+		if (exists) {
+			break;
+		}
+	}
+
+	closedir(dir);
+	return exists;
+}
+
+static char *get_article_id(struct nntp_session *nntp, int number)
+{
+	free_if(nntp->articleid);
+	nntp_traverse2(nntp->grouppath, on_find_article, nntp, number, number);
+	return nntp->articleid;
 }
 
 static int sendfile_full(const char *filepath, int wfd)
@@ -374,6 +485,55 @@ static int on_article(const char *dir_name, const char *filename, struct nntp_se
 	return 1; /* Stop traversal */
 }
 
+static int on_body(const char *dir_name, const char *filename, struct nntp_session *nntp, int number, int msgfilter, const char *msgidfilter)
+{
+	char fullpath[256];
+	char linebuf[1001];
+	const char *msgid;
+	FILE *fp;
+
+	if (msgfilter && number != msgfilter) { /* Filtering by article ID? */
+		return 0;
+	}
+
+	msgid = strchr(filename, '_');
+	if (!msgid++) {
+		bbs_error("Invalid newsgroup article filename: %s\n", filename);
+		return 0;
+	}
+	if (msgidfilter) { /* Message filtering by msgid? */
+		if (strcmp(msgidfilter, msgid)) {
+			return 0;
+		}
+	}
+
+	snprintf(fullpath, sizeof(fullpath), "%s/%s", dir_name, filename);
+
+	/* Read the file until the first CR LF CR LF (end of headers) */
+	fp = fopen(fullpath, "r");
+	if (!fp) {
+		bbs_error("Failed to open %s: %s\n", fullpath, strerror(errno));
+		return -1;
+	}
+	/* Skip headers */
+	while ((fgets(linebuf, sizeof(linebuf), fp))) {
+		/* fgets does store the newline, so line should end in CR LF */
+		if (!strcmp(linebuf, "\r\n")) {
+			break; /* End of headers */
+		}
+	}
+	/* This is the body */
+	nntp_send(nntp, 220, "%d <%s>", number, msgid);
+	/* XXX Easy, but not as efficient as calculating offset and then using sendfile... */
+	while ((fgets(linebuf, sizeof(linebuf), fp))) {
+		dprintf(nntp->wfd, "%s", linebuf);
+	}
+	fclose(fp);
+
+	dprintf(nntp->wfd, ".\r\n"); /* Termination character. */
+	return 1; /* Stop traversal */
+}
+
 static int find_header(FILE *fp, const char *header, char **ptr, char *buf, size_t len)
 {
 	int hdrlen = strlen(header);
@@ -456,31 +616,43 @@ static int do_post(struct nntp_session *nntp)
 	if (!end) {
 		goto cleanup;
 	}
-	newsgroups = strndup(newsgroups_header, end - newsgroups_header);
-	if (!newsgroups) {
-		goto cleanup;
-	}
 
-	/* Check the From header. */
-	if (!nntp->fromheader) {
-		goto cleanup;
-	} else {
-		const char *from = nntp->fromheader + 5; /* Skip From: */
-		if (bbs_user_identity_mismatch(nntp->node->user, from)) {
-			bbs_warning("Rejected NNTP post by user %d with identity %s\n", nntp->node->user ? nntp->node->user->id : 0, S_IF(from));
-			nntp_send(nntp, 441, "Identity not allowed for posting");
-			goto cleanup2;
+	if (nntp->mode == NNTP_MODE_READER) {
+		/* Check the From header. */
+		if (!nntp->fromheader) {
+			goto cleanup;
+		} else {
+			const char *from = nntp->fromheader + 5; /* Skip From: */
+			if (bbs_user_identity_mismatch(nntp->node->user, from)) {
+				bbs_warning("Rejected NNTP post by user %d with identity %s\n", nntp->node->user ? nntp->node->user->id : 0, S_IF(from));
+				nntp_send(nntp, 441, "Identity not allowed for posting");
+				goto cleanup2;
+			}
 		}
-	}
-
-	uuid = bbs_uuid(); /* Use same UUID for all newsgroups */
-	if (!uuid) {
-		goto cleanup;
+		uuid = bbs_uuid(); /* Use same UUID (and by extension, the same Article ID) for all newsgroups */
+		if (!uuid) {
+			goto cleanup;
+		}
+	} else { /* else if TRANSIT, just trust what the other end says (presumably the original server validated the identity). */
+		/* Could be a race condition, maybe we didn't have the article when the client said IHAVE,
+		 * but now we do (possibly from some other server). Check again. */
+		if (article_id_exists(nntp->rxarticleid)) {
+			nntp_send(nntp, 437, "Duplicate; do not resend");
+			return 0;
+		}
+		if (strlen_zero(nntp->rxarticleid)) {
+			bbs_error("Posting article ID is invalid: %s\n", nntp->rxarticleid);
+		}
+		bbs_debug(6, "XXX Have article ID: %s\n", nntp->rxarticleid);
 	}
 
 	/*! \todo On failure, should we keep track of Message ID to prevent duplicates on retries? But we assign the Message ID, so.... */
 	/*! \todo Do we need to inject the header? snprintf(msgid, sizeof(msgid), "Message-ID: <%s@%s>", uuid, bbs_hostname()); */
 
+	newsgroups = strndup(newsgroups_header, end - newsgroups_header);
+	if (!newsgroups) {
+		goto cleanup;
+	}
 	dup = newsgroups;
 	ltrim(dup);
 	while ((newsgroup = strsep(&dup, ","))) {
@@ -491,44 +663,58 @@ static int do_post(struct nntp_session *nntp)
 		int msgno;
 		int fd;
 
-		bbs_debug(5, "Processing newsgroup %s\n", newsgroup);
+		bbs_debug(5, "Processing newsgroup %s (%s)\n", newsgroup, nntp->mode == NNTP_MODE_READER ? "READER" : "TRANSIT");
 		if (build_newsgroup_path(newsgroup, group, sizeof(group))) {
-			bbs_warning("Newsgroup '%s' does not exist\n", newsgroup); /* Try to deliver to any other groups listed */
+			if (nntp->mode == NNTP_MODE_READER) {
+				bbs_warning("Newsgroup '%s' does not exist\n", newsgroup); /* Try to deliver to any other groups listed */
+			} else if (nntp->mode == NNTP_MODE_TRANSIT) {
+				bbs_debug(3, "Newsgroup '%s' does not exist\n", newsgroup); /* Try to deliver to any other groups listed */
+			}
 			continue;
 		}
 
 		/* Atomically assign the new message ID. */
-		pthread_mutex_lock(&nntp_lock);
+		pthread_mutex_lock(&nntp_lock); /* Could really just be a per-newsgroup lock, but we don't have such locks at the moment. */
 		scan_newsgroup(group, &min, &max, &total);
 		msgno = max + 1; /* Assign new message number, for this newsgroup. */
-		pthread_mutex_unlock(&nntp_lock);
-
 		/* The only way this file would already exist is if the client is posting to the same newsgroup twice.
 		 * Ignore any such attempts.
 		 * Check using current max UID since message would have already posted by now. */
-		snprintf(filename, sizeof(filename), "%s/%s/%d_%s@%s", newsdir, newsgroup, msgno - 1, uuid, bbs_hostname());
+		if (nntp->mode == NNTP_MODE_READER) {
+			snprintf(filename, sizeof(filename), "%s/%s/%d_%s@%s", newsdir, newsgroup, msgno - 1, uuid, bbs_hostname());
+		} else {
+			snprintf(filename, sizeof(filename), "%s/%s/%d_%s", newsdir, newsgroup, msgno - 1, nntp->rxarticleid);
+		}
 		if (!eaccess(filename, R_OK)) {
 			bbs_debug(2, "Ignoring duplicate post attempt\n");
+			pthread_mutex_unlock(&nntp_lock);
 			continue;
 		}
-		snprintf(filename, sizeof(filename), "%s/%s/%d_%s@%s", newsdir, newsgroup, msgno, uuid, bbs_hostname());
+		if (nntp->mode == NNTP_MODE_READER) {
+			snprintf(filename, sizeof(filename), "%s/%s/%d_%s@%s", newsdir, newsgroup, msgno, uuid, bbs_hostname());
+		} else {
+			snprintf(filename, sizeof(filename), "%s/%s/%d_%s", newsdir, newsgroup, msgno, nntp->rxarticleid);
+		}
 		fd = open(filename, O_CREAT | O_WRONLY, 0600);
 		if (fd < 0) {
 			bbs_warning("open(%s) failed: %s\n", filename, strerror(errno));
+			pthread_mutex_unlock(&nntp_lock);
 			continue;
 		}
 		bbs_std_write(fd, nntp->post, nntp->postlen);
 		close(fd);
+		pthread_mutex_unlock(&nntp_lock);
 		res = 0;
 		bbs_debug(3, "Posted article %s\n", filename);
 	}
 
 cleanup:
 	if (res) {
-		nntp_send(nntp, 441, "Posting failed");
+		/* Should we instead do permanent error for transit (437), if newsgroup doesn't exist? But what if it's added later? */
+		nntp_send(nntp, nntp->mode == NNTP_MODE_READER ? 441 : 436, "Posting failed");
 	} else {
 		/* Posting succeeded to at least one newsgroup. */
-		nntp_send(nntp, 240, "Article received OK");
+		nntp_send(nntp, nntp->mode == NNTP_MODE_READER ? 240 : 235, "Article received OK");
 		scan_newsgroups(); /* Rebuild the newsgroups file so that LIST responses are accurate. */
 	}
 cleanup2:
@@ -552,6 +738,56 @@ static int parse_min_max(char *s, int *min, int *max, char sep)
 	return 0;
 }
 
+static int sender_match(struct nntp_session *nntp, const char *s)
+{
+	bbs_debug(6, "Checking peer %s/%s against %s\n", nntp->node->ip, bbs_username(nntp->node->user), s);
+	/* Could have:
+	 * user=sysop
+	 * ip=127.0.0.1
+	 * ip=127.0.0.1/32
+	 * host=example.com
+	 */
+	if (!strchr(s, '.')) {
+		/* It's a username */
+		if (bbs_user_is_registered(nntp->node->user) && !strcmp(bbs_username(nntp->node->user), s)) {
+			bbs_debug(5, "Authorized by username match: %s\n", s);
+			return 1;
+		}
+	} else {
+		char ip[256];
+		/* It's an IP address or hostname. */
+		if (strchr(s, '/')) {
+			/* It's a CIDR range. Do a direct comparison. */
+			if (bbs_cidr_match_ipv4(nntp->node->ip, s)) {
+				bbs_debug(5, "Authorized by CIDR match: %s\n", s);
+				return 1;
+			}
+			return 0;
+		}
+		/* Resolve the hostname (if it is one) to an IP, then do a direct comparison. */
+		bbs_resolve_hostname(s, ip, sizeof(ip));
+		if (!strcmp(ip, nntp->node->ip)) {
+			bbs_debug(5, "Authorized by IP match: %s -> %s\n", s, ip);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int sender_authorized(struct nntp_session *nntp)
+{
+	const char *s;
+	struct stringitem *i = NULL;
+	RWLIST_RDLOCK(&inpeers);
+	while ((s = stringlist_next(&inpeers, &i))) {
+		if (sender_match(nntp, s)) {
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&inpeers);
+	return s ? 1 : 0;
+}
+
 #define REQUIRE_GROUP() \
 	if (!nntp->currentgroup) { \
 		nntp_send(nntp, 412, "No newsgroup selected"); \
@@ -569,7 +805,16 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 			nntp->inpost = 0;
 			if (nntp->postfail) {
 				nntp->postfail = 0;
-				nntp_send(nntp, 441, "Posting failed%s", nntp->postlen >= max_post_size ? " (too large)" : "");
+				if (nntp->mode == NNTP_MODE_TRANSIT) {
+					if (nntp->inpostheaders || nntp->postlen >= max_post_size) {
+						/* Permanent error */
+						nntp_send(nntp, 437, "Transfer rejected (%s); do not retry", nntp->inpostheaders ? "article mismatch" : "too large");
+					} else {
+						nntp_send(nntp, 436, "Transfer not possible; try again later"); /* Temporary error */
+					}
+				} else {
+					nntp_send(nntp, 441, "Posting failed%s", nntp->postlen >= max_post_size ? " (too large)" : "");
+				}
 				return 0;
 			}
 			return do_post(nntp);
@@ -586,6 +831,12 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 		if (nntp->inpostheaders && STARTS_WITH(s, "From:")) {
 			free_if(nntp->fromheader);
 			nntp->fromheader = strdup(s);
+		} else if (nntp->inpostheaders && nntp->mode == NNTP_MODE_TRANSIT && STARTS_WITH(s, "Message-ID:")) {
+			/* The article better be the article that the other server said it was in IHAVE */
+			if (!strstr(s, nntp->rxarticleid)) { /* XXX What if it's a substring? */
+				nntp->postfail = 1;
+				return 0;
+			}
 		}
 
 		if (!nntp->post) { /* First line */
@@ -629,6 +880,9 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 		if (!strcasecmp(command, "READER")) {
 			nntp->mode = NNTP_MODE_READER;
 			nntp_send(nntp, 200, "Reader mode, posting permitted");
+		} else if (!strcasecmp(command, "READER")) {
+			nntp->mode = NNTP_MODE_READER;
+			nntp_send(nntp, 200, "Reader mode, posting permitted");
 		} else {
 			bbs_error("Unknown mode: %s\n", command);
 		}
@@ -637,14 +891,17 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 		nntp_send(nntp, 101, "Capability list:");
 		_nntp_send(nntp, "VERSION 2\r\n"); /* Must be first */
 		/* Don't advertise MODE-READER, just READER */
+		if (!nntp->secure) {
+			_nntp_send(nntp, "STARTTLS\r\n");
+		}
 		if (nntp->mode == NNTP_MODE_READER) {
 			_nntp_send(nntp, "READER\r\n");
 			_nntp_send(nntp, "POST\r\n");
-			if (!nntp->secure) {
-				_nntp_send(nntp, "STARTTLS\r\n");
-			}
 			_nntp_send(nntp, "LIST ACTIVE\r\n");
-		} /*! \todo else if transit */
+		} else {
+			_nntp_send(nntp, "IHAVE\r\n");
+			_nntp_send(nntp, "MODE-READER\r\n");
+		}
 		_nntp_send(nntp, "XSECRET\r\n");
 		if ((nntp->secure || !require_secure_login) && !bbs_user_is_registered(nntp->node->user)) {
 			_nntp_send(nntp, "AUTHINFO USER\r\n");
@@ -661,6 +918,39 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 		} else {
 			nntp_send(nntp, 502, "Already using TLS");
 		}
+	} else if (!strcasecmp(command, "DATE")) {
+		char datestr[15];
+		time_t timenow;
+		struct tm nowtime;
+		timenow = time(NULL);
+		gmtime_r(&timenow, &nowtime);
+		strftime(datestr, sizeof(datestr), "%Y%m%d%H%M%S", &nowtime); /* yyyymmddhhmmss */
+		nntp_send(nntp, 111, "%s", datestr);
+	} else if (!strcasecmp(command, "HELP")) {
+		nntp_send(nntp, 100, "Help text follows");
+		/* XXX Could add descriptions too */
+		_nntp_send(nntp, "QUIT\r\n");
+		_nntp_send(nntp, "MODE\r\n");
+		_nntp_send(nntp, "DATE\r\n");
+		_nntp_send(nntp, "HELP\r\n");
+		_nntp_send(nntp, "CAPABILITIES\r\n");
+		_nntp_send(nntp, "STARTTLS\r\n");
+		_nntp_send(nntp, "XSECRET\r\n");
+		_nntp_send(nntp, "AUTHINFO\r\n");
+		_nntp_send(nntp, "USER\r\n");
+		_nntp_send(nntp, "PASS\r\n");
+		_nntp_send(nntp, "SASL\r\n");
+		_nntp_send(nntp, "LIST, LIST.ACTIVE\r\n");
+		_nntp_send(nntp, "GROUP\r\n");
+		_nntp_send(nntp, "XOVER\r\n");
+		_nntp_send(nntp, "HEAD\r\n");
+		_nntp_send(nntp, "ARTICLE\r\n");
+		_nntp_send(nntp, "BODY\r\n");
+		_nntp_send(nntp, "LAST\r\n");
+		_nntp_send(nntp, "NEXT\r\n");
+		_nntp_send(nntp, "POST\r\n");
+		_nntp_send(nntp, "IHAVE\r\n");
+		_nntp_send(nntp, ".\r\n");
 	} else if (!strcasecmp(command, "XSECRET")) {
 		/* XSECRET appears in RFC 3977, in passing, but there is no actual documentation anywhere of it that I can find.
 		 * My newsreader seems to use AUTHINFO instead, so if XSECRET/XENCRYPT are not widely used
@@ -769,7 +1059,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 			nntp_send(nntp, 501, "Unknown AUTHINFO command");
 		}
 	/* Must be authenticated, past this point, if so configured */
-	} else if (require_login && !bbs_user_is_registered(nntp->node->user)) {
+	} else if (nntp->mode == NNTP_MODE_READER && require_login && !bbs_user_is_registered(nntp->node->user)) {
 		nntp_send(nntp, 480, "Must authenticate first");
 	} else if (!strcasecmp(command, "LIST")) {
 		char *keyword, *wildmat; /* wildmat or argument */
@@ -789,7 +1079,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 			bbs_error("Unsupported LIST keyword: %s\n", keyword);
 		}
 		UNUSED(wildmat);
-	} else if (!strcasecmp(command, "GROUP")) {
+	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "GROUP")) {
 		char group[512];
 		int min, max, total;
 		if (build_newsgroup_path(s, group, sizeof(group))) {
@@ -803,49 +1093,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 		scan_newsgroup(group, &min, &max, &total);
 		nntp_send(nntp, 211, "%d %d %d %s", total, min, max, s);
 		nntp->currentarticle = min;
-	} else if (!strcasecmp(command, "HEAD")) {
-		int msgid;
-		REQUIRE_GROUP();
-		REQUIRE_ARGS(s);
-		msgid = atoi(s); /*! \todo BUGBUG If we're filtering by msg id (not article ID), but msg ID begins with a numeric, atoi will not return 0 */
-		if (!msgid) {
-			bbs_strterm(s, '>'); /* Strip <> from msgid */
-			if (*s == '<') {
-				s++;
-			}
-		}
-		if (!nntp_traverse(nntp->grouppath, on_head, nntp, msgid, msgid ? NULL : s)) {
-			nntp_send(nntp, 430, "No Such Article Found");
-			return 0;
-		}
-	} else if (!strcasecmp(command, "ARTICLE")) {
-		int msgid;
-		REQUIRE_GROUP();
-		REQUIRE_ARGS(s);
-		msgid = atoi(s); /*! \todo BUGBUG If we're filtering by msg id (not article ID), but msg ID begins with a numeric, atoi will not return 0 */
-		if (!msgid) {
-			bbs_strterm(s, '>'); /* Strip <> from msgid */
-			if (*s == '<') {
-				s++;
-			}
-		}
-		if (!nntp_traverse(nntp->grouppath, on_article, nntp, msgid, msgid ? NULL : s)) {
-			nntp_send(nntp, 430, "No Such Article Found");
-			return 0;
-		}
-	} else if (!strcasecmp(command, "POST")) {
-		if (require_login_posting && !bbs_user_is_registered(nntp->node->user)) {
-			nntp_send(nntp, 480, "Must authenticate first");
-			return 0;
-		} else if (min_priv_post > nntp->node->user->priv) {
-			nntp_send(nntp, 502, "Insufficient privileges to post");
-			return 0;
-		}
-		/* Group not required, the headers will say groups() to which message should be posted. */
-		nntp_send(nntp, 340, "Input article; end with a period on its own line");
-		nntp->inpost = 1;
-		nntp->inpostheaders = 1;
-	} else if (!strcasecmp(command, "XOVER")) {
+	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "XOVER")) {
 		/* RFC 2980 XOVER */
 		/* Thunderbird-based clients prefer XOVER to HEAD, and will only issue a HEAD if XOVER is not available. */
 		/* XXX For some reason, Thunderbird-based clients bork on HEAD and don't show any body (and don't ask for it),
@@ -867,6 +1115,136 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 		nntp_send(nntp, 224, "Overview information follows");
 		nntp_traverse2(nntp->grouppath, on_xover, nntp, min, max);
 		_nntp_send(nntp, ".\r\n");
+	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "HEAD")) {
+		int msgid;
+		REQUIRE_GROUP();
+		REQUIRE_ARGS(s);
+		msgid = atoi(s); /*! \todo BUGBUG If we're filtering by msg id (not article ID), but msg ID begins with a numeric, atoi will not return 0 */
+		if (!msgid) {
+			bbs_strterm(s, '>'); /* Strip <> from msgid */
+			if (*s == '<') {
+				s++;
+			}
+		}
+		if (!nntp_traverse(nntp->grouppath, on_head, nntp, msgid, msgid ? NULL : s)) {
+			nntp_send(nntp, 430, "No Such Article Found");
+			return 0;
+		}
+	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "ARTICLE")) {
+		int msgid;
+		REQUIRE_GROUP();
+		REQUIRE_ARGS(s);
+		msgid = atoi(s); /*! \todo BUGBUG If we're filtering by msg id (not article ID), but msg ID begins with a numeric, atoi will not return 0 */
+		if (!msgid) {
+			bbs_strterm(s, '>'); /* Strip <> from msgid */
+			if (*s == '<') {
+				s++;
+			}
+		}
+		if (!nntp_traverse(nntp->grouppath, on_article, nntp, msgid, msgid ? NULL : s)) {
+			nntp_send(nntp, 430, "No Such Article Found");
+			return 0;
+		}
+	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "BODY")) {
+		int msgid;
+		REQUIRE_GROUP();
+		REQUIRE_ARGS(s);
+		msgid = atoi(s); /*! \todo BUGBUG If we're filtering by msg id (not article ID), but msg ID begins with a numeric, atoi will not return 0 */
+		if (!msgid) {
+			bbs_strterm(s, '>'); /* Strip <> from msgid */
+			if (*s == '<') {
+				s++;
+			}
+		}
+		if (!nntp_traverse(nntp->grouppath, on_body, nntp, msgid, msgid ? NULL : s)) {
+			nntp_send(nntp, 430, "No Such Article Found");
+			return 0;
+		}
+	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "LAST")) {
+		REQUIRE_GROUP();
+		if (!nntp->currentarticle) {
+			nntp_send(nntp, 420, "Current article number is invalid");
+			return 0;
+		}
+		/* Find the max article number less than nntp->currentarticle, if there is one. */
+		nntp->nextlastarticle = 0;
+		nntp_traverse2(nntp->grouppath, on_last, nntp, 1, nntp->currentarticle - 1);
+		if (nntp->currentarticle == nntp->nextlastarticle) {
+			nntp_send(nntp, 422, "No previous article in group");
+			return 0;
+		}
+		if (!get_article_id(nntp, nntp->nextlastarticle)) {
+			bbs_error("Couldn't find article ID for %s #%d???\n", nntp->currentgroup, nntp->nextlastarticle);
+			nntp_send(nntp, 422, "No previous article in group");
+			return 0;
+		}
+		nntp_send(nntp, 223, "%d %s", nntp->nextlastarticle, nntp->articleid);
+		free_if(nntp->articleid);
+	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "NEXT")) {
+		REQUIRE_GROUP();
+		if (!nntp->currentarticle) {
+			nntp_send(nntp, 420, "Current article number is invalid");
+			return 0;
+		}
+		nntp->nextlastarticle = 0;
+		nntp_traverse2(nntp->grouppath, on_next, nntp, nntp->currentarticle + 1, INT_MAX);
+		if (!nntp->nextlastarticle) {
+			nntp_send(nntp, 421, "No next article in group");
+			return 0;
+		}
+		if (!get_article_id(nntp, nntp->nextlastarticle)) {
+			bbs_error("Couldn't find article ID for %s #%d???\n", nntp->currentgroup, nntp->nextlastarticle);
+			nntp_send(nntp, 421, "No next article in group");
+			return 0;
+		}
+		nntp_send(nntp, 223, "%d %s", nntp->nextlastarticle, nntp->articleid);
+		free_if(nntp->articleid);
+	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "POST")) {
+		if (require_login_posting && !bbs_user_is_registered(nntp->node->user)) {
+			nntp_send(nntp, 480, "Must authenticate first");
+			return 0;
+		} else if (min_priv_post > nntp->node->user->priv) {
+			nntp_send(nntp, 502, "Insufficient privileges to post");
+			return 0;
+		}
+		/* Group not required, the headers will say group(s) to which message should be posted. */
+		nntp_send(nntp, 340, "Input article; end with a period on its own line");
+		nntp->inpost = 1;
+		nntp->inpostheaders = 1;
+	} else if (nntp->mode == NNTP_MODE_TRANSIT && !strcasecmp(command, "IHAVE")) {
+		/* Check if client is authorized to relay us articles. */
+		if (requirerelaytls && !nntp->secure) {
+			nntp_send(nntp, 483, "Secure connection required");
+			return 0;
+		}
+		if (!sender_authorized(nntp)) {
+			bbs_warning("Sender %s/%s unauthorized to send us articles\n", bbs_username(nntp->node->user), nntp->node->ip);
+			nntp_send(nntp, 500, "Not authorized to relay articles");
+			return 0;
+		}
+		/* Group not required, the headers will say group(s) to which message should be posted. */
+		REQUIRE_ARGS(s);
+		/* Strip <> */
+		if (*s == '<') {
+			s++;
+		}
+		bbs_strterm(s, '>')
+		REQUIRE_ARGS(s);
+		/* Check if any message with this ID exists in any newsgroup. */
+		if (article_id_exists(s)) {
+			nntp_send(nntp, 435, "Duplicate");
+			return 0;
+		}
+		free_if(nntp->rxarticleid);
+		nntp->rxarticleid = strdup(s);
+		if (!nntp->rxarticleid) {
+			nntp_send(nntp, 436, "Retry later");
+			return 0;
+		}
+		nntp_send(nntp, 335, "Send it; end with a period on its own line");
+		/* Reuse the POST logic */
+		nntp->inpost = 1;
+		nntp->inpostheaders = 1;
 	} else {
 		/*! \todo add:
 		 * RFC 2980 extensions
@@ -1007,6 +1385,8 @@ static void *nnsp_listener(void *unused)
 static int load_config(void)
 {
 	struct bbs_config *cfg;
+	struct bbs_config_section *section = NULL;
+	struct bbs_keyval *keyval = NULL;
 
 	cfg = bbs_config_load("net_nntp.conf", 1);
 	if (!cfg) {
@@ -1035,11 +1415,40 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "nnsp", "enabled", &nnsp_enabled);
 	bbs_config_val_set_port(cfg, "nnsp", "port", &nnsp_port);
 
+	bbs_config_val_set_true(cfg, "relayin", "requiretls", &requirerelaytls);
+	bbs_debug(3, "Setting: %d\n", requirerelaytls);
+
+	bbs_config_val_set_uint(cfg, "relayout", "frequency", &relayfrequency);
+	bbs_config_val_set_uint(cfg, "relayout", "maxage", &relaymaxage);
+
+	/* If reload without unloading/loading were supported, we'd want to empty the list first. */
+	stringlist_empty(&inpeers);
+	stringlist_empty(&outpeers);
+
+	while ((section = bbs_config_walk(cfg, section))) {
+		if (!strcasecmp(bbs_config_section_name(section), "trusted")) {
+			RWLIST_WRLOCK(&inpeers);
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				/* Internally we don't actually differentiate between host=,ip=,user= when storing config in memory */
+				stringlist_push(&inpeers, bbs_keyval_val(keyval));
+			}
+			RWLIST_UNLOCK(&inpeers);
+		} else if (!strcasecmp(bbs_config_section_name(section), "relayto")) {
+			RWLIST_WRLOCK(&outpeers);
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				stringlist_push(&outpeers, bbs_keyval_val(keyval));
+			}
+			RWLIST_UNLOCK(&outpeers);
+		}
+	}
+
 	return 0;
 }
 
 static int load_module(void)
 {
+	memset(&inpeers, 0, sizeof(inpeers));
+	memset(&outpeers, 0, sizeof(outpeers));
 	if (load_config()) {
 		return -1;
 	}
@@ -1126,6 +1535,8 @@ static int unload_module(void)
 		close_if(nnsp_socket);
 	}
 	pthread_mutex_destroy(&nntp_lock);
+	stringlist_empty(&inpeers);
+	stringlist_empty(&outpeers);
 	return 0;
 }
 

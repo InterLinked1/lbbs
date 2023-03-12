@@ -13,6 +13,8 @@
  *
  */
 
+#include "include/linkedlists.h"
+
 /* Forward declarations */
 struct stringitem;
 RWLIST_HEAD(stringlist, stringitem);
@@ -27,6 +29,16 @@ int stringlist_contains(struct stringlist *list, const char *s);
 
 /*! \brief Remove all items from a stringlist */
 void stringlist_empty(struct stringlist *list);
+
+/*!
+ * \brief Get the next stringlist item in a stringlist without removing it
+ * \param list
+ * \param i Initialize to NULL. The value will contain the next item so this function can be repeatedly called.
+ *        When NULL, this will return NULL again.
+ * \returns Next string, or NULL if end of list reached.
+ * \note The returned string must not be modified, since it remains in the list.
+ */
+const char *stringlist_next(struct stringlist *list, struct stringitem **i);
 
 /*!
  * \brief Pop the most recently added item to a string list

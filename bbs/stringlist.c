@@ -55,6 +55,21 @@ void stringlist_empty(struct stringlist *list)
 	RWLIST_UNLOCK(list);
 }
 
+const char *stringlist_next(struct stringlist *list, struct stringitem **i)
+{
+	struct stringitem *inext;
+	if (!*i) {
+		inext = RWLIST_FIRST(list);
+	} else {
+		inext = RWLIST_NEXT(*i, entry);
+	}
+	*i = inext; /* Set iterator to next item */
+	if (*i) {
+		return inext->s;
+	}
+	return NULL;
+}
+
 char *stringlist_pop(struct stringlist *list)
 {
 	struct stringitem *i;

@@ -493,6 +493,10 @@ static void node_shutdown(struct bbs_node *node, int unique)
 
 	bbs_node_unlock(node);
 
+	if (!wasloggedin && !shutting_down && now < node->created + 5) {
+		bbs_event_dispatch(node, EVENT_NODE_SHORT_SESSION);
+	}
+
 	if (!unique) {
 		/* node is now no longer a valid reference, since bbs_node_handler calls node_free (in another thread) before it quits. */
 		if (skipjoin) {
@@ -505,10 +509,6 @@ static void node_shutdown(struct bbs_node *node, int unique)
 		/* node_thread is what called this, so don't join ourself. Just go ahead and call node_free.
 		 * It is safe to use node here since it will be freed in this thread after we return, no race condition. */
 		bbs_debug(3, "Shutdown pending finalization for node %d\n", node->id);
-	}
-
-	if (!wasloggedin && !shutting_down && now < node->created + 5) {
-		bbs_event_dispatch(node, EVENT_NODE_SHORT_SESSION);
 	}
 }
 

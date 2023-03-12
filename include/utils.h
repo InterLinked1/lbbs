@@ -188,6 +188,15 @@ int bbs_unblock_fd(int fd);
 int bbs_block_fd(int fd);
 
 /*!
+ * \brief Resolve a hostname to an IP address
+ * \param hostname Hostname or IP address
+ * \param[out] buf IP address
+ * \param[out] len Size of buf.
+ * \retval -1 on failure, 0 on success
+ */
+int bbs_resolve_hostname(const char *hostname, char *buf, size_t len);
+
+/*!
  * \brief Open a TCP socket to another server
  * \param hostname DNS hostname of server
  * \param port Destination port number

@@ -1618,7 +1618,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			while ((fgets(linebuf, sizeof(linebuf), fp))) {
 				/* fgets does store the newline, so line should end in CR LF */
 				if (!strcmp(linebuf, "\r\n")) {
-					break; /* End of headers (LF is eaten by fgets) */
+					break; /* End of headers */
 				}
 				/* I hope gcc optimizes this to not use snprintf under the hood */
 				SAFE_FAST_COND_APPEND_NOSPACE(headers, headpos, headlen, 1, "%s", linebuf);
