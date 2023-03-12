@@ -92,6 +92,8 @@ Config files go in `/etc/lbbs` and are as follows:
 
 - `mod_auth_mysql.conf` - MySQL/MariaDB auth provider module config
 
+- `mod_auth_static.conf` - Static user configuration (intended for development and testing)
+
 - `mod_chanserv.conf` - ChanServ IRC service config
 
 - `mod_discord.conf` - Discord/IRC relay configuration

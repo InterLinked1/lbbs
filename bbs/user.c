@@ -77,7 +77,9 @@ int bbs_user_dump(int fd, const char *username, int verbose)
 		bbs_dprintf(fd, "Full Name: %s\n", S_IF(user->fullname));
 	}
 	if (verbose >= 2) {
-		bbs_dprintf(fd, "From: %s, %s %s\r\n", user->city, user->state, verbose >= 10 ? S_IF(user->zip) : "");
+		if (!strlen_zero(user->city) || !strlen_zero(user->state) || !strlen_zero(user->zip)) {
+			bbs_dprintf(fd, "From: %s, %s %s\r\n", S_IF(user->city), S_IF(user->state), verbose >= 10 ? S_IF(user->zip) : "");
+		}
 	}
 	if (user->gender) {
 		bbs_dprintf(fd, "Gender: %c\r\n", user->gender);
@@ -114,7 +116,9 @@ int bbs_users_dump(int fd, int verbose)
 			bbs_dprintf(fd, " %4s %-15s %-15s %3s %s\r\n", "#", "USERNAME", "FULL NAME", "PRV", "LOCATION");
 		}
 		if (verbose >= 10) {
-			bbs_dprintf(fd, " %4d %-15s %-15s %3d %s, %s\r\n", user->id, bbs_username(user), verbose >= 10 ? S_IF(user->fullname) : "", user->priv, S_IF(user->city), S_IF(user->state));
+			bbs_dprintf(fd, " %4d %-15s %-15s %3d %s%c %s\r\n",
+				user->id, bbs_username(user), verbose >= 10 ? S_IF(user->fullname) : "", user->priv,
+				S_IF(user->city), !strlen_zero(user->city) || !strlen_zero(user->state), S_IF(user->state));
 		} else {
 			bbs_dprintf(fd, " %4d %-15s\r\n", user->id, bbs_username(user));
 		}
