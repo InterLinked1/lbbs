@@ -349,11 +349,13 @@ static void check_dependencies(const char *resource_in, unsigned int suppress_lo
 				}
 				continue;
 			}
-			if (!stringlist_contains(&modules_preload, dependency)) {
-				bbs_debug(2, "Marking %s for preload since %s depends on it\n", dependency, resource_in);
-				stringlist_push(&modules_preload, dependency);
-			} else {
-				bbs_debug(4, "Module %s is already marked for preload\n", dependency);
+			if (autoload_setting) {
+				if (!stringlist_contains(&modules_preload, dependency)) {
+					bbs_debug(2, "Marking %s for preload since %s depends on it\n", dependency, resource_in);
+					stringlist_push(&modules_preload, dependency);
+				} else {
+					bbs_debug(4, "Module %s is already marked for preload\n", dependency);
+				}
 			}
 		}
 	}
