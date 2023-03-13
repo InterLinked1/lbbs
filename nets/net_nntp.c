@@ -720,6 +720,8 @@ cleanup:
 cleanup2:
 	free_if(uuid);
 	free_if(newsgroups);
+	free_if(nntp->post);
+	nntp->postlen = 0;
 	return 0;
 }
 
