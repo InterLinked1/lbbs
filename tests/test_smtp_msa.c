@@ -12,7 +12,7 @@
 
 /*! \file
  *
- * \brief SMTP Mail Transfer Agent Tests
+ * \brief SMTP Message Submission Agent Tests
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -38,14 +38,16 @@ static int pre(void)
 	return 0;
 }
 
-static int send_body(int clientfd)
+static int send_body(int clientfd, const char *from)
 {
 	SWRITE(clientfd, "DATA\r\n");
 	CLIENT_EXPECT(clientfd, "354");
 	/* From RFC 5321. The actual content is completely unimportant. No, it doesn't matter at all that the From address doesn't match the envelope.
 	 * Note that messages from localhost are always passed by SPF, so although we don't disable the SPF addon, it's not very meaningful either way for this test. */
 	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:29 -0700" ENDL);
-	SWRITE(clientfd, "From: John Q. Public <JQP@bar.com>" ENDL);
+	SWRITE(clientfd, "From: ");
+	write(clientfd, from, strlen(from));
+	SWRITE(clientfd, ENDL);
 	SWRITE(clientfd, "Subject: The Next Meeting of the Board" ENDL);
 	SWRITE(clientfd, "To: Jones@xyz.com" ENDL);
 	SWRITE(clientfd, ENDL);
@@ -55,9 +57,23 @@ static int send_body(int clientfd)
 	SWRITE(clientfd, "....See you there!" ENDL); /* Test byte stuffing. This should not end message receipt! */
 	SWRITE(clientfd, "John." ENDL);
 	SWRITE(clientfd, "." ENDL); /* EOM */
-	CLIENT_EXPECT(clientfd, "250");
 	return 0;
 
+cleanup:
+	return -1;
+}
+
+static int handshake(int clientfd, int reset)
+{
+	if (reset) {
+		SWRITE(clientfd, "RSET" ENDL);
+		CLIENT_EXPECT(clientfd, "250");
+	} else {
+		CLIENT_EXPECT(clientfd, "220");
+	}
+	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
+	return 0;
 cleanup:
 	return -1;
 }
@@ -67,74 +83,71 @@ static int run(void)
 	int clientfd;
 	int res = -1;
 
-	clientfd = test_make_socket(25);
+	clientfd = test_make_socket(587);
 	if (clientfd < 0) {
 		return -1;
 	}
 
-	CLIENT_EXPECT(clientfd, "220");
-
-	/* Try doing invalid things */
-	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
-	CLIENT_EXPECT(clientfd, "503"); /* HELO/EHLO first */
-	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL_EXTERNAL ">\r\n");
-	CLIENT_EXPECT(clientfd, "503"); /* HELO/EHLO first */
-
-	/* Now stop messing around and start for real */
-	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
-
-	/* Try sending a message that's advertised as too big */
-	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL "> SIZE=500001\r\n");
-	CLIENT_EXPECT(clientfd, "552");
-
-	/* Try sending from a domain that's blacklisted. */
-	SWRITE(clientfd, "MAIL FROM:<test@example.org> SIZE=400000\r\n");
-	CLIENT_EXPECT(clientfd, "554"); /* Blacklisted domain */
-
-	/* Start over */
-	SWRITE(clientfd, "RSET\r\n");
-	CLIENT_EXPECT(clientfd, "250");
-	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
-
-	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
-	CLIENT_EXPECT(clientfd, "250");
-
-	/* Try an external recipient */
-	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL_EXTERNAL ">\r\n");
-	CLIENT_EXPECT(clientfd, "550"); /* Mail relay denied */
-
-	/* Try a local recipient that doesn't exist. */
-	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL_NONEXISTENT ">\r\n");
-	CLIENT_EXPECT(clientfd, "550"); /* No such user */
-
-	/* Try a local recipient (that exists) this time */
-	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL ">\r\n");
-	CLIENT_EXPECT(clientfd, "250");
-
-	/* Send the body */
-	if (send_body(clientfd)) {
+	if (handshake(clientfd, 0)) {
 		goto cleanup;
 	}
+
+	/* Can't send messages without logging in */
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
+	CLIENT_EXPECT(clientfd, "530"); /* Authentication required */
+
+	/* Log in */
+	SWRITE(clientfd, "AUTH PLAIN\r\n");
+	CLIENT_EXPECT(clientfd, "334");
+	SWRITE(clientfd, TEST_SASL "\r\n");
+	CLIENT_EXPECT(clientfd, "235");
+
+	SWRITE(clientfd, "DATA\r\n");
+	CLIENT_EXPECT(clientfd, "503"); /* MAIL first */
+
+	/* Try using identities we're not authorized to */
+
+	/* Unauthorized envelope */
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL2 ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL2 ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	if (send_body(clientfd, TEST_EMAIL)) {
+		goto cleanup;
+	}
+	CLIENT_EXPECT(clientfd, "550");
+
+	/* Unauthorized From: header */
+	if (handshake(clientfd, 1)) {
+		goto cleanup;
+	}
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	if (send_body(clientfd, TEST_EMAIL2)) {
+		goto cleanup;
+	}
+	CLIENT_EXPECT(clientfd, "550");
+
+	/* Verify that the email message does NOT exist on disk. */
+	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", -1); /* Folder not created yet */
+
+	/* All right, let's get it right this time. */
+	if (handshake(clientfd, 1)) {
+		goto cleanup;
+	}
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	if (send_body(clientfd, TEST_EMAIL)) {
+		goto cleanup;
+	}
+	CLIENT_EXPECT(clientfd, "250");
 
 	/* Verify that the email message actually exists on disk. */
 	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 1);
-
-	/* Send another message, but this time to an alias, and with an acceptable size. */
-	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL "> SIZE=100000\r\n"); /* Not the real size but it doesn't matter */
-	CLIENT_EXPECT(clientfd, "250");
-
-	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL_ALIAS ">\r\n");
-	CLIENT_EXPECT(clientfd, "250");
-
-	/* Send the body */
-	if (send_body(clientfd)) {
-		goto cleanup;
-	}
-
-	/* Verify that the email message actually exists on disk. */
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 2);
 
 	res = 0;
 
@@ -143,4 +156,4 @@ cleanup:
 	return res;
 }
 
-TEST_MODULE_INFO_STANDARD("SMTP MTA Tests");
+TEST_MODULE_INFO_STANDARD("SMTP MSA Tests");

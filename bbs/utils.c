@@ -225,6 +225,7 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host, i
 		if (start > addr) {
 			*(start - 1) = '\0';
 		}
+		ltrim(start);
 		*user = start;
 		if (name) {
 			rtrim(*name);

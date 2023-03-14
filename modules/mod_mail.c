@@ -146,7 +146,7 @@ static unsigned int resolve_alias(const char *aliasname)
 	if (alias->userid > 0) {
 		RWLIST_UNLOCK(&aliases);
 		return (unsigned int) alias->userid;
-	} else if (alias->userid == 0) {
+	} else if (alias->userid == -1) { /* Previously confirmed that this alias does not map to anything, skip an unnecessary lookup that will fail */
 		RWLIST_UNLOCK(&aliases);
 		return 0;
 	}
@@ -373,6 +373,9 @@ struct mailbox *mailbox_get(unsigned int userid, const char *name)
 		}
 	}
 
+	if (!mbox && !strlen_zero(name)) {
+		bbs_debug(5, "No user or alias exists for %s\n", name);
+	}
 	return mbox;
 }
 

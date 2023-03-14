@@ -165,7 +165,7 @@ int test_dir_file_count(const char *directory)
 	struct dirent *entry;
 
 	if (!(dir = opendir(directory))) {
-		bbs_error("Error opening directory - %s: %s\n", directory, strerror(errno));
+		bbs_debug(1, "Error opening directory - %s: %s\n", directory, strerror(errno));
 		return -1;
 	}
 	while ((entry = readdir(dir))) {

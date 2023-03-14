@@ -1507,6 +1507,40 @@ static int archive_list_msg(struct smtp_session *smtp)
 	return 0;
 }
 
+static int check_identity(struct smtp_session *smtp, char *s)
+{
+	char *user, *domain;
+	int local;
+	struct mailbox *sendingmbox;
+
+	/* Must use bbs_parse_email_address for sure, since From header could contain a name, not just the address that's in the <> */
+	if (bbs_parse_email_address(s, NULL, &user, &domain, &local)) {
+		smtp_reply(smtp, 550, 5.7.1, "Malformed From header");
+		return -1;
+	}
+	if (!domain) { /* Missing domain altogether, yikes */
+		smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
+		return -1;
+	}
+	if (!local) { /* Wrong domain */
+		smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
+		return -1;
+	}
+	/* Check what mailbox the sending username resolves to.
+	 * One corner case is the catch all address. This user is allowed to send email as any address,
+	 * which makes sense since the catch all is going to be the sysop, if it exists. */
+	sendingmbox = mailbox_get(0, user);
+	if (!sendingmbox || !mailbox_id(sendingmbox) || (mailbox_id(sendingmbox) != (int) smtp->node->user->id)) {
+		/* It resolved to something else (or maybe nothing at all, if NULL). Reject. */
+		bbs_warning("Rejected attempt by %s to send email as %s@%s (%d != %u)\n", bbs_username(smtp->node->user), user, domain,
+			sendingmbox ? mailbox_id(sendingmbox) : 0, smtp->node->user->id);
+		smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
+		return -1;
+	}
+	bbs_debug(5, "User %s authorized to send mail as %s@%s\n", bbs_username(smtp->node->user), user, domain);
+	return 0;
+}
+
 /*! \brief Actually send an email or queue it for delivery */
 static int do_deliver(struct smtp_session *smtp)
 {
@@ -1524,43 +1558,25 @@ static int do_deliver(struct smtp_session *smtp)
 	}
 
 	if (smtp->fromlocal || smtp->msa) {
-		/* Verify the address in the From header is one the sender is authorized to use. */
-		char *user, *domain;
-		int local;
-		struct mailbox *sendingmbox;
+		/* Verify the address used is one the sender is authorized to use. */
+		char fromdup[256];
 
 		bbs_assert(smtp->node->user->id > 0); /* Must be logged in for MSA. */
 
+		/* Check the envelope (MAIL FROM) */
+		safe_strncpy(fromdup, smtp->from, sizeof(fromdup));
+		if (check_identity(smtp, fromdup)) {
+			return 0;
+		}
+		/* Check From: header in email itself */
 		if (!smtp->fromheaderaddress) { /* Didn't get a From address at all. According to RFC 6409, we COULD add a Sender header, but just reject. */
 			smtp_reply(smtp, 550, 5.7.1, "Missing From header");
-			return 0;
+			return -1;
 		}
-		/* Must use bbs_parse_email_address for sure, since From header could contain a name, not just the address that's in the <> */
-		if (bbs_parse_email_address(smtp->fromheaderaddress, NULL, &user, &domain, &local)) {
-			smtp_reply(smtp, 550, 5.7.1, "Malformed From header");
-			return 0;
-		}
-		if (!domain) { /* Missing domain altogether, yikes */
-			smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
-			return 0;
-		}
-		if (!local) { /* Wrong domain */
-			smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
-			return 0;
-		}
-		/* Check what mailbox the sending username resolves to.
-		 * One corner case is the catch all address. This user is allowed to send email as any address,
-		 * which makes sense since the catch all is going to be the sysop, if it exists. */
-		sendingmbox = mailbox_get(0, user);
-		if (!sendingmbox || !mailbox_id(sendingmbox) || (mailbox_id(sendingmbox) != (int) smtp->node->user->id)) {
-			/* It resolved to something else (or maybe nothing at all, if NULL). Reject. */
-			bbs_warning("Rejected attempt by %s to send email as %s@%s (%d != %u)\n", bbs_username(smtp->node->user), user, domain,
-				sendingmbox ? mailbox_id(sendingmbox) : 0, smtp->node->user->id);
-			smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
+		if (check_identity(smtp, smtp->fromheaderaddress)) {
 			return 0;
 		}
 		/* We're good: the From header is either the actual username, or an alias that maps to it. */
-		bbs_debug(5, "User %s authorized to send mail as %s@%s\n", bbs_username(smtp->node->user), user, domain);
 		free_if(smtp->fromheaderaddress);
 	}
 
@@ -1617,6 +1633,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 		int dlen;
 
 		if (!strcmp(s, ".")) {
+			int res;
 			smtp->indata = 0;
 			if (smtp->datafail) {
 				smtp->datafail = 0;
@@ -1629,7 +1646,10 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 				}
 				return 0;
 			}
-			return do_deliver(smtp);
+			res = do_deliver(smtp);
+			free_if(smtp->data);
+			smtp->datalen = 0;
+			return res;
 		} else if (*s == '.') {
 			s++; /* RFC 5321 4.5.2: If first character is a period but there's more data afterwards, skip the first period. */
 		}
@@ -1706,7 +1726,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 			smtp_reply(smtp, 503, 5.5.1, "Bad sequence of commands.");
 		} else if (bbs_user_is_registered(smtp->node->user)) { /* Already authed */
 			smtp_reply(smtp, 503, 5.7.0, "Already authenticated, no identity changes permitted");
-		} else if (!smtp->secure) {
+		} else if (!smtp->secure && require_starttls) {
 			/* Must not offer PLAIN or LOGIN on insecure connections. */
 			smtp_reply(smtp, 504, 5.5.4, "Must issue a STARTTLS command first");
 		} else {
