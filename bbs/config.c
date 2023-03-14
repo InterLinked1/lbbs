@@ -307,7 +307,7 @@ static struct bbs_config *config_parse(const char *name)
 		return NULL;
 	}
 
-	snprintf(fullname, sizeof(fullname), "%s/%s", BBS_CONFIG_DIR, name);
+	snprintf(fullname, sizeof(fullname), "%s/%s", bbs_config_dir(), name);
 	if (access(fullname, R_OK)) {
 		/* Config files are optional, not mandatory, so this is a warning only, not an error. */
 		bbs_warning("Config file %s does not exist\n", fullname);
@@ -450,7 +450,7 @@ struct bbs_config *bbs_config_load(const char *name, int usecache)
 			char fullname[PATH_MAX];
 			struct stat st;
 
-			snprintf(fullname, sizeof(fullname), "%s/%s", BBS_CONFIG_DIR, name);
+			snprintf(fullname, sizeof(fullname), "%s/%s", bbs_config_dir(), name);
 
 			if (stat(fullname, &st)) {
 				bbs_error("stat failed: %s\n", strerror(errno));

@@ -59,7 +59,7 @@ $(MOD_SUBDIR):
 # $(SUBMAKE) --no-builtin-rules -C $@ SUBDIR=$@ all
 	$(SUBMAKE) --no-builtin-rules -C $@ all
 
-external :
+external tests :
 	@echo " +--------- make $@ ---------+"
 	$(SUBMAKE) --no-builtin-rules -C $@ all
 
@@ -67,9 +67,10 @@ clean :
 	$(RM) bbs/$(EXE) bbs/*.i bbs/*.o
 	$(RM) include/*.gch
 	$(SUBMAKE) --no-builtin-rules -C external clean
-	@for i in $(MOD_SUBDIR); do \
+	@for i in $(MOD_SUBDIR) tests; do \
 		$(RM) $${i}/*.i $${i}/*.o $${i}/*.so; \
 	done
+	$(RM) tests/test
 	$(RM) -r doors/lirc
 	$(RM) doxygen.log
 	$(RM) -r doc/html
@@ -155,6 +156,7 @@ helgrind : valgrindver
 .PHONY: bbs
 .PHONY: $(MOD_SUBDIR)
 .PHONY: external
+.PHONY: tests
 .PHONY: scripts
 .PHONY: clean
 .PHONY: install

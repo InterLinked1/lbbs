@@ -62,9 +62,6 @@
 #include "include/tls.h"
 #include "include/event.h"
 
-#define BBS_RUN_DIR DIRCAT("/var/run", BBS_NAME)
-#define BBS_PID_FILE DIRCAT(BBS_RUN_DIR, "bbs.pid")
-
 static char *_argv[256];
 
 /* Immutable */
@@ -75,7 +72,7 @@ int option_nofork = 0;
 int option_debug = 0;
 int option_verbose = 0;
 
-char *rungroup = NULL, *runuser = NULL;
+char *rungroup = NULL, *runuser = NULL, *config_dir = NULL;
 
 static pid_t bbs_pid;
 
@@ -326,6 +323,14 @@ int bbs_starttime(void)
 	return bbs_start_time;
 }
 
+const char *bbs_config_dir(void)
+{
+	if (strlen_zero(config_dir)) {
+		return BBS_CONFIG_DIR;
+	}
+	return config_dir;
+}
+
 int bbs_view_settings(int fd)
 {
 	char timebuf[24];
@@ -343,6 +348,7 @@ int bbs_view_settings(int fd)
 	bbs_dprintf(fd, VIEW_FMT_D, "PID", getpid());
 	bbs_dprintf(fd, VIEW_FMT_D, "Verbose", option_verbose);
 	bbs_dprintf(fd, VIEW_FMT_D, "Debug", option_debug);
+	bbs_dprintf(fd, VIEW_FMT_S, "Config Dir", bbs_config_dir());
 	bbs_dprintf(fd, VIEW_FMT_S, "Run User", S_IF(runuser));
 	bbs_dprintf(fd, VIEW_FMT_S, "Run Group", S_IF(rungroup));
 	bbs_dprintf(fd, VIEW_FMT_S, "Dump Core", BBS_YN(option_dumpcore));
@@ -358,35 +364,63 @@ int bbs_view_settings(int fd)
 
 static void show_help(void)
 {
-/* It is safe to use printf here since we aren't yet multithreaded */
+	/* It is safe to use printf here since we aren't yet multithreaded */
 	printf("  -c        Do not fork daemon\n");
+	printf("  -C        Specify alternate configuration directory\n");
 	printf("  -g        Dump core on crash\n");
 	printf("  -G        Specify run group\n");
 	printf("  -g        Dump core on crash\n");
+	printf("  -h        Display this help and exit\n");
 	printf("  -U        Specify run user\n");
 	printf("  -V        Display version number and exit\n");
 	printf("  -?        Display this help and exit\n");
 }
 
-static int parse_options(int argc, char *argv[])
+static const char *getopt_settings = "?cC:dG:ghU:v";
+
+static int parse_options_pre(int argc, char *argv[])
 {
-	static const char *getopt_settings = "?cdG:gU:v";
 	int c;
 
 	while ((c = getopt(argc, argv, getopt_settings)) != -1) {
 		switch (c) {
+		case 'C':
+			/* Affects what config we load in load_config, so do before that */
+			free_if(config_dir);
+			config_dir = strdup(optarg);
+			break;
+		default:
+			break; /* Ignore for now, everything else handled in parse_options */
+		}
+	}
+	return 0;
+}
+
+static int parse_options(int argc, char *argv[])
+{
+	int c;
+
+	optind = 1; /* Reset from parse_options_pre */
+	while ((c = getopt(argc, argv, getopt_settings)) != -1) {
+		switch (c) {
 		case '?':
+		case 'h':
 			show_help();
 			return -1;
 		case 'c':
 			option_nofork = 1;
 			break;
+		case 'C':
+			break; /* Already processed in parse_options_pre, skip */
 		case 'd':
 			if (option_debug == MAX_DEBUG) {
-				fprintf(stderr, "Maximum verbose level is %d\n", MAX_DEBUG);
-				return -1;
+				fprintf(stderr, "Maximum debug level is %d\n", MAX_DEBUG);
+				if (!config_dir) {
+					return -1;
+				}
+			} else {
+				option_debug++;
 			}
-			option_debug++;
 			break;
 		case 'g':
 			option_dumpcore = 1;
@@ -402,9 +436,12 @@ static int parse_options(int argc, char *argv[])
 		case 'v':
 			if (option_verbose == MAX_VERBOSE) {
 				fprintf(stderr, "Maximum verbose level is %d\n", MAX_VERBOSE);
-				return -1;
+				if (!config_dir) {
+					return -1;
+				}
+			} else {
+				option_verbose++;
 			}
-			option_verbose++;
 			break;
 		}
 	}
@@ -415,6 +452,7 @@ static void free_options(void)
 {
 	free_if(runuser);
 	free_if(rungroup);
+	free_if(config_dir);
 }
 
 /* Whether we successfully started the BBS */
@@ -718,10 +756,12 @@ static int load_config(void)
 	val = bbs_config_val(cfg, "logger", "verbose");
 	if (!strlen_zero(val)) {
 		bbs_set_verbose(atoi(val));
+		fprintf(stderr, "Verbose level set to %d\n", atoi(val));
 	}
 	val = bbs_config_val(cfg, "logger", "debug");
 	if (!strlen_zero(val)) {
 		bbs_set_debug(atoi(val));
+		fprintf(stderr, "Debug level set to %d\n", atoi(val));
 	}
 
 	return 0;
@@ -741,16 +781,18 @@ int main(int argc, char *argv[])
 {
 	long current_pid;
 
-	if (load_config() || parse_options(argc, argv) || run_init(argc, argv) || bbs_log_init(option_nofork)) {
+	if (parse_options_pre(argc, argv) || load_config() || parse_options(argc, argv) || run_init(argc, argv) || bbs_log_init(option_nofork)) {
 		free_options();
 		exit(EXIT_FAILURE);
 	}
 
-	/* If BBS already running, don't start another one. */
-	if ((current_pid = bbs_is_running())) {
-		startup_error("BBS already running on PID %ld. Use rsysop for remote sysop console.\n", current_pid);
-		cleanup();
-		exit(EXIT_FAILURE);
+	if (!config_dir) {
+		/* If BBS already running, don't start another one. */
+		if ((current_pid = bbs_is_running())) {
+			startup_error("BBS already running on PID %ld. Use rsysop for remote sysop console.\n", current_pid);
+			cleanup();
+			exit(EXIT_FAILURE);
+		}
 	}
 
 	/* This needs to remain as high up in the initial start up as possible.
@@ -773,7 +815,7 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	bbs_debug(1, "Starting BBS on PID %d, running as user '%s' and group '%s'\n", bbs_pid, S_IF(runuser), S_IF(rungroup));
+	bbs_debug(1, "Starting BBS on PID %d, running as user '%s' and group '%s', using '%s'\n", bbs_pid, S_IF(runuser), S_IF(rungroup), bbs_config_dir());
 	bbs_start_time = time(NULL);
 
 	/* Seed the random number generators */

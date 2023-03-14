@@ -2,7 +2,7 @@
 
 Welcome! Whether you're new to BBSing or a veteran sysop, LBBS was written to be a highly configurable, modular BBS for developers, sysops, and users alike.
 
-LBBS is a BBS server program written from the ground up to be extensible, modular, and, of course, lightweight. The codebase is relatively small, with relatively few dependencies. It is designed to be easy for sysops to administer, easy for users to use and navigate, and easy for developers to read, understand, maintain, and contribute to the source code.
+LBBS is a BBS server program written from the ground up to be extensible, modular, and, of course, lightweight. The codebase is relatively small (<50K SLOC), with relatively few dependencies. It is designed to be easy for sysops to administer, easy for users to use and navigate, and easy for developers to read, understand, maintain, and contribute to the source code.
 
 Key features and capabilities include:
 
@@ -18,15 +18,15 @@ Key features and capabilities include:
 
 - Automatic menu screen generation and resizing
 
-- Emulated slow baud rate support
-
 - Electronic mail (SMTP, POP3, IMAP4)
 
 - Newsgroups (NNTP)
 
 - Native realtime chat
 
-- Internet Relay Chat client and server, with native IRC and Discord relays
+- Internet Relay Chat client and server (including ChanServ), with native IRC and Discord relays
+
+- Emulated slow baud rate support
 
 - TDD/TTY (telecommunications device for the deaf) support
 
@@ -259,6 +259,8 @@ Most code is documented using doxygen, and each source file describes its purpos
 
 - `terms` - Reserved for possible future terminal modules, not yet used
 
+- `tests` - Test framework for black box testing
+
 LBBS, once installed, uses several system directories:
 
 - `/etc/lbbs/` - config files
@@ -312,7 +314,16 @@ LBBS includes a number of builtin tools to assist with debugging, in addition to
 
 From the sysop console, you can run `/threads` to show running threads, helpful if you suspect threading-related issues. Running `/fds` will show all open file descriptors.
 
+**Tests**
+
 LBBS includes unit tests for functionality that can be tested individually. These can be run using `/runtests` from the sysop console.
+
+A test framework is also included for black box testing of modules. The tests can be compiled using `make tests` and run using `tests/test` from the source directory.
+To run just a specific test, you can use the `-t` option: consult the help (`tests/test -?`) for program usage.
+
+Note that although the tests use isolated configuration and runtime directories, they currently do not log to a separate log file, so you may wish to avoid running the test framework on a production system to avoid any "mingling" of test executions and normal production usage. The test framework will also stop the BBS before running, so it is best run in a dedicated development environment.
+
+The test framework will return 0 if all tests (or the specified test) completed successfully and nonzero if any test(s) failed.
 
 **Dumper Script**
 
@@ -366,6 +377,8 @@ Please follow the coding guidelines used in this repository. They are by and lar
 - All public functions (anything in header files) should be documented using doxygen.
 
 - Add unit tests if possible (modules only).
+
+- For complex functionality, add black box tests in the test framework.
 
 - Avoid C functions that are not multi-thread safe.
 

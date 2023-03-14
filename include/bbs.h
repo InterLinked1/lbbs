@@ -14,7 +14,9 @@
  */
 
 /* BBS compiler options */
+#ifndef BBS_TEST_FRAMEWORK
 #define DEBUG_FD_LEAKS 1
+#endif
 
 /* Compiler directives */
 
@@ -27,9 +29,9 @@
 #include <errno.h>
 #include <assert.h>
 #include <stddef.h> /* use NULL */
+#include <unistd.h>
 #if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
 #include <stdio.h> /* FILE* cannot be forward declared, since it's a typedef */
-#include <unistd.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <fcntl.h>
@@ -52,6 +54,12 @@
 
 /* Used only by config.c */
 #define BBS_CONFIG_DIR "/etc/lbbs"
+
+/* Used only by bbs.c and test/test.c */
+#if defined(BBS_IN_CORE) || defined(TEST_IN_CORE)
+#define BBS_RUN_DIR DIRCAT("/var/run", BBS_NAME)
+#define BBS_PID_FILE DIRCAT(BBS_RUN_DIR, "bbs.pid")
+#endif
 
 /* Global undeclarations */
 /* Forbid usage of unsafe functions */
@@ -117,6 +125,7 @@ int bbs_fd_dump(int fd);
 #endif /* DEBUG_FD_LEAKS */
 
 /* Convenience macros */
+#define QUOTE(...) #__VA_ARGS__
 #define STR(s) #s
 #define XSTR(s) STR(s)
 #define DIRCAT(a, b) a "/" b
@@ -328,6 +337,7 @@ static inline void __attribute__((always_inline)) __bbs_assert(int condition, co
 #define PORT_VALID(p) (p > 0 && p < 65535)
 
 /* BBS modules */
+#if !defined(TEST_IN_CORE) && !defined(TEST_MODULE_SELF_SYM)
 #if defined(BBS_IN_CORE) || (!defined(BBS_MODULE_SELF_SYM) && (defined(STANDALONE) || defined(STANDALONE2) || defined(BBS_NOT_MODULE)))
 #define BBS_MODULE_SELF NULL
 #elif defined(BBS_MODULE_SELF_SYM)
@@ -339,6 +349,7 @@ struct bbs_module *BBS_MODULE_SELF_SYM(void);
 #else
 #error "Externally compiled modules must declare BBS_MODULE_SELF_SYM."
 #endif
+#endif /* TEST_IN_CORE / TEST_MODULE_SELF_SYM */
 
 /*! \brief Whether the BBS is fully started */
 int bbs_is_fully_started(void);
@@ -348,6 +359,9 @@ int bbs_is_shutting_down(void);
 
 /*! \brief Get BBS startup time */
 int bbs_starttime(void);
+
+/*! \brief Get BBS config directory */
+const char *bbs_config_dir(void);
 
 /*! \brief Print current BBS settings */
 int bbs_view_settings(int fd);
