@@ -133,7 +133,7 @@ static int parse_options(int argc, char *argv[])
 			fprintf(stderr, "-d     Increase debug level. At least level 1 need for BBS log output (except debug, controlled by -D, separately)\n");
 			fprintf(stderr, "-D     Increase BBS debug level. Must have at least one -d to get BBS logging output.\n");
 			fprintf(stderr, "-h     Show this help and exit.\n");
-			fprintf(stderr, "-t     Run a specific named test. Do not include the test_ prefix or the .so suffix.\n");
+			fprintf(stderr, "-t     Run a specific named test. Include the test_ prefix but not the .so suffix.\n");
 			return -1;
 		case 'd':
 			if (option_debug == MAX_DEBUG) {
@@ -156,6 +156,27 @@ static int parse_options(int argc, char *argv[])
 		}
 	}
 	return 0;
+}
+
+int test_dir_file_count(const char *directory)
+{
+	int count = 0;
+	DIR *dir;
+	struct dirent *entry;
+
+	if (!(dir = opendir(directory))) {
+		bbs_error("Error opening directory - %s: %s\n", directory, strerror(errno));
+		return -1;
+	}
+	while ((entry = readdir(dir))) {
+		/* Look for any test_*.so files in the directory in which the tests were compiled. */
+		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		count++;
+	}
+	closedir(dir);
+	return count;
 }
 
 int test_make_socket(int port)

@@ -32,3 +32,5 @@ jobs:
           sudo make
           sudo make install
           sudo make samples
+          sudo make tests
+          sudo tests/test -ddddddddd -DDDDDDDDDD

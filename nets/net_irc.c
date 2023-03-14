@@ -2700,7 +2700,7 @@ static void handle_client(struct irc_user *user)
 				}
 				if (capnegotiate == 5 && sasl_failed) {
 					send_numeric(user, 906, "SASL authentication aborted\r\n");
-				} else if (!started && !strcmp(s, "CAP END")) { /* CAP END can be sent at any time during capability negotiation */
+				} else if (!started && !strlen_zero(s) && !strcmp(s, "CAP END")) { /* CAP END can be sent at any time during capability negotiation */
 					capnegotiate = 0; /* Done with CAP */
 					bbs_debug(5, "Capability negotiation cancelled by client\n");
 					if (!started) {

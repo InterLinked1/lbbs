@@ -203,6 +203,7 @@ static struct stringlist blacklist;
 #define REQUIRE_HELO() \
 	if (!smtp->gothelo) { \
 		smtp_reply(smtp, 503, 5.5.1, "EHLO/HELO first."); \
+		return 0; \
 	}
 
 static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
@@ -1753,11 +1754,16 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 			char *sizestring;
 			/* Part of the SIZE extension. For ESMTP, something like SIZE=XXX */
 			sizestring = strchr(s, '=');
-			if (sizestring && !strlen_zero(sizestring + 1)) {
-				unsigned int sizebytes = atoi(sizestring);
-				if (sizebytes >= max_message_size) {
-					smtp_reply(smtp, 552, 5.3.4, "Message too large");
-					return 0;
+			if (sizestring) {
+				sizestring++;
+				if (!strlen_zero(sizestring)) {
+					unsigned int sizebytes = atoi(sizestring);
+					if (sizebytes >= max_message_size) {
+						smtp_reply(smtp, 552, 5.3.4, "Message too large");
+						return 0;
+					}
+				} else {
+					bbs_warning("Malformed MAIL directive: %s\n", s);
 				}
 			}
 		}

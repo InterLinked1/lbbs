@@ -236,7 +236,7 @@ static int nntp_traverse(const char *path, int (*on_file)(const char *dir_name, 
 {
 	struct dirent *entry, **entries;
 	int files, fno = 0;
-	int res, msgno;
+	int res = 0, msgno;
 
 	/* use scandir instead of opendir/readdir, so the listing is ordered */
 	files = scandir(path, &entries, NULL, alphasort);
@@ -643,7 +643,6 @@ static int do_post(struct nntp_session *nntp)
 		if (strlen_zero(nntp->rxarticleid)) {
 			bbs_error("Posting article ID is invalid: %s\n", nntp->rxarticleid);
 		}
-		bbs_debug(6, "XXX Have article ID: %s\n", nntp->rxarticleid);
 	}
 
 	/*! \todo On failure, should we keep track of Message ID to prevent duplicates on retries? But we assign the Message ID, so.... */
@@ -1129,7 +1128,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 			}
 		}
 		if (!nntp_traverse(nntp->grouppath, on_head, nntp, msgid, msgid ? NULL : s)) {
-			nntp_send(nntp, 430, "No Such Article Found");
+			nntp_send(nntp, msgid ? 423 : 430, "No Such Article Found");
 			return 0;
 		}
 	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "ARTICLE")) {
@@ -1144,7 +1143,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 			}
 		}
 		if (!nntp_traverse(nntp->grouppath, on_article, nntp, msgid, msgid ? NULL : s)) {
-			nntp_send(nntp, 430, "No Such Article Found");
+			nntp_send(nntp, msgid ? 423 : 430, "No Such Article Found");
 			return 0;
 		}
 	} else if (nntp->mode == NNTP_MODE_READER && !strcasecmp(command, "BODY")) {
