@@ -2131,6 +2131,7 @@ static int handle_auth(struct imap_session *imap, char *s)
 		}
 		_imap_reply(imap, "%s OK Success\r\n", imap->savedtag); /* Use tag from AUTHENTICATE request */
 		free_if(imap->savedtag);
+		mailbox_maildir_init(mailbox_maildir(imap->mbox)); /* Edge case: initialize if needed (necessary if user is accessing via POP before any messages ever delivered to it via SMTP) */
 		mailbox_watch(imap->mbox);
 	}
 	free_if(imap->savedtag);
@@ -2251,6 +2252,7 @@ static int imap_process(struct imap_session *imap, char *s)
 			return -1; /* Just disconnect, we probably won't be able to proceed anyways. */
 		}
 		imap_reply(imap, "OK Login completed");
+		mailbox_maildir_init(mailbox_maildir(imap->mbox)); /* Edge case: initialize if needed (necessary if user is accessing via POP before any messages ever delivered to it via SMTP) */
 		mailbox_watch(imap->mbox);
 	/* Past this point, must be logged in. */
 	} else if (!bbs_user_is_registered(imap->node->user)) {

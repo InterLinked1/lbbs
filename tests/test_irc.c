@@ -28,7 +28,7 @@
 static int pre(void)
 {
 	/* Don't load mod_chanserv.so since we don't want to muck with any channel registrations on this server */
-	test_add_module("net_irc.so");
+	test_load_module("net_irc.so");
 
 	TEST_ADD_CONFIG("net_irc.conf");
 	return 0;

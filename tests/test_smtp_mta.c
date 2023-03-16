@@ -27,8 +27,8 @@
 
 static int pre(void)
 {
-	test_add_module("mod_mail.so");
-	test_add_module("net_smtp.so");
+	test_preload_module("mod_mail.so");
+	test_load_module("net_smtp.so");
 
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_smtp.conf");

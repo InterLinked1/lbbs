@@ -27,7 +27,7 @@
 
 static int pre(void)
 {
-	test_add_module("net_nntp.so");
+	test_load_module("net_nntp.so");
 
 	TEST_ADD_CONFIG("net_nntp.conf");
 	system("rm -rf /tmp/test_lbbs_newsdir"); /* Yuck */

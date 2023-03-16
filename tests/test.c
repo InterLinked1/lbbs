@@ -419,7 +419,17 @@ static int total_fail = 0;
 
 FILE *modulefp;
 
-int test_add_module(const char *module)
+int test_preload_module(const char *module)
+{
+	if (!modulefp) {
+		bbs_error("Can't call this function now\n");
+		return -1;
+	}
+	fprintf(modulefp, "preload=%s\r\n", module);
+	return 0;
+}
+
+int test_load_module(const char *module)
 {
 	if (!modulefp) {
 		bbs_error("Can't call this function now\n");
@@ -481,7 +491,7 @@ static int run_test(const char *filename)
 				return -1;
 			}
 			fprintf(modulefp, "[general]\r\nautoload=no\r\n\r\n[modules]\r\n");
-			test_add_module("mod_auth_static.so"); /* Always load this module */
+			test_load_module("mod_auth_static.so"); /* Always load this module */
 			res = testmod->pre();
 			fclose(modulefp);
 			/* Set up basic configs that most, if not all, tests will need. */

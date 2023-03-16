@@ -734,6 +734,7 @@ static int gen_newname(struct mailbox *mbox, const char *curfilename, const char
 		bbs_error("Trying to move a message that had no previous UID?\n");
 		return -1;
 	}
+	mailbox_maildir_init(destmaildir); /* Make sure the maildir is ready if it hasn't been used before */
 	return uid;
 }
 

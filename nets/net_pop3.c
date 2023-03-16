@@ -606,6 +606,7 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 			return -1; /* Disconnect immediately */
 		}
 		pop3_ok(pop3, "");
+		mailbox_maildir_init(mailbox_maildir(pop3->mbox)); /* Edge case: initialize if needed (necessary if user is accessing via POP before any messages ever delivered to it via SMTP) */
 		snprintf(pop3->curdir, sizeof(pop3->curdir), "%s/cur", mailbox_maildir(pop3->mbox));
 		snprintf(pop3->newdir, sizeof(pop3->newdir), "%s/new", mailbox_maildir(pop3->mbox));
 		snprintf(pop3->trashmaildir, sizeof(pop3->trashmaildir), "%s/.Trash", mailbox_maildir(pop3->mbox));
@@ -703,7 +704,6 @@ static void handle_client(struct pop3_session *pop3)
 	pop3_ok(pop3, "POP3 Server Ready");
 
 	for (;;) {
-		const char *word2;
 		res = bbs_fd_readline(pop3->rfd, &rldata, "\r\n", MIN_MS(3));
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
@@ -713,8 +713,7 @@ static void handle_client(struct pop3_session *pop3)
 			}
 			break;
 		}
-		word2 = strchr(buf, ' ');
-		if (word2++ && !strlen_zero(word2) && !strncasecmp(word2, "PASS", STRLEN("PASS"))) {
+		if (!strncasecmp(buf, "PASS", STRLEN("PASS"))) {
 			bbs_debug(6, "%p => PASS ******\n", pop3); /* Mask login to avoid logging passwords */
 		} else {
 			bbs_debug(6, "%p => %s\n", pop3, buf);
