@@ -48,6 +48,8 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 
 #define LBBS_BINARY "/usr/sbin/lbbs"
 #define TEST_CONFIG_DIR "/tmp/test_lbbs_etc"
+#define TEST_MAIL_DIR "/tmp/test_lbbs_maildir"
+#define TEST_NEWS_DIR "/tmp/test_lbbs_newsdir"
 
 /* Yuck, but why reinvent the wheel */
 #define TEST_ADD_CONFIG(filename) system("cp " filename " " TEST_CONFIG_DIR)

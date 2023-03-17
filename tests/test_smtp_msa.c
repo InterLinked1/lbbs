@@ -34,7 +34,7 @@ static int pre(void)
 	TEST_ADD_CONFIG("net_smtp.conf");
 
 	system("rm -rf /tmp/test_lbbs_maildir"); /* Purge the contents of the directory, if it existed. */
-	mkdir("/tmp/test_lbbs_maildir", 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
+	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
 	return 0;
 }
 
@@ -131,7 +131,7 @@ static int run(void)
 	CLIENT_EXPECT(clientfd, "550");
 
 	/* Verify that the email message does NOT exist on disk. */
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", -1); /* Folder not created yet */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", -1); /* Folder not created yet */
 
 	/* All right, let's get it right this time. */
 	if (handshake(clientfd, 1)) {
@@ -147,7 +147,7 @@ static int run(void)
 	CLIENT_EXPECT(clientfd, "250");
 
 	/* Verify that the email message actually exists on disk. */
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 1);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1);
 
 	res = 0;
 

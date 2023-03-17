@@ -68,19 +68,11 @@ int bbs_unregister_network_protocol(unsigned int port)
 {
 	struct net_prot *prot;
 
-	RWLIST_WRLOCK(&prots);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&prots, prot, entry) {
-		if (prot->port == port) {
-			RWLIST_REMOVE_CURRENT(entry);
-			free(prot);
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&prots);
-
+	prot = RWLIST_WRLOCK_REMOVE_BY_FIELD(&prots, port, port, entry);
 	if (!prot) {
 		bbs_warning("Failed to unregister protocol on port %u: not found\n", port);
+	} else {
+		free(prot);
 	}
 
 	return 0;

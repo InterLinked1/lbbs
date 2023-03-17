@@ -2449,18 +2449,12 @@ static void imap_handler(struct bbs_node *node, int secure)
 
 	/* Remove from session list */
 	RWLIST_WRLOCK(&sessions);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&sessions, s, entry) {
-		if (s == &imap) {
-			RWLIST_REMOVE_CURRENT(entry);
-			/* imap is stack allocated, don't free it */
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
+	s = RWLIST_REMOVE(&sessions, &imap, entry);
 	RWLIST_UNLOCK(&sessions);
 	if (!s) {
 		bbs_error("Failed to remove IMAP session %p from session list?\n", &imap);
 	}
+	/* imap is stack allocated, don't free it */
 
 #ifdef HAVE_OPENSSL
 	if (secure) { /* implies ssl */

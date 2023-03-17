@@ -290,18 +290,11 @@ int irc_relay_unregister(int (*relay_send)(const char *channel, const char *send
 {
 	struct irc_relay *relay;
 
-	RWLIST_WRLOCK(&relays);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&relays, relay, entry) {
-		if (relay_send == relay->relay_send) {
-			RWLIST_REMOVE_CURRENT(entry);
-			free(relay);
-			bbs_module_unref(BBS_MODULE_SELF); /* And decrement the module ref count back again */
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&relays);
-	if (!relay) {
+	relay = RWLIST_WRLOCK_REMOVE_BY_FIELD(&relays, relay_send, relay_send, entry);
+	if (relay) {
+		free(relay);
+		bbs_module_unref(BBS_MODULE_SELF); /* And decrement the module ref count back again */
+	} else {
 		bbs_error("Relay %p was not previously registered\n", relay_send);
 		return -1;
 	}
@@ -508,19 +501,14 @@ static void user_free(struct irc_user *user)
 static void unlink_user(struct irc_user *user)
 {
 	struct irc_user *u;
+
 	RWLIST_WRLOCK(&users);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&users, u, entry) {
-		if (u == user) {
-			RWLIST_REMOVE_CURRENT(entry);
-			/* Caller will free */
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
+	u = RWLIST_REMOVE(&users, user, entry);
 	RWLIST_UNLOCK(&users);
 	if (!u) {
 		bbs_error("Didn't find user '%s' in list\n", S_IF(user->nickname));
 	}
+	/* Caller will free */
 }
 
 static struct irc_member *get_member(struct irc_user *user, struct irc_channel *channel)

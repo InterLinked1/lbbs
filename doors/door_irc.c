@@ -112,19 +112,11 @@ int bbs_irc_client_msg_callback_unregister(void (*msg_cb)(const char *clientname
 {
 	struct irc_msg_callback *cb;
 
-	RWLIST_WRLOCK(&msg_callbacks);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&msg_callbacks, cb, entry) {
-		bbs_debug(3, "Analyzing callback %p\n", cb->msg_cb);
-		if (msg_cb == cb->msg_cb) {
-			RWLIST_REMOVE_CURRENT(entry);
-			free(cb);
-			bbs_module_unref(BBS_MODULE_SELF); /* And decrement the module ref count back again */
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&msg_callbacks);
-	if (!cb) {
+	cb = RWLIST_WRLOCK_REMOVE_BY_FIELD(&msg_callbacks, msg_cb, msg_cb, entry);
+	if (cb) {
+		free(cb);
+		bbs_module_unref(BBS_MODULE_SELF); /* And decrement the module ref count back again */
+	} else {
 		bbs_error("Callback %p was not previously registered\n", msg_cb);
 		return -1;
 	}
@@ -287,19 +279,14 @@ static void leave_client(struct client *client, struct participant *participant)
 		return;
 	}
 	RWLIST_WRLOCK(&client->participants);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&client->participants, p, entry) {
-		if (p == participant) {
-			RWLIST_REMOVE_CURRENT(entry);
-			/* Close the pipe */
-			close(p->chatpipe[0]);
-			close(p->chatpipe[1]);
-			/* Free */
-			free(p);
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
-	if (!p) {
+	p = RWLIST_REMOVE(&client->participants, participant, entry);
+	if (p) {
+		/* Close the pipe */
+		close(p->chatpipe[0]);
+		close(p->chatpipe[1]);
+		/* Free */
+		free(p);
+	} else {
 		bbs_error("Failed to remove participant %p (node %d) from client %s?\n", participant, participant->node->id, client->name);
 	}
 	RWLIST_UNLOCK(&client->participants);

@@ -196,19 +196,12 @@ int bbs_unregister_auth_provider(int (*provider)(AUTH_PROVIDER_PARAMS))
 {
 	struct auth_provider *p;
 
-	RWLIST_WRLOCK(&providers);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&providers, p, entry) {
-		if (p->execute == provider) {
-			RWLIST_REMOVE_CURRENT(entry);
-			free(p);
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&providers);
+	p = RWLIST_WRLOCK_REMOVE_BY_FIELD(&providers, execute, provider, entry);
 	if (!p) {
 		bbs_error("Failed to unregister auth provider: not currently registered\n");
 		return -1;
+	} else {
+		free(p);
 	}
 	return 0;
 }

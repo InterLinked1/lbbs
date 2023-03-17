@@ -270,18 +270,13 @@ int bbs_config_free(struct bbs_config *c)
 	struct bbs_config *cfg;
 
 	RWLIST_WRLOCK(&configs);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&configs, cfg, entry) {
-		if (cfg == c) {
-			RWLIST_REMOVE_CURRENT(entry);
-			config_free(cfg);
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
+	cfg = RWLIST_REMOVE(&configs, c, entry);
 	RWLIST_UNLOCK(&configs);
 
 	if (!cfg) {
 		bbs_error("Couldn't find config %s\n", c->name);
+	} else {
+		config_free(cfg);
 	}
 
 	return cfg ? 0  : -1;

@@ -68,19 +68,12 @@ int bbs_unregister_event_consumer(int (*callback)(struct bbs_event *event))
 {
 	struct event_consumer *c;
 
-	RWLIST_WRLOCK(&consumers);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&consumers, c, entry) {
-		if (c->callback == callback) {
-			RWLIST_REMOVE_CURRENT(entry);
-			free(c);
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&consumers);
+	c = RWLIST_WRLOCK_REMOVE_BY_FIELD(&consumers, callback, callback, entry);
 	if (!c) {
 		bbs_error("Failed to unregister event consumer: not currently registered\n");
 		return -1;
+	} else {
+		free(c);
 	}
 	return 0;
 }

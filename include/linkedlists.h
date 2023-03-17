@@ -354,6 +354,53 @@ struct {								\
 	})
 
 /*!
+ * \brief Removes a specific entry from a list, by an attribute match.
+ * \param head This is a pointer to the list head structure
+ * \param elm This is a pointer to the entry to be removed.
+ * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * used to link entries of this list together.
+ * \retval elm if elm was in the list.
+ * \retval NULL if elm was not in the list or elm was NULL.
+ * \warning The removed entry is \b not freed.
+ */
+#define RWLIST_REMOVE_BY_FIELD(head, attribute, value, field)	\
+	({															\
+		typeof((head)->first) __elm = NULL;						\
+		if ((head)->first->attribute == value) {			\
+			__elm = (head)->first;							\
+			(head)->first = __elm->field.next;				\
+			__elm->field.next = NULL;						\
+			if ((head)->last == __elm) {					\
+				(head)->last = NULL;						\
+			}												\
+		} else {											\
+			typeof((head)->first) __prev = (head)->first;	\
+			while (__prev && __prev->field.next && __prev->field.next->attribute != value) {	\
+				__prev = __prev->field.next;				\
+			}												\
+			if (__prev) {									\
+				__elm = (__prev)->field.next;					\
+				__prev->field.next = __elm->field.next;		\
+				__elm->field.next = NULL;					\
+				if ((head)->last == __elm) {				\
+					(head)->last = __prev;					\
+				}											\
+			} else {										\
+				__elm = NULL;								\
+			}												\
+		}													\
+		__elm;												\
+	})
+
+#define RWLIST_WRLOCK_REMOVE_BY_FIELD(head, attribute, value, field) ({ \
+	typeof((head)->first) __elm_outer = NULL; \
+	RWLIST_WRLOCK(head); \
+	__elm_outer = RWLIST_REMOVE_BY_FIELD(head, attribute, value, field); \
+	RWLIST_UNLOCK(head); \
+	__elm_outer; \
+})
+
+/*!
  * \brief Removes all the entries from a list and invokes a destructor on each entry
  * \param head This is a pointer to the list head structure
  * \param field This is the name of the field (declared using RWLIST_ENTRY())

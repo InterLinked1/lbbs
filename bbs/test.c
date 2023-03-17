@@ -140,16 +140,7 @@ int bbs_unregister_test(int (*execute)(void))
 {
 	struct bbs_test *test;
 
-	RWLIST_WRLOCK(&tests);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&tests, test, entry) {
-		if (test->execute == execute) {
-			RWLIST_REMOVE_CURRENT(entry);
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&tests);
-
+	test = RWLIST_WRLOCK_REMOVE_BY_FIELD(&tests, execute, execute, entry);
 	if (!test) {
 		bbs_error("Tried to remove test %p that wasn't registered?\n", execute);
 		return -1;

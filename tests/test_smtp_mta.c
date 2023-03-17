@@ -34,7 +34,7 @@ static int pre(void)
 	TEST_ADD_CONFIG("net_smtp.conf");
 
 	system("rm -rf /tmp/test_lbbs_maildir"); /* Purge the contents of the directory, if it existed. */
-	mkdir("/tmp/test_lbbs_maildir", 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
+	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
 	return 0;
 }
 
@@ -119,7 +119,7 @@ static int run(void)
 	}
 
 	/* Verify that the email message actually exists on disk. */
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 1);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1);
 
 	/* Send another message, but this time to an alias, and with an acceptable size. */
 	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL "> SIZE=100000\r\n"); /* Not the real size but it doesn't matter */
@@ -134,7 +134,7 @@ static int run(void)
 	}
 
 	/* Verify that the email message actually exists on disk. */
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 2);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 2);
 
 	/* Ensure mail loops are prevented */
 	SWRITE(clientfd, "RSET" ENDL);

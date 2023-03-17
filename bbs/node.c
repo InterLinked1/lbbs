@@ -538,13 +538,7 @@ int bbs_node_unlink(struct bbs_node *node)
 	struct bbs_node *n;
 
 	RWLIST_WRLOCK(&nodes);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&nodes, n, entry) {
-		if (node == n) {
-			RWLIST_REMOVE_CURRENT(entry);
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
+	n = RWLIST_REMOVE(&nodes, node, entry);
 	RWLIST_UNLOCK(&nodes);
 
 	if (!n) {
@@ -563,21 +557,14 @@ int bbs_node_shutdown_node(unsigned int nodenum)
 	struct bbs_node *n;
 
 	RWLIST_WRLOCK(&nodes);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&nodes, n, entry) {
-		if (n->id != nodenum) {
-			continue;
-		}
-		RWLIST_REMOVE_CURRENT(entry);
+	n = RWLIST_REMOVE_BY_FIELD(&nodes, id, nodenum, entry);
+	if (n) {
 		/* Wait for shutdown of node to finish. */
 		node_shutdown(n, 0);
-		break;
-	}
-	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&nodes);
-
-	if (!n) {
+	} else {
 		bbs_warning("Node %d not found in node list?\n", nodenum);
 	}
+	RWLIST_UNLOCK(&nodes);
 
 	return n ? 0 : -1;
 }
@@ -604,18 +591,14 @@ unsigned int bbs_node_shutdown_mod(void *mod)
 	return count;
 }
 
+#define node_shutdown_nonunique(n) node_shutdown(n, 0)
+
 int bbs_node_shutdown_all(int shutdown)
 {
-	struct bbs_node *n;
-
 	RWLIST_WRLOCK(&nodes);
 	shutting_down = shutdown;
-	while ((n = RWLIST_REMOVE_HEAD(&nodes, entry))) {
-		/* Wait for shutdown of each node to finish. */
-		node_shutdown(n, 0);
-	}
+	RWLIST_REMOVE_ALL(&nodes, entry, node_shutdown_nonunique); /* Wait for shutdown of each node to finish. */
 	RWLIST_UNLOCK(&nodes);
-
 	return 0;
 }
 

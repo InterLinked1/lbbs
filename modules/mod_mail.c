@@ -125,19 +125,12 @@ int smtp_unregister_processor(int (*cb)(struct smtp_msg_process *mproc))
 {
 	struct smtp_processor *proc;
 
-	RWLIST_WRLOCK(&processors);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&processors, proc, entry) {
-		if (proc->cb == cb) {
-			RWLIST_REMOVE_CURRENT(entry);
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&processors);
+	proc = RWLIST_WRLOCK_REMOVE_BY_FIELD(&processors, cb, cb, entry);
 	if (!proc) {
 		bbs_error("Couldn't remove processor %p\n", cb);
 		return -1;
 	}
+	free(proc);
 	return 0;
 }
 

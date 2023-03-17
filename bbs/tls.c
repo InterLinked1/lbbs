@@ -169,17 +169,9 @@ static int ssl_unregister_fd(SSL *ssl)
 {
 	struct ssl_fd *sfd;
 
-	RWLIST_WRLOCK(&sslfds);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&sslfds, sfd, entry) {
-		if (ssl == sfd->ssl) {
-			RWLIST_REMOVE_CURRENT(entry);
-			ssl_fd_free(sfd);
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&sslfds);
+	sfd = RWLIST_WRLOCK_REMOVE_BY_FIELD(&sslfds, ssl, ssl, entry);
 	if (sfd) {
+		ssl_fd_free(sfd);
 		bbs_alertpipe_write(ssl_alert_pipe); /* Notify I/O thread that we removed a fd, although it'll probably detect this anyways. */
 		return 0;
 	}

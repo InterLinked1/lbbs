@@ -218,17 +218,10 @@ static void remove_user(struct discord_user *user)
 {
 	struct user *u;
 
-	RWLIST_WRLOCK(&users);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&users, u, entry) {
-		if (u->user_id == user->id) {
-			RWLIST_REMOVE_CURRENT(entry);
-			free_user(u);
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&users);
-	if (!u) {
+	u = RWLIST_WRLOCK_REMOVE_BY_FIELD(&users, user_id, user->id, entry);
+	if (u) {
+		free_user(u);
+	} else {
 		bbs_error("Failed to remove user %lu (%s#%s)\n", user->id, user->username, user->discriminator);
 	}
 }

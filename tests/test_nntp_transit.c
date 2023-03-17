@@ -31,9 +31,9 @@ static int pre(void)
 
 	TEST_ADD_CONFIG("net_nntp.conf");
 	system("rm -rf /tmp/test_lbbs_newsdir"); /* Yuck */
-	mkdir("/tmp/test_lbbs_newsdir", 0700); /* Make directory if it doesn't exist already */
-	mkdir("/tmp/test_lbbs_newsdir/misc.test", 0700);
-	mkdir("/tmp/test_lbbs_newsdir/misc.empty", 0700);
+	mkdir(TEST_NEWS_DIR, 0700); /* Make directory if it doesn't exist already */
+	mkdir(TEST_NEWS_DIR "/misc.test", 0700);
+	mkdir(TEST_NEWS_DIR "/misc.empty", 0700);
 	return 0;
 }
 

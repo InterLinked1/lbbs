@@ -87,15 +87,10 @@ static void leave_channel(struct channel *channel, struct participant *participa
 		struct channel *c;
 		/* Nobody is left in the channel. Destroy it. */
 		bbs_debug(3, "Nobody is left in channel %s, destroying\n", channel->name);
-		RWLIST_TRAVERSE_SAFE_BEGIN(&channels, c, entry) {
-			if (c == channel) {
-				RWLIST_REMOVE_CURRENT(entry);
-				free(c);
-				break;
-			}
-		}
-		RWLIST_TRAVERSE_SAFE_END;
-		if (!c) {
+		c = RWLIST_REMOVE(&channels, channel, entry);
+		if (c) {
+			free(c);
+		} else {
 			bbs_error("Faled to remove channel %s?\n", channel->name);
 		}
 	}

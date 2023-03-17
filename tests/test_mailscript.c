@@ -37,8 +37,8 @@ static int pre(void)
 	TEST_ADD_CONFIG("net_smtp.conf");
 
 	system("rm -rf /tmp/test_lbbs_maildir"); /* Purge the contents of the directory, if it existed. */
-	mkdir("/tmp/test_lbbs_maildir", 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
-	system("cp .rules /tmp/test_lbbs_maildir");
+	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
+	system("cp .rules " TEST_MAIL_DIR);
 	return 0;
 }
 
@@ -88,8 +88,8 @@ static int run(void)
 	SWRITE(clientfd, "T: " ENDL);
 	SWRITE(clientfd, "." ENDL);
 	CLIENT_EXPECT(clientfd, "250");
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 0);
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/.Junk/new", 1);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 0);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.Junk/new", 1);
 
 	/* Should be moved to .Trash */
 	STANDARD_ENVELOPE_BEGIN();
@@ -98,8 +98,8 @@ static int run(void)
 	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 0);
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/.Trash/new", 1);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 0);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.Trash/new", 1);
 
 	/* Should NOT be moved to .Trash */
 	STANDARD_ENVELOPE_BEGIN();
@@ -108,8 +108,8 @@ static int run(void)
 	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 1);
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/.Trash/new", 1);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.Trash/new", 1);
 
 	/* Should bounce, and not be delivered at all */
 	STANDARD_ENVELOPE_BEGIN();
@@ -118,8 +118,8 @@ static int run(void)
 	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "554");
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 1);
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/.Trash/new", 1);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.Trash/new", 1);
 
 	/* Ditto, but custom bounce message, too */
 	STANDARD_ENVELOPE_BEGIN();
@@ -128,8 +128,8 @@ static int run(void)
 	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "This is a custom bounce message");
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 1);
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/.Trash/new", 1);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.Trash/new", 1);
 
 	/* Test IF rule evaluation */
 	STANDARD_ENVELOPE_BEGIN();
@@ -138,7 +138,7 @@ static int run(void)
 	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/.Junk/new", 2);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.Junk/new", 2);
 
 	/* Test regular expressions (HEADER LIKE) */
 	STANDARD_ENVELOPE_BEGIN();
@@ -148,7 +148,7 @@ static int run(void)
 	SWRITE(clientfd, "Cc: cc@example.org" ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 1); /* Message dropped silently */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1); /* Message dropped silently */
 
 	/* Test EXISTS */
 	STANDARD_ENVELOPE_BEGIN();
@@ -158,7 +158,7 @@ static int run(void)
 	SWRITE(clientfd, "X-Drop-Message: Foo-Bar" ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 1); /* Message dropped silently */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1); /* Message dropped silently */
 
 	/* Test EXEC */
 	STANDARD_ENVELOPE_BEGIN();
@@ -167,7 +167,7 @@ static int run(void)
 	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 1); /* Message dropped silently */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1); /* Message dropped silently */
 
 	/* Test MAILFROM */
 	STANDARD_ENVELOPE_BEGIN();
@@ -176,7 +176,7 @@ static int run(void)
 	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 1); /* Message dropped silently */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1); /* Message dropped silently */
 
 	/* Test FORWARD and ensure that self mail loops do not occur */
 	STANDARD_ENVELOPE_BEGIN();
@@ -185,8 +185,8 @@ static int run(void)
 	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 2);
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/2/new", 1); /* Also forwarded to user 2 */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 2);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/2/new", 1); /* Also forwarded to user 2 */
 
 	/* Test FORWARD and back-and-forth mail loops and ensure loops do not occur */
 	STANDARD_ENVELOPE_BEGIN();
@@ -195,8 +195,8 @@ static int run(void)
 	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 3);
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/2/new", 2); /* Also forwarded to user 2 */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/2/new", 2); /* Also forwarded to user 2 */
 
 	/* Test that ${MAILFILE} variable works */
 	STANDARD_ENVELOPE_BEGIN();
@@ -205,7 +205,7 @@ static int run(void)
 	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 3); /* Message dropped silently */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3); /* Message dropped silently */
 
 	/* Test that FILE action works */
 
@@ -218,7 +218,7 @@ static int run(void)
 	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 3); /* Message dropped silently */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3); /* Message dropped silently */
 
 	res = 0;
 

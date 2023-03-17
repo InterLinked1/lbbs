@@ -192,19 +192,11 @@ int bbs_remove_logging_fd(int fd)
 {
 	struct remote_log_fd *rfd;
 
-	RWLIST_WRLOCK(&remote_log_fds);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&remote_log_fds, rfd, entry) {
-		if (rfd->fd == fd) {
-			RWLIST_REMOVE_CURRENT(entry);
-			free(rfd);
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&remote_log_fds);
+	rfd = RWLIST_WRLOCK_REMOVE_BY_FIELD(&remote_log_fds, fd, fd, entry);
 	if (!rfd) {
 		bbs_error("File descriptor %d did not have logging\n", fd);
 	} else {
+		free(rfd);
 		bbs_debug(5, "Unregistered file descriptor %d from logging\n", fd);
 	}
 	return rfd ? 0 : -1;

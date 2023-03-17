@@ -36,7 +36,7 @@ static int pre(void)
 	TEST_ADD_CONFIG("net_pop3.conf");
 
 	system("rm -rf /tmp/test_lbbs_maildir"); /* Purge the contents of the directory, if it existed. */
-	mkdir("/tmp/test_lbbs_maildir", 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
+	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
 	return 0;
 }
 
@@ -93,7 +93,7 @@ static int make_messages(int nummsg)
 		send_message(clientfd);
 	}
 	/* Verify that the email messages were all sent properly. */
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", send_count);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", send_count);
 	close(clientfd); /* Close SMTP connection */
 
 	return 0;
@@ -158,16 +158,16 @@ static int run(void)
 	/* Continue the first session */
 
 	SWRITE(client1, "RETR 1" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, ".\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "\r\n.\r\n");
 	SWRITE(client1, "DELE 1" ENDL);
 	CLIENT_EXPECT(client1, "+OK");
 	SWRITE(client1, "QUIT" ENDL);
 	CLIENT_EXPECT(client1, "+OK"); /* Server will now purge message marked as deleted */
 	close_if(client1);
 
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 0);
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/cur", send_count - 1); /* We deleted one message (it should now be in the Trash directory) */
-	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/.Trash", 1);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 0);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/cur", send_count - 1); /* We deleted one message (it should now be in the Trash directory) */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.Trash", 1);
 
 	res = 0;
 
