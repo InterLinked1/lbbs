@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <ctype.h>
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -191,6 +192,50 @@ static int exec_pre(int fdin, int fdout)
 	}
 
 	return 0;
+}
+
+int bbs_argv_from_str(char **argv, int argc, char *s)
+{
+	int c = 0;
+	int quoted = 0;
+	char *start = s;
+
+	ltrim(s);
+
+	/* Parse a string (delimiting on spaces, but also handling quotes) into arguments for argv */
+	while (*s) {
+		if ((*s == ' ' && !quoted) || (*s == '"' && quoted)) {
+			*s = '\0';
+			argv[c] = start;
+#ifdef EXTRA_DEBUG
+			bbs_debug(8, "argv[%d] = %s\n", c, argv[c]);
+#endif
+			c++;
+			s++;
+			start = s;
+		} else if (!quoted && *s == '"') {
+			quoted = 1;
+			if (start == s) {
+				start++; /* Don't include the begin quote itself in the arg */
+			}
+			s++;
+		} else {
+			s++;
+		}
+		if (c >= argc - 1) { /* Subtract 1, since there MUST be a NULL after the last arg with data */
+			bbs_warning("Truncation of arguments occured\n"); /* Sadly we have lost the original arg string since we split it up into the array, so we can't print it out here */
+			break;
+		}
+	}
+	if (s > start && c < argc - 1) {
+		argv[c] = start;
+#ifdef EXTRA_DEBUG
+		bbs_debug(8, "argv[%d] = %s\n", c, argv[c]);
+#endif
+		c++;
+	}
+	argv[c] = NULL;
+	return c;
 }
 
 /* Forward declaration */

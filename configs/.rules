@@ -1,0 +1,158 @@
+# SMTP MailScript Rules Engine
+
+# This is a very simple, yet very flexible and powerful way of performing certain operations
+# on incoming and outgoing messages. You can create rules to do pretty much anything.
+# By default, rules apply to ALL messages, and you need to use MATCH directives to explicitly
+# filter to the rules you want.
+# Rules are evaluated in a single ordered pass from top to bottom.
+# The global rules file (e.g. /home/bbs/maildir/.rules) is executed first, followed by
+# any .rules file in each user's individual maildir (e.g. /home/bbs/maildir/1/.rules)
+# Rule processing occurs once the entire message has been received and before delivery is attempted.
+
+# WARNING: DO NOT ALLOW USERS to directly create or modify these rules.
+# This can be dangerous due to the ability of certain actions (e.g. EXEC) to execute any arbitrary program.
+# e.g. ACTION EXEC rm -rf /home/bbs/maildir will probably succeed (bbs user needs r/w/x permissions) and this would delete everyone's mail.
+# If you create an abstraction layer to allow users to generate MailScript rules (e.g. for forwarding, junk purposes), please be sure to vet them carefully!
+# In the meantime, this is mainly intended for power users.
+
+# The basic structure of a rule is:
+# RULE
+# [0 or more MATCH conditions]. Note that it is legitimate to have a rule with 0 MATCH statements, but this is almost certainly NOT what you want, since it would match every message.
+# [0 or more ACTION conditions].
+# ENDRULE
+
+# You can also use IF blocks within both condition evaluation and action execution. In conditions, use TEST/IF and in actions, use IF directly. (See examples.)
+
+# Single-line comments begin with a # anywhere on the line (everything afterwards is ignored).
+# For multi-line comments, you can use COMMENT/ENDCOMMENT to delimit the multiline comment. Everything inbetween is ignored.
+
+# Rule syntax: RULE <0 or more rule statements on separate lines> ... ENDRULE - rules are ANDed together
+# Rule statement syntax: <MATCH|TEST|IF|ACTION> [NOT] ...
+
+# MATCH syntax: MATCH [<NOT>] <CONDITION> - match a condition, implicitly breaking if the condition is false
+# TEST syntax: TEST <CONDITION> - test a condition only. The result is checked using RETVAL.
+# IF syntax: IF [<NOT>] RETVAL <EQUALS> <VALUE> ... ENDIF - conditionally execute if expression is true. May be nested. Typically TEST is used before IF as IF will execute if RETVAL is nonzero.
+# ACTION syntax: ACTION <ACTIONTYPE> <ARGS> - execute a predefined or custom action
+
+# List of conditions:
+# Note: Some conditions (e.g. RETVAL, SIZE) accept logical operators (>,>=,==,<,<=). The != operator is NOT supported; instead, use NOT before the condition in combination with ==.
+
+# DIRECTION <IN|OUT> - direction of message. IN=incoming message for a local recipient, OUT=message sent by a local user for delivery (either locally or externally)
+# MAILFROM <EQUALS|LIKE> <arg> - envelope MAIL FROM
+# HEADER <header name> <EQUALS|LIKE|EXISTS> <arg> - header in the message. Since certain headers may be duplicated (To:, Cc:, etc.), this is a match on ANY of these headers.
+# FILE <file> <EXISTS> - whether a named file exists in the user's maildir. May be used for both incoming and outgoing messages.
+# RETVAL (>,>=,==,<,<=) <value> - check return value of last command
+# SIZE (>,>=,==,<,<=) <size> - size of message, in bytes
+
+# Condition Keywords:
+# EQUALS - exact string match
+# LIKE - regular expression match
+# EXISTS - specified value exists
+
+# Other Keywords:
+# RETVAL - return code of previous TEST or ACTION statement, useful for conditional execution of certain MATCH or ACTION statements.
+# Note that RETVAL may not be well defined for all actions, but is for EXEC, etc.
+
+# List of actions
+# BREAK - Stop executing the current rule
+# RETURN - Stop executing all rules in the current rules file
+# EXIT - Stop executing all rules in all rules files
+# BOUNCE - Reject SMTP acceptance of the message and return an SMTP error code to the sending server/client. Optionally, a custom bounce message may be specified as an argument.
+# DROP - Drop the message (prevent delivery). Typically used in conjunction with BOUNCE. If you wish to delete the message but retain it temporarily in the Trash folder, you should use MOVETO .Trash instead.
+# FORWARD - Forward the message to another address. Can be used to implement conditional or unconditional forwarding.
+# RELAY - Relay the message via another SMTP server. Useful for SMTP proxying.
+# REPLY - Reply to the sent message, to the original sender
+# MOVETO - Move the message to a specified folder in the maildir, e.g. to .Junk, .Trash, etc. Can be used to implement filtering. Can only be used for INCOMING messages since the SMTP server does not keep outgoing messages. If this action is executed multiple times, the last one wins.
+# EXEC - Execute a system program.
+# NOOP - Does nothing and always returns 0. Possibly useful for debugging rule execution with debug enabled.
+
+# Variables available for use in rules:
+# ${MAILFILE} - a file containing the message, useful for the EXEC action if you want to pass the message as an argument
+
+# Some example rules are below to demonstrate. They are commented out to avoid accidentally being executed:
+COMMENT
+
+# Reject all messages, incoming and outgoing
+RULE
+# You can use BOUNCE or DROP in isolation but typically these are used together
+# BOUNCE used by itself would send a bounce but actually deliver the message
+# DROP used by itself would drop the message but not send a bounce
+ACTION BOUNCE This message is not allowed # Send a custom bounce message
+ACTION DROP # Drop the message
+ENDRULE
+
+RULE
+MATCH HEADER From LIKE ^[A-Za-z0-9._%+-]+@example\.com$ # from any email address at domain example.com.
+MATCH SIZE >= 700 # greater than 700 bytes
+MATCH NOT HEADER Precedence EQUALS Bulk # if Precedence header is not bulk
+MATCH HEADER Precedence EXISTS # ... and it's present (not missing)
+# if all these rules match:
+ACTION FORWARD <sysop@example.com> # forward the message to sysop@example.com
+ACTION MOVETO .Trash # delete the message after forwarding it
+ACTION BREAK # stop processing the CURRENT rules. In this example, this isn't meaningful, but if there were further actions it would be.
+ENDRULE
+
+# MATCH statements are ANDed together. This admittedly kludgy example shows how you can achieve OR functionality by using TEST/IF instead.
+# Technically you could NEST the IFs as well, they are not nested here for formatting purposes, since they would be equivalent
+RULE
+TEST HEADER From 1@example.com
+IF RETVAL == 0
+	TEST HEADER From 2@example.com
+ENDIF
+IF RETVAL == 0
+	TEST HEADER From 3@example.com
+ENDIF
+IF RETVAL == 0
+	ACTION BREAK
+ENDIF
+# This rule will bounce and drop the message if it came from <1|2|3>@example.com
+ACTION BOUNCE
+ACTION DROP
+ENDRULE
+
+# A simple spam filter
+RULE
+MATCH DIRECTION IN # all incoming email (you don't want to spam filter the mail you send, right?)
+MATCH NOT FILE .nospamfilter MISSING # if .nospamfilter file is present in a user's root maildir folder, don't do any spam filtering
+MATCH NOT HEADER From LIKE ^[A-Za-z0-9._%+-]+@safe\.example\.com$ # safe/allowed sender
+ACTION EXEC spamassasin -e ${MAILFILE} # run spamassasin on this file, which will return nonzero if it's spam
+IF NOT RETVAL 0
+	ACTION MOVETO .Junk
+	ACTION RETURN # stop processing ALL rules immediately (why bother if it's spam?)
+ENDIF
+ENDRULE
+
+# When we get an email from somebody important, give the recipient a phone call (this assumes a local Asterisk server is running)
+RULE
+MATCH DIRECTION IN
+MATCH HEADER From EQUALS vip@example.com
+ACTION EXEC /usr/sbin/asterisk -rx "channel originate DAHDI/1 application Playback custom/vip-is-calling"
+# MATCHes usually all precede ACTIONS, but order can be mixed, too.
+# This example will also call a 2nd channel, if the precedence is urgent.
+MATCH HEADER Precedence EQUALS Urgent
+ACTION EXEC /usr/sbin/asterisk -rx "channel originate DAHDI/2 application Playback custom/vip-is-calling"
+ENDRULE
+
+# SMTP Proxy Server: useful if you want to relay your messages for a provider through this mail server first (e.g. to mask your IP address)
+RULE
+MATCH DIRECTION OUT
+MATCH HEADER From EQUALS other@example.org # From address is other@example.org
+TEST HEADER To LIKE ^[A-Za-z0-9._%+-]+@example\.com$ # test this condition, but unlike MATCH, don't implicitly break if it's false. Useful for testing RETVAL
+IF RETVAL == 1
+	ACTION BREAK # If the message is to our own domain, don't bother relaying it, just send it directly
+ENDIF
+ACTION RELAY myotheruser:mypassword@example.org:587 # relay the message by connecting to example.org's mail submission service
+ACTION DROP # drop the message so we don't send it out normally. example.org's SMTP server is now responsible for this.
+ENDRULE
+
+# Prevent accidentally sending emails to the wrong people. e.g. the same message should never contain a@example.com and b@example.org.
+# You can see how you could use this to prevent accidentally replying all to email lists you never intend to post to, etc. which could be quite handy!
+RULE
+MATCH DIRECTION OUT
+MATCH HEADER To EQUALS a@example.com
+MATCH HEADER To EQUALS b@example.org
+ACTION BOUNCE # send bounce message
+ACTION DROP # drop the message, prevent it from being sent.
+ENDRULE
+
+ENDCOMMENT

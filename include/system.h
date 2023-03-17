@@ -17,6 +17,16 @@
 struct bbs_node;
 
 /*!
+ * \brief Parse a string into an argv. Similar to wordexp, but without the unnecessary (and insecure?) shell expansion overhead
+ *        This function will separate on spaces, but keep a quoted argument together as a single argument.
+ * \param[out] argv
+ * \param argc Size of argv
+ * \param s String to parse
+ * \retval Value of argc (new argc + 1)
+ */
+int bbs_argv_from_str(char **argv, int argc, char *s);
+
+/*!
  * \brief Wrapper around execvpe(). This will fork(), then call execvp(), then wait for the child to exit.
  * \param node Node to use for I/O. If NULL, output will be written to a temporary pipe and logged, but otherwise discarded
  * \param filename Filename of program to execute (path is optional)

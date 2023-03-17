@@ -83,22 +83,16 @@ static int door_handler(struct bbs_node *node, char *args)
 /*! \brief Execute a system command / program */
 static int __exec_handler(struct bbs_node *node, char *args, int isolated)
 {
-	unsigned int i;
 	int res;
 	char *argv[32]; /* 32 arguments ought to be enough for anybody. */
 
 	bbs_assert_exists(args); /* We registered with needargs, so args should never be NULL */
 
 	/* Parse a string (delimiting on spaces) into arguments for argv */
-	for (i = 0; args && i < ARRAY_LEN(argv) - 1; i++) { /* Subtract 1, since there MUST be a NULL after the last arg with data */
-		argv[i] = strsep(&args, " ");
-	}
-	if (i == ARRAY_LEN(argv) - 1) {
-		bbs_warning("Truncation of arguments occured\n"); /* Sadly we have lost the original arg string since we split it up into the array, so we can't print it out here */
+	res = bbs_argv_from_str(argv, ARRAY_LEN(argv), args);
+	if (res < 1 || res >= (int) ARRAY_LEN(argv)) { /* Failure or truncation */
 		return 0; /* Don't execute if we failed parsing */
 	}
-
-	argv[i] = NULL; /* Set one after last set index one to NULL */
 
 	bbs_clear_screen(node);
 	bbs_buffer(node); /* Assume that exec'd processes will want the terminal to be buffered: in canonical mode with echo on. */

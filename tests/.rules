@@ -1,0 +1,124 @@
+
+RULE
+MATCH DIRECTION IN
+MATCH SIZE <= 15
+# This is redundant and doesn't really make sense... but the condition should match if the previous one did
+MATCH NOT SIZE > 1000000
+ACTION MOVETO .Junk
+ACTION EXIT # Stop processing all rules
+ENDRULE
+
+RULE
+MATCH DIRECTION IN
+MATCH HEADER Subject EQUALS Test Subject 1
+ACTION MOVETO .Trash
+ACTION RETURN # Stop processing all rules in this file
+ENDRULE
+
+RULE
+MATCH DIRECTION IN
+MATCH HEADER From EQUALS Some string here
+ACTION MOVETO .Trash
+ACTION BREAK # Stop processing the current rule (redundant)
+ENDRULE
+
+RULE
+MATCH DIRECTION IN
+MATCH HEADER Subject EQUALS Test Subject 2
+ACTION BOUNCE
+ACTION DROP
+ACTION EXIT
+ENDRULE
+
+RULE
+MATCH DIRECTION IN
+MATCH HEADER Subject EQUALS Test Subject 3
+ACTION BOUNCE This is a custom bounce message
+ACTION DROP
+ACTION EXIT
+ENDRULE
+
+RULE
+TEST DIRECTION IN
+IF RETVAL == 1
+	MATCH HEADER Subject EQUALS Test Subject 4
+	TEST HEADER Subject EQUALS Not equal to this
+	IF NOT RETVAL == 0
+		ACTION MOVETO .Trash
+		ACTION DROP
+	ENDIF
+	ACTION NOOP These actions should execute
+	ACTION MOVETO .Junk
+ENDIF
+COMMENT
+	ACTION NOOP This should not execute
+	ACTION MOVETO .Trash
+	ACTION DROP
+ENDCOMMENT
+ACTION NOOP This should be visible
+ACTION EXIT
+ENDRULE
+
+RULE
+MATCH DIRECTION IN
+MATCH HEADER SUBJECT EQUALS Test Subject 5 # Header names are case-insensitive
+MATCH HEADER Cc LIKE ^[A-Za-z0-9._%+-]+@example\.org$ # regex
+ACTION DROP
+ACTION EXIT
+ENDRULE
+
+RULE
+MATCH DIRECTION IN
+MATCH HEADER X-Drop-Message EXISTS
+ACTION DROP
+ACTION EXIT
+ENDRULE
+
+RULE
+MATCH DIRECTION IN
+MATCH HEADER Subject EQUALS Test Subject 6
+# false returns 1, true returns 0
+ACTION EXEC false
+IF RETVAL == 1
+	ACTION DROP
+ENDIF
+ENDRULE
+
+RULE
+MATCH DIRECTION IN
+MATCH HEADER Subject EQUALS Test Subject 7
+MATCH MAILFROM EQUALS external@example.net
+ACTION DROP
+ACTION EXIT
+ENDRULE
+
+RULE
+MATCH DIRECTION IN
+MATCH HEADER Subject EQUALS Test Subject 8
+MATCH MAILFROM EQUALS external@example.net
+ACTION FORWARD <testuser2@bbs.example.com>
+ENDRULE
+
+RULE
+MATCH DIRECTION IN
+MATCH HEADER Subject EQUALS Test Subject 9
+MATCH MAILFROM EQUALS external@example.net
+ACTION FORWARD <testuser2@bbs.example.com>
+ACTION FORWARD <testuser@bbs.example.com>
+ENDRULE
+
+RULE
+MATCH DIRECTION IN
+MATCH HEADER Subject EQUALS Test Subject 10
+ACTION EXEC echo "Temp file is ${MAILFILE}"
+IF RETVAL == 0
+	ACTION DROP
+ENDIF
+ENDRULE
+
+RULE
+MATCH DIRECTION IN
+MATCH HEADER Subject EQUALS Test Subject 11
+MATCH FILE .fake
+ACTION DROP
+ENDRULE

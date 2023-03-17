@@ -71,6 +71,8 @@
 #define MAX_LOCAL_RECIPIENTS 100
 #define MAX_EXTERNAL_RECIPIENTS 10
 
+#define MAX_HOPS 50
+
 static int smtp_port = DEFAULT_SMTP_PORT;
 static int smtps_port = DEFAULT_SMTPS_PORT;
 static int msa_port = DEFAULT_SMTP_MSA_PORT;
@@ -142,11 +144,13 @@ struct smtp_session {
 	int wfd;
 	char *from;
 	struct stringlist recipients;
+	struct stringlist sentrecipients;
 	int numrecipients;
 	int numlocalrecipients;
 	int numexternalrecipients;
 	char *data;
 	unsigned long datalen;
+	int hopcount;			/* Number of hops so far according to count of Received headers in message. */
 	char *helohost;			/* Hostname for HELO/EHLO */
 	/* AUTH: Temporary */
 	char *authuser;			/* Authentication username */
@@ -162,6 +166,7 @@ struct smtp_session {
 	unsigned int indataheaders:1;	/* Whether client is currently sending headers for the message */
 	unsigned int datafail:1;	/* Data failure */
 	unsigned int inauth:2;	/* Whether currently doing AUTH (1 = need PLAIN, 2 = need LOGIN user, 3 = need LOGIN pass) */
+	unsigned int sentself:1;
 };
 
 static void smtp_destroy(struct smtp_session *smtp)
@@ -172,6 +177,7 @@ static void smtp_destroy(struct smtp_session *smtp)
 	smtp->indata = 0;
 	smtp->indataheaders = 0;
 	smtp->inauth = 0;
+	smtp->hopcount = 0;
 	free_if(smtp->helohost);
 	free_if(smtp->authuser);
 	free_if(smtp->fromheaderaddress);
@@ -183,6 +189,7 @@ static void smtp_destroy(struct smtp_session *smtp)
 	smtp->numlocalrecipients = 0;
 	smtp->numexternalrecipients = 0;
 	stringlist_empty(&smtp->recipients);
+	stringlist_empty(&smtp->sentrecipients);
 }
 
 static struct stringlist blacklist;
@@ -921,12 +928,23 @@ static void notify_firstmsg(struct mailbox *mbox)
 	}
 }
 
-static int do_local_delivery(struct smtp_session *smtp, const char *recipient, const char *user, const char *data, unsigned long datalen)
+static inline void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_process *mproc)
+{
+	mproc->fd = smtp->wfd;
+	mproc->data = smtp->data;
+	mproc->size = smtp->datalen;
+	mproc->node = smtp->node;
+	mproc->from = smtp->from;
+	mproc->forward = &smtp->recipients; /* Tack on forwarding targets to the recipients list */
+}
+
+static int do_local_delivery(struct smtp_session *smtp, const char *recipient, const char *user, const char *data, unsigned long datalen, int *responded)
 {
 	struct mailbox *mbox;
 	char tmpfile[256], newfile[256];
 	unsigned long quotaleft;
 	int fd, res;
+	struct smtp_msg_process mproc;
 
 	mbox = mailbox_get(0, user);
 	if (!mbox) {
@@ -956,7 +974,45 @@ static int do_local_delivery(struct smtp_session *smtp, const char *recipient, c
 		return -2;
 	}
 
-	fd = maildir_mktemp(mailbox_maildir(mbox), tmpfile, sizeof(tmpfile), newfile);
+	/* SMTP callbacks for incoming messages */
+	memset(&mproc, 0, sizeof(mproc));
+	smtp_mproc_init(smtp, &mproc);
+	mproc.direction = SMTP_MSG_DIRECTION_IN;
+	mproc.mbox = mbox;
+	mproc.userid = 0;
+	if (smtp_run_callbacks(&mproc)) {
+		return 0; /* If returned nonzero, it's assumed it responded with an SMTP error code as appropriate. */
+	}
+
+	/*! \todo BUGBUG Shouldn't send reply here if there are multiple recipients, need to send a separate message
+	 * Need to refactor some of this stuff so multiple-recipient delivery results in only one SMTP reply code.
+	 * In particular, for sending messages to multiple local recipients, there are currently 3 places where
+	 * we could send return codes/messages.
+	 *
+	 * The responded variable that we set to 1 here is a hack until that happens.
+	 */
+	if (mproc.bounce) {
+		const char *msg = "This message has been rejected by the recipient";
+		if (mproc.bouncemsg) {
+			msg = mproc.bouncemsg;
+		}
+		smtp_reply(smtp, 554, 5.7.1, "%s", msg); /* XXX Best default SMTP code for this? */
+		free_if(mproc.bouncemsg);
+		*responded = 1;
+	}
+	if (mproc.drop) {
+		return 0; /* Silently drop message */
+	}
+
+	if (mproc.newdir) {
+		char newdir[512];
+		snprintf(newdir, sizeof(newdir), "%s/%s", mailbox_maildir(mbox), mproc.newdir);
+		free(mproc.newdir);
+		fd = maildir_mktemp(newdir, tmpfile, sizeof(tmpfile), newfile);
+	} else {
+		fd = maildir_mktemp(mailbox_maildir(mbox), tmpfile, sizeof(tmpfile), newfile);
+	}
+
 	if (fd < 0) {
 		return -1;
 	}
@@ -982,7 +1038,10 @@ static int do_local_delivery(struct smtp_session *smtp, const char *recipient, c
 		 * This is just a side effect of processing the email completely synchronously
 		 * "real" mail servers typically queue the message to decouple it. We just deliver it immediately.
 		 */
-		mailbox_notify(mbox, newfile);
+		bbs_debug(6, "Delivered message to %s\n", newfile);
+		if (!mproc.newdir) { /* Reference is invalid, but we only care about if it existed */
+			mailbox_notify(mbox, newfile);
+		}
 	}
 	return 0;
 }
@@ -1449,11 +1508,6 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 	return 0;
 }
 
-static int local_delivery(struct smtp_session *smtp, const char *recipient, const char *user)
-{
-	return do_local_delivery(smtp, recipient, user, smtp->data, smtp->datalen);
-}
-
 static int archive_list_msg(struct smtp_session *smtp)
 {
 	char listsdir[256];
@@ -1548,6 +1602,10 @@ static int do_deliver(struct smtp_session *smtp)
 	int res = 0;
 	int quotaexceeded = 0;
 	int mres;
+	int responded = 0;
+
+	struct smtp_msg_process mproc;
+	memset(&mproc, 0, sizeof(mproc));
 
 	bbs_debug(7, "Processing message from %s for delivery: local=%d, size=%lu, from=%s\n", smtp->msa ? "MSA" : "MTA", smtp->fromlocal, smtp->datalen, smtp->from);
 
@@ -1555,6 +1613,30 @@ static int do_deliver(struct smtp_session *smtp)
 		/* XXX Should this only apply for local deliveries? */
 		smtp_reply(smtp, 552, 5.3.4, "Message too large");
 		return 0;
+	}
+
+	/* SMTP callbacks for outgoing messages */
+	if (smtp->msa || smtp->fromlocal) {
+		smtp_mproc_init(smtp, &mproc);
+		mproc.direction = SMTP_MSG_DIRECTION_OUT;
+		mproc.mbox = NULL;
+		mproc.userid = smtp->node->user->id;
+		mproc.user = smtp->node->user;
+		if (smtp_run_callbacks(&mproc)) {
+			return 0; /* If returned nonzero, it's assumed it responded with an SMTP error code as appropriate. */
+		}
+		if (mproc.bounce) {
+			const char *msg = "This message has been rejected by the sender";
+			if (mproc.bouncemsg) {
+				msg = mproc.bouncemsg;
+			}
+			smtp_reply(smtp, 554, 5.7.1, "%s", msg); /* XXX Best default SMTP code for this? */
+			free_if(mproc.bouncemsg);
+		}
+		if (mproc.drop) {
+			/*! \todo BUGBUG For DIRECTION OUT, if we FORWARD, then DROP, we'll just drop here and forward won't happen */
+			return 0; /* Silently drop message */
+		}
 	}
 
 	if (smtp->fromlocal || smtp->msa) {
@@ -1587,17 +1669,34 @@ static int do_deliver(struct smtp_session *smtp)
 	while ((recipient = stringlist_pop(&smtp->recipients))) {
 		int local;
 		char *user, *domain;
-		char *dup = strdup(recipient);
+		char *dup;
+		/* The MailScript FORWARD rule will result in recipients being added to
+		 * the recipients list while we're in this loop.
+		 * However the same message is sent to the new target, since we forward the raw message, which means
+		 * we can't rely on counting Received headers to detect mail loops (for local users).
+		 * Perhaps even more appropriate would be keeping track of the user ID instead of the recipient,
+		 * to also account for aliases (but it should be fine).
+		 * This avoids loops not detected by counting Received headers:
+		 */
+		/*! \todo Is this entirely sufficient/appropriate? Maybe we should ALSO add a single Received header on forwards? */
+		if (stringlist_contains(&smtp->sentrecipients, recipient)) {
+			bbs_warning("Skipping duplicate delivery to %s\n", recipient);
+			continue;
+		}
+		/* Keep track that we have sent a message to this recipient */
+		stringlist_push(&smtp->sentrecipients, recipient);
+		dup = strdup(recipient);
 		if (!dup) {
 			bbs_error("strdup failed\n");
 			goto next;
 		}
+		bbs_debug(7, "Processing delivery to %s\n", dup);
 		/* We already did this when we got RCPT TO, so hopefully we're all good here. */
 		if (bbs_parse_email_address(dup, NULL, &user, &domain, &local)) {
 			goto next;
 		}
 		if (local) {
-			mres = local_delivery(smtp, recipient, user);
+			mres = do_local_delivery(smtp, recipient, user, smtp->data, smtp->datalen, &responded);
 			if (mres == -2) {
 				quotaexceeded = 1;
 			}
@@ -1608,6 +1707,10 @@ static int do_deliver(struct smtp_session *smtp)
 next:
 		free_if(dup);
 		free(recipient);
+	}
+
+	if (mproc.bounce || responded) {
+		return 0; /* If we sent a bounce but didn't drop, don't send a further SMTP reply */
 	}
 
 	if (res) {
@@ -1645,6 +1748,9 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 					smtp_reply(smtp, 451, 4.3.0, "Message not received successfully, try again");
 				}
 				return 0;
+			} else if (smtp->hopcount >= MAX_HOPS) {
+				smtp_reply(smtp, 554, 5.6.0, "Message exceeded %d hops, this may indicate a mail loop", MAX_HOPS);
+				return 0;
 			}
 			res = do_deliver(smtp);
 			free_if(smtp->data);
@@ -1663,6 +1769,10 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 		if ((smtp->fromlocal || smtp->msa) && smtp->indataheaders && STARTS_WITH(s, "From:")) {
 			free_if(smtp->fromheaderaddress);
 			smtp->fromheaderaddress = strdup(S_IF(s + 5));
+		}
+
+		if (STARTS_WITH(s, "Received:")) {
+			smtp->hopcount++;
 		}
 
 		if (!smtp->data) { /* First line */

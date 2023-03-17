@@ -65,7 +65,7 @@ cleanup:
 static int run(void)
 {
 	int clientfd;
-	int res = -1;
+	int i, res = -1;
 
 	clientfd = test_make_socket(25);
 	if (clientfd < 0) {
@@ -135,6 +135,26 @@ static int run(void)
 
 	/* Verify that the email message actually exists on disk. */
 	DIRECTORY_EXPECT_FILE_COUNT("/tmp/test_lbbs_maildir/1/new", 2);
+
+	/* Ensure mail loops are prevented */
+	SWRITE(clientfd, "RSET" ENDL);
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "DATA\r\n");
+	CLIENT_EXPECT(clientfd, "354");
+	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:29 -0700" ENDL);
+	for (i = 0; i < 55; i++) {
+		SWRITE(clientfd, "Received: from foobar.example.com" ENDL);
+	}
+	SWRITE(clientfd, ENDL);
+	SWRITE(clientfd, "Test" ENDL);
+	SWRITE(clientfd, "." ENDL); /* EOM */
+	CLIENT_EXPECT(clientfd, "554"); /* Mail loop detected */
 
 	res = 0;
 

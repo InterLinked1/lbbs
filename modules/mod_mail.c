@@ -89,6 +89,76 @@ int mailbox_unregister_watcher(void (*callback)(struct mailbox *mbox, const char
 	return 0;
 }
 
+struct smtp_processor {
+	int (*cb)(struct smtp_msg_process *proc);
+	void *mod;
+	RWLIST_ENTRY(smtp_processor) entry;
+};
+
+static RWLIST_HEAD_STATIC(processors, smtp_processor);
+
+/*! \note This is in mod_mail instead of net_smtp since the BBS doesn't currently support
+ * modules that both have dependencies and are dependencies of other modules,
+ * since the module autoloader only does a single pass to load modules that export global symbols.
+ * e.g. mod_mailscript depending on net_smtp, which depends on mod_mail.
+ * So we make both mod_mailscript and net_smtp depend on mod_mail directly.
+ * If this is resolved in the future, it may make sense to move this to net_smtp. */
+int __smtp_register_processor(int (*cb)(struct smtp_msg_process *mproc), void *mod)
+{
+	struct smtp_processor *proc;
+
+	proc = calloc(1, sizeof(*proc));
+	if (!proc) {
+		return -1;
+	}
+
+	proc->cb = cb;
+	proc->mod = mod;
+
+	RWLIST_WRLOCK(&processors);
+	RWLIST_INSERT_TAIL(&processors, proc, entry);
+	RWLIST_UNLOCK(&processors);
+	return 0;
+}
+
+int smtp_unregister_processor(int (*cb)(struct smtp_msg_process *mproc))
+{
+	struct smtp_processor *proc;
+
+	RWLIST_WRLOCK(&processors);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&processors, proc, entry) {
+		if (proc->cb == cb) {
+			RWLIST_REMOVE_CURRENT(entry);
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(&processors);
+	if (!proc) {
+		bbs_error("Couldn't remove processor %p\n", cb);
+		return -1;
+	}
+	return 0;
+}
+
+int smtp_run_callbacks(struct smtp_msg_process *mproc)
+{
+	int res = 0;
+	struct smtp_processor *proc;
+
+	RWLIST_RDLOCK(&processors);
+	RWLIST_TRAVERSE(&processors, proc, entry) {
+		bbs_module_ref(proc->mod);
+		res |= proc->cb(mproc);
+		bbs_module_unref(proc->mod);
+		if (res) {
+			break; /* Stop processing immediately if a processor returns nonzero */
+		}
+	}
+	RWLIST_UNLOCK(&processors);
+	return res;
+}
+
 /* E-Mail Address Alias */
 struct alias {
 	int userid;
@@ -518,9 +588,12 @@ int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf)
 		usleep(100 + bbs_rand(1, 25));
 	}
 
+	/* In case this maildir has never been accessed before */
+	mailbox_maildir_init(path);
+
 	fd = open(buf, O_WRONLY | O_CREAT, 0600);
 	if (fd < 0) {
-		bbs_error("open failed: %s\n", strerror(errno));
+		bbs_error("open(%s) failed: %s\n", buf, strerror(errno));
 	}
 	return fd;
 }

@@ -172,3 +172,44 @@ int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curf
 
 /*! \brief Same as maildir_move_msg, but deep copy the message instead of moving it. The original file is left intact. */
 int maildir_copy_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext);
+
+/* SMTP processor callbacks */
+
+#define SMTP_MSG_DIRECTION_IN 0
+#define SMTP_MSG_DIRECTION_OUT 1
+
+struct smtp_msg_process {
+	/* Inputs */
+	int fd;						/*!< File descriptor of SMTP session */
+	struct mailbox *mbox;		/*!< Mailbox (incoming only) */
+	struct bbs_user *user;		/*!< BBS user (outgoing only) */
+	struct bbs_node *node;		/*!< BBS node */
+	const char *data;			/*!< Email data */
+	const char *from;			/*!< Envelope from */
+	int size;					/*!< Size of email */
+	int userid;					/*!< User ID (outgoing only) */
+	unsigned int direction:1;	/*!< 0 = incoming, 1 = outgoing */
+	/* Outputs */
+	unsigned int bounce:1;		/*!< Whether to send a bounce */
+	unsigned int drop:1;		/*!< Whether message should be dropped */
+	int res;					/*!< General return code */
+	char *newdir;				/*!< New message location (incoming only) */
+	char *bouncemsg;			/*!< Bounce message */
+	struct stringlist *forward;	/*!< Forwarding addresses */
+};
+
+/*!
+ * \brief Register an SMTP processor callback to run on each message received or sent
+ * \param cb Callback that should return nonzero to stop processing further callbacks
+ */
+#define smtp_register_processor(cb) __smtp_register_processor(cb, BBS_MODULE_SELF)
+
+int __smtp_register_processor(int (*cb)(struct smtp_msg_process *mproc), void *mod);
+
+/*! \brief Unregister an SMTP processor previously registered with smtp_register_processor */
+int smtp_unregister_processor(int (*cb)(struct smtp_msg_process *mproc));
+
+/*!
+ * \brief Run SMTP callbacks for a message (only called by net_smtp)
+ */
+int smtp_run_callbacks(struct smtp_msg_process *mproc);

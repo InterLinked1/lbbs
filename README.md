@@ -18,7 +18,7 @@ Key features and capabilities include:
 
 - Automatic menu screen generation and resizing
 
-- Electronic mail (SMTP, POP3, IMAP4)
+- Electronic mail (SMTP, POP3, IMAP4), with [MailScript rule engine](https://github.com/InterLinked1/lbbs/blob/master/configs/.rules) for flexible, custom, dynamic mail handling rules
 
 - Newsgroups (NNTP)
 
@@ -137,6 +137,9 @@ Config files go in `/etc/lbbs` and are as follows:
 - `variables.conf` - Global variable configuration
 
 Each sample config file documents all available options. Refer to the sample configs for more info about a file.
+
+Additionally, the MailScript rule engine uses a script file called `.rules` in the root maildir and the user's root maildir for manipulating messages.
+A sample MailScript rules file is in `configs/.rules` (though this is not a config file, but a sample rule script file).
 
 ### Network Login Services / Comm Drivers
 
@@ -275,6 +278,8 @@ LBBS, once installed, uses several system directories:
   - `/var/lib/lbbs/scripts` - Useful scripts for use with LBBS
 
 - `/var/log/lbbs/` - log directory
+
+Additionally, modules (e.g. the mail server, newsgroup server, etc.) may use their own directories for storing data. These directories are configurable.
 
 ### Make Targets
 
