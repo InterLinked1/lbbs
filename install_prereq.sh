@@ -11,6 +11,7 @@ apt-get install -y binutils-dev # <bfd.h>
 apt-get install -y libcap-dev # <sys/capability.h>
 apt-get install -y libedit-dev # <histedit.h>
 apt-get install -y libuuid1 uuid-dev # <uuid/uuid.h>
+apt-get install -y libreadline-dev # <readline/history.h>
 
 # net_ssh and net_sftp
 apt-get install -y libssh-dev # libssh
