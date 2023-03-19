@@ -46,7 +46,10 @@
 static int option_debug = 0;
 static int option_debug_bbs = 0;
 static char option_debug_bbs_str[12] = "-";
+static int option_errorcheck = 0;
 static const char *testfilter = NULL;
+
+#define VALGRIND_LOGFILE "/tmp/test_lbbs_valgrind.log"
 
 static const char *loglevel2str(enum bbs_log_level level)
 {
@@ -122,7 +125,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 
 static int parse_options(int argc, char *argv[])
 {
-	static const char *getopt_settings = "?dDt:";
+	static const char *getopt_settings = "?dDet:";
 	int c;
 
 	while ((c = getopt(argc, argv, getopt_settings)) != -1) {
@@ -132,6 +135,7 @@ static int parse_options(int argc, char *argv[])
 			fprintf(stderr, "-?     Show this help and exit.\n");
 			fprintf(stderr, "-d     Increase debug level. At least level 1 need for BBS log output (except debug, controlled by -D, separately)\n");
 			fprintf(stderr, "-D     Increase BBS debug level. Must have at least one -d to get BBS logging output.\n");
+			fprintf(stderr, "-e     Run the BBS under valgrind to check for errors and warnings.\n");
 			fprintf(stderr, "-h     Show this help and exit.\n");
 			fprintf(stderr, "-t     Run a specific named test. Include the test_ prefix but not the .so suffix.\n");
 			return -1;
@@ -149,6 +153,9 @@ static int parse_options(int argc, char *argv[])
 			}
 			option_debug_bbs++;
 			strcat(option_debug_bbs_str, "d"); /* Safe */
+			break;
+		case 'e':
+			option_errorcheck = 1;
 			break;
 		case 't':
 			testfilter = optarg;
@@ -205,6 +212,41 @@ int test_make_socket(int port)
 	return sock;
 }
 
+int test_client_drain(int fd, int ms)
+{
+	int res;
+	struct pollfd pfd;
+	char buf[4096];
+	int drained = 0;
+
+	memset(&pfd, 0, sizeof(pfd));
+
+	pfd.fd = fd;
+	pfd.events = POLLIN | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
+	assert(pfd.fd != -1);
+
+	for (;;) {
+		pfd.revents = 0;
+		res = poll(&pfd, 1, ms);
+		if (res < 0) {
+			return -1;
+		} else if (!res) {
+			break;
+		} else {
+			res = read(fd, buf, sizeof(buf) - 1);
+			if (res <= 0) {
+				bbs_debug(1, "read returned %d\n", res);
+			} else {
+				buf[res] = '\0';
+				bbs_debug(8, "Flushed: %s\n", buf);
+				drained += res;
+			}
+		}
+	}
+	bbs_debug(5, "Flushed %d bytes from fd %d\n", drained, fd);
+	return 0;
+}
+
 int test_client_expect(int fd, int ms, const char *s, int line)
 {
 	int res;
@@ -234,6 +276,7 @@ int test_client_expect(int fd, int ms, const char *s, int line)
 			bbs_warning("Failed to receive expected output at line %d: %s (got %s)\n", line, s, buf);
 			return -1;
 		}
+		bbs_debug(10, "Contains output expected at line %d: %s", line, buf); /* Probably already ends in LF */
 		return 0;
 	}
 	bbs_warning("Failed to receive expected output at line %d: %s\n", line, s);
@@ -268,6 +311,8 @@ int test_client_expect_eventually(int fd, int ms, const char *s, int line)
 				return -1;
 			}
 			buf[bytes] = '\0'; /* Safe */
+			/* Probably ends in LF, so skip one here */
+			bbs_debug(10, "Analyzing output: %s", buf); /* Particularly under valgrind, we'll end up reading individual lines more than chunks, so using CLIENT_DRAIN is especially important */
 			if (strstr(buf, s)) {
 				return 0;
 			}
@@ -350,8 +395,11 @@ int test_bbs_expect(const char *s, int ms)
 static int test_bbs_spawn(const char *directory)
 {
 	pid_t child;
-	char *argv[] = {
+	char **argv = NULL;
+	char *argv_normal[] = {
 		LBBS_BINARY,
+		/* Begin options */
+		"-b", /* Force reuse bind ports */
 		"-c", /* Don't daemonize */
 		"-C", (char*) directory, /* Custom config directory */
 		"-g", /* Dump core on crash */
@@ -359,6 +407,39 @@ static int test_bbs_spawn(const char *directory)
 		option_debug_bbs ? option_debug_bbs_str : NULL, /* Lotsa debug... maybe */
 		NULL
 	};
+	char *argv_error_check[] = {
+		/* There are 3 things that are really helpful about running tests under valgrind:
+		 * 1) Can catch errors, warnings, and other issues, in general, which is always good.
+		 * 2) The test framework executes extremely quickly, and interacts with the BBS much faster
+		 *    than a normal user would. So this stress tests the BBS and potentially exposes issues
+		 *    that would not be uncovered in normal executions of either the BBS / under valgrind alone.
+		 * 3) The speed of execution is slower under valgrind, which can challenge assumptions made
+		 *    (esp. timing related ones) and intolerant tests (or services) may cause test failures
+		 *    if these are not taken into account.
+		 *
+		 * Ideally, to be comprehensive, the tests should be run normally (without valgrind)
+		 * as well as under valgrind, and both executions should pass.
+		 */
+		"valgrind",
+		"--show-error-list=yes",
+		"--keep-debuginfo=yes",
+		"--leak-check=full",
+		"--track-fds=yes",
+		"--track-origins=yes",
+		"--show-leak-kinds=all",
+		"--suppressions=../valgrind.supp", /* Move up one directory from tests, since that's where this file is */
+		"--log-file=" VALGRIND_LOGFILE,
+		LBBS_BINARY,
+		/* Begin options */
+		"-b", /* Force reuse bind ports */
+		"-c", /* Don't daemonize */
+		"-C", (char*) directory, /* Custom config directory */
+		"-g", /* Dump core on crash */
+		"-vvvvvvvvv", /* Very verbose */
+		option_debug_bbs ? option_debug_bbs_str : NULL, /* Lotsa debug... maybe */
+		NULL
+	};
+	argv = option_errorcheck ? argv_error_check : argv_normal;
 
 	if (pipe(bbspfd)) {
 		bbs_error("pipe failed: %s\n", strerror(errno));
@@ -374,9 +455,16 @@ static int test_bbs_spawn(const char *directory)
 		bbs_error("fork failed: %s\n", strerror(errno));
 		return -1;
 	} else if (child == 0) {
+		int i;
 		close_if(notifypfd[0]);
 		close_if(notifypfd[1]);
 		close_if(bbspfd[0]); /* Close read end */
+		/* Close all file descriptors that might still be open */
+		for (i = STDERR_FILENO + 1; i < 1024; i++) {
+			if (i != bbspfd[1]) {
+				close(i);
+			}
+		}
 		if (dup2(bbspfd[1], STDOUT_FILENO) < 0) {
 			bbs_error("dup2(%d) failed: %s\n", bbspfd[1], strerror(errno));
 			_exit(errno);
@@ -385,7 +473,7 @@ static int test_bbs_spawn(const char *directory)
 			_exit(errno);
 		}
 		close(STDIN_FILENO); /* Don't accept input */
-		execv(LBBS_BINARY, argv);
+		execvp(option_errorcheck ? "valgrind" : LBBS_BINARY, argv); /* use execvp instead of execv for option_errorcheck, so we don't have to specify valgrind path */
 		bbs_error("execv failed: %s\n", strerror(errno));
 		_exit(errno);
 	}
@@ -451,6 +539,72 @@ static int reset_test_configs(void)
 		system("rm " TEST_CONFIG_DIR "/*.conf");
 	}
 	return 0;
+}
+
+static int analyze_valgrind(void)
+{
+	int res = 0;
+	char buf[1024];
+	const char *s;
+	int got_segv = 0, fds_open = 0, num_bytes_lost = 0, num_errors = 0;
+	int in_heap_summary = 0;
+
+	FILE *fp = fopen(VALGRIND_LOGFILE, "r");
+	if (!fp) {
+		bbs_error("Failed to open %s: %s\n", VALGRIND_LOGFILE, strerror(errno));
+		return -1;
+	}
+
+	while ((fgets(buf, sizeof(buf), fp))) {
+		if (!num_bytes_lost && (s = strstr(buf, "definitely lost: "))) {
+			s += STRLEN("definitely lost: ");
+			num_bytes_lost = atoi(s);
+		} else if (!num_errors && (s = strstr(buf, "ERROR SUMMARY: "))) {
+			/* This includes things like conditional jump on uninitialized value, invalid writes, etc. */
+			s += STRLEN("ERROR SUMMARY: ");
+			/* This prints out twice, so skip the 2nd one */
+			num_errors = atoi(s);
+		} else if (!fds_open && (s = strstr(buf, "FILE DESCRIPTORS: "))) {
+			s += STRLEN("FILE DESCRIPTORS: ");
+			fds_open = atoi(s);
+		} else if (!got_segv && (s = strstr(buf, "Process terminating with default action of signal 6 (SIGABRT)"))) {
+			/* If we trigger an assertion in the BBS, we'll abort rather than segfault, but we should treat this the same */
+			got_segv = 1;
+		} else if (!in_heap_summary && (s = strstr(buf, "HEAP SUMMARY:"))) {
+			in_heap_summary = 1;
+		} else if (in_heap_summary && (s = strstr(buf, "LEAK SUMMARY:"))) {
+			if (got_segv && in_heap_summary && option_debug < 5) {
+				fprintf(stderr, "== Memory leak details omitted. See %s for full log.\n", VALGRIND_LOGFILE);
+			}
+			in_heap_summary = 0;
+		}
+		if (option_debug > 2) { /* Most any level of debug gets valgrind report printout */
+			if (!got_segv || !in_heap_summary || option_debug > 5) { /* Skip memory leak details if we segfaulted, since those are probably caused by the segfault and output will be HUGE */
+				fprintf(stderr, "%s", buf); /* Don't add LF since buffer already contains one */
+			}
+		}
+	}
+	fclose(fp);
+
+	/* Print everything out at the end, in case the valgrind log output is long */
+	if (got_segv) {
+		/* There should already be a core file anyways, but if not for some reason, make sure the test fails */
+		bbs_error("Segmentation fault or abortion during execution\n");
+	}
+/* STDIN, STDOUT, STDERR, +1 */
+#define FDS_OPEN_EXPECTED 4
+	if (fds_open > FDS_OPEN_EXPECTED) {
+		bbs_error("%d file descriptors open at shutdown (expected %d)\n", fds_open, FDS_OPEN_EXPECTED);
+	}
+	if (num_bytes_lost) {
+		bbs_error("Memory leak: %d bytes definitely lost\n", num_bytes_lost); /* # of bytes lost will never be singular, I guarantee you */
+	}
+	if (num_errors) {
+		bbs_error("%d error%s during execution\n", num_errors, ESS(num_errors));
+	}
+
+	res |= got_segv || num_errors || num_bytes_lost || fds_open > FDS_OPEN_EXPECTED;
+	return res;
 }
 
 static int run_test(const char *filename)
@@ -547,6 +701,10 @@ static int run_test(const char *filename)
 		sec_dif = (int64_t)(end.tv_sec - start.tv_sec) * 1000;
 		usec_dif = (1000000 + end.tv_usec - start.tv_usec) / 1000 - 1000;
 		tot_dif = sec_dif + usec_dif;
+		if (option_errorcheck) {
+			/* Check valgrind.log report for potential issues. */
+			res |= analyze_valgrind();
+		}
 		if (res) {
 			fprintf(stderr, "== Test %sFAILED%s: %5lums %-20s %s\n", COLOR(COLOR_RED), COLOR_RESET, tot_dif, testmod->name, testmod->description);
 		} else {
@@ -633,6 +791,11 @@ int main(int argc, char *argv[])
 
 	if (testfilter) { /* Single test */
 		snprintf(fullpath, sizeof(fullpath), "%s/%s.so", XSTR(TEST_DIR), testfilter);
+		if (eaccess(fullpath, R_OK)) {
+			fprintf(stderr, "No such file: %s\n", fullpath);
+			return -1;
+		}
+		fprintf(stderr, "Running test: %s\n", testfilter);
 		res |= run_test(fullpath);
 	} else { /* Run all tests */
 		DIR *dir;
@@ -641,6 +804,7 @@ int main(int argc, char *argv[])
 			bbs_error("Error opening directory - %s: %s\n", XSTR(TEST_DIR), strerror(errno));
 			return errno;
 		}
+		fprintf(stderr, "Running all tests\n");
 		while ((entry = readdir(dir))) {
 			/* Look for any test_*.so files in the directory in which the tests were compiled. */
 			if (entry->d_type != DT_REG || !STARTS_WITH(entry->d_name, "test_") || !strstr(entry->d_name, ".so")) {

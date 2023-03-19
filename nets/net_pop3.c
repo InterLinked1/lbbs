@@ -68,7 +68,7 @@ struct pop3_session {
 	char curdir[260];
 	/* Delete */
 	char trashmaildir[262]; /* 6 more, for .Trash */
-	int *deletions;
+	char *deletions; /* Use char for storing bits, since char is 1 byte while int is more */
 	/* Other */
 	int toplines;
 	/* Traversal flags */
@@ -95,6 +95,7 @@ static void pop3_destroy(struct pop3_session *pop3)
 #define pop3_ok(pop3, fmt, ...) pop3_send(pop3, "+OK " fmt "\r\n", ## __VA_ARGS__)
 #define pop3_err(pop3, fmt, ...) pop3_send(pop3, "-ERR " fmt "\r\n", ## __VA_ARGS__)
 
+/*! \note In practice, this function should only be called once during a POP3 session, since the number of messages visible will not change */
 static int init_deletions(struct pop3_session *pop3)
 {
 	int rem;
@@ -122,7 +123,7 @@ static int init_deletions(struct pop3_session *pop3)
 			 * If it's smaller, just let it be.
 			 * The latter is the more likely case, so realloc won't be too common. */
 			if (bytesize > pop3->delbytes) {
-				int *newdel = realloc(pop3->deletions, bytesize);
+				char *newdel = realloc(pop3->deletions, bytesize);
 				if (!newdel) {
 					bbs_error("realloc failed\n");
 					/* This is bad... just abort. */
@@ -156,7 +157,7 @@ static int mark_deleted(struct pop3_session *pop3, int message)
 	bbs_assert_exists(pop3->deletions);
 	element = (message - 1) / (8 * sizeof(int)); /* Subtract 1 to make 0-indexed, then determine which int index it is */
 	bit = (message - 1) % (8 * sizeof(int));
-	bbs_debug(3, "Setting bit %d of element %d\n", bit, element);
+	bbs_debug(3, "Setting bit %d of element %d (%d/%d)\n", bit, element, pop3->delsize, pop3->delbytes);
 	pop3->deletions[element] |= (1 << bit); /* Set bit high to mark deleted. */
 	return 0;
 }
@@ -225,7 +226,7 @@ static int pop3_traverse(const char *path, int (*on_file)(const char *dir_name, 
 	struct dirent *entry, **entries;
 	int files, fno = 0;
 	int msgno = 0;
-	int res;
+	int res = 0;
 
 	/* use scandir instead of opendir/readdir, so the listing is ordered */
 	files = scandir(path, &entries, NULL, alphasort);
@@ -611,6 +612,7 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 		snprintf(pop3->newdir, sizeof(pop3->newdir), "%s/new", mailbox_maildir(pop3->mbox));
 		snprintf(pop3->trashmaildir, sizeof(pop3->trashmaildir), "%s/.Trash", mailbox_maildir(pop3->mbox));
 		POP3_TRAVERSAL(pop3); /* Do our initial traversal of the mailbox to get stats */
+		/* Past this point (during the remainder of the session), we must never process the new directory again (in fact, nothing in the BBS is allowed to, or able to) */
 	/* APOP not supported */
 	/* Past this point, must be logged in. */
 	} else if (!bbs_user_is_registered(pop3->node->user)) {

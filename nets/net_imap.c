@@ -270,6 +270,8 @@ static void imap_destroy(struct imap_session *imap)
 		} \
 	}
 
+#define get_uidnext(imap, directory) mailbox_get_next_uid(imap->mbox, directory, 0, &imap->uidvalidity, &imap->uidnext)
+
 /* We traverse cur first, since messages from new are moved to cur, and we don't want to double count them */
 #define IMAP_TRAVERSAL(imap, callback) \
 	MAILBOX_TRYRDLOCK(imap); \
@@ -451,6 +453,11 @@ cleanup:
 		return 0; \
 	}
 
+#define IMAP_NO_READONLY(imap) \
+	if (imap->readonly) { \
+		imap_reply(imap, "NO Mailbox is read only"); \
+	}
+
 /*! \brief Translate an IMAP directory path to the full path of the IMAP mailbox on disk */
 static int imap_translate_dir(struct imap_session *imap, const char *directory, char *buf, size_t len)
 {
@@ -487,13 +494,11 @@ static int set_maildir(struct imap_session *imap, const char *mailbox)
 	return mailbox_maildir_init(imap->dir);
 }
 
-#define get_uidnext(imap, directory) mailbox_get_next_uid(imap->mbox, directory, 0, &imap->uidvalidity, &imap->uidnext)
-
 static int on_select(const char *dir_name, const char *filename, struct imap_session *imap)
 {
 	char *flags;
 
-	imap_debug(7, "Analyzing file %s/%s\n", dir_name, filename);
+	imap_debug(7, "Analyzing file %s/%s (readonly: %d)\n", dir_name, filename, imap->readonly);
 
 	/* RECENT is not the same as UNSEEN.
 	 * In the context of maildir, RECENT refers to messages in the new directory.
@@ -638,7 +643,7 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 	REQUIRE_ARGS(mailbox);
 	STRIP_QUOTES(mailbox);
 
-	/*! \todo need to save/restore current maildir for STATUS, so it doesn't mess up the selected mailbox? */
+	/* This modifies the current maildir even for STATUS, but the STATUS command will restore the old one afterwards. */
 	if (set_maildir(imap, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX" */
 		return 0;
 	}
@@ -647,6 +652,8 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 	}
 	if (readonly == 1) {
 		imap->readonly = readonly;
+	} else {
+		imap->readonly = 0; /* In case the previously SELECTed folder was read only */
 	}
 	mailbox_has_activity(imap->mbox); /* Clear any activity flag since we're about to do a traversal. */
 	IMAP_TRAVERSAL(imap, on_select);
@@ -663,7 +670,7 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 		imap_send(imap, "OK [UIDNEXT %u] Predicted next UID", imap->uidnext + 1);
 		/* Some other stuff might appear here, e.g. HIGHESTMODSEQ (RFC4551) that we don't currently support. */
 		/* XXX All mailboxes are READ-WRITE right now, but could be just READ-ONLY. Need to add ACL extensions for that. */
-		imap_reply(imap, "OK [%s] %s completed", "READ-WRITE", readonly ? "EXAMINE" : "SELECT");
+		imap_reply(imap, "OK [%s] %s completed", readonly ? "READ-ONLY" : "READ-WRITE", readonly ? "EXAMINE" : "SELECT");
 	} else if (readonly == 2) { /* STATUS */
 		/*! \todo imap->totalnew and imap->totalcur, etc. are now for this other mailbox we one-offed, rather than currently selected.
 		 * Will that mess anything up? Maybe we should save these in tmp vars, and only set on the imap struct if readonly <= 1? */
@@ -745,7 +752,7 @@ static int imap_dir_has_subfolders(const char *path, const char *prefix)
 {
 	struct dirent *entry, **entries;
 	int files, fno = 0;
-	int res;
+	int res = 0;
 	int prefixlen = strlen(prefix);
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
@@ -760,7 +767,7 @@ static int imap_dir_has_subfolders(const char *path, const char *prefix)
 			continue;
 		} else if (!strncmp(entry->d_name, prefix, prefixlen)) {
 			const char *rest = entry->d_name + prefixlen; /* do not add these within the strlen_zero macro! */
-			/* XXX Check entire code tree for strlen_zero with + inside adding arguments. That's a bug!!! */
+			/*! \todo XXX Check entire code tree for strlen_zero with + inside adding arguments. That's a bug!!! */
 			if (!strlen_zero(rest)) {
 				res = 1;
 				free(entry);
@@ -984,8 +991,9 @@ static int handle_list(struct imap_session *imap, char *s, int lsub)
 			/* Skip first character of directory name since it's . */
 			imap_send(imap, "%s (%s) \"%s\" \"%s\"", lsub ? "LSUB" : "LIST", attributes, HIERARCHY_DELIMITER, entry->d_name + 1); /* Always send the delimiter */
 cleanup:
-			free(entry);
+			; /* Needed so we can jump to the cleanup label */
 		}
+		free(entry);
 	}
 	free(entries);
 	imap_reply(imap, "OK %s completed.", lsub ? "LSUB" : "LIST");
@@ -1486,12 +1494,13 @@ static int finish_append(struct imap_session *imap)
 		}
 	}
 
-	/* Set the internal date */
-	/*! \todo Set the file creation/modified time (strptime)? */
+	/* Set the internal date? Maybe not, since the original date of the message should be preserved for best user experience. */
+	/*! \todo Set the file creation/modified time (strptime)? (If we do this, it shouldn't be a value returned to the client later, see note above) */
 	UNUSED(imap->appenddate);
 
 	/* APPENDUID response */
-	imap_reply(imap, "OK [APPENDUID %u %u] APPEND completed", uidvalidity, uidnext); /* Don't add 1, this is the current message UID, not UIDNEXT */
+	/* Use tag from APPEND request */
+	_imap_reply(imap, "%s OK [APPENDUID %u %u] APPEND completed\r\n", imap->savedtag, uidvalidity, uidnext); /* Don't add 1, this is the current message UID, not UIDNEXT */
 	return 0;
 }
 
@@ -1865,7 +1874,7 @@ cleanup:
 		free(entry);
 	}
 	free(entries);
-	imap_reply(imap, "OK %sFETCH Completed", usinguid ? "UID " : "");
+	imap_reply(imap, "OK %sSTORE Completed", usinguid ? "UID " : "");
 	return 0;
 }
 
@@ -1903,7 +1912,9 @@ static int handle_store(struct imap_session *imap, char *s, int usinguid)
 		imap_reply(imap, "BAD Invalid arguments");
 		return 0;
 	}
+	MAILBOX_TRYRDLOCK(imap);
 	process_flags(imap, s, usinguid, sequences, flagop, silent);
+	mailbox_unlock(imap->mbox);
 	return 0;
 }
 
@@ -1981,6 +1992,7 @@ static int handle_delete(struct imap_session *imap, char *s)
 		bbs_error("rmdir(%s) failed: %s\n", path, strerror(errno));
 	}
 	mailbox_unlock(imap->mbox);
+	imap_reply(imap, "OK DELETE completed");
 	return 0;
 }
 
@@ -2211,8 +2223,7 @@ static int imap_process(struct imap_session *imap, char *s)
 			}
 			_imap_reply(imap, "+\r\n");
 			imap->inauth = 1;
-			free_if(imap->savedtag);
-			imap->savedtag = strdup(imap->tag);
+			REPLACE(imap->savedtag, imap->tag);
 		} else {
 			imap_reply(imap, "NO Auth method not supported");
 		}
@@ -2256,6 +2267,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		mailbox_watch(imap->mbox);
 	/* Past this point, must be logged in. */
 	} else if (!bbs_user_is_registered(imap->node->user)) {
+		bbs_warning("'%s' command may not be used in the unauthenticated state\n", command);
 		imap_reply(imap, "BAD Not logged in");
 	} else if (!strcasecmp(command, "SELECT")) {
 		return handle_select(imap, s, 0);
@@ -2263,11 +2275,12 @@ static int imap_process(struct imap_session *imap, char *s)
 		return handle_select(imap, s, 1);
 	} else if (!strcasecmp(command, "STATUS")) { /* STATUS is like EXAMINE, but it's on a specified mailbox that is NOT the currently selected mailbox */
 		REQUIRE_ARGS(s);
-		if (imap->folder && !strcmp(s, imap->folder)) {
-			imap_reply(imap, "NO This mailbox is currently selected");
-			return 0;
+		/* Need to save/restore current maildir for STATUS, so it doesn't mess up the selected mailbox, since STATUS must not modify the selected folder. */
+		res = handle_select(imap, s, 2);
+		if (imap->folder) {
+			set_maildir(imap, imap->folder);
 		}
-		return handle_select(imap, s, 2);
+		return res;
 	} else if (!strcasecmp(command, "NAMESPACE")) {
 		imap_send(imap, "NAMESPACE ((\"\" \".\")) NIL NIL"); /* Single personal namespace */
 		imap_reply(imap, "NAMESPACE command completed");
@@ -2284,10 +2297,13 @@ static int imap_process(struct imap_session *imap, char *s)
 		 */
 		return handle_list(imap, s, 1);
 	} else if (!strcasecmp(command, "CREATE")) {
+		IMAP_NO_READONLY(imap);
 		return handle_create(imap, s);
 	} else if (!strcasecmp(command, "DELETE")) {
+		IMAP_NO_READONLY(imap);
 		return handle_delete(imap, s);
 	} else if (!strcasecmp(command, "RENAME")) {
+		IMAP_NO_READONLY(imap);
 		return handle_rename(imap, s);
 	} else if (!strcasecmp(command, "CHECK")) {
 		imap_reply(imap, "OK CHECK Completed"); /* Nothing we need to do now */
@@ -2299,6 +2315,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		imap->dir[0] = imap->curdir[0] = imap->newdir[0] = '\0';
 		imap_reply(imap, "OK CLOSE completed");
 	} else if (!strcasecmp(command, "EXPUNGE")) {
+		IMAP_NO_READONLY(imap);
 		if (imap->folder) {
 			imap->expungeindex = 0;
 			imap_traverse(imap->curdir, on_expunge, imap);
@@ -2310,8 +2327,10 @@ static int imap_process(struct imap_session *imap, char *s)
 	} else if (!strcasecmp(command, "FETCH")) {
 		return handle_fetch(imap, s, 0);
 	} else if (!strcasecmp(command, "COPY")) {
+		IMAP_NO_READONLY(imap);
 		return handle_copy(imap, s, 0);
 	} else if (!strcasecmp(command, "STORE")) {
+		IMAP_NO_READONLY(imap);
 		return handle_store(imap, s, 0);
 	} else if (!strcasecmp(command, "UID")) {
 		REQUIRE_ARGS(s);
@@ -2327,12 +2346,13 @@ static int imap_process(struct imap_session *imap, char *s)
 			imap_reply(imap, "BAD Invalid UID command");
 		}
 	} else if (!strcasecmp(command, "APPEND")) {
+		IMAP_NO_READONLY(imap);
+		REPLACE(imap->savedtag, imap->tag);
 		handle_append(imap, s);
 	} else if (allow_idle && !strcasecmp(command, "IDLE")) {
 		/* RFC 2177 IDLE */
 		_imap_reply(imap, "+ idling\r\n");
-		free_if(imap->savedtag);
-		imap->savedtag = strdup(imap->tag);
+		REPLACE(imap->savedtag, imap->tag);
 		imap->idle = 1;
 		/* Note that IDLE only applies to the currently selected mailbox (folder).
 		 * Thus, in traversing all the IMAP sessions, simply sharing the same mbox isn't enough.
@@ -2361,11 +2381,20 @@ static int imap_process(struct imap_session *imap, char *s)
 	 * LSUB will return all folders, so clients *shouldn't* try to SUBSCRIBE to something, but if they do, accept it.
 	 * If they try to UNSUBSCRIBE, definitely reject that. */
 	} else if (!strcasecmp(command, "SUBSCRIBE")) {
+		IMAP_NO_READONLY(imap);
 		bbs_warning("Subscription attempt for %s for mailbox %d\n", S_IF(s), mailbox_id(imap->mbox));
 		imap_reply(imap, "OK SUBSCRIBE completed"); /* Everything available is already subscribed anyways, so can't hurt */
 	} else if (!strcasecmp(command, "UNSUBSCRIBE")) {
+		IMAP_NO_READONLY(imap);
 		bbs_warning("Unsubscription attempt for %s for mailbox %d\n", S_IF(s), mailbox_id(imap->mbox));
 		imap_reply(imap, "NO Permission denied");
+	} else if (!strcasecmp(command, "TESTLOCK")) {
+		/* Hold the mailbox lock for a moment. */
+		/*! \note This is only used for the test suite, it is not part of any IMAP standard or intended for clients. */
+		MAILBOX_TRYRDLOCK(imap);
+		usleep(3500000); /* 500ms is sufficient normally, but under valgrind, we need more time */
+		mailbox_unlock(imap->mbox);
+		imap_reply(imap, "OK Lock test succeeded");
 	} else {
 		/*! \todo These commands are not currently implemented: SEARCH, MOVE */
 		/*! \todo The following common capabilities are not currently supported: AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH AUTH=XOAUTH2 UIDPLUS MOVE LITERAL+ BINARY ENABLE */

@@ -34,3 +34,5 @@ jobs:
           sudo make samples
           sudo make tests
           sudo tests/test -ddddddddd -DDDDDDDDDD
+          sudo apt-get install -y valgrind
+          sudo tests/test -ddddddddd -DDDDDDDDDD -e

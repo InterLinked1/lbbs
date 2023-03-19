@@ -657,14 +657,19 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 	if (!fp || !uidvalidity || !uidnext) {
 		/* UIDVALIDITY must be strictly increasing, so time is a good thing to use. */
 		uidvalidity = time(NULL); /* If this isn't the first access to this folder, this will invalidate the client's cache of this entire folder. */
-		uidnext = 1;
 		/* Since we're starting over, we must broadcast the new UIDVALIDITY value (we always do for SELECTs). */
-	} else {
-		/* See RFC 3501 2.3.1.1. The next UID must be at least UIDNEXT, but it could be greater than it, too. */
-		if (allocate) {
-			uidnext++; /* Increment and write back */
-		} /* else, we just wanted to read the current values */
 	}
+
+	/* See RFC 3501 2.3.1.1. The next UID must be at least UIDNEXT, but it could be greater than it, too. */
+	if (allocate) {
+		uidnext++; /* Increment and write back */
+	} /* else, we just wanted to read the current values */
+	/* uidnext is now the current max UID.
+	 * Admittedly, this can be confusing here (the now clunky API for this function doesn't help matters, either)
+	 * Say we read 11 from the .uidvalidity file.
+	 * This means that no message has a UID greater than 11, including the current one.
+	 * If we're allocating in this function (assigning and incrementing), then we'll want to write 12 into .uidvalidity and reutnr that.
+	 * So depending on what we're referring to, the right answer is 11 or 12. */
 
 	/* Write updated UID to persistent storage. It's super important that this succeed. */
 	if (fprintf(fp, "%u/%u", uidvalidity, uidnext) < 0) { /* Would need to do if we created the directory anyways */
@@ -676,14 +681,16 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 	}
 
 	if (allocate) {
-		bbs_debug(5, "Assigned UIDNEXT %u (UIDVALIDITY %u)\n", uidnext, uidvalidity);
+		bbs_debug(5, "Assigned UIDNEXT %u (UIDVALIDITY %u) - current max UID: %d\n", uidnext, uidvalidity, uidnext);
+	} else {
+		bbs_debug(8, "Current max UID: %d\n", uidnext);
 	}
 
 	/* These are only valid for this folder: */
 	*newuidvalidity = uidvalidity;
 	*newuidnext = uidnext;
 	mailbox_uid_unlock(mbox);
-	return *newuidnext;
+	return uidnext;
 }
 
 int maildir_move_new_to_cur(struct mailbox *mbox, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext)
@@ -774,6 +781,7 @@ static int gen_newname(struct mailbox *mbox, const char *curfilename, const char
 
 	uid = mailbox_get_next_uid(mbox, destmaildir, 1, &newuidvalidity, &newuidnext);
 	if (!uid) {
+		bbs_error("Failed to allocate a UID for message\n");
 		return -1; /* Failed to get a UID, don't move it */
 	}
 	if (uidvalidity) {
@@ -807,10 +815,10 @@ static int gen_newname(struct mailbox *mbox, const char *curfilename, const char
 int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext)
 {
 	char newpath[272];
-	unsigned int uid;
+	int uid;
 
 	uid = gen_newname(mbox, curfilename, destmaildir, uidvalidity, uidnext, newpath, sizeof(newpath));
-	if (!uid) {
+	if (uid <= 0) {
 		return -1;
 	}
 	if (rename(curfile, newpath)) {

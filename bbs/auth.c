@@ -436,7 +436,17 @@ static int bbs_node_authenticate(struct bbs_node *node, const char *username, co
 	}
 
 	/* Normal (full) authentication */
+	/* Prevent the node from disappearing while authentication is ongoing (especially since it can take awhile)
+	 * Without locking, there is a small chance that the node is destroyed while authentication is in process,
+	 * and as part of that the user is destroyed. As a result, the auth provider may attempt to access freed memory.
+	 * The locking will prevent a node (and its user) from being destroyed while authentication is running.
+	 * The same problem does not exist for bbs_user_authenticate standalone when not called from bbs_node_authenticate,
+	 * because users are not globally stored in any container. A user not attached to a node would only be freed
+	 * by the thread that called bbs_user_authenticate in the first place.
+	 */
+	bbs_node_lock(node);
 	res = bbs_user_authenticate(node->user, username, password);
+	bbs_node_unlock(node);
 	if (!res) {
 		login_cache(node, username, sha256_hash);
 	}
@@ -535,6 +545,11 @@ int bbs_authenticate(struct bbs_node *node, const char *username, const char *pa
 	/* Not a guest, somebody needs to actual verify the username and password. */
 	if (bbs_node_authenticate(node, username, password)) {
 		bbs_event_dispatch(node, EVENT_NODE_LOGIN_FAILED);
+		return -1;
+	}
+
+	if (!bbs_user_is_registered(node->user)) {
+		bbs_error("Authentication returned success, but no user?\n");
 		return -1;
 	}
 

@@ -181,7 +181,7 @@ static int unload_module(void)
 	bbs_unregister_user_info_handler(get_user_info);
 	bbs_unregister_user_list_handler(get_users);
 
-	RWLIST_REMOVE_ALL(&users, entry, free_user);
+	RWLIST_WRLOCK_REMOVE_ALL(&users, entry, free_user);
 
 	return res;
 }

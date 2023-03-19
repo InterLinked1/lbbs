@@ -30,10 +30,12 @@ static int pre(void)
 	test_preload_module("mod_mail.so");
 	test_load_module("net_smtp.so");
 	test_load_module("net_pop3.so");
+	test_load_module("net_imap.so");
 
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_smtp.conf");
 	TEST_ADD_CONFIG("net_pop3.conf");
+	TEST_ADD_CONFIG("net_imap.conf");
 
 	system("rm -rf /tmp/test_lbbs_maildir"); /* Purge the contents of the directory, if it existed. */
 	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
@@ -123,6 +125,7 @@ static int run(void)
 	SWRITE(client1, "CAPA " ENDL);
 	CLIENT_EXPECT(client1, "+OK");
 	CLIENT_EXPECT_EVENTUALLY(client1, ".");
+	CLIENT_DRAIN(client1);
 	SWRITE(client1, "USER " TEST_USER ENDL);
 	CLIENT_EXPECT(client1, "+OK");
 	SWRITE(client1, "PASS " TEST_PASS ENDL);
@@ -144,9 +147,16 @@ static int run(void)
 	CLIENT_EXPECT(client2, "-ERR [IN-USE]"); /* Mailbox is busy */
 	close_if(client2);
 
-	/*! \todo IMAP connections must be rejected while a POP3 session is active */
-
-	/*! \todo POP3 sessions must be rejected while an IMAP session is active */
+	/* IMAP connections must not be able to modify the mailbox while a POP3 session is active */
+	client2 = test_make_socket(143);
+	if (client2 < 0) {
+		goto cleanup;
+	}
+	CLIENT_EXPECT(client2, "OK");
+	SWRITE(client2, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
+	CLIENT_EXPECT(client2, "a1 OK"); /* Connection itself should succeed, but we'll be unable to grab the mailbox lock. */
+	SWRITE(client2, "a2 SELECT \"INBOX\"" ENDL);
+	CLIENT_EXPECT(client2, "a2 NO"); /* Mailbox busy */
 
 	/* SMTP connections while a POP3 session is active are okay,
 	 * since new messages are delivered to "new",
@@ -158,7 +168,8 @@ static int run(void)
 	/* Continue the first session */
 
 	SWRITE(client1, "RETR 1" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "\r\n.\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, ".");
+	CLIENT_DRAIN(client1);
 	SWRITE(client1, "DELE 1" ENDL);
 	CLIENT_EXPECT(client1, "+OK");
 	SWRITE(client1, "QUIT" ENDL);

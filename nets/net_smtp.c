@@ -894,6 +894,9 @@ static void notify_firstmsg(struct mailbox *mbox)
 			return;
 		}
 		email = bbs_user_email(user);
+		if (strlen_zero(email)) {
+			goto cleanup; /* No email? Forget about it */
+		}
 		port_imap = bbs_protocol_port("IMAPS");
 		port_pop3 = bbs_protocol_port("POP3S");
 		if (port_imap) {
@@ -924,6 +927,7 @@ static void notify_firstmsg(struct mailbox *mbox)
 			"%s"
 			"%s"
 			,bbs_username(user), bbs_hostname(), imapstr, popstr);
+cleanup:
 		bbs_user_destroy(user);
 	}
 }
@@ -1681,6 +1685,7 @@ static int do_deliver(struct smtp_session *smtp)
 		/*! \todo Is this entirely sufficient/appropriate? Maybe we should ALSO add a single Received header on forwards? */
 		if (stringlist_contains(&smtp->sentrecipients, recipient)) {
 			bbs_warning("Skipping duplicate delivery to %s\n", recipient);
+			free(recipient);
 			continue;
 		}
 		/* Keep track that we have sent a message to this recipient */

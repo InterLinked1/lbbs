@@ -67,6 +67,7 @@ static char *_argv[256];
 /* Immutable */
 int option_dumpcore = 0; /* extern in bbs.h for backtrace */
 int option_nofork = 0;
+int option_rebind = 0;
 
 /* Mutable during runtime */
 int option_debug = 0;
@@ -365,6 +366,7 @@ int bbs_view_settings(int fd)
 static void show_help(void)
 {
 	/* It is safe to use printf here since we aren't yet multithreaded */
+	printf("  -b        Always force rebind to busy ports\n");
 	printf("  -c        Do not fork daemon\n");
 	printf("  -C        Specify alternate configuration directory\n");
 	printf("  -g        Dump core on crash\n");
@@ -376,7 +378,7 @@ static void show_help(void)
 	printf("  -?        Display this help and exit\n");
 }
 
-static const char *getopt_settings = "?cC:dG:ghU:v";
+static const char *getopt_settings = "?bcC:dG:ghU:v";
 
 static int parse_options_pre(int argc, char *argv[])
 {
@@ -407,6 +409,9 @@ static int parse_options(int argc, char *argv[])
 		case 'h':
 			show_help();
 			return -1;
+		case 'b':
+			option_rebind = 1;
+			break;
 		case 'c':
 			option_nofork = 1;
 			break;
@@ -817,6 +822,13 @@ int main(int argc, char *argv[])
 
 	bbs_debug(1, "Starting BBS on PID %d, running as user '%s' and group '%s', using '%s'\n", bbs_pid, S_IF(runuser), S_IF(rungroup), bbs_config_dir());
 	bbs_start_time = time(NULL);
+
+	if (argc > 0 && !strstr(argv[0], BBS_NAME)) {
+		/* argv[0] is typically the program name, by convention.
+		 * If it's something else, then that is certainly odd.
+		 * Caller might mean to be running the BBS under something else (e.g. valgrind) */
+		bbs_warning("LBBS argv[0] is %s - did you mean to execute a different program?\n", S_IF(argv[0]));
+	}
 
 	/* Seed the random number generators */
 	srand(time(NULL));

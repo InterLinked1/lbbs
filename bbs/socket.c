@@ -45,6 +45,8 @@
 
 #include "include/term.h" /* use bbs_unbuffer */
 
+extern int option_rebind;
+
 int bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_t uid, gid_t gid)
 {
 	struct sockaddr_un sunaddr; /* UNIX socket */
@@ -112,6 +114,24 @@ int bbs_make_tcp_socket(int *sock, int port)
 	sinaddr.sin_family = AF_INET;
 	sinaddr.sin_addr.s_addr = INADDR_ANY;
 	sinaddr.sin_port = htons(port); /* Public TCP port on which to listen */
+
+	if (option_rebind) {
+		/* This is necessary since trying a bind without reuse and then trying with reuse
+		 * can actually still fail (for some reason...).
+		 * If you reuse the first time, though, it should always work.
+		 * This does defeat the safety checking here, to warn if the port was already in use,
+		 * but for cases where we already know that it's not, or that multiple BBS processes
+		 * aren't running, then this may be worth it (e.g. the test framework)
+		 */
+		if (setsockopt(*sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
+			bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
+			return -1;
+		}
+		if (setsockopt(*sock, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(int)) < 0) {
+			bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
+			return -1;
+		}
+	}
 
 	res = bind(*sock, (struct sockaddr *)&sinaddr, sizeof(sinaddr));
 	if (res) {
