@@ -630,7 +630,6 @@ static void http_handler(struct bbs_node *node, int secure)
 	int res;
 	char buf[MAX_HTTP_REQUEST_SIZE];
 	struct readline_data rldata;
-	FILE *clientfp;
 	struct http_req req;
 	char fullpath[PATH_MAX];
 	int nreq;
@@ -651,12 +650,6 @@ static void http_handler(struct bbs_node *node, int secure)
 		req.wfd = wfd;
 	} else {
 		rfd = wfd = req.rfd = req.wfd = node->fd;
-	}
-
-	clientfp = fdopen(req.rfd, "r");
-	if (!clientfp) {
-		bbs_error("fdopen failed: %s\n", strerror(errno));
-		goto cleanup;
 	}
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
@@ -695,7 +688,6 @@ static void http_handler(struct bbs_node *node, int secure)
 		}
 		req.secure = secure;
 
-		/* Start processing headers... yes, this limits on LF, but the CR should immediately precede it. */
 		for (;;) {
 			res = bbs_fd_readline(req.rfd, &rldata, "\r\n", MIN_MS(1));
 			if (s_strlen_zero(buf)) { /* End of request headers */
@@ -731,10 +723,10 @@ static void http_handler(struct bbs_node *node, int secure)
 		}
 
 		/* Valid (and safe) path? */
-		if (strstr(req.path, "..")) {
+		if (strlen_zero(req.path) || strstr(req.path, "..")) {
 			/* We could use realpath, but this just isn't a valid web path */
 			send_response(&req, HTTP_FORBIDDEN);
-			continue;
+			break;
 		}
 
 		/* RFC 7235 Basic Authentication */
@@ -996,9 +988,6 @@ cleanup:
 		http_req_destroy(&req);
 	}
 
-	if (clientfp) {
-		fclose(clientfp);
-	}
 #ifdef HAVE_OPENSSL
 	if (secure) { /* implies ssl */
 		ssl_close(ssl);

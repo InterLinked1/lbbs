@@ -89,13 +89,17 @@ int test_load_module(const char *module);
 int test_make_socket(int port);
 
 int test_client_expect(int fd, int ms, const char *s, int line);
+int test_client_expect_buf(int fd, int ms, const char *s, int line, char *buf, size_t len);
 int test_client_expect_eventually(int fd, int ms, const char *s, int line);
 int test_client_drain(int fd, int ms);
 
 #define CLIENT_EXPECT(fd, s) if (test_client_expect(fd, SEC_MS(5), s, __LINE__)) { goto cleanup; }
+#define CLIENT_EXPECT_BUF(fd, s, buf) if (test_client_expect_buf(fd, SEC_MS(5), s, __LINE__, buf, sizeof(buf))) { goto cleanup; }
 #define CLIENT_EXPECT_EVENTUALLY(fd, s) if (test_client_expect_eventually(fd, SEC_MS(5), s, __LINE__)) { goto cleanup; }
 /* We really may need up to 150ms when under valgrind */
 #define CLIENT_DRAIN(fd) test_client_drain(fd, 150)
+
+#define REQUIRE_FD(fd) if (fd < 0) { bbs_error("File descriptor is not set\n"); return -1; }
 
 #define DIRECTORY_EXPECT_FILE_COUNT(dir, cnt) { \
 	int _dir_cnt = test_dir_file_count(dir); \

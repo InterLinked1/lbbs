@@ -37,7 +37,7 @@ static int pre(void)
 	TEST_ADD_CONFIG("net_imap.conf");
 	TEST_ADD_CONFIG("net_pop3.conf");
 
-	system("rm -rf /tmp/test_lbbs_maildir"); /* Purge the contents of the directory, if it existed. */
+	system("rm -rf " TEST_MAIL_DIR); /* Purge the contents of the directory, if it existed. */
 	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
 	return 0;
 }

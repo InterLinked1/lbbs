@@ -236,6 +236,7 @@ int test_client_drain(int fd, int ms)
 			res = read(fd, buf, sizeof(buf) - 1);
 			if (res <= 0) {
 				bbs_debug(1, "read returned %d\n", res);
+				break;
 			} else {
 				buf[res] = '\0';
 				bbs_debug(8, "Flushed: %s\n", buf);
@@ -249,9 +250,14 @@ int test_client_drain(int fd, int ms)
 
 int test_client_expect(int fd, int ms, const char *s, int line)
 {
+	char buf[4096];
+	return test_client_expect_buf(fd, ms, s, line, buf, sizeof(buf));
+}
+
+int test_client_expect_buf(int fd, int ms, const char *s, int line, char *buf, size_t len)
+{
 	int res;
 	struct pollfd pfd;
-	char buf[4096];
 
 	memset(&pfd, 0, sizeof(pfd));
 
@@ -266,7 +272,7 @@ int test_client_expect(int fd, int ms, const char *s, int line)
 	}
 	if (res > 0 && pfd.revents) {
 		int bytes;
-		bytes = read(fd, buf, sizeof(buf) - 1);
+		bytes = read(fd, buf, len - 1);
 		if (bytes <= 0) {
 			bbs_warning("Failed to receive expected output at line %d: %s (read returned %d) - %s\n", line, s, bytes, strerror(errno));
 			return -1;

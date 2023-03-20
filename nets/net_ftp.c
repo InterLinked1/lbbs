@@ -89,6 +89,9 @@ static int ftp_pasv_new(int *sockfd)
 		port = bbs_rand(minport, maxport); /* It would be better if we didn't retry previously attempted ports, but this should be good enough */
 		/* XXX Could globally keep track of ports currently in use within this module, if the traffic ever becomes high enough, rather than attempting bind() directly */
 		res = bbs_make_tcp_socket(&sfd, port); /* bind() will fail if the port is already in use */
+		if (res) {
+			bbs_debug(7, "Couldn't bind to port %d\n", port);
+		}
 	}
 
 	if (res) {
@@ -152,7 +155,6 @@ static int ftp_put(struct bbs_node *node, int *pasv_fd_ptr, const char *fulldir,
 	fclose(fp);
 	close_if(*pasv_fd_ptr); /* Close connection when done. This is the EOF that signals the client that the file transfer has completed. */
 	if (res == -1) {
-		bbs_error("File transfer failed: %s\n", strerror(errno));
 		res = ftp_write(node, 451, "File transfer failed\r\n");
 	} else {
 		res = ftp_write(node, 226, "File transfer successful, put %d bytes\r\n", bytes);
@@ -247,7 +249,7 @@ static void *ftp_handler(void *varg)
 					res = ftp_write(node, 230, "Login successful\r\n"); /* If ACCT needed, reply 332 instead */
 				}
 			}
-		} else if (!strcasecmp(command, "ACCT")) { /* Reinitialize */
+		} else if (!strcasecmp(command, "ACCT")) {
 			res = ftp_write(node, 202, "Command Not Implemented, Superflous\r\n"); /* Not needed */
 		} else if (!strcasecmp(command, "REIN")) { /* Reinitialize */
 			if (node->user) {
@@ -257,7 +259,7 @@ static void *ftp_handler(void *varg)
 				res = ftp_write(node, 421, "Not currently logged in, closing control connection\r\n");
 				break;
 			}
-		} else if (!strcasecmp(command, "QUIT")) { /* Logout and quit */
+		} else if (!strcasecmp(command, "QUIT")) { /* Log out and quit */
 			res = ftp_write(node, 231, "Goodbye\r\n");
 			break;
 		} else if (!strcasecmp(command, "AUTH")) {
@@ -339,7 +341,8 @@ static void *ftp_handler(void *varg)
 				cur = strsep(&left, ".");
 				h3 = atoi(S_IF(cur));
 				h4 = atoi(S_IF(left));
-				if (!h1 || !h2 || !h3 || !h4) {
+				if (!h1 || !h4) {
+					/* Octets 2 and 3 could be 0, but octets 1 and 4 should not be */
 					bbs_error("IP address parsing error: %s = %d,%d,%d,%d\n", our_ip, h1, h2, h3, h4);
 					res = ftp_write(node, 425, "Failed to enter passive mode, closing control connection\r\n");
 					break; /* Just give up if this failed */
@@ -515,7 +518,8 @@ static void *ftp_handler(void *varg)
 		} else if (!strcasecmp(command, "PWD")) { /* Print Working Directory */
 			res = ftp_write(node, 257, "\"%s\" is current directory.\r\n", ftpdir);
 		} else if (!strcasecmp(command, "LIST")) { /* List files */
-			char *argv[4] = { "ls", "-l", fulldir, NULL }; /*! \todo BUGBUG FIXME XXX ls uses local timestamps, needs to be UTC */
+			/*! \todo BUGBUG FIXME XXX ls uses local timestamps, needs to be UTC. Also reveals local usernames. This should be generated directly, not exec'ed out to ls. */
+			char *argv[4] = { "ls", "-l", fulldir, NULL };
 			REQUIRE_PASV_FD();
 			res = ftp_write(node, 125, "Listing follows for %s\r\n", ftpdir);
 			bbs_debug(5, "Generating listing for %s\n", fulldir); /* Client should not know what fulldir is */
@@ -593,7 +597,8 @@ static int load_config(void)
 	ftp_port = DEFAULT_FTP_PORT;
 	bbs_config_val_set_port(cfg, "ftp", "port", &ftp_port);
 
-	minport = maxport = 0;
+	minport = 10000;
+	maxport = 20000;
 	bbs_config_val_set_port(cfg, "pasv", "minport", &minport);
 	bbs_config_val_set_port(cfg, "pasv", "maxport", &maxport);
 
