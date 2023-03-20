@@ -118,3 +118,453 @@
    fun:__bbs_assert
    fun:bbs_write
 }
+{
+   GMIME_load
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:calloc
+   fun:_dl_check_map_versions
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+   fun:_dl_open
+   fun:dlopen_doit
+   fun:_dl_catch_exception
+   fun:_dl_catch_error
+   fun:_dlerror_run
+   fun:dlopen@@GLIBC_2.2.5
+   fun:load_dlopen
+   fun:check_dependencies
+}
+{
+   GMIME_load
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:add_to_global_resize
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+   fun:_dl_open
+   fun:dlopen_doit
+   fun:_dl_catch_exception
+   fun:_dl_catch_error
+   fun:_dlerror_run
+   fun:dlopen@@GLIBC_2.2.5
+   fun:load_dlopen
+   fun:load_dynamic_module
+}
+{
+   GOBJECT
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:realloc
+   fun:g_realloc
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:g_signal_newv
+   fun:g_signal_new_valist
+   fun:g_signal_new
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:g_type_class_ref
+   fun:g_type_class_ref
+   fun:g_type_class_ref
+   fun:g_object_new_with_properties
+}
+{
+   GOBJECT
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:realloc
+   fun:g_realloc
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:g_signal_newv
+   fun:g_signal_new_valist
+   fun:g_signal_new
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:g_type_class_ref
+   fun:g_type_class_ref
+   fun:g_type_class_ref
+   fun:g_object_new_with_properties
+   fun:g_object_new
+}
+{
+   GLIB_GOBJECT
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   obj:/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.6600.8
+   fun:g_rw_lock_writer_lock
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:call_init.part.0
+   fun:call_init
+   fun:_dl_init
+   fun:_dl_catch_exception
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+   fun:_dl_open
+   fun:dlopen_doit
+   fun:_dl_catch_exception
+}
+{
+   GOBJECT_INIT
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_hash_table_new_full
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:call_init.part.0
+   fun:call_init
+   fun:_dl_init
+   fun:_dl_catch_exception
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+   fun:_dl_open
+   fun:dlopen_doit
+}
+{
+   GMIME_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.6600.8
+   fun:call_init.part.0
+   fun:call_init
+   fun:_dl_init
+   fun:_dl_catch_exception
+   ...
+}
+{
+   GOBJECT_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:call_init.part.0
+   fun:call_init
+   fun:_dl_init
+   fun:_dl_catch_exception
+   ...
+}
+{
+   GOBJECT_init
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:realloc
+   fun:g_realloc
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:g_type_register_static
+   fun:g_param_type_register_static
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:call_init.part.0
+   fun:call_init
+   fun:_dl_init
+   fun:_dl_catch_exception
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+}
+{
+   GMIME_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_mime_crypto_context_get_type
+   fun:g_mime_init
+   fun:load_module
+   fun:start_resource
+   fun:load_resource
+   fun:on_file_preload
+}
+{
+   GOBJECT_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.6600.8
+   obj:/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.6600.8
+   obj:/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.6600.8
+   fun:g_hash_table_insert
+   fun:g_quark_from_string
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:g_type_register_static
+   fun:g_mime_filter_get_type
+   fun:g_mime_init
+   fun:load_module
+}
+{
+   GOBJECT_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:call_init.part.0
+   fun:call_init
+   fun:_dl_init
+   fun:_dl_catch_exception
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+   fun:_dl_open
+   fun:dlopen_doit
+   fun:_dl_catch_exception
+}
+{
+   GOBJECT_init
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:g_type_register_static
+   fun:g_mime_content_disposition_get_type
+   fun:g_mime_init
+   ...
+}
+{
+   GOBJECT_init
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:g_type_register_fundamental
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:call_init.part.0
+   ...
+}
+{
+   GOBJECT_init
+   Memcheck:Leak
+   match-leak-kinds: possible
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:call_init.part.0
+   fun:call_init
+   fun:_dl_init
+   fun:_dl_catch_exception
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+   fun:_dl_open
+}
+{
+   GOBJECT_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:g_type_register_static
+   fun:g_mime_message_partial_get_type
+   fun:g_mime_init
+   ...
+}
+{
+   GOBJECT
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.6600.8
+   fun:g_hash_table_new_full
+   fun:g_param_spec_pool_new
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:g_type_class_ref
+   fun:g_type_class_ref
+   fun:g_type_class_ref
+   fun:g_object_new_with_properties
+   fun:g_object_new
+}
+{
+   GMIME
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.6600.8
+   fun:g_hash_table_new_full
+   fun:g_time_zone_new
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   fun:g_mime_utils_header_decode_date
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+}
+{
+   GMIME
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:g_type_class_ref
+   fun:g_type_class_ref
+   fun:g_type_class_ref
+   fun:g_object_new_with_properties
+   fun:g_object_new
+   fun:g_mime_stream_fs_new_with_bounds
+}
+{
+   GMIME
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_object_new
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   fun:g_type_create_instance
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:g_object_new_with_properties
+   fun:g_object_new
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+}
+
+{
+   GMIME
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_object_new
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+}
+{
+   GMIME
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_object_new
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+}
+{
+   GMIME
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_type_class_ref
+   fun:g_object_new_with_properties
+   fun:g_object_new
+   fun:g_mime_header_list_new
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   fun:g_type_create_instance
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   fun:g_object_new_with_properties
+   fun:g_object_new
+   fun:g_mime_message_new
+}
+{
+   GMIME_INIT
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_mime_init
+   fun:load_module
+   ...
+}
+{
+   MIMEPARSE_GMIME_run
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_object_new
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   fun:g_mime_parser_construct_message
+   fun:mime_make_bodystructure
+}
+{
+   MIMEPARSE_GMIME_run
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_object_new
+   fun:g_mime_parser_new_with_stream
+   fun:mime_make_bodystructure
+   ...
+}
+{
+   MIMEPARSE_GMIME_run
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   fun:g_malloc0
+   fun:g_type_class_ref
+   fun:g_type_class_ref
+   fun:g_type_class_ref
+   fun:g_object_new_with_properties
+   fun:g_object_new
+   fun:g_mime_stream_fs_new_with_bounds
+   fun:mime_make_bodystructure
+   fun:process_fetch
+   fun:handle_fetch
+   fun:imap_process
+}
+{
+   MIMEPARSE_GMIME_run
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_type_class_ref
+   fun:g_object_new_with_properties
+   fun:g_object_new
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   fun:g_mime_parser_construct_message
+   fun:mime_make_bodystructure
+   ...
+}
+{
+   MIMEPARSE_GMIME_run
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   fun:g_mime_parser_construct_message
+   fun:mime_make_bodystructure
+   ...
+}
+{
+   MIMEPARSE_GMIME_run
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_type_class_ref
+   fun:g_object_new_with_properties
+   fun:g_object_new
+   fun:g_mime_object_new_type
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   fun:g_mime_parser_construct_message
+   ...
+}
+{
+   MIMEPARSE_GMIME_run
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_object_new
+   fun:g_mime_stream_fs_new_with_bounds
+   fun:mime_make_bodystructure
+  ...
+}
+{
+   MIMEPARSE_GMIME_run
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   fun:g_mime_utils_header_decode_date
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
+   fun:g_mime_parser_construct_message
+}

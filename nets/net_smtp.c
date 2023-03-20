@@ -109,6 +109,8 @@ static unsigned int queue_interval = 900;
 static unsigned int max_retries = 10;
 static unsigned int max_age = 86400;
 
+static char queue_dir[256];
+
 /* Allow this module to use dprintf */
 #undef dprintf
 
@@ -169,16 +171,12 @@ struct smtp_session {
 	unsigned int sentself:1;
 };
 
-static void smtp_destroy(struct smtp_session *smtp)
+static void smtp_reset(struct smtp_session *smtp)
 {
-	/* Reset */
-	smtp->ehlo = 0;
-	smtp->gothelo = 0;
 	smtp->indata = 0;
 	smtp->indataheaders = 0;
 	smtp->inauth = 0;
 	smtp->hopcount = 0;
-	free_if(smtp->helohost);
 	free_if(smtp->authuser);
 	free_if(smtp->fromheaderaddress);
 	free_if(smtp->from);
@@ -190,6 +188,15 @@ static void smtp_destroy(struct smtp_session *smtp)
 	smtp->numexternalrecipients = 0;
 	stringlist_empty(&smtp->recipients);
 	stringlist_empty(&smtp->sentrecipients);
+}
+
+static void smtp_destroy(struct smtp_session *smtp)
+{
+	/* Reset */
+	smtp->ehlo = 0;
+	smtp->gothelo = 0;
+	free_if(smtp->helohost);
+	smtp_reset(smtp);
 }
 
 static struct stringlist blacklist;
@@ -222,7 +229,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		return -1;
 #endif
 	} else {
-		smtp->helohost = strdup(s);
+		REPLACE(smtp->helohost, s);
 		/* Note that enforcing that helohost matches sending IP is noncompliant with RFC 2821:
 		 * "An SMTP server MAY verify that the domain name parameter in the EHLO command
 		 * actually corresponds to the IP address of the client.
@@ -233,6 +240,11 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		 * any relationship between hostname resolution and authorized IPs for sending mail.
 		 * This is the kind of problem SPF records are better off at handling anyways.
 		 */
+	}
+
+	if (smtp->gothelo) {
+		/* We should be able to handle this gracefully. Clients shouldn't do it but servers should accept duplicates. */
+		bbs_warning("Duplicate HELO/EHLO\n");
 	}
 
 	smtp->gothelo = 1;
@@ -294,8 +306,7 @@ static int handle_auth(struct smtp_session *smtp, char *s)
 		}
 		smtp_reply(smtp, 235, 2.7.0, "Authentication successful");
 	} else if (inauth == 2) {
-		free_if(smtp->authuser);
-		smtp->authuser = strdup(s);
+		REPLACE(smtp->authuser, s);
 		smtp->inauth = 3; /* Get password */
 		smtp_reply(smtp, 334, "UGFzc3dvcmQA", ""); /* Prompt for password (base64 encoded) */
 	} else if (inauth == 3) {
@@ -510,8 +521,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 			}
 			bbs_debug(3, "Message expanded to %d recipient%s on mailing list %s\n", added, ESS(added), user);
 			smtp_reply(smtp, 250, 2.0.0, "OK");
-			free_if(smtp->listname);
-			smtp->listname = strdup(user);
+			REPLACE(smtp->listname, user);
 			return 0;
 		}
 
@@ -1228,7 +1238,6 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	int metalen;
 	char buf[256] = "";
 
-	UNUSED(dir_name);
 	UNUSED(obj);
 
 	snprintf(fullname, sizeof(fullname), "%s/%s", dir_name, filename);
@@ -1336,8 +1345,6 @@ cleanup:
 /*! \brief Periodically retry delivery of outgoing mail */
 static void *queue_handler(void *unused)
 {
-	char qdir[256];
-
 	UNUSED(unused);
 
 	if (!queue_outgoing) {
@@ -1345,12 +1352,11 @@ static void *queue_handler(void *unused)
 		return NULL; /* Not needed, queuing disabled */
 	}
 
-	snprintf(qdir, sizeof(qdir), "%s/mailq/new", mailbox_maildir(NULL));
 	usleep(10000000); /* Wait 10 seconds after the module loads, then try to flush anything in the queue. */
 
 	for (;;) {
 		pthread_mutex_lock(&queue_lock);
-		bbs_dir_traverse(qdir, on_queue_file, NULL, -1);
+		bbs_dir_traverse(queue_dir, on_queue_file, NULL, -1);
 		pthread_mutex_unlock(&queue_lock);
 		usleep(1000000 * queue_interval);
 	}
@@ -1814,7 +1820,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 	REQUIRE_ARGS(command);
 
 	if (!strcasecmp(command, "RSET")) {
-		smtp_destroy(smtp);
+		smtp_reset(smtp);
 		smtp_reply(smtp, 250, 2.1.5, "Flushed");
 	} else if (!strcasecmp(command, "NOOP")) {
 		smtp_reply(smtp, 250, 2.0.0, "OK");
@@ -1942,8 +1948,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 			smtp_reply(smtp, 554, 5.7.1, "This email address is blacklisted");
 			return 0;
 		}
-		free_if(smtp->from);
-		smtp->from = strdup(from);
+		REPLACE(smtp->from, from);
 		smtp_reply(smtp, 250, 2.0.0, "OK");
 	} else if (!strcasecmp(command, "RCPT")) {
 		REQUIRE_HELO();
@@ -2186,35 +2191,42 @@ static int load_module(void)
 	if (load_config()) {
 		return -1;
 	}
-	/* Since load_config returns 0 if no config, do this check here instead of in load_config: */
+	/* Since load_config returns 0 if no config, do this stuff here instead of in load_config: */
+	snprintf(queue_dir, sizeof(queue_dir), "%s/mailq", mailbox_maildir(NULL));
+	mailbox_maildir_init(queue_dir); /* The queue dir is also like a maildir, it has a new, tmp, and cur */
+	snprintf(queue_dir, sizeof(queue_dir), "%s/mailq/new", mailbox_maildir(NULL));
+	if (eaccess(queue_dir, R_OK) && mkdir(queue_dir, 0700)) {
+		bbs_error("mkdir(%s) failed: %s\n", queue_dir, strerror(errno));
+		goto cleanup;
+	}
 	if (!smtp_enabled && !smtps_enabled && !msa_enabled) {
 		bbs_debug(3, "Neither SMTP nor SMTPS nor MSA is enabled, declining to load\n");
-		return -1; /* Nothing is enabled */
+		goto cleanup; /* Nothing is enabled */
 	}
 	if (smtps_enabled && !ssl_available()) {
 		bbs_error("TLS is not available, SMTPS may not be used\n");
-		return -1;
+		goto cleanup;
 	}
 
 	if (strlen_zero(bbs_hostname())) {
 		bbs_error("A BBS hostname in nodes.conf is required for mail services\n");
-		return -1;
+		goto cleanup;
 	}
 
 	pthread_mutex_init(&queue_lock, NULL);
 
 	/* If we can't start the TCP listeners, decline to load */
 	if (smtp_enabled && bbs_make_tcp_socket(&smtp_socket, smtp_port)) {
-		return -1;
+		goto cleanup;
 	}
 	if (smtps_enabled && bbs_make_tcp_socket(&smtps_socket, smtps_port)) {
 		close_if(smtp_socket);
-		return -1;
+		goto cleanup;
 	}
 	if (msa_enabled && bbs_make_tcp_socket(&msa_socket, msa_port)) {
 		close_if(smtps_socket);
 		close_if(smtp_socket);
-		return -1;
+		goto cleanup;
 	}
 
 	spf_server = SPF_server_new(SPF_DNS_CACHE, 0);
@@ -2222,7 +2234,7 @@ static int load_module(void)
 		bbs_error("Failed to create SPF server\n");
 		close_if(smtps_socket);
 		close_if(smtp_socket);
-		return -1;
+		goto cleanup;
 	}
 
 	if (bbs_pthread_create(&smtp_listener_thread, NULL, smtp_listener, NULL)) {
@@ -2231,7 +2243,7 @@ static int load_module(void)
 		close_if(smtp_socket);
 		close_if(smtps_socket);
 		SPF_server_free(spf_server);
-		return -1;
+		goto cleanup;
 	} else if (bbs_pthread_create(&msa_listener_thread, NULL, msa_listener, NULL)) {
 		bbs_error("Unable to create SMTP MSA listener thread.\n");
 		close_if(msa_socket);
@@ -2241,7 +2253,7 @@ static int load_module(void)
 		pthread_kill(smtp_listener_thread, SIGURG);
 		bbs_pthread_join(smtp_listener_thread, NULL);
 		SPF_server_free(spf_server);
-		return -1;
+		goto cleanup;
 	}
 
 	if (bbs_pthread_create(&queue_thread, NULL, queue_handler, NULL)) {
@@ -2255,7 +2267,7 @@ static int load_module(void)
 		pthread_kill(msa_listener_thread, SIGURG);
 		bbs_pthread_join(msa_listener_thread, NULL);
 		SPF_server_free(spf_server);
-		return -1;
+		goto cleanup;
 	}
 
 	if (smtp_enabled) {
@@ -2271,6 +2283,10 @@ static int load_module(void)
 		bbs_register_test(tests[i].name, tests[i].callback);
 	}
 	return 0;
+
+cleanup:
+	stringlist_empty(&blacklist);
+	return -1;
 }
 
 static int unload_module(void)

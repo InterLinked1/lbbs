@@ -95,8 +95,6 @@ static int run(void)
 	/* Start over */
 	SWRITE(clientfd, "RSET\r\n");
 	CLIENT_EXPECT(clientfd, "250");
-	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
 
 	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
 	CLIENT_EXPECT(clientfd, "250");

@@ -28,6 +28,7 @@
 static int pre(void)
 {
 	test_preload_module("mod_mail.so");
+	test_preload_module("mod_mimeparse.so");
 	test_load_module("net_smtp.so");
 	test_load_module("net_pop3.so");
 	test_load_module("net_imap.so");
@@ -50,13 +51,13 @@ static int send_message(int client1)
 
 	if (!send_count++) {
 		CLIENT_EXPECT(client1, "220");
+		SWRITE(client1, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+		CLIENT_EXPECT_EVENTUALLY(client1, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
 	} else {
 		SWRITE(client1, "RSET" ENDL);
 		CLIENT_EXPECT(client1, "250");
 	}
 
-	SWRITE(client1, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
 	SWRITE(client1, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
 	CLIENT_EXPECT(client1, "250");
 	SWRITE(client1, "RCPT TO:<" TEST_EMAIL ">\r\n");

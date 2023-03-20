@@ -28,6 +28,7 @@
 static int pre(void)
 {
 	test_preload_module("mod_mail.so");
+	test_preload_module("mod_mimeparse.so");
 	test_load_module("net_smtp.so");
 	test_load_module("net_imap.so");
 	test_load_module("net_pop3.so");
@@ -50,13 +51,13 @@ static int send_message(int client1)
 
 	if (!send_count++) {
 		CLIENT_EXPECT(client1, "220");
+		SWRITE(client1, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+		CLIENT_EXPECT_EVENTUALLY(client1, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
 	} else {
 		SWRITE(client1, "RSET" ENDL);
 		CLIENT_EXPECT(client1, "250");
 	}
 
-	SWRITE(client1, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
 	SWRITE(client1, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
 	CLIENT_EXPECT(client1, "250");
 	SWRITE(client1, "RCPT TO:<" TEST_EMAIL ">\r\n");
@@ -70,6 +71,7 @@ static int send_message(int client1)
 	SWRITE(client1, "From: " TEST_EMAIL_EXTERNAL ENDL);
 	write(client1, subject, strlen(subject));
 	SWRITE(client1, "To: " TEST_EMAIL ENDL);
+	SWRITE(client1, "Content-Type: text/plain" ENDL);
 	SWRITE(client1, ENDL);
 	SWRITE(client1, "This is a test email message." ENDL);
 	SWRITE(client1, "....Let's hope it gets delivered properly." ENDL); /* Test byte stuffing */
@@ -106,6 +108,7 @@ static int run(void)
 {
 	int client1 = -1, client2 = -1;
 	int res = -1;
+	int i;
 
 	if (make_messages(TARGET_MESSAGES)) {
 		return -1;
@@ -290,8 +293,25 @@ static int run(void)
 	SWRITE(client1, "DONE" ENDL);
 	CLIENT_EXPECT(client1, "a25 OK IDLE");
 
+	/* Test FETCH BODYSTRUCTURE */
+	/* Since gmime/glib don't free all their memory prior to exiting,
+	 * run this multiple times to invoke mod_mimeparse multiple times,
+	 * to ensure our suppressions are valid. */
+	for (i = 0; i < 3; i++) {
+		SWRITE(client1, "a26 UID FETCH 1 (UID BODYSTRUCTURE)" ENDL);
+		CLIENT_EXPECT(client1, "plain");
+		CLIENT_DRAIN(client1);
+	}
+	SWRITE(client1, "a27 UID FETCH 2 (UID BODYSTRUCTURE)" ENDL);
+	CLIENT_EXPECT(client1, "plain");
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "a27 UID FETCH 11 (UID BODYSTRUCTURE)" ENDL);
+	CLIENT_EXPECT(client1, "PLAIN");
+	CLIENT_DRAIN(client1);
+
 	/* LOGOUT */
-	SWRITE(client1, "a26 LOGOUT" ENDL);
+	SWRITE(client1, "a999 LOGOUT" ENDL);
 	CLIENT_EXPECT(client1, "* BYE");
 
 	res = 0;

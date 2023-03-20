@@ -28,6 +28,9 @@ apt-get install -y libmagic-dev
 # net_smtp
 apt-get install -y libspf2-dev
 
+# mod_mimeparse
+apt-get install -y libglib2.0-dev libgmime-3.0-dev
+
 # libdiscord
 scripts/concord.sh
 

@@ -47,6 +47,7 @@ static int option_debug = 0;
 static int option_debug_bbs = 0;
 static char option_debug_bbs_str[12] = "-";
 static int option_errorcheck = 0;
+static int option_gen_supp = 0;
 static const char *testfilter = NULL;
 
 #define VALGRIND_LOGFILE "/tmp/test_lbbs_valgrind.log"
@@ -125,7 +126,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 
 static int parse_options(int argc, char *argv[])
 {
-	static const char *getopt_settings = "?dDet:";
+	static const char *getopt_settings = "?dDegt:";
 	int c;
 
 	while ((c = getopt(argc, argv, getopt_settings)) != -1) {
@@ -136,6 +137,7 @@ static int parse_options(int argc, char *argv[])
 			fprintf(stderr, "-d     Increase debug level. At least level 1 need for BBS log output (except debug, controlled by -D, separately)\n");
 			fprintf(stderr, "-D     Increase BBS debug level. Must have at least one -d to get BBS logging output.\n");
 			fprintf(stderr, "-e     Run the BBS under valgrind to check for errors and warnings.\n");
+			fprintf(stderr, "-g     Also generate valgrind suppressions for the valgrind report.\n");
 			fprintf(stderr, "-h     Show this help and exit.\n");
 			fprintf(stderr, "-t     Run a specific named test. Include the test_ prefix but not the .so suffix.\n");
 			return -1;
@@ -156,6 +158,9 @@ static int parse_options(int argc, char *argv[])
 			break;
 		case 'e':
 			option_errorcheck = 1;
+			break;
+		case 'g':
+			option_gen_supp = 1;
 			break;
 		case 't':
 			testfilter = optarg;
@@ -434,6 +439,8 @@ static int test_bbs_spawn(const char *directory)
 		"--track-origins=yes",
 		"--show-leak-kinds=all",
 		"--suppressions=../valgrind.supp", /* Move up one directory from tests, since that's where this file is */
+		/* =yes is not suitable for non-interactive usage: https://valgrind.org/docs/manual/manual-core.html#manual-core.suppress */
+		option_gen_supp ? "--gen-suppressions=all" : "--gen-suppressions=no",
 		"--log-file=" VALGRIND_LOGFILE,
 		LBBS_BINARY,
 		/* Begin options */
@@ -586,7 +593,9 @@ static int analyze_valgrind(void)
 		}
 		if (option_debug > 2) { /* Most any level of debug gets valgrind report printout */
 			if (!got_segv || !in_heap_summary || option_debug > 5) { /* Skip memory leak details if we segfaulted, since those are probably caused by the segfault and output will be HUGE */
-				fprintf(stderr, "%s", buf); /* Don't add LF since buffer already contains one */
+				if (!strstr(buf, "used_suppression:") || option_debug > 6) {
+					fprintf(stderr, "%s", buf); /* Don't add LF since buffer already contains one */
+				}
 			}
 		}
 	}

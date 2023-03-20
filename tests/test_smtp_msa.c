@@ -66,13 +66,14 @@ cleanup:
 static int handshake(int clientfd, int reset)
 {
 	if (reset) {
+		/* We should be able to reset at any point without losing our authenticated state, or needing to re-HELO/EHLO */
 		SWRITE(clientfd, "RSET" ENDL);
 		CLIENT_EXPECT(clientfd, "250");
 	} else {
 		CLIENT_EXPECT(clientfd, "220");
+		SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+		CLIENT_EXPECT_EVENTUALLY(clientfd, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
 	}
-	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
 	return 0;
 cleanup:
 	return -1;

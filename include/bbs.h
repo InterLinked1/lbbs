@@ -203,6 +203,8 @@ int bbs_fd_dump(int fd);
 
 #define strdup_if(x) (x ? strdup(x) : NULL)
 
+#define REPLACE(var, val) free_if(var); var = strdup(val);
+
 /*! \note In theory, free(NULL) is okay, but using this macro also documents that x could be NULL */
 #define free_if(x) if (x) { free(x); x = NULL; }
 
@@ -331,6 +333,18 @@ static inline void __attribute__((always_inline)) __bbs_assert(int condition, co
 
 /*! \brief Remove all leading and trailing whitespace from a string */
 #define trim(s) ltrim(s); rtrim(s);
+
+/*! \brief Strip begin/end quotes from a string */
+#define STRIP_QUOTES(s) { \
+	if (*s == '"') { \
+		char *tmps; \
+		s++; \
+		tmps = strrchr(s, '"'); \
+		if (tmps && !*(tmps + 1)) { \
+			*tmps = '\0'; \
+		} \
+	} \
+}
 
 /*! \brief Whether a number is a valid port number */
 /*! \note Technically 0 is valid, but we exclude it here since it would never be used, and atoi returns 0 on failure */

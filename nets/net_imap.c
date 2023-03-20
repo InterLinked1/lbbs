@@ -47,6 +47,7 @@
 #include "include/test.h"
 
 #include "include/mod_mail.h"
+#include "include/mod_mimeparse.h"
 
 /* IMAP ports */
 #define DEFAULT_IMAP_PORT 143
@@ -428,20 +429,6 @@ cleanup:
 		imap_reply(imap, "BAD Missing arguments"); \
 		return 0; \
 	}
-
-/*! \brief Strip begin/end quotes from a string */
-#define STRIP_QUOTES(s) { \
-	if (*s == '"') { \
-		char *tmps; \
-		s++; \
-		tmps = strrchr(s, '"'); \
-		if (tmps && !*(tmps + 1)) { \
-			*tmps = '\0'; \
-		} \
-	} \
-}
-
-#define REPLACE(var, val) free_if(var); var = strdup(val);
 
 /*! \todo There is locking in a few places, but there probably needs to be a lot more of it.
  * POP3 WRLOCKs the entire mailbox when it starts a session,
@@ -1530,6 +1517,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		int res;
 		int sendbody = 0;
 		int peek = 0;
+		char *dyn = NULL;
 
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			goto cleanup;
@@ -1637,7 +1625,17 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			SAFE_FAST_COND_APPEND(response, buf, len, 1, "RFC822.HEADER");
 		}
 
-		/*! \todo Still missing lots of stuff here!!! +need to mark as Seen unless peeking */
+		if (fetchreq->bodystructure) {
+			/* Excellent reference for BODYSTRUCTURE: http://sgerwk.altervista.org/imapbodystructure.html */
+			/* But we just use the top of the line gmime library for this task (see https://stackoverflow.com/a/18813164) */
+			dyn = mime_make_bodystructure(fullname);
+		}
+
+		/*! \todo Still missing lots of stuff here!!! +need to automatically mark as Seen unless peeking */
+		if (fetchreq->body || fetchreq->envelope || fetchreq->internaldate || fetchreq->rfc822text) {
+			/*! \todo Implement these */
+			bbs_warning("Client requested unsupported FETCH type\n"); /* Make some noise until these are implemented */
+		}
 
 		/* Actual body, if being sent, should be last */
 		if (fetchreq->rfc822) {
@@ -1657,7 +1655,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				fseek(fp, 0L, SEEK_END); /* Go to EOF */
 				size = ftell(fp);
 				rewind(fp); /* Be kind, rewind */
-				imap_send(imap, "%d FETCH (%s %s {%ld}", seqno, response, fetchreq->rfc822 ? "RFC822" : "BODY[]", size + 2); /* No close paren here, last dprintf will do that */
+				imap_send(imap, "%d FETCH (%s %s %s {%ld}", seqno, S_IF(dyn), response, fetchreq->rfc822 ? "RFC822" : "BODY[]", size + 2); /* No close paren here, last dprintf will do that */
 				/* XXX Assumes not sending headers and bodylen at same time.
 				 * In reality, I think that *might* be fine because the body contains everything,
 				 * and you wouldn't request just the headers and then the whole body in the same FETCH.
@@ -1684,7 +1682,11 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			}
 		} else {
 			/* Number after FETCH is always a message sequence number, not UID, even if usinguid */
-			imap_send(imap, "%d FETCH (%s)", seqno, response); /* Single line response */
+			imap_send(imap, "%d FETCH (%s %s)", seqno, S_IF(dyn), response); /* Single line response */
+		}
+
+		if (dyn) {
+			free(dyn);
 		}
 
 		/*! \todo mark as read if !peek (in reality, not critical, since most clients will manually set the flags, and use peek extensively) */
@@ -2618,4 +2620,4 @@ static int unload_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_DEPENDENT("RFC9051 IMAP", "mod_mail.so");
+BBS_MODULE_INFO_DEPENDENT("RFC9051 IMAP", "mod_mail.so,mod_mimeparse.so");
