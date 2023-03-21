@@ -35,7 +35,7 @@ static RWLIST_HEAD_STATIC(prots, net_prot);
 
 int bbs_register_network_protocol(const char *name, unsigned int port)
 {
-	struct net_prot *cur, *prev = NULL, *prot;
+	struct net_prot *prot;
 
 	RWLIST_WRLOCK(&prots);
 	prot = calloc(1, sizeof(*prot) + strlen(name) + 1);
@@ -43,22 +43,12 @@ int bbs_register_network_protocol(const char *name, unsigned int port)
 		RWLIST_UNLOCK(&prots);
 		return -1;
 	}
-	
+
 	prot->port = port;
 	strcpy(prot->name, name); /* Safe */
 
 	/* Insert in order of port */
-	RWLIST_TRAVERSE(&prots, cur, entry) {
-		if (cur->port > port) {
-			break;
-		}
-		prev = cur;
-	}
-	if (prev) {
-		RWLIST_INSERT_AFTER(&prots, prev, prot, entry);
-	} else {
-		RWLIST_INSERT_HEAD(&prots, prot, entry); /* List was empty, or it should go at beginning. */
-	}
+	RWLIST_INSERT_SORTED(&prots, prot, entry, port);
 	RWLIST_UNLOCK(&prots);
 	bbs_verb(5, "Registered %s protocol on port %u\n", name, port);
 	return 0;

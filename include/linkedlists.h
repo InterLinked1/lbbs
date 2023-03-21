@@ -295,6 +295,29 @@ struct {								\
 } while (0)
 
 /*!
+ * \brief Insert a list entry such that the list remains sorted in ascending order
+ * \param head This is a pointer to the list head structure
+ * \param elm This is a pointer to the entry to be inserted.
+ * \param field This is the name of the field (declared using RWLIST_ENTRY())
+ * used to link entries of this list together.
+ * \param attr This is the name of the struct field that will be compared
+ */
+#define RWLIST_INSERT_SORTED(head, elm, field, attr) {	\
+	typeof((head)->first) __prev = NULL, __cur;			\
+	RWLIST_TRAVERSE(head, __cur, field) { 				\
+		if (__cur->attr > elm->attr) { 					\
+			break; 										\
+		} 												\
+		__prev = __cur; 								\
+	} 													\
+	if (__prev) { 										\
+		RWLIST_INSERT_AFTER(head, __prev, elm, field); 	\
+	} else { 											\
+		RWLIST_INSERT_HEAD(head, elm, field); /* List was empty, or it should go at beginning. */ \
+	}													\
+}
+
+/*!
  * \brief Removes and returns the head entry from a list.
  * \param head This is a pointer to the list head structure
  * \param field This is the name of the field (declared using RWLIST_ENTRY())

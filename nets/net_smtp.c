@@ -564,7 +564,16 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 	return 0;
 }
 
-static int lookup_mx(const char *domain, char *buf, size_t len)
+struct mx_record {
+	int priority;
+	RWLIST_ENTRY(mx_record) entry;
+	char data[];
+};
+
+RWLIST_HEAD(mx_records, mx_record);
+
+/*! \brief Fill the results list with the MX results in order of priority */
+static int lookup_mx_all(const char *domain, struct stringlist *results)
 {
 	char *hostname, *tmp;
 	unsigned char answer[PACKETSZ] = "";
@@ -572,6 +581,10 @@ static int lookup_mx(const char *domain, char *buf, size_t len)
 	int res, i;
 	ns_msg msg;
 	ns_rr rr;
+	struct mx_records mxs; /* No need to bother locking this list, nobody else knows about it */
+	int priority;
+	struct mx_record *mx;
+	int added = 0;
 
 	res = res_query(domain, C_IN, T_MX, answer, sizeof(answer));
 	if (res == -1) {
@@ -588,35 +601,81 @@ static int lookup_mx(const char *domain, char *buf, size_t len)
 		bbs_error("No MX records available\n");
 		return -1;
 	}
-	/* XXX Just pick the first one and run with it */
-	for (i = 0; i < res; i++){
+
+	memset(&mxs, 0, sizeof(mxs));
+
+	/* Add each record to our sorted list */
+	for (i = 0; i < res; i++) {
 		ns_parserr(&msg, ns_s_an, i, &rr);
 		ns_sprintrr(&msg, &rr, NULL, NULL, dispbuf, sizeof(dispbuf));
-		break;
+		bbs_debug(8, "NS answer: %s\n", dispbuf);
+		/* Parse the result */
+		/*! \todo BUGBUG This is very rudimentary and needs to be made much more robust.
+		 * For example, this doesn't correctly parse results that don't have an MX record.
+		 * We also need to pick the mail server with the LOWEST score,
+		 * and potentially try multiple if the first one fails.
+		 */
+		hostname = dispbuf;
+
+		/* Results will be formatted like so:
+		 * gmail.com.         1H IN MX        30 alt3.gmail-smtp-in.l.google.com.
+		 * gmail.com.         1H IN MX        5 gmail-smtp-in.l.google.com.
+		 * gmail.com.         1H IN MX        20 alt2.gmail-smtp-in.l.google.com.
+		 * gmail.com.         1H IN MX        40 alt4.gmail-smtp-in.l.google.com.
+		 * gmail.com.         1H IN MX        10 alt1.gmail-smtp-in.l.google.com.
+		 *
+		 * If there is no MX record, we'll get something like:
+		 * example.com.               1D IN MX        0 .
+		 */
+
+		tmp = strstr(hostname, "MX");
+		if (!tmp) {
+			bbs_error("Unexpected MX NS answer: %s\n", dispbuf);
+			continue;
+		}
+		tmp += STRLEN("MX");
+		ltrim(tmp);
+		hostname = tmp;
+		tmp = strsep(&hostname, " ");
+		priority = atoi(tmp); /* Note that 0 is a valid (and the highest) priority */
+		tmp = strrchr(hostname, '.');
+		if (tmp) {
+			*tmp = '\0'; /* Strip trailing . */
+		}
+
+		if (strlen_zero(hostname)) { /* No MX record */
+			continue;
+		}
+
+		/* Insert in order of priority */
+		mx = calloc(1, sizeof(*mx) + strlen(hostname) + 1);
+		if (!mx) {
+			continue;
+		}
+		strcpy(mx->data, hostname); /* Safe */
+		mx->priority = priority;
+		RWLIST_INSERT_SORTED(&mxs, mx, entry, priority);
+		added++;
 	}
 
-	/* Parse the result */
-	bbs_debug(8, "NS answer: %s\n", dispbuf);
+	if (!added) {
+		bbs_error("No MX records available for %s\n", domain);
+		return -1;
+	}
 
-	/*! \todo BUGBUG This is very rudimentary and needs to be made much more robust.
-	 * For example, this doesn't correctly parse results that don't have an MX record.
-	 * We also need to pick the mail server with the LOWEST score,
-	 * and potentially try multiple if the first one fails.
+	/* Now that we have it ordered, we don't actually care about the priorities themselves.
+	 * Just return a stringlist to the client, with results ordered by priority. */
+	/* XXX Technically, the SMTP spec says we should randomly choose between MX servers
+	 * with the same priority.
+	 * While we don't do this currently, the DNS response has them in random order to begin with,
+	 * so that might add some randomness.
 	 */
-	hostname = dispbuf;
-	while (isspace(*hostname)) {
-		hostname++;
+	while ((mx = RWLIST_REMOVE_HEAD(&mxs, entry))) {
+		stringlist_push_tail(results, mx->data);
+		bbs_debug(3, "MX result for %s: server %s has priority %d\n", domain, mx->data, mx->priority);
+		free(mx);
 	}
-	do {
-		tmp = strchr(hostname, ' ');
-	} while (tmp && *(tmp + 1) && (hostname = tmp + 1));
 
-	tmp = strrchr(hostname, '.'); /* Strip the trailing . */
-	if (tmp) {
-		*tmp = '\0';
-	}
-	safe_strncpy(buf, hostname, len);
-	bbs_debug(6, "MX query for %s: %s\n", domain, hostname);
 	return 0;
 }
 
@@ -1227,16 +1286,17 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	FILE *fp;
 	char fullname[256], newname[sizeof(fullname) + 11];
 	char from[1000], recipient[1000], todup[256];
-	char hostname[256];
+	char *hostname;
 	char *realfrom, *realto;
 	char *user, *domain;
 	int local;
 	char *retries;
 	int newretries;
-	int res;
+	int res = -1;
 	unsigned long size;
 	int metalen;
 	char buf[256] = "";
+	struct stringlist mxservers;
 
 	UNUSED(obj);
 
@@ -1295,7 +1355,8 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 
 	bbs_debug(2, "Retrying delivery of %s (%s -> %s)\n", fullname, realfrom, realto);
 
-	if (lookup_mx(domain, hostname, sizeof(hostname))) {
+	memset(&mxservers, 0, sizeof(mxservers));
+	if (lookup_mx_all(domain, &mxservers)) {
 		bbs_error("Recipient domain does not have any MX records: %s\n", domain);
 		/* Just treat as undeliverable at this point and return to sender (if no MX records now, probably won't be any the next time we try) */
 		/* Send a delivery failure response, then delete the file. */
@@ -1304,7 +1365,12 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 		goto cleanup;
 	}
 
-	res = try_send(hostname, realfrom, realto, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
+	/* Try all the MX servers in order, if necessary */
+	while (res && (hostname = stringlist_pop(&mxservers))) {
+		res = try_send(hostname, realfrom, realto, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
+		free(hostname);
+	}
+	stringlist_empty(&mxservers);
 	fclose(fp);
 	if (!res) {
 		/* Successful delivery. */
@@ -1407,7 +1473,6 @@ static void *smtp_async_send(void *varg)
 /*! \brief Accept delivery of a message to an external recipient, sending it now if possible and queuing it otherwise */
 static int external_delivery(struct smtp_session *smtp, const char *recipient, const char *domain)
 {
-	char hostname[256];
 	int res = -1;
 #ifndef BUGGY_SEND_IMMEDIATE
 	char buf[256] = "";
@@ -1425,13 +1490,21 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 	}
 
 	if (!always_queue && !send_async) {  /* Try to send it synchronously */
+		struct stringlist mxservers;
 		/* Start by trying to deliver it directly, immediately, right now. */
-		if (lookup_mx(domain, hostname, sizeof(hostname))) {
+		memset(&mxservers, 0, sizeof(mxservers));
+		if (lookup_mx_all(domain, &mxservers)) {
 			smtp_reply(smtp, 553, 5.1.2, "Recipient domain not found.");
 			return 0;
 		}
 #ifndef BUGGY_SEND_IMMEDIATE
-		res = try_send(domain, smtp->from, recipient, smtp->data, smtp->datalen, -1, 0, 0, buf, sizeof(buf));
+		/* Try all the MX servers in order, if necessary */
+		while (res && (hostname = stringlist_pop(&mxservers))) {
+			res = try_send(hostname, realfrom, realto, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
+			free(hostname);
+		}
+		stringlist_empty(&mxservers);
+
 		if (res > 0) { /* Permanent error */
 			/* We've still got the sender on the socket, just relay the error. */
 			_smtp_reply(smtp, "%s\r\n", buf);
@@ -2282,6 +2355,7 @@ static int load_module(void)
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		bbs_register_test(tests[i].name, tests[i].callback);
 	}
+
 	return 0;
 
 cleanup:

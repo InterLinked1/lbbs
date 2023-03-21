@@ -49,10 +49,19 @@ const char *stringlist_next(struct stringlist *list, struct stringitem **i);
 char *stringlist_pop(struct stringlist *list);
 
 /*!
- * \brief Add an item to a stringlist
+ * \brief Add an item to the beginning of stringlist
  * \param list
  * \param s String to add
  * \note Assumes list is WRLOCKed
  * \retval 0 on success, -1 on failure
  */
 int stringlist_push(struct stringlist *list, const char *s);
+
+/*!
+ * \brief Add an item to the end of a stringlist
+ * \param list
+ * \param s String to add
+ * \note Assumes list is WRLOCKed
+ * \retval 0 on success, -1 on failure
+ */
+int stringlist_push_tail(struct stringlist *list, const char *s);

@@ -104,3 +104,24 @@ int stringlist_push(struct stringlist *list, const char *s)
 	RWLIST_INSERT_HEAD(list, i, entry);
 	return 0;
 }
+
+int stringlist_push_tail(struct stringlist *list, const char *s)
+{
+	struct stringitem *i;
+	char *sdup = strdup(s);
+
+	if (!sdup) {
+		bbs_error("strdup failed\n");
+		return -1;
+	}
+
+	i = calloc(1, sizeof(*i));
+	if (!i) {
+		bbs_error("calloc failed\n");
+		free(sdup);
+		return -1;
+	}
+	i->s = sdup;
+	RWLIST_INSERT_TAIL(list, i, entry);
+	return 0;
+}
