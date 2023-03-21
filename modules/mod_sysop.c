@@ -223,7 +223,7 @@ static void *sysop_handler(void *varg)
 		/* If this fails, the foreground console is just not going to work properly.
 		 * For example, supervisorctl doesn't seem to have a TTY/PTY available.
 		 * Just use screen or tmux? */
-		return NULL;
+		goto cleanup;
 	}
 
 	pfd.fd = sysopfdin;
@@ -415,6 +415,7 @@ static void *sysop_handler(void *varg)
 		}
 	}
 
+cleanup:
 	pthread_cleanup_pop(1);
 	return NULL;
 }
@@ -425,7 +426,6 @@ static int launch_sysop_console(int remote, int fdin, int fdout)
 
 	fds = calloc(1, sizeof(*fds));
 	if (!fds) {
-		bbs_error("calloc failed\n");
 		return -1;
 	}
 
@@ -511,27 +511,6 @@ static void *remote_sysop_listener(void *unused)
 
 #define BBS_SYSOP_SOCKET DIRCAT(DIRCAT("/var/run", BBS_NAME), "sysop.sock")
 
-static int load_module(void)
-{
-	bbs_history_init();
-
-	if (option_nofork) {
-		launch_sysop_console(0, STDIN_FILENO, STDOUT_FILENO);
-	} else {
-		bbs_debug(3, "BBS not started with foreground console, declining to load foreground sysop console\n");
-	}
-
-	/* Start a thread to allow remote sysop console connections */
-	if (bbs_make_unix_socket(&uds_socket, BBS_SYSOP_SOCKET, "0600", -1, -1) || bbs_pthread_create(&uds_thread, NULL, remote_sysop_listener, NULL)) {
-		if (!option_nofork) {
-			/* Nothing to clean up, we didn't create a foreground console, and the remote handler failed */
-			return -1; /* Only fatal if daemonized, since otherwise there would be no sysop consoles at all */
-		}
-	}
-
-	return 0;
-}
-
 static int unload_module(void)
 {
 	/* This module may have created detached threads that will never exit of their own volition.
@@ -557,6 +536,27 @@ static int unload_module(void)
 		bbs_debug(2, "Sysop thread has exited\n");
 	}
 	bbs_history_shutdown();
+	return 0;
+}
+
+static int load_module(void)
+{
+	bbs_history_init();
+
+	if (option_nofork) {
+		launch_sysop_console(0, STDIN_FILENO, STDOUT_FILENO);
+	} else {
+		bbs_debug(3, "BBS not started with foreground console, declining to load foreground sysop console\n");
+	}
+
+	/* Start a thread to allow remote sysop console connections */
+	if (bbs_make_unix_socket(&uds_socket, BBS_SYSOP_SOCKET, "0600", -1, -1) || bbs_pthread_create(&uds_thread, NULL, remote_sysop_listener, NULL)) {
+		if (!option_nofork) {
+			/* Nothing to clean up, we didn't create a foreground console, and the remote handler failed */
+			return -1; /* Only fatal if daemonized, since otherwise there would be no sysop consoles at all */
+		}
+	}
+
 	return 0;
 }
 

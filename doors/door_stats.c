@@ -83,20 +83,19 @@ static int nodes_exec(struct bbs_node *node, const char *args)
 	return 0;
 }
 
+static int unload_module(void)
+{
+	bbs_unregister_door("listusers");
+	bbs_unregister_door("listnodes");
+	return 0;
+}
+
 static int load_module(void)
 {
 	int res = 0;
 	res |= bbs_register_door("listusers", users_exec);
 	res |= bbs_register_door("listnodes", nodes_exec);
-	return res;
-}
-
-static int unload_module(void)
-{
-	int res = 0;
-	res |= bbs_unregister_door("listusers");
-	res |= bbs_unregister_door("listnodes");
-	return res;
+	REQUIRE_FULL_LOAD(res);
 }
 
 BBS_MODULE_INFO_STANDARD("User and Node Statistics");

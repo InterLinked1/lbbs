@@ -928,6 +928,7 @@ static void unload_modules_helper(void)
 	/* Run the loop a max of 5 times. Always do it at least once, but then only if there are still skipped modules remaining.
 	 * We really try our best here to unload all modules cleanly, but we can't try forever in case a module is just not unloading. */
 	for (passes = 0 ; (passes == 0 || skipped) && passes < MAX_PASSES ; passes++) {
+		int nodecount = bbs_node_count();
 		lastmod = NULL; /* If passes > 0, do this so we don't try dlclosing a module twice */
 		RWLIST_TRAVERSE(&modules, mod, entry) {
 			if (lastmod) {
@@ -949,7 +950,12 @@ static void unload_modules_helper(void)
 			}
 			lastmod = NULL; /* If we call continue in the loop, make sure this is NULL so we don't process a module twice. */
 			if (mod->usecount) {
-				bbs_debug(2, "Skipping unload of %s with use count %d on pass %d\n", mod->name, mod->usecount, passes + 1); /* Pass # when printed out is 1-indexed for sanity */
+				/* Pass # when printed out is 1-indexed for sanity */
+				if (nodecount) {
+					bbs_debug(2, "Skipping unload of %s with use count %d on pass %d (%d total nodes active)\n", mod->name, mod->usecount, passes + 1, nodecount);
+				} else {
+					bbs_debug(2, "Skipping unload of %s with use count %d on pass %d\n", mod->name, mod->usecount, passes + 1);
+				}
 				if (passes == 0) {
 					skipped++; /* Only add to our count the first time. */
 				}

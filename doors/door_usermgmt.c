@@ -180,7 +180,7 @@ static int pwreset_exec(struct bbs_node *node, const char *args)
 	NEG_RETURN(bbs_writef(node, "\n%sWe just emailed you a password reset code. Continue once you've received it.%s\n", COLOR(COLOR_SUCCESS), COLOR_RESET));
 	NEG_RETURN(bbs_wait_key(node, SEC_MS(600))); /* Wait a bit longer, up to 10 minutes in case email is delayed */
 
-	res = bbs_get_response(node, 40, COLOR(COLOR_WHITE) "\nReset Code: ", MIN_MS(3), usercode, sizeof(usercode), &tries, 1, NULL);
+	res = bbs_get_response(node, 20, COLOR(COLOR_WHITE) "\nReset Code: ", MIN_MS(3), usercode, sizeof(usercode), &tries, 1, NULL);
 	if (strcmp(usercode, randcode)) {
 		bbs_user_destroy(user);
 		NEG_RETURN(bbs_writef(node, "\n%sSorry, the reset code you provided was incorrect.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));

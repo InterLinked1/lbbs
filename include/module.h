@@ -98,6 +98,8 @@ int load_modules(void);
 /*! \brief Auto unload all modules */
 int unload_modules(void);
 
+#define REQUIRE_FULL_LOAD(res) if (unlikely(res)) { unload_module(); } return res;
+
 /* forward declare this pointer in modules, so that macro/function
 	calls that need it can get it, since it will actually be declared
    and populated at the end of the module's source file... */

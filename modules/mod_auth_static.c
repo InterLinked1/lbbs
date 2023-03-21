@@ -165,25 +165,25 @@ static int load_config(void)
 	return 0;
 }
 
+static int unload_module(void)
+{
+	bbs_unregister_auth_provider(provider);
+	bbs_unregister_user_info_handler(get_user_info);
+	bbs_unregister_user_list_handler(get_users);
+	RWLIST_WRLOCK_REMOVE_ALL(&users, entry, free_user);
+	return 0;
+}
+
 static int load_module(void)
 {
+	int res;
 	if (load_config()) {
 		return -1;
 	}
 	bbs_register_user_info_handler(get_user_info);
 	bbs_register_user_list_handler(get_users);
-	return bbs_register_auth_provider("Static", provider);
-}
-
-static int unload_module(void)
-{
-	int res = bbs_unregister_auth_provider(provider);
-	bbs_unregister_user_info_handler(get_user_info);
-	bbs_unregister_user_list_handler(get_users);
-
-	RWLIST_WRLOCK_REMOVE_ALL(&users, entry, free_user);
-
-	return res;
+	res = bbs_register_auth_provider("Static", provider);
+	REQUIRE_FULL_LOAD(res);
 }
 
 BBS_MODULE_INFO_STANDARD("Static Config User Authentication");

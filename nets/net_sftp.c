@@ -250,7 +250,6 @@ static struct sftp_info *alloc_sftp_info(void)
 {
 	struct sftp_info *h = calloc(1, sizeof(*h));
 	if (!h) {
-		bbs_error("calloc failed\n");
 		return NULL;
 	}
 	h->offset = 0;
@@ -262,7 +261,6 @@ static sftp_attributes attr_from_stat(struct stat *st)
 	sftp_attributes attr = calloc(1, sizeof(*attr));
 
 	if (!attr) {
-		bbs_error("calloc failed\n");
 		return NULL;
 	}
 

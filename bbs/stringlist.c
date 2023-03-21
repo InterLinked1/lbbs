@@ -90,13 +90,11 @@ int stringlist_push(struct stringlist *list, const char *s)
 	char *sdup = strdup(s);
 
 	if (!sdup) {
-		bbs_error("strdup failed\n");
 		return -1;
 	}
 
 	i = calloc(1, sizeof(*i));
 	if (!i) {
-		bbs_error("calloc failed\n");
 		free(sdup);
 		return -1;
 	}
@@ -111,13 +109,11 @@ int stringlist_push_tail(struct stringlist *list, const char *s)
 	char *sdup = strdup(s);
 
 	if (!sdup) {
-		bbs_error("strdup failed\n");
 		return -1;
 	}
 
 	i = calloc(1, sizeof(*i));
 	if (!i) {
-		bbs_error("calloc failed\n");
 		free(sdup);
 		return -1;
 	}

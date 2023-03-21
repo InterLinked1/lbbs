@@ -76,7 +76,6 @@ static int __attribute__ ((format (gnu_printf, 1, 2))) chanserv_send(const char 
 	va_end(ap);
 
 	if (len < 0) {
-		bbs_error("vasprintf failure\n");
 		return -1;
 	}
 

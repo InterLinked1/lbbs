@@ -209,7 +209,6 @@ unsigned char *base64_decode(const unsigned char *data, int input_length, int *o
 
 	decoded_data = (unsigned char*) malloc(output_length + 1);
 	if (!decoded_data) {
-		bbs_error("malloc failed\n");
 		return NULL;
 	}
 

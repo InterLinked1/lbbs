@@ -183,7 +183,6 @@ static int load_config(void)
 		bbs_config_val_set_dstr(cfg, bbs_config_section_name(section), "msgscript", &msgscript);
 		client = calloc(1, sizeof(*client) + strlen(bbs_config_section_name(section)) + 1);
 		if (!client) {
-			bbs_error("calloc failed\n");
 			continue;
 		}
 		strcpy(client->name, bbs_config_section_name(section)); /* Safe */
@@ -311,7 +310,6 @@ static struct participant *join_client(struct bbs_node *node, const char *name)
 	/* Okay, we have the client. Add the newcomer to it. */
 	p = calloc(1, sizeof(*p));
 	if (!p) {
-		bbs_error("calloc failure\n");
 		RWLIST_UNLOCK(&clients);
 		return NULL;
 	}
@@ -773,7 +771,6 @@ static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client 
 	va_end(ap);
 
 	if (len < 0) {
-		bbs_error("vasprintf failure\n");
 		return -1;
 	}
 	res = __chat_send(client, sender, channel, dorelay, buf, len);
@@ -808,7 +805,6 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_irc_client_send(const char *
 	va_end(ap);
 
 	if (len < 0) {
-		bbs_error("vasprintf failure\n");
 		RWLIST_UNLOCK(&clients);
 		return -1;
 	}
@@ -847,7 +843,6 @@ int __attribute__ ((format (gnu_printf, 3, 4))) bbs_irc_client_msg(const char *c
 	va_end(ap);
 
 	if (len < 0) {
-		bbs_error("vasprintf failure\n");
 		RWLIST_UNLOCK(&clients);
 		return -1;
 	}
@@ -978,26 +973,6 @@ static int irc_client_exec(struct bbs_node *node, const char *args)
 	return res;
 }
 
-static int load_module(void)
-{
-	int res;
-
-	if (load_config()) {
-		return -1;
-	}
-	irc_log_callback(__client_log); /* Set up logging */
-	res = bbs_register_door("irc", irc_client_exec);
-	if (!res) {
-		/* Start the clients now, unless the BBS is still starting */
-		if (bbs_is_fully_started()) {
-			start_clients();
-		} else {
-			bbs_register_startup_callback(start_clients);
-		}
-	}
-	return res;
-}
-
 static int unload_module(void)
 {
 	struct client *client;
@@ -1025,6 +1000,26 @@ static int unload_module(void)
 	RWLIST_UNLOCK(&clients);
 
 	return bbs_unregister_door("irc");
+}
+
+static int load_module(void)
+{
+	int res;
+
+	if (load_config()) {
+		return -1;
+	}
+	irc_log_callback(__client_log); /* Set up logging */
+	res = bbs_register_door("irc", irc_client_exec);
+	if (!res) {
+		/* Start the clients now, unless the BBS is still starting */
+		if (bbs_is_fully_started()) {
+			start_clients();
+		} else {
+			bbs_register_startup_callback(start_clients);
+		}
+	}
+	REQUIRE_FULL_LOAD(res);
 }
 
 BBS_MODULE_INFO_FLAGS("Internet Relay Chat Client", MODFLAG_GLOBAL_SYMBOLS);

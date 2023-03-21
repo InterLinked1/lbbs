@@ -55,11 +55,14 @@ static int telnet_send_command(int fd, unsigned char cmd, unsigned char opt)
 	unsigned char ctl[] = {IAC, cmd, opt};
 	int res = write(fd, ctl, 3);
 	if (res <= 0) {
-		bbs_error("Failed to set telnet echo\n");
+		if (errno != EPIPE) { /* Ignore if client just closed connection immediately */
+			bbs_error("Failed to set telnet echo: %s\n", strerror(errno));
+		}
+	} else {
+		/* telcmds[0] is EOF (236), so normalize the index to 236 */
+		/* telopts[0] is simply 0, so no modification needed */
+		bbs_debug(5, "Sent Telnet command: %s %s %s\n", telcmds[IAC - 236], telcmds[cmd - 236], telopts[opt]);
 	}
-	/* telcmds[0] is EOF (236), so normalize the index to 236 */
-	/* telopts[0] is simply 0, so no modification needed */
-	bbs_debug(5, "Sent Telnet command: %s %s %s\n", telcmds[IAC - 236], telcmds[cmd - 236], telopts[opt]); 
 	return res <= 0 ? -1 : 0; 
 }
 

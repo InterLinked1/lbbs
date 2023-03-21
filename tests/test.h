@@ -85,6 +85,7 @@ int test_bbs_expect(const char *s, int ms);
 
 int test_preload_module(const char *module);
 int test_load_module(const char *module);
+void test_autoload_all(void);
 
 int test_make_socket(int port);
 

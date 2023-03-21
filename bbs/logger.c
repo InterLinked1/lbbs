@@ -176,7 +176,6 @@ int bbs_add_logging_fd(int fd)
 	}
 	rfd = calloc(1, sizeof(*rfd));
 	if (!fd) {
-		bbs_error("calloc failed\n");
 		RWLIST_UNLOCK(&remote_log_fds);
 		return -1;
 	}
@@ -367,6 +366,14 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 			va_end(ap);
 		}
 		return;
+	} else if (!logfp) {
+		/* Attempt to call logger before it's even initialized. e.g. allocation failure during startup. */
+		if (stdoutavailable) {
+			va_start(ap, fmt);
+			len = vprintf(fmt, ap);
+			va_end(ap);
+		}
+		return;
 	}
 
 	bbs_assert(logfp != NULL);
@@ -383,7 +390,17 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 	va_end(ap);
 
 	if (len < 0) {
-		log_puts("ERROR: Logging vasprintf failure\n"); /* Can't use bbs_log functions! */
+		va_list ap2;
+		/* Fall back to simple logging. */
+		va_start(ap, fmt);
+		va_copy(ap2, ap);
+		if (stdoutavailable) {
+			vfprintf(stderr, fmt, ap);
+		}
+		if (logfp) {
+			vfprintf(logfp, fmt, ap2);
+		}
+		va_end(ap);
 	} else {
 		char *fullbuf;
 		int bytes;

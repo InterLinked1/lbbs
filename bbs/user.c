@@ -44,7 +44,6 @@ struct bbs_user *bbs_user_request(void)
 {
 	struct bbs_user *user = calloc(1, sizeof(*user));
 	if (!user) {
-		bbs_error("calloc failure\n");
 		return NULL;
 	}
 	user->priv = -1; /* Not logged in yet */

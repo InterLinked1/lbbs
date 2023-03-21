@@ -67,7 +67,8 @@ static char *_argv[256];
 /* Immutable */
 int option_dumpcore = 0; /* extern in bbs.h for backtrace */
 int option_nofork = 0;
-int option_rebind = 0;
+int option_rebind = 0; /* used extern in socket.c */
+int option_rand_alloc_failures = 0; /* used extern in alloc.c */
 
 /* Mutable during runtime */
 int option_debug = 0;
@@ -366,6 +367,7 @@ int bbs_view_settings(int fd)
 static void show_help(void)
 {
 	/* It is safe to use printf here since we aren't yet multithreaded */
+	printf("  -A        Randomly fail allocations periodically (DO NOT USE IN PRODUCTION)\n");
 	printf("  -b        Always force rebind to busy ports\n");
 	printf("  -c        Do not fork daemon\n");
 	printf("  -C        Specify alternate configuration directory\n");
@@ -378,7 +380,7 @@ static void show_help(void)
 	printf("  -?        Display this help and exit\n");
 }
 
-static const char *getopt_settings = "?bcC:dG:ghU:v";
+static const char *getopt_settings = "?AbcC:dG:ghU:v";
 
 static int parse_options_pre(int argc, char *argv[])
 {
@@ -409,6 +411,9 @@ static int parse_options(int argc, char *argv[])
 		case 'h':
 			show_help();
 			return -1;
+		case 'A':
+			option_rand_alloc_failures = 1;
+			break;
 		case 'b':
 			option_rebind = 1;
 			break;

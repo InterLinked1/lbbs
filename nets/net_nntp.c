@@ -1456,42 +1456,42 @@ static int load_module(void)
 	/* Since load_config returns 0 if no config, do this check here instead of in load_config: */
 	if (!nntp_enabled && !nntps_enabled && !nnsp_enabled) {
 		bbs_debug(3, "Neither NNTP nor NNTPS nor NNSP is enabled, declining to load\n");
-		return -1; /* Nothing is enabled */
+		goto cleanup; /* Nothing is enabled */
 	}
 	if (nntps_enabled && !ssl_available()) {
 		bbs_error("TLS is not available, NNTPS may not be used\n");
-		return -1;
+		goto cleanup;
 	}
 	if (strlen_zero(bbs_hostname())) {
 		bbs_error("A BBS hostname in nodes.conf is required for newsgroup services\n");
-		return -1;
+		goto cleanup;
 	}
 
 	pthread_mutex_init(&nntp_lock, NULL);
 
 	if (scan_newsgroups()) {
-		return -1;
+		goto cleanup;
 	}
 
 	/* If we can't start the TCP listeners, decline to load */
 	if (nntp_enabled && bbs_make_tcp_socket(&nntp_socket, nntp_port)) {
-		return -1;
+		goto cleanup;
 	}
 	if (nntps_enabled && bbs_make_tcp_socket(&nntps_socket, nntps_port)) {
 		close_if(nntp_socket);
-		return -1;
+		goto cleanup;
 	}
 	if (nnsp_enabled && bbs_make_tcp_socket(&nnsp_socket, nnsp_port)) {
 		close_if(nntp_socket);
 		close_if(nntps_socket);
-		return -1;
+		goto cleanup;
 	}
 
 	if (bbs_pthread_create(&nntp_listener_thread, NULL, nntp_listener, NULL)) {
 		bbs_error("Unable to create NNTP listener thread.\n");
 		close_if(nntp_socket);
 		close_if(nntps_socket);
-		return -1;
+		goto cleanup;
 	} else if (bbs_pthread_create(&nnsp_listener_thread, NULL, nnsp_listener, NULL)) {
 		bbs_error("Unable to create SMTP MSA listener thread.\n");
 		close_if(nnsp_socket);
@@ -1500,7 +1500,7 @@ static int load_module(void)
 		pthread_cancel(nntp_listener_thread);
 		pthread_kill(nntp_listener_thread, SIGURG);
 		bbs_pthread_join(nntp_listener_thread, NULL);
-		return -1;
+		goto cleanup;
 	}
 
 	if (nntp_enabled) {
@@ -1513,6 +1513,10 @@ static int load_module(void)
 		bbs_register_network_protocol("NNSP", nnsp_port);
 	}
 	return 0;
+cleanup:
+	stringlist_empty(&inpeers);
+	stringlist_empty(&outpeers);
+	return -1;
 }
 
 static int unload_module(void)

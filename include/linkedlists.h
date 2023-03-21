@@ -389,7 +389,7 @@ struct {								\
 #define RWLIST_REMOVE_BY_FIELD(head, attribute, value, field)	\
 	({															\
 		typeof((head)->first) __elm = NULL;						\
-		if ((head)->first->attribute == value) {			\
+		if ((head)->first && (head)->first->attribute == value) {		\
 			__elm = (head)->first;							\
 			(head)->first = __elm->field.next;				\
 			__elm->field.next = NULL;						\
@@ -402,9 +402,11 @@ struct {								\
 				__prev = __prev->field.next;				\
 			}												\
 			if (__prev) {									\
-				__elm = (__prev)->field.next;					\
-				__prev->field.next = __elm->field.next;		\
-				__elm->field.next = NULL;					\
+				__elm = (__prev)->field.next;				\
+				if (__elm) {								\
+					__prev->field.next = __elm->field.next;	\
+					__elm->field.next = NULL;				\
+				}											\
 				if ((head)->last == __elm) {				\
 					(head)->last = __prev;					\
 				}											\

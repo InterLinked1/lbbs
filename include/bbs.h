@@ -16,6 +16,7 @@
 /* BBS compiler options */
 #ifndef BBS_TEST_FRAMEWORK
 #define DEBUG_FD_LEAKS 1
+#define REDIRECT_LIBC_ALLOC 1
 #endif
 
 /* Compiler directives */
@@ -30,6 +31,10 @@
 #include <assert.h>
 #include <stddef.h> /* use NULL */
 #include <unistd.h>
+#if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
+#include <stdlib.h>
+#include <string.h>
+#endif
 #if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
 #include <stdio.h> /* FILE* cannot be forward declared, since it's a typedef */
 #include <sys/stat.h>
@@ -124,6 +129,24 @@ int __fdleak_dup(int oldfd, const char *file, int line, const char *func);
 int bbs_fd_dump(int fd);
 #endif /* DEBUG_FD_LEAKS */
 
+#if defined(REDIRECT_LIBC_ALLOC) && REDIRECT_LIBC_ALLOC == 1
+#define malloc(size) __bbs_malloc(size, __FILE__, __LINE__, __PRETTY_FUNCTION__)
+#define calloc(nmemb, size) __bbs_calloc(nmemb, size, __FILE__, __LINE__, __PRETTY_FUNCTION__)
+#define realloc(ptr, size) __bbs_realloc(ptr, size, __FILE__, __LINE__, __PRETTY_FUNCTION__)
+#define strdup(s) __bbs_strdup(s, __FILE__, __LINE__, __PRETTY_FUNCTION__)
+#define strndup(s, n) __bbs_strndup(s, n, __FILE__, __LINE__, __PRETTY_FUNCTION__)
+#define vasprintf(strp, format, ap) __bbs_vasprintf(strp, format, ap, __FILE__, __LINE__, __PRETTY_FUNCTION__)
+#define asprintf(strp, format, ...) __bbs_asprintf(__FILE__, __LINE__, __PRETTY_FUNCTION__, strp, format, ## __VA_ARGS__)
+
+void *__bbs_malloc(size_t size, const char *file, int line, const char *func) __attribute__((malloc));
+void *__bbs_calloc(size_t nmemb, size_t size, const char *file, int line, const char *func) __attribute__((malloc));
+void *__bbs_realloc(void *ptr, size_t size, const char *file, int line, const char *func) __attribute__((malloc));
+void *__bbs_strdup(const char *s, const char *file, int line, const char *func) __attribute__((malloc));
+void *__bbs_strndup(const char *s, size_t n, const char *file, int line, const char *func) __attribute__((malloc));
+int __attribute__ ((format (gnu_printf, 2, 0))) __bbs_vasprintf(char **strp, const char *fmt, va_list ap, const char *file, int line, const char *func);
+int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file, int line, const char *func, char **strp, const char *fmt, ...);
+#endif /* REDIRECT_LIBC_ALLOC */
+
 /* Convenience macros */
 #define QUOTE(...) #__VA_ARGS__
 #define STR(s) #s
@@ -131,6 +154,9 @@ int bbs_fd_dump(int fd);
 #define DIRCAT(a, b) a "/" b
 #define STRCAT(a, b) a b
 #define ARRAY_LEN(a) (size_t) (sizeof(a) / sizeof(a[0]))
+
+#define likely(x) __builtin_expect((x),1)
+#define unlikely(x) __builtin_expect((x),0)
 
 /*!
  * \brief strlen for constant strings

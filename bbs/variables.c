@@ -153,14 +153,13 @@ static int bbs_varlist_append(struct bbs_vars *vars, const char *key, const char
 	dupedvalue = strdup(value);
 	if (!dupedvalue) {
 		RWLIST_UNLOCK(vars);
-		bbs_error("strdup failed\n");
 		return -1;
 	}
 
 	v = calloc(1, sizeof(*v) + keylen + 1); /* NUL */
 	if (!v) {
+		free(dupedvalue);
 		RWLIST_UNLOCK(vars);
-		bbs_error("calloc failed\n");
 		return -1;
 	}
 	v->key = v->s;
@@ -227,7 +226,6 @@ int __attribute__ ((format (gnu_printf, 3, 4))) bbs_var_set_fmt(struct bbs_node 
 	va_end(ap);
 
 	if (len < 0) {
-		bbs_error("vasprintf failed\n");
 		return -1;
 	}
 	res = bbs_var_set(node, key, buf);

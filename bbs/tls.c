@@ -128,7 +128,6 @@ static int ssl_register_fd(SSL *ssl, int fd, int *rfd, int *wfd)
 	}
 	sfd = calloc(1, sizeof(*sfd));
 	if (!sfd) {
-		bbs_error("calloc failed\n");
 		RWLIST_UNLOCK(&sslfds);
 		return -1;
 	}
@@ -232,14 +231,12 @@ static void *ssl_io_thread(void *unused)
 			pfds = calloc(numfds, sizeof(*pfds));
 			if (!pfds) {
 				RWLIST_UNLOCK(&sslfds);
-				bbs_error("calloc failed\n");
 				break;
 			}
 			ssl_list = calloc(numssl, sizeof(SSL *));
 			if (!ssl_list) {
 				free(pfds);
 				RWLIST_UNLOCK(&sslfds);
-				bbs_error("calloc failed\n");
 				break;
 			}
 			readpipes = calloc(numssl, sizeof(int));
@@ -247,7 +244,6 @@ static void *ssl_io_thread(void *unused)
 				free(pfds);
 				free(ssl_list);
 				RWLIST_UNLOCK(&sslfds);
-				bbs_error("calloc failed\n");
 				break;
 			}
 			i = 0;

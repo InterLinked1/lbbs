@@ -155,7 +155,9 @@ int bbs_event_dispatch(struct bbs_node *node, enum bbs_event_type type)
 			}
 			/* Copy over some of the useful node/user information. */
 			safe_strncpy(event.protname, node->protname, sizeof(event.protname));
-			safe_strncpy(event.ipaddr, node->ip, sizeof(event.ipaddr));
+			if (node->ip) {
+				safe_strncpy(event.ipaddr, node->ip, sizeof(event.ipaddr));
+			}
 			break;
 		/* No default, so we'll have to explicitly handle any newly added events. */
 	}

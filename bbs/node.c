@@ -226,7 +226,6 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 
 	node = calloc(1, sizeof(*node));
 	if (!node) {
-		bbs_error("calloc failed\n");
 		RWLIST_UNLOCK(&nodes);
 		return NULL;
 	}
@@ -371,7 +370,7 @@ static int kill_pid(pid_t *pidptr)
 	/* Send a SIGINT first, in case that will effect an exit. */
 	if (kill(pid, SIGINT)) {
 		bbs_error("kill failed: %s\n", strerror(errno));
-	}
+		}
 	for (i = 0; *pidptr && i < 25; i++) {
 		/* In practice, even 1 us is enough time for this to work.
 		 * But if some reason it takes longer,
@@ -1167,6 +1166,10 @@ static int bbs_goodbye(struct bbs_node *node)
 
 static int node_handler_term(struct bbs_node *node)
 {
+	if (shutting_down) {
+		bbs_debug(5, "Exiting\n");
+		return -1;
+	}
 	/* Set up the psuedoterminal */
 	if (bbs_pty_allocate(node)) {
 		bbs_debug(5, "Exiting\n");

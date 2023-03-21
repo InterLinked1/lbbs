@@ -151,7 +151,6 @@ static int sql_string_prep(int num_fields, char *bind_strings[], unsigned long i
 	lengths[index] = size;
 	bind_strings[index] = malloc(lengths[index]);
 	if (!bind_strings[index]) {
-		bbs_error("malloc failure\n");
 		return -1;
 	}
 	return 0;
@@ -417,7 +416,6 @@ int sql_alloc_bind_strings(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND bind[],
 #endif
 				bind[i].buffer = calloc(1, lengths[i] + 1); /* Add 1 for null terminator, even though MySQL won't add one. */
 				if (!bind[i].buffer) {
-					bbs_error("malloc failed\n");
 					lengths[i] = 0; /* Set back to 0 so we don't attempt to free unallocated memory in sql_free_result_strings */
 				} else {
 					bind_strings[i] = bind[i].buffer; /* Make sure we have a reference to the allocated memory */

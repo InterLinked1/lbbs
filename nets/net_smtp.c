@@ -1771,7 +1771,6 @@ static int do_deliver(struct smtp_session *smtp)
 		stringlist_push(&smtp->sentrecipients, recipient);
 		dup = strdup(recipient);
 		if (!dup) {
-			bbs_error("strdup failed\n");
 			goto next;
 		}
 		bbs_debug(7, "Processing delivery to %s\n", dup);

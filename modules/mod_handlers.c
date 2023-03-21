@@ -162,17 +162,6 @@ static struct menu_handlers {
 	{ "file", file_handler, 1 },
 };
 
-static int load_module(void)
-{
-	int res = 0;
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_LEN(handlers); i++) {
-		res |= bbs_register_menu_handler(handlers[i].name, handlers[i].handler, handlers[i].needargs);
-	}
-	return res;
-}
-
 static int unload_module(void)
 {
 	int res = 0;
@@ -182,6 +171,17 @@ static int unload_module(void)
 		res |= bbs_unregister_menu_handler(handlers[i].name);
 	}
 	return res;
+}
+
+static int load_module(void)
+{
+	int res = 0;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_LEN(handlers); i++) {
+		res |= bbs_register_menu_handler(handlers[i].name, handlers[i].handler, handlers[i].needargs);
+	}
+	REQUIRE_FULL_LOAD(res);
 }
 
 BBS_MODULE_INFO_STANDARD("Builtin Menu Handlers");

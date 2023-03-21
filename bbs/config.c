@@ -320,9 +320,13 @@ static struct bbs_config *config_parse(const char *name)
 		fclose(fp);
 		return NULL;
 	}
-
 	cfg->parsetime = time(NULL);
 	cfg->name = strdup(name);
+	if (!cfg->name) {
+		free(cfg);
+		fclose(fp);
+		return NULL;
+	}
 
 	bbs_debug(3, "Parsing config %s\n", fullname);
 
@@ -363,10 +367,14 @@ static struct bbs_config *config_parse(const char *name)
 #endif
 			section = calloc(1, sizeof(*section));
 			if (!section) {
-				bbs_error("calloc failed\n");
 				continue;
 			}
 			section->name = strdup(section_name);
+			if (!section->name) {
+				free(section);
+				section = NULL;
+				continue;
+			}
 			RWLIST_INSERT_TAIL(&cfg->sections, section, entry);
 			bbs_assert(RWLIST_FIRST(&cfg->sections) != NULL);
 			continue;
@@ -396,18 +404,15 @@ static struct bbs_config *config_parse(const char *name)
 
 		keyval = calloc(1, sizeof(*keyval));
 		if (!keyval) {
-			bbs_error("calloc failure\n");
 			continue;
 		}
 		keyval->key = strdup(key);
 		if (!keyval->key) {
-			bbs_error("strdup failed\n");
 			free(keyval);
 			continue;
 		}
 		keyval->value = strdup(value);
 		if (!keyval->value) {
-			bbs_error("strdup failed\n");
 			free(keyval->key);
 			free(keyval);
 			continue;

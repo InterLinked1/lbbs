@@ -250,6 +250,16 @@ static struct unit_tests {
 	{ "IPv4 CIDR Range Matching", test_cidr_ipv4 },
 };
 
+static int unload_module(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_LEN(tests); i++) {
+		bbs_unregister_test(tests[i].callback);
+	}
+	return 0;
+}
+
 static int load_module(void)
 {
 	int res = 0;
@@ -258,18 +268,7 @@ static int load_module(void)
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		res |= bbs_register_test(tests[i].name, tests[i].callback);
 	}
-	return res;
-}
-
-static int unload_module(void)
-{
-	int res = 0;
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_LEN(tests); i++) {
-		res |= bbs_unregister_test(tests[i].callback);
-	}
-	return res;
+	REQUIRE_FULL_LOAD(res);
 }
 
 BBS_MODULE_INFO_STANDARD("Unit Tests");

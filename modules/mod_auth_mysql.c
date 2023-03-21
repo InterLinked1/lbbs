@@ -558,7 +558,6 @@ static int load_config(void)
 		free_if(reserved_usernames); /* Should always be NULL at this point, but if reloads during runtime were permitted in the future, might not be. */
 		reserved_usernames = malloc(len); /* Don't know in advance how many usernames the sysop wants to reserve, this could be arbitrarily long. */
 		if (!reserved_usernames) {
-			bbs_error("malloc failed\n");
 			bbs_config_free(cfg);
 			return -1;
 		}
@@ -572,8 +571,20 @@ static int load_config(void)
 	return 0;
 }
 
+static int unload_module(void)
+{
+	bbs_unregister_auth_provider(provider);
+	bbs_unregister_user_registration_provider(user_register);
+	bbs_unregister_password_reset_handler(change_password);
+	bbs_unregister_user_info_handler(get_user_info);
+	bbs_unregister_user_list_handler(get_users);
+	free_if(reserved_usernames);
+	return 0;
+}
+
 static int load_module(void)
 {
+	int res;
 	if (load_config()) {
 		return -1;
 	}
@@ -581,18 +592,8 @@ static int load_module(void)
 	bbs_register_password_reset_handler(change_password);
 	bbs_register_user_info_handler(get_user_info);
 	bbs_register_user_list_handler(get_users);
-	return bbs_register_auth_provider("MySQL/MariaDB", provider);
-}
-
-static int unload_module(void)
-{
-	int res = bbs_unregister_auth_provider(provider);
-	bbs_unregister_user_registration_provider(user_register);
-	bbs_unregister_password_reset_handler(change_password);
-	bbs_unregister_user_info_handler(get_user_info);
-	bbs_unregister_user_list_handler(get_users);
-	free_if(reserved_usernames);
-	return res;
+	res = bbs_register_auth_provider("MySQL/MariaDB", provider);
+	REQUIRE_FULL_LOAD(res);
 }
 
 BBS_MODULE_INFO_DEPENDENT("MySQL/MariaDB User Authentication", "mod_mysql.so");

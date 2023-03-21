@@ -610,7 +610,6 @@ static void link_permissions(struct chan_pair *cp, struct discord_overwrites *ov
 		}
 		e = calloc(1, sizeof(*e));
 		if (!e) {
-			bbs_error("calloc failed\n");
 			continue; /* continue would be fine here, but we already need a label, so use it for consistency */
 		}
 		e->id = overwrite->id;
@@ -1078,7 +1077,6 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 	}
 	dup = strdup(event->content);
 	if (!dup) {
-		bbs_error("strdup failed\n");
 		return;
 	}
 	lines = dup;

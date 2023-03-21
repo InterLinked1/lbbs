@@ -103,6 +103,9 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 
 	if (len < 0) {
 		fprintf(stderr, "ERROR: Logging vasprintf failure\n"); /* Can't use bbs_log functions! */
+		va_start(ap, fmt);
+		vprintf(fmt, ap);
+		va_end(ap);
 	} else {
 		char *fullbuf;
 		int bytes;
@@ -206,6 +209,8 @@ int test_make_socket(int port)
 	sinaddr.sin_family = AF_INET;
 	sinaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
 	sinaddr.sin_port = htons(port);
+
+	/* XXX connect() should not block */
 
 	len = sizeof(sinaddr);
 	if (connect(sock, (struct sockaddr *) &sinaddr, len) < 0) {
@@ -339,6 +344,10 @@ static int notifypfd[2] = { -1, -1 };
 static pthread_t bbs_io_thread = 0;
 static const char *bbs_expect_str = NULL;
 
+/* used extern */
+int test_autorun = 1;
+int rand_alloc_fails = 0;
+
 static void *io_relay(void *varg)
 {
 	int res;
@@ -370,6 +379,9 @@ static void *io_relay(void *varg)
 					bbs_error("write failed: %s\n", strerror(errno));
 				}
 			}
+		}
+		if (rand_alloc_fails && strstr(buf, "Simulated allocation failure")) {
+			rand_alloc_fails++;
 		}
 	}
 	close(logfd);
@@ -449,6 +461,7 @@ static int test_bbs_spawn(const char *directory)
 		"-C", (char*) directory, /* Custom config directory */
 		"-g", /* Dump core on crash */
 		"-vvvvvvvvv", /* Very verbose */
+		rand_alloc_fails ? "-A" : "-v", /* If not, add an option that won't do anything */
 		option_debug_bbs ? option_debug_bbs_str : NULL, /* Lotsa debug... maybe */
 		NULL
 	};
@@ -540,6 +553,13 @@ int test_load_module(const char *module)
 	return 0;
 }
 
+static int option_autoload_all;
+
+void test_autoload_all(void)
+{
+	option_autoload_all = 1;
+}
+
 static int reset_test_configs(void)
 {
 	if (eaccess(TEST_CONFIG_DIR, R_OK)) { /* Create the config directory, if it doesn't exist. */
@@ -622,7 +642,7 @@ static int analyze_valgrind(void)
 	return res;
 }
 
-static int run_test(const char *filename)
+static int run_test(const char *filename, int multiple)
 {
 	int res = 0;
 	void *lib;
@@ -647,21 +667,38 @@ static int run_test(const char *filename)
 	} else {
 		struct timeval start, end;
 		int64_t sec_dif, usec_dif, tot_dif;
+		int core_before = 0;
 		pid_t childpid = -1;
 		if (reset_test_configs()) { /* Reset before each test */
-			return -1;
+			res = -1;
+			goto cleanup;
 		}
+		option_autoload_all = rand_alloc_fails = 0;
+		test_autorun = 1;
 		if (testmod->pre) {
 			char modfilename[256];
 			snprintf(modfilename, sizeof(modfilename), "%s/%s", TEST_CONFIG_DIR, "modules.conf");
 			modulefp = fopen(modfilename, "w");
 			if (!modulefp) {
 				bbs_error("fopen(%s) failed: %s\n", modfilename, strerror(errno));
-				return -1;
+				res = -1;
+				goto cleanup;
 			}
 			fprintf(modulefp, "[general]\r\nautoload=no\r\n\r\n[modules]\r\n");
 			test_load_module("mod_auth_static.so"); /* Always load this module */
 			res = testmod->pre();
+			if (option_autoload_all) {
+				/* Truncate file and start again. Most tests don't use this.
+				 * There's not really a great way to truncate a file that's already open, so just close it and start again. */
+				fclose(modulefp);
+				modulefp = fopen(modfilename, "w");
+				if (!modulefp) {
+					bbs_error("fopen(%s) failed: %s\n", modfilename, strerror(errno));
+					res = -1;
+					goto cleanup;
+				}
+				fprintf(modulefp, "[general]\r\nautoload=yes\r\n\r\n[modules]\r\n");
+			}
 			fclose(modulefp);
 			/* Set up basic configs that most, if not all, tests will need. */
 			modulefp = fopen(TEST_CONFIG_DIR "/nodes.conf", "w");
@@ -675,13 +712,23 @@ static int run_test(const char *filename)
 				fprintf(modulefp, "[users]\r\n%s=%s\r\n", TEST_USER2, TEST_HASH2);
 				fclose(modulefp);
 			}
+			if (option_autoload_all) {
+				system("cp *.conf " TEST_CONFIG_DIR);
+			}
+		}
+		/* If we're running all the tests, skip those that should only be run standalone */
+		if (multiple && !test_autorun) {
+			bbs_debug(2, "Skipping test %s\n", testmod->name);
+			total_fail--;
+			goto cleanup;
 		}
 		gettimeofday(&start, NULL);
 		if (!res) {
-			int core_before = eaccess("core", R_OK) ? 0 : 1;
+			core_before = eaccess("core", R_OK) ? 0 : 1;
 			childpid = test_bbs_spawn(TEST_CONFIG_DIR);
 			if (childpid < 0) {
-				return -1;
+				res = -1;
+				goto cleanup;
 			}
 			bbs_debug(3, "Spawned child process %d\n", childpid);
 			/* Wait for the BBS to fully start */
@@ -700,11 +747,6 @@ static int run_test(const char *filename)
 				waitpid(childpid, &wstatus, 0); /* Wait for child to exit */
 				bbs_debug(3, "Child process %d has exited\n", childpid);
 			}
-			/* We called chdir before we spawned the BBS, so the core dump should be in the current directory if there is one. */
-			if (!core_before && !eaccess("core", R_OK)) {
-				bbs_error("BBS dumped a core during test %s...\n", testmod->name);
-				res = -1; /* Segfaults are never good... automatic test fail. */
-			}
 		} else {
 			memcpy(&end, &start, sizeof(end));
 		}
@@ -720,6 +762,14 @@ static int run_test(const char *filename)
 			/* Check valgrind.log report for potential issues. */
 			res |= analyze_valgrind();
 		}
+		/* We called chdir before we spawned the BBS, so the core dump should be in the current directory if there is one. */
+		if (!core_before && !eaccess("core", R_OK)) {
+			bbs_error("BBS dumped a core during test %s...\n", testmod->name);
+			res = -1; /* Segfaults are never good... automatic test fail. */
+		}
+		if (rand_alloc_fails) {
+			bbs_debug(1, "%d simulated allocation failure%s\n", rand_alloc_fails - 1, ESS(rand_alloc_fails - 1));
+		}
 		if (res) {
 			fprintf(stderr, "== Test %sFAILED%s: %5lums %-20s %s\n", COLOR(COLOR_RED), COLOR_RESET, tot_dif, testmod->name, testmod->description);
 		} else {
@@ -729,6 +779,7 @@ static int run_test(const char *filename)
 		}
 	}
 
+cleanup:
 	dlclose(lib);
 	if (testmod) {
 		bbs_warning("Test module still registered?\n");
@@ -811,7 +862,7 @@ int main(int argc, char *argv[])
 			return -1;
 		}
 		fprintf(stderr, "Running test: %s\n", testfilter);
-		res |= run_test(fullpath);
+		res |= run_test(fullpath, 0);
 	} else { /* Run all tests */
 		DIR *dir;
 		struct dirent *entry;
@@ -826,7 +877,7 @@ int main(int argc, char *argv[])
 				continue;
 			}
 			snprintf(fullpath, sizeof(fullpath), "%s/%s", XSTR(TEST_DIR), entry->d_name);
-			res |= run_test(fullpath);
+			res |= run_test(fullpath, 1);
 			if (do_abort) {
 				break;
 			}

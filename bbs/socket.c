@@ -1509,7 +1509,6 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(struct bbs_node *node
 	va_end(ap);
 
 	if (len < 0) {
-		bbs_error("vasprintf failure\n");
 		return -1;
 	}
 
@@ -1535,7 +1534,6 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_std_writef(int fd, const cha
 	va_end(ap);
 
 	if (len < 0) {
-		bbs_error("vasprintf failure\n");
 		return -1;
 	}
 

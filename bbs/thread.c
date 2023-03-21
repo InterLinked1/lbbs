@@ -281,7 +281,6 @@ static int create_thread(pthread_t *thread, pthread_attr_t *attr, void *(*start_
 	if (!a) {
 		/* If we can't malloc, what makes us think thread creation will succeed?
 		 * Just abort now. */
-		bbs_error("malloc failed\n");
 		return -1;
 	}
 
@@ -292,7 +291,8 @@ static int create_thread(pthread_t *thread, pthread_attr_t *attr, void *(*start_
 	a->killable = detached == 2 ? 1 : 0;
 	start_routine = thread_run;
 	if (asprintf(&a->name, "%-21s started by thread %d at %s:%d %s()", start_fn, bbs_gettid(), file, line, func) < 0) {
-		a->name = NULL;
+		free(a);
+		return -1;
 	}
 	data = a;
 

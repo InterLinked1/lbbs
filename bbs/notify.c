@@ -67,14 +67,12 @@ int __attribute__ ((format (gnu_printf, 3, 4))) bbs_sysop_email(struct bbs_user 
 	va_end(ap);
 
 	if (len < 0) {
-		bbs_error("vasprintf failure\n");
 		return -1;
 	}
 
 	/* Append the customary message trailer */
 	buf2 = realloc(buf, len + STRLEN(MSG_TRAILER) + 1);
 	if (!buf2) {
-		bbs_error("realloc failure\n");
 		/* Just continue, rather than aborting */
 	} else {
 		buf = buf2;

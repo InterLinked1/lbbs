@@ -57,7 +57,6 @@ int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
 	if (!dynstr->buf) {
 		dynstr->buf = strdup(s);
 		if (!dynstr->buf) {
-			bbs_error("strdup failed\n");
 			return -1;
 		}
 		dynstr->len = len;
@@ -70,7 +69,6 @@ int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
 	if (newlen >= dynstr->len) {
 		char *newbuf = realloc(dynstr->buf, newlen);
 		if (!newbuf) {
-			bbs_error("realloc failed\n");
 			return -1;
 		}
 		dynstr->buf = newbuf;
@@ -698,7 +696,6 @@ char *bbs_file_to_string(const char *filename, size_t maxsize)
 
 	s = malloc(size + 1); /* Add 1 for NUL */
 	if (!s) {
-		bbs_error("malloc failed\n");
 		return NULL;
 	}
 	res = fread(s, 1, size, fp);

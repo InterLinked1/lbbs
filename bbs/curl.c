@@ -83,7 +83,6 @@ static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *da
 	}
 
 	if (!respdata->str) {
-		bbs_error("Memory allocation failed\n");
 		if (orig_buf) {
 			free(orig_buf);
 		}

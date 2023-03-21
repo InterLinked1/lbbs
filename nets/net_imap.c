@@ -1153,12 +1153,10 @@ static int uintlist_append2(unsigned int **a, unsigned int **b, int *lengths, in
 	if (!*a) {
 		*a = malloc(32 * sizeof(unsigned int));
 		if (!*a) {
-			bbs_error("malloc failed\n");
 			return -1;
 		}
 		*b = malloc(32 * sizeof(unsigned int));
 		if (!*b) {
-			bbs_error("malloc failed\n");
 			free_if(*a);
 			return -1;
 		}
@@ -1167,13 +1165,11 @@ static int uintlist_append2(unsigned int **a, unsigned int **b, int *lengths, in
 		if (*lengths >= *allocsizes) {
 			unsigned int *newb, *newa = realloc(*a, *allocsizes + 32 * sizeof(unsigned int)); /* Increase by 32 each chunk */
 			if (!newa) {
-				bbs_error("realloc failed\n");
 				return -1;
 			}
 			newb = realloc(*b, *allocsizes + 32 * sizeof(unsigned int));
 			if (!newb) {
 				/* This is tricky. We expanded a but failed to expand b. Keep the smaller size for our records. */
-				bbs_error("realloc failed\n");
 				return -1;
 			}
 			*allocsizes = *allocsizes + 32 * sizeof(unsigned int);

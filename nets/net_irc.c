@@ -689,7 +689,6 @@ static int __attribute__ ((format (gnu_printf, 5, 6))) __channel_broadcast(int l
 	va_end(ap);
 
 	if (len < 0) {
-		bbs_error("vasprintf failure\n");
 		return -1;
 	}
 
@@ -3266,6 +3265,7 @@ static int load_module(void)
 	if (bbs_pthread_create(&irc_listener_thread, NULL, irc_listener, NULL)) {
 		bbs_error("Unable to create IRC listener thread.\n");
 		pthread_cancel(irc_ping_thread);
+		bbs_pthread_join(irc_ping_thread, NULL);
 		close_if(irc_socket);
 		close_if(ircs_socket);
 		return -1;

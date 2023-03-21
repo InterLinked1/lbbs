@@ -667,10 +667,13 @@ static int load_config(int reload)
 		}
 		menu = calloc(1, sizeof(*menu));
 		if (!menu) {
-			bbs_error("calloc failed\n");
 			continue;
 		}
 		menu->name = strdup(bbs_config_section_name(section));
+		if (!menu->name) {
+			free(menu);
+			continue;
+		}
 #ifdef DEBUG_MENU_PARSING
 		bbs_debug(3, "Parsing menu: %s\n", bbs_config_section_name(section));
 #endif
@@ -713,12 +716,11 @@ static int load_config(int reload)
 				}
 				menuitem = calloc(1, sizeof(*menuitem));
 				if (!menuitem) {
-					bbs_error("calloc failure\n");
 					continue;
 				}
 				tmporig = tmp = strdup(value); /* Avoid strdupa, we're in a loop */
 				if (!tmp) {
-					bbs_error("strdup failure\n");
+					free(menuitem);
 					continue;
 				}
 				menuitem->opt = *key; /* It's only a single letter */

@@ -251,7 +251,6 @@ static void add_alias(const char *aliasname, const char *target)
 	targetlen = strlen(target);
 	alias = calloc(1, sizeof(*alias) + aliaslen + targetlen + 2);
 	if (!alias) {
-		bbs_error("calloc failed\n");
 		RWLIST_UNLOCK(&aliases);
 		return;
 	}
@@ -291,7 +290,6 @@ static void add_listserv(const char *listname, const char *target)
 	targetlen = strlen(target);
 	l = calloc(1, sizeof(*l) + listlen + targetlen + 2);
 	if (!l) {
-		bbs_error("calloc failed\n");
 		RWLIST_UNLOCK(&listservs);
 		return;
 	}
@@ -358,7 +356,6 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid)
 		bbs_debug(3, "Creating mailbox for user %u for the first time\n", userid);
 		mbox = calloc(1, sizeof(*mbox));
 		if (!mbox) {
-			bbs_error("calloc failed\n");
 			RWLIST_UNLOCK(&mailboxes);
 			return NULL;
 		}

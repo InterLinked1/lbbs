@@ -213,20 +213,19 @@ static int dict_exec(struct bbs_node *node, const char *args)
 	return res;
 }
 
+static int unload_module(void)
+{
+	bbs_unregister_door("calc");
+	bbs_unregister_door("dict");
+	return 0;
+}
+
 static int load_module(void)
 {
 	int res = 0;
 	res |= bbs_register_door("calc", calc_exec);
 	res |= bbs_register_door("dict", dict_exec);
-	return res;
-}
-
-static int unload_module(void)
-{
-	int res = 0;
-	res |= bbs_unregister_door("calc");
-	res |= bbs_unregister_door("dict");
-	return res;
+	REQUIRE_FULL_LOAD(res);
 }
 
 BBS_MODULE_INFO_STANDARD("Utilities");

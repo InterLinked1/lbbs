@@ -125,7 +125,6 @@ static int init_deletions(struct pop3_session *pop3)
 			if (bytesize > pop3->delbytes) {
 				char *newdel = realloc(pop3->deletions, bytesize);
 				if (!newdel) {
-					bbs_error("realloc failed\n");
 					/* This is bad... just abort. */
 					return -1;
 				}
@@ -137,7 +136,6 @@ static int init_deletions(struct pop3_session *pop3)
 	} else {
 		pop3->deletions = calloc(1, bytesize);
 		if (!pop3->deletions) {
-			bbs_error("calloc failed\n");
 			return -1;
 		}
 	}
