@@ -72,8 +72,8 @@ static int do_reset(struct bbs_node *node, const char *username)
 	res = bbs_user_reset_password(username, password);
 
 	/* Zero out passwords from memory after done using them */
-	memset(password, 0, sizeof(password));
-	memset(password2, 0, sizeof(password2));
+	bbs_memzero(password, sizeof(password));
+	bbs_memzero(password2, sizeof(password2));
 
 	if (res) {
 		NEG_RETURN(bbs_writef(node, "\n%sSorry, your password could not be changed.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));

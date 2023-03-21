@@ -329,7 +329,7 @@ static inline int parse_header(struct http_req *req, char *s)
 				req->remoteuser = strdup(username);
 				bbs_authenticate(req->node, username, password);
 				/* Destroy the password before freeing it */
-				memset(decoded, 0, outlen);
+				bbs_memzero(decoded, outlen);
 				free(decoded);
 			}
 		}

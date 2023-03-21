@@ -567,7 +567,7 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 		char *domain;
 
 		if (!pop3->username) { /* Must get USER first */
-			memset(s, 0, strlen(s)); /* Destroy the password */
+			bbs_memzero(s, strlen(s)); /* Destroy the password */
 			pop3_err(pop3, "Invalid command sequence"); /* No such mailbox, since wrong domain! */
 			return 0;
 		}
@@ -576,7 +576,7 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 		if (domain) {
 			*domain++ = '\0';
 			if (strlen_zero(domain) || strcmp(domain, bbs_hostname())) {
-				memset(s, 0, strlen(s)); /* Destroy the password */
+				bbs_memzero(s, strlen(s)); /* Destroy the password */
 				pop3_err(pop3, "Invalid username or password"); /* No such mailbox, since wrong domain! */
 				return 0;
 			}
@@ -584,7 +584,7 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 		/* Try to authenticate */
 		res = bbs_authenticate(pop3->node, pop3->username, s);
 		free_if(pop3->username);
-		memset(s, 0, strlen(s)); /* Destroy the password from memory. */
+		bbs_memzero(s, strlen(s)); /* Destroy the password from memory. */
 		if (res) {
 			pop3_err(pop3, "Invalid username or password");
 			return 0;

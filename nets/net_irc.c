@@ -1990,7 +1990,7 @@ static void handle_oper(struct irc_user *user, char *s)
 		}
 	}
 
-	memset(pw, 0, strlen(pw)); /* Destroy the password... doesn't make much difference, since it's not obfuscated in command processing, but doesn't hurt... */
+	bbs_memzero(pw, strlen(pw)); /* Destroy the password... doesn't make much difference, since it's not obfuscated in command processing, but doesn't hurt... */
 
 	if (!operator) {
 		RWLIST_UNLOCK(&operators);
@@ -2523,7 +2523,7 @@ static int do_sasl_auth(struct irc_user *user, char *s)
 	}
 	user->username = strdup(username);
 	res = bbs_authenticate(user->node, username, password);
-	memset(password, 0, strlen(password)); /* Destroy the password from memory before we free it */
+	bbs_memzero(password, strlen(password)); /* Destroy the password from memory before we free it */
 	free(decoded);
 	if (res) {
 		send_numeric(user, 904, "SASL authentication failed\r\n");
@@ -2732,7 +2732,7 @@ static void handle_client(struct irc_user *user)
 						break;
 					}
 					authres = bbs_authenticate(user->node, user->nickname, user->password);
-					memset(user->password, 0, strlen(user->password)); /* Destroy password before freeing it */
+					bbs_memzero(user->password, strlen(user->password)); /* Destroy password before freeing it */
 					free(user->password);
 					if (authres) {
 						send_numeric(user, 464, "Password incorrect\r\n");

@@ -581,7 +581,7 @@ int bbs_sasl_authenticate(struct bbs_node *node, const char *s)
 	}
 
 	res = bbs_authenticate(node, authentication_id, password);
-	memset(password, 0, strlen(password)); /* Destroy the password from memory before we free it */
+	bbs_memzero(password, strlen(password)); /* Destroy the password from memory before we free it */
 	free(decoded);
 	return res;
 }

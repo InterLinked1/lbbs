@@ -286,6 +286,21 @@ static inline void safe_strncpy(char *dst, const char *src, size_t size)
 	*dst = '\0';
 }
 
+/*!
+ * \brief Guaranteed safe way of clearing the contents of a buffer,
+ *        since memset(buf, 0, len) is likely to be optimized away
+ *        when destroyed values are never used afterwards.
+ * \note This is implemented as a macro for now, so we can easily
+ *       change the implementation later without updating calling code.
+ *       bzero is deprecated and not used in this codebase (memset is always used),
+ *       but of explicit_bzero, memset_s, and explicit_memset,
+ *       only explicit_bzero is available with the current header files and options,
+ *       so I think this is the most portable way of doing this.
+ *       A more portable way would be a function that checks several options,
+ *       with a suitable fallback, but for now this is fine.
+ */
+#define bbs_memzero(buf, len) explicit_bzero(buf, len)
+
 /*! \brief returns the equivalent of logic or for strings: first one if not empty, otherwise second one. */
 #define S_OR(a, b) ({typeof(&((a)[0])) __x = (a); strlen_zero(__x) ? (b) : __x;})
 

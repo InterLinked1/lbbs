@@ -128,7 +128,6 @@ static int __attribute__ ((format (gnu_printf, 2, 3))) __imap_broadcast(struct i
 	va_end(ap);
 
 	if (len < 0) {
-		bbs_error("vasprintf failure\n");
 		return -1;
 	}
 
@@ -2314,7 +2313,7 @@ static int handle_auth(struct imap_session *imap, char *s)
 	/* Can't use bbs_sasl_authenticate directly since we need to strip the domain */
 	bbs_strterm(authentication_id, '@');
 	res = bbs_authenticate(imap->node, authentication_id, password);
-	memset(password, 0, strlen(password)); /* Destroy the password from memory before we free it */
+	bbs_memzero(password, strlen(password)); /* Destroy the password from memory before we free it */
 	free(decoded);
 
 	/* Have a combined username and password */
@@ -2437,7 +2436,7 @@ static int imap_process(struct imap_session *imap, char *s)
 			}
 		}
 		res = bbs_authenticate(imap->node, user, pass);
-		memset(pass, 0, strlen(pass)); /* Destroy the password from memory. */
+		bbs_memzero(pass, strlen(pass)); /* Destroy the password from memory. */
 		if (res) {
 			imap_reply(imap, "NO Invalid username or password");
 			return 0;

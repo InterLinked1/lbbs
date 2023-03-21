@@ -234,7 +234,7 @@ static void *ftp_handler(void *varg)
 			} else {
 				/* Try to authenticate. */
 				res = bbs_authenticate(node, username, next);
-				memset(buf, 0, sizeof(buf)); /* Overwrite (zero out) the plain text password from memory */
+				bbs_memzero(buf, sizeof(buf)); /* Overwrite (zero out) the plain text password from memory */
 				username[0] = '\0'; /* Delete the username too so it's not preset if we reauthenticate */
 				if (res) {
 					invalids++;

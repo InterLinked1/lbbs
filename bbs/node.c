@@ -973,7 +973,7 @@ static int authenticate(struct bbs_node *node)
 			NEG_RETURN(bbs_writef(node, "%s%-10s%s", COLOR(COLOR_PRIMARY), "Password: ", COLOR(COLOR_WHITE)));
 			NONPOS_RETURN(bbs_readline(node, 20000, password, sizeof(password)));
 			res = bbs_authenticate(node, username, password);
-			memset(password, 0, sizeof(password)); /* Overwrite (zero out) the plain text password before we return */
+			bbs_memzero(password, sizeof(password)); /* Overwrite (zero out) the plain text password before we return */
 			NEG_RETURN(bbs_echo_on(node)); /* Turn echo back on */
 			if (!res) {
 				break; /* Correct username and password */

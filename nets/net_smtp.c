@@ -294,7 +294,7 @@ static int handle_auth(struct smtp_session *smtp, char *s)
 		/* Can't use bbs_sasl_authenticate directly since we need to strip the domain */
 		bbs_strterm(authentication_id, '@');
 		res = bbs_authenticate(smtp->node, authentication_id, password);
-		memset(password, 0, strlen(password)); /* Destroy the password from memory before we free it */
+		bbs_memzero(password, strlen(password)); /* Destroy the password from memory before we free it */
 		free(decoded);
 
 		/* Have a combined username and password */

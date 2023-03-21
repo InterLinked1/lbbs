@@ -977,7 +977,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 			}
 		}
 		res = bbs_authenticate(nntp->node, user, pass);
-		memset(pass, 0, strlen(pass)); /* Destroy the password from memory. */
+		bbs_memzero(pass, strlen(pass)); /* Destroy the password from memory. */
 		if (res) {
 			nntp_send(nntp, 452, "Authorization rejected"); /*! \todo right code? */
 			return 0;
@@ -1023,7 +1023,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 			}
 			res = bbs_authenticate(nntp->node, nntp->user, pass);
 			free_if(nntp->user);
-			memset(pass, 0, strlen(pass)); /* Destroy the password from memory. */
+			bbs_memzero(pass, strlen(pass)); /* Destroy the password from memory. */
 			if (res) {
 				nntp_send(nntp, 481, "Authentication failed");
 				return 0;
@@ -1044,7 +1044,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 				/* Can't use bbs_sasl_authenticate directly since we need to strip the domain */
 				bbs_strterm(authentication_id, '@');
 				res = bbs_authenticate(nntp->node, authentication_id, password);
-				memset(password, 0, strlen(password)); /* Destroy the password from memory before we free it */
+				bbs_memzero(password, strlen(password)); /* Destroy the password from memory before we free it */
 				free(decoded);
 
 				if (res) {
