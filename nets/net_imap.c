@@ -1496,7 +1496,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 	struct dirent *entry, **entries;
 	int files, fno = 0;
 	int seqno = 0;
-	char response[512];
+	char response[1024];
 	char headers[4096] = ""; /* XXX Large enough for all headers, etc.? */
 	char *buf;
 	int len;
@@ -1516,8 +1516,9 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		char fullname[516];
 		int res;
 		int sendbody = 0;
-		int peek = 0;
+		int markseen = 0;
 		char *dyn = NULL;
+		int unoriginal = 0;
 
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			goto cleanup;
@@ -1531,14 +1532,30 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		len = sizeof(response);
 		snprintf(fullname, sizeof(fullname), "%s/%s", imap->curdir, entry->d_name);
 
+		/* We need to include the updated flags in the reply, if we're marking as seen, so check this first.
+		 * However, for, reasons, we'd prefer not to rename the file while we're doing stuff in the loop body.
+		 * The maildir_msg_setflags API doesn't currently provide us back with the new renamed filename.
+		 * So what we do is check if we need to mark as seen, but not actually mark as seen until the END of the loop.
+		 * Consequently, we have to append the seen flag to the flags response manually if needed. */
+		if (fetchreq->bodyargs && !fetchreq->bodypeek) {
+			markseen = 1;
+		}
+
 		if (fetchreq->flags) {
 			char flagsbuf[256];
+			char inflags[32];
 			flags = strchr(entry->d_name, ':'); /* maildir flags */
 			if (!flags) {
 				bbs_error("Message file %s contains no flags?\n", entry->d_name);
 				goto cleanup;
 			}
-			/* If we wanted to microptimize, we could set flags = current flag on a match, since these must appear in order (for maildir) */
+			if (markseen && !strchr(flags, FLAG_SEEN)) {
+				inflags[0] = FLAG_SEEN;
+				inflags[1] = '\0';
+				safe_strncpy(inflags + 1, flags, sizeof(inflags) - 1);
+				flags = inflags;
+				bbs_debug(6, "Appending seen flag since message wasn't already seen\n");
+			}
 			gen_flag_names(flags, flagsbuf, sizeof(flagsbuf));
 			SAFE_FAST_COND_APPEND(response, buf, len, 1, "FLAGS (%s)", flagsbuf);
 		}
@@ -1556,15 +1573,27 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		/* Must include UID in response, whether requested or not (so fetchreq->uid ignored) */
 		SAFE_FAST_COND_APPEND(response, buf, len, 1, "UID %u", msguid);
 		if (fetchreq->bodyargs || fetchreq->bodypeek) {
+			const char *bodyargs = fetchreq->bodyargs ? fetchreq->bodyargs + 5 : fetchreq->bodypeek + 10;
+			if (!strcmp(bodyargs, "HEADER]")) { /* e.g. BODY.PEEK[HEADER] */
+				/* Just treat it as if we got a HEADER request directly, to send all the headers. */
+				unoriginal = 1;
+				SAFE_FAST_COND_APPEND(response, buf, len, 1, "%s", fetchreq->bodypeek ? "BODY.PEEK[HEADER]" : "BODY[HEADER]");
+				fetchreq->rfc822header = 1;
+				fetchreq->bodyargs = fetchreq->bodypeek = NULL; /* Don't execute the if statement below, so that we can execute the else if */
+			}
+		}
+		if (fetchreq->bodyargs || fetchreq->bodypeek) {
+			/* Can be HEADER, HEADER.FIELDS, HEADER.FIELDS.NOT, MIME, TEXT */
 			char linebuf[1001];
 			char *headpos = headers;
 			int headlen = sizeof(headers);
 			/* e.g. BODY[HEADER.FIELDS (From To Cc Bcc Subject Date Message-ID Priority X-Priority References Newsgroups In-Reply-To Content-Type Reply-To Received)] */
 			const char *bodyargs = fetchreq->bodyargs ? fetchreq->bodyargs + 5 : fetchreq->bodypeek + 10;
-			if (fetchreq->bodypeek) {
-				peek = 1;
-			}
-			if (STARTS_WITH(bodyargs, "HEADER.FIELDS")) {
+			if (STARTS_WITH(bodyargs, "HEADER.FIELDS") || STARTS_WITH(bodyargs, "HEADER.FIELDS.NOT")) {
+				int inverted = 0;
+				if (STARTS_WITH(bodyargs, "HEADER.FIELDS.NOT")) {
+					inverted = 1;
+				}
 				multiline = 1;
 				bodyargs += STRLEN("HEADER.FIELDS (");
 				/* Read the file until the first CR LF CR LF (end of headers) */
@@ -1585,7 +1614,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 					safe_strncpy(headername, linebuf, sizeof(headername)); /* Don't copy the whole line. XXX This assumes that no header name is longer than 64 chars. */
 					bbs_strterm(headername, ':');
 					/* Only include headers that were asked for. */
-					if (strstr(bodyargs, headername)) {
+					if ((!inverted && strstr(bodyargs, headername)) || (inverted && !strstr(bodyargs, headername))) {
 						SAFE_FAST_COND_APPEND_NOSPACE(headers, headpos, headlen, 1, "%s", linebuf);
 					}
 				}
@@ -1593,11 +1622,12 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				bodylen = strlen(headers); /* Can't just subtract end of headers, we'd have to keep track of bytes added on each round (which we probably should anyways) */
 				/* bodyargs ends in a ')', so don't tack an additional one on afterwards */
 				SAFE_FAST_COND_APPEND(response, buf, len, 1, "BODY[HEADER.FIELDS (%s", bodyargs);
-			} else if (!strcmp(bodyargs, "]")) { /* Empty (e.g. BODY.PEEK[] or BODY[] */
+			} else if (!strcmp(bodyargs, "]") || !strcmp(bodyargs, "TEXT]")) { /* Empty (e.g. BODY.PEEK[] or BODY[], or TEXT */
 				multiline = 1;
 				sendbody = 1;
 			} else {
-				bbs_warning("Unsupported BODY[] argument: %s (%s)\n", bodyargs, fetchreq->bodyargs);
+				/* Since it contains a closing ], add a starting one for clarity or it'll look odd. */
+				bbs_warning("Unsupported BODY[] argument: [%s\n", bodyargs);
 			}
 		} else if (fetchreq->rfc822header) {
 			char linebuf[1001];
@@ -1622,23 +1652,162 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			}
 			fclose(fp);
 			bodylen = headpos - headers; /* XXX cheaper than strlen, although if truncation happened, this may be wrong (too high). */
-			SAFE_FAST_COND_APPEND(response, buf, len, 1, "RFC822.HEADER");
+			if (!unoriginal) {
+				SAFE_FAST_COND_APPEND(response, buf, len, 1, "RFC822.HEADER");
+			}
 		}
 
-		if (fetchreq->bodystructure) {
+		if (fetchreq->envelope) {
+			char linebuf[1001];
+			int findcount;
+			int started = 0;
+			char *bufhdr;
+
+			SAFE_FAST_COND_APPEND(response, buf, len, 1, "ENVELOPE (");
+			/* We can't rely on the headers in the message being in the desired order.
+			 * So look for each one explicitly, which means we have to double loop.
+			 * Furthermore, since there could be e.g. multiple To headers,
+			 * we may need to add all of them.
+			 */
+			fp = fopen(fullname, "r");
+			if (!fp) {
+				bbs_error("Failed to open %s: %s\n", fullname, strerror(errno));
+				goto cleanup;
+			}
+
+#define SEEK_HEADERS(hdrname) \
+	rewind(fp); \
+	findcount = 0; \
+	while ((fgets(linebuf, sizeof(linebuf), fp))) { \
+		bbs_strterm(linebuf, '\r'); \
+		bbs_strterm(linebuf, '\n'); \
+		if (s_strlen_zero(linebuf)) { \
+			break; \
+		} \
+		if (!strncasecmp(linebuf, hdrname ":", STRLEN(hdrname ":"))) { \
+			findcount++; \
+		} \
+		if (!strncasecmp(linebuf, hdrname ":", STRLEN(hdrname ":")))
+
+#define END_SEEK_HEADERS \
+	}
+
+/* We cannot use the ternary operator here because this is already a macro, so the format string must be a constant, not a ternary expression */
+#define APPEND_BUF_OR_NIL(bufptr, cond) \
+	if ((cond)) { \
+		SAFE_FAST_COND_APPEND(response, buf, len, 1, "\"%s\"", bufptr); \
+	} else { \
+		SAFE_FAST_COND_APPEND(response, buf, len, 1, "NIL"); \
+	}
+
+#define APPEND_BUF_OR_NIL_NOSPACE(bufptr, cond) \
+	if ((cond)) { \
+		SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, "\"%s\"", bufptr); \
+	} else { \
+		SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, "NIL"); \
+	}
+
+#define SEEK_SUBJECT_SINGLE(hdrname) \
+	bufhdr = NULL; \
+	SEEK_HEADERS(hdrname) { \
+		bufhdr = linebuf + STRLEN(hdrname) + 1; \
+		ltrim(bufhdr); \
+		break; \
+	} \
+	END_SEEK_HEADERS; \
+	if (!started) { \
+		APPEND_BUF_OR_NIL_NOSPACE(bufhdr, !strlen_zero(bufhdr)); /* Use the NOSPACE version since this is the first one */ \
+		started = 1; \
+	} else { \
+		APPEND_BUF_OR_NIL(bufhdr, !strlen_zero(bufhdr)); \
+	}
+
+#define SEEK_SUBJECT_MULTIPLE(hdrname) \
+	SEEK_HEADERS(hdrname) { \
+		char *name, *user, *host; \
+		char *sourceroute = NULL; /* https://stackoverflow.com/questions/30693478/imap-envelope-email-address-format/30698163#30698163 */ \
+		int local; \
+		bufhdr = linebuf + STRLEN(hdrname) + 1; \
+		ltrim(bufhdr); \
+		bbs_parse_email_address(bufhdr, &name, &user, &host, &local); \
+		/* Need spaces between them but not before the first one. And again, we can't use ternary expressions so do it the verbose way. */ \
+		if (findcount > 1) { \
+			SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, " ("); \
+		} else { \
+			SAFE_FAST_COND_APPEND(response, buf, len, 1, "(("); /* First one, so also add the outer one */ \
+		} \
+		APPEND_BUF_OR_NIL_NOSPACE(name, !strlen_zero(name)); \
+		APPEND_BUF_OR_NIL(sourceroute, !strlen_zero(sourceroute)); \
+		APPEND_BUF_OR_NIL(user, !strlen_zero(user)); \
+		APPEND_BUF_OR_NIL(host, !strlen_zero(host)); \
+		SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, ")"); \
+		break; \
+	} \
+	END_SEEK_HEADERS; \
+	if (findcount) { \
+		SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, ")"); \
+	} else { \
+		SAFE_FAST_COND_APPEND(response, buf, len, 1, "NIL"); \
+	}
+
+			/* From RFC:
+			 * The fields of the envelope structure are in the following order:
+			 * date, subject, from, sender, reply-to, to, cc, bcc, in-reply-to, and message-id.
+			 * The date, subject, in-reply-to, and message-id fields are strings.
+			 * The from, sender, reply-to, to, cc, and bcc fields are parenthesized lists of address structures.
+			 * An address structure is a parenthesized list that describes an electronic mail address.
+			 * The fields of an address structure are in the following order: personal name,
+			 * [SMTP] at-domain-list (source route), mailbox name, and host name. */
+
+			 /* Example (formatted with line breaks for clarity): * 1 FETCH (ENVELOPE
+			  *
+			  * ("Tue, 8 Nov 2022 01:19:53 +0000 (UTC)" "Welcome!"
+			  * (("Sender Name" NIL "sender" "example.com"))
+			  * (("Sender Name" NIL "sender" "example.com"))
+			  * (("Sender Name" NIL "sender" "example.com"))
+			  * (("Sender Name" NIL "recipientuser" "example.org"))
+			  * NIL NIL NIL "<526638975.9347.1667870393918@hostname.internal>")
+			  *
+			  * UID 1)
+			  */
+			SEEK_SUBJECT_SINGLE("Date");
+			SEEK_SUBJECT_SINGLE("Subject");
+			SEEK_SUBJECT_MULTIPLE("From");
+			SEEK_SUBJECT_MULTIPLE("Sender");
+			SEEK_SUBJECT_MULTIPLE("Reply-To");
+			SEEK_SUBJECT_MULTIPLE("To");
+			SEEK_SUBJECT_MULTIPLE("Cc");
+			SEEK_SUBJECT_MULTIPLE("Bcc");
+			SEEK_SUBJECT_SINGLE("In-Reply-To");
+			SEEK_SUBJECT_SINGLE("Message-Id");
+			fclose(fp);
+			SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, ")");
+		}
+
+		if (fetchreq->body || fetchreq->bodystructure) {
+			/* BODY is BODYSTRUCTURE without extensions (which we don't send anyways, in either case) */
 			/* Excellent reference for BODYSTRUCTURE: http://sgerwk.altervista.org/imapbodystructure.html */
 			/* But we just use the top of the line gmime library for this task (see https://stackoverflow.com/a/18813164) */
-			dyn = mime_make_bodystructure(fullname);
+			dyn = mime_make_bodystructure(fetchreq->bodystructure ? "BODYSTRUCTURE" : "BODY", fullname);
 		}
 
-		/*! \todo Still missing lots of stuff here!!! +need to automatically mark as Seen unless peeking */
-		if (fetchreq->body || fetchreq->envelope || fetchreq->internaldate || fetchreq->rfc822text) {
-			/*! \todo Implement these */
-			bbs_warning("Client requested unsupported FETCH type\n"); /* Make some noise until these are implemented */
+		if (fetchreq->internaldate) {
+			struct stat st;
+			if (stat(fullname, &st)) {
+				bbs_error("stat(%s) failed: %s\n", fullname, strerror(errno));
+			} else {
+				struct tm modtime;
+				char timebuf[40];
+				/* Linux doesn't really have "time created" like Windows does. Just use the modified time,
+				 * and hopefully renaming doesn't change that. */
+				/* Use server's local time */
+				strftime(timebuf, sizeof(timebuf), "%a, %d %b %Y %H:%M:%S %z", localtime_r(&st.st_mtim.tv_sec, &modtime));
+				SAFE_FAST_COND_APPEND(response, buf, len, 1, "INTERNALDATE \"%s\"", timebuf);
+			}
 		}
 
 		/* Actual body, if being sent, should be last */
-		if (fetchreq->rfc822) {
+		if (fetchreq->rfc822 || fetchreq->rfc822text) {
 			multiline = 1;
 			sendbody = 1;
 		}
@@ -1655,7 +1824,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				fseek(fp, 0L, SEEK_END); /* Go to EOF */
 				size = ftell(fp);
 				rewind(fp); /* Be kind, rewind */
-				imap_send(imap, "%d FETCH (%s %s %s {%ld}", seqno, S_IF(dyn), response, fetchreq->rfc822 ? "RFC822" : "BODY[]", size + 2); /* No close paren here, last dprintf will do that */
+				imap_send(imap, "%d FETCH (%s%s%s %s {%ld}", seqno, S_IF(dyn), dyn ? " " : "", response, fetchreq->rfc822 ? "RFC822" : "BODY[]", size + 2); /* No close paren here, last dprintf will do that */
 				/* XXX Assumes not sending headers and bodylen at same time.
 				 * In reality, I think that *might* be fine because the body contains everything,
 				 * and you wouldn't request just the headers and then the whole body in the same FETCH.
@@ -1678,19 +1847,38 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				pthread_mutex_unlock(&imap->lock);
 			} else {
 				/* Need to add 2 for last CR LF we tack on before ) */
-				imap_send(imap, "%d FETCH (%s {%d}\r\n%s\r\n)", seqno, response, bodylen + 2, headers);
+				imap_send(imap, "%d FETCH (%s%s%s{%d}\r\n%s\r\n)", seqno, S_IF(dyn), dyn ? " " : "", response, bodylen + 2, headers);
 			}
 		} else {
 			/* Number after FETCH is always a message sequence number, not UID, even if usinguid */
-			imap_send(imap, "%d FETCH (%s %s)", seqno, S_IF(dyn), response); /* Single line response */
+			imap_send(imap, "%d FETCH (%s%s%s)", seqno, S_IF(dyn), dyn ? " " : "", response); /* Single line response */
 		}
 
 		if (dyn) {
 			free(dyn);
 		}
 
-		/*! \todo mark as read if !peek (in reality, not critical, since most clients will manually set the flags, and use peek extensively) */
-		UNUSED(peek);
+		if (markseen) {
+			int newflags;
+			/* I haven't actually encountered any clients that will actually hit this path... most clients peek everything and manually mark as seen,
+			 * rather than using the BODY[] item which implicitly marks as seen during processing. */
+			flags = strchr(entry->d_name, ':'); /* maildir flags */
+			if (!flags) {
+				bbs_error("Message file %s contains no flags?\n", entry->d_name);
+				goto cleanup;
+			}
+			newflags = parse_flags_letters(flags + 2); /* Skip first 2 since it's always just "2," and real flags come after that */
+			/* If not already seen, mark as unseen */
+			if (!(newflags & FLAG_BIT_SEEN)) {
+				char newflagletters[256];
+				bbs_debug(6, "Implicitly marking message as seen\n");
+				newflags |= FLAG_BIT_SEEN;
+				/* Generate flag letters from flag bits */
+				gen_flag_letters(newflags, newflagletters, sizeof(newflagletters));
+				maildir_msg_setflags(fullname, newflagletters);
+			}
+		}
+
 cleanup:
 		free(entry);
 	}
@@ -1906,7 +2094,7 @@ static int handle_store(struct imap_session *imap, char *s, int usinguid)
 	} else if (!strcasecmp(operation, "-FLAGS")) {
 		flagop = -1; /* Remove */
 		silent = 0;
-	} else if (!strcasecmp(operation, "-FLAGS")) {
+	} else if (!strcasecmp(operation, "-FLAGS.SILENT")) {
 		flagop = -1; /* Remove */
 		silent = 1;
 	} else {

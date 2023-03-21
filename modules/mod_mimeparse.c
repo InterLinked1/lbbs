@@ -214,7 +214,7 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 	g_string_append_c(gs, ')');
 }
 
-char *mime_make_bodystructure(const char *file)
+char *mime_make_bodystructure(const char *itemname, const char *file)
 {
 	GMimeFormat format = GMIME_FORMAT_MESSAGE;
 	GMimeMessage *message;
@@ -246,7 +246,7 @@ char *mime_make_bodystructure(const char *file)
 	}
 
 	str = g_string_new("");
-	g_string_append(str, "BODYSTRUCTURE (");
+	g_string_append_printf(str, "%s (", itemname);
 	write_part_bodystructure(message->mime_part, str);
 	g_string_append(str, ")");
 	result = g_string_free(str, FALSE); /* Free the g_string but not the buffer */

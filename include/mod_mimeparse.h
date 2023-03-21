@@ -14,7 +14,9 @@
  */
 
 /*!
- * \brief File containing email message
+ * \brief Generate the BODY/BODYSTRUCTURE data item for FETCH responses
+ * \param itemname BODY or BODYSTRUCTURE
+ * \param file File containing email message
  * \returns NULL on failure, BODYSTRUCTURE text on success, which must be be freed using free()
  */
-char *mime_make_bodystructure(const char *file);
+char *mime_make_bodystructure(const char *itemname, const char *file);

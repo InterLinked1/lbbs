@@ -302,12 +302,33 @@ static int run(void)
 		CLIENT_EXPECT(client1, "plain");
 		CLIENT_DRAIN(client1);
 	}
-	SWRITE(client1, "a27 UID FETCH 2 (UID BODYSTRUCTURE)" ENDL);
-	CLIENT_EXPECT(client1, "plain");
+	SWRITE(client1, "a27 UID FETCH 11 (FLAGS UID BODYSTRUCTURE)" ENDL);
+	CLIENT_EXPECT(client1, "PLAIN");
 	CLIENT_DRAIN(client1);
 
-	SWRITE(client1, "a27 UID FETCH 11 (UID BODYSTRUCTURE)" ENDL);
-	CLIENT_EXPECT(client1, "PLAIN");
+	/* Test FETCH BODY.PEEK[HEADER] */
+	SWRITE(client1, "a28 UID FETCH 11 (FLAGS BODY.PEEK[HEADER])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "MIME-Version");
+	CLIENT_DRAIN(client1);
+
+	/* Test FETCH ENVELOPE and INTERNALDATE */
+	SWRITE(client1, "a29 UID FETCH 11 (FLAGS ENVELOPE INTERNALDATE)" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "B27397-0100000@Blurdybloop.example");
+	CLIENT_DRAIN(client1);
+
+	/* Using BODY instead of BODY.PEEK should result in the message getting marked as read.
+	 * Additionally, the flags should contain \Seen in the response.
+	 * First, remove the \Seen flag if it is already present. */
+	SWRITE(client1, "a30 UID STORE 11 -FLAGS.SILENT (\\Seen)" ENDL);
+	CLIENT_EXPECT(client1, "a30 OK UID STORE"); /* Response should be UID prefixed! */
+
+	SWRITE(client1, "a31 UID FETCH 11 (BODY[TEXT] FLAGS)" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "\\Seen");
+	CLIENT_DRAIN(client1);
+
+	/* Independently verify in a subsequent message that the file really was renamed to contain the Seen flag */
+	SWRITE(client1, "a32 UID FETCH 11 (FLAGS)" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "\\Seen");
 	CLIENT_DRAIN(client1);
 
 	/* LOGOUT */
