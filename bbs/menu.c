@@ -683,11 +683,9 @@ static int load_config(int reload)
 			bbs_debug(7, "Parsing menu directive %s=%s\n", key, value);
 #endif
 			if (!strcasecmp(key, "title")) {
-				free_if(menu->title);
-				menu->title = strdup(value);
+				REPLACE(menu->title, value);
 			} else if (!strcasecmp(key, "subtitle")) {
-				free_if(menu->subtitle);
-				menu->subtitle = strdup(value);
+				REPLACE(menu->subtitle, value);
 			} else if (!strcasecmp(key, "display")) {
 				if (menu->display) {
 					int slen = strlen(menu->display);

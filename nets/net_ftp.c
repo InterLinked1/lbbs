@@ -69,6 +69,7 @@ static int require_reuse = 0;
 #define UNSAFE_FILEPATH(path) strstr(path, "..")
 
 #define FTP_UPDATE_DIR(dir) safe_strncpy(ftpdir, dir, sizeof(ftpdir)); snprintf(fulldir, sizeof(fulldir), "%s%s", bbs_transfer_rootdir(), ftpdir); bbs_debug(5, "Updated FTP directory to %s\n", ftpdir)
+
 #define REQUIRE_PASV_FD() \
 	if (pasv_fd == -1) { \
 		res = ftp_write(ftp, 501, "Invalid command sequence\r\n"); \
@@ -340,6 +341,7 @@ static void *ftp_handler(void *varg)
 			res = ftp_write_raw(ftp, " AUTH TLS\r\n");
 			res = ftp_write_raw(ftp, " PBSZ\r\n");
 			res = ftp_write_raw(ftp, " PROT\r\n");
+			res = ftp_write_raw(ftp, " MDTM\r\n");
 			res = ftp_write(ftp, 211, "END\r\n");
 			break;
 		} else if (!strcasecmp(command, "AUTH") && !strlen_zero(rest) && !strcasecmp(rest, "TLS")) {
@@ -394,7 +396,32 @@ static void *ftp_handler(void *varg)
 				res = ftp_write(ftp, 250, "CWD successful. \"%s\" is current directory.\r\n", ftpdir);
 			}
 		} else if (!strcasecmp(command, "CDUP")) { /* Change to parent directory */
-			res = ftp_write(ftp, 502, "Command Not Implemented\r\n");
+			char *tmp;
+			char newdir[sizeof(fulldir) + 1];
+			safe_strncpy(newdir, fulldir, sizeof(newdir)); /* Copy the current directory. */
+			tmp = strrchr(newdir, '/'); /* Strip the last / */
+			if (!tmp) {
+				break; /* Impossible. */
+			}
+			*tmp++ = '\0';
+			if (!*tmp) {
+				/* The / we removed was at the end of the string, so we actually need to repeat this. */
+				tmp = strrchr(newdir, '/');
+				if (!tmp) {
+					break;
+				}
+				*tmp++ = '\0';
+			}
+			/* Going up a directory must succeed... unless we're at the root. */
+			if (strlen(newdir) < strlen(bbs_transfer_rootdir())) {
+				res = ftp_write(ftp, 431, "Can't move up directories\r\n");
+				continue;
+			} else if (strlen(newdir) == strlen(bbs_transfer_rootdir())) {
+				FTP_UPDATE_DIR("/");
+			} else {
+				FTP_UPDATE_DIR(newdir + strlen(bbs_transfer_rootdir()));
+			}
+			res = ftp_write(ftp, 250, "CWD successful. \"%s\" is current directory.\r\n", ftpdir);
 		} else if (!strcasecmp(command, "SMNT")) { /* Structure Mount */
 			res = ftp_write(ftp, 502, "Command Not Implemented\r\n");
 		/* Transfer Parameters */
@@ -599,6 +626,24 @@ static void *ftp_handler(void *varg)
 				break;
 			}
 			res = ftp_write(ftp, 226, "Action successful\r\n");
+		} else if (!strcasecmp(command, "MDTM")) { /* File Modification Time - RFC 3659 */
+			/* CoreFTP also attempts to send MDTM to send the modification time of an uploaded file,
+			 * but that should be MFMT, not MDTM. */
+			char fullfile[512];
+			struct stat st;
+			if (strlen_zero(next)) {
+				break;
+			}
+			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
+			if (stat(fullfile, &st)) {
+				res = ftp_write(ftp, 550, "No such file\r\n");
+			} else {
+				struct tm modtime;
+				char timebuf[35];
+				localtime_r(&st.st_mtim.tv_sec, &modtime);
+				strftime(timebuf, sizeof(timebuf), "%Y%m%d%H%M%S", &modtime);
+				res = ftp_write(ftp, 213, "%s\r\n", timebuf);
+			}
 		} else if (!strcasecmp(command, "STOR")) { /* Upload file to server */
 			REQUIRE_PASV_FD();
 			res = ftp_put(ftp, &pasv_fd, fulldir, rest, "w"); /* STOR will truncate */
