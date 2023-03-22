@@ -414,6 +414,8 @@ SSL *ssl_new_accept(int fd, int *rfd, int *wfd)
 		return NULL;
 	}
 
+	/* No need to call SSL_CTX_set_session_cache_mode(ssl_ctx, SSL_SESS_CACHE_SERVER) - this is the default */
+
 	ssl = SSL_new(ssl_ctx);
 	if (!ssl) {
 		bbs_error("Failed to create SSL\n");
@@ -443,6 +445,10 @@ accept:
 			SSL_free(ssl);
 			return NULL;
 		}
+	}
+
+	if (SSL_session_reused(ssl)) {
+		bbs_debug(5, "SSL session was reused for this connection\n");
 	}
 
 	return ssl;

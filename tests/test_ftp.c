@@ -103,6 +103,7 @@ static int run(void)
 	client2 = new_pasv(client1); /* Open a data connection */
 	REQUIRE_FD(client2);
 	SWRITE(client1, "STOR foobar.txt" ENDL);
+	CLIENT_EXPECT(client1, "150");
 	SWRITE(client2, "Hello world\r\nGoodbye world\r\n");
 	close_if(client2);
 	CLIENT_EXPECT(client1, "226");
@@ -120,6 +121,7 @@ static int run(void)
 	client2 = new_pasv(client1); /* Open a data connection */
 	REQUIRE_FD(client2);
 	SWRITE(client1, "STOR foobar.txt" ENDL);
+	CLIENT_EXPECT(client1, "150");
 	SWRITE(client2, "Goodbye world\r\nHello world\r\n");
 	close_if(client2);
 	CLIENT_EXPECT(client1, "226");
@@ -128,6 +130,7 @@ static int run(void)
 	client2 = new_pasv(client1);
 	REQUIRE_FD(client2);
 	SWRITE(client1, "RETR foobar.txt" ENDL);
+	CLIENT_EXPECT(client1, "150");
 	CLIENT_EXPECT(client2, "Goodbye world\r\nHello world\r\n");
 	close_if(client2);
 	CLIENT_EXPECT(client1, "226");
@@ -136,6 +139,7 @@ static int run(void)
 	client2 = new_pasv(client1);
 	REQUIRE_FD(client2);
 	SWRITE(client1, "APPE foobar.txt" ENDL);
+	CLIENT_EXPECT(client1, "150");
 	SWRITE(client2, "You say hello, I say goodbye\r\n");
 	close_if(client2);
 	CLIENT_EXPECT(client1, "226");
@@ -146,6 +150,7 @@ static int run(void)
 	SWRITE(client1, "TYPE I" ENDL); /* Binary mode */
 	CLIENT_EXPECT(client1, "200");
 	SWRITE(client1, "RETR foobar.txt" ENDL);
+	CLIENT_EXPECT(client1, "150");
 	CLIENT_EXPECT(client2, "Goodbye world\r\nHello world\r\nYou say hello, I say goodbye\r\n");
 	close_if(client2);
 	CLIENT_EXPECT(client1, "226");
