@@ -325,8 +325,7 @@ static inline int parse_header(struct http_req *req, char *s)
 				username = strsep(&password, ":");
 
 				/* Always set, even if incorrect password, so we know that we attempted Basic Auth */
-				free_if(req->remoteuser);
-				req->remoteuser = strdup(username);
+				REPLACE(req->remoteuser, username);
 				bbs_authenticate(req->node, username, password);
 				/* Destroy the password before freeing it */
 				bbs_memzero(decoded, outlen);

@@ -1357,11 +1357,9 @@ static void handle_topic(struct irc_user *user, char *s)
 			send_numeric(user, 482, "You're not a channel operator\r\n");
 		} else {
 			char buf[128];
-			free_if(channel->topic);
-			free_if(channel->topicsetby);
-			channel->topic = strdup(s);
+			REPLACE(channel->topic, s);
 			snprintf(buf, sizeof(buf),IDENT_PREFIX_FMT, IDENT_PREFIX_ARGS(user));
-			channel->topicsetby = strdup(buf);
+			REPLACE(channel->topicsetby, buf);
 			channel->topicsettime = time(NULL);
 			channel_print_topic(NULL, channel);
 			chanserv_broadcast("TOPIC", channel->name, user->nickname, s);
@@ -1922,8 +1920,7 @@ static void handle_identify(struct irc_user *user, char *s)
 		user->username = strdup(username);
 		/* Just in case it was different here. */
 		if (strlen_zero(user->nickname) || strcasecmp(username, user->nickname)) {
-			free_if(user->nickname);
-			user->nickname = strdup(username);
+			REPLACE(user->nickname, username);
 		}
 		add_user(user);
 		send_numeric(user, 900, IDENT_PREFIX_FMT " %s You are now logged in as %s\r\n", IDENT_PREFIX_ARGS(user), user->username, user->username);
@@ -2435,9 +2432,8 @@ static void hostmask(struct irc_user *user)
 {
 	char mask[32];
 	/* Replace hostname with host mask, since nobody actually wants his or her location publicly shared */
-	free_if(user->hostname);
 	snprintf(mask, sizeof(mask), "node/%d", user->node->id);
-	user->hostname = strdup(mask);
+	REPLACE(user->hostname, mask);
 }
 
 static int client_welcome(struct irc_user *user)
@@ -2547,8 +2543,7 @@ static int handle_user(struct irc_user *user)
 	/* Resolve IP address to hostname */
 	if (!bbs_get_hostname(user->hostname, hostname, sizeof(hostname))) {
 		bbs_debug(3, "Resolved IP %s to hostname %s\n", user->node->ip, hostname);
-		free_if(user->hostname);
-		user->hostname = strdup(hostname);
+		REPLACE(user->hostname, hostname);
 		send_reply(user, "NOTICE AUTH :*** Checking Ident\r\n"); /* XXX Not really, we're not */
 		send_reply(user, "NOTICE AUTH :*** No Ident response\r\n");
 		send_reply(user, "NOTICE AUTH :*** Found your hostname: %s\r\n", user->hostname);
@@ -2726,8 +2721,7 @@ static void handle_client(struct irc_user *user)
 					char *realname;
 					REQUIRE_PARAMETER(user, s);
 					realname = strsep(&s, " ");
-					free_if(user->realname);
-					user->realname = strdup(realname);
+					REPLACE(user->realname, realname);
 					if (handle_user(user)) {
 						break;
 					}

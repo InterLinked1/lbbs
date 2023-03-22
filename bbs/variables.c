@@ -124,8 +124,7 @@ static int bbs_varlist_append(struct bbs_vars *vars, const char *key, const char
 				/* Update to new value. */
 				if (strcmp(v->value, value)) {
 					bbs_debug(6, "Updating value of %s from %s to %s\n", key, v->value, value);
-					free(v->value);
-					v->value = strdup(value);
+					REPLACE(v->value, value);
 				} else {
 					bbs_debug(6, "Value of %s (%s) has not changed\n", key, value);
 				}

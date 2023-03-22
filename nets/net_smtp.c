@@ -1850,8 +1850,8 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 		dlen = strlen(s); /* s may be empty but will not be NULL */
 
 		if ((smtp->fromlocal || smtp->msa) && smtp->indataheaders && STARTS_WITH(s, "From:")) {
-			free_if(smtp->fromheaderaddress);
-			smtp->fromheaderaddress = strdup(S_IF(s + 5));
+			const char *newfromhdraddr = S_IF(s + 5);
+			REPLACE(smtp->fromheaderaddress, newfromhdraddr);
 		}
 
 		if (STARTS_WITH(s, "Received:")) {

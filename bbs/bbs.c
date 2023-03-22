@@ -390,8 +390,7 @@ static int parse_options_pre(int argc, char *argv[])
 		switch (c) {
 		case 'C':
 			/* Affects what config we load in load_config, so do before that */
-			free_if(config_dir);
-			config_dir = strdup(optarg);
+			REPLACE(config_dir, optarg);
 			break;
 		default:
 			break; /* Ignore for now, everything else handled in parse_options */
@@ -436,12 +435,10 @@ static int parse_options(int argc, char *argv[])
 			option_dumpcore = 1;
 			break;
 		case 'G':
-			free_if(rungroup); /* If specified by config, override */
-			rungroup = strdup(optarg);
+			REPLACE(rungroup, optarg); /* If specified by config, override */
 			break;
 		case 'U':
-			free_if(runuser); /* If specified by config, override */
-			runuser = strdup(optarg);
+			REPLACE(runuser, optarg); /* If specified by config, override */
 			break;
 		case 'v':
 			if (option_verbose == MAX_VERBOSE) {

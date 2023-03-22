@@ -830,8 +830,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 		dlen = strlen(s); /* s may be empty but will not be NULL */
 
 		if (nntp->inpostheaders && STARTS_WITH(s, "From:")) {
-			free_if(nntp->fromheader);
-			nntp->fromheader = strdup(s);
+			REPLACE(nntp->fromheader, s);
 		} else if (nntp->inpostheaders && nntp->mode == NNTP_MODE_TRANSIT && STARTS_WITH(s, "Message-ID:")) {
 			/* The article better be the article that the other server said it was in IHAVE */
 			if (!strstr(s, nntp->rxarticleid)) { /* XXX What if it's a substring? */
@@ -1088,8 +1087,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 			return 0;
 		}
 		/* Must not change current group unless we succeed */
-		free_if(nntp->currentgroup);
-		nntp->currentgroup = strdup(s);
+		REPLACE(nntp->currentgroup, s);
 		safe_strncpy(nntp->grouppath, group, sizeof(nntp->grouppath));
 		scan_newsgroup(group, &min, &max, &total);
 		nntp_send(nntp, 211, "%d %d %d %s", total, min, max, s);
@@ -1236,8 +1234,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 			nntp_send(nntp, 435, "Duplicate");
 			return 0;
 		}
-		free_if(nntp->rxarticleid);
-		nntp->rxarticleid = strdup(s);
+		REPLACE(nntp->rxarticleid, s);
 		if (!nntp->rxarticleid) {
 			nntp_send(nntp, 436, "Retry later");
 			return 0;
