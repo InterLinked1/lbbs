@@ -347,7 +347,7 @@ int bbs_timed_accept(int socket, int ms, const char *ip)
 			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
 			bbs_debug(1, "Accepting new TCP connection from %s\n", new_ip);
 			if (!strlen_zero(ip) && strcmp(ip, new_ip)) {
-				bbs_warning("Rejecting connection from %s\n", new_ip);
+				bbs_warning("Rejecting connection from %s (not from %s)\n", new_ip, ip);
 				close(sfd);
 				return -1;
 			}

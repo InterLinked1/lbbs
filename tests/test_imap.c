@@ -331,6 +331,11 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(client1, "\\Seen");
 	CLIENT_DRAIN(client1);
 
+	/* SEARCH */
+	SWRITE(client1, "a31 UID SEARCH LARGER 20 SEEN HEADER \"Content-Type\" \"plain\" BODY \"test\" OR OR SMALLER 200000 NOT FROM \"John Smith\" NOT FROM \"Paul Smith\"" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "a31 OK UID SEARCH");
+	CLIENT_DRAIN(client1);
+
 	/* LOGOUT */
 	SWRITE(client1, "a999 LOGOUT" ENDL);
 	CLIENT_EXPECT(client1, "* BYE");

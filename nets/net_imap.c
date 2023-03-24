@@ -382,6 +382,16 @@ static int parse_flags_letters(const char *f)
 	return flags;
 }
 
+static int parse_flags_letters_from_filename(const char *filename, int *flags)
+{
+	const char *flagstr = strchr(filename, ':');
+	if (!flagstr++) {
+		return -1;
+	}
+	*flags = parse_flags_letters(flagstr + 2); /* Skip first 2 since it's always just "2," and real flags come after that */
+	return 0;
+}
+
 static void gen_flag_letters(int flags, char *buf, size_t len)
 {
 	/* Note: these MUST be in alphabetic order to comply with maildir filename format! */
@@ -480,6 +490,26 @@ static int set_maildir(struct imap_session *imap, const char *mailbox)
 	return mailbox_maildir_init(imap->dir);
 }
 
+static int parse_uid_from_filename(const char *filename, unsigned int *uid)
+{
+	char *uidstr = strstr(filename, ",U=");
+	if (!uidstr) {
+		return -1;
+	}
+	if (uidstr) {
+		uidstr += STRLEN(",U=");
+		if (!strlen_zero(uidstr)) {
+			*uid = atoi(uidstr); /* Should stop as soon we encounter the first nonnumeric character, whether , or : */
+			if (*uid <= 0) {
+				return -1;
+			}
+		} else {
+			return -1;
+		}
+	}
+	return 0;
+}
+
 static int on_select(const char *dir_name, const char *filename, struct imap_session *imap)
 {
 	char *flags;
@@ -500,14 +530,8 @@ static int on_select(const char *dir_name, const char *filename, struct imap_ses
 			bbs_error("File %s/%s is noncompliant with maildir\n", dir_name, filename);
 		} else if (!strlen_zero(flags)) {
 			unsigned int uid = 0;
-			char *uidstr = strstr(filename, ",U=");
+			parse_uid_from_filename(filename, &uid);
 			flags++;
-			if (uidstr) {
-				uidstr += STRLEN(",U=");
-				if (!strlen_zero(uidstr)) {
-					uid = atoi(uidstr);
-				}
-			}
 			if (!strchr(flags, FLAG_SEEN)) {
 				imap->totalunseen += 1;
 				/* scandir will traverse in the order files were added,
@@ -533,7 +557,6 @@ static int on_select(const char *dir_name, const char *filename, struct imap_ses
 
 static int expunge_helper(const char *dir_name, const char *filename, struct imap_session *imap, int expunge)
 {
-	char *flags;
 	int oldflags;
 	char fullpath[256];
 
@@ -551,12 +574,10 @@ static int expunge_helper(const char *dir_name, const char *filename, struct ima
 	imap->expungeindex += 1;
 
 	imap_debug(7, "Analyzing file %s/%s\n", dir_name, filename);
-	flags = strchr(filename, ':');
-	if (!flags++) {
-		bbs_error("File %s/%s is noncompliant with maildir\n", dir_name, filename);
+	if (parse_flags_letters_from_filename(filename, &oldflags)) {
+		bbs_error("File %s is noncompliant with maildir\n", filename);
 		return 0;
 	}
-	oldflags = parse_flags_letters(flags + 2); /* Skip first 2 since it's always just "2," and real flags come after that */
 	if (!(oldflags & FLAG_BIT_DELETED)) {
 		return 0;
 	}
@@ -1113,8 +1134,7 @@ cleanup:
 /*! \retval 0 if not in range, UID if in range */
 static inline int msg_in_range(int seqno, const char *filename, const char *sequences, int usinguid)
 {
-	char *uidstr;
-	unsigned int msguid;
+	unsigned int msguid = 0;
 
 	if (!usinguid) {
 		/* XXX UIDs aren't guaranteed to be in order (see comment below), so we can't break if seqno > max */
@@ -1126,14 +1146,7 @@ static inline int msg_in_range(int seqno, const char *filename, const char *sequ
 	/* Since we use scandir, msg sequence #s should be in order of oldest to newest */
 
 	/* Parse UID */
-	uidstr = strstr(filename, ",U=");
-	if (!uidstr) {
-		bbs_error("Missing UID for file %s?\n", filename);
-		return 0;
-	}
-	uidstr += STRLEN(",U=");
-	msguid = atoi(uidstr); /* Should stop as soon we encounter the first nonnumeric character, whether , or : */
-	if (msguid <= 0) {
+	if (parse_uid_from_filename(filename, &msguid)) {
 		bbs_error("Unexpected UID: %u\n", msguid);
 		return 0;
 	}
@@ -1486,6 +1499,21 @@ static int finish_append(struct imap_session *imap)
 	return 0;
 }
 
+static inline unsigned long parse_size_from_filename(const char *filename, unsigned long *size)
+{
+	const char *sizestr = strstr(filename, ",S=");
+	if (!sizestr) {
+		bbs_error("Missing size in file %s\n", filename);
+		return -1;
+	}
+	sizestr += STRLEN(",S=");
+	*size = atol(sizestr);
+	if (*size <= 0) {
+		bbs_warning("Invalid size (%lu) for %s\n", *size, filename);
+	}
+	return 0;
+}
+
 static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_request *fetchreq, const char *sequences)
 {
 	struct dirent *entry, **entries;
@@ -1556,13 +1584,9 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		}
 		if (fetchreq->rfc822size) {
 			unsigned long size;
-			const char *sizestr = strstr(entry->d_name, ",S=");
-			if (!sizestr) {
-				bbs_error("Missing size in file %s\n", entry->d_name);
+			if (parse_size_from_filename(entry->d_name, &size)) {
 				goto cleanup;
 			}
-			sizestr += STRLEN(",S=");
-			size = atoi(sizestr);
 			SAFE_FAST_COND_APPEND(response, buf, len, 1, "RFC822.SIZE %lu", size);
 		}
 		/* Must include UID in response, whether requested or not (so fetchreq->uid ignored) */
@@ -1603,7 +1627,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 					char headername[64];
 					/* fgets does store the newline, so line should end in CR LF */
 					if (!strcmp(linebuf, "\r\n")) {
-						break; /* End of headers (LF is eaten by fgets) */
+						break; /* End of headers */
 					}
 					/* I hope gcc optimizes this to not use snprintf under the hood */
 					safe_strncpy(headername, linebuf, sizeof(headername)); /* Don't copy the whole line. XXX This assumes that no header name is longer than 64 chars. */
@@ -1702,7 +1726,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, "NIL"); \
 	}
 
-#define SEEK_SUBJECT_SINGLE(hdrname) \
+#define SEEK_HEADER_SINGLE(hdrname) \
 	bufhdr = NULL; \
 	SEEK_HEADERS(hdrname) { \
 		bufhdr = linebuf + STRLEN(hdrname) + 1; \
@@ -1717,7 +1741,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		APPEND_BUF_OR_NIL(bufhdr, !strlen_zero(bufhdr)); \
 	}
 
-#define SEEK_SUBJECT_MULTIPLE(hdrname) \
+#define SEEK_HEADER_MULTIPLE(hdrname) \
 	SEEK_HEADERS(hdrname) { \
 		char *name, *user, *host; \
 		char *sourceroute = NULL; /* https://stackoverflow.com/questions/30693478/imap-envelope-email-address-format/30698163#30698163 */ \
@@ -1765,16 +1789,16 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			  *
 			  * UID 1)
 			  */
-			SEEK_SUBJECT_SINGLE("Date");
-			SEEK_SUBJECT_SINGLE("Subject");
-			SEEK_SUBJECT_MULTIPLE("From");
-			SEEK_SUBJECT_MULTIPLE("Sender");
-			SEEK_SUBJECT_MULTIPLE("Reply-To");
-			SEEK_SUBJECT_MULTIPLE("To");
-			SEEK_SUBJECT_MULTIPLE("Cc");
-			SEEK_SUBJECT_MULTIPLE("Bcc");
-			SEEK_SUBJECT_SINGLE("In-Reply-To");
-			SEEK_SUBJECT_SINGLE("Message-Id");
+			SEEK_HEADER_SINGLE("Date");
+			SEEK_HEADER_SINGLE("Subject");
+			SEEK_HEADER_MULTIPLE("From");
+			SEEK_HEADER_MULTIPLE("Sender");
+			SEEK_HEADER_MULTIPLE("Reply-To");
+			SEEK_HEADER_MULTIPLE("To");
+			SEEK_HEADER_MULTIPLE("Cc");
+			SEEK_HEADER_MULTIPLE("Bcc");
+			SEEK_HEADER_SINGLE("In-Reply-To");
+			SEEK_HEADER_SINGLE("Message-Id");
 			fclose(fp);
 			SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, ")");
 		}
@@ -1857,12 +1881,10 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			int newflags;
 			/* I haven't actually encountered any clients that will actually hit this path... most clients peek everything and manually mark as seen,
 			 * rather than using the BODY[] item which implicitly marks as seen during processing. */
-			flags = strchr(entry->d_name, ':'); /* maildir flags */
-			if (!flags) {
-				bbs_error("Message file %s contains no flags?\n", entry->d_name);
+			if (parse_flags_letters_from_filename(entry->d_name, &newflags)) {
+				bbs_error("File %s is noncompliant with maildir\n", entry->d_name);
 				goto cleanup;
 			}
-			newflags = parse_flags_letters(flags + 2); /* Skip first 2 since it's always just "2," and real flags come after that */
 			/* If not already seen, mark as unseen */
 			if (!(newflags & FLAG_BIT_SEEN)) {
 				char newflagletters[256];
@@ -1993,7 +2015,6 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 	}
 	while (fno < files && (entry = entries[fno++])) {
 		unsigned int msguid;
-		const char *flags;
 		char newflagletters[256];
 		int i;
 		int newflags;
@@ -2007,12 +2028,11 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			goto cleanup;
 		}
 		/* Get the message's current flags. */
-		flags = strchr(entry->d_name, ':'); /* maildir flags */
-		if (!flags) {
-			bbs_error("Message file %s contains no flags?\n", entry->d_name);
+		if (parse_flags_letters_from_filename(entry->d_name, &oldflags)) {
+			bbs_error("File %s is noncompliant with maildir\n", entry->d_name);
 			goto cleanup;
 		}
-		oldflags = parse_flags_letters(flags + 2); /* Skip first 2 since it's always just "2," and real flags come after that */
+
 		/* If we wanted to microptimize, we could set flags = current flag on a match, since these must appear in order (for maildir) */
 
 		/* Build the new flags by iterating over opflags and comparing with oldflags */
@@ -2283,6 +2303,842 @@ static int handle_rename(struct imap_session *imap, char *s)
 	return 0;
 }
 
+enum imap_search_type {
+	IMAP_SEARCH_ALL = 0,
+	IMAP_SEARCH_ANSWERED,
+	IMAP_SEARCH_BCC,
+	IMAP_SEARCH_BEFORE,
+	IMAP_SEARCH_BODY,
+	IMAP_SEARCH_CC,
+	IMAP_SEARCH_DELETED,
+	IMAP_SEARCH_DRAFT,
+	IMAP_SEARCH_FLAGGED,
+	IMAP_SEARCH_FROM,
+	IMAP_SEARCH_HEADER,
+	IMAP_SEARCH_KEYWORD,
+	IMAP_SEARCH_LARGER,
+	IMAP_SEARCH_NEW,
+	IMAP_SEARCH_NOT,
+	IMAP_SEARCH_OLD,
+	IMAP_SEARCH_ON,
+	IMAP_SEARCH_OR,
+	IMAP_SEARCH_RECENT,
+	IMAP_SEARCH_SEEN,
+	IMAP_SEARCH_SENTBEFORE,
+	IMAP_SEARCH_SENTON,
+	IMAP_SEARCH_SENTSINCE,
+	IMAP_SEARCH_SINCE,
+	IMAP_SEARCH_SMALLER,
+	IMAP_SEARCH_SUBJECT,
+	IMAP_SEARCH_TEXT,
+	IMAP_SEARCH_TO,
+	IMAP_SEARCH_UID,
+	IMAP_SEARCH_UNANSWERED,
+	IMAP_SEARCH_UNDELETED,
+	IMAP_SEARCH_UNDRAFT,
+	IMAP_SEARCH_UNFLAGGED,
+	IMAP_SEARCH_UNKEYWORD,
+	IMAP_SEARCH_UNSEEN,
+};
+
+static const char *imap_search_key_name(enum imap_search_type type)
+{
+	switch (type) {
+		case IMAP_SEARCH_ALL:
+			return "ALL";
+		case IMAP_SEARCH_ANSWERED:
+			return "ANSWERED";
+		case IMAP_SEARCH_BCC:
+			return "BCC";
+		case IMAP_SEARCH_BEFORE:
+			return "BEFORE";
+		case IMAP_SEARCH_BODY:
+			return "BODY";
+		case IMAP_SEARCH_CC:
+			return "CC";
+		case IMAP_SEARCH_DELETED:
+			return "DELETED";
+		case IMAP_SEARCH_DRAFT:
+			return "DRAFT";
+		case IMAP_SEARCH_FLAGGED:
+			return "FLAGGED";
+		case IMAP_SEARCH_FROM:
+			return "FROM";
+		case IMAP_SEARCH_HEADER:
+			return "HEADER";
+		case IMAP_SEARCH_KEYWORD:
+			return "KEYWORD";
+		case IMAP_SEARCH_LARGER:
+			return "LARGER";
+		case IMAP_SEARCH_NEW:
+			return "NEW";
+		case IMAP_SEARCH_NOT:
+			return "NOT";
+		case IMAP_SEARCH_OLD:
+			return "OLD";
+		case IMAP_SEARCH_ON:
+			return "ON";
+		case IMAP_SEARCH_OR:
+			return "OR";
+		case IMAP_SEARCH_RECENT:
+			return "RECENT";
+		case IMAP_SEARCH_SEEN:
+			return "SEEN";
+		case IMAP_SEARCH_SENTBEFORE:
+			return "SENTBEFORE";
+		case IMAP_SEARCH_SENTON:
+			return "SENTON";
+		case IMAP_SEARCH_SENTSINCE:
+			return "SENTSINCE";
+		case IMAP_SEARCH_SINCE:
+			return "SINCE";
+		case IMAP_SEARCH_SMALLER:
+			return "SMALLER";
+		case IMAP_SEARCH_SUBJECT:
+			return "SUBJECT";
+		case IMAP_SEARCH_TEXT:
+			return "TEXT";
+		case IMAP_SEARCH_TO:
+			return "TO";
+		case IMAP_SEARCH_UID:
+			return "UID";
+		case IMAP_SEARCH_UNANSWERED:
+			return "UNANSWERED";
+		case IMAP_SEARCH_UNDELETED:
+			return "UNDELETED";
+		case IMAP_SEARCH_UNDRAFT:
+			return "UNDRAFT";
+		case IMAP_SEARCH_UNFLAGGED:
+			return "UNFLAGGED";
+		case IMAP_SEARCH_UNKEYWORD:
+			return "UNKEYWORD";
+		case IMAP_SEARCH_UNSEEN:
+			return "UNSEEN";
+		default:
+			bbs_error("Invalid search key type: %d\n", type);
+			return NULL;
+	}
+}
+
+struct imap_search_key;
+
+struct imap_search_key {
+	enum imap_search_type type;
+	union arg {
+		int number;
+		const char *string;
+		struct imap_search_keys *keys;			/* Child key (if any) */
+	} child;
+	RWLIST_ENTRY(imap_search_key) entry;	/* Next key at this level */
+};
+
+RWLIST_HEAD(imap_search_keys, imap_search_key);
+
+static struct imap_search_key *imap_search_add(struct imap_search_keys *skeys, enum imap_search_type type)
+{
+	struct imap_search_key *nk;
+
+	nk = calloc(1, sizeof(*nk));
+	if (!nk) {
+		return NULL;
+	}
+	nk->type = type;
+	RWLIST_INSERT_TAIL(skeys, nk, entry);
+	return nk;
+}
+
+static void imap_search_free(struct imap_search_keys *skeys)
+{
+	struct imap_search_key *skey;
+
+	while ((skey = RWLIST_REMOVE_HEAD(skeys, entry))) {
+		if (skey->type == IMAP_SEARCH_OR || skey->type == IMAP_SEARCH_NOT) {
+			imap_search_free(skey->child.keys);
+			free(skey->child.keys);
+		}
+		free(skey);
+	}
+}
+
+#define DEBUG_SEARCH
+
+#ifdef DEBUG_SEARCH
+/*! \brief Dump a parsed IMAP search query structure as a hierarchical tree for debugging */
+static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str *str, int depth)
+{
+	char buf[512];
+	size_t bytes;
+	struct imap_search_key *skey;
+
+	RWLIST_TRAVERSE(skeys, skey, entry) {
+		/* Indent according to the recursion depth */
+		bytes = snprintf(buf, sizeof(buf), "=%%= %*.s %s -> ", 3 * depth, "", imap_search_key_name(skey->type));
+		dyn_str_append(str, buf, bytes);
+		switch (skey->type) {
+			case IMAP_SEARCH_ANSWERED:
+			case IMAP_SEARCH_DELETED:
+			case IMAP_SEARCH_DRAFT:
+			case IMAP_SEARCH_FLAGGED:
+			case IMAP_SEARCH_NEW:
+			case IMAP_SEARCH_OLD:
+			case IMAP_SEARCH_RECENT:
+			case IMAP_SEARCH_SEEN:
+			case IMAP_SEARCH_UNANSWERED:
+			case IMAP_SEARCH_UNDELETED:
+			case IMAP_SEARCH_UNDRAFT:
+			case IMAP_SEARCH_UNFLAGGED:
+			case IMAP_SEARCH_UNKEYWORD:
+			case IMAP_SEARCH_UNSEEN:
+				bytes = snprintf(buf, sizeof(buf), "\n");
+				dyn_str_append(str, buf, bytes);
+				break;
+			case IMAP_SEARCH_LARGER:
+			case IMAP_SEARCH_SMALLER:
+			case IMAP_SEARCH_UID:
+				bytes = snprintf(buf, sizeof(buf), "%d\n", skey->child.number);
+				dyn_str_append(str, buf, bytes);
+				break;
+			case IMAP_SEARCH_BCC:
+			case IMAP_SEARCH_BEFORE:
+			case IMAP_SEARCH_BODY:
+			case IMAP_SEARCH_CC:
+			case IMAP_SEARCH_FROM:
+			case IMAP_SEARCH_HEADER:
+			case IMAP_SEARCH_KEYWORD:
+			case IMAP_SEARCH_ON:
+			case IMAP_SEARCH_SENTBEFORE:
+			case IMAP_SEARCH_SENTON:
+			case IMAP_SEARCH_SENTSINCE:
+			case IMAP_SEARCH_SINCE:
+			case IMAP_SEARCH_SUBJECT:
+			case IMAP_SEARCH_TEXT:
+			case IMAP_SEARCH_TO:
+				bytes = snprintf(buf, sizeof(buf), "%s\n", S_IF(skey->child.string));
+				dyn_str_append(str, buf, bytes);
+				break;
+			case IMAP_SEARCH_NOT:
+			case IMAP_SEARCH_OR:
+				bytes = snprintf(buf, sizeof(buf), "\n");
+				dyn_str_append(str, buf, bytes);
+				dump_imap_search_keys(skey->child.keys, str, depth + 1);
+				break;
+			case IMAP_SEARCH_ALL:
+			default:
+				bbs_warning("Invalid key: %d\n", skey->type);
+				dyn_str_append(str, "\n", 1);
+				break;
+		}
+	}
+}
+#endif
+
+#define SEARCH_PARSE_FLAG(name) \
+	else if (!strcasecmp(next, #name)) { \
+		nk = imap_search_add(skeys, IMAP_SEARCH_ ## name); \
+		if (unlikely(!nk)) { \
+			return -1; \
+		} \
+		listsize++; \
+	}
+
+#define SEARCH_PARSE_INT(name) \
+	else if (!strcasecmp(next, #name)) { \
+		nk = imap_search_add(skeys, IMAP_SEARCH_ ## name); \
+		if (unlikely(!nk)) { \
+			return -1; \
+		} \
+		next = strsep(s, " "); \
+		if (!next) { \
+			bbs_warning("Missing numeric argument\n"); \
+			return -1; \
+		} \
+		nk->child.number = atoi(next); \
+		listsize++; \
+	}
+
+#define SEARCH_PARSE_STRING(name) \
+	else if (!strcasecmp(next, #name)) { \
+		nk = imap_search_add(skeys, IMAP_SEARCH_ ## name); \
+		if (!nk) { \
+			return -1; \
+		} \
+		/* Argument can be more than one word - it's the whole quoted argument. Find it, and strip the quotes in the process. */ \
+		if (!*s) { \
+			bbs_warning("Missing string argument\n"); \
+			return -1; \
+		} \
+		begin = *s + 1; /* Skip opening " */ \
+		if (!*begin) { \
+			bbs_warning("Empty quoted argument\n"); \
+			return -1; \
+		} \
+		next = strchr(begin, '"'); \
+		if (!next) { \
+			bbs_warning("Unterminated quoted argument\n"); \
+			return -1; \
+		} \
+		*next = '\0'; \
+		*s = next + 1; \
+		nk->child.string = begin; /* This is not dynamically allocated, and does not need to be freed. */ \
+		listsize++; \
+	}
+
+#define SEARCH_PARSE_RECURSE(name) \
+		else if (!strcasecmp(next, #name)) { \
+		nk = imap_search_add(skeys, IMAP_SEARCH_ ## name); \
+		if (!nk) { \
+			return -1; \
+		} \
+		nk->child.keys = calloc(1, sizeof(*nk->child.keys)); \
+		listsize++; \
+		if (parse_search_query(nk->child.keys, IMAP_SEARCH_ ## name, s)) { \
+			return -1; \
+		} \
+	}
+
+static int parse_search_query(struct imap_search_keys *skeys, enum imap_search_type parent_type, char **s)
+{
+	char *begin, *next;
+	struct imap_search_key *nk;
+	int listsize = 0;
+
+	/*! \todo add parentheses support */
+
+	while ((next = strsep(s, " "))) {
+		if (strlen_zero(next)) {
+			continue;
+		}
+
+		/* Need to parse two strings from this, not just one */
+		if (!strcasecmp(next, "HEADER")) {
+			begin = *s + 1; /* Skip opening " */
+			begin = strchr(begin, '"');
+			if (!begin) {
+				bbs_warning("Missing end quote for HEADER arg1\n");
+				return -1;
+			}
+			*begin++ = ' '; /* Don't null terminate, we need to be able to continue through the string. */
+			begin = strchr(begin, '"');
+			/* There should be a "" for empty arg2, but the quotes should still be there */
+			if (!begin) {
+				bbs_warning("Missing opening quote for HEADER arg2\n");
+				return -1;
+			}
+			*begin = ' ';
+		}
+
+		if (unlikely(!strcasecmp(next, "ALL"))) { /* This is only first so the macros can all use else if, not because any client is likely to use it. */
+			/* Default */
+		} /* else: */
+		SEARCH_PARSE_FLAG(ANSWERED)
+		SEARCH_PARSE_FLAG(DELETED)
+		SEARCH_PARSE_FLAG(DRAFT)
+		SEARCH_PARSE_FLAG(FLAGGED)
+		SEARCH_PARSE_FLAG(NEW)
+		SEARCH_PARSE_FLAG(OLD)
+		SEARCH_PARSE_FLAG(RECENT)
+		SEARCH_PARSE_FLAG(SEEN)
+		SEARCH_PARSE_FLAG(UNANSWERED)
+		SEARCH_PARSE_FLAG(UNDELETED)
+		SEARCH_PARSE_FLAG(UNDRAFT)
+		SEARCH_PARSE_FLAG(UNFLAGGED)
+		SEARCH_PARSE_FLAG(UNKEYWORD)
+		SEARCH_PARSE_FLAG(UNSEEN)
+		SEARCH_PARSE_INT(LARGER)
+		SEARCH_PARSE_INT(SMALLER)
+		SEARCH_PARSE_INT(UID)
+		SEARCH_PARSE_STRING(BCC)
+		SEARCH_PARSE_STRING(BEFORE)
+		SEARCH_PARSE_STRING(BODY)
+		SEARCH_PARSE_STRING(CC)
+		SEARCH_PARSE_STRING(FROM)
+		SEARCH_PARSE_STRING(HEADER)
+		SEARCH_PARSE_STRING(KEYWORD)
+		SEARCH_PARSE_STRING(ON)
+		SEARCH_PARSE_STRING(SENTBEFORE)
+		SEARCH_PARSE_STRING(SENTON)
+		SEARCH_PARSE_STRING(SENTSINCE)
+		SEARCH_PARSE_STRING(SINCE)
+		SEARCH_PARSE_STRING(SUBJECT)
+		SEARCH_PARSE_STRING(TEXT)
+		SEARCH_PARSE_RECURSE(OR)
+		SEARCH_PARSE_RECURSE(NOT)
+		else {
+			bbs_warning("Foreign IMAP search key: %s\n", next);
+		}
+		switch (parent_type) {
+			case IMAP_SEARCH_NOT:
+				if (listsize == 1) {
+					goto ret;
+				}
+				break;
+			case IMAP_SEARCH_OR:
+				if (listsize == 2) {
+					goto ret;
+				}
+				break;
+			default:
+				break;
+		}
+	}
+
+ret:
+	switch (parent_type) {
+		case IMAP_SEARCH_NOT:
+			if (listsize != 1) {
+				bbs_warning("NOT has %d children?\n", listsize);
+				return -1;
+			}
+			break;
+		case IMAP_SEARCH_OR:
+			if (listsize != 2) {
+				bbs_warning("OR has %d children?\n", listsize);
+				return -1;
+			}
+			break;
+		default:
+			break;
+	}
+
+	return 0;
+}
+
+struct imap_search {
+	const char *directory;
+	const char *filename;
+	struct stat st;
+	FILE *fp;
+	int flags;
+	unsigned int new:1;
+	unsigned int didstat:1;
+};
+
+static int search_message(struct imap_search *search, const char *s, int headers, int body)
+{
+	char linebuf[1001];
+	int in_headers = 1;
+
+	if (!search->fp) {
+		char buf[512];
+		snprintf(buf, sizeof(buf), "%s/%s", search->directory, search->filename);
+		search->fp = fopen(buf, "r"); /* Only open the file if needed */
+		if (!search->fp) {
+			bbs_error("Failed to open %s: %s\n", buf, strerror(errno));
+			return -1;
+		}
+	} else {
+		rewind(search->fp);
+	}
+
+	while ((fgets(linebuf, sizeof(linebuf), search->fp))) {
+		/* fgets does store the newline, so line should end in CR LF */
+		if (!strcmp(linebuf, "\r\n")) {
+			in_headers = 0;
+			if (!body) {
+				break; /* End of headers */
+			}
+		} else if (in_headers && !headers) {
+			continue;
+		} else if (strcasestr(linebuf, s)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int search_header(struct imap_search *search, const char *header, size_t headerlen, const char *value)
+{
+	char linebuf[1001];
+	char *pos;
+
+	if (!search->fp) {
+		char buf[512];
+		snprintf(buf, sizeof(buf), "%s/%s", search->directory, search->filename);
+		search->fp = fopen(buf, "r"); /* Only open the file if needed */
+		if (!search->fp) {
+			bbs_error("Failed to open %s: %s\n", buf, strerror(errno));
+			return -1;
+		}
+	} else {
+		rewind(search->fp);
+	}
+
+#ifdef DEBUG_SEARCH
+	bbs_debug(8, "Searching %s header %.*s for %s\n", search->filename, (int) headerlen, header, S_IF(value));
+#endif
+
+	while ((fgets(linebuf, sizeof(linebuf), search->fp))) {
+		/* fgets does store the newline, so line should end in CR LF */
+		if (!strcmp(linebuf, "\r\n")) {
+			break; /* End of headers */
+		}
+		if (strncasecmp(linebuf, header, headerlen)) {
+			continue; /* Not the right header */
+		}
+		pos = linebuf + headerlen;
+		if (strlen_zero(value)) {
+			return 1; /* Header exists (no value to search for), and that's all we care about */
+		}
+		if (strcasestr(pos, value)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int search_sent_date(struct imap_search *search, struct tm *tm)
+{
+	char linebuf[1001];
+	char *pos;
+
+	if (!search->fp) {
+		char buf[512];
+		snprintf(buf, sizeof(buf), "%s/%s", search->directory, search->filename);
+		search->fp = fopen(buf, "r"); /* Only open the file if needed */
+		if (!search->fp) {
+			bbs_error("Failed to open %s: %s\n", buf, strerror(errno));
+			return -1;
+		}
+	} else {
+		rewind(search->fp);
+	}
+
+	while ((fgets(linebuf, sizeof(linebuf), search->fp))) {
+		/* fgets does store the newline, so line should end in CR LF */
+		if (!strcmp(linebuf, "\r\n")) {
+			break; /* End of headers */
+		}
+		if (strncasecmp(linebuf, "Date:", STRLEN("Date:"))) {
+			continue; /* Not the right header */
+		}
+		pos = linebuf + STRLEN("Date:");
+		if (!strptime(pos, "%d-%b-%Y", tm)) {
+			bbs_warning("Failed to parse as date: %s\n", pos);
+			return -1;
+		}
+		return 0;
+	}
+	return 0;
+}
+
+#define SEARCH_HEADER_MATCH(hdrname) \
+	retval = search_header(search, hdrname ":", STRLEN(hdrname ":"), skey->child.string); \
+	break;
+
+#define SEARCH_FLAG_MATCH(flag) \
+	retval = search->flags & flag ? 1 : 0; \
+	break;
+
+#define SEARCH_FLAG_NOT_MATCH(flag) \
+	retval = search->flags & flag ? 0 : 1; \
+	break;
+
+#define SEARCH_STAT() \
+	if (!search->didstat) { \
+		char buf[512]; \
+		snprintf(buf, sizeof(buf), "%s/%s", search->directory, search->filename); \
+		if (stat(buf, &search->st)) { \
+			bbs_error("stat(%s) failed: %s\n", buf, strerror(errno)); \
+		} else { \
+			search->didstat = 1; \
+		} \
+	}
+
+#define SEARCH_DATE() \
+	if (strptime(skey->child.string, "%d-%b-%Y", &tm2)) { /* We currently parse the date each time needed. */ \
+		bbs_warning("Failed to parse as date: %s\n", skey->child.string); \
+		break; \
+	} \
+	if (search_sent_date(search, &tm1)) { /* Get from Date header */ \
+		break; \
+	}
+
+#define TM_DATE_EQUAL(tm1, tm2) (tm1.tm_year == tm1.tm_year && tm1.tm_mon == tm2.tm_mon && tm1.tm_mday == tm2.tm_mday)
+
+/*! \brief Recursively evaluate if a message matches a tree of search expressions */
+static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_type type, struct imap_search *search)
+{
+	int retval = 1; /* True by default. */
+	struct imap_search_key *skey;
+	unsigned int uid;
+	unsigned long size;
+	const char *hdrval;
+	size_t len;
+	struct tm tm1, tm2;
+	time_t t1, t2;
+
+	/* Evaluate all expressions (they are all AND'ed together), stopping if we find one that's false. */
+	RWLIST_TRAVERSE(skeys, skey, entry) {
+		switch (skey->type) {
+			case IMAP_SEARCH_ANSWERED:
+				SEARCH_FLAG_MATCH(FLAG_BIT_ANSWERED);
+			case IMAP_SEARCH_DELETED:
+				SEARCH_FLAG_MATCH(FLAG_BIT_DELETED);
+			case IMAP_SEARCH_DRAFT:
+				SEARCH_FLAG_MATCH(FLAG_BIT_DRAFT);
+			case IMAP_SEARCH_FLAGGED:
+				SEARCH_FLAG_MATCH(FLAG_BIT_FLAGGED);
+			case IMAP_SEARCH_NEW: /* Same as RECENT && UNSEEN */
+				retval = search->new && !(search->flags & FLAG_BIT_SEEN);
+				break;
+			case IMAP_SEARCH_OLD:
+				retval = !search->new;
+				break;
+			case IMAP_SEARCH_RECENT:
+				retval = search->new;
+				break;
+			case IMAP_SEARCH_SEEN:
+				SEARCH_FLAG_MATCH(FLAG_BIT_SEEN);
+			case IMAP_SEARCH_UNANSWERED:
+				SEARCH_FLAG_NOT_MATCH(FLAG_BIT_ANSWERED);
+			case IMAP_SEARCH_UNDELETED:
+				SEARCH_FLAG_NOT_MATCH(FLAG_BIT_DELETED);
+			case IMAP_SEARCH_UNDRAFT:
+				SEARCH_FLAG_NOT_MATCH(FLAG_BIT_DELETED);
+			case IMAP_SEARCH_UNFLAGGED:
+				SEARCH_FLAG_NOT_MATCH(FLAG_BIT_FLAGGED);
+			case IMAP_SEARCH_UNKEYWORD:
+				bbs_warning("UNKEYWORD is not currently supported\n");
+				break;
+			case IMAP_SEARCH_UNSEEN:
+				SEARCH_FLAG_NOT_MATCH(FLAG_BIT_SEEN);
+			case IMAP_SEARCH_LARGER:
+				if (!search->new) {
+					/* only works for messages in cur, not new, same with subsequent parse_ function calls that use the filename */
+					parse_size_from_filename(search->filename, &size);
+				} else {
+					SEARCH_STAT()
+					size = search->st.st_size;
+				}
+				retval = (int) size > skey->child.number;
+				break;
+			case IMAP_SEARCH_SMALLER:
+				if (!search->new) {
+					parse_size_from_filename(search->filename, &size);
+				} else {
+					SEARCH_STAT()
+					size = search->st.st_size;
+				}
+				retval = (int) size < skey->child.number;
+				break;
+			case IMAP_SEARCH_UID:
+				if (!search->new) {
+					parse_uid_from_filename(search->filename, &uid);
+					retval = (int) uid == skey->child.number;
+				} else {
+					/* XXX messages in new don't have a UID, so by definition it can't match */
+					retval = 0;
+				}
+				break;
+			case IMAP_SEARCH_BCC:
+				SEARCH_HEADER_MATCH("Bcc");
+			case IMAP_SEARCH_BEFORE:
+			case IMAP_SEARCH_BODY:
+				retval = search_message(search, skey->child.string, 0, 1);
+				break;
+			case IMAP_SEARCH_CC:
+				SEARCH_HEADER_MATCH("Cc");
+			case IMAP_SEARCH_FROM:
+				SEARCH_HEADER_MATCH("From");
+			case IMAP_SEARCH_HEADER:
+				hdrval = strchr(skey->child.string, ' ');
+				len = hdrval - skey->child.string;
+				ltrim(hdrval);
+				retval = search_header(search, skey->child.string, len, hdrval);
+				break;
+			case IMAP_SEARCH_KEYWORD:
+				bbs_warning("KEYWORD is not currently supported\n");
+				break;
+			case IMAP_SEARCH_ON: /* INTERNALDATE == match */
+				SEARCH_STAT()
+				if (strptime(skey->child.string, "%d-%b-%Y", &tm2)) { /* We currently parse the date each time needed. */
+					bbs_warning("Failed to parse as date: %s\n", skey->child.string);
+					break;
+				}
+				localtime_r(&search->st.st_mtim.tv_sec, &tm1);
+				retval = TM_DATE_EQUAL(tm1, tm2);
+				break;
+			case IMAP_SEARCH_SENTBEFORE:
+				SEARCH_DATE()
+				t1 = mktime(&tm1);
+				t2 = mktime(&tm2);
+				/* t1 = INTERNALDATE, t2 = threshold for search before */
+				retval = difftime(t1, t2) < 0; /* If difftime is positive, tm1 > tm2 */
+				break;
+			case IMAP_SEARCH_SENTON:
+				SEARCH_DATE()
+				localtime_r(&search->st.st_mtim.tv_sec, &tm1);
+				retval = TM_DATE_EQUAL(tm1, tm2);
+				break;
+			case IMAP_SEARCH_SENTSINCE:
+				SEARCH_DATE()
+				t1 = mktime(&tm1);
+				t2 = mktime(&tm2);
+				/* t1 = INTERNALDATE, t2 = threshold for search before */
+				retval = difftime(t1, t2) > 0; /* If difftime is positive, tm1 > tm2 */
+				break;
+			case IMAP_SEARCH_SINCE: /* INTERNALDATE >=, e.g. 08-Mar-2011 */
+				SEARCH_STAT()
+				if (strptime(skey->child.string, "%d-%b-%Y", &tm2)) { /* We currently parse the date each time needed. */
+					bbs_warning("Failed to parse as date: %s\n", skey->child.string);
+					break;
+				}
+				localtime_r(&search->st.st_mtim.tv_sec, &tm1);
+				t1 = mktime(&tm1);
+				t2 = mktime(&tm2);
+				retval = difftime(t1, t2) > 0;
+				break;
+			case IMAP_SEARCH_SUBJECT:
+				SEARCH_HEADER_MATCH("Subject");
+			case IMAP_SEARCH_TEXT: /* In header or body */
+				retval = search_message(search, skey->child.string, 1, 1);
+				break;
+			case IMAP_SEARCH_TO:
+				SEARCH_HEADER_MATCH("To");
+			case IMAP_SEARCH_NOT: /* 1 child, negate the result. */
+				retval = !search_keys_eval(skey->child.keys, IMAP_SEARCH_NOT, search);
+				break;
+			case IMAP_SEARCH_OR: /* 2 children, only one of which must be true */
+				retval = search_keys_eval(skey->child.keys, IMAP_SEARCH_OR, search);
+				break;
+			case IMAP_SEARCH_ALL: /* Implicitly always true */
+				break;
+			default:
+				bbs_warning("Invalid key: %d\n", skey->type);
+				break;
+		}
+		/* Short circuit by stopping if any of the expressions turns out to be false... unless we're ORing (where we stop on the first one that's true). */
+		if (type == IMAP_SEARCH_OR && retval) {
+#ifdef DEBUG_SEARCH
+			bbs_debug(5, "Short-circuiting since OR contains at least one true expression (%s)\n", imap_search_key_name(skey->type));
+#endif
+			break;
+		} else if (type != IMAP_SEARCH_OR && !retval) {
+#ifdef DEBUG_SEARCH
+			bbs_debug(5, "Failed to match condition %s\n", imap_search_key_name(skey->type));
+#endif
+			break;
+		}
+	}
+	return retval;
+}
+
+/*! \note For some reason, looping twice or using goto results in valgrind reporting a memory leak, but calling this function twice does not */
+static int search_dir(const char *dirname, int newdir, struct imap_search_keys *skeys, unsigned int **a, unsigned int **b, int *lengths, int *allocsizes)
+{
+	int res = 0;
+	int files, fno = 0;
+	struct dirent *entry, **entries = NULL;
+	struct imap_search search;
+	unsigned int uid;
+
+	files = scandir(dirname, &entries, NULL, alphasort);
+	if (files < 0) {
+		bbs_error("scandir(%s) failed: %s\n", dirname, strerror(errno));
+		return -1;
+	}
+	while (fno < files && (entry = entries[fno++])) {
+		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			goto next;
+		} else if (entry->d_type != DT_REG) { /* We only care about directories, not files. */
+			goto next;
+		}
+		bbs_debug(3, "Checking message: %s\n", entry->d_name);
+		memset(&search, 0, sizeof(search));
+		search.directory = dirname;
+		search.filename = entry->d_name;
+		search.new = newdir;
+		/* Parse the flags just once in advance, since doing bit field comparisons is faster than strchr */
+		if (parse_flags_letters_from_filename(search.filename, &search.flags)) {
+			goto next;
+		}
+		if (search_keys_eval(skeys, IMAP_SEARCH_ALL, &search)) {
+			/* Include in search response */
+			parse_uid_from_filename(search.filename, &uid);
+			/* We really only need uintlist_append1, but just reuse the API used for COPY */
+			uintlist_append2(a, b, lengths, allocsizes, uid, uid);
+#ifdef DEBUG_SEARCH
+			bbs_debug(5, "Including message %s in response\n", entry->d_name);
+#endif
+		}
+		/* If we opened any resources, close them */
+		if (search.fp) {
+			fclose(search.fp);
+		}
+next:
+		free(entry);
+	}
+	free(entries);
+	if (res < 0) {
+		bbs_error("Error while reading directories (%d) - %s: %s\n", res, dirname, strerror(errno));
+		res = -1;
+	}
+	return res;
+}
+
+static int handle_search(struct imap_session *imap, char *s, int usinguid)
+{
+	int i, res = 0;
+	struct imap_search_keys skeys; /* At the least the top level list itself will be stack allocated. */
+	unsigned int *a = NULL, *b = NULL;
+	int lengths = 0, allocsizes = 0;
+	struct dyn_str dynstr;
+
+	/* IMAP uses polish notation, which makes for somewhat easier parsing (can do one pass left to right) */
+	/* Because of search keys like NOT, as well as being able to have multiple search keys of the same type,
+	 * we can't just trivially "compile" the SEARCH query into a struct and use that for fast matching.
+	 * We do in fact compile once here, but it requires a more involved parser since it can have multilevel depth.
+	 * For now, we just evaluate the query left to right on every message in a mailbox folder.
+	 * Note that IMAP SEARCH results should not be assumed by the client to be in any particular order.
+	 * However, conventionally they are in ascending order, even though the RFC does not specify any order.
+	 */
+
+	/* Parsing example:
+	 * NOT FLAGGED OR FROM 'John' FROM 'Paul'
+	 * !flagged && (FROM 'John' || FROM 'Paul')
+	 *
+	 * Essentially, we end up at the top level with a linked list of imap_search_key structures.
+	 * Each of these is ANDed together, i.e. all the keys at the top level list must be satisfied for a message to match.
+	 * Within each imap_search_key in this list, we could have further keys that are themselves lists.
+	 */
+
+	memset(&skeys, 0, sizeof(skeys));
+	/* If we didn't consume the entire search expression before returning, then this is invalid */
+	if (parse_search_query(&skeys, IMAP_SEARCH_ALL, &s) || !strlen_zero(s)) {
+		imap_search_free(&skeys);
+		imap_reply(imap, "BAD Invalid search query");
+		return 0;
+	}
+
+#ifdef DEBUG_SEARCH
+	{
+		memset(&dynstr, 0, sizeof(dynstr));
+		dump_imap_search_keys(&skeys, &dynstr, 0);
+		bbs_debug(3, "IMAP search tree:\n%s", dynstr.buf);
+		free(dynstr.buf);
+	}
+#endif
+
+	search_dir(imap->curdir, 0, &skeys, &a, &b, &lengths, &allocsizes);
+	search_dir(imap->newdir, 1, &skeys, &a, &b, &lengths, &allocsizes);
+	if (lengths) {
+		memset(&dynstr, 0, sizeof(dynstr));
+		for (i = 0; i < lengths; i++) {
+			char buf[15];
+			int len = snprintf(buf, sizeof(buf), "%s%u", i ? " " : "", a[i]);
+			dyn_str_append(&dynstr, buf, len);
+		}
+		imap_send(imap, "SEARCH %s", dynstr.buf);
+		free(dynstr.buf);
+	}
+
+	imap_search_free(&skeys);
+	free_if(a);
+	free_if(b);
+	imap_reply(imap, "OK %sSEARCH completed", usinguid ? "UID " : "");
+	return res;
+}
+
 static int handle_getquota(struct imap_session *imap)
 {
 	unsigned int quotatotal, quotaleft, quotaused;
@@ -2517,6 +3373,8 @@ static int imap_process(struct imap_session *imap, char *s)
 	} else if (!strcasecmp(command, "STORE")) {
 		IMAP_NO_READONLY(imap);
 		return handle_store(imap, s, 0);
+	} else if (!strcasecmp(command, "SEARCH")) {
+		return handle_search(imap, s, 0);
 	} else if (!strcasecmp(command, "UID")) {
 		REQUIRE_ARGS(s);
 		command = strsep(&s, " ");
@@ -2527,6 +3385,8 @@ static int imap_process(struct imap_session *imap, char *s)
 			return handle_copy(imap, s, 1);
 		} else if (!strcasecmp(command, "STORE")) {
 			return handle_store(imap, s, 1);
+		} else if (!strcasecmp(command, "SEARCH")) {
+			return handle_search(imap, s, 1);
 		} else {
 			imap_reply(imap, "BAD Invalid UID command");
 		}
@@ -2581,7 +3441,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		mailbox_unlock(imap->mbox);
 		imap_reply(imap, "OK Lock test succeeded");
 	} else {
-		/*! \todo These commands are not currently implemented: SEARCH, MOVE */
+		/*! \todo These commands are not currently implemented: MOVE */
 		/*! \todo The following common capabilities are not currently supported: AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH AUTH=XOAUTH2 UIDPLUS MOVE LITERAL+ BINARY ENABLE */
 		/*! \todo Add BURL SMTP / IMAP integration (to allow message to be uploaded only once, instead of twice) */
 

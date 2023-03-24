@@ -67,12 +67,13 @@ int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
 	/* Do we have enough room in the existing buffer? */
 	newlen = dynstr->used + len;
 	if (newlen >= dynstr->len) {
-		char *newbuf = realloc(dynstr->buf, newlen);
+		char *newbuf = realloc(dynstr->buf, newlen + 1); /* Add NULL terminator */
 		if (!newbuf) {
 			return -1;
 		}
 		dynstr->buf = newbuf;
 		dynstr->len = newlen;
+		dynstr->buf[newlen] = '\0';
 	}
 	memcpy(dynstr->buf + dynstr->used, s, len);
 	dynstr->used = newlen;
@@ -729,10 +730,10 @@ int64_t bbs_tvdiff_ms(struct timeval end, struct timeval start)
 int bbs_time_friendly_short_now(char *buf, size_t len)
 {
 	time_t lognow;
-    struct tm logdate;
+	struct tm logdate;
 
 	lognow = time(NULL);
-    localtime_r(&lognow, &logdate);
+	localtime_r(&lognow, &logdate);
 	/* 01/01 01:01pm = 13 chars */
 	return strftime(buf, len, "%m/%d %I:%M%P", &logdate);
 }
@@ -740,10 +741,10 @@ int bbs_time_friendly_short_now(char *buf, size_t len)
 int bbs_time_friendly_now(char *buf, size_t len)
 {
 	time_t lognow;
-    struct tm logdate;
+	struct tm logdate;
 
 	lognow = time(NULL);
-    localtime_r(&lognow, &logdate);
+	localtime_r(&lognow, &logdate);
 	/* Sat Dec 31 2000 09:45 am EST =  29 chars */
 	return strftime(buf, len, "%a %b %e %Y %I:%M %P %Z", &logdate);
 }
@@ -751,13 +752,13 @@ int bbs_time_friendly_now(char *buf, size_t len)
 int bbs_time_friendly(int epoch, char *buf, size_t len)
 {
 	time_t lognow;
-    struct tm logdate;
+	struct tm logdate;
 	/* Accept an int and cast internally for ease of usage: callers can directly provide int timestamps
 	 * without having to manually cast to time_t on the stack and provide a pointer */
 	time_t epocht = (time_t) epoch;
 
 	lognow = time(&epocht);
-    localtime_r(&lognow, &logdate);
+	localtime_r(&lognow, &logdate);
 	/* Sat Dec 31 2000 09:45 am EST =  29 chars */
 	return strftime(buf, len, "%a %b %e %Y %I:%M %P %Z", &logdate);
 }
