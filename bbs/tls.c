@@ -404,6 +404,7 @@ SSL *ssl_new_accept(int fd, int *rfd, int *wfd)
 {
 	int res;
 	int readfd, writefd;
+	int attempts = 0;
 	SSL *ssl;
 
 	if (!ssl_is_available) {
@@ -427,6 +428,11 @@ accept:
 	if (res != 1) {
 		int sslerr = SSL_get_error(ssl, res);
 		if (sslerr == SSL_ERROR_WANT_READ) {
+			if (++attempts > 3000) { /* 3 seconds */
+				bbs_warning("SSL_accept timed out\n");
+				SSL_free(ssl);
+				return NULL;
+			}
 			usleep(1000);
 			goto accept; /* This just works out to be cleaner than using any kind of loop here */
 		}
