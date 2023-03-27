@@ -48,7 +48,7 @@ int hash_sha256(const char *s, char buf[SHA256_BUFSIZE])
 {
 #ifdef HAVE_OPENSSL
 	int i;
-    unsigned char hash[SHA256_DIGEST_LENGTH];
+	unsigned char hash[SHA256_DIGEST_LENGTH];
 
 	/* We already use OpenSSL, just use that */
 	SHA256_CTX sha256;
@@ -56,11 +56,11 @@ int hash_sha256(const char *s, char buf[SHA256_BUFSIZE])
 	SHA256_Update(&sha256, s, strlen(s));
 	SHA256_Final(hash, &sha256);
 
-    for(i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+	for(i = 0; i < SHA256_DIGEST_LENGTH; i++) {
 #undef sprintf
-        sprintf(buf + (i * 2), "%02x", hash[i]); /* Safe */
-    }
-    buf[SHA256_BUFSIZE - 1] = '\0';
+		sprintf(buf + (i * 2), "%02x", hash[i]); /* Safe */
+	}
+	buf[SHA256_BUFSIZE - 1] = '\0';
 	return 0;
 #else
 	UNUSED(s);
@@ -600,17 +600,17 @@ int ssl_server_init(void)
 	SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_NONE, NULL); /* Server is not verifying the client, the client will verify the server */
 
 	if (SSL_CTX_use_certificate_file(ssl_ctx, ssl_cert, SSL_FILETYPE_PEM) <= 0) {
-        bbs_error("Could not load certificate file %s: %s\n", ssl_cert, ERR_error_string(ERR_get_error(), NULL));
-        return -1;
-    }
-    if (SSL_CTX_use_PrivateKey_file(ssl_ctx, ssl_key, SSL_FILETYPE_PEM) <= 0) {
-        bbs_error("Could not load private key file %s: %s\n", ssl_key, ERR_error_string(ERR_get_error(), NULL));
-        return -1;
-    }
-    if (SSL_CTX_check_private_key(ssl_ctx) != 1) {
-        bbs_error("Private key does not match public certificate\n");
-        return -1;
-    }
+		bbs_error("Could not load certificate file %s: %s\n", ssl_cert, ERR_error_string(ERR_get_error(), NULL));
+		return -1;
+	}
+	if (SSL_CTX_use_PrivateKey_file(ssl_ctx, ssl_key, SSL_FILETYPE_PEM) <= 0) {
+		bbs_error("Could not load private key file %s: %s\n", ssl_key, ERR_error_string(ERR_get_error(), NULL));
+		return -1;
+	}
+	if (SSL_CTX_check_private_key(ssl_ctx) != 1) {
+		bbs_error("Private key does not match public certificate\n");
+		return -1;
+	}
 
 	if (bbs_alertpipe_create(ssl_alert_pipe)) {
 		SSL_CTX_free(ssl_ctx);
@@ -629,7 +629,7 @@ int ssl_server_init(void)
 
 	return 0;
 #else
-	bbs_error("BBS compiled with OpenSSL support?\n");
+	bbs_error("BBS compiled without OpenSSL support?\n");
 	return -1; /* Won't happen */
 #endif
 }

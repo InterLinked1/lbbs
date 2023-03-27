@@ -169,7 +169,7 @@ int sql_fmt_autonull(char *fmt, ...)
 	int i;
 	int num_args = strlen(fmt);
 
-	va_start(ap, fmt); 
+	va_start(ap, fmt);
 	for (i = 0; i < num_args; i++, cur++) { /* Bind the parameters themselves for this round */
 		switch (*cur) {
 		case 'i': /* Integer */
@@ -320,7 +320,7 @@ int sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *fmt, ...
 
 	memset(bind, 0, sizeof(bind));
 
-	va_start(ap, fmt); 
+	va_start(ap, fmt);
 	for (i = 0; i < num_args; i++, cur++) { /* Bind the parameters themselves for this round */
 		if (sql_bind_param_single(ap, i, cur, bind, lengths, bind_ints, bind_longs, bind_strings, bind_dates, bind_null)) {
 			va_end(ap);

@@ -700,7 +700,7 @@ static void handle_client(struct pop3_session *pop3)
 	int res;
 	struct readline_data rldata;
 
-	bbs_readline_init(&rldata, buf, sizeof(buf));  
+	bbs_readline_init(&rldata, buf, sizeof(buf));
 	pop3_ok(pop3, "POP3 Server Ready");
 
 	for (;;) {

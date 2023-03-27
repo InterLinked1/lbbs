@@ -2067,7 +2067,7 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 	int res;
 	struct readline_data rldata;
 
-	bbs_readline_init(&rldata, buf, sizeof(buf));  
+	bbs_readline_init(&rldata, buf, sizeof(buf));
 
 	smtp_reply_nostatus(smtp, 220, "%s ESMTP Service Ready", bbs_hostname());
 

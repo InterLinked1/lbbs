@@ -145,7 +145,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod);
  * \param protname Protocol name
  * \retval Node on success, NULL on failure
  */
-#define bbs_node_request(fd, protname) __bbs_node_request(fd, protname, BBS_MODULE_SELF) 
+#define bbs_node_request(fd, protname) __bbs_node_request(fd, protname, BBS_MODULE_SELF)
 
 /*! Lock a BBS node */
 int bbs_node_lock(struct bbs_node *node);

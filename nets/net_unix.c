@@ -76,60 +76,12 @@ static pthread_t uds_thread;
  *
  * To secure your system, add the following to your /etc/ssh/sshd_config:
  * (assumes the public user account is named 'bbs'):
- * 
+ *
  * Match User bbs
  *   X11Forwarding no
  *   AllowTcpForwarding no
  *
  */
-
-static int uds_makesocket(uid_t uid, gid_t gid)
-{
-	struct sockaddr_un sunaddr; /* UNIX socket */
-	int res;
-
-	unlink(BBS_RUN_SOCKET);
-
-	/* Set up the UNIX domain socket. */
-	uds_socket = socket(PF_LOCAL, SOCK_STREAM, 0);
-	if (uds_socket < 0) {
-		bbs_error("Unable to create control socket: %s\n", strerror(errno));
-		return -1;
-	}
-	memset(&sunaddr, 0, sizeof(sunaddr));
-	sunaddr.sun_family = AF_LOCAL;
-	safe_strncpy(sunaddr.sun_path, BBS_RUN_SOCKET, sizeof(sunaddr.sun_path));
-	res = bind(uds_socket, (struct sockaddr *) &sunaddr, sizeof(sunaddr));
-	if (res) {
-		bbs_error("Unable to bind UNIX domain socket to %s: %s\n", BBS_RUN_SOCKET, strerror(errno));
-		close(uds_socket);
-		uds_socket = -1;
-		return -1;
-	}
-	res = listen(uds_socket, 2);
-	if (res < 0) {
-		bbs_error("Unable to listen on UNIX domain socket %s: %s\n", BBS_RUN_SOCKET, strerror(errno));
-		close(uds_socket);
-		uds_socket = -1;
-		return -1;
-	}
-
-	if (chown(BBS_RUN_SOCKET, uid, gid) < 0) {
-		bbs_error("Unable to change ownership of %s: %s\n", BBS_RUN_SOCKET, strerror(errno));
-	}
-
-	if (!strlen_zero(BBS_CTL_PERMISSIONS)) {
-		unsigned int p1;
-		mode_t p;
-		sscanf(BBS_CTL_PERMISSIONS, "%30o", &p1);
-		p = p1;
-		if ((chmod(BBS_RUN_SOCKET, p)) < 0) {
-			bbs_error("Unable to change file permissions of %s: %s\n", BBS_RUN_SOCKET, strerror(errno));
-		}
-	}
-
-	return 0;
-}
 
 static void *uds_listener(void *unused)
 {
@@ -193,7 +145,7 @@ static void *uds_listener(void *unused)
 static int load_module(void)
 {
 	/* If we can't start the UDS listener, decline to load */
-	if (uds_makesocket(-1, -1)) {
+	if (bbs_make_unix_socket(&uds_socket, BBS_RUN_SOCKET, BBS_CTL_PERMISSIONS, -1, -1)) {
 		return -1;
 	}
 	bbs_assert(uds_socket >= 0);

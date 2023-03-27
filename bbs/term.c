@@ -30,7 +30,7 @@ static int bbs_fd_input_set(int fd, int canonical, int echo)
 {
 	struct termios term;
 
-	memset(&term, 0, sizeof(term)); /* Prevent valgrind: Syscall param ioctl(TCSET{S,SW,SF}) points to uninitialised byte(s) */ 
+	memset(&term, 0, sizeof(term)); /* Prevent valgrind: Syscall param ioctl(TCSET{S,SW,SF}) points to uninitialised byte(s) */
 
 	if (tcgetattr(fd, &term)) {
 		bbs_error("tcgetattr failed: %s\n", strerror(errno));
@@ -57,7 +57,7 @@ int bbs_fd_echo(int fd, int echo)
 {
 	struct termios term;
 
-	memset(&term, 0, sizeof(term)); /* Prevent valgrind: Syscall param ioctl(TCSET{S,SW,SF}) points to uninitialised byte(s) */ 
+	memset(&term, 0, sizeof(term)); /* Prevent valgrind: Syscall param ioctl(TCSET{S,SW,SF}) points to uninitialised byte(s) */
 
 	if (tcgetattr(fd, &term)) {
 		bbs_error("tcgetattr failed: %s\n", strerror(errno));
@@ -170,7 +170,7 @@ int bbs_term_makeraw(int fd)
 
 	t.c_lflag &= ~(ICANON | ISIG | IEXTEN | ECHO); /* Noncanonical mode, disable signals, extended input processing, and echoing */
 	/* Disable special handling of CR, NL, and BREAK. No 8th-bit stripping or parity error handling. Disable START/STOP output flow control. */
-	t.c_iflag &= ~(BRKINT | ICRNL | IGNBRK | IGNCR | INLCR | INPCK | ISTRIP | IXON | PARMRK); 
+	t.c_iflag &= ~(BRKINT | ICRNL | IGNBRK | IGNCR | INLCR | INPCK | ISTRIP | IXON | PARMRK);
 	t.c_oflag &= ~OPOST; /* Disable all output processing */
 	t.c_cc[VMIN] = 1; /* Character-at-a-time input */
 	t.c_cc[VTIME] = 0; /* with blocking */

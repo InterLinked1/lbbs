@@ -33,7 +33,7 @@
 static int ibbs_exec(struct bbs_node *node, const char *args)
 {
 	time_t now;
-    struct tm nowdate;
+	struct tm nowdate;
 	char mmyy[5];
 	char tmpzip[20];
 	char mon[5];
@@ -42,7 +42,7 @@ static int ibbs_exec(struct bbs_node *node, const char *args)
 	UNUSED(args);
 
 	now = time(NULL);
-    localtime_r(&now, &nowdate);
+	localtime_r(&now, &nowdate);
 #pragma GCC diagnostic ignored "-Wformat-y2k"
 	strftime(mmyy, sizeof(mmyy), "%m%y", &nowdate); /* 2-digit month, 2-digit year */
 	strftime(mon, sizeof(mon), "%b", &nowdate); /* For the target filename. The full listing is in full_Mon_Yr.txt */
@@ -73,7 +73,7 @@ static int ibbs_exec(struct bbs_node *node, const char *args)
 		 */
 		if (bbs_execvp_headless(node, "unzip", argv)) {
 			return 0; /* Don't return -1 or the node will abort */
-		} 
+		}
 	} /* else, file already exists */
 
 	return bbs_node_term_browse(node, listfile);

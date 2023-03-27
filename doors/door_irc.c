@@ -688,7 +688,7 @@ begin:
 static int __chat_send(struct client *client, struct participant *sender, const char *channel, int dorelay, const char *msg, int len)
 {
 	time_t now;
-    struct tm sendtime;
+	struct tm sendtime;
 	char datestr[18];
 	int timelen;
 	int res;
@@ -696,7 +696,7 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 
 	/* Calculate the current time once, for everyone, using the server's time (sorry if participants are in different time zones) */
 	now = time(NULL);
-    localtime_r(&now, &sendtime);
+	localtime_r(&now, &sendtime);
 	/* So, %P is lowercase and %p is uppercase. Just consult your local strftime(3) man page if you don't believe me. Good grief. */
 	strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime); /* mm-dd hh:mm:ssPP + space at end (before message) = 17 chars */
 	timelen = strlen(datestr); /* Should be 17 */

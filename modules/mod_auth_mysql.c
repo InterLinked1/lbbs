@@ -367,7 +367,7 @@ static int user_register(struct bbs_node *node)
 			NONZERO_RETURN(res);
 		}
 		res = get_response(node, REG_QLEN, REG_FMT, "Please enter your full real name: ", MIN_MS(1), fullname, sizeof(fullname), &tries, 4, " "); /* If there's no space, we don't have at least 2 names */
-		NONZERO_RETURN(res); 
+		NONZERO_RETURN(res);
 
 		for (; tries > 0; tries--) { /* Retries here count less than retries of the main loop */
 			res = get_response(node, REG_QLEN, REG_FMT, "Desired username: ", MIN_MS(1), username, sizeof(username), &tries, 2, NULL);

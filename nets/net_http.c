@@ -372,7 +372,7 @@ static int mime_type(const char *filename, char *buf, size_t len)
 	magic_t magic;
 	char *ext;
 
-	magic = magic_open(MAGIC_MIME_TYPE); 
+	magic = magic_open(MAGIC_MIME_TYPE);
 	if (!magic) {
 		bbs_error("magic_open failed: %s\n", strerror(errno));
 		return -1;

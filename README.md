@@ -387,6 +387,8 @@ Please follow the coding guidelines used in this repository. They are by and lar
 
 - Avoid C functions that are not multi-thread safe.
 
+- Do not typedef structs
+
 - If there is a BBS function to do something, use it. (e.g. use the `bbs_pthread_create` wrapper, not `pthread_create` directly).
 
 - All source files should use UNIX line endings (LF). However, config files should use DOS/Windows line endings (CR LF). This is so that if Windows users open a config file in an old version of Notepad, it displays properly.

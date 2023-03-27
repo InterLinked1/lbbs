@@ -63,7 +63,7 @@ static int telnet_send_command(int fd, unsigned char cmd, unsigned char opt)
 		/* telopts[0] is simply 0, so no modification needed */
 		bbs_debug(5, "Sent Telnet command: %s %s %s\n", telcmds[IAC - 236], telcmds[cmd - 236], telopts[opt]);
 	}
-	return res <= 0 ? -1 : 0; 
+	return res <= 0 ? -1 : 0;
 }
 
 /*!

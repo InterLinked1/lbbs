@@ -38,7 +38,7 @@ static int do_reset(struct bbs_node *node, const char *username)
 	char password2[73];
 	int res;
 	int tries = 4;
-	
+
 #define MIN_PW_LENGTH 8
 	bbs_clear_screen(node);
 	NEG_RETURN(bbs_buffer(node));
@@ -122,7 +122,7 @@ static int pwreset_exec(struct bbs_node *node, const char *args)
 	NONZERO_RETURN(res);
 
 	res = bbs_get_response(node, MY_WIDTH, COLOR(COLOR_WHITE) "Please enter your full real name: ", MIN_MS(1), fullname, sizeof(fullname), &tries, 4, " "); /* If there's no space, we don't have at least 2 names */
-	NONZERO_RETURN(res); 
+	NONZERO_RETURN(res);
 
 	res = bbs_get_response(node, MY_WIDTH, COLOR(COLOR_WHITE) "Network mail address (user@domain): ", MIN_MS(1), email, sizeof(email), &tries, 5, "@.");
 	NONZERO_RETURN(res);

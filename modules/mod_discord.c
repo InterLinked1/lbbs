@@ -483,7 +483,7 @@ static void on_presence_update(struct discord *client, const struct discord_pres
 
 static void fetch_members(struct discord *client, u64snowflake guild_id)
 {
-	struct discord_request_guild_members params = { 
+	struct discord_request_guild_members params = {
 		.guild_id = guild_id,
 		.query = "", /* Empty string to return all members */
 		.limit = 0, /* All members */

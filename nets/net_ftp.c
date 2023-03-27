@@ -514,8 +514,8 @@ static void *ftp_handler(void *varg)
 				cur = strsep(&left, ".");
 				h3 = atoi(S_IF(cur));
 				h4 = atoi(S_IF(left));
-				if (!h1 || !h4) {
-					/* Octets 2 and 3 could be 0, but octets 1 and 4 should not be */
+				if (!h1) {
+					/* Octets 2, 3, and 4 could be 0, but octet 1 should not be */
 					bbs_error("IP address parsing error: %s = %d,%d,%d,%d\n", our_ip, h1, h2, h3, h4);
 					res = ftp_write(ftp, 425, "Failed to enter passive mode, closing control connection\r\n");
 					break; /* Just give up if this failed */

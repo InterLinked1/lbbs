@@ -111,7 +111,7 @@ int mailbox_maildir_init(const char *path);
  * \param path Path to maildir
  * \param[out] buf Generated filename
  * \param len Size of buffer
- * \param[out] newbuf Generated filename for rename target 
+ * \param[out] newbuf Generated filename for rename target
  * \retval -1 on failure, file descriptor on success
  */
 int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf);

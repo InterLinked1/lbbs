@@ -3458,7 +3458,7 @@ static void handle_client(struct imap_session *imap)
 	int res;
 	struct readline_data rldata;
 
-	bbs_readline_init(&rldata, buf, sizeof(buf));  
+	bbs_readline_init(&rldata, buf, sizeof(buf));
 
 	imap_send(imap, "OK %s Service Ready", IMAP_REV);
 
