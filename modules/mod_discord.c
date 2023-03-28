@@ -996,7 +996,6 @@ static void substitute_nicks(char *line, char *buf, size_t len)
 	while (*c) {
 		if (!start && *c == '<' && *(c + 1) == '@' && *(c + 2) && strchr(c + 2, '>')) {
 			start = c + 2;
-			bbs_debug(5, "Found the start of a sub string\n");
 		} else if (start && *c == '>') {
 			struct user *u;
 			unsigned long userid;
@@ -1022,6 +1021,7 @@ static void substitute_nicks(char *line, char *buf, size_t len)
 static void relay_message(struct discord *client, struct chan_pair *cp, const struct discord_message *event)
 {
 	struct discord_user *author;
+	struct discord_attachments *attachments;
 	char sendertmp[84];
 	char sender[84];
 	char subline[512];
@@ -1038,54 +1038,68 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 		return;
 	}
 	bbs_debug(4, "Relaying message from channel %lu by %s to %s: %s\n", event->channel_id, sender, cp->irc_channel, event->content);
-	if (strlen_zero(event->content)) {
-		bbs_warning("Message sent by %s is empty?\n", sender);
+
+	/* e.g. If somebody posted an image with no text, then the body may be empty, but there may be attachments yet. */
+	attachments = event->attachments;
+
+	/* If no attachments, and no message body, then what're we doing? */
+	if (!strlen(event->content) && (!attachments || !attachments->size)) {
+		bbs_warning("Message sent by %s is empty, and no attachments?\n", sender);
 		/* Probably won't actually relay through in this case... */
 		return;
 	}
+
 	if (!strchr(event->content, '\n')) { /* Avoid unnecessarily allocating memory if we don't have to. */
 		substitute_nicks(event->content, subline, sizeof(subline));
 		irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, subline);
-		return;
-	}
-	/* event->content could contain multiple lines. We need to relay each of them to IRC separately. */
-	if (cp->multiline) {
-		char mbuf[256];
-		struct discord_create_message params = {
-			.content = mbuf,
-			.message_reference = &(struct discord_message_reference) {
-				.message_id = 0, /* Irrelevant, we're not replying to a channel thread (IRC doesn't have the concept of threads anyways) */
-				.channel_id = cp->channel_id,
-				.guild_id = cp->guild_id,
-				.fail_if_not_exists = false, /* Send as a normal message, not an in-thread reply */
-			},
-			.components = NULL,
-		};
-		/* Drop or warn depending on setting.
-		 * This logic has to be in this module (not mod_relay_irc),
-		 * because only this module knows whether the original message was multiple lines.
-		 * Once we relay a message for each line, that information is lost. */
-		if (cp->multiline == 2) {
-			snprintf(mbuf, sizeof(mbuf), "%s: Your multi-line message has been dropped. Consider using a paste (e.g. https://paste.interlinked.us/) instead.", author->username);
-		} else {
-			snprintf(mbuf, sizeof(mbuf), "%s: Please avoid multi-line messages. Consider using a paste (e.g. https://paste.interlinked.us/) instead.", author->username);
+	} else {
+		/* event->content could contain multiple lines. We need to relay each of them to IRC separately. */
+		if (cp->multiline) {
+			char mbuf[256];
+			struct discord_create_message params = {
+				.content = mbuf,
+				.message_reference = &(struct discord_message_reference) {
+					.message_id = 0, /* Irrelevant, we're not replying to a channel thread (IRC doesn't have the concept of threads anyways) */
+					.channel_id = cp->channel_id,
+					.guild_id = cp->guild_id,
+					.fail_if_not_exists = false, /* Send as a normal message, not an in-thread reply */
+				},
+				.components = NULL,
+			};
+			/* Drop or warn depending on setting.
+			 * This logic has to be in this module (not mod_relay_irc),
+			 * because only this module knows whether the original message was multiple lines.
+			 * Once we relay a message for each line, that information is lost. */
+			if (cp->multiline == 2) {
+				snprintf(mbuf, sizeof(mbuf), "%s: Your multi-line message has been dropped. Consider using a paste (e.g. https://paste.interlinked.us/) instead.", author->username);
+			} else {
+				snprintf(mbuf, sizeof(mbuf), "%s: Please avoid multi-line messages. Consider using a paste (e.g. https://paste.interlinked.us/) instead.", author->username);
+			}
+			discord_create_message(client, cp->channel_id, &params, NULL);
+			if (cp->multiline == 2) {
+				return; /* Don't relay the message if set to block/drop */
+			}
 		}
-		discord_create_message(client, cp->channel_id, &params, NULL);
-		if (cp->multiline == 2) {
-			return; /* Don't relay the message if set to block/drop */
+		dup = strdup(event->content);
+		if (!dup) {
+			return;
+		}
+		lines = dup;
+		while ((line = strsep(&lines, "\n"))) {
+			bbs_strterm(line, '\n');
+			substitute_nicks(line, subline, sizeof(subline));
+			irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, subline);
+		}
+		free(dup);
+	}
+	if (attachments && attachments->size) {
+		int i;
+		/* Send messages with the links to any attachments */
+		for (i = 0; i < attachments->size; i++) {
+			struct discord_attachment *attachment = &attachments->array[i];
+			irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, attachment->url);
 		}
 	}
-	dup = strdup(event->content);
-	if (!dup) {
-		return;
-	}
-	lines = dup;
-	while ((line = strsep(&lines, "\n"))) {
-		bbs_strterm(line, '\n');
-		substitute_nicks(line, subline, sizeof(subline));
-		irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, subline);
-	}
-	free(dup);
 }
 
 /*! \brief Deliver direct messages from Discord to native IRC user */
