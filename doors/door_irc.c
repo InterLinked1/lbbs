@@ -438,6 +438,75 @@ cleanup:
 
 #define relay_to_local(client, channel, fmt, ...) _chat_send(client, NULL, channel, 0, fmt, __VA_ARGS__)
 
+static void handle_ctcp(struct client *client, struct irc_client *ircl, const char *channel, struct bbs_node *node, struct irc_msg *msg, char *body)
+{
+	/* CTCP command: known extended data = ACTION, VERSION, TIME, PING, DCC, SED, etc. */
+	/* Remember: CTCP requests use PRIVMSG, responses use NOTICE! */
+	char *tmp, *ctcp_name;
+	enum irc_ctcp ctcp;
+
+	body++; /* Skip leading \001 */
+	if (!*body) {
+		bbs_error("Nothing after \\001?\n");
+		return;
+	}
+	/* Don't print the trailing \001 */
+	tmp = strchr(body, 0x01);
+	if (tmp) {
+		*tmp = '\0';
+	} else {
+		bbs_error("Couldn't find trailing \\001?\n");
+	}
+
+	ctcp_name = strsep(&body, " ");
+
+	tmp = strchr(msg->prefix, '!');
+	if (tmp) {
+		*tmp = '\0'; /* Strip everything except the nickname from the prefix */
+	}
+
+	ctcp = irc_ctcp_from_string(ctcp_name);
+	if (ctcp < 0) {
+		bbs_error("Unsupported CTCP extended data type: %s\n", ctcp_name);
+		return;
+	}
+
+	if (!strcmp(msg->command, "PRIVMSG")) {
+		switch (ctcp) {
+		case CTCP_ACTION: /* /me, /describe */
+			if (client) {
+				relay_to_local(client, channel, "[ACTION] <%s> %s\n", msg->prefix, body);
+				bot_handler(client, 1, channel, msg->prefix, body);
+			} else {
+				bbs_writef(node, "[ACTION] <%s> %s\n", msg->prefix, body);
+			}
+			break;
+		case CTCP_VERSION:
+			irc_client_ctcp_reply(ircl, msg->prefix, ctcp, BBS_SHORTNAME " / LIRC 0.1.0");
+			break;
+		case CTCP_PING:
+			irc_client_ctcp_reply(ircl, msg->prefix, ctcp, body); /* Reply with the data that was sent */
+			break;
+		case CTCP_TIME:
+			{
+				char timebuf[32];
+				time_t nowtime;
+				struct tm nowdate;
+
+				nowtime = time(NULL);
+				localtime_r(&nowtime, &nowdate);
+				strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M:%S %P %Z", &nowdate);
+				irc_client_ctcp_reply(ircl, msg->prefix, ctcp, timebuf);
+			}
+			break;
+		default:
+			bbs_warning("Unhandled CTCP extended data type: %s\n", ctcp_name);
+		}
+	} else { /* NOTICE (reply) */
+		/* Ignore */
+	}
+}
+
 static void handle_irc_msg(struct client *client, struct irc_msg *msg)
 {
 	if (msg->numeric) {
@@ -488,67 +557,7 @@ static void handle_irc_msg(struct client *client, struct irc_msg *msg)
 		body++; /* Skip : */
 
 		if (*body == 0x01) { /* sscanf stripped off the leading : */
-			/* CTCP command: known extended data = ACTION, VERSION, TIME, PING, DCC, SED, etc. */
-			/* Remember: CTCP requests use PRIVMSG, responses use NOTICE! */
-			char *tmp, *ctcp_name;
-			enum irc_ctcp ctcp;
-
-			body++; /* Skip leading \001 */
-			if (!*body) {
-				bbs_error("Nothing after \\001?\n");
-				return;
-			}
-			/* Don't print the trailing \001 */
-			tmp = strchr(body, 0x01);
-			if (tmp) {
-				*tmp = '\0';
-			} else {
-				bbs_error("Couldn't find trailing \\001?\n");
-			}
-
-			ctcp_name = strsep(&body, " ");
-
-			tmp = strchr(msg->prefix, '!');
-			if (tmp) {
-				*tmp = '\0'; /* Strip everything except the nickname from the prefix */
-			}
-
-			ctcp = irc_ctcp_from_string(ctcp_name);
-			if (ctcp < 0) {
-				bbs_error("Unsupported CTCP extended data type: %s\n", ctcp_name);
-				return;
-			}
-
-			if (!strcmp(msg->command, "PRIVMSG")) {
-				switch (ctcp) {
-				case CTCP_ACTION: /* /me, /describe */
-					relay_to_local(client, channel, "[ACTION] <%s> %s\n", msg->prefix, body);
-					bot_handler(client, 1, channel, msg->prefix, body);
-					break;
-				case CTCP_VERSION:
-					irc_client_ctcp_reply(client->client, msg->prefix, ctcp, BBS_SHORTNAME " / LIRC 0.1.0");
-					break;
-				case CTCP_PING:
-					irc_client_ctcp_reply(client->client, msg->prefix, ctcp, body); /* Reply with the data that was sent */
-					break;
-				case CTCP_TIME:
-					{
-						char timebuf[32];
-						time_t nowtime;
-						struct tm nowdate;
-
-						nowtime = time(NULL);
-						localtime_r(&nowtime, &nowdate);
-						strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M:%S %P %Z", &nowdate);
-						irc_client_ctcp_reply(client->client, msg->prefix, ctcp, timebuf);
-					}
-					break;
-				default:
-					bbs_warning("Unhandled CTCP extended data type: %s\n", ctcp_name);
-				}
-			} else { /* NOTICE (reply) */
-				/* Ignore */
-			}
+			handle_ctcp(client, client->client, channel, NULL, msg, body);
 		} else {
 			char *tmp = strchr(msg->prefix, '!');
 			if (tmp) {
@@ -941,6 +950,285 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 	return res;
 }
 
+/*! \note channel could be char* and that would be fine, but we don't need to modify it, so const char* works */
+static int irc_single_client(struct bbs_node *node, char *constring, const char *channel)
+{
+	struct irc_client *ircl;
+	int res;
+	int port = 0; /* Default */
+	int secure = 0;
+	int flags = 0;
+	struct readline_data rldata;
+	char usernamebuf[24];
+	char passwordbuf[64];
+	char buf[2048];
+	int pfd[2] = { -1, -1};
+	char *username, *password, *hostname, *portstr;
+
+	/* Parse the arguments.
+	 * Format is:
+	 * irc:// or ircs://username[:password]@hostname[:port] */
+	if (STARTS_WITH(constring, "ircs://")) {
+		secure = 1;
+		constring += STRLEN("ircs://");
+	} else {
+		constring += STRLEN("irc://"); /* This is the only other thing it could be */
+	}
+
+	portstr = constring;
+	password = strsep(&portstr, "@");
+	username = strsep(&password, ":");
+	hostname = strsep(&portstr, ":");
+	if (!strlen_zero(portstr)) {
+		port = atoi(portstr);
+	}
+
+	if (strlen_zero(hostname)) {
+		bbs_warning("Missing IRC hostname\n");
+		return 0;
+	}
+
+	bbs_clear_screen(node);
+	bbs_writef(node, "Connecting to IRC...\n");
+
+	/* We get our own client, all to ourself! */
+	if (strlen_zero(username)) {
+		bbs_writef(node, "Enter username: ");
+		NONPOS_RETURN(bbs_readline(node, MIN_MS(1), usernamebuf, sizeof(usernamebuf))); /* Returning -1 anyways, no need to re-enable echo */
+		username = usernamebuf;
+		if (strlen_zero(username)) {
+			bbs_writef(node, "No username received. Connection aborted.\n");
+			NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
+			return 0;
+		}
+	}
+	if (strlen_zero(password)) {
+		/* Don't know the password.
+		 * For connections from a BBS node to the BBS IRC server,
+		 * user will probably have to re-enter his/her password here manually,
+		 * since we don't have any way of authenticating to the IRC server otherwise.
+		 * Kind of clunky, admittedly, in the future we could add a more seamless
+		 * mechanism that would allow the IRC server to auto-authenticate connections
+		 * like this perhaps (e.g. if username and password are empty).
+		 *
+		 * Complication is that we don't actually know this connection is to the local
+		 * IRC server, it could be to any arbitrary server, so this is at least generic:
+		 */
+		bbs_echo_off(node); /* Don't display password */
+		bbs_writef(node, "Enter password for %s: ", username);
+		NONPOS_RETURN(bbs_readline(node, MIN_MS(1), passwordbuf, sizeof(passwordbuf))); /* Returning -1 anyways, no need to re-enable echo */
+		/* Hopefully the password is right... only get one shot!
+		 * In theory, if we knew the connection was to our own IRC server,
+		 * we could actually call bbs_user_authentication here with a dummy user
+		 * to check the password, and if it's okay, proceed since we know that
+		 * the IRC server will then accept it.
+		 */
+		bbs_echo_on(node);
+		password = passwordbuf;
+		if (strlen_zero(password)) {
+			bbs_writef(node, "\nNo password received. Connection aborted.\n");
+			NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
+			return 0;
+		}
+	}
+
+	/* Somehow, it actually works that the same user can log into IRC twice
+	 * e.g. once directly to IRC and once through here.
+	 * Obviously the full masks are different in these cases. */
+
+	ircl = irc_client_new(hostname, port, username, password);
+	if (!ircl) {
+		return 0;
+	}
+
+	irc_client_autojoin(ircl, channel);
+	if (secure) {
+		flags |= IRC_CLIENT_USE_TLS;
+		/* Require SASL if using TLS, but don't do it otherwise,
+		 * since the IRC URI doesn't indicate whether to use SASL or not.
+		 * If a server requires SASL, however, it's reasonable to expect that
+		 * it supports TLS, so just pair them together. */
+		flags |= IRC_CLIENT_USE_SASL;
+	}
+	irc_client_set_flags(ircl, flags);
+
+	res = irc_client_connect(ircl); /* Actually connect */
+	if (!res) {
+		res = irc_client_login(ircl); /* Authenticate */
+	}
+	if (res || !irc_client_connected(ircl)) {
+		bbs_writef(node, "Connection failed.\n");
+		bbs_wait_key(node, SEC_MS(75));
+		goto cleanup;
+	}
+
+	if (pipe(pfd)) {
+		bbs_error("pipe failed: %s\n", strerror(errno));
+		goto cleanup;
+	}
+
+	/* Instead of spawning a client_relay thread with a pseudo client and running an event loop,
+	 * handle the connection in the current thread.
+	 * This does complicate things just a little bit, as can be seen below.
+	 * There are several inefficiencies in the loop that could be optimized.
+	 */
+	bbs_readline_init(&rldata, buf, sizeof(buf)); /* XXX Should probably use a bbs_readline in client_relay as well, to simplify message parsing */
+	bbs_clear_screen(node);
+	bbs_buffer(node);
+	for (;;) {
+		time_t now;
+		struct tm sendtime;
+		char datestr[18] = "";
+
+		/* XXX Known issue: If a message is received while a user is typing,
+		 * the message from IRC is printed out immediately and the user continues typing on the next line.
+		 * Not super ideal, but since the node is buffered here, we can't easily fix this without unbuffering
+		 * the first character and then buffering the rest, and not printing during that time
+		 * (this is what door_irc and door_chat do for the shared clients normally).
+		 */
+
+		/* Client is buffered, so if poll returns, that means we have a full message from it */
+		res = irc_poll(ircl, -1, node->slavefd); /* Wait for either something from the server or from the client */
+		if (res <= 0) {
+			break;
+		}
+
+		/* XXX This is embarassing. irc_poll returns 1 if poll() returned for either fd, but doesn't tell us which fd.
+		 * We should update that API to return 1 for fd 0 and 2 for fd 1, just like in socket.c.
+		 * Seriously... we are calling poll() 3 times here for every loop!!!
+		 * - Once in irc_poll
+		 * - bbs_poll and possibly irc_poll again, with timeout of 0.
+		 * - Finally in bbs_fd_readline (fortunately, we don't call irc_poll the 2nd time in this case, so it's always 3 times, never 4)
+		 *
+		 * In the meantime, we manually poll again with no timeout to see if it was the client that has activity. */
+		if (bbs_poll(node, 0) > 0) {
+			char clientbuf[512]; /* Use a separate buf so that bbs_fd_readline gets its own buf for the server reads */
+
+			/* No need to use a fancy bbs_readline struct, since we can reasonably expect to get 1 full line at a time, nothing more, nothing less */
+			res = bbs_readline(node, 0, clientbuf, sizeof(clientbuf) - 1);
+			if (res <= 0) {
+				bbs_warning("bbs_fd_readline returned %d\n", res);
+				break;
+			}
+			clientbuf[res] = '\0'; /* Safe */
+			bbs_strterm(clientbuf, '\r'); /* If we did get a CR, strip it */
+
+			/* Parse the user's message. Note this isn't IRC syntax, it's just STDIN input.
+			 * Unless the user typed /quit, we can basically just build a message and send it to the channel. */
+			if (!strcasecmp(clientbuf, "/quit")) {
+				break;
+			}
+			irc_client_msg(ircl, channel, clientbuf); /* Actually send to IRC */
+
+			/* Make our timestamp */
+			if (!NODE_IS_TDD(node)) {
+				now = time(NULL);
+				localtime_r(&now, &sendtime);
+				strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime);
+			}
+
+			bbs_writef(node, "%s<%s> %s\n", datestr, irc_client_username(ircl), clientbuf); /* Echo the user's own message */
+		} else if (irc_poll(ircl, 0, -1) > 0) { /* Must've been the server. */
+			char tmpbuf[2048];
+			/* bbs_fd_readline internally will call poll(), but we already polled inside irc_poll,
+			 * and then poll() again to see which file descriptor had activity,
+			 * so just pass 0 as poll should always return > 0 anyways, immediately,
+			 * since we haven't read any data yet to quell the poll. */
+
+			/* Another clunky thing. Need to get data using irc_read, but we want to buffer it using a bbs_readline struct.
+			 * So relay using a pipe.
+			 */
+			res = irc_read(ircl, tmpbuf, sizeof(tmpbuf));
+			if (res > 0) {
+				write(pfd[1], tmpbuf, res);
+			}
+			res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 10); /* This should succeed the first time since irc_poll told us it would. */
+			do {
+				struct irc_msg msg_stack, *msg = &msg_stack;
+				if (res < 0) {
+					res += 1; /* Convert the res back to a normal one. */
+					if (res == 0) {
+						/* No data to read. This shouldn't happen if irc_poll returned > 0 */
+						bbs_warning("bbs_fd_readline returned %d\n", res - 1); /* And subtract 1 again to match what it actually returned before we added 1 */
+					}
+					goto cleanup;
+				}
+				/* Parse message from server */
+				memset(&msg_stack, 0, sizeof(msg_stack));
+				if (!irc_parse_msg(&msg_stack, buf)) {
+					/* Condensed version of what handle_irc_msg does */
+					if (msg->numeric) {
+						bbs_writef(node, "%s %d %s\n", NODE_IS_TDD(node) ? "" : S_IF(msg->prefix), msg->numeric, msg->body);
+					} else {
+						bbs_assert_exists(msg->command);
+						if (!strcmp(msg->command, "PRIVMSG") || !strcmp(msg->command, "NOTICE")) { /* This is intentionally first, as it's the most common one. */
+							/* NOTICE is same as PRIVMSG, but should never be acknowledged (replied to), to prevent loops, e.g. for use with bots. */
+							char *channel_name, *body = msg->body;
+
+							/* Format of msg->body here is CHANNEL :BODY */
+							channel_name = strsep(&body, " ");
+							body++; /* Skip : */
+							if (*body == 0x01) { /* sscanf stripped off the leading : */
+								handle_ctcp(NULL, ircl, channel_name, node, msg, body);
+							} else {
+								char *tmp = strchr(msg->prefix, '!');
+								if (tmp) {
+									*tmp = '\0'; /* Strip everything except the nickname from the prefix */
+								}
+								if (!NODE_IS_TDD(node)) {
+									now = time(NULL);
+									localtime_r(&now, &sendtime);
+									strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime);
+								}
+								bbs_writef(node, "%s<%s> %s\n", datestr, msg->prefix, body);
+							}
+						} else if (!strcmp(msg->command, "PING")) {
+							/* Reply with the same data that it sent us (some servers may actually require that) */
+							int sres = irc_send(ircl, "PONG :%s", msg->body ? msg->body + 1 : ""); /* If there's a body, skip the : and bounce the rest back */
+							if (sres) {
+								return 0;
+							}
+						} else if (!strcmp(msg->command, "JOIN")) {
+							bbs_writef(node, "%s has %sjoined%s\n", msg->prefix, COLOR(COLOR_GREEN), COLOR_RESET);
+						} else if (!strcmp(msg->command, "PART")) {
+							bbs_writef(node, "%s has %sleft%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
+						} else if (!strcmp(msg->command, "QUIT")) {
+							bbs_writef(node, "%s has %squit%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
+						} else if (!strcmp(msg->command, "KICK")) {
+							bbs_writef(node, "%s has been %skicked%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
+						} else if (!strcmp(msg->command, "NICK")) {
+							bbs_writef(node, "%s is %snow known as%s %s\n", msg->prefix, COLOR(COLOR_CYAN), COLOR_RESET, msg->body);
+						} else if (!strcmp(msg->command, "MODE")) {
+							/* Ignore */
+						} else if (!strcmp(msg->command, "ERROR")) {
+							/* Ignore, do not send errors to users */
+						} else if (!strcmp(msg->command, "TOPIC")) {
+							bbs_writef(node, "Topic is now %s\n", msg->body);
+						} else {
+							bbs_warning("Unhandled command: prefix: %s, command: %s, body: %s\n", msg->prefix, msg->command, msg->body);
+						}
+					}
+				}
+
+				/* Okay, now because bbs_fd_readline might have read MULTIPLE lines from the server,
+				 * call it again to make sure there isn't any further input.
+				 * We use a timeout of 0, because if there isn't another message ready already,
+				 * then we should just go back to the outer poll.
+				 */
+				res = bbs_fd_readline(node->slavefd, &rldata, "\r\n", 0);
+			} while (res > 0);
+		} else { /* Shouldn't happen */
+			bbs_warning("irc_poll returned activity, but neither client nor server has pending data?\n");
+		}
+	}
+
+cleanup:
+	close_if(pfd[0]);
+	close_if(pfd[1]);
+	irc_client_destroy(ircl);
+	return 0;
+}
+
 static int irc_client_exec(struct bbs_node *node, const char *args)
 {
 	char buf[84];
@@ -962,6 +1250,13 @@ static int irc_client_exec(struct bbs_node *node, const char *args)
 		return 0;
 	}
 
+	/* Join via a dedicated connection, dynamically. Especially useful if trying to join the local BBS IRC server,
+	 * since then we can have a 1:1 connection for each client. */
+	if (STARTS_WITH(client, "irc://") || STARTS_WITH(client, "ircs://")) {
+		return irc_single_client(node, client, channel);
+	}
+
+	/* Join via a preconstructed client. */
 	p = join_client(node, client);
 	if (!p) {
 		return 0;

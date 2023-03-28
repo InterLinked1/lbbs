@@ -844,6 +844,8 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 	return 0;
 }
 
+static void nickserv(struct irc_user *user, char *s);
+
 static int privmsg(struct irc_user *user, const char *channame, int notice, const char *message)
 {
 	struct irc_channel *channel;
@@ -871,6 +873,9 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, cons
 		if (!chanserv_msg(user, (char*) message)) {
 			return 0;
 		} /* else, fall through to IS_CHANNEL_NAME so we can send a 401 response. */
+	} else if (!notice && !strcasecmp(channame, "NickServ")) {
+		nickserv(user, (char*) message);
+		return 0;
 	}
 	if (!IS_CHANNEL_NAME(channame)) {
 		struct irc_user *user2 = get_user(channame);
@@ -1813,6 +1818,15 @@ static void handle_help(struct irc_user *user, char *s)
 	send_numeric(user, 524, "I don't know anything about that\r\n");
 }
 
+static void hostmask(struct irc_user *user)
+{
+	char mask[32];
+	/* Replace hostname with host mask, since nobody actually wants his or her location publicly shared */
+	snprintf(mask, sizeof(mask), "node/%d", user->node->id);
+	bbs_debug(6, "Changing hostmask for node %d from %s to %s\n", user->node->id, user->hostname, mask);
+	REPLACE(user->hostname, mask);
+}
+
 static int add_user(struct irc_user *user)
 {
 	struct irc_user *u;
@@ -1826,6 +1840,10 @@ static int add_user(struct irc_user *user)
 	} else if (strlen_zero(user->nickname)) {
 		bbs_error("User lacks a nickname\n");
 		return -1;
+	}
+
+	if (bbs_user_is_registered(user->node->user)) {
+		hostmask(user); /* Cloak the user before adding to users list, so our IP doesn't leak on WHO/WHOIS */
 	}
 
 	RWLIST_WRLOCK(&users);
@@ -1866,8 +1884,8 @@ static void broadcast_nick_change(struct irc_user *user, const char *oldnick)
 
 static void handle_nick(struct irc_user *user, char *s)
 {
-	if (user->node->user) {
-		/* Don't allow changing nick if already logged in */
+	if (user->node->user && strcasecmp(s, bbs_username(user->node->user))) {
+		/* Don't allow changing nick if already logged in, unless it's to our actual username. */
 		send_numeric(user, 902, "You must use a nick assigned to you\r\n");
 	} else if (bbs_user_exists(s)) {
 		send_numeric(user, 433, "%s :Nickname is already in use.\r\n", s);
@@ -1922,7 +1940,11 @@ static void handle_identify(struct irc_user *user, char *s)
 		if (strlen_zero(user->nickname) || strcasecmp(username, user->nickname)) {
 			REPLACE(user->nickname, username);
 		}
-		add_user(user);
+		if (!user->registered) {
+			add_user(user);
+		} else {
+			hostmask(user);
+		}
 		send_numeric(user, 900, IDENT_PREFIX_FMT " %s You are now logged in as %s\r\n", IDENT_PREFIX_ARGS(user), user->username, user->username);
 	}
 }
@@ -1932,8 +1954,12 @@ static void nickserv(struct irc_user *user, char *s)
 	char *target = strsep(&s, " ");
 
 	/* This is all we need from NickServ, we don't need "it" to handle registration or anything else */
-	if (!strcasecmp(target, "IDENTIFY") && !user->registered) {
-		handle_identify(user, s);
+	if (!strcasecmp(target, "IDENTIFY")) {
+		if (!user->registered || !bbs_user_is_registered(user->node->user)) {
+			handle_identify(user, s);
+		} else {
+			send_reply(user, "NOTICE AUTH :*** Nickname change not supported.\r\n");
+		}
 	/* LOGOUT is not supported, since we need all users in the users list to have a name */
 	} else {
 		bbs_debug(3, "Unsupported NickServ command: %s\n", target);
@@ -2428,14 +2454,6 @@ static void motd(struct irc_user *user)
 	send_numeric(user, 376, "End of /MOTD command.\r\n");
 }
 
-static void hostmask(struct irc_user *user)
-{
-	char mask[32];
-	/* Replace hostname with host mask, since nobody actually wants his or her location publicly shared */
-	snprintf(mask, sizeof(mask), "node/%d", user->node->id);
-	REPLACE(user->hostname, mask);
-}
-
 static int client_welcome(struct irc_user *user)
 {
 	char starttime[30];
@@ -2445,8 +2463,6 @@ static int client_welcome(struct irc_user *user)
 	char timebuf[30];
 
 	bbs_time_friendly(loadtime, starttime, sizeof(starttime));
-
-	hostmask(user); /* Cloak the user before adding to users list, so our IP doesn't leak on WHO/WHOIS */
 
 	if (user->node->user) {
 		add_user(user);
@@ -2764,6 +2780,8 @@ static void handle_client(struct irc_user *user)
 						}
 					}
 					send_numeric(user, 451, "You have not registered\r\n");
+				} else if (!strcasecmp(command, "NS")) { /* NickServ alias */
+					nickserv(user, s);
 				} else if (!strcasecmp(command, "CS")) { /* ChanServ alias (much like NS ~ NickServ) */
 					chanserv_msg(user, s);
 				} else if (!strcasecmp(command, "PRIVMSG")) { /* List this as high up as possible, since this is the most common command */
