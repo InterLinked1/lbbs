@@ -675,7 +675,7 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 
 char *bbs_file_to_string(const char *filename, size_t maxsize)
 {
-	char *s;
+	char *s = NULL;
 	FILE *fp;
 	size_t size;
 	size_t res;
@@ -692,18 +692,20 @@ char *bbs_file_to_string(const char *filename, size_t maxsize)
 
 	if (maxsize && size > maxsize) {
 		bbs_warning("File %s is %lu bytes (only wanted max %lu)\n", filename, size, maxsize);
-		return NULL;
+		goto cleanup;
 	}
 
 	s = malloc(size + 1); /* Add 1 for NUL */
 	if (!s) {
-		return NULL;
+		goto cleanup;
 	}
 	res = fread(s, 1, size, fp);
 	if (res != size) {
 		bbs_error("Wanted to read %lu bytes but only read %lu\n", size, res);
 	}
 	s[res] = '\0'; /* Safe */
+cleanup:
+	fclose(fp);
 	return s;
 }
 
