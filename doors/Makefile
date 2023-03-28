@@ -31,5 +31,4 @@ door_irc.so : lirc door_irc.o irc.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o door_irc.so door_irc.o irc.o -lssl -lcrypto
 
-.PHONY: lirc
 .PHONY: all

@@ -10,7 +10,9 @@ EXE		= sigwinch
 RM		= rm -f
 INSTALL = install
 
-all: sigwinch.o
+all: $(EXE)
+
+$(EXE) : sigwinch.o
 	$(CC) $(CFLAGS) -o $(EXE) *.o
 
 %.o : %.c

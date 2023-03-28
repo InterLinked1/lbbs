@@ -10,7 +10,9 @@ EXE		= rsysop
 RM		= rm -f
 INSTALL = install
 
-all: rsysop.o
+all: $(EXE)
+
+$(EXE) : rsysop.o
 	$(CC) $(CFLAGS) -o $(EXE) *.o
 
 %.o : %.c

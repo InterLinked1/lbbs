@@ -10,7 +10,9 @@ EXE		= saslencode
 RM		= rm -f
 INSTALL = install
 
-all: saslencode.o
+all: $(EXE)
+
+$(EXE) : saslencode.o
 	$(CC) $(CFLAGS) -o $(EXE) *.o
 
 %.o : %.c
