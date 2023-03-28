@@ -64,11 +64,11 @@ external tests :
 	$(SUBMAKE) --no-builtin-rules -C $@ all
 
 clean :
-	$(RM) bbs/$(EXE) bbs/*.i bbs/*.o
+	$(RM) bbs/$(EXE) bbs/*.d bbs/*.i bbs/*.o
 	$(RM) include/*.gch
 	$(SUBMAKE) --no-builtin-rules -C external clean
 	@for i in $(MOD_SUBDIR) tests; do \
-		$(RM) $${i}/*.i $${i}/*.o $${i}/*.so; \
+		$(RM) $${i}/*.d $${i}/*.i $${i}/*.o $${i}/*.so; \
 	done
 	$(RM) tests/test
 	$(RM) -r doors/lirc

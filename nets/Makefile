@@ -1,8 +1,7 @@
 
 MOD_SRC := $(wildcard *.c)
 MOD_SO := $(MOD_SRC:.c=.so)
-
-INCLUDE_FILES := $(wildcard ../include/*.h)
+DEPENDS := $(patsubst %.c,%.d,$(MOD_SRC))
 
 # the include directory is in the parent
 INC = -I..
@@ -10,6 +9,7 @@ INC = -I..
 # SSHLIB=$(pkg-config --libs libssh)
 SSHLIB=-lssh
 
+# Since we don't use autoconf:
 SFTP_SERVER_FREE_EXISTS = $(shell objdump -T /usr/lib/x86_64-linux-gnu/libssh.so /lib/x86_64-linux-gnu/libssh.so  2>&1 | grep "sftp_server_free" | wc -l)
 
 ifneq ($(SFTP_SERVER_FREE_EXISTS),0)
@@ -19,9 +19,13 @@ endif
 all: $(MOD_SO)
 	@echo "== Compiling nets"
 
-%.o : %.c
+-include $(DEPENDS)
+
+$(DEPENDS):
+
+%.o : %.c %.d
 	@echo "== Compiling $@"
-	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $^)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $^)_self $(INC) -c $^
+	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) -c $<
 
 %.so : %.o
 	@echo "== Linking $@"

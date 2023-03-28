@@ -1,8 +1,7 @@
 
 MOD_SRC := $(wildcard *.c)
 MOD_SO := $(MOD_SRC:.c=.so)
-
-INCLUDE_FILES := $(wildcard ../include/*.h)
+DEPENDS := $(patsubst %.c,%.d,$(MOD_SRC))
 
 # the include directory is in the parent
 INC = -I..
@@ -14,13 +13,17 @@ MYSQL_LIBS := $(shell mysql_config --libs)
 all: $(MOD_SO)
 	@echo "== Compiling modules"
 
-%.o : %.c
-	@echo "== Compiling $@"
-	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $^)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $^)_self $(INC) -c $^
+-include $(DEPENDS)
 
-mod_mimeparse.o : mod_mimeparse.c
+$(DEPENDS):
+
+%.o : %.c %.d
 	@echo "== Compiling $@"
-	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $^)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $^)_self $(GMIME_FLAGS) $(INC) -c $^
+	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) -c $<
+
+mod_mimeparse.o : mod_mimeparse.c mod_mimeparse.d
+	@echo "== Compiling $@"
+	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self $(GMIME_FLAGS) -MMD -MP $(INC) -c $<
 
 %.so : %.o
 	@echo "== Linking $@"
