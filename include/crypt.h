@@ -14,6 +14,14 @@
  */
 
 /*!
+ * \brief Generate a cryptographically secure random string containing only alphanumeric characters
+ * \param[out] buf
+ * \param len Size of buffer. The length of the random string will be one less than this.
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_rand_alnum(char *buf, size_t len);
+
+/*!
  * \brief Generate a bcrypt salt
  * \retval salt, which is dynamically allocated and must be freed
  */

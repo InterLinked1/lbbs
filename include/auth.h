@@ -116,6 +116,15 @@ struct bbs_user **bbs_user_list(void);
 void login_cache_cleanup(void);
 
 /*!
+ * \brief Generate a temporary token that can be used to authenticate a user in lieu of a password
+ * \param user
+ * \param[out] buf
+ * \param len. Must be at least 48.
+ * \retval 0 on success, -1 on failure
+*/
+int bbs_user_temp_authorization_token(struct bbs_user *user, char *buf, size_t len);
+
+/*!
  * \brief Attempt to authenticate a user
  * \param node
  * \param username User-attempted username. NULL for guest.

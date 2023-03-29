@@ -35,6 +35,7 @@
 #include "include/config.h"
 #include "include/startup.h"
 #include "include/system.h"
+#include "include/auth.h"
 
 #include "include/door_irc.h"
 
@@ -1000,6 +1001,13 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 			bbs_writef(node, "No username received. Connection aborted.\n");
 			NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
 			return 0;
+		}
+	}
+	if (!strlen_zero(password) && !strcmp(password, "*")) {
+		if (bbs_user_is_registered(node->user) && !bbs_user_temp_authorization_token(node->user, passwordbuf, sizeof(passwordbuf))) {
+			password = passwordbuf;
+		} else {
+			password = NULL;
 		}
 	}
 	if (strlen_zero(password)) {

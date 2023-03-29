@@ -32,6 +32,7 @@
 #include "include/utils.h"
 #include "include/tls.h" /* use hash_sha256 */
 #include "include/event.h"
+#include "include/crypt.h"
 
 /*! \note Even though multiple auth providers are technically allowed, in general only 1 should be registered.
  * The original thinking behind allowing multiple is to allow alternates for authentication
@@ -295,6 +296,15 @@ struct cached_login {
 
 static RWLIST_HEAD_STATIC(cached_logins, cached_login);
 
+struct pw_auth_token {
+	char *username;
+	int added;
+	char token[48];
+	RWLIST_ENTRY(pw_auth_token) entry;
+};
+
+static RWLIST_HEAD_STATIC(auth_tokens, pw_auth_token);
+
 static void cached_login_destroy(struct cached_login *l)
 {
 	free_if(l->username);
@@ -302,9 +312,108 @@ static void cached_login_destroy(struct cached_login *l)
 	free(l);
 }
 
+static void auth_token_destory(struct pw_auth_token *t)
+{
+	free_if(t->username);
+	free(t);
+}
+
 void login_cache_cleanup(void)
 {
 	RWLIST_WRLOCK_REMOVE_ALL(&cached_logins, entry, cached_login_destroy);
+	RWLIST_WRLOCK_REMOVE_ALL(&auth_tokens, entry, auth_token_destory);
+}
+
+#define POSSIBLE_AUTH_TOKEN_CHAR '\\'
+#define MAX_TOKEN_AGE 15
+
+int bbs_user_temp_authorization_token(struct bbs_user *user, char *buf, size_t len)
+{
+	struct pw_auth_token *t;
+
+	if (!bbs_user_is_registered(user)) {
+		bbs_warning("Can't generate tokens for non-registered users\n");
+		return -1;
+	}
+
+	/* Generate a "token" that can be used in lieu of a password
+	 * for loopback authentication to the BBS.
+	 *
+	 * Currently, the only existing use case of this is when the door_irc IRC client
+	 * wants to initiate a connection to the IRC server (net_irc).
+	 * net_irc doesn't know that the connection is coming from the BBS, from
+	 * a user that (maybe) is already logged in. The IP address will be 127.0.0.1,
+	 * but that isn't really meaningful since localhost connections are not trusted specially.
+	 *
+	 * What we do here is generate a one-time token that can be used for the purposes
+	 * of authentication. The authorizing module will call bbs_user_authenticate
+	 * eventually, and in that code, if there is a token that exists for that user
+	 * (and the login attempt is from 127.0.0.1, since that is required but not sufficient),
+	 * then we can grant access simply by virtue of the token match.
+	 *
+	 * Using a random token is necessary because we don't have access to the user's password
+	 * at any point besides login.
+	 * Using a random token is desirable because if the sysop misconfigures door_irc.conf
+	 * and accidentally makes connections elsewhere, the tokens that could leak out
+	 * will be meaningless, since these tokens are only good for connections from localhost,
+	 * and only for a short period of time (e.g. less than 15 seconds).
+	 */
+
+	/* Create a token and insert into the list so we can find it again. */
+	RWLIST_WRLOCK(&auth_tokens);
+	t = calloc(1, sizeof(*t));
+	if (!t) {
+		RWLIST_UNLOCK(&auth_tokens);
+		return -1;
+	}
+	if (len < sizeof(t->token)) {
+		RWLIST_UNLOCK(&auth_tokens);
+		bbs_error("Truncation occured when storing temporary authorization token (need %lu bytes, only %lu available)\n", sizeof(t->token), len);
+		free(t);
+		return -1;
+	}
+	t->token[0] = POSSIBLE_AUTH_TOKEN_CHAR; /* Use an uncommon character to indicate possible token */
+	if (bbs_rand_alnum(t->token + 1, sizeof(t->token) - 1)) {
+		RWLIST_UNLOCK(&auth_tokens);
+		free(t);
+		return -1;
+	}
+	t->username = strdup(bbs_username(user));
+	t->added = time(NULL);
+	RWLIST_INSERT_TAIL(&auth_tokens, t, entry);
+	RWLIST_UNLOCK(&auth_tokens);
+	safe_strncpy(buf, t->token, len);
+	return 0;
+}
+
+/*! \retval 1 if valid match, 0 if not */
+static int valid_temp_token(const char *username, const char *password)
+{
+	struct pw_auth_token *t;
+	int now, cutoff;
+	int match = 0;
+
+	now = time(NULL);
+	cutoff = now - MAX_TOKEN_AGE;
+
+	/* Purge any stale tokens. */
+	RWLIST_WRLOCK(&auth_tokens);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&auth_tokens, t, entry) {
+		if (t->added < cutoff) {
+			RWLIST_REMOVE_CURRENT(entry);
+			auth_token_destory(t);
+		} else {
+			if (!strcmp(username, t->username) && !strcmp(password, t->token)) {
+				match = 1;
+			}
+			RWLIST_REMOVE_CURRENT(entry);
+			auth_token_destory(t); /* What good is a one-time token if we reuse it? */
+			/* Don't break, we still want to purge any tokens that may be stale. */
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(&auth_tokens);
+	return match;
 }
 
 /*! \retval 1 if successful, 0 if not found or unsuccessful */
@@ -431,6 +540,16 @@ static int bbs_node_authenticate(struct bbs_node *node, const char *username, co
 			bbs_warning("Login cached for nonexistent user %s?\n", username);
 		} else {
 			bbs_auth("User %s successfully authenticated (cached)\n", bbs_username(node->user));
+			return 0;
+		}
+	}
+
+	if (*password == POSSIBLE_AUTH_TOKEN_CHAR && !strcmp(node->ip, "127.0.0.1") && valid_temp_token(username, password)) { /* Check for possible temp auth token first */
+		node->user = bbs_user_info_by_username(username); /* Get the actual user from the DB */
+		if (!node->user) {
+			bbs_warning("Login cached for nonexistent user %s?\n", username);
+		} else {
+			bbs_auth("User %s successfully authenticated (temp auth token)\n", bbs_username(node->user));
 			return 0;
 		}
 	}

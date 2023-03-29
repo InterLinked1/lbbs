@@ -25,7 +25,8 @@
 #include <unistd.h>
 #include <crypt.h>
 #include <string.h> /* use strdup */
-#include <ctype.h> /* use isprint */
+#include <ctype.h> /* use isprint, isalnum */
+#include <sys/random.h>
 
 #ifdef __GLIBC__
 #include <gnu/libc-version.h>
@@ -42,7 +43,6 @@
 #endif
 
 #ifdef NEED_CRYPTO_IMPL
-#include <sys/random.h>
 extern int _crypt_output_magic(const char *setting, char *output, int size);
 extern char *_crypt_blowfish_rn(const char *key, const char *setting,
 	char *output, int size);
@@ -54,6 +54,29 @@ extern char *_crypt_gensalt_blowfish_rn(const char *prefix,
 #include <openssl/rand.h>
 
 #include "include/crypt.h"
+
+int bbs_rand_alnum(char *buf, size_t len)
+{
+	unsigned int i;
+
+	if (getrandom(buf, len, GRND_NONBLOCK) == -1) {
+		bbs_error("getrandom failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	/* getrandom returns... random bytes, not random ASCII characters. Fix that. */
+	for (i = 0; i < len; i++) {
+		if (!isalnum(buf[i])) {
+			buf[i] = 'A' + abs(buf[i] % 25); /* buf[i] could contain a negative value, and % won't make it positive */
+			/* Now it should be a printable, alphanumeric ASCII char... */
+			if (!isalnum(buf[i])) {
+				bbs_error("Character %d was not an alphanumeric character?\n", buf[i]);
+			}
+		}
+	}
+	buf[len] = '\0';
+	return 0;
+}
 
 #ifdef NEED_CRYPTO_IMPL
 /*! \note Thank you, PHP */

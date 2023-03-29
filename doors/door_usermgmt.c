@@ -21,8 +21,6 @@
 
 #include <stdlib.h> /* use random_r */
 #include <string.h>
-#include <ctype.h> /* use isalnum */
-#include <sys/random.h>
 
 #include "include/node.h"
 #include "include/user.h"
@@ -31,6 +29,7 @@
 #include "include/door.h"
 #include "include/term.h"
 #include "include/mail.h"
+#include "include/crypt.h"
 
 static int do_reset(struct bbs_node *node, const char *username)
 {
@@ -56,7 +55,7 @@ static int do_reset(struct bbs_node *node, const char *username)
 		NONPOS_RETURN(bbs_readline(node, MIN_MS(1), password2, sizeof(password2)));
 		if (s_strlen_zero(password) || strcmp(password, password2)) {
 			NEG_RETURN(bbs_writef(node, "\n%sPasswords do not match%s\n", COLOR(COLOR_RED), COLOR_RESET));
-		} else if (strlen(password) < MIN_PW_LENGTH) {
+			} else if (strlen(password) < MIN_PW_LENGTH) {
 			NEG_RETURN(bbs_writef(node, "\n%sPassword is too short%s\n", COLOR(COLOR_RED), COLOR_RESET));
 		} else {
 			break;
@@ -103,7 +102,6 @@ static int pwreset_exec(struct bbs_node *node, const char *args)
 	struct bbs_user *user;
 	int res;
 	int tries = 5;
-	long unsigned int i;
 
 	UNUSED(args);
 
@@ -151,21 +149,10 @@ static int pwreset_exec(struct bbs_node *node, const char *args)
 	rand2 = rand(); /* And this isn't either like rand_r... */
 	/* More importantly, random() and rand() should not be relied on to be secure,
 	 * since the time the BBS started (and hence seed to srandom() and srand()) is publicly known
-	 * So getrandom() does the real randomness generation here. */
+	 * So bbs_rand_alnum() does the real randomness generation here. */
 
-	if (getrandom(randombytes, sizeof(randombytes), GRND_NONBLOCK) == -1) {
-		bbs_error("getrandom failed: %s\n", strerror(errno));
+	if (bbs_rand_alnum(randombytes, sizeof(randombytes))) {
 		goto fail;
-	}
-	/* getrandom returns... random bytes, not random ASCII characters. Fix that. */
-	for (i = 0; i < sizeof(randombytes); i++) {
-		if (!isalnum(randombytes[i])) {
-			randombytes[i] = 'A' + randombytes[i] % 25;
-			/* Now it should be a printable, alphanumeric ASCII char... */
-			if (!isalnum(randombytes[i])) {
-				bbs_error("Character %d was not an ASCII character?\n", randombytes[i]);
-			}
-		}
 	}
 
 	suffix = rand1 % 2048 + rand2 % 1024;
