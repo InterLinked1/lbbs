@@ -110,10 +110,6 @@ int bbs_make_tcp_socket(int *sock, int port)
 		bbs_error("Unable to create TCP socket: %s\n", strerror(errno));
 		return -1;
 	}
-	memset(&sinaddr, 0, sizeof(sinaddr));
-	sinaddr.sin_family = AF_INET;
-	sinaddr.sin_addr.s_addr = INADDR_ANY;
-	sinaddr.sin_port = htons(port); /* Public TCP port on which to listen */
 
 	if (option_rebind) {
 		/* This is necessary since trying a bind without reuse and then trying with reuse
@@ -133,10 +129,14 @@ int bbs_make_tcp_socket(int *sock, int port)
 		}
 	}
 
-	res = bind(*sock, (struct sockaddr *)&sinaddr, sizeof(sinaddr));
+	memset(&sinaddr, 0, sizeof(sinaddr));
+	sinaddr.sin_family = AF_INET;
+	sinaddr.sin_addr.s_addr = INADDR_ANY;
+	sinaddr.sin_port = htons(port); /* Public TCP port on which to listen */
+
+	res = bind(*sock, (struct sockaddr*) &sinaddr, sizeof(sinaddr));
 	if (res) {
 		if (errno == EADDRINUSE) {
-			int i;
 			/* Don't do this by default.
 			 * If somehow multiple instances of the BBS are running,
 			 * then weird things can happen as a result of multiple BBS processes
@@ -150,30 +150,22 @@ int bbs_make_tcp_socket(int *sock, int port)
 			 * reuse the port, but make some noise about this just in case. */
 			bbs_warning("Port %d was already in use, retrying with reuse\n", port);
 
-			/* Retry if needed, since just doing it once can also fail? */
-			for (i = 0; errno == EADDRINUSE && i < 100; i++) {
-				/* We can't reuse the original socket after bind fails, make a new one. */
-				close(*sock);
-				*sock = socket(AF_INET, SOCK_STREAM, 0);
-				if (*sock < 0) {
-					bbs_error("Unable to recreate TCP socket: %s\n", strerror(errno));
-					return -1;
-				}
-				if (setsockopt(*sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
-					bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
-					return -1;
-				}
-				if (setsockopt(*sock, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(int)) < 0) {
-					bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
-					return -1;
-				}
-				res = bind(*sock, (struct sockaddr *)&sinaddr, sizeof(sinaddr));
-				if (!res) {
-					break;
-				}
-				usleep(1000000);
-				bbs_debug(5, "Retrying binding to port %d (attempt #%d)\n", port, i + 2);
+			/* We can't reuse the original socket after bind fails, make a new one. */
+			close(*sock);
+			*sock = socket(AF_INET, SOCK_STREAM, 0);
+			if (*sock < 0) {
+				bbs_error("Unable to recreate TCP socket: %s\n", strerror(errno));
+				return -1;
 			}
+			if (setsockopt(*sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
+				bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
+				return -1;
+			}
+			if (setsockopt(*sock, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(int)) < 0) {
+				bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
+				return -1;
+			}
+			res = bind(*sock, (struct sockaddr*) &sinaddr, sizeof(sinaddr));
 		}
 		if (res) {
 			bbs_error("Unable to bind TCP socket to port %d: %s\n", port, strerror(errno));
@@ -883,8 +875,6 @@ int bbs_tpoll(struct bbs_node *node, int ms)
 	int hadecho = node->echo;
 	int pollms = ms;
 	int attempts = 0;
-
-	bbs_assert(ms > 0); /* There would be no reason to use bbs_tpoll over bbs_poll unless ms > 0. */
 
 	/* If the poll is long enough, we do a preliminary poll first.
 	 * If this poll expires, give the user a warning that s/he's about to be disconnected.
