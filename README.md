@@ -12,6 +12,10 @@ Key features and capabilities include:
 
 - File transfers via FTP, SFTP, Gopher, and HTTP/HTTPS
 
+- User home directories
+
+- Password and public key authentication
+
 - Config-file driven configuration
 
 - Submenu "skip menu navigation" - select options in multiple nested menus at once
