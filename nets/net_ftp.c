@@ -59,7 +59,7 @@ static int require_reuse = 0;
 
 /*! \note Uses a statement expression so that we can also log all FTP responses */
 #define ftp_write(ftp, code, fmt, ...) ({ bbs_debug(5, "FTP <= %d " fmt, code, ## __VA_ARGS__); bbs_std_writef(ftp->wfd, "%d " fmt, code, ## __VA_ARGS__); })
-#define ftp_write0(ftp, code, fmt, ...) ({ bbs_debug(5, "FTP <= %d " fmt, code, ## __VA_ARGS__); bbs_std_writef(ftp->wfd, "%d-" fmt, code, ## __VA_ARGS__); })
+#define ftp_write0(ftp, code, fmt, ...) ({ bbs_debug(5, "FTP <= %d-" fmt, code, ## __VA_ARGS__); bbs_std_writef(ftp->wfd, "%d-" fmt, code, ## __VA_ARGS__); })
 #define ftp_write_raw(ftp, fmt, ...) ({ bbs_debug(5, "FTP <= " fmt, ## __VA_ARGS__); bbs_std_writef(ftp->wfd, fmt, ## __VA_ARGS__); })
 #define ftp_poll(ftp, ms) bbs_std_poll(ftp->rfd, ms)
 #define ftp_read(ftp, buf, size) read(ftp->rfd, buf, size)
@@ -67,8 +67,6 @@ static int require_reuse = 0;
 
 /*! \note Not sure if accessing parent directories is an issue with all functions, but just in case */
 #define UNSAFE_FILEPATH(path) strstr(path, "..")
-
-#define FTP_UPDATE_DIR(dir) safe_strncpy(ftpdir, dir, sizeof(ftpdir)); snprintf(fulldir, sizeof(fulldir), "%s%s", bbs_transfer_rootdir(), ftpdir); bbs_debug(5, "Updated FTP directory to %s\n", ftpdir)
 
 #define REQUIRE_PASV_FD() \
 	if (pasv_fd == -1) { \
@@ -167,16 +165,16 @@ static int ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir,
 	char fullfile[386];
 	char buf[512];
 	FILE *fp;
-	int x, bytes = 0;
+	int x = 0, bytes = 0;
 	SSL *ssl2 = NULL;
 	int pasv_fd = *pasvfdptr;
+	int maxuploadsize = bbs_transfer_max_upload_size();
 
 	if (!bbs_transfer_canwrite(ftp->node)) {
 		return ftp_write(ftp, 450, "File uploads denied for user\n");
 	}
 
-	snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, file);
-	if (UNSAFE_FILEPATH(file)) {
+	if (bbs_transfer_set_disk_path_relative_nocheck(ftp->node, bbs_transfer_get_user_path(ftp->node, fulldir), file, fullfile, sizeof(fullfile))) {
 		return ftp_write(ftp, 450, "File \"%s\" not allowed\n", file);
 	}
 
@@ -193,6 +191,7 @@ static int ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir,
 	/* Accept file upload */
 	ftp_write(ftp, 150, "Proceed with data\r\n");
 	if (DATA_INIT()) {
+		fclose(fp);
 		return -1;
 	}
 	for (;;) {
@@ -210,6 +209,11 @@ static int ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir,
 			res = 0; /* End of transfer */
 			break;
 		}
+		if (bytes + x > maxuploadsize) {
+			bbs_warning("File upload aborted (too large)\n");
+			res = -1;
+			break;
+		}
 		x = fprintf(fp, "%.*s", res, buf);
 		if (x != res) {
 			bbs_warning("Wanted to write %d bytes but only wrote %d\n", res, x);
@@ -220,7 +224,12 @@ static int ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir,
 	}
 	DATA_DONE(fp, *pasvfdptr);
 	if (res == -1) {
-		res = ftp_write(ftp, 451, "File transfer failed\r\n");
+		/* Can't use ternary operator here */
+		if (bytes + x > maxuploadsize) {
+			res = ftp_write(ftp, 451, "File too large\r\n");
+		} else {
+			res = ftp_write(ftp, 451, "File transfer failed\r\n");
+		}
 	} else {
 		res = ftp_write(ftp, 226, "File transfer successful, put %d bytes\r\n", bytes);
 	}
@@ -231,8 +240,7 @@ static void *ftp_handler(void *varg)
 {
 	char buf[512];
 	char username[64] = "";
-	char ftpdir[256] = ""; /* FTP relative directory */
-	char fulldir[256];
+	char fulldir[256];	/* Path on disk */
 	char *command, *rest, *next;
 	int res;
 	struct bbs_node *node = varg;
@@ -271,7 +279,8 @@ static void *ftp_handler(void *varg)
 	res = ftp_write(ftp, 220, "Welcome to %s FTP\r\n", bbs_name()); /* Send welcome message */
 	IO_ABORT(res);
 
-	FTP_UPDATE_DIR("/"); /* Must be called whenever ftpdir is updated (rootdir doesn't change) */
+	/* Initialize our directory to the transfer root */
+	safe_strncpy(fulldir, bbs_transfer_rootdir(), sizeof(fulldir));
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 
@@ -343,7 +352,6 @@ static void *ftp_handler(void *varg)
 			res = ftp_write_raw(ftp, " PROT\r\n");
 			res = ftp_write_raw(ftp, " MDTM\r\n");
 			res = ftp_write(ftp, 211, "END\r\n");
-			break;
 		} else if (!strcasecmp(command, "AUTH") && !strlen_zero(rest) && !strcasecmp(rest, "TLS")) {
 			/* AUTH TLS / AUTH SSL = RFC2228 opportunistic encryption */
 			if (!ssl && ssl_available()) {
@@ -371,57 +379,18 @@ static void *ftp_handler(void *varg)
 			/* All subsequent commands require authentication */
 			bbs_warning("Node %d issued FTP %s without authentication\n", node->id, command);
 			res = ftp_write(ftp, 530, "Not Logged In\r\n");
-			if (res <= 0) {
-				break;
-			}
-			continue;
 		} else if (!strcasecmp(command, "CWD")) { /* Change working directory */
-			char newdir[sizeof(fulldir) + 1];
-			bbs_debug(7, "Current FTP dir is '%s' and request is '%s'\n", ftpdir, rest);
-			if (*rest == '/') {
-				snprintf(newdir, sizeof(newdir), "%s%s", bbs_transfer_rootdir(), rest);
-			} else {
-				snprintf(newdir, sizeof(newdir), "%s%s/%s", bbs_transfer_rootdir(), ftpdir, rest); /* Relative to current directory */
-			}
-			bbs_debug(5, "Checking if directory exists: %s\n", newdir);
-			if (eaccess(newdir, R_OK) || UNSAFE_FILEPATH(rest)) {
+			if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rest, fulldir, sizeof(fulldir))) {
 				res = ftp_write(ftp, 431, "No such directory %s\r\n", rest);
 			} else {
-				if (*rest == '/') {
-					FTP_UPDATE_DIR(rest); /* Absolute */
-				} else {
-					snprintf(newdir, sizeof(newdir), "%s/%s", ftpdir, rest);
-					FTP_UPDATE_DIR(newdir); /* Relative */
-				}
-				res = ftp_write(ftp, 250, "CWD successful. \"%s\" is current directory.\r\n", ftpdir);
+				res = ftp_write(ftp, 250, "CWD successful. \"%s\" is current directory.\r\n", bbs_transfer_get_user_path(node, fulldir));
 			}
 		} else if (!strcasecmp(command, "CDUP")) { /* Change to parent directory */
-			char *tmp;
-			char newdir[sizeof(fulldir) + 1];
-			safe_strncpy(newdir, fulldir, sizeof(newdir)); /* Copy the current directory. */
-			tmp = strrchr(newdir, '/'); /* Strip the last / */
-			if (!tmp) {
-				break; /* Impossible. */
-			}
-			*tmp++ = '\0';
-			if (!*tmp) {
-				/* The / we removed was at the end of the string, so we actually need to repeat this. */
-				tmp = strrchr(newdir, '/');
-				if (!tmp) {
-					break;
-				}
-				*tmp++ = '\0';
-			}
-			/* Going up a directory must succeed... unless we're at the root. */
-			if (strlen(newdir) < strlen(bbs_transfer_rootdir())) {
+			if (bbs_transfer_set_disk_path_up(node, fulldir, fulldir, sizeof(fulldir))) {
 				res = ftp_write(ftp, 431, "Can't move up directories\r\n");
-				continue;
-			} else if (strlen(newdir) == strlen(bbs_transfer_rootdir())) {
-				FTP_UPDATE_DIR("/");
 			} else {
-				FTP_UPDATE_DIR(newdir + strlen(bbs_transfer_rootdir()));
+				res = ftp_write(ftp, 250, "CDUP successful. \"%s\" is current directory.\r\n", bbs_transfer_get_user_path(node, fulldir));
 			}
-			res = ftp_write(ftp, 250, "CWD successful. \"%s\" is current directory.\r\n", ftpdir);
 		} else if (!strcasecmp(command, "SMNT")) { /* Structure Mount */
 			res = ftp_write(ftp, 502, "Command Not Implemented\r\n");
 		/* Transfer Parameters */
@@ -560,9 +529,8 @@ static void *ftp_handler(void *varg)
 		/* Service Commands */
 		} else if (!strcasecmp(command, "RETR")) { /* Download file from server */
 			char fullfile[386];
-			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
 			MIN_FTP_PRIV(TRANSFER_DOWNLOAD);
-			if (eaccess(fullfile, R_OK) || UNSAFE_FILEPATH(rest)) {
+			if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
 			} else {
 				struct stat filestat;
@@ -602,7 +570,7 @@ static void *ftp_handler(void *varg)
 			/*! \todo BUGBUG FIXME XXX ls uses local timestamps, needs to be UTC. Also reveals local usernames. This should be generated directly, not exec'ed out to ls. */
 			char *argv[4] = { "ls", "-l", fulldir, NULL };
 			REQUIRE_PASV_FD();
-			res = ftp_write(ftp, 125, "Listing follows for %s\r\n", ftpdir);
+			res = ftp_write(ftp, 125, "Listing follows for %s\r\n", bbs_transfer_get_user_path(node, fulldir));
 			if (DATA_INIT()) {
 				break;
 			}
@@ -660,8 +628,7 @@ static void *ftp_handler(void *varg)
 		} else if (!strcasecmp(command, "DELE")) { /* Delete */
 			char fullfile[386];
 			MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE);
-			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
-			if (eaccess(fullfile, R_OK) || UNSAFE_FILEPATH(rest)) {
+			if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
 			} else {
 				if (unlink(fullfile)) {
@@ -677,8 +644,8 @@ static void *ftp_handler(void *varg)
 			char fullfile[386];
 			MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE);
 			rename_from[0] = '\0'; /* In case we issue a successful RNFR, then issue a failed one (nonexistent target), then try to rename, that should fail, so always reset */
-			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
-			if (eaccess(fullfile, R_OK) || UNSAFE_FILEPATH(rest)) {
+			/* The rename from target has to exist, so using set_disk_path is okay (since that verifies the path exists) */
+			if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
 			} else {
 				safe_strncpy(rename_from, rest, sizeof(rename_from)); /* Save the target name */
@@ -688,12 +655,13 @@ static void *ftp_handler(void *varg)
 			char fullfile[596];
 			char newfullfile[596];
 			MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE);
-			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rename_from);
-			snprintf(newfullfile, sizeof(newfullfile), "%s/%s", fulldir, rest);
 			if (s_strlen_zero(rename_from)) {
 				res = ftp_write(ftp, 503, "Bad sequence of commands\r\n");
-			} else if (eaccess(fullfile, R_OK) || UNSAFE_FILEPATH(rename_from)) {
+			} else if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rename_from, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rename_from);
+			/* Use bbs_transfer_set_disk_file_relative since we don't want to require that the target file exists (in fact, it must not) */
+			} else if (bbs_transfer_set_disk_path_relative_nocheck(node, bbs_transfer_get_user_path(node, fulldir), rest, newfullfile, sizeof(newfullfile))) {
+				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
 			} else if (!eaccess(newfullfile, R_OK)) {
 				res = ftp_write(ftp, 450, "File \"%s\" already exists\n", rest);
 			} else {
@@ -715,33 +683,33 @@ static void *ftp_handler(void *varg)
 		} else if (!strcasecmp(command, "RMD")) { /* Remove Directory */
 			char fullfile[386];
 			MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE);
-			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
-			if (eaccess(fullfile, R_OK)) {
+			if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "\"%s\" does not exist\n", rest);
 			} else {
 				if (rmdir(fullfile)) {
 					bbs_warning("rmdir failed: %s\n", strerror(errno));
 					res = ftp_write(ftp, 451, "\"%s\" could not be deleted\n", rest);
 				} else {
-					res = ftp_write(ftp, 250, "\"%s/%s\" directory deleted.\r\n", ftpdir, rest);
+					res = ftp_write(ftp, 250, "\"%s/%s\" directory deleted.\r\n", bbs_transfer_get_user_path(node, fullfile), rest);
 				}
 			}
 		} else if (!strcasecmp(command, "MKD")) { /* Make Directory */
 			char fullfile[386];
 			MIN_FTP_PRIV(TRANSFER_NEWDIR);
-			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
-			if (!eaccess(fullfile, R_OK)) {
+			if (bbs_transfer_set_disk_path_relative_nocheck(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
+				res = ftp_write(ftp, 450, "\"%s\" already exists\n", rest);
+			} else if (!eaccess(fullfile, R_OK)) {
 				res = ftp_write(ftp, 450, "\"%s\" already exists\n", rest);
 			} else {
 				if (mkdir(fullfile, 0600)) {
 					bbs_warning("mkdir failed: %s\n", strerror(errno));
 					res = ftp_write(ftp, 451, "\"%s\" could not be created\n", rest);
 				} else {
-					res = ftp_write(ftp, 250, "\"%s/%s\" directory created.\r\n", ftpdir, rest);
+					res = ftp_write(ftp, 250, "\"%s/%s\" directory created.\r\n", bbs_transfer_get_user_path(node, fullfile), rest);
 				}
 			}
 		} else if (!strcasecmp(command, "PWD")) { /* Print Working Directory */
-			res = ftp_write(ftp, 257, "\"%s\" is current directory.\r\n", ftpdir);
+			res = ftp_write(ftp, 257, "\"%s\" is current directory.\r\n", bbs_transfer_get_user_path(node, fulldir));
 		} else if (!strcasecmp(command, "NLST")) { /* Name list */
 			res = ftp_write(ftp, 502, "Command Not Implemented\r\n");
 		} else if (!strcasecmp(command, "SYST")) { /* System */

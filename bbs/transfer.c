@@ -27,9 +27,11 @@
 #include "include/user.h"
 
 static char rootdir[84];
+static int rootlen;
 static int privs[5];
 static int access_priv, download_priv, upload_priv, delete_priv, newdir_priv;
 static int idletimeout;
+static int max_upload_size;
 
 const char *bbs_transfer_rootdir(void)
 {
@@ -39,6 +41,11 @@ const char *bbs_transfer_rootdir(void)
 int bbs_transfer_timeout(void)
 {
 	return idletimeout;
+}
+
+int bbs_transfer_max_upload_size(void)
+{
+	return max_upload_size;
 }
 
 int bbs_transfer_operation_allowed(struct bbs_node *node, int operation)
@@ -54,6 +61,141 @@ int bbs_transfer_operation_allowed(struct bbs_node *node, int operation)
 	return 0;
 }
 
+/*! \note This implementation assumes the userpath is always a subset of the diskpath */
+const char *bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpath)
+{
+	const char *userpath = diskpath + rootlen;
+
+	UNUSED(node); /* Might be used in the future, e.g. for home directories? */
+
+	/* This isn't solely just to ensure that nothing funny is going on.
+	 * If diskpath is shorter than rootdir for whatever reason,
+	 * then userpath points to invalid memory, and we must not access it. */
+	if (strncmp(diskpath, rootdir, rootlen)) {
+		bbs_warning("Disk path '%s' is outside of transfer root '%s'\n", diskpath, rootdir);
+		return NULL;
+	}
+
+	userpath = S_OR(userpath, "/"); /* Corner case: for root, we need to manually add the / back */
+	bbs_debug(5, "Client path is '%s'\n", userpath);
+	return userpath;
+}
+
+/*! \note query and buf are probably aliased from the original parent call */
+static int __transfer_set_path(const char *function, const char *query, const char *fullpath, char *buf, size_t len, int require_existence)
+{
+	if (require_existence && eaccess(fullpath, R_OK)) {
+		bbs_debug(5, "Path %s does not exist\n", fullpath);
+		errno = ENOENT;
+		return -1; /* Doesn't exist, don't change the path. */
+	} else if (strstr(fullpath, "..")) {
+		bbs_warning("Attempt to access unsafe path '%s'\n", fullpath);
+		errno = EPERM;
+		return -1;
+	}
+	bbs_debug(3, "%s(%s) => '%s'\n", function, query, fullpath);
+	safe_strncpy(buf, fullpath, len);
+	return 0;
+}
+
+int __bbs_transfer_set_disk_path_absolute(struct bbs_node *node, const char *userpath, char *buf, size_t len, int mustexist)
+{
+	char tmp[256];
+
+	/*! \note Once home directory support is added, if trying to access another user's home directory, we should return EPERM (not ENOENT) */
+	UNUSED(node); /* Might be used in the future, e.g. for home directories? */
+
+	if (userpath && (strlen_zero(userpath) || !strcmp(userpath, ".") || !strcmp(userpath, "/"))) {
+		safe_strncpy(buf, rootdir, len); /* The rootdir must exist. Well, if it doesn't, then nothing will work anyways. */
+	} else {
+		int pathlen = !strlen_zero(userpath) ? strlen(userpath) : 0;
+		snprintf(tmp, sizeof(tmp), "%s%s", rootdir, S_IF(userpath));
+		if (pathlen > 3) {
+			/* e.g. for foobar/.. we want /.. */
+			const char *end = userpath + pathlen - 3;
+			if (!strcmp(end, "/..")) {
+				/* SFTP will use /.. at the end of a path to go up one directory (~CDUP in FTP).
+				 * Detect that and call bbs_transfer_set_disk_path_up when that happens. */
+				return bbs_transfer_set_disk_path_up(node, tmp, buf, len);
+			}
+		}
+		return __transfer_set_path("disk_path_absolute", userpath, tmp, buf, len, mustexist);
+	}
+	return 0;
+}
+
+int __bbs_transfer_set_disk_path_relative(struct bbs_node *node, const char *current, const char *userpath, char *buf, size_t len, int mustexist)
+{
+	char tmp[256];
+	const char *lastslash;
+	int addslash = 1;
+
+	UNUSED(node); /* Might be used in the future, e.g. for home directories? */
+
+	/* If directory does not start with a /, then it's relative to the current directory.
+	 * If it does, then it's absolute. */
+	if (!strlen_zero(userpath) && *userpath == '/') {
+		return __bbs_transfer_set_disk_path_absolute(node, userpath, buf, len, mustexist);
+	}
+	/* userpath will not begin with a / so we'll want to insert one there normally.
+	 * However, if current ends in a slash, then we don't want to insert or we'll have a duplicate //
+	 * Additionally, if current begins with a slash, then we should strip it to avoid a duplicate // there.
+	 */
+	lastslash = strrchr(current, '/');
+	if (lastslash && !*(lastslash + 1)) {
+		addslash = 0;
+	}
+	snprintf(tmp, sizeof(tmp), "%s/%s%s%s", rootdir, *current == '/' ? current + 1 : current, addslash ? "/" : "", S_IF(userpath));
+	return __transfer_set_path("disk_path_relative", userpath, tmp, buf, len, mustexist);
+}
+
+int bbs_transfer_set_disk_path_up(struct bbs_node *node, const char *diskpath, char *buf, size_t len)
+{
+	char tmp[256];
+	char *end;
+
+	UNUSED(node); /* Might be used in the future, e.g. for home directories? */
+
+	/* Note that diskpath and buf might be the same pointer.
+	 * We do not use diskpath at any point after buf is modified,
+	 * so this is fine.
+	 * In other words, these pointers could NOT be __restrict'ed,
+	 * since they may alias! */
+
+	safe_strncpy(tmp, diskpath, sizeof(tmp));
+	end = strrchr(tmp, '/');
+	if (!end) {
+		bbs_error("Path '%s' contains no slashes?\n", diskpath);
+		return -1;
+	}
+	*end++ = '\0';
+	/* If the / is at the end, it doesn't count. Same with if /.. is at the end. */
+	if (!*end || (!strlen_zero(end) && !strcmp(end, ".."))) {
+		bbs_debug(7, "That didn't count, terminating the previous slash too: %s\n", tmp);
+		end = strrchr(tmp, '/');
+	}
+
+	/* If the previous directory were just '/', then removing the last / could result
+	 * in an empty string remaining.
+	 * However, that would only happen if the transfer rootdir were actually / on disk,
+	 * and hopefully nobody is too stupid to do that. */
+	if (!end) {
+		bbs_error("Path '%s' contains no slashes?\n", diskpath);
+		return -1;
+	}
+	*end = '\0';
+
+	bbs_debug(7, "final: %s\n", tmp);
+
+	/* We must not allow anyone to escape out of the transfer directory! */
+	if ((int) strlen(tmp) < rootlen) {
+		bbs_warning("Attempt to navigate outside of rootdir: %s\n", tmp);
+		return -1;
+	}
+
+	return __transfer_set_path("disk_path_up", diskpath, tmp, buf, len, 0); /* Parent guaranteed to exist, so don't verify that it does, that's unnecessary. */
+}
+
 int bbs_transfer_config_load(void)
 {
 	struct bbs_config *cfg = bbs_config_load("transfers.conf", 1); /* Load cached version, since multiple transfer protocols may use this config */
@@ -63,6 +205,7 @@ int bbs_transfer_config_load(void)
 	}
 
 	idletimeout = 60000;
+	max_upload_size = 10 * 1024 * 1024; /* 10 MB */
 	if (!bbs_config_val_set_int(cfg, "transfers", "timeout", &idletimeout)) {
 		idletimeout *= 1000; /* convert s to ms */
 	}
@@ -70,12 +213,15 @@ int bbs_transfer_config_load(void)
 		bbs_error("No rootdir specified, transfers will be disabled\n");
 		return -1;
 	}
+	bbs_config_val_set_int(cfg, "transfers", "maxuploadsize", &max_upload_size);
+	rootlen = strlen(rootdir);
 
 	access_priv = 0;
 	download_priv = 0;
 	upload_priv = 1;
 	delete_priv = 2;
 	newdir_priv = 2;
+	
 	bbs_config_val_set_int(cfg, "privs", "access", &privs[TRANSFER_ACCESS]);
 	bbs_config_val_set_int(cfg, "privs", "download", &privs[TRANSFER_DOWNLOAD]);
 	bbs_config_val_set_int(cfg, "privs", "upload", &privs[TRANSFER_UPLOAD]);

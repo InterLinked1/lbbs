@@ -77,7 +77,7 @@ static ssh_bind sshbind = NULL;
  * However, if this turns out to be a major limitation, then we should migrate to using only a single listener.
  */
 
-/*! \brief Returns 1 on success, 0 on failure (!!!) */
+/*! \retval 1 on success, 0 on failure (!!!) */
 /*! \note from net_ssh */
 static int bind_key(enum ssh_bind_options_e opt, const char *filename)
 {
@@ -394,7 +394,7 @@ static const char *fopen_flags(int flags)
 	return "r"; /* Default */
 }
 
-static int handle_readdir(sftp_client_message msg)
+static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 {
 	sftp_attributes attr;
 	struct dirent *dir;
@@ -411,19 +411,24 @@ static int handle_readdir(sftp_client_message msg)
 	}
 
 	while (!eof) {
-		dir = readdir(info->dir);
+		dir = readdir(info->dir); /* XXX This is not thread safe */
 		if (!dir) {
 			eof = 1;
 			break;
 		}
 		i++;
+		if (!strcmp(dir->d_name, ".") || !strcmp(dir->d_name, "..")) {
+			continue;
+		}
 		/* Avoid double slash // at beginning when in the root directory */
 		bbs_debug(4, "Have %s/%s\n", !strcmp(info->name, "/") ? "" : info->name, dir->d_name);
+		/* Could do bbs_transfer_set_disk_path_relative(node, info->name, dir->d_name, file, sizeof(file)); but it's not really necessary here */
 		snprintf(file, sizeof(file), "%s/%s/%s", bbs_transfer_rootdir(), info->name, dir->d_name);
+		bbs_transfer_set_disk_path_relative(node, info->name, dir->d_name, file, sizeof(file));
 		if (lstat(file, &st)) {
 			bbs_error("lstat failed: %s\n", strerror(errno));
-            continue;
-        }
+			continue;
+		}
 		attr = attr_from_stat(&st);
 		if (!attr) {
 			continue;
@@ -500,9 +505,11 @@ static int handle_write(sftp_client_message msg)
 	uint32_t len;
 	struct sftp_info *info = sftp_handle(msg->sftp, msg->handle);
 
+	/*! \todo Add support for limiting max file size upload according to bbs_transfer_max_upload_size */
+
 	if (!info || info->type != TYPE_FILE) {
 		sftp_reply_status(msg, SSH_FX_INVALID_HANDLE, "Invalid handle");
-        return -1;
+		return -1;
 	}
 	len = string_len(msg->data);
 	if (fseeko(info->file, msg->offset, SEEK_SET)) {
@@ -619,9 +626,22 @@ static void sftp_server_free(sftp_session sftp)
 }
 #endif
 
+#define SFTP_MAKE_PATH() \
+	if (bbs_transfer_set_disk_path_absolute(node, msg->filename, mypath, sizeof(mypath))) { \
+		handle_errno(msg); \
+		break; \
+	}
+
+#define SFTP_MAKE_PATH_NOCHECK() \
+	if (bbs_transfer_set_disk_path_absolute_nocheck(node, msg->filename, mypath, sizeof(mypath))) { \
+		handle_errno(msg); \
+		break; \
+	}
+
 static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel channel)
 {
-	char buf[PATH_MAX], mypath[PATH_MAX];
+	char mypath[PATH_MAX]; /* Real disk path */
+	char buf[PATH_MAX]; /* for realpath */
 	sftp_session sftp;
 	int res;
 	FILE *fp;
@@ -659,31 +679,27 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 		if (!msg) {
 			break;
 		}
-		if (msg->filename && (!strcmp(msg->filename, ".") || !strcmp(msg->filename, "/"))) {
-			safe_strncpy(mypath, bbs_transfer_rootdir(), sizeof(mypath));
-		} else {
-			snprintf(mypath, sizeof(mypath), "%s%s", bbs_transfer_rootdir(), S_IF(msg->filename));
-		}
+		/* Since some operations can be for paths that may not exist currently, always use the _nocheck variant.
+		 * For operations that require the path to exist, they will fail anyways on the system call. */
 		bbs_debug(5, "Got SFTP client message %2d (%8s), client path: %s => server path: %s\n", msg->type, sftp_get_client_message_type_name(msg->type), msg->filename, mypath);
 		switch (msg->type) {
 			case SFTP_REALPATH:
+				SFTP_MAKE_PATH();
 				if (!realpath(mypath, buf)) { /* returns NULL on failure */
 					bbs_debug(5, "Path '%s' not found: %s\n", mypath, strerror(errno));
-					errno = ENOENT;
 					handle_errno(msg);
 				} else {
-					const char *client_realpath = buf + strlen(bbs_transfer_rootdir());
-					/* Corner case: for root, we need to manually add the / back */
-					bbs_debug(3, "Real client path is '%s'\n", S_OR(client_realpath, "/"));
-					sftp_reply_name(msg, S_OR(client_realpath, "/"), NULL); /* Skip root dir */
+					sftp_reply_name(msg, bbs_transfer_get_user_path(node, buf), NULL); /* Skip root dir */
 				}
 				break;
 			case SFTP_OPENDIR:
+				SFTP_MAKE_PATH();
 				dir = opendir(mypath);
 				if (!dir) {
 					handle_errno(msg);
 				} else if (!(info = alloc_sftp_info())) {
 					handle_errno(msg);
+					closedir(dir); /* Do this after so we don't mess up errno */
 				} else {
 					info->dir = dir;
 					info->type = TYPE_DIR;
@@ -696,6 +712,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 				}
 				break;
 			case SFTP_OPEN:
+				SFTP_MAKE_PATH_NOCHECK(); /* Might be opening a file that doesn't currently exist */
 				fd = open(mypath, sftp_io_flags(msg->flags), msg->attr->permissions);
 				if (fd < 0) {
 					handle_errno(msg);
@@ -719,6 +736,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 			case SFTP_STAT:
 				/* Fall through */
 			case SFTP_LSTAT:
+				SFTP_MAKE_PATH();
 				if ((msg->type == SFTP_STAT && stat(mypath, &st)) || (msg->type == SFTP_LSTAT && lstat(mypath, &st))) {
 					handle_errno(msg);
 				} else {
@@ -741,7 +759,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 				}
 				break;
 			case SFTP_READDIR:
-				handle_readdir(msg);
+				handle_readdir(node, msg);
 				break;
 			case SFTP_READ:
 				SFTP_ENSURE_TRUE(bbs_transfer_canread, node);
@@ -753,14 +771,17 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 				break;
 			case SFTP_REMOVE:
 				SFTP_ENSURE_TRUE(bbs_transfer_candelete, node);
+				SFTP_MAKE_PATH();
 				STDLIB_SYSCALL(unlink, mypath);
 				break;
 			case SFTP_MKDIR:
 				SFTP_ENSURE_TRUE(bbs_transfer_canmkdir, node);
+				SFTP_MAKE_PATH_NOCHECK();
 				STDLIB_SYSCALL(mkdir, mypath, 0600);
 				break;
 			case SFTP_RMDIR:
 				SFTP_ENSURE_TRUE(bbs_transfer_candelete, node);
+				SFTP_MAKE_PATH();
 				STDLIB_SYSCALL(rmdir, mypath);
 				break;
 			case SFTP_RENAME:
@@ -769,7 +790,11 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 					const char *newpath;
 					char realnewpath[PATH_MAX];
 					newpath = sftp_client_message_get_data(msg); /* According to sftp.h, rename() newpath is here */
-					snprintf(realnewpath, sizeof(realnewpath), "%s%s", bbs_transfer_rootdir(), newpath);
+					SFTP_MAKE_PATH();
+					if (bbs_transfer_set_disk_path_absolute_nocheck(node, newpath, mypath, sizeof(mypath))) {
+						handle_errno(msg);
+						break;
+					}
 					if (!eaccess(realnewpath, R_OK)) { /* If target already exists, it's a no go */
 						errno = EEXIST;
 						handle_errno(msg);
