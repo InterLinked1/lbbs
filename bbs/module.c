@@ -85,7 +85,7 @@ void bbs_module_register(const struct bbs_module_info *info)
 	struct bbs_module *mod;
 
 	mod = resource_being_loaded;
-	if (!mod) {
+	if (unlikely(!mod)) {
 		bbs_error("No module being loaded while registering %s?\n", info->name);
 		return;
 	}
@@ -430,7 +430,7 @@ static int start_resource(struct bbs_module *mod)
 {
 	int res;
 
-	if (!mod->info->load) {
+	if (unlikely(!mod->info->load)) {
 		bbs_error("Module %s contains no load function?\n", mod->name);
 		return -1;
 	}

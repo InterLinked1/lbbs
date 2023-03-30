@@ -69,7 +69,7 @@ int bbs_rand_alnum(char *buf, size_t len)
 		if (!isalnum(buf[i])) {
 			buf[i] = 'A' + abs(buf[i] % 25); /* buf[i] could contain a negative value, and % won't make it positive */
 			/* Now it should be a printable, alphanumeric ASCII char... */
-			if (!isalnum(buf[i])) {
+			if (unlikely(!isalnum(buf[i]))) {
 				bbs_error("Character %d was not an alphanumeric character?\n", buf[i]);
 			}
 		}

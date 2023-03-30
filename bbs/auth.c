@@ -181,7 +181,6 @@ int __bbs_register_auth_provider(const char *name, int (*provider)(AUTH_PROVIDER
 	}
 	p = calloc(1, sizeof(*p) + strlen(name) + 1);
 	if (!p) {
-		bbs_error("Failed to calloc auth provider\n");
 		RWLIST_UNLOCK(&providers);
 		return -1;
 	}

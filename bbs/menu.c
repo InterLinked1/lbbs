@@ -690,7 +690,7 @@ static int load_config(int reload)
 				if (menu->display) {
 					int slen = strlen(menu->display);
 					char *s = realloc(menu->display, slen + strlen(value) + 2); /* LF + NUL */
-					if (s) {
+					if (likely(s != NULL)) {
 						menu->display = s;
 						menu->display[slen] = '\n'; /* Next display= line is for the next line */
 						strcpy(menu->display + slen + 1, value); /* Safe */

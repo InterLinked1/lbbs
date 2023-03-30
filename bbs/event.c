@@ -53,7 +53,6 @@ int __bbs_register_event_consumer(int (*callback)(struct bbs_event *event), void
 	}
 	c = calloc(1, sizeof(*c));
 	if (!c) {
-		bbs_error("Failed to calloc event consumer\n");
 		RWLIST_UNLOCK(&consumers);
 		return -1;
 	}

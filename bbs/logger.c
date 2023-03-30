@@ -169,7 +169,7 @@ int bbs_add_logging_fd(int fd)
 			break;
 		}
 	}
-	if (rfd) {
+	if (unlikely(rfd != NULL)) {
 		bbs_error("File descriptor %d already has logging\n", fd);
 		RWLIST_UNLOCK(&remote_log_fds);
 		return -1;
@@ -192,7 +192,7 @@ int bbs_remove_logging_fd(int fd)
 	struct remote_log_fd *rfd;
 
 	rfd = RWLIST_WRLOCK_REMOVE_BY_FIELD(&remote_log_fds, fd, fd, entry);
-	if (!rfd) {
+	if (unlikely(!rfd)) {
 		bbs_error("File descriptor %d did not have logging\n", fd);
 	} else {
 		free(rfd);
@@ -389,7 +389,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 	len = vasprintf(&buf, fmt, ap);
 	va_end(ap);
 
-	if (len < 0) {
+	if (unlikely(len < 0)) {
 		va_list ap2;
 		/* Fall back to simple logging. */
 		va_start(ap, fmt);
@@ -420,7 +420,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 			} else {
 				bytes = asprintf(&fullbuf, "[%s.%03d] %s[%d]: %s%s:%d %s%s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 1), thread_id, COLOR_START COLOR_WHITE COLOR_BEGIN, file, lineno, func, COLOR_RESET, buf, need_reset ? COLOR_RESET : "");
 			}
-			if (bytes < 0) {
+			if (unlikely(bytes < 0)) {
 				term_puts("ERROR: Logging vasprintf failure\n"); /* Can't use bbs_log functions! */
 				term_puts(buf); /* Just put what we had */
 			} else {
@@ -438,7 +438,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 			}
 		}
 		bytes = asprintf(&fullbuf, "[%s.%03d] %s[%d]: %s:%d %s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 0), thread_id, file, lineno, func, buf, need_reset ? COLOR_RESET : "");
-		if (bytes < 0) {
+		if (unlikely(bytes < 0)) {
 			log_puts("ERROR: Logging vasprintf failure\n"); /* Can't use bbs_log functions! */
 			log_puts(buf); /* Just put what we had */
 		} else {

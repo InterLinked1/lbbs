@@ -327,7 +327,7 @@ static int print_fds(int fd)
 		return -1;
 	}
 
-	while ((entry = readdir(dir)) != NULL) { /* Don't just bail out if errno becomes set, modules could set errno when we load them. */
+	while ((entry = readdir(dir)) != NULL) {
 		if (entry->d_type == DT_LNK) {
 			int fdnum = atoi(entry->d_name);
 			/* Only care about ones we don't know about */
