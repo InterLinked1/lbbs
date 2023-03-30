@@ -28,6 +28,7 @@
 #include <pthread.h>
 #include <signal.h> /* use pthread_kill */
 #include <sys/sendfile.h>
+#include <dirent.h>
 
 #include "include/module.h"
 #include "include/node.h"
@@ -61,6 +62,7 @@ static int require_reuse = 0;
 #define ftp_write(ftp, code, fmt, ...) ({ bbs_debug(5, "FTP <= %d " fmt, code, ## __VA_ARGS__); bbs_std_writef(ftp->wfd, "%d " fmt, code, ## __VA_ARGS__); })
 #define ftp_write0(ftp, code, fmt, ...) ({ bbs_debug(5, "FTP <= %d-" fmt, code, ## __VA_ARGS__); bbs_std_writef(ftp->wfd, "%d-" fmt, code, ## __VA_ARGS__); })
 #define ftp_write_raw(ftp, fmt, ...) ({ bbs_debug(5, "FTP <= " fmt, ## __VA_ARGS__); bbs_std_writef(ftp->wfd, fmt, ## __VA_ARGS__); })
+#define ftp_write_raw2(ftp, fmt, ...) ({ bbs_debug(5, "FTP <= " fmt, ## __VA_ARGS__); bbs_std_writef(ftp->wfd2, fmt, ## __VA_ARGS__); })
 #define ftp_poll(ftp, ms) bbs_std_poll(ftp->rfd, ms)
 #define ftp_read(ftp, buf, size) read(ftp->rfd, buf, size)
 #define IO_ABORT(res) if (res <= 0) { goto cleanup; }
@@ -75,8 +77,8 @@ static int require_reuse = 0;
 		continue; \
 	}
 
-#define MIN_FTP_PRIV(priv) \
-	if (!bbs_transfer_operation_allowed(node, priv)) { \
+#define MIN_FTP_PRIV(priv, fullpath) \
+	if (!bbs_transfer_operation_allowed(node, priv, fullpath)) { \
 		res = ftp_write(ftp, 450, "Insufficient privileges for operation\n"); \
 		IO_ABORT(res); \
 		continue; \
@@ -170,7 +172,7 @@ static int ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir,
 	int pasv_fd = *pasvfdptr;
 	int maxuploadsize = bbs_transfer_max_upload_size();
 
-	if (!bbs_transfer_canwrite(ftp->node)) {
+	if (!bbs_transfer_canwrite(ftp->node, fulldir)) {
 		return ftp_write(ftp, 450, "File uploads denied for user\n");
 	}
 
@@ -179,7 +181,7 @@ static int ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir,
 	}
 
 	/* Overwriting is basically deleting and then writing, unless we're appending */
-	if (!bbs_transfer_candelete(ftp->node) && strcmp(flags, "a") && !eaccess(fullfile, R_OK)) {
+	if (!bbs_transfer_candelete(ftp->node, fulldir) && strcmp(flags, "a") && !eaccess(fullfile, R_OK)) {
 		return ftp_write(ftp, 450, "File \"%s\" already exists and may not be overwritten\n", file);
 	}
 
@@ -324,7 +326,7 @@ static void *ftp_handler(void *varg)
 						res = ftp_write(ftp, 430, "Invalid username or password\r\n");
 					}
 				} else {
-					MIN_FTP_PRIV(TRANSFER_ACCESS);
+					MIN_FTP_PRIV(TRANSFER_ACCESS, NULL);
 					res = ftp_write(ftp, 230, "Login successful\r\n"); /* If ACCT needed, reply 332 instead */
 				}
 			}
@@ -529,12 +531,12 @@ static void *ftp_handler(void *varg)
 		/* Service Commands */
 		} else if (!strcasecmp(command, "RETR")) { /* Download file from server */
 			char fullfile[386];
-			MIN_FTP_PRIV(TRANSFER_DOWNLOAD);
 			if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
 			} else {
 				struct stat filestat;
 				FILE *fp;
+				MIN_FTP_PRIV(TRANSFER_DOWNLOAD, fullfile);
 				REQUIRE_PASV_FD();
 				fp = fopen(fullfile, "rb");
 				if (!fp) {
@@ -567,10 +569,16 @@ static void *ftp_handler(void *varg)
 				}
 			}
 		} else if (!strcasecmp(command, "LIST")) { /* List files */
-			/*! \todo BUGBUG FIXME XXX ls uses local timestamps, needs to be UTC. Also reveals local usernames. This should be generated directly, not exec'ed out to ls. */
-			char *argv[4] = { "ls", "-l", fulldir, NULL };
+			struct dirent *dir;
+			struct stat st;
+			char file[1024];
+			char longname[PATH_MAX];
+			DIR *mydir;
+			int len;
+			const char *userpath = bbs_transfer_get_user_path(node, fulldir);
+
 			REQUIRE_PASV_FD();
-			res = ftp_write(ftp, 125, "Listing follows for %s\r\n", bbs_transfer_get_user_path(node, fulldir));
+			res = ftp_write(ftp, 125, "Listing follows for %s\r\n", userpath);
 			if (DATA_INIT()) {
 				break;
 			}
@@ -588,11 +596,27 @@ static void *ftp_handler(void *varg)
 			 * Should be something like:
 			 * -rw-r--r-- 1 owner group           213 Aug 26 16:31 README
 			 */
-			res = bbs_execvp_fd_headless(node, -1, ftp->wfd2, "/bin/ls", argv); /* Just use ls, since that's the right format */
-			DATA_DONE(NULL, pasv_fd);
-			if (res) { /* Listing failed, just disconnect */
-				break;
+			mydir = opendir(fulldir);
+			while ((dir = readdir(mydir))) { /* XXX This is not thread safe */
+				if (!strcmp(dir->d_name, ".") || !strcmp(dir->d_name, "..")) {
+					continue;
+				}
+				/* Could do bbs_transfer_set_disk_path_relative(node, info->name, dir->d_name, file, sizeof(file)); but it's not really necessary here */
+				snprintf(file, sizeof(file), "%s/%s/%s", bbs_transfer_rootdir(), userpath, dir->d_name);
+				if (bbs_transfer_set_disk_path_relative(node, userpath, dir->d_name, file, sizeof(file))) { /* Will fail for other people's home directories, which is fine, hide in listing */
+					continue;
+				}
+				if (lstat(file, &st)) {
+					bbs_error("lstat failed: %s\n", strerror(errno));
+					continue;
+				}
+				len = transfer_make_longname(dir->d_name, &st, longname, sizeof(longname), 1);
+				ftp_write_raw2(ftp, "%s\r\n", longname);
+				if (len) {
+				}
 			}
+			closedir(mydir);
+			DATA_DONE(NULL, pasv_fd);
 			res = ftp_write(ftp, 226, "Action successful\r\n");
 		} else if (!strcasecmp(command, "MDTM")) { /* File Modification Time - RFC 3659 */
 			/* CoreFTP also attempts to send MDTM to send the modification time of an uploaded file,
@@ -627,10 +651,10 @@ static void *ftp_handler(void *varg)
 			res = ftp_write(ftp, 202, "Command Not Relevant\r\n"); /* Ignore, don't need */
 		} else if (!strcasecmp(command, "DELE")) { /* Delete */
 			char fullfile[386];
-			MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE);
 			if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
 			} else {
+				MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE, fullfile);
 				if (unlink(fullfile)) {
 					bbs_error("unlink failed: %s\n", strerror(errno));
 					res = ftp_write(ftp, 451, "File deletion failed\r\n");
@@ -642,29 +666,29 @@ static void *ftp_handler(void *varg)
 			res = ftp_write(ftp, 502, "Command Not Implemented\r\n");
 		} else if (!strcasecmp(command, "RNFR")) { /* Rename From */
 			char fullfile[386];
-			MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE);
 			rename_from[0] = '\0'; /* In case we issue a successful RNFR, then issue a failed one (nonexistent target), then try to rename, that should fail, so always reset */
 			/* The rename from target has to exist, so using set_disk_path is okay (since that verifies the path exists) */
 			if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
 			} else {
+				MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE, fullfile);
 				safe_strncpy(rename_from, rest, sizeof(rename_from)); /* Save the target name */
 				res = ftp_write(ftp, 226, "Filename accepted\r\n");
 			}
 		} else if (!strcasecmp(command, "RNTO")) { /* Rename To */
 			char fullfile[596];
 			char newfullfile[596];
-			MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE);
 			if (s_strlen_zero(rename_from)) {
 				res = ftp_write(ftp, 503, "Bad sequence of commands\r\n");
 			} else if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rename_from, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rename_from);
 			/* Use bbs_transfer_set_disk_file_relative since we don't want to require that the target file exists (in fact, it must not) */
 			} else if (bbs_transfer_set_disk_path_relative_nocheck(node, bbs_transfer_get_user_path(node, fulldir), rest, newfullfile, sizeof(newfullfile))) {
-				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
+				res = ftp_write(ftp, 450, "File \"%s\" cannot be the new target\n", rest);
 			} else if (!eaccess(newfullfile, R_OK)) {
 				res = ftp_write(ftp, 450, "File \"%s\" already exists\n", rest);
 			} else {
+				MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE, fullfile);
 				if (rename(fullfile, newfullfile)) {
 					res = ftp_write(ftp, 450, "Failed to rename \"%s\"\n", rename_from);
 				} else {
@@ -682,10 +706,10 @@ static void *ftp_handler(void *varg)
 			res = ftp_write(ftp, 226, "Closed data connection\r\n");
 		} else if (!strcasecmp(command, "RMD")) { /* Remove Directory */
 			char fullfile[386];
-			MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE);
 			if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "\"%s\" does not exist\n", rest);
 			} else {
+				MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE, fullfile);
 				if (rmdir(fullfile)) {
 					bbs_warning("rmdir failed: %s\n", strerror(errno));
 					res = ftp_write(ftp, 451, "\"%s\" could not be deleted\n", rest);
@@ -695,12 +719,12 @@ static void *ftp_handler(void *varg)
 			}
 		} else if (!strcasecmp(command, "MKD")) { /* Make Directory */
 			char fullfile[386];
-			MIN_FTP_PRIV(TRANSFER_NEWDIR);
 			if (bbs_transfer_set_disk_path_relative_nocheck(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "\"%s\" already exists\n", rest);
 			} else if (!eaccess(fullfile, R_OK)) {
 				res = ftp_write(ftp, 450, "\"%s\" already exists\n", rest);
 			} else {
+				MIN_FTP_PRIV(TRANSFER_NEWDIR, fullfile);
 				if (mkdir(fullfile, 0600)) {
 					bbs_warning("mkdir failed: %s\n", strerror(errno));
 					res = ftp_write(ftp, 451, "\"%s\" could not be created\n", rest);

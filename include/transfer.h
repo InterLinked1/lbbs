@@ -23,26 +23,37 @@ struct bbs_node;
 #define TRANSFER_DESTRUCTIVE 4
 
 /*! \brief Whether file listings are allowed */
-#define bbs_transfer_canaccess(node) bbs_transfer_operation_allowed(node, TRANSFER_ACCESS)
+#define bbs_transfer_canaccess(node) bbs_transfer_operation_allowed(node, TRANSFER_ACCESS, NULL)
 
 /*! \brief Whether read operations (downloads) are allowed */
-#define bbs_transfer_canread(node) bbs_transfer_operation_allowed(node, TRANSFER_DOWNLOAD)
+#define bbs_transfer_canread(node, mypath) bbs_transfer_operation_allowed(node, TRANSFER_DOWNLOAD, mypath)
 
 /*! \brief Whether write operations (uploads) are allowed */
-#define bbs_transfer_canwrite(node) bbs_transfer_operation_allowed(node, TRANSFER_UPLOAD)
+#define bbs_transfer_canwrite(node, mypath) bbs_transfer_operation_allowed(node, TRANSFER_UPLOAD, mypath)
 
 /*! \brief Whether new directories may be created */
-#define bbs_transfer_canmkdir(node) bbs_transfer_operation_allowed(node, TRANSFER_NEWDIR)
+#define bbs_transfer_canmkdir(node, mypath) bbs_transfer_operation_allowed(node, TRANSFER_NEWDIR, mypath)
 
 /*! \brief Whether destructive operations (delete, rename, etc.) are allowed */
-#define bbs_transfer_candelete(node) bbs_transfer_operation_allowed(node, TRANSFER_DESTRUCTIVE)
+#define bbs_transfer_candelete(node, mypath) bbs_transfer_operation_allowed(node, TRANSFER_DESTRUCTIVE, mypath)
 
 /*!
  * \brief Whether a certain kind of transfer operation is allowed
  * \note Generally the macros above should be used, rather than this function directly
  * \retval 1 if allowed, 0 if not allowed
  */
-int bbs_transfer_operation_allowed(struct bbs_node *node, int operation);
+int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const char *fullpath);
+
+/*!
+ * \brief Make a ls-format directory listing for a file
+ * \param file Filename
+ * \param st
+ * \param[out] buf
+ * \param len Size of buf
+ * \param ftp Whether listing is for the FTP protocol
+ * \retval Number of bytes written to buf
+ */
+int transfer_make_longname(const char *file, struct stat *st, char *buf, size_t len, int ftp);
 
 /*!
  * \brief Get file transfer root directory

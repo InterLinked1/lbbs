@@ -48,17 +48,78 @@ int bbs_transfer_max_upload_size(void)
 	return max_upload_size;
 }
 
-int bbs_transfer_operation_allowed(struct bbs_node *node, int operation)
+int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const char *diskpath)
 {
 	int required_priv;
 
 	bbs_assert(IN_BOUNDS(operation, 0, (int) ARRAY_LEN(privs)));
 
-	required_priv = privs[operation];
-	if (bbs_user_priv(node->user) >= required_priv) {
-		return 1;
+	if (!strlen_zero(diskpath)) {
+		char homedir[256];
+		int len;
+		/* If the operation is being done to something inside the user's home directory, it is ALWAYS allowed.
+		 * i.e. even if a user cannot normally delete files in the transfer root, users can do whatever
+		 * they like inside their home directories. */
+		len = snprintf(homedir, sizeof(homedir), "%s/home/%d", bbs_transfer_rootdir(), bbs_user_is_registered(node->user) ? node->user->id : 0);
+		if (!strncmp(diskpath, homedir, len)) {
+			bbs_debug(6, "Operation implicitly authorized since it's in the user's home directory\n");
+			return 1;
+		}
 	}
-	return 0;
+
+	required_priv = privs[operation];
+	return bbs_user_priv(node->user) >= required_priv;
+}
+
+int transfer_make_longname(const char *file, struct stat *st, char *buf, size_t len, int ftp)
+{
+	char ctimebuf[26]; /* 26 bytes is enough per ctime(3) */
+	char *modtime;
+	char *p = buf;
+	int mode = st->st_mode;
+
+	/* Need 10 bytes for rwx, 10 bytes for first snprintf, 26-4 for ctime + filename */
+
+	/* Directory? */
+	*p++ = (mode & S_IFMT) == S_IFDIR ? 'd' : '-';
+
+	/* User */
+	*p++ = mode & 0400 ? 'r' : '-';
+	*p++ = mode & 0200 ? 'w' : '-';
+	*p++ = mode & 0100 ? mode & S_ISUID ? 's' : 'x' : '-';
+
+	/* Group */
+	*p++ = mode & 040 ? 'r' : '-';
+	*p++ = mode & 020 ? 'w' : '-';
+	*p++ = mode & 010 ? 'x' : '-';
+
+	/* Other */
+	*p++ = mode & 04 ? 'r' : '-';
+	*p++ = mode & 02 ? 'w' : '-';
+	*p++ = mode & 01 ? 'x' : '-';
+
+	*p++ = ' ';
+
+	p += snprintf(p, len - (p - buf), "%3d %d %d %d", (int) st->st_nlink, (int) st->st_uid, (int) st->st_gid, (int) st->st_size);
+	if (ftp) {
+		struct tm tm;
+		/* Times should be in UTC */
+		gmtime_r(&st->st_mtime, &tm);
+		modtime = asctime_r(&tm, ctimebuf);
+	} else {
+		modtime = ctime_r(&st->st_mtime, ctimebuf); /* ctime_r assumes ctimebuf is at least 26, there is no length argument. */
+	}
+	modtime += 4; /* Skip short day of week */
+	bbs_strterm(modtime, '\n'); /* Strip trailing LF */
+	if (ftp) {
+		char *colon;
+		/* For FTP, we don't want the seconds or FileZilla will treat part of the date as the filename. */
+		colon = strrchr(modtime, ':');
+		if (colon) {
+			*colon = '\0';
+		}
+	}
+	return snprintf(p, len - (p - buf), " %s %s", modtime, file);
 }
 
 /*! \note This implementation assumes the userpath is always a subset of the diskpath */
@@ -82,8 +143,39 @@ const char *bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpa
 }
 
 /*! \note query and buf are probably aliased from the original parent call */
-static int __transfer_set_path(const char *function, const char *query, const char *fullpath, char *buf, size_t len, int require_existence)
+static int __transfer_set_path(struct bbs_node *node, const char *function, const char *query, const char *fullpath, char *buf, size_t len, int require_existence)
 {
+	const char *userpath = bbs_transfer_get_user_path(node, fullpath);
+	/* If it's a home directory, dynamically create it if needed, since we can't expect that to exist automatically. */
+	if (bbs_user_is_registered(node->user) && STARTS_WITH(userpath, "/home")) {
+		char myhomedir[256];
+		/* When accessing /home, or the user's home directory directly, if the user's home directory doesn't exist, create it. */
+		snprintf(myhomedir, sizeof(myhomedir), "%s/%d", fullpath, node->user->id);
+		if (!strcmp(userpath, "/home") || STARTS_WITH(fullpath, myhomedir)) {
+			if (eaccess(myhomedir, R_OK)) {
+				if (mkdir(myhomedir, 0600)) {
+					bbs_error("mkdir(%s) failed: %s\n", myhomedir, strerror(errno));
+				} else {
+					bbs_verb(5, "Auto created home directory %s\n", myhomedir);
+				}
+			}
+		}
+	}
+
+	/* Deny requests to navigate into other people's home directories. */
+	if (STARTS_WITH(userpath, "/home") && strlen(userpath) > STRLEN("/home")) {
+		const char *homedir = strchr(userpath + 1, '/');
+		if (likely(homedir != NULL)) { /* If length is longer than /home, there should be another / */
+			unsigned int user = atoi(S_IF(homedir + 1));
+			if (user && (!bbs_user_is_registered(node->user) || user != node->user->id)) {
+				/* This is also hit when doing a directory listing, so this doesn't necessarily indicate user malfeasance */
+				bbs_debug(3, "User not authorized for location: %s\n", fullpath);
+				errno = EPERM;
+				return -1;
+			}
+		}
+	}
+
 	if (require_existence && eaccess(fullpath, R_OK)) {
 		bbs_debug(5, "Path %s does not exist\n", fullpath);
 		errno = ENOENT;
@@ -119,7 +211,7 @@ int __bbs_transfer_set_disk_path_absolute(struct bbs_node *node, const char *use
 				return bbs_transfer_set_disk_path_up(node, tmp, buf, len);
 			}
 		}
-		return __transfer_set_path("disk_path_absolute", userpath, tmp, buf, len, mustexist);
+		return __transfer_set_path(node, "disk_path_absolute", userpath, tmp, buf, len, mustexist);
 	}
 	return 0;
 }
@@ -146,7 +238,7 @@ int __bbs_transfer_set_disk_path_relative(struct bbs_node *node, const char *cur
 		addslash = 0;
 	}
 	snprintf(tmp, sizeof(tmp), "%s/%s%s%s", rootdir, *current == '/' ? current + 1 : current, addslash ? "/" : "", S_IF(userpath));
-	return __transfer_set_path("disk_path_relative", userpath, tmp, buf, len, mustexist);
+	return __transfer_set_path(node, "disk_path_relative", userpath, tmp, buf, len, mustexist);
 }
 
 int bbs_transfer_set_disk_path_up(struct bbs_node *node, const char *diskpath, char *buf, size_t len)
@@ -193,11 +285,12 @@ int bbs_transfer_set_disk_path_up(struct bbs_node *node, const char *diskpath, c
 		return -1;
 	}
 
-	return __transfer_set_path("disk_path_up", diskpath, tmp, buf, len, 0); /* Parent guaranteed to exist, so don't verify that it does, that's unnecessary. */
+	return __transfer_set_path(node, "disk_path_up", diskpath, tmp, buf, len, 0); /* Parent guaranteed to exist, so don't verify that it does, that's unnecessary. */
 }
 
 int bbs_transfer_config_load(void)
 {
+	char homedir[256];
 	struct bbs_config *cfg = bbs_config_load("transfers.conf", 1); /* Load cached version, since multiple transfer protocols may use this config */
 
 	if (!cfg) {
@@ -213,6 +306,13 @@ int bbs_transfer_config_load(void)
 		bbs_error("No rootdir specified, transfers will be disabled\n");
 		return -1;
 	}
+	/* Auto create the root home dir if it doesn't exist already. */
+	snprintf(homedir, sizeof(homedir), "%s/%s", rootdir, "home");
+	if (eaccess(homedir, R_OK) && mkdir(homedir, 0600)) {
+		bbs_error("mkdir(%s) failed: %s\n", homedir, strerror(errno));
+		return -1;
+	}
+
 	bbs_config_val_set_int(cfg, "transfers", "maxuploadsize", &max_upload_size);
 	rootlen = strlen(rootdir);
 

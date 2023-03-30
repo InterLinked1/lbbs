@@ -275,42 +275,7 @@ static sftp_attributes attr_from_stat(struct stat *st)
     return attr;
 }
 
-static int make_longname(const char *file, struct stat *st, char *buf, size_t len)
-{
-	char ctimebuf[26]; /* 26 bytes is enough per ctime(3) */
-	char *modtime;
-	char *p = buf;
-	int mode = st->st_mode;
 
-	/* Need 10 bytes for rwx, 10 bytes for first snprintf, 26-4 for ctime + filename */
-
-	/* Directory? */
-	*p++ = (mode & S_IFMT) == S_IFDIR ? 'd' : '-';
-
-	/* User */
-	*p++ = mode & 0400 ? 'r' : '-';
-	*p++ = mode & 0200 ? 'w' : '-';
-	*p++ = mode & 0100 ? mode & S_ISUID ? 's' : 'x' : '-';
-
-	/* Group */
-	*p++ = mode & 040 ? 'r' : '-';
-	*p++ = mode & 020 ? 'w' : '-';
-	*p++ = mode & 010 ? 'x' : '-';
-
-	/* Other */
-	*p++ = mode & 04 ? 'r' : '-';
-	*p++ = mode & 02 ? 'w' : '-';
-	*p++ = mode & 01 ? 'x' : '-';
-
-	*p++ = ' ';
-
-	p += snprintf(p, len - (p - buf), "%3d %d %d %d", (int) st->st_nlink, (int) st->st_uid, (int) st->st_gid, (int) st->st_size);
-	modtime = ctime_r(&st->st_mtime, ctimebuf); /* ctime_r assumes ctimebuf is at least 26, there is no length argument. */
-	modtime += 4; /* Skip short day of week */
-	bbs_strterm(modtime, '\n'); /* Strip trailing LF */
-	snprintf(p, len - (p - buf), " %s %s", modtime, file);
-	return 0;
-}
 
 static const char *sftp_get_client_message_type_name(uint8_t i)
 {
@@ -416,7 +381,6 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 			eof = 1;
 			break;
 		}
-		i++;
 		if (!strcmp(dir->d_name, ".") || !strcmp(dir->d_name, "..")) {
 			continue;
 		}
@@ -424,7 +388,9 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 		bbs_debug(4, "Have %s/%s\n", !strcmp(info->name, "/") ? "" : info->name, dir->d_name);
 		/* Could do bbs_transfer_set_disk_path_relative(node, info->name, dir->d_name, file, sizeof(file)); but it's not really necessary here */
 		snprintf(file, sizeof(file), "%s/%s/%s", bbs_transfer_rootdir(), info->name, dir->d_name);
-		bbs_transfer_set_disk_path_relative(node, info->name, dir->d_name, file, sizeof(file));
+		if (bbs_transfer_set_disk_path_relative(node, info->name, dir->d_name, file, sizeof(file))) { /* Will fail for other people's home directories, which is fine, hide in listing */
+			continue;
+		}
 		if (lstat(file, &st)) {
 			bbs_error("lstat failed: %s\n", strerror(errno));
 			continue;
@@ -433,7 +399,8 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 		if (!attr) {
 			continue;
 		}
-		make_longname(dir->d_name, &st, longname, sizeof(longname));
+		i++;
+		transfer_make_longname(dir->d_name, &st, longname, sizeof(longname), 0);
 		sftp_reply_names_add(msg, dir->d_name, longname, attr);
 		sftp_attributes_free(attr);
 	}
@@ -543,6 +510,13 @@ static int handle_write(sftp_client_message msg)
 		break; \
 	}
 
+#define SFTP_ENSURE_TRUE2(func, node, mypath) \
+	if (!func(node, mypath)) { \
+		errno = EACCES; \
+		handle_errno(msg); \
+		break; \
+	}
+
 /* Duplicate code from libssh if needed since sftp_server_free isn't available in older versions */
 #ifndef HAVE_SFTP_SERVER_FREE
 #define SAFE_FREE(x) do { if ((x) != NULL) {free(x); x=NULL;} } while(0)
@@ -640,7 +614,7 @@ static void sftp_server_free(sftp_session sftp)
 
 static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel channel)
 {
-	char mypath[PATH_MAX]; /* Real disk path */
+	char mypath[PATH_MAX] = ""; /* Real disk path */
 	char buf[PATH_MAX]; /* for realpath */
 	sftp_session sftp;
 	int res;
@@ -681,7 +655,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 		}
 		/* Since some operations can be for paths that may not exist currently, always use the _nocheck variant.
 		 * For operations that require the path to exist, they will fail anyways on the system call. */
-		bbs_debug(5, "Got SFTP client message %2d (%8s), client path: %s => server path: %s\n", msg->type, sftp_get_client_message_type_name(msg->type), msg->filename, mypath);
+		bbs_debug(5, "Got SFTP client message %2d (%8s), client path: %s\n", msg->type, sftp_get_client_message_type_name(msg->type), msg->filename);
 		switch (msg->type) {
 			case SFTP_REALPATH:
 				SFTP_MAKE_PATH();
@@ -762,35 +736,35 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 				handle_readdir(node, msg);
 				break;
 			case SFTP_READ:
-				SFTP_ENSURE_TRUE(bbs_transfer_canread, node);
+				SFTP_ENSURE_TRUE2(bbs_transfer_canread, node, mypath);
 				handle_read(msg);
 				break;
 			case SFTP_WRITE:
-				SFTP_ENSURE_TRUE(bbs_transfer_canwrite, node);
+				SFTP_ENSURE_TRUE2(bbs_transfer_canwrite, node, mypath);
 				handle_write(msg);
 				break;
 			case SFTP_REMOVE:
-				SFTP_ENSURE_TRUE(bbs_transfer_candelete, node);
 				SFTP_MAKE_PATH();
+				SFTP_ENSURE_TRUE2(bbs_transfer_candelete, node, mypath);
 				STDLIB_SYSCALL(unlink, mypath);
 				break;
 			case SFTP_MKDIR:
-				SFTP_ENSURE_TRUE(bbs_transfer_canmkdir, node);
 				SFTP_MAKE_PATH_NOCHECK();
+				SFTP_ENSURE_TRUE2(bbs_transfer_canmkdir, node, mypath);
 				STDLIB_SYSCALL(mkdir, mypath, 0600);
 				break;
 			case SFTP_RMDIR:
-				SFTP_ENSURE_TRUE(bbs_transfer_candelete, node);
 				SFTP_MAKE_PATH();
+				SFTP_ENSURE_TRUE2(bbs_transfer_candelete, node, mypath);
 				STDLIB_SYSCALL(rmdir, mypath);
 				break;
 			case SFTP_RENAME:
-				SFTP_ENSURE_TRUE(bbs_transfer_candelete, node);
 				{
 					const char *newpath;
 					char realnewpath[PATH_MAX];
 					newpath = sftp_client_message_get_data(msg); /* According to sftp.h, rename() newpath is here */
 					SFTP_MAKE_PATH();
+					SFTP_ENSURE_TRUE2(bbs_transfer_candelete, node, mypath);
 					if (bbs_transfer_set_disk_path_absolute_nocheck(node, newpath, mypath, sizeof(mypath))) {
 						handle_errno(msg);
 						break;
