@@ -50,6 +50,8 @@ static int option_errorcheck = 0;
 static int option_gen_supp = 0;
 static const char *testfilter = NULL;
 
+int startup_run_unit_tests;
+
 #define VALGRIND_LOGFILE "/tmp/test_lbbs_valgrind.log"
 
 static const char *loglevel2str(enum bbs_log_level level)
@@ -427,6 +429,7 @@ static int test_bbs_spawn(const char *directory)
 		"-C", (char*) directory, /* Custom config directory */
 		"-g", /* Dump core on crash */
 		"-vvvvvvvvv", /* Very verbose */
+		startup_run_unit_tests ? "-T" : "-v", /* If not, add an option that won't do anything */
 		option_debug_bbs ? option_debug_bbs_str : NULL, /* Lotsa debug... maybe */
 		NULL
 	};
@@ -462,6 +465,7 @@ static int test_bbs_spawn(const char *directory)
 		"-g", /* Dump core on crash */
 		"-vvvvvvvvv", /* Very verbose */
 		rand_alloc_fails ? "-A" : "-v", /* If not, add an option that won't do anything */
+		startup_run_unit_tests ? "-T" : "-v", /* If not, add an option that won't do anything */
 		option_debug_bbs ? option_debug_bbs_str : NULL, /* Lotsa debug... maybe */
 		NULL
 	};
@@ -675,6 +679,7 @@ static int run_test(const char *filename, int multiple)
 		}
 		option_autoload_all = rand_alloc_fails = 0;
 		test_autorun = 1;
+		startup_run_unit_tests = 0;
 		if (testmod->pre) {
 			char modfilename[256];
 			snprintf(modfilename, sizeof(modfilename), "%s/%s", TEST_CONFIG_DIR, "modules.conf");

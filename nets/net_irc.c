@@ -3252,35 +3252,30 @@ static int load_module(void)
 	/* Since load_config returns 0 if no config, do this check here instead of in load_config: */
 	if (!irc_enabled && !ircs_enabled) {
 		bbs_debug(3, "Neither IRC nor IRCS is enabled, declining to load\n");
-		return -1; /* Nothing is enabled */
+		goto decline; /* Nothing is enabled */
 	}
 
 	pthread_mutex_init(&motd_lock, NULL);
 
 	/* If we can't start the TCP listeners, decline to load */
 	if (irc_enabled && bbs_make_tcp_socket(&irc_socket, irc_port)) {
-		return -1;
+		goto decline;
 	}
 	if (ircs_enabled && bbs_make_tcp_socket(&ircs_socket, ircs_port)) {
-		close_if(irc_socket);
-		return -1;
+		goto decline;
 	}
 
 	loadtime = time(NULL);
 
 	if (bbs_pthread_create(&irc_ping_thread, NULL, ping_thread, NULL)) {
 		bbs_error("Unable to create IRC ping thread.\n");
-		close_if(irc_socket);
-		close_if(ircs_socket);
-		return -1;
+		goto decline;
 	}
 	if (bbs_pthread_create(&irc_listener_thread, NULL, irc_listener, NULL)) {
 		bbs_error("Unable to create IRC listener thread.\n");
 		pthread_cancel(irc_ping_thread);
 		bbs_pthread_join(irc_ping_thread, NULL);
-		close_if(irc_socket);
-		close_if(ircs_socket);
-		return -1;
+		goto decline;
 	}
 
 	if (irc_enabled) {
@@ -3290,6 +3285,12 @@ static int load_module(void)
 		bbs_register_network_protocol("IRCS", ircs_port);
 	}
 	return 0;
+
+decline:
+	destroy_operators();
+	close_if(irc_socket);
+	close_if(ircs_socket);
+	return -1;
 }
 
 static int unload_module(void)

@@ -1252,6 +1252,8 @@ static int test_copyuid_generation(void)
 	bbs_test_assert_str_equals(s, "11,13:14,16");
 	free_if(s);
 
+	free_if(a);
+	free_if(b);
 	return 0;
 
 cleanup:

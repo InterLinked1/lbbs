@@ -104,8 +104,8 @@ static int init_deletions(struct pop3_session *pop3)
 	/* sizeof(int) is probably 4, maybe 8.
 	 * Round up the number of messages to the nearest multiple of sizeof(int).
 	 * Then divide by it to get the actual size array we need. */
-	rem = newcount % (8 * sizeof(int)); /* 8 bits in a byte */
-	bytesize = newcount / (8 * sizeof(int)) + (rem ? 1 : 0); /* Add an extra int position if there was a remainder */
+	rem = newcount % (8 * sizeof(char)); /* 8 bits in a byte */
+	bytesize = newcount / (8 * sizeof(char)) + (rem ? 1 : 0); /* Add an extra int position if there was a remainder */
 
 	/* We can't just set the Deleted flag like with IMAP.
 	 * The deletion flags shouldn't be committed until we quit,
@@ -150,11 +150,12 @@ static int mark_deleted(struct pop3_session *pop3, int message)
 	int element, bit;
 
 	if (message > (int) pop3->delsize) {
+		bbs_warning("Attempt to delete message out of range: %d > %u\n", message, pop3->delsize);
 		return -1;
 	}
 	bbs_assert_exists(pop3->deletions);
-	element = (message - 1) / (8 * sizeof(int)); /* Subtract 1 to make 0-indexed, then determine which int index it is */
-	bit = (message - 1) % (8 * sizeof(int));
+	element = (message - 1) / (8 * sizeof(char)); /* Subtract 1 to make 0-indexed, then determine which int index it is */
+	bit = (message - 1) % (8 * sizeof(char));
 	bbs_debug(3, "Setting bit %d of element %d (%d/%d)\n", bit, element, pop3->delsize, pop3->delbytes);
 	pop3->deletions[element] |= (1 << bit); /* Set bit high to mark deleted. */
 	return 0;
@@ -165,11 +166,13 @@ static inline int is_deleted(struct pop3_session *pop3, int message)
 	int element, bit;
 
 	if (message > (int) pop3->delsize) {
+		bbs_debug(7, "Index %d does not exist\n", message - 1);
 		return 0; /* Nonexistent index, return 0 */
 	}
 	bbs_assert_exists(pop3->deletions);
-	element = (message - 1) / (8 * sizeof(int)); /* Subtract 1 to make 0-indexed, then determine which int index it is */
-	bit = (message - 1) % (8 * sizeof(int));
+	element = (message - 1) / (8 * sizeof(char)); /* Subtract 1 to make 0-indexed, then determine which int index it is */
+	bit = (message - 1) % (8 * sizeof(char));
+	bbs_debug(7, "Checking bit %d of element %d (%d/%d) = %d\n", bit, element, pop3->delsize, pop3->delbytes, pop3->deletions[element] & (1 << bit) ? 1 : 0);
 	return pop3->deletions[element] & (1 << bit) ? 1 : 0;
 }
 
@@ -209,7 +212,7 @@ static int test_deletion_sequences(void)
 
 	bbs_test_assert_equals(1, is_deleted(&pop3, 5));
 	bbs_test_assert_equals(0, is_deleted(&pop3, 10));
-	mark_deleted(&pop3, 10);
+	mark_deleted(&pop3, 10); /* Test a bit that's in the 2nd byte */
 	bbs_test_assert_equals(1, is_deleted(&pop3, 10));
 
 	res = 0;

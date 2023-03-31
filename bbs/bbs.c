@@ -61,6 +61,7 @@
 #include "include/startup.h"
 #include "include/tls.h"
 #include "include/event.h"
+#include "include/test.h"
 
 static char *_argv[256];
 
@@ -69,6 +70,7 @@ int option_dumpcore = 0; /* extern in bbs.h for backtrace */
 int option_nofork = 0;
 int option_rebind = 0; /* used extern in socket.c */
 int option_rand_alloc_failures = 0; /* used extern in alloc.c */
+static int option_run_unit_tests = 0;
 
 /* Mutable during runtime */
 int option_debug = 0;
@@ -375,12 +377,13 @@ static void show_help(void)
 	printf("  -G        Specify run group\n");
 	printf("  -g        Dump core on crash\n");
 	printf("  -h        Display this help and exit\n");
+	printf("  -T        Run unit tests on startup\n");
 	printf("  -U        Specify run user\n");
 	printf("  -V        Display version number and exit\n");
 	printf("  -?        Display this help and exit\n");
 }
 
-static const char *getopt_settings = "?AbcC:dG:ghU:v";
+static const char *getopt_settings = "?AbcC:dG:ghTU:v";
 
 static int parse_options_pre(int argc, char *argv[])
 {
@@ -436,6 +439,9 @@ static int parse_options(int argc, char *argv[])
 			break;
 		case 'G':
 			REPLACE(rungroup, optarg); /* If specified by config, override */
+			break;
+		case 'T':
+			option_run_unit_tests = 1;
 			break;
 		case 'U':
 			REPLACE(runuser, optarg); /* If specified by config, override */
@@ -877,6 +883,11 @@ int main(int argc, char *argv[])
 	}
 	if (is_root() && !runuser) {
 		bbs_warning("BBS is running as root. This may compromise the security of your system.\n");
+	}
+
+	if (option_run_unit_tests) {
+		usleep(250000); /* This is used for the test framework: need to make sure it can capture the output. 150ms isn't enough, 250 seems to work well. */
+		bbs_run_tests(STDOUT_FILENO);
 	}
 
 	/* Stall until a quit signal is given */
