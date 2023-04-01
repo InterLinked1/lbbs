@@ -83,18 +83,18 @@ int bbs_rand_alnum(char *buf, size_t len)
 static int php_bin2hex(const unsigned char *old, size_t oldlen, char *result, size_t newlen)
 {
 	static char hexconvtab[] = "0123456789abcdef";
-    size_t i, j;
+	size_t i, j;
 
 	if (newlen < (2 * oldlen + 1)) {
 		return -1;
 	}
 
-    for (i = j = 0; i < oldlen; i++) {
-        result[j++] = hexconvtab[old[i] >> 4];
-        result[j++] = hexconvtab[old[i] & 15];
-    }
-    result[j] = '\0';
-    return 0;
+	for (i = j = 0; i < oldlen; i++) {
+		result[j++] = hexconvtab[old[i] >> 4];
+		result[j++] = hexconvtab[old[i] & 15];
+	}
+	result[j] = '\0';
+	return 0;
 }
 #endif
 

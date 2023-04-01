@@ -1,4 +1,4 @@
-# SMTP MailScript Rules Engine
+# SMTP MailScript Filtering Engine
 
 # This is a very simple, yet very flexible and powerful way of performing certain operations
 # on incoming and outgoing messages. You can create rules to do pretty much anything.
@@ -60,7 +60,9 @@
 # BOUNCE - Reject SMTP acceptance of the message and return an SMTP error code to the sending server/client. Optionally, a custom bounce message may be specified as an argument.
 # DROP - Drop the message (prevent delivery). Typically used in conjunction with BOUNCE. If you wish to delete the message but retain it temporarily in the Trash folder, you should use MOVETO .Trash instead.
 # FORWARD - Forward the message to another address. Can be used to implement conditional or unconditional forwarding.
-# RELAY - Relay the message via another SMTP server. Useful for SMTP proxying.
+# RELAY - Outgoing messages only. Relay the message via another SMTP server. Useful for SMTP proxying. Format is smtp:// or smtps://user:password@host:port
+#                       Note that STARTTLS is always attempted for smtp://, while smtps:// will force Implicit TLS to be used, and smtp:// will use Explicit TLS if possible.
+#                       Currently, RELAY implicitly results in a DROP, normal message processing will not continue afterwards.
 # REPLY - Reply to the sent message, to the original sender
 # MOVETO - Move the message to a specified folder in the maildir, e.g. to .Junk, .Trash, etc. Can be used to implement filtering. Can only be used for INCOMING messages since the SMTP server does not keep outgoing messages. If this action is executed multiple times, the last one wins.
 # EXEC - Execute a system program.
@@ -133,7 +135,7 @@ MATCH HEADER Precedence EQUALS Urgent
 ACTION EXEC /usr/sbin/asterisk -rx "channel originate DAHDI/2 application Playback custom/vip-is-calling"
 ENDRULE
 
-# SMTP Proxy Server: useful if you want to relay your messages for a provider through this mail server first (e.g. to mask your IP address)
+# SMTP Proxy/Relay Server: useful if you want to relay your messages for a provider through this mail server first (e.g. to mask your IP address)
 RULE
 MATCH DIRECTION OUT
 MATCH HEADER From EQUALS other@example.org # From address is other@example.org
@@ -141,7 +143,7 @@ TEST HEADER To LIKE ^[A-Za-z0-9._%+-]+@example\.com$ # test this condition, but 
 IF RETVAL == 1
 	ACTION BREAK # If the message is to our own domain, don't bother relaying it, just send it directly
 ENDIF
-ACTION RELAY myotheruser:mypassword@example.org:587 # relay the message by connecting to example.org's mail submission service
+ACTION RELAY smtp://myotheruser:mypassword@example.org:587 # relay the message by connecting to example.org's mail submission service
 ACTION DROP # drop the message so we don't send it out normally. example.org's SMTP server is now responsible for this.
 ENDRULE
 

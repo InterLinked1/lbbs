@@ -288,6 +288,7 @@ static int handle_auth(struct smtp_session *smtp, char *s)
 
 		decoded = bbs_sasl_decode(s, &authorization_id, &authentication_id, &password);
 		if (!decoded) {
+			smtp_reply(smtp, 501, 5.5.2, "Cannot decode response");
 			return -1;
 		}
 
@@ -301,7 +302,6 @@ static int handle_auth(struct smtp_session *smtp, char *s)
 		if (res) {
 			/* Don't really know if it was a decoding failure or invalid username/password */
 			smtp_reply(smtp, 535, 5.7.8, "Authentication credentials invalid");
-			smtp->inauth = 0;
 			return 0;
 		}
 		smtp_reply(smtp, 235, 2.7.0, "Authentication successful");
@@ -685,17 +685,38 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 
 #define smtp_client_send(fd, fmt, ...) dprintf(fd, fmt, ## __VA_ARGS__); bbs_debug(3, " => " fmt, ## __VA_ARGS__);
 
-/*! \retval -1 on temporary error, 1 on permanent error, 0 on success */
-static int try_send(const char *hostname, const char *sender, const char *recipient, const char *data, unsigned long datalen, int datafd, int offset, unsigned long writelen, char *buf, size_t len)
+/*!
+ * \brief Attempt to send an external message to another mail transfer agent or message submission agent
+ * \param hostname Hostname of mail server
+ * \param port Port of mail server
+ * \param secure Whether to use Implicit TLS (typically for MSAs on port 465). If 0, STARTTLS will be attempted (but not required unless require_starttls_out = yes)
+ * \param username SMTP MSA username
+ * \param password SMTP MSA password
+ * \param sender The MAIL FROM for the message
+ * \param recipient A single recipient for RCPT TO
+ * \param recipients A list of recipients for RCPT TO. Either recipient or recipients must be specified.
+ * \param data Message data
+ * \param datalen Length of data
+ * \param datafd A file descriptor containing the message data (used instead of data/datalen)
+ * \param prepend Data to prepend
+ * \param prependlen Length of prepend
+ * \param offset sendfile offset for message (sent data will begin here)
+ * \param writelen Number of bytes to send
+ * \param[out] buf Buffer in which to temporarily store SMTP responses
+ * \param len Size of buf.
+ * \retval -1 on temporary error, 1 on permanent error, 0 on success
+ */
+static int try_send(const char *hostname, int port, int secure, const char *username, const char *password, const char *sender, const char *recipient, struct stringlist *recipients,
+	const char *data, unsigned long datalen, const char *prepend, int prependlen, int datafd, int offset, unsigned long writelen, char *buf, size_t len)
 {
 	SSL *ssl = NULL;
-	int sfd, res;
+	int sfd, res, wrote = 0;
 	int rfd, wfd;
 	struct readline_data rldata;
 	int supports_starttls = 0;
 
 	/* Connect on port 25, and don't set up TLS initially. */
-	sfd = bbs_tcp_connect(hostname, DEFAULT_SMTP_PORT);
+	sfd = bbs_tcp_connect(hostname, port);
 	if (sfd < 0) {
 		/* Unfortunately, we can't try an alternate port as there is no provision
 		 * for letting other SMTP MTAs know that they should try some port besides 25.
@@ -708,6 +729,14 @@ static int try_send(const char *hostname, const char *sender, const char *recipi
 
 	wfd = rfd = sfd;
 	bbs_debug(3, "Attempting delivery of %lu-byte message from %s -> %s via %s\n", datalen ? datalen : writelen, sender, recipient, hostname);
+
+	if (secure) {
+		ssl = ssl_client_new(sfd, &rfd, &wfd);
+		if (!ssl) {
+			bbs_debug(3, "Failed to set up TLS\n");
+			goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
+		}
+	}
 
 	bbs_readline_init(&rldata, buf, len);
 
@@ -778,18 +807,45 @@ static int try_send(const char *hostname, const char *sender, const char *recipi
 			}
 			bbs_debug(6, "Finished processing multiline EHLO\n");
 		}
-
 	} else if (require_starttls_out) {
 		bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
 		res = 1;
 		goto cleanup;
 	}
+
+	if (username && password) {
+		char *saslstr = bbs_sasl_encode(username, username, password);
+		if (!saslstr) {
+			goto cleanup;
+		}
+		bbs_debug(3, "SASL str is %s (%s / %s)\n", saslstr, username, password);
+		smtp_client_send(wfd, "AUTH PLAIN\r\n"); /* AUTH PLAIN is preferred to the deprecated AUTH LOGIN */
+		SMTP_EXPECT(rfd, 1000, "334");
+		smtp_client_send(wfd, "%s\r\n", saslstr);
+		SMTP_EXPECT(rfd, 1000, "235");
+	}
+
 	smtp_client_send(wfd, "MAIL FROM:<%s>\r\n", sender); /* sender lacks <>, but recipient has them */
 	SMTP_EXPECT(rfd, 1000, "250");
-	smtp_client_send(wfd, "RCPT TO:%s\r\n", recipient);
-	SMTP_EXPECT(rfd, 1000, "250");
+	if (recipient) {
+		smtp_client_send(wfd, "RCPT TO:%s\r\n", recipient);
+		SMTP_EXPECT(rfd, 1000, "250");
+	} else if (recipients) {
+		char *r;
+		while ((r = stringlist_pop(recipients))) {
+			smtp_client_send(wfd, "RCPT TO:%s\r\n", r);
+			SMTP_EXPECT(rfd, 1000, "250");
+			free(r);
+		}
+	} else {
+		bbs_error("No recipients specified\n");
+		goto cleanup;
+	}
 	smtp_client_send(wfd, "DATA\r\n");
 	SMTP_EXPECT(rfd, 1000, "354");
+	if (prepend && prependlen) {
+		wrote = bbs_std_write(wfd, prepend, prependlen);
+	}
 	if (datafd >= 0) {
 		off_t send_offset = offset;
 		/* sendfile will be much more efficient than reading the file ourself, as email body could be quite large, and we don't need to involve userspace. */
@@ -798,12 +854,14 @@ static int try_send(const char *hostname, const char *sender, const char *recipi
 	} else {
 		res = bbs_std_write(wfd, data, datalen); /* This won't show up in debug, which is probably a good thing. */
 	}
-	smtp_client_send(wfd, ".\r\n");
+	smtp_client_send(wfd, ".\r\n"); /* (end of) EOM */
 	if (res != (int) datalen) { /* Failed to write full message */
 		bbs_error("Wanted to write %lu bytes but wrote only %d?\n", datalen, res);
 		res = -1;
 		goto cleanup;
 	}
+	wrote += res;
+	bbs_debug(5, "Sent %d bytes\n", wrote);
 	SMTP_EXPECT(rfd, 5000, "250"); /* Okay, this email is somebody else's problem now. */
 
 cleanup:
@@ -825,42 +883,50 @@ cleanup:
 	return res;
 }
 
-/*! \brief Prepend a Received header to the received email */
-static int prepend_received(struct smtp_session *smtp, const char *recipient, int fd)
+static const char *smtp_protname(struct smtp_session *smtp)
 {
-	char hostname[256];
-	char timestamp[40];
-	const char *prot;
-	time_t smtpnow;
-    struct tm smtpdate;
-
-	bbs_get_hostname(smtp->node->ip, hostname, sizeof(hostname)); /* Look up the sending IP */
-
-	/* Timestamp is something like Wed, 22 Feb 2023 03:02:22 +0300 */
-	smtpnow = time(NULL);
-    localtime_r(&smtpnow, &smtpdate);
-	strftime(timestamp, sizeof(timestamp), "%a, %b %e %Y %H:%M:%S %z", &smtpdate);
-
 	/* RFC 2822, RFC 3848, RFC 2033 */
 	if (smtp->ehlo) {
 		if (smtp->secure) {
 			if (bbs_user_is_registered(smtp->node->user)) {
-				prot = "ESMTPSA";
+				return "ESMTPSA";
 			} else {
-				prot = "ESMTPS";
+				return "ESMTPS";
 			}
-		} else {
-			prot = "ESMTP";
 		}
-	} else {
-		prot = "SMTP";
+		return "ESMTP";
 	}
+	return "SMTP";
+}
+
+static inline void smtp_timestamp(char *buf, size_t len)
+{
+	time_t smtpnow;
+    struct tm smtpdate;
+
+	/* Timestamp is something like Wed, 22 Feb 2023 03:02:22 +0300 */
+	smtpnow = time(NULL);
+    localtime_r(&smtpnow, &smtpdate);
+	strftime(buf, len, "%a, %b %e %Y %H:%M:%S %z", &smtpdate);
+}
+
+/*! \brief Prepend a Received header to the received email */
+static int prepend_received(struct smtp_session *smtp, const char *recipient, int fd)
+{
+	const char *prot;
+	char timestamp[40];
+
+	smtp_timestamp(timestamp, sizeof(timestamp));
+
+	prot = smtp_protname(smtp);
 	/* We don't include a message ID since we don't generate/use any internally (even though the queue probably should...). */
 	if (smtp->fromlocal && !add_received_msa) {
 		/* For messages received by message submission agents, mask the sender's real IP address */
 		dprintf(fd, "Received: from [HIDDEN] (Authenticated sender: %s)\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
 			smtp->from, bbs_hostname(), prot, recipient, timestamp);
 	} else {
+		char hostname[256];
+		bbs_get_hostname(smtp->node->ip, hostname, sizeof(hostname)); /* Look up the sending IP */
 		dprintf(fd, "Received: from %s (%s [%s])\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
 			hostname, hostname, smtp->node->ip, bbs_hostname(), prot, recipient, timestamp); /* recipient already in <> */
 	}
@@ -1367,7 +1433,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 
 	/* Try all the MX servers in order, if necessary */
 	while (res && (hostname = stringlist_pop(&mxservers))) {
-		res = try_send(hostname, realfrom, realto, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
+		res = try_send(hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
 		free(hostname);
 	}
 	stringlist_empty(&mxservers);
@@ -1500,7 +1566,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 #ifndef BUGGY_SEND_IMMEDIATE
 		/* Try all the MX servers in order, if necessary */
 		while (res && (hostname = stringlist_pop(&mxservers))) {
-			res = try_send(hostname, realfrom, realto, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
+			res = try_send(hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
 			free(hostname);
 		}
 		stringlist_empty(&mxservers);
@@ -1707,6 +1773,61 @@ static int do_deliver(struct smtp_session *smtp)
 		mproc.user = smtp->node->user;
 		if (smtp_run_callbacks(&mproc)) {
 			return 0; /* If returned nonzero, it's assumed it responded with an SMTP error code as appropriate. */
+		}
+		if (mproc.relayroute) { /* This happens BEFORE we check the From identity, which is important for relaying since typically this would be rejected locally. */
+			char *prot, *user, *pass, *host, *portstr;
+			int port;
+			/* Relay it through another MSA */
+			/* Format is smtps://user:password@host:port - https://datatracker.ietf.org/doc/html/draft-earhart-url-smtp-00 */
+			/* Note: The username itself probably has an @ symbol in it. So use strrchr first, rather than strsep, to separate the user and host components. */
+			portstr = strrchr(mproc.relayroute, '@');
+			if (!portstr) {
+				bbs_warning("Malformed SMTP URI: %s\n", mproc.relayroute); /* XXX Could contain credentials */
+			}
+			*portstr++ = '\0';
+			host = strsep(&portstr, ":");
+			pass = mproc.relayroute;
+			prot = strsep(&pass, ":");
+			user = strsep(&pass, ":");
+			/* protocol is smtp:// or smtps:// but we split on :, so strip the // at the beginning */
+			if (!strlen_zero(user) && !strncmp(user, "//", 2)) {
+				user += 2;
+			}
+			if (strlen_zero(prot) || strlen_zero(host) || strlen_zero(portstr)) {
+				bbs_warning("Empty hostname or port\n");
+			} else if (!STARTS_WITH(prot, "smtp")) {
+				bbs_warning("Invalid SMTP protocol: %s\n", prot);
+			} else {
+				char buf[132];
+				char prepend[256] = "";
+				int prependlen = 0;
+
+				/* Still prepend a Received header, but less descriptive than normal (don't include Authenticated sender) since we're relaying */
+				if (smtp->fromlocal && !add_received_msa) {
+					char timestamp[40];
+					smtp_timestamp(timestamp, sizeof(timestamp));
+					prependlen = snprintf(prepend, sizeof(prepend), "Received: from [HIDDEN]\r\n\tby %s with %s\r\n\t%s\r\n",
+						bbs_hostname(), smtp_protname(smtp), timestamp);
+				}
+
+				port = atoi(portstr);
+				bbs_debug(5, "Relaying message via %s:%d (user: %s)\n", host, port, S_IF(user));
+				/* XXX smtp->recipients is "used up" by try_send, so this relies on the message being DROP'ed as there will be no recipients remaining afterwards
+				 * Instead, we could duplicate the recipients list to avoid this restriction. */
+				res = try_send(host, port, STARTS_WITH(prot, "smtps"), user, pass, user, NULL, &smtp->recipients, smtp->data, smtp->datalen, prepend, prependlen, -1, 0, 0, buf, sizeof(buf));
+				mproc.drop = 1;
+				if (!res) {
+					smtp_reply(smtp, 250, 2.6.0, "Message accepted for relay");
+				} else {
+					/* XXX If we couldn't relay it immediately, don't queue it, just reject it */
+					smtp_reply(smtp, 550, 5.7.0, "Mail relay rejected.");
+				}
+			}
+			if (pass) {
+				bbs_memzero(pass, strlen(pass)); /* Destroy the password */
+			}
+			free(mproc.relayroute);
+			mproc.relayroute = NULL;
 		}
 		if (mproc.bounce) {
 			const char *msg = "This message has been rejected by the sender";

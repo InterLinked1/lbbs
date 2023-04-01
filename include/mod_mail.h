@@ -196,6 +196,7 @@ struct smtp_msg_process {
 	char *newdir;				/*!< New message location (incoming only) */
 	char *bouncemsg;			/*!< Bounce message */
 	struct stringlist *forward;	/*!< Forwarding addresses */
+	char *relayroute;			/*!< Relay route */
 };
 
 /*!

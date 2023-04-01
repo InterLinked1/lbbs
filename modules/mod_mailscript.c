@@ -12,7 +12,7 @@
 
 /*! \file
  *
- * \brief MailScript Rules Engine
+ * \brief MailScript Filtering Engine
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -318,6 +318,10 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 		if (!stringlist_contains(mproc->forward, s)) {
 			stringlist_push(mproc->forward, s);
 		}
+	} else if (!strcasecmp(next, "RELAY")) {
+		REQUIRE_ARG(s);
+		/* Submit the message via a message submission agent (relay it through some other mail server) */
+		REPLACE(mproc->relayroute, s);
 	} else {
 		bbs_warning("Invalid action: %s %s\n", next, S_IF(s));
 	}

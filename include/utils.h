@@ -86,6 +86,15 @@ int bbs_fd_readline(int fd, struct readline_data *rldata, const char *delim, int
 unsigned char *bbs_sasl_decode(const char *s, char **authorization, char **authentication, char **passwd);
 
 /*!
+ * \brief Create a base64 encoded SASL PLAIN authentication string
+ * \param nickname
+ * \param username
+ * \param password
+ * \retval encoded string on success, which must be freed, or NULL on failure.
+ */
+char *bbs_sasl_encode(const char *nickname, const char *username, const char *password);
+
+/*!
  * \brief Parse an email address identity into its components
  * \param addr Identity (which will be consumed). Can be user@host or name <user@host> format.
  * \param[out] name Name portion, if any. NULL if not present.

@@ -9,7 +9,7 @@
 
 /*! \file
  *
- * \brief Base64 encoding
+ * \brief Base64 encoding and decoding
  *
  */
 
@@ -30,3 +30,12 @@ int base64_encode_file(const char *filename, FILE *outputfile, const char *endl)
  * \returns decoded string on success, NULL on failure
  */
 unsigned char *base64_decode(const unsigned char *data, int input_length, int *outlen);
+
+/*!
+ * \brief base64 encode a buffer (which may contain NUL characters as part of the data itself)
+ * \param data Data to encode
+ * \param input_length Length of data
+ * \param[out] outlen Length of encoded data
+ * \retval encoded data on success, NULL on failure
+*/
+char *base64_encode(const char *data, int input_length, int *outlen);

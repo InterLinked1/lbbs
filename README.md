@@ -38,6 +38,10 @@ Key features and capabilities include:
   - Node spying
   - Kick nodes
 
+**Can I try it out?**
+
+Sure! The reference implementation of LBBS is my own system, the PhreakNet BBS, reachable at `bbs.phreaknet.org`. Guest login is allowed.
+
 ## Donations
 
 LBBS is developed entirely by volunteers on their own time.
@@ -124,7 +128,7 @@ Config files go in `/etc/lbbs` and are as follows:
 
 - `net_pop3.conf` - POP3 server config
 
-- `net_rlogin`.conf` - RLogin server configuration
+- `net_rlogin.conf` - RLogin server configuration
 
 - `net_smtp.conf` - SMTP server configuration
 

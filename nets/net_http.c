@@ -255,7 +255,7 @@ static inline int parse_header(struct http_req *req, char *s)
 			if (!strcasecmp(tmp, "CONNECT")) {
 				bbs_debug(3, "Unsupported HTTP method: %s\n", tmp);
 			} else {
-				bbs_warning("Unknown HTTP request method: %s\n", tmp);
+				bbs_warning("Unknown HTTP request method: %s\n", bbs_str_isprint(tmp) ? tmp : "(non-printable)");
 			}
 			return HTTP_NOT_IMPLEMENTED;
 		}

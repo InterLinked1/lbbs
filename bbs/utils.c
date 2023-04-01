@@ -182,6 +182,25 @@ unsigned char *bbs_sasl_decode(const char *s, char **authorization, char **authe
 	return decoded;
 }
 
+char *bbs_sasl_encode(const char *nickname, const char *username, const char *password)
+{
+	char *encoded;
+	unsigned long len;
+	int outlen;
+	char decoded[256];
+	len = snprintf(decoded, sizeof(decoded), "%s%c%s%c%s", nickname, '\0', username, '\0', password);
+	if (len >= sizeof(decoded)) {
+		bbs_error("Truncation occured (arguments too long!)\n");
+		return NULL;
+	}
+	encoded = base64_encode(decoded, len, &outlen);
+	if (!encoded) {
+		bbs_error("base64 encoding failed\n");
+		return NULL;
+	}
+	return encoded;
+}
+
 int bbs_parse_email_address(char *addr, char **name, char **user, char **host, int *local)
 {
 	char address_buf[256]; /* Our mailbox names are definitely not super long, so using a small buffer is okay. */
