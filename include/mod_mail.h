@@ -81,6 +81,16 @@ int __mailbox_register_watcher(void (*callback)(struct mailbox *mbox, const char
 /*! \brief Unregister a mailbox watching application */
 int mailbox_unregister_watcher(void (*callback)(struct mailbox *mbox, const char *newfile));
 
+/*! \brief Invalidate the cached quota usage for this mailbox */
+void mailbox_invalidate_quota_cache(struct mailbox *mbox);
+
+/*!
+ * \brief Manually adjust the quota usage of a mailbox
+ * \param mbox
+ * \param bytes. Positive number to increase quota usage or negative number to decrease quota usage
+ */
+void mailbox_quota_adjust_usage(struct mailbox *mbox, int bytes);
+
 /*! \brief Get the quota of a mailbox in bytes */
 unsigned long mailbox_quota(struct mailbox *mbox);
 

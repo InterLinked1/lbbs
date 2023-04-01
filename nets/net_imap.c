@@ -555,10 +555,26 @@ static int on_select(const char *dir_name, const char *filename, struct imap_ses
 	return 0;
 }
 
+static inline unsigned int parse_size_from_filename(const char *filename, unsigned long *size)
+{
+	const char *sizestr = strstr(filename, ",S=");
+	if (!sizestr) {
+		bbs_error("Missing size in file %s\n", filename);
+		return -1;
+	}
+	sizestr += STRLEN(",S=");
+	*size = atol(sizestr);
+	if (*size <= 0) {
+		bbs_warning("Invalid size (%lu) for %s\n", *size, filename);
+	}
+	return 0;
+}
+
 static int expunge_helper(const char *dir_name, const char *filename, struct imap_session *imap, int expunge)
 {
 	int oldflags;
 	char fullpath[256];
+	unsigned long size;
 
 	/* This is the final stage of deletions.
 	 * What clients generally do when you "delete" an item is
@@ -590,6 +606,12 @@ static int expunge_helper(const char *dir_name, const char *filename, struct ima
 		bbs_error("Failed to delete %s: %s\n", fullpath, strerror(errno));
 	}
 	mailbox_unlock(imap->mbox);
+	if (parse_size_from_filename(filename, &size)) {
+		/* It's too late to stat now as a fallback, the file's gone, who knows how big it was now. */
+		mailbox_invalidate_quota_cache(imap->mbox);
+	} else {
+		mailbox_quota_adjust_usage(imap->mbox, -size);
+	}
 	if (expunge) {
 		imap_send_broadcast(imap, "%d EXPUNGE", imap->expungeindex); /* Send for EXPUNGE, but not CLOSE */
 	}
@@ -1448,6 +1470,7 @@ static int finish_append(struct imap_session *imap)
 	char *filename;
 	int res;
 	unsigned int uidvalidity, uidnext;
+	unsigned long size;
 
 	if (imap->appendcur != imap->appendsize) {
 		bbs_warning("Client wanted to append %d bytes, but sent %d?\n", imap->appendsize, imap->appendcur);
@@ -1480,6 +1503,15 @@ static int finish_append(struct imap_session *imap)
 		return 0;
 	}
 
+	/* maildir_move_new_to_cur_file conveniently put the size in the filename for us,
+	 * so we can just update the quota usage accordingly rather than having to invalidate it. */
+	if (parse_size_from_filename(newfilename, &size)) {
+		/* It's too late to stat now as a fallback, the file's gone, who knows how big it was now. */
+		mailbox_invalidate_quota_cache(imap->mbox);
+	} else {
+		mailbox_quota_adjust_usage(imap->mbox, -size);
+	}
+
 	/* Now, apply any flags to the message... (yet a third rename, potentially) */
 	if (imap->appendflags) {
 		char newflagletters[27];
@@ -1498,21 +1530,6 @@ static int finish_append(struct imap_session *imap)
 	/* APPENDUID response */
 	/* Use tag from APPEND request */
 	_imap_reply(imap, "%s OK [APPENDUID %u %u] APPEND completed\r\n", imap->savedtag, uidvalidity, uidnext); /* Don't add 1, this is the current message UID, not UIDNEXT */
-	return 0;
-}
-
-static inline unsigned long parse_size_from_filename(const char *filename, unsigned long *size)
-{
-	const char *sizestr = strstr(filename, ",S=");
-	if (!sizestr) {
-		bbs_error("Missing size in file %s\n", filename);
-		return -1;
-	}
-	sizestr += STRLEN(",S=");
-	*size = atol(sizestr);
-	if (*size <= 0) {
-		bbs_warning("Invalid size (%lu) for %s\n", *size, filename);
-	}
 	return 0;
 }
 
@@ -2161,6 +2178,7 @@ static int handle_create(struct imap_session *imap, char *s)
 	mailbox_unlock(imap->mbox);
 
 	/* Don't initialize the maildir itself here, that can be done at some later point. */
+	mailbox_quota_adjust_usage(imap->mbox, 4096);
 	imap_reply(imap, "OK CREATE completed");
 	return 0;
 }
@@ -2199,6 +2217,7 @@ static int handle_delete(struct imap_session *imap, char *s)
 		bbs_error("rmdir(%s) failed: %s\n", path, strerror(errno));
 	}
 	mailbox_unlock(imap->mbox);
+	mailbox_quota_adjust_usage(imap->mbox, -4096);
 	imap_reply(imap, "OK DELETE completed");
 	return 0;
 }

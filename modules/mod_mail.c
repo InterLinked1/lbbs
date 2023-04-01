@@ -47,11 +47,13 @@ static pthread_t trash_thread = -1;
 struct mailbox {
 	unsigned int id;					/* Mailbox ID. Corresponds with user ID. */
 	unsigned int watchers;				/* Number of watchers for this mailbox. */
+	unsigned int quotausage;			/* Cached quota usage calculation */
 	char maildir[256];					/* User's mailbox directory, on disk. */
 	pthread_rwlock_t lock;				/* R/W lock for entire mailbox. R/W instead of a mutex, because POP write locks the entire mailbox, IMAP can just read lock. */
 	pthread_mutex_t uidlock;			/* Mutex for UID operations. */
 	RWLIST_ENTRY(mailbox) entry;		/* Next mailbox */
 	unsigned int activity:1;			/* Mailbox has activity */
+	unsigned int quotavalid:1;			/* Whether cached quota calculations may still be used */
 };
 
 /* Once created, mailboxes are not destroyed until module unload,
@@ -480,6 +482,14 @@ void mailbox_unwatch(struct mailbox *mbox)
 
 void mailbox_notify(struct mailbox *mbox, const char *newfile)
 {
+	struct stat st;
+
+	if (stat(newfile, &st)) {
+		mailbox_invalidate_quota_cache(mbox);
+	} else {
+		mailbox_quota_adjust_usage(mbox, st.st_size);
+	}
+
 	if (!mbox->watchers) {
 		return; /* Nobody is watching the mailbox right now, so no need to bother notifying any watchers. */
 	}
@@ -505,6 +515,27 @@ int mailbox_has_activity(struct mailbox *mbox)
 	return res;
 }
 
+void mailbox_invalidate_quota_cache(struct mailbox *mbox)
+{
+	bbs_debug(5, "Cached quota usage for mailbox %d has been invalidated\n", mailbox_id(mbox));
+	mbox->quotavalid = 0; /* No lock needed since a race condition here wouldn't have any effect. */
+}
+
+void mailbox_quota_adjust_usage(struct mailbox *mbox, int bytes)
+{
+	mailbox_uid_lock(mbox); /* Borrow the UID lock since we need to do this atomically */
+	if (mbox->quotavalid) {
+		mbox->quotausage += bytes;
+		if (unlikely(mbox->quotausage > mailbox_quota(mbox))) {
+			/* Could also happen if we underflow below 0, since quotausage is unsigned */
+			/* Either our adjustments to the cached value went off somewhere, or we didn't check the quota somewhere. Either way, somebody screwed up. */
+			bbs_error("Mailbox quota usage (%u) exceeds quota allowed (%lu)\n", mbox->quotausage, mailbox_quota(mbox));
+			mailbox_invalidate_quota_cache(mbox);
+		}
+	}
+	mailbox_uid_unlock(mbox);
+}
+
 unsigned long mailbox_quota(struct mailbox *mbox)
 {
 	UNUSED(mbox); /* Not currently per-mailbox, but leave open the possibility of being more granular in the future. */
@@ -516,6 +547,12 @@ unsigned long mailbox_quota_remaining(struct mailbox *mbox)
 	long quota, quotaused;
 
 	quota = mailbox_quota(mbox);
+
+	if (mbox->quotavalid) {
+		/* Use the cached quota calculations if mailbox usage hasn't really changed */
+		return (unsigned long) (quota - mbox->quotausage);
+	}
+
 	quotaused = bbs_dir_size(mailbox_maildir(mbox));
 	if (quotaused < 0) {
 		/* An error occured, so we have no idea how much space is used.
@@ -523,6 +560,8 @@ unsigned long mailbox_quota_remaining(struct mailbox *mbox)
 		bbs_warning("Unable to calculate quota usage for mailbox %p\n", mbox);
 		return quota;
 	}
+	mbox->quotausage = quotaused;
+	mbox->quotavalid = 1; /* This can be cached until invalidated again */
 	quota -= quotaused;
 	if (quota <= 0) {
 		return 0; /* Quota already exceeded. Don't cast to unsigned or it will underflow and be huge. */
@@ -862,6 +901,8 @@ int maildir_copy_msg(struct mailbox *mbox, const char *curfile, const char *curf
 		return -1;
 	}
 	bbs_debug(6, "Copied %s -> %s\n", curfile, newpath);
+	/* Rather than invalidating quota usage for no reason, just update it so it stays in sync */
+	mailbox_quota_adjust_usage(mbox, copied);
 	return uid;
 }
 
@@ -881,8 +922,11 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, void *ob
 	int tstamp;
 	int trashsec = 86400 * trashdays;
 	int elapsed, now = time(NULL);
+	int mboxnum, *boxptr;
+	struct mailbox *mbox = NULL;
 
-	UNUSED(obj);
+	boxptr = obj;
+	mboxnum = *boxptr;
 
 	/* For autopurging, we don't care if the Deleted flag is set or not.
 	 * (If it were set, an IMAP user already flagged it for permanent deletion.) */
@@ -900,6 +944,12 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, void *ob
 			bbs_error("unlink(%s) failed: %s\n", fullname, strerror(errno));
 		} else {
 			bbs_debug(4, "Permanently deleted %s\n", fullname);
+			if (!mbox) {
+				mbox = mailbox_get(mboxnum, NULL);
+			}
+			if (likely(mbox != NULL)) {
+				mailbox_quota_adjust_usage(mbox, -st.st_size); /* Subtract file size from quota usage */
+			}
 		}
 	}
 	return 0;
@@ -931,7 +981,7 @@ static void scan_mailboxes(void)
 			continue;
 		}
 		bbs_debug(3, "Analyzing trash folder %s\n", trashdir);
-		bbs_dir_traverse(trashdir, on_mailbox_trash, NULL, -1); /* Traverse files in the Trash folder */
+		bbs_dir_traverse(trashdir, on_mailbox_trash, &mboxnum, -1); /* Traverse files in the Trash folder */
 	}
 
 	closedir(dir);
