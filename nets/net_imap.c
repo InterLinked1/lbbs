@@ -74,6 +74,7 @@ static int imap_debug_level = 10;
 #define _imap_reply(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); pthread_mutex_lock(&imap->lock); dprintf(imap->wfd, fmt, ## __VA_ARGS__); pthread_mutex_unlock(&imap->lock);
 #define imap_send_broadcast(imap, fmt, ...) _imap_broadcast(imap, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
 #define imap_send(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
+#define imap_reply_broadcast(imap, fmt, ...) _imap_broadcast(imap, "%s " fmt "\r\n", S_IF(imap->tag), ## __VA_ARGS__)
 #define imap_reply(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", S_IF(imap->tag), ## __VA_ARGS__)
 
 struct imap_session {
@@ -329,15 +330,15 @@ static int parse_flags_string(char *s)
 	int flags = 0;
 	char *f;
 	while ((f = strsep(&s, " "))) {
-		if (!strcmp(f, FLAG_NAME_FLAGGED)) {
+		if (!strcasecmp(f, FLAG_NAME_FLAGGED)) {
 			flags |= FLAG_BIT_FLAGGED;
-		} else if (!strcmp(f, FLAG_NAME_SEEN)) {
+		} else if (!strcasecmp(f, FLAG_NAME_SEEN)) {
 			flags |= FLAG_BIT_SEEN;
-		} else if (!strcmp(f, FLAG_NAME_ANSWERED)) {
+		} else if (!strcasecmp(f, FLAG_NAME_ANSWERED)) {
 			flags |= FLAG_BIT_ANSWERED;
-		} else if (!strcmp(f, FLAG_NAME_DELETED)) {
+		} else if (!strcasecmp(f, FLAG_NAME_DELETED)) {
 			flags |= FLAG_BIT_DELETED;
-		} else if (!strcmp(f, FLAG_NAME_DRAFT)) {
+		} else if (!strcasecmp(f, FLAG_NAME_DRAFT)) {
 			flags |= FLAG_BIT_DRAFT;
 		} else {
 			bbs_warning("Failed to parse flag: %s\n", f);
@@ -514,7 +515,7 @@ static int on_select(const char *dir_name, const char *filename, struct imap_ses
 {
 	char *flags;
 
-	imap_debug(7, "Analyzing file %s/%s (readonly: %d)\n", dir_name, filename, imap->readonly);
+	imap_debug(9, "Analyzing file %s/%s (readonly: %d)\n", dir_name, filename, imap->readonly);
 
 	/* RECENT is not the same as UNSEEN.
 	 * In the context of maildir, RECENT refers to messages in the new directory.
@@ -1184,31 +1185,36 @@ static int uintlist_append2(unsigned int **a, unsigned int **b, int *lengths, in
 {
 	int curlen;
 
+#define UINTLIST_CHUNK_SIZE 32
+
 	if (!*a) {
-		*a = malloc(32 * sizeof(unsigned int));
+		*a = malloc(UINTLIST_CHUNK_SIZE * sizeof(unsigned int));
 		if (!*a) {
 			return -1;
 		}
-		*b = malloc(32 * sizeof(unsigned int));
+		*b = malloc(UINTLIST_CHUNK_SIZE * sizeof(unsigned int));
 		if (!*b) {
 			free_if(*a);
 			return -1;
 		}
-		*allocsizes = 32;
+		*allocsizes = UINTLIST_CHUNK_SIZE;
 	} else {
 		if (*lengths >= *allocsizes) {
-			unsigned int *newb, *newa = realloc(*a, *allocsizes + 32 * sizeof(unsigned int)); /* Increase by 32 each chunk */
+			unsigned int *newb, *newa = realloc(*a, *allocsizes + UINTLIST_CHUNK_SIZE * sizeof(unsigned int)); /* Increase by 32 each chunk */
 			if (!newa) {
 				return -1;
 			}
-			newb = realloc(*b, *allocsizes + 32 * sizeof(unsigned int));
+			newb = realloc(*b, *allocsizes + UINTLIST_CHUNK_SIZE * sizeof(unsigned int));
 			if (!newb) {
 				/* This is tricky. We expanded a but failed to expand b. Keep the smaller size for our records. */
 				return -1;
 			}
-			*allocsizes = *allocsizes + 32 * sizeof(unsigned int);
+			*allocsizes = *allocsizes + UINTLIST_CHUNK_SIZE * sizeof(unsigned int);
+			*a = newa;
+			*b = newb;
 		}
 	}
+#undef UINTLIST_CHUNK_SIZE
 
 	curlen = *lengths;
 	(*a)[curlen] = vala;
@@ -1390,19 +1396,52 @@ static int handle_append(struct imap_session *imap, char *s)
 	}
 	*size++ = '\0';
 
-	/* These are both optional arguments */
-	flags = strsep(&s, " ");
-	date = strsep(&s, " ");
+	/* To properly handle the case without flags or date,
+	 * e.g. APPEND "INBOX" {1290}
+	 * Since we haven't called strsep yet on s since we separated the mailbox,
+	 * if there's no flags or date, then *s was { prior to size++.
+	 * In this case, we can skip all this:
+	 */
+	if (size > s + 1) {
+		/* These are both optional arguments */
 
-	imap->appendflags = 0;
-	free_if(imap->appenddate);
+		/* Multiword, e.g. APPEND "INBOX" "23-Jul-2002 19:39:23 -0400" {1110}
+		 * In fact, if date is present, it is guaranteed to contain spaces. */
+		if (*s == '"') {
+			s++;
+			flags = strsep(&s, "\"");
+		} else {
+			flags = strsep(&s, " ");
+		}
 
-	if (flags) {
-		bbs_strterm(flags, ')');
-		imap->appendflags = parse_flags_string(S_IF(flags + 1)); /* Skip () */
-	}
-	if (date) {
-		imap->appenddate = strdup(date);
+		ltrim(s);
+		if (*s == '"') {
+			s++;
+			date = strsep(&s, "\"");
+		} else {
+			date = strsep(&s, " ");
+		}
+
+		if (strlen_zero(date) && !strlen_zero(flags) && strchr(flags, ' ')) {
+			/* Only date, and no flags */
+			date = flags;
+			flags = NULL;
+		}
+
+		imap->appendflags = 0;
+		free_if(imap->appenddate);
+
+		if (flags) {
+			/* Skip () */
+			bbs_strterm(flags, ')');
+			flags++;
+			if (!strlen_zero(flags)) {
+				imap->appendflags = parse_flags_string(flags); 
+			}
+		}
+		if (date) {
+			imap->appenddate = strdup(date);
+		}
 	}
 
 	STRIP_QUOTES(mailbox);
@@ -1623,81 +1662,21 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				fetchreq->bodyargs = fetchreq->bodypeek = NULL; /* Don't execute the if statement below, so that we can execute the else if */
 			}
 		}
-		if (fetchreq->bodyargs || fetchreq->bodypeek) {
-			/* Can be HEADER, HEADER.FIELDS, HEADER.FIELDS.NOT, MIME, TEXT */
-			char linebuf[1001];
-			char *headpos = headers;
-			int headlen = sizeof(headers);
-			/* e.g. BODY[HEADER.FIELDS (From To Cc Bcc Subject Date Message-ID Priority X-Priority References Newsgroups In-Reply-To Content-Type Reply-To Received)] */
-			const char *bodyargs = fetchreq->bodyargs ? fetchreq->bodyargs + 5 : fetchreq->bodypeek + 10;
-			if (STARTS_WITH(bodyargs, "HEADER.FIELDS") || STARTS_WITH(bodyargs, "HEADER.FIELDS.NOT")) {
-				int inverted = 0;
-				if (STARTS_WITH(bodyargs, "HEADER.FIELDS.NOT")) {
-					inverted = 1;
-				}
-				multiline = 1;
-				bodyargs += STRLEN("HEADER.FIELDS (");
-				/* Read the file until the first CR LF CR LF (end of headers) */
-				fp = fopen(fullname, "r");
-				if (!fp) {
-					bbs_error("Failed to open %s: %s\n", fullname, strerror(errno));
-					goto cleanup;
-				}
-				/* The RFC says no line should be more than 1,000 octets (bytes).
-				 * Most clients will wrap at 72 characters, but we shouldn't rely on this. */
-				while ((fgets(linebuf, sizeof(linebuf), fp))) {
-					char headername[64];
-					/* fgets does store the newline, so line should end in CR LF */
-					if (!strcmp(linebuf, "\r\n")) {
-						break; /* End of headers */
-					}
-					/* I hope gcc optimizes this to not use snprintf under the hood */
-					safe_strncpy(headername, linebuf, sizeof(headername)); /* Don't copy the whole line. XXX This assumes that no header name is longer than 64 chars. */
-					bbs_strterm(headername, ':');
-					/* Only include headers that were asked for. */
-					if ((!inverted && strstr(bodyargs, headername)) || (inverted && !strstr(bodyargs, headername))) {
-						SAFE_FAST_COND_APPEND_NOSPACE(headers, headpos, headlen, 1, "%s", linebuf);
-					}
-				}
-				fclose(fp);
-				bodylen = strlen(headers); /* Can't just subtract end of headers, we'd have to keep track of bytes added on each round (which we probably should anyways) */
-				/* bodyargs ends in a ')', so don't tack an additional one on afterwards */
-				SAFE_FAST_COND_APPEND(response, buf, len, 1, "BODY[HEADER.FIELDS (%s", bodyargs);
-			} else if (!strcmp(bodyargs, "]") || !strcmp(bodyargs, "TEXT]")) { /* Empty (e.g. BODY.PEEK[] or BODY[], or TEXT */
-				multiline = 1;
-				sendbody = 1;
+		if (fetchreq->internaldate) {
+			struct stat st;
+			if (stat(fullname, &st)) {
+				bbs_error("stat(%s) failed: %s\n", fullname, strerror(errno));
 			} else {
-				/* Since it contains a closing ], add a starting one for clarity or it'll look odd. */
-				bbs_warning("Unsupported BODY[] argument: [%s\n", bodyargs);
-			}
-		} else if (fetchreq->rfc822header) {
-			char linebuf[1001];
-			char *headpos = headers;
-			int headlen = sizeof(headers);
-			multiline = 1;
-			/* Read the file until the first CR LF CR LF (end of headers) */
-			fp = fopen(fullname, "r");
-			if (!fp) {
-				bbs_error("Failed to open %s: %s\n", fullname, strerror(errno));
-				goto cleanup;
-			}
-			/* The RFC says no line should be more than 1,000 octets (bytes).
-			 * Most clients will wrap at 72 characters, but we shouldn't rely on this. */
-			while ((fgets(linebuf, sizeof(linebuf), fp))) {
-				/* fgets does store the newline, so line should end in CR LF */
-				if (!strcmp(linebuf, "\r\n")) {
-					break; /* End of headers */
-				}
-				/* I hope gcc optimizes this to not use snprintf under the hood */
-				SAFE_FAST_COND_APPEND_NOSPACE(headers, headpos, headlen, 1, "%s", linebuf);
-			}
-			fclose(fp);
-			bodylen = headpos - headers; /* XXX cheaper than strlen, although if truncation happened, this may be wrong (too high). */
-			if (!unoriginal) {
-				SAFE_FAST_COND_APPEND(response, buf, len, 1, "RFC822.HEADER");
+				struct tm modtime;
+				char timebuf[40];
+				/* Linux doesn't really have "time created" like Windows does. Just use the modified time,
+				 * and hopefully renaming doesn't change that. */
+				/* Use server's local time */
+				/* Example INTERNALDATE format: 08-Nov-2022 01:19:54 +0000 */
+				strftime(timebuf, sizeof(timebuf), "%d-%b-%Y %H:%M:%S %z", localtime_r(&st.st_mtim.tv_sec, &modtime));
+				SAFE_FAST_COND_APPEND(response, buf, len, 1, "INTERNALDATE \"%s\"", timebuf);
 			}
 		}
-
 		if (fetchreq->envelope) {
 			char linebuf[1001];
 			int findcount;
@@ -1824,28 +1803,89 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			fclose(fp);
 			SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, ")");
 		}
+		/* HEADER.FIELDS involves a multiline response, so this should be processed at the end of this loop since it appends to response.
+		 * Otherwise, something else might concatenate itself on at the end and break the response. */
+		if (fetchreq->bodyargs || fetchreq->bodypeek) {
+			/* Can be HEADER, HEADER.FIELDS, HEADER.FIELDS.NOT, MIME, TEXT */
+			char linebuf[1001];
+			char *headpos = headers;
+			int headlen = sizeof(headers);
+			/* e.g. BODY[HEADER.FIELDS (From To Cc Bcc Subject Date Message-ID Priority X-Priority References Newsgroups In-Reply-To Content-Type Reply-To Received)] */
+			const char *bodyargs = fetchreq->bodyargs ? fetchreq->bodyargs + 5 : fetchreq->bodypeek + 10;
+			if (STARTS_WITH(bodyargs, "HEADER.FIELDS") || STARTS_WITH(bodyargs, "HEADER.FIELDS.NOT")) {
+				int inverted = 0;
+				if (STARTS_WITH(bodyargs, "HEADER.FIELDS.NOT")) {
+					inverted = 1;
+				}
+				multiline = 1;
+				bodyargs += STRLEN("HEADER.FIELDS (");
+				/* Read the file until the first CR LF CR LF (end of headers) */
+				fp = fopen(fullname, "r");
+				if (!fp) {
+					bbs_error("Failed to open %s: %s\n", fullname, strerror(errno));
+					goto cleanup;
+				}
+				/* The RFC says no line should be more than 1,000 octets (bytes).
+				 * Most clients will wrap at 72 characters, but we shouldn't rely on this. */
+				while ((fgets(linebuf, sizeof(linebuf), fp))) {
+					char headername[64];
+					/* fgets does store the newline, so line should end in CR LF */
+					if (!strcmp(linebuf, "\r\n")) {
+						break; /* End of headers */
+					}
+					/* I hope gcc optimizes this to not use snprintf under the hood */
+					safe_strncpy(headername, linebuf, sizeof(headername)); /* Don't copy the whole line. XXX This assumes that no header name is longer than 64 chars. */
+					bbs_strterm(headername, ':');
+					/* Only include headers that were asked for. */
+					/* Note that some header names can be substrings of others, e.g. the "To" header should not match for "In-Reply-To" */
+					if ((!inverted && STARTS_WITH(bodyargs, headername)) || (inverted && !STARTS_WITH(bodyargs, headername))) {
+						SAFE_FAST_COND_APPEND_NOSPACE(headers, headpos, headlen, 1, "%s", linebuf);
+					}
+				}
+				fclose(fp);
+				bodylen = strlen(headers); /* Can't just subtract end of headers, we'd have to keep track of bytes added on each round (which we probably should anyways) */
+				/* bodyargs ends in a ')', so don't tack an additional one on afterwards */
+				SAFE_FAST_COND_APPEND(response, buf, len, 1, "BODY[HEADER.FIELDS (%s", bodyargs);
+			} else if (!strcmp(bodyargs, "]") || !strcmp(bodyargs, "TEXT]")) { /* Empty (e.g. BODY.PEEK[] or BODY[], or TEXT */
+				multiline = 1;
+				sendbody = 1;
+			} else {
+				/* Since it contains a closing ], add a starting one for clarity or it'll look odd. */
+				bbs_warning("Unsupported BODY[] argument: [%s\n", bodyargs);
+			}
+		} else if (fetchreq->rfc822header) {
+			char linebuf[1001];
+			char *headpos = headers;
+			int headlen = sizeof(headers);
+			multiline = 1;
+			/* Read the file until the first CR LF CR LF (end of headers) */
+			fp = fopen(fullname, "r");
+			if (!fp) {
+				bbs_error("Failed to open %s: %s\n", fullname, strerror(errno));
+				goto cleanup;
+			}
+			/* The RFC says no line should be more than 1,000 octets (bytes).
+			 * Most clients will wrap at 72 characters, but we shouldn't rely on this. */
+			while ((fgets(linebuf, sizeof(linebuf), fp))) {
+				/* fgets does store the newline, so line should end in CR LF */
+				if (!strcmp(linebuf, "\r\n")) {
+					break; /* End of headers */
+				}
+				/* I hope gcc optimizes this to not use snprintf under the hood */
+				SAFE_FAST_COND_APPEND_NOSPACE(headers, headpos, headlen, 1, "%s", linebuf);
+			}
+			fclose(fp);
+			bodylen = headpos - headers; /* XXX cheaper than strlen, although if truncation happened, this may be wrong (too high). */
+			if (!unoriginal) {
+				SAFE_FAST_COND_APPEND(response, buf, len, 1, "RFC822.HEADER");
+			}
+		}
 
 		if (fetchreq->body || fetchreq->bodystructure) {
 			/* BODY is BODYSTRUCTURE without extensions (which we don't send anyways, in either case) */
 			/* Excellent reference for BODYSTRUCTURE: http://sgerwk.altervista.org/imapbodystructure.html */
 			/* But we just use the top of the line gmime library for this task (see https://stackoverflow.com/a/18813164) */
 			dyn = mime_make_bodystructure(fetchreq->bodystructure ? "BODYSTRUCTURE" : "BODY", fullname);
-		}
-
-		if (fetchreq->internaldate) {
-			struct stat st;
-			if (stat(fullname, &st)) {
-				bbs_error("stat(%s) failed: %s\n", fullname, strerror(errno));
-			} else {
-				struct tm modtime;
-				char timebuf[40];
-				/* Linux doesn't really have "time created" like Windows does. Just use the modified time,
-				 * and hopefully renaming doesn't change that. */
-				/* Use server's local time */
-				/* Example INTERNALDATE format: 08-Nov-2022 01:19:54 +0000 */
-				strftime(timebuf, sizeof(timebuf), "%d-%b-%Y %H:%M:%S %z", localtime_r(&st.st_mtim.tv_sec, &modtime));
-				SAFE_FAST_COND_APPEND(response, buf, len, 1, "INTERNALDATE \"%s\"", timebuf);
-			}
 		}
 
 		/* Actual body, if being sent, should be last */
@@ -2013,6 +2053,7 @@ static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 	return process_fetch(imap, usinguid, &fetchreq, sequences);
 }
 
+/*! \brief Modify the flags for a message */
 static int process_flags(struct imap_session *imap, char *s, int usinguid, const char *sequences, int flagop, int silent)
 {
 	struct dirent *entry, **entries;
@@ -2023,7 +2064,9 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 
 	/* Convert something like (\Deleted) into the actual flags (parse once, use for all matches) */
 	/* Remove parentheses */
-	s++;
+	if (!strlen_zero(s) && *s == '(') {
+		s++;
+	}
 	if (!strlen_zero(s)) {
 		bbs_strterm(s, ')');
 	}
@@ -2366,6 +2409,7 @@ enum imap_search_type {
 	IMAP_SEARCH_UNSEEN,
 };
 
+#ifdef DEBUG_SEARCH
 static const char *imap_search_key_name(enum imap_search_type type)
 {
 	switch (type) {
@@ -2444,6 +2488,7 @@ static const char *imap_search_key_name(enum imap_search_type type)
 			return NULL;
 	}
 }
+#endif
 
 struct imap_search_key;
 
@@ -2485,7 +2530,7 @@ static void imap_search_free(struct imap_search_keys *skeys)
 	}
 }
 
-#define DEBUG_SEARCH
+/* #define DEBUG_SEARCH */
 
 #ifdef DEBUG_SEARCH
 /*! \brief Dump a parsed IMAP search query structure as a hierarchical tree for debugging */
@@ -2581,8 +2626,10 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 		listsize++; \
 	}
 
+/*! \brief Parse a string argument, optionally enclosed in quotes (mandatory if the argument contains multiple words) */
 #define SEARCH_PARSE_STRING(name) \
 	else if (!strcasecmp(next, #name)) { \
+		quoted_arg = 0; \
 		nk = imap_search_add(skeys, IMAP_SEARCH_ ## name); \
 		if (!nk) { \
 			return -1; \
@@ -2592,18 +2639,31 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 			bbs_warning("Missing string argument\n"); \
 			return -1; \
 		} \
-		begin = *s + 1; /* Skip opening " */ \
+		if (**s == '"') { \
+			begin = *s + 1; /* Skip opening " */ \
+			quoted_arg = 1; \
+		} else { \
+			begin = *s; \
+		} \
 		if (!*begin) { \
 			bbs_warning("Empty quoted argument\n"); \
 			return -1; \
 		} \
-		next = strchr(begin, '"'); \
-		if (!next) { \
-			bbs_warning("Unterminated quoted argument\n"); \
-			return -1; \
+		if (quoted_arg) { \
+			next = strchr(begin, '"'); \
+			if (!next) { \
+				bbs_warning("Unterminated quoted argument\n"); \
+				return -1; \
+			} \
+		} else { \
+			next = strchr(begin, ' '); \
 		} \
-		*next = '\0'; \
-		*s = next + 1; \
+		if (next) { \
+			*next = '\0'; \
+			*s = next + 1; \
+		} else { \
+			*s = '\0'; \
+		} \
 		nk->child.string = begin; /* This is not dynamically allocated, and does not need to be freed. */ \
 		listsize++; \
 	}
@@ -2626,6 +2686,7 @@ static int parse_search_query(struct imap_search_keys *skeys, enum imap_search_t
 	char *begin, *next;
 	struct imap_search_key *nk;
 	int listsize = 0;
+	int quoted_arg = 0;
 
 	/*! \todo add parentheses support */
 
@@ -2688,7 +2749,11 @@ static int parse_search_query(struct imap_search_keys *skeys, enum imap_search_t
 		SEARCH_PARSE_STRING(TEXT)
 		SEARCH_PARSE_RECURSE(OR)
 		SEARCH_PARSE_RECURSE(NOT)
-		else {
+		else if (isdigit(*next)) {
+			/* This is something dovecot's ImapTest seems to do, though I can't find anything in the RFC about this syntax.
+			 * For now, try to detect this and emit a warning. Doesn't catch cases like OR (1:2 etc... */
+			bbs_warning("SEARCH contains sequence filter (unsupported): %s\n", next);
+		} else {
 			bbs_warning("Foreign IMAP search key: %s\n", next);
 		}
 		switch (parent_type) {
@@ -2837,7 +2902,13 @@ static int search_sent_date(struct imap_search *search, struct tm *tm)
 			continue; /* Not the right header */
 		}
 		pos = linebuf + STRLEN("Date:");
-		if (!strptime(pos, "%d-%b-%Y", tm)) {
+		ltrim(pos);
+		bbs_strterm(pos, '\r');
+		/* Multiple possible date formats:
+		 * 15 Oct 2002 23:57:35 +0300
+		 * Tues, 15 Oct 2002 23:57:35 +0300
+		 */
+		if (!strptime(pos, "%a, %d %b %Y %H:%M:%S %z", tm) && !strptime(pos, "%d %b %Y %H:%M:%S %z", tm)) {
 			bbs_warning("Failed to parse as date: %s\n", pos);
 			return -1;
 		}
@@ -2870,7 +2941,7 @@ static int search_sent_date(struct imap_search *search, struct tm *tm)
 	}
 
 #define SEARCH_DATE() \
-	if (strptime(skey->child.string, "%d-%b-%Y", &tm2)) { /* We currently parse the date each time needed. */ \
+	if (!strptime(skey->child.string, "%d-%b-%Y", &tm2)) { /* We currently parse the date each time needed. */ \
 		bbs_warning("Failed to parse as date: %s\n", skey->child.string); \
 		break; \
 	} \
@@ -2959,7 +3030,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 				SEARCH_HEADER_MATCH("Bcc");
 			case IMAP_SEARCH_BEFORE:
 			case IMAP_SEARCH_BODY:
-				retval = search_message(search, skey->child.string, 0, 1);
+				retval = search_message(search, skey->child.string, 0, 1) == 1;
 				break;
 			case IMAP_SEARCH_CC:
 				SEARCH_HEADER_MATCH("Cc");
@@ -2976,7 +3047,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 				break;
 			case IMAP_SEARCH_ON: /* INTERNALDATE == match */
 				SEARCH_STAT()
-				if (strptime(skey->child.string, "%d-%b-%Y", &tm2)) { /* We currently parse the date each time needed. */
+				if (!strptime(skey->child.string, "%d-%b-%Y", &tm2)) { /* We currently parse the date each time needed. */
 					bbs_warning("Failed to parse as date: %s\n", skey->child.string);
 					break;
 				}
@@ -3004,7 +3075,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 				break;
 			case IMAP_SEARCH_SINCE: /* INTERNALDATE >=, e.g. 08-Mar-2011 */
 				SEARCH_STAT()
-				if (strptime(skey->child.string, "%d-%b-%Y", &tm2)) { /* We currently parse the date each time needed. */
+				if (!strptime(skey->child.string, "%d-%b-%Y", &tm2)) { /* We currently parse the date each time needed. */
 					bbs_warning("Failed to parse as date: %s\n", skey->child.string);
 					break;
 				}
@@ -3049,13 +3120,14 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 }
 
 /*! \note For some reason, looping twice or using goto results in valgrind reporting a memory leak, but calling this function twice does not */
-static int search_dir(const char *dirname, int newdir, struct imap_search_keys *skeys, unsigned int **a, unsigned int **b, int *lengths, int *allocsizes)
+static int search_dir(const char *dirname, int newdir, int usinguid, struct imap_search_keys *skeys, unsigned int **a, unsigned int **b, int *lengths, int *allocsizes)
 {
 	int res = 0;
 	int files, fno = 0;
 	struct dirent *entry, **entries = NULL;
 	struct imap_search search;
 	unsigned int uid;
+	unsigned int seqno = 0;
 
 	files = scandir(dirname, &entries, NULL, alphasort);
 	if (files < 0) {
@@ -3068,7 +3140,8 @@ static int search_dir(const char *dirname, int newdir, struct imap_search_keys *
 		} else if (entry->d_type != DT_REG) { /* We only care about directories, not files. */
 			goto next;
 		}
-		bbs_debug(3, "Checking message: %s\n", entry->d_name);
+		seqno++;
+		bbs_debug(3, "Checking message %u: %s\n", seqno, entry->d_name);
 		memset(&search, 0, sizeof(search));
 		search.directory = dirname;
 		search.filename = entry->d_name;
@@ -3079,11 +3152,15 @@ static int search_dir(const char *dirname, int newdir, struct imap_search_keys *
 		}
 		if (search_keys_eval(skeys, IMAP_SEARCH_ALL, &search)) {
 			/* Include in search response */
-			parse_uid_from_filename(search.filename, &uid);
+			if (usinguid) {
+				parse_uid_from_filename(search.filename, &uid);
+				res = uintlist_append2(a, b, lengths, allocsizes, uid, uid);
+			} else {
+				res = uintlist_append2(a, b, lengths, allocsizes, seqno, seqno);
+			}
 			/* We really only need uintlist_append1, but just reuse the API used for COPY */
-			uintlist_append2(a, b, lengths, allocsizes, uid, uid);
 #ifdef DEBUG_SEARCH
-			bbs_debug(5, "Including message %s in response\n", entry->d_name);
+			bbs_debug(5, "Including message %u (%s) in response\n", seqno, entry->d_name);
 #endif
 		}
 		/* If we opened any resources, close them */
@@ -3092,6 +3169,10 @@ static int search_dir(const char *dirname, int newdir, struct imap_search_keys *
 		}
 next:
 		free(entry);
+		if (unlikely(res)) {
+			bbs_error("Search failed at seqno %d\n", seqno);
+			break;
+		}
 	}
 	free(entries);
 	if (res < 0) {
@@ -3132,6 +3213,7 @@ static int handle_search(struct imap_session *imap, char *s, int usinguid)
 	if (parse_search_query(&skeys, IMAP_SEARCH_ALL, &s) || !strlen_zero(s)) {
 		imap_search_free(&skeys);
 		imap_reply(imap, "BAD Invalid search query");
+		bbs_warning("Failed to parse search query\n"); /* Consumed the query in the process, but should be visible in a previous debug message */
 		return 0;
 	}
 
@@ -3144,8 +3226,8 @@ static int handle_search(struct imap_session *imap, char *s, int usinguid)
 	}
 #endif
 
-	search_dir(imap->curdir, 0, &skeys, &a, &b, &lengths, &allocsizes);
-	search_dir(imap->newdir, 1, &skeys, &a, &b, &lengths, &allocsizes);
+	search_dir(imap->curdir, 0, usinguid, &skeys, &a, &b, &lengths, &allocsizes);
+	search_dir(imap->newdir, 1, usinguid, &skeys, &a, &b, &lengths, &allocsizes);
 	if (lengths) {
 		memset(&dynstr, 0, sizeof(dynstr));
 		for (i = 0; i < lengths; i++) {
@@ -3154,7 +3236,7 @@ static int handle_search(struct imap_session *imap, char *s, int usinguid)
 			dyn_str_append(&dynstr, buf, len);
 		}
 		imap_send(imap, "SEARCH %s", dynstr.buf);
-		free(dynstr.buf);
+		free_if(dynstr.buf);
 	}
 
 	imap_search_free(&skeys);
@@ -3253,6 +3335,10 @@ static int imap_process(struct imap_session *imap, char *s)
 		return 0;
 	} else if (imap->inauth) {
 		return handle_auth(imap, s);
+	}
+
+	if (strlen_zero(s)) {
+		return 0; /* Ignore empty lines at this point (can't do this if in an APPEND) */
 	}
 
 	imap->tag = strsep(&s, " "); /* Tag for client to identify responses to its request */
@@ -3502,7 +3588,7 @@ static void handle_client(struct imap_session *imap)
 		word2 = strchr(buf, ' ');
 		if (word2++ && !strlen_zero(word2) && !strncasecmp(word2, "LOGIN", STRLEN("LOGIN"))) {
 			bbs_debug(6, "%p => <LOGIN REDACTED>\n", imap); /* Mask login to avoid logging passwords */
-		} else {
+		} else if (!imap->appendsize) {
 			bbs_debug(6, "%p => %s\n", imap, buf);
 		}
 		if (imap_process(imap, buf)) {
