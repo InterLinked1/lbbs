@@ -1813,7 +1813,9 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			/* e.g. BODY[HEADER.FIELDS (From To Cc Bcc Subject Date Message-ID Priority X-Priority References Newsgroups In-Reply-To Content-Type Reply-To Received)] */
 			const char *bodyargs = fetchreq->bodyargs ? fetchreq->bodyargs + 5 : fetchreq->bodypeek + 10;
 			if (STARTS_WITH(bodyargs, "HEADER.FIELDS") || STARTS_WITH(bodyargs, "HEADER.FIELDS.NOT")) {
+				char *headerlist, *tmp;
 				int inverted = 0;
+				int in_match = 0;
 				if (STARTS_WITH(bodyargs, "HEADER.FIELDS.NOT")) {
 					inverted = 1;
 				}
@@ -1825,6 +1827,19 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 					bbs_error("Failed to open %s: %s\n", fullname, strerror(errno));
 					goto cleanup;
 				}
+				headerlist = malloc(strlen(bodyargs) + 2); /* Add 2, 1 for NUL and 1 for : at the beginning */
+				if (!headerlist) {
+					goto cleanup;
+				}
+				headerlist[0] = ':';
+				strcpy(headerlist + 1, bodyargs); /* Safe */
+				tmp = headerlist;
+				while (*tmp) {
+					if (*tmp == ' ' || *tmp == ')') {
+						*tmp = ':';
+					}
+					tmp++;
+				}
 				/* The RFC says no line should be more than 1,000 octets (bytes).
 				 * Most clients will wrap at 72 characters, but we shouldn't rely on this. */
 				while ((fgets(linebuf, sizeof(linebuf), fp))) {
@@ -1833,16 +1848,35 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 					if (!strcmp(linebuf, "\r\n")) {
 						break; /* End of headers */
 					}
-					/* I hope gcc optimizes this to not use snprintf under the hood */
-					safe_strncpy(headername, linebuf, sizeof(headername)); /* Don't copy the whole line. XXX This assumes that no header name is longer than 64 chars. */
-					bbs_strterm(headername, ':');
+					if (isspace(linebuf[0])) { /* It's part of a previous header (mutliline header) */
+						SAFE_FAST_COND_APPEND_NOSPACE(headers, headpos, headlen, in_match, "%s", linebuf); /* Append if in match */
+						continue;
+					}
+					headername[0] = ':';
+					safe_strncpy(headername + 1, linebuf, sizeof(headername) - 1); /* Don't copy the whole line. XXX This assumes that no header name is longer than 64 chars. */
+					tmp = strchr(headername + 1, ':');
+					if (!tmp) {
+						bbs_warning("Unexpected end of headers: %s\n", linebuf);
+						break;
+					}
+					/* Since safe_strncpy will always null terminate, it is always safe to null terminate the character after this */
+					*(tmp + 1) = '\0';
 					/* Only include headers that were asked for. */
-					/* Note that some header names can be substrings of others, e.g. the "To" header should not match for "In-Reply-To" */
-					if ((!inverted && STARTS_WITH(bodyargs, headername)) || (inverted && !STARTS_WITH(bodyargs, headername))) {
+					/* Note that some header names can be substrings of others, e.g. the "To" header should not match for "In-Reply-To"
+					 * bodyargs contains a list of (space delimited) header names that we can match on, so we can't just use strncmp.
+					 * Above, we transform the list into a : delimited list (every header has a : after it, including the last one),
+					 * so NOW we can just use strstr for :NAME:
+					 */
+					if ((!inverted && strcasestr(headerlist, headername)) || (inverted && !strcasestr(headerlist, headername))) {
+						/* I hope gcc optimizes this to not use snprintf under the hood */
 						SAFE_FAST_COND_APPEND_NOSPACE(headers, headpos, headlen, 1, "%s", linebuf);
+						in_match = 1;
+					} else {
+						in_match = 0;
 					}
 				}
 				fclose(fp);
+				free(headerlist);
 				bodylen = strlen(headers); /* Can't just subtract end of headers, we'd have to keep track of bytes added on each round (which we probably should anyways) */
 				/* bodyargs ends in a ')', so don't tack an additional one on afterwards */
 				SAFE_FAST_COND_APPEND(response, buf, len, 1, "BODY[HEADER.FIELDS (%s", bodyargs);
@@ -1906,6 +1940,9 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				fseek(fp, 0L, SEEK_END); /* Go to EOF */
 				size = ftell(fp);
 				rewind(fp); /* Be kind, rewind */
+				if (!size) {
+					bbs_warning("File size of %s is %ld bytes?\n", fullname, size);
+				}
 				imap_send(imap, "%d FETCH (%s%s%s %s {%ld}", seqno, S_IF(dyn), dyn ? " " : "", response, fetchreq->rfc822 ? "RFC822" : "BODY[]", size + 2); /* No close paren here, last dprintf will do that */
 				/* XXX Assumes not sending headers and bodylen at same time.
 				 * In reality, I think that *might* be fine because the body contains everything,
