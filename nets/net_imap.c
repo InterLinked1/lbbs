@@ -1606,7 +1606,10 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			if (parse_size_from_filename(entry->d_name, &size)) {
 				goto cleanup;
 			}
-			SAFE_FAST_COND_APPEND(response, buf, len, 1, "RFC822.SIZE %lu", size);
+			/* XXX With Dovecot IMAPTest, we were getting warnings that RFC822.SIZE was 2 bytes too small
+			 * and BODY length was 2 bytes too large. Adding 2 fixes this warnings, but maybe
+			 * the BODY is where we actually need to address this. */
+			SAFE_FAST_COND_APPEND(response, buf, len, 1, "RFC822.SIZE %lu", size + 2);
 		}
 		/* Must include UID in response, whether requested or not (so fetchreq->uid ignored) */
 		SAFE_FAST_COND_APPEND(response, buf, len, 1, "UID %u", msguid);
@@ -1839,7 +1842,8 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				/* Linux doesn't really have "time created" like Windows does. Just use the modified time,
 				 * and hopefully renaming doesn't change that. */
 				/* Use server's local time */
-				strftime(timebuf, sizeof(timebuf), "%a, %d %b %Y %H:%M:%S %z", localtime_r(&st.st_mtim.tv_sec, &modtime));
+				/* Example INTERNALDATE format: 08-Nov-2022 01:19:54 +0000 */
+				strftime(timebuf, sizeof(timebuf), "%d-%b-%Y %H:%M:%S %z", localtime_r(&st.st_mtim.tv_sec, &modtime));
 				SAFE_FAST_COND_APPEND(response, buf, len, 1, "INTERNALDATE \"%s\"", timebuf);
 			}
 		}
@@ -1885,7 +1889,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				pthread_mutex_unlock(&imap->lock);
 			} else {
 				/* Need to add 2 for last CR LF we tack on before ) */
-				imap_send(imap, "%d FETCH (%s%s%s{%d}\r\n%s\r\n)", seqno, S_IF(dyn), dyn ? " " : "", response, bodylen + 2, headers);
+				imap_send(imap, "%d FETCH (%s%s%s {%d}\r\n%s\r\n)", seqno, S_IF(dyn), dyn ? " " : "", response, bodylen + 2, headers);
 			}
 		} else {
 			/* Number after FETCH is always a message sequence number, not UID, even if usinguid */
@@ -2089,7 +2093,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 		}
 
 		/* Send the response if not silent */
-		if (!silent) {
+		if (changes && !silent) {
 			char flagstr[256];
 			gen_flag_names(newflagletters, flagstr, sizeof(flagstr));
 			imap_send(imap, "%d FETCH (FLAGS (%s))", seqno, flagstr);

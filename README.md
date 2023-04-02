@@ -22,7 +22,8 @@ Key features and capabilities include:
 
 - Automatic menu screen generation and resizing
 
-- Electronic mail (SMTP, POP3, IMAP4), with [MailScript rule engine](https://github.com/InterLinked1/lbbs/blob/master/configs/.rules) for flexible, custom, dynamic mail handling rules
+- Electronic mail (SMTP, POP3, IMAP4)
+  - [MailScript filtering engine](https://github.com/InterLinked1/lbbs/blob/master/configs/.rules) for flexible, custom, dynamic mail filtering rules (Sieve alternative)
 
 - Newsgroups (NNTP)
 
@@ -37,10 +38,6 @@ Key features and capabilities include:
 - Sysop capabilities
   - Node spying
   - Kick nodes
-
-**Can I try it out?**
-
-Sure! The reference implementation of LBBS is my own system, the PhreakNet BBS, reachable at `bbs.phreaknet.org`. Guest login is allowed.
 
 ## Donations
 
@@ -146,7 +143,7 @@ Config files go in `/etc/lbbs` and are as follows:
 
 Each sample config file documents all available options. Refer to the sample configs for more info about a file.
 
-Additionally, the MailScript rule engine uses a script file called `.rules` in the root maildir and the user's root maildir for manipulating messages.
+Additionally, the MailScript rules engine uses a script file called `.rules` in the root maildir and the user's root maildir for manipulating messages.
 A sample MailScript rules file is in `configs/.rules` (though this is not a config file, but a sample rule script file).
 
 ### Network Login Services / Comm Drivers
@@ -213,6 +210,22 @@ FLUSH PRIVILEGES;
 Then, create a database called `bbs` and a table called `users` - the SQL to do so is in `scripts/dbcreate.sql`.
 
 Don't forget to also add your DB connection info to `mod_auth_mysql.conf`!
+
+## FAQ
+
+#### Can I try it out?
+
+Sure! The reference installation of LBBS is the PhreakNet BBS, reachable at `bbs.phreaknet.org`. Guest login is allowed.
+
+#### Why is there a non-standard filtering engine (MailScript) included?
+
+The MailScript filtering language serves a slightly different purpose than common filtering languages like Sieve or procmail.
+It includes capabilities that other filtering languages do not, such as the ability to execute system commands.
+Additionally, these rules cannot be directly edited by users in any way.
+They are intended to allow the sysop to define rules for the system or per user, if needed.
+
+The language grammar for MailScript is also extremely simple, which made adding an implementation of it extremely easy.
+Support for Sieve and ManageSieve will be added at some point, and users will be able to manage these rules themselves.
 
 ## Licensing
 
