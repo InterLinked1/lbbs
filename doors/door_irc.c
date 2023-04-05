@@ -963,7 +963,6 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 	char usernamebuf[24];
 	char passwordbuf[64];
 	char buf[2048];
-	int pfd[2] = { -1, -1};
 	char *username, *password, *hostname, *portstr;
 
 	/* Parse the arguments.
@@ -1070,11 +1069,6 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 		goto cleanup;
 	}
 
-	if (pipe(pfd)) {
-		bbs_error("pipe failed: %s\n", strerror(errno));
-		goto cleanup;
-	}
-
 	/* Instead of spawning a client_relay thread with a pseudo client and running an event loop,
 	 * handle the connection in the current thread.
 	 * This does complicate things just a little bit, as can be seen below.
@@ -1138,6 +1132,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 			bbs_writef(node, "%s<%s> %s\n", datestr, irc_client_username(ircl), clientbuf); /* Echo the user's own message */
 		} else if (irc_poll(ircl, 0, -1) > 0) { /* Must've been the server. */
 			char tmpbuf[2048];
+			int ready;
 			/* bbs_fd_readline internally will call poll(), but we already polled inside irc_poll,
 			 * and then poll() again to see which file descriptor had activity,
 			 * so just pass 0 as poll should always return > 0 anyways, immediately,
@@ -1147,10 +1142,10 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 			 * So relay using a pipe.
 			 */
 			res = irc_read(ircl, tmpbuf, sizeof(tmpbuf));
-			if (res > 0) {
-				write(pfd[1], tmpbuf, res);
+			res = bbs_fd_readline_append(&rldata, "\r\n", tmpbuf, res, &ready);
+			if (!ready) {
+				continue;
 			}
-			res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 10); /* This should succeed the first time since irc_poll told us it would. */
 			do {
 				struct irc_msg msg_stack, *msg = &msg_stack;
 				if (res < 0) {
@@ -1231,8 +1226,6 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 	}
 
 cleanup:
-	close_if(pfd[0]);
-	close_if(pfd[1]);
 	irc_client_destroy(ircl);
 	return 0;
 }

@@ -43,11 +43,14 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include "include/readline.h"
+
 static int option_debug = 0;
 static int option_debug_bbs = 0;
 static char option_debug_bbs_str[12] = "-";
 static int option_errorcheck = 0;
 static int option_gen_supp = 0;
+static int option_exit_failure = 0;
 static const char *testfilter = NULL;
 
 int startup_run_unit_tests;
@@ -131,7 +134,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 
 static int parse_options(int argc, char *argv[])
 {
-	static const char *getopt_settings = "?dDegt:";
+	static const char *getopt_settings = "?dDegt:x";
 	int c;
 
 	while ((c = getopt(argc, argv, getopt_settings)) != -1) {
@@ -145,6 +148,7 @@ static int parse_options(int argc, char *argv[])
 			fprintf(stderr, "-g     Also generate valgrind suppressions for the valgrind report.\n");
 			fprintf(stderr, "-h     Show this help and exit.\n");
 			fprintf(stderr, "-t     Run a specific named test. Include the test_ prefix but not the .so suffix.\n");
+			fprintf(stderr, "-x     Exit on the first failure.\n");
 			return -1;
 		case 'd':
 			if (option_debug == MAX_DEBUG) {
@@ -169,6 +173,9 @@ static int parse_options(int argc, char *argv[])
 			break;
 		case 't':
 			testfilter = optarg;
+			break;
+		case 'x':
+			option_exit_failure = 1;
 			break;
 		}
 	}
@@ -350,12 +357,18 @@ static const char *bbs_expect_str = NULL;
 int test_autorun = 1;
 int rand_alloc_fails = 0;
 
+static char expectbuf[8192];
+static struct readline_data rldata;
+
 static void *io_relay(void *varg)
 {
 	int res;
 	char buf[1024];
 	int logfd;
 	int *pipefd = varg;
+	int ready;
+	int found;
+	char c = '\n';
 
 	logfd = open("/tmp/test_lbbs.log", O_CREAT | O_TRUNC);
 	if (logfd < 0) {
@@ -375,14 +388,19 @@ static void *io_relay(void *varg)
 		}
 		if (bbs_expect_str) {
 			buf[res] = '\0'; /* Safe */
-			if (strstr(buf, bbs_expect_str)) {
-				char c = '\n';
-				if (write(notifypfd[1], &c, 1) != 1) { /* Signal notify waiter */
-					bbs_error("write failed: %s\n", strerror(errno));
-				}
+			bbs_fd_readline_append(&rldata, "\n", buf, res, &ready);
+			/* Check both the readline buffer as well as what we just read.
+			 * Often the first is sufficient, but there's no guarantee since the string
+			 * we're expecting might be split across reads. */
+			found = strstr(buf, bbs_expect_str) || (ready && strstr(expectbuf, bbs_expect_str));
+			if (!found) {
+				continue;
+			}
+			if (write(notifypfd[1], &c, 1) != 1) { /* Signal notify waiter */
+				bbs_error("write failed: %s\n", strerror(errno));
 			}
 		}
-		if (rand_alloc_fails && strstr(buf, "Simulated allocation failure")) {
+		if (rand_alloc_fails && strstr(expectbuf, "Simulated allocation failure")) {
 			rand_alloc_fails++;
 		}
 	}
@@ -402,6 +420,7 @@ int test_bbs_expect(const char *s, int ms)
 	pfd.revents = 0;
 	assert(pfd.fd != -1);
 
+	bbs_readline_init(&rldata, expectbuf, sizeof(expectbuf));
 	bbs_expect_str = s;
 	res = poll(&pfd, 1, ms);
 	bbs_expect_str = NULL;
@@ -738,7 +757,7 @@ static int run_test(const char *filename, int multiple)
 			bbs_debug(3, "Spawned child process %d\n", childpid);
 			/* Wait for the BBS to fully start */
 			/* XXX If we could receive this event outside of the BBS process, that would be more elegant */
-			res = test_bbs_expect("BBS is fully started", SEC_MS(45)); /* In extreme cases, it can take up to a minute to rebind to ports previously in use */
+			res = test_bbs_expect("BBS is fully started", SEC_MS(20));
 			usleep(250000); /* In case a test exits immediately, let spawned threads spawn before we exit */
 			if (!res) {
 				bbs_debug(3, "BBS fully started on process %d\n", childpid);
@@ -883,14 +902,14 @@ int main(int argc, char *argv[])
 			}
 			snprintf(fullpath, sizeof(fullpath), "%s/%s", XSTR(TEST_DIR), entry->d_name);
 			res |= run_test(fullpath, 1);
-			if (do_abort) {
+			if (do_abort || (option_exit_failure && res)) {
 				break;
 			}
 		}
 		closedir(dir);
 	}
 
-	sigint_handler(SIGINT); /* Restore terminal on server disconnect */
+	sigint_handler(SIGINT); /* Restore terminal on exit */
 	bbs_debug(1, "Test Framework exiting (%d)\n", res);
 	if (res) {
 		fprintf(stderr, "%d test%s %sFAILED%s\n", total_fail, ESS(total_fail), COLOR(COLOR_RED), COLOR_RESET);
