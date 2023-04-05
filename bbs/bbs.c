@@ -57,6 +57,7 @@
 #include "include/auth.h" /* use bbs_num_auth_providers */
 #include "include/utils.h" /* use print_time_elapsed, print_days_elapsed */
 #include "include/node.h"
+#include "include/user.h"
 #include "include/variables.h"
 #include "include/startup.h"
 #include "include/tls.h"
@@ -539,6 +540,7 @@ static void bbs_shutdown(void)
 	bbs_curl_shutdown(); /* Clean up cURL */
 	ssl_server_shutdown(); /* Shut down SSL/TLS */
 	login_cache_cleanup(); /* Clean up any remaining cached logins */
+	username_cache_flush(); /* Clean up any cached username mappings */
 	bbs_free_menus(); /* Clean up menus */
 	bbs_configs_free_all(); /* Clean up any remaining configs that modules didn't. */
 	bbs_vars_cleanup();

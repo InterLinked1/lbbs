@@ -118,6 +118,15 @@ int bbs_user_exists(const char *username);
 unsigned int bbs_userid_from_username(const char *username);
 
 /*!
+ * \brief Get a username from a user ID
+ * \param userid User ID to query
+ * \param[out] buf
+ * \param len Size of buf
+ * \retval 0 on match, -1 if no such user
+ */
+int bbs_username_from_userid(unsigned int userid, char *buf, size_t len);
+
+/*!
  * \brief Get a user's privilege level by username
  * \param userid User ID
  * \retval -1 if user does not exist, user privilege level if user exists
@@ -136,3 +145,6 @@ void bbs_user_list_destroy(struct bbs_user **userlist);
 
 /*! \brief Free a user */
 void bbs_user_destroy(struct bbs_user *user);
+
+/*! \brief Invalidate the user ID/username translation cache */
+void username_cache_flush(void);

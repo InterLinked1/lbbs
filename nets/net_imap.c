@@ -1436,16 +1436,11 @@ static void list_scandir(struct imap_session *imap, const char *listscandir, int
 				}
 			}
 			if (level == 0 && ns == NAMESPACE_OTHER && isdigit(*entry->d_name)) {
-				struct bbs_user *bbsuser; /* User's maildir */
-				/* This is horribly inefficient, especially since we're going to iterate over all the directories */
-				bbsuser = bbs_user_from_userid(atoi(entry->d_name));
-				if (!bbsuser) {
+				if (bbs_username_from_userid(atoi(entry->d_name), mailboxbuf, sizeof(mailboxbuf))) {
 					bbs_warning("No user for maildir %s\n", entry->d_name);
 					goto cleanup;
 				}
-				safe_strncpy(mailboxbuf, bbs_username(bbsuser), sizeof(mailboxbuf));
 				str_tolower(mailboxbuf); /* Convert to all lowercase since that's the convention we use for email */
-				bbs_user_destroy(bbsuser);
 				mailboxname = mailboxbuf; /* e.g. jsmith instead of 1 */
 			} else if (level == 0 && ns == NAMESPACE_SHARED && !isdigit(*entry->d_name)) {
 				mailboxname = entry->d_name; /* Mailbox name stays the same, this is technically a redundant instruction */

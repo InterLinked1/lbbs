@@ -25,6 +25,7 @@
 
 #include "include/user.h"
 #include "include/auth.h" /* use bbs_user_info_by_username */
+#include "include/linkedlists.h"
 
 const char *bbs_username(struct bbs_user *user)
 {
@@ -132,12 +133,67 @@ int bbs_users_dump(int fd, int verbose)
 	return 0;
 }
 
+/* User ID / username translation caching */
+struct username_id_mapping {
+	unsigned int userid;
+	RWLIST_ENTRY(username_id_mapping) entry;
+	char username[0];
+};
+
+static RWLIST_HEAD_STATIC(username_mappings, username_id_mapping);
+
+void username_cache_flush(void)
+{
+	/* In general, this cache can only grow larger over time,
+	 * (e.g. new user registration).
+	 * It is not currently bounded since most BBS's don't have
+	 * an enormoous number of users, so caching everything is fine
+	 * to avoid DB calls, since this cache is used for common operations.
+	 * We don't really expect to ever edit or delete entries.
+	 * However, if we need to invalidate the cache for some reason,
+	 * this would allow us to do so.
+	 * For now, this is only called on shutdown. */
+	RWLIST_WRLOCK_REMOVE_ALL(&username_mappings, entry, free);
+}
+
+static void username_mapping_cache_add(unsigned int userid, const char *username)
+{
+	struct username_id_mapping *m;
+	int len;
+
+	len = strlen(username);
+	m = calloc(1, sizeof(*m) + len + 1); /* Plus NUL */
+	if (likely(m != NULL)) {
+		m->userid = userid;
+		strcpy(m->username, username); /* Safe */
+		RWLIST_WRLOCK(&username_mappings);
+		RWLIST_INSERT_SORTED(&username_mappings, m, entry, userid); /* Insert in order of user ID */
+		RWLIST_UNLOCK(&username_mappings);
+	}
+}
+
 int bbs_user_exists(const char *username)
 {
 	struct bbs_user *user;
+	struct username_id_mapping *m;
+
+	/* Check the cache first, to avoid a DB call if unnecessary. */
+	RWLIST_RDLOCK(&username_mappings);
+	RWLIST_TRAVERSE(&username_mappings, m, entry) {
+		if (!strcasecmp(username, m->username)) {
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&username_mappings);
+
+	if (m) {
+		return 1;
+	}
+
 	user = bbs_user_info_by_username(username); /* Does this user exist on the BBS? */
 	if (user) {
 		/* Yup, sure does. */
+		username_mapping_cache_add(user->id, bbs_username(user)); /* Cache, so we don't have to do this again. */
 		bbs_user_destroy(user);
 		return 1;
 	}
@@ -148,6 +204,28 @@ unsigned int bbs_userid_from_username(const char *username)
 {
 	unsigned int res;
 	struct bbs_user *user;
+	struct username_id_mapping *m;
+
+	/* Check the cache first */
+	RWLIST_RDLOCK(&username_mappings);
+	RWLIST_TRAVERSE(&username_mappings, m, entry) {
+		if (!strcasecmp(username, m->username)) {
+			res = m->userid;
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&username_mappings);
+	if (m) {
+		return res;
+	}
+
+	/* Yes, there is a race condition in that we unlock and then WRLOCK to insert,
+	 * so a duplicate entry could enter the cache.
+	 * This is still relatively unlikely, and if it happened, it wouldn't hurt anything,
+	 * it would just be unnecessary.
+	 * The overhead in WRLOCKing from the beginning of the search and keeping it locked,
+	 * is probably not worth it since that would unnecessarily serialize all calls to this function.
+	 */
 
 	/* XXX Rather than fetching an entire user
 	 * just to extract the user ID, then destroying it,
@@ -171,15 +249,54 @@ unsigned int bbs_userid_from_username(const char *username)
 		return 0;
 	}
 	res = user->id;
+	username_mapping_cache_add(user->id, bbs_username(user)); /* Cache, so we don't have to do this again. */
 	bbs_user_destroy(user);
 	return res;
+}
+
+int bbs_username_from_userid(unsigned int userid, char *buf, size_t len)
+{
+	struct bbs_user *bbsuser;
+	struct username_id_mapping *m;
+
+	/* Check the cache first */
+	RWLIST_RDLOCK(&username_mappings);
+	RWLIST_TRAVERSE(&username_mappings, m, entry) {
+		if (userid == m->userid) {
+			safe_strncpy(buf, m->username, len);
+			break;
+		} else if (m->userid > userid) { /* It's not present, since the list is sorted. */
+			m = NULL;
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&username_mappings);
+
+	if (m) {
+		return 0; /* Had a cache hit */
+	}
+
+	/* This is horribly inefficient */
+	bbsuser = bbs_user_from_userid(userid);
+	if (!bbsuser) {
+		return -1;
+	}
+	safe_strncpy(buf, bbs_username(bbsuser), len);
+	username_mapping_cache_add(userid, bbs_username(bbsuser)); /* Cache, so we don't have to do this again. */
+	bbs_user_destroy(bbsuser);
+	return 0;
 }
 
 int bbs_user_priv_from_userid(unsigned int userid)
 {
 	int priv = -1;
 	int index = 0;
-	struct bbs_user *user, **userlist = bbs_user_list();
+	struct bbs_user *user, **userlist;
+
+	/* We don't check the cache here, since privileges could change during runtime,
+	 * although user IDs and username mappings are not at all likely to change. */
+
+	userlist = bbs_user_list();
 	if (!userlist) {
 		return -1;
 	}
