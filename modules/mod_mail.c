@@ -54,6 +54,7 @@ struct mailbox {
 	RWLIST_ENTRY(mailbox) entry;		/* Next mailbox */
 	unsigned int activity:1;			/* Mailbox has activity */
 	unsigned int quotavalid:1;			/* Whether cached quota calculations may still be used */
+	char *name;
 };
 
 /* Once created, mailboxes are not destroyed until module unload,
@@ -338,18 +339,18 @@ static int create_if_nexist(const char *path)
  * \brief Retrieve a mailbox, creating it if it does not already exist
  * \retval mailbox on success, NULL on failure
  */
-static struct mailbox *mailbox_find_or_create(unsigned int userid)
+static struct mailbox *mailbox_find_or_create(unsigned int userid, const char *name)
 {
 	struct mailbox *mbox;
 
-	if (!userid) {
+	if (!userid && strlen_zero(name)) {
 		bbs_error("Can't create mailbox for user ID %u\n", userid); /* Probably a bug somewhere else */
 		return NULL;
 	}
 
 	RWLIST_WRLOCK(&mailboxes);
 	RWLIST_TRAVERSE(&mailboxes, mbox, entry) {
-		if (mbox->id == userid) {
+		if ((userid && mbox->id == userid) || (!userid && mbox->name && !strcmp(name, mbox->name))) {
 			break;
 		}
 	}
@@ -364,7 +365,14 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid)
 		pthread_rwlock_init(&mbox->lock, NULL);
 		pthread_mutex_init(&mbox->uidlock, NULL);
 		mbox->id = userid;
-		snprintf(mbox->maildir, sizeof(mbox->maildir), "%s/%u", maildir, userid);
+		if (name) {
+			mbox->name = strdup(name);
+		}
+		if (userid) {
+			snprintf(mbox->maildir, sizeof(mbox->maildir), "%s/%u", maildir, userid);
+		} else {
+			snprintf(mbox->maildir, sizeof(mbox->maildir), "%s/%s", maildir, name);
+		}
 		RWLIST_INSERT_HEAD(&mailboxes, mbox, entry);
 		/* Before we return the mailbox to a mail server module for operations,
 		 * make sure that the user's mail directory actually exists. */
@@ -399,18 +407,26 @@ struct mailbox *mailbox_get(unsigned int userid, const char *name)
 
 	/* If we have a user ID, use that directly. */
 	if (!userid) {
+		char mboxpath[256];
 		if (strlen_zero(name)) {
 			bbs_error("Must specify at least either a user ID or name\n");
 			return NULL;
 		}
-		/* New mailboxes could be created while the module is running (e.g. new user registration), so we may have to query the DB anyways. */
-		userid = bbs_userid_from_username(name);
+		/* Check for mailbox with this name, explicitly (e.g. shared mailboxes) */
+		snprintf(mboxpath, sizeof(mboxpath), "%s/%s", mailbox_maildir(NULL), name);
+		if (!eaccess(mboxpath, R_OK)) {
+			mbox = mailbox_find_or_create(0, name);
+		}
+		if (!mbox) {
+			/* New mailboxes could be created while the module is running (e.g. new user registration), so we may have to query the DB anyways. */
+			userid = bbs_userid_from_username(name);
+		}
 	}
 
 	/* If we had a user ID or were able to translate the name to one, lookup the mailbox by user ID. */
 	if (userid) {
 		bbs_debug(5, "Found mailbox mapping via username directly\n");
-		mbox = mailbox_find_or_create(userid);
+		mbox = mailbox_find_or_create(userid, NULL);
 	}
 
 	/* If we still don't have a valid mailbox at this point, see if it's an alias. */
@@ -418,7 +434,7 @@ struct mailbox *mailbox_get(unsigned int userid, const char *name)
 		userid = resolve_alias(name);
 		if (userid) {
 			bbs_debug(5, "Found mailbox mapping via alias\n");
-			mbox = mailbox_find_or_create(userid);
+			mbox = mailbox_find_or_create(userid, NULL);
 		}
 	}
 
@@ -429,7 +445,7 @@ struct mailbox *mailbox_get(unsigned int userid, const char *name)
 		}
 		if (catch_all_userid) {
 			bbs_debug(5, "Found mailbox mapping via catch all\n");
-			mbox = mailbox_find_or_create(catch_all_userid);
+			mbox = mailbox_find_or_create(catch_all_userid, NULL);
 		} else {
 			bbs_warning("No user exists for catch all mailbox '%s'\n", catchall); /* If a catch all address was explicitly specified, it was probably intended that it works. */
 		}
@@ -683,7 +699,12 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 				if (!fgets(uidv, sizeof(uidv), fp) || s_strlen_zero(uidv)) {
 					bbs_error("Failed to read UID from %s (read: %s)\n", uidfile, uidv);
 				} else if (!(uidvaliditystr = strsep(&tmp, "/")) || !(uidvalidity = atoi(uidvaliditystr)) || !(uidnext = atoi(tmp))) {
-					bbs_error("Failed to parse UIDVALIDITY/UIDNEXT from %s (%s/%s)\n", uidfile, S_IF(uidvaliditystr), S_IF(tmp));
+					/* If we create a maildir but don't do anything yet, uidnext will be 0.
+					 * So !atoi isn't a sufficient check as it may have successfully parsed 0.
+					 */
+					if (!tmp || *tmp != '0') {
+						bbs_error("Failed to parse UIDVALIDITY/UIDNEXT from %s (%s/%s)\n", uidfile, S_IF(uidvaliditystr), S_IF(tmp));
+					}
 				}
 				rewind(fp);
 			}

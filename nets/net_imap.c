@@ -18,6 +18,8 @@
  * \note Supports RFC9208 QUOTA
  * \note Supports RFC2971 ID
  * \note Supports RFC4959 SASL-IR
+ * \note Supports RFC2342 namespaces
+ * \note Supports RFC 4314 ACLs
  *
  * \note STARTTLS is not supported for cleartext IMAP, as proposed in RFC2595, as this guidance
  *       is obsoleted by RFC8314. Implicit TLS (IMAPS) should be preferred.
@@ -77,12 +79,139 @@ static int imap_debug_level = 10;
 #define imap_reply_broadcast(imap, fmt, ...) _imap_broadcast(imap, "%s " fmt "\r\n", S_IF(imap->tag), ## __VA_ARGS__)
 #define imap_reply(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", S_IF(imap->tag), ## __VA_ARGS__)
 
+/* RFC 2086/4314 ACLs */
+/*! \brief Visible in LIST, LSUB, SUBSCRIBE */
+#define IMAP_ACL_LOOKUP (1 << 0)
+#define IMAP_ACL_LOOKUP_LETTER 'l'
+
+/*! \brief SELECT, STATUS */
+#define IMAP_ACL_READ (1 << 1)
+#define IMAP_ACL_READ_LETTER 'r'
+
+/*! \brief SEEN persistence */
+/*! \note There is no way for \Seen to not be persistent, so this is always enabled. */
+#define IMAP_ACL_SEEN (1 << 2)
+#define IMAP_ACL_SEEN_LETTER 's'
+
+/*! \brief Set or clear flags other than \Seen or \Deleted via STORE, or set using APPEND/COPY */
+#define IMAP_ACL_WRITE (1 << 3)
+#define IMAP_ACL_WRITE_LETTER 'w'
+
+/*! \brief Insert (APPEND, COPY) */
+#define IMAP_ACL_INSERT (1 << 4)
+#define IMAP_ACL_INSERT_LETTER 'i'
+
+/*! \brief Post (send mail to submission address for mailbox), unused by IMAP4 */
+#define IMAP_ACL_POST (1 << 5)
+#define IMAP_ACL_POST_LETTER 'p'
+
+/* RFC 4314 only ACLs */
+
+/*! \brief CREATE, new mailbox RENAME */
+#define IMAP_ACL_MAILBOX_CREATE (1 << 6)
+#define IMAP_ACL_MAILBOX_CREATE_LETTER 'k'
+
+/*! \brief DELETE mailbox, old mailbox DELETE */
+#define IMAP_ACL_MAILBOX_DELETE (1 << 7)
+#define IMAP_ACL_MAILBOX_DELETE_LETTER 'x'
+
+/*! \brief DELETE messages (\Deleted flag via STORE, APPEND, COPY) */
+#define IMAP_ACL_DELETE (1 << 8)
+#define IMAP_ACL_DELETE_LETTER 't'
+
+/*! \brief EXPUNGE, expunge as part of CLOSE */
+#define IMAP_ACL_EXPUNGE (1 << 9)
+#define IMAP_ACL_EXPUNGE_LETTER 'e'
+
+/*! \brief Administer (SETACL/DELETEACL/GETACL/LISTRIGHTS) */
+#define IMAP_ACL_ADMINISTER (1 << 10)
+#define IMAP_ACL_ADMINISTER_LETTER 'a'
+
+/*! \brief Obsolete ACLs from RFC 2086 */
+#define IMAP_ACL_UNION_CREATE_LETTER 'c'
+#define IMAP_ACL_UNION_DELETE_LETTER 'd'
+
+/*! \brief Default ACLs for different namespaces: private = everything, other/shared = nothing */
+#define IMAP_ACL_DEFAULT_PRIVATE (IMAP_ACL_LOOKUP | IMAP_ACL_READ | IMAP_ACL_SEEN | IMAP_ACL_WRITE | IMAP_ACL_INSERT | IMAP_ACL_POST | IMAP_ACL_MAILBOX_CREATE | IMAP_ACL_MAILBOX_DELETE | IMAP_ACL_DELETE | IMAP_ACL_EXPUNGE | IMAP_ACL_ADMINISTER)
+#define IMAP_ACL_DEFAULT_OTHER 0
+#define IMAP_ACL_DEFAULT_SHARED 0
+
+#define PARSE_ACL_LETTER(aclflag) \
+	case aclflag ## _LETTER: \
+		acl |= aclflag; \
+		break; \
+
+#define WRITE_ACL_LETTER(aclflag) \
+	if (acl & aclflag) { \
+		*buf++ = aclflag ## _LETTER; \
+	}
+
+/*! \brief Parse IMAP ACL from string */
+static int parse_acl(const char *aclstring)
+{
+	int acl = 0;
+
+	for (; *aclstring; aclstring++) {
+		switch (*aclstring) {
+			PARSE_ACL_LETTER(IMAP_ACL_LOOKUP);
+			PARSE_ACL_LETTER(IMAP_ACL_READ);
+			PARSE_ACL_LETTER(IMAP_ACL_SEEN);
+			PARSE_ACL_LETTER(IMAP_ACL_WRITE);
+			PARSE_ACL_LETTER(IMAP_ACL_INSERT);
+			PARSE_ACL_LETTER(IMAP_ACL_POST);
+			PARSE_ACL_LETTER(IMAP_ACL_MAILBOX_CREATE);
+			PARSE_ACL_LETTER(IMAP_ACL_MAILBOX_DELETE);
+			PARSE_ACL_LETTER(IMAP_ACL_DELETE);
+			PARSE_ACL_LETTER(IMAP_ACL_EXPUNGE);
+			PARSE_ACL_LETTER(IMAP_ACL_ADMINISTER);
+			/* If an obsolete right is specified, we must treat it as if the client included all underlying rights */
+			case IMAP_ACL_UNION_CREATE_LETTER:
+				acl |= IMAP_ACL_MAILBOX_CREATE | IMAP_ACL_MAILBOX_DELETE;
+				break;
+			case IMAP_ACL_UNION_DELETE_LETTER:
+				acl |= IMAP_ACL_DELETE | IMAP_ACL_EXPUNGE;
+				break;
+			case '\n':
+				break; /* Ignore newlines if present */
+			default:
+				bbs_warning("Unknown IMAP right: %c\n", *aclstring);
+		}
+	}
+
+	return acl;
+}
+
+static void generate_acl_string(int acl, char *buf, size_t len)
+{
+	bbs_assert(len >= 14); /* Need at least 14 for all of them */
+	WRITE_ACL_LETTER(IMAP_ACL_LOOKUP);
+	WRITE_ACL_LETTER(IMAP_ACL_READ);
+	WRITE_ACL_LETTER(IMAP_ACL_SEEN);
+	WRITE_ACL_LETTER(IMAP_ACL_WRITE);
+	WRITE_ACL_LETTER(IMAP_ACL_INSERT);
+	WRITE_ACL_LETTER(IMAP_ACL_POST);
+	WRITE_ACL_LETTER(IMAP_ACL_MAILBOX_CREATE);
+	WRITE_ACL_LETTER(IMAP_ACL_MAILBOX_DELETE);
+	WRITE_ACL_LETTER(IMAP_ACL_DELETE);
+	WRITE_ACL_LETTER(IMAP_ACL_EXPUNGE);
+	WRITE_ACL_LETTER(IMAP_ACL_ADMINISTER);
+	/* If any of the members of an obsolete right is included, we must include the obsolete right */
+	if (acl & (IMAP_ACL_MAILBOX_CREATE | IMAP_ACL_MAILBOX_DELETE)) {
+		*buf++ = IMAP_ACL_UNION_CREATE_LETTER;
+	}
+	if (acl & (IMAP_ACL_DELETE | IMAP_ACL_EXPUNGE)) {
+		*buf++ = IMAP_ACL_UNION_DELETE_LETTER;
+	}
+	*buf = '\0';
+}
+
 struct imap_session {
 	int rfd;
 	int wfd;
 	char *tag;
 	struct bbs_node *node;
-	struct mailbox *mbox;
+	struct mailbox *mbox;		/* Current mailbox (mailbox as in entire mailbox, not just a mailbox folder) */
+	struct mailbox *mymbox;		/* Pointer to user's private/personal mailbox. */
 	char *folder;
 	char *savedtag;
 	/* maildir */
@@ -91,6 +220,7 @@ struct imap_session {
 	char curdir[260];
 	unsigned int uidvalidity;
 	unsigned int uidnext;
+	int acl;					/* Cached ACL for current directory. We allowed to cache per a mailbox by the RFC. */
 	/* APPEND */
 	char appenddir[212];		/* APPEND directory */
 	char appendtmp[260];		/* APPEND tmp name */
@@ -236,6 +366,11 @@ static void imap_mbox_watcher(struct mailbox *mbox, const char *newfile)
 
 static void imap_destroy(struct imap_session *imap)
 {
+	if (imap->mbox != imap->mymbox) {
+		mailbox_unwatch(imap->mbox);
+		imap->mbox = imap->mymbox;
+		imap->mymbox = NULL;
+	}
 	if (imap->mbox) {
 		mailbox_unwatch(imap->mbox); /* We previously started watching it, so stop watching it now. */
 		imap->mbox = NULL;
@@ -308,9 +443,27 @@ static void imap_destroy(struct imap_session *imap)
 #define IMAP_REV "IMAP4rev1"
 /* List of capabilities: https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml */
 /* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
-#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR"
+#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL"
 #define IMAP_FLAGS FLAG_NAME_FLAGGED " " FLAG_NAME_SEEN " " FLAG_NAME_ANSWERED " " FLAG_NAME_DELETED " " FLAG_NAME_DRAFT
 #define HIERARCHY_DELIMITER "."
+
+/* RFC 2342 Namespaces: prefix and hierarchy delimiter */
+#define PRIVATE_NAMESPACE_PREFIX ""
+#define OTHER_NAMESPACE_PREFIX "Other Users"
+#define SHARED_NAMESPACE_PREFIX "Shared Folders"
+#define PRIVATE_NAMESPACE "((\"\" \".\"))"
+#define OTHER_NAMESPACE "((\"" OTHER_NAMESPACE_PREFIX "\" \".\"))"
+#define SHARED_NAMESPACE "((\"" SHARED_NAMESPACE_PREFIX "\" \".\"))"
+
+/* Namespaces are useful for allowing users access to other mailboxes.
+ * To handle this, we leverage imap_translate_dir to take namespaces and ACLs into account.
+ * When a SELECT is issued by the client, the prefix for the namespace is already included,
+ * and we're really none the wiser that it's in a namespace. However, we can check if it
+ * starts with the prefix for a other or shared namespaces to detect this.
+ * This may be necessary if the namespace is outside of the user's root maildir.
+ * Currently, the 3 namespaces are identical for all users, to simplify this,
+ * but in theory this need not be the case and would be simple to extend if needed.
+ */
 
 /* maildir flags, that appear in a single string and must appear in ASCII order: https://cr.yp.to/proto/maildir.html */
 #define FLAG_DRAFT 'D'
@@ -440,6 +593,22 @@ cleanup:
 		return 0; \
 	}
 
+#define SHIFT_OPTIONALLY_QUOTED_ARG(assign, s) \
+	REQUIRE_ARGS(s); \
+	if (*s == '"') { \
+		s++; \
+		assign = s; \
+		s = strchr(s, '"'); \
+		REQUIRE_ARGS(s); \
+		*s++ = '\0'; \
+		if (*s) { \
+			s++; \
+		} \
+	} else { \
+		assign = strsep(&s, " "); \
+		STRIP_QUOTES(assign); \
+	}
+
 /*! \todo There is locking in a few places, but there probably needs to be a lot more of it.
  * POP3 WRLOCKs the entire mailbox when it starts a session,
  * and we need to ensure that we try to at least grab a RDLOCK when doing anything that
@@ -455,36 +624,357 @@ cleanup:
 		imap_reply(imap, "NO Mailbox is read only"); \
 	}
 
-/*! \brief Translate an IMAP directory path to the full path of the IMAP mailbox on disk */
-static int imap_translate_dir(struct imap_session *imap, const char *directory, char *buf, size_t len)
+enum mailbox_namespace {
+	NAMESPACE_PRIVATE = 0,
+	NAMESPACE_OTHER,
+	NAMESPACE_SHARED,
+};
+
+#define DEBUG_ACL
+
+static int load_acl_file(const char *filename, const char *matchstr, int matchlen, int *acl)
 {
+	char aclbuf[72];
+	FILE *fp;
+
+	fp = fopen(filename, "r");
+	if (!fp) {
+		return -1;
+	}
+
+	while ((fgets(aclbuf, sizeof(aclbuf), fp))) {
+		char *aclstr;
+		if (strncasecmp(aclbuf, matchstr, matchlen)) {
+			continue;
+		}
+		aclstr = strchr(aclbuf, ' ');
+		if (!aclstr) {
+			bbs_error("Invalid ACL entry: %s\n", aclbuf);
+			continue;
+		}
+		aclstr++;
+		*acl = parse_acl(aclstr);
+		break;
+	}
+	fclose(fp);
+	return 0;
+}
+
+static void load_acl(struct imap_session *imap, const char *directory, enum mailbox_namespace ns, int *acl)
+{
+	char fullname[256];
+	char matchbuf[256];
+	int matchlen;
+	char *slash;
+#ifdef DEBUG_ACL
+	char buf[15];
+	bbs_debug(7, "Loading ACLs for user %d for (ns %d) %s\n", mailbox_id(imap->mbox), ns, directory);
+#endif
+
+	/* Read .acl file in the maildir to check what the user's perms are, and load them in.
+	 * If mailbox doesn't have one, it inherits from its parent.
+	 * If no match anywhere, apply defaults. */
+
+	matchlen = snprintf(matchbuf, sizeof(matchbuf), "%s ", bbs_username(imap->node->user));
+	snprintf(fullname, sizeof(fullname), "%s/.acl", directory); /* Start off in this directory and traverse up if needed */
+
+	for (;;) {
+		if (!load_acl_file(fullname, matchbuf, matchlen, acl)) {
+			goto done;
+		}
+		/* Traverse up to the .acl directory in the parent dir */
+		/*! \todo Probably should not do this actually, if no .acl file in current, apply defaults immediately */
+		slash = strrchr(fullname, '/');
+		*slash = '\0'; /* This will always succeed, slash can never be NULL */
+		slash = strrchr(fullname, '/');
+		*slash = '\0'; /* This will always succeed, slash can never be NULL */
+		if (!strcmp(fullname, mailbox_maildir(NULL))) {
+			/* XXX About as efficient as calculating strlen(mailbox_maildir(NULL)) in advance, since we have to get the length of this anyways,
+			 * unless we do that just once and subtract as needed. */
+			break; /* If we reach the root maildir, then stop. There aren't any user ACLs here, and certainly not above either */
+		}
+		strcpy(slash, "/.acl"); /* Safe, since the buffer has more room than it did initially */
+	}
+
+	/* If no ACLs specified for this user, for this mailbox, go with the default for this namespace */
+	if (ns == NAMESPACE_PRIVATE) {
+		*acl = IMAP_ACL_DEFAULT_PRIVATE;
+	} else if (ns == NAMESPACE_OTHER) {
+		*acl = IMAP_ACL_DEFAULT_OTHER;
+	} else {
+		*acl = IMAP_ACL_DEFAULT_SHARED;
+	}
+
+done:
+#ifdef DEBUG_ACL
+	generate_acl_string(*acl, buf, sizeof(buf));
+	bbs_debug(5, "Effective ACL for %s: %s\n", directory, buf);
+#endif
+}
+
+static int getacl(struct imap_session *imap, const char *directory, const char *mailbox)
+{
+	char fullname[256];
+	char buf[256];
+	FILE *fp;
+	struct dyn_str dynstr;
+
+	snprintf(fullname, sizeof(fullname), "%s/.acl", directory);
+	fp = fopen(fullname, "r");
+	if (!fp) {
+		/* No ACLs, just include the default (current user's ACL???) XXXXX */
+		return 0; 
+	}
+
+	memset(&dynstr, 0, sizeof(dynstr));
+
+	while ((fgets(buf, sizeof(buf), fp))) {
+		char appendbuf[64];
+		int len;
+		char *username, *aclstr, *s = buf;
+		username = strsep(&s, " ");
+		aclstr = s;
+		bbs_strterm(aclstr, '\n'); /* Remove newline from output */
+		len = snprintf(appendbuf, sizeof(appendbuf), " %s %s", username, aclstr); /* For now, this accomplishes (almost) nothing, but in the future we may need to manipulate first */
+		dyn_str_append(&dynstr, appendbuf, len);
+	}
+
+	fclose(fp);
+
+	imap_send(imap, "ACL %s%s", mailbox, S_IF(dynstr.buf));
+	if (dynstr.buf) {
+		free(dynstr.buf);
+	}
+
+	return 0;
+}
+
+static pthread_mutex_t acl_lock;
+
+static int setacl(struct imap_session *imap, const char *directory, const char *mailbox, const char *user, const char *newacl)
+{
+	char fullname[256];
+	char fullname2[256];
+	char findstr[64];
+	char buf[256];
+	FILE *fp, *fp2;
+	int userlen;
+	int existed = 0;
+
+	UNUSED(imap);
+	UNUSED(mailbox);
+
+	snprintf(fullname, sizeof(fullname), "%s/.acl", directory);
+	pthread_mutex_lock(&acl_lock);
+	fp = fopen(fullname, "r+"); /* Open with r+ in case we end up appending to the original file */
+	if (!fp) {
+		/* No existing ACLs, this is the easy case. Just write a new file and return.
+		 * There is technically a race condition possible here, we're the only process using this file,
+		 * but another thread could be trying to access it too. So that's why we have a lock. */
+		fp = fopen(fullname, "w");
+		if (!fp) {
+			bbs_error("Failed to open %s for writing\n", fullname);
+			pthread_mutex_unlock(&acl_lock);
+			return -1;
+		}
+		/* XXX Should probably validate and verify this first */
+		fprintf(fp, "%s %s\n", user, newacl);
+		fclose(fp);
+		pthread_mutex_unlock(&acl_lock);
+		return 0;
+	}
+
+	/* We have to read from the current ACL file and write out the new ACL file at the same time. */
+	snprintf(fullname2, sizeof(fullname2), "%s/.aclnew", directory);
+	fp2 = fopen(fullname2, "w");
+	if (!fp2) {
+		bbs_error("Failed to open %s for writing\n", fullname2);
+		pthread_mutex_unlock(&acl_lock);
+		fclose(fp);
+		return -1;
+	}
+
+	userlen = strlen(user);
+	snprintf(findstr, sizeof(findstr), "%s ", user);
+
+	while ((fgets(buf, sizeof(buf), fp))) {
+		/* XXX Note that if usernames change, we'll have to update the ACL file.
+		 * But it's worth doing it this way as we don't have to translate user IDs <=> usernames
+		 * when reading or writing the ACL file. */
+		if (existed || strncasecmp(buf, findstr, userlen + 1)) {
+			/* Just copy to the new file. */
+			fprintf(fp2, "%s", buf); /* Includes a newline already, don't add another one */
+		} else {
+			/* Okay, we found a string starting with the username, followed by a space (so it's not merely a prefix) */
+			/* We want to replace this line */
+			/* XXX Should probably validate and verify this first */
+			if (newacl) { /* Copy over, unless we're deleting */
+				fprintf(fp2, "%s %s\n", user, newacl);
+			}
+			existed = 1;
+			/* Can't break, need to copy over the rest of the file. But since users can only appear once, we know IF will always evaluate to true now */
+		}
+	}
+
+	if (existed) {
+		fclose(fp);
+		fclose(fp2);
+		/* Replace the old file with the new one */
+		if (rename(fullname2, fullname)) {
+			bbs_error("rename %s -> %s failed: %s\n", fullname2, fullname, strerror(errno));
+			unlink(fullname2);
+			pthread_mutex_unlock(&acl_lock);
+			return -1;
+		}
+		bbs_debug(5, "Replaced ACL file %s\n", fullname);
+	} else {
+		/* No rename needed, just append to the old file after all. */
+		/* XXX Should probably validate and verify this first */
+		fprintf(fp, "%s %s\n", user, newacl);
+		fclose(fp);
+		fclose(fp2);
+		unlink(fullname2); /* Remove, not needed after all */
+		bbs_debug(5, "Updated ACL file %s\n", fullname);
+	}
+	pthread_mutex_unlock(&acl_lock);
+	return 0;
+}
+
+/*! \brief Translate an IMAP directory path to the full path of the IMAP mailbox on disk */
+static int imap_translate_dir(struct imap_session *imap, const char *directory, char *buf, size_t len, int *acl)
+{
+	enum mailbox_namespace ns;
+	const char *remainder;
+	struct mailbox *mbox;
+	int res = 0;
+
+	*acl = 0; /* Assume no rights by default */
+
 	/* With the maildir format, the INBOX is the top-level maildir for a user.
 	 * Other directories are subdirectories */
 	if (!strcasecmp(directory, "INBOX")) {
 		safe_strncpy(buf, mailbox_maildir(imap->mbox), len);
+		ns = NAMESPACE_PRIVATE;
+	} else if (strstr(directory, "..")) {
+		bbs_warning("Invalid IMAP directory: %s\n", directory);
+		return -1;
 	} else {
-		/* For subdirectories, if they don't exist, don't automatically create them. */
-		/* need to prefix with . for maildir++ format */
-		snprintf(buf, len, "%s/.%s", mailbox_maildir(imap->mbox), directory);
+		/* Determine what namespace this mailbox is in */
+		if (STARTS_WITH(directory, SHARED_NAMESPACE_PREFIX)) {
+			char name[64];
+
+			/* Translate as needed, starting from the root maildir */
+			remainder = directory + STRLEN(SHARED_NAMESPACE_PREFIX); /* e.g. .public, .public.Sent */
+			if (strlen_zero(remainder)) { /* Not \Select'able */
+				return -1;
+			}
+			remainder++;
+			if (strlen_zero(remainder)) {
+				return -1;
+			}
+			safe_strncpy(name, remainder, sizeof(name));
+			bbs_strterm(name, '.');
+			mbox = mailbox_get(0, name);
+			if (!mbox) {
+				return -1;
+			}
+			imap->mbox = mbox;
+			remainder += strlen(name);
+			snprintf(buf, len, "%s/%s%s%s", mailbox_maildir(NULL), name, !strlen_zero(remainder) ? "/" : "", remainder);
+			mailbox_maildir_init(mailbox_maildir(imap->mbox)); /* Edge case: initialize if needed (necessary if user is accessing via POP before any messages ever delivered to it via SMTP) */
+			mailbox_watch(imap->mbox);
+			ns = NAMESPACE_SHARED;
+		} else if (STARTS_WITH(directory, OTHER_NAMESPACE_PREFIX)) {
+			char username[64];
+			unsigned int userid;
+			/* Translate as needed, starting from the root maildir */
+			/* This is a bit more complicated, since we need to replace the username with the user ID,
+			 * e.g. Other Users.jsmith -> 1, Other Users.jsmith.Sent -> 1/.Sent
+			 * The first chunk after OTHER_NAMESPACE_PREFIX is the directory, and everything else is the subdirectory. */
+			remainder = directory + STRLEN(OTHER_NAMESPACE_PREFIX); /* e.g. .jsmith, .jsmith.Sent */
+			if (strlen_zero(remainder)) { /* Not \Select'able */
+				return -1;
+			}
+			remainder++;
+			if (strlen_zero(remainder)) {
+				return -1;
+			}
+			safe_strncpy(username, remainder, sizeof(username));
+			bbs_strterm(username, '.');
+			userid = bbs_userid_from_username(username);
+			if (!userid) {
+				bbs_warning("No such user: %s\n", username);
+				return -1;
+			}
+			remainder += strlen(username);
+			/* Just this is \Select'able, it's the INBOX (INBOX isn't shown as a separate subdir for Other Users, etc.) */
+			snprintf(buf, len, "%s/%d%s%s", mailbox_maildir(NULL), userid, !strlen_zero(remainder) ? "/" : "", remainder); /* Don't end in a trailing slash */
+			/* Update mailbox to pointer to the right one */
+			/* imap->mbox refers to the personal mailbox, not this other user's mailbox...
+			 * imap->mbox needs to point to the other user's mailbox now. */
+			/* Keep watching our personal mailbox, but also watch the new one. */
+			mbox = mailbox_get(userid, NULL);
+			if (!mbox) {
+				return -1;
+			}
+			imap->mbox = mbox;
+			mailbox_maildir_init(mailbox_maildir(imap->mbox)); /* Edge case: initialize if needed (necessary if user is accessing via POP before any messages ever delivered to it via SMTP) */
+			mailbox_watch(imap->mbox); /*! \todo Might be ideal to always be watching ALL mailboxes to which we have access, rather than only non-personal ones when we SELECT them */
+			ns = NAMESPACE_OTHER;
+		} else { /* Personal namespace */
+			/* For subdirectories, if they don't exist, don't automatically create them. */
+			/* need to prefix with . for maildir++ format */
+			/* Any time we do a SELECT, it's all relative to our personal mailbox.
+			 * i.e. if we're selecting a mailbox in a different namespace, imap_translate_dir will handle that.
+			 * So we should always reset to our personal mailbox here first. */
+			snprintf(buf, len, "%s/.%s", mailbox_maildir(imap->mymbox), directory); /* Always evaluate in the context of our personal mailbox */
+			ns = NAMESPACE_PRIVATE;
+			if (imap->mbox != imap->mymbox) {
+				/* Switch back to personal mailbox if needed */
+				mailbox_unwatch(imap->mbox); /* Stop watching whatever other/shared mailbox we were watching */
+				imap->mbox = imap->mymbox;
+			}
+		}
 		if (eaccess(buf, R_OK)) {
-			return -1;
+			bbs_debug(5, "Directory %s does not exist\n", buf);
+			res = -1;
+			/* Load the ACLs we would have even if directory doesn't exist, for operations like CREATE where we return -1 */
 		}
 	}
-	return 0;
+
+	load_acl(imap, buf, ns, acl); /* If we succeeded so far, get the user's ACLs for this mailbox */
+	return res;
 }
+
+#define IMAP_HAS_ACL(acl, flag) (acl & (flag))
+#define IMAP_REQUIRE_ACL(acl, flag) \
+	if (!IMAP_HAS_ACL(acl, (flag))) { \
+		char _aclbuf[15]; \
+		generate_acl_string(acl, _aclbuf, sizeof(_aclbuf)); \
+		bbs_debug(4, "User missing ACL %s (have %s)\n", #flag, _aclbuf); \
+		imap_reply(imap, "NO Permission denied"); \
+		return 0; \
+	}
 
 static int set_maildir(struct imap_session *imap, const char *mailbox)
 {
+	char dir[256];
+	int acl;
 	if (strlen_zero(mailbox)) {
 		imap_reply(imap, "BAD Missing argument");
 		return -1;
 	}
 
-	if (imap_translate_dir(imap, mailbox, imap->dir, sizeof(imap->dir))) {
+	if (imap_translate_dir(imap, mailbox, dir, sizeof(dir), &acl)) {
 		imap_reply(imap, "NO No such mailbox '%s'", mailbox);
 		return -1;
 	}
 
+	IMAP_REQUIRE_ACL(acl, IMAP_ACL_READ);
+
+	/* Actually copy over ACL once we are sure it will apply. */
+	imap->acl = acl;
+	safe_strncpy(imap->dir, dir, sizeof(imap->dir));
 	imap_debug(3, "New effective maildir is %s\n", imap->dir);
 	snprintf(imap->newdir, sizeof(imap->newdir), "%s/new", imap->dir);
 	snprintf(imap->curdir, sizeof(imap->curdir), "%s/cur", imap->dir);
@@ -668,14 +1158,20 @@ static int imap_traverse(const char *path, int (*on_file)(const char *dir_name, 
 
 static int handle_select(struct imap_session *imap, char *s, int readonly)
 {
-	char *mailbox = strsep(&s, " "); /* The STATUS command will have additional arguments */
+	/* Mailbox can contain spaces, so don't use strsep for it if it's in quotes */
+	char *mailbox;
 
-	REQUIRE_ARGS(mailbox);
-	STRIP_QUOTES(mailbox);
+	REQUIRE_ARGS(s);
+
+	SHIFT_OPTIONALLY_QUOTED_ARG(mailbox, s); /* The STATUS command will have additional arguments */
 
 	/* This modifies the current maildir even for STATUS, but the STATUS command will restore the old one afterwards. */
-	if (set_maildir(imap, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX" */
+	if (set_maildir(imap, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX". It may also change the active (account) mailbox. */
 		return 0;
+	}
+	if (!readonly) {
+		static int sharedflagrights = IMAP_ACL_SEEN | IMAP_ACL_WRITE;
+		readonly = IMAP_HAS_ACL(imap->acl, IMAP_ACL_INSERT | IMAP_ACL_EXPUNGE | sharedflagrights) ? 0 : 1;
 	}
 	if (readonly <= 1) { /* SELECT and EXAMINE should update currently selected mailbox, STATUS should not */
 		REPLACE(imap->folder, mailbox);
@@ -688,6 +1184,7 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 	mailbox_has_activity(imap->mbox); /* Clear any activity flag since we're about to do a traversal. */
 	IMAP_TRAVERSAL(imap, on_select);
 	if (readonly <= 1) { /* SELECT, EXAMINE */
+		char aclstr[15];
 		imap_send(imap, "FLAGS (%s)", IMAP_FLAGS);
 		imap_send_broadcast(imap, "%u EXISTS", imap->totalnew + imap->totalcur); /* Number of messages in the mailbox. */
 		imap_send(imap, "%u RECENT", imap->totalnew); /* Number of messages with \Recent flag (maildir: new, instead of cur). */
@@ -698,6 +1195,8 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 		imap_send(imap, "OK [UIDVALIDITY %u] UIDs valid", imap->uidvalidity);
 		/* uidnext is really the current max UID allocated. The next message will have at least UID of uidnext + 1, but it could be larger. */
 		imap_send(imap, "OK [UIDNEXT %u] Predicted next UID", imap->uidnext + 1);
+		generate_acl_string(imap->acl, aclstr, sizeof(aclstr));
+		imap_send(imap, "OK [MYRIGHTS \"%s\"] ACL", aclstr);
 		/* Some other stuff might appear here, e.g. HIGHESTMODSEQ (RFC4551) that we don't currently support. */
 		/* XXX All mailboxes are READ-WRITE right now, but could be just READ-ONLY. Need to add ACL extensions for that. */
 		imap_reply(imap, "OK [%s] %s completed", readonly ? "READ-ONLY" : "READ-WRITE", readonly ? "EXAMINE" : "SELECT");
@@ -717,6 +1216,8 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 		}
 		imap_send(imap, "STATUS %s (%s)", mailbox, status_items);
 		imap_reply(imap, "OK STATUS completed");
+	} else {
+		bbs_assert(0);
 	}
 	return 0;
 }
@@ -771,6 +1272,9 @@ static int test_list_interpretation(void)
 	bbs_test_assert_equals(0, list_match("Foo.Bar", "Foo%"));
 	bbs_test_assert_equals(1, list_match("Foo.Bar", "Foo*"));
 	bbs_test_assert_equals(1, list_match("Trash", "Trash"));
+	bbs_test_assert_equals(1, list_match(".Sent", "*"));
+	bbs_test_assert_equals(0, list_match(".Sent", "%"));
+	bbs_test_assert_equals(1, list_match(".Sent", ".S%"));
 
 	return 0;
 
@@ -830,7 +1334,7 @@ static int imap_dir_has_subfolders(const char *path, const char *prefix)
 
 #define ASSOC_ATTR(flag, string) SAFE_FAST_COND_APPEND(buf, pos, left, (attrs & flag), string)
 
-static int get_attributes(struct imap_session *imap, const char *mailbox)
+static int get_attributes(const char *parentdir, const char *mailbox)
 {
 	int flags = 0;
 
@@ -838,20 +1342,20 @@ static int get_attributes(struct imap_session *imap, const char *mailbox)
 	 * But HasNoChildren and HasChildren are mandatory in the RFC, and they're pretty important attributes for the client, so compute them.
 	 * In reality, it shouldn't take *too* terribly long since the number of folders (all folders, recursively), is still likely to be
 	 * (some kind of small) constant, not even linear, so it's sublinear * sublinear. */
-	if (imap_dir_has_subfolders(mailbox_maildir(imap->mbox), mailbox)) {
+	if (imap_dir_has_subfolders(parentdir, mailbox)) {
 		flags |= DIR_HAS_CHILDREN;
 	} else {
 		flags |= DIR_NO_CHILDREN;
 	}
 
 	/* Special folders that must be named as such on our end: let the client know these are special using RFC 6154 */
-	if (!strcmp(mailbox, "Drafts")) {
+	if (!strcmp(mailbox, ".Drafts")) {
 		flags |= DIR_DRAFTS;
-	} else if (!strcmp(mailbox, "Junk")) {
+	} else if (!strcmp(mailbox, ".Junk")) {
 		flags |= DIR_JUNK;
-	} else if (!strcmp(mailbox, "Sent")) {
+	} else if (!strcmp(mailbox, ".Sent")) {
 		flags |= DIR_SENT;
-	} else if (!strcmp(mailbox, "Trash")) {
+	} else if (!strcmp(mailbox, ".Trash")) {
 		flags |= DIR_TRASH;
 	}
 
@@ -898,16 +1402,194 @@ cleanup:
 	return -1;
 }
 
+static void str_tolower(char *s)
+{
+	while (*s) {
+		*s = tolower(*s);
+		s++;
+	}
+}
+
+static void list_scandir(struct imap_session *imap, const char *listscandir, int lsub, int level, enum mailbox_namespace ns,
+	char *attributes, size_t attrlen, const char *reference, const char *prefix, const char *mailbox, int reflen, int skiplen)
+{
+	struct dirent *entry, **entries;
+	int files, fno = 0;
+
+	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
+	files = scandir(listscandir, &entries, NULL, alphasort);
+	if (files < 0) {
+		bbs_error("scandir(%s) failed: %s\n", mailbox_maildir(imap->mbox), strerror(errno));
+		return;
+	}
+	while (fno < files && (entry = entries[fno++])) {
+		if (entry->d_type == DT_DIR && (strcmp(entry->d_name, ".") && strcmp(entry->d_name, ".."))) { /* We only care about directories, not files. */
+			int myacl, flags = 0;
+			char fulldir[257];
+			char mailboxbuf[256];
+			char relativepath[257];
+			const char *mailboxname = entry->d_name;
+
+			if (ns != NAMESPACE_PRIVATE) { /* Skip special directories in the root maildir */
+				if (!strcmp(entry->d_name, "cur") || !strcmp(entry->d_name, "new") || !strcmp(entry->d_name, "tmp") || !strcmp(entry->d_name, "mailq")) {
+					goto cleanup;
+				}
+			}
+			if (level == 0 && ns == NAMESPACE_OTHER && isdigit(*entry->d_name)) {
+				struct bbs_user *bbsuser; /* User's maildir */
+				/* This is horribly inefficient, especially since we're going to iterate over all the directories */
+				bbsuser = bbs_user_from_userid(atoi(entry->d_name));
+				if (!bbsuser) {
+					bbs_warning("No user for maildir %s\n", entry->d_name);
+					goto cleanup;
+				}
+				safe_strncpy(mailboxbuf, bbs_username(bbsuser), sizeof(mailboxbuf));
+				str_tolower(mailboxbuf); /* Convert to all lowercase since that's the convention we use for email */
+				bbs_user_destroy(bbsuser);
+				mailboxname = mailboxbuf; /* e.g. jsmith instead of 1 */
+			} else if (level == 0 && ns == NAMESPACE_SHARED && !isdigit(*entry->d_name)) {
+				mailboxname = entry->d_name; /* Mailbox name stays the same, this is technically a redundant instruction */
+			} else if (*entry->d_name != '.') {
+				/* maildir subdirectories start with . (maildir++ standard) */
+				goto cleanup;
+			}
+			/* This is an instance where maildir format is nice, we don't have to recurse in this subdirectory. */
+			if (strncmp(mailboxname, reference, reflen)) {
+#ifdef EXTRA_DEBUG
+				imap_debug(10, "Directory %s doesn't start with prefix %s\n", entry->d_name, reference);
+#endif
+				goto cleanup; /* It doesn't start with the same prefix as the reference */
+			}
+
+			/* This part can get tricky, not especially for the private namespace, but to handle all namespaces properly, and subdirectories.
+			 * Private namespace is fairly straightforward.
+			 * (Paths here are relative to the global root maildir):
+			 * Other namespace:
+			 * - Other Users.jsmith.Sent -> 1/.Sent
+			 * - Shared Folders.public -> public
+			 * - Shared Folders.public.Sent -> public/.Sent
+			 *
+			 * Notice how there are only two possible levels of hierarchy here.
+			 * We can either be looking at folders in the root maildir itself, or folders that are in those folders.
+			 * This is why the level variable is always 0 (root) or 1 (subfolder).
+			 *
+			 * We need to match the folders on disk against the patterns submitted by the client.
+			 * The thing to note is that "Other Users" and "Shared Folders" will never match because they don't exist in any part of the path.
+			 * We need to skip that and jump to what comes afterwards for this part.
+			 *
+			 * So for Other Users.jsmith, we would match the "1" directory on disk.
+			 * And for Shared Folders.public, we would match the "public" directory on disk.
+			 *
+			 * skiplen will let us skip that part. So mailbox + skiplen would just leave .jsmith, .public, etc.
+			 * Clearly, for other/shared, we need to match on the first chunk (anything before the 2nd period, skipping the first period),
+			 * and anything starting with (and including) the second period is part of the subdirectory folder name.
+			 * But remember, we're not done yet, since for Other Users, we need to translate the user ID in the filepath to the username, as in the IMAP path.
+			 *
+			 * So mailboxname = the directory name for shared and the username for other, and this is then the first "chunk" in the IMAP path at mailbox + skiplen.
+			 *
+			 * For personal namespace, it's difference since we're starting from the user's maildir. So there is really only 1 level of traversal, not two.
+			 * Other and Shared effectively "escape" to the root first.
+			 */
+
+			/* listscandir is the directory we're traversing.
+			 * For level 0, this is the root maildir for other/shared.
+			 * For level 1, this is the actual mailbox itself, just like for personal namespace.
+			 */
+
+			if (ns == NAMESPACE_PRIVATE) {
+				/* For personal, you only see the contents of your mailbox, never mailboxes themselves. */
+				safe_strncpy(relativepath, entry->d_name, sizeof(relativepath)); /*! \todo Optimize for this (common case) by updating a pointer when needed, rather than copying. */
+			} else if (level == 1) {
+				/* Other or Shared, inside the mailbox
+				 * listscandir = mailbox path
+				 * mailboxname = the name of this mailbox
+				 * entry->d_name = name of the mailbox folder (e.g. .Sent, .Trash, .Sub.Folder, etc.)
+				 */
+				snprintf(relativepath, sizeof(relativepath), ".%s%s", mailboxname, entry->d_name);
+			} else {
+				/* Other or Shared, in the root maildir
+				 * listscandir = root maildir path
+				 * prefix is NULL
+				 * mailboxname = e.g. jsmith, public
+				 */
+				snprintf(relativepath, sizeof(relativepath), ".%s", mailboxname);
+			}
+
+			/* At this point, relativepath should be something we can use for a match comparison.
+			 * Note that for other/shared, a leading . is included in the part of the query we look at (mailbox + skiplen),
+			 * so we've included that above as well, since that first leading period doesn't exist anywhere in the filepaths on disk.
+			 *
+			 * list_match takes the directory name and then the query (which can contain wildcards).
+			 *
+			 * The query doesn't need to be translated, we instead translated the path on disk to fit the query.
+			 * The query is "mailbox" variable... but don't forget reference (handled above)
+			 * However, most clients seem to provide an empty reference and put everything in the mailbox argument to LIST, and that's what I've mostly tested.
+			 */
+
+#ifdef EXTRA_DEBUG
+			imap_debug(10, "Matching IMAP path '%s' against query '%s'\n", relativepath, mailbox + skiplen);
+#endif
+			if (!list_match(relativepath, mailbox + skiplen)) {
+#ifdef EXTRA_DEBUG
+				imap_debug(9, "IMAP path '%s' does not match against query '%s'\n", relativepath, mailbox + skiplen);
+#endif
+				goto cleanup;
+			}
+
+			/* If it matches, we MIGHT want to include this in the results.
+			 * That depends on if we're authorized by the ACL.
+			 * Generate the full directory name so we can load the ACL from it */
+			snprintf(fulldir, sizeof(fulldir), "%s/%s", listscandir, entry->d_name);
+			load_acl(imap, fulldir, ns, &myacl);
+
+			/* Suppress mailbox from LIST output if user doesn't at least have IMAP_ACL_LOOKUP for this mailbox. */
+			if (!IMAP_HAS_ACL(myacl, IMAP_ACL_LOOKUP)) {
+				char aclbuf[256] = "";
+				if (myacl != 0) {
+					generate_acl_string(myacl, aclbuf, sizeof(aclbuf));
+				}
+#ifdef DEBUG_ACL
+				bbs_debug(6, "User lacks permission for %s: %s\n", fulldir, aclbuf);
+#endif
+				goto cleanup;
+			}
+
+			if (ns != NAMESPACE_PRIVATE && !level) { /* Most LISTs will be for the private namespace, so check that case first */
+				/* We can't use get_attributes for the mailbox itself, since there won't be other directories
+				 * in this same directory with the maildir++ format (e.g. for mailbox public, there is .Sent folder in public, e.g. public/.Sent,
+				 * but public.Sent does not exist anywhere on disk.
+				 * But we know it has children, since every mailbox has Sent/Drafts/Junk/etc. so just hardcode that here: */
+				flags = DIR_HAS_CHILDREN;
+			} else {
+				flags = get_attributes(listscandir, entry->d_name);
+			}
+			build_attributes_string(attributes, attrlen, flags);
+			imap_send(imap, "%s (%s) \"%s\" \"%s%s%s%s\"", lsub ? "LSUB" : "LIST", attributes, HIERARCHY_DELIMITER,
+				ns == NAMESPACE_SHARED ? SHARED_NAMESPACE_PREFIX HIERARCHY_DELIMITER : ns == NAMESPACE_OTHER ? OTHER_NAMESPACE_PREFIX HIERARCHY_DELIMITER : "",
+				S_IF(prefix), prefix ? HIERARCHY_DELIMITER : "", *mailboxname == '.' ? mailboxname + 1 : mailboxname); /* Always send the delimiter */
+			if (ns != NAMESPACE_PRIVATE && !level) {
+				/* Recurse only the first time, since there are no more maildirs within afterwards */
+				list_scandir(imap, fulldir, lsub, 1, ns, attributes, attrlen, reference, mailboxname, mailbox, reflen, skiplen);
+			}
+cleanup:
+			; /* Needed so we can jump to the cleanup label */
+		}
+		free(entry);
+	}
+	free(entries);
+}
+
 static int handle_list(struct imap_session *imap, char *s, int lsub)
 {
 	char *reference, *mailbox;
 	int reflen;
-	struct dirent *entry, **entries;
-	int files, fno = 0;
 	char attributes[128];
+	const char *listscandir;
+	enum mailbox_namespace ns;
+	int skiplen = 0;
 
 	reference = strsep(&s, " ");
-	mailbox = strsep(&s, " ");
+	mailbox = s; /* Can contain spaces, so don't use strsep first */
 	REQUIRE_ARGS(reference);
 	REQUIRE_ARGS(mailbox);
 	/* Doesn't seem to matter if arguments are in quotes, so we just remove them up front. */
@@ -974,10 +1656,14 @@ static int handle_list(struct imap_session *imap, char *s, int lsub)
 	 * However, note that % and * can appear anywhere in the mailbox argument. And they function just like a wildcard character you'd expect.
 	 * For that reason, we can't just concatenate reference and mailbox and use that as the prefix. */
 
+	ns = NAMESPACE_PRIVATE;
+	listscandir = mailbox_maildir(imap->mbox);
+
 	bbs_debug(6, "LIST traversal for '%s' '%s' => %s%s\n", reference, S_IF(mailbox), reference, S_IF(mailbox));
 
 	/* XXX Hack for INBOX (since it's the top level maildir folder for the user), though this feels very klunky (but it's the target of the dir traversal, so...) */
 	if (strlen_zero(reference) && (strlen_zero(mailbox) || !strcmp(mailbox, "*") || !strcmp(mailbox, "%"))) {
+		/* Include INBOX first before doing the rest */
 		build_attributes_string(attributes, sizeof(attributes), DIR_NO_CHILDREN);
 		imap_send(imap, "%s (%s) \"%s\" \"%s\"", lsub ? "LSUB" : "LIST", attributes, HIERARCHY_DELIMITER, "INBOX");
 	} else if (!strcmp(mailbox, "INBOX")) {
@@ -987,45 +1673,25 @@ static int handle_list(struct imap_session *imap, char *s, int lsub)
 		/* XXX Again, the special handling of this feels clunky here */
 		imap_reply(imap, "OK %s completed.", lsub ? "LSUB" : "LIST");
 		return 0;
-	}
-
-	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
-	files = scandir(mailbox_maildir(imap->mbox), &entries, NULL, alphasort);
-	if (files < 0) {
-		bbs_error("scandir(%s) failed: %s\n", mailbox_maildir(imap->mbox), strerror(errno));
-		return -1;
-	}
-	while (fno < files && (entry = entries[fno++])) {
-		if (entry->d_type == DT_DIR && (strcmp(entry->d_name, ".") && strcmp(entry->d_name, ".."))) { /* We only care about directories, not files. */
-			int flags = 0;
-			if (*entry->d_name != '.') {
-				/* maildir subdirectories start with . (maildir++ standard) */
-				goto cleanup;
-			}
-			/* This is an instance where maildir format is nice, we don't have to recurse in this subdirectory. */
-			if (strncmp(entry->d_name, reference, reflen)) {
-#ifdef EXTRA_DEBUG
-				imap_debug(10, "Directory %s doesn't start with prefix %s\n", entry->d_name, reference);
-#endif
-				goto cleanup; /* It doesn't start with the same prefix as the reference */
-			} else if (!list_match(entry->d_name + reflen + 1, mailbox)) { /* Didn't match the mailbox (folder) query */
-				/* Need to add 1 since all subdirectories start with . (maildir++ format) */
-#ifdef EXTRA_DEBUG
-				imap_debug(10, "Name '%s' doesn't match query '%s'\n", entry->d_name + reflen + 1, mailbox);
-#endif
-				goto cleanup;
-			}
-
-			flags = get_attributes(imap, entry->d_name);
-			build_attributes_string(attributes, sizeof(attributes), flags);
-			/* Skip first character of directory name since it's . */
-			imap_send(imap, "%s (%s) \"%s\" \"%s\"", lsub ? "LSUB" : "LIST", attributes, HIERARCHY_DELIMITER, entry->d_name + 1); /* Always send the delimiter */
-cleanup:
-			; /* Needed so we can jump to the cleanup label */
+	} else {
+		/* Different namespace? (Not the private one) */
+		/* Example of doing that at the bottom of this page, e.g. 0 LIST "" "#shared.*" : http://www.courier-mta.org/imap/tutorial.setup.html */
+		if (STARTS_WITH(mailbox, OTHER_NAMESPACE_PREFIX)) {
+			listscandir = mailbox_maildir(NULL);
+			ns = NAMESPACE_OTHER;
+			skiplen = STRLEN(OTHER_NAMESPACE_PREFIX);
+		} else if (STARTS_WITH(mailbox, SHARED_NAMESPACE_PREFIX)) {
+			listscandir = mailbox_maildir(NULL);
+			ns = NAMESPACE_SHARED;
+			skiplen = STRLEN(SHARED_NAMESPACE_PREFIX);
 		}
-		free(entry);
 	}
-	free(entries);
+
+#ifdef EXTRA_DEBUG
+	bbs_debug(6, "Namespace type: %d, dir: %s, mailbox: %s, reflen: %d, skiplen: %d\n", ns, listscandir, mailbox, reflen, skiplen);
+#endif
+	list_scandir(imap, listscandir, lsub, 0, ns, attributes, sizeof(attributes), reference, NULL, mailbox, reflen, skiplen); /* Recursively LIST */
+
 	imap_reply(imap, "OK %s completed.", lsub ? "LSUB" : "LIST");
 	return 0;
 }
@@ -1108,9 +1774,13 @@ struct fetch_request {
 /*! \note This is re-evaluated for every single message in the folder, which is not terribly efficient */
 static int in_range(const char *s, int num)
 {
-	char buf[64];
-	char *sequence, *sequences = buf;
-	safe_strncpy(buf, s, sizeof(buf));
+	char *dup;
+	char *sequence, *sequences;
+	dup = strdup(s);
+	if (!dup) {
+		return 0;
+	}
+	sequences = dup;
 
 	while ((sequence = strsep(&sequences, ","))) {
 		int min, max;
@@ -1135,8 +1805,10 @@ static int in_range(const char *s, int num)
 		if (num > max) {
 			continue;
 		}
+		free(dup);
 		return 1; /* Matches */
 	}
+	free(dup);
 	return 0;
 }
 
@@ -1305,20 +1977,27 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 	unsigned int uidvalidity, uidnext, uidres;
 	char *olduidstr = NULL, *newuidstr = NULL;
 	unsigned long quotaleft;
+	int destacl;
 
 	sequences = strsep(&s, " "); /* Messages, specified by sequence number or by UID (if usinguid) */
-	newbox = strsep(&s, " ");
 	REQUIRE_ARGS(sequences);
-	REQUIRE_ARGS(newbox);
-	STRIP_QUOTES(newbox);
+	SHIFT_OPTIONALLY_QUOTED_ARG(newbox, s);
 
 	/* We'll be moving into the cur directory. Don't specify here, maildir_copy_msg tacks on the /cur implicitly. */
-	if (imap_translate_dir(imap, newbox, newboxdir, sizeof(newboxdir))) { /* Destination directory doesn't exist. */
+	if (imap_translate_dir(imap, newbox, newboxdir, sizeof(newboxdir), &destacl)) { /* Destination directory doesn't exist. */
 		imap_reply(imap, "NO [TRYCREATE] No such mailbox");
 		return 0;
 	}
 
 	quotaleft = mailbox_quota_remaining(imap->mbox);
+
+	IMAP_REQUIRE_ACL(destacl, IMAP_ACL_INSERT); /* Must be able to copy to dest dir */
+	/* XXX Per RFC 4314, we should only copy the flags over if the user has permission to do so.
+	 * Even if the user does not have permission, per the RFC we must not fail the COPY/APPEND with a NO,
+	 * we just silently ignore those flags.
+	 * Currently, we just always copy, as we don't parse the flags for COPY/APPEND.
+	 * This comment also applies to handle_append
+	 */
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
 	files = scandir(imap->curdir, &entries, NULL, alphasort);
@@ -1383,12 +2062,13 @@ static int handle_append(struct imap_session *imap, char *s)
 	int appendsize;
 	char *mailbox, *flags, *date, *size;
 	unsigned long quotaleft;
+	int destacl;
 
 	/* Format is mailbox [flags] [date] message literal
 	 * The message literal begins with {size} on the same line
 	 * See also RFC 3502. */
 
-	mailbox = strsep(&s, " ");
+	SHIFT_OPTIONALLY_QUOTED_ARG(mailbox, s);
 	size = strchr(s, '{');
 	if (!size) {
 		imap_reply(imap, "NO Missing message literal size");
@@ -1445,10 +2125,12 @@ static int handle_append(struct imap_session *imap, char *s)
 	}
 
 	STRIP_QUOTES(mailbox);
-	if (imap_translate_dir(imap, mailbox, imap->appenddir, sizeof(imap->appenddir))) { /* Destination directory doesn't exist. */
+	if (imap_translate_dir(imap, mailbox, imap->appenddir, sizeof(imap->appenddir), &destacl)) { /* Destination directory doesn't exist. */
 		imap_reply(imap, "NO [TRYCREATE] No such mailbox");
 		return 0;
 	}
+
+	IMAP_REQUIRE_ACL(destacl, IMAP_ACL_INSERT);
 
 	quotaleft = mailbox_quota_remaining(imap->mbox); /* Calculate current quota remaining to determine acceptance. */
 
@@ -1833,7 +2515,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				}
 				headerlist[0] = ':';
 				strcpy(headerlist + 1, bodyargs); /* Safe */
-				tmp = headerlist;
+				tmp = headerlist + 1; /* No need to check the first byte as it's already a :, so save a CPU cycle by skipping it */
 				while (*tmp) {
 					if (*tmp == ' ' || *tmp == ')') {
 						*tmp = ':';
@@ -1977,7 +2659,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			free(dyn);
 		}
 
-		if (markseen) {
+		if (markseen && IMAP_HAS_ACL(imap->acl, IMAP_ACL_SEEN)) {
 			int newflags;
 			/* I haven't actually encountered any clients that will actually hit this path... most clients peek everything and manually mark as seen,
 			 * rather than using the BODY[] item which implicitly marks as seen during processing. */
@@ -2097,7 +2779,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 	int files, fno = 0;
 	int seqno = 0;
 	int opflags = 0;
-	int oldflags;
+	int oldflags, flagpermsdenied = 0;
 
 	/* Convert something like (\Deleted) into the actual flags (parse once, use for all matches) */
 	/* Remove parentheses */
@@ -2109,6 +2791,22 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 	}
 
 	opflags = parse_flags_string(s);
+	/* Check if user is authorized to set these flags. */
+	if (opflags & FLAG_BIT_SEEN && !IMAP_HAS_ACL(imap->acl, IMAP_ACL_SEEN)) {
+		bbs_debug(3, "User denied access to modify \\Seen flag\n");
+		opflags &= ~FLAG_BIT_SEEN;
+		flagpermsdenied++;
+	}
+	if (opflags & FLAG_BIT_DELETED && !IMAP_HAS_ACL(imap->acl, IMAP_ACL_DELETE)) {
+		bbs_debug(3, "User denied access to modify \\Deleted flag\n");
+		opflags &= ~FLAG_BIT_DELETED;
+		flagpermsdenied++;
+	}
+	if (!IMAP_HAS_ACL(imap->acl, IMAP_ACL_WRITE)) {
+		/* Cannot set any other remaining flags */
+		opflags &= (opflags & (FLAG_BIT_SEEN | FLAG_BIT_DELETED)); /* Restrict to these two flags, if they are set. */
+		flagpermsdenied++;
+	}
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
 	files = scandir(imap->curdir, &entries, NULL, alphasort);
@@ -2170,6 +2868,17 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			}
 		} else {
 			imap_debug(5, "No changes in flags for message %s/%s\n", imap->curdir, entry->d_name);
+			if (flagpermsdenied) {
+				/* STORE "SHOULD NOT" fail if user has rights to modify at least one flag.
+				 * If we got here, this means user didn't have permissions to set any flags.
+				 * We can break out of the loop at this point, because if ACLs failed for one message,
+				 * they will always fail (ACLs are per mailbox, not per message).
+				 */
+				imap_reply(imap, "NO Permission denieds");
+				free(entry);
+				free(entries);
+				return 0;
+			}
 		}
 
 		/* Send the response if not silent */
@@ -2229,6 +2938,7 @@ static int handle_store(struct imap_session *imap, char *s, int usinguid)
 static int handle_create(struct imap_session *imap, char *s)
 {
 	char path[256];
+	int destacl;
 
 	REQUIRE_ARGS(s);
 	STRIP_QUOTES(s);
@@ -2246,7 +2956,8 @@ static int handle_create(struct imap_session *imap, char *s)
 		return 0;
 	}
 
-	imap_translate_dir(imap, s, path, sizeof(path)); /* Don't care about return value, since it probably doesn't exist right now and that's fine. */
+	imap_translate_dir(imap, s, path, sizeof(path), &destacl); /* Don't care about return value, since it probably doesn't exist right now and that's fine. */
+	IMAP_REQUIRE_ACL(destacl, IMAP_ACL_MAILBOX_CREATE);
 	bbs_debug(3, "IMAP client wants to create directory %s\n", path);
 	if (!eaccess(path, R_OK)) {
 		imap_reply(imap, "NO Mailbox already exists");
@@ -2270,6 +2981,7 @@ static int handle_create(struct imap_session *imap, char *s)
 static int handle_delete(struct imap_session *imap, char *s)
 {
 	char path[256];
+	int destacl;
 
 	REQUIRE_ARGS(s);
 	STRIP_QUOTES(s);
@@ -2279,10 +2991,12 @@ static int handle_delete(struct imap_session *imap, char *s)
 		return 0;
 	}
 
-	if (imap_translate_dir(imap, s, path, sizeof(path))) {
+	if (imap_translate_dir(imap, s, path, sizeof(path), &destacl)) {
 		imap_reply(imap, "NO No such mailbox with that name");
 		return 0;
 	}
+
+	IMAP_REQUIRE_ACL(destacl, IMAP_ACL_MAILBOX_DELETE);
 
 	/* If the hierarchy really matched, it would be easier in this case, since we could
 	 * just call bbs_dir_has_subdirs and reject if true (kind of, would need to exclude tmp/new/cur).
@@ -2364,7 +3078,7 @@ static int handle_rename(struct imap_session *imap, char *s)
 	char oldpath[256];
 	char newpath[256];
 	char *old, *new;
-	int res;
+	int res, srcacl, destacl;
 
 	REQUIRE_ARGS(s);
 	old = strsep(&s, " ");
@@ -2380,11 +3094,13 @@ static int handle_rename(struct imap_session *imap, char *s)
 		return 0;
 	}
 
-	if (imap_translate_dir(imap, old, oldpath, sizeof(oldpath))) {
+	if (imap_translate_dir(imap, old, oldpath, sizeof(oldpath), &srcacl)) {
 		imap_reply(imap, "NO No such mailbox with that name");
 		return 0;
 	}
-	imap_translate_dir(imap, new, newpath, sizeof(newpath)); /* Don't care about return value since if it already exists, we'll abort. */
+	imap_translate_dir(imap, new, newpath, sizeof(newpath), &destacl); /* Don't care about return value since if it already exists, we'll abort. */
+	IMAP_REQUIRE_ACL(destacl, IMAP_ACL_MAILBOX_CREATE);
+	IMAP_REQUIRE_ACL(destacl, IMAP_ACL_MAILBOX_DELETE);
 	if (!eaccess(newpath, R_OK)) {
 		imap_reply(imap, "NO Mailbox already exists");
 		return 0;
@@ -3296,6 +4012,27 @@ static int handle_getquota(struct imap_session *imap)
 	return 0;
 }
 
+static int finish_auth(struct imap_session *imap, int auth)
+{
+	imap->mymbox = mailbox_get(imap->node->user->id, NULL); /* Retrieve the mailbox for this user */
+	if (!imap->mymbox) {
+		bbs_error("Successful authentication, but unable to retrieve mailbox for user %d\n", imap->node->user->id);
+		imap_reply(imap, "BYE System error");
+		return -1; /* Just disconnect, we probably won't be able to proceed anyways. */
+	}
+	if (auth) {
+		_imap_reply(imap, "%s OK Success\r\n", imap->savedtag); /* Use tag from AUTHENTICATE request */
+		free_if(imap->savedtag);
+	} else {
+		imap_reply(imap, "OK Login completed");
+	}
+
+	imap->mbox = imap->mymbox;
+	mailbox_maildir_init(mailbox_maildir(imap->mbox)); /* Edge case: initialize if needed (necessary if user is accessing via POP before any messages ever delivered to it via SMTP) */
+	mailbox_watch(imap->mbox);
+	return 0;
+}
+
 static int handle_auth(struct imap_session *imap, char *s)
 {
 	int res;
@@ -3320,18 +4057,46 @@ static int handle_auth(struct imap_session *imap, char *s)
 	if (res) {
 		imap_reply(imap, "NO Invalid username or password"); /* No such mailbox, since wrong domain! */
 	} else {
-		imap->mbox = mailbox_get(imap->node->user->id, NULL); /* Retrieve the mailbox for this user */
-		if (!imap->mbox) {
-			bbs_error("Successful authentication, but unable to retrieve mailbox for user %d\n", imap->node->user->id);
-			imap_reply(imap, "BYE System error");
-			return -1; /* Just disconnect, we probably won't be able to proceed anyways. */
-		}
-		_imap_reply(imap, "%s OK Success\r\n", imap->savedtag); /* Use tag from AUTHENTICATE request */
-		free_if(imap->savedtag);
-		mailbox_maildir_init(mailbox_maildir(imap->mbox)); /* Edge case: initialize if needed (necessary if user is accessing via POP before any messages ever delivered to it via SMTP) */
-		mailbox_watch(imap->mbox);
+		return finish_auth(imap, 1);
 	}
 	free_if(imap->savedtag);
+	return 0;
+}
+
+static int handle_setacl(struct imap_session *imap, char *s, int delete)
+{
+	char buf[256];
+	char *mailbox, *user, *newacl;
+	int myacl;
+
+	REQUIRE_ARGS(s);
+	mailbox = strsep(&s, " ");
+	user = strsep(&s, " ");
+	newacl = s;
+	if (delete) {
+		REQUIRE_ARGS(user);
+		if (newacl) {
+			bbs_warning("Extraneous argument provided for DELETEACL? (%s)\n", newacl);
+			newacl = NULL;
+		}
+	} else {
+		REQUIRE_ARGS(newacl);
+		STRIP_QUOTES(newacl);
+	}
+	STRIP_QUOTES(mailbox);
+	STRIP_QUOTES(user);
+
+	/* If we don't have permission to list the mailbox, then we must reply with No such mailbox to avoid leaking its existence */
+	if (imap_translate_dir(imap, mailbox, buf, sizeof(buf), &myacl) || !IMAP_HAS_ACL(myacl, IMAP_ACL_LOOKUP)) {
+		imap_reply(imap, "NO No such mailbox");
+		return 0;
+	}
+	IMAP_REQUIRE_ACL(myacl, IMAP_ACL_ADMINISTER);
+	if (setacl(imap, buf, mailbox, user, newacl)) {
+		imap_reply(imap, "NO %s failed", delete ? "DELETEACL" : "SETACL");
+	} else {
+		imap_reply(imap, "OK %s complete", delete ? "DELETEACL" : "SETACL");
+	}
 	return 0;
 }
 
@@ -3445,15 +4210,7 @@ static int imap_process(struct imap_session *imap, char *s)
 			imap_reply(imap, "NO Invalid username or password");
 			return 0;
 		}
-		imap->mbox = mailbox_get(imap->node->user->id, NULL); /* Retrieve the mailbox for this user */
-		if (!imap->mbox) {
-			bbs_error("Successful authentication, but unable to retrieve mailbox for user %d\n", imap->node->user->id);
-			imap_reply(imap, "BYE System error");
-			return -1; /* Just disconnect, we probably won't be able to proceed anyways. */
-		}
-		imap_reply(imap, "OK Login completed");
-		mailbox_maildir_init(mailbox_maildir(imap->mbox)); /* Edge case: initialize if needed (necessary if user is accessing via POP before any messages ever delivered to it via SMTP) */
-		mailbox_watch(imap->mbox);
+		return finish_auth(imap, 0);
 	/* Past this point, must be logged in. */
 	} else if (!bbs_user_is_registered(imap->node->user)) {
 		bbs_warning("'%s' command may not be used in the unauthenticated state\n", command);
@@ -3471,7 +4228,8 @@ static int imap_process(struct imap_session *imap, char *s)
 		}
 		return res;
 	} else if (!strcasecmp(command, "NAMESPACE")) {
-		imap_send(imap, "NAMESPACE ((\"\" \".\")) NIL NIL"); /* Single personal namespace */
+		/* Good article for understanding namespaces: https://utcc.utoronto.ca/~cks/space/blog/sysadmin/IMAPPrefixesClientAndServer */
+		imap_send(imap, "NAMESPACE %s %s %s", PRIVATE_NAMESPACE, OTHER_NAMESPACE, SHARED_NAMESPACE);
 		imap_reply(imap, "NAMESPACE command completed");
 	} else if (!strcasecmp(command, "LIST")) {
 		return handle_list(imap, s, 0);
@@ -3498,13 +4256,14 @@ static int imap_process(struct imap_session *imap, char *s)
 		imap_reply(imap, "OK CHECK Completed"); /* Nothing we need to do now */
 	/* Selected state */
 	} else if (!strcasecmp(command, "CLOSE")) {
-		if (imap->folder) {
+		if (imap->folder && IMAP_HAS_ACL(imap->acl, IMAP_ACL_EXPUNGE)) {
 			imap_traverse(imap->curdir, on_close, imap);
 		}
 		imap->dir[0] = imap->curdir[0] = imap->newdir[0] = '\0';
 		imap_reply(imap, "OK CLOSE completed");
 	} else if (!strcasecmp(command, "EXPUNGE")) {
 		IMAP_NO_READONLY(imap);
+		IMAP_REQUIRE_ACL(imap->acl, IMAP_ACL_EXPUNGE);
 		if (imap->folder) {
 			imap->expungeindex = 0;
 			imap_traverse(imap->curdir, on_expunge, imap);
@@ -3575,12 +4334,71 @@ static int imap_process(struct imap_session *imap, char *s)
 	 * If they try to UNSUBSCRIBE, definitely reject that. */
 	} else if (!strcasecmp(command, "SUBSCRIBE")) {
 		IMAP_NO_READONLY(imap);
+		/* Since we don't check for mailbox existence (and everything is always subscribed anyways), no real need to check ACLs here */
 		bbs_warning("Subscription attempt for %s for mailbox %d\n", S_IF(s), mailbox_id(imap->mbox));
 		imap_reply(imap, "OK SUBSCRIBE completed"); /* Everything available is already subscribed anyways, so can't hurt */
 	} else if (!strcasecmp(command, "UNSUBSCRIBE")) {
 		IMAP_NO_READONLY(imap);
 		bbs_warning("Unsubscription attempt for %s for mailbox %d\n", S_IF(s), mailbox_id(imap->mbox));
 		imap_reply(imap, "NO Permission denied");
+	} else if (!strcasecmp(command, "MYRIGHTS")) {
+		char buf[256];
+		int myacl;
+		REQUIRE_ARGS(s);
+		STRIP_QUOTES(s);
+		/* If we don't have permission to list the mailbox, then we must reply with No such mailbox to avoid leaking its existence */
+		if (imap_translate_dir(imap, s, buf, sizeof(buf), &myacl) || !IMAP_HAS_ACL(myacl, IMAP_ACL_LOOKUP)) {
+			imap_reply(imap, "NO No such mailbox");
+			return 0;
+		}
+		IMAP_REQUIRE_ACL(myacl, IMAP_ACL_LOOKUP | IMAP_ACL_READ | IMAP_ACL_INSERT | IMAP_ACL_MAILBOX_CREATE | IMAP_ACL_MAILBOX_DELETE | IMAP_ACL_ADMINISTER);
+		generate_acl_string(myacl, buf, sizeof(buf));
+		imap_send(imap, "MYRIGHTS %s %s", s, buf);
+		imap_reply(imap, "OK MYRIGHTS completed");
+	} else if (!strcasecmp(command, "LISTRIGHTS")) {
+		char buf[256];
+		char *mailbox;
+		int myacl;
+		REQUIRE_ARGS(s);
+		mailbox = strsep(&s, " ");
+		REQUIRE_ARGS(s);
+		STRIP_QUOTES(mailbox);
+		/* If we don't have permission to list the mailbox, then we must reply with No such mailbox to avoid leaking its existence */
+		if (imap_translate_dir(imap, mailbox, buf, sizeof(buf), &myacl) || !IMAP_HAS_ACL(myacl, IMAP_ACL_LOOKUP)) {
+			imap_reply(imap, "NO No such mailbox");
+			return 0;
+		}
+		IMAP_REQUIRE_ACL(myacl, IMAP_ACL_ADMINISTER);
+		/* First chunk is rights always granted to this user in the mailbox.
+		 * Subsequent ones are rights that MAY be granted, and rights in a chunk must be granted together.
+		 * No repeats allowed.
+		 *
+		 * Here we assume no rights always granted (empty string), and every right can be granted individually.
+		 * XXX Here IMAP_ACL_UNION_CREATE_LETTER and IMAP_ACL_UNION_DELETE_LETTER are ignored.
+		 */
+		imap_send(imap, "LISTRIGHTS %s %s \"\" %c %c %c %c %c " "%c %c " "%c %c " "%c", mailbox, s,
+			IMAP_ACL_LOOKUP_LETTER, IMAP_ACL_READ_LETTER, IMAP_ACL_SEEN_LETTER, IMAP_ACL_WRITE_LETTER, IMAP_ACL_POST_LETTER,
+			IMAP_ACL_MAILBOX_CREATE_LETTER, IMAP_ACL_MAILBOX_DELETE_LETTER,
+			IMAP_ACL_DELETE_LETTER, IMAP_ACL_EXPUNGE_LETTER,
+			IMAP_ACL_ADMINISTER_LETTER);
+		imap_reply(imap, "OK GETACL complete");
+	} else if (!strcasecmp(command, "GETACL")) {
+		char buf[256];
+		int myacl;
+		REQUIRE_ARGS(s);
+		STRIP_QUOTES(s);
+		/* If we don't have permission to list the mailbox, then we must reply with No such mailbox to avoid leaking its existence */
+		if (imap_translate_dir(imap, s, buf, sizeof(buf), &myacl) || !IMAP_HAS_ACL(myacl, IMAP_ACL_LOOKUP)) {
+			imap_reply(imap, "NO No such mailbox");
+			return 0;
+		}
+		IMAP_REQUIRE_ACL(myacl, IMAP_ACL_ADMINISTER);
+		getacl(imap, buf, s);
+		imap_reply(imap, "OK GETACL complete");
+	} else if (!strcasecmp(command, "SETACL")) {
+		return handle_setacl(imap, s, 0);
+	} else if (!strcasecmp(command, "DELETEACL")) {
+		return handle_setacl(imap, s, 1);
 	} else if (!strcasecmp(command, "TESTLOCK")) {
 		/* Hold the mailbox lock for a moment. */
 		/*! \note This is only used for the test suite, it is not part of any IMAP standard or intended for clients. */
@@ -3623,7 +4441,7 @@ static void handle_client(struct imap_session *imap)
 			break;
 		}
 		word2 = strchr(buf, ' ');
-		if (word2++ && !strlen_zero(word2) && !strncasecmp(word2, "LOGIN", STRLEN("LOGIN"))) {
+		if (imap->inauth || (word2++ && !strlen_zero(word2) && !strncasecmp(word2, "LOGIN", STRLEN("LOGIN")))) {
 			bbs_debug(6, "%p => <LOGIN REDACTED>\n", imap); /* Mask login to avoid logging passwords */
 		} else if (!imap->appendsize) {
 			bbs_debug(6, "%p => %s\n", imap, buf);
@@ -3770,6 +4588,8 @@ static int load_module(void)
 		return -1;
 	}
 
+	pthread_mutex_init(&acl_lock, NULL);
+
 	if (bbs_pthread_create(&imap_listener_thread, NULL, imap_listener, NULL)) {
 		bbs_error("Unable to create IMAP listener thread.\n");
 		close_if(imap_socket);
@@ -3808,6 +4628,7 @@ static int unload_module(void)
 		bbs_unregister_network_protocol(imaps_port);
 		close_if(imaps_socket);
 	}
+	pthread_mutex_destroy(&acl_lock);
 	return 0;
 }
 

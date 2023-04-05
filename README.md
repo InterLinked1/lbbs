@@ -23,7 +23,12 @@ Key features and capabilities include:
 - Automatic menu screen generation and resizing
 
 - Electronic mail (SMTP, POP3, IMAP4)
-  - [MailScript filtering engine](https://github.com/InterLinked1/lbbs/blob/master/configs/.rules) for flexible, custom, dynamic mail filtering rules (Sieve alternative)
+  - Aliases
+  - Mailing lists
+  - Mailbox quotas
+  - Shared mailboxes and ACL controls
+  - Filtering
+    - [MailScript filtering engine](https://github.com/InterLinked1/lbbs/blob/master/configs/.rules) for flexible, custom, dynamic mail filtering rules (Sieve alternative)
 
 - Newsgroups (NNTP)
 
