@@ -25,6 +25,7 @@
 #include "include/transfer.h"
 #include "include/node.h" /* for node->user */
 #include "include/user.h"
+#include "include/utils.h"
 
 static char rootdir[84];
 static int rootlen;
@@ -176,7 +177,7 @@ static int __transfer_set_path(struct bbs_node *node, const char *function, cons
 		}
 	}
 
-	if (require_existence && eaccess(fullpath, R_OK)) {
+	if (require_existence && !bbs_file_exists(fullpath)) {
 		bbs_debug(5, "Path %s does not exist\n", fullpath);
 		errno = ENOENT;
 		return -1; /* Doesn't exist, don't change the path. */

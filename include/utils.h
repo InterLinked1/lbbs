@@ -320,6 +320,13 @@ int bbs_dir_has_subdirs(const char *path);
 long bbs_dir_size(const char *path);
 
 /*!
+ * \brief Check if a file exists
+ * \param path Full path to file
+ * \retval 1 if file exists, 0 if file does not exist
+ */
+int bbs_file_exists(const char *path);
+
+/*!
  * \brief Create a temporary FILE*
  * \param template template ending in XXXXXX to pass to mkstemp
  * \param mode File mode for chmod

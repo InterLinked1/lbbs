@@ -155,8 +155,8 @@ int bbs_make_email_file(FILE *p, const char *subject, const char *body, const ch
 			friendlyname = filename; /* no specified name, so use the full base file name */
 		}
 
-		if (eaccess(fullname, R_OK)) {
-			bbs_error("Failed to open file: %s\n", fullname);
+		if (!bbs_file_exists(fullname)) {
+			bbs_error("File does not exist: %s\n", fullname);
 			res = -1;
 			continue;
 		}

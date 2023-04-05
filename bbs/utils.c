@@ -561,6 +561,16 @@ long bbs_dir_size(const char *path)
 	return size;
 }
 
+int bbs_file_exists(const char *path)
+{
+	struct stat st;
+
+	/* stat() is supposedly the most efficient way to check existence,
+	 * faster than access or other functions. */
+
+	return stat(path, &st) ? 0 : 1;
+}
+
 FILE *bbs_mkftemp(char *template, mode_t mode)
 {
 	FILE *p;

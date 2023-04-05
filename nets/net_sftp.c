@@ -151,7 +151,7 @@ static struct bbs_user *auth_by_pubkey(const char *user, struct ssh_key_struct *
 		return NULL;
 	}
 	snprintf(keyfile, sizeof(keyfile), "%s/home/%d/ssh.pub", bbs_transfer_rootdir(), userid);
-	if (eaccess(keyfile, R_OK)) {
+	if (!bbs_file_exists(keyfile)) {
 		bbs_auth("Public key authentication failed for '%s' (no public key for user)\n", user);
 		return NULL;
 	}
@@ -851,7 +851,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 						handle_errno(msg);
 						break;
 					}
-					if (!eaccess(realnewpath, R_OK)) { /* If target already exists, it's a no go */
+					if (bbs_file_exists(realnewpath)) { /* If target already exists, it's a no go */
 						errno = EEXIST;
 						handle_errno(msg);
 					} else {

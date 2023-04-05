@@ -94,7 +94,7 @@ static void *gopher_handler(void *varg)
 	bbs_debug(1, "Gopher request from %s: %s => %s\n", node->ip, buf, fullpath);
 
 	/* Dangerous path request or nonexistent file */
-	if (strstr(buf, "..") || eaccess(fullpath, R_OK) || stat(fullpath, &st)) {
+	if (strstr(buf, "..") || stat(fullpath, &st)) {
 		dprintf(node->fd, "%c'%s' doesn't exist!\r\n", GOPHER_ERROR, buf);
 		dprintf(node->fd, "%c'This resource cannot be located.\r\n", GOPHER_INFO);
 		goto cleanup;

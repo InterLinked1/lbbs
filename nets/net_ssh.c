@@ -58,9 +58,10 @@ static pthread_t ssh_listener_thread;
 
 /* This mainly exists so that I can test public key authentication with PuTTY/KiTTY.
  * If anonymous authentication is possible, then they will force you to use that instead.
- * Make sure this is defined to have all authentication options be available.
+ * So, if you're a developer using PuTTY/KiTTY to test public key auth, comment this out.
+ * Otherwise, make sure this is defined to have all authentication options be available.
  */
-//#define ALLOW_ANON_AUTH
+#define ALLOW_ANON_AUTH
 
 static int ssh_port = DEFAULT_SSH_PORT;
 /* Key loading defaults */
@@ -315,7 +316,7 @@ static struct bbs_user *auth_by_pubkey(const char *user, struct ssh_key_struct *
 		return NULL;
 	}
 	snprintf(keyfile, sizeof(keyfile), "%s/home/%d/ssh.pub", bbs_transfer_rootdir(), userid);
-	if (eaccess(keyfile, R_OK)) {
+	if (!bbs_file_exists(keyfile)) {
 		bbs_auth("Public key authentication failed for '%s' (no public key for user)\n", user);
 		return NULL;
 	}

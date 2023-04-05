@@ -40,7 +40,7 @@ static int calc_exec(struct bbs_node *node, const char *args)
 
 	UNUSED(args);
 
-	if (eaccess("/usr/bin/bc", R_OK)) {
+	if (eaccess("/usr/bin/bc", X_OK)) {
 		/* If bc isn't available, can't proceed */
 		bbs_error("/usr/bin/bc not found\n");
 		return 0;

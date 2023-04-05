@@ -181,7 +181,7 @@ static int ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir,
 	}
 
 	/* Overwriting is basically deleting and then writing, unless we're appending */
-	if (!bbs_transfer_candelete(ftp->node, fulldir) && strcmp(flags, "a") && !eaccess(fullfile, R_OK)) {
+	if (!bbs_transfer_candelete(ftp->node, fulldir) && strcmp(flags, "a") && bbs_file_exists(fullfile)) {
 		return ftp_write(ftp, 450, "File \"%s\" already exists and may not be overwritten\n", file);
 	}
 
@@ -685,7 +685,7 @@ static void *ftp_handler(void *varg)
 			/* Use bbs_transfer_set_disk_file_relative since we don't want to require that the target file exists (in fact, it must not) */
 			} else if (bbs_transfer_set_disk_path_relative_nocheck(node, bbs_transfer_get_user_path(node, fulldir), rest, newfullfile, sizeof(newfullfile))) {
 				res = ftp_write(ftp, 450, "File \"%s\" cannot be the new target\n", rest);
-			} else if (!eaccess(newfullfile, R_OK)) {
+			} else if (bbs_file_exists(newfullfile)) {
 				res = ftp_write(ftp, 450, "File \"%s\" already exists\n", rest);
 			} else {
 				MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE, fullfile);
@@ -721,7 +721,7 @@ static void *ftp_handler(void *varg)
 			char fullfile[386];
 			if (bbs_transfer_set_disk_path_relative_nocheck(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "\"%s\" already exists\n", rest);
-			} else if (!eaccess(fullfile, R_OK)) {
+			} else if (bbs_file_exists(fullfile)) {
 				res = ftp_write(ftp, 450, "\"%s\" already exists\n", rest);
 			} else {
 				MIN_FTP_PRIV(TRANSFER_NEWDIR, fullfile);

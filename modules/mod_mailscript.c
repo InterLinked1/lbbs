@@ -29,6 +29,7 @@
 #include "include/mod_mail.h"
 #include "include/stringlist.h"
 #include "include/variables.h"
+#include "include/utils.h"
 
 #define REQUIRE_ARG(s) \
 	if (strlen_zero(s)) { \
@@ -228,7 +229,7 @@ static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastre
 		} else {
 			file = s;
 		}
-		if (!eaccess(file, R_OK)) {
+		if (bbs_file_exists(file)) {
 			match = 1;
 		}
 	} else {
@@ -342,7 +343,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 	int lineno = 0;
 	int if_count = 0;
 
-	if (eaccess(rulesfile, R_OK)) {
+	if (!bbs_file_exists(rulesfile)) {
 		bbs_debug(7, "File %s doesn't exist, no rules to evaluate\n", rulesfile);
 		return 0;
 	}

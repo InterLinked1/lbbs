@@ -551,10 +551,7 @@ static inline int path_file_exists(const char *dir, const char *file)
 {
 	char buf[256];
 	snprintf(buf, sizeof(buf), "%s%s", dir, file);
-	if (eaccess(buf, F_OK)) { /* It doesn't even exist. */
-		return 0;
-	}
-	return 1;
+	return bbs_file_exists(buf);
 }
 
 /*! \brief 80 columns of spaces */
@@ -760,7 +757,7 @@ static void http_handler(struct bbs_node *node, int secure)
 		/* File exists? */
 		snprintf(fullpath, sizeof(fullpath), "%s%s%s", http_docroot, req.path, S_IF(req.file));
 		bbs_debug(6, "Full path: %s\n", fullpath);
-		if (eaccess(fullpath, F_OK)) { /* It doesn't even exist. */
+		if (!bbs_file_exists(fullpath)) { /* It doesn't even exist. */
 			send_response(&req, HTTP_NOT_FOUND);
 			continue;
 		} else if (eaccess(fullpath, R_OK)) { /* It exists, but it's not readable by the BBS user */

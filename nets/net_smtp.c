@@ -1519,7 +1519,7 @@ static void *smtp_async_send(void *varg)
 	 */
 
 	snprintf(fullname, sizeof(fullname), "%s/%s", mailnewdir, filename);
-	if (eaccess(fullname, R_OK)) {
+	if (!bbs_file_exists(fullname)) {
 		/* If we couldn't acquire the lock immediately,
 		 * that means the queue thread was already running.
 		 * It may or may not have already picked up this file,
