@@ -507,9 +507,11 @@ static int login_cache(struct bbs_node *node, const char *username, const char *
 	 * These offer a reasonable tradeoff between security and performance.
 	 */
 
+#ifndef TRUST_LOCALHOST
 	if (!strcmp(node->ip, "127.0.0.1")) {
 		return -1; /* Don't allow cached logins from localhost, this combines attack surfaces */
 	}
+#endif
 
 	l = calloc(1, sizeof(*l));
 	if (!l) {
