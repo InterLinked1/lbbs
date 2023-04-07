@@ -332,8 +332,37 @@ static int run(void)
 	CLIENT_DRAIN(client1);
 
 	/* SEARCH */
-	SWRITE(client1, "a31 UID SEARCH LARGER 20 SEEN HEADER \"Content-Type\" \"plain\" BODY \"test\" OR OR SMALLER 200000 NOT FROM \"John Smith\" NOT FROM \"Paul Smith\"" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "a31 OK UID SEARCH");
+	SWRITE(client1, "a33 UID SEARCH LARGER 20 SEEN HEADER \"Content-Type\" \"plain\" BODY \"test\" OR OR SMALLER 200000 NOT FROM \"John Smith\" NOT FROM \"Paul Smith\"" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "a33 OK UID SEARCH");
+	CLIENT_DRAIN(client1);
+
+	/* Keywords (custom flags) */
+	SWRITE(client1, "a34 STORE 1 +FLAGS ($label1)" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "$label1");
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "a35 FETCH 1 (FLAGS)" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "$label1");
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "a36 STORE 1 +FLAGS ($label2)" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "$label2");
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "a36 FETCH 1 (FLAGS)" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "$label1 $label2");
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "a37 STORE 1 -FLAGS ($label1)" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "$label2");
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "a38 STORE 1 FLAGS ($label3)" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "$label3");
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "a39 FETCH 1 (FLAGS)" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "$label3");
 	CLIENT_DRAIN(client1);
 
 	/* LOGOUT */

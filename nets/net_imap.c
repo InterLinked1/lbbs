@@ -19,7 +19,7 @@
  * \note Supports RFC2971 ID
  * \note Supports RFC4959 SASL-IR
  * \note Supports RFC2342 namespaces
- * \note Supports RFC 4314 ACLs
+ * \note Supports RFC4314 ACLs
  *
  * \note STARTTLS is not supported for cleartext IMAP, as proposed in RFC2595, as this guidance
  *       is obsoleted by RFC8314. Implicit TLS (IMAPS) should be preferred.
@@ -225,11 +225,13 @@ struct imap_session {
 	char appenddir[212];		/* APPEND directory */
 	char appendtmp[260];		/* APPEND tmp name */
 	char appendnew[260];		/* APPEND new name */
+	char appendkeywords[27];	/* APPEND keywords (custom flags) */
 	char *appenddate;			/* APPEND optional date */
 	int appendflags;			/* APPEND optional flags */
 	int appendfile;				/* File descriptor of current APPEND file */
 	unsigned int appendsize;	/* Expected size of APPEND */
 	unsigned int appendcur;		/* Bytes received so far in APPEND transfer */
+	unsigned int numappendkeywords:5; /* Number of append keywords. We only need 5 bits since this cannot exceed 26. */
 	unsigned int appendfail:1;
 	/* Traversal flags */
 	unsigned int totalnew;		/* In "new" maildir. Will be moved to "cur" when seen. */
@@ -478,10 +480,134 @@ static void imap_destroy(struct imap_session *imap)
 		*buf++ = letter; \
 	}
 
-static int parse_flags_string(char *s)
+/* The implementation of how keywords are stored is based on how Dovecot stores keywords:
+ * https://doc.dovecot.org/admin_manual/mailbox_formats/maildir/
+ * We use 26 lowercase letters, to differentiate from IMAP flags (uppercase letters).
+ * However, we don't a uidlist file, and we store the keywords in a separate file.
+ * The implementation is handled fully in net_imap, since other modules don't care about keywords.
+ */
+
+#define MAX_KEYWORDS 26
+
+/*! \brief Check filename for the mapping for keyword. If one does not exist and there is room ( < 26), it will be created. */
+static void parse_keyword(struct imap_session *imap, const char *s)
+{
+	char filename[266];
+	char buf[32];
+	FILE *fp;
+	char index = 0;
+
+	/* Many keywords start with $, but not all of them do */
+	if (imap->numappendkeywords >= MAX_KEYWORDS) {
+		bbs_warning("Can't store any more keywords\n");
+		return;
+	}
+
+	/* Check using file in current maildir */
+	snprintf(filename, sizeof(filename), "%s/.keywords", imap->dir);
+	/* Open the file in read + append mode.
+	 * If the file does not yet exist, it should be created.
+	 * However, we need to lock if we're appending, so this whole thing must be atomic.
+	 */
+
+	mailbox_uid_lock(imap->mbox); /* We're not doing anything with the UID, but that's a global short-lived lock for the mailbox we can use (unlike mailbox_wrlock) */
+	fp = fopen(filename, "a+"); /* XXX Silly to reopen this file in every loop of parse_flags_string. In practice, most messages will probably only have 1 keyword, if any. */
+	if (unlikely(!!!fp)) { /* same as fp == NULL */
+		bbs_error("File %s does not exist and could not be created: %s\n", filename, strerror(errno)); /* This really should not happen */
+		mailbox_uid_unlock(imap->mbox);
+		return;
+	}
+
+	/* Unlike dovecot, which indexes 0... 25, since it can still store more in the index file,
+	 * we strictly store a max of 26 keywords, indexed a...z, since more are not usable if they can't be stored in the filename
+	 * (we don't have an index file, like dovecot does)
+	 * This file MUST NOT BE MANUALLY MODIFIED (in particular, keywords MUST NOT be reordered), since the filenames store the index into the file of the keyword.
+	 * and such an operation would result in all the keywords changing in arbitrary ways.
+	 *
+	 * Because keywords are stored per maildir, different 'letters' (indices) in different maildirs for a mailbox
+	 * may in fact refer to the same actual keyword, and vice versa.
+	 */
+
+	while ((fgets(buf, sizeof(buf), fp))) {
+		const char *keyword = buf + 2; /* Skip index + space */
+		bbs_strterm(buf, '\n');
+		if (!strlen_zero(keyword) && !strcmp(keyword, s)) {
+			imap->appendkeywords[imap->numappendkeywords++] = buf[0]; /* Safe, since we know we're in bounds */
+			fclose(fp);
+			mailbox_uid_unlock(imap->mbox);
+			return;
+		}
+		index++;
+	}
+
+	/* Didn't find it. Add it if we can. */
+	if (index >= MAX_KEYWORDS) {
+		bbs_warning("Can't store any new keywords for this maildir (already have %d)\n", index);
+	} else {
+		char newindex = 'a' + index;
+		fprintf(fp, "%c %s\n", newindex, s);
+		imap->appendkeywords[imap->numappendkeywords++] = newindex; /* Safe, since we know we're in bounds */
+	}
+
+	mailbox_uid_unlock(imap->mbox);
+	fclose(fp);
+}
+
+static int gen_keyword_names(struct imap_session *imap, const char *s, char *inbuf, size_t inlen)
+{
+	FILE *fp;
+	char fbuf[32];
+	char filename[266];
+	char *buf = inbuf;
+	int matches = 0;
+	int keywordslen = 0;
+	int left = inlen;
+
+	snprintf(filename, sizeof(filename), "%s/.keywords", imap->dir);
+
+	*buf = '\0';
+	fp = fopen(filename, "r");
+	if (!fp) {
+		return 0;
+	}
+
+	while ((fgets(fbuf, sizeof(fbuf), fp))) {
+		if (!s || strchr(s, fbuf[0])) {
+			matches++;
+			bbs_strterm(fbuf, '\n');
+			SAFE_FAST_COND_APPEND_NOSPACE(inbuf, buf, left, 1, " %s", fbuf + 2);
+		}
+	}
+
+	if (s) {
+		while (*s) {
+			if (islower(*s)) {
+				keywordslen++;
+			}
+			s++;
+		}
+
+		if (keywordslen > matches) {
+			bbs_warning("File has %d flags, but we only have mappings for %d of them?\n", keywordslen, matches);
+		}
+	}
+	fclose(fp);
+	return matches;
+}
+
+/*! \brief Convert named flag or keyword into a single character for maildir filename */
+/*! \note If imap is not NULL, custom keywords are stored in imap->appendkeywords (size is stored in imap->numappendkeywords) */
+static int parse_flags_string(struct imap_session *imap, char *s)
 {
 	int flags = 0;
 	char *f;
+
+	/* Reset keywords */
+	if (imap) {
+		imap->appendkeywords[0] = '\0';
+		imap->numappendkeywords = 0;
+	}
+
 	while ((f = strsep(&s, " "))) {
 		if (strlen_zero(f)) {
 			continue;
@@ -496,14 +622,20 @@ static int parse_flags_string(char *s)
 			flags |= FLAG_BIT_DELETED;
 		} else if (!strcasecmp(f, FLAG_NAME_DRAFT)) {
 			flags |= FLAG_BIT_DRAFT;
-		} else {
-			bbs_warning("Failed to parse flag: %s\n", f);
+		} else if (*f == '\\') {
+			bbs_warning("Failed to parse flag: %s\n", f); /* Unknown non-custom flag */
+		} else if (imap) { /* else, it's a custom flag (keyword), if we have a mailbox, check the translation. */
+			parse_keyword(imap, f);
 		}
+	}
+	if (imap) {
+		imap->appendkeywords[imap->numappendkeywords] = '\0'; /* Null terminate the keywords buffer */
 	}
 	return flags;
 }
 
-static int parse_flags_letters(const char *f)
+/*! \param keywords[out] Pointer to beginning of keywords, if any */
+static int parse_flags_letters(const char *f, const char **keywords)
 {
 	int flags = 0;
 
@@ -528,6 +660,11 @@ static int parse_flags_letters(const char *f)
 			case FLAG_TRASHED:
 				flags |= FLAG_BIT_DELETED;
 				break;
+			case 'a' ... 'z':
+				if (keywords) {
+					*keywords = f;
+				}
+				return flags; /* If we encounter keywords (custom flags), we know we're done parsing builtin flags */
 			case FLAG_PASSED:
 			case FLAG_REPLIED:
 			default:
@@ -539,13 +676,22 @@ static int parse_flags_letters(const char *f)
 	return flags;
 }
 
-static int parse_flags_letters_from_filename(const char *filename, int *flags)
+/*! \param keywordsbuf. Must be of size 27 */
+static int parse_flags_letters_from_filename(const char *filename, int *flags, char *keywordsbuf)
 {
+	const char *keywords = NULL;
 	const char *flagstr = strchr(filename, ':');
 	if (!flagstr++) {
 		return -1;
 	}
-	*flags = parse_flags_letters(flagstr + 2); /* Skip first 2 since it's always just "2," and real flags come after that */
+	*flags = parse_flags_letters(flagstr + 2, &keywords); /* Skip first 2 since it's always just "2," and real flags come after that */
+	if (keywordsbuf) {
+		/* The buffer and the string to copy SHOULD always be 26 or fewer characters,
+		 * but if the file were maliciously renamed to be longer, that would risk a buffer overflow.
+		 * We know for sure the buffer will be of size 27, but can't guarantee strlen(keywords) <= 26
+		 */
+		safe_strncpy(keywordsbuf, S_IF(keywords), MAX_KEYWORDS + 1);
+	}
 	return 0;
 }
 
@@ -575,8 +721,8 @@ static void gen_flag_names(const char *flagstr, char *fullbuf, size_t len)
 static int test_flags_parsing(void)
 {
 	char buf[64] = FLAG_NAME_DELETED " " FLAG_NAME_FLAGGED " " FLAG_NAME_SEEN;
-	bbs_test_assert_equals(FLAG_BIT_DELETED | FLAG_BIT_FLAGGED | FLAG_BIT_SEEN, parse_flags_string(buf));
-	bbs_test_assert_equals(FLAG_BIT_DRAFT | FLAG_BIT_SEEN, parse_flags_letters("DS"));
+	bbs_test_assert_equals(FLAG_BIT_DELETED | FLAG_BIT_FLAGGED | FLAG_BIT_SEEN, parse_flags_string(NULL, buf));
+	bbs_test_assert_equals(FLAG_BIT_DRAFT | FLAG_BIT_SEEN, parse_flags_letters("DS", NULL));
 
 	gen_flag_letters(FLAG_BIT_FLAGGED | FLAG_BIT_SEEN, buf, sizeof(buf));
 	bbs_test_assert_str_equals("FS", buf);
@@ -716,6 +862,8 @@ done:
 #ifdef DEBUG_ACL
 	generate_acl_string(*acl, buf, sizeof(buf));
 	bbs_debug(5, "Effective ACL for %s: %s\n", directory, buf);
+#else
+	return;
 #endif
 }
 
@@ -1092,7 +1240,7 @@ static int expunge_helper(const char *dir_name, const char *filename, struct ima
 #ifdef EXTRA_DEBUG
 	imap_debug(10, "Analyzing file %s/%s\n", dir_name, filename);
 #endif
-	if (parse_flags_letters_from_filename(filename, &oldflags)) {
+	if (parse_flags_letters_from_filename(filename, &oldflags, NULL)) { /* Don't care about keywords */
 		bbs_error("File %s is noncompliant with maildir\n", filename);
 		return 0;
 	}
@@ -1196,7 +1344,24 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 	IMAP_TRAVERSAL(imap, on_select);
 	if (readonly <= 1) { /* SELECT, EXAMINE */
 		char aclstr[15];
-		imap_send(imap, "FLAGS (%s)", IMAP_FLAGS);
+		char keywords[256] = "";
+		int numkeywords = gen_keyword_names(imap, NULL, keywords, sizeof(keywords)); /* prepends a space before all of them, so this works out great */
+		imap_send(imap, "FLAGS (%s%s)", IMAP_FLAGS, numkeywords ? keywords : "");
+		/* Any non-standard flags are called keywords in IMAP
+		 * If we don't send a PERMANENTFLAGS, the RFC says that clients should assume all flags are permanent.
+		 * This works if clients are not allowed to set custom flags.
+		 * If they are, then we need to send the \* in the PERMANENTFLAGS response.
+		 * See: https://news.purelymail.com/posts/status/2023-04-01-security-disclosure-user-flags.html
+		 * specifically:
+		 * "We thought we could omit the PERMANENTFLAGS response, since the spec says that
+		 * if there is no PERMANENTFLAGS response then the client should assume all flags are permanent,
+		 * which is the case for Purelymail. Unfortunately this meant clients like Mozilla Thunderbird
+		 * assumed they could not create any new flags since they did not see a * response."
+		 *
+		 * (Side note: the security incident discussed in the above post mortem was uncovered
+		 *  through development of this IMAP server, in testing certain behavior of existing IMAP servers.)
+		 */
+		imap_send(imap, "OK [PERMANENTFLAGS (%s%s \\*)]", IMAP_FLAGS, numkeywords ? keywords : ""); /* Include \* to indicate we support IMAP keywords */
 		imap_send_broadcast(imap, "%u EXISTS", imap->totalnew + imap->totalcur); /* Number of messages in the mailbox. */
 		imap_send(imap, "%u RECENT", imap->totalnew); /* Number of messages with \Recent flag (maildir: new, instead of cur). */
 		if (imap->firstunseen) {
@@ -2122,7 +2287,8 @@ static int handle_append(struct imap_session *imap, char *s)
 			bbs_strterm(flags, ')');
 			flags++;
 			if (!strlen_zero(flags)) {
-				imap->appendflags = parse_flags_string(flags); 
+				imap->appendflags = parse_flags_string(imap, flags);
+				/* imap->appendkeywords will also contain keywords as well */
 			}
 		}
 		if (date) {
@@ -2181,6 +2347,9 @@ static int maildir_msg_setflags(const char *origname, const char *newflagletters
 		return -1;
 	}
 	snprintf(fullfilename, sizeof(fullfilename), "%s/%s:2,%s", dirpath, filename, newflagletters);
+	if (!strcmp(origname, fullfilename)) {
+		return 0; /* If the flags didn't change, no point in making an unnecessary system call */
+	}
 	bbs_debug(4, "Renaming %s -> %s\n", origname, fullfilename);
 	if (rename(origname, fullfilename)) {
 		bbs_error("rename %s -> %s failed: %s\n", origname, fullfilename, strerror(errno));
@@ -2241,9 +2410,12 @@ static int finish_append(struct imap_session *imap)
 
 	/* Now, apply any flags to the message... (yet a third rename, potentially) */
 	if (imap->appendflags) {
-		char newflagletters[27];
+		char newflagletters[53];
 		/* Generate flag letters from flag bits */
 		gen_flag_letters(imap->appendflags, newflagletters, sizeof(newflagletters));
+		if (imap->numappendkeywords) {
+			strncat(newflagletters, imap->appendkeywords, sizeof(newflagletters) - 1);
+		}
 		imap->appendflags = 0;
 		if (maildir_msg_setflags(newfilename, newflagletters)) {
 			bbs_warning("Failed to set flags for %s\n", newfilename);
@@ -2312,7 +2484,9 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 
 		if (fetchreq->flags) {
 			char flagsbuf[256];
-			char inflags[32];
+			char inflags[53];
+			int custom_keywords;
+
 			flags = strchr(entry->d_name, ':'); /* maildir flags */
 			if (!flags) {
 				bbs_error("Message file %s contains no flags?\n", entry->d_name);
@@ -2326,7 +2500,11 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				bbs_debug(6, "Appending seen flag since message wasn't already seen\n");
 			}
 			gen_flag_names(flags, flagsbuf, sizeof(flagsbuf));
-			SAFE_FAST_COND_APPEND(response, buf, len, 1, "FLAGS (%s)", flagsbuf);
+			SAFE_FAST_COND_APPEND(response, buf, len, 1, "FLAGS (%s", flagsbuf);
+			/* If there are any keywords (custom flags), include those as well */
+			custom_keywords = gen_keyword_names(imap, flags, flagsbuf, sizeof(flagsbuf));
+			SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, custom_keywords, "%s", flagsbuf);
+			SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, ")");
 		}
 		if (fetchreq->rfc822size) {
 			unsigned long size;
@@ -2673,7 +2851,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			int newflags;
 			/* I haven't actually encountered any clients that will actually hit this path... most clients peek everything and manually mark as seen,
 			 * rather than using the BODY[] item which implicitly marks as seen during processing. */
-			if (parse_flags_letters_from_filename(entry->d_name, &newflags)) {
+			if (parse_flags_letters_from_filename(entry->d_name, &newflags, NULL)) { /* Don't care about custom keywords */
 				bbs_error("File %s is noncompliant with maildir\n", entry->d_name);
 				goto cleanup;
 			}
@@ -2800,7 +2978,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 		bbs_strterm(s, ')');
 	}
 
-	opflags = parse_flags_string(s);
+	opflags = parse_flags_string(imap, s);
 	/* Check if user is authorized to set these flags. */
 	if (opflags & FLAG_BIT_SEEN && !IMAP_HAS_ACL(imap->acl, IMAP_ACL_SEEN)) {
 		bbs_debug(3, "User denied access to modify \\Seen flag\n");
@@ -2815,6 +2993,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 	if (!IMAP_HAS_ACL(imap->acl, IMAP_ACL_WRITE)) {
 		/* Cannot set any other remaining flags */
 		opflags &= (opflags & (FLAG_BIT_SEEN | FLAG_BIT_DELETED)); /* Restrict to these two flags, if they are set. */
+		imap->numappendkeywords = 0;
 		flagpermsdenied++;
 	}
 
@@ -2826,7 +3005,10 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 	}
 	while (fno < files && (entry = entries[fno++])) {
 		unsigned int msguid;
-		char newflagletters[256];
+		char newflagletters[53];
+		char oldkeywords[27] = "";
+		char newkeywords[27] = "";
+		const char *keywords = newkeywords;
 		int i;
 		int newflags;
 		int changes = 0;
@@ -2839,7 +3021,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			goto cleanup;
 		}
 		/* Get the message's current flags. */
-		if (parse_flags_letters_from_filename(entry->d_name, &oldflags)) {
+		if (parse_flags_letters_from_filename(entry->d_name, &oldflags, oldkeywords)) {
 			bbs_error("File %s is noncompliant with maildir\n", entry->d_name);
 			goto cleanup;
 		}
@@ -2868,10 +3050,49 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			changes++;
 		}
 
+		if (imap->numappendkeywords) {
+			char *newbuf = newkeywords;
+			size_t newlen = sizeof(newkeywords);
+			/* These are the keywords provided as input.
+			 * oldkeywords contains the existing keywords. */
+			if (flagop == 1) { /* If they're equal, we don't need to do anything */
+				if (strcmp(imap->appendkeywords, oldkeywords)) {
+					bbs_debug(5, "Change made to keyword: %s -> %s\n", oldkeywords, imap->appendkeywords);
+					strcpy(newkeywords, oldkeywords); /* Safe */
+					strncat(newkeywords, imap->appendkeywords, sizeof(newkeywords) - 1);
+					changes++;
+				} else if (changes) {
+					keywords = oldkeywords; /* If we're going to rename the file, make sure we preserve the flags it already had. If not, no point. */
+				}
+			} else if (flagop == -1) {
+				/* If the old flags contain any of the new flags, remove them, otherwise just copy over */
+				/* Note that imap->appendkeywords is not necessarily ordered since they are as the client sent them */
+				const char *c = oldkeywords;
+				while (*c) {
+					/* Hopefully gcc will optimize a sprintf with just %c. */
+					if (!strchr(imap->appendkeywords, *c)) {
+						SAFE_FAST_COND_APPEND_NOSPACE(newkeywords, newbuf, newlen, 1, "%c", *c);
+					} else {
+						changes++;
+					}
+					c++;
+				}
+			} else {
+				/* Just replace, easy */
+				if (IMAP_HAS_ACL(imap->acl, IMAP_ACL_WRITE)) {
+					keywords = imap->appendkeywords;
+				}
+			}
+		} else {
+			/* Preserve existing keywords, unless we're replacing */
+			keywords = flagop ? oldkeywords : imap->appendkeywords;
+		}
+
 		if (changes) {
 			char oldname[516];
 			/* Generate flag letters from flag bits */
 			gen_flag_letters(newflags, newflagletters, sizeof(newflagletters));
+			strncat(newflagletters, keywords, sizeof(newflagletters) - 1);
 			snprintf(oldname, sizeof(oldname), "%s/%s", imap->curdir, entry->d_name);
 			if (maildir_msg_setflags(oldname, newflagletters)) {
 				goto cleanup;
@@ -2894,7 +3115,12 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 		/* Send the response if not silent */
 		if (changes && !silent) {
 			char flagstr[256];
+			int slen;
 			gen_flag_names(newflagletters, flagstr, sizeof(flagstr));
+			if (keywords[0]) { /* Current keywords */
+				slen = strlen(flagstr);
+				gen_keyword_names(imap, keywords, flagstr + slen, sizeof(flagstr) - slen); /* Append keywords (include space before) */
+			}
 			imap_send(imap, "%d FETCH (FLAGS (%s))", seqno, flagstr);
 		}
 cleanup:
@@ -3622,10 +3848,12 @@ ret:
 struct imap_search {
 	const char *directory;
 	const char *filename;
+	const char *keywords;
 	struct stat st;
 	FILE *fp;
 	int flags;
 	int seqno;
+	struct imap_session *imap;
 	unsigned int new:1;
 	unsigned int didstat:1;
 };
@@ -3879,7 +4107,14 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 				retval = search_header(search, skey->child.string, len, hdrval);
 				break;
 			case IMAP_SEARCH_KEYWORD:
-				bbs_warning("KEYWORD is not currently supported\n");
+				/* This is not very efficient, since we reparse the keywords for every message, but the keyword mapping is the same for everything in this mailbox. */
+				parse_keyword(search->imap, skey->child.string);
+				/* imap->appendkeywords is now set. */
+				if (search->imap->numappendkeywords != 1) {
+					bbs_warning("Expected %d keyword, got %d?\n", 1, search->imap->numappendkeywords);
+					break;
+				}
+				retval = strchr(search->keywords, search->imap->appendkeywords[0]) ? 1 : 0;
 				break;
 			case IMAP_SEARCH_ON: /* INTERNALDATE == match */
 				SEARCH_STAT()
@@ -3970,7 +4205,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 }
 
 /*! \note For some reason, looping twice or using goto results in valgrind reporting a memory leak, but calling this function twice does not */
-static int search_dir(const char *dirname, int newdir, int usinguid, struct imap_search_keys *skeys, unsigned int **a, unsigned int **b, int *lengths, int *allocsizes)
+static int search_dir(struct imap_session *imap, const char *dirname, int newdir, int usinguid, struct imap_search_keys *skeys, unsigned int **a, unsigned int **b, int *lengths, int *allocsizes)
 {
 	int res = 0;
 	int files, fno = 0;
@@ -3978,6 +4213,7 @@ static int search_dir(const char *dirname, int newdir, int usinguid, struct imap
 	struct imap_search search;
 	unsigned int uid;
 	unsigned int seqno = 0;
+	char keywords[27] = "";
 
 	files = scandir(dirname, &entries, NULL, alphasort);
 	if (files < 0) {
@@ -3995,12 +4231,14 @@ static int search_dir(const char *dirname, int newdir, int usinguid, struct imap
 		bbs_debug(10, "Checking message %u: %s\n", seqno, entry->d_name);
 #endif
 		memset(&search, 0, sizeof(search));
+		search.imap = imap;
 		search.directory = dirname;
 		search.filename = entry->d_name;
 		search.new = newdir;
 		search.seqno = seqno;
+		search.keywords = keywords;
 		/* Parse the flags just once in advance, since doing bit field comparisons is faster than strchr */
-		if (parse_flags_letters_from_filename(search.filename, &search.flags)) {
+		if (parse_flags_letters_from_filename(search.filename, &search.flags, keywords)) {
 			goto next;
 		}
 		if (search_keys_eval(skeys, IMAP_SEARCH_ALL, &search)) {
@@ -4079,8 +4317,8 @@ static int handle_search(struct imap_session *imap, char *s, int usinguid)
 	}
 #endif
 
-	search_dir(imap->curdir, 0, usinguid, &skeys, &a, &b, &lengths, &allocsizes);
-	search_dir(imap->newdir, 1, usinguid, &skeys, &a, &b, &lengths, &allocsizes);
+	search_dir(imap, imap->curdir, 0, usinguid, &skeys, &a, &b, &lengths, &allocsizes);
+	search_dir(imap, imap->newdir, 1, usinguid, &skeys, &a, &b, &lengths, &allocsizes);
 	if (lengths) {
 		memset(&dynstr, 0, sizeof(dynstr));
 		for (i = 0; i < lengths; i++) {

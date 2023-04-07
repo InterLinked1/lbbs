@@ -166,13 +166,17 @@ static inline int is_deleted(struct pop3_session *pop3, int message)
 	int element, bit;
 
 	if (message > (int) pop3->delsize) {
+#ifdef EXTRA_DEBUG
 		bbs_debug(7, "Index %d does not exist\n", message - 1);
+#endif
 		return 0; /* Nonexistent index, return 0 */
 	}
 	bbs_assert_exists(pop3->deletions);
 	element = (message - 1) / (8 * sizeof(char)); /* Subtract 1 to make 0-indexed, then determine which int index it is */
 	bit = (message - 1) % (8 * sizeof(char));
+#ifdef EXTRA_DEBUG
 	bbs_debug(7, "Checking bit %d of element %d (%d/%d) = %d\n", bit, element, pop3->delsize, pop3->delbytes, pop3->deletions[element] & (1 << bit) ? 1 : 0);
+#endif
 	return pop3->deletions[element] & (1 << bit) ? 1 : 0;
 }
 
