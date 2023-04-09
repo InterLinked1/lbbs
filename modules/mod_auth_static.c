@@ -119,6 +119,9 @@ static struct bbs_user **get_users(void)
 
 	RWLIST_RDLOCK(&users);
 	userlist = malloc((RWLIST_SIZE(&users, u, entry) + 1) * sizeof(*user)); /* The list will be NULL terminated, so add 1 */
+	if (ALLOC_FAILURE(userlist)) {
+		return NULL;
+	}
 	/* Keep list locked here so count can't change on us */
 	RWLIST_TRAVERSE(&users, u, entry) {
 		user = convert_user(u);
@@ -147,8 +150,8 @@ static int load_config(void)
 		if (!strcasecmp(bbs_config_section_name(section), "users")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				struct static_user *u = calloc(1, sizeof(*u));
-				if (!u) {
-					bbs_error("Failed to allocate user\n");
+				if (ALLOC_FAILURE(u)) {
+					continue;
 				}
 				u->id = ++userid;
 				u->username = strdup(bbs_keyval_key(keyval));

@@ -89,7 +89,7 @@ int __bbs_register_door(const char *name, int (*execute)(DOOR_PARAMS), void *mod
 	/* It doesn't already exist, we're good. */
 	length = sizeof(*door) + strlen(name) + 1;
 	door = calloc(1, length);
-	if (!door) {
+	if (ALLOC_FAILURE(door)) {
 		goto cleanup;
 	}
 	strcpy(door->name, name); /* Safe */

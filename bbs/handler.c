@@ -92,7 +92,7 @@ int __bbs_register_menu_handler(const char *name, int (*execute)(struct bbs_node
 	/* It doesn't already exist, we're good. */
 	length = sizeof(*handler) + strlen(name) + 1;
 	handler = calloc(1, length);
-	if (!handler) {
+	if (ALLOC_FAILURE(handler)) {
 		goto cleanup;
 	}
 	strcpy(handler->name, name); /* Safe */

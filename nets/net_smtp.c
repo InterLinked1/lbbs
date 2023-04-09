@@ -420,7 +420,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 
 	/* Check the recipient format. */
 	address = strdup(s); /* Avoid strdupa for gcc stack protector warnings, and who knows how long this is... */
-	if (!address) {
+	if (ALLOC_FAILURE(address)) {
 		smtp_reply(smtp, 451, "Local error in processing", "");
 		return 0;
 	}
@@ -438,7 +438,8 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 		if (recipients) { /* It's a mailing list */
 			int added = 0;
 			char *senders, *recip, *recips, *dup = strdup(recipients);
-			if (!dup) {
+
+			if (ALLOC_FAILURE(dup)) {
 				smtp_reply(smtp, 451, "Local error in processing", "");
 				return 0;
 			}
@@ -648,7 +649,7 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 
 		/* Insert in order of priority */
 		mx = calloc(1, sizeof(*mx) + strlen(hostname) + 1);
-		if (!mx) {
+		if (ALLOC_FAILURE(mx)) {
 			continue;
 		}
 		strcpy(mx->data, hostname); /* Safe */
@@ -1640,7 +1641,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 			/* For some reason, this works, even though calling try_send on the smtp structure directly above did not. */
 			filename = strrchr(newfile, '/');
 			filenamedup = strdup(filename + 1); /* Need to duplicate since filename is on the stack and we're returning now */
-			if (filenamedup) {
+			if (ALLOC_SUCCESS(filenamedup)) {
 				/* Yes, I know spawning a thread for every email is not very efficient.
 				 * If this were a high traffic mail server, this might be architected differently.
 				 * Do note that this is mainly a WORKAROUND for BUGGY_SEND_IMMEDIATE. */
@@ -1890,7 +1891,7 @@ static int do_deliver(struct smtp_session *smtp)
 		/* Keep track that we have sent a message to this recipient */
 		stringlist_push(&smtp->sentrecipients, recipient);
 		dup = strdup(recipient);
-		if (!dup) {
+		if (ALLOC_FAILURE(dup)) {
 			goto next;
 		}
 		bbs_debug(7, "Processing delivery to %s\n", dup);
@@ -1980,7 +1981,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 
 		if (!smtp->data) { /* First line */
 			smtp->data = malloc(dlen + 3); /* Use malloc instead of strdup so we can tack on a CR LF */
-			if (!smtp->data) {
+			if (ALLOC_FAILURE(smtp->data)) {
 				smtp->datafail = 1;
 				return 0;
 			}
@@ -1990,7 +1991,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 		} else { /* Additional line */
 			char *newstr;
 			newstr = realloc(smtp->data, smtp->datalen + dlen + 3);
-			if (!newstr) {
+			if (ALLOC_FAILURE(newstr)) {
 				smtp->datafail = 1;
 				return 0;
 			}

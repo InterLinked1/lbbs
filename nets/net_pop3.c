@@ -124,7 +124,7 @@ static int init_deletions(struct pop3_session *pop3)
 			 * The latter is the more likely case, so realloc won't be too common. */
 			if (bytesize > pop3->delbytes) {
 				char *newdel = realloc(pop3->deletions, bytesize);
-				if (!newdel) {
+				if (ALLOC_FAILURE(newdel)) {
 					/* This is bad... just abort. */
 					return -1;
 				}
@@ -135,7 +135,7 @@ static int init_deletions(struct pop3_session *pop3)
 		}
 	} else {
 		pop3->deletions = calloc(1, bytesize);
-		if (!pop3->deletions) {
+		if (ALLOC_FAILURE(pop3->deletions)) {
 			return -1;
 		}
 	}

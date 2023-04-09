@@ -89,12 +89,12 @@ int stringlist_push(struct stringlist *list, const char *s)
 	struct stringitem *i;
 	char *sdup = strdup(s);
 
-	if (!sdup) {
+	if (ALLOC_FAILURE(sdup)) {
 		return -1;
 	}
 
 	i = calloc(1, sizeof(*i));
-	if (!i) {
+	if (ALLOC_FAILURE(i)) {
 		free(sdup);
 		return -1;
 	}
@@ -108,12 +108,12 @@ int stringlist_push_tail(struct stringlist *list, const char *s)
 	struct stringitem *i;
 	char *sdup = strdup(s);
 
-	if (!sdup) {
+	if (ALLOC_FAILURE(sdup)) {
 		return -1;
 	}
 
 	i = calloc(1, sizeof(*i));
-	if (!i) {
+	if (ALLOC_FAILURE(i)) {
 		free(sdup);
 		return -1;
 	}

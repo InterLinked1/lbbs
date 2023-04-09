@@ -129,7 +129,7 @@ static void process_section(bfd *bfdobj, asection *section, void *obj)
 		if (inlined) {
 			int origlen = strlen(data->retstrings[data->frame]);
 			char *s = realloc(data->retstrings[data->frame], origlen + strlen(data->msg) + 2); /* 1 for NUL, 1 for LF */
-			if (!s) {
+			if (ALLOC_FAILURE(s)) {
 				return; /* Stop on realloc failure */
 			}
 			data->retstrings[data->frame] = s;
@@ -139,7 +139,7 @@ static void process_section(bfd *bfdobj, asection *section, void *obj)
 		} else {
 			data->retstrings[data->frame] = strdup(data->msg);
 		}
-		if (!data->retstrings[data->frame]) {
+		if (ALLOC_FAILURE(data->retstrings[data->frame])) {
 			return; /* Stop on strdup failure */
 		}
 
@@ -205,7 +205,7 @@ static void bt_get_symbols(void **addresses, int num_frames, char *retstrings[])
 			}
 
 			data.syms = malloc(allocsize);
-			if (!data.syms) {
+			if (ALLOC_FAILURE(data.syms)) {
 				break;
 			}
 

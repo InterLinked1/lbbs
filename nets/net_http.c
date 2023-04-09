@@ -266,6 +266,9 @@ static inline int parse_header(struct http_req *req, char *s)
 		query = tmp;
 		tmp = strsep(&query, "?");
 		req->path = strdup(tmp);
+		if (ALLOC_FAILURE(req->path)) {
+			return HTTP_INTERNAL_SERVER_ERROR;
+		}
 		tmp = strrchr(req->path, '/');
 		if (strlen_zero(tmp) || strlen_zero(tmp + 1)) {
 			/* The / was the last character in the path.

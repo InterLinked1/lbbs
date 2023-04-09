@@ -757,7 +757,7 @@ static void *ssh_listener(void *unused)
 	for (;;) {
 		static pthread_t ssh_thread;
 		pending_session = session = ssh_new();
-		if (!session) {
+		if (ALLOC_FAILURE(session)) {
 			bbs_error("Failed to allocate SSH session\n");
 			continue;
 		}

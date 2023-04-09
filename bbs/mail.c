@@ -140,7 +140,7 @@ int bbs_make_email_file(FILE *p, const char *subject, const char *body, const ch
 	}
 	/* Use strdup instead of strdupa, as we don't know how long the list is, and to make gcc happy with -Wstack-protector */
 	attachmentlist = attachmentsbuf = strdup(attachments); /* Dup pointer for strsep so we can still free() it */
-	if (!attachmentsbuf) {
+	if (ALLOC_FAILURE(attachmentsbuf)) {
 		return -1;
 	}
 	while ((attachment = strsep(&attachmentlist, "|"))) {

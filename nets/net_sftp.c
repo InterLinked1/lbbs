@@ -330,10 +330,9 @@ struct sftp_info {
 static struct sftp_info *alloc_sftp_info(void)
 {
 	struct sftp_info *h = calloc(1, sizeof(*h));
-	if (!h) {
-		return NULL;
+	if (ALLOC_SUCCESS(h)) {
+		h->offset = 0;
 	}
-	h->offset = 0;
 	return h;
 }
 
@@ -341,7 +340,7 @@ static sftp_attributes attr_from_stat(struct stat *st)
 {
 	sftp_attributes attr = calloc(1, sizeof(*attr));
 
-	if (!attr) {
+	if (ALLOC_FAILURE(attr)) {
 		return NULL;
 	}
 
@@ -516,7 +515,7 @@ static int handle_read(sftp_client_message msg)
 	}
 
 	data = malloc(len);
-	if (!data) {
+	if (ALLOC_FAILURE(data)) {
 		sftp_reply_status(msg, SSH_FX_BAD_MESSAGE, "Allocation failed");
 		return -1;
 	}
@@ -974,7 +973,7 @@ static void *ssh_listener(void *unused)
 	for (;;) {
 		static pthread_t sftp_thread;
 		pending_session = session = ssh_new();
-		if (!session) {
+		if (ALLOC_FAILURE(session)) {
 			bbs_error("Failed to allocate SSH session\n");
 			continue;
 		}

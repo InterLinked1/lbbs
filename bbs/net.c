@@ -39,7 +39,7 @@ int bbs_register_network_protocol(const char *name, unsigned int port)
 
 	RWLIST_WRLOCK(&prots);
 	prot = calloc(1, sizeof(*prot) + strlen(name) + 1);
-	if (!prot) {
+	if (ALLOC_FAILURE(prot)) {
 		RWLIST_UNLOCK(&prots);
 		return -1;
 	}

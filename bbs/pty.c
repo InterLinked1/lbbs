@@ -207,7 +207,7 @@ int bbs_spawn_pty_master(int fd)
 	bbs_term_makeraw(amaster); /* Make the master side raw */
 
 	ptyfds = calloc(1, sizeof(*ptyfds));
-	if (!ptyfds) {
+	if (ALLOC_FAILURE(ptyfds)) {
 		return -1;
 	}
 	ptyfds->amaster = amaster;

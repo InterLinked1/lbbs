@@ -62,7 +62,7 @@ static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *da
 {
 	register int realsize = 0;
 	struct curl_response_data *respdata = data;
-	char *orig_buf = respdata->str;
+	char *newbuf, *orig_buf = respdata->str;
 
 	realsize = size * nmemb;
 
@@ -73,13 +73,20 @@ static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *da
 
 	if (respdata->len) {
 		bbs_debug(9, "curl response continued with %d + %d\n", respdata->len, realsize);
-		respdata->str = realloc(respdata->str, respdata->len + realsize + 1); /* Add null terminator */
+		newbuf = realloc(respdata->str, respdata->len + realsize + 1); /* Add null terminator */
+		if (ALLOC_FAILURE(newbuf)) {
+			free(orig_buf);
+			return 0; /* Fail */
+		}
+		respdata->str = newbuf;
 		memcpy(respdata->str + respdata->len, ptr, realsize); /* strncpy okay here, but since bbs.h blocks it, use memcpy */
 		*(respdata->str + respdata->len + realsize) = '\0'; /* Null terminate the string */
 	} else {
 		bbs_debug(9, "curl response started with %d\n", realsize);
 		respdata->str = strndup(ptr, realsize + 1); /* Add null terminator */
-		*(respdata->str + realsize) = '\0'; /* Null terminate the string */
+		if (ALLOC_SUCCESS(respdata->str)) {
+			*(respdata->str + realsize) = '\0'; /* Null terminate the string */
+		}
 	}
 
 	if (!respdata->str) {

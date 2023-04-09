@@ -98,7 +98,7 @@ static int add_pair(const char *client1, const char *channel1, const char *clien
 	}
 
 	cp = calloc(1, sizeof(*cp) + client1len + client2len + channel1len + channel2len); /* NULs are included above */
-	if (!cp) {
+	if (ALLOC_FAILURE(cp)) {
 		RWLIST_UNLOCK(&mappings);
 		return -1;
 	}

@@ -148,7 +148,7 @@ static int add_pair(u64snowflake guild_id, const char *discord_channel, const ch
 	dlen = strlen(discord_channel);
 	ilen = strlen(irc_channel);
 	cp = calloc(1, sizeof(*cp) + dlen + ilen + 2); /* 2 NULs */
-	if (!cp) {
+	if (ALLOC_FAILURE(cp)) {
 		RWLIST_UNLOCK(&mappings);
 		return -1;
 	}
@@ -261,7 +261,7 @@ static struct user *add_user(struct discord_user *user, u64snowflake guild_id, c
 		ulen = strlen(user->username);
 		dlen = strlen(user->discriminator);
 		u = calloc(1, sizeof(*u) + ulen + dlen + 2);
-		if (!u) {
+		if (ALLOC_FAILURE(u)) {
 			RWLIST_UNLOCK(&users);
 			return NULL;
 		}
@@ -355,7 +355,7 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 			}
 #endif
 			u->roles = calloc(roles->size, roles->array[0]);
-			if (u->roles) {
+			if (ALLOC_SUCCESS(u->roles)) {
 				u->numroles = roles->size;
 				memcpy(u->roles, roles, sizeof(*u->roles));
 			}
@@ -400,7 +400,7 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 #define BUGGY_PRESENCE_FETCH
 
 		missed.array = calloc(retry_now, sizeof(u64snowflake *));
-		if (missed.array) {
+		if (ALLOC_SUCCESS(missed.array)) {
 			struct discord_request_guild_members params = {
 				.guild_id = event->guild_id,
 				.query = "",
@@ -609,8 +609,8 @@ static void link_permissions(struct chan_pair *cp, struct discord_overwrites *ov
 			continue;
 		}
 		e = calloc(1, sizeof(*e));
-		if (!e) {
-			continue; /* continue would be fine here, but we already need a label, so use it for consistency */
+		if (ALLOC_FAILURE(e)) {
+			continue;
 		}
 		e->id = overwrite->id;
 		if (overwrite->type == 1) { /* it's a user, explicitly */
@@ -1081,7 +1081,7 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 			}
 		}
 		dup = strdup(event->content);
-		if (!dup) {
+		if (ALLOC_FAILURE(dup)) {
 			return;
 		}
 		lines = dup;

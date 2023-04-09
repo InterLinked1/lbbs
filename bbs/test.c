@@ -121,7 +121,7 @@ int __bbs_register_test(const char *name, int (*execute)(void), void *mod)
 	}
 
 	test = calloc(1, sizeof(*test) + strlen(name) + 1);
-	if (!test) {
+	if (ALLOC_FAILURE(test)) {
 		return -1;
 	}
 

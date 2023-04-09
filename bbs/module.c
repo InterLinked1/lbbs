@@ -252,7 +252,7 @@ static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ex
 	bytes = sizeof(*mod) + strlen(resource_in) + strlen(so_ext) + 1; /* + just enough for resource name + null term. */
 
 	mod = calloc(1, bytes);
-	if (!mod) {
+	if (ALLOC_FAILURE(mod)) {
 		return NULL;
 	}
 

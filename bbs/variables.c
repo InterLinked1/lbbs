@@ -150,13 +150,13 @@ static int bbs_varlist_append(struct bbs_vars *vars, const char *key, const char
 
 	/* Variable didn't already exist. Create a new variable */
 	dupedvalue = strdup(value);
-	if (!dupedvalue) {
+	if (ALLOC_FAILURE(dupedvalue)) {
 		RWLIST_UNLOCK(vars);
 		return -1;
 	}
 
 	v = calloc(1, sizeof(*v) + keylen + 1); /* NUL */
-	if (!v) {
+	if (ALLOC_FAILURE(v)) {
 		free(dupedvalue);
 		RWLIST_UNLOCK(vars);
 		return -1;
@@ -185,7 +185,7 @@ int bbs_var_set(struct bbs_node *node, const char *key, const char *value)
 		bbs_node_lock(node);
 		if (!node->vars) {
 			vars = calloc(1, sizeof(*vars));
-			if (!vars) {
+			if (ALLOC_FAILURE(vars)) {
 				return -1;
 			}
 			bbs_debug(5, "Allocated variable list for node %d\n", node->id);

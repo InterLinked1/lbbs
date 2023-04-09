@@ -46,7 +46,7 @@ int bbs_register_startup_callback(int (*execute)(void))
 		return -1;
 	}
 	cb = calloc(1, sizeof(*cb));
-	if (!cb) {
+	if (ALLOC_FAILURE(cb)) {
 		RWLIST_UNLOCK(&callbacks);
 		return -1;
 	}

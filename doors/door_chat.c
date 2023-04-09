@@ -113,7 +113,7 @@ static struct participant *join_channel(struct bbs_node *node, const char *name)
 		/* Doesn't exist yet, make it on the fly */
 		bbs_debug(3, "Chat channel %s doesn't exist yet, creating it now\n", name);
 		channel = calloc(1, sizeof(*channel) + strlen(name) + 1);
-		if (!channel) {
+		if (ALLOC_FAILURE(channel)) {
 			RWLIST_UNLOCK(&channels);
 			return NULL;
 		}
@@ -122,7 +122,7 @@ static struct participant *join_channel(struct bbs_node *node, const char *name)
 	}
 	/* Okay, we have the channel. Add the newcomer to it. */
 	p = calloc(1, sizeof(*p));
-	if (!p) {
+	if (ALLOC_FAILURE(p)) {
 		if (newchan) {
 			free(channel); /* If we calloc'd a channel but failed to calloc a participant, discard (free) the channel */
 		}

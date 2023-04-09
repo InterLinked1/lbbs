@@ -43,7 +43,7 @@ char *bbs_uuid(void)
 
 	uuid_generate_random(binary_uuid);
 	uuid = malloc(UUID_STR_LEN + 1);
-	if (!uuid) {
+	if (ALLOC_FAILURE(uuid)) {
 		return NULL;
 	}
 	uuid_unparse_lower(binary_uuid, uuid);
@@ -56,7 +56,7 @@ int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
 
 	if (!dynstr->buf) {
 		dynstr->buf = strdup(s);
-		if (!dynstr->buf) {
+		if (ALLOC_FAILURE(dynstr->buf)) {
 			return -1;
 		}
 		dynstr->len = len;
@@ -68,7 +68,7 @@ int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
 	newlen = dynstr->used + len;
 	if (newlen >= dynstr->len) {
 		char *newbuf = realloc(dynstr->buf, newlen + 1); /* Add NULL terminator */
-		if (!newbuf) {
+		if (ALLOC_FAILURE(newbuf)) {
 			return -1;
 		}
 		dynstr->buf = newbuf;
@@ -657,7 +657,7 @@ char *bbs_file_to_string(const char *filename, size_t maxsize)
 	}
 
 	s = malloc(size + 1); /* Add 1 for NUL */
-	if (!s) {
+	if (ALLOC_FAILURE(s)) {
 		goto cleanup;
 	}
 	res = fread(s, 1, size, fp);

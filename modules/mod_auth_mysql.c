@@ -97,7 +97,7 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 		if (!username) { /* Only needed if fetching all users */
 			numrows = mysql_stmt_num_rows(stmt);
 			userlist = malloc((numrows + 1) * sizeof(*user)); /* The list will be NULL terminated, so add 1 */
-			if (!userlist) {
+			if (ALLOC_FAILURE(userlist)) {
 				goto stmtcleanup;
 			}
 		}
@@ -557,7 +557,7 @@ static int load_config(void)
 		len += 3; /* , before and after + NUL */
 		free_if(reserved_usernames); /* Should always be NULL at this point, but if reloads during runtime were permitted in the future, might not be. */
 		reserved_usernames = malloc(len); /* Don't know in advance how many usernames the sysop wants to reserve, this could be arbitrarily long. */
-		if (!reserved_usernames) {
+		if (ALLOC_FAILURE(reserved_usernames)) {
 			bbs_config_free(cfg);
 			return -1;
 		}

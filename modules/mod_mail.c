@@ -111,7 +111,7 @@ int __smtp_register_processor(int (*cb)(struct smtp_msg_process *mproc), void *m
 	struct smtp_processor *proc;
 
 	proc = calloc(1, sizeof(*proc));
-	if (!proc) {
+	if (ALLOC_FAILURE(proc)) {
 		return -1;
 	}
 
@@ -253,7 +253,7 @@ static void add_alias(const char *aliasname, const char *target)
 	aliaslen = strlen(aliasname);
 	targetlen = strlen(target);
 	alias = calloc(1, sizeof(*alias) + aliaslen + targetlen + 2);
-	if (!alias) {
+	if (ALLOC_FAILURE(alias)) {
 		RWLIST_UNLOCK(&aliases);
 		return;
 	}
@@ -292,7 +292,7 @@ static void add_listserv(const char *listname, const char *target)
 	listlen = strlen(listname);
 	targetlen = strlen(target);
 	l = calloc(1, sizeof(*l) + listlen + targetlen + 2);
-	if (!l) {
+	if (ALLOC_FAILURE(l)) {
 		RWLIST_UNLOCK(&listservs);
 		return;
 	}
@@ -358,7 +358,7 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid, const char *n
 		char newdirname[265];
 		bbs_debug(3, "Creating mailbox for user %u for the first time\n", userid);
 		mbox = calloc(1, sizeof(*mbox));
-		if (!mbox) {
+		if (ALLOC_FAILURE(mbox)) {
 			RWLIST_UNLOCK(&mailboxes);
 			return NULL;
 		}
@@ -1081,8 +1081,7 @@ static int load_module(void)
 static int unload_module(void)
 {
 	if (trashdays) {
-		pthread_cancel(trash_thread);
-		pthread_kill(trash_thread, SIGURG);
+		bbs_pthread_cancel_kill(trash_thread);
 		bbs_pthread_join(trash_thread, NULL);
 	}
 	mailbox_cleanup();

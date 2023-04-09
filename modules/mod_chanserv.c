@@ -874,7 +874,7 @@ static void send_help(const char *username, const char *cmd, const char *subcmd,
 	char *line, *lines, *linesdup;
 	chanserv_notice(username, "Help for %s%s%s:", cmd, subcmd ? " " : "", S_IF(subcmd));
 	lines = linesdup = strdup(s);
-	if (!lines) {
+	if (ALLOC_FAILURE(lines)) {
 		return;
 	}
 	/* We shouldn't send CR LF here, but do allow it to be used as a separator,

@@ -124,7 +124,7 @@ int bbs_config_val_set_dstr(struct bbs_config *cfg, const char *section_name, co
 	const char *s = bbs_config_val(cfg, section_name, key);
 	if (!strlen_zero(s)) {
 		char *dup = strdup(s);
-		if (!dup) {
+		if (ALLOC_FAILURE(dup)) {
 			return -1;
 		}
 		*str = dup;
@@ -316,13 +316,13 @@ static struct bbs_config *config_parse(const char *name)
 	}
 
 	cfg = calloc(1, sizeof(*cfg));
-	if (!cfg) {
+	if (ALLOC_FAILURE(cfg)) {
 		fclose(fp);
 		return NULL;
 	}
 	cfg->parsetime = time(NULL);
 	cfg->name = strdup(name);
-	if (!cfg->name) {
+	if (ALLOC_FAILURE(cfg->name)) {
 		free(cfg);
 		fclose(fp);
 		return NULL;
@@ -366,11 +366,11 @@ static struct bbs_config *config_parse(const char *name)
 			bbs_debug(7, "New section: %s\n", section_name);
 #endif
 			section = calloc(1, sizeof(*section));
-			if (!section) {
+			if (ALLOC_FAILURE(section)) {
 				continue;
 			}
 			section->name = strdup(section_name);
-			if (!section->name) {
+			if (ALLOC_FAILURE(section->name)) {
 				free(section);
 				section = NULL;
 				continue;
@@ -403,16 +403,16 @@ static struct bbs_config *config_parse(const char *name)
 		}
 
 		keyval = calloc(1, sizeof(*keyval));
-		if (!keyval) {
+		if (ALLOC_FAILURE(keyval)) {
 			continue;
 		}
 		keyval->key = strdup(key);
-		if (!keyval->key) {
+		if (ALLOC_FAILURE(keyval->key)) {
 			free(keyval);
 			continue;
 		}
 		keyval->value = strdup(value);
-		if (!keyval->value) {
+		if (ALLOC_FAILURE(keyval->value)) {
 			free(keyval->key);
 			free(keyval);
 			continue;

@@ -180,7 +180,7 @@ int __bbs_register_auth_provider(const char *name, int (*provider)(AUTH_PROVIDER
 		return -1;
 	}
 	p = calloc(1, sizeof(*p) + strlen(name) + 1);
-	if (!p) {
+	if (ALLOC_FAILURE(p)) {
 		RWLIST_UNLOCK(&providers);
 		return -1;
 	}
@@ -361,7 +361,7 @@ int bbs_user_temp_authorization_token(struct bbs_user *user, char *buf, size_t l
 	/* Create a token and insert into the list so we can find it again. */
 	RWLIST_WRLOCK(&auth_tokens);
 	t = calloc(1, sizeof(*t));
-	if (!t) {
+	if (ALLOC_FAILURE(t)) {
 		RWLIST_UNLOCK(&auth_tokens);
 		return -1;
 	}
@@ -514,7 +514,7 @@ static int login_cache(struct bbs_node *node, const char *username, const char *
 #endif
 
 	l = calloc(1, sizeof(*l));
-	if (!l) {
+	if (ALLOC_FAILURE(l)) {
 		return -1;
 	}
 	l->added = time(NULL);

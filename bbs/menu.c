@@ -666,11 +666,11 @@ static int load_config(int reload)
 			continue; /* Not a menu section, skip */
 		}
 		menu = calloc(1, sizeof(*menu));
-		if (!menu) {
+		if (ALLOC_FAILURE(menu)) {
 			continue;
 		}
 		menu->name = strdup(bbs_config_section_name(section));
-		if (!menu->name) {
+		if (ALLOC_FAILURE(menu->name)) {
 			free(menu);
 			continue;
 		}
@@ -690,12 +690,12 @@ static int load_config(int reload)
 				if (menu->display) {
 					int slen = strlen(menu->display);
 					char *s = realloc(menu->display, slen + strlen(value) + 2); /* LF + NUL */
-					if (likely(s != NULL)) {
+					if (ALLOC_FAILURE(s)) {
+						bbs_error("Failed to append menu line '%s' due to realloc error\n", value);
+					} else {
 						menu->display = s;
 						menu->display[slen] = '\n'; /* Next display= line is for the next line */
 						strcpy(menu->display + slen + 1, value); /* Safe */
-					} else {
-						bbs_error("Failed to append menu line '%s' due to realloc error\n", value);
 					}
 				} else {
 					menu->display = strdup(value);
@@ -713,11 +713,11 @@ static int load_config(int reload)
 					continue;
 				}
 				menuitem = calloc(1, sizeof(*menuitem));
-				if (!menuitem) {
+				if (ALLOC_FAILURE(menuitem)) {
 					continue;
 				}
 				tmporig = tmp = strdup(value); /* Avoid strdupa, we're in a loop */
-				if (!tmp) {
+				if (ALLOC_FAILURE(tmp)) {
 					free(menuitem);
 					continue;
 				}
@@ -744,7 +744,7 @@ static int load_config(int reload)
 				}
 				menuitem->name = strdup(s);
 				/* These are mandatory */
-				if (!menuitem->opt || !menuitem->action || !menuitem->name) {
+				if (!menuitem->opt || !menuitem->action || ALLOC_FAILURE(menuitem->name)) {
 					menuitem_free(menuitem);
 					free(tmporig);
 					continue;

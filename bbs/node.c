@@ -225,7 +225,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 	}
 
 	node = calloc(1, sizeof(*node));
-	if (!node) {
+	if (ALLOC_FAILURE(node)) {
 		RWLIST_UNLOCK(&nodes);
 		return NULL;
 	}

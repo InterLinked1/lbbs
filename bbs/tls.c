@@ -127,7 +127,7 @@ static int ssl_register_fd(SSL *ssl, int fd, int *rfd, int *wfd)
 		return -1;
 	}
 	sfd = calloc(1, sizeof(*sfd));
-	if (!sfd) {
+	if (ALLOC_FAILURE(sfd)) {
 		RWLIST_UNLOCK(&sslfds);
 		return -1;
 	}
@@ -229,18 +229,18 @@ static void *ssl_io_thread(void *unused)
 			numssl = RWLIST_SIZE(&sslfds, sfd, entry);
 			numfds = 2 * numssl + 1; /* Times 2, one for read and write. Add 1 for alertpipe */
 			pfds = calloc(numfds, sizeof(*pfds));
-			if (!pfds) {
+			if (ALLOC_FAILURE(pfds)) {
 				RWLIST_UNLOCK(&sslfds);
 				break;
 			}
 			ssl_list = calloc(numssl, sizeof(SSL *));
-			if (!ssl_list) {
+			if (ALLOC_FAILURE(ssl_list)) {
 				free(pfds);
 				RWLIST_UNLOCK(&sslfds);
 				break;
 			}
 			readpipes = calloc(numssl, sizeof(int));
-			if (!readpipes) {
+			if (ALLOC_FAILURE(readpipes)) {
 				free(pfds);
 				free(ssl_list);
 				RWLIST_UNLOCK(&sslfds);

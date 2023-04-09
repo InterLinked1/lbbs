@@ -44,7 +44,7 @@ const char *bbs_username(struct bbs_user *user)
 struct bbs_user *bbs_user_request(void)
 {
 	struct bbs_user *user = calloc(1, sizeof(*user));
-	if (!user) {
+	if (ALLOC_FAILURE(user)) {
 		return NULL;
 	}
 	user->priv = -1; /* Not logged in yet */
@@ -163,7 +163,7 @@ static void username_mapping_cache_add(unsigned int userid, const char *username
 
 	len = strlen(username);
 	m = calloc(1, sizeof(*m) + len + 1); /* Plus NUL */
-	if (likely(m != NULL)) {
+	if (ALLOC_SUCCESS(m)) {
 		m->userid = userid;
 		strcpy(m->username, username); /* Safe */
 		RWLIST_WRLOCK(&username_mappings);

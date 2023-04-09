@@ -36,7 +36,7 @@
 #include <string.h>
 #endif
 #if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
-#include <stdio.h> /* FILE* cannot be forward declared, since it's a typedef */
+	#include <stdio.h> /* FILE* cannot be forward declared, since it's a typedef */
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <fcntl.h>
@@ -146,6 +146,9 @@ void *__bbs_strndup(const char *s, size_t n, const char *file, int line, const c
 int __attribute__ ((format (gnu_printf, 2, 0))) __bbs_vasprintf(char **strp, const char *fmt, va_list ap, const char *file, int line, const char *func);
 int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file, int line, const char *func, char **strp, const char *fmt, ...);
 #endif /* REDIRECT_LIBC_ALLOC */
+
+#define ALLOC_FAILURE(x) (unlikely(x == NULL))
+#define ALLOC_SUCCESS(x) (likely(x != NULL))
 
 /* Convenience macros */
 #define QUOTE(...) #__VA_ARGS__

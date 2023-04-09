@@ -208,7 +208,7 @@ unsigned char *base64_decode(const unsigned char *data, int input_length, int *o
 	}
 
 	decoded_data = (unsigned char*) malloc(output_length + 1);
-	if (!decoded_data) {
+	if (ALLOC_FAILURE(decoded_data)) {
 		return NULL;
 	}
 
@@ -255,7 +255,7 @@ char *base64_encode(const char *data, int input_length, int *outlen)
 
 	output_len = 4 * ((input_length + 2) / 3);
 	encoded_data = malloc(output_len  + 1);
-	if (!encoded_data) {
+	if (ALLOC_FAILURE(encoded_data)) {
 		return NULL;
 	}
 

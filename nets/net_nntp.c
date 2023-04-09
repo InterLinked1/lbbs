@@ -648,7 +648,7 @@ static int do_post(struct nntp_session *nntp)
 	/*! \todo Do we need to inject the header? snprintf(msgid, sizeof(msgid), "Message-ID: <%s@%s>", uuid, bbs_hostname()); */
 
 	newsgroups = strndup(newsgroups_header, end - newsgroups_header);
-	if (!newsgroups) {
+	if (ALLOC_FAILURE(newsgroups)) {
 		goto cleanup;
 	}
 	dup = newsgroups;
@@ -840,7 +840,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 
 		if (!nntp->post) { /* First line */
 			nntp->post = malloc(dlen + 3); /* Use malloc instead of strdup so we can tack on a CR LF */
-			if (!nntp->post) {
+			if (ALLOC_FAILURE(nntp->post)) {
 				nntp->postfail = 1;
 				return 0;
 			}
@@ -850,7 +850,7 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 		} else { /* Additional line */
 			char *newstr;
 			newstr = realloc(nntp->post, nntp->postlen + dlen + 3);
-			if (!newstr) {
+			if (ALLOC_FAILURE(newstr)) {
 				nntp->postfail = 1;
 				return 0;
 			}

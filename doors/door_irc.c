@@ -94,7 +94,7 @@ int bbs_irc_client_msg_callback_register(void (*msg_cb)(const char *clientname, 
 		return -1;
 	}
 	cb = calloc(1, sizeof(*cb));
-	if (!cb) {
+	if (ALLOC_FAILURE(cb)) {
 		RWLIST_UNLOCK(&msg_callbacks);
 		return -1;
 	}
@@ -183,7 +183,7 @@ static int load_config(void)
 		bbs_config_val_set_true(cfg, bbs_config_section_name(section), "callbacks", &callbacks);
 		bbs_config_val_set_dstr(cfg, bbs_config_section_name(section), "msgscript", &msgscript);
 		client = calloc(1, sizeof(*client) + strlen(bbs_config_section_name(section)) + 1);
-		if (!client) {
+		if (ALLOC_FAILURE(client)) {
 			continue;
 		}
 		strcpy(client->name, bbs_config_section_name(section)); /* Safe */
@@ -310,7 +310,7 @@ static struct participant *join_client(struct bbs_node *node, const char *name)
 	}
 	/* Okay, we have the client. Add the newcomer to it. */
 	p = calloc(1, sizeof(*p));
-	if (!p) {
+	if (ALLOC_FAILURE(p)) {
 		RWLIST_UNLOCK(&clients);
 		return NULL;
 	}

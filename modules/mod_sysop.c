@@ -26,7 +26,6 @@
 #include <ctype.h> /* use isprint */
 #include <poll.h>
 #include <pthread.h>
-#include <signal.h> /* use pthread_kill */
 #include <sys/un.h>	/* use struct sockaddr_un */
 
 #include "include/node.h"
@@ -425,7 +424,7 @@ static int launch_sysop_console(int remote, int fdin, int fdout)
 	struct sysop_fd *fds;
 
 	fds = calloc(1, sizeof(*fds));
-	if (!fds) {
+	if (ALLOC_FAILURE(fds)) {
 		return -1;
 	}
 
@@ -520,15 +519,13 @@ static int unload_module(void)
 	if (uds_socket != -1) {
 		close(uds_socket);
 		uds_socket = -1;
-		pthread_cancel(uds_thread);
-		pthread_kill(uds_thread, SIGURG);
+		bbs_pthread_cancel_kill(uds_thread);
 		bbs_pthread_join(uds_thread, NULL);
 		unlink(BBS_SYSOP_SOCKET);
 	}
 	if (sysop_thread != (long unsigned int) -1) {
 		bbs_debug(3, "Waiting for sysop thread to exit\n");
-		pthread_cancel(sysop_thread);
-		pthread_kill(sysop_thread, SIGURG);
+		bbs_pthread_cancel_kill(sysop_thread);
 		bbs_pthread_join(sysop_thread, NULL);
 		if (option_nofork) {
 			bbs_fd_buffer_input(STDIN_FILENO, 1); /* Be nice: re-enable canonical mode and echo to leave the TTY in a sane state. */

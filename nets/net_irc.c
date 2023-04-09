@@ -227,7 +227,7 @@ static int add_operator(const char *name, const char *password)
 		return -1;
 	}
 	operator = calloc(1, sizeof(*operator) + namelen + pwlen + 2);
-	if (!operator) {
+	if (ALLOC_FAILURE(operator)) {
 		RWLIST_UNLOCK(&operators);
 		return -1;
 	}
@@ -270,7 +270,7 @@ int irc_relay_register(int (*relay_send)(const char *channel, const char *sender
 		return -1;
 	}
 	relay = calloc(1, sizeof(*relay));
-	if (!relay) {
+	if (ALLOC_FAILURE(relay)) {
 		RWLIST_UNLOCK(&relays);
 		return -1;
 	}
@@ -1894,7 +1894,8 @@ static void handle_nick(struct irc_user *user, char *s)
 	} else { /* Nickname is not claimed. It's fine. */
 		char oldnick[64] = "";
 		char *newnick = strdup(s);
-		if (!newnick) {
+
+		if (ALLOC_FAILURE(newnick)) {
 			return;
 		}
 		/* Now, the nick change can't fail. */
@@ -2111,7 +2112,7 @@ static int join_channel(struct irc_user *user, char *name)
 		bbs_debug(3, "Creating channel '%s' for the first time\n", name);
 		newchan = 1;
 		channel = calloc(1, sizeof(*channel) + chanlen + 1);
-		if (!channel) {
+		if (ALLOC_FAILURE(channel)) {
 			RWLIST_UNLOCK(&channels);
 			return -1;
 		}
@@ -2205,7 +2206,7 @@ static int join_channel(struct irc_user *user, char *name)
 
 	/* Add ourself to the channel members */
 	member = calloc(1, sizeof(*member));
-	if (!member) {
+	if (ALLOC_FAILURE(member)) {
 		RWLIST_UNLOCK(&channel->members);
 		if (newchan) {
 			channel_free(channel); /* If we just created a new channel but couldn't join it, destroy it, since it has no members. Not yet in the list, so just free directly. */
@@ -3106,7 +3107,7 @@ static void irc_handler(struct bbs_node *node, int secure)
 	}
 
 	user = calloc(1, sizeof(*user));
-	if (!user) {
+	if (ALLOC_FAILURE(user)) {
 		return;
 	}
 	pthread_mutex_init(&user->lock, NULL);

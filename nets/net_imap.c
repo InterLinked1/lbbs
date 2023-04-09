@@ -1952,8 +1952,9 @@ static int in_range(const char *s, int num)
 {
 	char *dup;
 	char *sequence, *sequences;
+
 	dup = strdup(s);
-	if (!dup) {
+	if (ALLOC_FAILURE(dup)) {
 		return 0;
 	}
 	sequences = dup;
@@ -2037,11 +2038,11 @@ static int uintlist_append2(unsigned int **a, unsigned int **b, int *lengths, in
 
 	if (!*a) {
 		*a = malloc(UINTLIST_CHUNK_SIZE * sizeof(unsigned int));
-		if (!*a) {
+		if (ALLOC_FAILURE(*a)) {
 			return -1;
 		}
 		*b = malloc(UINTLIST_CHUNK_SIZE * sizeof(unsigned int));
-		if (!*b) {
+		if (ALLOC_FAILURE(*b)) {
 			free_if(*a);
 			return -1;
 		}
@@ -2049,11 +2050,11 @@ static int uintlist_append2(unsigned int **a, unsigned int **b, int *lengths, in
 	} else {
 		if (*lengths >= *allocsizes) {
 			unsigned int *newb, *newa = realloc(*a, *allocsizes + UINTLIST_CHUNK_SIZE * sizeof(unsigned int)); /* Increase by 32 each chunk */
-			if (!newa) {
+			if (ALLOC_FAILURE(newa)) {
 				return -1;
 			}
 			newb = realloc(*b, *allocsizes + UINTLIST_CHUNK_SIZE * sizeof(unsigned int));
-			if (!newb) {
+			if (ALLOC_FAILURE(newb)) {
 				/* This is tricky. We expanded a but failed to expand b. Keep the smaller size for our records. */
 				return -1;
 			}
@@ -2703,7 +2704,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 					goto cleanup;
 				}
 				headerlist = malloc(strlen(bodyargs) + 2); /* Add 2, 1 for NUL and 1 for : at the beginning */
-				if (!headerlist) {
+				if (ALLOC_FAILURE(headerlist)) {
 					goto cleanup;
 				}
 				headerlist[0] = ':';
@@ -3516,7 +3517,7 @@ static struct imap_search_key *imap_search_add(struct imap_search_keys *skeys, e
 	struct imap_search_key *nk;
 
 	nk = calloc(1, sizeof(*nk));
-	if (!nk) {
+	if (ALLOC_FAILURE(nk)) {
 		return NULL;
 	}
 	nk->type = type;

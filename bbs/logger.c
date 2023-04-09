@@ -175,7 +175,7 @@ int bbs_add_logging_fd(int fd)
 		return -1;
 	}
 	rfd = calloc(1, sizeof(*rfd));
-	if (!fd) {
+	if (ALLOC_FAILURE(rfd)) {
 		RWLIST_UNLOCK(&remote_log_fds);
 		return -1;
 	}

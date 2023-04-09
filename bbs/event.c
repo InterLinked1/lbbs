@@ -52,7 +52,7 @@ int __bbs_register_event_consumer(int (*callback)(struct bbs_event *event), void
 		return -1;
 	}
 	c = calloc(1, sizeof(*c));
-	if (!c) {
+	if (ALLOC_FAILURE(c)) {
 		RWLIST_UNLOCK(&consumers);
 		return -1;
 	}
