@@ -45,7 +45,7 @@ static int pre(void)
 
 static int send_count = 0;
 
-static int send_message(int client1)
+static int send_message(int client1, int extrabytes)
 {
 	char subject[32];
 
@@ -75,6 +75,12 @@ static int send_message(int client1)
 	SWRITE(client1, ENDL);
 	SWRITE(client1, "This is a test email message." ENDL);
 	SWRITE(client1, "....Let's hope it gets delivered properly." ENDL); /* Test byte stuffing */
+	if (extrabytes) {
+		extrabytes = MIN((int) sizeof(subject), extrabytes);
+		memset(subject, 'a', extrabytes);
+		write(client1, subject, extrabytes);
+		SWRITE(client1, ENDL);
+	}
 	SWRITE(client1, "." ENDL); /* EOM */
 	CLIENT_EXPECT(client1, "250");
 	return 0;
@@ -94,7 +100,7 @@ static int make_messages(int nummsg)
 
 	/* First, dump some messages into the mailbox for us to retrieve */
 	while (send_count < nummsg) {
-		send_message(clientfd);
+		send_message(clientfd, 0);
 	}
 	close(clientfd); /* Close SMTP connection */
 
@@ -106,7 +112,7 @@ static int make_messages(int nummsg)
 
 static int run(void)
 {
-	int client1 = -1, client2 = -1;
+	int client1 = -1, client2 = -1, smtpfd;
 	int res = -1;
 	int i;
 
@@ -365,8 +371,71 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(client1, "$label3");
 	CLIENT_DRAIN(client1);
 
+	/* ACLs and shared mailboxes */
+	client2 = test_make_socket(143);
+	if (client2 < 0) {
+		goto cleanup;
+	}
+	CLIENT_EXPECT(client2, "OK");
+	SWRITE(client2, "a1 LOGIN \"" TEST_USER2 "\" \"" TEST_PASS2 "\"" ENDL);
+	CLIENT_EXPECT(client2, "a1 OK");
+
+	SWRITE(client2, "a2 CREATE sharedmbox" ENDL);
+	CLIENT_EXPECT(client2, "a2 OK");
+
+	SWRITE(client2, "a3 SETACL sharedmbox " TEST_USER " lrswipkxte" ENDL); /* Grant full control, except administration rights */
+	CLIENT_EXPECT(client2, "a3 OK");
+
+	/* Shared mailbox should show up */
+	SWRITE(client1, "b1 LIST \"\" \"Other Users*\"" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "sharedmbox");
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "b2 SELECT \"Other Users." TEST_USER2 ".sharedmbox\"" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "b2 OK")
+
+	/* Now remove the permissions */
+	SWRITE(client2, "a4 DELETEACL sharedmbox " TEST_USER ENDL);
+	CLIENT_EXPECT(client2, "a4 OK");
+
+	SWRITE(client1, "b3 LIST \"\" \"Other Users*\"" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "b3 OK"); /* Can't really test for negative output... */
+	CLIENT_DRAIN(client1);
+
+	/* SORT */
+	/* Delete any existing messages so we don't get confused. */
+	SWRITE(client1, "c1 SELECT INBOX" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "c1 OK");
+
+	SWRITE(client1, "c2 STORE 1:* FLAGS.SILENT (\\Deleted)" ENDL);
+	CLIENT_EXPECT(client1, "c2 OK");
+
+	SWRITE(client1, "c3 CLOSE" ENDL); /* Expunge but don't send untagged responses */
+	CLIENT_EXPECT(client1, "c3 OK");
+
+	smtpfd = test_make_socket(25);
+	if (smtpfd < 0) {
+		goto cleanup;
+	}
+	send_count = 0;
+	send_message(smtpfd, 10);
+	send_message(smtpfd, 12);
+	send_message(smtpfd, 16);
+	send_message(smtpfd, 7);
+	send_message(smtpfd, 15);
+	send_message(smtpfd, 2);
+	SWRITE(smtpfd, "QUIT" ENDL);
+	close_if(smtpfd);
+
+	SWRITE(client1, "c4 SELECT INBOX" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "c4 OK");
+
+	SWRITE(client1, "c5 SORT (REVERSE SIZE TO REVERSE DATE) UTF-8 ALL" ENDL); /* Use SORT, not UID SORT, so we can exactly predict the correct sequence numbers for response */
+	CLIENT_EXPECT(client1, "SORT 3 5 2 1 4 6");
+	CLIENT_DRAIN(client1);
+
 	/* LOGOUT */
-	SWRITE(client1, "a999 LOGOUT" ENDL);
+	SWRITE(client1, "z999 LOGOUT" ENDL);
 	CLIENT_EXPECT(client1, "* BYE");
 
 	res = 0;
