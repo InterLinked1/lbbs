@@ -78,7 +78,6 @@ static int smtps_port = DEFAULT_SMTPS_PORT;
 static int msa_port = DEFAULT_SMTP_MSA_PORT;
 
 static pthread_t smtp_listener_thread = -1;
-static pthread_t msa_listener_thread = -1;
 static pthread_t queue_thread = -1;
 
 static int smtp_enabled = 1, smtps_enabled = 1, msa_enabled = 1;
@@ -2273,21 +2272,7 @@ static void *__smtp_handler(void *varg)
 	bbs_node_begin(node);
 
 	/* If it's secure, it's for message submission agent, MTAs are never secure by default. */
-	smtp_handler(node, secure, secure); /* Actually handle the SMTP/SMTPS client */
-
-	bbs_debug(3, "Node %d has ended its %s session\n", node->id, node->protname);
-	bbs_node_exit(node); /* node is no longer a valid reference */
-	return NULL;
-}
-
-static void *__msa_handler(void *varg)
-{
-	struct bbs_node *node = varg;
-
-	node->thread = pthread_self();
-	bbs_node_begin(node);
-
-	smtp_handler(node, 1, 0); /* Actually handle the message submission agent client */
+	smtp_handler(node, secure || !strcmp(node->protname, "SMTP (MSA)"), secure); /* Actually handle the SMTP/SMTPS/message submission agent client */
 
 	bbs_debug(3, "Node %d has ended its %s session\n", node->id, node->protname);
 	bbs_node_exit(node); /* node is no longer a valid reference */
@@ -2298,14 +2283,7 @@ static void *__msa_handler(void *varg)
 static void *smtp_listener(void *unused)
 {
 	UNUSED(unused);
-	bbs_tcp_listener2(smtp_socket, smtps_socket, "SMTP", "SMTPS", __smtp_handler, BBS_MODULE_SELF);
-	return NULL;
-}
-
-static void *msa_listener(void *unused)
-{
-	UNUSED(unused);
-	bbs_tcp_listener(msa_socket, "SMTP (MSA)", __msa_handler, BBS_MODULE_SELF);
+	bbs_tcp_listener3(smtp_socket, smtps_socket, msa_socket, "SMTP", "SMTPS", "SMTP (MSA)", __smtp_handler, BBS_MODULE_SELF);
 	return NULL;
 }
 
@@ -2437,15 +2415,6 @@ static int load_module(void)
 		close_if(smtps_socket);
 		SPF_server_free(spf_server);
 		goto cleanup;
-	} else if (bbs_pthread_create(&msa_listener_thread, NULL, msa_listener, NULL)) {
-		bbs_error("Unable to create SMTP MSA listener thread.\n");
-		close_if(msa_socket);
-		close_if(smtp_socket);
-		close_if(smtps_socket);
-		bbs_pthread_cancel_kill(smtp_listener_thread);
-		bbs_pthread_join(smtp_listener_thread, NULL);
-		SPF_server_free(spf_server);
-		goto cleanup;
 	}
 
 	if (bbs_pthread_create(&queue_thread, NULL, queue_handler, NULL)) {
@@ -2454,8 +2423,6 @@ static int load_module(void)
 		close_if(smtps_socket);
 		bbs_pthread_cancel_kill(smtp_listener_thread);
 		bbs_pthread_join(smtp_listener_thread, NULL);
-		bbs_pthread_cancel_kill(msa_listener_thread);
-		bbs_pthread_join(msa_listener_thread, NULL);
 		SPF_server_free(spf_server);
 		goto cleanup;
 	}
@@ -2489,8 +2456,6 @@ static int unload_module(void)
 	}
 	bbs_pthread_cancel_kill(smtp_listener_thread);
 	bbs_pthread_join(smtp_listener_thread, NULL);
-	bbs_pthread_cancel_kill(msa_listener_thread);
-	bbs_pthread_join(msa_listener_thread, NULL);
 	bbs_pthread_cancel_kill(queue_thread);
 	bbs_pthread_join(queue_thread, NULL);
 	if (smtp_enabled) {

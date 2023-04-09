@@ -226,6 +226,19 @@ void bbs_tcp_listener(int socket, const char *name, void *(*handler)(void *varg)
 void bbs_tcp_listener2(int socket, int socket2, const char *name, const char *name2, void *(*handler)(void *varg), void *module);
 
 /*!
+ * \brief Run a generic TCP network login service listener thread for up to 3 sockets
+ * \param socket Socket fd (typically the insecure socket). -1 if not needed.
+ * \param socket2 Optional 2nd fd (typically the secure socket). -1 if not needed.
+ * \param socket3 Optional 3rd fd. -1 if not needed.
+ * \param name Name of network login service corresponding to socket
+ * \param name2 Name of network login service corresponding to socket2
+ * \param name3 Name of network login service corresponding to socket3
+ * \param handler Common service handler function (for all sockets)
+ * \param module Module reference
+ */
+void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, const char *name2, const char *name3, void *(*handler)(void *varg), void *module);
+
+/*!
  * \brief Get local IP address
  * \param buf
  * \param len

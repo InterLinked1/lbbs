@@ -332,12 +332,12 @@ static int proc_setgroups_write(pid_t pid, const char *str, int str_len)
 static int setup_namespace(pid_t pid)
 {
 	char map_buf[100];
-    char map_path[PATH_MAX];
+	char map_path[PATH_MAX];
 	char *uid_map = map_buf, *gid_map = map_buf;
 	int map_len;
 
 	snprintf(map_path, sizeof(map_path), "/proc/%d/uid_map", pid);
-    map_len = snprintf(map_buf, sizeof(map_buf), "0 %ld 1", (long) getuid());
+	map_len = snprintf(map_buf, sizeof(map_buf), "0 %ld 1", (long) getuid());
 	if (update_map(uid_map, map_path, map_len)) {
 		return -1;
 	}
@@ -345,7 +345,7 @@ static int setup_namespace(pid_t pid)
 	proc_setgroups_write(pid, "deny", strlen("deny"));
 
 	snprintf(map_path, sizeof(map_path), "/proc/%d/gid_map", pid);
-    map_len = snprintf(map_buf, sizeof(map_buf), "0 %ld 1", (long) getgid());
+	map_len = snprintf(map_buf, sizeof(map_buf), "0 %ld 1", (long) getgid());
     if (update_map(gid_map, map_path, map_len)) {
 		return -1;
 	}

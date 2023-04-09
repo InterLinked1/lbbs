@@ -66,7 +66,6 @@ static int nntps_port = DEFAULT_NNTPS_PORT;
 static int nnsp_port = DEFAULT_NNSP_PORT;
 
 static pthread_t nntp_listener_thread = -1;
-static pthread_t nnsp_listener_thread = -1;
 
 static int nntp_enabled = 1, nntps_enabled = 1, nnsp_enabled = 1;
 static int nntp_socket = -1, nntps_socket = -1, nnsp_socket = -1;
@@ -1344,21 +1343,7 @@ static void *__nntp_handler(void *varg)
 	node->thread = pthread_self();
 	bbs_node_begin(node);
 
-	nntp_handler(node, !strcmp(node->protname, "NNTPS"), NNTP_MODE_READER);
-
-	bbs_debug(3, "Node %d has ended its %s session\n", node->id, node->protname);
-	bbs_node_exit(node); /* node is no longer a valid reference */
-	return NULL;
-}
-
-static void *__nnsp_handler(void *varg)
-{
-	struct bbs_node *node = varg;
-
-	node->thread = pthread_self();
-	bbs_node_begin(node);
-
-	nntp_handler(node, !strcmp(node->protname, "NNTPS"), NNTP_MODE_TRANSIT);
+	nntp_handler(node, !strcmp(node->protname, "NNTPS"), !strcmp(node->protname, "NNSP") ? NNTP_MODE_TRANSIT: NNTP_MODE_READER);
 
 	bbs_debug(3, "Node %d has ended its %s session\n", node->id, node->protname);
 	bbs_node_exit(node); /* node is no longer a valid reference */
@@ -1369,14 +1354,7 @@ static void *__nnsp_handler(void *varg)
 static void *nntp_listener(void *unused)
 {
 	UNUSED(unused);
-	bbs_tcp_listener2(nntp_socket, nntps_socket, "NNTP", "NNTPS", __nntp_handler, BBS_MODULE_SELF);
-	return NULL;
-}
-
-static void *nnsp_listener(void *unused)
-{
-	UNUSED(unused);
-	bbs_tcp_listener(nnsp_socket, "NNSP", __nnsp_handler, BBS_MODULE_SELF);
+	bbs_tcp_listener3(nntp_socket, nntps_socket, nnsp_socket, "NNTP", "NNTPS", "NNSP", __nntp_handler, BBS_MODULE_SELF);
 	return NULL;
 }
 
@@ -1489,14 +1467,6 @@ static int load_module(void)
 		close_if(nntp_socket);
 		close_if(nntps_socket);
 		goto cleanup;
-	} else if (bbs_pthread_create(&nnsp_listener_thread, NULL, nnsp_listener, NULL)) {
-		bbs_error("Unable to create SMTP MSA listener thread.\n");
-		close_if(nnsp_socket);
-		close_if(nntp_socket);
-		close_if(nntps_socket);
-		bbs_pthread_cancel_kill(nntp_listener_thread);
-		bbs_pthread_join(nntp_listener_thread, NULL);
-		goto cleanup;
 	}
 
 	if (nntp_enabled) {
@@ -1519,8 +1489,6 @@ static int unload_module(void)
 {
 	bbs_pthread_cancel_kill(nntp_listener_thread);
 	bbs_pthread_join(nntp_listener_thread, NULL);
-	bbs_pthread_cancel_kill(nnsp_listener_thread);
-	bbs_pthread_join(nnsp_listener_thread, NULL);
 	if (nntp_enabled) {
 		bbs_unregister_network_protocol(nntp_port);
 		close_if(nntp_socket);
