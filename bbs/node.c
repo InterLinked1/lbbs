@@ -230,6 +230,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 		return NULL;
 	}
 	pthread_mutex_init(&node->lock, NULL);
+	pthread_mutex_init(&node->ptylock, NULL);
 	node->id = newnodenumber;
 	node->fd = fd;
 
@@ -282,6 +283,18 @@ int bbs_node_unlock(struct bbs_node *node)
 {
 	bbs_assert_exists(node);
 	return pthread_mutex_unlock(&node->lock);
+}
+
+int bbs_node_pty_lock(struct bbs_node *node)
+{
+	bbs_assert_exists(node);
+	return pthread_mutex_lock(&node->ptylock);
+}
+
+int bbs_node_pty_unlock(struct bbs_node *node)
+{
+	bbs_assert_exists(node);
+	return pthread_mutex_unlock(&node->ptylock);
 }
 
 char bbs_node_input_translate(struct bbs_node *node, char c)
@@ -466,8 +479,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	}
 
 	if (node->ptythread) {
-		pthread_cancel(node->ptythread);
-		pthread_kill(node->ptythread, SIGURG);
+		bbs_pthread_cancel_kill(node->ptythread);
 		bbs_pthread_join(node->ptythread, NULL); /* Wait for the PTY master thread to exit, and then clean it up. */
 		if (node->spy) {
 			/* The sysop was spying on this node when it got disconnected.
@@ -529,6 +541,7 @@ static void node_free(struct bbs_node *node)
 	bbs_verb(3, "Node %d has exited\n", node->id);
 	bbs_node_unlock(node);
 	pthread_mutex_destroy(&node->lock);
+	pthread_mutex_destroy(&node->ptylock);
 	free(node);
 }
 
@@ -1170,11 +1183,16 @@ static int node_handler_term(struct bbs_node *node)
 		bbs_debug(5, "Exiting\n");
 		return -1;
 	}
+
 	/* Set up the psuedoterminal */
+	bbs_node_lock(node); /* Lock to prevent node thread from being cancelled while it's registering itself. */
 	if (bbs_pty_allocate(node)) {
+		bbs_node_unlock(node);
 		bbs_debug(5, "Exiting\n");
 		return -1;
 	}
+	bbs_node_unlock(node);
+
 	if (defaultbps) {
 		/* If there's a default speed to emulate, set it */
 		bbs_node_set_speed(node, defaultbps);

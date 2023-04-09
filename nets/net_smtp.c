@@ -2442,8 +2442,7 @@ static int load_module(void)
 		close_if(msa_socket);
 		close_if(smtp_socket);
 		close_if(smtps_socket);
-		pthread_cancel(smtp_listener_thread);
-		pthread_kill(smtp_listener_thread, SIGURG);
+		bbs_pthread_cancel_kill(smtp_listener_thread);
 		bbs_pthread_join(smtp_listener_thread, NULL);
 		SPF_server_free(spf_server);
 		goto cleanup;
@@ -2453,11 +2452,9 @@ static int load_module(void)
 		close_if(msa_socket);
 		close_if(smtp_socket);
 		close_if(smtps_socket);
-		pthread_cancel(smtp_listener_thread);
-		pthread_kill(smtp_listener_thread, SIGURG);
+		bbs_pthread_cancel_kill(smtp_listener_thread);
 		bbs_pthread_join(smtp_listener_thread, NULL);
-		pthread_cancel(msa_listener_thread);
-		pthread_kill(msa_listener_thread, SIGURG);
+		bbs_pthread_cancel_kill(msa_listener_thread);
 		bbs_pthread_join(msa_listener_thread, NULL);
 		SPF_server_free(spf_server);
 		goto cleanup;
@@ -2490,14 +2487,11 @@ static int unload_module(void)
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		bbs_unregister_test(tests[i].callback);
 	}
-	pthread_cancel(smtp_listener_thread);
-	pthread_kill(smtp_listener_thread, SIGURG);
+	bbs_pthread_cancel_kill(smtp_listener_thread);
 	bbs_pthread_join(smtp_listener_thread, NULL);
-	pthread_cancel(msa_listener_thread);
-	pthread_kill(msa_listener_thread, SIGURG);
+	bbs_pthread_cancel_kill(msa_listener_thread);
 	bbs_pthread_join(msa_listener_thread, NULL);
-	pthread_cancel(queue_thread);
-	pthread_kill(queue_thread, SIGURG);
+	bbs_pthread_cancel_kill(queue_thread);
 	bbs_pthread_join(queue_thread, NULL);
 	if (smtp_enabled) {
 		bbs_unregister_network_protocol(smtp_port);

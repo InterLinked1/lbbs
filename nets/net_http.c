@@ -1084,8 +1084,7 @@ static int load_module(void)
 
 static int unload_module(void)
 {
-	pthread_cancel(http_listener_thread);
-	pthread_kill(http_listener_thread, SIGURG);
+	bbs_pthread_cancel_kill(http_listener_thread);
 	bbs_pthread_join(http_listener_thread, NULL);
 	if (http_enabled) {
 		close_if(http_socket);

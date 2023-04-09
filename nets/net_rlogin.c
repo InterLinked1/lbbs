@@ -27,7 +27,6 @@
 #include <sys/socket.h>
 #include <netinet/in.h> /* use sockaddr_in */
 #include <pthread.h>
-#include <signal.h> /* use pthread_kill */
 
 #include "include/module.h"
 #include "include/node.h"
@@ -192,8 +191,7 @@ static int unload_module(void)
 		bbs_unregister_network_protocol(rlogin_port);
 		close(rlogin_socket);
 		rlogin_socket = -1;
-		pthread_cancel(rlogin_thread);
-		pthread_kill(rlogin_thread, SIGURG);
+		bbs_pthread_cancel_kill(rlogin_thread);
 		bbs_pthread_join(rlogin_thread, NULL);
 	} else {
 		bbs_error("RLogin socket already closed at unload?\n");

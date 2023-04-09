@@ -84,7 +84,12 @@ int bbs_user_identity_mismatch(struct bbs_user *user, const char *from);
 /*! \brief Get thread ID of current thread */
 int bbs_gettid(void);
 
+/*! \brief Cancel and kill a thread */
+int bbs_pthread_cancel_kill(pthread_t thread);
+
 int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const char *func, int line);
+
+/*! \brief Join a non-detached thread */
 #define bbs_pthread_join(thread, retval) __bbs_pthread_join(thread, retval, __FILE__, __FUNCTION__, __LINE__)
 
 int __bbs_pthread_create_detached(pthread_t *thread, pthread_attr_t *attr, void *(*start_routine)(void *), void *data, const char *file, const char *func, int line, const char *start_fn);

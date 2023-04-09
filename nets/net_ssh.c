@@ -833,8 +833,7 @@ static int unload_module(void)
 	}
 	bbs_unregister_network_protocol(ssh_port);
 	bbs_debug(3, "Cleaning up libssh\n");
-	pthread_cancel(ssh_listener_thread);
-	pthread_kill(ssh_listener_thread, SIGURG);
+	bbs_pthread_cancel_kill(ssh_listener_thread);
 	bbs_pthread_join(ssh_listener_thread, NULL);
 	/* Since the ssh_listener thread was cancelled, most likely in ssh_bind_accept,
 	 * but it already called ssh_new, we need to free the session that never got assigned. */

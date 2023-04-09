@@ -1494,8 +1494,7 @@ static int load_module(void)
 		close_if(nnsp_socket);
 		close_if(nntp_socket);
 		close_if(nntps_socket);
-		pthread_cancel(nntp_listener_thread);
-		pthread_kill(nntp_listener_thread, SIGURG);
+		bbs_pthread_cancel_kill(nntp_listener_thread);
 		bbs_pthread_join(nntp_listener_thread, NULL);
 		goto cleanup;
 	}
@@ -1518,11 +1517,9 @@ cleanup:
 
 static int unload_module(void)
 {
-	pthread_cancel(nntp_listener_thread);
-	pthread_kill(nntp_listener_thread, SIGURG);
+	bbs_pthread_cancel_kill(nntp_listener_thread);
 	bbs_pthread_join(nntp_listener_thread, NULL);
-	pthread_cancel(nnsp_listener_thread);
-	pthread_kill(nnsp_listener_thread, SIGURG);
+	bbs_pthread_cancel_kill(nnsp_listener_thread);
 	bbs_pthread_join(nnsp_listener_thread, NULL);
 	if (nntp_enabled) {
 		bbs_unregister_network_protocol(nntp_port);

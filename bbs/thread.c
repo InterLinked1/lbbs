@@ -32,9 +32,17 @@
 #include "include/utils.h"
 #include "include/linkedlists.h"
 
+static __thread int my_tid = 0;
+
 int bbs_gettid(void)
 {
 	int tid;
+
+	/* If we've called this before, return the cached value to avoid a system call.
+	 * Since every call to __bbs_log calls bbs_gettid, this is an important optimization. */
+	if (my_tid) {
+		return my_tid;
+	}
 
 	/* We cannot merely have a macro defining gettid if it's not defined,
 	 * because the native return types of gettid and SYS_gettid differ.
@@ -47,6 +55,7 @@ int bbs_gettid(void)
 #else
 	tid = syscall(SYS_gettid);
 #endif
+	my_tid = tid; /* Save the value for future reference, so we don't need to do this again. */
 	return tid;
 }
 
@@ -223,10 +232,63 @@ int bbs_dump_threads(int fd)
 	return 0;
 }
 
+int bbs_pthread_cancel_kill(pthread_t thread)
+{
+	int res;
+
+	res = pthread_cancel(thread);
+	if (res) {
+		if (res == ESRCH) {
+			bbs_debug(3, "Thread %lu no longer exists\n", thread);
+		} else {
+			bbs_warning("Could not cancel thread %lu: %s\n", thread, strerror(res));
+		}
+	}
+
+	res = pthread_kill(thread, SIGURG);
+	if (res) {
+		if (res == ESRCH) {
+			bbs_debug(3, "Thread %lu no longer exists\n", thread);
+		} else {
+			bbs_warning("Could not kill thread %lu: %s\n", thread, strerror(res));
+		}
+	} else {
+		bbs_debug(3, "Killed thread %lu\n", thread);
+	}
+	return res;
+}
+
 int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const char *func, int line)
 {
 	void *tmp;
 	int res;
+	struct thread_list_t *x;
+	int lwp;
+
+	RWLIST_RDLOCK(&thread_list);
+	RWLIST_TRAVERSE(&thread_list, x, list) {
+		if (thread == x->id) {
+			lwp = x->lwp;
+			if (x->detached) {
+				bbs_error("Can't join detached LWP %d at %s:%d %s()\n", lwp, file, line, func);
+				lwp = 0;
+			} else if (!x->waitingjoin) {
+				/* This is suspicious... we may end up hanging if the thread doesn't exit imminently */
+				bbs_warning("Thread %d is not currently waiting to be joined\n", lwp);
+			}
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&thread_list);
+
+	if (!x) {
+		bbs_error("Thread %lu not registered\n", thread);
+		return -1;
+	} else if (!lwp) {
+		return -1;
+	}
+
+	bbs_debug(6, "Attempting to join thread %lu (LWP %d) at %s:%d %s()\n", thread, lwp, file, line, func);
 	res = pthread_join(thread, retval ? retval : &tmp);
 	if (res) {
 		bbs_error("pthread_join(%lu) at %s:%d %s(): %s\n", thread, file, line, func, strerror(res));
@@ -235,7 +297,7 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 	res = __thread_unregister(thread, file, line, func);
 	if (res == -1) {
 		bbs_error("Thread %d attempted to join nonjoinable thread %lu at %s:%d %s()\n", bbs_gettid(), thread, file, line, func);
-		return -1; /* pthread_join may have returned 0, but if the thread was detached, we probably can't trust its return value */
+		return -1; /* pthread_join may have returned 0, but if the thread was detached (though it can't be here!), we probably can't trust its return value */
 	}
 	return 0;
 }

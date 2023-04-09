@@ -25,7 +25,7 @@
 #include <string.h>
 #include <dirent.h> /* use opendir, closedir */
 #include <time.h>
-#include <unistd.h> /* use gettid */
+#include <unistd.h>
 #include <sys/time.h> /* use gettimeofday */
 #include <unistd.h> /* use write */
 #include <linux/limits.h> /* use PATH_MAX */

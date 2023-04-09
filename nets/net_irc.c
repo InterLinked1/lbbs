@@ -3296,8 +3296,7 @@ decline:
 static int unload_module(void)
 {
 	pthread_cancel(irc_ping_thread);
-	pthread_cancel(irc_listener_thread);
-	pthread_kill(irc_listener_thread, SIGURG);
+	bbs_pthread_cancel_kill(irc_listener_thread);
 	bbs_pthread_join(irc_ping_thread, NULL);
 	bbs_pthread_join(irc_listener_thread, NULL);
 	if (irc_enabled) {

@@ -868,8 +868,7 @@ static int unload_module(void)
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		bbs_unregister_test(tests[i].callback);
 	}
-	pthread_cancel(pop3_listener_thread);
-	pthread_kill(pop3_listener_thread, SIGURG);
+	bbs_pthread_cancel_kill(pop3_listener_thread);
 	bbs_pthread_join(pop3_listener_thread, NULL);
 	if (pop3_enabled) {
 		bbs_unregister_network_protocol(pop3_port);

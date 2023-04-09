@@ -179,8 +179,7 @@ static int load_module(void)
 
 static int unload_module(void)
 {
-	pthread_cancel(gopher_listener_thread);
-	pthread_kill(gopher_listener_thread, SIGURG);
+	bbs_pthread_cancel_kill(gopher_listener_thread);
 	bbs_pthread_join(gopher_listener_thread, NULL);
 	close_if(gopher_socket);
 	bbs_unregister_network_protocol(gopher_port);

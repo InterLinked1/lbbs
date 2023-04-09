@@ -27,7 +27,6 @@
 #include <sys/socket.h>
 #include <netinet/in.h> /* use sockaddr_in */
 #include <pthread.h>
-#include <signal.h> /* use pthread_kill */
 
 /* Expose the telcmds and telopts string arrays */
 #define TELCMDS
@@ -255,16 +254,14 @@ static int unload_module(void)
 	if (tty_socket > -1) {
 		close(tty_socket);
 		tty_socket = -1;
-		pthread_cancel(tty_thread);
-		pthread_kill(tty_thread, SIGURG);
+		bbs_pthread_cancel_kill(tty_thread);
 		bbs_pthread_join(tty_thread, NULL);
 	}
 	if (telnet_socket > -1) {
 		bbs_unregister_network_protocol(telnet_port);
 		close(telnet_socket);
 		telnet_socket = -1;
-		pthread_cancel(telnet_thread);
-		pthread_kill(telnet_thread, SIGURG);
+		bbs_pthread_cancel_kill(telnet_thread);
 		bbs_pthread_join(telnet_thread, NULL);
 	} else {
 		bbs_error("Telnet socket already closed at unload?\n");

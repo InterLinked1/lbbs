@@ -44,6 +44,7 @@ struct bbs_node {
 	int menustack;				/*!< Current menu stack level */
 	char *ip;					/*!< IP Address */
 	pthread_mutex_t lock;		/*!< Node lock */
+	pthread_mutex_t ptylock;	/*!< Node PTY lock */
 	int created;				/*!< Creation time */
 	pid_t childpid;				/*!< Child PID of process node is currently exec'ing (0 if none) */
 	unsigned int bps;			/*!< Emulated terminal speed */
@@ -152,6 +153,12 @@ int bbs_node_lock(struct bbs_node *node);
 
 /*! Unlock a BBS node */
 int bbs_node_unlock(struct bbs_node *node);
+
+/*! Lock a BBS node for PTY operations */
+int bbs_node_pty_lock(struct bbs_node *node);
+
+/*! Unlock a BBS node for PTY operations */
+int bbs_node_pty_unlock(struct bbs_node *node);
 
 /*!
  * \brief Translate input characters from a node

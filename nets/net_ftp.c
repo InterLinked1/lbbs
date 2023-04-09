@@ -26,7 +26,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
-#include <signal.h> /* use pthread_kill */
 #include <sys/sendfile.h>
 #include <dirent.h>
 
@@ -847,8 +846,7 @@ static int unload_module(void)
 		bbs_unregister_network_protocol(ftp_port);
 		close_if(ftp_socket);
 		close_if(ftps_socket);
-		pthread_cancel(ftp_thread);
-		pthread_kill(ftp_thread, SIGURG);
+		bbs_pthread_cancel_kill(ftp_thread);
 		bbs_pthread_join(ftp_thread, NULL);
 	} else {
 		bbs_error("FTP socket already closed at unload?\n");

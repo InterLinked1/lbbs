@@ -162,8 +162,7 @@ static int load_module(void)
 
 static int unload_module(void)
 {
-	pthread_cancel(finger_listener_thread);
-	pthread_kill(finger_listener_thread, SIGURG);
+	bbs_pthread_cancel_kill(finger_listener_thread);
 	bbs_pthread_join(finger_listener_thread, NULL);
 	close_if(finger_socket);
 	bbs_unregister_network_protocol(finger_port);

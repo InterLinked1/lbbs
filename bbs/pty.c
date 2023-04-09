@@ -272,6 +272,7 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 	SWRITE(fdout, COLOR_RESET); /* Reset color too, just in case */
 	SWRITE(fdout, TERM_CLEAR);
 
+	bbs_node_pty_lock(node);
 	node->spy = 1;
 	node->spyfd = fdout;
 	node->spyfdin = fdin;
@@ -279,6 +280,7 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 		bbs_sigint_set_alertpipe(spy_alert_pipe);
 	}
 	bbs_fd_unbuffer_input(fdin, 0); /* Unbuffer input, so that sysop can type on the node's TTY in real time, not just flushed after line breaks. */
+	bbs_node_pty_lock(node);
 	bbs_node_unlock(node); /* We're done with the node. */
 
 	bbs_verb(3, "Spying begun on node %d\n", nodenum);
@@ -465,7 +467,8 @@ void *pty_master(void *varg)
 		fds[0].events = fds[1].events = POLLIN;
 		fds[0].revents = fds[1].revents = 0;
 		numfds = 2;
-		bbs_node_lock(node);
+		/* Don't try to acquire the regular node lock since that would deadlock during a shutdown. */
+		bbs_node_pty_lock(node);
 		speed = node->speed;
 		spy = node->spy;
 		if (node->spy) {
@@ -486,7 +489,7 @@ void *pty_master(void *varg)
 			spyfdin = node->spyfdin;
 			spyfdout = node->spyfd;
 		}
-		bbs_node_unlock(node);
+		bbs_node_pty_unlock(node);
 
 		pres = poll(fds, numfds, -1);
 		pthread_testcancel();

@@ -27,7 +27,6 @@
 #include <sys/socket.h>
 #include <sys/un.h>	/* use struct sockaddr_un */
 #include <pthread.h>
-#include <signal.h> /* use pthread_kill */
 #include <sys/stat.h> /* use chmod */
 
 #include "include/module.h"
@@ -162,8 +161,7 @@ static int unload_module(void)
 	if (uds_socket > -1) {
 		close(uds_socket);
 		uds_socket = -1;
-		pthread_cancel(uds_thread);
-		pthread_kill(uds_thread, SIGURG);
+		bbs_pthread_cancel_kill(uds_thread);
 		bbs_pthread_join(uds_thread, NULL);
 		unlink(BBS_RUN_SOCKET);
 	} else {

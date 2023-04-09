@@ -233,6 +233,7 @@ struct imap_session {
 	unsigned int appendcur;		/* Bytes received so far in APPEND transfer */
 	unsigned int numappendkeywords:5; /* Number of append keywords. We only need 5 bits since this cannot exceed 26. */
 	unsigned int appendfail:1;
+	unsigned int createdkeyword:1;	/* Whether a keyword was created in response to a STORE */
 	/* Traversal flags */
 	unsigned int totalnew;		/* In "new" maildir. Will be moved to "cur" when seen. */
 	unsigned int totalcur;		/* In "cur" maildir. */
@@ -490,7 +491,7 @@ static void imap_destroy(struct imap_session *imap)
 #define MAX_KEYWORDS 26
 
 /*! \brief Check filename for the mapping for keyword. If one does not exist and there is room ( < 26), it will be created. */
-static void parse_keyword(struct imap_session *imap, const char *s)
+static void parse_keyword(struct imap_session *imap, const char *s, int create)
 {
 	char filename[266];
 	char buf[32];
@@ -540,13 +541,16 @@ static void parse_keyword(struct imap_session *imap, const char *s)
 		index++;
 	}
 
-	/* Didn't find it. Add it if we can. */
-	if (index >= MAX_KEYWORDS) {
-		bbs_warning("Can't store any new keywords for this maildir (already have %d)\n", index);
-	} else {
-		char newindex = 'a' + index;
-		fprintf(fp, "%c %s\n", newindex, s);
-		imap->appendkeywords[imap->numappendkeywords++] = newindex; /* Safe, since we know we're in bounds */
+	if (create) {
+		/* Didn't find it. Add it if we can. */
+		if (index >= MAX_KEYWORDS) {
+			bbs_warning("Can't store any new keywords for this maildir (already have %d)\n", index);
+		} else {
+			char newindex = 'a' + index;
+			fprintf(fp, "%c %s\n", newindex, s);
+			imap->appendkeywords[imap->numappendkeywords++] = newindex; /* Safe, since we know we're in bounds */
+			imap->createdkeyword = 1;
+		}
 	}
 
 	mailbox_uid_unlock(imap->mbox);
@@ -606,6 +610,7 @@ static int parse_flags_string(struct imap_session *imap, char *s)
 	if (imap) {
 		imap->appendkeywords[0] = '\0';
 		imap->numappendkeywords = 0;
+		imap->createdkeyword = 0;
 	}
 
 	while ((f = strsep(&s, " "))) {
@@ -625,7 +630,7 @@ static int parse_flags_string(struct imap_session *imap, char *s)
 		} else if (*f == '\\') {
 			bbs_warning("Failed to parse flag: %s\n", f); /* Unknown non-custom flag */
 		} else if (imap) { /* else, it's a custom flag (keyword), if we have a mailbox, check the translation. */
-			parse_keyword(imap, f);
+			parse_keyword(imap, f, 1);
 		}
 	}
 	if (imap) {
@@ -3121,6 +3126,13 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 				slen = strlen(flagstr);
 				gen_keyword_names(imap, keywords, flagstr + slen, sizeof(flagstr) - slen); /* Append keywords (include space before) */
 			}
+			if (imap->createdkeyword) {
+				/* Server SHOULD send untagged response when a new keyword is created */
+				char allkeywords[256] = "";
+				gen_keyword_names(imap, NULL, allkeywords, sizeof(allkeywords)); /* prepends a space before all of them, so this works out great */
+				imap_send(imap, "FLAGS (%s%s)", IMAP_FLAGS, allkeywords);
+			}
+			/*! \todo Should really broadcast this, even if silent, for anyone else watching this folder (but may need to exclude self) */
 			imap_send(imap, "%d FETCH (FLAGS (%s))", seqno, flagstr);
 		}
 cleanup:
@@ -4108,7 +4120,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 				break;
 			case IMAP_SEARCH_KEYWORD:
 				/* This is not very efficient, since we reparse the keywords for every message, but the keyword mapping is the same for everything in this mailbox. */
-				parse_keyword(search->imap, skey->child.string);
+				parse_keyword(search->imap, skey->child.string, 0);
 				/* imap->appendkeywords is now set. */
 				if (search->imap->numappendkeywords != 1) {
 					bbs_warning("Expected %d keyword, got %d?\n", 1, search->imap->numappendkeywords);
@@ -4959,8 +4971,7 @@ static int unload_module(void)
 		bbs_unregister_test(tests[i].callback);
 	}
 	mailbox_unregister_watcher(imap_mbox_watcher);
-	pthread_cancel(imap_listener_thread);
-	pthread_kill(imap_listener_thread, SIGURG);
+	bbs_pthread_cancel_kill(imap_listener_thread);
 	bbs_pthread_join(imap_listener_thread, NULL);
 	if (imap_enabled) {
 		bbs_unregister_network_protocol(imap_port);
