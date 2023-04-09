@@ -24,17 +24,24 @@
 #include <unistd.h>
 #include <string.h>
 #include <ctype.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/utsname.h>
+#include <sys/resource.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
+#include <sys/mount.h>
 #include <sched.h> /* use clone */
 #include <syscall.h>
 
 #include "include/node.h"
 #include "include/system.h"
 #include "include/term.h"
+#include "include/user.h"
 
 /* Can be used to debug controlling terminal for child
  * (best done with something like /bin/bash, since it will complain if it can't set the terminal process group
@@ -146,7 +153,7 @@ static int fdlimit = -1;
 #define child_debug(level, ...) ;
 #endif
 
-static int exec_pre(int fdin, int fdout)
+static int exec_pre(int fdin, int fdout, int exclude)
 {
 	struct rlimit rl;
 	int i;
@@ -175,7 +182,7 @@ static int exec_pre(int fdin, int fdout)
 #else
 	for (i = 0; i < fdlimit; i++) {
 #endif
-		if (i == fdin || i == fdout) {
+		if (i == fdin || i == fdout || i == exclude) {
 			child_debug(7, "Not closing fd %d\n", i);
 			continue;
 		}
@@ -280,16 +287,88 @@ int bbs_execvpe_fd_headless(struct bbs_node *node, int fdin, int fdout, const ch
 	return __bbs_execvpe_fd(node, 0, fdin, fdout, filename, argv, envp, 0);
 }
 
+static int update_map(const char *mapping, const char *map_file, int map_len)
+{
+	int fd;
+
+	fd = open(map_file, O_RDWR);
+	if (fd < 0) {
+		fprintf(stderr, "open(%s) failed: %s\n", map_file, strerror(errno));
+		return -1;
+	}
+	if (write(fd, mapping, map_len) != map_len) {
+		fprintf(stderr, "write failed: %s\n", strerror(errno));
+		close(fd);
+		return -1;
+	}
+	close(fd);
+	return 0;
+}
+
+static int proc_setgroups_write(pid_t pid, const char *str, int str_len)
+{
+	char setgroups_path[PATH_MAX];
+	int fd;
+
+	snprintf(setgroups_path, sizeof(setgroups_path), "/proc/%ld/setgroups", (long) pid);
+	fd = open(setgroups_path, O_RDWR);
+	if (fd < 0) {
+		if (errno != ENOENT) {
+			fprintf(stderr, "open failed: %s\n", strerror(errno));
+			return -1;
+		}
+		return 0;
+	}
+
+	if (write(fd, str, str_len) != str_len) {
+		fprintf(stderr, "write failed: %s\n", strerror(errno));
+		close(fd);
+		return -1;
+	}
+	close(fd);
+	return 0;
+}
+
+static int setup_namespace(pid_t pid)
+{
+	char map_buf[100];
+    char map_path[PATH_MAX];
+	char *uid_map = map_buf, *gid_map = map_buf;
+	int map_len;
+
+	snprintf(map_path, sizeof(map_path), "/proc/%d/uid_map", pid);
+    map_len = snprintf(map_buf, sizeof(map_buf), "0 %ld 1", (long) getuid());
+	if (update_map(uid_map, map_path, map_len)) {
+		return -1;
+	}
+
+	proc_setgroups_write(pid, "deny", strlen("deny"));
+
+	snprintf(map_path, sizeof(map_path), "/proc/%d/gid_map", pid);
+    map_len = snprintf(map_buf, sizeof(map_buf), "0 %ld 1", (long) getgid());
+    if (update_map(gid_map, map_path, map_len)) {
+		return -1;
+	}
+
+	return 0;
+}
+
+static const char *hostname = "bbs";
+static const char *newroot = "./rootfs";
+static const char *oldroot = "./rootfs/.old";
+static const char *oldrootname = "/.old";
+
 static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[], char *const envp[], int isolated)
 {
 	pid_t pid;
 
 	int fd = fdout;
 	int res = -1;
-	int pfd[2];
-	char fullpath[256] = "", fullterm[32] = "";
+	int pfd[2], procpipe[2];
+	char fullpath[256] = "", fullterm[32] = "", fulluser[48] = "";
 	char *parentpath;
-	char *myenvp[3] = { fullpath, fullterm, NULL };
+#define MYENVP_SIZE 4
+	char *myenvp[MYENVP_SIZE] = { fullpath, fullterm, NULL, NULL }; /* End with 2 NULLs so we can add something if needed */
 
 	if (!envp) {
 		envp = myenvp;
@@ -334,12 +413,21 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 	if (isolated) {
 		int flags = 0;
 		/* We need to do more than fork() allows */
-		flags |= SIGCHLD; /* fork() uses this flag implicitly. */
+		flags |= SIGCHLD | CLONE_NEWIPC | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWUSER; /* fork() sets SIGCHLD implicitly. */
 #if 0
 		flags |= CLONE_CLEAR_SIGHAND; /* Don't inherit any signals from parent. */
 #else
 		flags &= ~CLONE_SIGHAND;
 #endif
+
+		if (eaccess(newroot, R_OK)) {
+			bbs_error("rootfs directory '%s' does not exist\n", newroot);
+			return -1;
+		} else if (pipe(procpipe)) {
+			bbs_error("pipe failed: %s\n", strerror(errno));
+			return -1;
+		}
+
 		/* We use the clone syscall directly, rather than the clone(2) glibc function.
 		 * The reason for this is clone launches a function for the child,
 		 * whereas the raw syscall is similar to fork and continues in the child as well.
@@ -354,6 +442,10 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 
 	if (pid == -1) {
 		bbs_error("%s failed (%s): %s\n", isolated ? "clone" : "fork", filename, strerror(errno));
+		if (isolated) {
+			close(procpipe[0]);
+			close(procpipe[1]);
+		}
 		return -1;
 	} else if (pid == 0) { /* Child */
 		if (!isolated) {
@@ -389,7 +481,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 			fd = pfd[1]; /* Use write end of pipe */
 			fdout = fd;
 		}
-		exec_pre(fdin, fdout);
+		exec_pre(fdin, fdout, isolated ? procpipe[0] : -1); /* If we still need procpipe, don't close that */
 		if (node && usenode) {
 			/* Set controlling terminal, or otherwise shells don't fully work properly. */
 			if (set_controlling_term(STDIN_FILENO)) { /* we dup2'd this to the slavefd. This is NOT the parent's STDIN. */
@@ -400,6 +492,62 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 				_exit(errno);
 			}
 		}
+
+#define SYSCALL_OR_DIE(func, ...) if (func(__VA_ARGS__) < 0) { fprintf(stderr, #func " failed: %s\n", strerror(errno)); _exit(errno); }
+#ifndef pivot_root
+#define pivot_root(new, old) syscall(SYS_pivot_root, new, old)
+#endif
+
+		if (isolated) {
+			struct utsname uts;
+			char c;
+
+			/* Wait until parent has updated mappings. */
+			res = read(procpipe[0], &c, 1);
+			if (res != 1) {
+				fprintf(stderr, "read returned %d for fd %d: %s\n", res, procpipe[0], strerror(errno));
+				_exit(errno);
+			}
+			close(procpipe[0]);
+			SYSCALL_OR_DIE(sethostname, hostname, strlen(hostname)); /* Change hostname in child's UTS namespace */
+			SYSCALL_OR_DIE(uname, &uts);
+
+			/* Set mount points */
+			SYSCALL_OR_DIE(mount, newroot, newroot, "bind", MS_BIND | MS_REC, "");
+			if (eaccess(oldroot, R_OK)) {
+				SYSCALL_OR_DIE(mkdir, oldroot, 0700); /* If ./rootfs/.old doesn't yet exist, create it in the rootfs */
+			}
+			SYSCALL_OR_DIE(pivot_root, newroot, oldroot);
+			SYSCALL_OR_DIE(mount, "proc", "/proc", "proc", 0, NULL);
+			SYSCALL_OR_DIE(chdir, "/");
+			SYSCALL_OR_DIE(umount2, oldrootname, MNT_DETACH);
+
+			/* It would be "nice to have" cgroup integration here as well,
+			 * to control resource usage within the container environment.
+			 * However, you have to be root to create a cgroup so we can't do this automatically
+			 * (unless we're root, which hopefully we're not!)
+			 * However, a user could set up a cgroup and pass in cgexec as the progname. */
+
+			/* Instead of showing root@bbs if we're launching a shell, which is just confusing, show the BBS username */
+			if (node) {
+				char *tmp;
+				const char *username = bbs_user_is_registered(node->user) ? bbs_username(node->user) : "guest";
+				if (envp == myenvp) {
+					/* Used if /root/.bashrc in rootfs contains this prompt override:
+					 * PS1='${debian_chroot:+($debian_chroot)}$BBS_USER@\h:\w\$ '
+					 */
+					myenvp[MYENVP_SIZE - 2] = fulluser;
+					snprintf(fulluser, sizeof(fulluser), "BBS_USER=%s", username);
+					/* Make it all lowercase, per *nix conventions */
+					tmp = fulluser + STRLEN("BBS_USER=");
+					while (*tmp) {
+						*tmp= tolower(*tmp);
+						tmp++;
+					}
+				}
+			}
+		}
+
 		res = execvpe(filename, argv, envp);
 		bbs_assert(res == -1);
 
@@ -420,6 +568,16 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		_exit(errno);
 	} /* else, parent */
 
+	if (isolated) {
+		close(procpipe[0]);
+		res = setup_namespace(pid);
+		if (!res) {
+			char c = 0;
+			write(procpipe[1], &c, 1); /* Write to write end of pipe, to signal that UID/GID maps have been updated. */
+		}
+		close(procpipe[1]);
+	}
+
 	if (fd == -1) {
 		close(pfd[1]); /* Close write end of pipe */
 	}
@@ -438,6 +596,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		 * until it gets another SIGWINCH due to a future resize. By doing this, it has its current dimensions from the get go. */
 		bbs_node_update_winsize(node, -1, -1); /* Call with -1 as args to simply send a SIGWINCH using existing dimensions. */
 	}
+
 	bbs_debug(5, "Waiting for process %d to exit\n", pid);
 	waitpidexit(pid, filename, &res);
 	if (node) {

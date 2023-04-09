@@ -14,6 +14,8 @@ Key features and capabilities include:
 
 - User home directories
 
+- Container environment for executing programs
+
 - Password and public key authentication
 
 - Config-file driven configuration
@@ -221,6 +223,21 @@ Don't forget to also add your DB connection info to `mod_auth_mysql.conf`!
 #### Can I try it out?
 
 Sure! The reference installation of LBBS is the PhreakNet BBS, reachable at `bbs.phreaknet.org`. Guest login is allowed.
+
+#### How does the container enviornment (isoexec handler) work?
+
+The `isoexec` handler creates the specified process in a separate namespace so that is isolated from the root namespace
+in which the BBS is running. Essentially, it creates a container, similar to how technologies like Docker work.
+
+This enhances security by providing isolation between your system and whatever may be executed within the environment,
+such as a shell or other arbitrary program. For example, you can use this to provide users shell access on your BBS,
+but without actually granting them access to the main filesystem.
+
+The container does require that you provide a root filesystem for it to use. An example of how to do this is
+in `configs/menus.conf`. Please also read the caveats, notes, and warnings about `isoexec` in the sample config file.
+
+The `isoroot` program in the `external` directory also demonstrates how this functionality works in a standalone manner,
+if you want to test your container environment separately.
 
 #### Why is there a non-standard filtering engine (MailScript) included?
 
