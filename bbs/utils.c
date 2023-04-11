@@ -634,7 +634,7 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 	return copied;
 }
 
-char *bbs_file_to_string(const char *filename, size_t maxsize)
+char *bbs_file_to_string(const char *filename, size_t maxsize, int *length)
 {
 	char *s = NULL;
 	FILE *fp;
@@ -659,6 +659,9 @@ char *bbs_file_to_string(const char *filename, size_t maxsize)
 	s = malloc(size + 1); /* Add 1 for NUL */
 	if (ALLOC_FAILURE(s)) {
 		goto cleanup;
+	}
+	if (length) {
+		*length = size;
 	}
 	res = fread(s, 1, size, fp);
 	if (res != size) {

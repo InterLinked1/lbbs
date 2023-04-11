@@ -20,6 +20,7 @@
  * \note Supports RFC1870 Size Declarations
  * \note Supports RFC6409 Message Submission
  * \note Supports RFC7208 Sender Policy Framework (SPF) Validation
+ * \note Supports RFC4468 BURL
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -32,6 +33,8 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/sendfile.h>
+
+#include <dirent.h> /* for msg_to_filename */
 
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -219,6 +222,18 @@ static struct stringlist blacklist;
 		return 0; \
 	}
 
+#define REQUIRE_MAIL_FROM() \
+	if (!smtp->from) { \
+		smtp_reply(smtp, 503, 5.5.1, "MAIL first."); \
+		return 0; \
+	}
+
+#define REQUIRE_RCPT() \
+	if (!smtp->numrecipients) { \
+		smtp_reply(smtp, 503, 5.5.1, "RCPT first."); \
+		return 0; \
+	}
+
 static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 {
 	if (strlen_zero(s)) {
@@ -251,13 +266,25 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 
 	if (ehlo) {
 		smtp_reply0_nostatus(smtp, 250, "%s at your service [%s]", bbs_hostname(), smtp->node->ip);
-		if (smtp->secure) {
+		/* The RFC says that login should only be allowed on secure connections,
+		 * but if we don't allow login on plaintext connections, then they're functionally useless. */
+		if (smtp->secure || !require_starttls) {
 			smtp_reply0_nostatus(smtp, 250, "AUTH LOGIN PLAIN"); /* RFC-complaint way */
 			smtp_reply0_nostatus(smtp, 250, "AUTH=LOGIN PLAIN"); /* For non-compliant user agents, e.g. Outlook 2003 and older */
 		}
+		smtp_reply0_nostatus(smtp, 250, "PIPELINING");
 		smtp_reply0_nostatus(smtp, 250, "SIZE %u", max_message_size); /* RFC 1870 */
 		if (!smtp->secure && ssl_available()) {
 			smtp_reply0_nostatus(smtp, 250, "STARTTLS");
+		}
+		if (bbs_user_is_registered(smtp->node->user)) {
+			/* BURL imap indicates that we support URLAUTH (RFC4467).
+			 * A specific IMAP URL indicates we have a trust relationship with an IMAP server and don't need URLAUTH.
+			 * Since the IMAP server here is the same server as the SMTP server, that is the case for us.
+			 * RFC 4468 3.3 conveniently allows us to not support URLAUTH at all if we don't list just "imap".
+			 * Here we indicate that BURL is only supported for our IMAP server, and URLAUTH is not necessary (and indeed, is not supported).
+			 */
+			smtp_reply0_nostatus(smtp, 250, "BURL imap://%s", bbs_hostname()); /* RFC 4468 BURL */
 		}
 		smtp_reply_nostatus(smtp, 250, "ENHANCEDSTATUSCODES");
 	} else {
@@ -630,7 +657,7 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 
 		tmp = strstr(hostname, "MX");
 		if (!tmp) {
-			bbs_error("Unexpected MX NS answer: %s\n", dispbuf);
+			bbs_debug(3, "Skipping unexpected MX NS answer: %s\n", dispbuf);
 			continue;
 		}
 		tmp += STRLEN("MX");
@@ -782,7 +809,7 @@ static int try_send(const char *hostname, int port, int secure, const char *user
 		/* Start over again. */
 
 		smtp_client_send(wfd, "EHLO %s\r\n", bbs_hostname());
-		res = bbs_expect_line(rfd, 1000, &rldata, "250");
+		res = bbs_expect_line(rfd, 2000, &rldata, "250");
 		if (res) { /* Fall back to HELO if EHLO not supported */
 			if (require_starttls_out) { /* STARTTLS is only supported by EHLO, not HELO */
 				bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
@@ -825,7 +852,17 @@ static int try_send(const char *hostname, int port, int secure, const char *user
 		SMTP_EXPECT(rfd, 1000, "235");
 	}
 
-	smtp_client_send(wfd, "MAIL FROM:<%s>\r\n", sender); /* sender lacks <>, but recipient has them */
+	/* RFC 5322 3.4.1 allows us to use IP addresses in SMTP as well (domain literal form). They just need to be enclosed in square brackets. */
+	if (bbs_hostname_is_ipv4(sender)) {
+		char senderip[64];
+		char *user, *ip;
+		safe_strncpy(senderip, sender, sizeof(senderip));
+		ip = senderip;
+		user = strsep(&ip, "@");
+		smtp_client_send(wfd, "MAIL FROM:<%s@[%s]>\r\n", user, ip);
+	} else {
+		smtp_client_send(wfd, "MAIL FROM:<%s>\r\n", sender); /* sender lacks <>, but recipient has them */
+	}
 	SMTP_EXPECT(rfd, 1000, "250");
 	if (recipient) {
 		smtp_client_send(wfd, "RCPT TO:%s\r\n", recipient);
@@ -1537,7 +1574,7 @@ static void *smtp_async_send(void *varg)
 }
 
 /*! \brief Accept delivery of a message to an external recipient, sending it now if possible and queuing it otherwise */
-static int external_delivery(struct smtp_session *smtp, const char *recipient, const char *domain)
+static int external_delivery(struct smtp_session *smtp, const char *recipient, const char *domain, const char *data, unsigned long datalen)
 {
 	int res = -1;
 #ifndef BUGGY_SEND_IMMEDIATE
@@ -1617,9 +1654,9 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		dprintf(fd, "MAIL FROM:<%s>\nRCPT TO:%s\n", smtp->from, recipient); /* First 2 lines contain metadata, and recipient is already enclosed in <> */
 		prepend_outgoing(smtp, recipient, fd);
 		/* Write the entire body of the message. */
-		res = bbs_std_write(fd, smtp->data, smtp->datalen); /* Faster than fwrite since we're writing a lot of data, don't need buffering, and know the length. */
-		if (res != (int) smtp->datalen) {
-			bbs_error("Failed to write %lu bytes to %s, only wrote %d\n", smtp->datalen, tmpfile, res);
+		res = bbs_std_write(fd, data, datalen); /* Faster than fwrite since we're writing a lot of data, don't need buffering, and know the length. */
+		if (res != (int) datalen) {
+			bbs_error("Failed to write %lu bytes to %s, only wrote %d\n", datalen, tmpfile, res);
 			close(fd);
 			return -1;
 		}
@@ -1715,6 +1752,9 @@ static int check_identity(struct smtp_session *smtp, char *s)
 	char *user, *domain;
 	int local;
 	struct mailbox *sendingmbox;
+	char sendersfile[256];
+	char buf[32];
+	FILE *fp;
 
 	/* Must use bbs_parse_email_address for sure, since From header could contain a name, not just the address that's in the <> */
 	if (bbs_parse_email_address(s, NULL, &user, &domain, &local)) {
@@ -1733,19 +1773,55 @@ static int check_identity(struct smtp_session *smtp, char *s)
 	 * One corner case is the catch all address. This user is allowed to send email as any address,
 	 * which makes sense since the catch all is going to be the sysop, if it exists. */
 	sendingmbox = mailbox_get(0, user);
-	if (!sendingmbox || !mailbox_id(sendingmbox) || (mailbox_id(sendingmbox) != (int) smtp->node->user->id)) {
-		/* It resolved to something else (or maybe nothing at all, if NULL). Reject. */
-		bbs_warning("Rejected attempt by %s to send email as %s@%s (%d != %u)\n", bbs_username(smtp->node->user), user, domain,
-			sendingmbox ? mailbox_id(sendingmbox) : 0, smtp->node->user->id);
-		smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
-		return -1;
+	if (!sendingmbox) {
+		goto fail; /* If you can't send email to this address, then email can't be sent from it, simple as that. */
 	}
+	if (mailbox_id(sendingmbox) && mailbox_id(sendingmbox) == (int) smtp->node->user->id) {
+		goto success; /* This is the common case. It's the same user sending email as him or herself. */
+	}
+
+	bbs_assert(bbs_user_is_registered(smtp->node->user));
+
+	/* Finally, check if user is authorized by ACL explicitly to send email as a certain user.
+	 * The 'p' IMAP ACL right is actually not relevant for this. That is used to
+	 * denote authorization to submit mail *to* the IMAP folder.
+	 * This right is not used by the BBS mail servers.
+	 *
+	 * So we use a separate file for this, a .senders file in the root maildir for a mailbox,
+	 * that explicitly lists users authorized to send mail as a certain user / address.
+	 * Currently, there is no way for this to be managed; the file must be manually created and modified as needed by the sysop.
+	 */
+
+	snprintf(sendersfile, sizeof(sendersfile), "%s/.senders", mailbox_maildir(sendingmbox));
+	fp = fopen(sendersfile, "r");
+	if (!fp) {
+		goto fail;
+	}
+	while ((fgets(buf, sizeof(buf), fp))) {
+		bbs_strterm(buf, '\n');
+		bbs_strterm(buf, '\r'); /* Since this file is manually modified, tolerate CR LF line endings as well. */
+		if (!strcasecmp(buf, bbs_username(smtp->node->user))) {
+			bbs_debug(6, "Send-as capability granted explicitly to %s for %s\n", bbs_username(smtp->node->user), user);
+			fclose(fp);
+			goto success;
+		}
+	}
+	fclose(fp);
+
+success:
 	bbs_debug(5, "User %s authorized to send mail as %s@%s\n", bbs_username(smtp->node->user), user, domain);
 	return 0;
+
+fail:
+	/* It resolved to something else (or maybe nothing at all, if NULL). Reject. */
+	bbs_warning("Rejected attempt by %s to send email as %s@%s (%d != %u)\n", bbs_username(smtp->node->user), user, domain,
+		sendingmbox ? mailbox_id(sendingmbox) : 0, smtp->node->user->id);
+	smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
+	return -1;
 }
 
 /*! \brief Actually send an email or queue it for delivery */
-static int do_deliver(struct smtp_session *smtp)
+static int do_deliver(struct smtp_session *smtp, const char *data, unsigned long datalen)
 {
 	char *recipient;
 	int res = 0;
@@ -1756,7 +1832,7 @@ static int do_deliver(struct smtp_session *smtp)
 	struct smtp_msg_process mproc;
 	memset(&mproc, 0, sizeof(mproc));
 
-	bbs_debug(7, "Processing message from %s for delivery: local=%d, size=%lu, from=%s\n", smtp->msa ? "MSA" : "MTA", smtp->fromlocal, smtp->datalen, smtp->from);
+	bbs_debug(7, "Processing message from %s for delivery: local=%d, size=%lu, from=%s\n", smtp->msa ? "MSA" : "MTA", smtp->fromlocal, datalen, smtp->from);
 
 	if (smtp->datalen >= max_message_size) {
 		/* XXX Should this only apply for local deliveries? */
@@ -1814,7 +1890,7 @@ static int do_deliver(struct smtp_session *smtp)
 				bbs_debug(5, "Relaying message via %s:%d (user: %s)\n", host, port, S_IF(user));
 				/* XXX smtp->recipients is "used up" by try_send, so this relies on the message being DROP'ed as there will be no recipients remaining afterwards
 				 * Instead, we could duplicate the recipients list to avoid this restriction. */
-				res = try_send(host, port, STARTS_WITH(prot, "smtps"), user, pass, user, NULL, &smtp->recipients, smtp->data, smtp->datalen, prepend, prependlen, -1, 0, 0, buf, sizeof(buf));
+				res = try_send(host, port, STARTS_WITH(prot, "smtps"), user, pass, user, NULL, &smtp->recipients, data, datalen, prepend, prependlen, -1, 0, 0, buf, sizeof(buf));
 				mproc.drop = 1;
 				if (!res) {
 					smtp_reply(smtp, 250, 2.6.0, "Message accepted for relay");
@@ -1859,7 +1935,8 @@ static int do_deliver(struct smtp_session *smtp)
 			smtp_reply(smtp, 550, 5.7.1, "Missing From header");
 			return -1;
 		}
-		if (check_identity(smtp, smtp->fromheaderaddress)) {
+		/* If the two addresses are exactly the same, no need to do the same check twice. */
+		if (strcmp(smtp->from, smtp->fromheaderaddress) && check_identity(smtp, smtp->fromheaderaddress)) {
 			return 0;
 		}
 		/* We're good: the From header is either the actual username, or an alias that maps to it. */
@@ -1900,13 +1977,13 @@ static int do_deliver(struct smtp_session *smtp)
 			goto next;
 		}
 		if (local) {
-			mres = do_local_delivery(smtp, recipient, user, smtp->data, smtp->datalen, &responded);
+			mres = do_local_delivery(smtp, recipient, user, data, datalen, &responded);
 			if (mres == -2) {
 				quotaexceeded = 1;
 			}
 			res |= mres;
 		} else {
-			res |= external_delivery(smtp, recipient, domain);
+			res |= external_delivery(smtp, recipient, domain, data, datalen);
 		}
 next:
 		free_if(dup);
@@ -1927,6 +2004,154 @@ next:
 	} else {
 		smtp_reply(smtp, 250, 2.6.0, "Message accepted for delivery");
 	}
+	return 0;
+}
+
+static int msg_to_filename(const char *path, int uid, char *buf, size_t len)
+{
+	DIR *dir;
+	struct dirent *entry;
+	int msguid;
+
+	/* Order doesn't matter here, we just want the total number of messages, so fine (and faster) to use opendir instead of scandir */
+	if (!(dir = opendir(path))) {
+		bbs_error("Error opening directory - %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+
+	while ((entry = readdir(dir)) != NULL) {
+		char *uidstr;
+		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		/*! \todo refactor parse_uid_from_filename from net_imap and use that here */
+		uidstr = strstr(entry->d_name, ",U=");
+		if (!uidstr) {
+			bbs_error("Invalid maildir filename: %s\n", entry->d_name);
+			continue;
+		}
+		msguid = atoi(uidstr);
+		if (msguid == uid) {
+			snprintf(buf, len, "%s/%s", path, entry->d_name);
+			closedir(dir);
+			return 0;
+		}
+	}
+
+	closedir(dir);
+	return -1;
+}
+
+static int handle_burl(struct smtp_session *smtp, char *s)
+{
+	char sentdir[256];
+	char msgfile[256];
+	char *imapurl, *last;
+	char *user, *host, *location, *uidvalidity, *uidstr;
+	char *tmp, *end, *msgdata;
+	int msglen;
+
+	REQUIRE_HELO();
+	REQUIRE_MAIL_FROM();
+	REQUIRE_RCPT();
+	REQUIRE_ARGS(s);
+	free_if(smtp->data);
+	/* Wow! A client that actually supports BURL! That's a rare one...
+	 * (at the time of this programming, only Trojita does. Maybe Thunderbird forks will some day?)
+	 * In the meantime, this is a feature that almost nobody can use. */
+	imapurl = strsep(&s, " ");
+	last = s;
+	REQUIRE_ARGS(last);
+	if (strcmp(last, "LAST")) {
+		smtp_reply(smtp, 554, 5.7.0, "Invalid BURL command");
+		return 0;
+	}
+	/*! \todo RFC 4468 says we MUST support 8BITMIME extension if we support BURL
+	 * We probably already do without doing anything, but verify that and add that to the EHLO response */
+
+	/* We'll get a URL that looks something like this:
+	 * imap://jsmith@imap.example.com/Sent;UIDVALIDITY=1677584102/;UID=8;urlauth=submit+jsmith:internal
+	 */
+	bbs_debug(5, "BURL URL: %s\n", imapurl);
+	if (STARTS_WITH(imapurl, "imap://")) {
+		imapurl += STRLEN("imap://");
+	} else if (STARTS_WITH(imapurl, "imaps://")) {
+		imapurl += STRLEN("imaps://");
+	} else {
+		smtp_reply(smtp, 554, 5.7.8, "Invalid IMAP URL");
+		return 0;
+	}
+	host = strsep(&imapurl, "/");
+	tmp = strrchr(host, '@'); /* Just in case username contains an @ symbol as well?? */
+	if (!tmp) {
+		smtp_reply(smtp, 554, 5.7.8, "Invalid IMAP URL");
+		return 0;
+	}
+	*tmp++ = '\0';
+	user = host;
+	host = tmp;
+
+	if (strcasecmp(host, bbs_hostname())) { /* Hostname is for a different IMAP server */
+		smtp_reply(smtp, 554, 5.7.8, "URL resolution requires trust relationship");
+		return 0;
+	}
+
+	/* Valid check for our minimal BURL implementation, but not if we support URLAUTH in general for arbitrary IMAP servers. */
+	if (strcasecmp(user, bbs_username(smtp->node->user))) { /* Different user? */
+		smtp_reply(smtp, 554, 5.7.8, "URL invalid for current user");
+		return 0;
+	}
+
+	location = strsep(&imapurl, ";");
+	uidvalidity = strsep(&imapurl, ";");
+	uidstr = strsep(&imapurl, ";");
+	REQUIRE_ARGS(location);
+	REQUIRE_ARGS(uidvalidity);
+	REQUIRE_ARGS(uidstr);
+	/* Ignore everything else for our minimal implementation */
+
+	/* Why would it be anything besides the Sent folder?
+	 * Since the IMAP path parsing routines are all in net_imap,
+	 * we can't easily do thorough parsing of arbitrary paths here anyways,
+	 * so this allows us to just use the maildir's sent folder. */
+	if (strcmp(location, "Sent")) {
+		smtp_reply(smtp, 554, 5.7.8, "URL invalid for current user");
+		return 0;
+	}
+
+	/* Retrieve the message with UID from this folder */
+	snprintf(sentdir, sizeof(sentdir), "%s/.Sent/cur", mailbox_maildir(mailbox_get(smtp->node->user->id, NULL))); /* It was stored using APPEND so it's in cur, not new */
+	/* Since this is by UID, not sequence number, the directory scan doesn't need to be sorted. */
+	/* Here's the trick: Instead of contacting the IMAP server agnostically, just pull the message right from disk directly. */
+	if (msg_to_filename(sentdir, atoi(uidstr), msgfile, sizeof(msgfile))) {
+		smtp_reply(smtp, 554, 5.6.6, "IMAP URL resolution failed");
+		return 0;
+	}
+	/* XXX Should probably verify uidvalidity has not changed as well (more important if we were using IMAP's URLFETCH) */
+
+	/* We have the message file. Just use its contents for the data. */
+	/* XXX Might be nice to not have to read it all into a string first. This is so we can use the existing functions without modification. */
+	msgdata = bbs_file_to_string(msgfile, 30000000, &msglen); /* Hardcoded maximum of ~30 MB, which is likely to be much more than the max message size allowed anyways. */
+	if (!msgdata) {
+		smtp_reply(smtp, 451, 4.4.1, "IMAP server unavailable");
+		return 0;
+	}
+
+	/* Need to find this as do_deliver expects this was sent while receiving data */
+	tmp = strstr(msgdata, "From:");
+	if (tmp) {
+		int len;
+		tmp += STRLEN("From:");
+		ltrim(tmp);
+		end = strchr(tmp, '\r');
+		if (end) {
+			len = end - tmp;
+			smtp->fromheaderaddress = strndup(tmp, len);
+		}
+	}
+
+	do_deliver(smtp, msgdata, msglen); /* do_deliver will send the reply code */
+	free_if(msgdata);
 	return 0;
 }
 
@@ -1956,7 +2181,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 				smtp_reply(smtp, 554, 5.6.0, "Message exceeded %d hops, this may indicate a mail loop", MAX_HOPS);
 				return 0;
 			}
-			res = do_deliver(smtp);
+			res = do_deliver(smtp, smtp->data, smtp->datalen);
 			free_if(smtp->data);
 			smtp->datalen = 0;
 			return res;
@@ -2145,10 +2370,7 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 		smtp_reply(smtp, 250, 2.0.0, "OK");
 	} else if (!strcasecmp(command, "RCPT")) {
 		REQUIRE_HELO();
-		if (!smtp->from) {
-			smtp_reply(smtp, 503, 5.5.1, "MAIL first.");
-			return 0;
-		}
+		REQUIRE_MAIL_FROM();
 		REQUIRE_ARGS(s);
 		if (strncasecmp(s, "TO:", 3)) {
 			smtp_reply(smtp, 501, 5.5.4, "Unrecognized parameter");
@@ -2160,19 +2382,16 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 		return handle_rcpt(smtp, s);
 	} else if (!strcasecmp(command, "DATA")) {
 		REQUIRE_HELO();
-		if (!smtp->from) {
-			smtp_reply(smtp, 503, 5.5.1, "MAIL first.");
-			return 0;
-		} else if (!smtp->numrecipients) {
-			smtp_reply(smtp, 503, 5.5.1, "RCPT first.");
-			return 0;
-		}
+		REQUIRE_MAIL_FROM();
+		REQUIRE_RCPT();
 		free_if(smtp->data);
 		smtp->indata = 1;
 		smtp->indataheaders = 1;
 		/* Begin reading data. */
 		smtp_reply_nostatus(smtp, 354, "Start mail input; end with a period on a line by itself");
-	} else {
+	} else if (!strcasecmp(command, "BURL")) {
+		return handle_burl(smtp, s);
+	} else { /* GENURLAUTH */
 		/* Deliberately not supported: VRFY, EXPN */
 		smtp_reply(smtp, 502, 5.5.1, "Unrecognized command");
 	}

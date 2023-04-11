@@ -273,6 +273,9 @@ int bbs_get_remote_ip(struct sockaddr_in *sinaddr, char *buf, size_t len);
  */
 int bbs_save_remote_ip(struct sockaddr_in *sinaddr, struct bbs_node *node);
 
+/*! \brief Check whether a hostname is an IPv4 address */
+int bbs_hostname_is_ipv4(const char *hostname);
+
 /*!
  * \brief Check if an IP address is within a specified CIDR range
  * \param ip IP address to check, e.g. 192.168.1.1
@@ -367,9 +370,10 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes);
  * \brief Load the contents of a file into a string
  * \param filename Full path to file
  * \param maxsize Maximum file size to load into a string (for safety reasons, to avoid allocating enormous amounts of memory). 0 for no limit.
+ * \param[out] length The length of the output string, not including the NUL terminator
  * \returns string on success, NULL on failure
  */
-char *bbs_file_to_string(const char *filename, size_t maxsize);
+char *bbs_file_to_string(const char *filename, size_t maxsize, int *length);
 
 /*! \brief Get a timeval for the current time */
 struct timeval bbs_tvnow(void);

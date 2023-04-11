@@ -595,6 +595,16 @@ int bbs_save_remote_ip(struct sockaddr_in *sinaddr, struct bbs_node *node)
 	return 0;
 }
 
+int bbs_hostname_is_ipv4(const char *hostname)
+{
+	struct sockaddr_in sa;
+
+	if (inet_pton(AF_INET, hostname, &(sa.sin_addr))) {
+		return 0;
+	}
+	return 1;
+}
+
 int bbs_cidr_match_ipv4(const char *ip, const char *cidr)
 {
 	char cidr_dup[64];

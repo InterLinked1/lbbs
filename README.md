@@ -2,7 +2,7 @@
 
 Welcome! Whether you're new to BBSing or a veteran sysop, LBBS was written to be a highly configurable, modular BBS for developers, sysops, and users alike.
 
-LBBS is a BBS server program written from the ground up to be extensible, modular, and, of course, lightweight. The codebase is relatively small (<50K SLOC), with relatively few dependencies. It is designed to be easy for sysops to administer, easy for users to use and navigate, and easy for developers to read, understand, maintain, and contribute to the source code.
+LBBS is a BBS server program written from the ground up to be extensible, modular, and, of course, lightweight. The codebase is relatively small (~50K SLOC), with relatively few dependencies. It is designed to be easy for sysops to administer, easy for users to use and navigate, and easy for developers to read, understand, maintain, and contribute to the source code.
 
 Key features and capabilities include:
 
@@ -29,6 +29,7 @@ Key features and capabilities include:
   - Mailing lists
   - Mailbox quotas
   - Shared mailboxes and ACL controls
+  - RFC 4468 BURL IMAP support, for more efficient email submission
   - Filtering
     - [MailScript filtering engine](https://github.com/InterLinked1/lbbs/blob/master/configs/.rules) for flexible, custom, dynamic mail filtering rules (Sieve alternative)
 

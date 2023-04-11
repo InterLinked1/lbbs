@@ -278,10 +278,32 @@ static int run(void)
 	/* We copied a message to the Trash in a18. Mark it as deleted. */
 	SWRITE(client1, "a21 STORE 1 +FLAGS.SILENT (\\Deleted)" ENDL);
 	CLIENT_EXPECT(client1, "a21 OK STORE");
+
+	/* Test another client at the same time. */
+	client2 = test_make_socket(143);
+	if (client2 < 0) {
+		goto cleanup;
+	}
+	CLIENT_EXPECT(client2, "OK");
+	SWRITE(client2, "b1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
+	CLIENT_EXPECT(client2, "b1 OK");
+
+	SWRITE(client2, "b2 SELECT \"Trash\"" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client2, "b2 OK");
+
 	SWRITE(client1, "a22 EXPUNGE" ENDL);
-	CLIENT_EXPECT(client1, "* 1 EXPUNGE");
-	CLIENT_EXPECT(client1, "a22 OK EXPUNGE");
+	CLIENT_EXPECT_EVENTUALLY(client1, "* 1 EXPUNGE"); /* Expunger should immediately see this response */
+	CLIENT_DRAIN(client1);
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.Trash/cur", 0);
+
+	/* Client 2 should see the EXPUNGE when it does a NOOP */
+	SWRITE(client2, "b3 FETCH 111:* (FLAGS)" ENDL); /* FETCH should not trigger the delayed EXPUNGE response... */
+	CLIENT_EXPECT(client2, "b3");
+	SWRITE(client2, "b4 NOOP" ENDL); /* ...but NOOP should */
+	CLIENT_EXPECT(client2, "* 1 EXPUNGE");
+	CLIENT_DRAIN(client2);
+
+	close_if(client2);
 
 	/* Test UID-prefixed commands. Granted... the UIDs and sequence numbers are the same in these tests. */
 	SWRITE(client1, "a23 SELECT \"INBOX\"" ENDL); /* First, switch back to the INBOX. */
@@ -402,6 +424,8 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(client1, "b3 OK"); /* Can't really test for negative output... */
 	CLIENT_DRAIN(client1);
 
+	close_if(client2);
+
 	/* SORT */
 	/* Delete any existing messages so we don't get confused. */
 	SWRITE(client1, "c1 SELECT INBOX" ENDL);
@@ -432,6 +456,49 @@ static int run(void)
 
 	SWRITE(client1, "c5 SORT (REVERSE SIZE TO REVERSE DATE) UTF-8 ALL" ENDL); /* Use SORT, not UID SORT, so we can exactly predict the correct sequence numbers for response */
 	CLIENT_EXPECT(client1, "SORT 3 5 2 1 4 6");
+	CLIENT_DRAIN(client1);
+
+	/* Test BURL SMTP + IMAP URLAUTH */
+	SWRITE(client1, "d1 APPEND Sent (\\Seen) {310}" ENDL); /* 310 includes the length of TEST_EMAIL */
+	CLIENT_EXPECT(client1, "+");
+	SWRITE(client1, "Date: Mon, 7 Feb 1994 21:52:25 -0800 (PST)" ENDL);
+	SWRITE(client1, "From: " TEST_EMAIL ENDL); /* Must be from ourself */
+	SWRITE(client1, "Subject: afternoon meeting" ENDL);
+	SWRITE(client1, "To: mooch@owatagu.siam.edu.example" ENDL);
+	SWRITE(client1, "Message-Id: <B27397-0100000@Blurdybloop.example>" ENDL);
+	SWRITE(client1, "MIME-Version: 1.0" ENDL);
+	SWRITE(client1, "Content-Type: TEXT/PLAIN; CHARSET=US-ASCII" ENDL);
+	SWRITE(client1, ENDL);
+	SWRITE(client1, "Hello Joe, do you think we can meet at 3:30 tomorrow?" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, " 1] APPEND"); /* The UID of this message should be 1; this is the first test that uses the Sent folder. */
+	CLIENT_DRAIN(client1);
+
+	/* UIDVALIDITY is not used in the current implementation so we can send some random value,
+	 * but ideally should parse from the APPEND response */
+#define BURL_URL "imap://" TEST_USER "@" TEST_HOSTNAME "/Sent;UIDVALIDITY=12345/;UID=1;urlauth=submit+" TEST_USER
+	SWRITE(client1, "d2 GENURLAUTH " BURL_URL " INTERNAL" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, ":internal"); /* GENURLAUTH should tack on :internal */
+	CLIENT_DRAIN(client1);
+
+	smtpfd = test_make_socket(587);
+	if (smtpfd < 0) {
+		goto cleanup;
+	}
+	CLIENT_EXPECT(smtpfd, "220");
+	SWRITE(smtpfd, "EHLO myclient" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(smtpfd, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
+	SWRITE(smtpfd, "AUTH PLAIN\r\n");
+	CLIENT_EXPECT(smtpfd, "334");
+	SWRITE(smtpfd, TEST_SASL "\r\n");
+	CLIENT_EXPECT(smtpfd, "235");
+	SWRITE(smtpfd, "MAIL FROM:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(smtpfd, "250");
+	SWRITE(smtpfd, "RCPT TO:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(smtpfd, "250");
+	/* Look, ma! We're not sending the message data to the SMTP server! */
+	SWRITE(smtpfd, "BURL " BURL_URL ":internal LAST" ENDL);
+	CLIENT_EXPECT(smtpfd, "250");
+	CLIENT_EXPECT_EVENTUALLY(client1, "* 7 EXISTS"); /* Should receive the message we just sent to ourself. INBOX already has 6 messages. */
 	CLIENT_DRAIN(client1);
 
 	/* LOGOUT */

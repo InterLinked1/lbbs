@@ -43,6 +43,7 @@ SSL_CTX *ssl_ctx = NULL;
 #endif
 
 static int ssl_is_available = 0;
+static int ssl_shutting_down = 0;
 
 int hash_sha256(const char *s, char buf[SHA256_BUFSIZE])
 {
@@ -114,6 +115,11 @@ static int ssl_alert_pipe[2] = { -1, -1 };
 static int ssl_register_fd(SSL *ssl, int fd, int *rfd, int *wfd)
 {
 	struct ssl_fd *sfd;
+
+	if (ssl_alert_pipe[0] == -1) {
+		bbs_error("Cannot register SSL fd: no alertpipe available\n");
+		return -1;
+	}
 
 	RWLIST_WRLOCK(&sslfds);
 	RWLIST_TRAVERSE(&sslfds, sfd, entry) {
@@ -217,7 +223,7 @@ static void *ssl_io_thread(void *unused)
 	for (;;) {
 		if (needcreate) {
 			int numdead = 0;
-			if (!ssl_is_available) {
+			if (ssl_shutting_down) {
 				bbs_debug(4, "SSL I/O thread has been instructed to exit\n");
 				break; /* We're shutting down. */
 			}
@@ -571,7 +577,7 @@ static int ssl_load_config(void)
 
 	if (!cfg) {
 		bbs_warning("SSL/TLS will be unavailable since tls.conf is missing\n");
-		return -1; /* Impossible to do TLS if we don't know what the server key/cert are */
+		return -1; /* Impossible to do TLS server stuff if we don't know what the server key/cert are */
 	}
 
 	res |= bbs_config_val_set_str(cfg, "tls", "cert", ssl_cert, sizeof(ssl_cert));
@@ -586,10 +592,23 @@ static int ssl_load_config(void)
 	return res;
 }
 
+static int setup_ssl_io(void)
+{
+	if (bbs_alertpipe_create(ssl_alert_pipe)) {
+		return -1;
+	}
+	if (bbs_pthread_create(&ssl_thread, NULL, ssl_io_thread, NULL)) {
+		return -1;
+	}
+	return 0;
+}
+
 int ssl_server_init(void)
 {
 #ifdef HAVE_OPENSSL
 	const SSL_METHOD *method;
+
+	setup_ssl_io(); /* Even if we can't be a TLS server, we can still be a TLS client. */
 
 	if (ssl_load_config()) {
 		return -1;
@@ -618,20 +637,7 @@ int ssl_server_init(void)
 		return -1;
 	}
 
-	if (bbs_alertpipe_create(ssl_alert_pipe)) {
-		SSL_CTX_free(ssl_ctx);
-		ssl_ctx = NULL;
-		return -1;
-	}
 	ssl_is_available = 1;
-	if (bbs_pthread_create(&ssl_thread, NULL, ssl_io_thread, NULL)) {
-		bbs_error("Failed to create thread for TLS I/O\n");
-		ssl_is_available = 0;
-		SSL_CTX_free(ssl_ctx);
-		ssl_ctx = NULL;
-		bbs_alertpipe_close(ssl_alert_pipe);
-		return -1;
-	}
 
 	return 0;
 #else
@@ -642,19 +648,17 @@ int ssl_server_init(void)
 
 void ssl_server_shutdown(void)
 {
-	int ssl_was_available = ssl_is_available;
 	ssl_is_available = 0;
+	ssl_shutting_down = 1;
 #ifdef HAVE_OPENSSL
 	if (ssl_ctx) {
 		SSL_CTX_free(ssl_ctx);
 		ssl_ctx = NULL;
 	}
 	/* Do not use pthread_cancel, let the thread clean up */
-	if (ssl_was_available) {
-		bbs_alertpipe_write(ssl_alert_pipe); /* Tell thread to exit */
-		bbs_pthread_join(ssl_thread, NULL);
-		bbs_alertpipe_close(ssl_alert_pipe);
-	}
+	bbs_alertpipe_write(ssl_alert_pipe); /* Tell thread to exit */
+	bbs_pthread_join(ssl_thread, NULL);
+	bbs_alertpipe_close(ssl_alert_pipe);
 	ssl_cleanup_fds();
 #endif
 }

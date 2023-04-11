@@ -2426,7 +2426,7 @@ static void motd(struct irc_user *user)
 		int now = time(NULL);
 		if (!motd_last_read || motd_last_read < now - 3600) {
 			free_if(motdstring);
-			motdstring = bbs_file_to_string(motd_file, 0);
+			motdstring = bbs_file_to_string(motd_file, 4096, NULL);
 		}
 		motd_last_read = now;
 		if (!strlen_zero(motdstring)) {
