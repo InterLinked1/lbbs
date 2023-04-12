@@ -24,10 +24,13 @@
  * \note Supports RFC 4466, 4731 SEARCH extensions
  * \note Supports RFC 4467 URLAUTH (partially) for RFC 4468 BURL
  * \note Supports RFC 4959 SASL-IR
+ * \note Supports RFC 5032 WITHIN (OLDER, YOUNGER)
  * \note Supports RFC 5182 SEARCHRES
  * \note Supports RFC 5256 SORT
  * \note Supports RFC 5267 ESORT
  * \note Supports RFC 5530 Response Codes
+ * \note Supports RFC 6851 MOVE
+ * \note Supports RFC 7889 APPENDLIMIT
  * \note Supports RFC 9208 QUOTA
  *
  * \note STARTTLS is not supported for cleartext IMAP, as proposed in RFC2595, as this guidance
@@ -36,14 +39,13 @@
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
-/*! \todo IMAP functionality not yet implemented:
- * - RFC 2088 LITERAL+
- * - RFC 3502 MULTIAPPEND
+/*! \todo IMAP functionality not yet implemented/supported:
+ * - RFC 2088 LITERAL+ and 7888 LITERAL-
+ * - RFC 3502 MULTIAPPEND - this could be potentially dangerous due to small deviations in literal sizes (see APPEND comments about Trojita)
  * - RFC 4469 CATENATE
  * - RFC 4551, 5162, 7162 CONDSTORE and QRESYNC, RFC 5161 ENABLE
  * - RFC 4959 SASL-IR
  * - RFC 4978 COMPRESS
- * - RFC 5032 WITHIN
  * - RFC 5228, 5703 Sieve
  * - RFC 5255 LANGUAGE
  * - RFC 5256 THREAD
@@ -57,17 +59,16 @@
  * - RFC 6154 LIST extension for special purpose mailboxes
  * - RFC 6203 FUZZY SEARCH
  * - RFC 6237 ESEARCH (MULTISEARCH)
- * - RFC 6851 MOVE
- * - RFC 7889 APPENDLIMIT
+ * - RFC 8970 PREVIEW
  * - BINARY and MULTIAPPEND extensions (RFC 3516, 4466)
- * Other capabilities: AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH AUTH=XOAUTH2 UIDPLUS MOVE LITERAL+ BINARY ENABLE
+ * Other capabilities: AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH AUTH=XOAUTH2
  */
 
 #define IMAP_REV "IMAP4rev1"
 /* List of capabilities: https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml */
 /* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
 /* XXX URLAUTH is advertised so that SMTP BURL will function in Trojita, even though we don't need URLAUTH since we have a direct trust */
-#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS"
+#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS APPENDLIMIT MOVE WITHIN"
 
 /* Capabilities advertised by popular mail providers, for reference/comparison, both pre and post authentication:
  * - Office 365
@@ -208,6 +209,16 @@ static int imap_debug_level = 10;
 		*buf++ = aclflag ## _LETTER; \
 	}
 
+#define IMAP_HAS_ACL(acl, flag) (acl & (flag))
+#define IMAP_REQUIRE_ACL(acl, flag) \
+	if (!IMAP_HAS_ACL(acl, (flag))) { \
+		char _aclbuf[15]; \
+		generate_acl_string(acl, _aclbuf, sizeof(_aclbuf)); \
+		bbs_debug(4, "User missing ACL %s (have %s)\n", #flag, _aclbuf); \
+		imap_reply(imap, "NO [NOPERM] Permission denied"); \
+		return 0; \
+	}
+
 /*! \brief Parse IMAP ACL from string */
 static int parse_acl(const char *aclstring)
 {
@@ -312,6 +323,7 @@ struct imap_session {
 	unsigned int idle:1;		/* Whether IDLE is active */
 	unsigned int dnd:1;			/* Do Not Disturb: Whether client is executing a FETCH, STORE, or SEARCH command (EXPUNGE responses are not allowed) */
 	unsigned int pending:1;		/* Delayed output is pending in pfd pipe */
+	unsigned int condstore:1;	/* Whether a client has indicated interest in the CONDSTORE capability via SELECT/EXAMINE */
 	pthread_mutex_t lock;		/* Lock for IMAP session */
 	RWLIST_ENTRY(imap_session) entry;	/* Next active session */
 };
@@ -586,7 +598,7 @@ static void imap_destroy(struct imap_session *imap)
 #define MAX_KEYWORDS 26
 
 /*! \brief Check filename for the mapping for keyword. If one does not exist and there is room ( < 26), it will be created. */
-static void parse_keyword(struct imap_session *imap, const char *s, int create)
+static void parse_keyword(struct imap_session *imap, const char *s, const char *directory, int create)
 {
 	char filename[266];
 	char buf[32];
@@ -600,7 +612,7 @@ static void parse_keyword(struct imap_session *imap, const char *s, int create)
 	}
 
 	/* Check using file in current maildir */
-	snprintf(filename, sizeof(filename), "%s/.keywords", imap->dir);
+	snprintf(filename, sizeof(filename), "%s/.keywords", directory);
 	/* Open the file in read + append mode.
 	 * If the file does not yet exist, it should be created.
 	 * However, we need to lock if we're appending, so this whole thing must be atomic.
@@ -652,7 +664,9 @@ static void parse_keyword(struct imap_session *imap, const char *s, int create)
 	fclose(fp);
 }
 
-static int gen_keyword_names(struct imap_session *imap, const char *s, char *inbuf, size_t inlen)
+#define gen_keyword_names(imap, s, inbuf, inlen) __gen_keyword_names(s, inbuf, inlen, imap->dir)
+
+static int __gen_keyword_names(const char *s, char *inbuf, size_t inlen, const char *directory)
 {
 	FILE *fp;
 	char fbuf[32];
@@ -663,11 +677,12 @@ static int gen_keyword_names(struct imap_session *imap, const char *s, char *inb
 	int left = inlen;
 	const char *custom_start = s;
 
-	snprintf(filename, sizeof(filename), "%s/.keywords", imap->dir);
+	snprintf(filename, sizeof(filename), "%s/.keywords", directory);
 
 	*buf = '\0';
 	fp = fopen(filename, "r");
 	if (!fp) {
+		bbs_debug(9, "maildir %s has no keywords\n", directory);
 		return 0;
 	}
 
@@ -712,9 +727,11 @@ static int gen_keyword_names(struct imap_session *imap, const char *s, char *inb
 	return matches;
 }
 
+#define parse_flags_string(imap, s) __parse_flags_string(imap, s, imap->dir)
+
 /*! \brief Convert named flag or keyword into a single character for maildir filename */
 /*! \note If imap is not NULL, custom keywords are stored in imap->appendkeywords (size is stored in imap->numappendkeywords) */
-static int parse_flags_string(struct imap_session *imap, char *s)
+static int __parse_flags_string(struct imap_session *imap, char *s, const char *directory)
 {
 	int flags = 0;
 	char *f;
@@ -743,7 +760,7 @@ static int parse_flags_string(struct imap_session *imap, char *s)
 		} else if (*f == '\\') {
 			bbs_warning("Failed to parse flag: %s\n", f); /* Unknown non-custom flag */
 		} else if (imap) { /* else, it's a custom flag (keyword), if we have a mailbox, check the translation. */
-			parse_keyword(imap, f, 1);
+			parse_keyword(imap, f, directory, 1);
 		}
 	}
 	if (imap) {
@@ -839,7 +856,7 @@ static void gen_flag_names(const char *flagstr, char *fullbuf, size_t len)
 static int test_flags_parsing(void)
 {
 	char buf[64] = FLAG_NAME_DELETED " " FLAG_NAME_FLAGGED " " FLAG_NAME_SEEN;
-	bbs_test_assert_equals(FLAG_BIT_DELETED | FLAG_BIT_FLAGGED | FLAG_BIT_SEEN, parse_flags_string(NULL, buf));
+	bbs_test_assert_equals(FLAG_BIT_DELETED | FLAG_BIT_FLAGGED | FLAG_BIT_SEEN, __parse_flags_string(NULL, buf, NULL));
 	bbs_test_assert_equals(FLAG_BIT_DRAFT | FLAG_BIT_SEEN, parse_flags_letters("DS", NULL));
 
 	gen_flag_letters(FLAG_BIT_FLAGGED | FLAG_BIT_SEEN, buf, sizeof(buf));
@@ -852,6 +869,101 @@ static int test_flags_parsing(void)
 
 cleanup:
 	return -1;
+}
+
+/* Forward declaration */
+static int maildir_msg_setflags(struct imap_session *imap, int seqno, const char *origname, const char *newflagletters);
+
+static int restrict_flags(int acl, int *flags)
+{
+	int flagpermsdenied = 0;
+
+	/* Check if user is authorized to set these flags. */
+	if (*flags & FLAG_BIT_SEEN && !IMAP_HAS_ACL(acl, IMAP_ACL_SEEN)) {
+		bbs_debug(3, "User denied access to modify \\Seen flag\n");
+		*flags &= ~FLAG_BIT_SEEN;
+		flagpermsdenied++;
+	}
+	if (*flags & FLAG_BIT_DELETED && !IMAP_HAS_ACL(acl, IMAP_ACL_DELETE)) {
+		bbs_debug(3, "User denied access to modify \\Deleted flag\n");
+		*flags &= ~FLAG_BIT_DELETED;
+		flagpermsdenied++;
+	}
+	if (!IMAP_HAS_ACL(acl, IMAP_ACL_WRITE)) {
+		/* Cannot set any other remaining flags */
+		*flags &= (*flags & (FLAG_BIT_SEEN | FLAG_BIT_DELETED)); /* Restrict to these two flags, if they are set. */
+		flagpermsdenied++;
+	}
+	return flagpermsdenied;
+}
+
+/*!
+ * \brief Translate the flags from a filename in one maildir to the flags for a different maildir (see function comments)
+ * \note This function will rename the file with the adjusted flag letters
+ *
+ * \param imap
+ * \param olddirectory The old maildir from which flags are translated
+ * \param oldfilenamefull The full path to the current filename of this message
+ * \param oldfilename A base filename that contains the flags. Note this does not necessarily have to be the basename of oldfilenamefull,
+ *        and with current usage, it is not. It's fine if it's stale, as long as it contains the flags accurately
+ * \param newmaildir The new maildir to which flags are translated
+ */
+static int translate_maildir_flags(struct imap_session *imap, const char *oldmaildir, const char *oldfilenamefull, const char *oldfilename, const char *newmaildir, int destacl)
+{
+	char keywords[256];
+	char newflagletters[53];
+	int numkeywords;
+	int oldflags;
+
+	/* Fix a little "oopsie" in the current implementation.
+	 * Because keywords are stored *per mailbox*, rather than globally (either per account, or all mailboxes),
+	 * when messages are moved or copied between folders, the mapping between the letters in the filename
+	 * and the keywords to which they correspond MAY change.
+	 * In particular, there is NO GUARANTEE that they will NOT change.
+	 * Therefore, we must translate the letters in the old filename to the keywords themselves,
+	 * and then translate them back to the letters for the new folder (which may create them if needed).
+	 * This MUST be done after any copy or move operation between folders.
+	 *
+	 * Ideally, this would be an atomic operation done inside maildir_copy_msg or maildir_move_msg,
+	 * but since it isn't, we call this immediately after those calls, if they succeed.
+	 *
+	 * Because the semantics of flags are purely within the IMAP module, the mod_mail module
+	 * cannot currently handle this logic, so this step has to be done manually in the IMAP module.
+	 * If in the future, mod_mail is aware of IMAP keywords, this logic should be moved there
+	 * and abstracted away from the IMAP module (i.e. done automatically on any move or copy). */
+
+	/* Get the old keyword names themselves */
+	numkeywords = __gen_keyword_names(oldfilename, keywords, sizeof(keywords), oldmaildir); /* prepends a space before all of them, so this (usually) works out great */
+
+	if (numkeywords <= 0) {
+#ifdef EXTRA_DEBUG
+		bbs_debug(8, "No keywords require translation for %s / %s\n", oldmaildir, oldfilename);
+#endif
+		return 0; /* If it doesn't have any keywords now, we don't need to do anything. */
+	}
+
+	/* Get what letters they would be in the new directory. */
+	oldflags = __parse_flags_string(imap, keywords, newmaildir); /* Note: __parse_flags_string "uses up" keyword so don't attempt to print it out afterwards */
+
+	/* Per RFC 4314, we should only copy the flags over if the user has permission to do so.
+	 * Even if the user does not have permission, per the RFC we must not fail the COPY/APPEND with a NO,
+	 * we just silently ignore those flags.
+	 * Since we already have to translate them anyways, this is a perfect place to
+	 * remove any flags that the user is not allowed to set in the new directory.
+	 */
+	restrict_flags(destacl, &oldflags);
+
+	/* Now, we need to replace the original keyword letters with the ones for the new directory.
+	 * The lengths will be the same, the letters themselves may not be.
+	 * newflagletters is all the flags, so we need to preserve the system flags (uppercase) too.
+	 */
+	gen_flag_letters(oldflags, newflagletters, sizeof(newflagletters)); /* Copy the old uppercase flags over */
+	if (IMAP_HAS_ACL(imap->acl, IMAP_ACL_WRITE)) {
+		strncat(newflagletters, imap->appendkeywords, sizeof(newflagletters) - 1); /* Append the keywords */
+	}
+
+	bbs_debug(5, "Flags for %s have changed to '%s' due to location/permission change\n", oldfilename, newflagletters);
+	return maildir_msg_setflags(imap, 0, oldfilenamefull, newflagletters);
 }
 
 #define REQUIRE_ARGS(s) \
@@ -1308,16 +1420,6 @@ static int imap_translate_dir(struct imap_session *imap, const char *directory, 
 	return res;
 }
 
-#define IMAP_HAS_ACL(acl, flag) (acl & (flag))
-#define IMAP_REQUIRE_ACL(acl, flag) \
-	if (!IMAP_HAS_ACL(acl, (flag))) { \
-		char _aclbuf[15]; \
-		generate_acl_string(acl, _aclbuf, sizeof(_aclbuf)); \
-		bbs_debug(4, "User missing ACL %s (have %s)\n", #flag, _aclbuf); \
-		imap_reply(imap, "NO [NOPERM] Permission denied"); \
-		return 0; \
-	}
-
 static int set_maildir(struct imap_session *imap, const char *mailbox)
 {
 	char dir[256];
@@ -1589,7 +1691,7 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 
 	REQUIRE_ARGS(s);
 
-	SHIFT_OPTIONALLY_QUOTED_ARG(mailbox, s); /* The STATUS command will have additional arguments */
+	SHIFT_OPTIONALLY_QUOTED_ARG(mailbox, s); /* The STATUS command will have additional arguments (and possibly SELECT, for CONDSTORE) */
 
 	/* This modifies the current maildir even for STATUS, but the STATUS command will restore the old one afterwards. */
 	if (set_maildir(imap, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX". It may also change the active (account) mailbox. */
@@ -1613,8 +1715,22 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 	if (readonly <= 1) { /* SELECT, EXAMINE */
 		char aclstr[15];
 		char keywords[256] = "";
+		int condstore_just_enabled = 0;
+		unsigned int maxmodseq;
 		int numkeywords = gen_keyword_names(imap, NULL, keywords, sizeof(keywords)); /* prepends a space before all of them, so this works out great */
 		imap_send(imap, "FLAGS (%s%s)", IMAP_FLAGS, numkeywords ? keywords : "");
+		if (!strlen_zero(s)) {
+			if (strstr(s, "CONDSTORE")) {
+				if (!imap->condstore) {
+					condstore_just_enabled = 1;
+				}
+				imap->condstore = 1;
+			} else {
+				/* CONDSTORE is the only known optional parameter for SELECT/EXAMINE */
+				bbs_warning("Unexpected parameter: %s\n", s);
+			}
+		}
+		maxmodseq = maildir_max_modseq(imap->mbox, imap->curdir);
 		/* Any non-standard flags are called keywords in IMAP
 		 * If we don't send a PERMANENTFLAGS, the RFC says that clients should assume all flags are permanent.
 		 * This works if clients are not allowed to set custom flags.
@@ -1628,8 +1744,15 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 		 *
 		 * (Side note: the security incident discussed in the above post mortem was uncovered
 		 *  through development of this IMAP server, in testing certain behavior of existing IMAP servers.)
+		 *
+		 * The Purelymail email server adds an "F" after its PERMANENTFLAGS response because some clients
+		 * will break if no commentary is present in the response (so a single letter suffices for this purpose).
+		 * Most of the other responses already have pretty standard commentary,
+		 * but that one doesn't so it's just arbitrary and as short as possible.
+		 * RFC 7162 3.1.2.1 shows "LIMITED" appearing at the end of a PERMANENTFLAGS response, so we do that here,
+		 * as clients are limited in how many custom flags (keywords) can be used (26 for the entire mailbox)
 		 */
-		imap_send(imap, "OK [PERMANENTFLAGS (%s%s \\*)]", IMAP_FLAGS, numkeywords ? keywords : ""); /* Include \* to indicate we support IMAP keywords */
+		imap_send(imap, "OK [PERMANENTFLAGS (%s%s \\*)] Limited", IMAP_FLAGS, numkeywords > 0 ? keywords : ""); /* Include \* to indicate we support IMAP keywords */
 		imap_send_broadcast(imap, "%u EXISTS", imap->totalnew + imap->totalcur); /* Number of messages in the mailbox. */
 		imap_send(imap, "%u RECENT", imap->totalnew); /* Number of messages with \Recent flag (maildir: new, instead of cur). */
 		if (imap->firstunseen) {
@@ -1639,11 +1762,10 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 		imap_send(imap, "OK [UIDVALIDITY %u] UIDs valid", imap->uidvalidity);
 		/* uidnext is really the current max UID allocated. The next message will have at least UID of uidnext + 1, but it could be larger. */
 		imap_send(imap, "OK [UIDNEXT %u] Predicted next UID", imap->uidnext + 1);
+		imap_send(imap, "OK [HIGHESTMODSEQ %u] Highest", maxmodseq);
 		generate_acl_string(imap->acl, aclstr, sizeof(aclstr));
 		imap_send(imap, "OK [MYRIGHTS \"%s\"] ACL", aclstr);
-		/* Some other stuff might appear here, e.g. HIGHESTMODSEQ (RFC4551) that we don't currently support. */
-		/* XXX All mailboxes are READ-WRITE right now, but could be just READ-ONLY. Need to add ACL extensions for that. */
-		imap_reply(imap, "OK [%s] %s completed", readonly ? "READ-ONLY" : "READ-WRITE", readonly ? "EXAMINE" : "SELECT");
+		imap_reply(imap, "OK [%s] %s completed%s", readonly ? "READ-ONLY" : "READ-WRITE", readonly ? "EXAMINE" : "SELECT", condstore_just_enabled ? ", CONDSTORE is now enabled" : "");
 	} else if (readonly == 2) { /* STATUS */
 		/*! \todo imap->totalnew and imap->totalcur, etc. are now for this other mailbox we one-offed, rather than currently selected.
 		 * Will that mess anything up? Maybe we should save these in tmp vars, and only set on the imap struct if readonly <= 1? */
@@ -1657,6 +1779,7 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 			SAFE_FAST_COND_APPEND(status_items, pos, left, strstr(s, "UIDVALIDITY"), "UIDVALIDITY %d", imap->uidvalidity);
 			/* Unlike with SELECT, this is the TOTAL number of unseen messages, not merely the first one */
 			SAFE_FAST_COND_APPEND(status_items, pos, left, strstr(s, "UNSEEN"), "UNSEEN %d", imap->totalunseen);
+			SAFE_FAST_COND_APPEND(status_items, pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %lu", mailbox_quota(imap->mbox));
 		}
 		imap_send(imap, "STATUS %s (%s)", mailbox, status_items);
 		imap_reply(imap, "OK STATUS completed");
@@ -2495,6 +2618,7 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 	unsigned long quotaleft;
 	int destacl;
 	int error = 0;
+	char newfile[256];
 
 	sequences = strsep(&s, " "); /* Messages, specified by sequence number or by UID (if usinguid) */
 	REQUIRE_ARGS(sequences);
@@ -2509,12 +2633,6 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 	quotaleft = mailbox_quota_remaining(imap->mbox);
 
 	IMAP_REQUIRE_ACL(destacl, IMAP_ACL_INSERT); /* Must be able to copy to dest dir */
-	/* XXX Per RFC 4314, we should only copy the flags over if the user has permission to do so.
-	 * Even if the user does not have permission, per the RFC we must not fail the COPY/APPEND with a NO,
-	 * we just silently ignore those flags.
-	 * Currently, we just always copy, as we don't parse the flags for COPY/APPEND.
-	 * This comment also applies to handle_append
-	 */
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
 	files = scandir(imap->curdir, &entries, NULL, uidsort);
@@ -2545,10 +2663,11 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 				break; /* Insufficient quota remaining */
 			}
 		}
-		uidres = maildir_copy_msg(imap->mbox, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext);
+		uidres = maildir_copy_msg_filename(imap->mbox, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext, newfile, sizeof(newfile));
 		if (!uidres) {
 			goto cleanup;
 		}
+		translate_maildir_flags(imap, imap->dir, newfile, entry->d_name, newboxdir, destacl);
 		if (!uintlist_append2(&olduids, &newuids, &lengths, &allocsizes, msguid, uidres)) {
 			numcopies++;
 		}
@@ -2572,6 +2691,96 @@ cleanup:
 	}
 	free_if(olduidstr);
 	free_if(newuidstr);
+	return 0;
+}
+
+/*! \brief Basically a simpler version of handle_copy, with some expunging responses */
+static int handle_move(struct imap_session *imap, char *s, int usinguid)
+{
+	struct dirent *entry, **entries;
+	char *sequences, *newbox;
+	char newboxdir[256];
+	char srcfile[516];
+	int files, fno = 0;
+	int seqno = 0;
+	unsigned int *olduids = NULL, *newuids = NULL, *expunged = NULL;
+	int lengths = 0, allocsizes = 0;
+	int exp_lengths = 0, exp_allocsizes = 0;
+	unsigned int uidvalidity, uidnext, uidres;
+	char *olduidstr = NULL, *newuidstr = NULL;
+	int destacl;
+	int error = 0;
+	int i;
+	char newname[256];
+
+	sequences = strsep(&s, " "); /* Messages, specified by sequence number or by UID (if usinguid) */
+	REQUIRE_ARGS(sequences);
+	SHIFT_OPTIONALLY_QUOTED_ARG(newbox, s);
+
+	/* We'll be moving into the cur directory. Don't specify here, maildir_move_msg_filename tacks on the /cur implicitly. */
+	if (imap_translate_dir(imap, newbox, newboxdir, sizeof(newboxdir), &destacl)) { /* Destination directory doesn't exist. */
+		imap_reply(imap, "NO [TRYCREATE] No such mailbox");
+		return 0;
+	}
+
+	IMAP_REQUIRE_ACL(imap->acl, IMAP_ACL_EXPUNGE);
+	IMAP_REQUIRE_ACL(destacl, IMAP_ACL_INSERT); /* Must be able to copy to dest dir and expunge from current dir */
+
+	/* Since an implicit EXPUNGE is done from the current directory, we must lock the mailbox to avoid confusing POP3 clients. */
+	MAILBOX_TRYRDLOCK(imap);
+
+	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
+	files = scandir(imap->curdir, &entries, NULL, uidsort);
+	if (files < 0) {
+		bbs_error("scandir(%s) failed: %s\n", imap->curdir, strerror(errno));
+		return -1;
+	}
+	while (fno < files && (entry = entries[fno++])) {
+		unsigned int msguid;
+
+		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			goto cleanup;
+		}
+		msguid = imap_msg_in_range(imap, ++seqno, entry->d_name, sequences, usinguid, &error);
+		if (!msguid) {
+			goto cleanup;
+		}
+
+		snprintf(srcfile, sizeof(srcfile), "%s/%s", imap->curdir, entry->d_name);
+		uidres = maildir_move_msg_filename(imap->mbox, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext, newname, sizeof(newname));
+		if (!uidres) {
+			goto cleanup;
+		}
+		/* maildir_move_msg_filename may rename the base filename, but it won't modify the flags, just the UID, so we can use the old basename for the purposes of flags. */
+		translate_maildir_flags(imap, imap->dir, newname, entry->d_name, newboxdir, destacl);
+		uintlist_append2(&olduids, &newuids, &lengths, &allocsizes, msguid, uidres);
+		uintlist_append(&expunged, &exp_lengths, &exp_allocsizes, seqno); /* always sequence number, even for UID MOVE */
+cleanup:
+		free(entry);
+	}
+	free(entries);
+	/* UIDVALIDITY of dest mailbox, src UIDs, dest UIDs (in same order as src messages) */
+	if (olduids || newuids) {
+		olduidstr = gen_uintlist(olduids, lengths);
+		newuidstr = gen_uintlist(newuids, lengths);
+		free_if(olduids);
+		free_if(newuids);
+	}
+	if (error) {
+		imap_reply(imap, "BAD Invalid saved search");
+	} else {
+		imap_reply(imap, "OK [COPYUID %u %s %s] COPY completed", uidvalidity, S_IF(olduidstr), S_IF(newuidstr));
+	}
+
+	mailbox_unlock(imap->mbox);
+
+	for (i = 0; i < exp_lengths; i++) {
+		imap_send_broadcast(imap, "%u EXPUNGE", expunged[i]);
+	}
+
+	free_if(olduidstr);
+	free_if(newuidstr);
+	free_if(expunged);
 	return 0;
 }
 
@@ -2658,14 +2867,14 @@ static int handle_append(struct imap_session *imap, char *s)
 		imap_reply(imap, "NO [CLIENTBUG] Invalid message literal size");
 		return 0;
 	} else if (appendsize >= MAX_APPEND_SIZE) {
-		imap_reply(imap, "NO [LIMIT] Message too large");
+		imap_reply(imap, "NO [LIMIT] Message too large"); /* [TOOBIG] could also be appropriate */
 		return 0;
 	} else if ((unsigned long) appendsize >= quotaleft) {
 		imap_reply(imap, "NO [OVERQUOTA] Insufficient quota remaining");
 		return 0;
 	}
 
-	_imap_reply(imap, "+ Ready for literal data\r\n");
+	_imap_reply(imap, "+ Ready for literal data\r\n"); /* Synchronizing literal response */
 	imap->appendsize = appendsize; /* Bytes we expect to receive */
 	imap->appendcur = 0; /* Bytes received so far */
 	imap->appendfile = maildir_mktemp(imap->appenddir, imap->appendtmp, sizeof(imap->appendtmp), imap->appendnew);
@@ -2675,19 +2884,27 @@ static int handle_append(struct imap_session *imap, char *s)
 	return 0;
 }
 
+/*! \brief base filename The file name of the message file. Please do not provide the full filepath. */
 static void generate_flag_names_full(struct imap_session *imap, const char *filename, char *bufstart, char **bufptr, int *lenptr)
 {
-	char flagsbuf[256];
+	char flagsbuf[256] = "";
+	int has_flags;
 	int custom_keywords;
 
 	char *buf = *bufptr;
 	size_t len = *lenptr;
 
 	gen_flag_names(filename, flagsbuf, sizeof(flagsbuf));
+	has_flags = flagsbuf[0] ? 1 : 0;
 	SAFE_FAST_COND_APPEND(bufstart, buf, len, 1, "FLAGS (%s", flagsbuf);
 	/* If there are any keywords (custom flags), include those as well */
 	custom_keywords = gen_keyword_names(imap, filename, flagsbuf, sizeof(flagsbuf));
-	SAFE_FAST_COND_APPEND_NOSPACE(bufstart, buf, len, custom_keywords, "%s", flagsbuf);
+	if (has_flags) {
+		SAFE_FAST_COND_APPEND_NOSPACE(bufstart, buf, len, custom_keywords > 0, "%s", flagsbuf);
+	} else {
+		/* No leading space if there were no other flags, would be more elegantly if everything just appended to the same buffer using _NOSPACE */
+		SAFE_FAST_COND_APPEND_NOSPACE(bufstart, buf, len, custom_keywords > 0, "%s", flagsbuf + 1); /* flagsbuf + 1 is safe since custom_keywords > 0 */
+	}
 	SAFE_FAST_COND_APPEND_NOSPACE(bufstart, buf, len, 1, ")");
 
 	*bufptr = buf;
@@ -2725,8 +2942,10 @@ static int maildir_msg_setflags(struct imap_session *imap, int seqno, const char
 	}
 
 	/* Send unilateral untagged FETCH responses to everyone except this session, to notify of the new flags */
-	generate_flag_names_full(imap, fullfilename, newflags, &newbuf, &newlen);
-	imap_send_unilaterial_broadcast(imap, 1, "%d FETCH (%s)", seqno, newflags); /* Send for EXPUNGE, but not CLOSE */
+	generate_flag_names_full(imap, filename, newflags, &newbuf, &newlen);
+	if (seqno) { /* Skip for merely translating flag mappings between maildirs */
+		imap_send_unilaterial_broadcast(imap, 1, "%d FETCH (%s)", seqno, newflags); /* Send for EXPUNGE, but not CLOSE */
+	}
 	return 0;
 }
 
@@ -2805,6 +3024,8 @@ static int finish_append(struct imap_session *imap)
 	/* APPENDUID response */
 	/* Use tag from APPEND request */
 	_imap_reply(imap, "%s OK [APPENDUID %u %u] APPEND completed\r\n", imap->savedtag, uidvalidity, uidnext); /* Don't add 1, this is the current message UID, not UIDNEXT */
+	/*! \todo BUGBUG If mailbox currently selected, we SHOULD send an untagged EXISTS.
+	 * Even if not, we should for that particular mailbox (folder) for other clients that may be monitoring it. */
 	return 0;
 }
 
@@ -3350,21 +3571,9 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 
 	opflags = parse_flags_string(imap, s);
 	/* Check if user is authorized to set these flags. */
-	if (opflags & FLAG_BIT_SEEN && !IMAP_HAS_ACL(imap->acl, IMAP_ACL_SEEN)) {
-		bbs_debug(3, "User denied access to modify \\Seen flag\n");
-		opflags &= ~FLAG_BIT_SEEN;
-		flagpermsdenied++;
-	}
-	if (opflags & FLAG_BIT_DELETED && !IMAP_HAS_ACL(imap->acl, IMAP_ACL_DELETE)) {
-		bbs_debug(3, "User denied access to modify \\Deleted flag\n");
-		opflags &= ~FLAG_BIT_DELETED;
-		flagpermsdenied++;
-	}
+	flagpermsdenied = restrict_flags(imap->acl, &opflags);
 	if (!IMAP_HAS_ACL(imap->acl, IMAP_ACL_WRITE)) {
-		/* Cannot set any other remaining flags */
-		opflags &= (opflags & (FLAG_BIT_SEEN | FLAG_BIT_DELETED)); /* Restrict to these two flags, if they are set. */
 		imap->numappendkeywords = 0;
-		flagpermsdenied++;
 	}
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
@@ -3421,23 +3630,37 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 		}
 
 		if (imap->numappendkeywords) {
+			const char *c;
 			char *newbuf = newkeywords;
 			size_t newlen = sizeof(newkeywords);
 			/* These are the keywords provided as input.
 			 * oldkeywords contains the existing keywords. */
 			if (flagop == 1) { /* If they're equal, we don't need to do anything */
 				if (strcmp(imap->appendkeywords, oldkeywords)) {
+					int oldlen = strlen(oldkeywords);
 					bbs_debug(5, "Change made to keyword: %s -> %s\n", oldkeywords, imap->appendkeywords);
+					/* Merge both of them: copy over any keywords that weren't in the old one. */
 					strcpy(newkeywords, oldkeywords); /* Safe */
-					strncat(newkeywords, imap->appendkeywords, sizeof(newkeywords) - 1);
-					changes++;
+					c = imap->appendkeywords;
+					newbuf = newkeywords + oldlen;
+					newlen = sizeof(newkeywords) - oldlen;
+					/* XXX This eliminates duplication, but ideally they should also be sorted alphabetically between the two (e.g. merge sort) */
+					while (*c) {
+						if (!strchr(oldkeywords, *c)) {
+							SAFE_FAST_COND_APPEND_NOSPACE(newkeywords, newbuf, newlen, 1, "%c", *c);
+							changes++;
+						} else {
+							bbs_debug(7, "Skipping existing flag %c\n", *c);
+						}
+						c++;
+					}
 				} else if (changes) {
 					keywords = oldkeywords; /* If we're going to rename the file, make sure we preserve the flags it already had. If not, no point. */
 				}
 			} else if (flagop == -1) {
+				c = oldkeywords;
 				/* If the old flags contain any of the new flags, remove them, otherwise just copy over */
 				/* Note that imap->appendkeywords is not necessarily ordered since they are as the client sent them */
-				const char *c = oldkeywords;
 				while (*c) {
 					/* Hopefully gcc will optimize a sprintf with just %c. */
 					if (!strchr(imap->appendkeywords, *c)) {
@@ -3761,6 +3984,7 @@ enum imap_search_type {
 	IMAP_SEARCH_NEW,
 	IMAP_SEARCH_NOT,
 	IMAP_SEARCH_OLD,
+	IMAP_SEARCH_OLDER,
 	IMAP_SEARCH_ON,
 	IMAP_SEARCH_OR,
 	IMAP_SEARCH_AND,
@@ -3781,6 +4005,7 @@ enum imap_search_type {
 	IMAP_SEARCH_UNFLAGGED,
 	IMAP_SEARCH_UNKEYWORD,
 	IMAP_SEARCH_UNSEEN,
+	IMAP_SEARCH_YOUNGER,
 	IMAP_SEARCH_SEQUENCE_NUMBER_SET,
 };
 
@@ -3820,6 +4045,8 @@ static const char *imap_search_key_name(enum imap_search_type type)
 			return "NOT";
 		case IMAP_SEARCH_OLD:
 			return "OLD";
+		case IMAP_SEARCH_OLDER:
+			return "OLDER";
 		case IMAP_SEARCH_ON:
 			return "ON";
 		case IMAP_SEARCH_OR:
@@ -3860,6 +4087,8 @@ static const char *imap_search_key_name(enum imap_search_type type)
 			return "UNKEYWORD";
 		case IMAP_SEARCH_UNSEEN:
 			return "UNSEEN";
+		case IMAP_SEARCH_YOUNGER:
+			return "YOUNGER";
 		case IMAP_SEARCH_SEQUENCE_NUMBER_SET:
 			return "SEQNO_SET";
 		default:
@@ -3943,6 +4172,8 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 				break;
 			case IMAP_SEARCH_LARGER:
 			case IMAP_SEARCH_SMALLER:
+			case IMAP_SEARCH_OLDER:
+			case IMAP_SEARCH_YOUNGER:
 				bytes = snprintf(buf, sizeof(buf), "%d\n", skey->child.number);
 				dyn_str_append(str, buf, bytes);
 				break;
@@ -4162,6 +4393,8 @@ static int parse_search_query(struct imap_session *imap, struct imap_search_keys
 		SEARCH_PARSE_FLAG(UNSEEN)
 		SEARCH_PARSE_INT(LARGER)
 		SEARCH_PARSE_INT(SMALLER)
+		SEARCH_PARSE_INT(OLDER)
+		SEARCH_PARSE_INT(YOUNGER)
 		SEARCH_PARSE_STRING(BCC)
 		SEARCH_PARSE_STRING(BEFORE)
 		SEARCH_PARSE_STRING(BODY)
@@ -4244,6 +4477,7 @@ struct imap_search {
 	FILE *fp;
 	int flags;
 	int seqno;
+	int now;
 	struct imap_session *imap;
 	unsigned int new:1;
 	unsigned int didstat:1;
@@ -4528,7 +4762,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 			case IMAP_SEARCH_UNKEYWORD:
 			case IMAP_SEARCH_KEYWORD:
 				/* This is not very efficient, since we reparse the keywords for every message, but the keyword mapping is the same for everything in this mailbox. */
-				parse_keyword(search->imap, skey->child.string, 0);
+				parse_keyword(search->imap, skey->child.string, search->imap->dir, 0);
 				/* imap->appendkeywords is now set. */
 				if (search->imap->numappendkeywords != 1) {
 					bbs_warning("Expected %d keyword, got %d?\n", 1, search->imap->numappendkeywords);
@@ -4589,6 +4823,22 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 				t2 = mktime(&tm2);
 				retval = difftime(t1, t2) > 0;
 				break;
+			case IMAP_SEARCH_OLDER: /* like BEFORE, but with # seconds */
+				SEARCH_STAT()
+				localtime_r(&search->st.st_mtim.tv_sec, &tm1);
+				t1 = mktime(&tm1);
+				t2 = search->now;
+				/* Since all INTERNALDATEs must be in the past, we expect difftime is always negative (tm1 < tm2, e.g. tm1 < now) */
+				retval = difftime(t1, t2) <= -skey->child.number;
+				break;
+			case IMAP_SEARCH_YOUNGER: /* like SINCE, but with # seconds */
+				SEARCH_STAT()
+				localtime_r(&search->st.st_mtim.tv_sec, &tm1);
+				t1 = mktime(&tm1);
+				t2 = search->now;
+				/* Since all INTERNALDATEs must be in the past, we expect difftime is always negative (tm1 < tm2, e.g. tm1 < now) */
+				retval = difftime(t1, t2) >= -skey->child.number;
+				break;
 			case IMAP_SEARCH_SUBJECT:
 				SEARCH_HEADER_MATCH("Subject");
 			case IMAP_SEARCH_TEXT: /* In header or body */
@@ -4637,6 +4887,9 @@ static int search_dir(struct imap_session *imap, const char *dirname, int newdir
 	unsigned int uid;
 	unsigned int seqno = 0;
 	char keywords[27] = "";
+	int now;
+
+	now = time(NULL); /* Only compute this once, not for each file */
 
 	files = scandir(dirname, &entries, NULL, uidsort);
 	if (files < 0) {
@@ -4660,6 +4913,7 @@ static int search_dir(struct imap_session *imap, const char *dirname, int newdir
 		search.new = newdir;
 		search.seqno = seqno;
 		search.keywords = keywords;
+		search.now = now;
 		/* Parse the flags just once in advance, since doing bit field comparisons is faster than strchr */
 		if (parse_flags_letters_from_filename(search.filename, &search.flags, keywords)) {
 			goto next;
@@ -5506,7 +5760,7 @@ static int imap_process(struct imap_session *imap, char *s)
 				if (res < 0) {
 					break;
 				}
-				_imap_reply_nolock(imap, "%s\r\n", buf); /* Already have lock held, and we don't know the length. Also, add CR LF back on, since bbs_readline_fd stripped that. */
+				_imap_reply_nolock(imap, "%s\r\n", buf); /* Already have lock held, and we don't know the length. Also, add CR LF back on, since bbs_fd_readline stripped that. */
 			}
 			imap->pending = 0;
 			pthread_mutex_unlock(&imap->lock);
@@ -5647,6 +5901,10 @@ static int imap_process(struct imap_session *imap, char *s)
 		REQUIRE_SELECTED(imap);
 		IMAP_NO_READONLY(imap);
 		return handle_copy(imap, s, 0);
+	} else if (!strcasecmp(command, "MOVE")) {
+		REQUIRE_SELECTED(imap);
+		IMAP_NO_READONLY(imap);
+		return handle_move(imap, s, 0);
 	} else if (!strcasecmp(command, "STORE")) {
 		REQUIRE_SELECTED(imap);
 		IMAP_NO_READONLY(imap);
@@ -5666,6 +5924,8 @@ static int imap_process(struct imap_session *imap, char *s)
 			return handle_fetch(imap, s, 1);
 		} else if (!strcasecmp(command, "COPY")) {
 			return handle_copy(imap, s, 1);
+		} else if (!strcasecmp(command, "MOVE")) {
+			return handle_move(imap, s, 1);
 		} else if (!strcasecmp(command, "STORE")) {
 			return handle_store(imap, s, 1);
 		} else if (!strcasecmp(command, "SEARCH")) {

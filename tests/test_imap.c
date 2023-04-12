@@ -110,6 +110,10 @@ static int make_messages(int nummsg)
 /* Do not change this value, as the value is used hardcoded in several places that would need to be updated as well */
 #define TARGET_MESSAGES 10
 
+#define SELECT_MAILBOX(fd, tag, name) \
+	SWRITE(fd, tag " SELECT \"" name "\"" ENDL); \
+	CLIENT_EXPECT_EVENTUALLY(fd, tag " OK");
+
 static int run(void)
 {
 	int client1 = -1, client2 = -1, smtpfd;
@@ -273,8 +277,7 @@ static int run(void)
 	SWRITE(client1, "a19 EXPUNGE" ENDL);
 	CLIENT_EXPECT(client1, "a19 OK EXPUNGE"); /* There are no messages in the currently selected folder with the Deleted flag set */
 	/* But we can change that */
-	SWRITE(client1, "a20 SELECT \"Trash\"" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "a20 OK");
+	SELECT_MAILBOX(client1, "a20", "Trash");
 	/* We copied a message to the Trash in a18. Mark it as deleted. */
 	SWRITE(client1, "a21 STORE 1 +FLAGS.SILENT (\\Deleted)" ENDL);
 	CLIENT_EXPECT(client1, "a21 OK STORE");
@@ -288,8 +291,7 @@ static int run(void)
 	SWRITE(client2, "b1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
 	CLIENT_EXPECT(client2, "b1 OK");
 
-	SWRITE(client2, "b2 SELECT \"Trash\"" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client2, "b2 OK");
+	SELECT_MAILBOX(client2, "b2", "Trash");
 
 	SWRITE(client1, "a22 EXPUNGE" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "* 1 EXPUNGE"); /* Expunger should immediately see this response */
@@ -428,8 +430,7 @@ static int run(void)
 
 	/* SORT */
 	/* Delete any existing messages so we don't get confused. */
-	SWRITE(client1, "c1 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "c1 OK");
+	SELECT_MAILBOX(client1, "c1", "INBOX");
 
 	SWRITE(client1, "c2 STORE 1:* FLAGS.SILENT (\\Deleted)" ENDL);
 	CLIENT_EXPECT(client1, "c2 OK");
@@ -451,8 +452,7 @@ static int run(void)
 	SWRITE(smtpfd, "QUIT" ENDL);
 	close_if(smtpfd);
 
-	SWRITE(client1, "c4 SELECT INBOX" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "c4 OK");
+	SELECT_MAILBOX(client1, "c4", "INBOX");
 
 	SWRITE(client1, "c5 SORT (REVERSE SIZE TO REVERSE DATE) UTF-8 ALL" ENDL); /* Use SORT, not UID SORT, so we can exactly predict the correct sequence numbers for response */
 	CLIENT_EXPECT(client1, "SORT 3 5 2 1 4 6");
@@ -485,6 +485,11 @@ static int run(void)
 	CLIENT_EXPECT(client1, "c11 OK");
 	SWRITE(client1, "c12 FETCH $ (FLAGS)" ENDL);
 	CLIENT_EXPECT(client1, "* 3 FETCH");
+	CLIENT_DRAIN(client1);
+
+	/* Test MOVE */
+	SWRITE(client1, "c13 MOVE 5 Trash" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "* 5 EXPUNGE"); /* Other clients in the same mailbox should also get an EXPUNGE if idling or on next command */
 	CLIENT_DRAIN(client1);
 
 	/* Test BURL SMTP + IMAP URLAUTH */
@@ -529,11 +534,33 @@ static int run(void)
 	/* Look, ma! We're not sending the message data to the SMTP server! */
 	SWRITE(smtpfd, "BURL " BURL_URL ":internal LAST" ENDL);
 	CLIENT_EXPECT(smtpfd, "250");
-	CLIENT_EXPECT_EVENTUALLY(client1, "* 7 EXISTS"); /* Should receive the message we just sent to ourself. INBOX already has 6 messages. */
+	CLIENT_EXPECT_EVENTUALLY(client1, "* 6 EXISTS"); /* Should receive the message we just sent to ourself. INBOX already had 6 messages, but we moved 1. */
 	CLIENT_DRAIN(client1);
 
 	SWRITE(client1, "DONE" ENDL);
 	CLIENT_EXPECT(client1, "d3 OK");
+
+	/* Test keywords on messages moved between folders */
+	SELECT_MAILBOX(client1, "a0", "Sent");
+
+	SWRITE(client1, "e1 STORE 1 +FLAGS.SILENT ($Test1 $Test2)" ENDL);
+	CLIENT_EXPECT(client1, "e1 OK");
+
+	SELECT_MAILBOX(client1, "e2", "INBOX");
+
+	/* Ensure the mappings for keywords are different between the two folders. */
+	SWRITE(client1, "e3 STORE 1:2 +FLAGS.SILENT ($Test2)" ENDL);
+	CLIENT_EXPECT(client1, "e3 OK");
+
+	SWRITE(client1, "e4 COPY 1 Sent" ENDL);
+	CLIENT_EXPECT(client1, "e4 OK");
+
+	SELECT_MAILBOX(client1, "e5", "Sent");
+
+	/* Sent already had one message (from the BURL test). It'll be #2 */
+	SWRITE(client1, "e6 FETCH 2 (FLAGS)" ENDL);
+	CLIENT_EXPECT(client1, "FLAGS ($Test2)"); /* Ensure this flag, and no other flag, is present */
+	CLIENT_DRAIN(client1);
 
 	/* LOGOUT */
 	SWRITE(client1, "z999 LOGOUT" ENDL);

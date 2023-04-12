@@ -688,6 +688,10 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 			/* Well, this is awkward.
 			 * The only sane thing we can really do is invalidate all the UIDs
 			 * and start over at this point.
+			 *
+			 * Note that we are allowed to reset HIGHESTMODSEQ whenever we reset UIDVALIDITY.
+			 * However, we do not currently do so, and UIDVALIDITY should never be reset
+			 * in a correct implementation, anyways.
 			 */
 		} else {
 			fp = fopen(uidfile, "r+"); /* Open for reading and writing */
@@ -748,6 +752,49 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 	*newuidnext = uidnext;
 	mailbox_uid_unlock(mbox);
 	return uidnext;
+}
+
+unsigned int maildir_max_modseq(struct mailbox *mbox, const char *directory)
+{
+	DIR *dir;
+	struct dirent *entry;
+	unsigned int cur, max_modseq = 0;
+	const char *modseq;
+
+	/*! \todo Some caching for HIGHESTMODSEQ would not be difficult to implement and would be greatly beneficial to make lookups constant time instead of linear.
+	 * Just need to be thorough since a lot of operations can update HIGHESTMODSEQ. */
+
+	UNUSED(mbox); /* Not currently used, but could be useful for future caching strategies? */
+
+	/* Order of traversal does not matter, so use opendir instead of scandir for efficiency. */
+
+	if (!(dir = opendir(directory))) {
+		bbs_error("Error opening directory - %s: %s\n", directory, strerror(errno));
+		return 0;
+	}
+
+	while ((entry = readdir(dir)) != NULL) {
+		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		modseq = strstr(entry->d_name, ",M=");
+		if (!modseq) {
+			/* For backwards compatibility, since MODSEQ was not initially present,
+			 * tolerate maildir files that don't have a M= component.
+			 * However, at some point, whenever they are modified, a M= component
+			 * will need to be inserted into the filename.
+			 * For now, just treat it as 0 (never modified, which is true, at least since we started tracking). */
+			continue;
+		}
+		modseq += STRLEN(",M=");
+		cur = atoi(modseq);
+		if (cur > max_modseq) {
+			max_modseq = cur;
+		}
+	}
+
+	closedir(dir);
+	return max_modseq;
 }
 
 int maildir_move_new_to_cur(struct mailbox *mbox, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext)
@@ -871,6 +918,11 @@ static int gen_newname(struct mailbox *mbox, const char *curfilename, const char
 
 int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext)
 {
+	return maildir_move_msg_filename(mbox, curfile, curfilename, destmaildir, uidvalidity, uidnext, NULL, 0);
+}
+
+int maildir_move_msg_filename(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len)
+{
 	char newpath[272];
 	int uid;
 
@@ -883,10 +935,18 @@ int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curf
 		return -1;
 	}
 	bbs_debug(6, "Renamed %s -> %s\n", curfile, newpath);
+	if (newfile) {
+		safe_strncpy(newfile, newpath, len);
+	}
 	return uid;
 }
 
 int maildir_copy_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext)
+{
+	return maildir_copy_msg_filename(mbox, curfile, curfilename, destmaildir, uidvalidity, uidnext, NULL, 0);
+}
+
+int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len)
 {
 	char newpath[272];
 	unsigned int uid;
@@ -922,6 +982,9 @@ int maildir_copy_msg(struct mailbox *mbox, const char *curfile, const char *curf
 		return -1;
 	}
 	bbs_debug(6, "Copied %s -> %s\n", curfile, newpath);
+	if (newfile) {
+		safe_strncpy(newfile, newpath, len);
+	}
 	/* Rather than invalidating quota usage for no reason, just update it so it stays in sync */
 	mailbox_quota_adjust_usage(mbox, copied);
 	return uid;

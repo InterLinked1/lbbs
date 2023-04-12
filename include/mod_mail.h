@@ -141,6 +141,14 @@ int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf);
 unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, int allocate, unsigned int *newuidvalidity, unsigned int *newuidnext);
 
 /*!
+ * \brief Get the highest MODSEQ (modification sequence number) in a maildir
+ * \param mbox Mailbox
+ * \param directory Full system path of the cur directory for this maildir
+ * \retval 0 on failure or no assigned MODSEQs currently, positive number for max MODSEQ currently assigned
+ */
+unsigned int maildir_max_modseq(struct mailbox *mbox, const char *directory);
+
+/*!
  * \brief Move a message from the new directory to the cur directory, atomically
  * \param mbox Mailbox
  * \param dir Full system path to the active maildir directory
@@ -180,8 +188,25 @@ int maildir_move_new_to_cur_file(struct mailbox *mbox, const char *dir, const ch
  */
 int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext);
 
+/*!
+ * \brief Move a message from one maildir to another maildir (including a subdirectory of the same account), adjusting the UID as needed
+ * \param mbox Mailbox
+ * \param curfile Full path to current file
+ * \param curfilename The base name of the current file
+ * \param destmaildir The directory path of the maildir to which the message should be moved (do not include new or cur at the end)
+ * \param[out] uidvalidity The new UIDVALIDITY of the destination maildir
+ * \param[out] uidnext The new max UID of the destination maildir
+ * \param[out] newfile The new filename of the message
+ * \param len Size of newfile
+ * \retval 0 on failure, UID of new message file on success
+ */
+int maildir_move_msg_filename(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len);
+
 /*! \brief Same as maildir_move_msg, but deep copy the message instead of moving it. The original file is left intact. */
 int maildir_copy_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext);
+
+/*! \brief Same as maildir_copy_msg, but also store the new filename of the message, like maildir_move_msg_filename */
+int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len);
 
 /* SMTP processor callbacks */
 
