@@ -458,6 +458,35 @@ static int run(void)
 	CLIENT_EXPECT(client1, "SORT 3 5 2 1 4 6");
 	CLIENT_DRAIN(client1);
 
+	/* Test ESEARCH */
+	SWRITE(client1, "c6 SEARCH RETURN (MIN MAX COUNT) 1:10" ENDL);
+	CLIENT_EXPECT(client1, "* ESEARCH (TAG \"c6\") MIN 1 MAX 6 COUNT 6");
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "c7 SEARCH RETURN () 1:10" ENDL);
+	CLIENT_EXPECT(client1, "* ESEARCH (TAG \"c7\") ALL 1:6");
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "c8 SEARCH RETURN (MIN ALL) 1:10" ENDL);
+	CLIENT_EXPECT(client1, "* ESEARCH (TAG \"c8\") MIN 1 ALL 1:6");
+	CLIENT_DRAIN(client1);
+
+	/* Test ESORT */
+	SWRITE(client1, "c9 SORT RETURN () (REVERSE SIZE TO REVERSE DATE) UTF-8 UNDELETED" ENDL);
+	CLIENT_EXPECT(client1, "* ESEARCH (TAG \"c9\") ALL 3,5,2,1,4,6");
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "c10 SORT RETURN (MIN ALL) (REVERSE SIZE TO REVERSE DATE) UTF-8 UNDELETED" ENDL);
+	CLIENT_EXPECT(client1, "* ESEARCH (TAG \"c10\") MIN 1 ALL 3,5,2,1,4,6");
+	CLIENT_DRAIN(client1);
+
+	/* Test SEARCHRES */
+	SWRITE(client1, "c11 SEARCH RETURN (SAVE) 3" ENDL);
+	CLIENT_EXPECT(client1, "c11 OK");
+	SWRITE(client1, "c12 FETCH $ (FLAGS)" ENDL);
+	CLIENT_EXPECT(client1, "* 3 FETCH");
+	CLIENT_DRAIN(client1);
+
 	/* Test BURL SMTP + IMAP URLAUTH */
 	SWRITE(client1, "d1 APPEND Sent (\\Seen) {310}" ENDL); /* 310 includes the length of TEST_EMAIL */
 	CLIENT_EXPECT(client1, "+");
@@ -479,6 +508,8 @@ static int run(void)
 	SWRITE(client1, "d2 GENURLAUTH " BURL_URL " INTERNAL" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, ":internal"); /* GENURLAUTH should tack on :internal */
 	CLIENT_DRAIN(client1);
+	SWRITE(client1, "d3 IDLE" ENDL); /* Need to idle to get the unilateral EXISTS without doing a NOOP */
+	CLIENT_EXPECT(client1, "+");
 
 	smtpfd = test_make_socket(587);
 	if (smtpfd < 0) {
@@ -500,6 +531,9 @@ static int run(void)
 	CLIENT_EXPECT(smtpfd, "250");
 	CLIENT_EXPECT_EVENTUALLY(client1, "* 7 EXISTS"); /* Should receive the message we just sent to ourself. INBOX already has 6 messages. */
 	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "DONE" ENDL);
+	CLIENT_EXPECT(client1, "d3 OK");
 
 	/* LOGOUT */
 	SWRITE(client1, "z999 LOGOUT" ENDL);

@@ -14,20 +14,77 @@
  *
  * \brief RFC9051 Internet Message Access Protocol (IMAP) version 4rev2 (updates RFC3501 IMAP 4rev1)
  *
- * \note Supports RFC2177 IDLE
- * \note Supports RFC9208 QUOTA
- * \note Supports RFC2971 ID
- * \note Supports RFC4959 SASL-IR
- * \note Supports RFC2342 namespaces
- * \note Supports RFC4314 ACLs
- * \note Supports RFC5256 SORT
- * \note Supports RFC4467 URLAUTH (partially)
- * \note Supports RFC5530 Response Codes
+ * \note Supports RFC 2177 IDLE
+ * \note Supports RFC 2342 namespaces
+ * \note Supports RFC 2359, 4315 UIDPLUS
+ * \note Supports RFC 2971 ID
+ * \note Supports RFC 3348 CHILDREN
+ * \note Supports RFC 3691 UNSELECT
+ * \note Supports RFC 4314 ACLs
+ * \note Supports RFC 4466, 4731 SEARCH extensions
+ * \note Supports RFC 4467 URLAUTH (partially) for RFC 4468 BURL
+ * \note Supports RFC 4959 SASL-IR
+ * \note Supports RFC 5182 SEARCHRES
+ * \note Supports RFC 5256 SORT
+ * \note Supports RFC 5267 ESORT
+ * \note Supports RFC 5530 Response Codes
+ * \note Supports RFC 9208 QUOTA
  *
  * \note STARTTLS is not supported for cleartext IMAP, as proposed in RFC2595, as this guidance
  *       is obsoleted by RFC8314. Implicit TLS (IMAPS) should be preferred.
  *
  * \author Naveen Albert <bbs@phreaknet.org>
+ */
+
+/*! \todo IMAP functionality not yet implemented:
+ * - RFC 2088 LITERAL+
+ * - RFC 3502 MULTIAPPEND
+ * - RFC 4469 CATENATE
+ * - RFC 4551, 5162, 7162 CONDSTORE and QRESYNC, RFC 5161 ENABLE
+ * - RFC 4959 SASL-IR
+ * - RFC 4978 COMPRESS
+ * - RFC 5032 WITHIN
+ * - RFC 5228, 5703 Sieve
+ * - RFC 5255 LANGUAGE
+ * - RFC 5256 THREAD
+ * - RFC 5257 ANNOTATE, RFC 5464 ANNOTATE
+ * - RFC 5258 LIST extensions (obsoletes 3348)
+ * - RFC 5267 CONTEXT=SEARCH and CONTEXT=SORT
+ * - RFC 5423 events and RFC 5465 NOTIFY
+ * - RFC 5738 UTF8
+ * - RFC 5819 LIST status
+ * - RFC 5957 DISPLAYFROM/DISPLAYTO
+ * - RFC 6154 LIST extension for special purpose mailboxes
+ * - RFC 6203 FUZZY SEARCH
+ * - RFC 6237 ESEARCH (MULTISEARCH)
+ * - RFC 6851 MOVE
+ * - RFC 7889 APPENDLIMIT
+ * - BINARY and MULTIAPPEND extensions (RFC 3516, 4466)
+ * Other capabilities: AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH AUTH=XOAUTH2 UIDPLUS MOVE LITERAL+ BINARY ENABLE
+ */
+
+#define IMAP_REV "IMAP4rev1"
+/* List of capabilities: https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml */
+/* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
+/* XXX URLAUTH is advertised so that SMTP BURL will function in Trojita, even though we don't need URLAUTH since we have a direct trust */
+#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS"
+
+/* Capabilities advertised by popular mail providers, for reference/comparison, both pre and post authentication:
+ * - Office 365
+ * Guest: IMAP4 IMAP4rev1 AUTH=PLAIN AUTH=XOAUTH2 SASL-IR UIDPLUS ID UNSELECT CHILDREN IDLE NAMESPACE LITERAL+
+ * Auth:  IMAP4 IMAP4rev1 AUTH=PLAIN AUTH=XOAUTH2 SASL-IR UIDPLUS MOVE ID UNSELECT CLIENTACCESSRULES CLIENTNETWORKPRESENCELOCATION BACKENDAUTHENTICATE CHILDREN IDLE NAMESPACE LITERAL+
+
+ * - Gmail
+ * Guest: IMAP4rev1 UNSELECT IDLE NAMESPACE QUOTA ID XLIST CHILDREN X-GM-EXT-1 XYZZY SASL-IR AUTH=XOAUTH2 AUTH=PLAIN AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH
+ * Auth:  IMAP4rev1 UNSELECT IDLE NAMESPACE QUOTA ID XLIST CHILDREN X-GM-EXT-1 UIDPLUS COMPRESS=DEFLATE ENABLE MOVE CONDSTORE ESEARCH UTF8=ACCEPT LIST-EXTENDED LIST-STATUS LITERAL- SPECIAL-USE APPENDLIMIT=35651584
+
+ * - Purely Mail
+ * Guest: IMAP4rev1 LITERAL+ CHILDREN I18NLEVEL=1 NAMESPACE IDLE ENABLE CONDSTORE QRESYNC ANNOTATION AUTH=PLAIN SASL-IR RIGHTS= WITHIN ESEARCH ESORT SEARCHRES SORT MOVE UIDPLUS UNSELECT COMPRESSED=DEFLATE
+ * Auth:  IMAP4rev1 LITERAL+ CHILDREN I18NLEVEL=1 NAMESPACE IDLE ENABLE CONDSTORE QRESYNC ANNOTATION AUTH=PLAIN SASL-IR RIGHTS= WITHIN ESEARCH ESORT SEARCHRES SORT MOVE UIDPLUS UNSELECT COMPRESSED=DEFLATE
+
+ * - Yandex
+ * Guest: IMAP4rev1 CHILDREN UNSELECT LITERAL+ NAMESPACE XLIST BINARY UIDPLUS ENABLE ID AUTH=PLAIN AUTH=XOAUTH2 IDLE MOVE
+ * Auth:  IMAP4rev1 CHILDREN UNSELECT LITERAL+ NAMESPACE XLIST BINARY UIDPLUS ENABLE ID IDLE MOVE
  */
 
 #include "include/bbs.h"
@@ -75,13 +132,13 @@ static int imap_debug_level = 10;
 #define imap_debug(level, fmt, ...) if (imap_debug_level >= level) { bbs_debug(level, fmt, ## __VA_ARGS__); }
 
 #undef dprintf
-#define _imap_broadcast(imap, exclude, delay, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); __imap_broadcast(imap, exclude, delay, fmt, ## __VA_ARGS__);
+#define _imap_broadcast(imap, exclude, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); __imap_broadcast(imap, exclude, fmt, ## __VA_ARGS__);
 #define _imap_reply_nolock(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); dprintf(imap->wfd, fmt, ## __VA_ARGS__);
 #define _imap_reply(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); pthread_mutex_lock(&imap->lock); dprintf(imap->wfd, fmt, ## __VA_ARGS__); pthread_mutex_unlock(&imap->lock);
-#define imap_send_broadcast(imap, fmt, ...) _imap_broadcast(imap, 0, 0, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
-#define imap_send_expunge_broadcast(imap, exclude, fmt, ...) _imap_broadcast(imap, exclude, 1, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
+#define imap_send_broadcast(imap, fmt, ...) _imap_broadcast(imap, 0, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
+#define imap_send_unilaterial_broadcast(imap, exclude, fmt, ...) _imap_broadcast(imap, exclude, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
 #define imap_send(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
-#define imap_reply_broadcast(imap, fmt, ...) _imap_broadcast(imap, 0, 0, "%s " fmt "\r\n", S_IF(imap->tag), ## __VA_ARGS__)
+#define imap_reply_broadcast(imap, fmt, ...) _imap_broadcast(imap, 0, "%s " fmt "\r\n", S_IF(imap->tag), ## __VA_ARGS__)
 #define imap_reply(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", S_IF(imap->tag), ## __VA_ARGS__)
 
 /* RFC 2086/4314 ACLs */
@@ -227,6 +284,7 @@ struct imap_session {
 	unsigned int uidvalidity;
 	unsigned int uidnext;
 	int acl;					/* Cached ACL for current directory. We allowed to cache per a mailbox by the RFC. */
+	char *savedsearch;			/* SEARCHRES */
 	/* APPEND */
 	char appenddir[212];		/* APPEND directory */
 	char appendtmp[260];		/* APPEND tmp name */
@@ -240,6 +298,8 @@ struct imap_session {
 	unsigned int numappendkeywords:5; /* Number of append keywords. We only need 5 bits since this cannot exceed 26. */
 	unsigned int appendfail:1;
 	unsigned int createdkeyword:1;	/* Whether a keyword was created in response to a STORE */
+	/* Other flags */
+	unsigned int savedsearchuid:1;	/* Whether the saved search consists of sequence numbers or UIDs */
 	/* Traversal flags */
 	unsigned int totalnew;		/* In "new" maildir. Will be moved to "cur" when seen. */
 	unsigned int totalcur;		/* In "cur" maildir. */
@@ -258,9 +318,15 @@ struct imap_session {
 
 static RWLIST_HEAD_STATIC(sessions, imap_session);
 
+static inline void reset_saved_search(struct imap_session *imap)
+{
+	free_if(imap->savedsearch); /* See comments about EXPUNGE in expunge_helper */
+	imap->savedsearch = 0;
+}
+
 /*! \param exclude Whether to not send the message to the current IMAP client */
 /*! \param delay Whether to not send the response immediately to other clients, but instead buffer it in their pipe */
-static int __attribute__ ((format (gnu_printf, 4, 5))) __imap_broadcast(struct imap_session *imap, int exclude, int delay, const char *fmt, ...)
+static int __attribute__ ((format (gnu_printf, 3, 4))) __imap_broadcast(struct imap_session *imap, int exclude, const char *fmt, ...)
 {
 	struct imap_session *s;
 	char *buf;
@@ -300,17 +366,18 @@ static int __attribute__ ((format (gnu_printf, 4, 5))) __imap_broadcast(struct i
 			continue; /* Different folders. */
 		}
 		/* Hey, this client is on the same exact folder right now! Send it an unsolicited, untagged response. */
-		if (delay) {
-			/* For EXPUNGE, we may need to delay the response. */
-			pthread_mutex_lock(&s->lock);
+		pthread_mutex_lock(&s->lock);
+		if (!s->idle) { /* We are only free to send responses whenever we want if the client is idling. */
 			bbs_std_write(s->pfd[1], buf, len);
 			s->pending = 1;
+			reset_saved_search(s);
 			pthread_mutex_unlock(&s->lock);
-			bbs_debug(6, "Delaying notification for %p: %s", s, buf); /* Don't add another LF */
-			continue;
+#ifdef EXTRA_DEBUG
+			bbs_debug(7, "Delaying notification for %p: %s", s, buf); /* Don't add another LF */
+#endif
+		} else {
+			bbs_std_write(s->wfd, buf, len);
 		}
-		pthread_mutex_lock(&s->lock);
-		bbs_std_write(s->wfd, buf, len);
 		pthread_mutex_unlock(&s->lock);
 	}
 	RWLIST_UNLOCK(&sessions);
@@ -382,8 +449,17 @@ static void imap_mbox_watcher(struct mailbox *mbox, const char *newfile)
 			continue; /* Don't send the client something clearly bogus */
 		}
 		pthread_mutex_lock(&s->lock);
-		imap_debug(4, "%p <= * %d EXISTS\r\n", s, numtotal);
-		dprintf(s->wfd, "* %d EXISTS\r\n", numtotal); /* Number of messages in the mailbox. */
+
+		/* RFC 3501 Section 7: unilateral response */
+		if (!s->idle) { /* We are only free to send responses whenever we want if the client is idling. */
+			dprintf(s->pfd[1], "* %d EXISTS\r\n", numtotal); /* Number of messages in the mailbox. */
+			imap_debug(4, "%p <= * %d EXISTS\r\n", s, numtotal);
+			s->pending = 1;
+			/* No need to reset saved search for new messages (only do that for EXPUNGE) */
+		} else {
+			dprintf(s->wfd, "* %d EXISTS\r\n", numtotal); /* Number of messages in the mailbox. */
+			imap_debug(4, "%p <= * %d EXISTS\r\n", s, numtotal);
+		}
 		pthread_mutex_unlock(&s->lock);
 	}
 	RWLIST_UNLOCK(&sessions);
@@ -400,6 +476,7 @@ static void imap_destroy(struct imap_session *imap)
 		mailbox_unwatch(imap->mbox); /* We previously started watching it, so stop watching it now. */
 		imap->mbox = NULL;
 	}
+	free_if(imap->savedsearch);
 	close_if(imap->appendfile);
 	free_if(imap->appenddate);
 	/* Do not free tag, since it's stack allocated */
@@ -465,11 +542,6 @@ static void imap_destroy(struct imap_session *imap)
 #define FLAG_NAME_DELETED "\\Deleted"
 #define FLAG_NAME_DRAFT "\\Draft"
 
-#define IMAP_REV "IMAP4rev1"
-/* List of capabilities: https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml */
-/* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
-/* XXX URLAUTH is advertised so that SMTP BURL will function in Trojita, even though we don't need URLAUTH since we have a direct trust */
-#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT URLAUTH"
 #define IMAP_FLAGS FLAG_NAME_FLAGGED " " FLAG_NAME_SEEN " " FLAG_NAME_ANSWERED " " FLAG_NAME_DELETED " " FLAG_NAME_DRAFT
 #define HIERARCHY_DELIMITER "."
 
@@ -790,7 +862,7 @@ cleanup:
 
 #define REQUIRE_SELECTED(imap) \
 	if (s_strlen_zero(imap->dir)) { \
-		imap_reply(imap, "NO [CLIENTBUG] Must select a mailbox first"); \
+		imap_reply(imap, "BAD [CLIENTBUG] Must select a mailbox first"); \
 		return 0; \
 	}
 
@@ -1398,10 +1470,15 @@ static int expunge_helper(const char *dir_name, const char *filename, struct ima
 		mailbox_quota_adjust_usage(imap->mbox, -size);
 	}
 	if (expunge) {
-		imap_send_expunge_broadcast(imap, 0, "%d EXPUNGE", imap->expungeindex); /* Send for EXPUNGE, but not CLOSE */
+		imap_send_unilaterial_broadcast(imap, 0, "%d EXPUNGE", imap->expungeindex); /* Send for EXPUNGE, but not CLOSE */
 	} else {
-		imap_send_expunge_broadcast(imap, 1, "%d EXPUNGE", imap->expungeindex); /* Send for EXPUNGE, but not CLOSE */
+		imap_send_unilaterial_broadcast(imap, 1, "%d EXPUNGE", imap->expungeindex); /* Send for EXPUNGE, but not CLOSE */
 	}
+
+	/* RFC 5182 says that if we have a saved search, it MUST be updated if a message in it is expunged.
+	 * That is really the correct way to do it, for now, to avoid incorrect results, we just clear any saved search (which is really not the right thing to do, either). */
+	reset_saved_search(imap);
+
 	/* EXPUNGE indexes update as we actively expunge messages.
 	 * i.e. if we were to delete all the messages in a directory,
 	 * the responses might look like:
@@ -1524,6 +1601,7 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 	}
 	if (readonly <= 1) { /* SELECT and EXAMINE should update currently selected mailbox, STATUS should not */
 		REPLACE(imap->folder, mailbox);
+		reset_saved_search(imap); /* RFC 5182 2.1 */
 	}
 	if (readonly == 1) {
 		imap->readonly = readonly;
@@ -2177,6 +2255,25 @@ static int in_range(const char *s, int num)
 	return 0;
 }
 
+static int imap_in_range(struct imap_session *imap, const char *s, int num)
+{
+	int res = 0;
+
+	if (!strcmp(s, "$")) {
+		/* The caller already accounts for savedsearchuid (don't need to, and can't, do that here) */
+		pthread_mutex_lock(&imap->lock); /* Lock the session to prevent somebody from freeing the savedsearch from under us */
+		if (!imap->savedsearch) {
+			bbs_warning("No saved search available\n");
+		} else {
+			res = in_range(imap->savedsearch, num);
+		}
+		pthread_mutex_unlock(&imap->lock);
+		return res;
+	}
+
+	return in_range(s, num);
+}
+
 static int test_sequence_in_range(void)
 {
 	bbs_test_assert_equals(1, in_range("2:3,6", 2));
@@ -2192,7 +2289,7 @@ cleanup:
 }
 
 /*! \retval 0 if not in range, UID if in range */
-static inline int msg_in_range(int seqno, const char *filename, const char *sequences, int usinguid)
+static int msg_in_range(int seqno, const char *filename, const char *sequences, int usinguid)
 {
 	unsigned int msguid = 0;
 
@@ -2216,6 +2313,34 @@ static inline int msg_in_range(int seqno, const char *filename, const char *sequ
 		}
 	}
 	return msguid;
+}
+
+static int imap_msg_in_range(struct imap_session *imap, int seqno, const char *filename, const char *sequences, int usinguid, int *error)
+{
+	int res, use_saved_search = !strcmp(sequences, "$") ? 1 : 0;
+
+	if (use_saved_search) {
+		if (!imap->savedsearch) {
+			bbs_warning("Client referred to nonexistent saved search\n");
+			*error = 1;
+			return 0;
+		}
+		pthread_mutex_lock(&imap->lock); /* Prevent saved search from disappearing underneath us while we're using it */
+		if (strlen_zero(imap->savedsearch)) {
+			/* Empty string means nothing matches */
+			pthread_mutex_unlock(&imap->lock);
+			return 0;
+		}
+		sequences = imap->savedsearch;
+		usinguid = imap->savedsearchuid; /* So that we're consistent with what the saved search actually refers to. */
+	}
+
+	res = msg_in_range(seqno, filename, sequences, usinguid);
+
+	if (use_saved_search) {
+		pthread_mutex_unlock(&imap->lock);
+	}
+	return res;
 }
 
 #define UINTLIST_CHUNK_SIZE 32
@@ -2369,6 +2494,7 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 	char *olduidstr = NULL, *newuidstr = NULL;
 	unsigned long quotaleft;
 	int destacl;
+	int error = 0;
 
 	sequences = strsep(&s, " "); /* Messages, specified by sequence number or by UID (if usinguid) */
 	REQUIRE_ARGS(sequences);
@@ -2403,7 +2529,7 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			goto cleanup;
 		}
-		msguid = msg_in_range(++seqno, entry->d_name, sequences, usinguid);
+		msguid = imap_msg_in_range(imap, ++seqno, entry->d_name, sequences, usinguid, &error);
 		if (!msguid) {
 			goto cleanup;
 		}
@@ -2437,7 +2563,9 @@ cleanup:
 		free_if(olduids);
 		free_if(newuids);
 	}
-	if (!numcopies && quotaleft <= 0) {
+	if (error) {
+		imap_reply(imap, "BAD Invalid saved search");
+	} else if (!numcopies && quotaleft <= 0) {
 		imap_reply(imap, "NO [OVERQUOTA] Insufficient quota remaining");
 	} else {
 		imap_reply(imap, "OK [COPYUID %u %s %s] COPY completed", uidvalidity, S_IF(olduidstr), S_IF(newuidstr));
@@ -2547,9 +2675,31 @@ static int handle_append(struct imap_session *imap, char *s)
 	return 0;
 }
 
-static int maildir_msg_setflags(const char *origname, const char *newflagletters)
+static void generate_flag_names_full(struct imap_session *imap, const char *filename, char *bufstart, char **bufptr, int *lenptr)
+{
+	char flagsbuf[256];
+	int custom_keywords;
+
+	char *buf = *bufptr;
+	size_t len = *lenptr;
+
+	gen_flag_names(filename, flagsbuf, sizeof(flagsbuf));
+	SAFE_FAST_COND_APPEND(bufstart, buf, len, 1, "FLAGS (%s", flagsbuf);
+	/* If there are any keywords (custom flags), include those as well */
+	custom_keywords = gen_keyword_names(imap, filename, flagsbuf, sizeof(flagsbuf));
+	SAFE_FAST_COND_APPEND_NOSPACE(bufstart, buf, len, custom_keywords, "%s", flagsbuf);
+	SAFE_FAST_COND_APPEND_NOSPACE(bufstart, buf, len, 1, ")");
+
+	*bufptr = buf;
+	*lenptr = len;
+}
+
+static int maildir_msg_setflags(struct imap_session *imap, int seqno, const char *origname, const char *newflagletters)
 {
 	char fullfilename[524];
+	char newflags[512] = "";
+	char *newbuf = newflags;
+	int newlen = sizeof(newflags);
 	char dirpath[256];
 	char *tmp, *filename;
 
@@ -2566,13 +2716,17 @@ static int maildir_msg_setflags(const char *origname, const char *newflagletters
 	}
 	snprintf(fullfilename, sizeof(fullfilename), "%s/%s:2,%s", dirpath, filename, newflagletters);
 	if (!strcmp(origname, fullfilename)) {
-		return 0; /* If the flags didn't change, no point in making an unnecessary system call */
+		return 0; /* If the flags didn't change, no point in making an unnecessary system call, or more importantly, sending unnecessary unilateral FETCH responses */
 	}
 	bbs_debug(4, "Renaming %s -> %s\n", origname, fullfilename);
 	if (rename(origname, fullfilename)) {
 		bbs_error("rename %s -> %s failed: %s\n", origname, fullfilename, strerror(errno));
 		return -1;
 	}
+
+	/* Send unilateral untagged FETCH responses to everyone except this session, to notify of the new flags */
+	generate_flag_names_full(imap, fullfilename, newflags, &newbuf, &newlen);
+	imap_send_unilaterial_broadcast(imap, 1, "%d FETCH (%s)", seqno, newflags); /* Send for EXPUNGE, but not CLOSE */
 	return 0;
 }
 
@@ -2630,6 +2784,7 @@ static int finish_append(struct imap_session *imap)
 
 	/* Now, apply any flags to the message... (yet a third rename, potentially) */
 	if (imap->appendflags) {
+		int seqno;
 		char newflagletters[53];
 		/* Generate flag letters from flag bits */
 		gen_flag_letters(imap->appendflags, newflagletters, sizeof(newflagletters));
@@ -2637,7 +2792,8 @@ static int finish_append(struct imap_session *imap)
 			strncat(newflagletters, imap->appendkeywords, sizeof(newflagletters) - 1);
 		}
 		imap->appendflags = 0;
-		if (maildir_msg_setflags(newfilename, newflagletters)) {
+		seqno = num_messages(newdir) + num_messages(curdir); /* XXX Clunky, but compute the sequence number of this message as the # of messages in this mailbox */
+		if (maildir_msg_setflags(imap, seqno, newfilename, newflagletters)) {
 			bbs_warning("Failed to set flags for %s\n", newfilename);
 		}
 	}
@@ -2663,6 +2819,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 	int len;
 	int multiline = 0;
 	int bodylen = 0;
+	int error = 0;
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
 	files = scandir(imap->curdir, &entries, NULL, uidsort);
@@ -2684,7 +2841,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			goto cleanup;
 		}
-		msguid = msg_in_range(++seqno, entry->d_name, sequences, usinguid);
+		msguid = imap_msg_in_range(imap, ++seqno, entry->d_name, sequences, usinguid, &error);
 		if (!msguid) {
 			goto cleanup;
 		}
@@ -2703,9 +2860,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		}
 
 		if (fetchreq->flags) {
-			char flagsbuf[256];
 			char inflags[53];
-			int custom_keywords;
 
 			flags = strchr(entry->d_name, ':'); /* maildir flags */
 			if (!flags) {
@@ -2719,12 +2874,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				flags = inflags;
 				bbs_debug(6, "Appending seen flag since message wasn't already seen\n");
 			}
-			gen_flag_names(flags, flagsbuf, sizeof(flagsbuf));
-			SAFE_FAST_COND_APPEND(response, buf, len, 1, "FLAGS (%s", flagsbuf);
-			/* If there are any keywords (custom flags), include those as well */
-			custom_keywords = gen_keyword_names(imap, flags, flagsbuf, sizeof(flagsbuf));
-			SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, custom_keywords, "%s", flagsbuf);
-			SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, ")");
+			generate_flag_names_full(imap, flags, response, &buf, &len);
 		}
 		if (fetchreq->rfc822size) {
 			unsigned long size;
@@ -3082,7 +3232,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				newflags |= FLAG_BIT_SEEN;
 				/* Generate flag letters from flag bits */
 				gen_flag_letters(newflags, newflagletters, sizeof(newflagletters));
-				maildir_msg_setflags(fullname, newflagletters);
+				maildir_msg_setflags(imap, seqno, fullname, newflagletters);
 			}
 		}
 
@@ -3090,7 +3240,11 @@ cleanup:
 		free(entry);
 	}
 	free(entries);
-	imap_reply(imap, "OK %sFETCH Completed", usinguid ? "UID " : "");
+	if (error) {
+		imap_reply(imap, "BAD Invalid saved search");
+	} else {
+		imap_reply(imap, "OK %sFETCH Completed", usinguid ? "UID " : "");
+	}
 	return 0;
 }
 
@@ -3183,6 +3337,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 	int seqno = 0;
 	int opflags = 0;
 	int oldflags, flagpermsdenied = 0;
+	int error = 0;
 
 	/* Convert something like (\Deleted) into the actual flags (parse once, use for all matches) */
 	/* Remove parentheses */
@@ -3231,7 +3386,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			goto cleanup;
 		}
-		msguid = msg_in_range(++seqno, entry->d_name, sequences, usinguid);
+		msguid = imap_msg_in_range(imap, ++seqno, entry->d_name, sequences, usinguid, &error);
 		if (!msguid) {
 			goto cleanup;
 		}
@@ -3309,7 +3464,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			gen_flag_letters(newflags, newflagletters, sizeof(newflagletters));
 			strncat(newflagletters, keywords, sizeof(newflagletters) - 1);
 			snprintf(oldname, sizeof(oldname), "%s/%s", imap->curdir, entry->d_name);
-			if (maildir_msg_setflags(oldname, newflagletters)) {
+			if (maildir_msg_setflags(imap, seqno, oldname, newflagletters)) {
 				goto cleanup;
 			}
 		} else {
@@ -3349,7 +3504,11 @@ cleanup:
 		free(entry);
 	}
 	free(entries);
-	imap_reply(imap, "OK %sSTORE Completed", usinguid ? "UID " : "");
+	if (error) {
+		imap_reply(imap, "BAD Invalid saved search");
+	} else {
+		imap_reply(imap, "OK %sSTORE Completed", usinguid ? "UID " : "");
+	}
 	return 0;
 }
 
@@ -3784,7 +3943,6 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 				break;
 			case IMAP_SEARCH_LARGER:
 			case IMAP_SEARCH_SMALLER:
-			case IMAP_SEARCH_UID:
 				bytes = snprintf(buf, sizeof(buf), "%d\n", skey->child.number);
 				dyn_str_append(str, buf, bytes);
 				break;
@@ -3804,6 +3962,7 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 			case IMAP_SEARCH_TEXT:
 			case IMAP_SEARCH_TO:
 			case IMAP_SEARCH_SEQUENCE_NUMBER_SET:
+			case IMAP_SEARCH_UID:
 				bytes = snprintf(buf, sizeof(buf), "%s\n", S_IF(skey->child.string));
 				dyn_str_append(str, buf, bytes);
 				break;
@@ -3901,12 +4060,12 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 			return -1; \
 		} \
 		listsize++; \
-		if (parse_search_query(nk->child.keys, IMAP_SEARCH_ ## name, s)) { \
+		if (parse_search_query(imap, nk->child.keys, IMAP_SEARCH_ ## name, s)) { \
 			return -1; \
 		} \
 	}
 
-static int parse_search_query(struct imap_search_keys *skeys, enum imap_search_type parent_type, char **s)
+static int parse_search_query(struct imap_session *imap, struct imap_search_keys *skeys, enum imap_search_type parent_type, char **s)
 {
 	char *begin, *next = NULL;
 	struct imap_search_key *nk;
@@ -3960,7 +4119,7 @@ static int parse_search_query(struct imap_search_keys *skeys, enum imap_search_t
 			listsize++;
 			subnext = next + 1;
 			/* Recurse to parse the contents of the expression between the ( and ) */
-			if (parse_search_query(nk->child.keys, IMAP_SEARCH_AND, &subnext)) {
+			if (parse_search_query(imap, nk->child.keys, IMAP_SEARCH_AND, &subnext)) {
 				return -1;
 			}
 			goto checklistsize;
@@ -4003,7 +4162,6 @@ static int parse_search_query(struct imap_search_keys *skeys, enum imap_search_t
 		SEARCH_PARSE_FLAG(UNSEEN)
 		SEARCH_PARSE_INT(LARGER)
 		SEARCH_PARSE_INT(SMALLER)
-		SEARCH_PARSE_INT(UID)
 		SEARCH_PARSE_STRING(BCC)
 		SEARCH_PARSE_STRING(BEFORE)
 		SEARCH_PARSE_STRING(BODY)
@@ -4020,6 +4178,7 @@ static int parse_search_query(struct imap_search_keys *skeys, enum imap_search_t
 		SEARCH_PARSE_STRING(TEXT)
 		SEARCH_PARSE_RECURSE(OR)
 		SEARCH_PARSE_RECURSE(NOT)
+		SEARCH_PARSE_STRING(UID)
 		else if (isdigit(*next)) {
 			/* sequence set */
 			/* Not quoted, so thankfully this doesn't duplicate much code */
@@ -4028,6 +4187,13 @@ static int parse_search_query(struct imap_search_keys *skeys, enum imap_search_t
 				return -1;
 			}
 			nk->child.string = next;
+			listsize++;
+		} else if (!strcmp(next, "$")) { /* Saved search */
+			nk = imap_search_add(skeys, imap->savedsearchuid ? IMAP_SEARCH_UID : IMAP_SEARCH_SEQUENCE_NUMBER_SET);
+			if (!nk) {
+				return -1;
+			}
+			nk->child.string = next; /* We store the literal '$' here, but this will get resolved in imap_in_range */
 			listsize++;
 		} else {
 			bbs_warning("Foreign IMAP search key: %s\n", next);
@@ -4311,9 +4477,6 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 				SEARCH_FLAG_NOT_MATCH(FLAG_BIT_DELETED);
 			case IMAP_SEARCH_UNFLAGGED:
 				SEARCH_FLAG_NOT_MATCH(FLAG_BIT_FLAGGED);
-			case IMAP_SEARCH_UNKEYWORD:
-				bbs_warning("UNKEYWORD is not currently supported\n");
-				break;
 			case IMAP_SEARCH_UNSEEN:
 				SEARCH_FLAG_NOT_MATCH(FLAG_BIT_SEEN);
 			case IMAP_SEARCH_LARGER:
@@ -4338,14 +4501,14 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 			case IMAP_SEARCH_UID:
 				if (!search->new) {
 					parse_uid_from_filename(search->filename, &uid);
-					retval = (int) uid == skey->child.number;
+					retval = imap_in_range(search->imap, skey->child.string, uid);
 				} else {
 					/* XXX messages in new don't have a UID, so by definition it can't match */
 					retval = 0;
 				}
 				break;
 			case IMAP_SEARCH_SEQUENCE_NUMBER_SET:
-				retval = in_range(skey->child.string, search->seqno);
+				retval = imap_in_range(search->imap, skey->child.string, search->seqno);
 				break;
 			case IMAP_SEARCH_BCC:
 				SEARCH_HEADER_MATCH("Bcc");
@@ -4362,6 +4525,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 				ltrim(hdrval);
 				retval = search_header(search, skey->child.string, len, hdrval);
 				break;
+			case IMAP_SEARCH_UNKEYWORD:
 			case IMAP_SEARCH_KEYWORD:
 				/* This is not very efficient, since we reparse the keywords for every message, but the keyword mapping is the same for everything in this mailbox. */
 				parse_keyword(search->imap, skey->child.string, 0);
@@ -4371,6 +4535,9 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 					break;
 				}
 				retval = strchr(search->keywords, search->imap->appendkeywords[0]) ? 1 : 0;
+				if (skey->type == IMAP_SEARCH_UNKEYWORD) {
+					retval = !retval;
+				}
 				break;
 			case IMAP_SEARCH_ON: /* INTERNALDATE == match */
 				SEARCH_STAT()
@@ -4461,7 +4628,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 }
 
 /*! \note For some reason, looping twice or using goto results in valgrind reporting a memory leak, but calling this function twice does not */
-static int search_dir(struct imap_session *imap, const char *dirname, int newdir, int usinguid, struct imap_search_keys *skeys, unsigned int **a, int *lengths, int *allocsizes)
+static int search_dir(struct imap_session *imap, const char *dirname, int newdir, int usinguid, struct imap_search_keys *skeys, unsigned int **a, int *lengths, int *allocsizes, int *min, int *max)
 {
 	int res = 0;
 	int files, fno = 0;
@@ -4501,9 +4668,19 @@ static int search_dir(struct imap_session *imap, const char *dirname, int newdir
 			/* Include in search response */
 			if (usinguid) {
 				parse_uid_from_filename(search.filename, &uid);
-				res = uintlist_append(a, lengths, allocsizes, uid);
 			} else {
-				res = uintlist_append(a, lengths, allocsizes, seqno);
+				uid = seqno; /* Not really, but use the same variable for both */
+			}
+			res = uintlist_append(a, lengths, allocsizes, uid);
+			if (min) {
+				if (*min == -1 || (int) uid < *min) {
+					*min = (int) uid;
+				}
+			}
+			if (max) {
+				if (*max == -1 || (int) uid > *max) {
+					*max = (int) uid;
+				}
 			}
 			/* We really only need uintlist_append1, but just reuse the API used for COPY */
 #ifdef DEBUG_SEARCH
@@ -4530,7 +4707,7 @@ next:
 }
 
 /*! \retval -1 on failure, number of search results on success */
-static int do_search(struct imap_session *imap, char *s, unsigned int **a, int usinguid)
+static int do_search(struct imap_session *imap, char *s, unsigned int **a, int usinguid, int *min, int *max)
 {
 	int lengths = 0, allocsizes = 0;
 	struct imap_search_keys skeys; /* At the least the top level list itself will be stack allocated. */
@@ -4553,9 +4730,17 @@ static int do_search(struct imap_session *imap, char *s, unsigned int **a, int u
 	 * Within each imap_search_key in this list, we could have further keys that are themselves lists.
 	 */
 
+	/* Initialize */
+	if (min) {
+		*min = -1;
+	}
+	if (max) {
+		*max = -1;
+	}
+
 	memset(&skeys, 0, sizeof(skeys));
 	/* If we didn't consume the entire search expression before returning, then this is invalid */
-	if (parse_search_query(&skeys, IMAP_SEARCH_ALL, &s) || !strlen_zero(s)) {
+	if (parse_search_query(imap, &skeys, IMAP_SEARCH_ALL, &s) || !strlen_zero(s)) {
 		imap_search_free(&skeys);
 		imap_reply(imap, "BAD [CLIENTBUG] Invalid search query");
 		bbs_warning("Failed to parse search query\n"); /* Consumed the query in the process, but should be visible in a previous debug message */
@@ -4571,8 +4756,8 @@ static int do_search(struct imap_session *imap, char *s, unsigned int **a, int u
 	}
 #endif
 
-	search_dir(imap, imap->curdir, 0, usinguid, &skeys, a, &lengths, &allocsizes);
-	search_dir(imap, imap->newdir, 1, usinguid, &skeys, a, &lengths, &allocsizes);
+	search_dir(imap, imap->curdir, 0, usinguid, &skeys, a, &lengths, &allocsizes, min, max);
+	search_dir(imap, imap->newdir, 1, usinguid, &skeys, a, &lengths, &allocsizes, min, max);
 	imap_search_free(&skeys);
 	return lengths;
 }
@@ -4591,26 +4776,226 @@ static char *uintlist_to_str(unsigned int *a, int length)
 	return dynstr.buf;
 }
 
+static char *uintlist_to_ranges(unsigned int *a, int length)
+{
+	int i;
+	struct dyn_str dynstr;
+	unsigned int start = 0, last, len;
+	const char *prefix = "";
+	char buf[15];
+
+	memset(&dynstr, 0, sizeof(dynstr));
+	if (length) {
+		start = last = a[0]; /* Instead of putting an if i == 0 branch inside the loop, that will only run once, just do it beforehand */
+	}
+	for (i = 1; i < length; i++) {
+		if (!start) {
+			start = last = a[i];
+		} else if (a[i] == last + 1) {
+			last = a[i];
+		} else {
+			if (start == last) {
+				len = snprintf(buf, sizeof(buf), "%s%u", prefix, last);
+			} else {
+				len = snprintf(buf, sizeof(buf), "%s%u:%u", prefix, start, last);
+			}
+			dyn_str_append(&dynstr, buf, len);
+			prefix = ",";
+			start = last = a[i];
+		}
+	}
+	if (start) {
+		/* last one */
+		if (start == last) {
+			len = snprintf(buf, sizeof(buf), "%s%u", prefix, last);
+		} else {
+			len = snprintf(buf, sizeof(buf), "%s%u:%u", prefix, start, last);
+		}
+		dyn_str_append(&dynstr, buf, len);
+	}
+	return dynstr.buf;
+}
+
+static int test_range_generation(void)
+{
+	char *ranges;
+	unsigned int a[6] = { 3, 5, 2, 1, 4, 6 };
+	unsigned int b[6] = { 1, 2, 3, 5, 7, 8 };
+	unsigned int c[6] = { 5, 6, 7, 3, 2, 1 };
+
+	/* Ranges must be ascending only (RFC 5267 3.2) */
+
+	ranges = uintlist_to_ranges(a, 6);
+	bbs_test_assert_str_equals(ranges, "3,5,2,1,4,6");
+	free_if(ranges);
+
+	ranges = uintlist_to_ranges(b, 6);
+	bbs_test_assert_str_equals(ranges, "1:3,5,7:8");
+	free_if(ranges);
+
+	ranges = uintlist_to_ranges(c, 6);
+	bbs_test_assert_str_equals(ranges, "5:7,3,2,1");
+	free_if(ranges);
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
+#define ESEARCH_ALL (1 << 0)
+#define ESEARCH_COUNT (1 << 1)
+#define ESEARCH_MIN (1 << 2)
+#define ESEARCH_MAX (1 << 3)
+#define ESEARCH_SAVE (1 << 4)
+
+#define ESEARCH_MINMAX (ESEARCH_MIN | ESEARCH_MAX)
+#define ESEARCH_STATS (ESEARCH_COUNT | ESEARCH_MIN | ESEARCH_MAX)
+#define ESEARCH_RESULTS (ESEARCH_MIN | ESEARCH_MAX | ESEARCH_COUNT | ESEARCH_ALL)
+
+#define ESEARCH_NEED_ALL(f) (f & ESEARCH_ALL || (f & ESEARCH_SAVE && !(f & ESEARCH_MINMAX)))
+
+static int parse_search_options(char *s)
+{
+	int flags = 0;
+	char *option;
+
+	if (strlen_zero(s)) {
+		return ESEARCH_ALL; /* for () */
+	}
+
+	while ((option = strsep(&s, " "))) {
+		if (!strcmp(option, "COUNT")) {
+			flags |= ESEARCH_COUNT;
+		} else if (!strcmp(option, "MIN")) {
+			flags |= ESEARCH_MIN;
+		} else if (!strcmp(option, "MAX")) {
+			flags |= ESEARCH_MAX;
+		} else if (!strcmp(option, "ALL")) {
+			flags |= ESEARCH_ALL;
+		} else if (!strcmp(option, "SAVE")) {
+			flags |= ESEARCH_SAVE;
+		} else {
+			bbs_warning("Unsupported ESEARCH option: %s\n", option);
+		}
+	}
+	return flags;
+}
+
+static int parse_return_options(struct imap_session *imap, char **str, int *option_flags)
+{
+	char *options, *s = *str;
+	if (STARTS_WITH(s, "RETURN (")) {
+		s += STRLEN("RETURN (");
+		options = s;
+		s = strchr(s, ')');
+		if (!s) {
+			imap_reply(imap, "BAD [CLIENTBUG] Unterminated argument");
+			return -1;
+		}
+		*s++ = '\0';
+		if (*s == ' ') {
+			s++;
+		}
+		*str = s;
+		*option_flags = parse_search_options(options);
+		return 1;
+	}
+	*option_flags = 0;
+	return 0;
+}
+
+static void esearch_response(struct imap_session *imap, int option_flags, unsigned int *a, int results, int min, int max, int usinguid)
+{
+	char *list = NULL;
+	if (results) {
+		char buf[96] = "";
+		char *pos = buf;
+		size_t buflen = sizeof(buf);
+
+		if (ESEARCH_NEED_ALL(option_flags)) {
+			/* For ESEARCH responses, we can send ranges, but for regular SEARCH, the RFC specifically says they are all space delimited */
+			list = uintlist_to_ranges(a, results);
+		}
+		SAFE_FAST_COND_APPEND(buf, pos, buflen, option_flags & ESEARCH_MIN, "MIN %d", min);
+		SAFE_FAST_COND_APPEND(buf, pos, buflen, option_flags & ESEARCH_MAX, "MAX %d", max);
+		SAFE_FAST_COND_APPEND(buf, pos, buflen, option_flags & ESEARCH_COUNT, "COUNT %d", results);
+
+		if (option_flags & ESEARCH_RESULTS) {
+			imap_send(imap, "ESEARCH (TAG \"%s\")%s%s%s %s%s", imap->tag, usinguid ? " UID" : "", option_flags & ESEARCH_STATS ? " " : "", buf, list ? "ALL " : "", S_IF(list));
+		}
+
+		if (option_flags & ESEARCH_SAVE) {
+			/* RFC 5182 2.4 defines what SAVE refers to if multiple options are specified. */
+			free_if(imap->savedsearch);
+			if (option_flags & ESEARCH_MINMAX) {
+				buf[0] = '\0';
+				pos = buf;
+				buflen = sizeof(buf);
+				SAFE_FAST_COND_APPEND(buf, pos, buflen, option_flags & ESEARCH_MIN, "%d", min);
+				SAFE_FAST_COND_APPEND(buf, pos, buflen, option_flags & ESEARCH_MAX, "%d", max);
+				imap->savedsearch = strdup(buf);
+			} else {
+				/* Implicit ALL is saved */
+				imap->savedsearch = list; /* Just steal this pointer. */
+				list = NULL;
+			}
+			/* RFC 5182 2.1 says that $ can reference message sequences or UID sequences...
+			 * and furthermore, it can be stored using one and referenced using another!
+			 * WHY on earth any client would do that, I don't know, but this is possible...
+			 *
+			 * What we have to do to account for this is that if $ is used in a UID command
+			 * but savedsearchuid == 0, for the purposes of matching messages, we treat it
+			 * as the non UID version.
+			 * Likewise, if savedsearchuid == 1, and $ is dereferenced in a non-UID command,
+			 * we have to match on UIDs, not sequence numbers.
+			 */
+			imap->savedsearchuid = usinguid;
+		}
+		free_if(list);
+	} else {
+		if (option_flags & ESEARCH_RESULTS) {
+			imap_send(imap, "ESEARCH (TAG \"%s\") %sCOUNT 0", imap->tag, usinguid ? "UID " : ""); /* No results, but still need to send an empty untagged response */
+		}
+		if (option_flags & ESEARCH_SAVE) {
+			REPLACE(imap->savedsearch, "");
+			imap->savedsearchuid = usinguid;
+		}
+	}
+}
+
 static int handle_search(struct imap_session *imap, char *s, int usinguid)
 {
 	unsigned int *a = NULL;
 	int results;
+	int min, max;
+	char *list = NULL;
+	int options, option_flags;
 
-	results = do_search(imap, s, &a, usinguid);
+	options = parse_return_options(imap, &s, &option_flags); /* ESEARCH */
+	if (options < 0) {
+		return 0;
+	}
+
+	results = do_search(imap, s, &a, usinguid, &min, &max);
 	if (results < 0) {
 		return 0;
 	}
 
-	if (results) {
-		char *list = uintlist_to_str(a, results);
-		imap_send(imap, "SEARCH %s", S_IF(list));
-		free_if(list);
+	if (options > 0) { /* ESEARCH */
+		esearch_response(imap, option_flags, a, results, min, max, usinguid);
 	} else {
-		imap_send(imap, "SEARCH"); /* No results, but still need to send an empty untagged response */
+		if (results) {
+			list = uintlist_to_str(a, results);
+			imap_send(imap, "SEARCH %s", S_IF(list));
+			free_if(list);
+		} else {
+			imap_send(imap, "SEARCH"); /* No results, but still need to send an empty untagged response */
+		}
 	}
 
 	free_if(a);
-	imap_reply(imap, "OK %sSEARCH completed", usinguid ? "UID " : "");
+	imap_reply(imap, "OK %sSEARCH completed%s", usinguid ? "UID " : "", option_flags & ESEARCH_SAVE ? ", result saved" : "");
 	return 0;
 }
 
@@ -4854,6 +5239,13 @@ static int handle_sort(struct imap_session *imap, char *s, int usinguid)
 	int results;
 	char *sortexpr, *charset, *search;
 	unsigned int *a = NULL;
+	int options, option_flags;
+	int min, max;
+
+	options = parse_return_options(imap, &s, &option_flags); /* ESORT */
+	if (options < 0) {
+		return 0;
+	}
 
 	/* e.g. A283 SORT (SUBJECT REVERSE DATE) UTF-8 ALL (RFC 5256) */
 	if (*s == '(') {
@@ -4875,7 +5267,7 @@ static int handle_sort(struct imap_session *imap, char *s, int usinguid)
 	REQUIRE_ARGS(search);
 
 	if (strcasecmp(charset, "UTF-8") && strcasecmp(charset, "US-ASCII")) {
-		imap_reply(imap, "NO [CANNOT] Charset not supported");
+		imap_reply(imap, "NO [BADCHARSET] (UTF-8 US_ASCII) Charset %s not supported", charset);
 		return 0;
 	}
 
@@ -4884,7 +5276,7 @@ static int handle_sort(struct imap_session *imap, char *s, int usinguid)
 	 * but sorting and searching could probably use lots of optimizations. */
 
 	/* First, search for any matching messages. */
-	results = do_search(imap, search, &a, usinguid);
+	results = do_search(imap, search, &a, usinguid, &min, &max);
 	if (results < 0) {
 		return 0;
 	}
@@ -4897,9 +5289,9 @@ static int handle_sort(struct imap_session *imap, char *s, int usinguid)
 	 * in which case this second pass essentially duplicates all the work done by the search, and then some.
 	 */
 
-	if (results) {
+	/* Sort if needed */
+	if (options == 0 || option_flags & ESEARCH_ALL) {
 		struct imap_sort sort;
-		char *list;
 		memset(&sort, 0, sizeof(sort));
 		sort.imap = imap;
 		sort.sortexpr = sortexpr;
@@ -4910,11 +5302,19 @@ static int handle_sort(struct imap_session *imap, char *s, int usinguid)
 			free_scandir_entries(sort.entries, sort.numfiles);
 			free(sort.entries);
 		}
-		list = uintlist_to_str(a, results);
-		imap_send(imap, "SORT %s", S_IF(list));
-		free_if(list);
+	}
+
+	if (options > 0) { /* ESORT */
+		esearch_response(imap, option_flags, a, results, min, max, usinguid);
 	} else {
-		imap_send(imap, "SORT"); /* No matches */
+		if (results) {
+			char *list;
+			list = uintlist_to_str(a, results);
+			imap_send(imap, "SORT %s", S_IF(list));
+			free_if(list);
+		} else {
+			imap_send(imap, "SORT"); /* No matches */
+		}
 	}
 
 	free_if(a);
@@ -5072,6 +5472,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		return 0; /* Ignore empty lines at this point (can't do this if in an APPEND) */
 	}
 
+	/* IMAP clients MUST use a different tag each command, but in practice this is treated as a SHOULD. Common IMAP servers do not enforce this. */
 	imap->tag = strsep(&s, " "); /* Tag for client to identify responses to its request */
 	command = strsep(&s, " ");
 
@@ -5084,6 +5485,12 @@ static int imap_process(struct imap_session *imap, char *s)
 	 * RFC 5256 also says not allowed during SORT (but UID SORT is fine). (UID commands don't use sequence numbers)
 	 * Typically, clients will issue a NOOP to get this information.
 	 * The pipe allows us to decouple the EXPUNGE action from the responses sent to multi-access clients. */
+
+	/* XXX Technically, the RFC says this should happen right before the END of the command, not at the beginning of it.
+	 * e.g. RFC 5465 Section 1: "as unsolicited responses sent just before the end of a command"
+	 * For simple cases like NOOP, there's no difference at all, but does it matter in other cases?
+	 * It would be tricky to support the other case since each command sends its own end of command reply,
+	 * and this would need to be interleaved before that as appropriate. So if it's fine to do it here, then that is much simpler. */
 
 	if (imap->pending) { /* Not necessary to lock just to read the flag. Only if we're actually going to read data. */
 		char buf[1024]; /* Hopefully big enough for any single command. */
@@ -5399,10 +5806,6 @@ static int imap_process(struct imap_session *imap, char *s)
 		mailbox_unlock(imap->mbox);
 		imap_reply(imap, "OK Lock test succeeded");
 	} else {
-		/*! \todo These commands are not currently implemented: MOVE */
-		/*! \todo The following common capabilities are not currently supported: AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH AUTH=XOAUTH2 UIDPLUS MOVE LITERAL+ BINARY ENABLE */
-		/*! \todo Add BURL SMTP / IMAP integration (to allow message to be uploaded only once, instead of twice) */
-
 		bbs_warning("Unsupported IMAP command: %s\n", command);
 		imap_reply(imap, "BAD Command not supported.");
 	}
@@ -5558,6 +5961,7 @@ static struct unit_tests {
 	{ "IMAP LIST Attributes", test_build_attributes },
 	{ "IMAP FETCH Item Parsing", test_parse_fetch_items },
 	{ "IMAP FETCH Sequence Ranges", test_sequence_in_range },
+	{ "IMAP Sequence Range Generation", test_range_generation },
 	{ "IMAP STORE Flags Parsing", test_flags_parsing },
 	{ "IMAP COPYUID Generation", test_copyuid_generation },
 };

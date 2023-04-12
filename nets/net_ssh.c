@@ -696,9 +696,9 @@ static void handle_session(ssh_event event, ssh_session session)
 		bbs_user_destroy(user);
 		user = NULL;
 	}
-	close(cdata.pty_master);
-	close(cdata.child_stdin);
-	close(cdata.child_stdout);
+	close_if(cdata.pty_master);
+	close_if(cdata.child_stdin);
+	close_if(cdata.child_stdout);
 
 	if (cdata.nodethread) {
 		bbs_pthread_join(cdata.nodethread, NULL);
