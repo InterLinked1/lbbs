@@ -754,15 +754,17 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 	return uidnext;
 }
 
-unsigned int maildir_max_modseq(struct mailbox *mbox, const char *directory)
+unsigned long maildir_max_modseq(struct mailbox *mbox, const char *directory)
 {
 	DIR *dir;
 	struct dirent *entry;
-	unsigned int cur, max_modseq = 0;
+	unsigned long cur, max_modseq = 0;
 	const char *modseq;
 
 	/*! \todo Some caching for HIGHESTMODSEQ would not be difficult to implement and would be greatly beneficial to make lookups constant time instead of linear.
-	 * Just need to be thorough since a lot of operations can update HIGHESTMODSEQ. */
+	 * If that's added, then we can simply return the cached value maintained by maildir_updated_modseq, if available, and only
+	 * do a directory scan when needed.
+	 */
 
 	UNUSED(mbox); /* Not currently used, but could be useful for future caching strategies? */
 
@@ -787,7 +789,12 @@ unsigned int maildir_max_modseq(struct mailbox *mbox, const char *directory)
 			continue;
 		}
 		modseq += STRLEN(",M=");
-		cur = atoi(modseq);
+		/* UIDs are 32-bit integers according to the IMAP RFCs, so an int is sufficiently large.
+		 * This still provides over ~2 billion possible messages in a single mailbox folder (unlikely to be realized in the real world).
+		 * There could conceivably be a much larger number of modifications than that, however, to a folder over time.
+		 * MODSEQ is 63/64 bit (originally 64-bit in RFC 4551, changed to 63-bit in RFC 7162)
+		 * So we use an unsigned long for just these, and not for any UID related numbers. */
+		cur = atol(modseq);
 		if (cur > max_modseq) {
 			max_modseq = cur;
 		}
@@ -795,6 +802,39 @@ unsigned int maildir_max_modseq(struct mailbox *mbox, const char *directory)
 
 	closedir(dir);
 	return max_modseq;
+}
+
+/*!
+ * \brief Inform the mail core of a change to a message's modification sequence, to keep track of HIGHESTMODSEQ
+ * \param mbox
+ * \param directory The full path to the /cur directory of the maildir
+ * \param modseq The new modification sequence
+ */
+static void maildir_updated_modseq(struct mailbox *mbox, const char *directory, unsigned long modseq)
+{
+	/*! \todo A future improvement would be to update the .uidvalidity with the value for HIGHESTMODSEQ
+	 * or cache it in memory.
+	 * The idea is anything that updates the modseq of any message in a directory will call this function.
+	 * In the future, it could be cached appropriately.
+	 * Note the input value MAY NOT be higher than the current HIGHESTMODSEQ (it should be for calls
+	 * to maildir_new_modseq, but may not be for modifying existing messages).
+	 * Here we would check if it's greater than the current HIGHESTMODSEQ, and if so, update that.
+	 *
+	 * e.g.
+	 * if (modseq <= highestmodseq)
+	 *    return;
+	 */
+	UNUSED(mbox);
+	UNUSED(directory);
+	UNUSED(modseq);
+}
+
+unsigned long maildir_new_modseq(struct mailbox *mbox, const char *directory)
+{
+	unsigned long modseq = maildir_max_modseq(mbox, directory);
+	modseq++;
+	maildir_updated_modseq(mbox, directory, modseq);
+	return modseq;
 }
 
 int maildir_move_new_to_cur(struct mailbox *mbox, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext)
@@ -858,7 +898,7 @@ int maildir_move_new_to_cur_file(struct mailbox *mbox, const char *dir, const ch
 	/* XXX maildir example shows S= and W= are different,
 	 * but I'm not sure why the number of bytes in the file
 	 * would not be st_size? So just use S= for now and skip W=. */
-	snprintf(newname, sizeof(newname), "%s/%s,S=%d,U=%u:2,", curdir, filename, bytes, uid); /* Add no flags now, but anticipate them being added */
+	snprintf(newname, sizeof(newname), "%s/%s,S=%d,U=%u,M=%lu:2,", curdir, filename, bytes, uid, maildir_max_modseq(mbox, curdir)); /* Add no flags now, but anticipate them being added */
 	if (rename(oldname, newname)) {
 		bbs_error("rename %s -> %s failed: %s\n", oldname, newname, strerror(errno));
 		return -1;
@@ -898,16 +938,19 @@ static int gen_newname(struct mailbox *mbox, const char *curfilename, const char
 	safe_strncpy(newname, curfilename, sizeof(newname));
 	tmp = strstr(newname, ",U=");
 	if (tmp) { /* Message already had a UID (was in cur, as opposed to new) */
+		unsigned long modseq;
+		char curdir[256];
 		/* Replace old UID with new UID */
 		tmp += STRLEN(",U=");
-		next = tmp;
-		while (isdigit(*next)) {
-			next++; /* Skip all the digits of the UID */
-		}
+		next = strchr(tmp, ':');
+		*tmp++ = '\0';
+		/* If it's moving folders, discard current MODSEQ as well and assign one based on new folder */
+		snprintf(curdir, sizeof(curdir), "%s/cur", destmaildir);
+		modseq = maildir_max_modseq(mbox, curdir);
+		modseq++;
 		/* Now, next points to the remainder of the filename. Need to do it this way and concatenate, since UIDs could be of different lengths */
-		*tmp = '\0';
 		/* Move to cur, because messages in new are always inferred to be unseen, and would also get renamed again erroneously */
-		snprintf(newpath, newpathlen, "%s/cur/%s%u%s", destmaildir, newname, uid, next);
+		snprintf(newpath, newpathlen, "%s/cur/%s%u,M=%lu%s", destmaildir, newname, uid, modseq, next);
 	} else {
 		bbs_error("Trying to move a message that had no previous UID?\n");
 		return -1;

@@ -562,6 +562,33 @@ static int run(void)
 	CLIENT_EXPECT(client1, "FLAGS ($Test2)"); /* Ensure this flag, and no other flag, is present */
 	CLIENT_DRAIN(client1);
 
+	/* Test CONDSTORE with STORE: UNCHANGEDSINCE */
+	SWRITE(client1, "e7 STORE 1 (UNCHANGEDSINCE 0) +FLAGS.SILENT ($Test2)" ENDL); /* 0 will never match */
+	CLIENT_EXPECT(client1, "[MODIFIED 1]");
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "e8 STORE 1 (UNCHANGEDSINCE 999) -FLAGS.SILENT ($Test1)" ENDL); /* Some value we know will be higher, and let the STORE proceed */
+	CLIENT_EXPECT(client1, "MODSEQ"); /* Even though we said +FLAGS.SILENT, we should get an untagged FETCH response. Should also contain MODSEQ (but not flags if silent). */
+	CLIENT_DRAIN(client1);
+
+	/* Test CONDSTORE with FETCH: CHANGEDSINCE */
+	SWRITE(client1, "e9 FETCH 1 (FLAGS) (CHANGEDSINCE 999)" ENDL);
+	CLIENT_EXPECT(client1, "e9 OK"); /* This shouldn't match any messages */
+
+	SWRITE(client1, "e10 FETCH 1 (FLAGS) (CHANGEDSINCE 0)" ENDL);
+	CLIENT_EXPECT(client1, "MODSEQ"); /* Should get an implicit MODSEQ as part of the untagged response */
+	CLIENT_DRAIN(client1);
+
+	/* Test CONDSTORE with SEARCH: MODSEQ */
+	SWRITE(client1, "e10 SEARCH MODSEQ 1 ALL" ENDL);
+	CLIENT_EXPECT(client1, "MODSEQ");
+	CLIENT_DRAIN(client1);
+
+	/* Test CONDSTORE with ESEARCH */
+	SWRITE(client1, "e11 SEARCH RETURN (MIN) MODSEQ 1" ENDL);
+	CLIENT_EXPECT(client1, "MODSEQ"); /* XXX If we knew the modification sequences of all messages in this mailbox, we'd expect to see the modseq of the minimum UID message with MODSEQ >= 1 */
+	CLIENT_DRAIN(client1);
+
 	/* LOGOUT */
 	SWRITE(client1, "z999 LOGOUT" ENDL);
 	CLIENT_EXPECT(client1, "* BYE");

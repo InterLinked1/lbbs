@@ -146,7 +146,15 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
  * \param directory Full system path of the cur directory for this maildir
  * \retval 0 on failure or no assigned MODSEQs currently, positive number for max MODSEQ currently assigned
  */
-unsigned int maildir_max_modseq(struct mailbox *mbox, const char *directory);
+unsigned long maildir_max_modseq(struct mailbox *mbox, const char *directory);
+
+/*!
+ * \brief Get a modification sequence suitable for assigning to a new (e.g. APPEND, COPY, MOVE), new -> cur message
+ * \param mbox
+ * \param directory The full path to the /cur directory of the maildir
+ * \retval A modification sequence higher than any other for this directory
+ */
+unsigned long maildir_new_modseq(struct mailbox *mbox, const char *directory);
 
 /*!
  * \brief Move a message from the new directory to the cur directory, atomically
