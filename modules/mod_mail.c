@@ -754,86 +754,203 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 	return uidnext;
 }
 
-unsigned long maildir_max_modseq(struct mailbox *mbox, const char *directory)
+static unsigned long __maildir_modseq(struct mailbox *mbox, const char *directory, int increment)
 {
 	DIR *dir;
 	struct dirent *entry;
 	unsigned long cur, max_modseq = 0;
 	const char *modseq;
-
-	/*! \todo Some caching for HIGHESTMODSEQ would not be difficult to implement and would be greatly beneficial to make lookups constant time instead of linear.
-	 * If that's added, then we can simply return the cached value maintained by maildir_updated_modseq, if available, and only
-	 * do a directory scan when needed.
-	 */
+	char modseqfile[256];
+	FILE *fp;
+	long unsigned int res;
 
 	UNUSED(mbox); /* Not currently used, but could be useful for future caching strategies? */
 
-	/* Order of traversal does not matter, so use opendir instead of scandir for efficiency. */
+	/* Use a separate file from .uidvalidity for simplicity and ease of parsing, since this file is going to get used a lot more than the uidvalidity file
+	 * Also, since this file may be very large, since it needs to permanently store the MODSEQ of every single expunged message, forever.
+	 * For this reason, and for ease and speed of modifying the file in place, this is also a binary file, NOT a text file. */
+	snprintf(modseqfile, sizeof(modseqfile), "%s/../.modseqs", directory); /* Go up one directory, since we're in the cur directory, but file is stored in the maildir root */
 
-	if (!(dir = opendir(directory))) {
-		bbs_error("Error opening directory - %s: %s\n", directory, strerror(errno));
+	/* If the file doesn't yet exist, scan the directory */
+	if (!bbs_file_exists(modseqfile)) {
+		/* Order of traversal does not matter, so use opendir instead of scandir for efficiency. */
+		if (!(dir = opendir(directory))) {
+			bbs_error("Error opening directory - %s: %s\n", directory, strerror(errno));
+			return 0;
+		}
+
+		while ((entry = readdir(dir)) != NULL) {
+			if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+				continue;
+			}
+			modseq = strstr(entry->d_name, ",M=");
+			if (!modseq) {
+				/* For backwards compatibility, since MODSEQ was not initially present,
+				 * tolerate maildir files that don't have a M= component.
+				 * However, at some point, whenever they are modified, a M= component
+				 * will need to be inserted into the filename.
+				 * For now, just treat it as 0 (never modified, which is true, at least since we started tracking). */
+				continue;
+			}
+			modseq += STRLEN(",M=");
+			/* UIDs are 32-bit integers according to the IMAP RFCs, so an int is sufficiently large.
+			 * This still provides over ~2 billion possible messages in a single mailbox folder (unlikely to be realized in the real world).
+			 * There could conceivably be a much larger number of modifications than that, however, to a folder over time.
+			 * MODSEQ is 63/64 bit (originally 64-bit in RFC 4551, changed to 63-bit in RFC 7162)
+			 * So we use an unsigned long for just these, and not for any UID related numbers. */
+			cur = atol(modseq);
+			if (cur > max_modseq) {
+				max_modseq = cur;
+			}
+		}
+		closedir(dir);
+		if (!max_modseq) {
+			max_modseq = 1; /* Must be at least 1 */
+		}
+		fp = fopen(modseqfile, "wb");
+		if (likely(fp != NULL)) {
+			res = fwrite(&max_modseq, sizeof(unsigned long), 1, fp);
+			fclose(fp);
+		}
+		return max_modseq;
+	}
+
+	fp = fopen(modseqfile, "rb+");
+	if (unlikely(fp == NULL)) {
+		bbs_error("Failed to open %s\n", modseqfile);
+		/* There is no sane thing to do at this point. */
+		return 0; /* This is not a correct behavior */
+	}
+
+	res = fread(&max_modseq, sizeof(unsigned long), 1, fp); /* Returns number of elements, not bytes (so should be 1) */
+	if (res != 1) {
+		bbs_error("Error reading HIGHESTMODSEQ from %s\n", modseqfile);
+		/* No sane thing we can do here either */
 		return 0;
 	}
 
-	while ((entry = readdir(dir)) != NULL) {
-		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
-			continue;
-		}
-		modseq = strstr(entry->d_name, ",M=");
-		if (!modseq) {
-			/* For backwards compatibility, since MODSEQ was not initially present,
-			 * tolerate maildir files that don't have a M= component.
-			 * However, at some point, whenever they are modified, a M= component
-			 * will need to be inserted into the filename.
-			 * For now, just treat it as 0 (never modified, which is true, at least since we started tracking). */
-			continue;
-		}
-		modseq += STRLEN(",M=");
-		/* UIDs are 32-bit integers according to the IMAP RFCs, so an int is sufficiently large.
-		 * This still provides over ~2 billion possible messages in a single mailbox folder (unlikely to be realized in the real world).
-		 * There could conceivably be a much larger number of modifications than that, however, to a folder over time.
-		 * MODSEQ is 63/64 bit (originally 64-bit in RFC 4551, changed to 63-bit in RFC 7162)
-		 * So we use an unsigned long for just these, and not for any UID related numbers. */
-		cur = atol(modseq);
-		if (cur > max_modseq) {
-			max_modseq = cur;
-		}
+	if (increment) {
+		max_modseq += 1;
+		rewind(fp);
+		/* Update new value */
+		fwrite(&max_modseq, sizeof(unsigned long), 1, fp);
 	}
 
-	closedir(dir);
+	fclose(fp);
 	return max_modseq;
 }
 
-/*!
- * \brief Inform the mail core of a change to a message's modification sequence, to keep track of HIGHESTMODSEQ
- * \param mbox
- * \param directory The full path to the /cur directory of the maildir
- * \param modseq The new modification sequence
- */
-static void maildir_updated_modseq(struct mailbox *mbox, const char *directory, unsigned long modseq)
+unsigned long maildir_indicate_expunged(struct mailbox *mbox, const char *directory, unsigned int *uids, int length)
 {
-	/*! \todo A future improvement would be to update the .uidvalidity with the value for HIGHESTMODSEQ
-	 * or cache it in memory.
-	 * The idea is anything that updates the modseq of any message in a directory will call this function.
-	 * In the future, it could be cached appropriately.
-	 * Note the input value MAY NOT be higher than the current HIGHESTMODSEQ (it should be for calls
-	 * to maildir_new_modseq, but may not be for modifying existing messages).
-	 * Here we would check if it's greater than the current HIGHESTMODSEQ, and if so, update that.
-	 *
-	 * e.g.
-	 * if (modseq <= highestmodseq)
-	 *    return;
+	char modseqfile[256];
+	unsigned long maxmodseq;
+	FILE *fp;
+	long pos;
+	int created, i;
+#ifdef VERIFY_MODSEQ_INTEGRITY
+	int res;
+#endif
+
+	/* Increment HIGHESTMODSEQ by 1.
+	 * We CAN use the same MODSEQ for all the expunged messages, if there are multiple. MODSEQ does not have to be unique. */
+	mailbox_uid_lock(mbox);
+	maxmodseq = __maildir_modseq(mbox, directory, 1); /* Must be atomic */
+
+	snprintf(modseqfile, sizeof(modseqfile), "%s/../.modseqs", directory);
+	fp = fopen(modseqfile, "ab");
+	if (!fp) {
+		bbs_error("Failed to open %s\n", modseqfile);
+		mailbox_uid_unlock(mbox);
+		return maxmodseq;
+	}
+
+	/* We need to also store all the expunged message UIDs and MODSEQs, indefinitely,
+	 * to fulfill RFC 7162 3.2.7
+	 * RFC 7162 Section 5.3 has some pertinent recommendations on this:
+	 * - this state should be persistent, but is not required to be (we make it persistent indefinitely)
+	 * - RFC cautions that indefinite storage could cause storage issues (64 GB in worst case, though this is far from likely)
+	 * - We could expire old MODSEQ values if needed to keep storage under control (subject to implementation, see the RFC)
 	 */
-	UNUSED(mbox);
-	UNUSED(directory);
-	UNUSED(modseq);
+
+	/* Check if we created the file or opened an existing one by getting our position.
+	 * If the file is empty, write HIGHESTMODSEQ first, then the expunged messages.
+	 * Otherwise, append all the expunged messages, then seek back to the beginning and overwrite HIGHESTMODSEQ. */
+	pos = ftell(fp);
+	bbs_debug(7, "Current position is %ld\n", pos);
+	created = pos == 0;
+	if (created) {
+		fwrite(&maxmodseq, sizeof(unsigned long), 1, fp);
+	}
+	for (i = 0; i < length; i++) {
+		if (!uids[i]) {
+			bbs_error("Invalid UID at index %d\n", i);
+			continue;
+		}
+		fwrite(&uids[i], sizeof(unsigned int), 1, fp);
+		fwrite(&maxmodseq, sizeof(unsigned long), 1, fp);
+		bbs_debug(6, "Added %u/%lu to expunge log\n", uids[i], maxmodseq);
+	}
+	if (!created) {
+		rewind(fp);
+		fwrite(&maxmodseq, sizeof(unsigned long), 1, fp);
+		bbs_debug(6, "Updated HIGHESTMODSEQ to %lu\n", maxmodseq);
+	}
+
+	fclose(fp); /* Flush changes before releasing the lock */
+	mailbox_uid_unlock(mbox);
+
+/* Enable this to automatically check the file for corruption after writing */
+/* See also the standalone MODSEQ dump utility in external/modseqdecode */
+#ifdef VERIFY_MODSEQ_INTEGRITY
+	fp = fopen(modseqfile, "r");
+	if (!fp) {
+		return maxmodseq;
+	}
+	res = fread(&maxmodseq, sizeof(unsigned long), 1, fp);
+	if (res != 1 || !maxmodseq) {
+		bbs_error("MODSEQ corruption detected: missing HIGHESTMODSEQ\n");
+	}
+	for (;;) {
+		unsigned int uid;
+		res = fread(&uid, sizeof(unsigned int), 1, fp);
+		if (res != 1) {
+			break;
+		}
+		if (!uid) {
+			bbs_debug(6, "Detected UID %u, stopping\n", uid);
+			/* Sometimes (often), it seems that 0 can crop in at the end of a file,
+			 * even though we never wrote one explicitly.
+			 * Not really sure why that happens, but be tolerant of it. */
+			break; /* If we get a UID of 0, just stop */
+		}
+		res = fread(&modseq, sizeof(unsigned long), 1, fp);
+		if (res != 1) {
+			bbs_error("MODSEQ corruption detected: MODSEQ file contains UID %u with no corresponding MODSEQ (possible corruption)\n", uid);
+			break;
+		}
+		if (!uid) {
+			bbs_error("MODSEQ corruption detected: UID is 0 for MODSEQ %lu?\n", modseq);
+		}
+		if (!modseq) {
+			bbs_error("MODSEQ corruption detected: UID %u's MODSEQ is 0?\n", uid);
+		}
+	}
+	fclose(fp);
+#endif
+	return maxmodseq;
+}
+
+unsigned long maildir_max_modseq(struct mailbox *mbox, const char *directory)
+{
+	return __maildir_modseq(mbox, directory, 0);
 }
 
 unsigned long maildir_new_modseq(struct mailbox *mbox, const char *directory)
 {
-	unsigned long modseq = maildir_max_modseq(mbox, directory);
-	modseq++;
-	maildir_updated_modseq(mbox, directory, modseq);
+	unsigned long modseq;
+	mailbox_uid_lock(mbox);
+	modseq = __maildir_modseq(mbox, directory, 1); /* Must be atomic */
+	mailbox_uid_unlock(mbox);
 	return modseq;
 }
 
@@ -1033,6 +1150,26 @@ int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const c
 	return uid;
 }
 
+int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid)
+{
+	char *uidstr = strstr(filename, ",U=");
+	if (!uidstr) {
+		return -1;
+	}
+	uidstr += STRLEN(",U=");
+	if (!strlen_zero(uidstr)) {
+		*uid = atoi(uidstr); /* Should stop as soon we encounter the first nonnumeric character, whether , or : */
+		if (*uid <= 0) {
+			bbs_warning("Failed to parse UID for %s\n", filename);
+			return -1;
+		}
+	} else {
+		bbs_debug(5, "Filename %s does not contain a UID\n", filename);
+		return -1;
+	}
+	return 0;
+}
+
 /*
  * maildir format: http://cr.yp.to/proto/maildir.html
  * also: http://www.courier-mta.org/maildir.html
@@ -1051,12 +1188,13 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, void *ob
 	int elapsed, now = time(NULL);
 	int mboxnum, *boxptr;
 	struct mailbox *mbox = NULL;
+	unsigned int msguid;
 
 	boxptr = obj;
 	mboxnum = *boxptr;
 
 	/* For autopurging, we don't care if the Deleted flag is set or not.
-	 * (If it were set, an IMAP user already flagged it for permanent deletion.) */
+	 * (If it were set, an IMAP user already flagged it for permanent deletion and it would just be awaiting expunge) */
 
 	snprintf(fullname, sizeof(fullname), "%s/%s", dir_name, filename);
 	if (stat(fullname, &st)) {
@@ -1078,6 +1216,13 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, void *ob
 				mailbox_quota_adjust_usage(mbox, -st.st_size); /* Subtract file size from quota usage */
 			}
 		}
+		maildir_parse_uid_from_filename(filename, &msguid);
+		/*! \todo Since many messages are probably deleted at the same time,
+		 * it would be more efficient to store a list of message UIDs deleted
+		 * and pass them to this function at once at the end.
+		 * Not as critical as in net_imap though since this is a background task.
+		 */
+		maildir_indicate_expunged(mbox, dir_name, &msguid, 1);
 	}
 	return 0;
 }

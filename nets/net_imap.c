@@ -15,7 +15,7 @@
  * \brief RFC9051 Internet Message Access Protocol (IMAP) version 4rev2 (updates RFC3501 IMAP 4rev1)
  *
  * \note Supports RFC 2177 IDLE
- * \note Supports RFC 2342 namespaces
+ * \note Supports RFC 2342 NAMESPACE
  * \note Supports RFC 2359, 4315 UIDPLUS
  * \note Supports RFC 2971 ID
  * \note Supports RFC 3348 CHILDREN
@@ -25,12 +25,14 @@
  * \note Supports RFC 4467 URLAUTH (partially) for RFC 4468 BURL
  * \note Supports RFC 4959 SASL-IR
  * \note Supports RFC 5032 WITHIN (OLDER, YOUNGER)
+ * \note Supports RFC 5161 ENABLE
  * \note Supports RFC 5182 SEARCHRES
  * \note Supports RFC 5256 SORT
  * \note Supports RFC 5267 ESORT
  * \note Supports RFC 5530 Response Codes
  * \note Supports RFC 6851 MOVE
- * \note Supports RFC 7162 CONDSTORE (obsoletes RFC 4551, 5162)
+ * \note Supports RFC 7162 CONDSTORE (obsoletes RFC 4551)
+ * \note Supports RFC 7162 QRESYNC (obsoletes RFC 5162)
  * \note Supports RFC 7889 APPENDLIMIT
  * \note Supports RFC 9208 QUOTA
  *
@@ -44,13 +46,12 @@
  * - RFC 2088 LITERAL+ and 7888 LITERAL-
  * - RFC 3502 MULTIAPPEND - this could be potentially dangerous due to small deviations in literal sizes (see APPEND comments about Trojita)
  * - RFC 4469 CATENATE
- * - RFC 7162 QRESYNC, RFC 5161 ENABLE
  * - RFC 4959 SASL-IR
  * - RFC 4978 COMPRESS
  * - RFC 5228, 5703 Sieve
  * - RFC 5255 LANGUAGE
  * - RFC 5256 THREAD
- * - RFC 5257 ANNOTATE, RFC 5464 ANNOTATE
+ * - RFC 5257 ANNOTATE, RFC 5464 ANNOTATE (METADATA)
  * - RFC 5258 LIST extensions (obsoletes 3348)
  * - RFC 5267 CONTEXT=SEARCH and CONTEXT=SORT
  * - RFC 5423 events and RFC 5465 NOTIFY
@@ -60,6 +61,7 @@
  * - RFC 6154 LIST extension for special purpose mailboxes
  * - RFC 6203 FUZZY SEARCH
  * - RFC 6237 ESEARCH (MULTISEARCH)
+ * - RFC 6855 UTF-8
  * - RFC 8970 PREVIEW
  * - BINARY and MULTIAPPEND extensions (RFC 3516, 4466)
  * Other capabilities: AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH AUTH=XOAUTH2
@@ -69,7 +71,7 @@
 /* List of capabilities: https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml */
 /* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
 /* XXX URLAUTH is advertised so that SMTP BURL will function in Trojita, even though we don't need URLAUTH since we have a direct trust */
-#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS APPENDLIMIT MOVE WITHIN CONDSTORE"
+#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC"
 
 /* Capabilities advertised by popular mail providers, for reference/comparison, both pre and post authentication:
  * - Office 365
@@ -134,13 +136,9 @@ static int imap_debug_level = 10;
 #define imap_debug(level, fmt, ...) if (imap_debug_level >= level) { bbs_debug(level, fmt, ## __VA_ARGS__); }
 
 #undef dprintf
-#define _imap_broadcast(imap, exclude, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); __imap_broadcast(imap, exclude, fmt, ## __VA_ARGS__);
 #define _imap_reply_nolock(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); dprintf(imap->wfd, fmt, ## __VA_ARGS__);
 #define _imap_reply(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); pthread_mutex_lock(&imap->lock); dprintf(imap->wfd, fmt, ## __VA_ARGS__); pthread_mutex_unlock(&imap->lock);
-#define imap_send_broadcast(imap, fmt, ...) _imap_broadcast(imap, 0, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
-#define imap_send_unilaterial_broadcast(imap, exclude, fmt, ...) _imap_broadcast(imap, exclude, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
 #define imap_send(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
-#define imap_reply_broadcast(imap, fmt, ...) _imap_broadcast(imap, 0, "%s " fmt "\r\n", S_IF(imap->tag), ## __VA_ARGS__)
 #define imap_reply(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", S_IF(imap->tag), ## __VA_ARGS__)
 
 /* RFC 2086/4314 ACLs */
@@ -295,6 +293,7 @@ struct imap_session {
 	char curdir[260];
 	unsigned int uidvalidity;
 	unsigned int uidnext;
+	unsigned long highestmodseq;	/* Cached HIGHESTMODSEQ for current folder */
 	int acl;					/* Cached ACL for current directory. We allowed to cache per a mailbox by the RFC. */
 	char *savedsearch;			/* SEARCHRES */
 	/* APPEND */
@@ -325,6 +324,7 @@ struct imap_session {
 	unsigned int dnd:1;			/* Do Not Disturb: Whether client is executing a FETCH, STORE, or SEARCH command (EXPUNGE responses are not allowed) */
 	unsigned int pending:1;		/* Delayed output is pending in pfd pipe */
 	unsigned int condstore:1;	/* Whether a client has issue a CONDSTORE enabling command, and should be sent MODSEQ updates in untagged FETCH responses */
+	unsigned int qresync:1;		/* Whether a client has enabled the QRESYNC capability */
 	pthread_mutex_t lock;		/* Lock for IMAP session */
 	RWLIST_ENTRY(imap_session) entry;	/* Next active session */
 };
@@ -337,82 +337,19 @@ static inline void reset_saved_search(struct imap_session *imap)
 	imap->savedsearch = 0;
 }
 
-/*! \param exclude Whether to not send the message to the current IMAP client */
-/*! \param delay Whether to not send the response immediately to other clients, but instead buffer it in their pipe */
-static int __attribute__ ((format (gnu_printf, 3, 4))) __imap_broadcast(struct imap_session *imap, int exclude, const char *fmt, ...)
-{
-	struct imap_session *s;
-	char *buf;
-	int len;
-	va_list ap;
-
-	va_start(ap, fmt);
-	len = vasprintf(&buf, fmt, ap);
-	va_end(ap);
-
-	if (len < 0) {
-		return -1;
-	}
-
-	if (!exclude) {
-		/* Write to this IMAP session first, since the client that expected a response should get it before any unsolicited replies go out. */
-		pthread_mutex_lock(&imap->lock);
-		bbs_std_write(imap->wfd, buf, len);
-		pthread_mutex_unlock(&imap->lock);
-	}
-
-	/* Write to all IMAP sessions that share the same mailbox and current folder (imap->dir), excluding ourselves since we already went first. */
-	/* Note that we do this regardless of whether or not the client is idling.
-	 * This functionality actually doesn't have anything to do with IDLE.
-	 * From RFC 2177, even without idle: the client MUST continue to be able to accept unsolicited untagged responses to ANY command
-	 * So in theory, anything using imap_send could use imap_send_broadcast, if we wanted.
-	 * EXPUNGE and EXISTS are just specifically called out in the RFC for such unsolicited responses. */
-	RWLIST_RDLOCK(&sessions);
-	RWLIST_TRAVERSE(&sessions, s, entry) {
-		if (s == imap) {
-			continue; /* Already did ourself first (or skipping), above, don't do us again. */
-		}
-		if (s->mbox != imap->mbox) {
-			continue; /* Different mailbox (account) */
-		}
-		if (strcmp(s->dir, imap->dir)) {
-			continue; /* Different folders. */
-		}
-		/* Hey, this client is on the same exact folder right now! Send it an unsolicited, untagged response. */
-		pthread_mutex_lock(&s->lock);
-		if (!s->idle) { /* We are only free to send responses whenever we want if the client is idling. */
-			bbs_std_write(s->pfd[1], buf, len);
-			s->pending = 1;
-			reset_saved_search(s); /* Since messages were expunged, invalidate any saved search */
-			pthread_mutex_unlock(&s->lock);
-#ifdef EXTRA_DEBUG
-			bbs_debug(7, "Delaying notification for %p: %s", s, buf); /* Don't add another LF */
-#endif
-		} else {
-			bbs_std_write(s->wfd, buf, len);
-		}
-		pthread_mutex_unlock(&s->lock);
-	}
-	RWLIST_UNLOCK(&sessions);
-
-	free(buf);
-	return 0;
-}
-
 static void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned int uid, unsigned long modseq, const char *newflags)
 {
 	struct imap_session *s;
 	char normalmsg[256];
 	char condstoremsg[256];
 	int normallen, condlen;
-	int c = 0;
 
 	/* Prepare both types of messages.
 	 * Each client currently in this same mailbox will get one message or the other,
 	 * depending on its value of imap->condstore
 	 */
 	normallen = snprintf(normalmsg, sizeof(normalmsg), "* %d FETCH (%s)\r\n", seqno, newflags);
-	condlen = snprintf(condstoremsg, sizeof(condstoremsg), "* %d FETCH (UID %u MODSEQ %lu %s)\r\n", seqno, uid, modseq, newflags);
+	condlen = snprintf(condstoremsg, sizeof(condstoremsg), "* %d FETCH (UID %u MODSEQ %lu %s)\r\n", seqno, uid, modseq, newflags); /* RFC 7162 3.2.4 */
 
 	/*! \todo If # mailbox_watchers on the current mailbox is 1 (the entire account, not just this folder),
 	 * we could probably bail out early here, since we know it's just us... */
@@ -428,18 +365,76 @@ static void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned i
 			bbs_std_write(s->pfd[1], s->condstore ? condstoremsg : normalmsg, s->condstore ? condlen : normallen);
 			s->pending = 1;
 			pthread_mutex_unlock(&s->lock);
-			imap_debug(4, "%p <= %s\n", s, s->condstore ? condstoremsg : normalmsg);
+			imap_debug(4, "%p <= %s", s, s->condstore ? condstoremsg : normalmsg); /* Already ends in CR LF */
 		} else {
 			bbs_std_write(s->wfd, s->condstore ? condstoremsg : normalmsg, s->condstore ? condlen : normallen);
-			imap_debug(4, "%p <= %s\n", s, s->condstore ? condstoremsg : normalmsg);
+			imap_debug(4, "%p <= %s", s, s->condstore ? condstoremsg : normalmsg); /* Already ends in CR LF */
 		}
 		pthread_mutex_unlock(&s->lock);
-		c++;
 	}
 	RWLIST_UNLOCK(&sessions);
-	if (c) {
-		bbs_debug(5, "Sent untagged FETCH to %d other session%s\n", c, ESS(c));
+}
+
+/* Forward declaration */
+static char *gen_uintlist(unsigned int *l, int lengths);
+
+static void send_untagged_expunge(struct imap_session *imap, int silent, unsigned int *uid, unsigned int *seqno, int length)
+{
+	struct imap_session *s;
+	char *str2, *str = NULL;
+	int slen, slen2;
+	int delay;
+
+	/* Send VANISHED responses to any clients that enabled QRESYNC, and normal EXPUNGE responses to everyone else. */
+	RWLIST_RDLOCK(&sessions);
+	RWLIST_TRAVERSE(&sessions, s, entry) {
+		/* This one also goes to ourself... unless silent */
+		if (s->mbox != imap->mbox || strcmp(s->dir, imap->dir)) {
+			continue;
+		}
+		if (s == imap && silent) {
+			continue;
+		}
+		pthread_mutex_lock(&s->lock);
+		delay = s->idle || s == imap ? 0 : 1; /* Only send immediately if in IDLE, or if it's the current client (which obviously is NOT idling) */
+		if (s->qresync) { /* VANISHED */
+			if (length && !str) {
+				/* Don't waste time generating a VANISHED response in advance if we're not going to send it to any clients.
+				 * Most clients don't even support QRESYNC, so most of the time this won't be even be useful.
+				 * Do it automatically as needed if/when we encounter the first supporting client. */
+				str = gen_uintlist(uid, length);
+				slen = strlen(S_IF(str));
+				/* Add length of * VANISHED + CR LF */
+				slen2 = slen + STRLEN("* VANISHED ") + STRLEN("\r\n");
+				str2 = malloc(slen2 + 1); /* For deletions of multiple sequences, this could be of any arbitrary length. Not likely, but possible. */
+				if (ALLOC_SUCCESS(str2)) {
+					strcpy(str2, "* VANISHED ");
+					strcpy(str2 + STRLEN("* VANISHED "), str);
+					strcpy(str2 + STRLEN("* VANISHED ") + slen, "\r\n");
+					free(str);
+					str = str2;
+					slen = slen2;
+				}
+			}
+			bbs_std_write(delay ? s->pfd[1] : s->wfd, str, slen);
+			imap_debug(4, "%p <= %s\r\n", s, str);
+		} else { /* EXPUNGE */
+			int i;
+			for (i = 0; i < length; i++) {
+				char normalmsg[64];
+				int normallen = snprintf(normalmsg, sizeof(normalmsg), "* %d EXPUNGE\r\n", seqno[i]);
+				bbs_std_write(delay ? s->pfd[1] : s->wfd, normalmsg, normallen);
+				imap_debug(4, "%p <= %s", s, normalmsg);
+			}
+		}
+		if (delay) {
+			s->pending = 1;
+			reset_saved_search(s); /* Since messages were expunged, invalidate any saved search */
+		}
+		pthread_mutex_unlock(&s->lock);
 	}
+	RWLIST_UNLOCK(&sessions);
+	free_if(str);
 }
 
 static int num_messages(const char *path)
@@ -474,9 +469,6 @@ static void free_scandir_entries(struct dirent **entries, int numfiles)
 		free(entry);
 	}
 }
-
-/* Forward declaration */
-static int parse_uid_from_filename(const char *filename, unsigned int *uid);
 
 static int uidsort(const struct dirent **da, const struct dirent **db)
 {
@@ -513,8 +505,8 @@ static int uidsort(const struct dirent **da, const struct dirent **db)
 	 * A simple mailbox test won't catch this, but in real world mailboxes, this is likely to happen.
 	 */
 
-	failures += !!parse_uid_from_filename(a, &auid);
-	failures += !!parse_uid_from_filename(b, &buid);
+	failures += !!maildir_parse_uid_from_filename(a, &auid);
+	failures += !!maildir_parse_uid_from_filename(b, &buid);
 
 	if (failures == 2) {
 		/* If this is the new dir instead of a cur dir, then there won't be any UIDs. Key is that either both or neither filename must have UIDs. */
@@ -1609,30 +1601,12 @@ static int set_maildir(struct imap_session *imap, const char *mailbox)
 	return mailbox_maildir_init(imap->dir);
 }
 
-static int parse_uid_from_filename(const char *filename, unsigned int *uid)
-{
-	char *uidstr = strstr(filename, ",U=");
-	if (!uidstr) {
-		return -1;
-	}
-	uidstr += STRLEN(",U=");
-	if (!strlen_zero(uidstr)) {
-		*uid = atoi(uidstr); /* Should stop as soon we encounter the first nonnumeric character, whether , or : */
-		if (*uid <= 0) {
-			bbs_warning("Failed to parse UID for %s\n", filename);
-			return -1;
-		}
-	} else {
-		bbs_debug(5, "Filename %s does not contain a UID\n", filename);
-		return -1;
-	}
-	return 0;
-}
-
 static long parse_modseq_from_filename(const char *filename, unsigned long *modseq)
 {
-	char *modseqstr = strstr(filename, ",U=");
+	char *modseqstr = strstr(filename, ",M=");
 	if (!modseqstr) {
+		/* Don't use 0 since HIGHESTMODSEQ=0 indicates persistent mod sequences not supported (RFC 7162 Section 7) */
+		*modseq = 1; /* At least since we started keeping track of MODSEQ, this file has not been modified to have it added to the filename */
 		return -1;
 	}
 	modseqstr += STRLEN(",M=");
@@ -1671,7 +1645,7 @@ static int on_select(const char *dir_name, const char *filename, struct imap_ses
 			bbs_error("File %s/%s is noncompliant with maildir\n", dir_name, filename);
 		} else if (!strlen_zero(flags)) {
 			unsigned int uid = 0;
-			parse_uid_from_filename(filename, &uid);
+			maildir_parse_uid_from_filename(filename, &uid);
 			flags++;
 			if (!strchr(flags, FLAG_SEEN)) {
 				imap->totalunseen += 1;
@@ -1711,11 +1685,24 @@ static inline unsigned int parse_size_from_filename(const char *filename, unsign
 	return 0;
 }
 
-static int expunge_helper(const char *dir_name, const char *filename, struct imap_session *imap, int expunge)
+/* Forward declarations */
+static int uintlist_append(unsigned int **a, int *lengths, int *allocsizes, unsigned int vala);
+static int uintlist_append2(unsigned int **a, unsigned int **b, int *lengths, int *allocsizes, unsigned int vala, unsigned int valb);
+
+static int imap_expunge(struct imap_session *imap, int silent)
 {
+	struct dirent *entry, **entries;
+	int files, fno = 0;
+
+	const char *dir_name = imap->curdir;
+	const char *filename;
 	int oldflags;
 	char fullpath[256];
 	unsigned long size;
+	unsigned int uid;
+	unsigned long modseq;
+	unsigned int *expunged = NULL, *expungedseqs = NULL;
+	int exp_lengths = 0, exp_allocsizes = 0;
 
 	/* This is the final stage of deletions.
 	 * What clients generally do when you "delete" an item is
@@ -1728,64 +1715,79 @@ static int expunge_helper(const char *dir_name, const char *filename, struct ima
 	 * using the same process.
 	 */
 
-	imap->expungeindex += 1;
+	MAILBOX_TRYRDLOCK(imap);
+
+	files = scandir(dir_name, &entries, NULL, uidsort);
+	if (files < 0) {
+		bbs_error("scandir(%s) failed: %s\n", dir_name, strerror(errno));
+		mailbox_unlock(imap->mbox);
+		return -1;
+	}
+	while (fno < files && (entry = entries[fno++])) {
+		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			goto next;
+		}
+
+		filename = entry->d_name;
+		imap->expungeindex += 1;
 
 #ifdef EXTRA_DEBUG
-	imap_debug(10, "Analyzing file %s/%s\n", dir_name, filename);
+		imap_debug(10, "Analyzing file %s/%s\n", dir_name, filename);
 #endif
-	if (parse_flags_letters_from_filename(filename, &oldflags, NULL)) { /* Don't care about keywords */
-		bbs_error("File %s is noncompliant with maildir\n", filename);
-		return 0;
-	}
-	if (!(oldflags & FLAG_BIT_DELETED)) {
-		return 0;
-	}
+		if (parse_flags_letters_from_filename(filename, &oldflags, NULL)) { /* Don't care about keywords */
+			bbs_error("File %s is noncompliant with maildir\n", filename);
+			goto next;
+		}
+		if (!(oldflags & FLAG_BIT_DELETED)) {
+			goto next;
+		}
 
-	/* Marked as deleted. Remove message, permanently. */
-	snprintf(fullpath, sizeof(fullpath), "%s/%s", dir_name, filename);
-	imap_debug(4, "Permanently removing message %s\n", fullpath);
-	MAILBOX_TRYRDLOCK(imap);
-	if (unlink(fullpath)) {
-		bbs_error("Failed to delete %s: %s\n", fullpath, strerror(errno));
+		/* Marked as deleted. Remove message, permanently. */
+		snprintf(fullpath, sizeof(fullpath), "%s/%s", dir_name, filename);
+		imap_debug(4, "Permanently removing message %s\n", fullpath);
+
+		if (unlink(fullpath)) {
+			bbs_error("Failed to delete %s: %s\n", fullpath, strerror(errno));
+		}
+
+		if (parse_size_from_filename(filename, &size)) {
+			/* It's too late to stat now as a fallback, the file's gone, who knows how big it was now. */
+			mailbox_invalidate_quota_cache(imap->mbox);
+		} else {
+			mailbox_quota_adjust_usage(imap->mbox, -size);
+		}
+		maildir_parse_uid_from_filename(filename, &uid);
+		parse_modseq_from_filename(filename, &modseq);
+		/* Note that the seqno gets modified during expunges, so we use expungeindex here */
+		uintlist_append2(&expunged, &expungedseqs, &exp_lengths, &exp_allocsizes, uid, imap->expungeindex); /* store UID and seqno */
+
+		/* RFC 5182 says that if we have a saved search, it MUST be updated if a message in it is expunged.
+		 * That is really the correct way to do it, for now, to avoid incorrect results, we just clear any saved search (which is really not the right thing to do, either).
+		 * This is done in send_untagged_expunge
+		 */
+
+		/* EXPUNGE indexes update as we actively expunge messages.
+		 * i.e. if we were to delete all the messages in a directory,
+		 * the responses might look like:
+		 * 1 EXPUNGE
+		 * 1 EXPUNGE
+		 * 1 EXPUNGE
+		 * etc...
+		 *
+		 * So every time we delete a message, decrement 1 so we're where we should be. */
+		imap->expungeindex -= 1;
+next:
+		free(entry);
 	}
+	free(entries);
+
 	mailbox_unlock(imap->mbox);
-	if (parse_size_from_filename(filename, &size)) {
-		/* It's too late to stat now as a fallback, the file's gone, who knows how big it was now. */
-		mailbox_invalidate_quota_cache(imap->mbox);
-	} else {
-		mailbox_quota_adjust_usage(imap->mbox, -size);
-	}
-	if (expunge) {
-		imap_send_unilaterial_broadcast(imap, 0, "%d EXPUNGE", imap->expungeindex); /* Send for EXPUNGE, but not CLOSE */
-	} else {
-		imap_send_unilaterial_broadcast(imap, 1, "%d EXPUNGE", imap->expungeindex); /* Send for EXPUNGE, but not CLOSE */
-	}
+	imap->highestmodseq = maildir_indicate_expunged(imap->mbox, imap->curdir, expunged, exp_lengths); /* Batch HIGHESTMODSEQ bookkeeping for EXPUNGEs */
+	send_untagged_expunge(imap, silent, expunged, expungedseqs, exp_lengths); /* Send for EXPUNGE, but not CLOSE */
+	free_if(expunged);
+	free_if(expungedseqs);
 
-	/* RFC 5182 says that if we have a saved search, it MUST be updated if a message in it is expunged.
-	 * That is really the correct way to do it, for now, to avoid incorrect results, we just clear any saved search (which is really not the right thing to do, either). */
-	reset_saved_search(imap);
-
-	/* EXPUNGE indexes update as we actively expunge messages.
-	 * i.e. if we were to delete all the messages in a directory,
-	 * the responses might look like:
-	 * 1 EXPUNGE
-	 * 1 EXPUNGE
-	 * 1 EXPUNGE
-	 * etc...
-	 *
-	 * So every time we delete a message, decrement 1 so we're where we should be. */
-	imap->expungeindex -= 1;
 	return 0;
-}
-
-static int on_close(const char *dir_name, const char *filename, struct imap_session *imap)
-{
-	return expunge_helper(dir_name, filename, imap, 0);
-}
-
-static int on_expunge(const char *dir_name, const char *filename, struct imap_session *imap)
-{
-	return expunge_helper(dir_name, filename, imap, 1);
 }
 
 static int imap_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, struct imap_session *imap), struct imap_session *imap)
@@ -1802,29 +1804,213 @@ static int imap_traverse(const char *path, int (*on_file)(const char *dir_name, 
 	}
 	while (fno < files && (entry = entries[fno++])) {
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
-			free(entry);
 			continue;
 		}
 		if ((res = on_file(path, entry->d_name, imap))) {
-			free(entry);
 			break; /* If the handler returns non-zero then stop */
-			/*! \todo BUGBUG We still need to free remaining entries */
 		}
+	}
+	free_scandir_entries(entries, files); /* Free all at once at the end, in case we break from the loop early */
+	free(entries);
+	return res;
+}
+
+/* Forward declarations */
+/*! \todo Please come up with a plan to move the IMAP utility functions elsewhere, ideally to a separate file...
+ * the forward declarations sprinkled throughout the file are starting to get ridiculous */
+static int in_range_allocated(const char *s, int num, char *sequences);
+static void generate_flag_names_full(struct imap_session *imap, const char *filename, char *bufstart, char **bufptr, int *lenptr);
+static char *parensep(char **str);
+static int range_to_uintlist(char *s, unsigned int **list, int *length);
+
+/*! \note This should kind of be in mod_mail with the other modseq functions,
+ * except it has dependencies on several net_imap things (uintlist_append, in_range_allocated, etc), so cleaner to just have it here */
+static void maildir_get_expunged_since_modseq(struct imap_session *imap, const char *directory, unsigned long lastmodseq, char *uidrangebuf, unsigned int minuid, const char *uidrange)
+{
+	char modseqfile[256];
+	FILE *fp;
+	unsigned long modseq;
+	unsigned int uid;
+	int res;
+	unsigned int *a = NULL;
+	int lengths = 0, allocsizes = 0;
+
+	snprintf(modseqfile, sizeof(modseqfile), "%s/../.modseqs", directory);
+	fp = fopen(modseqfile, "rb");
+	if (!fp) {
+		bbs_error("Failed to open %s\n", modseqfile);
+		return;
+	}
+	res = fread(&modseq, sizeof(unsigned long), 1, fp);
+	if (res != 1) {
+		bbs_error("Failed to read HIGHESTMODSEQ from %s\n", directory);
+		fclose(fp);
+		return;
+	}
+
+	for (;;) {
+		/* Note that this file is sorted by MODSEQ, not be UID */
+		res = fread(&uid, sizeof(unsigned int), 1, fp);
+		if (res != 1) {
+			break;
+		}
+		res = fread(&modseq, sizeof(unsigned long), 1, fp);
+		if (res != 1 || !uid) { /* Break early if UID is 0, see maildir_indicate_expunged */
+			break;
+		}
+		if (uid < minuid) {
+			continue;
+		}
+		if (modseq <= lastmodseq) {
+			continue;
+		}
+		if (uidrange && !in_range_allocated(uidrange, uid, uidrangebuf)) {
+			continue;
+		}
+		uintlist_append(&a, &lengths, &allocsizes, uid);
+	}
+
+	fclose(fp);
+
+	if (lengths) {
+		char *str = gen_uintlist(a, lengths);
+		free(a);
+		imap_send(imap, "VANISHED (EARLIER) %s", S_IF(str));
+		free_if(str);
+	}
+}
+
+static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, const char *uidrange, char *seqrange)
+{
+	struct dirent *entry, **entries;
+	int files, fno = 0;
+	unsigned long modseq;
+	unsigned int uid;
+	unsigned int seqno = 0;
+	unsigned int minuid = 0;
+	char *uidrangebuf = NULL;
+
+	bbs_assert(imap->qresync == 1);
+
+	if (uidrange) {
+		uidrangebuf = malloc(strlen(uidrange) + 1); /* We could use strdup, but in_range_allocated always calls strcpy, so malloc avoids unnecessary copying here */
+		if (!uidrangebuf) {
+			return;
+		}
+	}
+
+	/* Now send any pending flag changes */
+	files = scandir(imap->curdir, &entries, NULL, uidsort);
+	if (files < 0) {
+		bbs_error("scandir(%s) failed: %s\n", imap->curdir, strerror(errno));
+		free_if(uidrangebuf);
+		return;
+	}
+
+	if (seqrange) {
+		unsigned int *seqs = NULL, *uids = NULL;
+		int seq_lengths = 0, uid_lengths = 0;
+		char *sequences = parensep(&sequences); /* Strip the () */
+		sequences = strsep(&seqrange, " ");
+		range_to_uintlist(sequences, &seqs, &seq_lengths);
+		if (!seqrange) {
+			bbs_warning("Malformed command\n");
+		} else {
+			range_to_uintlist(seqrange, &uids, &uid_lengths);
+			if (seq_lengths != uid_lengths) {
+				bbs_warning("Invalid message sequence data argument (%d != %d)\n", seq_lengths, uid_lengths);
+				/* Just ignore this argument */
+				free_if(seqs);
+				free_if(uids);
+			} else {
+				/* Run the algorithm described in RFC 7162 3.2.5.2 */
+				/* Something like 1,3,5:6 1,10,15,17 - sequence numbers, then UIDs corresponding to those
+				 * If based on what the client has sent, we are able to determine the client already knows about this expunge,
+				 * we can skip including it in the list.
+				 * Here, we determine a lowerbound on the UIDs we will consider for EXPUNGE, and pass that into
+				 * maildir_get_expunged_since_modseq
+				 *
+				 * Note that the importance of this message sequence match data varies inversely with the completeness
+				 * of the storage of modification sequences for expunged messages. This parameter is designed to account
+				 * for servers expiring older expunged MODSEQs.
+				 * Since we don't currently remove old expunged MODSEQs, this parameter is not as useful to us and could be ignored.
+				 */
+				int i = 0;
+				while (fno < files && (entry = entries[fno++])) {
+					if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+						continue;
+					}
+					seqno++;
+					if (seqs[i] == seqno) {
+						unsigned int realuid;
+						maildir_parse_uid_from_filename(entry->d_name, &realuid);
+						if (uids[i] == realuid) {
+							minuid = realuid; /* Can skip at least everything prior to this message for EXPUNGE responses */
+						}
+						i++;
+					}
+				}
+			}
+		}
+		fno = 0, seqno = 0;
+	}
+
+	/* First, send any expunges since last time */
+	maildir_get_expunged_since_modseq(imap, imap->curdir, lastmodseq, uidrangebuf, minuid, uidrange);
+
+	while (fno < files && (entry = entries[fno++])) {
+		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			goto next;
+		}
+		seqno++;
+		if (parse_modseq_from_filename(entry->d_name, &modseq)) {
+			goto next;
+		}
+		if (maildir_parse_uid_from_filename(entry->d_name, &uid)) {
+			goto next;
+		}
+		if (uidrange && !in_range_allocated(uidrange, uid, uidrangebuf)) {
+			goto next;
+		}
+		/* seqrange is only used for EXPUNGE, not fetching flag changes */
+		if (modseq > lastmodseq) {
+			/* Send the flags for this message */
+			char flagsbuf[256];
+			char *buf = flagsbuf;
+			int len = sizeof(flagsbuf);
+			const char *flags;
+
+			flags = strchr(entry->d_name, ':'); /* maildir flags */
+			if (!flags) {
+				bbs_error("Message file %s contains no flags?\n", entry->d_name);
+				goto next;
+			}
+			generate_flag_names_full(imap, flags, flagsbuf, &buf, &len);
+			imap_send(imap, "%u FETCH (UID %u %s) MODSEQ (%lu)", seqno, uid, flagsbuf, modseq);
+		}
+next:
 		free(entry);
 	}
 	free(entries);
-	return res;
+	free_if(uidrangebuf);
+}
+
+static void close_mailbox(struct imap_session *imap)
+{
+	imap->dir[0] = imap->curdir[0] = imap->newdir[0] = '\0';
 }
 
 static int handle_select(struct imap_session *imap, char *s, int readonly)
 {
 	/* Mailbox can contain spaces, so don't use strsep for it if it's in quotes */
 	char *mailbox;
+	int was_selected;
 	unsigned long maxmodseq;
 
 	REQUIRE_ARGS(s);
+	SHIFT_OPTIONALLY_QUOTED_ARG(mailbox, s); /* The STATUS command will have additional arguments (and possibly SELECT, for CONDSTORE/QRESYNC) */
 
-	SHIFT_OPTIONALLY_QUOTED_ARG(mailbox, s); /* The STATUS command will have additional arguments (and possibly SELECT, for CONDSTORE) */
+	was_selected = imap->dir[0] ? 1 : 0;
 
 	/* This modifies the current maildir even for STATUS, but the STATUS command will restore the old one afterwards. */
 	if (set_maildir(imap, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX". It may also change the active (account) mailbox. */
@@ -1850,10 +2036,41 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 		char aclstr[15];
 		char keywords[256] = "";
 		int condstore_just_enabled = 0;
+		unsigned int lastmodseq = 0;
+		char *uidrange = NULL, *seqrange = NULL;
 		int numkeywords = gen_keyword_names(imap, NULL, keywords, sizeof(keywords)); /* prepends a space before all of them, so this works out great */
-		imap_send(imap, "FLAGS (%s%s)", IMAP_FLAGS, numkeywords ? keywords : "");
+
 		if (!strlen_zero(s)) {
-			if (strstr(s, "CONDSTORE")) {
+			if (STARTS_WITH(s, "(QRESYNC")) {
+				char *qresync, *tmp;
+				unsigned int lastuidvalidity;
+				if (!imap->qresync) { /* RFC 7162 3.2.5 */
+					imap_reply(imap, "BAD [CLIENTBUG] QRESYNC not enabled");
+					return 0;
+				}
+				/* Something like A02 SELECT INBOX (QRESYNC (67890007 20050715194045000 41,43:211,214:541)) */
+				qresync = parensep(&s);
+				qresync += STRLEN("QRESYNC ");
+				qresync = parensep(&qresync);
+				/* Now qresync should be the inner paren contents */
+				tmp = strsep(&qresync, " ");
+				REQUIRE_ARGS(tmp);
+				lastuidvalidity = atoi(tmp);
+				tmp = strsep(&qresync, " ");
+				REQUIRE_ARGS(tmp);
+				lastmodseq = atoi(tmp);
+				uidrange = strsep(&qresync, " "); /* This is optional and defaults to 1:* */
+				if (strlen_zero(uidrange)) {
+					uidrange = NULL; /* Defaults to 1:* - for efficiency's sake, use NULL instead */
+				}
+				seqrange = strsep(&qresync, " "); /* Also optional */
+				/* If client's last UIDVALIDITY doesn't match ours, then ignore all this */
+				if (lastuidvalidity != imap->uidvalidity) {
+					bbs_verb(5, "Client's UIDVALIDITY (%u) differs from ours (%u)\n", lastuidvalidity, imap->uidvalidity);
+					lastmodseq = 0;
+					uidrange = NULL;
+				}
+			} else if (strstr(s, "CONDSTORE")) {
 				if (!imap->condstore) {
 					condstore_just_enabled = 1;
 				}
@@ -1863,6 +2080,12 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 				bbs_warning("Unexpected parameter: %s\n", s);
 			}
 		}
+
+		if (was_selected) {
+			imap_send(imap, "OK [CLOSED]"); /* RFC 7162 3.2.11, example in 3.2.5.1 */
+		}
+
+		imap_send(imap, "FLAGS (%s%s)", IMAP_FLAGS, numkeywords ? keywords : "");
 		/* Any non-standard flags are called keywords in IMAP
 		 * If we don't send a PERMANENTFLAGS, the RFC says that clients should assume all flags are permanent.
 		 * This works if clients are not allowed to set custom flags.
@@ -1885,7 +2108,7 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 		 * as clients are limited in how many custom flags (keywords) can be used (26 for the entire mailbox)
 		 */
 		imap_send(imap, "OK [PERMANENTFLAGS (%s%s \\*)] Limited", IMAP_FLAGS, numkeywords > 0 ? keywords : ""); /* Include \* to indicate we support IMAP keywords */
-		imap_send_broadcast(imap, "%u EXISTS", imap->totalnew + imap->totalcur); /* Number of messages in the mailbox. */
+		imap_send(imap, "%u EXISTS", imap->totalnew + imap->totalcur); /* Number of messages in the mailbox. */
 		imap_send(imap, "%u RECENT", imap->totalnew); /* Number of messages with \Recent flag (maildir: new, instead of cur). */
 		if (imap->firstunseen) {
 			/* Both of these are supposed to be firstunseen (the first one is NOT totalunseen) */
@@ -1897,7 +2120,11 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 		imap_send(imap, "OK [HIGHESTMODSEQ %lu] Highest", maxmodseq);
 		generate_acl_string(imap->acl, aclstr, sizeof(aclstr));
 		imap_send(imap, "OK [MYRIGHTS \"%s\"] ACL", aclstr);
+		if (lastmodseq) {
+			do_qresync(imap, lastmodseq, uidrange, seqrange);
+		}
 		imap_reply(imap, "OK [%s] %s completed%s", readonly ? "READ-ONLY" : "READ-WRITE", readonly ? "EXAMINE" : "SELECT", condstore_just_enabled ? ", CONDSTORE is now enabled" : "");
+		imap->highestmodseq = maxmodseq;
 	} else if (readonly == 2) { /* STATUS */
 		/*! \todo imap->totalnew and imap->totalcur, etc. are now for this other mailbox we one-offed, rather than currently selected.
 		 * Will that mess anything up? Maybe we should save these in tmp vars, and only set on the imap struct if readonly <= 1? */
@@ -2469,19 +2696,18 @@ struct fetch_request {
 	unsigned int rfc822text:1;
 	unsigned int uid:1;
 	unsigned int modseq:1;
+	unsigned int vanished:1;
 };
 
-/*! \note This is re-evaluated for every single message in the folder, which is not terribly efficient */
-static int in_range(const char *s, int num)
+/*! \note Direct use of this function is more efficient than in_range since we can reuse the same allocated buffer for all comparisons */
+static int in_range_allocated(const char *s, int num, char *sequences)
 {
-	char *dup;
-	char *sequence, *sequences;
+	char *sequence;
 
-	dup = strdup(s);
-	if (ALLOC_FAILURE(dup)) {
-		return 0;
-	}
-	sequences = dup;
+	strcpy(sequences, s); /* This is safe, as it is assumed that sequences itself was strdup'd or malloc'd from s / strlen(s) + 1 previously */
+
+	/*! \todo since atoi would stop on a , anyways, strsep isn't really necessary.
+	 * We could parse the string in place, avoiding the need to allocate and copy in the first place. */
 
 	while ((sequence = strsep(&sequences, ","))) {
 		int min, max;
@@ -2492,7 +2718,6 @@ static int in_range(const char *s, int num)
 		}
 		if (!strcmp(begin, "*")) {
 			/* Something like just *, everything matches */
-			free(dup);
 			return 1;
 		}
 		min = atoi(begin);
@@ -2511,11 +2736,26 @@ static int in_range(const char *s, int num)
 		if (num > max) {
 			continue;
 		}
-		free(dup);
 		return 1; /* Matches */
 	}
-	free(dup);
 	return 0;
+}
+
+/*! \note This is re-evaluated for every single message in the folder, which is not terribly efficient. Prefer using in_range_allocated directly. */
+static int in_range(const char *s, int num)
+{
+	int res = 0;
+	char *dup;
+
+	dup = strdup(s);
+	if (ALLOC_FAILURE(dup)) {
+		return 0;
+	}
+
+	res = in_range_allocated(s, num, dup);
+
+	free(dup);
+	return res;
 }
 
 static int imap_in_range(struct imap_session *imap, const char *s, int num)
@@ -2568,7 +2808,7 @@ static int msg_in_range(int seqno, const char *filename, const char *sequences, 
 	/* Since we use scandir, msg sequence #s should be in order of oldest to newest */
 
 	/* Parse UID */
-	if (parse_uid_from_filename(filename, &msguid)) {
+	if (maildir_parse_uid_from_filename(filename, &msguid)) {
 		bbs_error("Unexpected UID: %u\n", msguid);
 		return 0;
 	}
@@ -2845,14 +3085,13 @@ static int handle_move(struct imap_session *imap, char *s, int usinguid)
 	char srcfile[516];
 	int files, fno = 0;
 	int seqno = 0;
-	unsigned int *olduids = NULL, *newuids = NULL, *expunged = NULL;
+	unsigned int *olduids = NULL, *newuids = NULL, *expunged = NULL, *expungedseqs = NULL;
 	int lengths = 0, allocsizes = 0;
 	int exp_lengths = 0, exp_allocsizes = 0;
 	unsigned int uidvalidity, uidnext, uidres;
 	char *olduidstr = NULL, *newuidstr = NULL;
 	int destacl;
 	int error = 0;
-	int i;
 	char newname[256];
 
 	sequences = strsep(&s, " "); /* Messages, specified by sequence number or by UID (if usinguid) */
@@ -2879,6 +3118,7 @@ static int handle_move(struct imap_session *imap, char *s, int usinguid)
 	}
 	while (fno < files && (entry = entries[fno++])) {
 		unsigned int msguid;
+		unsigned long modseq;
 
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			goto cleanup;
@@ -2895,8 +3135,14 @@ static int handle_move(struct imap_session *imap, char *s, int usinguid)
 		}
 		/* maildir_move_msg_filename may rename the base filename, but it won't modify the flags, just the UID, so we can use the old basename for the purposes of flags. */
 		translate_maildir_flags(imap, imap->dir, newname, entry->d_name, newboxdir, destacl);
+		parse_modseq_from_filename(entry->d_name, &modseq);
 		uintlist_append2(&olduids, &newuids, &lengths, &allocsizes, msguid, uidres);
-		uintlist_append(&expunged, &exp_lengths, &exp_allocsizes, seqno); /* always sequence number, even for UID MOVE */
+		/* Thankfully, we are allowed to send the EXPUNGEs before the tagged response, or this would be more complicated as we would have to store a bunch of stuff temporarily.
+		 * RFC 6851 3.3
+		 * We still store UIDs so we can call maildir_indicate_expunged with a batch of all UIDs, for efficiency.
+		 */
+		uintlist_append2(&expunged, &expungedseqs, &exp_lengths, &exp_allocsizes, msguid, seqno); /* store UID and seqno */
+		
 cleanup:
 		free(entry);
 	}
@@ -2914,15 +3160,16 @@ cleanup:
 		imap_reply(imap, "OK [COPYUID %u %s %s] COPY completed", uidvalidity, S_IF(olduidstr), S_IF(newuidstr));
 	}
 
-	mailbox_unlock(imap->mbox);
+	/* EXPUNGE untagged responses are sent in realtime (already done), just update HIGHESTMODSEQ now */
+	imap->highestmodseq = maildir_indicate_expunged(imap->mbox, imap->curdir, expunged, exp_lengths);
+	send_untagged_expunge(imap, 0, expunged, expungedseqs, exp_lengths);
 
-	for (i = 0; i < exp_lengths; i++) {
-		imap_send_broadcast(imap, "%u EXPUNGE", expunged[i]);
-	}
+	mailbox_unlock(imap->mbox);
 
 	free_if(olduidstr);
 	free_if(newuidstr);
 	free_if(expunged);
+	free_if(expungedseqs);
 	return 0;
 }
 
@@ -3032,9 +3279,19 @@ static void generate_flag_names_full(struct imap_session *imap, const char *file
 	char flagsbuf[256] = "";
 	int has_flags;
 	int custom_keywords;
+	const char *flags;
 
 	char *buf = *bufptr;
 	size_t len = *lenptr;
+
+	if (isdigit(*filename)) { /* We have an entire filename */
+		flags = strchr(filename, ':'); /* Skip everything before the flags, so we don't e.g. interpret ,S= as the Seen flag. */
+		if (!flags) {
+			filename = ""; /* There ain't no flags here */
+		}
+	} else {
+		flags = filename; /* Must just have the "flags" portion of the filename to begin with */
+	}
 
 	gen_flag_names(filename, flagsbuf, sizeof(flagsbuf));
 	has_flags = flagsbuf[0] ? 1 : 0;
@@ -3132,10 +3389,10 @@ static int maildir_msg_setflags_modseq(struct imap_session *imap, int seqno, con
 	/* If newmodseq is not NULL, then we need to send responses as needed. XXX What if it's not? */
 
 	/* Send unilateral untagged FETCH responses to everyone except this session, to notify of the new flags */
-	generate_flag_names_full(imap, filename, newflags, &newbuf, &newlen);
+	generate_flag_names_full(imap, newflagletters, newflags, &newbuf, &newlen);
 	if (seqno) { /* Skip for merely translating flag mappings between maildirs */
 		unsigned int uid;
-		parse_uid_from_filename(filename, &uid);
+		maildir_parse_uid_from_filename(filename, &uid);
 		send_untagged_fetch(imap, seqno, uid, modseq, newflags);
 	}
 	return 0;
@@ -3227,7 +3484,7 @@ static int finish_append(struct imap_session *imap)
 	/* APPENDUID response */
 	/* Use tag from APPEND request */
 	_imap_reply(imap, "%s OK [APPENDUID %u %u] APPEND completed\r\n", imap->savedtag, uidvalidity, uidnext); /* Don't add 1, this is the current message UID, not UIDNEXT */
-	/*! \todo BUGBUG If mailbox currently selected, we SHOULD send an untagged EXISTS.
+	/*! \todo BUGBUG If mailbox currently selected, we SHOULD send an untagged EXISTS e.g. send_untagged_exists
 	 * Even if not, we should for that particular mailbox (folder) for other clients that may be monitoring it. */
 	return 0;
 }
@@ -3251,6 +3508,16 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		bbs_error("scandir(%s) failed: %s\n", imap->curdir, strerror(errno));
 		return -1;
 	}
+
+	if (fetchreq->vanished) { /* First, send any VANISHED responses if needed */
+		char *uidrangebuf = malloc(strlen(sequences) + 1);
+		if (uidrangebuf) {
+			/* Since VANISHED is only with UID FETCH, the sequences are in fact UID sequences, perfect! */
+			maildir_get_expunged_since_modseq(imap, imap->curdir, fetchreq->changedsince, uidrangebuf, 0, sequences);
+			free(uidrangebuf);
+		}
+	}
+
 	while (fno < files && (entry = entries[fno++])) {
 		unsigned int msguid;
 		unsigned long modseq = 0;
@@ -3275,7 +3542,9 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				goto cleanup;
 			}
 			if (modseq <= fetchreq->changedsince) {
+#ifdef EXTRA_DEBUG
 				bbs_debug(5, "modseq %lu older than CHANGEDSINCE %lu\n", modseq, fetchreq->changedsince);
+#endif
 				goto cleanup; /* Older than specified CHANGEDSINCE */
 			}
 		}
@@ -3745,16 +4014,35 @@ static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 
 	if (!strlen_zero(s)) {
 		/* Another parenthesized list? (Probably CHANGEDSINCE, nothing else is supported) */
-		if (!STARTS_WITH(s, "CHANGEDSINCE ")) {
-			s += STRLEN("CHANGEDSINCE ");
-			if (!strlen_zero(s)) {
-				fetchreq.changedsince = atol(s);
+		char *arg;
+		s = parensep(&s);
+		while ((arg = strsep(&s, " "))) {
+			if (!strcasecmp(arg, "CHANGEDSINCE")) {
+				arg = strsep(&s,  " ");
+				REQUIRE_ARGS(arg);
+				fetchreq.changedsince = atol(arg);
 				fetchreq.modseq = 1; /* RFC 7162 3.1.4.1: CHANGEDSINCE implicitly sets MODSEQ FETCH message data item */
 				imap->condstore = 1;
+			} else if (!strcasecmp(arg, "VANISHED")) {
+				fetchreq.vanished = 1;
+			} else {
+				bbs_warning("Unexpected FETCH modifier: %s\n", s);
 			}
-		} else {
-			bbs_warning("Unexpected parenthesized list: %s\n", s);
 		}
+		/* RFC 7162 3.2.6 */
+		if (fetchreq.vanished) {
+			if (!usinguid) {
+				imap_reply(imap, "BAD Must use UID FETCH, not FETCH");
+				return 0;
+			} else if (!imap->qresync) {
+				imap_reply(imap, "BAD Must enabled QRESYNC first");
+				return 0;
+			} else if (!fetchreq.changedsince) {
+				imap_reply(imap, "BAD Must use in conjunction with CHANGEDSINCE");
+				return 0;
+			}
+		}
+		
 	}
 
 	/* Only parse the request once. */
@@ -4000,6 +4288,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			gen_flag_letters(newflags, newflagletters, sizeof(newflagletters));
 			strncat(newflagletters, keywords, sizeof(newflagletters) - 1);
 			snprintf(oldname, sizeof(oldname), "%s/%s", imap->curdir, entry->d_name);
+			/* RFC 3501 6.4.6: We SHOULD send an untagged FETCH when flags change from an external source (not us). This handles that: */
 			if (maildir_msg_setflags_modseq(imap, seqno, oldname, newflagletters, &newmodseq)) {
 				continue;
 			}
@@ -4023,16 +4312,16 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			gen_flag_names(newflagletters, flagstr, sizeof(flagstr));
 			if (keywords[0]) { /* Current keywords */
 				slen = strlen(flagstr);
+				/*! \todo We should not append a space before if we're at the beginning of the buffer */
 				gen_keyword_names(imap, keywords, flagstr + slen, sizeof(flagstr) - slen); /* Append keywords (include space before) */
 			}
-			/* RFC 3501 6.4.6: We SHOULD send an untagged FETCH when flags change from an external source (not us) */
+
 			if (imap->createdkeyword) {
 				/* Server SHOULD send untagged response when a new keyword is created */
 				char allkeywords[256] = "";
 				gen_keyword_names(imap, NULL, allkeywords, sizeof(allkeywords)); /* prepends a space before all of them, so this works out great */
 				imap_send(imap, "FLAGS (%s%s)", IMAP_FLAGS, allkeywords);
 			}
-			/*! \todo Should really broadcast this, even if silent, for anyone else watching this folder (but may need to exclude self) */
 			/*! \todo This is repetitive, clean this up so we're not duplicating this log for UID/no UID, MODSEQ/no MODSEQ, silent/not silent */
 			if (do_unchangedsince) {
 				if (!newmodseq) {
@@ -5127,7 +5416,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 				break;
 			case IMAP_SEARCH_UID:
 				if (!search->new) {
-					parse_uid_from_filename(search->filename, &uid);
+					maildir_parse_uid_from_filename(search->filename, &uid);
 					retval = imap_in_range(search->imap, skey->child.string, uid);
 				} else {
 					/* XXX messages in new don't have a UID, so by definition it can't match */
@@ -5324,7 +5613,7 @@ static int search_dir(struct imap_session *imap, const char *dirname, int newdir
 		if (search_keys_eval(skeys, IMAP_SEARCH_ALL, &search)) {
 			/* Include in search response */
 			if (usinguid) {
-				parse_uid_from_filename(search.filename, &uid);
+				maildir_parse_uid_from_filename(search.filename, &uid);
 			} else {
 				uid = seqno; /* Not really, but use the same variable for both */
 			}
@@ -5469,6 +5758,33 @@ static char *uintlist_to_ranges(unsigned int *a, int length)
 		dyn_str_append(&dynstr, buf, len);
 	}
 	return dynstr.buf;
+}
+
+/*! \note This function is not safe to use for arbitrary valid IMAP sequences, e.g. *, 1:*, etc. */
+static int range_to_uintlist(char *s, unsigned int **list, int *length)
+{
+	char *seq;
+	int alloc_sizes = 0;
+
+	while ((seq = strsep(&s, ","))) {
+		int a, b;
+		char *start, *end = seq;
+		start = strsep(&end, ":");
+		a = atoi(start);
+		if (!end) {
+			uintlist_append(list, length, &alloc_sizes, a);
+			continue;
+		}
+		b = atoi(start);
+		if (b - a > 100000) {
+			bbs_warning("Declining to process range %d:%d (too large)\n", a, b);
+			return -1; /* Don't malloc into oblivion */
+		}
+		for (; a <= b; a++) {
+			uintlist_append(list, length, &alloc_sizes, a);
+		}
+	}
+	return 0;
 }
 
 static int test_range_generation(void)
@@ -5707,7 +6023,7 @@ static int msg_to_filename(struct imap_sort *sort, unsigned int number, int usin
 		seqno++;
 		if (usinguid) {
 			unsigned int uid;
-			parse_uid_from_filename(entry->d_name, &uid);
+			maildir_parse_uid_from_filename(entry->d_name, &uid);
 			if (uid == number) {
 				snprintf(buf, len, "%s/%s", sort->imap->curdir, entry->d_name);
 				return 0;
@@ -6025,6 +6341,10 @@ static int finish_auth(struct imap_session *imap, int auth)
 		imap_reply(imap, "BYE System error");
 		return -1; /* Just disconnect, we probably won't be able to proceed anyways. */
 	}
+
+	/* XXX Most clients are going to request the capabilities immediately.
+	 * As an optimization, we could save an RTT by sending them unsolicited */
+
 	if (auth) {
 		_imap_reply(imap, "%s OK Success\r\n", imap->savedtag); /* Use tag from AUTHENTICATE request */
 		free_if(imap->savedtag);
@@ -6172,14 +6492,29 @@ static int imap_process(struct imap_session *imap, char *s)
 	 * e.g. RFC 5465 Section 1: "as unsolicited responses sent just before the end of a command"
 	 * For simple cases like NOOP, there's no difference at all, but does it matter in other cases?
 	 * It would be tricky to support the other case since each command sends its own end of command reply,
-	 * and this would need to be interleaved before that as appropriate. So if it's fine to do it here, then that is much simpler. */
+	 * and this would need to be interleaved before that as appropriate. So if it's fine to do it here, then that is much simpler.
+	 *
+	 * From RFC 7162 3.2.10.2, this seems to suggest that this approach is fine:
+	 * A VANISHED response MUST NOT be sent when no command is in progress, nor while responding to a FETCH, STORE, or SEARCH command.
+	 * This rule is necessary to prevent a loss of synchronization of message sequence numbers between the client and server.
+	 * A command is not "in progress" until the complete command has been received; in particular, a command is not "in progress" during the negotiation of command continuation.
+	 */
 
 	if (imap->pending) { /* Not necessary to lock just to read the flag. Only if we're actually going to read data. */
 		char buf[1024]; /* Hopefully big enough for any single command. */
 		struct readline_data rldata;
 
 		/* If it's a command during which we're not allowed to send an EXPUNGE, then don't send it now. */
-		if (!STARTS_WITH(command, "FETCH") && !STARTS_WITH(command, "STORE") && !STARTS_WITH(command, "SEARCH") && !STARTS_WITH(command, "SORT")) {
+
+		/* RFC 7162 3.2.10.2: UID FETCH, UID STORE, and UID SEARCH are different commands from FETCH, STORE, and SEARCH.
+		 * A VANISHED response MAY be sent during a UID command. However, the VANISHED response MUST NOT be sent
+		 * during a UID SEARCH command that contains message numbers in the search criteria.
+		 *
+		 * XXX Regardless of what we to do here, won't the clients sequence numbers be off anyways?
+		 * We don't maintain a "client's view" of what sequences numbers are known and map to what UIDs.
+		 * So what is the actual effect of "preventing loss of synchronization in this manner"???
+		 */
+		if (!STARTS_WITH(command, "FETCH") && !STARTS_WITH(command, "STORE") && !STARTS_WITH(command, "SEARCH") && !STARTS_WITH(command, "SORT") && !STARTS_WITH(command, "UID SEARCH")) {
 			pthread_mutex_lock(&imap->lock);
 			bbs_readline_init(&rldata, buf, sizeof(buf));
 			/* Read from the pipe until it's empty again. If there's more than one response waiting, and in particular, more than sizeof(buf), we need to read by line. */
@@ -6204,7 +6539,10 @@ static int imap_process(struct imap_session *imap, char *s)
 	} else if (!strcasecmp(command, "CAPABILITY")) {
 		/* Some clients send a CAPABILITY after login, too,
 		 * even though the RFC says clients shouldn't,
-		 * since capabilities don't change during sessions. */
+		 * since capabilities don't change during sessions.
+		 * However, in practice, the capabilities exposed by many servers
+		 * after authentication differ.
+		 */
 		imap_send(imap, "CAPABILITY " IMAP_CAPABILITIES);
 		imap_reply(imap, "OK CAPABILITY completed");
 	} else if (!strcasecmp(command, "AUTHENTICATE")) {
@@ -6306,9 +6644,9 @@ static int imap_process(struct imap_session *imap, char *s)
 	} else if (!strcasecmp(command, "CLOSE")) {
 		REQUIRE_SELECTED(imap);
 		if (imap->folder && IMAP_HAS_ACL(imap->acl, IMAP_ACL_EXPUNGE)) {
-			imap_traverse(imap->curdir, on_close, imap);
+			imap_expunge(imap, 1);
 		}
-		imap->dir[0] = imap->curdir[0] = imap->newdir[0] = '\0';
+		close_mailbox(imap);
 		imap_reply(imap, "OK CLOSE completed");
 	} else if (!strcasecmp(command, "EXPUNGE")) {
 		REQUIRE_SELECTED(imap);
@@ -6316,11 +6654,13 @@ static int imap_process(struct imap_session *imap, char *s)
 		IMAP_REQUIRE_ACL(imap->acl, IMAP_ACL_EXPUNGE);
 		if (imap->folder) {
 			imap->expungeindex = 0;
-			imap_traverse(imap->curdir, on_expunge, imap);
+			imap_expunge(imap, 0);
+			imap_reply(imap, "OK [HIGHESTMODSEQ %lu] EXPUNGE completed", imap->highestmodseq); /* imap->highestmodseq is guaranteed to be accurate here since we just set it */
+		} else {
+			imap_reply(imap, "OK EXPUNGE completed");
 		}
-		imap_reply(imap, "OK EXPUNGE completed");
 	} else if (!strcasecmp(command, "UNSELECT")) { /* Same as CLOSE, without the implicit auto-expunging */
-		imap->dir[0] = imap->curdir[0] = imap->newdir[0] = '\0';
+		close_mailbox(imap);
 		imap_reply(imap, "OK UNSELECT completed");
 	} else if (!strcasecmp(command, "FETCH")) {
 		REQUIRE_SELECTED(imap);
@@ -6486,6 +6826,29 @@ static int imap_process(struct imap_session *imap, char *s)
 		return handle_setacl(imap, s, 0);
 	} else if (!strcasecmp(command, "DELETEACL")) {
 		return handle_setacl(imap, s, 1);
+	} else if (!strcasecmp(command, "ENABLE")) {
+		char *cap;
+		int enabled = 0;
+		REQUIRE_ARGS(s);
+		while ((cap = strsep(&s, " "))) {
+			if (!strcasecmp(cap, "CONDSTORE")) {
+				imap->condstore = 1;
+				imap_send(imap, "ENABLED CONDSTORE");
+				enabled++;
+			} else if (!strcasecmp(cap, "QRESYNC")) {
+				imap->condstore = 1; /* Implicitly includes CONDSTORE */
+				imap->qresync = 1;
+				imap_send(imap, "ENABLED QRESYNC CONDSTORE");
+				enabled++;
+			} else {
+				bbs_warning("Unknown capability %s\n", cap);
+			}
+		}
+		if (enabled) {
+			imap_reply(imap, "OK ENABLE");
+		} else {
+			imap_reply(imap, "BAD [CLIENTBUG] Bad capability");
+		}
 	} else if (!strcasecmp(command, "TESTLOCK")) {
 		/* Hold the mailbox lock for a moment. */
 		/*! \note This is only used for the test suite, it is not part of any IMAP standard or intended for clients. */
@@ -6503,7 +6866,7 @@ static int imap_process(struct imap_session *imap, char *s)
 
 static void handle_client(struct imap_session *imap)
 {
-	char buf[1001];
+	char buf[8192]; /* Buffer size suggested by RFC 7162 Section 4 */
 	int res;
 	struct readline_data rldata;
 

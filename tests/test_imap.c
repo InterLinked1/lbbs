@@ -114,11 +114,31 @@ static int make_messages(int nummsg)
 	SWRITE(fd, tag " SELECT \"" name "\"" ENDL); \
 	CLIENT_EXPECT_EVENTUALLY(fd, tag " OK");
 
+static unsigned int get_uidvalidity(int fd, const char *mailbox)
+{
+	char buf[256];
+	char *s;
+	static int c = 0;
+
+	dprintf(fd, "u%d SELECT %s\r\n", ++c, mailbox);
+	if (test_client_expect_eventually_buf(fd, SEC_MS(5), "UIDVALIDITY ", __LINE__, buf, sizeof(buf))) {
+		return 0;
+	}
+	s = strstr(buf, "UIDVALIDITY ");
+	if (!s) {
+		return 0;
+	}
+	s += STRLEN("UIDVALIDITY ");
+	CLIENT_DRAIN(fd);
+	return atoi(s);
+}
+
 static int run(void)
 {
 	int client1 = -1, client2 = -1, smtpfd;
 	int res = -1;
 	int i;
+	unsigned int uidvalidity;
 
 	if (make_messages(TARGET_MESSAGES)) {
 		return -1;
@@ -275,7 +295,7 @@ static int run(void)
 
 	/* EXPUNGE */
 	SWRITE(client1, "a19 EXPUNGE" ENDL);
-	CLIENT_EXPECT(client1, "a19 OK EXPUNGE"); /* There are no messages in the currently selected folder with the Deleted flag set */
+	CLIENT_EXPECT(client1, "a19 OK"); /* There are no messages in the currently selected folder with the Deleted flag set */
 	/* But we can change that */
 	SELECT_MAILBOX(client1, "a20", "Trash");
 	/* We copied a message to the Trash in a18. Mark it as deleted. */
@@ -305,8 +325,6 @@ static int run(void)
 	CLIENT_EXPECT(client2, "* 1 EXPUNGE");
 	CLIENT_DRAIN(client2);
 
-	close_if(client2);
-
 	/* Test UID-prefixed commands. Granted... the UIDs and sequence numbers are the same in these tests. */
 	SWRITE(client1, "a23 SELECT \"INBOX\"" ENDL); /* First, switch back to the INBOX. */
 	CLIENT_EXPECT_EVENTUALLY(client1, "a23 OK [READ-WRITE] SELECT");
@@ -320,6 +338,14 @@ static int run(void)
 	send_count = 0;
 	make_messages(1);
 	CLIENT_EXPECT(client1, "* 12 EXISTS"); /* Should receive an untagged EXISTS message. In particular, there are now 12 messages in this folder. */
+
+	/* Change the flags of a message. We should get an untagged response for it. */
+	SELECT_MAILBOX(client2, "b3", "INBOX");
+	SWRITE(client2, "b4 STORE 1 +FLAGS.SILENT (\\Flagged)" ENDL);
+	CLIENT_EXPECT(client2, "b4 OK");
+	CLIENT_EXPECT(client1, "\\Flagged"); /* Should get an untagged response when a flag is changed */
+	close_if(client2);
+
 	SWRITE(client1, "DONE" ENDL);
 	CLIENT_EXPECT(client1, "a25 OK IDLE");
 
@@ -588,6 +614,54 @@ static int run(void)
 	SWRITE(client1, "e11 SEARCH RETURN (MIN) MODSEQ 1" ENDL);
 	CLIENT_EXPECT(client1, "MODSEQ"); /* XXX If we knew the modification sequences of all messages in this mailbox, we'd expect to see the modseq of the minimum UID message with MODSEQ >= 1 */
 	CLIENT_DRAIN(client1);
+
+	/* Test QRESYNC */
+	uidvalidity = get_uidvalidity(client1, "INBOX");
+	if (!uidvalidity) {
+		goto cleanup;
+	}
+	dprintf(client1, "e12 SELECT INBOX (QRESYNC (%u 1))" ENDL, uidvalidity); /* Try using QRESYNC without enabling */
+	CLIENT_EXPECT(client1, "e12 BAD");
+	dprintf(client1, "e13 ENABLE QRESYNC" ENDL);
+	CLIENT_EXPECT(client1, "QRESYNC");
+	CLIENT_DRAIN(client1);
+
+	dprintf(client1, "e14 SELECT INBOX (QRESYNC (%u 1))" ENDL, uidvalidity);
+	CLIENT_EXPECT_EVENTUALLY(client1, "FETCH"); /* Should get all flag changes since MODSEQ 1 */
+	CLIENT_DRAIN(client1);
+
+	dprintf(client1, "e15 SELECT INBOX (QRESYNC (%u 1))" ENDL, uidvalidity);
+	CLIENT_EXPECT_EVENTUALLY(client1, "VANISHED"); /* Repeat, to make sure we also got a VANISHED response */
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "e16 UID FETCH 1:* (FLAGS) (CHANGEDSINCE 1 VANISHED)" ENDL);
+	CLIENT_EXPECT(client1, "VANISHED"); /* Should get a VANISHED response */
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "e17 IDLE" ENDL);
+	CLIENT_EXPECT(client1, "+");
+
+	/* Now, if another client expunges a message, we should get a VANISHED response, not an EXPUNGE response */
+	client2 = test_make_socket(143);
+	if (client2 < 0) {
+		goto cleanup;
+	}
+	CLIENT_EXPECT(client2, "OK");
+	SWRITE(client2, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
+	CLIENT_EXPECT(client2, "a1 OK");
+	SELECT_MAILBOX(client2, "a2", "INBOX");
+	SWRITE(client2, "a3 STORE 1 +FLAGS.SILENT (\\Deleted)" ENDL);
+	CLIENT_EXPECT(client1, "\\Deleted"); /* We should get notified about the flag change since we're idling */
+	CLIENT_EXPECT(client2, "a3 OK");
+	SWRITE(client2, "a4 EXPUNGE" ENDL);
+	CLIENT_EXPECT(client2, "* 1 EXPUNGE");
+	CLIENT_EXPECT(client1, "* VANISHED"); /* We should get a VANISHED response for the expunged message (containing the UID) */
+
+	SWRITE(client1, "DONE" ENDL);
+	CLIENT_EXPECT(client1, "e17 OK");
+
+	CLIENT_DRAIN(client2);
+	close_if(client2);
 
 	/* LOGOUT */
 	SWRITE(client1, "z999 LOGOUT" ENDL);

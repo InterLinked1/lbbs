@@ -137,8 +137,21 @@ int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf);
  * \note This operation is used by both the IMAP and POP3 servers, although UIDs are only relevant for IMAP.
  *       POP3 calls this function to ensure consistency for IMAP operations.
  * \note This operation internally maintains the .uidvalidity of a maildir directory.
+ * \todo This function should really be renamed maildir_get_next_uid, it's a maildir function, not a mailbox function. Currently, it's a misnomer.
  */
 unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, int allocate, unsigned int *newuidvalidity, unsigned int *newuidnext);
+
+/*!
+ * \brief Indicate a sequence of expunges
+ * \param mbox
+ * \param directory Full system path of the cur directory for this maildir
+ * \param uids A list of message UIDs for expunged messages
+ * \param length Number of expunged messages in the list
+ * \retval The new HIGHESTMODSEQ for the mailbox
+ * \note For performance reasons, calls to this function should be batched if possible (which is why it takes a list, rather than only a single UID)
+ * \note This function MUST be called whenever messages are expunged from a directory, by IMAP, POP3, or SMTP
+ */
+unsigned long maildir_indicate_expunged(struct mailbox *mbox, const char *directory, unsigned int *uids, int length);
 
 /*!
  * \brief Get the highest MODSEQ (modification sequence number) in a maildir
@@ -215,6 +228,14 @@ int maildir_copy_msg(struct mailbox *mbox, const char *curfile, const char *curf
 
 /*! \brief Same as maildir_copy_msg, but also store the new filename of the message, like maildir_move_msg_filename */
 int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len);
+
+/*!
+ * \brief Get the UID of a maildir file in cur directory
+ * \param filename Base name of file
+ * \param[out] UID
+ * \retval 0 on success, -1 on failure
+ */
+int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid);
 
 /* SMTP processor callbacks */
 

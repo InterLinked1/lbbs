@@ -85,9 +85,9 @@ static int rlogin_handshake(struct bbs_node *node)
 
 	/* Client sends 4 NUL-terminated bytes.
 	 * <null>
-     * client-user-name<null>
-     * server-user-name<null>
-     * terminal-type/speed<null>
+	 * client-user-name<null>
+	 * server-user-name<null>
+	 * terminal-type/speed<null>
 	 */
 	res = bbs_fd_poll_read(node->fd, SEC_MS(2), buf, sizeof(buf) - 1);
 	if (res <= 0) {

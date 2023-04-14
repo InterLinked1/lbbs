@@ -278,6 +278,7 @@ static int on_delete(const char *dir_name, const char *filename, struct pop3_ses
 {
 	char fullpath[256];
 	char newdir[256];
+	unsigned int msguid;
 
 	UNUSED(msgfilter);
 
@@ -292,6 +293,11 @@ static int on_delete(const char *dir_name, const char *filename, struct pop3_ses
 
 	bbs_debug(5, "Deleting message %d (%s)\n", number, fullpath);
 	maildir_move_msg(pop3->mbox, fullpath, filename, pop3->trashmaildir, NULL, NULL); /* Move message to Trash folder */
+
+	/* It would be more efficient to batch deletions like with IMAP, but that would require moving this outside of the callback,
+	 * and given POP3 is just not intended to be as smart as IMAP, I am not sure that is worth the effort. */
+	maildir_parse_uid_from_filename(filename, &msguid);
+	maildir_indicate_expunged(pop3->mbox, dir_name, &msguid, 1);
 	return 0;
 }
 

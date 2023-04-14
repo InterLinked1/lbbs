@@ -92,6 +92,7 @@ int test_make_socket(int port);
 int test_client_expect(int fd, int ms, const char *s, int line);
 int test_client_expect_buf(int fd, int ms, const char *s, int line, char *buf, size_t len);
 int test_client_expect_eventually(int fd, int ms, const char *s, int line);
+int test_client_expect_eventually_buf(int fd, int ms, const char *s, int line, char *buf, size_t len);
 int test_client_drain(int fd, int ms);
 
 #define CLIENT_EXPECT(fd, s) if (test_client_expect(fd, SEC_MS(5), s, __LINE__)) { goto cleanup; }

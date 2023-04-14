@@ -264,6 +264,7 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 	int res;
 	struct thread_list_t *x;
 	int lwp;
+	int waiting_join;
 
 	RWLIST_RDLOCK(&thread_list);
 	RWLIST_TRAVERSE(&thread_list, x, list) {
@@ -272,10 +273,8 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 			if (x->detached) {
 				bbs_error("Can't join detached LWP %d at %s:%d %s()\n", lwp, file, line, func);
 				lwp = 0;
-			} else if (!x->waitingjoin) {
-				/* This is suspicious... we may end up hanging if the thread doesn't exit imminently */
-				bbs_warning("Thread %d is not currently waiting to be joined\n", lwp);
 			}
+			waiting_join = x->waitingjoin;
 			break;
 		}
 	}
@@ -289,7 +288,29 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 	}
 
 	bbs_debug(6, "Attempting to join thread %lu (LWP %d) at %s:%d %s()\n", thread, lwp, file, line, func);
-	res = pthread_join(thread, retval ? retval : &tmp);
+
+	if (!waiting_join) {
+		struct timespec ts;
+		/* This is suspicious... we may end up hanging if the thread doesn't exit imminently */
+		/* Don't immediately emit a warning, because the thread may be just about to exit
+		 * and thus wasn't waitingjoin when we checked. This prevents superflous warnings,
+		 * by waiting to join for a brief moment and only warning if the thread doesn't join in that time. */
+		ts.tv_sec = 0;
+		ts.tv_nsec = 15000000; /* 15 ms */
+		res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts); /* This is not POSIX portable */
+		if (res && res == ETIMEDOUT) {
+			/* The thread hasn't exited yet. At this point, it's more likely that something is actually wrong. */
+			bbs_warning("Thread %d is not currently waiting to be joined\n", lwp);
+			/* Now, proceed as normal and do a ~blocking pthread_join */
+			/* Seems that after using pthread_timedjoin_np, you can't do a blocking pthread_join anymore. So loop */
+			while (res && res == ETIMEDOUT) {
+				res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts);
+			}
+		}
+	} else {
+		res = pthread_join(thread, retval ? retval : &tmp);
+	}
+
 	if (res) {
 		bbs_error("pthread_join(%lu) at %s:%d %s(): %s\n", thread, file, line, func, strerror(res));
 		return res;

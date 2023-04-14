@@ -258,7 +258,7 @@ int test_client_drain(int fd, int ms)
 				break;
 			} else {
 				buf[res] = '\0';
-				bbs_debug(8, "Flushed: %s\n", buf);
+				bbs_debug(8, "Flushed: %s", buf); /* There's probably already a CR LF, don't add to it */
 				drained += res;
 			}
 		}
@@ -310,9 +310,14 @@ int test_client_expect_buf(int fd, int ms, const char *s, int line, char *buf, s
 
 int test_client_expect_eventually(int fd, int ms, const char *s, int line)
 {
+	char buf[4096];
+	return test_client_expect_eventually_buf(fd, ms, s, line, buf, sizeof(buf));
+}
+
+int test_client_expect_eventually_buf(int fd, int ms, const char *s, int line, char *buf, size_t len)
+{
 	int res;
 	struct pollfd pfd;
-	char buf[4096];
 
 	memset(&pfd, 0, sizeof(pfd));
 
@@ -330,7 +335,7 @@ int test_client_expect_eventually(int fd, int ms, const char *s, int line)
 		}
 		if (res > 0 && pfd.revents) {
 			int bytes;
-			bytes = read(fd, buf, sizeof(buf) - 1);
+			bytes = read(fd, buf, len - 1);
 			if (bytes <= 0) {
 				bbs_warning("Failed to receive expected output at line %d: %s (read returned %d)\n", line, s, bytes);
 				return -1;
@@ -867,6 +872,7 @@ static void stop_bbs(void)
 int main(int argc, char *argv[])
 {
 	int res = 0;
+	int total;
 	char fullpath[512];
 
 	if (parse_options(argc, argv)) {
@@ -914,6 +920,7 @@ int main(int argc, char *argv[])
 	if (res) {
 		fprintf(stderr, "%d test%s %sFAILED%s\n", total_fail, ESS(total_fail), COLOR(COLOR_RED), COLOR_RESET);
 	}
-	fprintf(stderr, "%d/%d tests passed\n", total_pass, total_pass + total_fail);
+	total = total_pass + total_fail;
+	fprintf(stderr, "%d/%d test%s passed\n", total_pass, total, ESS(total));
 	return res;
 }
