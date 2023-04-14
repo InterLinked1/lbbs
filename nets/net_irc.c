@@ -389,7 +389,7 @@ static int authorized_atleast(struct irc_member *member, int atleast)
 	return auth;
 }
 
-#define APPEND_MODE(buf, len, modes, mode, letter) if (modes & mode && (len-- >= 1)) { buf[pos++] = letter; }
+#define APPEND_MODE(buf, len, modes, mode, letter) if ((modes & mode) && (len-- >= 1)) { buf[pos++] = letter; }
 
 static int get_channel_user_modes(char *buf, size_t len, struct irc_member *member)
 {
@@ -407,6 +407,7 @@ static int get_channel_user_modes(char *buf, size_t len, struct irc_member *memb
 	APPEND_MODE(buf, len, member->modes, CHANNEL_USER_MODE_OP, 'o');
 	APPEND_MODE(buf, len, member->modes, CHANNEL_USER_MODE_FOUNDER, 'q');
 	APPEND_MODE(buf, len, member->modes, CHANNEL_USER_MODE_VOICE, 'v');
+	(void) len; /* Suppress cppcheck whining about len being unused for the last APPEND_MODE call */
 	pthread_mutex_unlock(&member->lock);
 	buf[pos] = '\0';
 	return 0;
@@ -438,6 +439,7 @@ static void get_channel_modes(char *buf, size_t len, struct irc_channel *channel
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_SECRET, 's');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_TOPIC_PROTECTED, 't');
 	APPEND_MODE(buf, len, channel->modes, CHANNEL_MODE_REDUCED_MODERATION, 'z');
+	(void) len; /* Suppress cppcheck whining about len being unused for the last APPEND_MODE call */
 	buf[pos] = '\0';
 }
 
@@ -456,13 +458,14 @@ static int get_user_modes(char *buf, size_t len, struct irc_user *user)
 	APPEND_MODE(buf, len, user->modes, USER_MODE_OPERATOR, 'o');
 	APPEND_MODE(buf, len, user->modes, USER_MODE_WALLOPS, 'w');
 	APPEND_MODE(buf, len, user->modes, USER_MODE_SECURE, 'Z');
+	(void) len; /* Suppress cppcheck whining about len being unused for the last APPEND_MODE call */
 	pthread_mutex_unlock(&user->lock);
 	buf[pos] = '\0';
 	return 0;
 }
 
 #define MULTIPREFIX_FMT "%s%s%s%s%s"
-#define MULTIPREFIX_ARGS(member) member->modes & CHANNEL_USER_MODE_FOUNDER ? PREFIX_FOUNDER : "", member->modes & CHANNEL_USER_MODE_ADMIN ? PREFIX_ADMIN : "", member->modes & CHANNEL_USER_MODE_OP ? PREFIX_OP : "", member->modes & CHANNEL_USER_MODE_HALFOP ? PREFIX_HALFOP : "", member->modes & CHANNEL_USER_MODE_VOICE ? PREFIX_VOICE : ""
+#define MULTIPREFIX_ARGS(member) (member->modes & CHANNEL_USER_MODE_FOUNDER) ? PREFIX_FOUNDER : "", (member->modes & CHANNEL_USER_MODE_ADMIN) ? PREFIX_ADMIN : "", (member->modes & CHANNEL_USER_MODE_OP) ? PREFIX_OP : "", (member->modes & CHANNEL_USER_MODE_HALFOP) ? PREFIX_HALFOP : "", (member->modes & CHANNEL_USER_MODE_VOICE) ? PREFIX_VOICE : ""
 
 static const char *top_channel_membership_prefix(struct irc_member *member)
 {
@@ -645,10 +648,10 @@ static void channel_free(struct irc_channel *channel)
 static void destroy_channels(void)
 {
 	struct irc_channel *channel;
-	struct irc_member *member;
 
 	RWLIST_WRLOCK(&channels);
 	while ((channel = RWLIST_REMOVE_HEAD(&channels, entry))) {
+		struct irc_member *member;
 		RWLIST_WRLOCK(&channel->members); /* Kick any members still present */
 		while ((member = RWLIST_REMOVE_HEAD(&channel->members, entry))) {
 			channel->membercount -= 1;
@@ -1054,7 +1057,7 @@ static int print_user_mode(struct irc_user *user)
 		bbs_debug(6, "Set mode %s\n", #mode); \
 		modes |= mode; \
 		changed++; \
-	} else if (!set) { \
+	} else { \
 		bbs_debug(6, "Cleared mode %s\n", #mode); \
 		modes &= ~mode; \
 		changed++; \
@@ -1109,7 +1112,6 @@ static void handle_modes(struct irc_user *user, char *s)
 		}
 	} else {
 		char *target;
-		char mode;
 		int set;
 		int changed = 0;
 		target = s; /* Anything left is the target, e.g. user to op */
@@ -1150,7 +1152,7 @@ static void handle_modes(struct irc_user *user, char *s)
 			targetmember = get_member_by_username(target, channel_name);
 		}
 		for (modes++; *modes; modes++) { /* Skip the + or - to start */
-			mode = *modes;
+			char mode = *modes;
 			bbs_debug(5, "Requesting %s mode %c for %s (%s)\n", set ? "set" : "unset", mode, target, S_IF(channel_name));
 			if (IS_CHANNEL_NAME(channel_name)) { /* Channel, and it's a channel operator */
 				char *args;
@@ -1228,7 +1230,7 @@ static void handle_modes(struct irc_user *user, char *s)
 							*args++ = '\0';
 							channel->throttleusers = atoi(target);
 							channel->throttleinterval = atoi(S_IF(args));
-							SET_MODE_FORCE(channel->modes, set, CHANNEL_MODE_THROTTLED); /* It's possible the arguments changed, even if it wasn't toggled. */
+							SET_MODE_FORCE(channel->modes, 1, CHANNEL_MODE_THROTTLED); /* It's possible the arguments changed, even if it wasn't toggled. */
 						} else {
 							SET_MODE(channel->modes, set, CHANNEL_MODE_THROTTLED);
 							channel->throttleusers = channel->throttleinterval = 0;
@@ -1243,7 +1245,7 @@ static void handle_modes(struct irc_user *user, char *s)
 						if (set) {
 							channel->password = strdup(target);
 							/* Broadcast the new password to the channel. */
-							channel_broadcast(channel, NULL, ":%s MODE %s %c%c %s\r\n", user->nickname, channel->name, set ? '+' : '-', mode, target);
+							channel_broadcast(channel, NULL, ":%s MODE %s %c%c %s\r\n", user->nickname, channel->name, '+', mode, target);
 							broadcast_if_change = 0; /* Don't do it again */
 						} else {
 							free_if(channel->password);
@@ -1486,7 +1488,6 @@ static int channels_in_common(struct irc_user *u1, struct irc_user *u2)
 	 * on the user struct itself, and make comparisons between those,
 	 * since users are not generally in many channels. */
 	struct irc_channel *channel;
-	struct irc_member *m1, *m2, *m;
 
 	if (u1 == u2) {
 		return 1; /* Same user */
@@ -1494,7 +1495,7 @@ static int channels_in_common(struct irc_user *u1, struct irc_user *u2)
 
 	RWLIST_RDLOCK(&channels);
 	RWLIST_TRAVERSE(&channels, channel, entry) {
-		m1 = m2 = NULL;
+		struct irc_member *m1 = NULL, *m2 = NULL, *m;
 		RWLIST_RDLOCK(&channel->members);
 		RWLIST_TRAVERSE(&channel->members, m, entry) {
 			if (m->user == u1) {
@@ -1615,11 +1616,8 @@ static int suppress_channel(struct irc_user *user, struct irc_channel *channel)
 static void handle_whois(struct irc_user *user, char *s)
 {
 	int now;
-	char buf[256];
-	int len = 0;
 	char umodes[15];
 	struct irc_channel *channel;
-	struct irc_member *member;
 	struct irc_user *u = get_user(s);
 	if (!u) {
 		int res = 0;
@@ -1663,9 +1661,12 @@ static void handle_whois(struct irc_user *user, char *s)
 	}
 
 	if (!IS_SERVICE(u)) {
+		char buf[256];
+		int len = 0;
 		/* Channel memberships */
 		RWLIST_RDLOCK(&channels);
 		RWLIST_TRAVERSE(&channels, channel, entry) {
+			struct irc_member *member;
 			if (channel->modes & CHANNEL_HIDDEN && suppress_channel(user, channel)) {
 				continue;
 			}
@@ -2037,7 +2038,7 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 
 	RWLIST_RDLOCK(&channel->members);
 	RWLIST_TRAVERSE(&channel->members, member, entry) {
-		if (member->user->modes & USER_MODE_INVISIBLE && !channels_in_common(member->user, user)) {
+		if ((member->user->modes & USER_MODE_INVISIBLE) && !channels_in_common(member->user, user)) {
 			continue; /* Hide from NAMES */
 		}
 		if (user->multiprefix) {
@@ -2689,7 +2690,7 @@ static void handle_client(struct irc_user *user)
 						} else {
 							bbs_error("Client %p already started?\n", user);
 						}
-					} else if (strcmp(s, "CAP END")) {
+					} else {
 						bbs_warning("Unhandled message: %s\n", s);
 					}
 				} else {
@@ -2702,13 +2703,9 @@ static void handle_client(struct irc_user *user)
 				} else if (!started && !strlen_zero(s) && !strcmp(s, "CAP END")) { /* CAP END can be sent at any time during capability negotiation */
 					capnegotiate = 0; /* Done with CAP */
 					bbs_debug(5, "Capability negotiation cancelled by client\n");
-					if (!started) {
-						if (!client_welcome(user)) {
-							started = 1;
-							/*! \todo once we auth, need to explicitly call add_user */
-						}
-					} else {
-						bbs_error("Client %p already started?\n", user);
+					if (!client_welcome(user)) {
+						started = 1;
+						/*! \todo once we auth, need to explicitly call add_user */
 					}
 				}
 			} else if (!strcasecmp(s, "CAP LS 302")) {

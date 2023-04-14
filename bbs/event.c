@@ -104,12 +104,12 @@ const char *bbs_event_name(enum bbs_event_type type)
 int bbs_event_broadcast(struct bbs_event *event)
 {
 	int res = 0;
-	int mres;
 	struct event_consumer *c;
 
 	/* Give each callback function a const pointer to it (since they all get the same event) */
 	RWLIST_RDLOCK(&consumers);
 	RWLIST_TRAVERSE(&consumers, c, entry) {
+		int mres;
 		bbs_module_ref(c->module);
 		mres = c->callback(event);
 		bbs_module_unref(c->module);

@@ -193,14 +193,13 @@ static int __transfer_set_path(struct bbs_node *node, const char *function, cons
 
 int __bbs_transfer_set_disk_path_absolute(struct bbs_node *node, const char *userpath, char *buf, size_t len, int mustexist)
 {
-	char tmp[256];
-
 	/*! \note Once home directory support is added, if trying to access another user's home directory, we should return EPERM (not ENOENT) */
 	UNUSED(node); /* Might be used in the future, e.g. for home directories? */
 
 	if (userpath && (strlen_zero(userpath) || !strcmp(userpath, ".") || !strcmp(userpath, "/"))) {
 		safe_strncpy(buf, rootdir, len); /* The rootdir must exist. Well, if it doesn't, then nothing will work anyways. */
 	} else {
+		char tmp[256];
 		int pathlen = !strlen_zero(userpath) ? strlen(userpath) : 0;
 		snprintf(tmp, sizeof(tmp), "%s%s", rootdir, S_IF(userpath));
 		if (pathlen > 3) {

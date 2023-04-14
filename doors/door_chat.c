@@ -197,8 +197,8 @@ static int __chat_send(struct channel *channel, struct participant *sender, cons
 	struct tm sendtime;
 	char datestr[18];
 	int timelen;
-	int res;
 	struct participant *p;
+
 #ifdef INTEGRITY_CHECKS
 	struct channel *c;
 
@@ -236,6 +236,7 @@ static int __chat_send(struct channel *channel, struct participant *sender, cons
 	/* Relay the message to everyone */
 	RWLIST_RDLOCK(&channel->participants);
 	RWLIST_TRAVERSE(&channel->participants, p, entry) {
+		int res;
 		if (p == sender) {
 			continue; /* Don't send a sender's message back to him/herself */
 		}
@@ -248,7 +249,7 @@ static int __chat_send(struct channel *channel, struct participant *sender, cons
 		 * can be reserved for the IRC module. Let's keep it simple here.
 		 */
 		if (!NODE_IS_TDD(p->node)) {
-			res = write(p->chatpipe[1], datestr, timelen); /* Don't send timestamps to TDDs, for brevity */
+			write(p->chatpipe[1], datestr, timelen); /* Don't send timestamps to TDDs, for brevity */
 		}
 		res = write(p->chatpipe[1], msg, len);
 		if (res <= 0) {

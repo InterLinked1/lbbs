@@ -86,7 +86,7 @@ static void *uds_listener(void *unused)
 {
 	struct sockaddr_un sunaddr;
 	socklen_t len;
-	int sfd, res;
+	int sfd;
 	struct pollfd pfd;
 
 	UNUSED(unused);
@@ -97,6 +97,7 @@ static void *uds_listener(void *unused)
 	bbs_debug(1, "Started UDS listener thread\n");
 
 	for (;;) {
+		int res;
 		struct bbs_node *node;
 		res = poll(&pfd, 1, -1); /* Wait forever for an incoming connection. */
 		pthread_testcancel();

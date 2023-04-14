@@ -160,7 +160,6 @@ void bbs_module_unref(struct bbs_module *mod)
 /*! \note modules list must be locked */
 static struct bbs_module *find_resource(const char *resource)
 {
-	char *curname;
 	struct bbs_module *mod = NULL;
 	int len = strlen(resource);
 	char buf[256]; /* Avoid using len + 4, for -Wstack-protector */
@@ -171,7 +170,7 @@ static struct bbs_module *find_resource(const char *resource)
 	}
 
 	RWLIST_TRAVERSE(&modules, mod, entry) {
-		curname = mod->name;
+		char *curname = mod->name;
 		if (!strcasecmp(curname, resource) || (*buf && !strcasecmp(curname, buf))) {
 			break;
 		}
@@ -564,8 +563,7 @@ static void dec_refcounts(struct bbs_module *mod)
 
 static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int force, int *usecount, struct stringlist *removed)
 {
-	int res = -1;
-	int error = 0;
+	int res;
 
 	bbs_debug(2, "Module %s has use count %d\n", mod->name, mod->usecount);
 	*usecount = mod->usecount;
@@ -592,7 +590,7 @@ static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int for
 		unload_dependencies(mod, removed);
 	}
 
-	if (!error && (mod->usecount > 0)) {
+	if (mod->usecount > 0) {
 		if (force > 1) {
 			bbs_warning("Warning:  Forcing removal of module '%s' with use count %d\n", mod->name, mod->usecount);
 		} else {
@@ -601,21 +599,19 @@ static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int for
 		}
 	}
 
-	if (!error) {
-		bbs_debug(1, "Unloading %s\n", mod->name);
-		res = mod->info->unload();
-		if (res) {
-			bbs_warning("Firm unload failed for %s\n", mod->name);
-			if (force <= 2) {
-				return NULL;
-			} else {
-				bbs_warning("** Dangerous **: Unloading resource anyway, at user request\n");
-			}
+	bbs_debug(1, "Unloading %s\n", mod->name);
+	res = mod->info->unload();
+	if (res) {
+		bbs_warning("Firm unload failed for %s\n", mod->name);
+		if (force <= 2) {
+			return NULL;
 		} else {
-			/* Decrement the ref count of any modules upon which we depend. */
-			if (!strlen_zero(mod->info->dependencies)) {
-				dec_refcounts(mod);
-			}
+			bbs_warning("** Dangerous **: Unloading resource anyway, at user request\n");
+		}
+	} else {
+		/* Decrement the ref count of any modules upon which we depend. */
+		if (!strlen_zero(mod->info->dependencies)) {
+			dec_refcounts(mod);
 		}
 	}
 
@@ -847,10 +843,7 @@ int bbs_module_unload(const char *name)
 	int res;
 
 	res = unload_resource(name, 0, NULL);
-	if (res) {
-		return -1;
-	}
-	return res;
+	return res ? -1 : 0;
 }
 
 int bbs_module_reload(const char *name, int try_delayed)
@@ -916,7 +909,6 @@ int bbs_list_modules(int fd)
 /*! \brief Cleanly unload everything we can */
 static void unload_modules_helper(void)
 {
-	struct bbs_module *mod, *lastmod = NULL;
 	int passes, skipped = 0;
 
 	bbs_debug(3, "Auto unloading modules\n");
@@ -929,7 +921,7 @@ static void unload_modules_helper(void)
 	 * We really try our best here to unload all modules cleanly, but we can't try forever in case a module is just not unloading. */
 	for (passes = 0 ; (passes == 0 || skipped) && passes < MAX_PASSES ; passes++) {
 		int nodecount = bbs_node_count();
-		lastmod = NULL; /* If passes > 0, do this so we don't try dlclosing a module twice */
+		struct bbs_module *mod, *lastmod = NULL; /* If passes > 0, do this so we don't try dlclosing a module twice */
 		RWLIST_TRAVERSE(&modules, mod, entry) {
 			if (lastmod) {
 				/* Because we're using a singly linked list, instead of a doubly linked list,

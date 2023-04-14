@@ -47,7 +47,7 @@
 
 static char *escape_string(const char *string)
 {
-	const char *start, *inptr;
+	const char *inptr;
 	GString *str;
 
 	str = g_string_new("");
@@ -55,7 +55,7 @@ static char *escape_string(const char *string)
 	inptr = string;
 
 	while (*inptr) {
-		start = inptr;
+		const char *start = inptr;
 		while (*inptr && *inptr != '"') {
 			inptr++;
 		}
@@ -108,11 +108,10 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 	
 	if (GMIME_IS_MULTIPART(part)) {
 		GMimeMultipart *multipart = (GMimeMultipart *) part;
-		GMimeObject *subpart;
-		
+
 		n = g_mime_multipart_get_count(multipart);
 		for (i = 0; i < n; i++) {
-			subpart = g_mime_multipart_get_part(multipart, i);
+			GMimeObject *subpart = g_mime_multipart_get_part(multipart, i);
 			write_part_bodystructure(subpart, gs);
 		}
 	} else if (GMIME_IS_MESSAGE_PART(part)) {

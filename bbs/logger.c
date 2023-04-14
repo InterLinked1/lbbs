@@ -397,10 +397,11 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 		if (stdoutavailable) {
 			vfprintf(stderr, fmt, ap);
 		}
+		va_end(ap);
 		if (logfp) {
 			vfprintf(logfp, fmt, ap2);
 		}
-		va_end(ap);
+		va_end(ap2);
 	} else {
 		char *fullbuf;
 		int bytes;

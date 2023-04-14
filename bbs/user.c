@@ -117,7 +117,7 @@ int bbs_users_dump(int fd, int verbose)
 		}
 		if (verbose >= 10) {
 			bbs_dprintf(fd, " %4d %-15s %-15s %3d %s%c %s\r\n",
-				user->id, bbs_username(user), verbose >= 10 ? S_IF(user->fullname) : "", user->priv,
+				user->id, bbs_username(user), S_IF(user->fullname), user->priv,
 				S_IF(user->city), !strlen_zero(user->city) || !strlen_zero(user->state), S_IF(user->state));
 		} else {
 			bbs_dprintf(fd, " %4d %-15s\r\n", user->id, bbs_username(user));

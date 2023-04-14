@@ -78,7 +78,6 @@ static int readline_post_read(struct readline_data *rldata, const char *delim, c
 #endif
 	rldata->pos = firstdelim; /* Update pos to point to the beginning, not the end, of the remaining data in the buffer. leftover tells us how much is left, we don't need a pointer to it directly. */
 
-	firstdelim += 2; /* There is no guarantee that this doesn't contain garbage, but this is our next position. */
 	return used; /* Return number of bytes that we're actually returning, not however many are really in the buffer, since the caller won't care about that anyways. */
 }
 

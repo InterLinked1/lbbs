@@ -149,7 +149,7 @@ static struct bbs_user *auth_by_pubkey(const char *user, struct ssh_key_struct *
 		bbs_auth("Public key authentication failed for '%s' (no such user)\n", user);
 		return NULL;
 	}
-	snprintf(keyfile, sizeof(keyfile), "%s/home/%d/ssh.pub", bbs_transfer_rootdir(), userid);
+	snprintf(keyfile, sizeof(keyfile), "%s/home/%u/ssh.pub", bbs_transfer_rootdir(), userid);
 	if (!bbs_file_exists(keyfile)) {
 		bbs_auth("Public key authentication failed for '%s' (no public key for user)\n", user);
 		return NULL;
@@ -442,7 +442,6 @@ static const char *fopen_flags(int flags)
 static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 {
 	sftp_attributes attr;
-	struct dirent *dir;
 	struct stat st;
 	int eof = 0;
 	char file[1024];
@@ -456,7 +455,7 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 	}
 
 	while (!eof) {
-		dir = readdir(info->dir); /* XXX This is not thread safe */
+		struct dirent *dir = readdir(info->dir); /* XXX This is not thread safe */
 		if (!dir) {
 			eof = 1;
 			break;
@@ -548,7 +547,6 @@ static int handle_read(sftp_client_message msg)
 
 static int handle_write(sftp_client_message msg)
 {
-	int r;
 	uint32_t len;
 	struct sftp_info *info = sftp_handle(msg->sftp, msg->handle);
 
@@ -565,7 +563,7 @@ static int handle_write(sftp_client_message msg)
 		return -1;
 	}
 	do {
-		r = fwrite(string_data(msg->data), 1, len, info->file);
+		int r = fwrite(string_data(msg->data), 1, len, info->file);
 		if (r <= 0 && len > 0) {
 			handle_errno(msg);
 			return -1;
@@ -609,13 +607,12 @@ struct sftp_ext_struct {
 
 static void sftp_ext_free(sftp_ext ext)
 {
-	size_t i;
-
 	if (ext == NULL) {
 		return;
 	}
 
 	if (ext->count > 0) {
+		size_t i;
 		if (ext->name != NULL) {
 			for (i = 0; i < ext->count; i++) {
 				SAFE_FREE(ext->name[i]);

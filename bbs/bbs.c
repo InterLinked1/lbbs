@@ -794,14 +794,13 @@ static int load_config(void)
 
 int main(int argc, char *argv[])
 {
-	long current_pid;
-
 	if (parse_options_pre(argc, argv) || load_config() || parse_options(argc, argv) || run_init(argc, argv) || bbs_log_init(option_nofork)) {
 		free_options();
 		exit(EXIT_FAILURE);
 	}
 
 	if (!config_dir) {
+		long current_pid;
 		/* If BBS already running, don't start another one. */
 		if ((current_pid = bbs_is_running())) {
 			startup_error("BBS already running on PID %ld. Use rsysop for remote sysop console.\n", current_pid);

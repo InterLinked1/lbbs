@@ -427,7 +427,6 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 	int local, res;
 	char *user, *domain;
 	char *address;
-	const char *recipients;
 
 	/* If MAIL FROM is an address that belongs to us,
 	 * then authentication is required. Any recipients are allowed.
@@ -459,6 +458,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 
 	if (local) {
 		struct mailbox *mbox;
+		const char *recipients;
 
 		/* Check if it's a mailing list. */
 		recipients = mailbox_expand_list(user);
@@ -515,9 +515,10 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 					 * In other words, if there are 50 users on the BBS, but only 15 have mailbox directories,
 					 * we'll only deliver 15, to avoid the hassle of creating mailboxes for users that may
 					 * not check them anyways. */
-					int index = 0;
-					struct bbs_user *bbsuser, **users = bbs_user_list();
+					struct bbs_user **users = bbs_user_list();
 					if (users) {
+						struct bbs_user *bbsuser;
+						int index = 0;
 						while ((bbsuser = users[index++])) {
 							char maildir[256];
 							snprintf(maildir, sizeof(maildir), "%s/%d", mailbox_maildir(NULL), bbsuser->id);
@@ -978,7 +979,6 @@ static int prepend_spf(struct smtp_session *smtp, const char *recipient, int fd)
 	SPF_request_t *spf_request;
 	SPF_response_t *spf_response = NULL;
 	const char *domain;
-	const char *spfresult;
 
 	UNUSED(recipient);
 
@@ -1003,7 +1003,7 @@ static int prepend_spf(struct smtp_session *smtp, const char *recipient, int fd)
 
 	SPF_request_query_mailfrom(spf_request, &spf_response);
 	if (spf_response) {
-		spfresult = SPF_strresult(SPF_response_result(spf_response));
+		const char *spfresult = SPF_strresult(SPF_response_result(spf_response));
 		bbs_debug(5, "Received-SPF: %s\n", SPF_response_get_received_spf_value(spf_response));
 		if (VALID_SPF(spfresult)) {
 			dprintf(fd, "%s\r\n", SPF_response_get_received_spf(spf_response));
@@ -1576,9 +1576,9 @@ static void *smtp_async_send(void *varg)
 /*! \brief Accept delivery of a message to an external recipient, sending it now if possible and queuing it otherwise */
 static int external_delivery(struct smtp_session *smtp, const char *recipient, const char *domain, const char *data, unsigned long datalen)
 {
-	int res = -1;
 #ifndef BUGGY_SEND_IMMEDIATE
 	char buf[256] = "";
+	int res = -1;
 #endif
 
 	bbs_assert(smtp->fromlocal);
@@ -1618,14 +1618,21 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		}
 #endif
 	}
+
+#ifndef BUGGY_SEND_IMMEDIATE
 	if (res && !queue_outgoing) {
 		bbs_debug(3, "Delivery failed and can't queue message, rejecting\n");
 		return -1; /* Can't queue failed message, so reject it now. */
 	} else if (res) {
+		int doasync;
+#else
+	if (1) {
+		int res;
+#endif
 		int fd;
 		char qdir[256];
 		char tmpfile[256], newfile[256];
-		int doasync;
+
 		if (!queue_outgoing) {
 			return -1;
 		}
@@ -1666,12 +1673,12 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 			return -1;
 		}
 		close(fd);
-#ifdef BUGGY_SEND_IMMEDIATE
-		doasync = 1;
-#else
+#ifndef BUGGY_SEND_IMMEDIATE
 		doasync = send_async;
-#endif
 		if (doasync) {
+#else
+		if (1) {
+#endif
 			pthread_t sendthread;
 			const char *filename;
 			char *filenamedup;
@@ -2140,12 +2147,11 @@ static int handle_burl(struct smtp_session *smtp, char *s)
 	/* Need to find this as do_deliver expects this was sent while receiving data */
 	tmp = strstr(msgdata, "From:");
 	if (tmp) {
-		int len;
 		tmp += STRLEN("From:");
 		ltrim(tmp);
 		end = strchr(tmp, '\r');
 		if (end) {
-			len = end - tmp;
+			int len = end - tmp;
 			smtp->fromheaderaddress = strndup(tmp, len);
 		}
 	}
@@ -2404,7 +2410,6 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 {
 	char buf[1001]; /* Maximum length, including CR LF, is 1000 */
-	int res;
 	struct readline_data rldata;
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
@@ -2412,7 +2417,7 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 	smtp_reply_nostatus(smtp, 220, "%s ESMTP Service Ready", bbs_hostname());
 
 	for (;;) {
-		res = bbs_fd_readline(smtp->rfd, &rldata, "\r\n", 60000); /* Wait 60 seconds, that ought to be plenty even for manual testing... real SMTP clients won't need more than a couple seconds. */
+		int res = bbs_fd_readline(smtp->rfd, &rldata, "\r\n", 60000); /* Wait 60 seconds, that ought to be plenty even for manual testing... real SMTP clients won't need more than a couple seconds. */
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {

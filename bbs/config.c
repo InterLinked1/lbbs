@@ -155,10 +155,9 @@ int bbs_config_val_set_uint(struct bbs_config *cfg, const char *section_name, co
 
 int bbs_config_val_set_port(struct bbs_config *cfg, const char *section_name, const char *key, int *var)
 {
-	int tmp;
 	const char *s = bbs_config_val(cfg, section_name, key);
 	if (!strlen_zero(s)) {
-		tmp = atoi(s);
+		int tmp = atoi(s);
 		if (PORT_VALID(tmp)) {
 			*var = tmp;
 		} else {
@@ -380,7 +379,7 @@ static struct bbs_config *config_parse(const char *name)
 			continue;
 		}
 
-		key = value = NULL;
+		value = NULL;
 		key = line; /* Must not modify line pointer for free() */
 
 		ltrim(key); /* Eat leading whitespace: maybe the line has a comment later on and that's it */
@@ -396,7 +395,7 @@ static struct bbs_config *config_parse(const char *name)
 		*value++ = '\0';
 		trim(key);
 		trim(value);
-
+		
 		if (!section) {
 			bbs_warning("Failed to process %s=%s, not in a section (%s:%d)\n", key, value, name, lineno);
 			continue;

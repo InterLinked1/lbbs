@@ -70,7 +70,6 @@ static void process_section(bfd *bfdobj, asection *section, void *obj)
 	bfd_vma vma;
 	bfd_size_type size;
 	bfd_boolean line_found = 0;
-	char *fn;
 	int inlined = 0;
 
 	offset = data->pc - (data->dynamic ? (bfd_vma)(uintptr_t) data->dli.dli_fbase : 0);
@@ -113,6 +112,7 @@ static void process_section(bfd *bfdobj, asection *section, void *obj)
 	/* If we find a line, we will want to continue calling bfd_find_inliner_info
 	 * to capture any inlined functions that don't have their own stack frames. */
 	do {
+		char *fn;
 		data->found++;
 		/* file can possibly be null even with a success result from bfd_find_nearest_line */
 		file = file ? file : "";
@@ -157,7 +157,6 @@ static void bt_get_symbols(void **addresses, int num_frames, char *retstrings[])
 	static pthread_mutex_t bfd_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 	for (stackfr = 0; stackfr < num_frames; stackfr++) {
-		int symbolcount;
 		struct bfd_data data = {
 			.retstrings = retstrings,
 			.msg = msg,
@@ -182,6 +181,7 @@ static void bt_get_symbols(void **addresses, int num_frames, char *retstrings[])
 		pthread_mutex_lock(&bfd_mutex);
 		/* Using do while(0) here makes it easier to escape and clean up */
 		do {
+			int symbolcount;
 			bfdobj = bfd_openr(data.dli.dli_fname, NULL);
 			if (!bfdobj) {
 				break;
@@ -239,7 +239,6 @@ static void bbs_log_backtrace(void)
 	char **bt_syms;
 	void *array[BT_MAX_STACK_FRAMES]; /* Maximum number of stack frames to dump. */
 	size_t size;
-	unsigned long i;
 
 	size = backtrace(array, BT_MAX_STACK_FRAMES);
 	bt_syms = backtrace_symbols(array, size);
@@ -249,6 +248,7 @@ static void bbs_log_backtrace(void)
 	{
 		/* Scope for retstrings, since size is not known at beginning of function */
 		char *retstrings[size];
+		unsigned long i;
 #pragma GCC diagnostic pop
 		memset(retstrings, 0, sizeof(*retstrings));
 		bt_get_symbols(array, size, retstrings); /* Get backtraces with friendly symbols */

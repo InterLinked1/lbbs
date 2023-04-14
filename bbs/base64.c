@@ -111,13 +111,14 @@ static int __base64_encode_file(FILE *inputfile, FILE *outputfile, const char *e
 	memset(&bio, 0, sizeof(bio));
 	bio.iocp = BASEMAXINLINE;
 
-	while (!hiteof){
-		unsigned char igroup[3], ogroup[4];
-		int c, n;
+	while (!hiteof) {
+		unsigned char igroup[3];
+		int n;
 
 		memset(igroup, 0, sizeof(igroup));
 
 		for (n = 0; n < 3; n++) {
+			int c;
 			if ((c = inchar(&bio, inputfile)) == EOF) {
 				hiteof = 1;
 				break;
@@ -127,6 +128,7 @@ static int __base64_encode_file(FILE *inputfile, FILE *outputfile, const char *e
 		}
 
 		if (n > 0) {
+			unsigned char ogroup[4];
 			ogroup[0]= dtable[igroup[0] >> 2];
 			ogroup[1]= dtable[((igroup[0] & 3) << 4) | (igroup[1] >> 4)];
 			ogroup[2]= dtable[((igroup[1] & 0xF) << 2) | (igroup[2] >> 6)];

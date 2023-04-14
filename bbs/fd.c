@@ -258,10 +258,8 @@ FILE *__fdleak_fopen(const char *path, const char *mode, const char *file, int l
 int __fdleak_fclose(FILE *ptr)
 {
 	int fd, res;
-	if (!ptr) {
-		return fclose(ptr);
-	}
 
+	bbs_assert_exists(ptr);
 	fd = fileno(ptr);
 	if ((res = fclose(ptr)) || fd < 0 || fd >= (int) ARRAY_LEN(fdleaks)) {
 		return res;

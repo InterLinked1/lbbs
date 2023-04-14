@@ -421,7 +421,6 @@ static int login_is_cached(struct bbs_node *node, const char *username, const ch
 	struct cached_login *l;
 	int now, cutoff;
 	int remaining = 0;
-	int i;
 
 	now = time(NULL);
 	cutoff = now - MAX_CACHE_AGE;
@@ -440,7 +439,7 @@ static int login_is_cached(struct bbs_node *node, const char *username, const ch
 
 	/* If we still have more than MAX_CACHE_SIZE, purge the oldest ones. */
 	if (remaining > MAX_CACHE_SIZE) {
-		i = 0;
+		int i = 0;
 		RWLIST_TRAVERSE_SAFE_BEGIN(&cached_logins, l, entry) {
 			if (i++ < MAX_CACHE_SIZE) { /* Oldest cached logins are all at the end of the list */
 				continue;

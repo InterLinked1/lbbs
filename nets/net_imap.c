@@ -422,7 +422,7 @@ static void send_untagged_expunge(struct imap_session *imap, int silent, unsigne
 			int i;
 			for (i = 0; i < length; i++) {
 				char normalmsg[64];
-				int normallen = snprintf(normalmsg, sizeof(normalmsg), "* %d EXPUNGE\r\n", seqno[i]);
+				int normallen = snprintf(normalmsg, sizeof(normalmsg), "* %u EXPUNGE\r\n", seqno[i]);
 				bbs_std_write(delay ? s->pfd[1] : s->wfd, normalmsg, normallen);
 				imap_debug(4, "%p <= %s", s, normalmsg);
 			}
@@ -524,13 +524,13 @@ static int uidsort(const struct dirent **da, const struct dirent **db)
 }
 
 /*! \brief Find the disk filename of a message, given its sequence number or UID in a cur maildir folder */
-static int imap_msg_to_filename(const char *directory, int seqno, int uid, char *buf, size_t len)
+static int imap_msg_to_filename(const char *directory, int seqno, unsigned int uid, char *buf, size_t len)
 {
-	DIR *dir;
 	struct dirent *entry;
 
 	/*! \todo We should cache all the filenames in a single file perhaps to speed up lookups */
 	if (uid) {
+		DIR *dir;
 		char fbuf[25];
 		snprintf(fbuf, sizeof(fbuf), ",U=%u", uid);
 		/* Doesn't need to be an ordered traversal. readdir is okay. */
@@ -659,7 +659,7 @@ static void imap_destroy(struct imap_session *imap)
 		int _bytes = snprintf(bufpos, buflen, bufpos == bufstart ? fmt : " " fmt, ## __VA_ARGS__); \
 		bufpos += _bytes; \
 		buflen -= _bytes; \
-		if (buflen <= 0) { \
+		if ((int) buflen <= 0) { \
 			bbs_warning("Buffer truncation\n"); \
 			*(bufpos + buflen - 1) = '\0';  \
 		} \
@@ -670,7 +670,7 @@ static void imap_destroy(struct imap_session *imap)
 		int _bytes = snprintf(bufpos, buflen, fmt, ## __VA_ARGS__); \
 		bufpos += _bytes; \
 		buflen -= _bytes; \
-		if (buflen <= 0) { \
+		if ((int) buflen <= 0) { \
 			bbs_warning("Buffer truncation\n"); \
 			*(bufpos + buflen - 1) = '\0';  \
 		} \
@@ -776,7 +776,7 @@ static void parse_keyword(struct imap_session *imap, const char *s, const char *
 
 	mailbox_uid_lock(imap->mbox); /* We're not doing anything with the UID, but that's a global short-lived lock for the mailbox we can use (unlike mailbox_wrlock) */
 	fp = fopen(filename, "a+"); /* XXX Silly to reopen this file in every loop of parse_flags_string. In practice, most messages will probably only have 1 keyword, if any. */
-	if (unlikely(!!!fp)) { /* same as fp == NULL */
+	if (unlikely(fp == NULL)) {
 		bbs_error("File %s does not exist and could not be created: %s\n", filename, strerror(errno)); /* This really should not happen */
 		mailbox_uid_unlock(imap->mbox);
 		return;
@@ -829,7 +829,6 @@ static int __gen_keyword_names(const char *s, char *inbuf, size_t inlen, const c
 	char filename[266];
 	char *buf = inbuf;
 	int matches = 0;
-	int keywordslen = 0;
 	int left = inlen;
 	const char *custom_start = s;
 
@@ -851,7 +850,8 @@ static int __gen_keyword_names(const char *s, char *inbuf, size_t inlen, const c
 	}
 
 	if (s) {
-		while (*s) {
+		int keywordslen = 0;
+		while (!strlen_zero(s)) {
 			if (islower(*s)) {
 				keywordslen++;
 			}
@@ -1538,7 +1538,7 @@ static int imap_translate_dir(struct imap_session *imap, const char *directory, 
 			}
 			remainder += strlen(username);
 			/* Just this is \Select'able, it's the INBOX (INBOX isn't shown as a separate subdir for Other Users, etc.) */
-			snprintf(buf, len, "%s/%d%s%s", mailbox_maildir(NULL), userid, !strlen_zero(remainder) ? "/" : "", remainder); /* Don't end in a trailing slash */
+			snprintf(buf, len, "%s/%u%s%s", mailbox_maildir(NULL), userid, !strlen_zero(remainder) ? "/" : "", remainder); /* Don't end in a trailing slash */
 			/* Update mailbox to pointer to the right one */
 			/* imap->mbox refers to the personal mailbox, not this other user's mailbox...
 			 * imap->mbox needs to point to the other user's mailbox now. */
@@ -1612,7 +1612,7 @@ static long parse_modseq_from_filename(const char *filename, unsigned long *mods
 	modseqstr += STRLEN(",M=");
 	if (!strlen_zero(modseqstr)) {
 		*modseq = atol(modseqstr); /* Should stop as soon we encounter the first nonnumeric character, whether , or : */
-		if (*modseq <= 0) {
+		if (!*modseq) {
 			bbs_warning("Failed to parse modseq for %s\n", filename);
 			return -1;
 		}
@@ -1679,7 +1679,7 @@ static inline unsigned int parse_size_from_filename(const char *filename, unsign
 	}
 	sizestr += STRLEN(",S=");
 	*size = atol(sizestr);
-	if (*size <= 0) {
+	if (!*size) {
 		bbs_warning("Invalid size (%lu) for %s\n", *size, filename);
 	}
 	return 0;
@@ -2760,9 +2760,8 @@ static int in_range(const char *s, int num)
 
 static int imap_in_range(struct imap_session *imap, const char *s, int num)
 {
-	int res = 0;
-
 	if (!strcmp(s, "$")) {
+		int res = 0;
 		/* The caller already accounts for savedsearchuid (don't need to, and can't, do that here) */
 		pthread_mutex_lock(&imap->lock); /* Lock the session to prevent somebody from freeing the savedsearch from under us */
 		if (!imap->savedsearch) {
@@ -2997,7 +2996,7 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 	int lengths = 0, allocsizes = 0;
 	unsigned int uidvalidity, uidnext, uidres;
 	char *olduidstr = NULL, *newuidstr = NULL;
-	unsigned long quotaleft;
+	long quotaleft;
 	int destacl;
 	int error = 0;
 	char newfile[256];
@@ -3176,7 +3175,7 @@ cleanup:
 static int handle_append(struct imap_session *imap, char *s)
 {
 	int appendsize;
-	char *mailbox, *flags, *date, *size;
+	char *mailbox, *flags, *size;
 	unsigned long quotaleft;
 	int destacl;
 
@@ -3199,6 +3198,7 @@ static int handle_append(struct imap_session *imap, char *s)
 	 * In this case, we can skip all this:
 	 */
 	if (size > s + 1) {
+		char *date;
 		/* These are both optional arguments */
 
 		/* Multiword, e.g. APPEND "INBOX" "23-Jul-2002 19:39:23 -0400" {1110}
@@ -3279,19 +3279,16 @@ static void generate_flag_names_full(struct imap_session *imap, const char *file
 	char flagsbuf[256] = "";
 	int has_flags;
 	int custom_keywords;
-	const char *flags;
 
 	char *buf = *bufptr;
 	size_t len = *lenptr;
 
 	if (isdigit(*filename)) { /* We have an entire filename */
-		flags = strchr(filename, ':'); /* Skip everything before the flags, so we don't e.g. interpret ,S= as the Seen flag. */
-		if (!flags) {
+		filename = strchr(filename, ':'); /* Skip everything before the flags, so we don't e.g. interpret ,S= as the Seen flag. */
+		if (!filename) {
 			filename = ""; /* There ain't no flags here */
 		}
-	} else {
-		flags = filename; /* Must just have the "flags" portion of the filename to begin with */
-	}
+	} /* else, must just have the "flags" portion of the filename to begin with */
 
 	gen_flag_names(filename, flagsbuf, sizeof(flagsbuf));
 	has_flags = flagsbuf[0] ? 1 : 0;
@@ -4308,10 +4305,9 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 		/* Send the response if not silent */
 		if (changes && !silent) {
 			char flagstr[256];
-			int slen;
 			gen_flag_names(newflagletters, flagstr, sizeof(flagstr));
 			if (keywords[0]) { /* Current keywords */
-				slen = strlen(flagstr);
+				int slen = strlen(flagstr);
 				/*! \todo We should not append a space before if we're at the beginning of the buffer */
 				gen_keyword_names(imap, keywords, flagstr + slen, sizeof(flagstr) - slen); /* Append keywords (include space before) */
 			}
@@ -4369,7 +4365,7 @@ done:
 
 static int handle_store(struct imap_session *imap, char *s, int usinguid)
 {
-	char *sequences, *modifier, *operation, *tmp;
+	char *sequences, *operation;
 	int flagop;
 	int silent;
 	int do_unchangedsince = 0; /* Needed since unchangedsince is unsigned, and 0 is a valid value */
@@ -4380,6 +4376,7 @@ static int handle_store(struct imap_session *imap, char *s, int usinguid)
 	REQUIRE_ARGS(s);
 
 	if (*s == '(') {
+		char *modifier, *tmp;
 		modifier = s + 1;
 		s = strchr(modifier, ')');
 		REQUIRE_ARGS(s);
@@ -4802,12 +4799,11 @@ static void imap_search_free(struct imap_search_keys *skeys)
 static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str *str, int depth)
 {
 	char buf[512];
-	size_t bytes;
 	struct imap_search_key *skey;
 
 	RWLIST_TRAVERSE(skeys, skey, entry) {
 		/* Indent according to the recursion depth */
-		bytes = snprintf(buf, sizeof(buf), "=%%= %*.s %s -> ", 3 * depth, "", imap_search_key_name(skey->type));
+		size_t bytes = snprintf(buf, sizeof(buf), "=%%= %*.s %s -> ", 3 * depth, "", imap_search_key_name(skey->type));
 		dyn_str_append(str, buf, bytes);
 		switch (skey->type) {
 			case IMAP_SEARCH_ANSWERED:
@@ -4835,7 +4831,7 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 				dyn_str_append(str, buf, bytes);
 				break;
 			case IMAP_SEARCH_MODSEQ:
-				bytes = snprintf(buf, sizeof(buf), "%d\n", skey->child.longnumber);
+				bytes = snprintf(buf, sizeof(buf), "%lu\n", skey->child.longnumber);
 				dyn_str_append(str, buf, bytes);
 				break;
 			case IMAP_SEARCH_BCC:
@@ -4950,7 +4946,7 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 			*next = '\0'; \
 			*s = next + 1; \
 		} else { \
-			*s = '\0'; \
+			*s = NULL; \
 		} \
 		nk->child.string = begin; /* This is not dynamically allocated, and does not need to be freed. */ \
 		listsize++; \
@@ -5315,11 +5311,11 @@ static int search_sent_date(struct imap_search *search, struct tm *tm)
 	break;
 
 #define SEARCH_FLAG_MATCH(flag) \
-	retval = search->flags & flag ? 1 : 0; \
+	retval = (search->flags & flag) ? 1 : 0; \
 	break;
 
 #define SEARCH_FLAG_NOT_MATCH(flag) \
-	retval = search->flags & flag ? 0 : 1; \
+	retval = (search->flags & flag) ? 0 : 1; \
 	break;
 
 #define SEARCH_STAT() \
@@ -5855,8 +5851,9 @@ static int parse_search_options(char *s)
 
 static int parse_return_options(struct imap_session *imap, char **str, int *option_flags)
 {
-	char *options, *s = *str;
+	char *s = *str;
 	if (STARTS_WITH(s, "RETURN (")) {
+		char *options;
 		s += STRLEN("RETURN (");
 		options = s;
 		s = strchr(s, ')');
@@ -5910,7 +5907,7 @@ static void esearch_response(struct imap_session *imap, int option_flags, unsign
 				parse_modseq_from_filename(filename, &othermodseq);
 				maxmodseq = MAX(maxmodseq, othermodseq);
 			} else {
-				int target = option_flags & ESEARCH_MIN ? min : max;
+				int target = (option_flags & ESEARCH_MIN) ? min : max;
 				/* One corresponding to the particular message */
 				imap_msg_to_filename(imap->curdir, usinguid ? 0 : target, usinguid ? target : 0, filename, sizeof(filename));
 				parse_modseq_from_filename(filename, &maxmodseq);
@@ -6501,7 +6498,6 @@ static int imap_process(struct imap_session *imap, char *s)
 	 */
 
 	if (imap->pending) { /* Not necessary to lock just to read the flag. Only if we're actually going to read data. */
-		char buf[1024]; /* Hopefully big enough for any single command. */
 		struct readline_data rldata;
 
 		/* If it's a command during which we're not allowed to send an EXPUNGE, then don't send it now. */
@@ -6515,6 +6511,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		 * So what is the actual effect of "preventing loss of synchronization in this manner"???
 		 */
 		if (!STARTS_WITH(command, "FETCH") && !STARTS_WITH(command, "STORE") && !STARTS_WITH(command, "SEARCH") && !STARTS_WITH(command, "SORT") && !STARTS_WITH(command, "UID SEARCH")) {
+			char buf[1024]; /* Hopefully big enough for any single untagged  response. */
 			pthread_mutex_lock(&imap->lock);
 			bbs_readline_init(&rldata, buf, sizeof(buf));
 			/* Read from the pipe until it's empty again. If there's more than one response waiting, and in particular, more than sizeof(buf), we need to read by line. */
@@ -6867,7 +6864,6 @@ static int imap_process(struct imap_session *imap, char *s)
 static void handle_client(struct imap_session *imap)
 {
 	char buf[8192]; /* Buffer size suggested by RFC 7162 Section 4 */
-	int res;
 	struct readline_data rldata;
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
@@ -6877,7 +6873,7 @@ static void handle_client(struct imap_session *imap)
 	for (;;) {
 		const char *word2;
 		/* Autologout timer should not be less than 30 minutes, according to the RFC. We'll uphold that, for clients that are logged in. */
-		res = bbs_fd_readline(imap->rfd, &rldata, "\r\n", bbs_user_is_registered(imap->node->user) ? MIN_MS(30) : MIN_MS(1));
+		int res = bbs_fd_readline(imap->rfd, &rldata, "\r\n", bbs_user_is_registered(imap->node->user) ? MIN_MS(30) : MIN_MS(1));
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {

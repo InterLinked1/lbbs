@@ -752,7 +752,7 @@ static void chanserv_flags(const char *username, char *msg)
 			chanserv_notice(username, "%s is not registered.", channel);
 		}
 	} else { /* Modify flags */
-		int res = -1, enabled = *flags++ == '+' ? 1 : 0;
+		int res, enabled = *flags++ == '+' ? 1 : 0;
 		char validflags[64] = "";
 		int left = sizeof(validflags) - 1;
 		int attempted = 0;
@@ -964,7 +964,7 @@ static void process_privmsg(const char *username, char *msg)
 		chanserv_notice(username, "Invalid ChanServ command.");
 		chanserv_notice(username, "	Use /msg ChanServ HELP for a ChanServ command listing.");
 	}
-}
+	}
 
 static void join_flags_cb(const char *username, const char *fields[], int row, void *data)
 {

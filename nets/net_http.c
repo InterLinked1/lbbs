@@ -582,7 +582,7 @@ static int dir_listing(const char *dir_name, const char *filename, int dir, void
 		return -1;
 	}
 	gmtime_r(&st.st_mtim.tv_sec, &modtime); /* Times are always in GMT (UTC) */
-	if (strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M", &modtime) <= 0) { /* returns 0 on failure, o/w number of bytes written */
+	if (!strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M", &modtime)) { /* returns 0 on failure, o/w number of bytes written */
 		bbs_error("strftime failed\n"); /* errno is not set according to strftime(3) man page */
 		return -1;
 	}
@@ -688,7 +688,7 @@ static void http_handler(struct bbs_node *node, int secure)
 		req.secure = secure;
 
 		for (;;) {
-			res = bbs_fd_readline(req.rfd, &rldata, "\r\n", MIN_MS(1));
+			bbs_fd_readline(req.rfd, &rldata, "\r\n", MIN_MS(1));
 			if (s_strlen_zero(buf)) { /* End of request headers */
 				complete = 1;
 				break;
@@ -869,7 +869,7 @@ static void http_handler(struct bbs_node *node, int secure)
 		}
 
 		/* Caching headers */
-		if (strftime(timebuf, sizeof(timebuf), STRFTIME_FMT, &modtime) <= 0) { /* returns 0 on failure, o/w number of bytes written */
+		if (!strftime(timebuf, sizeof(timebuf), STRFTIME_FMT, &modtime)) { /* returns 0 on failure, o/w number of bytes written */
 			bbs_error("strftime failed\n"); /* errno is not set according to strftime(3) man page */
 			send_response(&req, HTTP_INTERNAL_SERVER_ERROR);
 			break;

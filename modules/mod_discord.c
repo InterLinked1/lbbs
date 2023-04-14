@@ -953,7 +953,6 @@ static int discord_send(const char *channel, const char *sender, const char *msg
 		/* Manually format CTCP ACTIONs */
 		if (strstr(msg, ":\001ACTION")) {
 			char newmsg[512];
-			char *realsender, *action;
 			/* Turn PRIVMSG #channel :<1>ACTION <sender> does something<1> into <sender> *does something* */
 			msg = strchr(msg, ' '); /* Skip to 2nd word (channel) */
 			if (msg) {
@@ -964,6 +963,7 @@ static int discord_send(const char *channel, const char *sender, const char *msg
 			}
 
 			if (msg) {
+				char *realsender, *action;
 				msg += 1; /* Skip space */
 				safe_strncpy(newmsg, msg, sizeof(newmsg));
 				action = newmsg;
@@ -1025,7 +1025,6 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 	char sendertmp[84];
 	char sender[84];
 	char subline[512];
-	char *dup, *line, *lines;
 
 	author = event->author;
 	snprintf(sendertmp, sizeof(sendertmp), "%s#%s", author->username, author->discriminator);
@@ -1053,6 +1052,7 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 		substitute_nicks(event->content, subline, sizeof(subline));
 		irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, subline);
 	} else {
+		char *dup, *line, *lines;
 		/* event->content could contain multiple lines. We need to relay each of them to IRC separately. */
 		if (cp->multiline) {
 			char mbuf[256];

@@ -444,7 +444,6 @@ static void *ftp_handler(void *varg)
 			 * Don't care that much about that, active mode is useless in the 21st century. */
 			res = ftp_write(ftp, 502, "Command Not Implemented\r\n");
 		} else if (!strcasecmp(command, "PASV") || !strcasecmp(command, "EPSV")) { /* Passive Mode */
-			int h1, h2, h3, h4, p1, p2;
 			int tmpfd;
 			close_if(pasv_fd); /* In case there was an existing data channel open (but there shouldn't be...) */
 			if (ssl2) {
@@ -472,6 +471,7 @@ static void *ftp_handler(void *varg)
 			if (!strcasecmp(command, "EPSV")) { /* RFC2428 Extended Passive Mode, only need the port. IPv4 and IPv6 supported. */
 				res = ftp_write(ftp, 227, "Entering Extended Passive Mode (|||%d|)\r\n", pasv_port);
 			} else {
+				int h1, h2, h3, h4, p1, p2;
 				/* Yes, PASV only supports IPv4 */
 				char *cur, *left;
 				char myip[48];

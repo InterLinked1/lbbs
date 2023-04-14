@@ -62,7 +62,7 @@ static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *da
 {
 	register int realsize = 0;
 	struct curl_response_data *respdata = data;
-	char *newbuf, *orig_buf = respdata->str;
+	char *newbuf, *orig_buf;
 
 	realsize = size * nmemb;
 
@@ -70,6 +70,8 @@ static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *da
 		bbs_error("curl callback called without custom data?\n");
 		return 0;
 	}
+
+	orig_buf = respdata->str;
 
 	if (respdata->len) {
 		bbs_debug(9, "curl response continued with %d + %d\n", respdata->len, realsize);
@@ -232,6 +234,7 @@ int bbs_curl_get_file(struct bbs_curl *c, const char *filename)
 	}
 
 	if (curl_common_setup(&curl, c->url)) {
+		fclose(fp);
 		return -1;
 	}
 

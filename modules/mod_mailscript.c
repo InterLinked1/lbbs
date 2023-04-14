@@ -127,8 +127,8 @@ static int header_match(const char *data, const char *header, const char *find, 
 			}
 		} else { /* Things like "CONTAINS" can be done with LIKE... technically even EQUALS could be, too... */
 			/* Use a regular expression for LIKE */
-			int errcode;
 			if (!regcompiled) {
+				int errcode;
 				if ((errcode = regcomp(&regexbuf, find, REG_EXTENDED | REG_NOSUB))) {
 					regerror(errcode, &regexbuf, headerval, sizeof(headerval)); /* steal headerval buf */
 					bbs_warning("Malformed expression %s: %s\n", find, headerval);
@@ -480,7 +480,7 @@ static int mailscript(struct smtp_msg_process *mproc)
 	res = run_rules(mproc, fullfile, usermaildir);
 	if (!res) {
 		snprintf(fullfile, sizeof(fullfile), "%s/.rules", usermaildir);
-		res = run_rules(mproc, fullfile, usermaildir);
+		run_rules(mproc, fullfile, usermaildir);
 	}
 	return 0;
 }

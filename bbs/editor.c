@@ -32,7 +32,6 @@
 int bbs_line_editor(struct bbs_node *node, const char *instr, char *buf, size_t len)
 {
 	char *tmp, *ptr = buf;
-	char c;
 	int otherdata = 0, nlflag = 0;
 
 	bbs_clear_screen(node);
@@ -42,6 +41,7 @@ int bbs_line_editor(struct bbs_node *node, const char *instr, char *buf, size_t 
 	}
 
 	for (;;) {
+		char c;
 		bbs_buffer(node);
 		/* Read until we get 2 newlines */
 		for (;;) {

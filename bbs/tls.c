@@ -267,7 +267,6 @@ static void *ssl_io_thread(void *unused)
 				i++;
 				pfds[i].fd = sfd->writepipe[0];
 				pfds[i].events = POLLIN;
-				i++;
 				if (sfd->dead) {
 					numdead++;
 				}

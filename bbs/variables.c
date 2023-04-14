@@ -197,7 +197,7 @@ int bbs_var_set(struct bbs_node *node, const char *key, const char *value)
 	} else {
 		/* "Global" var */
 		return bbs_varlist_append(&global_vars, key, value);
-	}
+		}
 }
 
 int bbs_var_set_user(const char *key, const char *value)
@@ -234,13 +234,13 @@ int __attribute__ ((format (gnu_printf, 3, 4))) bbs_var_set_fmt(struct bbs_node 
 
 static int vars_dump(int fd, struct bbs_vars *vars)
 {
-	char safebuf[256];
-	struct bbs_var *v;
-	
 	if (vars) {
 		int c = 0;
+		struct bbs_var *v;
+
 		RWLIST_RDLOCK(vars);
 		RWLIST_TRAVERSE(vars, v, entry) {
+			char safebuf[256];
 			if (!c++) {
 				bbs_dprintf(fd, "== %sVariables ==\n", vars == &global_vars ? "Global " : "Node ");
 				if (vars == &global_vars) {

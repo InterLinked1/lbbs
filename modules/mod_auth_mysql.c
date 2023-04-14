@@ -343,7 +343,7 @@ static int user_register(struct bbs_node *node)
 	char fullname[64], username[64], password[72], password2[72];
 	char email[64], phone[16] = "", address[64] = "", city[64], state[32], zip[10] = "", dob[11] = "";
 	char how_heard[256] = "";
-	char gender = 0, correct;
+	char gender = 0;
 	int res;
 #define MAX_REG_ATTEMPTS 6
 	int tries = MAX_REG_ATTEMPTS;
@@ -359,6 +359,7 @@ static int user_register(struct bbs_node *node)
 	NONPOS_RETURN(bbs_writef(node, "%s%s%s\n", COLOR(COLOR_PRIMARY), "New User Registration", COLOR(COLOR_WHITE))); /* Use white for the questions to stand out */
 
 	for (; tries > 0; tries -= 2) {
+		int correct;
 		/* No newlines necessary inbetween reads, since echo is on
 		 * and input is terminated by a return. */
 		/* NONZERO_RETURN is a macro that returns x, so we must NOT call it directly with the function itself */
@@ -499,7 +500,7 @@ static int user_register(struct bbs_node *node)
 
 		bbs_buffer(node);
 
-		res = bbs_get_response(node, 20, COLOR(COLOR_WHITE) "\nVerification Code: ", MIN_MS(3), usercode, sizeof(usercode), &tries, 1, NULL);
+		bbs_get_response(node, 20, COLOR(COLOR_WHITE) "\nVerification Code: ", MIN_MS(3), usercode, sizeof(usercode), &tries, 1, NULL);
 		if (strcmp(usercode, randcode)) {
 			NEG_RETURN(bbs_writef(node, "\n%sSorry, the verification code you provided was incorrect.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
 			NEG_RETURN(bbs_writef(node, "\nPlease try again later...\n"));

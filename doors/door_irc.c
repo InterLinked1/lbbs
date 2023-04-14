@@ -231,11 +231,11 @@ static void *client_relay(void *varg);
 static int start_clients(void)
 {
 	struct client *client;
-	int res, started = 0;
+	int started = 0;
 
 	RWLIST_WRLOCK(&clients);
 	RWLIST_TRAVERSE_SAFE_BEGIN(&clients, client, entry) {
-		res = irc_client_connect(client->client); /* Actually connect */
+		int res = irc_client_connect(client->client); /* Actually connect */
 		if (!res) {
 			res = irc_client_login(client->client); /* Authenticate */
 		}
@@ -701,7 +701,6 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 	struct tm sendtime;
 	char datestr[18];
 	int timelen;
-	int res;
 	struct participant *p;
 
 	/* Calculate the current time once, for everyone, using the server's time (sorry if participants are in different time zones) */
@@ -737,6 +736,7 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 		}
 	}
 	RWLIST_TRAVERSE(&client->participants, p, entry) {
+		int res;
 		/* We're intentionally relaying to other BBS nodes ourselves, separately from IRC, rather than
 		 * just enabling echo on the IRC client and letting that bounce back for other participants.
 		 * This is because we don't want our own messages to echo back to ourselves,
@@ -750,7 +750,7 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 			continue; /* Channel filter doesn't match for this participant */
 		}
 		if (!NODE_IS_TDD(p->node)) {
-			res = write(p->chatpipe[1], datestr, timelen); /* Don't send timestamps to TDDs, for brevity */
+			write(p->chatpipe[1], datestr, timelen); /* Don't send timestamps to TDDs, for brevity */
 		}
 		res = write(p->chatpipe[1], msg, len);
 		if (res <= 0) {
@@ -1272,12 +1272,12 @@ static int irc_client_exec(struct bbs_node *node, const char *args)
 static int unload_module(void)
 {
 	struct client *client;
-	struct participant *p;
 
 	RWLIST_WRLOCK(&clients);
 	unloading = 1;
 
 	while ((client = RWLIST_REMOVE_HEAD(&clients, entry))) {
+		struct participant *p;
 		irc_client_destroy(client->client);
 		/* If there are any clients still connected, boot them */
 		while ((p = RWLIST_REMOVE_HEAD(&client->participants, entry))) {

@@ -530,9 +530,9 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 
 			/* Instead of showing root@bbs if we're launching a shell, which is just confusing, show the BBS username */
 			if (node) {
-				char *tmp;
 				const char *username = bbs_user_is_registered(node->user) ? bbs_username(node->user) : "guest";
 				if (envp == myenvp) {
+					char *tmp;
 					/* Used if /root/.bashrc in rootfs contains this prompt override:
 					 * PS1='${debian_chroot:+($debian_chroot)}$BBS_USER@\h:\w\$ '
 					 */
@@ -611,15 +611,14 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		node->childpid = 0;
 	}
 	if (fd == -1) {
-		int nbytes;
-		char buf[1024]; /* Who knows how much data is in the pipe, make it big enough so we're not super fragmented, but not super big */
 		if (bbs_std_poll(pfd[0], 0) == 0) {
 			/* The child has exited, so all the data that will ever be in the pipe is already here.
 			 * If there's nothing there, then poll with 0 to skip blocking unnecessarily on read for a few seconds. */
 			bbs_debug(3, "pipe poll returned 0\n");
 		} else {
 			for (;;) {
-				nbytes = read(pfd[0], buf, sizeof(buf)); /* Read from the pipe. */
+				char buf[1024]; /* Who knows how much data is in the pipe, make it big enough so we're not super fragmented, but not super big */
+				int nbytes = read(pfd[0], buf, sizeof(buf)); /* Read from the pipe. */
 				if (nbytes <= 0) { /* read will return 0 when the pipe is empty */
 					break; /* End of pipe */
 				}

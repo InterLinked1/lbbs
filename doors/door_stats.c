@@ -62,7 +62,7 @@ static int users_exec(struct bbs_node *node, const char *args)
 		if (active) {
 			totalonline++;
 		}
-		len = snprintf(buf, sizeof(buf), COLOR(COLOR_SECONDARY) " %4d " COLOR_RESET "%-15s %s\r\n", user->id, bbs_username(user), active ? "  *  " : "");
+		len = snprintf(buf, sizeof(buf), COLOR(COLOR_SECONDARY) " %4d " COLOR_RESET "%-15s %s\r\n", user->id, bbs_username(user), (active ? "  *  " : ""));
 		if (bbs_pager(node, &pginfo, MIN_MS(3), buf, len)) {
 			break;
 		}

@@ -136,7 +136,7 @@ char *bbs_sasl_encode(const char *nickname, const char *username, const char *pa
 int bbs_parse_email_address(char *addr, char **name, char **user, char **host, int *local)
 {
 	char address_buf[256]; /* Our mailbox names are definitely not super long, so using a small buffer is okay. */
-	char *start, *end, *domain;
+	char *start, *domain;
 
 	if (!name && !user && !host) { /* If we don't want to keep the parsed result, make a stack copy and leave the original intact. */
 		safe_strncpy(address_buf, addr, sizeof(address_buf));
@@ -145,6 +145,7 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host, i
 
 	start = strchr(addr, '<');
 	if (start++ && !strlen_zero(start)) {
+		char *end;
 		end = strchr(start, '>');
 		if (!end) {
 			return -1; /* Email address must be enclosed in <> */
@@ -242,7 +243,7 @@ int bbs_dir_traverse_items(const char *path, int (*on_file)(const char *dir_name
 		int is_file = 0;
 		int is_dir = 0;
 
-		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			continue;
 		}
 		/* If the dirent structure has a d_type use it to determine if we are dealing with

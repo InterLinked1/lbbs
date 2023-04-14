@@ -35,7 +35,7 @@ static int pre(void)
 static int run(void)
 {
 	int i;
-	unsigned long f = 0;
+	unsigned long f;
 	int ports[] = { 23, 25, 80, 110, 143 };
 	int clientfds[ARRAY_LEN(ports)];
 

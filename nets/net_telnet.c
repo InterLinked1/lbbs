@@ -86,7 +86,6 @@ static int telnet_echo(int fd, int echo)
 static int telnet_handshake(struct bbs_node *node)
 {
 	unsigned char buf[32];
-	int res;
 
 	/* Disable Telnet echo or we'll get double echo when slave echo is on and single echo when it's off. */
 	/* XXX Only for Telnet, not raw TCP */
@@ -108,7 +107,7 @@ static int telnet_handshake(struct bbs_node *node)
 
 	/* Process any Telnet commands received. Wait 100ms after sending our commands. */
 	for (;;) {
-		res = bbs_std_poll(node->fd, 100);
+		int res = bbs_std_poll(node->fd, 100);
 		if (res <= 0) {
 			return res;
 		}

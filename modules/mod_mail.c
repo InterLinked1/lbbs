@@ -700,7 +700,7 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 			} else {
 				char uidv[32] = "";
 				char *uidvaliditystr, *tmp = uidv;
-				if (!fgets(uidv, sizeof(uidv), fp) || s_strlen_zero(uidv)) {
+				if (!fgets(uidv, sizeof(uidv), fp) || !uidv[0]) {
 					bbs_error("Failed to read UID from %s (read: %s)\n", uidfile, uidv);
 				} else if (!(uidvaliditystr = strsep(&tmp, "/")) || !(uidvalidity = atoi(uidvaliditystr)) || !(uidnext = atoi(tmp))) {
 					/* If we create a maildir but don't do anything yet, uidnext will be 0.
@@ -733,12 +733,14 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 	 * So depending on what we're referring to, the right answer is 11 or 12. */
 
 	/* Write updated UID to persistent storage. It's super important that this succeed. */
-	if (fprintf(fp, "%u/%u", uidvalidity, uidnext) < 0) { /* Would need to do if we created the directory anyways */
-		bbs_error("Failed to write data to UID file\n");
-	}
-	fflush(fp);
-	if (fclose(fp)) {
-		bbs_error("fclose(%s) failed: %s\n", uidfile, strerror(errno));
+	if (likely(fp != NULL)) {
+		if (fprintf(fp, "%u/%u", uidvalidity, uidnext) < 0) { /* Would need to do if we created the directory anyways */
+			bbs_error("Failed to write data to UID file\n");
+		}
+		fflush(fp);
+		if (fclose(fp)) {
+			bbs_error("fclose(%s) failed: %s\n", uidfile, strerror(errno));
+		}
 	}
 
 	if (allocate) {
@@ -756,10 +758,7 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 
 static unsigned long __maildir_modseq(struct mailbox *mbox, const char *directory, int increment)
 {
-	DIR *dir;
-	struct dirent *entry;
-	unsigned long cur, max_modseq = 0;
-	const char *modseq;
+	unsigned long max_modseq = 0;
 	char modseqfile[256];
 	FILE *fp;
 	long unsigned int res;
@@ -773,6 +772,9 @@ static unsigned long __maildir_modseq(struct mailbox *mbox, const char *director
 
 	/* If the file doesn't yet exist, scan the directory */
 	if (!bbs_file_exists(modseqfile)) {
+		DIR *dir;
+		struct dirent *entry;
+		const char *modseq;
 		/* Order of traversal does not matter, so use opendir instead of scandir for efficiency. */
 		if (!(dir = opendir(directory))) {
 			bbs_error("Error opening directory - %s: %s\n", directory, strerror(errno));
@@ -780,6 +782,7 @@ static unsigned long __maildir_modseq(struct mailbox *mbox, const char *director
 		}
 
 		while ((entry = readdir(dir)) != NULL) {
+			unsigned long cur;
 			if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 				continue;
 			}
@@ -809,7 +812,7 @@ static unsigned long __maildir_modseq(struct mailbox *mbox, const char *director
 		}
 		fp = fopen(modseqfile, "wb");
 		if (likely(fp != NULL)) {
-			res = fwrite(&max_modseq, sizeof(unsigned long), 1, fp);
+			fwrite(&max_modseq, sizeof(unsigned long), 1, fp);
 			fclose(fp);
 		}
 		return max_modseq;
@@ -857,7 +860,7 @@ unsigned long maildir_indicate_expunged(struct mailbox *mbox, const char *direct
 	maxmodseq = __maildir_modseq(mbox, directory, 1); /* Must be atomic */
 
 	snprintf(modseqfile, sizeof(modseqfile), "%s/../.modseqs", directory);
-	fp = fopen(modseqfile, "ab");
+	fp = fopen(modseqfile, "wb");
 	if (!fp) {
 		bbs_error("Failed to open %s\n", modseqfile);
 		mailbox_uid_unlock(mbox);
@@ -875,6 +878,7 @@ unsigned long maildir_indicate_expunged(struct mailbox *mbox, const char *direct
 	/* Check if we created the file or opened an existing one by getting our position.
 	 * If the file is empty, write HIGHESTMODSEQ first, then the expunged messages.
 	 * Otherwise, append all the expunged messages, then seek back to the beginning and overwrite HIGHESTMODSEQ. */
+	fseek(fp, -1, SEEK_END);
 	pos = ftell(fp);
 	bbs_debug(7, "Current position is %ld\n", pos);
 	created = pos == 0;
@@ -1012,7 +1016,7 @@ int maildir_move_new_to_cur_file(struct mailbox *mbox, const char *dir, const ch
 		*uidnext = newuidnext; /* Should be same as uid as well */
 	}
 
-	/* XXX maildir example shows S= and W= are different,
+/* XXX maildir example shows S= and W= are different,
 	 * but I'm not sure why the number of bytes in the file
 	 * would not be st_size? So just use S= for now and skip W=. */
 	snprintf(newname, sizeof(newname), "%s/%s,S=%d,U=%u,M=%lu:2,", curdir, filename, bytes, uid, maildir_max_modseq(mbox, curdir)); /* Add no flags now, but anticipate them being added */
@@ -1031,7 +1035,7 @@ static int gen_newname(struct mailbox *mbox, const char *curfilename, const char
 	char newname[156];
 	unsigned int uid;
 	unsigned int newuidvalidity, newuidnext;
-	char *tmp, *next;
+	char *tmp;
 
 	/* Keep all the message's flags when moving.
 	 * The only thing we change is the UID.
@@ -1057,6 +1061,7 @@ static int gen_newname(struct mailbox *mbox, const char *curfilename, const char
 	if (tmp) { /* Message already had a UID (was in cur, as opposed to new) */
 		unsigned long modseq;
 		char curdir[256];
+		char *next;
 		/* Replace old UID with new UID */
 		tmp += STRLEN(",U=");
 		next = strchr(tmp, ':');
@@ -1159,7 +1164,7 @@ int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid)
 	uidstr += STRLEN(",U=");
 	if (!strlen_zero(uidstr)) {
 		*uid = atoi(uidstr); /* Should stop as soon we encounter the first nonnumeric character, whether , or : */
-		if (*uid <= 0) {
+		if (!*uid) {
 			bbs_warning("Failed to parse UID for %s\n", filename);
 			return -1;
 		}
@@ -1209,9 +1214,7 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, void *ob
 			bbs_error("unlink(%s) failed: %s\n", fullname, strerror(errno));
 		} else {
 			bbs_debug(4, "Permanently deleted %s\n", fullname);
-			if (!mbox) {
-				mbox = mailbox_get(mboxnum, NULL);
-			}
+			mbox = mailbox_get(mboxnum, NULL);
 			if (likely(mbox != NULL)) {
 				mailbox_quota_adjust_usage(mbox, -st.st_size); /* Subtract file size from quota usage */
 			}

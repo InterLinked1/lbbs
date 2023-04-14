@@ -322,7 +322,7 @@ int bbs_timed_accept(int socket, int ms, const char *ip)
 {
 	struct sockaddr_in sinaddr;
 	socklen_t len;
-	int sfd, res;
+	int sfd;
 	struct pollfd pfd;
 	char new_ip[56];
 
@@ -330,7 +330,7 @@ int bbs_timed_accept(int socket, int ms, const char *ip)
 	pfd.events = POLLIN;
 
 	for (;;) {
-		res = poll(&pfd, 1, ms);
+		int res = poll(&pfd, 1, ms);
 		pthread_testcancel();
 		if (res < 0) {
 			if (errno == EINTR) {
@@ -372,7 +372,7 @@ void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, c
 {
 	struct sockaddr_in sinaddr;
 	socklen_t len;
-	int sfd, res;
+	int sfd;
 	struct pollfd pfds[3];
 	int nfds = 0;
 	struct bbs_node *node;
@@ -403,7 +403,7 @@ void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, c
 
 	for (;;) {
 		int sockidx;
-		res = poll(pfds, nfds, -1); /* Wait forever for an incoming connection. */
+		int res = poll(pfds, nfds, -1); /* Wait forever for an incoming connection. */
 		pthread_testcancel();
 		if (res < 0) {
 			if (errno != EINTR) {
@@ -464,7 +464,7 @@ static void __bbs_tcp_listener(int socket, const char *name, int (*handshake)(st
 {
 	struct sockaddr_in sinaddr;
 	socklen_t len;
-	int sfd, res;
+	int sfd;
 	struct pollfd pfd;
 	struct bbs_node *node;
 	char new_ip[56];
@@ -475,7 +475,7 @@ static void __bbs_tcp_listener(int socket, const char *name, int (*handshake)(st
 	bbs_debug(1, "Started %s listener thread\n", name);
 
 	for (;;) {
-		res = poll(&pfd, 1, -1); /* Wait forever for an incoming connection. */
+		int res = poll(&pfd, 1, -1); /* Wait forever for an incoming connection. */
 		pthread_testcancel();
 		if (res < 0) {
 			if (errno != EINTR) {
@@ -530,7 +530,7 @@ void bbs_tcp_listener(int socket, const char *name, void *(*handler)(void *varg)
 
 int bbs_get_local_ip(char *buf, size_t len)
 {
-	int af, res = -1;
+	int res = -1;
 	struct sockaddr_in *sinaddr;
 	struct ifaddrs *iflist, *iface;
 	if (getifaddrs(&iflist)) {
@@ -539,7 +539,7 @@ int bbs_get_local_ip(char *buf, size_t len)
 	}
 
 	for (iface = iflist; res && iface; iface = iface->ifa_next) {
-		af = iface->ifa_addr->sa_family;
+		int af = iface->ifa_addr->sa_family;
 		switch (af) {
 			case AF_INET:
 				sinaddr = ((struct sockaddr_in *) iface->ifa_addr);
@@ -902,7 +902,7 @@ int bbs_poll(struct bbs_node *node, int ms)
 
 int bbs_tpoll(struct bbs_node *node, int ms)
 {
-	int everwarned = 0, warned = 0, res = 0;
+	int everwarned = 0, res = 0;
 	int wasbuffered = node->buffered; /* We could be buffered or unbuffered, with echo or without */
 	int hadecho = node->echo;
 	int pollms = ms;
@@ -923,6 +923,7 @@ int bbs_tpoll(struct bbs_node *node, int ms)
 #define MIN_POLL_MS_FOR_WARNING 2 * MIN_WARNING_MS
 
 	for (;;) {
+		int warned;
 		if (++attempts > 1) {
 			bbs_debug(6, "tpoll iteration %d (%d ms)\n", attempts, pollms);
 		}
@@ -1230,11 +1231,11 @@ int bbs_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 #ifdef DEBUG_TEXT_IO
 	int i;
 #endif
-	int res;
+	int res, left = len;
 	int bytes_read = 0;
 	char *startbuf = buf;
 	char *term = NULL;
-	char *nterm = 0;
+	char *nterm;
 	int keep_trying = 0;
 
 	REQUIRE_SLAVE_FD(node);
@@ -1288,14 +1289,14 @@ int bbs_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 			}
 		}
 		buf += res;
-		len -= res;
+		left -= res;
 		bytes_read += res;
 #ifdef DEBUG_TEXT_IO
 		for (i = 0; i < bytes_read; i++) {
 			bbs_debug(10, "read[%d] %d / '%c'\n", i, startbuf[i], isprint(startbuf[i]) ? startbuf[i] : ' ');
 		}
 #endif
-		if (nterm || term || len <= 0) {
+		if (nterm || term || left <= 0) {
 			/* Remove any line ending from input. */
 			if (term) {
 				*term = '\0';
@@ -1471,14 +1472,15 @@ int bbs_flush_input(struct bbs_node *node)
 
 int bbs_write(struct bbs_node *node, const char *buf, unsigned int len)
 {
-	int res;
+	int left = len;
 	unsigned int written = 0;
 	REQUIRE_SLAVE_FD(node);
 	for (;;) {
+		int res;
 		/* So helgrind doesn't complain about data race if node is shut down
 		 * and slavefd closed during write */
 		bbs_node_lock(node);
-		res = write(node->slavefd, buf, len);
+		res = write(node->slavefd, buf, left);
 		bbs_node_unlock(node);
 		if (res <= 0) {
 			bbs_debug(5, "Node %d: write returned %d\n", node->id, res);
@@ -1486,8 +1488,8 @@ int bbs_write(struct bbs_node *node, const char *buf, unsigned int len)
 		}
 		buf += res;
 		written += res;
-		len -= res;
-		if (len <= 0) {
+		left -= res;
+		if (left <= 0) {
 			break;
 		}
 	}
@@ -1496,18 +1498,18 @@ int bbs_write(struct bbs_node *node, const char *buf, unsigned int len)
 
 int bbs_std_write(int fd, const char *buf, unsigned int len)
 {
-	int res;
+	int left = len;
 	unsigned int written = 0;
 	for (;;) {
-		res = write(fd, buf, len);
+		int res = write(fd, buf, left);
 		if (res <= 0) {
 			bbs_debug(5, "fd %d: write returned %d: %s\n", fd, res, strerror(errno));
 			return res;
 		}
 		buf += res;
 		written += res;
-		len -= res;
-		if (len <= 0) {
+		left -= res;
+		if (left <= 0) {
 			break;
 		}
 	}

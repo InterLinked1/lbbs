@@ -233,7 +233,6 @@ int test_make_socket(int port)
 
 int test_client_drain(int fd, int ms)
 {
-	int res;
 	struct pollfd pfd;
 	char buf[4096];
 	int drained = 0;
@@ -245,6 +244,7 @@ int test_client_drain(int fd, int ms)
 	assert(pfd.fd != -1);
 
 	for (;;) {
+		int res;
 		pfd.revents = 0;
 		res = poll(&pfd, 1, ms);
 		if (res < 0) {
@@ -316,7 +316,6 @@ int test_client_expect_eventually(int fd, int ms, const char *s, int line)
 
 int test_client_expect_eventually_buf(int fd, int ms, const char *s, int line, char *buf, size_t len)
 {
-	int res;
 	struct pollfd pfd;
 
 	memset(&pfd, 0, sizeof(pfd));
@@ -326,6 +325,7 @@ int test_client_expect_eventually_buf(int fd, int ms, const char *s, int line, c
 	assert(pfd.fd != -1);
 
 	for (;;) {
+		int res;
 		pfd.revents = 0;
 		res = poll(&pfd, 1, ms);
 		if (res < 0) {
@@ -367,7 +367,6 @@ static struct readline_data rldata;
 
 static void *io_relay(void *varg)
 {
-	int res;
 	char buf[1024];
 	int logfd;
 	int *pipefd = varg;
@@ -382,6 +381,7 @@ static void *io_relay(void *varg)
 	}
 
 	for (;;) {
+		int res;
 		res = read(pipefd[0], buf, sizeof(buf) - 1);
 		if (res <= 0) {
 			bbs_debug(4, "read returned %d\n", res);
@@ -606,7 +606,6 @@ static int analyze_valgrind(void)
 {
 	int res = 0;
 	char buf[1024];
-	const char *s;
 	int got_segv = 0, fds_open = 0, num_bytes_lost = 0, num_errors = 0;
 	int in_heap_summary = 0;
 
@@ -617,6 +616,7 @@ static int analyze_valgrind(void)
 	}
 
 	while ((fgets(buf, sizeof(buf), fp))) {
+		const char *s;
 		if (!num_bytes_lost && (s = strstr(buf, "definitely lost: "))) {
 			s += STRLEN("definitely lost: ");
 			num_bytes_lost = atoi(s);
@@ -634,7 +634,7 @@ static int analyze_valgrind(void)
 		} else if (!in_heap_summary && (s = strstr(buf, "HEAP SUMMARY:"))) {
 			in_heap_summary = 1;
 		} else if (in_heap_summary && (s = strstr(buf, "LEAK SUMMARY:"))) {
-			if (got_segv && in_heap_summary && option_debug < 5) {
+			if (got_segv && option_debug < 5) {
 				fprintf(stderr, "== Memory leak details omitted. See %s for full log.\n", VALGRIND_LOGFILE);
 			}
 			in_heap_summary = 0;
@@ -694,7 +694,8 @@ static int run_test(const char *filename, int multiple)
 		res = -1;
 	} else {
 		struct timeval start, end;
-		int64_t sec_dif, usec_dif, tot_dif;
+		int64_t sec_dif, usec_dif;
+		unsigned long tot_dif;
 		int core_before = 0;
 		pid_t childpid = -1;
 		if (reset_test_configs()) { /* Reset before each test */

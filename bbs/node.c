@@ -299,11 +299,11 @@ int bbs_node_pty_unlock(struct bbs_node *node)
 
 char bbs_node_input_translate(struct bbs_node *node, char c)
 {
-	long unsigned int i;
 	char ret = c;
 
 	bbs_node_lock(node);
 	if (node->ioreplaces) {
+		long unsigned int i;
 		for (i = 0; i < ARRAY_LEN(node->ioreplace); i++) {
 			if (node->ioreplace[i][0] == c) {
 				ret = node->ioreplace[i][1];
@@ -619,7 +619,6 @@ int bbs_nodes_print(int fd)
 	char elapsed[24];
 	struct bbs_node *n;
 	int c = 0;
-	int lwp;
 	int now = time(NULL);
 
 	bbs_dprintf(fd, "%3s %8s %9s %7s %-15s %-15s %15s %1s %1s %6s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "USER", "MENU/PAGE", "IP ADDRESS", "E", "B", "TID", "FD", "MST", "SLV", "SPY", "SLV NAME");
@@ -627,6 +626,7 @@ int bbs_nodes_print(int fd)
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
 		char menufull[16];
+		int lwp;
 		bbs_node_lock(n);
 		print_time_elapsed(n->created, now, elapsed, sizeof(elapsed));
 		snprintf(menufull, sizeof(menufull), "%s%s%s%s", S_IF(n->menu), n->menuitem ? " (" : "", S_IF(n->menuitem), n->menuitem ? ")" : "");
@@ -1137,10 +1137,11 @@ static int bbs_node_splash(struct bbs_node *node)
 	/*! \todo Add more stats here, e.g. num logins today, since started, lifetime, etc. */
 
 	if (bbs_starttime() > (int) minuptimedisplayed) {
-		char timebuf[24], daysbuf[36];
+		char timebuf[24];
 		int now = time(NULL);
 		print_time_elapsed(bbs_starttime(), now, timebuf, sizeof(timebuf)); /* Formatting for timebuf (11 chars) should be enough for 11 years uptime, I think that's good enough */
 		if (!NODE_IS_TDD(node)) {
+			char daysbuf[36];
 			print_days_elapsed(bbs_starttime(), now, daysbuf, sizeof(daysbuf));
 			NEG_RETURN(bbs_writef(node, "%s%6s%s %2s%-11s%s: %s%s\n", COLOR(COLOR_SECONDARY), "Uptime", COLOR(COLOR_PRIMARY), "", timebuf, COLOR(COLOR_SECONDARY), COLOR(COLOR_PRIMARY), daysbuf));
 		} else {

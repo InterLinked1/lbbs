@@ -207,6 +207,7 @@ static int scan_newsgroups(void)
 	subs = scandir(newsdir, &entries, NULL, alphasort);
 	if (subs < 0) {
 		bbs_error("scandir(%s) failed: %s\n", newsdir, strerror(errno));
+		fclose(fp);
 		pthread_mutex_unlock(&nntp_lock);
 		return -1;
 	}
@@ -1255,7 +1256,6 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 {
 	char buf[1001];
-	int res;
 	struct readline_data rldata;
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
@@ -1263,9 +1263,8 @@ static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 	nntp_send(nntp, 200, "%s Newsgroup Service Ready, posting permitted", bbs_hostname());
 
 	for (;;) {
-		res = bbs_fd_readline(nntp->rfd, &rldata, "\r\n", MIN_MS(5));
+		int res = bbs_fd_readline(nntp->rfd, &rldata, "\r\n", MIN_MS(5));
 		if (res < 0) {
-			res += 1; /* Convert the res back to a normal one. */
 			/* We should NOT send any response to the client when terminating a connection due to timeout. */
 			break;
 		}

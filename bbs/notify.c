@@ -72,9 +72,7 @@ int __attribute__ ((format (gnu_printf, 3, 4))) bbs_sysop_email(struct bbs_user 
 
 	/* Append the customary message trailer */
 	buf2 = realloc(buf, len + STRLEN(MSG_TRAILER) + 1);
-	if (ALLOC_FAILURE(buf2)) {
-		/* Just continue, rather than aborting */
-	} else {
+	if (ALLOC_SUCCESS(buf2)) {
 		buf = buf2;
 		strcpy(buf + len, MSG_TRAILER); /* Safe */
 	}

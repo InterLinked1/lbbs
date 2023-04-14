@@ -539,16 +539,15 @@ int sql_fetch_columns(int bind_ints[], long long bind_longs[], char *bind_string
 	int i, num_args = strlen(fmt);
 	va_list ap;
 	const char *cur = fmt;
-	char format_char;
-	int *tmpint;
-	long long *tmplong;
-	char **tmpstr;
-	struct tm *tmptm;
 	MYSQL_TIME datetime;
 
 	va_start(ap, fmt);
 	for (i = 0; i < num_args; i++, cur++) { /* Bind the parameters themselves for this round */
-		format_char = tolower(*cur);
+		int *tmpint;
+		long long *tmplong;
+		char **tmpstr;
+		struct tm *tmptm;
+		char format_char = tolower(*cur);
 		switch (format_char) {
 		case 'i': /* Integer */
 		case 'd': /* Double */

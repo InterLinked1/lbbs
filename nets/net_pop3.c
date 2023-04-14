@@ -175,9 +175,9 @@ static inline int is_deleted(struct pop3_session *pop3, int message)
 	element = (message - 1) / (8 * sizeof(char)); /* Subtract 1 to make 0-indexed, then determine which int index it is */
 	bit = (message - 1) % (8 * sizeof(char));
 #ifdef EXTRA_DEBUG
-	bbs_debug(7, "Checking bit %d of element %d (%d/%d) = %d\n", bit, element, pop3->delsize, pop3->delbytes, pop3->deletions[element] & (1 << bit) ? 1 : 0);
+	bbs_debug(7, "Checking bit %d of element %d (%d/%d) = %d\n", bit, element, pop3->delsize, pop3->delbytes, (pop3->deletions[element] & (1 << bit)) ? 1 : 0);
 #endif
-	return pop3->deletions[element] & (1 << bit) ? 1 : 0;
+	return (pop3->deletions[element] & (1 << bit)) ? 1 : 0;
 }
 
 static void clear_deleted(struct pop3_session *pop3)
@@ -207,7 +207,7 @@ static int test_deletion_sequences(void)
 	clear_deleted(&pop3);
 	bbs_test_assert_equals(0, is_deleted(&pop3, 5));
 	bbs_test_assert_equals(0, is_deleted(&pop3, 1));
-
+	
 	mark_deleted(&pop3, 5);
 	bbs_test_assert_equals(1, is_deleted(&pop3, 5));
 	pop3.totalnew = 5;
@@ -486,6 +486,7 @@ static int on_retr(const char *dir_name, const char *filename, struct pop3_sessi
 	if (size != realsize) { /* Shouldn't happen unless some tampered with the message on disk... naughty tyke... */
 		bbs_error("Expected %s to be %u bytes, but it's really %d bytes?\n", fullpath, size, realsize);
 		pop3_err(pop3, "Server error"); /* Don't send the message unless it's the right size. */
+		fclose(fp);
 		return 0;
 	}
 
@@ -658,7 +659,7 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 		}
 	} else if (!strcasecmp(command, "RETR")) {
 		unsigned int filter = atoi(S_IF(s));
-		if (filter <= 0) {
+		if (!filter) {
 			pop3_err(pop3, "Missing message ID");
 			return 0;
 		}
@@ -672,7 +673,7 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 		msg = strsep(&s, " ");
 		lines = s;
 		filter = atoi(S_IF(msg));
-		if (filter <= 0) {
+		if (!filter) {
 			pop3_err(pop3, "Missing message ID");
 			return 0;
 		}
@@ -682,7 +683,7 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 		pop3_traverse(pop3->curdir, on_top, pop3, filter);
 	} else if (!strcasecmp(command, "DELE")) {
 		unsigned int filter = atoi(S_IF(s));
-		if (filter <= 0) {
+		if (!filter) {
 			pop3_err(pop3, "Missing message ID");
 			return 0;
 		}
@@ -710,14 +711,13 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 static void handle_client(struct pop3_session *pop3)
 {
 	char buf[1001];
-	int res;
 	struct readline_data rldata;
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 	pop3_ok(pop3, "POP3 Server Ready");
 
 	for (;;) {
-		res = bbs_fd_readline(pop3->rfd, &rldata, "\r\n", MIN_MS(3));
+		int res = bbs_fd_readline(pop3->rfd, &rldata, "\r\n", MIN_MS(3));
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {

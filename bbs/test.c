@@ -61,12 +61,12 @@ static int test_execute(struct bbs_test *test)
 int bbs_run_tests(int fd)
 {
 	int res = 0;
-	int mres;
 	int total = 0, passed = 0;
 	struct bbs_test *test;
 
 	RWLIST_RDLOCK(&tests); /* Prevent test from being unregistered while running */
 	RWLIST_TRAVERSE(&tests, test, entry) {
+		int mres;
 		total++;
 		mres = test_execute(test); /* execute the test and save results */
 		res |= mres;

@@ -393,9 +393,9 @@ static int BF_decode(BF_word *dst, const char *src, int size)
 	unsigned char *dptr = (unsigned char *)dst;
 	unsigned char *end = dptr + size;
 	const unsigned char *sptr = (const unsigned char *)src;
-	unsigned int tmp, c1, c2, c3, c4;
 
 	do {
+		unsigned int tmp, c1, c2, c3, c4;
 		BF_safe_atoi64(c1, *sptr++);
 		BF_safe_atoi64(c2, *sptr++);
 		*dptr++ = (c1 << 2) | ((c2 & 0x30) >> 4);
@@ -417,9 +417,9 @@ static void BF_encode(char *dst, const BF_word *src, int size)
 	const unsigned char *sptr = (const unsigned char *)src;
 	const unsigned char *end = sptr + size;
 	unsigned char *dptr = (unsigned char *)dst;
-	unsigned int c1, c2;
 
 	do {
+		unsigned int c1, c2;
 		c1 = *sptr++;
 		*dptr++ = BF_itoa64[c1 >> 2];
 		c1 = (c1 & 0x03) << 4;
@@ -448,11 +448,10 @@ static void BF_swap(BF_word *x, int count)
 {
 	static int endianness_check = 1;
 	char *is_little_endian = (char *)&endianness_check;
-	BF_word tmp;
 
 	if (*is_little_endian)
 	do {
-		tmp = *x;
+		BF_word tmp = *x;
 		tmp = (tmp << 16) | (tmp >> 16);
 		*x++ = ((tmp & 0x00FF00FF) << 8) | ((tmp >> 8) & 0x00FF00FF);
 	} while (--count);

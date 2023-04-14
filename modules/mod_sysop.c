@@ -131,8 +131,6 @@ static int sysop_command(int fdin, int fdout, const char *s)
 		bbs_list_doors(fdout);
 	} else if (!strcmp(s, "modules")) {
 		bbs_list_modules(fdout);
-	} else if (!strcmp(s, "modules")) {
-		bbs_list_modules(fdout);
 	} else if (!strcmp(s, "nets")) {
 		bbs_list_network_protocols(fdout);
 	} else if (!strcmp(s, "authproviders")) {
@@ -460,7 +458,7 @@ static void *remote_sysop_listener(void *unused)
 {
 	struct sockaddr_un sunaddr;
 	socklen_t len;
-	int sfd, res;
+	int sfd;
 	struct pollfd pfd;
 
 	UNUSED(unused);
@@ -470,7 +468,7 @@ static void *remote_sysop_listener(void *unused)
 
 	for (;;) {
 		int aslave;
-		res = poll(&pfd, 1, -1); /* Wait forever for an incoming connection. */
+		int res = poll(&pfd, 1, -1); /* Wait forever for an incoming connection. */
 		pthread_testcancel();
 		if (res < 0) {
 			if (errno != EINTR) {

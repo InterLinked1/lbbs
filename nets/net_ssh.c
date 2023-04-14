@@ -218,13 +218,13 @@ static int save_remote_ip(ssh_session session, struct bbs_node *node, char *buf,
 /*! \brief Called when data is available from PTY master */
 static int process_stdout(socket_t fd, int revents, void *userdata)
 {
-#define BUF_SIZE 1048576
-	char buf[BUF_SIZE];
-#undef BUF_SIZE
 	int n = -1;
 	ssh_channel channel = (ssh_channel) userdata;
 
 	if (channel != NULL && (revents & POLLIN) != 0) {
+#define BUF_SIZE 1048576
+		char buf[BUF_SIZE];
+#undef BUF_SIZE
 		n = read(fd, buf, sizeof(buf));
 		if (n > 0) {
 			/* Relay data from PTY master to the client */
@@ -315,7 +315,7 @@ static struct bbs_user *auth_by_pubkey(const char *user, struct ssh_key_struct *
 		bbs_auth("Public key authentication failed for '%s' (no such user)\n", user);
 		return NULL;
 	}
-	snprintf(keyfile, sizeof(keyfile), "%s/home/%d/ssh.pub", bbs_transfer_rootdir(), userid);
+	snprintf(keyfile, sizeof(keyfile), "%s/home/%u/ssh.pub", bbs_transfer_rootdir(), userid);
 	if (!bbs_file_exists(keyfile)) {
 		bbs_auth("Public key authentication failed for '%s' (no public key for user)\n", user);
 		return NULL;

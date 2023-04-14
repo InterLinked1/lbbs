@@ -134,7 +134,6 @@ struct pty_fds {
 static void *pty_master_fd(void *varg)
 {
 	struct pty_fds *ptyfds = varg;
-	int pres;
 	struct pollfd fds[2];
 	char buf[4096]; /* According to termios(3) man page, the canonical mode buffer of the PTY is 4096, so this should always be large enough */
 	int bytes_read, bytes_wrote;
@@ -151,6 +150,7 @@ static void *pty_master_fd(void *varg)
 
 	/* Relay data between master and slave */
 	for (;;) {
+		int pres;
 		fds[0].revents = fds[1].revents = 0;
 		pres = poll(fds, 2, -1);
 		pthread_testcancel();
@@ -349,7 +349,7 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 /*! \brief Emulated speed control for non-serial file descriptors */
 static int slow_write(int fd, int fd2, const char *__restrict buf, int len, int sleepms)
 {
-	int c, res, res2 = 0, total_bytes = 0;
+	int c, res2 = 0, total_bytes = 0;
 
 	/* This function exists because it is not possible to use termios
 	 * to set the speed of non-serial terminals.
@@ -384,6 +384,7 @@ static int slow_write(int fd, int fd2, const char *__restrict buf, int len, int 
 	 */
 
 	for (c = 0; c < len; c++) {
+		int res;
 		if (c) {
 			usleep(sleepms); /* delay in us between each character for I/O */
 		}
