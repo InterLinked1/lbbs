@@ -1754,6 +1754,111 @@ static int archive_list_msg(struct smtp_session *smtp)
 	return 0;
 }
 
+static int expand_and_deliver(struct smtp_session *smtp, const char *data, int datalen, int *responded, int *quotaexceeded)
+{
+	char *recipient;
+	int mres;
+	int res = 0;
+
+	if (smtp->listname && archivelists) {
+		archive_list_msg(smtp);
+	}
+	while ((recipient = stringlist_pop(&smtp->recipients))) {
+		int local;
+		char *user, *domain;
+		char *dup;
+		/* The MailScript FORWARD rule will result in recipients being added to
+		 * the recipients list while we're in this loop.
+		 * However the same message is sent to the new target, since we forward the raw message, which means
+		 * we can't rely on counting Received headers to detect mail loops (for local users).
+		 * Perhaps even more appropriate would be keeping track of the user ID instead of the recipient,
+		 * to also account for aliases (but it should be fine).
+		 * This avoids loops not detected by counting Received headers:
+		 */
+		/*! \todo Is this entirely sufficient/appropriate? Maybe we should ALSO add a single Received header on forwards? */
+		if (stringlist_contains(&smtp->sentrecipients, recipient)) {
+			bbs_warning("Skipping duplicate delivery to %s\n", recipient);
+			free(recipient);
+			continue;
+		}
+		/* Keep track that we have sent a message to this recipient */
+		stringlist_push(&smtp->sentrecipients, recipient);
+		dup = strdup(recipient);
+		if (ALLOC_FAILURE(dup)) {
+			goto next;
+		}
+		bbs_debug(7, "Processing delivery to %s\n", dup);
+		/* We already did this when we got RCPT TO, so hopefully we're all good here. */
+		if (bbs_parse_email_address(dup, NULL, &user, &domain, &local)) {
+			goto next;
+		}
+		if (local) {
+			mres = do_local_delivery(smtp, recipient, user, data, datalen, responded);
+			if (mres == -2) {
+				/*! \todo Needs total overhaul, use a separate structure to keep track of delivery failure reasons and outcomes */
+				*quotaexceeded = 1;
+			}
+			res |= mres;
+		} else {
+			res |= external_delivery(smtp, recipient, domain, data, datalen);
+		}
+next:
+		free_if(dup);
+		free(recipient);
+	}
+	return res;
+}
+
+/*! \brief Accept messages injected from the BBS to deliver, to local or external recipients */
+static int injectmail(MAILER_PARAMS)
+{
+	struct smtp_session smtp;
+	int responded = 0, quotaexceeded = 0;
+	int res;
+	FILE *fp;
+	char *s;
+	int length;
+	char tmp[80] = "/tmp/bbsmail-XXXXXX";
+
+	UNUSED(async); /* Currently they're synchronous if local and asynchronous if external, which is just fine */
+
+	/* Build the message itself */
+	fp = bbs_mkftemp(tmp, MAIL_FILE_MODE);
+	if (!fp) {
+		return -1;
+	}
+	bbs_make_email_file(fp, subject, body, to, from, replyto, errorsto, NULL, 0);
+	fclose(fp);
+
+	/*! \todo Refactor things so we don't have to create a dummy SMTP structure */
+	memset(&smtp, 0, sizeof(smtp));
+
+	smtp.fromlocal = 1;
+
+	/* Set up the envelope */
+	smtp.from = (char*) from;
+	/*! \todo The mail interface should probably accept a stringlist globally, since it's reasonable to have multiple recipients */
+	stringlist_push(&smtp.recipients, to);
+
+	/*! \todo FIXME XXX It makes no sense to generate a file, read it into a string, and then write it back to a file immediately
+	 * Adjust APIs to be able to pass through a file directly. */
+	s = bbs_file_to_string(tmp, 0, &length);
+
+	res = expand_and_deliver(&smtp, s, length, &responded, &quotaexceeded);
+	free_if(s);
+	stringlist_empty(&smtp.recipients);
+	stringlist_empty(&smtp.sentrecipients);
+	unlink(tmp);
+	bbs_debug(3, "injectmail res=%d, responded=%d, quotaexceeded=%d\n", res, responded, quotaexceeded);
+	if (res) {
+		return -1;
+	}
+	if (responded || quotaexceeded) {
+		return 1;
+	}
+	return 0;
+}
+
 static int check_identity(struct smtp_session *smtp, char *s)
 {
 	char *user, *domain;
@@ -1830,10 +1935,8 @@ fail:
 /*! \brief Actually send an email or queue it for delivery */
 static int do_deliver(struct smtp_session *smtp, const char *data, unsigned long datalen)
 {
-	char *recipient;
 	int res = 0;
 	int quotaexceeded = 0;
-	int mres;
 	int responded = 0;
 
 	struct smtp_msg_process mproc;
@@ -1950,53 +2053,7 @@ static int do_deliver(struct smtp_session *smtp, const char *data, unsigned long
 		free_if(smtp->fromheaderaddress);
 	}
 
-	if (smtp->listname && archivelists) {
-		archive_list_msg(smtp);
-	}
-
-	while ((recipient = stringlist_pop(&smtp->recipients))) {
-		int local;
-		char *user, *domain;
-		char *dup;
-		/* The MailScript FORWARD rule will result in recipients being added to
-		 * the recipients list while we're in this loop.
-		 * However the same message is sent to the new target, since we forward the raw message, which means
-		 * we can't rely on counting Received headers to detect mail loops (for local users).
-		 * Perhaps even more appropriate would be keeping track of the user ID instead of the recipient,
-		 * to also account for aliases (but it should be fine).
-		 * This avoids loops not detected by counting Received headers:
-		 */
-		/*! \todo Is this entirely sufficient/appropriate? Maybe we should ALSO add a single Received header on forwards? */
-		if (stringlist_contains(&smtp->sentrecipients, recipient)) {
-			bbs_warning("Skipping duplicate delivery to %s\n", recipient);
-			free(recipient);
-			continue;
-		}
-		/* Keep track that we have sent a message to this recipient */
-		stringlist_push(&smtp->sentrecipients, recipient);
-		dup = strdup(recipient);
-		if (ALLOC_FAILURE(dup)) {
-			goto next;
-		}
-		bbs_debug(7, "Processing delivery to %s\n", dup);
-		/* We already did this when we got RCPT TO, so hopefully we're all good here. */
-		if (bbs_parse_email_address(dup, NULL, &user, &domain, &local)) {
-			goto next;
-		}
-		if (local) {
-			mres = do_local_delivery(smtp, recipient, user, data, datalen, &responded);
-			if (mres == -2) {
-				quotaexceeded = 1;
-			}
-			res |= mres;
-		} else {
-			res |= external_delivery(smtp, recipient, domain, data, datalen);
-		}
-next:
-		free_if(dup);
-		free(recipient);
-	}
-
+	res = expand_and_deliver(smtp, data, datalen, &responded, &quotaexceeded);
 	if (mproc.bounce || responded) {
 		return 0; /* If we sent a bounce but didn't drop, don't send a further SMTP reply */
 	}
@@ -2665,6 +2722,8 @@ static int load_module(void)
 		bbs_register_test(tests[i].name, tests[i].callback);
 	}
 
+	bbs_register_mailer(injectmail, 1);
+
 	return 0;
 
 cleanup:
@@ -2675,6 +2734,8 @@ cleanup:
 static int unload_module(void)
 {
 	long unsigned int i;
+
+	bbs_unregister_mailer(injectmail);
 
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		bbs_unregister_test(tests[i].callback);

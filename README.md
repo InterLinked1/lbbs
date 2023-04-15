@@ -225,6 +225,32 @@ Don't forget to also add your DB connection info to `mod_auth_mysql.conf`!
 
 Sure! The reference installation of LBBS is the PhreakNet BBS, reachable at `bbs.phreaknet.org`. Guest login is allowed.
 
+#### How can I bind BBS services to privileged ports if it's not running as root?
+
+If you are running your BBS as a non-root user (which you *should*!), you may encounter errors binding to particular ports.
+There are a few different methods you can use to bind to privileged ports (1 through 1023) when running the BBS as a non-root user.
+
+The first is as simple as explicitly granting the BBS binary the right to do so, e.g.:
+`sudo setcap CAP_NET_BIND_SERVICE=+eip /usr/sbin/lbbs`
+
+This is the recommended approach if it works for you. If not, you can also explicitly allow
+all users to bind to any ports that are at least the specified port number:
+
+`sudo sysctl net.ipv4.ip_unprivileged_port_start=21`
+
+This example would allow any user to bind to ports 21 and above.
+The lowest standard port number currently used by the BBS is 21 (FTP).
+
+Note that this method is not as secure as the first method, but is likely to work even if other methods fail.
+
+Finally, note that many systems already have daemons running on the standard ports, e.g.
+sshd, telnetd, Apache web server, etc. If these are present, you will need to resolve the conflict, as only one
+program can bind to a port at any given time.
+
+#### How can I run SSH and SFTP on the same port?
+
+Currently, this is not possible, but hopefully this limitation will be fixed soon.
+
 #### How does the container enviornment (isoexec handler) work?
 
 The `isoexec` handler creates the specified process in a separate namespace so that is isolated from the root namespace

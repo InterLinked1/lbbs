@@ -33,22 +33,30 @@
 
 #include "include/base64.h"
 #include "include/mail.h"
-#include "include/system.h"
 #include "include/config.h"
 #include "include/utils.h"
+#include "include/module.h"
+#include "include/linkedlists.h"
+#include "include/startup.h"
+
+struct mailer {
+	int (*mailer)(MAILER_PARAMS);
+	struct bbs_module *module;
+	RWLIST_ENTRY(mailer) entry;
+	unsigned int priority;
+};
+
+static RWLIST_HEAD_STATIC(mailers, mailer);
 
 #define MESSAGE_ID_PREFIX "LBBS"
-
-#define SENDMAIL "/usr/sbin/sendmail"
-#define SENDMAIL_ARG "-t"
-#define SENDMAIL_CMD "/usr/sbin/sendmail -t"
 #define ENDL "\n"
-#define	MAIL_FILE_MODE	0600
 #define MAXHOSTNAMELEN   256
 
 static char default_to[84];
 static char default_from[84];
 static char default_errorsto[84];
+
+static int config_exists = 0;
 
 static int load_config(void)
 {
@@ -58,10 +66,7 @@ static int load_config(void)
 		return 0;
 	}
 
-	if (eaccess(SENDMAIL, R_OK)) {
-		/* If mail.conf exists, warn now if sendmail is not detected */
-		bbs_warning("System mailer '%s' does not exist, email transmission will fail.\n", SENDMAIL);
-	}
+	config_exists = 1;
 
 	bbs_config_val_set_str(cfg, "general", "errorsto", default_errorsto, sizeof(default_errorsto));
 	bbs_config_val_set_str(cfg, "defaults", "to", default_to, sizeof(default_to));
@@ -69,24 +74,31 @@ static int load_config(void)
 	return 0;
 }
 
-int bbs_mail_init(void)
+static int check_mailers(void)
 {
-	return load_config();
+	struct mailer *m;
+	int c;
+
+	/* If mail.conf exists, warn if no mailers are registered */
+	RWLIST_RDLOCK(&mailers);
+	c = RWLIST_SIZE(&mailers, m, entry);
+	RWLIST_UNLOCK(&mailers);
+
+	if (!c) {
+		bbs_warning("No mailers are registered, email transmission will fail!\n");
+	}
+	return 0;
 }
 
-/*!
- * \brief Create an email
- * \param p File handler into which to write the email
- * \param subject Email subject
- * \param body Email body
- * \param to Recipient
- * \param from Sender
- * \param replyto Reply-To address. If NULL, not added.
- * \param errorsto Errors-To address. If NULL, not added.
- * \param attachments Pipe (|) separated list of full file paths of attachments to attach.
- * \param delete Whether to delete attachments afterwards
- * \retval 0 on total success and -1 on partial or total failure to generate the message properly
- */
+int bbs_mail_init(void)
+{
+	int res = load_config();
+	if (config_exists) {
+		bbs_register_startup_callback(check_mailers);
+	}
+	return res;
+}
+
 int bbs_make_email_file(FILE *p, const char *subject, const char *body, const char *to, const char *from, const char *replyto, const char *errorsto, const char *attachments, int deleteafter)
 {
 	struct tm tm;
@@ -208,11 +220,52 @@ int __attribute__ ((format (gnu_printf, 6, 7))) bbs_mail_fmt(int async, const ch
 	return res;
 }
 
+int __bbs_register_mailer(int (*mailer)(MAILER_PARAMS), void *mod, int priority)
+{
+	struct mailer *m;
+
+	RWLIST_WRLOCK(&mailers);
+	RWLIST_TRAVERSE(&mailers, m, entry) {
+		if (m->mailer == mailer) {
+			break;
+		}
+	}
+	if (m) {
+		bbs_error("Mailer is already registered\n");
+		RWLIST_UNLOCK(&mailers);
+		return -1;
+	}
+	m = calloc(1, sizeof(*m) + 1);
+	if (ALLOC_FAILURE(m)) {
+		RWLIST_UNLOCK(&mailers);
+		return -1;
+	}
+	m->mailer = mailer;
+	m->module = mod;
+	m->priority = priority;
+	RWLIST_INSERT_SORTED(&mailers, m, entry, priority); /* Insert in order of priority */
+	RWLIST_UNLOCK(&mailers);
+	return 0;
+}
+
+int bbs_unregister_mailer(int (*mailer)(MAILER_PARAMS))
+{
+	struct mailer *m;
+
+	m = RWLIST_WRLOCK_REMOVE_BY_FIELD(&mailers, mailer, mailer, entry);
+	if (!m) {
+		bbs_error("Failed to unregister mailer: not currently registered\n");
+		return -1;
+	} else {
+		free(m);
+	}
+	return 0;
+}
+
 int bbs_mail(int async, const char *to, const char *from, const char *replyto, const char *subject, const char *body)
 {
-	int res;
-	FILE *p;
-	char tmp[80] = "/tmp/bbsmail-XXXXXX";
+	struct mailer *m;
+	int res = -1;
 	const char *errorsto;
 
 	/* Use default email addresses if necessary */
@@ -232,71 +285,17 @@ int bbs_mail(int async, const char *to, const char *from, const char *replyto, c
 		return -1;
 	}
 
-	/* We can't count on sendmail existing. Check first. */
-	if (eaccess(SENDMAIL, R_OK)) {
-		bbs_error("System mailer '%s' does not exist, unable to send email to %s\n", SENDMAIL, to);
-		return -1;
-	}
-
-	bbs_debug(4, "Sending %semail: %s -> %s (replyto %s), subject: %s\n", async ? "async " : "", from, to, S_IF(replyto), subject);
-
-	/* Make a temporary file instead of piping directly to sendmail:
-	 * a) to make debugging easier
-	 * b) in case the mail command hangs
-	 */
-	p = bbs_mkftemp(tmp, MAIL_FILE_MODE);
-	if (!p) {
-		bbs_error("Unable to launch '%s' (can't create temporary file)\n", SENDMAIL_CMD);
-		return -1;
-	}
-	bbs_make_email_file(p, subject, body, to, from, replyto, errorsto, NULL, 0);
-
-	/* XXX We could be calling this function from a node thread.
-	 * If it's async, it's totally fine and there's no problem, but if not, we're really hoping sendmail doesn't block very long or it will block shutdown.
-	 * Probably okay here, but in general don't do this... always pass a handle to node using the headless function variant.
-	 */
-	if (async) {
-		char tmp2[256];
-		/* We can't simply double fork() and call it a day, to run this in the background,
-		 * since we're doing input redirection (and need to clean up afterwards).
-		 * The shell will have to help us out with that. */
-		char *argv[4] = { "/bin/sh", "-c", tmp2, NULL };
-
-		/* Run it in the background using a shell */
-		fclose(p);
-		snprintf(tmp2, sizeof(tmp2), "( %s < %s ; rm -f %s ) &", SENDMAIL_CMD, tmp, tmp);
-		res = bbs_execvp(NULL, "/bin/sh", argv);
-	} else {
-		/* Call sendmail synchronously. */
-		char *argv[3] = { SENDMAIL, SENDMAIL_ARG, NULL };
-		/* Have sendmail read STDIN from the file itself */
-		rewind(p);
-		res = bbs_execvp_fd(NULL, fileno(p), -1, SENDMAIL, argv);
-		fclose(p);
-		if (remove(tmp)) {
-			bbs_error("Failed to delete temporary email file '%s'\n", tmp);
-		} else {
-			bbs_debug(7, "Removed temporary file '%s'\n", tmp);
+	/* Hand off the delivery of the message itself to the appropriate module */
+	RWLIST_RDLOCK(&mailers);
+	RWLIST_TRAVERSE(&mailers, m, entry) {
+		bbs_module_ref(m->module);
+		res = m->mailer(async, to, from, replyto, errorsto, subject, body);
+		bbs_module_unref(m->module);
+		if (res >= 0) {
+			break;
 		}
 	}
+	RWLIST_UNLOCK(&mailers);
 
-	if ((res < 0) && (errno != ECHILD)) {
-		bbs_error("Unable to execute '%s'\n", SENDMAIL_CMD);
-	} else if (res == 127) {
-		bbs_error("Unable to execute '%s'\n", SENDMAIL_CMD);
-	} else {
-		/* Translate exec return value to a normal C-style res */
-		if (res < 0) {
-			res = 0; /* If ECHILD, ignore */
-		}
-		if (res != 0) {
-			res = -1; /* If nonzero, ignore */
-		} else {
-			bbs_debug(1, "%s sent mail to %s with command '%s'\n", async ? "Asynchronously" : "Synchronously", to, SENDMAIL_CMD);
-		}
-	}
-	if (res) {
-		bbs_error("Failed to send email to %s\n", to);
-	}
 	return res;
 }

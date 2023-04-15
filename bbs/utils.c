@@ -156,10 +156,9 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host, i
 	}
 
 	domain = strchr(start, '@');
-	if (!domain) {
-		return -1; /* Email address must be enclosed in <> */
-	}
-	domain++;
+	if (domain) {
+		domain++;
+	} /* else, no domain, it's just a username */
 
 	if (!user && !host) {
 		return 0; /* We only confirmed that this was a valid address. */
@@ -183,11 +182,19 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host, i
 		}
 	}
 	if (host) {
-		*(domain - 1) = '\0';
-		*host = domain;
+		if (domain) {
+			*(domain - 1) = '\0';
+			*host = domain;
+		} else {
+			*host = NULL;
+		}
 	}
 	if (local) {
-		*local = !strcmp(domain, bbs_hostname());
+		if (domain) {
+			*local = !strcmp(domain, bbs_hostname());
+		} else {
+			*local = 1;
+		}
 	}
 	return 0;
 }

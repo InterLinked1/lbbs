@@ -2000,17 +2000,30 @@ static void close_mailbox(struct imap_session *imap)
 	imap->dir[0] = imap->curdir[0] = imap->newdir[0] = '\0';
 }
 
+/* ~ 2.5 MB */
+#define LOW_MAILBOX_SPACE_THRESHOLD 2500000
+
+static void low_quota_alert(struct imap_session *imap)
+{
+	unsigned quotaleft = mailbox_quota_remaining(imap->mbox);
+	if (quotaleft < LOW_MAILBOX_SPACE_THRESHOLD) { /* Very little quota remaining */
+		imap_send(imap, "OK [ALERT] Mailbox is almost full (%u KB quota remaining)\n", quotaleft / 1024);
+	}
+}
+
 static int handle_select(struct imap_session *imap, char *s, int readonly)
 {
 	/* Mailbox can contain spaces, so don't use strsep for it if it's in quotes */
 	char *mailbox;
 	int was_selected;
 	unsigned long maxmodseq;
+	struct mailbox *oldmbox;
 
 	REQUIRE_ARGS(s);
 	SHIFT_OPTIONALLY_QUOTED_ARG(mailbox, s); /* The STATUS command will have additional arguments (and possibly SELECT, for CONDSTORE/QRESYNC) */
 
 	was_selected = imap->dir[0] ? 1 : 0;
+	oldmbox = imap->mbox;
 
 	/* This modifies the current maildir even for STATUS, but the STATUS command will restore the old one afterwards. */
 	if (set_maildir(imap, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX". It may also change the active (account) mailbox. */
@@ -2122,6 +2135,10 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 		imap_send(imap, "OK [MYRIGHTS \"%s\"] ACL", aclstr);
 		if (lastmodseq) {
 			do_qresync(imap, lastmodseq, uidrange, seqrange);
+		}
+		if (oldmbox != imap->mbox) {
+			/* Whenever we switch mailboxes, alert about low quota */
+			low_quota_alert(imap);
 		}
 		imap_reply(imap, "OK [%s] %s completed%s", readonly ? "READ-ONLY" : "READ-WRITE", readonly ? "EXAMINE" : "SELECT", condstore_just_enabled ? ", CONDSTORE is now enabled" : "");
 		imap->highestmodseq = maxmodseq;
@@ -6962,7 +6979,7 @@ static void *__imap_handler(void *varg)
 	node->thread = pthread_self();
 	bbs_node_begin(node);
 
-	imap_handler(node, !strcmp(node->protname, "IMAPS")); /* Actually handle the message submission agent client */
+	imap_handler(node, !strcmp(node->protname, "IMAPS"));
 
 	bbs_debug(3, "Node %d has ended its %s session\n", node->id, node->protname);
 	bbs_node_exit(node); /* node is no longer a valid reference */
