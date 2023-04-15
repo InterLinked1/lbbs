@@ -48,6 +48,7 @@
 #include "include/config.h"
 #include "include/net.h"
 #include "include/transfer.h"
+#include "include/event.h"
 
 static pthread_t ssh_listener_thread;
 
@@ -503,6 +504,21 @@ static inline int thread_has_exited(pthread_t thread)
 	return 0;
 }
 
+static void bad_ssh_conn(ssh_session session)
+{
+	char ipaddr[84];
+	struct bbs_event event;
+	/* These connections are not likely to be legitimate, so log them. We don't have a node, so use the session. */
+	save_remote_ip(session, NULL, ipaddr, sizeof(ipaddr));
+	bbs_auth("SSH connection from %s did not have a PTY at shutdown\n", ipaddr);
+	/* We don't have a node, so manually dispatch an event */
+	memset(&event, 0, sizeof(event));
+	event.type = EVENT_NODE_SHORT_SESSION; /* Always consider it short, if it never set up a PTY */
+	safe_strncpy(event.protname, "SSH", sizeof(event.protname));
+	safe_strncpy(event.ipaddr, ipaddr, sizeof(event.ipaddr));
+	bbs_event_dispatch(NULL, EVENT_NODE_SHORT_SESSION);
+}
+
 static void handle_session(ssh_event event, ssh_session session)
 {
 	int n;
@@ -696,6 +712,11 @@ static void handle_session(ssh_event event, ssh_session session)
 		bbs_user_destroy(user);
 		user = NULL;
 	}
+
+	if (cdata.pty_master == -1) {
+		bad_ssh_conn(session);
+	}
+
 	close_if(cdata.pty_master);
 	close_if(cdata.child_stdin);
 	close_if(cdata.child_stdout);
