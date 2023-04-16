@@ -36,6 +36,7 @@
 #include "include/user.h"
 #include "include/stringlist.h"
 #include "include/ansi.h"
+#include "include/notify.h"
 
 #include "include/net_irc.h"
 
@@ -159,7 +160,19 @@ static struct irc_user user_chanserv = {
 	.modes = USER_MODE_OPERATOR, /* Grant ChanServ permissions to do whatever it wants */
 };
 
-#define IS_SERVICE(user) (user == &user_chanserv)
+/*! \brief Static user struct for private messaging operations */
+static struct irc_user user_messageserv = {
+	.node = NULL,
+	.channelcount = 0,
+	/* This is kind of the opposite of MemoServ, actually, so let's call it MessageServ */
+	.username = "MessageServ",
+	.nickname = "MessageServ",
+	.realname = "Messaging Services",
+	.hostname = "services",
+	.modes = 0,
+};
+
+#define IS_SERVICE(user) (user == &user_chanserv || user == &user_messageserv)
 
 static RWLIST_HEAD_STATIC(users, irc_user);	/* Container for all users */
 
@@ -3010,6 +3023,18 @@ int __chanserv_exec(void *mod, char *s)
 	return 0;
 }
 
+/*! \brief Callback that allows other parts of the BBS to send a message to a user via IRC */
+static int alertmsg(unsigned int userid, const char *msg)
+{
+	char username[48];
+	int res = -1;
+
+	if (!bbs_username_from_userid(userid, username, sizeof(username))) {
+		res = privmsg(&user_messageserv, username, 1, msg); /* Send a NOTICE to the user */
+	}
+	return res;
+}
+
 /* The threading model here is pretty basic.
  * We have one thread per client.
  * Each of these threads will wait for activity from the client.
@@ -3282,6 +3307,7 @@ static int load_module(void)
 	if (ircs_enabled) {
 		bbs_register_network_protocol("IRCS", ircs_port);
 	}
+	bbs_register_alerter(alertmsg, 5);
 	return 0;
 
 decline:
@@ -3293,6 +3319,7 @@ decline:
 
 static int unload_module(void)
 {
+	bbs_unregister_alerter(alertmsg);
 	pthread_cancel(irc_ping_thread);
 	bbs_pthread_cancel_kill(irc_listener_thread);
 	bbs_pthread_join(irc_ping_thread, NULL);

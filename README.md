@@ -231,6 +231,7 @@ If you are running your BBS as a non-root user (which you *should*!), you may en
 There are a few different methods you can use to bind to privileged ports (1 through 1023) when running the BBS as a non-root user.
 
 The first is as simple as explicitly granting the BBS binary the right to do so, e.g.:
+
 `sudo setcap CAP_NET_BIND_SERVICE=+eip /usr/sbin/lbbs`
 
 This is the recommended approach if it works for you. If not, you can also explicitly allow

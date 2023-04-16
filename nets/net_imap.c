@@ -111,6 +111,7 @@
 #include "include/auth.h"
 #include "include/user.h"
 #include "include/test.h"
+#include "include/notify.h"
 
 #include "include/mod_mail.h"
 #include "include/mod_mimeparse.h"
@@ -296,6 +297,7 @@ struct imap_session {
 	unsigned long highestmodseq;	/* Cached HIGHESTMODSEQ for current folder */
 	int acl;					/* Cached ACL for current directory. We allowed to cache per a mailbox by the RFC. */
 	char *savedsearch;			/* SEARCHRES */
+	char *clientid;				/* Client ID */
 	/* APPEND */
 	char appenddir[212];		/* APPEND directory */
 	char appendtmp[260];		/* APPEND tmp name */
@@ -323,6 +325,7 @@ struct imap_session {
 	unsigned int idle:1;		/* Whether IDLE is active */
 	unsigned int dnd:1;			/* Do Not Disturb: Whether client is executing a FETCH, STORE, or SEARCH command (EXPUNGE responses are not allowed) */
 	unsigned int pending:1;		/* Delayed output is pending in pfd pipe */
+	unsigned int alerted:2;		/* An alert has been delivered to this client */
 	unsigned int condstore:1;	/* Whether a client has issue a CONDSTORE enabling command, and should be sent MODSEQ updates in untagged FETCH responses */
 	unsigned int qresync:1;		/* Whether a client has enabled the QRESYNC capability */
 	pthread_mutex_t lock;		/* Lock for IMAP session */
@@ -649,6 +652,7 @@ static void imap_destroy(struct imap_session *imap)
 	free_if(imap->appenddate);
 	/* Do not free tag, since it's stack allocated */
 	free_if(imap->savedtag);
+	free_if(imap->clientid);
 	free_if(imap->folder);
 	pthread_mutex_destroy(&imap->lock);
 }
@@ -1907,21 +1911,22 @@ static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, cons
 		return;
 	}
 
-	if (seqrange) {
+	if (seqrange) { /* Testing note: Thunderbird does not support QRESYNC, but Trojita does */
 		unsigned int *seqs = NULL, *uids = NULL;
 		int seq_lengths = 0, uid_lengths = 0;
-		char *sequences = parensep(&sequences); /* Strip the () */
-		sequences = strsep(&seqrange, " ");
+		char *uidseq, *sequences;
+
+		uidseq = parensep(&seqrange); /* Strip the () */
+		sequences = strsep(&uidseq, " "); /* Get the first half (the sequence numbers, second half is UIDs) */
+		bbs_debug(7, "sequences %s <=> UIDs %s\n", sequences, uidseq);
 		range_to_uintlist(sequences, &seqs, &seq_lengths);
-		if (!seqrange) {
+		if (!uidseq) {
 			bbs_warning("Malformed command\n");
 		} else {
-			range_to_uintlist(seqrange, &uids, &uid_lengths);
+			range_to_uintlist(uidseq, &uids, &uid_lengths);
 			if (seq_lengths != uid_lengths) {
 				bbs_warning("Invalid message sequence data argument (%d != %d)\n", seq_lengths, uid_lengths);
 				/* Just ignore this argument */
-				free_if(seqs);
-				free_if(uids);
 			} else {
 				/* Run the algorithm described in RFC 7162 3.2.5.2 */
 				/* Something like 1,3,5:6 1,10,15,17 - sequence numbers, then UIDs corresponding to those
@@ -1944,15 +1949,23 @@ static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, cons
 					if (seqs[i] == seqno) {
 						unsigned int realuid;
 						maildir_parse_uid_from_filename(entry->d_name, &realuid);
+						bbs_debug(7, "Comparing seqno %u with UID %u\n", seqs[i], uids[i]);
 						if (uids[i] == realuid) {
 							minuid = realuid; /* Can skip at least everything prior to this message for EXPUNGE responses */
+						} else {
+							break; /* No point in continuing, minuid will never get any higher */
 						}
 						i++;
+						if (i == seq_lengths) {
+							break; /* If we finish early, stop, since there are no more comparisons that can be made */
+						}
 					}
 				}
 			}
 		}
 		fno = 0, seqno = 0;
+		free_if(seqs);
+		free_if(uids);
 	}
 
 	/* First, send any expunges since last time */
@@ -2072,11 +2085,18 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 				tmp = strsep(&qresync, " ");
 				REQUIRE_ARGS(tmp);
 				lastmodseq = atoi(tmp);
-				uidrange = strsep(&qresync, " "); /* This is optional and defaults to 1:* */
-				if (strlen_zero(uidrange)) {
+				if (!strlen_zero(qresync) && *qresync != '(') { /* Trojita sends params 1, 2, and 4 but not 3 (no UID range) */
+					uidrange = strsep(&qresync, " "); /* This is optional and defaults to 1:* */
+				} else {
 					uidrange = NULL; /* Defaults to 1:* - for efficiency's sake, use NULL instead */
 				}
-				seqrange = strsep(&qresync, " "); /* Also optional */
+				if (!strlen_zero(qresync)) {
+					if (*qresync == '(') {
+						seqrange = qresync; /* Also optional */
+					} else {
+						bbs_warning("Parsing error: %s\n", qresync);
+					}
+				}
 				/* If client's last UIDVALIDITY doesn't match ours, then ignore all this */
 				if (lastuidvalidity != imap->uidvalidity) {
 					bbs_verb(5, "Client's UIDVALIDITY (%u) differs from ours (%u)\n", lastuidvalidity, imap->uidvalidity);
@@ -3973,10 +3993,24 @@ cleanup:
 	return 0;
 }
 
+/*! \brief strsep-like tokenizer that returns the contents of the next substring inside parentheses (handling nested parentheses) */
 static char *parensep(char **str)
 {
 	char *ret, *s = *str;
 	int count = 0;
+
+	if (strlen_zero(s)) {
+		return NULL;
+	}
+
+	if (*s != '(') {
+		if (*s == ' ') {
+			s++;
+		}
+		if (*s != '(') {
+			bbs_warning("parensep used incorrectly: %s\n", *str);
+		}
+	}
 
 	while (*s) {
 		if (*s == '(') {
@@ -5626,7 +5660,9 @@ static int search_dir(struct imap_session *imap, const char *dirname, int newdir
 		if (search_keys_eval(skeys, IMAP_SEARCH_ALL, &search)) {
 			/* Include in search response */
 			if (usinguid) {
-				maildir_parse_uid_from_filename(search.filename, &uid);
+				if (maildir_parse_uid_from_filename(search.filename, &uid)) {
+					continue;
+				}
 			} else {
 				uid = seqno; /* Not really, but use the same variable for both */
 			}
@@ -5783,12 +5819,16 @@ static int range_to_uintlist(char *s, unsigned int **list, int *length)
 		int a, b;
 		char *start, *end = seq;
 		start = strsep(&end, ":");
+		if (strlen_zero(start)) {
+			bbs_warning("Invalid range\n");
+			continue;
+		}
 		a = atoi(start);
 		if (!end) {
 			uintlist_append(list, length, &alloc_sizes, a);
 			continue;
 		}
-		b = atoi(start);
+		b = atoi(end);
 		if (b - a > 100000) {
 			bbs_warning("Declining to process range %d:%d (too large)\n", a, b);
 			return -1; /* Don't malloc into oblivion */
@@ -6448,15 +6488,19 @@ static int imap_process(struct imap_session *imap, char *s)
 	int res;
 	char *command;
 
-	if (imap->idle) {
-		/* Command should be "DONE" */
-		if (strlen_zero(s) || strcasecmp(s, "DONE")) {
+	if (imap->idle || (imap->alerted == 1 && !strcasecmp(s, "DONE"))) {
+		/* Thunderbird clients will still send "DONE" if we send a tagged reply during the IDLE,
+		 * but Microsoft Outlook will not, so handle both cases, i.e. tolerate the redundant DONE.
+		 */
+		if (strlen_zero(s) || strcasecmp(s, "DONE")) { /* Command should be "DONE" */
 			bbs_warning("Improper IDLE termination (received '%s')\n", S_IF(s));
 		}
 		imap->idle = 0;
 		_imap_reply(imap, "%s OK IDLE terminated\r\n", imap->savedtag); /* Use tag from IDLE request */
 		free_if(imap->savedtag);
 		return 0;
+	} else if (imap->alerted == 1) {
+		imap->alerted = 2;
 	}
 
 	if (imap->appendsize) {
@@ -6527,7 +6571,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		 * We don't maintain a "client's view" of what sequences numbers are known and map to what UIDs.
 		 * So what is the actual effect of "preventing loss of synchronization in this manner"???
 		 */
-		if (!STARTS_WITH(command, "FETCH") && !STARTS_WITH(command, "STORE") && !STARTS_WITH(command, "SEARCH") && !STARTS_WITH(command, "SORT") && !STARTS_WITH(command, "UID SEARCH")) {
+		if (!STARTS_WITH(command, "FETCH") && !STARTS_WITH(command, "STORE") && !STARTS_WITH(command, "SEARCH") && !STARTS_WITH(command, "SORT") && (!STARTS_WITH(command, "UID") || (!strlen_zero(s) && !STARTS_WITH(s, "SEARCH")))) {
 			char buf[1024]; /* Hopefully big enough for any single untagged  response. */
 			pthread_mutex_lock(&imap->lock);
 			bbs_readline_init(&rldata, buf, sizeof(buf));
@@ -6746,7 +6790,8 @@ static int imap_process(struct imap_session *imap, char *s)
 		imap_reply(imap, "OK GETQUOTAROOT complete");
 	} else if (!strcasecmp(command, "ID")) {
 		/* RFC 2971 (ID extension) */
-		REQUIRE_ARGS(s); /* We don't care what the client's capabilities are (we don't make use of them), but must be some argument (e.g. NIL) */
+		REQUIRE_ARGS(s);
+		REPLACE(imap->clientid, s);
 		imap_send(imap, "ID (\"name\" \"%s.Imap4Server\" \"version\" \"%s\")", BBS_SHORTNAME, BBS_VERSION);
 		imap_reply(imap, "OK ID completed");
 	/* We don't store subscriptions. We just automatically treat all available folders as subscribed.
@@ -7030,6 +7075,99 @@ static struct unit_tests {
 	{ "IMAP COPYUID Generation", test_copyuid_generation },
 };
 
+static int alertmsg(unsigned int userid, const char *msg)
+{
+	int res = -1;
+	struct imap_session *s;
+
+	RWLIST_RDLOCK(&sessions);
+	RWLIST_TRAVERSE(&sessions, s, entry) {
+		if (!bbs_user_is_registered(s->node->user) || s->node->user->id != userid) { /* Must be the desired user */
+			continue;
+		}
+		pthread_mutex_lock(&s->lock);
+		if (!s->idle || s->alerted) { /* Must be idling, or we can't send an untagged response now */
+			pthread_mutex_unlock(&s->lock);
+			continue;
+		}
+
+		/* Deliver the message using an IMAP ALERT, which MUAs (mail user agents / mail clients)
+		 * are obligated to display to the user in some way (RFC 3501 7.1).
+		 * In theory... */
+
+		/* Unfortunately, in practice, it doesn't seem to be that simple...
+		 * You can't just send an untagged * OK [ALERT] message to the client during an IDLE and call it a day.
+		 *
+		 * Thunderbird-based clients will ignore ALERTs on some commands entirely.
+		 * At least these commands CAN work... SOMETIMES: ID, GETQUOTAROOT, UID FETCH, SELECT, LIST, ENABLE, CAPABILITY, NAMESPACE, LSUB
+		 * However, it is not consistent. When testing, I could easily make an alert display on an initial UID FETCH,
+		 * but after kicking it out of an IDLE and having it issue UID FETCH again, the alert would not display.
+		 *
+		 * The Thunderbird source code can be relevant here to try to understand this behavior.
+		 * The relevant code is mostly unchanged since at least 52 so this applies to most Thunderbird forks as well, e.g. Interlink, Epyrus, etc.
+		 *
+		 * Files that have to do with ALERT:
+		 * - mailnews/imap/src/nsImapServerResponseParser.cpp
+		 * - mailnews/imap/src/nsImapProtocol.cpp
+		 * (Search for ALERT and functions starting with AlertUser, but not ending in UsingName)
+		 *
+		 * RFC 3501 also backs up the theory that you SHOULD be able to send ALERTs whenever you want, and clients SHOULD display them.
+		 * The Thunderbird behavior is probably wrong.
+		 * Other sources that suggest you should be able to send ALERTs whenever you want:
+		 * - https://mail.uni-bonn.de/Guide/IMAP.html
+		 * - https://mail.uni-bonn.de/Guide/Alerts.html
+		 *
+		 * TL;DR It seems that we can only reliably send an ALERT when a new mailbox is selected,
+		 * or initially when the client first connects and is issuing any of the commands listed in an above paragraph.
+		 *
+		 * So, our workaround solution, since even if this issue gets fixed, that won't fix it for the massive install base.
+		 * Most things do not work, but one thing that does is we can end the IDLE session with a NO reply,
+		 * which will display an alert like:
+		 * "The current operation on 'Inbox' did not succeed. The mail server for account (account) : [ALERT] ...
+		 *
+		 * This only works if it's a tagged reply, not if it's an untagged response.
+		 * This is far from ideal, but since we can't reliably generate an alert in other ways / until we figure out how,
+		 * this is probably the best we can hope for.
+		 *
+		 * Except never mind... that only works ONCE and then never again!!!
+		 *
+		 * Ultimately, we can only use this mechanism ONCE for an entire connection... even if it logs back in on the same connection, that's no good.
+		 * So basically use alerted to mark a "dirty bit" that means we can't use this session again.
+		 *
+		 * So there are major shortcomings of this mechanism in practice:
+		 * - This mechanism is extremely unreliable
+		 * - It only works once per connection, if at all, and then never again (MS Outlook seems to always ignore them)
+		 * - Instead of sending a native ALERT in an IDLE (OK [ALERT]), it only works with NO [ALERT],
+		 *   which adds the "The current operation did not succeed..." boilerplate, which is confusing to users.
+		 *
+		 * Overall, this mechanism has a lot of potential in theories, but since clients are very bad about displaying alerts,
+		 * we can't really take advantage of this currently.
+		 */
+
+		/* RFC 2971 says we MUST NOT make operational changes or attempt to work around client bugs based on the ID.
+		 * Well, RFC 3501 also says clients MUST display ALERTs to the user, so who cares about rules anyways?
+		 * We have no choice but to voilate the RFC here. */
+
+		if (!strlen_zero(s->clientid)) {
+			if (strstr(s->clientid, "Outlook")) { /* MS Outlook never seems to display alerts at all */
+				pthread_mutex_unlock(&s->lock);
+				continue;
+			}
+			/* The following (Thunderbird family) clients MAY work: Thunderbird, Interlink, MailNews, Epyrus */
+			/* Untested: Trojita */
+		}
+
+		s->alerted = 1;
+		/* Do not send a random untagged EXISTS, e.g. * EXISTS 999999, or that will cause ~Thunderbird to ignore the ALERT */
+		_imap_reply_nolock(s, "%s NO [ALERT] %s\r\n", s->savedtag, msg); /* Use tag from IDLE request. This must be a NO, not an OK. */
+		s->idle = 0; /* Since we sent a tagged reply, the IDLE is technically terminated now. */
+		res = 0;
+		pthread_mutex_unlock(&s->lock);
+	}
+	RWLIST_UNLOCK(&sessions);
+	return res;
+}
+
 static int load_module(void)
 {
 	unsigned int i;
@@ -7075,12 +7213,14 @@ static int load_module(void)
 		bbs_register_test(tests[i].name, tests[i].callback);
 	}
 	mailbox_register_watcher(imap_mbox_watcher);
+	bbs_register_alerter(alertmsg, 90);
 	return 0;
 }
 
 static int unload_module(void)
 {
 	unsigned int i;
+	bbs_unregister_alerter(alertmsg);
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		bbs_unregister_test(tests[i].callback);
 	}

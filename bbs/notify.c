@@ -26,6 +26,8 @@
 #include "include/mail.h"
 #include "include/user.h" /* must be included before notify.h */
 #include "include/notify.h"
+#include "include/module.h"
+#include "include/linkedlists.h"
 
 #define MSG_TRAILER "\r\n\r\n\t--" BBS_SHORTNAME
 
@@ -78,6 +80,111 @@ int __attribute__ ((format (gnu_printf, 3, 4))) bbs_sysop_email(struct bbs_user 
 	}
 
 	res = bbs_mail(1, to, from, replyto, subject, buf);
+	free(buf);
+	return res;
+}
+
+struct alerter {
+	int (*alerter)(unsigned int userid, const char *msg);
+	void *module;
+	RWLIST_ENTRY(alerter) entry;
+	unsigned int priority;
+};
+
+static RWLIST_HEAD_STATIC(alerters, alerter);
+
+int __bbs_register_alerter(int (*alerter)(ALERTER_PARAMS), void *mod, int priority)
+{
+	struct alerter *a;
+
+	RWLIST_WRLOCK(&alerters);
+	RWLIST_TRAVERSE(&alerters, a, entry) {
+		if (a->alerter == alerter) {
+			break;
+		}
+	}
+	if (a) {
+		bbs_error("Alerter is already registered\n");
+		RWLIST_UNLOCK(&alerters);
+		return -1;
+	}
+	a = calloc(1, sizeof(*a) + 1);
+	if (ALLOC_FAILURE(a)) {
+		RWLIST_UNLOCK(&alerters);
+		return -1;
+	}
+	a->alerter = alerter;
+	a->module = mod;
+	a->priority = priority;
+	RWLIST_INSERT_SORTED(&alerters, a, entry, priority); /* Insert in order of priority */
+	RWLIST_UNLOCK(&alerters);
+	return 0;
+}
+
+int bbs_unregister_alerter(int (*alerter)(ALERTER_PARAMS))
+{
+	struct alerter *a;
+
+	a = RWLIST_WRLOCK_REMOVE_BY_FIELD(&alerters, alerter, alerter, entry);
+	if (!a) {
+		bbs_error("Failed to unregister alerter: not currently registered\n");
+		return -1;
+	} else {
+		free(a);
+	}
+	return 0;
+}
+
+static int __bbs_alert_user(unsigned int userid, enum notify_delivery_type persistence, const char *msg)
+{
+	int res = -1;
+	struct alerter *a;
+
+	/*! \todo Possible future enhancement: if userid is 0, broadcast the alert to all users.
+	 * (could add an /alertall command to mod_sysop)
+	 * We'd have to pass 0 to the module and have it deliver the message to as many users as possible,
+	 * and inform us of which users, so we don't deliver repeats to the same user using other callbacks. */
+
+	RWLIST_RDLOCK(&alerters);
+	RWLIST_TRAVERSE(&alerters, a, entry) {
+		bbs_module_ref(a->module);
+		res = a->alerter(userid, msg);
+		bbs_module_unref(a->module);
+		if (!res) {
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&alerters);
+
+	/* If everything else failed and we're allowed to, deliver via email instead. */
+	if (res && persistence == DELIVERY_GUARANTEED) {
+		char username[48];
+		if (!bbs_username_from_userid(userid, username, sizeof(username))) {
+			res = bbs_mail(1, username, NULL, NULL, "BBS Alert", msg);
+		}
+	}
+	return res;
+}
+
+int __attribute__ ((format (gnu_printf, 3, 4))) bbs_alert_user(unsigned int userid, enum notify_delivery_type persistence, const char *fmt, ...)
+{
+	int len, res;
+	char *buf;
+	va_list ap;
+
+	if (!strchr(fmt, '%')) {
+		return __bbs_alert_user(userid, persistence, fmt);
+	}
+
+	va_start(ap, fmt);
+	len = vasprintf(&buf, fmt, ap);
+	va_end(ap);
+
+	if (len < 0) {
+		return -1;
+	}
+
+	res = __bbs_alert_user(userid, persistence, buf);
 	free(buf);
 	return res;
 }

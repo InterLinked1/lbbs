@@ -334,7 +334,7 @@ static int handle_auth(struct smtp_session *smtp, char *s)
 	} else if (inauth == 2) {
 		REPLACE(smtp->authuser, s);
 		smtp->inauth = 3; /* Get password */
-		smtp_reply(smtp, 334, "UGFzc3dvcmQA", ""); /* Prompt for password (base64 encoded) */
+		_smtp_reply(smtp, "334 UGFzc3dvcmQ6\r\n"); /* Prompt for password (base64 encoded) */
 	} else if (inauth == 3) {
 		int userlen, passlen;
 		int res;
@@ -351,7 +351,7 @@ static int handle_auth(struct smtp_session *smtp, char *s)
 			smtp_reply(smtp, 502, 5.5.2, "Decoding failure");
 			return 0;
 		}
-		res = bbs_user_authenticate(smtp->node->user, (char*) user, (char*) pass);
+		res = bbs_authenticate(smtp->node, (char*) user, (char*) pass);
 		free(user);
 		free(pass);
 		if (res) {
@@ -2345,7 +2345,8 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 			} else if (!strcasecmp(command, "LOGIN")) {
 				/* https://www.ietf.org/archive/id/draft-murchison-sasl-login-00.txt */
 				smtp->inauth = 2;
-				smtp_reply(smtp, 334, "VXNlciBOYW1lAA==", ""); /* Prompt for username (base64 encoded) */
+				/* Prompt for username (base64 encoded) */
+				_smtp_reply(smtp, "334 VXNlcm5hbWU6\r\n"); /* Microsoft Outlook doesn't like quotes around the encoded string. XXX Why are there quotes anyways? */
 			} else {
 				smtp_reply(smtp, 504, 5.7.4, "Unrecognized Authentication Type");
 			}

@@ -43,6 +43,7 @@
 #include "include/utils.h" /* use bbs_dump_threads */
 #include "include/auth.h" /* use bbs_list_auth_providers */
 #include "include/user.h" /* use bbs_user_dump */
+#include "include/notify.h"
 
 extern int option_nofork;
 
@@ -161,6 +162,24 @@ static int sysop_command(int fdin, int fdout, const char *s)
 		s += 4;
 		ENSURE_STRLEN(s);
 		bbs_node_spy(fdin, fdout, atoi(s));
+	} else if (STARTS_WITH(s, "alert ")) {
+		char *dup = strdup(S_IF(s + STRLEN("alert ")));
+		if (ALLOC_SUCCESS(dup)) {
+			unsigned int userid;
+			char *username, *msg = dup;
+			username = strsep(&msg, " ");
+			userid = bbs_userid_from_username(username);
+			if (userid) {
+				if (bbs_alert_user(userid, DELIVERY_EPHEMERAL, "%s", msg)) {
+					bbs_dprintf(fdout, "Failed to deliver message\n");
+				} else {
+					bbs_dprintf(fdout, "Message delivered\n");
+				}
+			} else {
+				bbs_dprintf(fdout, "No such user '%s'\n", username);
+			}
+			free(dup);
+		}
 	} else if (!strcmp(s, "runtests")) {
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_run_tests(fdout);
@@ -257,36 +276,37 @@ static void *sysop_handler(void *varg)
 					bbs_dprintf(sysopfdout, "UP -> Previous command\n");
 					bbs_dprintf(sysopfdout, "DN -> More recent command\n");
 					bbs_dprintf(sysopfdout, " == Sysoping ==\n");
-					bbs_dprintf(sysopfdout, "/kickall          - Kick all connected nodes\n");
-					bbs_dprintf(sysopfdout, "/kick <nodenum>   - Kick specified node\n");
-					bbs_dprintf(sysopfdout, "/node <nodenum>   - View information about a node\n");
-					bbs_dprintf(sysopfdout, "/user <username>  - View information about a user\n");
-					bbs_dprintf(sysopfdout, "/spy <nodenum>    - Spy on a node (^C to stop)\n");
-					bbs_dprintf(sysopfdout, "/menureload       - Reload menus\n");
+					bbs_dprintf(sysopfdout, "/kickall            - Kick all connected nodes\n");
+					bbs_dprintf(sysopfdout, "/kick <nodenum>     - Kick specified node\n");
+					bbs_dprintf(sysopfdout, "/node <nodenum>     - View information about a node\n");
+					bbs_dprintf(sysopfdout, "/user <username>    - View information about a user\n");
+					bbs_dprintf(sysopfdout, "/spy <nodenum>      - Spy on a node (^C to stop)\n");
+					bbs_dprintf(sysopfdout, "/alert <user> <msg> - Send a message to a user\n");
+					bbs_dprintf(sysopfdout, "/menureload         - Reload menus\n");
 					bbs_dprintf(sysopfdout, " == Operational ==\n");
-					bbs_dprintf(sysopfdout, "/debug <level>    - Set debug level\n");
-					bbs_dprintf(sysopfdout, "/verbose <level>  - Set verbose level\n");
-					bbs_dprintf(sysopfdout, "/variables        - List all global variables\n");
-					bbs_dprintf(sysopfdout, "/menu <name>      - Dump a menu\n");
-					bbs_dprintf(sysopfdout, "/menus            - View list of menus\n");
-					bbs_dprintf(sysopfdout, "/menuhandlers     - View list of menu handlers\n");
-					bbs_dprintf(sysopfdout, "/doors            - View list of doors\n");
-					bbs_dprintf(sysopfdout, "/modules          - View list of loaded modules\n");
-					bbs_dprintf(sysopfdout, "/nets             - View list of network protocols\n");
-					bbs_dprintf(sysopfdout, "/authproviders    - View list of registered auth providers\n");
+					bbs_dprintf(sysopfdout, "/debug <level>      - Set debug level\n");
+					bbs_dprintf(sysopfdout, "/verbose <level>    - Set verbose level\n");
+					bbs_dprintf(sysopfdout, "/variables          - List all global variables\n");
+					bbs_dprintf(sysopfdout, "/menu <name>        - Dump a menu\n");
+					bbs_dprintf(sysopfdout, "/menus              - View list of menus\n");
+					bbs_dprintf(sysopfdout, "/menuhandlers       - View list of menu handlers\n");
+					bbs_dprintf(sysopfdout, "/doors              - View list of doors\n");
+					bbs_dprintf(sysopfdout, "/modules            - View list of loaded modules\n");
+					bbs_dprintf(sysopfdout, "/nets               - View list of network protocols\n");
+					bbs_dprintf(sysopfdout, "/authproviders      - View list of registered auth providers\n");
 					bbs_dprintf(sysopfdout, " == Development & Debugging == \n");
-					bbs_dprintf(sysopfdout, "/threads          - View list of active registered threads\n");
-					bbs_dprintf(sysopfdout, "/fds              - View list of open file descriptors\n");
-					bbs_dprintf(sysopfdout, "/runtests         - Run all unit tests\n");
-					bbs_dprintf(sysopfdout, "/testemail        - Send a test email to the sysop\n");
+					bbs_dprintf(sysopfdout, "/threads            - View list of active registered threads\n");
+					bbs_dprintf(sysopfdout, "/fds                - View list of open file descriptors\n");
+					bbs_dprintf(sysopfdout, "/runtests           - Run all unit tests\n");
+					bbs_dprintf(sysopfdout, "/testemail          - Send a test email to the sysop\n");
 					bbs_dprintf(sysopfdout, " == Administrative ==\n");
-					bbs_dprintf(sysopfdout, "/load <module>    - Load dynamic module\n");
-					bbs_dprintf(sysopfdout, "/unload <module>  - Unload dynamic module\n");
-					bbs_dprintf(sysopfdout, "/reload <module>  - Unload and load dynamic module\n");
-					bbs_dprintf(sysopfdout, "/qreload <module> - Unload and load dynamic module, queuing if necessary\n");
-					bbs_dprintf(sysopfdout, "/halt             - Immediately (uncleanly) halt the BBS (DANGER!)\n");
-					bbs_dprintf(sysopfdout, "/shutdown (^C)    - Shut down the BBS (no confirmation)\n");
-					bbs_dprintf(sysopfdout, "/restart          - Restart the BBS\n");
+					bbs_dprintf(sysopfdout, "/load <module>      - Load dynamic module\n");
+					bbs_dprintf(sysopfdout, "/unload <module>    - Unload dynamic module\n");
+					bbs_dprintf(sysopfdout, "/reload <module>    - Unload and load dynamic module\n");
+					bbs_dprintf(sysopfdout, "/qreload <module>   - Unload and load dynamic module, queuing if necessary\n");
+					bbs_dprintf(sysopfdout, "/halt               - Immediately (uncleanly) halt the BBS (DANGER!)\n");
+					bbs_dprintf(sysopfdout, "/shutdown (^C)      - Shut down the BBS (no confirmation)\n");
+					bbs_dprintf(sysopfdout, "/restart            - Restart the BBS\n");
 					break;
 				case 'c':
 					bbs_dprintf(sysopfdout, TERM_CLEAR); /* TERM_CLEAR doesn't end in a newline, so normally, flush output, but bbs_printf does this for us. */
