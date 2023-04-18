@@ -30,6 +30,7 @@ Key features and capabilities include:
   - Mailbox quotas
   - Shared mailboxes and ACL controls
   - RFC 4468 BURL IMAP support, for more efficient email submission
+  - Remote mailboxes (IMAP proxy)
   - Filtering
     - [MailScript filtering engine](https://github.com/InterLinked1/lbbs/blob/master/configs/.rules) for flexible, custom, dynamic mail filtering rules (Sieve alternative)
 

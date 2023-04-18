@@ -201,6 +201,17 @@ static void ssl_cleanup_fds(void)
 
 static pthread_t ssl_thread;
 
+#define MARK_DEAD(ssl) \
+	RWLIST_TRAVERSE(&sslfds, sfd, entry) { \
+		if (sfd->ssl == ssl) { \
+			sfd->dead = 1; \
+			break; \
+		} \
+	} \
+	if (!sfd) { \
+		bbs_error("Couldn't find SSL %p in list?\n", ssl); \
+	}
+
 /*! \brief Single thread to handle I/O for all TLS connections (which are mainly buffered in chunks anyways) */
 static void *ssl_io_thread(void *unused)
 {
@@ -210,14 +221,18 @@ static void *ssl_io_thread(void *unused)
 	int *readpipes = NULL;
 	SSL **ssl_list = NULL;
 	int prevfds = 0;
-	int numfds = 0;
+	int oldnumfds = 0, numfds = 0;
 	int numssl = 0;
 	int needcreate = 1;
-	char buf[2048];
+	char buf[8192];
 	int pending;
 	int inovertime = 0, overtime = 0;
+	int needprune = 0;
+	char err_msg[1024];
 
 	UNUSED(unused);
+
+	SSL_load_error_strings();
 
 	/* Only recreate pfds when we read from the alertpipe, otherwise, it's the same file descriptors the next round */
 	for (;;) {
@@ -228,10 +243,12 @@ static void *ssl_io_thread(void *unused)
 				break; /* We're shutting down. */
 			}
 			needcreate = 0;
+			needprune = 0;
 			free_if(pfds);
 			free_if(ssl_list);
 			free_if(readpipes);
 			RWLIST_RDLOCK(&sslfds);
+			oldnumfds = numfds;
 			numssl = RWLIST_SIZE(&sslfds, sfd, entry);
 			numfds = 2 * numssl + 1; /* Times 2, one for read and write. Add 1 for alertpipe */
 			pfds = calloc(numfds, sizeof(*pfds));
@@ -267,6 +284,7 @@ static void *ssl_io_thread(void *unused)
 				i++;
 				pfds[i].fd = sfd->writepipe[0];
 				pfds[i].events = POLLIN;
+				i++; /* cppcheck thought this was redundant, it's not */
 				if (sfd->dead) {
 					numdead++;
 				}
@@ -275,9 +293,9 @@ static void *ssl_io_thread(void *unused)
 			if (numfds != prevfds) {
 				char tmpbuf[20] = "";
 				if (numdead) {
-					snprintf(tmpbuf, sizeof(tmpbuf), " (%d dead)", numdead);
+					snprintf(tmpbuf, sizeof(tmpbuf), ", %d dead", numdead);
 				}
-				bbs_debug(7, "SSL I/O thread now polling %d fd%s%s\n", numfds, ESS(numfds), tmpbuf);
+				bbs_debug(7, "SSL I/O thread now polling %d -> %d fd%s (%d connection%s%s)\n", oldnumfds, numfds, ESS(numfds), numssl, ESS(numssl), tmpbuf);
 			}
 			prevfds = numfds;
 		}
@@ -295,7 +313,9 @@ static void *ssl_io_thread(void *unused)
 			}
 			inovertime = 0;
 		} else {
+#ifdef DEBUG_TLS
 			bbs_debug(6, "%d TLS connection%s in overtime\n", overtime, ESS(overtime));
+#endif
 			res = overtime;
 			inovertime = 1;
 		}
@@ -321,14 +341,18 @@ static void *ssl_io_thread(void *unused)
 				int readpipe = readpipes[i / 2];
 				if (readpipe == -2) {
 					/* Don't bother trying to call SSL_read again, we'll just get the error we got last time (SYSCALL or ZERO_RETURN) */
-					bbs_debug(10, "Skipping dead SSL connection\n"); /* This may spam the debug logs until whatever is using this SSL fd cleans it up */
+					if (needprune++ < 5) { /* Try to temper the warnings at least */
+						bbs_debug(10, "Skipping dead SSL connection\n"); /* This may spam the debug logs until whatever is using this SSL fd cleans it up */
+					}
 					continue;
 				} else if (inovertime) {
 					pending = SSL_pending(ssl);
 					if (pending <= 0) {
 						continue;
 					}
+#ifdef DEBUG_TLS
 					bbs_debug(10, "Reading from SSL connection in overtime with %d bytes pending\n", pending);
+#endif
 					res--; /* Processed an overtime event */
 					overtime--;
 				}
@@ -343,17 +367,18 @@ static void *ssl_io_thread(void *unused)
 					switch (err) {
 						case SSL_ERROR_NONE:
 						case SSL_ERROR_WANT_READ:
-							bbs_debug(10, "SSL_read returned %d (%s)\n", ores, ssl_strerror(err));
-							continue;
+							bbs_debug(10, "SSL_read for %p returned %d (%s)\n", ssl, ores, ssl_strerror(err));
+							continue; /* Move on to other connections, come back to this one later */
 						case SSL_ERROR_SYSCALL:
 						case SSL_ERROR_ZERO_RETURN:
-							/* This socket is done for, do not retry to read more data, e.g. client has closed the connection but server has yet to close its end, and we're in the middle */
-							RWLIST_TRAVERSE(&sslfds, sfd, entry) {
-								if (sfd->ssl == ssl) {
-									sfd->dead = 1;
-									break;
-								}
+						case SSL_ERROR_SSL:
+							if (err == SSL_ERROR_SSL) {
+								ERR_error_string_n(ERR_get_error(), err_msg, sizeof(err_msg));
+								bbs_error("TLS error: %s\n", err_msg);
 							}
+							/* This socket is done for, do not retry to read more data,
+							 * e.g. client has closed the connection but server has yet to close its end, and we're in the middle */
+							MARK_DEAD(ssl);
 							/* Fall through */
 						default:
 							break;
@@ -378,10 +403,13 @@ static void *ssl_io_thread(void *unused)
 				 * even though poll() doesn't think there is anymore. */
 				pending = SSL_pending(ssl);
 				if (pending > 0) {
+#ifdef DEBUG_TLS
 					bbs_debug(6, "SSL %p has %d pending bytes\n", ssl, pending);
+#endif
 					overtime++;
 				}
 			} else if (!overtime) { /* sfd->writepipe has activity */
+				int write_attempts = 0;
 				/* Read from writepipe and relay to socket using SSL_write */
 				SSL *ssl = ssl_list[(i - 1) / 2];
 				ores = read(pfds[i].fd, buf, sizeof(buf));
@@ -389,11 +417,68 @@ static void *ssl_io_thread(void *unused)
 					bbs_debug(3, "read returned %d\n", ores);
 					/* Application closed the connection,
 					 * but it will close the node fd (socket) so we don't need to close here. */
+					MARK_DEAD(ssl); /* What we can do now though is mark it as dead */
+					needcreate = 1; /* Rebuild the iterator so we don't repeatedly try reading from a dead connection */
 					continue;
 				}
-				wres = SSL_write(ssl, buf, ores);
-				if (wres != ores) {
-					bbs_error("Wanted to write %d bytes but wrote %d?\n", ores, wres);
+				do {
+					/* If we're sending a large amount of data from the BBS to a TLS socket,
+					 * it is probable that SSL_write will return -1 (SSL_ERROR_WANT_WRITE).
+					 * In this case, we need to be prepared to keep retrying the write. */
+					wres = SSL_write(ssl, buf, ores);
+					if (wres != ores) {
+						if (wres <= 0) {
+							int err = SSL_get_error(ssl, wres);
+							switch (err) {
+								case SSL_ERROR_WANT_WRITE:
+									/* We are supposed to retry with the same arguments,
+									 * we cannot just come back and try this again later,
+									 * since the buffer is shared amongst all TLS users,
+									 * we cannot store this for later.
+									 * It may not be a great idea to retry again because this may hold
+									 * other connections up, and no single SSL connection must be allowed to hog
+									 * the thread.
+									 * We COULD malloc dup the # of bytes in the buffer (and store how many)
+									 * and check for such a buffer on previous visits to this item in the loop.
+									 * We certainly SHOULD do this if this turns out to be a major issue,
+									 * i.e. more than just tens or a couple hunderd milliseconds.
+									 * This is definitely a downside of using a single thread for all TLS relaying.
+									 */
+									if (!write_attempts++) { /* Log the first time. Debug, not warning, since this could happen legitimately */
+										bbs_debug(4, "SSL_write returned %d (%s)\n", wres, ssl_strerror(err));
+									}
+									if (write_attempts < 1000) {
+										usleep(25); /* Don't make the loop super tight, it'll probably take several hunderd/thousand us anyways. */
+										continue;
+									}
+									bbs_error("Max SSL_write retries (%d) exceeded\n", write_attempts);
+									MARK_DEAD(ssl);
+									needcreate = 1;
+									break;
+								case SSL_ERROR_NONE:
+								case SSL_ERROR_SYSCALL:
+								case SSL_ERROR_ZERO_RETURN:
+								case SSL_ERROR_SSL:
+									bbs_warning("Wanted to write %d bytes to %p but wrote %d?\n", ores, ssl, wres);
+									if (err == SSL_ERROR_SSL) {
+										ERR_error_string_n(ERR_get_error(), err_msg, sizeof(err_msg));
+										bbs_error("TLS error: %s\n", err_msg);
+									}
+									/* This socket is done for, do not retry to read more data,
+									 * e.g. client has closed the connection but server has yet to close its end, and we're in the middle */
+									MARK_DEAD(ssl);
+									needcreate = 1;
+									/* Fall through */
+								default:
+									break;
+							}
+							bbs_debug(6, "SSL_write returned %d (%s)\n", wres, ssl_strerror(err));
+							break;
+						}
+					}
+				} while (wres != ores);
+				if (write_attempts) {
+					bbs_debug(4, "SSL_write succeeded after %d retries\n", write_attempts);
 				}
 			}
 		}

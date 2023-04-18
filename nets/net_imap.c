@@ -100,6 +100,7 @@
 #include <unistd.h>
 #include <sys/sendfile.h>
 #include <dirent.h>
+#include <poll.h>
 
 #include "include/tls.h"
 
@@ -292,12 +293,15 @@ struct imap_session {
 	char dir[256];
 	char newdir[260]; /* 4 more, for /new and /cur */
 	char curdir[260];
+	char virtprefix[260];		/* Mapping prefix defined in .imapremote */
+	int virtprefixlen;			/* Length of virtprefix */
 	unsigned int uidvalidity;
 	unsigned int uidnext;
 	unsigned long highestmodseq;	/* Cached HIGHESTMODSEQ for current folder */
 	int acl;					/* Cached ACL for current directory. We allowed to cache per a mailbox by the RFC. */
 	char *savedsearch;			/* SEARCHRES */
 	char *clientid;				/* Client ID */
+	struct bbs_tcp_client client;	/* TCP client for virtual mailbox access on remote servers */
 	/* APPEND */
 	char appenddir[212];		/* APPEND directory */
 	char appendtmp[260];		/* APPEND tmp name */
@@ -323,6 +327,7 @@ struct imap_session {
 	unsigned int readonly:1;	/* SELECT vs EXAMINE */
 	unsigned int inauth:1;
 	unsigned int idle:1;		/* Whether IDLE is active */
+	unsigned int virtmbox:1;	/* Currently in a virtual mailbox */
 	unsigned int dnd:1;			/* Do Not Disturb: Whether client is executing a FETCH, STORE, or SEARCH command (EXPUNGE responses are not allowed) */
 	unsigned int pending:1;		/* Delayed output is pending in pfd pipe */
 	unsigned int alerted:2;		/* An alert has been delivered to this client */
@@ -603,6 +608,9 @@ static void imap_mbox_watcher(struct mailbox *mbox, const char *newfile)
 	RWLIST_RDLOCK(&sessions);
 	RWLIST_TRAVERSE(&sessions, s, entry) {
 		if (s->mbox != mbox) {
+			/* Note that we always watch our personal mailbox (s->mymbox), but the current mailbox, s->mbox,
+			 * may be different.
+			 * This works out as we can only send untagged responses during IDLE for the currently selected mailbox. */
 			continue; /* Different mailbox (account) */
 		}
 		if (strcmp(s->dir, mailbox_maildir(mbox))) {
@@ -636,8 +644,20 @@ static void imap_mbox_watcher(struct mailbox *mbox, const char *newfile)
 	RWLIST_UNLOCK(&sessions);
 }
 
+static void imap_close_remote_mailbox(struct imap_session *imap)
+{
+	bbs_assert(imap->virtmbox == 1);
+	bbs_debug(6, "Closing remote mailbox\n");
+	SWRITE(imap->client.wfd, "bye LOGOUT\r\n"); /* This is optional, but be nice */
+	bbs_tcp_client_cleanup(&imap->client);
+	imap->virtmbox = 0;
+}
+
 static void imap_destroy(struct imap_session *imap)
 {
+	if (imap->virtmbox) {
+		imap_close_remote_mailbox(imap);
+	}
 	if (imap->mbox != imap->mymbox) {
 		mailbox_unwatch(imap->mbox);
 		imap->mbox = imap->mymbox;
@@ -1537,7 +1557,6 @@ static int imap_translate_dir(struct imap_session *imap, const char *directory, 
 			bbs_strterm(username, '.');
 			userid = bbs_userid_from_username(username);
 			if (!userid) {
-				bbs_warning("No such user: %s\n", username);
 				return -1;
 			}
 			remainder += strlen(username);
@@ -1580,6 +1599,9 @@ static int imap_translate_dir(struct imap_session *imap, const char *directory, 
 	return res;
 }
 
+/* Forward declaration */
+static int load_virtual_mailbox(struct imap_session *imap, const char *path);
+
 static int set_maildir(struct imap_session *imap, const char *mailbox)
 {
 	char dir[256];
@@ -1589,9 +1611,41 @@ static int set_maildir(struct imap_session *imap, const char *mailbox)
 		return -1;
 	}
 
+	/* Don't close the virtmbox, if there is one,
+	 * because if we're selecting a different mailbox on the same remote account,
+	 * we can just reuse the connection. */
+
 	if (imap_translate_dir(imap, mailbox, dir, sizeof(dir), &acl)) {
+		int res = load_virtual_mailbox(imap, mailbox);
+		if (res >= 0) {
+			/* XXX If a user named a mailbox "foobar" and then a foobar user was created,
+			 * the other user's mailbox would take precedence over the virtual mailbox mapping.
+			 * That's probably not a good thing... it would be nice to have a 4th namespace for this, but we don't. */
+			bbs_debug(6, "Mailbox '%s' has a virtual mapping\n", mailbox);
+			if (res) { /* Mapping exists, but couldn't connect for some reason */
+				imap_reply(imap, "NO Remote server unavailable");
+				goto fail;
+			}
+			imap->acl = 0; /* ACL not used for virtual mapped mailboxes. If the client does GETACL, that should passthrough to the remote. */
+			/* This isn't really in a mailbox, since it's a remote, but use the private mailbox structure since nothing else would make sense */
+			if (imap->mbox != imap->mymbox) {
+				/* Switch back to personal mailbox if needed */
+				mailbox_unwatch(imap->mbox); /* Stop watching whatever other/shared mailbox we were watching */
+				imap->mbox = imap->mymbox; /* XXX Could we even set imap->mbox to NULL? In theory, it should now be used for virtual mailboxes. */
+			}
+			return 0;
+		}
+		/* Mailbox doesn't exist on this server, and there is no mapping for it to any remote */
 		imap_reply(imap, "NO [NONEXISTENT] No such mailbox '%s'", mailbox);
+fail:
+		if (imap->virtmbox) {
+			imap_close_remote_mailbox(imap);
+		}
 		return -1;
+	}
+
+	if (imap->virtmbox) {
+		imap_close_remote_mailbox(imap);
 	}
 
 	IMAP_REQUIRE_ACL(acl, IMAP_ACL_READ);
@@ -2024,6 +2078,139 @@ static void low_quota_alert(struct imap_session *imap)
 	}
 }
 
+static int client_command_passthru(struct imap_session *imap, int fd, const char *tag, int taglen, int ms)
+{
+	int res;
+	char buf[8192];
+	struct pollfd pfds[2];
+	int client_said_something = 0;
+	struct bbs_tcp_client *client = &imap->client;
+
+	/* We initialized bbs_fd_readline with a NULL buffer, fix that: */
+	client->rldata.buf = buf;
+	client->rldata.len = sizeof(buf);
+
+	pfds[0].fd = client->rfd;
+	pfds[1].fd = fd;
+
+	for (;;) {
+		if (fd != -1) {
+			res = bbs_multi_poll(pfds, 2, ms); /* If returns 1, client->rfd had activity, if 2, it was fd */
+			if (res == 2) {
+				char buf2[32];
+				/* This is used during an IDLE. Passthru whatever we read to the client in return.
+				 * We do not need actually need to parse this. If the client terminates an IDLE,
+				 * then the server will respond "tag DONE" and we will detect that and exit normally.
+				 * It is also true that for IDLE, the first input from the client should terminate anyways.
+				 * So we check that below.
+				 */
+				client_said_something = 1;
+				res = read(fd, buf2, sizeof(buf2));
+				if (res <= 0) {
+					return -1; /* Client disappeared during idle / server shutdown */
+				}
+				res = write(client->wfd, buf2, res);
+				continue;
+			}
+			/* If client->rfd had activity, go ahead and just call bbs_fd_readline.
+			 * The internal poll it does will be superflous, of course. */
+		}
+		res = bbs_fd_readline(client->rfd, &client->rldata, "\r\n", ms);
+		if (res < 0) { /* Could include remote server disconnect */
+			return res;
+		}
+		/* Go ahead and relay it */
+		bbs_std_write(imap->wfd, buf, res);
+		SWRITE(imap->wfd, "\r\n");
+		if (!strncmp(buf, tag, taglen)) {
+			break; /* That's all, folks! */
+		}
+		if (client_said_something) {
+			bbs_warning("Client likely terminated IDLE, but loop has not exited\n");
+		}
+	}
+	return res;
+}
+
+#define IMAP_CLIENT_EXPECT(client, s) if (bbs_tcp_client_expect(client, "\r\n", 1, 2000, s)) { goto cleanup; }
+#define IMAP_CLIENT_EXPECT_EVENTUALLY(client, s) if (bbs_tcp_client_expect(client, "\r\n", 9999, 2000, s)) { goto cleanup; }
+#define IMAP_CLIENT_SEND(client, fmt, ...) bbs_tcp_client_send(client, fmt "\r\n", ## __VA_ARGS__);
+
+#define IMAP_CAPABILITY_CONDSTORE (1 << 0)
+#define IMAP_CAPABILITY_QRESYNC (1 << 1)
+
+static int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url)
+{
+	int caps = 0;
+
+	IMAP_CLIENT_EXPECT(client, "* OK");
+	IMAP_CLIENT_SEND(client, "a0 CAPABILITY");
+	IMAP_CLIENT_EXPECT(client, "* CAPABILITY");
+
+	/* Enable any capabilities the client may have enabled. */
+	/*! \todo Parse all the capabilities (just make one pass using strsep) and store the ones we care about */
+	if (strstr(client->buf, "CONDSTORE")) {
+		caps |= IMAP_CAPABILITY_CONDSTORE;
+	}
+	if (strstr(client->buf, "QRESYNC")) {
+		caps |= IMAP_CAPABILITY_QRESYNC;
+	}
+
+	IMAP_CLIENT_EXPECT(client, "a0 OK");
+	IMAP_CLIENT_SEND(client, "a1 LOGIN \"%s\" \"%s\"", url->user, url->pass);
+	IMAP_CLIENT_EXPECT(client, "a1 OK");
+
+	if (caps & IMAP_CAPABILITY_QRESYNC) {
+		IMAP_CLIENT_SEND(client, "cap0 ENABLE QRESYNC");
+		IMAP_CLIENT_EXPECT(client, "* ENABLED QRESYNC");
+		IMAP_CLIENT_EXPECT(client, "cap0 OK");
+	} else if (caps & IMAP_CAPABILITY_CONDSTORE) {
+		IMAP_CLIENT_SEND(client, "cap0 ENABLE CONDSTORE");
+		IMAP_CLIENT_EXPECT(client, "* ENABLED CONDSTORE");
+		IMAP_CLIENT_EXPECT(client, "cap0 OK");
+	}
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
+#define imap_client_send_wait_response(imap, fd, ms, fmt, ...) __imap_client_send_wait_response(imap, fd, ms, __LINE__, fmt, ## __VA_ARGS__)
+
+static int __attribute__ ((format (gnu_printf, 5, 6))) __imap_client_send_wait_response(struct imap_session *imap, int fd, int ms, int lineno, const char *fmt, ...)
+{
+	char *buf;
+	int len, res;
+	char tagbuf[15];
+	int taglen;
+	va_list ap;
+
+	va_start(ap, fmt);
+	len = vasprintf(&buf, fmt, ap);
+	va_end(ap);
+
+	if (len < 0) {
+		return -1;
+	}
+	taglen = snprintf(tagbuf, sizeof(tagbuf), "%s ", imap->tag); /* Reuse the tag the client sent us, so we can just passthrough the response */
+
+	/* XXX If the remote server disconnected on us for some reason, these operations may succeed
+	 * even if no data is sent.
+	 * Handled in client_command_passthru */
+
+	bbs_debug(6, "Passing through command %s (line %d) to remote server mapped by '%s'\n", imap->tag, lineno, imap->virtprefix);
+	if (1) {
+		imap_debug(7, "=> %s%s", tagbuf, buf);
+	}
+	bbs_std_write(imap->client.wfd, tagbuf, taglen);
+	bbs_std_write(imap->client.wfd, buf, len);
+	free(buf);
+	/* Read until we get the tagged respones */
+	res = client_command_passthru(imap, fd, tagbuf, taglen, ms) <= 0;
+	return res;
+}
+
 static int handle_select(struct imap_session *imap, char *s, int readonly)
 {
 	/* Mailbox can contain spaces, so don't use strsep for it if it's in quotes */
@@ -2041,6 +2228,11 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 	/* This modifies the current maildir even for STATUS, but the STATUS command will restore the old one afterwards. */
 	if (set_maildir(imap, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX". It may also change the active (account) mailbox. */
 		return 0;
+	}
+	if (imap->virtmbox) {
+		/* This is some other server's problem to handle.
+		 * Just forward the request (after modifying the mailbox name as appropriate, to remove the prefix + following period). */
+		return imap_client_send_wait_response(imap, -1, 5000, "SELECT \"%s\"\r\n", mailbox + imap->virtprefixlen + 1); /* Reconstruct the SELECT, fortunately this is not too bad */
 	}
 	if (!readonly) {
 		static int sharedflagrights = IMAP_ACL_SEEN | IMAP_ACL_WRITE;
@@ -2541,6 +2733,275 @@ cleanup:
 	free(entries);
 }
 
+/*! \brief Mutex to prevent recursion */
+static pthread_mutex_t virt_lock; /* XXX Should most definitely be per mailbox struct, not global */
+
+static int skipn(char **str, char c, int n)
+{
+	int count = 0;
+	char *s = *str;
+
+	while (*s) {
+		if (*s == c) {
+			if (++count == n) {
+				*str = s + 1;
+				break;
+			}
+		}
+		s++;
+	}
+	return count;
+}
+
+static int imap_client_list(struct bbs_tcp_client *client, const char *prefix, FILE *fp)
+{
+	int res;
+
+	IMAP_CLIENT_SEND(client, "a3 LIST \"\" \"*\"");
+
+	/* Now, passthrough the response, adjusting it as appropriate by prepending the path to this virtual mailbox */
+	for (;;) {
+		char fullmailbox[256];
+		char *p1, *p2, *attributes;
+		res = bbs_fd_readline(client->rfd, &client->rldata, "\r\n", 200);
+		if (res < 0) {
+			break;
+		}
+		if (STARTS_WITH(client->buf, "a3 OK")) {
+			break; /* Done */
+		}
+		/* The responses are something like this:
+		 *     * LIST () "." "Archive"
+		 *     * LIST () "." "INBOX"
+		 */
+		/* Skip the first 4 spaces */
+		p1 = client->buf;
+		p2 = p1;
+		if (skipn(&p2, ' ', 4) != 4) {
+			bbs_warning("Invalid LIST response: %s\n", client->buf);
+			continue;
+		}
+		if (strlen_zero(p2)) {
+			bbs_warning("Unexpected LIST response: %s\n", client->buf); /* Probably screwed up now anyways */
+			continue;
+		}
+		STRIP_QUOTES(p2); /* Strip quotes from mailbox name, we'll add them ourselves */
+		attributes = strsep(&p1, " ");
+		attributes = strsep(&p1, " ");
+		attributes = strsep(&p1, " ");
+		if (*attributes != '(') { /* guaranteed to exist since p2 would be empty otherwise */
+			bbs_warning("Invalid LIST response: %s\n", attributes);
+			continue;
+		}
+		/* Note that for real Other Users, the root folder (username) is itself selectable, and that is the INBOX.
+		 * For these virtual folders, the INBOX is just a folder that appears as a sibling to other folders, e.g. Sent, Drafts, etc. */
+		if (!strcmp(attributes, "()")) {
+			/* attributes are empty. Try to guess what they are based on folder name.
+			 * This is useful as mail clients will at least use nice icons when displaying these folders: */
+			if (!strcmp(p2, "Drafts")) {
+				attributes = "(\\Drafts)";
+			} else if (!strcmp(p2, "Sent")) {
+				attributes = "(\\Sent)";
+			} else if (!strcmp(p2, "Junk")) {
+				attributes = "(\\Junk)";
+			} else if (!strcmp(p2, "Trash")) {
+				attributes = "(\\Trash)";
+			}
+			/*! \todo Would be nice to say \HasChildren or \HasNoChildren here, too, if the server didn't say */
+		}
+		snprintf(fullmailbox, sizeof(fullmailbox), "%s.%s", prefix, p2);
+		fprintf(fp, "%s \".\" \"%s\"\n", attributes, fullmailbox); /* Cache the folders so we don't have to keep hitting the server up */
+		/* If this doesn't match the filter, we won't actually send it to the client, but still save it to the cache, so it's complete. */
+	}
+
+	return 0;
+}
+
+/*! \brief Whether a specific mailbox path has a virtual mapping to a mailbox on a remote server */
+static int load_virtual_mailbox(struct imap_session *imap, const char *path)
+{
+	FILE *fp;
+	int res = 1;
+	char virtcachefile[256];
+	char buf[256];
+
+	/* Reuse the same connection if it's the same account. */
+	if (imap->virtmbox && !strncmp(imap->virtprefix, path, imap->virtprefixlen)) {
+		bbs_debug(6, "Reusing existing connection for %s\n", path);
+		return 0;
+	}
+
+	snprintf(virtcachefile, sizeof(virtcachefile), "%s/.imapremote", mailbox_maildir(imap->mymbox));
+	fp = fopen(virtcachefile, "r");
+	if (!fp) {
+		return -1;
+	}
+	while ((fgets(buf, sizeof(buf), fp))) {
+		char *mpath, *urlstr = buf;
+		int prefixlen;
+		mpath = strsep(&urlstr, "|");
+		/* We are not looking for an exact match.
+		 * Essentially, the user defines a "subtree" in the .imapremote file,
+		 * and anything under this subtree should match.
+		 * It doesn't matter if the actual desired mailbox doesn't exist on the remote server,
+		 * that's not our problem, and the client will discover that when doing a SELECT.
+		 */
+
+		if (strlen_zero(urlstr)) {
+			continue; /* Illegitimate */
+		}
+
+		/* Instead of doing prefixlen = strlen(mpath), we can just subtract the pointers */
+		prefixlen = urlstr - mpath - 1; /* Subtract 1 for the space between. */
+		bbs_debug(3, "Comparing '%s' with %s\n", path, mpath);
+		if (!strncmp(mpath, path, prefixlen)) {
+			struct bbs_url url;
+			char tmpbuf[1024];
+			memset(&url, 0, sizeof(url));
+			if (bbs_parse_url(&url, urlstr)) {
+				continue;
+			}
+			memset(&imap->client, 0, sizeof(imap->client));
+			if (bbs_tcp_client_connect(&imap->client, &url, !strcmp(url.prot, "imaps"), tmpbuf, sizeof(tmpbuf))) {
+				res = 1;
+				continue;
+			}
+			if (imap_client_login(&imap->client, &url)) {
+				bbs_tcp_client_cleanup(&imap->client);
+				res = 1;
+				continue;
+			}
+			imap->virtmbox = 1;
+			safe_strncpy(imap->virtprefix, mpath, sizeof(imap->virtprefix));
+			imap->virtprefixlen = prefixlen;
+			res = 0;
+			break;
+		}
+	}
+	fclose(fp);
+	return res;
+}
+
+/*! \brief Allow a LIST against mailboxes on other mail servers, configured in the .imapremote file in a user's root maildir */
+/*! \note XXX Virtual mailboxes already have a meaning in some IMAP contexts, so maybe "remote mailboxes" would be a better name? */
+static int list_virtual(struct imap_session *imap, const char *listscandir, int lsub, enum mailbox_namespace ns, const char *reference, const char *mailbox, int reflen, int skiplen)
+{
+	FILE *fp2;
+	char virtfile[256];
+	char virtcachefile[256];
+	char line[256];
+	int l = 0;
+
+	/* Folders from the proxied mailbox will need to be translated back and forth */
+	if (pthread_mutex_lock(&virt_lock)) {
+		bbs_warning("Possible recursion inhibited\n");
+		return -1;
+	}
+
+	snprintf(virtfile, sizeof(virtfile), "%s/.imapremote", mailbox_maildir(imap->mymbox));
+	snprintf(virtcachefile, sizeof(virtcachefile), "%s/.imapremote.cache", mailbox_maildir(imap->mymbox));
+	bbs_debug(3, "Checking virtual mailboxes in %s\n", virtcachefile);
+
+	/* A bit non-optimal since we'll fail 2 fopens if a user isn't using virtual mailboxes */
+	fp2 = fopen(virtcachefile, "r");
+	/*! \todo This should expire periodically, e.g. once a week, and the user should be able to purge this cache manually, too, somehow...
+	 * perhaps the interface could be emailing postmaster, mailmaster, etc. (maybe w/o a domain) and feeding it some kind of command...
+	 * e.g. Subject: Purge Cache
+	 */
+	if (!fp2) {
+		FILE *fp = fopen(virtfile, "r");
+		if (!fp) {
+			pthread_mutex_unlock(&virt_lock);
+			return -1;
+		}
+		fp2 = fopen(virtcachefile, "w+");
+		if (!fp2) {
+			fclose(fp);
+			pthread_mutex_unlock(&virt_lock);
+			return -1;
+		}
+
+		/* Note that we cache all the directories on all servers at once, since we truncate the file. */
+		while ((fgets(line, sizeof(line), fp))) {
+			char *prefix, *server;
+			struct bbs_url url;
+			struct bbs_tcp_client client;
+			int secure = 0;
+			char buf[1024]; /* Must be large enough to get all the CAPABILITYs, or bbs_fd_readline will throw a warning about buffer exhaustion and return 0 */
+
+			memset(&url, 0, sizeof(url));
+			l++;
+
+			server = line;
+			prefix = strsep(&server, "|"); /* Use pipe in case mailbox name contains spaces */
+
+			/*! \todo if prefix doesn't start with, skip */
+
+			if (bbs_parse_url(&url, server)) {
+				bbs_warning("Malformed URL on line %d: %s\n", l, server); /* Include the line number since bbs_parse_url "used up" the string */
+				continue;
+			}
+			if (!strcmp(url.prot, "imaps")) {
+				secure = 1;
+			} else if (strcmp(url.prot, "imap")) {
+				bbs_warning("Unsupported protocol: %s\n", url.prot);
+				continue;
+			}
+			/* Expect a URL like imap://user:password@imap.example.com:993/mailbox */
+			memset(&client, 0, sizeof(client));
+			if (bbs_tcp_client_connect(&client, &url, secure, buf, sizeof(buf))) {
+				continue;
+			}
+			if (!imap_client_login(&client, &url)) {
+				imap_client_list(&client, prefix, fp2);
+			}
+			bbs_tcp_client_cleanup(&client);
+		}
+		fclose(fp);
+	}
+
+	/* At this point, we should be able to send whatever is in the cache */
+
+	rewind(fp2); /* Rewind cache to the beginning, in case we just wrote it */
+
+	UNUSED(listscandir);
+	UNUSED(ns);
+
+	while ((fgets(line, sizeof(line), fp2))) {
+		char relativepath[256];
+		char *virtmboxname = relativepath;
+
+		/* Extract the user facing mailbox path from the LIST response in the cache file */
+		bbs_strterm(line, '\n'); /* Strip trailing LF */
+		safe_strncpy(relativepath, line, sizeof(relativepath));
+		if (skipn(&virtmboxname, ' ', 2) != 2) {
+			bbs_warning("Invalid LIST response: %s\n", line); /* Garbage in the cache file */
+			continue;
+		}
+		STRIP_QUOTES(virtmboxname);
+
+		/* Check if it matches the LIST filters */
+		if (strncmp(virtmboxname, reference, reflen)) {
+			bbs_debug(8, "Virtual mailbox '%s' doesn't match reference %s\n", virtmboxname, reference);
+			continue;
+		}
+		if (ns == NAMESPACE_OTHER) { /* XXX This seems fragile */
+			virtmboxname += STRLEN(OTHER_NAMESPACE_PREFIX);
+		}
+		if (!list_match(virtmboxname, mailbox + skiplen)) {
+			bbs_debug(8, "Virtual mailbox '%s' does not match list %s\n", virtmboxname, mailbox + skiplen);
+			continue;
+		}
+
+		/* Matches prefix, send it */
+		imap_send(imap, "%s %s", lsub ? "LSUB" : "LIST", line);
+	}
+	fclose(fp2);
+
+	pthread_mutex_unlock(&virt_lock);
+	return 0;
+}
+
 static int handle_list(struct imap_session *imap, char *s, int lsub)
 {
 	char *reference, *mailbox;
@@ -2653,6 +3114,7 @@ static int handle_list(struct imap_session *imap, char *s, int lsub)
 	bbs_debug(6, "Namespace type: %d, dir: %s, mailbox: %s, reflen: %d, skiplen: %d\n", ns, listscandir, mailbox, reflen, skiplen);
 #endif
 	list_scandir(imap, listscandir, lsub, 0, ns, attributes, sizeof(attributes), reference, NULL, mailbox, reflen, skiplen); /* Recursively LIST */
+	list_virtual(imap, listscandir, lsub, ns, reference, mailbox, reflen, skiplen);
 
 	imap_reply(imap, "OK %s completed.", lsub ? "LSUB" : "LIST");
 	return 0;
@@ -4075,6 +4537,8 @@ static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 				fetchreq.vanished = 1;
 			} else {
 				bbs_warning("Unexpected FETCH modifier: %s\n", s);
+				imap_reply(imap, "BAD FETCH failed. Illegal arguments.");
+				return 0;
 			}
 		}
 		/* RFC 7162 3.2.6 */
@@ -4147,6 +4611,8 @@ static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 			break;
 		} else {
 			bbs_warning("Unsupported FETCH item: %s\n", item);
+			imap_reply(imap, "BAD FETCH failed. Illegal arguments.");
+			return 0;
 		}
 	}
 
@@ -6483,12 +6949,97 @@ static int handle_setacl(struct imap_session *imap, char *s, int delete)
 	return 0;
 }
 
+/*! \retval Number of replacements made */
+static int imap_substitute_remote_command(struct imap_session *imap, char *s)
+{
+	char *prefix;
+	int len, lenleft, replacements = 0;
+	char *curpos;
+
+	if (strlen_zero(s)) {
+		bbs_debug(5, "Command is empty, nothing to substitute\n");
+		return 0;
+	}
+
+	/* This function is a generic one that replaces the local name for a remote (virtually mapped)
+	 * mailbox with the name of the mailbox on that system, suitable for sending to it.
+	 * This means that we can passthru commands generically after modification
+	 * without being concerned with the semantics/syntax of the command itself. */
+
+	/* The remote command should always be *shorter* than the local one, because we're merely removing the prefix, wherever it may occur.
+	 * This allows us to do this in place, using memmove. */
+	len = strlen(s);
+	curpos = s;
+	while ((prefix = strstr(curpos, imap->virtprefix))) {
+		char *end = prefix + imap->virtprefixlen;
+		if (*end != '.') {
+			bbs_warning("Unexpected character at pos: %d\n", *end);
+			continue;
+		}
+		replacements++;
+		len -= imap->virtprefixlen + 1; /* plus period */
+		lenleft = len - (prefix - s);
+		memmove(prefix, end + 1, lenleft);
+		prefix[lenleft] = '\0';
+		curpos = prefix; /* Start where we left off, not at the beginning of the string */
+	}
+	bbs_debug(5, "Substituted remote command to: '%s'\n", s);
+	return replacements;
+}
+
+static int test_remote_mailbox_substitution(void)
+{
+	struct imap_session imap;
+	char buf[256];
+
+	memset(&imap, 0, sizeof(imap));
+	safe_strncpy(imap.virtprefix, "Other Users.foobar", sizeof(imap.virtprefix));
+	imap.virtprefixlen = STRLEN("Other Users.foobar");
+
+	safe_strncpy(buf, "a1 UID COPY 149 \"Other Users.foobar.INBOX\"", sizeof(buf));
+	bbs_test_assert_equals(1, imap_substitute_remote_command(&imap, buf));
+	bbs_test_assert_str_equals(buf, "a1 UID COPY 149 \"INBOX\"");
+
+	safe_strncpy(buf, "copy 149 \"Other Users.foobar.Sent\"", sizeof(buf));
+	bbs_test_assert_equals(1, imap_substitute_remote_command(&imap, buf));
+	bbs_test_assert_str_equals(buf, "copy 149 \"Sent\"");
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
+#define FORWARD_VIRT_MBOX() \
+	if (imap->virtmbox) { \
+		return imap_client_send_wait_response(imap, -1, 5000, "%s %s\r\n", command, S_IF(s)); \
+	}
+
+#define FORWARD_VIRT_MBOX_UID() \
+	if (imap->virtmbox) { \
+		return imap_client_send_wait_response(imap, -1, 5000, "UID %s %s\r\n", command, S_IF(s)); \
+	}
+
+#define FORWARD_VIRT_MBOX_MODIFIED_PREFIX(count, prefix) \
+	if (imap->virtmbox) { \
+		replacecount = imap_substitute_remote_command(imap, s); \
+		if (replacecount != count) { /* Number of replacements must be all or nothing */ \
+			imap_reply(imap, "NO Cannot move/copy between home and remote servers\n"); \
+			return 0; \
+		} \
+		return imap_client_send_wait_response(imap, -1, 5000, prefix " %s %s\r\n", command, S_IF(s)); \
+	}
+
+#define FORWARD_VIRT_MBOX_MODIFIED(count) FORWARD_VIRT_MBOX_MODIFIED_PREFIX(count, "")
+#define FORWARD_VIRT_MBOX_MODIFIED_UID(count) FORWARD_VIRT_MBOX_MODIFIED_PREFIX(count, "UID ")
+
 static int imap_process(struct imap_session *imap, char *s)
 {
-	int res;
+	int res, replacecount;
 	char *command;
 
 	if (imap->idle || (imap->alerted == 1 && !strcasecmp(s, "DONE"))) {
+		/* IDLE for virtual mailboxes (proxied) is handled in the IDLE command itself */
 		/* Thunderbird clients will still send "DONE" if we send a tagged reply during the IDLE,
 		 * but Microsoft Outlook will not, so handle both cases, i.e. tolerate the redundant DONE.
 		 */
@@ -6558,7 +7109,7 @@ static int imap_process(struct imap_session *imap, char *s)
 	 * A command is not "in progress" until the complete command has been received; in particular, a command is not "in progress" during the negotiation of command continuation.
 	 */
 
-	if (imap->pending) { /* Not necessary to lock just to read the flag. Only if we're actually going to read data. */
+	if (imap->pending && !imap->virtmbox) { /* Not necessary to lock just to read the flag. Only if we're actually going to read data. */
 		struct readline_data rldata;
 
 		/* If it's a command during which we're not allowed to send an EXPUNGE, then don't send it now. */
@@ -6589,6 +7140,7 @@ static int imap_process(struct imap_session *imap, char *s)
 	}
 
 	if (!strcasecmp(command, "NOOP")) {
+		FORWARD_VIRT_MBOX();
 		imap_reply(imap, "OK NOOP completed");
 	} else if (!strcasecmp(command, "LOGOUT")) {
 		imap_send(imap, "BYE IMAP4 Server logging out");
@@ -6664,9 +7216,11 @@ static int imap_process(struct imap_session *imap, char *s)
 	} else if (!strcasecmp(command, "EXAMINE")) {
 		return handle_select(imap, s, 1);
 	} else if (!strcasecmp(command, "STATUS")) { /* STATUS is like EXAMINE, but it's on a specified mailbox that is NOT the currently selected mailbox */
-		REQUIRE_ARGS(s);
 		/* Need to save/restore current maildir for STATUS, so it doesn't mess up the selected mailbox, since STATUS must not modify the selected folder. */
 		res = handle_select(imap, s, 2);
+		if (imap->virtmbox) {
+			imap_close_remote_mailbox(imap);
+		}
 		if (imap->folder) {
 			set_maildir(imap, imap->folder);
 		}
@@ -6688,6 +7242,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		 */
 		return handle_list(imap, s, 1);
 	} else if (!strcasecmp(command, "CREATE")) {
+		/*! \todo need to modify mailbox names like select, but can then pass it on (do in the commands) */
 		IMAP_NO_READONLY(imap);
 		return handle_create(imap, s);
 	} else if (!strcasecmp(command, "DELETE")) {
@@ -6697,9 +7252,11 @@ static int imap_process(struct imap_session *imap, char *s)
 		IMAP_NO_READONLY(imap);
 		return handle_rename(imap, s);
 	} else if (!strcasecmp(command, "CHECK")) {
+		FORWARD_VIRT_MBOX(); /* Perhaps the remote server does something with CHECK... forward it just in case */
 		imap_reply(imap, "OK CHECK Completed"); /* Nothing we need to do now */
 	/* Selected state */
 	} else if (!strcasecmp(command, "CLOSE")) {
+		FORWARD_VIRT_MBOX(); /* Send CLOSE to remote server since CLOSE = implicit expunge */
 		REQUIRE_SELECTED(imap);
 		if (imap->folder && IMAP_HAS_ACL(imap->acl, IMAP_ACL_EXPUNGE)) {
 			imap_expunge(imap, 1);
@@ -6707,6 +7264,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		close_mailbox(imap);
 		imap_reply(imap, "OK CLOSE completed");
 	} else if (!strcasecmp(command, "EXPUNGE")) {
+		FORWARD_VIRT_MBOX();
 		REQUIRE_SELECTED(imap);
 		IMAP_NO_READONLY(imap);
 		IMAP_REQUIRE_ACL(imap->acl, IMAP_ACL_EXPUNGE);
@@ -6718,54 +7276,95 @@ static int imap_process(struct imap_session *imap, char *s)
 			imap_reply(imap, "OK EXPUNGE completed");
 		}
 	} else if (!strcasecmp(command, "UNSELECT")) { /* Same as CLOSE, without the implicit auto-expunging */
-		close_mailbox(imap);
+		if (imap->virtmbox) {
+			imap_close_remote_mailbox(imap);
+		} else {
+			close_mailbox(imap);
+		}
 		imap_reply(imap, "OK UNSELECT completed");
 	} else if (!strcasecmp(command, "FETCH")) {
+		FORWARD_VIRT_MBOX();
 		REQUIRE_SELECTED(imap);
 		return handle_fetch(imap, s, 0);
 	} else if (!strcasecmp(command, "COPY")) {
+		/* The client may think two mailboxes are on the same server, when in reality they are not.
+		 * If virtual mailbox, destination must also be on that server. Otherwise, reject the operation.
+		 * We would need to transparently do an APPEND otherwise (which could be done, but isn't at the moment). */
+		FORWARD_VIRT_MBOX_MODIFIED(1);
 		REQUIRE_SELECTED(imap);
 		IMAP_NO_READONLY(imap);
 		return handle_copy(imap, s, 0);
 	} else if (!strcasecmp(command, "MOVE")) {
+		REQUIRE_ARGS(s);
+		FORWARD_VIRT_MBOX_MODIFIED(1);
 		REQUIRE_SELECTED(imap);
 		IMAP_NO_READONLY(imap);
 		return handle_move(imap, s, 0);
 	} else if (!strcasecmp(command, "STORE")) {
+		REQUIRE_ARGS(s);
+		FORWARD_VIRT_MBOX();
 		REQUIRE_SELECTED(imap);
 		IMAP_NO_READONLY(imap);
 		return handle_store(imap, s, 0);
 	} else if (!strcasecmp(command, "SEARCH")) {
+		REQUIRE_ARGS(s);
+		FORWARD_VIRT_MBOX();
 		REQUIRE_SELECTED(imap);
 		return handle_search(imap, s, 0);
 	} else if (!strcasecmp(command, "SORT")) {
+		REQUIRE_ARGS(s);
+		FORWARD_VIRT_MBOX();
 		REQUIRE_SELECTED(imap);
 		return handle_sort(imap, s, 0);
 	} else if (!strcasecmp(command, "UID")) {
-		REQUIRE_SELECTED(imap);
 		REQUIRE_ARGS(s);
+		if (!imap->virtmbox) { /* Ultimately, FORWARD_VIRT_MBOX will intercept this command, if it's valid */
+			REQUIRE_SELECTED(imap);
+		}
 		command = strsep(&s, " ");
 		REQUIRE_ARGS(command);
 		if (!strcasecmp(command, "FETCH")) {
+			FORWARD_VIRT_MBOX_UID();
 			return handle_fetch(imap, s, 1);
 		} else if (!strcasecmp(command, "COPY")) {
+			FORWARD_VIRT_MBOX_MODIFIED_UID(1);
 			return handle_copy(imap, s, 1);
 		} else if (!strcasecmp(command, "MOVE")) {
+			FORWARD_VIRT_MBOX_MODIFIED_UID(1);
 			return handle_move(imap, s, 1);
 		} else if (!strcasecmp(command, "STORE")) {
+			FORWARD_VIRT_MBOX_UID();
 			return handle_store(imap, s, 1);
 		} else if (!strcasecmp(command, "SEARCH")) {
+			FORWARD_VIRT_MBOX_UID();
 			return handle_search(imap, s, 1);
 		} else if (!strcasecmp(command, "SORT")) {
+			FORWARD_VIRT_MBOX_UID();
 			return handle_sort(imap, s, 1);
 		} else {
 			imap_reply(imap, "BAD Invalid UID command");
 		}
 	} else if (!strcasecmp(command, "APPEND")) {
+		REQUIRE_ARGS(s);
+		if (imap->virtmbox) {
+			/*! \todo This needs careful attention for virtual mappings */
+			imap_reply(imap, "NO Operation not supported for virtual mailboxes");
+			return 0;
+		}
 		IMAP_NO_READONLY(imap);
 		REPLACE(imap->savedtag, imap->tag);
 		handle_append(imap, s);
 	} else if (allow_idle && !strcasecmp(command, "IDLE")) {
+		if (imap->virtmbox) {
+			/* IDLE for up to (just under) 30 minutes.
+			 * Note that client_command_passthru will restart the timer each time there is activity,
+			 * but real mail clients should terminate the IDLE when they get an untagged response
+			 * and do a FETCH anyways (at least, in response to EXISTS, not EXPUNGE).
+			 * Furthermore, it is NOT our responsibility to terminate the IDLE automatically after 29 minutes.
+			 * It's the client's job to do that. If we get disconnected, we'll disconnect as well.
+			 */
+			return imap_client_send_wait_response(imap, imap->rfd, 1790000, "%s %s\r\n", command, S_IF(s));
+		}
 		REQUIRE_SELECTED(imap);
 		/* RFC 2177 IDLE */
 		_imap_reply(imap, "+ idling\r\n");
@@ -6810,6 +7409,7 @@ static int imap_process(struct imap_session *imap, char *s)
 	} else if (!strcasecmp(command, "GENURLAUTH")) {
 		char *resource, *mechanism;
 		REQUIRE_ARGS(s);
+		FORWARD_VIRT_MBOX_MODIFIED(1);
 		resource = strsep(&s, " ");
 		mechanism = s;
 		REQUIRE_ARGS(mechanism);
@@ -6831,6 +7431,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		char buf[256];
 		int myacl;
 		REQUIRE_ARGS(s);
+		FORWARD_VIRT_MBOX_MODIFIED(1);
 		STRIP_QUOTES(s);
 		/* If we don't have permission to list the mailbox, then we must reply with No such mailbox to avoid leaking its existence */
 		if (imap_translate_dir(imap, s, buf, sizeof(buf), &myacl) || !IMAP_HAS_ACL(myacl, IMAP_ACL_LOOKUP)) {
@@ -6846,6 +7447,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		char *mailbox;
 		int myacl;
 		REQUIRE_ARGS(s);
+		FORWARD_VIRT_MBOX_MODIFIED(1);
 		mailbox = strsep(&s, " ");
 		REQUIRE_ARGS(s);
 		STRIP_QUOTES(mailbox);
@@ -6872,6 +7474,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		char buf[256];
 		int myacl;
 		REQUIRE_ARGS(s);
+		FORWARD_VIRT_MBOX_MODIFIED(1);
 		STRIP_QUOTES(s);
 		/* If we don't have permission to list the mailbox, then we must reply with No such mailbox to avoid leaking its existence */
 		if (imap_translate_dir(imap, s, buf, sizeof(buf), &myacl) || !IMAP_HAS_ACL(myacl, IMAP_ACL_LOOKUP)) {
@@ -6882,14 +7485,20 @@ static int imap_process(struct imap_session *imap, char *s)
 		getacl(imap, buf, s);
 		imap_reply(imap, "OK GETACL complete");
 	} else if (!strcasecmp(command, "SETACL")) {
+		REQUIRE_ARGS(s);
+		FORWARD_VIRT_MBOX_MODIFIED(1);
 		return handle_setacl(imap, s, 0);
 	} else if (!strcasecmp(command, "DELETEACL")) {
+		REQUIRE_ARGS(s);
+		FORWARD_VIRT_MBOX_MODIFIED(1);
 		return handle_setacl(imap, s, 1);
 	} else if (!strcasecmp(command, "ENABLE")) {
 		char *cap;
 		int enabled = 0;
 		REQUIRE_ARGS(s);
+		/*! \todo This combined with our parsing of remote server capabilities could use a more formal capabilities flag-based int */
 		while ((cap = strsep(&s, " "))) {
+			/* The reply only contains capabilities that were enabled just now, not any that may have already been enabled. */
 			if (!strcasecmp(cap, "CONDSTORE")) {
 				imap->condstore = 1;
 				imap_send(imap, "ENABLED CONDSTORE");
@@ -6903,16 +7512,12 @@ static int imap_process(struct imap_session *imap, char *s)
 				bbs_warning("Unknown capability %s\n", cap);
 			}
 		}
-		if (enabled) {
-			imap_reply(imap, "OK ENABLE");
-		} else {
-			imap_reply(imap, "BAD [CLIENTBUG] Bad capability");
-		}
+		imap_reply(imap, "OK ENABLE completed."); /* Always reply OK, even if nonexistent capability. */
 	} else if (!strcasecmp(command, "TESTLOCK")) {
 		/* Hold the mailbox lock for a moment. */
 		/*! \note This is only used for the test suite, it is not part of any IMAP standard or intended for clients. */
 		MAILBOX_TRYRDLOCK(imap);
-		usleep(3500000); /* 500ms is sufficient normally, but under valgrind, we need more time */
+		usleep(3500000); /* 500ms is sufficient normally, but under valgrind, we need more time. Even 2500ms is not enough. */
 		mailbox_unlock(imap->mbox);
 		imap_reply(imap, "OK Lock test succeeded");
 	} else {
@@ -6977,6 +7582,7 @@ static void imap_handler(struct bbs_node *node, int secure)
 	}
 
 	memset(&imap, 0, sizeof(imap));
+	imap.client.fd = -1;
 	imap.rfd = rfd;
 	imap.wfd = wfd;
 	imap.node = node;
@@ -7073,6 +7679,7 @@ static struct unit_tests {
 	{ "IMAP Sequence Range Generation", test_range_generation },
 	{ "IMAP STORE Flags Parsing", test_flags_parsing },
 	{ "IMAP COPYUID Generation", test_copyuid_generation },
+	{ "IMAP Remote Mailbox Translation", test_remote_mailbox_substitution },
 };
 
 static int alertmsg(unsigned int userid, const char *msg)
@@ -7195,6 +7802,7 @@ static int load_module(void)
 	}
 
 	pthread_mutex_init(&acl_lock, NULL);
+	pthread_mutex_init(&virt_lock, NULL);
 
 	if (bbs_pthread_create(&imap_listener_thread, NULL, imap_listener, NULL)) {
 		bbs_error("Unable to create IMAP listener thread.\n");
@@ -7236,6 +7844,7 @@ static int unload_module(void)
 		close_if(imaps_socket);
 	}
 	pthread_mutex_destroy(&acl_lock);
+	pthread_mutex_destroy(&virt_lock);
 	return 0;
 }
 

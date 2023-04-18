@@ -94,9 +94,12 @@ int bbs_fd_readline(int fd, struct readline_data *rldata, const char *delim, int
 #ifdef EXTRA_CHECKS
 		bbs_assert(rldata->pos + rldata->left - 1 <= rldata->buf + rldata->len); /* If we're going to corrupt the stack and crash anyways, might as well assert. */
 #endif
+		if (rldata->left - 1 < 2) {
+			bbs_warning("Buffer (size %d) has been exhausted\n", rldata->len); /* The using application needs to allocate a larger buffer */
+		}
 		res = bbs_fd_poll_read(fd, timeout, rldata->pos, rldata->left - 1); /* Subtract 1 for NUL */
 		if (res <= 0) {
-			bbs_debug(3, "read returned %d\n", res);
+			bbs_debug(3, "read returned %d (%s)\n", res, res < 0 ? strerror(errno) : "");
 			return res - 1; /* see the doxygen notes: we should return 0 only if we read just the delimiter. */
 		}
 		rldata->pos[res] = '\0'; /* Safe. Null terminate so we can use string functions. */

@@ -356,7 +356,7 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid, const char *n
 	}
 	if (!mbox) {
 		char newdirname[265];
-		bbs_debug(3, "Creating mailbox for user %u for the first time\n", userid);
+		bbs_debug(3, "Loading mailbox for user %u for the first time\n", userid);
 		mbox = calloc(1, sizeof(*mbox));
 		if (ALLOC_FAILURE(mbox)) {
 			RWLIST_UNLOCK(&mailboxes);

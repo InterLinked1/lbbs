@@ -16,6 +16,13 @@
 
 #include "include/readline.h"
 
+#define HAVE_OPENSSL
+
+/* Forward declaration of SSL* needed */
+#ifdef HAVE_OPENSSL
+#include <openssl/bio.h>
+#endif
+
 /* Forward declarations */
 struct bbs_user;
 
@@ -41,6 +48,23 @@ struct dyn_str {
  * \retval on success, actual length of the string currently in the dyn_str buffer (not the current allocation size)
  */
 int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len);
+
+struct bbs_url {
+	char *prot;
+	char *user;
+	char *pass;
+	char *host;
+	int port;
+	char *resource;
+};
+
+/*!
+ * \brief Parse a URL into its components
+ * \param url
+ * \param s String that will get used up
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_parse_url(struct bbs_url *url, char *s);
 
 /*!
  * \brief Decode an base64-encoded RFC4616 SASL PLAIN response into its components
@@ -177,6 +201,50 @@ int bbs_block_fd(int fd);
  * \retval -1 on failure, 0 on success
  */
 int bbs_resolve_hostname(const char *hostname, char *buf, size_t len);
+
+struct bbs_tcp_client {
+	char *buf;
+	size_t len;
+	struct readline_data rldata;
+	int fd;
+	int rfd;
+	int wfd;
+	SSL *ssl;
+	unsigned int secure:1;
+};
+
+/*! \brief Clean up a TCP client */
+void bbs_tcp_client_cleanup(struct bbs_tcp_client *client);
+
+/*!
+ * \brief Establish a TCP client connection to a server
+ * \param[out] client. This is filled in, but memset this to 0 first.
+ * \param url Server address
+ * \param secure Whether to use implicit TLS when establishing the connection
+ * \param buf Buffer for readline operations
+ * \param len Size of buf
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, int secure, char *buf, size_t len);
+
+/*!
+ * \brief Send data on a TCP client connection
+ * \param client
+ * \param fmt printf-style format string
+ * \retval same as write
+ */
+int __attribute__ ((format (gnu_printf, 2, 3))) bbs_tcp_client_send(struct bbs_tcp_client *client, const char *fmt, ...);
+
+/*!
+ * \brief Expect a response containing a substring on a TCP connection
+ * \param client
+ * \param delim Delimiter to use for readline operations (CR LF is typical)
+ * \param attempts Maximum number of responses (typically lines) that will be parsed. Typically 1.
+ * \param ms argument to poll()
+ * \param str Substring to expect
+ * \retval 0 on success (substring contained in response), -1 on failure, 1 if max attempts reached
+ */
+int bbs_tcp_client_expect(struct bbs_tcp_client *client, const char *delim, int attempts, int ms, const char *str);
 
 /*!
  * \brief Open a TCP socket to another server

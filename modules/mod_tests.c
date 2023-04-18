@@ -234,6 +234,58 @@ cleanup:
 	return -1;
 }
 
+static int test_url_parsing(void)
+{
+	int res = -1;
+	char buf[84];
+	struct bbs_url url;
+
+	snprintf(buf, sizeof(buf), "imap://username:password@imap.example.com:993/mailbox");
+	memset(&url, 0, sizeof(url));
+	bbs_test_assert_equals(0, bbs_parse_url(&url, buf));
+	bbs_test_assert_str_exists_equals(url.prot, "imap");
+	bbs_test_assert_str_exists_equals(url.user, "username");
+	bbs_test_assert_str_exists_equals(url.pass, "password");
+	bbs_test_assert_str_exists_equals(url.host, "imap.example.com");
+	bbs_test_assert_equals(url.port, 993);
+	bbs_test_assert_str_exists_equals(url.resource, "mailbox");
+
+	snprintf(buf, sizeof(buf), "imap://username@imap.example.com");
+	memset(&url, 0, sizeof(url));
+	bbs_test_assert_equals(0, bbs_parse_url(&url, buf));
+	bbs_test_assert_str_exists_equals(url.prot, "imap");
+	bbs_test_assert_str_exists_equals(url.user, "username");
+	bbs_test_assert_null(url.pass);
+	bbs_test_assert_str_exists_equals(url.host, "imap.example.com");
+	bbs_test_assert_equals(url.port, 0);
+	bbs_test_assert_null(url.resource);
+
+	snprintf(buf, sizeof(buf), "imap://imap.example.com");
+	memset(&url, 0, sizeof(url));
+	bbs_test_assert_equals(0, bbs_parse_url(&url, buf));
+	bbs_test_assert_str_exists_equals(url.prot, "imap");
+	bbs_test_assert_null(url.user);
+	bbs_test_assert_null(url.pass);
+	bbs_test_assert_str_exists_equals(url.host, "imap.example.com");
+	bbs_test_assert_equals(url.port, 0);
+	bbs_test_assert_null(url.resource);
+
+	snprintf(buf, sizeof(buf), "imap://user@domain:password@imap.example.com");
+	memset(&url, 0, sizeof(url));
+	bbs_test_assert_equals(0, bbs_parse_url(&url, buf));
+	bbs_test_assert_str_exists_equals(url.prot, "imap");
+	bbs_test_assert_str_exists_equals(url.user, "user@domain");
+	bbs_test_assert_str_exists_equals(url.pass, "password");
+	bbs_test_assert_str_exists_equals(url.host, "imap.example.com");
+	bbs_test_assert_equals(url.port, 0);
+	bbs_test_assert_null(url.resource);
+
+	res = 0;
+
+cleanup:
+	return res;
+}
+
 static struct unit_tests {
 	const char *name;
 	int (*callback)(void);
@@ -248,6 +300,7 @@ static struct unit_tests {
 	{ "Readline Helper", test_readline_helper },
 	{ "SASL Decoding", test_sasl_decode },
 	{ "IPv4 CIDR Range Matching", test_cidr_ipv4 },
+	{ "URL Parsing", test_url_parsing },
 };
 
 static int unload_module(void)

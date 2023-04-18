@@ -80,6 +80,55 @@ int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
 	return newlen;
 }
 
+int bbs_parse_url(struct bbs_url *url, char *s)
+{
+	char *tmp;
+
+	/* Example URLs:
+	 * imap://user:password@imap.example.com:993/mailbox
+	 * ftp://user@localhost/
+	 * ftp://localhost
+	 */
+
+	url->prot = s;
+	tmp = strstr(s, "://");
+	if (!tmp) {
+		return -1;
+	}
+
+	*tmp = '\0';
+	tmp += STRLEN("://");
+	s = tmp;
+
+	/* There may be 1 or 2 @ symbols.
+	 * If there is only 1, it's a little ambiguous, but we'll assume it's the hostname.
+	 */
+	tmp = strrchr(s, '@'); /* Username could contain @ symbol, so be tolerant of that */
+	if (!tmp) {
+		url->host = s;
+	} else {
+		*tmp++ = '\0';
+		url->host = tmp;
+		url->user = s;
+		tmp = strchr(s, ':');
+		if (tmp) {
+			*tmp++ = '\0';
+			url->pass = tmp;
+		}
+	}
+	tmp = strchr(url->host, '/');
+	if (tmp) {
+		*tmp++ = '\0';
+		url->resource = tmp;
+	}
+	tmp = strchr(url->host, ':');
+	if (tmp) {
+		*tmp++ = '\0';
+		url->port = atoi(S_IF(tmp));
+	}
+	return 0;
+}
+
 unsigned char *bbs_sasl_decode(const char *s, char **authorization, char **authentication, char **passwd)
 {
 	int outlen;

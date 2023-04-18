@@ -227,7 +227,7 @@ static const char *loglevel2str(enum bbs_log_level level, int term)
 	/* WARNING/VERBOSE are the longest names, so make them all that long by left-padding with spaces, for visual alignment. */
 	switch (level) {
 		case LOG_ERROR:
-			return COLOR_LOG_OR(" ERROR", COLOR_RED, term);
+			return COLOR_LOG_OR("  ERROR", COLOR_RED, term);
 		case LOG_WARNING:
 			return COLOR_LOG_OR("WARNING", COLOR_RED, term);
 		case LOG_NOTICE:

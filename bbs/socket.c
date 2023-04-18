@@ -44,6 +44,7 @@
 #include "include/node.h"
 
 #include "include/term.h" /* use bbs_unbuffer */
+#include "include/tls.h"
 
 extern int option_rebind;
 
@@ -136,7 +137,7 @@ int bbs_make_tcp_socket(int *sock, int port)
 
 	res = bind(*sock, (struct sockaddr*) &sinaddr, sizeof(sinaddr));
 	if (res) {
-		if (errno == EADDRINUSE) {
+		while (errno == EADDRINUSE) {
 			/* Don't do this by default.
 			 * If somehow multiple instances of the BBS are running,
 			 * then weird things can happen as a result of multiple BBS processes
@@ -148,10 +149,15 @@ int bbs_make_tcp_socket(int *sock, int port)
 			 *
 			 * Therefore, try to bind without reusing first, and only if that fails,
 			 * reuse the port, but make some noise about this just in case. */
-			bbs_warning("Port %d was already in use, retrying with reuse\n", port);
+			if (option_rebind) {
+				bbs_error("Port %d was already in use, retrying with reuse\n", port);
+			} else {
+				bbs_warning("Port %d was already in use, retrying with reuse\n", port);
+			}
 
 			/* We can't reuse the original socket after bind fails, make a new one. */
 			close(*sock);
+			usleep(500000);
 			*sock = socket(AF_INET, SOCK_STREAM, 0);
 			if (*sock < 0) {
 				bbs_error("Unable to recreate TCP socket: %s\n", strerror(errno));
@@ -172,6 +178,9 @@ int bbs_make_tcp_socket(int *sock, int port)
 			sinaddr.sin_port = htons(port); /* Public TCP port on which to listen */
 
 			res = bind(*sock, (struct sockaddr*) &sinaddr, sizeof(sinaddr));
+			if (!option_rebind) {
+				break;
+			}
 		}
 		if (res) {
 			bbs_error("Unable to bind TCP socket to port %d: %s\n", port, strerror(errno));
@@ -318,6 +327,79 @@ int bbs_tcp_connect(const char *hostname, int port)
 	return sfd;
 }
 
+void bbs_tcp_client_cleanup(struct bbs_tcp_client *client)
+{
+	if (client->ssl) {
+		ssl_close(client->ssl);
+		client->ssl = NULL;
+	}
+	close_if(client->fd);
+}
+
+int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, int secure, char *buf, size_t len)
+{
+	client->fd = bbs_tcp_connect(url->host, url->port);
+	if (client->fd < 0) {
+		return -1;
+	}
+	client->wfd = client->rfd = client->fd;
+	client->secure = secure;
+	client->buf = buf;
+	client->len = len;
+	if (client->secure) {
+		client->ssl = ssl_client_new(client->fd, &client->rfd, &client->wfd);
+		if (!client->ssl) {
+			bbs_debug(3, "Failed to set up TLS\n");
+			close_if(client->fd);
+			return -1;
+		}
+		bbs_debug(5, "Implicit TLS completed\n");
+	}
+	bbs_readline_init(&client->rldata, client->buf, client->len);
+	return 0;
+}
+
+int __attribute__ ((format (gnu_printf, 2, 3))) bbs_tcp_client_send(struct bbs_tcp_client *client, const char *fmt, ...)
+{
+	char *buf;
+	int len, res;
+	va_list ap;
+
+	if (!strchr(fmt, '%')) {
+		len = strlen(fmt);
+		return bbs_std_write(client->wfd, fmt, len);
+	}
+
+	/* Do not use vdprintf, I have not had good experiences with that... */
+	va_start(ap, fmt);
+	len = vasprintf(&buf, fmt, ap);
+	va_end(ap);
+
+	if (len < 0) {
+		return -1;
+	}
+	res = bbs_std_write(client->wfd, buf, len);
+	free(buf);
+	return res;
+}
+
+int bbs_tcp_client_expect(struct bbs_tcp_client *client, const char *delim, int attempts, int ms, const char *str)
+{
+	while (attempts-- > 0) {
+		int res = bbs_fd_readline(client->rfd, &client->rldata, delim, ms);
+		if (res <= 0) {
+			return -1;
+		}
+		bbs_debug(7, "<= %s\n", client->buf);
+		if (!strstr(client->buf, str)) {
+			bbs_warning("Missing expected response (%s), got: %s\n", str, client->buf);
+			return -1;
+		}
+		return 0;
+	}
+	return 1;
+}
+
 int bbs_timed_accept(int socket, int ms, const char *ip)
 {
 	struct sockaddr_in sinaddr;
@@ -372,7 +454,6 @@ void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, c
 {
 	struct sockaddr_in sinaddr;
 	socklen_t len;
-	int sfd;
 	struct pollfd pfds[3];
 	int nfds = 0;
 	struct bbs_node *node;
@@ -402,7 +483,7 @@ void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, c
 	bbs_debug(1, "Started %s/%s/%s listener thread\n", S_IF(name), S_IF(name2), S_IF(name3));
 
 	for (;;) {
-		int sockidx;
+		int sfd, sockidx;
 		int res = poll(pfds, nfds, -1); /* Wait forever for an incoming connection. */
 		pthread_testcancel();
 		if (res < 0) {
@@ -710,14 +791,20 @@ int bbs_std_poll(int fd, int ms)
 		}
 		break;
 	}
-	bbs_debug(10, "poll returned %d\n", res);
+#ifdef DEBUG_POLL
+	bbs_debug(10, "poll returned %d on fd %d\n", res, fd);
+#else
+	if (res <= 0) { /* Only log consequential events */
+		bbs_debug(10, "poll returned %d on fd %d\n", res, fd);
+	}
+#endif
 	return res;
 }
 
 /* XXX For INTERNAL_POLL_THRESHOLD stuff, if ms == -1, instead of asserting, just set ms to INT_MAX or loop forever, internally */
 
 /* XXX bbs_poll should really use bbs_multi_poll internally to avoid duplicating code. Might be a tiny performance hit? */
-static int bbs_multi_poll(struct pollfd pfds[], int numfds, int ms)
+int bbs_multi_poll(struct pollfd pfds[], int numfds, int ms)
 {
 	int i, res;
 

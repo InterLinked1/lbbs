@@ -22,6 +22,7 @@ struct bbs_module;
 struct bbs_user;
 struct bbs_vars;
 struct readline_data;
+struct pollfd;
 
 struct bbs_node {
 	unsigned int id;			/*!< Node number, 1-indexed for user-friendliness */
@@ -282,6 +283,16 @@ int bbs_node_statuses(struct bbs_node *node);
  * \retval Same as poll()
  */
 int bbs_std_poll(int fd, int ms);
+
+/*!
+ * \brief wrapper around poll() for multiple file descriptors
+ * \param pfds File descriptors to monitor
+ * \param numfds Number of file descriptors
+ * \param ms -1 to wait forever, 0 for nonblocking, positive number of ms for timed poll
+ * \retval -1 on error, 0 if no activity
+ * \retval positive (1-indexed) number of file descriptor with activity
+ */
+int bbs_multi_poll(struct pollfd *pfds, int numfds, int ms);
 
 /*!
  * \brief wrapper around poll() for BBS node and other file descriptors
