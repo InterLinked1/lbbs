@@ -20,6 +20,7 @@ $(DEPENDS):
 %.o : %.c %.d
 	@echo "== Compiling $@"
 	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) -c $<
+	touch $@
 
 mod_mimeparse.o : mod_mimeparse.c mod_mimeparse.d
 	@echo "== Compiling $@"
@@ -40,6 +41,9 @@ mod_mimeparse.so : mod_mimeparse.o
 mod_mysql.so : mod_mysql.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(MYSQL_LIBS)
+
+# Don't automatically remove intermediate .o files, to prevent unnecessary recompilations
+.SECONDARY: $(patsubst %.c,%.o,$(MOD_SRC))
 
 .PHONY: concord
 .PHONY: all

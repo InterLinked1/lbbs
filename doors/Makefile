@@ -35,4 +35,7 @@ door_irc.so : lirc door_irc.o irc.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o door_irc.so door_irc.o irc.o -lssl -lcrypto
 
+# Don't automatically remove intermediate .o files, to prevent unnecessary recompilations
+.SECONDARY: $(patsubst %.c,%.o,$(MOD_SRC))
+
 .PHONY: all

@@ -12,7 +12,7 @@ INSTALL = install
 
 all: $(EXE)
 
-$(EXE) : saslencode.o
+$(EXE) : $(EXE).o
 	$(CC) $(CFLAGS) -o $(EXE) *.o
 
 %.o : %.c

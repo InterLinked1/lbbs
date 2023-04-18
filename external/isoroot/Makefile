@@ -10,7 +10,7 @@ EXE		= isoroot
 RM		= rm -f
 INSTALL = install
 
-all: isoroot.o
+$(EXE) : $(EXE).o
 	$(CC) $(CFLAGS) -o $(EXE) *.o
 
 %.o : %.c

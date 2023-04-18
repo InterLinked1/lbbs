@@ -47,4 +47,7 @@ net_http.so : net_http.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lmagic
 
+# Don't automatically remove intermediate .o files, to prevent unnecessary recompilations
+.SECONDARY: $(patsubst %.c,%.o,$(MOD_SRC))
+
 .PHONY: all

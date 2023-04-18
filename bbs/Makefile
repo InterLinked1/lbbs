@@ -21,4 +21,7 @@ $(DEPENDS):
 	@echo "== Compiling bbs/$@"
 	$(CC) $(CFLAGS) -DBBS_IN_CORE -MMD -MP $(INC) -c $<
 
+# Don't automatically remove intermediate .o files, to prevent unnecessary recompilations
+.SECONDARY: $(patsubst %.c,%.o,$(MOD_SRC))
+
 .PHONY: bbs

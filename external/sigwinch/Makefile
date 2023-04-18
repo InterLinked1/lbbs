@@ -12,7 +12,7 @@ INSTALL = install
 
 all: $(EXE)
 
-$(EXE) : sigwinch.o
+$(EXE) : $(EXE).o
 	$(CC) $(CFLAGS) -o $(EXE) *.o
 
 %.o : %.c
