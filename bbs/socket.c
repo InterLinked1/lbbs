@@ -1590,7 +1590,7 @@ int bbs_std_write(int fd, const char *buf, unsigned int len)
 	for (;;) {
 		int res = write(fd, buf, left);
 		if (res <= 0) {
-			bbs_debug(5, "fd %d: write returned %d: %s\n", fd, res, strerror(errno));
+			bbs_debug(5, "fd %d: write returned %d: %s\n", fd, res, res ? strerror(errno) : "");
 			return res;
 		}
 		buf += res;
