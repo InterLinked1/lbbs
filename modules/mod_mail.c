@@ -1140,6 +1140,7 @@ int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const c
 	lseek(origfd, 0, SEEK_SET); /* rewind to beginning */
 
 	copied = bbs_copy_file(origfd, newfd, 0, size);
+	close(origfd);
 	if (copied != size) {
 		if (unlink(newpath)) {
 			bbs_error("Failed to delete %s: %s\n", newpath, strerror(errno));

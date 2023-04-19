@@ -152,7 +152,8 @@ struct smtp_session {
 	int numrecipients;
 	int numlocalrecipients;
 	int numexternalrecipients;
-	char *data;
+	char template[64];
+	FILE *fp;
 	unsigned long datalen;
 	int hopcount;			/* Number of hops so far according to count of Received headers in message. */
 	char *helohost;			/* Hostname for HELO/EHLO */
@@ -173,8 +174,20 @@ struct smtp_session {
 	unsigned int sentself:1;
 };
 
+static void smtp_reset_data(struct smtp_session *smtp)
+{
+	if (smtp->fp) {
+		fclose(smtp->fp);
+		smtp->fp = NULL;
+		if (unlink(smtp->template)) {
+			bbs_error("Failed to delete %s: %s\n", smtp->template, strerror(errno));
+		}
+	}
+}
+
 static void smtp_reset(struct smtp_session *smtp)
 {
+	smtp_reset_data(smtp);
 	smtp->indata = 0;
 	smtp->indataheaders = 0;
 	smtp->inauth = 0;
@@ -182,7 +195,6 @@ static void smtp_reset(struct smtp_session *smtp)
 	free_if(smtp->authuser);
 	free_if(smtp->fromheaderaddress);
 	free_if(smtp->from);
-	free_if(smtp->data);
 	smtp->datalen = 0;
 	smtp->datafail = 0;
 	smtp->numrecipients = 0;
@@ -735,13 +747,17 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
  * \retval -1 on temporary error, 1 on permanent error, 0 on success
  */
 static int try_send(const char *hostname, int port, int secure, const char *username, const char *password, const char *sender, const char *recipient, struct stringlist *recipients,
-	const char *data, unsigned long datalen, const char *prepend, int prependlen, int datafd, int offset, unsigned long writelen, char *buf, size_t len)
+	const char *prepend, int prependlen, int datafd, int offset, unsigned long writelen, char *buf, size_t len)
 {
 	SSL *ssl = NULL;
 	int sfd, res, wrote = 0;
 	int rfd, wfd;
 	struct readline_data rldata;
 	int supports_starttls = 0;
+	off_t send_offset = offset;
+
+	bbs_assert(datafd != -1);
+	bbs_assert(writelen > 0);
 
 	/* Connect on port 25, and don't set up TLS initially. */
 	sfd = bbs_tcp_connect(hostname, port);
@@ -756,7 +772,7 @@ static int try_send(const char *hostname, int port, int secure, const char *user
 	}
 
 	wfd = rfd = sfd;
-	bbs_debug(3, "Attempting delivery of %lu-byte message from %s -> %s via %s\n", datalen ? datalen : writelen, sender, recipient, hostname);
+	bbs_debug(3, "Attempting delivery of %lu-byte message from %s -> %s via %s\n", writelen, sender, recipient, hostname);
 
 	if (secure) {
 		ssl = ssl_client_new(sfd, &rfd, &wfd);
@@ -884,17 +900,13 @@ static int try_send(const char *hostname, int port, int secure, const char *user
 	if (prepend && prependlen) {
 		wrote = bbs_std_write(wfd, prepend, prependlen);
 	}
-	if (datafd >= 0) {
-		off_t send_offset = offset;
-		/* sendfile will be much more efficient than reading the file ourself, as email body could be quite large, and we don't need to involve userspace. */
-		res = sendfile(wfd, datafd, &send_offset, writelen);
-		datalen = writelen;
-	} else {
-		res = bbs_std_write(wfd, data, datalen); /* This won't show up in debug, which is probably a good thing. */
-	}
+
+	/* sendfile will be much more efficient than reading the file ourself, as email body could be quite large, and we don't need to involve userspace. */
+	res = sendfile(wfd, datafd, &send_offset, writelen);
+
 	smtp_client_send(wfd, ".\r\n"); /* (end of) EOM */
-	if (res != (int) datalen) { /* Failed to write full message */
-		bbs_error("Wanted to write %lu bytes but wrote only %d?\n", datalen, res);
+	if (res != (int) writelen) { /* Failed to write full message */
+		bbs_error("Wanted to write %lu bytes but wrote only %d?\n", writelen, res);
 		res = -1;
 		goto cleanup;
 	}
@@ -1107,14 +1119,14 @@ cleanup:
 static inline void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_process *mproc)
 {
 	mproc->fd = smtp->wfd;
-	mproc->data = smtp->data;
+	safe_strncpy(mproc->datafile, smtp->template, sizeof(mproc->datafile));
 	mproc->size = smtp->datalen;
 	mproc->node = smtp->node;
 	mproc->from = smtp->from;
 	mproc->forward = &smtp->recipients; /* Tack on forwarding targets to the recipients list */
 }
 
-static int do_local_delivery(struct smtp_session *smtp, const char *recipient, const char *user, const char *data, unsigned long datalen, int *responded)
+static int do_local_delivery(struct smtp_session *smtp, const char *recipient, const char *user, int srcfd, size_t datalen, int *responded)
 {
 	struct mailbox *mbox;
 	char tmpfile[256], newfile[256];
@@ -1172,7 +1184,10 @@ static int do_local_delivery(struct smtp_session *smtp, const char *recipient, c
 		if (mproc.bouncemsg) {
 			msg = mproc.bouncemsg;
 		}
-		smtp_reply(smtp, 554, 5.7.1, "%s", msg); /* XXX Best default SMTP code for this? */
+		if (smtp->node) { /*! \todo FIXME XXX Since injection doesn't have a node->fd... and doesn't have a node either for mod_mailscript to do variable substitution */
+			/*! \todo We should allow the filtering engine to set the response code too (e.g. greylisting) */
+			smtp_reply(smtp, 554, 5.7.1, "%s", msg); /* XXX Best default SMTP code for this? */
+		}
 		free_if(mproc.bouncemsg);
 		*responded = 1;
 	}
@@ -1196,7 +1211,7 @@ static int do_local_delivery(struct smtp_session *smtp, const char *recipient, c
 	prepend_incoming(smtp, recipient, fd);
 
 	/* Write the entire body of the message. */
-	res = bbs_std_write(fd, data, datalen); /* Faster than fwrite since we're writing a lot of data, don't need buffering, and know the length. */
+	res = bbs_copy_file(srcfd, fd, 0, datalen);
 	if (res != (int) datalen) {
 		bbs_error("Failed to write %lu bytes to %s, only wrote %d\n", datalen, tmpfile, res);
 		close(fd);
@@ -1272,6 +1287,7 @@ static int return_dead_letter(const char *from, const char *to, const char *msgf
 
 	/* Skip first metalen characters, and send msgsize - metalen, to copy over just the message itself. */
 	bbs_copy_file(origfd, attachfd, metalen, msgsize - metalen);
+	close(origfd);
 	snprintf(fromaddr, sizeof(fromaddr), "mailer-daemon@%s", bbs_hostname()); /* We can be whomever we want to say we are... but let's be a mailer daemon. */
 
 	/* XXX This is not a standard bounce message format (we need multipart/report for that)
@@ -1470,7 +1486,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 
 	/* Try all the MX servers in order, if necessary */
 	while (res && (hostname = stringlist_pop(&mxservers))) {
-		res = try_send(hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
+		res = try_send(hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
 		free(hostname);
 	}
 	stringlist_empty(&mxservers);
@@ -1574,7 +1590,7 @@ static void *smtp_async_send(void *varg)
 }
 
 /*! \brief Accept delivery of a message to an external recipient, sending it now if possible and queuing it otherwise */
-static int external_delivery(struct smtp_session *smtp, const char *recipient, const char *domain, const char *data, unsigned long datalen)
+static int external_delivery(struct smtp_session *smtp, const char *recipient, const char *domain, int srcfd, unsigned long datalen)
 {
 #ifndef BUGGY_SEND_IMMEDIATE
 	char buf[256] = "";
@@ -1603,7 +1619,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 #ifndef BUGGY_SEND_IMMEDIATE
 		/* Try all the MX servers in order, if necessary */
 		while (res && (hostname = stringlist_pop(&mxservers))) {
-			res = try_send(hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
+			res = try_send(hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, srcfd, metalen, size - metalen, buf, sizeof(buf));
 			free(hostname);
 		}
 		stringlist_empty(&mxservers);
@@ -1661,7 +1677,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		dprintf(fd, "MAIL FROM:<%s>\nRCPT TO:%s\n", smtp->from, recipient); /* First 2 lines contain metadata, and recipient is already enclosed in <> */
 		prepend_outgoing(smtp, recipient, fd);
 		/* Write the entire body of the message. */
-		res = bbs_std_write(fd, data, datalen); /* Faster than fwrite since we're writing a lot of data, don't need buffering, and know the length. */
+		res = bbs_copy_file(srcfd, fd, 0, datalen);
 		if (res != (int) datalen) {
 			bbs_error("Failed to write %lu bytes to %s, only wrote %d\n", datalen, tmpfile, res);
 			close(fd);
@@ -1701,7 +1717,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 	return 0;
 }
 
-static int archive_list_msg(struct smtp_session *smtp)
+static int archive_list_msg(struct smtp_session *smtp, int srcfd)
 {
 	char listsdir[256];
 	char listdir[384];
@@ -1737,7 +1753,7 @@ static int archive_list_msg(struct smtp_session *smtp)
 	}
 
 	/* Write the entire body of the message. */
-	res = bbs_std_write(fd, smtp->data, smtp->datalen); /* Faster than fwrite since we're writing a lot of data, don't need buffering, and know the length. */
+	res = bbs_copy_file(srcfd, fd, 0, smtp->datalen);
 	if (res != (int) smtp->datalen) {
 		bbs_error("Failed to write %lu bytes to %s, only wrote %d\n", smtp->datalen, tmpfile, res);
 		close(fd);
@@ -1754,14 +1770,21 @@ static int archive_list_msg(struct smtp_session *smtp)
 	return 0;
 }
 
-static int expand_and_deliver(struct smtp_session *smtp, const char *data, int datalen, int *responded, int *quotaexceeded)
+static int expand_and_deliver(struct smtp_session *smtp, const char *filename, int datalen, int *responded, int *quotaexceeded)
 {
 	char *recipient;
 	int mres;
 	int res = 0;
+	int srcfd;
+
+	srcfd = open(filename, O_RDONLY);
+	if (srcfd < 0) {
+		bbs_error("open(%s) failed: %s\n", filename, strerror(errno));
+		return -1;
+	}
 
 	if (smtp->listname && archivelists) {
-		archive_list_msg(smtp);
+		archive_list_msg(smtp, srcfd);
 	}
 	while ((recipient = stringlist_pop(&smtp->recipients))) {
 		int local;
@@ -1793,19 +1816,20 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *data, int d
 			goto next;
 		}
 		if (local) {
-			mres = do_local_delivery(smtp, recipient, user, data, datalen, responded);
+			mres = do_local_delivery(smtp, recipient, user, srcfd, datalen, responded);
 			if (mres == -2) {
 				/*! \todo Needs total overhaul, use a separate structure to keep track of delivery failure reasons and outcomes */
 				*quotaexceeded = 1;
 			}
 			res |= mres;
 		} else {
-			res |= external_delivery(smtp, recipient, domain, data, datalen);
+			res |= external_delivery(smtp, recipient, domain, srcfd, datalen);
 		}
 next:
 		free_if(dup);
 		free(recipient);
 	}
+	close(srcfd);
 	return res;
 }
 
@@ -1816,7 +1840,6 @@ static int injectmail(MAILER_PARAMS)
 	int responded = 0, quotaexceeded = 0;
 	int res;
 	FILE *fp;
-	char *s;
 	int length;
 	char tmp[80] = "/tmp/bbsmail-XXXXXX";
 
@@ -1828,6 +1851,7 @@ static int injectmail(MAILER_PARAMS)
 		return -1;
 	}
 	bbs_make_email_file(fp, subject, body, to, from, replyto, errorsto, NULL, 0);
+	length = ftell(fp);
 	fclose(fp);
 
 	/*! \todo Refactor things so we don't have to create a dummy SMTP structure */
@@ -1840,12 +1864,7 @@ static int injectmail(MAILER_PARAMS)
 	/*! \todo The mail interface should probably accept a stringlist globally, since it's reasonable to have multiple recipients */
 	stringlist_push(&smtp.recipients, to);
 
-	/*! \todo FIXME XXX It makes no sense to generate a file, read it into a string, and then write it back to a file immediately
-	 * Adjust APIs to be able to pass through a file directly. */
-	s = bbs_file_to_string(tmp, 0, &length);
-
-	res = expand_and_deliver(&smtp, s, length, &responded, &quotaexceeded);
-	free_if(s);
+	res = expand_and_deliver(&smtp, tmp, length, &responded, &quotaexceeded);
 	stringlist_empty(&smtp.recipients);
 	stringlist_empty(&smtp.sentrecipients);
 	unlink(tmp);
@@ -1933,13 +1952,13 @@ fail:
 }
 
 /*! \brief Actually send an email or queue it for delivery */
-static int do_deliver(struct smtp_session *smtp, const char *data, unsigned long datalen)
+static int do_deliver(struct smtp_session *smtp, const char *filename, size_t datalen)
 {
 	int res = 0;
 	int quotaexceeded = 0;
 	int responded = 0;
-
 	struct smtp_msg_process mproc;
+
 	memset(&mproc, 0, sizeof(mproc));
 
 	bbs_debug(7, "Processing message from %s for delivery: local=%d, size=%lu, from=%s\n", smtp->msa ? "MSA" : "MTA", smtp->fromlocal, datalen, smtp->from);
@@ -1986,7 +2005,7 @@ static int do_deliver(struct smtp_session *smtp, const char *data, unsigned long
 			} else {
 				char buf[132];
 				char prepend[256] = "";
-				int prependlen = 0;
+				int fd, prependlen = 0;
 
 				/* Still prepend a Received header, but less descriptive than normal (don't include Authenticated sender) since we're relaying */
 				if (smtp->fromlocal && !add_received_msa) {
@@ -2000,8 +2019,15 @@ static int do_deliver(struct smtp_session *smtp, const char *data, unsigned long
 				bbs_debug(5, "Relaying message via %s:%d (user: %s)\n", host, port, S_IF(user));
 				/* XXX smtp->recipients is "used up" by try_send, so this relies on the message being DROP'ed as there will be no recipients remaining afterwards
 				 * Instead, we could duplicate the recipients list to avoid this restriction. */
-				res = try_send(host, port, STARTS_WITH(prot, "smtps"), user, pass, user, NULL, &smtp->recipients, data, datalen, prepend, prependlen, -1, 0, 0, buf, sizeof(buf));
-				mproc.drop = 1;
+				fd = open(filename, O_RDONLY);
+				if (fd >= 0) {
+					res = try_send(host, port, STARTS_WITH(prot, "smtps"), user, pass, user, NULL, &smtp->recipients, prepend, prependlen, fd, 0, datalen, buf, sizeof(buf));
+					mproc.drop = 1;
+					close(fd);
+				} else {
+					bbs_error("open(%s) failed: %s\n", filename, strerror(errno));
+					res = -1;
+				}
 				if (!res) {
 					smtp_reply(smtp, 250, 2.6.0, "Message accepted for relay");
 				} else {
@@ -2053,7 +2079,7 @@ static int do_deliver(struct smtp_session *smtp, const char *data, unsigned long
 		free_if(smtp->fromheaderaddress);
 	}
 
-	res = expand_and_deliver(smtp, data, datalen, &responded, &quotaexceeded);
+	res = expand_and_deliver(smtp, filename, datalen, &responded, &quotaexceeded);
 	if (mproc.bounce || responded) {
 		return 0; /* If we sent a bounce but didn't drop, don't send a further SMTP reply */
 	}
@@ -2112,14 +2138,16 @@ static int handle_burl(struct smtp_session *smtp, char *s)
 	char msgfile[256];
 	char *imapurl, *last;
 	char *user, *host, *location, *uidvalidity, *uidstr;
-	char *tmp, *end, *msgdata;
+	char *tmp;
 	int msglen;
+	char buf[1001];
+	FILE *fp;
 
 	REQUIRE_HELO();
 	REQUIRE_MAIL_FROM();
 	REQUIRE_RCPT();
 	REQUIRE_ARGS(s);
-	free_if(smtp->data);
+	smtp_reset_data(smtp);
 	/* Wow! A client that actually supports BURL! That's a rare one...
 	 * (at the time of this programming, only Trojita does. Maybe Thunderbird forks will some day?)
 	 * In the meantime, this is a feature that almost nobody can use. */
@@ -2193,42 +2221,44 @@ static int handle_burl(struct smtp_session *smtp, char *s)
 	}
 	/* XXX Should probably verify uidvalidity has not changed as well (more important if we were using IMAP's URLFETCH) */
 
-	/* We have the message file. Just use its contents for the data. */
-	/* XXX Might be nice to not have to read it all into a string first. This is so we can use the existing functions without modification. */
-	msgdata = bbs_file_to_string(msgfile, 30000000, &msglen); /* Hardcoded maximum of ~30 MB, which is likely to be much more than the max message size allowed anyways. */
-	if (!msgdata) {
+	/* Need to find this as do_deliver expects this was sent while receiving data */
+	fp = fopen(msgfile, "r");
+	if (!fp) {
+		bbs_error("Failed to open file %s: %s\n", msgfile, strerror(errno));
 		smtp_reply(smtp, 451, 4.4.1, "IMAP server unavailable");
 		return 0;
 	}
-
-	/* Need to find this as do_deliver expects this was sent while receiving data */
-	tmp = strstr(msgdata, "From:");
-	if (tmp) {
-		tmp += STRLEN("From:");
-		ltrim(tmp);
-		end = strchr(tmp, '\r');
-		if (end) {
-			int len = end - tmp;
-			smtp->fromheaderaddress = strndup(tmp, len);
+	while ((fgets(buf, sizeof(buf), fp))) {
+		if (STARTS_WITH(buf, "From:")) {
+			char *from;
+			bbs_strterm(buf, '\r');
+			from = buf + STRLEN("From:");
+			ltrim(from);
+			smtp->fromheaderaddress = strdup(from);
+			break;
+		} else if (!strcmp(buf, "\r\n")) {
+			bbs_warning("BURL submission is missing From header\n"); /* Transmission will probably be rejected, but not our concern here. */
+			break; /* End of headers. Definitely break. */
 		}
 	}
+	fseek(fp, 0L, SEEK_END); /* We could also get the length from the filename (S=), but we've already got it open, so whatever */
+	msglen = ftell(fp);
+	fclose(fp);
 
-	do_deliver(smtp, msgdata, msglen); /* do_deliver will send the reply code */
-	free_if(msgdata);
+	do_deliver(smtp, msgfile, msglen); /* do_deliver will send the reply code */
 	return 0;
 }
 
-static int smtp_process(struct smtp_session *smtp, char *s)
+static int smtp_process(struct smtp_session *smtp, char *s, int len)
 {
 	char *command;
 
 	if (smtp->inauth) {
 		return handle_auth(smtp, s);
 	} else if (smtp->indata) {
-		int dlen;
+		int res;
 
 		if (!strcmp(s, ".")) {
-			int res;
 			smtp->indata = 0;
 			if (smtp->datafail) {
 				smtp->datafail = 0;
@@ -2244,56 +2274,39 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 				smtp_reply(smtp, 554, 5.6.0, "Message exceeded %d hops, this may indicate a mail loop", MAX_HOPS);
 				return 0;
 			}
-			res = do_deliver(smtp, smtp->data, smtp->datalen);
-			free_if(smtp->data);
+			fclose(smtp->fp); /* Have to close and reopen in read mode anyways */
+			smtp->fp = NULL;
+			res = do_deliver(smtp, smtp->template, smtp->datalen);
+			unlink(smtp->template);
 			smtp->datalen = 0;
 			return res;
-		} else if (*s == '.') {
-			s++; /* RFC 5321 4.5.2: If first character is a period but there's more data afterwards, skip the first period. */
 		}
 
 		if (smtp->datafail) {
 			return 0; /* Corruption already happened, just ignore the rest of the message for now. */
 		}
 
-		dlen = strlen(s); /* s may be empty but will not be NULL */
-
-		if ((smtp->fromlocal || smtp->msa) && smtp->indataheaders && STARTS_WITH(s, "From:")) {
-			const char *newfromhdraddr = S_IF(s + 5);
-			REPLACE(smtp->fromheaderaddress, newfromhdraddr);
-		}
-
-		if (STARTS_WITH(s, "Received:")) {
-			smtp->hopcount++;
-		}
-
-		if (!smtp->data) { /* First line */
-			smtp->data = malloc(dlen + 3); /* Use malloc instead of strdup so we can tack on a CR LF */
-			if (ALLOC_FAILURE(smtp->data)) {
-				smtp->datafail = 1;
-				return 0;
+		if (smtp->indataheaders) {
+			if ((smtp->fromlocal || smtp->msa) && STARTS_WITH(s, "From:")) {
+				const char *newfromhdraddr = S_IF(s + 5);
+				REPLACE(smtp->fromheaderaddress, newfromhdraddr);
+			} else if (STARTS_WITH(s, "Received:")) {
+				smtp->hopcount++;
+			} else if (!len) {
+				smtp->indataheaders = 0; /* CR LF on its own indicates end of headers */
 			}
-			strcpy(smtp->data, s); /* Safe */
-			strcpy(smtp->data + dlen, "\r\n"); /* Safe */
-			smtp->datalen = dlen + 2;
-		} else { /* Additional line */
-			char *newstr;
-			newstr = realloc(smtp->data, smtp->datalen + dlen + 3);
-			if (ALLOC_FAILURE(newstr)) {
-				smtp->datafail = 1;
-				return 0;
-			}
-			strcpy(newstr + smtp->datalen, s);
-			strcpy(newstr + smtp->datalen + dlen, "\r\n");
-			smtp->datalen += dlen + 2;
-			smtp->data = newstr;
 		}
-		if (smtp->indataheaders && dlen == 2) {
-			smtp->indataheaders = 0; /* CR LF on its own indicates end of headers */
+
+		if (smtp->datalen + len >= max_message_size) {
+			smtp->datafail = 1;
+			smtp->datalen = max_message_size; /* This isn't really true, this is so we can detect that the message was too large. */
 		}
-		if (smtp->datalen >= max_message_size) {
+
+		res = bbs_append_stuffed_line_message(smtp->fp, s, len); /* Should return len + 2, unless it was byte stuffed, in which case it'll be len + 1 */
+		if (res < 0) {
 			smtp->datafail = 1;
 		}
+		smtp->datalen += res;
 		return 0;
 	}
 
@@ -2448,11 +2461,17 @@ static int smtp_process(struct smtp_session *smtp, char *s)
 		REQUIRE_HELO();
 		REQUIRE_MAIL_FROM();
 		REQUIRE_RCPT();
-		free_if(smtp->data);
-		smtp->indata = 1;
-		smtp->indataheaders = 1;
-		/* Begin reading data. */
-		smtp_reply_nostatus(smtp, 354, "Start mail input; end with a period on a line by itself");
+		smtp_reset_data(smtp);
+		strcpy(smtp->template, "/tmp/smtpXXXXXX");
+		smtp->fp = bbs_mkftemp(smtp->template, 0600);
+		if (!smtp->fp) {
+			smtp_reply_nostatus(smtp, 452, "Server error, unable to allocate buffer");
+		} else {
+			/* Begin reading data. */
+			smtp->indata = 1;
+			smtp->indataheaders = 1;
+			smtp_reply_nostatus(smtp, 354, "Start mail input; end with a period on a line by itself");
+		}
 	} else if (!strcasecmp(command, "BURL")) {
 		return handle_burl(smtp, s);
 	} else { /* GENURLAUTH */
@@ -2485,11 +2504,11 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 			break;
 		}
 		if (smtp->indata) {
-			bbs_debug(6, "%p => [%d data bytes]\n", smtp, res); /* This could be a lot of output, don't show it all. */
+			bbs_debug(8, "%p => [%d data bytes]\n", smtp, res); /* This could be a lot of output, don't show it all. */
 		} else {
 			bbs_debug(6, "%p => %s\n", smtp, buf);
 		}
-		if (smtp_process(smtp, buf)) {
+		if (smtp_process(smtp, buf, res)) {
 			break;
 		}
 		if (smtp->dostarttls) {

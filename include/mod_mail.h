@@ -248,7 +248,8 @@ struct smtp_msg_process {
 	struct mailbox *mbox;		/*!< Mailbox (incoming only) */
 	struct bbs_user *user;		/*!< BBS user (outgoing only) */
 	struct bbs_node *node;		/*!< BBS node */
-	const char *data;			/*!< Email data */
+	char datafile[128];			/*!< Name of email data file */
+	FILE *fp;					/*!< Email data file (used internally only) */
 	const char *from;			/*!< Envelope from */
 	int size;					/*!< Size of email */
 	int userid;					/*!< User ID (outgoing only) */

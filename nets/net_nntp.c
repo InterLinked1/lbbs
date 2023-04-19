@@ -102,8 +102,10 @@ struct nntp_session {
 	int currentarticle;
 	int nextlastarticle;
 	char grouppath[512];
+	char template[64];
 	char *user;
-	char *post;
+	FILE *fp;
+	char *newsgroups;
 	char *fromheader;
 	char *articleid;
 	char *rxarticleid;
@@ -116,13 +118,25 @@ struct nntp_session {
 	unsigned int dostarttls:1;
 };
 
+static void nntp_reset_data(struct nntp_session *nntp)
+{
+	free_if(nntp->newsgroups);
+	if (nntp->fp) {
+		fclose(nntp->fp);
+		nntp->fp = NULL;
+		if (unlink(nntp->template)) {
+			bbs_error("Failed to delete %s: %s\n", nntp->template, strerror(errno));
+		}
+	}
+}
+
 static void nntp_destroy(struct nntp_session *nntp)
 {
+	nntp_reset_data(nntp);
 	free_if(nntp->rxarticleid);
 	free_if(nntp->articleid);
 	free_if(nntp->fromheader);
 	free_if(nntp->user);
-	free_if(nntp->post);
 	free_if(nntp->currentgroup);
 	UNUSED(nntp);
 }
@@ -595,25 +609,14 @@ static int on_xover(const char *dir_name, const char *filename, struct nntp_sess
 	return 0;
 }
 
-static int do_post(struct nntp_session *nntp)
+static int do_post(struct nntp_session *nntp, const char *srcfilename)
 {
-	char *newsgroups_header, *end;
 	char *newsgroup, *newsgroups = NULL;
-	char *dup, *uuid = NULL;
+	char *uuid = NULL;
 	int res = -1;
+	int srcfd;
 
-	/* Carefully extract just the Newsgroups header, without duplicating the entire message */
-	newsgroups_header = strcasestr(nntp->post, "Newsgroups:");
-	if (!newsgroups_header) {
-		goto cleanup;
-	}
-	newsgroups_header += STRLEN("Newsgroups:");
-	if (strlen_zero(newsgroups_header)) {
-		goto cleanup;
-	}
-
-	end = strchr(newsgroups_header, '\r');
-	if (!end) {
+	if (!nntp->newsgroups) {
 		goto cleanup;
 	}
 
@@ -622,7 +625,8 @@ static int do_post(struct nntp_session *nntp)
 		if (!nntp->fromheader) {
 			goto cleanup;
 		} else {
-			const char *from = nntp->fromheader + 5; /* Skip From: */
+			const char *from = nntp->fromheader + STRLEN("From:");
+			ltrim(from);
 			if (bbs_user_identity_mismatch(nntp->node->user, from)) {
 				bbs_warning("Rejected NNTP post by user %d with identity %s\n", nntp->node->user ? nntp->node->user->id : 0, S_IF(from));
 				nntp_send(nntp, 441, "Identity not allowed for posting");
@@ -648,13 +652,15 @@ static int do_post(struct nntp_session *nntp)
 	/*! \todo On failure, should we keep track of Message ID to prevent duplicates on retries? But we assign the Message ID, so.... */
 	/*! \todo Do we need to inject the header? snprintf(msgid, sizeof(msgid), "Message-ID: <%s@%s>", uuid, bbs_hostname()); */
 
-	newsgroups = strndup(newsgroups_header, end - newsgroups_header);
-	if (ALLOC_FAILURE(newsgroups)) {
+	srcfd = open(srcfilename, O_RDONLY);
+	if (srcfd < 0) {
+		bbs_error("Failed to open %s: %s\n", srcfilename, strerror(errno));
 		goto cleanup;
 	}
-	dup = newsgroups;
-	ltrim(dup);
-	while ((newsgroup = strsep(&dup, ","))) {
+
+	newsgroups = nntp->newsgroups + STRLEN("Newsgroups:");
+	ltrim(newsgroups);
+	while ((newsgroup = strsep(&newsgroups, ","))) {
 		char group[512];
 		char filename[512];
 
@@ -700,12 +706,13 @@ static int do_post(struct nntp_session *nntp)
 			pthread_mutex_unlock(&nntp_lock);
 			continue;
 		}
-		bbs_std_write(fd, nntp->post, nntp->postlen);
+		bbs_copy_file(srcfd, fd, 0, nntp->postlen);
 		close(fd);
 		pthread_mutex_unlock(&nntp_lock);
 		res = 0;
-		bbs_debug(3, "Posted article %s\n", filename);
+		bbs_debug(3, "Posted article %s to newsgroup %s\n", filename, newsgroup);
 	}
+	close(srcfd);
 
 cleanup:
 	if (res) {
@@ -719,7 +726,6 @@ cleanup:
 cleanup2:
 	free_if(uuid);
 	free_if(newsgroups);
-	free_if(nntp->post);
 	nntp->postlen = 0;
 	return 0;
 }
@@ -795,13 +801,12 @@ static int sender_authorized(struct nntp_session *nntp)
 		return 0; \
 	}
 
-static int nntp_process(struct nntp_session *nntp, char *s)
+static int nntp_process(struct nntp_session *nntp, char *s, int len)
 {
 	char *command;
 
 	if (nntp->inpost) {
-		int dlen;
-
+		int res;
 		if (!strcmp(s, ".")) {
 			nntp->inpost = 0;
 			if (nntp->postfail) {
@@ -818,54 +823,43 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 				}
 				return 0;
 			}
-			return do_post(nntp);
-		} else if (*s == '.') {
-			s++; /* If first character is a period but there's more data afterwards, skip the first period. */
+			fclose(nntp->fp);
+			nntp->fp = NULL;
+			res = do_post(nntp, nntp->template);
+			unlink(nntp->template);
+			return res;
 		}
 
 		if (nntp->postfail) {
 			return 0; /* Corruption already happened, just ignore the rest of the message for now. */
 		}
 
-		dlen = strlen(s); /* s may be empty but will not be NULL */
-
-		if (nntp->inpostheaders && STARTS_WITH(s, "From:")) {
-			REPLACE(nntp->fromheader, s);
-		} else if (nntp->inpostheaders && nntp->mode == NNTP_MODE_TRANSIT && STARTS_WITH(s, "Message-ID:")) {
-			/* The article better be the article that the other server said it was in IHAVE */
-			if (!strstr(s, nntp->rxarticleid)) { /* XXX What if it's a substring? */
-				nntp->postfail = 1;
-				return 0;
+		if (nntp->inpostheaders) {
+			if (STARTS_WITH(s, "From:")) {
+				REPLACE(nntp->fromheader, s);
+			} else if (nntp->mode == NNTP_MODE_TRANSIT && STARTS_WITH(s, "Message-ID:")) {
+				/* The article better be the article that the other server said it was in IHAVE */
+				if (!strstr(s, nntp->rxarticleid)) { /* XXX What if it's a substring? */
+					nntp->postfail = 1;
+					return 0;
+				}
+			} else if (STARTS_WITH(s, "Newsgroups:")) {
+				REPLACE(nntp->newsgroups, s);
+			} else if (!len) {
+				nntp->inpostheaders = 0; /* Got CR LF, end of headers */
 			}
 		}
 
-		if (!nntp->post) { /* First line */
-			nntp->post = malloc(dlen + 3); /* Use malloc instead of strdup so we can tack on a CR LF */
-			if (ALLOC_FAILURE(nntp->post)) {
-				nntp->postfail = 1;
-				return 0;
-			}
-			strcpy(nntp->post, s); /* Safe */
-			strcpy(nntp->post + dlen, "\r\n"); /* Safe */
-			nntp->postlen = dlen + 2;
-		} else { /* Additional line */
-			char *newstr;
-			newstr = realloc(nntp->post, nntp->postlen + dlen + 3);
-			if (ALLOC_FAILURE(newstr)) {
-				nntp->postfail = 1;
-				return 0;
-			}
-			strcpy(newstr + nntp->postlen, s);
-			strcpy(newstr + nntp->postlen + dlen, "\r\n");
-			nntp->postlen += dlen + 2;
-			nntp->post = newstr;
+		if (nntp->postlen + len >= max_post_size) {
+			nntp->postfail = 1;
+			nntp->postlen = max_post_size; /* This isn't really true, this is so we can detect that the message was too large. */
 		}
-		if (nntp->inpostheaders && dlen == 2) {
-			nntp->inpostheaders = 0; /* Got CR LF, end of headers */
-		}
-		if (nntp->postlen >= max_post_size) {
+
+		res = bbs_append_stuffed_line_message(nntp->fp, s, len); /* Should return len + 2, unless it was byte stuffed, in which case it'll be len + 1 */
+		if (res < 0) {
 			nntp->postfail = 1;
 		}
+		nntp->postlen += res;
 		return 0;
 	}
 
@@ -1207,9 +1201,16 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 			return 0;
 		}
 		/* Group not required, the headers will say group(s) to which message should be posted. */
-		nntp_send(nntp, 340, "Input article; end with a period on its own line");
-		nntp->inpost = 1;
-		nntp->inpostheaders = 1;
+		nntp_reset_data(nntp);
+		strcpy(nntp->template, "/tmp/nntpXXXXXX");
+		nntp->fp = bbs_mkftemp(nntp->template, 0600);
+		if (!nntp->fp) {
+			nntp_send(nntp, 440, "Server error, posting temporarily unavailable");
+		} else {
+			nntp_send(nntp, 340, "Input article; end with a period on its own line");
+			nntp->inpost = 1;
+			nntp->inpostheaders = 1;
+		}
 	} else if (nntp->mode == NNTP_MODE_TRANSIT && !strcasecmp(command, "IHAVE")) {
 		/* Check if client is authorized to relay us articles. */
 		if (requirerelaytls && !nntp->secure) {
@@ -1239,10 +1240,17 @@ static int nntp_process(struct nntp_session *nntp, char *s)
 			nntp_send(nntp, 436, "Retry later");
 			return 0;
 		}
-		nntp_send(nntp, 335, "Send it; end with a period on its own line");
-		/* Reuse the POST logic */
-		nntp->inpost = 1;
-		nntp->inpostheaders = 1;
+		nntp_reset_data(nntp);
+		strcpy(nntp->template, "/tmp/nntpXXXXXX");
+		nntp->fp = bbs_mkftemp(nntp->template, 0600);
+		if (!nntp->fp) {
+			nntp_send(nntp, 436, "Temporary server error, try again later");
+		} else {
+			nntp_send(nntp, 335, "Send it; end with a period on its own line");
+			/* Reuse the POST logic */
+			nntp->inpost = 1;
+			nntp->inpostheaders = 1;
+		}
 	} else {
 		/*! \todo add:
 		 * RFC 2980 extensions
@@ -1278,7 +1286,7 @@ static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 		} else {
 			bbs_debug(6, "%p => %s\n", nntp, buf);
 		}
-		if (nntp_process(nntp, buf)) {
+		if (nntp_process(nntp, buf, res)) {
 			break;
 		}
 		if (nntp->dostarttls) {

@@ -105,6 +105,15 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host, i
  */
 int bbs_user_identity_mismatch(struct bbs_user *user, const char *from);
 
+/*!
+ * \brief Append a byte stuffed line (for SMTP or NNTP data) to a fp
+ * \param fp
+ * \param line
+ * \param len Nominal length of the line. If it starts with a ., the first period will be skipped. A CR LF will be appended.
+ * \retval -1 on failure, number of bytes actually written to file on success
+ */
+int bbs_append_stuffed_line_message(FILE *fp, const char *line, size_t len);
+
 /*! \brief Get thread ID of current thread */
 int bbs_gettid(void);
 

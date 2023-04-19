@@ -276,6 +276,27 @@ int bbs_user_identity_mismatch(struct bbs_user *user, const char *from)
 	return 0;
 }
 
+int bbs_append_stuffed_line_message(FILE *fp, const char *line, size_t len)
+{
+	int res;
+	/* Compiler could maybe optimize fprintf to fwrite, but just use it directly */
+	if (*line == '.') { /* RFC 5321 4.5.2: If line starts with a ., it's byte stuffed, and really starts at the character after. */
+		line++;
+		len--;
+	}
+	res = fwrite(line, sizeof(char), len, fp);
+	if (res != (int) len) {
+		bbs_error("Failed to append %lu bytes (appended %d)\n", len, res);
+		return -1;
+	}
+	res = fwrite("\r\n", sizeof(char), STRLEN("\r\n"), fp);
+	if (res != (int) STRLEN("\r\n")) {
+		bbs_error("Failed to append %d bytes (appended %d)\n", 2, res);
+		return -1;
+	}
+	return len + 2;
+}
+
 int bbs_dir_traverse_items(const char *path, int (*on_file)(const char *dir_name, const char *filename, int dir, void *obj), void *obj)
 {
 	DIR *dir;
@@ -661,6 +682,8 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 		return -1;
 	}
 
+	bbs_assert(srcfd != destfd);
+
 	offset = start;
 	/* This is not a POSIX function, it exists only in Linux.
 	 * Like sendfile, it's more efficient than moving data between kernel and userspace,
@@ -686,7 +709,6 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 		bbs_error("Wanted to copy %d bytes but only copied %d?\n", bytes, copied);
 		return -1;
 	}
-	close(srcfd);
 	close(destfd);
 	return copied;
 }

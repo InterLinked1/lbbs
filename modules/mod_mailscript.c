@@ -68,34 +68,34 @@ static int numcmp(char *s, int num)
 }
 
 /*! \brief retval -1 if no such header, 0 if not found, 1 if found */
-static int header_match(const char *data, const char *header, const char *find, int strict)
+static int header_match(struct smtp_msg_process *mproc, const char *header, const char *find, int strict)
 {
 	int found = -1;
-	const char *start;
-	const char *end;
 	int findlen = 0;
 	regex_t regexbuf;
 	int regcompiled = 0;
 	char headerval[1000];
+	int headerlen;
 
-	for (;;) {
-		if (!data) {
-			break;
+	if (!mproc->fp) {
+		mproc->fp = fopen(mproc->datafile, "r");
+		if (!mproc->fp) {
+			bbs_error("fopen(%s) failed: %s\n", mproc->datafile, strerror(errno));
+			return 0;
 		}
-		end = strstr(data, "\r\n");
-		if (!end) {
-			break;
-		}
-		start = data;
-		data = end + 2;
-		/* We now have the next line, which begins at start and ends at end - 1 */
-		if (STARTS_WITH(start, "\r\n")) {
+	} else {
+		rewind(mproc->fp);
+	}
+	headerlen = strlen(header);
+	while ((fgets(headerval, sizeof(headerval), mproc->fp))) {
+		char *start;
+		if (!strcmp(headerval, "\r\n")) {
 			break; /* End of headers */
 		}
-		if (strncasecmp(start, header, strlen(header))) { /* Header names are not case-sensitive */
+		if (strncasecmp(headerval, header, headerlen)) { /* Header names are not case-sensitive */
 			continue; /* It's not the right header. */
 		}
-		start += strlen(header);
+		start = headerval + headerlen;
 		if (*start != ':') {
 			continue; /* Prefix of another header, I guess. Not actually the right header. */
 		}
@@ -108,6 +108,7 @@ static int header_match(const char *data, const char *header, const char *find, 
 		}
 		start++;
 		ltrim(start);
+		bbs_strterm(start, '\r');
 		if (strict) {
 			/* Exact match, easy */
 			if (!findlen) {
@@ -136,9 +137,8 @@ static int header_match(const char *data, const char *header, const char *find, 
 				}
 				regcompiled = 1;
 			}
-			safe_strncpy(headerval, start, MIN(end - start + 1, (int) sizeof(headerval)));
-			bbs_debug(6, "Evaluating regex: '%s' %s\n", find, headerval);
-			found = regexec(&regexbuf, headerval, 0, NULL, 0) ? 0 : 1;
+			bbs_debug(6, "Evaluating regex: '%s' %s\n", find, start);
+			found = regexec(&regexbuf, start, 0, NULL, 0) ? 0 : 1;
 			if (found) {
 				break;
 			}
@@ -207,15 +207,15 @@ static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastre
 		matchtype = strsep(&s, " ");
 		expr = s;
 		if (!strcasecmp(matchtype, "EXISTS")) {
-			found = header_match(mproc->data, header, NULL, 1);
+			found = header_match(mproc, header, NULL, 1);
 			match = found >= 0;
 		} else if (!strcasecmp(matchtype, "EQUALS")) {
 			REQUIRE_ARG(expr);
-			found = header_match(mproc->data, header, expr, 1);
+			found = header_match(mproc, header, expr, 1);
 			match = found == 1;
 		} else if (!strcasecmp(matchtype, "LIKE")) {
 			REQUIRE_ARG(expr);
-			found = header_match(mproc->data, header, expr, 0);
+			found = header_match(mproc, header, expr, 0);
 			match = found == 1;
 		} else {
 			bbs_warning("Invalid HEADER command match type: %s\n", matchtype);
@@ -283,23 +283,11 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 	} else if (!strcasecmp(next, "EXEC")) {
 		int res;
 		char subbuf[1024];
-		char tmpmailfile[256] = "/tmp/mailmsgXXXXXX";
-		int fd = -1;
 		char *argv[32];
 		int argc;
 		REQUIRE_ARG(s);
 		if (strstr(s, "${MAILFILE}")) { /* This rule wants the message as a file */
-			/* Create temporary file containing the message. */
-			fd = mkstemp(tmpmailfile);
-			if (fd >= 0) {
-				res = write(fd, mproc->data, mproc->size);
-				if (res != mproc->size) {
-					bbs_warning("Wanted to write %d bytes but only wrote %d?\n", mproc->size, res);
-				} else {
-					bbs_var_set(mproc->node, "MAILFILE", tmpmailfile);
-				}
-				close(fd);
-			}
+			bbs_var_set(mproc->node, "MAILFILE", mproc->datafile);
 		}
 		bbs_substitute_vars(mproc->node, s, subbuf, sizeof(subbuf));
 		s = subbuf;
@@ -309,9 +297,6 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 			return -1; /* Rules may rely on a return code of 0 for success, so don't return 0 if we didn't do anything */
 		}
 		res = bbs_execvp_headless(mproc->node, argv[0], argv); /* Directly return the exit code */
-		if (fd != -1) {
-			unlink(tmpmailfile);
-		}
 		return res;
 	} else if (!strcasecmp(next, "FORWARD")) {
 		REQUIRE_ARG(s);
@@ -481,6 +466,9 @@ static int mailscript(struct smtp_msg_process *mproc)
 	if (!res) {
 		snprintf(fullfile, sizeof(fullfile), "%s/.rules", usermaildir);
 		run_rules(mproc, fullfile, usermaildir);
+	}
+	if (mproc->fp) {
+		fclose(mproc->fp);
 	}
 	return 0;
 }
