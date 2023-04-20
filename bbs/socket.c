@@ -1093,7 +1093,7 @@ int bbs_tpoll(struct bbs_node *node, int ms)
 		 * Note that because we're writing directly to the socket fd,
 		 * we must do CR LF, not just LF.
 		 */
-		SWRITE(node->fd, COLOR_RESET "\r\nYou've been inactive too long.\r\n");
+		SWRITE(node->wfd, COLOR_RESET "\r\nYou've been inactive too long.\r\n");
 		bbs_verb(4, "Node %d timed out due to inactivity\n", node->id);
 	}
 	return res;

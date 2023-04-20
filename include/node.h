@@ -27,6 +27,8 @@ struct pollfd;
 struct bbs_node {
 	unsigned int id;			/*!< Node number, 1-indexed for user-friendliness */
 	int fd;						/*!< Socket file descriptor */
+	int rfd;					/*!< File descriptor for reading */
+	int wfd;					/*!< File descriptor for writing */
 	int amaster;				/*!< PTY master file descriptor */
 	int slavefd;				/*!< PTY slave file descriptor */
 	char slavename[84];			/*!< PTY slave name */

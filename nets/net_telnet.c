@@ -39,14 +39,20 @@
 #include "include/utils.h"
 #include "include/config.h"
 #include "include/net.h"
+#include "include/tls.h"
 
-static int telnet_socket = -1, tty_socket = -1; /*!< TCP Socket for allowing incoming network connections */
-static pthread_t telnet_thread, tty_thread;
+static int telnet_socket = -1, telnets_socket = -1, tty_socket = -1; /*!< TCP Socket for allowing incoming network connections */
+static pthread_t telnet_thread, telnets_thread, tty_thread;
 
 /*! \brief Telnet port is 23 */
 #define DEFAULT_TELNET_PORT 23
 
+/*! \brief TELNETS (Telnet over TLS) port is 992 */
+#define DEFAULT_TELNETS_PORT 992
+
 static int telnet_port = DEFAULT_TELNET_PORT;
+static int telnets_port = DEFAULT_TELNETS_PORT;
+static int telnets_enabled = 0;
 static int tty_port = 0; /* Disabled by default */
 
 static int telnet_send_command(int fd, unsigned char cmd, unsigned char opt)
@@ -89,12 +95,12 @@ static int telnet_handshake(struct bbs_node *node)
 
 	/* Disable Telnet echo or we'll get double echo when slave echo is on and single echo when it's off. */
 	/* XXX Only for Telnet, not raw TCP */
-	if (telnet_echo(node->fd, 0)) {
+	if (telnet_echo(node->wfd, 0)) {
 		return -1;
 	}
 
 	/* RFC 1073 Request window size */
-	if (telnet_send_command(node->fd, DO, TELOPT_NAWS)) {
+	if (telnet_send_command(node->wfd, DO, TELOPT_NAWS)) {
 		return -1;
 	}
 
@@ -107,11 +113,11 @@ static int telnet_handshake(struct bbs_node *node)
 
 	/* Process any Telnet commands received. Wait 100ms after sending our commands. */
 	for (;;) {
-		int res = bbs_std_poll(node->fd, 100);
+		int res = bbs_std_poll(node->rfd, 100);
 		if (res <= 0) {
 			return res;
 		}
-		res = read(node->fd, buf, sizeof(buf));
+		res = read(node->rfd, buf, sizeof(buf));
 		/* Process the command */
 		if (res <= 0) {
 			return res;
@@ -160,7 +166,7 @@ static int telnet_handshake(struct bbs_node *node)
 				 *
 				 * Either way, for now, we don't support window updates.
 				 */
-				if (telnet_send_command(node->fd, DONT, TELOPT_NAWS)) {
+				if (telnet_send_command(node->wfd, DONT, TELOPT_NAWS)) {
 					return -1;
 				}
 			}
@@ -190,7 +196,50 @@ static int tty_handshake(struct bbs_node *node)
 static void *telnet_listener(void *unused)
 {
 	UNUSED(unused);
-	bbs_tcp_comm_listener(telnet_socket, "Telnet", telnet_handshake, BBS_MODULE_SELF);
+	bbs_tcp_comm_listener(telnet_socket, "TELNET", telnet_handshake, BBS_MODULE_SELF);
+	return NULL;
+}
+
+/* A quick way to test this is simply: openssl s_client -port 992
+ * However, I think s_client is cookied / canonical,
+ * so input isn't flushed to the server until you hit ENTER locally.
+ * Additionally, output that shouldn't be echoed obviously is.
+ * A proper TELNETS client probably doesn't have this issue.
+ * (And no, -nbio doesn't help with input buffering either)
+ */
+static void *telnets_handler(void *varg)
+{
+	struct bbs_node *node = varg;
+	SSL *ssl = NULL;
+
+	/* Yikes... a TELNETS client needs 3 threads:
+	 * the network thread, the PTY thread,
+	 * and the actual application thread.
+	 * Please don't implement proper Telnet support
+	 * as another intermediary layer that looks for 255 bytes,
+	 * and add yet a fourth thread! */
+	ssl = ssl_new_accept(node->fd, &node->rfd, &node->wfd);
+	if (!ssl) {
+		return NULL;
+	}
+
+	if (!telnet_handshake(node)) {
+		bbs_node_handler(node); /* Run the normal node handler */
+	}
+
+	/* Set up TLS, then do the handshake, then proceed as normal. */
+	close_if(node->rfd);
+	close_if(node->wfd);
+	ssl_close(ssl);
+	ssl = NULL;
+	return NULL;
+}
+
+static void *telnets_listener(void *unused)
+{
+	UNUSED(unused);
+	/* We need to start TLS before doing the application-level handshake, so use the generic TCP listener for TELNETS */
+	bbs_tcp_listener(telnets_socket, "TELNETS", telnets_handler, BBS_MODULE_SELF);
 	return NULL;
 }
 
@@ -213,6 +262,15 @@ static int load_config(void)
 	telnet_port = DEFAULT_TELNET_PORT;
 	bbs_config_val_set_port(cfg, "telnet", "port", &telnet_port);
 
+	telnets_port = DEFAULT_TELNETS_PORT;
+	bbs_config_val_set_port(cfg, "telnets", "port", &telnets_port);
+	bbs_config_val_set_true(cfg, "telnets", "enabled", &telnets_enabled);
+
+	if (telnets_enabled && !ssl_available()) {
+		bbs_error("TLS is not available, TELNETS cannot be used\n");
+		return -1;
+	}
+
 	tty_port = 0; /* Disabled by default */
 	bbs_config_val_set_port(cfg, "telnet", "ttyport", &tty_port);
 
@@ -228,9 +286,22 @@ static int load_module(void)
 	if (bbs_make_tcp_socket(&telnet_socket, telnet_port)) {
 		return -1;
 	}
+	if (telnets_enabled && bbs_make_tcp_socket(&telnets_socket, telnets_port)) {
+		close(telnet_socket);
+		return -1;
+	}
 	bbs_assert(telnet_socket >= 0);
 	if (bbs_pthread_create(&telnet_thread, NULL, telnet_listener, NULL)) {
 		close(telnet_socket);
+		close_if(telnets_socket);
+		telnet_socket = -1;
+		return -1;
+	}
+	if (telnets_enabled && bbs_pthread_create(&telnets_thread, NULL, telnets_listener, NULL)) {
+		close(telnet_socket);
+		close_if(telnets_socket);
+		bbs_pthread_cancel_kill(telnet_thread);
+		bbs_pthread_join(telnet_thread, NULL);
 		telnet_socket = -1;
 		return -1;
 	}
@@ -240,11 +311,21 @@ static int load_module(void)
 		}
 		if (bbs_pthread_create(&tty_thread, NULL, tty_listener, NULL)) {
 			close(tty_socket);
+			close_if(telnets_socket);
+			bbs_pthread_cancel_kill(telnet_thread);
+			bbs_pthread_join(telnet_thread, NULL);
+			if (telnets_enabled) {
+				bbs_pthread_cancel_kill(telnets_thread);
+				bbs_pthread_join(telnets_thread, NULL);
+			}
 			tty_socket = -1;
 			return -1;
 		}
 	}
-	bbs_register_network_protocol("Telnet", telnet_port);
+	bbs_register_network_protocol("TELNET", telnet_port);
+	if (telnets_enabled) {
+		bbs_register_network_protocol("TELNETS", telnets_port);
+	}
 	return 0;
 }
 
@@ -258,10 +339,19 @@ static int unload_module(void)
 	}
 	if (telnet_socket > -1) {
 		bbs_unregister_network_protocol(telnet_port);
+		if (telnets_socket > -1) {
+			bbs_unregister_network_protocol(telnets_port);
+		}
 		close(telnet_socket);
 		telnet_socket = -1;
 		bbs_pthread_cancel_kill(telnet_thread);
 		bbs_pthread_join(telnet_thread, NULL);
+		if (telnets_enabled) {
+			close(telnets_socket);
+			telnets_socket = -1;
+			bbs_pthread_cancel_kill(telnets_thread);
+			bbs_pthread_join(telnets_thread, NULL);
+		}
 	} else {
 		bbs_error("Telnet socket already closed at unload?\n");
 	}

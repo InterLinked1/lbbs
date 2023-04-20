@@ -54,7 +54,7 @@ static int run(void)
 	SWRITE(clientfd, TEST_USER "\n");
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "Password");
 	SWRITE(clientfd, TEST_PASS "\n");
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "at welcome menu via Telnet");
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "at welcome menu via T");
 	CLIENT_DRAIN(clientfd);
 	SWRITE(clientfd, " "); /* Hit a key */
 

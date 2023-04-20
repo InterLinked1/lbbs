@@ -233,6 +233,10 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 	pthread_mutex_init(&node->ptylock, NULL);
 	node->id = newnodenumber;
 	node->fd = fd;
+	/* By default, same file descriptor for reading and writing.
+	 * These may differ when directly interacting with a TLS session,
+	 * due to the way that TLS relaying is implemented in the BBS. */
+	node->rfd = node->wfd = fd;
 
 	/* Not all nodes will get a pseudoterminal, so initialize to -1 so if not, we don't try to close STDIN erroneously on shutdown */
 	node->amaster = -1;
@@ -475,7 +479,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 		 * Don't use bbs_reset_color because we already hold the node lock, so we can't call bbs_write,
 		 * as that will try to get a recursive lock.
 		 */
-		SWRITE(node->fd, COLOR_RESET);
+		SWRITE(node->wfd, COLOR_RESET);
 	}
 
 	if (node->ptythread) {
@@ -621,7 +625,7 @@ int bbs_nodes_print(int fd)
 	int c = 0;
 	int now = time(NULL);
 
-	bbs_dprintf(fd, "%3s %8s %9s %7s %-15s %-15s %15s %1s %1s %6s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "USER", "MENU/PAGE", "IP ADDRESS", "E", "B", "TID", "FD", "MST", "SLV", "SPY", "SLV NAME");
+	bbs_dprintf(fd, "%3s %8s %9s %7s %-15s %-15s %15s %1s %1s %6s %3s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "USER", "MENU/PAGE", "IP ADDRESS", "E", "B", "TID", "RFD", "WFD", "MST", "SLV", "SPY", "SLV NAME");
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
@@ -631,9 +635,9 @@ int bbs_nodes_print(int fd)
 		print_time_elapsed(n->created, now, elapsed, sizeof(elapsed));
 		snprintf(menufull, sizeof(menufull), "%s%s%s%s", S_IF(n->menu), n->menuitem ? " (" : "", S_IF(n->menuitem), n->menuitem ? ")" : "");
 		lwp = bbs_pthread_tid(n->thread);
-		bbs_dprintf(fd, "%3d %8s %9s %3dx%3d %-15s %-15s %15s %1s %1s %6d %3d %3d %3d %3d %s\n",
+		bbs_dprintf(fd, "%3d %8s %9s %3dx%3d %-15s %-15s %15s %1s %1s %6d %3d %3d %3d %3d %3d %s\n",
 			n->id, n->protname, elapsed, n->cols, n->rows, bbs_username(n->user), menufull, n->ip, BBS_YN(n->echo), BBS_YN(n->buffered),
-			lwp, n->fd, n->amaster, n->slavefd, n->spyfd, n->slavename);
+			lwp, n->rfd, n->wfd, n->amaster, n->slavefd, n->spyfd, n->slavename);
 		bbs_node_unlock(n);
 		c++;
 	}
@@ -696,7 +700,8 @@ int bbs_node_info(int fd, unsigned int nodenum)
 	bbs_dprintf(fd, BBS_FMT_DSD, "Term Size", n->cols, "x", n->rows);
 	bbs_dprintf(fd, BBS_FMT_S, "Term Echo", BBS_YN(n->echo));
 	bbs_dprintf(fd, BBS_FMT_S, "Term Buffered", BBS_YN(n->buffered));
-	bbs_dprintf(fd, BBS_FMT_D, "Node FD", n->fd);
+	bbs_dprintf(fd, BBS_FMT_D, "Node Read FD", n->rfd);
+	bbs_dprintf(fd, BBS_FMT_D, "Node Write FD", n->wfd);
 	bbs_dprintf(fd, BBS_FMT_D, "Node PTY Master FD", n->amaster);
 	bbs_dprintf(fd, BBS_FMT_D, "Node PTY Slave FD", n->slavefd);
 	bbs_dprintf(fd, BBS_FMT_S, "Node PTY Slave Name", n->slavename);

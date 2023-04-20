@@ -436,13 +436,14 @@ void *pty_master(void *varg)
 	int emulated_crlf = 0, just_did_emulated_crlf = 0;
 
 	/* Save relevant fields. */
-	int nodeid, amaster, sfd, ansi;
+	int nodeid, amaster, rfd, wfd, ansi;
 
 	/* Not that these are expected to change, but it makes helgrind happy */
 	bbs_node_lock(node);
 	nodeid = node->id;
 	amaster = node->amaster;
-	sfd = node->fd;
+	rfd = node->rfd;
+	wfd = node->wfd;
 	ansi = node->ansi;
 	bbs_node_unlock(node);
 
@@ -463,7 +464,7 @@ void *pty_master(void *varg)
 	/* Relay data between terminal (socket side) and pty master */
 	for (;;) {
 		int speed = 0, spy = 0, spyfdin, spyfdout;
-		fds[0].fd = sfd;
+		fds[0].fd = rfd;
 		fds[1].fd = amaster;
 		fds[0].events = fds[1].events = POLLIN;
 		fds[0].revents = fds[1].revents = 0;
@@ -502,7 +503,7 @@ void *pty_master(void *varg)
 		}
 
 		if (fds[0].revents & POLLIN) { /* Got input on socket -> pty */
-			bytes_read = read(sfd, buf, sizeof(buf));
+			bytes_read = read(rfd, buf, sizeof(buf));
 			if (bytes_read <= 0) {
 				bbs_debug(10, "socket read returned %d\n", bytes_read);
 				/* If the PTY master exits, need to get rid of the node. This should do the trick. */
@@ -648,9 +649,9 @@ void *pty_master(void *varg)
 			}
 			if (speed) {
 				/* Slow write to both real socket and spying fd simultaneously */
-				bytes_wrote = slow_write(sfd, spy ? spyfdout : -1, relaybuf, bytes_read, speed);
+				bytes_wrote = slow_write(wfd, spy ? spyfdout : -1, relaybuf, bytes_read, speed);
 			} else {
-				bytes_wrote = write(sfd, relaybuf, bytes_read);
+				bytes_wrote = write(wfd, relaybuf, bytes_read);
 				if (spy && bytes_wrote == bytes_read) {
 					bytes_wrote = write(spyfdout, relaybuf, bytes_read);
 				}
