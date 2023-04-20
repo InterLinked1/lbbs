@@ -19,7 +19,7 @@ apt-get install -y libssh-dev # libssh
 # net_sftp, which requires objdump to test for symbol existence... thanks a lot, libssh
 apt-get install -y binutils # binutils, for objdump
 
-# mod_mysql_auth
+# mod_mysql, mod_mysql_auth
 apt-get install -y libmariadb-dev libmariadb-dev-compat # MariaDB (MySQL) dev headers
 
 # net_http
@@ -30,6 +30,9 @@ apt-get install -y libspf2-dev
 
 # mod_mimeparse
 apt-get install -y libglib2.0-dev libgmime-3.0-dev
+
+# mod_sieve
+apt-get install -y libsieve2-dev
 
 # libdiscord
 scripts/concord.sh

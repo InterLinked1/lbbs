@@ -2835,7 +2835,7 @@ static int imap_client_list(struct bbs_tcp_client *client, const char *prefix, F
 static int load_virtual_mailbox(struct imap_session *imap, const char *path)
 {
 	FILE *fp;
-	int res = 1;
+	int res = -1;
 	char virtcachefile[256];
 	char buf[256];
 
@@ -7439,6 +7439,10 @@ static int imap_process(struct imap_session *imap, char *s)
 			 */
 			return imap_client_send_wait_response(imap, imap->rfd, 1790000, "%s %s\r\n", command, S_IF(s));
 		}
+		/* XXX Outlook often tries to IDLE without selecting a mailbox, which is kind of bizarre.
+		 * Technically though, RFC 2177 says IDLE is valid in either the authenticated or selected states.
+		 * How it's used in the authenticated (but non-selected) state, I don't really know.
+		 * For now, clients attempting that will be summarily rebuffed. */
 		REQUIRE_SELECTED(imap);
 		/* RFC 2177 IDLE */
 		_imap_reply(imap, "+ idling\r\n");

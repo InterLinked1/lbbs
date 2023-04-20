@@ -237,6 +237,37 @@ int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const c
  */
 int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid);
 
+/* Sieve integration */
+
+/*!
+ * \brief Register a Sieve implementation
+ * \param validate A callback that will validate a Sieve script and return 0 if valid, 1 if invalid, and -1 on failure
+ * \param capabilities A dynamically allocated string of Sieve capabilities. The caller should never free this.
+ * \note This does not register the Sieve implementation with the SMTP server to actually filter mail. Use smtp_register_processor to do that.
+ *       The callbacks here are only used for the ManageSieve service.
+ * \retval 0 on success, -1 on failure (e.g. another Sieve implementation already registered)
+ */
+#define sieve_register_provider(validate, capabilities) __sieve_register_provider(validate, capabilities, BBS_MODULE_SELF)
+
+int __sieve_register_provider(int (*validate)(const char *filename, struct mailbox *mbox, char **errormsg), char *capabilities, void *mod);
+
+/*! \brief Unregister a previously registered Sieve implementation */
+int sieve_unregister_provider(int (*validate)(const char *filename, struct mailbox *mbox, char **errormsg));
+
+/*!
+ * \brief Get list of Sieve capabilities
+ * \returns NULL on failure, capability list on success that must be freed
+ */
+char *sieve_get_capabilities(void);
+
+/*!
+ * \brief Validate a Sieve script
+ * \param filename Full path to file containing Sieve script
+ * \param[out] errormsg error message for user, which must be freed
+ * \retval 0 if valid, 1 if invalid, -1 on error or failure
+ */
+int sieve_validate_script(const char *filename, struct mailbox *mbox, char **errormsg);
+
 /* SMTP processor callbacks */
 
 #define SMTP_MSG_DIRECTION_IN 0
@@ -251,6 +282,7 @@ struct smtp_msg_process {
 	char datafile[128];			/*!< Name of email data file */
 	FILE *fp;					/*!< Email data file (used internally only) */
 	const char *from;			/*!< Envelope from */
+	const char *recipient;		/*!< Envelope to - only for INCOMING messages */
 	int size;					/*!< Size of email */
 	int userid;					/*!< User ID (outgoing only) */
 	unsigned int direction:1;	/*!< 0 = incoming, 1 = outgoing */

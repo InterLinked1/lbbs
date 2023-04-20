@@ -1120,7 +1120,6 @@ static inline void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_pr
 {
 	mproc->fd = smtp->wfd;
 	safe_strncpy(mproc->datafile, smtp->template, sizeof(mproc->datafile));
-	mproc->size = smtp->datalen;
 	mproc->node = smtp->node;
 	mproc->from = smtp->from;
 	mproc->forward = &smtp->recipients; /* Tack on forwarding targets to the recipients list */
@@ -1165,6 +1164,8 @@ static int do_local_delivery(struct smtp_session *smtp, const char *recipient, c
 	/* SMTP callbacks for incoming messages */
 	memset(&mproc, 0, sizeof(mproc));
 	smtp_mproc_init(smtp, &mproc);
+	mproc.size = datalen;
+	mproc.recipient = recipient;
 	mproc.direction = SMTP_MSG_DIRECTION_IN;
 	mproc.mbox = mbox;
 	mproc.userid = 0;
@@ -1447,6 +1448,11 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	realfrom = strchr(from, '<');
 	realto = strchr(recipient, '<');
 
+	if (!realfrom || !realto) {
+		bbs_error("Invalid mail queue file: %s\n", fullname);
+		goto cleanup;
+	}
+
 	/* If you manually edit the queue files, the line endings will get converted,
 	 * and since the queue files use a combination of LF and CR LF,
 	 * that can mess things up.
@@ -1460,10 +1466,6 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	bbs_strterm(realto, '\r'); /* XXX Shouldn't be necessary? But strip any CR if there is one. */
 	bbs_strterm(realto, '\n'); /* Ditto */
 
-	if (!realfrom || !realto) {
-		bbs_error("Invalid mail queue file: %s\n", fullname);
-		goto cleanup;
-	}
 	realfrom++;
 	safe_strncpy(todup, realto, sizeof(todup));
 	if (strlen_zero(realfrom) || bbs_parse_email_address(todup, NULL, &user, &domain, &local)) {
@@ -1789,7 +1791,8 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, i
 	while ((recipient = stringlist_pop(&smtp->recipients))) {
 		int local;
 		char *user, *domain;
-		char *dup;
+		char *dup, *tmp = NULL;
+		const char *normalized_recipient;
 		/* The MailScript FORWARD rule will result in recipients being added to
 		 * the recipients list while we're in this loop.
 		 * However the same message is sent to the new target, since we forward the raw message, which means
@@ -1799,18 +1802,32 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, i
 		 * This avoids loops not detected by counting Received headers:
 		 */
 		/*! \todo Is this entirely sufficient/appropriate? Maybe we should ALSO add a single Received header on forwards? */
-		if (stringlist_contains(&smtp->sentrecipients, recipient)) {
-			bbs_warning("Skipping duplicate delivery to %s\n", recipient);
+		/* Keep track that we have sent a message to this recipient */
+		if (*recipient == '<') {
+			tmp = strrchr(recipient, '>');
+			if (tmp && *(tmp + 1)) {
+				tmp = NULL;
+			}
+			if (tmp) {
+				*tmp = '\0';
+			}
+		}
+		/* Add (and check) without <> so it's more normalized and consistent for comparisons. */
+		normalized_recipient = tmp ? recipient + 1 : recipient;
+		if (stringlist_contains(&smtp->sentrecipients, normalized_recipient)) {
+			bbs_warning("Skipping duplicate delivery to %s\n", normalized_recipient);
 			free(recipient);
 			continue;
 		}
-		/* Keep track that we have sent a message to this recipient */
-		stringlist_push(&smtp->sentrecipients, recipient);
+		stringlist_push(&smtp->sentrecipients, normalized_recipient);
+		bbs_debug(7, "Processing delivery to %s\n", normalized_recipient);
+		if (tmp) {
+			*tmp = '>'; /* Restore it back */
+		}
 		dup = strdup(recipient);
 		if (ALLOC_FAILURE(dup)) {
 			goto next;
 		}
-		bbs_debug(7, "Processing delivery to %s\n", dup);
 		/* We already did this when we got RCPT TO, so hopefully we're all good here. */
 		if (bbs_parse_email_address(dup, NULL, &user, &domain, &local)) {
 			goto next;
@@ -1861,6 +1878,7 @@ static int injectmail(MAILER_PARAMS)
 
 	/* Set up the envelope */
 	smtp.from = (char*) from;
+	safe_strncpy(smtp.template, tmp, sizeof(smtp.template));
 	/*! \todo The mail interface should probably accept a stringlist globally, since it's reasonable to have multiple recipients */
 	stringlist_push(&smtp.recipients, to);
 
@@ -1972,6 +1990,7 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 	/* SMTP callbacks for outgoing messages */
 	if (smtp->msa || smtp->fromlocal) {
 		smtp_mproc_init(smtp, &mproc);
+		mproc.size = datalen;
 		mproc.direction = SMTP_MSG_DIRECTION_OUT;
 		mproc.mbox = NULL;
 		mproc.userid = smtp->node->user->id;

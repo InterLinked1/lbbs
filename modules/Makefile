@@ -42,6 +42,10 @@ mod_mysql.so : mod_mysql.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(MYSQL_LIBS)
 
+mod_sieve.so : mod_sieve.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lsieve
+
 # Don't automatically remove intermediate .o files, to prevent unnecessary recompilations
 .SECONDARY: $(patsubst %.c,%.o,$(MOD_SRC))
 

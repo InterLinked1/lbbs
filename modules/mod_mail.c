@@ -92,6 +92,68 @@ int mailbox_unregister_watcher(void (*callback)(struct mailbox *mbox, const char
 	return 0;
 }
 
+static int (*sieve_validate)(const char *filename, struct mailbox *mbox, char **errormsg) = NULL;
+static char *sieve_capabilities = NULL;
+static void *sievemod = NULL;
+
+int __sieve_register_provider(int (*validate)(const char *filename, struct mailbox *mbox, char **errormsg), char *capabilities, void *mod)
+{
+	if (strlen_zero(capabilities)) {
+		bbs_error("Missing capabilities\n");
+		return -1;
+	} else if (sieve_validate) {
+		bbs_error("A Sieve implementation is already registered.\n");
+		free(capabilities);
+		return -1;
+	}
+
+	sieve_capabilities = capabilities; /* Steal the reference */
+	sieve_validate = validate;
+	sievemod = mod;
+	return 0;
+}
+
+int sieve_unregister_provider(int (*validate)(const char *filename, struct mailbox *mbox, char **errormsg))
+{
+	if (sieve_validate != validate) {
+		bbs_error("Sieve implementation %p does not match registered provider %p\n", validate, sieve_validate);
+		return -1;
+	}
+
+	sieve_validate = NULL;
+	sievemod = NULL;
+	free(sieve_capabilities);
+	sieve_capabilities = NULL;
+	return 0;
+}
+
+char *sieve_get_capabilities(void)
+{
+	char *caps;
+	/* Technically not safe to just return directly, since the module could go away while we're using it? */
+	if (!sieve_capabilities) {
+		bbs_error("No Sieve implementation is currently registered\n");
+		return NULL;
+	}
+	bbs_module_ref(sievemod);
+	caps = strdup(sieve_capabilities);
+	bbs_module_unref(sievemod);
+	return caps;
+}
+
+int sieve_validate_script(const char *filename, struct mailbox *mbox, char **errormsg)
+{
+	int res;
+	if (!sieve_validate) {
+		bbs_error("No Sieve implementation is currently registered\n");
+		return -1;
+	}
+	bbs_module_ref(sievemod);
+	res = sieve_validate(filename, mbox, errormsg);
+	bbs_module_unref(sievemod);
+	return res;
+}
+
 struct smtp_processor {
 	int (*cb)(struct smtp_msg_process *proc);
 	void *mod;

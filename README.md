@@ -32,6 +32,7 @@ Key features and capabilities include:
   - RFC 4468 BURL IMAP support, for more efficient email submission
   - Remote mailboxes (IMAP proxy)
   - Filtering
+    - Sieve filtering scripts and ManageSieve service
     - [MailScript filtering engine](https://github.com/InterLinked1/lbbs/blob/master/configs/.rules) for flexible, custom, dynamic mail filtering rules (Sieve alternative)
 
 - Newsgroups (NNTP)
@@ -270,13 +271,23 @@ if you want to test your container environment separately.
 
 #### Why is there a non-standard filtering engine (MailScript) included?
 
-The MailScript filtering language serves a slightly different purpose than common filtering languages like Sieve or procmail.
-It includes capabilities that other filtering languages do not, such as the ability to execute system commands.
-Additionally, these rules cannot be directly edited by users in any way.
-They are intended to allow the sysop to define rules for the system or per user, if needed.
+The MailScript filtering language was explicitly designed to be very simple to parse, unlike filtering languages with
+slightly more complicated syntax, such as Sieve. MailScript also allows for basic testing of filtering primitives
+independent of the filtering language used, which can be useful for testing. MailScript was added before Sieve support
+was added due to the easier implementation.
 
-The language grammar for MailScript is also extremely simple, which made adding an implementation of it extremely easy.
-Support for Sieve and ManageSieve will be added at some point, and users will be able to manage these rules themselves.
+Currently, some capabilities, such as executing system commands, are only possible with MailScript, not with Sieve.
+Although there are Sieve extensions to do this, the Sieve implementation in the BBS does not yet support this
+(or rather, the underlying library does not). Eventually the goal is to have full feature parity.
+
+Sieve rules can be edited by users directly using the ManageSieve protocol (net_sieve).
+In contrast, MailScript rules can only be modified by the sysop directly on the server. Additionally,
+MailScript allows for potentially dangerous operations out of the box, and should not normally be exposed to users.
+
+It is recommended that Sieve be used for filtering if possible, since this is a standardized and well support protocol.
+MailScript is a nonstandard syntax that was invented purely for this software, so it is not portable anywhere else.
+However, if the current Sieve implementation does not meet certain needs but MailScript does, feel free to use that as well.
+Both filtering engines can be used in conjunction with each other.
 
 ## Licensing
 
