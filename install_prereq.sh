@@ -31,6 +31,9 @@ apt-get install -y libspf2-dev
 # mod_mimeparse
 apt-get install -y libglib2.0-dev libgmime-3.0-dev
 
+# mod_oauth
+apt-get install -y libjansson-dev
+
 # mod_sieve
 apt-get install -y libsieve2-dev
 

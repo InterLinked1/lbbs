@@ -17,11 +17,11 @@
 
 struct bbs_curl {
 	/* Input fields */
-	char *postfields;
+	const char *url;			/*!< URL to request */
+	const char *postfields;		/*!< POST request body */
 	/* Output fields */
 	int http_code;
-	char *url;			/*!< URL to request */
-	char *response;		/*!< Response body */
+	char *response;				/*!< Response body */
 	/* Input flags */
 	unsigned int forcefail:1;	/* Return failure if return code is not a success (2xx) code */
 };

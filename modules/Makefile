@@ -42,6 +42,10 @@ mod_mysql.so : mod_mysql.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(MYSQL_LIBS)
 
+mod_oauth.so : mod_oauth.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -ljansson
+
 mod_sieve.so : mod_sieve.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lsieve

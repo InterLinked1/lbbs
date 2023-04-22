@@ -234,6 +234,18 @@ cleanup:
 	return -1;
 }
 
+static int test_ipv4_detection(void)
+{
+	bbs_test_assert_equals(1, bbs_hostname_is_ipv4("1.1.1.1"));
+	bbs_test_assert_equals(0, bbs_hostname_is_ipv4("example.com"));
+	bbs_test_assert_equals(1, bbs_hostname_is_ipv4("1.2.3.4"));
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
 static int test_url_parsing(void)
 {
 	int res = -1;
@@ -300,6 +312,7 @@ static struct unit_tests {
 	{ "Readline Helper", test_readline_helper },
 	{ "SASL Decoding", test_sasl_decode },
 	{ "IPv4 CIDR Range Matching", test_cidr_ipv4 },
+	{ "IPv4 Address Detection", test_ipv4_detection },
 	{ "URL Parsing", test_url_parsing },
 };
 

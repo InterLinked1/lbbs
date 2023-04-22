@@ -157,8 +157,7 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 	if (res != CURLE_OK) {
 		bbs_warning("curl_easy_perform() failed for %s: %s\n", c->url, curl_easy_strerror(res));
 		if (response.len && response.str) {
-			free(response.str); /* Free response if we're not going to return it */
-			response.str = NULL;
+			free_if(response.str); /* Free response if we're not going to return it */
 		}
 	} else {
 		int failed;
@@ -175,9 +174,8 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 		c->http_code = http_code;
 		failed = STARTS_WITH(c->url, "http") ? !HTTP_RESPONSE_SUCCESS(http_code) : http_code != 0;
 		if (c->forcefail && failed) {
-			bbs_debug(4, "Response failed, freeing response\n");
-			free(response.str); /* Free response if we're not going to return it */
-			response.str = NULL;
+			bbs_debug(4, "Response failed, freeing response (length %d)\n", response.len);
+			free_if(response.str); /* Free response if we're not going to return it */
 		} else {
 			if (response.len) {
 				if (!response.str && response.resp) {
@@ -196,16 +194,14 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 				c->response = strdup(""); /* This way, response is never NULL */
 			}
 			cres = 0;
+			if (!c->response) {
+				bbs_warning("c->response was still NULL?\n");
+				c->response = strdup(""); /* Guarantee to caller that response will always be non-NULL */
+			}
 		}
 	}
 
 	curl_easy_cleanup(curl);
-
-	if (!c->response) {
-		bbs_warning("c->response was still NULL?\n");
-		c->response = strdup(""); /* Guarantee to caller that response will always be non-NULL */
-	}
-
 	return cres;
 }
 

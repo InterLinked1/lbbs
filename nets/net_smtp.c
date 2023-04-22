@@ -58,6 +58,7 @@
 #include "include/stringlist.h"
 #include "include/test.h"
 #include "include/mail.h"
+#include "include/oauth.h"
 
 #include "include/mod_mail.h"
 
@@ -269,8 +270,10 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 	}
 
 	if (smtp->gothelo) {
-		/* We should be able to handle this gracefully. Clients shouldn't do it but servers should accept duplicates. */
-		bbs_warning("Duplicate HELO/EHLO\n");
+		/* RFC 5321 4.1.4 says a duplicate EHLO is treated as a RSET */
+		smtp_reset(smtp);
+		smtp_reply(smtp, 250, 2.1.5, "Flushed");
+		return 0;
 	}
 
 	smtp->gothelo = 1;
@@ -720,10 +723,86 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 }
 
 #define SMTP_EXPECT(fd, ms, str) \
-	res = bbs_expect_line(fd, ms, &rldata, str); \
+	res = bbs_expect_line(fd, ms, rldata, str); \
 	if (res) { bbs_warning("Expected '%s', got: %s\n", str, buf); goto cleanup; } else { bbs_debug(9, "Found '%s': %s\n", str, buf); }
 
 #define smtp_client_send(fd, fmt, ...) dprintf(fd, fmt, ## __VA_ARGS__); bbs_debug(3, " => " fmt, ## __VA_ARGS__);
+
+#define SMTP_CAPABILITY_STARTTLS (1 << 0)
+#define SMTP_CAPABILITY_PIPELINING (1 << 1)
+#define SMTP_CAPABILITY_8BITMIME (1 << 2)
+#define SMTP_CAPABILITY_ENHANCEDSTATUSCODES (1 << 3)
+#define SMTP_CAPABILITY_AUTH_LOGIN (1 << 4)
+#define SMTP_CAPABILITY_AUTH_PLAIN (1 << 5)
+#define SMTP_CAPABILITY_AUTH_XOAUTH2 (1 << 6)
+
+static void process_capabilities(int *caps, const char *capname)
+{
+	if (strlen_zero(capname) || !isupper(*capname)) { /* Capabilities are all uppercase XXX but is that required by the RFC? */
+		return;
+	}
+	if (!strcasecmp(capname, "STARTTLS")) {
+		*caps |= SMTP_CAPABILITY_STARTTLS;
+	} else if (!strcasecmp(capname, "PIPELINING")) {
+		*caps |= SMTP_CAPABILITY_PIPELINING;
+	} else if (!strcasecmp(capname, "8BITMIME")) {
+		*caps |= SMTP_CAPABILITY_8BITMIME;
+	} else if (!strcasecmp(capname, "ENHANCEDSTATUSCODES")) {
+		*caps |= SMTP_CAPABILITY_ENHANCEDSTATUSCODES;
+	} else if (STARTS_WITH(capname, "AUTH ")) {
+		capname += STRLEN("AUTH ");
+		if (strstr(capname, "LOGIN")) {
+			*caps |= SMTP_CAPABILITY_AUTH_LOGIN;
+		}
+		if (strstr(capname, "PLAIN")) {
+			*caps |= SMTP_CAPABILITY_AUTH_PLAIN;
+		}
+		if (strstr(capname, "XOAUTH2")) {
+			bbs_debug(3, "Supports oauth2\n");
+			*caps |= SMTP_CAPABILITY_AUTH_XOAUTH2;
+		}
+	} else if (STARTS_WITH(capname, "SIZE ")) {
+		/*! \todo parse and store the limit, abort early if our message length is greater than this */
+	} else if (!strcasecmp(capname, "CHUNKING") || !strcasecmp(capname, "SMTPUTF8")) {
+		/* Don't care about */
+	} else {
+		/*! \todo Add more capabilities here */
+		bbs_warning("Unknown capability advertised: %s\n", capname);
+	}
+}
+
+static int smtp_client_handshake(struct readline_data *rldata, int rfd, int wfd, char *buf, const char *hostname, int *capsptr)
+{
+	int res = 0;
+
+	smtp_client_send(wfd, "EHLO %s\r\n", bbs_hostname());
+	res = bbs_expect_line(rfd, 1000, rldata, "250");
+	if (res) { /* Fall back to HELO if EHLO not supported */
+		if (require_starttls_out) { /* STARTTLS is only supported by EHLO, not HELO */
+			bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
+			res = 1;
+			goto cleanup;
+		}
+		bbs_debug(3, "SMTP server %s does not support ESMTP, falling back to regular SMTP\n", hostname);
+		smtp_client_send(wfd, "HELO %s\r\n", bbs_hostname());
+		SMTP_EXPECT(rfd, 1000, "250");
+	} else {
+		/* Keep reading the rest of the multiline EHLO */
+		while (STARTS_WITH(buf, "250-")) {
+			bbs_debug(9, "<= %s\n", buf);
+			process_capabilities(capsptr, buf + 4);
+			res = bbs_expect_line(rfd, 1000, rldata, "250");
+		}
+		bbs_debug(9, "<= %s\n", buf);
+		process_capabilities(capsptr, buf + 4);
+		bbs_debug(6, "Finished processing multiline EHLO\n");
+	}
+
+cleanup:
+	return res;
+}
+
+/*! \todo redo try_send using a bbs_tcp_client instead, just like net_imap uses */
 
 /*!
  * \brief Attempt to send an external message to another mail transfer agent or message submission agent
@@ -752,9 +831,10 @@ static int try_send(const char *hostname, int port, int secure, const char *user
 	SSL *ssl = NULL;
 	int sfd, res, wrote = 0;
 	int rfd, wfd;
-	struct readline_data rldata;
-	int supports_starttls = 0;
+	struct readline_data rldata_stack;
+	struct readline_data *rldata = &rldata_stack;
 	off_t send_offset = offset;
+	int caps = 0;
 
 	bbs_assert(datafd != -1);
 	bbs_assert(writelen > 0);
@@ -778,43 +858,21 @@ static int try_send(const char *hostname, int port, int secure, const char *user
 		ssl = ssl_client_new(sfd, &rfd, &wfd);
 		if (!ssl) {
 			bbs_debug(3, "Failed to set up TLS\n");
-			goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
+			goto cleanup; /* Abort if we failed to set up implicit TLS */
 		}
 	}
 
-	bbs_readline_init(&rldata, buf, len);
+	bbs_readline_init(&rldata_stack, buf, len);
 
 	/* The logic for being an SMTP client with an SMTP MTA is pretty straightforward. */
 	SMTP_EXPECT(rfd, 1000, "220");
 
-	smtp_client_send(wfd, "EHLO %s\r\n", bbs_hostname());
-	res = bbs_expect_line(rfd, 1000, &rldata, "250");
-	if (res) { /* Fall back to HELO if EHLO not supported */
-		if (require_starttls_out) { /* STARTTLS is only supported by EHLO, not HELO */
-			bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
-			res = 1;
-			goto cleanup;
-		}
-		bbs_debug(3, "SMTP server %s does not support ESMTP, falling back to regular SMTP\n", hostname);
-		smtp_client_send(wfd, "HELO %s\r\n", bbs_hostname());
-		SMTP_EXPECT(rfd, 1000, "250");
-	} else {
-		/* Keep reading the rest of the multiline EHLO */
-		bbs_debug(9, "Read: %s\n", buf);
-		while (strstr(buf, "250-")) {
-			if (!supports_starttls && strstr(buf, "STARTTLS")) {
-				supports_starttls = 1;
-			}
-			res = bbs_expect_line(rfd, 1000, &rldata, "250");
-			bbs_debug(9, "Read: %s\n", buf);
-		}
-		if (!supports_starttls && strstr(buf, "STARTTLS")) { /* For last line */
-			supports_starttls = 1;
-		}
-		bbs_debug(6, "Finished processing multiline EHLO\n");
+	res = smtp_client_handshake(rldata, rfd, wfd, buf, hostname, &caps);
+	if (res) {
+		goto cleanup;
 	}
 
-	if (supports_starttls) {
+	if (caps & SMTP_CAPABILITY_STARTTLS) {
 		smtp_client_send(wfd, "STARTTLS\r\n");
 		SMTP_EXPECT(rfd, 2500, "220");
 		bbs_debug(3, "Starting TLS\n");
@@ -824,49 +882,90 @@ static int try_send(const char *hostname, int port, int secure, const char *user
 			goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
 		}
 		/* Start over again. */
-
-		smtp_client_send(wfd, "EHLO %s\r\n", bbs_hostname());
-		res = bbs_expect_line(rfd, 2000, &rldata, "250");
-		if (res) { /* Fall back to HELO if EHLO not supported */
-			if (require_starttls_out) { /* STARTTLS is only supported by EHLO, not HELO */
-				bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
-				res = 1;
-				goto cleanup;
-			}
-			bbs_debug(3, "SMTP server %s does not support ESMTP, falling back to regular SMTP\n", hostname);
-			smtp_client_send(wfd, "HELO %s\r\n", bbs_hostname());
-			SMTP_EXPECT(rfd, 1000, "250");
-		} else {
-			/* Keep reading the rest of the multiline EHLO */
-			bbs_debug(9, "Read: %s\n", buf);
-			while (strstr(buf, "250-")) {
-				if (!supports_starttls && strstr(buf, "STARTTLS")) {
-					supports_starttls = 1;
-				}
-				res = bbs_expect_line(rfd, 1000, &rldata, "250");
-				bbs_debug(9, "Read: %s\n", buf);
-			}
-			if (!supports_starttls && strstr(buf, "STARTTLS")) { /* For last line */
-				supports_starttls = 1;
-			}
-			bbs_debug(6, "Finished processing multiline EHLO\n");
+		caps = 0;
+		res = smtp_client_handshake(rldata, rfd, wfd, buf, hostname, &caps);
+		if (res) {
+			goto cleanup;
 		}
 	} else if (require_starttls_out) {
 		bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
 		res = 1;
 		goto cleanup;
+	} else {
+		bbs_warning("SMTP server %s does not support STARTTLS. This message will not be transmitted securely!\n", hostname);
 	}
 
 	if (username && password) {
-		char *saslstr = bbs_sasl_encode(username, username, password);
-		if (!saslstr) {
+		if (STARTS_WITH(password, "oauth:")) { /* OAuth authentication */
+			char token[512];
+			char decoded[568];
+			int decodedlen, encodedlen;
+			char *encoded;
+			const char *oauthprofile = password + STRLEN("oauth:");
+
+			if (!(caps & SMTP_CAPABILITY_AUTH_XOAUTH2)) {
+				bbs_warning("SMTP server does not support XOAUTH2\n");
+				res = -1;
+				goto cleanup;
+			}
+
+			/* We don't have access to the smtp->node->user here (and simply can't, due to all the code paths that come here).
+			 * However, if the message was submitted locally, we can trust the sender to be accurate.
+			 * But the sender is the sender for the relay, not the BBS sender.
+			 * We can't even look for "Authenticated sender" in the message itself since we don't prepend that if we're relaying. */
+			/*! \todo FIXME So for now, we pass in 0 for the user ID to allow any user ID to match,
+			 * but we should come up with a (secure) solution for this.
+			 * In the meantime, as long as users are not allowed to directly or indirectly control mod_oauth.conf and .rules (MailScript)
+			 * (which they are not likely to anyways), this is more or less fine.
+			 *
+			 * Note that because the RELAY MailScript rule runs in the foreground, we're not actually operating on a queue file,
+			 * we're operating live (and blocking the connection, which means if we reject the relay, it will go directly to the user),
+			 * so in theory we COULD have access to the user here if smtp were passed down the stack all the way here.
+			 */
+			res = bbs_get_oauth_token(0, oauthprofile, token, sizeof(token));
+			if (res) {
+				bbs_warning("OAuth token '%s' does not exist\n", oauthprofile);
+				res = -1;
+				goto cleanup;
+			}
+			/* https://developers.google.com/gmail/imap/xoauth2-protocol#smtp_protocol_exchange */
+			decodedlen = snprintf(decoded, sizeof(decoded), "user=%s%cauth=Bearer %s%c%c", username, 0x01, token, 0x01, 0x01);
+			encoded = base64_encode(decoded, decodedlen, &encodedlen);
+			if (!encoded) {
+				bbs_error("Base64 encoding failed\n");
+				res = -1;
+				goto cleanup;
+			}
+			smtp_client_send(wfd, "AUTH XOAUTH2 %s\r\n", encoded);
+			free(encoded);
+			res = bbs_expect_line(rfd, 1000, rldata, "235");
+			if (res) {
+				/* If we get 334 here, that means we failed: https://developers.google.com/gmail/imap/xoauth2-protocol#smtp_protocol_exchange
+				 * We should send an empty reply to get the error message. */
+				if (STARTS_WITH(buf, "334")) {
+					smtp_client_send(wfd, "\r\n");
+					SMTP_EXPECT(rfd, 1000, "235"); /* We're not actually going to get a 235, but send the error to the console and abort */
+					bbs_warning("Huh? It worked?\n"); /* Shouldn't happen */
+				} else {
+					bbs_warning("Expected '%s', got: %s\n", "235", buf);
+					goto cleanup;
+				}
+			}
+		} else if (caps & SMTP_CAPABILITY_AUTH_LOGIN) {
+			char *saslstr = bbs_sasl_encode(username, username, password);
+			if (!saslstr) {
+				res = -1;
+				goto cleanup;
+			}
+			smtp_client_send(wfd, "AUTH PLAIN\r\n"); /* AUTH PLAIN is preferred to the deprecated AUTH LOGIN */
+			SMTP_EXPECT(rfd, 1000, "334");
+			smtp_client_send(wfd, "%s\r\n", saslstr);
+			SMTP_EXPECT(rfd, 1000, "235");
+		} else {
+			bbs_warning("No mutual login methods available\n");
+			res = -1;
 			goto cleanup;
 		}
-		bbs_debug(3, "SASL str is %s (%s / %s)\n", saslstr, username, password);
-		smtp_client_send(wfd, "AUTH PLAIN\r\n"); /* AUTH PLAIN is preferred to the deprecated AUTH LOGIN */
-		SMTP_EXPECT(rfd, 1000, "334");
-		smtp_client_send(wfd, "%s\r\n", saslstr);
-		SMTP_EXPECT(rfd, 1000, "235");
 	}
 
 	/* RFC 5322 3.4.1 allows us to use IP addresses in SMTP as well (domain literal form). They just need to be enclosed in square brackets. */

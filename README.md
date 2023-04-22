@@ -31,6 +31,7 @@ Key features and capabilities include:
   - Shared mailboxes and ACL controls
   - RFC 4468 BURL IMAP support, for more efficient email submission
   - Remote mailboxes (IMAP proxy)
+    - Built-in OAuth2 proxy, allowing the BBS to log in to remote IMAP servers using OAuth2, while your IMAP client uses your normal BBS credentials
   - Filtering
     - Sieve filtering scripts and ManageSieve service
     - [MailScript filtering engine](https://github.com/InterLinked1/lbbs/blob/master/configs/.rules) for flexible, custom, dynamic mail filtering rules (Sieve alternative)
@@ -114,6 +115,8 @@ Config files go in `/etc/lbbs` and are as follows:
 - `mod_discord.conf` - Discord/IRC relay configuration
 
 - `mod_mail.conf ` - General email server configuration
+
+- `mod_oauth.conf` - OAuth2 token configuration
 
 - `mod_relay_irc.conf` - IRC/IRC relay configuration
 
@@ -276,7 +279,7 @@ slightly more complicated syntax, such as Sieve. MailScript also allows for basi
 independent of the filtering language used, which can be useful for testing. MailScript was added before Sieve support
 was added due to the easier implementation.
 
-Currently, some capabilities, such as executing system commands, are only possible with MailScript, not with Sieve.
+Currently, some capabilities, such as executing system commands or processing outgoing emails, that are only possible with MailScript, not with Sieve.
 Although there are Sieve extensions to do this, the Sieve implementation in the BBS does not yet support this
 (or rather, the underlying library does not). Eventually the goal is to have full feature parity.
 

@@ -680,9 +680,10 @@ int bbs_hostname_is_ipv4(const char *hostname)
 {
 	struct sockaddr_in sa;
 
-	if (inet_pton(AF_INET, hostname, &(sa.sin_addr))) {
+	if (!inet_pton(AF_INET, hostname, &(sa.sin_addr))) {
 		return 0;
 	}
+
 	return 1;
 }
 

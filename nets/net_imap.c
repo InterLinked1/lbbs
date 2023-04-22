@@ -49,7 +49,6 @@
  * - RFC 4469 CATENATE
  * - RFC 4959 SASL-IR
  * - RFC 4978 COMPRESS
- * - RFC 5228, 5703 Sieve
  * - RFC 5255 LANGUAGE
  * - RFC 5256 THREAD
  * - RFC 5257 ANNOTATE, RFC 5464 ANNOTATE (METADATA)
@@ -114,6 +113,8 @@
 #include "include/user.h"
 #include "include/test.h"
 #include "include/notify.h"
+#include "include/oauth.h"
+#include "include/base64.h"
 
 #include "include/mod_mail.h"
 #include "include/mod_mimeparse.h"
@@ -296,6 +297,8 @@ struct imap_session {
 	char curdir[260];
 	char virtprefix[260];		/* Mapping prefix defined in .imapremote */
 	int virtprefixlen;			/* Length of virtprefix */
+	int virtcapabilities;		/* Capabilities of remote IMAP server */
+	char virtdelimiter;			/* Hierarchy delimiter used by remote server */
 	unsigned int uidvalidity;
 	unsigned int uidnext;
 	unsigned long highestmodseq;	/* Cached HIGHESTMODSEQ for current folder */
@@ -737,6 +740,7 @@ static void imap_destroy(struct imap_session *imap)
 
 #define IMAP_FLAGS FLAG_NAME_FLAGGED " " FLAG_NAME_SEEN " " FLAG_NAME_ANSWERED " " FLAG_NAME_DELETED " " FLAG_NAME_DRAFT
 #define HIERARCHY_DELIMITER "."
+#define HIERARCHY_DELIMITER_CHAR '.'
 
 /* RFC 2342 Namespaces: prefix and hierarchy delimiter */
 #define PRIVATE_NAMESPACE_PREFIX ""
@@ -2079,7 +2083,7 @@ static void low_quota_alert(struct imap_session *imap)
 	}
 }
 
-static int client_command_passthru(struct imap_session *imap, int fd, const char *tag, int taglen, int ms)
+static int client_command_passthru(struct imap_session *imap, int fd, const char *tag, int taglen, const char *cmd, int cmdlen, int ms)
 {
 	int res;
 	char buf[8192];
@@ -2110,6 +2114,7 @@ static int client_command_passthru(struct imap_session *imap, int fd, const char
 				if (res <= 0) {
 					return -1; /* Client disappeared during idle / server shutdown */
 				}
+				imap_debug(10, "=> %.*s", res, buf2); /* "DONE" already includes CR LF */
 				res = write(client->wfd, buf2, res);
 				continue;
 			}
@@ -2123,7 +2128,16 @@ static int client_command_passthru(struct imap_session *imap, int fd, const char
 		/* Go ahead and relay it */
 		bbs_std_write(imap->wfd, buf, res);
 		SWRITE(imap->wfd, "\r\n");
+#ifdef DEBUG_REMOTE_RESPONSES
+		/* NEVER enable this in production because this will be a huge volume of data */
+		imap_debug(10, "<= %.*s\n", res, buf);
+#endif
 		if (!strncmp(buf, tag, taglen)) {
+			imap_debug(10, "<= %.*s\n", res, buf);
+			if (STARTS_WITH(buf + taglen, "BAD")) {
+				/* We did something we shouldn't have, oops */
+				bbs_warning("Command '%.*s%.*s' failed\n", taglen, tag, cmdlen > 2 ? cmdlen - 2 : cmdlen, cmd); /* Don't include trailing CR LF */
+			}
 			break; /* That's all, folks! */
 		}
 		if (client_said_something) {
@@ -2134,15 +2148,18 @@ static int client_command_passthru(struct imap_session *imap, int fd, const char
 }
 
 #define IMAP_CLIENT_EXPECT(client, s) if (bbs_tcp_client_expect(client, "\r\n", 1, 2000, s)) { goto cleanup; }
-#define IMAP_CLIENT_EXPECT_EVENTUALLY(client, s) if (bbs_tcp_client_expect(client, "\r\n", 9999, 2000, s)) { goto cleanup; }
 #define IMAP_CLIENT_SEND(client, fmt, ...) bbs_tcp_client_send(client, fmt "\r\n", ## __VA_ARGS__);
 
 #define IMAP_CAPABILITY_CONDSTORE (1 << 0)
 #define IMAP_CAPABILITY_QRESYNC (1 << 1)
+#define IMAP_CAPABILITY_SASL_IR (1 << 2)
+#define IMAP_CAPABILITY_XOAUTH2 (1 << 3)
+#define IMAP_CAPABILITY_ACL (1 << 4)
+#define IMAP_CAPABILITY_QUOTA (1 << 5)
 
-static int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url)
+static int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct imap_session *imap)
 {
-	int caps = 0;
+	int res, caps = 0;
 
 	IMAP_CLIENT_EXPECT(client, "* OK");
 	IMAP_CLIENT_SEND(client, "a0 CAPABILITY");
@@ -2156,21 +2173,87 @@ static int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url)
 	if (strstr(client->buf, "QRESYNC")) {
 		caps |= IMAP_CAPABILITY_QRESYNC;
 	}
+	if (strstr(client->buf, "SASL-IR")) {
+		caps |= IMAP_CAPABILITY_SASL_IR;
+	}
+	if (strstr(client->buf, "AUTH=XOAUTH2")) {
+		caps |= IMAP_CAPABILITY_XOAUTH2;
+	}
+	if (strstr(client->buf, "ACL")) {
+		caps |= IMAP_CAPABILITY_ACL;
+	}
+	if (strstr(client->buf, "QUOTA")) {
+		caps |= IMAP_CAPABILITY_QUOTA;
+	}
 
 	IMAP_CLIENT_EXPECT(client, "a0 OK");
-	IMAP_CLIENT_SEND(client, "a1 LOGIN \"%s\" \"%s\"", url->user, url->pass);
-	IMAP_CLIENT_EXPECT(client, "a1 OK");
 
-	if (caps & IMAP_CAPABILITY_QRESYNC) {
+	if (STARTS_WITH(url->pass, "oauth:")) { /* OAuth authentication */
+		char token[512];
+		char decoded[568];
+		int decodedlen, encodedlen;
+		char *encoded;
+		const char *oauthprofile = url->pass + STRLEN("oauth:");
+
+		if (!(caps & IMAP_CAPABILITY_XOAUTH2)) {
+			bbs_warning("IMAP server does not support XOAUTH2\n");
+			return -1;
+		} else if (!(caps & IMAP_CAPABILITY_SASL_IR)) {
+			/*! \todo FIXME We should support normal 2-phase as well if SASL-IR not available. But Gmail does support it, probably the main reason someone would have to use OAuth... */
+			bbs_warning("IMAP server does not support SASL-IR\n");
+			return -1;
+		}
+
+		if (!bbs_user_is_registered(imap->node->user)) {
+			bbs_warning("IMAP user not logged in?\n");
+			return -1;
+		}
+
+		res = bbs_get_oauth_token(imap->node->user, oauthprofile, token, sizeof(token));
+		if (res) {
+			bbs_warning("OAuth token '%s' does not exist for user %d\n", oauthprofile, imap->node->user->id);
+			return -1;
+		}
+		/* https://developers.google.com/gmail/imap/imap-smtp
+		 * https://developers.google.com/gmail/imap/xoauth2-protocol */
+		decodedlen = snprintf(decoded, sizeof(decoded), "user=%s%cauth=Bearer %s%c%c", url->user, 0x01, token, 0x01, 0x01);
+		encoded = base64_encode(decoded, decodedlen, &encodedlen);
+		if (!encoded) {
+			bbs_error("Base64 encoding failed\n");
+			return -1;
+		}
+		IMAP_CLIENT_SEND(client, "a1 AUTHENTICATE XOAUTH2 %s", encoded);
+		free(encoded);
+	} else { /* Normal password auth */
+		IMAP_CLIENT_SEND(client, "a1 LOGIN \"%s\" \"%s\"", url->user, url->pass);
+	}
+
+	/* Gmail sends the capabilities again when you log in, so tolerate CAPABILITY then OK as well as just OK. */
+	res = bbs_fd_readline(client->rfd, &client->rldata, "\r\n", 2500);
+	if (res <= 0) {
+		return -1;
+	}
+	if (STARTS_WITH(client->buf, "* CAPABILITY")) {
+		IMAP_CLIENT_EXPECT(client, "a1 OK");
+	} else {
+		if (!strstr(client->buf, "a1 OK")) {
+			bbs_warning("Login failed, got '%s'\n", client->buf);
+			return -1;
+		}
+	}
+
+	/* Enable any capabilities enabled by the client that the server supports */
+	if (imap->qresync && (caps & IMAP_CAPABILITY_QRESYNC)) {
 		IMAP_CLIENT_SEND(client, "cap0 ENABLE QRESYNC");
 		IMAP_CLIENT_EXPECT(client, "* ENABLED QRESYNC");
 		IMAP_CLIENT_EXPECT(client, "cap0 OK");
-	} else if (caps & IMAP_CAPABILITY_CONDSTORE) {
+	} else if (imap->condstore && (caps & IMAP_CAPABILITY_CONDSTORE)) {
 		IMAP_CLIENT_SEND(client, "cap0 ENABLE CONDSTORE");
 		IMAP_CLIENT_EXPECT(client, "* ENABLED CONDSTORE");
 		IMAP_CLIENT_EXPECT(client, "cap0 OK");
 	}
 
+	imap->virtcapabilities = caps;
 	return 0;
 
 cleanup:
@@ -2200,15 +2283,18 @@ static int __attribute__ ((format (gnu_printf, 5, 6))) __imap_client_send_wait_r
 	 * even if no data is sent.
 	 * Handled in client_command_passthru */
 
-	bbs_debug(6, "Passing through command %s (line %d) to remote server mapped by '%s'\n", imap->tag, lineno, imap->virtprefix);
-	if (1) {
-		imap_debug(7, "=> %s%s", tagbuf, buf);
-	}
+#if 0
+	/* Somewhat redundant since there's another debug right after */
+	bbs_debug(6, "Passing through command %s (line %d) to remotely mapped '%s'\n", imap->tag, lineno, imap->virtprefix);
+#else
+	UNUSED(lineno);
+#endif
 	bbs_std_write(imap->client.wfd, tagbuf, taglen);
 	bbs_std_write(imap->client.wfd, buf, len);
-	free(buf);
+	imap_debug(7, "=> %s%s", tagbuf, buf);
 	/* Read until we get the tagged respones */
-	res = client_command_passthru(imap, fd, tagbuf, taglen, ms) <= 0;
+	res = client_command_passthru(imap, fd, tagbuf, taglen, buf, len, ms) <= 0;
+	free(buf);
 	return res;
 }
 
@@ -2231,9 +2317,23 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 		return 0;
 	}
 	if (imap->virtmbox) {
+		char *tmp, *remotename = mailbox + imap->virtprefixlen + 1;
 		/* This is some other server's problem to handle.
 		 * Just forward the request (after modifying the mailbox name as appropriate, to remove the prefix + following period). */
-		return imap_client_send_wait_response(imap, -1, 5000, "SELECT \"%s\"\r\n", mailbox + imap->virtprefixlen + 1); /* Reconstruct the SELECT, fortunately this is not too bad */
+		/* Also need to adjust for hierarchy delimiter being different, potentially.
+		 * Typically imap_substitute_remote_command handles this, but for SELECT we go ahead and send the name directly,
+		 * so do what's needed here. The conversion logic here is a lot simpler anyways, since we know we just have
+		 * a mailbox name and not an entire command to convert.
+		 * XXX What if we ever want to support SELECT commands that contain more than just a mailbox?
+		 */
+		tmp = remotename;
+		while (*tmp) {
+			if (*tmp == HIERARCHY_DELIMITER_CHAR) {
+				*tmp = imap->virtdelimiter;
+			}
+			tmp++;
+		}
+		return imap_client_send_wait_response(imap, -1, 5000, "SELECT \"%s\"\r\n", remotename); /* Reconstruct the SELECT, fortunately this is not too bad */
 	}
 	if (!readonly) {
 		static int sharedflagrights = IMAP_ACL_SEEN | IMAP_ACL_WRITE;
@@ -2380,7 +2480,6 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 }
 
 #define EMPTY_QUOTES "\"\""
-#define QUOTED_ROOT "\"/\""
 
 /*! \brief Determine if the interpreted result of the LIST arguments matches a directory in the maildir */
 static inline int list_match(const char *dirname, const char *query)
@@ -2767,16 +2866,38 @@ static int skipn(char **str, char c, int n)
 	return count;
 }
 
+/*! \brief Same as skipn, but don't include spaces inside a parenthesized list */
+static int skipn_noparen(char **str, char c, int n)
+{
+	int count = 0;
+	int level = 0;
+	char *s = *str;
+
+	while (*s) {
+		if (*s == '(') {
+			level++;
+		} else if (*s == ')') {
+			level--;
+		} else if (!level && *s == c) {
+			if (++count == n) {
+				*str = s + 1;
+				break;
+			}
+		}
+		s++;
+	}
+	return count;
+}
+
 static int imap_client_list(struct bbs_tcp_client *client, const char *prefix, FILE *fp)
 {
 	int res;
 
 	IMAP_CLIENT_SEND(client, "a3 LIST \"\" \"*\"");
 
-	/* Now, passthrough the response, adjusting it as appropriate by prepending the path to this virtual mailbox */
 	for (;;) {
 		char fullmailbox[256];
-		char *p1, *p2, *attributes;
+		char *p1, *p2, *attributes, *delimiter;
 		res = bbs_fd_readline(client->rfd, &client->rldata, "\r\n", 200);
 		if (res < 0) {
 			break;
@@ -2788,10 +2909,10 @@ static int imap_client_list(struct bbs_tcp_client *client, const char *prefix, F
 		 *     * LIST () "." "Archive"
 		 *     * LIST () "." "INBOX"
 		 */
-		/* Skip the first 4 spaces */
+		/* Skip the first 2 spaces */
 		p1 = client->buf;
 		p2 = p1;
-		if (skipn(&p2, ' ', 4) != 4) {
+		if (skipn(&p2, ' ', 2) != 2) {
 			bbs_warning("Invalid LIST response: %s\n", client->buf);
 			continue;
 		}
@@ -2799,32 +2920,50 @@ static int imap_client_list(struct bbs_tcp_client *client, const char *prefix, F
 			bbs_warning("Unexpected LIST response: %s\n", client->buf); /* Probably screwed up now anyways */
 			continue;
 		}
-		STRIP_QUOTES(p2); /* Strip quotes from mailbox name, we'll add them ourselves */
-		attributes = strsep(&p1, " ");
-		attributes = strsep(&p1, " ");
-		attributes = strsep(&p1, " ");
-		if (*attributes != '(') { /* guaranteed to exist since p2 would be empty otherwise */
-			bbs_warning("Invalid LIST response: %s\n", attributes);
+		/* Should now be at (). But this can contain multiple words, so use parensep, not strsep */
+		if (*p2 != '(') { /* guaranteed to exist since p2 would be empty otherwise */
+			bbs_warning("Invalid LIST response: %s\n", p2);
 			continue;
 		}
+		attributes = parensep(&p2);
+		/* Now at "." "Archive"
+		 * But not all IMAP servers use "." as their hierarchy delimiter.
+		 * Gimap, for example, uses "/".
+		 * So preserve the delimiter the server sends us. */
+		delimiter = strsep(&p2, " ");
+		STRIP_QUOTES(delimiter);
+		if (strlen_zero(delimiter)) {
+			bbs_warning("Invalid LIST response\n");
+			continue;
+		}
+		if (strcmp(delimiter, ".") && strcmp(delimiter, "/")) {
+			bbs_warning("Unexpected hierarchy delimiter '%s'\n", delimiter); /* Flag anything uncommon in case it's a parsing error */
+			continue;
+		}
+		STRIP_QUOTES(p2); /* Strip quotes from mailbox name, we'll add them ourselves */
 		/* Note that for real Other Users, the root folder (username) is itself selectable, and that is the INBOX.
 		 * For these virtual folders, the INBOX is just a folder that appears as a sibling to other folders, e.g. Sent, Drafts, etc. */
-		if (!strcmp(attributes, "()")) {
+		if (strlen_zero(attributes)) { /* If it was (), then *attributes is just the NUL terminator at this point */
 			/* attributes are empty. Try to guess what they are based on folder name.
 			 * This is useful as mail clients will at least use nice icons when displaying these folders: */
 			if (!strcmp(p2, "Drafts")) {
-				attributes = "(\\Drafts)";
+				attributes = "\\Drafts";
 			} else if (!strcmp(p2, "Sent")) {
-				attributes = "(\\Sent)";
+				attributes = "\\Sent";
 			} else if (!strcmp(p2, "Junk")) {
-				attributes = "(\\Junk)";
+				attributes = "\\Junk";
 			} else if (!strcmp(p2, "Trash")) {
-				attributes = "(\\Trash)";
+				attributes = "\\Trash";
+			} else {
+				bbs_debug(8, "Mailbox '%s' has no attributes\n", p2);
 			}
 			/*! \todo Would be nice to say \HasChildren or \HasNoChildren here, too, if the server didn't say */
 		}
-		snprintf(fullmailbox, sizeof(fullmailbox), "%s.%s", prefix, p2);
-		fprintf(fp, "%s \".\" \"%s\"\n", attributes, fullmailbox); /* Cache the folders so we don't have to keep hitting the server up */
+		snprintf(fullmailbox, sizeof(fullmailbox), "%s%s%s", prefix, delimiter, p2);
+		/* If the hierarchy delimiter differs from ours, then fullmailbox will contain multiple delimiters.
+		 * The prefix uses ours and the remote mailbox part uses theirs.
+		 * The translation happens when this gets used later. */
+		fprintf(fp, "(%s) \"%s\" \"%s\"\n", attributes, delimiter, fullmailbox); /* Cache the folders so we don't have to keep hitting the server up */
 		/* If this doesn't match the filter, we won't actually send it to the client, but still save it to the cache, so it's complete. */
 	}
 
@@ -2871,24 +3010,53 @@ static int load_virtual_mailbox(struct imap_session *imap, const char *path)
 		if (!strncmp(mpath, path, prefixlen)) {
 			struct bbs_url url;
 			char tmpbuf[1024];
+			char *tmp;
 			memset(&url, 0, sizeof(url));
 			if (bbs_parse_url(&url, urlstr)) {
-				continue;
+				break;
 			}
 			memset(&imap->client, 0, sizeof(imap->client));
 			if (bbs_tcp_client_connect(&imap->client, &url, !strcmp(url.prot, "imaps"), tmpbuf, sizeof(tmpbuf))) {
 				res = 1;
-				continue;
+				break;
 			}
-			if (imap_client_login(&imap->client, &url)) {
-				bbs_tcp_client_cleanup(&imap->client);
-				res = 1;
-				continue;
+			if (imap_client_login(&imap->client, &url, imap)) {
+				goto cleanup;
 			}
 			imap->virtmbox = 1;
 			safe_strncpy(imap->virtprefix, mpath, sizeof(imap->virtprefix));
 			imap->virtprefixlen = prefixlen;
+
+			/* Need to determine the hierarchy delimiter on the remote server,
+			 * so that we can make replacements as needed, including for SELECT.
+			 * We do store this in the .imapremote.cache file,
+			 * but that's not the file we opened.
+			 * It's not stored in .imapremote itself.
+			 * Simplest thing is just issue: a0 LIST "" ""
+			 * which will return the hierarchy delimiter and not much else.
+			 * Maybe not efficient in terms of network RTT,
+			 * but we only do this once, when we login and setup the connection, so not too bad.
+			 */
+			IMAP_CLIENT_SEND(&imap->client, "dlm LIST \"\" \"\"");
+			IMAP_CLIENT_EXPECT(&imap->client, "* LIST");
+			/* Parse out the hierarchy delimiter */
+			tmp = strchr((&imap->client)->buf, '"');
+			if (!tmp) {
+				bbs_warning("Invalid LIST response: %s\n", (&imap->client)->buf);
+				goto cleanup;
+			}
+			tmp++;
+			if (strlen_zero(tmp)) {
+				goto cleanup;
+			}
+			imap->virtdelimiter = *tmp;
+			bbs_debug(6, "Remote server's hierarchy delimiter is '%c'\n", imap->virtdelimiter);
+			IMAP_CLIENT_EXPECT(&imap->client, "dlm OK");
 			res = 0;
+			break;
+cleanup:
+			res = 1;
+			bbs_tcp_client_cleanup(&imap->client);
 			break;
 		}
 	}
@@ -2905,6 +3073,8 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 	char virtcachefile[256];
 	char line[256];
 	int l = 0;
+	struct stat st, st2;
+	int forcerescan = 0;
 	const char *cmd = lsub == 2 ? "XLIST" : lsub ? "LSUB" : "LIST";
 
 	/* Folders from the proxied mailbox will need to be translated back and forth */
@@ -2917,13 +3087,19 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 	snprintf(virtcachefile, sizeof(virtcachefile), "%s/.imapremote.cache", mailbox_maildir(imap->mymbox));
 	bbs_debug(3, "Checking virtual mailboxes in %s\n", virtcachefile);
 
-	/* A bit non-optimal since we'll fail 2 fopens if a user isn't using virtual mailboxes */
-	fp2 = fopen(virtcachefile, "r");
-	/*! \todo This should expire periodically, e.g. once a week, and the user should be able to purge this cache manually, too, somehow...
-	 * perhaps the interface could be emailing postmaster, mailmaster, etc. (maybe w/o a domain) and feeding it some kind of command...
-	 * e.g. Subject: Purge Cache
-	 */
-	if (!fp2) {
+	if (stat(virtfile, &st)) {
+		pthread_mutex_unlock(&virt_lock);
+		return -1;
+	}
+	if (stat(virtcachefile, &st2) || st.st_mtim.tv_sec > st2.st_mtim.tv_sec) {
+		/* .imapremote has been modified since .imapremote.cache was written, or .imapremote.cache doesn't even exist yet */
+		forcerescan = 1;
+	}
+	if (!forcerescan) {
+		/* A bit non-optimal since we'll fail 2 fopens if a user isn't using virtual mailboxes */
+		fp2 = fopen(virtcachefile, "r");
+	}
+	if (!fp2 || forcerescan) {
 		FILE *fp = fopen(virtfile, "r");
 		if (!fp) {
 			pthread_mutex_unlock(&virt_lock);
@@ -2950,8 +3126,6 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 			server = line;
 			prefix = strsep(&server, "|"); /* Use pipe in case mailbox name contains spaces */
 
-			/*! \todo if prefix doesn't start with, skip */
-
 			if (bbs_parse_url(&url, server)) {
 				bbs_warning("Malformed URL on line %d: %s\n", l, server); /* Include the line number since bbs_parse_url "used up" the string */
 				continue;
@@ -2967,7 +3141,7 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 			if (bbs_tcp_client_connect(&client, &url, secure, buf, sizeof(buf))) {
 				continue;
 			}
-			if (!imap_client_login(&client, &url)) {
+			if (!imap_client_login(&client, &url, imap)) {
 				imap_client_list(&client, prefix, fp2);
 			}
 			bbs_tcp_client_cleanup(&client);
@@ -2984,12 +3158,13 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 
 	while ((fgets(line, sizeof(line), fp2))) {
 		char relativepath[256];
-		char *virtmboxname = relativepath;
+		char remotedelim;
+		char *tmp, *virtmboxname = relativepath;
 
 		/* Extract the user facing mailbox path from the LIST response in the cache file */
 		bbs_strterm(line, '\n'); /* Strip trailing LF */
 		safe_strncpy(relativepath, line, sizeof(relativepath));
-		if (skipn(&virtmboxname, ' ', 2) != 2) {
+		if (skipn_noparen(&virtmboxname, ' ', 2) != 2) {
 			bbs_warning("Invalid LIST response: %s\n", line); /* Garbage in the cache file */
 			continue;
 		}
@@ -3008,11 +3183,62 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 			continue;
 		}
 
+		/* Skip "virtual folders" that people don't really want, since they duplicate other folders,
+		 * in case they're not actually disabled for IMAP access online.
+		 * That way the client doesn't even have a chance to learn they exist,
+		 * in case it's not configured to ignore those / not synchronize them.
+		 */
+		tmp = strstr(virtmboxname, "[Gmail]/");
+		if (tmp) {
+			const char *rest = tmp + STRLEN("[Gmail]/");
+			if (!strcmp(rest, "All Mail") || !strcmp(rest, "Important") || !strcmp(rest, "Starred")) {
+				bbs_debug(5, "Omitting unwanted folder '%s' from listing\n", virtmboxname);
+				continue;
+			}
+		}
+
 		/* Matches prefix, send it */
 		if (specialuse && !strstr(line, "\\")) {
 			/* If it's a special use mailbox, there should be a backslash present, somewhere */
 			continue;
 		}
+		/* If the remote server's hierarchy delimiter differs from ours,
+		 * then we need to use our hierarchy delimiter locally,
+		 * but translate when sending commands to the remote server.
+		 *
+		 * e.g. something like:
+		 * (\NoSelect) "/" "Other Users.gmail.[Gmail]/Something"
+		 *
+		 * The first part uses our hierarchy delimiter, and the remote part could be different.
+		 * Change "/" to "." (our delimiter) in the response to the client,
+		 * and replace the remote's delimiter with ours wherever it appears
+		 *
+		 * So the above might transform to:
+		 * (\NoSelect) "." "Other Users.gmail.[Gmail].Something"
+		 *
+		 * The great thing here is we don't need to recreate the string.
+		 * We're replacing one character with another, so we can
+		 * do the replacement in place.
+		 */
+		tmp = line;
+		/* This must succeed since we did at least this much above.
+		 * And you might think, this is a bit silly, why not use strsep?
+		 * Ah, but strsep splits the string up, which we don't want to do. */
+		skipn_noparen(&tmp, ' ', 1);
+		tmp++; /* Skip opening quote */
+		remotedelim = *tmp;
+		*tmp = HIERARCHY_DELIMITER_CHAR;
+		skipn_noparen(&tmp, ' ', 1);
+		tmp++; /* Skip opening quote */
+		tmp += skiplen; /* Skip our prefix to the remote */
+		/* Now, do replacements where needed on the remote name */
+		while (*tmp) {
+			if (*tmp == remotedelim) {
+				*tmp = HIERARCHY_DELIMITER_CHAR;
+			}
+			tmp++;
+		}
+
 		imap_send(imap, "%s %s", cmd, line);
 	}
 	fclose(fp2);
@@ -3077,6 +3303,8 @@ static int handle_list(struct imap_session *imap, char *s, int lsub)
 	 *
 	 * The XLIST command is not formally specified anywhere but basically seems to be the same thing
 	 * as RFC 6154, except returning XLIST instead of LIST (obviously), and with an \Inbox attribute for the INBOX.
+	 * Google says that XLIST attributes are NOT exactly the same:
+	 * https://developers.google.com/gmail/imap/imap-extensions#xlist_is_deprecated
 	 * Even though XLIST is deprecated, it is still needed as some clients (e.g. some versions of Microsoft Outlook)
 	 * support XLIST but not SPECIAL-USE.
 	 */
@@ -3097,7 +3325,7 @@ static int handle_list(struct imap_session *imap, char *s, int lsub)
 	if (!specialuse && strlen_zero(mailbox)) {
 		/* Just return hierarchy delimiter and root name of reference */
 		/* When testing other servers, the reference argument doesn't even seem to matter, I always get something like this: */
-		imap_send(imap, "%s (%s %s) %s %s", cmd, ATTR_NOSELECT, ATTR_HAS_CHILDREN, QUOTED_ROOT, EMPTY_QUOTES);
+		imap_send(imap, "%s (%s %s) \"%s\" %s", cmd, ATTR_NOSELECT, ATTR_HAS_CHILDREN, HIERARCHY_DELIMITER, EMPTY_QUOTES);
 		imap_reply(imap, "OK %s completed.", cmd);
 		return 0;
 	}
@@ -4534,6 +4762,34 @@ static char *parensep(char **str)
 		s++;
 	}
 	return NULL;
+}
+
+static int test_parensep(void)
+{
+	char buf[256];
+	char *s, *left;
+
+	strcpy(buf, "(1 (2))");
+	left = buf;
+	s = parensep(&left);
+	bbs_test_assert_str_equals(s, "1 (2)");
+
+	strcpy(buf, "(1 2 3) 4 5");
+	left = buf;
+	s = parensep(&left);
+	bbs_test_assert_str_equals(s, "1 2 3");
+	bbs_test_assert_str_equals(left, "4 5");
+
+	strcpy(buf, "() \".\" \"Archive\"");
+	left = buf;
+	s = parensep(&left);
+	bbs_test_assert_str_equals(s, "");
+	bbs_test_assert_str_equals(left, "\".\" \"Archive\"");
+
+	return 0;
+
+cleanup:
+	return -1;
 }
 
 /*! \brief Retrieve data associated with a message */
@@ -7044,10 +7300,38 @@ static int imap_substitute_remote_command(struct imap_session *imap, char *s)
 	curpos = s;
 	while ((prefix = strstr(curpos, imap->virtprefix))) {
 		char *end = prefix + imap->virtprefixlen;
-		if (*end != '.') {
+		if (*end != HIERARCHY_DELIMITER_CHAR) {
 			bbs_warning("Unexpected character at pos: %d\n", *end);
 			continue;
 		}
+
+		/* While we're doing this, convert the hierarchy delimiter as well.
+		 * This can be done in place, thankfully.
+		 * Go until we get a space or an end quote, signaling the end of the mailbox name.
+		 * But if the mailbox name contains spaces, then we must NOT stop there
+		 * since there could be more remaining... so we should only stop on spaces
+		 * if the mailbox name STARTED with a quote.
+		 */
+		if (imap->virtdelimiter != HIERARCHY_DELIMITER_CHAR) { /* Wouldn't hurt anything to always do, but why bother? */
+			int mailbox_has_spaces;
+			char *tmp = end + 1;
+			if (prefix != s) { /* Bounds check: don't go past the beginning of the string */
+				mailbox_has_spaces = *(prefix - 1) == '"';
+			} else {
+				mailbox_has_spaces = 0;
+			}
+			while (*tmp) {
+				if (*tmp == HIERARCHY_DELIMITER_CHAR) {
+					*tmp = imap->virtdelimiter;
+				} else if (*tmp == '"') {
+					break;
+				} else if (!mailbox_has_spaces && *tmp == ' ') {
+					break;
+				}
+				tmp++;
+			}
+		}
+
 		replacements++;
 		len -= imap->virtprefixlen + 1; /* plus period */
 		lenleft = len - (prefix - s);
@@ -7076,20 +7360,32 @@ static int test_remote_mailbox_substitution(void)
 	bbs_test_assert_equals(1, imap_substitute_remote_command(&imap, buf));
 	bbs_test_assert_str_equals(buf, "copy 149 \"Sent\"");
 
+	/* With different remote hierarchy delimiter. */
+	imap.virtdelimiter = '/';
+	safe_strncpy(buf, "copy 149 \"Other Users.foobar.Sub.Folder\"", sizeof(buf));
+	bbs_test_assert_equals(1, imap_substitute_remote_command(&imap, buf));
+	bbs_test_assert_str_equals(buf, "copy 149 \"Sub/Folder\"");
+
+	/* Including with spaces */
+	safe_strncpy(buf, "copy 149 \"Other Users.foobar.Sub.Folder with spaces.sub\"", sizeof(buf));
+	bbs_test_assert_equals(1, imap_substitute_remote_command(&imap, buf));
+	bbs_test_assert_str_equals(buf, "copy 149 \"Sub/Folder with spaces/sub\"");
+
 	return 0;
 
 cleanup:
 	return -1;
 }
 
+/* There must not be extra spaces between tokens. Gimap is not tolerant of them. */
 #define FORWARD_VIRT_MBOX() \
 	if (imap->virtmbox) { \
-		return imap_client_send_wait_response(imap, -1, 5000, "%s %s\r\n", command, S_IF(s)); \
+		return imap_client_send_wait_response(imap, -1, 5000, "%s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
 	}
 
 #define FORWARD_VIRT_MBOX_UID() \
 	if (imap->virtmbox) { \
-		return imap_client_send_wait_response(imap, -1, 5000, "UID %s %s\r\n", command, S_IF(s)); \
+		return imap_client_send_wait_response(imap, -1, 5000, "UID %s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
 	}
 
 #define FORWARD_VIRT_MBOX_MODIFIED_PREFIX(count, prefix) \
@@ -7099,7 +7395,7 @@ cleanup:
 			imap_reply(imap, "NO Cannot move/copy between home and remote servers\n"); \
 			return 0; \
 		} \
-		return imap_client_send_wait_response(imap, -1, 5000, prefix " %s %s\r\n", command, S_IF(s)); \
+		return imap_client_send_wait_response(imap, -1, 5000, prefix "%s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
 	}
 
 #define FORWARD_VIRT_MBOX_MODIFIED(count) FORWARD_VIRT_MBOX_MODIFIED_PREFIX(count, "")
@@ -7152,6 +7448,7 @@ static int imap_process(struct imap_session *imap, char *s)
 	}
 
 	if (strlen_zero(s)) {
+		imap_send(imap, "BAD [CLIENTBUG] Invalid tag"); /* There isn't a tag, so we can't do a tagged reply */
 		return 0; /* Ignore empty lines at this point (can't do this if in an APPEND) */
 	}
 
@@ -7437,7 +7734,7 @@ static int imap_process(struct imap_session *imap, char *s)
 			 * Furthermore, it is NOT our responsibility to terminate the IDLE automatically after 29 minutes.
 			 * It's the client's job to do that. If we get disconnected, we'll disconnect as well.
 			 */
-			return imap_client_send_wait_response(imap, imap->rfd, 1790000, "%s %s\r\n", command, S_IF(s));
+			return imap_client_send_wait_response(imap, imap->rfd, 1790000, "%s\r\n", command); /* No trailing spaces! Gimap doesn't like that */
 		}
 		/* XXX Outlook often tries to IDLE without selecting a mailbox, which is kind of bizarre.
 		 * Technically though, RFC 2177 says IDLE is valid in either the authenticated or selected states.
@@ -7462,6 +7759,18 @@ static int imap_process(struct imap_session *imap, char *s)
 		handle_getquota(imap);
 		imap_reply(imap, "OK GETQUOTA complete");
 	} else if (!strcasecmp(command, "GETQUOTAROOT")) {
+		REQUIRE_ARGS(s);
+		if (imap->virtmbox) {
+			if (!(imap->virtcapabilities & IMAP_CAPABILITY_QUOTA)) {
+				/* Not really anything nice we can do here. There is no "default" we can provide,
+				 * and since our capabilities include QUOTA, the client will think we've gone and lied to it now.
+				 * Apologies, dear client. If only you knew all the tricks we were playing on you right now. */
+				imap_reply(imap, "NO Quota unavailable for this mailbox");
+				return 0;
+			}
+			/* XXX Since the remote quota will differ from ours, could this mess up the client if we don't translate the quota root? */
+			FORWARD_VIRT_MBOX_MODIFIED(1);
+		}
 		imap_send(imap, "QUOTAROOT %s \"\"", s);
 		handle_getquota(imap);
 		imap_reply(imap, "OK GETQUOTAROOT complete");
@@ -7509,7 +7818,20 @@ static int imap_process(struct imap_session *imap, char *s)
 		char buf[256];
 		int myacl;
 		REQUIRE_ARGS(s);
-		FORWARD_VIRT_MBOX_MODIFIED(1);
+		if (imap->virtmbox) {
+			if (!(imap->virtcapabilities & IMAP_CAPABILITY_ACL)) {
+				/* Remote server doesn't support ACLs.
+				 * Don't send a MYRIGHTS command since the server will reject it.
+				 * Just assume everything is allowed, which is reasonable. */
+				myacl = IMAP_ACL_DEFAULT_PRIVATE;
+				myacl &= ~IMAP_ACL_ADMINISTER; /* If server doesn't support ACL, there is no ACL administration */
+				generate_acl_string(myacl, buf, sizeof(buf));
+				imap_send(imap, "MYRIGHTS %s %s", s, buf);
+				imap_reply(imap, "OK MYRIGHTS completed");
+				return 0;
+			}
+			FORWARD_VIRT_MBOX_MODIFIED(1);
+		}
 		STRIP_QUOTES(s);
 		/* If we don't have permission to list the mailbox, then we must reply with No such mailbox to avoid leaking its existence */
 		if (imap_translate_dir(imap, s, buf, sizeof(buf), &myacl) || !IMAP_HAS_ACL(myacl, IMAP_ACL_LOOKUP)) {
@@ -7758,6 +8080,7 @@ static struct unit_tests {
 	{ "IMAP STORE Flags Parsing", test_flags_parsing },
 	{ "IMAP COPYUID Generation", test_copyuid_generation },
 	{ "IMAP Remote Mailbox Translation", test_remote_mailbox_substitution },
+	{ "parensep", test_parensep },
 };
 
 static int alertmsg(unsigned int userid, const char *msg)
