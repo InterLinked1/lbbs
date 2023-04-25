@@ -736,20 +736,24 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 #define SMTP_CAPABILITY_AUTH_PLAIN (1 << 5)
 #define SMTP_CAPABILITY_AUTH_XOAUTH2 (1 << 6)
 
+#define PARSE_CAPABILITY(name, flag) \
+	else if (!strcmp(capname, name)) { \
+		*caps |= flag; \
+	}
+
 static void process_capabilities(int *caps, const char *capname)
 {
 	if (strlen_zero(capname) || !isupper(*capname)) { /* Capabilities are all uppercase XXX but is that required by the RFC? */
 		return;
 	}
-	if (!strcasecmp(capname, "STARTTLS")) {
-		*caps |= SMTP_CAPABILITY_STARTTLS;
-	} else if (!strcasecmp(capname, "PIPELINING")) {
-		*caps |= SMTP_CAPABILITY_PIPELINING;
-	} else if (!strcasecmp(capname, "8BITMIME")) {
-		*caps |= SMTP_CAPABILITY_8BITMIME;
-	} else if (!strcasecmp(capname, "ENHANCEDSTATUSCODES")) {
-		*caps |= SMTP_CAPABILITY_ENHANCEDSTATUSCODES;
-	} else if (STARTS_WITH(capname, "AUTH ")) {
+	if (0) {
+		/* Unused */
+	}
+	PARSE_CAPABILITY("STARTTLS", SMTP_CAPABILITY_STARTTLS)
+	PARSE_CAPABILITY("PIPELINING", SMTP_CAPABILITY_PIPELINING)
+	PARSE_CAPABILITY("8BITMIME", SMTP_CAPABILITY_8BITMIME)
+	PARSE_CAPABILITY("ENHANCEDSTATUSCODES", SMTP_CAPABILITY_ENHANCEDSTATUSCODES)
+	else if (STARTS_WITH(capname, "AUTH ")) {
 		capname += STRLEN("AUTH ");
 		if (strstr(capname, "LOGIN")) {
 			*caps |= SMTP_CAPABILITY_AUTH_LOGIN;
@@ -806,6 +810,7 @@ cleanup:
 
 /*!
  * \brief Attempt to send an external message to another mail transfer agent or message submission agent
+ * \param smtp SMTP session. Generally, this will be NULL except for relayed messages, which are typically the only time this is needed.
  * \param hostname Hostname of mail server
  * \param port Port of mail server
  * \param secure Whether to use Implicit TLS (typically for MSAs on port 465). If 0, STARTTLS will be attempted (but not required unless require_starttls_out = yes)
@@ -825,7 +830,7 @@ cleanup:
  * \param len Size of buf.
  * \retval -1 on temporary error, 1 on permanent error, 0 on success
  */
-static int try_send(const char *hostname, int port, int secure, const char *username, const char *password, const char *sender, const char *recipient, struct stringlist *recipients,
+static int try_send(struct smtp_session *smtp, const char *hostname, int port, int secure, const char *username, const char *password, const char *sender, const char *recipient, struct stringlist *recipients,
 	const char *prepend, int prependlen, int datafd, int offset, unsigned long writelen, char *buf, size_t len)
 {
 	SSL *ssl = NULL;
@@ -855,7 +860,7 @@ static int try_send(const char *hostname, int port, int secure, const char *user
 	bbs_debug(3, "Attempting delivery of %lu-byte message from %s -> %s via %s\n", writelen, sender, recipient, hostname);
 
 	if (secure) {
-		ssl = ssl_client_new(sfd, &rfd, &wfd);
+		ssl = ssl_client_new(sfd, &rfd, &wfd, hostname);
 		if (!ssl) {
 			bbs_debug(3, "Failed to set up TLS\n");
 			goto cleanup; /* Abort if we failed to set up implicit TLS */
@@ -876,7 +881,7 @@ static int try_send(const char *hostname, int port, int secure, const char *user
 		smtp_client_send(wfd, "STARTTLS\r\n");
 		SMTP_EXPECT(rfd, 2500, "220");
 		bbs_debug(3, "Starting TLS\n");
-		ssl = ssl_client_new(sfd, &rfd, &wfd);
+		ssl = ssl_client_new(sfd, &rfd, &wfd, hostname);
 		if (!ssl) {
 			bbs_debug(3, "Failed to set up TLS\n");
 			goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
@@ -907,24 +912,19 @@ static int try_send(const char *hostname, int port, int secure, const char *user
 				bbs_warning("SMTP server does not support XOAUTH2\n");
 				res = -1;
 				goto cleanup;
+			} else if (!smtp || !smtp->node || !bbs_user_is_registered(smtp->node->user)) {
+				bbs_warning("Cannot look up OAuth tokens without an authenticated SMTP session\n");
+				res = -1;
+				goto cleanup;
 			}
 
-			/* We don't have access to the smtp->node->user here (and simply can't, due to all the code paths that come here).
-			 * However, if the message was submitted locally, we can trust the sender to be accurate.
-			 * But the sender is the sender for the relay, not the BBS sender.
-			 * We can't even look for "Authenticated sender" in the message itself since we don't prepend that if we're relaying. */
-			/*! \todo FIXME So for now, we pass in 0 for the user ID to allow any user ID to match,
-			 * but we should come up with a (secure) solution for this.
-			 * In the meantime, as long as users are not allowed to directly or indirectly control mod_oauth.conf and .rules (MailScript)
-			 * (which they are not likely to anyways), this is more or less fine.
-			 *
-			 * Note that because the RELAY MailScript rule runs in the foreground, we're not actually operating on a queue file,
-			 * we're operating live (and blocking the connection, which means if we reject the relay, it will go directly to the user),
-			 * so in theory we COULD have access to the user here if smtp were passed down the stack all the way here.
-			 */
-			res = bbs_get_oauth_token(0, oauthprofile, token, sizeof(token));
+			/* Typically, smtp is NULL, except for relayed mail.
+			 * This means this functionality here only works for relayed mail (from MailScript RELAY rule).
+			 * The reason we need it in this case is to ensure that the oauth: profile specified by the user
+			 * is one that the user is actually authorized to use. */
+			res = bbs_get_oauth_token(smtp->node->user, oauthprofile, token, sizeof(token));
 			if (res) {
-				bbs_warning("OAuth token '%s' does not exist\n", oauthprofile);
+				bbs_warning("OAuth token '%s' does not exist for user %d\n", oauthprofile, smtp->node->user->id);
 				res = -1;
 				goto cleanup;
 			}
@@ -1224,12 +1224,89 @@ static inline void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_pr
 	mproc->forward = &smtp->recipients; /* Tack on forwarding targets to the recipients list */
 }
 
+/*!
+ * \brief Save a message to a maildir folder
+ * \param smtp SMTP session
+ * \param mbox Mailbox to which message is being appended
+ * \param mproc
+ * \param recipient Recipient address (incoming), NULL for saving copies of sent messages (outgoing)
+ * \param srcfd
+ * \param datalen Length of message
+ * \retval 0 on success, nonzero on error
+ */
+static int appendmsg(struct smtp_session *smtp, struct mailbox *mbox, struct smtp_msg_process *mproc, const char *recipient, int srcfd, size_t datalen)
+{
+	char tmpfile[256];
+	char newfile[sizeof(tmpfile)];
+	int fd, res;
+	unsigned long quotaleft;
+
+	/* Enforce mail quota for message delivery. We check this after callbacks,
+	 * since maybe the callback opted to drop the message, or relay it,
+	 * or do something to the message that can succeed even with insufficient quota to save it. */
+	quotaleft = mailbox_quota_remaining(mbox);
+	bbs_debug(5, "Mailbox %d has %lu bytes quota remaining (need %lu)\n", mailbox_id(mbox), quotaleft, datalen);
+	if (quotaleft < datalen) {
+		/* Mailbox is full, insufficient quota remaining for this message. */
+		return -2;
+	}
+
+	if (mproc->newdir) {
+		char newdir[512];
+		snprintf(newdir, sizeof(newdir), "%s/%s", mailbox_maildir(mbox), mproc->newdir);
+		free(mproc->newdir);
+		if (eaccess(newdir, R_OK)) {
+			bbs_warning("maildir %s does not exist. Defaulting to INBOX\n", newdir);
+			fd = maildir_mktemp(mailbox_maildir(mbox), tmpfile, sizeof(tmpfile), newfile);
+		} else {
+			fd = maildir_mktemp(newdir, tmpfile, sizeof(tmpfile), newfile);
+		}
+	} else {
+		fd = maildir_mktemp(mailbox_maildir(mbox), tmpfile, sizeof(tmpfile), newfile);
+	}
+
+	if (fd < 0) {
+		return -1;
+	}
+
+	if (recipient) { /* For incoming messages, but not for saving copies of outgoing messages */
+		prepend_incoming(smtp, recipient, fd);
+	}
+
+	/* Write the entire body of the message. */
+	res = bbs_copy_file(srcfd, fd, 0, datalen);
+	if (res != (int) datalen) {
+		bbs_error("Failed to write %lu bytes to %s, only wrote %d\n", datalen, tmpfile, res);
+		close(fd);
+		return -1;
+	}
+
+	close(fd);
+	if (rename(tmpfile, newfile)) {
+		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
+		return -1;
+	} else {
+		/* Because the notification is delivered before we actually return success to the sending client,
+		 * this can result in the somewhat strange experience of receiving an email send to yourself
+		 * before it seems that the email has been fully sent.
+		 * This is just a side effect of processing the email completely synchronously
+		 * "real" mail servers typically queue the message to decouple it. We just deliver it immediately.
+		 */
+		bbs_debug(6, "Delivered message to %s\n", newfile);
+		if (!mproc->newdir && recipient) { /* Reference is invalid by now, but we only care about if it existed */
+			/*! \todo For now, no need to notify ourselves for saving copies of Sent messages. Clients probably aren't idling on the Sent folder anyways
+			 * If/when IMAP NOTIFY support is added, we still need to notify mod_mail about new messages,
+			 * here and everywhere else in net_smtp where messages are saved to disk.
+			 */
+			mailbox_notify(mbox, newfile);
+		}
+	}
+	return 0;
+}
+
 static int do_local_delivery(struct smtp_session *smtp, const char *recipient, const char *user, int srcfd, size_t datalen, int *responded)
 {
 	struct mailbox *mbox;
-	char tmpfile[256], newfile[256];
-	unsigned long quotaleft;
-	int fd, res;
 	struct smtp_msg_process mproc;
 
 	mbox = mailbox_get(0, user);
@@ -1250,14 +1327,6 @@ static int do_local_delivery(struct smtp_session *smtp, const char *recipient, c
 	/* No need to get a mailbox lock, really. */
 	if (mailbox_maildir_init(mailbox_maildir(mbox))) {
 		return -1;
-	}
-
-	/* Enforce mail quota for message delivery. */
-	quotaleft = mailbox_quota_remaining(mbox);
-	bbs_debug(5, "Mailbox '%s' has %lu bytes quota remaining (need %lu)\n", user, quotaleft, datalen);
-	if (quotaleft < datalen) {
-		/* Mailbox is full, insufficient quota remaining for this message. */
-		return -2;
 	}
 
 	/* SMTP callbacks for incoming messages */
@@ -1295,46 +1364,7 @@ static int do_local_delivery(struct smtp_session *smtp, const char *recipient, c
 		return 0; /* Silently drop message */
 	}
 
-	if (mproc.newdir) {
-		char newdir[512];
-		snprintf(newdir, sizeof(newdir), "%s/%s", mailbox_maildir(mbox), mproc.newdir);
-		free(mproc.newdir);
-		fd = maildir_mktemp(newdir, tmpfile, sizeof(tmpfile), newfile);
-	} else {
-		fd = maildir_mktemp(mailbox_maildir(mbox), tmpfile, sizeof(tmpfile), newfile);
-	}
-
-	if (fd < 0) {
-		return -1;
-	}
-
-	prepend_incoming(smtp, recipient, fd);
-
-	/* Write the entire body of the message. */
-	res = bbs_copy_file(srcfd, fd, 0, datalen);
-	if (res != (int) datalen) {
-		bbs_error("Failed to write %lu bytes to %s, only wrote %d\n", datalen, tmpfile, res);
-		close(fd);
-		return -1;
-	}
-
-	close(fd);
-	if (rename(tmpfile, newfile)) {
-		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
-		return -1;
-	} else {
-		/* Because the notification is delivered before we actually return success to the sending client,
-		 * this can result in the somewhat strange experience of receiving an email send to yourself
-		 * before it seems that the email has been fully sent.
-		 * This is just a side effect of processing the email completely synchronously
-		 * "real" mail servers typically queue the message to decouple it. We just deliver it immediately.
-		 */
-		bbs_debug(6, "Delivered message to %s\n", newfile);
-		if (!mproc.newdir) { /* Reference is invalid, but we only care about if it existed */
-			mailbox_notify(mbox, newfile);
-		}
-	}
-	return 0;
+	return appendmsg(smtp, mbox, &mproc, recipient, srcfd, datalen);
 }
 
 /*! \brief Generate "Undelivered Mail Returned to Sender" email and send it to the sending user using do_local_delivery (then delete the message) */
@@ -1587,7 +1617,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 
 	/* Try all the MX servers in order, if necessary */
 	while (res && (hostname = stringlist_pop(&mxservers))) {
-		res = try_send(hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
+		res = try_send(NULL, hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
 		free(hostname);
 	}
 	stringlist_empty(&mxservers);
@@ -1720,7 +1750,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 #ifndef BUGGY_SEND_IMMEDIATE
 		/* Try all the MX servers in order, if necessary */
 		while (res && (hostname = stringlist_pop(&mxservers))) {
-			res = try_send(hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, srcfd, metalen, size - metalen, buf, sizeof(buf));
+			res = try_send(NULL, hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, srcfd, metalen, size - metalen, buf, sizeof(buf));
 			free(hostname);
 		}
 		stringlist_empty(&mxservers);
@@ -2068,6 +2098,52 @@ fail:
 	return -1;
 }
 
+static int upload_file(struct smtp_session *smtp, struct smtp_msg_process *mproc, int srcfd, size_t datalen)
+{
+	struct bbs_tcp_client client;
+	struct bbs_url url;
+	char tmpbuf[1024];
+	int imapcaps;
+	off_t offset = 0;
+	int res;
+
+	memset(&url, 0, sizeof(url));
+	memset(&client, 0, sizeof(client));
+	if (bbs_parse_url(&url, mproc->newdir) || strlen_zero(url.resource) || bbs_tcp_client_connect(&client, &url, !strcmp(url.prot, "imaps"), tmpbuf, sizeof(tmpbuf))) {
+		smtp_reply(smtp, 550, 5.7.0, "Unable to save sent message"); /* XXX Appropriate SMTP code? */
+		return -1;
+	}
+
+	if (imap_client_login(&client, &url, smtp->node->user, &imapcaps)) {
+		bbs_debug(3, "IMAP login fail!\n");
+		goto cleanup;
+	}
+
+	if (imapcaps & IMAP_CAPABILITY_LITERAL_PLUS) {
+		/* Avoid an RTT if possible by using a non-synchronizing literal */
+		IMAP_CLIENT_SEND(&client, "a2 APPEND \"%s\" (\\Seen) {%lu+}", url.resource, datalen);
+	} else {
+		IMAP_CLIENT_SEND(&client, "a2 APPEND \"%s\" (\\Seen) {%lu}", url.resource, datalen);
+		IMAP_CLIENT_EXPECT(&client, "+");
+	}
+
+	res = sendfile(client.wfd, srcfd, &offset, datalen); /* Don't use bbs_copy_file, the target is a pipe/socket, not a file */
+	if (res != (int) datalen) {
+		bbs_warning("Wanted to upload %lu bytes but only uploaded %d? (%s)\n", datalen, res, strerror(errno));
+		goto cleanup;
+	}
+	IMAP_CLIENT_SEND(&client, ""); /* CR LF to finish */
+	IMAP_CLIENT_EXPECT(&client, "a2 OK");
+	IMAP_CLIENT_SEND(&client, "a3 LOGOUT");
+	bbs_tcp_client_cleanup(&client);
+	return 0;
+
+cleanup:
+	bbs_debug(5, "Remote IMAP login to %s:%d failed\n", url.host, url.port);
+	bbs_tcp_client_cleanup(&client);
+	return -1;
+}
+
 /*! \brief Actually send an email or queue it for delivery */
 static int do_deliver(struct smtp_session *smtp, const char *filename, size_t datalen)
 {
@@ -2088,6 +2164,7 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 
 	/* SMTP callbacks for outgoing messages */
 	if (smtp->msa || smtp->fromlocal) {
+		int srcfd = -1;
 		smtp_mproc_init(smtp, &mproc);
 		mproc.size = datalen;
 		mproc.direction = SMTP_MSG_DIRECTION_OUT;
@@ -2097,33 +2174,88 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 		if (smtp_run_callbacks(&mproc)) {
 			return 0; /* If returned nonzero, it's assumed it responded with an SMTP error code as appropriate. */
 		}
+		/*
+		 * For incoming messages, we process MOVETO after DROP, since if we drop, we're probably discarding,
+		 * but here we process it first.
+		 * By default, outgoing SMTP submissions aren't saved at all (persistently).
+		 * This accounts for the case where we want to save a local copy,
+		 * i.e. emulating IMAP's APPEND, but having the SMTP server do it
+		 * to the client doesn't have to upload the message twice.
+		 * If we're relaying, we might RELAY and then DROP, so we should save the copy before we abort.
+		 *
+		 * This is the same idea behind BURL IMAP by the way, but BURL IMAP requires both client and server supports,
+		 * and BURL support is virtually nonexistent amongst clients - only Trojita supports it.
+		 * Some servers, including this one, support BURL, but it's not very useful for that reason.
+		 *
+		 * This here is more similar to the old "auto Bcc yourself on all emails, filter those into Sent,
+		 * and don't upload Sent copies" trick, which takes advantage of user's faster download speeds
+		 * compared to upload speeds, typically (e.g. ADSL).
+		 * Likewise, the functionality here requires no special client support, other than disabling
+		 * "Save a sent copy of messages to... (Sent)", as now the server will save messages for the client.
+		 *
+		 * Some servers like Gmail in fact do this automatically (which is why you may see duplicate Sent messages
+		 * if your client is also uploading them). The difference here is hopefully the client is smart and does
+		 * MOVETO .Sent to save sent messages to the Sent folder, rather than Gmail just placing them in the same one (e.g. INBOX).
+		 *
+		 * Now, for some implementation concerns:
+		 * Mail clients will try to save sent messages in the account's main Sent mailbox,
+		 * even if this is for a "subaccount" visible in Other Users / Shared Folders.
+		 * This makes sense, since if you just change the From address, the MUA doesn't really know what you're doing.
+		 * Yet another reason why you might prefer to have the mail client NOT save copies of sent messages itself,
+		 * and handle that server side: the mail client will always put sent messages in the account's main Sent folder,
+		 * but maybe they should be saved in one of the Other Users / Shared Folders sent folders instead,
+		 * or it should be appended to a remote IMAP mailbox (in the case of an SMTP relayed submission),
+		 * and our job is basically to act as a sort of BURL-like proxy: append the message on behalf of the client,
+		 * which means that the message is still sent twice, ultimately, but the client only sends it once to us,
+		 * and we send it twice, to the SMTP server, and then APPENDing to the IMAP server.
+		 * Regardless of the scenario, handling saving of sent messages server-side is going to be more efficient.
+		 *
+		 * For Proxied SMTP accounts, the MOVETO to a remote location needs to transparently APPEND.
+		 *
+		 * Note that we actually save a copy of the message BEFORE it gets Sent (kind of like BURL IMAP).
+		 * The reason for this is that if we relayed it first and then saved it, but saving failed,
+		 * then we would not be able to return an error at that point since the message was already sent.
+		 * But that would mean the user wouldn't know the message wasn't saved, which is bad.
+		 * By trying to save it first (which should succeed), we ensure we can return an error at that point
+		 * and also decline to relay or send messages if we were told to save them but failed to.
+		 * Now done this way, the actual relaying could still fail, and we'll have saved a copy unnecessarily,
+		 * but I guess that's easier to deal with... better to have superflous copies than be missing one altogether.
+		 */
+		if (mproc.newdir) {
+			srcfd = open(filename, O_RDONLY);
+			if (STARTS_WITH(mproc.newdir, "imap://") || STARTS_WITH(mproc.newdir, "imaps://")) {
+				res = upload_file(smtp, &mproc, srcfd, datalen); /* Connect to some remote IMAP server and APPEND the message */
+				free(mproc.newdir);
+			} else {
+				if (srcfd < 0) {
+					bbs_error("Failed to open %s: %s\n", filename, strerror(errno));
+					res = -1;
+				} else {
+					struct mailbox *mbox = mailbox_get(smtp->node->user->id, NULL);
+					res = appendmsg(smtp, mbox, &mproc, NULL, srcfd, datalen); /* Save the Sent message locally */
+					/* appendmsg frees mproc.newdir */
+				}
+			}
+			CLOSE(srcfd);
+			if (res) {
+				smtp_reply(smtp, 550, 5.7.0, "Unable to save sent message"); /* XXX Appropriate SMTP code? */
+				return -1;
+			}
+		}
 		if (mproc.relayroute) { /* This happens BEFORE we check the From identity, which is important for relaying since typically this would be rejected locally. */
-			char *prot, *user, *pass, *host, *portstr;
-			int port;
 			/* Relay it through another MSA */
 			/* Format is smtps://user:password@host:port - https://datatracker.ietf.org/doc/html/draft-earhart-url-smtp-00 */
-			/* Note: The username itself probably has an @ symbol in it. So use strrchr first, rather than strsep, to separate the user and host components. */
-			portstr = strrchr(mproc.relayroute, '@');
-			if (!portstr) {
-				bbs_warning("Malformed SMTP URI: %s\n", mproc.relayroute); /* XXX Could contain credentials */
-			}
-			*portstr++ = '\0';
-			host = strsep(&portstr, ":");
-			pass = mproc.relayroute;
-			prot = strsep(&pass, ":");
-			user = strsep(&pass, ":");
-			/* protocol is smtp:// or smtps:// but we split on :, so strip the // at the beginning */
-			if (!strlen_zero(user) && !strncmp(user, "//", 2)) {
-				user += 2;
-			}
-			if (strlen_zero(prot) || strlen_zero(host) || strlen_zero(portstr)) {
-				bbs_warning("Empty hostname or port\n");
-			} else if (!STARTS_WITH(prot, "smtp")) {
-				bbs_warning("Invalid SMTP protocol: %s\n", prot);
+			struct bbs_url url;
+			memset(&url, 0, sizeof(url));
+			if (bbs_parse_url(&url, mproc.relayroute)) {
+				bbs_warning("Failed to parse SMTP URL\n");
+				res = -1;
+			} else if (!STARTS_WITH(url.prot, "smtp")) {
+				bbs_warning("Invalid SMTP protocol: %s\n", url.prot);
 			} else {
 				char buf[132];
 				char prepend[256] = "";
-				int fd, prependlen = 0;
+				int prependlen = 0;
 
 				/* Still prepend a Received header, but less descriptive than normal (don't include Authenticated sender) since we're relaying */
 				if (smtp->fromlocal && !add_received_msa) {
@@ -2133,15 +2265,14 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 						bbs_hostname(), smtp_protname(smtp), timestamp);
 				}
 
-				port = atoi(portstr);
-				bbs_debug(5, "Relaying message via %s:%d (user: %s)\n", host, port, S_IF(user));
+				bbs_debug(5, "Relaying message via %s:%d (user: %s)\n", url.host, url.port, S_IF(url.user));
 				/* XXX smtp->recipients is "used up" by try_send, so this relies on the message being DROP'ed as there will be no recipients remaining afterwards
 				 * Instead, we could duplicate the recipients list to avoid this restriction. */
-				fd = open(filename, O_RDONLY);
-				if (fd >= 0) {
-					res = try_send(host, port, STARTS_WITH(prot, "smtps"), user, pass, user, NULL, &smtp->recipients, prepend, prependlen, fd, 0, datalen, buf, sizeof(buf));
-					mproc.drop = 1;
-					close(fd);
+				srcfd = open(filename, O_RDONLY);
+				if (srcfd >= 0) {
+					/* XXX A cool optimization would be if the IMAP server supported BURL IMAP and we did a MOVETO, use BURL with the SMTP server */
+					res = try_send(smtp, url.host, url.port, STARTS_WITH(url.prot, "smtps"), url.user, url.pass, url.user, NULL, &smtp->recipients, prepend, prependlen, srcfd, 0, datalen, buf, sizeof(buf));
+					mproc.drop = 1; /* We MUST drop any messages that are relayed. We wouldn't be relaying them if we could send them ourselves. */
 				} else {
 					bbs_error("open(%s) failed: %s\n", filename, strerror(errno));
 					res = -1;
@@ -2153,11 +2284,11 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 					smtp_reply(smtp, 550, 5.7.0, "Mail relay rejected.");
 				}
 			}
-			if (pass) {
-				bbs_memzero(pass, strlen(pass)); /* Destroy the password */
+			if (url.pass) {
+				bbs_memzero(url.pass, strlen(url.pass)); /* Destroy the password */
 			}
-			free(mproc.relayroute);
-			mproc.relayroute = NULL;
+			/*! \todo Should have a macro like free_if that just frees and sets to NULL, *without* checking for existence first. Here we know it exists: */
+			FREE(mproc.relayroute);
 		}
 		if (mproc.bounce) {
 			const char *msg = "This message has been rejected by the sender";
@@ -2169,7 +2300,8 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 		}
 		if (mproc.drop) {
 			/*! \todo BUGBUG For DIRECTION OUT, if we FORWARD, then DROP, we'll just drop here and forward won't happen */
-			return 0; /* Silently drop message */
+			bbs_debug(5, "Discarding message and ceasing all further processing\n");
+			return 0; /* Silently drop message. We MUST do this for RELAYed messages, since we must not allow those to be sent again afterwards. */
 		}
 	}
 
@@ -2269,7 +2401,7 @@ static int handle_burl(struct smtp_session *smtp, char *s)
 	/* Wow! A client that actually supports BURL! That's a rare one...
 	 * (at the time of this programming, only Trojita does. Maybe Thunderbird forks will some day?)
 	 * In the meantime, this is a feature that almost nobody can use. */
-	imapurl = strsep(&s, " ");
+	imapurl = strsep(&s, " "); /* We don't use the generic bbs_parse_url here since we need to parse the IMAP URL fully */
 	last = s;
 	REQUIRE_ARGS(last);
 	if (strcmp(last, "LAST")) {

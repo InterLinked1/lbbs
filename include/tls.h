@@ -50,9 +50,10 @@ SSL *ssl_new_accept(int fd, int *rfd, int *wfd);
  * \param fd Client file descriptor
  * \param[out] rfd File descriptor for reading from connection (data has been decrypted)
  * \param[out] wfd File descriptor for writing to connection (data will be encrypted)
+ * \param snihostname Hostname to use for Server Name Indication
  * \retval ssl on success, NULL on failure
  */
-SSL *ssl_client_new(int fd, int *rfd, int *wfd);
+SSL *ssl_client_new(int fd, int *rfd, int *wfd, const char *snihostname);
 
 /*!
  * \brief Close and free an OpenSSL connection

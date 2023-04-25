@@ -531,6 +531,10 @@ static int bbs_node_authenticate(struct bbs_node *node, const char *username, co
 	int res;
 	char sha256_hash[65];
 
+	if (strlen_zero(password)) {
+		return -1;
+	}
+
 	hash_sha256(password, sha256_hash);
 
 	/* Fast authentication for previously and recently successful logins */

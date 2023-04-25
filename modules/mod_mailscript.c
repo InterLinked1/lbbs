@@ -257,21 +257,18 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 	} else if (!strcasecmp(next, "MOVETO")) {
 		char newdir[512];
 		REQUIRE_ARG(s);
-		if (mproc->direction == SMTP_MSG_DIRECTION_OUT) {
-			bbs_warning("MOVETO action invalid for outgoing messages\n");
-			return 0;
+		if (!STARTS_WITH(s, "imap:") && !STARTS_WITH(s, "imaps:")) {
+			if (mproc->userid) {
+				snprintf(newdir, sizeof(newdir), "%s/%d/%s", mailbox_maildir(NULL), mproc->userid, s);
+			} else {
+				snprintf(newdir, sizeof(newdir), "%s/%s", mailbox_maildir(mproc->mbox), s);
+			}
+			if (eaccess(newdir, R_OK)) {
+				bbs_warning("MOVETO failed: %s\n", strerror(errno));
+				return 0;
+			}
 		}
-		if (mproc->userid) {
-			snprintf(newdir, sizeof(newdir), "%s/%d/%s", mailbox_maildir(NULL), mproc->userid, s);
-		} else {
-			snprintf(newdir, sizeof(newdir), "%s/%s", mailbox_maildir(mproc->mbox), s);
-		}
-		free_if(mproc->newdir);
-		if (eaccess(newdir, R_OK)) {
-			bbs_warning("MOVETO failed: %s\n", strerror(errno));
-			return 0;
-		}
-		mproc->newdir = strdup(s);
+		REPLACE(mproc->newdir, s);
 	} else if (!strcasecmp(next, "BOUNCE")) {
 		mproc->bounce = 1;
 		free_if(mproc->bouncemsg);

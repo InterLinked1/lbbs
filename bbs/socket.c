@@ -347,7 +347,7 @@ int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, i
 	client->buf = buf;
 	client->len = len;
 	if (client->secure) {
-		client->ssl = ssl_client_new(client->fd, &client->rfd, &client->wfd);
+		client->ssl = ssl_client_new(client->fd, &client->rfd, &client->wfd, url->host);
 		if (!client->ssl) {
 			bbs_debug(3, "Failed to set up TLS\n");
 			close_if(client->fd);

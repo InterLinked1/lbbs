@@ -33,6 +33,8 @@
 #include "include/config.h"
 #include "include/user.h"
 #include "include/utils.h"
+#include "include/oauth.h"
+#include "include/base64.h"
 
 #include "include/mod_mail.h"
 
@@ -1236,6 +1238,120 @@ int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid)
 		return -1;
 	}
 	return 0;
+}
+
+int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct bbs_user *user, int *capsptr)
+{
+	char *cur, *capstring;
+	int res, caps = 0;
+	char *encoded = NULL;
+
+	IMAP_CLIENT_EXPECT(client, "* OK");
+	IMAP_CLIENT_SEND(client, "a0 CAPABILITY");
+	IMAP_CLIENT_EXPECT(client, "* CAPABILITY");
+
+#define PARSE_CAPABILITY(name, flag) \
+	else if (!strcmp(cur, name)) { \
+		caps |= flag; \
+	}
+
+	/* Enable any capabilities the client may have enabled. */
+	capstring = client->buf + STRLEN("* CAPABILITY");
+	bbs_debug(5, "Capabilities: %s\n", capstring);
+	while ((cur = strsep(&capstring, " "))) { /* It's okay to consume the capabilities, nobody else needs them */
+		if (strlen_zero(cur) || !strcmp(cur, "IMAP4rev1")) {
+			continue;
+		}
+		PARSE_CAPABILITY("IDLE", IMAP_CAPABILITY_IDLE)
+		PARSE_CAPABILITY("CONDSTORE", IMAP_CAPABILITY_CONDSTORE)
+		PARSE_CAPABILITY("ENABLE", IMAP_CAPABILITY_ENABLE)
+		PARSE_CAPABILITY("QRESYNC", IMAP_CAPABILITY_QRESYNC)
+		PARSE_CAPABILITY("SASL-IR", IMAP_CAPABILITY_SASL_IR)
+		PARSE_CAPABILITY("LITERAL+", IMAP_CAPABILITY_LITERAL_PLUS)
+		PARSE_CAPABILITY("AUTH=PLAIN", IMAP_CAPABILITY_AUTH_PLAIN)
+		PARSE_CAPABILITY("AUTH=XOAUTH2", IMAP_CAPABILITY_AUTH_XOAUTH2)
+		PARSE_CAPABILITY("ACL", IMAP_CAPABILITY_ACL)
+		PARSE_CAPABILITY("QUOTA", IMAP_CAPABILITY_QUOTA)
+		else if (STARTS_WITH(cur, "X") || STARTS_WITH(cur, "AUTH=") || !strcmp(cur, "CHILDREN") || !strcmp(cur, "UNSELECT") || !strcmp(cur, "NAMESPACE") || !strcmp(cur, "ID") || !strcmp(cur, "SORT") || !strcmp(cur, "MOVE") || !strcmp(cur, "UIDPLUS") || !strcmp(cur, "XLIST") || !strcmp(cur, "I18NLEVEL=1") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "RIGHTS=") || !strcmp(cur, "WITHIN") || !strcmp(cur, "ESEARCH") || !strcmp(cur, "ESORT") || !strcmp(cur, "SEARCHRES") || !strcmp(cur, "COMPRESSED=DEFLATE")) {
+			/* Don't care */
+		} else if (!strcmp(cur, "LOGINDISABLED")) { /* RFC 3501 7.2.1 */
+			bbs_warning("IMAP server %s does not support login\n", url->host);
+			return -1;
+		} else {
+			bbs_warning("Unknown IMAP capability: %s\n", cur);
+		}
+	}
+
+	IMAP_CLIENT_EXPECT(client, "a0 OK");
+
+	if (STARTS_WITH(url->pass, "oauth:")) { /* OAuth authentication */
+		char token[512];
+		char decoded[568];
+		int decodedlen, encodedlen;
+		const char *oauthprofile = url->pass + STRLEN("oauth:");
+
+		if (!(caps & IMAP_CAPABILITY_AUTH_XOAUTH2)) {
+			bbs_warning("IMAP server does not support XOAUTH2\n");
+			return -1;
+		}
+		if (!bbs_user_is_registered(user)) {
+			bbs_warning("IMAP user not logged in?\n");
+			return -1;
+		}
+
+		res = bbs_get_oauth_token(user, oauthprofile, token, sizeof(token));
+		if (res) {
+			bbs_warning("OAuth token '%s' does not exist for user %d\n", oauthprofile, user->id);
+			return -1;
+		}
+		/* https://developers.google.com/gmail/imap/imap-smtp
+		 * https://developers.google.com/gmail/imap/xoauth2-protocol */
+		decodedlen = snprintf(decoded, sizeof(decoded), "user=%s%cauth=Bearer %s%c%c", url->user, 0x01, token, 0x01, 0x01);
+		encoded = base64_encode(decoded, decodedlen, &encodedlen);
+		if (!encoded) {
+			bbs_error("Base64 encoding failed\n");
+			return -1;
+		}
+
+		if (caps & IMAP_CAPABILITY_SASL_IR) { /* Save an RTT if the server supports RFC4959 SASL-IR */
+			IMAP_CLIENT_SEND(client, "a1 AUTHENTICATE XOAUTH2 %s", encoded);
+		} else {
+			IMAP_CLIENT_SEND(client, "a1 AUTHENTICATE XOAUTH2");
+			IMAP_CLIENT_EXPECT(client, "+");
+			IMAP_CLIENT_SEND(client, "%s", encoded);
+		}
+		free(encoded);
+		encoded = NULL;
+	} else { /* Normal password auth */
+		IMAP_CLIENT_SEND(client, "a1 LOGIN \"%s\" \"%s\"", url->user, url->pass);
+	}
+
+	/* Gmail sends the capabilities again when you log in, so tolerate CAPABILITY then OK as well as just OK. */
+	res = bbs_fd_readline(client->rfd, &client->rldata, "\r\n", 2500);
+	if (res <= 0) {
+		bbs_warning("No response from IMAP server %s:%d?\n", url->host, url->port);
+		return -1;
+	}
+	if (STARTS_WITH(client->buf, "* CAPABILITY")) {
+		IMAP_CLIENT_EXPECT(client, "a1 OK");
+	} else {
+		if (!strstr(client->buf, "a1 OK")) {
+			if (STARTS_WITH(client->buf, "+ ")) {
+				/* It failed, send an empty response to get the error message */
+				IMAP_CLIENT_SEND(client, "");
+			}
+			IMAP_CLIENT_EXPECT(client, "a1 OK"); /* Won't get it, but at least see what the server had to say */
+			bbs_warning("Login failed, got '%s'\n", client->buf);
+			return -1;
+		}
+	}
+
+	*capsptr = caps;
+	return 0;
+
+cleanup:
+	free_if(encoded);
+	return -1;
 }
 
 /*

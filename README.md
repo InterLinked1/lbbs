@@ -29,7 +29,7 @@ Key features and capabilities include:
   - Mailing lists
   - Mailbox quotas
   - Shared mailboxes and ACL controls
-  - RFC 4468 BURL IMAP support, for more efficient email submission
+  - RFC 4468 BURL IMAP and server-side proxied append support, for more efficient (bandwidth saving) email submission
   - Remote mailboxes (IMAP proxy)
     - Built-in OAuth2 proxy, allowing the BBS to log in to remote IMAP servers using OAuth2, while your IMAP client uses your normal BBS credentials
   - Filtering
@@ -167,7 +167,7 @@ Generally speaking, the comm drivers implement some kind of standardized TCP-bas
 
 LBBS also includes a UNIX domain socket module (`net_unix`). One use case for this is if you want to "proxy" connections to the BBS through the main, public-facing network login service. For example, say you run OpenSSH on port 22 (and you don't want to change the port), but you still want people to be able to connect to your BBS on port 22. You can create a public user account on your server that executes the BBS as a program, rather than providing a login shell. If you do this, you don't need any of the network drivers loaded or running besides `net_unix` (UNIX domain sockets provide the least overhead for these kinds of loopback connections). That said, the UNIX domain socket driver is quite primitive. Using one of the other drivers, particularly the SSH driver, will provide a far superior experience.
 
-Do note, should you choose to proxy connections in th emanner described above, there are several important security implications of doing this that you *must* understand, or you open your system up to vulnerabilities. See the comments at the top of the source file `nets/net_unix.c`
+Do note, should you choose to proxy connections in the manner described above, there are several important security implications of doing this that you *must* understand, or you open your system up to vulnerabilities. See the comments at the top of the source file `nets/net_unix.c`
 
 Unless you really know what you are doing, you are probably better off using LBBS's builtin network login services, rather than proxying the connection through your system's primary network login services. This will provide a more seamless user experience and mitigate potential security vulnerabilities described above.
 

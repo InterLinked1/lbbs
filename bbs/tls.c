@@ -550,7 +550,7 @@ accept:
 	return ssl;
 }
 
-SSL *ssl_client_new(int fd, int *rfd, int *wfd)
+SSL *ssl_client_new(int fd, int *rfd, int *wfd, const char *snihostname)
 {
 	SSL *ssl;
 	SSL_CTX *ctx;
@@ -581,6 +581,19 @@ SSL *ssl_client_new(int fd, int *rfd, int *wfd)
 		bbs_error("Failed to connect SSL: %s\n", ERR_error_string(ERR_get_error(), NULL));
 		goto sslcleanup;
 	}
+
+	/* SNI (Server Name Indication) tells the server which host we want.
+	 * Some servers may host multiple hosts at the same IP,
+	 * and won't send us a TLS certificate if we don't provide the SNI.
+	 * Either way, we should always send SNI if possible. */
+	if (!strlen_zero(snihostname)) {
+		if (SSL_set_tlsext_host_name(ssl, snihostname) != 1) {
+			bbs_warning("Failed to set SNI for TLS connection\n");
+		}
+	} else {
+		bbs_warning("No SNI provided, server may be unable to provide us its certificate!\n");
+	}
+
 connect:
 	if (SSL_connect(ssl) == -1) {
 		int sslerr = SSL_get_error(ssl, -1);

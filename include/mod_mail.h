@@ -13,8 +13,11 @@
  *
  */
 
-/* Forward declaration */
+/* Forward declarations */
 struct mailbox;
+struct bbs_user;
+struct bbs_url;
+struct bbs_tcp_client;
 
 /*!
  * \brief Get the mailbox by user ID and/or email address username
@@ -236,6 +239,32 @@ int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const c
  * \retval 0 on success, -1 on failure
  */
 int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid);
+
+/* IMAP client */
+#define IMAP_CLIENT_EXPECT(client, s) if (bbs_tcp_client_expect(client, "\r\n", 1, 2000, s)) { bbs_debug(3, "Didn't receive expected '%s'\n", s); goto cleanup; }
+#define IMAP_CLIENT_SEND(client, fmt, ...) bbs_tcp_client_send(client, fmt "\r\n", ## __VA_ARGS__);
+
+#define IMAP_CAPABILITY_IDLE (1 << 0)
+#define IMAP_CAPABILITY_CONDSTORE (1 << 1)
+#define IMAP_CAPABILITY_ENABLE (1 << 2)
+#define IMAP_CAPABILITY_QRESYNC (1 << 3)
+#define IMAP_CAPABILITY_SASL_IR (1 << 4)
+#define IMAP_CAPABILITY_LITERAL_PLUS (1 << 5)
+#define IMAP_CAPABILITY_AUTH_PLAIN (1 << 6)
+#define IMAP_CAPABILITY_AUTH_XOAUTH (1 << 7)
+#define IMAP_CAPABILITY_AUTH_XOAUTH2 (1 << 8)
+#define IMAP_CAPABILITY_ACL (1 << 9)
+#define IMAP_CAPABILITY_QUOTA (1 << 10)
+
+/*!
+ * \brief Log in to a remote IMAP server
+ * \param client TCP client
+ * \param url IMAP URL
+ * \param user Currently authenticated user, used to control what OAuth profiles can be used
+ * \param[out] capsptr Remote server's IMAP capabilities
+ * \retval 0 on success, -1 on failure
+ */
+int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct bbs_user *user, int *capsptr);
 
 /* Sieve integration */
 

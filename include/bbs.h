@@ -234,10 +234,14 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 
 #define REPLACE(var, val) free_if(var); var = strdup(val);
 
-/*! \note In theory, free(NULL) is okay, but using this macro also documents that x could be NULL */
-#define free_if(x) if (x) { free(x); x = NULL; }
+#define FREE(x) free(x); x = NULL;
 
-#define close_if(x) if (x != -1) { close(x); x = -1; }
+/*! \note In theory, free(NULL) is okay, but using this macro also documents that x could be NULL */
+#define free_if(x) if (x) { FREE(x); }
+
+#define CLOSE(x) close(x); x = -1;
+
+#define close_if(x) if (x != -1) { CLOSE(x); }
 
 /*! \brief If char * is NULL or empty string */
 #define strlen_zero(s) ((!s || *s == '\0'))

@@ -345,7 +345,7 @@ static RWLIST_HEAD_STATIC(sessions, imap_session);
 
 static inline void reset_saved_search(struct imap_session *imap)
 {
-	free_if(imap->savedsearch); /* See comments about EXPUNGE in expunge_helper */
+	free_if(imap->savedsearch); /* See comments about EXPUNGE in imap_expunge */
 	imap->savedsearch = 0;
 }
 
@@ -376,7 +376,6 @@ static void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned i
 		if (!s->idle) { /* We are only free to send responses whenever we want if the client is idling. */
 			bbs_std_write(s->pfd[1], s->condstore ? condstoremsg : normalmsg, s->condstore ? condlen : normallen);
 			s->pending = 1;
-			pthread_mutex_unlock(&s->lock);
 			imap_debug(4, "%p <= %s", s, s->condstore ? condstoremsg : normalmsg); /* Already ends in CR LF */
 		} else {
 			bbs_std_write(s->wfd, s->condstore ? condstoremsg : normalmsg, s->condstore ? condlen : normallen);
@@ -2147,117 +2146,9 @@ static int client_command_passthru(struct imap_session *imap, int fd, const char
 	return res;
 }
 
-#define IMAP_CLIENT_EXPECT(client, s) if (bbs_tcp_client_expect(client, "\r\n", 1, 2000, s)) { goto cleanup; }
-#define IMAP_CLIENT_SEND(client, fmt, ...) bbs_tcp_client_send(client, fmt "\r\n", ## __VA_ARGS__);
-
-#define IMAP_CAPABILITY_CONDSTORE (1 << 0)
-#define IMAP_CAPABILITY_QRESYNC (1 << 1)
-#define IMAP_CAPABILITY_SASL_IR (1 << 2)
-#define IMAP_CAPABILITY_XOAUTH2 (1 << 3)
-#define IMAP_CAPABILITY_ACL (1 << 4)
-#define IMAP_CAPABILITY_QUOTA (1 << 5)
-
-static int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct imap_session *imap)
+static int my_imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct imap_session *imap)
 {
-	int res, caps = 0;
-
-	IMAP_CLIENT_EXPECT(client, "* OK");
-	IMAP_CLIENT_SEND(client, "a0 CAPABILITY");
-	IMAP_CLIENT_EXPECT(client, "* CAPABILITY");
-
-	/* Enable any capabilities the client may have enabled. */
-	/*! \todo Parse all the capabilities (just make one pass using strsep) and store the ones we care about */
-	if (strstr(client->buf, "CONDSTORE")) {
-		caps |= IMAP_CAPABILITY_CONDSTORE;
-	}
-	if (strstr(client->buf, "QRESYNC")) {
-		caps |= IMAP_CAPABILITY_QRESYNC;
-	}
-	if (strstr(client->buf, "SASL-IR")) {
-		caps |= IMAP_CAPABILITY_SASL_IR;
-	}
-	if (strstr(client->buf, "AUTH=XOAUTH2")) {
-		caps |= IMAP_CAPABILITY_XOAUTH2;
-	}
-	if (strstr(client->buf, "ACL")) {
-		caps |= IMAP_CAPABILITY_ACL;
-	}
-	if (strstr(client->buf, "QUOTA")) {
-		caps |= IMAP_CAPABILITY_QUOTA;
-	}
-
-	IMAP_CLIENT_EXPECT(client, "a0 OK");
-
-	if (STARTS_WITH(url->pass, "oauth:")) { /* OAuth authentication */
-		char token[512];
-		char decoded[568];
-		int decodedlen, encodedlen;
-		char *encoded;
-		const char *oauthprofile = url->pass + STRLEN("oauth:");
-
-		if (!(caps & IMAP_CAPABILITY_XOAUTH2)) {
-			bbs_warning("IMAP server does not support XOAUTH2\n");
-			return -1;
-		} else if (!(caps & IMAP_CAPABILITY_SASL_IR)) {
-			/*! \todo FIXME We should support normal 2-phase as well if SASL-IR not available. But Gmail does support it, probably the main reason someone would have to use OAuth... */
-			bbs_warning("IMAP server does not support SASL-IR\n");
-			return -1;
-		}
-
-		if (!bbs_user_is_registered(imap->node->user)) {
-			bbs_warning("IMAP user not logged in?\n");
-			return -1;
-		}
-
-		res = bbs_get_oauth_token(imap->node->user, oauthprofile, token, sizeof(token));
-		if (res) {
-			bbs_warning("OAuth token '%s' does not exist for user %d\n", oauthprofile, imap->node->user->id);
-			return -1;
-		}
-		/* https://developers.google.com/gmail/imap/imap-smtp
-		 * https://developers.google.com/gmail/imap/xoauth2-protocol */
-		decodedlen = snprintf(decoded, sizeof(decoded), "user=%s%cauth=Bearer %s%c%c", url->user, 0x01, token, 0x01, 0x01);
-		encoded = base64_encode(decoded, decodedlen, &encodedlen);
-		if (!encoded) {
-			bbs_error("Base64 encoding failed\n");
-			return -1;
-		}
-		IMAP_CLIENT_SEND(client, "a1 AUTHENTICATE XOAUTH2 %s", encoded);
-		free(encoded);
-	} else { /* Normal password auth */
-		IMAP_CLIENT_SEND(client, "a1 LOGIN \"%s\" \"%s\"", url->user, url->pass);
-	}
-
-	/* Gmail sends the capabilities again when you log in, so tolerate CAPABILITY then OK as well as just OK. */
-	res = bbs_fd_readline(client->rfd, &client->rldata, "\r\n", 2500);
-	if (res <= 0) {
-		return -1;
-	}
-	if (STARTS_WITH(client->buf, "* CAPABILITY")) {
-		IMAP_CLIENT_EXPECT(client, "a1 OK");
-	} else {
-		if (!strstr(client->buf, "a1 OK")) {
-			bbs_warning("Login failed, got '%s'\n", client->buf);
-			return -1;
-		}
-	}
-
-	/* Enable any capabilities enabled by the client that the server supports */
-	if (imap->qresync && (caps & IMAP_CAPABILITY_QRESYNC)) {
-		IMAP_CLIENT_SEND(client, "cap0 ENABLE QRESYNC");
-		IMAP_CLIENT_EXPECT(client, "* ENABLED QRESYNC");
-		IMAP_CLIENT_EXPECT(client, "cap0 OK");
-	} else if (imap->condstore && (caps & IMAP_CAPABILITY_CONDSTORE)) {
-		IMAP_CLIENT_SEND(client, "cap0 ENABLE CONDSTORE");
-		IMAP_CLIENT_EXPECT(client, "* ENABLED CONDSTORE");
-		IMAP_CLIENT_EXPECT(client, "cap0 OK");
-	}
-
-	imap->virtcapabilities = caps;
-	return 0;
-
-cleanup:
-	return -1;
+	return imap_client_login(client, url, imap->node->user, &imap->virtcapabilities);
 }
 
 #define imap_client_send_wait_response(imap, fd, ms, fmt, ...) __imap_client_send_wait_response(imap, fd, ms, __LINE__, fmt, ## __VA_ARGS__)
@@ -3020,7 +2911,7 @@ static int load_virtual_mailbox(struct imap_session *imap, const char *path)
 				res = 1;
 				break;
 			}
-			if (imap_client_login(&imap->client, &url, imap)) {
+			if (my_imap_client_login(&imap->client, &url, imap)) {
 				goto cleanup;
 			}
 			imap->virtmbox = 1;
@@ -3052,6 +2943,20 @@ static int load_virtual_mailbox(struct imap_session *imap, const char *path)
 			imap->virtdelimiter = *tmp;
 			bbs_debug(6, "Remote server's hierarchy delimiter is '%c'\n", imap->virtdelimiter);
 			IMAP_CLIENT_EXPECT(&imap->client, "dlm OK");
+
+			/* Enable any capabilities enabled by the client that the server supports */
+			if (imap->virtcapabilities & IMAP_CAPABILITY_ENABLE) {
+				if (imap->qresync && (imap->virtcapabilities & IMAP_CAPABILITY_QRESYNC)) {
+					IMAP_CLIENT_SEND(&imap->client, "cap0 ENABLE QRESYNC");
+					IMAP_CLIENT_EXPECT(&imap->client, "* ENABLED QRESYNC");
+					IMAP_CLIENT_EXPECT(&imap->client, "cap0 OK");
+				} else if (imap->condstore && (imap->virtcapabilities & IMAP_CAPABILITY_CONDSTORE)) {
+					IMAP_CLIENT_SEND(&imap->client, "cap0 ENABLE CONDSTORE");
+					IMAP_CLIENT_EXPECT(&imap->client, "* ENABLED CONDSTORE");
+					IMAP_CLIENT_EXPECT(&imap->client, "cap0 OK");
+				}
+			}
+
 			res = 0;
 			break;
 cleanup:
@@ -3141,7 +3046,7 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 			if (bbs_tcp_client_connect(&client, &url, secure, buf, sizeof(buf))) {
 				continue;
 			}
-			if (!imap_client_login(&client, &url, imap)) {
+			if (!my_imap_client_login(&client, &url, imap)) {
 				imap_client_list(&client, prefix, fp2);
 			}
 			bbs_tcp_client_cleanup(&client);

@@ -374,17 +374,18 @@ static void show_help(void)
 	printf("  -b        Always force rebind to busy ports\n");
 	printf("  -c        Do not fork daemon\n");
 	printf("  -C        Specify alternate configuration directory\n");
+	printf("  -d        Increase debug level\n");
 	printf("  -g        Dump core on crash\n");
 	printf("  -G        Specify run group\n");
-	printf("  -g        Dump core on crash\n");
 	printf("  -h        Display this help and exit\n");
 	printf("  -T        Run unit tests on startup\n");
 	printf("  -U        Specify run user\n");
+	printf("  -v        Increase verbosity level\n");
 	printf("  -V        Display version number and exit\n");
 	printf("  -?        Display this help and exit\n");
 }
 
-static const char *getopt_settings = "?AbcC:dG:ghTU:v";
+static const char *getopt_settings = "?AbcC:dG:ghTU:Vv";
 
 static int parse_options_pre(int argc, char *argv[])
 {
@@ -396,6 +397,9 @@ static int parse_options_pre(int argc, char *argv[])
 			/* Affects what config we load in load_config, so do before that */
 			REPLACE(config_dir, optarg);
 			break;
+		case 'V':
+			fprintf(stderr, BBS_TAGLINE " " BBS_VERSION "\n");
+			return -1;
 		default:
 			break; /* Ignore for now, everything else handled in parse_options */
 		}
