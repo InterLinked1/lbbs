@@ -379,11 +379,12 @@ struct {								\
 /*!
  * \brief Removes a specific entry from a list, by an attribute match.
  * \param head This is a pointer to the list head structure
- * \param elm This is a pointer to the entry to be removed.
+ * \param attribute The attribute by which to look for a match
+ * \param value The value that the attribute must have to match
  * \param field This is the name of the field (declared using RWLIST_ENTRY())
  * used to link entries of this list together.
- * \retval elm if elm was in the list.
- * \retval NULL if elm was not in the list or elm was NULL.
+ * \retval Removed element
+ * \retval NULL if no matching element was found.
  * \warning The removed entry is \b not freed.
  */
 #define RWLIST_REMOVE_BY_FIELD(head, attribute, value, field)	\

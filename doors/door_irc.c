@@ -764,7 +764,13 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 
 #define chat_send(client, sender, channel, fmt, ...) _chat_send(client, sender, channel, 1, fmt, __VA_ARGS__)
 
-/*! \param sender If NULL, the message will be sent to the sender, if specified, the message will not be sent to this participant */
+/*!
+ * \param client
+ * \param sender If NULL, the message will be sent to the sender, if specified, the message will not be sent to this participant
+ * \param channel
+ * \param dorelay
+ * \param fmt
+ */
 static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client *client, struct participant *sender, const char *channel, int dorelay, const char *fmt, ...)
 {
 	char *buf;

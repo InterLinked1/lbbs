@@ -88,7 +88,7 @@ char *bbs_sasl_encode(const char *nickname, const char *username, const char *pa
 
 /*!
  * \brief Parse an email address identity into its components
- * \param addr Identity (which will be consumed). Can be user@host or name <user@host> format.
+ * \param addr Identity (which will be consumed). Can be user\@host or name \<user@host> format.
  * \param[out] name Name portion, if any. NULL if not present.
  * \param[out] user Username portion
  * \param[out] host Hostname portion
@@ -162,13 +162,14 @@ void bbs_thread_cleanup(void);
 
 /*!
  * \brief Get the thread ID (LWP) of a registered thread
- * \param pid pthread_t handle
+ * \param thread pthread_t handle
  * \retval -1 if thread not currently registered, LWP/thread ID otherwise
  */
 int bbs_pthread_tid(pthread_t thread);
 
 /*!
  * \brief Print list of active BBS threads
+ * \param fd File descriptor to which to print thread listing
  * \warning This may not include all threads, such as those that do not use the BBS pthread creation wrappers (external libraries, etc.)
  */
 int bbs_dump_threads(int fd);
@@ -187,7 +188,7 @@ int bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_
 /*!
  * \brief Create a TCP socket
  * \param sock Pointer to socket
- * \param Port number on which to create the socket
+ * \param port Port number on which to create the socket
  * \retval 0 on success, -1 on failure
  */
 int bbs_make_tcp_socket(int *sock, int port);
@@ -227,7 +228,7 @@ void bbs_tcp_client_cleanup(struct bbs_tcp_client *client);
 
 /*!
  * \brief Establish a TCP client connection to a server
- * \param[out] client. This is filled in, but memset this to 0 first.
+ * \param[out] client This is filled in, but memset this to 0 first.
  * \param url Server address
  * \param secure Whether to use implicit TLS when establishing the connection
  * \param buf Buffer for readline operations
@@ -242,7 +243,7 @@ int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, i
  * \param fmt printf-style format string
  * \retval same as write
  */
-int __attribute__ ((format (gnu_printf, 2, 3))) bbs_tcp_client_send(struct bbs_tcp_client *client, const char *fmt, ...);
+int bbs_tcp_client_send(struct bbs_tcp_client *client, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) ;
 
 /*!
  * \brief Expect a response containing a substring on a TCP connection
@@ -367,9 +368,8 @@ const char *poll_revent_name(int revents);
 /*!
  * \brief Traverse all the files and directories in a directory, non-recursively
  * \param path Directory to traverse
- * \param bbs_file_on_file Callback function to execute for each file or directory. Should return 0 to continue iterating and non-zero to stop.
+ * \param on_file Callback function to execute for each file or directory. Should return 0 to continue iterating and non-zero to stop.
  * \param obj Argument to callback function
- * \param max_depth
  * \retval 0 on success, -1 on failure
  */
 int bbs_dir_traverse_items(const char *path, int (*on_file)(const char *dir_name, const char *filename, int dir, void *obj), void *obj);
@@ -387,7 +387,7 @@ int bbs_dir_traverse(const char *path, int (*bbs_file_on_file)(const char *dir_n
 /*!
  * \brief Traverse all the directories in a directory, recursively
  * \param path Directory to traverse recursively
- * \param bbs_file_on_file Callback function to execute for each file. Should return 0 to continue iterating and non-zero to stop.
+ * \param on_file Callback function to execute for each file. Should return 0 to continue iterating and non-zero to stop.
  * \param obj Argument to callback function
  * \param max_depth
  * \retval 0 on success, -1 on failure
@@ -486,7 +486,7 @@ int bbs_time_friendly(int epoch, char *buf, size_t len);
 /*!
  * \brief Print time elapsed e.g. 0:33:21
  * \param start
- * \param end. End time. 0 to automatically call time(NULL) for current time.
+ * \param end End time. 0 to automatically call time(NULL) for current time.
  *             If you call multiple related functions at the same time, doing this yourself
  *             and passing it will be more efficient, avoiding duplicate calls to time().
  * \param buf Buffer.
@@ -497,7 +497,7 @@ void print_time_elapsed(int start, int end, char *buf, size_t len);
 /*!
  * \brief Print days elapsed e.g. (0 days, 0 hrs, 33 mins, 21 secs)
  * \param start
- * \param end. End time. 0 to automatically call time(NULL) for current time.
+ * \param end End time. 0 to automatically call time(NULL) for current time.
  *             If you call multiple related functions at the same time, doing this yourself
  *             and passing it will be more efficient, avoiding duplicate calls to time().
  * \param buf Buffer.

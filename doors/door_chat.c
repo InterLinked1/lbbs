@@ -261,7 +261,11 @@ static int __chat_send(struct channel *channel, struct participant *sender, cons
 	return 0;
 }
 
-/*! \param sender If NULL, the message will be sent to the sender, if specified, the message will not be sent to this participant */
+/*!
+ * \param channel
+ * \param sender If NULL, the message will be sent to the sender, if specified, the message will not be sent to this participant
+ * \param fmt
+ */
 static int __attribute__ ((format (gnu_printf, 3, 4))) chat_send(struct channel *channel, struct participant *sender, const char *fmt, ...)
 {
 	char *buf;

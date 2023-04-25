@@ -687,8 +687,10 @@ static void destroy_operators(void)
 
 /*!
  * \brief Send a message to everyone (or almost everyone) in a channel
+ * \param lock
  * \param channel Channel to which to broadcast
  * \param user A user to which to NOT send the message (typically to prevent echoes of a user's own messages). NULL to really send to everyone.
+ * \param minmode The minimum channel user mode required to broadcast the message
  * \param fmt printf-style format string
  * \retval 0 on success, -1 on failure
  */
@@ -755,7 +757,13 @@ static void user_setactive(struct irc_user *user)
 	pthread_mutex_unlock(&user->lock);
 }
 
-/*! \param user Should be NULL for "system" generated messages and provided for messages actually sent by that user. */
+/*!
+ * \param channel
+ * \param user Should be NULL for "system" generated messages and provided for messages actually sent by that user.
+ * \param username
+ * \param buf
+ * \param sendingmod
+ */
 static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, const char *username, const char *buf, void *sendingmod)
 {
 	/* Now, relay it to any other external integrations that may exist. */

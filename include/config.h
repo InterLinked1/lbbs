@@ -103,14 +103,14 @@ int bbs_config_val_set_port(struct bbs_config *cfg, const char *section_name, co
  * \param cfg
  * \param section_name Name of section
  * \param key Name of key
- * \param int Pointer to integer
+ * \param var Pointer to integer
  * \retval 0 if set, -1 if not set (config value not found)
  */
 int bbs_config_val_set_true(struct bbs_config *cfg, const char *section_name, const char *key, int *var);
 
 /*!
  * \brief Traverse a config section
- * \param cfg
+ * \param section
  * \param keyval Previous key value pair. NULL to start at beginning.
  * \returns Next config key value pair
  */

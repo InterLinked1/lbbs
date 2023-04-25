@@ -82,10 +82,11 @@ int bbs_module_unload(const char *name);
 
 /*!
  * \brief Unload and load again a dynamic module by name
- * \param name Module name, with or without .so extension
- * \param Whether to queue a delayed reload if a reload cannot be completed now.
+ * \param name Module name with or without .so extension
+ * \param try_delayed Whether to queue a delayed reload if a reload cannot be completed now.
  *        The reload will be processed once the ref count of the module hits 0.
- * \retval 0 on success, -1 on failure (including if a reload was queued)
+ * \retval 0 on success
+ * \retval -1 on failure (including if a reload was queued)
  */
 int bbs_module_reload(const char *name, int try_delayed);
 

@@ -39,7 +39,7 @@ char *bbs_password_hash(const char *password, const char *salt);
  * \brief Generate a salt and hash
  * \param password Password to hash
  * \param buf Buffer
- * param len Length of buf (at least 61)
+ * \param len Length of buf (at least 61)
  * \retval 0 on success, -1 on failure
  */
 int bbs_password_salt_and_hash(const char *password, char *buf, size_t len);

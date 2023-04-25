@@ -24,7 +24,7 @@ struct bbs_user;
  * \param regprovider Callback function to execute that fully handles user registration.
  * \note Only one user registration provider may be registered system-wide.
  */
-#define bbs_register_user_registration_provider(name) __bbs_register_user_registration_provider(name, BBS_MODULE_SELF)
+#define bbs_register_user_registration_provider(regprovider) __bbs_register_user_registration_provider(regprovider, BBS_MODULE_SELF)
 
 int __bbs_register_user_registration_provider(int (*regprovider)(struct bbs_node *node), void *mod);
 
@@ -119,14 +119,14 @@ void login_cache_cleanup(void);
  * \brief Generate a temporary token that can be used to authenticate a user in lieu of a password
  * \param user
  * \param[out] buf
- * \param len. Must be at least 48.
+ * \param len Must be at least 48.
  * \retval 0 on success, -1 on failure
 */
 int bbs_user_temp_authorization_token(struct bbs_user *user, char *buf, size_t len);
 
 /*!
  * \brief Attempt to authenticate a user
- * \param node
+ * \param user
  * \param username User-attempted username. NULL for guest.
  * \param password User-attempted password. NULL for guest.
  * \retval 0 if user authenticated successfully, -1 if wrong credentials or other failure
@@ -175,7 +175,7 @@ int __bbs_register_auth_provider(const char *name, int (*provider)(AUTH_PROVIDER
 
 /*!
  * \brief Unregister an auth provider
- * \provider Callback function to unregister
+ * \param provider Callback function to unregister
  */
 int bbs_unregister_auth_provider(int (*provider)(AUTH_PROVIDER_PARAMS));
 

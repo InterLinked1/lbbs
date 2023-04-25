@@ -15,7 +15,6 @@
 
 /*!
  * \brief Register a callback to receive messages from door_irc IRC clients that have callbacks=yes
- * \param clientname Client name from door_irc.conf
  * \param msg_cb Callback for IRC messages
  * \param numeric_cb Callback for IRC numeric responses/messages. NULL if not needed.
  * \param mod Module reference
@@ -32,7 +31,7 @@ int bbs_irc_client_msg_callback_unregister(void (*msg_cb)(const char *clientname
  * \param fmt printf-style format string
  * \retval 0 on success, -1 on failure
  */
-int __attribute__ ((format (gnu_printf, 2, 3))) bbs_irc_client_send(const char *clientname, const char *fmt, ...);
+int bbs_irc_client_send(const char *clientname, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) ;
 
 /*!
  * \brief Send a PRIVMSG message to an IRC channel using a door_irc client (can be used anywhere in the BBS)
@@ -41,4 +40,4 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_irc_client_send(const char *
  * \param fmt printf-style format string
  * \retval 0 on success, -1 on failure
  */
-int __attribute__ ((format (gnu_printf, 3, 4))) bbs_irc_client_msg(const char *clientname, const char *channel, const char *fmt, ...);
+int bbs_irc_client_msg(const char *clientname, const char *channel, const char *fmt, ...) __attribute__ ((format (gnu_printf, 3, 4))) ;

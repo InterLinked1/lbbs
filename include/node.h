@@ -370,10 +370,9 @@ int bbs_expect_line(int fd, int ms, struct readline_data *rldata, const char *st
 /*!
  * \brief wrapper around poll() and read() for BBS node
  * \param node
- * \param buf Buffer for data
- * \param len Size of buf
+ * \param ms for poll
  * \note This is useful for reading a single character (in non-canonical mode) with no delay
- * \retval Same as read() i.e. 0 if fd closed, -1 on failure, non-negative character read otherwise
+ * \retval 0 if fd closed, -1 on failure, non-negative character read otherwise
  */
 char bbs_tread(struct bbs_node *node, int ms);
 
@@ -453,13 +452,13 @@ int bbs_std_write(int fd, const char *buf, unsigned int len);
  * \param fmt printf-format string
  * \retval Same as write()
  */
-int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(struct bbs_node *node, const char *fmt, ...);
+int bbs_writef(struct bbs_node *node, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) ;
 
 /*!
  * \brief Same as bbs_writef, but directly on a file descriptor
  * \note This is not exactly the same thing as a function like dprintf, since it returns the value returned by write()
  */
-int __attribute__ ((format (gnu_printf, 2, 3))) bbs_std_writef(int fd, const char *fmt, ...);
+int bbs_std_writef(int fd, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) ;
 
 /*!
  * \brief Clear the terminal screen on a node's connected TTY
@@ -478,7 +477,7 @@ int bbs_clear_line(struct bbs_node *node);
 /*!
  * \brief Set the terminal title
  * \param node
- * \param Title text. This is what will show up in the terminal emulator's window title, taskbar, etc.
+ * \param s Title text. This is what will show up in the terminal emulator's window title, taskbar, etc.
  * \retval Same as write()
  */
 int bbs_set_term_title(struct bbs_node *node, const char *s);
@@ -516,7 +515,7 @@ int bbs_ring_bell(struct bbs_node *node);
 /*!
  * \brief Wait for user to hit a key (any key)
  * \param node
- * \param Timeout in ms
+ * \param ms Timeout in milliseconds
  * \retval 0 on success, -1 on failure
  */
 int bbs_wait_key(struct bbs_node *node, int ms);
@@ -533,6 +532,6 @@ void bbs_node_exit(struct bbs_node *node);
 
 /*!
  * \brief Top-level node handler
- * \param node
+ * \param varg BBS node
  */
 void *bbs_node_handler(void *varg);

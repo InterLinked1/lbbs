@@ -64,9 +64,9 @@ struct bbs_user {
 
 /*!
  * \brief Get username of a BBS user.
- * \param user. It is okay if user is NULL, so it is always safe to pass node->user, for example.
+ * \param user It is okay if user is NULL, so it is always safe to pass node->user, for example.
  * \note For guests, this will always return Guest, not the guest-provided alias. Use bbs_user_alias for that.
- * \retval Friendly representation of logged in user. Never NULL.
+ * \returns Friendly representation of logged in user. Never NULL.
  */
 const char *bbs_username(struct bbs_user *user);
 

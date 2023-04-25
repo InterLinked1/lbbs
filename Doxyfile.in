@@ -26,6 +26,7 @@ ABBREVIATE_BRIEF       = "The $name class" \
                          a \
                          an \
                          the
+WARN_AS_ERROR          = YES
 ALWAYS_DETAILED_SEC    = NO
 INLINE_INHERITED_MEMB  = NO
 FULL_PATH_NAMES        = YES
@@ -40,7 +41,6 @@ INHERIT_DOCS           = YES
 SEPARATE_MEMBER_PAGES  = NO
 TAB_SIZE               = 4
 ALIASES                =
-TCL_SUBST              =
 OPTIMIZE_OUTPUT_FOR_C  = YES
 OPTIMIZE_OUTPUT_JAVA   = NO
 OPTIMIZE_FOR_FORTRAN   = NO
@@ -61,6 +61,7 @@ INLINE_GROUPED_CLASSES = NO
 INLINE_SIMPLE_STRUCTS  = NO
 TYPEDEF_HIDES_STRUCT   = NO
 LOOKUP_CACHE_SIZE      = 0
+DOT_GRAPH_MAX_NODES    = 100
 #---------------------------------------------------------------------------
 # Build related configuration options
 #---------------------------------------------------------------------------
@@ -153,7 +154,6 @@ CLANG_DATABASE_PATH    =
 # Configuration options related to the alphabetical class index
 #---------------------------------------------------------------------------
 ALPHABETICAL_INDEX     = YES
-COLS_IN_ALPHA_INDEX    = 5
 IGNORE_PREFIX          =
 #---------------------------------------------------------------------------
 # Configuration options related to the HTML output
@@ -284,8 +284,8 @@ PERLMOD_MAKEVAR_PREFIX =
 # Configuration options related to the preprocessor
 #---------------------------------------------------------------------------
 ENABLE_PREPROCESSING   = YES
-MACRO_EXPANSION        = NO
-EXPAND_ONLY_PREDEF     = NO
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = YES
 SEARCH_INCLUDES        = YES
 INCLUDE_PATH           =
 INCLUDE_FILE_PATTERNS  =

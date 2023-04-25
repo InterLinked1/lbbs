@@ -21,8 +21,8 @@ struct bbs_tcp_client;
 
 /*!
  * \brief Get the mailbox by user ID and/or email address username
- * \param userid. The user ID of the target mailbox, if known (will be for POP/IMAP, will not be for SMTP, so specify 0)
- * \param name. The username of the mailbox. This MUST be specified for SMTP, for alias resolution if needed, but optional for POP/IMAP.
+ * \param userid The user ID of the target mailbox, if known (will be for POP/IMAP, will not be for SMTP, so specify 0)
+ * \param name The username of the mailbox. This MUST be specified for SMTP, for alias resolution if needed, but optional for POP/IMAP.
  * \retval mailbox on success, NULL on failure
  */
 struct mailbox *mailbox_get(unsigned int userid, const char *name);
@@ -36,6 +36,7 @@ const char *mailbox_expand_list(const char *listname);
 
 /*!
  * \brief Attempt to obtain a read lock on mailbox
+ * \param mbox
  * \retval 0 on success (lock obtained), error number otherwise
  * \note IMAP operations may use this function
  */
@@ -43,6 +44,7 @@ int mailbox_rdlock(struct mailbox *mbox);
 
 /*!
  * \brief Attempt to obtain a write lock on mailbox
+ * \param mbox
  * \retval 0 on success (lock obtained), error number otherwise
  * \note POP operations should use this function
  */
@@ -90,7 +92,7 @@ void mailbox_invalidate_quota_cache(struct mailbox *mbox);
 /*!
  * \brief Manually adjust the quota usage of a mailbox
  * \param mbox
- * \param bytes. Positive number to increase quota usage or negative number to decrease quota usage
+ * \param bytes Positive number to increase quota usage or negative number to decrease quota usage
  */
 void mailbox_quota_adjust_usage(struct mailbox *mbox, int bytes);
 
@@ -179,8 +181,8 @@ unsigned long maildir_new_modseq(struct mailbox *mbox, const char *directory);
  * \param curdir Full system path to cur directory (should be an immediate subdirectory of dir)
  * \param newdir Full system path to new directory (should be an immediate subdirectory of dir)
  * \param filename The original name (just the name, not the full path) of the message file in the new directory
- * \param[out] newuidvalidity The UIDVALIDITY of this directory
- * \param[out] newuidnext The current maximum UID in this directory (this is somewhat of a misnomer, you need to add 1 to compute the actual UIDNEXT)
+ * \param[out] uidvalidity The UIDVALIDITY of this directory
+ * \param[out] uidnext The current maximum UID in this directory (this is somewhat of a misnomer, you need to add 1 to compute the actual UIDNEXT)
  * \retval -1 on failure, number of bytes in file on success (useful for POP3)
  */
 int maildir_move_new_to_cur(struct mailbox *mbox, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext);
@@ -192,8 +194,8 @@ int maildir_move_new_to_cur(struct mailbox *mbox, const char *dir, const char *c
  * \param curdir Full system path to cur directory (should be an immediate subdirectory of dir)
  * \param newdir Full system path to new directory (should be an immediate subdirectory of dir)
  * \param filename The original name (just the name, not the full path) of the message file in the new directory
- * \param[out] newuidvalidity The UIDVALIDITY of this directory
- * \param[out] newuidnext The current maximum UID in this directory (this is somewhat of a misnomer, you need to add 1 to compute the actual UIDNEXT)
+ * \param[out] uidvalidity The UIDVALIDITY of this directory
+ * \param[out] uidnext The current maximum UID in this directory (this is somewhat of a misnomer, you need to add 1 to compute the actual UIDNEXT)
  * \param[out] newpath The resulting new filename
  * \param len Length of newpath
  * \retval -1 on failure, number of bytes in file on success (useful for POP3)
@@ -235,7 +237,7 @@ int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const c
 /*!
  * \brief Get the UID of a maildir file in cur directory
  * \param filename Base name of file
- * \param[out] UID
+ * \param[out] uid
  * \retval 0 on success, -1 on failure
  */
 int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid);
@@ -292,6 +294,7 @@ char *sieve_get_capabilities(void);
 /*!
  * \brief Validate a Sieve script
  * \param filename Full path to file containing Sieve script
+ * \param mbox
  * \param[out] errormsg error message for user, which must be freed
  * \retval 0 if valid, 1 if invalid, -1 on error or failure
  */

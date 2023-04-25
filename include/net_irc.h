@@ -97,11 +97,11 @@ const char *irc_channel_topic(const char *channel);
 
 /*!
  * \brief Register a relay function that will be used to receive messages sent on IRC channels for rebroadcast on other protocols.
- * \param relay_send. Callback function. Note that sender could be NULL, but will contain the sending user's nickname, if available.
+ * \param relay_send Callback function. Note that sender could be NULL, but will contain the sending user's nickname, if available.
  *                    The function should return 0 to continue processing any other relays and nonzero to stop immediately.
- * \param nicklist. Callback function to obtain an IRC NAMES or WHO format of any users that should be displayed as channel members. NULL if not applicable.
+ * \param nicklist Callback function to obtain an IRC NAMES or WHO format of any users that should be displayed as channel members. NULL if not applicable.
  *                  If channel is non-NULL, function should return all members in channel. Otherwise, it should return the specified user.
- * \param privmsg.  Callback function to relay a private message to a user on another network. NULL if not applicable.
+ * \param privmsg  Callback function to relay a private message to a user on another network. NULL if not applicable.
  * \param mod Module reference.
  * \retval 0 on success, -1 on failure
  */

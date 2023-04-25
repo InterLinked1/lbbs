@@ -15,12 +15,12 @@
 
 /*!
  * \brief Email the sysop
- * \param user. Sending user. NULL for general system notifications.
+ * \param user Sending user. NULL for general system notifications.
  * \param subject
  * \param fmt Email printf-style format string
  * \retval 0 on success, -1 on failure
  */
-int __attribute__ ((format (gnu_printf, 3, 4))) bbs_sysop_email(struct bbs_user *user, const char *subject, const char *fmt, ...);
+int bbs_sysop_email(struct bbs_user *user, const char *subject, const char *fmt, ...) __attribute__ ((format (gnu_printf, 3, 4))) ;
 
 enum notify_delivery_type {
 	DELIVERY_GUARANTEED = 0,
@@ -34,7 +34,7 @@ enum notify_delivery_type {
  * \param fmt printf-style format string
  * \note This should only be used for *short* messages, i.e. a sentence or two at most. Do not include a trailing CR LF.
  */
-int __attribute__ ((format (gnu_printf, 3, 4))) bbs_alert_user(unsigned int userid, enum notify_delivery_type persistence, const char *fmt, ...);
+int bbs_alert_user(unsigned int userid, enum notify_delivery_type persistence, const char *fmt, ...) __attribute__ ((format (gnu_printf, 3, 4))) ;
 
 #define ALERTER_PARAMS unsigned int userid, const char *msg
 

@@ -30,7 +30,7 @@ int __bbs_register_oauth_provider(int (*provider)(OAUTH_PROVIDER_PARAMS), void *
 
 /*!
  * \brief Unregister an OAuth token provider
- * \provider Callback function to unregister
+ * \param provider Callback function to unregister
  */
 int bbs_unregister_oauth_provider(int (*provider)(OAUTH_PROVIDER_PARAMS));
 

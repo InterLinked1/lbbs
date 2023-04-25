@@ -781,10 +781,11 @@ static void dump_user(int fd, const char *requsername, struct user *u)
 }
 
 /*!
- * \param numeric
- * 318 = WHOIS
- * 352 = WHO
- * 353 = NAMES
+ * \param fd
+ * \param numeric: 318 = WHOIS, 352 = WHO, 353 = NAMES
+ * \param requsername
+ * \param channel
+ * \param user
  */
 static int nicklist(int fd, int numeric, const char *requsername, const char *channel, const char *user)
 {

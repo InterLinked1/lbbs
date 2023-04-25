@@ -72,6 +72,7 @@ const char *bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpa
 
 /*!
  * \brief Get a directory using an absolute argument
+ * \param node
  * \param userpath The absolute or relative path argument
  * \param[out] buf The new directory
  * \param len Size of buf
@@ -95,6 +96,7 @@ int __bbs_transfer_set_disk_path_absolute(struct bbs_node *node, const char *use
 
 /*!
  * \brief Get a directory using an absolute or relative path argument
+ * \param node
  * \param current The current full path on disk
  * \param userpath The absolute or relative path argument
  * \param[out] buf The new directory
@@ -108,6 +110,7 @@ int __bbs_transfer_set_disk_path_absolute(struct bbs_node *node, const char *use
 
 /*!
  * \brief Get a directory using an absolute or relative path argument
+ * \param node
  * \param current The current full path on disk
  * \param userpath The absolute or relative path argument
  * \param[out] buf The new directory
@@ -119,8 +122,9 @@ int __bbs_transfer_set_disk_path_relative(struct bbs_node *node, const char *cur
 
 /*!
  * \brief Get the parent directory of the current directory
+ * \param node
  * \param diskpath The current directory on disk
- * \param buf[out] The new (parent) directory, or the current directory if currently at the transfer root
+ * \param[out] buf The new (parent) directory, or the current directory if currently at the transfer root
  * \param len Size of buf
  * \retval 0 on success (updated to parent dir), -1 on failure (unchanged)
  */

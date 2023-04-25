@@ -50,6 +50,6 @@ int bbs_node_spy(int fdin, int fdout, int nodenum);
 
 /*!
  * \brief PTY master side handling
- * \param node
+ * \param varg BBS node
  */
 void *pty_master(void *varg);

@@ -127,6 +127,8 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 #define COLOR_CYAN      "36"
 #define COLOR_WHITE     "37"
 
+/*! @} */
+
 /* User definitions */
 #define COLOR_SUCCESS COLOR_GREEN
 #define COLOR_FAILURE COLOR_RED

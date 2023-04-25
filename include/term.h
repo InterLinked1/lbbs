@@ -72,7 +72,7 @@ int bbs_echo(struct bbs_node *node, int echo);
 
 /*!
  * \brief Make a TTY fd raw (pass most input unaltered)
- * \param PTY master fd
+ * \param fd PTY master fd
  * \retval 0 on success, -1 on failure
  */
 int bbs_term_makeraw(int fd);

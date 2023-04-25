@@ -155,11 +155,11 @@ static int imap_debug_level = 10;
 #define IMAP_ACL_READ_LETTER 'r'
 
 /*! \brief SEEN persistence */
-/*! \note There is no way for \Seen to not be persistent, so this is always enabled. */
+/*! \note There is no way for Seen to not be persistent, so this is always enabled. */
 #define IMAP_ACL_SEEN (1 << 2)
 #define IMAP_ACL_SEEN_LETTER 's'
 
-/*! \brief Set or clear flags other than \Seen or \Deleted via STORE, or set using APPEND/COPY */
+/*! \brief Set or clear flags other than Seen or Deleted via STORE, or set using APPEND/COPY */
 #define IMAP_ACL_WRITE (1 << 3)
 #define IMAP_ACL_WRITE_LETTER 'w'
 
@@ -181,7 +181,7 @@ static int imap_debug_level = 10;
 #define IMAP_ACL_MAILBOX_DELETE (1 << 7)
 #define IMAP_ACL_MAILBOX_DELETE_LETTER 'x'
 
-/*! \brief DELETE messages (\Deleted flag via STORE, APPEND, COPY) */
+/*! \brief DELETE messages (Deleted flag via STORE, APPEND, COPY) */
 #define IMAP_ACL_DELETE (1 << 8)
 #define IMAP_ACL_DELETE_LETTER 't'
 
@@ -953,7 +953,10 @@ static int __parse_flags_string(struct imap_session *imap, char *s, const char *
 	return flags;
 }
 
-/*! \param keywords[out] Pointer to beginning of keywords, if any */
+/*!
+ * \param f
+ * \param[out] keywords Pointer to beginning of keywords, if any
+ */
 static int parse_flags_letters(const char *f, const char **keywords)
 {
 	int flags = 0;
@@ -995,7 +998,11 @@ static int parse_flags_letters(const char *f, const char **keywords)
 	return flags;
 }
 
-/*! \param keywordsbuf. Must be of size 27 */
+/*!
+ * \param filename
+ * \param flags
+ * \param keywordsbuf Must be of size 27
+ */
 static int parse_flags_letters_from_filename(const char *filename, int *flags, char *keywordsbuf)
 {
 	const char *keywords = NULL;
@@ -1086,11 +1093,12 @@ static int restrict_flags(int acl, int *flags)
  * \note This function will rename the file with the adjusted flag letters
  *
  * \param imap
- * \param olddirectory The old maildir from which flags are translated
+ * \param oldmaildir The old maildir from which flags are translated
  * \param oldfilenamefull The full path to the current filename of this message
  * \param oldfilename A base filename that contains the flags. Note this does not necessarily have to be the basename of oldfilenamefull,
  *        and with current usage, it is not. It's fine if it's stale, as long as it contains the flags accurately
  * \param newmaildir The new maildir to which flags are translated
+ * \param destacl
  */
 static int translate_maildir_flags(struct imap_session *imap, const char *oldmaildir, const char *oldfilenamefull, const char *oldfilename, const char *newmaildir, int destacl)
 {
@@ -2848,7 +2856,7 @@ static int imap_client_list(struct bbs_tcp_client *client, const char *prefix, F
 			} else {
 				bbs_debug(8, "Mailbox '%s' has no attributes\n", p2);
 			}
-			/*! \todo Would be nice to say \HasChildren or \HasNoChildren here, too, if the server didn't say */
+			/*! \todo Would be nice to say HasChildren or HasNoChildren here, too, if the server didn't say */
 		}
 		snprintf(fullmailbox, sizeof(fullmailbox), "%s%s%s", prefix, delimiter, p2);
 		/* If the hierarchy delimiter differs from ours, then fullmailbox will contain multiple delimiters.
@@ -3214,7 +3222,7 @@ static int handle_list(struct imap_session *imap, char *s, int lsub)
 	 * support XLIST but not SPECIAL-USE.
 	 */
 
-	/*! \todo Add support for displaying \Marked and \Unmarked */
+	/*! \todo Add support for displaying Marked and Unmarked */
 
 	/* SPECIAL-USE specific: */
 	if (!strlen_zero(s) && !strcasecmp(s, "RETURN (SPECIAL-USE)")) {

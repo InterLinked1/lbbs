@@ -819,11 +819,9 @@ cleanup:
  * \param sender The MAIL FROM for the message
  * \param recipient A single recipient for RCPT TO
  * \param recipients A list of recipients for RCPT TO. Either recipient or recipients must be specified.
- * \param data Message data
- * \param datalen Length of data
- * \param datafd A file descriptor containing the message data (used instead of data/datalen)
  * \param prepend Data to prepend
  * \param prependlen Length of prepend
+ * \param datafd A file descriptor containing the message data (used instead of data/datalen)
  * \param offset sendfile offset for message (sent data will begin here)
  * \param writelen Number of bytes to send
  * \param[out] buf Buffer in which to temporarily store SMTP responses

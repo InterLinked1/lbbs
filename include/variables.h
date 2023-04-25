@@ -42,7 +42,6 @@ int bbs_var_set(struct bbs_node *node, const char *key, const char *value);
 
 /*!
  * \brief Set a global variable using config input
- * \param node If NULL, variable will be set globally.
  * \param key Name of variable. Case-sensitive.
  * \param value New or updated variable value. To delete a variable already set, use NULL.
  * \note This function should not be used by the BBS itself for setting BBS variables, only for setting variables from user configs.
@@ -57,10 +56,11 @@ int bbs_var_set_user(const char *key, const char *value);
  * \param fmt printf-style format string
  * \retval 0 if variable was successfully added, updated, or deleted, and -1 on failure.
  */
-int __attribute__ ((format (gnu_printf, 3, 4))) bbs_var_set_fmt(struct bbs_node *node, const char *key, const char *fmt, ...);
+int bbs_var_set_fmt(struct bbs_node *node, const char *key, const char *fmt, ...) __attribute__ ((format (gnu_printf, 3, 4))) ;
 
 /*!
  * \brief Enumerate all variables
+ * \param fd File descriptor to which to print
  * \param node Node for which to list variables. If NULL, all global variables will be dumped.
  */
 int bbs_vars_dump(int fd, struct bbs_node *node);

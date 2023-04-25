@@ -23,8 +23,8 @@ struct bbs_node;
  *        The user can choose to process, abort, or continue at any time.
  * \param node
  * \param instr If non-NULL, a line of instructions to be displayed to the user. Do not terminate with LF.
- * \param buf Buffer in which input will be stored. Should be sufficiently large for its purpose.
- * \param line Size of buf
+ * \param[out] buf Buffer in which input will be stored. Should be sufficiently large for its purpose.
+ * \param len Size of buf
  * \retval -1 on disconnect, 0 on success (continue processing), 1 on abort (discard buffer)
  */
 int bbs_line_editor(struct bbs_node *node, const char *instr, char *buf, size_t len);

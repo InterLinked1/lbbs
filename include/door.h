@@ -39,6 +39,7 @@ int bbs_list_doors(int fd);
  * \brief Execute a named door
  * \param node
  * \param name Name of door
+ * \param args Optional door arguments
  * \retval 0 on success, -1 on failure
  */
 int bbs_door_exec(struct bbs_node *node, const char *name, const char *args);
