@@ -49,6 +49,7 @@ static pthread_t trash_thread = -1;
 struct mailbox {
 	unsigned int id;					/* Mailbox ID. Corresponds with user ID. */
 	unsigned int watchers;				/* Number of watchers for this mailbox. */
+	unsigned int quota;					/* Total quota for this mailbox */
 	unsigned int quotausage;			/* Cached quota usage calculation */
 	char maildir[256];					/* User's mailbox directory, on disk. */
 	pthread_rwlock_t lock;				/* R/W lock for entire mailbox. R/W instead of a mutex, because POP write locks the entire mailbox, IMAP can just read lock. */
@@ -618,8 +619,24 @@ void mailbox_quota_adjust_usage(struct mailbox *mbox, int bytes)
 
 unsigned long mailbox_quota(struct mailbox *mbox)
 {
-	UNUSED(mbox); /* Not currently per-mailbox, but leave open the possibility of being more granular in the future. */
-	return (unsigned long) maxquota;
+	char quotafile[256];
+	char quotabuf[256];
+	FILE *fp;
+
+	if (mbox->quota) {
+		return mbox->quota; /* At this point, this value is read only */
+	}
+
+	/* This only needs to be done once for any given mailbox. */
+	snprintf(quotafile, sizeof(quotafile), "%s/.quota", mailbox_maildir(mbox));
+	fp = fopen(quotafile, "r");
+	if (fp && fgets(quotabuf, sizeof(quotabuf), fp)) { /* Use the default */
+		mbox->quota = (unsigned long) atol(quotabuf);
+		fclose(fp);
+	} else {
+		mbox->quota = (unsigned long) maxquota;
+	}
+	return mbox->quota;
 }
 
 unsigned long mailbox_quota_remaining(struct mailbox *mbox)

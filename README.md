@@ -272,6 +272,21 @@ in `configs/menus.conf`. Please also read the caveats, notes, and warnings about
 The `isoroot` program in the `external` directory also demonstrates how this functionality works in a standalone manner,
 if you want to test your container environment separately.
 
+#### What format does the BBS use to store email?
+
+The BBS mail servers use the maildir++ format. This is similar to what software like Dovecot and Courier use by default,
+although certain implementation details may differ.
+
+#### Does the BBS provide any kind of webmail access?
+
+Not natively, no.
+However, you can use an open source webmail package, e.g. SquirrelMail, RoundCube, etc. and that should work just fine.
+SquirrelMail is extremely simple (no JavaScript used or required); RoundCube comes with more features and extensibility.
+In particular, RoundCube comes with a built-in graphical ManageSieve editor, which can be useful for managing your Sieve scripts.
+
+Do keep in mind that webmail offers significantly reduced functionality compared to a standard mail client (e.g. something in the Thunderbird family,
+like Interlink/MailNews).
+
 #### Why is there a non-standard filtering engine (MailScript) included?
 
 The MailScript filtering language was explicitly designed to be very simple to parse, unlike filtering languages with

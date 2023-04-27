@@ -3542,16 +3542,21 @@ static int uintlist_append(unsigned int **a, int *lengths, int *allocsizes, unsi
 		*allocsizes = UINTLIST_CHUNK_SIZE;
 	} else {
 		if (*lengths >= *allocsizes) {
-			unsigned int *newa = realloc(*a, *allocsizes + UINTLIST_CHUNK_SIZE * sizeof(unsigned int)); /* Increase by 32 each chunk */
+			unsigned int *newa;
+			int newallocsize = *allocsizes += UINTLIST_CHUNK_SIZE; /* Don't multiply by sizeof(unsigned int), so we can directly compare with lengths */
+			newa = realloc(*a, newallocsize * sizeof(unsigned int)); /* Increase by 32 each chunk */
 			if (ALLOC_FAILURE(newa)) {
 				return -1;
 			}
-			*allocsizes = *allocsizes + UINTLIST_CHUNK_SIZE * sizeof(unsigned int);
 			*a = newa;
+			*allocsizes = newallocsize;
 		}
 	}
 
 	curlen = *lengths;
+#ifdef DEBUG_UINTLIST
+	bbs_debug(10, "Writing to index %d/%d\n", curlen, *allocsizes);
+#endif
 	(*a)[curlen] = vala;
 	*lengths = curlen + 1;
 	return 0;
@@ -3574,7 +3579,9 @@ static int uintlist_append2(unsigned int **a, unsigned int **b, int *lengths, in
 		*allocsizes = UINTLIST_CHUNK_SIZE;
 	} else {
 		if (*lengths >= *allocsizes) {
-			unsigned int *newb, *newa = realloc(*a, *allocsizes + UINTLIST_CHUNK_SIZE * sizeof(unsigned int)); /* Increase by 32 each chunk */
+			unsigned int *newb, *newa;
+			int newallocsize = *allocsizes += UINTLIST_CHUNK_SIZE; /* Don't multiply by sizeof(unsigned int), so we can directly compare with lengths */
+			newa = realloc(*a, newallocsize * sizeof(unsigned int)); /* Increase by 32 each chunk */
 			if (ALLOC_FAILURE(newa)) {
 				return -1;
 			}
@@ -3583,13 +3590,16 @@ static int uintlist_append2(unsigned int **a, unsigned int **b, int *lengths, in
 				/* This is tricky. We expanded a but failed to expand b. Keep the smaller size for our records. */
 				return -1;
 			}
-			*allocsizes = *allocsizes + UINTLIST_CHUNK_SIZE * sizeof(unsigned int);
+			*allocsizes = newallocsize;
 			*a = newa;
 			*b = newb;
 		}
 	}
 
 	curlen = *lengths;
+#ifdef DEBUG_UINTLIST
+	bbs_debug(10, "Writing to index %d/%d\n", curlen, *allocsizes);
+#endif
 	(*a)[curlen] = vala;
 	(*b)[curlen] = valb;
 	*lengths = curlen + 1;
@@ -7107,7 +7117,7 @@ static int finish_auth(struct imap_session *imap, int auth)
 	 * As an optimization, we could save an RTT by sending them unsolicited */
 
 	if (auth) {
-		_imap_reply(imap, "%s OK Success\r\n", imap->savedtag); /* Use tag from AUTHENTICATE request */
+		_imap_reply(imap, "%s OK Success\r\n", imap->savedtag ? imap->savedtag : imap->tag); /* Use tag from AUTHENTICATE request */
 		free_if(imap->savedtag);
 	} else {
 		imap_reply(imap, "OK Login completed");
