@@ -132,6 +132,7 @@ static void *uds_listener(void *unused)
 		node->ip = strdup("127.0.0.1"); /* Connection is from localhost */
 
 		/* Run the BBS on this node */
+		node->skipjoin = 1;
 		if (bbs_pthread_create_detached(&node->thread, NULL, bbs_node_handler, node)) {
 			bbs_node_unlink(node);
 			continue;

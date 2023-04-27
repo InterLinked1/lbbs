@@ -948,6 +948,7 @@ static void *ssh_connection(void *varg)
 	if (node) {
 		save_remote_ip(session, node, NULL, 0);
 		node->thread = pthread_self();
+		node->skipjoin = 1;
 		bbs_node_begin(node);
 		handle_session(node, session); /* This is the custom node handler, essentially */
 		bbs_debug(3, "Node %d has ended its SFTP session\n", node->id);

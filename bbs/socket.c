@@ -528,8 +528,11 @@ void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, c
 			close(sfd);
 		} else if (bbs_save_remote_ip(&sinaddr, node)) {
 			bbs_node_unlink(node);
-		} else if (bbs_pthread_create_detached(&node->thread, NULL, handler, node)) { /* Run the BBS on this node */
-			bbs_node_unlink(node);
+		} else {
+			node->skipjoin = 1;
+			if (bbs_pthread_create_detached(&node->thread, NULL, handler, node)) { /* Run the BBS on this node */
+				bbs_node_unlink(node);
+			}
 		}
 	}
 	/* Normally, we never get here, as pthread_cancel snuffs out the thread ungracefully */

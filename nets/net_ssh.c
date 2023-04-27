@@ -145,6 +145,7 @@ struct channel_data_struct {
 	/* Flags */
 	unsigned int closed:1;
 	unsigned int userattached:1;
+	unsigned int addedfdwatch:1;
 };
 
 /* A userdata struct for session. */
@@ -477,12 +478,12 @@ static int shell_request(ssh_session session, ssh_channel channel, void *userdat
 	 * node thread normally (not detached), so that handle_session
 	 * can join the thread (and know if it has exited)
 	 */
+	node->skipjoin = 1; /* handle_session will join the node thread, bbs_node_shutdown should not */
 	if (bbs_pthread_create(&node->thread, NULL, bbs_node_handler, node)) {
 		bbs_node_unlink(node);
 		cdata->node = NULL;
 		return SSH_ERROR;
 	}
-	node->skipjoin = 1; /* handle_session will join the node thread, bbs_node_shutdown should not */
 	cdata->nodethread = node->thread;
 	bbs_debug(3, "Node thread is %lu\n", cdata->nodethread);
 	return SSH_OK;
@@ -523,6 +524,7 @@ static void handle_session(ssh_event event, ssh_session session)
 {
 	int n;
 	int node_started = 0;
+	int stdoutfd;
 	/* We set the user when we have access to the session userdata,
 	 * but we need to attach it the node when we have access to the
 	 * channel userdata.
@@ -693,10 +695,12 @@ static void handle_session(ssh_event event, ssh_session session)
 		node_started = 1;
 		/* If stdout valid, add stdout to be monitored by the poll event. */
 		/* Skip stderr, the BBS doesn't use it, since we're not launching a shell. */
-		if (cdata.child_stdout != -1) {
+		if (cdata.child_stdout != -1 && !cdata.addedfdwatch) {
 			if (ssh_event_add_fd(event, cdata.child_stdout, POLLIN | POLLPRI | POLLERR | POLLHUP | POLLNVAL, process_stdout, sdata.channel) != SSH_OK) {
 				bbs_error("Failed to register stdout to poll context\n");
 				ssh_channel_close(sdata.channel);
+			} else {
+				cdata.addedfdwatch = 1;
 			}
 		} else {
 			bbs_error("No stdout available?\n");
@@ -719,6 +723,7 @@ static void handle_session(ssh_event event, ssh_session session)
 
 	close_if(cdata.pty_master);
 	close_if(cdata.child_stdin);
+	stdoutfd = cdata.child_stdout;
 	close_if(cdata.child_stdout);
 
 	if (cdata.nodethread) {
@@ -726,7 +731,9 @@ static void handle_session(ssh_event event, ssh_session session)
 	}
 
 	/* Remove the descriptors from the polling context, since they are now closed, they will always trigger during the poll calls */
-	ssh_event_remove_fd(event, cdata.child_stdout);
+	if (stdoutfd != -1 && ssh_event_remove_fd(event, stdoutfd) != SSH_OK) {
+		bbs_error("Failed to free SSH event fd\n");
+	}
 
 	/* Goodbye */
 	ssh_channel_send_eof(sdata.channel);
