@@ -159,29 +159,29 @@ static int test_readline_helper(void)
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 
 	SWRITE(pfd[1], "abcd\r\nefg");
-	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
+	res = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(4, res);
 	bbs_test_assert_str_equals(buf, "abcd");
 	SWRITE(pfd[1], "hi\r\nj");
-	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
+	res = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(5, res);
 	bbs_test_assert_str_equals(buf, "efghi");
 	SWRITE(pfd[1], "k\r\nlmno\r\npqrs\r\n");
-	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
+	res = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(2, res);
 	bbs_test_assert_str_equals(buf, "jk");
-	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
+	res = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(4, res);
 	bbs_test_assert_str_equals(buf, "lmno");
-	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
+	res = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(4, res);
 	bbs_test_assert_str_equals(buf, "pqrs");
 	SWRITE(pfd[1], "tuv\r\n");
-	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
+	res = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(3, res);
 	bbs_test_assert_str_equals(buf, "tuv");
 	SWRITE(pfd[1], "wxyz\r\n");
-	res = bbs_fd_readline(pfd[0], &rldata, "\r\n", 1000);
+	res = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(4, res);
 	bbs_test_assert_str_equals(buf, "wxyz");
 
@@ -239,6 +239,8 @@ static int test_ipv4_detection(void)
 	bbs_test_assert_equals(1, bbs_hostname_is_ipv4("1.1.1.1"));
 	bbs_test_assert_equals(0, bbs_hostname_is_ipv4("example.com"));
 	bbs_test_assert_equals(1, bbs_hostname_is_ipv4("1.2.3.4"));
+	bbs_test_assert_equals(1, bbs_hostname_is_ipv4("192.168.1.1"));
+	bbs_test_assert_equals(1, bbs_hostname_is_ipv4("10.2.3.4"));
 
 	return 0;
 

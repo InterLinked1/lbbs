@@ -113,7 +113,7 @@ static int telnet_handshake(struct bbs_node *node)
 
 	/* Process any Telnet commands received. Wait 100ms after sending our commands. */
 	for (;;) {
-		int res = bbs_std_poll(node->rfd, 100);
+		int res = bbs_poll(node->rfd, 100);
 		if (res <= 0) {
 			return res;
 		}

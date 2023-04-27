@@ -64,12 +64,12 @@ static int calc_exec(struct bbs_node *node, const char *args)
 		return 0;
 	}
 
-	bbs_buffer(node);
-	bbs_writef(node, "\r");
+	bbs_node_buffer(node);
+	bbs_node_writef(node, "\r");
 	for (;;) {
 		char *argv[3] = { "bc", "-q", NULL }; /* -q = quiet: disable initial banner */
-		bbs_writef(node, "EQ> ");
-		res = bbs_readline(node, MIN_MS(5), buf, sizeof(buf) - 2);
+		bbs_node_writef(node, "EQ> ");
+		res = bbs_node_readline(node, MIN_MS(5), buf, sizeof(buf) - 2);
 		if (res <= 0) {
 			res = -1;
 			break;
@@ -101,13 +101,13 @@ static int calc_exec(struct bbs_node *node, const char *args)
 		}
 		res = bbs_execvp_fd_headless(node, stdin[0], stdout[1], "bc", argv);
 		if (res) {
-			bbs_writef(node, "Execution Error\n");
+			bbs_node_writef(node, "Execution Error\n");
 			continue;
 		}
 		/* Read into the buffer */
-		if (bbs_std_poll(stdout[0], 0) == 0) {
+		if (bbs_poll(stdout[0], 0) == 0) {
 			bbs_warning("No data in pipe?\n");
-			bbs_writef(node, "Execution Error\n");
+			bbs_node_writef(node, "Execution Error\n");
 			continue;
 		}
 		res = read(stdout[0], buf, sizeof(buf) - 1);
@@ -120,10 +120,10 @@ static int calc_exec(struct bbs_node *node, const char *args)
 		/* Show the answer */
 		bbs_debug(5, "Read '%s' from stdout pipe\n", buf);
 		if (STARTS_WITH(buf, "(standard_in)")) { /* Syntax error or some other thingamajig */
-			bbs_writef(node, "Syntax Error\n");
+			bbs_node_writef(node, "Syntax Error\n");
 			continue;
 		}
-		bbs_writef(node, "%s", buf);
+		bbs_node_writef(node, "%s", buf);
 	}
 	close(stdin[0]);
 	close(stdin[1]);
@@ -140,9 +140,9 @@ static int dict_exec(struct bbs_node *node, const char *args)
 
 	UNUSED(args);
 
-	bbs_clear_screen(node); /* Didn't really want to, but the pager will clear the screen anyways so this is consistent with that */
+	bbs_node_clear_screen(node); /* Didn't really want to, but the pager will clear the screen anyways so this is consistent with that */
 
-	bbs_writef(node, "\r");
+	bbs_node_writef(node, "\r");
 	for (;;) {
 		char url[256];
 		struct pager_info pginfo;
@@ -150,9 +150,9 @@ static int dict_exec(struct bbs_node *node, const char *args)
 			.forcefail = 1,
 		};
 
-		bbs_buffer(node); /* The pager will disable buffering (including echo), so do this each loop */
-		bbs_writef(node, "DICT> ");
-		res = bbs_readline(node, MIN_MS(5), buf, sizeof(buf) - 2);
+		bbs_node_buffer(node); /* The pager will disable buffering (including echo), so do this each loop */
+		bbs_node_writef(node, "DICT> ");
+		res = bbs_node_readline(node, MIN_MS(5), buf, sizeof(buf) - 2);
 		if (res <= 0) {
 			res = -1;
 			break;
@@ -203,7 +203,7 @@ static int dict_exec(struct bbs_node *node, const char *args)
 					break; /* Stop if anything exceptional happens */
 				}
 #else
-				bbs_writef(node, "%s\n", line);
+				bbs_node_writef(node, "%s\n", line);
 #endif
 			}
 			bbs_curl_free(&c);

@@ -685,6 +685,13 @@ static void destroy_operators(void)
 #define channel_broadcast_nolock(channel, user, fmt, ...) __channel_broadcast(0, channel, user, 0, fmt, ## __VA_ARGS__)
 #define channel_broadcast_selective(channel, user, minmode, fmt, ...) __channel_broadcast(1, channel, user, minmode, fmt, ## __VA_ARGS__)
 
+/*
+ * Forward declaration needed since __attribute__ can only be used with declarations, not definitions.
+ * See http://www.unixwiz.net/techtips/gnu-c-attributes.html#compat
+ * We only need the redundant declarations for static functions with attributes.
+ */
+static int __attribute__ ((format (gnu_printf, 5, 6))) __channel_broadcast(int lock, struct irc_channel *channel, struct irc_user *user, enum channel_user_modes minmode, const char *fmt, ...);
+
 /*!
  * \brief Send a message to everyone (or almost everyone) in a channel
  * \param lock
@@ -694,7 +701,7 @@ static void destroy_operators(void)
  * \param fmt printf-style format string
  * \retval 0 on success, -1 on failure
  */
-static int __attribute__ ((format (gnu_printf, 5, 6))) __channel_broadcast(int lock, struct irc_channel *channel, struct irc_user *user, enum channel_user_modes minmode, const char *fmt, ...)
+static int __channel_broadcast(int lock, struct irc_channel *channel, struct irc_user *user, enum channel_user_modes minmode, const char *fmt, ...)
 {
 	struct irc_member *member;
 	char *buf;
@@ -2603,7 +2610,7 @@ static void handle_client(struct irc_user *user)
 
 	for (;;) {
 		char *s, *m = buf;
-		res = bbs_fd_poll_read(user->rfd, 2 * PING_TIME, buf, sizeof(buf) - 1); /* Wait up to the ping interval time for something, anything, otherwise disconnect. */
+		res = bbs_poll_read(user->rfd, 2 * PING_TIME, buf, sizeof(buf) - 1); /* Wait up to the ping interval time for something, anything, otherwise disconnect. */
 		if (res <= 0) {
 			/* Don't set graceful_close to 0 here, since after a QUIT, the client may close the connection first.
 			 * The QUIT message should be whatever the client sent, since it was graceful, not connection closed by remote host. */

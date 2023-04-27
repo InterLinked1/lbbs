@@ -89,7 +89,7 @@ static int rlogin_handshake(struct bbs_node *node)
 	 * server-user-name<null>
 	 * terminal-type/speed<null>
 	 */
-	res = bbs_fd_poll_read(node->fd, SEC_MS(2), buf, sizeof(buf) - 1);
+	res = bbs_poll_read(node->fd, SEC_MS(2), buf, sizeof(buf) - 1);
 	if (res <= 0) {
 		bbs_warning("Didn't receive connection string\n");
 		return -1;
@@ -126,7 +126,7 @@ static int rlogin_handshake(struct bbs_node *node)
 	 * so this currently always fails.
 	 * Probably we're not sending the TCP urgent data properly. Dunno. */
 
-	res = bbs_fd_poll_read(node->fd, SEC_MS(2), (char*) buf2, sizeof(buf2) - 1);
+	res = bbs_poll_read(node->fd, SEC_MS(2), (char*) buf2, sizeof(buf2) - 1);
 	if (res <= 0) {
 		bbs_warning("Failed to receive window change control sequence\n");
 		/* Just continue */

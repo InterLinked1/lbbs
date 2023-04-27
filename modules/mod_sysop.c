@@ -234,7 +234,7 @@ static void *sysop_handler(void *varg)
 	bbs_dprintf(sysopfdout, TERM_TITLE_FMT, "Sysop Console");
 
 	/* Disable input buffering so we can read a character as soon as it's typed */
-	if (bbs_fd_unbuffer_input(sysopfdin, 0)) {
+	if (bbs_unbuffer_input(sysopfdin, 0)) {
 		bbs_error("Failed to unbuffer fd %d, sysop console will be unavailable\n", sysopfdin);
 		/* If this fails, the foreground console is just not going to work properly.
 		 * For example, supervisorctl doesn't seem to have a TTY/PTY available.
@@ -348,7 +348,7 @@ static void *sysop_handler(void *varg)
 					}
 					break;
 				case KEY_ESC:
-					res = bbs_fd_read_escseq(sysopfdin);
+					res = bbs_read_escseq(sysopfdin);
 					switch (res) {
 						case KEY_UP:
 							histentry = bbs_history_older();
@@ -379,9 +379,9 @@ static void *sysop_handler(void *varg)
 						bbs_history_reset();
 						histentry = NULL;
 						my_set_stdout_logging(sysopfdout, 0); /* Disable logging so other stuff isn't trying to write to STDOUT at the same time. */
-						bbs_fd_buffer_input(sysopfdin, 1);
+						bbs_buffer_input(sysopfdin, 1);
 						res = sysop_command(sysopfdin, sysopfdout, cmdbuf);
-						bbs_fd_unbuffer_input(sysopfdin, 0);
+						bbs_unbuffer_input(sysopfdin, 0);
 						my_set_stdout_logging(sysopfdout, 1); /* If running in foreground, re-enable STDOUT logging */
 					} else {
 						bbs_dprintf(sysopfdout, "\n"); /* Print newline for convenience */
@@ -390,7 +390,7 @@ static void *sysop_handler(void *varg)
 				case '/':
 					bbs_dprintf(sysopfdout, "/");
 					my_set_stdout_logging(sysopfdout, 0); /* Disable logging so other stuff isn't trying to write to STDOUT at the same time. */
-					bbs_fd_buffer_input(sysopfdin, 1);
+					bbs_buffer_input(sysopfdin, 1);
 					res = poll(&pfd, 1, 30000);
 					if (res < 0) {
 						if (errno != EINTR) {
@@ -411,7 +411,7 @@ static void *sysop_handler(void *varg)
 							res = sysop_command(sysopfdin, sysopfdout, cmdbuf);
 						}
 					}
-					bbs_fd_unbuffer_input(sysopfdin, 0);
+					bbs_unbuffer_input(sysopfdin, 0);
 					my_set_stdout_logging(sysopfdout, 1); /* If running in foreground, re-enable STDOUT logging */
 					break;
 				default:
@@ -517,7 +517,7 @@ static void *remote_sysop_listener(void *unused)
 			close(sfd);
 			continue;
 		}
-		bbs_fd_unbuffer_input(aslave, 0); /* Disable canonical mode and echo on this PTY slave */
+		bbs_unbuffer_input(aslave, 0); /* Disable canonical mode and echo on this PTY slave */
 		bbs_dprintf(aslave, TERM_CLEAR); /* Clear the screen on connect */
 		launch_sysop_console(1, aslave, aslave); /* Launch sysop console for this connection */
 	}
@@ -546,7 +546,7 @@ static int unload_module(void)
 		bbs_pthread_cancel_kill(sysop_thread);
 		bbs_pthread_join(sysop_thread, NULL);
 		if (option_nofork) {
-			bbs_fd_buffer_input(STDIN_FILENO, 1); /* Be nice: re-enable canonical mode and echo to leave the TTY in a sane state. */
+			bbs_buffer_input(STDIN_FILENO, 1); /* Be nice: re-enable canonical mode and echo to leave the TTY in a sane state. */
 		}
 		bbs_debug(2, "Sysop thread has exited\n");
 	}

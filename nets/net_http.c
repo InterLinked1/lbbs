@@ -665,7 +665,7 @@ static void http_handler(struct bbs_node *node, int secure)
 		int rangeparts = 0;
 
 		/* For keep alive, it can take a non-zero time for the next request to arrive */
-		if (bbs_std_poll(req.rfd, 1000) <= 0) { /* Do this here so we don't double log for successive requests on the same connection. */
+		if (bbs_poll(req.rfd, 1000) <= 0) { /* Do this here so we don't double log for successive requests on the same connection. */
 			bbs_debug(3, "Client timed out, closing connection\n");
 			break;
 		}
@@ -688,7 +688,7 @@ static void http_handler(struct bbs_node *node, int secure)
 		req.secure = secure;
 
 		for (;;) {
-			bbs_fd_readline(req.rfd, &rldata, "\r\n", MIN_MS(1));
+			bbs_readline(req.rfd, &rldata, "\r\n", MIN_MS(1));
 			if (s_strlen_zero(buf)) { /* End of request headers */
 				complete = 1;
 				break;

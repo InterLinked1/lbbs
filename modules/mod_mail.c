@@ -1282,6 +1282,8 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 		}
 	}
 
+#undef PARSE_CAPABILITY
+
 	IMAP_CLIENT_EXPECT(client, "a0 OK");
 
 	if (STARTS_WITH(url->pass, "oauth:")) { /* OAuth authentication */
@@ -1327,7 +1329,7 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 	}
 
 	/* Gmail sends the capabilities again when you log in, so tolerate CAPABILITY then OK as well as just OK. */
-	res = bbs_fd_readline(client->rfd, &client->rldata, "\r\n", 2500);
+	res = bbs_readline(client->rfd, &client->rldata, "\r\n", 2500);
 	if (res <= 0) {
 		bbs_warning("No response from IMAP server %s:%d?\n", url->host, url->port);
 		return -1;

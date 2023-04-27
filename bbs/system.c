@@ -611,7 +611,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		node->childpid = 0;
 	}
 	if (fd == -1) {
-		if (bbs_std_poll(pfd[0], 0) == 0) {
+		if (bbs_poll(pfd[0], 0) == 0) {
 			/* The child has exited, so all the data that will ever be in the pipe is already here.
 			 * If there's nothing there, then poll with 0 to skip blocking unnecessarily on read for a few seconds. */
 			bbs_debug(3, "pipe poll returned 0\n");

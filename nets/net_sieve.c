@@ -422,7 +422,7 @@ doneupload:
 		size = 0;
 		while ((fgets(buf, sizeof(buf), fp))) {
 			int len = strlen(buf);
-			size += bbs_std_write(sieve->wfd, buf, len);
+			size += bbs_write(sieve->wfd, buf, len);
 		}
 		fclose(fp);
 		bbs_debug(5, "Sent %d-byte script\n", size);
@@ -450,7 +450,7 @@ static void handle_client(struct sieve_session *sieve, SSL **sslptr)
 	}
 
 	for (;;) {
-		int res = bbs_fd_readline(sieve->rfd, &rldata, "\r\n", 300000); /* Must be at least 30 minutes per RFC 5804, though that seems excessive */
+		int res = bbs_readline(sieve->rfd, &rldata, "\r\n", 300000); /* Must be at least 30 minutes per RFC 5804, though that seems excessive */
 		if (res < 0) {
 			break;
 		}

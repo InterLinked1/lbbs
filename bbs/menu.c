@@ -218,7 +218,7 @@ static int print_header(struct bbs_node *node, const char *s, const char *color,
 	int rows_used = 1;
 	/* Manually substitute any variables, since we don't substitute until the menu handler is called */
 	bbs_substitute_vars(node, s, buf, len);
-	bbs_writef(node, "%s%s\n", color, buf);
+	bbs_node_writef(node, "%s%s\n", color, buf);
 	/* Check for exceeding dimensions */
 	plen = bbs_printable_strlen(buf);
 	bbs_debug(6, "plen: %u, cols: %u\n", plen, node->cols);
@@ -251,7 +251,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 	int outcol = 1;
 	struct bbs_menu_item *menuitem;
 
-	NEG_RETURN(bbs_clear_screen(node)); /* Clear screen for each menu. */
+	NEG_RETURN(bbs_node_clear_screen(node)); /* Clear screen for each menu. */
 
 	numopts = RWLIST_SIZE(&menu->menuitems, menuitem, entry);
 	bbs_debug(2, "Menu has %d total option%s\n", numopts, ESS(numopts));
@@ -264,7 +264,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 	}
 	if (!strlen_zero(menu->title) || !strlen_zero(menu->subtitle)) {
 		/* If either title or subtitle, add additional empty line for visual separation from the options */
-		bbs_writef(node, "\n");
+		bbs_node_writef(node, "\n");
 		rows_used++;
 	}
 
@@ -294,8 +294,8 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 		/* menus.conf tells us what to draw to the screen. */
 		char disp[2 * 1920]; /* An 80x24 screen is 1920, so twice that ought to be plenty. Avoid using strlen(menu->display) for gcc -Wstack-protector */
 		bbs_substitute_vars(node, menu->display, disp, sizeof(disp));
-		bbs_writef(node, "%s\n", disp); /* Add LF after last line */
-		bbs_reset_color(node);
+		bbs_node_writef(node, "%s\n", disp); /* Add LF after last line */
+		bbs_node_reset_color(node);
 		return 0;
 	}
 
@@ -359,24 +359,24 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 				bbs_error("Needed %d characters to display option '%c', but we only have %d?\n", real_len, menuitem->opt, longest);
 			}
 			chunk_len = longest + (byte_len - real_len); /* In theory, byte_len - real_len should be constant for ALL menu items */
-			bbs_writef(node, "%-*s", chunk_len, sub_full);
+			bbs_node_writef(node, "%-*s", chunk_len, sub_full);
 #ifdef DEBUG_MENU_DRAW
 			bbs_debug(7, "Displaying option '%c' in row group %d, col group %d, total size %d bytes (%d cols)\n", menuitem->opt, rows_used, outcol, chunk_len, longest);
 #endif
 			if (++outcol > numcols) {
 				/* End of what we can fit on this line. Move to a new line */
-				bbs_writef(node, "\n");
+				bbs_node_writef(node, "\n");
 				outcol = 1; /* Yes, this is a 1-indexed variable */
 				rows_used++;
 			}
 		}
 		if (outcol > 1) {
 			/* We're in the middle of the screen. Final newline so the cursor is now at the beginning of a line */
-			bbs_writef(node, "\n");
+			bbs_node_writef(node, "\n");
 			outcol = 1;
 			rows_used++;
 		}
-		bbs_reset_color(node); /* We didn't reset the color after each item, for efficiency. Now that we're all done, reset it. */
+		bbs_node_reset_color(node); /* We didn't reset the color after each item, for efficiency. Now that we're all done, reset it. */
 		bbs_debug(6, "Built full menu with %d option%s in %d row group%s, %d col group%s for %dx%d terminal\n",
 			i, ESS(i), rows_used, ESS(rows_used), numcols, ESS(numcols), node->cols, node->rows);
 		if (i > numopts) {
@@ -394,7 +394,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 			/* Manually substitute any variables, since we don't substitute until the menu handler is called */
 			bbs_substitute_vars(node, menuitem->name, sub_name, sizeof(sub_name));
 			snprintf(sub_full, sizeof(sub_full), "%s%s%c  %s%s", outcol > 1 ? "  " : "", COLOR(COLOR_PRIMARY), menuitem->opt, COLOR(COLOR_SECONDARY), sub_name);
-			bbs_writef(node, " %s ", sub_full);
+			bbs_node_writef(node, " %s ", sub_full);
 		}
 		bbs_debug(6, "Built compact menu with %d option%s for %dx%d terminal\n", i, ESS(i), node->cols, node->rows);
 	}
@@ -492,7 +492,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 					if (neederror) {
 						/* We chose an invalid option before the menu was displayed (for skip menu nav) */
 						neederror = 0;
-						bbs_writef(node, "\r%sInvalid option!%s", COLOR(COLOR_RED), COLOR_RESET);
+						bbs_node_writef(node, "\r%sInvalid option!%s", COLOR(COLOR_RED), COLOR_RESET);
 					}
 				} else {
 					/* For TDDs, don't draw the menu initially,
@@ -501,16 +501,16 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 					 * a printout of all the options.
 					 * Simply inform the user how to get the option list.
 					 */
-					bbs_clear_screen(node); /* Won't have any effect for real TDDs, call this just in case */
+					bbs_node_clear_screen(node); /* Won't have any effect for real TDDs, call this just in case */
 					/* Don't draw the whole menu, just print the title initially so we know which menu we're on. */
 					print_menu_title(node, menu); /* Make a function call, because we don't want to allocate a buffer on THIS stack. */
-					bbs_writef(node, "Opt (SPACE for list): \n");
+					bbs_node_writef(node, "Opt (SPACE for list): \n");
 					build_options(node, menu, options, sizeof(options)); /* Since we didn't display the menu, get the option list */
 				}
 			}
 			/* Wait for user to choose an option from the menu */
-			bbs_unbuffer(node); /* Unbuffer input and disable echo, so we can read a single-char selection */
-			opt = bbs_tread(node, bbs_idle_ms());
+			bbs_node_unbuffer(node); /* Unbuffer input and disable echo, so we can read a single-char selection */
+			opt = bbs_node_tread(node, bbs_idle_ms());
 			if (opt <= 0) {
 				RWLIST_UNLOCK(&menus);
 				return opt;
@@ -531,19 +531,19 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 		/* We can quickly check if this was a valid selection. If the option chosen isn't valid, try again. */
 		if (opt == '/') {
 			/* Allow "jumping" through menus all at once. */
-			bbs_writef(node, COLOR_RESET "/"); /* Since echo was off, print it out manually. */
-			bbs_buffer(node);
-			res = bbs_readline(node, SEC_MS(30), menusequence, sizeof(menusequence) - 1);
+			bbs_node_writef(node, COLOR_RESET "/"); /* Since echo was off, print it out manually. */
+			bbs_node_buffer(node);
+			res = bbs_node_readline(node, SEC_MS(30), menusequence, sizeof(menusequence) - 1);
 			if (res <= 0) {
 				RWLIST_UNLOCK(&menus);
 				return opt;
 			}
 			menusequence[res] = '\0'; /* Null terminate */
-			bbs_unbuffer(node);
+			bbs_node_unbuffer(node);
 
 			/* Everything in the sequence must be alphanumeric: either a letter or number */
 			if (!valid_menusequence(menusequence)) {
-				bbs_writef(node, "%sInvalid skip menu sequence%s\n", COLOR(COLOR_RED), COLOR_RESET);
+				bbs_node_writef(node, "%sInvalid skip menu sequence%s\n", COLOR(COLOR_RED), COLOR_RESET);
 				continue;
 			}
 
@@ -568,8 +568,8 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 				opt = 0; /* This will clear the screen, so no point in printing an error message here, really... */
 				neederror = 1; /* Display the error message once we redraw the screen */
 			} else {
-				bbs_clear_line(node);
-				bbs_writef(node, "\r%sInvalid option!%s", COLOR(COLOR_RED), COLOR_RESET);
+				bbs_node_clear_line(node);
+				bbs_node_writef(node, "\r%sInvalid option!%s", COLOR(COLOR_RED), COLOR_RESET);
 			}
 			optreq = NULL; /* If were doing skip menu navigation, stop now since we hit a dead end. */
 			continue; /* We must continue and not proceed. */

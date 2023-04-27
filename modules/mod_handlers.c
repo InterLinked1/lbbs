@@ -45,15 +45,15 @@ static int quit_handler(struct bbs_node *node, char *args)
 	UNUSED(node);
 	UNUSED(args);
 
-	bbs_writef(node, "%s\rAre you sure you want to quit? [YN]%s", COLOR(COLOR_RED), COLOR_RESET);
-	opt = bbs_tread(node, SEC_MS(30));
+	bbs_node_writef(node, "%s\rAre you sure you want to quit? [YN]%s", COLOR(COLOR_RED), COLOR_RESET);
+	opt = bbs_node_tread(node, SEC_MS(30));
 	if (opt <= 0) {
 		return opt;
 	} else if (tolower(opt) == 'y') {
 		return fastquit_handler(node, args);
 	}
 	/* else, user changed mind / cancelled */
-	bbs_clear_line(node);
+	bbs_node_clear_line(node);
 	return 0;
 }
 
@@ -94,8 +94,8 @@ static int __exec_handler(struct bbs_node *node, char *args, int isolated)
 		return 0; /* Don't execute if we failed parsing */
 	}
 
-	bbs_clear_screen(node);
-	bbs_buffer(node); /* Assume that exec'd processes will want the terminal to be buffered: in canonical mode with echo on. */
+	bbs_node_clear_screen(node);
+	bbs_node_buffer(node); /* Assume that exec'd processes will want the terminal to be buffered: in canonical mode with echo on. */
 	if (isolated) {
 		res = bbs_execvp_isolated(node, argv[0], argv); /* Prog name is simply argv[0]. */
 	} else {
@@ -121,13 +121,13 @@ static int __exec_handler(struct bbs_node *node, char *args, int isolated)
 		 * However, returning -1 worked well when the child was killed due to an active node shutdown.
 		 * Compromise by detecting that here and changing res to -1.
 		 *
-		 * If we don't, then bbs_wait_key will just trigger an assertion because the slavefd will be -1 already.
+		 * If we don't, then bbs_node_wait_key will just trigger an assertion because the slavefd will be -1 already.
 		 */
 		return -1;
 	}
 	/* Who knows what this external program did. Prompt the user for confirmation before returning to menu. */
-	/* bbs_wait_key's unbuffer ill always succeed, regardless of actual current state, because as far as the BBS is concerned, we're buffered */
-	return bbs_wait_key(node, MIN_MS(2));
+	/* bbs_node_wait_key's unbuffer ill always succeed, regardless of actual current state, because as far as the BBS is concerned, we're buffered */
+	return bbs_node_wait_key(node, MIN_MS(2));
 }
 
 /*! \brief Execute a system command / program */

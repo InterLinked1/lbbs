@@ -2,7 +2,7 @@
 
 Welcome! Whether you're new to BBSing or a veteran sysop, LBBS was written to be a highly configurable, modular BBS for developers, sysops, and users alike.
 
-LBBS is a BBS server program written from the ground up to be extensible, modular, and, of course, lightweight. The codebase is relatively small (~50K SLOC), with relatively few dependencies. It is designed to be easy for sysops to administer, easy for users to use and navigate, and easy for developers to read, understand, maintain, and contribute to the source code.
+LBBS is a BBS (bulletin board system) package and personal server written from the ground up to be extensible, modular, and, of course, lightweight. The codebase is relatively small (~50K SLOC), with relatively few dependencies. It is designed to be easy for sysops to administer, easy for users to use and navigate, and easy for developers to read, understand, maintain, and contribute to the source code.
 
 Key features and capabilities include:
 
@@ -291,6 +291,29 @@ It is recommended that Sieve be used for filtering if possible, since this is a 
 MailScript is a nonstandard syntax that was invented purely for this software, so it is not portable anywhere else.
 However, if the current Sieve implementation does not meet certain needs but MailScript does, feel free to use that as well.
 Both filtering engines can be used in conjunction with each other.
+
+#### How can I improve the efficiency of my email submissions?
+
+You *could* use RFC 4468 BURL, but this is not supported by virtually any mail client (besides Trojita).
+
+The recommended setting is to use MailScript rules to "filter" your outgoing emails.
+You can define a rule for each account to save a copy in your IMAP server's Sent folder.
+For your local BBS email account, you can use `MOVETO .Sent`; for remote IMAP servers,
+you can specify an IMAP URL like `MOVETO imaps://username@domain.com:password@imap.example.com:993/Sent`.
+The BBS's SMTP server will then save a copy of the message in the designated location before relaying or sending it.
+
+This can be faster since normally your mail client uploads messages twice: once to your SMTP server to send it,
+and once to the IMAP server to save a copy of it (in the Sent folder). BURL IMAP was created to address this inefficiency,
+but unfortunately lacks widespread client support (although LBBS and several other IMAP servers do support it).
+Instead, the SMTP server can save the copy to the IMAP server (basically the inverse of BURL).
+(Gmail's SMTP server does something like this as well.) This doesn't require any special client support.
+
+If you synchronize your Sent folder locally, you'll still end up downloading the message, but it'll use your download bandwidth
+instead of your uplink bandwidth, the latter of which is typically more limited.
+
+If you do have the SMTP server save copies of your sent messages, make sure to *disable* "Save a copy of sent messages to..." in your mail client, to avoid saving a duplicate copy.
+
+As noted above, currently Sieve and MailScript do not have feature parity, so you cannot use Sieve to do this; you must use MailScript rules.
 
 ## Licensing
 

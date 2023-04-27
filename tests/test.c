@@ -393,7 +393,7 @@ static void *io_relay(void *varg)
 		}
 		if (bbs_expect_str) {
 			buf[res] = '\0'; /* Safe */
-			bbs_fd_readline_append(&rldata, "\n", buf, res, &ready);
+			bbs_readline_append(&rldata, "\n", buf, res, &ready);
 			/* Check both the readline buffer as well as what we just read.
 			 * Often the first is sufficient, but there's no guarantee since the string
 			 * we're expecting might be split across reads. */

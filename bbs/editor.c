@@ -34,18 +34,18 @@ int bbs_line_editor(struct bbs_node *node, const char *instr, char *buf, size_t 
 	char *tmp, *ptr = buf;
 	int otherdata = 0, nlflag = 0;
 
-	bbs_clear_screen(node);
-	bbs_writef(node, "%s%s LINE EDITOR - %sENTER 2x to process/abort%s\n", COLOR(COLOR_PRIMARY), BBS_SHORTNAME, COLOR(COLOR_SECONDARY), COLOR_RESET);
+	bbs_node_clear_screen(node);
+	bbs_node_writef(node, "%s%s LINE EDITOR - %sENTER 2x to process/abort%s\n", COLOR(COLOR_PRIMARY), BBS_SHORTNAME, COLOR(COLOR_SECONDARY), COLOR_RESET);
 	if (instr) {
-		bbs_writef(node, "%s%s%s\n", COLOR(COLOR_WHITE), instr, COLOR_RESET);
+		bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_WHITE), instr, COLOR_RESET);
 	}
 
 	for (;;) {
 		char c;
-		bbs_buffer(node);
+		bbs_node_buffer(node);
 		/* Read until we get 2 newlines */
 		for (;;) {
-			int res = bbs_readline(node, MIN_MS(5), ptr, len);
+			int res = bbs_node_readline(node, MIN_MS(5), ptr, len);
 			if (res <= 0) {
 				return -1;
 			}
@@ -60,8 +60,8 @@ int bbs_line_editor(struct bbs_node *node, const char *instr, char *buf, size_t 
 			len -= res;
 			if (len <= 2) { /* Room for LF and NUL */
 				/* Truncation */
-				bbs_writef(node, "%sBuffer is full, aborting%s\n", COLOR(COLOR_RED), COLOR_RESET);
-				NEG_RETURN(bbs_wait_key(node, MIN_MS(2)));
+				bbs_node_writef(node, "%sBuffer is full, aborting%s\n", COLOR(COLOR_RED), COLOR_RESET);
+				NEG_RETURN(bbs_node_wait_key(node, MIN_MS(2)));
 				return 0;
 			}
 			*ptr = '\n';
@@ -86,15 +86,15 @@ int bbs_line_editor(struct bbs_node *node, const char *instr, char *buf, size_t 
 			len++;
 		} while (nlflag--);
 		bbs_debug(3, "Line editing finished: %s\n", buf);
-		bbs_writef(node, "%sProcess? [YNC]%s\n", COLOR(COLOR_RED), COLOR_RESET);
-		bbs_unbuffer(node);
-		c = bbs_tread(node, MIN_MS(1));
+		bbs_node_writef(node, "%sProcess? [YNC]%s\n", COLOR(COLOR_RED), COLOR_RESET);
+		bbs_node_unbuffer(node);
+		c = bbs_node_tread(node, MIN_MS(1));
 		if (c <= 0) {
 			return -1; /* if tpoll/tread return 0, we return -1 */
 		} else if (tolower(c) == 'y') {
 			break;
 		} else if (tolower(c) != 'c') {
-			bbs_writef(node, "%sAborted%s\n", COLOR(COLOR_RED), COLOR_RESET);
+			bbs_node_writef(node, "%sAborted%s\n", COLOR(COLOR_RED), COLOR_RESET);
 			return 1;
 		}
 		ptr = strchr(buf, '\0'); /* Since we called rtrim, find the end of the buffer so far as we're concerned. */
@@ -132,14 +132,14 @@ int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const ch
 
 	if (!pginfo->line) {
 		/* First invocation! Clear the screen and switch to non-canonical mode (with echo off). */
-		NEG_RETURN(bbs_clear_screen(node));
-		NEG_RETURN(bbs_reset_color(node));
-		bbs_unbuffer(node);
+		NEG_RETURN(bbs_node_clear_screen(node));
+		NEG_RETURN(bbs_node_reset_color(node));
+		bbs_node_unbuffer(node);
 
 		/* Print any header */
 		if (pginfo->header) {
 			/* If it has a newline, don't add another one */
-			NEG_RETURN(bbs_writef(node, strchr(pginfo->header, '\n') ? "%s" : "%s\n", pginfo->header));
+			NEG_RETURN(bbs_node_writef(node, strchr(pginfo->header, '\n') ? "%s" : "%s\n", pginfo->header));
 		}
 		pginfo->want = eff_height; /* Start by printing the effective height number of rows */
 	}
@@ -185,7 +185,7 @@ int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const ch
 				int left = len;
 				/* Write 80 characters at a time */
 				while (left > 80) {
-					NEG_RETURN(bbs_writef(node, "%.*s\n", 80, s));
+					NEG_RETURN(bbs_node_writef(node, "%.*s\n", 80, s));
 					s += 80; /* Advance to next row of output */
 					left -= 80;
 				}
@@ -205,9 +205,9 @@ int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const ch
 #endif
 					s = "\r \n"; /* Replace empty line with a space, then go on to the next line, to properly cover up the press : symbol */
 				} else if (*s == '\t') {
-					NEG_RETURN(bbs_writef(node, "\r \r")); /* Tabs don't erase the :, do so manually */
+					NEG_RETURN(bbs_node_writef(node, "\r \r")); /* Tabs don't erase the :, do so manually */
 				}
-				NEG_RETURN(bbs_writef(node, ends_in_newline ? "%s" : "%s\n", s)); /* Print the line */
+				NEG_RETURN(bbs_node_writef(node, ends_in_newline ? "%s" : "%s\n", s)); /* Print the line */
 			}
 			if (pginfo->want) {
 				pginfo->want -= lines_eff; /* We're printing out this many rows, that we no longer owe */
@@ -225,10 +225,10 @@ int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const ch
 	for (;;) {
 		int res;
 		char buf[5];
-		NEG_RETURN(bbs_writef(node, s ? ":" : "EOF:")); /* Input prompt */
-		res = bbs_poll_read(node, ms, buf, 5); /* Any key shouldn't be more than 5 characters (some keys involve escape sequences) */
+		NEG_RETURN(bbs_node_writef(node, s ? ":" : "EOF:")); /* Input prompt */
+		res = bbs_node_poll_read(node, ms, buf, 5); /* Any key shouldn't be more than 5 characters (some keys involve escape sequences) */
 		if (res >= 0) {
-			NEG_RETURN(bbs_writef(node, "\r")); /* Overwrite : */
+			NEG_RETURN(bbs_node_writef(node, "\r")); /* Overwrite : */
 			/* If the next line is just a newline, then we won't actually end up "deleting" the : in this manner.
 			 * To workaround that, we could write "\r \r" which would space over the : and then go back to the beginning of the line again.
 			 * However, to be more efficient, since most lines won't be empty, we can simply detect empty lines and do this only then.
@@ -255,11 +255,11 @@ int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const ch
 				pginfo->want += 999999; /* Hopefully we don't encounter any files this long, let alone INT_MAX lines long */
 				break;
 			default: /* Ignore */
-				NEG_RETURN(bbs_ring_bell(node));
+				NEG_RETURN(bbs_node_ring_bell(node));
 				continue; /* Continue the for loop */
 		}
 		if (!s) { /* Wait for explicit quit */
-			NEG_RETURN(bbs_ring_bell(node));
+			NEG_RETURN(bbs_node_ring_bell(node));
 			continue; /* Continue the for loop */
 		}
 		break;

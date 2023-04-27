@@ -62,7 +62,7 @@ static void *finger_handler(void *varg)
 	 * The /W modifier increases verbosity. */
 
 	/* This is not buffered since there's no pseudoterminal. */
-	res = bbs_fd_poll_read(node->fd, 1000, buf, sizeof(buf) - 1);
+	res = bbs_poll_read(node->fd, 1000, buf, sizeof(buf) - 1);
 	if (res <= 0) {
 		goto cleanup;
 	}

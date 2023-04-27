@@ -88,7 +88,7 @@ char *bbs_sasl_encode(const char *nickname, const char *username, const char *pa
 
 /*!
  * \brief Parse an email address identity into its components
- * \param addr Identity (which will be consumed). Can be user\@host or name \<user@host> format.
+ * \param addr Identity (which will be consumed). Can be user\@host or name <user\@host> format.
  * \param[out] name Name portion, if any. NULL if not present.
  * \param[out] user Username portion
  * \param[out] host Hostname portion
@@ -100,7 +100,7 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host, i
 /*!
  * \brief Detect a mismatch between an email identity and the currently authenticated user
  * \param user
- * \param from Identity string. Can be user@host or name <user@host> format.
+ * \param from Identity string. Can be user\@host or name <user\@host> format.
  * \retval 0 if okay, -1 on error, -1 if mismatch detected
  */
 int bbs_user_identity_mismatch(struct bbs_user *user, const char *from);

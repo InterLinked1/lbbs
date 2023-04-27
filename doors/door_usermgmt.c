@@ -39,34 +39,34 @@ static int do_reset(struct bbs_node *node, const char *username)
 	int tries = 4;
 
 #define MIN_PW_LENGTH 8
-	bbs_clear_screen(node);
-	NEG_RETURN(bbs_buffer(node));
-	NEG_RETURN(bbs_writef(node, "=== Change Password ===\n"));
+	bbs_node_clear_screen(node);
+	NEG_RETURN(bbs_node_buffer(node));
+	NEG_RETURN(bbs_node_writef(node, "=== Change Password ===\n"));
 
 	if (MIN_PW_LENGTH > 1) {
-		NEG_RETURN(bbs_writef(node, "Remember, your new password must be at least %s%d%s characters long.\n", COLOR(COLOR_WHITE), MIN_PW_LENGTH, COLOR_RESET));
+		NEG_RETURN(bbs_node_writef(node, "Remember, your new password must be at least %s%d%s characters long.\n", COLOR(COLOR_WHITE), MIN_PW_LENGTH, COLOR_RESET));
 	}
 
-	bbs_echo_off(node); /* Don't display password */
+	bbs_node_echo_off(node); /* Don't display password */
 	for (; tries > 0; tries--) {
-		NEG_RETURN(bbs_writef(node, "%-*s", 24, COLOR(COLOR_WHITE) "New Password: "));
-		NONPOS_RETURN(bbs_readline(node, MIN_MS(1), password, sizeof(password)));
-		NEG_RETURN(bbs_writef(node, "%-*s", 24, COLOR(COLOR_WHITE) "\nConfirm New Password: ")); /* Begin with new line since wasn't echoed */
-		NONPOS_RETURN(bbs_readline(node, MIN_MS(1), password2, sizeof(password2)));
+		NEG_RETURN(bbs_node_writef(node, "%-*s", 24, COLOR(COLOR_WHITE) "New Password: "));
+		NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), password, sizeof(password)));
+		NEG_RETURN(bbs_node_writef(node, "%-*s", 24, COLOR(COLOR_WHITE) "\nConfirm New Password: ")); /* Begin with new line since wasn't echoed */
+		NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), password2, sizeof(password2)));
 		if (s_strlen_zero(password) || strcmp(password, password2)) {
-			NEG_RETURN(bbs_writef(node, "\n%sPasswords do not match%s\n", COLOR(COLOR_RED), COLOR_RESET));
+			NEG_RETURN(bbs_node_writef(node, "\n%sPasswords do not match%s\n", COLOR(COLOR_RED), COLOR_RESET));
 			} else if (strlen(password) < MIN_PW_LENGTH) {
-			NEG_RETURN(bbs_writef(node, "\n%sPassword is too short%s\n", COLOR(COLOR_RED), COLOR_RESET));
+			NEG_RETURN(bbs_node_writef(node, "\n%sPassword is too short%s\n", COLOR(COLOR_RED), COLOR_RESET));
 		} else {
 			break;
 		}
 	}
 	if (tries <= 0) {
-		NEG_RETURN(bbs_writef(node, "\n%sIt seems you're having difficulties. Please reach out to your sysop.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
-		NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
+		NEG_RETURN(bbs_node_writef(node, "\n%sIt seems you're having difficulties. Please reach out to your sysop.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
+		NEG_RETURN(bbs_node_wait_key(node, SEC_MS(75)));
 		return 0;
 	}
-	bbs_echo_on(node);
+	bbs_node_echo_on(node);
 
 	res = bbs_user_reset_password(username, password);
 
@@ -75,14 +75,14 @@ static int do_reset(struct bbs_node *node, const char *username)
 	bbs_memzero(password2, sizeof(password2));
 
 	if (res) {
-		NEG_RETURN(bbs_writef(node, "\n%sSorry, your password could not be changed.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
+		NEG_RETURN(bbs_node_writef(node, "\n%sSorry, your password could not be changed.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
 	} else {
 		/* If successful, no need to log, auth.c will do that */
-		NEG_RETURN(bbs_writef(node, "\n%sYour password has been successfully changed. Please remember it!%s\n", COLOR(COLOR_SUCCESS), COLOR_RESET));
+		NEG_RETURN(bbs_node_writef(node, "\n%sYour password has been successfully changed. Please remember it!%s\n", COLOR(COLOR_SUCCESS), COLOR_RESET));
 	}
 
 	/* Wait for user to confirm, otherwise the message will disappear since the screen will clear after we return */
-	NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
+	NEG_RETURN(bbs_node_wait_key(node, SEC_MS(75)));
 	return res;
 }
 
@@ -107,13 +107,13 @@ static int pwreset_exec(struct bbs_node *node, const char *args)
 
 #define MY_WIDTH 45
 
-	bbs_clear_screen(node);
-	NEG_RETURN(bbs_buffer(node));
-	NEG_RETURN(bbs_writef(node, "=== Reset Password ===\n"));
+	bbs_node_clear_screen(node);
+	NEG_RETURN(bbs_node_buffer(node));
+	NEG_RETURN(bbs_node_writef(node, "=== Reset Password ===\n"));
 
-	NEG_RETURN(bbs_writef(node, "Forgot your password? It happens to the best of us.\n"));
-	NEG_RETURN(bbs_writef(node, "If you've forgotten your username, you must contact the sysop for assistance.\n"));
-	NEG_RETURN(bbs_writef(node, "You'll need access to the email address you used to register.\n"));
+	NEG_RETURN(bbs_node_writef(node, "Forgot your password? It happens to the best of us.\n"));
+	NEG_RETURN(bbs_node_writef(node, "If you've forgotten your username, you must contact the sysop for assistance.\n"));
+	NEG_RETURN(bbs_node_writef(node, "You'll need access to the email address you used to register.\n"));
 
 	/* Ask a few questions. */
 	res = bbs_get_response(node, MY_WIDTH, COLOR(COLOR_WHITE) "Username: ", MIN_MS(1), username, sizeof(username), &tries, 2, NULL);
@@ -137,9 +137,9 @@ static int pwreset_exec(struct bbs_node *node, const char *args)
 		if (user) {
 			bbs_user_destroy(user);
 		}
-		NEG_RETURN(bbs_writef(node, "\n%sSorry, we can't proceed using the information you provided. Please contact the sysop.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
-		NEG_RETURN(bbs_writef(node, "\nYou will be disconnected momentarily...\n"));
-		NEG_RETURN(bbs_wait_key(node, SEC_MS(20)));
+		NEG_RETURN(bbs_node_writef(node, "\n%sSorry, we can't proceed using the information you provided. Please contact the sysop.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
+		NEG_RETURN(bbs_node_writef(node, "\nYou will be disconnected momentarily...\n"));
+		NEG_RETURN(bbs_node_wait_key(node, SEC_MS(20)));
 		return -1; /* Return -1 to disconnect the node, to make it harder for brute force attempts */
 	}
 	/*! \todo Add some more checks here, with varying levels of tolerance */
@@ -164,15 +164,15 @@ static int pwreset_exec(struct bbs_node *node, const char *args)
 		goto fail;
 	}
 
-	NEG_RETURN(bbs_writef(node, "\n%sWe just emailed you a password reset code. Continue once you've received it.%s\n", COLOR(COLOR_SUCCESS), COLOR_RESET));
-	NEG_RETURN(bbs_wait_key(node, SEC_MS(600))); /* Wait a bit longer, up to 10 minutes in case email is delayed */
+	NEG_RETURN(bbs_node_writef(node, "\n%sWe just emailed you a password reset code. Continue once you've received it.%s\n", COLOR(COLOR_SUCCESS), COLOR_RESET));
+	NEG_RETURN(bbs_node_wait_key(node, SEC_MS(600))); /* Wait a bit longer, up to 10 minutes in case email is delayed */
 
 	bbs_get_response(node, 20, COLOR(COLOR_WHITE) "\nReset Code: ", MIN_MS(3), usercode, sizeof(usercode), &tries, 1, NULL);
 	if (strcmp(usercode, randcode)) {
 		bbs_user_destroy(user);
-		NEG_RETURN(bbs_writef(node, "\n%sSorry, the reset code you provided was incorrect.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
-		NEG_RETURN(bbs_writef(node, "\nYou will be disconnected momentarily...\n"));
-		NEG_RETURN(bbs_wait_key(node, SEC_MS(20)));
+		NEG_RETURN(bbs_node_writef(node, "\n%sSorry, the reset code you provided was incorrect.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
+		NEG_RETURN(bbs_node_writef(node, "\nYou will be disconnected momentarily...\n"));
+		NEG_RETURN(bbs_node_wait_key(node, SEC_MS(20)));
 		return -1; /* Return -1 to disconnect the node, to make it harder for brute force attempts */
 	}
 
@@ -183,8 +183,8 @@ static int pwreset_exec(struct bbs_node *node, const char *args)
 
 fail:
 	bbs_user_destroy(user);
-	NEG_RETURN(bbs_writef(node, "\n%sYour request could not be processed. Please contact the sysop.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
-	NEG_RETURN(bbs_wait_key(node, SEC_MS(20)));
+	NEG_RETURN(bbs_node_writef(node, "\n%sYour request could not be processed. Please contact the sysop.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
+	NEG_RETURN(bbs_node_wait_key(node, SEC_MS(20)));
 	return 0;
 }
 
@@ -195,7 +195,7 @@ static int pwchange_exec(struct bbs_node *node, const char *args)
 	if (!bbs_user_is_registered(node->user)) {
 #if 0
 		/* in menus.conf, any access to this option should have |minpriv=1 since anyone with less than that won't be able to use this and will get this error: */
-		NEG_RETURN(bbs_writef(node, "%sSorry, only registered users can reset their passwords%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
+		NEG_RETURN(bbs_node_writef(node, "%sSorry, only registered users can reset their passwords%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
 		return 0;
 #else
 		return pwreset_exec(node, args); /* Just run the reset handler instead if not logged in */

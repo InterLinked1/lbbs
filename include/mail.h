@@ -28,9 +28,9 @@ int bbs_mail(int async, const char *to, const char *from, const char *replyto, c
 /*!
  * \brief Send an email, with variadic printf-style arguments
  * \param async Whether to send the email asynchronously
- * \param to Recipient. If NULL, default from mail.conf will be used. Name is optional (use email <name> format).
- * \param from Sender. If NULL, default from mail.conf will be used. Name is optional (use email <name> format).
- * \param replyto Optional Reply-To address.  Name is optional (use email <name> format).
+ * \param to Recipient. If NULL, default from mail.conf will be used. Name is optional (use email \<name> format).
+ * \param from Sender. If NULL, default from mail.conf will be used. Name is optional (use email \<name> format).
+ * \param replyto Optional Reply-To address.  Name is optional (use email \<name> format).
  * \param subject
  * \param fmt printf-style format string
  * \retval 0 on success, -1 on failure

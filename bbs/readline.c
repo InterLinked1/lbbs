@@ -83,7 +83,7 @@ static int readline_post_read(struct readline_data *rldata, const char *delim, c
 
 #ifdef BBS_IN_CORE
 /*! \brief Helper function to read a single line from a file descriptor, with a timeout (for any single read) */
-int bbs_fd_readline(int fd, struct readline_data *rldata, const char *delim, int timeout)
+int bbs_readline(int fd, struct readline_data *rldata, const char *delim, int timeout)
 {
 	int res;
 	char *firstdelim;
@@ -97,7 +97,7 @@ int bbs_fd_readline(int fd, struct readline_data *rldata, const char *delim, int
 		if (rldata->left - 1 < 2) {
 			bbs_warning("Buffer (size %d) has been exhausted\n", rldata->len); /* The using application needs to allocate a larger buffer */
 		}
-		res = bbs_fd_poll_read(fd, timeout, rldata->pos, rldata->left - 1); /* Subtract 1 for NUL */
+		res = bbs_poll_read(fd, timeout, rldata->pos, rldata->left - 1); /* Subtract 1 for NUL */
 		if (res <= 0) {
 			bbs_debug(3, "read returned %d (%s)\n", res, res < 0 ? strerror(errno) : "");
 			return res - 1; /* see the doxygen notes: we should return 0 only if we read just the delimiter. */
@@ -113,7 +113,7 @@ int bbs_fd_readline(int fd, struct readline_data *rldata, const char *delim, int
 }
 #endif
 
-int bbs_fd_readline_append(struct readline_data *rldata, const char *delim, char *buf, size_t len, int *ready)
+int bbs_readline_append(struct readline_data *rldata, const char *delim, char *buf, size_t len, int *ready)
 {
 	char *firstdelim;
 	int res;

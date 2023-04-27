@@ -736,16 +736,17 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 #define SMTP_CAPABILITY_AUTH_PLAIN (1 << 5)
 #define SMTP_CAPABILITY_AUTH_XOAUTH2 (1 << 6)
 
-#define PARSE_CAPABILITY(name, flag) \
-	else if (!strcmp(capname, name)) { \
-		*caps |= flag; \
-	}
-
 static void process_capabilities(int *caps, const char *capname)
 {
 	if (strlen_zero(capname) || !isupper(*capname)) { /* Capabilities are all uppercase XXX but is that required by the RFC? */
 		return;
 	}
+
+#define PARSE_CAPABILITY(name, flag) \
+	else if (!strcmp(capname, name)) { \
+		*caps |= flag; \
+	}
+
 	if (0) {
 		/* Unused */
 	}
@@ -753,6 +754,7 @@ static void process_capabilities(int *caps, const char *capname)
 	PARSE_CAPABILITY("PIPELINING", SMTP_CAPABILITY_PIPELINING)
 	PARSE_CAPABILITY("8BITMIME", SMTP_CAPABILITY_8BITMIME)
 	PARSE_CAPABILITY("ENHANCEDSTATUSCODES", SMTP_CAPABILITY_ENHANCEDSTATUSCODES)
+#undef PARSE_CAPABILITY
 	else if (STARTS_WITH(capname, "AUTH ")) {
 		capname += STRLEN("AUTH ");
 		if (strstr(capname, "LOGIN")) {
@@ -767,10 +769,9 @@ static void process_capabilities(int *caps, const char *capname)
 		}
 	} else if (STARTS_WITH(capname, "SIZE ")) {
 		/*! \todo parse and store the limit, abort early if our message length is greater than this */
-	} else if (!strcasecmp(capname, "CHUNKING") || !strcasecmp(capname, "SMTPUTF8")) {
+	} else if (!strcasecmp(capname, "CHUNKING") || !strcasecmp(capname, "SMTPUTF8") || !strcasecmp(capname, "VRFY") || !strcasecmp(capname, "ETRN") || !strcasecmp(capname, "DSN")) {
 		/* Don't care about */
 	} else {
-		/*! \todo Add more capabilities here */
 		bbs_warning("Unknown capability advertised: %s\n", capname);
 	}
 }
@@ -838,6 +839,8 @@ static int try_send(struct smtp_session *smtp, const char *hostname, int port, i
 	struct readline_data *rldata = &rldata_stack;
 	off_t send_offset = offset;
 	int caps = 0;
+	char senderip[64];
+	char *user, *ip;
 
 	bbs_assert(datafd != -1);
 	bbs_assert(writelen > 0);
@@ -967,12 +970,10 @@ static int try_send(struct smtp_session *smtp, const char *hostname, int port, i
 	}
 
 	/* RFC 5322 3.4.1 allows us to use IP addresses in SMTP as well (domain literal form). They just need to be enclosed in square brackets. */
-	if (bbs_hostname_is_ipv4(sender)) {
-		char senderip[64];
-		char *user, *ip;
-		safe_strncpy(senderip, sender, sizeof(senderip));
-		ip = senderip;
-		user = strsep(&ip, "@");
+	safe_strncpy(senderip, sender, sizeof(senderip));
+	ip = senderip;
+	user = strsep(&ip, "@");
+	if (bbs_hostname_is_ipv4(ip)) {
 		smtp_client_send(wfd, "MAIL FROM:<%s@[%s]>\r\n", user, ip);
 	} else {
 		smtp_client_send(wfd, "MAIL FROM:<%s>\r\n", sender); /* sender lacks <>, but recipient has them */
@@ -995,7 +996,7 @@ static int try_send(struct smtp_session *smtp, const char *hostname, int port, i
 	smtp_client_send(wfd, "DATA\r\n");
 	SMTP_EXPECT(rfd, 1000, "354");
 	if (prepend && prependlen) {
-		wrote = bbs_std_write(wfd, prepend, prependlen);
+		wrote = bbs_write(wfd, prepend, prependlen);
 	}
 
 	/* sendfile will be much more efficient than reading the file ourself, as email body could be quite large, and we don't need to involve userspace. */
@@ -1230,9 +1231,11 @@ static inline void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_pr
  * \param recipient Recipient address (incoming), NULL for saving copies of sent messages (outgoing)
  * \param srcfd
  * \param datalen Length of message
+ * \param[out] newfilebuf Saved filename
+ * \param len Length of newfilebuf
  * \retval 0 on success, nonzero on error
  */
-static int appendmsg(struct smtp_session *smtp, struct mailbox *mbox, struct smtp_msg_process *mproc, const char *recipient, int srcfd, size_t datalen)
+static int appendmsg(struct smtp_session *smtp, struct mailbox *mbox, struct smtp_msg_process *mproc, const char *recipient, int srcfd, size_t datalen, char *newfilebuf, size_t len)
 {
 	char tmpfile[256];
 	char newfile[sizeof(tmpfile)];
@@ -1291,6 +1294,9 @@ static int appendmsg(struct smtp_session *smtp, struct mailbox *mbox, struct smt
 		 * "real" mail servers typically queue the message to decouple it. We just deliver it immediately.
 		 */
 		bbs_debug(6, "Delivered message to %s\n", newfile);
+		if (newfilebuf) {
+			safe_strncpy(newfilebuf, newfile, len);
+		}
 		if (!mproc->newdir && recipient) { /* Reference is invalid by now, but we only care about if it existed */
 			/*! \todo For now, no need to notify ourselves for saving copies of Sent messages. Clients probably aren't idling on the Sent folder anyways
 			 * If/when IMAP NOTIFY support is added, we still need to notify mod_mail about new messages,
@@ -1362,7 +1368,7 @@ static int do_local_delivery(struct smtp_session *smtp, const char *recipient, c
 		return 0; /* Silently drop message */
 	}
 
-	return appendmsg(smtp, mbox, &mproc, recipient, srcfd, datalen);
+	return appendmsg(smtp, mbox, &mproc, recipient, srcfd, datalen, NULL, 0);
 }
 
 /*! \brief Generate "Undelivered Mail Returned to Sender" email and send it to the sending user using do_local_delivery (then delete the message) */
@@ -1584,7 +1590,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	 * and since the queue files use a combination of LF and CR LF,
 	 * that can mess things up.
 	 * In particular, something like nano will convert everything to LF,
-	 * so bbs_fd_readline will return the entire body as one big blob,
+	 * so bbs_readline will return the entire body as one big blob,
 	 * since the file has no CR LF delimiters at all.
 	 * And because rely on CR LF . CR LF for end of email detection,
 	 * we'll only see LF . CR LF at the end, and delivery will thus fail.
@@ -2162,6 +2168,8 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 
 	/* SMTP callbacks for outgoing messages */
 	if (smtp->msa || smtp->fromlocal) {
+		char newfile[256];
+		int savedcopy = 0;
 		int srcfd = -1;
 		smtp_mproc_init(smtp, &mproc);
 		mproc.size = datalen;
@@ -2230,8 +2238,11 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 					res = -1;
 				} else {
 					struct mailbox *mbox = mailbox_get(smtp->node->user->id, NULL);
-					res = appendmsg(smtp, mbox, &mproc, NULL, srcfd, datalen); /* Save the Sent message locally */
+					res = appendmsg(smtp, mbox, &mproc, NULL, srcfd, datalen, newfile, sizeof(newfile)); /* Save the Sent message locally */
 					/* appendmsg frees mproc.newdir */
+					if (!res) {
+						savedcopy = 1;
+					}
 				}
 			}
 			CLOSE(srcfd);
@@ -2280,12 +2291,23 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 				} else {
 					/* XXX If we couldn't relay it immediately, don't queue it, just reject it */
 					smtp_reply(smtp, 550, 5.7.0, "Mail relay rejected.");
+					if (savedcopy) {
+						/* This is the one case where it's convenient to clean up, so we do so.
+						 * It's possible, of course, that the message is no longer in "new" but has been moved to "cur".
+						 * However, given the common use case is the Sent folder, which most clients don't idle on,
+						 * that is still probably unlikely. Delete it if we can, if not, no big deal.
+						 *
+						 * This also only covers the relaying case. Since messages we sent to another MTA directly
+						 * are done in another thread, we don't keep track of saved copies beyond this point,
+						 * since we're not going to know immediately if we succeeded or not anyways. So the user will
+						 * just have to deal with superflous saved copies, even if the actual sending failed. */
+						unlink(newfile);
+					}
 				}
 			}
 			if (url.pass) {
 				bbs_memzero(url.pass, strlen(url.pass)); /* Destroy the password */
 			}
-			/*! \todo Should have a macro like free_if that just frees and sets to NULL, *without* checking for existence first. Here we know it exists: */
 			FREE(mproc.relayroute);
 		}
 		if (mproc.bounce) {
@@ -2742,7 +2764,7 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 	smtp_reply_nostatus(smtp, 220, "%s ESMTP Service Ready", bbs_hostname());
 
 	for (;;) {
-		int res = bbs_fd_readline(smtp->rfd, &rldata, "\r\n", 60000); /* Wait 60 seconds, that ought to be plenty even for manual testing... real SMTP clients won't need more than a couple seconds. */
+		int res = bbs_readline(smtp->rfd, &rldata, "\r\n", 60000); /* Wait 60 seconds, that ought to be plenty even for manual testing... real SMTP clients won't need more than a couple seconds. */
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {

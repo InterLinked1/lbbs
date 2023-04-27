@@ -43,7 +43,7 @@
 #include "include/user.h"
 #include "include/auth.h"
 #include "include/pty.h" /* use bbs_openpty */
-#include "include/term.h" /* use bbs_fd_unbuffer_input */
+#include "include/term.h" /* use bbs_unbuffer_input */
 #include "include/utils.h"
 #include "include/config.h"
 #include "include/net.h"
@@ -408,7 +408,7 @@ static int pty_request(ssh_session session, ssh_channel channel, const char *ter
 	}
 
 	/* Disable canonical mode and echo on this PTY slave, since these are set on the node's PTY. */
-	bbs_fd_unbuffer_input(cdata->pty_slave, 0);
+	bbs_unbuffer_input(cdata->pty_slave, 0);
 
 	/* Make the master side raw, to pass everything unaltered to the "real" PTY, which is the node PTY */
 	bbs_term_makeraw(cdata->pty_master);

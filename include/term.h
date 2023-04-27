@@ -19,7 +19,7 @@
  * \param echo Whether to enable local echo
  * \retval 0 on success, -1 on failure
  */
-int bbs_fd_unbuffer_input(int fd, int echo);
+int bbs_unbuffer_input(int fd, int echo);
 
 /*!
  * \brief Enable input buffering on a fd
@@ -27,7 +27,7 @@ int bbs_fd_unbuffer_input(int fd, int echo);
  * \param echo Whether to enable local echo
  * \retval 0 on success, -1 on failure
  */
-int bbs_fd_buffer_input(int fd, int echo);
+int bbs_buffer_input(int fd, int echo);
 
 /*!
  * \brief Set echo on/off on a fd
@@ -35,13 +35,13 @@ int bbs_fd_buffer_input(int fd, int echo);
  * \param echo Whether to enable local echo
  * \retval 0 on success, -1 on failure
  */
-int bbs_fd_echo(int fd, int echo);
+int bbs_echo(int fd, int echo);
 
-/*! \brief Wrapper for bbs_unbuffer_input that disables canonical mode and echo */
-#define bbs_unbuffer(node) bbs_unbuffer_input(node, 0)
+/*! \brief Wrapper for bbs_node_unbuffer_input that disables canonical mode and echo */
+#define bbs_node_unbuffer(node) bbs_node_unbuffer_input(node, 0)
 
-/*! \brief Wrapper for bbs_buffer_input that enables canonical mode and echo */
-#define bbs_buffer(node) bbs_buffer_input(node, 1)
+/*! \brief Wrapper for bbs_node_buffer_input that enables canonical mode and echo */
+#define bbs_node_buffer(node) bbs_node_buffer_input(node, 1)
 
 /*!
  * \brief Disable input buffering for BBS node
@@ -49,7 +49,7 @@ int bbs_fd_echo(int fd, int echo);
  * \param echo Whether to enable local echo
  * \retval 0 on success, -1 on failure
  */
-int bbs_unbuffer_input(struct bbs_node *node, int echo);
+int bbs_node_unbuffer_input(struct bbs_node *node, int echo);
 
 /*!
  * \brief Enable input buffering for BBS node
@@ -57,10 +57,10 @@ int bbs_unbuffer_input(struct bbs_node *node, int echo);
  * \param echo Whether to enable local echo
  * \retval 0 on success, -1 on failure
  */
-int bbs_buffer_input(struct bbs_node *node, int echo);
+int bbs_node_buffer_input(struct bbs_node *node, int echo);
 
-#define bbs_echo_on(node) bbs_echo(node, 1)
-#define bbs_echo_off(node) bbs_echo(node, 0)
+#define bbs_node_echo_on(node) bbs_node_echo(node, 1)
+#define bbs_node_echo_off(node) bbs_node_echo(node, 0)
 
 /*!
  * \brief Set echo on/off for a BBS node
@@ -68,7 +68,7 @@ int bbs_buffer_input(struct bbs_node *node, int echo);
  * \param echo Whether to enable local echo
  * \retval 0 on success, -1 on failure
  */
-int bbs_echo(struct bbs_node *node, int echo);
+int bbs_node_echo(struct bbs_node *node, int echo);
 
 /*!
  * \brief Make a TTY fd raw (pass most input unaltered)

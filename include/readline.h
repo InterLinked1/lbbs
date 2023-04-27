@@ -46,7 +46,7 @@ void bbs_readline_init(struct readline_data *rldata, char *buf, int len);
  *         not including the delimiter.
  * \note The actual number of bytes read may be greater than the number of bytes returned. These bytes will be returned in subsequent calls to this function.
  */
-int bbs_fd_readline(int fd, struct readline_data *rldata, const char *delim, int timeout);
+int bbs_readline(int fd, struct readline_data *rldata, const char *delim, int timeout);
 
 /*!
  * \brief Append to a readline_data buffer
@@ -57,4 +57,4 @@ int bbs_fd_readline(int fd, struct readline_data *rldata, const char *delim, int
  * \param[out] ready Whether a complete message is ready for processing.
  * \retval Number of bytes appended to buffer. May be less than len, if insufficient space is left in the internal buffer.
  */
-int bbs_fd_readline_append(struct readline_data *rldata, const char *delim, char *buf, size_t len, int *ready);
+int bbs_readline_append(struct readline_data *rldata, const char *delim, char *buf, size_t len, int *ready);

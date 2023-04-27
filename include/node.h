@@ -284,7 +284,7 @@ int bbs_node_statuses(struct bbs_node *node);
  * \param ms -1 to wait forever, 0 for nonblocking, positive number of ms for timed poll
  * \retval Same as poll()
  */
-int bbs_std_poll(int fd, int ms);
+int bbs_poll(int fd, int ms);
 
 /*!
  * \brief wrapper around poll() for multiple file descriptors
@@ -303,7 +303,7 @@ int bbs_multi_poll(struct pollfd *pfds, int numfds, int ms);
  * \param fd Another file descriptor to poll
  * \retval The 1-indexed file descriptor with activity. i.e. if the node has activity, it will return 1; if fd has activity, it will return 2.
  */
-int bbs_poll2(struct bbs_node *node, int ms, int fd);
+int bbs_node_poll2(struct bbs_node *node, int ms, int fd);
 
 /*!
  * \brief wrapper around poll() for BBS node
@@ -311,10 +311,10 @@ int bbs_poll2(struct bbs_node *node, int ms, int fd);
  * \param ms -1 to wait forever, 0 for nonblocking, positive number of ms for timed poll
  * \retval Same as poll()
  */
-int bbs_poll(struct bbs_node *node, int ms);
+int bbs_node_poll(struct bbs_node *node, int ms);
 
-/*! \brief Same as bbs_poll, but print notice if poll times out */
-int bbs_tpoll(struct bbs_node *node, int ms);
+/*! \brief Same as bbs_node_poll, but print notice if poll times out */
+int bbs_node_tpoll(struct bbs_node *node, int ms);
 
 /*!
  * \brief wrapper around read() for BBS node
@@ -323,7 +323,7 @@ int bbs_tpoll(struct bbs_node *node, int ms);
  * \param len Size of buf
  * \retval Same as read() i.e. 0 if fd closed, -1 on failure, positive number of bytes read otherwise
  */
-int bbs_read(struct bbs_node *node, char *buf, size_t len);
+int bbs_node_read(struct bbs_node *node, char *buf, size_t len);
 
 /*!
  * \brief wrapper around poll() and read() for BBS node
@@ -333,7 +333,7 @@ int bbs_read(struct bbs_node *node, char *buf, size_t len);
  * \param len Size of buf
  * \retval Same as poll() and read()
  */
-int bbs_poll_read(struct bbs_node *node, int ms, char *buf, size_t len);
+int bbs_node_poll_read(struct bbs_node *node, int ms, char *buf, size_t len);
 
 /*!
  * \brief wrapper around poll() and read()
@@ -343,10 +343,10 @@ int bbs_poll_read(struct bbs_node *node, int ms, char *buf, size_t len);
  * \param len Size of buf
  * \retval Same as poll() and read()
  */
-int bbs_fd_poll_read(int fd, int ms, char *buf, size_t len);
+int bbs_poll_read(int fd, int ms, char *buf, size_t len);
 
 /*!
- * \brief wrapper around bbs_fd_poll_read that expects a substring to appear in the read response
+ * \brief wrapper around bbs_poll_read that expects a substring to appear in the read response
  * \param fd
  * \param ms for poll
  * \param buf Buffer for data
@@ -358,7 +358,7 @@ int bbs_fd_poll_read(int fd, int ms, char *buf, size_t len);
 int bbs_expect(int fd, int ms, char *buf, size_t len, const char *str);
 
 /*!
- * \brief wrapper around bbs_fd_poll_read that expects a substring to appear in the read response
+ * \brief wrapper around bbs_poll_read that expects a substring to appear in the read response
  * \param fd
  * \param ms for poll
  * \param rldata A readline data structure
@@ -374,10 +374,10 @@ int bbs_expect_line(int fd, int ms, struct readline_data *rldata, const char *st
  * \note This is useful for reading a single character (in non-canonical mode) with no delay
  * \retval 0 if fd closed, -1 on failure, non-negative character read otherwise
  */
-char bbs_tread(struct bbs_node *node, int ms);
+char bbs_node_tread(struct bbs_node *node, int ms);
 
-/*! * \brief Same as bbs_read_escseq, but directly on a file descriptor, rather than a node */
-int bbs_fd_read_escseq(int fd);
+/*! * \brief Same as bbs_node_read_escseq, but directly on a file descriptor, rather than a node */
+int bbs_read_escseq(int fd);
 
 /*!
  * \brief Read an escape sequence, after the key 27 (ESCAPE) is read
@@ -386,7 +386,7 @@ int bbs_fd_read_escseq(int fd);
  * \retval 0 ESC (just the ESC key, no escape sequence)
  * \retval positive escape sequence code
  */
-int bbs_read_escseq(struct bbs_node *node);
+int bbs_node_read_escseq(struct bbs_node *node);
 
 /*!
  * \brief Read a line of input from a BBS node
@@ -400,7 +400,7 @@ int bbs_read_escseq(struct bbs_node *node);
  *       This means this function may return a value larger than the length of the string in the buffer,
  *       and the return value MUST NOT BE USED to deduce the length of the string in the buffer.
  */
-int bbs_readline(struct bbs_node *node, int ms, char *buf, size_t len);
+int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len);
 
 /*!
  * \brief Solicit a response to a question, retrying if necessary
@@ -419,20 +419,20 @@ int bbs_readline(struct bbs_node *node, int ms, char *buf, size_t len);
 int bbs_get_response(struct bbs_node *node, int qlen, const char *q, int pollms, char *buf, int len, int *tries, int minlen, const char *reqchars);
 
 /*!
- * \brief Flush (discard) all input (typically used prior to bbs_poll so it doesn't return immediately due to backlogged input)
+ * \brief Flush (discard) all input (typically used prior to bbs_node_poll so it doesn't return immediately due to backlogged input)
  * \param fd
  * \retval Same as read()
  * \warning Use this function judiciously. Input should be handled properly if feasible, avoid this function if possible.
  */
-int bbs_std_flush_input(int fd);
+int bbs_flush_input(int fd);
 
 /*!
- * \brief Flush (discard) all input (typically used prior to bbs_poll so it doesn't return immediately due to backlogged input)
+ * \brief Flush (discard) all input (typically used prior to bbs_node_poll so it doesn't return immediately due to backlogged input)
  * \param node
  * \retval Same as read()
  * \warning Use this function judiciously. Input should be handled properly if feasible, avoid this function if possible.
  */
-int bbs_flush_input(struct bbs_node *node);
+int bbs_node_flush_input(struct bbs_node *node);
 
 /*!
  * \brief wrapper around write() for BBS node. Unlike write, this will write the whole buffer before returning.
@@ -441,38 +441,38 @@ int bbs_flush_input(struct bbs_node *node);
  * \param len Number of bytes to write
  * \retval Same as write()
  */
-int bbs_write(struct bbs_node *node, const char *buf, unsigned int len);
+int bbs_node_write(struct bbs_node *node, const char *buf, unsigned int len);
 
-/*! \brief Same as bbs_write, but directly on a file descriptor */
-int bbs_std_write(int fd, const char *buf, unsigned int len);
+/*! \brief Same as bbs_node_write, but directly on a file descriptor */
+int bbs_write(int fd, const char *buf, unsigned int len);
 
 /*!
- * \brief printf-style wrapper for bbs_write.
+ * \brief printf-style wrapper for bbs_node_write.
  * \param node
  * \param fmt printf-format string
  * \retval Same as write()
  */
-int bbs_writef(struct bbs_node *node, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) ;
+int bbs_node_writef(struct bbs_node *node, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) ;
 
 /*!
- * \brief Same as bbs_writef, but directly on a file descriptor
+ * \brief Same as bbs_node_writef, but directly on a file descriptor
  * \note This is not exactly the same thing as a function like dprintf, since it returns the value returned by write()
  */
-int bbs_std_writef(int fd, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) ;
+int bbs_writef(int fd, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) ;
 
 /*!
  * \brief Clear the terminal screen on a node's connected TTY
  * \param node
  * \retval Same as write()
  */
-int bbs_clear_screen(struct bbs_node *node);
+int bbs_node_clear_screen(struct bbs_node *node);
 
 /*!
  * \brief Clear the current line on a node's connected TTY
  * \param node
  * \retval Same as write()
  */
-int bbs_clear_line(struct bbs_node *node);
+int bbs_node_clear_line(struct bbs_node *node);
 
 /*!
  * \brief Set the terminal title
@@ -480,7 +480,7 @@ int bbs_clear_line(struct bbs_node *node);
  * \param s Title text. This is what will show up in the terminal emulator's window title, taskbar, etc.
  * \retval Same as write()
  */
-int bbs_set_term_title(struct bbs_node *node, const char *s);
+int bbs_node_set_term_title(struct bbs_node *node, const char *s);
 
 /*!
  * \brief Set the terminal icon
@@ -488,14 +488,14 @@ int bbs_set_term_title(struct bbs_node *node, const char *s);
  * \param s Icon text
  * \retval Same as write()
  */
-int bbs_set_term_icon(struct bbs_node *node, const char *s);
+int bbs_node_set_term_icon(struct bbs_node *node, const char *s);
 
 /*!
  * \brief Reset color to normal on a node's connected TTY
  * \param node
  * \retval Same as write()
  */
-int bbs_reset_color(struct bbs_node *node);
+int bbs_node_reset_color(struct bbs_node *node);
 
 /*!
  * \brief Draw a line of a specified character across the screen
@@ -503,14 +503,14 @@ int bbs_reset_color(struct bbs_node *node);
  * \param c Character to repeat all the way across the screen
  * \retval Same as write()
  */
-int bbs_draw_line(struct bbs_node *node, char c);
+int bbs_node_draw_line(struct bbs_node *node, char c);
 
 /*!
  * \brief Trigger bell / alert sound on a node's connected TTY
  * \param node
  * \retval Same as write()
  */
-int bbs_ring_bell(struct bbs_node *node);
+int bbs_node_ring_bell(struct bbs_node *node);
 
 /*!
  * \brief Wait for user to hit a key (any key)
@@ -518,7 +518,7 @@ int bbs_ring_bell(struct bbs_node *node);
  * \param ms Timeout in milliseconds
  * \retval 0 on success, -1 on failure
  */
-int bbs_wait_key(struct bbs_node *node, int ms);
+int bbs_node_wait_key(struct bbs_node *node, int ms);
 
 /*! \brief Begin handling a node
  * \note Not needed if you use bbs_node_handler

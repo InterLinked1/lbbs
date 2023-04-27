@@ -26,7 +26,7 @@
 #include "include/node.h"
 #include "include/term.h"
 
-static int bbs_fd_input_set(int fd, int canonical, int echo)
+static int bbs_input_set(int fd, int canonical, int echo)
 {
 	struct termios term;
 
@@ -53,7 +53,7 @@ static int bbs_fd_input_set(int fd, int canonical, int echo)
 	return 0;
 }
 
-int bbs_fd_echo(int fd, int echo)
+int bbs_echo(int fd, int echo)
 {
 	struct termios term;
 
@@ -75,14 +75,14 @@ int bbs_fd_echo(int fd, int echo)
 	return 0;
 }
 
-int bbs_fd_unbuffer_input(int fd, int echo)
+int bbs_unbuffer_input(int fd, int echo)
 {
-	return bbs_fd_input_set(fd, 0, echo);
+	return bbs_input_set(fd, 0, echo);
 }
 
-int bbs_fd_buffer_input(int fd, int echo)
+int bbs_buffer_input(int fd, int echo)
 {
-	return bbs_fd_input_set(fd, 1, echo);
+	return bbs_input_set(fd, 1, echo);
 }
 
 static int bbs_node_set_input(struct bbs_node *node, int buffered, int echo)
@@ -99,7 +99,7 @@ static int bbs_node_set_input(struct bbs_node *node, int buffered, int echo)
 	}
 
 	if (NODE_IS_TDD(node) && echo) {
-		bbs_debug(6, "Overriding echo to OFF for TDD on node %d\n", node->id); /* See comment in bbs_echo about TDDs and echo */
+		bbs_debug(6, "Overriding echo to OFF for TDD on node %d\n", node->id); /* See comment in bbs_node_echo about TDDs and echo */
 		echo = 0;
 	}
 
@@ -108,7 +108,7 @@ static int bbs_node_set_input(struct bbs_node *node, int buffered, int echo)
 		return 0; /* Nothing is changing. */
 	}
 
-	res = bbs_fd_input_set(node->slavefd, buffered, echo);
+	res = bbs_input_set(node->slavefd, buffered, echo);
 
 	if (!res) {
 		bbs_debug(5, "Node %d (fd %d): input now %s, echo %s\n", node->id, node->slavefd, buffered ? "buffered" : "unbuffered", echo ? "enabled" : "disabled");
@@ -118,19 +118,19 @@ static int bbs_node_set_input(struct bbs_node *node, int buffered, int echo)
 	return 0;
 }
 
-int bbs_unbuffer_input(struct bbs_node *node, int echo)
+int bbs_node_unbuffer_input(struct bbs_node *node, int echo)
 {
 	/* Do not lock the node here: node_shutdown already holds it */
 	return bbs_node_set_input(node, 0, echo);
 }
 
-int bbs_buffer_input(struct bbs_node *node, int echo)
+int bbs_node_buffer_input(struct bbs_node *node, int echo)
 {
 	/* Do not lock the node here: node_shutdown already holds it */
 	return bbs_node_set_input(node, 1, echo);
 }
 
-int bbs_echo(struct bbs_node *node, int echo)
+int bbs_node_echo(struct bbs_node *node, int echo)
 {
 	int res;
 
@@ -149,7 +149,7 @@ int bbs_echo(struct bbs_node *node, int echo)
 		return 0;
 	}
 
-	res = bbs_fd_echo(node->slavefd, echo);
+	res = bbs_echo(node->slavefd, echo);
 
 	if (!res) {
 		node->echo = echo;

@@ -374,11 +374,11 @@ static void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned i
 		/* Hey, this client is on the same exact folder right now! Send it an unsolicited, untagged response. */
 		pthread_mutex_lock(&s->lock);
 		if (!s->idle) { /* We are only free to send responses whenever we want if the client is idling. */
-			bbs_std_write(s->pfd[1], s->condstore ? condstoremsg : normalmsg, s->condstore ? condlen : normallen);
+			bbs_write(s->pfd[1], s->condstore ? condstoremsg : normalmsg, s->condstore ? condlen : normallen);
 			s->pending = 1;
 			imap_debug(4, "%p <= %s", s, s->condstore ? condstoremsg : normalmsg); /* Already ends in CR LF */
 		} else {
-			bbs_std_write(s->wfd, s->condstore ? condstoremsg : normalmsg, s->condstore ? condlen : normallen);
+			bbs_write(s->wfd, s->condstore ? condstoremsg : normalmsg, s->condstore ? condlen : normallen);
 			imap_debug(4, "%p <= %s", s, s->condstore ? condstoremsg : normalmsg); /* Already ends in CR LF */
 		}
 		pthread_mutex_unlock(&s->lock);
@@ -427,14 +427,14 @@ static void send_untagged_expunge(struct imap_session *imap, int silent, unsigne
 					slen = slen2;
 				}
 			}
-			bbs_std_write(delay ? s->pfd[1] : s->wfd, str, slen);
+			bbs_write(delay ? s->pfd[1] : s->wfd, str, slen);
 			imap_debug(4, "%p <= %s\r\n", s, str);
 		} else { /* EXPUNGE */
 			int i;
 			for (i = 0; i < length; i++) {
 				char normalmsg[64];
 				int normallen = snprintf(normalmsg, sizeof(normalmsg), "* %u EXPUNGE\r\n", seqno[i]);
-				bbs_std_write(delay ? s->pfd[1] : s->wfd, normalmsg, normallen);
+				bbs_write(delay ? s->pfd[1] : s->wfd, normalmsg, normallen);
 				imap_debug(4, "%p <= %s", s, normalmsg);
 			}
 		}
@@ -2098,7 +2098,7 @@ static int client_command_passthru(struct imap_session *imap, int fd, const char
 	int client_said_something = 0;
 	struct bbs_tcp_client *client = &imap->client;
 
-	/* We initialized bbs_fd_readline with a NULL buffer, fix that: */
+	/* We initialized bbs_readline with a NULL buffer, fix that: */
 	client->rldata.buf = buf;
 	client->rldata.len = sizeof(buf);
 
@@ -2125,15 +2125,15 @@ static int client_command_passthru(struct imap_session *imap, int fd, const char
 				res = write(client->wfd, buf2, res);
 				continue;
 			}
-			/* If client->rfd had activity, go ahead and just call bbs_fd_readline.
+			/* If client->rfd had activity, go ahead and just call bbs_readline.
 			 * The internal poll it does will be superflous, of course. */
 		}
-		res = bbs_fd_readline(client->rfd, &client->rldata, "\r\n", ms);
+		res = bbs_readline(client->rfd, &client->rldata, "\r\n", ms);
 		if (res < 0) { /* Could include remote server disconnect */
 			return res;
 		}
 		/* Go ahead and relay it */
-		bbs_std_write(imap->wfd, buf, res);
+		bbs_write(imap->wfd, buf, res);
 		SWRITE(imap->wfd, "\r\n");
 #ifdef DEBUG_REMOTE_RESPONSES
 		/* NEVER enable this in production because this will be a huge volume of data */
@@ -2188,8 +2188,8 @@ static int __attribute__ ((format (gnu_printf, 5, 6))) __imap_client_send_wait_r
 #else
 	UNUSED(lineno);
 #endif
-	bbs_std_write(imap->client.wfd, tagbuf, taglen);
-	bbs_std_write(imap->client.wfd, buf, len);
+	bbs_write(imap->client.wfd, tagbuf, taglen);
+	bbs_write(imap->client.wfd, buf, len);
 	imap_debug(7, "=> %s%s", tagbuf, buf);
 	/* Read until we get the tagged respones */
 	res = client_command_passthru(imap, fd, tagbuf, taglen, buf, len, ms) <= 0;
@@ -2797,7 +2797,7 @@ static int imap_client_list(struct bbs_tcp_client *client, const char *prefix, F
 	for (;;) {
 		char fullmailbox[256];
 		char *p1, *p2, *attributes, *delimiter;
-		res = bbs_fd_readline(client->rfd, &client->rldata, "\r\n", 200);
+		res = bbs_readline(client->rfd, &client->rldata, "\r\n", 200);
 		if (res < 0) {
 			break;
 		}
@@ -3031,7 +3031,7 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 			struct bbs_url url;
 			struct bbs_tcp_client client;
 			int secure = 0;
-			char buf[1024]; /* Must be large enough to get all the CAPABILITYs, or bbs_fd_readline will throw a warning about buffer exhaustion and return 0 */
+			char buf[1024]; /* Must be large enough to get all the CAPABILITYs, or bbs_readline will throw a warning about buffer exhaustion and return 0 */
 
 			memset(&url, 0, sizeof(url));
 			l++;
@@ -7345,8 +7345,8 @@ static int imap_process(struct imap_session *imap, char *s)
 		}
 
 		dlen = strlen(s); /* s may be empty but will not be NULL */
-		bbs_std_write(imap->appendfile, s, dlen);
-		bbs_std_write(imap->appendfile, "\r\n", 2);
+		bbs_write(imap->appendfile, s, dlen);
+		bbs_write(imap->appendfile, "\r\n", 2);
 		imap->appendcur += dlen + 2;
 #ifdef EXTRA_DEBUG
 		imap_debug(10, "Received %d/%d bytes of APPEND so far\n", imap->appendcur, imap->appendsize);
@@ -7410,11 +7410,11 @@ static int imap_process(struct imap_session *imap, char *s)
 			bbs_readline_init(&rldata, buf, sizeof(buf));
 			/* Read from the pipe until it's empty again. If there's more than one response waiting, and in particular, more than sizeof(buf), we need to read by line. */
 			for (;;) {
-				res = bbs_fd_readline(imap->pfd[0], &rldata, "\r\n", 5); /* Only up to 5 ms */
+				res = bbs_readline(imap->pfd[0], &rldata, "\r\n", 5); /* Only up to 5 ms */
 				if (res < 0) {
 					break;
 				}
-				_imap_reply_nolock(imap, "%s\r\n", buf); /* Already have lock held, and we don't know the length. Also, add CR LF back on, since bbs_fd_readline stripped that. */
+				_imap_reply_nolock(imap, "%s\r\n", buf); /* Already have lock held, and we don't know the length. Also, add CR LF back on, since bbs_readline stripped that. */
 			}
 			imap->pending = 0;
 			pthread_mutex_unlock(&imap->lock);
@@ -7853,7 +7853,7 @@ static void handle_client(struct imap_session *imap)
 	for (;;) {
 		const char *word2;
 		/* Autologout timer should not be less than 30 minutes, according to the RFC. We'll uphold that, for clients that are logged in. */
-		int res = bbs_fd_readline(imap->rfd, &rldata, "\r\n", bbs_user_is_registered(imap->node->user) ? MIN_MS(30) : MIN_MS(1));
+		int res = bbs_readline(imap->rfd, &rldata, "\r\n", bbs_user_is_registered(imap->node->user) ? MIN_MS(30) : MIN_MS(1));
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {

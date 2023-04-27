@@ -378,7 +378,7 @@ static void bot_handler(struct client *client, int fromirc, const char *channel,
 
 	/* If there's output in the pipe, send it to the channel */
 	/* Poll first, in case there's no data in the pipe or this would block. */
-	if (bbs_std_poll(stdout[0], 0) == 0) {
+	if (bbs_poll(stdout[0], 0) == 0) {
 		bbs_debug(4, "No data in script's STDOUT pipe\n"); /* Not necessarily an issue, the script could have returned 0 but printed nothing */
 		goto cleanup;
 	}
@@ -479,7 +479,7 @@ static void handle_ctcp(struct client *client, struct irc_client *ircl, const ch
 				relay_to_local(client, channel, "[ACTION] <%s> %s\n", msg->prefix, body);
 				bot_handler(client, 1, channel, msg->prefix, body);
 			} else {
-				bbs_writef(node, "[ACTION] <%s> %s\n", msg->prefix, body);
+				bbs_node_writef(node, "[ACTION] <%s> %s\n", msg->prefix, body);
 			}
 			break;
 		case CTCP_VERSION:
@@ -764,6 +764,13 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 
 #define chat_send(client, sender, channel, fmt, ...) _chat_send(client, sender, channel, 1, fmt, __VA_ARGS__)
 
+/*
+ * Forward declaration needed since __attribute__ can only be used with declarations, not definitions.
+ * See http://www.unixwiz.net/techtips/gnu-c-attributes.html#compat
+ * We only need the redundant declarations for static functions with attributes.
+ */
+static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client *client, struct participant *sender, const char *channel, int dorelay, const char *fmt, ...);
+
 /*!
  * \param client
  * \param sender If NULL, the message will be sent to the sender, if specified, the message will not be sent to this participant
@@ -878,19 +885,19 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 	struct client *c = p->client;
 
 	/* Join the channel */
-	bbs_clear_screen(node);
+	bbs_node_clear_screen(node);
 	chat_send(c, NULL, channel, "%s@%d has joined %s\n", bbs_username(node->user), p->node->id, channel);
 
-	bbs_unbuffer(node); /* Unbuffer so we can receive keys immediately. Otherwise, might print a message while user is typing */
+	bbs_node_unbuffer(node); /* Unbuffer so we can receive keys immediately. Otherwise, might print a message while user is typing */
 
 	for (;;) {
 		/* We need to poll both the node as well as the participant (chat) pipe */
-		res = bbs_poll2(node, SEC_MS(10), p->chatpipe[0]);
+		res = bbs_node_poll2(node, SEC_MS(10), p->chatpipe[0]);
 		if (res < 0) {
 			break;
 		} else if (res == 1) {
 			/* Node has activity: Typed something */
-			res = bbs_read(node, buf, 1);
+			res = bbs_node_read(node, buf, 1);
 			if (res <= 0) {
 				break;
 			}
@@ -898,19 +905,19 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 			if (buf[0] == '\n') { /* User just pressed ENTER. Um, okay. */
 				continue;
 			}
-			bbs_writef(node, "%c", buf[0]);
+			bbs_node_writef(node, "%c", buf[0]);
 			/* Now, buffer input */
 			/* XXX The user will be able to use terminal line editing, except for the first char */
 			/* XXX ESC should cancel */
 			/* XXX All this would be handled once we have a terminal line editor that works with unbuffered input */
-			bbs_buffer(node);
-			res = bbs_poll_read(node, MIN_MS(3), buf + 1, sizeof(buf) - 2); /* Leave the first char in the buffer alone, -1 for null termination, and -1 for the first char */
+			bbs_node_buffer(node);
+			res = bbs_node_poll_read(node, MIN_MS(3), buf + 1, sizeof(buf) - 2); /* Leave the first char in the buffer alone, -1 for null termination, and -1 for the first char */
 			if (res <= 0) {
-				bbs_debug(3, "bbs_poll_read returned %d\n", res);
+				bbs_debug(3, "bbs_node_poll_read returned %d\n", res);
 				if (res == 0) {
 					/* User started a message, but didn't finish before timeout */
-					bbs_writef(node, "\n*** TIMEOUT ***\n");
-					bbs_flush_input(node); /* Discard any pending input */
+					bbs_node_writef(node, "\n*** TIMEOUT ***\n");
+					bbs_node_flush_input(node); /* Discard any pending input */
 					continue;
 				}
 				break;
@@ -924,7 +931,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 			if (STARTS_WITH(buf2, "/quit")) {
 				break; /* Quit */
 			}
-			bbs_unbuffer(node);
+			bbs_node_unbuffer(node);
 			chat_send(c, p, channel, "<%s@%d> %s", bbs_username(node->user), node->id, buf2); /* buf2 already contains a newline from the user pressing ENTER, so don't add another one */
 			bot_handler(c, 0, channel, bbs_username(node->user), buf2);
 		} else if (res == 2) {
@@ -936,7 +943,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 			}
 			buf[res] = '\0'; /* Safe */
 			/* Don't add a trailing LF, the sent message should already had one. */
-			if (bbs_writef(node, "%.*s", res, buf) < 0) {
+			if (bbs_node_writef(node, "%.*s", res, buf) < 0) {
 				res = -1;
 				break;
 			}
@@ -945,7 +952,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 				bbs_debug(3, "Message contains '%s', alerting user\n", bbs_username(node->user));
 				/* If the message contains our username, ring the bell.
 				 * (Most IRC clients also do this for mentions.) */
-				if (bbs_ring_bell(node) < 0) {
+				if (bbs_node_ring_bell(node) < 0) {
 					res = -1;
 					break;
 				}
@@ -994,17 +1001,17 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 		return 0;
 	}
 
-	bbs_clear_screen(node);
-	bbs_writef(node, "Connecting to IRC...\n");
+	bbs_node_clear_screen(node);
+	bbs_node_writef(node, "Connecting to IRC...\n");
 
 	/* We get our own client, all to ourself! */
 	if (strlen_zero(username)) {
-		bbs_writef(node, "Enter username: ");
-		NONPOS_RETURN(bbs_readline(node, MIN_MS(1), usernamebuf, sizeof(usernamebuf))); /* Returning -1 anyways, no need to re-enable echo */
+		bbs_node_writef(node, "Enter username: ");
+		NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), usernamebuf, sizeof(usernamebuf))); /* Returning -1 anyways, no need to re-enable echo */
 		username = usernamebuf;
 		if (strlen_zero(username)) {
-			bbs_writef(node, "No username received. Connection aborted.\n");
-			NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
+			bbs_node_writef(node, "No username received. Connection aborted.\n");
+			NEG_RETURN(bbs_node_wait_key(node, SEC_MS(75)));
 			return 0;
 		}
 	}
@@ -1027,20 +1034,20 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 		 * Complication is that we don't actually know this connection is to the local
 		 * IRC server, it could be to any arbitrary server, so this is at least generic:
 		 */
-		bbs_echo_off(node); /* Don't display password */
-		bbs_writef(node, "Enter password for %s: ", username);
-		NONPOS_RETURN(bbs_readline(node, MIN_MS(1), passwordbuf, sizeof(passwordbuf))); /* Returning -1 anyways, no need to re-enable echo */
+		bbs_node_echo_off(node); /* Don't display password */
+		bbs_node_writef(node, "Enter password for %s: ", username);
+		NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), passwordbuf, sizeof(passwordbuf))); /* Returning -1 anyways, no need to re-enable echo */
 		/* Hopefully the password is right... only get one shot!
 		 * In theory, if we knew the connection was to our own IRC server,
 		 * we could actually call bbs_user_authentication here with a dummy user
 		 * to check the password, and if it's okay, proceed since we know that
 		 * the IRC server will then accept it.
 		 */
-		bbs_echo_on(node);
+		bbs_node_echo_on(node);
 		password = passwordbuf;
 		if (strlen_zero(password)) {
-			bbs_writef(node, "\nNo password received. Connection aborted.\n");
-			NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
+			bbs_node_writef(node, "\nNo password received. Connection aborted.\n");
+			NEG_RETURN(bbs_node_wait_key(node, SEC_MS(75)));
 			return 0;
 		}
 	}
@@ -1070,8 +1077,8 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 		res = irc_client_login(ircl); /* Authenticate */
 	}
 	if (res || !irc_client_connected(ircl)) {
-		bbs_writef(node, "Connection failed.\n");
-		bbs_wait_key(node, SEC_MS(75));
+		bbs_node_writef(node, "Connection failed.\n");
+		bbs_node_wait_key(node, SEC_MS(75));
 		goto cleanup;
 	}
 
@@ -1080,9 +1087,9 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 	 * This does complicate things just a little bit, as can be seen below.
 	 * There are several inefficiencies in the loop that could be optimized.
 	 */
-	bbs_readline_init(&rldata, buf, sizeof(buf)); /* XXX Should probably use a bbs_readline in client_relay as well, to simplify message parsing */
-	bbs_clear_screen(node);
-	bbs_buffer(node);
+	bbs_readline_init(&rldata, buf, sizeof(buf)); /* XXX Should probably use a bbs_node_readline in client_relay as well, to simplify message parsing */
+	bbs_node_clear_screen(node);
+	bbs_node_buffer(node);
 	for (;;) {
 		time_t now;
 		struct tm sendtime;
@@ -1105,17 +1112,17 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 		 * We should update that API to return 1 for fd 0 and 2 for fd 1, just like in socket.c.
 		 * Seriously... we are calling poll() 3 times here for every loop!!!
 		 * - Once in irc_poll
-		 * - bbs_poll and possibly irc_poll again, with timeout of 0.
-		 * - Finally in bbs_fd_readline (fortunately, we don't call irc_poll the 2nd time in this case, so it's always 3 times, never 4)
+		 * - bbs_node_poll and possibly irc_poll again, with timeout of 0.
+		 * - Finally in bbs_readline (fortunately, we don't call irc_poll the 2nd time in this case, so it's always 3 times, never 4)
 		 *
 		 * In the meantime, we manually poll again with no timeout to see if it was the client that has activity. */
-		if (bbs_poll(node, 0) > 0) {
-			char clientbuf[512]; /* Use a separate buf so that bbs_fd_readline gets its own buf for the server reads */
+		if (bbs_node_poll(node, 0) > 0) {
+			char clientbuf[512]; /* Use a separate buf so that bbs_readline gets its own buf for the server reads */
 
-			/* No need to use a fancy bbs_readline struct, since we can reasonably expect to get 1 full line at a time, nothing more, nothing less */
-			res = bbs_readline(node, 0, clientbuf, sizeof(clientbuf) - 1);
+			/* No need to use a fancy bbs_node_readline struct, since we can reasonably expect to get 1 full line at a time, nothing more, nothing less */
+			res = bbs_node_readline(node, 0, clientbuf, sizeof(clientbuf) - 1);
 			if (res <= 0) {
-				bbs_warning("bbs_fd_readline returned %d\n", res);
+				bbs_warning("bbs_readline returned %d\n", res);
 				break;
 			}
 			clientbuf[res] = '\0'; /* Safe */
@@ -1135,20 +1142,20 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 				strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime);
 			}
 
-			bbs_writef(node, "%s<%s> %s\n", datestr, irc_client_username(ircl), clientbuf); /* Echo the user's own message */
+			bbs_node_writef(node, "%s<%s> %s\n", datestr, irc_client_username(ircl), clientbuf); /* Echo the user's own message */
 		} else if (irc_poll(ircl, 0, -1) > 0) { /* Must've been the server. */
 			char tmpbuf[2048];
 			int ready;
-			/* bbs_fd_readline internally will call poll(), but we already polled inside irc_poll,
+			/* bbs_readline internally will call poll(), but we already polled inside irc_poll,
 			 * and then poll() again to see which file descriptor had activity,
 			 * so just pass 0 as poll should always return > 0 anyways, immediately,
 			 * since we haven't read any data yet to quell the poll. */
 
-			/* Another clunky thing. Need to get data using irc_read, but we want to buffer it using a bbs_readline struct.
+			/* Another clunky thing. Need to get data using irc_read, but we want to buffer it using a bbs_node_readline struct.
 			 * So relay using a pipe.
 			 */
 			res = irc_read(ircl, tmpbuf, sizeof(tmpbuf));
-			res = bbs_fd_readline_append(&rldata, "\r\n", tmpbuf, res, &ready);
+			res = bbs_readline_append(&rldata, "\r\n", tmpbuf, res, &ready);
 			if (!ready) {
 				continue;
 			}
@@ -1158,7 +1165,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 					res += 1; /* Convert the res back to a normal one. */
 					if (res == 0) {
 						/* No data to read. This shouldn't happen if irc_poll returned > 0 */
-						bbs_warning("bbs_fd_readline returned %d\n", res - 1); /* And subtract 1 again to match what it actually returned before we added 1 */
+						bbs_warning("bbs_readline returned %d\n", res - 1); /* And subtract 1 again to match what it actually returned before we added 1 */
 					}
 					goto cleanup;
 				}
@@ -1167,7 +1174,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 				if (!irc_parse_msg(&msg_stack, buf)) {
 					/* Condensed version of what handle_irc_msg does */
 					if (msg->numeric) {
-						bbs_writef(node, "%s %d %s\n", NODE_IS_TDD(node) ? "" : S_IF(msg->prefix), msg->numeric, msg->body);
+						bbs_node_writef(node, "%s %d %s\n", NODE_IS_TDD(node) ? "" : S_IF(msg->prefix), msg->numeric, msg->body);
 					} else {
 						bbs_assert_exists(msg->command);
 						if (!strcmp(msg->command, "PRIVMSG") || !strcmp(msg->command, "NOTICE")) { /* This is intentionally first, as it's the most common one. */
@@ -1189,7 +1196,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 									localtime_r(&now, &sendtime);
 									strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime);
 								}
-								bbs_writef(node, "%s<%s> %s\n", datestr, msg->prefix, body);
+								bbs_node_writef(node, "%s<%s> %s\n", datestr, msg->prefix, body);
 							}
 						} else if (!strcmp(msg->command, "PING")) {
 							/* Reply with the same data that it sent us (some servers may actually require that) */
@@ -1198,33 +1205,33 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 								return 0;
 							}
 						} else if (!strcmp(msg->command, "JOIN")) {
-							bbs_writef(node, "%s has %sjoined%s\n", msg->prefix, COLOR(COLOR_GREEN), COLOR_RESET);
+							bbs_node_writef(node, "%s has %sjoined%s\n", msg->prefix, COLOR(COLOR_GREEN), COLOR_RESET);
 						} else if (!strcmp(msg->command, "PART")) {
-							bbs_writef(node, "%s has %sleft%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
+							bbs_node_writef(node, "%s has %sleft%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
 						} else if (!strcmp(msg->command, "QUIT")) {
-							bbs_writef(node, "%s has %squit%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
+							bbs_node_writef(node, "%s has %squit%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
 						} else if (!strcmp(msg->command, "KICK")) {
-							bbs_writef(node, "%s has been %skicked%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
+							bbs_node_writef(node, "%s has been %skicked%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
 						} else if (!strcmp(msg->command, "NICK")) {
-							bbs_writef(node, "%s is %snow known as%s %s\n", msg->prefix, COLOR(COLOR_CYAN), COLOR_RESET, msg->body);
+							bbs_node_writef(node, "%s is %snow known as%s %s\n", msg->prefix, COLOR(COLOR_CYAN), COLOR_RESET, msg->body);
 						} else if (!strcmp(msg->command, "MODE")) {
 							/* Ignore */
 						} else if (!strcmp(msg->command, "ERROR")) {
 							/* Ignore, do not send errors to users */
 						} else if (!strcmp(msg->command, "TOPIC")) {
-							bbs_writef(node, "Topic is now %s\n", msg->body);
+							bbs_node_writef(node, "Topic is now %s\n", msg->body);
 						} else {
 							bbs_warning("Unhandled command: prefix: %s, command: %s, body: %s\n", msg->prefix, msg->command, msg->body);
 						}
 					}
 				}
 
-				/* Okay, now because bbs_fd_readline might have read MULTIPLE lines from the server,
+				/* Okay, now because bbs_readline might have read MULTIPLE lines from the server,
 				 * call it again to make sure there isn't any further input.
 				 * We use a timeout of 0, because if there isn't another message ready already,
 				 * then we should just go back to the outer poll.
 				 */
-				res = bbs_fd_readline(node->slavefd, &rldata, "\r\n", 0);
+				res = bbs_readline(node->slavefd, &rldata, "\r\n", 0);
 			} while (res > 0);
 		} else { /* Shouldn't happen */
 			bbs_warning("irc_poll returned activity, but neither client nor server has pending data?\n");

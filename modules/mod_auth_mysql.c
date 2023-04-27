@@ -348,15 +348,15 @@ static int user_register(struct bbs_node *node)
 #define MAX_REG_ATTEMPTS 6
 	int tries = MAX_REG_ATTEMPTS;
 
-	bbs_buffer(node); /* Buffer input so we can read line by line */
+	bbs_node_buffer(node); /* Buffer input so we can read line by line */
 
 #define REG_FMT COLOR(COLOR_WHITE)
 #define REG_QLEN 43
 #define get_response(node, qlen, fmt, q, pollms, buf, len, tries, minlen, reqchars) bbs_get_response(node, qlen, fmt q, pollms, buf, len, tries, minlen, reqchars)
 
 	/* Registration notice */
-	NEG_RETURN(bbs_clear_screen(node));
-	NONPOS_RETURN(bbs_writef(node, "%s%s%s\n", COLOR(COLOR_PRIMARY), "New User Registration", COLOR(COLOR_WHITE))); /* Use white for the questions to stand out */
+	NEG_RETURN(bbs_node_clear_screen(node));
+	NONPOS_RETURN(bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_PRIMARY), "New User Registration", COLOR(COLOR_WHITE))); /* Use white for the questions to stand out */
 
 	for (; tries > 0; tries -= 2) {
 		int correct;
@@ -374,15 +374,15 @@ static int user_register(struct bbs_node *node)
 			res = get_response(node, REG_QLEN, REG_FMT, "Desired username: ", MIN_MS(1), username, sizeof(username), &tries, 2, NULL);
 			NONZERO_RETURN(res);
 			if (strchr(username, ' ')) {
-				NEG_RETURN(bbs_writef(node, "\n%sUsername cannot contain spaces%s\n", COLOR(COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sUsername cannot contain spaces%s\n", COLOR(COLOR_RED), COLOR_RESET));
 			} else if (!bbs_str_isprint(username)) {
-				NEG_RETURN(bbs_writef(node, "\n%sUsername contains disallowed characters%s\n", COLOR(COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sUsername contains disallowed characters%s\n", COLOR(COLOR_RED), COLOR_RESET));
 			} else if (strlen(username) > 15) {
-				NEG_RETURN(bbs_writef(node, "\n%sUsername is too long%s\n", COLOR(COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sUsername is too long%s\n", COLOR(COLOR_RED), COLOR_RESET));
 			} else if (USERNAME_RESERVED(username)) {
-				NEG_RETURN(bbs_writef(node, "\n%sThat username is not allowed%s\n", COLOR(COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sThat username is not allowed%s\n", COLOR(COLOR_RED), COLOR_RESET));
 			} else if (username_reserved(username)) {
-				NEG_RETURN(bbs_writef(node, "\n%sThat username is not allowed%s\n", COLOR(COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sThat username is not allowed%s\n", COLOR(COLOR_RED), COLOR_RESET));
 			} else {
 				break;
 			}
@@ -396,18 +396,18 @@ static int user_register(struct bbs_node *node)
 		 * We can't just do a case-insensitive comparison since we never store the password anywhere, only the hash.
 		 * Therefore, we must obtain the exact password for authentication,
 		 * and the user must explicitly set a compatible password if TTY/TDD compatibility is desired. */
-		bbs_writef(node, COLOR(COLOR_RED) "If you want to be able to log in from a TTY/TDD, your password should not contain lowercase letters.\n" COLOR_RESET);
+		bbs_node_writef(node, COLOR(COLOR_RED) "If you want to be able to log in from a TTY/TDD, your password should not contain lowercase letters.\n" COLOR_RESET);
 
-		bbs_echo_off(node); /* Don't display password */
+		bbs_node_echo_off(node); /* Don't display password */
 		for (; tries > 0; tries--) { /* Retries here count less than retries of the main loop */
-			NEG_RETURN(bbs_writef(node, "%-*s", REG_QLEN, REG_FMT "Password: "));
-			NONPOS_RETURN(bbs_readline(node, MIN_MS(1), password, sizeof(password)));
-			NEG_RETURN(bbs_writef(node, "%-*s", REG_QLEN, REG_FMT "\nConfirm Password: ")); /* Begin with new line since wasn't echoed */
-			NONPOS_RETURN(bbs_readline(node, MIN_MS(1), password2, sizeof(password2)));
+			NEG_RETURN(bbs_node_writef(node, "%-*s", REG_QLEN, REG_FMT "Password: "));
+			NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), password, sizeof(password)));
+			NEG_RETURN(bbs_node_writef(node, "%-*s", REG_QLEN, REG_FMT "\nConfirm Password: ")); /* Begin with new line since wasn't echoed */
+			NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), password2, sizeof(password2)));
 			if (s_strlen_zero(password) || strcmp(password, password2)) {
-				NEG_RETURN(bbs_writef(node, "\n%sPasswords do not match%s\n", COLOR(COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sPasswords do not match%s\n", COLOR(COLOR_RED), COLOR_RESET));
 			} else if (strlen(password) < 8) {
-				NEG_RETURN(bbs_writef(node, "\n%sPassword is too short%s\n", COLOR(COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sPassword is too short%s\n", COLOR(COLOR_RED), COLOR_RESET));
 			} else {
 				break;
 			}
@@ -415,10 +415,10 @@ static int user_register(struct bbs_node *node)
 		if (tries <= 0) {
 			return 1;
 		}
-		bbs_echo_on(node);
+		bbs_node_echo_on(node);
 
 		/* Begin with LF since not echoed from input */
-		bbs_writef(node, "\n");
+		bbs_node_writef(node, "\n");
 
 		/* XXX Validation of provided data needed, but should be primarily handled by the SQL schema. We do include some rudimentary format checks. */
 
@@ -445,15 +445,15 @@ static int user_register(struct bbs_node *node)
 			NONZERO_RETURN(res);
 		}
 
-		bbs_unbuffer(node); /* We need to be unbuffered for tread */
+		bbs_node_unbuffer(node); /* We need to be unbuffered for tread */
 		if (register_gender) {
 			for (; tries > 0; tries--) { /* Retries here count less than retries of the main loop */
-				NEG_RETURN(bbs_writef(node, "%-*s", REG_QLEN, REG_FMT "\rGender (MFX): ")); /* Erase existing line in case we're retrying */
-				gender = bbs_tread(node, MIN_MS(1));
+				NEG_RETURN(bbs_node_writef(node, "%-*s", REG_QLEN, REG_FMT "\rGender (MFX): ")); /* Erase existing line in case we're retrying */
+				gender = bbs_node_tread(node, MIN_MS(1));
 				NONPOS_RETURN(gender);
 				gender = tolower(gender);
 				if (gender == 'm' || gender == 'f' || gender == 'x') {
-					NEG_RETURN(bbs_writef(node, "%c\n", gender)); /* Print response + newline */
+					NEG_RETURN(bbs_node_writef(node, "%c\n", gender)); /* Print response + newline */
 					break; /* Got a valid response */
 				}
 				/* Invalid, try again */
@@ -463,8 +463,8 @@ static int user_register(struct bbs_node *node)
 			}
 		}
 
-		NEG_RETURN(bbs_writef(node, "%-*s", REG_QLEN, REG_FMT "Is the above information correct? "));
-		correct = bbs_tread(node, MIN_MS(1));
+		NEG_RETURN(bbs_node_writef(node, "%-*s", REG_QLEN, REG_FMT "Is the above information correct? "));
+		correct = bbs_node_tread(node, MIN_MS(1));
 		if (tolower(correct) == 'y') {
 			break;
 		}
@@ -475,7 +475,7 @@ static int user_register(struct bbs_node *node)
 	}
 #undef REG_FMT
 
-	NEG_RETURN(bbs_writef(node, "\n%sProcessing...\n", COLOR(COLOR_SUCCESS)));
+	NEG_RETURN(bbs_node_writef(node, "\n%sProcessing...\n", COLOR(COLOR_SUCCESS)));
 	bbs_auth("New registration attempt for user %s from IP %s\n", username, node->ip);
 
 	/* How heard is logged but not passed to make_user */
@@ -491,20 +491,20 @@ static int user_register(struct bbs_node *node)
 		/* Verify that the user owns the provided email address. */
 		res = bbs_mail_fmt(0, email, NULL, NULL, "BBS Registration", "Greetings,\r\n\tYour verification code for your BBS account registration is %s.\r\nIf you did not request this code, you should ignore this email.\r\n", randcode);
 		if (res) {
-			NEG_RETURN(bbs_writef(node, "%s%s%s\n", COLOR(COLOR_FAILURE), "Your registration could not be completed due to a processing error.\nContact the sysop.", COLOR_RESET));
-			NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
+			NEG_RETURN(bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_FAILURE), "Your registration could not be completed due to a processing error.\nContact the sysop.", COLOR_RESET));
+			NEG_RETURN(bbs_node_wait_key(node, SEC_MS(75)));
 			return 1;
 		}
-		NEG_RETURN(bbs_writef(node, "\n%sWe just emailed you a verification code. Continue once you've received it.%s\n", COLOR(COLOR_SUCCESS), COLOR_RESET));
-		NEG_RETURN(bbs_wait_key(node, SEC_MS(600))); /* Wait a bit longer, up to 10 minutes in case email is delayed */
+		NEG_RETURN(bbs_node_writef(node, "\n%sWe just emailed you a verification code. Continue once you've received it.%s\n", COLOR(COLOR_SUCCESS), COLOR_RESET));
+		NEG_RETURN(bbs_node_wait_key(node, SEC_MS(600))); /* Wait a bit longer, up to 10 minutes in case email is delayed */
 
-		bbs_buffer(node);
+		bbs_node_buffer(node);
 
 		bbs_get_response(node, 20, COLOR(COLOR_WHITE) "\nVerification Code: ", MIN_MS(3), usercode, sizeof(usercode), &tries, 1, NULL);
 		if (strcmp(usercode, randcode)) {
-			NEG_RETURN(bbs_writef(node, "\n%sSorry, the verification code you provided was incorrect.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
-			NEG_RETURN(bbs_writef(node, "\nPlease try again later...\n"));
-			NEG_RETURN(bbs_wait_key(node, SEC_MS(20)));
+			NEG_RETURN(bbs_node_writef(node, "\n%sSorry, the verification code you provided was incorrect.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
+			NEG_RETURN(bbs_node_writef(node, "\nPlease try again later...\n"));
+			NEG_RETURN(bbs_node_wait_key(node, SEC_MS(20)));
 			return 1;
 		}
 		/* Allow registration to continue. */
@@ -514,23 +514,23 @@ static int user_register(struct bbs_node *node)
 	res = make_user(username, password, fullname, email, NULL_IFEMPTY(phone), NULL_IFEMPTY(address), city, state, NULL_IFEMPTY(zip), NULL_IFEMPTY(dob), gender);
 
 	if (res) {
-		NEG_RETURN(bbs_writef(node, "%s%s%s\n", COLOR(COLOR_FAILURE), "Your registration was rejected.", COLOR_RESET));
-		NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
+		NEG_RETURN(bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_FAILURE), "Your registration was rejected.", COLOR_RESET));
+		NEG_RETURN(bbs_node_wait_key(node, SEC_MS(75)));
 		return 1;
 	}
 	/* If user registration actually succeeded, then this function call will succeed. If not, it won't. */
 	res = bbs_authenticate(node, username, password);
 	if (res) {
 		/* Something went wrong */
-		NEG_RETURN(bbs_writef(node, "%s%s%s\n", COLOR(COLOR_FAILURE), "An error occured in processing your registration.\n", COLOR_RESET));
-		NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
+		NEG_RETURN(bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_FAILURE), "An error occured in processing your registration.\n", COLOR_RESET));
+		NEG_RETURN(bbs_node_wait_key(node, SEC_MS(75)));
 		return 1;
 	}
 
 	/* If successful, no need to log, auth.c will do that */
-	NEG_RETURN(bbs_writef(node, "\n%sRegistration successful. Welcome aboard!%s\n", COLOR(COLOR_SUCCESS), COLOR_RESET));
+	NEG_RETURN(bbs_node_writef(node, "\n%sRegistration successful. Welcome aboard!%s\n", COLOR(COLOR_SUCCESS), COLOR_RESET));
 	/* Wait for user to confirm, otherwise the message will disappear since the screen will clear after we return */
-	NEG_RETURN(bbs_wait_key(node, SEC_MS(75)));
+	NEG_RETURN(bbs_node_wait_key(node, SEC_MS(75)));
 
 	return res;
 }

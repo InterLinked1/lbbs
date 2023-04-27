@@ -1271,7 +1271,7 @@ static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 	nntp_send(nntp, 200, "%s Newsgroup Service Ready, posting permitted", bbs_hostname());
 
 	for (;;) {
-		int res = bbs_fd_readline(nntp->rfd, &rldata, "\r\n", MIN_MS(5));
+		int res = bbs_readline(nntp->rfd, &rldata, "\r\n", MIN_MS(5));
 		if (res < 0) {
 			/* We should NOT send any response to the client when terminating a connection due to timeout. */
 			break;

@@ -58,11 +58,11 @@ static int ftps_enabled = 0;
 static int require_reuse = 0;
 
 /*! \note Uses a statement expression so that we can also log all FTP responses */
-#define ftp_write(ftp, code, fmt, ...) ({ bbs_debug(5, "FTP <= %d " fmt, code, ## __VA_ARGS__); bbs_std_writef(ftp->wfd, "%d " fmt, code, ## __VA_ARGS__); })
-#define ftp_write0(ftp, code, fmt, ...) ({ bbs_debug(5, "FTP <= %d-" fmt, code, ## __VA_ARGS__); bbs_std_writef(ftp->wfd, "%d-" fmt, code, ## __VA_ARGS__); })
-#define ftp_write_raw(ftp, fmt, ...) ({ bbs_debug(5, "FTP <= " fmt, ## __VA_ARGS__); bbs_std_writef(ftp->wfd, fmt, ## __VA_ARGS__); })
-#define ftp_write_raw2(ftp, fmt, ...) ({ bbs_debug(5, "FTP <= " fmt, ## __VA_ARGS__); bbs_std_writef(ftp->wfd2, fmt, ## __VA_ARGS__); })
-#define ftp_poll(ftp, ms) bbs_std_poll(ftp->rfd, ms)
+#define ftp_write(ftp, code, fmt, ...) ({ bbs_debug(5, "FTP <= %d " fmt, code, ## __VA_ARGS__); bbs_writef(ftp->wfd, "%d " fmt, code, ## __VA_ARGS__); })
+#define ftp_write0(ftp, code, fmt, ...) ({ bbs_debug(5, "FTP <= %d-" fmt, code, ## __VA_ARGS__); bbs_writef(ftp->wfd, "%d-" fmt, code, ## __VA_ARGS__); })
+#define ftp_write_raw(ftp, fmt, ...) ({ bbs_debug(5, "FTP <= " fmt, ## __VA_ARGS__); bbs_writef(ftp->wfd, fmt, ## __VA_ARGS__); })
+#define ftp_write_raw2(ftp, fmt, ...) ({ bbs_debug(5, "FTP <= " fmt, ## __VA_ARGS__); bbs_writef(ftp->wfd2, fmt, ## __VA_ARGS__); })
+#define ftp_poll(ftp, ms) bbs_poll(ftp->rfd, ms)
 #define ftp_read(ftp, buf, size) read(ftp->rfd, buf, size)
 #define IO_ABORT(res) if (res <= 0) { goto cleanup; }
 
@@ -196,7 +196,7 @@ static int ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir,
 		return -1;
 	}
 	for (;;) {
-		res = bbs_std_poll(ftp->rfd2, 2000);
+		res = bbs_poll(ftp->rfd2, 2000);
 		if (res < 0) {
 			res = 0;
 			break; /* Client will close connection for EOF */
@@ -286,7 +286,7 @@ static void *ftp_handler(void *varg)
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 
 	for (;;) {
-		res = bbs_fd_readline(ftp->rfd, &rldata, "\r\n", node->user ? bbs_transfer_timeout() : 15000); /* After some number of seconds of inactivity, a client times out */
+		res = bbs_readline(ftp->rfd, &rldata, "\r\n", node->user ? bbs_transfer_timeout() : 15000); /* After some number of seconds of inactivity, a client times out */
 		if (res <= 0) {
 			break;
 		}

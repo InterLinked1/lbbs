@@ -238,7 +238,7 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 			goto cleanup;
 	}
 	/* Wait for the response to our request. */
-	res = bbs_std_poll(nickpipe[0], 3000);
+	res = bbs_poll(nickpipe[0], 3000);
 	if (res <= 0) {
 		bbs_warning("Didn't receive response to WHO/WHOIS/NAMES (%d) query: returned %d\n", numeric, res);
 		res = -1;
@@ -254,7 +254,7 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 		if (res <= 0) {
 			break;
 		}
-	} while (bbs_std_poll(nickpipe[0], 250) > 0);
+	} while (bbs_poll(nickpipe[0], 250) > 0);
 
 	*bufpos = '\0';
 

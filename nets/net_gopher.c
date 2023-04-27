@@ -79,7 +79,7 @@ static void *gopher_handler(void *varg)
 	bbs_node_begin(node);
 
 	/* This is not buffered since there's no pseudoterminal. */
-	res = bbs_fd_poll_read(node->fd, 1000, buf, sizeof(buf) - 1); /* Read the retrieval/selector string from the client */
+	res = bbs_poll_read(node->fd, 1000, buf, sizeof(buf) - 1); /* Read the retrieval/selector string from the client */
 	if (res <= 0) {
 		goto cleanup;
 	}

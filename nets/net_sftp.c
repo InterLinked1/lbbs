@@ -43,7 +43,7 @@
 #include "include/user.h"
 #include "include/auth.h"
 #include "include/pty.h" /* use bbs_openpty */
-#include "include/term.h" /* use bbs_fd_unbuffer_input */
+#include "include/term.h" /* use bbs_unbuffer_input */
 #include "include/utils.h"
 #include "include/config.h"
 #include "include/net.h"
@@ -720,7 +720,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 		sftp_client_message msg;
 #if 0
 		/*! \todo BUGBUG FIXME For some reason, this doesn't work (probably can't poll directly on the fd, see if there's a libssh API to do this) */
-		int pres = bbs_std_poll(node->fd, bbs_transfer_timeout());
+		int pres = bbs_poll(node->fd, bbs_transfer_timeout());
 		if (pres <= 0) {
 			bbs_debug(3, "poll returned %d, terminating SFTP session\n", pres);
 			break;

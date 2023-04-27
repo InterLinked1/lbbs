@@ -21,6 +21,6 @@
 #define BBS_SHORTNAME "LBBS"
 #define BBS_MAJOR_VERSION 0
 #define BBS_MINOR_VERSION 2
-#define BBS_PATCH_VERSION 1
+#define BBS_PATCH_VERSION 2
 #define BBS_SOURCE_URL "https://github.com/InterLinked1/lbbs"
 #endif

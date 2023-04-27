@@ -203,7 +203,7 @@ int bbs_spawn_pty_master(int fd)
 		bbs_error("Failed to openpty\n");
 		return -1;
 	}
-	bbs_fd_unbuffer_input(aslave, 0); /* Disable canonical mode and echo on this PTY slave */
+	bbs_unbuffer_input(aslave, 0); /* Disable canonical mode and echo on this PTY slave */
 	bbs_term_makeraw(amaster); /* Make the master side raw */
 
 	ptyfds = calloc(1, sizeof(*ptyfds));
@@ -279,7 +279,7 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 	if (fgconsole) {
 		bbs_sigint_set_alertpipe(spy_alert_pipe);
 	}
-	bbs_fd_unbuffer_input(fdin, 0); /* Unbuffer input, so that sysop can type on the node's TTY in real time, not just flushed after line breaks. */
+	bbs_unbuffer_input(fdin, 0); /* Unbuffer input, so that sysop can type on the node's TTY in real time, not just flushed after line breaks. */
 	bbs_node_pty_lock(node);
 	bbs_node_unlock(node); /* We're done with the node. */
 
@@ -304,7 +304,7 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 		bbs_alertpipe_close(spy_alert_pipe);
 
 		/* Reset the terminal. */
-		bbs_fd_buffer_input(fdin, 1); /* Rebuffer input */
+		bbs_buffer_input(fdin, 1); /* Rebuffer input */
 		SWRITE(fdout, COLOR_RESET);
 		SWRITE(fdout, TERM_CLEAR);
 	} else {
@@ -322,7 +322,7 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 		 * for fdin/fdout (which are sockets) to close. */
 		do {
 			pfd.revents = 0;
-			res = poll(&pfd, 1, -1); /* Use poll directly instead of just bbs_std_poll, so that we know what event we get */
+			res = poll(&pfd, 1, -1); /* Use poll directly instead of just bbs_poll, so that we know what event we get */
 			/* Careful! poll will return 1 when the remote console disconnects, not -1. Use the revents to figure out what really happened. */
 			if (res == 1 && pfd.revents & BBS_POLL_QUIT) {
 				break;
@@ -405,10 +405,10 @@ static void trigger_node_disconnect(struct bbs_node *node)
 {
 	bbs_node_lock(node);
 	/* Client disconnected */
-	/* Close the slave, this will cause bbs_poll, bbs_read, bbs_write, etc. to return -1.
+	/* Close the slave, this will cause bbs_node_poll, bbs_node_read, bbs_node_write, etc. to return -1.
 	 * That will cause the node to exit and it will subsequently join this thread. */
 	close(node->slavefd);
-	/* bbs_poll will wait for ms to expire (so if ms == -1, very bad!!!)
+	/* bbs_node_poll will wait for ms to expire (so if ms == -1, very bad!!!)
 	 * You'd think poll would get a POLLHUP immediately... but nope! Not sure why.
 	 * Need to find a way to make this immediate.
 	 * In the meantime, the node threads will exit eventually, just not immediately.

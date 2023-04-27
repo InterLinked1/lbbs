@@ -367,7 +367,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_tcp_client_send(struct bbs_t
 
 	if (!strchr(fmt, '%')) {
 		len = strlen(fmt);
-		return bbs_std_write(client->wfd, fmt, len);
+		return bbs_write(client->wfd, fmt, len);
 	}
 
 	/* Do not use vdprintf, I have not had good experiences with that... */
@@ -378,7 +378,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_tcp_client_send(struct bbs_t
 	if (len < 0) {
 		return -1;
 	}
-	res = bbs_std_write(client->wfd, buf, len);
+	res = bbs_write(client->wfd, buf, len);
 	free(buf);
 	return res;
 }
@@ -386,7 +386,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_tcp_client_send(struct bbs_t
 int bbs_tcp_client_expect(struct bbs_tcp_client *client, const char *delim, int attempts, int ms, const char *str)
 {
 	while (attempts-- > 0) {
-		int res = bbs_fd_readline(client->rfd, &client->rldata, delim, ms);
+		int res = bbs_readline(client->rfd, &client->rldata, delim, ms);
 		if (res <= 0) {
 			return -1;
 		}
@@ -758,8 +758,8 @@ const char *poll_revent_name(int revents)
 	return NULL;
 }
 
-/* XXX This duplicates code, we should combine core logic of bbs_std_poll and bbs_poll */
-int bbs_std_poll(int fd, int ms)
+/* XXX This duplicates code, we should combine core logic of bbs_poll and bbs_node_poll */
+int bbs_poll(int fd, int ms)
 {
 	struct pollfd pfd;
 	int res;
@@ -804,7 +804,7 @@ int bbs_std_poll(int fd, int ms)
 
 /* XXX For INTERNAL_POLL_THRESHOLD stuff, if ms == -1, instead of asserting, just set ms to INT_MAX or loop forever, internally */
 
-/* XXX bbs_poll should really use bbs_multi_poll internally to avoid duplicating code. Might be a tiny performance hit? */
+/* XXX bbs_node_poll should really use bbs_multi_poll internally to avoid duplicating code. Might be a tiny performance hit? */
 int bbs_multi_poll(struct pollfd pfds[], int numfds, int ms)
 {
 	int i, res;
@@ -894,7 +894,7 @@ int bbs_multi_poll(struct pollfd pfds[], int numfds, int ms)
 	}
 
 /*! \note fd is the last arg in case in the future, we want to expand this to accept variadic args of fds */
-int bbs_poll2(struct bbs_node *node, int ms, int fd)
+int bbs_node_poll2(struct bbs_node *node, int ms, int fd)
 {
 	struct pollfd pfds[2];
 
@@ -910,7 +910,7 @@ int bbs_poll2(struct bbs_node *node, int ms, int fd)
 	return bbs_multi_poll(pfds, 2, ms);
 }
 
-int bbs_poll(struct bbs_node *node, int ms)
+int bbs_node_poll(struct bbs_node *node, int ms)
 {
 	struct pollfd pfd;
 	int res;
@@ -988,7 +988,7 @@ int bbs_poll(struct bbs_node *node, int ms)
 	return res;
 }
 
-int bbs_tpoll(struct bbs_node *node, int ms)
+int bbs_node_tpoll(struct bbs_node *node, int ms)
 {
 	int everwarned = 0, res = 0;
 	int wasbuffered = node->buffered; /* We could be buffered or unbuffered, with echo or without */
@@ -1019,68 +1019,68 @@ int bbs_tpoll(struct bbs_node *node, int ms)
 		warned = 0;
 		if (ms >= MIN_POLL_MS_FOR_WARNING) {
 			/* Wait until there's MIN_WARNING_MS ms left. */
-			res = bbs_poll(node, ms - MIN_WARNING_MS);
+			res = bbs_node_poll(node, ms - MIN_WARNING_MS);
 			if (!res) {
 				bbs_debug(8, "Node %d has been inactive for %d ms, warning\n", node->id, ms - MIN_WARNING_MS);
 				bbs_verb(5, "Node %d is at imminent risk of timing out\n", node->id);
 				if (everwarned) {
 					/* If already warned, don't keep adding more new lines. */
-					bbs_clear_line(node);
-					NEG_RETURN(bbs_writef(node, "\r"));
+					bbs_node_clear_line(node);
+					NEG_RETURN(bbs_node_writef(node, "\r"));
 				} else {
 					/* Don't begin with \r because we may not necessarily want to erase current line. */
-					/* On the contrary, start with a LF for safety, since bbs_wait_key for example doesn't end in LF.
+					/* On the contrary, start with a LF for safety, since bbs_node_wait_key for example doesn't end in LF.
 					 * Finally, don't end with a LF. */
-					NEG_RETURN(bbs_writef(node, "\n"));
+					NEG_RETURN(bbs_node_writef(node, "\n"));
 				}
 				if (!NODE_IS_TDD(node)) {
-					NEG_RETURN(bbs_writef(node, "%sAre you still there? []%s", COLOR(COLOR_RED), COLOR_RESET));
+					NEG_RETURN(bbs_node_writef(node, "%sAre you still there? []%s", COLOR(COLOR_RED), COLOR_RESET));
 					/* Ring the bell to get the user's attention. */
-					NEG_RETURN(bbs_ring_bell(node));
+					NEG_RETURN(bbs_node_ring_bell(node));
 				} else {
-					NEG_RETURN(bbs_writef(node, "Still there?"));
+					NEG_RETURN(bbs_node_writef(node, "Still there?"));
 				}
 
 				ms = MIN_WARNING_MS;
 				everwarned = warned = 1;
-				/* If wasbuffered, then we don't actually know if the next bbs_poll returned 1
+				/* If wasbuffered, then we don't actually know if the next bbs_node_poll returned 1
 				 * because the user started typing and stopped before hitting ENTER (and the timer went off),
 				 * or because the user responded to the "Are you still there?".
 				 * As a result, we need to check if the buffer has data when we put
 				 * the terminal into noncanonical mode, before polling, so we know which of the 2 cases is true.
 				 *
 				 * We don't actually need to call poll with 0 to check, we can just flush the buffer here,
-				 * as well as below. This guarantees that the next bbs_poll won't return immediately
+				 * as well as below. This guarantees that the next bbs_node_poll won't return immediately
 				 * because of data that was present in the buffer prior to the warning, simply
 				 * because we changed to noncanonical mode.
 				 */
-				bbs_unbuffer(node); /* Non-canonical mode for warning response, no echo */
-				NEG_RETURN(bbs_flush_input(node));
+				bbs_node_unbuffer(node); /* Non-canonical mode for warning response, no echo */
+				NEG_RETURN(bbs_node_flush_input(node));
 			}
 		}
 
 		/* This is the first poll if <= MIN_POLL_MS_FOR_WARNING, and possibly if >. */
 		if (!res) {
-			res = bbs_poll(node, ms);
+			res = bbs_node_poll(node, ms);
 			if (res > 0 && warned) {
 				/* This was a response to the "Are you still there?" prompt, not whatever the BBS was doing.
 				 * Flush the response to ignore everything pending in the input buffer.
 				 * (If we were in canonical mode, there could be more than 1 byte to flush.)
 				 */
-				NEG_RETURN(bbs_flush_input(node));
+				NEG_RETURN(bbs_node_flush_input(node));
 				/* Ate response, now start over */
 				if (wasbuffered) {
-					bbs_clear_line(node); /* Erase prompt */
-					NEG_RETURN(bbs_writef(node, "\r"));
-					bbs_buffer_input(node, hadecho); /* Canonical mode, same echo */
+					bbs_node_clear_line(node); /* Erase prompt */
+					NEG_RETURN(bbs_node_writef(node, "\r"));
+					bbs_node_buffer_input(node, hadecho); /* Canonical mode, same echo */
 				} else {
 					/* Prevent "Are you still there?" from lingering on menus after confirmation */
-					bbs_clear_line(node); /* Erase prompt */
-					NEG_RETURN(bbs_writef(node, "\r"));
+					bbs_node_clear_line(node); /* Erase prompt */
+					NEG_RETURN(bbs_node_writef(node, "\r"));
 				}
 				continue; /* Start the poll over again, now that the user confirmed s/he's still there */
 			} else if (!res && warned && wasbuffered) {
-				bbs_buffer_input(node, hadecho); /* Restore before continuing */
+				bbs_node_buffer_input(node, hadecho); /* Restore before continuing */
 			}
 		}
 		break;
@@ -1100,7 +1100,7 @@ int bbs_tpoll(struct bbs_node *node, int ms)
 	return res;
 }
 
-int bbs_read(struct bbs_node *node, char *buf, size_t len)
+int bbs_node_read(struct bbs_node *node, char *buf, size_t len)
 {
 	int res;
 
@@ -1121,19 +1121,19 @@ int bbs_read(struct bbs_node *node, char *buf, size_t len)
 	return res;
 }
 
-int bbs_poll_read(struct bbs_node *node, int ms, char *buf, size_t len)
+int bbs_node_poll_read(struct bbs_node *node, int ms, char *buf, size_t len)
 {
-	int res = bbs_poll(node, ms);
+	int res = bbs_node_poll(node, ms);
 	if (res <= 0) {
 		return res;
 	}
-	res = bbs_read(node, buf, len);
+	res = bbs_node_read(node, buf, len);
 	return res;
 }
 
-int bbs_fd_poll_read(int fd, int ms, char *buf, size_t len)
+int bbs_poll_read(int fd, int ms, char *buf, size_t len)
 {
-	int res = bbs_std_poll(fd, ms);
+	int res = bbs_poll(fd, ms);
 	if (res <= 0) {
 		return res;
 	}
@@ -1146,7 +1146,7 @@ int bbs_expect(int fd, int ms, char *buf, size_t len, const char *str)
 	int res;
 
 	*buf = '\0'; /* Clear the buffer, in case we don't read anything at all. */
-	res = bbs_fd_poll_read(fd, ms, buf, len - 1);
+	res = bbs_poll_read(fd, ms, buf, len - 1);
 	if (res <= 0) {
 		return -1;
 	}
@@ -1166,7 +1166,7 @@ int bbs_expect_line(int fd, int ms, struct readline_data *rldata, const char *st
 	int res;
 
 	rldata->buf[0] = '\0'; /* Clear the buffer, in case we don't read anything at all. */
-	res = bbs_fd_readline(fd, rldata, "\r\n", ms);
+	res = bbs_readline(fd, rldata, "\r\n", ms);
 	if (res <= 0) {
 		return -1;
 	}
@@ -1178,12 +1178,12 @@ int bbs_expect_line(int fd, int ms, struct readline_data *rldata, const char *st
 	return 0;
 }
 
-static char bbs_fd_tread(int fd, int ms)
+static char bbs_tread(int fd, int ms)
 {
 	char res;
 
-	bbs_assert(ms > 0); /* There would be no reason to use bbs_tpoll over bbs_poll unless ms > 0. */
-	res = bbs_std_poll(fd, ms);
+	bbs_assert(ms > 0); /* There would be no reason to use bbs_node_tpoll over bbs_node_poll unless ms > 0. */
+	res = bbs_poll(fd, ms);
 
 	if (res > 0) {
 		char buf[1];
@@ -1196,16 +1196,16 @@ static char bbs_fd_tread(int fd, int ms)
 	return res;
 }
 
-char bbs_tread(struct bbs_node *node, int ms)
+char bbs_node_tread(struct bbs_node *node, int ms)
 {
 	char res;
 
-	bbs_assert(ms > 0); /* There would be no reason to use bbs_tpoll over bbs_poll unless ms > 0. */
-	res = bbs_tpoll(node, ms);
+	bbs_assert(ms > 0); /* There would be no reason to use bbs_node_tpoll over bbs_node_poll unless ms > 0. */
+	res = bbs_node_tpoll(node, ms);
 
 	if (res > 0) {
 		char buf[1];
-		res = bbs_read(node, buf, sizeof(buf));
+		res = bbs_node_read(node, buf, sizeof(buf));
 		if (res <= 0) {
 			return res;
 		}
@@ -1219,10 +1219,10 @@ char bbs_tread(struct bbs_node *node, int ms)
  * \retval 0 ESC (just the ESC key, no escape sequence)
  * \retval positive escape sequence code
  */
-static int __bbs_read_escseq(struct bbs_node *node, int fd)
+static int __bbs_node_read_escseq(struct bbs_node *node, int fd)
 {
 	/* We can't just declare a variable pointing to the right function to use, since their arguments are of different types (node vs int). Use a macro instead. */
-#define bbs_proper_tread(node, fd, ms) node ? bbs_tread(node, ms) : bbs_fd_tread(fd, ms)
+#define bbs_proper_tread(node, fd, ms) node ? bbs_node_tread(node, ms) : bbs_tread(fd, ms)
 
 	char c1, c2, c3;
 	/* We already read ESC (27). Try to read further characters. */
@@ -1299,22 +1299,22 @@ static int __bbs_read_escseq(struct bbs_node *node, int fd)
 #undef bbs_proper_tread
 }
 
-int bbs_fd_read_escseq(int fd)
+int bbs_read_escseq(int fd)
 {
-	int res = __bbs_read_escseq(NULL, fd);
+	int res = __bbs_node_read_escseq(NULL, fd);
 	if (res > 0) {
 		bbs_debug(5, "Escape sequence converted to %d\n", res);
 	}
 	return res;
 }
 
-int bbs_read_escseq(struct bbs_node *node)
+int bbs_node_read_escseq(struct bbs_node *node)
 {
-	int res = __bbs_read_escseq(node, -1);
+	int res = __bbs_node_read_escseq(node, -1);
 	return res;
 }
 
-int bbs_readline(struct bbs_node *node, int ms, char *buf, size_t len)
+int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 {
 #ifdef DEBUG_TEXT_IO
 	int i;
@@ -1328,7 +1328,7 @@ int bbs_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 
 	REQUIRE_SLAVE_FD(node);
 
-	/* Do not call bbs_buffer(node) here,
+	/* Do not call bbs_node_buffer(node) here,
 	 * calling functions should do that if needed.
 	 * This allows to read with echo on or off (e.g. passwords),
 	 * we don't know what's appropriate here. */
@@ -1339,7 +1339,7 @@ int bbs_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 
 	for (;;) {
 		if (keep_trying) {
-			res = bbs_poll(node, 5);
+			res = bbs_node_poll(node, 5);
 			if (res == 0) {
 				/* It's okay, we were just checking to see if there was more input,
 				 * (remember we set ms to be very small)
@@ -1347,7 +1347,7 @@ int bbs_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 				break;
 			}
 		} else {
-			res = bbs_tpoll(node, ms);
+			res = bbs_node_tpoll(node, ms);
 		}
 		if (res <= 0) {
 			bbs_debug(10, "Node %d: poll returned %d\n", node->id, res);
@@ -1428,44 +1428,44 @@ int bbs_get_response(struct bbs_node *node, int qlen, const char *q, int pollms,
 			bbs_debug(4, "Attempt #%d to get response for question\n", attempt);
 		}
 		if (qlen) {
-			NONPOS_RETURN(bbs_writef(node, "%-*s", qlen, q));
+			NONPOS_RETURN(bbs_node_writef(node, "%-*s", qlen, q));
 		} else {
-			NONPOS_RETURN(bbs_writef(node, "%s", q));
+			NONPOS_RETURN(bbs_node_writef(node, "%s", q));
 		}
-		res = bbs_readline(node, pollms, buf, len);
-		/* bbs_readline returns the number of bytes read.
+		res = bbs_node_readline(node, pollms, buf, len);
+		/* bbs_node_readline returns the number of bytes read.
 		 * However, in most cases, we'll want to subtract 1, because we null terminated the new line read as input.
 		 * Therefore, we can approximate the strlen with res - 1 (so long as res > 0)
 		 */
 		if (res < 0) {
 			return res;
 		} else if (res == 0) {
-			/* bbs_readline uses bbs_tpoll, so if the tpoll times out (returns 0), then we must return,
+			/* bbs_node_readline uses bbs_node_tpoll, so if the tpoll times out (returns 0), then we must return,
 			 * as we already printed out "You've been inactive too long" at this point. */
 			return -1; /* -1, not 0, we're already due for disconnect. */
 		} else if (strlen_zero(buf)) {
-			NONPOS_RETURN(bbs_writef(node, "%sPlease try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+			NONPOS_RETURN(bbs_node_writef(node, "%sPlease try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
 			continue; /* Empty responses not allowed. Try again, eventually we'll hit max attempts */
 		} if (res - 1 < minlen) {
 			if (NODE_IS_TDD(node)) {
-				NONPOS_RETURN(bbs_writef(node, "Inadequate, try again.\n"));
+				NONPOS_RETURN(bbs_node_writef(node, "Inadequate, try again.\n"));
 			} else {
-				NONPOS_RETURN(bbs_writef(node, "%sInadequate response, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+				NONPOS_RETURN(bbs_node_writef(node, "%sInadequate response, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
 			}
 			continue; /* Too short */
 		} else if (res - 1 >= len) {
 			if (NODE_IS_TDD(node)) {
-				NONPOS_RETURN(bbs_writef(node, "Too long, try again.\n"));
+				NONPOS_RETURN(bbs_node_writef(node, "Too long, try again.\n"));
 			} else {
-				NONPOS_RETURN(bbs_writef(node, "%sResponse is too long, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+				NONPOS_RETURN(bbs_node_writef(node, "%sResponse is too long, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
 			}
 			continue;
 		} else if (!bbs_str_isprint(buf)) {
 			/* Contains nonprintable characters. Reject. */
 			if (NODE_IS_TDD(node)) {
-				NONPOS_RETURN(bbs_writef(node, "Invalid, try again.\n"));
+				NONPOS_RETURN(bbs_node_writef(node, "Invalid, try again.\n"));
 			} else {
-				NONPOS_RETURN(bbs_writef(node, "%sResponse contains invalid characters, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+				NONPOS_RETURN(bbs_node_writef(node, "%sResponse contains invalid characters, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
 			}
 			continue;
 		}
@@ -1473,9 +1473,9 @@ int bbs_get_response(struct bbs_node *node, int qlen, const char *q, int pollms,
 			for (c = reqchars; *c; c++) {
 				if (!strchr(buf, *c)) {
 					if (NODE_IS_TDD(node)) {
-						NONPOS_RETURN(bbs_writef(node, "Inadequate, try again.\n"));
+						NONPOS_RETURN(bbs_node_writef(node, "Inadequate, try again.\n"));
 					} else {
-						NONPOS_RETURN(bbs_writef(node, "%sInadequate response, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+						NONPOS_RETURN(bbs_node_writef(node, "%sInadequate response, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
 					}
 					/* We're in a double loop, we want to continue the outer loop */
 					goto continueloop; /* Missing required chars */
@@ -1512,14 +1512,14 @@ static void print_printable(char *s, int len)
 }
 #endif
 
-int bbs_std_flush_input(int fd)
+int bbs_flush_input(int fd)
 {
 	char buf[64];
 	int res;
 
 	for (;;) {
 		/* Poll and read again and again until poll says there's no input waiting. */
-		res = bbs_std_poll(fd, 0);
+		res = bbs_poll(fd, 0);
 		if (res <= 0) {
 			break;
 		}
@@ -1535,18 +1535,18 @@ int bbs_std_flush_input(int fd)
 	return res;
 }
 
-int bbs_flush_input(struct bbs_node *node)
+int bbs_node_flush_input(struct bbs_node *node)
 {
 	char buf[64];
 	int res;
 
 	for (;;) {
 		/* Poll and read again and again until poll says there's no input waiting. */
-		res = bbs_poll(node, 0);
+		res = bbs_node_poll(node, 0);
 		if (res <= 0) {
 			break;
 		}
-		res = bbs_read(node, buf, sizeof(buf));
+		res = bbs_node_read(node, buf, sizeof(buf));
 		if (res <= 0) {
 			break;
 		}
@@ -1558,20 +1558,20 @@ int bbs_flush_input(struct bbs_node *node)
 	return res;
 }
 
-int bbs_write(struct bbs_node *node, const char *buf, unsigned int len)
+int bbs_node_write(struct bbs_node *node, const char *buf, unsigned int len)
 {
 	int left = len;
 	unsigned int written = 0;
 	REQUIRE_SLAVE_FD(node);
+	/* So helgrind doesn't complain about data race if node is shut down
+	 * and slavefd closed during write */
+	bbs_node_lock(node);
 	for (;;) {
 		int res;
-		/* So helgrind doesn't complain about data race if node is shut down
-		 * and slavefd closed during write */
-		bbs_node_lock(node);
 		res = write(node->slavefd, buf, left);
-		bbs_node_unlock(node);
 		if (res <= 0) {
 			bbs_debug(5, "Node %d: write returned %d\n", node->id, res);
+			bbs_node_unlock(node);
 			return res;
 		}
 		buf += res;
@@ -1581,10 +1581,11 @@ int bbs_write(struct bbs_node *node, const char *buf, unsigned int len)
 			break;
 		}
 	}
+	bbs_node_unlock(node);
 	return written;
 }
 
-int bbs_std_write(int fd, const char *buf, unsigned int len)
+int bbs_write(int fd, const char *buf, unsigned int len)
 {
 	int left = len;
 	unsigned int written = 0;
@@ -1604,7 +1605,12 @@ int bbs_std_write(int fd, const char *buf, unsigned int len)
 	return written;
 }
 
-int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(struct bbs_node *node, const char *fmt, ...)
+/* Note: In case this gets forgotten about and somebody thinks that some of the bbs_node functions
+ * can be easily refactored: it's not that simple, because bbs_node_write is NOT the same
+ * as calling bbs_write with node->slavefd. In particular, the bbs_node I/O functions may
+ * acquire node locks. The regular I/O functions do not do this.
+ * For that reason, you can't simply have bbs_node_writef call bbs_writef under the hood, etc. */
+int __attribute__ ((format (gnu_printf, 2, 3))) bbs_node_writef(struct bbs_node *node, const char *fmt, ...)
 {
 	char *buf;
 	int len, res;
@@ -1613,7 +1619,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(struct bbs_node *node
 	if (!strchr(fmt, '%')) {
 		/* If the format string doesn't contain any %'s, there are no variadic arguments.
 		 * Just write it directly, to avoid allocating memory unnecessarily. */
-		return bbs_write(node, fmt, strlen(fmt));
+		return bbs_node_write(node, fmt, strlen(fmt));
 	}
 
 	va_start(ap, fmt);
@@ -1624,12 +1630,12 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(struct bbs_node *node
 		return -1;
 	}
 
-	res = bbs_write(node, buf, len);
+	res = bbs_node_write(node, buf, len);
 	free(buf);
 	return res;
 }
 
-int __attribute__ ((format (gnu_printf, 2, 3))) bbs_std_writef(int fd, const char *fmt, ...)
+int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(int fd, const char *fmt, ...)
 {
 	char *buf;
 	int len, res;
@@ -1638,7 +1644,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_std_writef(int fd, const cha
 	if (!strchr(fmt, '%')) {
 		/* If the format string doesn't contain any %'s, there are no variadic arguments.
 		 * Just write it directly, to avoid allocating memory unnecessarily. */
-		return bbs_std_write(fd, fmt, strlen(fmt));
+		return bbs_write(fd, fmt, strlen(fmt));
 	}
 
 	va_start(ap, fmt);
@@ -1649,52 +1655,52 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_std_writef(int fd, const cha
 		return -1;
 	}
 
-	res = bbs_std_write(fd, buf, len);
+	res = bbs_write(fd, buf, len);
 	free(buf);
 	return res;
 }
 
-int bbs_clear_screen(struct bbs_node *node)
+int bbs_node_clear_screen(struct bbs_node *node)
 {
 	if (!node->ansi) {
 		return 0;
 	}
-	return bbs_write(node, TERM_CLEAR, STRLEN(TERM_CLEAR));
+	return bbs_node_write(node, TERM_CLEAR, STRLEN(TERM_CLEAR));
 }
 
-int bbs_clear_line(struct bbs_node *node)
+int bbs_node_clear_line(struct bbs_node *node)
 {
 	if (!node->ansi) {
 		return 0;
 	}
-	return bbs_write(node, TERM_RESET_LINE, STRLEN(TERM_RESET_LINE));
+	return bbs_node_write(node, TERM_RESET_LINE, STRLEN(TERM_RESET_LINE));
 }
 
-int bbs_set_term_title(struct bbs_node *node, const char *s)
+int bbs_node_set_term_title(struct bbs_node *node, const char *s)
 {
 	if (!node->ansi) {
 		return 0;
 	}
-	return bbs_writef(node, TERM_TITLE_FMT, s); /* for xterm, screen, etc. */
+	return bbs_node_writef(node, TERM_TITLE_FMT, s); /* for xterm, screen, etc. */
 }
 
-int bbs_set_term_icon(struct bbs_node *node, const char *s)
+int bbs_node_set_term_icon(struct bbs_node *node, const char *s)
 {
 	if (!node->ansi) {
 		return 0;
 	}
-	return bbs_writef(node, "\033]1;%s\007", s);
+	return bbs_node_writef(node, "\033]1;%s\007", s);
 }
 
-int bbs_reset_color(struct bbs_node *node)
+int bbs_node_reset_color(struct bbs_node *node)
 {
 	if (!node->ansi) {
 		return 0;
 	}
-	return bbs_write(node, COLOR_RESET, STRLEN(COLOR_RESET));
+	return bbs_node_write(node, COLOR_RESET, STRLEN(COLOR_RESET));
 }
 
-int bbs_draw_line(struct bbs_node *node, char c)
+int bbs_node_draw_line(struct bbs_node *node, char c)
 {
 	int i, cols = node->cols ? node->cols : 80; /* Assume 80x24 if not available */
 	char buf[384]; /* Avoid cols + 2 for gcc -Wstack-protector */
@@ -1710,10 +1716,10 @@ int bbs_draw_line(struct bbs_node *node, char c)
 	buf[i++] = '\n'; /* New line */
 	buf[i] = '\0';
 	/* Write all at once */
-	return bbs_write(node, buf, cols + 1); /* No need to actually write the NUL, just through the LF */
+	return bbs_node_write(node, buf, cols + 1); /* No need to actually write the NUL, just through the LF */
 }
 
-int bbs_ring_bell(struct bbs_node *node)
+int bbs_node_ring_bell(struct bbs_node *node)
 {
 	if (!node->ansi) {
 		return 0;
@@ -1721,25 +1727,25 @@ int bbs_ring_bell(struct bbs_node *node)
 	/* This function should be sparingly used. Users are annoyed if the bell goes off all the time.
 	 * So log every time it's used. */
 	bbs_debug(7, "Ringing bell for node %d\n", node->id);
-	return bbs_write(node, TERM_BELL, STRLEN(TERM_BELL));
+	return bbs_node_write(node, TERM_BELL, STRLEN(TERM_BELL));
 }
 
 #define HIT_KEY_PROMPT_LONG "Hit a key, any key..."
 #define HIT_KEY_PROMPT_SHORT "Hit key:"
 
-int bbs_wait_key(struct bbs_node *node, int ms)
+int bbs_node_wait_key(struct bbs_node *node, int ms)
 {
 	bbs_debug(6, "Waiting %d ms for any input\n", ms);
-	NEG_RETURN(bbs_unbuffer(node));
-	NEG_RETURN(bbs_flush_input(node)); /* Discard anything that may be pending so bbs_tpoll doesn't return immediately. */
+	NEG_RETURN(bbs_node_unbuffer(node));
+	NEG_RETURN(bbs_node_flush_input(node)); /* Discard anything that may be pending so bbs_node_tpoll doesn't return immediately. */
 	if (!NODE_IS_TDD(node)) {
-		NEG_RETURN(bbs_writef(node, "\r\n%s%s%s", COLOR(COLOR_RED), "[" HIT_KEY_PROMPT_LONG "]", COLOR_RESET));
+		NEG_RETURN(bbs_node_writef(node, "\r\n%s%s%s", COLOR(COLOR_RED), "[" HIT_KEY_PROMPT_LONG "]", COLOR_RESET));
 	} else {
-		NEG_RETURN(bbs_writef(node, "\r\n%s", "[" HIT_KEY_PROMPT_SHORT "]"));
+		NEG_RETURN(bbs_node_writef(node, "\r\n%s", "[" HIT_KEY_PROMPT_SHORT "]"));
 	}
 
 	/* Wait up to ms for any key, doesn't matter what key so discard input if/when received. */
-	if (bbs_tpoll(node, ms) <= 0 || bbs_flush_input(node) < 0) {
+	if (bbs_node_tpoll(node, ms) <= 0 || bbs_node_flush_input(node) < 0) {
 		return -1;
 	}
 	return 0;

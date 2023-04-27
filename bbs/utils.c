@@ -32,7 +32,7 @@
 #include <sys/sendfile.h>
 
 #include "include/utils.h"
-#include "include/node.h" /* use bbs_fd_poll_read */
+#include "include/node.h" /* use bbs_poll_read */
 #include "include/user.h"
 #include "include/base64.h"
 

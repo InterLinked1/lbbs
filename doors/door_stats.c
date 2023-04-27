@@ -45,7 +45,7 @@ static int users_exec(struct bbs_node *node, const char *args)
 	}
 
 	/* Don't be deceived: this is an O(n^2) operation, since we call bbs_user_online for each user */
-	bbs_clear_screen(node);
+	bbs_node_clear_screen(node);
 	memset(&pginfo, 0, sizeof(pginfo));
 	while ((user = userlist[index++])) {
 		char buf[96];
@@ -57,7 +57,7 @@ static int users_exec(struct bbs_node *node, const char *args)
 			continue;
 		}
 		if (index == 1) {
-			bbs_writef(node, COLOR(COLOR_PRIMARY) " %4s %-15s %s\r\n", "#", "USERNAME", "ONLINE");
+			bbs_node_writef(node, COLOR(COLOR_PRIMARY) " %4s %-15s %s\r\n", "#", "USERNAME", "ONLINE");
 		}
 		if (active) {
 			totalonline++;
@@ -69,17 +69,17 @@ static int users_exec(struct bbs_node *node, const char *args)
 	}
 
 	bbs_user_list_destroy(userlist);
-	bbs_writef(node, "%d user%s online (%d total)\n", totalonline, ESS(totalonline), total);
-	NEG_RETURN(bbs_wait_key(node, MIN_MS(2)));
+	bbs_node_writef(node, "%d user%s online (%d total)\n", totalonline, ESS(totalonline), total);
+	NEG_RETURN(bbs_node_wait_key(node, MIN_MS(2)));
 	return 0;
 }
 
 static int nodes_exec(struct bbs_node *node, const char *args)
 {
 	UNUSED(args);
-	bbs_clear_screen(node);
+	bbs_node_clear_screen(node);
 	bbs_node_statuses(node);
-	NEG_RETURN(bbs_wait_key(node, MIN_MS(2)));
+	NEG_RETURN(bbs_node_wait_key(node, MIN_MS(2)));
 	return 0;
 }
 

@@ -172,20 +172,20 @@ static int print_channel_participants(struct bbs_node *node, struct channel *cha
 	struct participant *p;
 	int now = time(NULL);
 
-	bbs_writef(node, "%4s %9s %s\n", "Node", "Elapsed", "User");
+	bbs_node_writef(node, "%4s %9s %s\n", "Node", "Elapsed", "User");
 	RWLIST_RDLOCK(&channel->participants);
 	RWLIST_TRAVERSE(&channel->participants, p, entry) {
 		struct bbs_node *n = p->node;
 		print_time_elapsed(p->jointime, now, elapsed, sizeof(elapsed));
 		/* Participants can't go away without leaving the channel (which needs a WRLOCK)
 		 * So nodes can't go away either. */
-		bbs_writef(node, "%4d %9s %s\n", n->id, elapsed, bbs_username(n->user));
+		bbs_node_writef(node, "%4d %9s %s\n", n->id, elapsed, bbs_username(n->user));
 		c++;
 	}
 	RWLIST_UNLOCK(&channel->participants);
 
 	bbs_assert(c > 0); /* We're at least in it. */
-	bbs_writef(node, "%d user%s in channel #%s\n", c, ESS(c), channel->name);
+	bbs_node_writef(node, "%d user%s in channel #%s\n", c, ESS(c), channel->name);
 	return c;
 }
 
@@ -261,12 +261,19 @@ static int __chat_send(struct channel *channel, struct participant *sender, cons
 	return 0;
 }
 
+/*
+ * Forward declaration needed since __attribute__ can only be used with declarations, not definitions.
+ * See http://www.unixwiz.net/techtips/gnu-c-attributes.html#compat
+ * We only need the redundant declarations for static functions with attributes.
+ */
+static int __attribute__ ((format (gnu_printf, 3, 4))) chat_send(struct channel *channel, struct participant *sender, const char *fmt, ...);
+
 /*!
  * \param channel
  * \param sender If NULL, the message will be sent to the sender, if specified, the message will not be sent to this participant
  * \param fmt
  */
-static int __attribute__ ((format (gnu_printf, 3, 4))) chat_send(struct channel *channel, struct participant *sender, const char *fmt, ...)
+static int chat_send(struct channel *channel, struct participant *sender, const char *fmt, ...)
 {
 	char *buf;
 	int res, len;
@@ -298,40 +305,40 @@ static int chat_run(struct bbs_node *node, struct participant *p)
 	struct channel *c = p->channel;
 
 	/* Join the channel */
-	bbs_clear_screen(node);
+	bbs_node_clear_screen(node);
 	chat_send(c, NULL, "%s has joined #%s from node %d\n", bbs_username(node->user), c->name, node->id);
 
-	bbs_unbuffer(node); /* Unbuffer so we can receive keys immediately. Otherwise, might print a message while user is typing */
+	bbs_node_unbuffer(node); /* Unbuffer so we can receive keys immediately. Otherwise, might print a message while user is typing */
 
 	/* Since q will not quit, explicitly provide instructions to the poor, unsuspecting user */
 	participants = channel_participant_count(c);
 	bbs_assert(participants >= 1); /* We're in it at least */
-	bbs_writef(node, "Welcome to #%s! Type /quit to quit, and /help for help\n", c->name);
-	bbs_writef(node, "%d user%s (%d other user%s) in channel #%s\n", participants, ESS(participants), participants - 1, ESS(participants - 1), c->name);
+	bbs_node_writef(node, "Welcome to #%s! Type /quit to quit, and /help for help\n", c->name);
+	bbs_node_writef(node, "%d user%s (%d other user%s) in channel #%s\n", participants, ESS(participants), participants - 1, ESS(participants - 1), c->name);
 
 	for (;;) {
 		/* We need to poll both the node as well as the participant (chat) pipe */
-		res = bbs_poll2(node, SEC_MS(10), p->chatpipe[0]);
+		res = bbs_node_poll2(node, SEC_MS(10), p->chatpipe[0]);
 		if (res < 0) {
 			break;
 		} else if (res == 1) {
 			/* Node has activity: Typed something */
-			res = bbs_read(node, buf, 1);
+			res = bbs_node_read(node, buf, 1);
 			if (res <= 0) {
 				break;
 			}
 			res = 0;
 			if (buf[0] == '\n') { /* User just pressed ENTER. Um, okay. */
-				bbs_writef(node, "%s%s%s\n", COLOR(COLOR_RED), "Empty messages not allowed. Type /help for help.", COLOR_RESET);
+				bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_RED), "Empty messages not allowed. Type /help for help.", COLOR_RESET);
 				continue;
 			}
-			bbs_writef(node, "%c", buf[0]);
+			bbs_node_writef(node, "%c", buf[0]);
 			/* Now, buffer input */
 			/* XXX The user will be able to use terminal line editing, except for the first char */
 			/* XXX ESC should cancel */
 			/* XXX All this would be handled once we have a terminal line editor that works with unbuffered input */
-			bbs_buffer(node);
-			res = bbs_poll_read(node, SEC_MS(30), buf + 1, sizeof(buf) - 2); /* Leave the first char in the buffer alone, -1 for null termination, and -1 for the first char */
+			bbs_node_buffer(node);
+			res = bbs_node_poll_read(node, SEC_MS(30), buf + 1, sizeof(buf) - 2); /* Leave the first char in the buffer alone, -1 for null termination, and -1 for the first char */
 			if (res <= 0) {
 				break;
 			}
@@ -346,22 +353,22 @@ static int chat_run(struct bbs_node *node, struct participant *p)
 			} else if (STARTS_WITH(buf2, "/users")) {
 				print_channel_participants(node, c);
 			} else if (STARTS_WITH(buf2, "/help")) {
-				bbs_writef(node, "== LBBS Chat ==\n");
-				bbs_writef(node, "/help Help\n");
-				bbs_writef(node, "/quit Quit\n");
-				bbs_writef(node, "/users List users in channel\n");
-				bbs_writef(node, "<message>\n");
+				bbs_node_writef(node, "== LBBS Chat ==\n");
+				bbs_node_writef(node, "/help Help\n");
+				bbs_node_writef(node, "/quit Quit\n");
+				bbs_node_writef(node, "/users List users in channel\n");
+				bbs_node_writef(node, "<message>\n");
 			}
-			bbs_unbuffer(node);
+			bbs_node_unbuffer(node);
 
 			/* Message contains non-printable characters. Reject it.
 			 * It's not great for security if any user can send arbitrary ASCII characters to anyone else's terminal. */
 			if (!bbs_str_anyprint(buf2)) {
 				/* For example, reject messages that contain only spaces. */
-				bbs_writef(node, "%s%s%s\n", COLOR(COLOR_RED), "Sorry, message is empty.", COLOR_RESET);
+				bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_RED), "Sorry, message is empty.", COLOR_RESET);
 				continue;
 			} else if (!bbs_str_isprint(buf2)) {
-				bbs_writef(node, "%s%s%s\n", COLOR(COLOR_RED), "Sorry, message contains invalid characters.", COLOR_RESET);
+				bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_RED), "Sorry, message contains invalid characters.", COLOR_RESET);
 				continue;
 			}
 
@@ -389,7 +396,7 @@ static int chat_run(struct bbs_node *node, struct participant *p)
 			 * Even if it doesn't, don't blindly add one. Because we write the time and message in 2 separate calls to write(),
 			 * in __chat_send, we could end up doing 2 disjoint reads here, and the first one will only have the timestamp.
 			 */
-			if (bbs_writef(node, "%.*s", res, buf) < 0) {
+			if (bbs_node_writef(node, "%.*s", res, buf) < 0) {
 				res = -1;
 				break;
 			}
@@ -398,7 +405,7 @@ static int chat_run(struct bbs_node *node, struct participant *p)
 				bbs_debug(3, "Message contains '%s', alerting user\n", bbs_username(node->user));
 				/* If the message contains our username, ring the bell.
 				 * (Most IRC clients also do this for mentions.) */
-				if (bbs_ring_bell(node) < 0) {
+				if (bbs_node_ring_bell(node) < 0) {
 					res = -1;
 					break;
 				}
