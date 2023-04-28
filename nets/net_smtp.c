@@ -839,11 +839,58 @@ static int try_send(struct smtp_session *smtp, const char *hostname, int port, i
 	struct readline_data *rldata = &rldata_stack;
 	off_t send_offset = offset;
 	int caps = 0;
-	char senderip[64];
-	char *user, *ip;
+	char sendercopy[64];
+	int local;
+	char *user, *domain, *tmp;
 
 	bbs_assert(datafd != -1);
 	bbs_assert(writelen > 0);
+
+/* XXX Disable this eventually */
+#define SUPPORT_CORRUPTED_MAILTO
+
+#ifdef SUPPORT_CORRUPTED_MAILTO
+	/* Kludge to deal with corrupted MAIL FROM header, broken in a few possible ways (to successfully deliver such queued files):
+	 * - Double arrows e.g. <John Smith <jsmith@example.com>>
+	 * - Missing end arrow e.g. John Smith <jsmith@example.com
+	 */
+	if (*sender == '<' && *(sender + 1) && *(sender + 2) && strchr(sender + 2, '<')) {
+		safe_strncpy(sendercopy, sender + 1, sizeof(sendercopy));
+		bbs_warning("Corrected address from %s -> %s\n", sender, sendercopy);
+	} else {
+		safe_strncpy(sendercopy, sender, sizeof(sendercopy));
+	}
+
+	/* Missing end > ? */
+	tmp = strchr(sendercopy, '>');
+	if (tmp) {
+		if (*(tmp + 1)) {
+			tmp = strchr(tmp + 1, '>');
+			if (tmp) {
+				bbs_warning("Removing duplicate end >\n");
+				*tmp = '\0';
+			}
+		}
+	} else {
+		bbs_warning("Adding missing end >\n");
+		strncat(sendercopy, ">", sizeof(sendercopy) - 1);
+	}
+
+	if (recipient && STARTS_WITH(recipient,"RCPT TO:")) { /* Good grief, how broken do things get? */
+		bbs_warning("Queue file recipient corrupted: %s\n", recipient);
+		recipient += STRLEN("RCPT TO:");
+	}
+
+#else
+	/* RFC 5322 3.4.1 allows us to use IP addresses in SMTP as well (domain literal form). They just need to be enclosed in square brackets. */
+	safe_strncpy(sendercopy, sender, sizeof(sendercopy));
+#endif
+
+	/* Properly parse, since if a name is present, in addition to the email address, we must exclude the name in the MAIL FROM */
+	if (bbs_parse_email_address(sendercopy, NULL, &user, &domain, &local)) {
+		bbs_error("Invalid email address: %s\n", sender);
+		return -1;
+	}
 
 	/* Connect on port 25, and don't set up TLS initially. */
 	sfd = bbs_tcp_connect(hostname, port);
@@ -969,18 +1016,19 @@ static int try_send(struct smtp_session *smtp, const char *hostname, int port, i
 		}
 	}
 
-	/* RFC 5322 3.4.1 allows us to use IP addresses in SMTP as well (domain literal form). They just need to be enclosed in square brackets. */
-	safe_strncpy(senderip, sender, sizeof(senderip));
-	ip = senderip;
-	user = strsep(&ip, "@");
-	if (bbs_hostname_is_ipv4(ip)) {
-		smtp_client_send(wfd, "MAIL FROM:<%s@[%s]>\r\n", user, ip);
+	if (bbs_hostname_is_ipv4(domain)) {
+		smtp_client_send(wfd, "MAIL FROM:<%s@[%s]>\r\n", user, domain);
 	} else {
-		smtp_client_send(wfd, "MAIL FROM:<%s>\r\n", sender); /* sender lacks <>, but recipient has them */
+		smtp_client_send(wfd, "MAIL FROM:<%s@%s>\r\n", user, domain); /* sender lacks <>, but recipient has them */
 	}
 	SMTP_EXPECT(rfd, 1000, "250");
 	if (recipient) {
-		smtp_client_send(wfd, "RCPT TO:%s\r\n", recipient);
+		if (*recipient == '<') {
+			smtp_client_send(wfd, "RCPT TO:%s\r\n", recipient);
+		} else {
+			bbs_warning("Queue file recipient did not contain <>\n"); /* Support broken queue files, but make some noise */
+			smtp_client_send(wfd, "RCPT TO:<%s>\r\n", recipient);
+		}
 		SMTP_EXPECT(rfd, 1000, "250");
 	} else if (recipients) {
 		char *r;
@@ -1012,6 +1060,9 @@ static int try_send(struct smtp_session *smtp, const char *hostname, int port, i
 	bbs_debug(5, "Sent %d bytes\n", wrote);
 	SMTP_EXPECT(rfd, 5000, "250"); /* Okay, this email is somebody else's problem now. */
 
+	bbs_debug(3, "Message successfully delivered to %s\n", recipient);
+	res = 0;
+
 cleanup:
 	if (res > 0) {
 		smtp_client_send(wfd, "QUIT\r\n");
@@ -1025,6 +1076,7 @@ cleanup:
 	if (res > 0) {
 		res = -1; /* Assume temporary unless we're sure it's not. */
 		if (STARTS_WITH(buf, "5")) {
+			bbs_debug(5, "Encountered permanent failure (%s)\n", buf);
 			res = 1; /* Permanent error. */
 		}
 	}
@@ -1581,9 +1633,14 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	realfrom = strchr(from, '<');
 	realto = strchr(recipient, '<');
 
-	if (!realfrom || !realto) {
+	if (!realfrom) {
 		bbs_error("Invalid mail queue file: %s\n", fullname);
 		goto cleanup;
+	}
+	if (!realto) { /* May not be in <> */
+		realto = recipient;
+	} else {
+		realto++;
 	}
 
 	/* If you manually edit the queue files, the line endings will get converted,
@@ -1620,7 +1677,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	}
 
 	/* Try all the MX servers in order, if necessary */
-	while (res && (hostname = stringlist_pop(&mxservers))) {
+	while (res < 0 && (hostname = stringlist_pop(&mxservers))) {
 		res = try_send(NULL, hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, fileno(fp), metalen, size - metalen, buf, sizeof(buf));
 		free(hostname);
 	}
@@ -1753,7 +1810,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		}
 #ifndef BUGGY_SEND_IMMEDIATE
 		/* Try all the MX servers in order, if necessary */
-		while (res && (hostname = stringlist_pop(&mxservers))) {
+		while (res < 0 && (hostname = stringlist_pop(&mxservers))) {
 			res = try_send(NULL, hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, srcfd, metalen, size - metalen, buf, sizeof(buf));
 			free(hostname);
 		}
@@ -1809,7 +1866,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		 * Note that this means this file contains mixed line endings (both LF and CR LF), so if manually edited in a text editor,
 		 * it will probably get screwed up. Don't do it!
 		 */
-		dprintf(fd, "MAIL FROM:<%s>\nRCPT TO:%s\n", smtp->from, recipient); /* First 2 lines contain metadata, and recipient is already enclosed in <> */
+		dprintf(fd, "MAIL FROM:%s\nRCPT TO:%s\n", smtp->from, recipient); /* First 2 lines contain metadata, and recipient is already enclosed in <> */
 		prepend_outgoing(smtp, recipient, fd);
 		/* Write the entire body of the message. */
 		res = bbs_copy_file(srcfd, fd, 0, datalen);

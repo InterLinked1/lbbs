@@ -288,7 +288,8 @@ struct imap_session {
 	struct bbs_node *node;
 	struct mailbox *mbox;		/* Current mailbox (mailbox as in entire mailbox, not just a mailbox folder) */
 	struct mailbox *mymbox;		/* Pointer to user's private/personal mailbox. */
-	char *folder;
+	char *folder;				/* Currently selected mailbox */
+	char *activefolder;			/* Currently connected mailbox (i.e. STATUS updates this, but not folder) */
 	char *savedtag;
 	int pfd[2];					/* Pipe for delayed responses */
 	/* maildir */
@@ -676,6 +677,7 @@ static void imap_destroy(struct imap_session *imap)
 	/* Do not free tag, since it's stack allocated */
 	free_if(imap->savedtag);
 	free_if(imap->clientid);
+	free_if(imap->activefolder);
 	free_if(imap->folder);
 	pthread_mutex_destroy(&imap->lock);
 }
@@ -1614,6 +1616,12 @@ static int imap_translate_dir(struct imap_session *imap, const char *directory, 
 /* Forward declaration */
 static int load_virtual_mailbox(struct imap_session *imap, const char *path);
 
+enum select_type {
+	CMD_SELECT = 0,
+	CMD_EXAMINE = 1,
+	CMD_STATUS = 2,
+};
+
 static int set_maildir(struct imap_session *imap, const char *mailbox)
 {
 	char dir[256];
@@ -1626,7 +1634,6 @@ static int set_maildir(struct imap_session *imap, const char *mailbox)
 	/* Don't close the virtmbox, if there is one,
 	 * because if we're selecting a different mailbox on the same remote account,
 	 * we can just reuse the connection. */
-
 	if (imap_translate_dir(imap, mailbox, dir, sizeof(dir), &acl)) {
 		int res = load_virtual_mailbox(imap, mailbox);
 		if (res >= 0) {
@@ -2197,7 +2204,7 @@ static int __attribute__ ((format (gnu_printf, 5, 6))) __imap_client_send_wait_r
 	return res;
 }
 
-static int handle_select(struct imap_session *imap, char *s, int readonly)
+static int handle_select(struct imap_session *imap, char *s, enum select_type readonly)
 {
 	/* Mailbox can contain spaces, so don't use strsep for it if it's in quotes */
 	char *mailbox;
@@ -2232,7 +2239,13 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 			}
 			tmp++;
 		}
-		return imap_client_send_wait_response(imap, -1, 5000, "SELECT \"%s\"\r\n", remotename); /* Reconstruct the SELECT, fortunately this is not too bad */
+		if (readonly <= 1) { /* SELECT/EXAMINE */
+			REPLACE(imap->folder, mailbox);
+			return imap_client_send_wait_response(imap, -1, 5000, "%s \"%s\"\r\n", readonly == CMD_SELECT ? "SELECT" : "EXAMINE", remotename); /* Reconstruct the SELECT, fortunately this is not too bad */
+		} else { /* STATUS */
+			REPLACE(imap->activefolder, mailbox);
+			return imap_client_send_wait_response(imap, -1, 5000, "STATUS \"%s\" %s\r\n", remotename, s);
+		}
 	}
 	if (!readonly) {
 		static int sharedflagrights = IMAP_ACL_SEEN | IMAP_ACL_WRITE;
@@ -2241,8 +2254,12 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 	if (readonly <= 1) { /* SELECT and EXAMINE should update currently selected mailbox, STATUS should not */
 		REPLACE(imap->folder, mailbox);
 		reset_saved_search(imap); /* RFC 5182 2.1 */
+	} else {
+		/* imap->folder will still contain the currently selected mailbox.
+		 * imap->activefolder will now contain the mailbox for STATUS. */
+		REPLACE(imap->activefolder, mailbox);
 	}
-	if (readonly == 1) {
+	if (readonly == CMD_EXAMINE) {
 		imap->readonly = readonly;
 	} else {
 		imap->readonly = 0; /* In case the previously SELECTed folder was read only */
@@ -2354,7 +2371,7 @@ static int handle_select(struct imap_session *imap, char *s, int readonly)
 		}
 		imap_reply(imap, "OK [%s] %s completed%s", readonly ? "READ-ONLY" : "READ-WRITE", readonly ? "EXAMINE" : "SELECT", condstore_just_enabled ? ", CONDSTORE is now enabled" : "");
 		imap->highestmodseq = maxmodseq;
-	} else if (readonly == 2) { /* STATUS */
+	} else if (readonly == CMD_STATUS) { /* STATUS */
 		/*! \todo imap->totalnew and imap->totalcur, etc. are now for this other mailbox we one-offed, rather than currently selected.
 		 * Will that mess anything up? Maybe we should save these in tmp vars, and only set on the imap struct if readonly <= 1? */
 		char status_items[84] = "";
@@ -2452,19 +2469,17 @@ static int imap_dir_has_subfolders(const char *path, const char *prefix)
 	}
 	while (fno < files && (entry = entries[fno++])) {
 		if (entry->d_type != DT_DIR || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
-			free(entry);
 			continue;
 		} else if (!strncmp(entry->d_name, prefix, prefixlen)) {
 			const char *rest = entry->d_name + prefixlen; /* do not add these within the strlen_zero macro! */
 			/*! \todo XXX Check entire code tree for strlen_zero with + inside adding arguments. That's a bug!!! */
 			if (!strlen_zero(rest)) {
 				res = 1;
-				free(entry);
 				break;
 			}
 		}
-		free(entry);
 	}
+	free_scandir_entries(entries, files);
 	free(entries);
 	return res;
 }
@@ -2877,10 +2892,14 @@ static int load_virtual_mailbox(struct imap_session *imap, const char *path)
 	char virtcachefile[256];
 	char buf[256];
 
-	/* Reuse the same connection if it's the same account. */
-	if (imap->virtmbox && !strncmp(imap->virtprefix, path, imap->virtprefixlen)) {
-		bbs_debug(6, "Reusing existing connection for %s\n", path);
-		return 0;
+	if (imap->virtmbox) {
+		/* Reuse the same connection if it's the same account. */
+		if (!strncmp(imap->virtprefix, path, imap->virtprefixlen)) {
+			bbs_debug(6, "Reusing existing connection for %s\n", path);
+			return 0;
+		}
+		/* If it's to a different server, tear down the existing connection first. */
+		imap_close_remote_mailbox(imap);
 	}
 
 	snprintf(virtcachefile, sizeof(virtcachefile), "%s/.imapremote", mailbox_maildir(imap->mymbox));
@@ -2905,7 +2924,9 @@ static int load_virtual_mailbox(struct imap_session *imap, const char *path)
 
 		/* Instead of doing prefixlen = strlen(mpath), we can just subtract the pointers */
 		prefixlen = urlstr - mpath - 1; /* Subtract 1 for the space between. */
+#if 0
 		bbs_debug(3, "Comparing '%s' with %s\n", path, mpath);
+#endif
 		if (!strncmp(mpath, path, prefixlen)) {
 			struct bbs_url url;
 			char tmpbuf[1024];
@@ -2914,6 +2935,7 @@ static int load_virtual_mailbox(struct imap_session *imap, const char *path)
 			if (bbs_parse_url(&url, urlstr)) {
 				break;
 			}
+			bbs_assert(!imap->virtmbox); /* Shouldn't be a client left, or it'll leak here */
 			memset(&imap->client, 0, sizeof(imap->client));
 			if (bbs_tcp_client_connect(&imap->client, &url, !strcmp(url.prot, "imaps"), tmpbuf, sizeof(tmpbuf))) {
 				res = 1;
@@ -2991,7 +3013,7 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 	const char *cmd = lsub == 2 ? "XLIST" : lsub ? "LSUB" : "LIST";
 
 	/* Folders from the proxied mailbox will need to be translated back and forth */
-	if (pthread_mutex_lock(&virt_lock)) {
+	if (pthread_mutex_trylock(&virt_lock)) {
 		bbs_warning("Possible recursion inhibited\n");
 		return -1;
 	}
@@ -3718,11 +3740,11 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 		struct stat st;
 
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
-			goto cleanup;
+			continue;
 		}
 		msguid = imap_msg_in_range(imap, ++seqno, entry->d_name, sequences, usinguid, &error);
 		if (!msguid) {
-			goto cleanup;
+			continue;
 		}
 
 		snprintf(srcfile, sizeof(srcfile), "%s/%s", imap->curdir, entry->d_name);
@@ -3732,21 +3754,19 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 			quotaleft -= st.st_size; /* Determine if we would be about to exceed our current quota. */
 			if (quotaleft <= 0) {
 				bbs_verb(5, "Mailbox %d has insufficient quota remaining for COPY operation\n", mailbox_id(imap->mbox));
-				free(entry);
 				break; /* Insufficient quota remaining */
 			}
 		}
 		uidres = maildir_copy_msg_filename(imap->mbox, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext, newfile, sizeof(newfile));
 		if (!uidres) {
-			goto cleanup;
+			continue;
 		}
 		translate_maildir_flags(imap, imap->dir, newfile, entry->d_name, newboxdir, destacl);
 		if (!uintlist_append2(&olduids, &newuids, &lengths, &allocsizes, msguid, uidres)) {
 			numcopies++;
 		}
-cleanup:
-		free(entry);
 	}
+	free_scandir_entries(entries, files);
 	free(entries);
 	/* UIDVALIDITY of dest mailbox, src UIDs, dest UIDs (in same order as src messages) */
 	if (olduids || newuids) {
@@ -5296,7 +5316,6 @@ static int sub_rename(const char *path, const char *prefix, const char *newprefi
 	}
 	while (fno < files && (entry = entries[fno++])) {
 		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
-			free(entry);
 			continue;
 		} else if (entry->d_type == DT_DIR) { /* We only care about directories, not files. */
 			if (!strncmp(entry->d_name, prefix, prefixlen)) {
@@ -5315,14 +5334,13 @@ static int sub_rename(const char *path, const char *prefix, const char *newprefi
 					 * then we shouldn't have changed anything.
 					 * For this reason, better to rename the subdirs before the main dir itself. */
 					res = -1;
-					free(entry);
 					break;
 				}
 			}
 		}
-		free(entry);
 	}
 
+	free_scandir_entries(entries, files);
 	free(entries);
 	if (res < 0) {
 		bbs_error("Error while reading directories (%d) - %s: %s\n", res, path, strerror(errno));
@@ -6335,7 +6353,6 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 /*! \note For some reason, looping twice or using goto results in valgrind reporting a memory leak, but calling this function twice does not */
 static int search_dir(struct imap_session *imap, const char *dirname, int newdir, int usinguid, struct imap_search_keys *skeys, unsigned int **a, int *lengths, int *allocsizes, int *min, int *max, unsigned long *maxmodseq)
 {
-	int res = 0;
 	int files, fno = 0;
 	struct dirent *entry, **entries = NULL;
 	struct imap_search search;
@@ -6383,7 +6400,7 @@ static int search_dir(struct imap_session *imap, const char *dirname, int newdir
 			} else {
 				uid = seqno; /* Not really, but use the same variable for both */
 			}
-			res = uintlist_append(a, lengths, allocsizes, uid);
+			uintlist_append(a, lengths, allocsizes, uid);
 			if (min) {
 				if (*min == -1 || (int) uid < *min) {
 					*min = (int) uid;
@@ -6406,17 +6423,9 @@ static int search_dir(struct imap_session *imap, const char *dirname, int newdir
 		}
 next:
 		free(entry);
-		if (unlikely(res)) {
-			bbs_error("Search failed at seqno %d\n", seqno);
-			break;
-		}
 	}
 	free(entries);
-	if (res < 0) {
-		bbs_error("Error while reading directories (%d) - %s: %s\n", res, dirname, strerror(errno));
-		res = -1;
-	}
-	return res;
+	return 0;
 }
 
 /*! \retval -1 on failure, number of search results on success */
@@ -7431,6 +7440,33 @@ static int imap_process(struct imap_session *imap, char *s)
 		}
 	}
 
+	if (imap->activefolder && strcasecmp(command, "STATUS")) {
+		/* STATUS does not change the currently selected mailbox in IMAP.
+		 * However, if a client issues multiple STATUS commands for multiple
+		 * mailboxes on the same remote account, we want to be able to reuse
+		 * that IMAP client connection.
+		 *
+		 * To account for this, internally STATUS really does update the
+		 * active mailbox. It will set imap->activefolder but not change
+		 * imap->folder. Thus, whenever the client is done issuing STATUS
+		 * commands, we'll end up inside this branch here.
+		 *
+		 * At THAT point, we can then replace the connection for STATUS
+		 * with whatever we should have for the currently selected mailbox. */
+		bbs_debug(4, "Reverting temporary STATUS override\n");
+		if (imap->folder) {
+			/* Since we internally changed the active mailbox, change it back to the mailbox that's still really selected.
+			 * Internally, this will also close the remote if needed. */
+			set_maildir(imap, imap->folder);
+		} else {
+			/* If no mailbox was selected when we did the STATUS, then just close the remote */
+			if (imap->virtmbox) {
+				imap_close_remote_mailbox(imap);
+			}
+		}
+		FREE(imap->activefolder);
+	}
+
 	if (!strcasecmp(command, "NOOP")) {
 		FORWARD_VIRT_MBOX();
 		imap_reply(imap, "OK NOOP completed");
@@ -7504,18 +7540,13 @@ static int imap_process(struct imap_session *imap, char *s)
 		bbs_warning("'%s' command may not be used in the unauthenticated state\n", command);
 		imap_reply(imap, "BAD Not logged in"); /* Not necessarily a client bug, could be our fault too if we don't implement something */
 	} else if (!strcasecmp(command, "SELECT")) {
-		return handle_select(imap, s, 0);
+		return handle_select(imap, s, CMD_SELECT);
 	} else if (!strcasecmp(command, "EXAMINE")) {
-		return handle_select(imap, s, 1);
+		return handle_select(imap, s, CMD_EXAMINE);
 	} else if (!strcasecmp(command, "STATUS")) { /* STATUS is like EXAMINE, but it's on a specified mailbox that is NOT the currently selected mailbox */
-		/* Need to save/restore current maildir for STATUS, so it doesn't mess up the selected mailbox, since STATUS must not modify the selected folder. */
-		res = handle_select(imap, s, 2);
-		if (imap->virtmbox) {
-			imap_close_remote_mailbox(imap);
-		}
-		if (imap->folder) {
-			set_maildir(imap, imap->folder);
-		}
+		/* Need to save/restore current maildir for STATUS, so it doesn't mess up the selected mailbox, since STATUS must not modify the selected folder.
+		 * This is handled earlier in this function. */
+		res = handle_select(imap, s, CMD_STATUS);
 		return res;
 	} else if (!strcasecmp(command, "NAMESPACE")) {
 		/* Good article for understanding namespaces: https://utcc.utoronto.ca/~cks/space/blog/sysadmin/IMAPPrefixesClientAndServer */
