@@ -24,6 +24,7 @@ struct readline_data {
 	char *pos;
 	int left;
 	int leftover;
+	unsigned int waiting:1;
 };
 
 /*!

@@ -7,7 +7,10 @@ LBBS - The Lightweight Bulletin Board System
 
 Welcome! Whether you're new to BBSing or a veteran sysop, LBBS was written to be a highly configurable, modular BBS for developers, sysops, and users alike.
 
-LBBS is a BBS (bulletin board system) package and personal server written from the ground up to be extensible, modular, and, of course, lightweight. The codebase is relatively small (~50K SLOC), with relatively few dependencies. It is designed to be easy for sysops to administer, easy for users to use and navigate, and easy for developers to read, understand, maintain, and contribute to the source code.
+LBBS is a BBS (bulletin board system) package and personal server written from the ground up to be extensible, modular, and, of course, lightweight.
+The codebase is relatively small (~50K SLOC), with relatively few dependencies. It is designed to be easy for sysops to administer, easy for users to use and navigate, and easy for developers to read, understand, maintain, and contribute to the source code.
+
+While LBBS is first and foremost a BBS server, its different components can also be used individually: for example, you could use the mail modules as a private mail server, and not load the BBS-related functionality.
 
 Features
 ========
@@ -63,8 +66,8 @@ Key features and capabilities include:
 Usage
 =====
 
-Installations
-~~~~~~~~~~~~~
+Installation
+~~~~~~~~~~~~
 
 To install LBBS, you will need to compile it from source. Fortunately, we've made this as easy as possible::
 

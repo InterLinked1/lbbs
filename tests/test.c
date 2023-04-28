@@ -362,8 +362,10 @@ static const char *bbs_expect_str = NULL;
 int test_autorun = 1;
 int rand_alloc_fails = 0;
 
-static char expectbuf[8192];
+static char expectbuf[4096];
 static struct readline_data rldata;
+
+static int startup_run_unit_tests_started = 0;
 
 static void *io_relay(void *varg)
 {
@@ -392,17 +394,34 @@ static void *io_relay(void *varg)
 			write(STDERR_FILENO, buf, res);
 		}
 		if (bbs_expect_str) {
-			buf[res] = '\0'; /* Safe */
+			int rounds = 0;
 			bbs_readline_append(&rldata, "\n", buf, res, &ready);
-			/* Check both the readline buffer as well as what we just read.
-			 * Often the first is sufficient, but there's no guarantee since the string
-			 * we're expecting might be split across reads. */
-			found = strstr(buf, bbs_expect_str) || (ready && strstr(expectbuf, bbs_expect_str));
-			if (!found) {
-				continue;
+			/* Check if the line contains the expected output.
+			 * If we read multiple lines, loop until there's not a full line left in the buffer. */
+			while (ready && bbs_expect_str) { /* Check bbs_expect_str again as it could be set NULL once we get a match */
+				found = strstr(expectbuf, bbs_expect_str) ? 1 : 0;
+				if (found) {
+					if (write(notifypfd[1], &c, 1) != 1) { /* Signal notify waiter */
+						bbs_error("write failed: %s\n", strerror(errno));
+					}
+					if (startup_run_unit_tests && startup_run_unit_tests_started == 0) {
+						/* First call to io_relay is always to detect BBS being fully started. */
+						startup_run_unit_tests_started = 1;
+						/* To prevent a race condition where the BBS unit tests all pass before
+						 * test_unit has a chance to call test_bbs_expect with "100%",
+						 * stall intentionally until we know we're good to proceed. */
+					}
+				}
+				/* Don't append, just shift the buffer and check if we can read immediately. */
+				bbs_readline_append(&rldata, "\n", "", 0, &ready);
+				rounds++;
 			}
-			if (write(notifypfd[1], &c, 1) != 1) { /* Signal notify waiter */
-				bbs_error("write failed: %s\n", strerror(errno));
+			if (startup_run_unit_tests_started == 1) {
+				bbs_debug(5, "Stalling until expect reactivated\n");
+				while (startup_run_unit_tests_started == 1) {
+					usleep(500);
+				}
+				bbs_debug(5, "Ending stall due to expect reactivation\n");
 			}
 		}
 		if (rand_alloc_fails && strstr(expectbuf, "Simulated allocation failure")) {
@@ -425,11 +444,16 @@ int test_bbs_expect(const char *s, int ms)
 	pfd.revents = 0;
 	assert(pfd.fd != -1);
 
+	expectbuf[0] = '\0';
 	bbs_readline_init(&rldata, expectbuf, sizeof(expectbuf));
 	bbs_expect_str = s;
+	if (startup_run_unit_tests_started == 1) {
+		startup_run_unit_tests_started = 2;
+	}
 	res = poll(&pfd, 1, ms);
 	bbs_expect_str = NULL;
 	if (do_abort || res < 0) {
+		bbs_debug(5, "poll returned %d\n", res);
 		return -1;
 	}
 	if (res > 0 && pfd.revents) {
@@ -437,7 +461,7 @@ int test_bbs_expect(const char *s, int ms)
 		read(notifypfd[0], &c, 1);
 		return 0;
 	}
-	bbs_warning("Failed to receive expected output: %s\n", s);
+	bbs_warning("Failed to receive expected output: %s (got: %s)\n", s, expectbuf);
 	return -1;
 }
 
@@ -616,6 +640,8 @@ static int analyze_valgrind(void)
 	}
 
 	while ((fgets(buf, sizeof(buf), fp))) {
+		/*! \todo BUGBUG atoi will stop when it sees commas, so for example 8,192 bytes lost is reported as 8 bytes lost
+		 * This isn't super high priority to fix at the moment since any number of bytes lost is bad and should be fixed. */
 		const char *s;
 		if (!num_bytes_lost && (s = strstr(buf, "definitely lost: "))) {
 			s += STRLEN("definitely lost: ");
@@ -763,12 +789,13 @@ static int run_test(const char *filename, int multiple)
 			bbs_debug(3, "Spawned child process %d\n", childpid);
 			/* Wait for the BBS to fully start */
 			/* XXX If we could receive this event outside of the BBS process, that would be more elegant */
-			res = test_bbs_expect("BBS is fully started", SEC_MS(20));
-			usleep(250000); /* In case a test exits immediately, let spawned threads spawn before we exit */
+			res = test_bbs_expect("BBS is fully started", SEC_MS(15));
+			usleep(25000); /* In case a test exits immediately, let spawned threads spawn before we exit */
 			if (!res) {
 				bbs_debug(3, "BBS fully started on process %d\n", childpid);
 				res = testmod->run();
-				usleep(250000); /* Allow the poor BBS time for catching its breath */
+				bbs_debug(3, "Test '%s' returned %d\n", filename, res);
+				usleep(25000); /* Allow the poor BBS time for catching its breath. At least test_irc under valgrind seems to need this. */
 			}
 			gettimeofday(&end, NULL);
 			if (childpid != -1) {

@@ -52,11 +52,18 @@ static char *readline_pre_read(struct readline_data *rldata, const char *delim, 
 		/* If we already have a delimiter, no need to proceed further. */
 		firstdelim = strstr(rldata->buf, delim); /* Use buf, not pos, since pos is the beginning of the buffer that remains at this point. */
 		res = rldata->leftover = 0;
+		rldata->leftover = 0;
 		*resptr = res;
 	} else {
-		rldata->pos = rldata->buf;
-		rldata->left = rldata->len;
+		if (!rldata->waiting) {
+			/* bbs_readline never returns without reading a full line,
+			 * but bbs_readline_append can return without calling readline_post_read,
+			 * so we should not reset pos to buf if the next chunk is incomplete. */
+			rldata->pos = rldata->buf;
+			rldata->left = rldata->len;
+		}
 	}
+	rldata->waiting = 0;
 	return firstdelim;
 }
 
@@ -96,6 +103,7 @@ int bbs_readline(int fd, struct readline_data *rldata, const char *delim, int ti
 #endif
 		if (rldata->left - 1 < 2) {
 			bbs_warning("Buffer (size %d) has been exhausted\n", rldata->len); /* The using application needs to allocate a larger buffer */
+			return -1;
 		}
 		res = bbs_poll_read(fd, timeout, rldata->pos, rldata->left - 1); /* Subtract 1 for NUL */
 		if (res <= 0) {
@@ -111,37 +119,56 @@ int bbs_readline(int fd, struct readline_data *rldata, const char *delim, int ti
 
 	return readline_post_read(rldata, delim, firstdelim, res);
 }
-#endif
+#endif /* BBS_IN_CORE */
 
 int bbs_readline_append(struct readline_data *rldata, const char *delim, char *buf, size_t len, int *ready)
 {
 	char *firstdelim;
-	int res;
+	int res, drain = 0;
 
 	firstdelim = readline_pre_read(rldata, delim, &res);
-
 	if (firstdelim) {
 		*ready = 1;
-		return 0; /* Force the caller to use the previous chunk before appending */
-	}
-	if ((int) len >= rldata->left - 1) {
-		bbs_warning("Insufficient space in buffer to fully write %lu bytes (have %d)\n", len, rldata->left - 1);
+		drain = 1;
+		/* Force the caller to use the previous chunk before appending */
+	} else {
+		*ready = 0; /* Reset */
 	}
 
-	/* buf is not (necessarily) null terminated, so can't just blindly use safe_strncpy */
-	res = MIN((int) len, rldata->left - 1);
-	memcpy(rldata->pos, buf, res);
+	/* If there's data to append, do that as well */
+	if (len) {
+		if ((int) len >= rldata->left - 1) {
+			bbs_warning("Insufficient space in buffer to fully write %lu bytes (have %d)\n", len, rldata->left - 1);
+			return -1; /* Don't write past the end of the buffer. Don't even bother storing a partial append. */
+		}
 
-	rldata->pos[res] = '\0'; /* Safe. Null terminate so we can use string functions. */
-	firstdelim = strstr(rldata->pos, delim); /* Find the first occurence of the delimiter, if present. */
-	/* Update our position */
-	rldata->pos += res;
-	rldata->left -= res;
-	*ready = firstdelim ? 1 : 0;
+		/* buf is not (necessarily) null terminated, so can't just blindly use safe_strncpy */
+		res = MIN((int) len, rldata->left - 1);
+		memcpy(rldata->pos, buf, res);
+
+		rldata->pos[res] = '\0'; /* Safe. Null terminate so we can use string functions. */
+		if (!drain) { /* If we're draining the buffer, firstdelim is already set and we want to use that */
+			firstdelim = strstr(rldata->pos, delim); /* Find the first occurence of the delimiter, if present. */
+		}
+		/* Update our position */
+		rldata->pos += res;
+		rldata->left -= res;
+		*ready = firstdelim ? 1 : 0;
+	} else {
+		res = 0;
+	}
 
 	if (*ready) {
+		char *nextbegin, *origpos = rldata->pos;
+
 		readline_post_read(rldata, delim, firstdelim, res);
+		nextbegin = rldata->pos;
+		rldata->leftover = origpos - nextbegin; /* Amount leftover is whatever we'll need to shift after the caller uses the available chunk */
+
 		/* Still return the original value */
+	} else {
+		/* Don't shift anything in the buffer just yet. We will once we get a complete chunk. */
+		rldata->waiting = 1;
 	}
 
 	return res;

@@ -338,7 +338,9 @@ static inline void safe_strncpy(char *dst, const char *src, size_t size)
 /*! \brief revents that should result in terminating the poll */
 #define BBS_POLL_QUIT (POLLERR | POLLHUP | POLLNVAL)
 
+#ifndef BBS_TEST_FRAMEWORK
 #define BBS_ASSERT
+#endif
 
 #define bbs_assert_exists(x) bbs_assert(x != NULL)
 

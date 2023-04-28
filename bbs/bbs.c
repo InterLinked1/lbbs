@@ -68,10 +68,10 @@ static char *_argv[256];
 
 /* Immutable */
 int option_dumpcore = 0; /* extern in bbs.h for backtrace */
-int option_nofork = 0;
+int option_nofork = 0; /* run in foreground instead of daemonizing */
 int option_rebind = 0; /* used extern in socket.c */
 int option_rand_alloc_failures = 0; /* used extern in alloc.c */
-static int option_run_unit_tests = 0;
+static int option_run_unit_tests = 0; /* run unit tests on startup */
 
 /* Mutable during runtime */
 int option_debug = 0;
@@ -891,7 +891,6 @@ int main(int argc, char *argv[])
 	}
 
 	if (option_run_unit_tests) {
-		usleep(250000); /* This is used for the test framework: need to make sure it can capture the output. 150ms isn't enough, 250 seems to work well. */
 		bbs_run_tests(STDOUT_FILENO);
 	}
 

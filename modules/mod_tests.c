@@ -193,6 +193,50 @@ cleanup:
 	return res;
 }
 
+static int test_readline_append(void)
+{
+	int res = -1;
+	char inbuf[256];
+	char buf[256];
+	struct readline_data rldata;
+	int len, ready;
+
+	bbs_readline_init(&rldata, buf, sizeof(buf));
+
+#undef sprintf
+	len = sprintf(inbuf, "Test1\nTest2\nTe");
+	res = bbs_readline_append(&rldata, "\n", inbuf, len, &ready);
+	bbs_test_assert_equals(len, res);
+	bbs_test_assert_equals(1, ready);
+	bbs_test_assert_str_equals(buf, "Test1");
+
+	res = bbs_readline_append(&rldata, "\n", "", 0, &ready);
+	bbs_test_assert_equals(0, res);
+	bbs_test_assert_equals(1, ready);
+	bbs_test_assert_str_equals(buf, "Test2");
+
+	res = bbs_readline_append(&rldata, "\n", "", 0, &ready);
+	bbs_test_assert_equals(0, res);
+	bbs_test_assert_equals(0, ready);
+	bbs_test_assert_str_equals(buf, "Te");
+
+	len = sprintf(inbuf, "st3\nTest4\n");
+	res = bbs_readline_append(&rldata, "\n", inbuf, len, &ready);
+	bbs_test_assert_equals(len, res);
+	bbs_test_assert_equals(1, ready);
+	bbs_test_assert_str_equals(buf, "Test3");
+
+	res = bbs_readline_append(&rldata, "\n", "", 0, &ready);
+	bbs_test_assert_equals(0, res);
+	bbs_test_assert_equals(1, ready);
+	bbs_test_assert_str_equals(buf, "Test4");
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
 static int test_sasl_decode(void)
 {
 	int res = -1;
@@ -312,6 +356,7 @@ static struct unit_tests {
 	{ "Backspace Processing", test_backspace_processing },
 	{ "String Copy w/o Spaces", test_strcpy_nospaces },
 	{ "Readline Helper", test_readline_helper },
+	{ "Readline Append", test_readline_append },
 	{ "SASL Decoding", test_sasl_decode },
 	{ "IPv4 CIDR Range Matching", test_cidr_ipv4 },
 	{ "IPv4 Address Detection", test_ipv4_detection },
