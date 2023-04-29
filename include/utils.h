@@ -275,6 +275,30 @@ int bbs_tcp_connect(const char *hostname, int port);
 int bbs_timed_accept(int socket, int ms, const char *ip);
 
 /*!
+ * \brief Listen on a TCP socket
+ * \param port TCP port number
+ * \param name Name of network service
+ * \param handler Handler to execute to handle nodes spawned by this listener
+ * \retval 0 on success, -1 on failure
+ */
+#define bbs_start_tcp_listener(port, name, handler) __bbs_start_tcp_listener(port, name, handler, BBS_MODULE_SELF)
+
+int __bbs_start_tcp_listener(int port, const char *name, void *(*handler)(void *varg), void *module);
+
+/*! \brief Same as bbs_start_tcp_listener but, like bbs_tcp_listener3, for multiple TCP listeners at once */
+#define bbs_start_tcp_listener3(port, port2, port3, name, name2, name3, handler) __bbs_start_tcp_listener3(port, port2, port3, name, name2, name3, handler, BBS_MODULE_SELF)
+
+int __bbs_start_tcp_listener3(int port, int port2, int port3, const char *name, const char *name2, const char *name3, void *(*handler)(void *varg), void *module);
+
+/*!
+ * \brief Stop a TCP listener registered previously using bbs_start_tcp_listener
+ * \param port TCP port number
+ * \retval 0 on success, -1 on failure
+ * \note This does not close the socket
+ */
+int bbs_stop_tcp_listener(int port);
+
+/*!
  * \brief Run a terminal services TCP network login service listener thread
  * \param socket Socket fd
  * \param name Name of network login service, e.g. Telnet, RLogin, etc.

@@ -106,7 +106,6 @@
 
 #include "include/module.h"
 #include "include/config.h"
-#include "include/net.h"
 #include "include/utils.h"
 #include "include/node.h"
 #include "include/auth.h"
@@ -126,10 +125,7 @@
 static int imap_port = DEFAULT_IMAP_PORT;
 static int imaps_port = DEFAULT_IMAPS_PORT;
 
-static pthread_t imap_listener_thread = -1;
-
 static int imap_enabled = 0, imaps_enabled = 1;
-static int imap_socket = -1, imaps_socket = -1;
 
 static int allow_idle = 1;
 
@@ -7991,14 +7987,6 @@ static void *__imap_handler(void *varg)
 	return NULL;
 }
 
-/*! \brief Single listener thread for IMAP and/or IMAPS */
-static void *imap_listener(void *unused)
-{
-	UNUSED(unused);
-	bbs_tcp_listener2(imap_socket, imaps_socket, "IMAP", "IMAPS", __imap_handler, BBS_MODULE_SELF);
-	return NULL;
-}
-
 static int load_config(void)
 {
 	struct bbs_config *cfg;
@@ -8148,30 +8136,13 @@ static int load_module(void)
 	}
 
 	/* If we can't start the TCP listeners, decline to load */
-	if (imap_enabled && bbs_make_tcp_socket(&imap_socket, imap_port)) {
-		return -1;
-	}
-	if (imaps_enabled && bbs_make_tcp_socket(&imaps_socket, imaps_port)) {
-		close_if(imap_socket);
+	if (bbs_start_tcp_listener3(imap_enabled ? imap_port : 0, imaps_enabled ? imaps_port : 0, 0, "IMAP", "IMAPS", NULL, __imap_handler)) {
 		return -1;
 	}
 
 	pthread_mutex_init(&acl_lock, NULL);
 	pthread_mutex_init(&virt_lock, NULL);
 
-	if (bbs_pthread_create(&imap_listener_thread, NULL, imap_listener, NULL)) {
-		bbs_error("Unable to create IMAP listener thread.\n");
-		close_if(imap_socket);
-		close_if(imaps_socket);
-		return -1;
-	}
-
-	if (imap_enabled) {
-		bbs_register_network_protocol("IMAP", imap_port);
-	}
-	if (imaps_enabled) {
-		bbs_register_network_protocol("IMAPS", imaps_port); /* This is also for MSA */
-	}
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		bbs_register_test(tests[i].name, tests[i].callback);
 	}
@@ -8188,15 +8159,11 @@ static int unload_module(void)
 		bbs_unregister_test(tests[i].callback);
 	}
 	mailbox_unregister_watcher(imap_mbox_watcher);
-	bbs_pthread_cancel_kill(imap_listener_thread);
-	bbs_pthread_join(imap_listener_thread, NULL);
 	if (imap_enabled) {
-		bbs_unregister_network_protocol(imap_port);
-		close_if(imap_socket);
+		bbs_stop_tcp_listener(imap_port);
 	}
 	if (imaps_enabled) {
-		bbs_unregister_network_protocol(imaps_port);
-		close_if(imaps_socket);
+		bbs_stop_tcp_listener(imaps_port);
 	}
 	pthread_mutex_destroy(&acl_lock);
 	pthread_mutex_destroy(&virt_lock);

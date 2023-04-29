@@ -28,7 +28,6 @@
 
 #include "include/module.h"
 #include "include/config.h"
-#include "include/net.h"
 #include "include/utils.h"
 #include "include/node.h"
 #include "include/user.h"
@@ -41,9 +40,6 @@
 #define DEFAULT_SIEVE_PORT 4190 
 
 static int sieve_port = DEFAULT_SIEVE_PORT;
-
-static pthread_t sieve_listener_thread = -1;
-static int sieve_socket = -1;
 
 struct sieve_session {
 	int rfd;
@@ -525,32 +521,14 @@ static void *__sieve_handler(void *varg)
 	return NULL;
 }
 
-static void *sieve_listener(void *unused)
-{
-	UNUSED(unused);
-	bbs_tcp_listener(sieve_socket, "ManageSieve", __sieve_handler, BBS_MODULE_SELF);
-	return NULL;
-}
-
 static int load_module(void)
 {
-	if (bbs_make_tcp_socket(&sieve_socket, sieve_port)) {
-		return -1;
-	} else if (bbs_pthread_create(&sieve_listener_thread, NULL, sieve_listener, NULL)) {
-		close_if(sieve_socket);
-		return -1;
-	}
-
-	bbs_register_network_protocol("ManageSieve", sieve_port);
-	return 0;
+	return bbs_start_tcp_listener(sieve_port, "ManageSieve", __sieve_handler);
 }
 
 static int unload_module(void)
 {
-	bbs_pthread_cancel_kill(sieve_listener_thread);
-	bbs_pthread_join(sieve_listener_thread, NULL);
-	bbs_unregister_network_protocol(sieve_port);
-	close_if(sieve_socket);
+	bbs_stop_tcp_listener(sieve_port);
 	return 0;
 }
 

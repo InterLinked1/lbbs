@@ -81,11 +81,9 @@ static int smtp_port = DEFAULT_SMTP_PORT;
 static int smtps_port = DEFAULT_SMTPS_PORT;
 static int msa_port = DEFAULT_SMTP_MSA_PORT;
 
-static pthread_t smtp_listener_thread = -1;
 static pthread_t queue_thread = -1;
 
 static int smtp_enabled = 1, smtps_enabled = 1, msa_enabled = 1;
-static int smtp_socket = -1, smtps_socket = -1, msa_socket = -1;
 
 static pthread_mutex_t queue_lock;
 
@@ -2908,14 +2906,6 @@ static void *__smtp_handler(void *varg)
 	return NULL;
 }
 
-/*! \brief Single listener thread for SMTP and/or SMTPS */
-static void *smtp_listener(void *unused)
-{
-	UNUSED(unused);
-	bbs_tcp_listener3(smtp_socket, smtps_socket, msa_socket, "SMTP", "SMTPS", "SMTP (MSA)", __smtp_handler, BBS_MODULE_SELF);
-	return NULL;
-}
-
 static int load_config(void)
 {
 	struct bbs_config *cfg;
@@ -3015,56 +3005,23 @@ static int load_module(void)
 
 	pthread_mutex_init(&queue_lock, NULL);
 
-	/* If we can't start the TCP listeners, decline to load */
-	if (smtp_enabled && bbs_make_tcp_socket(&smtp_socket, smtp_port)) {
-		goto cleanup;
-	}
-	if (smtps_enabled && bbs_make_tcp_socket(&smtps_socket, smtps_port)) {
-		close_if(smtp_socket);
-		goto cleanup;
-	}
-	if (msa_enabled && bbs_make_tcp_socket(&msa_socket, msa_port)) {
-		close_if(smtps_socket);
-		close_if(smtp_socket);
-		goto cleanup;
-	}
-
 	spf_server = SPF_server_new(SPF_DNS_CACHE, 0);
 	if (!spf_server) {
 		bbs_error("Failed to create SPF server\n");
-		close_if(smtps_socket);
-		close_if(smtp_socket);
-		goto cleanup;
-	}
-
-	if (bbs_pthread_create(&smtp_listener_thread, NULL, smtp_listener, NULL)) {
-		bbs_error("Unable to create SMTP listener thread.\n");
-		close_if(msa_socket);
-		close_if(smtp_socket);
-		close_if(smtps_socket);
-		SPF_server_free(spf_server);
 		goto cleanup;
 	}
 
 	if (bbs_pthread_create(&queue_thread, NULL, queue_handler, NULL)) {
-		close_if(msa_socket);
-		close_if(smtp_socket);
-		close_if(smtps_socket);
-		bbs_pthread_cancel_kill(smtp_listener_thread);
-		bbs_pthread_join(smtp_listener_thread, NULL);
 		SPF_server_free(spf_server);
 		goto cleanup;
 	}
 
-	if (smtp_enabled) {
-		bbs_register_network_protocol("SMTP", smtp_port);
+	/* If we can't start the TCP listeners, decline to load */
+	if (bbs_start_tcp_listener3(smtp_enabled ? smtp_port : 0, smtps_enabled ? smtps_port : 0, msa_enabled ? msa_port : 0, "SMTP", "SMTPS", "SMTP (MSA)", __smtp_handler)) {
+		SPF_server_free(spf_server);
+		goto cleanup;
 	}
-	if (smtps_enabled) {
-		bbs_register_network_protocol("SMTPS", smtps_port); /* This is also for MSA */
-	}
-	if (msa_enabled) {
-		bbs_register_network_protocol("SMTP (MSA)", msa_port);
-	}
+
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		bbs_register_test(tests[i].name, tests[i].callback);
 	}
@@ -3087,21 +3044,16 @@ static int unload_module(void)
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		bbs_unregister_test(tests[i].callback);
 	}
-	bbs_pthread_cancel_kill(smtp_listener_thread);
-	bbs_pthread_join(smtp_listener_thread, NULL);
 	bbs_pthread_cancel_kill(queue_thread);
 	bbs_pthread_join(queue_thread, NULL);
 	if (smtp_enabled) {
-		bbs_unregister_network_protocol(smtp_port);
-		close_if(smtp_socket);
+		bbs_stop_tcp_listener(smtp_port);
 	}
 	if (smtps_enabled) {
-		bbs_unregister_network_protocol(smtps_port);
-		close_if(smtps_socket);
+		bbs_stop_tcp_listener(smtps_port);
 	}
 	if (msa_enabled) {
-		bbs_unregister_network_protocol(msa_port);
-		close_if(msa_socket);
+		bbs_stop_tcp_listener(msa_port);
 	}
 	SPF_server_free(spf_server);
 	stringlist_empty(&blacklist);

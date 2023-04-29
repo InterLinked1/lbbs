@@ -34,15 +34,11 @@
 #include "include/user.h"
 #include "include/utils.h"
 #include "include/config.h"
-#include "include/net.h"
 #include "include/auth.h"
 #include "include/system.h"
 #include "include/transfer.h"
 #include "include/tls.h"
 
-static int ftp_socket = -1; /*!< TCP Socket for allowing incoming network connections */
-static int ftps_socket = -1;
-static pthread_t ftp_thread;
 static int minport, maxport;
 
 /*! \brief Default FTP port is 21 */
@@ -773,13 +769,6 @@ cleanup:
 	return NULL;
 }
 
-static void *ftp_listener(void *unused)
-{
-	UNUSED(unused);
-	bbs_tcp_listener2(ftp_socket, ftps_socket, "FTP", "FTPS", ftp_handler, BBS_MODULE_SELF);
-	return NULL;
-}
-
 static int load_config(void)
 {
 	struct bbs_config *cfg;
@@ -820,36 +809,14 @@ static int load_module(void)
 		return -1;
 	}
 	/* If we can't start the TCP listener, decline to load */
-	if (bbs_make_tcp_socket(&ftp_socket, ftp_port)) {
-		return -1;
-	}
-	if (ftps_enabled && bbs_make_tcp_socket(&ftps_socket, ftps_port)) {
-		close_if(ftp_socket);
-		return -1;
-	}
-	bbs_assert(ftp_socket >= 0);
-	if (bbs_pthread_create(&ftp_thread, NULL, ftp_listener, NULL)) {
-		close(ftp_socket);
-		ftp_socket = -1;
-		return -1;
-	}
-	bbs_register_network_protocol("FTP", ftp_port);
-	if (ftps_enabled) {
-		bbs_register_network_protocol("FTPS", ftps_port);
-	}
-	return 0;
+	return bbs_start_tcp_listener3(ftp_port, ftps_enabled ? ftps_port : 0, 0, "FTP", "FTPS", NULL, ftp_handler);
 }
 
 static int unload_module(void)
 {
-	if (ftp_socket > -1) {
-		bbs_unregister_network_protocol(ftp_port);
-		close_if(ftp_socket);
-		close_if(ftps_socket);
-		bbs_pthread_cancel_kill(ftp_thread);
-		bbs_pthread_join(ftp_thread, NULL);
-	} else {
-		bbs_error("FTP socket already closed at unload?\n");
+	bbs_stop_tcp_listener(ftp_port);
+	if (ftps_enabled) {
+		bbs_stop_tcp_listener(ftps_port);
 	}
 	return 0;
 }

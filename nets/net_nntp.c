@@ -35,7 +35,6 @@
 #include "include/stringlist.h"
 #include "include/module.h"
 #include "include/config.h"
-#include "include/net.h"
 #include "include/utils.h"
 #include "include/node.h"
 #include "include/auth.h"
@@ -65,10 +64,7 @@ static int nntp_port = DEFAULT_NNTP_PORT;
 static int nntps_port = DEFAULT_NNTPS_PORT;
 static int nnsp_port = DEFAULT_NNSP_PORT;
 
-static pthread_t nntp_listener_thread = -1;
-
 static int nntp_enabled = 1, nntps_enabled = 1, nnsp_enabled = 1;
-static int nntp_socket = -1, nntps_socket = -1, nnsp_socket = -1;
 
 static pthread_mutex_t nntp_lock;
 
@@ -1357,14 +1353,6 @@ static void *__nntp_handler(void *varg)
 	return NULL;
 }
 
-/*! \brief Single listener thread for NNTP and/or NNTPS */
-static void *nntp_listener(void *unused)
-{
-	UNUSED(unused);
-	bbs_tcp_listener3(nntp_socket, nntps_socket, nnsp_socket, "NNTP", "NNTPS", "NNSP", __nntp_handler, BBS_MODULE_SELF);
-	return NULL;
-}
-
 static int load_config(void)
 {
 	struct bbs_config *cfg;
@@ -1455,37 +1443,8 @@ static int load_module(void)
 		goto cleanup;
 	}
 
-	/* If we can't start the TCP listeners, decline to load */
-	if (nntp_enabled && bbs_make_tcp_socket(&nntp_socket, nntp_port)) {
-		goto cleanup;
-	}
-	if (nntps_enabled && bbs_make_tcp_socket(&nntps_socket, nntps_port)) {
-		close_if(nntp_socket);
-		goto cleanup;
-	}
-	if (nnsp_enabled && bbs_make_tcp_socket(&nnsp_socket, nnsp_port)) {
-		close_if(nntp_socket);
-		close_if(nntps_socket);
-		goto cleanup;
-	}
+	return bbs_start_tcp_listener3(nntp_enabled ? nntp_port : 0, nntps_enabled ? nntps_port : 0, nnsp_enabled ? nnsp_port : 0, "NNTP", "NNTPS", "NNSP", __nntp_handler);
 
-	if (bbs_pthread_create(&nntp_listener_thread, NULL, nntp_listener, NULL)) {
-		bbs_error("Unable to create NNTP listener thread.\n");
-		close_if(nntp_socket);
-		close_if(nntps_socket);
-		goto cleanup;
-	}
-
-	if (nntp_enabled) {
-		bbs_register_network_protocol("NNTP", nntp_port);
-	}
-	if (nntps_enabled) {
-		bbs_register_network_protocol("NNTPS", nntps_port);
-	}
-	if (nnsp_enabled) {
-		bbs_register_network_protocol("NNSP", nnsp_port);
-	}
-	return 0;
 cleanup:
 	stringlist_empty(&inpeers);
 	stringlist_empty(&outpeers);
@@ -1494,19 +1453,14 @@ cleanup:
 
 static int unload_module(void)
 {
-	bbs_pthread_cancel_kill(nntp_listener_thread);
-	bbs_pthread_join(nntp_listener_thread, NULL);
 	if (nntp_enabled) {
-		bbs_unregister_network_protocol(nntp_port);
-		close_if(nntp_socket);
+		bbs_stop_tcp_listener(nntp_port);
 	}
 	if (nntps_enabled) {
-		bbs_unregister_network_protocol(nntps_port);
-		close_if(nntps_socket);
+		bbs_stop_tcp_listener(nntps_port);
 	}
 	if (nnsp_enabled) {
-		bbs_unregister_network_protocol(nnsp_port);
-		close_if(nnsp_socket);
+		bbs_stop_tcp_listener(nnsp_port);
 	}
 	pthread_mutex_destroy(&nntp_lock);
 	stringlist_empty(&inpeers);

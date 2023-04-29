@@ -40,7 +40,6 @@
 
 #include "include/module.h"
 #include "include/config.h"
-#include "include/net.h"
 #include "include/node.h"
 #include "include/auth.h"
 #include "include/user.h"
@@ -62,13 +61,11 @@
 static int http_port = DEFAULT_HTTP_PORT;
 static int https_port = DEFAULT_HTTPS_PORT;
 
-static pthread_t http_listener_thread = -1;
 static char http_docroot[256] = "";
 
 static int http_enabled = 0, https_enabled = 0;
 static int cgi = 0;
 static int authonly = 0;
-static int http_socket = -1, https_socket = -1;
 
 /* These functions are not safe to use */
 #undef read
@@ -1009,14 +1006,6 @@ static void *__http_handler(void *varg)
 	return NULL;
 }
 
-/*! \brief Single listener thread for HTTP and/or HTTPS */
-static void *http_listener(void *unused)
-{
-	UNUSED(unused);
-	bbs_tcp_listener2(http_socket, https_socket, "HTTP", "HTTPS", __http_handler, BBS_MODULE_SELF);
-	return NULL;
-}
-
 static int load_config(void)
 {
 	struct bbs_config *cfg;
@@ -1059,43 +1048,16 @@ static int load_module(void)
 		return -1;
 	}
 
-	/* If we can't start the TCP listeners, decline to load */
-	if (http_enabled && bbs_make_tcp_socket(&http_socket, http_port)) {
-		return -1;
-	}
-	/* If we get this far, and HTTPS is enabled, we're allowed to use it. */
-	if (https_enabled && bbs_make_tcp_socket(&https_socket, https_port)) {
-		close_if(http_socket);
-		return -1;
-	}
-
-	if (bbs_pthread_create(&http_listener_thread, NULL, http_listener, NULL)) {
-		bbs_error("Unable to create HTTP listener thread.\n");
-		close_if(http_socket);
-		close_if(https_socket);
-		return -1;
-	}
-
-	if (http_enabled) {
-		bbs_register_network_protocol("HTTP", http_port);
-	}
-	if (https_enabled) {
-		bbs_register_network_protocol("HTTPS", https_port);
-	}
-	return 0;
+	return bbs_start_tcp_listener3(http_enabled ? http_port : 0, https_enabled ? https_port : 0, 0, "HTTP", "HTTPS", NULL, __http_handler);
 }
 
 static int unload_module(void)
 {
-	bbs_pthread_cancel_kill(http_listener_thread);
-	bbs_pthread_join(http_listener_thread, NULL);
 	if (http_enabled) {
-		close_if(http_socket);
-		bbs_unregister_network_protocol(http_port);
+		bbs_stop_tcp_listener(http_port);
 	}
 	if (https_enabled) {
-		close_if(https_socket);
-		bbs_unregister_network_protocol(https_port);
+		bbs_stop_tcp_listener(https_port);
 	}
 	return 0;
 }

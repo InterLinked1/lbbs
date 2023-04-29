@@ -34,7 +34,6 @@
 
 #include "include/module.h"
 #include "include/config.h"
-#include "include/net.h"
 #include "include/utils.h"
 #include "include/node.h"
 #include "include/auth.h"
@@ -50,10 +49,7 @@
 static int pop3_port = DEFAULT_POP3_PORT;
 static int pop3s_port = DEFAULT_POP3S_PORT;
 
-static pthread_t pop3_listener_thread = -1;
-
 static int pop3_enabled = 0, pop3s_enabled = 1;
-static int pop3_socket = -1, pop3s_socket = -1;
 
 struct pop3_session {
 	int rfd;
@@ -787,14 +783,6 @@ static void *__pop3_handler(void *varg)
 	return NULL;
 }
 
-/*! \brief Single listener thread for POP3 and/or POP3S */
-static void *pop3_listener(void *unused)
-{
-	UNUSED(unused);
-	bbs_tcp_listener2(pop3_socket, pop3s_socket, "POP3", "POP3S", __pop3_handler, BBS_MODULE_SELF);
-	return NULL;
-}
-
 static int load_config(void)
 {
 	struct bbs_config *cfg;
@@ -840,32 +828,10 @@ static int load_module(void)
 		return -1;
 	}
 
-	/* If we can't start the TCP listeners, decline to load */
-	if (pop3_enabled && bbs_make_tcp_socket(&pop3_socket, pop3_port)) {
-		return -1;
-	}
-	if (pop3s_enabled && bbs_make_tcp_socket(&pop3s_socket, pop3s_port)) {
-		close_if(pop3_socket);
-		return -1;
-	}
-
-	if (bbs_pthread_create(&pop3_listener_thread, NULL, pop3_listener, NULL)) {
-		bbs_error("Unable to create POP3 listener thread.\n");
-		close_if(pop3_socket);
-		close_if(pop3s_socket);
-		return -1;
-	}
-
-	if (pop3_enabled) {
-		bbs_register_network_protocol("POP3", pop3_port);
-	}
-	if (pop3s_enabled) {
-		bbs_register_network_protocol("POP3S", pop3s_port);
-	}
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		bbs_register_test(tests[i].name, tests[i].callback);
 	}
-	return 0;
+	return bbs_start_tcp_listener3(pop3_enabled ? pop3_port : 0, pop3s_enabled ? pop3s_port : 0, 0, "POP3", "POP3S", NULL, __pop3_handler);
 }
 
 static int unload_module(void)
@@ -874,15 +840,11 @@ static int unload_module(void)
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		bbs_unregister_test(tests[i].callback);
 	}
-	bbs_pthread_cancel_kill(pop3_listener_thread);
-	bbs_pthread_join(pop3_listener_thread, NULL);
 	if (pop3_enabled) {
-		bbs_unregister_network_protocol(pop3_port);
-		close_if(pop3_socket);
+		bbs_stop_tcp_listener(pop3_port);
 	}
 	if (pop3s_enabled) {
-		bbs_unregister_network_protocol(pop3s_port);
-		close_if(pop3s_socket);
+		bbs_stop_tcp_listener(pop3s_port);
 	}
 	return 0;
 }

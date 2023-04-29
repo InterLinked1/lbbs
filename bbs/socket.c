@@ -45,6 +45,10 @@
 
 #include "include/term.h" /* use bbs_unbuffer */
 #include "include/tls.h"
+#include "include/alertpipe.h"
+#include "include/net.h"
+#include "include/linkedlists.h"
+#include "include/startup.h"
 
 extern int option_rebind;
 
@@ -448,6 +452,281 @@ int bbs_timed_accept(int socket, int ms, const char *ip)
 	/* Normally, we never get here, as pthread_cancel snuffs out the thread ungracefully */
 	bbs_warning("TCP listener thread exiting abnormally\n");
 	return -1;
+}
+
+struct tcp_listener {
+	void *(*handler)(void *varg);
+	void *module;
+	int port;
+	int socket;
+	const char *name;
+	RWLIST_ENTRY(tcp_listener) entry;
+	char data[0];
+};
+
+static RWLIST_HEAD_STATIC(listeners, tcp_listener);
+
+static pthread_t multilistener_thread = 0;
+static int multilistener_alertpipe[2] = { -1, -1 };
+static int num_listeners = 0;
+
+static struct tcp_listener *list_add_listener(int port, int sfd, const char *name, void *(*handler)(void *varg), void *module)
+{
+	struct tcp_listener *l;
+	int namelen = strlen(name);
+
+	l = calloc(1, sizeof(*l) + namelen + 1);
+	if (!l) {
+		return NULL;
+	}
+	strcpy(l->data, name); /* Safe */
+	l->port = port;
+	l->socket = sfd;
+	l->name = l->data;
+	l->handler = handler;
+	l->module = module;
+
+	return l;
+}
+
+/*! \brief Single thread to poll all registered TCP listeners, to avoid creating lots of listener threads (similar to ssl_io_thread in tls.c) */
+static void *tcp_multilistener(void *unused)
+{
+	static RWLIST_HEAD_STATIC(listeners_local, tcp_listener);
+	int num_sockets = 0;
+	struct pollfd *pfds = NULL;
+	int rebuild = 1; /* This thread isn't started unless there's a listener, so we need to build a list from the get go. */
+
+	UNUSED(unused);
+
+	for (;;) {
+		int i, res;
+		struct tcp_listener *l, *l2;
+		if (rebuild) {
+			/* Clear our copy and rebuild. Keep in mind this is not a common operation,
+			 * so we do it this way to optimize performance for when a listener accepts a connection (don't need to hold any locks),
+			 * not for rebuilding the list itself. */
+			rebuild = 0;
+			num_sockets = 0;
+			RWLIST_WRLOCK_REMOVE_ALL(&listeners_local, entry, free);
+			RWLIST_WRLOCK(&listeners);
+			RWLIST_TRAVERSE(&listeners, l, entry) {
+				l2 = list_add_listener(l->port, l->socket, l->name, l->handler, l->module);
+				if (ALLOC_SUCCESS(l2)) {
+					RWLIST_INSERT_TAIL(&listeners_local, l2, entry);
+					num_sockets++;
+				}
+			}
+			RWLIST_UNLOCK(&listeners);
+			bbs_debug(6, "TCP multilistener is now watching %d socket%s\n", num_sockets, ESS(num_sockets));
+			if (!num_sockets && bbs_is_shutting_down()) {
+				/* If we're shutting down and we're the last listener, then we can safely exit. */
+				break;
+			}
+			free_if(pfds);
+			pfds = calloc(num_sockets + 1, sizeof(*pfds));
+			if (ALLOC_FAILURE(pfds)) {
+				break; /* Uh oh... */
+			}
+			i = 0;
+			pfds[i].fd = multilistener_alertpipe[0];
+			pfds[i].events = POLLIN;
+			i++;
+			RWLIST_TRAVERSE(&listeners, l, entry) {
+				pfds[i].fd = l->socket;
+				pfds[i].events = POLLIN;
+				i++;
+			}
+		}
+		for (i = 0; i < num_sockets + 1; i++) {
+			pfds[i].revents = 0;
+		}
+		res = poll(pfds, num_sockets + 1, -1);
+		if (res < 0) {
+			if (errno != EINTR) {
+				bbs_warning("poll returned error: %s\n", strerror(errno));
+				break;
+			}
+			continue;
+		}
+		if (pfds[0].revents) {
+			bbs_alertpipe_read(multilistener_alertpipe);
+			rebuild = 1;
+			continue; /* Rebuild list immediately */
+		}
+		i = 0; /* The first listener is at index 1, so start at 0 so the ++ will start us at 1 */
+		RWLIST_TRAVERSE(&listeners_local, l, entry) {
+			struct sockaddr_in sinaddr;
+			socklen_t len;
+			int sfd;
+			struct bbs_node *node;
+			char new_ip[56];
+
+			i++;
+			if (!res || i >= num_sockets + 1) {
+				break;
+			} else if (!pfds[i].revents) {
+				continue;
+			}
+			res--; /* Processed one event. Break the loop as soon as there are no more, to avoid traversing all like with select(). */
+
+			len = sizeof(sinaddr);
+			sfd = accept(pfds[i].fd, (struct sockaddr *) &sinaddr, &len);
+			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
+			bbs_debug(1, "Accepting new %s connection from %s\n", l->name, new_ip);
+
+			if (sfd < 0) {
+				if (errno != EINTR) {
+					bbs_warning("accept returned %d: %s\n", sfd, strerror(errno));
+				}
+				continue;
+			}
+
+			node = __bbs_node_request(sfd, l->name, l->module);
+			if (!node) {
+				close(sfd);
+			} else if (bbs_save_remote_ip(&sinaddr, node)) {
+				bbs_node_unlink(node);
+			} else {
+				node->skipjoin = 1;
+				if (bbs_pthread_create_detached(&node->thread, NULL, l->handler, node)) { /* Run the BBS on this node */
+					bbs_node_unlink(node);
+				}
+			}
+		}
+	}
+
+	free_if(pfds);
+	bbs_alertpipe_close(multilistener_alertpipe);
+	RWLIST_WRLOCK_REMOVE_ALL(&listeners_local, entry, free);
+	return NULL;
+}
+
+static pthread_mutex_t tcp_start_lock = PTHREAD_MUTEX_INITIALIZER;
+static int tcp_multilistener_started = 0;
+
+static int start_tcp_multilistener(void)
+{
+	int res = 0;
+	/* Thread doesn't exist yet. Start it up. */
+	if (bbs_alertpipe_create(multilistener_alertpipe)) { /* Create an alertpipe for future signaling. */
+		res = -1; /* Not much we can do if this fails... */
+	} else if (bbs_pthread_create_detached(&multilistener_thread, NULL, tcp_multilistener, NULL)) {
+		res = -1;
+	}
+	return res;
+}
+
+int __bbs_start_tcp_listener(int port, const char *name, void *(*handler)(void *varg), void *module)
+{
+	struct tcp_listener *l;
+	int sfd;
+
+	if (bbs_is_shutting_down()) {
+		return -1;
+	}
+
+	if (bbs_make_tcp_socket(&sfd, port)) {
+		return -1;
+	}
+
+	l = list_add_listener(port, sfd, name, handler, module);
+	if (ALLOC_FAILURE(l)) {
+		close(sfd);
+		return -1;
+	}
+
+	RWLIST_WRLOCK(&listeners);
+	RWLIST_INSERT_TAIL(&listeners, l, entry);
+	num_listeners++;
+	RWLIST_UNLOCK(&listeners);
+
+	bbs_register_network_protocol(name, port);
+	bbs_debug(1, "Registered TCP listener for %s on port %d\n", name, port);
+
+	/* Signal the listener thread there's a new socket on which to listen.
+	 * But if the BBS is still starting, delay that until the BBS is fully started,
+	 * and just signal it once then.
+	 * There are two reasons for doing this.
+	 * One is better performance.
+	 * The other is that we probably don't want to accept TCP connections before we're fully started, anyways. */
+	pthread_mutex_lock(&tcp_start_lock);
+	if (!bbs_is_fully_started()) {
+		if (!tcp_multilistener_started) {
+			bbs_register_startup_callback(start_tcp_multilistener);
+			tcp_multilistener_started = 1;
+		}
+	} else {
+		bbs_alertpipe_write(multilistener_alertpipe);
+	}
+	pthread_mutex_unlock(&tcp_start_lock);
+	return 0;
+}
+
+int __bbs_start_tcp_listener3(int port, int port2, int port3, const char *name, const char *name2, const char *name3, void *(*handler)(void *varg), void *module)
+{
+	int res;
+
+	if (port) {
+		res = __bbs_start_tcp_listener(port, name, handler, module);
+		if (res) {
+			return res;
+		}
+	}
+	if (port2) {
+		res = __bbs_start_tcp_listener(port2, name2, handler, module);
+		if (res) {
+			if (port) {
+				bbs_stop_tcp_listener(port);
+			}
+			return res;
+		}
+	}
+	if (port3) {
+		res = __bbs_start_tcp_listener(port3, name3, handler, module);
+		if (res) {
+			if (port) {
+				bbs_stop_tcp_listener(port);
+			}
+			if (port2) {
+				bbs_stop_tcp_listener(port2);
+			}
+			return res;
+		}
+	}
+	return res;
+}
+
+int bbs_stop_tcp_listener(int port)
+{
+	struct tcp_listener *l;
+	int sfd;
+
+	RWLIST_WRLOCK(&listeners);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&listeners, l, entry) {
+		if (l->port == port) {
+			RWLIST_REMOVE_CURRENT(entry);
+			sfd = l->socket;
+			free(l);
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	if (l) {
+		num_listeners--;
+	} else {
+		bbs_error("Port %d is not registered\n", port);
+	}
+	RWLIST_UNLOCK(&listeners);
+
+	if (!l) {
+		return -1;
+	}
+
+	bbs_unregister_network_protocol(port);
+	close(sfd);
+	bbs_alertpipe_write(multilistener_alertpipe); /* This will wake up the listener thread and cause it to remove the listener */
+	return 0;
 }
 
 void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, const char *name2, const char *name3, void *(*handler)(void *varg), void *module)

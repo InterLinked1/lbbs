@@ -28,15 +28,12 @@
 
 #include "include/module.h"
 #include "include/config.h"
-#include "include/net.h"
 #include "include/utils.h"
 #include "include/node.h"
 
 #define DEFAULT_GOPHER_PORT 70
 
 static int gopher_port = DEFAULT_GOPHER_PORT;
-static int gopher_socket = -1;
-static pthread_t gopher_listener_thread = -1;
 static char gopher_root[256] = "";
 
 #undef dprintf
@@ -133,14 +130,6 @@ cleanup:
 	return NULL;
 }
 
-static void *gopher_listener(void *unused)
-{
-	UNUSED(unused);
-	/* Use a generic listener, even though it will allocate a node, which isn't really needed */
-	bbs_tcp_listener(gopher_socket, "Gopher", gopher_handler, BBS_MODULE_SELF);
-	return NULL;
-}
-
 static int load_config(void)
 {
 	struct bbs_config *cfg = bbs_config_load("net_gopher.conf", 0);
@@ -162,27 +151,12 @@ static int load_module(void)
 		return -1;
 	}
 
-	/* If we can't start the TCP listener, decline to load */
-	if (bbs_make_tcp_socket(&gopher_socket, gopher_port)) {
-		return -1;
-	}
-
-	if (bbs_pthread_create(&gopher_listener_thread, NULL, gopher_listener, NULL)) {
-		bbs_error("Unable to create Gopher listener thread.\n");
-		close_if(gopher_socket);
-		return -1;
-	}
-
-	bbs_register_network_protocol("Gopher", gopher_port);
-	return 0;
+	return bbs_start_tcp_listener(gopher_port, "Gopher", gopher_handler);
 }
 
 static int unload_module(void)
 {
-	bbs_pthread_cancel_kill(gopher_listener_thread);
-	bbs_pthread_join(gopher_listener_thread, NULL);
-	close_if(gopher_socket);
-	bbs_unregister_network_protocol(gopher_port);
+	bbs_stop_tcp_listener(gopher_port);
 	return 0;
 }
 

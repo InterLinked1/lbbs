@@ -29,7 +29,6 @@
 
 #include "include/module.h"
 #include "include/config.h"
-#include "include/net.h"
 #include "include/utils.h"
 #include "include/node.h"
 #include "include/auth.h"
@@ -80,11 +79,9 @@
 static int irc_port = DEFAULT_IRC_PORT;
 static int ircs_port = DEFAULT_IRCS_PORT;
 
-static pthread_t irc_listener_thread = -1;
 static pthread_t irc_ping_thread = -1;
 
 static int irc_enabled = 1, ircs_enabled = 1;
-static int irc_socket = -1, ircs_socket = -1;
 static int require_sasl = 1;
 static int require_chanserv = 1;
 static int log_channels = 0;
@@ -3196,14 +3193,6 @@ static void *__irc_handler(void *varg)
 	return NULL;
 }
 
-/*! \brief Single listener thread for IRC and/or IRCS */
-static void *irc_listener(void *unused)
-{
-	UNUSED(unused);
-	bbs_tcp_listener2(irc_socket, ircs_socket, "IRC", "IRCS", __irc_handler, BBS_MODULE_SELF);
-	return NULL;
-}
-
 static int load_config(void)
 {
 	struct bbs_config *cfg;
@@ -3294,41 +3283,22 @@ static int load_module(void)
 	}
 
 	pthread_mutex_init(&motd_lock, NULL);
-
-	/* If we can't start the TCP listeners, decline to load */
-	if (irc_enabled && bbs_make_tcp_socket(&irc_socket, irc_port)) {
-		goto decline;
-	}
-	if (ircs_enabled && bbs_make_tcp_socket(&ircs_socket, ircs_port)) {
-		goto decline;
-	}
-
 	loadtime = time(NULL);
 
 	if (bbs_pthread_create(&irc_ping_thread, NULL, ping_thread, NULL)) {
 		bbs_error("Unable to create IRC ping thread.\n");
 		goto decline;
 	}
-	if (bbs_pthread_create(&irc_listener_thread, NULL, irc_listener, NULL)) {
-		bbs_error("Unable to create IRC listener thread.\n");
-		pthread_cancel(irc_ping_thread);
-		bbs_pthread_join(irc_ping_thread, NULL);
+
+	if (bbs_start_tcp_listener3(irc_enabled ? irc_port : 0, ircs_enabled ? ircs_port : 0, 0, "IRC", "IRCS", NULL, __irc_handler)) {
 		goto decline;
 	}
 
-	if (irc_enabled) {
-		bbs_register_network_protocol("IRC", irc_port);
-	}
-	if (ircs_enabled) {
-		bbs_register_network_protocol("IRCS", ircs_port);
-	}
 	bbs_register_alerter(alertmsg, 5);
 	return 0;
 
 decline:
 	destroy_operators();
-	close_if(irc_socket);
-	close_if(ircs_socket);
 	return -1;
 }
 
@@ -3336,16 +3306,12 @@ static int unload_module(void)
 {
 	bbs_unregister_alerter(alertmsg);
 	pthread_cancel(irc_ping_thread);
-	bbs_pthread_cancel_kill(irc_listener_thread);
 	bbs_pthread_join(irc_ping_thread, NULL);
-	bbs_pthread_join(irc_listener_thread, NULL);
 	if (irc_enabled) {
-		bbs_unregister_network_protocol(irc_port);
-		close_if(irc_socket);
+		bbs_stop_tcp_listener(irc_port);
 	}
 	if (ircs_enabled) {
-		bbs_unregister_network_protocol(ircs_port);
-		close_if(ircs_socket);
+		bbs_stop_tcp_listener(ircs_port);
 	}
 	destroy_channels();
 	destroy_operators();

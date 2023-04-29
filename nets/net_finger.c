@@ -27,7 +27,6 @@
 
 #include "include/module.h"
 #include "include/config.h"
-#include "include/net.h"
 #include "include/utils.h"
 #include "include/node.h"
 #include "include/user.h"
@@ -35,8 +34,6 @@
 #define DEFAULT_FINGER_PORT 79
 
 static int finger_port = DEFAULT_FINGER_PORT;
-static int finger_socket = -1;
-static pthread_t finger_listener_thread = -1;
 
 static int allusersallowed = 0;
 
@@ -118,14 +115,6 @@ cleanup:
 	return NULL;
 }
 
-static void *finger_listener(void *unused)
-{
-	UNUSED(unused);
-	/* Use a generic listener, even though it will allocate a node, which isn't really needed */
-	bbs_tcp_listener(finger_socket, "Finger", finger_handler, BBS_MODULE_SELF);
-	return NULL;
-}
-
 static int load_config(void)
 {
 	struct bbs_config *cfg = bbs_config_load("net_finger.conf", 0);
@@ -145,27 +134,12 @@ static int load_module(void)
 		return -1;
 	}
 
-	/* If we can't start the TCP listener, decline to load */
-	if (bbs_make_tcp_socket(&finger_socket, finger_port)) {
-		return -1;
-	}
-
-	if (bbs_pthread_create(&finger_listener_thread, NULL, finger_listener, NULL)) {
-		bbs_error("Unable to create Finger listener thread.\n");
-		close_if(finger_socket);
-		return -1;
-	}
-
-	bbs_register_network_protocol("Finger", finger_port);
-	return 0;
+	return bbs_start_tcp_listener(finger_port, "Finger", finger_handler);
 }
 
 static int unload_module(void)
 {
-	bbs_pthread_cancel_kill(finger_listener_thread);
-	bbs_pthread_join(finger_listener_thread, NULL);
-	close_if(finger_socket);
-	bbs_unregister_network_protocol(finger_port);
+	bbs_stop_tcp_listener(finger_port);
 	return 0;
 }
 
