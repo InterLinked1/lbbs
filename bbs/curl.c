@@ -60,24 +60,18 @@ struct curl_response_data {
 
 static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *data)
 {
-	register int realsize = 0;
+	register int realsize = size * nmemb;
 	struct curl_response_data *respdata = data;
-	char *newbuf, *orig_buf;
+	char *newbuf, *orig_buf = respdata->str;
 
-	realsize = size * nmemb;
+	bbs_assert_exists(respdata);
 
-	if (!respdata) {
-		bbs_error("curl callback called without custom data?\n");
-		return 0;
-	}
-
-	orig_buf = respdata->str;
-
+	/* XXX Not for binary data */
 	if (respdata->len) {
 		bbs_debug(9, "curl response continued with %d + %d\n", respdata->len, realsize);
 		newbuf = realloc(respdata->str, respdata->len + realsize + 1); /* Add null terminator */
 		if (ALLOC_FAILURE(newbuf)) {
-			free(orig_buf);
+			FREE(respdata->str);
 			return 0; /* Fail */
 		}
 		respdata->str = newbuf;
@@ -94,6 +88,7 @@ static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *da
 	if (!respdata->str) {
 		if (orig_buf) {
 			free(orig_buf);
+			respdata->str = NULL; /* Can't use FREE() here */
 		}
 		return 0; /* Fail */
 	}
@@ -138,8 +133,7 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 	struct curl_response_data response;
 	int http_code;
 
-	response.len = 0; /* Initialize */
-	response.str = response.resp = NULL;
+	memset(&response, 0, sizeof(response));
 
 	if (fp) {
 		/* Write response body to a file */
@@ -148,7 +142,7 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 	} else {
 		/* Write response body to an allocated string */
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-		curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*) &response);
+		curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
 	}
 	res = curl_easy_perform(curl);
 
@@ -157,6 +151,7 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 	if (res != CURLE_OK) {
 		bbs_warning("curl_easy_perform() failed for %s: %s\n", c->url, curl_easy_strerror(res));
 		if (response.len && response.str) {
+			response.str = response.resp;
 			free_if(response.str); /* Free response if we're not going to return it */
 		}
 	} else {
@@ -175,6 +170,7 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 		failed = STARTS_WITH(c->url, "http") ? !HTTP_RESPONSE_SUCCESS(http_code) : http_code != 0;
 		if (c->forcefail && failed) {
 			bbs_debug(4, "Response failed, freeing response (length %d)\n", response.len);
+			response.str = response.resp;
 			free_if(response.str); /* Free response if we're not going to return it */
 		} else {
 			if (response.len) {

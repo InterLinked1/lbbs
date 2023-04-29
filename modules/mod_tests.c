@@ -27,6 +27,7 @@
 #include "include/variables.h"
 #include "include/ansi.h"
 #include "include/utils.h"
+#include "include/curl.h"
 
 static int test_substitution(void)
 {
@@ -344,6 +345,28 @@ cleanup:
 	return res;
 }
 
+#ifdef EXTRA_TESTS
+static int test_curl_failure(void)
+{
+	int res;
+	struct bbs_curl c = {
+		.url = "https://httpstat.us/400", /* Faster than https://httpbin.org/status/400 */
+		.forcefail = 1,
+	};
+
+	/* This test implicitly passes if it does not cause a segfault */
+	res = bbs_curl_get(&c);
+	bbs_test_assert_equals(-1, res);
+
+	bbs_curl_free(&c);
+	return 0;
+
+cleanup:
+	bbs_curl_free(&c);
+	return -1;
+}
+#endif
+
 static struct unit_tests {
 	const char *name;
 	int (*callback)(void);
@@ -361,6 +384,9 @@ static struct unit_tests {
 	{ "IPv4 CIDR Range Matching", test_cidr_ipv4 },
 	{ "IPv4 Address Detection", test_ipv4_detection },
 	{ "URL Parsing", test_url_parsing },
+#ifdef EXTRA_TESTS
+	{ "cURL Failure", test_curl_failure },
+#endif
 };
 
 static int unload_module(void)
