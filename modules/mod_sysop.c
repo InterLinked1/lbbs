@@ -404,8 +404,7 @@ static void *sysop_handler(void *varg)
 							bbs_debug(5, "read returned %d\n", bytes_read);
 						} else {
 							cmdbuf[bytes_read] = '\0'; /* Safe, since size - 1 above */
-							bbs_strterm(cmdbuf, '\r');
-							bbs_strterm(cmdbuf, '\n');
+							bbs_term_line(cmdbuf);
 							/* Save in history */
 							bbs_history_add(cmdbuf);
 							res = sysop_command(sysopfdin, sysopfdout, cmdbuf);

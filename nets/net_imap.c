@@ -28,6 +28,7 @@
  * \note Supports RFC 5161 ENABLE
  * \note Supports RFC 5182 SEARCHRES
  * \note Supports RFC 5256 SORT
+ * \note Supports RFC 5256 THREAD-ORDEREDSUBJECT
  * \note Supports RFC 5267 ESORT
  * \note Supports RFC 5530 Response Codes
  * \note Supports RFC 6154 SPECIAL-USE (but not CREATE-SPECIAL-USE)
@@ -50,7 +51,7 @@
  * - RFC 4959 SASL-IR
  * - RFC 4978 COMPRESS
  * - RFC 5255 LANGUAGE
- * - RFC 5256 THREAD
+ * - RFC 5256 THREAD-REFERENCES
  * - RFC 5257 ANNOTATE, RFC 5464 ANNOTATE (METADATA)
  * - RFC 5258 LIST extensions (obsoletes 3348)
  * - RFC 5267 CONTEXT=SEARCH and CONTEXT=SORT
@@ -70,7 +71,7 @@
 /* List of capabilities: https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml */
 /* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
 /* XXX URLAUTH is advertised so that SMTP BURL will function in Trojita, even though we don't need URLAUTH since we have a direct trust */
-#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT SPECIAL-USE XLIST CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC"
+#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT SPECIAL-USE XLIST CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC"
 
 /* Capabilities advertised by popular mail providers, for reference/comparison, both pre and post authentication:
  * - Office 365
@@ -4351,8 +4352,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 	rewind(fp); \
 	findcount = 0; \
 	while ((fgets(linebuf, sizeof(linebuf), fp))) { \
-		bbs_strterm(linebuf, '\r'); \
-		bbs_strterm(linebuf, '\n'); \
+		bbs_term_line(linebuf); \
 		if (s_strlen_zero(linebuf)) { \
 			break; \
 		} \
@@ -6833,6 +6833,13 @@ static int subjectcmp(const char *a, const char *b)
 {
 	int skips;
 
+	/* Deal with empty subjects */
+	if (strlen_zero(a)) {
+		return -1;
+	} else if (strlen_zero(b)) {
+		return 1;
+	}
+
 	SKIP_PREFIXES(a);
 	SKIP_PREFIXES(b);
 	return strcasecmp(a, b);
@@ -7093,6 +7100,280 @@ static int handle_sort(struct imap_session *imap, char *s, int usinguid)
 
 	free_if(a);
 	imap_reply(imap, "OK %sSORT completed", usinguid ? "UID " : "");
+	return 0;
+}
+
+enum thread_algorithm {
+	THREAD_ALG_ORDERED_SUBJECT,
+	THREAD_ALG_REFERENCES,
+};
+
+struct thread_message {
+	unsigned int id;
+	struct tm sent;
+	char *references;
+	/* Use fixed size buffers, so we can allocate all messages at once, to avoid excessive memory fragmentation */
+	char subject[128];
+	char inreplyto[128];
+};
+
+static void free_thread_messages(struct thread_message *msgs, int length)
+{
+	int i;
+	for (i = 0; i < length; i++) {
+		free_if(msgs[i].references);
+	}
+	free(msgs);
+}
+
+static int populate_thread_data(struct imap_session *imap, struct thread_message *msgs, unsigned int *a, int length, int usinguid)
+{
+	char filename[256];
+	int i;
+	struct imap_sort sort;
+
+	/* We're not going to sort anything here. We just need a sort structure to use the msg_to_filename API.
+	 * We obviously don't want to call scandir or opendir for each message. */
+	memset(&sort, 0, sizeof(sort));
+	sort.imap = imap;
+	sort.numfiles = scandir(imap->curdir, &sort.entries, NULL, uidsort); /* cur dir only */
+	if (sort.numfiles < 0) {
+		return -1;
+	}
+
+	for (i = 0; i < length; i++) {
+		char linebuf[1024];
+		struct dyn_str dynstr;
+		int gotinfo = 0, in_ref = 0;
+		FILE *fp;
+
+		memset(&dynstr, 0, sizeof(dynstr));
+
+		if (msg_to_filename(&sort, a[i], usinguid, filename, sizeof(filename))) {
+			continue;
+		}
+
+		/* Retrieve anything from the message that may be useful in trying to thread it during the algorithm.
+		 * After this, we never peek inside the message again. */
+		fp = fopen(filename, "r");
+		if (!fp) {
+			continue;
+		}
+		while ((fgets(linebuf, sizeof(linebuf), fp))) {
+			/* fgets does store the newline, so line should end in CR LF */
+			if (in_ref) {
+				if (linebuf[0] == ' ') {
+					/* Already starts with a space, conveniently, so we can just go ahead and append immediately. */
+					int len = bbs_term_line(linebuf);
+					dyn_str_append(&dynstr, linebuf, len);
+					continue;
+				}
+				gotinfo++;
+			}
+			if (gotinfo == 4 || !strcmp(linebuf, "\r\n")) {
+				break; /* End of headers, or got everything we need already, whichever comes first. */
+			}
+			if (STARTS_WITH(linebuf, "Date:")) {
+				char *s = linebuf + STRLEN("Date:");
+				bbs_term_line(s);
+				parse_sent_date(s, &msgs[i].sent);
+				gotinfo++;
+			} else if (STARTS_WITH(linebuf, "In-Reply-To:")) {
+				char *s = linebuf + STRLEN("In-Reply-To:");
+				bbs_term_line(s);
+				safe_strncpy(msgs[i].inreplyto, s, sizeof(msgs[i].inreplyto));
+				gotinfo++;
+			} else if (STARTS_WITH(linebuf, "Subject:")) {
+				char *s = linebuf + STRLEN("Subject:");
+				bbs_term_line(s);
+				/* Don't normalize subject here. subjectcmp will handle that when needed. */
+				safe_strncpy(msgs[i].subject, s, sizeof(msgs[i].subject));
+				gotinfo++;
+			} else if (STARTS_WITH(linebuf, "References:")) {
+				/* The References header may consist of many lines, since it can contain many lines.
+				 * The other headers we expect to only be one line so can handle more simply. */
+				char *s = linebuf + STRLEN("References:");
+				int len = bbs_term_line(s);
+				linebuf[0] = ' '; /* Add leading space, in case there were previous lines */
+				dyn_str_append(&dynstr, s, len);
+				in_ref = 1;
+			}
+		}
+		fclose(fp);
+		/* We already allocated References... may as well just use that. */
+		msgs[i].references = dynstr.buf;
+		msgs[i].id = a[i];
+	}
+
+	free_scandir_entries(sort.entries, sort.numfiles);
+	free(sort.entries);
+	return 0;
+}
+
+static int thread_ordered_subject_compare(const void *aptr, const void *bptr)
+{
+	const struct thread_message *a = aptr;
+	const struct thread_message *b = bptr;
+	int res;
+
+	res = subjectcmp(a->subject, b->subject);
+	if (!res) {
+		/* Subjects match. Use date as a tiebreaker. */
+		int t1, t2;
+		long diff;
+		struct thread_message *ac = (struct thread_message*) a, *bc = (struct thread_message*) b; /* discard const pointer for mktime */
+		t1 = mktime(&ac->sent);
+		t2 = mktime(&bc->sent);
+		diff = difftime(t1, t2); /* If difftime is positive, tm1 > tm2 */
+		res = diff < 0 ? 1 : diff > 0 ? -1 : 0;
+	}
+	return res;
+}
+
+static int do_threading(struct imap_session *imap, unsigned int *a, int length, int usinguid, enum thread_algorithm algo)
+{
+	struct thread_message *msgs = calloc(length, sizeof(struct thread_message));
+
+	if (ALLOC_FAILURE(msgs)) {
+		return -1;
+	}
+
+	/* Populate the thread structures with the content needed for either algorithm */
+	if (populate_thread_data(imap, msgs, a, length, usinguid)) {
+		free(msgs); /* Haven't allocated anything else yet */
+		return -1;
+	}
+
+	if (algo == THREAD_ALG_ORDERED_SUBJECT) {
+		struct dyn_str dynstr;
+		char buf[64];
+		char *lastsubject = NULL;
+		int i, len, level = 0;
+		/* Poor man's threading. Sort by subject, then date, then thread by subject.
+		 * Rather than bothering with sorting a, we just sort msgs directly,
+		 * since it will immediately have the info needed to make the comparison decision. */
+		qsort(msgs, length, sizeof(struct thread_message), thread_ordered_subject_compare); /* Actually sort the results, conveniently already in an array. */
+		memset(&dynstr, 0, sizeof(dynstr));
+
+		/*
+		 * Carefully read sections 3 and 4 of RFC 5256,
+		 * as they pertain to ORDEREDSUBJECT. Otherwise, you may be wondering
+		 * why the ORDEREDSUBJECT example in the RFC appears to contain grandchildren,
+		 * but it doesn't.
+		 *
+		 * Note that if there are no grandchildren and there are only 2
+		 * messages in a thread, parentheses around the child are optional.
+		 *
+		 * Using the examples from the RFC:
+		 * THREAD (166)(167)(168)(169)(172)(170)(171) (173)(174 (175)(176)(178)(181)(180))(179)
+		 *        (177 (183)(182)(188)(184)(185)(186)(187)(189))(190) (191)(192)(193)(194 195)(196 (197)(198))(199)
+		 *        (200 202)(201)(203)(204)(205)(206 207)(208)
+		 *
+		 * 195 is the only child of 194, so it is not in parentheses (they are optional here).
+		 * 175, 176, 178, 181, and 180 are all considered children of 174.
+		 * They MUST be in parentheses since if there weren't any, each would be a child of the previous one.
+		 *
+		 * Below, we always include parentheses, so we can make a single pass to generate the string.
+		 */
+		for (i = 0; i < length; i++) {
+			/* Easy: just group all the messages with the same subject */
+#define DEBUG_THREADING
+#ifdef DEBUG_THREADING
+			bbs_debug(3, "Message %5d => %7d: %s\n", i + 1, msgs[i].id, msgs[i].subject);
+#endif
+			if (lastsubject) {
+				if (!subjectcmp(msgs[i].subject, lastsubject)) {
+					/* Same subject as last one.
+					 * If level == 0, this is the first "child" of that thread.
+					 * Otherwise, it's a sibling to the last child. */
+					if (level == 0) {
+						len = snprintf(buf, sizeof(buf), " (%u", msgs[i].id);
+						level = 1;
+					} else {
+						len = snprintf(buf, sizeof(buf), ")(%u", msgs[i].id);
+					}
+				} else {
+					if (level) {
+						/* Finish off the last message and group first */
+						len = snprintf(buf, sizeof(buf), "))(%u", msgs[i].id);
+						level = 0;
+					} else {
+						len = snprintf(buf, sizeof(buf), ")(%u", msgs[i].id); /* Finish off last group (which had no children) */
+					}
+				}
+			} else { /* First message */
+				len = snprintf(buf, sizeof(buf), "(%u", msgs[i].id);
+				/*! \todo should be a dyn_str_append_fmt */
+				/*! \todo dyn_str_append should allocate in chunks, too */
+			}
+			dyn_str_append(&dynstr, buf, len);
+			lastsubject = msgs[i].subject;
+		}
+		/* Finish it off. We are guaranteed here that the list is non-empty. */
+		if (level) {
+			dyn_str_append(&dynstr, "))", 2);
+		} else {
+			dyn_str_append(&dynstr, ")", 1);
+		}
+		imap_send(imap, "THREAD %s", dynstr.buf);
+		free(dynstr.buf);
+	} else { /* REFERENCES */
+		/*! \todo not implemented */
+	}
+
+	/* Destroy thread structures */
+	free_thread_messages(msgs, length);
+	return 0;
+}
+
+static int handle_thread(struct imap_session *imap, char *s, int usinguid)
+{
+	int results;
+	char *charset, *search;
+	enum thread_algorithm algo;
+	unsigned int *a = NULL;
+	int min, max;
+	unsigned long maxmodseq;
+	char *tmp;
+
+	/* e.g. A283 THREAD ORDEREDSUBJECT UTF-8 SINCE 5-MAR-2000 */
+
+	REQUIRE_ARGS(s);
+	tmp = strsep(&s, " ");
+	if (!strcasecmp(tmp, "REFERENCES")) {
+		algo = THREAD_ALG_REFERENCES;
+		return -1; /*! \todo Not yet supported */
+	} else if (!strcasecmp(tmp, "ORDEREDSUBJECT")) {
+		algo = THREAD_ALG_ORDERED_SUBJECT;
+	} else {
+		imap_reply(imap, "BAD Invalid threading algorithm");
+		return 0;
+	}
+
+	charset = strsep(&s, " ");
+	REQUIRE_ARGS(charset); /* This is mandatory in the RFC, though we ignore this, apart from checking it. */
+	search = s;
+	REQUIRE_ARGS(search);
+
+	if (strcasecmp(charset, "UTF-8") && strcasecmp(charset, "US-ASCII")) {
+		imap_reply(imap, "NO [BADCHARSET] (UTF-8 US_ASCII) Charset %s not supported", charset);
+		return 0;
+	}
+
+	/* First, search for any matching messages. */
+	results = do_search(imap, search, &a, usinguid, &min, &max, &maxmodseq);
+	if (results < 0) {
+		return 0;
+	}
+
+	if (results) {
+		/* Now, thread the messages. This is much more complicating than normal sorting,
+		 * particularly for the REFERENCES algorithm. */
+		do_threading(imap, a, results, usinguid, algo);
+	}
+
+	free_if(a);
+	imap_reply(imap, "OK %sTHREAD completed", usinguid ? "UID " : "");
 	return 0;
 }
 
@@ -7419,7 +7700,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		 * We don't maintain a "client's view" of what sequences numbers are known and map to what UIDs.
 		 * So what is the actual effect of "preventing loss of synchronization in this manner"???
 		 */
-		if (!STARTS_WITH(command, "FETCH") && !STARTS_WITH(command, "STORE") && !STARTS_WITH(command, "SEARCH") && !STARTS_WITH(command, "SORT") && (!STARTS_WITH(command, "UID") || (!strlen_zero(s) && !STARTS_WITH(s, "SEARCH")))) {
+		if (!STARTS_WITH(command, "FETCH") && !STARTS_WITH(command, "STORE") && !STARTS_WITH(command, "SEARCH") && !STARTS_WITH(command, "SORT") && !STARTS_WITH(command, "THREAD") && (!STARTS_WITH(command, "UID") || (!strlen_zero(s) && !STARTS_WITH(s, "SEARCH")))) {
 			char buf[1024]; /* Hopefully big enough for any single untagged  response. */
 			pthread_mutex_lock(&imap->lock);
 			bbs_readline_init(&rldata, buf, sizeof(buf));
@@ -7637,6 +7918,11 @@ static int imap_process(struct imap_session *imap, char *s)
 		FORWARD_VIRT_MBOX();
 		REQUIRE_SELECTED(imap);
 		return handle_sort(imap, s, 0);
+	} else if (!strcasecmp(command, "THREAD")) {
+		REQUIRE_ARGS(s);
+		FORWARD_VIRT_MBOX();
+		REQUIRE_SELECTED(imap);
+		return handle_thread(imap, s, 0);
 	} else if (!strcasecmp(command, "UID")) {
 		REQUIRE_ARGS(s);
 		if (!imap->virtmbox) { /* Ultimately, FORWARD_VIRT_MBOX will intercept this command, if it's valid */
@@ -7662,6 +7948,9 @@ static int imap_process(struct imap_session *imap, char *s)
 		} else if (!strcasecmp(command, "SORT")) {
 			FORWARD_VIRT_MBOX_UID();
 			return handle_sort(imap, s, 1);
+		} else if (!strcasecmp(command, "THREAD")) {
+			FORWARD_VIRT_MBOX_UID();
+			return handle_thread(imap, s, 1);
 		} else {
 			imap_reply(imap, "BAD Invalid UID command");
 		}
@@ -8135,13 +8424,13 @@ static int load_module(void)
 		return -1;
 	}
 
+	pthread_mutex_init(&acl_lock, NULL);
+	pthread_mutex_init(&virt_lock, NULL);
+
 	/* If we can't start the TCP listeners, decline to load */
 	if (bbs_start_tcp_listener3(imap_enabled ? imap_port : 0, imaps_enabled ? imaps_port : 0, 0, "IMAP", "IMAPS", NULL, __imap_handler)) {
 		return -1;
 	}
-
-	pthread_mutex_init(&acl_lock, NULL);
-	pthread_mutex_init(&virt_lock, NULL);
 
 	for (i = 0; i < ARRAY_LEN(tests); i++) {
 		bbs_register_test(tests[i].name, tests[i].callback);

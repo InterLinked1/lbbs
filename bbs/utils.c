@@ -975,6 +975,27 @@ void bbs_dump_string(const char *s)
 	bbs_debug(8, "String Dump: '%s'\n", buf);
 }
 
+int bbs_term_line(char *c)
+{
+	int len = 0;
+
+	/* More efficient than calling:
+	 * bbs_strterm(linebuf, '\r');
+	 * bbs_strterm(linebuf, '\n');
+	 * in succession.
+	 * Plus this returns the new string length for free. */
+
+	while (*c) {
+		if (*c == '\r' || *c == '\n') {
+			*c = '\0';
+			break;
+		}
+		len++;
+		c++;
+	}
+	return len;
+}
+
 int bbs_strcpy_nospaces(const char *s, char *buf, size_t len)
 {
 	/* Copy the username, not including spaces */

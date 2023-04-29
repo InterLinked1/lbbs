@@ -343,8 +343,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 		int was_skip = 0;
 		s = buf;
 		lineno++;
-		bbs_strterm(s, '\n');
-		bbs_strterm(s, '\r'); /* Ignore line endings in a tolerant way (CR LF vs LF) */
+		bbs_term_line(s); /* Ignore line endings in a tolerant way (CR LF vs LF) */
 		bbs_strterm(s, '#'); /* Ignore single line comments */
 		trim(s);
 		if (strlen_zero(s)) {

@@ -561,6 +561,14 @@ int bbs_str_safe_print(const char *s, char *buf, size_t len);
 void bbs_dump_string(const char *s);
 
 /*!
+ * \brief Terminate a string at the end of the first line (first CR or LF character)
+ * \param c
+ * \return New string length
+ * \note This is equivalent to calling bbs_strterm(c, '\r'); bbs_strterm(c, '\n'); return strlen(c);
+ */
+int bbs_term_line(char *c);
+
+/*!
  * \brief Copy s into buf, except for any whitespace characters
  * \param s Original string
  * \param[out] buf

@@ -558,8 +558,7 @@ static int find_header(FILE *fp, const char *header, char **ptr, char *buf, size
 			while (*start && isspace(*start)) { /* ltrim doesn't work here */
 				start++;
 			}
-			bbs_strterm(start, '\r'); /* This should be sufficient, but do LF as well just in case */
-			bbs_strterm(start, '\n');
+			bbs_term_line(start); /* CR should be sufficient, but do LF as well just in case */
 			*ptr = start;
 			return 0;
 		}

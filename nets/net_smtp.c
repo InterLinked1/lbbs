@@ -1651,8 +1651,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	 * we'll only see LF . CR LF at the end, and delivery will thus fail.
 	 * Do not modify the mail queue files manually for debugging, unless you really know what you are doing,
 	 * and in particular are preserving the mixed line endings. */
-	bbs_strterm(realto, '\r'); /* XXX Shouldn't be necessary? But strip any CR if there is one. */
-	bbs_strterm(realto, '\n'); /* Ditto */
+	bbs_term_line(realto); /* XXX Shouldn't be necessary? But strip any CR/LF if there is one. */
 
 	realfrom++;
 	safe_strncpy(todup, realto, sizeof(todup));
@@ -2135,8 +2134,7 @@ static int check_identity(struct smtp_session *smtp, char *s)
 		goto fail;
 	}
 	while ((fgets(buf, sizeof(buf), fp))) {
-		bbs_strterm(buf, '\n');
-		bbs_strterm(buf, '\r'); /* Since this file is manually modified, tolerate CR LF line endings as well. */
+		bbs_term_line(buf); /* Since this file is manually modified, tolerate CR LF line endings as well. */
 		if (!strcasecmp(buf, bbs_username(smtp->node->user))) {
 			bbs_debug(6, "Send-as capability granted explicitly to %s for %s\n", bbs_username(smtp->node->user), user);
 			fclose(fp);
