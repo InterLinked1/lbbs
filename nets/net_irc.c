@@ -2601,397 +2601,380 @@ static void handle_client(struct irc_user *user)
 	int capnegotiate = 0;
 	int res, started = 0;
 	char buf[513];
-	int mcount = 0;
 	int sasl_attempted = 0;
 	int graceful_close = 0;
+	struct readline_data rldata;
+
+	bbs_readline_init(&rldata, buf, sizeof(buf));
 
 	for (;;) {
-		char *s, *m = buf;
-		res = bbs_poll_read(user->rfd, 2 * PING_TIME, buf, sizeof(buf) - 1); /* Wait up to the ping interval time for something, anything, otherwise disconnect. */
+		char *s = buf;
+		res = bbs_readline(user->rfd, &rldata, "\r\n", 2 * PING_TIME); /* Wait up to the ping interval time for something, anything, otherwise disconnect. */
 		if (res <= 0) {
 			/* Don't set graceful_close to 0 here, since after a QUIT, the client may close the connection first.
 			 * The QUIT message should be whatever the client sent, since it was graceful, not connection closed by remote host. */
 			bbs_debug(3, "poll/read returned %d\n", res);
 			break;
 		}
-		buf[res] = '\0'; /* Safe */
-		/* Messages end in CR LF */
-		if (res >= 2 && buf[res - 1] == '\n' && buf[res - 2] == '\r') {
-			buf[res - 2] = '\0';
-		} else if (buf[res - 1] == '\n') { /* No CR, but did get a LF at the end... okay, weird, but just go with it. */
-			buf[res - 1] = '\0';
+
+		/* Don't fully print out commands containing sensitive info */
+		if (STARTS_WITH(s, "OPER ")) {
+			bbs_debug(8, "%p => OPER *****\n", user);
+		} else if (STARTS_WITH(s, "PASS ")) {
+			bbs_debug(8, "%p => PASS *****\n", user);
+		} else if (STARTS_WITH(s, "NS IDENTIFY")) {
+			bbs_debug(8, "%p => NS IDENTIFY *****\n", user);
+		} else if (STARTS_WITH(s, "PRIVMSG NickServ")) {
+			bbs_debug(8, "%p => PRIVMSG NickServ *****\n", user);
 		} else {
-			bbs_warning("Incomplete message from client: %s (ends in %d %d)\n", buf, res >= 2 ? buf[res - 2] : ' ', buf[res - 1]); /* XXX Now what? Continue reading? */
+			bbs_debug(8, "%p => %s\n", user, s); /* No trailing LF, so addding one here is fine */
 		}
-		/* In practice, most IRC clients are nice and buffer any messages they sent to the server on connection,
-		 * so dealing with a flood of messages at once that could be read all at once into the buffer isn't super likely.
-		 * But it can happen, heck, lirc (the library used by door_irc) does this type of flooding for capability negotiation, first thing.
-		 * Assume we could've gotten multiple complete messages, but the last one wasn't split between reads.
-		 */
-		while ((s = strsep(&m, "\r\n"))) {
-			if (strlen_zero(s)) { /* For some reason, every other strsep we do returns an empty string? */
-				continue;
-			}
-			mcount++;
-			/* Don't fully print out commands containing sensitive info */
-			if (STARTS_WITH(s, "OPER ")) {
-				bbs_debug(8, "%p => OPER *****\n", user);
-			} else if (STARTS_WITH(s, "PASS ")) {
-				bbs_debug(8, "%p => PASS *****\n", user);
-			} else if (STARTS_WITH(s, "NS IDENTIFY")) {
-				bbs_debug(8, "%p => NS IDENTIFY *****\n", user);
-			} else if (STARTS_WITH(s, "PRIVMSG NickServ")) {
-				bbs_debug(8, "%p => PRIVMSG NickServ *****\n", user);
-			} else {
-				bbs_debug(8, "%p => %s\n", user, s); /* No trailing LF, so addding one here is fine */
-			}
-			if (capnegotiate) {
-				int sasl_failed = 0;
-				/* XXX This is pretty rudimentary CAP support, it doesn't really support anything besides PLAIN SASL auth.
-				 * It also doesn't fully account for all the possible scenarios allowed by the specs, only what's commonly done in practice. */
-				if (capnegotiate == 1) {
-					char *command = strsep(&s, " ");
-					if (!s) {
-						bbs_warning("No data after command %s\n", command);
-						break; /* Just disconnect on the client */
-					}
-					/* Client will send a NICK, then USER: https://ircv3.net/specs/extensions/capability-negotiation.html */
-					if (!strcasecmp(command, "NICK")) {
-						if (!started) {
-							/* Users that aren't started, and more importantly, in the user list, (!started, !user->registered)
-							 * can change their nickname arbitrarily, but can't use it without identifying. */
-							user->nickname = strdup(s);
-							bbs_debug(5, "Nickname is %s\n", user->nickname);
-						}
-					} else if (!strcasecmp(command, "USER")) { /* Whole message is something like 'ambassador * * :New Now Know How' */
-						char *realname;
-						bbs_debug(5, "Username data is %s\n", s);
-						realname = strsep(&s, " ");
-						free_if(user->realname);
-						user->realname = strdup(realname);
-						if (handle_user(user)) {
-							break;
-						}
-						send_reply(user, "CAP * LS :multi-prefix sasl=PLAIN\r\n");
-						capnegotiate++;
-					} else {
-						bbs_warning("Unhandled message: %s %s\n", command, s);
-					}
-				} else if (capnegotiate == 2) {
-					if (!strcmp(s, "CAP REQ :multi-prefix")) { /* See https://ircv3.net/specs/extensions/multi-prefix */
-						send_reply(user, "CAP * ACK :multi-prefix\r\n"); /* Colon technically optional, since there's only one capability */
-						/* SASL *not* supported */
-						/* Don't increment capnegotiate, just wait for the client to send CAP END */
-						user->multiprefix = 1;
-					} else if (!strcmp(s, "CAP REQ :multi-prefix sasl")) {
-						send_reply(user, "CAP * ACK :multi-prefix sasl\r\n");
-						capnegotiate++;
-						user->multiprefix = 1;
-					} else if (!strcmp(s, "CAP REQ :sasl")) {
-						send_reply(user, "CAP * ACK :sasl\r\n");
-						capnegotiate++;
-					} else if (strcmp(s, "CAP END")) {
-						bbs_warning("Unhandled message: %s\n", s);
-					}
-				} else if (capnegotiate == 3) {
-					if (!strcmp(s, "AUTHENTICATE PLAIN")) {
-						send_reply(user, "AUTHENTICATE +\r\n");
-						capnegotiate++;
-					} else if (strcmp(s, "CAP END")) {
-						bbs_warning("Unhandled message: %s\n", s);
-					}
-				} else if (capnegotiate == 4) {
-					capnegotiate++;
-					sasl_attempted = 1;
-					sasl_failed = do_sasl_auth(user, s);
-				} else if (capnegotiate == 5) {
-					if (!strcmp(s, "CAP END")) {
-						capnegotiate = 0; /* Done with CAP */
-						bbs_debug(5, "Capability negotiation finished\n");
-						if (!started) {
-							if (!client_welcome(user)) {
-								started = 1;
-							}
-						} else {
-							bbs_error("Client %p already started?\n", user);
-						}
-					} else {
-						bbs_warning("Unhandled message: %s\n", s);
-					}
-				} else {
-					bbs_warning("Unhandled message: %s\n", s);
-					send_numeric(user, 410, "Invalid CAP command\r\n");
-					/* First message: Didn't start with CAP LS 302? Then client doesn't support SASL, just get going. */
+		if (capnegotiate) {
+			int sasl_failed = 0;
+			/* XXX This is pretty rudimentary CAP support, it doesn't really support anything besides PLAIN SASL auth.
+			 * It also doesn't fully account for all the possible scenarios allowed by the specs, only what's commonly done in practice. */
+			if (capnegotiate == 1) {
+				char *command = strsep(&s, " ");
+				if (!s) {
+					bbs_warning("No data after command %s\n", command);
+					break; /* Just disconnect on the client */
 				}
-				if (capnegotiate == 5 && sasl_failed) {
-					send_numeric(user, 906, "SASL authentication aborted\r\n");
-				} else if (!started && !strlen_zero(s) && !strcmp(s, "CAP END")) { /* CAP END can be sent at any time during capability negotiation */
-					capnegotiate = 0; /* Done with CAP */
-					bbs_debug(5, "Capability negotiation cancelled by client\n");
-					if (!client_welcome(user)) {
-						started = 1;
-						/*! \todo once we auth, need to explicitly call add_user */
+				/* Client will send a NICK, then USER: https://ircv3.net/specs/extensions/capability-negotiation.html */
+				if (!strcasecmp(command, "NICK")) {
+					if (!started) {
+						/* Users that aren't started, and more importantly, in the user list, (!started, !user->registered)
+						 * can change their nickname arbitrarily, but can't use it without identifying. */
+						user->nickname = strdup(s);
+						bbs_debug(5, "Nickname is %s\n", user->nickname);
 					}
-				}
-			} else if (!strcasecmp(s, "CAP LS 302")) {
-				if (started) {
-					send_numeric(user, 462, "You are already connected and cannot handshake again\r\n");
-				} else {
-					bbs_debug(5, "Client wants to negotiate\n"); /* Technically, a client could also just start with an unsolicited CAP REQ */
-					capnegotiate = 1; /* Begin negotiation */
-				}
-			} else { /* Post-CAP/SASL */
-				char *current, *command = strsep(&s, " ");
-				if (!strcasecmp(command, "PONG")) {
-					pthread_mutex_lock(&user->lock);
-					user->lastpong = time(NULL);
-					pthread_mutex_unlock(&user->lock);
-				} else if (!strcasecmp(command, "PING")) { /* Usually servers ping clients, but clients can ping servers too */
-					send_reply(user, "PONG %s\r\n", S_IF(s)); /* Don't add another : because it's still in s, if present. */
-				} else if (!strcasecmp(command, "PASS")) {
-					REQUIRE_PARAMETER(user, s);
-					free_if(user->password);
-					user->password = strdup(s);
-				} else if (!strcasecmp(command, "NICK")) {
-					REQUIRE_PARAMETER(user, s);
-					handle_nick(user, s);
-				} else if (!strcasecmp(command, "USER")) {
-					int authres;
+				} else if (!strcasecmp(command, "USER")) { /* Whole message is something like 'ambassador * * :New Now Know How' */
 					char *realname;
-					REQUIRE_PARAMETER(user, s);
+					bbs_debug(5, "Username data is %s\n", s);
 					realname = strsep(&s, " ");
-					REPLACE(user->realname, realname);
+					free_if(user->realname);
+					user->realname = strdup(realname);
 					if (handle_user(user)) {
 						break;
 					}
-					authres = bbs_authenticate(user->node, user->nickname, user->password);
-					bbs_memzero(user->password, strlen(user->password)); /* Destroy password before freeing it */
-					free(user->password);
-					if (authres) {
-						send_numeric(user, 464, "Password incorrect\r\n");
+					send_reply(user, "CAP * LS :multi-prefix sasl=PLAIN\r\n");
+					capnegotiate++;
+				} else {
+					bbs_warning("Unhandled message: %s %s\n", command, s);
+				}
+			} else if (capnegotiate == 2) {
+				if (!strcmp(s, "CAP REQ :multi-prefix")) { /* See https://ircv3.net/specs/extensions/multi-prefix */
+					send_reply(user, "CAP * ACK :multi-prefix\r\n"); /* Colon technically optional, since there's only one capability */
+					/* SASL *not* supported */
+					/* Don't increment capnegotiate, just wait for the client to send CAP END */
+					user->multiprefix = 1;
+				} else if (!strcmp(s, "CAP REQ :multi-prefix sasl")) {
+					send_reply(user, "CAP * ACK :multi-prefix sasl\r\n");
+					capnegotiate++;
+					user->multiprefix = 1;
+				} else if (!strcmp(s, "CAP REQ :sasl")) {
+					send_reply(user, "CAP * ACK :sasl\r\n");
+					capnegotiate++;
+				} else if (strcmp(s, "CAP END")) {
+					bbs_warning("Unhandled message: %s\n", s);
+				}
+			} else if (capnegotiate == 3) {
+				if (!strcmp(s, "AUTHENTICATE PLAIN")) {
+					send_reply(user, "AUTHENTICATE +\r\n");
+					capnegotiate++;
+				} else if (strcmp(s, "CAP END")) {
+					bbs_warning("Unhandled message: %s\n", s);
+				}
+			} else if (capnegotiate == 4) {
+				capnegotiate++;
+				sasl_attempted = 1;
+				sasl_failed = do_sasl_auth(user, s);
+			} else if (capnegotiate == 5) {
+				if (!strcmp(s, "CAP END")) {
+					capnegotiate = 0; /* Done with CAP */
+					bbs_debug(5, "Capability negotiation finished\n");
+					if (!started) {
+						if (!client_welcome(user)) {
+							started = 1;
+						}
 					} else {
-						free_if(user->username);
-						user->username = strdup(user->nickname);
-						add_user(user);
-						send_numeric(user, 900, IDENT_PREFIX_FMT " %s You are now logged in as %s\r\n", IDENT_PREFIX_ARGS(user), user->username, user->username);
+						bbs_error("Client %p already started?\n", user);
 					}
-				/* Any remaining commands require authentication.
-				 * The nice thing about this IRC server is we authenticate using the BBS user,
-				 * e.g. you don't create accounts using IRC, so we don't need to support guest access at all. */
-				} else if (!sasl_attempted && !bbs_user_is_registered(user->node->user) && require_sasl) {
-					send_reply(user, "NOTICE AUTH :*** This server requires SASL for authentication. Please reconnect with SASL enabled.\r\n");
-					goto quit; /* Disconnect at this point, there's no point in lingering around further. */
-				/* We can't necessarily use %s (user->username) instead of %p (user), since if require_sasl == false, we might not have a username still. */
-				} else if (!user->node->user) {
-					char *target;
-					/* Okay to message NickServ without being registered, but nobody else. */
-					/* Can be NS IDENTIFY <password> or a regular PRIVMSG */
-					if (!strcasecmp(command, "NS")) {
-						REQUIRE_PARAMETER(user, s);
+				} else {
+					bbs_warning("Unhandled message: %s\n", s);
+				}
+			} else {
+				bbs_warning("Unhandled message: %s\n", s);
+				send_numeric(user, 410, "Invalid CAP command\r\n");
+				/* First message: Didn't start with CAP LS 302? Then client doesn't support SASL, just get going. */
+			}
+			if (capnegotiate == 5 && sasl_failed) {
+				send_numeric(user, 906, "SASL authentication aborted\r\n");
+			} else if (!started && !strlen_zero(s) && !strcmp(s, "CAP END")) { /* CAP END can be sent at any time during capability negotiation */
+				capnegotiate = 0; /* Done with CAP */
+				bbs_debug(5, "Capability negotiation cancelled by client\n");
+				if (!client_welcome(user)) {
+					started = 1;
+					/*! \todo once we auth, need to explicitly call add_user */
+				}
+			}
+		} else if (!strcasecmp(s, "CAP LS 302")) {
+			if (started) {
+				send_numeric(user, 462, "You are already connected and cannot handshake again\r\n");
+			} else {
+				bbs_debug(5, "Client wants to negotiate\n"); /* Technically, a client could also just start with an unsolicited CAP REQ */
+				capnegotiate = 1; /* Begin negotiation */
+			}
+		} else { /* Post-CAP/SASL */
+			char *current, *command = strsep(&s, " ");
+			if (!strcasecmp(command, "PONG")) {
+				pthread_mutex_lock(&user->lock);
+				user->lastpong = time(NULL);
+				pthread_mutex_unlock(&user->lock);
+			} else if (!strcasecmp(command, "PING")) { /* Usually servers ping clients, but clients can ping servers too */
+				send_reply(user, "PONG %s\r\n", S_IF(s)); /* Don't add another : because it's still in s, if present. */
+			} else if (!strcasecmp(command, "PASS")) {
+				REQUIRE_PARAMETER(user, s);
+				free_if(user->password);
+				user->password = strdup(s);
+			} else if (!strcasecmp(command, "NICK")) {
+				REQUIRE_PARAMETER(user, s);
+				handle_nick(user, s);
+			} else if (!strcasecmp(command, "USER")) {
+				int authres;
+				char *realname;
+				REQUIRE_PARAMETER(user, s);
+				realname = strsep(&s, " ");
+				REPLACE(user->realname, realname);
+				if (handle_user(user)) {
+					break;
+				}
+				authres = bbs_authenticate(user->node, user->nickname, user->password);
+				bbs_memzero(user->password, strlen(user->password)); /* Destroy password before freeing it */
+				free(user->password);
+				if (authres) {
+					send_numeric(user, 464, "Password incorrect\r\n");
+				} else {
+					free_if(user->username);
+					user->username = strdup(user->nickname);
+					add_user(user);
+					send_numeric(user, 900, IDENT_PREFIX_FMT " %s You are now logged in as %s\r\n", IDENT_PREFIX_ARGS(user), user->username, user->username);
+				}
+			/* Any remaining commands require authentication.
+			 * The nice thing about this IRC server is we authenticate using the BBS user,
+			 * e.g. you don't create accounts using IRC, so we don't need to support guest access at all. */
+			} else if (!sasl_attempted && !bbs_user_is_registered(user->node->user) && require_sasl) {
+				send_reply(user, "NOTICE AUTH :*** This server requires SASL for authentication. Please reconnect with SASL enabled.\r\n");
+				goto quit; /* Disconnect at this point, there's no point in lingering around further. */
+			/* We can't necessarily use %s (user->username) instead of %p (user), since if require_sasl == false, we might not have a username still. */
+			} else if (!user->node->user) {
+				char *target;
+				/* Okay to message NickServ without being registered, but nobody else. */
+				/* Can be NS IDENTIFY <password> or a regular PRIVMSG */
+				if (!strcasecmp(command, "NS")) {
+					REQUIRE_PARAMETER(user, s);
+					nickserv(user, s);
+					continue;
+				} else if (!strcasecmp(command, "PRIVMSG")) {
+					target = strsep(&s, " ");
+					REQUIRE_PARAMETER(user, s);
+					REQUIRE_PARAMETER(user, target);
+					if (s && *s == ':') {
+						s++; /* Skip leading : */
+					}
+					if (!strcmp(target, "NickServ")) {
 						nickserv(user, s);
 						continue;
-					} else if (!strcasecmp(command, "PRIVMSG")) {
-						target = strsep(&s, " ");
-						REQUIRE_PARAMETER(user, s);
-						REQUIRE_PARAMETER(user, target);
-						if (s && *s == ':') {
-							s++; /* Skip leading : */
-						}
-						if (!strcmp(target, "NickServ")) {
-							nickserv(user, s);
-							continue;
-						}
 					}
-					send_numeric(user, 451, "You have not registered\r\n");
-				} else if (!strcasecmp(command, "NS")) { /* NickServ alias */
-					nickserv(user, s);
-				} else if (!strcasecmp(command, "CS")) { /* ChanServ alias (much like NS ~ NickServ) */
-					chanserv_msg(user, s);
-				} else if (!strcasecmp(command, "PRIVMSG")) { /* List this as high up as possible, since this is the most common command */
-					handle_privmsg(user, s, 0);
-				} else if (!strcasecmp(command, "NOTICE")) { /* List this as high up as possible, since this is the most common command */
-					handle_privmsg(user, s, 1);
-				} else if (!strcasecmp(command, "MODE")) {
-					handle_modes(user, s);
-				} else if (!strcasecmp(command, "TOPIC")) { /* Get or set the topic */
-					handle_topic(user, s);
-				} else if (!strcasecmp(command, "JOIN")) {
-					bbs_debug(3, "User %p wants to join channels: %s\n", user, s);
-					rtrim(s); /* Not sure why this is necessary, but there's an extra space on the end it seems with Ambassador, at least. */
-					while ((current = strsep(&s, ","))) {
-						join_channel(user, current);
-					}
-				} else if (!strcasecmp(command, "PART")) {
-					bbs_strterm(s, ':'); /* If there's a :, ignore anything after it */
-					rtrim(s);
-					bbs_debug(3, "User %p wants to leave channels: %s\n", user, s);
-					while ((current = strsep(&s, ","))) {
-						leave_channel(user, current);
-					}
-				} else if (!strcasecmp(command, "QUIT")) {
-					bbs_debug(3, "User %p wants to quit: %s\n", user, S_IF(s));
-					rtrim(s);
-					leave_all_channels(user, "QUIT", s);
-					graceful_close = 1; /* Defaults to 1 anyways, but this is definitely graceful */
-					break; /* We're done. */
-				} else if (!strcasecmp(command, "AWAY")) {
-					if (!strlen_zero(s) && strlen(s) > MAX_AWAY_LEN) {
-						send_numeric(user, 416, "Input too large\r\n"); /* XXX Not really the appropriate numeric */
-						continue;
-					}
-					pthread_mutex_lock(&user->lock);
-					free_if(user->awaymsg);
-					if (!strlen_zero(s)) { /* Away */
-						user->awaymsg = strdup(s);
-						user->away = 1;
-					} else { /* No longer away */
-						user->away = 0;
-					}
-					pthread_mutex_unlock(&user->lock);
-					send_numeric(user, user->away ? 306 : 305, "You %s marked as being away\r\n", user->away ? "have been" : "are no longer");
-				} else if (!strcasecmp(command, "KICK")) {
-					struct irc_member *member;
-					char *reason, *kickusername, *channame = strsep(&s, " ");
-					kickusername = strsep(&s, " ");
-					reason = s;
-					REQUIRE_PARAMETER(user, kickusername);
-					/* KICK #channel jsmith :Reason for kicking user */
-					member = get_member_by_channel_name(user, channame);
-					if (!member || !authorized_atleast(member, CHANNEL_USER_MODE_HALFOP)) { /* Need at least half op to kick */
-						send_numeric2(user, 482, "%s: You're not a channel operator\r\n", channame);
-					} else {
-						struct irc_member *kickuser;
-						struct irc_channel *kickchan = get_channel(channame);
-						if (!kickchan) {
-							send_numeric2(user, 403, "%s :No such channel\r\n", channame);
-							continue;
-						}
-						kickuser = get_member_by_username(kickusername, kickchan->name);
-						if (!kickuser) {
-							send_numeric2(user, 401, "%s :No such nick/channel\r\n", kickchan->name);
-							continue;
-						}
-						kick_member(kickchan, user, kickuser->user, reason);
-					}
-				} else if (!strcasecmp(command, "KILL")) {
-					struct irc_user *u;
-					char *killusername, *reason;
-					killusername = strsep(&s, " ");
-					reason = s;
-					REQUIRE_PARAMETER(user, killusername);
-					REQUIRE_OPER(user);
-					/* KILL jsmith :Reason for kicking user */
-					u = get_user(killusername);
-					if (!u) {
-						send_numeric2(user, 401, "%s :No such nick/channel\r\n", killusername);
-						continue;
-					}
-					/* Kill the user */
-					leave_all_channels(u, "QUIT", reason); /* Just use QUIT for now, KILL doesn't render properly in Ambassador. */
-					send_reply(u, "KILL %s%s\r\n", !strlen_zero(reason) ? ":" : "", S_IF(reason));
-					bbs_debug(5, "Shutting down client on node %d\n", user->node->id);
-					shutdown(u->node->fd, SHUT_RDWR); /* Make the client handler thread break */
-				} else if (!strcasecmp(command, "INVITE")) {
-					handle_invite(user, s);
-				} else if (!strcasecmp(command, "KNOCK")) {
-					handle_knock(user, s);
-				} else if (!strcasecmp(command, "NAMES")) {
-					struct irc_channel *channel;
-					REQUIRE_PARAMETER(user, s);
-					channel = get_channel(s);
-					/* Many servers don't allow NAMES unless you're in the channel: we do... */
-					if (!channel) {
-						send_numeric2(user, 403, "%s :No such channel\r\n", s);
-						continue;
-					}
-					/* ...unless it's private/secret */
-					if (channel->modes & CHANNEL_HIDDEN && suppress_channel(user, channel)) {
-						send_numeric(user, 442, "You're not on that channel\r\n");
-						continue;
-					}
-					send_channel_members(user, channel);
-				} else if (!strcasecmp(command, "WHO")) {
-					/* WHO username or WHO #channel, mask patterns not supported */
-					handle_who(user, s);
-				} else if (!strcasecmp(command, "WHOIS")) {
-					handle_whois(user, s);
-				} else if (!strcasecmp(command, "USERHOST")) {
-					handle_userhost(user, s);
-				} else if (!strcasecmp(command, "LIST")) {
-					handle_list(user, s);
-				} else if (!strcasecmp(command, "STATS")) {
-					REQUIRE_PARAMETER(user, s);
-					handle_stats(user, s);
-				} else if (!strcasecmp(command, "ISON")) {
-					char *name, *names = s;
-					REQUIRE_PARAMETER(user, s);
-					while ((name = strsep(&names, " "))) {
-						if (get_user(name)) {
-							send_numeric(user, 303, "%s\r\n", name);
-						}
-					}
-				} else if (!strcasecmp(command, "MOTD")) {
-					motd(user);
-				} else if (!strcasecmp(command, "HELP")) {
-					handle_help(user, s);
-				} else if (!strcasecmp(command, "VERSION")) {
-					send_numeric(user, 351, "%s %s :%s\r\n", BBS_VERSION, irc_hostname, IRC_SERVER_VERSION);
-				} else if (!strcasecmp(command, "TIME")) {
-					time_t lognow;
-					struct tm logdate;
-					char datestr[20];
-					lognow = time(NULL);
-					localtime_r(&lognow, &logdate);
-					strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
-					send_numeric(user, 391, "%s\r\n", datestr);
-				} else if (!strcasecmp(command, "INFO")) {
-					char starttime[30];
-					bbs_time_friendly(loadtime, starttime, sizeof(starttime));
-					send_numeric(user, 371, "%s (%s) v%s - Integrated IRC Server\r\n", BBS_SHORTNAME, BBS_TAGLINE, BBS_VERSION);
-					send_numeric(user, 371, "Copyright (C) 2023 %s\r\n", BBS_AUTHOR);
-					send_numeric(user, 371, "%s\r\n", BBS_SOURCE_URL);
-					send_numeric(user, 371, "\r\n");
-					send_numeric(user, 371, "This program is free software; you can redistribute it and/or\r\n");
-					send_numeric(user, 371, "modify it under the terms of the GNU General Public License\r\n");
-					send_numeric(user, 371, "Version 2 as published by the Free Software Foundation.\r\n");
-					send_numeric(user, 371, "\r\n");
-					send_numeric(user, 371, "On-line since %s\r\n", starttime);
-					send_numeric(user, 374, "End of /INFO list.\r\n");
-				} else if (!strcasecmp(command, "OPER")) {
-					handle_oper(user, s);
-				} else if (!strcasecmp(command, "WALLOPS")) {
-					struct irc_user *u;
-					REQUIRE_OPER(user);
-					RWLIST_RDLOCK(&users);
-					RWLIST_TRAVERSE(&users, u, entry) {
-						if (u->modes & USER_MODE_WALLOPS) {
-							pthread_mutex_lock(&u->lock); /* Serialize writes to this user */
-							dprintf(u->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), "WALLOPS", u->nickname, s);
-							pthread_mutex_unlock(&u->lock);
-						}
-					}
-					RWLIST_UNLOCK(&users);
-				} else if (!strcasecmp(command, "REHASH")) {
-					REQUIRE_OPER(user);
-					/* Reread the config, although not everything can be updated this way. */
-					send_numeric(user, 382, "%s :Rehashing\r\n", irc_hostname);
-					destroy_operators(); /* Remove any existing operators */
-					load_config();
-				} else if (!strcasecmp(command, "RESTART")) {
-					REQUIRE_OPER(user);
-					/* Restart the IRC server */
-					need_restart = 2; /* This will get processed by the ping thread, so that we can be disconnected. */
-					send_reply(user, "NOTICE :Server will restart momentarily\r\n");
-				} else if (!strcasecmp(command, "DIE")) {
-					REQUIRE_OPER(user);
-					/* Stop the IRC server */
-					need_restart = 1; /* This will get processed by the ping thread, so that we can be disconnected. */
-					send_reply(user, "NOTICE :Server will halt momentarily\r\n");
-				/* Ignore SQUIT for now, since this is a single-server network */
-				} else {
-					send_numeric2(user, 421, "%s :Unknown command\r\n", command);
-					bbs_warning("%p: Unhandled message: %s %s\n", user, command, s);
 				}
+				send_numeric(user, 451, "You have not registered\r\n");
+			} else if (!strcasecmp(command, "NS")) { /* NickServ alias */
+				nickserv(user, s);
+			} else if (!strcasecmp(command, "CS")) { /* ChanServ alias (much like NS ~ NickServ) */
+				chanserv_msg(user, s);
+			} else if (!strcasecmp(command, "PRIVMSG")) { /* List this as high up as possible, since this is the most common command */
+				handle_privmsg(user, s, 0);
+			} else if (!strcasecmp(command, "NOTICE")) { /* List this as high up as possible, since this is the most common command */
+				handle_privmsg(user, s, 1);
+			} else if (!strcasecmp(command, "MODE")) {
+				handle_modes(user, s);
+			} else if (!strcasecmp(command, "TOPIC")) { /* Get or set the topic */
+				handle_topic(user, s);
+			} else if (!strcasecmp(command, "JOIN")) {
+				bbs_debug(3, "User %p wants to join channels: %s\n", user, s);
+				rtrim(s); /* Not sure why this is necessary, but there's an extra space on the end it seems with Ambassador, at least. */
+				while ((current = strsep(&s, ","))) {
+					join_channel(user, current);
+				}
+			} else if (!strcasecmp(command, "PART")) {
+				bbs_strterm(s, ':'); /* If there's a :, ignore anything after it */
+				rtrim(s);
+				bbs_debug(3, "User %p wants to leave channels: %s\n", user, s);
+				while ((current = strsep(&s, ","))) {
+					leave_channel(user, current);
+				}
+			} else if (!strcasecmp(command, "QUIT")) {
+				bbs_debug(3, "User %p wants to quit: %s\n", user, S_IF(s));
+				rtrim(s);
+				leave_all_channels(user, "QUIT", s);
+				graceful_close = 1; /* Defaults to 1 anyways, but this is definitely graceful */
+				break; /* We're done. */
+			} else if (!strcasecmp(command, "AWAY")) {
+				if (!strlen_zero(s) && strlen(s) > MAX_AWAY_LEN) {
+					send_numeric(user, 416, "Input too large\r\n"); /* XXX Not really the appropriate numeric */
+					continue;
+				}
+				pthread_mutex_lock(&user->lock);
+				free_if(user->awaymsg);
+				if (!strlen_zero(s)) { /* Away */
+					user->awaymsg = strdup(s);
+					user->away = 1;
+				} else { /* No longer away */
+					user->away = 0;
+				}
+				pthread_mutex_unlock(&user->lock);
+				send_numeric(user, user->away ? 306 : 305, "You %s marked as being away\r\n", user->away ? "have been" : "are no longer");
+			} else if (!strcasecmp(command, "KICK")) {
+				struct irc_member *member;
+				char *reason, *kickusername, *channame = strsep(&s, " ");
+				kickusername = strsep(&s, " ");
+				reason = s;
+				REQUIRE_PARAMETER(user, kickusername);
+				/* KICK #channel jsmith :Reason for kicking user */
+				member = get_member_by_channel_name(user, channame);
+				if (!member || !authorized_atleast(member, CHANNEL_USER_MODE_HALFOP)) { /* Need at least half op to kick */
+					send_numeric2(user, 482, "%s: You're not a channel operator\r\n", channame);
+				} else {
+					struct irc_member *kickuser;
+					struct irc_channel *kickchan = get_channel(channame);
+					if (!kickchan) {
+						send_numeric2(user, 403, "%s :No such channel\r\n", channame);
+						continue;
+					}
+					kickuser = get_member_by_username(kickusername, kickchan->name);
+					if (!kickuser) {
+						send_numeric2(user, 401, "%s :No such nick/channel\r\n", kickchan->name);
+						continue;
+					}
+					kick_member(kickchan, user, kickuser->user, reason);
+				}
+			} else if (!strcasecmp(command, "KILL")) {
+				struct irc_user *u;
+				char *killusername, *reason;
+				killusername = strsep(&s, " ");
+				reason = s;
+				REQUIRE_PARAMETER(user, killusername);
+				REQUIRE_OPER(user);
+				/* KILL jsmith :Reason for kicking user */
+				u = get_user(killusername);
+				if (!u) {
+					send_numeric2(user, 401, "%s :No such nick/channel\r\n", killusername);
+					continue;
+				}
+				/* Kill the user */
+				leave_all_channels(u, "QUIT", reason); /* Just use QUIT for now, KILL doesn't render properly in Ambassador. */
+				send_reply(u, "KILL %s%s\r\n", !strlen_zero(reason) ? ":" : "", S_IF(reason));
+				bbs_debug(5, "Shutting down client on node %d\n", user->node->id);
+				shutdown(u->node->fd, SHUT_RDWR); /* Make the client handler thread break */
+			} else if (!strcasecmp(command, "INVITE")) {
+				handle_invite(user, s);
+			} else if (!strcasecmp(command, "KNOCK")) {
+				handle_knock(user, s);
+			} else if (!strcasecmp(command, "NAMES")) {
+				struct irc_channel *channel;
+				REQUIRE_PARAMETER(user, s);
+				channel = get_channel(s);
+				/* Many servers don't allow NAMES unless you're in the channel: we do... */
+				if (!channel) {
+					send_numeric2(user, 403, "%s :No such channel\r\n", s);
+					continue;
+				}
+				/* ...unless it's private/secret */
+				if (channel->modes & CHANNEL_HIDDEN && suppress_channel(user, channel)) {
+					send_numeric(user, 442, "You're not on that channel\r\n");
+					continue;
+				}
+				send_channel_members(user, channel);
+			} else if (!strcasecmp(command, "WHO")) {
+				/* WHO username or WHO #channel, mask patterns not supported */
+				handle_who(user, s);
+			} else if (!strcasecmp(command, "WHOIS")) {
+				handle_whois(user, s);
+			} else if (!strcasecmp(command, "USERHOST")) {
+				handle_userhost(user, s);
+			} else if (!strcasecmp(command, "LIST")) {
+				handle_list(user, s);
+			} else if (!strcasecmp(command, "STATS")) {
+				REQUIRE_PARAMETER(user, s);
+				handle_stats(user, s);
+			} else if (!strcasecmp(command, "ISON")) {
+				char *name, *names = s;
+				REQUIRE_PARAMETER(user, s);
+				while ((name = strsep(&names, " "))) {
+					if (get_user(name)) {
+						send_numeric(user, 303, "%s\r\n", name);
+					}
+				}
+			} else if (!strcasecmp(command, "MOTD")) {
+				motd(user);
+			} else if (!strcasecmp(command, "HELP")) {
+				handle_help(user, s);
+			} else if (!strcasecmp(command, "VERSION")) {
+				send_numeric(user, 351, "%s %s :%s\r\n", BBS_VERSION, irc_hostname, IRC_SERVER_VERSION);
+			} else if (!strcasecmp(command, "TIME")) {
+				time_t lognow;
+				struct tm logdate;
+				char datestr[20];
+				lognow = time(NULL);
+				localtime_r(&lognow, &logdate);
+				strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
+				send_numeric(user, 391, "%s\r\n", datestr);
+			} else if (!strcasecmp(command, "INFO")) {
+				char starttime[30];
+				bbs_time_friendly(loadtime, starttime, sizeof(starttime));
+				send_numeric(user, 371, "%s (%s) v%s - Integrated IRC Server\r\n", BBS_SHORTNAME, BBS_TAGLINE, BBS_VERSION);
+				send_numeric(user, 371, "Copyright (C) 2023 %s\r\n", BBS_AUTHOR);
+				send_numeric(user, 371, "%s\r\n", BBS_SOURCE_URL);
+				send_numeric(user, 371, "\r\n");
+				send_numeric(user, 371, "This program is free software; you can redistribute it and/or\r\n");
+				send_numeric(user, 371, "modify it under the terms of the GNU General Public License\r\n");
+				send_numeric(user, 371, "Version 2 as published by the Free Software Foundation.\r\n");
+				send_numeric(user, 371, "\r\n");
+				send_numeric(user, 371, "On-line since %s\r\n", starttime);
+				send_numeric(user, 374, "End of /INFO list.\r\n");
+			} else if (!strcasecmp(command, "OPER")) {
+				handle_oper(user, s);
+			} else if (!strcasecmp(command, "WALLOPS")) {
+				struct irc_user *u;
+				REQUIRE_OPER(user);
+				RWLIST_RDLOCK(&users);
+				RWLIST_TRAVERSE(&users, u, entry) {
+					if (u->modes & USER_MODE_WALLOPS) {
+						pthread_mutex_lock(&u->lock); /* Serialize writes to this user */
+						dprintf(u->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), "WALLOPS", u->nickname, s);
+						pthread_mutex_unlock(&u->lock);
+					}
+				}
+				RWLIST_UNLOCK(&users);
+			} else if (!strcasecmp(command, "REHASH")) {
+				REQUIRE_OPER(user);
+				/* Reread the config, although not everything can be updated this way. */
+				send_numeric(user, 382, "%s :Rehashing\r\n", irc_hostname);
+				destroy_operators(); /* Remove any existing operators */
+				load_config();
+			} else if (!strcasecmp(command, "RESTART")) {
+				REQUIRE_OPER(user);
+				/* Restart the IRC server */
+				need_restart = 2; /* This will get processed by the ping thread, so that we can be disconnected. */
+				send_reply(user, "NOTICE :Server will restart momentarily\r\n");
+			} else if (!strcasecmp(command, "DIE")) {
+				REQUIRE_OPER(user);
+				/* Stop the IRC server */
+				need_restart = 1; /* This will get processed by the ping thread, so that we can be disconnected. */
+				send_reply(user, "NOTICE :Server will halt momentarily\r\n");
+			/* Ignore SQUIT for now, since this is a single-server network */
+			} else {
+				send_numeric2(user, 421, "%s :Unknown command\r\n", command);
+				bbs_warning("%p: Unhandled message: %s %s\n", user, command, s);
 			}
 		}
 	}
