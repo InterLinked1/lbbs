@@ -92,10 +92,9 @@ char *bbs_sasl_encode(const char *nickname, const char *username, const char *pa
  * \param[out] name Name portion, if any. NULL if not present.
  * \param[out] user Username portion
  * \param[out] host Hostname portion
- * \param[out] local Whether identity is local to the BBS.
  * \retval 0 on success, -1 on failure
 */
-int bbs_parse_email_address(char *addr, char **name, char **user, char **host, int *local);
+int bbs_parse_email_address(char *addr, char **name, char **user, char **host);
 
 /*!
  * \brief Detect a mismatch between an email identity and the currently authenticated user

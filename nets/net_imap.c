@@ -1529,7 +1529,7 @@ static int imap_translate_dir(struct imap_session *imap, const char *directory, 
 			}
 			safe_strncpy(name, remainder, sizeof(name));
 			bbs_strterm(name, '.');
-			mbox = mailbox_get(0, name);
+			mbox = mailbox_get_by_username(name);
 			if (!mbox) {
 				return -1;
 			}
@@ -1567,7 +1567,7 @@ static int imap_translate_dir(struct imap_session *imap, const char *directory, 
 			/* imap->mbox refers to the personal mailbox, not this other user's mailbox...
 			 * imap->mbox needs to point to the other user's mailbox now. */
 			/* Keep watching our personal mailbox, but also watch the new one. */
-			mbox = mailbox_get(userid, NULL);
+			mbox = mailbox_get_by_userid(userid);
 			if (!mbox) {
 				return -1;
 			}
@@ -3985,7 +3985,6 @@ static int handle_append(struct imap_session *imap, char *s)
 	}
 
 	/* Process the upload */
-	bbs_debug(3, "Received %d-byte upload\n", res);
 	close_if(appendfile);
 	filename = strrchr(appendnew, '/');
 	if (!filename) {
@@ -4036,6 +4035,9 @@ static int handle_append(struct imap_session *imap, char *s)
 		if (maildir_msg_setflags(imap, seqno, newfilename, newflagletters)) {
 			bbs_warning("Failed to set flags for %s\n", newfilename);
 		}
+		bbs_debug(3, "Received %d-byte upload (flags: %s)\n", res, newflagletters);
+	} else {
+		bbs_debug(3, "Received %d-byte upload\n", res);
 	}
 
 	/* Set the internal date? Maybe not, since the original date of the message should be preserved for best user experience. */
@@ -4386,10 +4388,9 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 	SEEK_HEADERS(hdrname) { \
 		char *name, *user, *host; \
 		char *sourceroute = NULL; /* https://stackoverflow.com/questions/30693478/imap-envelope-email-address-format/30698163#30698163 */ \
-		int local; \
 		bufhdr = linebuf + STRLEN(hdrname) + 1; \
 		ltrim(bufhdr); \
-		bbs_parse_email_address(bufhdr, &name, &user, &host, &local); \
+		bbs_parse_email_address(bufhdr, &name, &user, &host); \
 		if (name) { \
 			STRIP_QUOTES(name); \
 		} \
@@ -7380,7 +7381,7 @@ static int handle_getquota(struct imap_session *imap)
 
 static int finish_auth(struct imap_session *imap, int auth)
 {
-	imap->mymbox = mailbox_get(imap->node->user->id, NULL); /* Retrieve the mailbox for this user */
+	imap->mymbox = mailbox_get_by_userid(imap->node->user->id); /* Retrieve the mailbox for this user */
 	if (!imap->mymbox) {
 		bbs_error("Successful authentication, but unable to retrieve mailbox for user %d\n", imap->node->user->id);
 		imap_reply(imap, "BYE System error");

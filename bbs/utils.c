@@ -182,7 +182,7 @@ char *bbs_sasl_encode(const char *nickname, const char *username, const char *pa
 	return encoded;
 }
 
-int bbs_parse_email_address(char *addr, char **name, char **user, char **host, int *local)
+int bbs_parse_email_address(char *addr, char **name, char **user, char **host)
 {
 	char address_buf[256]; /* Our mailbox names are definitely not super long, so using a small buffer is okay. */
 	char *start, *domain;
@@ -236,13 +236,6 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host, i
 			*host = domain;
 		} else {
 			*host = NULL;
-		}
-	}
-	if (local) {
-		if (domain) {
-			*local = !strcmp(domain, bbs_hostname());
-		} else {
-			*local = 1;
 		}
 	}
 	return 0;

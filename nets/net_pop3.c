@@ -599,7 +599,7 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 			pop3_err(pop3, "Invalid username or password");
 			return 0;
 		}
-		pop3->mbox = mailbox_get(pop3->node->user->id, NULL); /* Retrieve the mailbox for this user */
+		pop3->mbox = mailbox_get_by_userid(pop3->node->user->id); /* Retrieve the mailbox for this user */
 		if (!pop3->mbox) {
 			bbs_error("Successful authentication, but unable to retrieve mailbox for user %d\n", pop3->node->user->id);
 			pop3_err(pop3, "System error");

@@ -39,6 +39,7 @@ Key features and capabilities include:
   * Mailing lists
   * Mailbox quotas
   * Shared mailboxes and ACL controls
+  * Multi-domain support
   * RFC 4468 BURL IMAP and server-side proxied append support, for more efficient (bandwidth saving) email submission
   * Remote mailboxes (IMAP proxy)
 

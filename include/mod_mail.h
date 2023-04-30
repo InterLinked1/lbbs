@@ -19,20 +19,38 @@ struct bbs_user;
 struct bbs_url;
 struct bbs_tcp_client;
 
+/*! \brief Check whether a particular domain's mail is handled local to the BBS */
+int mail_domain_is_local(const char *domain);
+
 /*!
- * \brief Get the mailbox by user ID and/or email address username
- * \param userid The user ID of the target mailbox, if known (will be for POP/IMAP, will not be for SMTP, so specify 0)
- * \param name The username of the mailbox. This MUST be specified for SMTP, for alias resolution if needed, but optional for POP/IMAP.
+ * \brief Get a mailbox by BBS username
+ * \param username The user's username
  * \retval mailbox on success, NULL on failure
  */
-struct mailbox *mailbox_get(unsigned int userid, const char *name);
+#define mailbox_get_by_username(username) mailbox_get_by_name(username, NULL)
+
+/*!
+ * \brief Get a mailbox by email address
+ * \param user The user portion of the address
+ * \param domain The domain portion of the address
+ * \retval mailbox on success, NULL on failure
+ */
+struct mailbox *mailbox_get_by_name(const char *user, const char *domain);
+
+/*!
+ * \brief Get a mailbox by user ID
+ * \param userid The user ID of the target mailbox
+ * \retval mailbox on success, NULL on failure
+ */
+struct mailbox *mailbox_get_by_userid(unsigned int userid);
 
 /*!
  * \brief Get all the destination addresses for a listserv
- * \param listname User portion of address
+ * \param user User portion of address
+ * \param domain Domain portion of address
  * \returns list of addresses, NULL if address does not resolve to a mailing list
  */
-const char *mailbox_expand_list(const char *listname);
+const char *mailbox_expand_list(const char *user, const char *domain);
 
 /*!
  * \brief Attempt to obtain a read lock on mailbox

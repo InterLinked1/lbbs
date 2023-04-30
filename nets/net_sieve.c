@@ -238,7 +238,7 @@ doneupload:
 			if (res) {
 				sieve_send(sieve, "NO Authentication failed");
 			} else {
-				sieve->mbox = mailbox_get(sieve->node->user->id, NULL);
+				sieve->mbox = mailbox_get_by_userid(sieve->node->user->id);
 				sieve_send(sieve, "OK");
 			}
 		} else {

@@ -383,15 +383,14 @@ static int test_parse_email(void)
 	int res = -1;
 	char s[84] = "John Smith <test@example.com>";
 	char *name, *user, *domain;
-	int local;
 
-	bbs_test_assert_equals(0, bbs_parse_email_address(s, &name, &user, &domain, &local));
+	bbs_test_assert_equals(0, bbs_parse_email_address(s, &name, &user, &domain));
 	bbs_test_assert_str_equals(name, "John Smith");
 	bbs_test_assert_str_equals(user, "test");
 	bbs_test_assert_str_equals(domain, "example.com");
 
 	safe_strncpy(s, "test@example.com", sizeof(s));
-	bbs_test_assert_equals(0, bbs_parse_email_address(s, &name, &user, &domain, &local));
+	bbs_test_assert_equals(0, bbs_parse_email_address(s, &name, &user, &domain));
 	bbs_test_assert_equals(1, name == NULL); /* Clunky since bbs_test_assert_equals is only for integer comparisons */
 	bbs_test_assert_str_equals(user, "test");
 	bbs_test_assert_str_equals(domain, "example.com");
@@ -463,18 +462,19 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 		smtp_reply(smtp, 451, "Local error in processing", "");
 		return 0;
 	}
-	if (bbs_parse_email_address(address, NULL, &user, &domain, &local)) {
+	if (bbs_parse_email_address(address, NULL, &user, &domain)) {
 		free(address);
 		smtp_reply(smtp, 501, 5.1.7, "Syntax error in RCPT command"); /* Email address must be enclosed in <> */
 		return 0;
 	}
 
+	local = mail_domain_is_local(domain);
 	if (local) {
 		struct mailbox *mbox;
 		const char *recipients;
 
 		/* Check if it's a mailing list. */
-		recipients = mailbox_expand_list(user);
+		recipients = mailbox_expand_list(user, domain);
 		if (recipients) { /* It's a mailing list */
 			int added = 0;
 			char *senders, *recip, *recips, *dup = strdup(recipients);
@@ -567,7 +567,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 		}
 
 		/* It's not a mailing list, check if it's a real mailbox (or an alias that maps to one) */
-		mbox = mailbox_get(0, user);
+		mbox = mailbox_get_by_name(user, domain);
 		free(address);
 		if (!mbox) {
 			smtp_reply(smtp, 550, 5.1.1, "No such user here");
@@ -843,7 +843,6 @@ static int try_send(struct smtp_session *smtp, const char *hostname, int port, i
 	off_t send_offset = offset;
 	int caps = 0;
 	char sendercopy[64];
-	int local;
 	char *user, *domain;
 
 	bbs_assert(datafd != -1);
@@ -853,7 +852,7 @@ static int try_send(struct smtp_session *smtp, const char *hostname, int port, i
 	safe_strncpy(sendercopy, sender, sizeof(sendercopy));
 
 	/* Properly parse, since if a name is present, in addition to the email address, we must exclude the name in the MAIL FROM */
-	if (bbs_parse_email_address(sendercopy, NULL, &user, &domain, &local)) {
+	if (bbs_parse_email_address(sendercopy, NULL, &user, &domain)) {
 		bbs_error("Invalid email address: %s\n", sender);
 		return -1;
 	}
@@ -1326,12 +1325,12 @@ static int appendmsg(struct smtp_session *smtp, struct mailbox *mbox, struct smt
 	return 0;
 }
 
-static int do_local_delivery(struct smtp_session *smtp, const char *recipient, const char *user, int srcfd, size_t datalen, int *responded)
+static int do_local_delivery(struct smtp_session *smtp, const char *recipient, const char *user, const char *domain, int srcfd, size_t datalen, int *responded)
 {
 	struct mailbox *mbox;
 	struct smtp_msg_process mproc;
 
-	mbox = mailbox_get(0, user);
+	mbox = mailbox_get_by_name(user, domain);
 	if (!mbox) {
 		/* We should've caught this before. */
 		bbs_warning("Mailbox '%s' does not exist locally\n", user);
@@ -1402,22 +1401,21 @@ static int return_dead_letter(const char *from, const char *to, const char *msgf
 	char tmpfile[256];
 	char newfile[256];
 	char *user, *domain;
-	int local;
 	FILE *fp;
 
 	/* This server does not relay mail from the outside,
 	 * so we're only responsible for dispatching Delivery Failure notices
 	 * to local users. */
 	safe_strncpy(dupaddr, from, sizeof(dupaddr));
-	if (bbs_parse_email_address(dupaddr, NULL, &user, &domain, &local)) {
+	if (bbs_parse_email_address(dupaddr, NULL, &user, &domain)) {
 		bbs_error("Invalid email address: %s\n", from);
 		return -1;
 	}
-	if (!local) {
+	if (!mail_domain_is_local(domain)) {
 		bbs_error("Address %s is not local (user: %s, host: %s)\n", from, user, domain);
 		return -1;
 	}
-	mbox = mailbox_get(0, user);
+	mbox = mailbox_get_by_name(user, domain);
 	if (!mbox) {
 		bbs_error("Couldn't find mailbox for '%s'\n", user);
 		return -1;
@@ -1499,19 +1497,18 @@ static int notify_stalled_delivery(const char *from, const char *to, const char 
 	char tmpfile[256];
 	char newfile[256];
 	char *user, *domain;
-	int local;
 	FILE *fp;
 
 	safe_strncpy(dupaddr, from, sizeof(dupaddr));
-	if (bbs_parse_email_address(dupaddr, NULL, &user, &domain, &local)) {
+	if (bbs_parse_email_address(dupaddr, NULL, &user, &domain)) {
 		bbs_error("Invalid email address: %s\n", from);
 		return -1;
 	}
-	if (!local) {
+	if (!mail_domain_is_local(domain)) {
 		bbs_error("Address %s is not local (user: %s, host: %s)\n", from, user, domain);
 		return -1;
 	}
-	mbox = mailbox_get(0, user);
+	mbox = mailbox_get_by_name(user, domain);
 	if (!mbox) {
 		bbs_error("Couldn't find mailbox for '%s'\n", user);
 		return -1;
@@ -1560,7 +1557,6 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	char *hostname;
 	char *realfrom, *realto;
 	char *user, *domain;
-	int local;
 	char *retries;
 	int newretries;
 	int res = -1;
@@ -1630,7 +1626,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	bbs_debug(5, "Processing message from (%s) -> (%s)\n", realfrom, realto);
 
 	safe_strncpy(todup, realto, sizeof(todup));
-	if (strlen_zero(realfrom) || bbs_parse_email_address(todup, NULL, &user, &domain, &local)) {
+	if (strlen_zero(realfrom) || bbs_parse_email_address(todup, NULL, &user, &domain)) {
 		bbs_error("Address parsing error\n");
 		goto cleanup;
 	}
@@ -1950,7 +1946,6 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, i
 		archive_list_msg(smtp, srcfd);
 	}
 	while ((recipient = stringlist_pop(&smtp->recipients))) {
-		int local;
 		char *user, *domain;
 		char *dup, *tmp = NULL;
 		const char *normalized_recipient;
@@ -1990,11 +1985,11 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, i
 			goto next;
 		}
 		/* We already did this when we got RCPT TO, so hopefully we're all good here. */
-		if (bbs_parse_email_address(dup, NULL, &user, &domain, &local)) {
+		if (bbs_parse_email_address(dup, NULL, &user, &domain)) {
 			goto next;
 		}
-		if (local) {
-			mres = do_local_delivery(smtp, recipient, user, srcfd, datalen, responded);
+		if (mail_domain_is_local(domain)) {
+			mres = do_local_delivery(smtp, recipient, user, domain, srcfd, datalen, responded);
 			if (mres == -2) {
 				/*! \todo Needs total overhaul, use a separate structure to keep track of delivery failure reasons and outcomes */
 				*quotaexceeded = 1;
@@ -2060,14 +2055,13 @@ static int injectmail(MAILER_PARAMS)
 static int check_identity(struct smtp_session *smtp, char *s)
 {
 	char *user, *domain;
-	int local;
 	struct mailbox *sendingmbox;
 	char sendersfile[256];
 	char buf[32];
 	FILE *fp;
 
 	/* Must use bbs_parse_email_address for sure, since From header could contain a name, not just the address that's in the <> */
-	if (bbs_parse_email_address(s, NULL, &user, &domain, &local)) {
+	if (bbs_parse_email_address(s, NULL, &user, &domain)) {
 		smtp_reply(smtp, 550, 5.7.1, "Malformed From header");
 		return -1;
 	}
@@ -2075,14 +2069,14 @@ static int check_identity(struct smtp_session *smtp, char *s)
 		smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
 		return -1;
 	}
-	if (!local) { /* Wrong domain */
+	if (!mail_domain_is_local(domain)) { /* Wrong domain */
 		smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
 		return -1;
 	}
 	/* Check what mailbox the sending username resolves to.
 	 * One corner case is the catch all address. This user is allowed to send email as any address,
 	 * which makes sense since the catch all is going to be the sysop, if it exists. */
-	sendingmbox = mailbox_get(0, user);
+	sendingmbox = mailbox_get_by_name(user, domain);
 	if (!sendingmbox) {
 		goto fail; /* If you can't send email to this address, then email can't be sent from it, simple as that. */
 	}
@@ -2264,7 +2258,7 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 					bbs_error("Failed to open %s: %s\n", filename, strerror(errno));
 					res = -1;
 				} else {
-					struct mailbox *mbox = mailbox_get(smtp->node->user->id, NULL);
+					struct mailbox *mbox = mailbox_get_by_userid(smtp->node->user->id);
 					res = appendmsg(smtp, mbox, &mproc, NULL, srcfd, datalen, newfile, sizeof(newfile)); /* Save the Sent message locally */
 					/* appendmsg frees mproc.newdir */
 					if (!res) {
@@ -2509,7 +2503,7 @@ static int handle_burl(struct smtp_session *smtp, char *s)
 	}
 
 	/* Retrieve the message with UID from this folder */
-	snprintf(sentdir, sizeof(sentdir), "%s/.Sent/cur", mailbox_maildir(mailbox_get(smtp->node->user->id, NULL))); /* It was stored using APPEND so it's in cur, not new */
+	snprintf(sentdir, sizeof(sentdir), "%s/.Sent/cur", mailbox_maildir(mailbox_get_by_userid(smtp->node->user->id))); /* It was stored using APPEND so it's in cur, not new */
 	/* Since this is by UID, not sequence number, the directory scan doesn't need to be sorted. */
 	/* Here's the trick: Instead of contacting the IMAP server agnostically, just pull the message right from disk directly. */
 	if (msg_to_filename(sentdir, atoi(uidstr), msgfile, sizeof(msgfile))) {

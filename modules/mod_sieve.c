@@ -444,7 +444,6 @@ static int my_getsubaddress(sieve2_context_t *s, void *varg)
 {
 	struct sieve_exec *sieve = varg;
 	char *dup, *name, *user, *host;
-	int local;
 	const char *address = sieve2_getvalue_string(s, "address");
 
 	free_if(sieve->subaddress);
@@ -452,7 +451,7 @@ static int my_getsubaddress(sieve2_context_t *s, void *varg)
 	if (!dup) {
 		return SIEVE2_ERROR_FAIL;
 	}
-	if (bbs_parse_email_address(dup, &name, &user, &host, &local)) {
+	if (bbs_parse_email_address(dup, &name, &user, &host)) {
 		return SIEVE2_ERROR_BADARGS;
 	}
 	sieve2_setvalue_string(s, "user", user);

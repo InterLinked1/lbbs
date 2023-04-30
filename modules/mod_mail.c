@@ -31,10 +31,12 @@
 #include "include/linkedlists.h"
 #include "include/module.h"
 #include "include/config.h"
+#include "include/node.h" /* use bbs_hostname */
 #include "include/user.h"
 #include "include/utils.h"
 #include "include/oauth.h"
 #include "include/base64.h"
+#include "include/stringlist.h"
 
 #include "include/mod_mail.h"
 
@@ -44,6 +46,8 @@ static unsigned int maxquota = 10000000;
 static unsigned int trashdays = 7;
 
 static pthread_t trash_thread = -1;
+
+struct stringlist local_domains;
 
 /*! \brief Opaque structure for a user's mailbox */
 struct mailbox {
@@ -66,6 +70,17 @@ struct mailbox {
  * mailboxes unlocked and use them in the net modules,
  * since they bump the refcount of this module itself. */
 static RWLIST_HEAD_STATIC(mailboxes, mailbox);
+
+int mail_domain_is_local(const char *domain)
+{
+	if (strlen_zero(domain)) {
+		return 1;
+	}
+	if (!strcmp(domain, bbs_hostname())) {
+		return 1;
+	}
+	return stringlist_contains(&local_domains, domain);
+}
 
 static void (*watchcallback)(struct mailbox *mbox, const char *newfile) = NULL;
 static void *watchmod = NULL;
@@ -224,7 +239,8 @@ int smtp_run_callbacks(struct smtp_msg_process *mproc)
 /* E-Mail Address Alias */
 struct alias {
 	int userid;
-	const char *alias;
+	const char *aliasuser;
+	const char *aliasdomain;
 	const char *target;
 	RWLIST_ENTRY(alias) entry;		/* Next alias */
 	char data[0];
@@ -233,7 +249,8 @@ struct alias {
 static RWLIST_HEAD_STATIC(aliases, alias);
 
 struct listserv {
-	const char *name;
+	const char *user;
+	const char *domain;
 	const char *target;
 	RWLIST_ENTRY(listserv) entry;		/* Next alias */
 	char data[0];
@@ -254,90 +271,110 @@ static void mailbox_cleanup(void)
 	RWLIST_WRLOCK_REMOVE_ALL(&mailboxes, entry, mailbox_free);
 	RWLIST_WRLOCK_REMOVE_ALL(&aliases, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&listservs, entry, free);
+	stringlist_empty(&local_domains);
 }
 
 /*!
  * \brief Retrieve the user ID of the mailbox to which an alias maps
- * \retval 0 on failure/no such alias, positive user ID on success
+ * \retval alias mapping, NULL if none
  */
-static unsigned int resolve_alias(const char *aliasname)
+static const char *resolve_alias(const char *user, const char *domain)
 {
+	const char *retval = NULL;
 	struct alias *alias;
-	unsigned int res;
 
 	RWLIST_RDLOCK(&aliases);
 	RWLIST_TRAVERSE(&aliases, alias, entry) {
-		if (!strcmp(alias->alias, aliasname)) {
-			break;
+		if (!strcmp(alias->aliasuser, user)) {
+			/* Unqualified match, or domain must match */
+			bbs_debug(7, "Analyzing: %s @ %s / %s @ %s\n", user, domain, alias->aliasuser, alias->aliasdomain);
+			if (!alias->aliasdomain || (domain && !strcmp(alias->aliasdomain, domain))) {
+				retval = alias->target; /* Safe to return in practice since aliases cannot be unloaded while the module is running */
+				break;
+			}
 		}
 	}
-	if (!alias) {
-		RWLIST_UNLOCK(&aliases);
-		return 0;
-	}
-	if (alias->userid > 0) {
-		RWLIST_UNLOCK(&aliases);
-		return (unsigned int) alias->userid;
-	} else if (alias->userid == -1) { /* Previously confirmed that this alias does not map to anything, skip an unnecessary lookup that will fail */
-		RWLIST_UNLOCK(&aliases);
-		return 0;
-	}
-	/* First access, compute what the actual user ID mapping is. */
-	res = bbs_userid_from_username(alias->target);
-	if (!res) {
-		alias->userid = -1; /* Indicate no such user exists, so we don't have to look this up again in the future. */
-		/* XXX If the user is created while mod_mail is running, we won't pick that up, but performance benefit of this optimization is probably worth it? */
-		res = 0;
-	} else {
-		alias->userid = res;
-	}
 	RWLIST_UNLOCK(&aliases);
-	return res;
+	return retval;
+}
+
+/*! \note domain must be initialized to NULL before calling this function */
+static void parse_user_domain(char *buf, size_t len, const char *address, char **user, char **domain)
+{
+	char *tmp;
+
+	safe_strncpy(buf, address, len);
+	*user = buf;
+	tmp = strchr(buf, '@');
+	if (tmp) {
+		*tmp++ = '\0';
+		if (!strlen_zero(tmp)) {
+			*domain = tmp;
+		}
+	}
 }
 
 static void add_alias(const char *aliasname, const char *target)
 {
 	struct alias *alias;
-	int aliaslen, targetlen;
+	int aliaslen, domainlen, targetlen;
+	char aliasbuf[256];
+	char *aliasuser, *aliasdomain = NULL;
 
 	if (strlen_zero(target)) {
 		bbs_error("Empty translation for alias %s\n", aliasname);
 		return;
 	}
 
+	parse_user_domain(aliasbuf, sizeof(aliasbuf), aliasname, &aliasuser, &aliasdomain);
+
 	RWLIST_WRLOCK(&aliases);
 	RWLIST_TRAVERSE(&aliases, alias, entry) {
-		if (!strcmp(alias->alias, aliasname)) {
-			break;
+		if (!strcmp(alias->aliasuser, aliasuser)) {
+			if (!alias->aliasdomain) { /* Unqualified alias matches any domain */
+				break;
+			} else if (aliasdomain && !strcmp(alias->aliasdomain, aliasdomain)) { /* Explicit domain match */
+				break;
+			}
 		}
 	}
 	if (alias) {
-		bbs_warning("Alias %s already mapped to user %s\n", alias->alias, alias->target);
+		bbs_warning("Alias %s already mapped to mailbox %s\n", alias->aliasuser, alias->target);
 		RWLIST_UNLOCK(&aliases);
 		return;
 	}
-	aliaslen = strlen(aliasname);
+	aliaslen = strlen(aliasuser);
+	domainlen = aliasdomain ? strlen(aliasdomain) : 0;
 	targetlen = strlen(target);
-	alias = calloc(1, sizeof(*alias) + aliaslen + targetlen + 2);
+	alias = calloc(1, sizeof(*alias) + aliaslen + domainlen + targetlen + 3);
 	if (ALLOC_FAILURE(alias)) {
 		RWLIST_UNLOCK(&aliases);
 		return;
 	}
-	strcpy(alias->data, aliasname);
+	strcpy(alias->data, aliasuser);
 	strcpy(alias->data + aliaslen + 1, target);
-	alias->alias = alias->data;
-	/* Store the actual target name directly, instead of converting to a username immediately, since mod_mysql might not be loaded when the config is parsed. */
+	if (aliasdomain) {
+		strcpy(alias->data + aliaslen + targetlen + 2, aliasdomain);
+		alias->aliasdomain = alias->data + aliaslen + targetlen + 2;
+	}
+	alias->aliasuser = alias->data;
+	/* Store the actual target name directly, instead of converting to a username immediately, since mod_mysql might not be loaded when the config is parsed.
+	 * Also, we can have aliases resolve to non-user mailboxes, e.g. shared mailboxes. */
 	alias->target = alias->data + aliaslen + 1;
 	alias->userid = 0; /* Not known yet, will get the first time we access this. */
 	RWLIST_INSERT_HEAD(&aliases, alias, entry);
-	bbs_debug(3, "Added alias mapping %s => %s\n", alias->alias, alias->target);
+	bbs_debug(3, "Added alias mapping %s%s%s => %s\n", alias->aliasuser, alias->aliasdomain ? "@" : "", S_IF(alias->aliasdomain), alias->target);
 	RWLIST_UNLOCK(&aliases);
 }
 
 static void add_listserv(const char *listname, const char *target)
 {
 	struct listserv *l;
-	int listlen, targetlen;
+	int listlen, domainlen, targetlen;
+	char *listuser, *listdomain = NULL;
+	char listbuf[256];
+
+	parse_user_domain(listbuf, sizeof(listbuf), listname, &listuser, &listdomain);
 
 	if (strlen_zero(target)) {
 		bbs_error("Empty membership for listserv %s\n", listname);
@@ -346,40 +383,53 @@ static void add_listserv(const char *listname, const char *target)
 
 	RWLIST_WRLOCK(&listservs);
 	RWLIST_TRAVERSE(&listservs, l, entry) {
-		if (!strcmp(l->name, listname)) {
-			break;
+		if (!strcmp(l->user, listuser)) {
+			if (!l->domain || (listdomain && !strcmp(l->domain, listdomain))) {
+				break;
+			}
 		}
 	}
 	if (l) {
-		bbs_warning("List %s already defined: %s\n", l->name, l->target);
+		bbs_warning("List %s already defined: %s\n", l->user, l->target);
 		RWLIST_UNLOCK(&listservs);
 		return;
 	}
-	listlen = strlen(listname);
+	listlen = strlen(listuser);
+	domainlen = listdomain ? strlen(listdomain) : 0;
 	targetlen = strlen(target);
-	l = calloc(1, sizeof(*l) + listlen + targetlen + 2);
+	l = calloc(1, sizeof(*l) + listlen + domainlen + targetlen + 3);
 	if (ALLOC_FAILURE(l)) {
 		RWLIST_UNLOCK(&listservs);
 		return;
 	}
-	strcpy(l->data, listname);
+	strcpy(l->data, listuser);
 	strcpy(l->data + listlen + 1, target);
-	l->name = l->data;
+	if (listdomain) {
+		strcpy(l->data + listlen + targetlen + 2, listdomain);
+		l->domain = l->data + listlen + targetlen + 2;
+	}
+	l->user = l->data;
 	/* Store the actual target name directly, instead of converting to a username immediately, since mod_mysql might not be loaded when the config is parsed. */
 	l->target = l->data + listlen + 1;
 	RWLIST_INSERT_HEAD(&listservs, l, entry);
-	bbs_debug(3, "Added listserv mapping %s => %s\n", l->name, l->target);
+	bbs_debug(3, "Added listserv mapping %s%s%s => %s\n", l->user, l->domain ? "@" : "", S_IF(l->domain), l->target);
 	RWLIST_UNLOCK(&listservs);
 }
 
-const char *mailbox_expand_list(const char *listname)
+const char *mailbox_expand_list(const char *user, const char *domain)
 {
 	struct listserv *l;
 
 	RWLIST_RDLOCK(&listservs);
 	RWLIST_TRAVERSE(&listservs, l, entry) {
-		if (!strcmp(l->name, listname)) {
-			break;
+		if (!strcmp(l->user, user)) {
+			if (!l->domain) { /* If l->domain is NULL, that means it's unqualified, and always matches. */
+				break;
+			} else if (domain && !strcmp(l->domain, domain)) { /* l->domain must match domain */
+				break;
+			} else if (!domain && !strcmp(domain, bbs_hostname())) { /* Empty domain matches the primary hostname */
+				break;
+			}
 		}
 	}
 	if (!l) {
@@ -468,25 +518,25 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid, const char *n
 	return mbox;
 }
 
-struct mailbox *mailbox_get(unsigned int userid, const char *name)
+static struct mailbox *mailbox_get(unsigned int userid, const char *user, const char *domain)
 {
+	char mboxpath[256];
 	struct mailbox *mbox = NULL;
 
 	/* If we have a user ID, use that directly. */
-	if (!userid) {
-		char mboxpath[256];
-		if (strlen_zero(name)) {
+	if (!userid && (!domain || !strcmp(domain, bbs_hostname()))) { /* Only for primary domain */
+		if (strlen_zero(user)) {
 			bbs_error("Must specify at least either a user ID or name\n");
 			return NULL;
 		}
 		/* Check for mailbox with this name, explicitly (e.g. shared mailboxes) */
-		snprintf(mboxpath, sizeof(mboxpath), "%s/%s", mailbox_maildir(NULL), name);
+		snprintf(mboxpath, sizeof(mboxpath), "%s/%s", mailbox_maildir(NULL), user);
 		if (!eaccess(mboxpath, R_OK)) {
-			mbox = mailbox_find_or_create(0, name);
+			mbox = mailbox_find_or_create(0, user);
 		}
 		if (!mbox) {
 			/* New mailboxes could be created while the module is running (e.g. new user registration), so we may have to query the DB anyways. */
-			userid = bbs_userid_from_username(name);
+			userid = bbs_userid_from_username(user);
 		}
 	}
 
@@ -497,11 +547,25 @@ struct mailbox *mailbox_get(unsigned int userid, const char *name)
 	}
 
 	/* If we still don't have a valid mailbox at this point, see if it's an alias. */
-	if (!mbox && !strlen_zero(name)) {
-		userid = resolve_alias(name);
-		if (userid) {
-			bbs_debug(5, "Found mailbox mapping via alias\n");
-			mbox = mailbox_find_or_create(userid, NULL);
+	if (!mbox && !strlen_zero(user)) {
+		const char *target = resolve_alias(user, domain);
+		if (target) {
+			bbs_debug(5, "Resolved alias '%s%s%s' => mailbox %s\n", user, domain ? "@" : "", S_IF(domain), target);
+			/* The alias could resolve to a shared mailbox, for example, not necessarily a user,
+			 * so take advantage of the existing lookup strategy for that. */
+			snprintf(mboxpath, sizeof(mboxpath), "%s/%s", mailbox_maildir(NULL), target);
+			if (!eaccess(mboxpath, R_OK)) {
+				mbox = mailbox_find_or_create(0, target);
+			}
+			if (!mbox) {
+				/* New mailboxes could be created while the module is running (e.g. new user registration), so we may have to query the DB anyways. */
+				userid = bbs_userid_from_username(target); /* These are cached so not super terrible to look up every time... */
+			}
+			if (!userid) {
+				bbs_warning("Alias target '%s' cannot be resolved\n", target);
+			} else {
+				mbox = mailbox_find_or_create(userid, NULL);
+			}
 		}
 	}
 
@@ -518,10 +582,20 @@ struct mailbox *mailbox_get(unsigned int userid, const char *name)
 		}
 	}
 
-	if (!mbox && !strlen_zero(name)) {
-		bbs_debug(5, "No user or alias exists for %s\n", name);
+	if (!mbox && !strlen_zero(user)) {
+		bbs_debug(5, "No user or alias exists for %s%s%s\n", user, domain ? "@" : "", S_IF(domain));
 	}
 	return mbox;
+}
+
+struct mailbox *mailbox_get_by_name(const char *user, const char *domain)
+{
+	return mailbox_get(0, user, domain);
+}
+
+struct mailbox *mailbox_get_by_userid(unsigned int userid)
+{
+	return mailbox_get(userid, NULL, NULL);
 }
 
 int mailbox_rdlock(struct mailbox *mbox)
@@ -1406,12 +1480,8 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, void *ob
 	int tstamp;
 	int trashsec = 86400 * trashdays;
 	int elapsed, now = time(NULL);
-	int mboxnum, *boxptr;
-	struct mailbox *mbox = NULL;
+	struct mailbox *mbox = obj;
 	unsigned int msguid;
-
-	boxptr = obj;
-	mboxnum = *boxptr;
 
 	/* For autopurging, we don't care if the Deleted flag is set or not.
 	 * (If it were set, an IMAP user already flagged it for permanent deletion and it would just be awaiting expunge) */
@@ -1429,10 +1499,7 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, void *ob
 			bbs_error("unlink(%s) failed: %s\n", fullname, strerror(errno));
 		} else {
 			bbs_debug(4, "Permanently deleted %s\n", fullname);
-			mbox = mailbox_get(mboxnum, NULL);
-			if (likely(mbox != NULL)) {
-				mailbox_quota_adjust_usage(mbox, -st.st_size); /* Subtract file size from quota usage */
-			}
+			mailbox_quota_adjust_usage(mbox, -st.st_size); /* Subtract file size from quota usage */
 		}
 		maildir_parse_uid_from_filename(filename, &msguid);
 		/*! \todo Since many messages are probably deleted at the same time,
@@ -1450,7 +1517,6 @@ static void scan_mailboxes(void)
 	DIR *dir;
 	struct dirent *entry;
 	char trashdir[515];
-	int mboxnum;
 
 	/* Traverse each mailbox top-level maildir */
 	if (!(dir = opendir(maildir))) {
@@ -1458,6 +1524,8 @@ static void scan_mailboxes(void)
 		return;
 	}
 	while ((entry = readdir(dir)) != NULL) {
+		struct mailbox *mbox;
+		int mboxnum;
 		if (entry->d_type != DT_DIR || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			continue;
 		}
@@ -1471,7 +1539,8 @@ static void scan_mailboxes(void)
 			continue;
 		}
 		bbs_debug(3, "Analyzing trash folder %s\n", trashdir);
-		bbs_dir_traverse(trashdir, on_mailbox_trash, &mboxnum, -1); /* Traverse files in the Trash folder */
+		mbox = mailbox_find_or_create(mboxnum, mboxnum ? NULL : entry->d_name);
+		bbs_dir_traverse(trashdir, on_mailbox_trash, mbox, -1); /* Traverse files in the Trash folder */
 	}
 
 	closedir(dir);
@@ -1526,6 +1595,13 @@ static int load_config(void)
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				const char *key = bbs_keyval_key(keyval), *value = bbs_keyval_val(keyval);
 				add_listserv(key, value);
+			}
+		} else if (!strcmp(bbs_config_section_name(section), "domains")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				const char *key = bbs_keyval_key(keyval);
+				if (!stringlist_contains(&local_domains, key)) {
+					stringlist_push(&local_domains, key);
+				}
 			}
 		} else {
 			bbs_warning("Unknown section name, ignoring: %s\n", bbs_config_section_name(section));
