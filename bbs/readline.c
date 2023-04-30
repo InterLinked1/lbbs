@@ -19,6 +19,10 @@
 
 #include "include/bbs.h"
 
+#ifdef BBS_IN_CORE
+#include <stdio.h> /* use BUFSIZ */
+#endif
+
 #include "include/readline.h"
 
 #ifdef BBS_IN_CORE
@@ -118,6 +122,57 @@ int bbs_readline(int fd, struct readline_data *rldata, const char *delim, int ti
 	}
 
 	return readline_post_read(rldata, delim, firstdelim, res);
+}
+
+int bbs_readline_getn(int fd, int destfd, struct readline_data *rldata, int timeout, int n)
+{
+	int res, wres;
+	int left_in_buffer;
+	int written = 0, remaining = n;
+
+	/* First, use anything that's already in the buffer from a previous read.
+	 * The actual delimiter we provide to readline_pre_read doesn't matter here, it can be anything,
+	 * since we don't use the result.
+	 * We only check rldata->pos afterwards to determine how much data is already in the buffer. */
+	readline_pre_read(rldata, "\n", &res);
+	left_in_buffer = rldata->pos - rldata->buf;
+#ifdef EXTRA_DEBUG
+	bbs_debug(8, "Up to %d/%d bytes can be satisfied from existing buffer\n", left_in_buffer, n);
+#endif
+	if (left_in_buffer) {
+		int bytes = MIN(left_in_buffer, n); /* Minimum of # bytes available or # bytes we want to read */
+		wres = bbs_write(destfd, rldata->buf, bytes);
+		if (wres < 0) {
+			return wres;
+		}
+		written += wres;
+		remaining -= wres;
+		/* Update (shift) the rldata buffer for the next time it gets used. */
+		memmove(rldata->buf, rldata->buf + bytes, left_in_buffer - bytes);
+		left_in_buffer -= bytes;
+		rldata->buf[left_in_buffer] = '\0';
+		/* Update our position to where we need to be. */
+		rldata->pos = rldata->buf + left_in_buffer;
+		rldata->left = rldata->len - left_in_buffer;
+	}
+	/* For the remainder of this function, we don't use the rldata buffer.
+	 * Since we know the exact number of bytes we want, we can use a temporary buffer
+	 * and write them directly to the destination, no persistent bookkeeping is required. */
+	while (remaining) {
+		char readbuf[BUFSIZ];
+		int readsize = MIN((int) sizeof(readbuf), remaining); /* Don't read more than we want, or can */
+		res = bbs_poll_read(fd, timeout, readbuf, readsize);
+		if (res <= 0) {
+			return written;
+		}
+		wres = bbs_write(destfd, readbuf, res);
+		if (wres <= 0) {
+			return written;
+		}
+		written += wres;
+		remaining -= wres;
+	}
+	return written;
 }
 #endif /* BBS_IN_CORE */
 

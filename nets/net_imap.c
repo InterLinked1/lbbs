@@ -14,6 +14,7 @@
  *
  * \brief RFC9051 Internet Message Access Protocol (IMAP) version 4rev2 (updates RFC3501 IMAP 4rev1)
  *
+ * \note Supports RFC 2088 LITERAL+ (for APPEND only)
  * \note Supports RFC 2177 IDLE
  * \note Supports RFC 2342 NAMESPACE
  * \note Supports RFC 4315 UIDPLUS (obsoletes RFC 2359)
@@ -45,7 +46,6 @@
  */
 
 /*! \todo IMAP functionality not yet implemented/supported:
- * - RFC 2088 LITERAL+ and 7888 LITERAL-
  * - RFC 3502 MULTIAPPEND - this could be potentially dangerous due to small deviations in literal sizes (see APPEND comments about Trojita)
  * - RFC 4469 CATENATE
  * - RFC 4959 SASL-IR
@@ -62,6 +62,7 @@
  * - RFC 6203 FUZZY SEARCH
  * - RFC 6237 ESEARCH (MULTISEARCH)
  * - RFC 6855 UTF-8
+ * - RFC 7888 LITERAL-
  * - RFC 8970 PREVIEW
  * - BINARY and MULTIAPPEND extensions (RFC 3516, 4466)
  * Other capabilities: AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH AUTH=XOAUTH2
@@ -71,7 +72,7 @@
 /* List of capabilities: https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml */
 /* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
 /* XXX URLAUTH is advertised so that SMTP BURL will function in Trojita, even though we don't need URLAUTH since we have a direct trust */
-#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT SPECIAL-USE XLIST CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC"
+#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT SPECIAL-USE XLIST CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS LITERAL+ APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC"
 
 /* Capabilities advertised by popular mail providers, for reference/comparison, both pre and post authentication:
  * - Office 365
@@ -304,18 +305,9 @@ struct imap_session {
 	char *savedsearch;			/* SEARCHRES */
 	char *clientid;				/* Client ID */
 	struct bbs_tcp_client client;	/* TCP client for virtual mailbox access on remote servers */
-	/* APPEND */
-	char appenddir[212];		/* APPEND directory */
-	char appendtmp[260];		/* APPEND tmp name */
-	char appendnew[260];		/* APPEND new name */
+	struct readline_data *rldata;	/* Pointer to rldata used for reading input from client */
 	char appendkeywords[27];	/* APPEND keywords (custom flags) */
-	char *appenddate;			/* APPEND optional date */
-	int appendflags;			/* APPEND optional flags */
-	int appendfile;				/* File descriptor of current APPEND file */
-	unsigned int appendsize;	/* Expected size of APPEND */
-	unsigned int appendcur;		/* Bytes received so far in APPEND transfer */
 	unsigned int numappendkeywords:5; /* Number of append keywords. We only need 5 bits since this cannot exceed 26. */
-	unsigned int appendfail:1;
 	unsigned int createdkeyword:1;	/* Whether a keyword was created in response to a STORE */
 	/* Other flags */
 	unsigned int savedsearchuid:1;	/* Whether the saved search consists of sequence numbers or UIDs */
@@ -669,8 +661,6 @@ static void imap_destroy(struct imap_session *imap)
 		imap->mbox = NULL;
 	}
 	free_if(imap->savedsearch);
-	close_if(imap->appendfile);
-	free_if(imap->appenddate);
 	/* Do not free tag, since it's stack allocated */
 	free_if(imap->savedtag);
 	free_if(imap->clientid);
@@ -3882,22 +3872,35 @@ cleanup:
 
 static int handle_append(struct imap_session *imap, char *s)
 {
-	int appendsize;
-	char *mailbox, *flags, *size;
+	int appendsize, appendfile, appendflags = 0, res;
+	char *mailbox, *flags, *sizestr;
+	char *appenddate = NULL;
+	int synchronizing;
 	unsigned long quotaleft;
 	int destacl;
+
+	char appenddir[212];		/* APPEND directory */
+	char appendtmp[260];		/* APPEND tmp name */
+	char appendnew[260];		/* APPEND new name */
+	char curdir[260];
+	char newdir[260];
+	char newfilename[256];
+	char *filename;
+	unsigned int uidvalidity, uidnext;
+	unsigned long size;
 
 	/* Format is mailbox [flags] [date] message literal
 	 * The message literal begins with {size} on the same line
 	 * See also RFC 3502. */
 
 	SHIFT_OPTIONALLY_QUOTED_ARG(mailbox, s);
-	size = strchr(s, '{');
-	if (!size) {
+	sizestr = strchr(s, '{');
+	if (!sizestr) {
 		imap_reply(imap, "NO [CLIENTBUG] Missing message literal size");
 		return 0;
 	}
-	*size++ = '\0';
+	*sizestr++ = '\0';
+	synchronizing = strchr(sizestr, '+') ? 0 : 1;
 
 	/* To properly handle the case without flags or date,
 	 * e.g. APPEND "INBOX" {1290}
@@ -3905,7 +3908,7 @@ static int handle_append(struct imap_session *imap, char *s)
 	 * if there's no flags or date, then *s was { prior to size++.
 	 * In this case, we can skip all this:
 	 */
-	if (size > s + 1) {
+	if (sizestr > s + 1) {
 		char *date;
 		/* These are both optional arguments */
 
@@ -3932,25 +3935,22 @@ static int handle_append(struct imap_session *imap, char *s)
 			flags = NULL;
 		}
 
-		imap->appendflags = 0;
-		free_if(imap->appenddate);
-
 		if (flags) {
 			/* Skip () */
 			bbs_strterm(flags, ')');
 			flags++;
 			if (!strlen_zero(flags)) {
-				imap->appendflags = parse_flags_string(imap, flags);
+				appendflags = parse_flags_string(imap, flags);
 				/* imap->appendkeywords will also contain keywords as well */
 			}
 		}
 		if (date) {
-			imap->appenddate = strdup(date);
+			appenddate = date;
 		}
 	}
 
 	STRIP_QUOTES(mailbox);
-	if (imap_translate_dir(imap, mailbox, imap->appenddir, sizeof(imap->appenddir), &destacl)) { /* Destination directory doesn't exist. */
+	if (imap_translate_dir(imap, mailbox, appenddir, sizeof(appenddir), &destacl)) { /* Destination directory doesn't exist. */
 		imap_reply(imap, "NO [TRYCREATE] No such mailbox");
 		return 0;
 	}
@@ -3958,8 +3958,7 @@ static int handle_append(struct imap_session *imap, char *s)
 	IMAP_REQUIRE_ACL(destacl, IMAP_ACL_INSERT);
 
 	quotaleft = mailbox_quota_remaining(imap->mbox); /* Calculate current quota remaining to determine acceptance. */
-
-	appendsize = atoi(size); /* Read this many bytes */
+	appendsize = atoi(sizestr); /* Read this many bytes */
 	if (appendsize <= 0) {
 		imap_reply(imap, "NO [CLIENTBUG] Invalid message literal size");
 		return 0;
@@ -3971,13 +3970,83 @@ static int handle_append(struct imap_session *imap, char *s)
 		return 0;
 	}
 
-	_imap_reply(imap, "+ Ready for literal data\r\n"); /* Synchronizing literal response */
-	imap->appendsize = appendsize; /* Bytes we expect to receive */
-	imap->appendcur = 0; /* Bytes received so far */
-	imap->appendfile = maildir_mktemp(imap->appenddir, imap->appendtmp, sizeof(imap->appendtmp), imap->appendnew);
-	if (imap->appendfile < 0) {
+	appendfile = maildir_mktemp(appenddir, appendtmp, sizeof(appendtmp), appendnew);
+	if (appendfile < 0) {
 		return -1;
 	}
+
+	if (synchronizing) {
+		_imap_reply(imap, "+ Ready for literal data\r\n"); /* Synchronizing literal response */
+	}
+	res = bbs_readline_getn(imap->rfd, appendfile, imap->rldata, 5000, appendsize);
+	if (res != appendsize) {
+		bbs_warning("Client wanted to append %d bytes, but sent %d?\n", appendsize, res);
+		return -1; /* Disconnect if we failed to receive the upload properly, since we're probably all screwed up now */
+	}
+
+	/* Process the upload */
+	bbs_debug(3, "Received %d-byte upload\n", res);
+	close_if(appendfile);
+	filename = strrchr(appendnew, '/');
+	if (!filename) {
+		bbs_error("Invalid filename: %s\n", appendnew);
+		imap_reply(imap, "NO [SERVERBUG] Append failed");
+		unlink(appendnew);
+		return 0;
+	}
+	filename++; /* Just the base name now */
+	if (rename(appendtmp, appendnew)) {
+		bbs_error("rename %s -> %s failed: %s\n", appendtmp, appendnew, strerror(errno));
+		imap_reply(imap, "NO [SERVERBUG] Append failed");
+		return 0;
+	}
+
+	/* File has been moved from tmp to new.
+	 * Now, move it to cur.
+	 * This is a 2-stage rename because we don't have a function to move an arbitrary
+	 * file into a mailbox folder, only one that's already in cur,
+	 * and the only function that properly initializes a filename is maildir_move_new_to_cur. */
+	snprintf(curdir, sizeof(curdir), "%s/cur", appenddir);
+	snprintf(newdir, sizeof(newdir), "%s/new", appenddir);
+	res = maildir_move_new_to_cur_file(imap->mbox, appenddir, curdir, newdir, filename, &uidvalidity, &uidnext, newfilename, sizeof(newfilename));
+	if (res < 0) {
+		imap_reply(imap, "NO [SERVERBUG] Append failed");
+		return 0;
+	}
+
+	/* maildir_move_new_to_cur_file conveniently put the size in the filename for us,
+	 * so we can just update the quota usage accordingly rather than having to invalidate it. */
+	if (parse_size_from_filename(newfilename, &size)) {
+		/* It's too late to stat now as a fallback, the file's gone, who knows how big it was now. */
+		mailbox_invalidate_quota_cache(imap->mbox);
+	} else {
+		mailbox_quota_adjust_usage(imap->mbox, -size);
+	}
+
+	/* Now, apply any flags to the message... (yet a third rename, potentially) */
+	if (appendflags) {
+		int seqno;
+		char newflagletters[53];
+		/* Generate flag letters from flag bits */
+		gen_flag_letters(appendflags, newflagletters, sizeof(newflagletters));
+		if (imap->numappendkeywords) {
+			strncat(newflagletters, imap->appendkeywords, sizeof(newflagletters) - 1);
+		}
+		seqno = num_messages(newdir) + num_messages(curdir); /* XXX Clunky, but compute the sequence number of this message as the # of messages in this mailbox */
+		if (maildir_msg_setflags(imap, seqno, newfilename, newflagletters)) {
+			bbs_warning("Failed to set flags for %s\n", newfilename);
+		}
+	}
+
+	/* Set the internal date? Maybe not, since the original date of the message should be preserved for best user experience. */
+	/*! \todo Set the file creation/modified time (strptime)? (If we do this, it shouldn't be a value returned to the client later, see note above) */
+	UNUSED(appenddate);
+
+	/* APPENDUID response */
+	/* Use tag from APPEND request */
+	_imap_reply(imap, "%s OK [APPENDUID %u %u] APPEND completed\r\n", imap->savedtag, uidvalidity, uidnext); /* Don't add 1, this is the current message UID, not UIDNEXT */
+	/*! \todo BUGBUG If mailbox currently selected, we SHOULD send an untagged EXISTS e.g. send_untagged_exists
+	 * Even if not, we should for that particular mailbox (folder) for other clients that may be monitoring it. */
 	return 0;
 }
 
@@ -4112,86 +4181,6 @@ static int maildir_msg_setflags_notify(struct imap_session *imap, int seqno, con
 {
 	unsigned long newmodseq; /* newmodseq will be non NULL, so we'll know that we need to send out the FETCH accordingly */
 	return maildir_msg_setflags_modseq(imap, seqno, origname, newflagletters, &newmodseq);
-}
-
-static int finish_append(struct imap_session *imap)
-{
-	char curdir[260];
-	char newdir[260];
-	char newfilename[256];
-	char *filename;
-	int res;
-	unsigned int uidvalidity, uidnext;
-	unsigned long size;
-
-	if (imap->appendcur != imap->appendsize) {
-		/* Note: Trojita (which seems to be quite broken, but is the only client AFAIK that supports BURL, for testing)
-		 * sends 2 bytes more than we expect, so if those last 2 are CR LF, can safely ignore this. */
-		bbs_warning("Client wanted to append %d bytes, but sent %d?\n", imap->appendsize, imap->appendcur);
-	}
-	imap->appendsize = 0; /* APPEND is over now */
-	close_if(imap->appendfile);
-	filename = strrchr(imap->appendnew, '/');
-	if (!filename) {
-		bbs_error("Invalid filename: %s\n", imap->appendnew);
-		imap_reply(imap, "NO [SERVERBUG] Append failed");
-		return 0;
-	}
-	filename++; /* Just the base name now */
-	if (rename(imap->appendtmp, imap->appendnew)) {
-		bbs_error("rename %s -> %s failed: %s\n", imap->appendtmp, imap->appendnew, strerror(errno));
-		imap_reply(imap, "NO [SERVERBUG] Append failed");
-		return 0;
-	}
-
-	/* File has been moved from tmp to new.
-	 * Now, move it to cur.
-	 * This is a 2-stage rename because we don't have a function to move an arbitrary
-	 * file into a mailbox folder, only one that's already in cur,
-	 * and the only function that properly initializes a filename is maildir_move_new_to_cur. */
-	snprintf(curdir, sizeof(curdir), "%s/cur", imap->appenddir);
-	snprintf(newdir, sizeof(newdir), "%s/new", imap->appenddir);
-	res = maildir_move_new_to_cur_file(imap->mbox, imap->appenddir, curdir, newdir, filename, &uidvalidity, &uidnext, newfilename, sizeof(newfilename));
-	if (res < 0) {
-		imap_reply(imap, "NO [SERVERBUG] Append failed");
-		return 0;
-	}
-
-	/* maildir_move_new_to_cur_file conveniently put the size in the filename for us,
-	 * so we can just update the quota usage accordingly rather than having to invalidate it. */
-	if (parse_size_from_filename(newfilename, &size)) {
-		/* It's too late to stat now as a fallback, the file's gone, who knows how big it was now. */
-		mailbox_invalidate_quota_cache(imap->mbox);
-	} else {
-		mailbox_quota_adjust_usage(imap->mbox, -size);
-	}
-
-	/* Now, apply any flags to the message... (yet a third rename, potentially) */
-	if (imap->appendflags) {
-		int seqno;
-		char newflagletters[53];
-		/* Generate flag letters from flag bits */
-		gen_flag_letters(imap->appendflags, newflagletters, sizeof(newflagletters));
-		if (imap->numappendkeywords) {
-			strncat(newflagletters, imap->appendkeywords, sizeof(newflagletters) - 1);
-		}
-		imap->appendflags = 0;
-		seqno = num_messages(newdir) + num_messages(curdir); /* XXX Clunky, but compute the sequence number of this message as the # of messages in this mailbox */
-		if (maildir_msg_setflags(imap, seqno, newfilename, newflagletters)) {
-			bbs_warning("Failed to set flags for %s\n", newfilename);
-		}
-	}
-
-	/* Set the internal date? Maybe not, since the original date of the message should be preserved for best user experience. */
-	/*! \todo Set the file creation/modified time (strptime)? (If we do this, it shouldn't be a value returned to the client later, see note above) */
-	UNUSED(imap->appenddate);
-
-	/* APPENDUID response */
-	/* Use tag from APPEND request */
-	_imap_reply(imap, "%s OK [APPENDUID %u %u] APPEND completed\r\n", imap->savedtag, uidvalidity, uidnext); /* Don't add 1, this is the current message UID, not UIDNEXT */
-	/*! \todo BUGBUG If mailbox currently selected, we SHOULD send an untagged EXISTS e.g. send_untagged_exists
-	 * Even if not, we should for that particular mailbox (folder) for other clients that may be monitoring it. */
-	return 0;
 }
 
 static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_request *fetchreq, const char *sequences)
@@ -7630,28 +7619,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		imap->alerted = 2;
 	}
 
-	if (imap->appendsize) {
-		/* We're in the middle of an append at the moment.
-		 * This is kind of like the DATA command with SMTP. */
-		int dlen;
-
-		if (imap->appendfail) {
-			return 0; /* Corruption already happened, just ignore the rest of the message for now. */
-		}
-
-		dlen = strlen(s); /* s may be empty but will not be NULL */
-		bbs_write(imap->appendfile, s, dlen);
-		bbs_write(imap->appendfile, "\r\n", 2);
-		imap->appendcur += dlen + 2;
-#ifdef EXTRA_DEBUG
-		imap_debug(10, "Received %d/%d bytes of APPEND so far\n", imap->appendcur, imap->appendsize);
-#endif
-
-		if (imap->appendcur >= imap->appendsize) {
-			finish_append(imap);
-		}
-		return 0;
-	} else if (imap->inauth) {
+	if (imap->inauth) {
 		return handle_auth(imap, s);
 	}
 
@@ -7687,7 +7655,7 @@ static int imap_process(struct imap_session *imap, char *s)
 	 */
 
 	if (imap->pending && !imap->virtmbox) { /* Not necessary to lock just to read the flag. Only if we're actually going to read data. */
-		struct readline_data rldata;
+		struct readline_data rldata2;
 
 		/* If it's a command during which we're not allowed to send an EXPUNGE, then don't send it now. */
 
@@ -7702,10 +7670,10 @@ static int imap_process(struct imap_session *imap, char *s)
 		if (!STARTS_WITH(command, "FETCH") && !STARTS_WITH(command, "STORE") && !STARTS_WITH(command, "SEARCH") && !STARTS_WITH(command, "SORT") && !STARTS_WITH(command, "THREAD") && (!STARTS_WITH(command, "UID") || (!strlen_zero(s) && !STARTS_WITH(s, "SEARCH")))) {
 			char buf[1024]; /* Hopefully big enough for any single untagged  response. */
 			pthread_mutex_lock(&imap->lock);
-			bbs_readline_init(&rldata, buf, sizeof(buf));
+			bbs_readline_init(&rldata2, buf, sizeof(buf));
 			/* Read from the pipe until it's empty again. If there's more than one response waiting, and in particular, more than sizeof(buf), we need to read by line. */
 			for (;;) {
-				res = bbs_readline(imap->pfd[0], &rldata, "\r\n", 5); /* Only up to 5 ms */
+				res = bbs_readline(imap->pfd[0], &rldata2, "\r\n", 5); /* Only up to 5 ms */
 				if (res < 0) {
 					break;
 				}
@@ -8172,6 +8140,7 @@ static void handle_client(struct imap_session *imap)
 	struct readline_data rldata;
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
+	imap->rldata = &rldata;
 
 	imap_send(imap, "OK %s Service Ready", IMAP_REV);
 
@@ -8190,7 +8159,7 @@ static void handle_client(struct imap_session *imap)
 		word2 = strchr(buf, ' ');
 		if (imap->inauth || (word2++ && !strlen_zero(word2) && !strncasecmp(word2, "LOGIN", STRLEN("LOGIN")))) {
 			bbs_debug(6, "%p => <LOGIN REDACTED>\n", imap); /* Mask login to avoid logging passwords */
-		} else if (!imap->appendsize) {
+		} else {
 			bbs_debug(6, "%p => %s\n", imap, buf);
 		}
 		if (imap_process(imap, buf)) {
@@ -8224,7 +8193,6 @@ static void imap_handler(struct bbs_node *node, int secure)
 	imap.rfd = rfd;
 	imap.wfd = wfd;
 	imap.node = node;
-	imap.appendfile = -1;
 
 	if (pipe(imap.pfd)) {
 		bbs_error("pipe failed: %s\n", strerror(errno));

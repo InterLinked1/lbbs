@@ -273,6 +273,20 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(client1, "11] APPEND"); /* The UID of this message should be 11 */
 	CLIENT_DRAIN(client1);
 
+	/* Repeat with non-synchronizing literal */
+	SWRITE(client1, "a14b APPEND INBOX (\\Seen) {326+}" ENDL);
+	SWRITE(client1, "Date: Mon, 7 Feb 1994 21:52:25 -0800 (PST)" ENDL);
+	SWRITE(client1, "From: Fred Foobar <foobar@Blurdybloop.example>" ENDL);
+	SWRITE(client1, "Subject: afternoon meeting" ENDL);
+	SWRITE(client1, "To: mooch@owatagu.siam.edu.example" ENDL);
+	SWRITE(client1, "Message-Id: <B27397-0100000@Blurdybloop.example>" ENDL);
+	SWRITE(client1, "MIME-Version: 1.0" ENDL);
+	SWRITE(client1, "Content-Type: TEXT/PLAIN; CHARSET=US-ASCII" ENDL);
+	SWRITE(client1, ENDL);
+	SWRITE(client1, "Hello Joe, do you think we can meet at 3:30 tomorrow?" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "12] APPEND"); /* The UID of this message should be 11 */
+	CLIENT_DRAIN(client1);
+
 	/* STORE */
 	SWRITE(client1, "a15 STORE 1:3 +FLAGS (\\Seen)" ENDL); /* Mark messages 1 through 3 as read */
 	CLIENT_EXPECT_EVENTUALLY(client1, "* 3 FETCH (FLAGS (\\Seen))"); /* We know taht no other flags have been set yet */
@@ -337,7 +351,7 @@ static int run(void)
 	CLIENT_EXPECT(client1, "+");
 	send_count = 0;
 	make_messages(1);
-	CLIENT_EXPECT(client1, "* 12 EXISTS"); /* Should receive an untagged EXISTS message. In particular, there are now 12 messages in this folder. */
+	CLIENT_EXPECT(client1, "* 13 EXISTS"); /* Should receive an untagged EXISTS message. In particular, there are now 13 messages in this folder. */
 
 	/* Change the flags of a message. We should get an untagged response for it. */
 	SELECT_MAILBOX(client2, "b3", "INBOX");

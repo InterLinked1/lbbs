@@ -147,7 +147,7 @@ cleanup:
 
 static int test_readline_helper(void)
 {
-	int res = -1;
+	int mres, res = -1;
 	char buf[256];
 	int pfd[2];
 	struct readline_data rldata;
@@ -160,30 +160,30 @@ static int test_readline_helper(void)
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 
 	SWRITE(pfd[1], "abcd\r\nefg");
-	res = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
-	bbs_test_assert_equals(4, res);
+	mres = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
+	bbs_test_assert_equals(4, mres);
 	bbs_test_assert_str_equals(buf, "abcd");
 	SWRITE(pfd[1], "hi\r\nj");
-	res = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
-	bbs_test_assert_equals(5, res);
+	mres = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
+	bbs_test_assert_equals(5, mres);
 	bbs_test_assert_str_equals(buf, "efghi");
 	SWRITE(pfd[1], "k\r\nlmno\r\npqrs\r\n");
-	res = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
-	bbs_test_assert_equals(2, res);
+	mres = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
+	bbs_test_assert_equals(2, mres);
 	bbs_test_assert_str_equals(buf, "jk");
-	res = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
-	bbs_test_assert_equals(4, res);
+	mres = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
+	bbs_test_assert_equals(4, mres);
 	bbs_test_assert_str_equals(buf, "lmno");
-	res = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
-	bbs_test_assert_equals(4, res);
+	mres = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
+	bbs_test_assert_equals(4, mres);
 	bbs_test_assert_str_equals(buf, "pqrs");
 	SWRITE(pfd[1], "tuv\r\n");
-	res = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
-	bbs_test_assert_equals(3, res);
+	mres = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
+	bbs_test_assert_equals(3, mres);
 	bbs_test_assert_str_equals(buf, "tuv");
 	SWRITE(pfd[1], "wxyz\r\n");
-	res = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
-	bbs_test_assert_equals(4, res);
+	mres = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
+	bbs_test_assert_equals(4, mres);
 	bbs_test_assert_str_equals(buf, "wxyz");
 
 	res = 0;
@@ -196,7 +196,7 @@ cleanup:
 
 static int test_readline_append(void)
 {
-	int res = -1;
+	int mres;
 	char inbuf[256];
 	char buf[256];
 	struct readline_data rldata;
@@ -206,29 +206,29 @@ static int test_readline_append(void)
 
 #undef sprintf
 	len = sprintf(inbuf, "Test1\nTest2\nTe");
-	res = bbs_readline_append(&rldata, "\n", inbuf, len, &ready);
-	bbs_test_assert_equals(len, res);
+	mres = bbs_readline_append(&rldata, "\n", inbuf, len, &ready);
+	bbs_test_assert_equals(len, mres);
 	bbs_test_assert_equals(1, ready);
 	bbs_test_assert_str_equals(buf, "Test1");
 
-	res = bbs_readline_append(&rldata, "\n", "", 0, &ready);
-	bbs_test_assert_equals(0, res);
+	mres = bbs_readline_append(&rldata, "\n", "", 0, &ready);
+	bbs_test_assert_equals(0, mres);
 	bbs_test_assert_equals(1, ready);
 	bbs_test_assert_str_equals(buf, "Test2");
 
-	res = bbs_readline_append(&rldata, "\n", "", 0, &ready);
-	bbs_test_assert_equals(0, res);
+	mres = bbs_readline_append(&rldata, "\n", "", 0, &ready);
+	bbs_test_assert_equals(0, mres);
 	bbs_test_assert_equals(0, ready);
 	bbs_test_assert_str_equals(buf, "Te");
 
 	len = sprintf(inbuf, "st3\nTest4\n");
-	res = bbs_readline_append(&rldata, "\n", inbuf, len, &ready);
-	bbs_test_assert_equals(len, res);
+	mres = bbs_readline_append(&rldata, "\n", inbuf, len, &ready);
+	bbs_test_assert_equals(len, mres);
 	bbs_test_assert_equals(1, ready);
 	bbs_test_assert_str_equals(buf, "Test3");
 
-	res = bbs_readline_append(&rldata, "\n", "", 0, &ready);
-	bbs_test_assert_equals(0, res);
+	mres = bbs_readline_append(&rldata, "\n", "", 0, &ready);
+	bbs_test_assert_equals(0, mres);
 	bbs_test_assert_equals(1, ready);
 	bbs_test_assert_str_equals(buf, "Test4");
 
@@ -236,6 +236,58 @@ static int test_readline_append(void)
 
 cleanup:
 	return -1;
+}
+
+static int test_readline_getn(void)
+{
+	int res = -1;
+	int mres;
+	char buf[256];
+	char buf2[256];
+	int pfd[2], pfd2[2];
+	struct readline_data rldata;
+
+	if (pipe(pfd)) {
+		bbs_error("pipe failed: %s\n", strerror(errno));
+		return -1;
+	} else if (pipe(pfd2)) {
+		bbs_error("pipe failed: %s\n", strerror(errno));
+		goto cleanup;
+	}
+
+	bbs_readline_init(&rldata, buf, sizeof(buf));
+
+	SWRITE(pfd[1], "abcd\r\nefg");
+	mres = bbs_readline_getn(pfd[0], pfd2[1], &rldata, 1000, 3);
+	bbs_test_assert_equals(3, mres);
+	mres = read(pfd2[0], buf2, sizeof(buf2));
+	bbs_test_assert_equals(3, mres);
+	buf2[mres] = '\0'; /* Returned string is not NUL-terminated so do that for strcmp */
+	bbs_test_assert_str_equals(buf2, "abc");
+
+	mres = bbs_readline_getn(pfd[0], pfd2[1], &rldata, 1000, 4);
+	bbs_test_assert_equals(4, mres);
+	mres = read(pfd2[0], buf2, sizeof(buf2));
+	bbs_test_assert_equals(4, mres);
+	buf2[mres] = '\0'; /* Returned string is not NUL-terminated so do that for strcmp */
+	bbs_test_assert_str_equals(buf2, "d\r\ne");
+
+	SWRITE(pfd[1], "foobar");
+	mres = bbs_readline_getn(pfd[0], pfd2[1], &rldata, 1000, 8);
+	bbs_test_assert_equals(8, mres);
+	mres = read(pfd2[0], buf2, sizeof(buf2));
+	bbs_test_assert_equals(8, mres);
+	buf2[mres] = '\0'; /* Returned string is not NUL-terminated so do that for strcmp */
+	bbs_test_assert_str_equals(buf2, "fgfoobar");
+
+	res = 0;
+
+cleanup:
+	close_if(pfd[0]);
+	close_if(pfd[1]);
+	close_if(pfd2[0]);
+	close_if(pfd2[1]);
+	return res;
 }
 
 static int test_sasl_decode(void)
@@ -380,6 +432,7 @@ static struct unit_tests {
 	{ "String Copy w/o Spaces", test_strcpy_nospaces },
 	{ "Readline Helper", test_readline_helper },
 	{ "Readline Append", test_readline_append },
+	{ "Readline getn", test_readline_getn },
 	{ "SASL Decoding", test_sasl_decode },
 	{ "IPv4 CIDR Range Matching", test_cidr_ipv4 },
 	{ "IPv4 Address Detection", test_ipv4_detection },

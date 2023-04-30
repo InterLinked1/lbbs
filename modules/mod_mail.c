@@ -52,6 +52,7 @@ struct mailbox {
 	unsigned int quota;					/* Total quota for this mailbox */
 	unsigned int quotausage;			/* Cached quota usage calculation */
 	char maildir[256];					/* User's mailbox directory, on disk. */
+	int maildirlen;						/* Length of maildir */
 	pthread_rwlock_t lock;				/* R/W lock for entire mailbox. R/W instead of a mutex, because POP write locks the entire mailbox, IMAP can just read lock. */
 	pthread_mutex_t uidlock;			/* Mutex for UID operations. */
 	RWLIST_ENTRY(mailbox) entry;		/* Next mailbox */
@@ -438,6 +439,7 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid, const char *n
 		} else {
 			snprintf(mbox->maildir, sizeof(mbox->maildir), "%s/%s", maildir, name);
 		}
+		mbox->maildirlen = strlen(mbox->maildir);
 		RWLIST_INSERT_HEAD(&mailboxes, mbox, entry);
 		/* Before we return the mailbox to a mail server module for operations,
 		 * make sure that the user's mail directory actually exists. */
@@ -1050,10 +1052,24 @@ int maildir_move_new_to_cur_file(struct mailbox *mbox, const char *dir, const ch
 	char newname[272];
 	struct stat st;
 	int bytes;
+	int markseen;
 	unsigned int uid;
 	unsigned int newuidvalidity, newuidnext;
 
 	snprintf(oldname, sizeof(oldname), "%s/%s", newdir, filename);
+
+	/* This logic exists to handle net_smtp automatically saving Sent messages to the new directory
+	 * (if this functionality is enabled by a filtering rule).
+	 * Thus in the future, net_imap might find those and move them to cur.
+	 * The messages need to have the Seen flag, which isn't added at the time net_smtp saves them,
+	 * so we do it here, so that sent messages don't show up as unread.
+	 */
+	/*! \todo Once Sieve/MailScript filtering rules support adding flags to a message, we should
+	 * remove this logic and let the user do that there (of course, this logic will need to be
+	 * updated to apply those flags).
+	 * This is so users can apply whatever arbitrary flags they want, at which point
+	 * auto-applying the Seen flag no longer would make sense. */
+	markseen = !strcmp(dir + mbox->maildirlen, "/.Sent");
 
 	/* dovecot adds a couple pieces of info as well to optimize future access
 	 * since it can get relevant info right from the filename, rather than needing to use stat(2)
@@ -1097,10 +1113,10 @@ int maildir_move_new_to_cur_file(struct mailbox *mbox, const char *dir, const ch
 		*uidnext = newuidnext; /* Should be same as uid as well */
 	}
 
-/* XXX maildir example shows S= and W= are different,
+	/* XXX maildir example shows S= and W= are different,
 	 * but I'm not sure why the number of bytes in the file
 	 * would not be st_size? So just use S= for now and skip W=. */
-	snprintf(newname, sizeof(newname), "%s/%s,S=%d,U=%u,M=%lu:2,", curdir, filename, bytes, uid, maildir_max_modseq(mbox, curdir)); /* Add no flags now, but anticipate them being added */
+	snprintf(newname, sizeof(newname), "%s/%s,S=%d,U=%u,M=%lu:2,%s", curdir, filename, bytes, uid, maildir_max_modseq(mbox, curdir), markseen ? "S" : ""); /* Add no flags now, but anticipate them being added */
 	if (rename(oldname, newname)) {
 		bbs_error("rename %s -> %s failed: %s\n", oldname, newname, strerror(errno));
 		return -1;
@@ -1108,6 +1124,7 @@ int maildir_move_new_to_cur_file(struct mailbox *mbox, const char *dir, const ch
 	if (newpath) {
 		safe_strncpy(newpath, newname, len);
 	}
+	bbs_debug(7, "Renamed %s -> %s%s\n", oldname, newname, markseen ? " (and auto-marked as Seen)" : "");
 	return bytes;
 }
 

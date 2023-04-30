@@ -50,6 +50,19 @@ void bbs_readline_init(struct readline_data *rldata, char *buf, int len);
 int bbs_readline(int fd, struct readline_data *rldata, const char *delim, int timeout);
 
 /*!
+ * \brief Read exactly n bytes from a file descriptor and write them to another file descriptor
+ * \param fd Source file descriptor
+ * \param destfd Destination file descriptor
+ * \param rldata
+ * \param timeout Timeout for activity (applies to each read/poll, not overall)
+ * \param n Number of bytes to read
+ * \retval -1 on failure
+ * \return number of bytes read
+ * \note The written data is NOT NUL-terminated, this is a binary operation
+ */
+int bbs_readline_getn(int fd, int destfd, struct readline_data *rldata, int timeout, int n);
+
+/*!
  * \brief Append to a readline_data buffer
  * \param rldata
  * \param delim
