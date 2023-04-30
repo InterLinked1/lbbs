@@ -275,7 +275,7 @@ static inline int parse_header(struct http_req *req, char *s)
 			req->dir = 0;
 		}
 
-		if (query && !strlen_zero(++query)) {
+		if (query && ++query && !strlen_zero(query)) {
 			req->query = strdup(query);
 		}
 

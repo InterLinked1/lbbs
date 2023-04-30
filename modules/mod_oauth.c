@@ -139,29 +139,38 @@ static int fetch_token(struct oauth_client *client, char *buf, size_t len)
 	struct bbs_curl c = {
 		.url = client->posturl,
 		.postfields = postdata,
-		.forcefail = 1,
+		.forcefail = 0, /* If there's an error, display it */
 	};
 	const char *newtoken;
 	json_t *json;
 	json_error_t jansson_error = {};
 	int now = time(NULL);
-	int expires, expired = now - client->expires;
+	int expires, expiretime;
 	int res = -1;
 
 	pthread_mutex_lock(&client->lock);
 
-	if (client->tokentime && expired > client->tokentime) {
+	/* tokentime is when the token was acquired.
+	 * expires is for how long the token is valid.
+	 * So tokentime + expires = when the token expires */
+	expiretime = client->tokentime + client->expires;
+
+	if (client->tokentime && now < expiretime) {
 		/* We already have a valid token and it hasn't expired yet. */
 		safe_strncpy(buf, client->accesstoken, len);
 		pthread_mutex_unlock(&client->lock);
 		return 0;
+	} else if (client->tokentime) {
+		int ago = now - expiretime;
+		bbs_debug(5, "Token refresh required (expired %d seconds ago)\n", ago);
 	}
 
 	/* Get a new token */
 	snprintf(postdata, sizeof(postdata), "client_id=%s&client_secret=%s&grant_type=refresh_token&refresh_token=%s", client->clientid, client->clientsecret, client->refreshtoken);
-	if (bbs_curl_post(&c)) {
-		bbs_warning("Failed to refresh OAuth token '%s'\n", client->name);
+	if (bbs_curl_post(&c) || c.http_code != 200) {
+		bbs_warning("Failed to refresh OAuth token '%s': %s\n", client->name, c.response);
 		pthread_mutex_unlock(&client->lock);
+		bbs_curl_free(&c);
 		return -1;
 	}
 

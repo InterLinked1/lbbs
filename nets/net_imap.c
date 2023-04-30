@@ -2469,7 +2469,6 @@ static int imap_dir_has_subfolders(const char *path, const char *prefix)
 			continue;
 		} else if (!strncmp(entry->d_name, prefix, prefixlen)) {
 			const char *rest = entry->d_name + prefixlen; /* do not add these within the strlen_zero macro! */
-			/*! \todo XXX Check entire code tree for strlen_zero with + inside adding arguments. That's a bug!!! */
 			if (!strlen_zero(rest)) {
 				res = 1;
 				break;

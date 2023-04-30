@@ -627,6 +627,11 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 	struct mx_record *mx;
 	int added = 0;
 
+	if (strlen_zero(domain)) {
+		bbs_error("Missing domain\n");
+		return -1;
+	}
+
 	res = res_query(domain, C_IN, T_MX, answer, sizeof(answer));
 	if (res == -1) {
 		bbs_error("res_query failed\n");
@@ -839,50 +844,13 @@ static int try_send(struct smtp_session *smtp, const char *hostname, int port, i
 	int caps = 0;
 	char sendercopy[64];
 	int local;
-	char *user, *domain, *tmp;
+	char *user, *domain;
 
 	bbs_assert(datafd != -1);
 	bbs_assert(writelen > 0);
 
-/* XXX Disable this eventually */
-#define SUPPORT_CORRUPTED_MAILTO
-
-#ifdef SUPPORT_CORRUPTED_MAILTO
-	/* Kludge to deal with corrupted MAIL FROM header, broken in a few possible ways (to successfully deliver such queued files):
-	 * - Double arrows e.g. <John Smith <jsmith@example.com>>
-	 * - Missing end arrow e.g. John Smith <jsmith@example.com
-	 */
-	if (*sender == '<' && *(sender + 1) && *(sender + 2) && strchr(sender + 2, '<')) {
-		safe_strncpy(sendercopy, sender + 1, sizeof(sendercopy));
-		bbs_warning("Corrected address from %s -> %s\n", sender, sendercopy);
-	} else {
-		safe_strncpy(sendercopy, sender, sizeof(sendercopy));
-	}
-
-	/* Missing end > ? */
-	tmp = strchr(sendercopy, '>');
-	if (tmp) {
-		if (*(tmp + 1)) {
-			tmp = strchr(tmp + 1, '>');
-			if (tmp) {
-				bbs_warning("Removing duplicate end >\n");
-				*tmp = '\0';
-			}
-		}
-	} else {
-		bbs_warning("Adding missing end >\n");
-		strncat(sendercopy, ">", sizeof(sendercopy) - 1);
-	}
-
-	if (recipient && STARTS_WITH(recipient,"RCPT TO:")) { /* Good grief, how broken do things get? */
-		bbs_warning("Queue file recipient corrupted: %s\n", recipient);
-		recipient += STRLEN("RCPT TO:");
-	}
-
-#else
 	/* RFC 5322 3.4.1 allows us to use IP addresses in SMTP as well (domain literal form). They just need to be enclosed in square brackets. */
 	safe_strncpy(sendercopy, sender, sizeof(sendercopy));
-#endif
 
 	/* Properly parse, since if a name is present, in addition to the email address, we must exclude the name in the MAIL FROM */
 	if (bbs_parse_email_address(sendercopy, NULL, &user, &domain, &local)) {
@@ -1628,19 +1596,6 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 		goto cleanup;
 	}
 
-	realfrom = strchr(from, '<');
-	realto = strchr(recipient, '<');
-
-	if (!realfrom) {
-		bbs_error("Invalid mail queue file: %s\n", fullname);
-		goto cleanup;
-	}
-	if (!realto) { /* May not be in <> */
-		realto = recipient;
-	} else {
-		realto++;
-	}
-
 	/* If you manually edit the queue files, the line endings will get converted,
 	 * and since the queue files use a combination of LF and CR LF,
 	 * that can mess things up.
@@ -1651,15 +1606,34 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	 * we'll only see LF . CR LF at the end, and delivery will thus fail.
 	 * Do not modify the mail queue files manually for debugging, unless you really know what you are doing,
 	 * and in particular are preserving the mixed line endings. */
-	bbs_term_line(realto); /* XXX Shouldn't be necessary? But strip any CR/LF if there is one. */
+	bbs_term_line(from);
+	bbs_term_line(recipient);
 
-	realfrom++;
+	realfrom = strchr(from, '<');
+	realto = strchr(recipient, '<');
+
+	if (!realfrom) {
+		bbs_error("Mail queue file MAIL FROM missing <>: %s\n", fullname);
+		goto cleanup;
+	} else if (!realto) {
+		bbs_error("Mail queue file RCPT TO missing <>: %s\n", fullname);
+		goto cleanup;
+	}
+
+	realfrom++; /* Skip < */
+	if (strlen_zero(realfrom)) {
+		bbs_error("Malformed MAIL FROM: %s\n", fullname);
+		goto cleanup;
+	}
+	bbs_strterm(realfrom, '>'); /* try_send will add <> for us, so strip it here to match */
+
+	bbs_debug(5, "Processing message from (%s) -> (%s)\n", realfrom, realto);
+
 	safe_strncpy(todup, realto, sizeof(todup));
 	if (strlen_zero(realfrom) || bbs_parse_email_address(todup, NULL, &user, &domain, &local)) {
 		bbs_error("Address parsing error\n");
 		goto cleanup;
 	}
-	bbs_strterm(realfrom, '>'); /* try_send will add <> for us, so strip it here to match */
 
 	bbs_debug(2, "Retrying delivery of %s (%s -> %s)\n", fullname, realfrom, realto);
 
@@ -1863,7 +1837,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		 * Note that this means this file contains mixed line endings (both LF and CR LF), so if manually edited in a text editor,
 		 * it will probably get screwed up. Don't do it!
 		 */
-		dprintf(fd, "MAIL FROM:%s\nRCPT TO:%s\n", smtp->from, recipient); /* First 2 lines contain metadata, and recipient is already enclosed in <> */
+		dprintf(fd, "MAIL FROM:<%s>\nRCPT TO:%s\n", smtp->from, recipient); /* First 2 lines contain metadata, and recipient is already enclosed in <> */
 		prepend_outgoing(smtp, recipient, fd);
 		/* Write the entire body of the message. */
 		res = bbs_copy_file(srcfd, fd, 0, datalen);
