@@ -29,7 +29,7 @@
  * \note Supports RFC 5161 ENABLE
  * \note Supports RFC 5182 SEARCHRES
  * \note Supports RFC 5256 SORT
- * \note Supports RFC 5256 THREAD-ORDEREDSUBJECT
+ * \note Supports RFC 5256 THREAD (ORDEREDSUBJECT and REFERENCES)
  * \note Supports RFC 5267 ESORT
  * \note Supports RFC 5530 Response Codes
  * \note Supports RFC 6154 SPECIAL-USE (but not CREATE-SPECIAL-USE)
@@ -51,7 +51,6 @@
  * - RFC 4959 SASL-IR
  * - RFC 4978 COMPRESS
  * - RFC 5255 LANGUAGE
- * - RFC 5256 THREAD-REFERENCES
  * - RFC 5257 ANNOTATE, RFC 5464 ANNOTATE (METADATA)
  * - RFC 5258 LIST extensions (obsoletes 3348)
  * - RFC 5267 CONTEXT=SEARCH and CONTEXT=SORT
@@ -61,6 +60,7 @@
  * - RFC 5957 DISPLAYFROM/DISPLAYTO
  * - RFC 6203 FUZZY SEARCH
  * - RFC 6237 ESEARCH (MULTISEARCH)
+ * - RFC 6785 IMAPSIEVE
  * - RFC 6855 UTF-8
  * - RFC 7888 LITERAL-
  * - RFC 8970 PREVIEW
@@ -72,7 +72,7 @@
 /* List of capabilities: https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml */
 /* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
 /* XXX URLAUTH is advertised so that SMTP BURL will function in Trojita, even though we don't need URLAUTH since we have a direct trust */
-#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT SPECIAL-USE XLIST CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS LITERAL+ APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC"
+#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT SPECIAL-USE XLIST CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS LITERAL+ APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC"
 
 /* Capabilities advertised by popular mail providers, for reference/comparison, both pre and post authentication:
  * - Office 365
@@ -103,6 +103,7 @@
 #include <dirent.h>
 #include <ftw.h>
 #include <poll.h>
+#include <search.h>
 
 #include "include/tls.h"
 
@@ -7101,7 +7102,10 @@ struct thread_message {
 	unsigned int id;
 	struct tm sent;
 	char *references;
-	/* Use fixed size buffers, so we can allocate all messages at once, to avoid excessive memory fragmentation */
+	char *msgid;
+	struct thread_message *parent;
+	struct thread_message *child;
+	/* Use fixed size buffers, to reduce the number of allocations, to avoid excessive memory fragmentation */
 	char subject[128];
 	char inreplyto[128];
 };
@@ -7110,6 +7114,7 @@ static void free_thread_messages(struct thread_message *msgs, int length)
 {
 	int i;
 	for (i = 0; i < length; i++) {
+		free_if(msgs[i].msgid);
 		free_if(msgs[i].references);
 	}
 	free(msgs);
@@ -7159,31 +7164,41 @@ static int populate_thread_data(struct imap_session *imap, struct thread_message
 				}
 				gotinfo++;
 			}
-			if (gotinfo == 4 || !strcmp(linebuf, "\r\n")) {
+			if (gotinfo == 5 || !strcmp(linebuf, "\r\n")) {
 				break; /* End of headers, or got everything we need already, whichever comes first. */
 			}
 			if (STARTS_WITH(linebuf, "Date:")) {
 				char *s = linebuf + STRLEN("Date:");
+				ltrim(s);
 				bbs_term_line(s);
 				parse_sent_date(s, &msgs[i].sent);
 				gotinfo++;
 			} else if (STARTS_WITH(linebuf, "In-Reply-To:")) {
 				char *s = linebuf + STRLEN("In-Reply-To:");
+				ltrim(s);
 				bbs_term_line(s);
 				safe_strncpy(msgs[i].inreplyto, s, sizeof(msgs[i].inreplyto));
 				gotinfo++;
 			} else if (STARTS_WITH(linebuf, "Subject:")) {
 				char *s = linebuf + STRLEN("Subject:");
+				ltrim(s);
 				bbs_term_line(s);
 				/* Don't normalize subject here. subjectcmp will handle that when needed. */
 				safe_strncpy(msgs[i].subject, s, sizeof(msgs[i].subject));
+				gotinfo++;
+			} else if (STARTS_WITH(linebuf, "Message-ID:")) {
+				char *s = linebuf + STRLEN("Message-ID:");
+				ltrim(s);
+				bbs_term_line(s);
+				REPLACE(msgs[i].msgid, s);
 				gotinfo++;
 			} else if (STARTS_WITH(linebuf, "References:")) {
 				/* The References header may consist of many lines, since it can contain many lines.
 				 * The other headers we expect to only be one line so can handle more simply. */
 				char *s = linebuf + STRLEN("References:");
-				int len = bbs_term_line(s);
-				linebuf[0] = ' '; /* Add leading space, in case there were previous lines */
+				int len;
+				ltrim(s);
+				len = bbs_term_line(s);
 				dyn_str_append(&dynstr, s, len);
 				in_ref = 1;
 			}
@@ -7214,13 +7229,942 @@ static int thread_ordered_subject_compare(const void *aptr, const void *bptr)
 		t1 = mktime(&ac->sent);
 		t2 = mktime(&bc->sent);
 		diff = difftime(t1, t2); /* If difftime is positive, tm1 > tm2 */
-		res = diff < 0 ? 1 : diff > 0 ? -1 : 0;
+		res = diff < 0 ? -1 : diff > 0 ? 1 : 0;
 	}
+	return res;
+}
+
+/*! \note This struct uses a doubly linked list to keep track of all messages in a flat hierarchy, but internally there is also a hierarchy for threads */
+struct thread_messageid {
+	struct thread_messageid *llnext;	/* Next item in linked list. Must be first for <search.h>. */
+	struct thread_messageid *llprev;	/* Previous item in linked list. Must be second for <search.h>. */
+	const char *msgid;					/* Message ID */
+	struct thread_messageid *parent;	/* Parent */
+	struct thread_messageid *children;	/* First child in the thread (all children can be obtained by traversing the next point on children) */
+	struct thread_messageid *next; 		/* Next sibling in the thread */
+	struct tm *sent;
+	unsigned int id;					/* ID (sequence number or UID) */
+	unsigned int dummy:1;				/* Dummy message created by the threading algorithm? */
+	char data[0];
+};
+
+static struct thread_messageid *find_thread_msgid_any(struct thread_messageid *msgids, const char *msgid)
+{
+	struct thread_messageid *t = msgids;
+
+	while (t) { /* Check all of them. Don't care about parent/child relationships. */
+		if (!strcmp(msgid, t->msgid)) { /* Message ID comparisons are case sensitive */
+			return t;
+		}
+		t = t->llnext;
+	}
+	return NULL;
+}
+
+/*! \brief Same as find_thread_msgid_related, but faster if target pointer already known since we can do pointer comparisons */
+static struct thread_messageid *find_thread_msgid_related_ptr(struct thread_messageid *a, struct thread_messageid *b)
+{
+	struct thread_messageid *t;
+
+	/* Check all our children */
+	if (a->children) {
+		t = find_thread_msgid_related_ptr(a->children, b);
+		if (t) {
+			return t;
+		}
+	}
+
+	/* Check all our siblings */
+	t = a;
+	while (t) {
+		if (a == b) {
+			return t;
+		}
+		t = t->next;
+	}
+	return NULL;
+}
+
+static struct thread_messageid *push_threadmsgid(struct thread_messageid *msgids, const char *msgid, int dummy)
+{
+	struct thread_messageid *curmsg;
+
+	curmsg = calloc(1, sizeof(*curmsg) + strlen(msgid) + 1);
+	if (ALLOC_FAILURE(curmsg)) {
+		return NULL;
+	}
+	strcpy(curmsg->data, msgid); /* Safe */
+	curmsg->msgid = curmsg->data;
+	curmsg->dummy = dummy;
+
+	/* Insert (head insert) */
+	insque(curmsg, msgids);
+	return curmsg;
+}
+
+/*! \todo XXX Combine this function with the above */
+static struct thread_messageid *append_threadmsgid(struct thread_messageid *prev, const char *msgid)
+{
+	struct thread_messageid *curmsg;
+
+	curmsg = calloc(1, sizeof(*curmsg) + strlen(msgid) + 1);
+	if (ALLOC_FAILURE(curmsg)) {
+		return NULL;
+	}
+	strcpy(curmsg->data, msgid); /* Safe */
+	curmsg->msgid = curmsg->data;
+	curmsg->dummy = 0;
+
+	/* Insert (tail insert) */
+	insque(curmsg, prev);
+	return curmsg;
+}
+
+static void free_thread_msgids(struct thread_messageid *msgids)
+{
+	struct thread_messageid *t = msgids;
+	t = t->llnext; /* Skip t itself, since it's stack allocated and it's the dummy root. */
+	while (t) {
+		struct thread_messageid *cur = t;
+		t = t->llnext;
+		free(cur);
+	}
+}
+
+#ifdef DEBUG_THREADING
+static char spaces[] = "                                                                        ";
+
+static int __dump_thread(struct thread_messageid *msgids, int level)
+{
+	struct thread_messageid *t;
+	int c = 0;
+
+	if (!msgids) {
+		bbs_debug(7, "Nothing at this level\n");
+		return 0;
+	}
+
+	/* Iterate over everything at this level. */
+	t = msgids;
+#if 0
+	bbs_debug(8, "Thread root: %s - children: %d\n", t->msgid, msgids->children ? 1 : 0);
+#endif
+	while (t) {
+		static char buf[100];
+		char date[21] = "";
+		if (t->sent) {
+			strftime(date, sizeof(date), "%d %b %Y %H:%M:%S", t->sent);
+		}
+		snprintf(buf, sizeof(buf), "%.*s%s %s", level, spaces, level ? "|-" : "", t->msgid);
+		bbs_debug(5, "%20s [%2d%c] %s [%d]\n", date, level, t->children ? '+' : ' ', buf, t->id);
+		c++;
+		/* Iterate over children, if any. */
+		if (t->children) {
+			c += __dump_thread(t->children, level + 1);
+		}
+		t = t->next;
+	}
+
+	return c;
+}
+
+static void dump_thread_msgids(struct thread_messageid *msgids)
+{
+	struct thread_messageid *t;
+	int d = 0, c = 0;
+
+	t = msgids;
+	t = msgids->llnext; /* Skip the dummy root */
+	while (t) {
+		c++;
+		/* Recursively dump anything that doesn't have a parent (since these are the top level of a thread)
+		 * and they will handle all their children. */
+		if (!t->parent) {
+			d += __dump_thread(t, 0);
+		}
+		t = t->llnext;
+	}
+	if (c != d) {
+		/* If not all messages are reachable from the root, we've corrupted the pointers somewhere. */
+		bbs_error("%d total messages, but only %d reachable in threads?\n", c, d);
+	} else {
+		bbs_debug(5, "%d total messages, %d reachable in threads\n", c, d);
+	}
+}
+#endif /* DEBUG_THREADING */
+
+static void thread_link_parent_child(struct thread_messageid *parent, struct thread_messageid *child)
+{
+	struct thread_messageid *tmp;
+
+	/* If message already has a parent, don't change the existing link */
+	if (child->parent) {
+#ifdef DEBUG_THREADING
+		if (child->parent != parent) {
+			bbs_debug(3, "Message %s already has another parent (%s)\n", child->msgid, child->parent->msgid);
+		}
+#endif
+		return;
+	}
+
+	/* Don't create a link if that would introduce a loop. */
+
+	/* Make sure that parent is not already a descendant of child,
+	 * and that child is not already a parent of parent. */
+	if (parent == child) {
+		bbs_warning("Parent and child are the same?\n");
+		return;
+	}
+	if (parent->parent == child) { /* If this happens, something is probably seriously whacked up */
+		bbs_warning("Message %s is already the parent of %s???\n", child->msgid, parent->msgid);
+		return;
+	}
+
+	/* Recursively search the child for parent. If we find parent, bail out. */
+	if (find_thread_msgid_related_ptr(child, parent)) {
+		bbs_warning("Message %s is already a descendant of %s, cannot also be a parent!\n", parent->msgid, child->msgid);
+		return;
+	}
+
+#ifdef DEBUG_THREADING
+	bbs_debug(5, "%s is now the parent of %s\n", parent->msgid, child->msgid);
+#endif
+
+	/* Make parent the parent of child */
+	child->parent = parent;
+
+	tmp = parent->children;
+
+	/* Unlike JWZ's and the RFC algorithms, we maintain order here by inserting into the proper location.
+	 * This is expected to be near constant time, since typically any particular message isn't likely to have
+	 * many direct children: in a proper thread, each child has one child, and so forth...
+	 * So we shouldn't have to make too many comparisons here.
+	 *
+	 * The advantage of doing it this way is that Step 6 of the algorithm is already done for us here,
+	 * as long as we don't later perturb the ordering.
+	 */
+	if (tmp) {
+		/* Insert at the right place to maintain order.
+		 * Earlier messages come first.
+		 * So insert it into the list whenever we're newer than, or reach the end of the list. */
+		struct thread_messageid *prev = NULL;
+		time_t t1 = child->sent ? mktime(child->sent) : 0;
+		while (tmp) {
+			time_t t2;
+			long diff;
+			t2 = tmp->sent ? mktime(tmp->sent) : 0;
+			diff = difftime(t1, t2);
+			if (diff < 0) {
+				break;
+			}
+			prev = tmp;
+			tmp = tmp->next;
+		}
+		/* Insert after the previous one (inbetween its successor) */
+		if (prev) {
+			child->next = prev->next;
+			prev->next = child;
+		} else {
+			/* Insert at head of list (it's first) */
+			child->next = parent->children;
+			parent->children = child;
+		}
+	} else {
+		parent->children = child;
+	}
+}
+
+/*! \brief RFC 5256 REFERENCES algorithm Steps 1/2 */
+static int thread_references_step1(struct thread_messageid *tmsgids, struct thread_message *msgs, int length)
+{
+	int i;
+
+	tmsgids->msgid = "0"; /* This is the root. Won't match anything */
+	insque(tmsgids, NULL); /* Linear list initialization - see insque(3) */
+
+	/* Ensure we have a unique Message ID for every message */
+	for (i = 0; i < length; i++) {
+		struct thread_messageid *curmsg;
+		/* If no Message ID present, assign a new one.
+		 * All valid Message IDs probably have an '@' symbol so just use the index if unavailable. */
+		if (!msgs[i].msgid) {
+			bbs_debug(3, "Message %d (ID %d) does not have a Message-ID\n", i, msgs[i].id);
+			if (asprintf(&msgs[i].msgid, "%d", i) < 0) {
+				return -1;
+			}
+		}
+		/* If the message does not have a unique Message ID (already exists),
+		 * then treat it as if it didn't have one. */
+		curmsg = find_thread_msgid_any(tmsgids, msgs[i].msgid);
+		if (curmsg) {
+			bbs_debug(3, "Message %d (ID %d) has a duplicate Message-ID: %s\n", i, msgs[i].id, msgs[i].msgid);
+			if (asprintf(&msgs[i].msgid, "%d", i) < 0) {
+				return -1;
+			}
+		}
+		/* Now, create the thread_messageid for this message. */
+		curmsg = push_threadmsgid(tmsgids, msgs[i].msgid, 0);
+		if (ALLOC_SUCCESS(curmsg)) {
+			curmsg->sent = &msgs[i].sent;
+			curmsg->id = msgs[i].id;
+		}
+	}
+
+	/* Create all the parent/child relationships between messages. */
+	for (i = 0; i < length; i++) {
+		char *refdup, *refs, *ref;
+		struct thread_messageid *curmsg, *parentmsg = NULL, *childmsg = NULL;
+		int j = 0;
+
+		if (strlen_zero(msgs[i].references)) {
+#ifdef DEBUG_THREADING
+			bbs_debug(8, "Message %d (ID %d) %s does not reference any message\n", i, msgs[i].id, msgs[i].msgid); /* First in its thread, or the only one */
+#endif
+			continue; /* Message has no references */
+		}
+
+		refdup = strdup(msgs[i].references);
+		if (ALLOC_FAILURE(refdup)) {
+			continue;
+		}
+		refs = refdup;
+		while ((ref = strsep(&refs, " "))) {
+			j++;
+			parentmsg = childmsg; /* Whatever was the child last round is now the parent, since we go older to newer */
+			childmsg = find_thread_msgid_any(tmsgids, ref);
+			/* If no message can be found with a given Message ID, create a dummy message with this ID.
+			 * For example, we only have part of a thread and are referencing older messages not included in this set. */
+			if (!childmsg) { /* It could not exist since the first part only creates Message IDs for messages, not the messages they reference. */
+#ifdef DEBUG_THREADING
+				bbs_debug(5, "Creating dummy message for Message-ID %s\n", ref);
+#endif
+				childmsg = push_threadmsgid(tmsgids, ref, 1);
+				if (ALLOC_FAILURE(childmsg)) {
+					return -1;
+				}
+			}
+			if (j == 1) { /* First one */
+				/* We won't have a parentmsg at this point */
+				continue;
+			}
+			thread_link_parent_child(parentmsg, childmsg);
+		}
+
+		/* Create a parent/child link between the last reference and ourself. */
+		if (childmsg) {
+			curmsg = find_thread_msgid_any(tmsgids, msgs[i].msgid);
+			bbs_assert_exists(curmsg); /* We created the message earlier, so it MUST exist in the list. */
+			thread_link_parent_child(childmsg, curmsg);
+		}
+		free(refdup);
+	}
+
+	/* Parentless threads are automatically children of the dummy root, so nothing special needs to be done for Step 2. */
+
+	return 0;
+}
+
+static void thread_remove(struct thread_messageid *t)
+{
+	/* Removing is not just as simple as calling remque;
+	 * that takes care of the llnext/llprev pointers,
+	 * but not the parent/child relationships that are affected. */
+
+	remque(t); /* Remove from linked list */
+
+	if (t->children) {
+		struct thread_messageid *cur;
+
+		/* Promote dummy messages with children (shift up),
+		 * UNLESS doing so would make them children of the root...
+		 * UNLESS there is only 1 child (in which case, do)
+		 *
+		 * (If you think hard about threading for a minute, this will make perfect sense)
+		 *
+		 * Basically, we only skip if t is a descendant of the root (no parent),
+		 * and there is more than 1 child at this level. Otherwise, we prune.
+		 */
+
+		cur = t->children;
+		if (t->parent) {
+			struct thread_messageid *next;
+			bbs_debug(5, "Pruning dummy message with children: %s\n", t->msgid);
+			/* Make the children all belong to our parent.
+			 * Insert each child into the list one by one, so as not to perturb the ordering (earliest first) */
+			while (cur) {
+				next = cur->next; /* thread_link_parent_child could change the next pointer, save it */
+				cur->parent = NULL; /* Wipe the parent, since we won't be it anymore, so we can successfully reassign it a new parent. */
+				thread_link_parent_child(t->parent, cur); /* All right, the new parent has adopted this child */
+				cur = next;
+			}
+		} else {
+			/* The thread being removed is a child of the dummy root.
+			 * We should only have one child. Make it a direct child of the dummy root. */
+			if (t->next) { /* XXX Possibly incomplete? This assumes we're the first child, but what if we're not? */
+				bbs_warning("We have a sibling?\n");
+			} else {
+				if (t->children->next) {
+					/* Make the oldest child the new parent (we know it's the earliest message in the thread), and shift the other children up. */
+					struct thread_messageid *newparent = cur; /* Since we maintain order throughout, this should be the oldest child. */
+					newparent->parent = NULL;
+					newparent->children = t->children->next;
+					newparent->next = NULL;
+					cur = newparent->children;
+					bbs_debug(5, "Pruning dummy message with multiple children (dummy is a child of the root): %s\n", t->msgid);
+					/* XXX This is supposedly the case where we don't do anything in the algorithm, but I feel like we have to do something.
+					 * e.g. if we have:
+					 * - dummy
+					 * |- message 1
+					 * |- message 2
+					 *
+					 * Thunderbird clients will, if dummy is deleted, change this to:
+					 * - message 1
+					 * |- message 2
+					 *
+					 * Even though message 1 ISN'T the parent of message 2, it's a sibling.
+					 * But really, what other sane thing is there to do? We need to have something at the first level.
+					 * Somebody has to be promoted, even if none of them wants to be.
+					 */
+					while (cur) {
+						/* Manually correct all the parent pointers, less overhead than calling thread_link_parent_child */
+						cur->parent = newparent;
+						cur = cur->next;
+					}
+				} else {
+					bbs_debug(5, "Pruning dummy message with only 1 child: %s\n", t->msgid);
+					/* XXX Loop unnecessary? Since only one child */
+					while (cur) {
+						cur->parent = NULL; /* This is all that needs to be done to become a child of the dummy root */
+						cur = cur->next;
+					}
+				}
+			}
+		}
+	} else {
+		bbs_debug(5, "Pruning dummy message with no children: %s\n", t->msgid);
+	}
+
+	if (t->parent) {
+		struct thread_messageid *next, *prev = NULL;
+		/* Remove ourselves from the parent's child list. */
+		bbs_assert_exists(t->parent->children); /* If we have a parent, our parent must have children. */
+		next = t->parent->children;
+		bbs_debug(5, "Pruning ourselves from our parent's children (%s)\n", t->msgid);
+		while (next) {
+			if (next == t) {
+				/* Found ourself. Remove ourselves from inbetween the previous and next child. */
+				if (prev) {
+					prev->next = next->next;
+				} else {
+					t->parent->children = next->next;
+				}
+				break;
+			}
+			prev = next;
+			next = t->next;
+		}
+		if (!next) {
+			bbs_warning("Didn't find ourself (%s) in parent's list of children?\n", t->msgid);
+		}
+	}
+
+	free(t);
+}
+
+/*! \brief RFC 5256 REFERENCES algorithm Step 3 */
+static int thread_references_step3(struct thread_messageid *msgids)
+{
+	struct thread_messageid *t;
+
+#ifdef DEBUG_THREADING
+	dump_thread_msgids(msgids);
+#endif
+
+	/* Prune dummy messages */
+	t = msgids;
+	t = msgids->llnext; /* Skip the dummy root */
+	while (t) {
+		struct thread_messageid *next = t->llnext; /* Since we could free t within the loop */
+		/* Traverse each thread under the root, recursively. */
+		if (t->dummy) {
+			if (t->next) {
+				/* This will probably mess up our algorithm (at least our implementation of it) */
+				bbs_warning("Dummy message %s has thread-level siblings?\n", t->msgid);
+			}
+			thread_remove(t);
+		}
+		t = next;
+	}
+
+	return 0;
+}
+
+#define FIND_EARLIEST_CHILD_DATE(x, var) \
+	c = x->children; \
+	bbs_assert_exists(c); \
+	var = 0; \
+	while (c) { \
+		time_t tmp = c->sent ? mktime(c->sent) : 0; \
+		if (!var || tmp < var) { \
+			var = tmp; /* Time is earlier, use this one */ \
+		} \
+		c = c->next; \
+	}
+
+static int thread_toplevel_datesort(const void *aptr, const void *bptr)
+{
+	struct thread_messageid **ap = (struct thread_messageid **) aptr;
+	struct thread_messageid **bp = (struct thread_messageid **) bptr;
+	struct thread_messageid *a = (struct thread_messageid*) *ap;
+	struct thread_messageid *b = (struct thread_messageid*) *bp;
+	struct thread_messageid *c;
+	time_t t1, t2;
+	long int diff;
+	int res;
+
+	/* We only want to sort messages under the root. */
+	bbs_assert(!a->parent && !b->parent); /* We shouldn't be comparing things that aren't children of the root */
+
+	/* Both of the messages are under the root.
+	 * If one of the messages is a dummy, though, use the earliest date of the children (and there must be at least one child) */
+	if (a->dummy) {
+		FIND_EARLIEST_CHILD_DATE(a, t1);
+	} else {
+		t1 = mktime(a->sent);
+	}
+	if (b->dummy) {
+		FIND_EARLIEST_CHILD_DATE(b, t2);
+	} else {
+		t2 = mktime(b->sent);
+	}
+
+	diff = difftime(t1, t2); /* If difftime is positive, tm1 > tm2 */
+	if (!t1 || !t2 || diff == INT_MIN) {
+		bbs_warning("%s: %ld, %s: %ld, diff: %ld\n", a->msgid, t1, b->msgid, t2, diff);
+	}
+	res = diff < 0 ? -1 : diff > 0 ? 1 : 0; /* This is inverted from other operations so we can get earlier dates sorted first */
+	if (!res) {
+		/* If dates are the same, use order in mailbox as the tiebreaker. */
+		res = a->id < b->id ? -1 : a->id > b->id ? 1 : 0;
+		bbs_assert(res != 0 || (a->id == 0 && b->id == 0));
+	}
+#if defined(DEBUG_THREADING) && defined(DEBUG_SORT)
+	bbs_debug(10, "%s %s %s (%ld)\n", a->msgid, res ? res == 1 ? ">" : "<" : "=", b->msgid, diff);
+#endif
+	return res;
+}
+
+static int thread_references_step4(struct thread_messageid *msgids, int *lengthptr)
+{
+	int i, length = 0;
+	struct thread_messageid **msgptrs, *next;
+
+	*lengthptr = 0;
+
+	/* Sort messages under the root (top-level siblings only) by sent date.
+	 * For dummy messages, sort children by sort date and then use the first child for the top-level sort.
+	 *
+	 * XXX Not sure why we would sort the children though, which is n*log(n), when we could do a linear scan for the min (linear time).
+	 * Forget performance, it's way simpler to do that, too.
+	 */
+
+	/* Complicating things here is the fact that we have a linked list, not an array,
+	 * so we can't just pass msgids right into qsort, as the list pointers themselves need to be updated.
+	 * To work around that, here we allocate an array of pointers for all the message IDs.
+	 * We can sort the array of pointers, and then use the sorted array to rearrange the linked list.
+	 * Kind of clunky, but works until we come up with a better method...
+	 */
+
+	/* First, calculate the size of the list.
+	 * We can't use the length parameter provided to step 1 since that's the number of messages,
+	 * not the size of the references list (since there could be dummies now) */
+
+	next = msgids->llnext; /* Skip dummy root, don't include it in the count. */
+	while (next) {
+		if (!next->parent) {
+			/* Skip anything that's not a direct child of the dummy root, to avoid unnecessary qsort callback calls.
+			 * These are the only ones that needed to be sorted. */
+			length++;
+		}
+		if (!next->dummy) {
+			*lengthptr += 1; /* Count the number of non-dummy messages */
+		}
+		next = next->llnext;
+	}
+
+	if (length <= 1) {
+		bbs_debug(8, "Only %d child, no sorting is necessary\n", length);
+		return 0;
+	}
+
+	msgptrs = calloc(length, sizeof(struct thread_messageid*)); /* Skip dummy root */
+	if (ALLOC_FAILURE(msgptrs)) {
+		return -1;
+	}
+
+	/* Copy the list pointers to the array */
+	next = msgids->llnext; /* Skip dummy root */
+	i = 0;
+	while (next) {
+		/*! \todo XXX To optimize for performance instead of correctness, if i == length, we can break the loop, since there are no more. */
+		if (!next->parent) {
+			bbs_assert(i < length); /* Shouldn't be out of bounds if we calculated the length correctly */
+			msgptrs[i++] = next;
+		}
+		next = next->llnext;
+	}
+
+	qsort(msgptrs, length, sizeof(struct thread_messageid**), thread_toplevel_datesort);
+
+	/* Okay, now we have a sorted array of pointers, go ahead and update the linked list. */
+#if defined(DEBUG_THREADING) && 0
+	for (i = 0; i < length; i++) {
+		char date[21] = "";
+		if (msgptrs[i]->sent) {
+			strftime(date, sizeof(date), "%d %b %Y %H:%M:%S", msgptrs[i]->sent);
+		}
+		bbs_debug(3, "Child %d: %20s - %s\n", i, date, msgptrs[i]->msgid);
+	}
+#endif
+
+	/* Now the msgptrs array is sorted from oldest to newest, as far as the threads themselves should be ordered. */
+	/* To fix the ordering of the linked list, remove all the top-level children from the linked list,
+	 * and then re-insert them in such a way that they are in the proper order. */
+	for (i = 0; i < length; i++) {
+		remque(msgptrs[i]); /* Remove from list, but do not delete the element. We are going to reinsert it. */
+	}
+	i = 0;
+	insque(msgptrs[i], msgids); /* First child goes after root */
+	for (i = 1; i < length; i++) {
+		insque(msgptrs[i], msgptrs[i - 1]); /* Each other child goes after the previous one */
+	}
+
+	free(msgptrs);
+	return 0;
+}
+
+static void thread_generate_list_recurse(struct dyn_str *dynstr, struct thread_messageid *msgids, int level)
+{
+	char buf[20];
+	int len;
+	int multiple;
+	struct thread_messageid *next = msgids;
+
+	if (!msgids) {
+		return;
+	}
+
+	/* These are all of the threads at this level. */
+	multiple = next->next || level == 0 ? 1 : 0; /* Root threads always need parentheses, otherwise add only if needed */
+	while (next) {
+		
+		if (next->id) { /* Skip messages with no ID, since they were not among the originally provided messages */
+			if (multiple) {
+				dyn_str_append(dynstr, "(", 1);
+			}
+			len = snprintf(buf, sizeof(buf), "%d%s", next->id, next->children ? " " : "");
+			dyn_str_append(dynstr, buf, len);
+			thread_generate_list_recurse(dynstr, next->children, level + 1);
+			if (multiple) {
+				dyn_str_append(dynstr, ") ", 1);
+			}
+		} else {
+			thread_generate_list_recurse(dynstr, next->children, level + 1);
+		}
+		
+		next = next->next;
+	}
+}
+
+static char *thread_generate_list(struct thread_messageid *msgids)
+{
+	struct dyn_str dynstr;
+	struct thread_messageid *next;
+
+	memset(&dynstr, 0, sizeof(dynstr));
+
+#ifdef DEBUG_THREADING
+	dump_thread_msgids(msgids);
+#endif
+
+	next = msgids->llnext; /* Skip dummy root */
+	while (next) {
+		/* Process top level children here, and recurse */
+		if (!next->parent) {
+			/* Each one of these is its own thread. The recursive step will handle the descendants of the thread. */
+			thread_generate_list_recurse(&dynstr, next, 0);
+		}
+		next = next->llnext;
+	}
+
+#ifdef DEBUG_THREADING
+	bbs_debug(3, "%s\n", dynstr.buf);
+#endif
+
+	if (dynstr.buf && strstr(dynstr.buf, "((")) { /* Invalid syntax that will result in missing messages, something has gone wrong */
+		bbs_warning("Corrupted thread list: %s\n", dynstr.buf);
+	}
+
+	return dynstr.buf;
+}
+
+static int thread_orderedsubject(struct thread_messageid *tmsgids, struct thread_message *msgs, int length)
+{
+	int i;
+	struct thread_messageid *next, *lastmsg, *parent = NULL;
+	char *lastsubject = NULL;
+	int outlen;
+
+	tmsgids->msgid = "0"; /* This is the root. Won't match anything */
+	insque(tmsgids, NULL); /* Linear list initialization - see insque(3) */
+
+	/* Poor man's threading. Sort by subject, then date, then thread by subject.
+	 * Rather than bothering with sorting a, we just sort msgs directly,
+	 * since it will immediately have the info needed to make the comparison decision. */
+	qsort(msgs, length, sizeof(struct thread_message), thread_ordered_subject_compare); /* Actually sort the results, conveniently already in an array. */
+
+	/* Load all the messages - simplified version of REFERENCES algorithm step 1.
+	 * Note that we're already sorted by subject here. */
+	lastmsg = tmsgids;
+	for (i = 0; i < length; i++) {
+		struct thread_messageid *curmsg;
+		if (!msgs[i].msgid) {
+			bbs_debug(3, "Message %d does not have a Message-ID\n", i);
+			if (asprintf(&msgs[i].msgid, "%d", i) < 0) {
+				return -1;
+			}
+		}
+		curmsg = append_threadmsgid(lastmsg, msgs[i].msgid); /* Tail insert to preserve order with array */
+		if (ALLOC_FAILURE(curmsg)) {
+			return -1;
+		}
+		curmsg->sent = &msgs[i].sent;
+		curmsg->id = msgs[i].id;
+		lastmsg = curmsg;
+	}
+
+	/* Traverse the list we just built and create the parent/child relationships.
+	 * Note that the list order follows the array order from above. */
+	next = tmsgids->llnext; /* Skip dummy root */
+	i = 0;
+	while (next) {
+		/* Parent is simply the first one for each subject */
+		bbs_assert(next->id == msgs[i].id); /* If this isn't true, then we're threading the wrong messages */
+		if (i && lastsubject && !subjectcmp(msgs[i].subject, lastsubject)) {
+			/* Same subject as last one */
+			thread_link_parent_child(parent, next);
+		} else {
+			/* First thread, or new subject */
+			parent = next;
+			lastsubject = msgs[i].subject;
+#ifdef DEBUG_THREADING
+			bbs_debug(8, "Next subject: %s (%s)\n", lastsubject, msgs[i].msgid);
+#endif
+		}
+		lastsubject = msgs[i].subject;
+		next = next->llnext;
+		i++;
+	}
+
+	/* Sorting is same as Step 4 of the REFERENCES algorithm */
+	thread_references_step4(tmsgids, &outlen);
+
+	/* Something to note about the ordering here is that the Date header is used (i.e. the SENT time, not the RECEIVED time)
+	 * Thus, messages without a Sent time will appear all the way at the beginning.
+	 * Probably reasonable...
+	 */
+
+	return 0;
+}
+
+static int test_thread_orderedsubject(void)
+{
+	int res = -1, mres;
+	struct thread_message *msgs;
+	struct thread_messageid tmsgids;
+	time_t now = time(NULL);
+	int i;
+	char date[34];
+	const int num_msgs = 20;
+	char *list = NULL;
+
+	memset(&tmsgids, 0, sizeof(tmsgids));
+
+	msgs = calloc(num_msgs, sizeof(struct thread_message));
+	if (ALLOC_FAILURE(msgs)) {
+		goto cleanup;
+	}
+	/* A bunch of messages in one thread, one after the other */
+	for (i = 0; i < 5; i++) {
+		msgs[i].id = i + 1;
+		localtime_r(&now, &msgs[i].sent);
+		msgs[i].sent.tm_sec = i; /* So they're not exactly the same */
+		if (asprintf(&msgs[i].msgid, "<msg%d@localhost>", i + 1) < 0) {
+			goto cleanup;
+		}
+		snprintf(msgs[i].subject, sizeof(msgs[i].subject), "Test Subject");
+	}
+	/* Messages that are the only one in their conversation */
+	for (; i < 8; i++) {
+		msgs[i].id = i + 1;
+		localtime_r(&now, &msgs[i].sent);
+		msgs[i].sent.tm_sec = i; /* So they're not exactly the same */
+		if (asprintf(&msgs[i].msgid, "<msg%d@localhost>", i + 1) < 0) {
+			goto cleanup;
+		}
+		snprintf(msgs[i].subject, sizeof(msgs[i].subject), "Test Subject %d", i);
+	}
+	msgs[i].id = i + 1;
+	snprintf(date, sizeof(date), "Tues, 2 Jan 2001 14:14:14 -0300");
+	parse_sent_date(date, &msgs[i].sent); /* XXX Currently fails, so date will be first of all of them */
+	msgs[i].sent.tm_sec = i; /* So they're not exactly the same */
+	i++;
+	for (; i < 11; i++) {
+		msgs[i].id = i + 1;
+		localtime_r(&now, &msgs[i].sent);
+		msgs[i].sent.tm_sec = i; /* So they're not exactly the same */
+		if (asprintf(&msgs[i].msgid, "<msg%d@localhost>", i + 1) < 0) {
+			goto cleanup;
+		}
+		snprintf(msgs[i].subject, sizeof(msgs[i].subject), "Test Subject %d", i);
+	}
+
+	for (; i < num_msgs; i++) {
+		msgs[i].id = i + 1;
+		localtime_r(&now, &msgs[i].sent);
+		msgs[i].sent.tm_sec = i; /* So they're not exactly the same */
+		snprintf(msgs[i].subject, sizeof(msgs[i].subject), "Re: Some Subject");
+		if (asprintf(&msgs[i].msgid, "<msg%d@localhost>", i + 1) < 0) {
+			goto cleanup;
+		}
+	}
+
+	mres = thread_orderedsubject(&tmsgids, msgs, num_msgs);
+	bbs_test_assert_equals(0, mres);
+	list = thread_generate_list(&tmsgids);
+	bbs_test_assert(list != NULL);
+	bbs_test_assert_str_equals(list, "(9)(1 (2)(3)(4)(5))(6)(7)(8)(10)(11)(12 (13)(14)(15)(16)(17)(18)(19)(20))");
+	res = 0;
+
+cleanup:
+	free_if(list);
+	free_thread_msgids(&tmsgids);
+	free_thread_messages(msgs, num_msgs);
+	return res;
+}
+
+static int test_thread_references(void)
+{
+	int res = -1, mres;
+	struct thread_message *msgs;
+	struct thread_messageid tmsgids;
+	time_t now = time(NULL);
+	int i, outlen;
+	char date[34];
+	const int num_msgs = 20;
+	char *list = NULL;
+
+	memset(&tmsgids, 0, sizeof(tmsgids));
+
+	msgs = calloc(num_msgs, sizeof(struct thread_message));
+	if (ALLOC_FAILURE(msgs)) {
+		goto cleanup;
+	}
+	/* A bunch of messages in one thread, one after the other */
+	for (i = 0; i < 5; i++) {
+		msgs[i].id = i + 1;
+		localtime_r(&now, &msgs[i].sent);
+		msgs[i].sent.tm_year -= 2;
+		if (asprintf(&msgs[i].references, "<msg%d@localhost>", i) < 0) {
+			goto cleanup;
+		}
+		if (asprintf(&msgs[i].msgid, "<msg%d@localhost>", i + 1) < 0) {
+			goto cleanup;
+		}
+		snprintf(msgs[i].subject, sizeof(msgs[i].subject), "Test Subject");
+		snprintf(msgs[i].inreplyto, sizeof(msgs[i].inreplyto), "<msg%d@localhost>", i);
+	}
+	/* Messages that are the only one in their conversation */
+	for (; i < 8; i++) {
+		msgs[i].id = i + 1;
+		localtime_r(&now, &msgs[i].sent);
+		msgs[i].sent.tm_year -= (i * 2 - (i % 2) * 5); /* Mix it up though */
+		if (asprintf(&msgs[i].msgid, "<msg%d@localhost>", i + 1) < 0) {
+			goto cleanup;
+		}
+		snprintf(msgs[i].subject, sizeof(msgs[i].subject), "Test Subject %d", i);
+	}
+	/* 8 doesn't have a Message-ID, just to throw us off */
+	msgs[i].id = i + 1;
+	snprintf(date, sizeof(date), "Tues, 2 Jan 2001 14:14:14 -0300");
+	parse_sent_date(date, &msgs[i].sent); /* XXX Currently fails, so date will be first of all of them */
+	snprintf(msgs[i].subject, sizeof(msgs[i].subject), "Message with no Msg-ID");
+	i++;
+	for (; i < 11; i++) {
+		msgs[i].id = i + 1;
+		localtime_r(&now, &msgs[i].sent);
+		msgs[i].sent.tm_year -= 1;
+		msgs[i].sent.tm_min = i;
+		if (asprintf(&msgs[i].references, "<nonexistent%d@localhost>", i) < 0) { /* Reference a nonexistent message */
+			goto cleanup;
+		}
+		if (asprintf(&msgs[i].msgid, "<msg%d@localhost>", i + 1) < 0) {
+			goto cleanup;
+		}
+		snprintf(msgs[i].subject, sizeof(msgs[i].subject), "Test Subject %d", i);
+	}
+
+	/* Thread where they all reference their ancestors */
+	for (; i < num_msgs; i++) {
+		char references[384] = "";
+		char *refbuf = references;
+		int refleft = sizeof(references);
+		int j;
+		int parent = i;
+
+		/* For variety, make some messages in the thread be siblings.
+		 * i.e. there will be messages with 2 children, rather than every message having 1 children. */
+		if (parent % 2) {
+			parent--;
+		}
+
+		/* Reference all prior conversations, as a proper MUA should. */
+		for (j = 10; j < parent; j++) {
+			SAFE_FAST_COND_APPEND(references, refbuf, refleft, 1, "<msg%d@localhost>", j);
+		}
+		msgs[i].id = i + 1;
+		msgs[i].references = strdup(references);
+		localtime_r(&now, &msgs[i].sent);
+		msgs[i].sent.tm_sec = i; /* So they're not exactly the same */
+		snprintf(msgs[i].subject, sizeof(msgs[i].subject), "Re: Some Subject");
+		if (asprintf(&msgs[i].msgid, "<msg%d@localhost>", i + 1) < 0) {
+			goto cleanup;
+		}
+		snprintf(msgs[i].inreplyto, sizeof(msgs[i].inreplyto), "<msg%d@localhost>", parent);
+	}
+
+	mres = thread_references_step1(&tmsgids, msgs, num_msgs);
+	bbs_test_assert_equals(0, mres);
+	mres = thread_references_step3(&tmsgids);
+	bbs_test_assert_equals(0, mres);
+	mres = thread_references_step4(&tmsgids, &outlen);
+	bbs_test_assert_equals(0, mres);
+	list = thread_generate_list(&tmsgids);
+	bbs_test_assert(list != NULL);
+	bbs_test_assert_str_equals(list, "(9)(7)(8)(6)(1 2 3 4 5)(10)(11 (12)(13 (15 (17 (19)(20))(18))(16))(14))");
+	res = 0;
+
+cleanup:
+	free_if(list);
+	free_thread_msgids(&tmsgids);
+	free_thread_messages(msgs, num_msgs);
 	return res;
 }
 
 static int do_threading(struct imap_session *imap, unsigned int *a, int length, int usinguid, enum thread_algorithm algo)
 {
+	char *list;
+	struct thread_messageid tmsgids;
 	struct thread_message *msgs = calloc(length, sizeof(struct thread_message));
 
 	if (ALLOC_FAILURE(msgs)) {
@@ -7230,85 +8174,39 @@ static int do_threading(struct imap_session *imap, unsigned int *a, int length, 
 	/* Populate the thread structures with the content needed for either algorithm */
 	if (populate_thread_data(imap, msgs, a, length, usinguid)) {
 		free(msgs); /* Haven't allocated anything else yet */
+		bbs_warning("Failed to populate thread data\n");
 		return -1;
 	}
 
-	if (algo == THREAD_ALG_ORDERED_SUBJECT) {
-		struct dyn_str dynstr;
-		char buf[64];
-		char *lastsubject = NULL;
-		int i, len, level = 0;
-		/* Poor man's threading. Sort by subject, then date, then thread by subject.
-		 * Rather than bothering with sorting a, we just sort msgs directly,
-		 * since it will immediately have the info needed to make the comparison decision. */
-		qsort(msgs, length, sizeof(struct thread_message), thread_ordered_subject_compare); /* Actually sort the results, conveniently already in an array. */
-		memset(&dynstr, 0, sizeof(dynstr));
+	memset(&tmsgids, 0, sizeof(tmsgids));
 
-		/*
-		 * Carefully read sections 3 and 4 of RFC 5256,
-		 * as they pertain to ORDEREDSUBJECT. Otherwise, you may be wondering
-		 * why the ORDEREDSUBJECT example in the RFC appears to contain grandchildren,
-		 * but it doesn't.
-		 *
-		 * Note that if there are no grandchildren and there are only 2
-		 * messages in a thread, parentheses around the child are optional.
-		 *
-		 * Using the examples from the RFC:
-		 * THREAD (166)(167)(168)(169)(172)(170)(171) (173)(174 (175)(176)(178)(181)(180))(179)
-		 *        (177 (183)(182)(188)(184)(185)(186)(187)(189))(190) (191)(192)(193)(194 195)(196 (197)(198))(199)
-		 *        (200 202)(201)(203)(204)(205)(206 207)(208)
-		 *
-		 * 195 is the only child of 194, so it is not in parentheses (they are optional here).
-		 * 175, 176, 178, 181, and 180 are all considered children of 174.
-		 * They MUST be in parentheses since if there weren't any, each would be a child of the previous one.
-		 *
-		 * Below, we always include parentheses, so we can make a single pass to generate the string.
-		 */
-		for (i = 0; i < length; i++) {
-			/* Easy: just group all the messages with the same subject */
-#define DEBUG_THREADING
-#ifdef DEBUG_THREADING
-			bbs_debug(3, "Message %5d => %7d: %s\n", i + 1, msgs[i].id, msgs[i].subject);
-#endif
-			if (lastsubject) {
-				if (!subjectcmp(msgs[i].subject, lastsubject)) {
-					/* Same subject as last one.
-					 * If level == 0, this is the first "child" of that thread.
-					 * Otherwise, it's a sibling to the last child. */
-					if (level == 0) {
-						len = snprintf(buf, sizeof(buf), " (%u", msgs[i].id);
-						level = 1;
-					} else {
-						len = snprintf(buf, sizeof(buf), ")(%u", msgs[i].id);
-					}
-				} else {
-					if (level) {
-						/* Finish off the last message and group first */
-						len = snprintf(buf, sizeof(buf), "))(%u", msgs[i].id);
-						level = 0;
-					} else {
-						len = snprintf(buf, sizeof(buf), ")(%u", msgs[i].id); /* Finish off last group (which had no children) */
-					}
-				}
-			} else { /* First message */
-				len = snprintf(buf, sizeof(buf), "(%u", msgs[i].id);
-				/*! \todo should be a dyn_str_append_fmt */
-				/*! \todo dyn_str_append should allocate in chunks, too */
-			}
-			dyn_str_append(&dynstr, buf, len);
-			lastsubject = msgs[i].subject;
-		}
-		/* Finish it off. We are guaranteed here that the list is non-empty. */
-		if (level) {
-			dyn_str_append(&dynstr, "))", 2);
-		} else {
-			dyn_str_append(&dynstr, ")", 1);
-		}
-		imap_send(imap, "THREAD %s", dynstr.buf);
-		free(dynstr.buf);
+	if (algo == THREAD_ALG_ORDERED_SUBJECT) {
+		thread_orderedsubject(&tmsgids, msgs, length);
 	} else { /* REFERENCES */
-		/*! \todo not implemented */
+		int outlen;
+		/* RFC 5256 REFERENCES algorithm.
+		 * Also a good writeup by the original author of the algorithm, here: https://www.jwz.org/doc/threading.html */
+		thread_references_step1(&tmsgids, msgs, length); /* Steps 1, 2, and 6 */
+		thread_references_step3(&tmsgids);
+		thread_references_step4(&tmsgids, &outlen);
+		/* We skip step 5 of the algorithm.
+		 * I consider this part "optional", since nowadays all compliant MUAs should be setting the References header,
+		 * and combining based on subject may group unrelated threads with the same subject erroneously,
+		 * and this is probably worse than the marginal benefit of grouping together potentially related messages.
+		 * I am aware there are a few such broken clients out there (e.g. Outlook 2003, SurgeWeb) that do not support threading,
+		 * but to my knowledge, clients e.g. Thunderbird-based ones, do not do Step 5 either, anyways.
+		 * JWZ would say this is cutting corners, just like Netscape 4.0, but this really makes more sense this way, to me.
+		 */
+		if (outlen != length) { /* Note that even if this is false, that doesn't necessarily mean the result was correct. */
+			bbs_warning("Got %d messages as input, but only threaded %d?\n", length, outlen);
+		}
 	}
+
+	/* At this point, threads are sorted. All we need to do now is generate the list. */
+	list = thread_generate_list(&tmsgids);
+	free_thread_msgids(&tmsgids);
+	imap_send(imap, "THREAD %s", S_IF(list));
+	free_if(list);
 
 	/* Destroy thread structures */
 	free_thread_messages(msgs, length);
@@ -7331,7 +8229,6 @@ static int handle_thread(struct imap_session *imap, char *s, int usinguid)
 	tmp = strsep(&s, " ");
 	if (!strcasecmp(tmp, "REFERENCES")) {
 		algo = THREAD_ALG_REFERENCES;
-		return -1; /*! \todo Not yet supported */
 	} else if (!strcasecmp(tmp, "ORDEREDSUBJECT")) {
 		algo = THREAD_ALG_ORDERED_SUBJECT;
 	} else {
@@ -8280,6 +9177,8 @@ static struct unit_tests {
 	{ "IMAP COPYUID Generation", test_copyuid_generation },
 	{ "IMAP Remote Mailbox Translation", test_remote_mailbox_substitution },
 	{ "parensep", test_parensep },
+	{ "IMAP THREAD ORDEREDSUBJECT", test_thread_orderedsubject },
+	{ "IMAP THREAD REFERENCES", test_thread_references },
 };
 
 static int alertmsg(unsigned int userid, const char *msg)

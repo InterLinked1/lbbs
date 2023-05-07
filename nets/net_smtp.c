@@ -630,6 +630,9 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 	if (strlen_zero(domain)) {
 		bbs_error("Missing domain\n");
 		return -1;
+	} else if (bbs_hostname_is_ipv4(domain)) { /* IP address? Just send it there */
+		stringlist_push_tail(results, domain);
+		return 0;
 	}
 
 	res = res_query(domain, C_IN, T_MX, answer, sizeof(answer));
@@ -772,7 +775,7 @@ static void process_capabilities(int *caps, const char *capname)
 		}
 	} else if (STARTS_WITH(capname, "SIZE ")) {
 		/*! \todo parse and store the limit, abort early if our message length is greater than this */
-	} else if (!strcasecmp(capname, "CHUNKING") || !strcasecmp(capname, "SMTPUTF8") || !strcasecmp(capname, "VRFY") || !strcasecmp(capname, "ETRN") || !strcasecmp(capname, "DSN")) {
+	} else if (!strcasecmp(capname, "CHUNKING") || !strcasecmp(capname, "SMTPUTF8") || !strcasecmp(capname, "VRFY") || !strcasecmp(capname, "ETRN") || !strcasecmp(capname, "DSN") || !strcasecmp(capname, "HELP")) {
 		/* Don't care about */
 	} else {
 		bbs_warning("Unknown capability advertised: %s\n", capname);

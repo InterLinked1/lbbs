@@ -580,7 +580,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 		/* Hey, guess what, we're still holding a RDLOCK on the menu. See what this option is for. */
 		/* We don't need to call MENUITEM_NOT_APPLICABLE here to check if it applies, it wouldn't be in the options buffer if it wasn't */
 		menuitem = find_menuitem(menu, opt);
-		bbs_assert(menuitem != NULL); /* It was in the menu and the menu hasn't changed, it better exist. */
+		bbs_assert_exists(menuitem); /* It was in the menu and the menu hasn't changed, it better exist. */
 		node->menuitem = menuitem->name;
 
 		opt = 0; /* Got a valid option, display the menu again next round */
