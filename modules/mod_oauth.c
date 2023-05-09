@@ -63,10 +63,10 @@ static void free_client(struct oauth_client *client)
 }
 
 static int add_oauth_client(const char *name, const char *clientid, const char *clientsecret, const char *refreshtoken, const char *accesstoken,
-	const char *posturl, int expires, int userid)
+	const char *posturl, int expires, unsigned int userid)
 {
 	struct oauth_client *client;
-	int namelen, idlen, secretlen, refreshlen, urllen;
+	size_t namelen, idlen, secretlen, refreshlen, urllen;
 	char *pos;
 
 	if (strlen_zero(clientid) || strlen_zero(clientsecret) || strlen_zero(refreshtoken) || strlen_zero(posturl)) {
@@ -120,7 +120,7 @@ static int add_oauth_client(const char *name, const char *clientid, const char *
 	/* Access token is optional */
 	if (accesstoken) {
 		client->accesstoken = strdup(accesstoken);
-		client->tokentime = time(NULL); /* Assumed to be valid as of now. */
+		client->tokentime = (int) time(NULL); /* Assumed to be valid as of now. */
 	}
 
 	client->expires = expires;
@@ -144,7 +144,7 @@ static int fetch_token(struct oauth_client *client, char *buf, size_t len)
 	const char *newtoken;
 	json_t *json;
 	json_error_t jansson_error = {};
-	int now = time(NULL);
+	int now = (int) time(NULL);
 	int expires, expiretime;
 	int res = -1;
 
@@ -247,7 +247,7 @@ static int load_config(void)
 
 	while ((section = bbs_config_walk(cfg, section))) {
 		int expires = 3600; /* Defaults to 1 hour */
-		int userid = 0;
+		unsigned int userid = 0;
 		const char *clientid = NULL, *clientsecret = NULL, *accesstoken = NULL, *refreshtoken = NULL, *posturl = NULL;
 		if (!strcmp(bbs_config_section_name(section), "general")) { /* Not used currently, but reserved */
 			continue;
@@ -267,7 +267,7 @@ static int load_config(void)
 			} else if (!strcasecmp(key, "expires")) {
 				expires = atoi(value);
 			} else if (!strcasecmp(key, "userid")) {
-				userid = atoi(value);
+				userid = (unsigned int) atoi(value);
 			} else {
 				bbs_warning("Unknown config directive: %s\n", key);
 			}

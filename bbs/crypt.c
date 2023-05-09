@@ -67,7 +67,9 @@ int bbs_rand_alnum(char *buf, size_t len)
 	/* getrandom returns... random bytes, not random ASCII characters. Fix that. */
 	for (i = 0; i < len; i++) {
 		if (!isalnum(buf[i])) {
+#pragma GCC diagnostic ignored "-Wconversion"
 			buf[i] = 'A' + abs(buf[i] % 25); /* buf[i] could contain a negative value, and % won't make it positive */
+#pragma GCC diagnostic pop
 			/* Now it should be a printable, alphanumeric ASCII char... */
 			if (unlikely(!isalnum(buf[i]))) {
 				bbs_error("Character %d was not an alphanumeric character?\n", buf[i]);
@@ -174,7 +176,7 @@ char *bbs_password_hash(const char *password, const char *salt)
 {
 	char *hash;
 	struct crypt_data data;
-	int len;
+	size_t len;
 
 	memset(&data, 0, sizeof(data)); /* Not necessary, but whatever... */
 	data.initialized = 0; /* This must be done. */
@@ -206,7 +208,7 @@ char *bbs_password_hash(const char *password, const char *salt)
 	if (len != 59 && len != 60) {
 		/* XXX This is only for bcrypt */
 		/* https://stackoverflow.com/questions/5881169/what-column-type-length-should-i-use-for-storing-a-bcrypt-hashed-password-in-a-d */
-		bbs_error("%s failed: password hash length should be 59-60 but was %d? (%s)\n", __FUNCTION__, len, hash);
+		bbs_error("%s failed: password hash length should be 59-60 but was %ld? (%s)\n", __func__, len, hash);
 		return NULL;
 	}
 
@@ -235,7 +237,8 @@ int bbs_password_salt_and_hash(const char *password, char *buf, size_t len)
 
 int bbs_password_verify(const char *password, const char *salt, const char *hash)
 {
-	int a, b, res;
+	size_t a, b;
+	int res;
 	char *uhash = bbs_password_hash(password, salt);
 
 	if (!uhash) {
@@ -269,19 +272,19 @@ int bbs_password_verify(const char *password, const char *salt, const char *hash
 }
 
 #define BCRYPT_FULL_HASH_LEN 60
-int bbs_password_verify_bcrypt(const char *password, char *combined)
+int bbs_password_verify_bcrypt(const char *password, const char *combined)
 {
 	int res;
 	char salt[BCRYPT_FULL_HASH_LEN + 1];
 	char *pos, *ohash;
 	char orig;
-	int len;
+	size_t len;
 
 	/* For bcrypt, it's $2b$<COST>$ + 22 char salt + 31 char hash */
 	len = strlen(combined);
 	/* Length should be 7 + 22 + 31 = 60 (BCRYPT_FULL_HASH_LEN) */
 	if (len != BCRYPT_FULL_HASH_LEN) {
-		bbs_warning("Expected input length to be %d, but it's %d?\n", BCRYPT_FULL_HASH_LEN, len);
+		bbs_warning("Expected input length to be %d, but it's %ld?\n", BCRYPT_FULL_HASH_LEN, len);
 		return -1;
 	}
 	safe_strncpy(salt, combined, sizeof(salt));

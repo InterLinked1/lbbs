@@ -59,6 +59,11 @@ struct sieve_exec {
 	unsigned int actiontaken:1;
 };
 
+/* Old versions of libsieve don't use const pointers,
+ * so this entire module disables this compiler check,
+ * because dealing with this would be a mess otherwise. */
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+
 static int my_debug(sieve2_context_t *s, void *varg)
 {
 #ifdef DEBUG_LIBSIEVE
@@ -366,7 +371,7 @@ static int my_getheader(sieve2_context_t *s, void *varg)
 	char buf[1001];
 	const char *header = sieve2_getvalue_string(s, "header");
 	struct sieve_exec *sieve = varg;
-	int headerlen = strlen(header);
+	size_t headerlen = strlen(header);
 	char **headers;
 	int c = 0;
 
@@ -413,6 +418,8 @@ static int my_getheader(sieve2_context_t *s, void *varg)
 	return SIEVE2_OK;
 }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
 static int my_getenvelope(sieve2_context_t *s, void *varg)
 {
 	struct sieve_exec *sieve = varg;
@@ -421,6 +428,7 @@ static int my_getenvelope(sieve2_context_t *s, void *varg)
 	sieve2_setvalue_string(s, "from", (char*) sieve->mproc->from);
 	return SIEVE2_OK;
 }
+#pragma GCC diagnostic pop /* -Wcast-qual */
 
 static int my_getbody(sieve2_context_t *s, void *varg)
 {
@@ -643,6 +651,7 @@ static int script_validate(const char *filename, struct mailbox *mbox, char **er
 	sieve2_free(&sieve2_context);
 	return vres;
 }
+#pragma GCC diagnostic pop /* -Wdiscarded-qualifiers */
 
 static int load_module(void)
 {

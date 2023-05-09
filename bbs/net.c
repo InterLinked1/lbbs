@@ -92,7 +92,7 @@ int bbs_list_network_protocols(int fd)
 
 int bbs_protocol_port(const char *name)
 {
-	int port = 0;
+	unsigned int port = 0;
 	struct net_prot *prot;
 
 	RWLIST_RDLOCK(&prots);
@@ -104,5 +104,5 @@ int bbs_protocol_port(const char *name)
 	}
 	RWLIST_UNLOCK(&prots);
 
-	return port;
+	return (int) port;
 }

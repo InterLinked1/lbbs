@@ -344,18 +344,16 @@ static sftp_attributes attr_from_stat(struct stat *st)
 		return NULL;
 	}
 
-	attr->size = st->st_size;
-	attr->uid = st->st_uid;
+	attr->size = (uint64_t) st->st_size;
+	attr->uid = (uint32_t) st->st_uid;
 	attr->gid = st->st_gid;
 	attr->permissions = st->st_mode;
-	attr->atime = st->st_atime;
-	attr->mtime = st->st_mtime;
+	attr->atime = (uint32_t) st->st_atime;
+	attr->mtime = (uint32_t) st->st_mtime;
 	attr->flags = SSH_FILEXFER_ATTR_SIZE | SSH_FILEXFER_ATTR_UIDGID | SSH_FILEXFER_ATTR_PERMISSIONS | SSH_FILEXFER_ATTR_ACMODTIME;
 
     return attr;
 }
-
-
 
 static const char *sftp_get_client_message_type_name(uint8_t i)
 {
@@ -495,7 +493,7 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 static int handle_read(sftp_client_message msg)
 {
 	void *data;
-	int r;
+	size_t r;
 	uint32_t len = msg->len; /* Maximum number of bytes to read */
 	struct sftp_info *info = sftp_handle(msg->sftp, msg->handle);
 
@@ -519,7 +517,7 @@ static int handle_read(sftp_client_message msg)
 		return -1;
 	}
 
-	if (fseeko(info->file, msg->offset, SEEK_SET)) {
+	if (fseeko(info->file, (off_t) msg->offset, SEEK_SET)) {
 		bbs_error("fseeko failed: %s\n", strerror(errno));
 		sftp_reply_status(msg, SSH_FX_BAD_MESSAGE, "Offset failed");
 		free(data);
@@ -527,7 +525,7 @@ static int handle_read(sftp_client_message msg)
 	}
 
 	r = fread(data, 1, len, info->file);
-	bbs_debug(7, "read %d bytes (len: %d)\n", r, len);
+	bbs_debug(7, "read %lu bytes (len: %d)\n", r, len);
 	/* XXX For some reason, we get 128 of these after the EOF, before we stop getting READ messages (???) (At least with FileZilla).
 	 * Still works but probably not right */
 	if (r <= 0) {
@@ -538,16 +536,17 @@ static int handle_read(sftp_client_message msg)
 			handle_errno(msg);
 		}
 	} else {
-		sftp_reply_data(msg, data, r);
+		sftp_reply_data(msg, data, (int) r);
 	}
 	/* Do not respond with an OK here */
 	free(data);
 	return 0;
 }
 
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations" /* string_len and string_data */
 static int handle_write(sftp_client_message msg)
 {
-	uint32_t len;
+	size_t len;
 	struct sftp_info *info = sftp_handle(msg->sftp, msg->handle);
 
 	/*! \todo Add support for limiting max file size upload according to bbs_transfer_max_upload_size */
@@ -557,13 +556,13 @@ static int handle_write(sftp_client_message msg)
 		return -1;
 	}
 	len = string_len(msg->data);
-	if (fseeko(info->file, msg->offset, SEEK_SET)) {
+	if (fseeko(info->file, (off_t) msg->offset, SEEK_SET)) {
 		bbs_error("fseeko failed: %s\n", strerror(errno));
 		sftp_reply_status(msg, SSH_FX_BAD_MESSAGE, "Offset failed");
 		return -1;
 	}
 	do {
-		int r = fwrite(string_data(msg->data), 1, len, info->file);
+		size_t r = fwrite(string_data(msg->data), 1, len, info->file);
 		if (r <= 0 && len > 0) {
 			handle_errno(msg);
 			return -1;
@@ -573,19 +572,13 @@ static int handle_write(sftp_client_message msg)
 	sftp_reply_status(msg, SSH_FX_OK, NULL);
 	return 0;
 }
+#pragma GCC diagnostic pop
 
 #define STDLIB_SYSCALL(func, ...) \
 	if (func(__VA_ARGS__)) { \
 		handle_errno(msg); \
 	} else { \
 		sftp_reply_status(msg, SSH_FX_OK, NULL); \
-	}
-
-#define SFTP_ENSURE_TRUE(func, node) \
-	if (!func(node)) { \
-		errno = EACCES; \
-		handle_errno(msg); \
-		break; \
 	}
 
 #define SFTP_ENSURE_TRUE2(func, node, mypath) \
@@ -764,11 +757,11 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 				break;
 			case SFTP_OPEN:
 				SFTP_MAKE_PATH_NOCHECK(); /* Might be opening a file that doesn't currently exist */
-				fd = open(mypath, sftp_io_flags(msg->flags), msg->attr->permissions);
+				fd = open(mypath, sftp_io_flags((int) msg->flags), msg->attr->permissions);
 				if (fd < 0) {
 					handle_errno(msg);
 				} else {
-					fp = fdopen(fd, fopen_flags(sftp_io_flags(msg->flags)));
+					fp = fdopen(fd, fopen_flags(sftp_io_flags((int) msg->flags)));
 					if (!(info = alloc_sftp_info())) {
 						handle_errno(msg);
 						close(fd); /* Do this after so we don't mess up errno */
@@ -1032,7 +1025,7 @@ static int load_module(void)
 		bbs_error("Unable to create SFTP listener thread.\n");
 		goto cleanup;
 	}
-	bbs_register_network_protocol("SFTP", sftp_port);
+	bbs_register_network_protocol("SFTP", (unsigned int) sftp_port);
 	return 0;
 
 cleanup:
@@ -1046,7 +1039,7 @@ static int unload_module(void)
 		bbs_error("SSH socket already closed at unload?\n");
 		return 0;
 	}
-	bbs_unregister_network_protocol(sftp_port);
+	bbs_unregister_network_protocol((unsigned int) sftp_port);
 	bbs_debug(3, "Cleaning up libssh\n");
 	bbs_pthread_cancel_kill(sftp_listener_thread);
 	bbs_pthread_join(sftp_listener_thread, NULL);

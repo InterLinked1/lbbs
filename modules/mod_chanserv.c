@@ -93,14 +93,14 @@ static int __attribute__ ((format (gnu_printf, 1, 2))) chanserv_send(const char 
 
 /*! \retval 0 on success (result rows), -1 on failure, 1 if no results */
 #pragma GCC diagnostic ignored "-Wstack-protector"
-static int sql_fetch_strings(const char *username, const char *channel, void cb(const char *username, const char *strfields[], int row, void *data), void *data, const char *fmt, const char *sql)
+static int sql_fetch_strings(const char *username, const char *channel, void cb(const char *username, char *const strfields[], int row, void *data), void *data, const char *fmt, const char *sql)
 {
 	MYSQL *mysql = NULL;
 	MYSQL_STMT *stmt;
 	int mysqlres;
 	int res = -1;
 	unsigned int i;
-	const unsigned int num_fields = strlen(fmt);
+	const size_t num_fields = strlen(fmt);
 
 	if (strlen_zero(channel)) {
 		bbs_error("Channel is NULL or empty?\n");
@@ -144,7 +144,7 @@ static int sql_fetch_strings(const char *username, const char *channel, void cb(
 		}
 
 		while (MYSQL_NEXT_ROW(stmt)) {
-			cb(username, (const char **) bind_strings, rownum++, data); /* Only call on success */
+			cb(username, bind_strings, rownum++, data); /* Only call on success */
 			res = 0;
 		}
 	}
@@ -163,14 +163,14 @@ cleanup:
 
 /*! \retval 0 on success (result rows), -1 on failure, 1 if no results */
 #pragma GCC diagnostic ignored "-Wstack-protector"
-static int sql_fetch_strings2(const char *username, const char *channel, const char *nickname, void cb(const char *username, const char *strfields[], int row, void *data), void *data, const char *fmt, const char *sql)
+static int sql_fetch_strings2(const char *username, const char *channel, const char *nickname, void cb(const char *username, char *const strfields[], int row, void *data), void *data, const char *fmt, const char *sql)
 {
 	MYSQL *mysql = NULL;
 	MYSQL_STMT *stmt;
 	int mysqlres;
 	int res = -1;
 	unsigned int i;
-	const unsigned int num_fields = strlen(fmt);
+	const size_t num_fields = strlen(fmt);
 
 	if (strlen_zero(channel)) {
 		bbs_error("Channel is NULL or empty?\n");
@@ -214,7 +214,7 @@ static int sql_fetch_strings2(const char *username, const char *channel, const c
 		}
 
 		while (MYSQL_NEXT_ROW(stmt)) {
-			cb(username, (const char **) bind_strings, rownum++, data); /* Only call on success */
+			cb(username, bind_strings, rownum++, data); /* Only call on success */
 			res = 0;
 		}
 	}
@@ -240,7 +240,7 @@ static int get_channel_colval(MYSQL_STMT *stmt, const char *channel, const char 
 	/* SQL SELECT */
 	const char *fmt = "s";
 	int res = -1;
-	const unsigned int num_fields = strlen(fmt);
+	const size_t num_fields = strlen(fmt);
 
 	*buf = '\0';
 
@@ -278,12 +278,12 @@ static int get_channel_colval(MYSQL_STMT *stmt, const char *channel, const char 
 			if (colval) {
 				safe_strncpy(buf, colval, len);
 			}
-			sql_free_result_strings(num_fields, results, lengths, bind_strings); /* Call inside the while loop, since strings only need to be freed per row */
+			sql_free_result_strings((int) num_fields, results, lengths, bind_strings); /* Call inside the while loop, since strings only need to be freed per row */
 			res = 0;
 		}
 
 stmtcleanup:
-		sql_free_result_strings(num_fields, results, lengths, bind_strings); /* Won't hurt anything, clean up in case we break from the loop */
+		sql_free_result_strings((int) num_fields, results, lengths, bind_strings); /* Won't hurt anything, clean up in case we break from the loop */
 	}
 
 	return res;
@@ -584,7 +584,7 @@ static void chanserv_register(const char *username, char *msg)
 }
 
 /*! \brief Called on successful queries for INFO commands */
-static void info_cb(const char *username, const char *fields[], int row, void *data)
+static void info_cb(const char *username, char *const fields[], int row, void *data)
 {
 	/* Array length is what we expect it to be. Be careful! */
 	chanserv_notice(username, "Information on %s:", fields[0]);
@@ -708,7 +708,7 @@ static void chanserv_set(const char *username, char *msg)
 	}
 }
 
-static void flag_view_cb(const char *username, const char *fields[], int row, void *data)
+static void flag_view_cb(const char *username, char *const fields[], int row, void *data)
 {
 	if (data) { /* Means we filtered to a single user only */
 		chanserv_notice(username, "Flags for %s in %s are +%s", fields[1], fields[0], fields[2]);
@@ -966,7 +966,7 @@ static void process_privmsg(const char *username, char *msg)
 	}
 	}
 
-static void join_flags_cb(const char *username, const char *fields[], int row, void *data)
+static void join_flags_cb(const char *username, char *const fields[], int row, void *data)
 {
 	const char *channel = fields[0];
 	const char *nickname = fields[1];
@@ -997,7 +997,7 @@ static void event_cb(const char *cmd, const char *channel, const char *username,
 	/* Case-sensitive comparisons fine here */
 	if (!strcmp(cmd, "JOIN")) {
 		char entrymsg[256] = "";
-		sql_fetch_strings2(username, channel, username, join_flags_cb, (char*) username, "sss", "SELECT channel, nickname, GROUP_CONCAT(flag ORDER BY flag SEPARATOR '') AS flags FROM channel_flags WHERE channel = ? AND nickname = ? GROUP BY channel, nickname");
+		sql_fetch_strings2(username, channel, username, join_flags_cb, NULL, "sss", "SELECT channel, nickname, GROUP_CONCAT(flag ORDER BY flag SEPARATOR '') AS flags FROM channel_flags WHERE channel = ? AND nickname = ? GROUP BY channel, nickname");
 		if (!channel_get_entrymsg(NULL, channel, entrymsg, sizeof(entrymsg)) && !s_strlen_zero(entrymsg)) {
 			/* Channel has an entry message. Send it to the newcomer. */
 			chanserv_notice(username, "[%s] %s", channel, entrymsg);
@@ -1019,7 +1019,7 @@ static void chanserv_init(void)
 	int mysqlres;
 	/* SQL SELECT */
 	const char *fmt = "sssii";
-	const unsigned int num_fields = strlen(fmt);
+	const size_t num_fields = strlen(fmt);
 
 	mysql = sql_connect_db(buf_dbhostname, buf_dbusername, buf_dbpassword, buf_dbname);
 	if (!mysql) {
@@ -1080,13 +1080,13 @@ static void chanserv_init(void)
 			}
 
 			rownum++;
-			sql_free_result_strings(num_fields, results, lengths, bind_strings); /* Call inside the while loop, since strings only need to be freed per row */
+			sql_free_result_strings((int) num_fields, results, lengths, bind_strings); /* Call inside the while loop, since strings only need to be freed per row */
 		}
 
 		bbs_debug(3, "Processed %d channel%s\n", rownum, ESS(rownum));
 
 stmtcleanup:
-		sql_free_result_strings(num_fields, results, lengths, bind_strings); /* Won't hurt anything, clean up in case we break from the loop */
+		sql_free_result_strings((int) num_fields, results, lengths, bind_strings); /* Won't hurt anything, clean up in case we break from the loop */
 		mysql_stmt_close(stmt);
 	}
 

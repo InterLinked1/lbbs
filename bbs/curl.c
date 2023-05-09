@@ -55,20 +55,28 @@ void bbs_curl_free(struct bbs_curl *c)
 struct curl_response_data {
 	char *str;
 	char *resp;	/* XXX This is a total hack. For some reason str is NULL when we get back to main func so dup the pointer */
-	int len;
+	size_t len;
 };
+
+#define MAX_CURL_DOWNLOAD_SIZE 10000000 /* 10 MB */
 
 static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *data)
 {
-	register int realsize = size * nmemb;
+	register size_t realsize = size * nmemb;
 	struct curl_response_data *respdata = data;
 	char *newbuf, *orig_buf = respdata->str;
 
 	bbs_assert_exists(respdata);
 
+	/* Prevent a huge download from using up all our memory */
+	if (respdata->len + size > MAX_CURL_DOWNLOAD_SIZE) {
+		bbs_warning("Partial download size %ld exceeded maximum allowed\n", respdata->len + size);
+		return 0;
+	}
+
 	/* XXX Not for binary data */
 	if (respdata->len) {
-		bbs_debug(9, "curl response continued with %d + %d\n", respdata->len, realsize);
+		bbs_debug(9, "curl response continued with %ld + %ld\n", respdata->len, realsize);
 		newbuf = realloc(respdata->str, respdata->len + realsize + 1); /* Add null terminator */
 		if (ALLOC_FAILURE(newbuf)) {
 			FREE(respdata->str);
@@ -78,7 +86,7 @@ static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *da
 		memcpy(respdata->str + respdata->len, ptr, realsize); /* strncpy okay here, but since bbs.h blocks it, use memcpy */
 		*(respdata->str + respdata->len + realsize) = '\0'; /* Null terminate the string */
 	} else {
-		bbs_debug(9, "curl response started with %d\n", realsize);
+		bbs_debug(9, "curl response started with %ld\n", realsize);
 		respdata->str = strndup(ptr, realsize + 1); /* Add null terminator */
 		if (ALLOC_SUCCESS(respdata->str)) {
 			*(respdata->str + realsize) = '\0'; /* Null terminate the string */
@@ -95,7 +103,7 @@ static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *da
 
 	respdata->resp = respdata->str; /* XXX Hack: Dup the pointer because for some reason response.str is NULL in curl_common_run? */
 	respdata->len += realsize;
-	bbs_debug(8, "curl response now %d bytes\n", respdata->len);
+	bbs_debug(8, "curl response now %ld bytes\n", respdata->len);
 	return realsize;
 }
 
@@ -161,15 +169,15 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 		if (fp) {
 			/* We're already at the end of the file, so we can get the file size
 			 * just from the current position. */
-			unsigned int sz = ftell(fp);
-			bbs_debug(4, "CURL Response Code: %d - %u bytes (%s)\n", http_code, sz, c->url);
+			long int sz = ftell(fp);
+			bbs_debug(4, "CURL Response Code: %d - %ld bytes (%s)\n", http_code, sz, c->url);
 		} else {
-			bbs_debug(4, "CURL Response Code: %d - %d bytes (%s)\n", http_code, response.len, c->url);
+			bbs_debug(4, "CURL Response Code: %d - %ld bytes (%s)\n", http_code, response.len, c->url);
 		}
 		c->http_code = http_code;
 		failed = STARTS_WITH(c->url, "http") ? !HTTP_RESPONSE_SUCCESS(http_code) : http_code != 0;
 		if (c->forcefail && failed) {
-			bbs_debug(4, "Response failed, freeing response (length %d)\n", response.len);
+			bbs_debug(4, "Response failed, freeing response (length %ld)\n", response.len);
 			response.str = response.resp;
 			free_if(response.str); /* Free response if we're not going to return it */
 		} else {

@@ -70,6 +70,7 @@ static int sendmail(MAILER_PARAMS)
 	 * Probably okay here, but in general don't do this... always pass a handle to node using the headless function variant.
 	 */
 
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 	if (async) {
 		char tmp2[256];
 		/* We can't simply double fork() and call it a day, to run this in the background,
@@ -94,6 +95,7 @@ static int sendmail(MAILER_PARAMS)
 			bbs_debug(7, "Removed temporary file '%s'\n", tmp);
 		}
 	}
+#pragma GCC diagnostic pop
 
 	if ((res < 0) && (errno != ECHILD)) {
 		bbs_error("Unable to execute '%s'\n", SENDMAIL_CMD);

@@ -26,6 +26,7 @@
 #include "include/node.h"
 #include "include/term.h"
 
+#pragma GCC diagnostic ignored "-Wsign-conversion"
 static int bbs_input_set(int fd, int canonical, int echo)
 {
 	struct termios term;
@@ -74,6 +75,7 @@ int bbs_echo(int fd, int echo)
 	}
 	return 0;
 }
+#pragma GCC diagnostic pop
 
 int bbs_unbuffer_input(int fd, int echo)
 {
@@ -112,8 +114,8 @@ static int bbs_node_set_input(struct bbs_node *node, int buffered, int echo)
 
 	if (!res) {
 		bbs_debug(5, "Node %d (fd %d): input now %s, echo %s\n", node->id, node->slavefd, buffered ? "buffered" : "unbuffered", echo ? "enabled" : "disabled");
-		node->buffered = buffered;
-		node->echo = echo;
+		SET_BITFIELD(node->buffered, buffered);
+		SET_BITFIELD(node->echo, echo);
 	}
 	return 0;
 }
@@ -152,11 +154,12 @@ int bbs_node_echo(struct bbs_node *node, int echo)
 	res = bbs_echo(node->slavefd, echo);
 
 	if (!res) {
-		node->echo = echo;
+		SET_BITFIELD(node->echo, echo);
 	}
 	return res;
 }
 
+#pragma GCC diagnostic ignored "-Wsign-conversion"
 int bbs_term_makeraw(int fd)
 {
 	struct termios t;
@@ -214,3 +217,4 @@ int tty_set_line_discipline(int fd)
 	}
 	return 0;
 }
+#pragma GCC diagnostic pop

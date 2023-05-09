@@ -110,7 +110,7 @@ int bbs_make_email_file(FILE *p, const char *subject, const char *body, const ch
 	char *attachmentsbuf, *attachmentlist, *attachment;
 	struct timeval when;
 	int res = 0;
-	time_t t = time(NULL);
+	time_t t = (int) time(NULL);
 
 	gettimeofday(&when, NULL);
 	gethostname(host, sizeof(host) - 1);
@@ -242,7 +242,7 @@ int __bbs_register_mailer(int (*mailer)(MAILER_PARAMS), void *mod, int priority)
 	}
 	m->mailer = mailer;
 	m->module = mod;
-	m->priority = priority;
+	m->priority = (unsigned int) priority;
 	RWLIST_INSERT_SORTED(&mailers, m, entry, priority); /* Insert in order of priority */
 	RWLIST_UNLOCK(&mailers);
 	return 0;

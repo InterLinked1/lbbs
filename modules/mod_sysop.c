@@ -47,7 +47,7 @@
 
 extern int option_nofork;
 
-static pthread_t sysop_thread = -1;
+static pthread_t sysop_thread = 0;
 
 #define my_set_stdout_logging(fdout, setting) if (fdout == STDOUT_FILENO) { bbs_set_stdout_logging(setting); } else { bbs_set_fd_logging(fdout, setting); }
 
@@ -56,6 +56,9 @@ static pthread_t sysop_thread = -1;
 #undef bbs_printf
 #endif
 #define bbs_printf __Do_not_use_bbs_printf_use_bbs_dprintf
+/* Use the macro to suppress unused macro warning with -Wunused-macros */
+#ifdef bbs_printf
+#endif
 
 static int sysop_command(int fdin, int fdout, const char *s)
 {
@@ -144,14 +147,14 @@ static int sysop_command(int fdin, int fdout, const char *s)
 		s += 5;
 		ENSURE_STRLEN(s);
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
-		bbs_node_shutdown_node(atoi(s));
+		bbs_node_shutdown_node((unsigned int) atoi(s));
 	} else if (!strcmp(s, "kickall")) {
 		my_set_stdout_logging(fdout, 1);
 		bbs_node_shutdown_all(0);
 	} else if (STARTS_WITH(s, "node ")) {
 		s += 5;
 		ENSURE_STRLEN(s);
-		bbs_node_info(fdout, atoi(s));
+		bbs_node_info(fdout, (unsigned int) atoi(s));
 	} else if (STARTS_WITH(s, "user ")) {
 		s += 5;
 		ENSURE_STRLEN(s);
@@ -161,7 +164,7 @@ static int sysop_command(int fdin, int fdout, const char *s)
 	} else if (STARTS_WITH(s, "spy ")) {
 		s += 4;
 		ENSURE_STRLEN(s);
-		bbs_node_spy(fdin, fdout, atoi(s));
+		bbs_node_spy(fdin, fdout, (unsigned int) atoi(s));
 	} else if (STARTS_WITH(s, "alert ")) {
 		char *dup = strdup(S_IF(s + STRLEN("alert ")));
 		if (ALLOC_SUCCESS(dup)) {
@@ -257,9 +260,9 @@ static void *sysop_handler(void *varg)
 			continue;
 		}
 		if (pfd.revents & POLLIN) {
-			int bytes_read = read(sysopfdin, buf, sizeof(buf));
+			ssize_t bytes_read = read(sysopfdin, buf, sizeof(buf));
 			if (bytes_read <= 0) {
-				bbs_debug(5, "read returned %d\n", bytes_read);
+				bbs_debug(5, "read returned %ld\n", bytes_read);
 				break;
 			}
 			switch (tolower(buf[0])) {
@@ -335,7 +338,7 @@ static void *sysop_handler(void *varg)
 						} else {
 							bytes_read = read(sysopfdin, buf, 1);
 							if (bytes_read <= 0) {
-								bbs_debug(5, "read returned %d\n", bytes_read);
+								bbs_debug(5, "read returned %ld\n", bytes_read);
 							} else if (buf[0] == 'y' || buf[0] == 'Y') {
 								do_quit = 1;
 							}
@@ -401,7 +404,7 @@ static void *sysop_handler(void *varg)
 					} else {
 						bytes_read = read(sysopfdin, cmdbuf, sizeof(cmdbuf) - 1);
 						if (bytes_read <= 0) {
-							bbs_debug(5, "read returned %d\n", bytes_read);
+							bbs_debug(5, "read returned %ld\n", bytes_read);
 						} else {
 							cmdbuf[bytes_read] = '\0'; /* Safe, since size - 1 above */
 							bbs_term_line(cmdbuf);
@@ -563,6 +566,7 @@ static int load_module(void)
 		bbs_debug(3, "BBS not started with foreground console, declining to load foreground sysop console\n");
 	}
 
+#pragma GCC diagnostic ignored "-Wsign-conversion"
 	/* Start a thread to allow remote sysop console connections */
 	if (bbs_make_unix_socket(&uds_socket, BBS_SYSOP_SOCKET, "0600", -1, -1) || bbs_pthread_create(&uds_thread, NULL, remote_sysop_listener, NULL)) {
 		if (!option_nofork) {
@@ -570,6 +574,7 @@ static int load_module(void)
 			return -1; /* Only fatal if daemonized, since otherwise there would be no sysop consoles at all */
 		}
 	}
+#pragma GCC diagnostic pop
 
 	return 0;
 }

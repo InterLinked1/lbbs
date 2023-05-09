@@ -212,18 +212,18 @@ int bbs_dump_menus(int fd)
 
 #define DEBUG_MENU_DRAW
 
-static int print_header(struct bbs_node *node, const char *s, const char *color, char *buf, size_t len)
+static unsigned int print_header(struct bbs_node *node, const char *s, const char *color, char *buf, size_t len)
 {
 	unsigned int plen;
-	int rows_used = 1;
+	unsigned int rows_used = 1;
 	/* Manually substitute any variables, since we don't substitute until the menu handler is called */
 	bbs_substitute_vars(node, s, buf, len);
 	bbs_node_writef(node, "%s%s\n", color, buf);
 	/* Check for exceeding dimensions */
-	plen = bbs_printable_strlen(buf);
+	plen = (unsigned int) bbs_printable_strlen(buf);
 	bbs_debug(6, "plen: %u, cols: %u\n", plen, node->cols);
 	if (!NODE_IS_TDD(node) && node->cols && plen > node->cols) {
-		int real_rows = (int) ceil(1.0 * plen / node->cols);
+		unsigned int real_rows = plen + (node->cols - 1) / node->cols; /* avoid ceil() */
 		bbs_warning("Menu title length (%d) exceeds node %d's terminal width (%dx%d), actually occupies %d rows\n", plen, node->id, node->cols, node->rows, real_rows);
 		rows_used += (real_rows - 1); /* Add additional rows it actually took up */
 	}
@@ -246,9 +246,9 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 	char sub_name[64];
 	char sub_full[96];
 	int longest = 0;
-	int rows_used = 0;
-	int numcols = 1;
-	int outcol = 1;
+	unsigned int rows_used = 0;
+	unsigned int numcols = 1;
+	unsigned int outcol = 1;
 	struct bbs_menu_item *menuitem;
 
 	NEG_RETURN(bbs_node_clear_screen(node)); /* Clear screen for each menu. */
@@ -510,7 +510,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 			}
 			/* Wait for user to choose an option from the menu */
 			bbs_node_unbuffer(node); /* Unbuffer input and disable echo, so we can read a single-char selection */
-			opt = bbs_node_tread(node, bbs_idle_ms());
+			opt = bbs_node_tread(node, (int) bbs_idle_ms());
 			if (opt <= 0) {
 				RWLIST_UNLOCK(&menus);
 				return opt;
@@ -525,7 +525,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 		}
 
 		if (!case_sensitive) {
-			opt = toupper(opt);
+			opt = (char) toupper(opt);
 		}
 
 		/* We can quickly check if this was a valid selection. If the option chosen isn't valid, try again. */
@@ -551,7 +551,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 			optreq = menusequence;
 			opt = menusequence[0];
 			if (!case_sensitive) {
-				opt = toupper(opt);
+				opt = (char) toupper(opt);
 			}
 		} else if (opt == ' ') {
 			/* Force redraw the menu (or maybe, for TDDs, draw it for the first time) */
@@ -688,7 +688,7 @@ static int load_config(int reload)
 				REPLACE(menu->subtitle, value);
 			} else if (!strcasecmp(key, "display")) {
 				if (menu->display) {
-					int slen = strlen(menu->display);
+					size_t slen = strlen(menu->display);
 					char *s = realloc(menu->display, slen + strlen(value) + 2); /* LF + NUL */
 					if (ALLOC_FAILURE(s)) {
 						bbs_error("Failed to append menu line '%s' due to realloc error\n", value);
@@ -723,7 +723,7 @@ static int load_config(int reload)
 				}
 				menuitem->opt = *key; /* It's only a single letter */
 				if (!case_sensitive) {
-					menuitem->opt = toupper(menuitem->opt); /* If not case sensitive, store internally as uppercase */
+					menuitem->opt = (char) toupper(menuitem->opt); /* If not case sensitive, store internally as uppercase */
 				}
 				/* First one is always the menu item action. */
 				s = strsep(&tmp, "|");
@@ -758,7 +758,7 @@ static int load_config(int reload)
 						continue;
 					}
 					if (!strcasecmp(k, "minpriv")) {
-						menuitem->minpriv = atoi(s);
+						menuitem->minpriv = (unsigned int) atoi(s);
 					} else {
 						bbs_warning("Unrecognized menu item modifier '%s'\n", k);
 					}

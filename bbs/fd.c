@@ -64,7 +64,7 @@ static struct fdleaks {
  * - if there is no slash, it copies the value with the head
  *   truncated */
 #define	COPY(dst, src) { \
-	int dlen = sizeof(dst), slen = strlen(src);                \
+	size_t dlen = sizeof(dst), slen = strlen(src);                \
 	if (slen + 1 > dlen) {                                     \
 		const char *slash = strrchr(src, '/');                 \
 		if (slash) {                                           \
@@ -79,7 +79,7 @@ static struct fdleaks {
 
 #define STORE_COMMON(offset, name, ...) { \
 	struct fdleaks *tmp = &fdleaks[offset]; \
-	tmp->now = time(NULL); \
+	tmp->now = (int) time(NULL); \
 	COPY(tmp->file, file);      \
 	tmp->line = line;           \
 	COPY(tmp->function, func);  \
@@ -184,7 +184,8 @@ int __fdleak_eventfd(unsigned int initval, int flags, const char *file, int line
 
 int __fdleak_socket(int domain, int type, int protocol, const char *file, int line, const char *func)
 {
-	char sdomain[20], stype[20], *sproto = NULL;
+	char sdomain[20], stype[20];
+	const char *sproto = NULL;
 	struct protoent *pe;
 	int res = socket(domain, type, protocol);
 	if (res < 0 || res >= (int) ARRAY_LEN(fdleaks)) {

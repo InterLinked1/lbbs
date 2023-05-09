@@ -31,8 +31,8 @@
 
 /*! \brief Structure used for base64 encoding */
 struct baseio {
-	int iocp;
-	int iolen;
+	size_t iocp;
+	size_t iolen;
 	int linelength;
 	int ateof;
 	unsigned char iobuf[BASEMAXINLINE];
@@ -41,9 +41,9 @@ struct baseio {
 /*!
  * \brief utility used by inchar(), for base_encode()
  */
-static int inbuf(struct baseio *bio, FILE *fi)
+static size_t inbuf(struct baseio *bio, FILE *fi)
 {
-	int l;
+	size_t l;
 
 	if (bio->ateof) {
 		return 0;
@@ -209,16 +209,16 @@ unsigned char *base64_decode(const unsigned char *data, int input_length, int *o
 		(output_length)--;
 	}
 
-	decoded_data = (unsigned char*) malloc(output_length + 1);
+	decoded_data = (unsigned char*) malloc((size_t) output_length + 1);
 	if (ALLOC_FAILURE(decoded_data)) {
 		return NULL;
 	}
 
 	for (i = 0, j = 0; i < input_length;) {
-		uint32_t sextet_a = data[i] == '=' ? 0 & i++ : decoding_table[data[i++]];
-		uint32_t sextet_b = data[i] == '=' ? 0 & i++ : decoding_table[data[i++]];
-		uint32_t sextet_c = data[i] == '=' ? 0 & i++ : decoding_table[data[i++]];
-		uint32_t sextet_d = data[i] == '=' ? 0 & i++ : decoding_table[data[i++]];
+		uint32_t sextet_a = (uint32_t) (data[i] == '=' ? 0 & i++ : decoding_table[data[i++]]);
+		uint32_t sextet_b = (uint32_t) (data[i] == '=' ? 0 & i++ : decoding_table[data[i++]]);
+		uint32_t sextet_c = (uint32_t) (data[i] == '=' ? 0 & i++ : decoding_table[data[i++]]);
+		uint32_t sextet_d = (uint32_t) (data[i] == '=' ? 0 & i++ : decoding_table[data[i++]]);
 		uint32_t triple = (sextet_a << 3 * 6) + (sextet_b << 2 * 6) + (sextet_c << 1 * 6) + (sextet_d << 0 * 6);
 
 		if (j < output_length) {
@@ -256,7 +256,7 @@ char *base64_encode(const char *data, int input_length, int *outlen)
 	int i, j, output_len;
 
 	output_len = 4 * ((input_length + 2) / 3);
-	encoded_data = malloc(output_len  + 1);
+	encoded_data = malloc((size_t) output_len  + 1);
 	if (ALLOC_FAILURE(encoded_data)) {
 		return NULL;
 	}

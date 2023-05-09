@@ -47,7 +47,7 @@ static char *readline_pre_read(struct readline_data *rldata, const char *delim, 
 	if (rldata->leftover) { /* Data from previous read still in the buffer */
 		int res;
 		/* Shift contents of buffer back to beginning, which simplifies some things over potentially circling around until we wrap. */
-		memmove(rldata->buf, rldata->pos, rldata->leftover);
+		memmove(rldata->buf, rldata->pos, (size_t) rldata->leftover);
 		res = rldata->leftover; /* Pretend like we just read this many bytes, just now. */
 		rldata->buf[res] = '\0';
 		/* Update our position to where we need to be. */
@@ -75,13 +75,13 @@ static int readline_post_read(struct readline_data *rldata, const char *delim, c
 {
 	int used, delimlen;
 
-	delimlen = strlen(delim);
+	delimlen = (int) strlen(delim);
 
 	/* We have at least 1 complete command, and maybe more. */
 	*firstdelim = '\0'; /* Null terminate here so the caller can just read from the buffer and get a full line (up to and not including the delimiter). */
-	used = firstdelim - rldata->buf; /* Number of bytes, NOT including the trimmed delimiter. */
+	used = (int) (firstdelim - rldata->buf); /* Number of bytes, NOT including the trimmed delimiter. */
 	firstdelim += delimlen; /* There is the beginning of the rest of the buffer. No, we do not need to add 1 here. */
-	rldata->leftover = rldata->pos - firstdelim; /* Number of bytes leftover. */
+	rldata->leftover = (int) (rldata->pos - firstdelim); /* Number of bytes leftover. */
 #ifdef EXTRA_DEBUG
 	bbs_debug(8, "Read %lu bytes (%d just now), processing %d and leaving %d leftover\n", rldata->pos - rldata->buf, res, used, rldata->leftover);
 #else
@@ -109,7 +109,7 @@ int bbs_readline(int fd, struct readline_data *rldata, const char *delim, int ti
 			bbs_warning("Buffer (size %d) has been exhausted\n", rldata->len); /* The using application needs to allocate a larger buffer */
 			return -1;
 		}
-		res = bbs_poll_read(fd, timeout, rldata->pos, rldata->left - 1); /* Subtract 1 for NUL */
+		res = bbs_poll_read(fd, timeout, rldata->pos, (size_t) rldata->left - 1); /* Subtract 1 for NUL */
 		if (res <= 0) {
 			bbs_debug(3, "read returned %d (%s)\n", res, res < 0 ? strerror(errno) : "");
 			return res - 1; /* see the doxygen notes: we should return 0 only if we read just the delimiter. */
@@ -127,7 +127,7 @@ int bbs_readline(int fd, struct readline_data *rldata, const char *delim, int ti
 int bbs_readline_getn(int fd, int destfd, struct readline_data *rldata, int timeout, int n)
 {
 	int res, wres;
-	int left_in_buffer;
+	unsigned int left_in_buffer;
 	int written = 0, remaining = n;
 
 	/* First, use anything that's already in the buffer from a previous read.
@@ -135,12 +135,12 @@ int bbs_readline_getn(int fd, int destfd, struct readline_data *rldata, int time
 	 * since we don't use the result.
 	 * We only check rldata->pos afterwards to determine how much data is already in the buffer. */
 	readline_pre_read(rldata, "\n", &res);
-	left_in_buffer = rldata->pos - rldata->buf;
+	left_in_buffer = (unsigned int) (rldata->pos - rldata->buf);
 #ifdef EXTRA_DEBUG
 	bbs_debug(8, "Up to %d/%d bytes can be satisfied from existing buffer\n", left_in_buffer, n);
 #endif
 	if (left_in_buffer) {
-		int bytes = MIN(left_in_buffer, n); /* Minimum of # bytes available or # bytes we want to read */
+		unsigned int bytes = (unsigned int) MIN(left_in_buffer, (unsigned int) n); /* Minimum of # bytes available or # bytes we want to read */
 		wres = bbs_write(destfd, rldata->buf, bytes);
 		if (wres < 0) {
 			return wres;
@@ -153,7 +153,7 @@ int bbs_readline_getn(int fd, int destfd, struct readline_data *rldata, int time
 		rldata->buf[left_in_buffer] = '\0';
 		/* Update our position to where we need to be. */
 		rldata->pos = rldata->buf + left_in_buffer;
-		rldata->left = rldata->len - left_in_buffer;
+		rldata->left = rldata->len - (int) left_in_buffer;
 	}
 	/* For the remainder of this function, we don't use the rldata buffer.
 	 * Since we know the exact number of bytes we want, we can use a temporary buffer
@@ -161,11 +161,11 @@ int bbs_readline_getn(int fd, int destfd, struct readline_data *rldata, int time
 	while (remaining) {
 		char readbuf[BUFSIZ];
 		int readsize = MIN((int) sizeof(readbuf), remaining); /* Don't read more than we want, or can */
-		res = bbs_poll_read(fd, timeout, readbuf, readsize);
+		res = bbs_poll_read(fd, timeout, readbuf, (size_t) readsize);
 		if (res <= 0) {
 			return written;
 		}
-		wres = bbs_write(destfd, readbuf, res);
+		wres = bbs_write(destfd, readbuf, (unsigned int) res);
 		if (wres <= 0) {
 			return written;
 		}
@@ -199,7 +199,7 @@ int bbs_readline_append(struct readline_data *rldata, const char *delim, char *b
 
 		/* buf is not (necessarily) null terminated, so can't just blindly use safe_strncpy */
 		res = MIN((int) len, rldata->left - 1);
-		memcpy(rldata->pos, buf, res);
+		memcpy(rldata->pos, buf, (size_t) res);
 
 		rldata->pos[res] = '\0'; /* Safe. Null terminate so we can use string functions. */
 		if (!drain) { /* If we're draining the buffer, firstdelim is already set and we want to use that */
@@ -218,7 +218,7 @@ int bbs_readline_append(struct readline_data *rldata, const char *delim, char *b
 
 		readline_post_read(rldata, delim, firstdelim, res);
 		nextbegin = rldata->pos;
-		rldata->leftover = origpos - nextbegin; /* Amount leftover is whatever we'll need to shift after the caller uses the available chunk */
+		rldata->leftover = (int) (origpos - nextbegin); /* Amount leftover is whatever we'll need to shift after the caller uses the available chunk */
 
 		/* Still return the original value */
 	} else {

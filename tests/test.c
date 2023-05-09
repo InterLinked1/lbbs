@@ -98,7 +98,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 	}
 
 	gettimeofday(&now, NULL);
-	lognow = time(NULL);
+	lognow = (int) time(NULL);
 	localtime_r(&lognow, &logdate);
 	strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 
@@ -158,7 +158,7 @@ static int parse_options(int argc, char *argv[])
 			option_debug++;
 			break;
 		case 'D':
-			if (option_debug_bbs == MAX_DEBUG) {
+		if (option_debug_bbs == MAX_DEBUG) {
 				fprintf(stderr, "Maximum BBS debug level is %d\n", MAX_DEBUG);
 				return -1;
 			}
@@ -217,7 +217,7 @@ int test_make_socket(int port)
 	memset(&sinaddr, 0, sizeof(sinaddr));
 	sinaddr.sin_family = AF_INET;
 	sinaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-	sinaddr.sin_port = htons(port);
+	sinaddr.sin_port = htons((uint16_t) port);
 
 	/* XXX connect() should not block */
 
@@ -235,7 +235,7 @@ int test_client_drain(int fd, int ms)
 {
 	struct pollfd pfd;
 	char buf[4096];
-	int drained = 0;
+	ssize_t drained = 0;
 
 	memset(&pfd, 0, sizeof(pfd));
 
@@ -244,7 +244,7 @@ int test_client_drain(int fd, int ms)
 	assert(pfd.fd != -1);
 
 	for (;;) {
-		int res;
+		ssize_t res;
 		pfd.revents = 0;
 		res = poll(&pfd, 1, ms);
 		if (res < 0) {
@@ -254,7 +254,7 @@ int test_client_drain(int fd, int ms)
 		} else {
 			res = read(fd, buf, sizeof(buf) - 1);
 			if (res <= 0) {
-				bbs_debug(1, "read returned %d\n", res);
+				bbs_debug(1, "read returned %ld\n", res);
 				break;
 			} else {
 				buf[res] = '\0';
@@ -263,7 +263,7 @@ int test_client_drain(int fd, int ms)
 			}
 		}
 	}
-	bbs_debug(5, "Flushed %d bytes from fd %d\n", drained, fd);
+	bbs_debug(5, "Flushed %ld bytes from fd %d\n", drained, fd);
 	return 0;
 }
 
@@ -290,10 +290,10 @@ int test_client_expect_buf(int fd, int ms, const char *s, int line, char *buf, s
 		return -1;
 	}
 	if (res > 0 && pfd.revents) {
-		int bytes;
+		ssize_t bytes;
 		bytes = read(fd, buf, len - 1);
 		if (bytes <= 0) {
-			bbs_warning("Failed to receive expected output at line %d: %s (read returned %d) - %s\n", line, s, bytes, strerror(errno));
+			bbs_warning("Failed to receive expected output at line %d: %s (read returned %ld) - %s\n", line, s, bytes, strerror(errno));
 			return -1;
 		}
 		buf[bytes] = '\0'; /* Safe */
@@ -334,10 +334,10 @@ int test_client_expect_eventually_buf(int fd, int ms, const char *s, int line, c
 			break;
 		}
 		if (res > 0 && pfd.revents) {
-			int bytes;
+			ssize_t bytes;
 			bytes = read(fd, buf, len - 1);
 			if (bytes <= 0) {
-				bbs_warning("Failed to receive expected output at line %d: %s (read returned %d)\n", line, s, bytes);
+				bbs_warning("Failed to receive expected output at line %d: %s (read returned %ld)\n", line, s, bytes);
 				return -1;
 			}
 			buf[bytes] = '\0'; /* Safe */
@@ -383,19 +383,19 @@ static void *io_relay(void *varg)
 	}
 
 	for (;;) {
-		int res;
+		ssize_t res;
 		res = read(pipefd[0], buf, sizeof(buf) - 1);
 		if (res <= 0) {
-			bbs_debug(4, "read returned %d\n", res);
+			bbs_debug(4, "read returned %ld\n", res);
 			return NULL;
 		}
-		write(logfd, buf, res);
+		write(logfd, buf, (size_t) res);
 		if (option_debug) {
-			write(STDERR_FILENO, buf, res);
+			write(STDERR_FILENO, buf, (size_t) res);
 		}
 		if (bbs_expect_str) {
 			int rounds = 0;
-			bbs_readline_append(&rldata, "\n", buf, res, &ready);
+			bbs_readline_append(&rldata, "\n", buf, (size_t) res, &ready);
 			/* Check if the line contains the expected output.
 			 * If we read multiple lines, loop until there's not a full line left in the buffer. */
 			while (ready && bbs_expect_str) { /* Check bbs_expect_str again as it could be set NULL once we get a match */
@@ -413,7 +413,7 @@ static void *io_relay(void *varg)
 					}
 				}
 				/* Don't append, just shift the buffer and check if we can read immediately. */
-				bbs_readline_append(&rldata, "\n", "", 0, &ready);
+				bbs_readline_append(&rldata, "\n", NULL, 0, &ready);
 				rounds++;
 			}
 			if (startup_run_unit_tests_started == 1) {
@@ -465,6 +465,9 @@ int test_bbs_expect(const char *s, int ms)
 	return -1;
 }
 
+#pragma GCC diagnostic ignored "-Wcast-qual"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 static int test_bbs_spawn(const char *directory)
 {
 	pid_t child;
@@ -559,6 +562,8 @@ static int test_bbs_spawn(const char *directory)
 	pthread_create(&bbs_io_thread, NULL, io_relay, bbspfd);
 	return child;
 }
+#pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
 
 static void close_pipes(void)
 {
@@ -720,8 +725,7 @@ static int run_test(const char *filename, int multiple)
 		res = -1;
 	} else {
 		struct timeval start, end;
-		int64_t sec_dif, usec_dif;
-		unsigned long tot_dif;
+		int64_t sec_dif, usec_dif, tot_dif;
 		int core_before = 0;
 		pid_t childpid = -1;
 		if (reset_test_configs()) { /* Reset before each test */
@@ -885,14 +889,14 @@ static void stop_bbs(void)
 		bbs_debug(5, "Process %ld no longer exists\n", file_pid);
 		return;
 	}
-	kill(file_pid, SIGINT); /* Ask it to exit nicely. */
+	kill((pid_t) file_pid, SIGINT); /* Ask it to exit nicely. */
 	usleep(1500000);
 	/* If it's still running, then forcibly kill it. */
 	if (stat(procpath, &st) == -1 && errno == ENOENT) {
 		bbs_debug(5, "Gently killed existing BBS process %ld\n", file_pid);
 		return;
 	}
-	kill(file_pid, SIGKILL);
+	kill((pid_t) file_pid, SIGKILL);
 	bbs_warning("Forcibly killed existing BBS process %ld\n", file_pid);
 	return;
 }

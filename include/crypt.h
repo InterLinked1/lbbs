@@ -59,4 +59,4 @@ int bbs_password_verify(const char *password, const char *salt, const char *hash
  * \param combined The full hash i.e. salt + hash
  * \retval 0 on success (match), -1 on failure (mismatch)
  */
-int bbs_password_verify_bcrypt(const char *password, char *combined);
+int bbs_password_verify_bcrypt(const char *password, const char *combined);

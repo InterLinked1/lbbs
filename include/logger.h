@@ -28,12 +28,12 @@ enum bbs_log_level {
 	LOG_DEBUG,
 };
 
-#define bbs_auth(fmt, ...) __bbs_log(LOG_AUTH, 0, __FILE__, __LINE__, __FUNCTION__, fmt, ## __VA_ARGS__);
-#define bbs_error(fmt, ...) __bbs_log(LOG_ERROR, 0, __FILE__, __LINE__, __FUNCTION__, fmt, ## __VA_ARGS__);
-#define bbs_warning(fmt, ...) __bbs_log(LOG_WARNING, 0, __FILE__, __LINE__, __FUNCTION__, fmt, ## __VA_ARGS__);
-#define bbs_notice(fmt, ...) __bbs_log(LOG_NOTICE, 0, __FILE__, __LINE__, __FUNCTION__, fmt, ## __VA_ARGS__);
-#define bbs_verb(level, fmt, ...) __bbs_log(LOG_VERBOSE, level, __FILE__, __LINE__, __FUNCTION__, fmt, ## __VA_ARGS__);
-#define bbs_debug(level, fmt, ...) __bbs_log(LOG_DEBUG, level, __FILE__, __LINE__, __FUNCTION__, fmt, ## __VA_ARGS__);
+#define bbs_auth(fmt, ...) __bbs_log(LOG_AUTH, 0, __FILE__, __LINE__, __func__, fmt, ## __VA_ARGS__);
+#define bbs_error(fmt, ...) __bbs_log(LOG_ERROR, 0, __FILE__, __LINE__, __func__, fmt, ## __VA_ARGS__);
+#define bbs_warning(fmt, ...) __bbs_log(LOG_WARNING, 0, __FILE__, __LINE__, __func__, fmt, ## __VA_ARGS__);
+#define bbs_notice(fmt, ...) __bbs_log(LOG_NOTICE, 0, __FILE__, __LINE__, __func__, fmt, ## __VA_ARGS__);
+#define bbs_verb(level, fmt, ...) __bbs_log(LOG_VERBOSE, level, __FILE__, __LINE__, __func__, fmt, ## __VA_ARGS__);
+#define bbs_debug(level, fmt, ...) __bbs_log(LOG_DEBUG, level, __FILE__, __LINE__, __func__, fmt, ## __VA_ARGS__);
 
 /*!
  * \brief Set BBS verbose level

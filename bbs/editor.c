@@ -45,7 +45,7 @@ int bbs_line_editor(struct bbs_node *node, const char *instr, char *buf, size_t 
 		bbs_node_buffer(node);
 		/* Read until we get 2 newlines */
 		for (;;) {
-			int res = bbs_node_readline(node, MIN_MS(5), ptr, len);
+			size_t res = (size_t) bbs_node_readline(node, MIN_MS(5), ptr, len);
 			if (res <= 0) {
 				return -1;
 			}
@@ -123,12 +123,12 @@ static int strcount(const char *s, char c)
 #define PAGE_COLS(node) (node->cols ? node->cols : 80)
 #define PAGE_ROWS(node) (node->rows ? node->rows : 24)
 
-int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const char *s, int len)
+int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const char *s, size_t len)
 {
 	/* Retrieve the terminal dimensions each time, because they could change at any time */
-	int eff_width = PAGE_COLS(node);
+	unsigned int eff_width = PAGE_COLS(node);
 	/* Subtract 1 each for header + footer, if present, plus our own footer */
-	int eff_height = PAGE_ROWS(node) - (pginfo->header ? 1 : 0) - (pginfo->footer ? 1 : 0) - 1;
+	unsigned int eff_height = PAGE_ROWS(node) - (pginfo->header ? 1 : 0) - (pginfo->footer ? 1 : 0) - 1;
 
 	if (!pginfo->line) {
 		/* First invocation! Clear the screen and switch to non-canonical mode (with echo off). */
@@ -165,12 +165,12 @@ int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const ch
 		if (len > eff_width) {
 			/* The line is longer than the terminal width, so if we just spill it out as is, it will wrap automatically.
 			 * That's fine, but we need to know how many rows this will actually use up on the user's terminal. */
-			int actual_lines = ceil(1.0 * len / eff_width); /* Don't do expensive floating point division unless we need to. */
+			int actual_lines = (int) (len + (eff_width - 1) / eff_width); /* Round up, without using the ceil function to avoid expensive floating point division */
 			lines_eff += (actual_lines - 1); /* Subtract 1 because actual_lines includes the first line, so don't double count that. */
 		}
 		/* If this will cause us to exceed what we're allowed, stop now. */
-		if (lines_eff > pginfo->want) {
-			bbs_warning("Stopping paging early, as %d effective rows exceeds %d permitted\n", lines_eff, pginfo->want);
+		if (lines_eff > (int) pginfo->want) {
+			bbs_warning("Stopping paging early, as %d effective rows exceeds %ld permitted\n", lines_eff, pginfo->want);
 			pginfo->want = 0; /* Reset */
 			/* Continue to paging part of the function */
 		} else {
@@ -182,7 +182,7 @@ int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const ch
 			 * Otherwise, on wide terminals, we may take up fewer lines on the screen than we thought we used.
 			 */
 			if (len > 80 && !node->cols) {
-				int left = len;
+				size_t left = len;
 				/* Write 80 characters at a time */
 				while (left > 80) {
 					NEG_RETURN(bbs_node_writef(node, "%.*s\n", 80, s));
@@ -210,7 +210,7 @@ int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const ch
 				NEG_RETURN(bbs_node_writef(node, ends_in_newline ? "%s" : "%s\n", s)); /* Print the line */
 			}
 			if (pginfo->want) {
-				pginfo->want -= lines_eff; /* We're printing out this many rows, that we no longer owe */
+				pginfo->want -= (size_t) lines_eff; /* We're printing out this many rows, that we no longer owe */
 			}
 			/* Can't just write all the lines in a for loop, bbs_pager only gets 1 line at a time */
 			if (pginfo->want) {
@@ -289,7 +289,7 @@ int bbs_node_term_browse(struct bbs_node *node, const char *filename)
 #ifdef DEBUG_PAGING
 		bbs_debug(8, "Read line(%zu): %s\n", nbytes, line);
 #endif
-		res = bbs_pager(node, &pginfo, MIN_MS(5), line, nbytes);
+		res = bbs_pager(node, &pginfo, MIN_MS(5), line, (size_t) nbytes);
 		if (res) {
 			break; /* Stop if anything exceptional happens */
 		}

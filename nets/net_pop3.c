@@ -96,12 +96,12 @@ static int init_deletions(struct pop3_session *pop3)
 {
 	int rem;
 	unsigned int bytesize;
-	int newcount = pop3->totalnew + pop3->totalcur;
+	unsigned int newcount = pop3->totalnew + pop3->totalcur;
 	/* sizeof(int) is probably 4, maybe 8.
 	 * Round up the number of messages to the nearest multiple of sizeof(int).
 	 * Then divide by it to get the actual size array we need. */
 	rem = newcount % (8 * sizeof(char)); /* 8 bits in a byte */
-	bytesize = newcount / (8 * sizeof(char)) + (rem ? 1 : 0); /* Add an extra int position if there was a remainder */
+	bytesize = newcount / (unsigned int) (8 * sizeof(char)) + (rem ? 1 : 0); /* Add an extra int position if there was a remainder */
 
 	/* We can't just set the Deleted flag like with IMAP.
 	 * The deletion flags shouldn't be committed until we quit,
@@ -141,6 +141,7 @@ static int init_deletions(struct pop3_session *pop3)
 	return 0;
 }
 
+#pragma GCC diagnostic ignored "-Wconversion"
 static int mark_deleted(struct pop3_session *pop3, int message)
 {
 	int element, bit;
@@ -150,18 +151,18 @@ static int mark_deleted(struct pop3_session *pop3, int message)
 		return -1;
 	}
 	bbs_assert_exists(pop3->deletions);
-	element = (message - 1) / (8 * sizeof(char)); /* Subtract 1 to make 0-indexed, then determine which int index it is */
-	bit = (message - 1) % (8 * sizeof(char));
+	element = (message - 1) / (int) (8 * sizeof(char)); /* Subtract 1 to make 0-indexed, then determine which int index it is */
+	bit = (message - 1) % (int) (8 * sizeof(char));
 	bbs_debug(3, "Setting bit %d of element %d (%d/%d)\n", bit, element, pop3->delsize, pop3->delbytes);
 	pop3->deletions[element] |= (1 << bit); /* Set bit high to mark deleted. */
 	return 0;
 }
 
-static inline int is_deleted(struct pop3_session *pop3, int message)
+static inline int is_deleted(struct pop3_session *pop3, unsigned int message)
 {
-	int element, bit;
+	unsigned int element, bit;
 
-	if (message > (int) pop3->delsize) {
+	if (message > pop3->delsize) {
 #ifdef EXTRA_DEBUG
 		bbs_debug(7, "Index %d does not exist\n", message - 1);
 #endif
@@ -171,10 +172,11 @@ static inline int is_deleted(struct pop3_session *pop3, int message)
 	element = (message - 1) / (8 * sizeof(char)); /* Subtract 1 to make 0-indexed, then determine which int index it is */
 	bit = (message - 1) % (8 * sizeof(char));
 #ifdef EXTRA_DEBUG
-	bbs_debug(7, "Checking bit %d of element %d (%d/%d) = %d\n", bit, element, pop3->delsize, pop3->delbytes, (pop3->deletions[element] & (1 << bit)) ? 1 : 0);
+	bbs_debug(7, "Checking bit %u of element %u (%d/%d) = %d\n", bit, element, pop3->delsize, pop3->delbytes, (pop3->deletions[element] & (1 << bit)) ? 1 : 0);
 #endif
 	return (pop3->deletions[element] & (1 << bit)) ? 1 : 0;
 }
+#pragma GCC diagnostic pop
 
 static void clear_deleted(struct pop3_session *pop3)
 {
@@ -226,7 +228,7 @@ static int pop3_traverse(const char *path, int (*on_file)(const char *dir_name, 
 {
 	struct dirent *entry, **entries;
 	int files, fno = 0;
-	int msgno = 0;
+	unsigned int msgno = 0;
 	int res = 0;
 
 	/* use scandir instead of opendir/readdir, so the listing is ordered */
@@ -249,7 +251,7 @@ static int pop3_traverse(const char *path, int (*on_file)(const char *dir_name, 
 				continue;
 			}
 		}
-		if ((res = on_file(path, entry->d_name, pop3, msgno, msgfilter))) {
+		if ((res = on_file(path, entry->d_name, pop3, (int) msgno, msgfilter))) {
 			free(entry);
 			break; /* If the handler returns non-zero then stop */
 		}
@@ -278,7 +280,7 @@ static int on_delete(const char *dir_name, const char *filename, struct pop3_ses
 
 	UNUSED(msgfilter);
 
-	if (!is_deleted(pop3, number)) {
+	if (!is_deleted(pop3, (unsigned int) number)) {
 		return 0;
 	}
 
@@ -329,7 +331,7 @@ static int on_stat(const char *dir_name, const char *filename, struct pop3_sessi
 		 * However, we don't need to compute UIDL here, so we can do that later, once everything is in the cur directory. */
 		res = maildir_move_new_to_cur(pop3->mbox, mailbox_maildir(pop3->mbox), pop3->curdir, pop3->newdir, filename, NULL, NULL);
 		if (res > 0) {
-			pop3->totalbytes += res;
+			pop3->totalbytes += (unsigned int) res;
 		}
 	} else {
 		unsigned int size;
@@ -340,7 +342,7 @@ static int on_stat(const char *dir_name, const char *filename, struct pop3_sessi
 			return 0;
 		}
 		sizestr += STRLEN(",S=");
-		size = atoi(sizestr);
+		size = (unsigned int) atoi(sizestr);
 		pop3->totalbytes += size;
 	}
 
@@ -397,7 +399,7 @@ static int on_uidl(const char *dir_name, const char *filename, struct pop3_sessi
 		return 0;
 	}
 	uidstr += STRLEN(",U=");
-	uid = atoi(uidstr); /* We don't actually need a numeric representation since we're printing, but this implicitly discards anything after the number */
+	uid = (unsigned int) atoi(uidstr); /* We don't actually need a numeric representation since we're printing, but this implicitly discards anything after the number */
 
 	uidl = uid; /* Just use the IMAP UID */
 
@@ -432,7 +434,7 @@ static int on_list(const char *dir_name, const char *filename, struct pop3_sessi
 		return 0;
 	}
 	sizestr += STRLEN(",S=");
-	size = atoi(sizestr);
+	size = (unsigned int) atoi(sizestr);
 	if (msgfilter) {
 		pop3_ok(pop3, "%d %u", number, size);
 	} else {
@@ -460,7 +462,7 @@ static int on_retr(const char *dir_name, const char *filename, struct pop3_sessi
 		return 0;
 	}
 	sizestr += STRLEN(",S=");
-	size = atoi(sizestr);
+	size = (unsigned int) atoi(sizestr);
 
 	snprintf(fullpath, sizeof(fullpath), "%s/%s", dir_name, filename);
 	fp = fopen(fullpath, "r");
@@ -476,7 +478,7 @@ static int on_retr(const char *dir_name, const char *filename, struct pop3_sessi
 	 * Of course, this assumes that nobody has messed with us, so maybe check anyways. */
 
 	fseek(fp, 0L, SEEK_END); /* Go to EOF */
-	realsize = ftell(fp);
+	realsize = (unsigned int) ftell(fp);
 	rewind(fp);
 
 	if (size != realsize) { /* Shouldn't happen unless some tampered with the message on disk... naughty tyke... */
@@ -488,7 +490,7 @@ static int on_retr(const char *dir_name, const char *filename, struct pop3_sessi
 
 	pop3_ok(pop3, "%u octets", realsize);
 	offset = 0;
-	res = sendfile(pop3->wfd, fileno(fp), &offset, realsize);
+	res = (unsigned int) sendfile(pop3->wfd, fileno(fp), &offset, realsize);
 	if (res != realsize) {
 		bbs_error("Wanted to send %d bytes but only sent %d?\n", realsize, res);
 	}
@@ -631,44 +633,44 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 		/* Report total number of messages and total number of octets (bytes) */
 		pop3_ok(pop3, "%d %d", pop3->totalnew + pop3->totalcur, pop3->totalbytes);
 	} else if (!strcasecmp(command, "LIST")) {
-		unsigned int filter = atoi(S_IF(s));
+		unsigned int filter = (unsigned int) atoi(S_IF(s));
 		/* Just in case the client didn't issue a STAT first, move any messages in new into cur. */
 		POP3_ENSURE_MESSAGE_EXISTS(filter);
 		/* Proceed with a LISTing, just using the cur directory (since new should be empty now). */
 		if (!filter) {
 			pop3_ok(pop3, "%d message%s (%d octets)", pop3->totalnew + pop3->totalcur, ESS(pop3->totalnew + pop3->totalcur), pop3->totalbytes);
 		}
-		pop3_traverse(pop3->curdir, on_list, pop3, filter);
+		pop3_traverse(pop3->curdir, on_list, pop3, (int) filter);
 		if (!filter) {
 			pop3_send(pop3, ".\r\n"); /* Termination octet */
 		}
 	} else if (!strcasecmp(command, "UIDL")) {
-		unsigned int filter = atoi(S_IF(s));
+		unsigned int filter = (unsigned int) atoi(S_IF(s));
 		/* UIDL is technically optional in RFC 1939, but proper POP3 servers should really provide it (also see RFC 1957) */
 		POP3_ENSURE_MESSAGE_EXISTS(filter);
 		if (!filter) {
 			pop3_ok(pop3, "");
 		}
-		pop3_traverse(pop3->curdir, on_uidl, pop3, filter);
+		pop3_traverse(pop3->curdir, on_uidl, pop3, (int) filter);
 		if (!filter) {
 			pop3_send(pop3, ".\r\n"); /* Termination octet */
 		}
 	} else if (!strcasecmp(command, "RETR")) {
-		unsigned int filter = atoi(S_IF(s));
+		unsigned int filter = (unsigned int) atoi(S_IF(s));
 		if (!filter) {
 			pop3_err(pop3, "Missing message ID");
 			return 0;
 		}
 		POP3_ENSURE_MESSAGE_EXISTS(filter);
 		/* Report total number of messages and total number of octets (bytes) */
-		pop3_traverse(pop3->curdir, on_retr, pop3, filter);
+		pop3_traverse(pop3->curdir, on_retr, pop3, (int) filter);
 	} else if (!strcasecmp(command, "TOP")) {
 		const char *lines, *msg;
 		unsigned int filter;
 
 		msg = strsep(&s, " ");
 		lines = s;
-		filter = atoi(S_IF(msg));
+		filter = (unsigned int) atoi(S_IF(msg));
 		if (!filter) {
 			pop3_err(pop3, "Missing message ID");
 			return 0;
@@ -676,9 +678,9 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 		POP3_ENSURE_MESSAGE_EXISTS(filter);
 		/* Report total number of messages and total number of octets (bytes) */
 		pop3->toplines = atoi(S_IF(lines));
-		pop3_traverse(pop3->curdir, on_top, pop3, filter);
+		pop3_traverse(pop3->curdir, on_top, pop3, (int) filter);
 	} else if (!strcasecmp(command, "DELE")) {
-		unsigned int filter = atoi(S_IF(s));
+		unsigned int filter = (unsigned int) atoi(S_IF(s));
 		if (!filter) {
 			pop3_err(pop3, "Missing message ID");
 			return 0;
@@ -689,7 +691,7 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 			pop3_err(pop3, "Message %u already deleted", filter);
 			return 0;
 		}
-		if (mark_deleted(pop3, filter)) {
+		if (mark_deleted(pop3, (int) filter)) {
 			pop3_err(pop3, "Failed to mark message %u for deletion", filter);
 			return 0;
 		}

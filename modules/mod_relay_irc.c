@@ -62,7 +62,7 @@ static int add_pair(const char *client1, const char *channel1, const char *clien
 {
 	char *pos;
 	struct chan_pair *cp;
-	int client1len, channel1len, client2len, channel2len;
+	size_t client1len, channel1len, client2len, channel2len;
 
 	/* Add NULs here if needed */
 	client1len = client1 ? strlen(client1) + 1 : 0;
@@ -124,7 +124,7 @@ static int add_pair(const char *client1, const char *channel1, const char *clien
 	cp->channel2 = pos;
 	pos += channel2len;
 
-	cp->relaysystem = relaysystem;
+	SET_BITFIELD(cp->relaysystem, relaysystem);
 
 	RWLIST_INSERT_HEAD(&mappings, cp, entry);
 	RWLIST_UNLOCK(&mappings);
@@ -203,7 +203,7 @@ static void numeric_cb(const char *clientname, const char *prefix, int numeric, 
 	/* Since we have to format it here anyways, do all the formatting here */
 	len = snprintf(mybuf, sizeof(mybuf), ":%s %d %s\n", S_OR(prefix, bbs_hostname()), numeric, msg); /* Use LF to delimit on the other end */
 	bbs_debug(9, "Numeric %s\n", prefix);
-	write(nickpipe[1], mybuf, len);
+	write(nickpipe[1], mybuf, (size_t) len);
 }
 
 /*! \todo This info should be cached locally for a while (there could be lots of these requests in a busy channel...) */
@@ -212,7 +212,7 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 	char buf[3092];
 	int res = -1;
 	char *bufpos, *line;
-	int buflen = sizeof(buf) - 1;
+	size_t buflen = sizeof(buf) - 1;
 
 	/* Only one pipe needed: they write, we read */
 
@@ -248,12 +248,12 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 	/* Read the full response, until there's no more data for 250ms or we get the END OF LIST numeric. Relay each message as soon as we get it. */
 	bufpos = buf;
 	do {
-		res = read(nickpipe[0], bufpos, buflen);
-		bufpos += res;
-		buflen -= res;
-		if (res <= 0) {
+		ssize_t readres = read(nickpipe[0], bufpos, buflen);
+		if (readres <= 0) {
 			break;
 		}
+		bufpos += (size_t) readres;
+		buflen -= (size_t) readres;
 	} while (bbs_poll(nickpipe[0], 250) > 0);
 
 	*bufpos = '\0';
@@ -271,7 +271,8 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 	/* Now, parse the response, and send the results back. */
 	bufpos = buf;
 	while ((line = strsep(&bufpos, "\n"))) {
-		char *w1, *w2, *w3, *w4, *w5, *w6, *w7, *w8, *rest;
+		const char *w1, *w2, *w3, *w4, *w5, *w6, *w7, *w8;
+		char *rest;
 		int mynumeric;
 #ifdef PREFIX_NAMES
 		char restbuf[512] = "";
@@ -292,8 +293,8 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 				/* We need to replace a few things, but can otherwise pass it back intact.
 				 * - The third word is to whom we are sending the response. This was the client's username, but should be replaced with requsername.
 				 * - The fourth word was the nick on which we did the lookup. We want to replace this nick back with fullnick, which is what the original lookup was for. */
-				w3 = (char*) requsername;
-				w4 = (char*) fullnick;
+				w3 = requsername;
+				w4 = fullnick;
 				/* Skip end of */
 				if (mynumeric == 318) {
 					break;
@@ -310,8 +311,8 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 #endif
 					break;
 				}
-				w3 = (char*) requsername; /* Replace client username with requsername */
-				w4 = (char*) origchan; /* Replace channel name */
+				w3 = requsername; /* Replace client username with requsername */
+				w4 = origchan; /* Replace channel name */
 				/* The 8th word contains the nick */
 				w5 = strsep(&rest, " ");
 				w6 = strsep(&rest, " ");
@@ -330,9 +331,9 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 #endif
 					break;
 				}
-				w3 = (char*) requsername; /* Replace client username with requsername */
+				w3 = requsername; /* Replace client username with requsername */
 				w5 = strsep(&rest, " ");
-				w5 = (char*) origchan; /* Replace channel name */
+				w5 = origchan; /* Replace channel name */
 				res = 0;
 #ifdef PREFIX_NAMES
 				if (rest && *rest == ':') {
@@ -535,7 +536,7 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 		msg++; /* CTCP message ends in 0x01 so we don't have to add 0x01 to the end using snprintf */
 		ctcpactionend = strchr(msg, ' ');
 		if (ctcpactionend) {
-			ctcpactionbytes = ctcpactionend - msg + 1;
+			ctcpactionbytes = (int) (ctcpactionend - msg + 1);
 			ctcp = 1;
 			/* Turn 0x01ACTION action0x01 into 0x01ACTION <sender> action0x01 */
 			snprintf(fullmsg, sizeof(fullmsg), "%c%.*s <%s> %s", 0x01, ctcpactionbytes, msg, sender, msg + ctcpactionbytes);
@@ -659,7 +660,7 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		if (!cp->relaysystem) {
 			bbs_debug(8, "Not relaying system message\n");
 			return;
-		} else if (ignore_join_start && time(NULL) < modstart + ignore_join_start) {
+		} else if (ignore_join_start && time(NULL) < modstart + (int) ignore_join_start) {
 			bbs_debug(2, "Not relaying JOIN by %s/%s (%s -> %s) due to startupjoinignore setting.\n", clientname, nick, channel, ourchan);
 		} else if (MAP1_MATCH(cp, clientname, channel)) {
 			irc_relay_raw_send(cp->channel2, sysmsg);
@@ -808,7 +809,7 @@ static int load_config(void)
 
 	while ((section = bbs_config_walk(cfg, section))) {
 		const char *client1 = NULL, *client2 = NULL, *channel1 = NULL, *channel2 = NULL;
-		unsigned int relaysystem = 1;
+		int relaysystem = 1;
 		if (!strcmp(bbs_config_section_name(section), "general")) {
 			continue; /* Not a channel mapping section, skip */
 		}
@@ -848,7 +849,7 @@ static int load_module(void)
 	}
 
 	pthread_mutex_init(&nicklock, NULL);
-	modstart = time(NULL);
+	modstart = (int) time(NULL);
 
 	irc_relay_register(netirc_cb, nicklist, privmsg_cb, BBS_MODULE_SELF);
 	bbs_irc_client_msg_callback_register(doormsg_cb, numeric_cb, BBS_MODULE_SELF);

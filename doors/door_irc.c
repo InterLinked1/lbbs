@@ -204,8 +204,8 @@ static int load_config(void)
 		}
 		irc_client_set_flags(ircl, flags);
 		client->client = ircl;
-		client->log = logfile;
-		client->callbacks = callbacks;
+		SET_BITFIELD(client->log, logfile);
+		SET_BITFIELD(client->callbacks, callbacks);
 		client->msgscript = msgscript;
 		/* Go ahead and warn now if it doesn't exist. Set it either way, as it could be fixed during runtime. */
 		if (client->msgscript && access(client->msgscript, X_OK)) {
@@ -336,7 +336,12 @@ static void bot_handler(struct client *client, int fromirc, const char *channel,
 {
 	char *line, *dest, *outmsg;
 	char buf[IRC_MAX_MSG_LEN + 1];
+#pragma GCC diagnostic ignored "-Wcast-qual"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 	char *argv[6] = { (char*) client->msgscript, fromirc ? "1" : "0", (char*) channel, (char*) sender, (char*) body, NULL };
+#pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
 	int res;
 	int stdout[2];
 
@@ -382,7 +387,7 @@ static void bot_handler(struct client *client, int fromirc, const char *channel,
 		bbs_debug(4, "No data in script's STDOUT pipe\n"); /* Not necessarily an issue, the script could have returned 0 but printed nothing */
 		goto cleanup;
 	}
-	res = read(stdout[0], buf, sizeof(buf) - 1); /* Luckily, we are bounded by the max length of an IRC message anyways */
+	res = (int) read(stdout[0], buf, sizeof(buf) - 1); /* Luckily, we are bounded by the max length of an IRC message anyways */
 	if (res <= 0) {
 		bbs_error("read returned %d\n", res);
 		goto cleanup;
@@ -418,7 +423,7 @@ static void bot_handler(struct client *client, int fromirc, const char *channel,
 		/* Can't be over 512 characters since that's as large as the buffer is anyways. (We ignore anything over that) */
 		if (!strcmp(channel, dest)) {
 			/* It's going back to the same channel. Send it to everyone. */
-			__chat_send(client, NULL, dest, 1, line, strlen(line));
+			__chat_send(client, NULL, dest, 1, line, (int) strlen(line));
 		} else {
 			/* It's going to a different channel, or to a user. */
 			/* Call irc_client_msg directly, and don't relay it to local users.
@@ -494,7 +499,7 @@ static void handle_ctcp(struct client *client, struct irc_client *ircl, const ch
 				time_t nowtime;
 				struct tm nowdate;
 
-				nowtime = time(NULL);
+				nowtime = (int) time(NULL);
 				localtime_r(&nowtime, &nowdate);
 				strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M:%S %P %Z", &nowdate);
 				irc_client_ctcp_reply(ircl, msg->prefix, ctcp, timebuf);
@@ -605,7 +610,7 @@ static void *client_relay(void *varg)
 	char readbuf[IRC_MAX_MSG_LEN + 1];
 	struct irc_msg msg;
 	char *prevbuf, *mybuf = readbuf;
-	int prevlen, mylen = sizeof(readbuf) - 1;
+	size_t prevlen, mylen = sizeof(readbuf) - 1;
 	char *start, *eom;
 	int rounds;
 	char logfile[256];
@@ -633,7 +638,7 @@ begin:
 			}
 			*a = '\0';
 			mybuf = a;
-			mylen = sizeof(readbuf) - 1 - (mybuf - readbuf);
+			mylen = sizeof(readbuf) - 1 - (size_t) (mybuf - readbuf);
 			start = readbuf;
 			if (mylen <= 1) { /* Couldn't shift, whole buffer was full */
 				/* Could happen but this would not be valid. Abort read and reset. */
@@ -654,7 +659,7 @@ begin:
 		}
 		prevbuf = mybuf;
 		prevlen = mylen;
-		res = irc_read(client->client, mybuf, mylen);
+		res = irc_read(client->client, mybuf, (int) mylen);
 		if (res <= 0) {
 			break;
 		}
@@ -665,7 +670,7 @@ begin:
 			if (!eom) {
 				/* read returned incomplete message */
 				mybuf = prevbuf + res;
-				mylen = prevlen - res;
+				mylen = prevlen - (size_t) res;
 				goto begin; /* In a double loop, can't continue */
 			}
 
@@ -682,7 +687,7 @@ begin:
 				handle_irc_msg(client, &msg);
 			}
 
-			mylen -= (eom + 2 - mybuf);
+			mylen -= (unsigned long) (eom + 2 - mybuf);
 			start = mybuf = eom + 2;
 			rounds++;
 		} while (mybuf && *mybuf);
@@ -700,11 +705,11 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 	time_t now;
 	struct tm sendtime;
 	char datestr[18];
-	int timelen;
+	size_t timelen;
 	struct participant *p;
 
 	/* Calculate the current time once, for everyone, using the server's time (sorry if participants are in different time zones) */
-	now = time(NULL);
+	now = (int) time(NULL);
 	localtime_r(&now, &sendtime);
 	/* So, %P is lowercase and %p is uppercase. Just consult your local strftime(3) man page if you don't believe me. Good grief. */
 	strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime); /* mm-dd hh:mm:ssPP + space at end (before message) = 17 chars */
@@ -736,7 +741,7 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 		}
 	}
 	RWLIST_TRAVERSE(&client->participants, p, entry) {
-		int res;
+		ssize_t res;
 		/* We're intentionally relaying to other BBS nodes ourselves, separately from IRC, rather than
 		 * just enabling echo on the IRC client and letting that bounce back for other participants.
 		 * This is because we don't want our own messages to echo back to ourselves,
@@ -752,7 +757,7 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 		if (!NODE_IS_TDD(p->node)) {
 			write(p->chatpipe[1], datestr, timelen); /* Don't send timestamps to TDDs, for brevity */
 		}
-		res = write(p->chatpipe[1], msg, len);
+		res = write(p->chatpipe[1], msg, (size_t) len);
 		if (res <= 0) {
 			bbs_error("write failed: %s\n", strerror(errno));
 			continue; /* Even if one send fails, don't fail all of them */
@@ -764,6 +769,7 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 
 #define chat_send(client, sender, channel, fmt, ...) _chat_send(client, sender, channel, 1, fmt, __VA_ARGS__)
 
+#pragma GCC diagnostic ignored "-Wredundant-decls"
 /*
  * Forward declaration needed since __attribute__ can only be used with declarations, not definitions.
  * See http://www.unixwiz.net/techtips/gnu-c-attributes.html#compat
@@ -786,7 +792,7 @@ static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client 
 
 	if (!strchr(fmt, '%')) {
 		/* No format specifiers in the format string, just do it directly to avoid an unnecessary allocation. */
-		return __chat_send(client, sender, channel, dorelay, fmt, strlen(fmt));
+		return __chat_send(client, sender, channel, dorelay, fmt, (int) strlen(fmt));
 	}
 
 	va_start(ap, fmt);
@@ -800,6 +806,7 @@ static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client 
 	free(buf);
 	return res;
 }
+#pragma GCC diagnostic pop
 
 int __attribute__ ((format (gnu_printf, 2, 3))) bbs_irc_client_send(const char *clientname, const char *fmt, ...)
 {
@@ -937,7 +944,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 		} else if (res == 2) {
 			/* Pipe has activity: Received a message */
 			res = 0;
-			res = read(p->chatpipe[0], buf, sizeof(buf) - 1);
+			res = (int) read(p->chatpipe[0], buf, sizeof(buf) - 1);
 			if (res <= 0) {
 				break;
 			}
@@ -1056,7 +1063,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 	 * e.g. once directly to IRC and once through here.
 	 * Obviously the full masks are different in these cases. */
 
-	ircl = irc_client_new(hostname, port, username, password);
+	ircl = irc_client_new(hostname, (unsigned int) port, username, password);
 	if (!ircl) {
 		return 0;
 	}
@@ -1137,7 +1144,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 
 			/* Make our timestamp */
 			if (!NODE_IS_TDD(node)) {
-				now = time(NULL);
+				now = (int) time(NULL);
 				localtime_r(&now, &sendtime);
 				strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime);
 			}
@@ -1155,7 +1162,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 			 * So relay using a pipe.
 			 */
 			res = irc_read(ircl, tmpbuf, sizeof(tmpbuf));
-			res = bbs_readline_append(&rldata, "\r\n", tmpbuf, res, &ready);
+			res = bbs_readline_append(&rldata, "\r\n", tmpbuf, (size_t) res, &ready);
 			if (!ready) {
 				continue;
 			}
@@ -1192,7 +1199,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 									*tmp = '\0'; /* Strip everything except the nickname from the prefix */
 								}
 								if (!NODE_IS_TDD(node)) {
-									now = time(NULL);
+									now = (int) time(NULL);
 									localtime_r(&now, &sendtime);
 									strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime);
 								}

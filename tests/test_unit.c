@@ -33,9 +33,6 @@ static int pre(void)
 	return 0;
 }
 
-/* from mod_sysop.c */
-#define BBS_SYSOP_SOCKET DIRCAT(DIRCAT("/var/run", BBS_NAME), "sysop.sock")
-
 static int run(void)
 {
 	return test_bbs_expect("100%", SEC_MS(5)); /* Unit tests are fast, so shouldn't take very long to execute them all */

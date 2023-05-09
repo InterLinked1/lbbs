@@ -106,10 +106,10 @@ static void *gopher_handler(void *varg)
 			int size;
 
 			fseek(fp, 0L, SEEK_END); /* Go to EOF to determine how big the file is. */
-			size = ftell(fp);
+			size = (int) ftell(fp);
 			rewind(fp); /* Be kind, rewind */
 
-			res = sendfile(node->fd, fileno(fp), &offset, size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
+			res = (int) sendfile(node->fd, fileno(fp), &offset, (size_t) size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
 			if (res != size) {
 				bbs_error("sendfile failed (%d): %s\n", res, strerror(errno));
 			}

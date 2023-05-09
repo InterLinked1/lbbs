@@ -67,6 +67,7 @@ static int calc_exec(struct bbs_node *node, const char *args)
 	bbs_node_buffer(node);
 	bbs_node_writef(node, "\r");
 	for (;;) {
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 		char *argv[3] = { "bc", "-q", NULL }; /* -q = quiet: disable initial banner */
 		bbs_node_writef(node, "EQ> ");
 		res = bbs_node_readline(node, MIN_MS(5), buf, sizeof(buf) - 2);
@@ -79,7 +80,7 @@ static int calc_exec(struct bbs_node *node, const char *args)
 			res = 0;
 			break;
 		}
-		res = strlen(buf);
+		res = (int) strlen(buf);
 		buf[res++] = '\n'; /* bc must get a LF to terminate command */
 		buf[res++] = '\0';
 		/* This is basically echo "scale=3; $buf" | bc
@@ -100,6 +101,7 @@ static int calc_exec(struct bbs_node *node, const char *args)
 			continue;
 		}
 		res = bbs_execvp_fd_headless(node, stdin[0], stdout[1], "bc", argv);
+#pragma GCC diagnostic pop
 		if (res) {
 			bbs_node_writef(node, "Execution Error\n");
 			continue;
@@ -110,7 +112,7 @@ static int calc_exec(struct bbs_node *node, const char *args)
 			bbs_node_writef(node, "Execution Error\n");
 			continue;
 		}
-		res = read(stdout[0], buf, sizeof(buf) - 1);
+		res = (int) read(stdout[0], buf, sizeof(buf) - 1);
 		if (res <= 0) {
 			bbs_error("read returned %d\n", res);
 			res = 0;

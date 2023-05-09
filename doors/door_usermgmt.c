@@ -145,7 +145,7 @@ static int pwreset_exec(struct bbs_node *node, const char *args)
 	/*! \todo Add some more checks here, with varying levels of tolerance */
 
 	/* If we get here, send the user an email */
-	rand1 = random(); /* I know, this isn't thread-safe like random_r... */
+	rand1 = (int) random(); /* I know, this isn't thread-safe like random_r... */
 	rand2 = rand(); /* And this isn't either like rand_r... */
 	/* More importantly, random() and rand() should not be relied on to be secure,
 	 * since the time the BBS started (and hence seed to srandom() and srand()) is publicly known

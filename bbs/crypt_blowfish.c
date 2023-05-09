@@ -50,8 +50,9 @@
 #define __set_errno(val) errno = (val)
 #endif
 
+#pragma GCC diagnostic ignored "-Wconversion"
+
 /* Just to make sure the prototypes match the actual definitions */
-#define _CRYPT_BLOWFISH_H
 extern int _crypt_output_magic(const char *setting, char *output, int size);
 extern char *_crypt_blowfish_rn(const char *key, const char *setting,
 	char *output, int size);
@@ -417,7 +418,7 @@ static void BF_encode(char *dst, const BF_word *src, int size)
 	const unsigned char *sptr = (const unsigned char *)src;
 	const unsigned char *end = sptr + size;
 	unsigned char *dptr = (unsigned char *)dst;
-
+	
 	do {
 		unsigned int c1, c2;
 		c1 = *sptr++;
@@ -545,6 +546,8 @@ static void BF_swap(BF_word *x, int count)
 	} while (ptr < &data.ctx.S[3][0xFF]);
 #endif
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
 static void BF_set_key(const char *key, BF_key expanded, BF_key initial,
     unsigned char flags)
 {
@@ -771,17 +774,17 @@ static char *BF_crypt(const char *key, const char *setting,
 	}
 
 	memcpy(output, setting, 7 + 22 - 1);
-	output[7 + 22 - 1] = BF_itoa64[(int)
-		BF_atoi64[(int)setting[7 + 22 - 1] - 0x20] & 0x30];
+	output[7 + 22 - 1] = BF_itoa64[(int) BF_atoi64[(int)setting[7 + 22 - 1] - 0x20] & 0x30];
 
-/* This has to be bug-compatible with the original implementation, so
- * only encode 23 of the 24 bytes. :-) */
+	/* This has to be bug-compatible with the original implementation, so
+	 * only encode 23 of the 24 bytes. :-) */
 	BF_swap(data.binary.output, 6);
 	BF_encode(&output[7 + 22], data.binary.output, 23);
 	output[7 + 22 + 31] = '\0';
 
 	return output;
 }
+#pragma GCC diagnostic pop /* -Wsign-conversion */
 
 int _crypt_output_magic(const char *setting, char *output, int size)
 {
@@ -910,3 +913,5 @@ char *_crypt_gensalt_blowfish_rn(const char *prefix, unsigned long count,
 
 	return output;
 }
+
+#pragma GCC diagnostic pop /* -Wconversion */

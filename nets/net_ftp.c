@@ -58,12 +58,7 @@ static int require_reuse = 0;
 #define ftp_write0(ftp, code, fmt, ...) ({ bbs_debug(5, "FTP <= %d-" fmt, code, ## __VA_ARGS__); bbs_writef(ftp->wfd, "%d-" fmt, code, ## __VA_ARGS__); })
 #define ftp_write_raw(ftp, fmt, ...) ({ bbs_debug(5, "FTP <= " fmt, ## __VA_ARGS__); bbs_writef(ftp->wfd, fmt, ## __VA_ARGS__); })
 #define ftp_write_raw2(ftp, fmt, ...) ({ bbs_debug(5, "FTP <= " fmt, ## __VA_ARGS__); bbs_writef(ftp->wfd2, fmt, ## __VA_ARGS__); })
-#define ftp_poll(ftp, ms) bbs_poll(ftp->rfd, ms)
-#define ftp_read(ftp, buf, size) read(ftp->rfd, buf, size)
 #define IO_ABORT(res) if (res <= 0) { goto cleanup; }
-
-/*! \note Not sure if accessing parent directories is an issue with all functions, but just in case */
-#define UNSAFE_FILEPATH(path) strstr(path, "..")
 
 #define REQUIRE_PASV_FD() \
 	if (pasv_fd == -1) { \
@@ -201,7 +196,7 @@ static int ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir,
 			bbs_warning("File transfer stalled, aborting\n");
 			break;
 		}
-		res = read(ftp->rfd2, buf, sizeof(buf));
+		res = (int) read(ftp->rfd2, buf, sizeof(buf));
 		if (res <= 0) {
 			res = 0; /* End of transfer */
 			break;
@@ -554,7 +549,7 @@ static void *ftp_handler(void *varg)
 				if (DATA_INIT()) {
 					break;
 				}
-				res = sendfile(ftp->wfd2, fileno(fp), NULL, filestat.st_size); /* More convenient and efficient than manually relaying using read/write */
+				res = (int) sendfile(ftp->wfd2, fileno(fp), NULL, (size_t) filestat.st_size); /* More convenient and efficient than manually relaying using read/write */
 				DATA_DONE(fp, pasv_fd);
 				if (res != filestat.st_size) {
 					bbs_error("File transfer failed: %s\n", strerror(errno));

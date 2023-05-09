@@ -81,7 +81,8 @@ int bbs_unregister_menu_handler(const char *name)
 int __bbs_register_menu_handler(const char *name, int (*execute)(struct bbs_node *node, char *args), int needargs, void *mod)
 {
 	struct menu_handler *handler;
-	int length, res = -1;
+	size_t length;
+	int res = -1;
 
 	RWLIST_WRLOCK(&handlers);
 	handler = find_handler(name);
@@ -97,7 +98,7 @@ int __bbs_register_menu_handler(const char *name, int (*execute)(struct bbs_node
 	}
 	strcpy(handler->name, name); /* Safe */
 	handler->execute = execute;
-	handler->needargs = needargs;
+	SET_BITFIELD(handler->needargs, needargs);
 	handler->module = mod;
 	res = 0;
 	RWLIST_INSERT_TAIL(&handlers, handler, entry);

@@ -99,7 +99,9 @@ void bbs_module_register(const struct bbs_module_info *info)
 	mod->info = info;
 
 	/* Give the module a copy of its own handle, for later use in registrations and the like */
+#pragma GCC diagnostic ignored "-Wcast-qual"
 	*((struct bbs_module **) &(info->self)) = mod;
+#pragma GCC diagnostic pop
 	return;
 }
 
@@ -107,7 +109,7 @@ void bbs_module_unregister(const struct bbs_module_info *info)
 {
 	char *curname;
 	struct bbs_module *mod = NULL;
-	int len = strlen(info->name);
+	size_t len = strlen(info->name);
 	char buf[256]; /* Avoid using len + 4, for -Wstack-protector */
 
 	if (!really_register) {
@@ -161,7 +163,7 @@ void bbs_module_unref(struct bbs_module *mod)
 static struct bbs_module *find_resource(const char *resource)
 {
 	struct bbs_module *mod = NULL;
-	int len = strlen(resource);
+	size_t len = strlen(resource);
 	char buf[256]; /* Avoid using len + 4, for -Wstack-protector */
 
 	buf[0] = '\0';
@@ -244,7 +246,7 @@ static void logged_dlclose(const char *name, void *lib)
 static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ext, const char *filename, int flags, unsigned int suppress_logging)
 {
 	struct bbs_module *mod;
-	int bytes;
+	size_t bytes;
 
 	bbs_assert(!resource_being_loaded);
 
@@ -920,7 +922,7 @@ static void unload_modules_helper(void)
 	/* Run the loop a max of 5 times. Always do it at least once, but then only if there are still skipped modules remaining.
 	 * We really try our best here to unload all modules cleanly, but we can't try forever in case a module is just not unloading. */
 	for (passes = 0 ; (passes == 0 || skipped) && passes < MAX_PASSES ; passes++) {
-		int nodecount = bbs_node_count();
+		unsigned int nodecount = bbs_node_count();
 		struct bbs_module *mod, *lastmod = NULL; /* If passes > 0, do this so we don't try dlclosing a module twice */
 		RWLIST_TRAVERSE(&modules, mod, entry) {
 			if (lastmod) {

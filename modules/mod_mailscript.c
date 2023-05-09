@@ -71,11 +71,11 @@ static int numcmp(char *s, int num)
 static int header_match(struct smtp_msg_process *mproc, const char *header, const char *find, int strict)
 {
 	int found = -1;
-	int findlen = 0;
+	size_t findlen = 0;
 	regex_t regexbuf;
 	int regcompiled = 0;
 	char headerval[1000];
-	int headerlen;
+	size_t headerlen;
 
 	if (!mproc->fp) {
 		mproc->fp = fopen(mproc->datafile, "r");

@@ -65,7 +65,9 @@ int bbs_ansi_strip(const char *in, int inlen, char *out, size_t outlen, int *str
 						case 0:
 							bbs_error("Malformed ANSI escape sequence\n");
 							return -1;
+#pragma GCC diagnostic ignored "-Wpedantic"
 						case '3' ... '6': /* Double height top, bottom line; single, double width line */
+#pragma GCC diagnostic pop
 							/* Fall through */
 						default:
 							break;
@@ -92,7 +94,9 @@ int bbs_ansi_strip(const char *in, int inlen, char *out, size_t outlen, int *str
 						break;
 				}
 				break;
+#pragma GCC diagnostic ignored "-Wpedantic"
 			case 32 ... 126:
+#pragma GCC diagnostic pop
 				/* Fall through */
 			default:
 				*out++ = c;

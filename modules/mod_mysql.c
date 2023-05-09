@@ -50,6 +50,7 @@ const char *sql_dbname(void)
 
 MYSQL *sql_connect_db(const char *hostname, const char *username, const char *password, const char *database)
 {
+	static char charset[] = "utf8";
 	MYSQL *mysql;
 
 	hostname = S_OR(hostname, dbhostname);
@@ -65,7 +66,7 @@ MYSQL *sql_connect_db(const char *hostname, const char *username, const char *pa
 		bbs_error("mysql_init returned NULL\n");
 		return NULL;
 	}
-	if (mysql_optionsv(mysql, MYSQL_SET_CHARSET_NAME, (void *) "utf8")) {
+	if (mysql_optionsv(mysql, MYSQL_SET_CHARSET_NAME, charset)) {
 		goto fail;
 	}
 	if (!mysql_real_connect(mysql, hostname, username, password, database, 0, NULL, 0)) {
@@ -89,8 +90,8 @@ MYSQL *sql_connect(void)
 
 int sql_prepare(MYSQL_STMT *stmt, const char *fmt, const char *query)
 {
-	int i, qlen;
-	int num_args;
+	size_t i, qlen;
+	size_t num_args;
 	const char *cur = fmt;
 
 	if (!stmt) {
@@ -113,8 +114,8 @@ int sql_prepare(MYSQL_STMT *stmt, const char *fmt, const char *query)
 		bbs_warning("mysql_stmt_prepare failed: %s (%s)\n", mysql_stmt_error(stmt), query);
 		return -1;
 	}
-	if ((int) mysql_stmt_param_count(stmt) != num_args) {
-		bbs_warning("Expected %d parameters but prepared %lu?\n", num_args, mysql_stmt_param_count(stmt));
+	if (mysql_stmt_param_count(stmt) != num_args) {
+		bbs_warning("Expected %lu parameters but prepared %lu?\n", num_args, mysql_stmt_param_count(stmt));
 		return -1;
 	}
 
@@ -166,8 +167,7 @@ int sql_fmt_autonull(char *fmt, ...)
 	struct tm *tmarg;
 	char *cur = fmt;
 	va_list ap;
-	int i;
-	int num_args = strlen(fmt);
+	size_t i, num_args = strlen(fmt);
 
 	va_start(ap, fmt);
 	for (i = 0; i < num_args; i++, cur++) { /* Bind the parameters themselves for this round */
@@ -175,31 +175,33 @@ int sql_fmt_autonull(char *fmt, ...)
 		case 'i': /* Integer */
 			intarg = va_arg(ap, int);
 			if (!intarg) {
-				fmt[i] = toupper(fmt[i]);
+				fmt[i] = (char) toupper(fmt[i]);
 			}
 			break;
 		case 'l': /* Long int */
 			longarg = va_arg(ap, long long);
 			if (!longarg) {
-				fmt[i] = toupper(fmt[i]);
+				fmt[i] = (char) toupper(fmt[i]);
 			}
 			break;
 		case 'd': /* Double */
 			doublearg = va_arg(ap, double);
+#pragma GCC diagnostic ignored "-Wfloat-equal"
 			if (!doublearg) {
-				fmt[i] = toupper(fmt[i]);
+#pragma GCC diagnostic pop
+				fmt[i] = (char) toupper(fmt[i]);
 			}
 			break;
 		case 's': /* String */
 			stringarg = va_arg(ap, char *);
 			if (!stringarg) {
-				fmt[i] = toupper(fmt[i]);
+				fmt[i] = (char) toupper(fmt[i]);
 			}
 			break;
 		case 't': /* Date */
 			tmarg = va_arg(ap, struct tm*);
 			if (!tmarg) {
-				fmt[i] = toupper(fmt[i]);
+				fmt[i] = (char) toupper(fmt[i]);
 			}
 			break;
 		case 'b': /* Blob */
@@ -210,7 +212,7 @@ int sql_fmt_autonull(char *fmt, ...)
 			return -1;
 		}
 		if (isupper(fmt[i])) {
-			bbs_debug(5, "Argument at index %d (%c) is NULL\n", i, *cur);
+			bbs_debug(5, "Argument at index %lu (%c) is NULL\n", i, *cur);
 		}
 	}
 	va_end(ap);
@@ -222,7 +224,7 @@ int sql_fmt_autonull(char *fmt, ...)
 int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[], unsigned long int lengths[], int bind_ints[], long long bind_longs[], char *bind_strings[], MYSQL_TIME bind_dates[], my_bool bind_null[])
 {
 	struct tm *tm;
-	char format_char = tolower(*cur);
+	char format_char = (char) tolower(*cur);
 	/* Uppercase format char means it's NULL */
 	bind_null[i] = isupper(*cur) ? 1 : 0; /* Simply casting to my_bool doesn't work here */
 	if (!bind_null[i] && isupper(*cur)) {
@@ -276,12 +278,12 @@ int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[],
 	case 't': /* Date */
 		tm = va_arg(ap, struct tm *);
 		if (!bind_null[i]) {
-			bind_dates[i].year = TM_YEAR(tm->tm_year);
-			bind_dates[i].month = TM_MONTH(tm->tm_mon);
-			bind_dates[i].day = tm->tm_mday;
-			bind_dates[i].hour = tm->tm_hour;
-			bind_dates[i].minute = tm->tm_min;
-			bind_dates[i].second = tm->tm_sec;
+			bind_dates[i].year = (unsigned int) TM_YEAR(tm->tm_year);
+			bind_dates[i].month = (unsigned int) TM_MONTH(tm->tm_mon);
+			bind_dates[i].day = (unsigned int) tm->tm_mday;
+			bind_dates[i].hour = (unsigned int) tm->tm_hour;
+			bind_dates[i].minute = (unsigned int) tm->tm_min;
+			bind_dates[i].second = (unsigned int) tm->tm_sec;
 		}
 		bind[i].buffer_type = MYSQL_TYPE_DATE;
 		bind[i].buffer = (char *) &bind_dates[i];
@@ -301,7 +303,7 @@ int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[],
 #pragma GCC diagnostic ignored "-Wstack-protector"
 int sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *fmt, ...)
 {
-	int i, num_args = strlen(fmt);
+	size_t i, num_args = strlen(fmt);
 	va_list ap;
 	MYSQL_BIND bind[num_args];
 	unsigned long int lengths[num_args];
@@ -322,7 +324,7 @@ int sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *fmt, ...
 
 	va_start(ap, fmt);
 	for (i = 0; i < num_args; i++, cur++) { /* Bind the parameters themselves for this round */
-		if (sql_bind_param_single(ap, i, cur, bind, lengths, bind_ints, bind_longs, bind_strings, bind_dates, bind_null)) {
+		if (sql_bind_param_single(ap, (int) i, cur, bind, lengths, bind_ints, bind_longs, bind_strings, bind_dates, bind_null)) {
 			va_end(ap);
 			return -1;
 		}
@@ -386,10 +388,10 @@ void sql_free_result_strings(int num_fields, MYSQL_BIND bind[], unsigned long in
 
 int sql_alloc_bind_strings(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND bind[], unsigned long int lengths[], char *bind_strings[])
 {
-	int i, res = 0;
+	int res = 0;
 	int nullstrings = 0;
 	const char *cur = fmt;
-	int num_cols = strlen(fmt);
+	size_t i, num_cols = strlen(fmt);
 
 	for (i = 0; i < num_cols; i++) {
 		switch (*cur++) {
@@ -423,16 +425,16 @@ int sql_alloc_bind_strings(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND bind[],
 					/* The official documentation for this function has a typo in it that has never been corrected: https://dev.mysql.com/doc/c-api/8.0/en/mysql-stmt-fetch.html
 					 * See: https://bugs.mysql.com/bug.php?id=33086
 					 * If there's one thing I really hate, it's documentation that is wrong or not maintained... argh... */
-					res = mysql_stmt_fetch_column(stmt, &bind[i], i, 0);
+					res = mysql_stmt_fetch_column(stmt, &bind[i], (unsigned int) i, 0);
 					if (res) { /* ith column, offset 0 to start at beginning */
-						bbs_error("mysql_stmt_fetch_column(%d) failed (%d): %s\n", i, res, mysql_stmt_error(stmt));
+						bbs_error("mysql_stmt_fetch_column(%lu) failed (%d): %s\n", i, res, mysql_stmt_error(stmt));
 						/* Free now since this buffer is useless anyways */
 						free(bind_strings[i]);
 						bind_strings[i] = NULL;
 						lengths[i] = 0;
 					} else {
 						if (strlen(bind_strings[i]) != lengths[i]) {
-							bbs_warning("Column %d: expected length %lu but have %lu\n", i, lengths[i], strlen(bind_strings[i]));
+							bbs_warning("Column %lu: expected length %lu but have %lu\n", i, lengths[i], strlen(bind_strings[i]));
 						} else {
 							res = 0;
 						}
@@ -450,7 +452,9 @@ int sql_alloc_bind_strings(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND bind[],
 
 int sql_bind_result(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND bind[], unsigned long int lengths[], int bind_ints[], char *bind_strings[], MYSQL_TIME bind_dates[], my_bool bind_null[])
 {
-	int num_cols, num_rows, expect_cols;
+	int num_cols;
+	unsigned long num_rows;
+	size_t expect_cols;
 	int i, res = -1;
 	MYSQL_RES *prepare_meta_result;
 	const char *cur = fmt;
@@ -462,11 +466,11 @@ int sql_bind_result(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND bind[], unsign
 	}
 
 	expect_cols = strlen(fmt);
-	num_cols = mysql_num_fields(prepare_meta_result);
+	num_cols = (int) mysql_num_fields(prepare_meta_result);
 
 	/* Ensure number of columns in results is what we expected */
-	if (num_cols != expect_cols) {
-		bbs_warning("Expected %d columns but got %d?\n", expect_cols, num_cols);
+	if (num_cols != (int) expect_cols) {
+		bbs_warning("Expected %lu columns but got %d?\n", expect_cols, num_cols);
 		goto cleanup;
 	}
 
@@ -526,7 +530,7 @@ int sql_bind_result(MYSQL_STMT *stmt, const char *fmt, MYSQL_BIND bind[], unsign
 	}
 
 	num_rows = mysql_stmt_num_rows(stmt);
-	bbs_debug(10, "Query returned %d rows\n", num_rows);
+	bbs_debug(10, "Query returned %ld rows\n", num_rows);
 
 	res = 0;
 cleanup:
@@ -536,7 +540,7 @@ cleanup:
 
 int sql_fetch_columns(int bind_ints[], long long bind_longs[], char *bind_strings[], MYSQL_TIME bind_dates[], my_bool bind_null[], const char *fmt, ...)
 {
-	int i, num_args = strlen(fmt);
+	size_t i, num_args = strlen(fmt);
 	va_list ap;
 	const char *cur = fmt;
 	MYSQL_TIME datetime;
@@ -547,7 +551,7 @@ int sql_fetch_columns(int bind_ints[], long long bind_longs[], char *bind_string
 		long long *tmplong;
 		char **tmpstr;
 		struct tm *tmptm;
-		char format_char = tolower(*cur);
+		char format_char = (char) tolower(*cur);
 		switch (format_char) {
 		case 'i': /* Integer */
 		case 'd': /* Double */
@@ -565,17 +569,17 @@ int sql_fetch_columns(int bind_ints[], long long bind_longs[], char *bind_string
 		case 't': /* Date */
 			tmptm = va_arg(ap, struct tm *); /* If we don't call va_arg for each argument, that will throw subsequent ones off */
 			if (bind_null[i]) { /* It's all good that we memset tmptm, but if we don't check for NULL, we'll set the clean memory to uninitialized bytes */
-				bbs_debug(3, "Index %d is NULL\n", i);
+				bbs_debug(3, "Index %lu is NULL\n", i);
 			} else {
 				time_t tmptime;
 				struct tm tmptm2;
 				datetime = bind_dates[i];
-				tmptm->tm_year = TO_TM_YEAR(datetime.year);
-				tmptm->tm_mon = TO_TM_MONTH(datetime.month);
-				tmptm->tm_mday = datetime.day;
-				tmptm->tm_hour = datetime.hour;
-				tmptm->tm_min = datetime.minute;
-				tmptm->tm_sec = datetime.second;
+				tmptm->tm_year = (int) TO_TM_YEAR(datetime.year);
+				tmptm->tm_mon = (int) TO_TM_MONTH(datetime.month);
+				tmptm->tm_mday = (int) datetime.day;
+				tmptm->tm_hour = (int) datetime.hour;
+				tmptm->tm_min = (int) datetime.minute;
+				tmptm->tm_sec = (int) datetime.second;
 				/* Note that we haven't filled in tm_wday at this point (MYSQL_TIME doesn't have a field for it), so the day of the week is defaulted to Sunday
 				 * Hack to recover this information from what we have: */
 				tmptime = mktime(tmptm); /* Convert to epoch */

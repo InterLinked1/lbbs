@@ -54,7 +54,7 @@ static int test_execute(struct bbs_test *test)
 	bbs_debug(5, "Test '%s' returned %d\n", test->name, res);
 	test->executed = 1;
 
-	test->time = bbs_tvdiff_ms(end, begin);
+	test->time = (unsigned int) bbs_tvdiff_ms(end, begin);
 	return res;
 }
 

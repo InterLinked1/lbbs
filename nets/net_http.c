@@ -158,7 +158,7 @@ static int send_response(struct http_req *req, int code)
 {
 	const char *title = NULL, *description = NULL;
 
-	req->responsecode = code;
+	req->responsecode = (unsigned int) code;
 
 	switch (code) {
 		/* Some verbiage borrowed from Apache HTTP server: https://github.com/apache/httpd/tree/trunk/docs/error */
@@ -304,13 +304,13 @@ static inline int parse_header(struct http_req *req, char *s)
 	} else if (!strcasecmp(header, "Cache-Control")) {
 		/* HTTP 1.1 header that replaced Pragma: Ignore, because we're not a proxy server or CDN */
 	} else if (!strcasecmp(header, "Upgrade-Insecure-Requests")) {
-		req->upgradeinsecure = atoi(value);
+		SET_BITFIELD(req->upgradeinsecure, atoi(value));
 	} else if (!strcasecmp(header, "User-Agent")) {
 		HEADER_DUP(req->useragent);
 	} else if (!strcasecmp(header, "Accept") || !strcasecmp(header, "Accept-Encoding") || !strcasecmp(header, "Accept-Language")) {
 		/* Ignore */
 	} else if (!strcasecmp(header, "Content-Length")) {
-		req->length = atoi(value);
+		req->length = (unsigned int) atoi(value);
 	} else if (!strcasecmp(header, "Content-Type")) {
 		HEADER_DUP(req->contenttype);
 	} else if (!strcasecmp(header, "Referer")) {
@@ -319,7 +319,7 @@ static inline int parse_header(struct http_req *req, char *s)
 		int outlen;
 		tmp = strsep(&value, " ");
 		if (!strcmp(tmp, "Basic")) {
-			unsigned char *decoded = base64_decode((unsigned char*) value, strlen(value), &outlen);
+			unsigned char *decoded = base64_decode((unsigned char*) value, (int) strlen(value), &outlen);
 			if (decoded) {
 				char *username, *password = (char*) decoded;
 				username = strsep(&password, ":");
@@ -328,7 +328,7 @@ static inline int parse_header(struct http_req *req, char *s)
 				REPLACE(req->remoteuser, username);
 				bbs_authenticate(req->node, username, password);
 				/* Destroy the password before freeing it */
-				bbs_memzero(decoded, outlen);
+				bbs_memzero(decoded, (size_t) outlen);
 				free(decoded);
 			}
 		}
@@ -397,6 +397,8 @@ static int mime_type(const char *filename, char *buf, size_t len)
 	}
 	if (!strcmp(buf, "text/plain") && !strcmp(ext, "html")) {
 		safe_strncpy(buf, "text/html", len);
+	} else if (!mime) {
+		safe_strncpy(buf, DEFAULT_MIME_TYPE, sizeof(buf));
 	}
 
 	return 0;
@@ -438,6 +440,9 @@ static void cgi_delenv(char *envp[])
 #define cgi_setenv(key, fmt, ...) __cgi_setenv(envp, &envnum, "%s=" fmt, key, __VA_ARGS__)
 #define cgi_setenvif(key, fmt, var) if (var) { cgi_setenv(key, fmt, var); }
 
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
 /*! \brief RFC 3875 Common Gateway Interface */
 static int run_cgi(struct http_req *req, const char *filename)
 {
@@ -503,6 +508,8 @@ static int run_cgi(struct http_req *req, const char *filename)
 	cgi_delenv(envp);
 	return res;
 }
+#pragma GCC diagnostic pop /* -Wcast-qual */
+#pragma GCC diagnostic pop /* -Wdiscarded-qualifiers */
 
 static int range_parse(char *range, int size, int *a, int *b)
 {
@@ -584,8 +591,8 @@ static int dir_listing(const char *dir_name, const char *filename, int dir, void
 		return -1;
 	}
 
-	paddinglen = 80 - strlen(filename);
-	bytes = st.st_size;
+	paddinglen = 80 - (int) strlen(filename);
+	bytes = (int) st.st_size;
 	mb = 1.0 * bytes / (1024 * 1024);
 
 	if (mb >= 1) {
@@ -682,7 +689,7 @@ static void http_handler(struct bbs_node *node, int secure)
 				break; /* Client doesn't support persistent connections, stop */
 			}
 		}
-		req.secure = secure;
+		SET_BITFIELD(req.secure, secure);
 
 		for (;;) {
 			bbs_readline(req.rfd, &rldata, "\r\n", MIN_MS(1));
@@ -817,7 +824,7 @@ static void http_handler(struct bbs_node *node, int secure)
 		memset(&nowtime, 0, sizeof(nowtime));
 		memset(&modtime, 0, sizeof(modtime));
 
-		timenow = time(NULL);
+		timenow = (int) time(NULL);
 		gmtime_r(&timenow, &nowtime);
 		gmtime_r(&st.st_mtim.tv_sec, &modtime); /* Times are always in GMT (UTC) */
 
@@ -842,12 +849,12 @@ static void http_handler(struct bbs_node *node, int secure)
 			break;
 		}
 		fseek(fp, 0L, SEEK_END); /* Go to EOF */
-		size = ftell(fp);
+		size = (int) ftell(fp);
 		rewind(fp); /* Be kind, rewind */
 
 		/* Assume it's a 200 OK by default */
 		req.responsecode = 200;
-		req.responselen = size;
+		req.responselen = (unsigned int) size;
 
 		if (req.range) { /* Range header, override */
 			if (STARTS_WITH(req.range, "bytes=")) {
@@ -917,7 +924,7 @@ static void http_handler(struct bbs_node *node, int secure)
 			} else {
 				break; /* Invalid */
 			}
-			req.responselen = rangebytes;
+			req.responselen = (unsigned int) rangebytes;
 		} else if (!mime_type(fullpath, mime, sizeof(mime))) {
 			dprintf(req.wfd, "Content-Type: %s\r\n", mime);
 		}
@@ -960,7 +967,7 @@ static void http_handler(struct bbs_node *node, int secure)
 				/* Send this chunk */
 				offset = a;
 				size = thisrangebytes;
-				res = sendfile(req.wfd, fileno(fp), &offset, size);
+				res = (int) sendfile(req.wfd, fileno(fp), &offset, (size_t) size);
 				if (res != size) {
 					bbs_error("sendfile failed for range (%d != %d): %s\n", res, size, strerror(errno));
 					break; /* This is fatal, just bail immediately. The client will know the request failed since the response body won't match the response headers. */
@@ -968,7 +975,7 @@ static void http_handler(struct bbs_node *node, int secure)
 			}
 		} else {
 			offset = 0;
-			res = sendfile(req.wfd, fileno(fp), &offset, size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
+			res = (int) sendfile(req.wfd, fileno(fp), &offset, (size_t) size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
 			if (res != size) {
 				bbs_error("sendfile failed (%d): %s\n", res, strerror(errno));
 				break; /* This is fatal, just bail immediately */

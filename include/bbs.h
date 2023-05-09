@@ -102,17 +102,17 @@
  */
 
 #if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
-#define	open(a,...)	__fdleak_open(__FILE__,__LINE__,__PRETTY_FUNCTION__, a, __VA_ARGS__)
-#define pipe(a)		__fdleak_pipe(a, __FILE__,__LINE__,__PRETTY_FUNCTION__)
-#define socketpair(a,b,c,d)	__fdleak_socketpair(a, b, c, d, __FILE__,__LINE__,__PRETTY_FUNCTION__)
-#define socket(a,b,c)	__fdleak_socket(a, b, c, __FILE__,__LINE__,__PRETTY_FUNCTION__)
-#define accept(a,b,c)	__fdleak_accept(a, b, c, __FILE__,__LINE__,__PRETTY_FUNCTION__)
-#define close(a)	__fdleak_close(a, __FILE__,__LINE__,__PRETTY_FUNCTION__)
-#define	fopen(a,b)	__fdleak_fopen(a, b, __FILE__,__LINE__,__PRETTY_FUNCTION__)
+#define	open(a,...)	__fdleak_open(__FILE__,__LINE__,__func__, a, __VA_ARGS__)
+#define pipe(a)		__fdleak_pipe(a, __FILE__,__LINE__,__func__)
+#define socketpair(a,b,c,d)	__fdleak_socketpair(a, b, c, d, __FILE__,__LINE__,__func__)
+#define socket(a,b,c)	__fdleak_socket(a, b, c, __FILE__,__LINE__,__func__)
+#define accept(a,b,c)	__fdleak_accept(a, b, c, __FILE__,__LINE__,__func__)
+#define close(a)	__fdleak_close(a, __FILE__,__LINE__,__func__)
+#define	fopen(a,b)	__fdleak_fopen(a, b, __FILE__,__LINE__,__func__)
 #define	fclose(a)	__fdleak_fclose(a)
-#define	dup2(a,b)	__fdleak_dup2(a, b, __FILE__,__LINE__,__PRETTY_FUNCTION__)
-#define dup(a)		__fdleak_dup(a, __FILE__,__LINE__,__PRETTY_FUNCTION__)
-#define eventfd(a,b)	__fdleak_eventfd(a,b, __FILE__,__LINE__,__PRETTY_FUNCTION__)
+#define	dup2(a,b)	__fdleak_dup2(a, b, __FILE__,__LINE__,__func__)
+#define dup(a)		__fdleak_dup(a, __FILE__,__LINE__,__func__)
+#define eventfd(a,b)	__fdleak_eventfd(a,b, __FILE__,__LINE__,__func__)
 
 int __fdleak_open(const char *file, int line, const char *func, const char *path, int flags, ...);
 int __fdleak_pipe(int *fds, const char *file, int line, const char *func);
@@ -130,13 +130,13 @@ int bbs_fd_dump(int fd);
 #endif /* DEBUG_FD_LEAKS */
 
 #if defined(REDIRECT_LIBC_ALLOC) && REDIRECT_LIBC_ALLOC == 1
-#define malloc(size) __bbs_malloc(size, __FILE__, __LINE__, __PRETTY_FUNCTION__)
-#define calloc(nmemb, size) __bbs_calloc(nmemb, size, __FILE__, __LINE__, __PRETTY_FUNCTION__)
-#define realloc(ptr, size) __bbs_realloc(ptr, size, __FILE__, __LINE__, __PRETTY_FUNCTION__)
-#define strdup(s) __bbs_strdup(s, __FILE__, __LINE__, __PRETTY_FUNCTION__)
-#define strndup(s, n) __bbs_strndup(s, n, __FILE__, __LINE__, __PRETTY_FUNCTION__)
-#define vasprintf(strp, format, ap) __bbs_vasprintf(strp, format, ap, __FILE__, __LINE__, __PRETTY_FUNCTION__)
-#define asprintf(strp, format, ...) __bbs_asprintf(__FILE__, __LINE__, __PRETTY_FUNCTION__, strp, format, ## __VA_ARGS__)
+#define malloc(size) __bbs_malloc(size, __FILE__, __LINE__, __func__)
+#define calloc(nmemb, size) __bbs_calloc(nmemb, size, __FILE__, __LINE__, __func__)
+#define realloc(ptr, size) __bbs_realloc(ptr, size, __FILE__, __LINE__, __func__)
+#define strdup(s) __bbs_strdup(s, __FILE__, __LINE__, __func__)
+#define strndup(s, n) __bbs_strndup(s, n, __FILE__, __LINE__, __func__)
+#define vasprintf(strp, format, ap) __bbs_vasprintf(strp, format, ap, __FILE__, __LINE__, __func__)
+#define asprintf(strp, format, ...) __bbs_asprintf(__FILE__, __LINE__, __func__, strp, format, ## __VA_ARGS__)
 
 void *__bbs_malloc(size_t size, const char *file, int line, const char *func) __attribute__((malloc));
 void *__bbs_calloc(size_t nmemb, size_t size, const char *file, int line, const char *func) __attribute__((malloc));
@@ -177,6 +177,9 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 
 #define bbs_rand(min, max) (min + rand() % (max + 1 - min))
 #define bbs_maxrand(max) bbs_rand(0, max)
+
+#define SET_BITFIELD(field, value) field = (unsigned) (value & 0x1)
+#define SET_BITFIELD2(field, value) field = (unsigned) (value & 0x3)
 
 #define STARTS_WITH(s, start) (!strncasecmp(s, start, STRLEN(start)))
 
@@ -350,7 +353,7 @@ extern int option_dumpcore; /* Actually, this functions as a forward declaration
 #else
 extern int option_dumpcore;
 #endif
-#define bbs_assert(x) __bbs_assert(x, #x, __FILE__, __LINE__, __PRETTY_FUNCTION__)
+#define bbs_assert(x) __bbs_assert(x, #x, __FILE__, __LINE__, __func__)
 void __bbs_assert_nonfatal(const char *condition_str, const char *file, int line, const char *function);
 void __attribute__((noreturn)) __bbs_assert_fatal(const char *condition_str, const char *file, int line, const char *function);
 

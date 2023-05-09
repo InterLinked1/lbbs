@@ -216,6 +216,7 @@ cleanup:
 	return;
 }
 
+#pragma GCC diagnostic ignored "-Wsign-conversion"
 static int run_init(int argc, char *argv[])
 {
 	struct rlimit limits;
@@ -322,6 +323,7 @@ static int run_init(int argc, char *argv[])
 	saveopts(argc, argv);
 	return 0;
 }
+#pragma GCC diagnostic pop
 
 int bbs_starttime(void)
 {
@@ -342,7 +344,7 @@ int bbs_view_settings(int fd)
 	char daysbuf[36];
 	int now;
 
-	now = time(NULL);
+	now = (int) time(NULL);
 	print_time_elapsed(bbs_start_time, now, timebuf, sizeof(timebuf));
 	print_days_elapsed(bbs_start_time, now, daysbuf, sizeof(daysbuf));
 
@@ -583,7 +585,7 @@ static void __sigint_handler(int num)
 		if (bbs_alertpipe_write(sigint_alert_pipe)) {
 			/* Don't use BBS log functions within a signal handler */
 			if (option_nofork) {
-				fprintf(stderr, "%s: write() failed: %s\n", __FUNCTION__, strerror(errno));
+				fprintf(stderr, "%s: write() failed: %s\n", __func__, strerror(errno));
 			}
 		}
 		/* XXX Should we go ahead and automatically remove the subscriber? (set sigint_alert_pipe to NULL?)
@@ -592,7 +594,7 @@ static void __sigint_handler(int num)
 		bbs_debug(2, "Got SIGINT, requesting shutdown\n"); /* XXX not safe */
 		/* Don't use BBS log functions within a signal handler */
 		if (option_nofork) {
-			fprintf(stderr, "%s: write() failed: %s\n", __FUNCTION__, strerror(errno));
+			fprintf(stderr, "%s: write() failed: %s\n", __func__, strerror(errno));
 		}
 	}
 }
@@ -834,7 +836,7 @@ int main(int argc, char *argv[])
 	}
 
 	bbs_debug(1, "Starting BBS on PID %d, running as user '%s' and group '%s', using '%s'\n", bbs_pid, S_IF(runuser), S_IF(rungroup), bbs_config_dir());
-	bbs_start_time = time(NULL);
+	bbs_start_time = (int) time(NULL);
 
 	if (argc > 0 && !strstr(argv[0], BBS_NAME)) {
 		/* argv[0] is typically the program name, by convention.
@@ -844,8 +846,8 @@ int main(int argc, char *argv[])
 	}
 
 	/* Seed the random number generators */
-	srand(time(NULL));
-	srandom(time(NULL));
+	srand((unsigned int) time(NULL));
+	srandom((unsigned int) time(NULL));
 
 	/* Initialize alert pipe before installing any signal handlers. */
 	pthread_mutex_init(&sig_lock, NULL);

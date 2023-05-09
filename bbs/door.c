@@ -78,7 +78,8 @@ int bbs_unregister_door(const char *name)
 int __bbs_register_door(const char *name, int (*execute)(DOOR_PARAMS), void *mod)
 {
 	struct bbs_door *door;
-	int length, res = -1;
+	size_t length;
+	int res = -1;
 
 	RWLIST_WRLOCK(&doors);
 	door = find_door(name);

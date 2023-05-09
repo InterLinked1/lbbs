@@ -58,7 +58,7 @@ static int tty_port = 0; /* Disabled by default */
 static int telnet_send_command(int fd, unsigned char cmd, unsigned char opt)
 {
 	unsigned char ctl[] = {IAC, cmd, opt};
-	int res = write(fd, ctl, 3);
+	ssize_t res = write(fd, ctl, 3);
 	if (res <= 0) {
 		if (errno != EPIPE) { /* Ignore if client just closed connection immediately */
 			bbs_error("Failed to set telnet echo: %s\n", strerror(errno));
@@ -117,7 +117,7 @@ static int telnet_handshake(struct bbs_node *node)
 		if (res <= 0) {
 			return res;
 		}
-		res = read(node->rfd, buf, sizeof(buf));
+		res = (int) read(node->rfd, buf, sizeof(buf));
 		/* Process the command */
 		if (res <= 0) {
 			return res;
@@ -322,9 +322,9 @@ static int load_module(void)
 			return -1;
 		}
 	}
-	bbs_register_network_protocol("TELNET", telnet_port);
+	bbs_register_network_protocol("TELNET", (unsigned int) telnet_port);
 	if (telnets_enabled) {
-		bbs_register_network_protocol("TELNETS", telnets_port);
+		bbs_register_network_protocol("TELNETS", (unsigned int) telnets_port);
 	}
 	return 0;
 }
@@ -338,9 +338,9 @@ static int unload_module(void)
 		bbs_pthread_join(tty_thread, NULL);
 	}
 	if (telnet_socket > -1) {
-		bbs_unregister_network_protocol(telnet_port);
+		bbs_unregister_network_protocol((unsigned int) telnet_port);
 		if (telnets_socket > -1) {
-			bbs_unregister_network_protocol(telnets_port);
+			bbs_unregister_network_protocol((unsigned int) telnets_port);
 		}
 		close(telnet_socket);
 		telnet_socket = -1;

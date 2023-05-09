@@ -127,7 +127,7 @@ static void process_section(bfd *bfdobj, asection *section, void *obj)
 			line, S_OR(func, "???"));
 
 		if (inlined) {
-			int origlen = strlen(data->retstrings[data->frame]);
+			size_t origlen = strlen(data->retstrings[data->frame]);
 			char *s = realloc(data->retstrings[data->frame], origlen + strlen(data->msg) + 2); /* 1 for NUL, 1 for LF */
 			if (ALLOC_FAILURE(s)) {
 				return; /* Stop on realloc failure */
@@ -163,7 +163,7 @@ static void bt_get_symbols(void **addresses, int num_frames, char *retstrings[])
 			.pc = (bfd_vma)(uintptr_t) addresses[stackfr],
 			.found = 0,
 			.dynamic = 0,
-			.frame = stackfr,
+			.frame = (long unsigned int) stackfr,
 		};
 
 		msg[0] = '\0';
@@ -204,12 +204,12 @@ static void bt_get_symbols(void **addresses, int num_frames, char *retstrings[])
 				break;
 			}
 
-			data.syms = malloc(allocsize);
+			data.syms = malloc((size_t) allocsize);
 			if (ALLOC_FAILURE(data.syms)) {
 				break;
 			}
 
-			symbolcount = data.dynamic ? bfd_canonicalize_dynamic_symtab(bfdobj, data.syms) : bfd_canonicalize_symtab(bfdobj, data.syms);
+			symbolcount = (int) (data.dynamic ? bfd_canonicalize_dynamic_symtab(bfdobj, data.syms) : bfd_canonicalize_symtab(bfdobj, data.syms));
 			if (symbolcount < 0) {
 				break;
 			}
@@ -238,17 +238,17 @@ static void bbs_log_backtrace(void)
 {
 	char **bt_syms;
 	void *array[BT_MAX_STACK_FRAMES]; /* Maximum number of stack frames to dump. */
-	size_t size;
+	int size;
 
 	size = backtrace(array, BT_MAX_STACK_FRAMES);
 	bt_syms = backtrace_symbols(array, size);
 
-	bbs_error("Got %lu backtrace records\n", size);
+	bbs_error("Got %d backtrace records\n", size);
 
 	{
 		/* Scope for retstrings, since size is not known at beginning of function */
 		char *retstrings[size];
-		unsigned long i;
+		int i;
 #pragma GCC diagnostic pop
 		memset(retstrings, 0, sizeof(*retstrings));
 		bt_get_symbols(array, size, retstrings); /* Get backtraces with friendly symbols */
@@ -264,16 +264,16 @@ static void bbs_log_backtrace(void)
 						if (frame) {
 							*frame++ = '\0';
 						}
-						bbs_error("%2lu: %s\n", i, s);
+						bbs_error("%2d: %s\n", i, s);
 						s = frame;
 					} while (frame);
 				} else {
-					bbs_error("%2lu: %s\n", i, retstrings[i]);
+					bbs_error("%2d: %s\n", i, retstrings[i]);
 				}
 				free(retstrings[i]); /* Free symbols as we're done using them */
 			} else {
 				/* Fallback to backtrace_symbols output */
-				bbs_error("%2lu: %s\n", i, bt_syms[i]);
+				bbs_error("%2d: %s\n", i, bt_syms[i]);
 			}
 		}
 		free(bt_syms);

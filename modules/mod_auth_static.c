@@ -118,7 +118,7 @@ static struct bbs_user **get_users(void)
 	int index = 0;
 
 	RWLIST_RDLOCK(&users);
-	userlist = malloc((RWLIST_SIZE(&users, u, entry) + 1) * sizeof(*user)); /* The list will be NULL terminated, so add 1 */
+	userlist = malloc((size_t) (RWLIST_SIZE(&users, u, entry) + 1) * sizeof(*user)); /* The list will be NULL terminated, so add 1 */
 	if (ALLOC_FAILURE(userlist)) {
 		return NULL;
 	}
@@ -153,7 +153,7 @@ static int load_config(void)
 				if (ALLOC_FAILURE(u)) {
 					continue;
 				}
-				u->id = ++userid;
+				u->id = (unsigned int) ++userid;
 				u->username = strdup(bbs_keyval_key(keyval));
 				u->password = strdup(bbs_keyval_val(keyval));
 				u->priv = 1;

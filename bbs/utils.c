@@ -59,15 +59,15 @@ int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
 		if (ALLOC_FAILURE(dynstr->buf)) {
 			return -1;
 		}
-		dynstr->len = len;
-		dynstr->used = len;
-		return len;
+		dynstr->len = (int) len;
+		dynstr->used = (int) len;
+		return (int) len;
 	}
 
 	/* Do we have enough room in the existing buffer? */
-	newlen = dynstr->used + len;
+	newlen = dynstr->used + (int) len;
 	if (newlen >= dynstr->len) {
-		char *newbuf = realloc(dynstr->buf, newlen + 1); /* Add NULL terminator */
+		char *newbuf = realloc(dynstr->buf, (size_t) newlen + 1); /* Add NULL terminator */
 		if (ALLOC_FAILURE(newbuf)) {
 			return -1;
 		}
@@ -136,20 +136,20 @@ unsigned char *bbs_sasl_decode(const char *s, char **authorization, char **authe
 	int runlen = 0;
 	char *authorization_id, *authentication_id, *password;
 
-	decoded = base64_decode((unsigned char*) s, strlen(s), &outlen);
+	decoded = base64_decode((const unsigned char*) s, (int) strlen(s), &outlen);
 	/* If you were to dump decoded here using a printf-style function, you would just see the username, since the string is separated by NULs. We need the outlen. */
 	if (!decoded) {
 		return NULL;
 	}
 	authorization_id = (char*) decoded;
-	runlen += strlen(authorization_id) + 1;
+	runlen += (int) strlen(authorization_id) + 1;
 	if (runlen >= outlen) {
 		bbs_warning("No data after nickname?\n");
 		free(decoded);
 		return NULL;
 	}
 	authentication_id = (char*) decoded + runlen;
-	runlen += strlen(authentication_id) + 1;
+	runlen += (int) strlen(authentication_id) + 1;
 	if (runlen >= outlen) {
 		bbs_warning("No data after username?\n");
 		free(decoded);
@@ -166,11 +166,11 @@ unsigned char *bbs_sasl_decode(const char *s, char **authorization, char **authe
 char *bbs_sasl_encode(const char *nickname, const char *username, const char *password)
 {
 	char *encoded;
-	unsigned long len;
+	int len;
 	int outlen;
 	char decoded[256];
 	len = snprintf(decoded, sizeof(decoded), "%s%c%s%c%s", nickname, '\0', username, '\0', password);
-	if (len >= sizeof(decoded)) {
+	if (len >= (int) sizeof(decoded)) {
 		bbs_error("Truncation occured (arguments too long!)\n");
 		return NULL;
 	}
@@ -271,23 +271,23 @@ int bbs_user_identity_mismatch(struct bbs_user *user, const char *from)
 
 int bbs_append_stuffed_line_message(FILE *fp, const char *line, size_t len)
 {
-	int res;
+	size_t res;
 	/* Compiler could maybe optimize fprintf to fwrite, but just use it directly */
 	if (*line == '.') { /* RFC 5321 4.5.2: If line starts with a ., it's byte stuffed, and really starts at the character after. */
 		line++;
 		len--;
 	}
 	res = fwrite(line, sizeof(char), len, fp);
-	if (res != (int) len) {
-		bbs_error("Failed to append %lu bytes (appended %d)\n", len, res);
+	if (res != len) {
+		bbs_error("Failed to append %lu bytes (appended %lu)\n", len, res);
 		return -1;
 	}
 	res = fwrite("\r\n", sizeof(char), STRLEN("\r\n"), fp);
-	if (res != (int) STRLEN("\r\n")) {
-		bbs_error("Failed to append %d bytes (appended %d)\n", 2, res);
+	if (res != STRLEN("\r\n")) {
+		bbs_error("Failed to append %d bytes (appended %lu)\n", 2, res);
 		return -1;
 	}
-	return len + 2;
+	return (int) len + 2;
 }
 
 int bbs_dir_traverse_items(const char *path, int (*on_file)(const char *dir_name, const char *filename, int dir, void *obj), void *obj)
@@ -447,7 +447,7 @@ int bbs_dir_has_file_prefix(const char *path, const char *prefix)
 	DIR *dir;
 	struct dirent *entry;
 	int res;
-	int prefixlen = strlen(prefix);
+	size_t prefixlen = strlen(prefix);
 
 	/* Since we'll be using errno to check for problems, zero it out now. */
 	if (errno) {
@@ -670,8 +670,8 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 	int copied;
 	off_t offset;
 
-	if (!bytes) { /* Something's not right. */
-		bbs_warning("Wanted to copy 0 bytes from file descriptor %d?\n", srcfd);
+	if (bytes <= 0) { /* Something's not right. */
+		bbs_warning("Wanted to copy %d bytes from file descriptor %d?\n", bytes, srcfd);
 		return -1;
 	}
 
@@ -682,18 +682,18 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 	 * Like sendfile, it's more efficient than moving data between kernel and userspace,
 	 * since the kernel can do the copy directly.
 	 * Closest we can get to a system call that will copy a file for us. */
-	copied = copy_file_range(srcfd, &offset, destfd, NULL, bytes, 0);
+	copied = (int) copy_file_range(srcfd, &offset, destfd, NULL, (size_t) bytes, 0);
 	/* If copy_file_range fails, the syscall probably isn't available on this system. */
 #if 0
 	if (copied == -1 && errno == ENOSYS) {
 		/* copy_file_range glibc function doesn't exist on this function. */
 		bbs_debug(5, "copy_file_range glibc wrapper doesn't exist?\n");
-		copied = syscall(__NR_copy_file_range, srcfd, &offset, destfd, NULL, bytes, 0);
+		copied = (int) syscall(__NR_copy_file_range, srcfd, &offset, destfd, NULL, (size_t) bytes, 0);
 	}
 #endif
 	if (copied == -1 && errno == ENOSYS) {
 		/* Okay, the actual syscall doesn't even exist. Fall back to sendfile. */
-		copied = sendfile(destfd, srcfd, &offset, bytes);
+		copied = (int) sendfile(destfd, srcfd, &offset, (size_t) bytes);
 	}
 	if (copied == -1) {
 		bbs_error("copy %d -> %d failed: %s\n", srcfd, destfd, strerror(errno));
@@ -720,7 +720,7 @@ char *bbs_file_to_string(const char *filename, size_t maxsize, int *length)
 	}
 
 	fseek(fp, 0, SEEK_END);
-	size = ftell(fp);
+	size = (size_t) ftell(fp);
 	rewind(fp); /* Be kind, rewind. */
 
 	if (maxsize && size > maxsize) {
@@ -733,7 +733,7 @@ char *bbs_file_to_string(const char *filename, size_t maxsize, int *length)
 		goto cleanup;
 	}
 	if (length) {
-		*length = size;
+		*length = (int) size;
 	}
 	res = fread(s, 1, size, fp);
 	if (res != size) {
@@ -745,12 +745,14 @@ cleanup:
 	return s;
 }
 
+#pragma GCC diagnostic ignored "-Waggregate-return"
 struct timeval bbs_tvnow(void)
 {
 	struct timeval t;
 	gettimeofday(&t, NULL);
 	return t;
 }
+#pragma GCC diagnostic pop
 
 /*! \note This is ast_tvdiff_ms from Asterisk (GPLv2) */
 int64_t bbs_tvdiff_ms(struct timeval end, struct timeval start)
@@ -770,10 +772,10 @@ int bbs_time_friendly_short_now(char *buf, size_t len)
 	time_t lognow;
 	struct tm logdate;
 
-	lognow = time(NULL);
+	lognow = (int) time(NULL);
 	localtime_r(&lognow, &logdate);
 	/* 01/01 01:01pm = 13 chars */
-	return strftime(buf, len, "%m/%d %I:%M%P", &logdate);
+	return (int) strftime(buf, len, "%m/%d %I:%M%P", &logdate);
 }
 
 int bbs_time_friendly_now(char *buf, size_t len)
@@ -781,10 +783,10 @@ int bbs_time_friendly_now(char *buf, size_t len)
 	time_t lognow;
 	struct tm logdate;
 
-	lognow = time(NULL);
+	lognow = (int) time(NULL);
 	localtime_r(&lognow, &logdate);
 	/* Sat Dec 31 2000 09:45 am EST =  29 chars */
-	return strftime(buf, len, "%a %b %e %Y %I:%M %P %Z", &logdate);
+	return (int) strftime(buf, len, "%a %b %e %Y %I:%M %P %Z", &logdate);
 }
 
 int bbs_time_friendly(int epoch, char *buf, size_t len)
@@ -798,7 +800,7 @@ int bbs_time_friendly(int epoch, char *buf, size_t len)
 	lognow = time(&epocht);
 	localtime_r(&lognow, &logdate);
 	/* Sat Dec 31 2000 09:45 am EST =  29 chars */
-	return strftime(buf, len, "%a %b %e %Y %I:%M %P %Z", &logdate);
+	return (int) strftime(buf, len, "%a %b %e %Y %I:%M %P %Z", &logdate);
 }
 
 void print_time_elapsed(int start, int end, char *buf, size_t len)
@@ -807,7 +809,7 @@ void print_time_elapsed(int start, int end, char *buf, size_t len)
 	int hr, min, sec;
 
 	if (!end) {
-		end = time(NULL);
+		end = (int) time(NULL);
 	}
 
 	diff = end - start;
@@ -825,7 +827,7 @@ void print_days_elapsed(int start, int end, char *buf, size_t len)
 	int days, hr, min, sec;
 
 	if (!end) {
-		end = time(NULL);
+		end = (int) time(NULL);
 	}
 
 	diff = end - start;
@@ -918,7 +920,7 @@ int bbs_str_safe_print(const char *s, char *buf, size_t len)
 			len--;
 		} else {
 			/* Make a representation */
-			size_t replen = snprintf(ascii_num, sizeof(ascii_num), "<%d>", *s);
+			size_t replen = (size_t) snprintf(ascii_num, sizeof(ascii_num), "<%d>", *s);
 			if (replen >= len - 1) {
 				bbs_error("Truncation occurred when building string\n");
 				return -1;
@@ -956,7 +958,7 @@ void bbs_dump_string(const char *s)
 				pos += 4;
 				len -= 4;
 			} else {
-				int b = snprintf(pos, len, "<%d>", *s);
+				int b = snprintf(pos, (size_t) len, "<%d>", *s);
 				pos += b;
 				len -= b;
 			}

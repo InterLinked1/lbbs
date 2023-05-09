@@ -124,13 +124,13 @@ int __attribute__ ((format (gnu_printf, 2, 0))) __bbs_vasprintf(char **strp, con
 	va_copy(ap2, ap);
 	size = vsnprintf(&s, 1, fmt, ap2);
 	va_end(ap2);
-	ptr = malloc(size + 1);
+	ptr = malloc((unsigned int) size + 1);
 	if (!ptr) {
 		LOG_ALLOC_FAILURE(ptr, vasprintf);
 		va_end(ap);
 		return -1;
 	}
-	vsnprintf(ptr, size + 1, fmt, ap);
+	vsnprintf(ptr, (unsigned int) size + 1, fmt, ap);
 	*strp = ptr;
 
 	return size;
@@ -149,13 +149,13 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 	va_copy(ap2, ap);
 	size = vsnprintf(&s, 1, fmt, ap2);
 	va_end(ap2);
-	ptr = malloc(size + 1);
+	ptr = malloc((unsigned int) size + 1);
 	if (!ptr) {
 		LOG_ALLOC_FAILURE(ptr, asprintf);
 		va_end(ap);
 		return -1;
 	}
-	vsnprintf(ptr, size + 1, fmt, ap);
+	vsnprintf(ptr, (unsigned int) size + 1, fmt, ap);
 	va_end(ap);
 	*strp = ptr;
 

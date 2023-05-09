@@ -411,7 +411,7 @@ static int sendfile_full(const char *filepath, int wfd)
 	size = lseek(fd, 0, SEEK_END);
 	lseek(fd, 0, SEEK_SET);
 	offset = 0;
-	sent = sendfile(wfd, fd, &offset, size);
+	sent = (int) sendfile(wfd, fd, &offset, (size_t) size);
 	close(fd);
 	if (sent != size) {
 		bbs_error("Wanted to write %lu bytes but only wrote %d?\n", size, sent);
@@ -546,12 +546,12 @@ static int on_body(const char *dir_name, const char *filename, struct nntp_sessi
 
 static int find_header(FILE *fp, const char *header, char **ptr, char *buf, size_t len)
 {
-	int hdrlen = strlen(header);
+	size_t hdrlen = strlen(header);
 
 	*ptr = NULL;
 	rewind(fp);
 
-	while (fgets(buf, len, fp)) {
+	while (fgets(buf, (int) len, fp)) {
 		if (!strncasecmp(buf, header, hdrlen)) {
 			char *start;
 			start = buf + hdrlen;
@@ -701,7 +701,7 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename)
 			pthread_mutex_unlock(&nntp_lock);
 			continue;
 		}
-		bbs_copy_file(srcfd, fd, 0, nntp->postlen);
+		bbs_copy_file(srcfd, fd, 0, (int) nntp->postlen);
 		close(fd);
 		pthread_mutex_unlock(&nntp_lock);
 		res = 0;
@@ -845,16 +845,16 @@ static int nntp_process(struct nntp_session *nntp, char *s, int len)
 			}
 		}
 
-		if (nntp->postlen + len >= max_post_size) {
+		if (nntp->postlen + (unsigned int) len >= max_post_size) {
 			nntp->postfail = 1;
 			nntp->postlen = max_post_size; /* This isn't really true, this is so we can detect that the message was too large. */
 		}
 
-		res = bbs_append_stuffed_line_message(nntp->fp, s, len); /* Should return len + 2, unless it was byte stuffed, in which case it'll be len + 1 */
+		res = bbs_append_stuffed_line_message(nntp->fp, s, (size_t) len); /* Should return len + 2, unless it was byte stuffed, in which case it'll be len + 1 */
 		if (res < 0) {
 			nntp->postfail = 1;
 		}
-		nntp->postlen += res;
+		nntp->postlen += (unsigned int) res;
 		return 0;
 	}
 
@@ -911,7 +911,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, int len)
 		char datestr[15];
 		time_t timenow;
 		struct tm nowtime;
-		timenow = time(NULL);
+		timenow = (int) time(NULL);
 		gmtime_r(&timenow, &nowtime);
 		strftime(datestr, sizeof(datestr), "%Y%m%d%H%M%S", &nowtime); /* yyyymmddhhmmss */
 		nntp_send(nntp, 111, "%s", datestr);
@@ -1051,7 +1051,8 @@ static int nntp_process(struct nntp_session *nntp, char *s, int len)
 	} else if (nntp->mode == NNTP_MODE_READER && require_login && !bbs_user_is_registered(nntp->node->user)) {
 		nntp_send(nntp, 480, "Must authenticate first");
 	} else if (!strcasecmp(command, "LIST")) {
-		char *keyword, *wildmat; /* wildmat or argument */
+		const char *keyword;
+		char *wildmat; /* wildmat or argument */
 		keyword = strsep(&s, " ");
 		if (strlen_zero(keyword)) {
 			keyword = "ACTIVE"; /* Default if no keyword provided */
@@ -1324,8 +1325,8 @@ static void nntp_handler(struct bbs_node *node, int secure, int reader)
 	nntp.rfd = rfd;
 	nntp.wfd = wfd;
 	nntp.node = node;
-	nntp.secure = secure;
-	nntp.mode = reader;
+	SET_BITFIELD(nntp.secure, secure);
+	SET_BITFIELD(nntp.mode, reader);
 
 	handle_client(&nntp, &ssl);
 

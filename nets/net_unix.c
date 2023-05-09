@@ -143,6 +143,7 @@ static void *uds_listener(void *unused)
 	return NULL;
 }
 
+#pragma GCC diagnostic ignored "-Wsign-conversion"
 static int load_module(void)
 {
 	/* If we can't start the UDS listener, decline to load */
@@ -157,6 +158,7 @@ static int load_module(void)
 	}
 	return 0;
 }
+#pragma GCC diagnostic pop
 
 static int unload_module(void)
 {

@@ -53,7 +53,7 @@ int bbs_gettid(void)
 	 * It works on Debian 11 but not on Debian 10 for me. */
 	tid = gettid();
 #else
-	tid = syscall(SYS_gettid);
+	tid = (int) syscall(SYS_gettid);
 #endif
 	my_tid = tid; /* Save the value for future reference, so we don't need to do this again. */
 	return tid;
@@ -81,12 +81,12 @@ static void thread_register(char *name, int detached, int killable)
 		return;
 	}
 
-	new->start = time(NULL);
+	new->start = (int) time(NULL);
 	new->id = pthread_self();
 	new->lwp = bbs_gettid();
 	new->name = name; /* steal the allocated memory for the thread name */
-	new->detached = detached;
-	new->killable = killable;
+	SET_BITFIELD(new->detached, detached);
+	SET_BITFIELD(new->killable, killable);
 	RWLIST_WRLOCK(&thread_list);
 	RWLIST_INSERT_TAIL(&thread_list, new, list);
 	RWLIST_UNLOCK(&thread_list);
@@ -107,7 +107,7 @@ static int __thread_unregister(pthread_t id, const char *file, int line, const c
 				remove = 1;
 			} else {
 				x->waitingjoin = 1;
-				x->end = time(NULL);
+				x->end = (int) time(NULL);
 			}
 			lwp = x->lwp;
 			break;
@@ -173,7 +173,7 @@ void bbs_thread_cleanup(void)
 {
 	char elapsed[24];
 	struct thread_list_t *x;
-	int now = time(NULL);
+	int now = (int) time(NULL);
 
 	/* All spawned threads should have exited by now. Let's see if that's the case. */
 	RWLIST_WRLOCK(&thread_list);
@@ -218,7 +218,7 @@ int bbs_dump_threads(int fd)
 	char elapsed[24];
 	int threads = 0;
 	struct thread_list_t *cur;
-	int now = time(NULL);
+	int now = (int) time(NULL);
 
 	bbs_dprintf(fd, "%3d %6d (%s)\n", 0, getpid(), "PID / main thread");
 	RWLIST_RDLOCK(&thread_list);
@@ -296,7 +296,7 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 		 * and thus wasn't waitingjoin when we checked. This prevents superflous warnings,
 		 * by waiting to join for a brief moment and only warning if the thread doesn't join in that time. */
 		ts.tv_sec = 0;
-		ts.tv_nsec = 45000000; /* 45 ms */
+		ts.tv_nsec = 30000000; /* 30 ms */
 		res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts); /* This is not POSIX portable */
 		if (res && res == ETIMEDOUT) {
 			/* The thread hasn't exited yet. At this point, it's more likely that something is actually wrong. */

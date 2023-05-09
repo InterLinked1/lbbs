@@ -118,7 +118,7 @@ static void list_cleanup(void)
 static int add_pair(u64snowflake guild_id, const char *discord_channel, const char *irc_channel, unsigned int relaysystem, unsigned int multiline)
 {
 	struct chan_pair *cp;
-	int dlen, ilen;
+	size_t dlen, ilen;
 
 	RWLIST_WRLOCK(&mappings);
 	RWLIST_TRAVERSE(&mappings, cp, entry) {
@@ -157,8 +157,8 @@ static int add_pair(u64snowflake guild_id, const char *discord_channel, const ch
 	cp->discord_channel = cp->data;
 	cp->irc_channel = cp->data + dlen + 1;
 	cp->guild_id = guild_id;
-	cp->relaysystem = relaysystem;
-	cp->multiline = multiline;
+	SET_BITFIELD(cp->relaysystem, relaysystem);
+	SET_BITFIELD2(cp->multiline, multiline);
 	/* channel_id is not yet known. Once we call fetch_channels, we'll be able to get the channel_id if it matches a name. */
 	RWLIST_INSERT_HEAD(&mappings, cp, entry);
 	RWLIST_UNLOCK(&mappings);
@@ -230,7 +230,7 @@ static void remove_user(struct discord_user *user)
 static struct user *add_user(struct discord_user *user, u64snowflake guild_id, const char *status, u64unix_ms joined_at)
 {
 	struct user *u;
-	int ulen, dlen;
+	size_t ulen, dlen;
 	char simpleusername[64];
 	int new = 0;
 	const char *username = user->username;
@@ -354,7 +354,7 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 				bbs_debug(10, "User has role %lu\n", roles->array[j]);
 			}
 #endif
-			u->roles = calloc(roles->size, roles->array[0]);
+			u->roles = calloc((size_t) roles->size, roles->array[0]);
 			if (ALLOC_SUCCESS(u->roles)) {
 				u->numroles = roles->size;
 				memcpy(u->roles, roles, sizeof(*u->roles));
@@ -399,11 +399,12 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 /*! \brief Can't get all the presences on startup (does not appear to be a concord issue, but perhaps an API issue?) */
 #define BUGGY_PRESENCE_FETCH
 
-		missed.array = calloc(retry_now, sizeof(u64snowflake *));
+		missed.array = calloc((size_t) retry_now, sizeof(u64snowflake *));
 		if (ALLOC_SUCCESS(missed.array)) {
+			char empty[] = "";
 			struct discord_request_guild_members params = {
 				.guild_id = event->guild_id,
-				.query = "",
+				.query = empty,
 				.limit = retry_now, /* All members */
 				.user_ids = &missed, /* Filter to only users whose status we failed to get the first time */
 				.presences = true, /* Include presences */
@@ -418,7 +419,9 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 					}
 					missed.array[i++] = u->user_id;
 #ifdef BUGGY_USER_IDS
+#pragma GCC diagnostic ignored "-Wcast-qual"
 					params.query = (char*) u->username;
+#pragma GCC diagnostic pop
 					i = 1;
 					break;
 #endif
@@ -446,7 +449,7 @@ static void on_guild_member_add(struct discord *client, const struct discord_gui
 
 	UNUSED(client);
 	bbs_debug(2, "User %lu (%s#%s) has joined guild %lu\n", user->id, user->username, user->discriminator, event->guild_id);
-	add_user(user, event->guild_id, "online", time(NULL) * 1000);
+	add_user(user, event->guild_id, "online", (u64unix_ms) time(NULL) * 1000);
 }
 
 static void on_guild_member_remove(struct discord *client, const struct discord_guild_member_remove *event)
@@ -483,9 +486,10 @@ static void on_presence_update(struct discord *client, const struct discord_pres
 
 static void fetch_members(struct discord *client, u64snowflake guild_id)
 {
+	char empty[] = "";
 	struct discord_request_guild_members params = {
 		.guild_id = guild_id,
-		.query = "", /* Empty string to return all members */
+		.query = empty, /* Empty string to return all members */
 		.limit = 0, /* All members */
 		.presences = true, /* Include presences */
 	};
@@ -834,7 +838,7 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 			if (numeric == 352) {
 				dump_user(fd, requsername, u); /* Include in WHO response */
 			} else if (numeric == 353) {
-				len += snprintf(buf + len, sizeof(buf) - len, "%s%s#%s", len ? " " : "", u->username, u->discriminator);
+				len += snprintf(buf + len, sizeof(buf) - (size_t) len, "%s%s#%s", len ? " " : "", u->username, u->discriminator);
 				if (len >= 400) { /* Stop well short of the 512 character message limit and clear the buffer */
 					len = 0;
 					fdprint_log(fd, "%03d %s " "%s %s :%s\r\n", numeric, requsername, PUBLIC_CHANNEL_PREFIX, cp->irc_channel, buf);
@@ -860,7 +864,7 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 			char mask[96];
 			char combined[84];
 			int idle = 0; /* XXX Arbitrary */
-			int signon = u->guild_joined / 1000; /* Probably the most sensical value to use? */
+			int signon = (int) u->guild_joined / 1000; /* Probably the most sensical value to use? */
 			snprintf(combined, sizeof(combined), "%s#%s", u->username, u->discriminator);
 			snprintf(mask, sizeof(mask), "%s/%s", "Discord", combined);
 			fdprint_log(fd, "%03d %s " "%s %s %s * :%lu\r\n", 311, requsername, combined, combined, mask, u->user_id);
@@ -990,7 +994,7 @@ static int discord_send(const char *channel, const char *sender, const char *msg
 static void substitute_nicks(char *line, char *buf, size_t len)
 {
 	char *pos = buf;
-	int left = len - 1;
+	size_t left = len - 1;
 	char *start = NULL, *c = line;
 
 	/* Need to substitute stuff like <@1234567890> to @jsmith */
@@ -1001,11 +1005,11 @@ static void substitute_nicks(char *line, char *buf, size_t len)
 			struct user *u;
 			unsigned long userid;
 			*c = '\0';
-			userid = atol(start);
+			userid = (unsigned long) atol(start);
 			u = find_user(userid);
 			bbs_debug(5, "Substituted %s (%lu) -> %s\n", start, userid, u ? u->username : "");
 			if (u) {
-				int bytes = snprintf(pos, left, "@%s", u->username);
+				size_t bytes = (size_t) snprintf(pos, left, "@%s", u->username);
 				pos += bytes;
 				left -= bytes;
 			}
@@ -1264,7 +1268,7 @@ static int load_config(void)
 			bbs_warning("Section %s is incomplete, ignoring\n", bbs_config_section_name(section));
 			continue;
 		}
-		add_pair(atol(guild), discord, irc, relaysystem, multiline);
+		add_pair((unsigned long) atol(guild), discord, irc, relaysystem, multiline);
 	}
 
 	return 0;

@@ -8,12 +8,12 @@
 # Naveen Albert <bbs@phreaknet.org>
 #
 
-export BBSTOPDIR		# Top level dir, used in subdirs' Makefiles
-
 BBSTOPDIR:=$(subst $(space),\$(space),$(CURDIR))
 
+export BBSTOPDIR		# Top level dir, used in subdirs' Makefiles
+
 CC		= gcc
-CFLAGS = -Wall -Werror -Wunused -Wextra -Wmaybe-uninitialized -Wstrict-prototypes -Wmissing-prototypes -Wdangling-else -Wdeclaration-after-statement -Wmissing-declarations -Wno-deprecated-declarations -Wmissing-format-attribute -Wnull-dereference -Wformat=2 -Wshadow -Wsizeof-pointer-memaccess -std=gnu99 -pthread -O0 -g -Wstack-protector -fno-omit-frame-pointer -fwrapv -D_FORTIFY_SOURCE=2
+CFLAGS = -Wall -Werror -Wunused -Wextra -Wparentheses -Wconversion -Wdangling-else -Waggregate-return -Wchar-subscripts -Wdouble-promotion -Wmissing-include-dirs -Wuninitialized -Wunknown-pragmas -Wstrict-overflow -Wstringop-truncation -Wmissing-format-attribute -Wnull-dereference -Warray-bounds=1 -Wduplicated-branches -Wduplicated-cond -Wtrampolines -Wfloat-equal -Wdeclaration-after-statement -Wshadow -Wundef -Wunused-macros -Wcast-qual -Wcast-align -Wwrite-strings -Wjump-misses-init -Wlogical-op -Wstrict-prototypes -Wmissing-prototypes -Wmissing-declarations -Wredundant-decls -Wpacked -Wnested-externs -Winline -Wdisabled-optimization -Wstack-protector -std=gnu99 -pthread -O0 -g -fno-omit-frame-pointer -fstrict-aliasing -fdelete-null-pointer-checks -fwrapv -D_FORTIFY_SOURCE=2
 EXE		= lbbs
 PREFIX	= /usr/local
 BINDIR	= $(PREFIX)/bin

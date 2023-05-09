@@ -147,7 +147,7 @@ int bbs_config_val_set_uint(struct bbs_config *cfg, const char *section_name, co
 {
 	const char *s = bbs_config_val(cfg, section_name, key);
 	if (!strlen_zero(s)) {
-		*var = atoi(s); /* Explicitly set to an unsigned int, so we lose the negative */
+		*var = (unsigned int) atoi(s); /* Explicitly set to an unsigned int, so we lose the negative */
 		return 0;
 	}
 	return -1;
@@ -319,7 +319,7 @@ static struct bbs_config *config_parse(const char *name)
 		fclose(fp);
 		return NULL;
 	}
-	cfg->parsetime = time(NULL);
+	cfg->parsetime = (int) time(NULL);
 	cfg->name = strdup(name);
 	if (ALLOC_FAILURE(cfg->name)) {
 		free(cfg);

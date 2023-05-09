@@ -73,7 +73,7 @@ int __attribute__ ((format (gnu_printf, 3, 4))) bbs_sysop_email(struct bbs_user 
 	}
 
 	/* Append the customary message trailer */
-	buf2 = realloc(buf, len + STRLEN(MSG_TRAILER) + 1);
+	buf2 = realloc(buf, (unsigned int) len + STRLEN(MSG_TRAILER) + 1);
 	if (ALLOC_SUCCESS(buf2)) {
 		buf = buf2;
 		strcpy(buf + len, MSG_TRAILER); /* Safe */
@@ -115,7 +115,7 @@ int __bbs_register_alerter(int (*alerter)(ALERTER_PARAMS), void *mod, int priori
 	}
 	a->alerter = alerter;
 	a->module = mod;
-	a->priority = priority;
+	a->priority = (unsigned int) priority;
 	RWLIST_INSERT_SORTED(&alerters, a, entry, priority); /* Insert in order of priority */
 	RWLIST_UNLOCK(&alerters);
 	return 0;

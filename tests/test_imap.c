@@ -45,7 +45,7 @@ static int pre(void)
 
 static int send_count = 0;
 
-static int send_message(int client1, int extrabytes)
+static int send_message(int client1, size_t extrabytes)
 {
 	char subject[32];
 
@@ -76,7 +76,7 @@ static int send_message(int client1, int extrabytes)
 	SWRITE(client1, "This is a test email message." ENDL);
 	SWRITE(client1, "....Let's hope it gets delivered properly." ENDL); /* Test byte stuffing */
 	if (extrabytes) {
-		extrabytes = MIN((int) sizeof(subject), extrabytes);
+		extrabytes = MIN(sizeof(subject), extrabytes);
 		memset(subject, 'a', extrabytes);
 		write(client1, subject, extrabytes);
 		SWRITE(client1, ENDL);
@@ -130,7 +130,7 @@ static unsigned int get_uidvalidity(int fd, const char *mailbox)
 	}
 	s += STRLEN("UIDVALIDITY ");
 	CLIENT_DRAIN(fd);
-	return atoi(s);
+	return (unsigned int) atoi(s);
 }
 
 static int run(void)

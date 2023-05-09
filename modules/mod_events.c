@@ -53,9 +53,12 @@ static RWLIST_HEAD_STATIC(ipblocks, ip_block);
 /* If no hits in 2 hours, purge it */
 #define GOOD_NEIGHBOR_SEC 7200
 
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 static void ban_ip(const char *addr)
 {
 	int res;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
 	char *ipaddr = (char*) addr;
 	if (is_root()) {
 		char *argv[] = { "/usr/sbin/iptables", "-A", "INPUT", "-s", ipaddr, "-j", "DROP", NULL };
@@ -72,6 +75,8 @@ static void ban_ip(const char *addr)
 		bbs_auth("Blocked IP address %s (too many failed connections)\n", ipaddr);
 	}
 }
+#pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
 
 static void process_bad_ip(struct in_addr *addr, const char *straddr, int authfail)
 {
@@ -83,7 +88,7 @@ static void process_bad_ip(struct in_addr *addr, const char *straddr, int authfa
 	int least_recent_offend_time = 0;
 	int repeat_offender, do_ban;
 
-	now = time(NULL);
+	now = (int) time(NULL);
 	nowthresh = now - GOOD_NEIGHBOR_SEC;
 	gettimeofday(&nowtime, NULL);
 
@@ -143,7 +148,7 @@ static void process_bad_ip(struct in_addr *addr, const char *straddr, int authfa
 		ip->authhits++;
 	}
 	if (repeat_offender) {
-		diff = (nowtime.tv_sec - ip->lastfail.tv_sec) * 1000000 + nowtime.tv_usec - ip->lastfail.tv_usec;
+		diff = (unsigned long) (nowtime.tv_sec - ip->lastfail.tv_sec) * 1000000 + (unsigned long) (nowtime.tv_usec - ip->lastfail.tv_usec);
 		if (diff < 200000) {
 			/* Less than 200 ms since the last hit. Almost certainly automated scanning. */
 			if (authfail) {

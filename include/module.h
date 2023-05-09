@@ -108,13 +108,13 @@ int unload_modules(void);
 static const __attribute__((unused)) struct bbs_module_info *bbs_module_info;
 #endif
 
-#define BBS_MODULE_INFO(flags_to_set, desc, fields...)	\
+#define BBS_MODULE_INFO(flags_to_set, desc, ...)	\
 	static struct bbs_module_info 				\
 		__mod_info = {					\
 		.name = BBS_MODULE,				\
 		.flags = flags_to_set,				\
 		.description = desc,				\
-		fields						\
+		__VA_ARGS__						\
 	};						\
 	static void  __attribute__((constructor)) __reg_module(void) \
 	{ \

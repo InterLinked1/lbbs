@@ -41,7 +41,7 @@ static int ibbs_exec(struct bbs_node *node, const char *args)
 
 	UNUSED(args);
 
-	now = time(NULL);
+	now = (int) time(NULL);
 	localtime_r(&now, &nowdate);
 #pragma GCC diagnostic ignored "-Wformat-y2k"
 	strftime(mmyy, sizeof(mmyy), "%m%y", &nowdate); /* 2-digit month, 2-digit year */
@@ -51,6 +51,7 @@ static int ibbs_exec(struct bbs_node *node, const char *args)
 	snprintf(tmpzip, sizeof(tmpzip), "/tmp/ibbs%s.zip", mmyy);
 	snprintf(listfile, sizeof(listfile), "/tmp/full_%s_%s.txt", mon, mmyy + 2);
 
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 	if (access(listfile, R_OK)) {
 		char *const argv[] = { "unzip", tmpzip, "-d", "/tmp", NULL };
 		if (access(tmpzip, R_OK)) {
@@ -75,6 +76,7 @@ static int ibbs_exec(struct bbs_node *node, const char *args)
 			return 0; /* Don't return -1 or the node will abort */
 		}
 	} /* else, file already exists */
+#pragma GCC diagnostic pop
 
 	return bbs_node_term_browse(node, listfile);
 }

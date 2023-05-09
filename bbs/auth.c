@@ -47,7 +47,7 @@ struct auth_provider {
 	/* Next entry */
 	RWLIST_ENTRY(auth_provider) entry;
 	/* Friendly name, not used internally, since we use the callback function as the unique "key", not the name. Only used in bbs_list_providers */
-	char name[0];
+	char name[];
 };
 
 static RWLIST_HEAD_STATIC(providers, auth_provider);
@@ -80,7 +80,7 @@ int __bbs_register_user_registration_provider(int (*regprovider)(struct bbs_node
 int bbs_unregister_user_registration_provider(int (*regprovider)(struct bbs_node *node))
 {
 	if (regprovider != registerprovider) {
-		bbs_error("User registration provider %p does not match registered provider %p\n", regprovider, registerprovider);
+		bbs_error("User registration provider does not match registered provider\n");
 		return -1;
 	}
 
@@ -105,7 +105,7 @@ int __bbs_register_password_reset_handler(int (*handler)(const char *username, c
 int bbs_unregister_password_reset_handler(int (*handler)(const char *username, const char *password))
 {
 	if (handler != pwresethandler) {
-		bbs_error("Password reset handler %p does not match registered handler %p\n", handler, pwresethandler);
+		bbs_error("Password reset handler does not match registered handler\n");
 		return -1;
 	}
 
@@ -130,7 +130,7 @@ int __bbs_register_user_info_handler(struct bbs_user* (*handler)(const char *use
 int bbs_unregister_user_info_handler(struct bbs_user* (*handler)(const char *username))
 {
 	if (handler != userinfohandler) {
-		bbs_error("User info handler %p does not match registered handler %p\n", handler, userinfohandler);
+		bbs_error("User info handler does not match registered handler\n");
 		return -1;
 	}
 
@@ -155,7 +155,7 @@ int __bbs_register_user_list_handler(struct bbs_user** (*handler)(void), void *m
 int bbs_unregister_user_list_handler(struct bbs_user** (*handler)(void))
 {
 	if (handler != userlisthandler) {
-		bbs_error("User list handler %p does not match registered handler %p\n", handler, userlisthandler);
+		bbs_error("User list handler does not match registered handler\n");
 		return -1;
 	}
 
@@ -378,7 +378,7 @@ int bbs_user_temp_authorization_token(struct bbs_user *user, char *buf, size_t l
 		return -1;
 	}
 	t->username = strdup(bbs_username(user));
-	t->added = time(NULL);
+	t->added = (int) time(NULL);
 	RWLIST_INSERT_TAIL(&auth_tokens, t, entry);
 	RWLIST_UNLOCK(&auth_tokens);
 	safe_strncpy(buf, t->token, len);
@@ -392,7 +392,7 @@ static int valid_temp_token(const char *username, const char *password)
 	int now, cutoff;
 	int match = 0;
 
-	now = time(NULL);
+	now = (int) time(NULL);
 	cutoff = now - MAX_TOKEN_AGE;
 
 	/* Purge any stale tokens. */
@@ -422,7 +422,7 @@ static int login_is_cached(struct bbs_node *node, const char *username, const ch
 	int now, cutoff;
 	int remaining = 0;
 
-	now = time(NULL);
+	now = (int) time(NULL);
 	cutoff = now - MAX_CACHE_AGE;
 
 	/* Purge any stale cached logins. */
@@ -516,7 +516,7 @@ static int login_cache(struct bbs_node *node, const char *username, const char *
 	if (ALLOC_FAILURE(l)) {
 		return -1;
 	}
-	l->added = time(NULL);
+	l->added = (int) time(NULL);
 	l->username = strdup(username);
 	safe_strncpy(l->hash, hash, sizeof(l->hash)); /* Could just use strcpy too, if we trust the hash is legitimate. */
 	l->ip = strdup(node->ip);
@@ -717,8 +717,6 @@ int bbs_user_register(struct bbs_node *node)
 		bbs_error("No user registration provider is currently registered, registration rejected\n");
 		return -1;
 	}
-
-	bbs_debug(3, "Handing new user registration off to %p\n", registerprovider);
 
 	node->menu = "Register";
 	bbs_assert_exists(registermod);

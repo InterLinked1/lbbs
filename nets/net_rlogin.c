@@ -58,12 +58,12 @@ static int strncount(char *buf, int len, char c)
 
 static int send_urgent(int fd)
 {
-	int res;
+	ssize_t res;
 	/* The source of rlogind: https://fossies.org/linux/inetutils/src/rlogind.c
 	 * was helpful in figuring out how to properly send the urgent TCP data.
 	 * XXX BUGBUG This doesn't work properly yet, but the above source provides some clues.
 	 */
-	char oobdata[] = { TIOCPKT_WINDOW };
+	unsigned char oobdata[] = { TIOCPKT_WINDOW };
 
 	/* The MSG_OOB flag to send is what makes this urgent. */
 	res = send(fd, oobdata, 1, MSG_OOB);
@@ -181,14 +181,14 @@ static int load_module(void)
 		rlogin_socket = -1;
 		return -1;
 	}
-	bbs_register_network_protocol("RLogin", rlogin_port);
+	bbs_register_network_protocol("RLogin", (unsigned int) rlogin_port);
 	return 0;
 }
 
 static int unload_module(void)
 {
 	if (rlogin_socket > -1) {
-		bbs_unregister_network_protocol(rlogin_port);
+		bbs_unregister_network_protocol((unsigned int) rlogin_port);
 		close(rlogin_socket);
 		rlogin_socket = -1;
 		bbs_pthread_cancel_kill(rlogin_thread);

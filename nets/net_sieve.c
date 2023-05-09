@@ -49,7 +49,7 @@ struct sieve_session {
 	FILE *fp;
 	char *scriptname;
 	char template[32];
-	unsigned int quotaleft;
+	long unsigned int quotaleft;
 	unsigned int uploadsofar;
 	unsigned int uploadexpected;
 	unsigned int secure:1;
@@ -147,7 +147,7 @@ static int putscript_helper(struct sieve_session *sieve, char *s, int put)
 		return 0;
 	}
 	literal++;
-	bytes = atoi(literal);
+	bytes = (unsigned int) atoi(literal);
 	if (!bytes) {
 		sieve_send(sieve, "BAD \"Invalid length\"");
 		return 0;
@@ -266,7 +266,7 @@ doneupload:
 		REQUIRE_ARGS(command);
 		s = strsep(&s, " "); /* Ignore the script name */
 		REQUIRE_ARGS(s);
-		scriptsize = atoi(s);
+		scriptsize = (unsigned int) atoi(s);
 		if (mailbox_quota_remaining(sieve->mbox) < scriptsize) {
 			sieve_send(sieve, "NO (QUOTA/MAXSIZE) \"Quota exceeded\"");
 		} else {
@@ -278,7 +278,7 @@ doneupload:
 		char activescriptpath[PATH_MAX];
 		struct dirent *entry;
 		const char *activebase = NULL;
-		int res;
+		ssize_t res;
 
 		REQUIRE_AUTH();
 		if (!(dir = opendir(mailbox_maildir(sieve->mbox)))) {
@@ -288,7 +288,7 @@ doneupload:
 
 		snprintf(activescript, sizeof(activescript), "%s/.sieve", mailbox_maildir(sieve->mbox));
 		res = readlink(activescript, activescriptpath, sizeof(activescriptpath) - 1);
-		if (res > 0 && res < (int) sizeof(activescriptpath) - 1) { /* There is an active script (symlink exists) */
+		if (res > 0 && res < (ssize_t) sizeof(activescriptpath) - 1) { /* There is an active script (symlink exists) */
 			activescriptpath[res] = '\0'; /* readlink does not NULL terminate */
 			activebase = strrchr(activescriptpath, '/');
 			if (activebase) {
@@ -350,11 +350,11 @@ doneupload:
 		if (sieve_script_name_to_path(sieve, s, targetscript, sizeof(targetscript))) {
 			sieve_send(sieve, "NO (NONEXISTENT) \"No such script\"");
 		} else {
-			int res;
+			ssize_t res;
 			/* Cannot delete an active script */
 			snprintf(activescript, sizeof(activescript), "%s/.sieve", mailbox_maildir(sieve->mbox));
 			res = readlink(activescript, activescriptpath, sizeof(activescriptpath) - 1);
-			if (res > 0 && res < (int) sizeof(activescriptpath) - 1) {
+			if (res > 0 && res < (ssize_t) sizeof(activescriptpath) - 1) {
 				activescriptpath[res] = '\0';
 				if (!strcmp(activescriptpath, targetscript)) {
 					sieve_send(sieve, "NO (ACTIVE) \"You may not delete an active script\"");
@@ -398,7 +398,7 @@ doneupload:
 		char path[256];
 		char buf[1001];
 		FILE *fp;
-		unsigned int size;
+		long int size;
 		REQUIRE_AUTH();
 		REQUIRE_ARGS(s);
 		STRIP_QUOTES(s);
@@ -414,14 +414,14 @@ doneupload:
 		fseek(fp, 0L, SEEK_END);
 		size = ftell(fp);
 		rewind(fp);
-		sieve_send(sieve, "{%u}", size);
+		sieve_send(sieve, "{%ld}", size);
 		size = 0;
 		while ((fgets(buf, sizeof(buf), fp))) {
-			int len = strlen(buf);
-			size += bbs_write(sieve->wfd, buf, len);
+			size_t len = strlen(buf);
+			size += bbs_write(sieve->wfd, buf, (unsigned int) len);
 		}
 		fclose(fp);
-		bbs_debug(5, "Sent %d-byte script\n", size);
+		bbs_debug(5, "Sent %ld-byte script\n", size);
 		sieve_send(sieve, ""); /* The RFC suggests this, and the Thunderbird Sieve editor extension wants to see an empty line after the script */
 		sieve_send(sieve, "OK");
 	} else if (!strcasecmp(command, "PUTSCRIPT")) {
@@ -451,12 +451,12 @@ static void handle_client(struct sieve_session *sieve, SSL **sslptr)
 			break;
 		}
 		if (sieve->fp) { /* Uploading a file */
-			sieve->uploadsofar += res + 2; /* Add the CR LF back */
+			sieve->uploadsofar += (unsigned int) res + 2; /* Add the CR LF back */
 			if (sieve->scriptname && sieve->uploadsofar > sieve->quotaleft) { /* Only check quota for PUTSCRIPT, but not CHECKSCRIPT */
 				sieve_send(sieve, "NO (QUOTA/MAXSIZE) Quota exceeded");
 				break; /* Extreme, but it's highly unlikely anyone would exceed email quota by uploading a Sieve script... come on, folks. */
 			}
-			fwrite(buf, sizeof(char), res, sieve->fp); /* Append */
+			fwrite(buf, sizeof(char), (size_t) res, sieve->fp); /* Append */
 			if (sieve->uploadsofar >= sieve->uploadexpected) {
 				if (sieve->uploadsofar > sieve->uploadexpected) { /* We already added 2 for the final CR LF so should never be more than */
 					bbs_warning("Received %u/%u byte upload\n", sieve->uploadsofar, sieve->uploadexpected);

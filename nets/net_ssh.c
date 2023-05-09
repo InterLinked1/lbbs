@@ -179,7 +179,7 @@ static int data_function(ssh_session session, ssh_channel channel, void *data, u
 	}
 
 	/* child_stdin = pty_master (relay data from client to PTY master) */
-	return write(cdata->child_stdin, (char *) data, len);
+	return (int) write(cdata->child_stdin, (char *) data, len);
 }
 
 /*! \brief Called if the client closes the connection */
@@ -227,10 +227,10 @@ static int process_stdout(socket_t fd, int revents, void *userdata)
 #define BUF_SIZE 1048576
 		char buf[BUF_SIZE];
 #undef BUF_SIZE
-		n = read(fd, buf, sizeof(buf));
+		n = (int) read(fd, buf, sizeof(buf));
 		if (n > 0) {
 			/* Relay data from PTY master to the client */
-			ssh_channel_write(channel, buf, n);
+			ssh_channel_write(channel, buf, (uint32_t) n);
 		} else {
 			bbs_debug(3, "len: %d\n", n);
 		}
@@ -383,12 +383,12 @@ static int pty_request(ssh_session session, ssh_channel channel, const char *ter
 	UNUSED(channel);
 	UNUSED(term);
 
-	cdata->winsize->ws_row = rows;
-	cdata->winsize->ws_col = cols;
+	cdata->winsize->ws_row = (short unsigned int) rows;
+	cdata->winsize->ws_col = (short unsigned int) cols;
 
 	/* These are ignored at present, as they're not that important and don't even seem to get sent by some clients. */
-	cdata->winsize->ws_xpixel = px;
-	cdata->winsize->ws_ypixel = py;
+	cdata->winsize->ws_xpixel = (short unsigned int) px;
+	cdata->winsize->ws_ypixel = (short unsigned int) py;
 
 	/* Yes, we're launching a separate PTY here.
 	 * In theory, we could probably get by with just the PTY in pty.c.
@@ -436,12 +436,12 @@ static int pty_resize(ssh_session session, ssh_channel channel, int cols, int ro
 	UNUSED(session);
 	UNUSED(channel);
 
-	cdata->winsize->ws_row = rows;
-	cdata->winsize->ws_col = cols;
+	cdata->winsize->ws_row = (short unsigned int) rows;
+	cdata->winsize->ws_col = (short unsigned int) cols;
 
 	/* These are ignored at present, as they're not that important and don't even seem to get sent by some clients. */
-	cdata->winsize->ws_xpixel = px;
-	cdata->winsize->ws_ypixel = py;
+	cdata->winsize->ws_xpixel = (short unsigned int) px;
+	cdata->winsize->ws_ypixel = (short unsigned int) py;
 
 	/* Resist the urge to directly send a SIGWINCH signal here.
 	 * bbs_node_update_winsize will do that if needed. */
@@ -845,7 +845,7 @@ static int load_module(void)
 		bbs_error("Unable to create SSH listener thread.\n");
 		goto cleanup;
 	}
-	bbs_register_network_protocol("SSH", ssh_port);
+	bbs_register_network_protocol("SSH", (unsigned int) ssh_port);
 	return 0;
 
 cleanup:
@@ -859,7 +859,7 @@ static int unload_module(void)
 		bbs_error("SSH socket already closed at unload?\n");
 		return 0;
 	}
-	bbs_unregister_network_protocol(ssh_port);
+	bbs_unregister_network_protocol((unsigned int) ssh_port);
 	bbs_debug(3, "Cleaning up libssh\n");
 	bbs_pthread_cancel_kill(ssh_listener_thread);
 	bbs_pthread_join(ssh_listener_thread, NULL);

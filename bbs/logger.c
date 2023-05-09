@@ -33,7 +33,7 @@
 #include <sys/types.h>
 #include <pthread.h>
 
-#include "include/utils.h" /* use bbs_gettid */
+#include "include/utils.h" /* use bbs_gettid, bbs_tvnow */
 #include "include/linkedlists.h"
 
 /* bbs.c */
@@ -270,13 +270,6 @@ static const char *verbose_prefix(int level)
 	return NULL;
 }
 
-static struct timeval tvnow(void)
-{
-	struct timeval t;
-	gettimeofday(&t, NULL);
-	return t;
-}
-
 #define log_puts(msg) pthread_mutex_lock(&loglock); fprintf(logfp, "%s", msg); fflush(logfp); pthread_mutex_unlock(&loglock);
 #define term_puts(msg) pthread_mutex_lock(&termlock); fprintf(stdout, "%s", msg); fflush(stdout); pthread_mutex_unlock(&termlock);
 
@@ -378,8 +371,10 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 
 	bbs_assert(logfp != NULL);
 
-	now = tvnow();
-	lognow = time(NULL);
+#pragma GCC diagnostic ignored "-Waggregate-return"
+	now = bbs_tvnow();
+#pragma GCC diagnostic pop
+	lognow = (int) time(NULL);
 	localtime_r(&lognow, &logdate);
 	strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 

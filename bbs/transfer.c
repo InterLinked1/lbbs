@@ -62,7 +62,7 @@ int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const c
 		 * i.e. even if a user cannot normally delete files in the transfer root, users can do whatever
 		 * they like inside their home directories. */
 		len = snprintf(homedir, sizeof(homedir), "%s/home/%d", bbs_transfer_rootdir(), bbs_user_is_registered(node->user) ? node->user->id : 0);
-		if (!strncmp(diskpath, homedir, len)) {
+		if (!strncmp(diskpath, homedir, (size_t) len)) {
 			bbs_debug(6, "Operation implicitly authorized since it's in the user's home directory\n");
 			return 1;
 		}
@@ -77,7 +77,7 @@ int transfer_make_longname(const char *file, struct stat *st, char *buf, size_t 
 	char ctimebuf[26]; /* 26 bytes is enough per ctime(3) */
 	char *modtime;
 	char *p = buf;
-	int mode = st->st_mode;
+	mode_t mode = st->st_mode;
 
 	/* Need 10 bytes for rwx, 10 bytes for first snprintf, 26-4 for ctime + filename */
 
@@ -101,7 +101,7 @@ int transfer_make_longname(const char *file, struct stat *st, char *buf, size_t 
 
 	*p++ = ' ';
 
-	p += snprintf(p, len - (p - buf), "%3d %d %d %d", (int) st->st_nlink, (int) st->st_uid, (int) st->st_gid, (int) st->st_size);
+	p += snprintf(p, len - (size_t) (p - buf), "%3d %d %d %d", (int) st->st_nlink, (int) st->st_uid, (int) st->st_gid, (int) st->st_size);
 	if (ftp) {
 		struct tm tm;
 		/* Times should be in UTC */
@@ -120,7 +120,7 @@ int transfer_make_longname(const char *file, struct stat *st, char *buf, size_t 
 			*colon = '\0';
 		}
 	}
-	return snprintf(p, len - (p - buf), " %s %s", modtime, file);
+	return snprintf(p, len - (size_t) (p - buf), " %s %s", modtime, file);
 }
 
 /*! \note This implementation assumes the userpath is always a subset of the diskpath */
@@ -133,7 +133,7 @@ const char *bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpa
 	/* This isn't solely just to ensure that nothing funny is going on.
 	 * If diskpath is shorter than rootdir for whatever reason,
 	 * then userpath points to invalid memory, and we must not access it. */
-	if (strncmp(diskpath, rootdir, rootlen)) {
+	if (strncmp(diskpath, rootdir, (size_t) rootlen)) {
 		bbs_warning("Disk path '%s' is outside of transfer root '%s'\n", diskpath, rootdir);
 		return NULL;
 	}
@@ -167,7 +167,7 @@ static int __transfer_set_path(struct bbs_node *node, const char *function, cons
 	if (STARTS_WITH(userpath, "/home") && strlen(userpath) > STRLEN("/home")) {
 		const char *homedir = strchr(userpath + 1, '/');
 		if (likely(homedir != NULL)) { /* If length is longer than /home, there should be another / */
-			unsigned int user = atoi(S_IF(homedir + 1));
+			unsigned int user = (unsigned int) atoi(S_IF(homedir + 1));
 			if (user && (!bbs_user_is_registered(node->user) || user != node->user->id)) {
 				/* This is also hit when doing a directory listing, so this doesn't necessarily indicate user malfeasance */
 				bbs_debug(3, "User not authorized for location: %s\n", fullpath);
@@ -200,7 +200,7 @@ int __bbs_transfer_set_disk_path_absolute(struct bbs_node *node, const char *use
 		safe_strncpy(buf, rootdir, len); /* The rootdir must exist. Well, if it doesn't, then nothing will work anyways. */
 	} else {
 		char tmp[256];
-		int pathlen = !strlen_zero(userpath) ? strlen(userpath) : 0;
+		int pathlen = !strlen_zero(userpath) ? (int) strlen(userpath) : 0;
 		snprintf(tmp, sizeof(tmp), "%s%s", rootdir, S_IF(userpath));
 		if (pathlen > 3) {
 			/* e.g. for foobar/.. we want /.. */
@@ -314,7 +314,7 @@ int bbs_transfer_config_load(void)
 	}
 
 	bbs_config_val_set_int(cfg, "transfers", "maxuploadsize", &max_upload_size);
-	rootlen = strlen(rootdir);
+	rootlen = (int) strlen(rootdir);
 
 	access_priv = 0;
 	download_priv = 0;

@@ -45,7 +45,7 @@ static char catchall[256] = "";
 static unsigned int maxquota = 10000000;
 static unsigned int trashdays = 7;
 
-static pthread_t trash_thread = -1;
+static pthread_t trash_thread = 0;
 
 struct stringlist local_domains;
 
@@ -317,7 +317,7 @@ static void parse_user_domain(char *buf, size_t len, const char *address, char *
 static void add_alias(const char *aliasname, const char *target)
 {
 	struct alias *alias;
-	int aliaslen, domainlen, targetlen;
+	size_t aliaslen, domainlen, targetlen;
 	char aliasbuf[256];
 	char *aliasuser, *aliasdomain = NULL;
 
@@ -370,7 +370,7 @@ static void add_alias(const char *aliasname, const char *target)
 static void add_listserv(const char *listname, const char *target)
 {
 	struct listserv *l;
-	int listlen, domainlen, targetlen;
+	size_t listlen, domainlen, targetlen;
 	char *listuser, *listdomain = NULL;
 	char listbuf[256];
 
@@ -489,7 +489,7 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid, const char *n
 		} else {
 			snprintf(mbox->maildir, sizeof(mbox->maildir), "%s/%s", maildir, name);
 		}
-		mbox->maildirlen = strlen(mbox->maildir);
+		mbox->maildirlen = (int) strlen(mbox->maildir);
 		RWLIST_INSERT_HEAD(&mailboxes, mbox, entry);
 		/* Before we return the mailbox to a mail server module for operations,
 		 * make sure that the user's mail directory actually exists. */
@@ -570,7 +570,7 @@ static struct mailbox *mailbox_get(unsigned int userid, const char *user, const 
 	}
 
 	if (!mbox && !s_strlen_zero(catchall)) {
-		static int catch_all_userid = 0; /* This won't change, so until we having caching of user ID to usernames in the core, don't look this up again after we find a match. */
+		static unsigned int catch_all_userid = 0; /* This won't change, so until we having caching of user ID to usernames in the core, don't look this up again after we find a match. */
 		if (!catch_all_userid) {
 			catch_all_userid = bbs_userid_from_username(catchall);
 		}
@@ -644,7 +644,7 @@ void mailbox_notify(struct mailbox *mbox, const char *newfile)
 	if (stat(newfile, &st)) {
 		mailbox_invalidate_quota_cache(mbox);
 	} else {
-		mailbox_quota_adjust_usage(mbox, st.st_size);
+		mailbox_quota_adjust_usage(mbox, (int) st.st_size);
 	}
 
 	if (!mbox->watchers) {
@@ -682,7 +682,7 @@ void mailbox_quota_adjust_usage(struct mailbox *mbox, int bytes)
 {
 	mailbox_uid_lock(mbox); /* Borrow the UID lock since we need to do this atomically */
 	if (mbox->quotavalid) {
-		mbox->quotausage += bytes;
+		mbox->quotausage += (unsigned int) bytes;
 		if (unlikely(mbox->quotausage > mailbox_quota(mbox))) {
 			/* Could also happen if we underflow below 0, since quotausage is unsigned */
 			/* Either our adjustments to the cached value went off somewhere, or we didn't check the quota somewhere. Either way, somebody screwed up. */
@@ -707,33 +707,35 @@ unsigned long mailbox_quota(struct mailbox *mbox)
 	snprintf(quotafile, sizeof(quotafile), "%s/.quota", mailbox_maildir(mbox));
 	fp = fopen(quotafile, "r");
 	if (fp && fgets(quotabuf, sizeof(quotabuf), fp)) { /* Use the default */
-		mbox->quota = (unsigned long) atol(quotabuf);
+		mbox->quota = (unsigned int) atoi(quotabuf);
 		fclose(fp);
 	} else {
-		mbox->quota = (unsigned long) maxquota;
+		mbox->quota = (unsigned int) maxquota;
 	}
 	return mbox->quota;
 }
 
 unsigned long mailbox_quota_remaining(struct mailbox *mbox)
 {
-	long quota, quotaused;
+	unsigned long quota, quotaused;
+	long tmp;
 
 	quota = mailbox_quota(mbox);
 
 	if (mbox->quotavalid) {
 		/* Use the cached quota calculations if mailbox usage hasn't really changed */
-		return (unsigned long) (quota - mbox->quotausage);
+		return quota - mbox->quotausage;
 	}
 
-	quotaused = bbs_dir_size(mailbox_maildir(mbox));
-	if (quotaused < 0) {
+	tmp = bbs_dir_size(mailbox_maildir(mbox));
+	if (tmp < 0) {
 		/* An error occured, so we have no idea how much space is used.
 		 * Err on the side of assuming no quota for now. */
 		bbs_warning("Unable to calculate quota usage for mailbox %p\n", mbox);
 		return quota;
 	}
-	mbox->quotausage = quotaused;
+	quotaused = (unsigned long) tmp;
+	mbox->quotausage = (unsigned int) quotaused;
 	mbox->quotavalid = 1; /* This can be cached until invalidated again */
 	quota -= quotaused;
 	if (quota <= 0) {
@@ -768,7 +770,7 @@ const char *mailbox_maildir(struct mailbox *mbox)
 
 int mailbox_id(struct mailbox *mbox)
 {
-	return mbox->id;
+	return (int) mbox->id;
 }
 
 int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf)
@@ -778,7 +780,9 @@ int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf)
 	int fd;
 
 	for (;;) {
+#pragma GCC diagnostic ignored "-Waggregate-return"
 		tvnow = bbs_tvnow();
+#pragma GCC diagnostic pop
 		snprintf(buf, len, "%s/tmp/%lu%06lu", path, tvnow.tv_sec, tvnow.tv_usec);
 		snprintf(newbuf, len, "%s/new/%lu%06lu", path, tvnow.tv_sec, tvnow.tv_usec);
 		if (stat(buf, &st) == -1 && errno == ENOENT) {
@@ -787,7 +791,7 @@ int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf)
 				break;
 			}
 		}
-		usleep(100 + bbs_rand(1, 25));
+		usleep(100 + (unsigned int) bbs_rand(1, 25));
 	}
 
 	/* In case this maildir has never been accessed before */
@@ -859,7 +863,7 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 				char *uidvaliditystr, *tmp = uidv;
 				if (!fgets(uidv, sizeof(uidv), fp) || !uidv[0]) {
 					bbs_error("Failed to read UID from %s (read: %s)\n", uidfile, uidv);
-				} else if (!(uidvaliditystr = strsep(&tmp, "/")) || !(uidvalidity = atoi(uidvaliditystr)) || !(uidnext = atoi(tmp))) {
+				} else if (!(uidvaliditystr = strsep(&tmp, "/")) || !(uidvalidity = (unsigned int) atoi(uidvaliditystr)) || !(uidnext = (unsigned int) atoi(tmp))) {
 					/* If we create a maildir but don't do anything yet, uidnext will be 0.
 					 * So !atoi isn't a sufficient check as it may have successfully parsed 0.
 					 */
@@ -874,7 +878,7 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 
 	if (!fp || !uidvalidity || !uidnext) {
 		/* UIDVALIDITY must be strictly increasing, so time is a good thing to use. */
-		uidvalidity = time(NULL); /* If this isn't the first access to this folder, this will invalidate the client's cache of this entire folder. */
+		uidvalidity = (unsigned int) time(NULL); /* If this isn't the first access to this folder, this will invalidate the client's cache of this entire folder. */
 		/* Since we're starting over, we must broadcast the new UIDVALIDITY value (we always do for SELECTs). */
 	}
 
@@ -958,7 +962,7 @@ static unsigned long __maildir_modseq(struct mailbox *mbox, const char *director
 			 * There could conceivably be a much larger number of modifications than that, however, to a folder over time.
 			 * MODSEQ is 63/64 bit (originally 64-bit in RFC 4551, changed to 63-bit in RFC 7162)
 			 * So we use an unsigned long for just these, and not for any UID related numbers. */
-			cur = atol(modseq);
+			cur = (unsigned long) atol(modseq);
 			if (cur > max_modseq) {
 				max_modseq = cur;
 			}
@@ -1170,7 +1174,7 @@ int maildir_move_new_to_cur_file(struct mailbox *mbox, const char *dir, const ch
 		bbs_error("stat(%s) failed: %s\n", oldname, strerror(errno));
 		return -1;
 	}
-	bytes = st.st_size;
+	bytes = (int) st.st_size;
 
 	/* XXX Calling this once per every file, if there are a lot of files, is not efficient.
 	 * Would be better to read the file at the beginning of the directory traversal,
@@ -1250,7 +1254,7 @@ static int gen_newname(struct mailbox *mbox, const char *curfilename, const char
 		return -1;
 	}
 	mailbox_maildir_init(destmaildir); /* Make sure the maildir is ready if it hasn't been used before */
-	return uid;
+	return (int) uid;
 }
 
 int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext)
@@ -1290,7 +1294,7 @@ int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const c
 	int origfd, newfd;
 	int size, copied;
 
-	uid = gen_newname(mbox, curfilename, destmaildir, uidvalidity, uidnext, newpath, sizeof(newpath));
+	uid = (unsigned int) gen_newname(mbox, curfilename, destmaildir, uidvalidity, uidnext, newpath, sizeof(newpath));
 	if (!uid) {
 		return -1;
 	}
@@ -1308,7 +1312,7 @@ int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const c
 		return -1;
 	}
 
-	size = lseek(origfd, 0, SEEK_END); /* Don't blindly trust the size in the filename's S= */
+	size = (int) lseek(origfd, 0, SEEK_END); /* Don't blindly trust the size in the filename's S= */
 	lseek(origfd, 0, SEEK_SET); /* rewind to beginning */
 
 	copied = bbs_copy_file(origfd, newfd, 0, size);
@@ -1325,7 +1329,7 @@ int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const c
 	}
 	/* Rather than invalidating quota usage for no reason, just update it so it stays in sync */
 	mailbox_quota_adjust_usage(mbox, copied);
-	return uid;
+	return (int) uid;
 }
 
 int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid)
@@ -1336,7 +1340,7 @@ int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid)
 	}
 	uidstr += STRLEN(",U=");
 	if (!strlen_zero(uidstr)) {
-		*uid = atoi(uidstr); /* Should stop as soon we encounter the first nonnumeric character, whether , or : */
+		*uid = (unsigned int) atoi(uidstr); /* Should stop as soon we encounter the first nonnumeric character, whether , or : */
 		if (!*uid) {
 			bbs_warning("Failed to parse UID for %s\n", filename);
 			return -1;
@@ -1478,8 +1482,8 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, void *ob
 	struct stat st;
 	char fullname[256];
 	int tstamp;
-	int trashsec = 86400 * trashdays;
-	int elapsed, now = time(NULL);
+	int trashsec = 86400 * (int) trashdays;
+	int elapsed, now = (int) time(NULL);
 	struct mailbox *mbox = obj;
 	unsigned int msguid;
 
@@ -1491,7 +1495,7 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, void *ob
 		bbs_error("stat(%s) failed: %s\n", fullname, strerror(errno));
 		return 0;
 	}
-	tstamp = st.st_ctime;
+	tstamp = (int) st.st_ctime;
 	elapsed = now - tstamp;
 	bbs_debug(7, "Encountered in trash: %s (%d s ago)\n", fullname, elapsed);
 	if (elapsed > trashsec) {
@@ -1499,7 +1503,7 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, void *ob
 			bbs_error("unlink(%s) failed: %s\n", fullname, strerror(errno));
 		} else {
 			bbs_debug(4, "Permanently deleted %s\n", fullname);
-			mailbox_quota_adjust_usage(mbox, -st.st_size); /* Subtract file size from quota usage */
+			mailbox_quota_adjust_usage(mbox, (int) -st.st_size); /* Subtract file size from quota usage */
 		}
 		maildir_parse_uid_from_filename(filename, &msguid);
 		/*! \todo Since many messages are probably deleted at the same time,
@@ -1525,11 +1529,11 @@ static void scan_mailboxes(void)
 	}
 	while ((entry = readdir(dir)) != NULL) {
 		struct mailbox *mbox;
-		int mboxnum;
+		unsigned int mboxnum;
 		if (entry->d_type != DT_DIR || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			continue;
 		}
-		mboxnum = atoi(entry->d_name);
+		mboxnum = (unsigned int) atoi(entry->d_name);
 		if (!mboxnum) {
 			continue; /* Ignore non-numeric directories, these are other things (e.g. mailq) */
 		}

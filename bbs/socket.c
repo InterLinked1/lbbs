@@ -137,7 +137,7 @@ int bbs_make_tcp_socket(int *sock, int port)
 	memset(&sinaddr, 0, sizeof(sinaddr));
 	sinaddr.sin_family = AF_INET;
 	sinaddr.sin_addr.s_addr = INADDR_ANY;
-	sinaddr.sin_port = htons(port); /* Public TCP port on which to listen */
+	sinaddr.sin_port = htons((uint16_t) port); /* Public TCP port on which to listen */
 
 	res = bind(*sock, (struct sockaddr*) &sinaddr, sizeof(sinaddr));
 	if (res) {
@@ -179,7 +179,7 @@ int bbs_make_tcp_socket(int *sock, int port)
 			memset(&sinaddr, 0, sizeof(sinaddr));
 			sinaddr.sin_family = AF_INET;
 			sinaddr.sin_addr.s_addr = INADDR_ANY;
-			sinaddr.sin_port = htons(port); /* Public TCP port on which to listen */
+			sinaddr.sin_port = htons((uint16_t) port); /* Public TCP port on which to listen */
 
 			res = bind(*sock, (struct sockaddr*) &sinaddr, sizeof(sinaddr));
 			if (!option_rebind) {
@@ -254,10 +254,10 @@ int bbs_resolve_hostname(const char *hostname, char *buf, size_t len)
 	for (ai = res; ai; ai = ai->ai_next) {
 		if (ai->ai_family == AF_INET) {
 			saddr_in = (struct sockaddr_in *) ai->ai_addr;
-			inet_ntop(ai->ai_family, &saddr_in->sin_addr, buf, len); /* Print IPv4*/
+			inet_ntop(ai->ai_family, &saddr_in->sin_addr, buf, (socklen_t) len); /* Print IPv4*/
 		} else if (ai->ai_family == AF_INET6) {
 			saddr_in6 = (struct sockaddr_in6 *) ai->ai_addr;
-			inet_ntop(ai->ai_family, &saddr_in6->sin6_addr, buf, len); /* Print IPv6 */
+			inet_ntop(ai->ai_family, &saddr_in6->sin6_addr, buf, (socklen_t) len); /* Print IPv6 */
 		}
 		break; /* Use the 1st one that works */
 	}
@@ -292,11 +292,11 @@ int bbs_tcp_connect(const char *hostname, int port)
 	for (ai = res; ai; ai = ai->ai_next) {
 		if (ai->ai_family == AF_INET) {
 			saddr_in = (struct sockaddr_in *) ai->ai_addr;
-			saddr_in->sin_port = htons(port);
+			saddr_in->sin_port = htons((uint16_t) port);
 			inet_ntop(ai->ai_family, &saddr_in->sin_addr, ip, sizeof(ip)); /* Print IPv4*/
 		} else if (ai->ai_family == AF_INET6) {
 			saddr_in6 = (struct sockaddr_in6 *) ai->ai_addr;
-			saddr_in6->sin6_port = htons(port);
+			saddr_in6->sin6_port = htons((uint16_t) port);
 			inet_ntop(ai->ai_family, &saddr_in6->sin6_addr, ip, sizeof(ip)); /* Print IPv6 */
 		}
 		sfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
@@ -347,7 +347,7 @@ int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, i
 		return -1;
 	}
 	client->wfd = client->rfd = client->fd;
-	client->secure = secure;
+	SET_BITFIELD(client->secure, secure);
 	client->buf = buf;
 	client->len = len;
 	if (client->secure) {
@@ -359,7 +359,7 @@ int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, i
 		}
 		bbs_debug(5, "Implicit TLS completed\n");
 	}
-	bbs_readline_init(&client->rldata, client->buf, client->len);
+	bbs_readline_init(&client->rldata, client->buf, (int) client->len);
 	return 0;
 }
 
@@ -370,8 +370,8 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_tcp_client_send(struct bbs_t
 	va_list ap;
 
 	if (!strchr(fmt, '%')) {
-		len = strlen(fmt);
-		return bbs_write(client->wfd, fmt, len);
+		len = (int) strlen(fmt);
+		return bbs_write(client->wfd, fmt, (unsigned int) len);
 	}
 
 	/* Do not use vdprintf, I have not had good experiences with that... */
@@ -382,7 +382,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_tcp_client_send(struct bbs_t
 	if (len < 0) {
 		return -1;
 	}
-	res = bbs_write(client->wfd, buf, len);
+	res = bbs_write(client->wfd, buf, (unsigned int) len);
 	free(buf);
 	return res;
 }
@@ -473,7 +473,7 @@ static int num_listeners = 0;
 static struct tcp_listener *list_add_listener(int port, int sfd, const char *name, void *(*handler)(void *varg), void *module)
 {
 	struct tcp_listener *l;
-	int namelen = strlen(name);
+	size_t namelen = strlen(name);
 
 	l = calloc(1, sizeof(*l) + namelen + 1);
 	if (!l) {
@@ -524,7 +524,7 @@ static void *tcp_multilistener(void *unused)
 				break;
 			}
 			free_if(pfds);
-			pfds = calloc(num_sockets + 1, sizeof(*pfds));
+			pfds = calloc((size_t) num_sockets + 1, sizeof(*pfds));
 			if (ALLOC_FAILURE(pfds)) {
 				break; /* Uh oh... */
 			}
@@ -541,7 +541,7 @@ static void *tcp_multilistener(void *unused)
 		for (i = 0; i < num_sockets + 1; i++) {
 			pfds[i].revents = 0;
 		}
-		res = poll(pfds, num_sockets + 1, -1);
+		res = poll(pfds, (size_t) num_sockets + 1, -1);
 		if (res < 0) {
 			if (errno != EINTR) {
 				bbs_warning("poll returned error: %s\n", strerror(errno));
@@ -641,7 +641,7 @@ int __bbs_start_tcp_listener(int port, const char *name, void *(*handler)(void *
 	num_listeners++;
 	RWLIST_UNLOCK(&listeners);
 
-	bbs_register_network_protocol(name, port);
+	bbs_register_network_protocol(name, (unsigned int) port);
 	bbs_debug(1, "Registered TCP listener for %s on port %d\n", name, port);
 
 	/* Signal the listener thread there's a new socket on which to listen.
@@ -723,7 +723,7 @@ int bbs_stop_tcp_listener(int port)
 		return -1;
 	}
 
-	bbs_unregister_network_protocol(port);
+	bbs_unregister_network_protocol((unsigned int) port);
 	close(sfd);
 	bbs_alertpipe_write(multilistener_alertpipe); /* This will wake up the listener thread and cause it to remove the listener */
 	return 0;
@@ -734,7 +734,7 @@ void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, c
 	struct sockaddr_in sinaddr;
 	socklen_t len;
 	struct pollfd pfds[3];
-	int nfds = 0;
+	long unsigned int nfds = 0;
 	struct bbs_node *node;
 	char new_ip[56];
 
@@ -935,13 +935,13 @@ int bbs_get_hostname(const char *ip, char *buf, size_t len)
 	address.sin_family = AF_INET;
 	address.sin_addr.s_addr = inet_addr(ip);
 
-	return getnameinfo((struct sockaddr*) &address, sizeof(address), buf, len, NULL, 0, 0);
+	return getnameinfo((struct sockaddr*) &address, sizeof(address), buf, (socklen_t) len, NULL, 0, 0);
 }
 
 int bbs_get_remote_ip(struct sockaddr_in *sinaddr, char *buf, size_t len)
 {
 	struct in_addr ip_addr = sinaddr->sin_addr;
-	inet_ntop(AF_INET, &ip_addr, buf, len); /* XXX Assumes IPv4 */
+	inet_ntop(AF_INET, &ip_addr, buf, (socklen_t) len); /* XXX Assumes IPv4 */
 	return 0;
 }
 
@@ -975,7 +975,7 @@ int bbs_cidr_match_ipv4(const char *ip, const char *cidr)
 	char *tmp;
 	int netbits;
 	struct in_addr addr, netmask;
-	int a, b;
+	socklen_t a, b;
 
 	safe_strncpy(cidr_dup, cidr, sizeof(cidr_dup));
 	tmp = strchr(cidr_dup, '/');
@@ -1118,7 +1118,7 @@ int bbs_multi_poll(struct pollfd pfds[], int numfds, int ms)
 		if (ms > INTERNAL_POLL_THRESHOLD) {
 			int msleft = ms;
 			for (;;) {
-				res = poll(pfds, numfds, MIN(msleft, INTERNAL_POLL_THRESHOLD));
+				res = poll(pfds, (unsigned int) numfds, MIN(msleft, INTERNAL_POLL_THRESHOLD));
 				if (res == 0 && msleft > INTERNAL_POLL_THRESHOLD) {
 					msleft -= INTERNAL_POLL_THRESHOLD;
 #ifdef EXTRA_DEBUG
@@ -1129,7 +1129,7 @@ int bbs_multi_poll(struct pollfd pfds[], int numfds, int ms)
 				break;
 			}
 		} else {
-			res = poll(pfds, numfds, ms);
+			res = poll(pfds, (unsigned int) numfds, ms);
 		}
 		if (res < 0) {
 			if (errno != EINTR) {
@@ -1389,7 +1389,7 @@ int bbs_node_read(struct bbs_node *node, char *buf, size_t len)
 	REQUIRE_SLAVE_FD(node);
 
 	bbs_node_lock(node);
-	res = read(node->slavefd, buf, len);
+	res = (int) read(node->slavefd, buf, len);
 	bbs_node_unlock(node);
 	if (res <= 0) {
 		bbs_debug(5, "Node %d: read returned %d\n", node->id, res);
@@ -1419,7 +1419,7 @@ int bbs_poll_read(int fd, int ms, char *buf, size_t len)
 	if (res <= 0) {
 		return res;
 	}
-	res = read(fd, buf, len);
+	res = (int) read(fd, buf, len);
 	return res;
 }
 
@@ -1462,14 +1462,14 @@ int bbs_expect_line(int fd, int ms, struct readline_data *rldata, const char *st
 
 static char bbs_tread(int fd, int ms)
 {
-	char res;
+	signed char res;
 
 	bbs_assert(ms > 0); /* There would be no reason to use bbs_node_tpoll over bbs_node_poll unless ms > 0. */
-	res = bbs_poll(fd, ms);
+	res = (char) bbs_poll(fd, ms);
 
 	if (res > 0) {
 		char buf[1];
-		res = read(fd, buf, sizeof(buf));
+		res = (char) read(fd, buf, sizeof(buf));
 		if (res <= 0) {
 			return res;
 		}
@@ -1480,14 +1480,14 @@ static char bbs_tread(int fd, int ms)
 
 char bbs_node_tread(struct bbs_node *node, int ms)
 {
-	char res;
+	signed char res;
 
 	bbs_assert(ms > 0); /* There would be no reason to use bbs_node_tpoll over bbs_node_poll unless ms > 0. */
-	res = bbs_node_tpoll(node, ms);
+	res = (char) bbs_node_tpoll(node, ms);
 
 	if (res > 0) {
 		char buf[1];
-		res = bbs_node_read(node, buf, sizeof(buf));
+		res = (char) bbs_node_read(node, buf, sizeof(buf));
 		if (res <= 0) {
 			return res;
 		}
@@ -1601,7 +1601,8 @@ int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 #ifdef DEBUG_TEXT_IO
 	int i;
 #endif
-	int res, left = len;
+	int res;
+	size_t left = len;
 	int bytes_read = 0;
 	char *startbuf = buf;
 	char *term = NULL;
@@ -1616,7 +1617,7 @@ int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 	 * we don't know what's appropriate here. */
 
 	if (!node->buffered) {
-		bbs_warning("Node %d is not buffered when calling %s\n", node->id, __FUNCTION__);
+		bbs_warning("Node %d is not buffered when calling %s\n", node->id, __func__);
 	}
 
 	for (;;) {
@@ -1635,12 +1636,12 @@ int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 			bbs_debug(10, "Node %d: poll returned %d\n", node->id, res);
 			return res;
 		}
-		res = read(node->slavefd, buf, len);
+		res = (int) read(node->slavefd, buf, len);
 		if (res <= 0) {
 			bbs_debug(10, "Node %d: read returned %d\n", node->id, res);
 			return res;
 		}
-		nterm = memchr(buf, '\0', res);
+		nterm = memchr(buf, '\0', (size_t) res);
 		/* Telnet may send CR NUL or CR LF, so check CR first, then LF.
 		 * To make things even more confusing, Windows Telnet and SyncTERM seem to send LF LF.
 		 * (Though it could be the PTY line discipline converting things that results in this)
@@ -1653,13 +1654,13 @@ int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 		 * In PuTTY with Telnet, there are ^@'s at the beginning of lines after this function returns.
 		 */
 		if (!term) { /* In the case where we poll again for a few ms (below), this will be true, don't do this again. */
-			term = memchr(buf, '\r', res); /* There is no strnchr function. Use memchr. */
+			term = memchr(buf, '\r', (size_t) res); /* There is no strnchr function. Use memchr. */
 			if (!term) {
-				term = memchr(buf, '\n', res);
+				term = memchr(buf, '\n', (size_t) res);
 			}
 		}
 		buf += res;
-		left -= res;
+		left -= (size_t) res;
 		bytes_read += res;
 #ifdef DEBUG_TEXT_IO
 		for (i = 0; i < bytes_read; i++) {
@@ -1694,7 +1695,7 @@ int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 
 	bbs_debug(10, "Node %d: read(%d) %.*s\n", node->id, bytes_read, bytes_read, startbuf);
 	if (!node->buffered) {
-		bbs_warning("Node %d is not buffered when ending %s?\n", node->id, __FUNCTION__); /* Not as bad if not buffered when starting, but strange... */
+		bbs_warning("Node %d is not buffered when ending %s?\n", node->id, __func__); /* Not as bad if not buffered when starting, but strange... */
 	}
 	return bytes_read;
 }
@@ -1714,7 +1715,7 @@ int bbs_get_response(struct bbs_node *node, int qlen, const char *q, int pollms,
 		} else {
 			NONPOS_RETURN(bbs_node_writef(node, "%s", q));
 		}
-		res = bbs_node_readline(node, pollms, buf, len);
+		res = bbs_node_readline(node, pollms, buf, (size_t) len);
 		/* bbs_node_readline returns the number of bytes read.
 		 * However, in most cases, we'll want to subtract 1, because we null terminated the new line read as input.
 		 * Therefore, we can approximate the strlen with res - 1 (so long as res > 0)
@@ -1805,7 +1806,7 @@ int bbs_flush_input(int fd)
 		if (res <= 0) {
 			break;
 		}
-		res = read(fd, buf, sizeof(buf));
+		res = (int) read(fd, buf, sizeof(buf));
 		if (res <= 0) {
 			break;
 		}
@@ -1842,49 +1843,49 @@ int bbs_node_flush_input(struct bbs_node *node)
 
 int bbs_node_write(struct bbs_node *node, const char *buf, unsigned int len)
 {
-	int left = len;
+	unsigned int left = len;
 	unsigned int written = 0;
 	REQUIRE_SLAVE_FD(node);
 	/* So helgrind doesn't complain about data race if node is shut down
 	 * and slavefd closed during write */
 	bbs_node_lock(node);
 	for (;;) {
-		int res;
+		ssize_t res;
 		res = write(node->slavefd, buf, left);
 		if (res <= 0) {
-			bbs_debug(5, "Node %d: write returned %d\n", node->id, res);
+			bbs_debug(5, "Node %d: write returned %ld\n", node->id, res);
 			bbs_node_unlock(node);
-			return res;
+			return (int) res;
 		}
 		buf += res;
-		written += res;
-		left -= res;
+		written += (unsigned int) res;
+		left -= (unsigned int) res;
 		if (left <= 0) {
 			break;
 		}
 	}
 	bbs_node_unlock(node);
-	return written;
+	return (int) written;
 }
 
 int bbs_write(int fd, const char *buf, unsigned int len)
 {
-	int left = len;
+	unsigned int left = len;
 	unsigned int written = 0;
 	for (;;) {
-		int res = write(fd, buf, left);
+		ssize_t res = write(fd, buf, left);
 		if (res <= 0) {
-			bbs_debug(5, "fd %d: write returned %d: %s\n", fd, res, res ? strerror(errno) : "");
-			return res;
+			bbs_debug(5, "fd %d: write returned %ld: %s\n", fd, res, res ? strerror(errno) : "");
+			return (int) res;
 		}
 		buf += res;
-		written += res;
-		left -= res;
+		written += (unsigned int) res;
+		left -= (unsigned int) res;
 		if (left <= 0) {
 			break;
 		}
 	}
-	return written;
+	return (int) written;
 }
 
 /* Note: In case this gets forgotten about and somebody thinks that some of the bbs_node functions
@@ -1901,7 +1902,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_node_writef(struct bbs_node 
 	if (!strchr(fmt, '%')) {
 		/* If the format string doesn't contain any %'s, there are no variadic arguments.
 		 * Just write it directly, to avoid allocating memory unnecessarily. */
-		return bbs_node_write(node, fmt, strlen(fmt));
+		return bbs_node_write(node, fmt, (unsigned int) strlen(fmt));
 	}
 
 	va_start(ap, fmt);
@@ -1912,7 +1913,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_node_writef(struct bbs_node 
 		return -1;
 	}
 
-	res = bbs_node_write(node, buf, len);
+	res = bbs_node_write(node, buf, (unsigned int) len);
 	free(buf);
 	return res;
 }
@@ -1926,7 +1927,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(int fd, const char *f
 	if (!strchr(fmt, '%')) {
 		/* If the format string doesn't contain any %'s, there are no variadic arguments.
 		 * Just write it directly, to avoid allocating memory unnecessarily. */
-		return bbs_write(fd, fmt, strlen(fmt));
+		return bbs_write(fd, fmt, (unsigned int) strlen(fmt));
 	}
 
 	va_start(ap, fmt);
@@ -1937,7 +1938,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(int fd, const char *f
 		return -1;
 	}
 
-	res = bbs_write(fd, buf, len);
+	res = bbs_write(fd, buf, (unsigned int) len);
 	free(buf);
 	return res;
 }
@@ -1984,7 +1985,7 @@ int bbs_node_reset_color(struct bbs_node *node)
 
 int bbs_node_draw_line(struct bbs_node *node, char c)
 {
-	int i, cols = node->cols ? node->cols : 80; /* Assume 80x24 if not available */
+	unsigned int i, cols = node->cols ? node->cols : 80; /* Assume 80x24 if not available */
 	char buf[384]; /* Avoid cols + 2 for gcc -Wstack-protector */
 
 	if (cols + 2 >= (int) (sizeof(buf) - 1)) {

@@ -261,7 +261,7 @@ int bbs_execvp_isolated(struct bbs_node *node, const char *filename, char *const
 int bbs_execvp_headless(struct bbs_node *node, const char *filename, char *const argv[])
 {
 	if (!node) {
-		bbs_warning("It is not necessary to use %s if node is NULL\n", __FUNCTION__);
+		bbs_warning("It is not necessary to use %s if node is NULL\n", __func__);
 	}
 	return __bbs_execvpe_fd(node, 0, -1, -1, filename, argv, NULL, 0);
 }
@@ -274,7 +274,7 @@ int bbs_execvp_fd(struct bbs_node *node, int fdin, int fdout, const char *filena
 int bbs_execvp_fd_headless(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[])
 {
 	if (!node) {
-		bbs_warning("It is not necessary to use %s if node is NULL\n", __FUNCTION__);
+		bbs_warning("It is not necessary to use %s if node is NULL\n", __func__);
 	}
 	return __bbs_execvpe_fd(node, 0, fdin, fdout, filename, argv, NULL, 0);
 }
@@ -282,7 +282,7 @@ int bbs_execvp_fd_headless(struct bbs_node *node, int fdin, int fdout, const cha
 int bbs_execvpe_fd_headless(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[], char *const envp[])
 {
 	if (!node) {
-		bbs_warning("It is not necessary to use %s if node is NULL\n", __FUNCTION__);
+		bbs_warning("It is not necessary to use %s if node is NULL\n", __func__);
 	}
 	return __bbs_execvpe_fd(node, 0, fdin, fdout, filename, argv, envp, 0);
 }
@@ -296,7 +296,7 @@ static int update_map(const char *mapping, const char *map_file, int map_len)
 		fprintf(stderr, "open(%s) failed: %s\n", map_file, strerror(errno));
 		return -1;
 	}
-	if (write(fd, mapping, map_len) != map_len) {
+	if (write(fd, mapping, (size_t) map_len) != map_len) {
 		fprintf(stderr, "write failed: %s\n", strerror(errno));
 		close(fd);
 		return -1;
@@ -320,7 +320,7 @@ static int proc_setgroups_write(pid_t pid, const char *str, int str_len)
 		return 0;
 	}
 
-	if (write(fd, str, str_len) != str_len) {
+	if (write(fd, str, (size_t) str_len) != str_len) {
 		fprintf(stderr, "write failed: %s\n", strerror(errno));
 		close(fd);
 		return -1;
@@ -435,7 +435,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		 * Using the syscall is not as portable as using the function,
 		 * but our usage here is portable to x86-64, which is pretty much everything anyways.
 		 */
-		pid = syscall(SYS_clone, flags, NULL, NULL, NULL, 0);
+		pid = (pid_t) syscall(SYS_clone, flags, NULL, NULL, NULL, 0);
 	} else {
 		pid = fork(); /* fork has an implicit SIGCHLD */
 	}
@@ -503,7 +503,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 			char c;
 
 			/* Wait until parent has updated mappings. */
-			res = read(procpipe[0], &c, 1);
+			res = (int) read(procpipe[0], &c, 1);
 			if (res != 1) {
 				fprintf(stderr, "read returned %d for fd %d: %s\n", res, procpipe[0], strerror(errno));
 				_exit(errno);
@@ -541,7 +541,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 					/* Make it all lowercase, per *nix conventions */
 					tmp = fulluser + STRLEN("BBS_USER=");
 					while (*tmp) {
-						*tmp= tolower(*tmp);
+						*tmp= (char) tolower(*tmp);
 						tmp++;
 					}
 				}
@@ -618,12 +618,12 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		} else {
 			for (;;) {
 				char buf[1024]; /* Who knows how much data is in the pipe, make it big enough so we're not super fragmented, but not super big */
-				int nbytes = read(pfd[0], buf, sizeof(buf)); /* Read from the pipe. */
+				ssize_t nbytes = read(pfd[0], buf, sizeof(buf)); /* Read from the pipe. */
 				if (nbytes <= 0) { /* read will return 0 when the pipe is empty */
 					break; /* End of pipe */
 				}
 				/* Log the output from the exec, but we do nothing else in particular with it. */
-				bbs_debug(6, "exec output: %.*s\n", nbytes, buf);
+				bbs_debug(6, "exec output: %.*s\n", (int) nbytes, buf);
 			}
 		}
 		close(pfd[0]);

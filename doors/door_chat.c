@@ -131,7 +131,7 @@ static struct participant *join_channel(struct bbs_node *node, const char *name)
 	}
 	p->node = node;
 	p->channel = channel;
-	p->jointime = time(NULL);
+	p->jointime = (int) time(NULL);
 	if (pipe(p->chatpipe)) {
 		bbs_error("Failed to create pipe\n");
 		if (newchan) {
@@ -170,7 +170,7 @@ static int print_channel_participants(struct bbs_node *node, struct channel *cha
 	char elapsed[24];
 	int c = 0;
 	struct participant *p;
-	int now = time(NULL);
+	int now = (int) time(NULL);
 
 	bbs_node_writef(node, "%4s %9s %s\n", "Node", "Elapsed", "User");
 	RWLIST_RDLOCK(&channel->participants);
@@ -191,12 +191,12 @@ static int print_channel_participants(struct bbs_node *node, struct channel *cha
 
 #define INTEGRITY_CHECKS
 
-static int __chat_send(struct channel *channel, struct participant *sender, const char *msg, int len)
+static int __chat_send(struct channel *channel, struct participant *sender, const char *msg, size_t len)
 {
 	time_t now;
 	struct tm sendtime;
 	char datestr[18];
-	int timelen;
+	size_t timelen;
 	struct participant *p;
 
 #ifdef INTEGRITY_CHECKS
@@ -219,7 +219,7 @@ static int __chat_send(struct channel *channel, struct participant *sender, cons
 #endif
 
 	/* Calculate the current time once, for everyone, using the server's time (sorry if participants are in different time zones) */
-	now = time(NULL);
+	now = (int) time(NULL);
 	localtime_r(&now, &sendtime);
 	/* So, %P is lowercase and %p is uppercase. Just consult your local strftime(3) man page if you don't believe me. Good grief. */
 	strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime); /* mm-dd hh:mm:ssPP + space at end (before message) = 17 chars */
@@ -228,15 +228,15 @@ static int __chat_send(struct channel *channel, struct participant *sender, cons
 
 	/* If sender is set, it's safe to use even with no locks, because the sender is a calling function of this one */
 	if (sender) {
-		bbs_debug(7, "Broadcasting to %s (except node %d): %s%.*s\n", channel->name, sender->node->id, datestr, len, msg);
+		bbs_debug(7, "Broadcasting to %s (except node %d): %s%.*s\n", channel->name, sender->node->id, datestr, (int) len, msg);
 	} else {
-		bbs_debug(7, "Broadcasting to %s: %s%.*s\n", channel->name, datestr, len, msg);
+		bbs_debug(7, "Broadcasting to %s: %s%.*s\n", channel->name, datestr, (int) len, msg);
 	}
 
 	/* Relay the message to everyone */
 	RWLIST_RDLOCK(&channel->participants);
 	RWLIST_TRAVERSE(&channel->participants, p, entry) {
-		int res;
+		ssize_t res;
 		if (p == sender) {
 			continue; /* Don't send a sender's message back to him/herself */
 		}
@@ -291,7 +291,7 @@ static int chat_send(struct channel *channel, struct participant *sender, const 
 	if (len < 0) {
 		return -1;
 	}
-	res = __chat_send(channel, sender, buf, len);
+	res = __chat_send(channel, sender, buf, (size_t) len);
 	free(buf);
 	return res;
 }
@@ -387,7 +387,7 @@ static int chat_run(struct bbs_node *node, struct participant *p)
 			 * so THAT will be accurate, which is good!
 			 */
 			res = 0;
-			res = read(p->chatpipe[0], buf, sizeof(buf) - 1);
+			res = (int) read(p->chatpipe[0], buf, sizeof(buf) - 1);
 			if (res <= 0) {
 				break;
 			}

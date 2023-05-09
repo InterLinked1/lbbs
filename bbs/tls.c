@@ -45,6 +45,7 @@ SSL_CTX *ssl_ctx = NULL;
 static int ssl_is_available = 0;
 static int ssl_shutting_down = 0;
 
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations" /* SHA256_Init, SHA256_Update, SHA256_Final deprecated in OpenSSL 3.0 */
 int hash_sha256(const char *s, char buf[SHA256_BUFSIZE])
 {
 #ifdef HAVE_OPENSSL
@@ -70,6 +71,7 @@ int hash_sha256(const char *s, char buf[SHA256_BUFSIZE])
 	return -1;
 #endif
 }
+#pragma GCC diagnostic pop /* -Wdeprecated-declarations */
 
 /*! \todo is there an OpenSSL function for this? */
 const char *ssl_strerror(int err)
@@ -251,18 +253,18 @@ static void *ssl_io_thread(void *unused)
 			oldnumfds = numfds;
 			numssl = RWLIST_SIZE(&sslfds, sfd, entry);
 			numfds = 2 * numssl + 1; /* Times 2, one for read and write. Add 1 for alertpipe */
-			pfds = calloc(numfds, sizeof(*pfds));
+			pfds = calloc((size_t) numfds, sizeof(*pfds));
 			if (ALLOC_FAILURE(pfds)) {
 				RWLIST_UNLOCK(&sslfds);
 				break;
 			}
-			ssl_list = calloc(numssl, sizeof(SSL *));
+			ssl_list = calloc((size_t) numssl, sizeof(SSL *));
 			if (ALLOC_FAILURE(ssl_list)) {
 				free(pfds);
 				RWLIST_UNLOCK(&sslfds);
 				break;
 			}
-			readpipes = calloc(numssl, sizeof(int));
+			readpipes = calloc((size_t) numssl, sizeof(int));
 			if (ALLOC_FAILURE(readpipes)) {
 				free(pfds);
 				free(ssl_list);
@@ -303,7 +305,7 @@ static void *ssl_io_thread(void *unused)
 			pfds[i].revents = 0;
 		}
 		if (!overtime) {
-			res = poll(pfds, numfds, -1);
+			res = poll(pfds, (long unsigned int) numfds, -1);
 			if (res <= 0) {
 				if (res == -1 && errno == EINTR) {
 					continue;
@@ -321,7 +323,8 @@ static void *ssl_io_thread(void *unused)
 		}
 		RWLIST_RDLOCK(&sslfds);
 		for (i = 0; res > 0 && i < numfds; i++) {
-			int ores, wres;
+			int ores;
+			ssize_t wres;
 			if (!inovertime) {
 				if (pfds[i].revents == 0) {
 					continue;
@@ -389,9 +392,9 @@ static void *ssl_io_thread(void *unused)
 					needcreate = 1;
 					continue;
 				}
-				wres = write(readpipe, buf, ores);
+				wres = write(readpipe, buf, (size_t) ores);
 				if (wres != ores) {
-					bbs_error("Wanted to write %d bytes but wrote %d?\n", ores, wres);
+					bbs_error("Wanted to write %d bytes but wrote %ld?\n", ores, wres);
 				}
 				/* We're polling the raw socket file descriptor,
 				 * but reading from ssl. Therefore, it's possible
@@ -412,7 +415,7 @@ static void *ssl_io_thread(void *unused)
 				int write_attempts = 0;
 				/* Read from writepipe and relay to socket using SSL_write */
 				SSL *ssl = ssl_list[(i - 1) / 2];
-				ores = read(pfds[i].fd, buf, sizeof(buf));
+				ores = (int) read(pfds[i].fd, buf, sizeof(buf));
 				if (ores <= 0) {
 					bbs_debug(3, "read returned %d\n", ores);
 					/* Application closed the connection,
@@ -428,7 +431,7 @@ static void *ssl_io_thread(void *unused)
 					wres = SSL_write(ssl, buf, ores);
 					if (wres != ores) {
 						if (wres <= 0) {
-							int err = SSL_get_error(ssl, wres);
+							int err = SSL_get_error(ssl, (int) wres);
 							switch (err) {
 								case SSL_ERROR_WANT_WRITE:
 									/* We are supposed to retry with the same arguments,
@@ -445,7 +448,7 @@ static void *ssl_io_thread(void *unused)
 									 * This is definitely a downside of using a single thread for all TLS relaying.
 									 */
 									if (!write_attempts++) { /* Log the first time. Debug, not warning, since this could happen legitimately */
-										bbs_debug(4, "SSL_write returned %d (%s)\n", wres, ssl_strerror(err));
+										bbs_debug(4, "SSL_write returned %ld (%s)\n", wres, ssl_strerror(err));
 									}
 									if (write_attempts < 1000) {
 										usleep(25); /* Don't make the loop super tight, it'll probably take several hunderd/thousand us anyways. */
@@ -459,7 +462,7 @@ static void *ssl_io_thread(void *unused)
 								case SSL_ERROR_SYSCALL:
 								case SSL_ERROR_ZERO_RETURN:
 								case SSL_ERROR_SSL:
-									bbs_warning("Wanted to write %d bytes to %p but wrote %d?\n", ores, ssl, wres);
+									bbs_warning("Wanted to write %d bytes to %p but wrote %ld?\n", ores, ssl, wres);
 									if (err == SSL_ERROR_SSL) {
 										ERR_error_string_n(ERR_get_error(), err_msg, sizeof(err_msg));
 										bbs_error("TLS error: %s\n", err_msg);
@@ -472,7 +475,7 @@ static void *ssl_io_thread(void *unused)
 								default:
 									break;
 							}
-							bbs_debug(6, "SSL_write returned %d (%s)\n", wres, ssl_strerror(err));
+							bbs_debug(6, "SSL_write returned %ld (%s)\n", wres, ssl_strerror(err));
 							break;
 						}
 					}

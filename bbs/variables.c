@@ -110,7 +110,7 @@ int bbs_vars_init(void)
 static int bbs_varlist_append(struct bbs_vars *vars, const char *key, const char *value)
 {
 	struct bbs_var *v;
-	int keylen = strlen(key);
+	size_t keylen = strlen(key);
 	char *dupedvalue;
 
 	RWLIST_WRLOCK(vars);
@@ -421,7 +421,7 @@ int bbs_substitute_vars(struct bbs_node *node, const char *sub, char *buf, size_
 		 *
 		 * Truncation shouldn't occur because we already checked for that.
 		 */
-		safe_strncpy(varname, s, MIN((int) sizeof(varname), end - s + 1));
+		safe_strncpy(varname, s, (size_t) MIN((int) sizeof(varname), end - s + 1));
 		bbs_debug(5, "Substituting variable '%s'\n", varname);
 		bbs_var_get_buf(node, varname, buf, len);
 		/* After substitution occurs, find the null termination and update our pointers. */

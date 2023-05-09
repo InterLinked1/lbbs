@@ -136,7 +136,7 @@ static void *pty_master_fd(void *varg)
 	struct pty_fds *ptyfds = varg;
 	struct pollfd fds[2];
 	char buf[4096]; /* According to termios(3) man page, the canonical mode buffer of the PTY is 4096, so this should always be large enough */
-	int bytes_read, bytes_wrote;
+	size_t bytes_read, bytes_wrote;
 
 	/* Save relevant fields. */
 	fds[0].fd = ptyfds->fd;
@@ -162,27 +162,27 @@ static void *pty_master_fd(void *varg)
 			continue;
 		}
 		if (fds[0].revents & POLLIN) { /* Got input on socket -> pty */
-			bytes_read = read(fds[0].fd, buf, sizeof(buf));
+			bytes_read = (size_t) read(fds[0].fd, buf, sizeof(buf));
 			if (bytes_read <= 0) {
 				close(fds[1].fd); /* Close the other side */
 				close(fds[0].fd); /* Close our side, since nobody else will */
 				break; /* We'll read 0 bytes upon disconnect */
 			}
-			bytes_wrote = write(fds[1].fd, buf, bytes_read);
+			bytes_wrote = (size_t) write(fds[1].fd, buf, bytes_read);
 			if (bytes_wrote != bytes_read) {
-				bbs_error("Expected to write %d bytes, only wrote %d\n", bytes_read, bytes_wrote);
+				bbs_error("Expected to write %ld bytes, only wrote %ld\n", bytes_read, bytes_wrote);
 			}
 		} else if (fds[1].revents & POLLIN) { /* Got input from pty -> socket */
-			bytes_read = read(fds[1].fd, buf, sizeof(buf) - 1);
+			bytes_read = (size_t) read(fds[1].fd, buf, sizeof(buf) - 1);
 			if (bytes_read <= 0) {
-				bbs_debug(10, "pty master read returned %d (%s)\n", bytes_read, strerror(errno));
+				bbs_debug(10, "pty master read returned %ld (%s)\n", bytes_read, strerror(errno));
 				close(fds[0].fd); /* Close the other side */
 				close(fds[1].fd); /* Close our side, since nobody else will */
 				break; /* We'll read 0 bytes upon disconnect */
 			}
-			bytes_wrote = write(fds[0].fd, buf, bytes_read);
+			bytes_wrote = (size_t) write(fds[0].fd, buf, bytes_read);
 			if (bytes_wrote != bytes_read) {
-				bbs_error("Expected to write %d bytes, only wrote %d\n", bytes_read, bytes_wrote);
+				bbs_error("Expected to write %ld bytes, only wrote %ld\n", bytes_read, bytes_wrote);
 			}
 		} else {
 			break;
@@ -243,7 +243,7 @@ int bbs_pty_allocate(struct bbs_node *node)
 	return 0;
 }
 
-int bbs_node_spy(int fdin, int fdout, int nodenum)
+int bbs_node_spy(int fdin, int fdout, unsigned int nodenum)
 {
 	int spy_alert_pipe[2] = { -1, -1 };
 	struct bbs_node *node;
@@ -258,7 +258,7 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 
 	node = bbs_node_get(nodenum); /* This returns node locked */
 	if (!node) {
-		bbs_dprintf(fdout, "No such node: %d\n", nodenum);
+		bbs_dprintf(fdout, "No such node: %u\n", nodenum);
 		return 0;
 	}
 
@@ -347,9 +347,11 @@ int bbs_node_spy(int fdin, int fdout, int nodenum)
 }
 
 /*! \brief Emulated speed control for non-serial file descriptors */
-static int slow_write(int fd, int fd2, const char *__restrict buf, int len, int sleepms)
+static ssize_t slow_write(int fd, int fd2, const char *__restrict buf, size_t len, unsigned int sleepms)
 {
-	int c, res2 = 0, total_bytes = 0;
+	size_t c;
+	ssize_t total_bytes = 0;
+	ssize_t res2 = 0;
 
 	/* This function exists because it is not possible to use termios
 	 * to set the speed of non-serial terminals.
@@ -384,7 +386,7 @@ static int slow_write(int fd, int fd2, const char *__restrict buf, int len, int 
 	 */
 
 	for (c = 0; c < len; c++) {
-		int res;
+		ssize_t res;
 		if (c) {
 			usleep(sleepms); /* delay in us between each character for I/O */
 		}
@@ -431,12 +433,13 @@ void *pty_master(void *varg)
 	struct pollfd fds[3];
 	char buf[4096]; /* According to termios(3) man page, the canonical mode buffer of the PTY is 4096, so this should always be large enough */
 	char strippedbuf[sizeof(buf)];
-	int bytes_read, bytes_wrote;
-	int numfds;
+	ssize_t bytes_read, bytes_wrote;
+	long unsigned int numfds;
 	int emulated_crlf = 0, just_did_emulated_crlf = 0;
 
 	/* Save relevant fields. */
-	int nodeid, amaster, rfd, wfd, ansi;
+	unsigned int nodeid;
+	int amaster, rfd, wfd, ansi;
 
 	/* Not that these are expected to change, but it makes helgrind happy */
 	bbs_node_lock(node);
@@ -463,7 +466,8 @@ void *pty_master(void *varg)
 
 	/* Relay data between terminal (socket side) and pty master */
 	for (;;) {
-		int speed = 0, spy = 0, spyfdin, spyfdout;
+		unsigned int speed = 0;
+		int spy = 0, spyfdin, spyfdout;
 		fds[0].fd = rfd;
 		fds[1].fd = amaster;
 		fds[0].events = fds[1].events = POLLIN;
@@ -505,7 +509,7 @@ void *pty_master(void *varg)
 		if (fds[0].revents & POLLIN) { /* Got input on socket -> pty */
 			bytes_read = read(rfd, buf, sizeof(buf));
 			if (bytes_read <= 0) {
-				bbs_debug(10, "socket read returned %d\n", bytes_read);
+				bbs_debug(10, "socket read returned %ld\n", bytes_read);
 				/* If the PTY master exits, need to get rid of the node. This should do the trick. */
 				trigger_node_disconnect(node);
 				break; /* We'll read 0 bytes upon disconnect */
@@ -566,10 +570,10 @@ void *pty_master(void *varg)
 				emulated_crlf = just_did_emulated_crlf = 0;
 			}
 			/* We only slow output, not input, so don't use slow_write here, regardless of the speed */
-			bytes_wrote = write(amaster, buf, bytes_read);
+			bytes_wrote = write(amaster, buf, (size_t) bytes_read);
 			/* Don't relay user input to sysop for spying here. If we're supposed to, it'll get echoed back in the output. */
 			if (bytes_wrote != bytes_read) {
-				bbs_error("Expected to write %d bytes, only wrote %d\n", bytes_read, bytes_wrote);
+				bbs_error("Expected to write %ld bytes, only wrote %ld\n", bytes_read, bytes_wrote);
 				return NULL;
 			}
 			if (bytes_read == 1 && *buf == 3) {
@@ -626,7 +630,7 @@ void *pty_master(void *varg)
 			char *relaybuf = buf;
 			bytes_read = read(amaster, buf, sizeof(buf) - 1);
 			if (bytes_read <= 0) {
-				bbs_debug(10, "pty master read returned %d (%s)\n", bytes_read, strerror(errno));
+				bbs_debug(10, "pty master read returned %ld (%s)\n", bytes_read, strerror(errno));
 				break; /* We'll read 0 bytes upon disconnect */
 			}
 #ifdef DEBUG_PTY
@@ -635,34 +639,34 @@ void *pty_master(void *varg)
 			 * so this is disabled unless absolutely needed, even with DEBUG_PTY.
 			 */
 #if 0
-			bbs_debug(10, "Node %d: slave->master(%d): %.*s\n", nodeid, bytes_read, bytes_read, buf);
+			bbs_debug(10, "Node %u: slave->master(%d): %.*s\n", nodeid, bytes_read, bytes_read, buf);
 #endif
 #endif /* DEBUG_PTY */
 			if (!ansi) {
 				int strippedlen;
 				/* Strip ANSI escape sequences from output for terminal, e.g. TTY/TDD */
 				buf[bytes_read] = '\0'; /* NUL terminate for bbs_ansi_strip */
-				if (!bbs_ansi_strip(buf, bytes_read, strippedbuf, sizeof(strippedbuf), &strippedlen)) {
+				if (!bbs_ansi_strip(buf, (int) bytes_read, strippedbuf, sizeof(strippedbuf), &strippedlen)) {
 					bytes_read = strippedlen;
 					relaybuf = strippedbuf;
 				} /* else, failed to strip, just write the original data (possibly containing ANSI escape sequences) */
 			}
 			if (speed) {
 				/* Slow write to both real socket and spying fd simultaneously */
-				bytes_wrote = slow_write(wfd, spy ? spyfdout : -1, relaybuf, bytes_read, speed);
+				bytes_wrote = slow_write(wfd, spy ? spyfdout : -1, relaybuf, (size_t) bytes_read, speed);
 			} else {
-				bytes_wrote = write(wfd, relaybuf, bytes_read);
+				bytes_wrote = write(wfd, relaybuf, (size_t) bytes_read);
 				if (spy && bytes_wrote == bytes_read) {
-					bytes_wrote = write(spyfdout, relaybuf, bytes_read);
+					bytes_wrote = write(spyfdout, relaybuf, (size_t) bytes_read);
 				}
 			}
 			if (bytes_wrote != bytes_read) {
-				bbs_error("Expected to write %d bytes, only wrote %d\n", bytes_read, bytes_wrote);
+				bbs_error("Expected to write %ld bytes, only wrote %ld\n", bytes_read, bytes_wrote);
 			}
 		} else if (numfds == 3 && fds[2].revents & POLLIN) { /* Got input from sysop (node spying) -> pty */
 			bytes_read = read(spyfdin, buf, sizeof(buf));
 			if (bytes_read <= 0) {
-				bbs_debug(10, "pty spy_in read returned %d (%s)\n", bytes_read, strerror(errno));
+				bbs_debug(10, "pty spy_in read returned %ld (%s)\n", bytes_read, strerror(errno));
 				break; /* We'll read 0 bytes upon disconnect */
 			}
 #ifdef DEBUG_PTY
@@ -684,9 +688,9 @@ void *pty_master(void *varg)
 			if (spy) {
 				/* Spoof sysop input (spy) to system.
 				 * One great thing about the way we're doing this: notice that we're not using TIOCSTI, which requires CAP_SYS_ADMIN (see man terminal(7)) */
-				bytes_wrote = write(amaster, buf, bytes_read);
+				bytes_wrote = write(amaster, buf, (size_t) bytes_read);
 				if (bytes_wrote != bytes_read) {
-					bbs_error("Expected to write %d bytes, only wrote %d\n", bytes_read, bytes_wrote);
+					bbs_error("Expected to write %ld bytes, only wrote %ld\n", bytes_read, bytes_wrote);
 					return NULL;
 				}
 			} else {

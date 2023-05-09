@@ -247,7 +247,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 
 	node->user = NULL; /* No user exists yet. We calloc'd so this is already NULL, but this documents that user may not exist at first. */
 	node->active = 1;
-	node->created = time(NULL);
+	node->created = (int) time(NULL);
 	/* Assume TTY will be in canonical mode with echo enabled to start. */
 	node->echo = 1;
 	node->buffered = 1;
@@ -392,7 +392,7 @@ static int kill_pid(pid_t *pidptr)
 		/* In practice, even 1 us is enough time for this to work.
 		 * But if some reason it takes longer,
 		 * keep trying for a little bit with exponential backoff. */
-		usleep(i + 1);
+		usleep((unsigned int) i + 1);
 	}
 	/* Next, try a SIGTERM */
 	if (*pidptr) {
@@ -401,7 +401,7 @@ static int kill_pid(pid_t *pidptr)
 		}
 		/* Just to make sure, see if it really died. */
 		for (i = 0; *pidptr && i < 25; i++) {
-			usleep(i + 1);
+			usleep((unsigned int) i + 1);
 		}
 		/* If node->childpid is still set, then send a SIGKILL and get on with it. */
 		if (*pidptr) {
@@ -410,7 +410,7 @@ static int kill_pid(pid_t *pidptr)
 			}
 			/* Just to make sure, see if it really died. */
 			for (i = 0; *pidptr && i < 25; i++) {
-				usleep(i + 1);
+				usleep((unsigned int) i + 1);
 			}
 			if (*pidptr) {
 				bbs_error("Child process %d has not exited yet?\n", pid);
@@ -460,7 +460,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	node->active = 0;
 	bbs_debug(2, "Terminating node %d\n", node->id);
 
-	now = time(NULL);
+	now = (int) time(NULL);
 
 	bbs_node_kill_child(node);
 
@@ -624,7 +624,7 @@ int bbs_nodes_print(int fd)
 	char elapsed[24];
 	struct bbs_node *n;
 	int c = 0;
-	int now = time(NULL);
+	int now = (int) time(NULL);
 
 	bbs_dprintf(fd, "%3s %8s %9s %7s %-15s %-15s %15s %1s %1s %6s %3s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "USER", "MENU/PAGE", "IP ADDRESS", "E", "B", "TID", "RFD", "WFD", "MST", "SLV", "SPY", "SLV NAME");
 
@@ -656,7 +656,7 @@ int bbs_node_info(int fd, unsigned int nodenum)
 	struct bbs_node *n;
 	char menufull[16];
 	int lwp;
-	int now = time(NULL);
+	int now = (int) time(NULL);
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
@@ -770,7 +770,7 @@ int bbs_node_update_winsize(struct bbs_node *node, int cols, int rows)
 {
 	struct winsize ws;
 	pid_t child;
-	int oldcols = node->cols, oldrows = node->rows;
+	unsigned int oldcols = node->cols, oldrows = node->rows;
 
 	if (rows >= 0 && cols >= 0) {
 		bbs_debug(3, "Node %d's terminal now has %d cols and %d rows\n", node->id, cols, rows);
@@ -778,8 +778,8 @@ int bbs_node_update_winsize(struct bbs_node *node, int cols, int rows)
 		 * But we're not, so we don't. The menu and terminal routines will simply check cols/rows
 		 * when drawing menus or other things on the screen.
 		 */
-		node->cols = cols;
-		node->rows = rows;
+		node->cols = (unsigned int) cols;
+		node->rows = (unsigned int) rows;
 	}
 
 	/*
@@ -799,8 +799,8 @@ int bbs_node_update_winsize(struct bbs_node *node, int cols, int rows)
 	bbs_node_unlock(node);
 
 	memset(&ws, 0, sizeof(ws));
-	ws.ws_row = node->rows;
-	ws.ws_col = node->cols;
+	ws.ws_row = (short unsigned int) node->rows;
+	ws.ws_col = (short unsigned int) node->cols;
 
 	if (node->amaster == -1) {
 		bbs_debug(3, "Skipping TIOCSWINSZ for winsize on node %d (no active PTY allocation)\n", node->id);
@@ -857,12 +857,12 @@ int bbs_node_update_winsize(struct bbs_node *node, int cols, int rows)
 		 * If it shrunk vertically, the only way we can redraw the menu to show the options
 		 * better would be if there are more columns now.
 		 */
-		if (cols < oldcols || (rows < oldrows && cols > oldcols)) {
+		if (node->cols < oldcols || (node->rows < oldrows && node->cols > oldcols)) {
 			char c = MENU_REFRESH_KEY;
 			bbs_debug(5, "Screen size has changed (%dx%d -> %dx%d) such that a menu redraw is warranted\n", oldcols, oldrows, cols, rows);
 			/* Don't even need an alertpipe - we know that we're in bbs_node_tread in the menu, spoof a special control char as input. */
 			if (!node->buffered) {
-				int wres = write(node->amaster, &c, 1);
+				ssize_t wres = write(node->amaster, &c, 1);
 				if (wres != 1) {
 					bbs_error("Screen refresh failed for node %d (fd %d)\n", node->id, node->amaster);
 				}
@@ -878,8 +878,8 @@ int bbs_node_update_winsize(struct bbs_node *node, int cols, int rows)
 
 int bbs_node_set_speed(struct bbs_node *node, unsigned int bps)
 {
-	int cps;
-	int pauseus;
+	unsigned int cps;
+	unsigned int pauseus;
 
 	/*
 	 * Emulated output speeds for TTYs.
@@ -906,8 +906,8 @@ int bbs_node_set_speed(struct bbs_node *node, unsigned int bps)
 		return 0;
 	}
 
-	cps = (int) ceil((1.0 * bps) / 8); /* Round characters per second up */
-	pauseus = (int) floor(1000000.0 / cps); /* Round pause time between chars down */
+	cps = bps + (8 - 1) / 8; /* Round characters per second up */
+	pauseus = 1000000 / cps; /* Round pause time between chars down */
 	node->bps = bps;
 	node->speed = pauseus;
 	bbs_debug(3, "Set node %d speed to emulated %ubps (%d us/char)\n", node->id, bps, pauseus);
@@ -1144,7 +1144,7 @@ static int bbs_node_splash(struct bbs_node *node)
 
 	if (bbs_starttime() > (int) minuptimedisplayed) {
 		char timebuf[24];
-		int now = time(NULL);
+		int now = (int) time(NULL);
 		print_time_elapsed(bbs_starttime(), now, timebuf, sizeof(timebuf)); /* Formatting for timebuf (11 chars) should be enough for 11 years uptime, I think that's good enough */
 		if (!NODE_IS_TDD(node)) {
 			char daysbuf[36];
@@ -1240,7 +1240,7 @@ static int node_handler_term(struct bbs_node *node)
 void bbs_node_begin(struct bbs_node *node)
 {
 	bbs_assert_exists(node);
-	bbs_assert(node->thread);
+	bbs_assert((int) node->thread);
 	bbs_assert(node->fd);
 	bbs_assert_exists(node->protname); /* Will fail if a network comm driver forgets to set before calling bbs_node_handler */
 

@@ -34,7 +34,7 @@ const char *bbs_get_osver(void)
 
 int bbs_init_os_info(void)
 {
-	long unsigned int res;
+	int res;
 	struct utsname buf;
 
 	if (uname(&buf)) {
@@ -43,8 +43,8 @@ int bbs_init_os_info(void)
 	}
 
 	res = snprintf(osver, sizeof(osver), "%s %s", buf.sysname, buf.release);
-	if (res >= sizeof(osver)) {
-		bbs_error("Truncation occured when trying to write %ld bytes\n", res);
+	if (res >= (int) sizeof(osver)) {
+		bbs_error("Truncation occured when trying to write %d bytes\n", res);
 		return -1;
 	}
 	bbs_debug(5, "OS info: %s\n", osver);

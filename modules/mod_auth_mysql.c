@@ -54,7 +54,7 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 	struct bbs_user *user = NULL;
 	/* SQL SELECT */
 	const char *fmt = "dssdssssssssttt";
-	const unsigned int num_fields = strlen(fmt);
+	const size_t num_fields = strlen(fmt);
 
 	mysql = sql_connect();
 	if (!mysql) {
@@ -83,7 +83,8 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 		char *bind_strings[num_fields];
 		my_bool bind_null[num_fields];
 		MYSQL_TIME bind_dates[num_fields];
-		int numrows, rownum = 0;
+		size_t numrows;
+		int rownum = 0;
 #pragma GCC diagnostic pop
 
 		memset(results, 0, sizeof(results));
@@ -130,7 +131,7 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 					user = myuser;
 				}
 				/* Set user info */
-				user->id = id;
+				user->id = (unsigned int) id;
 				if (password && user->username) { /* XXX Why would this ever be non-NULL here? */
 					bbs_warning("Already had a username?\n");
 					free_if(user->username);
@@ -169,14 +170,14 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 			} else if (password) {
 				bbs_debug(3, "Failed password auth for %s\n", real_username);
 			}
-			sql_free_result_strings(num_fields, results, lengths, bind_strings); /* Call inside the while loop, since strings only need to be freed per row */
+			sql_free_result_strings((int) num_fields, results, lengths, bind_strings); /* Call inside the while loop, since strings only need to be freed per row */
 		}
 		if (!username) {
 			userlist[rownum] = NULL; /* NULL terminate the array of users */
 		}
 
 stmtcleanup:
-		sql_free_result_strings(num_fields, results, lengths, bind_strings); /* Won't hurt anything, clean up in case we break from the loop */
+		sql_free_result_strings((int) num_fields, results, lengths, bind_strings); /* Won't hurt anything, clean up in case we break from the loop */
 		mysql_stmt_close(stmt);
 		if (!user && password) {
 			/* If we didn't find a user, do a dummy call to bbs_password_verify_bcrypt
@@ -261,7 +262,7 @@ cleanup:
 static int invalid_birthday(struct tm *tm)
 {
 	struct tm nowtime;
-	time_t timenow = time(NULL);
+	time_t timenow = (int) time(NULL);
 
 	gmtime_r(&timenow, &nowtime);
 
@@ -451,7 +452,7 @@ static int user_register(struct bbs_node *node)
 				NEG_RETURN(bbs_node_writef(node, "%-*s", REG_QLEN, REG_FMT "\rGender (MFX): ")); /* Erase existing line in case we're retrying */
 				gender = bbs_node_tread(node, MIN_MS(1));
 				NONPOS_RETURN(gender);
-				gender = tolower(gender);
+				gender = (char) tolower(gender);
 				if (gender == 'm' || gender == 'f' || gender == 'x') {
 					NEG_RETURN(bbs_node_writef(node, "%c\n", gender)); /* Print response + newline */
 					break; /* Got a valid response */
@@ -554,7 +555,7 @@ static int load_config(void)
 
 	varval = bbs_config_val(cfg, "registration", "reservedusernames");
 	if (!strlen_zero(varval)) {
-		int len = strlen(varval); /* Don't use strdup, since we need to surround in ,, for easy (and accurate, not confounded by prefixes) searching */
+		size_t len = strlen(varval); /* Don't use strdup, since we need to surround in ,, for easy (and accurate, not confounded by prefixes) searching */
 		len += 3; /* , before and after + NUL */
 		free_if(reserved_usernames); /* Should always be NULL at this point, but if reloads during runtime were permitted in the future, might not be. */
 		reserved_usernames = malloc(len); /* Don't know in advance how many usernames the sysop wants to reserve, this could be arbitrarily long. */

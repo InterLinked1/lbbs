@@ -79,7 +79,7 @@
 static int irc_port = DEFAULT_IRC_PORT;
 static int ircs_port = DEFAULT_IRCS_PORT;
 
-static pthread_t irc_ping_thread = -1;
+static pthread_t irc_ping_thread = 0;
 
 static int irc_enabled = 1, ircs_enabled = 1;
 static int require_sasl = 1;
@@ -146,6 +146,7 @@ struct irc_user {
 	/* Avoid using a flexible struct member since we'll probably strdup both the username and nickname beforehand anyways */
 };
 
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 /*! \brief Static user struct for ChanServ operations */
 static struct irc_user user_chanserv = {
 	.node = NULL,
@@ -168,6 +169,7 @@ static struct irc_user user_messageserv = {
 	.hostname = "services",
 	.modes = 0,
 };
+#pragma GCC diagnostic pop
 
 #define IS_SERVICE(user) (user == &user_chanserv || user == &user_messageserv)
 
@@ -220,7 +222,7 @@ static RWLIST_HEAD_STATIC(relays, irc_relay); /* Container for all relays */
 static int add_operator(const char *name, const char *password)
 {
 	struct irc_operator *operator;
-	int namelen, pwlen;
+	size_t namelen, pwlen;
 
 	namelen = strlen(name);
 	pwlen = password ? strlen(password) : 0;
@@ -363,7 +365,7 @@ static int chanserv_msg(struct irc_user *user, char *s)
 
 static int authorized_atleast_bymode(enum channel_user_modes modes, int atleast)
 {
-	int auth = 0;
+	unsigned int auth = 0;
 
 	switch (atleast) {
 		case CHANNEL_USER_MODE_VOICE:
@@ -385,7 +387,7 @@ static int authorized_atleast_bymode(enum channel_user_modes modes, int atleast)
 			break;
 	}
 
-	return auth;
+	return (int) auth;
 }
 
 static int authorized_atleast(struct irc_member *member, int atleast)
@@ -728,7 +730,7 @@ static int __channel_broadcast(int lock, struct irc_channel *channel, struct irc
 		}
 		/* Careful here... we want member->user, not user */
 		pthread_mutex_lock(&member->user->lock); /* Serialize writes to this user */
-		write(member->user->wfd, buf, len); /* Use write instead of dprintf, because we already have the length, and it's just a simple string now */
+		write(member->user->wfd, buf, (size_t) len); /* Use write instead of dprintf, because we already have the length, and it's just a simple string now */
 		pthread_mutex_unlock(&member->user->lock);
 		sent++;
 	}
@@ -741,7 +743,7 @@ static int __channel_broadcast(int lock, struct irc_channel *channel, struct irc
 		struct tm logdate;
 		char datestr[20];
 		/* Calculate our current timestamp, for logging sanity */
-		lognow = time(NULL);
+		lognow = (int) time(NULL);
 		localtime_r(&lognow, &logdate);
 		strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 		fprintf(channel->fp, "[%s] %s", datestr, buf); /* Assume it ends in CR LF (it better!) */
@@ -757,7 +759,7 @@ static int __channel_broadcast(int lock, struct irc_channel *channel, struct irc
 static void user_setactive(struct irc_user *user)
 {
 	pthread_mutex_lock(&user->lock);
-	user->lastactive = time(NULL);
+	user->lastactive = (int) time(NULL);
 	pthread_mutex_unlock(&user->lock);
 }
 
@@ -874,12 +876,12 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 
 static void nickserv(struct irc_user *user, char *s);
 
-static int privmsg(struct irc_user *user, const char *channame, int notice, const char *message)
+static int privmsg(struct irc_user *user, const char *channame, int notice, char *message)
 {
 	struct irc_channel *channel;
 	struct irc_member *m;
 	char stripbuf[513];
-	int msglen;
+	size_t msglen;
 	enum channel_user_modes minmode = CHANNEL_USER_MODE_NONE;
 
 	user_setactive(user);
@@ -898,11 +900,11 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, cons
 	/* XXX Could be multiple channels, comma-separated (not currently supported) */
 
 	if (!notice && !strcasecmp(channame, "ChanServ")) {
-		if (!chanserv_msg(user, (char*) message)) {
+		if (!chanserv_msg(user, message)) {
 			return 0;
 		} /* else, fall through to IS_CHANNEL_NAME so we can send a 401 response. */
 	} else if (!notice && !strcasecmp(channame, "NickServ")) {
-		nickserv(user, (char*) message);
+		nickserv(user, message);
 		return 0;
 	}
 	if (!IS_CHANNEL_NAME(channame)) {
@@ -992,7 +994,7 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, cons
 	}
 	if (channel->modes & CHANNEL_MODE_COLOR_FILTER) {
 		int newlen;
-		if (bbs_ansi_strip(message, msglen, stripbuf, sizeof(stripbuf), &newlen)) {
+		if (bbs_ansi_strip(message, (int) msglen, stripbuf, sizeof(stripbuf), &newlen)) {
 			/* Our fault */
 			send_numeric2(user, 404, "%s :Cannot send to nick/channel\r\n", channame);
 			return -1;
@@ -1067,11 +1069,11 @@ static int print_user_mode(struct irc_user *user)
 #define SET_MODE(modes, set, mode) \
 	if (set && !(modes & mode)) { \
 		bbs_debug(6, "Set mode %s\n", #mode); \
-		modes |= mode; \
+		modes |= (unsigned int) mode; \
 		changed++; \
 	} else if (!set && modes & mode) { \
 		bbs_debug(6, "Cleared mode %s\n", #mode); \
-		modes &= ~mode; \
+		modes &= (unsigned int) ~mode; \
 		changed++; \
 	} else { \
 		bbs_debug(6, "Not %sting mode %s (no change)\n", set ? "set" : "unset", #mode); \
@@ -1080,11 +1082,11 @@ static int print_user_mode(struct irc_user *user)
 #define SET_MODE_FORCE(modes, set, mode) \
 	if (set) { \
 		bbs_debug(6, "Set mode %s\n", #mode); \
-		modes |= mode; \
+		modes |= (unsigned int) mode; \
 		changed++; \
 	} else { \
 		bbs_debug(6, "Cleared mode %s\n", #mode); \
-		modes &= ~mode; \
+		modes &= (unsigned int) ~mode; \
 		changed++; \
 	}
 
@@ -1253,8 +1255,8 @@ static void handle_modes(struct irc_user *user, char *s)
 						REQUIRE_PARAMETER(user, args);
 						if (set) {
 							*args++ = '\0';
-							channel->throttleusers = atoi(target);
-							channel->throttleinterval = atoi(S_IF(args));
+							channel->throttleusers = (unsigned int) atoi(target);
+							channel->throttleinterval = (unsigned int) atoi(S_IF(args));
 							SET_MODE_FORCE(channel->modes, 1, CHANNEL_MODE_THROTTLED); /* It's possible the arguments changed, even if it wasn't toggled. */
 						} else {
 							SET_MODE(channel->modes, set, CHANNEL_MODE_THROTTLED);
@@ -1282,7 +1284,7 @@ static void handle_modes(struct irc_user *user, char *s)
 							continue;
 						}
 						SET_MODE_FORCE(channel->modes, set, CHANNEL_MODE_LIMIT); /* Arguments could have changed, even if mode not toggled */
-						channel->limit = set ? atoi(target) : 0; /* If this fails, the limit will be 0 (turned off), so not super dangerous... */
+						channel->limit = set ? (unsigned int) atoi(target) : 0; /* If this fails, the limit will be 0 (turned off), so not super dangerous... */
 						break;
 					case 'm':
 						SET_MODE(channel->modes, set, CHANNEL_MODE_MODERATED);
@@ -1392,7 +1394,7 @@ static void handle_topic(struct irc_user *user, char *s)
 			REPLACE(channel->topic, s);
 			snprintf(buf, sizeof(buf),IDENT_PREFIX_FMT, IDENT_PREFIX_ARGS(user));
 			REPLACE(channel->topicsetby, buf);
-			channel->topicsettime = time(NULL);
+			channel->topicsettime = (unsigned int) time(NULL);
 			channel_print_topic(NULL, channel);
 			chanserv_broadcast("TOPIC", channel->name, user->nickname, s);
 		}
@@ -1669,7 +1671,7 @@ static void handle_whois(struct irc_user *user, char *s)
 		return;
 	}
 
-	now = time(NULL);
+	now = (int) time(NULL);
 	get_user_modes(umodes, sizeof(umodes), u);
 
 	if (!IS_SERVICE(u)) {
@@ -1705,9 +1707,9 @@ static void handle_whois(struct irc_user *user, char *s)
 						}
 					}
 					if (user->multiprefix) {
-						len += snprintf(buf + len, sizeof(buf) - len, "%s" MULTIPREFIX_FMT "%s", len ? " " : "", MULTIPREFIX_ARGS(member), channel->name);
+						len += snprintf(buf + len, sizeof(buf) - (size_t) len, "%s" MULTIPREFIX_FMT "%s", len ? " " : "", MULTIPREFIX_ARGS(member), channel->name);
 					} else {
-						len += snprintf(buf + len, sizeof(buf) - len, "%s%s%s", len ? " " : "", top_channel_membership_prefix(member), channel->name);
+						len += snprintf(buf + len, sizeof(buf) - (size_t) len, "%s%s%s", len ? " " : "", top_channel_membership_prefix(member), channel->name);
 					}
 					if (len >= 200) {
 						send_numeric2(user, 319, "%s :%s\r\n", u->nickname, buf);
@@ -1753,7 +1755,7 @@ static void handle_list(struct irc_user *user, char *s)
 	struct irc_channel *channel;
 	unsigned int minmembers = 0, maxmembers = 0;
 	unsigned int mintopicage = 0, maxtopicage = 0;
-	unsigned int now = time(NULL);
+	unsigned int now = (unsigned int) time(NULL);
 	char *elistcond, *conds;
 
 	conds = s;
@@ -1764,17 +1766,17 @@ static void handle_list(struct irc_user *user, char *s)
 		switch (*elistcond) {
 			/* These are not inclusive */
 			case '>':
-				minmembers = atoi(elistcond + 1);
+				minmembers = (unsigned int) atoi(elistcond + 1);
 				break;
 			case '<':
-				maxmembers = atoi(elistcond + 1);
+				maxmembers = (unsigned int) atoi(elistcond + 1);
 				break;
 			case 'T':
 				elistcond++;
 				if (*elistcond == '<' && !strlen_zero(elistcond + 1)) {
-					maxtopicage = atoi(elistcond + 1);
+					maxtopicage = (unsigned int) atoi(elistcond + 1);
 				} else if (*elistcond == '>' && !strlen_zero(elistcond + 1)) {
-					mintopicage = atoi(elistcond + 1);
+					mintopicage = (unsigned int) atoi(elistcond + 1);
 				}
 				break;
 			default:
@@ -2067,9 +2069,9 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 			continue; /* Hide from NAMES */
 		}
 		if (user->multiprefix) {
-			len += snprintf(buf + len, sizeof(buf) - len, "%s" MULTIPREFIX_FMT "%s", len ? " " : "", MULTIPREFIX_ARGS(member), member->user->nickname);
+			len += snprintf(buf + len, sizeof(buf) - (size_t) len, "%s" MULTIPREFIX_FMT "%s", len ? " " : "", MULTIPREFIX_ARGS(member), member->user->nickname);
 		} else {
-			len += snprintf(buf + len, sizeof(buf) - len, "%s%s%s", len ? " " : "", top_channel_membership_prefix(member), member->user->nickname);
+			len += snprintf(buf + len, sizeof(buf) - (size_t) len, "%s%s%s", len ? " " : "", top_channel_membership_prefix(member), member->user->nickname);
 		}
 		if (len >= 400) { /* Stop well short of the 512 character message limit and clear the buffer */
 			len = 0;
@@ -2108,7 +2110,7 @@ static int join_channel(struct irc_user *user, char *name)
 	struct irc_member *member, *m;
 	int newchan = 0;
 	char modestr[16];
-	int chanlen = strlen(name);
+	size_t chanlen = strlen(name);
 	char *password;
 
 	password = strchr(name, ' ');
@@ -2185,7 +2187,7 @@ static int join_channel(struct irc_user *user, char *name)
 			return -1;
 		}
 		if (channel->modes & CHANNEL_MODE_THROTTLED && channel->throttleusers > 0 && channel->throttleinterval > 0) {
-			unsigned int now = time(NULL);
+			unsigned int now = (unsigned int) time(NULL);
 
 			pthread_mutex_lock(&channel->lock);
 			if (channel->throttlebegin < now - channel->throttleinterval) {
@@ -2449,7 +2451,7 @@ static void motd(struct irc_user *user)
 	pthread_mutex_lock(&motd_lock);
 	if (!s_strlen_zero(motd_file)) { /* Custom MOTD text */
 		/* Reread the MOTD from disk at most once an hour. */
-		int now = time(NULL);
+		int now = (int) time(NULL);
 		if (!motd_last_read || motd_last_read < now - 3600) {
 			free_if(motdstring);
 			motdstring = bbs_file_to_string(motd_file, 4096, NULL);
@@ -2728,7 +2730,7 @@ static void handle_client(struct irc_user *user)
 			char *current, *command = strsep(&s, " ");
 			if (!strcasecmp(command, "PONG")) {
 				pthread_mutex_lock(&user->lock);
-				user->lastpong = time(NULL);
+				user->lastpong = (int) time(NULL);
 				pthread_mutex_unlock(&user->lock);
 			} else if (!strcasecmp(command, "PING")) { /* Usually servers ping clients, but clients can ping servers too */
 				send_reply(user, "PONG %s\r\n", S_IF(s)); /* Don't add another : because it's still in s, if present. */
@@ -2924,7 +2926,7 @@ static void handle_client(struct irc_user *user)
 				time_t lognow;
 				struct tm logdate;
 				char datestr[20];
-				lognow = time(NULL);
+				lognow = (int) time(NULL);
 				localtime_r(&lognow, &logdate);
 				strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 				send_numeric(user, 391, "%s\r\n", datestr);
@@ -3025,7 +3027,9 @@ static int alertmsg(unsigned int userid, const char *msg)
 	int res = -1;
 
 	if (!bbs_username_from_userid(userid, username, sizeof(username))) {
-		res = privmsg(&user_messageserv, username, 1, msg); /* Send a NOTICE to the user */
+		char dup[512];
+		safe_strncpy(dup, msg, sizeof(dup));
+		res = privmsg(&user_messageserv, username, 1, dup); /* Send a NOTICE to the user */
 	}
 	return res;
 }
@@ -3056,7 +3060,7 @@ static void *ping_thread(void *unused)
 		int now, clients = 0;
 		usleep(PING_TIME * 1000); /* convert ms to us */
 
-		now = time(NULL);
+		now = (int) time(NULL);
 		RWLIST_RDLOCK(&users);
 		RWLIST_TRAVERSE(&users, user, entry) {
 			/* Prevent concurrent writes to a user */
@@ -3144,7 +3148,7 @@ static void irc_handler(struct bbs_node *node, int secure)
 	user->wfd = wfd;
 	user->node = node;
 	user->modes = USER_MODE_NONE;
-	user->joined = time(NULL);
+	user->joined = (int) time(NULL);
 	user->hostname = strdup(node->ip);
 	user->modes |= USER_MODE_WALLOPS; /* Receive wallops by default */
 	if (secure) {
@@ -3266,7 +3270,7 @@ static int load_module(void)
 	}
 
 	pthread_mutex_init(&motd_lock, NULL);
-	loadtime = time(NULL);
+	loadtime = (int) time(NULL);
 
 	if (bbs_pthread_create(&irc_ping_thread, NULL, ping_thread, NULL)) {
 		bbs_error("Unable to create IRC ping thread.\n");

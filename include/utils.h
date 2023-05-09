@@ -122,7 +122,7 @@ int bbs_pthread_cancel_kill(pthread_t thread);
 int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const char *func, int line);
 
 /*! \brief Join a non-detached thread */
-#define bbs_pthread_join(thread, retval) __bbs_pthread_join(thread, retval, __FILE__, __FUNCTION__, __LINE__)
+#define bbs_pthread_join(thread, retval) __bbs_pthread_join(thread, retval, __FILE__, __func__, __LINE__)
 
 int __bbs_pthread_create_detached(pthread_t *thread, pthread_attr_t *attr, void *(*start_routine)(void *), void *data, const char *file, const char *func, int line, const char *start_fn);
 
@@ -130,7 +130,7 @@ int __bbs_pthread_create_detached(pthread_t *thread, pthread_attr_t *attr, void 
  * \brief Create a detached pthread
  * \retval 0 on success, -1 on failure
  */
-#define bbs_pthread_create_detached(thread, attr, start_routine, data) __bbs_pthread_create_detached(thread, attr, start_routine, data, __FILE__, __FUNCTION__, __LINE__, #start_routine)
+#define bbs_pthread_create_detached(thread, attr, start_routine, data) __bbs_pthread_create_detached(thread, attr, start_routine, data, __FILE__, __func__, __LINE__, #start_routine)
 
 int __bbs_pthread_create_detached_killable(pthread_t *thread, pthread_attr_t *attr, void *(*start_routine)(void *), void *data, const char *file, const char *func, int line, const char *start_fn);
 
@@ -138,7 +138,7 @@ int __bbs_pthread_create_detached_killable(pthread_t *thread, pthread_attr_t *at
  * \brief Create a detached pthread that can be killed using bbs_thread_cleanup
  * \retval 0 on success, -1 on failure
  */
-#define bbs_pthread_create_detached_killable(thread, attr, start_routine, data) __bbs_pthread_create_detached_killable(thread, attr, start_routine, data, __FILE__, __FUNCTION__, __LINE__, #start_routine)
+#define bbs_pthread_create_detached_killable(thread, attr, start_routine, data) __bbs_pthread_create_detached_killable(thread, attr, start_routine, data, __FILE__, __func__, __LINE__, #start_routine)
 
 int __bbs_pthread_create(pthread_t *thread, pthread_attr_t *attr, void *(*start_routine)(void *), void *data, const char *file, const char *func, int line, const char *start_fn);
 
@@ -146,7 +146,7 @@ int __bbs_pthread_create(pthread_t *thread, pthread_attr_t *attr, void *(*start_
  * \brief Create a non-detached pthread
  * \retval 0 on success, -1 on failure
  */
-#define bbs_pthread_create(thread, attr, start_routine, data) __bbs_pthread_create(thread, attr, start_routine, data, __FILE__, __FUNCTION__, __LINE__, #start_routine)
+#define bbs_pthread_create(thread, attr, start_routine, data) __bbs_pthread_create(thread, attr, start_routine, data, __FILE__, __func__, __LINE__, #start_routine)
 
 /*!
  * \brief Kill detached threads that were created by this file that are marked as killable

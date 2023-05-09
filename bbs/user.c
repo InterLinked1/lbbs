@@ -159,7 +159,7 @@ void username_cache_flush(void)
 static void username_mapping_cache_add(unsigned int userid, const char *username)
 {
 	struct username_id_mapping *m;
-	int len;
+	size_t len;
 
 	len = strlen(username);
 	m = calloc(1, sizeof(*m) + len + 1); /* Plus NUL */

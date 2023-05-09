@@ -93,14 +93,14 @@ static int test_ansi_strip(void)
 	const char *s3 = TERM_CLEAR;
 	char outbuf[32];
 
-	bbs_test_assert_equals(0, bbs_ansi_strip(s, strlen(s), outbuf, sizeof(outbuf), &outlen));
+	bbs_test_assert_equals(0, bbs_ansi_strip(s, (int) strlen(s), outbuf, sizeof(outbuf), &outlen));
 	bbs_test_assert_equals(4, outlen);
 	bbs_test_assert_str_equals(outbuf, " abc");
 
-	bbs_test_assert_equals(0, bbs_ansi_strip(s2, strlen(s2), outbuf, sizeof(outbuf), NULL));
+	bbs_test_assert_equals(0, bbs_ansi_strip(s2, (int) strlen(s2), outbuf, sizeof(outbuf), NULL));
 	bbs_test_assert_str_equals(outbuf, "abc 123 456");
 
-	bbs_test_assert_equals(0, bbs_ansi_strip(s3, strlen(s3), outbuf, sizeof(outbuf), &outlen));
+	bbs_test_assert_equals(0, bbs_ansi_strip(s3, (int) strlen(s3), outbuf, sizeof(outbuf), &outlen));
 	bbs_test_assert_equals(0, outlen);
 	bbs_test_assert_str_equals(outbuf, "");
 
@@ -206,28 +206,31 @@ static int test_readline_append(void)
 
 #undef sprintf
 	len = sprintf(inbuf, "Test1\nTest2\nTe");
-	mres = bbs_readline_append(&rldata, "\n", inbuf, len, &ready);
+	mres = bbs_readline_append(&rldata, "\n", inbuf, (size_t) len, &ready);
 	bbs_test_assert_equals(len, mres);
 	bbs_test_assert_equals(1, ready);
 	bbs_test_assert_str_equals(buf, "Test1");
 
-	mres = bbs_readline_append(&rldata, "\n", "", 0, &ready);
+	inbuf[0] = '\0';
+	mres = bbs_readline_append(&rldata, "\n", inbuf, 0, &ready);
 	bbs_test_assert_equals(0, mres);
 	bbs_test_assert_equals(1, ready);
 	bbs_test_assert_str_equals(buf, "Test2");
 
-	mres = bbs_readline_append(&rldata, "\n", "", 0, &ready);
+	inbuf[0] = '\0';
+	mres = bbs_readline_append(&rldata, "\n", inbuf, 0, &ready);
 	bbs_test_assert_equals(0, mres);
 	bbs_test_assert_equals(0, ready);
 	bbs_test_assert_str_equals(buf, "Te");
 
 	len = sprintf(inbuf, "st3\nTest4\n");
-	mres = bbs_readline_append(&rldata, "\n", inbuf, len, &ready);
+	mres = bbs_readline_append(&rldata, "\n", inbuf, (size_t) len, &ready);
 	bbs_test_assert_equals(len, mres);
 	bbs_test_assert_equals(1, ready);
 	bbs_test_assert_str_equals(buf, "Test3");
 
-	mres = bbs_readline_append(&rldata, "\n", "", 0, &ready);
+	inbuf[0] = '\0';
+	mres = bbs_readline_append(&rldata, "\n", inbuf, 0, &ready);
 	bbs_test_assert_equals(0, mres);
 	bbs_test_assert_equals(1, ready);
 	bbs_test_assert_str_equals(buf, "Test4");
@@ -260,14 +263,14 @@ static int test_readline_getn(void)
 	SWRITE(pfd[1], "abcd\r\nefg");
 	mres = bbs_readline_getn(pfd[0], pfd2[1], &rldata, 1000, 3);
 	bbs_test_assert_equals(3, mres);
-	mres = read(pfd2[0], buf2, sizeof(buf2));
+	mres = (int) read(pfd2[0], buf2, sizeof(buf2));
 	bbs_test_assert_equals(3, mres);
 	buf2[mres] = '\0'; /* Returned string is not NUL-terminated so do that for strcmp */
 	bbs_test_assert_str_equals(buf2, "abc");
 
 	mres = bbs_readline_getn(pfd[0], pfd2[1], &rldata, 1000, 4);
 	bbs_test_assert_equals(4, mres);
-	mres = read(pfd2[0], buf2, sizeof(buf2));
+	mres = (int) read(pfd2[0], buf2, sizeof(buf2));
 	bbs_test_assert_equals(4, mres);
 	buf2[mres] = '\0'; /* Returned string is not NUL-terminated so do that for strcmp */
 	bbs_test_assert_str_equals(buf2, "d\r\ne");
@@ -275,7 +278,7 @@ static int test_readline_getn(void)
 	SWRITE(pfd[1], "foobar");
 	mres = bbs_readline_getn(pfd[0], pfd2[1], &rldata, 1000, 8);
 	bbs_test_assert_equals(8, mres);
-	mres = read(pfd2[0], buf2, sizeof(buf2));
+	mres = (int) read(pfd2[0], buf2, sizeof(buf2));
 	bbs_test_assert_equals(8, mres);
 	buf2[mres] = '\0'; /* Returned string is not NUL-terminated so do that for strcmp */
 	bbs_test_assert_str_equals(buf2, "fgfoobar");

@@ -46,7 +46,7 @@ int bbs_pty_allocate(struct bbs_node *node);
  * \param nodenum ID of node on which to spy
  * \retval 0 on success, -1 on failure
  */
-int bbs_node_spy(int fdin, int fdout, int nodenum);
+int bbs_node_spy(int fdin, int fdout, unsigned int nodenum);
 
 /*!
  * \brief PTY master side handling

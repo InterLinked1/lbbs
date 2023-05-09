@@ -296,7 +296,7 @@ struct imap_session {
 	char newdir[260]; /* 4 more, for /new and /cur */
 	char curdir[260];
 	char virtprefix[260];		/* Mapping prefix defined in .imapremote */
-	int virtprefixlen;			/* Length of virtprefix */
+	size_t virtprefixlen;		/* Length of virtprefix */
 	int virtcapabilities;		/* Capabilities of remote IMAP server */
 	char virtdelimiter;			/* Hierarchy delimiter used by remote server */
 	unsigned int uidvalidity;
@@ -365,11 +365,11 @@ static void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned i
 		/* Hey, this client is on the same exact folder right now! Send it an unsolicited, untagged response. */
 		pthread_mutex_lock(&s->lock);
 		if (!s->idle) { /* We are only free to send responses whenever we want if the client is idling. */
-			bbs_write(s->pfd[1], s->condstore ? condstoremsg : normalmsg, s->condstore ? condlen : normallen);
+			bbs_write(s->pfd[1], s->condstore ? condstoremsg : normalmsg, (unsigned int) (s->condstore ? condlen : normallen));
 			s->pending = 1;
 			imap_debug(4, "%p <= %s", s, s->condstore ? condstoremsg : normalmsg); /* Already ends in CR LF */
 		} else {
-			bbs_write(s->wfd, s->condstore ? condstoremsg : normalmsg, s->condstore ? condlen : normallen);
+			bbs_write(s->wfd, s->condstore ? condstoremsg : normalmsg, (unsigned int) (s->condstore ? condlen : normallen));
 			imap_debug(4, "%p <= %s", s, s->condstore ? condstoremsg : normalmsg); /* Already ends in CR LF */
 		}
 		pthread_mutex_unlock(&s->lock);
@@ -384,7 +384,7 @@ static void send_untagged_expunge(struct imap_session *imap, int silent, unsigne
 {
 	struct imap_session *s;
 	char *str2, *str = NULL;
-	int slen, slen2;
+	size_t slen, slen2;
 	int delay;
 
 	/* Send VANISHED responses to any clients that enabled QRESYNC, and normal EXPUNGE responses to everyone else. */
@@ -418,14 +418,14 @@ static void send_untagged_expunge(struct imap_session *imap, int silent, unsigne
 					slen = slen2;
 				}
 			}
-			bbs_write(delay ? s->pfd[1] : s->wfd, str, slen);
+			bbs_write(delay ? s->pfd[1] : s->wfd, str, (unsigned int) slen);
 			imap_debug(4, "%p <= %s\r\n", s, str);
 		} else { /* EXPUNGE */
 			int i;
 			for (i = 0; i < length; i++) {
 				char normalmsg[64];
 				int normallen = snprintf(normalmsg, sizeof(normalmsg), "* %u EXPUNGE\r\n", seqno[i]);
-				bbs_write(delay ? s->pfd[1] : s->wfd, normalmsg, normallen);
+				bbs_write(delay ? s->pfd[1] : s->wfd, normalmsg, (unsigned int) normallen);
 				imap_debug(4, "%p <= %s", s, normalmsg);
 			}
 		}
@@ -512,8 +512,8 @@ static int uidsort(const struct dirent **da, const struct dirent **db)
 
 	if (failures == 2) {
 		/* If this is the new dir instead of a cur dir, then there won't be any UIDs. Key is that either both or neither filename must have UIDs. */
-		auid = atoi(a);
-		buid = atoi(b);
+		auid = (unsigned int) atoi(a);
+		buid = (unsigned int) atoi(b);
 	} else if (unlikely(failures == 1)) {
 		bbs_error("Failed to parse UID for %s / %s\n", a, b);
 		return 0;
@@ -589,6 +589,9 @@ static int imap_msg_to_filename(const char *directory, int seqno, unsigned int u
 #define readdir __Do_not_use_readdir_or_opendir_use_scandir
 #define closedir __Do_not_use_readdir_or_opendir_use_scandir
 #define alphasort __Do_not_use_alphasort_use_uidsort
+#if defined(opendir) || defined(readdir) || defined(closedir) || defined(alphasort)
+/* Dummy usage for -Wunused-macros */
+#endif
 
 /*! \brief Callback for new messages (delivered by SMTP to the INBOX) */
 static void imap_mbox_watcher(struct mailbox *mbox, const char *newfile)
@@ -673,9 +676,9 @@ static void imap_destroy(struct imap_session *imap)
 /*! \brief Faster than strncat, since we store our position between calls, but maintain its safety */
 #define SAFE_FAST_COND_APPEND(bufstart, bufpos, buflen, cond, fmt, ...) \
 	if (buflen > 0 && (cond)) { \
-		int _bytes = snprintf(bufpos, buflen, bufpos == bufstart ? fmt : " " fmt, ## __VA_ARGS__); \
-		bufpos += _bytes; \
-		buflen -= _bytes; \
+		int _bytes = snprintf(bufpos, (size_t) buflen, bufpos == bufstart ? fmt : " " fmt, ## __VA_ARGS__); \
+		bufpos += (typeof((buflen))) _bytes; \
+		buflen -= (typeof((buflen))) _bytes; \
 		if ((int) buflen <= 0) { \
 			bbs_warning("Buffer truncation\n"); \
 			*(bufpos + buflen - 1) = '\0';  \
@@ -684,9 +687,9 @@ static void imap_destroy(struct imap_session *imap)
 
 #define SAFE_FAST_COND_APPEND_NOSPACE(bufstart, bufpos, buflen, cond, fmt, ...) \
 	if (buflen > 0 && (cond)) { \
-		int _bytes = snprintf(bufpos, buflen, fmt, ## __VA_ARGS__); \
-		bufpos += _bytes; \
-		buflen -= _bytes; \
+		int _bytes = snprintf(bufpos, (size_t) buflen, fmt, ## __VA_ARGS__); \
+		bufpos += (typeof((buflen))) _bytes; \
+		buflen -= (typeof((buflen))) _bytes; \
 		if ((int) buflen <= 0) { \
 			bbs_warning("Buffer truncation\n"); \
 			*(bufpos + buflen - 1) = '\0';  \
@@ -732,7 +735,7 @@ static void imap_destroy(struct imap_session *imap)
 #define HIERARCHY_DELIMITER_CHAR '.'
 
 /* RFC 2342 Namespaces: prefix and hierarchy delimiter */
-#define PRIVATE_NAMESPACE_PREFIX ""
+/* #define PRIVATE_NAMESPACE_PREFIX "" */
 #define OTHER_NAMESPACE_PREFIX "Other Users"
 #define SHARED_NAMESPACE_PREFIX "Shared Folders"
 #define PRIVATE_NAMESPACE "((\"\" \".\"))"
@@ -847,7 +850,7 @@ static int __gen_keyword_names(const char *s, char *inbuf, size_t inlen, const c
 	char filename[266];
 	char *buf = inbuf;
 	int matches = 0;
-	int left = inlen;
+	int left = (int) inlen;
 	const char *custom_start = s;
 
 	snprintf(filename, sizeof(filename), "%s/.keywords", directory);
@@ -1026,7 +1029,7 @@ static void gen_flag_letters(int flags, char *buf, size_t len)
 static void gen_flag_names(const char *flagstr, char *fullbuf, size_t len)
 {
 	char *buf = fullbuf;
-	int left = len;
+	int left = (int) len;
 	*buf = '\0';
 	SAFE_FAST_COND_APPEND(fullbuf, buf, left, strchr(flagstr, FLAG_DRAFT), FLAG_NAME_DRAFT);
 	SAFE_FAST_COND_APPEND(fullbuf, buf, left, strchr(flagstr, FLAG_FLAGGED), FLAG_NAME_FLAGGED);
@@ -1206,7 +1209,7 @@ enum mailbox_namespace {
 	aclstr++; \
 	var = parse_acl(aclstr);
 
-static int load_acl_file(const char *filename, const char *matchstr, int matchlen, int *acl)
+static int load_acl_file(const char *filename, const char *matchstr, size_t matchlen, int *acl)
 {
 	char aclbuf[72];
 	FILE *fp;
@@ -1288,7 +1291,7 @@ static void load_acl(struct imap_session *imap, const char *directory, enum mail
 	snprintf(fullname, sizeof(fullname), "%s/.acl", directory); /* Start off in this directory and traverse up if needed */
 
 	for (;;) {
-		if (!load_acl_file(fullname, matchbuf, matchlen, acl)) {
+		if (!load_acl_file(fullname, matchbuf, (size_t) matchlen, acl)) {
 			goto done;
 		}
 		/* Traverse up to the .acl directory in the parent dir */
@@ -1309,6 +1312,10 @@ static void load_acl(struct imap_session *imap, const char *directory, enum mail
 	bbs_debug(8, "No explicit ACL assignments, using defaults\n");
 #endif
 
+/* gcc gets a little confused here. IMAP_ACL_DEFAULT_OTHER and IMAP_ACL_DEFAULT_SHARED happen to be the same value,
+ * so with -Wduplicated-branches, it will throw a warning here.
+ * However, semantically, these are not necessarily the same and so we treat them separately. */
+#pragma GCC diagnostic ignored "-Wduplicated-branches"
 	/* If no ACLs specified for this user, for this mailbox, go with the default for this namespace */
 	if (ns == NAMESPACE_PRIVATE) {
 		*acl = IMAP_ACL_DEFAULT_PRIVATE;
@@ -1317,6 +1324,7 @@ static void load_acl(struct imap_session *imap, const char *directory, enum mail
 	} else {
 		*acl = IMAP_ACL_DEFAULT_SHARED;
 	}
+#pragma GCC diagnostic pop
 
 done:
 #ifdef DEBUG_ACL
@@ -1351,7 +1359,7 @@ static int getacl(struct imap_session *imap, const char *directory, const char *
 		aclstr = s;
 		bbs_strterm(aclstr, '\n'); /* Remove newline from output */
 		len = snprintf(appendbuf, sizeof(appendbuf), " %s %s", username, aclstr); /* For now, this accomplishes (almost) nothing, but in the future we may need to manipulate first */
-		dyn_str_append(&dynstr, appendbuf, len);
+		dyn_str_append(&dynstr, appendbuf, (size_t) len);
 	}
 
 	fclose(fp);
@@ -1373,7 +1381,7 @@ static int setacl(struct imap_session *imap, const char *directory, const char *
 	char findstr[64];
 	char buf[256];
 	FILE *fp, *fp2;
-	int userlen;
+	size_t userlen;
 	int existed = 0;
 	int action = 0;
 
@@ -1455,7 +1463,7 @@ static int setacl(struct imap_session *imap, const char *directory, const char *
 				}
 				eff_acl[pos] = '\0';
 				if (action == 1) {
-					safe_strncpy(eff_acl + pos, newacl, sizeof(eff_acl) - pos); /* Since we know the end, can use safe_strncpy instead of strncat */
+					safe_strncpy(eff_acl + pos, newacl, sizeof(eff_acl) - (size_t) pos); /* Since we know the end, can use safe_strncpy instead of strncat */
 				}
 			} else { /* We want to replace this line */
 				/* XXX Should probably validate and verify this first */
@@ -1676,7 +1684,7 @@ static long parse_modseq_from_filename(const char *filename, unsigned long *mods
 	}
 	modseqstr += STRLEN(",M=");
 	if (!strlen_zero(modseqstr)) {
-		*modseq = atol(modseqstr); /* Should stop as soon we encounter the first nonnumeric character, whether , or : */
+		*modseq = (unsigned long) atol(modseqstr); /* Should stop as soon we encounter the first nonnumeric character, whether , or : */
 		if (!*modseq) {
 			bbs_warning("Failed to parse modseq for %s\n", filename);
 			return -1;
@@ -1735,7 +1743,7 @@ static int on_select(const char *dir_name, const char *filename, struct imap_ses
 	return 0;
 }
 
-static inline unsigned int parse_size_from_filename(const char *filename, unsigned long *size)
+static inline int parse_size_from_filename(const char *filename, unsigned long *size)
 {
 	const char *sizestr = strstr(filename, ",S=");
 	if (!sizestr) {
@@ -1743,7 +1751,7 @@ static inline unsigned int parse_size_from_filename(const char *filename, unsign
 		return -1;
 	}
 	sizestr += STRLEN(",S=");
-	*size = atol(sizestr);
+	*size = (unsigned long) atol(sizestr);
 	if (!*size) {
 		bbs_warning("Invalid size (%lu) for %s\n", *size, filename);
 	}
@@ -1819,7 +1827,7 @@ static int imap_expunge(struct imap_session *imap, int silent)
 			/* It's too late to stat now as a fallback, the file's gone, who knows how big it was now. */
 			mailbox_invalidate_quota_cache(imap->mbox);
 		} else {
-			mailbox_quota_adjust_usage(imap->mbox, -size);
+			mailbox_quota_adjust_usage(imap->mbox, (int) -size);
 		}
 		maildir_parse_uid_from_filename(filename, &uid);
 		parse_modseq_from_filename(filename, &modseq);
@@ -1896,7 +1904,7 @@ static void maildir_get_expunged_since_modseq(struct imap_session *imap, const c
 	FILE *fp;
 	unsigned long modseq;
 	unsigned int uid;
-	int res;
+	size_t res;
 	unsigned int *a = NULL;
 	int lengths = 0, allocsizes = 0;
 
@@ -1929,7 +1937,7 @@ static void maildir_get_expunged_since_modseq(struct imap_session *imap, const c
 		if (modseq <= lastmodseq) {
 			continue;
 		}
-		if (uidrange && !in_range_allocated(uidrange, uid, uidrangebuf)) {
+		if (uidrange && !in_range_allocated(uidrange, (int) uid, uidrangebuf)) {
 			continue;
 		}
 		uintlist_append(&a, &lengths, &allocsizes, uid);
@@ -2043,7 +2051,7 @@ static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, cons
 		if (maildir_parse_uid_from_filename(entry->d_name, &uid)) {
 			goto next;
 		}
-		if (uidrange && !in_range_allocated(uidrange, uid, uidrangebuf)) {
+		if (uidrange && !in_range_allocated(uidrange, (int) uid, uidrangebuf)) {
 			goto next;
 		}
 		/* seqrange is only used for EXPUNGE, not fetching flag changes */
@@ -2079,9 +2087,9 @@ static void close_mailbox(struct imap_session *imap)
 
 static void low_quota_alert(struct imap_session *imap)
 {
-	unsigned quotaleft = mailbox_quota_remaining(imap->mbox);
+	unsigned long quotaleft = mailbox_quota_remaining(imap->mbox);
 	if (quotaleft < LOW_MAILBOX_SPACE_THRESHOLD) { /* Very little quota remaining */
-		imap_send(imap, "OK [ALERT] Mailbox is almost full (%u KB quota remaining)\n", quotaleft / 1024);
+		imap_send(imap, "OK [ALERT] Mailbox is almost full (%lu KB quota remaining)\n", quotaleft / 1024);
 	}
 }
 
@@ -2112,12 +2120,12 @@ static int client_command_passthru(struct imap_session *imap, int fd, const char
 				 * So we check that below.
 				 */
 				client_said_something = 1;
-				res = read(fd, buf2, sizeof(buf2));
+				res = (int) read(fd, buf2, sizeof(buf2));
 				if (res <= 0) {
 					return -1; /* Client disappeared during idle / server shutdown */
 				}
 				imap_debug(10, "=> %.*s", res, buf2); /* "DONE" already includes CR LF */
-				res = write(client->wfd, buf2, res);
+				res = (int) write(client->wfd, buf2, (size_t) res);
 				continue;
 			}
 			/* If client->rfd had activity, go ahead and just call bbs_readline.
@@ -2128,13 +2136,13 @@ static int client_command_passthru(struct imap_session *imap, int fd, const char
 			return res;
 		}
 		/* Go ahead and relay it */
-		bbs_write(imap->wfd, buf, res);
+		bbs_write(imap->wfd, buf, (unsigned int) res);
 		SWRITE(imap->wfd, "\r\n");
 #ifdef DEBUG_REMOTE_RESPONSES
 		/* NEVER enable this in production because this will be a huge volume of data */
 		imap_debug(10, "<= %.*s\n", res, buf);
 #endif
-		if (!strncmp(buf, tag, taglen)) {
+		if (!strncmp(buf, tag, (size_t) taglen)) {
 			imap_debug(10, "<= %.*s\n", res, buf);
 			if (STARTS_WITH(buf + taglen, "BAD")) {
 				/* We did something we shouldn't have, oops */
@@ -2183,8 +2191,8 @@ static int __attribute__ ((format (gnu_printf, 5, 6))) __imap_client_send_wait_r
 #else
 	UNUSED(lineno);
 #endif
-	bbs_write(imap->client.wfd, tagbuf, taglen);
-	bbs_write(imap->client.wfd, buf, len);
+	bbs_write(imap->client.wfd, tagbuf, (unsigned int) taglen);
+	bbs_write(imap->client.wfd, buf, (unsigned int) len);
 	imap_debug(7, "=> %s%s", tagbuf, buf);
 	/* Read until we get the tagged respones */
 	res = client_command_passthru(imap, fd, tagbuf, taglen, buf, len, ms) <= 0;
@@ -2278,10 +2286,10 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 				/* Now qresync should be the inner paren contents */
 				tmp = strsep(&qresync, " ");
 				REQUIRE_ARGS(tmp);
-				lastuidvalidity = atoi(tmp);
+				lastuidvalidity = (unsigned int) atoi(tmp);
 				tmp = strsep(&qresync, " ");
 				REQUIRE_ARGS(tmp);
-				lastmodseq = atoi(tmp);
+				lastmodseq = (unsigned int) atoi(tmp);
 				if (!strlen_zero(qresync) && *qresync != '(') { /* Trojita sends params 1, 2, and 4 but not 3 (no UID range) */
 					uidrange = strsep(&qresync, " "); /* This is optional and defaults to 1:* */
 				} else {
@@ -2447,7 +2455,7 @@ static int imap_dir_has_subfolders(const char *path, const char *prefix)
 	struct dirent *entry, **entries;
 	int files, fno = 0;
 	int res = 0;
-	int prefixlen = strlen(prefix);
+	size_t prefixlen = strlen(prefix);
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
 	files = scandir(path, &entries, NULL, uidsort);
@@ -2528,7 +2536,7 @@ static int get_attributes(const char *parentdir, const char *mailbox)
 static void build_attributes_string(char *buf, size_t len, int attrs)
 {
 	char *pos = buf;
-	int left = len;
+	size_t left = len;
 
 	bbs_assert(!(attrs & DIR_NO_CHILDREN && attrs & DIR_HAS_CHILDREN)); /* This would make no sense. */
 
@@ -2542,7 +2550,7 @@ static void build_attributes_string(char *buf, size_t len, int attrs)
 	ASSOC_ATTR(DIR_INBOX, ATTR_INBOX);
 
 	if (left <= 0) {
-		bbs_error("Truncation occured when building attribute string (%d)\n", left);
+		bbs_error("Truncation occured when building attribute string (%lu)\n", left);
 		*(buf + len - 1) = '\0';
 	} else {
 		*pos = '\0';
@@ -2569,13 +2577,13 @@ cleanup:
 static void str_tolower(char *s)
 {
 	while (*s) {
-		*s = tolower(*s);
+		*s = (char) tolower(*s);
 		s++;
 	}
 }
 
 static void list_scandir(struct imap_session *imap, const char *listscandir, int lsub, int specialuse, int level, enum mailbox_namespace ns,
-	char *attributes, size_t attrlen, const char *reference, const char *prefix, const char *mailbox, int reflen, int skiplen)
+	char *attributes, size_t attrlen, const char *reference, const char *prefix, const char *mailbox, size_t reflen, int skiplen)
 {
 	struct dirent *entry, **entries;
 	int files, fno = 0;
@@ -2601,7 +2609,7 @@ static void list_scandir(struct imap_session *imap, const char *listscandir, int
 				}
 			}
 			if (level == 0 && ns == NAMESPACE_OTHER && isdigit(*entry->d_name)) {
-				if (bbs_username_from_userid(atoi(entry->d_name), mailboxbuf, sizeof(mailboxbuf))) {
+				if (bbs_username_from_userid((unsigned int) atoi(entry->d_name), mailboxbuf, sizeof(mailboxbuf))) {
 					bbs_warning("No user for maildir %s\n", entry->d_name);
 					goto cleanup;
 				}
@@ -2798,7 +2806,8 @@ static int imap_client_list(struct bbs_tcp_client *client, const char *prefix, F
 
 	for (;;) {
 		char fullmailbox[256];
-		char *p1, *p2, *attributes, *delimiter;
+		char *p1, *p2, *delimiter;
+		const char *attributes;
 		res = bbs_readline(client->rfd, &client->rldata, "\r\n", 200);
 		if (res < 0) {
 			break;
@@ -2896,7 +2905,7 @@ static int load_virtual_mailbox(struct imap_session *imap, const char *path)
 	}
 	while ((fgets(buf, sizeof(buf), fp))) {
 		char *mpath, *urlstr = buf;
-		int prefixlen;
+		size_t prefixlen;
 		mpath = strsep(&urlstr, "|");
 		/* We are not looking for an exact match.
 		 * Essentially, the user defines a "subtree" in the .imapremote file,
@@ -2910,7 +2919,7 @@ static int load_virtual_mailbox(struct imap_session *imap, const char *path)
 		}
 
 		/* Instead of doing prefixlen = strlen(mpath), we can just subtract the pointers */
-		prefixlen = urlstr - mpath - 1; /* Subtract 1 for the space between. */
+		prefixlen = (size_t) (urlstr - mpath - 1); /* Subtract 1 for the space between. */
 #if 0
 		bbs_debug(3, "Comparing '%s' with %s\n", path, mpath);
 #endif
@@ -2988,7 +2997,7 @@ cleanup:
 
 /*! \brief Allow a LIST against mailboxes on other mail servers, configured in the .imapremote file in a user's root maildir */
 /*! \note XXX Virtual mailboxes already have a meaning in some IMAP contexts, so maybe "remote mailboxes" would be a better name? */
-static int list_virtual(struct imap_session *imap, const char *listscandir, int lsub, int specialuse, enum mailbox_namespace ns, const char *reference, const char *mailbox, int reflen, int skiplen)
+static int list_virtual(struct imap_session *imap, const char *listscandir, int lsub, int specialuse, enum mailbox_namespace ns, const char *reference, const char *mailbox, size_t reflen, int skiplen)
 {
 	FILE *fp2;
 	char virtfile[256];
@@ -3172,7 +3181,7 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 static int handle_list(struct imap_session *imap, char *s, int lsub)
 {
 	char *reference, *mailbox;
-	int reflen;
+	size_t reflen;
 	char attributes[128];
 	const char *listscandir;
 	enum mailbox_namespace ns;
@@ -3180,6 +3189,7 @@ static int handle_list(struct imap_session *imap, char *s, int lsub)
 	int specialuse = 0;
 	const char *cmd = lsub == 2 ? "XLIST" : lsub ? "LSUB" : "LIST";
 	int xlistflags = 0;
+	char empty[] = "";
 
 	reference = strsep(&s, " ");
 	mailbox = s; /* Can contain spaces, so don't use strsep first */
@@ -3255,7 +3265,7 @@ static int handle_list(struct imap_session *imap, char *s, int lsub)
 	if (strlen_zero(reference)) { /* Empty reference ("") means same mailbox selected using SELECT */
 		/* Default to INBOX if nothing has been selected yet, since it is the root */
 	} else if (!strcmp(reference, "INBOX")) {
-		reference = ""; /* It's the root. */
+		reference = empty; /* It's the root. */
 	}
 
 	reflen = strlen(reference);
@@ -3303,7 +3313,7 @@ static int handle_list(struct imap_session *imap, char *s, int lsub)
 	}
 
 #ifdef EXTRA_DEBUG
-	bbs_debug(6, "Namespace type: %d, dir: %s, mailbox: %s, reflen: %d, skiplen: %d\n", ns, listscandir, mailbox, reflen, skiplen);
+	bbs_debug(6, "Namespace type: %d, dir: %s, mailbox: %s, reflen: %lu, skiplen: %d\n", ns, listscandir, mailbox, reflen, skiplen);
 #endif
 	list_scandir(imap, listscandir, lsub, specialuse, 0, ns, attributes, sizeof(attributes), reference, NULL, mailbox, reflen, skiplen); /* Recursively LIST */
 	list_virtual(imap, listscandir, lsub, specialuse, ns, reference, mailbox, reflen, skiplen);
@@ -3484,7 +3494,7 @@ cleanup:
 }
 
 /*! \retval 0 if not in range, UID if in range */
-static int msg_in_range(int seqno, const char *filename, const char *sequences, int usinguid)
+static unsigned int msg_in_range(int seqno, const char *filename, const char *sequences, int usinguid)
 {
 	unsigned int msguid = 0;
 
@@ -3503,16 +3513,17 @@ static int msg_in_range(int seqno, const char *filename, const char *sequences, 
 		return 0;
 	}
 	if (usinguid) {
-		if (!in_range(sequences, msguid)) {
+		if (!in_range(sequences, (int) msguid)) {
 			return 0;
 		}
 	}
 	return msguid;
 }
 
-static int imap_msg_in_range(struct imap_session *imap, int seqno, const char *filename, const char *sequences, int usinguid, int *error)
+static unsigned int imap_msg_in_range(struct imap_session *imap, int seqno, const char *filename, const char *sequences, int usinguid, int *error)
 {
-	int res, use_saved_search = !strcmp(sequences, "$") ? 1 : 0;
+	unsigned int res;
+	int use_saved_search = !strcmp(sequences, "$") ? 1 : 0;
 
 	if (use_saved_search) {
 		if (!imap->savedsearch) {
@@ -3553,7 +3564,7 @@ static int uintlist_append(unsigned int **a, int *lengths, int *allocsizes, unsi
 		if (*lengths >= *allocsizes) {
 			unsigned int *newa;
 			int newallocsize = *allocsizes += UINTLIST_CHUNK_SIZE; /* Don't multiply by sizeof(unsigned int), so we can directly compare with lengths */
-			newa = realloc(*a, newallocsize * sizeof(unsigned int)); /* Increase by 32 each chunk */
+			newa = realloc(*a, (size_t) newallocsize * sizeof(unsigned int)); /* Increase by 32 each chunk */
 			if (ALLOC_FAILURE(newa)) {
 				return -1;
 			}
@@ -3590,11 +3601,11 @@ static int uintlist_append2(unsigned int **a, unsigned int **b, int *lengths, in
 		if (*lengths >= *allocsizes) {
 			unsigned int *newb, *newa;
 			int newallocsize = *allocsizes += UINTLIST_CHUNK_SIZE; /* Don't multiply by sizeof(unsigned int), so we can directly compare with lengths */
-			newa = realloc(*a, newallocsize * sizeof(unsigned int)); /* Increase by 32 each chunk */
+			newa = realloc(*a, (size_t) newallocsize * sizeof(unsigned int)); /* Increase by 32 each chunk */
 			if (ALLOC_FAILURE(newa)) {
 				return -1;
 			}
-			newb = realloc(*b, *allocsizes + UINTLIST_CHUNK_SIZE * sizeof(unsigned int));
+			newb = realloc(*b, (size_t) *allocsizes + UINTLIST_CHUNK_SIZE * sizeof(unsigned int));
 			if (ALLOC_FAILURE(newb)) {
 				/* This is tricky. We expanded a but failed to expand b. Keep the smaller size for our records. */
 				return -1;
@@ -3625,7 +3636,7 @@ static int copyuid_str_append(struct dyn_str *dynstr, unsigned int a, unsigned i
 	} else {
 		len = snprintf(range, sizeof(range), "%s%u:%u", dynstr->used ? "," : "", a, b);
 	}
-	return dyn_str_append(dynstr, range, len);
+	return dyn_str_append(dynstr, range, (size_t) len);
 }
 
 static char *gen_uintlist(unsigned int *l, int lengths)
@@ -3712,7 +3723,7 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 		return 0;
 	}
 
-	quotaleft = mailbox_quota_remaining(imap->mbox);
+	quotaleft = (long int) mailbox_quota_remaining(imap->mbox);
 
 	IMAP_REQUIRE_ACL(destacl, IMAP_ACL_INSERT); /* Must be able to copy to dest dir */
 
@@ -3744,7 +3755,7 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 				break; /* Insufficient quota remaining */
 			}
 		}
-		uidres = maildir_copy_msg_filename(imap->mbox, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext, newfile, sizeof(newfile));
+		uidres = (unsigned int) maildir_copy_msg_filename(imap->mbox, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext, newfile, sizeof(newfile));
 		if (!uidres) {
 			continue;
 		}
@@ -3827,7 +3838,7 @@ static int handle_move(struct imap_session *imap, char *s, int usinguid)
 		}
 
 		snprintf(srcfile, sizeof(srcfile), "%s/%s", imap->curdir, entry->d_name);
-		uidres = maildir_move_msg_filename(imap->mbox, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext, newname, sizeof(newname));
+		uidres = (unsigned int) maildir_move_msg_filename(imap->mbox, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext, newname, sizeof(newname));
 		if (!uidres) {
 			goto cleanup;
 		}
@@ -3839,7 +3850,7 @@ static int handle_move(struct imap_session *imap, char *s, int usinguid)
 		 * RFC 6851 3.3
 		 * We still store UIDs so we can call maildir_indicate_expunged with a batch of all UIDs, for efficiency.
 		 */
-		uintlist_append2(&expunged, &expungedseqs, &exp_lengths, &exp_allocsizes, msguid, seqno); /* store UID and seqno */
+		uintlist_append2(&expunged, &expungedseqs, &exp_lengths, &exp_allocsizes, msguid, (unsigned int) seqno); /* store UID and seqno */
 		
 cleanup:
 		free(entry);
@@ -4020,7 +4031,7 @@ static int handle_append(struct imap_session *imap, char *s)
 		/* It's too late to stat now as a fallback, the file's gone, who knows how big it was now. */
 		mailbox_invalidate_quota_cache(imap->mbox);
 	} else {
-		mailbox_quota_adjust_usage(imap->mbox, -size);
+		mailbox_quota_adjust_usage(imap->mbox, (int) -size);
 	}
 
 	/* Now, apply any flags to the message... (yet a third rename, potentially) */
@@ -4061,7 +4072,7 @@ static void generate_flag_names_full(struct imap_session *imap, const char *file
 	int custom_keywords;
 
 	char *buf = *bufptr;
-	size_t len = *lenptr;
+	size_t len = (size_t) *lenptr;
 
 	if (isdigit(*filename)) { /* We have an entire filename */
 		filename = strchr(filename, ':'); /* Skip everything before the flags, so we don't e.g. interpret ,S= as the Seen flag. */
@@ -4084,7 +4095,7 @@ static void generate_flag_names_full(struct imap_session *imap, const char *file
 	SAFE_FAST_COND_APPEND_NOSPACE(bufstart, buf, len, 1, ")");
 
 	*bufptr = buf;
-	*lenptr = len;
+	*lenptr = (int) len;
 }
 
 static int maildir_msg_setflags_modseq(struct imap_session *imap, int seqno, const char *origname, const char *newflagletters, unsigned long *newmodseq)
@@ -4196,7 +4207,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 	char *buf;
 	int len;
 	int multiline = 0;
-	int bodylen = 0;
+	size_t bodylen = 0;
 	int error = 0;
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
@@ -4555,7 +4566,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				SAFE_FAST_COND_APPEND_NOSPACE(headers, headpos, headlen, 1, "%s", linebuf);
 			}
 			fclose(fp);
-			bodylen = headpos - headers; /* XXX cheaper than strlen, although if truncation happened, this may be wrong (too high). */
+			bodylen = (size_t) (headpos - headers); /* XXX cheaper than strlen, although if truncation happened, this may be wrong (too high). */
 			if (!unoriginal) {
 				SAFE_FAST_COND_APPEND(response, buf, len, 1, "RFC822.HEADER");
 			}
@@ -4601,7 +4612,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				offset = 0;
 				/* XXX Doesn't handle partial bodies */
 				pthread_mutex_lock(&imap->lock);
-				res = sendfile(imap->wfd, fileno(fp), &offset, size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
+				res = (int) sendfile(imap->wfd, fileno(fp), &offset, (size_t) size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
 				fclose(fp);
 				if (res != size) {
 					bbs_error("sendfile failed (%d != %ld): %s\n", res, size, strerror(errno));
@@ -4612,7 +4623,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				pthread_mutex_unlock(&imap->lock);
 			} else {
 				/* Need to add 2 for last CR LF we tack on before ) */
-				imap_send(imap, "%d FETCH (%s%s%s {%d}\r\n%s\r\n)", seqno, S_IF(dyn), dyn ? " " : "", response, bodylen + 2, headers);
+				imap_send(imap, "%d FETCH (%s%s%s {%lu}\r\n%s\r\n)", seqno, S_IF(dyn), dyn ? " " : "", response, bodylen + 2, headers);
 			}
 		} else {
 			/* Number after FETCH is always a message sequence number, not UID, even if usinguid */
@@ -4757,7 +4768,7 @@ static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 			if (!strcasecmp(arg, "CHANGEDSINCE")) {
 				arg = strsep(&s,  " ");
 				REQUIRE_ARGS(arg);
-				fetchreq.changedsince = atol(arg);
+				fetchreq.changedsince = (unsigned long) atol(arg);
 				fetchreq.modseq = 1; /* RFC 7162 3.1.4.1: CHANGEDSINCE implicitly sets MODSEQ FETCH message data item */
 				imap->condstore = 1;
 			} else if (!strcasecmp(arg, "VANISHED")) {
@@ -4908,7 +4919,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 				 * since there are no examples of consecutive messages.
 				 * So we just play it safe here and make a comma-separated list */
 				len = snprintf(buf, sizeof(buf), ",%u", usinguid ? msguid : (unsigned int) seqno);
-				dyn_str_append(&dynstr, buf, len);
+				dyn_str_append(&dynstr, buf, (size_t) len);
 			}
 		}
 		seqno = fno = 0;
@@ -4979,7 +4990,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			 * oldkeywords contains the existing keywords. */
 			if (flagop == 1) { /* If they're equal, we don't need to do anything */
 				if (strcmp(imap->appendkeywords, oldkeywords)) {
-					int oldlen = strlen(oldkeywords);
+					size_t oldlen = strlen(oldkeywords);
 					bbs_debug(7, "Change made to keyword: %s -> %s\n", oldkeywords, imap->appendkeywords);
 					/* Merge both of them: copy over any keywords that weren't in the old one. */
 					strcpy(newkeywords, oldkeywords); /* Safe */
@@ -5051,7 +5062,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			char flagstr[256];
 			gen_flag_names(newflagletters, flagstr, sizeof(flagstr));
 			if (keywords[0]) { /* Current keywords */
-				int slen = strlen(flagstr);
+				size_t slen = strlen(flagstr);
 				/*! \todo We should not append a space before if we're at the beginning of the buffer */
 				gen_keyword_names(imap, keywords, flagstr + slen, sizeof(flagstr) - slen); /* Append keywords (include space before) */
 			}
@@ -5130,7 +5141,7 @@ static int handle_store(struct imap_session *imap, char *s, int usinguid)
 		if (tmp) {
 			tmp += STRLEN("UNCHANGEDSINCE ");
 			if (!strlen_zero(tmp)) {
-				unchangedsince = atol(tmp);
+				unchangedsince = (unsigned int) atol(tmp);
 				do_unchangedsince = 1;
 				imap->condstore = 1;
 			}
@@ -5292,7 +5303,7 @@ static int sub_rename(const char *path, const char *prefix, const char *newprefi
 	struct dirent *entry, **entries;
 	int res = 0;
 	int files, fno = 0;
-	int prefixlen = strlen(prefix);
+	size_t prefixlen = strlen(prefix);
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
 	files = scandir(path, &entries, NULL, uidsort);
@@ -5678,7 +5689,7 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 			bbs_warning("Missing numeric argument\n"); \
 			return -1; \
 		} \
-		nk->child.longnumber = atol(next); \
+		nk->child.longnumber = (unsigned long) atol(next); \
 		listsize++; \
 	}
 
@@ -6169,7 +6180,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 					parse_size_from_filename(search->filename, &size);
 				} else {
 					SEARCH_STAT()
-					size = search->st.st_size;
+					size = (unsigned long) search->st.st_size;
 				}
 				retval = (int) size > skey->child.number;
 				break;
@@ -6178,14 +6189,14 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 					parse_size_from_filename(search->filename, &size);
 				} else {
 					SEARCH_STAT()
-					size = search->st.st_size;
+					size = (unsigned long) search->st.st_size;
 				}
 				retval = (int) size < skey->child.number;
 				break;
 			case IMAP_SEARCH_UID:
 				if (!search->new) {
 					maildir_parse_uid_from_filename(search->filename, &uid);
-					retval = imap_in_range(search->imap, skey->child.string, uid);
+					retval = imap_in_range(search->imap, skey->child.string, (int) uid);
 				} else {
 					/* XXX messages in new don't have a UID, so by definition it can't match */
 					retval = 0;
@@ -6214,7 +6225,7 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 				SEARCH_HEADER_MATCH("From");
 			case IMAP_SEARCH_HEADER:
 				hdrval = strchr(skey->child.string, ' ');
-				len = hdrval - skey->child.string;
+				len = (size_t) (hdrval - skey->child.string);
 				ltrim(hdrval);
 				retval = search_header(search, skey->child.string, len, hdrval);
 				break;
@@ -6347,7 +6358,7 @@ static int search_dir(struct imap_session *imap, const char *dirname, int newdir
 	char keywords[27] = "";
 	int now;
 
-	now = time(NULL); /* Only compute this once, not for each file */
+	now = (int) time(NULL); /* Only compute this once, not for each file */
 
 	files = scandir(dirname, &entries, NULL, uidsort);
 	if (files < 0) {
@@ -6368,8 +6379,8 @@ static int search_dir(struct imap_session *imap, const char *dirname, int newdir
 		search.imap = imap;
 		search.directory = dirname;
 		search.filename = entry->d_name;
-		search.new = newdir;
-		search.seqno = seqno;
+		SET_BITFIELD(search.new, newdir);
+		search.seqno = (int) seqno;
 		search.keywords = keywords;
 		search.now = now;
 		search.maxmodseq = *maxmodseq;
@@ -6476,7 +6487,7 @@ static char *uintlist_to_str(unsigned int *a, int length)
 	for (i = 0; i < length; i++) {
 		char buf[15];
 		int len = snprintf(buf, sizeof(buf), "%s%u", i ? " " : "", a[i]);
-		dyn_str_append(&dynstr, buf, len);
+		dyn_str_append(&dynstr, buf, (size_t) len);
 	}
 	return dynstr.buf;
 }
@@ -6500,9 +6511,9 @@ static char *uintlist_to_ranges(unsigned int *a, int length)
 			last = a[i];
 		} else {
 			if (start == last) {
-				len = snprintf(buf, sizeof(buf), "%s%u", prefix, last);
+				len = (unsigned int) snprintf(buf, sizeof(buf), "%s%u", prefix, last);
 			} else {
-				len = snprintf(buf, sizeof(buf), "%s%u:%u", prefix, start, last);
+				len = (unsigned int) snprintf(buf, sizeof(buf), "%s%u:%u", prefix, start, last);
 			}
 			dyn_str_append(&dynstr, buf, len);
 			prefix = ",";
@@ -6512,9 +6523,9 @@ static char *uintlist_to_ranges(unsigned int *a, int length)
 	if (start) {
 		/* last one */
 		if (start == last) {
-			len = snprintf(buf, sizeof(buf), "%s%u", prefix, last);
+			len = (unsigned int) snprintf(buf, sizeof(buf), "%s%u", prefix, last);
 		} else {
-			len = snprintf(buf, sizeof(buf), "%s%u:%u", prefix, start, last);
+			len = (unsigned int) snprintf(buf, sizeof(buf), "%s%u:%u", prefix, start, last);
 		}
 		dyn_str_append(&dynstr, buf, len);
 	}
@@ -6528,21 +6539,21 @@ static int range_to_uintlist(char *s, unsigned int **list, int *length)
 	int alloc_sizes = 0;
 
 	while ((seq = strsep(&s, ","))) {
-		int a, b;
+		unsigned int a, b;
 		char *start, *end = seq;
 		start = strsep(&end, ":");
 		if (strlen_zero(start)) {
 			bbs_warning("Invalid range\n");
 			continue;
 		}
-		a = atoi(start);
+		a = (unsigned int) atoi(start);
 		if (!end) {
 			uintlist_append(list, length, &alloc_sizes, a);
 			continue;
 		}
-		b = atoi(end);
+		b = (unsigned int) atoi(end);
 		if (b - a > 100000) {
-			bbs_warning("Declining to process range %d:%d (too large)\n", a, b);
+			bbs_warning("Declining to process range %u:%u (too large)\n", a, b);
 			return -1; /* Don't malloc into oblivion */
 		}
 		for (; a <= b; a++) {
@@ -6670,15 +6681,15 @@ static void esearch_response(struct imap_session *imap, int option_flags, unsign
 			if (option_flags & ESEARCH_MIN && option_flags & ESEARCH_MAX) {
 				unsigned long othermodseq;
 				/* Highest of both of them */
-				imap_msg_to_filename(imap->curdir, usinguid ? 0 : min, usinguid ? min : 0, filename, sizeof(filename));
+				imap_msg_to_filename(imap->curdir, usinguid ? 0 : min, usinguid ? (unsigned int) min : 0, filename, sizeof(filename));
 				parse_modseq_from_filename(filename, &maxmodseq);
-				imap_msg_to_filename(imap->curdir, usinguid ? 0 : max, usinguid ? max : 0, filename, sizeof(filename));
+				imap_msg_to_filename(imap->curdir, usinguid ? 0 : max, usinguid ? (unsigned int) max : 0, filename, sizeof(filename));
 				parse_modseq_from_filename(filename, &othermodseq);
 				maxmodseq = MAX(maxmodseq, othermodseq);
 			} else {
 				int target = (option_flags & ESEARCH_MIN) ? min : max;
 				/* One corresponding to the particular message */
-				imap_msg_to_filename(imap->curdir, usinguid ? 0 : target, usinguid ? target : 0, filename, sizeof(filename));
+				imap_msg_to_filename(imap->curdir, usinguid ? 0 : target, usinguid ? (unsigned int) target : 0, filename, sizeof(filename));
 				parse_modseq_from_filename(filename, &maxmodseq);
 			}
 		}
@@ -6713,7 +6724,7 @@ static void esearch_response(struct imap_session *imap, int option_flags, unsign
 			 * Likewise, if savedsearchuid == 1, and $ is dereferenced in a non-UID command,
 			 * we have to match on UIDs, not sequence numbers.
 			 */
-			imap->savedsearchuid = usinguid;
+			SET_BITFIELD(imap->savedsearchuid, usinguid);
 		}
 		free_if(list);
 	} else {
@@ -6722,7 +6733,7 @@ static void esearch_response(struct imap_session *imap, int option_flags, unsign
 		}
 		if (option_flags & ESEARCH_SAVE) {
 			REPLACE(imap->savedsearch, "");
-			imap->savedsearchuid = usinguid;
+			SET_BITFIELD(imap->savedsearchuid, usinguid);
 		}
 	}
 }
@@ -6854,7 +6865,7 @@ static int sort_compare(const void *aptr, const void *bptr, void *varg)
 	FILE *fpa = NULL, *fpb = NULL;
 	struct tm tm1, tm2;
 	time_t t1, t2;
-	int diff;
+	long int diff;
 
 	/* If sort->usinguid, then we are comparing UIDs.
 	 * Otherwise, we're comparing sequence numbers. */
@@ -6920,7 +6931,7 @@ static int sort_compare(const void *aptr, const void *bptr, void *varg)
 		/* Must use STARTS_WITH (strncasecmp) since the criterion is NOT null terminated. */
 		/* Break as soon as we have an unambiguous winner. */
 		space = strchr(criterion, ' ');
-		len = space ? (space - criterion) : (int) strlen(criterion);
+		len = space ? (int) (space - criterion) : (int) strlen(criterion);
 
 #ifdef DEBUG_SORT
 		bbs_debug(10, "Processing next SORT token: %.*s\n", len, criterion);
@@ -6934,7 +6945,7 @@ static int sort_compare(const void *aptr, const void *bptr, void *varg)
 			if (hdra || hdrb) {
 				res = hdra ? hdrb ? 0 : -1 : 1; /* If a date is invalid, it sorts first */
 			} else {
-				diff = difftime(stata.st_mtime, statb.st_mtime); /* If difftime is positive, tm1 > tm2 */
+				diff = (long int) difftime(stata.st_mtime, statb.st_mtime); /* If difftime is positive, tm1 > tm2 */
 				res = diff < 0 ? 1 : diff > 0 ? -1 : 0;
 			}
 		} else if (STARTS_WITH(criterion, "CC")) {
@@ -6951,7 +6962,7 @@ static int sort_compare(const void *aptr, const void *bptr, void *varg)
 			} else {
 				t1 = mktime(&tm1);
 				t2 = mktime(&tm2);
-				diff = difftime(t1, t2); /* If difftime is positive, tm1 > tm2 */
+				diff = (long int) difftime(t1, t2); /* If difftime is positive, tm1 > tm2 */
 				res = diff < 0 ? 1 : diff > 0 ? -1 : 0;
 			}
 		} else if (STARTS_WITH(criterion, "FROM")) {
@@ -7062,10 +7073,10 @@ static int handle_sort(struct imap_session *imap, char *s, int usinguid)
 		memset(&sort, 0, sizeof(sort));
 		sort.imap = imap;
 		sort.sortexpr = sortexpr;
-		sort.usinguid = usinguid;
+		SET_BITFIELD(sort.usinguid, usinguid);
 		sort.numfiles = scandir(imap->curdir, &sort.entries, NULL, uidsort); /* cur dir only */
 		if (sort.numfiles >= 0) {
-			qsort_r(a, results, sizeof(unsigned int), sort_compare, &sort); /* Actually sort the results, conveniently already in an array. */
+			qsort_r(a, (size_t) results, sizeof(unsigned int), sort_compare, &sort); /* Actually sort the results, conveniently already in an array. */
 			free_scandir_entries(sort.entries, sort.numfiles);
 			free(sort.entries);
 		}
@@ -7110,9 +7121,9 @@ struct thread_message {
 	char inreplyto[128];
 };
 
-static void free_thread_messages(struct thread_message *msgs, int length)
+static void free_thread_messages(struct thread_message *msgs, size_t length)
 {
-	int i;
+	size_t i;
 	for (i = 0; i < length; i++) {
 		free_if(msgs[i].msgid);
 		free_if(msgs[i].references);
@@ -7159,7 +7170,7 @@ static int populate_thread_data(struct imap_session *imap, struct thread_message
 				if (linebuf[0] == ' ') {
 					/* Already starts with a space, conveniently, so we can just go ahead and append immediately. */
 					int len = bbs_term_line(linebuf);
-					dyn_str_append(&dynstr, linebuf, len);
+					dyn_str_append(&dynstr, linebuf, (size_t) len);
 					continue;
 				}
 				gotinfo++;
@@ -7199,7 +7210,7 @@ static int populate_thread_data(struct imap_session *imap, struct thread_message
 				int len;
 				ltrim(s);
 				len = bbs_term_line(s);
-				dyn_str_append(&dynstr, s, len);
+				dyn_str_append(&dynstr, s, (size_t) len);
 				in_ref = 1;
 			}
 		}
@@ -7214,6 +7225,9 @@ static int populate_thread_data(struct imap_session *imap, struct thread_message
 	return 0;
 }
 
+#pragma GCC diagnostic ignored "-Wcast-qual"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 static int thread_ordered_subject_compare(const void *aptr, const void *bptr)
 {
 	const struct thread_message *a = aptr;
@@ -7226,13 +7240,15 @@ static int thread_ordered_subject_compare(const void *aptr, const void *bptr)
 		int t1, t2;
 		long diff;
 		struct thread_message *ac = (struct thread_message*) a, *bc = (struct thread_message*) b; /* discard const pointer for mktime */
-		t1 = mktime(&ac->sent);
-		t2 = mktime(&bc->sent);
-		diff = difftime(t1, t2); /* If difftime is positive, tm1 > tm2 */
+		t1 = (int) mktime(&ac->sent);
+		t2 = (int) mktime(&bc->sent);
+		diff = (long int) difftime(t1, t2); /* If difftime is positive, tm1 > tm2 */
 		res = diff < 0 ? -1 : diff > 0 ? 1 : 0;
 	}
 	return res;
 }
+#pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
 
 /*! \note This struct uses a doubly linked list to keep track of all messages in a flat hierarchy, but internally there is also a hierarchy for threads */
 struct thread_messageid {
@@ -7295,7 +7311,7 @@ static struct thread_messageid *push_threadmsgid(struct thread_messageid *msgids
 	}
 	strcpy(curmsg->data, msgid); /* Safe */
 	curmsg->msgid = curmsg->data;
-	curmsg->dummy = dummy;
+	SET_BITFIELD(curmsg->dummy, dummy);
 
 	/* Insert (head insert) */
 	insque(curmsg, msgids);
@@ -7453,7 +7469,7 @@ static void thread_link_parent_child(struct thread_messageid *parent, struct thr
 			time_t t2;
 			long diff;
 			t2 = tmp->sent ? mktime(tmp->sent) : 0;
-			diff = difftime(t1, t2);
+			diff = (long int) difftime(t1, t2);
 			if (diff < 0) {
 				break;
 			}
@@ -7711,6 +7727,9 @@ static int thread_references_step3(struct thread_messageid *msgids)
 		c = c->next; \
 	}
 
+#pragma GCC diagnostic ignored "-Wcast-qual"
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 static int thread_toplevel_datesort(const void *aptr, const void *bptr)
 {
 	struct thread_messageid **ap = (struct thread_messageid **) aptr;
@@ -7738,7 +7757,7 @@ static int thread_toplevel_datesort(const void *aptr, const void *bptr)
 		t2 = mktime(b->sent);
 	}
 
-	diff = difftime(t1, t2); /* If difftime is positive, tm1 > tm2 */
+	diff = (long int) difftime(t1, t2); /* If difftime is positive, tm1 > tm2 */
 	if (!t1 || !t2 || diff == INT_MIN) {
 		bbs_warning("%s: %ld, %s: %ld, diff: %ld\n", a->msgid, t1, b->msgid, t2, diff);
 	}
@@ -7753,6 +7772,8 @@ static int thread_toplevel_datesort(const void *aptr, const void *bptr)
 #endif
 	return res;
 }
+#pragma GCC diagnostic pop
+#pragma GCC diagnostic pop
 
 static int thread_references_step4(struct thread_messageid *msgids, int *lengthptr)
 {
@@ -7797,7 +7818,7 @@ static int thread_references_step4(struct thread_messageid *msgids, int *lengthp
 		return 0;
 	}
 
-	msgptrs = calloc(length, sizeof(struct thread_messageid*)); /* Skip dummy root */
+	msgptrs = calloc((size_t) length, sizeof(struct thread_messageid*)); /* Skip dummy root */
 	if (ALLOC_FAILURE(msgptrs)) {
 		return -1;
 	}
@@ -7814,7 +7835,7 @@ static int thread_references_step4(struct thread_messageid *msgids, int *lengthp
 		next = next->llnext;
 	}
 
-	qsort(msgptrs, length, sizeof(struct thread_messageid**), thread_toplevel_datesort);
+	qsort(msgptrs, (size_t) length, sizeof(struct thread_messageid**), thread_toplevel_datesort);
 
 	/* Okay, now we have a sorted array of pointers, go ahead and update the linked list. */
 #if defined(DEBUG_THREADING) && 0
@@ -7863,7 +7884,7 @@ static void thread_generate_list_recurse(struct dyn_str *dynstr, struct thread_m
 				dyn_str_append(dynstr, "(", 1);
 			}
 			len = snprintf(buf, sizeof(buf), "%d%s", next->id, next->children ? " " : "");
-			dyn_str_append(dynstr, buf, len);
+			dyn_str_append(dynstr, buf, (size_t) len);
 			thread_generate_list_recurse(dynstr, next->children, level + 1);
 			if (multiple) {
 				dyn_str_append(dynstr, ") ", 1);
@@ -7921,7 +7942,7 @@ static int thread_orderedsubject(struct thread_messageid *tmsgids, struct thread
 	/* Poor man's threading. Sort by subject, then date, then thread by subject.
 	 * Rather than bothering with sorting a, we just sort msgs directly,
 	 * since it will immediately have the info needed to make the comparison decision. */
-	qsort(msgs, length, sizeof(struct thread_message), thread_ordered_subject_compare); /* Actually sort the results, conveniently already in an array. */
+	qsort(msgs, (size_t) length, sizeof(struct thread_message), thread_ordered_subject_compare); /* Actually sort the results, conveniently already in an array. */
 
 	/* Load all the messages - simplified version of REFERENCES algorithm step 1.
 	 * Note that we're already sorted by subject here. */
@@ -7982,10 +8003,10 @@ static int test_thread_orderedsubject(void)
 	int res = -1, mres;
 	struct thread_message *msgs;
 	struct thread_messageid tmsgids;
-	time_t now = time(NULL);
-	int i;
+	time_t now = (int) time(NULL);
+	unsigned int i;
 	char date[34];
-	const int num_msgs = 20;
+	const size_t num_msgs = 20;
 	char *list = NULL;
 
 	memset(&tmsgids, 0, sizeof(tmsgids));
@@ -7998,7 +8019,7 @@ static int test_thread_orderedsubject(void)
 	for (i = 0; i < 5; i++) {
 		msgs[i].id = i + 1;
 		localtime_r(&now, &msgs[i].sent);
-		msgs[i].sent.tm_sec = i; /* So they're not exactly the same */
+		msgs[i].sent.tm_sec = (int) i; /* So they're not exactly the same */
 		if (asprintf(&msgs[i].msgid, "<msg%d@localhost>", i + 1) < 0) {
 			goto cleanup;
 		}
@@ -8008,7 +8029,7 @@ static int test_thread_orderedsubject(void)
 	for (; i < 8; i++) {
 		msgs[i].id = i + 1;
 		localtime_r(&now, &msgs[i].sent);
-		msgs[i].sent.tm_sec = i; /* So they're not exactly the same */
+		msgs[i].sent.tm_sec = (int) i; /* So they're not exactly the same */
 		if (asprintf(&msgs[i].msgid, "<msg%d@localhost>", i + 1) < 0) {
 			goto cleanup;
 		}
@@ -8017,12 +8038,12 @@ static int test_thread_orderedsubject(void)
 	msgs[i].id = i + 1;
 	snprintf(date, sizeof(date), "Tues, 2 Jan 2001 14:14:14 -0300");
 	parse_sent_date(date, &msgs[i].sent); /* XXX Currently fails, so date will be first of all of them */
-	msgs[i].sent.tm_sec = i; /* So they're not exactly the same */
+	msgs[i].sent.tm_sec = (int) i; /* So they're not exactly the same */
 	i++;
 	for (; i < 11; i++) {
 		msgs[i].id = i + 1;
 		localtime_r(&now, &msgs[i].sent);
-		msgs[i].sent.tm_sec = i; /* So they're not exactly the same */
+		msgs[i].sent.tm_sec = (int) i; /* So they're not exactly the same */
 		if (asprintf(&msgs[i].msgid, "<msg%d@localhost>", i + 1) < 0) {
 			goto cleanup;
 		}
@@ -8032,14 +8053,14 @@ static int test_thread_orderedsubject(void)
 	for (; i < num_msgs; i++) {
 		msgs[i].id = i + 1;
 		localtime_r(&now, &msgs[i].sent);
-		msgs[i].sent.tm_sec = i; /* So they're not exactly the same */
+		msgs[i].sent.tm_sec = (int) i; /* So they're not exactly the same */
 		snprintf(msgs[i].subject, sizeof(msgs[i].subject), "Re: Some Subject");
 		if (asprintf(&msgs[i].msgid, "<msg%d@localhost>", i + 1) < 0) {
 			goto cleanup;
 		}
 	}
 
-	mres = thread_orderedsubject(&tmsgids, msgs, num_msgs);
+	mres = thread_orderedsubject(&tmsgids, msgs, (int) num_msgs);
 	bbs_test_assert_equals(0, mres);
 	list = thread_generate_list(&tmsgids);
 	bbs_test_assert(list != NULL);
@@ -8058,10 +8079,11 @@ static int test_thread_references(void)
 	int res = -1, mres;
 	struct thread_message *msgs;
 	struct thread_messageid tmsgids;
-	time_t now = time(NULL);
-	int i, outlen;
+	time_t now = (int) time(NULL);
+	unsigned int i;
+	int outlen;
 	char date[34];
-	const int num_msgs = 20;
+	const size_t num_msgs = 20;
 	char *list = NULL;
 
 	memset(&tmsgids, 0, sizeof(tmsgids));
@@ -8088,7 +8110,7 @@ static int test_thread_references(void)
 	for (; i < 8; i++) {
 		msgs[i].id = i + 1;
 		localtime_r(&now, &msgs[i].sent);
-		msgs[i].sent.tm_year -= (i * 2 - (i % 2) * 5); /* Mix it up though */
+		msgs[i].sent.tm_year -= (int) (i * 2 - (i % 2) * 5); /* Mix it up though */
 		if (asprintf(&msgs[i].msgid, "<msg%d@localhost>", i + 1) < 0) {
 			goto cleanup;
 		}
@@ -8104,7 +8126,7 @@ static int test_thread_references(void)
 		msgs[i].id = i + 1;
 		localtime_r(&now, &msgs[i].sent);
 		msgs[i].sent.tm_year -= 1;
-		msgs[i].sent.tm_min = i;
+		msgs[i].sent.tm_min = (int) i;
 		if (asprintf(&msgs[i].references, "<nonexistent%d@localhost>", i) < 0) { /* Reference a nonexistent message */
 			goto cleanup;
 		}
@@ -8120,7 +8142,7 @@ static int test_thread_references(void)
 		char *refbuf = references;
 		int refleft = sizeof(references);
 		int j;
-		int parent = i;
+		int parent = (int) i;
 
 		/* For variety, make some messages in the thread be siblings.
 		 * i.e. there will be messages with 2 children, rather than every message having 1 children. */
@@ -8135,7 +8157,7 @@ static int test_thread_references(void)
 		msgs[i].id = i + 1;
 		msgs[i].references = strdup(references);
 		localtime_r(&now, &msgs[i].sent);
-		msgs[i].sent.tm_sec = i; /* So they're not exactly the same */
+		msgs[i].sent.tm_sec = (int) i; /* So they're not exactly the same */
 		snprintf(msgs[i].subject, sizeof(msgs[i].subject), "Re: Some Subject");
 		if (asprintf(&msgs[i].msgid, "<msg%d@localhost>", i + 1) < 0) {
 			goto cleanup;
@@ -8143,7 +8165,7 @@ static int test_thread_references(void)
 		snprintf(msgs[i].inreplyto, sizeof(msgs[i].inreplyto), "<msg%d@localhost>", parent);
 	}
 
-	mres = thread_references_step1(&tmsgids, msgs, num_msgs);
+	mres = thread_references_step1(&tmsgids, msgs, (int) num_msgs);
 	bbs_test_assert_equals(0, mres);
 	mres = thread_references_step3(&tmsgids);
 	bbs_test_assert_equals(0, mres);
@@ -8161,7 +8183,7 @@ cleanup:
 	return res;
 }
 
-static int do_threading(struct imap_session *imap, unsigned int *a, int length, int usinguid, enum thread_algorithm algo)
+static int do_threading(struct imap_session *imap, unsigned int *a, size_t length, int usinguid, enum thread_algorithm algo)
 {
 	char *list;
 	struct thread_messageid tmsgids;
@@ -8172,7 +8194,7 @@ static int do_threading(struct imap_session *imap, unsigned int *a, int length, 
 	}
 
 	/* Populate the thread structures with the content needed for either algorithm */
-	if (populate_thread_data(imap, msgs, a, length, usinguid)) {
+	if (populate_thread_data(imap, msgs, a, (int) length, usinguid)) {
 		free(msgs); /* Haven't allocated anything else yet */
 		bbs_warning("Failed to populate thread data\n");
 		return -1;
@@ -8181,12 +8203,12 @@ static int do_threading(struct imap_session *imap, unsigned int *a, int length, 
 	memset(&tmsgids, 0, sizeof(tmsgids));
 
 	if (algo == THREAD_ALG_ORDERED_SUBJECT) {
-		thread_orderedsubject(&tmsgids, msgs, length);
+		thread_orderedsubject(&tmsgids, msgs, (int) length);
 	} else { /* REFERENCES */
 		int outlen;
 		/* RFC 5256 REFERENCES algorithm.
 		 * Also a good writeup by the original author of the algorithm, here: https://www.jwz.org/doc/threading.html */
-		thread_references_step1(&tmsgids, msgs, length); /* Steps 1, 2, and 6 */
+		thread_references_step1(&tmsgids, msgs, (int) length); /* Steps 1, 2, and 6 */
 		thread_references_step3(&tmsgids);
 		thread_references_step4(&tmsgids, &outlen);
 		/* We skip step 5 of the algorithm.
@@ -8197,8 +8219,8 @@ static int do_threading(struct imap_session *imap, unsigned int *a, int length, 
 		 * but to my knowledge, clients e.g. Thunderbird-based ones, do not do Step 5 either, anyways.
 		 * JWZ would say this is cutting corners, just like Netscape 4.0, but this really makes more sense this way, to me.
 		 */
-		if (outlen != length) { /* Note that even if this is false, that doesn't necessarily mean the result was correct. */
-			bbs_warning("Got %d messages as input, but only threaded %d?\n", length, outlen);
+		if (outlen != (int) length) { /* Note that even if this is false, that doesn't necessarily mean the result was correct. */
+			bbs_warning("Got %lu messages as input, but only threaded %d?\n", length, outlen);
 		}
 	}
 
@@ -8255,7 +8277,7 @@ static int handle_thread(struct imap_session *imap, char *s, int usinguid)
 	if (results) {
 		/* Now, thread the messages. This is much more complicating than normal sorting,
 		 * particularly for the REFERENCES algorithm. */
-		do_threading(imap, a, results, usinguid, algo);
+		do_threading(imap, a, (size_t) results, usinguid, algo);
 	}
 
 	free_if(a);
@@ -8265,14 +8287,14 @@ static int handle_thread(struct imap_session *imap, char *s, int usinguid)
 
 static int handle_getquota(struct imap_session *imap)
 {
-	unsigned int quotatotal, quotaleft, quotaused;
+	unsigned long quotatotal, quotaleft, quotaused;
 
 	quotatotal = mailbox_quota(imap->mbox);
 	quotaleft = mailbox_quota_remaining(imap->mbox);
 	quotaused = quotatotal - quotaleft;
 
 	/* The RFC doesn't say this explicitly, but quota values are in KB, not bytes. */
-	imap_send(imap, "QUOTA \"\" (STORAGE %u %u)", quotaused / 1024, quotatotal / 1024);
+	imap_send(imap, "QUOTA \"\" (STORAGE %lu %lu)", quotaused / 1024, quotatotal / 1024);
 	return 0;
 }
 
@@ -8391,7 +8413,7 @@ static int imap_substitute_remote_command(struct imap_session *imap, char *s)
 
 	/* The remote command should always be *shorter* than the local one, because we're merely removing the prefix, wherever it may occur.
 	 * This allows us to do this in place, using memmove. */
-	len = strlen(s);
+	len = (int) strlen(s);
 	curpos = s;
 	while ((prefix = strstr(curpos, imap->virtprefix))) {
 		char *end = prefix + imap->virtprefixlen;
@@ -8428,9 +8450,9 @@ static int imap_substitute_remote_command(struct imap_session *imap, char *s)
 		}
 
 		replacements++;
-		len -= imap->virtprefixlen + 1; /* plus period */
-		lenleft = len - (prefix - s);
-		memmove(prefix, end + 1, lenleft);
+		len -= (int) imap->virtprefixlen + 1; /* plus period */
+		lenleft = len - (int) (prefix - s);
+		memmove(prefix, end + 1, (size_t) lenleft);
 		prefix[lenleft] = '\0';
 		curpos = prefix; /* Start where we left off, not at the beginning of the string */
 	}
