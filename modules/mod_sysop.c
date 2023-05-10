@@ -222,7 +222,6 @@ static void *sysop_handler(void *varg)
 	char cmdbuf[256];
 	int res;
 	struct pollfd pfd;
-	const char *histentry = NULL;
 	int sysopfdin, sysopfdout;
 	struct sysop_fd *fds = varg;
 
@@ -260,6 +259,7 @@ static void *sysop_handler(void *varg)
 			continue;
 		}
 		if (pfd.revents & POLLIN) {
+			const char *histentry = NULL;
 			ssize_t bytes_read = read(sysopfdin, buf, sizeof(buf));
 			if (bytes_read <= 0) {
 				bbs_debug(5, "read returned %ld\n", bytes_read);

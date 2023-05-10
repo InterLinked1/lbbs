@@ -227,7 +227,7 @@ static int send_response(struct http_req *req, int code)
 	free_if(var); \
 	var = strdup(value);
 
-static inline int parse_header(struct http_req *req, char *s)
+static int parse_header(struct http_req *req, char *s)
 {
 	char *tmp, *query, *header, *value = s;
 
@@ -556,7 +556,7 @@ static int range_parse(char *range, int size, int *a, int *b)
 
 static inline int path_file_exists(const char *dir, const char *file)
 {
-	char buf[256];
+	char buf[PATH_MAX + 10];
 	snprintf(buf, sizeof(buf), "%s%s", dir, file);
 	return bbs_file_exists(buf);
 }
@@ -628,7 +628,7 @@ static int dir_listing(const char *dir_name, const char *filename, int dir, void
 static void http_handler(struct bbs_node *node, int secure)
 {
 #ifdef HAVE_OPENSSL
-	SSL *ssl;
+	SSL *ssl = NULL;
 #endif
 	int res;
 	char buf[MAX_HTTP_REQUEST_SIZE];

@@ -55,7 +55,7 @@ struct mailbox {
 	unsigned int watchers;				/* Number of watchers for this mailbox. */
 	unsigned int quota;					/* Total quota for this mailbox */
 	unsigned int quotausage;			/* Cached quota usage calculation */
-	char maildir[256];					/* User's mailbox directory, on disk. */
+	char maildir[266];					/* User's mailbox directory, on disk. */
 	int maildirlen;						/* Length of maildir */
 	pthread_rwlock_t lock;				/* R/W lock for entire mailbox. R/W instead of a mutex, because POP write locks the entire mailbox, IMAP can just read lock. */
 	pthread_mutex_t uidlock;			/* Mutex for UID operations. */
@@ -243,7 +243,7 @@ struct alias {
 	const char *aliasdomain;
 	const char *target;
 	RWLIST_ENTRY(alias) entry;		/* Next alias */
-	char data[0];
+	char data[];
 };
 
 static RWLIST_HEAD_STATIC(aliases, alias);
@@ -253,7 +253,7 @@ struct listserv {
 	const char *domain;
 	const char *target;
 	RWLIST_ENTRY(listserv) entry;		/* Next alias */
-	char data[0];
+	char data[];
 };
 
 static RWLIST_HEAD_STATIC(listservs, listserv);
@@ -272,7 +272,7 @@ static void mailbox_cleanup(void)
 	RWLIST_WRLOCK_REMOVE_ALL(&aliases, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&listservs, entry, free);
 	stringlist_empty(&local_domains);
-}
+	}
 
 /*!
  * \brief Retrieve the user ID of the mailbox to which an alias maps
@@ -351,6 +351,7 @@ static void add_alias(const char *aliasname, const char *target)
 		RWLIST_UNLOCK(&aliases);
 		return;
 	}
+
 	strcpy(alias->data, aliasuser);
 	strcpy(alias->data + aliaslen + 1, target);
 	if (aliasdomain) {
@@ -427,7 +428,7 @@ const char *mailbox_expand_list(const char *user, const char *domain)
 				break;
 			} else if (domain && !strcmp(l->domain, domain)) { /* l->domain must match domain */
 				break;
-			} else if (!domain && !strcmp(domain, bbs_hostname())) { /* Empty domain matches the primary hostname */
+			} else if (!domain && !strcmp(l->domain, bbs_hostname())) { /* Empty domain matches the primary hostname */
 				break;
 			}
 		}
@@ -471,7 +472,7 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid, const char *n
 		}
 	}
 	if (!mbox) {
-		char newdirname[265];
+		char newdirname[277];
 		bbs_debug(3, "Loading mailbox for user %u for the first time\n", userid);
 		mbox = calloc(1, sizeof(*mbox));
 		if (ALLOC_FAILURE(mbox)) {

@@ -40,6 +40,7 @@
 
 #include "include/node.h"
 #include "include/system.h"
+#include "include/utils.h"
 #include "include/term.h"
 #include "include/user.h"
 

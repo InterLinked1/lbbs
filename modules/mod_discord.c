@@ -65,7 +65,7 @@ struct chan_pair {
 	struct u64snowflake_list members;	/* Members with permission to view channel */
 	struct u64snowflake_list roles;		/* Roles with permission to view channel */
 	RWLIST_ENTRY(chan_pair) entry;
-	char data[0];
+	char data[];
 };
 
 static RWLIST_HEAD_STATIC(mappings, chan_pair);
@@ -89,7 +89,7 @@ struct user {
 	const char *discriminator;
 	enum user_status status;
 	RWLIST_ENTRY(user) entry;
-	char data[0];
+	char data[];
 };
 
 static RWLIST_HEAD_STATIC(users, user);
@@ -152,6 +152,7 @@ static int add_pair(u64snowflake guild_id, const char *discord_channel, const ch
 		RWLIST_UNLOCK(&mappings);
 		return -1;
 	}
+
 	strcpy(cp->data, discord_channel); /* Safe */
 	strcpy(cp->data + dlen + 1, irc_channel); /* Safe */
 	cp->discord_channel = cp->data;
@@ -265,6 +266,7 @@ static struct user *add_user(struct discord_user *user, u64snowflake guild_id, c
 			RWLIST_UNLOCK(&users);
 			return NULL;
 		}
+
 		strcpy(u->data, username); /* Safe */
 		strcpy(u->data + ulen + 1, user->discriminator); /* Safe */
 		u->username = u->data;

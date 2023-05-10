@@ -503,6 +503,9 @@ Usage:
 
 * :code:`./bbs_dumper.sh livedump` - Obtain a backtrace from a currently running LBBS process
 
+Note that if the BBS was compiled with optimizations enabled (anything except -O0, e.g -Og, -O1, -O2, -O3), then some variables may be optimized out in the backtrace.
+If you submit an issue, please recompile the BBS without optimization (change to :code:`-O0` in the top-level Makefile) and get a backtrace from an unoptimized system. Otherwise, important details may be missing as the backtrace is incomplete.
+
 ABI Compatibility
 ~~~~~~~~~~~~~~~~~
 

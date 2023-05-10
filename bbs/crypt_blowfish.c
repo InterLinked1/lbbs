@@ -418,12 +418,17 @@ static void BF_encode(char *dst, const BF_word *src, int size)
 	const unsigned char *sptr = (const unsigned char *)src;
 	const unsigned char *end = sptr + size;
 	unsigned char *dptr = (unsigned char *)dst;
-	
+
 	do {
 		unsigned int c1, c2;
 		c1 = *sptr++;
 		*dptr++ = BF_itoa64[c1 >> 2];
 		c1 = (c1 & 0x03) << 4;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstrict-overflow"
+		/* This code is known to work, and I didn't write it, so I'm not touching it, lest it break */
+		/* Note: This pragma seems to only work for compiling, not linking, with -flto,
+		 * so the bbs Makefile passes -Wno-strict-overflow to the linker */
 		if (sptr >= end) {
 			*dptr++ = BF_itoa64[c1];
 			break;
@@ -437,6 +442,7 @@ static void BF_encode(char *dst, const BF_word *src, int size)
 			*dptr++ = BF_itoa64[c1];
 			break;
 		}
+#pragma GCC diagnostic pop
 
 		c2 = *sptr++;
 		c1 |= c2 >> 6;

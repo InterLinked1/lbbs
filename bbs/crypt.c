@@ -54,6 +54,7 @@ extern char *_crypt_gensalt_blowfish_rn(const char *prefix,
 #include <openssl/rand.h>
 
 #include "include/crypt.h"
+#include "include/utils.h"
 
 int bbs_rand_alnum(char *buf, size_t len)
 {

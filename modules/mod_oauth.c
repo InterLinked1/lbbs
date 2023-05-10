@@ -27,10 +27,9 @@
 #include "include/config.h"
 #include "include/curl.h"
 #include "include/linkedlists.h"
+#include "include/utils.h"
 #include "include/user.h"
-
 #include "include/oauth.h"
-
 #include "include/json.h"
 
 /* Helpful resources:

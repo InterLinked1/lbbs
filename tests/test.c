@@ -308,13 +308,13 @@ int test_client_expect_buf(int fd, int ms, const char *s, int line, char *buf, s
 	return -1;
 }
 
-int test_client_expect_eventually(int fd, int ms, const char *s, int line)
+int test_client_expect_eventually(int fd, int ms, const char *restrict s, int line)
 {
 	char buf[4096];
 	return test_client_expect_eventually_buf(fd, ms, s, line, buf, sizeof(buf));
 }
 
-int test_client_expect_eventually_buf(int fd, int ms, const char *s, int line, char *buf, size_t len)
+int test_client_expect_eventually_buf(int fd, int ms, const char *restrict s, int line, char *restrict buf, size_t len)
 {
 	struct pollfd pfd;
 
@@ -376,7 +376,7 @@ static void *io_relay(void *varg)
 	int found;
 	char c = '\n';
 
-	logfd = open("/tmp/test_lbbs.log", O_CREAT | O_TRUNC);
+	logfd = open("/tmp/test_lbbs.log", O_CREAT | O_TRUNC, 0600);
 	if (logfd < 0) {
 		bbs_error("open failed: %s\n", strerror(errno));
 		return NULL;

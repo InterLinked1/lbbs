@@ -310,7 +310,7 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 	return mod;
 }
 
-static void check_dependencies(const char *resource_in, unsigned int suppress_logging)
+static void check_dependencies(const char *restrict resource_in, unsigned int suppress_logging)
 {
 	char fn[PATH_MAX];
 	size_t resource_in_len = strlen(resource_in);
@@ -447,7 +447,7 @@ static int start_resource(struct bbs_module *mod)
 }
 
 /*! \brief loads a resource based upon resource_name. */
-static int load_resource(const char *resource_name, unsigned int suppress_logging)
+static int load_resource(const char *restrict resource_name, unsigned int suppress_logging)
 {
 	int res;
 	struct bbs_module *mod;
@@ -491,7 +491,7 @@ static int load_resource(const char *resource_name, unsigned int suppress_loggin
 static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int force, int *usecount, struct stringlist *removed);
 
 /*! \note modules list must be locked when calling */
-static int unload_dependencies(struct bbs_module *mod, struct stringlist *removed)
+static int unload_dependencies(struct bbs_module *mod, struct stringlist *restrict removed)
 {
 	int usecount;
 	struct bbs_module *m;
@@ -563,7 +563,7 @@ static void dec_refcounts(struct bbs_module *mod)
 	}
 }
 
-static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int force, int *usecount, struct stringlist *removed)
+static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int force, int *usecount, struct stringlist *restrict removed)
 {
 	int res;
 
@@ -620,7 +620,7 @@ static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int for
 	return mod;
 }
 
-static int unload_resource(const char *resource_name, int force, struct stringlist *removed)
+static int unload_resource(const char *resource_name, int force, struct stringlist *restrict removed)
 {
 	struct bbs_module *mod;
 	int usecount = 0;

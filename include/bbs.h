@@ -34,9 +34,7 @@
 #if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
 #include <stdlib.h>
 #include <string.h>
-#endif
-#if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
-	#include <stdio.h> /* FILE* cannot be forward declared, since it's a typedef */
+#include <stdio.h> /* FILE* cannot be forward declared, since it's a typedef */
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <fcntl.h>
@@ -68,6 +66,7 @@
 
 /* Global undeclarations */
 /* Forbid usage of unsafe functions */
+#if defined(BBS_IN_CORE)
 #define gets(s) Do_not_use_gets__use_fgets
 #define strcat(dst, src) Do_not_use_strcat__use_strncat
 #define sprintf(fmt, ...) Do_not_use_sprintf__use_snprintf
@@ -80,6 +79,7 @@
 #define ctime(a) Do_not_use_ctime__use_ctime_r
 #define ptsname(fd) Do_not_use_ptsname__use_ptsname_r
 #define strncpy(dest, src, size) Do_not_use_strncpy__use_safe_strncpy
+
 #ifndef BBS_MAIN_FILE
 /* Allow printf only in bbs.c */
 #define printf(...) Do_not_use_printf__use_bbs_printf
@@ -92,7 +92,9 @@
 #define pthread_create(a, b, c, d) Do_not_use_pthread_create__use_bbs_pthread_create
 #define pthread_create_detached(a, b, c, d) Do_not_use_pthread_create__use_bbs_pthread_create_detached->fail(a, b, c, d)
 #define pthread_join(a, b) Do_not_use_pthread_join__use_bbs_pthread_join
-#endif
+#endif /* BBS_MAIN_FILE */
+#endif /* BBS_IN_CORE */
+
 /* BUGBUG FIXME XXX ^^^ For some reason adding ->fail(a, b, c, d) etc. on the end
  * (which does force an undeclared function warning) causes an expected = , ; asm or __attribute__ before -> token ???
  *
@@ -269,31 +271,6 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 	if (strrterm_str) { \
 		*strrterm_str = '\0'; \
 	} \
-}
-
-/*!
- * \brief Size-limited null-terminating string copy.
- * \param dst The destination buffer.
- * \param src The source string
- * \param size The size of the destination buffer
- * This is similar to \a strncpy, with two important differences:
- * - the destination buffer will \b always be null-terminated
- * - the destination buffer is not filled with zeros past the copied string length
- * These differences make it slightly more efficient, and safer to use since it will
- * not leave the destination buffer unterminated. There is no need to pass an artificially
- * reduced buffer size to this function (unlike \a strncpy), and the buffer does not need
- * to be initialized to zeroes prior to calling this function.
- */
-static inline void safe_strncpy(char *dst, const char *src, size_t size)
-{
-	while (*src && size) {
-		*dst++ = *src++;
-		size--;
-	}
-	if (__builtin_expect(!size, 0)) {
-		dst--;
-	}
-	*dst = '\0';
 }
 
 /*!

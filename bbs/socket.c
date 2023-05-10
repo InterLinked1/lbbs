@@ -665,7 +665,7 @@ int __bbs_start_tcp_listener(int port, const char *name, void *(*handler)(void *
 
 int __bbs_start_tcp_listener3(int port, int port2, int port3, const char *name, const char *name2, const char *name3, void *(*handler)(void *varg), void *module)
 {
-	int res;
+	int res = -1;
 
 	if (port) {
 		res = __bbs_start_tcp_listener(port, name, handler, module);

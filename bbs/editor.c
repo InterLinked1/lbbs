@@ -29,7 +29,7 @@
 #include "include/term.h"
 #include "include/editor.h"
 
-int bbs_line_editor(struct bbs_node *node, const char *instr, char *buf, size_t len)
+int bbs_line_editor(struct bbs_node *node, const char *restrict instr, char *restrict buf, size_t len)
 {
 	char *tmp, *ptr = buf;
 	int otherdata = 0, nlflag = 0;
@@ -108,7 +108,7 @@ int bbs_line_editor(struct bbs_node *node, const char *instr, char *buf, size_t 
 
 /* #define DEBUG_PAGING */
 
-static int strcount(const char *s, char c)
+static int strcount(const char *restrict s, char c)
 {
 	int count = 0;
 	while (*s) {
@@ -123,7 +123,7 @@ static int strcount(const char *s, char c)
 #define PAGE_COLS(node) (node->cols ? node->cols : 80)
 #define PAGE_ROWS(node) (node->rows ? node->rows : 24)
 
-int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const char *s, size_t len)
+int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const char *restrict s, size_t len)
 {
 	/* Retrieve the terminal dimensions each time, because they could change at any time */
 	unsigned int eff_width = PAGE_COLS(node);

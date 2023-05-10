@@ -80,7 +80,7 @@ int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
 	return newlen;
 }
 
-int bbs_parse_url(struct bbs_url *url, char *s)
+int bbs_parse_url(struct bbs_url *url, char *restrict s)
 {
 	char *tmp;
 
@@ -231,8 +231,12 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host)
 		}
 	}
 	if (host) {
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+		/* avoid warning: writing 1 byte into a region of size 0 */
+		/* XXX Requires adding -Wno-stringop-overflow to bbs Makefile with -flto */
 		if (domain) {
 			*(domain - 1) = '\0';
+#pragma GCC diagnostic pop
 			*host = domain;
 		} else {
 			*host = NULL;
@@ -313,7 +317,7 @@ int bbs_dir_traverse_items(const char *path, int (*on_file)(const char *dir_name
 		int is_file = 0;
 		int is_dir = 0;
 
-if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			continue;
 		}
 		/* If the dirent structure has a d_type use it to determine if we are dealing with
@@ -745,6 +749,7 @@ cleanup:
 	return s;
 }
 
+/* XXX Have to pass -Wno-aggregate-return to the linker for this function, with -flto */
 #pragma GCC diagnostic ignored "-Waggregate-return"
 struct timeval bbs_tvnow(void)
 {
@@ -841,7 +846,7 @@ void print_days_elapsed(int start, int end, char *buf, size_t len)
 	snprintf(buf, len, "%d day%s, %d hr%s, %d min%s, %d sec%s", days, ESS(days), hr, ESS(hr), min, ESS(min), sec, ESS(sec));
 }
 
-int bbs_printable_strlen(const char *s)
+int bbs_printable_strlen(const char *restrict s)
 {
 	int c = 0;
 	while (*s) {
@@ -878,7 +883,7 @@ int bbs_printable_strlen(const char *s)
 	return c;
 }
 
-int bbs_str_process_backspaces(const char *s, char *buf, size_t len)
+int bbs_str_process_backspaces(const char *restrict s, char *restrict buf, size_t len)
 {
 	int i = 0;
 	while (*s) {
@@ -903,7 +908,7 @@ int bbs_str_process_backspaces(const char *s, char *buf, size_t len)
 	return 0;
 }
 
-int bbs_str_safe_print(const char *s, char *buf, size_t len)
+int bbs_str_safe_print(const char *restrict s, char *restrict buf, size_t len)
 {
 	char ascii_num[7];
 
@@ -935,7 +940,7 @@ int bbs_str_safe_print(const char *s, char *buf, size_t len)
 	return 0;
 }
 
-void bbs_dump_string(const char *s)
+void bbs_dump_string(const char *restrict s)
 {
 	char buf[1024];
 	char *pos = buf;
@@ -970,7 +975,7 @@ void bbs_dump_string(const char *s)
 	bbs_debug(8, "String Dump: '%s'\n", buf);
 }
 
-int bbs_term_line(char *c)
+int bbs_term_line(char *restrict c)
 {
 	int len = 0;
 
@@ -991,7 +996,20 @@ int bbs_term_line(char *c)
 	return len;
 }
 
-int bbs_strcpy_nospaces(const char *s, char *buf, size_t len)
+/* XXX Have to pass -Wno-null-dereference to the linker for this function with -flto */
+void safe_strncpy(char *restrict dst, const char *restrict src, size_t size)
+{
+	while (*src && size) {
+		*dst++ = *src++;
+		size--;
+	}
+	if (unlikely(!size)) {
+		dst--;
+	}
+	*dst = '\0';
+}
+
+int bbs_strcpy_nospaces(const char *restrict s, char *restrict buf, size_t len)
 {
 	/* Copy the username, not including spaces */
 	while (*s && --len > 1) {
@@ -1004,7 +1022,7 @@ int bbs_strcpy_nospaces(const char *s, char *buf, size_t len)
 	return len > 1 ? 0 : -1;
 }
 
-void bbs_strreplace(char *s, char find, char repl)
+void bbs_strreplace(char *restrict s, char find, char repl)
 {
 	while (*s) {
 		if (*s == find) {
@@ -1014,7 +1032,7 @@ void bbs_strreplace(char *s, char find, char repl)
 	}
 }
 
-int bbs_str_isprint(const char *s)
+int bbs_str_isprint(const char *restrict s)
 {
 	while (*s) {
 		/* isprint doesn't include LF */
@@ -1027,7 +1045,7 @@ int bbs_str_isprint(const char *s)
 	return 1;
 }
 
-int bbs_str_anyprint(const char *s)
+int bbs_str_anyprint(const char *restrict s)
 {
 	while (*s) {
 		if (isprint(*s) && !isspace(*s)) {

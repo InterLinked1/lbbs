@@ -882,6 +882,7 @@ static int try_send(struct smtp_session *smtp, const char *hostname, int port, i
 		ssl = ssl_client_new(sfd, &rfd, &wfd, hostname);
 		if (!ssl) {
 			bbs_debug(3, "Failed to set up TLS\n");
+			res = 1;
 			goto cleanup; /* Abort if we failed to set up implicit TLS */
 		}
 	}
@@ -2437,7 +2438,7 @@ static int msg_to_filename(const char *path, int uid, char *buf, size_t len)
 static int handle_burl(struct smtp_session *smtp, char *s)
 {
 	char sentdir[256];
-	char msgfile[256];
+	char msgfile[512];
 	char *imapurl, *last;
 	char *user, *host, *location, *uidvalidity, *uidstr;
 	char *tmp;
@@ -2832,7 +2833,7 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 static void smtp_handler(struct bbs_node *node, int msa, int secure)
 {
 #ifdef HAVE_OPENSSL
-	SSL *ssl;
+	SSL *ssl = NULL;
 #endif
 	int rfd, wfd;
 	struct smtp_session smtp;

@@ -878,6 +878,18 @@ int main(int argc, char *argv[])
 	}
 	CHECK_INIT(load_modules());
 
+#ifdef SILLY_OPTIMIZATIONS
+	/* Many modules (and the core) don't free their configs, and if a module never rereads the config,
+	 * this memory is sitting around for no reason. Free all the configs after startup finishes,
+	 * any rereads will require a new parse the first time, but after that, it will linger around.
+	 * This is a minor optimization to free a small amount of memory that may never be needed again.
+	 * XXX config.c returns configs (not locked) to modules, reference counting should be utilized
+	 * to prevent destroying a config that may be in use (previously not an issue, since only done at shutdown)
+	 * Ideally, if modules did this themselves (explicitly destroyed the config), that would be race free.
+	 */
+	bbs_configs_free_all();
+#endif
+
 	fully_started = 1;
 	bbs_verb(1, "%s\n", COLOR(COLOR_SUCCESS) "BBS is fully started" COLOR_RESET);
 	bbs_event_dispatch(NULL, EVENT_STARTUP);

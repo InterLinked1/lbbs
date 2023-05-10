@@ -32,6 +32,8 @@
 #include <sys/resource.h> /* use getrlimit */
 #include <dirent.h>
 
+#include "include/utils.h"
+
 #define FDLEAKS_NUM_FDS 1024
 
 #if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1

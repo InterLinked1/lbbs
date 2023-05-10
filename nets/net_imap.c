@@ -387,6 +387,10 @@ static void send_untagged_expunge(struct imap_session *imap, int silent, unsigne
 	size_t slen, slen2;
 	int delay;
 
+	if (!length) {
+		return;
+	}
+
 	/* Send VANISHED responses to any clients that enabled QRESYNC, and normal EXPUNGE responses to everyone else. */
 	RWLIST_RDLOCK(&sessions);
 	RWLIST_TRAVERSE(&sessions, s, entry) {
@@ -400,7 +404,7 @@ static void send_untagged_expunge(struct imap_session *imap, int silent, unsigne
 		pthread_mutex_lock(&s->lock);
 		delay = s->idle || s == imap ? 0 : 1; /* Only send immediately if in IDLE, or if it's the current client (which obviously is NOT idling) */
 		if (s->qresync) { /* VANISHED */
-			if (length && !str) {
+			if (!str) {
 				/* Don't waste time generating a VANISHED response in advance if we're not going to send it to any clients.
 				 * Most clients don't even support QRESYNC, so most of the time this won't be even be useful.
 				 * Do it automatically as needed if/when we encounter the first supporting client. */
@@ -418,7 +422,11 @@ static void send_untagged_expunge(struct imap_session *imap, int silent, unsigne
 					slen = slen2;
 				}
 			}
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+			/* gcc seems to think that slen can be used uninitialized here.
+			 * It can't be, since !str will be true and we'll initialize slen there. */
 			bbs_write(delay ? s->pfd[1] : s->wfd, str, (unsigned int) slen);
+#pragma GCC diagnostic pop
 			imap_debug(4, "%p <= %s\r\n", s, str);
 		} else { /* EXPUNGE */
 			int i;
@@ -950,7 +958,7 @@ static int __parse_flags_string(struct imap_session *imap, char *s, const char *
  * \param f
  * \param[out] keywords Pointer to beginning of keywords, if any
  */
-static int parse_flags_letters(const char *f, const char **keywords)
+static int parse_flags_letters(const char *restrict f, const char **keywords)
 {
 	int flags = 0;
 
@@ -1214,7 +1222,7 @@ static int load_acl_file(const char *filename, const char *matchstr, size_t matc
 	char aclbuf[72];
 	FILE *fp;
 	int found_anyone = 0, found_authenticated = 0;
-	int anyone_acl, authenticated_acl;
+	int anyone_acl = 0, authenticated_acl = 0;
 	int negative_acl = 0;
 	int res = -1; /* If no match for this user, we still need to use the defaults. */
 
@@ -1337,7 +1345,7 @@ done:
 
 static int getacl(struct imap_session *imap, const char *directory, const char *mailbox)
 {
-	char fullname[256];
+	char fullname[261]; /* + .acl */
 	char buf[256];
 	FILE *fp;
 	struct dyn_str dynstr;
@@ -1376,8 +1384,8 @@ static pthread_mutex_t acl_lock;
 
 static int setacl(struct imap_session *imap, const char *directory, const char *mailbox, const char *user, const char *newacl)
 {
-	char fullname[256];
-	char fullname2[256];
+	char fullname[261]; /* + .acl */
+	char fullname2[264]; /* + .aclnew */
 	char findstr[64];
 	char buf[256];
 	FILE *fp, *fp2;
@@ -1748,6 +1756,7 @@ static inline int parse_size_from_filename(const char *filename, unsigned long *
 	const char *sizestr = strstr(filename, ",S=");
 	if (!sizestr) {
 		bbs_error("Missing size in file %s\n", filename);
+		*size = 0;
 		return -1;
 	}
 	sizestr += STRLEN(",S=");
@@ -1770,7 +1779,7 @@ static int imap_expunge(struct imap_session *imap, int silent)
 	const char *dir_name = imap->curdir;
 	const char *filename;
 	int oldflags;
-	char fullpath[256];
+	char fullpath[516];
 	unsigned long size;
 	unsigned int uid;
 	unsigned long modseq;
@@ -1867,7 +1876,7 @@ static int imap_traverse(const char *path, int (*on_file)(const char *dir_name, 
 {
 	struct dirent *entry, **entries;
 	int files, fno = 0;
-	int res;
+	int res = 0;
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
 	files = scandir(path, &entries, NULL, uidsort);
@@ -2574,7 +2583,7 @@ cleanup:
 	return -1;
 }
 
-static void str_tolower(char *s)
+static void str_tolower(char *restrict s)
 {
 	while (*s) {
 		*s = (char) tolower(*s);
@@ -2600,7 +2609,7 @@ static void list_scandir(struct imap_session *imap, const char *listscandir, int
 			int myacl, flags = 0;
 			char fulldir[257];
 			char mailboxbuf[256];
-			char relativepath[257];
+			char relativepath[512];
 			const char *mailboxname = entry->d_name;
 
 			if (ns != NAMESPACE_PRIVATE) { /* Skip special directories in the root maildir */
@@ -3030,7 +3039,11 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 		/* A bit non-optimal since we'll fail 2 fopens if a user isn't using virtual mailboxes */
 		fp2 = fopen(virtcachefile, "r");
 	}
-	if (!fp2 || forcerescan) {
+
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+	/* gcc thinks fp2 can be used uninitialized here. If it is, the conditional will short circuit, so it can't be. */
+	if (forcerescan || !fp2) {
+#pragma GCC diagnostic pop /* -Wcast-qual */
 		FILE *fp = fopen(virtfile, "r");
 		if (!fp) {
 			pthread_mutex_unlock(&virt_lock);
@@ -6855,8 +6868,8 @@ static int sort_compare(const void *aptr, const void *bptr, void *varg)
 	const unsigned int b = *bp;
 	struct imap_sort *sort = varg;
 
-	char filename_a[256];
-	char filename_b[256];
+	char filename_a[516];
+	char filename_b[516];
 	char buf1[128], buf2[128];
 	const char *criterion;
 	int reverse = 0;

@@ -24,6 +24,7 @@
 
 #include "include/linkedlists.h"
 #include "include/module.h"
+#include "include/utils.h"
 #include "include/event.h"
 #include "include/node.h"
 #include "include/user.h"

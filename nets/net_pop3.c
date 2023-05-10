@@ -158,7 +158,7 @@ static int mark_deleted(struct pop3_session *pop3, int message)
 	return 0;
 }
 
-static inline int is_deleted(struct pop3_session *pop3, unsigned int message)
+static int is_deleted(struct pop3_session *pop3, unsigned int message)
 {
 	unsigned int element, bit;
 
@@ -274,8 +274,8 @@ static int pop3_traverse(const char *path, int (*on_file)(const char *dir_name, 
 
 static int on_delete(const char *dir_name, const char *filename, struct pop3_session *pop3, int number, int msgfilter)
 {
-	char fullpath[256];
-	char newdir[256];
+	char fullpath[516];
+	char newdir[267];
 	unsigned int msguid;
 
 	UNUSED(msgfilter);
@@ -448,7 +448,7 @@ static int on_retr(const char *dir_name, const char *filename, struct pop3_sessi
 	FILE *fp;
 	unsigned int res, size, realsize;
 	const char *sizestr;
-	char fullpath[256];
+	char fullpath[516];
 	off_t offset;
 
 	if (number != msgfilter) {
@@ -739,7 +739,7 @@ static void handle_client(struct pop3_session *pop3)
 static void pop3_handler(struct bbs_node *node, int secure)
 {
 #ifdef HAVE_OPENSSL
-	SSL *ssl;
+	SSL *ssl = NULL;
 #endif
 	int rfd, wfd;
 	struct pop3_session pop3;

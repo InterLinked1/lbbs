@@ -277,6 +277,7 @@ static void *ftp_handler(void *varg)
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 
 	for (;;) {
+		next = NULL;
 		res = bbs_readline(ftp->rfd, &rldata, "\r\n", node->user ? bbs_transfer_timeout() : 15000); /* After some number of seconds of inactivity, a client times out */
 		if (res <= 0) {
 			break;

@@ -601,6 +601,7 @@ static void info_cb(const char *username, char *const fields[], int row, void *d
 	UNUSED(data);
 }
 
+#pragma GCC diagnostic ignored "-Wstack-protector"
 static void chanserv_info(const char *username, char *msg)
 {
 	int res;
@@ -1010,7 +1011,6 @@ static void event_cb(const char *cmd, const char *channel, const char *username,
 	}
 }
 
-#pragma GCC diagnostic ignored "-Wstack-protector"
 static void chanserv_init(void)
 {
 	const char *sql = "SELECT name, topic, modelock, guard, keeptopic FROM channels WHERE guard > ?";
@@ -1043,7 +1043,6 @@ static void chanserv_init(void)
 		my_bool bind_null[num_fields];
 		MYSQL_TIME bind_dates[num_fields];
 		int rownum = 0;
-#pragma GCC diagnostic pop
 
 		memset(results, 0, sizeof(results));
 		memset(lengths, 0, sizeof(lengths));
@@ -1127,6 +1126,7 @@ static int load_module(void)
 	chanserv_init();
 	return 0;
 }
+#pragma GCC diagnostic pop
 
 static int unload_module(void)
 {

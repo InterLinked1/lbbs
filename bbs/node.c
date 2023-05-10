@@ -1250,7 +1250,6 @@ void bbs_node_begin(struct bbs_node *node)
 
 void bbs_node_exit(struct bbs_node *node)
 {
-	bbs_node_lock(node);
 	if (node->active) {
 		bbs_node_unlock(node);
 		/* User quit: unlink and free */

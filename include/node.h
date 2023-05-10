@@ -528,7 +528,7 @@ void bbs_node_begin(struct bbs_node *node);
 /*! \brief Stop handling a node
  * \note Not needed if you use bbs_node_handler
  */
-void bbs_node_exit(struct bbs_node *node);
+void bbs_node_exit(struct bbs_node *node) __attribute__ ((nonnull (1))) ;
 
 /*!
  * \brief Top-level node handler

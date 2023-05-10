@@ -26,6 +26,7 @@
 #include "include/user.h"
 #include "include/auth.h" /* use bbs_user_info_by_username */
 #include "include/linkedlists.h"
+#include "include/utils.h"
 
 const char *bbs_username(struct bbs_user *user)
 {

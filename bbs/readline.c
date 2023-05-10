@@ -40,7 +40,7 @@ void bbs_readline_init(struct readline_data *rldata, char *buf, int len)
 	rldata->leftover = 0;
 }
 
-static char *readline_pre_read(struct readline_data *rldata, const char *delim, int *resptr)
+static char *readline_pre_read(struct readline_data *restrict rldata, const char *delim, int *resptr)
 {
 	char *firstdelim = NULL;
 
@@ -71,7 +71,7 @@ static char *readline_pre_read(struct readline_data *rldata, const char *delim, 
 	return firstdelim;
 }
 
-static int readline_post_read(struct readline_data *rldata, const char *delim, char *firstdelim, int res)
+static int readline_post_read(struct readline_data *restrict rldata, const char *delim, char *restrict firstdelim, int res)
 {
 	int used, delimlen;
 
@@ -94,7 +94,7 @@ static int readline_post_read(struct readline_data *rldata, const char *delim, c
 
 #ifdef BBS_IN_CORE
 /*! \brief Helper function to read a single line from a file descriptor, with a timeout (for any single read) */
-int bbs_readline(int fd, struct readline_data *rldata, const char *delim, int timeout)
+int bbs_readline(int fd, struct readline_data *restrict rldata, const char *restrict delim, int timeout)
 {
 	int res;
 	char *firstdelim;
@@ -124,7 +124,7 @@ int bbs_readline(int fd, struct readline_data *rldata, const char *delim, int ti
 	return readline_post_read(rldata, delim, firstdelim, res);
 }
 
-int bbs_readline_getn(int fd, int destfd, struct readline_data *rldata, int timeout, int n)
+int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata, int timeout, int n)
 {
 	int res, wres;
 	unsigned int left_in_buffer;
@@ -176,7 +176,7 @@ int bbs_readline_getn(int fd, int destfd, struct readline_data *rldata, int time
 }
 #endif /* BBS_IN_CORE */
 
-int bbs_readline_append(struct readline_data *rldata, const char *delim, char *buf, size_t len, int *ready)
+int bbs_readline_append(struct readline_data *restrict rldata, const char *restrict delim, char *restrict buf, size_t len, int *restrict ready)
 {
 	char *firstdelim;
 	int res, drain = 0;

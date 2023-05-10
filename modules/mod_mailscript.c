@@ -413,7 +413,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 				break;
 			} else {
 				retval = do_action(mproc, lineno, s);
-			}
+				}
 		} else if (STARTS_WITH(s, "IF ")) {
 			int cond, negate = 0;
 			s += STRLEN("IF ");
@@ -447,7 +447,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 static int mailscript(struct smtp_msg_process *mproc)
 {
 	int res;
-	char fullfile[256];
+	char fullfile[265];
 	char fullfile2[256];
 	const char *usermaildir;
 

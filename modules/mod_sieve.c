@@ -52,7 +52,7 @@ struct sieve_exec {
 	char *subaddress;
 	char *script_data;
 	char *errormsg;
-	char scriptpath[256];
+	char scriptpath[264];
 	struct smtp_msg_process *mproc;
 	unsigned int error_parse:1;
 	unsigned int error_runtime:1;

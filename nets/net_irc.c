@@ -114,7 +114,7 @@ struct irc_operator {
 	const char *name;
 	const char *password;
 	RWLIST_ENTRY(irc_operator) entry;	/* Next operator */
-	char data[0];
+	char data[];
 };
 
 static RWLIST_HEAD_STATIC(operators, irc_operator);	/* Container for all operators */
@@ -204,7 +204,7 @@ struct irc_channel {
 	RWLIST_ENTRY(irc_channel) entry;	/* Next channel */
 	unsigned int relay:1;				/* Enable relaying */
 	pthread_mutex_t lock;				/* Channel lock */
-	char data[0];						/* Flexible struct member for channel name */
+	char data[];						/* Flexible struct member for channel name */
 };
 
 static RWLIST_HEAD_STATIC(channels, irc_channel);	/* Container for all channels */
@@ -243,6 +243,7 @@ static int add_operator(const char *name, const char *password)
 		RWLIST_UNLOCK(&operators);
 		return -1;
 	}
+
 	strcpy(operator->data, name); /* Safe */
 	operator->name = operator->data;
 	if (password) {

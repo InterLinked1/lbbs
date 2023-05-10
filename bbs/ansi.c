@@ -24,7 +24,7 @@
 #include "include/ansi.h"
 #include "include/utils.h" /* use bbs_str_safe_print */
 
-int bbs_ansi_strip(const char *in, int inlen, char *out, size_t outlen, int *strippedlen)
+int bbs_ansi_strip(const char *restrict in, int inlen, char *restrict out, size_t outlen, int *restrict strippedlen)
 {
 	int outindex = 0;
 

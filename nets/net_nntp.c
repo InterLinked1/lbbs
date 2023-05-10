@@ -275,7 +275,7 @@ static int nntp_traverse2(const char *path, int (*on_file)(const char *dir_name,
 {
 	struct dirent *entry, **entries;
 	int files, fno = 0;
-	int res, msgno;
+	int res = 0;
 
 	/* use scandir instead of opendir/readdir, so the listing is ordered */
 	files = scandir(path, &entries, NULL, alphasort);
@@ -284,6 +284,7 @@ static int nntp_traverse2(const char *path, int (*on_file)(const char *dir_name,
 		return -1;
 	}
 	while (fno < files && (entry = entries[fno++])) {
+		int msgno;
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			goto cleanup;
 		}
@@ -572,7 +573,7 @@ static int find_header(FILE *fp, const char *header, char **ptr, char *buf, size
 static int on_xover(const char *dir_name, const char *filename, struct nntp_session *nntp, int number)
 {
 	FILE *fp;
-	char fullpath[256];
+	char fullpath[3 * 256];
 	char subjbuf[256], authorbuf[256], datebuf[256], bytecountbuf[12] = "";
 	char *subject = subjbuf, *author = authorbuf, *date = datebuf, *msgid = NULL, *references = NULL, *bytecount = bytecountbuf, *linecount = NULL;
 	struct stat st;
@@ -1305,7 +1306,7 @@ static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 static void nntp_handler(struct bbs_node *node, int secure, int reader)
 {
 #ifdef HAVE_OPENSSL
-	SSL *ssl;
+	SSL *ssl = NULL;
 #endif
 	int rfd, wfd;
 	struct nntp_session nntp;

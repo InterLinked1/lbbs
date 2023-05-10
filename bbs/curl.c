@@ -60,7 +60,7 @@ struct curl_response_data {
 
 #define MAX_CURL_DOWNLOAD_SIZE 10000000 /* 10 MB */
 
-static size_t WriteMemoryCallback(void *ptr, size_t size, size_t nmemb, void *data)
+static size_t WriteMemoryCallback(void *restrict ptr, size_t size, size_t nmemb, void *restrict data)
 {
 	register size_t realsize = size * nmemb;
 	struct curl_response_data *respdata = data;
@@ -139,7 +139,7 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 {
 	int res, cres = -1;
 	struct curl_response_data response;
-	int http_code;
+	long http_code;
 
 	memset(&response, 0, sizeof(response));
 
@@ -170,11 +170,11 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 			/* We're already at the end of the file, so we can get the file size
 			 * just from the current position. */
 			long int sz = ftell(fp);
-			bbs_debug(4, "CURL Response Code: %d - %ld bytes (%s)\n", http_code, sz, c->url);
+			bbs_debug(4, "CURL Response Code: %ld - %ld bytes (%s)\n", http_code, sz, c->url);
 		} else {
-			bbs_debug(4, "CURL Response Code: %d - %ld bytes (%s)\n", http_code, response.len, c->url);
+			bbs_debug(4, "CURL Response Code: %ld - %ld bytes (%s)\n", http_code, response.len, c->url);
 		}
-		c->http_code = http_code;
+		c->http_code = (int) http_code;
 		failed = STARTS_WITH(c->url, "http") ? !HTTP_RESPONSE_SUCCESS(http_code) : http_code != 0;
 		if (c->forcefail && failed) {
 			bbs_debug(4, "Response failed, freeing response (length %ld)\n", response.len);

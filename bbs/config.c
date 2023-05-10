@@ -28,6 +28,7 @@
 
 #include "include/linkedlists.h"
 #include "include/config.h"
+#include "include/utils.h"
 
 struct bbs_keyval {
 	char *key;

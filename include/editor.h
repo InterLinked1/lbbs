@@ -27,7 +27,7 @@ struct bbs_node;
  * \param len Size of buf
  * \retval -1 on disconnect, 0 on success (continue processing), 1 on abort (discard buffer)
  */
-int bbs_line_editor(struct bbs_node *node, const char *instr, char *buf, size_t len);
+int bbs_line_editor(struct bbs_node *node, const char *restrict instr, char *restrict buf, size_t len);
 
 struct pager_info {
 	int line;
@@ -46,7 +46,7 @@ struct pager_info {
  * \retval 2 on quit, 1 on timeout, 0 if input received, -1 on failure
  * \note The return values from this function are non-standard, please pay attention!
  */
-int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const char *s, size_t len);
+int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const char *restrict s, size_t len);
 
 /*! \brief Display a file to a node */
 int bbs_node_term_browse(struct bbs_node *node, const char *filename);

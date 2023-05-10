@@ -347,11 +347,10 @@ int bbs_node_spy(int fdin, int fdout, unsigned int nodenum)
 }
 
 /*! \brief Emulated speed control for non-serial file descriptors */
-static ssize_t slow_write(int fd, int fd2, const char *__restrict buf, size_t len, unsigned int sleepms)
+static ssize_t slow_write(int fd, int fd2, const char *restrict buf, size_t len, unsigned int sleepms)
 {
 	size_t c;
 	ssize_t total_bytes = 0;
-	ssize_t res2 = 0;
 
 	/* This function exists because it is not possible to use termios
 	 * to set the speed of non-serial terminals.
@@ -386,7 +385,7 @@ static ssize_t slow_write(int fd, int fd2, const char *__restrict buf, size_t le
 	 */
 
 	for (c = 0; c < len; c++) {
-		ssize_t res;
+		ssize_t res, res2 = 0;
 		if (c) {
 			usleep(sleepms); /* delay in us between each character for I/O */
 		}
@@ -467,7 +466,7 @@ void *pty_master(void *varg)
 	/* Relay data between terminal (socket side) and pty master */
 	for (;;) {
 		unsigned int speed = 0;
-		int spy = 0, spyfdin, spyfdout;
+		int spy = 0, spyfdin, spyfdout = -1;
 		fds[0].fd = rfd;
 		fds[1].fd = amaster;
 		fds[0].events = fds[1].events = POLLIN;
@@ -477,7 +476,7 @@ void *pty_master(void *varg)
 		bbs_node_pty_lock(node);
 		speed = node->speed;
 		spy = node->spy;
-		if (node->spy) {
+		if (spy) {
 			/* You might think that a limitation of this is that we only check this at the begining of
 			 * each poll loop here, i.e. if the sysop attaches to a node mid-poll,
 			 * then the spying won't take effect until the next loop.
@@ -653,7 +652,7 @@ void *pty_master(void *varg)
 			}
 			if (speed) {
 				/* Slow write to both real socket and spying fd simultaneously */
-				bytes_wrote = slow_write(wfd, spy ? spyfdout : -1, relaybuf, (size_t) bytes_read, speed);
+				bytes_wrote = slow_write(wfd, spyfdout, relaybuf, (size_t) bytes_read, speed);
 			} else {
 				bytes_wrote = write(wfd, relaybuf, (size_t) bytes_read);
 				if (spy && bytes_wrote == bytes_read) {

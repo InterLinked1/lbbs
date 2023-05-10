@@ -21,4 +21,4 @@
  * \param outlen Size of out. Should be at least inlen, but no more than it.
  * \param strippedlen Will be set to the actual length of the stripped output, not including null terminator.
  */
-int bbs_ansi_strip(const char *in, int inlen, char *out, size_t outlen, int *strippedlen);
+int bbs_ansi_strip(const char *restrict in, int inlen, char *restrict out, size_t outlen, int *restrict strippedlen);

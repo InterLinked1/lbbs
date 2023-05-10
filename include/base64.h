@@ -20,7 +20,7 @@
  * \param endl Line ending to use (CR LF or just LF)
  * \retval -1 on failure, 0 on success *
  */
-int base64_encode_file(const char *filename, FILE *outputfile, const char *endl);
+int base64_encode_file(const char *restrict filename, FILE *restrict outputfile, const char *restrict endl);
 
 /*!
  * \brief base64 decode a string
@@ -29,7 +29,7 @@ int base64_encode_file(const char *filename, FILE *outputfile, const char *endl)
  * \param outlen Pointer to int in which output length will be stored
  * \returns decoded string on success, NULL on failure
  */
-unsigned char *base64_decode(const unsigned char *data, int input_length, int *outlen);
+unsigned char *base64_decode(const unsigned char *restrict data, int input_length, int *restrict outlen);
 
 /*!
  * \brief base64 encode a buffer (which may contain NUL characters as part of the data itself)
@@ -38,4 +38,4 @@ unsigned char *base64_decode(const unsigned char *data, int input_length, int *o
  * \param[out] outlen Length of encoded data
  * \retval encoded data on success, NULL on failure
 */
-char *base64_encode(const char *data, int input_length, int *outlen);
+char *base64_encode(const char *restrict data, int input_length, int *restrict outlen);

@@ -99,7 +99,7 @@ static int ochar(struct baseio *bio, int c, FILE *so, const char *endl)
 	return 1;
 }
 
-static int __base64_encode_file(FILE *inputfile, FILE *outputfile, const char *endl)
+static int __base64_encode_file(FILE *restrict inputfile, FILE *restrict outputfile, const char *endl)
 {
 	static const unsigned char dtable[] = { 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K',
 		'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
@@ -155,7 +155,7 @@ static int __base64_encode_file(FILE *inputfile, FILE *outputfile, const char *e
 	return 0;
 }
 
-int base64_encode_file(const char *filename, FILE *outputfile, const char *endl)
+int base64_encode_file(const char *restrict filename, FILE *restrict outputfile, const char *restrict endl)
 {
 	FILE *fi;
 	int res;
@@ -190,7 +190,7 @@ static const unsigned char decoding_table[256] = {
 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
 /*! \note Modified and amalgamated from https://stackoverflow.com/questions/342409/how-do-i-base64-encode-decode-in-c/64856489 */
-unsigned char *base64_decode(const unsigned char *data, int input_length, int *outlen)
+unsigned char *base64_decode(const unsigned char *restrict data, int input_length, int *restrict outlen)
 {
 	int i, j;
 	int output_length;
@@ -250,7 +250,7 @@ static char encoding_table[] =
 static int mod_table[] = {0, 2, 1};
 
 /*! \brief Based on https://stackoverflow.com/questions/342409/how-do-i-base64-encode-decode-in-c/6782480#6782480 */
-char *base64_encode(const char *data, int input_length, int *outlen)
+char *base64_encode(const char *restrict data, int input_length, int *restrict outlen)
 {
 	char *encoded_data;
 	int i, j, output_len;

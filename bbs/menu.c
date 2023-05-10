@@ -239,7 +239,7 @@ static int print_menu_title(struct bbs_node *node, struct bbs_menu *menu)
 
 /*! \brief Build and display menu to a node */
 /*! \note Must be called with RDLOCK on menu list */
-static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf, size_t len)
+static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *restrict buf, size_t len)
 {
 	int numopts;
 	int i = 0;
@@ -402,7 +402,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *buf,
 	return 0;
 }
 
-static int build_options(struct bbs_node *node, struct bbs_menu *menu, char *buf, size_t len)
+static int build_options(struct bbs_node *node, struct bbs_menu *menu, char *restrict buf, size_t len)
 {
 	struct bbs_menu_item *menuitem;
 
@@ -420,7 +420,7 @@ static int build_options(struct bbs_node *node, struct bbs_menu *menu, char *buf
 	return 0;
 }
 
-static int valid_menusequence(const char *s)
+static int valid_menusequence(const char *restrict s)
 {
 	while (*s) {
 		if (!isalnum(*s)) {
@@ -581,6 +581,9 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 		/* We don't need to call MENUITEM_NOT_APPLICABLE here to check if it applies, it wouldn't be in the options buffer if it wasn't */
 		menuitem = find_menuitem(menu, opt);
 		bbs_assert_exists(menuitem); /* It was in the menu and the menu hasn't changed, it better exist. */
+		if (unlikely(!menuitem)) {
+			return -1;
+		}
 		node->menuitem = menuitem->name;
 
 		opt = 0; /* Got a valid option, display the menu again next round */
