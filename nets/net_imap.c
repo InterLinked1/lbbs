@@ -4003,7 +4003,7 @@ static int handle_append(struct imap_session *imap, char *s)
 	if (synchronizing) {
 		_imap_reply(imap, "+ Ready for literal data\r\n"); /* Synchronizing literal response */
 	}
-	res = bbs_readline_getn(imap->rfd, appendfile, imap->rldata, 5000, appendsize);
+	res = bbs_readline_getn(imap->rfd, appendfile, imap->rldata, 5000, (size_t) appendsize);
 	if (res != appendsize) {
 		bbs_warning("Client wanted to append %d bytes, but sent %d?\n", appendsize, res);
 		return -1; /* Disconnect if we failed to receive the upload properly, since we're probably all screwed up now */

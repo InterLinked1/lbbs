@@ -359,7 +359,7 @@ int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, i
 		}
 		bbs_debug(5, "Implicit TLS completed\n");
 	}
-	bbs_readline_init(&client->rldata, client->buf, (int) client->len);
+	bbs_readline_init(&client->rldata, client->buf, client->len);
 	return 0;
 }
 
@@ -370,8 +370,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_tcp_client_send(struct bbs_t
 	va_list ap;
 
 	if (!strchr(fmt, '%')) {
-		len = (int) strlen(fmt);
-		return bbs_write(client->wfd, fmt, (unsigned int) len);
+		return bbs_write(client->wfd, fmt, strlen(fmt));
 	}
 
 	/* Do not use vdprintf, I have not had good experiences with that... */
@@ -382,7 +381,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_tcp_client_send(struct bbs_t
 	if (len < 0) {
 		return -1;
 	}
-	res = bbs_write(client->wfd, buf, (unsigned int) len);
+	res = bbs_write(client->wfd, buf, (size_t) len);
 	free(buf);
 	return res;
 }
@@ -1841,10 +1840,10 @@ int bbs_node_flush_input(struct bbs_node *node)
 	return res;
 }
 
-int bbs_node_write(struct bbs_node *node, const char *buf, unsigned int len)
+int bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
 {
-	unsigned int left = len;
-	unsigned int written = 0;
+	size_t left = len;
+	size_t written = 0;
 	REQUIRE_SLAVE_FD(node);
 	/* So helgrind doesn't complain about data race if node is shut down
 	 * and slavefd closed during write */
@@ -1858,8 +1857,8 @@ int bbs_node_write(struct bbs_node *node, const char *buf, unsigned int len)
 			return (int) res;
 		}
 		buf += res;
-		written += (unsigned int) res;
-		left -= (unsigned int) res;
+		written += (size_t) res;
+		left -= (size_t) res;
 		if (left <= 0) {
 			break;
 		}
@@ -1868,10 +1867,10 @@ int bbs_node_write(struct bbs_node *node, const char *buf, unsigned int len)
 	return (int) written;
 }
 
-int bbs_write(int fd, const char *buf, unsigned int len)
+int bbs_write(int fd, const char *buf, size_t len)
 {
-	unsigned int left = len;
-	unsigned int written = 0;
+	size_t left = len;
+	size_t written = 0;
 	for (;;) {
 		ssize_t res = write(fd, buf, left);
 		if (res <= 0) {
@@ -1879,8 +1878,8 @@ int bbs_write(int fd, const char *buf, unsigned int len)
 			return (int) res;
 		}
 		buf += res;
-		written += (unsigned int) res;
-		left -= (unsigned int) res;
+		written += (size_t) res;
+		left -= (size_t) res;
 		if (left <= 0) {
 			break;
 		}
@@ -1902,7 +1901,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_node_writef(struct bbs_node 
 	if (!strchr(fmt, '%')) {
 		/* If the format string doesn't contain any %'s, there are no variadic arguments.
 		 * Just write it directly, to avoid allocating memory unnecessarily. */
-		return bbs_node_write(node, fmt, (unsigned int) strlen(fmt));
+		return bbs_node_write(node, fmt, strlen(fmt));
 	}
 
 	va_start(ap, fmt);
@@ -1913,7 +1912,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_node_writef(struct bbs_node 
 		return -1;
 	}
 
-	res = bbs_node_write(node, buf, (unsigned int) len);
+	res = bbs_node_write(node, buf, (size_t) len);
 	free(buf);
 	return res;
 }
@@ -1927,7 +1926,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(int fd, const char *f
 	if (!strchr(fmt, '%')) {
 		/* If the format string doesn't contain any %'s, there are no variadic arguments.
 		 * Just write it directly, to avoid allocating memory unnecessarily. */
-		return bbs_write(fd, fmt, (unsigned int) strlen(fmt));
+		return bbs_write(fd, fmt, strlen(fmt));
 	}
 
 	va_start(ap, fmt);
@@ -1938,7 +1937,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(int fd, const char *f
 		return -1;
 	}
 
-	res = bbs_write(fd, buf, (unsigned int) len);
+	res = bbs_write(fd, buf, (size_t) len);
 	free(buf);
 	return res;
 }

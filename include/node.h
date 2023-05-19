@@ -441,10 +441,10 @@ int bbs_node_flush_input(struct bbs_node *node);
  * \param len Number of bytes to write
  * \retval Same as write()
  */
-int bbs_node_write(struct bbs_node *node, const char *buf, unsigned int len);
+int bbs_node_write(struct bbs_node *node, const char *buf, size_t len);
 
 /*! \brief Same as bbs_node_write, but directly on a file descriptor */
-int bbs_write(int fd, const char *buf, unsigned int len);
+int bbs_write(int fd, const char *buf, size_t len);
 
 /*!
  * \brief printf-style wrapper for bbs_node_write.

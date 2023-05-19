@@ -887,7 +887,7 @@ static int try_send(struct smtp_session *smtp, const char *hostname, int port, i
 		}
 	}
 
-	bbs_readline_init(&rldata_stack, buf, (int) len);
+	bbs_readline_init(&rldata_stack, buf, len);
 
 	/* The logic for being an SMTP client with an SMTP MTA is pretty straightforward. */
 	SMTP_EXPECT(rfd, 1000, "220");

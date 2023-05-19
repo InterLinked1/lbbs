@@ -18,12 +18,12 @@
 struct readline_data {
 	/* Global data */
 	char *buf;
-	int len;
+	size_t len;
 	int timeout;
 	/* Internal pointers */
 	char *pos;
-	int left;
-	int leftover;
+	size_t left;
+	size_t leftover;
 	unsigned int waiting:1;
 };
 
@@ -33,7 +33,7 @@ struct readline_data {
  * \param buf Buffer to use for reading data. This should be large enough for at least the largest possible single input.
  * \param len Size of buf.
  */
-void bbs_readline_init(struct readline_data *rldata, char *buf, int len);
+void bbs_readline_init(struct readline_data *rldata, char *buf, size_t len);
 
 /*!
  * \brief Read input from a file descriptor, up to a delimiter. This function handles reading partial inputs, multiple inputs, etc. automatically.
@@ -60,7 +60,7 @@ int bbs_readline(int fd, struct readline_data *restrict rldata, const char *rest
  * \return number of bytes read
  * \note The written data is NOT NUL-terminated, this is a binary operation
  */
-int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata, int timeout, int n);
+int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata, int timeout, size_t n);
 
 /*!
  * \brief Append to a readline_data buffer
