@@ -23,11 +23,18 @@
 #include <stdio.h> /* use BUFSIZ */
 #endif
 
-#include "include/readline.h"
-
 #ifdef BBS_IN_CORE
 #include "include/node.h"
+#include "include/utils.h" /* This includes readline.h */
+#else
+#include "include/readline.h"
 #endif
+
+static inline void readline_buffer_reset(struct readline_data *restrict rldata)
+{
+	rldata->pos = rldata->buf;
+	rldata->left = rldata->len;
+}
 
 void bbs_readline_init(struct readline_data *rldata, char *buf, size_t len)
 {
@@ -35,8 +42,7 @@ void bbs_readline_init(struct readline_data *rldata, char *buf, size_t len)
 	rldata->buf = buf;
 	rldata->len = len;
 	/* Initialize internals: start at the beginning */
-	rldata->pos = rldata->buf;
-	rldata->left = rldata->len;
+	readline_buffer_reset(rldata);
 	rldata->leftover = 0;
 }
 
@@ -63,8 +69,7 @@ static char *readline_pre_read(struct readline_data *restrict rldata, const char
 			/* bbs_readline never returns without reading a full line,
 			 * but bbs_readline_append can return without calling readline_post_read,
 			 * so we should not reset pos to buf if the next chunk is incomplete. */
-			rldata->pos = rldata->buf;
-			rldata->left = rldata->len;
+			readline_buffer_reset(rldata);
 		}
 	}
 	rldata->waiting = 0;
@@ -134,7 +139,7 @@ int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata,
 	 * since we don't use the result.
 	 * We only check rldata->pos afterwards to determine how much data is already in the buffer. */
 	readline_pre_read(rldata, "\n", &res);
-	left_in_buffer = (unsigned int) (rldata->pos - rldata->buf);
+	left_in_buffer = (size_t) (rldata->pos - rldata->buf);
 #ifdef EXTRA_DEBUG
 	bbs_debug(8, "Up to %d/%d bytes can be satisfied from existing buffer\n", left_in_buffer, n);
 #endif
@@ -164,7 +169,7 @@ int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata,
 		if (res <= 0) {
 			return (int) written;
 		}
-		wres = bbs_write(destfd, readbuf, (unsigned int) res);
+		wres = bbs_write(destfd, readbuf, (size_t) res);
 		if (wres <= 0) {
 			return (int) written;
 		}
@@ -172,6 +177,111 @@ int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata,
 		remaining -= (size_t) wres;
 	}
 	return (int) written;
+}
+
+void bbs_readline_set_boundary(struct readline_data *restrict rldata, const char *separator)
+{
+	rldata->boundary = separator;
+	rldata->boundarylen = strlen(separator);
+}
+
+static int readline_get_until_process(struct dyn_str *dynstr, struct readline_data *restrict rldata, size_t left_in_buffer, size_t maxlen)
+{
+	size_t i;
+
+	for (i = 0; i < left_in_buffer; i++) {
+		if (rldata->buf[i] == rldata->boundary[rldata->boundarypos]) {
+			/* Up to the boundarypos'th character of the boundary has been read */
+			rldata->boundarypos++;
+			if (rldata->boundarypos == rldata->boundarylen) {
+				size_t n;
+				i++; /* Skip the last char of the boundary itself */
+				/* We've read the entire boundary.
+				 * We want to REMOVE the boundary from the string.
+				 * Since we haven't yet appended to dynstr, we
+				 * may need to copy some number of bytes first,
+				 * and we may also need to remove the last X bytes from it,
+				 * where X <= boundarylen. */
+				bbs_debug(4, "Parsed full content until boundary, length is %lu\n", rldata->segmentlen);
+				if (i > rldata->boundarylen) {
+					/* There was data at the beginning of the buffer that
+					 * wasn't part of the boundary that we need to append. */
+					n = i - rldata->boundarylen;
+					dyn_str_append(dynstr, rldata->buf, n);
+					rldata->segmentlen += n;
+				} else {
+					/* If i <= boundarylen, left_in_buffer[0] was already part of the boundary.
+					 * We need to remove some number of characters. */
+					size_t curlen;
+					n = rldata->boundarylen - i;
+					curlen = dyn_str_len(dynstr);
+					dynstr->buf[curlen - n] = '\0';
+					dynstr->used = curlen - n - 1;
+					rldata->segmentlen -= n;
+				}
+				bbs_assert(rldata->segmentlen == dyn_str_len(dynstr));
+				bbs_debug(4, "Parsed full content until boundary, length is %lu\n", rldata->segmentlen);
+				/* No need to copy the boundary itself. Discard that, and shift in everything after it, if any */
+				memmove(rldata->buf, rldata->buf + i, left_in_buffer - i);
+				left_in_buffer -= i;
+				/* Update our position to where we need to be. */
+				rldata->pos = rldata->buf + i;
+				rldata->left = rldata->len - i;
+				rldata->buf[left_in_buffer] = '\0';
+				rldata->leftover = left_in_buffer;
+				rldata->segmentlen = 0; /* Reset */
+				rldata->boundarypos = 0;
+				return 0;
+			}
+		} else {
+			rldata->boundarypos = 0; /* Any match we had is gone now. */
+		}
+	}
+
+	/* If we got this far, we didn't read the entire boundary. Copy everything over. */
+	bbs_debug(8, "Chunk of length %lu is incomplete\n", left_in_buffer);
+	rldata->segmentlen += left_in_buffer;
+	if (rldata->segmentlen > maxlen) { /* Too much! */
+		bbs_warning("Maximum segment length (%lu) exceeded (would be >= %lu)\n", maxlen, rldata->segmentlen);
+	} else {
+		dyn_str_append(dynstr, rldata->buf, left_in_buffer);
+	}
+	readline_buffer_reset(rldata);
+	return 1; /* We're incomplete */
+}
+
+int bbs_readline_get_until(int fd, struct dyn_str *dynstr, struct readline_data *restrict rldata, int timeout, size_t maxlen)
+{
+	int res;
+	size_t left_in_buffer;
+
+	bbs_assert_exists(rldata->boundary); /* Boundary must be initialized first */
+
+	/* First, use anything that's already in the buffer from a previous read.
+	 * The actual delimiter we provide to readline_pre_read doesn't matter here, it can be anything,
+	 * since we don't use the result.
+	 * We only check rldata->pos afterwards to determine how much data is already in the buffer. */
+	readline_pre_read(rldata, "\n", &res);
+
+	left_in_buffer = (size_t) (rldata->pos - rldata->buf);
+	if (left_in_buffer && !readline_get_until_process(dynstr, rldata, left_in_buffer, maxlen)) {
+		return 0;
+	}
+
+	/* Read as much data as is available, for efficiency */
+	for (;;) {
+		bbs_assert(rldata->pos == rldata->buf);
+		res = bbs_poll_read(fd, timeout, rldata->pos, rldata->left);
+		if (res <= 0) {
+			return res;
+		}
+		rldata->pos += (size_t) res;
+		rldata->left -= (size_t) res;
+		if (res && !readline_get_until_process(dynstr, rldata, (size_t) res, maxlen)) {
+			return 0;
+		}
+	}
+	return 0;
 }
 #endif /* BBS_IN_CORE */
 

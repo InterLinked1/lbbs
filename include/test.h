@@ -23,6 +23,14 @@
 int bbs_run_tests(int fd);
 
 /*!
+ * \brief Run a specific unit test
+ * \param fd
+ * \param name Name of test to run
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_run_test(int fd, const char *name);
+
+/*!
  * \brief Registers a unit test
  * \param name Name of unit test
  * \param exec Function

@@ -186,6 +186,11 @@ static int sysop_command(int fdin, int fdout, const char *s)
 	} else if (!strcmp(s, "runtests")) {
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_run_tests(fdout);
+	} else if (STARTS_WITH(s, "runtest ")) {
+		s += STRLEN("runtest ");
+		ENSURE_STRLEN(s);
+		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
+		bbs_run_test(fdout, s);
 	} else if (!strcmp(s, "testemail")) {
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_mail(0, NULL, NULL, NULL, "Test Email", "This is a test email.\r\n\t--LBBS");
@@ -301,6 +306,7 @@ static void *sysop_handler(void *varg)
 					bbs_dprintf(sysopfdout, "/threads            - View list of active registered threads\n");
 					bbs_dprintf(sysopfdout, "/fds                - View list of open file descriptors\n");
 					bbs_dprintf(sysopfdout, "/runtests           - Run all unit tests\n");
+					bbs_dprintf(sysopfdout, "/runtest <test>     - Run a specific unit test\n");
 					bbs_dprintf(sysopfdout, "/testemail          - Send a test email to the sysop\n");
 					bbs_dprintf(sysopfdout, " == Administrative ==\n");
 					bbs_dprintf(sysopfdout, "/load <module>      - Load dynamic module\n");

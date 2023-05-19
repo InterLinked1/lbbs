@@ -14,6 +14,9 @@
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
+/* Forward declaration */
+struct dyn_str;
+
 /*! \note This really should be opaque, but it's declared here so that callers can stack allocate it */
 struct readline_data {
 	/* Global data */
@@ -24,6 +27,10 @@ struct readline_data {
 	char *pos;
 	size_t left;
 	size_t leftover;
+	size_t segmentlen;
+	const char *boundary;
+	size_t boundarylen;
+	size_t boundarypos;
 	unsigned int waiting:1;
 };
 
@@ -61,6 +68,27 @@ int bbs_readline(int fd, struct readline_data *restrict rldata, const char *rest
  * \note The written data is NOT NUL-terminated, this is a binary operation
  */
 int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata, int timeout, size_t n);
+
+/*!
+ * \brief Set the boundary until which data should be read
+ * \param rldata
+ * \param separator Boundary string
+ * \note This only needs to be called once, or when the boundary changes
+ */
+void bbs_readline_set_boundary(struct readline_data *restrict rldata, const char *separator);
+
+/*!
+ * \brief Read until a delimiting boundary string is read
+ * \param fd Source file descriptor
+ * \param[out] dynstr
+ * \param rldata
+ * \param timeout Timeout for activity (applies to each read/poll, not overall)
+ * \param maxlen Maximum number of bytes to read
+ * \retval -1 on failure
+ * \retval 0 on success
+ * \note bbs_readline_set_boundary must be called prior to the first invocation of this function
+ */
+int bbs_readline_get_until(int fd, struct dyn_str *dynstr, struct readline_data *restrict rldata, int timeout, size_t maxlen);
 
 /*!
  * \brief Append to a readline_data buffer

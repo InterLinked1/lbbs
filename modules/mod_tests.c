@@ -293,6 +293,62 @@ cleanup:
 	return res;
 }
 
+static int test_readline_boundary(void)
+{
+	int res = -1;
+	int mres;
+	char buf[256];
+	int pfd[2], pfd2[2];
+	struct readline_data rldata;
+	struct dyn_str dynstr;
+
+	if (pipe(pfd)) {
+		bbs_error("pipe failed: %s\n", strerror(errno));
+		return -1;
+	} else if (pipe(pfd2)) {
+		bbs_error("pipe failed: %s\n", strerror(errno));
+		goto cleanup;
+	}
+
+	memset(&dynstr, 0, sizeof(dynstr));
+	bbs_readline_init(&rldata, buf, sizeof(buf));
+
+	bbs_readline_set_boundary(&rldata, "--seperator--");
+
+	SWRITE(pfd[1], "abcdefg--seperator--hijklmno");
+	mres = bbs_readline_get_until(pfd[0], &dynstr, &rldata, 1000, 4096);
+	bbs_test_assert_equals(0, mres);
+	bbs_test_assert_str_exists_equals(dynstr.buf, "abcdefg");
+	bbs_test_assert_str_equals(buf, "hijklmno");
+
+	dyn_str_reset(&dynstr);
+
+	SWRITE(pfd[1], "p--seperator--qrstuv");
+	mres = bbs_readline_get_until(pfd[0], &dynstr, &rldata, 1000, 4096);
+	bbs_test_assert_equals(0, mres);
+	bbs_test_assert_str_exists_equals(dynstr.buf, "hijklmnop");
+	bbs_test_assert_str_equals(buf, "qrstuv");
+
+	dyn_str_reset(&dynstr);
+
+	SWRITE(pfd[1], "wxyz--seperator--");
+	mres = bbs_readline_get_until(pfd[0], &dynstr, &rldata, 1000, 4096);
+	bbs_test_assert_equals(0, mres);
+	bbs_test_assert_str_exists_equals(dynstr.buf, "qrstuvwxyz");
+
+	dyn_str_reset(&dynstr);
+
+	res = 0;
+
+cleanup:
+	free_if(dynstr.buf);
+	close_if(pfd[0]);
+	close_if(pfd[1]);
+	close_if(pfd2[0]);
+	close_if(pfd2[1]);
+	return res;
+}
+
 static int test_sasl_decode(void)
 {
 	int res = -1;
@@ -436,6 +492,7 @@ static struct unit_tests {
 	{ "Readline Helper", test_readline_helper },
 	{ "Readline Append", test_readline_append },
 	{ "Readline getn", test_readline_getn },
+	{ "Readline Boundary", test_readline_boundary },
 	{ "SASL Decoding", test_sasl_decode },
 	{ "IPv4 CIDR Range Matching", test_cidr_ipv4 },
 	{ "IPv4 Address Detection", test_ipv4_detection },

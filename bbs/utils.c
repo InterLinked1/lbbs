@@ -50,24 +50,33 @@ char *bbs_uuid(void)
 	return uuid;
 }
 
+void dyn_str_reset(struct dyn_str *dynstr)
+{
+	free_if(dynstr->buf);
+	dynstr->len = 0;
+	dynstr->used = 0;
+}
+
 int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
 {
-	int newlen;
+	size_t newlen;
 
 	if (!dynstr->buf) {
-		dynstr->buf = strdup(s);
+		dynstr->buf = malloc(len + 1); /* use malloc, not strdup, in case the buffer contains data after what we want to copy */
 		if (ALLOC_FAILURE(dynstr->buf)) {
 			return -1;
 		}
-		dynstr->len = (int) len;
-		dynstr->used = (int) len;
+		memcpy(dynstr->buf, s, len);
+		dynstr->buf[len] = '\0';
+		dynstr->len = len;
+		dynstr->used = len;
 		return (int) len;
 	}
 
 	/* Do we have enough room in the existing buffer? */
-	newlen = dynstr->used + (int) len;
+	newlen = dynstr->used + len;
 	if (newlen >= dynstr->len) {
-		char *newbuf = realloc(dynstr->buf, (size_t) newlen + 1); /* Add NULL terminator */
+		char *newbuf = realloc(dynstr->buf, newlen + 1); /* Add NULL terminator */
 		if (ALLOC_FAILURE(newbuf)) {
 			return -1;
 		}
@@ -77,7 +86,7 @@ int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
 	}
 	memcpy(dynstr->buf + dynstr->used, s, len);
 	dynstr->used = newlen;
-	return newlen;
+	return (int) newlen;
 }
 
 int bbs_parse_url(struct bbs_url *url, char *restrict s)

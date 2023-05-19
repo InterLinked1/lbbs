@@ -35,9 +35,12 @@ char *bbs_uuid(void);
 /*! \note This really should be opaque, but it's declared here so that callers can stack allocate it */
 struct dyn_str {
 	char *buf;
-	int len;
-	int used;
+	size_t len;
+	size_t used;
 };
+
+/*! \brief Reset a dyn_str */
+void dyn_str_reset(struct dyn_str *dynstr);
 
 /*!
  * \brief Append to a dyn_str
@@ -48,6 +51,13 @@ struct dyn_str {
  * \retval on success, actual length of the string currently in the dyn_str buffer (not the current allocation size)
  */
 int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len);
+
+/*!
+ * \brief Get the length of a dyn_str
+ * \param dynstr
+ * \retval Length of string
+ */
+#define dyn_str_len(dynstr) (dynstr->used)
 
 struct bbs_url {
 	char *prot;

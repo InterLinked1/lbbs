@@ -58,7 +58,7 @@ static int test_execute(struct bbs_test *test)
 	return res;
 }
 
-int bbs_run_tests(int fd)
+int bbs_run_test(int fd, const char *name)
 {
 	int res = 0;
 	int total = 0, passed = 0;
@@ -67,6 +67,9 @@ int bbs_run_tests(int fd)
 	RWLIST_RDLOCK(&tests); /* Prevent test from being unregistered while running */
 	RWLIST_TRAVERSE(&tests, test, entry) {
 		int mres;
+		if (name && strcasecmp(name, test->name)) {
+			continue;
+		}
 		total++;
 		mres = test_execute(test); /* execute the test and save results */
 		res |= mres;
@@ -85,22 +88,34 @@ int bbs_run_tests(int fd)
 	}
 	/* Summarize */
 	if (fd) {
-		bbs_dprintf(fd, " == Tests Complete == \n");
-		RWLIST_TRAVERSE(&tests, test, entry) {
-			bbs_dprintf(fd, "%s%-7s%s %-32s %1s%4ums\n",
-				test->result || !test->executed ? COLOR(COLOR_FAILURE) : COLOR(COLOR_SUCCESS),
-				test->executed ? test->result ? "FAIL" : "PASS" : "NOT RUN",
-				COLOR_RESET,
-				test->name,
-				test->time ? "" : "<",
-				test->time ? test->time : 1);
+		if (total) {
+			bbs_dprintf(fd, " == Tests Complete == \n");
+			RWLIST_TRAVERSE(&tests, test, entry) {
+				if (name && strcasecmp(name, test->name)) {
+					continue;
+				}
+				bbs_dprintf(fd, "%s%-7s%s %-32s %1s%4ums\n",
+					test->result || !test->executed ? COLOR(COLOR_FAILURE) : COLOR(COLOR_SUCCESS),
+					test->executed ? test->result ? "FAIL" : "PASS" : "NOT RUN",
+					COLOR_RESET,
+					test->name,
+					test->time ? "" : "<",
+					test->time ? test->time : 1);
+			}
+			/* Stats */
+			bbs_dprintf(fd, "%s%d%%%s of tests passed\n", passed == total ? COLOR(COLOR_SUCCESS) : COLOR(COLOR_FAILURE), (int) (100.0 * passed / total), COLOR_RESET);
+		} else if (name) {
+			bbs_dprintf(fd, "No such test: %s\n", name);
 		}
-		/* Stats */
-		bbs_dprintf(fd, "%s%d%%%s of tests passed\n", passed == total ? COLOR(COLOR_SUCCESS) : COLOR(COLOR_FAILURE), (int) (100.0 * passed / total), COLOR_RESET);
 	}
 	RWLIST_UNLOCK(&tests);
 
 	return res;
+}
+
+int bbs_run_tests(int fd)
+{
+	return bbs_run_test(fd, NULL);
 }
 
 int __bbs_register_test(const char *name, int (*execute)(void), void *mod)
