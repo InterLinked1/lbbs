@@ -34,6 +34,10 @@ mod_discord.so : mod_discord.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -ldiscord
 
+mod_http.so : mod_http.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lmagic
+
 mod_mimeparse.so : mod_mimeparse.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(GMIME_LIBS)

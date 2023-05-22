@@ -138,6 +138,35 @@ int bbs_parse_url(struct bbs_url *url, char *restrict s)
 	return 0;
 }
 
+#define char_to_int(x) (x >= 'a' ? x - 'a' - 'A' : x >= 'A' ? x - 'A' + 10 : x - '0')
+
+void bbs_url_decode(char *restrict s)
+{
+	char *o;
+
+	for (o = s; *s; s++, o++) {
+		if (*s == '+') {
+			/* A lot of URL decoders don't do this. Convert + to space. */
+			*o = ' ';
+		} else if (*s == '%' && isxdigit(s[1]) && isxdigit(s[2])) {
+			/* It's simply %xx where xx is the hex code for the ASCII char.
+			 * Doing it this way is probably faster than sprintf/sscanf */
+			char h;
+			int a, b;
+			a = char_to_int(s[1]);
+			b = char_to_int(s[2]);
+			h = (char) (b + 16 * a);
+			*o = h;
+			s += 2; /* Needs to skip 3 characters, but the for loop will do the last one */
+		} else {
+			*o = *s;
+		}
+	}
+	*o = '\0';
+}
+
+#undef char_to_int
+
 unsigned char *bbs_sasl_decode(const char *s, char **authorization, char **authentication, char **passwd)
 {
 	int outlen;
@@ -982,6 +1011,43 @@ void bbs_dump_string(const char *restrict s)
 
 	*pos = '\0';
 	bbs_debug(8, "String Dump: '%s'\n", buf);
+}
+
+void bbs_dump_mem(unsigned char *restrict s, size_t len)
+{
+	size_t i;
+	unsigned int start;
+	char buf[3 * 16 + 1] = "";
+	char ascii[16 + 1] = "";
+	if (ALLOC_FAILURE(buf)) {
+		return;
+	}
+	start = 0;
+	for (i = 0; i < len; i++) {
+		int pos = (int) (i % 16);
+#undef sprintf
+		if (pos) {
+			sprintf(buf + pos * 3 - 1, " %02x", s[i]);
+		} else {
+			sprintf(buf + pos * 3, "%02x", s[i]);
+		}
+		if (isprint(s[i])) {
+			ascii[pos] = (char) s[i];
+		} else {
+			ascii[pos] = '.';
+		}
+		if (pos == 15) {
+			/* Flush */
+			ascii[16] = '\0';
+			bbs_debug(3, "%04x %-47s | %s\n", start, buf, ascii);
+			ascii[0] = buf[0] = '\0';
+			start = (unsigned int) (i + 1);
+		}
+	}
+	if (i % 16) {
+		ascii[i % 16] = '\0';
+		bbs_debug(3, "%04x %-47s | %s\n", start, buf, ascii);
+	}
 }
 
 int bbs_term_line(char *restrict c)

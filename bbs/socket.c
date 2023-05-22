@@ -390,16 +390,15 @@ int bbs_tcp_client_expect(struct bbs_tcp_client *client, const char *delim, int 
 {
 	while (attempts-- > 0) {
 		int res = bbs_readline(client->rfd, &client->rldata, delim, ms);
-		if (res <= 0) {
+		if (res < 0) {
 			return -1;
 		}
 		bbs_debug(7, "<= %s\n", client->buf);
-		if (!strstr(client->buf, str)) {
-			bbs_warning("Missing expected response (%s), got: %s\n", str, client->buf);
-			return -1;
+		if (strstr(client->buf, str)) {
+			return 0;
 		}
-		return 0;
 	}
+	bbs_warning("Missing expected response (%s), got: %s\n", str, client->buf);
 	return 1;
 }
 
@@ -460,7 +459,6 @@ struct tcp_listener {
 	int socket;
 	const char *name;
 	RWLIST_ENTRY(tcp_listener) entry;
-	char data[0];
 };
 
 static RWLIST_HEAD_STATIC(listeners, tcp_listener);
@@ -472,16 +470,14 @@ static int num_listeners = 0;
 static struct tcp_listener *list_add_listener(int port, int sfd, const char *name, void *(*handler)(void *varg), void *module)
 {
 	struct tcp_listener *l;
-	size_t namelen = strlen(name);
 
-	l = calloc(1, sizeof(*l) + namelen + 1);
+	l = calloc(1, sizeof(*l));
 	if (!l) {
 		return NULL;
 	}
-	strcpy(l->data, name); /* Safe */
 	l->port = port;
 	l->socket = sfd;
-	l->name = l->data;
+	l->name = name;
 	l->handler = handler;
 	l->module = module;
 
@@ -530,11 +526,11 @@ static void *tcp_multilistener(void *unused)
 			i = 0;
 			pfds[i].fd = multilistener_alertpipe[0];
 			pfds[i].events = POLLIN;
-			i++;
-			RWLIST_TRAVERSE(&listeners, l, entry) {
+			RWLIST_TRAVERSE(&listeners_local, l, entry) {
+				i++;
+				bbs_assert(i <= num_sockets + 1);
 				pfds[i].fd = l->socket;
 				pfds[i].events = POLLIN;
-				i++;
 			}
 		}
 		for (i = 0; i < num_sockets + 1; i++) {
@@ -581,12 +577,16 @@ static void *tcp_multilistener(void *unused)
 				continue;
 			}
 
+			/* Note that l->name is const memory allocated as part of l.
+			 * That means the listener must not go away while any nodes are using it
+			 * (which shouldn't happen anyways) */
 			node = __bbs_node_request(sfd, l->name, l->module);
 			if (!node) {
 				close(sfd);
 			} else if (bbs_save_remote_ip(&sinaddr, node)) {
 				bbs_node_unlink(node);
 			} else {
+				node->port = (short unsigned int) l->port;
 				node->skipjoin = 1;
 				if (bbs_pthread_create_detached(&node->thread, NULL, l->handler, node)) { /* Run the BBS on this node */
 					bbs_node_unlink(node);

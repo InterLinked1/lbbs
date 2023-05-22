@@ -37,24 +37,24 @@ static int test_substitution(void)
 	const char *orig = "Hello ${BBS_TEST_testvar}";
 	const char *novars = "Hello there!";
 
-	bbs_var_set(NULL, "BBS_TEST_testvar", "world");
-	bbs_substitute_vars(NULL, orig, buffer, sizeof(buffer));
+	bbs_node_var_set(NULL, "BBS_TEST_testvar", "world");
+	bbs_node_substitute_vars(NULL, orig, buffer, sizeof(buffer));
 	bbs_test_assert_str_equals(buffer, "Hello world");
 
 	/* Now reuse the buffer */
-	bbs_var_set(NULL, "BBS_TEST_testvar", "!");
-	bbs_substitute_vars(NULL, orig, buffer, sizeof(buffer));
+	bbs_node_var_set(NULL, "BBS_TEST_testvar", "!");
+	bbs_node_substitute_vars(NULL, orig, buffer, sizeof(buffer));
 	bbs_test_assert_str_equals(buffer, "Hello !");
 
 	/* Substitution with no variables */
-	bbs_substitute_vars(NULL, novars, buffer, sizeof(buffer));
+	bbs_node_substitute_vars(NULL, novars, buffer, sizeof(buffer));
 	bbs_test_assert_str_equals(buffer, novars);
 
 	res = 0; /* All passed */
 
 cleanup:
 	/* Clean up the mess we made */
-	bbs_var_set(NULL, "BBS_TEST_testvar", NULL); /* Clean up the dummy global we made */
+	bbs_node_var_set(NULL, "BBS_TEST_testvar", NULL); /* Clean up the dummy global we made */
 	return res;
 }
 
@@ -456,6 +456,20 @@ cleanup:
 	return res;
 }
 
+static int test_url_decoding(void)
+{
+	char buf[256];
+
+	strcpy(buf, "http://example.com/test?foo=bar&test=two+words&foo2=%20%28%29");
+	bbs_url_decode(buf);
+	bbs_test_assert_str_equals(buf, "http://example.com/test?foo=bar&test=two words&foo2= ()");
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
 #ifdef EXTRA_TESTS
 static int test_curl_failure(void)
 {
@@ -497,6 +511,7 @@ static struct unit_tests {
 	{ "IPv4 CIDR Range Matching", test_cidr_ipv4 },
 	{ "IPv4 Address Detection", test_ipv4_detection },
 	{ "URL Parsing", test_url_parsing },
+	{ "URL Decoding", test_url_decoding },
 #ifdef EXTRA_TESTS
 	{ "cURL Failure", test_curl_failure },
 #endif

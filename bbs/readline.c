@@ -60,7 +60,8 @@ static char *readline_pre_read(struct readline_data *restrict rldata, const char
 		rldata->pos = rldata->buf + res;
 		rldata->left = rldata->len - res;
 		/* If we already have a delimiter, no need to proceed further. */
-		firstdelim = strstr(rldata->buf, delim); /* Use buf, not pos, since pos is the beginning of the buffer that remains at this point. */
+		/* Use memmem instead of strstr to accomodate binary data */
+		firstdelim = memmem(rldata->buf, res, delim, strlen(delim)); /* Use buf, not pos, since pos is the beginning of the buffer that remains at this point. */
 		res = rldata->leftover = 0;
 		rldata->leftover = 0;
 		*resptr = (int) res;
@@ -76,6 +77,16 @@ static char *readline_pre_read(struct readline_data *restrict rldata, const char
 	return firstdelim;
 }
 
+int readline_bytes_available(struct readline_data *restrict rldata, int process)
+{
+	if (process) {
+		/* Shift leftover to beginning */
+		int ready; /* We're discarding this, so delimiter doesn't matter */
+		bbs_readline_append(rldata, "\n", NULL, 0, &ready);
+	}
+	return (int) (rldata->pos - rldata->buf);
+}
+
 static int readline_post_read(struct readline_data *restrict rldata, const char *delim, char *restrict firstdelim, int res)
 {
 	int used, delimlen;
@@ -88,7 +99,7 @@ static int readline_post_read(struct readline_data *restrict rldata, const char 
 	firstdelim += delimlen; /* There is the beginning of the rest of the buffer. No, we do not need to add 1 here. */
 	rldata->leftover = (size_t) (rldata->pos - firstdelim); /* Number of bytes leftover. */
 #ifdef EXTRA_DEBUG
-	bbs_debug(8, "Read %lu bytes (%d just now), processing %d and leaving %d leftover\n", rldata->pos - rldata->buf, res, used, rldata->leftover);
+	bbs_debug(8, "Read %lu bytes (%d just now), processing %d and leaving %lu leftover\n", rldata->pos - rldata->buf, res, used, rldata->leftover);
 #else
 	UNUSED(res);
 #endif
@@ -129,7 +140,7 @@ int bbs_readline(int fd, struct readline_data *restrict rldata, const char *rest
 	return readline_post_read(rldata, delim, firstdelim, res);
 }
 
-int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata, int timeout, size_t n)
+static int __bbs_readline_getn(int fd, int destfd, struct dyn_str *restrict dynstr, struct readline_data *restrict rldata, int timeout, size_t n)
 {
 	int res, wres;
 	size_t left_in_buffer, written = 0, remaining = n;
@@ -141,13 +152,21 @@ int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata,
 	readline_pre_read(rldata, "\n", &res);
 	left_in_buffer = (size_t) (rldata->pos - rldata->buf);
 #ifdef EXTRA_DEBUG
-	bbs_debug(8, "Up to %d/%d bytes can be satisfied from existing buffer\n", left_in_buffer, n);
+	bbs_debug(8, "Up to %lu/%lu bytes can be satisfied from existing buffer\n", left_in_buffer, n);
 #endif
 	if (left_in_buffer) {
 		size_t bytes = MIN(left_in_buffer, n); /* Minimum of # bytes available or # bytes we want to read */
-		wres = bbs_write(destfd, rldata->buf, bytes);
-		if (wres < 0) {
-			return wres;
+		if (destfd != -1) {
+			wres = bbs_write(destfd, rldata->buf, bytes);
+			if (wres < 0) {
+				return wres;
+			}
+		} else if (dynstr) {
+			dyn_str_append(dynstr, rldata->buf, bytes);
+			wres = (int) bytes;
+		} else {
+			/* Somebody is just discarding this data without saving it */
+			wres = (int) bytes;
 		}
 		written += (size_t) wres;
 		remaining -= (size_t) wres;
@@ -169,14 +188,48 @@ int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata,
 		if (res <= 0) {
 			return (int) written;
 		}
-		wres = bbs_write(destfd, readbuf, (size_t) res);
-		if (wres <= 0) {
-			return (int) written;
+		if (destfd != -1) {
+			wres = bbs_write(destfd, readbuf, (size_t) res);
+			if (wres <= 0) {
+				return (int) written;
+			}
+		} else if (dynstr) {
+			dyn_str_append(dynstr, readbuf, (size_t) res);
+			wres = (int) res;
+		} else {
+			/* Somebody is just discarding this data without saving it */
+			wres = (int) res;
 		}
 		written += (size_t) wres;
 		remaining -= (size_t) wres;
 	}
 	return (int) written;
+}
+
+int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata, int timeout, size_t n)
+{
+	return __bbs_readline_getn(fd, destfd, NULL, rldata, timeout, n);
+}
+
+int bbs_readline_getn_dynstr(int fd, struct dyn_str *restrict dynstr, struct readline_data *restrict rldata, int timeout, size_t n)
+{
+	return __bbs_readline_getn(fd, -1, dynstr, rldata, timeout, n);
+}
+
+char *bbs_readline_getn_str(int fd, struct readline_data *restrict rldata, int timeout, size_t n)
+{
+	struct dyn_str dynstr;
+
+	memset(&dynstr, 0, sizeof(dynstr));
+	if (__bbs_readline_getn(fd, -1, &dynstr, rldata, timeout, n) != (int) n) {
+		free_if(dynstr.buf);
+	}
+	return dynstr.buf;
+}
+
+int bbs_readline_discard_n(int fd, struct readline_data *restrict rldata, int timeout, size_t n)
+{
+	return bbs_readline_getn(fd, -1, rldata, timeout, n); /* Read the bytes and throw them away */
 }
 
 void bbs_readline_set_boundary(struct readline_data *restrict rldata, const char *separator)

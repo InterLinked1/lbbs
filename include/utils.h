@@ -76,6 +76,9 @@ struct bbs_url {
  */
 int bbs_parse_url(struct bbs_url *url, char *restrict s);
 
+/*! \brief URL decode a string, in place */
+void bbs_url_decode(char *restrict s);
+
 /*!
  * \brief Decode an base64-encoded RFC4616 SASL PLAIN response into its components
  * \param s SASL PLAIN response from client
@@ -568,6 +571,9 @@ int bbs_str_safe_print(const char *restrict s, char *restrict buf, size_t len);
 
 /*! \brief Dump an ASCII representation of a string to the BBS debug log level */
 void bbs_dump_string(const char *restrict s);
+
+/*! \brief Dump an hex representation of a buffer to the BBS debug log level */
+void bbs_dump_mem(unsigned char *restrict s, size_t len);
 
 /*!
  * \brief Terminate a string at the end of the first line (first CR or LF character)

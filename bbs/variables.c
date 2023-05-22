@@ -53,6 +53,27 @@ void bbs_vars_destroy(struct bbs_vars *vars)
 	RWLIST_WRLOCK_REMOVE_ALL(vars, entry, bbs_var_destroy);
 }
 
+void bbs_vars_remove_first(struct bbs_vars *vars)
+{
+	struct bbs_var *var;
+	RWLIST_WRLOCK(vars);
+	var = RWLIST_REMOVE_HEAD(vars, entry);
+	if (var) {
+		bbs_var_destroy(var);
+	}
+	RWLIST_UNLOCK(vars);
+}
+
+const char *bbs_vars_peek_head(struct bbs_vars *vars, char **value)
+{
+	struct bbs_var *var = RWLIST_FIRST(vars);
+	if (var) {
+		*value = var->value;
+		return var->key;
+	}
+	return NULL;
+}
+
 void bbs_vars_cleanup(void)
 {
 	/* Destroy any global variables that remain */
@@ -107,7 +128,28 @@ int bbs_vars_init(void)
 	return load_config();
 }
 
-static int bbs_varlist_append(struct bbs_vars *vars, const char *key, const char *value)
+int bbs_varlist_last_var_append(struct bbs_vars *vars, const char *s)
+{
+	struct bbs_var *v;
+
+	RWLIST_WRLOCK(vars);
+	v = RWLIST_LAST(vars);
+	if (v) {
+		char *newval;
+		size_t oldlen = strlen(v->value);
+		size_t addlen = strlen(s);
+		bbs_debug(6, "Updating value of %s from %s to %s%s\n", v->key, v->value, v->value, s);
+		newval = realloc(v->value, oldlen + addlen + 1);
+		if (ALLOC_SUCCESS(newval)) {
+			strcpy(newval + oldlen, s); /* Safe */
+			v->value = newval;
+		}
+	}
+	RWLIST_UNLOCK(vars);
+	return v ? 0 : -1;
+}
+
+int bbs_varlist_append(struct bbs_vars *vars, const char *key, const char *value)
 {
 	struct bbs_var *v;
 	size_t keylen = strlen(key);
@@ -170,7 +212,7 @@ static int bbs_varlist_append(struct bbs_vars *vars, const char *key, const char
 	return 0;
 }
 
-int bbs_var_set(struct bbs_node *node, const char *key, const char *value)
+int bbs_node_var_set(struct bbs_node *node, const char *key, const char *value)
 {
 	/* The bbs_node struct contains a pointer to bbs_vars, not a bbs_var itself.
 	 * This prevents having to expose bbs_var internally to node.h, we just need
@@ -197,7 +239,7 @@ int bbs_var_set(struct bbs_node *node, const char *key, const char *value)
 	} else {
 		/* "Global" var */
 		return bbs_varlist_append(&global_vars, key, value);
-		}
+	}
 }
 
 int bbs_var_set_user(const char *key, const char *value)
@@ -206,10 +248,10 @@ int bbs_var_set_user(const char *key, const char *value)
 		bbs_warning("Variable name '%s' is reserved\n", key);
 		return -1;
 	}
-	return bbs_var_set(NULL, key, value); /* Set a global var */
+	return bbs_node_var_set(NULL, key, value); /* Set a global var */
 }
 
-int __attribute__ ((format (gnu_printf, 3, 4))) bbs_var_set_fmt(struct bbs_node *node, const char *key, const char *fmt, ...)
+int __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_var_set_fmt(struct bbs_node *node, const char *key, const char *fmt, ...)
 {
 	char *buf;
 	int len, res;
@@ -217,7 +259,7 @@ int __attribute__ ((format (gnu_printf, 3, 4))) bbs_var_set_fmt(struct bbs_node 
 
 	if (!strchr(fmt, '%')) {
 		/* No format characters, just call it directly to avoid an unnecessary allocation */
-		return bbs_var_set(node, key, fmt);
+		return bbs_node_var_set(node, key, fmt);
 	}
 
 	va_start(ap, fmt);
@@ -227,7 +269,7 @@ int __attribute__ ((format (gnu_printf, 3, 4))) bbs_var_set_fmt(struct bbs_node 
 	if (len < 0) {
 		return -1;
 	}
-	res = bbs_var_set(node, key, buf);
+	res = bbs_node_var_set(node, key, buf);
 	free(buf);
 	return res;
 }
@@ -264,7 +306,7 @@ static int vars_dump(int fd, struct bbs_vars *vars)
 	return 0;
 }
 
-int bbs_vars_dump(int fd, struct bbs_node *node)
+int bbs_node_vars_dump(int fd, struct bbs_node *node)
 {
 	if (node) {
 		/* If there are vars for a node, print them (vars_dump handles NULL) */
@@ -275,13 +317,27 @@ int bbs_vars_dump(int fd, struct bbs_node *node)
 	}
 }
 
-static const char *bbs_var_find(struct bbs_vars *vars, const char *key)
+const char *bbs_var_find(struct bbs_vars *vars, const char *key)
 {
 	struct bbs_var *v;
 
 	RWLIST_RDLOCK(vars);
 	RWLIST_TRAVERSE(vars, v, entry) {
 		if (!strcmp(v->key, key)) {
+			break;
+		}
+	}
+	RWLIST_UNLOCK(vars);
+	return v ? v->value : NULL;
+}
+
+const char *bbs_var_find_case(struct bbs_vars *vars, const char *key)
+{
+	struct bbs_var *v;
+
+	RWLIST_RDLOCK(vars);
+	RWLIST_TRAVERSE(vars, v, entry) {
+		if (!strcasecmp(v->key, key)) {
 			break;
 		}
 	}
@@ -311,7 +367,7 @@ static int builtin_var_expand(struct bbs_node *node, const char *name, char *buf
 }
 
 /*! \note Not really safe, unless node is locked before/after. Since we're not locking in this function, only in bbs_var_find, var could go away */
-const char *bbs_var_get(struct bbs_node *node, const char *key)
+const char *bbs_node_var_get(struct bbs_node *node, const char *key)
 {
 	const char *value;
 
@@ -330,7 +386,7 @@ const char *bbs_var_get(struct bbs_node *node, const char *key)
 	return value;
 }
 
-int bbs_var_get_buf(struct bbs_node *node, const char *key, char *buf, size_t len)
+int bbs_node_var_get_buf(struct bbs_node *node, const char *key, char *buf, size_t len)
 {
 	const char *s;
 
@@ -343,7 +399,7 @@ int bbs_var_get_buf(struct bbs_node *node, const char *key, char *buf, size_t le
 	if (node) {
 		bbs_node_lock(node); /* Guarantee thread safety for node variables. */
 	}
-	s = bbs_var_get(node, key);
+	s = bbs_node_var_get(node, key);
 	if (s) {
 		safe_strncpy(buf, s, len);
 	} else {
@@ -356,7 +412,7 @@ int bbs_var_get_buf(struct bbs_node *node, const char *key, char *buf, size_t le
 	return s ? 0 : -1;
 }
 
-int bbs_substitute_vars(struct bbs_node *node, const char *sub, char *buf, size_t len)
+int bbs_node_substitute_vars(struct bbs_node *node, const char *sub, char *buf, size_t len)
 {
 	char varname[64];
 	char *bufstart = buf;
@@ -423,7 +479,7 @@ int bbs_substitute_vars(struct bbs_node *node, const char *sub, char *buf, size_
 		 */
 		safe_strncpy(varname, s, (size_t) MIN((int) sizeof(varname), end - s + 1));
 		bbs_debug(5, "Substituting variable '%s'\n", varname);
-		bbs_var_get_buf(node, varname, buf, len);
+		bbs_node_var_get_buf(node, varname, buf, len);
 		/* After substitution occurs, find the null termination and update our pointers. */
 		while (*buf) {
 			if (len <= 1) {

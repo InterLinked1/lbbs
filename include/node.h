@@ -45,7 +45,8 @@ struct bbs_node {
 	const char *menu;			/*!< Current menu */
 	const char *menuitem;		/*!< Currently executed menu item */
 	int menustack;				/*!< Current menu stack level */
-	char *ip;					/*!< IP Address */
+	char *ip;					/*!< Remote IP Address */
+	unsigned short int port;	/*!< Local port number */
 	pthread_mutex_t lock;		/*!< Node lock */
 	pthread_mutex_t ptylock;	/*!< Node PTY lock */
 	int created;				/*!< Creation time */

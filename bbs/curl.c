@@ -46,9 +46,7 @@ int bbs_curl_init(void)
 
 void bbs_curl_free(struct bbs_curl *c)
 {
-	if (c->response) {
-		free(c->response);
-	}
+	free_if(c->response);
 	/* Don't actually free c, it's probably stack allocated! */
 }
 
@@ -76,7 +74,9 @@ static size_t WriteMemoryCallback(void *restrict ptr, size_t size, size_t nmemb,
 
 	/* XXX Not for binary data */
 	if (respdata->len) {
+#ifdef EXTRA_DEBUG
 		bbs_debug(9, "curl response continued with %ld + %ld\n", respdata->len, realsize);
+#endif
 		newbuf = realloc(respdata->str, respdata->len + realsize + 1); /* Add null terminator */
 		if (ALLOC_FAILURE(newbuf)) {
 			FREE(respdata->str);
@@ -86,7 +86,9 @@ static size_t WriteMemoryCallback(void *restrict ptr, size_t size, size_t nmemb,
 		memcpy(respdata->str + respdata->len, ptr, realsize); /* strncpy okay here, but since bbs.h blocks it, use memcpy */
 		*(respdata->str + respdata->len + realsize) = '\0'; /* Null terminate the string */
 	} else {
+#ifdef EXTRA_DEBUG
 		bbs_debug(9, "curl response started with %ld\n", realsize);
+#endif
 		respdata->str = strndup(ptr, realsize + 1); /* Add null terminator */
 		if (ALLOC_SUCCESS(respdata->str)) {
 			*(respdata->str + realsize) = '\0'; /* Null terminate the string */
@@ -103,7 +105,9 @@ static size_t WriteMemoryCallback(void *restrict ptr, size_t size, size_t nmemb,
 
 	respdata->resp = respdata->str; /* XXX Hack: Dup the pointer because for some reason response.str is NULL in curl_common_run? */
 	respdata->len += realsize;
+#ifdef EXTRA_DEBUG
 	bbs_debug(8, "curl response now %ld bytes\n", respdata->len);
+#endif
 	return realsize;
 }
 
@@ -135,6 +139,43 @@ static int curl_common_setup(CURL **curl_ptr, const char *url)
 	return 0;
 }
 
+#ifdef DEBUG_CURL
+static int curl_debug(CURL *handle, curl_infotype type, char *data, size_t size, void *clientp)
+{
+	switch (type) {
+		case CURLINFO_TEXT:
+			bbs_debug(5, "== %.*s", (int) size, data);
+			break;
+		/* XXX Not binary safe, could use bbs_dump_mem instead: */
+		case CURLINFO_HEADER_OUT:
+			bbs_debug(5, "=> Send header %.*s", (int) size, data);
+			break;
+		case CURLINFO_DATA_OUT:
+			bbs_debug(5, "=> Send data %.*s", (int) size, data);
+			break;
+		case CURLINFO_SSL_DATA_OUT:
+			bbs_debug(5, "=> Send SSL data %.*s", (int) size, data);
+			break;
+		case CURLINFO_HEADER_IN:
+			bbs_debug(5, "=> Recv header %.*s", (int) size, data);
+			break;
+		case CURLINFO_DATA_IN:
+			bbs_debug(5, "=> Recv data %.*s", (int) size, data);
+			break;
+		case CURLINFO_SSL_DATA_IN:
+			bbs_debug(5, "=> Recv SSL data %.*s", (int) size, data);
+			break;
+		default:
+			bbs_debug(5, "-- %.*s", (int) size, data);
+			break;
+			UNUSED(handle);
+			UNUSED(clientp);
+	}
+
+	return 0;
+}
+#endif
+
 static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 {
 	int res, cres = -1;
@@ -152,6 +193,14 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
 		curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
 	}
+	if (!strlen_zero(c->ranges)) {
+		curl_easy_setopt(curl, CURLOPT_RANGE, c->ranges);
+	}
+	curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L); /* Follow redirects */
+#ifdef DEBUG_CURL
+	curl_easy_setopt(curl, CURLOPT_DEBUGFUNCTION, curl_debug);
+	curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+#endif
 	res = curl_easy_perform(curl);
 
 	c->response = NULL;

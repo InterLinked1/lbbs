@@ -119,7 +119,7 @@ static int sysop_command(int fdin, int fdout, const char *s)
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_set_debug(atoi(s));
 	} else if (!strcmp(s, "variables")) {
-		bbs_vars_dump(fdout, NULL);
+		bbs_node_vars_dump(fdout, NULL);
 	} else if (!strcmp(s, "menureload")) {
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_load_menus(1);

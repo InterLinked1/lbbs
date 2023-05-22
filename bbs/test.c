@@ -45,6 +45,8 @@ static int test_execute(struct bbs_test *test)
 	int res;
 	struct timeval begin, end;
 
+	bbs_debug(5, "Starting test '%s'\n", test->name);
+
 	bbs_module_ref(test->module);
 	gettimeofday(&begin, NULL);
 	res = test->result = test->execute();

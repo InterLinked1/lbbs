@@ -284,9 +284,9 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 		int argc;
 		REQUIRE_ARG(s);
 		if (strstr(s, "${MAILFILE}")) { /* This rule wants the message as a file */
-			bbs_var_set(mproc->node, "MAILFILE", mproc->datafile);
+			bbs_node_var_set(mproc->node, "MAILFILE", mproc->datafile);
 		}
-		bbs_substitute_vars(mproc->node, s, subbuf, sizeof(subbuf));
+		bbs_node_substitute_vars(mproc->node, s, subbuf, sizeof(subbuf));
 		s = subbuf;
 		argc = bbs_argv_from_str(argv, ARRAY_LEN(argv), s); /* Parse string into argv */
 		if (argc < 1 || argc > (int) ARRAY_LEN(argv)) {

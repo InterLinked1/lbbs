@@ -171,7 +171,7 @@ int menu_handler_exec(struct bbs_node *node, const char *name, char *args)
 	bbs_module_ref(handler->module);
 	RWLIST_UNLOCK(&handlers);
 	if (args) {
-		bbs_substitute_vars(node, args, subargs, sizeof(subargs));
+		bbs_node_substitute_vars(node, args, subargs, sizeof(subargs));
 	}
 	bbs_debug(5, "Executing menu handler %s (%s)\n", name, args ? subargs : ""); /* Yes, this looks backwards but this is right. If no args, pass NULL */
 	res = handler->execute(node, args ? subargs : NULL); /* Yes, this looks backwards but this is right. If no args, pass NULL */

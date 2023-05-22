@@ -217,7 +217,7 @@ static unsigned int print_header(struct bbs_node *node, const char *s, const cha
 	unsigned int plen;
 	unsigned int rows_used = 1;
 	/* Manually substitute any variables, since we don't substitute until the menu handler is called */
-	bbs_substitute_vars(node, s, buf, len);
+	bbs_node_substitute_vars(node, s, buf, len);
 	bbs_node_writef(node, "%s%s\n", color, buf);
 	/* Check for exceeding dimensions */
 	plen = (unsigned int) bbs_printable_strlen(buf);
@@ -277,7 +277,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *rest
 		}
 		/* We have to substitute here, because the length could (probably will) change when we substitute, and we want the real length we'll print */
 		/* Manually substitute any variables, since we don't substitute until the menu handler is called */
-		bbs_substitute_vars(node, menuitem->name, sub_name, sizeof(sub_name));
+		bbs_node_substitute_vars(node, menuitem->name, sub_name, sizeof(sub_name));
 		slen = bbs_printable_strlen(sub_name); /* We must use bbs_printable_strlen to get the real # of cols occupied, because this could contain escape sequences (e.g. color formatting) */
 		longest = MAX(slen, longest);
 		i++; /* Count how many options we're actually going to output */
@@ -293,7 +293,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *rest
 	if (!strlen_zero(menu->display)) {
 		/* menus.conf tells us what to draw to the screen. */
 		char disp[2 * 1920]; /* An 80x24 screen is 1920, so twice that ought to be plenty. Avoid using strlen(menu->display) for gcc -Wstack-protector */
-		bbs_substitute_vars(node, menu->display, disp, sizeof(disp));
+		bbs_node_substitute_vars(node, menu->display, disp, sizeof(disp));
 		bbs_node_writef(node, "%s\n", disp); /* Add LF after last line */
 		bbs_node_reset_color(node);
 		return 0;
@@ -342,7 +342,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *rest
 				continue;
 			}
 			/* Manually substitute any variables, since we don't substitute until the menu handler is called */
-			bbs_substitute_vars(node, menuitem->name, sub_name, sizeof(sub_name));
+			bbs_node_substitute_vars(node, menuitem->name, sub_name, sizeof(sub_name));
 
 			/* Resist the urge to directly snprintf the whole chunk into a buffer and then format that using %.*s.
 			 * It won't work because the string includes non-printable characters, and *.*s doesn't care about printable length, it cares about bytes.
@@ -392,7 +392,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *rest
 				continue;
 			}
 			/* Manually substitute any variables, since we don't substitute until the menu handler is called */
-			bbs_substitute_vars(node, menuitem->name, sub_name, sizeof(sub_name));
+			bbs_node_substitute_vars(node, menuitem->name, sub_name, sizeof(sub_name));
 			snprintf(sub_full, sizeof(sub_full), "%s%s%c  %s%s", outcol > 1 ? "  " : "", COLOR(COLOR_PRIMARY), menuitem->opt, COLOR(COLOR_SECONDARY), sub_name);
 			bbs_node_writef(node, " %s ", sub_full);
 		}

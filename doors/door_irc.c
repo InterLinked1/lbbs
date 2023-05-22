@@ -1159,7 +1159,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 			 * since we haven't read any data yet to quell the poll. */
 
 			/* Another clunky thing. Need to get data using irc_read, but we want to buffer it using a bbs_node_readline struct.
-			 * So relay using a pipe.
+			 * So use bbs_readline_append.
 			 */
 			res = irc_read(ircl, tmpbuf, sizeof(tmpbuf));
 			res = bbs_readline_append(&rldata, "\r\n", tmpbuf, (size_t) res, &ready);

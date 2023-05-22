@@ -43,6 +43,15 @@ struct readline_data {
 void bbs_readline_init(struct readline_data *rldata, char *buf, size_t len);
 
 /*!
+ * \brief Get number of bytes of data currently available in buffer
+ * \param rldata
+ * \param process 1 if readline data needs to be shifted and processed after a previous read
+ * \warning Return value will NOT be accurate if the process argument is wrong!
+ * \return Number of bytes available
+ */
+int readline_bytes_available(struct readline_data *restrict rldata, int process);
+
+/*!
  * \brief Read input from a file descriptor, up to a delimiter. This function handles reading partial inputs, multiple inputs, etc. automatically.
  * \param fd File descriptor from which to read
  * \param rldata Previously initialized using bbs_readline_init
@@ -68,6 +77,40 @@ int bbs_readline(int fd, struct readline_data *restrict rldata, const char *rest
  * \note The written data is NOT NUL-terminated, this is a binary operation
  */
 int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata, int timeout, size_t n);
+
+/*!
+ * \brief Read exactly n bytes from a file descriptor and append them to a dyn_str
+ * \param fd Source file descriptor
+ * \param dynstr
+ * \param rldata
+ * \param timeout Timeout for activity (applies to each read/poll, not overall)
+ * \param n Number of bytes to read
+ * \retval -1 on failure
+ * \return number of bytes read
+ */
+int bbs_readline_getn_dynstr(int fd, struct dyn_str *restrict dynstr, struct readline_data *restrict rldata, int timeout, size_t n);
+
+/*!
+ * \brief Read exactly n bytes from a file descriptor and store them in a dynamically allocated buffer
+ * \param fd Source file descriptor
+ * \param rldata
+ * \param timeout Timeout for activity (applies to each read/poll, not overall)
+ * \param n Number of bytes to read
+ * \retval NULL on failure (fewer than n bytes read)
+ * \return buffer containing data, which must be freed
+ * \note The buffer is NUL terminated
+ */
+char *bbs_readline_getn_str(int fd, struct readline_data *restrict rldata, int timeout, size_t n);
+
+/*!
+ * \brief Read and discard the next n bytes available
+ * \param fd Source file descriptor
+ * \param rldata
+ * \param timeout Timeout for activity (applies to each read/poll, not overall)
+ * \param n Number of bytes to read and discard
+ * \retval Number of bytes discarded on success, -1 on failure
+ */
+int bbs_readline_discard_n(int fd, struct readline_data *restrict rldata, int timeout, size_t n);
 
 /*!
  * \brief Set the boundary until which data should be read

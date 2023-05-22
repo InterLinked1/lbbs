@@ -538,8 +538,7 @@ static void node_free(struct bbs_node *node)
 	}
 	if (node->vars) {
 		bbs_vars_destroy(node->vars);
-		free(node->vars); /* Free the list itself */
-		node->vars = NULL;
+		FREE(node->vars); /* Free the list itself */
 	}
 	free_if(node->ip);
 	bbs_debug(4, "Node %d now freed\n", node->id);
@@ -722,7 +721,7 @@ int bbs_node_info(int fd, unsigned int nodenum)
 	PRINT_D_OR_S(fd, "Child PID", n->childpid, "None");
 	PRINT_D_OR_S(fd, "Speed (BPS)", n->speed, "Unthrottled");
 	bbs_dprintf(fd, BBS_FMT_S, "Shutting Down", BBS_YN(!n->active));
-	bbs_vars_dump(fd, n);
+	bbs_node_vars_dump(fd, n);
 	pthread_mutex_unlock(&n->lock);
 
 #undef BBS_FMT_S
@@ -1090,10 +1089,10 @@ static int node_intro(struct bbs_node *node)
 	/* Make some basic variables available that can be used in menus.conf scripting
 	 * For example, something in the menu could say Welcome ${BBS_USERNAME}!
 	 */
-	bbs_var_set_fmt(node, "BBS_NODENUM", "%d", node->id);
-	bbs_var_set_fmt(node, "BBS_USERID", "%d", node->user->id);
-	bbs_var_set_fmt(node, "BBS_USERPRIV", "%d", node->user->priv);
-	bbs_var_set(node, "BBS_USERNAME", bbs_username(node->user));
+	bbs_node_var_set_fmt(node, "BBS_NODENUM", "%d", node->id);
+	bbs_node_var_set_fmt(node, "BBS_USERID", "%d", node->user->id);
+	bbs_node_var_set_fmt(node, "BBS_USERPRIV", "%d", node->user->priv);
+	bbs_node_var_set(node, "BBS_USERNAME", bbs_username(node->user));
 
 	/*! \todo Notify user's friends that s/he's logged on now */
 	/*! \todo Notify the sysop (sysop console), via BELL, that a new user has logged in, if and only if the sysop console is idle */
@@ -1178,7 +1177,7 @@ static int bbs_goodbye(struct bbs_node *node)
 	char sub[512];
 
 	NEG_RETURN(bbs_node_clear_screen(node));
-	bbs_substitute_vars(node, bbs_exitmsg, sub, sizeof(sub));
+	bbs_node_substitute_vars(node, bbs_exitmsg, sub, sizeof(sub));
 	NEG_RETURN(bbs_node_writef(node, "%s", sub));
 	NEG_RETURN(bbs_node_wait_key(node, SEC_MS(12)));
 	return 0;
@@ -1251,11 +1250,11 @@ void bbs_node_begin(struct bbs_node *node)
 void bbs_node_exit(struct bbs_node *node)
 {
 	if (node->active) {
-		bbs_node_unlock(node);
+		//bbs_node_unlock(node);
 		/* User quit: unlink and free */
 		bbs_node_unlink(node);
 	} else {
-		bbs_node_unlock(node);
+		//bbs_node_unlock(node);
 		/* Server force quit the node.
 		 * For example, bbs_node_shutdown_all was called, which already holds a WRLOCK,
 		 * so we shouldn't call bbs_node_unlink or that will grab another WRLOCK and cause deadlock.

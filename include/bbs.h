@@ -248,6 +248,8 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 
 #define close_if(x) if (x != -1) { CLOSE(x); }
 
+#define PIPE_CLOSE(x) close_if(x[0]); close_if(x[1]);
+
 /*! \brief If char * is NULL or empty string */
 #define strlen_zero(s) ((!s || *s == '\0'))
 

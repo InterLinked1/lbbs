@@ -29,6 +29,7 @@
 
 static int pre(void)
 {
+	test_preload_module("mod_http.so");
 	test_load_module("net_http.so");
 
 	TEST_ADD_CONFIG("net_http.conf");
@@ -55,6 +56,7 @@ static int run(void)
 	REQUIRE_FD(clientfd);
 
 	SWRITE(clientfd, "GET / HTTP/1.1" ENDL);
+	SWRITE(clientfd, "Host: localhost:8080" ENDL);
 	SWRITE(clientfd, ENDL); /* End of headers */
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "file2.txt");
 	CLIENT_DRAIN(clientfd);
@@ -66,6 +68,7 @@ static int run(void)
 	/* XXX It would be significantly more rigorous to read the response line by line and, after the headers, make an exact comparison of the entire body */
 
 	SWRITE(clientfd, "GET /file1.txt HTTP/1.1" ENDL);
+	SWRITE(clientfd, "Host: localhost:8080" ENDL);
 	SWRITE(clientfd, "Connection: keep-alive" ENDL);
 	SWRITE(clientfd, ENDL); /* End of headers */
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "This is a test page");
@@ -73,6 +76,7 @@ static int run(void)
 
 	/* Test connection reuse */
 	SWRITE(clientfd, "GET /file2.txt HTTP/1.1" ENDL);
+	SWRITE(clientfd, "Host: localhost:8080" ENDL);
 	SWRITE(clientfd, "Connection: keep-alive" ENDL);
 	SWRITE(clientfd, ENDL); /* End of headers */
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "This is another test page");
