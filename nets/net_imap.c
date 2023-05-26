@@ -3064,12 +3064,14 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 			int secure = 0;
 			char buf[1024]; /* Must be large enough to get all the CAPABILITYs, or bbs_readline will throw a warning about buffer exhaustion and return 0 */
 
-			memset(&url, 0, sizeof(url));
 			l++;
-
 			server = line;
 			prefix = strsep(&server, "|"); /* Use pipe in case mailbox name contains spaces */
+			if (!strncmp(prefix, "# ", 2)) {
+				continue; /* Skip commented lines */
+			}
 
+			memset(&url, 0, sizeof(url));
 			if (bbs_parse_url(&url, server)) {
 				bbs_warning("Malformed URL on line %d: %s\n", l, server); /* Include the line number since bbs_parse_url "used up" the string */
 				continue;
@@ -3498,6 +3500,7 @@ static int test_sequence_in_range(void)
 	bbs_test_assert_equals(0, in_range("2:3,6", 4));
 	bbs_test_assert_equals(1, in_range("2:3,6,7:9", 8));
 	bbs_test_assert_equals(1, in_range("1:*", 8));
+	bbs_test_assert_equals(1, in_range("1:*", 6666));
 	bbs_test_assert_equals(1, in_range("*", 13));
 	bbs_test_assert_equals(1, in_range("1", 1));
 	return 0;
@@ -4216,12 +4219,13 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 	int files, fno = 0;
 	int seqno = 0;
 	char response[1024];
-	char headers[4096] = ""; /* XXX Large enough for all headers, etc.? */
+	char headers[8192] = ""; /* XXX Large enough for all headers, etc.? */
 	char *buf;
 	int len;
 	int multiline = 0;
 	size_t bodylen = 0;
 	int error = 0;
+	int fetched = 0;
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
 	files = scandir(imap->curdir, &entries, NULL, uidsort);
@@ -4613,17 +4617,36 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				if (!size) {
 					bbs_warning("File size of %s is %ld bytes?\n", fullname, size);
 				}
-				imap_send(imap, "%d FETCH (%s%s%s %s {%ld}", seqno, S_IF(dyn), dyn ? " " : "", response, fetchreq->rfc822 ? "RFC822" : "BODY[]", size + 2); /* No close paren here, last dprintf will do that */
+
 				/* XXX Assumes not sending headers and bodylen at same time.
 				 * In reality, I think that *might* be fine because the body contains everything,
 				 * and you wouldn't request just the headers and then the whole body in the same FETCH.
 				 * Now if there is a request for just the body text without the headers, we might be in trouble...
 				 */
 				if (bodylen) {
-					bbs_warning("This is not handled!\n");
+					bbs_error("This is not handled!\n");
 				}
 				offset = 0;
 				/* XXX Doesn't handle partial bodies */
+				/* XXX Hack to handle sending the body but not headers.
+				 * As the comment above notes, all the BODY[] stuff needs to be properly handled. */
+				if (fetchreq->rfc822text && !fetchreq->rfc822) {
+					/* Only body. No headers. */
+					char linebuf[1001];
+					/* XXX Refactor so we can just get the offset to body start via function call */
+					while ((fgets(linebuf, sizeof(linebuf), fp))) {
+						/* fgets does store the newline, so line should end in CR LF */
+						offset += (off_t) strlen(linebuf); /* strlen includes CR LF already */
+						if (!strcmp(linebuf, "\r\n")) {
+							break; /* End of headers */
+						}
+					}
+					size -= offset;
+				}
+
+				/* If request used RFC822, use that. If it used BODY, use BODY */
+				imap_send(imap, "%d FETCH (%s%s%s %s {%ld}", seqno, S_IF(dyn), dyn ? " " : "", response, fetchreq->rfc822 ? "RFC822" : fetchreq->rfc822text ? "RFC822.TEXT" : "BODY[]", size); /* No close paren here, last dprintf will do that */
+
 				pthread_mutex_lock(&imap->lock);
 				res = (int) sendfile(imap->wfd, fileno(fp), &offset, (size_t) size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
 				fclose(fp);
@@ -4632,16 +4655,17 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				} else {
 					imap_debug(5, "Sent %d-byte body for %s\n", res, fullname);
 				}
-				dprintf(imap->wfd, "\r\n)\r\n"); /* And the finale (don't use imap_send for this) */
+				dprintf(imap->wfd, ")\r\n"); /* And the finale (don't use imap_send for this) */
 				pthread_mutex_unlock(&imap->lock);
 			} else {
-				/* Need to add 2 for last CR LF we tack on before ) */
-				imap_send(imap, "%d FETCH (%s%s%s {%lu}\r\n%s\r\n)", seqno, S_IF(dyn), dyn ? " " : "", response, bodylen + 2, headers);
+				imap_send(imap, "%d FETCH (%s%s%s {%lu}\r\n%s)", seqno, S_IF(dyn), dyn ? " " : "", response, bodylen, headers);
 			}
 		} else {
 			/* Number after FETCH is always a message sequence number, not UID, even if usinguid */
 			imap_send(imap, "%d FETCH (%s%s%s)", seqno, S_IF(dyn), dyn ? " " : "", response); /* Single line response */
 		}
+
+		fetched++;
 
 		if (dyn) {
 			free(dyn);
@@ -4670,6 +4694,9 @@ cleanup:
 		free(entry);
 	}
 	free(entries);
+	if (!fetched) {
+		bbs_debug(6, "FETCH command did not return any matching results\n");
+	}
 	if (error) {
 		imap_reply(imap, "BAD Invalid saved search");
 	} else {
