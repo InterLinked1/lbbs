@@ -2722,10 +2722,18 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 		*tmp = '\0'; /* Stop at < */
 		from++; /* Skip < */
 		/* Can use MAIL FROM more than once (to replace previous one) */
+		if (strlen_zero(from)) {
+			/* Empty MAIL FROM. This means postmaster, i.e. an email that should not be auto-replied to. */
+			/* XXX This does bypass some checks below, but we shouldn't reject such mail. */
+			smtp->fromlocal = 0;
+			REPLACE(smtp->from, "");
+			smtp_reply(smtp, 250, 2.0.0, "OK");
+			return 0;
+		}
 		tmp = strchr(from, '@');
 		REQUIRE_ARGS(tmp); /* Must be user@domain */
 		tmp++; /* Skip @ */
-		if (!strcasecmp(tmp, bbs_hostname())) {
+		if (smtp_domain_matches(bbs_hostname(), tmp)) {
 			/* It's one of our addresses. Authentication is required. */
 			if (!bbs_user_is_registered(smtp->node->user)) {
 				smtp_reply(smtp, 530, 5.7.0, "Authentication required");
@@ -2734,7 +2742,7 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 			smtp->fromlocal = 1;
 		} else {
 			smtp->fromlocal = 0; /* It's not something that belongs to us. No authentication required. */
-			if (strlen_zero(smtp->helohost) || (requirefromhelomatch && strcmp(tmp, smtp->helohost))) {
+			if (strlen_zero(smtp->helohost) || (requirefromhelomatch && !smtp_domain_matches(smtp->helohost, tmp))) {
 				smtp_reply(smtp, 530, 5.7.0, "HELO/EHLO domain does not match MAIL FROM domain");
 				return 0;
 			}

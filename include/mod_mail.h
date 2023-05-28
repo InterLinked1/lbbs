@@ -19,6 +19,15 @@ struct bbs_user;
 struct bbs_url;
 struct bbs_tcp_client;
 
+/*!
+ * \brief Check whether an SMTP domain or domain literal matches a local domain or hostname
+ * \param domain Domain or IP address
+ * \param addr Domain or domain literal (enclosed in [] for IP addresses)
+ * \retval 1 if matches
+ * \retval 0 if doesn't match
+ */
+int smtp_domain_matches(const char *domain, const char *addr);
+
 /*! \brief Check whether a particular domain's mail is handled local to the BBS */
 int mail_domain_is_local(const char *domain);
 

@@ -71,12 +71,36 @@ struct mailbox {
  * since they bump the refcount of this module itself. */
 static RWLIST_HEAD_STATIC(mailboxes, mailbox);
 
+int smtp_domain_matches(const char *domain, const char *addr)
+{
+	if (*addr == '[') {
+		size_t domainlen;
+		/* Domain literal */
+		addr++;
+		if (strlen_zero(addr)) {
+			return 0;
+		}
+		domainlen = strlen(domain);
+		if (strncmp(domain, addr, domainlen)) {
+			return 0;
+		}
+		addr += domainlen;
+		if (*addr != ']') {
+			return 0;
+		}
+		addr++;
+		return strlen_zero(addr); /* Should be the end of that now */
+	} else {
+		return !strcmp(domain, addr);
+	}
+}
+
 int mail_domain_is_local(const char *domain)
 {
 	if (strlen_zero(domain)) {
 		return 1;
 	}
-	if (!strcmp(domain, bbs_hostname())) {
+	if (smtp_domain_matches(bbs_hostname(), domain)) {
 		return 1;
 	}
 	return stringlist_contains(&local_domains, domain);
@@ -525,7 +549,7 @@ static struct mailbox *mailbox_get(unsigned int userid, const char *user, const 
 	struct mailbox *mbox = NULL;
 
 	/* If we have a user ID, use that directly. */
-	if (!userid && (!domain || !strcmp(domain, bbs_hostname()))) { /* Only for primary domain */
+	if (!userid && (!domain || smtp_domain_matches(bbs_hostname(), domain))) { /* Only for primary domain */
 		if (strlen_zero(user)) {
 			bbs_error("Must specify at least either a user ID or name\n");
 			return NULL;

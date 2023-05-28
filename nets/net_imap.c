@@ -4077,6 +4077,8 @@ static int handle_append(struct imap_session *imap, char *s)
 	_imap_reply(imap, "%s OK [APPENDUID %u %u] APPEND completed\r\n", imap->savedtag, uidvalidity, uidnext); /* Don't add 1, this is the current message UID, not UIDNEXT */
 	/*! \todo BUGBUG If mailbox currently selected, we SHOULD send an untagged EXISTS e.g. send_untagged_exists
 	 * Even if not, we should for that particular mailbox (folder) for other clients that may be monitoring it. */
+	/*! \todo Sometimes we get 2 extra bytes after this. We shouldn't let those slip by if present,
+	 * as that's probably a CR LF at the end we should (ignore). */
 	return 0;
 }
 
@@ -4219,7 +4221,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 	int files, fno = 0;
 	int seqno = 0;
 	char response[1024];
-	char headers[8192] = ""; /* XXX Large enough for all headers, etc.? */
+	char headers[8192] = ""; /* XXX Large enough for all headers, etc.? Better might be sendfile, no buffering */
 	char *buf;
 	int len;
 	int multiline = 0;
@@ -4283,7 +4285,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		 * The maildir_msg_setflags API doesn't currently provide us back with the new renamed filename.
 		 * So what we do is check if we need to mark as seen, but not actually mark as seen until the END of the loop.
 		 * Consequently, we have to append the seen flag to the flags response manually if needed. */
-		if (fetchreq->bodyargs && !fetchreq->bodypeek) {
+		if ((fetchreq->bodyargs && !fetchreq->bodypeek) || fetchreq->rfc822text) {
 			markseen = 1;
 		}
 
@@ -4310,10 +4312,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			if (parse_size_from_filename(entry->d_name, &size)) {
 				goto cleanup;
 			}
-			/* XXX With Dovecot IMAPTest, we were getting warnings that RFC822.SIZE was 2 bytes too small
-			 * and BODY length was 2 bytes too large. Adding 2 fixes this warnings, but maybe
-			 * the BODY is where we actually need to address this. */
-			SAFE_FAST_COND_APPEND(response, buf, len, 1, "RFC822.SIZE %lu", size + 2);
+			SAFE_FAST_COND_APPEND(response, buf, len, 1, "RFC822.SIZE %lu", size);
 		}
 		/* Must include UID in response, whether requested or not (so fetchreq->uid ignored) */
 		SAFE_FAST_COND_APPEND(response, buf, len, 1, "UID %u", msguid);
