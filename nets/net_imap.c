@@ -838,7 +838,7 @@ static void parse_keyword(struct imap_session *imap, const char *s, const char *
 		if (index >= MAX_KEYWORDS) {
 			bbs_warning("Can't store any new keywords for this maildir (already have %d)\n", index);
 		} else {
-			char newindex = 'a' + index;
+			char newindex = (char) ('a' + index);
 			fprintf(fp, "%c %s\n", newindex, s);
 			imap->appendkeywords[imap->numappendkeywords++] = newindex; /* Safe, since we know we're in bounds */
 			imap->createdkeyword = 1;

@@ -116,13 +116,13 @@ char *bbs_password_salt(void)
 #define SALT_LENGTH 16
 	char result[SALT_LENGTH * 2 + 1];
 	unsigned char stream[SALT_LENGTH + 1];
-	int res;
+	ssize_t res;
 	res = getrandom(stream, SALT_LENGTH, 0);
 	if (res < 0) {
 		bbs_error("getrandom failed: %s\n", strerror(errno));
 		return NULL;
 	} else if (res != SALT_LENGTH) {
-		bbs_error("getrandom returned %d bytes (wanted %d)\n", res, SALT_LENGTH);
+		bbs_error("getrandom returned %ld bytes (wanted %d)\n", res, SALT_LENGTH);
 		return NULL;
 	}
 	if (php_bin2hex(stream, SALT_LENGTH, result, sizeof(result))) {

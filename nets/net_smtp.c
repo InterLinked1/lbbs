@@ -1559,7 +1559,7 @@ static int notify_stalled_delivery(const char *from, const char *to, const char 
 static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 {
 	FILE *fp;
-	char fullname[256], newname[sizeof(fullname) + 11];
+	char fullname[516], newname[sizeof(fullname) + 11];
 	char from[1000], recipient[1000], todup[256];
 	char *hostname;
 	char *realfrom, *realto;

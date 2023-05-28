@@ -503,7 +503,7 @@ static int on_retr(const char *dir_name, const char *filename, struct pop3_sessi
 static int on_top(const char *dir_name, const char *filename, struct pop3_session *pop3, int number, int msgfilter)
 {
 	FILE *fp;
-	char fullpath[256];
+	char fullpath[516];
 	int lineno = 0;
 	int headersdone = 0;
 	char msgbuf[1001]; /* Enough for longest possible line */
