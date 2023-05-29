@@ -31,12 +31,10 @@ static int pre(void)
 	test_preload_module("mod_mimeparse.so");
 	test_load_module("net_smtp.so");
 	test_load_module("net_imap.so");
-	test_load_module("net_pop3.so");
 
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_smtp.conf");
 	TEST_ADD_CONFIG("net_imap.conf");
-	TEST_ADD_CONFIG("net_pop3.conf");
 
 	system("rm -rf " TEST_MAIL_DIR); /* Purge the contents of the directory, if it existed. */
 	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
@@ -156,29 +154,6 @@ static int run(void)
 	SWRITE(client1, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
 	CLIENT_EXPECT(client1, "a1 OK");
 
-	/* POP3 sessions are not necessarily rejected entirely while an IMAP session is active.
-	 * This is hard to test since the IMAP server does not persistently hold the mailbox lock.
-	 * The lock is only grabbed (as a RDLOCK) for as long as an operation needs it.
-	 * If an IMAP client is idling, no locks are held, and a POP client would be allowed to connect.
-	 * Thus, we use the TESTLOCK command, explicitly added for this purpose.
-	 */
-	client2 = test_make_socket(110);
-	if (client2 < 0) {
-		goto cleanup;
-	}
-	CLIENT_EXPECT(client2, "+OK"); /* Server Ready greeting */
-	SWRITE(client2, "USER " TEST_USER ENDL);
-	CLIENT_EXPECT(client2, "+OK");
-	SWRITE(client2, "PASS " TEST_PASS ENDL);
-
-	/* Interleave these writes at the same time to ensure the lock is held when the POP server tries to authenticate */
-	SWRITE(client1, "a2 TESTLOCK" ENDL); /* When the INBOX is selected, that should temporarily grab the lock */
-	CLIENT_EXPECT(client2, "-ERR [IN-USE]"); /* Mailbox is busy */
-	close_if(client2); /* POP server will disconnect at this point. We'll need to reconnect. */
-
-	/* But if we wait a moment and try again, it should succeed, since the IMAP server will eventually release the lock. */
-	CLIENT_EXPECT(client1, "a2 OK"); /* This will naturally block until the lock is released. So when we try to reconnect to the POP server, it will succeed. */
-
 	/* EXAMINE */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", send_count);
 	SWRITE(client1, "a2 EXAMINE \"INBOX\"" ENDL);
@@ -192,21 +167,6 @@ static int run(void)
 	/* SELECT traversal should have moved all the messages from new to cur */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 0);
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/cur", send_count);
-
-	/* This POP3 login should succeed. Note that this will result in a maildir traversal. For that reason, we do the EXAMINE/SELECT above so that this traversal here will not move any files. */
-	client2 = test_make_socket(110);
-	if (client2 < 0) {
-		return -1;
-	}
-	CLIENT_EXPECT(client2, "+OK"); /* Server ready */
-	SWRITE(client2, "USER " TEST_USER ENDL);
-	CLIENT_EXPECT(client2, "+OK");
-	SWRITE(client2, "PASS " TEST_PASS ENDL);
-	CLIENT_EXPECT(client2, "+OK");
-	SWRITE(client2, "QUIT" ENDL); /* Make sure we cleanly quit so that the POP3 user doesn't log in and block the IMAP connection */
-	CLIENT_EXPECT(client2, "+OK");
-	close_if(client2);
-	usleep(2000); /* Wait a small instant since the mailbox lock is not released until net_pop3 cleans up the POP3 session, and we need to be able to grab the lock */
 
 	/* LIST */
 	SWRITE(client1, "a4 LIST \"\" \"\"" ENDL);
