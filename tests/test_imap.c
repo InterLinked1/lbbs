@@ -588,8 +588,8 @@ static int run(void)
 
 	SELECT_MAILBOX(client1, "e2", "INBOX");
 
-	/* Ensure the mappings for keywords are different between the two folders. */
-	SWRITE(client1, "e3 STORE 1:2 +FLAGS.SILENT ($Test2)" ENDL);
+	/* Ensure the mappings for keywords are different between the two folders, and that flags are copied properly. */
+	SWRITE(client1, "e3 STORE 1:2 +FLAGS.SILENT (\\Seen $Test2)" ENDL);
 	CLIENT_EXPECT(client1, "e3 OK");
 
 	SWRITE(client1, "e4 COPY 1 Sent" ENDL);
@@ -599,7 +599,7 @@ static int run(void)
 
 	/* Sent already had one message (from the BURL test). It'll be #2 */
 	SWRITE(client1, "e6 FETCH 2 (FLAGS)" ENDL);
-	CLIENT_EXPECT(client1, "FLAGS ($Test2)"); /* Ensure this flag, and no other flag, is present */
+	CLIENT_EXPECT(client1, "FLAGS (\\Seen $Test2)"); /* Ensure these flags, and no other flags, are present */
 	CLIENT_DRAIN(client1);
 
 	/* Test CONDSTORE with STORE: UNCHANGEDSINCE */

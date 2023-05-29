@@ -988,7 +988,9 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 	if (likely(fp != NULL)) {
 		/* Always write back to the file in the binary format. UIDVALIDITY first, then UIDNEXT. */
 		char c = 3; /* This is binary, so it will never appear in an ASCII file */
-		bbs_verb(5, "Converting %s from ASCII to binary format\n", uidfile);
+		if (ascii) {
+			bbs_verb(5, "Converting %s from ASCII to binary format\n", uidfile);
+		}
 		if (fwrite(&uidvalidity, sizeof(unsigned int), 1, fp) != 1 || fwrite(&uidnext, sizeof(unsigned int), 1, fp) != 1 || fwrite(&c, sizeof(char), 1, fp) != 1) {
 			bbs_error("Failed to write data to UID file %s\n", uidfile); /* Would need to do if we created the directory anyways */
 		}

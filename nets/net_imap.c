@@ -1103,8 +1103,8 @@ static int restrict_flags(int acl, int *flags)
  */
 static int translate_maildir_flags(struct imap_session *imap, const char *oldmaildir, const char *oldfilenamefull, const char *oldfilename, const char *newmaildir, int destacl)
 {
-	char keywords[256];
-	char newflagletters[53];
+	char keywords[256] = "";
+	char newflagletters[53] = "";
 	int numkeywords;
 	int oldflags;
 
@@ -1135,8 +1135,11 @@ static int translate_maildir_flags(struct imap_session *imap, const char *oldmai
 		return 0; /* If it doesn't have any keywords now, we don't need to do anything. */
 	}
 
-	/* Get what letters they would be in the new directory. */
-	oldflags = __parse_flags_string(imap, keywords, newmaildir); /* Note: __parse_flags_string "uses up" keyword so don't attempt to print it out afterwards */
+	/* Extract current system flags, and any keywords */
+	parse_flags_letters_from_filename(oldfilename, &oldflags, NULL);
+
+	/* Convert keyword names to the letters in the new directory */
+	__parse_flags_string(imap, keywords, newmaildir); /* Note: __parse_flags_string "uses up" keyword so don't attempt to print it out afterwards */
 
 	/* Per RFC 4314, we should only copy the flags over if the user has permission to do so.
 	 * Even if the user does not have permission, per the RFC we must not fail the COPY/APPEND with a NO,
