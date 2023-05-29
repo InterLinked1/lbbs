@@ -829,11 +829,61 @@ int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf)
 	return fd;
 }
 
+static int parse_uidfile(FILE *fp, const char *uidfile, unsigned int *uidvalidity, unsigned int *uidnext, int *ascii)
+{
+	/* Because .uidvalidity was originally a plain text file,
+	 * prefer to parse it as binary, but if that fails, fall back to parsing as plain text,
+	 * so this remains backwards compatible. */
+	char c;
+	char uidv[32] = "";
+	char *uidvaliditystr, *tmp;
+
+	if (fread(uidvalidity, sizeof(unsigned int), 1, fp) != 1) {
+		bbs_debug(4, "Failed to read UIDVALIDITY from %s (empty file?)\n", uidfile); /* If we just created the file, it's empty, so this could happen */
+		return 1;
+	} else if (fread(uidnext, sizeof(unsigned int), 1, fp) != 1) {
+		bbs_error("Failed to read UID from %s\n", uidfile);
+		return -1; /* Can't be a text file, because that would have more bytes than the binary version, not fewer */
+	}
+
+	/* If this is a binary file, the next byte is 3. Verify that. */
+	if (fread(&c, sizeof(char), 1, fp) != 1) {
+		bbs_error("Failed to read byte from %s\n", uidfile);
+		return -1; /* Ditto */
+	}
+	if (c == 3) {
+		/* It was in binary format */
+		return 0;
+	}
+
+	/* It's still in plain text format. */
+	bbs_debug(4, "%s is still in ASCII format (c == %d)\n", uidfile, c);
+	*ascii = 1;
+	rewind(fp);
+
+	tmp = uidv;
+	if (!fgets(uidv, sizeof(uidv), fp) || !uidv[0]) {
+		bbs_error("Failed to read UID from %s (read: %s)\n", uidfile, uidv);
+		return -1;
+	} else if (!(uidvaliditystr = strsep(&tmp, "/")) || !(*uidvalidity = (unsigned int) atoi(uidvaliditystr)) || !(*uidnext = (unsigned int) atoi(tmp))) {
+		/* If we create a maildir but don't do anything yet, uidnext will be 0.
+		 * So !atoi isn't a sufficient check as it may have successfully parsed 0.
+		 */
+		if (!tmp || *tmp != '0') {
+			bbs_error("Failed to parse UIDVALIDITY/UIDNEXT from %s (%s/%s)\n", uidfile, S_IF(uidvaliditystr), S_IF(tmp));
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
 unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, int allocate, unsigned int *newuidvalidity, unsigned int *newuidnext)
 {
 	FILE *fp = NULL;
 	char uidfile[256];
 	unsigned int uidvalidity = 0, uidnext = 0;
+	int ascii = 0;
 
 	/* If the directory is not executable, any files created will be owned by root, which is bad.
 	 * We won't be able to write to these files, and mailbox corruption will ensue. */
@@ -861,47 +911,46 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 	 * In practice, clients could have many folders, so if even with 100 users with 10 folders each,
 	 * that's 1000 file descriptors open, all the time, while the BBS is running, with very little benefit.
 	 * Just open and close the files as needed. */
-	if (eaccess(uidfile, R_OK)) {
-		bbs_debug(3, "No UID file yet exists for directory %s\n", directory);
-		fp = fopen(uidfile, "w"); /* Nothing to read, open write only */
-		if (!fp) {
+
+	/* There is now fopen mode that actually does what we want.
+	 * We would like to open the file for reading and writing (but not appending), without truncating, creating if needed.
+	 * a+ is close, but forces writes to append. You can't write to existing bytes.
+	 * w+ is close, but truncates the file when opened.
+	 * r+ is close, but doesn't create the file if needed.
+	 *
+	 * Ultimately, the best thing to do here is try opening with r+ first.
+	 * If that fails, then create the file and reopen with r+. */
+
+	fp = fopen(uidfile, "r+"); /* Open for reading and writing, don't truncate it, and create if it doesn't exist */
+	if (!fp) {
+		/* Assume the file doesn't yet exist. */
+		fp = fopen(uidfile, "a");
+		if (unlikely(!fp)) {
 			bbs_error("fopen(%s) failed: %s\n", uidfile, strerror(errno));
-		}
-	} else {
-		/* If it exists, we better be able to write to this file, too. */
-		if (eaccess(uidfile, W_OK)) {
-			bbs_error("UID file %s is readable but not writable!\n", uidfile);
-			/* Well, this is awkward.
-			 * The only sane thing we can really do is invalidate all the UIDs
-			 * and start over at this point.
-			 *
-			 * Note that we are allowed to reset HIGHESTMODSEQ whenever we reset UIDVALIDITY.
-			 * However, we do not currently do so, and UIDVALIDITY should never be reset
-			 * in a correct implementation, anyways.
-			 */
 		} else {
-			fp = fopen(uidfile, "r+"); /* Open for reading and writing */
-			if (!fp) {
+			fclose(fp);
+			/* Now, the file should exist. Reopen it (it'll be empty) */
+			fp = fopen(uidfile, "r+");
+			if (unlikely(!fp)) {
 				bbs_error("fopen(%s) failed: %s\n", uidfile, strerror(errno));
-			} else {
-				char uidv[32] = "";
-				char *uidvaliditystr, *tmp = uidv;
-				if (!fgets(uidv, sizeof(uidv), fp) || !uidv[0]) {
-					bbs_error("Failed to read UID from %s (read: %s)\n", uidfile, uidv);
-				} else if (!(uidvaliditystr = strsep(&tmp, "/")) || !(uidvalidity = (unsigned int) atoi(uidvaliditystr)) || !(uidnext = (unsigned int) atoi(tmp))) {
-					/* If we create a maildir but don't do anything yet, uidnext will be 0.
-					 * So !atoi isn't a sufficient check as it may have successfully parsed 0.
-					 */
-					if (!tmp || *tmp != '0') {
-						bbs_error("Failed to parse UIDVALIDITY/UIDNEXT from %s (%s/%s)\n", uidfile, S_IF(uidvaliditystr), S_IF(tmp));
-					}
-				}
-				rewind(fp);
 			}
 		}
+		/* If fp is still NULL here, this is awkward.
+		 * The only sane thing we can really do is invalidate all the UIDs
+		 * and start over at this point.
+		 *
+		 * Note that we are allowed to reset HIGHESTMODSEQ whenever we reset UIDVALIDITY.
+		 * However, we do not currently do so, and UIDVALIDITY should never be reset
+		 * in a correct implementation, anyways.
+		 */
 	}
 
-	if (!fp || !uidvalidity || !uidnext) {
+	if (likely(fp != NULL)) {
+		/* At this point, the file is open and it's readable and writable. */
+		parse_uidfile(fp, uidfile, &uidvalidity, &uidnext, &ascii);
+	}
+
+	if (!uidvalidity || !uidnext || !fp) {
 		/* UIDVALIDITY must be strictly increasing, so time is a good thing to use. */
 		uidvalidity = (unsigned int) time(NULL); /* If this isn't the first access to this folder, this will invalidate the client's cache of this entire folder. */
 		/* Since we're starting over, we must broadcast the new UIDVALIDITY value (we always do for SELECTs). */
@@ -919,11 +968,40 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 	 * So depending on what we're referring to, the right answer is 11 or 12. */
 
 	/* Write updated UID to persistent storage. It's super important that this succeed. */
-	if (likely(fp != NULL)) {
-		if (fprintf(fp, "%u/%u", uidvalidity, uidnext) < 0) { /* Would need to do if we created the directory anyways */
-			bbs_error("Failed to write data to UID file\n");
+	if (ascii || !fp) {
+		/* If it was an ASCII file, we'll want to reopen with mode 'w',
+		 * to truncate the file, since otherwise if the new file is smaller,
+		 * there would be old bytes leftover at the end otherwise.
+		 * This isn't very efficient, but thankfully we'll only do it a maximum of once per mailbox.
+		 * If we failed to open the file before, we can always try creating it now.
+		 * We don't need to read anything, so w is sufficient, w+ isn't needed. */
+		if (fp) {
+			fclose(fp);
 		}
-		fflush(fp);
+		fp = fopen(uidfile, "w+"); /* If it's ASCII, we're going to call parse_uid again to verify it's not anymore, so need to be readable too */
+		if (unlikely(!fp)) {
+			bbs_error("fopen(%s) failed: %s\n", uidfile, strerror(errno));
+		}
+	} else {
+		rewind(fp);
+	}
+	if (likely(fp != NULL)) {
+		/* Always write back to the file in the binary format. UIDVALIDITY first, then UIDNEXT. */
+		char c = 3; /* This is binary, so it will never appear in an ASCII file */
+		bbs_verb(5, "Converting %s from ASCII to binary format\n", uidfile);
+		if (fwrite(&uidvalidity, sizeof(unsigned int), 1, fp) != 1 || fwrite(&uidnext, sizeof(unsigned int), 1, fp) != 1 || fwrite(&c, sizeof(char), 1, fp) != 1) {
+			bbs_error("Failed to write data to UID file %s\n", uidfile); /* Would need to do if we created the directory anyways */
+		}
+		if (ascii) { /* It was previously a text file but should now be binary */
+			/* Check that the conversion happened correctly. */
+			unsigned int a, b;
+			rewind(fp);
+			ascii = 0;
+			parse_uidfile(fp, uidfile, &a, &b, &ascii);
+			if (ascii) {
+				bbs_error("Failed to convert %s from ASCII to binary\n", uidfile);
+			}
+		}
 		if (fclose(fp)) {
 			bbs_error("fclose(%s) failed: %s\n", uidfile, strerror(errno));
 		}
