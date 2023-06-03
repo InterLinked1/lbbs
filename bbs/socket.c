@@ -724,7 +724,9 @@ int bbs_stop_tcp_listener(int port)
 
 	bbs_unregister_network_protocol((unsigned int) port);
 	close(sfd);
-	bbs_alertpipe_write(multilistener_alertpipe); /* This will wake up the listener thread and cause it to remove the listener */
+	if (bbs_is_fully_started()) {
+		bbs_alertpipe_write(multilistener_alertpipe); /* This will wake up the listener thread and cause it to remove the listener */
+	} /* else, it didn't even start yet anyways */
 	return 0;
 }
 

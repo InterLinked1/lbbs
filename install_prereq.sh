@@ -40,5 +40,8 @@ apt-get install -y libsieve2-dev
 # libdiscord
 scripts/concord.sh
 
+# libwss
+scripts/libwss.sh
+
 # doxygen only:
 # apt-get install -y doxygen graphviz

@@ -223,7 +223,7 @@ static unsigned int print_header(struct bbs_node *node, const char *s, const cha
 	plen = (unsigned int) bbs_printable_strlen(buf);
 	bbs_debug(6, "plen: %u, cols: %u\n", plen, node->cols);
 	if (!NODE_IS_TDD(node) && node->cols && plen > node->cols) {
-		unsigned int real_rows = plen + (node->cols - 1) / node->cols; /* avoid ceil() */
+		unsigned int real_rows = (plen + (node->cols - 1)) / node->cols; /* avoid ceil() */
 		bbs_warning("Menu title length (%d) exceeds node %d's terminal width (%dx%d), actually occupies %d rows\n", plen, node->id, node->cols, node->rows, real_rows);
 		rows_used += (real_rows - 1); /* Add additional rows it actually took up */
 	}

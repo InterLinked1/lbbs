@@ -49,6 +49,7 @@
 #include "include/linkedlists.h"
 #include "include/variables.h"
 #include "include/base64.h"
+#include "include/hash.h"
 
 #include "include/mod_http.h"
 
@@ -203,7 +204,8 @@ static void http_send_headers(struct http_session *http)
 #endif
 	}
 
-	if (http->req->method & HTTP_VERSION_1_1_OR_NEWER) {
+	/* Include Connection header, except for websocket upgrades, which already have one */
+	if ((http->req->method & HTTP_VERSION_1_1_OR_NEWER) && http->res->code != HTTP_SWITCHING_PROTOCOLS) {
 		http_send_header(http, "Connection: %s\r\n", http->req->keepalive ? "keep-alive" : "close");
 	}
 
@@ -619,8 +621,8 @@ static int process_headers(struct http_session *http)
 
 	/* Upgrade Insecure */
 	value = http_request_header(http, "Upgrade-Insecure-Requests");
-	if (value) {
-		SET_BITFIELD(http->req->upgradeinsecure, atoi(value));
+	if (value && atoi(value) == 1) {
+		SET_BITFIELD(http->req->httpsupgrade, atoi(value));
 	}
 
 	/* Content-Length */
@@ -700,14 +702,87 @@ static int process_headers(struct http_session *http)
 		}
 	}
 
-	/* Upgrade */
-	value = http_request_header(http, "Upgrade-Insecure-Requests");
-	if (value) {
-		if (atoi(value) == 1) {
-			http->req->httpsupgrade = 1;
+	return 0;
+}
+
+int http_websocket_upgrade_requested(struct http_session *http)
+{
+	const char *value;
+	value = http_request_header(http, "Connection");
+	if (!strlen_zero(value) && !strcmp(value, "Upgrade")) {
+		value = http_request_header(http, "Upgrade");
+		if (!strlen_zero(value) && !strcmp(value, "websocket")) {
+			return 1;
 		}
 	}
+	return 0;
+}
 
+int http_websocket_handshake(struct http_session *http)
+{
+	/* Set-WebSocket-Accept response is derived from Sec-WebSocket-Key request header */
+	const char *versionstr, *key;
+	int version;
+
+	if (!(http->req->version & HTTP_VERSION_1_1_OR_NEWER)) {
+		bbs_warning("HTTP version incompatible with websockets\n");
+		return -1;
+	}
+
+	if (!(http->req->method & HTTP_METHOD_GET)) {
+		bbs_warning("Websocket upgrades must use GET request\n");
+		return -1;
+	}
+
+	versionstr = http_request_header(http, "Sec-WebSocket-Version");
+	if (!versionstr) {
+		bbs_warning("Websocket version not included in client request\n");
+		return -1;
+	}
+	/* Version numbers found here: https://www.iana.org/assignments/websocket/websocket.xhtml#version-number */
+	version = atoi(versionstr);
+	if (version != 13 && !strstr(versionstr, "13")) { /* In case client specified multiple, e.g. 7, 13 */
+		http_set_header(http, "Sec-Websocket-Version", "13"); /* Tell the client what we support */
+		return -1;
+	}
+
+	key = http_request_header(http, "Sec-WebSocket-Key");
+	if (key) { /* This is optional, only if the client wants to */
+		char concatenation[256];
+		char hash[SHA1_LEN];
+		int outlen;
+		char *response;
+		/* Compute the challenge response to include in our response. */
+#define WS_UPGRADE_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" /* RFC 6455 1.3 */
+		if (snprintf(concatenation, sizeof(concatenation), "%s%s", key, WS_UPGRADE_GUID) >= (int) sizeof(concatenation)) {
+#undef WS_UPGRADE_GUID
+			bbs_warning("Buffer truncation during handshake\n"); /* sizeof(concatenation) too small, or malicious request */
+			return -1;
+		}
+		hash_sha1_bytes(concatenation, hash);
+		response = base64_encode(hash, SHA1_LEN, &outlen);
+		if (!response) {
+			bbs_warning("base64 encoding failed\n");
+			return -1;
+		}
+		http_set_header(http, "Sec-WebSocket-Accept", response);
+		free(response);
+	}
+
+	/* If we got this far, http_websocket_upgrade_requested(http) should be true,
+	 * there isn't any need to verify that here. */
+
+	http->res->code = HTTP_SWITCHING_PROTOCOLS;
+	http_set_header(http, "Upgrade", "websocket");
+	http_set_header(http, "Connection", "Upgrade");
+
+	/* There isn't any data to send for the 101 response. Just flush headers out. */
+	http->res->chunked = 0; /* Not a chunked response, turn that off. */
+	http->req->keepalive = 0; /* No keep alive */
+	http_send_headers(http);
+
+	/* At this point, the application is good to proceed,
+	 * e.g. hand the connection off to a websocket server. */
 	return 0;
 }
 
@@ -1213,15 +1288,11 @@ static void route_unref(struct http_route *route)
 	pthread_mutex_unlock(&route->lock);
 }
 
-/*! \retval -1 if connection should be closed (-2 if immediately), 0 on success, positive response code to send a default error message */
-static int http_handle_request(struct http_session *http, char *buf)
+int http_parse_request(struct http_session *http, char *buf)
 {
-	struct http_route *route;
-	enum http_response_code code;
-	int res, methodmismatch = 0;
+	int res;
 	size_t requestsize;
 	size_t headerlen = 0;
-	unsigned short int secureport = 0;
 
 	memset(&http->reqstack, 0, sizeof(http->reqstack));
 	/* XXX This also memset's http->res->chunkbuf, which is unnecessary */
@@ -1297,7 +1368,18 @@ static int http_handle_request(struct http_session *http, char *buf)
 			bbs_varlist_append(&http->req->headers, tmp, s);
 		}
 	}
-	res = process_headers(http);
+	return process_headers(http);
+}
+
+/*! \retval -1 if connection should be closed (-2 if immediately), 0 on success, positive response code to send a default error message */
+static int http_handle_request(struct http_session *http, char *buf)
+{
+	int res, methodmismatch = 0;
+	struct http_route *route;
+	enum http_response_code code;
+	unsigned short int secureport = 0;
+
+	res = http_parse_request(http, buf);
 	if (res) {
 		return res;
 	}
@@ -1374,6 +1456,10 @@ static int http_handle_request(struct http_session *http, char *buf)
 	/* Run route handler, to abstractly serve the actual static or dynamic content. */
 	code = route->handler(http);
 	if (code > 0) {
+		if (http->res->code > 0 && http->res->code != (unsigned int) code) {
+			/* Possible programming error: set code and returned something else? */
+			bbs_warning("Actual HTTP response code is %u, but returned %d?\n", http->res->code, code);
+		}
 		http->res->code = code;
 	}
 	route_unref(route);

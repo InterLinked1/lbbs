@@ -161,6 +161,7 @@ struct smtp_session {
 	char *authuser;			/* Authentication username */
 	char *fromheaderaddress;	/* Address in the From: header */
 	char *listname;				/* Name of mailing list */
+	unsigned int numresets;		/* Number of RSETs */
 	unsigned int msa:1;		/* Whether connection was to the Message Submission Agent port (as opposed to the Mail Transfer Agent port) */
 	unsigned int secure:1;	/* Whether session is secure (TLS, STARTTLS) */
 	unsigned int dostarttls:1;	/* Whether we are initiating STARTTLS */
@@ -350,7 +351,7 @@ static int handle_auth(struct smtp_session *smtp, char *s)
 		smtp->inauth = 3; /* Get password */
 		_smtp_reply(smtp, "334 UGFzc3dvcmQ6\r\n"); /* Prompt for password (base64 encoded) */
 	} else if (inauth == 3) {
-		int userlen, passlen;
+	int userlen, passlen;
 		int res;
 		unsigned char *user, *pass;
 		/* Have a password, and a stored username */
@@ -2617,6 +2618,10 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 	REQUIRE_ARGS(command);
 
 	if (!strcasecmp(command, "RSET")) {
+		if (smtp->numresets++ > 50) { /* Don't let SMTP clients keep trying forever */
+			bbs_debug(3, "Forcibly disconnecting client for too many resets\n");
+			return -1;
+		}
 		smtp_reset(smtp);
 		smtp_reply(smtp, 250, 2.1.5, "Flushed");
 	} else if (!strcasecmp(command, "NOOP")) {

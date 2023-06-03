@@ -44,6 +44,23 @@ int stringlist_contains(struct stringlist *list, const char *s)
 	return i ? 1 : 0;
 }
 
+int stringlist_remove(struct stringlist *list, const char *s)
+{
+	struct stringitem *i;
+	RWLIST_WRLOCK(list);
+	RWLIST_TRAVERSE_SAFE_BEGIN(list, i, entry) {
+		if (!strcmp(i->s, s)) {
+			RWLIST_REMOVE_CURRENT(entry);
+			free(i->s);
+			free(i);
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(list);
+	return i ? 0 : -1;
+}
+
 void stringlist_empty(struct stringlist *list)
 {
 	struct stringitem *i;

@@ -27,6 +27,14 @@ RWLIST_HEAD(stringlist, stringitem);
  */
 int stringlist_contains(struct stringlist *list, const char *s);
 
+/*!
+ * \brief Remove the first encountered occurence of a string from a stringlist
+ * \param list
+ * \param s Search string. Case sensitive.
+ * \retval 0 if removed once, -1 if not present
+ */
+int stringlist_remove(struct stringlist *list, const char *s);
+
 /*! \brief Remove all items from a stringlist */
 void stringlist_empty(struct stringlist *list);
 

@@ -151,6 +151,13 @@ static const __attribute__((unused)) struct bbs_module_info *bbs_module_info;
 		.dependencies = dependencylist,		\
 	)
 
+#define BBS_MODULE_INFO_FLAGS_DEPENDENT(desc, flags, dependencylist)	 \
+	BBS_MODULE_INFO(flags, desc,   				\
+		.load = load_module,				\
+		.unload = unload_module,			\
+		.dependencies = dependencylist,		\
+	)
+
 /* For modules that are depended upon by other modules */
 #define BBS_MODULE_INFO_FLAGS(desc, flags)	 \
 	BBS_MODULE_INFO(flags, desc,   			\

@@ -272,9 +272,7 @@ static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ex
 		if (mod->lib) {
 			bbs_error("Module '%s' did not register itself during load\n", resource_in);
 			logged_dlclose(resource_in, mod->lib);
-		} else if (suppress_logging) {
-			bbs_error("Failed to load module %s, aborting\n", resource_in);
-		} else {
+		} else if (!suppress_logging) {
 			bbs_error("Error loading module '%s': %s\n", resource_in, dlerror_msg);
 		}
 
@@ -284,6 +282,9 @@ static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ex
 
 	return mod;
 }
+
+/* Forward declaration */
+static int load_resource(const char *restrict resource_name, unsigned int suppress_logging);
 
 static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned int suppress_logging)
 {
@@ -299,6 +300,70 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 	snprintf(fn, sizeof(fn), "%s/%s%s", BBS_MODULE_DIR, resource_in, so_ext);
 
 	mod = load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_LOCAL, suppress_logging);
+	if (!mod) {
+		/* XXX. Here, we consider the case of modules that are both depended on by other modules
+		 * and themselves depend on yet other modules.
+		 * In other words, they both export symbols globally,
+		 * and they also require the symbols of other modules.
+		 * This means that among the modules to preload, order will matter,
+		 * because if C depends on B and B depends on A, then B and A will both be marked for preload,
+		 * but A *MUST* be loaded before B, or B will fail to load (cascading to C, etc.)
+		 *
+		 * When scanning the list of modules, at some point, we will discover that B requires A and C requires B.
+		 * It could be in either order.
+		 * And besides that, we use directory order, not stringlist order, for the purposes of autoloading.
+		 * That could be changed for preload, but we would need to store more state to detect these deeper dependencies
+		 * than we do now.
+		 *
+		 * In the meantime, if we're autoloading modules, and a load fails, it's probably because symbols
+		 * failed to resolve, and probably due to unresolved dependencies. Try to resolve those on the fly, for now.
+		 *
+		 * XXX This is really not elegant, it would be better to make a properly ordered list of all modules from the get go.
+		 * Also, this is no longer safe from accidental infinte recursion. We will crash (stack overflow) if there is a dependency loop here.
+		 * If we have a better way of handling this in the future, this hack can be removed:
+		 */
+		if (stringlist_contains(&modules_preload, resource_in)) {
+			/* Only bother checking if it's a preload module.
+			 * Otherwise, checking dependencies now isn't going to do anything for us.
+			 * Also only do this during autoload (the preload list will be emptied once autoload finishes).
+			 */
+
+			/* At this point, we'll have to do a lazy open again. If that fails, then really give up. */
+			mod = load_dlopen(resource_in, so_ext, fn, RTLD_LAZY | RTLD_LOCAL, suppress_logging);
+			if (mod) {
+				int res = 0;
+				char dependencies_buf[256];
+				char *dependencies, *dependency;
+				safe_strncpy(dependencies_buf, mod->info->dependencies, sizeof(dependencies_buf));
+				logged_dlclose(resource_in, mod->lib);
+				free(mod);
+				dependencies = dependencies_buf;
+				while ((dependency = strsep(&dependencies, ","))) {
+					if (!find_resource(dependency)) { /* It's not loaded already. */
+						int mres;
+						bbs_debug(1, "Preloading %s on the fly since it's required by %s\n", dependency, resource_in);
+						mres = load_resource(dependency, suppress_logging);
+						if (!mres) {
+							/* Prevent it from being loaded again in the future */
+							stringlist_push(&modules_noload, dependency);
+							stringlist_remove(&modules_preload, dependency);
+							autoload_loaded++;
+						}
+						res |= mres;
+					}
+				}
+				/* Try again for real. */
+				if (!res) {
+					/* Try again, now that dependencies are loaded (and possibly recursively) */
+					mod = load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_LOCAL, suppress_logging);
+				} else {
+					mod = NULL;
+				}
+			}
+		} else {
+			bbs_debug(3, "Failure appears to be genuine: %s cannot be loaded\n", resource_in);
+		}
+	}
 	if (mod && mod->info->flags & MODFLAG_GLOBAL_SYMBOLS) {
 		/* Close the module so we can reopen with correct flags. */
 		logged_dlclose(resource_in, mod->lib);

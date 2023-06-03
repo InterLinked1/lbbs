@@ -609,6 +609,63 @@ cleanup:
 	return res;
 }
 
+static enum http_response_code websocket_server_upgrade(struct http_session *http)
+{
+	bbs_test_assert_equals(http_websocket_upgrade_requested(http), 1);
+	bbs_test_assert_equals(http_websocket_handshake(http), 0);
+	return http->res->code;
+
+cleanup:
+	return HTTP_INTERNAL_SERVER_ERROR;
+}
+
+static int test_http_websocket_upgrade(void)
+{
+	int mres, res = -1;
+	char buf[256];
+	char urlstr[84];
+	struct bbs_url url;
+	struct bbs_tcp_client client;
+	struct http_route_uri tests[] = {
+		{ NULL, DEFAULT_TEST_HTTP_PORT, "/ws", HTTP_METHOD_GET, websocket_server_upgrade },
+	};
+	mres = register_uris(tests, ARRAY_LEN(tests));
+	bbs_test_assert_equals(mres, 0);
+
+	memset(&url, 0, sizeof(url));
+	memset(&client, 0, sizeof(client));
+
+	/* localhost might try ::1 before 127.0.0.1, so be explicit here: */
+	snprintf(urlstr, sizeof(urlstr), "http://127.0.0.1:%u", DEFAULT_TEST_HTTP_PORT);
+	mres = bbs_parse_url(&url, urlstr);
+	bbs_test_assert_equals(mres, 0);
+	mres = bbs_tcp_client_connect(&client, &url, 0, buf, sizeof(buf));
+	bbs_test_assert_equals(mres, 0);
+
+	/* Example from https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers */
+	SWRITE(client.wfd,
+		"GET /ws HTTP/1.1\r\n"
+		"Host: localhost:58280\r\n"
+		"Upgrade: websocket\r\n"
+		"Connection: Upgrade\r\n"
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+		"Sec-WebSocket-Version: 13\r\n"
+		"\r\n");
+
+	mres = bbs_tcp_client_expect(&client, "\r\n", 1, SEC_MS(1), "101 Switching Protocols");
+	bbs_test_assert_equals(mres, 0);
+
+	mres = bbs_tcp_client_expect(&client, "\r\n", 10, SEC_MS(1), "Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="); /* By the time headers are all received, should get */
+	bbs_test_assert_equals(mres, 0);
+
+	res = 0;
+
+cleanup:
+	bbs_tcp_client_cleanup(&client);
+	unregister_uris(tests, ARRAY_LEN(tests));
+	return res;
+}
+
 static struct unit_tests {
 	const char *name;
 	int (*callback)(void);
@@ -621,6 +678,7 @@ static struct unit_tests {
 	{ "HTTP Header Continuation", test_http_header_continuation },
 	{ "HTTP GET Range Single", test_http_range_single },
 	{ "HTTP GET Range Multiple", test_http_range_multiple },
+	{ "HTTP Websocket Upgrade", test_http_websocket_upgrade },
 };
 
 static int unload_module(void)

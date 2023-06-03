@@ -24,12 +24,6 @@
 
 #include "include/tls.h"
 
-/* For hashing: */
-#ifdef HAVE_OPENSSL
-#include <openssl/evp.h>
-#include <openssl/hmac.h>
-#endif
-
 #include "include/linkedlists.h"
 #include "include/config.h"
 #include "include/alertpipe.h"
@@ -44,34 +38,6 @@ SSL_CTX *ssl_ctx = NULL;
 
 static int ssl_is_available = 0;
 static int ssl_shutting_down = 0;
-
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations" /* SHA256_Init, SHA256_Update, SHA256_Final deprecated in OpenSSL 3.0 */
-int hash_sha256(const char *s, char buf[SHA256_BUFSIZE])
-{
-#ifdef HAVE_OPENSSL
-	int i;
-	unsigned char hash[SHA256_DIGEST_LENGTH];
-
-	/* We already use OpenSSL, just use that */
-	SHA256_CTX sha256;
-	SHA256_Init(&sha256);
-	SHA256_Update(&sha256, s, strlen(s));
-	SHA256_Final(hash, &sha256);
-
-	for(i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-#undef sprintf
-		sprintf(buf + (i * 2), "%02x", hash[i]); /* Safe */
-	}
-	buf[SHA256_BUFSIZE - 1] = '\0';
-	return 0;
-#else
-	UNUSED(s);
-	UNUSED(buf);
-	UNUSED(len);
-	return -1;
-#endif
-}
-#pragma GCC diagnostic pop /* -Wdeprecated-declarations */
 
 /*! \todo is there an OpenSSL function for this? */
 const char *ssl_strerror(int err)

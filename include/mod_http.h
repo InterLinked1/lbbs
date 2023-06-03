@@ -105,7 +105,6 @@ struct http_request {
 	const char *querystring;
 	/* Flags */
 	unsigned int keepalive:1;
-	unsigned int upgradeinsecure:1;
 	unsigned int ifmodsince:1;
 	unsigned int httpsupgrade:1;
 	unsigned int chunked:1;		/*!< Request uses chunked transfer encoding */
@@ -138,6 +137,13 @@ struct http_session {
 	int wfd;
 	unsigned int secure:1;
 };
+
+/*!
+ * \brief Parse an HTTP request that is pending on an http_session's node's file descriptor
+ * \note Do not use this function directly unless needed; this is primarily internal and only used externally by net_wss.
+ * \retval 0 on success, -1 or HTTP status code on failure
+ */
+int http_parse_request(struct http_session *http, char *buf);
 
 /*!
  * \brief Set an HTTP response header
@@ -175,6 +181,16 @@ int __attribute__ ((format (gnu_printf, 2, 3))) http_writef(struct http_session 
  * \return Header value, or NULL if header not present
  */
 const char *http_request_header(struct http_session *http, const char *header);
+
+/*! \brief Whether a websocket upgrade was requested by the client */
+int http_websocket_upgrade_requested(struct http_session *http);
+
+/*!
+ * \brief Complete a websocket handshake with the client
+ * \retval 0 if connection was successfully upgraded
+ * \retval -1 if handshake failed (connection should be aborted by the application by returning HTTP_BAD_REQUEST)
+ */
+int http_websocket_handshake(struct http_session *http);
 
 /*!
  * \brief Get an HTTP POST field, if it exists

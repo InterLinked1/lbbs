@@ -912,7 +912,7 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 	 * that's 1000 file descriptors open, all the time, while the BBS is running, with very little benefit.
 	 * Just open and close the files as needed. */
 
-	/* There is now fopen mode that actually does what we want.
+	/* There is no fopen mode that actually does what we want.
 	 * We would like to open the file for reading and writing (but not appending), without truncating, creating if needed.
 	 * a+ is close, but forces writes to append. You can't write to existing bytes.
 	 * w+ is close, but truncates the file when opened.

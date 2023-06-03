@@ -22,16 +22,6 @@
 #include <openssl/err.h>
 #endif
 
-#define SHA256_BUFSIZE 65
-
-/*!
- * \brief Hash a string using SHA256
- * \param s String to hash
- * \param buf Buffer that is at least 65 bytes (larger is unnecessary)
- * \retval 0 on success, -1 on failure
- */
-int hash_sha256(const char *s, char buf[SHA256_BUFSIZE]);
-
 /*! \brief Get the string version of an OpenSSL error */
 const char *ssl_strerror(int err);
 

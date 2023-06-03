@@ -30,7 +30,7 @@
 #include "include/user.h"
 #include "include/module.h" /* use bbs_module_name */
 #include "include/utils.h"
-#include "include/tls.h" /* use hash_sha256 */
+#include "include/hash.h" /* use hash_sha256 */
 #include "include/event.h"
 #include "include/crypt.h"
 

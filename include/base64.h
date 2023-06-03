@@ -27,7 +27,7 @@ int base64_encode_file(const char *restrict filename, FILE *restrict outputfile,
  * \param data Data to decode
  * \param input_length Size of input
  * \param outlen Pointer to int in which output length will be stored
- * \returns decoded string on success, NULL on failure
+ * \returns decoded string on success (which must be freed), NULL on failure
  */
 unsigned char *base64_decode(const unsigned char *restrict data, int input_length, int *restrict outlen);
 
@@ -36,6 +36,6 @@ unsigned char *base64_decode(const unsigned char *restrict data, int input_lengt
  * \param data Data to encode
  * \param input_length Length of data
  * \param[out] outlen Length of encoded data
- * \retval encoded data on success, NULL on failure
+ * \retval encoded data on success (which must be freed), NULL on failure
 */
 char *base64_encode(const char *restrict data, int input_length, int *restrict outlen);
