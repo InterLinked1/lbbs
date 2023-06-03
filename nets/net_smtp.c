@@ -1023,7 +1023,8 @@ static int try_send(struct smtp_session *smtp, const char *hostname, int port, i
 	/* sendfile will be much more efficient than reading the file ourself, as email body could be quite large, and we don't need to involve userspace. */
 	res = (int) sendfile(wfd, datafd, &send_offset, writelen);
 
-	smtp_client_send(wfd, ".\r\n"); /* (end of) EOM */
+	/* XXX If email doesn't end in CR LF, we need to tack that on. But ONLY if it doesn't already end in CR LF. */
+	smtp_client_send(wfd, "\r\n.\r\n"); /* (end of) EOM */
 	if (res != (int) writelen) { /* Failed to write full message */
 		bbs_error("Wanted to write %lu bytes but wrote only %d?\n", writelen, res);
 		res = -1;
@@ -1557,6 +1558,19 @@ static int notify_stalled_delivery(const char *from, const char *to, const char 
 	return res;
 }
 
+/*! \todo move to utils.c - a few other files also have functions like this, e.g. editor.c */
+static int str_char_count(const char *restrict s, char c)
+{
+	int count = 0;
+	while (*s) {
+		if (*s == c) {
+			count++;
+		}
+		s++;
+	}
+	return count;
+}
+
 static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 {
 	FILE *fp;
@@ -1631,7 +1645,11 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	}
 	bbs_strterm(realfrom, '>'); /* try_send will add <> for us, so strip it here to match */
 
-	bbs_debug(5, "Processing message from (%s) -> (%s)\n", realfrom, realto);
+	if (str_char_count(realfrom, '<') || str_char_count(realfrom, '>') || str_char_count(realto, '<') != 1 || str_char_count(realto, '>') != 1) {
+		bbs_error("Sender or recipient address malformed %s -> %s\n", realfrom, realto);
+		goto cleanup;
+	}
+	bbs_debug(5, "Processing message from %s -> %s\n", realfrom, realto);
 
 	safe_strncpy(todup, realto, sizeof(todup));
 	if (strlen_zero(realfrom) || bbs_parse_email_address(todup, NULL, &user, &domain)) {
@@ -1841,6 +1859,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		 * Note that this means this file contains mixed line endings (both LF and CR LF), so if manually edited in a text editor,
 		 * it will probably get screwed up. Don't do it!
 		 */
+
 		dprintf(fd, "MAIL FROM:<%s>\nRCPT TO:%s\n", smtp->from, recipient); /* First 2 lines contain metadata, and recipient is already enclosed in <> */
 		prepend_outgoing(smtp, recipient, fd);
 		/* Write the entire body of the message. */
@@ -2023,6 +2042,9 @@ static int injectmail(MAILER_PARAMS)
 	FILE *fp;
 	long int length;
 	char tmp[80] = "/tmp/bbsmail-XXXXXX";
+	char sender[256];
+	char recipient[256];
+	char *tmpaddr;
 
 	UNUSED(async); /* Currently they're synchronous if local and asynchronous if external, which is just fine */
 
@@ -2044,18 +2066,35 @@ static int injectmail(MAILER_PARAMS)
 #pragma GCC diagnostic ignored "-Wcast-qual"
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
-	smtp.from = (char*) from;
+	/* This is just for the MAIL FROM, so just the address, no name */
+	tmpaddr = strchr(from, '<');
+	if (tmpaddr) {
+		safe_strncpy(sender, tmpaddr + 1, sizeof(sender));
+		bbs_strterm(sender, '>');
+	} else {
+		safe_strncpy(sender, from, sizeof(sender));
+	}
+	smtp.from = sender;
 #pragma GCC diagnostic pop
 #pragma GCC diagnostic pop
 	safe_strncpy(smtp.template, tmp, sizeof(smtp.template));
 	/*! \todo The mail interface should probably accept a stringlist globally, since it's reasonable to have multiple recipients */
-	stringlist_push(&smtp.recipients, to);
+
+	/* This should be enclosed in <>, but there must not be a name.
+	 * That's because the queue file writer expects us to provide <> around TO, but not FROM... it's a bit flimsy. */
+	tmpaddr = strchr(to, '<');
+	if (tmpaddr) {
+		safe_strncpy(recipient, tmpaddr, sizeof(recipient));
+	} else {
+		snprintf(recipient, sizeof(recipient), "<%s>", to);
+	}
+	stringlist_push(&smtp.recipients, recipient);
 
 	res = expand_and_deliver(&smtp, tmp, (size_t) length, &responded, &quotaexceeded);
 	stringlist_empty(&smtp.recipients);
 	stringlist_empty(&smtp.sentrecipients);
 	unlink(tmp);
-	bbs_debug(3, "injectmail res=%d, responded=%d, quotaexceeded=%d\n", res, responded, quotaexceeded);
+	bbs_debug(3, "injectmail res=%d, responded=%d, quotaexceeded=%d, sender=%s, recipient=%s\n", res, responded, quotaexceeded, sender, recipient);
 	if (res) {
 		return -1;
 	}

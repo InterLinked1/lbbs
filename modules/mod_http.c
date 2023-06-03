@@ -1232,7 +1232,7 @@ static struct http_route *find_route(unsigned short int port, const char *hostna
 
 	RWLIST_RDLOCK(&routes);
 	RWLIST_TRAVERSE(&routes, r, entry) {
-		if (r->hostname && hostname && strcmp(r->hostname, hostname)) {
+		if (r->hostname && host && strcmp(r->hostname, host)) {
 			continue; /* Different virtualhost */
 		}
 		if (!r->prefix) {
@@ -1276,7 +1276,7 @@ static struct http_route *find_route(unsigned short int port, const char *hostna
 	}
 	RWLIST_UNLOCK(&routes);
 
-	free(host);
+	free_if(host);
 	return route;
 }
 
