@@ -84,6 +84,8 @@ To install LBBS, you will need to compile it from source. Fortunately, we've mad
      make install
      make samples
 
+If you are setting up a Linux server from scratch, you may also want to refer to :code:`scripts/server_setup.sh` for a more complete script to set up your BBS server.
+
 To start the BBS with the sysop console in the foreground, you can then run :code:`lbbs -c`. To daemonize it, just run :code:`lbbs`.
 
 At the console, press :code:`?` or :code:`h` for a list of available commands. You can also run :code:`lbbs -?` or :code:`lbbs -h` for a list of startup options.
