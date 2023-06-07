@@ -261,6 +261,7 @@ static void *sysop_handler(void *varg)
 	int res;
 	struct pollfd pfd;
 	int sysopfdin, sysopfdout;
+	const char *histentry;
 	struct sysop_fd *fds = varg;
 
 	sysopfdin = fds->fdin;
@@ -285,6 +286,7 @@ static void *sysop_handler(void *varg)
 	pfd.fd = sysopfdin;
 	pfd.events = POLLIN | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
 
+	histentry = NULL;
 	for (;;) {
 		pfd.revents = 0;
 		res = poll(&pfd, 1, -1);
@@ -297,7 +299,6 @@ static void *sysop_handler(void *varg)
 			continue;
 		}
 		if (pfd.revents & POLLIN) {
-			const char *histentry = NULL;
 			ssize_t bytes_read = read(sysopfdin, buf, sizeof(buf));
 			if (bytes_read <= 0) {
 				bbs_debug(5, "read returned %ld\n", bytes_read);
