@@ -956,6 +956,26 @@ int bbs_module_reload(const char *name, int try_delayed)
 	return res;
 }
 
+int bbs_module_exists(const char *name)
+{
+	char fn[PATH_MAX];
+	size_t resource_in_len = strlen(name);
+	const char *so_ext = "";
+
+	if (resource_in_len < 4 || strcasecmp(name + resource_in_len - 3, ".so")) {
+		so_ext = ".so";
+	}
+
+	snprintf(fn, sizeof(fn), "%s/%s%s", BBS_MODULE_DIR, name, so_ext);
+	return bbs_file_exists(fn);
+}
+
+int bbs_module_running(const char *name)
+{
+	struct bbs_module *mod = find_resource(name);
+	return mod ? 1 : 0;
+}
+
 int bbs_list_modules(int fd)
 {
 	int c = 0;
@@ -980,8 +1000,8 @@ static void unload_modules_helper(void)
 
 	bbs_debug(3, "Auto unloading modules\n");
 
-/* Try 50 times * 0.2 seconds = up to 10 seconds to unload everything cleanly */
-#define MAX_PASSES 50
+/* Try 15 times * 0.2 seconds = up to 3 seconds to unload everything cleanly */
+#define MAX_PASSES 15
 
 	RWLIST_WRLOCK(&modules);
 	/* Run the loop a max of 5 times. Always do it at least once, but then only if there are still skipped modules remaining.

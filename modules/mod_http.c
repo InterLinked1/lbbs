@@ -464,7 +464,7 @@ static void postfield_free(struct post_field *p)
 	free(p);
 }
 
-static void http_request_cleanup(struct http_request *req)
+void http_request_cleanup(struct http_request *req)
 {
 	free_if(req->uri);
 	free_if(req->urihost);
@@ -513,7 +513,7 @@ static int parse_request_line(struct http_session *restrict http, char *s)
 	if (strlen_zero(tmp)) {
 		return HTTP_BAD_REQUEST;
 	}
-	if (*tmp == '/') {
+	if (!strstr(tmp, "://")) {
 		if (strlen(tmp) > MAX_URI_LENGTH) {
 			return HTTP_URI_TOO_LONG;
 		}
@@ -695,7 +695,7 @@ static int process_headers(struct http_session *http)
 				}
 				STRIP_QUOTES(name);
 				STRIP_QUOTES(value);
-				bbs_debug(4, "Cookie: %s=%s\n", name, val);
+				bbs_debug(4, "Cookie: %s => %s\n", name, val);
 				bbs_varlist_append(&http->req->cookies, name, val);
 			}
 			free(cookies);
@@ -1216,6 +1216,11 @@ static int parse_uri(struct http_session *http)
 const char *http_request_header(struct http_session *http, const char *header)
 {
 	return bbs_var_find_case(&http->req->headers, header);
+}
+
+const char *http_get_cookie(struct http_session *http, const char *cookie)
+{
+	return bbs_var_find(&http->req->cookies, cookie);
 }
 
 static struct http_route *find_route(unsigned short int port, const char *hostname, const char *uri, enum http_method method, int *methodmismatch, unsigned short int *secureport)

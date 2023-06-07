@@ -78,6 +78,7 @@ clean :
 
 uninstall :
 	$(RM) /var/lib/lbbs/external/*
+	$(RM) /usr/local/sbin/rsysop
 	$(RM) /usr/lib/lbbs/modules/*.so
 	$(RM) /usr/sbin/$(EXE)
 
@@ -105,6 +106,7 @@ extinstall:
 		mkdir /var/lib/lbbs/external;\
 	fi
 	$(SUBMAKE) --no-builtin-rules -C external install
+	ln -s /var/lib/lbbs/external/rsysop /usr/local/sbin/rsysop
 
 scripts :
 	@if [ ! -d /var/lib/lbbs ]; then\

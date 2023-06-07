@@ -146,6 +146,12 @@ struct http_session {
 int http_parse_request(struct http_session *http, char *buf);
 
 /*!
+ * \brief Free an HTTP request's contents
+ * \note Do not use this function directly unless needed; this is primarily internal and only used externally by net_wss.
+ */
+void http_request_cleanup(struct http_request *req);
+
+/*!
  * \brief Set an HTTP response header
  * \param http
  * \param header Header name. If a header has already been set, it will be replaced.
@@ -181,6 +187,14 @@ int __attribute__ ((format (gnu_printf, 2, 3))) http_writef(struct http_session 
  * \return Header value, or NULL if header not present
  */
 const char *http_request_header(struct http_session *http, const char *header);
+
+/*!
+ * \brief Get an HTTP cookie, if it exists
+ * \param http
+ * \param cookie Name of cookie
+ * \return Cookie value, or NULL if cookie not foun
+ */
+const char *http_get_cookie(struct http_session *http, const char *cookie);
 
 /*! \brief Whether a websocket upgrade was requested by the client */
 int http_websocket_upgrade_requested(struct http_session *http);

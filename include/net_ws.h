@@ -16,6 +16,14 @@
 /* Forward declaration of private structure */
 struct ws_session;
 
+struct ws_callbacks {
+	int (*on_open)(struct ws_session *ws);
+	int (*on_close)(struct ws_session *ws, void *data);
+	int (*on_text_message)(struct ws_session *ws, void *data, const char *buf, size_t len);
+	int (*on_poll_activity)(struct ws_session *ws, void *data);
+	int (*on_poll_timeout)(struct ws_session *ws, void *data);
+};
+
 /*!
  * \brief Register a WebSocket route (separate from HTTP routes)
  * \param uri Unique WebSocket URI (across all ports)
@@ -24,15 +32,39 @@ struct ws_session;
  * \param on_text_message Optional callback to execute when a text payload is received from a WebSocket client. Return nonzero to close connection.
  * \retval 0 on success, -1 on failure
  */
-#define websocket_route_register(uri, on_open, on_close, on_text_message) __websocket_route_register(uri, on_open, on_close, on_text_message, BBS_MODULE_SELF)
+#define websocket_route_register(uri, callbacks) __websocket_route_register(uri, callbacks, BBS_MODULE_SELF)
 
-int __websocket_route_register(const char *uri, int (on_open)(struct ws_session *ws), int (on_close)(struct ws_session *ws, void *data), int (on_text_message)(struct ws_session *ws, void *data, const char *buf, size_t len), void *mod);
+int __websocket_route_register(const char *uri, struct ws_callbacks *callbacks, void *mod);
 
 /*! \brief Unregister a route previously registered by websocket_route_register */
 int websocket_route_unregister(const char *uri);
 
 /*! \brief Set the custom user data of a ws_session */
 void websocket_attach_user_data(struct ws_session *ws, void *data);
+
+/*!
+ * \brief Get a string session variable from a WebSocket session
+ * \param ws
+ * \param key Session variable name
+ * \return Session variable value, or NULL if not found
+ */
+const char *websocket_session_data_string(struct ws_session *ws, const char *key);
+
+/*!
+ * \brief Get a integer or boolean session variable from a WebSocket session
+ * \param ws
+ * \param key Session variable name
+ * \return Session variable value, or 0 if not found
+ */
+int websocket_session_data_number(struct ws_session *ws, const char *key);
+
+/*!
+ * \brief Set custom polling settings
+ * \param ws
+ * \param fd Additional file descriptor to poll, or -1 if no additional fd
+ * \param pollms Timeout argument to poll() that should be used.
+ */
+void websocket_set_custom_poll_fd(struct ws_session *ws, int fd, int pollms);
 
 /*!
  * \brief Send text payload to client

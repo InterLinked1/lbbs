@@ -4,6 +4,7 @@
 apt-get update
 
 # Install pre-reqs
+apt-get install -y build-essential # make
 apt-get install -y libncurses-dev # ncurses
 apt-get install -y libcrypt-dev # crypt_r
 apt-get install -y libcurl4-openssl-dev # <curl/curl.h> - cURL, OpenSSL variant
@@ -37,11 +38,15 @@ apt-get install -y libjansson-dev
 # mod_sieve
 apt-get install -y libsieve2-dev
 
-# libdiscord
+# libdiscord (mod_discord)
 scripts/concord.sh
 
-# libwss
+# libwss (net_ws)
 scripts/libwss.sh
+
+# libetpan (mod_webmail): for now, the package suffices
+# scripts/libetpan.sh
+apt-get install -y libetpan-dev
 
 # doxygen only:
 # apt-get install -y doxygen graphviz

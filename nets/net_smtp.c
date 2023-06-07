@@ -2861,7 +2861,11 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 		if (smtp->indata) {
 			bbs_debug(8, "%p => [%d data bytes]\n", smtp, res); /* This could be a lot of output, don't show it all. */
 		} else {
-			bbs_debug(6, "%p => %s\n", smtp, buf);
+			if (STARTS_WITH(buf, "AUTH PLAIN ")) {
+				bbs_debug(6, "%p => AUTH PLAIN ******\n", smtp);
+			} else {
+				bbs_debug(6, "%p => %s\n", smtp, buf);
+			}
 		}
 		if (smtp_process(smtp, buf, (size_t) res)) {
 			break;

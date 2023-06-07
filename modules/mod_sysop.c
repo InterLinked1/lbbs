@@ -75,12 +75,45 @@ static int sysop_command(int fdin, int fdout, const char *s)
 	} else if (!strcmp(s, "restart")) {
 		bbs_request_shutdown(1);
 	} else if (STARTS_WITH(s, "load ")) {
-		s += 5;
+		s += STRLEN("load ");
 		ENSURE_STRLEN(s);
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		res = bbs_module_load(s);
+	} else if (STARTS_WITH(s, "waitload ")) {
+		struct pollfd pfd;
+		s += STRLEN("waitload ");
+		ENSURE_STRLEN(s);
+		memset(&pfd, 0, sizeof(pfd));
+		pfd.fd = fdin;
+		pfd.events = POLLIN;
+		/* Since the terminal is in canonical mode, we need a newline for poll() to wake up.
+		 * That's fine, just say so. */
+		/* XXX Should check that s is at least a valid module, otherwise it will never load
+		 * Also, if it's already loaded, we shouldn't wait at all. */
+		if (!bbs_module_exists(s)) {
+			bbs_dprintf(fdout, "Module '%s' does not exist\n", s);
+		} else if (bbs_module_running(s)) {
+			bbs_dprintf(fdout, "Module '%s' is already running\n", s);
+		} else {
+			/* Technically, a small race condition is possible here.
+			 * The module might not be running when we check above
+			 * but be running before we call bbs_module_load.
+			 * In that case, we'd just sit here. Very unlikely though,
+			 * and not really possible unless the user is manipulating modules.
+			 */
+			bbs_dprintf(fdout, "Waiting until module '%s' loads. Press ENTER to cancel retry: ", s); /* No newline */
+			do {
+				res = bbs_module_load(s);
+				/* Allow the call to be interrupted. */
+			} while (res && poll(&pfd, 1, 500) == 0);
+			if (res) {
+				bbs_dprintf(fdout, TERM_RESET_LINE "Load retry cancelled\n");
+			} else {
+				bbs_dprintf(fdout, TERM_RESET_LINE "Module loaded\n");
+			}
+		}
 	} else if (STARTS_WITH(s, "unload ")) {
-		s += 7;
+		s += STRLEN("unload ");
 		ENSURE_STRLEN(s);
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		if (!strncasecmp(s, file_without_ext, strlen(file_without_ext))) {
@@ -89,7 +122,7 @@ static int sysop_command(int fdin, int fdout, const char *s)
 			res = bbs_module_unload(s);
 		}
 	} else if (STARTS_WITH(s, "reload ")) {
-		s += 7;
+		s += STRLEN("reload ");
 		ENSURE_STRLEN(s);
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		if (!strncasecmp(s, file_without_ext, strlen(file_without_ext))) {
@@ -98,7 +131,7 @@ static int sysop_command(int fdin, int fdout, const char *s)
 			res = bbs_module_reload(s, 0);
 		}
 	} else if (STARTS_WITH(s, "qreload ")) {
-		s += 8;
+		s += STRLEN("qreload ");
 		ENSURE_STRLEN(s);
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		/* Nothing increments the ref count of this module (mod_sysop) currently,
@@ -109,12 +142,12 @@ static int sysop_command(int fdin, int fdout, const char *s)
 			res = bbs_module_reload(s, 1);
 		}
 	} else if (STARTS_WITH(s, "verbose ")) {
-		s += 8;
+		s += STRLEN("verbose ");
 		ENSURE_STRLEN(s);
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_set_verbose(atoi(s));
 	} else if (STARTS_WITH(s, "debug ")) {
-		s += 6;
+		s += STRLEN("debug ");
 		ENSURE_STRLEN(s);
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_set_debug(atoi(s));
@@ -310,6 +343,7 @@ static void *sysop_handler(void *varg)
 					bbs_dprintf(sysopfdout, "/testemail          - Send a test email to the sysop\n");
 					bbs_dprintf(sysopfdout, " == Administrative ==\n");
 					bbs_dprintf(sysopfdout, "/load <module>      - Load dynamic module\n");
+					bbs_dprintf(sysopfdout, "/waitload <module>  - Keep retrying load of dynamic module until it succeeds\n");
 					bbs_dprintf(sysopfdout, "/unload <module>    - Unload dynamic module\n");
 					bbs_dprintf(sysopfdout, "/reload <module>    - Unload and load dynamic module\n");
 					bbs_dprintf(sysopfdout, "/qreload <module>   - Unload and load dynamic module, queuing if necessary\n");

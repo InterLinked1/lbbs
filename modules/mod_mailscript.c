@@ -167,10 +167,10 @@ static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastre
 		REQUIRE_ARG(s);
 	}
 	if (!strcasecmp(next, "DIRECTION")) {
-		if (!strcasecmp(s, "IN") && mproc->direction == SMTP_MSG_DIRECTION_IN) {
-			match = 1;
-		} else if (!strcasecmp(s, "OUT") && mproc->direction == SMTP_MSG_DIRECTION_OUT) {
-			match = 1;
+		if (!strcasecmp(s, "IN")) {
+			match = mproc->direction == SMTP_MSG_DIRECTION_IN;
+		} else if (!strcasecmp(s, "OUT")) {
+			match = mproc->direction == SMTP_MSG_DIRECTION_OUT;
 		} else {
 			bbs_warning("Invalid direction: %s\n", s);
 		}

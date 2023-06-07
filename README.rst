@@ -23,6 +23,8 @@ Key features and capabilities include:
 
 * File transfers via FTP, SFTP, Gopher, and HTTP/HTTPS
 
+* HTTP 1.1 web server, with WebSocket support
+
 * User home directories
 
 * Container environment for executing programs
@@ -49,6 +51,8 @@ Key features and capabilities include:
 
     * Sieve filtering scripts and ManageSieve service
     * `MailScript filtering engine <configs/.rules>`_ for flexible, custom, dynamic mail filtering rules (Sieve alternative)
+
+  * Webmail client backend
 
 * Newsgroups (NNTP)
 
@@ -156,6 +160,8 @@ Config files go in :code:`/etc/lbbs` and are as follows:
 
 * :code:`net_telnet.conf` - Telnet server configuration
 
+* :code:`net_ws.conf` - WebSocket server configuration
+
 * :code:`nodes.conf` - Node-related configuration
 
 * :code:`tls.conf` - SSL/TLS configuration
@@ -217,6 +223,8 @@ The BBS also comes with some network services that aren't intended for terminal 
 * :code:`net_smtp` - Simple Mail Transfer Protocol (SMTP) server
 
 * :code:`net_sftp` - Secure File Transfer Protocol server
+
+* :code:`net_ws` - WebSocket server
 
 Using mod_auth_mysql
 ~~~~~~~~~~~~~~~~~~~~
@@ -295,13 +303,53 @@ although certain implementation details may differ.
 
 Does the BBS provide any kind of webmail access?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Not natively, no.
-However, you can use an open source webmail package, e.g. SquirrelMail, RoundCube, etc. and that should work just fine.
+You can use `wssmail <https://github.com/InterLinked1/wssmail>`_, a fast and efficient webamil client designed with the BBS's mail server in mind (but may be used with any mail server).
+LBBS comes with the mod_webmail module, which is a backend module for wssmail.
+
+Note that only the webmail backend is a BBS module. The corresponding webmail frontend is a required but separately maintained project. (In theory, the frontend could have multiple implementations as well.)
+
+If you don't want to use mod_webmail, you can also use any other open source webmail package, e.g. SquirrelMail, RoundCube, etc. and that should work just fine.
 SquirrelMail is extremely simple (no JavaScript used or required); RoundCube comes with more features and extensibility.
 In particular, RoundCube comes with a built-in graphical ManageSieve editor, which can be useful for managing your Sieve scripts.
 
 Do keep in mind that webmail offers significantly reduced functionality compared to a standard mail client (e.g. something in the Thunderbird family,
 like Interlink/MailNews).
+
+How do I fully set up the webmail service?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+You will need to set up both the frontend and the backend for the webmail.
+
+The frontend refers to a frontend website that provides the user-facing HTML, CSS, and JavaScript.
+
+The backend refers to a backend service which interfaces between the frontend and the IMAP/SMTP servers.
+
+The backend is :code:`mod_webmail`, though it runs on top of :code:`net_ws`, which itself depends on
+the BBS's web server modules. The frontend is a separate project as the frontend is not coupled to
+the backend, other than through the requirement that the WebSocket interface be consistent with both.
+
+No configuration is required of the backend. Only the frontend needs to be configured.
+
+The frontend does not need to be run under the BBS's web server (and in fact, it cannot be currently,
+since the BBS web server does not support storing session data currently). The recommended approach
+is to run the frontend under the Apache HTTP web server, just like any other virtualhost. You'll want
+to secure the site using TLS just like any other site if it's public facing. The BBS doesn't support
+SNI (Server Name Indication) currently either, so this is probably another reason to use Apache for now.
+
+Apart from the frontend site itself, you can also configure a WebSocket reverse proxy under Apache HTTP
+to accept WebSocket upgrades on your standard HTTPS port (e.g. 443) and hand those off to the BBS WebSocket
+server. That might look something like this::
+
+   RewriteEngine On
+   RewriteCond %{HTTP:Upgrade} =websocket [NC]
+   RewriteRule /(.*)           ws://localhost:8143/webmail [P,L]
+
+This example assumes Apache is running on 443 (or whatever client facing port),
+and :code:`net_ws` is listening on port 8143. Note that this connection is
+not encrypted, but this is a loopback connection so that does not matter.
+
+Why use mod_webmail over a more popular, established webmail package?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Refer to the webmail package documentation for more information: https://github.com/InterLinked1/wssmail
 
 Why is there a non-standard filtering engine (MailScript) included?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
