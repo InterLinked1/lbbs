@@ -499,20 +499,25 @@ static void append_quota(json_t *root, struct imap_client *client)
 static void __append_datetime(json_t *json, const char *field, struct tm *tm)
 {
 	time_t epoch;
+	long int offset;
 
-	tm->tm_isdst = -1; /* Let mktime figured it out */
-	epoch = mktime(tm);
-#ifdef EXTRA_DEBUG
-	bbs_debug(3, "Parsed %d's date: %s -> %ld\n", start, buf, epoch);
-#endif
+	offset = tm->tm_gmtoff; /* timegm will reset this, save it first */
+
+	/* tm->tm_isdst is not relevant, because we're using UTC offsets, so Daylight Saving thankfully doesn't matter */
+
+	/* We need to subtract the offset (in s) from UTC to actually get the right epoch */
+	epoch = timegm(tm) - offset; /* All times need to be given out in UTC */
 	/* Send the epoch time, and the client can display it in
 	 * its local timezone / preferred format without us needing to know. */
+	bbs_debug(5, "Parsed datetime -> epoch %lu (had offset %ld)\n", epoch, offset);
 	json_object_set_new(json, field, json_integer(epoch));
 }
 
 static void append_datetime(json_t *json, const char *field, const char *buf)
 {
 	struct tm tm;
+
+	memset(&tm, 0, sizeof(tm)); /* so that fields not set by strptime are still zeroed */
 
 	if (!strptime(buf, "%Y-%m-%d %H:%M:%S %z", &tm)) {
 		bbs_warning("Failed to parse INTERNALDATE %s?\n", buf);
@@ -526,7 +531,7 @@ static void append_internaldate(json_t *json, struct mailimap_date_time *dt)
 	char buf[40];
 	snprintf(buf, sizeof(buf), "%4d-%02d-%02d %02d:%02d:%02d %c%04d",
 		dt->dt_year, dt->dt_month, dt->dt_day, dt->dt_hour, dt->dt_min, dt->dt_sec,
-		dt->dt_zone < 0 ? '-' : '+', dt->dt_zone < 0 ? -dt->dt_zone : dt->dt_zone);
+	dt->dt_zone < 0 ? '-' : '+', dt->dt_zone < 0 ? -dt->dt_zone : dt->dt_zone); /* -/+ followed by abs value for formatting */
 	return append_datetime(json, "received", buf);
 }
 

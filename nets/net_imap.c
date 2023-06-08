@@ -104,6 +104,7 @@
 #include <ftw.h>
 #include <poll.h>
 #include <search.h>
+#include <utime.h>
 
 #include "include/tls.h"
 
@@ -3901,6 +3902,33 @@ cleanup:
 	return 0;
 }
 
+/*! \brief Set the INTERNALDATE of a message */
+static void set_file_mtime(const char *filename, const char *appenddate)
+{
+	struct tm tm;
+	struct stat st;
+	struct utimbuf updated;
+
+	/* e.g. 23-Jul-2002 19:39:23 -0400 */
+	if (!strptime(appenddate, "%d-%b-%Y %H:%M:%S %z", &tm)) {
+		bbs_error("Failed to parse date: %s\n", appenddate);
+		return;
+	}
+	if (stat(filename, &st)) {
+		bbs_error("stat(%s) failed: %s\n", filename, strerror(errno));
+		return;
+	}
+
+	updated.actime = st.st_atime; /* Preserve atime */
+	tm.tm_isdst = -1; /* Figure out Daylight Saving for us, or we might end up off by an hour. */
+	/* Do actually use mktime, not timegm. The mtime needs to be in the server's time, even if it's not UTC. */
+	updated.modtime = mktime(&tm);
+
+	if (utime(filename, &updated)) {
+		bbs_error("utime(%s) failed: %s\n", filename, strerror(errno));
+	}
+}
+
 static int handle_append(struct imap_session *imap, char *s)
 {
 	int appendsize, appendfile, appendflags = 0, res;
@@ -3913,6 +3941,7 @@ static int handle_append(struct imap_session *imap, char *s)
 	char appenddir[212];		/* APPEND directory */
 	char appendtmp[260];		/* APPEND tmp name */
 	char appendnew[260];		/* APPEND new name */
+	char appenddatebuf[28];		/* APPEND date */
 	char curdir[260];
 	char newdir[260];
 	char newfilename[256];
@@ -3941,42 +3970,38 @@ static int handle_append(struct imap_session *imap, char *s)
 	 */
 	if (sizestr > s + 1) {
 		char *date;
-		/* These are both optional arguments */
-
+		/* These are both optional arguments, so we could have 0, 1, or 2 arguments. */
 		/* Multiword, e.g. APPEND "INBOX" "23-Jul-2002 19:39:23 -0400" {1110}
 		 * In fact, if date is present, it is guaranteed to contain spaces. */
-		if (*s == '"') {
-			s++;
-			flags = strsep(&s, "\"");
-		} else {
-			flags = strsep(&s, " ");
+
+		/* e.g. (\Seen encrypted) "07-Jun-2023 12:02:51 -0400" */
+
+		/* Parse flags (which are first, if present) */
+		if (*s == '(') {
+			/* We have flags */
+			flags = parensep(&s);
+			if (!strlen_zero(flags)) {
+				appendflags = parse_flags_string(imap, flags);
+				/* imap->appendkeywords will also contain keywords as well */
+			}
 		}
 
+		/* Parse date */
 		ltrim(s);
+		/* XXX Seems like STRIP_QUOTES would work but that doesn't remove the trailing quote */
 		if (*s == '"') {
 			s++;
 			date = strsep(&s, "\"");
 		} else {
 			date = strsep(&s, " ");
 		}
-
-		if (strlen_zero(date) && !strlen_zero(flags) && strchr(flags, ' ')) {
-			/* Only date, and no flags */
-			date = flags;
-			flags = NULL;
-		}
-
-		if (flags) {
-			/* Skip () */
-			bbs_strterm(flags, ')');
-			flags++;
-			if (!strlen_zero(flags)) {
-				appendflags = parse_flags_string(imap, flags);
-				/* imap->appendkeywords will also contain keywords as well */
-			}
-		}
 		if (date) {
-			appenddate = date;
+			safe_strncpy(appenddatebuf, date, sizeof(appenddatebuf));
+			/* s is just a pointer to the readline buffer,
+			 * so our call to bbs_readline_getn before we call set_file_mtime
+			 * will clobber appenddate if we just do appenddate = date.
+			 * Copy it locally on the stack so we don't lose it. */
+			appenddate = appenddatebuf;
 		}
 	}
 
@@ -4053,6 +4078,10 @@ static int handle_append(struct imap_session *imap, char *s)
 		mailbox_quota_adjust_usage(imap->mbox, (int) -size);
 	}
 
+	/* Maintain the INTERNALDATE of the message by using what the client gave us.
+	 * Since we need the filename, do it while we still know a valid filename. */
+	set_file_mtime(newfilename, appenddate);
+
 	/* Now, apply any flags to the message... (yet a third rename, potentially) */
 	if (appendflags) {
 		int seqno;
@@ -4070,10 +4099,6 @@ static int handle_append(struct imap_session *imap, char *s)
 	} else {
 		bbs_debug(3, "Received %d-byte upload\n", res);
 	}
-
-	/* Set the internal date? Maybe not, since the original date of the message should be preserved for best user experience. */
-	/*! \todo Set the file creation/modified time (strptime)? (If we do this, it shouldn't be a value returned to the client later, see note above) */
-	UNUSED(appenddate);
 
 	/* APPENDUID response */
 	/* Use tag from APPEND request */
