@@ -183,6 +183,13 @@ void websocket_attach_user_data(struct ws_session *ws, void *data)
 void websocket_set_custom_poll_fd(struct ws_session *ws, int fd, int pollms)
 {
 	ws->pollfd = fd;
+	/* After 5 minutes without any ping pong, WebSocket clients will close the connection.
+	 * (At least, Chromium will.)
+	 * So ping at least as frequently as just under every 5 minutes. */
+	if (pollms > MAX_WEBSOCKET_POLL_MS) {
+		bbs_warning("Poll timeout truncated to %d\n", MAX_WEBSOCKET_POLL_MS);
+		pollms = MAX_WEBSOCKET_POLL_MS;
+	}
 	ws->pollms = pollms;
 }
 
@@ -824,7 +831,6 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 			bbs_warning("poll failed: %s\n", strerror(errno));
 			break;
 		}
-		/*! \todo IMAP: poll imap client fd, as well as websocket client fd - could use readline on the IMAP side. */
 		if (pfds[0].revents) {
 			res = wss_read(client, SEC_MS(55), 1); /* Pass in 1 since we already know poll returned activity for this fd */
 			if (res < 0) {
@@ -835,17 +841,6 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 					wss_close(client, WS_CLOSE_PROTOCOL_ERROR);
 				}
 				break;
-			} else if (!res) {
-				int framelen;
-				/* Send a ping if we haven't heard anything in a while */
-				if (++want_ping > 1) {
-					/* Already had a ping outstanding that wasn't ponged. Disconnect. */
-					bbs_debug(3, "Still haven't received ping reply, disconnecting client\n");
-					break;
-				}
-				/* Use current timestamp as our ping data */
-				framelen = snprintf(ping_data, sizeof(ping_data), "%ld", time(NULL));
-				wss_write(client, WS_OPCODE_PING, ping_data, (size_t) framelen);
 			} else {
 				struct wss_frame *frame = wss_client_frame(client);
 				bbs_debug(1, "WebSocket '%s' frame received\n", wss_frame_name(frame));
@@ -891,6 +886,16 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 				}
 			}
 		} else {
+			int framelen;
+			/* Send a ping if we haven't heard anything in a while */
+			if (++want_ping > 1) {
+				/* Already had a ping outstanding that wasn't ponged. Disconnect. */
+				bbs_debug(3, "Still haven't received ping reply, disconnecting client\n");
+				break;
+			}
+			/* Use current timestamp as our ping data */
+			framelen = snprintf(ping_data, sizeof(ping_data), "%ld", time(NULL));
+			wss_write(client, WS_OPCODE_PING, ping_data, (size_t) framelen);
 			/* Nothing happened. Let the application know. */
 			if (route->callbacks->on_poll_timeout) {
 				if (route->callbacks->on_poll_timeout(&ws, ws.data)) {

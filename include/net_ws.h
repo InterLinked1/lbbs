@@ -13,6 +13,9 @@
  *
  */
 
+/* Must be less than 5 minutes */
+#define MAX_WEBSOCKET_POLL_MS (MIN_MS(5) - 5)
+
 /* Forward declaration of private structure */
 struct ws_session;
 
@@ -62,7 +65,7 @@ int websocket_session_data_number(struct ws_session *ws, const char *key);
  * \brief Set custom polling settings
  * \param ws
  * \param fd Additional file descriptor to poll, or -1 if no additional fd
- * \param pollms Timeout argument to poll() that should be used.
+ * \param pollms Timeout argument to poll() that should be used. Limited to maximum of MAX_WEBSOCKET_POLL_MS.
  */
 void websocket_set_custom_poll_fd(struct ws_session *ws, int fd, int pollms);
 

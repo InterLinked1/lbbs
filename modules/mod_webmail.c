@@ -1683,7 +1683,7 @@ static void idle_start(struct ws_session *ws, struct imap_client *client)
 		} else {
 			client->imapfd = mailimap_idle_get_fd(client->imap);
 			client->idling = 1;
-			websocket_set_custom_poll_fd(ws, client->imapfd, 1740000);
+			websocket_set_custom_poll_fd(ws, client->imapfd, SEC_MS(290)); /* Under 5 minutes (WebSocket timeout) */
 		}
 	}
 }
