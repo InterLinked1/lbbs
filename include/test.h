@@ -46,3 +46,18 @@ int __bbs_register_test(const char *name, int (*execute)(void), void *mod);
 
 /*! \brief Unregister a unit test */
 int bbs_unregister_test(int (*execute)(void));
+
+struct bbs_unit_test {
+	const char *name;
+	int (*callback)(void);
+};
+
+int __bbs_register_tests(struct bbs_unit_test tests[], unsigned int len, void *mod);
+
+/*! \brief Register multiple unit tests */
+#define bbs_register_tests(tests) __bbs_register_tests(tests, ARRAY_LEN(tests), BBS_MODULE_SELF)
+
+/*! \brief Unregister multiple unit tests */
+int __bbs_unregister_tests(struct bbs_unit_test tests[], unsigned int len);
+
+#define bbs_unregister_tests(tests) __bbs_unregister_tests(tests, ARRAY_LEN(tests))

@@ -9252,10 +9252,7 @@ static int load_config(void)
 	return 0;
 }
 
-static struct unit_tests {
-	const char *name;
-	int (*callback)(void);
-} tests[] =
+static struct bbs_unit_test tests[] =
 {
 	{ "IMAP LIST Interpretation", test_list_interpretation },
 	{ "IMAP LIST Attributes", test_build_attributes },
@@ -9365,8 +9362,6 @@ static int alertmsg(unsigned int userid, const char *msg)
 
 static int load_module(void)
 {
-	unsigned int i;
-
 	if (load_config()) {
 		return -1;
 	}
@@ -9388,9 +9383,7 @@ static int load_module(void)
 		return -1;
 	}
 
-	for (i = 0; i < ARRAY_LEN(tests); i++) {
-		bbs_register_test(tests[i].name, tests[i].callback);
-	}
+	bbs_register_tests(tests);
 	mailbox_register_watcher(imap_mbox_watcher);
 	bbs_register_alerter(alertmsg, 90);
 	return 0;
@@ -9398,11 +9391,8 @@ static int load_module(void)
 
 static int unload_module(void)
 {
-	unsigned int i;
 	bbs_unregister_alerter(alertmsg);
-	for (i = 0; i < ARRAY_LEN(tests); i++) {
-		bbs_unregister_test(tests[i].callback);
-	}
+	bbs_unregister_tests(tests);
 	mailbox_unregister_watcher(imap_mbox_watcher);
 	if (imap_enabled) {
 		bbs_stop_tcp_listener(imap_port);

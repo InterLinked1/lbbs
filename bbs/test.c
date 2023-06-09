@@ -165,3 +165,25 @@ int bbs_unregister_test(int (*execute)(void))
 	free(test);
 	return 0;
 }
+
+int __bbs_register_tests(struct bbs_unit_test utests[], unsigned int len, void *mod)
+{
+	unsigned int i;
+	int res = 0;
+
+	for (i = 0; i < len; i++) {
+		res |= __bbs_register_test(utests[i].name, utests[i].callback, mod);
+	}
+	return res;
+}
+
+int __bbs_unregister_tests(struct bbs_unit_test utests[], unsigned int len)
+{
+	unsigned int i;
+	int res = 0;
+
+	for (i = 0; i < len; i++) {
+		res |= bbs_unregister_test(utests[i].callback);
+	}
+	return res;
+}

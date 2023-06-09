@@ -616,12 +616,7 @@ cleanup:
 	return res;
 }
 
-
-
-static struct unit_tests {
-	const char *name;
-	int (*callback)(void);
-} tests[] =
+static struct bbs_unit_test tests[] =
 {
 	{ "PHP Sessions", test_php_unserialize },
 };
@@ -1064,12 +1059,7 @@ static int load_config(void)
 
 static int unload_module(void)
 {
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_LEN(tests); i++) {
-		bbs_unregister_test(tests[i].callback);
-	}
-
+	bbs_unregister_tests(tests);
 	http_unregister_route(ws_proxy_handler);
 	if (ws_port) {
 		bbs_stop_tcp_listener(ws_port);
@@ -1083,7 +1073,6 @@ static int unload_module(void)
 
 static int load_module(void)
 {
-	unsigned int i;
 	int res = 0;
 	if (load_config()) {
 		return -1;
@@ -1092,9 +1081,7 @@ static int load_module(void)
 	wss_set_log_level(WS_LOG_DEBUG + 5);
 	/* Register reverse proxy routes if needed */
 
-	for (i = 0; i < ARRAY_LEN(tests); i++) {
-		res |= bbs_register_test(tests[i].name, tests[i].callback);
-	}
+	bbs_register_tests(tests);
 
 	/* XXX Need to register all routes? */
 	if (http_port) {

@@ -492,10 +492,7 @@ cleanup:
 }
 #endif
 
-static struct unit_tests {
-	const char *name;
-	int (*callback)(void);
-} tests[] =
+static struct bbs_unit_test tests[] =
 {
 	{ "Variable Substitution", test_substitution },
 	{ "Safe Print", test_safe_print },
@@ -519,22 +516,12 @@ static struct unit_tests {
 
 static int unload_module(void)
 {
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_LEN(tests); i++) {
-		bbs_unregister_test(tests[i].callback);
-	}
-	return 0;
+	return bbs_unregister_tests(tests);
 }
 
 static int load_module(void)
 {
-	int res = 0;
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_LEN(tests); i++) {
-		res |= bbs_register_test(tests[i].name, tests[i].callback);
-	}
+	int res = bbs_register_tests(tests);
 	REQUIRE_FULL_LOAD(res);
 }
 

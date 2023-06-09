@@ -805,18 +805,13 @@ static int load_config(void)
 	return 0;
 }
 
-static struct unit_tests {
-	const char *name;
-	int (*callback)(void);
-} tests[] =
+static struct bbs_unit_test tests[] =
 {
 	{ "POP3 Deletion Bits", test_deletion_sequences },
 };
 
 static int load_module(void)
 {
-	unsigned int i;
-
 	if (load_config()) {
 		return -1;
 	}
@@ -830,18 +825,13 @@ static int load_module(void)
 		return -1;
 	}
 
-	for (i = 0; i < ARRAY_LEN(tests); i++) {
-		bbs_register_test(tests[i].name, tests[i].callback);
-	}
+	bbs_register_tests(tests);
 	return bbs_start_tcp_listener3(pop3_enabled ? pop3_port : 0, pop3s_enabled ? pop3s_port : 0, 0, "POP3", "POP3S", NULL, __pop3_handler);
 }
 
 static int unload_module(void)
 {
-	unsigned int i;
-	for (i = 0; i < ARRAY_LEN(tests); i++) {
-		bbs_unregister_test(tests[i].callback);
-	}
+	bbs_unregister_tests(tests);
 	if (pop3_enabled) {
 		bbs_stop_tcp_listener(pop3_port);
 	}

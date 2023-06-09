@@ -403,10 +403,7 @@ cleanup:
 	return res;
 }
 
-static struct unit_tests {
-	const char *name;
-	int (*callback)(void);
-} tests[] =
+static struct bbs_unit_test tests[] =
 {
 	{ "Parse Email Addresses", test_parse_email },
 };
@@ -3008,8 +3005,6 @@ static int load_config(void)
 
 static int load_module(void)
 {
-	long unsigned int i;
-
 	memset(&blacklist, 0, sizeof(blacklist));
 
 	if (load_config()) {
@@ -3056,10 +3051,7 @@ static int load_module(void)
 		goto cleanup;
 	}
 
-	for (i = 0; i < ARRAY_LEN(tests); i++) {
-		bbs_register_test(tests[i].name, tests[i].callback);
-	}
-
+	bbs_register_tests(tests);
 	bbs_register_mailer(injectmail, 1);
 
 	return 0;
@@ -3071,13 +3063,8 @@ cleanup:
 
 static int unload_module(void)
 {
-	long unsigned int i;
-
 	bbs_unregister_mailer(injectmail);
-
-	for (i = 0; i < ARRAY_LEN(tests); i++) {
-		bbs_unregister_test(tests[i].callback);
-	}
+	bbs_unregister_tests(tests);
 	bbs_pthread_cancel_kill(queue_thread);
 	bbs_pthread_join(queue_thread, NULL);
 	if (smtp_enabled) {
