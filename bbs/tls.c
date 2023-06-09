@@ -24,6 +24,10 @@
 
 #include "include/tls.h"
 
+#ifdef HAVE_OPENSSL
+#include <openssl/opensslv.h>
+#endif
+
 #include "include/linkedlists.h"
 #include "include/config.h"
 #include "include/alertpipe.h"
@@ -226,14 +230,14 @@ static void *ssl_io_thread(void *unused)
 			}
 			ssl_list = calloc((size_t) numssl, sizeof(SSL *));
 			if (ALLOC_FAILURE(ssl_list)) {
-				free(pfds);
+				free_if(pfds);
 				RWLIST_UNLOCK(&sslfds);
 				break;
 			}
 			readpipes = calloc((size_t) numssl, sizeof(int));
 			if (ALLOC_FAILURE(readpipes)) {
-				free(pfds);
-				free(ssl_list);
+				free_if(pfds);
+				free_if(ssl_list);
 				RWLIST_UNLOCK(&sslfds);
 				break;
 			}
@@ -575,7 +579,11 @@ connect:
 		goto sslcleanup;
 	}
 	/* Verify cert */
+#if defined(OPENSSL_VERSION_MAJOR) && OPENSSL_VERSION_MAJOR >= 3
+	server_cert = SSL_get1_peer_certificate(ssl);
+#else
 	server_cert = SSL_get_peer_certificate(ssl);
+#endif
 	if (!server_cert) {
 		bbs_error("Failed to get peer certificate\n");
 		goto sslcleanup;

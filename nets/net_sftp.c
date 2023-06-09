@@ -195,6 +195,7 @@ static int do_auth(struct bbs_node *node, ssh_session session)
 			case SSH_REQUEST_AUTH:
 				switch (ssh_message_subtype(message)) {
 					case SSH_AUTH_METHOD_PASSWORD:
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 						if (!bbs_authenticate(node, ssh_message_auth_user(message), ssh_message_auth_password(message))) {
 							ssh_message_auth_reply_success(message, 0);
 						}
@@ -213,6 +214,7 @@ static int do_auth(struct bbs_node *node, ssh_session session)
 						{
 							user = ssh_message_auth_user(message);
 							pubkey = ssh_message_auth_pubkey(message);
+#pragma GCC diagnostic pop
 							if (!pubkey) {
 								bbs_warning("No public key provided\n");
 								return -1;

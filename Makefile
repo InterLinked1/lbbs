@@ -106,7 +106,7 @@ extinstall:
 		mkdir /var/lib/lbbs/external;\
 	fi
 	$(SUBMAKE) --no-builtin-rules -C external install
-	ln -s /var/lib/lbbs/external/rsysop /usr/local/sbin/rsysop
+	ln -s --force /var/lib/lbbs/external/rsysop /usr/local/sbin/rsysop
 
 scripts :
 	@if [ ! -d /var/lib/lbbs ]; then\

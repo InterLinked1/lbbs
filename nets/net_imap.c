@@ -683,25 +683,25 @@ static void imap_destroy(struct imap_session *imap)
 }
 
 /*! \brief Faster than strncat, since we store our position between calls, but maintain its safety */
-#define SAFE_FAST_COND_APPEND(bufstart, bufpos, buflen, cond, fmt, ...) \
+#define SAFE_FAST_COND_APPEND(bufstart, bufsize, bufpos, buflen, cond, fmt, ...) \
 	if (buflen > 0 && (cond)) { \
 		int _bytes = snprintf(bufpos, (size_t) buflen, bufpos == bufstart ? fmt : " " fmt, ## __VA_ARGS__); \
 		bufpos += (typeof((buflen))) _bytes; \
 		buflen -= (typeof((buflen))) _bytes; \
 		if ((int) buflen <= 0) { \
 			bbs_warning("Buffer truncation\n"); \
-			*(bufpos + buflen - 1) = '\0';  \
+			*(bufstart + bufsize - 1) = '\0';  \
 		} \
 	}
 
-#define SAFE_FAST_COND_APPEND_NOSPACE(bufstart, bufpos, buflen, cond, fmt, ...) \
+#define SAFE_FAST_COND_APPEND_NOSPACE(bufstart, bufsize, bufpos, buflen, cond, fmt, ...) \
 	if (buflen > 0 && (cond)) { \
 		int _bytes = snprintf(bufpos, (size_t) buflen, fmt, ## __VA_ARGS__); \
 		bufpos += (typeof((buflen))) _bytes; \
 		buflen -= (typeof((buflen))) _bytes; \
 		if ((int) buflen <= 0) { \
 			bbs_warning("Buffer truncation\n"); \
-			*(bufpos + buflen - 1) = '\0';  \
+			*(bufstart + bufsize - 1) = '\0';  \
 		} \
 	}
 
@@ -875,7 +875,7 @@ static int __gen_keyword_names(const char *s, char *inbuf, size_t inlen, const c
 		if (!s || strchr(s, fbuf[0])) {
 			matches++;
 			bbs_strterm(fbuf, '\n');
-			SAFE_FAST_COND_APPEND_NOSPACE(inbuf, buf, left, 1, " %s", fbuf + 2);
+			SAFE_FAST_COND_APPEND_NOSPACE(inbuf, inlen, buf, left, 1, " %s", fbuf + 2);
 		}
 	}
 
@@ -1040,10 +1040,10 @@ static void gen_flag_names(const char *flagstr, char *fullbuf, size_t len)
 	char *buf = fullbuf;
 	int left = (int) len;
 	*buf = '\0';
-	SAFE_FAST_COND_APPEND(fullbuf, buf, left, strchr(flagstr, FLAG_DRAFT), FLAG_NAME_DRAFT);
-	SAFE_FAST_COND_APPEND(fullbuf, buf, left, strchr(flagstr, FLAG_FLAGGED), FLAG_NAME_FLAGGED);
-	SAFE_FAST_COND_APPEND(fullbuf, buf, left, strchr(flagstr, FLAG_SEEN), FLAG_NAME_SEEN);
-	SAFE_FAST_COND_APPEND(fullbuf, buf, left, strchr(flagstr, FLAG_TRASHED), FLAG_NAME_DELETED);
+	SAFE_FAST_COND_APPEND(fullbuf, len, buf, left, strchr(flagstr, FLAG_DRAFT), FLAG_NAME_DRAFT);
+	SAFE_FAST_COND_APPEND(fullbuf, len, buf, left, strchr(flagstr, FLAG_FLAGGED), FLAG_NAME_FLAGGED);
+	SAFE_FAST_COND_APPEND(fullbuf, len, buf, left, strchr(flagstr, FLAG_SEEN), FLAG_NAME_SEEN);
+	SAFE_FAST_COND_APPEND(fullbuf, len, buf, left, strchr(flagstr, FLAG_TRASHED), FLAG_NAME_DELETED);
 }
 
 static int test_flags_parsing(void)
@@ -1905,7 +1905,7 @@ static int imap_traverse(const char *path, int (*on_file)(const char *dir_name, 
 /*! \todo Please come up with a plan to move the IMAP utility functions elsewhere, ideally to a separate file...
  * the forward declarations sprinkled throughout the file are starting to get ridiculous */
 static int in_range_allocated(const char *s, int num, char *sequences);
-static void generate_flag_names_full(struct imap_session *imap, const char *filename, char *bufstart, char **bufptr, int *lenptr);
+static void generate_flag_names_full(struct imap_session *imap, const char *filename, char *bufstart, size_t bufsize, char **bufptr, int *lenptr);
 static char *parensep(char **str);
 static int range_to_uintlist(char *s, unsigned int **list, int *length);
 
@@ -2080,7 +2080,7 @@ static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, cons
 				bbs_error("Message file %s contains no flags?\n", entry->d_name);
 				goto next;
 			}
-			generate_flag_names_full(imap, flags, flagsbuf, &buf, &len);
+			generate_flag_names_full(imap, flags, flagsbuf, sizeof(flagsbuf), &buf, &len);
 			imap_send(imap, "%u FETCH (UID %u %s) MODSEQ (%lu)", seqno, uid, flagsbuf, modseq);
 		}
 next:
@@ -2387,14 +2387,14 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 		if (!strlen_zero(s)) {
 			char *pos = status_items;
 			int left = sizeof(status_items);
-			SAFE_FAST_COND_APPEND(status_items, pos, left, strstr(s, "MESSAGES"), "MESSAGES %d", imap->totalnew + imap->totalcur);
-			SAFE_FAST_COND_APPEND(status_items, pos, left, strstr(s, "RECENT"), "RECENT %d", imap->totalnew);
-			SAFE_FAST_COND_APPEND(status_items, pos, left, strstr(s, "UIDNEXT"), "UIDNEXT %d", imap->uidnext + 1);
-			SAFE_FAST_COND_APPEND(status_items, pos, left, strstr(s, "UIDVALIDITY"), "UIDVALIDITY %d", imap->uidvalidity);
+			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "MESSAGES"), "MESSAGES %d", imap->totalnew + imap->totalcur);
+			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "RECENT"), "RECENT %d", imap->totalnew);
+			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "UIDNEXT"), "UIDNEXT %d", imap->uidnext + 1);
+			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "UIDVALIDITY"), "UIDVALIDITY %d", imap->uidvalidity);
 			/* Unlike with SELECT, this is the TOTAL number of unseen messages, not merely the first one */
-			SAFE_FAST_COND_APPEND(status_items, pos, left, strstr(s, "UNSEEN"), "UNSEEN %d", imap->totalunseen);
-			SAFE_FAST_COND_APPEND(status_items, pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %lu", mailbox_quota(imap->mbox));
-			SAFE_FAST_COND_APPEND(status_items, pos, left, strstr(s, "HIGHESTMODSEQ"), "HIGHESTMODSEQ %lu", maxmodseq);
+			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "UNSEEN"), "UNSEEN %d", imap->totalunseen);
+			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %lu", mailbox_quota(imap->mbox));
+			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "HIGHESTMODSEQ"), "HIGHESTMODSEQ %lu", maxmodseq);
 		}
 		imap_send(imap, "STATUS %s (%s)", mailbox, status_items);
 		imap_reply(imap, "OK STATUS completed");
@@ -2516,7 +2516,7 @@ static int imap_dir_has_subfolders(const char *path, const char *prefix)
 
 #define ATTR_INBOX "\\Inbox"
 
-#define ASSOC_ATTR(flag, string) SAFE_FAST_COND_APPEND(buf, pos, left, (attrs & flag), string)
+#define ASSOC_ATTR(flag, string) SAFE_FAST_COND_APPEND(buf, len, pos, left, (attrs & flag), string)
 
 static int get_attributes(const char *parentdir, const char *mailbox)
 {
@@ -4078,9 +4078,11 @@ static int handle_append(struct imap_session *imap, char *s)
 		mailbox_quota_adjust_usage(imap->mbox, (int) -size);
 	}
 
-	/* Maintain the INTERNALDATE of the message by using what the client gave us.
-	 * Since we need the filename, do it while we still know a valid filename. */
-	set_file_mtime(newfilename, appenddate);
+	if (appenddate) {
+		/* Maintain the INTERNALDATE of the message by using what the client gave us.
+		 * Since we need the filename, do it while we still know a valid filename. */
+		set_file_mtime(newfilename, appenddate);
+	}
 
 	/* Now, apply any flags to the message... (yet a third rename, potentially) */
 	if (appendflags) {
@@ -4111,7 +4113,7 @@ static int handle_append(struct imap_session *imap, char *s)
 }
 
 /*! \brief base filename The file name of the message file. Please do not provide the full filepath. */
-static void generate_flag_names_full(struct imap_session *imap, const char *filename, char *bufstart, char **bufptr, int *lenptr)
+static void generate_flag_names_full(struct imap_session *imap, const char *filename, char *bufstart, size_t bufsize, char **bufptr, int *lenptr)
 {
 	char flagsbuf[256] = "";
 	int has_flags;
@@ -4129,16 +4131,16 @@ static void generate_flag_names_full(struct imap_session *imap, const char *file
 
 	gen_flag_names(filename, flagsbuf, sizeof(flagsbuf));
 	has_flags = flagsbuf[0] ? 1 : 0;
-	SAFE_FAST_COND_APPEND(bufstart, buf, len, 1, "FLAGS (%s", flagsbuf);
+	SAFE_FAST_COND_APPEND(bufstart, bufsize, buf, len, 1, "FLAGS (%s", flagsbuf);
 	/* If there are any keywords (custom flags), include those as well */
 	custom_keywords = gen_keyword_names(imap, filename, flagsbuf, sizeof(flagsbuf));
 	if (has_flags) {
-		SAFE_FAST_COND_APPEND_NOSPACE(bufstart, buf, len, custom_keywords > 0, "%s", flagsbuf);
+		SAFE_FAST_COND_APPEND_NOSPACE(bufstart, bufsize, buf, len, custom_keywords > 0, "%s", flagsbuf);
 	} else {
 		/* No leading space if there were no other flags, would be more elegantly if everything just appended to the same buffer using _NOSPACE */
-		SAFE_FAST_COND_APPEND_NOSPACE(bufstart, buf, len, custom_keywords > 0, "%s", flagsbuf + 1); /* flagsbuf + 1 is safe since custom_keywords > 0 */
+		SAFE_FAST_COND_APPEND_NOSPACE(bufstart, bufsize, buf, len, custom_keywords > 0, "%s", flagsbuf + 1); /* flagsbuf + 1 is safe since custom_keywords > 0 */
 	}
-	SAFE_FAST_COND_APPEND_NOSPACE(bufstart, buf, len, 1, ")");
+	SAFE_FAST_COND_APPEND_NOSPACE(bufstart, bufsize, buf, len, 1, ")");
 
 	*bufptr = buf;
 	*lenptr = (int) len;
@@ -4223,7 +4225,7 @@ static int maildir_msg_setflags_modseq(struct imap_session *imap, int seqno, con
 	/* If newmodseq is not NULL, then we need to send responses as needed. XXX What if it's not? */
 
 	/* Send unilateral untagged FETCH responses to everyone except this session, to notify of the new flags */
-	generate_flag_names_full(imap, newflagletters, newflags, &newbuf, &newlen);
+	generate_flag_names_full(imap, newflagletters, newflags, sizeof(newflags), &newbuf, &newlen);
 	if (seqno) { /* Skip for merely translating flag mappings between maildirs */
 		unsigned int uid;
 		maildir_parse_uid_from_filename(filename, &uid);
@@ -4333,30 +4335,30 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				flags = inflags;
 				bbs_debug(6, "Appending seen flag since message wasn't already seen\n");
 			}
-			generate_flag_names_full(imap, flags, response, &buf, &len);
+			generate_flag_names_full(imap, flags, response, sizeof(response), &buf, &len);
 		}
 		if (fetchreq->rfc822size) {
 			unsigned long size;
 			if (parse_size_from_filename(entry->d_name, &size)) {
 				goto cleanup;
 			}
-			SAFE_FAST_COND_APPEND(response, buf, len, 1, "RFC822.SIZE %lu", size);
+			SAFE_FAST_COND_APPEND(response, sizeof(response), buf, len, 1, "RFC822.SIZE %lu", size);
 		}
 		/* Must include UID in response, whether requested or not (so fetchreq->uid ignored) */
-		SAFE_FAST_COND_APPEND(response, buf, len, 1, "UID %u", msguid);
+		SAFE_FAST_COND_APPEND(response, sizeof(response), buf, len, 1, "UID %u", msguid);
 		if (fetchreq->modseq) {
 			if (!modseq) {
 				/* If we didn't already compute this, do it now */
 				parse_modseq_from_filename(entry->d_name, &modseq);
 			}
-			SAFE_FAST_COND_APPEND(response, buf, len, 1, "MODSEQ %lu", modseq);
+			SAFE_FAST_COND_APPEND(response, sizeof(response), buf, len, 1, "MODSEQ %lu", modseq);
 		}
 		if (fetchreq->bodyargs || fetchreq->bodypeek) {
 			const char *bodyargs = fetchreq->bodyargs ? fetchreq->bodyargs + 5 : fetchreq->bodypeek + 10;
 			if (!strcmp(bodyargs, "HEADER]")) { /* e.g. BODY.PEEK[HEADER] */
 				/* Just treat it as if we got a HEADER request directly, to send all the headers. */
 				unoriginal = 1;
-				SAFE_FAST_COND_APPEND(response, buf, len, 1, "%s", fetchreq->bodypeek ? "BODY.PEEK[HEADER]" : "BODY[HEADER]");
+				SAFE_FAST_COND_APPEND(response, sizeof(response), buf, len, 1, "%s", fetchreq->bodypeek ? "BODY.PEEK[HEADER]" : "BODY[HEADER]");
 				fetchreq->rfc822header = 1;
 				fetchreq->bodyargs = fetchreq->bodypeek = NULL; /* Don't execute the if statement below, so that we can execute the else if */
 			}
@@ -4373,7 +4375,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				/* Use server's local time */
 				/* Example INTERNALDATE format: 08-Nov-2022 01:19:54 +0000 */
 				strftime(timebuf, sizeof(timebuf), "%d-%b-%Y %H:%M:%S %z", localtime_r(&st.st_mtim.tv_sec, &modtime));
-				SAFE_FAST_COND_APPEND(response, buf, len, 1, "INTERNALDATE \"%s\"", timebuf);
+				SAFE_FAST_COND_APPEND(response, sizeof(response), buf, len, 1, "INTERNALDATE \"%s\"", timebuf);
 			}
 		}
 		if (fetchreq->envelope) {
@@ -4382,7 +4384,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			int started = 0;
 			char *bufhdr;
 
-			SAFE_FAST_COND_APPEND(response, buf, len, 1, "ENVELOPE (");
+			SAFE_FAST_COND_APPEND(response, sizeof(response), buf, len, 1, "ENVELOPE (");
 			/* We can't rely on the headers in the message being in the desired order.
 			 * So look for each one explicitly, which means we have to double loop.
 			 * Furthermore, since there could be e.g. multiple To headers,
@@ -4413,16 +4415,16 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 /* We cannot use the ternary operator here because this is already a macro, so the format string must be a constant, not a ternary expression */
 #define APPEND_BUF_OR_NIL(bufptr, cond) \
 	if ((cond)) { \
-		SAFE_FAST_COND_APPEND(response, buf, len, 1, "\"%s\"", bufptr); \
+		SAFE_FAST_COND_APPEND(response, sizeof(response), buf, len, 1, "\"%s\"", bufptr); \
 	} else { \
-		SAFE_FAST_COND_APPEND(response, buf, len, 1, "NIL"); \
+		SAFE_FAST_COND_APPEND(response, sizeof(response), buf, len, 1, "NIL"); \
 	}
 
 #define APPEND_BUF_OR_NIL_NOSPACE(bufptr, cond) \
 	if ((cond)) { \
-		SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, "\"%s\"", bufptr); \
+		SAFE_FAST_COND_APPEND_NOSPACE(response, sizeof(response), buf, len, 1, "\"%s\"", bufptr); \
 	} else { \
-		SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, "NIL"); \
+		SAFE_FAST_COND_APPEND_NOSPACE(response, sizeof(response), buf, len, 1, "NIL"); \
 	}
 
 #define SEEK_HEADER_SINGLE(hdrname) \
@@ -4452,22 +4454,22 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		} \
 		/* Need spaces between them but not before the first one. And again, we can't use ternary expressions so do it the verbose way. */ \
 		if (findcount > 1) { \
-			SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, " ("); \
+			SAFE_FAST_COND_APPEND_NOSPACE(response, sizeof(response), buf, len, 1, " ("); \
 		} else { \
-			SAFE_FAST_COND_APPEND(response, buf, len, 1, "(("); /* First one, so also add the outer one */ \
+			SAFE_FAST_COND_APPEND(response, sizeof(response), buf, len, 1, "(("); /* First one, so also add the outer one */ \
 		} \
 		APPEND_BUF_OR_NIL_NOSPACE(name, !strlen_zero(name)); \
 		APPEND_BUF_OR_NIL(sourceroute, !strlen_zero(sourceroute)); \
 		APPEND_BUF_OR_NIL(user, !strlen_zero(user)); \
 		APPEND_BUF_OR_NIL(host, !strlen_zero(host)); \
-		SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, ")"); \
+		SAFE_FAST_COND_APPEND_NOSPACE(response, sizeof(response), buf, len, 1, ")"); \
 		break; \
 	} \
 	END_SEEK_HEADERS; \
 	if (findcount) { \
-		SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, ")"); \
+		SAFE_FAST_COND_APPEND_NOSPACE(response, sizeof(response), buf, len, 1, ")"); \
 	} else { \
-		SAFE_FAST_COND_APPEND(response, buf, len, 1, "NIL"); \
+		SAFE_FAST_COND_APPEND(response, sizeof(response), buf, len, 1, "NIL"); \
 	}
 
 			/* From RFC:
@@ -4502,7 +4504,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			SEEK_HEADER_SINGLE("In-Reply-To");
 			SEEK_HEADER_SINGLE("Message-Id");
 			fclose(fp);
-			SAFE_FAST_COND_APPEND_NOSPACE(response, buf, len, 1, ")");
+			SAFE_FAST_COND_APPEND_NOSPACE(response, sizeof(response), buf, len, 1, ")");
 		}
 		/* HEADER.FIELDS involves a multiline response, so this should be processed at the end of this loop since it appends to response.
 		 * Otherwise, something else might concatenate itself on at the end and break the response. */
@@ -4550,7 +4552,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 						break; /* End of headers */
 					}
 					if (isspace(linebuf[0])) { /* It's part of a previous header (mutliline header) */
-						SAFE_FAST_COND_APPEND_NOSPACE(headers, headpos, headlen, in_match, "%s", linebuf); /* Append if in match */
+						SAFE_FAST_COND_APPEND_NOSPACE(headers, sizeof(headers), headpos, headlen, in_match, "%s", linebuf); /* Append if in match */
 						continue;
 					}
 					headername[0] = ':';
@@ -4570,7 +4572,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 					 */
 					if ((!inverted && strcasestr(headerlist, headername)) || (inverted && !strcasestr(headerlist, headername))) {
 						/* I hope gcc optimizes this to not use snprintf under the hood */
-						SAFE_FAST_COND_APPEND_NOSPACE(headers, headpos, headlen, 1, "%s", linebuf);
+						SAFE_FAST_COND_APPEND_NOSPACE(headers, sizeof(headers), headpos, headlen, 1, "%s", linebuf);
 						in_match = 1;
 					} else {
 						in_match = 0;
@@ -4580,7 +4582,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 				free(headerlist);
 				bodylen = strlen(headers); /* Can't just subtract end of headers, we'd have to keep track of bytes added on each round (which we probably should anyways) */
 				/* bodyargs ends in a ')', so don't tack an additional one on afterwards */
-				SAFE_FAST_COND_APPEND(response, buf, len, 1, "BODY[HEADER.FIELDS (%s", bodyargs);
+				SAFE_FAST_COND_APPEND(response, sizeof(response), buf, len, 1, "BODY[HEADER.FIELDS (%s", bodyargs);
 			} else if (!strcmp(bodyargs, "]") || !strcmp(bodyargs, "TEXT]")) { /* Empty (e.g. BODY.PEEK[] or BODY[], or TEXT */
 				multiline = 1;
 				sendbody = 1;
@@ -4607,12 +4609,12 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 					break; /* End of headers */
 				}
 				/* I hope gcc optimizes this to not use snprintf under the hood */
-				SAFE_FAST_COND_APPEND_NOSPACE(headers, headpos, headlen, 1, "%s", linebuf);
+				SAFE_FAST_COND_APPEND_NOSPACE(headers, sizeof(headers), headpos, headlen, 1, "%s", linebuf);
 			}
 			fclose(fp);
 			bodylen = (size_t) (headpos - headers); /* XXX cheaper than strlen, although if truncation happened, this may be wrong (too high). */
 			if (!unoriginal) {
-				SAFE_FAST_COND_APPEND(response, buf, len, 1, "RFC822.HEADER");
+				SAFE_FAST_COND_APPEND(response, sizeof(response), buf, len, 1, "RFC822.HEADER");
 			}
 		}
 
@@ -5067,7 +5069,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 					/* XXX This eliminates duplication, but ideally they should also be sorted alphabetically between the two (e.g. merge sort) */
 					while (*c) {
 						if (!strchr(oldkeywords, *c)) {
-							SAFE_FAST_COND_APPEND_NOSPACE(newkeywords, newbuf, newlen, 1, "%c", *c);
+							SAFE_FAST_COND_APPEND_NOSPACE(newkeywords, sizeof(newkeywords), newbuf, newlen, 1, "%c", *c);
 							changes++;
 						} else {
 							bbs_debug(9, "Skipping existing flag %c\n", *c);
@@ -5084,7 +5086,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 				while (*c) {
 					/* Hopefully gcc will optimize a sprintf with just %c. */
 					if (!strchr(imap->appendkeywords, *c)) {
-						SAFE_FAST_COND_APPEND_NOSPACE(newkeywords, newbuf, newlen, 1, "%c", *c);
+						SAFE_FAST_COND_APPEND_NOSPACE(newkeywords, sizeof(newkeywords), newbuf, newlen, 1, "%c", *c);
 					} else {
 						changes++;
 					}
@@ -6732,9 +6734,9 @@ static void esearch_response(struct imap_session *imap, int option_flags, unsign
 			/* For ESEARCH responses, we can send ranges, but for regular SEARCH, the RFC specifically says they are all space delimited */
 			list = uintlist_to_ranges(a, results);
 		}
-		SAFE_FAST_COND_APPEND(buf, pos, buflen, option_flags & ESEARCH_MIN, "MIN %d", min);
-		SAFE_FAST_COND_APPEND(buf, pos, buflen, option_flags & ESEARCH_MAX, "MAX %d", max);
-		SAFE_FAST_COND_APPEND(buf, pos, buflen, option_flags & ESEARCH_COUNT, "COUNT %d", results);
+		SAFE_FAST_COND_APPEND(buf, sizeof(buf), pos, buflen, option_flags & ESEARCH_MIN, "MIN %d", min);
+		SAFE_FAST_COND_APPEND(buf, sizeof(buf), pos, buflen, option_flags & ESEARCH_MAX, "MAX %d", max);
+		SAFE_FAST_COND_APPEND(buf, sizeof(buf), pos, buflen, option_flags & ESEARCH_COUNT, "COUNT %d", results);
 		/* There is an exception to the RFC 7162 MODSEQ response for SEARCH/SORT,
 		 * and it is outlined in RFC 4731 3.2:
 		 * Basically, we return the highest MODSEQ as usual, UNLESS:
@@ -6760,7 +6762,7 @@ static void esearch_response(struct imap_session *imap, int option_flags, unsign
 				parse_modseq_from_filename(filename, &maxmodseq);
 			}
 		}
-		SAFE_FAST_COND_APPEND(buf, pos, buflen, maxmodseq, "MODSEQ %lu", maxmodseq);
+		SAFE_FAST_COND_APPEND(buf, sizeof(buf), pos, buflen, maxmodseq, "MODSEQ %lu", maxmodseq);
 
 		if (option_flags & ESEARCH_RESULTS) {
 			imap_send(imap, "ESEARCH (TAG \"%s\")%s%s%s %s%s", imap->tag, usinguid ? " UID" : "", option_flags & ESEARCH_STATS ? " " : "", buf, list ? "ALL " : "", S_IF(list));
@@ -6773,8 +6775,8 @@ static void esearch_response(struct imap_session *imap, int option_flags, unsign
 				buf[0] = '\0';
 				pos = buf;
 				buflen = sizeof(buf);
-				SAFE_FAST_COND_APPEND(buf, pos, buflen, option_flags & ESEARCH_MIN, "%d", min);
-				SAFE_FAST_COND_APPEND(buf, pos, buflen, option_flags & ESEARCH_MAX, "%d", max);
+				SAFE_FAST_COND_APPEND(buf, sizeof(buf), pos, buflen, option_flags & ESEARCH_MIN, "%d", min);
+				SAFE_FAST_COND_APPEND(buf, sizeof(buf), pos, buflen, option_flags & ESEARCH_MAX, "%d", max);
 				imap->savedsearch = strdup(buf);
 			} else {
 				/* Implicit ALL is saved */
@@ -8219,7 +8221,7 @@ static int test_thread_references(void)
 
 		/* Reference all prior conversations, as a proper MUA should. */
 		for (j = 10; j < parent; j++) {
-			SAFE_FAST_COND_APPEND(references, refbuf, refleft, 1, "<msg%d@localhost>", j);
+			SAFE_FAST_COND_APPEND(references, sizeof(references), refbuf, refleft, 1, "<msg%d@localhost>", j);
 		}
 		msgs[i].id = i + 1;
 		msgs[i].references = strdup(references);
