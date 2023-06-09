@@ -37,6 +37,7 @@
  * \note Supports RFC 7162 CONDSTORE (obsoletes RFC 4551)
  * \note Supports RFC 7162 QRESYNC (obsoletes RFC 5162)
  * \note Supports RFC 7889 APPENDLIMIT
+ * \note Supports RFC 8438 STATUS=SIZE
  * \note Supports RFC 9208 QUOTA
  *
  * \note STARTTLS is not supported for cleartext IMAP, as proposed in RFC2595, as this guidance
@@ -72,7 +73,7 @@
 /* List of capabilities: https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml */
 /* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
 /* XXX URLAUTH is advertised so that SMTP BURL will function in Trojita, even though we don't need URLAUTH since we have a direct trust */
-#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT SPECIAL-USE XLIST CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS LITERAL+ APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC"
+#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT SPECIAL-USE XLIST CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS LITERAL+ APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC STATUS=SIZE"
 
 /* Capabilities advertised by popular mail providers, for reference/comparison, both pre and post authentication:
  * - Office 365
@@ -317,6 +318,7 @@ struct imap_session {
 	unsigned int totalnew;		/* In "new" maildir. Will be moved to "cur" when seen. */
 	unsigned int totalcur;		/* In "cur" maildir. */
 	unsigned int totalunseen;	/* Messages with Unseen flag (or more rather, without the Seen flag). */
+	unsigned long totalsize;	/* Total size of mailbox */
 	unsigned int firstunseen;	/* Oldest message that is not Seen. */
 	unsigned int expungeindex;	/* Index for EXPUNGE */
 	unsigned int innew:1;		/* So we can use the same callback for both new and cur */
@@ -712,6 +714,7 @@ static void imap_destroy(struct imap_session *imap)
 	MAILBOX_TRYRDLOCK(imap); \
 	imap->totalnew = 0; \
 	imap->totalcur = 0; \
+	imap->totalsize = 0; \
 	imap->totalunseen = 0; \
 	imap->firstunseen = 0; \
 	imap->innew = 0; \
@@ -1708,9 +1711,27 @@ static long parse_modseq_from_filename(const char *filename, unsigned long *mods
 	return 0;
 }
 
+static int parse_size_from_filename(const char *filename, unsigned long *size)
+{
+	const char *sizestr = strstr(filename, ",S=");
+	if (!sizestr) {
+		bbs_error("Missing size in file %s\n", filename);
+		*size = 0;
+		return -1;
+	}
+	sizestr += STRLEN(",S=");
+	*size = (unsigned long) atol(sizestr);
+	if (!*size) {
+		bbs_warning("Invalid size (%lu) for %s\n", *size, filename);
+	}
+	return 0;
+}
+
 static int on_select(const char *dir_name, const char *filename, struct imap_session *imap)
 {
 	char *flags;
+	char newfile[512];
+	unsigned long size;
 
 #ifdef EXTRA_DEBUG
 	imap_debug(9, "Analyzing file %s/%s (readonly: %d)\n", dir_name, filename, imap->readonly);
@@ -1723,6 +1744,7 @@ static int on_select(const char *dir_name, const char *filename, struct imap_ses
 	if (imap->innew) {
 		imap->totalnew += 1;
 		imap->totalunseen += 1; /* If it's in the new dir, it definitely can't have been seen yet. */
+		
 	} else {
 		imap->totalcur += 1;
 		flags = strchr(filename, ':');
@@ -1745,29 +1767,30 @@ static int on_select(const char *dir_name, const char *filename, struct imap_ses
 					imap->firstunseen = MIN(imap->firstunseen, uid); /* Otherwise, keep the lowest numbered one. */
 				}
 			}
+			
 		}
 	}
 
-	if (imap->innew && !imap->readonly) {
-		maildir_move_new_to_cur(imap->mbox, imap->dir, imap->curdir, imap->newdir, filename, &imap->uidvalidity, &imap->uidnext);
+	if (imap->innew) {
+		if (!imap->readonly) {
+			maildir_move_new_to_cur_file(imap->mbox, imap->dir, imap->curdir, imap->newdir, filename, &imap->uidvalidity, &imap->uidnext, newfile, sizeof(newfile));
+			filename = newfile;
+		} else {
+			/* Need to stat to get the file size the regular way since parse_size_from_filename will fail. */
+			struct stat st;
+			if (stat(filename, &st)) {
+				bbs_error("stat(%s) failed: %s\n", filename, strerror(errno));
+			} else {
+				imap->totalsize += (unsigned long) st.st_size;
+			}
+			return 0;
+		}
 	}
 
-	return 0;
-}
+	if (!parse_size_from_filename(filename, &size)) {
+		imap->totalsize += size;
+	}
 
-static inline int parse_size_from_filename(const char *filename, unsigned long *size)
-{
-	const char *sizestr = strstr(filename, ",S=");
-	if (!sizestr) {
-		bbs_error("Missing size in file %s\n", filename);
-		*size = 0;
-		return -1;
-	}
-	sizestr += STRLEN(",S=");
-	*size = (unsigned long) atol(sizestr);
-	if (!*size) {
-		bbs_warning("Invalid size (%lu) for %s\n", *size, filename);
-	}
 	return 0;
 }
 
@@ -2395,6 +2418,8 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "UNSEEN"), "UNSEEN %d", imap->totalunseen);
 			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %lu", mailbox_quota(imap->mbox));
 			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "HIGHESTMODSEQ"), "HIGHESTMODSEQ %lu", maxmodseq);
+			/* RFC 8438 STATUS=SIZE extension */
+			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "SIZE"), "SIZE %lu", imap->totalsize);
 		}
 		imap_send(imap, "STATUS %s (%s)", mailbox, status_items);
 		imap_reply(imap, "OK STATUS completed");

@@ -278,7 +278,7 @@ Can I run SSH and SFTP on the same port?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Yes (and, in fact, you must, if you wish to enable both).
-Originally, SSH and SFTP were provided by 2 independent modules. They are now combined allowing for same-port usage, which users expect.
+Originally, SSH and SFTP were provided by 2 independent modules. They are now combined, allowing for same-port usage, which users expect.
 
 How does the container enviornment (isoexec handler) work?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

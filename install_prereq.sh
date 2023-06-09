@@ -44,9 +44,9 @@ scripts/concord.sh
 # libwss (net_ws)
 scripts/libwss.sh
 
-# libetpan (mod_webmail): for now, the package suffices
-# scripts/libetpan.sh
-apt-get install -y libetpan-dev
+# libetpan (mod_webmail): the package no longer suffices, since we patch the source.
+# apt-get install -y libetpan-dev
+scripts/libetpan.sh
 
 # doxygen only:
 # apt-get install -y doxygen graphviz
