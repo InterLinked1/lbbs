@@ -14,10 +14,10 @@ apt-get install -y libedit-dev # <histedit.h>
 apt-get install -y libuuid1 uuid-dev # <uuid/uuid.h>
 apt-get install -y libreadline-dev # <readline/history.h>
 
-# net_ssh and net_sftp
+# net_ssh
 apt-get install -y libssh-dev # libssh
 
-# net_sftp, which requires objdump to test for symbol existence... thanks a lot, libssh
+# net_ssh, which requires objdump to test for symbol existence... thanks a lot, libssh
 apt-get install -y binutils # binutils, for objdump
 
 # mod_mysql, mod_mysql_auth

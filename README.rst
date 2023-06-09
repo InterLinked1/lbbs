@@ -224,8 +224,6 @@ The BBS also comes with some network services that aren't intended for terminal 
 
 * :code:`net_smtp` - Simple Mail Transfer Protocol (SMTP) server
 
-* :code:`net_sftp` - Secure File Transfer Protocol server
-
 * :code:`net_ws` - WebSocket server
 
 Using mod_auth_mysql
@@ -276,10 +274,11 @@ Finally, note that many systems already have daemons running on the standard por
 sshd, telnetd, Apache web server, etc. If these are present, you will need to resolve the conflict, as only one
 program can bind to a port at any given time.
 
-How can I run SSH and SFTP on the same port?
+Can I run SSH and SFTP on the same port?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Currently, this is not possible, but hopefully this limitation will be fixed soon.
+Yes (and, in fact, you must, if you wish to enable both).
+Originally, SSH and SFTP were provided by 2 independent modules. They are now combined allowing for same-port usage, which users expect.
 
 How does the container enviornment (isoexec handler) work?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

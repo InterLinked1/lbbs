@@ -12,7 +12,7 @@
 
 /*! \file
  *
- * \brief SSH (Secure Shell)
+ * \brief SSH (Secure Shell) and SFTP (Secure File Transfer Protocol) server
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -31,12 +31,17 @@
 #include <sys/ioctl.h> /* use winsize */
 
 /*
- * The SSH comm driver has dependencies on libssh and libcrypto.
- * Parts of this module based on https://github.com/jeroen/libssh/blob/master/examples/ssh_server_fork.c
+ * The SSH driver has dependencies on libssh and libcrypto.
+ * Parts of this module based on https://github.com/xbmc/libssh/blob/master/examples/ssh_server_fork.c
  */
 #include <libssh/libssh.h>
 #include <libssh/callbacks.h>
 #include <libssh/server.h>
+
+/* SFTP */
+#define WITH_SERVER
+#include <libssh/sftp.h>
+#include <dirent.h>
 
 #include "include/module.h"
 #include "include/node.h"
@@ -64,7 +69,14 @@ static pthread_t ssh_listener_thread;
  */
 #define ALLOW_ANON_AUTH
 
+/*
+ * There is no RFC officially for SFTP.
+ * Version 3, working draft 2 is what we want: https://www.sftp.net/spec/draft-ietf-secsh-filexfer-02.txt
+ */
+
 static int ssh_port = DEFAULT_SSH_PORT;
+static int allow_sftp = 1;
+
 /* Key loading defaults */
 static int load_key_rsa = 1;
 static int load_key_dsa = 0;
@@ -128,12 +140,12 @@ struct channel_data_struct {
 	struct bbs_user **user;
 	/* BBS node thread */
 	pthread_t nodethread;
-	/* pid of the child process the channel will spawn. */
+	/* pid of the child thread the channel will spawn. */
 	pid_t pid;
 	/* For PTY allocation */
 	socket_t pty_master;
 	socket_t pty_slave;
-	/* For communication with the child process. */
+	/* For communication with the child thread. */
 	socket_t child_stdin;
 	socket_t child_stdout;
 	/* Only used for subsystem and exec requests. */
@@ -489,6 +501,43 @@ static int shell_request(ssh_session session, ssh_channel channel, void *userdat
 	return SSH_OK;
 }
 
+static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel channel);
+
+static int subsystem_request(ssh_session session, ssh_channel channel, const char *subsystem, void *userdata)
+{
+	struct channel_data_struct *cdata = (struct channel_data_struct *) userdata;
+
+	UNUSED(channel);
+
+	if (cdata->node) {
+		bbs_error("Node already exists?\n");
+		return SSH_ERROR;
+	}
+
+	if (!strcmp(subsystem, "sftp")) {
+		if (!allow_sftp) {
+			bbs_verb(4, "SFTP subsystem request rejected (disabled)\n");
+			return SSH_ERROR;
+		}
+
+		cdata->node = bbs_node_request(ssh_get_fd(session), "SFTP");
+		if (!cdata->node) {
+			return SSH_ERROR;
+		}
+		/* Attach the user that we set earlier.
+		 * If we didn't set one, it's still NULL, so fine either way. */
+		if (!bbs_node_attach_user(cdata->node, *cdata->user)) {
+			cdata->userattached = 1;
+		}
+		save_remote_ip(session, cdata->node, NULL, 0);
+		bbs_debug(3, "Starting SFTP session on node %d\n", cdata->node->id);
+        return SSH_OK;
+    }
+
+	bbs_error("Unsupported subsystem: %s\n", subsystem);
+    return SSH_ERROR;
+}
+
 /*! \note Works only for threads that are NOT detached */
 static inline int thread_has_exited(pthread_t thread)
 {
@@ -507,8 +556,9 @@ static inline int thread_has_exited(pthread_t thread)
 
 static void bad_ssh_conn(ssh_session session)
 {
-	char ipaddr[84];
+	char ipaddr[84] = "";
 	struct bbs_event event;
+
 	/* These connections are not likely to be legitimate, so log them. We don't have a node, so use the session. */
 	save_remote_ip(session, NULL, ipaddr, sizeof(ipaddr));
 	bbs_auth("SSH connection from %s did not have a PTY at shutdown\n", ipaddr);
@@ -576,7 +626,7 @@ static void handle_session(ssh_event event, ssh_session session)
 		 * There are many more callbacks we don't need, that aren't all explicitly listed here as not being needed.
 		 */
 		.channel_exec_request_function = NULL, /* When client requests a command execution. Not needed. */
-		.channel_subsystem_request_function = NULL, /* When client requests a subsystem, e.g. SFTP. Not needed */
+		.channel_subsystem_request_function = subsystem_request, /* When client requests a subsystem, e.g. SFTP. */
 	};
 
 	struct ssh_server_callbacks_struct server_cb = {
@@ -686,24 +736,28 @@ static void handle_session(ssh_event event, ssh_session session)
 		} else if (!cdata.node) {
 			bbs_debug(3, "No BBS node\n");
 			continue;
-		} else if (node_started) {
-			bbs_error("Shouldn't happen\n");
-			bbs_assert(0);
 		}
+		bbs_assert(!node_started);
 		/* Executed only once, once the child thread starts. */
 		cdata.event = event;
 		node_started = 1;
-		/* If stdout valid, add stdout to be monitored by the poll event. */
-		/* Skip stderr, the BBS doesn't use it, since we're not launching a shell. */
-		if (cdata.child_stdout != -1 && !cdata.addedfdwatch) {
-			if (ssh_event_add_fd(event, cdata.child_stdout, POLLIN | POLLPRI | POLLERR | POLLHUP | POLLNVAL, process_stdout, sdata.channel) != SSH_OK) {
-				bbs_error("Failed to register stdout to poll context\n");
-				ssh_channel_close(sdata.channel);
-			} else {
-				cdata.addedfdwatch = 1;
-			}
+
+		if (!strcmp(cdata.node->protname, "SFTP")) {
+			do_sftp(cdata.node, session, sdata.channel);
 		} else {
-			bbs_error("No stdout available?\n");
+
+			/* If stdout valid, add stdout to be monitored by the poll event. */
+			/* Skip stderr, the BBS doesn't use it, since we're not launching a shell. */
+			if (cdata.child_stdout != -1 && !cdata.addedfdwatch) {
+				if (ssh_event_add_fd(event, cdata.child_stdout, POLLIN | POLLPRI | POLLERR | POLLHUP | POLLNVAL, process_stdout, sdata.channel) != SSH_OK) {
+					bbs_error("Failed to register stdout to poll context\n");
+					ssh_channel_close(sdata.channel);
+				} else {
+					cdata.addedfdwatch = 1;
+				}
+			} else {
+				bbs_error("No stdout available?\n");
+			}
 		}
 	} while (ssh_channel_is_open(sdata.channel));
 
@@ -717,7 +771,7 @@ static void handle_session(ssh_event event, ssh_session session)
 		user = NULL;
 	}
 
-	if (cdata.pty_master == -1) {
+	if (cdata.pty_master == -1 && !(cdata.node && !strcmp(cdata.node->protname, "SFTP"))) {
 		bad_ssh_conn(session);
 	}
 
@@ -735,9 +789,589 @@ static void handle_session(ssh_event event, ssh_session session)
 		bbs_error("Failed to free SSH event fd\n");
 	}
 
+	if (cdata.node && !strcmp(cdata.node->protname, "SFTP")) {
+		bbs_node_exit(cdata.node);
+	}
+
 	/* Goodbye */
 	ssh_channel_send_eof(sdata.channel);
 	ssh_channel_close(sdata.channel);
+}
+
+/* === SFTP functions === */
+static int handle_errno(sftp_client_message msg)
+{
+	bbs_debug(3, "errno: %s\n", strerror(errno));
+	switch (errno) {
+		case EPERM:
+		case EACCES:
+			return sftp_reply_status(msg, SSH_FX_PERMISSION_DENIED, "Permission denied");
+		case ENOENT:
+			return sftp_reply_status(msg, SSH_FX_NO_SUCH_FILE, "No such file or directory"); /* Also SSH_FX_NO_SUCH_PATH */
+		case ENOTDIR:
+			return sftp_reply_status(msg, SSH_FX_FAILURE, "Not a directory");
+		case EEXIST:
+			return sftp_reply_status(msg, SSH_FX_FILE_ALREADY_EXISTS, "File already exists");
+		default:
+			return sftp_reply_status(msg, SSH_FX_FAILURE, NULL);
+	}
+}
+
+#define TYPE_DIR 0
+#define TYPE_FILE 1
+
+struct sftp_info {
+	int offset;
+	char *name;			/*!< Client's filename */
+	char *realpath;		/*!< Actual server path */
+	DIR *dir;
+	FILE *file;
+	unsigned int type:1;
+};
+
+static struct sftp_info *alloc_sftp_info(void)
+{
+	struct sftp_info *h = calloc(1, sizeof(*h));
+	if (ALLOC_SUCCESS(h)) {
+		h->offset = 0;
+	}
+	return h;
+}
+
+static sftp_attributes attr_from_stat(struct stat *st)
+{
+	sftp_attributes attr = calloc(1, sizeof(*attr));
+
+	if (ALLOC_FAILURE(attr)) {
+		return NULL;
+	}
+
+	attr->size = (uint64_t) st->st_size;
+	attr->uid = (uint32_t) st->st_uid;
+	attr->gid = st->st_gid;
+	attr->permissions = st->st_mode;
+	attr->atime = (uint32_t) st->st_atime;
+	attr->mtime = (uint32_t) st->st_mtime;
+	attr->flags = SSH_FILEXFER_ATTR_SIZE | SSH_FILEXFER_ATTR_UIDGID | SSH_FILEXFER_ATTR_PERMISSIONS | SSH_FILEXFER_ATTR_ACMODTIME;
+
+    return attr;
+}
+
+static const char *sftp_get_client_message_type_name(uint8_t i)
+{
+	switch (i) {
+		case SSH_FXP_INIT: return "INIT";
+		case SSH_FXP_VERSION: return "VERSION";
+		case SSH_FXP_OPEN: return "OPEN";
+		case SSH_FXP_CLOSE: return "CLOSE";
+		case SSH_FXP_READ: return "READ";
+		case SSH_FXP_WRITE: return "WRITE";
+		case SSH_FXP_LSTAT: return "LSTAT";
+		case SSH_FXP_FSTAT: return "FSTAT";
+		case SSH_FXP_SETSTAT: return "SETSTAT";
+		case SSH_FXP_FSETSTAT: return "FSETSTAT";
+		case SSH_FXP_OPENDIR: return "OPENDIR";
+		case SSH_FXP_READDIR: return "READDIR";
+		case SSH_FXP_REMOVE: return "REMOVE";
+		case SSH_FXP_MKDIR: return "MKDIR";
+		case SSH_FXP_RMDIR: return "RMDIR";
+		case SSH_FXP_REALPATH: return "REALPATH";
+		case SSH_FXP_STAT: return "STAT";
+		case SSH_FXP_RENAME: return "RENAME";
+		case SSH_FXP_READLINK: return "READLINK";
+		case SSH_FXP_SYMLINK: return "SYMLINK";
+		case SSH_FXP_STATUS: return "STATUS";
+		case SSH_FXP_HANDLE: return "HANDLE";
+		case SSH_FXP_DATA: return "DATA";
+		case SSH_FXP_NAME: return "NAME";
+		case SSH_FXP_ATTRS: return "ATTRS";
+		case SSH_FXP_EXTENDED: return "EXTENDED";
+		case SSH_FXP_EXTENDED_REPLY: return "return EXTENDED_REPLY";
+		default:
+			bbs_error("Unknown message type: %d\n", i);
+			return NULL;
+	}
+}
+
+static int sftp_io_flags(int sflags)
+{
+	int flags = 0;
+	if (sflags & SSH_FXF_READ) {
+		flags |= O_RDONLY;
+	}
+	if (sflags & SSH_FXF_WRITE) {
+		flags |= O_WRONLY;
+	}
+	if (sflags & SSH_FXF_APPEND) {
+		flags |= O_APPEND;
+	}
+	if (sflags & SSH_FXF_TRUNC) {
+		flags |= O_TRUNC;
+	}
+	if (sflags & SSH_FXF_EXCL) {
+		flags |= O_EXCL;
+	}
+	if (sflags & SSH_FXF_CREAT) {
+		flags |= O_CREAT;
+	}
+	return flags;
+}
+
+static const char *fopen_flags(int flags)
+{
+	switch (flags & (O_RDONLY | O_WRONLY | O_APPEND | O_TRUNC)) {
+		case O_RDONLY:
+			return "r";
+		case O_WRONLY | O_RDONLY:
+			return "r+";
+		case O_WRONLY | O_TRUNC:
+			return "w";
+		case O_WRONLY | O_RDONLY | O_APPEND:
+			return "a+";
+		default:
+			switch (flags & (O_RDONLY | O_WRONLY)) {
+				case O_RDONLY:
+					return "r";
+				case O_WRONLY:
+					return "w";
+			}
+	}
+	return "r"; /* Default */
+}
+
+static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
+{
+	sftp_attributes attr;
+	struct stat st;
+	int eof = 0;
+	char file[1024];
+	char longname[PATH_MAX];
+	int i = 0;
+	struct sftp_info *info = sftp_handle(msg->sftp, msg->handle);
+
+	if (!info || info->type != TYPE_DIR) {
+		sftp_reply_status(msg, SSH_FX_INVALID_HANDLE, "Invalid handle");
+		return -1;
+	}
+
+	while (!eof) {
+		struct dirent *dir = readdir(info->dir); /* XXX This is not thread safe */
+		if (!dir) {
+			eof = 1;
+			break;
+		}
+		if (!strcmp(dir->d_name, ".") || !strcmp(dir->d_name, "..")) {
+			continue;
+		}
+		/* Avoid double slash // at beginning when in the root directory */
+		bbs_debug(4, "Have %s/%s\n", !strcmp(info->name, "/") ? "" : info->name, dir->d_name);
+		/* Could do bbs_transfer_set_disk_path_relative(node, info->name, dir->d_name, file, sizeof(file)); but it's not really necessary here */
+		snprintf(file, sizeof(file), "%s/%s/%s", bbs_transfer_rootdir(), info->name, dir->d_name);
+		if (bbs_transfer_set_disk_path_relative(node, info->name, dir->d_name, file, sizeof(file))) { /* Will fail for other people's home directories, which is fine, hide in listing */
+			continue;
+		}
+		if (lstat(file, &st)) {
+			bbs_error("lstat failed: %s\n", strerror(errno));
+			continue;
+		}
+		attr = attr_from_stat(&st);
+		if (!attr) {
+			continue;
+		}
+		i++;
+		transfer_make_longname(dir->d_name, &st, longname, sizeof(longname), 0);
+		sftp_reply_names_add(msg, dir->d_name, longname, attr);
+		sftp_attributes_free(attr);
+	}
+
+	if (!i && eof) { /* No files */
+		sftp_reply_status(msg, SSH_FX_EOF, NULL);
+		return 0;
+	}
+	sftp_reply_names(msg);
+	return 0;
+}
+
+static int handle_read(sftp_client_message msg)
+{
+	void *data;
+	size_t r;
+	uint32_t len = msg->len; /* Maximum number of bytes to read */
+	struct sftp_info *info = sftp_handle(msg->sftp, msg->handle);
+
+	if (!info || info->type != TYPE_FILE) {
+		sftp_reply_status(msg, SSH_FX_INVALID_HANDLE, "Invalid handle");
+		return -1;
+	} else if (len < 1) {
+		sftp_reply_status(msg, SSH_FX_BAD_MESSAGE, "Insufficient length");
+		return -1;
+	}
+
+	/* Avoid MIN macro due to different signedness */
+	if (len > (2 << 15)) {
+		len = 2 << 15; /* Cap at 32768, so we don't malloc ourselves into oblivion... */
+		bbs_debug(5, "Capping len at %d (down from %d)\n", len, msg->len);
+	}
+
+	data = malloc(len);
+	if (ALLOC_FAILURE(data)) {
+		sftp_reply_status(msg, SSH_FX_BAD_MESSAGE, "Allocation failed");
+		return -1;
+	}
+
+	if (fseeko(info->file, (off_t) msg->offset, SEEK_SET)) {
+		bbs_error("fseeko failed: %s\n", strerror(errno));
+		sftp_reply_status(msg, SSH_FX_BAD_MESSAGE, "Offset failed");
+		free(data);
+		return -1;
+	}
+
+	r = fread(data, 1, len, info->file);
+	bbs_debug(7, "read %lu bytes (len: %d)\n", r, len);
+	/* XXX For some reason, we get 128 of these after the EOF, before we stop getting READ messages (???) (At least with FileZilla).
+	 * Still works but probably not right */
+	if (r <= 0) {
+		if (feof(info->file)) {
+			bbs_debug(4, "File transfer has completed\n");
+			sftp_reply_status(msg, SSH_FX_EOF, "EOF");
+		} else {
+			handle_errno(msg);
+		}
+	} else {
+		sftp_reply_data(msg, data, (int) r);
+	}
+	/* Do not respond with an OK here */
+	free(data);
+	return 0;
+}
+
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations" /* string_len and string_data */
+static int handle_write(sftp_client_message msg)
+{
+	size_t len;
+	struct sftp_info *info = sftp_handle(msg->sftp, msg->handle);
+
+	/*! \todo Add support for limiting max file size upload according to bbs_transfer_max_upload_size */
+
+	if (!info || info->type != TYPE_FILE) {
+		sftp_reply_status(msg, SSH_FX_INVALID_HANDLE, "Invalid handle");
+		return -1;
+	}
+	len = string_len(msg->data);
+	if (fseeko(info->file, (off_t) msg->offset, SEEK_SET)) {
+		bbs_error("fseeko failed: %s\n", strerror(errno));
+		sftp_reply_status(msg, SSH_FX_BAD_MESSAGE, "Offset failed");
+		return -1;
+	}
+	do {
+		size_t r = fwrite(string_data(msg->data), 1, len, info->file);
+		if (r <= 0 && len > 0) {
+			handle_errno(msg);
+			return -1;
+		}
+		len -= r;
+	} while (len > 0);
+	sftp_reply_status(msg, SSH_FX_OK, NULL);
+	return 0;
+}
+#pragma GCC diagnostic pop
+
+#define STDLIB_SYSCALL(func, ...) \
+	if (func(__VA_ARGS__)) { \
+		handle_errno(msg); \
+	} else { \
+		sftp_reply_status(msg, SSH_FX_OK, NULL); \
+	}
+
+#define SFTP_ENSURE_TRUE2(func, node, mypath) \
+	if (!func(node, mypath)) { \
+		errno = EACCES; \
+		handle_errno(msg); \
+		break; \
+	}
+
+/* Duplicate code from libssh if needed since sftp_server_free isn't available in older versions */
+#ifndef HAVE_SFTP_SERVER_FREE
+#define SAFE_FREE(x) do { if ((x) != NULL) {free(x); x=NULL;} } while(0)
+
+struct sftp_ext_struct {
+	uint32_t count;
+	char **name;
+	char **data;
+};
+
+static void sftp_ext_free(sftp_ext ext)
+{
+	if (ext == NULL) {
+		return;
+	}
+
+	if (ext->count > 0) {
+		size_t i;
+		if (ext->name != NULL) {
+			for (i = 0; i < ext->count; i++) {
+				SAFE_FREE(ext->name[i]);
+			}
+			SAFE_FREE(ext->name);
+		}
+
+		if (ext->data != NULL) {
+			for (i = 0; i < ext->count; i++) {
+				SAFE_FREE(ext->data[i]);
+			}
+			SAFE_FREE(ext->data);
+		}
+	}
+
+	SAFE_FREE(ext);
+}
+
+static void sftp_message_free(sftp_message msg)
+{
+	if (msg == NULL) {
+		return;
+	}
+
+	SSH_BUFFER_FREE(msg->payload);
+	SAFE_FREE(msg);
+}
+
+/*!
+ * \brief sftp_server_free from libssh's sftp.c (unmodified)
+ * \note Licensed under the GNU Lesser GPL
+ * \note This was only added to libssh in commit cc536377f9711d9883678efe4fcf4cb6449c3b1a
+ *       LIBSFTP_VERSION is 3 both before/after this commit, so unfortunately
+ *       we don't have any good way of detecting whether or not this function
+ *       exists in the version of libssh installed.
+ *       Therefore, we just duplicate the function here to guarantee its availability.
+ */
+static void sftp_server_free(sftp_session sftp)
+{
+	sftp_request_queue ptr;
+
+	if (sftp == NULL) {
+		return;
+	}
+
+	ptr = sftp->queue;
+	while(ptr) {
+		sftp_request_queue old;
+		sftp_message_free(ptr->message);
+		old = ptr->next;
+		SAFE_FREE(ptr);
+		ptr = old;
+	}
+
+	SAFE_FREE(sftp->handles);
+	SSH_BUFFER_FREE(sftp->read_packet->payload);
+	SAFE_FREE(sftp->read_packet);
+
+	sftp_ext_free(sftp->ext);
+
+	SAFE_FREE(sftp);
+}
+#endif
+
+#define SFTP_MAKE_PATH() \
+	if (bbs_transfer_set_disk_path_absolute(node, msg->filename, mypath, sizeof(mypath))) { \
+		handle_errno(msg); \
+		break; \
+	}
+
+#define SFTP_MAKE_PATH_NOCHECK() \
+	if (bbs_transfer_set_disk_path_absolute_nocheck(node, msg->filename, mypath, sizeof(mypath))) { \
+		handle_errno(msg); \
+		break; \
+	}
+
+static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel channel)
+{
+	char mypath[PATH_MAX] = ""; /* Real disk path */
+	char buf[PATH_MAX]; /* for realpath */
+	sftp_session sftp;
+	int res;
+	FILE *fp;
+	int fd;
+	DIR *dir;
+	struct sftp_info *info;
+	ssh_string handle;
+	struct stat st;
+	sftp_attributes attr;
+
+	bbs_debug(3, "Starting SFTP session on node %d\n", node->id);
+
+	sftp = sftp_server_new(session, channel);
+	if (!sftp) {
+		bbs_error("Failed to create SFTP session\n");
+		return SSH_ERROR;
+	}
+	res = sftp_server_init(sftp); /* Initialize SFTP server */
+	if (res) {
+		bbs_error("sftp_server_init failed: %d\n", sftp_get_error(sftp));
+		goto cleanup;
+	}
+
+	for (;;) {
+		sftp_client_message msg;
+#if 0
+		/*! \todo BUGBUG FIXME For some reason, this doesn't work (probably can't poll directly on the fd, see if there's a libssh API to do this) */
+		int pres = bbs_poll(node->fd, bbs_transfer_timeout());
+		if (pres <= 0) {
+			bbs_debug(3, "poll returned %d, terminating SFTP session\n", pres);
+			break;
+		}
+#endif
+		msg = sftp_get_client_message(sftp); /* This will block, so if we want a timeout, we need to do it beforehand */
+		if (!msg) {
+			break;
+		}
+		/* Since some operations can be for paths that may not exist currently, always use the _nocheck variant.
+		 * For operations that require the path to exist, they will fail anyways on the system call. */
+		bbs_debug(5, "Got SFTP client message %2d (%8s), client path: %s\n", msg->type, sftp_get_client_message_type_name(msg->type), msg->filename);
+		switch (msg->type) {
+			case SFTP_REALPATH:
+				SFTP_MAKE_PATH();
+				if (!realpath(mypath, buf)) { /* returns NULL on failure */
+					bbs_debug(5, "Path '%s' not found: %s\n", mypath, strerror(errno));
+					handle_errno(msg);
+				} else {
+					sftp_reply_name(msg, bbs_transfer_get_user_path(node, buf), NULL); /* Skip root dir */
+				}
+				break;
+			case SFTP_OPENDIR:
+				SFTP_MAKE_PATH();
+				dir = opendir(mypath);
+				if (!dir) {
+					handle_errno(msg);
+				} else if (!(info = alloc_sftp_info())) {
+					handle_errno(msg);
+					closedir(dir); /* Do this after so we don't mess up errno */
+				} else {
+					info->dir = dir;
+					info->type = TYPE_DIR;
+					info->name = strdup(msg->filename);
+					info->realpath = strdup(mypath);
+					handle = sftp_handle_alloc(msg->sftp, info);
+					sftp_reply_handle(msg, handle);
+					free(handle);
+					handle = NULL;
+				}
+				break;
+			case SFTP_OPEN:
+				SFTP_MAKE_PATH_NOCHECK(); /* Might be opening a file that doesn't currently exist */
+				fd = open(mypath, sftp_io_flags((int) msg->flags), msg->attr->permissions);
+				if (fd < 0) {
+					handle_errno(msg);
+				} else {
+					fp = fdopen(fd, fopen_flags(sftp_io_flags((int) msg->flags)));
+					if (!(info = alloc_sftp_info())) {
+						handle_errno(msg);
+						close(fd); /* Do this after so we don't mess up errno */
+					} else {
+						info->type = TYPE_FILE;
+						info->file = fp;
+						info->name = strdup(msg->filename);
+						info->realpath = strdup(mypath);
+						handle = sftp_handle_alloc(msg->sftp, info);
+						sftp_reply_handle(msg, handle);
+						free(handle);
+						handle = NULL;
+					}
+				}
+				break;
+			case SFTP_STAT:
+				/* Fall through */
+			case SFTP_LSTAT:
+				SFTP_MAKE_PATH();
+				if ((msg->type == SFTP_STAT && stat(mypath, &st)) || (msg->type == SFTP_LSTAT && lstat(mypath, &st))) {
+					handle_errno(msg);
+				} else {
+					attr = attr_from_stat(&st);
+					sftp_reply_attr(msg, attr);
+					sftp_attributes_free(attr);
+				}
+				break;
+			case SFTP_CLOSE:
+				info = sftp_handle(msg->sftp, msg->handle);
+				if (!info) {
+					sftp_reply_status(msg, SSH_FX_INVALID_HANDLE, "Invalid handle");
+				} else {
+					sftp_handle_remove(msg->sftp, info);
+					info->type == TYPE_DIR ? closedir(info->dir) : fclose(info->file);
+					free_if(info->name);
+					free_if(info->realpath);
+					free(info);
+					sftp_reply_status(msg, SSH_FX_OK, NULL);
+				}
+				break;
+			case SFTP_READDIR:
+				handle_readdir(node, msg);
+				break;
+			case SFTP_READ:
+				SFTP_ENSURE_TRUE2(bbs_transfer_canread, node, mypath);
+				handle_read(msg);
+				break;
+			case SFTP_WRITE:
+				SFTP_ENSURE_TRUE2(bbs_transfer_canwrite, node, mypath);
+				handle_write(msg);
+				break;
+			case SFTP_REMOVE:
+				SFTP_MAKE_PATH();
+				SFTP_ENSURE_TRUE2(bbs_transfer_candelete, node, mypath);
+				STDLIB_SYSCALL(unlink, mypath);
+				break;
+			case SFTP_MKDIR:
+				SFTP_MAKE_PATH_NOCHECK();
+				SFTP_ENSURE_TRUE2(bbs_transfer_canmkdir, node, mypath);
+				STDLIB_SYSCALL(mkdir, mypath, 0600);
+				break;
+			case SFTP_RMDIR:
+				SFTP_MAKE_PATH();
+				SFTP_ENSURE_TRUE2(bbs_transfer_candelete, node, mypath);
+				STDLIB_SYSCALL(rmdir, mypath);
+				break;
+			case SFTP_RENAME:
+				{
+					const char *newpath;
+					char realnewpath[PATH_MAX];
+					newpath = sftp_client_message_get_data(msg); /* According to sftp.h, rename() newpath is here */
+					SFTP_MAKE_PATH();
+					SFTP_ENSURE_TRUE2(bbs_transfer_candelete, node, mypath);
+					if (bbs_transfer_set_disk_path_absolute_nocheck(node, newpath, realnewpath, sizeof(realnewpath))) {
+						handle_errno(msg);
+						break;
+					}
+					if (bbs_file_exists(realnewpath)) { /* If target already exists, it's a no go */
+						errno = EEXIST;
+						handle_errno(msg);
+					} else {
+						bbs_debug(5, "Renaming %s => %s\n", mypath, realnewpath);
+						STDLIB_SYSCALL(rename, mypath, realnewpath);
+					}
+				}
+				break;
+			case SFTP_SETSTAT:
+			case SFTP_FSETSTAT:
+				/* XXX Not implemented, don't allow users to change permissions on the system */
+				errno = EPERM;
+				handle_errno(msg);
+				break;
+			case SFTP_FSTAT:
+			case SFTP_READLINK:
+			case SFTP_SYMLINK:
+				/* Not implemented */
+			default:
+				bbs_error("Unhandled SFTP client operation: %d (%s)\n", msg->type, sftp_get_client_message_type_name(msg->type));
+				sftp_reply_status(msg, SSH_FX_OP_UNSUPPORTED, "Unsupported operation");
+		}
+		sftp_client_message_free(msg);
+	}
+
+	/*! \todo BUGBUG FIXME XXX Need to implicitly close anything that's open to prevent resource leaks (don't trust the client to clean up) */
+
+cleanup:
+	sftp_server_free(sftp);
+	return SSH_ERROR;
 }
 
 static void *ssh_connection(void *varg)
@@ -821,6 +1455,8 @@ static int load_config(void)
 	ssh_port = DEFAULT_SSH_PORT;
 	bbs_config_val_set_port(cfg, "ssh", "port", &ssh_port);
 
+	bbs_config_val_set_true(cfg, "sftp", "enabled", &allow_sftp);
+
 	bbs_config_val_set_true(cfg, "keys", "rsa", &load_key_rsa);
 	bbs_config_val_set_true(cfg, "keys", "dsa", &load_key_dsa);
 	bbs_config_val_set_true(cfg, "keys", "ecdsa", &load_key_ecdsa);
@@ -874,4 +1510,4 @@ static int unload_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_STANDARD("RFC4253 SSH (Secure Shell)");
+BBS_MODULE_INFO_STANDARD("RFC4253 SSH (Secure Shell) and SFTP (Secure File Transfer Protocol)");
