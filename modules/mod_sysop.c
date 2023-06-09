@@ -286,7 +286,7 @@ static void *sysop_handler(void *varg)
 	pfd.fd = sysopfdin;
 	pfd.events = POLLIN | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
 
-	histentry = NULL;
+	histentry = NULL; /* initiailization must be after pthread_cleanup_push to avoid "variable might be clobbered" warning */
 	for (;;) {
 		pfd.revents = 0;
 		res = poll(&pfd, 1, -1);

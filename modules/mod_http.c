@@ -1227,13 +1227,16 @@ static struct http_route *find_route(unsigned short int port, const char *hostna
 {
 	struct http_route *route = NULL, *r, *secureroute = NULL;
 	struct http_route *defaultroute = NULL;
-	char *host = strdup(hostname);
+	char *host = NULL;
 
-	if (ALLOC_FAILURE(host)) {
-		return NULL;
+	if (!strlen_zero(hostname)) {
+		host = strdup(hostname);
+		if (ALLOC_FAILURE(host)) {
+			return NULL;
+		}
+
+		bbs_strterm(host, ':'); /* Ignore port */
 	}
-
-	bbs_strterm(host, ':'); /* Ignore port */
 
 	RWLIST_RDLOCK(&routes);
 	RWLIST_TRAVERSE(&routes, r, entry) {
