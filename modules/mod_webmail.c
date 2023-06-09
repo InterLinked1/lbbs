@@ -648,6 +648,11 @@ static void append_header_meta(json_t *restrict json, char *headers, int fetchli
 	while ((header = strsep(&headers, "\n"))) {
 		char *hdrname, *hdrval = header;
 
+		bbs_strterm(header, '\r');
+		if (strlen_zero(header)) {
+			break; /* End of headers */
+		}
+
 		if (isspace(header[0])) {
 			/* Continuation of previous header */
 			hdrname = prevheadername;
