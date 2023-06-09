@@ -314,14 +314,21 @@ extern int shutdown_finished;
 
 void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level loglevel, int level, const char *file, int lineno, const char *func, const char *fmt, ...)
 {
-	char *buf;
 	int len;
 	va_list ap;
 	time_t lognow;
 	struct tm logdate;
 	struct timeval now;
 	char datestr[20];
+	char logminibuf[512];
+	char logfullbuf[768];
+	char *buf = logminibuf;
+	char *fullbuf = logfullbuf;
 	int thread_id;
+	int dynamic = 0, fulldynamic = 0;
+	int bytes;
+	int log_stdout;
+	int need_reset = 0;
 
 	switch (loglevel) {
 		case LOG_DEBUG:
@@ -381,68 +388,116 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 	thread_id = bbs_gettid();
 
 	va_start(ap, fmt);
-	len = vasprintf(&buf, fmt, ap);
+	len = vsnprintf(logminibuf, sizeof(logminibuf), fmt, ap);
 	va_end(ap);
 
-	if (unlikely(len < 0)) {
-		va_list ap2;
-		/* Fall back to simple logging. */
+	if (len >= (int) sizeof(buf)) {
+		/* Too large for stack allocated buffer. Dynamically allocate it. */
+		dynamic = 1;
+		buf = malloc((size_t) len + 1);
+		if (ALLOC_FAILURE(buf)) {
+			va_list ap2;
+			/* Fall back to simple logging. */
+			va_start(ap, fmt);
+			va_copy(ap2, ap);
+			if (stdoutavailable) {
+				vfprintf(stderr, fmt, ap);
+			}
+			va_end(ap);
+			if (logfp) {
+				vfprintf(logfp, fmt, ap2);
+			}
+			va_end(ap2);
+			return;
+		}
 		va_start(ap, fmt);
-		va_copy(ap2, ap);
-		if (stdoutavailable) {
-			vfprintf(stderr, fmt, ap);
-		}
+#undef vsprintf
+		vsprintf(buf, fmt, ap); /* vsprintf is safe, vsnprintf is unnecessary here */
 		va_end(ap);
-		if (logfp) {
-			vfprintf(logfp, fmt, ap2);
-		}
-		va_end(ap2);
-	} else {
-		char *fullbuf;
-		int bytes;
-		int log_stdout;
-		int need_reset = 0;
-
-		need_reset = strchr(buf, 27) ? 1 : 0; /* If contains ESC, this could contain a color escape sequence. Reset afterwards. */
-
-		pthread_mutex_lock(&termlock);
-		log_stdout = logstdout;
-		pthread_mutex_unlock(&termlock);
-
-		if (log_stdout) {
-			if (loglevel == LOG_VERBOSE && verbose_special_formatting) {
-				const char *verbprefix = verbose_prefix(level);
-				bytes = asprintf(&fullbuf, "[%s.%03d] %s%s%s", datestr, (int) now.tv_usec / 1000, verbprefix, buf, need_reset ? COLOR_RESET : "");
-			} else {
-				bytes = asprintf(&fullbuf, "[%s.%03d] %s[%d]: %s%s:%d %s%s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 1), thread_id, COLOR_START COLOR_WHITE COLOR_BEGIN, file, lineno, func, COLOR_RESET, buf, need_reset ? COLOR_RESET : "");
-			}
-			if (unlikely(bytes < 0)) {
-				term_puts("ERROR: Logging vasprintf failure\n"); /* Can't use bbs_log functions! */
-				term_puts(buf); /* Just put what we had */
-			} else {
-				struct remote_log_fd *rfd;
-				term_puts(fullbuf);
-				RWLIST_RDLOCK(&remote_log_fds);
-				RWLIST_TRAVERSE(&remote_log_fds, rfd, entry) {
-					if (fd_logging[rfd->fd]) {
-#undef dprintf
-						dprintf(rfd->fd, "%s", fullbuf);
-					}
-				}
-				RWLIST_UNLOCK(&remote_log_fds);
-				free(fullbuf);
-			}
-		}
-		bytes = asprintf(&fullbuf, "[%s.%03d] %s[%d]: %s:%d %s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 0), thread_id, file, lineno, func, buf, need_reset ? COLOR_RESET : "");
-		if (unlikely(bytes < 0)) {
-			log_puts("ERROR: Logging vasprintf failure\n"); /* Can't use bbs_log functions! */
-			log_puts(buf); /* Just put what we had */
-		} else {
-			log_puts(fullbuf);
-			free(fullbuf);
-		}
-		free(buf);
 	}
 
-	return;
+	need_reset = strchr(buf, 27) ? 1 : 0; /* If contains ESC, this could contain a color escape sequence. Reset afterwards. */
+
+	/* Race condition here is fine, but helgrind won't like it: */
+#ifdef HAPPY_HELGRIND
+	pthread_mutex_lock(&termlock);
+#endif
+	log_stdout = logstdout;
+#ifdef HAPPY_HELGRIND
+	pthread_mutex_unlock(&termlock);
+#endif
+
+	if (log_stdout) {
+		struct remote_log_fd *rfd;
+		if (loglevel == LOG_VERBOSE && verbose_special_formatting) {
+			const char *verbprefix = verbose_prefix(level);
+			bytes = snprintf(logfullbuf, sizeof(logfullbuf), "[%s.%03d] %s%s%s", datestr, (int) now.tv_usec / 1000, verbprefix, buf, need_reset ? COLOR_RESET : "");
+			if (bytes >= (int) sizeof(logfullbuf)) {
+				fulldynamic = 1;
+				fullbuf = malloc((size_t) bytes + 1);
+				if (ALLOC_FAILURE(fullbuf)) {
+					term_puts("ERROR: Logging vasprintf failure\n"); /* Can't use bbs_log functions! */
+					term_puts(buf); /* Just put what we had */
+					goto stdoutdone;
+				}
+				/* Safe */
+#undef sprintf
+				sprintf(fullbuf, "[%s.%03d] %s%s%s", datestr, (int) now.tv_usec / 1000, verbprefix, buf, need_reset ? COLOR_RESET : "");
+			}
+		} else {
+			bytes = snprintf(logfullbuf, sizeof(logfullbuf), "[%s.%03d] %s[%d]: %s%s:%d %s%s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 1), thread_id, COLOR_START COLOR_WHITE COLOR_BEGIN, file, lineno, func, COLOR_RESET, buf, need_reset ? COLOR_RESET : "");
+			if (bytes >= (int) sizeof(logfullbuf)) {
+				fulldynamic = 1;
+				fullbuf = malloc((size_t) bytes + 1);
+				if (ALLOC_FAILURE(fullbuf)) {
+					term_puts("ERROR: Logging vasprintf failure\n"); /* Can't use bbs_log functions! */
+					term_puts(buf); /* Just put what we had */
+					goto stdoutdone;
+				}
+				/* Safe */
+				bytes = sprintf(fullbuf, "[%s.%03d] %s[%d]: %s%s:%d %s%s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 1), thread_id, COLOR_START COLOR_WHITE COLOR_BEGIN, file, lineno, func, COLOR_RESET, buf, need_reset ? COLOR_RESET : "");
+			}
+		}
+
+		term_puts(fullbuf);
+		RWLIST_RDLOCK(&remote_log_fds);
+		RWLIST_TRAVERSE(&remote_log_fds, rfd, entry) {
+			if (fd_logging[rfd->fd]) {
+				write(rfd->fd, fullbuf, (size_t) bytes);
+			}
+		}
+		RWLIST_UNLOCK(&remote_log_fds);
+		if (fulldynamic) {
+			free(fullbuf);
+		}
+stdoutdone:
+		/* Reset */
+		fulldynamic = 0;
+		fullbuf = logfullbuf;
+	}
+	/* Log message to file should not include color formatting */
+	bytes = snprintf(logfullbuf, sizeof(logfullbuf), "[%s.%03d] %s[%d]: %s:%d %s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 0), thread_id, file, lineno, func, buf, need_reset ? COLOR_RESET : "");
+	if (bytes >= (int) sizeof(logfullbuf)) {
+		fullbuf = malloc((size_t) bytes + 1);
+		if (ALLOC_FAILURE(fullbuf)) {
+			log_puts("ERROR: Logging vasprintf failure\n"); /* Can't use bbs_log functions! */
+			log_puts(buf); /* Just put what we had */
+			goto almostdone;
+		}
+		/* Safe */
+		sprintf(fullbuf, "[%s.%03d] %s[%d]: %s:%d %s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 0), thread_id, file, lineno, func, buf, need_reset ? COLOR_RESET : "");
+	}
+
+	pthread_mutex_lock(&loglock);
+	fwrite(fullbuf, 1, (size_t) bytes, logfp);
+	fflush(logfp);
+	pthread_mutex_unlock(&loglock);
+
+	if (fulldynamic) {
+		free(fullbuf);
+	}
+almostdone:
+	if (dynamic) {
+		free(buf);
+	}
 }
