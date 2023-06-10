@@ -8783,7 +8783,9 @@ static int imap_process(struct imap_session *imap, char *s)
 			}
 		}
 		res = bbs_authenticate(imap->node, user, pass);
-		bbs_memzero(pass, strlen(pass)); /* Destroy the password from memory. */
+		if (pass) {
+			bbs_memzero(pass, strlen(pass)); /* Destroy the password from memory. */
+		}
 		if (res) {
 			if (!bbs_num_auth_providers()) {
 				imap_reply(imap, "NO [UNAVAILABLE] Authentication currently unavailable");

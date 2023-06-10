@@ -2752,7 +2752,9 @@ static void handle_client(struct irc_user *user)
 					break;
 				}
 				authres = bbs_authenticate(user->node, user->nickname, user->password);
-				bbs_memzero(user->password, strlen(user->password)); /* Destroy password before freeing it */
+				if (user->password) {
+					bbs_memzero(user->password, strlen(user->password)); /* Destroy password before freeing it */
+				}
 				free(user->password);
 				if (authres) {
 					send_numeric(user, 464, "Password incorrect\r\n");

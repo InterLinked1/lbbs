@@ -194,6 +194,11 @@ unsigned char *bbs_sasl_decode(const char *s, char **authorization, char **authe
 		return NULL;
 	}
 	password = (char*) decoded + runlen;
+	if (strlen_zero(password)) {
+		bbs_warning("No password provided\n");
+		free(decoded);
+		return NULL;
+	}
 
 	*authorization = authorization_id;
 	*authentication = authentication_id;

@@ -578,6 +578,11 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 	} else if (!strcasecmp(command, "PASS")) {
 		char *domain;
 
+		if (strlen_zero(s)) {
+			pop3_err(pop3, "Missing argument");
+			return 0;
+		}
+
 		if (!pop3->username) { /* Must get USER first */
 			bbs_memzero(s, strlen(s)); /* Destroy the password */
 			pop3_err(pop3, "Invalid command sequence"); /* No such mailbox, since wrong domain! */

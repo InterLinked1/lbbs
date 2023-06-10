@@ -233,7 +233,11 @@ static int php_var_append(struct php_varlist *vars, const char *name, enum php_v
 			memcpy(var->data + namelen + 1, value, len); /* NOT null terminated! */
 			var->data[namelen + 1 + len] = '\0';
 			var->value.string = var->data + namelen + 1;
-			bbs_debug(5, "Added STRING variable '%s' = %s\n", name, var->value.string);
+			if (strstr(name, "password")) {
+				bbs_debug(5, "Added STRING variable '%s'\n", name);
+			} else {
+				bbs_debug(5, "Added STRING variable '%s' = %s\n", name, var->value.string);
+			}
 			break;
 		case PHP_VAR_ARRAY:
 			var->value.array = (struct php_varlist*) value;
@@ -419,7 +423,10 @@ static int php_unserialize(struct php_varlist *vars, char **sptr, const char *st
 
 	char *s = *sptr; /* Nice side effect? Can't use restrict because of strsep, but since this is local it should have the same effect anyways */
 
+#ifdef DEBUG_PHP_SESSION_PARSING
+	/* The session data may contain sensitive info, do not log this, normally */
 	bbs_debug(6, "Parsing: %s\n", start);
+#endif
 
 	for (;;) {
 		char vartype, sep;
@@ -647,6 +654,7 @@ static int php_load_session(struct ws_session *ws)
 
 	dup = contents;
 	php_unserialize(&ws->varlist, &dup, contents, (size_t) length);
+	bbs_debug(3, "Loaded %d bytes from session file %s\n", length, sessfile);
 	free(contents);
 	return 0;
 }
@@ -687,6 +695,10 @@ static const char *php_get_session_string(struct ws_session *ws, const char *key
 {
 	struct php_var *var = php_get_session_value(ws, key);
 
+	if (!var) {
+		return NULL;
+	}
+
 	if (var->type != PHP_VAR_STRING) {
 		bbs_debug(1, "Variable %s exists, but it's not a string\n", key);
 		return NULL;
@@ -697,6 +709,10 @@ static const char *php_get_session_string(struct ws_session *ws, const char *key
 static int php_get_session_number(struct ws_session *ws, const char *key)
 {
 	struct php_var *var = php_get_session_value(ws, key);
+
+	if (!var) {
+		return 0;
+	}
 
 	switch (var->type) {
 		case PHP_VAR_BOOL:
@@ -763,6 +779,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 	ws.data = NULL;
 	ws.pollfd = -1;
 	ws.pollms = -1;
+	ws.sessionchecked = 0;
 	memset(&ws.varlist, 0, sizeof(ws.varlist));
 	SET_BITFIELD(ws.proxied, proxied);
 
@@ -832,9 +849,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 				bbs_debug(3, "Failed to read WebSocket frame\n");
 				if (wss_error_code(client)) {
 					wss_close(client, wss_error_code(client));
-				} else {
-					wss_close(client, WS_CLOSE_PROTOCOL_ERROR);
-				}
+				} /* else, if client already closed, don't try writing any further */
 				break;
 			} else {
 				struct wss_frame *frame = wss_client_frame(client);
@@ -1088,7 +1103,7 @@ static int load_module(void)
 		res |= http_register_insecure_route("/ws", (unsigned short int) http_port, NULL, HTTP_METHOD_GET, ws_proxy_handler);
 	}
 	if (https_port) {
-		res |= http_register_secure_route("/ws", (unsigned short int) http_port, NULL, HTTP_METHOD_GET, ws_proxy_handler);
+		res |= http_register_secure_route("/ws", (unsigned short int) https_port, NULL, HTTP_METHOD_GET, ws_proxy_handler);
 	}
 	if (res) {
 		return unload_module();
