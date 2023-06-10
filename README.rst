@@ -330,11 +330,10 @@ the backend, other than through the requirement that the WebSocket interface be 
 
 No configuration is required of the backend. Only the frontend needs to be configured.
 
-The frontend does not need to be run under the BBS's web server (and in fact, it cannot be currently,
-since the BBS web server does not support storing session data currently). The recommended approach
-is to run the frontend under the Apache HTTP web server, just like any other virtualhost. You'll want
-to secure the site using TLS just like any other site if it's public facing. The BBS doesn't support
-SNI (Server Name Indication) currently either, so this is probably another reason to use Apache for now.
+The frontend does not need to be run under the BBS's web server. For example, you can
+run the frontend under the Apache HTTP web server, just like any other virtualhost. You'll want
+to secure the site using TLS just like any other site if it's public facing. The BBS HTTP server doesn't support
+SNI (Server Name Indication) currently, so this may be a reason to prefer Apache for now.
 
 Apart from the frontend site itself, you can also configure a WebSocket reverse proxy under Apache HTTP
 to accept WebSocket upgrades on your standard HTTPS port (e.g. 443) and hand those off to the BBS WebSocket

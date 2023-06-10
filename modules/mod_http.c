@@ -727,6 +727,7 @@ static int process_headers(struct http_session *http)
 				}
 				STRIP_QUOTES(name);
 				STRIP_QUOTES(value);
+				ltrim(name); /* If we got multiple cookies, there is a space after the ; */
 				bbs_debug(4, "Cookie: %s => %s\n", name, val);
 				bbs_varlist_append(&http->req->cookies, name, val);
 			}
@@ -1487,28 +1488,42 @@ static struct http_route *find_route(unsigned short int port, const char *hostna
 		if (ALLOC_FAILURE(host)) {
 			return NULL;
 		}
-
 		bbs_strterm(host, ':'); /* Ignore port */
 	}
 
 	RWLIST_RDLOCK(&routes);
 	RWLIST_TRAVERSE(&routes, r, entry) {
 		if (r->hostname && host && strcmp(r->hostname, host)) {
+#ifdef DEBUG_ROUTING
+			bbs_debug(5, "Different host: %s != %s\n", host, r->hostname);
+#endif
 			continue; /* Different virtualhost */
 		}
 		if (!r->prefix) {
 			if (port == r->port) {
 				defaultroute = r;
 			}
+#ifdef DEBUG_ROUTING
+			bbs_debug(5, "Skipping default route for now\n");
+#endif
 			continue; /* Prefer a more specific match, if available. */
 		}
 		if (strncmp(uri, r->prefix, r->prefixlen)) {
+#ifdef DEBUG_ROUTING
+			bbs_debug(5, "Prefix '%s' does not match\n", r->prefix);
+#endif
 			continue; /* Prefix doesn't match the request URI */
 		}
 		if (!(r->methods & method)) {
 			*methodmismatch = 1;
+#ifdef DEBUG_ROUTING
+			bbs_debug(5, "Prefix %s matches, but method mismatch\n", r->prefix);
+#endif
 			continue; /* Wrong method */
 		}
+#ifdef DEBUG_ROUTING
+		bbs_debug(5, "Found candidate route for %s\n", r->prefix);
+#endif
 		/* The route sufficiently matches */
 		if (secureport && r->secure) {
 			secureroute = r;
@@ -1534,6 +1549,8 @@ static struct http_route *find_route(unsigned short int port, const char *hostna
 		route->usecount++;
 		pthread_mutex_unlock(&route->lock);
 		bbs_module_ref(route->mod);
+	} else {
+		bbs_debug(3, "No matching route for '%s' and no default route!\n", uri);
 	}
 	RWLIST_UNLOCK(&routes);
 
