@@ -43,6 +43,95 @@ SSL_CTX *ssl_ctx = NULL;
 static int ssl_is_available = 0;
 static int ssl_shutting_down = 0;
 
+static pthread_mutex_t *lock_cs = NULL;
+static long *lock_count = NULL;
+
+static void pthreads_locking_callback(int mode, int type, const char *file, int line)
+{
+#ifdef DEBUG_TLS_LOCKING
+	bbs_debug(3,"mode=%s lock=%s %s:%d\n", (mode & CRYPTO_LOCK) ? "l" : "u", (type & CRYPTO_READ) ? "r" : "w", file, line);
+#else
+	UNUSED(file);
+	UNUSED(line);
+#endif
+	if (mode & CRYPTO_LOCK) {
+		pthread_mutex_lock(&(lock_cs[type]));
+		lock_count[type]++;
+	} else {
+		pthread_mutex_unlock(&(lock_cs[type]));
+	}
+}
+
+static int lock_init(void)
+{
+	int i;
+	/* OpenSSL crypto/threads/mttest.c */
+	lock_cs = OPENSSL_malloc(CRYPTO_num_locks() * sizeof(pthread_mutex_t));
+	if (ALLOC_FAILURE(lock_cs)) {
+		return -1;
+	}
+	lock_count = OPENSSL_malloc(CRYPTO_num_locks() * sizeof(long));
+	if (ALLOC_FAILURE(lock_count)) {
+		OPENSSL_free(lock_cs);
+		return -1;
+	}
+	for (i = 0; i < CRYPTO_num_locks(); i++) {
+		lock_count[i] = 0;
+		pthread_mutex_init(&(lock_cs[i]), NULL);
+	}
+	CRYPTO_set_locking_callback(pthreads_locking_callback);
+	if (0) {
+		/* XXX FIXME For some reason, CRYPTO_set_locking_callback doesn't count as using pthreads_locking_callback,
+		 * so we have this dummy usage that the compiler will optimize out. Something else is probably not right... */
+		pthreads_locking_callback(0, 0, NULL, 0);
+	}
+	return 0;
+}
+
+static void lock_cleanup(void)
+{
+	int i;
+
+	CRYPTO_set_locking_callback(NULL);
+	for (i = 0; i < CRYPTO_num_locks(); i++) {
+		pthread_mutex_destroy(&(lock_cs[i]));
+	}
+	OPENSSL_free(lock_cs);
+	OPENSSL_free(lock_count);
+}
+
+struct sni {
+	const char *hostname;		/*!< SNI hostname */
+	SSL_CTX *ctx;
+	RWLIST_ENTRY(sni) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(sni_certs, sni);
+
+/*! \note Must be called with WRLOCK held */
+static void sni_push(const char *hostname, SSL_CTX *ctx)
+{
+	struct sni *sni;
+	size_t hostlen = strlen(hostname);
+	sni = calloc(1, sizeof(*sni) + hostlen + 1);
+	if (ALLOC_FAILURE(sni)) {
+		return;
+	}
+	sni->ctx = ctx;
+	strcpy(sni->data, hostname); /* Safe */
+	sni->hostname = sni->data;
+	RWLIST_INSERT_HEAD(&sni_certs, sni, entry);
+	bbs_verb(5, "Added TLS certificate for %s\n", hostname);
+}
+
+/*! \note Must be called with WRLOCK held */
+static void sni_free(struct sni *sni)
+{
+	SSL_CTX_free(sni->ctx);
+	free(sni);
+}
+
 /*! \todo is there an OpenSSL function for this? */
 const char *ssl_strerror(int err)
 {
@@ -463,6 +552,39 @@ static void *ssl_io_thread(void *unused)
 	return NULL;
 }
 
+static int ssl_servername_cb(SSL *s, int *ad, void *arg)
+{
+	/* OpenSSL apps/s_server.c */
+
+	/* This is supposedly threadsafe due to CRYPTO_set_locking_callback */
+	struct sni *sni;
+	const char *servername = SSL_get_servername(s, TLSEXT_NAMETYPE_host_name);
+
+	UNUSED(ad);
+	UNUSED(arg);
+
+	if (strlen_zero(servername)) { /* Client that doesn't support SNI? */
+		bbs_debug(4, "No server name in TLS handshake - client doesn't support SNI?\n");
+		return SSL_TLSEXT_ERR_OK;
+	}
+
+	RWLIST_RDLOCK(&sni_certs);
+	RWLIST_TRAVERSE(&sni_certs, sni, entry) {
+		if (!strcasecmp(servername, sni->hostname)) { /* Hostnames are not case sensitive */
+			SSL_set_SSL_CTX(s, sni->ctx);
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&sni_certs);
+
+	if (sni) {
+		bbs_debug(1, "Switching server context due to SNI: %s\n", servername);
+	} else {
+		bbs_debug(1, "SNI failed, no certificate available for: %s\n", servername);
+	}
+	return SSL_TLSEXT_ERR_OK;
+}
+
 SSL *ssl_new_accept(int fd, int *rfd, int *wfd)
 {
 	int res;
@@ -486,6 +608,9 @@ SSL *ssl_new_accept(int fd, int *rfd, int *wfd)
 		return NULL;
 	}
 	SSL_set_fd(ssl, fd);
+	SSL_CTX_set_min_proto_version(ssl_ctx, TLS1_VERSION); /* Minimum TLS 1.0 */
+	SSL_CTX_set_tlsext_servername_callback(ssl_ctx, ssl_servername_cb);
+
 accept:
 	res = SSL_accept(ssl);
 	if (res != 1) {
@@ -520,6 +645,7 @@ accept:
 		bbs_debug(5, "SSL session was reused for this connection\n");
 	}
 
+	bbs_debug(3, "TLS handshake completed (%s)\n", SSL_get_version(ssl));
 	return ssl;
 }
 
@@ -642,10 +768,38 @@ int ssl_available(void)
 	return ssl_is_available;
 }
 
+static SSL_CTX *tls_ctx_create(const char *cert, const char *key)
+{
+	const SSL_METHOD *method = TLS_server_method();
+	SSL_CTX *ctx = SSL_CTX_new(method);
+	if (!ctx) {
+		bbs_error("Failed to create SSL context\n");
+		return NULL;
+	}
+
+	SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL); /* Server is not verifying the client, the client will verify the server */
+
+	if (SSL_CTX_use_certificate_file(ctx, cert, SSL_FILETYPE_PEM) <= 0) {
+		bbs_error("Could not load certificate file %s: %s\n", cert, ERR_error_string(ERR_get_error(), NULL));
+		return NULL;
+	}
+	if (SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM) <= 0) {
+		bbs_error("Could not load private key file %s: %s\n", key, ERR_error_string(ERR_get_error(), NULL));
+		return NULL;
+	}
+	if (SSL_CTX_check_private_key(ctx) != 1) {
+		bbs_error("Private key does not match public certificate\n");
+		return NULL;
+	}
+	return ctx;
+}
+
 static int ssl_load_config(void)
 {
 	int res = 0;
 	struct bbs_config *cfg;
+	struct bbs_config_section *section = NULL;
+	struct bbs_keyval *keyval = NULL;
 
 	cfg = bbs_config_load("tls.conf", 0);
 
@@ -660,6 +814,49 @@ static int ssl_load_config(void)
 	if (!res && (s_strlen_zero(ssl_cert) || s_strlen_zero(ssl_key))) {
 		bbs_error("An SSL certificate and private key must be provided to use TLS\n");
 		return -1;
+	}
+
+	ssl_ctx = tls_ctx_create(ssl_cert, ssl_key);
+	if (!ssl_ctx) {
+		return -1;
+	}
+
+	while ((section = bbs_config_walk(cfg, section))) {
+		if (!strcmp(bbs_config_section_name(section), "tls")) {
+			continue; /* Not a menu section, skip */
+		} else if (!strcmp(bbs_config_section_name(section), "sni")) {
+			RWLIST_WRLOCK(&sni_certs);
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				char certbuf[512];
+				char *cert, *key;
+				SSL_CTX *ctx;
+				const char *value = bbs_keyval_val(keyval);
+
+				if (bbs_hostname_is_ipv4(bbs_keyval_val(keyval))) {
+					bbs_error("SNI is only supported for hostnames, not IP addresses (e.g. %s)\n", bbs_keyval_val(keyval));
+					continue;
+				}
+				safe_strncpy(certbuf, value, sizeof(certbuf));
+				key = certbuf;
+				cert = strsep(&key, ":");
+
+				if (strlen_zero(cert)) {
+					bbs_error("TLS certificate for '%s' not specified\n", bbs_keyval_key(keyval));
+					continue;
+				} else if (strlen_zero(key)) {
+					bbs_error("TLS private key for '%s' not specified\n", bbs_keyval_key(keyval));
+					continue;
+				}
+				ctx = tls_ctx_create(cert, key);
+				if (!ctx) {
+					continue;
+				}
+				sni_push(bbs_keyval_key(keyval), ctx);
+			}
+			RWLIST_UNLOCK(&sni_certs);
+		} else {
+			bbs_error("Invalid section '%s', ignoring\n", bbs_config_section_name(section));
+		}
 	}
 
 	bbs_config_free(cfg);
@@ -680,39 +877,16 @@ static int setup_ssl_io(void)
 int ssl_server_init(void)
 {
 #ifdef HAVE_OPENSSL
-	const SSL_METHOD *method;
-
 	setup_ssl_io(); /* Even if we can't be a TLS server, we can still be a TLS client. */
 
 	if (ssl_load_config()) {
 		return -1;
 	}
-
-	method = TLS_server_method(); /* Server method, not client method! */
-	ssl_ctx = SSL_CTX_new(method);
-
-	if (!ssl_ctx) {
-		bbs_error("Failed to create SSL context\n");
-		return -1;
-	}
-
-	SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_NONE, NULL); /* Server is not verifying the client, the client will verify the server */
-
-	if (SSL_CTX_use_certificate_file(ssl_ctx, ssl_cert, SSL_FILETYPE_PEM) <= 0) {
-		bbs_error("Could not load certificate file %s: %s\n", ssl_cert, ERR_error_string(ERR_get_error(), NULL));
-		return -1;
-	}
-	if (SSL_CTX_use_PrivateKey_file(ssl_ctx, ssl_key, SSL_FILETYPE_PEM) <= 0) {
-		bbs_error("Could not load private key file %s: %s\n", ssl_key, ERR_error_string(ERR_get_error(), NULL));
-		return -1;
-	}
-	if (SSL_CTX_check_private_key(ssl_ctx) != 1) {
-		bbs_error("Private key does not match public certificate\n");
+	if (lock_init()) {
 		return -1;
 	}
 
 	ssl_is_available = 1;
-
 	return 0;
 #else
 	bbs_error("BBS compiled without OpenSSL support?\n");
@@ -729,10 +903,14 @@ void ssl_server_shutdown(void)
 		SSL_CTX_free(ssl_ctx);
 		ssl_ctx = NULL;
 	}
+	RWLIST_WRLOCK_REMOVE_ALL(&sni_certs, entry, sni_free);
 	/* Do not use pthread_cancel, let the thread clean up */
 	bbs_alertpipe_write(ssl_alert_pipe); /* Tell thread to exit */
 	bbs_pthread_join(ssl_thread, NULL);
 	bbs_alertpipe_close(ssl_alert_pipe);
 	ssl_cleanup_fds();
 #endif
+	if (ssl_is_available) {
+		lock_cleanup();
+	}
 }

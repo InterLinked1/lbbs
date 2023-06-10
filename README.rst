@@ -280,6 +280,22 @@ Can I run SSH and SFTP on the same port?
 Yes (and, in fact, you must, if you wish to enable both).
 Originally, SSH and SFTP were provided by 2 independent modules. They are now combined, allowing for same-port usage, which users expect.
 
+I have multiple hostnames. Is SNI (Server Name Indication) supported?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Yes, LBBS supports SNI as both a client and a server. Refer to :code:`tls.conf` for configuration details.
+
+How can I server webpages using the embedded web server?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+There are 3 methods supported by the web server:
+
+* Embedded server applications - these are dynamic applications that run within the BBS itself
+
+* Static files - static files on disk that the web server sends to clients
+
+* CGI (Common Gateway Interface) - CGI can be used to dynamically send a webpage from an external program
+
+Embedded dynamic scripting engines (e.g. a la Apache HTTP server's mod_php) are not currently supported.
+
 How does the container enviornment (isoexec handler) work?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -332,8 +348,7 @@ No configuration is required of the backend. Only the frontend needs to be confi
 
 The frontend does not need to be run under the BBS's web server. For example, you can
 run the frontend under the Apache HTTP web server, just like any other virtualhost. You'll want
-to secure the site using TLS just like any other site if it's public facing. The BBS HTTP server doesn't support
-SNI (Server Name Indication) currently, so this may be a reason to prefer Apache for now.
+to secure the site using TLS just like any other site if it's public facing.
 
 Apart from the frontend site itself, you can also configure a WebSocket reverse proxy under Apache HTTP
 to accept WebSocket upgrades on your standard HTTPS port (e.g. 443) and hand those off to the BBS WebSocket
