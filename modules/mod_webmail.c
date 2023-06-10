@@ -1707,6 +1707,7 @@ static void idle_stop(struct ws_session *ws, struct imap_client *client)
 		if (res != MAILIMAP_NO_ERROR) {
 			bbs_warning("Failed to stop IDLE: %s\n", maildriver_strerror(res));
 			client->idling = 0;
+			/* net_ws will convert -1 to the maximum allowed poll time */
 			websocket_set_custom_poll_fd(ws, -1, -1);
 		}
 	}
@@ -1791,9 +1792,12 @@ static int on_poll_timeout(struct ws_session *ws, void *data)
 {
 	struct imap_client *client = data;
 
-	/* Just restart the IDLE before it times out */
-	idle_stop(ws, client);
-	idle_start(ws, client);
+	if (client->idling) {
+		/* Just restart the IDLE before it times out */
+		idle_stop(ws, client);
+		idle_start(ws, client);
+	}
+
 	return 0;
 }
 

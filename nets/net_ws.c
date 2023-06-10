@@ -186,9 +186,9 @@ void websocket_set_custom_poll_fd(struct ws_session *ws, int fd, int pollms)
 	/* After 5 minutes without any ping pong, WebSocket clients will close the connection.
 	 * (At least, Chromium will.)
 	 * So ping at least as frequently as just under every 5 minutes. */
-	if (pollms > MAX_WEBSOCKET_POLL_MS) {
-		bbs_warning("Poll timeout truncated to %d\n", MAX_WEBSOCKET_POLL_MS);
-		pollms = MAX_WEBSOCKET_POLL_MS;
+	if (pollms > MAX_WEBSOCKET_POLL_MS - SEC_MS(5) || pollms < 0) {
+		bbs_warning("Poll timeout truncated to %d\n", MAX_WEBSOCKET_POLL_MS - SEC_MS(5));
+		pollms = MAX_WEBSOCKET_POLL_MS - SEC_MS(5);
 	}
 	ws->pollms = pollms;
 }
@@ -778,7 +778,8 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 	ws.http = http;
 	ws.data = NULL;
 	ws.pollfd = -1;
-	ws.pollms = -1;
+	/* MAX_WEBSOCKET_POLL_MS is the absolute max. Subtract a few seconds just to be safe, so it's not too close a call. */
+	ws.pollms = MAX_WEBSOCKET_POLL_MS - SEC_MS(5);
 	ws.sessionchecked = 0;
 	memset(&ws.varlist, 0, sizeof(ws.varlist));
 	SET_BITFIELD(ws.proxied, proxied);
