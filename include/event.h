@@ -51,3 +51,6 @@ int bbs_event_broadcast(struct bbs_event *event);
 
 /*! \brief Build and dispatch an event to all event consumers */
 int bbs_event_dispatch(struct bbs_node *node, enum bbs_event_type type);
+
+/*! \brief Same as bbs_event_dispatch, but provide optional custom data, used depending on the type */
+int bbs_event_dispatch_custom(struct bbs_node *node, enum bbs_event_type type, const void *data);

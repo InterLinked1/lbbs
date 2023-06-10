@@ -582,7 +582,7 @@ int bbs_user_authenticate(struct bbs_user *user, const char *username, const cha
 
 	if (do_authenticate(user, username, password)) {
 		/* We don't know the IP address here so we can't log that, but it will be in the logs */
-		bbs_auth("Login attempt rejected for user %s (wrong password)\n", username);
+		bbs_auth("Login attempt rejected for user %s (wrong password)\n", bbs_str_isprint(username) ? username : "[non-printable]");
 		return -1; /* All auth providers rejected the login. */
 	}
 
@@ -667,7 +667,7 @@ int bbs_authenticate(struct bbs_node *node, const char *username, const char *pa
 
 	/* Not a guest, somebody needs to actual verify the username and password. */
 	if (bbs_node_authenticate(node, username, password)) {
-		bbs_event_dispatch(node, EVENT_NODE_LOGIN_FAILED);
+		bbs_event_dispatch_custom(node, EVENT_NODE_LOGIN_FAILED, username);
 		return -1;
 	}
 

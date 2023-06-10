@@ -30,6 +30,7 @@
 #include "include/notify.h"
 #include "include/system.h"
 #include "include/linkedlists.h"
+#include "include/utils.h" /* use bbs_str_isprint */
 
 /* Don't ban private IP addresses, under any circumstances */
 #define IGNORE_LOCAL_NETS
@@ -78,7 +79,7 @@ static void ban_ip(const char *addr)
 #pragma GCC diagnostic pop
 #pragma GCC diagnostic pop
 
-static void process_bad_ip(struct in_addr *addr, const char *straddr, int authfail)
+static void process_bad_ip(struct in_addr *addr, const char *straddr, int authfail, const char *username)
 {
 	int c = 0;
 	struct ip_block *ip, *oldest_offender = NULL;
@@ -143,7 +144,14 @@ static void process_bad_ip(struct in_addr *addr, const char *straddr, int authfa
 
 	/* Treat failed logins much more severely than short sessions */
 	if (authfail) {
+		int bad_username = 0;
+		if (!strlen_zero(username)) {
+			bad_username = !strcmp(username, "root") || !strcmp(username, "shell") || !strcmp(username, "system") || !bbs_str_isprint(username);
+		}
 		ip->authfails++;
+		if (bad_username) { /* 99% sure this is spam, expedite the block */
+			ip->authfails += 4;
+		}
 	} else {
 		ip->authhits++;
 	}
@@ -200,7 +208,7 @@ static int event_cb(struct bbs_event *event)
 			/*! \todo Some protocols probably need to be exempted from this, e.g. Finger, Gopher, HTTP (to some extent), etc.
 			 * For HTTP, if the request is bad, we should send an event, but if it's a successful request, then it's okay. */
 			inet_pton(AF_INET, event->ipaddr, &(sa.sin_addr));
-			process_bad_ip(&sa.sin_addr, event->ipaddr, event->type == EVENT_NODE_LOGIN_FAILED);
+			process_bad_ip(&sa.sin_addr, event->ipaddr, event->type == EVENT_NODE_LOGIN_FAILED, event->username);
 			return 1;
 		case EVENT_USER_REGISTRATION:
 			/* Relatively speaking, it's a pretty big deal whenever a new user registers.

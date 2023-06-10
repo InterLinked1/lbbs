@@ -126,7 +126,13 @@ int bbs_event_broadcast(struct bbs_event *event)
 
 int bbs_event_dispatch(struct bbs_node *node, enum bbs_event_type type)
 {
+	return bbs_event_dispatch_custom(node, type, NULL);
+}
+
+int bbs_event_dispatch_custom(struct bbs_node *node, enum bbs_event_type type, const void *data)
+{
 	struct bbs_event event;
+	const char *username;
 
 	memset(&event, 0, sizeof(event));
 	event.type = type;
@@ -152,6 +158,10 @@ int bbs_event_dispatch(struct bbs_node *node, enum bbs_event_type type)
 			event.nodenum = node->id;
 			if (node->user) {
 				event.userid = node->user->id;
+			}
+			username = data;
+			if (username) {
+				safe_strncpy(event.username, username, sizeof(event.username));
 			}
 			/* Copy over some of the useful node/user information. */
 			safe_strncpy(event.protname, node->protname, sizeof(event.protname));
