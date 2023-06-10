@@ -33,16 +33,17 @@
 #include "include/alertpipe.h"
 #include "include/utils.h"
 
+#ifdef HAVE_OPENSSL
 static char ssl_cert[256] = "";
 static char ssl_key[256] = "";
 
-#ifdef HAVE_OPENSSL
 SSL_CTX *ssl_ctx = NULL;
 #endif
 
 static int ssl_is_available = 0;
 static int ssl_shutting_down = 0;
 
+#ifdef HAVE_OPENSSL
 static pthread_mutex_t *lock_cs = NULL;
 static long *lock_count = NULL;
 
@@ -131,10 +132,12 @@ static void sni_free(struct sni *sni)
 	SSL_CTX_free(sni->ctx);
 	free(sni);
 }
+#endif /* HAVE_OPENSSL */
 
 /*! \todo is there an OpenSSL function for this? */
 const char *ssl_strerror(int err)
 {
+#ifdef HAVE_OPENSSL
 	switch (err) {
 	case SSL_ERROR_NONE:
 		return "SSL_ERROR_NONE";
@@ -157,9 +160,13 @@ const char *ssl_strerror(int err)
 	default:
 		break;
 	}
+#else
+	UNUSED(err);
+#endif /* HAVE_OPENSSL */
 	return "Undefined";
 }
 
+#ifdef HAVE_OPENSSL
 struct ssl_fd {
 	SSL *ssl;
 	int fd;
@@ -584,9 +591,11 @@ static int ssl_servername_cb(SSL *s, int *ad, void *arg)
 	}
 	return SSL_TLSEXT_ERR_OK;
 }
+#endif /* HAVE_OPENSSL */
 
 SSL *ssl_new_accept(int fd, int *rfd, int *wfd)
 {
+#ifdef HAVE_OPENSSL
 	int res;
 	int readfd, writefd;
 	int attempts = 0;
@@ -647,10 +656,17 @@ accept:
 
 	bbs_debug(3, "TLS handshake completed (%s)\n", SSL_get_version(ssl));
 	return ssl;
+#else
+	UNUSED(fd);
+	UNUSED(rfd);
+	UNUSED(wfd);
+	return NULL;
+#endif /* HAVE_OPENSSL */
 }
 
 SSL *ssl_client_new(int fd, int *rfd, int *wfd, const char *snihostname)
 {
+#ifdef HAVE_OPENSSL
 	SSL *ssl;
 	SSL_CTX *ctx;
 	X509 *server_cert;
@@ -747,20 +763,29 @@ connect:
 	return ssl;
 
 sslcleanup:
-#ifdef HAVE_OPENSSL
 	SSL_CTX_free(ctx);
 	SSL_free(ssl);
 	ctx = NULL;
 	ssl = NULL;
-#endif
+#else
+	UNUSED(fd);
+	UNUSED(rfd);
+	UNUSED(wfd);
+	UNUSED(snihostname);
+#endif /* HAVE_OPENSSL */
 	return NULL;
 }
 
 int ssl_close(SSL *ssl)
 {
+#ifdef HAVE_OPENSSL
 	int res = ssl_unregister_fd(ssl);
 	SSL_free(ssl);
 	return res;
+#else
+	UNUSED(ssl);
+	return -1;
+#endif /* HAVE_OPENSSL */
 }
 
 int ssl_available(void)
@@ -768,6 +793,7 @@ int ssl_available(void)
 	return ssl_is_available;
 }
 
+#ifdef HAVE_OPENSSL
 static SSL_CTX *tls_ctx_create(const char *cert, const char *key)
 {
 	const SSL_METHOD *method = TLS_server_method();
@@ -873,6 +899,7 @@ static int setup_ssl_io(void)
 	}
 	return 0;
 }
+#endif /* HAVE_OPENSSL */
 
 int ssl_server_init(void)
 {
@@ -909,8 +936,8 @@ void ssl_server_shutdown(void)
 	bbs_pthread_join(ssl_thread, NULL);
 	bbs_alertpipe_close(ssl_alert_pipe);
 	ssl_cleanup_fds();
-#endif
 	if (ssl_is_available) {
 		lock_cleanup();
 	}
+#endif
 }
