@@ -330,14 +330,13 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 
 			/* At this point, we'll have to do a lazy open again. If that fails, then really give up. */
 			mod = load_dlopen(resource_in, so_ext, fn, RTLD_LAZY | RTLD_LOCAL, suppress_logging);
-			if (mod) {
+			if (mod && mod->info->dependencies) {
 				int res = 0;
 				char dependencies_buf[256];
-				char *dependencies, *dependency;
+				char *dependency, *dependencies = dependencies_buf;
 				safe_strncpy(dependencies_buf, mod->info->dependencies, sizeof(dependencies_buf));
 				logged_dlclose(resource_in, mod->lib);
 				free(mod);
-				dependencies = dependencies_buf;
 				while ((dependency = strsep(&dependencies, ","))) {
 					if (!find_resource(dependency)) { /* It's not loaded already. */
 						int mres;

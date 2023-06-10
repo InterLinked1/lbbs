@@ -826,7 +826,7 @@ static int check_menus(void)
 				bbs_warning("Menu handler '%s' requires arguments, missing for %s => %c: %s\n", handler_name, menu->name, menuitem->opt, menuitem->action);
 			} else {
 				/* XXX I don't fully like that these handlers are hardcoded here like this, but this is fine for now */
-				if (!egress_possible && (!strcmp(menuitem->action, "quit") || !strcmp(menuitem->action, "forcequit") || !strcmp(menuitem->action, "return"))) {
+				if (!egress_possible && (!strcmp(menuitem->action, "quit") || !strcmp(menuitem->action, "fastquit") || !strcmp(menuitem->action, "return"))) {
 					egress_possible = 1;
 				} else if (!strcmp(handler_name, "menu")) {
 					/* If it's a menu, make the menu it references actually exists. */

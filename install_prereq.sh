@@ -46,6 +46,7 @@ scripts/libwss.sh
 
 # libetpan (mod_webmail): the package no longer suffices, since we patch the source.
 # apt-get install -y libetpan-dev
+apt-get install -y automake libtool
 scripts/libetpan.sh
 
 # doxygen only:
