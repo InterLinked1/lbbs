@@ -1103,4 +1103,4 @@ static int load_module(void)
 	return res ? unload_module() : res;
 }
 
-BBS_MODULE_INFO_FLAGS_DEPENDENT("WebSocket Server", MODFLAG_GLOBAL_SYMBOLS, "mod_http.so");
+BBS_MODULE_INFO_FLAGS_DEPENDENT("WebSocket Server", MODFLAG_GLOBAL_SYMBOLS, "mod_http.so,net_http.so");

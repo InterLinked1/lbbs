@@ -666,6 +666,98 @@ cleanup:
 	return res;
 }
 
+static enum http_response_code set_session(struct http_session *http)
+{
+	bbs_test_assert_equals(0, http_session_start(http, 0));
+	bbs_test_assert_equals(0, http_session_set_var(http, "foo", "bar"));
+	bbs_test_assert_str_exists_equals(http_session_var(http, "foo"), "bar"); /* We just set it, it better still be there */
+
+	return HTTP_OK;
+
+cleanup:
+	return HTTP_INTERNAL_SERVER_ERROR;
+}
+
+static enum http_response_code get_session(struct http_session *http)
+{
+	bbs_test_assert_equals(0, http_session_start(http, 0));
+	/* Completely separate HTTP request. Session var should still be there. */
+	bbs_test_assert_str_exists_equals(http_session_var(http, "foo"), "bar");
+
+	return HTTP_OK;
+
+cleanup:
+	return HTTP_INTERNAL_SERVER_ERROR;
+}
+
+static int test_http_session(void)
+{
+	int mres, res = -1;
+	char buf[256];
+	char urlstr[84];
+	struct bbs_url url;
+	struct bbs_tcp_client client;
+
+	struct http_route_uri tests[] = {
+		{ NULL, DEFAULT_TEST_HTTP_PORT, "/sessionset", HTTP_METHOD_GET, set_session },
+		{ NULL, DEFAULT_TEST_HTTP_PORT, "/sessionget", HTTP_METHOD_GET, get_session },
+	};
+	mres = register_uris(tests, ARRAY_LEN(tests));
+	bbs_test_assert_equals(mres, 0);
+
+	memset(&url, 0, sizeof(url));
+	memset(&client, 0, sizeof(client));
+
+	/* localhost might try ::1 before 127.0.0.1, so be explicit here: */
+	snprintf(urlstr, sizeof(urlstr), "http://127.0.0.1:%u", DEFAULT_TEST_HTTP_PORT);
+	mres = bbs_parse_url(&url, urlstr);
+	bbs_test_assert_equals(mres, 0);
+	mres = bbs_tcp_client_connect(&client, &url, 0, buf, sizeof(buf));
+	bbs_test_assert_equals(mres, 0);
+
+	/* We make the HTTP requests manually, instead of using bbs_curl_get,
+	 * because the BBS's libcurl interface doesn't support cookies currently,
+	 * and honestly, probably doesn't need to since that wouldn't be useful
+	 * for much else. */
+
+	SWRITE(client.wfd,
+		"GET /sessionset HTTP/1.1\r\n"
+		"Host: localhost:58280\r\n"
+		"\r\n");
+
+	mres = bbs_tcp_client_expect(&client, "\r\n", 1, SEC_MS(1), "200 OK");
+	bbs_test_assert_equals(mres, 0);
+
+	mres = bbs_tcp_client_expect(&client, "\r\n", 10, SEC_MS(1), "Set-Cookie:"); /* By the time headers are all received, should get */
+	bbs_test_assert_equals(mres, 0);
+
+	/* Extract the cookie from the buf */
+	bbs_strterm(buf, ';'); /* Don't echo the attributes back */
+	bbs_debug(3, "Cookie => %s\n", buf);
+
+	/* Close the connection so that we have a separate HTTP client on the server side */
+	bbs_tcp_client_cleanup(&client);
+	mres = bbs_tcp_client_connect(&client, &url, 0, buf, sizeof(buf));
+	bbs_test_assert_equals(mres, 0);
+
+	/* Send the cookie back */
+	SWRITE(client.wfd,
+		"GET /sessionget HTTP/1.1\r\n"
+		"Host: localhost:58280\r\n");
+	write(client.wfd, buf + 4, strlen(buf + 4));
+	SWRITE(client.wfd, "\r\n\r\n");
+
+	mres = bbs_tcp_client_expect(&client, "\r\n", 1, SEC_MS(1), "200 OK");
+	bbs_test_assert_equals(mres, 0);
+
+	res = 0;
+
+cleanup:
+	bbs_tcp_client_cleanup(&client);
+	unregister_uris(tests, ARRAY_LEN(tests));
+	return res;
+}
+
 static struct bbs_unit_test tests[] =
 {
 	{ "HTTP GET Basic", test_http_get_basic },
@@ -676,6 +768,7 @@ static struct bbs_unit_test tests[] =
 	{ "HTTP GET Range Single", test_http_range_single },
 	{ "HTTP GET Range Multiple", test_http_range_multiple },
 	{ "HTTP Websocket Upgrade", test_http_websocket_upgrade },
+	{ "HTTP Sessions", test_http_session },
 };
 
 static int unload_module(void)

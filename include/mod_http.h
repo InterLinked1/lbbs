@@ -86,6 +86,8 @@ struct post_field {
 
 RWLIST_HEAD(post_fields, post_field);
 
+struct session;
+
 struct http_request {
 	enum http_method method;
 	enum http_version version;
@@ -96,6 +98,7 @@ struct http_request {
 	struct bbs_vars cookies;
 	struct bbs_vars queryparams;	/*!< Query parameters in the GET URI */
 	struct post_fields postfields;	/*!< Parameters in the POST body */
+	struct session *session;
 	char *username;			/*!< Basic Authentication username (not necessarily authenticated, check http->node->user for that) */
 	unsigned char *body;
 	struct tm modsince;
@@ -196,6 +199,49 @@ const char *http_request_header(struct http_session *http, const char *header);
  */
 const char *http_get_cookie(struct http_session *http, const char *cookie);
 
+/*!
+ * \brief Set an HTTP cookie
+ * \param http
+ * \param name Cookie name
+ * \param value Cookie value
+ * \param secure Whether the cookie will only be accessible on secure connections
+ * \param maxage Number of seconds for which cookie should be valid
+ */
+int http_set_cookie(struct http_session *http, const char *name, const char *value, int secure, int maxage);
+
+/*! \brief Regenerate Session ID (to prevent session fixation) */
+int http_session_regenerate(struct http_session *http);
+
+/*! \brief Destroy (end) a session */
+int http_session_destroy(struct http_session *http);
+
+/*!
+ * \brief Start a session
+ * \param http
+ * \param secure Whether the session should only be accessible for secure connections
+ * \retval 0 on success, -1 on failure
+ */
+int http_session_start(struct http_session *http, int secure);
+
+/*!
+ * \brief Get a session variable
+ * \param http
+ * \param name Name of session variable
+ * \return NULL it no session or variable not found
+ * \return Session variable
+ * \warning The returned variable is not protected
+ */
+const char *http_session_var(struct http_session *http, const char *name);
+
+/*!
+ * \brief Set a session variable
+ * \param http
+ * \param name Name of session variable
+ * \param value
+ * \retval 0 on success, -1 on failure
+ */
+int http_session_set_var(struct http_session *http, const char *name, const char *value);
+
 /*! \brief Whether a websocket upgrade was requested by the client */
 int http_websocket_upgrade_requested(struct http_session *http);
 
@@ -261,12 +307,14 @@ void http_set_default_https_port(int port);
 /*!
  * \brief Get the default HTTP application port
  * \retval HTTP application port, or -1 if not configured
+ * \note Modules that use this function must explicitly have a dependency on net_http (the module that sets these ports)
  */
 int http_get_default_http_port(void);
 
 /*!
  * \brief Get the default HTTPS application port
  * \retval HTTPS application port, or -1 if not configured
+ * \note Modules that use this function must explicitly have a dependency on net_http (the module that sets these ports)
  */
 int http_get_default_https_port(void);
 

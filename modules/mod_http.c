@@ -50,6 +50,7 @@
 #include "include/variables.h"
 #include "include/base64.h"
 #include "include/hash.h"
+#include "include/crypt.h"
 
 #include "include/mod_http.h"
 
@@ -115,8 +116,20 @@ struct http_listener {
 	RWLIST_ENTRY(http_listener) entry;
 };
 
+#define SESSION_ID_LENGTH 48
+
+struct session {
+	char sessid[SESSION_ID_LENGTH + 1];	/*!< Session ID (may change) */
+	struct bbs_vars vars;				/*!< Session variables */
+	int created;						/*!< Session creation time */
+	RWLIST_ENTRY(session) entry;		/*!< Next session */
+	unsigned int usecount;				/*!< Number of clients using this session */
+	unsigned int secure:1;				/*!< Session only used securely? */
+};
+
 static RWLIST_HEAD_STATIC(listeners, http_listener);
 static RWLIST_HEAD_STATIC(routes, http_route);
+static RWLIST_HEAD_STATIC(sessions, session);
 
 #define http_send_header(http, fmt, ...) \
 	dprintf(http->wfd, fmt, ## __VA_ARGS__); \
@@ -464,6 +477,22 @@ static void postfield_free(struct post_field *p)
 	free(p);
 }
 
+static void session_free(struct session *sess)
+{
+	/* It's assumed that all clients have been kicked at this point
+	 * and are not using the session. */
+	bbs_vars_destroy(&sess->vars);
+	free(sess);
+}
+
+static void session_decref(struct session *sess)
+{
+	RWLIST_WRLOCK(&sessions);
+	--sess->usecount;
+	/* Don't remove it if the use count hits 0 (think about it: that would be stupid) */
+	RWLIST_UNLOCK(&sessions);
+}
+
 void http_request_cleanup(struct http_request *req)
 {
 	free_if(req->uri);
@@ -472,6 +501,9 @@ void http_request_cleanup(struct http_request *req)
 	bbs_vars_destroy(&req->headers); /* In case headers were never sent? */
 	bbs_vars_destroy(&req->cookies);
 	bbs_vars_destroy(&req->queryparams);
+	if (req->session) {
+		session_decref(req->session);
+	}
 	RWLIST_REMOVE_ALL(&req->postfields, entry, postfield_free);
 	free_if(req->body);
 }
@@ -1221,6 +1253,227 @@ const char *http_request_header(struct http_session *http, const char *header)
 const char *http_get_cookie(struct http_session *http, const char *cookie)
 {
 	return bbs_var_find(&http->req->cookies, cookie);
+}
+
+int http_set_cookie(struct http_session *http, const char *name, const char *value, int secure, int maxage)
+{
+	char cookiebuf[1024];
+	int len;
+
+	/*
+	 * Cookie attributes are ; separated:
+	 * Domain= Top-level domain to which cookie will be sent (including subdomains). Default is only current domain.
+	 * Expires= Date at which cookie will expire.
+	 * HttpOnly Forbid JavaScript access.
+	 * Max-Age= Number of seconds until cookie expiration. <= 0 will expire immediately.
+	 * Partitioned
+	 * Path= Required URL prefix for cookie to be sent
+	 * SameSite=[Strict|Lax|None] Cross-site request control
+	 * Secure HTTPS-only
+	 */
+	len = snprintf(cookiebuf, sizeof(cookiebuf), "%s=%s; HttpOnly; SameSite=Strict%s", name, value, secure ? "; Secure" : "");
+	if (maxage) {
+		snprintf(cookiebuf + len, sizeof(cookiebuf) - (size_t) len, "; Max-Age=%d", maxage);
+	}
+
+	/*! \todo FIXME Because http_set_header uses variables, this only allows a max of 1 cookie to be set
+	 * We should store cookies in variables internally in the response, then write them out into a header
+	 * when we actually send headers. */
+	if (bbs_var_find_case(&http->res->headers, "Set-Cookie")) {
+		bbs_warning("A cookie has already been set, and multiple cookies are not currently supported\n");
+		return -1;
+	}
+	return http_set_header(http, "Set-Cookie", cookiebuf);
+}
+
+/* Could prefix with __Secure if it should be accessible only secure */
+static char session_cookie_name[] = "HTTPSESSID";
+static char session_cookie_name_secure[] = "__Secure-HTTPSESSID";
+static int session_duration = 7200; /* 2 hours */
+
+static struct session *http_session_find(const char *sessid)
+{
+	struct session *sess;
+	int expired_threshold = (int) time(NULL) - session_duration;
+
+	RWLIST_WRLOCK(&sessions);
+	/* First, purge any expired sessions that aren't in use */
+	RWLIST_TRAVERSE_SAFE_BEGIN(&sessions, sess, entry) {
+		if (!sess->usecount && sess->created < expired_threshold) {
+			bbs_debug(4, "Purging session %s (too old)\n", sess->sessid);
+			RWLIST_REMOVE_CURRENT(entry);
+			free(sess);
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+
+	/* Now, look up the session. It's still not valid if it's expired. */
+	RWLIST_TRAVERSE(&sessions, sess, entry) {
+		if (!strcmp(sessid, sess->sessid)) {
+			if (sess->created >= expired_threshold) {
+				sess->usecount++;
+				break;
+			}
+		}
+	}
+	RWLIST_UNLOCK(&sessions);
+	if (!sess) {
+		/* Since sessions are stored entirely in memory, and are not persisted to disk,
+		 * likely from a previous instance of the BBS. */
+		bbs_debug(5, "No session found with session ID: %s\n", sessid);
+	}
+	return sess;
+}
+
+static struct session *http_session_set(struct http_session *http, int secure, int update)
+{
+	struct session *sess;
+	char sessid[SESSION_ID_LENGTH];
+
+	if (bbs_rand_alnum(sessid, sizeof(sessid))) {
+		return NULL;
+	}
+
+	RWLIST_WRLOCK(&sessions);
+	RWLIST_TRAVERSE(&sessions, sess, entry) {
+		if (!strcmp(sessid, sess->sessid)) {
+			break;
+		}
+	}
+	if (sess) {
+		RWLIST_UNLOCK(&sessions);
+		bbs_error("Created duplicate session ID %s?\n", sessid);
+		return NULL;
+	}
+
+	if (update) {
+		/* Find the existing session. */
+		RWLIST_TRAVERSE(&sessions, sess, entry) {
+			if (sess == http->req->session) {
+				break;
+			}
+		}
+#if 1
+		if (!sess) {
+			RWLIST_UNLOCK(&sessions);
+			bbs_error("Can't update session (no session currently exists)\n");
+			return NULL;
+		}
+#endif
+	}
+	if (!sess) {
+		sess = calloc(1, sizeof(*sess));
+		if (ALLOC_FAILURE(sess)) {
+			RWLIST_UNLOCK(&sessions);
+			return NULL;
+		}
+	}
+
+	strcpy(sess->sessid, sessid); /* Safe */
+
+	if (!update) {
+		RWLIST_INSERT_HEAD(&sessions, sess, entry);
+		sess->usecount += 1;
+		SET_BITFIELD(sess->secure, secure);
+		sess->created = (int) time(NULL);
+	}
+	RWLIST_UNLOCK(&sessions);
+
+	/* Send a cookie to the client */
+	http_set_cookie(http, secure ? session_cookie_name_secure : session_cookie_name, sessid, secure, session_duration);
+
+	return sess; /* refcounted, so safe to return */
+}
+
+/*! \brief Create a new session */
+static struct session *http_session_new(struct http_session *http, int secure)
+{
+	return http_session_set(http, secure, 0);
+}
+
+int http_session_regenerate(struct http_session *http)
+{
+	struct session *sess = http->req->session;
+	if (!sess) {
+		bbs_error("Can't regenerate session (no existing session)\n");
+		return -1;
+	}
+	return http_session_set(http, sess->secure, 1) ? 0 : -1;
+}
+
+int http_session_destroy(struct http_session *http)
+{
+	struct session *sess = http->req->session;
+	if (!sess) {
+		bbs_warning("No session available to destroy\n");
+		return -1;
+	}
+	RWLIST_WRLOCK(&sessions);
+	sess->usecount--;
+	http->req->session = NULL;
+	sess->created = -1; /* Too old to ever be valid again. It'll get cleaned up when possible. Maybe now! */
+	if (!sess->usecount) {
+		struct session *s;
+		RWLIST_TRAVERSE_SAFE_BEGIN(&sessions, s, entry) {
+			if (sess == s) {
+				RWLIST_REMOVE_CURRENT(entry);
+				break;
+			}
+		}
+		RWLIST_TRAVERSE_SAFE_END;
+		if (!s) {
+			bbs_warning("Couldn't find session in session list?\n");
+		}
+	} else {
+		bbs_debug(3, "Session invalidated, but can't be removed yet (still has usecount %d)\n", sess->usecount);
+	}
+	RWLIST_UNLOCK(&sessions);
+	return 0;
+}
+
+int http_session_start(struct http_session *http, int secure)
+{
+	const char *cookie;
+	struct session *sess = NULL;
+
+	cookie = secure ? http_get_cookie(http, session_cookie_name_secure) : http_get_cookie(http, session_cookie_name);
+	if (cookie) {
+		sess = http_session_find(cookie);
+	}
+	if (!sess) {
+		if (cookie) {
+			bbs_verb(5, "Client had an expired session, starting a new session\n");
+		} else {
+			bbs_verb(5, "Client did not send a session cookie, starting a new session\n");
+		}
+		sess = http_session_new(http, secure);
+	}
+	http->req->session = sess;
+	if (!sess) {
+		bbs_warning("Failed to create or find session\n");
+		return -1;
+	}
+	return 0;
+}
+
+const char *http_session_var(struct http_session *http, const char *name)
+{
+	struct session *sess = http->req->session;
+	if (!sess) {
+		bbs_warning("No session is currently active\n");
+		return NULL;
+	}
+	return bbs_var_find(&sess->vars, name);
+}
+
+int http_session_set_var(struct http_session *http, const char *name, const char *value)
+{
+	struct session *sess = http->req->session;
+	if (!sess) {
+		bbs_warning("No session is currently active\n");
+		return -1;
+	}
+	return bbs_varlist_append(&sess->vars, name, value); /* Add or replace session var */
 }
 
 static struct http_route *find_route(unsigned short int port, const char *hostname, const char *uri, enum http_method method, int *methodmismatch, unsigned short int *secureport)
@@ -2427,6 +2680,8 @@ static int load_module(void)
 
 static int unload_module(void)
 {
+	/* Remove any lingering sessions */
+	RWLIST_REMOVE_ALL(&sessions, entry, session_free);
 	return 0;
 }
 
