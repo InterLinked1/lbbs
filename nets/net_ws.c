@@ -41,7 +41,6 @@
 
 #include <wss.h> /* libwss */
 
-static int http_port = 0, https_port = 0;
 static int ws_port = 0, wss_port = 0;
 static char *allowed_origins = NULL;
 static char phpsessdir[PATH_MAX] = "";
@@ -1017,54 +1016,44 @@ static void *__ws_handler(void *varg)
 static int load_config(void)
 {
 	struct bbs_config *cfg;
+	struct bbs_config_section *section = NULL;
 
-	cfg = bbs_config_load("net_http.conf", 0);
-	if (cfg) {
-		int http_enabled = 0, https_enabled = 0;
-		bbs_config_val_set_true(cfg, "http", "enabled", &http_enabled);
-		if (http_enabled) {
-			bbs_config_val_set_port(cfg, "http", "port", &http_port);
-		}
-		bbs_config_val_set_true(cfg, "https", "enabled", &https_enabled);
-		if (https_enabled) {
-			bbs_config_val_set_port(cfg, "https", "port", &https_port);
-		}
-	}
 	cfg = bbs_config_load("net_ws.conf", 0);
-	if (cfg) {
-		struct bbs_config_section *section = NULL;
-		bbs_config_val_set_path(cfg, "sessions", "phpsessdir", phpsessdir, sizeof(phpsessdir));
-		bbs_config_val_set_str(cfg, "sessions", "phpsessname", phpsessname, sizeof(phpsessname));
-		bbs_config_val_set_str(cfg, "sessions", "phpsessprefix", phpsessprefix, sizeof(phpsessprefix));
-		bbs_config_val_set_port(cfg, "ws", "port", &ws_port);
-		bbs_config_val_set_port(cfg, "wss", "port", &wss_port);
-		while ((section = bbs_config_walk(cfg, section))) {
-			/* Already processed */
-			if (!strcmp(bbs_config_section_name(section), "sessions")) {
-				continue;
-			} else if (!strcmp(bbs_config_section_name(section), "ws") || !strcmp(bbs_config_section_name(section), "wss")) {
-				continue;
-			}
+	if (!cfg) {
+		return -1;
+	}
 
-			if (!strcmp(bbs_config_section_name(section), "origins")) {
-				struct bbs_keyval *keyval = NULL;
-				struct dyn_str origins;
-				int numorigins = 0;
-				memset(&origins, 0, sizeof(origins));
-				while ((keyval = bbs_config_section_walk(section, keyval))) {
-					const char *host = bbs_keyval_key(keyval);
-					dyn_str_append(&origins, ",", STRLEN(","));
-					dyn_str_append(&origins, host, strlen(host));
-					numorigins++;
-				}
-				if (numorigins) {
-					dyn_str_append(&origins, ",", STRLEN(","));
-					/* Now every value is surrounded by commas, including the first and last (makes it easy to use strstr) */
-					allowed_origins = origins.buf;
-				}
-			} else {
-				bbs_warning("Unknown section name, ignoring: %s\n", bbs_config_section_name(section));
+	bbs_config_val_set_path(cfg, "sessions", "phpsessdir", phpsessdir, sizeof(phpsessdir));
+	bbs_config_val_set_str(cfg, "sessions", "phpsessname", phpsessname, sizeof(phpsessname));
+	bbs_config_val_set_str(cfg, "sessions", "phpsessprefix", phpsessprefix, sizeof(phpsessprefix));
+	bbs_config_val_set_port(cfg, "ws", "port", &ws_port);
+	bbs_config_val_set_port(cfg, "wss", "port", &wss_port);
+	while ((section = bbs_config_walk(cfg, section))) {
+		/* Already processed */
+		if (!strcmp(bbs_config_section_name(section), "sessions")) {
+			continue;
+		} else if (!strcmp(bbs_config_section_name(section), "ws") || !strcmp(bbs_config_section_name(section), "wss")) {
+			continue;
+		}
+
+		if (!strcmp(bbs_config_section_name(section), "origins")) {
+			struct bbs_keyval *keyval = NULL;
+			struct dyn_str origins;
+			int numorigins = 0;
+			memset(&origins, 0, sizeof(origins));
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				const char *host = bbs_keyval_key(keyval);
+				dyn_str_append(&origins, ",", STRLEN(","));
+				dyn_str_append(&origins, host, strlen(host));
+				numorigins++;
 			}
+			if (numorigins) {
+				dyn_str_append(&origins, ",", STRLEN(","));
+				/* Now every value is surrounded by commas, including the first and last (makes it easy to use strstr) */
+				allowed_origins = origins.buf;
+			}
+		} else {
+			bbs_warning("Unknown section name, ignoring: %s\n", bbs_config_section_name(section));
 		}
 	}
 	if (!allowed_origins) {
@@ -1100,11 +1089,11 @@ static int load_module(void)
 	bbs_register_tests(tests);
 
 	/* XXX Need to register all routes? */
-	if (http_port) {
-		res |= http_register_insecure_route("/ws", (unsigned short int) http_port, NULL, HTTP_METHOD_GET, ws_proxy_handler);
+	if (http_get_default_http_port() != -1) {
+		res |= http_register_insecure_route("/ws", (unsigned short int) http_get_default_http_port(), NULL, HTTP_METHOD_GET, ws_proxy_handler);
 	}
-	if (https_port) {
-		res |= http_register_secure_route("/ws", (unsigned short int) https_port, NULL, HTTP_METHOD_GET, ws_proxy_handler);
+	if (http_get_default_https_port() != -1) {
+		res |= http_register_secure_route("/ws", (unsigned short int) http_get_default_https_port(), NULL, HTTP_METHOD_GET, ws_proxy_handler);
 	}
 	if (res) {
 		return unload_module();

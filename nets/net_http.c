@@ -135,6 +135,8 @@ static int unload_module(void)
 {
 	http_unregister_route(default_handler);
 	http_unregister_route(home_dir_handler);
+	http_set_default_http_port(-1);
+	http_set_default_https_port(-1);
 	return 0;
 }
 
@@ -147,10 +149,12 @@ static int load_module(void)
 	if (http_enabled) {
 		res |= http_register_insecure_route(NULL, (unsigned short int) http_port, NULL, HTTP_METHOD_HEAD | HTTP_METHOD_GET | HTTP_METHOD_POST, default_handler);
 		res |= http_register_insecure_route(NULL, (unsigned short int) http_port, "/~", HTTP_METHOD_HEAD | HTTP_METHOD_GET, home_dir_handler);
+		http_set_default_http_port(http_port);
 	}
 	if (https_enabled) {
 		res |= http_register_secure_route(NULL, (unsigned short int) https_port, NULL, HTTP_METHOD_HEAD | HTTP_METHOD_GET | HTTP_METHOD_POST, default_handler);
 		res |= http_register_secure_route(NULL, (unsigned short int) https_port, "/~", HTTP_METHOD_HEAD | HTTP_METHOD_GET, home_dir_handler);
+		http_set_default_https_port(https_port);
 	}
 	return res ? unload_module() : res;
 }

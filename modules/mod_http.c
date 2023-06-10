@@ -2306,6 +2306,29 @@ static void unref_listener(unsigned short int port)
 	}
 }
 
+static int http_default_port = -1;
+static int https_default_port = -1;
+
+void http_set_default_http_port(int port)
+{
+	http_default_port = port;
+}
+
+void http_set_default_https_port(int port)
+{
+	https_default_port = port;
+}
+
+int http_get_default_http_port(void)
+{
+	return http_default_port;
+}
+
+int http_get_default_https_port(void)
+{
+	return https_default_port;
+}
+
 int __http_register_route(const char *hostname, unsigned short int port, unsigned int secure, const char *prefix, enum http_method methods, enum http_response_code (*handler)(struct http_session *http), void *mod)
 {
 	size_t hostlen, prefixlen;

@@ -246,6 +246,30 @@ enum http_response_code http_cgi(struct http_session *http, const char *filename
  */
 enum http_response_code http_serve_static_or_cgi(struct http_session *http, const char *uri, const char *docroot, int dirlist, int cgi, const char *cgiext);
 
+/*!
+ * \brief Set the default HTTP application port
+ * \param port Non-negative default port for HTTP, or -1 if not configured
+ */
+void http_set_default_http_port(int port);
+
+/*!
+ * \brief Set the default HTTPS application port
+ * \param port Non-negative default port for HTTPS, or -1 if not configured
+ */
+void http_set_default_https_port(int port);
+
+/*!
+ * \brief Get the default HTTP application port
+ * \retval HTTP application port, or -1 if not configured
+ */
+int http_get_default_http_port(void);
+
+/*!
+ * \brief Get the default HTTPS application port
+ * \retval HTTPS application port, or -1 if not configured
+ */
+int http_get_default_https_port(void);
+
 #define http_register_insecure_route(hostname, port, prefix, methods, handler) http_register_route(hostname, port, 0, prefix, methods, handler)
 #define http_register_secure_route(hostname, port, prefix, methods, handler) http_register_route(hostname, port, 1, prefix, methods, handler)
 #define http_register_route(hostname, port, secure, prefix, methods, handler) __http_register_route(hostname, port, secure, prefix, methods, handler, BBS_MODULE_SELF)
