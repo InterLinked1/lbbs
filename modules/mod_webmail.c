@@ -126,13 +126,8 @@ static int client_status_command(struct imap_client *client, struct mailimap *im
 				json_object_set_new(folder, "unseen", json_integer(status_info->st_value));
 				break;
 			case MAILIMAP_STATUS_ATT_UIDNEXT:
-				json_object_set_new(folder, "uidnext", json_integer(status_info->st_value));
-				break;
 			case MAILIMAP_STATUS_ATT_UIDVALIDITY:
-				json_object_set_new(folder, "uidvalidity", json_integer(status_info->st_value));
-				break;
 			case MAILIMAP_STATUS_ATT_HIGHESTMODSEQ:
-				json_object_set_new(folder, "highestmodseq", json_integer(status_info->st_value));
 				break;
 			case MAILIMAP_STATUS_ATT_SIZE:
 				json_object_set_new(folder, "size", json_integer(status_info->st_value));
@@ -289,43 +284,49 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 			uint32_t total;
 			/* STATUS: ideally we could get all the details we want from a single STATUS command. */
 			if (!client_status_command(client, imap, name, folder, &total)) {
-				if (!client->has_status_size && total > 0) { /* Lacks RFC 8438 support */
-					/* Do it the manual way. */
+				if (!client->has_status_size) { /* Lacks RFC 8438 support */
 					uint32_t size = 0;
-					struct mailimap_fetch_type *fetch_type;
-					struct mailimap_fetch_att *fetch_att;
-					clist *fetch_result;
-					struct mailimap_set *set = mailimap_set_new_interval(1, 0); /* fetch in interval 1:* */
+					if (total > 0) {
+						/* Do it the manual way. */
+						struct mailimap_fetch_type *fetch_type;
+						struct mailimap_fetch_att *fetch_att;
+						clist *fetch_result;
+						struct mailimap_set *set = mailimap_set_new_interval(1, 0); /* fetch in interval 1:* */
 
-					bbs_debug(2, "IMAP server does not support RFC 8438. Manually calculating mailbox size for %s\n", name);
-					/* Must SELECT mailbox */
-					res = mailimap_select(imap, name);
-					if (res != MAILIMAP_NO_ERROR) {
-						bbs_warning("Failed to SELECT mailbox '%s'\n", name);
-					} else {
-						fetch_type = mailimap_fetch_type_new_fetch_att_list_empty();
-						fetch_att = mailimap_fetch_att_new_rfc822_size();
-						mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
-						res = mailimap_fetch(imap, set, fetch_type, &fetch_result);
+						bbs_debug(2, "IMAP server does not support RFC 8438. Manually calculating mailbox size for %s\n", name);
+						/* Must SELECT mailbox */
+						res = mailimap_select(imap, name);
 						if (res != MAILIMAP_NO_ERROR) {
-							bbs_error("Failed to calculate size of mailbox %s: %s\n", name, maildriver_strerror(res));
+							bbs_warning("Failed to SELECT mailbox '%s'\n", name);
 						} else {
-							clistiter *cur2;
-							/* Iterate over each message size */
-							for (cur2 = clist_begin(fetch_result); cur2; cur2 = clist_next(cur2)) {
-								struct mailimap_msg_att *msg_att = clist_content(cur2);
-								size += fetch_size(msg_att);
+							fetch_type = mailimap_fetch_type_new_fetch_att_list_empty();
+							fetch_att = mailimap_fetch_att_new_rfc822_size();
+							mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
+							res = mailimap_fetch(imap, set, fetch_type, &fetch_result);
+							if (res != MAILIMAP_NO_ERROR) {
+								bbs_error("Failed to calculate size of mailbox %s: %s\n", name, maildriver_strerror(res));
+							} else {
+								clistiter *cur2;
+								/* Iterate over each message size */
+								for (cur2 = clist_begin(fetch_result); cur2; cur2 = clist_next(cur2)) {
+									struct mailimap_msg_att *msg_att = clist_content(cur2);
+									size += fetch_size(msg_att);
+								}
+								mailimap_fetch_list_free(fetch_result);
+								mailimap_fetch_type_free(fetch_type);
 							}
-							mailimap_fetch_list_free(fetch_result);
-							mailimap_fetch_type_free(fetch_type);
+							/* UNSELECT the mailbox, since we weren't supposed to do this.
+							 * XXX If a mailbox was previously selected, after we're done with all this,
+							 * reselect that one. */
+							needunselect = 1;
 						}
-						/* UNSELECT the mailbox, since we weren't supposed to do this.
-						 * XXX If a mailbox was previously selected, after we're done with all this,
-						 * reselect that one. */
-						needunselect = 1;
+						mailimap_set_free(set);
 					}
-					mailimap_set_free(set);
 					json_object_set_new(folder, "size", json_integer(size));
+					if (imap->imap_selection_info) {
+						json_object_set_new(folder, "uidvalidity", json_integer(imap->imap_selection_info->sel_uidvalidity));
+						json_object_set_new(folder, "uidnext", json_integer(imap->imap_selection_info->sel_uidnext));
+					}
 				}
 			}
 		}
