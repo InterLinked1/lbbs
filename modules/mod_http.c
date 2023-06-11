@@ -1879,27 +1879,35 @@ static int dir_listing(const char *dir_name, const char *filename, int dir, void
 		*(tmp + 1) = '\0';
 	}
 	/* We need at least 7 characters for the size: potentially 4 numbers + period + decimal digit + suffix */
-	http_writef(http, "<a href='%s/%s%s'>%s</a>%.*s <span>%s</span> <span style='text-align: right;'>%8s</span><br>\r\n",
+	http_writef(http, "<a href='%s%s%s'>%s</a>%.*s <span>%s</span> <span style='text-align: right;'>%8s</span><br>\r\n",
 		http->req->uri, filename, dir ? "/" : "", filename, paddinglen, SPACE_STRING, timebuf, sizebuf);
 	return 0;
 }
 
-#undef SPACE_STRING
-
 static enum http_response_code http_dirlist(struct http_session *http, const char *dirname)
 {
+	/* strlen_zero doesn't like + 1 being passed in with its argument. Must be a pointer with no calculations. */
+	/*! \todo XXX BUGBUG Check the rest of the BBS for strlen_zero calls with calculations - these will not work! */
+	const char *suburi = http->req->uri + 1;
 	/* Dump the directory */
 	bbs_debug(5, "Neither index.html nor index.htm exists, producing a directory listing for %s\n", dirname);
 	http_writef(http, "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 3.2 Final//EN\">");
 	http_writef(http, "<html><head><title>Index of %s</title></head>\r\n", http->req->uri);
 	http_writef(http, "<body><h1>Index of %s</h1>\r\n", http->req->uri);
 	http_writef(http, "<pre>");
-	http_writef(http, "<b>%-80s</b> <b>%-16s</b> <b>%-8s</b>\n", "Name", "Last modified", "Size");
+	http_writef(http, "<b>%-80s</b> <b>%-16s</b> <b>%8s</b>\n", "Name", "Last modified", "Size");
 	http_writef(http, "<hr>");
+	if (!strlen_zero(suburi) && strchr(suburi + 1, '/')) {
+		/* If we're in a subdirectory, provide link to go up one level */
+		http_writef(http, "<a href='%s%s%s'>%s</a>%.*s <span>%s</span> <span style='text-align: right;'>%8s</span><br>\r\n",
+			http->req->uri, "..", "/", "Parent Directory", 80 - (int) STRLEN("Parent Directory"), SPACE_STRING, "", "");
+	}
 	bbs_dir_traverse_items(dirname, dir_listing, http); /* Dump the directory */
 	http_writef(http, "<hr></pre></body></html>");
 	return HTTP_OK;
 }
+
+#undef SPACE_STRING
 
 static int translate_dir_to_file(const char *docroot, const char *uri, int ends_in_slash, struct stat *stptr, char *buf, size_t len, const char *suffix)
 {
