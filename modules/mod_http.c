@@ -240,6 +240,18 @@ int http_set_header(struct http_session *http, const char *header, const char *v
 	return bbs_varlist_append(&http->res->headers, header, value); /* Add or replace header */
 }
 
+enum http_response_code http_redirect_https(struct http_session *http)
+{
+	char full_url[PATH_MAX];
+
+	/* This function must not be called if we're already secure, or we'll just end up in a loop, redirecting to ourself. */
+	bbs_assert(!http->secure);
+
+	snprintf(full_url, sizeof(full_url), "https://%s%s", http->req->host, http->req->uri);
+	http_redirect(http, HTTP_REDIRECT_FOUND, full_url);
+	return HTTP_REDIRECT_FOUND;
+}
+
 int http_redirect(struct http_session *http, enum http_response_code code, const char *location)
 {
 	switch (code) {
@@ -1672,10 +1684,7 @@ static int http_handle_request(struct http_session *http, char *buf)
 	route = find_route(http->node->port, http->req->host, http->req->uri, http->req->method, &methodmismatch, http->req->httpsupgrade ? &secureport : NULL);
 	if (http->req->httpsupgrade && secureport && secureport != http->node->port) {
 		/* Upgrade to the HTTPS version of this page */
-		char full_url[PATH_MAX];
-		snprintf(full_url, sizeof(full_url), "https://%s%s", http->req->host, http->req->uri);
-		http_redirect(http, HTTP_REDIRECT_FOUND, full_url);
-		return HTTP_REDIRECT_FOUND;
+		return http_redirect_https(http);
 	}
 	if (!route) {
 		if (methodmismatch) {

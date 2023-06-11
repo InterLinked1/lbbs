@@ -164,6 +164,14 @@ void http_request_cleanup(struct http_request *req);
 int http_set_header(struct http_session *http, const char *header, const char *value);
 
 /*!
+ * \brief Redirect an HTTP request to the HTTPS version of the site
+ * \param http
+ * \retval HTTP response code to return
+ * \warning This function must NOT be called for HTTPS requests, or it will send the client into a redirect loop
+ */
+enum http_response_code http_redirect_https(struct http_session *http);
+
+/*!
  * \brief Redirect an HTTP client to a new location
  * \param http
  * \param code Redirect response code

@@ -49,6 +49,7 @@ static char http_docroot[256] = "";
 static int http_enabled = 0, https_enabled = 0;
 static int allow_cgi = 0;
 static int authonly = 0;
+static int forcehttps;
 
 /*! \brief Serve static files in users' home directories' public_html directories */
 static enum http_response_code home_dir_handler(struct http_session *http)
@@ -57,7 +58,13 @@ static enum http_response_code home_dir_handler(struct http_session *http)
 	char user_home_dir[PATH_MAX];
 	unsigned int userid;
 	const char *uri;
-	const char *slash, *username = http->req->uri + STRLEN("/~"); /* Guaranteed to be at least length 2 */
+	const char *slash, *username;
+
+	if (!http->secure && forcehttps) {
+		return http_redirect_https(http);
+	}
+
+	username = http->req->uri + STRLEN("/~"); /* Guaranteed to be at least length 2 */
 	if (strlen_zero(username)) {
 		return HTTP_NOT_FOUND;
 	}
@@ -89,6 +96,9 @@ static enum http_response_code home_dir_handler(struct http_session *http)
 /*! \brief Serve static files and CGI scripts in the configured docroot */
 static enum http_response_code default_handler(struct http_session *http)
 {
+	if (!http->secure && forcehttps) {
+		return http_redirect_https(http);
+	}
 	if (authonly && !bbs_user_is_registered(http->node->user)) {
 		return HTTP_UNAUTHORIZED;
 	}
@@ -99,6 +109,8 @@ static int load_config(void)
 {
 	struct bbs_config *cfg;
 
+	forcehttps = ssl_available(); /* Default depends on whether TLS is available. */
+
 	cfg = bbs_config_load("net_http.conf", 0);
 	if (!cfg) {
 		return -1; /* Decline to load if there is no config. */
@@ -106,10 +118,12 @@ static int load_config(void)
 
 	/* General */
 	if (bbs_config_val_set_path(cfg, "general", "docroot", http_docroot, sizeof(http_docroot))) {
+		bbs_warning("No document root is specified, web server will be disabled\n");
 		return -1;
 	}
 	bbs_config_val_set_true(cfg, "general", "cgi", &allow_cgi); /* Allow Common Gateway Interface? */
 	bbs_config_val_set_true(cfg, "general", "authonly", &authonly);
+	bbs_config_val_set_true(cfg, "general", "forcehttps", &forcehttps);
 
 	/* HTTP */
 	bbs_config_val_set_true(cfg, "http", "enabled", &http_enabled);
@@ -120,6 +134,7 @@ static int load_config(void)
 	bbs_config_val_set_port(cfg, "https", "port", &https_port);
 
 	if (!http_enabled && !https_enabled) {
+		bbs_warning("Neither HTTP nor HTTPS is enabled, web server will be disabled\n");
 		return -1; /* Nothing is enabled. */
 	}
 
