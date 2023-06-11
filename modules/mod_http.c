@@ -240,16 +240,27 @@ int http_set_header(struct http_session *http, const char *header, const char *v
 	return bbs_varlist_append(&http->res->headers, header, value); /* Add or replace header */
 }
 
-enum http_response_code http_redirect_https(struct http_session *http)
+enum http_response_code http_redirect_https(struct http_session *http, int port)
 {
 	char full_url[PATH_MAX];
 
 	/* This function must not be called if we're already secure, or we'll just end up in a loop, redirecting to ourself. */
 	bbs_assert(!http->secure);
 
-	snprintf(full_url, sizeof(full_url), "https://%s%s", http->req->host, http->req->uri);
-	http_redirect(http, HTTP_REDIRECT_FOUND, full_url);
-	return HTTP_REDIRECT_FOUND;
+	if (port != 443) {
+		snprintf(full_url, sizeof(full_url), "https://%s:443%s", http->req->host, http->req->uri);
+	} else {
+		snprintf(full_url, sizeof(full_url), "https://%s%s", http->req->host, http->req->uri);
+	}
+	http_redirect(http, HTTP_REDIRECT_PERMANENT, full_url);
+	return HTTP_REDIRECT_PERMANENT;
+}
+
+void http_enable_hsts(struct http_session *http, unsigned int maxage)
+{
+	char buf[256];
+	snprintf(buf, sizeof(buf), "max-age=%u; includeSubDomains; preload", maxage);
+	http_set_header(http, "Strict-Transport-Security", buf);
 }
 
 int http_redirect(struct http_session *http, enum http_response_code code, const char *location)
@@ -1682,9 +1693,9 @@ static int http_handle_request(struct http_session *http, char *buf)
 
 	/* Search for a matching route, before processing the body. */
 	route = find_route(http->node->port, http->req->host, http->req->uri, http->req->method, &methodmismatch, http->req->httpsupgrade ? &secureport : NULL);
-	if (http->req->httpsupgrade && secureport && secureport != http->node->port) {
+	if (!http->secure && http->req->httpsupgrade && secureport && secureport != http->node->port) {
 		/* Upgrade to the HTTPS version of this page */
-		return http_redirect_https(http);
+		return http_redirect_https(http, secureport);
 	}
 	if (!route) {
 		if (methodmismatch) {

@@ -166,10 +166,18 @@ int http_set_header(struct http_session *http, const char *header, const char *v
 /*!
  * \brief Redirect an HTTP request to the HTTPS version of the site
  * \param http
+ * \param port HTTPS port for the application
  * \retval HTTP response code to return
  * \warning This function must NOT be called for HTTPS requests, or it will send the client into a redirect loop
  */
-enum http_response_code http_redirect_https(struct http_session *http);
+enum http_response_code http_redirect_https(struct http_session *http, int port);
+
+/*!
+ * \brief Send a Strict-Transport-Security header to instruct the client to use HSTS
+ * \param http
+ * \param maxage Seconds for max-age attribute (should be greater than 0)
+ */
+void http_enable_hsts(struct http_session *http, unsigned int maxage);
 
 /*!
  * \brief Redirect an HTTP client to a new location

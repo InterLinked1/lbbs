@@ -50,6 +50,7 @@ static int http_enabled = 0, https_enabled = 0;
 static int allow_cgi = 0;
 static int authonly = 0;
 static int forcehttps;
+static unsigned int hsts_max_age = 0;
 
 /*! \brief Serve static files in users' home directories' public_html directories */
 static enum http_response_code home_dir_handler(struct http_session *http)
@@ -61,7 +62,10 @@ static enum http_response_code home_dir_handler(struct http_session *http)
 	const char *slash, *username;
 
 	if (!http->secure && forcehttps) {
-		return http_redirect_https(http);
+		return http_redirect_https(http, https_port);
+	}
+	if (http->secure && hsts_max_age) {
+		http_enable_hsts(http, hsts_max_age);
 	}
 
 	username = http->req->uri + STRLEN("/~"); /* Guaranteed to be at least length 2 */
@@ -97,7 +101,10 @@ static enum http_response_code home_dir_handler(struct http_session *http)
 static enum http_response_code default_handler(struct http_session *http)
 {
 	if (!http->secure && forcehttps) {
-		return http_redirect_https(http);
+		return http_redirect_https(http, https_port);
+	}
+	if (http->secure && hsts_max_age) {
+		http_enable_hsts(http, hsts_max_age);
 	}
 	if (authonly && !bbs_user_is_registered(http->node->user)) {
 		return HTTP_UNAUTHORIZED;
@@ -124,6 +131,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "general", "cgi", &allow_cgi); /* Allow Common Gateway Interface? */
 	bbs_config_val_set_true(cfg, "general", "authonly", &authonly);
 	bbs_config_val_set_true(cfg, "general", "forcehttps", &forcehttps);
+	bbs_config_val_set_uint(cfg, "general", "hsts", &hsts_max_age);
 
 	/* HTTP */
 	bbs_config_val_set_true(cfg, "http", "enabled", &http_enabled);
