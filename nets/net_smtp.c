@@ -99,7 +99,7 @@ static int always_queue = 0;
 static int notify_queue = 0;
 static int require_starttls = 1;
 static int require_starttls_out = 0;
-static int requirefromhelomatch = 1;
+static int requirefromhelomatch = 0;
 static int validatespf = 1;
 static int add_received_msa = 0;
 static int archivelists = 1;
@@ -1658,12 +1658,20 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 
 	memset(&mxservers, 0, sizeof(mxservers));
 	if (lookup_mx_all(domain, &mxservers)) {
-		bbs_error("Recipient domain does not have any MX records: %s\n", domain);
-		/* Just treat as undeliverable at this point and return to sender (if no MX records now, probably won't be any the next time we try) */
-		/* Send a delivery failure response, then delete the file. */
-		bbs_warning("Delivery of message %s from %s to %s has failed permanently (no MX records)\n", fullname, realfrom, realto);
-		return_dead_letter(realfrom, realto, fullname, size, metalen, buf);
-		goto cleanup;
+		char a_ip[256];
+		/* Fall back to trying the A record */
+		if (bbs_resolve_hostname(domain, a_ip, sizeof(a_ip))) {
+			bbs_warning("Recipient domain %s does not have any MX or A records\n", domain);
+			/* Just treat as undeliverable at this point and return to sender (if no MX records now, probably won't be any the next time we try) */
+			/* Send a delivery failure response, then delete the file. */
+			bbs_warning("Delivery of message %s from %s to %s has failed permanently (no MX records)\n", fullname, realfrom, realto);
+			/* There isn't any SMTP level error at this point yet, we have to make our own error message for the bounce message */
+			snprintf(buf, sizeof(buf), "No MX record(s) located for hostname %s", domain);
+			return_dead_letter(realfrom, realto, fullname, size, metalen, buf);
+			goto cleanup;
+		}
+		bbs_warning("Recipient domain %s does not have any MX records, falling back to A record %s\n", domain, a_ip);
+		stringlist_push(&mxservers, a_ip);
 	}
 
 	/* Try all the MX servers in order, if necessary */
@@ -2766,6 +2774,7 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 		if (strlen_zero(from)) {
 			/* Empty MAIL FROM. This means postmaster, i.e. an email that should not be auto-replied to. */
 			/* XXX This does bypass some checks below, but we shouldn't reject such mail. */
+			bbs_debug(5, "MAILFROM is empty\n");
 			smtp->fromlocal = 0;
 			REPLACE(smtp->from, "");
 			smtp_reply(smtp, 250, 2.0.0, "OK");
@@ -2774,7 +2783,7 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 		tmp = strchr(from, '@');
 		REQUIRE_ARGS(tmp); /* Must be user@domain */
 		tmp++; /* Skip @ */
-		if (smtp_domain_matches(bbs_hostname(), tmp)) {
+		if (mail_domain_is_local(tmp)) {
 			/* It's one of our addresses. Authentication is required. */
 			if (!bbs_user_is_registered(smtp->node->user)) {
 				smtp_reply(smtp, 530, 5.7.0, "Authentication required");
