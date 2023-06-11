@@ -250,6 +250,21 @@ static int process_stdout(socket_t fd, int revents, void *userdata)
 	return n;
 }
 
+static void auth_fail(ssh_session session, const char *username)
+{
+	struct bbs_event event;
+
+	/* auth.c won't trigger the EVENT_NODE_LOGIN_FAILED event,
+	 * since that requires a node. Do it manually. */
+	memset(&event, 0, sizeof(event));
+	event.type = EVENT_NODE_LOGIN_FAILED;
+	save_remote_ip(session, NULL, event.ipaddr, sizeof(event.ipaddr));
+	if (!strlen_zero(username)) {
+		safe_strncpy(event.username, username, sizeof(event.username));
+	}
+	bbs_event_broadcast(&event);
+}
+
 #ifdef ALLOW_ANON_AUTH
 static int auth_none(ssh_session session, const char *user, void *userdata)
 {
@@ -276,7 +291,7 @@ static int auth_password(ssh_session session, const char *user, const char *pass
 
 	UNUSED(session);
 
-	bbs_debug(3, "Password authentication attempt for user '%s'\n", user);
+	bbs_debug(3, "Password authentication attempt for user '%s'\n", S_IF(user));
 
 	/* We can't use bbs_authenticate because node doesn't exist yet
 	 * It's not even allocated until pty_request is called...
@@ -287,8 +302,8 @@ static int auth_password(ssh_session session, const char *user, const char *pass
 	 */
 
 	if (strlen_zero(user) || strlen_zero(pass)) {
-		sdata->auth_attempts++;
-		return SSH_AUTH_DENIED;
+		bbs_debug(1, "Empty SSH username or password\n");
+		goto fail;
 	}
 
 	if (!*sdata->user) { /* First attempt? Allocate a user. */
@@ -303,6 +318,9 @@ static int auth_password(ssh_session session, const char *user, const char *pass
 		sdata->authenticated = 1;
 		return SSH_AUTH_SUCCESS;
 	}
+
+fail:
+	auth_fail(session, user);
 
 	sdata->auth_attempts++;
 	return SSH_AUTH_DENIED;
@@ -379,6 +397,7 @@ static int auth_pubkey(ssh_session session, const char *user, struct ssh_key_str
 
 	bbsuser = auth_by_pubkey(user, pubkey);
 	if (!bbsuser) {
+		auth_fail(session, user);
 		return SSH_AUTH_DENIED;
 	}
 
