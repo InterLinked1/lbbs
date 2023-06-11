@@ -3063,6 +3063,7 @@ static void *ping_thread(void *unused)
 		int now, clients = 0;
 		usleep(PING_TIME * 1000); /* convert ms to us */
 
+		bbs_pthread_disable_cancel();
 		now = (int) time(NULL);
 		RWLIST_RDLOCK(&users);
 		RWLIST_TRAVERSE(&users, user, entry) {
@@ -3106,8 +3107,10 @@ static void *ping_thread(void *unused)
 			bbs_module_unload("mod_discord"); /* mod_discord depends on net_irc, so we can't unload while it's loaded. */
 			bbs_module_unload("mod_relay_irc"); /* Ditto */
 			bbs_request_module_unload(file_without_ext, need_restart - 1);
+			bbs_pthread_enable_cancel();
 			break;
 		}
+		bbs_pthread_enable_cancel();
 	}
 	return NULL;
 }

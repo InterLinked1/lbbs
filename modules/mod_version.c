@@ -94,12 +94,11 @@ static void *periodic_tasks(void *unused)
 	 */
 	usleep(5000000);
 	for (;;) {
-		int oldstate;
 		/* Check if a newer version of the BBS is available */
 		/* Only check once a day. */
-		pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate); /* Mainly for unit tests. If thread is cancelled during curl, we'll leak memory */
+		bbs_pthread_disable_cancel();
 		checkver();
-		pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &oldstate);
+		bbs_pthread_enable_cancel();
 		sleep(60 * 60 * 24); /* use sleep instead of usleep since the argument to usleep would overflow an int */
 	}
 	return NULL;

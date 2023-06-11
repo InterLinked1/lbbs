@@ -1426,9 +1426,12 @@ static void *ssh_listener(void *unused)
 
 		/* Blocks until there is a new incoming connection. */
 		if (ssh_bind_accept(sshbind, session) == SSH_ERROR) {
+			bbs_pthread_disable_cancel();
 			bbs_error("%s\n", ssh_get_error(sshbind));
+			bbs_pthread_enable_cancel();
 			continue;
 		}
+		bbs_pthread_disable_cancel();
 		/* Get the IP of the connecting user now, in case authentication never succeeds
 		 * and we never store the IP. */
 		save_remote_ip(session, NULL, ipaddr, sizeof(ipaddr));
@@ -1439,6 +1442,7 @@ static void *ssh_listener(void *unused)
 			ssh_free(session);
 			continue;
 		}
+		bbs_pthread_enable_cancel();
 	}
 	return NULL;
 }

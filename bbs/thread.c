@@ -232,6 +232,20 @@ int bbs_dump_threads(int fd)
 	return 0;
 }
 
+void bbs_pthread_disable_cancel(void)
+{
+	int oldstate;
+	/* In LINUX, it's okay to pass NULL for the 2nd argument, but this is not portable. */
+	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
+}
+
+void bbs_pthread_enable_cancel(void)
+{
+	int oldstate;
+	/* In LINUX, it's okay to pass NULL for the 2nd argument, but this is not portable. */
+	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &oldstate);
+}
+
 int bbs_pthread_cancel_kill(pthread_t thread)
 {
 	int res;

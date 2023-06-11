@@ -44,11 +44,6 @@ static FILE *logfp = NULL;
 static int logstdout = 0;
 static int stdoutavailable = 0;
 
-/*! \brief Mutexes to force serialization of logging to both log file and foreground console.
- * In theory, fprintf should be capable of handling multiple threads interleaving writes,
- * but if nothing else, this cleans up helgrind whining about it a bit. */
-static pthread_mutex_t loglock, termlock;
-
 /*! \brief Pretty printing for verbose log level */
 static int verbose_special_formatting = 1;
 
@@ -114,8 +109,6 @@ int bbs_log_init(int nofork)
 	if (logstdout) {
 		fflush(stdout);
 	}
-	pthread_mutex_init(&loglock, NULL);
-	pthread_mutex_init(&termlock, NULL);
 	return 0;
 }
 
@@ -125,9 +118,7 @@ int bbs_set_stdout_logging(int enabled)
 		bbs_debug(1, "Can't enable logging to stdout when daemonized\n");
 		return -1;
 	}
-	pthread_mutex_lock(&termlock);
 	logstdout = enabled;
-	pthread_mutex_unlock(&termlock);
 	return 0;
 }
 
@@ -206,16 +197,9 @@ int bbs_log_close(void)
 	bbs_assert(logfp != NULL);
 	bbs_debug(1, "Shutting down BBS logger\n");
 
-	pthread_mutex_lock(&loglock);
-	pthread_mutex_lock(&termlock);
 	fclose(logfp);
 	logfp = NULL;
 	logstdout = 0;
-	pthread_mutex_unlock(&loglock);
-	pthread_mutex_unlock(&termlock);
-
-	pthread_mutex_destroy(&loglock);
-	pthread_mutex_destroy(&termlock);
 	return 0;
 }
 
@@ -270,19 +254,17 @@ static const char *verbose_prefix(int level)
 	return NULL;
 }
 
-#define log_puts(msg) pthread_mutex_lock(&loglock); fprintf(logfp, "%s", msg); fflush(logfp); pthread_mutex_unlock(&loglock);
-#define term_puts(msg) pthread_mutex_lock(&termlock); fprintf(stdout, "%s", msg); fflush(stdout); pthread_mutex_unlock(&termlock);
+#define log_puts(msg) fprintf(logfp, "%s", msg); fflush(logfp);
+#define term_puts(msg) fprintf(stdout, "%s", msg); fflush(stdout);
 
 void __attribute__ ((format (gnu_printf, 1, 2))) bbs_printf(const char *fmt, ...)
 {
 	va_list ap;
 
-	pthread_mutex_lock(&termlock);
 	va_start(ap, fmt);
 	vprintf(fmt, ap);
 	va_end(ap);
 	fflush(stdout);
-	pthread_mutex_unlock(&termlock);
 }
 
 void __attribute__ ((format (gnu_printf, 2, 3))) bbs_dprintf(int fd, const char *fmt, ...)
@@ -296,12 +278,10 @@ void __attribute__ ((format (gnu_printf, 2, 3))) bbs_dprintf(int fd, const char 
 		 * and if the fd were changed to not STDOUT_FILENO, we would fall back
 		 * to normal dprintf below.
 		 */
-		pthread_mutex_lock(&termlock);
 		va_start(ap, fmt);
 		vprintf(fmt, ap);
 		va_end(ap);
 		fflush(stdout);
-		pthread_mutex_unlock(&termlock);
 	} else {
 		va_start(ap, fmt);
 		vdprintf(fd, fmt, ap);
@@ -419,13 +399,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 	need_reset = strchr(buf, 27) ? 1 : 0; /* If contains ESC, this could contain a color escape sequence. Reset afterwards. */
 
 	/* Race condition here is fine, but helgrind won't like it: */
-#ifdef HAPPY_HELGRIND
-	pthread_mutex_lock(&termlock);
-#endif
 	log_stdout = logstdout;
-#ifdef HAPPY_HELGRIND
-	pthread_mutex_unlock(&termlock);
-#endif
 
 	if (log_stdout) {
 		struct remote_log_fd *rfd;
@@ -488,10 +462,8 @@ stdoutdone:
 		sprintf(fullbuf, "[%s.%03d] %s[%d]: %s:%d %s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 0), thread_id, file, lineno, func, buf, need_reset ? COLOR_RESET : "");
 	}
 
-	pthread_mutex_lock(&loglock);
 	fwrite(fullbuf, 1, (size_t) bytes, logfp);
 	fflush(logfp);
-	pthread_mutex_unlock(&loglock);
 
 	if (fulldynamic) {
 		free(fullbuf);

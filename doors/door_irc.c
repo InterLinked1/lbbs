@@ -1303,10 +1303,8 @@ static int unload_module(void)
 		while ((p = RWLIST_REMOVE_HEAD(&client->participants, entry))) {
 			/* XXX Because the usecount will be positive if clients are being used, the handling to remove participants may be kind of moot */
 			/* Remove from list, but don't actually free the participant itself. Each node will do that as it leaves. */
-			close(p->chatpipe[1]); /* Close write end of pipe to kick the node from the client */
-			p->chatpipe[1] = -1;
+			bbs_socket_close(&p->chatpipe[1]); /* Close write end of pipe to kick the node from the client */
 		}
-		pthread_cancel(client->thread); /* Kill the relay thread for this client, if it hasn't already exited by now. */
 		bbs_pthread_join(client->thread, NULL);
 		if (client->logfile) {
 			fclose(client->logfile);

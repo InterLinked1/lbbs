@@ -129,7 +129,22 @@ int bbs_append_stuffed_line_message(FILE *fp, const char *line, size_t len);
 /*! \brief Get thread ID of current thread */
 int bbs_gettid(void);
 
-/*! \brief Cancel and kill a thread */
+/*!
+ * \brief Disable cancellability of a thread
+ * \warning This function should be avoided if possible, but must be used if it is needed
+ */
+void bbs_pthread_disable_cancel(void);
+
+/*!
+ * \brief Restore cancellability of a thread
+ */
+void bbs_pthread_enable_cancel(void);
+
+/*!
+ * \brief Cancel and kill a thread
+ * \deprecated
+ * \warning Avoid this function if possible, as threads may not clean up properly if cancelled/killed in the wrong place
+ */
 int bbs_pthread_cancel_kill(pthread_t thread);
 
 int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const char *func, int line);
@@ -285,6 +300,19 @@ int bbs_tcp_connect(const char *hostname, int port);
  * \retval -1 on failure, socket file descriptor otherwise
  */
 int bbs_timed_accept(int socket, int ms, const char *ip);
+
+/*!
+ * \brief Cleanly shutdown and close a socket
+ * \param socket Pointer to socket fd
+ */
+void bbs_socket_close(int *socket);
+
+/*!
+ * \brief Cleanly shutdown and close a socket and an associated listening thread
+ * \param socket Pointer to socket fd
+ * \param thread
+ */
+void bbs_socket_thread_shutdown(int *socket, pthread_t thread);
 
 /*!
  * \brief Listen on a TCP socket

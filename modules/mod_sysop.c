@@ -540,20 +540,19 @@ static void *remote_sysop_listener(void *unused)
 			}
 			continue;
 		}
-		if (pfd.revents) {
-			bbs_verb(4, "Accepting new remote sysop connection\n");
-			len = sizeof(sunaddr);
-			sfd = accept(uds_socket, (struct sockaddr *) &sunaddr, &len);
-		} else {
+		if (!pfd.revents) {
 			continue; /* Shouldn't happen? */
 		}
+		len = sizeof(sunaddr);
+		sfd = accept(uds_socket, (struct sockaddr *) &sunaddr, &len);
 		if (sfd < 0) {
 			if (errno != EINTR) {
-				bbs_warning("accept returned %d: %s\n", sfd, strerror(errno));
+				bbs_debug(1, "accept returned %d: %s\n", sfd, strerror(errno));
 				break;
 			}
 			continue;
 		}
+		bbs_verb(4, "Accepting new remote sysop connection\n");
 		/* Now, we need to create a pseudoterminal for the UNIX socket, the sysop thread needs a PTY. */
 		aslave = bbs_spawn_pty_master(sfd);
 		if (aslave == -1) {
@@ -564,8 +563,6 @@ static void *remote_sysop_listener(void *unused)
 		bbs_dprintf(aslave, TERM_CLEAR); /* Clear the screen on connect */
 		launch_sysop_console(1, aslave, aslave); /* Launch sysop console for this connection */
 	}
-	/* Normally, we never get here, as pthread_cancel snuffs out the thread ungracefully */
-	bbs_warning("Remote sysop console listener thread exiting abnormally\n");
 	return NULL;
 }
 
@@ -578,14 +575,13 @@ static int unload_module(void)
 	bbs_thread_cancel_killable();
 
 	if (uds_socket != -1) {
-		close(uds_socket);
-		uds_socket = -1;
-		bbs_pthread_cancel_kill(uds_thread);
-		bbs_pthread_join(uds_thread, NULL);
+		bbs_socket_thread_shutdown(&uds_socket, uds_thread);
 		unlink(BBS_SYSOP_SOCKET);
 	}
 	if (sysop_thread != (long unsigned int) -1) {
 		bbs_debug(3, "Waiting for sysop thread to exit\n");
+		/* A bit difficult to avoid pthread_cancel here since shutdowns can be initiated in this module.
+		 * Use caution if trying to improve this. */
 		bbs_pthread_cancel_kill(sysop_thread);
 		bbs_pthread_join(sysop_thread, NULL);
 		if (option_nofork) {

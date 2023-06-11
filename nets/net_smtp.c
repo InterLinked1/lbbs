@@ -1730,9 +1730,11 @@ static void *queue_handler(void *unused)
 	usleep(10000000); /* Wait 10 seconds after the module loads, then try to flush anything in the queue. */
 
 	for (;;) {
+		bbs_pthread_disable_cancel();
 		pthread_mutex_lock(&queue_lock);
 		bbs_dir_traverse(queue_dir, on_queue_file, NULL, -1);
 		pthread_mutex_unlock(&queue_lock);
+		bbs_pthread_enable_cancel();
 		usleep(1000000 * queue_interval);
 	}
 	return NULL;

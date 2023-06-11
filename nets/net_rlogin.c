@@ -189,10 +189,7 @@ static int unload_module(void)
 {
 	if (rlogin_socket > -1) {
 		bbs_unregister_network_protocol((unsigned int) rlogin_port);
-		close(rlogin_socket);
-		rlogin_socket = -1;
-		bbs_pthread_cancel_kill(rlogin_thread);
-		bbs_pthread_join(rlogin_thread, NULL);
+		bbs_socket_thread_shutdown(&rlogin_socket, rlogin_thread);
 	} else {
 		bbs_error("RLogin socket already closed at unload?\n");
 	}

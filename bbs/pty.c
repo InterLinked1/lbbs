@@ -408,13 +408,15 @@ static void trigger_node_disconnect(struct bbs_node *node)
 	/* Client disconnected */
 	/* Close the slave, this will cause bbs_node_poll, bbs_node_read, bbs_node_write, etc. to return -1.
 	 * That will cause the node to exit and it will subsequently join this thread. */
-	close(node->slavefd);
+	if (node->slavefd != -1) {
+		/* XXX If something else is closing it now, possible race condition here */
+		bbs_socket_close(&node->slavefd);
+	}
 	/* bbs_node_poll will wait for ms to expire (so if ms == -1, very bad!!!)
 	 * You'd think poll would get a POLLHUP immediately... but nope! Not sure why.
 	 * Need to find a way to make this immediate.
 	 * In the meantime, the node threads will exit eventually, just not immediately.
 	 */
-	node->slavefd = -1;
 	/* Resist the urge to also close node->fd here.
 	 * Just wait for cleanup to happen, and we'll close node->fd there in due course. */
 
@@ -710,6 +712,6 @@ void *pty_master(void *varg)
 		}
 	}
 
-	bbs_debug(10, "PTY master exiting for node %d\n", nodeid);
+	bbs_debug(9, "PTY master exiting for node %d\n", nodeid);
 	return NULL;
 }

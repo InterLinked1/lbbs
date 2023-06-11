@@ -108,21 +108,19 @@ static void *uds_listener(void *unused)
 			}
 			continue;
 		}
-		if (pfd.revents) {
-			bbs_debug(1, "Accepting new UDS connection\n");
-			len = sizeof(sunaddr);
-			sfd = accept(uds_socket, (struct sockaddr *) &sunaddr, &len);
-		} else {
+		if (!pfd.revents) {
 			continue; /* Shouldn't happen? */
 		}
+		len = sizeof(sunaddr);
+		sfd = accept(uds_socket, (struct sockaddr *) &sunaddr, &len);
 		if (sfd < 0) {
 			if (errno != EINTR) {
-				bbs_warning("accept returned %d: %s\n", sfd, strerror(errno));
+				bbs_debug(1, "accept returned %d: %s\n", sfd, strerror(errno));
 				break;
 			}
 			continue;
 		}
-
+		bbs_debug(1, "Accepting new UDS connection\n");
 		node = bbs_node_request(sfd, "UNIX");
 		if (!node) {
 			close(sfd);
@@ -138,8 +136,6 @@ static void *uds_listener(void *unused)
 			continue;
 		}
 	}
-	/* Normally, we never get here, as pthread_cancel snuffs out the thread ungracefully */
-	bbs_warning("UDS listener thread exiting abnormally\n");
 	return NULL;
 }
 
@@ -163,10 +159,7 @@ static int load_module(void)
 static int unload_module(void)
 {
 	if (uds_socket > -1) {
-		close(uds_socket);
-		uds_socket = -1;
-		bbs_pthread_cancel_kill(uds_thread);
-		bbs_pthread_join(uds_thread, NULL);
+		bbs_socket_thread_shutdown(&uds_socket, uds_thread);
 		unlink(BBS_RUN_SOCKET);
 	} else {
 		bbs_error("UDS socket already closed at unload?\n");

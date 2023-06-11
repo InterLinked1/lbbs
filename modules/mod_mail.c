@@ -103,7 +103,11 @@ int mail_domain_is_local(const char *domain)
 	if (smtp_domain_matches(bbs_hostname(), domain)) {
 		return 1;
 	}
-	return stringlist_contains(&local_domains, domain);
+	if (stringlist_contains(&local_domains, domain)) {
+		return 1;
+	}
+	bbs_debug(5, "Domain '%s' is not local\n", domain);
+	return 0;
 }
 
 static void (*watchcallback)(struct mailbox *mbox, const char *newfile) = NULL;
@@ -296,7 +300,7 @@ static void mailbox_cleanup(void)
 	RWLIST_WRLOCK_REMOVE_ALL(&aliases, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&listservs, entry, free);
 	stringlist_empty(&local_domains);
-	}
+}
 
 /*!
  * \brief Retrieve the user ID of the mailbox to which an alias maps
@@ -1659,7 +1663,9 @@ static void *trash_monitor(void *unused)
 {
 	UNUSED(unused);
 	for (;;) {
+		bbs_pthread_disable_cancel();
 		scan_mailboxes();
+		bbs_pthread_enable_cancel();
 		/* Not necessary to run more frequently than once per hour. */
 		sleep(60 * 60); /* use sleep instead of usleep since the argument to usleep would overflow an int */
 	}
@@ -1709,6 +1715,7 @@ static int load_config(void)
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				const char *key = bbs_keyval_key(keyval);
 				if (!stringlist_contains(&local_domains, key)) {
+					bbs_debug(3, "Added local domain %s\n", key);
 					stringlist_push(&local_domains, key);
 				}
 			}

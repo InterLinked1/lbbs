@@ -298,11 +298,8 @@ static int load_module(void)
 		return -1;
 	}
 	if (telnets_enabled && bbs_pthread_create(&telnets_thread, NULL, telnets_listener, NULL)) {
-		close(telnet_socket);
 		close_if(telnets_socket);
-		bbs_pthread_cancel_kill(telnet_thread);
-		bbs_pthread_join(telnet_thread, NULL);
-		telnet_socket = -1;
+		bbs_socket_thread_shutdown(&telnet_socket, telnet_thread);
 		return -1;
 	}
 	if (tty_port) {
@@ -310,13 +307,9 @@ static int load_module(void)
 			return -1;
 		}
 		if (bbs_pthread_create(&tty_thread, NULL, tty_listener, NULL)) {
-			close(tty_socket);
-			close_if(telnets_socket);
-			bbs_pthread_cancel_kill(telnet_thread);
-			bbs_pthread_join(telnet_thread, NULL);
+			bbs_socket_thread_shutdown(&telnet_socket, telnet_thread);
 			if (telnets_enabled) {
-				bbs_pthread_cancel_kill(telnets_thread);
-				bbs_pthread_join(telnets_thread, NULL);
+				bbs_socket_thread_shutdown(&telnets_socket, telnets_thread);
 			}
 			tty_socket = -1;
 			return -1;
@@ -332,25 +325,16 @@ static int load_module(void)
 static int unload_module(void)
 {
 	if (tty_socket > -1) {
-		close(tty_socket);
-		tty_socket = -1;
-		bbs_pthread_cancel_kill(tty_thread);
-		bbs_pthread_join(tty_thread, NULL);
+		bbs_socket_thread_shutdown(&tty_socket, tty_thread);
 	}
 	if (telnet_socket > -1) {
 		bbs_unregister_network_protocol((unsigned int) telnet_port);
 		if (telnets_socket > -1) {
 			bbs_unregister_network_protocol((unsigned int) telnets_port);
 		}
-		close(telnet_socket);
-		telnet_socket = -1;
-		bbs_pthread_cancel_kill(telnet_thread);
-		bbs_pthread_join(telnet_thread, NULL);
+		bbs_socket_thread_shutdown(&telnet_socket, telnet_thread);
 		if (telnets_enabled) {
-			close(telnets_socket);
-			telnets_socket = -1;
-			bbs_pthread_cancel_kill(telnets_thread);
-			bbs_pthread_join(telnets_thread, NULL);
+			bbs_socket_thread_shutdown(&telnets_socket, telnets_thread);
 		}
 	} else {
 		bbs_error("Telnet socket already closed at unload?\n");

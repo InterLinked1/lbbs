@@ -441,15 +441,29 @@ int bbs_timed_accept(int socket, int ms, const char *ip)
 			if (errno == EINTR) {
 				continue;
 			}
-			bbs_warning("accept returned %d: %s\n", sfd, strerror(errno));
+			bbs_debug(1, "accept returned %d: %s\n", sfd, strerror(errno));
 			return -1;
 		}
 		bbs_debug(7, "accepted fd = %d\n", sfd);
 		return sfd;
 	}
-	/* Normally, we never get here, as pthread_cancel snuffs out the thread ungracefully */
-	bbs_warning("TCP listener thread exiting abnormally\n");
 	return -1;
+}
+
+void bbs_socket_close(int *socket)
+{
+	/* Calling shutdown on the socket first
+	 * avoids needing to call bbs_pthread_cancel_kill,
+	 * which is a lot cleaner and helps avoid deadlocks. */
+	shutdown(*socket, SHUT_RDWR);
+	close(*socket);
+	*socket = -1;
+}
+
+void bbs_socket_thread_shutdown(int *socket, pthread_t thread)
+{
+	bbs_socket_close(socket);
+	bbs_pthread_join(thread, NULL);
 }
 
 struct tcp_listener {
@@ -797,7 +811,7 @@ void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, c
 		}
 		if (sfd < 0) {
 			if (errno != EINTR) {
-				bbs_warning("accept returned %d: %s\n", sfd, strerror(errno));
+				bbs_debug(1, "accept returned %d: %s\n", sfd, strerror(errno));
 				break;
 			}
 			continue;
@@ -815,8 +829,6 @@ void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, c
 			}
 		}
 	}
-	/* Normally, we never get here, as pthread_cancel snuffs out the thread ungracefully */
-	bbs_warning("%s/%s/%s listener thread exiting abnormally\n", S_IF(name), S_IF(name2), S_IF(name3));
 }
 
 void bbs_tcp_listener2(int socket, int socket2, const char *name, const char *name2, void *(*handler)(void *varg), void *module)
@@ -848,23 +860,25 @@ static void __bbs_tcp_listener(int socket, const char *name, int (*handshake)(st
 			}
 			continue;
 		}
-		if (pfd.revents) {
-			len = sizeof(sinaddr);
-			sfd = accept(socket, (struct sockaddr *) &sinaddr, &len);
-			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
-			bbs_debug(1, "Accepting new %s connection from %s\n", name, new_ip);
-		} else {
+		if (!pfd.revents) {
 			bbs_error("No revents?\n");
 			continue; /* Shouldn't happen? */
 		}
+		len = sizeof(sinaddr);
+		sfd = accept(socket, (struct sockaddr *) &sinaddr, &len);
 		if (sfd < 0) {
 			if (errno != EINTR) {
-				bbs_warning("accept returned %d: %s\n", sfd, strerror(errno));
+				/* If shutdown is called on the listener socket, then we'll hit this,
+				 * and that's great, not bad at all. It allows us to exit cleanly,
+				 * on our own terms. */
+				bbs_debug(1, "accept returned %d: %s\n", sfd, strerror(errno));
 				break;
 			}
 			continue;
 		}
 
+		bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
+		bbs_debug(1, "Accepting new %s connection from %s\n", name, new_ip);
 		bbs_debug(7, "accepted fd = %d\n", sfd);
 
 		node = __bbs_node_request(sfd, name, module);
@@ -878,8 +892,6 @@ static void __bbs_tcp_listener(int socket, const char *name, int (*handshake)(st
 			bbs_node_unlink(node);
 		}
 	}
-	/* Normally, we never get here, as pthread_cancel snuffs out the thread ungracefully */
-	bbs_warning("%s listener thread exiting abnormally\n", name);
 }
 
 void bbs_tcp_comm_listener(int socket, const char *name, int (*handshake)(struct bbs_node *node), void *module)

@@ -483,8 +483,8 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	}
 
 	if (node->ptythread) {
-		bbs_pthread_cancel_kill(node->ptythread);
-		bbs_pthread_join(node->ptythread, NULL); /* Wait for the PTY master thread to exit, and then clean it up. */
+		bbs_socket_close(&node->amaster);
+		bbs_socket_thread_shutdown(&node->slavefd, node->ptythread); /* Wait for the PTY master thread to exit, and then clean it up. */
 		if (node->spy) {
 			/* The sysop was spying on this node when it got disconnected.
 			 * Let the sysop know this node is dead. */
@@ -493,14 +493,9 @@ static void node_shutdown(struct bbs_node *node, int unique)
 		}
 	}
 
-	if (node->fd) { /* Properly shut down */
-		/* If we just close our end of the socket, poll doesn't see that */
-		shutdown(node->fd, SHUT_RDWR); /* XXX Using for PTY fds could fix poll not waking up on node disconnect? */
+	if (node->fd) {
+		bbs_socket_close(&node->fd);
 	}
-
-	close_if(node->amaster);
-	close_if(node->slavefd);
-	close_if(node->fd);
 
 	node_thread = node->thread;
 	nodeid = node->id;
