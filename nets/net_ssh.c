@@ -81,6 +81,7 @@ static int allow_sftp = 1;
 static int load_key_rsa = 1;
 static int load_key_dsa = 0;
 static int load_key_ecdsa = 1;
+static int load_key_ed25519 = 1;
 
 static ssh_bind sshbind = NULL;
 
@@ -91,8 +92,7 @@ static int bind_key(enum ssh_bind_options_e opt, const char *filename)
 		bbs_warning("Can't access key %s - missing or not readable?\n", filename);
 		return 0;
 	}
-	ssh_bind_options_set(sshbind, opt, KEYS_FOLDER "ssh_host_rsa_key");
-	return 1;
+	return ssh_bind_options_set(sshbind, opt, KEYS_FOLDER "ssh_host_rsa_key") ? 0 : 1;
 }
 
 static int start_ssh(void)
@@ -114,6 +114,9 @@ static int start_ssh(void)
 	}
 	if (load_key_ecdsa) {
 		keys += bind_key(SSH_BIND_OPTIONS_ECDSAKEY, KEYS_FOLDER "ssh_host_ecdsa_key");
+	}
+	if (load_key_ed25519) {
+		keys += ssh_bind_options_set(sshbind, SSH_BIND_OPTIONS_HOSTKEY, KEYS_FOLDER "ssh_host_ed25519_key");
 	}
 
 	if (!keys) {
@@ -688,6 +691,8 @@ static void handle_session(ssh_event event, ssh_session session)
 	ssh_callbacks_init(&channel_cb);
 	ssh_set_server_callbacks(session, &server_cb);
 
+	/*! \todo If a client just connects and does nothing, ssh_handle_key_exchange can hang forever.
+	 * It should time out after some amount of time (30-60 seconds). */
 	if (ssh_handle_key_exchange(session) != SSH_OK) {
 		bbs_error("%s\n", ssh_get_error(session));
 		return;
@@ -702,7 +707,7 @@ static void handle_session(ssh_event event, ssh_session session)
 	while (sdata.authenticated == 0 || sdata.channel == NULL) {
 		/* If the user has used up all attempts, or if he hasn't been able to
 		 * authenticate in 10 seconds (n * 100ms), disconnect. */
-		if (sdata.auth_attempts >= 3 || n >= 100) {
+		if (sdata.auth_attempts >= 3 || n++ >= 100) {
 			return;
 		}
 
@@ -712,7 +717,6 @@ static void handle_session(ssh_event event, ssh_session session)
 			bbs_warning("%s\n", ssh_get_error(session));
 			return;
 		}
-		n++;
 	}
 
 	/* If we get here, it was a successful authentication (from an SSH protocol perspective) */
@@ -721,11 +725,13 @@ static void handle_session(ssh_event event, ssh_session session)
 
 	/* Session is now running. Wait for it to finish. */
 	do {
-		int pollres = ssh_event_dopoll(event, -1);
+		int pollres = ssh_event_dopoll(event, cdata.node ? -1 : MIN_MS(600));
 		if (pollres == SSH_ERROR) {
 			bbs_debug(1, "ssh_event_dopoll returned error, closing SSH channel\n");
 			ssh_channel_close(sdata.channel);
 			break;
+		} else if (pollres) { /* Don't print out otherwise, there'll be an event for every key */
+			bbs_debug(5, "SSH pollres: %d\n", pollres);
 		}
 		/* If child thread's stdout/stderr has been registered with the event,
 		 * or the child thread hasn't started yet, continue. */
@@ -764,7 +770,6 @@ static void handle_session(ssh_event event, ssh_session session)
 		if (!strcmp(cdata.node->protname, "SFTP")) {
 			do_sftp(cdata.node, session, sdata.channel);
 		} else {
-
 			/* If stdout valid, add stdout to be monitored by the poll event. */
 			/* Skip stderr, the BBS doesn't use it, since we're not launching a shell. */
 			if (cdata.child_stdout != -1 && !cdata.addedfdwatch) {
@@ -1483,6 +1488,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "keys", "rsa", &load_key_rsa);
 	bbs_config_val_set_true(cfg, "keys", "dsa", &load_key_dsa);
 	bbs_config_val_set_true(cfg, "keys", "ecdsa", &load_key_ecdsa);
+	bbs_config_val_set_true(cfg, "keys", "ed25519", &load_key_ed25519);
 
 	return 0;
 }

@@ -21,6 +21,8 @@ ensure_gdb_installed() {
 
 if [ "$1" = "pid" ]; then
 	echo $bbspid
+elif [ "$1" = "threads" ]; then
+	ps -o pid,lwp,pcpu,pmem,comm,cmd -L $bbspid
 elif [ "$1" = "term" ]; then
 	kill -9 $bbspid
 elif [ "$1" = "quit" ]; then
