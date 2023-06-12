@@ -2612,13 +2612,19 @@ static void handle_client(struct irc_user *user)
 
 	for (;;) {
 		char *s = buf;
-		res = bbs_readline(user->rfd, &rldata, "\r\n", 2 * PING_TIME); /* Wait up to the ping interval time for something, anything, otherwise disconnect. */
+		/* XXX For some reason, using \r\n as the delimiter for bbs_readline breaks Ambassador.
+		 * Doesn't seem like a bug in bbs_readline, though it is suspicious since
+		 * the RFCs are very clear that CR LF is the delimiter.
+		 * So even though this feels wrong, accept just LF for compatibility, and strip trailing CR if present.
+		*/
+		res = bbs_readline(user->rfd, &rldata, "\n", 2 * PING_TIME); /* Wait up to the ping interval time for something, anything, otherwise disconnect. */
 		if (res <= 0) {
 			/* Don't set graceful_close to 0 here, since after a QUIT, the client may close the connection first.
 			 * The QUIT message should be whatever the client sent, since it was graceful, not connection closed by remote host. */
 			bbs_debug(3, "poll/read returned %d\n", res);
 			break;
 		}
+		bbs_strterm(s, '\r');
 
 		/* Don't fully print out commands containing sensitive info */
 		if (STARTS_WITH(s, "OPER ")) {

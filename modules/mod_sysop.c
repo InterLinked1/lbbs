@@ -435,7 +435,7 @@ static void *sysop_handler(void *varg)
 					bbs_dprintf(sysopfdout, "/");
 					my_set_stdout_logging(sysopfdout, 0); /* Disable logging so other stuff isn't trying to write to STDOUT at the same time. */
 					bbs_buffer_input(sysopfdin, 1);
-					res = poll(&pfd, 1, 30000);
+					res = poll(&pfd, 1, 300000);
 					if (res < 0) {
 						if (errno != EINTR) {
 							bbs_error("poll returned %d: %s\n", res, strerror(errno));
