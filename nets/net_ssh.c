@@ -597,6 +597,7 @@ static void handle_session(ssh_event event, ssh_session session)
 	int n;
 	int node_started = 0;
 	int stdoutfd;
+	long int timeout; /* in seconds */
 	/* We set the user when we have access to the session userdata,
 	 * but we need to attach it the node when we have access to the
 	 * channel userdata.
@@ -691,8 +692,12 @@ static void handle_session(ssh_event event, ssh_session session)
 	ssh_callbacks_init(&channel_cb);
 	ssh_set_server_callbacks(session, &server_cb);
 
-	/*! \todo If a client just connects and does nothing, ssh_handle_key_exchange can hang forever.
-	 * It should time out after some amount of time (30-60 seconds). */
+	timeout = 60; /* Max 60 seconds until logged in */
+	ssh_options_set(session, SSH_OPTIONS_TIMEOUT, &timeout);
+
+	/* If a client connects and just does nothing, it might just block here forever.
+	 * The timeout above is to address that. */
+
 	if (ssh_handle_key_exchange(session) != SSH_OK) {
 		bbs_error("%s\n", ssh_get_error(session));
 		return;
@@ -723,9 +728,13 @@ static void handle_session(ssh_event event, ssh_session session)
 	ssh_set_channel_callbacks(sdata.channel, &channel_cb);
 	bbs_debug(3, "Authentication has succeeded\n");
 
+	/* Increase the timeout now that the connection is established */
+	timeout = 3600; /* 1 hour */
+	ssh_options_set(session, SSH_OPTIONS_TIMEOUT, &timeout);
+
 	/* Session is now running. Wait for it to finish. */
 	do {
-		int pollres = ssh_event_dopoll(event, cdata.node ? -1 : MIN_MS(600));
+		int pollres = ssh_event_dopoll(event, cdata.node ? -1 : MIN_MS(60));
 		if (pollres == SSH_ERROR) {
 			bbs_debug(1, "ssh_event_dopoll returned error, closing SSH channel\n");
 			ssh_channel_close(sdata.channel);
