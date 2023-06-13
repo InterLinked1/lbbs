@@ -170,12 +170,13 @@ struct session_data_struct {
 	/* Pointer to the channel the session will allocate. */
 	ssh_channel channel;
 	int auth_attempts;
-	int authenticated;
+	unsigned int authenticated:1;
+	unsigned int dead:1;
 };
 
 static ssh_channel channel_open(ssh_session session, void *userdata)
 {
-	struct session_data_struct *sdata = (struct session_data_struct *) userdata;
+	struct session_data_struct *sdata = userdata;
 	sdata->channel = ssh_channel_new(session);
 	return sdata->channel;
 }
@@ -183,7 +184,7 @@ static ssh_channel channel_open(ssh_session session, void *userdata)
 /*! \brief Called when data is available from the client for the server */
 static int data_function(ssh_session session, ssh_channel channel, void *data, uint32_t len, int is_stderr, void *userdata)
 {
-	struct channel_data_struct *cdata = (struct channel_data_struct *) userdata;
+	struct channel_data_struct *cdata = userdata;
 
 	UNUSED(session);
 	UNUSED(channel);
@@ -200,7 +201,7 @@ static int data_function(ssh_session session, ssh_channel channel, void *data, u
 /*! \brief Called if the client closes the connection */
 static void close_callback(ssh_session session, ssh_channel channel, void *userdata)
 {
-	struct channel_data_struct *cdata = (struct channel_data_struct *) userdata;
+	struct channel_data_struct *cdata = userdata;
 
 	UNUSED(session);
 	UNUSED(channel);
@@ -236,7 +237,8 @@ static int save_remote_ip(ssh_session session, struct bbs_node *node, char *buf,
 static int process_stdout(socket_t fd, int revents, void *userdata)
 {
 	int n = -1;
-	ssh_channel channel = (ssh_channel) userdata;
+	struct session_data_struct *sdata = userdata;
+	ssh_channel channel = sdata->channel;
 
 	if (channel != NULL && (revents & POLLIN) != 0) {
 #define BUF_SIZE 1048576
@@ -248,6 +250,11 @@ static int process_stdout(socket_t fd, int revents, void *userdata)
 			ssh_channel_write(channel, buf, (uint32_t) n);
 		} else {
 			bbs_debug(3, "len: %d\n", n);
+		}
+	} else {
+		bbs_debug(3, "channel: %p, events: %s\n", channel, poll_revent_name(revents));
+		if (revents & POLLHUP) {
+			sdata->dead = 1;
 		}
 	}
 	return n;
@@ -576,24 +583,21 @@ static inline int thread_has_exited(pthread_t thread)
 	return 0;
 }
 
-static void bad_ssh_conn(ssh_session session)
+static void bad_ssh_conn(const char *ipaddr)
 {
-	char ipaddr[84] = "";
 	struct bbs_event event;
 
-	/* These connections are not likely to be legitimate, so log them. We don't have a node, so use the session. */
-	save_remote_ip(session, NULL, ipaddr, sizeof(ipaddr));
-	bbs_auth("SSH connection from %s did not have a PTY at shutdown\n", ipaddr);
-	/* We don't have a node, so manually dispatch an event */
+	/* These connections are not likely to be legitimate, so log them. We don't have a node, so manually dispatch an event */
 	memset(&event, 0, sizeof(event));
 	event.type = EVENT_NODE_SHORT_SESSION; /* Always consider it short, if it never set up a PTY */
 	safe_strncpy(event.protname, "SSH", sizeof(event.protname));
 	safe_strncpy(event.ipaddr, ipaddr, sizeof(event.ipaddr));
-	bbs_event_dispatch(NULL, EVENT_NODE_SHORT_SESSION);
+	bbs_event_broadcast(&event);
 }
 
 static void handle_session(ssh_event event, ssh_session session)
 {
+	char ipaddr[64];
 	int n;
 	int node_started = 0;
 	int stdoutfd;
@@ -634,7 +638,8 @@ static void handle_session(ssh_event event, ssh_session session)
 		.user = &user,
 		.channel = NULL,
 		.auth_attempts = 0,
-		.authenticated = 0
+		.authenticated = 0,
+		.dead = 0,
 	};
 
 	struct ssh_channel_callbacks_struct channel_cb = {
@@ -661,6 +666,11 @@ static void handle_session(ssh_event event, ssh_session session)
 		.auth_pubkey_function = auth_pubkey,
 		.channel_open_request_session_function = channel_open,
 	};
+
+	/* Get the IP of the connecting user now, in case authentication never succeeds
+	 * and we never store the IP. */
+	save_remote_ip(session, NULL, ipaddr, sizeof(ipaddr));
+	bbs_auth("Accepting new SSH connection from %s\n", ipaddr);
 
 	/*
 	 * Unlike Telnet and RLogin, the closest you can get with SSH to disabling protocol-level authentication
@@ -744,6 +754,10 @@ static void handle_session(ssh_event event, ssh_session session)
 		}
 		/* If child thread's stdout/stderr has been registered with the event,
 		 * or the child thread hasn't started yet, continue. */
+		if (sdata.dead) {
+			bbs_debug(3, "Server has closed PTY, exiting\n");
+			break;
+		}
 		if (cdata.event != NULL) {
 #ifdef EXTRA_DEBUG
 			bbs_debug(8, "No SSH event (pollres: %d)\n", pollres);
@@ -760,11 +774,13 @@ static void handle_session(ssh_event event, ssh_session session)
 				/* When we close the PTY master, that'll signal the node to die */
 				break;
 			}
-			if (node_started && thread_has_exited(cdata.nodethread)) {
-				/* The node started but disappeared, i.e. server disconnected the node.
-				 * Time for us to die. */
-				bbs_debug(3, "Node thread has now exited\n");
-				break;
+			if (node_started) {
+				if (thread_has_exited(cdata.nodethread)) {
+					/* The node started but disappeared, i.e. server disconnected the node.
+					 * Time for us to die. */
+					bbs_debug(3, "Node thread has now exited\n");
+					break;
+				}
 			}
 			continue;
 		} else if (!cdata.node) {
@@ -782,7 +798,7 @@ static void handle_session(ssh_event event, ssh_session session)
 			/* If stdout valid, add stdout to be monitored by the poll event. */
 			/* Skip stderr, the BBS doesn't use it, since we're not launching a shell. */
 			if (cdata.child_stdout != -1 && !cdata.addedfdwatch) {
-				if (ssh_event_add_fd(event, cdata.child_stdout, POLLIN | POLLPRI | POLLERR | POLLHUP | POLLNVAL, process_stdout, sdata.channel) != SSH_OK) {
+				if (ssh_event_add_fd(event, cdata.child_stdout, POLLIN | POLLPRI | POLLERR | POLLHUP | POLLNVAL, process_stdout, &sdata) != SSH_OK) {
 					bbs_error("Failed to register stdout to poll context\n");
 					ssh_channel_close(sdata.channel);
 				} else {
@@ -805,7 +821,8 @@ static void handle_session(ssh_event event, ssh_session session)
 	}
 
 	if (cdata.pty_master == -1 && !(cdata.node && !strcmp(cdata.node->protname, "SFTP"))) {
-		bad_ssh_conn(session);
+		bbs_auth("SSH connection from %s did not have a PTY at shutdown\n", ipaddr);
+		bad_ssh_conn(ipaddr);
 	}
 
 	close_if(cdata.pty_master);
@@ -1444,7 +1461,6 @@ static ssh_session pending_session = NULL;
 
 static void *ssh_listener(void *unused)
 {
-	char ipaddr[64];
 	ssh_session session; /* This is actually a pointer, even though it doesn't look like one. */
 
 	UNUSED(unused);
@@ -1465,10 +1481,6 @@ static void *ssh_listener(void *unused)
 			continue;
 		}
 		bbs_pthread_disable_cancel();
-		/* Get the IP of the connecting user now, in case authentication never succeeds
-		 * and we never store the IP. */
-		save_remote_ip(session, NULL, ipaddr, sizeof(ipaddr));
-		bbs_auth("Accepting new SSH connection from %s\n", ipaddr);
 		/* Spawn a thread to handle this SSH connection. */
 		if (bbs_pthread_create_detached(&ssh_thread, NULL, ssh_connection, session)) {
 			ssh_disconnect(session);

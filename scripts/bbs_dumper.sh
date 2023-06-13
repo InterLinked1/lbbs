@@ -35,6 +35,9 @@ elif [ "$1" = "livedump" ]; then
 	ensure_gdb_installed
 	gdb /usr/sbin/lbbs --batch -q -p $bbspid -ex 'thread apply all bt full' -ex 'quit' > full.txt
 	printf "Backtrace saved to full.txt\n"
+elif [ "$1" = "gdb" ]; then
+	ensure_gdb_installed
+	exec gdb /usr/sbin/lbbs -p $bbspid
 else
 	echo "Invalid command!"
 	exit 1

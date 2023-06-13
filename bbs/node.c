@@ -1235,7 +1235,7 @@ void bbs_node_begin(struct bbs_node *node)
 {
 	bbs_assert_exists(node);
 	bbs_assert((int) node->thread);
-	bbs_assert(node->fd);
+	bbs_assert(node->fd != -1);
 	bbs_assert_exists(node->protname); /* Will fail if a network comm driver forgets to set before calling bbs_node_handler */
 
 	bbs_debug(1, "Running BBS for node %d\n", node->id);
@@ -1245,11 +1245,9 @@ void bbs_node_begin(struct bbs_node *node)
 void bbs_node_exit(struct bbs_node *node)
 {
 	if (node->active) {
-		//bbs_node_unlock(node);
 		/* User quit: unlink and free */
 		bbs_node_unlink(node);
 	} else {
-		//bbs_node_unlock(node);
 		/* Server force quit the node.
 		 * For example, bbs_node_shutdown_all was called, which already holds a WRLOCK,
 		 * so we shouldn't call bbs_node_unlink or that will grab another WRLOCK and cause deadlock.
