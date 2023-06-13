@@ -1018,7 +1018,7 @@ void bbs_dump_string(const char *restrict s)
 	bbs_debug(8, "String Dump: '%s'\n", buf);
 }
 
-void bbs_dump_mem(unsigned char *restrict s, size_t len)
+void bbs_dump_mem(unsigned const char *restrict s, size_t len)
 {
 	size_t i;
 	unsigned int start;

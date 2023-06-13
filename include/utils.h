@@ -601,7 +601,7 @@ int bbs_str_safe_print(const char *restrict s, char *restrict buf, size_t len);
 void bbs_dump_string(const char *restrict s);
 
 /*! \brief Dump an hex representation of a buffer to the BBS debug log level */
-void bbs_dump_mem(unsigned char *restrict s, size_t len);
+void bbs_dump_mem(unsigned const char *restrict s, size_t len);
 
 /*!
  * \brief Terminate a string at the end of the first line (first CR or LF character)

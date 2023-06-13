@@ -113,15 +113,31 @@ int bbs_users_dump(int fd, int verbose)
 
 	/* Use CR LF instead of just LF since Finger also uses it */
 	while ((user = userlist[index++])) {
+		char namebuf[26];
+		const char *disp_name = user->fullname;
+		if (disp_name && strlen(disp_name) > 22) {
+			memcpy(namebuf, disp_name, 22);
+			strcpy(namebuf + 22, "..."); /* Safe */
+			disp_name = namebuf;
+		}
 		if (index == 1) {
-			bbs_dprintf(fd, " %4s %-15s %-15s %3s %s\r\n", "#", "USERNAME", "FULL NAME", "PRV", "LOCATION");
+			bbs_dprintf(fd, " %4s %-18s %-25s %3s %s\r\n", "#", "USERNAME", "FULL NAME", "PRV", "LOCATION");
+		}
+		if (!bbs_str_isprint(bbs_username(user))) {
+			bbs_warning("Invalid username:\n");
+			bbs_dump_mem((unsigned const char*) bbs_username(user), strlen(bbs_username(user)));
+			continue;
+		} else if (disp_name && !bbs_str_isprint(disp_name)) {
+			bbs_warning("Invalid name:\n");
+			bbs_dump_mem((unsigned const char*) disp_name, strlen(disp_name));
+			continue;
 		}
 		if (verbose >= 10) {
-			bbs_dprintf(fd, " %4d %-15s %-15s %3d %s%c %s\r\n",
-				user->id, bbs_username(user), S_IF(user->fullname), user->priv,
+			bbs_dprintf(fd, " %4d %-18s %-25s %3d %s%c %s\r\n",
+				user->id, bbs_username(user), S_IF(disp_name), user->priv,
 				S_IF(user->city), !strlen_zero(user->city) || !strlen_zero(user->state), S_IF(user->state));
 		} else {
-			bbs_dprintf(fd, " %4d %-15s\r\n", user->id, bbs_username(user));
+			bbs_dprintf(fd, " %4d %-18s\r\n", user->id, bbs_username(user));
 		}
 		if (strchr(bbs_username(user), ' ')) {
 			/* mod_auth_mysql doesn't allow registration of usernames with spaces,

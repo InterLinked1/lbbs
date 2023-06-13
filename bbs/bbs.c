@@ -161,9 +161,9 @@ static void check_cap(int isroot)
 		/* Typically < 1024, but could be different per system.
 		 * Can run sysctl -a | grep "net.ipv4.ip_unprivileged_port_start" to see where privileged ports start. */
 		if (isroot) {
-			fprintf(stderr, "Process lacks CAP_NET_BIND_SERVICE capability and will not be able to bind to privileged ports\n");
+			fprintf(stderr, "Process lacks CAP_NET_BIND_SERVICE capability and may not be able to bind to privileged ports\n");
 		} else {
-			bbs_warning("Process lacks CAP_NET_BIND_SERVICE capability and will not be able to bind to privileged ports.\n");
+			bbs_warning("Process lacks CAP_NET_BIND_SERVICE capability and may not be able to bind to privileged ports.\n");
 			bbs_warning("Consider granting privileges to UID %d to bind on any necessary ports, or use nonprivileged ports.\n", getuid()); /* By this point, we've dropped privileges and check UID directly */
 		}
 	}
