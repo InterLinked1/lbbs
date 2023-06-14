@@ -234,11 +234,12 @@ int __fdleak_close(int fd, const char *file, int line, const char *func)
 
 	/* Detect attempts to close file descriptors we shouldn't be closing
 	 * (e.g. can happen if a file descriptor variable is initialized to 0 instead of -1) */
-	if (fd <= 2 && strcmp(file, "system.c")) { /* It's legitimate to close file descriptors 0, 1, and 2 when calling exec */
+	if (fd <= 2 && (fd < 0 || strcmp(file, "system.c"))) { /* It's legitimate to close file descriptors 0, 1, and 2 when calling exec */
 		bbs_warning("Attempting to close file descriptor %d at %s:%d (%s)\n", fd, file, line, func);
+		bbs_log_backtrace(); /* Get a backtrace to see what made the invalid close, in case immediate caller isn't enough detail. */
 	}
 	res = close(fd);
-	if (!res && fd > -1 && fd < (int) ARRAY_LEN(fdleaks)) {
+	if (!res && IN_BOUNDS(fd, 0, (int) ARRAY_LEN(fdleaks))) {
 		fdleaks[fd].isopen = 0;
 	}
 	return res;

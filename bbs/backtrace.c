@@ -234,7 +234,7 @@ static void bt_get_symbols(void **addresses, int num_frames, char *retstrings[])
 
 /* retstrings takes a variable, which makes gcc unhappy with this option */
 #pragma GCC diagnostic ignored "-Wstack-protector"
-static void bbs_log_backtrace(void)
+void bbs_log_backtrace(void)
 {
 	char **bt_syms;
 	void *array[BT_MAX_STACK_FRAMES]; /* Maximum number of stack frames to dump. */

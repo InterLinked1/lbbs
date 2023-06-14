@@ -483,8 +483,13 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	}
 
 	if (node->ptythread) {
-		bbs_socket_close(&node->amaster);
-		bbs_socket_thread_shutdown(&node->slavefd, node->ptythread); /* Wait for the PTY master thread to exit, and then clean it up. */
+		if (node->amaster != -1) {
+			bbs_socket_close(&node->amaster);
+		}
+		if (node->slavefd != -1) {
+			bbs_socket_close(&node->slavefd);
+		}
+		bbs_pthread_join(node->ptythread, 0); /* Wait for the PTY master thread to exit, and then clean it up. */
 		if (node->spy) {
 			/* The sysop was spying on this node when it got disconnected.
 			 * Let the sysop know this node is dead. */

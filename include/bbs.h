@@ -349,6 +349,9 @@ static inline void __attribute__((always_inline)) __bbs_assert(int condition, co
 #define bbs_assert(x) assert(x)
 #endif
 
+/*! \brief Dump a backtrace of the current thread to the logs */
+void bbs_log_backtrace(void);
+
 /*! \brief Remove all leading whitespace from a string */
 #define ltrim(s) while (isspace(*s)) s++;
 

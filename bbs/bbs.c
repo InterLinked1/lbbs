@@ -352,6 +352,7 @@ int bbs_view_settings(int fd)
 #define VIEW_FMT_U  "%-12s: %u\n"
 #define VIEW_FMT_S  "%-12s: %s\n"
 #define VIEW_FMT_SS "%-12s: %s (%s)\n"
+	bbs_dprintf(fd, VIEW_FMT_S, "Host", bbs_hostname());
 	bbs_dprintf(fd, VIEW_FMT_D, "PID", getpid());
 	bbs_dprintf(fd, VIEW_FMT_D, "Verbose", option_verbose);
 	bbs_dprintf(fd, VIEW_FMT_D, "Debug", option_debug);
