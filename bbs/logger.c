@@ -421,13 +421,13 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 		} else {
 			bytes = snprintf(logfullbuf, sizeof(logfullbuf), "[%s.%03d] %s[%d]: %s%s:%d %s%s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 1), thread_id, COLOR_START COLOR_WHITE COLOR_BEGIN, file, lineno, func, COLOR_RESET, buf, need_reset ? COLOR_RESET : "");
 			if (bytes >= (int) sizeof(logfullbuf)) {
-				fulldynamic = 1;
 				fullbuf = malloc((size_t) bytes + 1);
 				if (ALLOC_FAILURE(fullbuf)) {
 					term_puts("ERROR: Logging vasprintf failure\n"); /* Can't use bbs_log functions! */
 					term_puts(buf); /* Just put what we had */
 					goto stdoutdone;
 				}
+				fulldynamic = 1;
 				/* Safe */
 				bytes = sprintf(fullbuf, "[%s.%03d] %s[%d]: %s%s:%d %s%s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 1), thread_id, COLOR_START COLOR_WHITE COLOR_BEGIN, file, lineno, func, COLOR_RESET, buf, need_reset ? COLOR_RESET : "");
 			}
@@ -458,6 +458,7 @@ stdoutdone:
 			log_puts(buf); /* Just put what we had */
 			goto almostdone;
 		}
+		fulldynamic = 1;
 		/* Safe */
 		sprintf(fullbuf, "[%s.%03d] %s[%d]: %s:%d %s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 0), thread_id, file, lineno, func, buf, need_reset ? COLOR_RESET : "");
 	}
