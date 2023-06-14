@@ -588,7 +588,7 @@ static int ssl_servername_cb(SSL *s, int *ad, void *arg)
 	if (sni) {
 		bbs_debug(1, "Switching server context due to SNI: %s\n", servername);
 	} else {
-		bbs_debug(1, "SNI failed, no certificate available for: %s\n", servername);
+		bbs_debug(1, "No certificate match for %s, aborting SNI\n", servername);
 	}
 	return SSL_TLSEXT_ERR_OK;
 }
@@ -844,7 +844,11 @@ static int ssl_load_config(void)
 		return -1; /* Impossible to do TLS server stuff if we don't know what the server key/cert are */
 	}
 
-	res |= bbs_config_val_set_str(cfg, "tls", "rootcerts", root_certs, sizeof(root_certs));
+	bbs_config_val_set_str(cfg, "tls", "rootcerts", root_certs, sizeof(root_certs)); /* Has a sane default that will work on Debian systems */
+	/* If not specified in the config, warn if the default file doesn't exist on this system. */
+	if (!bbs_file_exists(root_certs)) {
+		bbs_warning("Root certs file '%s' does not exist; specify explicitly in tls.conf\n", root_certs);
+	}
 	res |= bbs_config_val_set_str(cfg, "tls", "cert", ssl_cert, sizeof(ssl_cert));
 	res |= bbs_config_val_set_str(cfg, "tls", "key", ssl_key, sizeof(ssl_key));
 
@@ -857,10 +861,11 @@ static int ssl_load_config(void)
 	if (!ssl_ctx) {
 		return -1;
 	}
+	bbs_verb(5, "Added default TLS certificate\n");
 
 	while ((section = bbs_config_walk(cfg, section))) {
 		if (!strcmp(bbs_config_section_name(section), "tls")) {
-			continue; /* Not a menu section, skip */
+			continue; /* Already processed */
 		} else if (!strcmp(bbs_config_section_name(section), "sni")) {
 			RWLIST_WRLOCK(&sni_certs);
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
@@ -918,9 +923,11 @@ int ssl_server_init(void)
 	setup_ssl_io(); /* Even if we can't be a TLS server, we can still be a TLS client. */
 
 	if (ssl_load_config()) {
+		bbs_debug(5, "TLS will not be available\n");
 		return -1;
 	}
 	if (lock_init()) {
+		bbs_error("lock_init failed, TLS disabled\n");
 		return -1;
 	}
 
