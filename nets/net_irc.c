@@ -64,7 +64,7 @@
 #define IDENT_PREFIX_FMT "%s!%s@%s"
 #define IDENT_PREFIX_ARGS(user) user->nickname, user->username, user->hostname
 
-#define send_reply(user, fmt, ...) bbs_debug(3, "%p <= " fmt, user, ## __VA_ARGS__); pthread_mutex_lock(&user->lock); dprintf(user->wfd, fmt, ## __VA_ARGS__); pthread_mutex_unlock(&user->lock);
+#define send_reply(user, fmt, ...) bbs_debug(3, "%p <= " fmt, user, ## __VA_ARGS__); if (user->wfd != -1) { pthread_mutex_lock(&user->lock); dprintf(user->wfd, fmt, ## __VA_ARGS__); pthread_mutex_unlock(&user->lock); }
 #define send_numeric(user, numeric, fmt, ...) send_reply(user, "%03d %s :" fmt, numeric, user->nickname, ## __VA_ARGS__)
 #define send_numeric2(user, numeric, fmt, ...) send_reply(user, "%03d %s " fmt, numeric, user->nickname, ## __VA_ARGS__)
 #define send_numeric_broadcast(channel, user, numeric, fmt, ...) channel_broadcast(channel, user, "%03d %s " fmt, numeric, irc_hostname, ## __VA_ARGS__)
@@ -156,6 +156,7 @@ static struct irc_user user_chanserv = {
 	.realname = "Channel Services",
 	.hostname = "services",
 	.modes = USER_MODE_OPERATOR, /* Grant ChanServ permissions to do whatever it wants */
+	.wfd = -1,
 };
 
 /*! \brief Static user struct for private messaging operations */
@@ -168,6 +169,7 @@ static struct irc_user user_messageserv = {
 	.realname = "Messaging Services",
 	.hostname = "services",
 	.modes = 0,
+	.wfd = -1,
 };
 #pragma GCC diagnostic pop
 
