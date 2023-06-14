@@ -1102,6 +1102,20 @@ int bbs_strcpy_nospaces(const char *restrict s, char *restrict buf, size_t len)
 	return len > 1 ? 0 : -1;
 }
 
+void bbs_str_remove_substring(char *restrict s, const char *word, size_t wordlen)
+{
+	char *dst = s;
+	while (*s) {
+		if (!strncmp(s, word, wordlen)) {
+			/* Skip over it */
+			s += wordlen;
+		} else {
+			*dst++ = *s++;
+		}
+	}
+	*dst = '\0';
+}
+
 void bbs_strreplace(char *restrict s, char find, char repl)
 {
 	while (*s) {

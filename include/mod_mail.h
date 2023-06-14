@@ -284,6 +284,8 @@ int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid);
 #define IMAP_CAPABILITY_AUTH_XOAUTH2 (1 << 8)
 #define IMAP_CAPABILITY_ACL (1 << 9)
 #define IMAP_CAPABILITY_QUOTA (1 << 10)
+#define IMAP_CAPABILITY_STATUS_SIZE (1 << 11)
+#define IMAP_CAPABILITY_UNSELECT (1 << 12)
 
 /*!
  * \brief Log in to a remote IMAP server

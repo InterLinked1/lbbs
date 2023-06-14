@@ -145,6 +145,24 @@ cleanup:
 	return res;
 }
 
+static int test_str_remove_substring(void)
+{
+	char buf[256];
+
+	strcpy(buf, "a1 STATUS (RECENT MESSAGES)\r\n");
+	bbs_str_remove_substring(buf, " SIZE", STRLEN(" SIZE"));
+	bbs_test_assert_str_equals(buf, "a1 STATUS (RECENT MESSAGES)\r\n");
+
+	strcpy(buf, "a1 STATUS (RECENT MESSAGES SIZE)\r\n");
+	bbs_str_remove_substring(buf, " SIZE", STRLEN(" SIZE"));
+	bbs_test_assert_str_equals(buf, "a1 STATUS (RECENT MESSAGES)\r\n");
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
 static int test_readline_helper(void)
 {
 	int mres, res = -1;
@@ -500,6 +518,7 @@ static struct bbs_unit_test tests[] =
 	{ "ANSI Stripping", test_ansi_strip },
 	{ "Backspace Processing", test_backspace_processing },
 	{ "String Copy w/o Spaces", test_strcpy_nospaces },
+	{ "String Remove Substring", test_str_remove_substring },
 	{ "Readline Helper", test_readline_helper },
 	{ "Readline Append", test_readline_append },
 	{ "Readline getn", test_readline_getn },

@@ -54,11 +54,16 @@ static void libetpan_log(mailimap *session, int log_type, const char *str, size_
 	UNUSED(session);
 	UNUSED(context); /* this is a imap_client */
 
+	if (!size) {
+		/* Sometimes log messages from libetpan have length 0... ? */
+		return;
+	}
+
 	switch (log_type) {
 		case MAILSTREAM_LOG_TYPE_ERROR_PARSE:
 		case MAILSTREAM_LOG_TYPE_ERROR_RECEIVED:
 		case MAILSTREAM_LOG_TYPE_ERROR_SENT:
-			bbs_warning("libetpan: %.*s", (int) size, str); /* Already ends in newline */
+			bbs_warning("[%lu] %.*s", size, (int) size, str); /* Already ends in newline */
 		case MAILSTREAM_LOG_TYPE_INFO_RECEIVED:
 		case MAILSTREAM_LOG_TYPE_INFO_SENT:
 		case MAILSTREAM_LOG_TYPE_DATA_RECEIVED:
@@ -430,6 +435,7 @@ static void list_response(struct ws_session *ws, struct imap_client *client, str
 	if (client_list_command(client, imap, arr, delim, 1)) {
 		goto cleanup;
 	}
+	json_object_set_new(root, "delimiter", json_string(delim));
 	json_send(ws, root);
 	return;
 

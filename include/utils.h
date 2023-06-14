@@ -636,6 +636,14 @@ void safe_strncpy(char *restrict dst, const char *restrict src, size_t size) __a
 int bbs_strcpy_nospaces(const char *restrict s, char *restrict buf, size_t len);
 
 /*!
+ * \brief Remove a substring from a string in place
+ * \param s String to modify
+ * \param word Substring of which instances will be removed
+ * \param wordlen Length of word
+ */
+void bbs_str_remove_substring(char *restrict s, const char *word, size_t wordlen);
+
+/*!
  * \brief Replace all instances of character in a string with another character
  * \param s String in which to perform replacements
  * \param find Character that should be replaced

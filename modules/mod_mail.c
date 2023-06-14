@@ -1493,6 +1493,8 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 		PARSE_CAPABILITY("AUTH=XOAUTH2", IMAP_CAPABILITY_AUTH_XOAUTH2)
 		PARSE_CAPABILITY("ACL", IMAP_CAPABILITY_ACL)
 		PARSE_CAPABILITY("QUOTA", IMAP_CAPABILITY_QUOTA)
+		PARSE_CAPABILITY("STATUS=SIZE", IMAP_CAPABILITY_STATUS_SIZE)
+		PARSE_CAPABILITY("UNSELECT", IMAP_CAPABILITY_UNSELECT)
 		else if (STARTS_WITH(cur, "X") || STARTS_WITH(cur, "AUTH=") || !strcmp(cur, "CHILDREN") || !strcmp(cur, "UNSELECT") || !strcmp(cur, "NAMESPACE") || !strcmp(cur, "ID") || !strcmp(cur, "SORT") || !strcmp(cur, "MOVE") || !strcmp(cur, "UIDPLUS") || !strcmp(cur, "XLIST") || !strcmp(cur, "I18NLEVEL=1") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "RIGHTS=") || !strcmp(cur, "WITHIN") || !strcmp(cur, "ESEARCH") || !strcmp(cur, "ESORT") || !strcmp(cur, "SEARCHRES") || !strcmp(cur, "COMPRESSED=DEFLATE")) {
 			/* Don't care */
 		} else if (!strcmp(cur, "LOGINDISABLED")) { /* RFC 3501 7.2.1 */
