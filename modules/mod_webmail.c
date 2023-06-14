@@ -169,6 +169,7 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client, s
 {
 	struct mailimap *imap;
 	int res;
+	time_t timeout;
 	struct mailimap_capability_data *capdata;
 
 	/* Keep in mind the session is the only way to send data from the frontend to the backend.
@@ -193,6 +194,8 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client, s
 	}
 
 	mailimap_set_logger(imap, libetpan_log, client);
+	timeout = mailimap_get_timeout(imap);
+	mailimap_set_timeout(imap, 7); /* If the IMAP server hasn't responded by now, I doubt it ever will */
 	if (secure) {
 		res = mailimap_ssl_connect(imap, hostname, port);
 	} else {
@@ -202,6 +205,7 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client, s
 		bbs_warning("Failed to establish IMAP session\n");
 		goto cleanup;
 	}
+	mailimap_set_timeout(imap, timeout); /* Reset once logged in */
 	res = mailimap_login(imap, username, password);
 	if (MAILIMAP_ERROR(res)) {
 		bbs_warning("Failed to login to IMAP server\n");
@@ -731,7 +735,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 	int expected, res, c = 0;
 	struct mailimap_set *set;
 	struct mailimap_fetch_type *fetch_type;
-	struct mailimap_fetch_att *fetch_att;
+	struct mailimap_fetch_att *fetch_att = NULL;
 	clist *fetch_result;
 	clistiter *cur;
 	clist *hdrlist;
@@ -790,7 +794,11 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 	if (!fetch_att) {
 		goto cleanup2;
 	}
-	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
+	res = mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
+	if (MAILIMAP_ERROR(res)) {
+		goto cleanup;
+	}
+	fetch_att = NULL;
 
 	/* Fetch! By sequence number, not UID. */
 	res = mailimap_fetch(client->imap, set, fetch_type, &fetch_result);
@@ -960,7 +968,9 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 	append_quota(root, client);
 
 	mailimap_set_free(set);
-	mailimap_fetch_type_free(fetch_type);
+	if (fetch_att) {
+		mailimap_fetch_type_free(fetch_type);
+	}
 	mailimap_fetch_list_free(fetch_result);
 	json_send(ws, root);
 	return;
@@ -1738,6 +1748,9 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 
 	if (!client->idling) {
 		bbs_debug(7, "IDLE not active, ignoring...\n");
+		return 0;
+	} else if (strlen_zero(client->mailbox)) {
+		bbs_error("Client mailbox not set?\n");
 		return 0;
 	}
 

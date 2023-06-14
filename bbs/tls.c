@@ -34,6 +34,7 @@
 #include "include/utils.h"
 
 #ifdef HAVE_OPENSSL
+static char root_certs[84] = "/etc/ssl/certs/ca-certificates.crt";
 static char ssl_cert[256] = "";
 static char ssl_key[256] = "";
 
@@ -697,6 +698,15 @@ SSL *ssl_client_new(int fd, int *rfd, int *wfd, const char *snihostname)
 		goto sslcleanup;
 	}
 
+	/* Attempt to verify the server's TLS certificate.
+	 * If we don't do this, verify_result won't be set properly later on. */
+	SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+	SSL_CTX_set_verify_depth(ctx, 4);
+	if (SSL_CTX_load_verify_locations(ctx, root_certs, NULL) != 1) {
+		bbs_error("Failed to load root certs from %s: %s\n", root_certs, ERR_error_string(ERR_get_error(), NULL));
+		goto sslcleanup;
+	}
+
 	/* SNI (Server Name Indication) tells the server which host we want.
 	 * Some servers may host multiple hosts at the same IP,
 	 * and won't send us a TLS certificate if we don't provide the SNI.
@@ -747,8 +757,8 @@ connect:
 	X509_free(server_cert);
 	verify_result = SSL_get_verify_result(ssl);
 	if (verify_result != X509_V_OK) {
-		/* XXX Verification always fails, so do debug for now, rather than warning log */
-		bbs_debug(1, "SSL verify failed: %ld (%s)\n", verify_result, X509_verify_cert_error_string(verify_result));
+		bbs_warning("SSL verify failed: %ld (%s)\n", verify_result, X509_verify_cert_error_string(verify_result));
+		goto sslcleanup;
 	} else {
 		bbs_debug(4, "TLS verification successful\n");
 	}
@@ -834,6 +844,7 @@ static int ssl_load_config(void)
 		return -1; /* Impossible to do TLS server stuff if we don't know what the server key/cert are */
 	}
 
+	res |= bbs_config_val_set_str(cfg, "tls", "rootcerts", root_certs, sizeof(root_certs));
 	res |= bbs_config_val_set_str(cfg, "tls", "cert", ssl_cert, sizeof(ssl_cert));
 	res |= bbs_config_val_set_str(cfg, "tls", "key", ssl_key, sizeof(ssl_key));
 
