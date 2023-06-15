@@ -2339,8 +2339,6 @@ static int pseudo_status_size(struct imap_session *imap, char *s, const char *re
 			mb_size += (size_t) atoi(sizestr);
 		}
 
-		bbs_debug(3, "Calculated size is %lu\n", mb_size);
-
 #if 0
 		/* Actually, the code to switch back to the really selected mailbox for STATUS should handle this, so no need: */
 		if (!imap->folder && imap->virtcapabilities & IMAP_CAPABILITY_UNSELECT) {
@@ -2356,7 +2354,8 @@ static int pseudo_status_size(struct imap_session *imap, char *s, const char *re
 	}
 
 	/* Modify the originally returned response to include the SIZE attribute */
-	tmp = strchr(remote_status, ')'); /* XXX Assumes only one () pair in the whole response */
+	/* Find LAST instance, since we can't assume there's only one pair of parentheses, the mailbox name could contain parentheses */
+	tmp = strrchr(remote_status, ')');
 	if (!tmp) {
 		return -1;
 	}
@@ -2366,7 +2365,7 @@ static int pseudo_status_size(struct imap_session *imap, char *s, const char *re
 	/* Replace remote mailbox name with our name for it.
 	 * To do this, insert imap->virtprefix before the mailbox name.
 	 * In practice, easier to just reconstruct the STATUS as needed. */
-	tmp = strchr(remote_status, '(');
+	tmp = strrchr(remote_status, '('); /* Again, look for the last ( since the mailbox name could contain it */
 
 	imap_send(imap, "STATUS \"%s%c%s\" %s", imap->virtprefix, HIERARCHY_DELIMITER_CHAR, remotename, tmp); /* Send the modified response */
 	imap_reply(imap, "OK STATUS");
@@ -3026,9 +3025,9 @@ static int imap_client_list(struct bbs_tcp_client *client, const char *prefix, F
 			bbs_warning("Invalid LIST response\n");
 			continue;
 		}
-		if (strcmp(delimiter, ".") && strcmp(delimiter, "/")) {
-			bbs_warning("Unexpected hierarchy delimiter '%s'\n", delimiter); /* Flag anything uncommon in case it's a parsing error */
-			continue;
+		/* . is the most common. Gmail uses / and Yandex uses | */
+		if (strcmp(delimiter, ".") && strcmp(delimiter, "/") && strcmp(delimiter, "|")) {
+			bbs_warning("Unexpected hierarchy delimiter '%s' (remainder: %s)\n", delimiter, p2); /* Flag anything uncommon in case it's a parsing error */
 		}
 		STRIP_QUOTES(p2); /* Strip quotes from mailbox name, we'll add them ourselves */
 		/* Note that for real Other Users, the root folder (username) is itself selectable, and that is the INBOX.
@@ -3204,6 +3203,7 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 	}
 	if (stat(virtcachefile, &st2) || st.st_mtim.tv_sec > st2.st_mtim.tv_sec) {
 		/* .imapremote has been modified since .imapremote.cache was written, or .imapremote.cache doesn't even exist yet */
+		bbs_debug(4, "Control file has changed since cache file was last rebuilt, need to rebuild again\n");
 		forcerescan = 1;
 	}
 	if (!forcerescan) {
@@ -3264,11 +3264,10 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 			bbs_tcp_client_cleanup(&client);
 		}
 		fclose(fp);
+		rewind(fp2); /* Rewind cache to the beginning, in case we just wrote it */
 	}
 
 	/* At this point, we should be able to send whatever is in the cache */
-
-	rewind(fp2); /* Rewind cache to the beginning, in case we just wrote it */
 
 	UNUSED(listscandir);
 	UNUSED(ns);

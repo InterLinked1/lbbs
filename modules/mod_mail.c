@@ -1469,7 +1469,7 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 
 	IMAP_CLIENT_EXPECT(client, "* OK");
 	IMAP_CLIENT_SEND(client, "a0 CAPABILITY");
-	IMAP_CLIENT_EXPECT(client, "* CAPABILITY");
+	IMAP_CLIENT_EXPECT(client, "* CAPABILITY ");
 
 #define PARSE_CAPABILITY(name, flag) \
 	else if (!strcmp(cur, name)) { \
@@ -1477,10 +1477,10 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 	}
 
 	/* Enable any capabilities the client may have enabled. */
-	capstring = client->buf + STRLEN("* CAPABILITY");
+	capstring = client->buf + STRLEN("* CAPABILITY ");
 	bbs_debug(5, "Capabilities: %s\n", capstring);
 	while ((cur = strsep(&capstring, " "))) { /* It's okay to consume the capabilities, nobody else needs them */
-		if (strlen_zero(cur) || !strcmp(cur, "IMAP4rev1")) {
+		if (strlen_zero(cur) || !strcmp(cur, "IMAP4rev1") || !strcmp(cur, "IMAP4")) {
 			continue;
 		}
 		PARSE_CAPABILITY("IDLE", IMAP_CAPABILITY_IDLE)
@@ -1495,6 +1495,7 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 		PARSE_CAPABILITY("QUOTA", IMAP_CAPABILITY_QUOTA)
 		PARSE_CAPABILITY("STATUS=SIZE", IMAP_CAPABILITY_STATUS_SIZE)
 		PARSE_CAPABILITY("UNSELECT", IMAP_CAPABILITY_UNSELECT)
+		PARSE_CAPABILITY("BINARY", IMAP_CAPABILITY_BINARY)
 		else if (STARTS_WITH(cur, "X") || STARTS_WITH(cur, "AUTH=") || !strcmp(cur, "CHILDREN") || !strcmp(cur, "UNSELECT") || !strcmp(cur, "NAMESPACE") || !strcmp(cur, "ID") || !strcmp(cur, "SORT") || !strcmp(cur, "MOVE") || !strcmp(cur, "UIDPLUS") || !strcmp(cur, "XLIST") || !strcmp(cur, "I18NLEVEL=1") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "RIGHTS=") || !strcmp(cur, "WITHIN") || !strcmp(cur, "ESEARCH") || !strcmp(cur, "ESORT") || !strcmp(cur, "SEARCHRES") || !strcmp(cur, "COMPRESSED=DEFLATE")) {
 			/* Don't care */
 		} else if (!strcmp(cur, "LOGINDISABLED")) { /* RFC 3501 7.2.1 */

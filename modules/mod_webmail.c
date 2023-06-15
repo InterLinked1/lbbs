@@ -277,6 +277,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 	for (cur = clist_begin(imap_list); cur; cur = clist_next(cur)) {
 		json_t *folder, *flagsarr;
 		const char *name;
+		int noselect = 0;
 		struct mailimap_mailbox_list *mb_list = clist_content(cur);
 		struct mailimap_mbx_list_flags *flags = mb_list->mb_flag;
 		delimiter = mb_list->mb_delimiter;
@@ -289,7 +290,38 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 		}
 
 		json_object_set_new(folder, "name", json_string(name));
-		if (details) {
+		flagsarr = json_array();
+		json_object_set_new(folder, "flags", flagsarr);
+		if (flags) {
+			clistiter *cur2;
+			if (flags->mbf_type == MAILIMAP_MBX_LIST_FLAGS_SFLAG) {
+				switch (flags->mbf_sflag) {
+					case MAILIMAP_MBX_LIST_SFLAG_MARKED:
+						json_array_append_new(flagsarr, json_string("Marked"));
+						break;
+					case MAILIMAP_MBX_LIST_SFLAG_UNMARKED:
+						json_array_append_new(flagsarr, json_string("Unmarked"));
+						break;
+					case MAILIMAP_MBX_LIST_SFLAG_NOSELECT:
+						json_array_append_new(flagsarr, json_string("NoSelect"));
+						noselect = 1;
+						break;
+				}
+			}
+			for (cur2 = clist_begin(flags->mbf_oflags); cur2; cur2 = clist_next(cur2)) {
+				struct mailimap_mbx_list_oflag *oflag = clist_content(cur2);
+				switch (oflag->of_type) {
+					case MAILIMAP_MBX_LIST_OFLAG_NOINFERIORS:
+						json_array_append_new(flagsarr, json_string("NoInferiors"));
+						break;
+					case MAILIMAP_MBX_LIST_OFLAG_FLAG_EXT:
+						/* These don't include any backslashes, so don't in the other ones above either: */
+						json_array_append_new(flagsarr, json_string(oflag->of_flag_ext));
+						break;
+				}
+			}
+		}
+		if (details && !noselect) {
 			uint32_t total;
 			/* STATUS: ideally we could get all the details we want from a single STATUS command. */
 			if (!client_status_command(client, imap, name, folder, &total)) {
@@ -336,36 +368,6 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 						json_object_set_new(folder, "uidvalidity", json_integer(imap->imap_selection_info->sel_uidvalidity));
 						json_object_set_new(folder, "uidnext", json_integer(imap->imap_selection_info->sel_uidnext));
 					}
-				}
-			}
-		}
-		flagsarr = json_array();
-		json_object_set_new(folder, "flags", flagsarr);
-		if (flags) {
-			clistiter *cur2;
-			if (flags->mbf_type == MAILIMAP_MBX_LIST_FLAGS_SFLAG) {
-				switch (flags->mbf_sflag) {
-					case MAILIMAP_MBX_LIST_SFLAG_MARKED:
-						json_array_append_new(flagsarr, json_string("Marked"));
-						break;
-					case MAILIMAP_MBX_LIST_SFLAG_UNMARKED:
-						json_array_append_new(flagsarr, json_string("Unmarked"));
-						break;
-					case MAILIMAP_MBX_LIST_SFLAG_NOSELECT:
-						json_array_append_new(flagsarr, json_string("NoSelect"));
-						break;
-				}
-			}
-			for (cur2 = clist_begin(flags->mbf_oflags); cur2; cur2 = clist_next(cur2)) {
-				struct mailimap_mbx_list_oflag *oflag = clist_content(cur2);
-				switch (oflag->of_type) {
-					case MAILIMAP_MBX_LIST_OFLAG_NOINFERIORS:
-						json_array_append_new(flagsarr, json_string("NoInferiors"));
-						break;
-					case MAILIMAP_MBX_LIST_OFLAG_FLAG_EXT:
-						/* These don't include any backslashes, so don't in the other ones above either: */
-						json_array_append_new(flagsarr, json_string(oflag->of_flag_ext));
-						break;
 				}
 			}
 		}
