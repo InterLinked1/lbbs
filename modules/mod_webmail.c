@@ -978,8 +978,9 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 
 	mailimap_set_free(set);
 	if (fetch_att) {
-		mailimap_fetch_type_free(fetch_type);
+		mailimap_fetch_att_free(fetch_att);
 	}
+	mailimap_fetch_type_free(fetch_type);
 	mailimap_fetch_list_free(fetch_result);
 	json_send(ws, root);
 	return;
@@ -993,7 +994,9 @@ cleanup:
 		free(headername);
 	}
 	clist_free(hdrlist);
-	mailimap_fetch_att_free(fetch_att);
+	if (fetch_att) {
+		mailimap_fetch_att_free(fetch_att);
+	}
 	mailimap_fetch_type_free(fetch_type);
 	json_decref(root);
 	return;
@@ -1001,7 +1004,9 @@ cleanup:
 cleanup2:
 	mailimap_set_free(set);
 	mailimap_header_list_free(imap_hdrlist);
-	mailimap_fetch_att_free(fetch_att);
+	if (fetch_att) {
+		mailimap_fetch_att_free(fetch_att);
+	}
 	mailimap_fetch_type_free(fetch_type);
 	json_decref(root);
 }
