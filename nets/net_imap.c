@@ -119,6 +119,7 @@
 #include "include/notify.h"
 #include "include/oauth.h"
 #include "include/base64.h"
+#include "include/stringlist.h"
 
 #include "include/mod_mail.h"
 #include "include/mod_mimeparse.h"
@@ -301,6 +302,7 @@ struct imap_session {
 	size_t virtprefixlen;		/* Length of virtprefix */
 	int virtcapabilities;		/* Capabilities of remote IMAP server */
 	char virtdelimiter;			/* Hierarchy delimiter used by remote server */
+	struct stringlist remotemailboxes;	/* List of remote mailboxes */
 	unsigned int uidvalidity;
 	unsigned int uidnext;
 	unsigned long highestmodseq;	/* Cached HIGHESTMODSEQ for current folder */
@@ -666,6 +668,7 @@ static void imap_destroy(struct imap_session *imap)
 	if (imap->virtmbox) {
 		imap_close_remote_mailbox(imap);
 	}
+	stringlist_empty(&imap->remotemailboxes);
 	if (imap->mbox != imap->mymbox) {
 		mailbox_unwatch(imap->mbox);
 		imap->mbox = imap->mymbox;
@@ -1580,6 +1583,15 @@ static int imap_translate_dir(struct imap_session *imap, const char *directory, 
 			}
 			safe_strncpy(username, remainder, sizeof(username));
 			bbs_strterm(username, '.');
+			if (stringlist_contains(&imap->remotemailboxes, username)) {
+				/* If we know there's a virtual/remote mailbox mapping, skip a DB call that will likely return nothing anyways.
+				 * This has the benefit that if a user explicitly defines a mapping in .imapremote,
+				 * it will take priority over a user with that particular username, preventing
+				 * "hijacking" of names that others have used for a mapping.
+				 * And from a performance perspective, it's way better to call stringlist_contains than query the DB every time.
+				 */
+				return -1;
+			}
 			userid = bbs_userid_from_username(username);
 			if (!userid) {
 				return -1;
@@ -3272,9 +3284,11 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 	UNUSED(listscandir);
 	UNUSED(ns);
 
+	stringlist_empty(&imap->remotemailboxes);
 	while ((fgets(line, sizeof(line), fp2))) {
 		char relativepath[256];
 		char remotedelim;
+		const char *virtmboxaccount;
 		char *tmp, *virtmboxname = relativepath;
 
 		/* Extract the user facing mailbox path from the LIST response in the cache file */
@@ -3356,6 +3370,11 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 		}
 
 		imap_send(imap, "%s %s", cmd, line);
+		virtmboxaccount = virtmboxname + STRLEN(OTHER_NAMESPACE_PREFIX) + 1; /* Skip Other Users. */
+		bbs_strterm(virtmboxaccount, remotedelim); /* Just the account portion, so we can use stringlist_contains later */
+		if (!stringlist_contains(&imap->remotemailboxes, virtmboxaccount)) {
+			stringlist_push(&imap->remotemailboxes, virtmboxaccount);
+		}
 	}
 	fclose(fp2);
 
