@@ -20,6 +20,18 @@
    Memcheck:Leak
    match-leak-kinds: reachable
    fun:malloc
+   obj:/usr/lib/x86_64-linux-gnu/libgcrypt.so.20.2.4
+   ...
+   fun:gcry_control
+   fun:libssh2_init
+   obj:/usr/lib/x86_64-linux-gnu/libcurl.so.4.7.0
+   obj:/usr/lib/x86_64-linux-gnu/libcurl.so.4.7.0
+}
+{
+   SSH_MODULE
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
    fun:strdup
    fun:_dl_load_cache_lookup
    fun:_dl_map_object
@@ -31,6 +43,19 @@
    fun:_dl_open
    fun:dlopen_doit
    fun:_dl_catch_exception
+}
+{
+   DLOPEN
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   ...
+   fun:call_init
+   fun:_dl_init
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+   fun:_dl_open
+   fun:dlopen_doit
 }
 {
    SSH_MODULE
@@ -99,6 +124,50 @@
    obj:/usr/lib/x86_64-linux-gnu/libcurl.so.4.7.0
    fun:bbs_curl_init
    fun:main
+}
+{
+   SSH_MODULE
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   fun:allocate_dtv_entry
+   fun:allocate_and_init
+   fun:tls_get_addr_tail.isra.0
+   fun:__tls_get_addr
+   fun:ssh_get_log_level
+   fun:_ssh_log
+   fun:ssh_pki_import_privkey_base64
+   fun:ssh_pki_import_privkey_file
+   obj:/usr/lib/x86_64-linux-gnu/libssh.so.4.7.4
+   fun:ssh_bind_listen
+   fun:start_ssh
+   fun:load_module
+   fun:start_resource
+   fun:load_resource.constprop.10
+   fun:on_file_autoload
+   fun:on_file_autoload
+}
+{
+   TLS
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   fun:allocate_dtv_entry
+   fun:allocate_and_init
+   fun:tls_get_addr_tail.isra.0
+   fun:__tls_get_addr
+   obj:/usr/lib/x86_64-linux-gnu/libgpgme.so.11.21.0
+   fun:gpgme_check_version
+   fun:gpgme_check_version_internal
+   fun:g_mime_init
+   fun:load_module
+   fun:start_resource
+   fun:load_resource.constprop.10
+   fun:on_file_preload
+   fun:on_file_preload
+   fun:__bbs_dir_traverse
+   fun:autoload_modules
+   fun:load_modules
 }
 {
    BACKTRACE_libbfd_bfd_elf_find_nearest_line
@@ -187,6 +256,46 @@
    fun:g_object_new
 }
 {
+   GOBJECT
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   fun:realloc
+   fun:g_realloc
+   ...
+   fun:_dl_init
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+   fun:_dl_open
+}
+{
+   GOBJECT
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   fun:realloc
+   fun:g_realloc
+   ...
+   fun:call_init.part.0
+   fun:call_init
+   fun:_dl_init
+   fun:dl_open_worker
+}
+{
+   GLIB
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:calloc
+   fun:g_malloc0
+   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.5800.3
+   fun:g_type_register_static
+   fun:g_pointer_type_register_static
+   ...
+   fun:_dl_init
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+}
+{
    GLIB_GOBJECT
    Memcheck:Leak
    match-leak-kinds: reachable
@@ -264,6 +373,22 @@
    fun:_dl_catch_exception
 }
 {
+   GMIME_INIT
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:calloc
+   ...
+   fun:g_mime_init
+   fun:load_module
+   fun:start_resource
+   fun:load_resource.constprop.10
+   fun:on_file_preload
+   fun:on_file_preload
+   fun:__bbs_dir_traverse
+   fun:autoload_modules
+   fun:load_modules
+}
+{
    GMIME_init
    Memcheck:Leak
    match-leak-kinds: reachable
@@ -295,6 +420,18 @@
    GOBJECT_init
    Memcheck:Leak
    match-leak-kinds: reachable
+   fun:malloc
+   ...
+   fun:g_hash_table_new_full
+   ...
+   fun:_dl_catch_exception
+   fun:_dl_open
+   fun:dlopen_doit
+}
+{
+   GOBJECT_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
    ...
    obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
    obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
@@ -313,7 +450,6 @@
    Memcheck:Leak
    match-leak-kinds: possible
    ...
-   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
    fun:g_type_register_static
    fun:g_mime_content_disposition_get_type
    fun:g_mime_init
@@ -330,6 +466,34 @@
    obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
    fun:call_init.part.0
    ...
+}
+{
+   GOBJECT_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:calloc
+   fun:g_malloc0
+   ...
+   fun:_dl_init
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+   fun:_dl_open
+   fun:dlopen_doit
+}
+{
+   GOBJECT
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   fun:realloc
+   fun:g_realloc
+   ...
+   fun:call_init.part.0
+   fun:call_init
+   fun:_dl_init
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+   fun:_dl_open
 }
 {
    GOBJECT_init
@@ -567,4 +731,109 @@
    obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
    obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
    fun:g_mime_parser_construct_message
+}
+
+
+{
+   DLOPEN
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:realloc
+   ...
+   fun:_dl_open
+   fun:dlopen_doit
+}
+{
+   DLOPEN
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:calloc
+   ...
+   fun:_dl_open
+   fun:dlopen_doit
+}
+{
+   DLOPEN
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:calloc
+   ...
+   fun:_dl_open
+}
+{
+   DLOPEN
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:calloc
+   ...
+   fun:_dl_catch_exception
+}
+{
+   DLOPEN
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:realloc
+   ...
+   fun:_dl_open
+}
+{
+   DLOPEN
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   ...
+   fun:_dl_open
+   fun:dlopen_doit
+}
+{
+   DLOPEN
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   ...
+   fun:_dl_open
+}
+{
+   DLOPEN
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:malloc
+   ...
+   fun:_dl_open
+}
+{
+   DLOPEN
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   ...
+   fun:_dl_open
+   fun:dlopen_doit
+   fun:_dl_catch_exception
+   fun:_dl_catch_error
+   fun:_dlerror_run
+   fun:dlopen@@GLIBC_2.2.5
+   fun:load_dlopen.constprop.12
+   fun:load_dynamic_module.constprop.11
+}
+{
+   DLCLOSE
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   fun:_dl_close_worker
+   fun:_dl_close_worker
+   fun:_dl_close
+   fun:_dl_catch_exception
+   fun:_dl_catch_error
+   fun:_dlerror_run
+   fun:dlclose
+   fun:logged_dlclose
+   fun:unload_dynamic_module
+   fun:unload_modules_helper
+   fun:unload_modules
+   fun:bbs_shutdown
+   fun:bbs_shutdown
+   fun:monitor_sig_flags
+   fun:main
 }

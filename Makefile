@@ -149,7 +149,7 @@ valgrind : valgrindver
 	$(VALGRIND) --leak-check=full --track-fds=yes --track-origins=yes --show-leak-kinds=all --suppressions=valgrind.supp --log-fd=9 /usr/sbin/$(EXE) -c 9>valgrind.txt
 
 valgrindsupp : valgrindver
-	$(VALGRIND) --leak-check=full --track-fds=yes --track-origins=yes --show-leak-kinds=all --gen-suppressions=all --log-fd=9 /usr/sbin/$(EXE) -c 9>valgrind.txt
+	$(VALGRIND) --leak-check=full --track-fds=yes --track-origins=yes --show-leak-kinds=all --suppressions=valgrind.supp --gen-suppressions=all --log-fd=9 /usr/sbin/$(EXE) -c 9>valgrind.txt
 
 helgrind : valgrindver
 	$(VALGRIND) --tool=helgrind /usr/sbin/$(EXE) -c

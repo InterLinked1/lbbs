@@ -790,20 +790,14 @@ void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, c
 		if (pfds[0].revents) {
 			len = sizeof(sinaddr);
 			sfd = accept(pfds[0].fd, (struct sockaddr *) &sinaddr, &len);
-			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
-			bbs_debug(1, "Accepting new %s connection from %s\n", pfds[0].fd == socket ? name : pfds[0].fd == socket2 ? name2 : name3, new_ip);
 			sockidx = pfds[0].fd == socket ? 0 : pfds[0].fd == socket2 ? 1 : 2; /* Could be socket, socket2, or socket3 */
 		} else if (pfds[1].revents) {
 			len = sizeof(sinaddr);
 			sfd = accept(pfds[1].fd, (struct sockaddr *) &sinaddr, &len);
-			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
-			bbs_debug(1, "Accepting new %s connection from %s\n", pfds[1].fd == socket ? name : pfds[1].fd == socket2 ? name2 : name3, new_ip);
 			sockidx = pfds[1].fd == socket ? 0 : pfds[1].fd == socket2 ? 1 : 2; /* Could only be socket2 or socket3, technically */
 		} else if (pfds[2].revents) {
 			len = sizeof(sinaddr);
 			sfd = accept(pfds[2].fd, (struct sockaddr *) &sinaddr, &len);
-			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
-			bbs_debug(1, "Accepting new %s connection from %s\n", pfds[2].fd == socket ? name : pfds[2].fd == socket2 ? name2 : name3, new_ip);
 			sockidx = pfds[2].fd == socket ? 0 : pfds[2].fd == socket2 ? 1 : 2; /* Could only be socket 3, technically */
 		} else {
 			bbs_error("No revents?\n");
@@ -816,6 +810,9 @@ void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, c
 			bbs_debug(3, "accept: %s\n", strerror(errno));
 			break;
 		}
+
+		bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
+		bbs_debug(1, "Accepting new %s connection from %s\n", pfds[sockidx].fd == socket ? name : pfds[sockidx].fd == socket2 ? name2 : name3, new_ip);
 
 		node = __bbs_node_request(sfd, sockidx == 0 ? name : sockidx == 1 ? name2 : name3, module);
 		if (!node) {

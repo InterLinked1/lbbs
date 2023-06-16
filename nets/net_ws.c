@@ -186,7 +186,9 @@ void websocket_set_custom_poll_fd(struct ws_session *ws, int fd, int pollms)
 	 * (At least, Chromium will.)
 	 * So ping at least as frequently as just under every 5 minutes. */
 	if (pollms > MAX_WEBSOCKET_POLL_MS - SEC_MS(5) || pollms < 0) {
-		bbs_warning("Poll timeout truncated to %d\n", MAX_WEBSOCKET_POLL_MS - SEC_MS(5));
+		if (pollms > MAX_WEBSOCKET_POLL_MS) {
+			bbs_warning("Poll timeout truncated to %d\n", MAX_WEBSOCKET_POLL_MS - SEC_MS(5));
+		}
 		pollms = MAX_WEBSOCKET_POLL_MS - SEC_MS(5);
 	}
 	ws->pollms = pollms;

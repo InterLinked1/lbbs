@@ -941,6 +941,7 @@ int ssl_server_init(void)
 
 void ssl_server_shutdown(void)
 {
+	int ssl_was_available = ssl_is_available;
 	ssl_is_available = 0;
 	ssl_shutting_down = 1;
 #ifdef HAVE_OPENSSL
@@ -954,7 +955,7 @@ void ssl_server_shutdown(void)
 	bbs_pthread_join(ssl_thread, NULL);
 	bbs_alertpipe_close(ssl_alert_pipe);
 	ssl_cleanup_fds();
-	if (ssl_is_available) {
+	if (ssl_was_available) {
 		lock_cleanup();
 	}
 #endif
