@@ -200,7 +200,8 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client, s
 
 	mailimap_set_logger(imap, libetpan_log, client);
 	timeout = mailimap_get_timeout(imap);
-	mailimap_set_timeout(imap, 7); /* If the IMAP server hasn't responded by now, I doubt it ever will */
+	/* Timeout needs to be sufficiently large... e.g. FETCH 1:* (SIZE) can take quite a few seconds on large mailboxes. */
+	mailimap_set_timeout(imap, 25); /* If the IMAP server hasn't responded by now, I doubt it ever will */
 	if (secure) {
 		res = mailimap_ssl_connect(imap, hostname, port);
 	} else {
@@ -1861,10 +1862,10 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 			/*! \todo Frontend should automark this as read, without us sending an update */
 		} else if (!strcmp(command, "UNSEEN")) {
 			handle_store_seen(client, -1, json_object_get(root, "uids"));
-			REFRESH_LISTING("UNSEEN");
+			/* Frontend will handle toggling unread/read visibility and updating folder counts */
 		} else if (!strcmp(command, "SEEN")) {
 			handle_store_seen(client, +1, json_object_get(root, "uids"));
-			REFRESH_LISTING("SEEN");
+			/* Frontend will handle toggling unread/read visibility and updating folder counts */
 		} else if (!strcmp(command, "MOVE")) {
 			handle_move(client, json_object_get(root, "uids"), json_object_string_value(root, "folder"));
 			REFRESH_LISTING("MOVE");
