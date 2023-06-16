@@ -112,6 +112,20 @@ void *__bbs_strndup(const char *s, size_t n, const char *file, int line, const c
 	return ptr;
 }
 
+void *__bbs_memdup(void *ptr, size_t size, const char *file, int line, const char *func)
+{
+	void *newptr;
+	RAND_MEMORY_FAIL(realloc, NULL);
+	newptr = malloc(size + 1); /* +1 in case it's a string */
+	LOG_ALLOC_FAILURE(newptr, realloc);
+	if (ALLOC_SUCCESS(newptr)) {
+		char *end = ptr + size - 1;
+		memcpy(newptr, ptr, size);
+		*end = '\0'; /* Null terminate, in case it's a string */
+	}
+	return newptr;
+}
+
 int __attribute__ ((format (gnu_printf, 2, 0))) __bbs_vasprintf(char **strp, const char *fmt, va_list ap, const char *file, int line, const char *func)
 {
 	int size;

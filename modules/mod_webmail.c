@@ -227,12 +227,17 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client, s
 		mailimap_capability_data_free(capdata); /* This is wasteful of libetpan to duplicate the caps for us to immediately free them... but this is the API */
 	}
 	if (mailimap_has_id(imap)) {
+#if 0
+		/* This dynamically allocates a lot of memory unnecessarily, and it has a memory leak, so avoid it and do it ourself. */
 		char *server = NULL, *server_ver = NULL;
 		res = mailimap_id_basic(imap, "wssmail via LBBS (libetpan)", BBS_VERSION, &server, &server_ver);
 		if (!MAILIMAP_ERROR(res)) {
 			free_if(server);
 			free_if(server_ver);
 		}
+#else
+		res = mailimap_custom_command(imap, "ID (\"name\" \"wssmail via LBBS (libetpan)\" \"version\" \"" BBS_VERSION "\")");
+#endif
 	}
 	SET_BITFIELD(client->has_status_size, mailimap_has_extension(imap, "STATUS=SIZE"));
 	*data = imap;
@@ -743,7 +748,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 {
 	int expected, res, c = 0;
 	struct mailimap_set *set;
-	struct mailimap_fetch_type *fetch_type;
+	struct mailimap_fetch_type *fetch_type = NULL;
 	struct mailimap_fetch_att *fetch_att = NULL;
 	clist *fetch_result;
 	clistiter *cur;
@@ -811,14 +816,17 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 
 	/* Fetch! By sequence number, not UID. */
 	res = mailimap_fetch(client->imap, set, fetch_type, &fetch_result);
+	mailimap_fetch_type_free(fetch_type);
+	mailimap_set_free(set);
+	/* Don't go to cleanup past this point, so no need to set fetch_type/set to NULL */
 	if (MAILIMAP_ERROR(res)) {
 		bbs_warning("FETCH failed: %s\n", maildriver_strerror(res));
-		goto cleanup2;
+		/* fetch_result and everything that went into it is already freed */
+		return;
 	}
 
 	root = json_object();
 	if (!root) {
-		mailimap_fetch_type_free(fetch_type);
 		mailimap_fetch_list_free(fetch_result);
 		return;
 	}
@@ -938,11 +946,6 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 	/* XXX Should this be done only for SELECT, not each FETCHLIST? */
 	append_quota(root, client);
 
-	mailimap_set_free(set);
-	if (fetch_att) {
-		mailimap_fetch_att_free(fetch_att);
-	}
-	mailimap_fetch_type_free(fetch_type);
 	mailimap_fetch_list_free(fetch_result);
 	json_send(ws, root);
 	return;
@@ -956,10 +959,13 @@ cleanup:
 		free(headername);
 	}
 	clist_free(hdrlist);
+
 	if (fetch_att) {
 		mailimap_fetch_att_free(fetch_att);
 	}
-	mailimap_fetch_type_free(fetch_type);
+	if (fetch_type) {
+		mailimap_fetch_type_free(fetch_type);
+	}
 	json_decref(root);
 	return;
 
@@ -969,7 +975,9 @@ cleanup2:
 	if (fetch_att) {
 		mailimap_fetch_att_free(fetch_att);
 	}
-	mailimap_fetch_type_free(fetch_type);
+	if (fetch_type) {
+		mailimap_fetch_type_free(fetch_type);
+	}
 	json_decref(root);
 }
 
@@ -1403,10 +1411,8 @@ static void send_preview(struct ws_session *ws, struct imap_client *client, uint
 					eoh = memmem(msg_body, msg_size, "\r\n\r\n", STRLEN("\r\n\r\n")); /* Find end of headers */
 					if (eoh) {
 						size_t headerlen = (size_t) (eoh - msg_body);
-						char *dupheaders = malloc(headerlen + 1);
+						char *dupheaders = memdup(msg_body, headerlen);
 						if (ALLOC_SUCCESS(dupheaders)) {
-							memcpy(dupheaders, msg_body, headerlen); /*! \todo XXX standardize memdup in utils.c */
-							dupheaders[headerlen] = '\0';
 							append_header_meta(root, dupheaders, 0);
 							free(dupheaders);
 						}
@@ -1513,10 +1519,8 @@ static void handle_fetch(struct ws_session *ws, struct imap_client *client, uint
 					eoh = memmem(msg_body, msg_size, "\r\n\r\n", STRLEN("\r\n\r\n")); /* Find end of headers */
 					if (eoh) {
 						size_t headerlen = (size_t) (eoh - msg_body);
-						char *dupheaders = malloc(headerlen + 1);
+						char *dupheaders = memdup(msg_body, headerlen);
 						if (ALLOC_SUCCESS(dupheaders)) {
-							memcpy(dupheaders, msg_body, headerlen); /*! \todo XXX standardize memdup in utils.c */
-							dupheaders[headerlen] = '\0';
 							append_header_meta(root, dupheaders, 0);
 							free(dupheaders);
 						}
@@ -1741,7 +1745,9 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	 * To figure that out, call STATUS on the mailbox, which will make the pagination in REFRESH_LISTING correct.
 	 */
 
-	client_status_command(client, client->imap, client->mailbox, NULL, &messages);
+	if (client_status_command(client, client->imap, client->mailbox, NULL, &messages)) {
+		goto exit;
+	}
 	/* Figure out if it was an EXISTS or EXPUNGE by how it changed */
 	if (messages > client->messages) {
 		/* More messages now. EXISTS */

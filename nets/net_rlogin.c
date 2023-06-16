@@ -42,18 +42,6 @@ static pthread_t rlogin_thread;
 
 static int rlogin_port = DEFAULT_RLOGIN_PORT;
 
-static int strncount(char *buf, int len, char c)
-{
-	int i, count = 0;
-	for (i = 0; i < len; i++) {
-		if (buf[i] == c) {
-			count++;
-		}
-	}
-	return count;
-}
-
-
 #define TIOCPKT_WINDOW 0x80
 
 static int send_urgent(int fd)
@@ -95,7 +83,7 @@ static int rlogin_handshake(struct bbs_node *node)
 		return -1;
 	}
 	buf[res] = '\0'; /* Safe - just in case we didn't read a NUL */
-	i = strncount(buf, res, '\0');
+	i = bbs_strncount(buf, (size_t) res, '\0');
 	if (i != 4) {
 		bbs_debug(3, "Got %d-byte connection string with %d NULs?\n", res, i);
 		return -1;

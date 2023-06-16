@@ -1055,6 +1055,30 @@ void bbs_dump_mem(unsigned const char *restrict s, size_t len)
 	}
 }
 
+int bbs_str_count(const char *restrict s, char c)
+{
+	int count = 0;
+	while (*s) {
+		if (*s == c) {
+			count++;
+		}
+		s++;
+	}
+	return count;
+}
+
+int bbs_strncount(const char *restrict s, size_t len, char c)
+{
+	size_t i;
+	int count = 0;
+	for (i = 0; i < len; i++) {
+		if (s[i] == c) {
+			count++;
+		}
+	}
+	return count;
+}
+
 int bbs_term_line(char *restrict c)
 {
 	int len = 0;

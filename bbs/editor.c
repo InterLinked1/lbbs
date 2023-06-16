@@ -28,6 +28,7 @@
 #include "include/node.h"
 #include "include/term.h"
 #include "include/editor.h"
+#include "include/utils.h" /* use bbs_str_count */
 
 int bbs_line_editor(struct bbs_node *node, const char *restrict instr, char *restrict buf, size_t len)
 {
@@ -108,18 +109,6 @@ int bbs_line_editor(struct bbs_node *node, const char *restrict instr, char *res
 
 /* #define DEBUG_PAGING */
 
-static int strcount(const char *restrict s, char c)
-{
-	int count = 0;
-	while (*s) {
-		if (*s == c) {
-			count++;
-		}
-		s++;
-	}
-	return count;
-}
-
 #define PAGE_COLS(node) (node->cols ? node->cols : 80)
 #define PAGE_ROWS(node) (node->rows ? node->rows : 24)
 
@@ -150,7 +139,7 @@ int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const ch
 	if (pginfo->want > 0 && s) {
 		int ends_in_newline;
 		int newlines, lines_eff = 1;
-		newlines = strcount(s, '\n');
+		newlines = bbs_str_count(s, '\n');
 		ends_in_newline = s[len - 1] == '\n' ? 1 : 0;
 		if (newlines) {
 			/* The LF isn't necessarily at the end of the line, this could mean there are multiple lines of input. */

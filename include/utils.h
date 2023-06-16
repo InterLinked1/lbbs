@@ -604,6 +604,23 @@ void bbs_dump_string(const char *restrict s);
 void bbs_dump_mem(unsigned const char *restrict s, size_t len);
 
 /*!
+ * \brief Get the number of instances of a character in a NUL-terminated string
+ * \param s String
+ * \param c Character of interest
+ * \return Number of instances
+ */
+int bbs_str_count(const char *restrict s, char c);
+
+/*!
+ * \brief Get the number of instances of a character in a region of memory
+ * \param s String
+ * \param len Number of bytes to search
+ * \param c Character of interest
+ * \return Number of instances
+ */
+int bbs_strncount(const char *restrict s, size_t len, char c);
+
+/*!
  * \brief Terminate a string at the end of the first line (first CR or LF character)
  * \param c
  * \return New string length

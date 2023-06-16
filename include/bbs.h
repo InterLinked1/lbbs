@@ -140,11 +140,21 @@ int bbs_fd_dump(int fd);
 #define vasprintf(strp, format, ap) __bbs_vasprintf(strp, format, ap, __FILE__, __LINE__, __func__)
 #define asprintf(strp, format, ...) __bbs_asprintf(__FILE__, __LINE__, __func__, strp, format, ## __VA_ARGS__)
 
+/*!
+ * \brief Helper function to malloc + memcpy
+ * \param ptr Buffer to copy to newly allocated memory
+ * \param size Number of bytes to copy.
+ * \return NULL on failure
+ * \return Allocated buffer which contains size bytes starting at ptr, followed by a terminating NUL byte (useful for strings)
+ */
+#define memdup(ptr, size) __bbs_memdup(ptr, size, __FILE__, __LINE__, __func__)
+
 void *__bbs_malloc(size_t size, const char *file, int line, const char *func) __attribute__((malloc));
 void *__bbs_calloc(size_t nmemb, size_t size, const char *file, int line, const char *func) __attribute__((malloc));
 void *__bbs_realloc(void *ptr, size_t size, const char *file, int line, const char *func) __attribute__((malloc));
 void *__bbs_strdup(const char *s, const char *file, int line, const char *func) __attribute__((malloc));
 void *__bbs_strndup(const char *s, size_t n, const char *file, int line, const char *func) __attribute__((malloc));
+void *__bbs_memdup(void *ptr, size_t size, const char *file, int line, const char *func) __attribute__((malloc));
 int __attribute__ ((format (gnu_printf, 2, 0))) __bbs_vasprintf(char **strp, const char *fmt, va_list ap, const char *file, int line, const char *func);
 int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file, int line, const char *func, char **strp, const char *fmt, ...);
 #endif /* REDIRECT_LIBC_ALLOC */

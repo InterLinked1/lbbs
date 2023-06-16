@@ -948,15 +948,6 @@ static int read_body(struct http_session *http, char *buf, int discard)
 	return 0;
 }
 
-static void *memdup(const void *buf, size_t len)
-{
-	void *dup = malloc(len);
-	if (ALLOC_SUCCESS(dup)) {
-		memcpy(dup, buf, len);
-	}
-	return dup;
-}
-
 static int push_post_param(struct http_session *http, const char *name, const char *ctype, const char *filename, unsigned char *buffer, size_t len)
 {
 	struct post_field *p;
