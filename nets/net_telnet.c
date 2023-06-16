@@ -9,7 +9,7 @@
  * the GNU General Public License Version 2. See the LICENSE file
  * at the top of the source tree.
  */
-
+ 
 /*! \file
  *
  * \brief Telnet and TTY/TDD network driver
@@ -41,7 +41,7 @@
 #include "include/net.h"
 #include "include/tls.h"
 
-static int telnet_socket = -1, telnets_socket = -1, tty_socket = -1; /*!< TCP Socket for allowing incoming network connections */
+static int telnet_socket = -1, telnets_socket = -1, tty_socket = -1, ttys_socket = -1; /*!< TCP Socket for allowing incoming network connections */
 static pthread_t telnet_thread, telnets_thread, tty_thread;
 
 /*! \brief Telnet port is 23 */
@@ -53,7 +53,7 @@ static pthread_t telnet_thread, telnets_thread, tty_thread;
 static int telnet_port = DEFAULT_TELNET_PORT;
 static int telnets_port = DEFAULT_TELNETS_PORT;
 static int telnets_enabled = 0;
-static int tty_port = 0; /* Disabled by default */
+static int tty_port = 0, ttys_port = 0; /* Disabled by default */
 
 static int telnet_send_command(int fd, unsigned char cmd, unsigned char opt)
 {
@@ -218,6 +218,7 @@ static void *telnets_handler(void *varg)
 	 * Please don't implement proper Telnet support
 	 * as another intermediary layer that looks for 255 bytes,
 	 * and add yet a fourth thread! */
+	/* Set up TLS, then do the handshake, then proceed as normal. */
 	ssl = ssl_new_accept(node->fd, &node->rfd, &node->wfd);
 	if (!ssl) {
 		return NULL;
@@ -227,11 +228,31 @@ static void *telnets_handler(void *varg)
 		bbs_node_handler(node); /* Run the normal node handler */
 	}
 
-	/* Set up TLS, then do the handshake, then proceed as normal. */
-	close_if(node->rfd);
-	close_if(node->wfd);
 	ssl_close(ssl);
-	ssl = NULL;
+	return NULL;
+}
+
+static void *tty_handler(void *varg)
+{
+	struct bbs_node *node = varg;
+	SSL *ssl = NULL;
+
+	if (!strcmp(node->protname, "TDDS")) {
+		/* Use TDD for both secure and plaintext TDD. Used in NODE_IS_TDD macro. */
+		node->protname = "TDD";
+		bbs_debug(5, "Connection accepted on secure TTY port\n");
+		ssl = ssl_new_accept(node->fd, &node->rfd, &node->wfd);
+		if (!ssl) {
+			return NULL;
+		}
+	}
+
+	tty_handshake(node);
+	bbs_node_handler(node); /* Run the normal node handler */
+
+	if (ssl) {
+		ssl_close(ssl);
+	}
 	return NULL;
 }
 
@@ -246,7 +267,7 @@ static void *telnets_listener(void *unused)
 static void *tty_listener(void *unused)
 {
 	UNUSED(unused);
-	bbs_tcp_comm_listener(tty_socket, "TDD", tty_handshake, BBS_MODULE_SELF);
+	bbs_tcp_listener2(tty_socket, ttys_socket, "TDD", "TDDS", tty_handler, BBS_MODULE_SELF);
 	return NULL;
 }
 
@@ -271,8 +292,9 @@ static int load_config(void)
 		return -1;
 	}
 
-	tty_port = 0; /* Disabled by default */
+	tty_port = ttys_port = 0; /* Disabled by default */
 	bbs_config_val_set_port(cfg, "telnet", "ttyport", &tty_port);
+	bbs_config_val_set_port(cfg, "telnets", "ttyport", &ttys_port);
 
 	return 0;
 }
@@ -302,16 +324,25 @@ static int load_module(void)
 		bbs_socket_thread_shutdown(&telnet_socket, telnet_thread);
 		return -1;
 	}
-	if (tty_port) {
-		if (bbs_make_tcp_socket(&tty_socket, tty_port)) {
-			return -1;
+	if (tty_port || ttys_port) {
+		if (tty_port) {
+			if (bbs_make_tcp_socket(&tty_socket, tty_port)) {
+				return -1;
+			}
+		}
+		if (ttys_port) {
+			if (bbs_make_tcp_socket(&ttys_socket, ttys_port)) {
+				close_if(tty_socket);
+				return -1;
+			}
 		}
 		if (bbs_pthread_create(&tty_thread, NULL, tty_listener, NULL)) {
 			bbs_socket_thread_shutdown(&telnet_socket, telnet_thread);
 			if (telnets_enabled) {
 				bbs_socket_thread_shutdown(&telnets_socket, telnets_thread);
 			}
-			tty_socket = -1;
+			close_if(tty_socket);
+			close_if(ttys_socket);
 			return -1;
 		}
 	}
@@ -324,8 +355,14 @@ static int load_module(void)
 
 static int unload_module(void)
 {
-	if (tty_socket > -1) {
-		bbs_socket_thread_shutdown(&tty_socket, tty_thread);
+	if (tty_socket > -1 || ttys_socket > -1) {
+		if (tty_socket != -1) {
+			bbs_socket_close(&tty_socket);
+		}
+		if (ttys_socket != -1) {
+			bbs_socket_close(&ttys_socket);
+		}
+		bbs_pthread_join(tty_thread, NULL);
 	}
 	if (telnet_socket > -1) {
 		bbs_unregister_network_protocol((unsigned int) telnet_port);

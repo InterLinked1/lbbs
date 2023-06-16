@@ -812,9 +812,9 @@ void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, c
 		if (sfd < 0) {
 			if (errno != EINTR) {
 				bbs_debug(1, "accept returned %d: %s\n", sfd, strerror(errno));
-				break;
 			}
-			continue;
+			bbs_debug(3, "accept: %s\n", strerror(errno));
+			break;
 		}
 
 		node = __bbs_node_request(sfd, sockidx == 0 ? name : sockidx == 1 ? name2 : name3, module);
