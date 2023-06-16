@@ -848,15 +848,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 			struct mailimap_msg_att_item *item = clist_content(cur2);
 			if (item->att_type == MAILIMAP_MSG_ATT_ITEM_STATIC) {
 				struct mailimap_msg_att_body_section *msg_att_body_section;
-#if 0
-				struct mailimap_section *secsection;
-				struct mailimap_section_spec *section_spec;
-				struct mailimap_section_msgtext *section_msgtext;
-				struct mailimap_header_list *header_list;
-				clistiter *hcur;
-#else
 				char headersbuf[2048];
-#endif
 				switch (item->att_data.att_static->att_type) {
 					case MAILIMAP_MSG_ATT_UID:
 						json_object_set_new(msgitem, "uid", json_integer(item->att_data.att_static->att_data.att_uid));
@@ -873,42 +865,12 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 						bbs_debug(5, "Matching headers: %s\n", msg_att_body_section->sec_body_part);
 #endif
 
-#if 0
-						/* I thought this would get me key/value pairs for the headers, but didn't seem to work out */
-						secsection = msg_att_body_section->sec_section;
-						if (secsection && secsection->sec_spec) {
-							section_spec = secsection->sec_spec;
-							switch (section_spec->sec_type) {
-								case MAILIMAP_SECTION_SPEC_SECTION_MSGTEXT:
-									section_msgtext = section_spec->sec_data.sec_msgtext;
-									switch(section_msgtext->sec_type) {
-										case MAILIMAP_SECTION_MSGTEXT_HEADER_FIELDS:
-											header_list = section_msgtext->sec_header_list;
-											for (hcur = clist_begin(header_list->hdr_list); hcur; hcur = clist_next(hcur)) {
-												char *hdrval = clist_content(hcur); /* This is the header name here */
-												bbs_debug(3, "hdrval: %s\n", hdrval);
-											}
-											break;
-										case MAILIMAP_SECTION_MSGTEXT_HEADER:
-										case MAILIMAP_SECTION_MSGTEXT_HEADER_FIELDS_NOT:
-										case MAILIMAP_SECTION_MSGTEXT_TEXT:
-											bbs_warning("Unhandled FETCH response item\n");
-											break;
-									}
-									break;
-								case MAILIMAP_SECTION_SPEC_SECTION_PART:
-									bbs_warning("Unhandled FETCH response item\n");
-									break;
-							}
-						}
-#else
 						/* Manual hacky workaround */
 						/* Seems calling mailmime_parse and fetch_mime_recurse here is pointless
 						 * since we still have to do append_header_meta on those fields anyways,
 						 * or they don't show up. Can't just parse headers into mailmime_parse. */
 						safe_strncpy(headersbuf, msg_att_body_section->sec_body_part, sizeof(headersbuf));
 						append_header_meta(msgitem, headersbuf, 1);
-#endif
 						break;
 					case MAILIMAP_MSG_ATT_RFC822_HEADER:
 					case MAILIMAP_MSG_ATT_ENVELOPE:
@@ -1805,10 +1767,6 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 		 * Do NOT automark as seen. This is not a FETCH. */
 		send_preview(ws, client, previewseqno);
 	}
-
-#if 0
-	mailimap_noop(client->imap);
-#endif
 
 exit:
 	idle_start(ws, client);
