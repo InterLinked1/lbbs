@@ -44,6 +44,7 @@
 #include "include/auth.h" /* use bbs_list_auth_providers */
 #include "include/user.h" /* use bbs_user_dump */
 #include "include/notify.h"
+#include "include/startup.h"
 
 extern int option_nofork;
 
@@ -59,6 +60,58 @@ static pthread_t sysop_thread = 0;
 /* Use the macro to suppress unused macro warning with -Wunused-macros */
 #ifdef bbs_printf
 #endif
+
+static void show_copyright(int fd, int footer)
+{
+	bbs_dprintf(fd,
+	BBS_TAGLINE ", " BBS_COPYRIGHT "\n"
+	BBS_SHORTNAME " comes with ABSOLUTELY NO WARRANTY; for details type '/warranty'\n"
+	"This is free software, and you are welcome to redistribute it\n"
+	"under certain conditions; type '/copyright' for details.\n");
+	if (footer) {
+		bbs_dprintf(fd, "====================================================================\n");
+	}
+}
+
+static void show_license(int fd)
+{
+	bbs_dprintf(fd,
+	BBS_SHORTNAME " is free software; you can redistribute it and/or modify\n"
+	"it under the terms of the GNU General Public License version 2 as\n"
+	"published by the Free Software Foundation.\n\n"
+	"This program also contains components licensed under other licenses.\n"
+	"They include:\n\n"
+	"This program is distributed in the hope that it will be useful,\n"
+	"but WITHOUT ANY WARRANTY; without even the implied warranty of\n"
+	"MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n"
+	"GNU General Public License for more details.\n\n"
+	"You should have received a copy of the GNU General Public License\n"
+	"along with this program; if not, write to the Free Software\n"
+	"Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA\n");
+}
+
+static void show_warranty(int fd)
+{
+	bbs_dprintf(fd, "                            NO WARRANTY\n"
+	"BECAUSE THE PROGRAM IS LICENSED FREE OF CHARGE, THERE IS NO WARRANTY\n"
+	"FOR THE PROGRAM, TO THE EXTENT PERMITTED BY APPLICABLE LAW.  EXCEPT WHEN\n"
+	"OTHERWISE STATED IN WRITING THE COPYRIGHT HOLDERS AND/OR OTHER PARTIES\n"
+	"PROVIDE THE PROGRAM \"AS IS\" WITHOUT WARRANTY OF ANY KIND, EITHER EXPRESSED\n"
+	"OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF\n"
+	"MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.  THE ENTIRE RISK AS\n"
+	"TO THE QUALITY AND PERFORMANCE OF THE PROGRAM IS WITH YOU.  SHOULD THE\n"
+	"PROGRAM PROVE DEFECTIVE, YOU ASSUME THE COST OF ALL NECESSARY SERVICING,\n"
+	"REPAIR OR CORRECTION.\n\n"
+	"IN NO EVENT UNLESS REQUIRED BY APPLICABLE LAW OR AGREED TO IN WRITING\n"
+	"WILL ANY COPYRIGHT HOLDER, OR ANY OTHER PARTY WHO MAY MODIFY AND/OR\n"
+	"REDISTRIBUTE THE PROGRAM AS PERMITTED ABOVE, BE LIABLE TO YOU FOR DAMAGES,\n"
+	"INCLUDING ANY GENERAL, SPECIAL, INCIDENTAL OR CONSEQUENTIAL DAMAGES ARISING\n"
+	"OUT OF THE USE OR INABILITY TO USE THE PROGRAM (INCLUDING BUT NOT LIMITED\n"
+	"TO LOSS OF DATA OR DATA BEING RENDERED INACCURATE OR LOSSES SUSTAINED BY\n"
+	"YOU OR THIRD PARTIES OR A FAILURE OF THE PROGRAM TO OPERATE WITH ANY OTHER\n"
+	"PROGRAMS), EVEN IF SUCH HOLDER OR OTHER PARTY HAS BEEN ADVISED OF THE\n"
+	"POSSIBILITY OF SUCH DAMAGES.\n");
+}
 
 static int sysop_command(int fdin, int fdout, const char *s)
 {
@@ -232,6 +285,12 @@ static int sysop_command(int fdin, int fdout, const char *s)
 		char *tmp = NULL;
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_assert_exists(tmp);
+	} else if (!strcmp(s, "copyright")) {
+		show_copyright(fdout, 0);
+	} else if (!strcmp(s, "license")) {
+		show_license(fdout);
+	} else if (!strcmp(s, "warranty")) {
+		show_warranty(fdout);
 	} else {
 		res = -1;
 		bbs_dprintf(fdout, "ERROR: Invalid command: '%s'. Press '?' for help.\n", s);
@@ -286,6 +345,8 @@ static void *sysop_handler(void *varg)
 	pfd.fd = sysopfdin;
 	pfd.events = POLLIN | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
 
+	show_copyright(sysopfdout, 1);
+
 	histentry = NULL; /* initiailization must be after pthread_cleanup_push to avoid "variable might be clobbered" warning */
 	for (;;) {
 		pfd.revents = 0;
@@ -336,6 +397,10 @@ static void *sysop_handler(void *varg)
 					bbs_dprintf(sysopfdout, "/modules            - View list of loaded modules\n");
 					bbs_dprintf(sysopfdout, "/nets               - View list of network protocols\n");
 					bbs_dprintf(sysopfdout, "/authproviders      - View list of registered auth providers\n");
+					bbs_dprintf(sysopfdout, " == Licensing == \n");
+					bbs_dprintf(sysopfdout, "/copyright          - Show copyright notice\n");
+					bbs_dprintf(sysopfdout, "/license            - Show license notice\n");
+					bbs_dprintf(sysopfdout, "/warranty           - Show warranty notice\n");
 					bbs_dprintf(sysopfdout, " == Development & Debugging == \n");
 					bbs_dprintf(sysopfdout, "/threads            - View list of active registered threads\n");
 					bbs_dprintf(sysopfdout, "/fds                - View list of open file descriptors\n");
@@ -593,6 +658,12 @@ static int unload_module(void)
 	return 0;
 }
 
+static int show_copyright_fg(void)
+{
+	show_copyright(STDOUT_FILENO, 1);
+	return 0;
+}
+
 static int load_module(void)
 {
 	bbs_history_init();
@@ -612,6 +683,10 @@ static int load_module(void)
 		}
 	}
 #pragma GCC diagnostic pop
+
+	if (!bbs_is_fully_started() && option_nofork) {
+		bbs_register_startup_callback(show_copyright_fg);
+	}
 
 	return 0;
 }
