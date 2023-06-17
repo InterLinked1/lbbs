@@ -53,6 +53,9 @@ static char *readline_pre_read(struct readline_data *restrict rldata, const char
 	if (rldata->leftover) { /* Data from previous read still in the buffer */
 		size_t res;
 		/* Shift contents of buffer back to beginning, which simplifies some things over potentially circling around until we wrap. */
+#ifdef EXTRA_DEBUG
+		bbs_debug(8, "Shifting by %ld bytes at pos %ld\n", rldata->leftover, rldata->pos - rldata->buf);
+#endif
 		memmove(rldata->buf, rldata->pos, (size_t) rldata->leftover);
 		res = rldata->leftover; /* Pretend like we just read this many bytes, just now. */
 		rldata->buf[res] = '\0';
@@ -70,6 +73,9 @@ static char *readline_pre_read(struct readline_data *restrict rldata, const char
 			/* bbs_readline never returns without reading a full line,
 			 * but bbs_readline_append can return without calling readline_post_read,
 			 * so we should not reset pos to buf if the next chunk is incomplete. */
+#ifdef EXTRA_DEBUG
+			bbs_debug(8," Resetting buffer\n");
+#endif
 			readline_buffer_reset(rldata);
 		}
 	}
@@ -154,7 +160,10 @@ static int __bbs_readline_getn(int fd, int destfd, struct dyn_str *restrict dyns
 #ifdef EXTRA_DEBUG
 	bbs_debug(8, "Up to %lu/%lu bytes can be satisfied from existing buffer\n", left_in_buffer, n);
 #endif
+
 	if (left_in_buffer) {
+		/* XXX Similar to below, we need to retry this section in a loop until either the buffer is empty or remaining == 0
+		 * This is to handle the case that write doesn't succeed in writing all the bytes we told it to do (wres < bytes)*/
 		size_t bytes = MIN(left_in_buffer, n); /* Minimum of # bytes available or # bytes we want to read */
 		if (destfd != -1) {
 			wres = bbs_write(destfd, rldata->buf, bytes);
@@ -178,6 +187,17 @@ static int __bbs_readline_getn(int fd, int destfd, struct dyn_str *restrict dyns
 		rldata->pos = rldata->buf + left_in_buffer;
 		rldata->left = rldata->len - left_in_buffer;
 	}
+
+	/* In case there's more data still left than we read. It's currently at the beginning of the buffer already (rldata->buf)
+	 * In readline_pre_read we'll end up shifting by 0 bytes in memmove, but the delimiter should get set right. */
+	if (left_in_buffer) {
+#ifdef EXTRA_DEBUG
+		bbs_debug(6, "%lu bytes remain in buffer\n", left_in_buffer);
+#endif
+		rldata->pos = rldata->buf;
+		rldata->leftover = left_in_buffer;
+	}
+
 	/* For the remainder of this function, we don't use the rldata buffer.
 	 * Since we know the exact number of bytes we want, we can use a temporary buffer
 	 * and write them directly to the destination, no persistent bookkeeping is required. */
@@ -189,6 +209,7 @@ static int __bbs_readline_getn(int fd, int destfd, struct dyn_str *restrict dyns
 			return (int) written;
 		}
 		if (destfd != -1) {
+			/* XXX If copying from fd to fd, could use copy_file_range or sendfile for efficiency? (unless source can't be a socket) */
 			wres = bbs_write(destfd, readbuf, (size_t) res);
 			if (wres <= 0) {
 				return (int) written;

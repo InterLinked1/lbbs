@@ -20,13 +20,13 @@ struct dyn_str;
 /*! \note This really should be opaque, but it's declared here so that callers can stack allocate it */
 struct readline_data {
 	/* Global data */
-	char *buf;
-	size_t len;
+	char *buf;					/*!< Beginning of buffer */
+	size_t len;					/*!< Fixed length of buffer */
 	int timeout;
 	/* Internal pointers */
-	char *pos;
-	size_t left;
-	size_t leftover;
+	char *pos;					/*!< Beginning of remaining data in the buffer */
+	size_t left;				/*!< How much room is left available in the buffer for reading/appending */
+	size_t leftover;			/*!< How much data is leftover */
 	size_t segmentlen;
 	const char *boundary;
 	size_t boundarylen;

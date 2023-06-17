@@ -1555,19 +1555,6 @@ static int notify_stalled_delivery(const char *from, const char *to, const char 
 	return res;
 }
 
-/*! \todo move to utils.c - a few other files also have functions like this, e.g. editor.c */
-static int str_char_count(const char *restrict s, char c)
-{
-	int count = 0;
-	while (*s) {
-		if (*s == c) {
-			count++;
-		}
-		s++;
-	}
-	return count;
-}
-
 static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 {
 	FILE *fp;
@@ -1642,7 +1629,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	}
 	bbs_strterm(realfrom, '>'); /* try_send will add <> for us, so strip it here to match */
 
-	if (str_char_count(realfrom, '<') || str_char_count(realfrom, '>') || str_char_count(realto, '<') != 1 || str_char_count(realto, '>') != 1) {
+	if (bbs_str_count(realfrom, '<') || bbs_str_count(realfrom, '>') || bbs_str_count(realto, '<') != 1 || bbs_str_count(realto, '>') != 1) {
 		bbs_error("Sender or recipient address malformed %s -> %s\n", realfrom, realto);
 		goto cleanup;
 	}
@@ -2862,6 +2849,9 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {
 				/* Timeout occured. */
+				/* XXX This also happens if a noncompliant SMTP client sends us more than 1,000 bytes in a single line
+				 * and exhausts our buffer. In this case, bbs_readline returns -1.
+				 * We should probably send a more appropriate error in this event. */
 				smtp_reply(smtp, 451, 4.4.2, "Timeout - closing connection"); /* XXX Should do only if poll returns 0, not if read returns 0 */
 			}
 			break;

@@ -230,6 +230,7 @@ static int run(void)
 	SWRITE(client1, "Content-Type: TEXT/PLAIN; CHARSET=US-ASCII" ENDL);
 	SWRITE(client1, ENDL);
 	SWRITE(client1, "Hello Joe, do you think we can meet at 3:30 tomorrow?" ENDL);
+	SWRITE(client1, ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "11] APPEND"); /* The UID of this message should be 11 */
 	CLIENT_DRAIN(client1);
 
@@ -244,7 +245,36 @@ static int run(void)
 	SWRITE(client1, "Content-Type: TEXT/PLAIN; CHARSET=US-ASCII" ENDL);
 	SWRITE(client1, ENDL);
 	SWRITE(client1, "Hello Joe, do you think we can meet at 3:30 tomorrow?" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "12] APPEND"); /* The UID of this message should be 11 */
+	SWRITE(client1, ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "12] APPEND"); /* The UID of this message should be 12 */
+	CLIENT_DRAIN(client1);
+
+	/* MULTIAPPEND */
+	SWRITE(client1, "a14 APPEND INBOX (\\Seen) {326}" ENDL);
+	CLIENT_EXPECT(client1, "+");
+	SWRITE(client1, "Date: Mon, 7 Feb 1994 21:52:25 -0800 (PST)" ENDL);
+	SWRITE(client1, "From: Fred Foobar <foobar@Blurdybloop.example>" ENDL);
+	SWRITE(client1, "Subject: afternoon meeting" ENDL);
+	SWRITE(client1, "To: mooch@owatagu.siam.edu.example" ENDL);
+	SWRITE(client1, "Message-Id: <B27397-0100000@Blurdybloop.example>" ENDL);
+	SWRITE(client1, "MIME-Version: 1.0" ENDL);
+	SWRITE(client1, "Content-Type: TEXT/PLAIN; CHARSET=US-ASCII" ENDL);
+	SWRITE(client1, ENDL);
+	SWRITE(client1, "Hello Joe, do you think we can meet at 3:30 tomorrow?" ENDL);
+	/* Skip this since we're in the middle of a MULTIAPPEND: SWRITE(client1, ENDL); */
+	/* Repeat with non-synchronizing literal */
+	SWRITE(client1, "(\\Seen) {326+}" ENDL);
+	SWRITE(client1, "Date: Mon, 7 Feb 1994 21:52:25 -0800 (PST)" ENDL);
+	SWRITE(client1, "From: Fred Foobar <foobar@Blurdybloop.example>" ENDL);
+	SWRITE(client1, "Subject: afternoon meeting" ENDL);
+	SWRITE(client1, "To: mooch@owatagu.siam.edu.example" ENDL);
+	SWRITE(client1, "Message-Id: <B27397-0100000@Blurdybloop.example>" ENDL);
+	SWRITE(client1, "MIME-Version: 1.0" ENDL);
+	SWRITE(client1, "Content-Type: TEXT/PLAIN; CHARSET=US-ASCII" ENDL);
+	SWRITE(client1, ENDL);
+	SWRITE(client1, "Hello Joe, do you think we can meet at 3:30 tomorrow?" ENDL);
+	SWRITE(client1, ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "13:14] APPEND"); /* The UID of these messages should be 13 and 14 */
 	CLIENT_DRAIN(client1);
 
 	/* STORE */
@@ -311,7 +341,7 @@ static int run(void)
 	CLIENT_EXPECT(client1, "+");
 	send_count = 0;
 	make_messages(1);
-	CLIENT_EXPECT(client1, "* 13 EXISTS"); /* Should receive an untagged EXISTS message. In particular, there are now 13 messages in this folder. */
+	CLIENT_EXPECT(client1, "* 15 EXISTS"); /* Should receive an untagged EXISTS message. In particular, there are now 15 messages in this folder. */
 
 	/* Change the flags of a message. We should get an untagged response for it. */
 	SELECT_MAILBOX(client2, "b3", "INBOX");
@@ -504,6 +534,7 @@ static int run(void)
 	SWRITE(client1, "Content-Type: TEXT/PLAIN; CHARSET=US-ASCII" ENDL);
 	SWRITE(client1, ENDL);
 	SWRITE(client1, "Hello Joe, do you think we can meet at 3:30 tomorrow?" ENDL);
+	SWRITE(client1, ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, " 1] APPEND"); /* The UID of this message should be 1; this is the first test that uses the Sent folder. */
 	CLIENT_DRAIN(client1);
 
