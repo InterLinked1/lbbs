@@ -39,6 +39,7 @@
 /* bbs.c */
 extern int option_debug;
 extern int option_verbose;
+extern int max_logfile_debug_level;
 
 static FILE *logfp = NULL;
 static int logstdout = 0;
@@ -309,18 +310,20 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 	int bytes;
 	int log_stdout;
 	int need_reset = 0;
+	int skip_logfile = 0;
 
 	switch (loglevel) {
 		case LOG_DEBUG:
 			if (level > option_debug) {
 				return;
 			}
+			skip_logfile = level > max_logfile_debug_level;
 			break;
 		case LOG_VERBOSE:
 			if (level > option_verbose) {
 				return;
 			}
-			break;
+			/* Fall through */
 		default:
 			break;
 	}
@@ -449,26 +452,30 @@ stdoutdone:
 		fulldynamic = 0;
 		fullbuf = logfullbuf;
 	}
-	/* Log message to file should not include color formatting */
-	bytes = snprintf(logfullbuf, sizeof(logfullbuf), "[%s.%03d] %s[%d]: %s:%d %s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 0), thread_id, file, lineno, func, buf, need_reset ? COLOR_RESET : "");
-	if (bytes >= (int) sizeof(logfullbuf)) {
-		fullbuf = malloc((size_t) bytes + 1);
-		if (ALLOC_FAILURE(fullbuf)) {
-			log_puts("ERROR: Logging vasprintf failure\n"); /* Can't use bbs_log functions! */
-			log_puts(buf); /* Just put what we had */
-			goto almostdone;
+
+	if (!skip_logfile) {
+		/* Log message to file should not include color formatting */
+		bytes = snprintf(logfullbuf, sizeof(logfullbuf), "[%s.%03d] %s[%d]: %s:%d %s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 0), thread_id, file, lineno, func, buf, need_reset ? COLOR_RESET : "");
+		if (bytes >= (int) sizeof(logfullbuf)) {
+			fullbuf = malloc((size_t) bytes + 1);
+			if (ALLOC_FAILURE(fullbuf)) {
+				log_puts("ERROR: Logging vasprintf failure\n"); /* Can't use bbs_log functions! */
+				log_puts(buf); /* Just put what we had */
+				goto almostdone;
+			}
+			fulldynamic = 1;
+			/* Safe */
+			sprintf(fullbuf, "[%s.%03d] %s[%d]: %s:%d %s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 0), thread_id, file, lineno, func, buf, need_reset ? COLOR_RESET : "");
 		}
-		fulldynamic = 1;
-		/* Safe */
-		sprintf(fullbuf, "[%s.%03d] %s[%d]: %s:%d %s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 0), thread_id, file, lineno, func, buf, need_reset ? COLOR_RESET : "");
+
+		fwrite(fullbuf, 1, (size_t) bytes, logfp);
+		fflush(logfp);
+
+		if (fulldynamic) {
+			free(fullbuf);
+		}
 	}
 
-	fwrite(fullbuf, 1, (size_t) bytes, logfp);
-	fflush(logfp);
-
-	if (fulldynamic) {
-		free(fullbuf);
-	}
 almostdone:
 	if (dynamic) {
 		free(buf);

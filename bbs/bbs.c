@@ -76,6 +76,7 @@ static int option_run_unit_tests = 0; /* run unit tests on startup */
 /* Mutable during runtime */
 int option_debug = 0;
 int option_verbose = 0;
+int max_logfile_debug_level = MAX_DEBUG;
 
 char *rungroup = NULL, *runuser = NULL, *config_dir = NULL;
 
@@ -791,6 +792,11 @@ static int load_config(void)
 	if (!strlen_zero(val)) {
 		bbs_set_debug(atoi(val));
 		fprintf(stderr, "Debug level set to %d\n", atoi(val));
+	}
+	val = bbs_config_val(cfg, "logger", "logfile_debug");
+	if (!strlen_zero(val)) {
+		max_logfile_debug_level = atoi(val);
+		fprintf(stderr, "Max log file debug level set to %d\n", max_logfile_debug_level);
 	}
 
 	return 0;
