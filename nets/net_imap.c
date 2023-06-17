@@ -120,6 +120,7 @@
 #include "include/oauth.h"
 #include "include/base64.h"
 #include "include/stringlist.h"
+#include "include/range.h"
 
 #include "include/mod_mail.h"
 #include "include/mod_mimeparse.h"
@@ -381,9 +382,6 @@ static void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned i
 	}
 	RWLIST_UNLOCK(&sessions);
 }
-
-/* Forward declaration */
-static char *gen_uintlist(unsigned int *l, int lengths);
 
 static void send_untagged_expunge(struct imap_session *imap, int silent, unsigned int *uid, unsigned int *seqno, int length)
 {
@@ -1808,10 +1806,6 @@ static int on_select(const char *dir_name, const char *filename, struct imap_ses
 	return 0;
 }
 
-/* Forward declarations */
-static int uintlist_append(unsigned int **a, int *lengths, int *allocsizes, unsigned int vala);
-static int uintlist_append2(unsigned int **a, unsigned int **b, int *lengths, int *allocsizes, unsigned int vala, unsigned int valb);
-
 static int imap_expunge(struct imap_session *imap, int silent)
 {
 	struct dirent *entry, **entries;
@@ -1938,70 +1932,8 @@ static int imap_traverse(const char *path, int (*on_file)(const char *dir_name, 
 	return res;
 }
 
-/* Forward declarations */
-/*! \todo Please come up with a plan to move the IMAP utility functions elsewhere, ideally to a separate file...
- * the forward declarations sprinkled throughout the file are starting to get ridiculous */
-static int in_range_allocated(const char *s, int num, char *sequences);
+/* Forward declaration */
 static void generate_flag_names_full(struct imap_session *imap, const char *filename, char *bufstart, size_t bufsize, char **bufptr, int *lenptr);
-static char *parensep(char **str);
-static int range_to_uintlist(char *s, unsigned int **list, int *length);
-
-/*! \note This should kind of be in mod_mail with the other modseq functions,
- * except it has dependencies on several net_imap things (uintlist_append, in_range_allocated, etc), so cleaner to just have it here */
-static void maildir_get_expunged_since_modseq(struct imap_session *imap, const char *directory, unsigned long lastmodseq, char *uidrangebuf, unsigned int minuid, const char *uidrange)
-{
-	char modseqfile[256];
-	FILE *fp;
-	unsigned long modseq;
-	unsigned int uid;
-	size_t res;
-	unsigned int *a = NULL;
-	int lengths = 0, allocsizes = 0;
-
-	snprintf(modseqfile, sizeof(modseqfile), "%s/../.modseqs", directory);
-	fp = fopen(modseqfile, "rb");
-	if (!fp) {
-		bbs_error("Failed to open %s\n", modseqfile);
-		return;
-	}
-	res = fread(&modseq, sizeof(unsigned long), 1, fp);
-	if (res != 1) {
-		bbs_error("Failed to read HIGHESTMODSEQ from %s\n", directory);
-		fclose(fp);
-		return;
-	}
-
-	for (;;) {
-		/* Note that this file is sorted by MODSEQ, not be UID */
-		res = fread(&uid, sizeof(unsigned int), 1, fp);
-		if (res != 1) {
-			break;
-		}
-		res = fread(&modseq, sizeof(unsigned long), 1, fp);
-		if (res != 1 || !uid) { /* Break early if UID is 0, see maildir_indicate_expunged */
-			break;
-		}
-		if (uid < minuid) {
-			continue;
-		}
-		if (modseq <= lastmodseq) {
-			continue;
-		}
-		if (uidrange && !in_range_allocated(uidrange, (int) uid, uidrangebuf)) {
-			continue;
-		}
-		uintlist_append(&a, &lengths, &allocsizes, uid);
-	}
-
-	fclose(fp);
-
-	if (lengths) {
-		char *str = gen_uintlist(a, lengths);
-		free(a);
-		imap_send(imap, "VANISHED (EARLIER) %s", S_IF(str));
-		free_if(str);
-	}
-}
 
 static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, const char *uidrange, char *seqrange)
 {
@@ -2012,6 +1944,7 @@ static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, cons
 	unsigned int seqno = 0;
 	unsigned int minuid = 0;
 	char *uidrangebuf = NULL;
+	char *expunged;
 
 	bbs_assert(imap->qresync == 1);
 
@@ -2088,7 +2021,9 @@ static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, cons
 	}
 
 	/* First, send any expunges since last time */
-	maildir_get_expunged_since_modseq(imap, imap->curdir, lastmodseq, uidrangebuf, minuid, uidrange);
+	expunged = maildir_get_expunged_since_modseq(imap->curdir, lastmodseq, uidrangebuf, minuid, uidrange);
+	imap_send(imap, "VANISHED (EARLIER) %s", S_IF(expunged));
+	free_if(expunged);
 
 	while (fno < files && (entry = entries[fno++])) {
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
@@ -3606,65 +3541,6 @@ struct fetch_request {
 	unsigned int vanished:1;
 };
 
-/*! \note Direct use of this function is more efficient than in_range since we can reuse the same allocated buffer for all comparisons */
-static int in_range_allocated(const char *s, int num, char *sequences)
-{
-	char *sequence;
-
-	strcpy(sequences, s); /* This is safe, as it is assumed that sequences itself was strdup'd or malloc'd from s / strlen(s) + 1 previously */
-
-	/*! \todo since atoi would stop on a , anyways, strsep isn't really necessary.
-	 * We could parse the string in place, avoiding the need to allocate and copy in the first place. */
-
-	while ((sequence = strsep(&sequences, ","))) {
-		int min, max;
-		char *begin = strsep(&sequence, ":");
-		if (strlen_zero(begin)) {
-			bbs_warning("Malformed range: %s\n", s);
-			continue;
-		}
-		if (!strcmp(begin, "*")) {
-			/* Something like just *, everything matches */
-			return 1;
-		}
-		min = atoi(begin);
-		if (num < min) {
-			continue;
-		}
-		if (sequence) {
-			if (!strcmp(sequence, "*")) { /* Something like 1:* */
-				max = INT_MAX;
-			} else {
-				max = atoi(sequence);
-			}
-		} else {
-			max = min;
-		}
-		if (num > max) {
-			continue;
-		}
-		return 1; /* Matches */
-	}
-	return 0;
-}
-
-/*! \note This is re-evaluated for every single message in the folder, which is not terribly efficient. Prefer using in_range_allocated directly. */
-static int in_range(const char *s, int num)
-{
-	int res = 0;
-	char *dup;
-
-	dup = strdup(s);
-	if (ALLOC_FAILURE(dup)) {
-		return 0;
-	}
-
-	res = in_range_allocated(s, num, dup);
-
-	free(dup);
-	return res;
-}
-
 static int imap_in_range(struct imap_session *imap, const char *s, int num)
 {
 	if (!strcmp(s, "$")) {
@@ -3681,23 +3557,6 @@ static int imap_in_range(struct imap_session *imap, const char *s, int num)
 	}
 
 	return in_range(s, num);
-}
-
-static int test_sequence_in_range(void)
-{
-	bbs_test_assert_equals(1, in_range("2:3,6", 2));
-	bbs_test_assert_equals(1, in_range("2:3,6", 3));
-	bbs_test_assert_equals(1, in_range("2:3,6", 6));
-	bbs_test_assert_equals(0, in_range("2:3,6", 4));
-	bbs_test_assert_equals(1, in_range("2:3,6,7:9", 8));
-	bbs_test_assert_equals(1, in_range("1:*", 8));
-	bbs_test_assert_equals(1, in_range("1:*", 6666));
-	bbs_test_assert_equals(1, in_range("*", 13));
-	bbs_test_assert_equals(1, in_range("1", 1));
-	return 0;
-
-cleanup:
-	return -1;
 }
 
 /*! \retval 0 if not in range, UID if in range */
@@ -3754,152 +3613,6 @@ static unsigned int imap_msg_in_range(struct imap_session *imap, int seqno, cons
 		pthread_mutex_unlock(&imap->lock);
 	}
 	return res;
-}
-
-#define UINTLIST_CHUNK_SIZE 32
-static int uintlist_append(unsigned int **a, int *lengths, int *allocsizes, unsigned int vala)
-{
-	int curlen;
-
-	if (!*a) {
-		*a = malloc(UINTLIST_CHUNK_SIZE * sizeof(unsigned int));
-		if (ALLOC_FAILURE(*a)) {
-			return -1;
-		}
-		*allocsizes = UINTLIST_CHUNK_SIZE;
-	} else {
-		if (*lengths >= *allocsizes) {
-			unsigned int *newa;
-			int newallocsize = *allocsizes += UINTLIST_CHUNK_SIZE; /* Don't multiply by sizeof(unsigned int), so we can directly compare with lengths */
-			newa = realloc(*a, (size_t) newallocsize * sizeof(unsigned int)); /* Increase by 32 each chunk */
-			if (ALLOC_FAILURE(newa)) {
-				return -1;
-			}
-			*a = newa;
-			*allocsizes = newallocsize;
-		}
-	}
-
-	curlen = *lengths;
-#ifdef DEBUG_UINTLIST
-	bbs_debug(10, "Writing to index %d/%d\n", curlen, *allocsizes);
-#endif
-	(*a)[curlen] = vala;
-	*lengths = curlen + 1;
-	return 0;
-}
-
-static int uintlist_append2(unsigned int **a, unsigned int **b, int *lengths, int *allocsizes, unsigned int vala, unsigned int valb)
-{
-	int curlen;
-
-	if (!*a) {
-		*a = malloc(UINTLIST_CHUNK_SIZE * sizeof(unsigned int));
-		if (ALLOC_FAILURE(*a)) {
-			return -1;
-		}
-		*b = malloc(UINTLIST_CHUNK_SIZE * sizeof(unsigned int));
-		if (ALLOC_FAILURE(*b)) {
-			free_if(*a);
-			return -1;
-		}
-		*allocsizes = UINTLIST_CHUNK_SIZE;
-	} else {
-		if (*lengths >= *allocsizes) {
-			unsigned int *newb, *newa;
-			int newallocsize = *allocsizes += UINTLIST_CHUNK_SIZE; /* Don't multiply by sizeof(unsigned int), so we can directly compare with lengths */
-			newa = realloc(*a, (size_t) newallocsize * sizeof(unsigned int)); /* Increase by 32 each chunk */
-			if (ALLOC_FAILURE(newa)) {
-				return -1;
-			}
-			newb = realloc(*b, (size_t) newallocsize * sizeof(unsigned int));
-			if (ALLOC_FAILURE(newb)) {
-				/* This is tricky. We expanded a but failed to expand b. Keep the smaller size for our records. */
-				return -1;
-			}
-			*allocsizes = newallocsize;
-			*a = newa;
-			*b = newb;
-		}
-	}
-
-	curlen = *lengths;
-#ifdef DEBUG_UINTLIST
-	bbs_debug(10, "Writing to index %d/%d\n", curlen, *allocsizes);
-#endif
-	(*a)[curlen] = vala;
-	(*b)[curlen] = valb;
-	*lengths = curlen + 1;
-	return 0;
-}
-#undef UINTLIST_CHUNK_SIZE
-
-static int copyuid_str_append(struct dyn_str *dynstr, unsigned int a, unsigned int b)
-{
-	char range[32];
-	int len;
-	if (a == b) {
-		len = snprintf(range, sizeof(range), "%s%u", dynstr->used ? "," : "", a);
-	} else {
-		len = snprintf(range, sizeof(range), "%s%u:%u", dynstr->used ? "," : "", a, b);
-	}
-	return dyn_str_append(dynstr, range, (size_t) len);
-}
-
-static char *gen_uintlist(unsigned int *l, int lengths)
-{
-	int i;
-	unsigned int begin, last;
-	struct dyn_str dynstr;
-
-	if (!lengths) {
-		return NULL;
-	}
-
-	memset(&dynstr, 0, sizeof(dynstr));
-
-	last = begin = l[0];
-	for (i = 1; i < lengths; i++) {
-		if (l[i] != last + 1) {
-			/* Last one ended a range */
-			copyuid_str_append(&dynstr, begin, last);
-			begin = l[i]; /* Start of next range */
-		}
-		last = l[i];
-	}
-	/* Last one */
-	copyuid_str_append(&dynstr, begin, last);
-	return dynstr.buf; /* This is dynamically allocated, so okay */
-}
-
-static int test_copyuid_generation(void)
-{
-	unsigned int *a = NULL, *b = NULL;
-	char *s = NULL;
-	int lengths = 0, allocsizes = 0;
-
-	uintlist_append2(&a, &b, &lengths, &allocsizes, 1, 11);
-	uintlist_append2(&a, &b, &lengths, &allocsizes, 3, 13);
-	uintlist_append2(&a, &b, &lengths, &allocsizes, 4, 14);
-	uintlist_append2(&a, &b, &lengths, &allocsizes, 6, 16);
-
-	s = gen_uintlist(a, lengths);
-	bbs_test_assert_str_equals(s, "1,3:4,6");
-	free_if(s);
-
-	s = gen_uintlist(b, lengths);
-	bbs_test_assert_str_equals(s, "11,13:14,16");
-	free_if(s);
-
-	free_if(a);
-	free_if(b);
-	return 0;
-
-cleanup:
-	free_if(a);
-	free_if(b);
-	free_if(s);
-	return -1;
 }
 
 static int handle_copy(struct imap_session *imap, char *s, int usinguid)
@@ -4121,9 +3834,6 @@ static int set_file_mtime(const char *filename, const char *appenddate)
 	}
 	return 0;
 }
-
-/* Forward declaration */
-static char *uintlist_to_ranges(unsigned int *a, int length);
 
 static int handle_append(struct imap_session *imap, char *s)
 {
@@ -4512,8 +4222,10 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		char *uidrangebuf = malloc(strlen(sequences) + 1);
 		if (uidrangebuf) {
 			/* Since VANISHED is only with UID FETCH, the sequences are in fact UID sequences, perfect! */
-			maildir_get_expunged_since_modseq(imap, imap->curdir, fetchreq->changedsince, uidrangebuf, 0, sequences);
+			char *expunged = maildir_get_expunged_since_modseq(imap->curdir, fetchreq->changedsince, uidrangebuf, 0, sequences);
 			free(uidrangebuf);
+			imap_send(imap, "VANISHED (EARLIER) %s", S_IF(expunged));
+			free_if(expunged);
 		}
 	}
 
@@ -4974,73 +4686,6 @@ cleanup:
 		imap_reply(imap, "OK %sFETCH Completed", usinguid ? "UID " : "");
 	}
 	return 0;
-}
-
-/*! \brief strsep-like tokenizer that returns the contents of the next substring inside parentheses (handling nested parentheses) */
-static char *parensep(char **str)
-{
-	char *ret, *s = *str;
-	int count = 0;
-
-	if (strlen_zero(s)) {
-		return NULL;
-	}
-
-	if (*s != '(') {
-		if (*s == ' ') {
-			s++;
-		}
-		if (*s != '(') {
-			bbs_warning("parensep used incorrectly: %s\n", *str);
-		}
-	}
-
-	while (*s) {
-		if (*s == '(') {
-			count++;
-		} else if (*s == ')') {
-			count--;
-			if (count == 0) {
-				*s++ = '\0';
-				ret = *str + 1;
-				if (*s == ' ') {
-					s++;
-				}
-				*str = s;
-				return ret;
-			}
-		}
-		s++;
-	}
-	return NULL;
-}
-
-static int test_parensep(void)
-{
-	char buf[256];
-	char *s, *left;
-
-	strcpy(buf, "(1 (2))");
-	left = buf;
-	s = parensep(&left);
-	bbs_test_assert_str_equals(s, "1 (2)");
-
-	strcpy(buf, "(1 2 3) 4 5");
-	left = buf;
-	s = parensep(&left);
-	bbs_test_assert_str_equals(s, "1 2 3");
-	bbs_test_assert_str_equals(left, "4 5");
-
-	strcpy(buf, "() \".\" \"Archive\"");
-	left = buf;
-	s = parensep(&left);
-	bbs_test_assert_str_equals(s, "");
-	bbs_test_assert_str_equals(left, "\".\" \"Archive\"");
-
-	return 0;
-
-cleanup:
-	return -1;
 }
 
 /*! \brief Retrieve data associated with a message */
@@ -6787,118 +6432,6 @@ static int do_search(struct imap_session *imap, char *s, unsigned int **a, int u
 	search_dir(imap, imap->newdir, 1, usinguid, &skeys, a, &lengths, &allocsizes, min, max, maxmodseq);
 	imap_search_free(&skeys);
 	return lengths;
-}
-
-static char *uintlist_to_str(unsigned int *a, int length)
-{
-	int i;
-	struct dyn_str dynstr;
-
-	memset(&dynstr, 0, sizeof(dynstr));
-	for (i = 0; i < length; i++) {
-		char buf[15];
-		int len = snprintf(buf, sizeof(buf), "%s%u", i ? " " : "", a[i]);
-		dyn_str_append(&dynstr, buf, (size_t) len);
-	}
-	return dynstr.buf;
-}
-
-static char *uintlist_to_ranges(unsigned int *a, int length)
-{
-	int i;
-	struct dyn_str dynstr;
-	unsigned int start = 0, last, len;
-	const char *prefix = "";
-	char buf[15];
-
-	memset(&dynstr, 0, sizeof(dynstr));
-	if (length) {
-		start = last = a[0]; /* Instead of putting an if i == 0 branch inside the loop, that will only run once, just do it beforehand */
-	}
-	for (i = 1; i < length; i++) {
-		if (!start) {
-			start = last = a[i];
-		} else if (a[i] == last + 1) {
-			last = a[i];
-		} else {
-			if (start == last) {
-				len = (unsigned int) snprintf(buf, sizeof(buf), "%s%u", prefix, last);
-			} else {
-				len = (unsigned int) snprintf(buf, sizeof(buf), "%s%u:%u", prefix, start, last);
-			}
-			dyn_str_append(&dynstr, buf, len);
-			prefix = ",";
-			start = last = a[i];
-		}
-	}
-	if (start) {
-		/* last one */
-		if (start == last) {
-			len = (unsigned int) snprintf(buf, sizeof(buf), "%s%u", prefix, last);
-		} else {
-			len = (unsigned int) snprintf(buf, sizeof(buf), "%s%u:%u", prefix, start, last);
-		}
-		dyn_str_append(&dynstr, buf, len);
-	}
-	return dynstr.buf;
-}
-
-/*! \note This function is not safe to use for arbitrary valid IMAP sequences, e.g. *, 1:*, etc. */
-static int range_to_uintlist(char *s, unsigned int **list, int *length)
-{
-	char *seq;
-	int alloc_sizes = 0;
-
-	while ((seq = strsep(&s, ","))) {
-		unsigned int a, b;
-		char *start, *end = seq;
-		start = strsep(&end, ":");
-		if (strlen_zero(start)) {
-			bbs_warning("Invalid range\n");
-			continue;
-		}
-		a = (unsigned int) atoi(start);
-		if (!end) {
-			uintlist_append(list, length, &alloc_sizes, a);
-			continue;
-		}
-		b = (unsigned int) atoi(end);
-		if (b - a > 100000) {
-			bbs_warning("Declining to process range %u:%u (too large)\n", a, b);
-			return -1; /* Don't malloc into oblivion */
-		}
-		for (; a <= b; a++) {
-			uintlist_append(list, length, &alloc_sizes, a);
-		}
-	}
-	return 0;
-}
-
-static int test_range_generation(void)
-{
-	char *ranges;
-	unsigned int a[6] = { 3, 5, 2, 1, 4, 6 };
-	unsigned int b[6] = { 1, 2, 3, 5, 7, 8 };
-	unsigned int c[6] = { 5, 6, 7, 3, 2, 1 };
-
-	/* Ranges must be ascending only (RFC 5267 3.2) */
-
-	ranges = uintlist_to_ranges(a, 6);
-	bbs_test_assert_str_equals(ranges, "3,5,2,1,4,6");
-	free_if(ranges);
-
-	ranges = uintlist_to_ranges(b, 6);
-	bbs_test_assert_str_equals(ranges, "1:3,5,7:8");
-	free_if(ranges);
-
-	ranges = uintlist_to_ranges(c, 6);
-	bbs_test_assert_str_equals(ranges, "5:7,3,2,1");
-	free_if(ranges);
-
-	return 0;
-
-cleanup:
-	return -1;
 }
 
 #define ESEARCH_ALL (1 << 0)
@@ -9502,12 +9035,8 @@ static struct bbs_unit_test tests[] =
 	{ "IMAP LIST Interpretation", test_list_interpretation },
 	{ "IMAP LIST Attributes", test_build_attributes },
 	{ "IMAP FETCH Item Parsing", test_parse_fetch_items },
-	{ "IMAP FETCH Sequence Ranges", test_sequence_in_range },
-	{ "IMAP Sequence Range Generation", test_range_generation },
 	{ "IMAP STORE Flags Parsing", test_flags_parsing },
-	{ "IMAP COPYUID Generation", test_copyuid_generation },
 	{ "IMAP Remote Mailbox Translation", test_remote_mailbox_substitution },
-	{ "parensep", test_parensep },
 	{ "IMAP THREAD ORDEREDSUBJECT", test_thread_orderedsubject },
 	{ "IMAP THREAD REFERENCES", test_thread_references },
 };

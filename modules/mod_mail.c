@@ -37,6 +37,7 @@
 #include "include/oauth.h"
 #include "include/base64.h"
 #include "include/stringlist.h"
+#include "include/range.h"
 
 #include "include/mod_mail.h"
 
@@ -1111,6 +1112,62 @@ static unsigned long __maildir_modseq(struct mailbox *mbox, const char *director
 
 	fclose(fp);
 	return max_modseq;
+}
+
+char *maildir_get_expunged_since_modseq(const char *directory, unsigned long lastmodseq, char *uidrangebuf, unsigned int minuid, const char *uidrange)
+{
+	char modseqfile[256];
+	FILE *fp;
+	unsigned long modseq;
+	unsigned int uid;
+	size_t res;
+	unsigned int *a = NULL;
+	int lengths = 0, allocsizes = 0;
+
+	snprintf(modseqfile, sizeof(modseqfile), "%s/../.modseqs", directory);
+	fp = fopen(modseqfile, "rb");
+	if (!fp) {
+		bbs_error("Failed to open %s\n", modseqfile);
+		return NULL;
+	}
+	res = fread(&modseq, sizeof(unsigned long), 1, fp);
+	if (res != 1) {
+		bbs_error("Failed to read HIGHESTMODSEQ from %s\n", directory);
+		fclose(fp);
+		return NULL;
+	}
+
+	for (;;) {
+		/* Note that this file is sorted by MODSEQ, not be UID */
+		res = fread(&uid, sizeof(unsigned int), 1, fp);
+		if (res != 1) {
+			break;
+		}
+		res = fread(&modseq, sizeof(unsigned long), 1, fp);
+		if (res != 1 || !uid) { /* Break early if UID is 0, see maildir_indicate_expunged */
+			break;
+		}
+		if (uid < minuid) {
+			continue;
+		}
+		if (modseq <= lastmodseq) {
+			continue;
+		}
+		if (uidrange && !in_range_allocated(uidrange, (int) uid, uidrangebuf)) {
+			continue;
+		}
+		uintlist_append(&a, &lengths, &allocsizes, uid);
+	}
+
+	fclose(fp);
+
+	if (lengths) {
+		char *str = gen_uintlist(a, lengths);
+		free(a);
+		return str;
+	} else {
+		return NULL;
+	}
 }
 
 unsigned long maildir_indicate_expunged(struct mailbox *mbox, const char *directory, unsigned int *uids, int length)

@@ -29,6 +29,34 @@
 #include "include/utils.h"
 #include "include/curl.h"
 
+static int test_parensep(void)
+{
+	char buf[256];
+	char *s, *left;
+
+	strcpy(buf, "(1 (2))");
+	left = buf;
+	s = parensep(&left);
+	bbs_test_assert_str_equals(s, "1 (2)");
+
+	strcpy(buf, "(1 2 3) 4 5");
+	left = buf;
+	s = parensep(&left);
+	bbs_test_assert_str_equals(s, "1 2 3");
+	bbs_test_assert_str_equals(left, "4 5");
+
+	strcpy(buf, "() \".\" \"Archive\"");
+	left = buf;
+	s = parensep(&left);
+	bbs_test_assert_str_equals(s, "");
+	bbs_test_assert_str_equals(left, "\".\" \"Archive\"");
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
 static int test_substitution(void)
 {
 	int res = -1;
@@ -512,6 +540,7 @@ cleanup:
 
 static struct bbs_unit_test tests[] =
 {
+	{ "parensep", test_parensep },
 	{ "Variable Substitution", test_substitution },
 	{ "Safe Print", test_safe_print },
 	{ "Printable String Length", test_printable_strlen },

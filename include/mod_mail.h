@@ -194,6 +194,17 @@ unsigned long maildir_indicate_expunged(struct mailbox *mbox, const char *direct
 unsigned long maildir_max_modseq(struct mailbox *mbox, const char *directory);
 
 /*!
+ * \brief Retrieve all messages in a mailbox expunged since a certain MODSEQ
+ * \param directory Full system path of the cur directory for this maildir
+ * \param lastmodseq MODSEQ to use for comparisons
+ * \param uidrangebuf A buffer that is the same size as uidrange, used as scratch space
+ * \param minuid Minimum UID to match
+ * \param uidrange Range of UIDs in request
+ * \return NULL on failure or no results, list of UIDs otherwise
+ */
+char *maildir_get_expunged_since_modseq(const char *directory, unsigned long lastmodseq, char *uidrangebuf, unsigned int minuid, const char *uidrange);
+
+/*!
  * \brief Get a modification sequence suitable for assigning to a new (e.g. APPEND, COPY, MOVE), new -> cur message
  * \param mbox
  * \param directory The full path to the /cur directory of the maildir
