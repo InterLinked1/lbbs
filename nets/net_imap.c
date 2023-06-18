@@ -3842,6 +3842,8 @@ static char *fetchitem_sep(char **s)
 		} else if (*cur == ']') {
 			if (in_bracket) {
 				in_bracket = 0;
+				/* Keep going, there might be <> components afterwards
+				 * e.g. BODY[]<0.2048> */
 			} else {
 				bbs_warning("Malformed FETCH request item string: %s\n", *s);
 			}
@@ -3867,7 +3869,7 @@ static char *fetchitem_sep(char **s)
 
 static int test_parse_fetch_items(void)
 {
-	char buf[64] = "FLAGS BODY[HEADER.FIELDS (DATE FROM)] INTERNALDATE";
+	char buf[72] = "FLAGS BODY[HEADER.FIELDS (DATE FROM)] INTERNALDATE BODY[]<0.2048>";
 	char *item, *items = buf;
 
 	item = fetchitem_sep(&items);
@@ -3877,6 +3879,8 @@ static int test_parse_fetch_items(void)
 	item = fetchitem_sep(&items);
 	bbs_test_assert_str_equals(item, "INTERNALDATE");
 	item = fetchitem_sep(&items);
+	bbs_test_assert_str_equals(item, "BODY[]<0.2048>");
+	item = fetchitem_sep(&items);
 	bbs_test_assert(item == NULL);
 	return 0;
 
@@ -3885,8 +3889,10 @@ cleanup:
 }
 
 struct fetch_request {
-	const char *bodyargs;
-	const char *bodypeek;
+	const char *bodyargs;			/*!< BODY arguments */
+	const char *bodypeek;			/*!< BODY.PEEK arguments */
+	int substart;					/*!< For BODY and BODY.PEEK partial fetch, the beginning octet */
+	long sublength;					/*!< For BODY and BODY.PEEK partial fetch, number of bytes to fetch */
 	const char *flags;
 	unsigned long changedsince;
 	unsigned int envelope:1;
@@ -4792,42 +4798,59 @@ static int process_fetch_rfc822header(const char *fullname, char *response, size
 static int process_fetch_finalize(struct imap_session *imap, struct fetch_request *fetchreq, int seqno, const char *fullname, char *response, size_t responselen, char **buf, int *len)
 {
 	char headers[8192] = ""; /* XXX Large enough for all headers, etc.? Better might be sendfile, no buffering */
+	char rangebuf[32] = "";
 	int multiline = 0;
 	size_t bodylen = 0;
 	int sendbody = 0;
-	int unoriginal = 0;
+	int skipheaders = 0;
+	int unoriginal = 0; /* BODY[HEADER] or BODY.PEEK[HEADER], rather than RFC822.HEADER, and the type has already been appended to the buffer. */
 	FILE *fp = NULL;
 	char *dyn = NULL;
+	/* For BODY and BODY.PEEK: */
+	int peek = fetchreq->bodypeek ? 1 : 0; /* NOT whether we are peeking the message, this is purely if it's BODY.PEEK vs. BODY */
+	int body = fetchreq->bodyargs || fetchreq->bodypeek; /* One of BODY or BODY.PEEK ? */
+	const char *bodyargs = peek ? fetchreq->bodypeek : fetchreq->bodyargs;
 
-	if (fetchreq->bodyargs || fetchreq->bodypeek) {
-		const char *bodyargs = fetchreq->bodyargs ? fetchreq->bodyargs + 5 : fetchreq->bodypeek + 10;
-		if (!strcmp(bodyargs, "HEADER]")) { /* e.g. BODY.PEEK[HEADER] */
-			/* Just treat it as if we got a HEADER request directly, to send all the headers. */
-			unoriginal = 1;
-			SAFE_FAST_COND_APPEND(response, responselen, *buf, *len, 1, "%s", fetchreq->bodypeek ? "BODY.PEEK[HEADER]" : "BODY[HEADER]");
-			fetchreq->rfc822header = 1;
-			fetchreq->bodyargs = fetchreq->bodypeek = NULL; /* Don't execute the if statement below, so that we can execute the else if */
-		}
-	}
+	/* BODY or BODY.PEEK (RFC 3501 6.4.5)
+	 * format is BODY[section]<partial>
+	 * section = 0+ part specifiers:
+	 * - HEADER: all headers
+	 * - HEADER.FIELDS: only the specified headers
+	 * - HEADER.FIELDS.NOT: only those headers that don't match the provided list
+	 * - MIME: MIME header for this part
+	 * - TEXT: body (not including headers)
+	 * - If empty, it's the entire message (including headers)
+	 * partial = substring in a.b format (a = position of first octet, b = max # of octets to fetch)
+	 * - Note: BODY[]<0.2048> of a 1500-octet message will be returned as BODY[]<0>, not BODY[]
+	 * - Substrings should be supported for HEADER.FIELDS and HEADER.FIELDS.NOT too!
+	 */
 
 	/* HEADER.FIELDS involves a multiline response, so this should be processed at the end of this loop since it appends to response.
 	 * Otherwise, something else might concatenate itself on at the end and break the response. */
-	if (fetchreq->bodyargs || fetchreq->bodypeek) {
+	if (body) {
 		/* Can be HEADER, HEADER.FIELDS, HEADER.FIELDS.NOT, MIME, TEXT */
 		char linebuf[1001];
 		char *headpos = headers;
 		int headlen = sizeof(headers);
-		/* e.g. BODY[HEADER.FIELDS (From To Cc Bcc Subject Date Message-ID Priority X-Priority References Newsgroups In-Reply-To Content-Type Reply-To Received)] */
-		const char *bodyargs = fetchreq->bodyargs ? fetchreq->bodyargs + 5 : fetchreq->bodypeek + 10;
-		if (STARTS_WITH(bodyargs, "HEADER.FIELDS") || STARTS_WITH(bodyargs, "HEADER.FIELDS.NOT")) {
+
+		if (!strcmp(bodyargs, "HEADER")) { /* e.g. BODY.PEEK[HEADER] */
+			/* Just treat it as if we got a HEADER request directly, to send all the headers. */
+			unoriginal = 1;
+			SAFE_FAST_COND_APPEND(response, responselen, *buf, *len, 1, "%s", peek ? "BODY.PEEK[HEADER]" : "BODY[HEADER]");
+			fetchreq->rfc822header = 1;
+			fetchreq->bodyargs = fetchreq->bodypeek = NULL; /* Don't execute the if statement below, so that we can execute the else if */
+		} else if (STARTS_WITH(bodyargs, "HEADER.FIELDS") || STARTS_WITH(bodyargs, "HEADER.FIELDS.NOT")) {
+			/* e.g. BODY[HEADER.FIELDS (From To Cc Bcc Subject Date Message-ID Priority X-Priority References Newsgroups In-Reply-To Content-Type Reply-To Received)] */
 			char *headerlist, *tmp;
 			int inverted = 0;
 			int in_match = 0;
+			multiline = 1;
 			if (STARTS_WITH(bodyargs, "HEADER.FIELDS.NOT")) {
 				inverted = 1;
+				bodyargs += STRLEN("HEADER.FIELDS.NOT (");
+			} else {
+				bodyargs += STRLEN("HEADER.FIELDS (");
 			}
-			multiline = 1;
-			bodyargs += STRLEN("HEADER.FIELDS (");
 			/* Read the file until the first CR LF CR LF (end of headers) */
 			fp = fopen(fullname, "r");
 			if (!fp) {
@@ -4886,16 +4909,25 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 			fclose(fp);
 			free(headerlist);
 			bodylen = strlen(headers); /* Can't just subtract end of headers, we'd have to keep track of bytes added on each round (which we probably should anyways) */
+
 			/* bodyargs ends in a ')', so don't tack an additional one on afterwards */
-			SAFE_FAST_COND_APPEND(response, responselen, *buf, *len, 1, "BODY[HEADER.FIELDS (%s", bodyargs);
-		} else if (!strcmp(bodyargs, "]") || !strcmp(bodyargs, "TEXT]")) { /* Empty (e.g. BODY.PEEK[] or BODY[], or TEXT */
+			/* Here, the condition will only be true for one or the other: */
+			SAFE_FAST_COND_APPEND(response, responselen, *buf, *len, !inverted, "BODY[HEADER.FIELDS (%s", bodyargs);
+			SAFE_FAST_COND_APPEND(response, responselen, *buf, *len, inverted, "BODY[HEADER.FIELDS.NOT (%s", bodyargs);
+		} else if (!strcmp(bodyargs, "TEXT")) { /* Empty (e.g. BODY.PEEK[] or BODY[], or TEXT */
+			multiline = 1;
+			sendbody = 1;
+			skipheaders = 1;
+		} else if (!strcmp(bodyargs, "MIME")) {
+			bbs_error("MIME is currently unsupported!\n"); /*! \todo Support it */
+		} else if (!strcmp(bodyargs, "")) { /* Empty (e.g. BODY.PEEK[] or BODY[], or TEXT */
 			multiline = 1;
 			sendbody = 1;
 		} else {
-			/* Since it contains a closing ], add a starting one for clarity or it'll look odd. */
-			bbs_warning("Unsupported BODY[] argument: [%s\n", bodyargs);
+			bbs_warning("Invalid BODY argument: %s\n", bodyargs);
 		}
-	} else if (fetchreq->rfc822header) {
+	}
+	if (fetchreq->rfc822header) { /* not a else if, because it could have just been set true. */
 		multiline = 1;
 		if (process_fetch_rfc822header(fullname, response, responselen, buf, len, headers, sizeof(headers), unoriginal, &bodylen)) {
 			return -1;
@@ -4917,10 +4949,11 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 
 	if (multiline) {
 		/* {D} tells client this is a multiline response, with D more bytes remaining */
-		long size;
-		int skipheaders = fetchreq->rfc822text && !fetchreq->rfc822;
+		long size, fullsize;
+		skipheaders |= (fetchreq->rfc822text && !fetchreq->rfc822); /* Other conditions in which we skip sending headers */
 		if (sendbody) {
 			int res;
+			char resptype[48];
 			off_t offset;
 			fp = fopen(fullname, "r");
 			if (!fp) {
@@ -4928,7 +4961,7 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 				return -1;
 			}
 			fseek(fp, 0L, SEEK_END); /* Go to EOF */
-			size = ftell(fp);
+			fullsize = size = ftell(fp);
 			rewind(fp); /* Be kind, rewind */
 			if (!size) {
 				bbs_warning("File size of %s is %ld bytes?\n", fullname, size);
@@ -4938,14 +4971,10 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 			 * In reality, I think that *might* be fine because the body contains everything,
 			 * and you wouldn't request just the headers and then the whole body in the same FETCH. */
 			if (bodylen) {
-				bbs_error("This is not handled!\n");
+				bbs_error("Can't send body and headers simultaneously!\n");
 			}
 			offset = 0;
-			/* XXX Doesn't handle partial bodies */
-			/* XXX Hack to handle sending the body but not headers.
-			 * As the comment above notes, all the BODY[] stuff needs to be properly handled. */
-			if (skipheaders) {
-				/* Only body. No headers. */
+			if (skipheaders) { /* Only body. No headers. */
 				char linebuf[1001];
 				/* XXX Refactor so we can just get the offset to body start via function call */
 				while ((fgets(linebuf, sizeof(linebuf), fp))) {
@@ -4958,21 +4987,53 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 				size -= offset;
 			}
 
+			if (fetchreq->sublength) {
+				int realskip = 0;
+				if (fetchreq->substart) {
+					/* size is currently how many bytes are left.
+					 * So for this offset to work,
+					 * fetchreq->substart must be at most size, and we
+					 * reduce size by fetchreq->substart bytes. */
+					realskip = MIN(fetchreq->substart, (int) size);
+					offset += realskip;
+					size -= realskip;
+				}
+				size = MIN(fetchreq->sublength, size); /* Can be at most size. */
+				/* Format is described in RFC 3501 7.4.2: BODY[<section>]<<origin octet>>
+				 * We only include the starting octet, not the length.
+				 * Client must assume truncation may have occured. */
+				snprintf(rangebuf, sizeof(rangebuf), "<%d>", realskip);
+			}
+
 			/* If request used RFC822, use that. If it used BODY, use BODY */
-			imap_send(imap, "%d FETCH (%s%s%s %s {%ld}", seqno, S_IF(dyn), dyn ? " " : "", response, fetchreq->rfc822 ? "RFC822" : fetchreq->rfc822text ? "RFC822.TEXT" : "BODY[]", size); /* No close paren here, last dprintf will do that */
+			snprintf(resptype, sizeof(resptype), "%s%s", fetchreq->rfc822 ? "RFC822" : fetchreq->rfc822text ? "RFC822.TEXT" : skipheaders ? "BODY[TEXT]" : "BODY[]", rangebuf);
+
+			imap_send(imap, "%d FETCH (%s%s%s %s {%ld}", seqno, S_IF(dyn), dyn ? " " : "", response, resptype, size); /* No close paren here, last dprintf will do that */
 
 			pthread_mutex_lock(&imap->lock);
 			res = (int) sendfile(imap->wfd, fileno(fp), &offset, (size_t) size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
+			dprintf(imap->wfd, ")\r\n"); /* And the finale (don't use imap_send for this) */
+			pthread_mutex_unlock(&imap->lock);
+
 			fclose(fp);
 			if (res != size) {
 				bbs_error("sendfile failed (%d != %ld): %s\n", res, size, strerror(errno));
 			} else {
-				imap_debug(5, "Sent %d-byte body for %s\n", res, fullname);
+				imap_debug(5, "Sent %d/%ld-byte body for %s\n", res, fullsize, fullname); /* either partial or entire body */
 			}
-			dprintf(imap->wfd, ")\r\n"); /* And the finale (don't use imap_send for this) */
-			pthread_mutex_unlock(&imap->lock);
 		} else {
-			imap_send(imap, "%d FETCH (%s%s%s {%lu}\r\n%s)", seqno, S_IF(dyn), dyn ? " " : "", response, bodylen, headers);
+			const char *headersptr = headers;
+			if (fetchreq->sublength) {
+				int realskip = 0;
+				if (fetchreq->substart) {
+					realskip = MIN(fetchreq->substart, (int) bodylen);
+					headersptr += realskip;
+					bodylen -= (size_t) realskip;
+				}
+				bodylen = MIN((size_t) fetchreq->sublength, bodylen);
+				snprintf(rangebuf, sizeof(rangebuf), "<%d>", realskip);
+			}
+			imap_send(imap, "%d FETCH (%s%s%s%s {%lu}\r\n%s)", seqno, S_IF(dyn), dyn ? " " : "", response, rangebuf, bodylen, headersptr);
 		}
 	} else {
 		/* Number after FETCH is always a message sequence number, not UID, even if usinguid */
@@ -4986,8 +5047,11 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 static int mark_seen(struct imap_session *imap, int seqno, const char *fullname, const char *filename)
 {
 	int newflags;
-	/* I haven't actually encountered any clients that will actually hit this path... most clients peek everything and manually mark as seen,
-	 * rather than using the BODY[] item which implicitly marks as seen during processing. */
+	/* I haven't actually encountered many clients that will actually hit this path...
+	 * most clients peek everything and then explicitly mark as seen,
+	 * rather than using the BODY[] item which implicitly marks as seen during processing.
+	 * Seems to be a common safety precaution to avoid implicitly marking something as read if some client or server side issue crops up.
+	 */
 	if (parse_flags_letters_from_filename(filename, &newflags, NULL)) { /* Don't care about custom keywords */
 		bbs_error("File %s is noncompliant with maildir\n", filename);
 		return -1;
@@ -5110,6 +5174,40 @@ cleanup:
 	return 0;
 }
 
+static int parse_body_tail(struct fetch_request *fetchreq, char *s)
+{
+	char *tmp;
+
+	if (strlen_zero(s)) {
+		return -1;
+	}
+	tmp = strchr(s, ']');
+	if (!tmp) {
+		return -1;
+	}
+	*tmp++ = '\0';
+	if (!strlen_zero(tmp)) { /* Something like <0.2048> is leftover. */
+		char *a, *b;
+		if (*tmp++ != '<') {
+			return -1;
+		}
+		b = tmp;
+		a = strsep(&b, ".");
+		if (strlen_zero(a) || strlen_zero(b)) {
+			return -1;
+		}
+		fetchreq->substart = atoi(a); /* Can be 0 (to start from the beginning) */
+		if (fetchreq->substart < 0) {
+			return -1;
+		}
+		fetchreq->sublength = atol(b); /* cannot be 0 (or negative) */
+		if (fetchreq->sublength <= 0) {
+			return -1;
+		}
+	}
+	return 0;
+}
+
 /*! \brief Retrieve data associated with a message */
 static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 {
@@ -5175,16 +5273,25 @@ static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 
 	/* Only parse the request once. */
 	while ((item = fetchitem_sep(&items))) {
+		char *tmp;
 		if (!strcmp(item, "BODY")) {
 			/* Same as BODYSTRUCTURE, basically */
 			fetchreq.body = 1;
 		} else if (!strcmp(item, "BODYSTRUCTURE")) {
 			fetchreq.bodystructure = 1;
 		} else if (STARTS_WITH(item, "BODY[")) {
-			/* BODY[]<> */
-			fetchreq.bodyargs = item;
+			/* Leave just the contents inside the [] */
+			tmp = item + STRLEN("BODY[");
+			if (parse_body_tail(&fetchreq, tmp)) {
+				return -1;
+			}
+			fetchreq.bodyargs = tmp; /* Make assignment after, since this is a const char */
 		} else if (STARTS_WITH(item, "BODY.PEEK[")) {
-			fetchreq.bodypeek = item;
+			tmp = item + STRLEN("BODY.PEEK[");
+			if (parse_body_tail(&fetchreq, tmp)) {
+				return -1;
+			}
+			fetchreq.bodypeek = tmp;
 		} else if (!strcmp(item, "ENVELOPE")) {
 			fetchreq.envelope = 1;
 		} else if (!strcmp(item, "FLAGS")) {

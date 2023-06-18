@@ -406,6 +406,25 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(client1, "\\Seen");
 	CLIENT_DRAIN(client1);
 
+	/* XXX Because the actual bytes and the closing )
+	 * are written separately by net_imap,
+	 * trying to read them together is unreliable
+	 * without using a reliable readline (e.g. bbs_readline)
+	 * For that reason only, we just expect the bytes without the closing ) for now,
+	 * even though in reality we'd always expect that immediately after.
+	 * If/when the tests are converted to use reliable readline,
+	 * then we should update this and tack the ) back on (and followed immediately by ENDL). */
+
+	/* Test partial fetch: first 5 bytes */
+	SWRITE(client1, "a32a UID FETCH 11 (BODY[]<0.5>)" ENDL); /* Bytes 0 through 4 */
+	CLIENT_EXPECT_EVENTUALLY(client1, "Date:");
+	CLIENT_DRAIN(client1);
+
+	/* Repeat, with an offset */
+	SWRITE(client1, "a32b UID FETCH 11 (BODY[]<2.7>)" ENDL); /* Bytes 2 through 8 */
+	CLIENT_EXPECT_EVENTUALLY(client1, "te: Mon");
+	CLIENT_DRAIN(client1);
+
 	/* SEARCH */
 	SWRITE(client1, "a33 UID SEARCH LARGER 20 SEEN HEADER \"Content-Type\" \"plain\" BODY \"test\" OR OR SMALLER 200000 NOT FROM \"John Smith\" NOT FROM \"Paul Smith\"" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "a33 OK UID SEARCH");
