@@ -247,7 +247,6 @@ static int run(void)
 	SWRITE(client1, "Hello Joe, do you think we can meet at 3:30 tomorrow?" ENDL);
 	SWRITE(client1, ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "11] APPEND"); /* The UID of this message should be 11 */
-	CLIENT_DRAIN(client1);
 
 	/* Repeat with non-synchronizing literal */
 	SWRITE(client1, "a14b APPEND INBOX (\\Seen) {326+}" ENDL);
@@ -290,12 +289,10 @@ static int run(void)
 	SWRITE(client1, "Hello Joe, do you think we can meet at 3:30 tomorrow?" ENDL);
 	SWRITE(client1, ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "13:14] APPEND"); /* The UID of these messages should be 13 and 14 */
-	CLIENT_DRAIN(client1);
 
 	/* STORE */
 	SWRITE(client1, "a15 STORE 1:3 +FLAGS (\\Seen)" ENDL); /* Mark messages 1 through 3 as read */
 	CLIENT_EXPECT_EVENTUALLY(client1, "* 3 FETCH (FLAGS (\\Seen))"); /* We know taht no other flags have been set yet */
-	CLIENT_DRAIN(client1);
 
 	/* Make sure the flags really persisted */
 	SWRITE(client1, "a16 FETCH 3:3 (FLAGS)" ENDL);
@@ -334,7 +331,6 @@ static int run(void)
 
 	SWRITE(client1, "a22 EXPUNGE" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "* 1 EXPUNGE"); /* Expunger should immediately see this response */
-	CLIENT_DRAIN(client1);
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.Trash/cur", 0);
 
 	/* Client 2 should see the EXPUNGE when it does a NOOP */
@@ -379,12 +375,10 @@ static int run(void)
 	}
 	SWRITE(client1, "a27 UID FETCH 11 (FLAGS UID BODYSTRUCTURE)" ENDL);
 	CLIENT_EXPECT(client1, "PLAIN");
-	CLIENT_DRAIN(client1);
 
 	/* Test FETCH BODY.PEEK[HEADER] */
 	SWRITE(client1, "a28 UID FETCH 11 (FLAGS BODY.PEEK[HEADER])" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "MIME-Version");
-	CLIENT_DRAIN(client1);
 
 	/* Test FETCH ENVELOPE and INTERNALDATE */
 	SWRITE(client1, "a29 UID FETCH 11 (FLAGS ENVELOPE INTERNALDATE)" ENDL);
@@ -399,7 +393,6 @@ static int run(void)
 
 	SWRITE(client1, "a31 UID FETCH 11 (BODY[TEXT] FLAGS)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "\\Seen");
-	CLIENT_DRAIN(client1);
 
 	/* Independently verify in a subsequent message that the file really was renamed to contain the Seen flag */
 	SWRITE(client1, "a32 UID FETCH 11 (FLAGS)" ENDL);
@@ -418,46 +411,36 @@ static int run(void)
 	/* Test partial fetch: first 5 bytes */
 	SWRITE(client1, "a32a UID FETCH 11 (BODY[]<0.5>)" ENDL); /* Bytes 0 through 4 */
 	CLIENT_EXPECT_EVENTUALLY(client1, "Date:");
-	CLIENT_DRAIN(client1);
 
 	/* Repeat, with an offset */
 	SWRITE(client1, "a32b UID FETCH 11 (BODY[]<2.7>)" ENDL); /* Bytes 2 through 8 */
 	CLIENT_EXPECT_EVENTUALLY(client1, "te: Mon");
-	CLIENT_DRAIN(client1);
 
 	/* SEARCH */
 	SWRITE(client1, "a33 UID SEARCH LARGER 20 SEEN HEADER \"Content-Type\" \"plain\" BODY \"test\" OR OR SMALLER 200000 NOT FROM \"John Smith\" NOT FROM \"Paul Smith\"" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "a33 OK UID SEARCH");
-	CLIENT_DRAIN(client1);
 
 	/* Keywords (custom flags) */
 	SWRITE(client1, "a34 STORE 1 +FLAGS ($label1)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "$label1");
-	CLIENT_DRAIN(client1);
 
 	SWRITE(client1, "a35 FETCH 1 (FLAGS)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "$label1");
-	CLIENT_DRAIN(client1);
 
 	SWRITE(client1, "a36 STORE 1 +FLAGS ($label2)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "$label2");
-	CLIENT_DRAIN(client1);
 
 	SWRITE(client1, "a36 FETCH 1 (FLAGS)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "$label1 $label2");
-	CLIENT_DRAIN(client1);
 
 	SWRITE(client1, "a37 STORE 1 -FLAGS ($label1)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "$label2");
-	CLIENT_DRAIN(client1);
 
 	SWRITE(client1, "a38 STORE 1 FLAGS ($label3)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "$label3");
-	CLIENT_DRAIN(client1);
 
 	SWRITE(client1, "a39 FETCH 1 (FLAGS)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "$label3");
-	CLIENT_DRAIN(client1);
 
 	/* ACLs and shared mailboxes */
 	client2 = test_make_socket(143);
@@ -477,7 +460,6 @@ static int run(void)
 	/* Shared mailbox should show up */
 	SWRITE(client1, "b1 LIST \"\" \"Other Users*\"" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "sharedmbox");
-	CLIENT_DRAIN(client1);
 
 	SWRITE(client1, "b2 SELECT \"Other Users." TEST_USER2 ".sharedmbox\"" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "b2 OK")
@@ -549,7 +531,6 @@ static int run(void)
 	CLIENT_EXPECT(client1, "c11 OK");
 	SWRITE(client1, "c12 FETCH $ (FLAGS)" ENDL);
 	CLIENT_EXPECT(client1, "* 3 FETCH");
-	CLIENT_DRAIN(client1);
 
 	/* Test MOVE */
 	SWRITE(client1, "c13 MOVE 5 Trash" ENDL);
@@ -570,7 +551,6 @@ static int run(void)
 	SWRITE(client1, "Hello Joe, do you think we can meet at 3:30 tomorrow?" ENDL);
 	SWRITE(client1, ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, " 1] APPEND"); /* The UID of this message should be 1; this is the first test that uses the Sent folder. */
-	CLIENT_DRAIN(client1);
 
 	/* UIDVALIDITY is not used in the current implementation so we can send some random value,
 	 * but ideally should parse from the APPEND response */
@@ -663,15 +643,12 @@ static int run(void)
 	CLIENT_EXPECT(client1, "e12 BAD");
 	dprintf(client1, "e13 ENABLE QRESYNC" ENDL);
 	CLIENT_EXPECT(client1, "QRESYNC");
-	CLIENT_DRAIN(client1);
 
 	dprintf(client1, "e14 SELECT INBOX (QRESYNC (%u 1))" ENDL, uidvalidity);
 	CLIENT_EXPECT_EVENTUALLY(client1, "FETCH"); /* Should get all flag changes since MODSEQ 1 */
-	CLIENT_DRAIN(client1);
 
 	dprintf(client1, "e15 SELECT INBOX (QRESYNC (%u 1))" ENDL, uidvalidity);
 	CLIENT_EXPECT_EVENTUALLY(client1, "VANISHED"); /* Repeat, to make sure we also got a VANISHED response */
-	CLIENT_DRAIN(client1);
 
 	SWRITE(client1, "e16 UID FETCH 1:* (FLAGS) (CHANGEDSINCE 1 VANISHED)" ENDL);
 	CLIENT_EXPECT(client1, "VANISHED"); /* Should get a VANISHED response */
@@ -699,7 +676,6 @@ static int run(void)
 	SWRITE(client1, "DONE" ENDL);
 	CLIENT_EXPECT(client1, "e17 OK");
 
-	CLIENT_DRAIN(client2);
 	close_if(client2);
 
 	/* LOGOUT */

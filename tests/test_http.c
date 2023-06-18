@@ -59,7 +59,6 @@ static int run(void)
 	SWRITE(clientfd, "Host: localhost:8080" ENDL);
 	SWRITE(clientfd, ENDL); /* End of headers */
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "file2.txt");
-	CLIENT_DRAIN(clientfd);
 	close_if(clientfd);
 
 	clientfd = test_make_socket(8080);
@@ -72,7 +71,6 @@ static int run(void)
 	SWRITE(clientfd, "Connection: keep-alive" ENDL);
 	SWRITE(clientfd, ENDL); /* End of headers */
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "This is a test page");
-	CLIENT_DRAIN(clientfd);
 
 	/* Test connection reuse */
 	SWRITE(clientfd, "GET /file2.txt HTTP/1.1" ENDL);
@@ -80,7 +78,6 @@ static int run(void)
 	SWRITE(clientfd, "Connection: keep-alive" ENDL);
 	SWRITE(clientfd, ENDL); /* End of headers */
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "This is another test page");
-	CLIENT_DRAIN(clientfd);
 
 	res = 0;
 

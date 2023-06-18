@@ -44,31 +44,25 @@ static int run(void)
 	clientfd = test_make_socket(23);
 	REQUIRE_FD(clientfd);
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "Hit a key");
-	CLIENT_DRAIN(clientfd);
 	SWRITE(clientfd, " "); /* Hit a key */
 
 	/* Must always use CLIENT_EXPECT_EVENTUALLY since our input is also echoed back to us */
 
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "Login");
-	CLIENT_DRAIN(clientfd);
 	SWRITE(clientfd, TEST_USER "\n");
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "Password");
 	SWRITE(clientfd, TEST_PASS "\n");
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "at welcome menu via T");
-	CLIENT_DRAIN(clientfd);
 	SWRITE(clientfd, " "); /* Hit a key */
 
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "Main Menu");
-	CLIENT_DRAIN(clientfd);
 	SWRITE(clientfd, "a"); /* Choose option 'a' */
 
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "Menu A1");
-	CLIENT_DRAIN(clientfd);
 	SWRITE(clientfd, "q"); /* Go back to main menu */
 
 	/* Test submenu skip navigation */
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "Main Menu");
-	CLIENT_DRAIN(clientfd);
 	SWRITE(clientfd, "/aa\n"); /* Go to the same submenu, and into the submenu A2 */
 
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "Menu A2");
