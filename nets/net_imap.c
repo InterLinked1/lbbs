@@ -2602,6 +2602,8 @@ static inline int list_match(const char *dirname, const char *query)
 			}
 			continue;
 		}
+		/* XXX The logic here is a hack. It might work, but it doesn't change that.
+		 * The pattern matching in this function should be externalized to something more robust and well tested. */
 		if (had_wildcard) { /* Last char was a wildcard */
 			a = strchr(a, *b); /* For patterns like *2, baz2 should match. Here, we look for the 2 instead of a. */
 			if (a) {
@@ -2609,7 +2611,7 @@ static inline int list_match(const char *dirname, const char *query)
 			}
 		}
 #ifdef DEBUG_LIST_MATCH
-			imap_debug(9, "IMAP path '%s' failed prefix test\n", dirname);
+		imap_debug(9, "IMAP path '%s' failed prefix test: %s != %s (%s, %s)\n", dirname, a, b, dirname, query);
 #endif
 		res = 0;
 		goto ret;
@@ -2794,8 +2796,9 @@ struct list_command {
 	const char *cmd;
 	/* Mailbox patterns */
 	char *reference;
-	int patterns;				/*!< Number of mailboxes in pattern */
-	char **mailboxes;			/*!< List of mailbox patterns */
+	size_t patterns;			/*!< Number of mailboxes in pattern */
+	const char **mailboxes;		/*!< List of mailbox patterns */
+	int *skiplens;				/*!< List of skip lengths */
 	/* Selection options */
 	unsigned int subscribed:1;	/*!< RFC 5258 SUBSCRIBED selection option - mailboxes to which we're subscribed. */
 	unsigned int remote:1;		/*!< RFC 5258 REMOTE selection option - mailboxes using RFC 2193 mailbox referrals (N/A for us) */
@@ -2804,6 +2807,7 @@ struct list_command {
 	/* Return options */
 	unsigned int retsubscribed:1;	/*!< SUBSCRIBED return option */
 	unsigned int retchildren:1;		/*!< CHILDREN return option */
+	unsigned int retspecialuse:1;	/*!< SPECIAL-USE (RFC 6154) */
 	const char *retstatus;			/*!< STATUS return option (RFC 5819 LIST-STATUS extension) */
 	/* Internal */
 	unsigned int extended:1;	/*!< EXTENDED list command? */
@@ -2812,7 +2816,6 @@ struct list_command {
 	int xlistflags;				/*!< Whether or not to also return \Inbox */
 	enum mailbox_namespace ns;
 	size_t reflen;
-	int skiplen;
 	char attributes[128];
 };
 
@@ -2822,7 +2825,7 @@ struct list_command {
 
 static int list_mailbox_pattern_matches_inbox(struct list_command *lcmd)
 {
-	int i;
+	size_t i;
 
 	for (i = 0; i < lcmd->patterns; i++) {
 		if (list_mailbox_pattern_matches_inbox_single(lcmd->mailboxes[i])) {
@@ -2834,11 +2837,15 @@ static int list_mailbox_pattern_matches_inbox(struct list_command *lcmd)
 
 static int list_mailbox_pattern_matches(struct list_command *lcmd, const char *dirname)
 {
-	int i;
+	size_t i;
 
 	/* It just needs to match one (any) of them */
 	for (i = 0; i < lcmd->patterns; i++) {
-		if (list_match(dirname, lcmd->mailboxes[i] + lcmd->skiplen)) {
+#ifdef DEBUG_LIST_MATCH
+		imap_debug(10, "Checking '%s' against '%s'\n", dirname, lcmd->mailboxes[i] + lcmd->skiplens[i]);
+#endif
+		/* lcmd->mailboxes[i] is guaranteed to be at least lcmd->skiplens[i] chars long */
+		if (list_match(dirname, lcmd->mailboxes[i] + lcmd->skiplens[i])) { /* Compare mailbox with the pattern (on the right) */
 			return 1;
 		}
 	}
@@ -2847,10 +2854,9 @@ static int list_mailbox_pattern_matches(struct list_command *lcmd, const char *d
 
 /*! \retval 0 if skipped, 1 if included */
 static int list_scandir_single(struct imap_session *imap, struct list_command *lcmd, int level,
-	const char *fulldir, const char *mailboxname, const char *listscandir, const char *leafname)
+	const char *fulldir, const char *mailboxname, const char *prefix, const char *listscandir, const char *leafname)
 {
 	int flags = 0, myacl;
-	const char *prefix = lcmd->reference;
 	char extended_buf[512] = "";
 	const char *extended_data_items = extended_buf;
 
@@ -2879,6 +2885,7 @@ static int list_scandir_single(struct imap_session *imap, struct list_command *l
 		 * But we know it has children, since every mailbox has Sent/Drafts/Junk/etc. so just hardcode that here: */
 		flags = DIR_HAS_CHILDREN;
 	} else {
+		/* We always return special use attributes, regardless of lcmd->retspecialuse */
 		flags = get_attributes(listscandir, leafname);
 	}
 	if (lcmd->cmdtype == CMD_XLIST && strstr(leafname, "INBOX")) { /* XXX This is not the right way to detect this */
@@ -2910,6 +2917,10 @@ static int list_scandir_single(struct imap_session *imap, struct list_command *l
 		}
 	}
 
+#ifdef DEBUG_LIST_MATCH
+	imap_debug(10, "level %d, reference: %s, prefix: %s, mailboxname: %s\n", level, lcmd->reference, prefix, mailboxname);
+#endif
+
 	build_attributes_string(lcmd->attributes, sizeof(lcmd->attributes), flags);
 	imap_send(imap, "%s (%s) \"%s\" \"%s%s%s%s\"%s%s", lcmd->cmd, lcmd->attributes, HIERARCHY_DELIMITER,
 		lcmd->ns == NAMESPACE_SHARED ? SHARED_NAMESPACE_PREFIX HIERARCHY_DELIMITER : lcmd->ns == NAMESPACE_OTHER ? OTHER_NAMESPACE_PREFIX HIERARCHY_DELIMITER : "",
@@ -2926,7 +2937,7 @@ static int list_scandir_single(struct imap_session *imap, struct list_command *l
 	return 1;
 }
 
-static int list_scandir(struct imap_session *imap, struct list_command *lcmd, int level, const char *listscandir)
+static int list_scandir(struct imap_session *imap, struct list_command *lcmd, int level, const char *prefix, const char *listscandir)
 {
 	struct dirent *entry, **entries;
 	int files, fno = 0;
@@ -2934,7 +2945,7 @@ static int list_scandir(struct imap_session *imap, struct list_command *lcmd, in
 
 	/* Handle INBOX, since that's also a special case. */
 	if (level == 0 && lcmd->ns == NAMESPACE_PRIVATE && !lcmd->specialuse && list_mailbox_pattern_matches_inbox(lcmd)) {
-		matches += list_scandir_single(imap, lcmd, level, mailbox_maildir(imap->mbox), "INBOX", mailbox_maildir(imap->mbox), "INBOX");
+		matches += list_scandir_single(imap, lcmd, level, mailbox_maildir(imap->mbox), "INBOX", prefix, mailbox_maildir(imap->mbox), "INBOX");
 	}
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
@@ -3033,9 +3044,9 @@ static int list_scandir(struct imap_session *imap, struct list_command *lcmd, in
 			safe_strncpy(relativepath, entry->d_name + 1, sizeof(relativepath)); /*! \todo Optimize for this (common case) by updating a pointer when needed, rather than copying. */
 		} else if (level == 1) {
 			/* Other or Shared, inside the mailbox
-			 * listscandir = mailbox path, mailboxname = the name of this mailbox
+			 * listscandir = mailbox path, prefix = the name of this mailbox
 			 * entry->d_name = name of the mailbox folder (e.g. .Sent, .Trash, .Sub.Folder, etc.) */
-			snprintf(relativepath, sizeof(relativepath), ".%s%s", mailboxname, entry->d_name);
+			snprintf(relativepath, sizeof(relativepath), ".%s%s", prefix, entry->d_name);
 		} else {
 			/* Other or Shared, in the root maildir
 			 * listscandir = root maildir path, prefix is NULL, mailboxname = e.g. jsmith, public */
@@ -3066,13 +3077,13 @@ static int list_scandir(struct imap_session *imap, struct list_command *lcmd, in
 		 * That depends on if we're authorized by the ACL.
 		 * Generate the full directory name so we can load the ACL from it */
 		snprintf(fulldir, sizeof(fulldir), "%s/%s", listscandir, entry->d_name);
-		matches += list_scandir_single(imap, lcmd, level, fulldir, mailboxname, listscandir, entry->d_name);
+		matches += list_scandir_single(imap, lcmd, level, fulldir, mailboxname, prefix, listscandir, entry->d_name);
 
 		/* User may not be authorized for some mailbox, but may be authorized for a subdirectory (e.g. not INBOX, but some subfolder)
 		 * However, this is incredibly expensive as it means "Other Users" will literally traverse every user's entire maildir. */
 		if (level == 0 && lcmd->ns != NAMESPACE_PRIVATE) {
 			/* Recurse only the first time, since there are no more maildirs within afterwards */
-			list_scandir(imap, lcmd, 1, fulldir);
+			list_scandir(imap, lcmd, 1, mailboxname, fulldir);
 		}
 cleanup:
 		free(entry);
@@ -3206,9 +3217,6 @@ static int load_virtual_mailbox(struct imap_session *imap, const char *path)
 
 		/* Instead of doing prefixlen = strlen(mpath), we can just subtract the pointers */
 		prefixlen = (size_t) (urlstr - mpath - 1); /* Subtract 1 for the space between. */
-#if 0
-		bbs_debug(3, "Comparing '%s' with %s\n", path, mpath);
-#endif
 		if (!strncmp(mpath, path, prefixlen)) {
 			struct bbs_url url;
 			char tmpbuf[1024];
@@ -3396,8 +3404,12 @@ static int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 			bbs_debug(8, "Virtual mailbox '%s' doesn't match reference %s\n", virtmboxname, lcmd->reference);
 			continue;
 		}
-		if (!strncmp(virtmboxname, OTHER_NAMESPACE_PREFIX, STRLEN(OTHER_NAMESPACE_PREFIX))) { /* XXX This seems fragile */
+
+		/* Need to do specifically for remote mailboxes, we can't just add a fixed skiplen (could be multiple patterns) */
+		if (STARTS_WITH(virtmboxname, OTHER_NAMESPACE_PREFIX)) {
 			virtmboxname += STRLEN(OTHER_NAMESPACE_PREFIX);
+		} else if (STARTS_WITH(virtmboxname, SHARED_NAMESPACE_PREFIX)) {
+			virtmboxname += STRLEN(SHARED_NAMESPACE_PREFIX);
 		}
 		if (!list_mailbox_pattern_matches(lcmd, virtmboxname)) {
 			bbs_debug(8, "Virtual mailbox '%s' does not match any list pattern\n", virtmboxname);
@@ -3451,7 +3463,7 @@ static int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 		*tmp = HIERARCHY_DELIMITER_CHAR;
 		skipn_noparen(&tmp, ' ', 1);
 		tmp++; /* Skip opening quote */
-		tmp += lcmd->skiplen; /* Skip our prefix to the remote */
+
 		/* Now, do replacements where needed on the remote name */
 		while (*tmp) {
 			if (*tmp == remotedelim) {
@@ -3476,16 +3488,20 @@ static int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 static void list_command_destroy(struct list_command *lcmd)
 {
 	free_if(lcmd->mailboxes);
+	free_if(lcmd->skiplens);
 }
 
-static void process_parsed_mailbox(struct list_command *lcmd, const char *s)
+static void process_parsed_mailbox(struct list_command *lcmd, const char *s, size_t index)
 {
+	lcmd->mailboxes[index] = s;
 	/* To allow for optimizations later, where we can skip certain process if we know these don't apply. */
 	/* Example of doing that at the bottom of this page, e.g. 0 LIST "" "#shared.*" : http://www.courier-mta.org/imap/tutorial.setup.html */
 	if (STARTS_WITH(s, OTHER_NAMESPACE_PREFIX)) {
 		lcmd->anyother = 1;
+		lcmd->skiplens[index] = STRLEN(OTHER_NAMESPACE_PREFIX);
 	} else if (STARTS_WITH(s, SHARED_NAMESPACE_PREFIX)) {
 		lcmd->anyshared = 1;
+		lcmd->skiplens[index] = STRLEN(SHARED_NAMESPACE_PREFIX);
 	} else if (list_wildcard_match(s)) { /* Is this a broad query (list everything?) */
 		lcmd->anyshared = lcmd->anyother = 1;
 	}
@@ -3552,21 +3568,26 @@ static int parse_list_cmd(struct imap_session *imap, struct list_command *lcmd, 
 	}
 	if (*s == '(') {
 		char *mbox;
-		int p = 0;
+		size_t p = 0;
 		lcmd->extended = 1;
 		tmp = parensep(&s);
 		if (strlen_zero(tmp)) {
 			imap_reply(imap, "BAD [CLIENTBUG] No mailbox patterns provided");
 			return -1;
 		}
-		lcmd->patterns = bbs_str_count(tmp, '"');
+		lcmd->patterns = (size_t) bbs_str_count(tmp, '"');
 		if (lcmd->patterns % 2) {
 			imap_reply(imap, "BAD [CLIENTBUG] Odd number of quotes in pattern list");
 			return -1;
 		}
 		lcmd->patterns /= 2; /* 2 quotes per mailbox */
-		lcmd->mailboxes = calloc(1, sizeof(*lcmd->mailboxes));
+		lcmd->mailboxes = calloc(lcmd->patterns, sizeof(*lcmd->mailboxes));
 		if (ALLOC_FAILURE(lcmd->mailboxes)) {
+			imap_reply(imap, "NO [SERVERBUG] Allocation failure");
+			return -1;
+		}
+		lcmd->skiplens = calloc(lcmd->patterns, sizeof(*lcmd->skiplens));
+		if (ALLOC_FAILURE(lcmd->skiplens)) {
 			imap_reply(imap, "NO [SERVERBUG] Allocation failure");
 			return -1;
 		}
@@ -3577,24 +3598,28 @@ static int parse_list_cmd(struct imap_session *imap, struct list_command *lcmd, 
 				imap_reply(imap, "BAD [CLIENTBUG] Malformed mailbox pattern list");
 				return -1;
 			}
-			lcmd->mailboxes[p] = mbox;
-			process_parsed_mailbox(lcmd, mbox);
+			process_parsed_mailbox(lcmd, mbox, p);
 			p++;
 		}
 	} else {
 		/* Single mailbox */
 		lcmd->patterns = 1;
-		lcmd->mailboxes = calloc(1, sizeof(*lcmd->mailboxes));
+		lcmd->mailboxes = calloc(lcmd->patterns, sizeof(*lcmd->mailboxes));
 		if (ALLOC_FAILURE(lcmd->mailboxes)) {
 			imap_reply(imap, "NO [SERVERBUG] Allocation failure");
 			return -1;
 		}
-		lcmd->mailboxes[0] = quotesep(&s);
-		if (!lcmd->mailboxes[0]) {
+		lcmd->skiplens = calloc(lcmd->patterns, sizeof(*lcmd->skiplens));
+		if (ALLOC_FAILURE(lcmd->skiplens)) {
+			imap_reply(imap, "NO [SERVERBUG] Allocation failure");
+			return -1;
+		}
+		tmp = quotesep(&s);
+		if (!tmp) {
 			imap_reply(imap, "BAD [CLIENTBUG] Missing mailbox argument");
 			return -1;
 		}
-		process_parsed_mailbox(lcmd, lcmd->mailboxes[0]);
+		process_parsed_mailbox(lcmd, tmp, 0);
 	}
 
 	if (lcmd->patterns < 1) {
@@ -3620,6 +3645,8 @@ static int parse_list_cmd(struct imap_session *imap, struct list_command *lcmd, 
 				lcmd->retsubscribed = 1;
 			} else if (!strcasecmp(opt, "CHILDREN")) {
 				lcmd->retchildren = 1;
+			} else if (!strcasecmp(opt, "SPECIAL-USE")) {
+				lcmd->retspecialuse = 1;
 			} else if (!strcasecmp(opt, "STATUS")) {
 				/* RFC 5819 LIST-STATUS */
 				lcmd->retstatus = parensep(&tmp);
@@ -3723,23 +3750,25 @@ static int handle_list(struct imap_session *imap, char *s, enum list_cmd_type cm
 	 *
 	 * However, note that % and * can appear anywhere in the mailbox argument. And they function just like a wildcard character you'd expect.
 	 * For that reason, we can't just concatenate reference and mailbox and use that as the prefix. */
-	bbs_debug(6, "%s traversal rooted at '%s' (%d pattern%s, anyshared: %d, anyother: %d)\n", lcmd->cmd, lcmd->reference, lcmd->patterns, ESS(lcmd->patterns), lcmd->anyshared, lcmd->anyother);
+#ifdef DEBUG_LIST_MATCH
+	bbs_debug(6, "%s traversal rooted at '%s' (%lu pattern%s, anyshared: %d, anyother: %d)\n", lcmd->cmd, lcmd->reference, lcmd->patterns, ESS(lcmd->patterns), lcmd->anyshared, lcmd->anyother);
+#endif
 
 	/* Do 3 traversals: once each for private, shared, and other namespaces (+virtual mappings) */
 	lcmd->ns = NAMESPACE_PRIVATE;
-	list_scandir(imap, lcmd, 0, mailbox_maildir(imap->mbox)); /* Recursively LIST */
+	list_scandir(imap, lcmd, 0, lcmd->reference, mailbox_maildir(imap->mbox)); /* Recursively LIST */
 	/* For shared and other users, we use the root maildir since that's where the maildirs for each account are located. */
 	if (lcmd->anyshared) {
 		lcmd->ns = NAMESPACE_SHARED;
-		lcmd->skiplen = STRLEN(SHARED_NAMESPACE_PREFIX);
-		list_scandir(imap, lcmd, 0, mailbox_maildir(NULL));
+		list_scandir(imap, lcmd, 0, lcmd->reference, mailbox_maildir(NULL));
 	}
 	if (lcmd->anyother) {
 		lcmd->ns = NAMESPACE_OTHER;
-		lcmd->skiplen = STRLEN(OTHER_NAMESPACE_PREFIX);
-		list_scandir(imap, lcmd, 0, mailbox_maildir(NULL));
+		list_scandir(imap, lcmd, 0, lcmd->reference, mailbox_maildir(NULL));
+		/* XXX There are some assumptions made that all remote mailboxes are in the Other Users namespace,
+		 * but these aren't really enforced anywhere. */
+		list_virtual(imap, lcmd);
 	}
-	list_virtual(imap, lcmd);
 
 	imap_reply(imap, "OK %s completed.", lcmd->cmd);
 
