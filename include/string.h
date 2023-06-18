@@ -127,9 +127,32 @@ int bbs_str_isprint(const char *restrict s);
  */
 int bbs_str_anyprint(const char *restrict s);
 
+/*! \brief Convert a string to all lowercase */
+void str_tolower(char *restrict s);
+
+/*!
+ * \brief Skip a number of occurences of a character in a string
+ * \param str
+ * \param c Character of interest
+ * \param n Number of times to skip
+ * \retval Number of instances of character skipped
+ */
+int skipn(char **str, char c, int n);
+
+/*! \brief Same as skipn, but don't include spaces inside a parenthesized list */
+int skipn_noparen(char **str, char c, int n);
+
 /*!
  * \brief strsep-like tokenizer that returns the contents of the next substring inside parentheses (handling nested parentheses)
  * \param str
  * \return Substring inside the next outer set of parentheses. str will point to the next unparsed character.
  */
 char *parensep(char **str);
+
+/*!
+ * \brief strsep-like tokenizer that returns the contents of the next substring inside quotes
+ * \param str
+ * \return Substring inside the next outer set of double quotes. str will point to the next unparsed character.
+ * \note Nested quotes are not supported
+ */
+char *quotesep(char **str);

@@ -172,6 +172,12 @@ static int run(void)
 	SWRITE(client1, "a4 LIST \"\" \"\"" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "a4 OK LIST");
 
+	/* LIST-EXTENDED and LIST-STATUS extensions */
+	SWRITE(client1, "a4a LIST (SUBSCRIBED) \"\" (\"INBOX\") RETURN (STATUS (MESSAGES UNSEEN SIZE))" ENDL);
+	/* Dunno the actual size here, but if it's present that's probably correct */
+	CLIENT_EXPECT_EVENTUALLY(client1, "* STATUS \"INBOX\" (MESSAGES " XSTR(TARGET_MESSAGES) " UNSEEN " XSTR(TARGET_MESSAGES) " SIZE ");
+	CLIENT_DRAIN(client1);
+
 	/* CREATE */
 	SWRITE(client1, "a5 CREATE foobar" ENDL);
 	CLIENT_EXPECT(client1, "a5 OK CREATE");
@@ -203,18 +209,27 @@ static int run(void)
 	/* STATUS */
 	/* RFC 9051: the STATUS command SHOULD NOT be used on the currently selected mailbox. However, servers MUST be able to execute the STATUS command on the selected mailbox. */
 	SWRITE(client1, "a11 STATUS \"INBOX\" (UIDNEXT MESSAGES)" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "* STATUS INBOX (MESSAGES 10 UIDNEXT 11)");
+	CLIENT_EXPECT_EVENTUALLY(client1, "* STATUS \"INBOX\" (MESSAGES 10 UIDNEXT 11)");
 
 	/* The main thing we want to test with STATUS is this:
 	 * RFC 9051 6.3.11: It does not change the currently selected mailbox, nor does it affect the state of any messages in the queried mailbox.
 	 * We can test this by issuing STATUS on a different folder, and then when we try to perform an operation on the originally selected folder, it should be sensible.
 	 */
 	SWRITE(client1, "a12 STATUS \"Trash\" (UIDNEXT MESSAGES)" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "* STATUS Trash (MESSAGES 0 UIDNEXT 1)");
+	CLIENT_EXPECT_EVENTUALLY(client1, "* STATUS \"Trash\" (MESSAGES 0 UIDNEXT 1)");
+
+	SWRITE(client1, "a12a LIST \"\" \"Trash\" RETURN (STATUS (UIDNEXT MESSAGES))" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "\".\" \"Trash\""); /* Ensure mailbox name is correct (Trash, not .Trash) */
+
+	/* Issue the command again since we can't currently reliably test for presence of multiple lines in one go */
+	SWRITE(client1, "a12b LIST \"\" \"Trash\" RETURN (STATUS (UIDNEXT MESSAGES))" ENDL);
+	/* We tested LIST-STATUS with INBOX earlier, but that's a special case. This tests the other case (non-INBOX): */
+	CLIENT_EXPECT_EVENTUALLY(client1, "* STATUS \"Trash\" (MESSAGES 0 UIDNEXT 1)");
 
 	/* This FETCH should apply to INBOX, not Trash */
 	SWRITE(client1, "a13 FETCH 1:* (FLAGS)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "* 10 FETCH"); /* Expect to get info for the 10th message (in the INBOX) */
+
 	CLIENT_DRAIN(client1);
 
 	/* APPEND */

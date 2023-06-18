@@ -31,8 +31,10 @@
  * \note Supports RFC 5182 SEARCHRES
  * \note Supports RFC 5256 SORT
  * \note Supports RFC 5256 THREAD (ORDEREDSUBJECT and REFERENCES)
+ * \note Supports RFC 5258 LIST-EXTENDED
  * \note Supports RFC 5267 ESORT
  * \note Supports RFC 5530 Response Codes
+ * \note Supports RFC 5819 LIST-STATUS
  * \note Supports RFC 6154 SPECIAL-USE (but not CREATE-SPECIAL-USE)
  * \note Supports RFC 6851 MOVE
  * \note Supports RFC 7162 CONDSTORE (obsoletes RFC 4551)
@@ -57,7 +59,6 @@
  * - RFC 5267 CONTEXT=SEARCH and CONTEXT=SORT
  * - RFC 5423 events and RFC 5465 NOTIFY
  * - RFC 5738 UTF8
- * - RFC 5819 LIST status
  * - RFC 5957 DISPLAYFROM/DISPLAYTO
  * - RFC 6203 FUZZY SEARCH
  * - RFC 6237 ESEARCH (MULTISEARCH)
@@ -73,7 +74,7 @@
 /* List of capabilities: https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml */
 /* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
 /* XXX URLAUTH is advertised so that SMTP BURL will function in Trojita, even though we don't need URLAUTH since we have a direct trust */
-#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT SPECIAL-USE XLIST CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS LITERAL+ MULTIAPPEND APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC STATUS=SIZE"
+#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT SPECIAL-USE LIST-EXTENDED LIST-STATUS XLIST CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS LITERAL+ MULTIAPPEND APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC STATUS=SIZE"
 
 /* Capabilities advertised by popular mail providers, for reference/comparison, both pre and post authentication:
  * - Office 365
@@ -1179,6 +1180,7 @@ static int translate_maildir_flags(struct imap_session *imap, const char *oldmai
 		return 0; \
 	}
 
+/*! \todo The quotesep function has now been added and probably should be used instead of this mess? */
 #define SHIFT_OPTIONALLY_QUOTED_ARG(assign, s) \
 	REQUIRE_ARGS(s); \
 	if (*s == '"') { \
@@ -2321,56 +2323,175 @@ static int pseudo_status_size(struct imap_session *imap, char *s, const char *re
 	return 0;
 }
 
+static void construct_status(struct imap_session *imap, const char *s, char *buf, size_t len, unsigned long maxmodseq)
+{
+	char *pos = buf;
+	size_t left = len;
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "MESSAGES"), "MESSAGES %d", imap->totalnew + imap->totalcur);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "RECENT"), "RECENT %d", imap->totalnew);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDNEXT"), "UIDNEXT %d", imap->uidnext + 1);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDVALIDITY"), "UIDVALIDITY %d", imap->uidvalidity);
+	/* Unlike with SELECT, this is the TOTAL number of unseen messages, not merely the first one */
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UNSEEN"), "UNSEEN %d", imap->totalunseen);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %lu", mailbox_quota(imap->mbox));
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "HIGHESTMODSEQ"), "HIGHESTMODSEQ %lu", maxmodseq);
+	/* RFC 8438 STATUS=SIZE extension */
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "SIZE"), "SIZE %lu", imap->totalsize);
+}
+
+static char *remote_mailbox_name(struct imap_session *imap, char *restrict mailbox)
+{
+	char *tmp, *remotename = mailbox + imap->virtprefixlen + 1;
+	/* This is some other server's problem to handle.
+	 * Just forward the request (after modifying the mailbox name as appropriate, to remove the prefix + following period). */
+	/* Also need to adjust for hierarchy delimiter being different, potentially.
+	 * Typically imap_substitute_remote_command handles this, but for SELECT we go ahead and send the name directly,
+	 * so do what's needed here. The conversion logic here is a lot simpler anyways, since we know we just have
+	 * a mailbox name and not an entire command to convert.
+	 * XXX What if we ever want to support SELECT commands that contain more than just a mailbox?
+	 */
+	tmp = mailbox + imap->virtprefixlen + 1;
+	while (*tmp) {
+		if (*tmp == HIERARCHY_DELIMITER_CHAR) {
+			*tmp = imap->virtdelimiter;
+		}
+		tmp++;
+	}
+	return remotename;
+}
+
+static int select_examine_response(struct imap_session *imap, enum select_type readonly, char *s, unsigned long maxmodseq, int was_selected, struct mailbox *oldmbox)
+{
+	char aclstr[15];
+	char keywords[256] = "";
+	int condstore_just_enabled = 0;
+	unsigned int lastmodseq = 0;
+	char *uidrange = NULL, *seqrange = NULL;
+	int numkeywords = gen_keyword_names(imap, NULL, keywords, sizeof(keywords)); /* prepends a space before all of them, so this works out great */
+
+	if (!strlen_zero(s)) {
+		if (STARTS_WITH(s, "(QRESYNC")) {
+			char *qresync, *tmp;
+			unsigned int lastuidvalidity;
+			if (!imap->qresync) { /* RFC 7162 3.2.5 */
+				imap_reply(imap, "BAD [CLIENTBUG] QRESYNC not enabled");
+				return 0;
+			}
+			/* Something like A02 SELECT INBOX (QRESYNC (67890007 20050715194045000 41,43:211,214:541)) */
+			qresync = parensep(&s);
+			qresync += STRLEN("QRESYNC ");
+			qresync = parensep(&qresync);
+			/* Now qresync should be the inner paren contents */
+			tmp = strsep(&qresync, " ");
+			REQUIRE_ARGS(tmp);
+			lastuidvalidity = (unsigned int) atoi(tmp);
+			tmp = strsep(&qresync, " ");
+			REQUIRE_ARGS(tmp);
+			lastmodseq = (unsigned int) atoi(tmp);
+			if (!strlen_zero(qresync) && *qresync != '(') { /* Trojita sends params 1, 2, and 4 but not 3 (no UID range) */
+				uidrange = strsep(&qresync, " "); /* This is optional and defaults to 1:* */
+			} else {
+				uidrange = NULL; /* Defaults to 1:* - for efficiency's sake, use NULL instead */
+			}
+			if (!strlen_zero(qresync)) {
+				if (*qresync == '(') {
+					seqrange = qresync; /* Also optional */
+				} else {
+					bbs_warning("Parsing error: %s\n", qresync);
+				}
+			}
+			/* If client's last UIDVALIDITY doesn't match ours, then ignore all this */
+			if (lastuidvalidity != imap->uidvalidity) {
+				bbs_verb(5, "Client's UIDVALIDITY (%u) differs from ours (%u)\n", lastuidvalidity, imap->uidvalidity);
+				lastmodseq = 0;
+				uidrange = NULL;
+			}
+		} else if (strstr(s, "CONDSTORE")) {
+			if (!imap->condstore) {
+				condstore_just_enabled = 1;
+			}
+			imap->condstore = 1; /* RFC 7162 3.1.8 */
+		} else {
+			/* CONDSTORE is the only known optional parameter for SELECT/EXAMINE */
+			bbs_warning("Unexpected parameter: %s\n", s);
+		}
+	}
+
+	if (was_selected) {
+		imap_send(imap, "OK [CLOSED]"); /* RFC 7162 3.2.11, example in 3.2.5.1 */
+	}
+
+	imap_send(imap, "FLAGS (%s%s)", IMAP_FLAGS, numkeywords ? keywords : "");
+	/* Any non-standard flags are called keywords in IMAP
+	 * If we don't send a PERMANENTFLAGS, the RFC says that clients should assume all flags are permanent.
+	 * This works if clients are not allowed to set custom flags.
+	 * If they are, then we need to send the \* in the PERMANENTFLAGS response.
+	 * See: https://news.purelymail.com/posts/status/2023-04-01-security-disclosure-user-flags.html
+	 * specifically:
+	 * "We thought we could omit the PERMANENTFLAGS response, since the spec says that
+	 * if there is no PERMANENTFLAGS response then the client should assume all flags are permanent,
+	 * which is the case for Purelymail. Unfortunately this meant clients like Mozilla Thunderbird
+	 * assumed they could not create any new flags since they did not see a * response."
+	 *
+	 * (Side note: the security incident discussed in the above post mortem was uncovered
+	 *  through development of this IMAP server, in testing certain behavior of existing IMAP servers.)
+	 *
+	 * The Purelymail email server adds an "F" after its PERMANENTFLAGS response because some clients
+	 * will break if no commentary is present in the response (so a single letter suffices for this purpose).
+	 * Most of the other responses already have pretty standard commentary,
+	 * but that one doesn't so it's just arbitrary and as short as possible.
+	 * RFC 7162 3.1.2.1 shows "LIMITED" appearing at the end of a PERMANENTFLAGS response, so we do that here,
+	 * as clients are limited in how many custom flags (keywords) can be used (26 for the entire mailbox)
+	 */
+	imap_send(imap, "OK [PERMANENTFLAGS (%s%s \\*)] Limited", IMAP_FLAGS, numkeywords > 0 ? keywords : ""); /* Include \* to indicate we support IMAP keywords */
+	imap_send(imap, "%u EXISTS", imap->totalnew + imap->totalcur); /* Number of messages in the mailbox. */
+	imap_send(imap, "%u RECENT", imap->totalnew); /* Number of messages with \Recent flag (maildir: new, instead of cur). */
+	if (imap->firstunseen) {
+		/* Both of these are supposed to be firstunseen (the first one is NOT totalunseen) */
+		imap_send(imap, "OK [UNSEEN %u] Message %u is first unseen", imap->firstunseen, imap->firstunseen);
+	}
+	imap_send(imap, "OK [UIDVALIDITY %u] UIDs valid", imap->uidvalidity);
+	/* uidnext is really the current max UID allocated. The next message will have at least UID of uidnext + 1, but it could be larger. */
+	imap_send(imap, "OK [UIDNEXT %u] Predicted next UID", imap->uidnext + 1);
+	imap_send(imap, "OK [HIGHESTMODSEQ %lu] Highest", maxmodseq);
+	generate_acl_string(imap->acl, aclstr, sizeof(aclstr));
+	imap_send(imap, "OK [MYRIGHTS \"%s\"] ACL", aclstr);
+	if (lastmodseq) {
+		do_qresync(imap, lastmodseq, uidrange, seqrange);
+	}
+	if (oldmbox != imap->mbox) {
+		/* Whenever we switch mailboxes, alert about low quota */
+		low_quota_alert(imap);
+	}
+	imap_reply(imap, "OK [%s] %s completed%s", imap->readonly ? "READ-ONLY" : "READ-WRITE", readonly == CMD_EXAMINE ? "EXAMINE" : "SELECT", condstore_just_enabled ? ", CONDSTORE is now enabled" : "");
+	imap->highestmodseq = maxmodseq;
+	return 0;
+}
+
+static int sharedflagrights = IMAP_ACL_SEEN | IMAP_ACL_WRITE;
+
+/*! \brief SELECT/EXAMINE handler */
 static int handle_select(struct imap_session *imap, char *s, enum select_type readonly)
 {
-	/* Mailbox can contain spaces, so don't use strsep for it if it's in quotes */
 	char *mailbox;
-	int was_selected;
+	int was_selected = imap->dir[0] ? 1 : 0;
 	unsigned long maxmodseq;
-	struct mailbox *oldmbox;
+	struct mailbox *oldmbox = imap->mbox;
 
-	REQUIRE_ARGS(s);
+	REQUIRE_ARGS(s); /* Mailbox can contain spaces, so don't use strsep for it if it's in quotes */
 	SHIFT_OPTIONALLY_QUOTED_ARG(mailbox, s); /* The STATUS command will have additional arguments (and possibly SELECT, for CONDSTORE/QRESYNC) */
-
-	was_selected = imap->dir[0] ? 1 : 0;
-	oldmbox = imap->mbox;
 
 	/* This modifies the current maildir even for STATUS, but the STATUS command will restore the old one afterwards. */
 	if (set_maildir(imap, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX". It may also change the active (account) mailbox. */
 		return 0;
 	}
 	if (imap->virtmbox) {
-		char *tmp, *remotename = mailbox + imap->virtprefixlen + 1;
-		/* This is some other server's problem to handle.
-		 * Just forward the request (after modifying the mailbox name as appropriate, to remove the prefix + following period). */
-		/* Also need to adjust for hierarchy delimiter being different, potentially.
-		 * Typically imap_substitute_remote_command handles this, but for SELECT we go ahead and send the name directly,
-		 * so do what's needed here. The conversion logic here is a lot simpler anyways, since we know we just have
-		 * a mailbox name and not an entire command to convert.
-		 * XXX What if we ever want to support SELECT commands that contain more than just a mailbox?
-		 */
-		tmp = remotename;
-		while (*tmp) {
-			if (*tmp == HIERARCHY_DELIMITER_CHAR) {
-				*tmp = imap->virtdelimiter;
-			}
-			tmp++;
-		}
-		if (readonly <= 1) { /* SELECT/EXAMINE */
-			REPLACE(imap->folder, mailbox);
-			return imap_client_send_wait_response(imap, -1, 5000, "%s \"%s\"\r\n", readonly == CMD_SELECT ? "SELECT" : "EXAMINE", remotename); /* Reconstruct the SELECT, fortunately this is not too bad */
-		} else { /* STATUS */
-			REPLACE(imap->activefolder, mailbox);
-			/* If the client wants SIZE but the remote server doesn't support it, we'll have to fake it by translating */
-			if (strstr(s, "SIZE") && !(imap->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
-				return pseudo_status_size(imap, s, remotename);
-			} else {
-				return imap_client_send_wait_response(imap, -1, 5000, "STATUS \"%s\" %s\r\n", remotename, s);
-			}
-		}
+		char *remotename = remote_mailbox_name(imap, mailbox);
+		REPLACE(imap->folder, mailbox);
+		return imap_client_send_wait_response(imap, -1, 5000, "%s \"%s\"\r\n", readonly == CMD_SELECT ? "SELECT" : "EXAMINE", remotename); /* Reconstruct the SELECT, fortunately this is not too bad */
 	}
-	if (!readonly) {
-		static int sharedflagrights = IMAP_ACL_SEEN | IMAP_ACL_WRITE;
+	IMAP_REQUIRE_ACL(imap->acl, IMAP_ACL_READ);
+	if (readonly == CMD_SELECT) {
 		readonly = IMAP_HAS_ACL(imap->acl, IMAP_ACL_INSERT | IMAP_ACL_EXPUNGE | sharedflagrights) ? 0 : 1;
 	}
 	if (readonly <= 1) { /* SELECT and EXAMINE should update currently selected mailbox, STATUS should not */
@@ -2381,141 +2502,69 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 		 * imap->activefolder will now contain the mailbox for STATUS. */
 		REPLACE(imap->activefolder, mailbox);
 	}
-	if (readonly == CMD_EXAMINE) {
-		imap->readonly = readonly;
-	} else {
-		imap->readonly = 0; /* In case the previously SELECTed folder was read only */
-	}
+	imap->readonly = readonly == CMD_EXAMINE;
 	mailbox_has_activity(imap->mbox); /* Clear any activity flag since we're about to do a traversal. */
 	IMAP_TRAVERSAL(imap, on_select);
 	maxmodseq = maildir_max_modseq(imap->mbox, imap->curdir);
-	if (readonly <= 1) { /* SELECT, EXAMINE */
-		char aclstr[15];
-		char keywords[256] = "";
-		int condstore_just_enabled = 0;
-		unsigned int lastmodseq = 0;
-		char *uidrange = NULL, *seqrange = NULL;
-		int numkeywords = gen_keyword_names(imap, NULL, keywords, sizeof(keywords)); /* prepends a space before all of them, so this works out great */
+	return select_examine_response(imap, readonly, s, maxmodseq, was_selected, oldmbox);
+}
 
-		if (!strlen_zero(s)) {
-			if (STARTS_WITH(s, "(QRESYNC")) {
-				char *qresync, *tmp;
-				unsigned int lastuidvalidity;
-				if (!imap->qresync) { /* RFC 7162 3.2.5 */
-					imap_reply(imap, "BAD [CLIENTBUG] QRESYNC not enabled");
-					return 0;
-				}
-				/* Something like A02 SELECT INBOX (QRESYNC (67890007 20050715194045000 41,43:211,214:541)) */
-				qresync = parensep(&s);
-				qresync += STRLEN("QRESYNC ");
-				qresync = parensep(&qresync);
-				/* Now qresync should be the inner paren contents */
-				tmp = strsep(&qresync, " ");
-				REQUIRE_ARGS(tmp);
-				lastuidvalidity = (unsigned int) atoi(tmp);
-				tmp = strsep(&qresync, " ");
-				REQUIRE_ARGS(tmp);
-				lastmodseq = (unsigned int) atoi(tmp);
-				if (!strlen_zero(qresync) && *qresync != '(') { /* Trojita sends params 1, 2, and 4 but not 3 (no UID range) */
-					uidrange = strsep(&qresync, " "); /* This is optional and defaults to 1:* */
-				} else {
-					uidrange = NULL; /* Defaults to 1:* - for efficiency's sake, use NULL instead */
-				}
-				if (!strlen_zero(qresync)) {
-					if (*qresync == '(') {
-						seqrange = qresync; /* Also optional */
-					} else {
-						bbs_warning("Parsing error: %s\n", qresync);
-					}
-				}
-				/* If client's last UIDVALIDITY doesn't match ours, then ignore all this */
-				if (lastuidvalidity != imap->uidvalidity) {
-					bbs_verb(5, "Client's UIDVALIDITY (%u) differs from ours (%u)\n", lastuidvalidity, imap->uidvalidity);
-					lastmodseq = 0;
-					uidrange = NULL;
-				}
-			} else if (strstr(s, "CONDSTORE")) {
-				if (!imap->condstore) {
-					condstore_just_enabled = 1;
-				}
-				imap->condstore = 1; /* RFC 7162 3.1.8 */
-			} else {
-				/* CONDSTORE is the only known optional parameter for SELECT/EXAMINE */
-				bbs_warning("Unexpected parameter: %s\n", s);
-			}
-		}
+static int local_status(struct imap_session *imap, const char *mailbox, const char *items)
+{
+	char status_items[84] = "";
 
-		if (was_selected) {
-			imap_send(imap, "OK [CLOSED]"); /* RFC 7162 3.2.11, example in 3.2.5.1 */
-		}
+	/*! \todo Since this is local and we can control it,
+	 * we could cache the STATUS stats and invalidate them as needed */
 
-		imap_send(imap, "FLAGS (%s%s)", IMAP_FLAGS, numkeywords ? keywords : "");
-		/* Any non-standard flags are called keywords in IMAP
-		 * If we don't send a PERMANENTFLAGS, the RFC says that clients should assume all flags are permanent.
-		 * This works if clients are not allowed to set custom flags.
-		 * If they are, then we need to send the \* in the PERMANENTFLAGS response.
-		 * See: https://news.purelymail.com/posts/status/2023-04-01-security-disclosure-user-flags.html
-		 * specifically:
-		 * "We thought we could omit the PERMANENTFLAGS response, since the spec says that
-		 * if there is no PERMANENTFLAGS response then the client should assume all flags are permanent,
-		 * which is the case for Purelymail. Unfortunately this meant clients like Mozilla Thunderbird
-		 * assumed they could not create any new flags since they did not see a * response."
-		 *
-		 * (Side note: the security incident discussed in the above post mortem was uncovered
-		 *  through development of this IMAP server, in testing certain behavior of existing IMAP servers.)
-		 *
-		 * The Purelymail email server adds an "F" after its PERMANENTFLAGS response because some clients
-		 * will break if no commentary is present in the response (so a single letter suffices for this purpose).
-		 * Most of the other responses already have pretty standard commentary,
-		 * but that one doesn't so it's just arbitrary and as short as possible.
-		 * RFC 7162 3.1.2.1 shows "LIMITED" appearing at the end of a PERMANENTFLAGS response, so we do that here,
-		 * as clients are limited in how many custom flags (keywords) can be used (26 for the entire mailbox)
-		 */
-		imap_send(imap, "OK [PERMANENTFLAGS (%s%s \\*)] Limited", IMAP_FLAGS, numkeywords > 0 ? keywords : ""); /* Include \* to indicate we support IMAP keywords */
-		imap_send(imap, "%u EXISTS", imap->totalnew + imap->totalcur); /* Number of messages in the mailbox. */
-		imap_send(imap, "%u RECENT", imap->totalnew); /* Number of messages with \Recent flag (maildir: new, instead of cur). */
-		if (imap->firstunseen) {
-			/* Both of these are supposed to be firstunseen (the first one is NOT totalunseen) */
-			imap_send(imap, "OK [UNSEEN %u] Message %u is first unseen", imap->firstunseen, imap->firstunseen);
-		}
-		imap_send(imap, "OK [UIDVALIDITY %u] UIDs valid", imap->uidvalidity);
-		/* uidnext is really the current max UID allocated. The next message will have at least UID of uidnext + 1, but it could be larger. */
-		imap_send(imap, "OK [UIDNEXT %u] Predicted next UID", imap->uidnext + 1);
-		imap_send(imap, "OK [HIGHESTMODSEQ %lu] Highest", maxmodseq);
-		generate_acl_string(imap->acl, aclstr, sizeof(aclstr));
-		imap_send(imap, "OK [MYRIGHTS \"%s\"] ACL", aclstr);
-		if (lastmodseq) {
-			do_qresync(imap, lastmodseq, uidrange, seqrange);
-		}
-		if (oldmbox != imap->mbox) {
-			/* Whenever we switch mailboxes, alert about low quota */
-			low_quota_alert(imap);
-		}
-		imap_reply(imap, "OK [%s] %s completed%s", readonly ? "READ-ONLY" : "READ-WRITE", readonly ? "EXAMINE" : "SELECT", condstore_just_enabled ? ", CONDSTORE is now enabled" : "");
-		imap->highestmodseq = maxmodseq;
-	} else if (readonly == CMD_STATUS) { /* STATUS */
-		/*! \todo imap->totalnew and imap->totalcur, etc. are now for this other mailbox we one-offed, rather than currently selected.
-		 * Will that mess anything up? Maybe we should save these in tmp vars, and only set on the imap struct if readonly <= 1? */
-		char status_items[84] = "";
-		if (!strlen_zero(s)) {
-			char *pos = status_items;
-			int left = sizeof(status_items);
-			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "MESSAGES"), "MESSAGES %d", imap->totalnew + imap->totalcur);
-			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "RECENT"), "RECENT %d", imap->totalnew);
-			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "UIDNEXT"), "UIDNEXT %d", imap->uidnext + 1);
-			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "UIDVALIDITY"), "UIDVALIDITY %d", imap->uidvalidity);
-			/* Unlike with SELECT, this is the TOTAL number of unseen messages, not merely the first one */
-			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "UNSEEN"), "UNSEEN %d", imap->totalunseen);
-			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %lu", mailbox_quota(imap->mbox));
-			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "HIGHESTMODSEQ"), "HIGHESTMODSEQ %lu", maxmodseq);
-			/* RFC 8438 STATUS=SIZE extension */
-			SAFE_FAST_COND_APPEND(status_items, sizeof(status_items), pos, left, strstr(s, "SIZE"), "SIZE %lu", imap->totalsize);
-		}
-		imap_send(imap, "STATUS %s (%s)", mailbox, status_items);
-		imap_reply(imap, "OK STATUS completed");
-	} else {
-		bbs_assert(0);
+	/* imap->folder will still contain the currently selected mailbox.
+	 * imap->activefolder will now contain the mailbox for STATUS. */
+	REPLACE(imap->activefolder, mailbox);
+
+	imap->readonly = 0;
+	mailbox_has_activity(imap->mbox); /* Clear any activity flag since we're about to do a traversal. */
+	IMAP_TRAVERSAL(imap, on_select);
+
+	/*! \todo imap->totalnew and imap->totalcur, etc. are now for this other mailbox we one-offed, rather than currently selected.
+	 * Will that mess anything up? Maybe we should save these in tmp vars, and only set on the imap struct if readonly <= 1? */
+	if (!strlen_zero(items)) {
+		construct_status(imap, items, status_items, sizeof(status_items), maildir_max_modseq(imap->mbox, imap->curdir));
 	}
+	imap_send(imap, "STATUS \"%s\" (%s)", mailbox, status_items); /* Quotes needed if mailbox name contains spaces */
+	return 0;
+}
+
+/*! \brief STATUS handler, split off from handle_select for modularity */
+static int handle_status(struct imap_session *imap, char *s)
+{
+	/* STATUS is like EXAMINE, but it's on a specified mailbox that is NOT the currently selected mailbox */
+	/* Need to save/restore current maildir for STATUS, so it doesn't mess up the selected mailbox,
+	 * since STATUS must not modify the selected folder.
+	 * This is handled earlier in imap_process (look for "Reverting temporary STATUS override"). */
+	char *mailbox;
+
+	REQUIRE_ARGS(s); /* Mailbox can contain spaces, so don't use strsep for it if it's in quotes */
+	SHIFT_OPTIONALLY_QUOTED_ARG(mailbox, s); /* The STATUS command will have additional arguments (and possibly SELECT, for CONDSTORE/QRESYNC) */
+
+	/* This modifies the current maildir even for STATUS, but the STATUS command will restore the old one afterwards. */
+	if (set_maildir(imap, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX". It may also change the active (account) mailbox. */
+		return 0;
+	}
+	if (imap->virtmbox) {
+		char *remotename = remote_mailbox_name(imap, mailbox);
+		REPLACE(imap->activefolder, mailbox);
+		/* If the client wants SIZE but the remote server doesn't support it, we'll have to fake it by translating */
+		/*! \todo If something higher up is doing a LIST-STATUS, and the remote server supports LIST-STATUS,
+		 * do that (once), rather than doing a STATUS on each mailbox there */
+		if (strstr(s, "SIZE") && !(imap->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
+			return pseudo_status_size(imap, s, remotename);
+		} else {
+			return imap_client_send_wait_response(imap, -1, 5000, "STATUS \"%s\" %s\r\n", remotename, s);
+		}
+	}
+
+	IMAP_REQUIRE_ACL(imap->acl, IMAP_ACL_READ);
+	local_status(imap, mailbox, s);
+	imap_reply(imap, "OK STATUS completed");
 	return 0;
 }
 
@@ -2525,6 +2574,8 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 static inline int list_match(const char *dirname, const char *query)
 {
 	const char *a, *b;
+	int res = 1;
+	int had_wildcard = 0;
 
 	/* A user's account is commonly called a "mailbox", and IMAP refers to folders as mailboxes...
 	 * and the 2nd argument to LIST is the mailbox argument... to disambiguate here, I'll refer
@@ -2543,19 +2594,44 @@ static inline int list_match(const char *dirname, const char *query)
 
 	for (; *a && *b; a++, b++) {
 		if (*a == *b) {
+			had_wildcard = 0;
 			continue; /* Exact match on this character. */
 		} else if (*b == '*' || (*b == '%' && *a != '.')) {
+			if (*b == '*') {
+				had_wildcard = 1;
+			}
 			continue;
 		}
-		return 0;
+		if (had_wildcard) { /* Last char was a wildcard */
+			a = strchr(a, *b); /* For patterns like *2, baz2 should match. Here, we look for the 2 instead of a. */
+			if (a) {
+				continue; /* Keep going */
+			}
+		}
+#ifdef DEBUG_LIST_MATCH
+			imap_debug(9, "IMAP path '%s' failed prefix test\n", dirname);
+#endif
+		res = 0;
+		goto ret;
 	}
 	/* If there was no wildcard at the end, but there's more of the directory name remaining, it's NOT a match. */
 	if (!strlen_zero(a)) {
 		if (!strlen_zero(query) && *(b - 1) != '*' && *(b - 1) != '%') {
-			return 0;
+#ifdef DEBUG_LIST_MATCH
+			imap_debug(9, "IMAP path '%s' failed wildcard test\n", dirname);
+#endif
+			res = 0;
+			goto ret;
 		}
 	}
-	return 1;
+
+ret:
+#ifdef DEBUG_LIST_MATCH
+	if (res) {
+		imap_debug(9, "IMAP path '%s' matches query '%s'\n", dirname, query);
+	}
+#endif
+	return res;
 }
 
 static int test_list_interpretation(void)
@@ -2571,6 +2647,8 @@ static int test_list_interpretation(void)
 	bbs_test_assert_equals(1, list_match(".Sent", "*"));
 	bbs_test_assert_equals(0, list_match(".Sent", "%"));
 	bbs_test_assert_equals(1, list_match(".Sent", ".S%"));
+	bbs_test_assert_equals(1, list_match("baz2", "*2")); /* RFC 5258 5.9 */
+	bbs_test_assert_equals(0, list_match("baz2", "*32"));
 
 	return 0;
 
@@ -2616,6 +2694,7 @@ static int imap_dir_has_subfolders(const char *path, const char *prefix)
 #define DIR_TRASH (1 << 6)
 
 #define DIR_INBOX (1 << 7)
+#define DIR_SUBSCRIBED (1 << 8)
 
 #define DIR_SPECIALUSE (DIR_DRAFTS | DIR_JUNK | DIR_SENT | DIR_TRASH)
 
@@ -2630,6 +2709,7 @@ static int imap_dir_has_subfolders(const char *path, const char *prefix)
 #define ATTR_TRASH "\\Trash"
 
 #define ATTR_INBOX "\\Inbox"
+#define ATTR_SUBSCRIBED "\\Subscribed"
 
 #define ASSOC_ATTR(flag, string) SAFE_FAST_COND_APPEND(buf, len, pos, left, (attrs & flag), string)
 
@@ -2676,6 +2756,7 @@ static void build_attributes_string(char *buf, size_t len, int attrs)
 	ASSOC_ATTR(DIR_SENT, ATTR_SENT);
 	ASSOC_ATTR(DIR_TRASH, ATTR_TRASH);
 	ASSOC_ATTR(DIR_INBOX, ATTR_INBOX);
+	ASSOC_ATTR(DIR_SUBSCRIBED, ATTR_SUBSCRIBED);
 
 	if (left <= 0) {
 		bbs_error("Truncation occured when building attribute string (%lu)\n", left);
@@ -2702,229 +2783,306 @@ cleanup:
 	return -1;
 }
 
-static void str_tolower(char *restrict s)
+enum list_cmd_type {
+	CMD_LIST,
+	CMD_LSUB,
+	CMD_XLIST,
+};
+
+struct list_command {
+	enum list_cmd_type cmdtype;
+	const char *cmd;
+	/* Mailbox patterns */
+	char *reference;
+	int patterns;				/*!< Number of mailboxes in pattern */
+	char **mailboxes;			/*!< List of mailbox patterns */
+	/* Selection options */
+	unsigned int subscribed:1;	/*!< RFC 5258 SUBSCRIBED selection option - mailboxes to which we're subscribed. */
+	unsigned int remote:1;		/*!< RFC 5258 REMOTE selection option - mailboxes using RFC 2193 mailbox referrals (N/A for us) */
+	unsigned int recursive:1;	/*!< RFC 5258 RECRUSIVEMATCH selection option */
+	unsigned int specialuse:1;	/*!< RFC 6154 SPECIAL-USE LIST extension */
+	/* Return options */
+	unsigned int retsubscribed:1;	/*!< SUBSCRIBED return option */
+	unsigned int retchildren:1;		/*!< CHILDREN return option */
+	const char *retstatus;			/*!< STATUS return option (RFC 5819 LIST-STATUS extension) */
+	/* Internal */
+	unsigned int extended:1;	/*!< EXTENDED list command? */
+	unsigned int anyother:1;	/*!< Any mailboxes in Other Users namespace? */
+	unsigned int anyshared:1;	/*!< Any mailboxes in Shared Folders namespace? */
+	int xlistflags;				/*!< Whether or not to also return \Inbox */
+	enum mailbox_namespace ns;
+	size_t reflen;
+	int skiplen;
+	char attributes[128];
+};
+
+#define list_wildcard_match(mailbox) (strlen_zero(lcmd->reference) && (strlen_zero(mailbox) || !strcmp(mailbox, "*") || !strcmp(mailbox, "%")))
+
+#define list_mailbox_pattern_matches_inbox_single(mailbox) (list_wildcard_match(mailbox) || !strcmp(mailbox, "INBOX"))
+
+static int list_mailbox_pattern_matches_inbox(struct list_command *lcmd)
 {
-	while (*s) {
-		*s = (char) tolower(*s);
-		s++;
+	int i;
+
+	for (i = 0; i < lcmd->patterns; i++) {
+		if (list_mailbox_pattern_matches_inbox_single(lcmd->mailboxes[i])) {
+			return 1;
+		}
 	}
+	return 0;
 }
 
-static void list_scandir(struct imap_session *imap, const char *listscandir, int lsub, int specialuse, int level, enum mailbox_namespace ns,
-	char *attributes, size_t attrlen, const char *reference, const char *prefix, const char *mailbox, size_t reflen, int skiplen)
+static int list_mailbox_pattern_matches(struct list_command *lcmd, const char *dirname)
+{
+	int i;
+
+	/* It just needs to match one (any) of them */
+	for (i = 0; i < lcmd->patterns; i++) {
+		if (list_match(dirname, lcmd->mailboxes[i] + lcmd->skiplen)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/*! \retval 0 if skipped, 1 if included */
+static int list_scandir_single(struct imap_session *imap, struct list_command *lcmd, int level,
+	const char *fulldir, const char *mailboxname, const char *listscandir, const char *leafname)
+{
+	int flags = 0, myacl;
+	const char *prefix = lcmd->reference;
+	char extended_buf[512] = "";
+	const char *extended_data_items = extended_buf;
+
+	load_acl(imap, fulldir, lcmd->ns, &myacl);
+
+	/* Suppress mailbox from LIST output if user doesn't at least have IMAP_ACL_LOOKUP for this mailbox. */
+	if (!IMAP_HAS_ACL(myacl, IMAP_ACL_LOOKUP)) {
+#ifdef DEBUG_LIST_MATCH
+		char aclbuf[256] = "";
+		if (myacl != 0) {
+			generate_acl_string(myacl, aclbuf, sizeof(aclbuf));
+		}
+		bbs_debug(6, "User lacks permission for %s: %s\n", fulldir, aclbuf);
+#endif
+		return 0; /* We don't have permission to LIST this mailbox, but might have permission to list one of its children. */
+	}
+
+	/* lcmd->remote is never true on this server (but this only expands the selection, so we can also functionally ignore it).
+	 * We always return children (\HasChildren or \HasNoChildren), regardless of lcmd->retchildren.
+	 * lcmd->retsubscribed XXX */
+
+	if (level == 0 && lcmd->ns != NAMESPACE_PRIVATE) { /* Most LISTs will be for the private namespace, so check that case first */
+		/* We can't use get_attributes for the mailbox itself, since there won't be other directories
+		 * in this same directory with the maildir++ format (e.g. for mailbox public, there is .Sent folder in public, e.g. public/.Sent,
+		 * but public.Sent does not exist anywhere on disk.
+		 * But we know it has children, since every mailbox has Sent/Drafts/Junk/etc. so just hardcode that here: */
+		flags = DIR_HAS_CHILDREN;
+	} else {
+		flags = get_attributes(listscandir, leafname);
+	}
+	if (lcmd->cmdtype == CMD_XLIST && strstr(leafname, "INBOX")) { /* XXX This is not the right way to detect this */
+		flags |= DIR_INBOX;
+	}
+	if (lcmd->subscribed) {
+		flags |= DIR_SUBSCRIBED; /* All folders are always subscribed on this server. */
+	}
+
+	/* Check selection criteria */
+	if (lcmd->specialuse && !(flags & DIR_SPECIALUSE)) {
+#ifdef DEBUG_LIST_MATCH
+		imap_debug(8, "Omitting listing due to SPECIAL-USE: %s\n", mailboxname);
+#endif
+		/*! \todo need to implement lcmd->recursive: if child mailboxes are matched and this is not, also return this one
+		 * (still has to match pattern, but maybe selection criteria did not match)
+		 * We also need to support the CHILDINFO extended data item as in RFC 5258 3.5,
+		 * which will indicate the reason a parent folder was included.
+		 * Also note that LSUB behaves differently than LIST (SUBSCRIBED) here.
+		 */
+		return 0;
+	}
+
+	if (lcmd->retstatus) { /* RFC 5819 LIST-STATUS */
+		if (!IMAP_HAS_ACL(myacl, IMAP_ACL_READ)) {
+			/* Do not send a STATUS response for this mailbox.
+			 * Additionally, this is a NoSelect mailbox (RFC 5819 Section 2) */
+			flags |= DIR_NO_SELECT;
+		}
+	}
+
+	build_attributes_string(lcmd->attributes, sizeof(lcmd->attributes), flags);
+	imap_send(imap, "%s (%s) \"%s\" \"%s%s%s%s\"%s%s", lcmd->cmd, lcmd->attributes, HIERARCHY_DELIMITER,
+		lcmd->ns == NAMESPACE_SHARED ? SHARED_NAMESPACE_PREFIX HIERARCHY_DELIMITER : lcmd->ns == NAMESPACE_OTHER ? OTHER_NAMESPACE_PREFIX HIERARCHY_DELIMITER : "",
+		S_IF(prefix), !strlen_zero(prefix) ? HIERARCHY_DELIMITER : "", mailboxname,
+		!strlen_zero(extended_data_items) ? " " : "", S_IF(extended_data_items)); /* Always send the delimiter */
+
+	if (lcmd->retstatus && IMAP_HAS_ACL(myacl, IMAP_ACL_READ)) { /* Part 2 for LIST-STATUS: actually send listing if we can */
+		if (set_maildir(imap, mailboxname)) {
+			bbs_error("Failed to set maildir for %s\n", mailboxname);
+		}
+		local_status(imap, mailboxname, lcmd->retstatus); /* We know this folder is local, not remote */
+	}
+
+	return 1;
+}
+
+static int list_scandir(struct imap_session *imap, struct list_command *lcmd, int level, const char *listscandir)
 {
 	struct dirent *entry, **entries;
 	int files, fno = 0;
-	const char *cmd = lsub == 2 ? "XLIST" : lsub ? "LSUB" : "LIST";
+	int matches = 0;
+
+	/* Handle INBOX, since that's also a special case. */
+	if (level == 0 && lcmd->ns == NAMESPACE_PRIVATE && !lcmd->specialuse && list_mailbox_pattern_matches_inbox(lcmd)) {
+		matches += list_scandir_single(imap, lcmd, level, mailbox_maildir(imap->mbox), "INBOX", mailbox_maildir(imap->mbox), "INBOX");
+	}
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
+#ifdef DEBUG_LIST_MATCH
+	imap_debug(9, "Traversing directory at level %d (ns filter %d): %s\n", level, lcmd->ns, listscandir);
+#endif
 	files = scandir(listscandir, &entries, NULL, uidsort);
 	if (files < 0) {
 		bbs_error("scandir(%s) failed: %s\n", mailbox_maildir(imap->mbox), strerror(errno));
-		return;
+		return -1;
 	}
 	while (fno < files && (entry = entries[fno++])) {
-		if (entry->d_type == DT_DIR && (strcmp(entry->d_name, ".") && strcmp(entry->d_name, ".."))) { /* We only care about directories, not files. */
-			int myacl, flags = 0;
-			char fulldir[257];
-			char mailboxbuf[256];
-			char relativepath[512];
-			const char *mailboxname = entry->d_name;
+		char fulldir[257];
+		char mailboxbuf[256];
+		char relativepath[512];
+		const char *mailboxname = entry->d_name;
 
-			if (ns != NAMESPACE_PRIVATE) { /* Skip special directories in the root maildir */
+		/* Only care about directories, not files. */
+		if (entry->d_type != DT_DIR || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			goto cleanup;
+		}
+
+		if (level == 0) {
+			if (lcmd->ns != NAMESPACE_PRIVATE) {
 				if (!strcmp(entry->d_name, "cur") || !strcmp(entry->d_name, "new") || !strcmp(entry->d_name, "tmp") || !strcmp(entry->d_name, "mailq")) {
 					goto cleanup;
 				}
-			}
-			if (level == 0 && ns == NAMESPACE_OTHER && isdigit(*entry->d_name)) {
-				if (bbs_username_from_userid((unsigned int) atoi(entry->d_name), mailboxbuf, sizeof(mailboxbuf))) {
-					bbs_warning("No user for maildir %s\n", entry->d_name);
-					goto cleanup;
+				if (!strcmp(entry->d_name, ".mailq")) {
+					goto cleanup; /* Not a mailbox */
 				}
-				str_tolower(mailboxbuf); /* Convert to all lowercase since that's the convention we use for email */
-				mailboxname = mailboxbuf; /* e.g. jsmith instead of 1 */
-			} else if (level == 0 && ns == NAMESPACE_SHARED && !isdigit(*entry->d_name)) {
-				mailboxname = entry->d_name; /* Mailbox name stays the same, this is technically a redundant instruction */
-			} else if (*entry->d_name != '.') {
-				/* maildir subdirectories start with . (maildir++ standard) */
-				goto cleanup;
 			}
-			/* This is an instance where maildir format is nice, we don't have to recurse in this subdirectory. */
-			if (strncmp(mailboxname, reference, reflen)) {
-#ifdef EXTRA_DEBUG
-				imap_debug(10, "Directory %s doesn't start with prefix %s\n", entry->d_name, reference);
-#endif
-				goto cleanup; /* It doesn't start with the same prefix as the reference */
-			}
-
-			/* This part can get tricky, not especially for the private namespace, but to handle all namespaces properly, and subdirectories.
-			 * Private namespace is fairly straightforward.
-			 * (Paths here are relative to the global root maildir):
-			 * Other namespace:
-			 * - Other Users.jsmith.Sent -> 1/.Sent
-			 * - Shared Folders.public -> public
-			 * - Shared Folders.public.Sent -> public/.Sent
-			 *
-			 * Notice how there are only two possible levels of hierarchy here.
-			 * We can either be looking at folders in the root maildir itself, or folders that are in those folders.
-			 * This is why the level variable is always 0 (root) or 1 (subfolder).
-			 *
-			 * We need to match the folders on disk against the patterns submitted by the client.
-			 * The thing to note is that "Other Users" and "Shared Folders" will never match because they don't exist in any part of the path.
-			 * We need to skip that and jump to what comes afterwards for this part.
-			 *
-			 * So for Other Users.jsmith, we would match the "1" directory on disk.
-			 * And for Shared Folders.public, we would match the "public" directory on disk.
-			 *
-			 * skiplen will let us skip that part. So mailbox + skiplen would just leave .jsmith, .public, etc.
-			 * Clearly, for other/shared, we need to match on the first chunk (anything before the 2nd period, skipping the first period),
-			 * and anything starting with (and including) the second period is part of the subdirectory folder name.
-			 * But remember, we're not done yet, since for Other Users, we need to translate the user ID in the filepath to the username, as in the IMAP path.
-			 *
-			 * So mailboxname = the directory name for shared and the username for other, and this is then the first "chunk" in the IMAP path at mailbox + skiplen.
-			 *
-			 * For personal namespace, it's difference since we're starting from the user's maildir. So there is really only 1 level of traversal, not two.
-			 * Other and Shared effectively "escape" to the root first.
-			 */
-
-			/* listscandir is the directory we're traversing.
-			 * For level 0, this is the root maildir for other/shared.
-			 * For level 1, this is the actual mailbox itself, just like for personal namespace.
-			 */
-
-			if (ns == NAMESPACE_PRIVATE) {
-				/* For personal, you only see the contents of your mailbox, never mailboxes themselves. */
-				safe_strncpy(relativepath, entry->d_name, sizeof(relativepath)); /*! \todo Optimize for this (common case) by updating a pointer when needed, rather than copying. */
-			} else if (level == 1) {
-				/* Other or Shared, inside the mailbox
-				 * listscandir = mailbox path
-				 * mailboxname = the name of this mailbox
-				 * entry->d_name = name of the mailbox folder (e.g. .Sent, .Trash, .Sub.Folder, etc.)
-				 */
-				snprintf(relativepath, sizeof(relativepath), ".%s%s", mailboxname, entry->d_name);
-			} else {
-				/* Other or Shared, in the root maildir
-				 * listscandir = root maildir path
-				 * prefix is NULL
-				 * mailboxname = e.g. jsmith, public
-				 */
-				snprintf(relativepath, sizeof(relativepath), ".%s", mailboxname);
-			}
-
-			/* At this point, relativepath should be something we can use for a match comparison.
-			 * Note that for other/shared, a leading . is included in the part of the query we look at (mailbox + skiplen),
-			 * so we've included that above as well, since that first leading period doesn't exist anywhere in the filepaths on disk.
-			 *
-			 * list_match takes the directory name and then the query (which can contain wildcards).
-			 *
-			 * The query doesn't need to be translated, we instead translated the path on disk to fit the query.
-			 * The query is "mailbox" variable... but don't forget reference (handled above)
-			 * However, most clients seem to provide an empty reference and put everything in the mailbox argument to LIST, and that's what I've mostly tested.
-			 */
-
-#ifdef EXTRA_DEBUG
-			imap_debug(10, "Matching IMAP path '%s' against query '%s'\n", relativepath, mailbox + skiplen);
-#endif
-			if (!list_match(relativepath, mailbox + skiplen)) {
-#ifdef EXTRA_DEBUG
-				imap_debug(9, "IMAP path '%s' does not match against query '%s'\n", relativepath, mailbox + skiplen);
-#endif
-				goto cleanup;
-			}
-
-			/* If it matches, we MIGHT want to include this in the results.
-			 * That depends on if we're authorized by the ACL.
-			 * Generate the full directory name so we can load the ACL from it */
-			snprintf(fulldir, sizeof(fulldir), "%s/%s", listscandir, entry->d_name);
-			load_acl(imap, fulldir, ns, &myacl);
-
-			/* Suppress mailbox from LIST output if user doesn't at least have IMAP_ACL_LOOKUP for this mailbox. */
-			if (!IMAP_HAS_ACL(myacl, IMAP_ACL_LOOKUP)) {
-				char aclbuf[256] = "";
-				if (myacl != 0) {
-					generate_acl_string(myacl, aclbuf, sizeof(aclbuf));
-				}
-#ifdef DEBUG_ACL
-				bbs_debug(6, "User lacks permission for %s: %s\n", fulldir, aclbuf);
-#endif
-				goto recurse;
-			}
-
-			if (ns != NAMESPACE_PRIVATE && !level) { /* Most LISTs will be for the private namespace, so check that case first */
-				/* We can't use get_attributes for the mailbox itself, since there won't be other directories
-				 * in this same directory with the maildir++ format (e.g. for mailbox public, there is .Sent folder in public, e.g. public/.Sent,
-				 * but public.Sent does not exist anywhere on disk.
-				 * But we know it has children, since every mailbox has Sent/Drafts/Junk/etc. so just hardcode that here: */
-				flags = DIR_HAS_CHILDREN;
-			} else {
-				flags = get_attributes(listscandir, entry->d_name);
-			}
-			if (lsub == 2 && strstr(entry->d_name, "INBOX")) { /* XXX This is not the right way to detect this */
-				flags |= DIR_INBOX;
-			}
-			build_attributes_string(attributes, attrlen, flags);
-			if (!specialuse || flags & DIR_SPECIALUSE) {
-				imap_send(imap, "%s (%s) \"%s\" \"%s%s%s%s\"", cmd, attributes, HIERARCHY_DELIMITER,
-					ns == NAMESPACE_SHARED ? SHARED_NAMESPACE_PREFIX HIERARCHY_DELIMITER : ns == NAMESPACE_OTHER ? OTHER_NAMESPACE_PREFIX HIERARCHY_DELIMITER : "",
-					S_IF(prefix), prefix ? HIERARCHY_DELIMITER : "", *mailboxname == '.' ? mailboxname + 1 : mailboxname); /* Always send the delimiter */
-			}
-recurse:
-			/* User may not be authorized for some mailbox, but may be authorized for a subdirectory (e.g. not INBOX, but some subfolder)
-			 * However, this is incredibly expensive as it means "Other Users" will literally traverse every user's entire maildir. */
-			if (ns != NAMESPACE_PRIVATE && !level) {
-				/* Recurse only the first time, since there are no more maildirs within afterwards */
-				list_scandir(imap, fulldir, lsub, specialuse, 1, ns, attributes, attrlen, reference, mailboxname, mailbox, reflen, skiplen);
-			}
-cleanup:
-			; /* Needed so we can jump to the cleanup label */
 		}
+
+		if (level == 0 && lcmd->ns == NAMESPACE_OTHER && isdigit(*entry->d_name)) {
+			unsigned int userid = (unsigned int) atoi(entry->d_name);
+			if (userid == imap->node->user->id) {
+				goto cleanup; /* Skip ourself */
+			}
+			if (bbs_username_from_userid(userid, mailboxbuf, sizeof(mailboxbuf))) {
+				bbs_warning("No user for maildir %s\n", entry->d_name);
+				goto cleanup;
+			}
+			str_tolower(mailboxbuf); /* Convert to all lowercase since that's the convention we use for email */
+			mailboxname = mailboxbuf; /* e.g. jsmith instead of 1 */
+		} else if (level == 0 && lcmd->ns == NAMESPACE_SHARED && !isdigit(*entry->d_name)) {
+			mailboxname = entry->d_name; /* Mailbox name stays the same, this is technically a redundant instruction */
+		} else if (*entry->d_name != '.') {
+			goto cleanup; /* Not a maildir++ directory (or it's an INBOX folder) */
+		}
+		/* This is an instance where maildir format is nice, we don't have to recurse in this subdirectory. */
+		if (strncmp(mailboxname, lcmd->reference, lcmd->reflen)) {
+#ifdef DEBUG_LIST_MATCH
+			imap_debug(10, "Directory %s doesn't start with prefix %s\n", entry->d_name, lcmd->reference);
+#endif
+			goto cleanup; /* It doesn't start with the same prefix as the reference */
+		}
+
+		/* This part can get tricky, not especially for the private namespace, but to handle all namespaces properly, and subdirectories.
+		 * Private namespace is fairly straightforward.
+		 * (Paths here are relative to the global root maildir):
+		 * Other namespace:
+		 * - Other Users.jsmith.Sent -> 1/.Sent
+		 * - Shared Folders.public -> public
+		 * - Shared Folders.public.Sent -> public/.Sent
+		 *
+		 * Notice how there are only two possible levels of hierarchy here.
+		 * We can either be looking at folders in the root maildir itself, or folders that are in those folders.
+		 * This is why the level variable is always 0 (root) or 1 (subfolder).
+		 *
+		 * We need to match the folders on disk against the patterns submitted by the client.
+		 * The thing to note is that "Other Users" and "Shared Folders" will never match because they don't exist in any part of the path.
+		 * We need to skip that and jump to what comes afterwards for this part.
+		 *
+		 * So for Other Users.jsmith, we would match the "1" directory on disk.
+		 * And for Shared Folders.public, we would match the "public" directory on disk.
+		 *
+		 * skiplen will let us skip that part. So mailbox + skiplen would just leave .jsmith, .public, etc.
+		 * Clearly, for other/shared, we need to match on the first chunk (anything before the 2nd period, skipping the first period),
+		 * and anything starting with (and including) the second period is part of the subdirectory folder name.
+		 * But remember, we're not done yet, since for Other Users, we need to translate the user ID in the filepath to the username, as in the IMAP path.
+		 *
+		 * So mailboxname = the directory name for shared and the username for other, and this is then the first "chunk" in the IMAP path at mailbox + skiplen.
+		 *
+		 * For personal namespace, it's difference since we're starting from the user's maildir. So there is really only 1 level of traversal, not two.
+		 * Other and Shared effectively "escape" to the root first.
+		 */
+
+		/* listscandir is the directory we're traversing.
+		 * For level 0, this is the root maildir for other/shared.
+		 * For level 1, this is the actual mailbox itself, just like for personal namespace.
+		 */
+
+		if (lcmd->ns == NAMESPACE_PRIVATE) {
+			/* For personal, you only see the contents of your mailbox, never mailboxes themselves. */
+			/* Add +1 to skip the leading ., since that doesn't appear in the mailbox name */
+			safe_strncpy(relativepath, entry->d_name + 1, sizeof(relativepath)); /*! \todo Optimize for this (common case) by updating a pointer when needed, rather than copying. */
+		} else if (level == 1) {
+			/* Other or Shared, inside the mailbox
+			 * listscandir = mailbox path, mailboxname = the name of this mailbox
+			 * entry->d_name = name of the mailbox folder (e.g. .Sent, .Trash, .Sub.Folder, etc.) */
+			snprintf(relativepath, sizeof(relativepath), ".%s%s", mailboxname, entry->d_name);
+		} else {
+			/* Other or Shared, in the root maildir
+			 * listscandir = root maildir path, prefix is NULL, mailboxname = e.g. jsmith, public */
+			snprintf(relativepath, sizeof(relativepath), ".%s", mailboxname);
+		}
+
+		/* Skip leading hierarchy delimiter, since it doesn't appear in the mailbox name */
+		if (*mailboxname == HIERARCHY_DELIMITER_CHAR) {
+			mailboxname++;
+		}
+
+		/* At this point, relativepath should be something we can use for a match comparison.
+		 * Note that for other/shared, a leading . is included in the part of the query we look at (mailbox + skiplen),
+		 * so we've included that above as well, since that first leading period doesn't exist anywhere in the filepaths on disk.
+		 *
+		 * list_match takes the directory name and then the query (which can contain wildcards).
+		 *
+		 * The query doesn't need to be translated, we instead translated the path on disk to fit the query.
+		 * The query is "mailbox" variable... but don't forget reference (handled above)
+		 * However, most clients seem to provide an empty reference and put everything in the mailbox argument to LIST, and that's what I've mostly tested.
+		 */
+
+		if (!list_mailbox_pattern_matches(lcmd, relativepath)) {
+			goto cleanup;
+		}
+
+		/* If it matches, we MIGHT want to include this in the results.
+		 * That depends on if we're authorized by the ACL.
+		 * Generate the full directory name so we can load the ACL from it */
+		snprintf(fulldir, sizeof(fulldir), "%s/%s", listscandir, entry->d_name);
+		matches += list_scandir_single(imap, lcmd, level, fulldir, mailboxname, listscandir, entry->d_name);
+
+		/* User may not be authorized for some mailbox, but may be authorized for a subdirectory (e.g. not INBOX, but some subfolder)
+		 * However, this is incredibly expensive as it means "Other Users" will literally traverse every user's entire maildir. */
+		if (level == 0 && lcmd->ns != NAMESPACE_PRIVATE) {
+			/* Recurse only the first time, since there are no more maildirs within afterwards */
+			list_scandir(imap, lcmd, 1, fulldir);
+		}
+cleanup:
 		free(entry);
 	}
 	free(entries);
+	return matches;
 }
 
 /*! \brief Mutex to prevent recursion */
 static pthread_mutex_t virt_lock; /* XXX Should most definitely be per mailbox struct, not global */
-
-static int skipn(char **str, char c, int n)
-{
-	int count = 0;
-	char *s = *str;
-
-	while (*s) {
-		if (*s == c) {
-			if (++count == n) {
-				*str = s + 1;
-				break;
-			}
-		}
-		s++;
-	}
-	return count;
-}
-
-/*! \brief Same as skipn, but don't include spaces inside a parenthesized list */
-static int skipn_noparen(char **str, char c, int n)
-{
-	int count = 0;
-	int level = 0;
-	char *s = *str;
-
-	while (*s) {
-		if (*s == '(') {
-			level++;
-		} else if (*s == ')') {
-			level--;
-		} else if (!level && *s == c) {
-			if (++count == n) {
-				*str = s + 1;
-				break;
-			}
-		}
-		s++;
-	}
-	return count;
-}
 
 static int imap_client_list(struct bbs_tcp_client *client, const char *prefix, FILE *fp)
 {
@@ -3125,7 +3283,7 @@ cleanup:
 
 /*! \brief Allow a LIST against mailboxes on other mail servers, configured in the .imapremote file in a user's root maildir */
 /*! \note XXX Virtual mailboxes already have a meaning in some IMAP contexts, so maybe "remote mailboxes" would be a better name? */
-static int list_virtual(struct imap_session *imap, const char *listscandir, int lsub, int specialuse, enum mailbox_namespace ns, const char *reference, const char *mailbox, size_t reflen, int skiplen)
+static int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 {
 	FILE *fp2;
 	char virtfile[256];
@@ -3134,7 +3292,6 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 	int l = 0;
 	struct stat st, st2;
 	int forcerescan = 0;
-	const char *cmd = lsub == 2 ? "XLIST" : lsub ? "LSUB" : "LIST";
 
 	/* Folders from the proxied mailbox will need to be translated back and forth */
 	if (pthread_mutex_trylock(&virt_lock)) {
@@ -3218,9 +3375,6 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 
 	/* At this point, we should be able to send whatever is in the cache */
 
-	UNUSED(listscandir);
-	UNUSED(ns);
-
 	stringlist_empty(&imap->remotemailboxes);
 	while ((fgets(line, sizeof(line), fp2))) {
 		char relativepath[256];
@@ -3238,15 +3392,15 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 		STRIP_QUOTES(virtmboxname);
 
 		/* Check if it matches the LIST filters */
-		if (strncmp(virtmboxname, reference, reflen)) {
-			bbs_debug(8, "Virtual mailbox '%s' doesn't match reference %s\n", virtmboxname, reference);
+		if (strncmp(virtmboxname, lcmd->reference, lcmd->reflen)) {
+			bbs_debug(8, "Virtual mailbox '%s' doesn't match reference %s\n", virtmboxname, lcmd->reference);
 			continue;
 		}
-		if (ns == NAMESPACE_OTHER) { /* XXX This seems fragile */
+		if (!strncmp(virtmboxname, OTHER_NAMESPACE_PREFIX, STRLEN(OTHER_NAMESPACE_PREFIX))) { /* XXX This seems fragile */
 			virtmboxname += STRLEN(OTHER_NAMESPACE_PREFIX);
 		}
-		if (!list_match(virtmboxname, mailbox + skiplen)) {
-			bbs_debug(8, "Virtual mailbox '%s' does not match list %s\n", virtmboxname, mailbox + skiplen);
+		if (!list_mailbox_pattern_matches(lcmd, virtmboxname)) {
+			bbs_debug(8, "Virtual mailbox '%s' does not match any list pattern\n", virtmboxname);
 			continue;
 		}
 
@@ -3265,7 +3419,7 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 		}
 
 		/* Matches prefix, send it */
-		if (specialuse && !strstr(line, "\\")) {
+		if (lcmd->specialuse && !strstr(line, "\\")) {
 			/* If it's a special use mailbox, there should be a backslash present, somewhere */
 			continue;
 		}
@@ -3297,7 +3451,7 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 		*tmp = HIERARCHY_DELIMITER_CHAR;
 		skipn_noparen(&tmp, ' ', 1);
 		tmp++; /* Skip opening quote */
-		tmp += skiplen; /* Skip our prefix to the remote */
+		tmp += lcmd->skiplen; /* Skip our prefix to the remote */
 		/* Now, do replacements where needed on the remote name */
 		while (*tmp) {
 			if (*tmp == remotedelim) {
@@ -3306,7 +3460,7 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 			tmp++;
 		}
 
-		imap_send(imap, "%s %s", cmd, line);
+		imap_send(imap, "%s %s", lcmd->cmd, line);
 		virtmboxaccount = virtmboxname + STRLEN(OTHER_NAMESPACE_PREFIX) + 1; /* Skip Other Users. */
 		bbs_strterm(virtmboxaccount, remotedelim); /* Just the account portion, so we can use stringlist_contains later */
 		if (!stringlist_contains(&imap->remotemailboxes, virtmboxaccount)) {
@@ -3319,27 +3473,187 @@ static int list_virtual(struct imap_session *imap, const char *listscandir, int 
 	return 0;
 }
 
-static int handle_list(struct imap_session *imap, char *s, int lsub)
+static void list_command_destroy(struct list_command *lcmd)
 {
-	char *reference, *mailbox;
-	size_t reflen;
-	char attributes[128];
-	const char *listscandir;
-	enum mailbox_namespace ns;
-	int skiplen = 0;
-	int specialuse = 0;
-	const char *cmd = lsub == 2 ? "XLIST" : lsub ? "LSUB" : "LIST";
-	int xlistflags = 0;
-	char empty[] = "";
+	free_if(lcmd->mailboxes);
+}
 
-	reference = strsep(&s, " ");
-	mailbox = s; /* Can contain spaces, so don't use strsep first */
-	REQUIRE_ARGS(reference);
-	SHIFT_OPTIONALLY_QUOTED_ARG(mailbox, s);
+static void process_parsed_mailbox(struct list_command *lcmd, const char *s)
+{
+	/* To allow for optimizations later, where we can skip certain process if we know these don't apply. */
+	/* Example of doing that at the bottom of this page, e.g. 0 LIST "" "#shared.*" : http://www.courier-mta.org/imap/tutorial.setup.html */
+	if (STARTS_WITH(s, OTHER_NAMESPACE_PREFIX)) {
+		lcmd->anyother = 1;
+	} else if (STARTS_WITH(s, SHARED_NAMESPACE_PREFIX)) {
+		lcmd->anyshared = 1;
+	} else if (list_wildcard_match(s)) { /* Is this a broad query (list everything?) */
+		lcmd->anyshared = lcmd->anyother = 1;
+	}
+}
 
-	/* Doesn't seem to matter if arguments are in quotes, so we just remove them up front. */
-	STRIP_QUOTES(reference);
-	STRIP_QUOTES(mailbox);
+static int parse_list_cmd(struct imap_session *imap, struct list_command *lcmd, char *s)
+{
+	static char empty[] = ""; /* Static so that pointers to this buffer are valid after we return */
+	char *tmp, *opt;
+
+	/* Determine if this is an extended command (RFC 5258 LIST-EXTENDED) or normal LIST/LSUB *
+	 * RFC 5258 Section 1: 3 cases to consider:
+	 * 1) 1st word after command begins with (    - selection options
+	 * 2) 2nd word after command begins with (    - multiple mailbox patterns
+	 * 3) LIST command has more than 2 parameters - return options
+	 */
+
+	if (strlen_zero(s)) {
+		return -1;
+	}
+
+	if (lcmd->cmdtype == CMD_XLIST) {
+		lcmd->xlistflags = DIR_INBOX; /* XLIST also returns \Inbox for INBOX: */
+	}
+
+	/* First argument */
+	if (*s == '(') {
+		/* This contains selection options. */
+		lcmd->extended = 1;
+		tmp = parensep(&s);
+		if (strlen_zero(tmp)) {
+			imap_reply(imap, "BAD [CLIENTBUG] No selection options provided");
+			return -1;
+		}
+		while ((opt = strsep(&tmp, " "))) {
+			if (!strcasecmp(opt, "SUBSCRIBED")) {
+				lcmd->subscribed = 1;
+			} else if (!strcasecmp(opt, "REMOTE")) {
+				lcmd->remote = 1;
+			} else if (!strcasecmp(opt, "RECURSIVEMATCH")) {
+				lcmd->recursive = 1;
+			} else if (!strcasecmp(opt, "SPECIAL-USE")) {
+				lcmd->specialuse = 1;
+			} else {
+				/* RFC 5258 Section 3: MUST respond to options we don't know about with BAD */
+				imap_reply(imap, "BAD Unknown selection option %s\n", opt);
+				return -1;
+			}
+		}
+	}
+
+	/* Reference: First or second argument, depending on if we there were selection options. */
+	lcmd->reference = strsep(&s, " ");
+	if (strlen_zero(lcmd->reference)) {
+		imap_reply(imap, "BAD [CLIENTBUG] No mailbox pattern provided");
+		return -1;
+	}
+	STRIP_QUOTES(lcmd->reference);
+
+	/* Either a mailbox or list of mailbox patterns (if extended) */
+	if (strlen_zero(s)) {
+		imap_reply(imap, "BAD [CLIENTBUG] Missing mailbox argument");
+		return -1;
+	}
+	if (*s == '(') {
+		char *mbox;
+		int p = 0;
+		lcmd->extended = 1;
+		tmp = parensep(&s);
+		if (strlen_zero(tmp)) {
+			imap_reply(imap, "BAD [CLIENTBUG] No mailbox patterns provided");
+			return -1;
+		}
+		lcmd->patterns = bbs_str_count(tmp, '"');
+		if (lcmd->patterns % 2) {
+			imap_reply(imap, "BAD [CLIENTBUG] Odd number of quotes in pattern list");
+			return -1;
+		}
+		lcmd->patterns /= 2; /* 2 quotes per mailbox */
+		lcmd->mailboxes = calloc(1, sizeof(*lcmd->mailboxes));
+		if (ALLOC_FAILURE(lcmd->mailboxes)) {
+			imap_reply(imap, "NO [SERVERBUG] Allocation failure");
+			return -1;
+		}
+		/* All mailbox names are quoted */
+		while ((mbox = quotesep(&tmp))) {
+			if (p > lcmd->patterns) {
+				/* Avoid out of bounds */
+				imap_reply(imap, "BAD [CLIENTBUG] Malformed mailbox pattern list");
+				return -1;
+			}
+			lcmd->mailboxes[p] = mbox;
+			process_parsed_mailbox(lcmd, mbox);
+			p++;
+		}
+	} else {
+		/* Single mailbox */
+		lcmd->patterns = 1;
+		lcmd->mailboxes = calloc(1, sizeof(*lcmd->mailboxes));
+		if (ALLOC_FAILURE(lcmd->mailboxes)) {
+			imap_reply(imap, "NO [SERVERBUG] Allocation failure");
+			return -1;
+		}
+		lcmd->mailboxes[0] = quotesep(&s);
+		if (!lcmd->mailboxes[0]) {
+			imap_reply(imap, "BAD [CLIENTBUG] Missing mailbox argument");
+			return -1;
+		}
+		process_parsed_mailbox(lcmd, lcmd->mailboxes[0]);
+	}
+
+	if (lcmd->patterns < 1) {
+		imap_reply(imap, "BAD [CLIENTBUG] No mailbox patterns provided");
+		return -1;
+	}
+
+	/* Return options (only for extended) */
+	ltrim(s);
+	if (!strlen_zero(s)) {
+		if (!STARTS_WITH(s, "RETURN (")) {
+			imap_reply(imap, "BAD [CLIENTBUG] Invalid return options");
+			return -1;
+		}
+		lcmd->extended = 1;
+		s += STRLEN("RETURN "); /* Want to start with ( */
+		tmp = parensep(&s); /* We know that ( exists so s cannot be NULL */
+		while ((opt = strsep(&tmp, " "))) {
+			if (strlen_zero(opt)) {
+				continue; /* Yes, we need this... */
+			}
+			if (!strcasecmp(opt, "SUBSCRIBED")) {
+				lcmd->retsubscribed = 1;
+			} else if (!strcasecmp(opt, "CHILDREN")) {
+				lcmd->retchildren = 1;
+			} else if (!strcasecmp(opt, "STATUS")) {
+				/* RFC 5819 LIST-STATUS */
+				lcmd->retstatus = parensep(&tmp);
+			} else {
+				/* RFC 5258 Section 3: MUST respond to options we don't know about with BAD */
+				imap_reply(imap, "BAD Unknown return option '%s'\n", opt);
+				bbs_debug(3, "Remainder: %s\n", tmp);
+				return -1;
+			}
+		}
+	}
+
+	if (strlen_zero(lcmd->reference)) { /* Empty reference ("") means same mailbox selected using SELECT */
+		/* Default to INBOX if nothing has been selected yet, since it is the root */
+	} else if (!strcmp(lcmd->reference, "INBOX")) {
+		lcmd->reference = empty; /* It's the root. */
+	}
+	lcmd->reflen = strlen(lcmd->reference);
+
+	return 0;
+}
+
+static int handle_list(struct imap_session *imap, char *s, enum list_cmd_type cmdtype)
+{
+	struct list_command lcmdstack;
+	struct list_command *lcmd = &lcmdstack;
+
+	memset(&lcmdstack, 0, sizeof(lcmdstack));
+	lcmd->cmdtype = cmdtype;
+	lcmd->cmd = cmdtype == CMD_XLIST ? "XLIST" : cmdtype == CMD_LSUB ? "LSUB" : "LIST";
+
+	if (parse_list_cmd(imap, &lcmdstack, s)) {
+		goto cleanup;
+	}
 
 	/* Examples:
 	 * LIST "" % should return all top-level folders.
@@ -3347,6 +3661,7 @@ static int handle_list(struct imap_session *imap, char *s, int lsub)
 	 * LIST "" S% should return all top-level folders starting with S.
 	 * LIST "" S* should return all folders starting with S.
 	 * Swapping these 2 arguments often results in a similar response, with subtle differences.
+	 * A detailed reading and reading of the RFC (e.g. RFC 3501) is very handy for understanding the LIST command in its entirety.
 	 */
 
 	/*
@@ -3374,6 +3689,12 @@ static int handle_list(struct imap_session *imap, char *s, int lsub)
 	 * \Sent
 	 * \Trash
 	 *
+	 * Additional attributes specified by RFC 5258:
+	 * \Remote - RFC 2193 IMAP referrals (not something that we do)
+	 * \Subscribed - all mailboxes are always subscribed for us
+	 * \NonExistent - mailbox that doesn't exist, which can happen if subscriptions are allowed for nonexistent mailboxes.
+	 *              Since we couple subscriptions to existence (1:1), this can't happen here.
+	 *
 	 * The XLIST command is not formally specified anywhere but basically seems to be the same thing
 	 * as RFC 6154, except returning XLIST instead of LIST (obviously), and with an \Inbox attribute for the INBOX.
 	 * Google says that XLIST attributes are NOT exactly the same:
@@ -3384,82 +3705,46 @@ static int handle_list(struct imap_session *imap, char *s, int lsub)
 
 	/*! \todo Add support for displaying Marked and Unmarked */
 
-	/* SPECIAL-USE specific: */
-	if (!strlen_zero(s) && !strcasecmp(s, "RETURN (SPECIAL-USE)")) {
-		specialuse = 1;
-	}
-
-	/* XLIST also returns \Inbox for INBOX: */
-	if (lsub == 2) {
-		xlistflags = DIR_INBOX;
-	}
-
-	/* A detailed reading and reading of the RFC (e.g. RFC 3501) is very handy for understanding the LIST command in its entirety. */
-	if (!specialuse && strlen_zero(mailbox)) {
-		/* Just return hierarchy delimiter and root name of reference */
+	if (!lcmd->specialuse && lcmd->patterns == 1 && strlen_zero(lcmd->mailboxes[0])) {
+		/* This is a special case. Just return hierarchy delimiter and root name of reference */
 		/* When testing other servers, the reference argument doesn't even seem to matter, I always get something like this: */
-		imap_send(imap, "%s (%s %s) \"%s\" %s", cmd, ATTR_NOSELECT, ATTR_HAS_CHILDREN, HIERARCHY_DELIMITER, EMPTY_QUOTES);
-		imap_reply(imap, "OK %s completed.", cmd);
-		return 0;
+		imap_send(imap, "%s (%s %s) \"%s\" %s", lcmd->cmd, ATTR_NOSELECT, ATTR_HAS_CHILDREN, HIERARCHY_DELIMITER, EMPTY_QUOTES);
+		imap_reply(imap, "OK %s completed.", lcmd->cmd);
+		goto cleanup;
 	}
-
-	if (strlen_zero(reference)) { /* Empty reference ("") means same mailbox selected using SELECT */
-		/* Default to INBOX if nothing has been selected yet, since it is the root */
-	} else if (!strcmp(reference, "INBOX")) {
-		reference = empty; /* It's the root. */
-	}
-
-	reflen = strlen(reference);
 
 	/* If there are subdirectories (say one level down), it doesn't even matter which side
 	 * has the hierarchy delimiter: could be end of the reference or beginning of the mailbox. */
 
 	/* In doing our traversal of the maildir, we're going to look for directories
-	 * that start with reference, and then match the pattern specified by mailbox.
+	 * that start with reference, and then match (the/a) pattern specified by (mailbox/mailboxes).
 	 * If it ends in %, that's a wildcard for the current directory.
 	 * If it ends in *, that's a wildcard for all subdirectories as well.
 	 *
 	 * However, note that % and * can appear anywhere in the mailbox argument. And they function just like a wildcard character you'd expect.
 	 * For that reason, we can't just concatenate reference and mailbox and use that as the prefix. */
+	bbs_debug(6, "%s traversal rooted at '%s' (%d pattern%s, anyshared: %d, anyother: %d)\n", lcmd->cmd, lcmd->reference, lcmd->patterns, ESS(lcmd->patterns), lcmd->anyshared, lcmd->anyother);
 
-	ns = NAMESPACE_PRIVATE;
-	listscandir = mailbox_maildir(imap->mbox);
-
-	bbs_debug(6, "LIST traversal for '%s' '%s' => %s%s\n", reference, S_IF(mailbox), reference, S_IF(mailbox));
-
-	/* XXX Hack for INBOX (since it's the top level maildir folder for the user), though this feels very klunky (but it's the target of the dir traversal, so...) */
-	if (!specialuse && strlen_zero(reference) && (strlen_zero(mailbox) || !strcmp(mailbox, "*") || !strcmp(mailbox, "%"))) {
-		/* Include INBOX first before doing the rest */
-		build_attributes_string(attributes, sizeof(attributes), DIR_NO_CHILDREN | xlistflags);
-		imap_send(imap, "%s (%s) \"%s\" \"%s\"", cmd, attributes, HIERARCHY_DELIMITER, "INBOX");
-	} else if (!specialuse && !strcmp(mailbox, "INBOX")) {
-		build_attributes_string(attributes, sizeof(attributes), DIR_NO_CHILDREN | xlistflags);
-		imap_send(imap, "%s (%s) \"%s\" \"%s\"", cmd, attributes, HIERARCHY_DELIMITER, "INBOX");
-		/* This was just for INBOX, so nothing else can possibly match. */
-		/* XXX Again, the special handling of this feels clunky here */
-		imap_reply(imap, "OK %s completed.", cmd);
-		return 0;
-	} else {
-		/* Different namespace? (Not the private one) */
-		/* Example of doing that at the bottom of this page, e.g. 0 LIST "" "#shared.*" : http://www.courier-mta.org/imap/tutorial.setup.html */
-		if (STARTS_WITH(mailbox, OTHER_NAMESPACE_PREFIX)) {
-			listscandir = mailbox_maildir(NULL);
-			ns = NAMESPACE_OTHER;
-			skiplen = STRLEN(OTHER_NAMESPACE_PREFIX);
-		} else if (STARTS_WITH(mailbox, SHARED_NAMESPACE_PREFIX)) {
-			listscandir = mailbox_maildir(NULL);
-			ns = NAMESPACE_SHARED;
-			skiplen = STRLEN(SHARED_NAMESPACE_PREFIX);
-		}
+	/* Do 3 traversals: once each for private, shared, and other namespaces (+virtual mappings) */
+	lcmd->ns = NAMESPACE_PRIVATE;
+	list_scandir(imap, lcmd, 0, mailbox_maildir(imap->mbox)); /* Recursively LIST */
+	/* For shared and other users, we use the root maildir since that's where the maildirs for each account are located. */
+	if (lcmd->anyshared) {
+		lcmd->ns = NAMESPACE_SHARED;
+		lcmd->skiplen = STRLEN(SHARED_NAMESPACE_PREFIX);
+		list_scandir(imap, lcmd, 0, mailbox_maildir(NULL));
 	}
+	if (lcmd->anyother) {
+		lcmd->ns = NAMESPACE_OTHER;
+		lcmd->skiplen = STRLEN(OTHER_NAMESPACE_PREFIX);
+		list_scandir(imap, lcmd, 0, mailbox_maildir(NULL));
+	}
+	list_virtual(imap, lcmd);
 
-#ifdef EXTRA_DEBUG
-	bbs_debug(6, "Namespace type: %d, dir: %s, mailbox: %s, reflen: %lu, skiplen: %d\n", ns, listscandir, mailbox, reflen, skiplen);
-#endif
-	list_scandir(imap, listscandir, lsub, specialuse, 0, ns, attributes, sizeof(attributes), reference, NULL, mailbox, reflen, skiplen); /* Recursively LIST */
-	list_virtual(imap, listscandir, lsub, specialuse, ns, reference, mailbox, reflen, skiplen);
+	imap_reply(imap, "OK %s completed.", lcmd->cmd);
 
-	imap_reply(imap, "OK %s completed.", cmd);
+cleanup:
+	list_command_destroy(&lcmdstack);
 	return 0;
 }
 
@@ -8553,17 +8838,14 @@ static int imap_process(struct imap_session *imap, char *s)
 		return handle_select(imap, s, CMD_SELECT);
 	} else if (!strcasecmp(command, "EXAMINE")) {
 		return handle_select(imap, s, CMD_EXAMINE);
-	} else if (!strcasecmp(command, "STATUS")) { /* STATUS is like EXAMINE, but it's on a specified mailbox that is NOT the currently selected mailbox */
-		/* Need to save/restore current maildir for STATUS, so it doesn't mess up the selected mailbox, since STATUS must not modify the selected folder.
-		 * This is handled earlier in this function. */
-		res = handle_select(imap, s, CMD_STATUS);
-		return res;
+	} else if (!strcasecmp(command, "STATUS")) {
+		return handle_status(imap, s);
 	} else if (!strcasecmp(command, "NAMESPACE")) {
 		/* Good article for understanding namespaces: https://utcc.utoronto.ca/~cks/space/blog/sysadmin/IMAPPrefixesClientAndServer */
 		imap_send(imap, "NAMESPACE %s %s %s", PRIVATE_NAMESPACE, OTHER_NAMESPACE, SHARED_NAMESPACE);
 		imap_reply(imap, "NAMESPACE command completed");
 	} else if (!strcasecmp(command, "LIST")) {
-		return handle_list(imap, s, 0);
+		return handle_list(imap, s, CMD_LIST);
 	} else if (!strcasecmp(command, "LSUB")) { /* Deprecated in RFC 9051 (IMAP4rev2), but clients still use it */
 		/* Bit of a hack: just assume all folders are subscribed
 		 * All clients share the subscription list, so clients should try to LSUB before they SUBSCRIBE to anything.
@@ -8573,9 +8855,9 @@ static int imap_process(struct imap_session *imap, char *s)
 		 * We have stubs for SUBSCRIBE and UNSUBSCRIBE as well, but the LSUB response is actually the only important one.
 		 * Since we return all folders as subscribed, clients shouldn't try to subscribe to anything.
 		 */
-		return handle_list(imap, s, 1);
+		return handle_list(imap, s, CMD_LSUB);
 	} else if (!strcasecmp(command, "XLIST")) {
-		return handle_list(imap, s, 2);
+		return handle_list(imap, s, CMD_XLIST);
 	} else if (!strcasecmp(command, "CREATE")) {
 		/*! \todo need to modify mailbox names like select, but can then pass it on (do in the commands) */
 		IMAP_NO_READONLY(imap);

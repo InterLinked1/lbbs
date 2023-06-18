@@ -57,6 +57,35 @@ cleanup:
 	return -1;
 }
 
+static int test_quotesep(void)
+{
+	char buf[256];
+	char *s, *left;
+
+	strcpy(buf, "\"foo bar\" \"foo2 bar2\"");
+	left = buf;
+	s = quotesep(&left);
+	bbs_test_assert_str_equals(s, "foo bar");
+	s = quotesep(&left);
+	bbs_test_assert_str_equals(s, "foo2 bar2");
+	s = quotesep(&left);
+	bbs_test_assert_null(s);
+
+	strcpy(buf, "\"*\" \"%\"");
+	left = buf;
+	s = quotesep(&left);
+	bbs_test_assert_str_equals(s, "*");
+	s = quotesep(&left);
+	bbs_test_assert_str_equals(s, "%");
+	s = quotesep(&left);
+	bbs_test_assert_null(s);
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
 static int test_substitution(void)
 {
 	int res = -1;
@@ -541,6 +570,7 @@ cleanup:
 static struct bbs_unit_test tests[] =
 {
 	{ "parensep", test_parensep },
+	{ "quotesep", test_quotesep },
 	{ "Variable Substitution", test_substitution },
 	{ "Safe Print", test_safe_print },
 	{ "Printable String Length", test_printable_strlen },

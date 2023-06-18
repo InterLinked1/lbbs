@@ -310,7 +310,53 @@ int bbs_str_anyprint(const char *restrict s)
 	return 0;
 }
 
-/*! \brief strsep-like tokenizer that returns the contents of the next substring inside parentheses (handling nested parentheses) */
+void str_tolower(char *restrict s)
+{
+	while (*s) {
+		*s = (char) tolower(*s);
+		s++;
+	}
+}
+
+int skipn(char **str, char c, int n)
+{
+	int count = 0;
+	char *s = *str;
+
+	while (*s) {
+		if (*s == c) {
+			if (++count == n) {
+				*str = s + 1;
+				break;
+			}
+		}
+		s++;
+	}
+	return count;
+}
+
+int skipn_noparen(char **str, char c, int n)
+{
+	int count = 0;
+	int level = 0;
+	char *s = *str;
+
+	while (*s) {
+		if (*s == '(') {
+			level++;
+		} else if (*s == ')') {
+			level--;
+		} else if (!level && *s == c) {
+			if (++count == n) {
+				*str = s + 1;
+				break;
+			}
+		}
+		s++;
+	}
+	return count;
+}
+
 char *parensep(char **str)
 {
 	char *ret, *s = *str;
@@ -347,4 +393,35 @@ char *parensep(char **str)
 		s++;
 	}
 	return NULL;
+}
+
+char *quotesep(char **str)
+{
+	char *ret, *s = *str;
+
+	if (strlen_zero(s)) {
+		return NULL;
+	}
+
+	if (*s != '"' && *s == ' ') {
+		s++;
+	}
+
+	if (*s != '"') {
+		bbs_warning("quotesep used incorrectly: %s\n", *str);
+	}
+	if (!*(s + 1)) {
+		bbs_warning("Malformed string (quotes not terminated)\n");
+		return NULL;
+	}
+	ret = s + 1;
+	s = strchr(s + 1, '"');
+	if (!s) {
+		bbs_warning("Unterminated quotes\n");
+		return NULL;
+	}
+
+	*s++ = '\0';
+	*str = s;
+	return ret;
 }
