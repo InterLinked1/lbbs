@@ -136,9 +136,16 @@ int bbs_user_priv_from_userid(unsigned int userid);
 /*!
  * \brief Get a user by user ID
  * \param userid User ID
- * \returns NULL if user does not exist, user otherwise, which must be freed using bbs_user_destroy
+ * \returns NULL if user does not exist, user otherwise, which must be freed using bbs_user_destroy (or attached to a node)
  */
 struct bbs_user *bbs_user_from_userid(unsigned int userid);
+
+/*!
+ * \brief Get a user by username
+ * \param username
+ * \returns NULL if user does not exist, user otherwise, which must be freed using bbs_user_destroy (or attached to a node)
+ */
+struct bbs_user *bbs_user_from_username(const char *username);
 
 /*! \brief Free a list of BBS users, including all the users in the list */
 void bbs_user_list_destroy(struct bbs_user **userlist);

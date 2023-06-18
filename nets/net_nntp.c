@@ -756,25 +756,8 @@ static int sender_match(struct nntp_session *nntp, const char *s)
 			bbs_debug(5, "Authorized by username match: %s\n", s);
 			return 1;
 		}
-	} else {
-		char ip[256];
-		/* It's an IP address or hostname. */
-		if (strchr(s, '/')) {
-			/* It's a CIDR range. Do a direct comparison. */
-			if (bbs_cidr_match_ipv4(nntp->node->ip, s)) {
-				bbs_debug(5, "Authorized by CIDR match: %s\n", s);
-				return 1;
-			}
-			return 0;
-		}
-		/* Resolve the hostname (if it is one) to an IP, then do a direct comparison. */
-		bbs_resolve_hostname(s, ip, sizeof(ip));
-		if (!strcmp(ip, nntp->node->ip)) {
-			bbs_debug(5, "Authorized by IP match: %s -> %s\n", s, ip);
-			return 1;
-		}
 	}
-	return 0;
+	return bbs_ip_match_ipv4(nntp->node->ip, s);
 }
 
 static int sender_authorized(struct nntp_session *nntp)

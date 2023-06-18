@@ -149,6 +149,51 @@ static int imap_debug_level = 10;
 #define imap_send(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
 #define imap_reply(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", S_IF(imap->tag), ## __VA_ARGS__)
 
+struct preauth_ip {
+	const char *range;
+	const char *username;
+	RWLIST_ENTRY(preauth_ip) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(preauths, preauth_ip);
+
+static void add_preauth_ip(const char *range, const char *username)
+{
+	struct preauth_ip *ip;
+	size_t rangelen = strlen(range);
+	size_t userlen = strlen(username);
+
+	ip = calloc(1, sizeof(*ip) + rangelen + userlen + 2);
+	if (ALLOC_FAILURE(ip)) {
+		return;
+	}
+
+	strcpy(ip->data, range); /* Safe */
+	ip->range = ip->data;
+	strcpy(ip->data + rangelen + 1, username); /* Safe */
+	ip->username = ip->data + rangelen + 1;
+
+	RWLIST_WRLOCK(&preauths);
+	RWLIST_INSERT_HEAD(&preauths, ip, entry);
+	RWLIST_UNLOCK(&preauths);
+}
+
+static const char *preauth_username_match(const char *ipaddr)
+{
+	struct preauth_ip *ip;
+	RWLIST_RDLOCK(&preauths);
+	RWLIST_TRAVERSE(&preauths, ip, entry) {
+		if (bbs_ip_match_ipv4(ipaddr, ip->range)) {
+			bbs_debug(5, "Authorized by IP/CIDR match: %s\n", ip->range);
+			RWLIST_UNLOCK(&preauths);
+			return ip->username; /* Safe to return unlocked, since preauth_ip's are not cleaned up until exit. */
+		}
+	}
+	RWLIST_UNLOCK(&preauths);
+	return NULL;
+}
+
 /* RFC 2086/4314 ACLs */
 /*! \brief Visible in LIST, LSUB, SUBSCRIBE */
 #define IMAP_ACL_LOOKUP (1 << 0)
@@ -2816,7 +2861,6 @@ struct list_command {
 	int xlistflags;				/*!< Whether or not to also return \Inbox */
 	enum mailbox_namespace ns;
 	size_t reflen;
-	char attributes[128];
 };
 
 #define list_wildcard_match(mailbox) (strlen_zero(lcmd->reference) && (strlen_zero(mailbox) || !strcmp(mailbox, "*") || !strcmp(mailbox, "%")))
@@ -2858,6 +2902,7 @@ static int list_scandir_single(struct imap_session *imap, struct list_command *l
 {
 	int flags = 0, myacl;
 	char extended_buf[512] = "";
+	char attributes[128];
 	const char *extended_data_items = extended_buf;
 
 	load_acl(imap, fulldir, lcmd->ns, &myacl);
@@ -2921,8 +2966,8 @@ static int list_scandir_single(struct imap_session *imap, struct list_command *l
 	imap_debug(10, "level %d, reference: %s, prefix: %s, mailboxname: %s\n", level, lcmd->reference, prefix, mailboxname);
 #endif
 
-	build_attributes_string(lcmd->attributes, sizeof(lcmd->attributes), flags);
-	imap_send(imap, "%s (%s) \"%s\" \"%s%s%s%s\"%s%s", lcmd->cmd, lcmd->attributes, HIERARCHY_DELIMITER,
+	build_attributes_string(attributes, sizeof(attributes), flags);
+	imap_send(imap, "%s (%s) \"%s\" \"%s%s%s%s\"%s%s", lcmd->cmd, attributes, HIERARCHY_DELIMITER,
 		lcmd->ns == NAMESPACE_SHARED ? SHARED_NAMESPACE_PREFIX HIERARCHY_DELIMITER : lcmd->ns == NAMESPACE_OTHER ? OTHER_NAMESPACE_PREFIX HIERARCHY_DELIMITER : "",
 		S_IF(prefix), !strlen_zero(prefix) ? HIERARCHY_DELIMITER : "", mailboxname,
 		!strlen_zero(extended_data_items) ? " " : "", S_IF(extended_data_items)); /* Always send the delimiter */
@@ -8456,13 +8501,25 @@ static int handle_getquota(struct imap_session *imap)
 	return 0;
 }
 
-static int finish_auth(struct imap_session *imap, int auth)
+static int finalize_auth(struct imap_session *imap)
 {
 	imap->mymbox = mailbox_get_by_userid(imap->node->user->id); /* Retrieve the mailbox for this user */
 	if (!imap->mymbox) {
 		bbs_error("Successful authentication, but unable to retrieve mailbox for user %d\n", imap->node->user->id);
 		imap_reply(imap, "BYE System error");
 		return -1; /* Just disconnect, we probably won't be able to proceed anyways. */
+	}
+
+	imap->mbox = imap->mymbox;
+	mailbox_maildir_init(mailbox_maildir(imap->mbox)); /* Edge case: initialize if needed (necessary if user is accessing via POP before any messages ever delivered to it via SMTP) */
+	mailbox_watch(imap->mbox);
+	return 0;
+}
+
+static int finish_auth(struct imap_session *imap, int auth)
+{
+	if (finalize_auth(imap)) {
+		return -1;
 	}
 
 	/* XXX Most clients are going to request the capabilities immediately.
@@ -8474,10 +8531,6 @@ static int finish_auth(struct imap_session *imap, int auth)
 	} else {
 		imap_reply(imap, "OK Login completed");
 	}
-
-	imap->mbox = imap->mymbox;
-	mailbox_maildir_init(mailbox_maildir(imap->mbox)); /* Edge case: initialize if needed (necessary if user is accessing via POP before any messages ever delivered to it via SMTP) */
-	mailbox_watch(imap->mbox);
 	return 0;
 }
 
@@ -9214,11 +9267,28 @@ static void handle_client(struct imap_session *imap)
 {
 	char buf[8192]; /* Buffer size suggested by RFC 7162 Section 4 */
 	struct readline_data rldata;
+	const char *preauth_username;
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 	imap->rldata = &rldata;
 
-	imap_send(imap, "OK %s Service Ready", IMAP_REV);
+	preauth_username = preauth_username_match(imap->node->ip);
+	if (preauth_username) {
+		/* Resolve the username and see if we get a match. */
+		struct bbs_user *user = bbs_user_from_username(preauth_username);
+		if (!user) {
+			bbs_warning("PREAUTH failed: no such user '%s'\n", preauth_username);
+		} else {
+			bbs_node_attach_user(imap->node, user);
+			finalize_auth(imap);
+		}
+	}
+
+	if (bbs_user_is_registered(imap->node->user)) {
+		imap_send(imap, "PREAUTH %s server logged in as %s", IMAP_REV, bbs_username(imap->node->user));
+	} else {
+		imap_send(imap, "OK %s Service Ready", IMAP_REV);
+	}
 
 	for (;;) {
 		const char *word2;
@@ -9322,6 +9392,7 @@ static void *__imap_handler(void *varg)
 static int load_config(void)
 {
 	struct bbs_config *cfg;
+	struct bbs_config_section *section = NULL;
 
 	cfg = bbs_config_load("net_imap.conf", 1);
 	if (!cfg) {
@@ -9337,6 +9408,15 @@ static int load_config(void)
 	/* IMAPS */
 	bbs_config_val_set_true(cfg, "imaps", "enabled", &imaps_enabled);
 	bbs_config_val_set_port(cfg, "imaps", "port", &imaps_port);
+
+	while ((section = bbs_config_walk(cfg, section))) {
+		if (!strcasecmp(bbs_config_section_name(section), "preauth")) {
+			struct bbs_keyval *keyval = NULL;
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				add_preauth_ip(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
+			}
+		}
+	}
 
 	return 0;
 }
@@ -9487,6 +9567,7 @@ static int unload_module(void)
 	}
 	pthread_mutex_destroy(&acl_lock);
 	pthread_mutex_destroy(&virt_lock);
+	RWLIST_WRLOCK_REMOVE_ALL(&preauths, entry, free);
 	return 0;
 }
 

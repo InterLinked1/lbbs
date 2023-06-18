@@ -1029,6 +1029,27 @@ int bbs_cidr_match_ipv4(const char *ip, const char *cidr)
 	return a == b;
 }
 
+int bbs_ip_match_ipv4(const char *ip, const char *s)
+{
+	char resolved_ip[256];
+	/* It's an IP address or hostname. */
+	if (strchr(s, '/')) {
+		/* It's a CIDR range. Do a direct comparison. */
+		if (bbs_cidr_match_ipv4(ip, s)) {
+			bbs_debug(5, "CIDR match: %s\n", s);
+			return 1;
+		}
+		return 0;
+	}
+	/* Resolve the hostname (if it is one) to an IP, then do a direct comparison. */
+	bbs_resolve_hostname(s, resolved_ip, sizeof(resolved_ip));
+	if (!strcmp(ip, resolved_ip)) {
+		bbs_debug(5, "IP match: %s -> %s\n", s, ip);
+		return 1;
+	}
+	return 0;
+}
+
 const char *poll_revent_name(int revents)
 {
 	if (revents & POLLIN) {

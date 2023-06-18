@@ -374,6 +374,15 @@ struct bbs_user *bbs_user_from_userid(unsigned int userid)
 	return retuser;
 }
 
+struct bbs_user *bbs_user_from_username(const char *username)
+{
+	unsigned int userid = bbs_userid_from_username(username);
+	if (!userid) {
+		return NULL;
+	}
+	return bbs_user_from_userid(userid);
+}
+
 void bbs_user_destroy(struct bbs_user *user)
 {
 	if (bbs_user_is_guest(user)) {

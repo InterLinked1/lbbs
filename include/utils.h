@@ -430,6 +430,14 @@ int bbs_hostname_is_ipv4(const char *hostname);
  */
 int bbs_cidr_match_ipv4(const char *ip, const char *cidr);
 
+/*!
+ * \brief Check if an IP address matches an IP address, CIDR range, or hostname
+ * \param ip IP address to check, e.g. 192.168.1.1
+ * \param s IPv4 address, IPv4 CIDR range, or hostname (not recommended, since it will only match one of the returned IPs, if multiple)
+ * \retval 1 if IP address matches, 0 if not
+ */
+int bbs_ip_match_ipv4(const char *ip, const char *s);
+
 /*! \brief Get the name of a poll revent */
 const char *poll_revent_name(int revents);
 
