@@ -114,12 +114,8 @@ static int client_status_command(struct imap_client *client, struct mailimap *im
 					str += STRLEN("MESSAGES ");
 					if (!strlen_zero(str)) {
 						num = (uint32_t) atol(str);
-						if (messages) {
-							*messages = num;
-						}
-						if (folder) {
-							json_object_set_new(folder, "messages", json_integer(num));
-						}
+						*messages = num;
+						json_object_set_new(folder, "messages", json_integer(num));
 					}
 				}
 				if (!str) {
@@ -199,12 +195,8 @@ static int client_status_command(struct imap_client *client, struct mailimap *im
 		struct mailimap_status_info *status_info = clist_content(cur);
 		switch (status_info->st_att) {
 			case MAILIMAP_STATUS_ATT_MESSAGES:
-				if (messages) {
-					*messages = status_info->st_value;
-				}
-				if (folder) {
-					json_object_set_new(folder, "messages", json_integer(status_info->st_value));
-				}
+				*messages = status_info->st_value;
+				json_object_set_new(folder, "messages", json_integer(status_info->st_value));
 				break;
 			case MAILIMAP_STATUS_ATT_RECENT:
 				json_object_set_new(folder, "recent", json_integer(status_info->st_value));
@@ -484,7 +476,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 		json_t *folder, *flagsarr;
 		const char *name;
 		int noselect = 0;
-		uint32_t total;
+		uint32_t total = 0;
 		struct mailimap_mailbox_list *mb_list = clist_content(cur);
 		struct mailimap_mbx_list_flags *flags = mb_list->mb_flag;
 		delimiter = mb_list->mb_delimiter;
@@ -1925,10 +1917,10 @@ static void idle_start(struct ws_session *ws, struct imap_client *client)
 
 static int on_poll_activity(struct ws_session *ws, void *data)
 {
-	const char *reason;
-	uint32_t messages;
+	const char *reason = NULL;
 	struct imap_client *client = data;
 	uint32_t previewseqno = 0;
+	char *idledata;
 
 	if (!client->idling) {
 		bbs_debug(7, "IDLE not active, ignoring...\n");
@@ -1939,33 +1931,40 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	}
 
 	/* IDLE activity! */
-	bbs_debug(4, "IDLE activity detected\n");
-	idle_stop(ws, client); /* Seems this suffices, we don't need to read any data (and trying to call mailimap_read_line will just block) */
+	idledata = mailimap_read_line(client->imap);
+	bbs_debug(3, "IDLE activity detected: %s", idledata); /* Already ends in CR LF */
+	if (STARTS_WITH(idledata, "* ")) {
+		char *tmp = idledata + 2;
+		if (!strlen_zero(tmp)) {
+			int seqno = atoi(tmp); /* It'll stop where it needs to */
+			tmp = strchr(tmp, ' '); /* Skip the sequence number */
+			if (!strlen_zero(tmp)) {
+				tmp++;
+			}
+			if (!strlen_zero(tmp)) {
+				if (STARTS_WITH(tmp, "EXISTS")) {
+					reason = "EXISTS";
+					previewseqno = (uint32_t) seqno;
+					client->messages = previewseqno; /* Update number of messages in this mailbox */
+				} else if (STARTS_WITH(tmp, "EXPUNGE")) {
+					reason = "EXPUNGE";
+					if (client->messages) {
+						client->messages--; /* Assume we lost one */
+					} else {
+						bbs_warning("EXPUNGE on empty mailbox?\n");
+					}
+				}
+			}
+		}
+	}
+	if (!reason) {
+		bbs_warning("Unhandled IDLE response: %s\n", idledata);
+		return 0; /* No need to start the IDLE again, we never stopped it */
+	}
+	idle_stop(ws, client);
 
 	/* In our case, since we're webmail, we can cheat a little and just refresh the current listing.
-	 * The nice thing is this handles both EXISTS and EXPUNGE responses just fine.
-	 * However, we don't know (without getting the actual IDLE data XXX not sure how to do that)
-	 * whether it was an EXISTS or EXPUNGE, i.e. if the total message count went up or down by 1.
-	 * To figure that out, call STATUS on the mailbox, which will make the pagination in REFRESH_LISTING correct.
-	 */
-
-	if (client_status_command(client, client->imap, client->mailbox, NULL, &messages)) {
-		goto exit;
-	}
-	/* Figure out if it was an EXISTS or EXPUNGE by how it changed */
-	if (messages > client->messages) {
-		/* More messages now. EXISTS */
-		reason = "EXISTS";
-		previewseqno = messages; /* Assume that messages is the sequence # of the new message */
-	} else if (messages < client->messages) {
-		reason = "EXPUNGE";
-	} else {
-		/* Could probably be legitimate, just seems unlikely to me. Most likely this callback was hit twice due to poll() stuff. */
-		bbs_warning("IDLE data, but message count unchanged?\n");
-		/* Dunno what happened */
-		goto exit; /* Don't refresh twice */
-	}
-	client->messages = messages; /* Update total with new current count */
+	 * The nice thing is this handles both EXISTS and EXPUNGE responses just fine. */
 
 	/* Send the update and restart the IDLE */
 	REFRESH_LISTING(reason);
@@ -1978,7 +1977,6 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 		send_preview(ws, client, previewseqno);
 	}
 
-exit:
 	idle_start(ws, client);
 	return 0;
 }
