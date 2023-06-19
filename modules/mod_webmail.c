@@ -43,10 +43,12 @@ struct imap_client {
 	char *mailbox;		/* Current mailbox name */
 	uint32_t messages;	/* Cached number of messages in selected mailbox */
 	uint32_t uid;		/* Current message UID */
+	char *tmp;			/* Temporary string */
 	/* Flags */
 	unsigned int canidle:1;
 	unsigned int idling:1;
 	unsigned int has_status_size:1;
+	unsigned int has_list_status:1;
 };
 
 static void libetpan_log(mailimap *session, int log_type, const char *str, size_t size, void *context)
@@ -83,6 +85,86 @@ static int client_status_command(struct imap_client *client, struct mailimap *im
 	struct mailimap_status_att_list *att_list;
 	struct mailimap_mailbox_data_status *status;
 	clistiter *cur;
+
+	if (client->tmp) {
+		char *tmp;
+		char findbuf[64];
+		int skiplen;
+		/* See if we can get what we want from the log message. */
+		skiplen = snprintf(findbuf, sizeof(findbuf), "* STATUS \"%s\" (", mbox);
+		tmp = strstr(client->tmp, findbuf);
+		if (!tmp && !strchr(mbox, ' ')) { /* If not found, try the unquoted version */
+			skiplen = snprintf(findbuf, sizeof(findbuf), "* STATUS %s (", mbox);
+			tmp = strstr(client->tmp, findbuf);
+		}
+		if (!tmp) {
+			bbs_warning("No STATUS response for mailbox '%s'\n", mbox);
+			/* Manually ask for it now, as usual */
+		} else {
+			/* Parse what we want from the STATUS response.
+			 * Normally not a great idea, but STATUS responses are easy to parse. */
+			char *str;
+			uint32_t num;
+			tmp += skiplen;
+			if (strlen_zero(tmp)) {
+				bbs_warning("Malformed STATUS response\n");
+			} else {
+				str = strstr(tmp, "MESSAGES ");
+				if (str) {
+					str += STRLEN("MESSAGES ");
+					if (!strlen_zero(str)) {
+						num = (uint32_t) atol(str);
+						if (messages) {
+							*messages = num;
+						}
+						if (folder) {
+							json_object_set_new(folder, "messages", json_integer(num));
+						}
+					}
+				}
+				if (!str) {
+					bbs_warning("Failed to parse MESSAGES\n");
+				}
+				str = strstr(tmp, "RECENT ");
+				if (str) {
+					str += STRLEN("RECENT ");
+					if (!strlen_zero(str)) {
+						num = (uint32_t) atol(str);
+						json_object_set_new(folder, "recent", json_integer(num));
+					}
+				}
+				if (!str) {
+					bbs_warning("Failed to parse RECENT\n");
+				}
+				str = strstr(tmp, "UNSEEN ");
+				if (str) {
+					str += STRLEN("UNSEEN ");
+					if (!strlen_zero(str)) {
+						num = (uint32_t) atol(str);
+						json_object_set_new(folder, "unseen", json_integer(num));
+					}
+				}
+				if (!str) {
+					bbs_warning("Failed to parse UNSEEN\n");
+				}
+				if (client->has_status_size) {
+					str = strstr(tmp, "SIZE ");
+					if (str) {
+						str += STRLEN("SIZE ");
+						if (!strlen_zero(str)) {
+							num = (uint32_t) atol(str);
+							json_object_set_new(folder, "size", json_integer(num));
+						}
+					}
+					if (!str) {
+						bbs_warning("Failed to parse SIZE\n");
+					}
+				}
+			}
+			/* Look at all the time we saved! Profit and return */
+			return 0;
+		}
+	}
 
 	att_list = mailimap_status_att_list_new_empty();
 	if (!att_list) {
@@ -139,7 +221,7 @@ static int client_status_command(struct imap_client *client, struct mailimap *im
 				break;
 			case MAILIMAP_STATUS_ATT_EXTENSION:
 				st_ext_data = status_info->st_ext_data;
-				bbs_debug(7, "XXX STATUS extension data - %d / %p\n", st_ext_data->ext_type, st_ext_data->ext_data);
+				bbs_debug(7, "STATUS extension data - %d / %p\n", st_ext_data->ext_type, st_ext_data->ext_data);
 				break;
 		}
 	}
@@ -239,7 +321,9 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client, s
 		res = mailimap_custom_command(imap, "ID (\"name\" \"wssmail via LBBS (libetpan)\" \"version\" \"" BBS_VERSION "\")");
 #endif
 	}
+	SET_BITFIELD(client->canidle, mailimap_has_idle(imap));
 	SET_BITFIELD(client->has_status_size, mailimap_has_extension(imap, "STATUS=SIZE"));
+	SET_BITFIELD(client->has_list_status, mailimap_has_extension(imap, "LIST-STATUS"));
 	*data = imap;
 	return 0;
 
@@ -262,6 +346,91 @@ static uint32_t fetch_size(struct mailimap_msg_att *msg_att)
 	return 0;
 }
 
+static void list_status_logger(mailstream *imap_stream, int log_type, const char *str, size_t size, void *context)
+{
+	/* This is a hack due to the limitations of libetpan.
+	 * It is very tricky to be able to send an arbitrary command and be able to read the raw response from it.
+	 * Ideally, libetpan would populate a list of STATUS, but it only does this for one mailbox,
+	 * so with LIST-STATUS, the status returned would just be that of the last mailbox for which an untagged STATUS
+	 * was received. This doesn't help us at all.
+	 *
+	 * Instead, we use this logger callback as a callback to be able to receive the raw data received.
+	 * We'll analyze any STATUS lines that appear here, store the info we want from it,
+	 * and then use that later.
+	 * The LIST response is still parsed as usual in mailimap_list_status.
+	 * We still let libetpan handle parsing the LIST responses and we only manually parse the STATUS responses.
+	 */
+
+	struct imap_client *client = context;
+	UNUSED(client);
+	UNUSED(imap_stream);
+
+	if (!size || log_type != MAILSTREAM_LOG_TYPE_DATA_RECEIVED) {
+#ifdef DEBUG_LIST_STATUS
+		bbs_debug(3, "Skipping %d: %.*s\n", log_type, (int) size, str);
+#endif
+		return;
+	}
+
+#ifdef DEBUG_LIST_STATUS
+	bbs_debug(3, "Log callback %d: %.*s\n", log_type, (int) size, str);
+#endif
+
+	/* In my testing, we just get one log message after the command finishes. This assumes that. */
+	bbs_debug(6, "Log callback of %lu bytes for LIST-STATUS\n", size);
+	free_if(client->tmp);
+	client->tmp = strndup(str, size);
+}
+
+/*! \brief Basically mailimap_list, but sending a custom command */
+static int mailimap_list_status(mailimap *session, clist **list_result)
+{
+	struct mailimap_response *response;
+	int r;
+	int error_code;
+
+#define LIST_STATUS_CMD "LIST \"\" \"*\" RETURN (STATUS (MESSAGES RECENT UNSEEN SIZE))\r\n"
+
+	if ((session->imap_state != MAILIMAP_STATE_AUTHENTICATED) && (session->imap_state != MAILIMAP_STATE_SELECTED)) {
+		return MAILIMAP_ERROR_BAD_STATE;
+	}
+	r = mailimap_send_current_tag(session);
+	if (r != MAILIMAP_NO_ERROR) {
+		return r;
+	}
+
+	/* XXX mailimap_send_crlf and mailimap_send_custom_command aren't public */
+	r = (int) mailstream_write(session->imap_stream, LIST_STATUS_CMD, STRLEN(LIST_STATUS_CMD));
+	if (r != STRLEN(LIST_STATUS_CMD)) {
+		return MAILIMAP_ERROR_STREAM;
+	}
+
+	if (mailstream_flush(session->imap_stream) == -1) {
+		return MAILIMAP_ERROR_STREAM;
+	}
+	if (mailimap_read_line(session) == NULL) {
+		return MAILIMAP_ERROR_STREAM;
+	}
+	r = mailimap_parse_response(session, &response);
+	if (r != MAILIMAP_NO_ERROR) {
+		return r;
+	}
+
+	*list_result = session->imap_response_info->rsp_mailbox_list;
+	session->imap_response_info->rsp_mailbox_list = NULL;
+
+	/* session->imap_response only contains the last line (e.g. LIST completed) */
+	error_code = response->rsp_resp_done->rsp_data.rsp_tagged->rsp_cond_state->rsp_type;
+	mailimap_response_free(response);
+
+	switch (error_code) {
+		case MAILIMAP_RESP_COND_STATE_OK:
+			return MAILIMAP_NO_ERROR;
+		default:
+			return MAILIMAP_ERROR_LIST;
+	}
+}
+
 static int client_list_command(struct imap_client *client, struct mailimap *imap, json_t *json, char *delim, int details)
 {
 	int res;
@@ -270,7 +439,38 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 	clistiter *cur;
 	int needunselect = 0;
 
-	res = mailimap_list(imap, "", "*", &imap_list);
+	/* There are a few different scenarios here, depending on supported extensions:
+	 * LIST-STATUS     STATUS=SIZE        # commands Approach
+	 *     No              No             2N + 1     LIST, STATUS for each folder, FETCH 1:* to compute size for each folder
+	 *     Yes             No             N + 1      Extended LIST command, FETCH 1:* to compute size for each folder
+	 *     No              Yes            N + 1      LIST, STATUS-SIZE for each folder
+	 *     Yes             Yes            1          LIST-STATUS=SIZE
+	 *
+	 * For a non-pipelined client, the # of commands also is proportional to the total RTT of all commands in the operation.
+	 *
+	 * Assuming the IMAP server is net_imap, it supports both and will optimize aggregation for remote mailboxes.
+	 *
+	 * Obviously, a server that supports both LIST-STATUS and STATUS=SIZE is the holy grail of IMAP servers, and we should take advantage of that.
+	 */
+
+	if (details && client->has_list_status && client->has_status_size) {
+		/* Fundamentally, libetpan does not support LIST-STATUS.
+		 * It did not support STATUS=SIZE either, but it was easy to patch it support that
+		 * (and mod_webmail requires such a patched version of libetpan).
+		 * Rather than trying to kludge libetpan to support LIST-STATUS,
+		 * it's easier to just send it the command we want and parse it ourselves.
+		 *
+		 * XXX Since I don't know how to read/write directly using libetpan's connection,
+		 * we open up a 2nd IMAP connection here for the LIST-STATUS operation.
+		 * The time savings from doing a single LIST-STATUS command over N STATUS commands
+		 * is worth the overhead in setting up a separate connection. */
+		bbs_debug(4, "Nice, both LIST-STATUS and STATUS=SIZE are supported!\n"); /* Somebody please give the poor IMAP server a pay raise */
+		mailstream_set_logger(imap->imap_stream, list_status_logger, client);
+		res = mailimap_list_status(imap, &imap_list);
+		mailstream_set_logger(imap->imap_stream, NULL, NULL);
+	} else {
+		res = mailimap_list(imap, "", "*", &imap_list);
+	}
 	if (res != MAILIMAP_NO_ERROR) {
 		bbs_warning("%s\n", maildriver_strerror(res));
 		return -1;
@@ -284,6 +484,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 		json_t *folder, *flagsarr;
 		const char *name;
 		int noselect = 0;
+		uint32_t total;
 		struct mailimap_mailbox_list *mb_list = clist_content(cur);
 		struct mailimap_mbx_list_flags *flags = mb_list->mb_flag;
 		delimiter = mb_list->mb_delimiter;
@@ -327,59 +528,61 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 				}
 			}
 		}
-		if (details && !noselect) {
-			uint32_t total;
-			/* STATUS: ideally we could get all the details we want from a single STATUS command. */
-			if (!client_status_command(client, imap, name, folder, &total)) {
-				if (!client->has_status_size) { /* Lacks RFC 8438 support */
-					uint32_t size = 0;
-					if (total > 0) {
-						/* Do it the manual way. */
-						struct mailimap_fetch_type *fetch_type;
-						struct mailimap_fetch_att *fetch_att;
-						clist *fetch_result;
-						struct mailimap_set *set = mailimap_set_new_interval(1, 0); /* fetch in interval 1:* */
+		json_array_append_new(json, folder);
+		if (!details || noselect) {
+			continue;
+		}
 
-						bbs_debug(2, "IMAP server does not support RFC 8438. Manually calculating mailbox size for %s\n", name);
-						/* Must SELECT mailbox */
-						res = mailimap_select(imap, name);
+		/* STATUS: ideally we could get all the details we want from a single STATUS command. */
+		if (!client_status_command(client, imap, name, folder, &total)) {
+			if (!client->has_status_size) { /* Lacks RFC 8438 support */
+				uint32_t size = 0;
+				if (total > 0) {
+					/* Do it the manual way. */
+					struct mailimap_fetch_type *fetch_type;
+					struct mailimap_fetch_att *fetch_att;
+					clist *fetch_result;
+					struct mailimap_set *set = mailimap_set_new_interval(1, 0); /* fetch in interval 1:* */
+
+					bbs_debug(2, "IMAP server does not support RFC 8438. Manually calculating mailbox size for %s\n", name);
+					/* Must SELECT mailbox */
+					res = mailimap_select(imap, name);
+					if (res != MAILIMAP_NO_ERROR) {
+						bbs_warning("Failed to SELECT mailbox '%s'\n", name);
+					} else {
+						fetch_type = mailimap_fetch_type_new_fetch_att_list_empty();
+						fetch_att = mailimap_fetch_att_new_rfc822_size();
+						mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
+						res = mailimap_fetch(imap, set, fetch_type, &fetch_result);
 						if (res != MAILIMAP_NO_ERROR) {
-							bbs_warning("Failed to SELECT mailbox '%s'\n", name);
+							bbs_error("Failed to calculate size of mailbox %s: %s\n", name, maildriver_strerror(res));
 						} else {
-							fetch_type = mailimap_fetch_type_new_fetch_att_list_empty();
-							fetch_att = mailimap_fetch_att_new_rfc822_size();
-							mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
-							res = mailimap_fetch(imap, set, fetch_type, &fetch_result);
-							if (res != MAILIMAP_NO_ERROR) {
-								bbs_error("Failed to calculate size of mailbox %s: %s\n", name, maildriver_strerror(res));
-							} else {
-								clistiter *cur2;
-								/* Iterate over each message size */
-								for (cur2 = clist_begin(fetch_result); cur2; cur2 = clist_next(cur2)) {
-									struct mailimap_msg_att *msg_att = clist_content(cur2);
-									size += fetch_size(msg_att);
-								}
-								mailimap_fetch_list_free(fetch_result);
-								mailimap_fetch_type_free(fetch_type);
+							clistiter *cur2;
+							/* Iterate over each message size */
+							for (cur2 = clist_begin(fetch_result); cur2; cur2 = clist_next(cur2)) {
+								struct mailimap_msg_att *msg_att = clist_content(cur2);
+								size += fetch_size(msg_att);
 							}
-							/* UNSELECT the mailbox, since we weren't supposed to do this.
-							 * XXX If a mailbox was previously selected, after we're done with all this,
-							 * reselect that one. */
-							needunselect = 1;
+							mailimap_fetch_list_free(fetch_result);
+							mailimap_fetch_type_free(fetch_type);
 						}
-						mailimap_set_free(set);
+						/* UNSELECT the mailbox, since we weren't supposed to do this.
+						 * XXX If a mailbox was previously selected, after we're done with all this,
+						 * reselect that one. */
+						needunselect = 1;
 					}
-					json_object_set_new(folder, "size", json_integer(size));
-					if (imap->imap_selection_info) {
-						json_object_set_new(folder, "uidvalidity", json_integer(imap->imap_selection_info->sel_uidvalidity));
-						json_object_set_new(folder, "uidnext", json_integer(imap->imap_selection_info->sel_uidnext));
-					}
+					mailimap_set_free(set);
+				}
+				json_object_set_new(folder, "size", json_integer(size));
+				if (imap->imap_selection_info) {
+					json_object_set_new(folder, "uidvalidity", json_integer(imap->imap_selection_info->sel_uidvalidity));
+					json_object_set_new(folder, "uidnext", json_integer(imap->imap_selection_info->sel_uidnext));
 				}
 			}
 		}
-		json_array_append_new(json, folder);
 	}
 
+	free_if(client->tmp);
 	mailimap_list_result_free(imap_list);
 
 	if (needunselect) {
@@ -1711,7 +1914,7 @@ static void idle_start(struct ws_session *ws, struct imap_client *client)
 		bbs_debug(5, "Starting IDLE...\n");
 		res = mailimap_idle(client->imap);
 		if (res != MAILIMAP_NO_ERROR) {
-			bbs_warning("Failed to stop IDLE: %s\n", maildriver_strerror(res));
+			bbs_warning("Failed to start IDLE: %s\n", maildriver_strerror(res));
 		} else {
 			client->imapfd = mailimap_idle_get_fd(client->imap);
 			client->idling = 1;
@@ -1829,7 +2032,6 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 		/* SELECTed state only */
 		if (!strcmp(command, "FETCH")) {
 			handle_fetch(ws, client, (uint32_t) json_object_int_value(root, "uid"), json_object_bool_value(root, "html"), json_object_bool_value(root, "raw"));
-			/*! \todo Frontend should automark this as read, without us sending an update */
 		} else if (!strcmp(command, "UNSEEN")) {
 			handle_store_seen(client, -1, json_object_get(root, "uids"));
 			/* Frontend will handle toggling unread/read visibility and updating folder counts */
@@ -1876,7 +2078,6 @@ static int on_open(struct ws_session *ws)
 	}
 	list_response(ws, client, imap);
 	client->imap = imap;
-	client->canidle = mailimap_has_idle(imap) ? 1 : 0;
 	/* Don't start IDLING yet. No mailbox is yet selected. */
 	return 0;
 
@@ -1896,6 +2097,7 @@ static int on_close(struct ws_session *ws, void *data)
 	mailimap_logout(client->imap);
 	mailimap_free(client->imap); /* Must exist, or we would have rejected in on_open */
 	free_if(client->mailbox);
+	free_if(client->tmp);
 	free(client);
 	return 0;
 }
