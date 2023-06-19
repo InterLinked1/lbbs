@@ -2906,6 +2906,7 @@ static int list_scandir_single(struct imap_session *imap, struct list_command *l
 	int flags = 0, myacl;
 	char extended_buf[512] = "";
 	char attributes[128];
+	char fullmailboxname[256];
 	const char *extended_data_items = extended_buf;
 
 	load_acl(imap, fulldir, lcmd->ns, &myacl);
@@ -2969,17 +2970,21 @@ static int list_scandir_single(struct imap_session *imap, struct list_command *l
 	imap_debug(10, "level %d, reference: %s, prefix: %s, mailboxname: %s\n", level, lcmd->reference, prefix, mailboxname);
 #endif
 
-	build_attributes_string(attributes, sizeof(attributes), flags);
-	imap_send(imap, "%s (%s) \"%s\" \"%s%s%s%s\"%s%s", lcmd->cmd, attributes, HIERARCHY_DELIMITER,
+	snprintf(fullmailboxname, sizeof(fullmailboxname), "%s%s%s%s",
 		lcmd->ns == NAMESPACE_SHARED ? SHARED_NAMESPACE_PREFIX HIERARCHY_DELIMITER : lcmd->ns == NAMESPACE_OTHER ? OTHER_NAMESPACE_PREFIX HIERARCHY_DELIMITER : "",
-		S_IF(prefix), !strlen_zero(prefix) ? HIERARCHY_DELIMITER : "", mailboxname,
+		S_IF(prefix), !strlen_zero(prefix) ? HIERARCHY_DELIMITER : "", mailboxname);
+
+	build_attributes_string(attributes, sizeof(attributes), flags);
+	imap_send(imap, "%s (%s) \"%s\" \"%s\"%s%s", lcmd->cmd, attributes, HIERARCHY_DELIMITER, fullmailboxname,
 		!strlen_zero(extended_data_items) ? " " : "", S_IF(extended_data_items)); /* Always send the delimiter */
 
 	if (lcmd->retstatus && IMAP_HAS_ACL(myacl, IMAP_ACL_READ)) { /* Part 2 for LIST-STATUS: actually send listing if we can */
-		if (set_maildir(imap, mailboxname)) {
+		if (set_maildir(imap, fullmailboxname)) {
+			/*! \todo Handle remote mailboxes */
 			bbs_error("Failed to set maildir for %s\n", mailboxname);
+		} else {
+			local_status(imap, fullmailboxname, lcmd->retstatus); /* We know this folder is local, not remote */
 		}
-		local_status(imap, mailboxname, lcmd->retstatus); /* We know this folder is local, not remote */
 	}
 
 	return 1;
