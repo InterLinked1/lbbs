@@ -710,6 +710,7 @@ static void append_header_meta(json_t *restrict json, char *headers, int fetchli
 			/* Continuation of previous header */
 			hdrname = prevheadername;
 			dyn_str_append(&dynstr, prevval, strlen(prevval));
+			prevval = header;
 		} else {
 			/* If we had a previous multiline header, flush it */
 			if (dynstr.buf) {
