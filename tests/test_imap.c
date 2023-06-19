@@ -261,11 +261,10 @@ static int run(void)
 	SWRITE(client1, "Hello Joe, do you think we can meet at 3:30 tomorrow?" ENDL);
 	SWRITE(client1, ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "12] APPEND"); /* The UID of this message should be 12 */
-	CLIENT_DRAIN(client1);
 
 	/* MULTIAPPEND */
-	SWRITE(client1, "a14 APPEND INBOX (\\Seen) {326}" ENDL);
-	CLIENT_EXPECT(client1, "+");
+	SWRITE(client1, "a14c APPEND INBOX (\\Seen) {326}" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "+"); /* Will get * 12 EXISTS when we issue the command, first */
 	SWRITE(client1, "Date: Mon, 7 Feb 1994 21:52:25 -0800 (PST)" ENDL);
 	SWRITE(client1, "From: Fred Foobar <foobar@Blurdybloop.example>" ENDL);
 	SWRITE(client1, "Subject: afternoon meeting" ENDL);
@@ -306,7 +305,7 @@ static int run(void)
 
 	/* COPY */
 	SWRITE(client1, "a18 COPY 3 Trash" ENDL);
-	CLIENT_EXPECT(client1, "3 1] COPY");
+	CLIENT_EXPECT_EVENTUALLY(client1, "3 1] COPY"); /* We'll also read * 14 EXISTS here */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.Trash/cur", 1);
 
 	/* EXPUNGE */

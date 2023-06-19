@@ -147,7 +147,7 @@ static int imap_debug_level = 10;
 #define _imap_reply_nolock(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); dprintf(imap->wfd, fmt, ## __VA_ARGS__);
 #define _imap_reply(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); pthread_mutex_lock(&imap->lock); dprintf(imap->wfd, fmt, ## __VA_ARGS__); pthread_mutex_unlock(&imap->lock);
 #define imap_send(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
-#define imap_reply(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", S_IF(imap->tag), ## __VA_ARGS__)
+#define imap_reply(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", imap->tag, ## __VA_ARGS__)
 
 struct preauth_ip {
 	const char *range;
@@ -2465,7 +2465,8 @@ static int select_examine_response(struct imap_session *imap, enum select_type r
 	}
 
 	if (was_selected) {
-		imap_send(imap, "OK [CLOSED]"); /* RFC 7162 3.2.11, example in 3.2.5.1 */
+		/* Best practice to always include some response text after [] */
+		imap_send(imap, "OK [CLOSED] Closed"); /* RFC 7162 3.2.11, example in 3.2.5.1 */
 	}
 
 	imap_send(imap, "FLAGS (%s%s)", IMAP_FLAGS, numkeywords ? keywords : "");
@@ -2521,7 +2522,7 @@ static int sharedflagrights = IMAP_ACL_SEEN | IMAP_ACL_WRITE;
 static int handle_select(struct imap_session *imap, char *s, enum select_type readonly)
 {
 	char *mailbox;
-	int was_selected = imap->dir[0] ? 1 : 0;
+	int was_selected = !s_strlen_zero(imap->dir);
 	unsigned long maxmodseq;
 	struct mailbox *oldmbox = imap->mbox;
 
@@ -3675,33 +3676,35 @@ static int parse_list_cmd(struct imap_session *imap, struct list_command *lcmd, 
 	}
 
 	/* Return options (only for extended) */
-	ltrim(s);
 	if (!strlen_zero(s)) {
-		if (!STARTS_WITH(s, "RETURN (")) {
-			imap_reply(imap, "BAD [CLIENTBUG] Invalid return options");
-			return -1;
-		}
-		lcmd->extended = 1;
-		s += STRLEN("RETURN "); /* Want to start with ( */
-		tmp = parensep(&s); /* We know that ( exists so s cannot be NULL */
-		while ((opt = strsep(&tmp, " "))) {
-			if (strlen_zero(opt)) {
-				continue; /* Yes, we need this... */
-			}
-			if (!strcasecmp(opt, "SUBSCRIBED")) {
-				lcmd->retsubscribed = 1;
-			} else if (!strcasecmp(opt, "CHILDREN")) {
-				lcmd->retchildren = 1;
-			} else if (!strcasecmp(opt, "SPECIAL-USE")) {
-				lcmd->retspecialuse = 1;
-			} else if (!strcasecmp(opt, "STATUS")) {
-				/* RFC 5819 LIST-STATUS */
-				lcmd->retstatus = parensep(&tmp);
-			} else {
-				/* RFC 5258 Section 3: MUST respond to options we don't know about with BAD */
-				imap_reply(imap, "BAD Unknown return option '%s'\n", opt);
-				bbs_debug(3, "Remainder: %s\n", tmp);
+		ltrim(s);
+		if (!strlen_zero(s)) {
+			if (!STARTS_WITH(s, "RETURN (")) {
+				imap_reply(imap, "BAD [CLIENTBUG] Invalid return options");
 				return -1;
+			}
+			lcmd->extended = 1;
+			s += STRLEN("RETURN "); /* Want to start with ( */
+			tmp = parensep(&s); /* We know that ( exists so s cannot be NULL */
+			while ((opt = strsep(&tmp, " "))) {
+				if (strlen_zero(opt)) {
+					continue; /* Yes, we need this... */
+				}
+				if (!strcasecmp(opt, "SUBSCRIBED")) {
+					lcmd->retsubscribed = 1;
+				} else if (!strcasecmp(opt, "CHILDREN")) {
+					lcmd->retchildren = 1;
+				} else if (!strcasecmp(opt, "SPECIAL-USE")) {
+					lcmd->retspecialuse = 1;
+				} else if (!strcasecmp(opt, "STATUS")) {
+					/* RFC 5819 LIST-STATUS */
+					lcmd->retstatus = parensep(&tmp);
+				} else {
+					/* RFC 5258 Section 3: MUST respond to options we don't know about with BAD */
+					imap_reply(imap, "BAD Unknown return option '%s'\n", opt);
+					bbs_debug(3, "Remainder: %s\n", tmp);
+					return -1;
+				}
 			}
 		}
 	}
@@ -4207,6 +4210,7 @@ static int handle_append(struct imap_session *imap, char *s)
 	char *mailbox;
 	int destacl;
 	int appends;
+	char tag[48];
 	char appenddir[212];		/* APPEND directory */
 	unsigned int uidvalidity, uidnext;
 	unsigned int *a = NULL;
@@ -4224,6 +4228,10 @@ static int handle_append(struct imap_session *imap, char *s)
 	}
 
 	IMAP_REQUIRE_ACL(destacl, IMAP_ACL_INSERT);
+
+	/* APPEND will clobber the readline buffer, so save off the tag */
+	safe_strncpy(tag, imap->tag, sizeof(tag));
+	imap->tag = tag;
 
 	for (appends = 0;; appends++) {
 		unsigned long quotaleft;
@@ -4413,14 +4421,18 @@ static int handle_append(struct imap_session *imap, char *s)
 			if (ALLOC_SUCCESS(list)) {
 				imap_reply(imap, "OK [APPENDUID %u %s] APPEND completed", uidvalidity, list);
 				free(list);
+			} else {
+				imap_reply(imap, "OK APPEND completed");
 			}
 		}
 	} else {
 		imap_reply(imap, "OK APPEND completed");
 	}
 
-	/*! \todo BUGBUG If mailbox currently selected, we SHOULD send an untagged EXISTS e.g. send_untagged_exists
-	 * Even if not, we should for that particular mailbox (folder) for other clients that may be monitoring it. */
+	if (appends) {
+		/* RFC 3501 6.3.11: We SHOULD notify the client via an untagged EXISTS. */
+		imap_mbox_watcher(imap->mbox, NULL);
+	}
 
 cleanup:
 	free_if(a);
@@ -4912,8 +4924,8 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 
 			/* bodyargs ends in a ')', so don't tack an additional one on afterwards */
 			/* Here, the condition will only be true for one or the other: */
-			SAFE_FAST_COND_APPEND(response, responselen, *buf, *len, !inverted, "BODY[HEADER.FIELDS (%s", bodyargs);
-			SAFE_FAST_COND_APPEND(response, responselen, *buf, *len, inverted, "BODY[HEADER.FIELDS.NOT (%s", bodyargs);
+			SAFE_FAST_COND_APPEND(response, responselen, *buf, *len, !inverted, "BODY[HEADER.FIELDS (%s]", bodyargs);
+			SAFE_FAST_COND_APPEND(response, responselen, *buf, *len, inverted, "BODY[HEADER.FIELDS.NOT (%s]", bodyargs);
 		} else if (!strcmp(bodyargs, "TEXT")) { /* Empty (e.g. BODY.PEEK[] or BODY[], or TEXT */
 			multiline = 1;
 			sendbody = 1;
@@ -8998,16 +9010,18 @@ static int imap_process(struct imap_session *imap, char *s)
 		 *
 		 * At THAT point, we can then replace the connection for STATUS
 		 * with whatever we should have for the currently selected mailbox. */
-		bbs_debug(4, "Reverting temporary STATUS override\n");
 		if (imap->folder) {
 			/* Since we internally changed the active mailbox, change it back to the mailbox that's still really selected.
 			 * Internally, this will also close the remote if needed. */
+			bbs_debug(4, "Reverting temporary STATUS override to previously selected %s\n", imap->folder);
 			set_maildir(imap, imap->folder);
 		} else {
 			/* If no mailbox was selected when we did the STATUS, then just close the remote */
+			bbs_debug(4, "Reverting temporary STATUS override to unselected\n");
 			if (imap->virtmbox) {
 				imap_close_remote_mailbox(imap);
 			}
+			imap->dir[0] = '\0'; /* This is how we know we're unselected */
 		}
 		FREE(imap->activefolder);
 	}

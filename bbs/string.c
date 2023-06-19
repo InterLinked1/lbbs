@@ -408,7 +408,7 @@ char *quotesep(char **str)
 	}
 
 	if (*s != '"') {
-		bbs_warning("quotesep used incorrectly: %s\n", *str);
+		return strsep(str, " "); /* If not in quotes, then just return the next word as usual */
 	}
 	if (!*(s + 1)) {
 		bbs_warning("Malformed string (quotes not terminated)\n");
