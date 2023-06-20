@@ -761,7 +761,9 @@ static void __append_datetime(json_t *json, const char *field, struct tm *tm)
 	epoch = timegm(tm) - offset; /* All times need to be given out in UTC */
 	/* Send the epoch time, and the client can display it in
 	 * its local timezone / preferred format without us needing to know. */
+#ifdef DEBUG_DATETIME
 	bbs_debug(5, "Parsed datetime -> epoch %lu (had offset %ld)\n", epoch, offset);
+#endif
 	json_object_set_new(json, field, json_integer(epoch));
 }
 
@@ -956,6 +958,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 	char *headername = NULL;
 	struct mailimap_header_list *imap_hdrlist;
 	struct mailimap_section *section;
+	int curmsg = start;
 	json_t *root = NULL, *arr;
 
 	/* start to end is inclusive */
@@ -1040,7 +1043,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 	arr = json_array();
 	json_object_set_new(root, "data", arr);
 
-	for (cur = clist_begin(fetch_result); cur; start++, cur = clist_next(cur)) {
+	for (cur = clist_begin(fetch_result); cur; curmsg++, cur = clist_next(cur)) {
 		json_t *msgitem;
 		clistiter *cur2;
 		struct mailimap_msg_att *msg_att = clist_content(cur);
@@ -1050,7 +1053,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 			continue;
 		}
 		json_array_append_new(arr, msgitem);
-		json_object_set_new(msgitem, "seqno", json_integer(start));
+		json_object_set_new(msgitem, "seqno", json_integer(curmsg));
 
 		for (cur2 = clist_begin(msg_att->att_list); cur2; cur2 = clist_next(cur2)) {
 			struct mailimap_msg_att_item *item = clist_content(cur2);
@@ -1860,6 +1863,12 @@ static void handle_move(struct imap_client *client, json_t *uids, const char *ne
 	res = mailimap_uid_move(client->imap, set, newmbox);
 	if (res != MAILIMAP_NO_ERROR) {
 		bbs_warning("UID MOVE failed: %s\n", maildriver_strerror(res));
+	} else {
+		if (client->messages >= json_array_size(uids)) {
+			uint32_t newcount = client->messages - (uint32_t) json_array_size(uids);
+			bbs_debug(5, "Updated folder count from %u to %u\n", client->messages, newcount);
+			client->messages = newcount;
+		}
 	}
 	mailimap_set_free(set);
 }
@@ -2042,6 +2051,15 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 			/* Frontend will handle toggling unread/read visibility and updating folder counts */
 		} else if (!strcmp(command, "MOVE")) {
 			handle_move(client, json_object_get(root, "uids"), json_object_string_value(root, "folder"));
+			/* Problem here is libetpan flushes all existing pending output when issuing a command.
+			 * This includes NOOP and IDLE, so if there's an untagged * EXISTS already waiting for us, we'll never see it.
+			 * We could just poll and call readline, since there SHOULD be an untagged * EXISTS,
+			 * but we don't know how many, so that gets very tricky.
+			 *
+			 * So, just assume that the number of messages in the mailbox has decreased by how many messages
+			 * were moved, and update our count and then refresh (handle_move does the calculation)
+			 * This of course assumes we won't ever see the corresponding EXPUNGE responses for these messages (but since we won't, it works)
+			 */
 			REFRESH_LISTING("MOVE");
 		} else if (!strcmp(command, "COPY")) {
 			handle_copy(client, json_object_get(root, "uids"), json_object_string_value(root, "folder"));
