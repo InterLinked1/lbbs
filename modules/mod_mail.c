@@ -291,6 +291,7 @@ static void mailbox_free(struct mailbox *mbox)
 {
 	pthread_rwlock_destroy(&mbox->lock);
 	pthread_mutex_destroy(&mbox->uidlock);
+	free_if(mbox->name);
 	free(mbox);
 }
 

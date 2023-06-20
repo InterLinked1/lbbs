@@ -2237,20 +2237,121 @@ static int __attribute__ ((format (gnu_printf, 6, 7))) __imap_client_send_wait_r
 	return res;
 }
 
-static int pseudo_status_size(struct imap_session *imap, char *s, const char *remotename)
+static int remote_status(struct imap_session *imap, const char *remotename, const char *items, int size)
 {
 	char buf[1024];
-	char remote_status[1024];
+	char remote_status_resp[1024];
 	char rtag[64];
 	size_t taglen;
 	int len, res;
 	char *tmp;
-	size_t mb_size = 0;
 	struct bbs_tcp_client *client = &imap->client;
 
 	client->rldata.buf = buf;
 	client->rldata.len = sizeof(buf);
 
+	taglen = (size_t) snprintf(rtag, sizeof(rtag), "A.%s.1 OK", imap->tag);
+	len = snprintf(buf, sizeof(buf), "A.%s.1 STATUS \"%s\" (%s)\r\n", imap->tag, remotename, items);
+	imap_debug(3, "=> %.*s", len, buf);
+	bbs_write(client->wfd, buf, (size_t) len);
+	res = bbs_readline(client->rfd, &client->rldata, "\r\n", 5000);
+	if (res <= 0) {
+		return -1;
+	}
+	if (!STARTS_WITH(buf, "* STATUS ")) {
+		bbs_warning("Unexpected response: %s\n", buf);
+		return -1;
+	}
+	safe_strncpy(remote_status_resp, buf, sizeof(remote_status_resp)); /* Save the STATUS response from the server */
+	res = bbs_readline(client->rfd, &client->rldata, "\r\n", 5000);
+	if (res <= 0) {
+		return -1;
+	}
+	if (strncasecmp(buf, rtag, taglen)) {
+		bbs_warning("Unexpected response: %s\n", buf);
+		return -1;
+	}
+
+	/*! \todo If something higher up is doing a LIST-STATUS, and the remote server supports LIST-STATUS,
+	 * do that (once), rather than doing a STATUS on each mailbox there
+	 * What we can do is keep a local temp file: issue LIST-STATUS once, store all the results,
+	 * and then when we enter this function for a specific mailbox, before issuing a STATUS query, check that file.
+	 *
+	 * The second optimization will be caching, important for servers that don't support STATUS=SIZE.
+	 * After each invocation of this function, we will store the STATUS response received from the server.
+	 * If it is identical to the cached version, we know that SIZE must be the same, without issuing a FETCH 1:* (which is slow!)
+	 * To be 100% reliable, we should include UIDNEXT and UIDVALIDITY in the STATUS query,
+	 * even if the client didn't ask for them (should be okay to respond with them regardless anyways).
+	 */
+
+	if (size && !strstr(remote_status_resp, "SIZE ")) { /* If we want SIZE and the server didn't send it, calculate it. */
+		size_t mb_size = 0;
+		if (!strstr(remote_status_resp, "MESSAGES 0")) { /* If we know the folder is empty, we know SIZE is 0 without asking */
+			/* EXAMINE it so it's read only */
+			/* XXX This will reuse imap->tag for the tag here... which isn't ideal but should be accepted.
+			 * Since we're not pipelining our commands, it doesn't really matter anyways. */
+			res = imap_client_send_wait_response_noecho(imap, -1, 5000, "%s \"%s\"\r\n", "EXAMINE", remotename);
+			if (res) {
+				return res;
+			}
+
+			/* Need to reinitialize again since client_command_passthru modifies this */
+			client->rldata.buf = buf;
+			client->rldata.len = sizeof(buf);
+
+			/* imap->tag gets reused multiple times for different commands here...
+			 * something we SHOULD not do but servers are supposed to (MUST) tolerate. */
+			taglen = strlen(imap->tag);
+			bbs_write(client->wfd, imap->tag, taglen);
+			SWRITE(client->wfd, " FETCH 1:* (RFC822.SIZE)\r\n");
+			imap_debug(3, "=> %s FETCH 1:* (RFC822.SIZE)\n", imap->tag);
+			for (;;) {
+				const char *sizestr;
+				res = bbs_readline(client->rfd, &client->rldata, "\r\n", 5000);
+				if (res <= 0) {
+					bbs_warning("IMAP timeout from FETCH 1:* (RFC822.SIZE) - remote server issue?\n");
+					return -1;
+				}
+				if (!strncmp(buf, imap->tag, taglen)) {
+					bbs_debug(3, "End of FETCH response: %s\n", buf);
+					break;
+				}
+				/* Should get a response like this: * 48 FETCH (RFC822.SIZE 548) */
+				sizestr = strstr(buf, "RFC822.SIZE ");
+				if (!sizestr) {
+					bbs_warning("Unexpected response line: %s\n", buf);
+					continue;
+				}
+				sizestr = sizestr + STRLEN("RFC822.SIZE ");
+				if (strlen_zero(sizestr)) {
+					bbs_warning("Server sent empty size: %s\n", buf);
+					continue;
+				}
+				mb_size += (size_t) atoi(sizestr);
+			}
+		} /* else, if no messages, assume size is 0 */
+
+		/* Modify the originally returned response to include the SIZE attribute */
+		/* Find LAST instance, since we can't assume there's only one pair of parentheses, the mailbox name could contain parentheses */
+		tmp = strrchr(remote_status_resp, ')');
+		if (!tmp) {
+			return -1;
+		}
+		*tmp = '\0';
+		snprintf(tmp, sizeof(remote_status_resp) - (size_t) (tmp - remote_status_resp), " SIZE %lu)", mb_size);
+	}
+
+	/* Replace remote mailbox name with our name for it.
+	 * To do this, insert imap->virtprefix before the mailbox name.
+	 * In practice, easier to just reconstruct the STATUS as needed. */
+	tmp = strrchr(remote_status_resp, '('); /* Again, look for the last ( since the mailbox name could contain it */
+
+	imap_send(imap, "STATUS \"%s%c%s\" %s", imap->virtprefix, HIERARCHY_DELIMITER_CHAR, remotename, tmp); /* Send the modified response */
+	return 0;
+}
+
+static char *remove_size(char *restrict s)
+{
 	/* This IMAP server supports STATUS=SIZE, but if the remote one doesn't,
 	 * we have to remove it from the STATUS command before passing it through,
 	 * since unsupporting IMAP servers may reject the command otherwise. */
@@ -2266,106 +2367,23 @@ static int pseudo_status_size(struct imap_session *imap, char *s, const char *re
 	} else {
 		bbs_str_remove_substring(s, "SIZE", STRLEN("SIZE"));
 	}
+	return s;
+}
+
+static int pseudo_status_size(struct imap_session *imap, char *s, const char *remotename)
+{
+	const char *items;
+
+	s = remove_size(s);
+	items = parensep(&s);
 
 	/* However, since we told the IMAP client we support STATUS=SIZE,
 	 * it's going to expect the size of the folder in the STATUS of the response.
 	 * Transparently calculate the folder size the manual way behind the scenes and inform the client. */
-
-	taglen = (size_t) snprintf(rtag, sizeof(rtag), "A.%s.1 OK", imap->tag);
-	len = snprintf(buf, sizeof(buf), "A.%s.1 STATUS \"%s\" %s\r\n", imap->tag, remotename, s);
-	imap_debug(3, "=> %.*s", len, buf);
-	bbs_write(client->wfd, buf, (size_t) len);
-	res = bbs_readline(client->rfd, &client->rldata, "\r\n", 5000);
-	if (res <= 0) {
-		return -1;
-	}
-	if (!STARTS_WITH(buf, "* STATUS ")) {
-		bbs_warning("Unexpected response: %s\n", buf);
-		return -1;
-	}
-	safe_strncpy(remote_status, buf, sizeof(remote_status)); /* Save the STATUS response from the server */
-	res = bbs_readline(client->rfd, &client->rldata, "\r\n", 5000);
-	if (res <= 0) {
-		return -1;
-	}
-	if (strncasecmp(buf, rtag, taglen)) {
-		bbs_warning("Unexpected response: %s\n", buf);
+	if (remote_status(imap, remotename, items, 1)) {
 		return -1;
 	}
 
-	if (!strstr(remote_status, "MESSAGES 0")) { /* If we know the folder is empty, we know SIZE is 0 without asking */
-		/* EXAMINE it so it's read only */
-		/* XXX This will reuse imap->tag for the tag here... which isn't ideal but should be accepted.
-		 * Since we're not pipelining our commands, it doesn't really matter anyways. */
-		res = imap_client_send_wait_response_noecho(imap, -1, 5000, "%s \"%s\"\r\n", "EXAMINE", remotename);
-		if (res) {
-			return res;
-		}
-
-		/* Need to reinitialize again since client_command_passthru modifies this */
-		client->rldata.buf = buf;
-		client->rldata.len = sizeof(buf);
-
-		/* imap->tag gets reused multiple times for different commands here...
-		 * something we SHOULD not do but servers are supposed to (MUST) tolerate. */
-		taglen = strlen(imap->tag);
-		bbs_write(client->wfd, imap->tag, taglen);
-		SWRITE(client->wfd, " FETCH 1:* (RFC822.SIZE)\r\n");
-		imap_debug(3, "=> %s FETCH 1:* (RFC822.SIZE)\n", imap->tag);
-		for (;;) {
-			const char *sizestr;
-			res = bbs_readline(client->rfd, &client->rldata, "\r\n", 5000);
-			if (res <= 0) {
-				bbs_warning("IMAP timeout from FETCH 1:* (RFC822.SIZE) - remote server issue?\n");
-				return -1;
-			}
-			if (!strncmp(buf, imap->tag, taglen)) {
-				bbs_debug(3, "End of FETCH response: %s\n", buf);
-				break;
-			}
-			/* Should get a response like this: * 48 FETCH (RFC822.SIZE 548) */
-			sizestr = strstr(buf, "RFC822.SIZE ");
-			if (!sizestr) {
-				bbs_warning("Unexpected response line: %s\n", buf);
-				continue;
-			}
-			sizestr = sizestr + STRLEN("RFC822.SIZE ");
-			if (strlen_zero(sizestr)) {
-				bbs_warning("Server sent empty size: %s\n", buf);
-				continue;
-			}
-			mb_size += (size_t) atoi(sizestr);
-		}
-
-#if 0
-		/* Actually, the code to switch back to the really selected mailbox for STATUS should handle this, so no need: */
-		if (!imap->folder && imap->virtcapabilities & IMAP_CAPABILITY_UNSELECT) {
-			res = imap_client_send_wait_response_noecho(imap, -1, 5000, "UNSELECT\r\n");
-		} else {
-			/* SELECT whatever mailbox was previously selected, if any. */
-			res = imap_client_send_wait_response_noecho(imap, -1, 5000, "SELECT \"%s\"", imap->folder);
-		}
-		if (res) {
-			return res;
-		}
-#endif
-	}
-
-	/* Modify the originally returned response to include the SIZE attribute */
-	/* Find LAST instance, since we can't assume there's only one pair of parentheses, the mailbox name could contain parentheses */
-	tmp = strrchr(remote_status, ')');
-	if (!tmp) {
-		return -1;
-	}
-	*tmp = '\0';
-	snprintf(tmp, sizeof(remote_status) - (size_t) (tmp - remote_status), " SIZE %lu)", mb_size);
-
-	/* Replace remote mailbox name with our name for it.
-	 * To do this, insert imap->virtprefix before the mailbox name.
-	 * In practice, easier to just reconstruct the STATUS as needed. */
-	tmp = strrchr(remote_status, '('); /* Again, look for the last ( since the mailbox name could contain it */
-
-	imap_send(imap, "STATUS \"%s%c%s\" %s", imap->virtprefix, HIERARCHY_DELIMITER_CHAR, remotename, tmp); /* Send the modified response */
 	imap_reply(imap, "OK STATUS");
 	return 0;
 }
@@ -2386,7 +2404,7 @@ static void construct_status(struct imap_session *imap, const char *s, char *buf
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "SIZE"), "SIZE %lu", imap->totalsize);
 }
 
-static char *remote_mailbox_name(struct imap_session *imap, char *restrict mailbox)
+static const char *remote_mailbox_name(struct imap_session *imap, char *restrict mailbox)
 {
 	char *tmp, *remotename = mailbox + imap->virtprefixlen + 1;
 	/* This is some other server's problem to handle.
@@ -2534,7 +2552,7 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 		return 0;
 	}
 	if (imap->virtmbox) {
-		char *remotename = remote_mailbox_name(imap, mailbox);
+		const char *remotename = remote_mailbox_name(imap, mailbox);
 		REPLACE(imap->folder, mailbox);
 		return imap_client_send_wait_response(imap, -1, 5000, "%s \"%s\"\r\n", readonly == CMD_SELECT ? "SELECT" : "EXAMINE", remotename); /* Reconstruct the SELECT, fortunately this is not too bad */
 	}
@@ -2542,14 +2560,10 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 	if (readonly == CMD_SELECT) {
 		readonly = IMAP_HAS_ACL(imap->acl, IMAP_ACL_INSERT | IMAP_ACL_EXPUNGE | sharedflagrights) ? 0 : 1;
 	}
-	if (readonly <= 1) { /* SELECT and EXAMINE should update currently selected mailbox, STATUS should not */
-		REPLACE(imap->folder, mailbox);
-		reset_saved_search(imap); /* RFC 5182 2.1 */
-	} else {
-		/* imap->folder will still contain the currently selected mailbox.
-		 * imap->activefolder will now contain the mailbox for STATUS. */
-		REPLACE(imap->activefolder, mailbox);
-	}
+	/* SELECT and EXAMINE should update currently selected mailbox, STATUS should not */
+	REPLACE(imap->folder, mailbox);
+	reset_saved_search(imap); /* RFC 5182 2.1 */
+
 	imap->readonly = readonly == CMD_EXAMINE;
 	mailbox_has_activity(imap->mbox); /* Clear any activity flag since we're about to do a traversal. */
 	IMAP_TRAVERSAL(imap, on_select);
@@ -2567,7 +2581,6 @@ static int local_status(struct imap_session *imap, const char *mailbox, const ch
 	/* imap->folder will still contain the currently selected mailbox.
 	 * imap->activefolder will now contain the mailbox for STATUS. */
 	REPLACE(imap->activefolder, mailbox);
-
 	imap->readonly = 0;
 	mailbox_has_activity(imap->mbox); /* Clear any activity flag since we're about to do a traversal. */
 	IMAP_TRAVERSAL(imap, on_select);
@@ -2598,11 +2611,9 @@ static int handle_status(struct imap_session *imap, char *s)
 		return 0;
 	}
 	if (imap->virtmbox) {
-		char *remotename = remote_mailbox_name(imap, mailbox);
+		const char *remotename = remote_mailbox_name(imap, mailbox);
 		REPLACE(imap->activefolder, mailbox);
 		/* If the client wants SIZE but the remote server doesn't support it, we'll have to fake it by translating */
-		/*! \todo If something higher up is doing a LIST-STATUS, and the remote server supports LIST-STATUS,
-		 * do that (once), rather than doing a STATUS on each mailbox there */
 		if (strstr(s, "SIZE") && !(imap->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
 			return pseudo_status_size(imap, s, remotename);
 		} else {
@@ -2940,7 +2951,7 @@ static int list_scandir_single(struct imap_session *imap, struct list_command *l
 	if (lcmd->cmdtype == CMD_XLIST && strstr(leafname, "INBOX")) { /* XXX This is not the right way to detect this */
 		flags |= DIR_INBOX;
 	}
-	if (lcmd->subscribed) {
+	if (lcmd->retsubscribed) {
 		flags |= DIR_SUBSCRIBED; /* All folders are always subscribed on this server. */
 	}
 
@@ -2980,7 +2991,6 @@ static int list_scandir_single(struct imap_session *imap, struct list_command *l
 
 	if (lcmd->retstatus && IMAP_HAS_ACL(myacl, IMAP_ACL_READ)) { /* Part 2 for LIST-STATUS: actually send listing if we can */
 		if (set_maildir(imap, fullmailboxname)) {
-			/*! \todo Handle remote mailboxes */
 			bbs_error("Failed to set maildir for %s\n", mailboxname);
 		} else {
 			local_status(imap, fullmailboxname, lcmd->retstatus); /* We know this folder is local, not remote */
@@ -3441,7 +3451,7 @@ static int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 		char relativepath[256];
 		char remotedelim;
 		const char *virtmboxaccount;
-		char *tmp, *virtmboxname = relativepath;
+		char *tmp, *fullmboxname, *virtmboxname = relativepath;
 
 		/* Extract the user facing mailbox path from the LIST response in the cache file */
 		bbs_strterm(line, '\n'); /* Strip trailing LF */
@@ -3457,6 +3467,8 @@ static int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 			bbs_debug(8, "Virtual mailbox '%s' doesn't match reference %s\n", virtmboxname, lcmd->reference);
 			continue;
 		}
+
+		fullmboxname = virtmboxname;
 
 		/* Need to do specifically for remote mailboxes, we can't just add a fixed skiplen (could be multiple patterns) */
 		if (STARTS_WITH(virtmboxname, OTHER_NAMESPACE_PREFIX)) {
@@ -3488,6 +3500,14 @@ static int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 			/* If it's a special use mailbox, there should be a backslash present, somewhere */
 			continue;
 		}
+
+		/*! \todo FIXME Not everything implemented in list_scandir_single is implemented here.
+		 * e.g. XLIST, adding \\Subscribed.
+		 * Ideally, we'd have common code for that, but there we construct the flags,
+		 * and here we basically do passthrough from whatever the server told us.
+		 * In particular, if lcmd->retsubscribed, we should append \\Subscribed.
+		 */
+
 		/* If the remote server's hierarchy delimiter differs from ours,
 		 * then we need to use our hierarchy delimiter locally,
 		 * but translate when sending commands to the remote server.
@@ -3526,7 +3546,38 @@ static int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 		}
 
 		imap_send(imap, "%s %s", lcmd->cmd, line);
-		virtmboxaccount = virtmboxname + STRLEN(OTHER_NAMESPACE_PREFIX) + 1; /* Skip Other Users. */
+
+		/* Handle LIST-STATUS and STATUS=SIZE for remote mailboxes. */
+		if (lcmd->retstatus) {
+			/* Use fullmboxname, for full mailbox name (from our perspective), NOT virtmboxname */
+			if (set_maildir(imap, fullmboxname)) {
+				bbs_error("Failed to set maildir for mailbox '%s'\n", fullmboxname);
+			} else if (!imap->virtmbox) {
+				/* We know we called set_maildir for a remote mailbox, so it should always be remote */
+				bbs_warning("No virtual/remote mailbox active?\n");
+			} else {
+				/* remote_mailbox_name may modify fullmboxname (if the hierarchy delimiters differ)
+				 * This is fine since the only further use is below when pushing to the stringlish,
+				 * but we strip all hierarchy delimiters before doing that anyways. */
+				char statuscmd[84];
+				const char *items = lcmd->retstatus;
+				const char *remotename = remote_mailbox_name(imap, fullmboxname);
+				int want_size = strstr(lcmd->retstatus, "SIZE") ? 1 : 0;
+				REPLACE(imap->activefolder, fullmboxname);
+
+				/* We also need to remove SIZE from lcmd->retstatus if it's not supported by the remote */
+				if (want_size && !(imap->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
+					safe_strncpy(statuscmd, lcmd->retstatus, sizeof(statuscmd));
+					items = remove_size(statuscmd);
+				}
+
+				/* Always use remote_status, never direct passthrough, to avoid sending a tagged OK response each time */
+				remote_status(imap, remotename, items, want_size);
+			}
+		}
+
+		/* Keep track of parent mailboxe names that are remote */
+		virtmboxaccount = virtmboxname + 1; /* Skip Other Users. (Other Users already skipped at this point, so skip the delimiter) */
 		bbs_strterm(virtmboxaccount, remotedelim); /* Just the account portion, so we can use stringlist_contains later */
 		if (!stringlist_contains(&imap->remotemailboxes, virtmboxaccount)) {
 			stringlist_push(&imap->remotemailboxes, virtmboxaccount);
@@ -9717,16 +9768,16 @@ static int alertmsg(unsigned int userid, const char *msg)
 static int load_module(void)
 {
 	if (load_config()) {
-		return -1;
+		goto abort;
 	}
 	/* Since load_config returns 0 if no config, do this check here instead of in load_config: */
 	if (!imap_enabled && !imaps_enabled) {
 		bbs_debug(3, "Neither IMAP nor IMAPS is enabled, declining to load\n");
-		return -1; /* Nothing is enabled */
+		goto abort; /* Nothing is enabled */
 	}
 	if (imaps_enabled && !ssl_available()) {
 		bbs_error("TLS is not available, IMAPS may not be used\n");
-		return -1;
+		goto abort;
 	}
 
 	pthread_mutex_init(&acl_lock, NULL);
@@ -9734,13 +9785,17 @@ static int load_module(void)
 
 	/* If we can't start the TCP listeners, decline to load */
 	if (bbs_start_tcp_listener3(imap_enabled ? imap_port : 0, imaps_enabled ? imaps_port : 0, 0, "IMAP", "IMAPS", NULL, __imap_handler)) {
-		return -1;
+		goto abort;
 	}
 
 	bbs_register_tests(tests);
 	mailbox_register_watcher(imap_mbox_watcher);
 	bbs_register_alerter(alertmsg, 90);
 	return 0;
+
+abort:
+	RWLIST_WRLOCK_REMOVE_ALL(&preauths, entry, free);
+	return -1;
 }
 
 static int unload_module(void)
