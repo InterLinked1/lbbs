@@ -961,6 +961,7 @@ int bbs_save_remote_ip(struct sockaddr_in *sinaddr, struct bbs_node *node)
 
 	bbs_get_remote_ip(sinaddr, addrstr, sizeof(addrstr));
 	node->ip = strdup(addrstr);
+	node->rport = ntohs(sinaddr->sin_port);
 	if (ALLOC_FAILURE(node->ip)) {
 		bbs_error("Failed to duplicate IP address '%s'\n", addrstr);
 		return -1;

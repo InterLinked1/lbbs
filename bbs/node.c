@@ -625,7 +625,7 @@ int bbs_nodes_print(int fd)
 	int c = 0;
 	int now = (int) time(NULL);
 
-	bbs_dprintf(fd, "%3s %8s %9s %7s %-15s %-15s %15s %1s %1s %6s %3s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "USER", "MENU/PAGE", "IP ADDRESS", "E", "B", "TID", "RFD", "WFD", "MST", "SLV", "SPY", "SLV NAME");
+	bbs_dprintf(fd, "%3s %8s %9s %7s %-15s %-15s %15s %5s %1s %1s %6s %3s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "USER", "MENU/PAGE", "IP ADDRESS", "RPORT", "E", "B", "TID", "RFD", "WFD", "MST", "SLV", "SPY", "SLV NAME");
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
@@ -635,8 +635,8 @@ int bbs_nodes_print(int fd)
 		print_time_elapsed(n->created, now, elapsed, sizeof(elapsed));
 		snprintf(menufull, sizeof(menufull), "%s%s%s%s", S_IF(n->menu), n->menuitem ? " (" : "", S_IF(n->menuitem), n->menuitem ? ")" : "");
 		lwp = bbs_pthread_tid(n->thread);
-		bbs_dprintf(fd, "%3d %8s %9s %3dx%3d %-15s %-15s %15s %1s %1s %6d %3d %3d %3d %3d %3d %s\n",
-			n->id, n->protname, elapsed, n->cols, n->rows, bbs_username(n->user), menufull, n->ip, BBS_YN(n->echo), BBS_YN(n->buffered),
+		bbs_dprintf(fd, "%3d %8s %9s %3dx%3d %-15s %-15s %15s %5u %1s %1s %6d %3d %3d %3d %3d %3d %s\n",
+			n->id, n->protname, elapsed, n->cols, n->rows, bbs_username(n->user), menufull, n->ip, n->rport, BBS_YN(n->echo), BBS_YN(n->buffered),
 			lwp, n->rfd, n->wfd, n->amaster, n->slavefd, n->spyfd, n->slavename);
 		bbs_node_unlock(n);
 		c++;
@@ -1244,7 +1244,7 @@ void bbs_node_begin(struct bbs_node *node)
 	bbs_assert_exists(node->protname); /* Will fail if a network comm driver forgets to set before calling bbs_node_handler */
 
 	bbs_debug(1, "Running BBS for node %d\n", node->id);
-	bbs_auth("New %s connection to node %d from %s\n", node->protname, node->id, node->ip);
+	bbs_auth("New %s connection to node %d from %s:%u\n", node->protname, node->id, node->ip, node->rport);
 }
 
 void bbs_node_exit(struct bbs_node *node)
