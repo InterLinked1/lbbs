@@ -1629,7 +1629,7 @@ static int imap_translate_dir(struct imap_session *imap, const char *directory, 
 				return -1;
 			}
 			safe_strncpy(username, remainder, sizeof(username));
-			bbs_strterm(username, '.');
+			bbs_strterm(username, HIERARCHY_DELIMITER_CHAR);
 			if (stringlist_contains(&imap->remotemailboxes, username)) {
 				/* If we know there's a virtual/remote mailbox mapping, skip a DB call that will likely return nothing anyways.
 				 * This has the benefit that if a user explicitly defines a mapping in .imapremote,
@@ -2240,6 +2240,7 @@ static int __attribute__ ((format (gnu_printf, 6, 7))) __imap_client_send_wait_r
 static int remote_status(struct imap_session *imap, const char *remotename, const char *items, int size)
 {
 	char buf[1024];
+	char converted[256];
 	char remote_status_resp[1024];
 	char rtag[64];
 	size_t taglen;
@@ -2250,6 +2251,9 @@ static int remote_status(struct imap_session *imap, const char *remotename, cons
 	client->rldata.buf = buf;
 	client->rldata.len = sizeof(buf);
 
+	/* XXX The tag sent to the remote end will be the same for every single mailbox (for LIST-STATUS)
+	 * Since we're not pipelining these that's fine (and even if we were, it wouldn't be ambiguous
+	 * since the response contains the mailbox name), but this is certainly not a "proper" thing to do... */
 	taglen = (size_t) snprintf(rtag, sizeof(rtag), "A.%s.1 OK", imap->tag);
 	len = snprintf(buf, sizeof(buf), "A.%s.1 STATUS \"%s\" (%s)\r\n", imap->tag, remotename, items);
 	imap_debug(3, "=> %.*s", len, buf);
@@ -2307,7 +2311,7 @@ static int remote_status(struct imap_session *imap, const char *remotename, cons
 			imap_debug(3, "=> %s FETCH 1:* (RFC822.SIZE)\n", imap->tag);
 			for (;;) {
 				const char *sizestr;
-				res = bbs_readline(client->rfd, &client->rldata, "\r\n", 5000);
+				res = bbs_readline(client->rfd, &client->rldata, "\r\n", 10000);
 				if (res <= 0) {
 					bbs_warning("IMAP timeout from FETCH 1:* (RFC822.SIZE) - remote server issue?\n");
 					return -1;
@@ -2346,7 +2350,10 @@ static int remote_status(struct imap_session *imap, const char *remotename, cons
 	 * In practice, easier to just reconstruct the STATUS as needed. */
 	tmp = strrchr(remote_status_resp, '('); /* Again, look for the last ( since the mailbox name could contain it */
 
-	imap_send(imap, "STATUS \"%s%c%s\" %s", imap->virtprefix, HIERARCHY_DELIMITER_CHAR, remotename, tmp); /* Send the modified response */
+	safe_strncpy(converted, remotename, sizeof(converted));
+	bbs_strreplace(converted, imap->virtdelimiter, HIERARCHY_DELIMITER_CHAR); /* Convert remote delimiter back to local for client response */
+
+	imap_send(imap, "STATUS \"%s%c%s\" %s", imap->virtprefix, HIERARCHY_DELIMITER_CHAR, converted, tmp); /* Send the modified response */
 	return 0;
 }
 
@@ -2404,7 +2411,7 @@ static void construct_status(struct imap_session *imap, const char *s, char *buf
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "SIZE"), "SIZE %lu", imap->totalsize);
 }
 
-static const char *remote_mailbox_name(struct imap_session *imap, char *restrict mailbox)
+static char *remote_mailbox_name(struct imap_session *imap, char *restrict mailbox)
 {
 	char *tmp, *remotename = mailbox + imap->virtprefixlen + 1;
 	/* This is some other server's problem to handle.
@@ -2552,7 +2559,7 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 		return 0;
 	}
 	if (imap->virtmbox) {
-		const char *remotename = remote_mailbox_name(imap, mailbox);
+		char *remotename = remote_mailbox_name(imap, mailbox);
 		REPLACE(imap->folder, mailbox);
 		return imap_client_send_wait_response(imap, -1, 5000, "%s \"%s\"\r\n", readonly == CMD_SELECT ? "SELECT" : "EXAMINE", remotename); /* Reconstruct the SELECT, fortunately this is not too bad */
 	}
@@ -2611,7 +2618,7 @@ static int handle_status(struct imap_session *imap, char *s)
 		return 0;
 	}
 	if (imap->virtmbox) {
-		const char *remotename = remote_mailbox_name(imap, mailbox);
+		char *remotename = remote_mailbox_name(imap, mailbox);
 		REPLACE(imap->activefolder, mailbox);
 		/* If the client wants SIZE but the remote server doesn't support it, we'll have to fake it by translating */
 		if (strstr(s, "SIZE") && !(imap->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
@@ -3546,9 +3553,12 @@ static int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 		}
 
 		imap_send(imap, "%s %s", lcmd->cmd, line);
+		virtmboxaccount = virtmboxname + 1; /* Skip Other Users. (Other Users already skipped at this point, so skip the delimiter) */
 
 		/* Handle LIST-STATUS and STATUS=SIZE for remote mailboxes. */
-		if (lcmd->retstatus) {
+		if (lcmd->retstatus && !strcasestr(line, "\\Noselect")) { /* Don't call STATUS on a NoSelect mailbox */
+			/* Replace the remote hierarchy delimiter with our own, solely for set_maildir. */
+			bbs_strreplace(fullmboxname, remotedelim, HIERARCHY_DELIMITER_CHAR);
 			/* Use fullmboxname, for full mailbox name (from our perspective), NOT virtmboxname */
 			if (set_maildir(imap, fullmboxname)) {
 				bbs_error("Failed to set maildir for mailbox '%s'\n", fullmboxname);
@@ -3561,7 +3571,7 @@ static int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 				 * but we strip all hierarchy delimiters before doing that anyways. */
 				char statuscmd[84];
 				const char *items = lcmd->retstatus;
-				const char *remotename = remote_mailbox_name(imap, fullmboxname);
+				char *remotename = remote_mailbox_name(imap, fullmboxname); /* Convert local delimiter (back) to remote */
 				int want_size = strstr(lcmd->retstatus, "SIZE") ? 1 : 0;
 				REPLACE(imap->activefolder, fullmboxname);
 
@@ -3574,11 +3584,13 @@ static int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 				/* Always use remote_status, never direct passthrough, to avoid sending a tagged OK response each time */
 				remote_status(imap, remotename, items, want_size);
 			}
+			/* Most of it is already in the remote format... convert it all so bbs_strterm will stop at the right spot */
+			bbs_strreplace(fullmboxname, HIERARCHY_DELIMITER_CHAR, remotedelim);
 		}
 
-		/* Keep track of parent mailboxe names that are remote */
-		virtmboxaccount = virtmboxname + 1; /* Skip Other Users. (Other Users already skipped at this point, so skip the delimiter) */
 		bbs_strterm(virtmboxaccount, remotedelim); /* Just the account portion, so we can use stringlist_contains later */
+
+		/* Keep track of parent mailboxe names that are remote */
 		if (!stringlist_contains(&imap->remotemailboxes, virtmboxaccount)) {
 			stringlist_push(&imap->remotemailboxes, virtmboxaccount);
 		}

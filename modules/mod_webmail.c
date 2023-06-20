@@ -1934,6 +1934,7 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	struct imap_client *client = data;
 	uint32_t previewseqno = 0;
 	char *idledata;
+	int ends_in_crlf;
 
 	if (!client->idling) {
 		bbs_debug(7, "IDLE not active, ignoring...\n");
@@ -1945,7 +1946,8 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 
 	/* IDLE activity! */
 	idledata = mailimap_read_line(client->imap);
-	bbs_debug(3, "IDLE activity detected: %s", idledata); /* Already ends in CR LF */
+	ends_in_crlf = !strlen_zero(idledata) ? strchr(idledata, '\n') ? 1 : 0 : 0;
+	bbs_debug(3, "IDLE activity detected: %s%s", idledata, ends_in_crlf ? "" : "\n");
 	if (STARTS_WITH(idledata, "* ")) {
 		char *tmp = idledata + 2;
 		if (!strlen_zero(tmp)) {
@@ -1971,7 +1973,7 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 		}
 	}
 	if (!reason) {
-		bbs_warning("Unhandled IDLE response: %s\n", idledata);
+		bbs_warning("Unhandled IDLE response: %s%s", idledata, ends_in_crlf ? "" : "\n");
 		return 0; /* No need to start the IDLE again, we never stopped it */
 	}
 	idle_stop(ws, client);

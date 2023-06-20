@@ -263,6 +263,7 @@ unsigned int bbs_userid_from_username(const char *username)
 
 	user = bbs_user_info_by_username(username);
 	if (!user) {
+		bbs_debug(5, "No user with username '%s'\n", username);
 		return 0;
 	}
 	res = user->id;
@@ -275,6 +276,11 @@ int bbs_username_from_userid(unsigned int userid, char *buf, size_t len)
 {
 	struct bbs_user *bbsuser;
 	struct username_id_mapping *m;
+
+	if (!userid) {
+		bbs_debug(4, "User ID %u is invalid\n", userid);
+		return -1; /* If for some reason we get an invalid user ID, don't even bother checking. */
+	}
 
 	/* Check the cache first */
 	RWLIST_RDLOCK(&username_mappings);
