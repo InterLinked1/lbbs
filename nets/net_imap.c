@@ -2241,11 +2241,12 @@ static FILE *status_size_cache_file_load(struct imap_session *imap, const char *
 {
 	char cache_dir[256];
 	char cache_file_name[534];
+	int cachedirlen;
 	FILE *fp;
 
 	/* Put them in a subdirectory of the maildir, so it doesn't clutter up the maildir.
 	 * The name just has to NOT start with the hierarchy delimiter (or it would be a maildir) */
-	snprintf(cache_dir, sizeof(cache_dir), "%s/__cache", mailbox_maildir(imap->mymbox));
+	cachedirlen = snprintf(cache_dir, sizeof(cache_dir), "%s/__cache", mailbox_maildir(imap->mymbox));
 	if (write && eaccess(cache_dir, R_OK) && mkdir(cache_dir, 0700)) {
 		bbs_error("mkdir(%s) failed: %s\n", cache_dir, strerror(errno));
 	}
@@ -2256,7 +2257,7 @@ static FILE *status_size_cache_file_load(struct imap_session *imap, const char *
 	 * It just needs to be deterministic and make this path unique on the filesystem,
 	 * and it can't be / as that would indicate a subdirectory.
 	 * Period is just a good choice, for the same reason it's a good choice for the maildir++ delimiter. */
-	bbs_strreplace(cache_file_name, imap->virtdelimiter, '.');
+	bbs_strreplace(cache_file_name + cachedirlen + 1, imap->virtdelimiter, '.');
 	fp = fopen(cache_file_name, write ? "w" : "r");
 	if (!fp) {
 		if (write) {
