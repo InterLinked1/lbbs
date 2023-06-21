@@ -1219,6 +1219,8 @@ static void handle_fetchlist(struct ws_session *ws, struct imap_client *client, 
 	if (end < 1) {
 		end = 0; /* But we must not pass 1:0 to libetpan, or that will turn into 1:* */
 		return;
+	} else if (end > (int) total) {
+		end = (int) total; /* End can't be beyond the max # of messages */
 	}
 	return fetchlist(ws, client, reason, start, end, page, numpages);
 }
@@ -1788,42 +1790,13 @@ static struct mailimap_set *uidset(json_t *uids)
 	return set;
 }
 
-/*!
- * \brief Add or remove the \Seen flag from a message.
- * \param client
- * \param uid
- * \param sign 1 to store flag, -1 to remove flag
- */
-static void handle_store_seen(struct imap_client *client, int sign, json_t *uids)
+static void __handle_store(struct imap_client *client, int sign, struct mailimap_set *set, struct mailimap_flag_list *flag_list)
 {
 	int res;
-	struct mailimap_flag_list *flag_list;
-	struct mailimap_flag *flag;
 	struct mailimap_store_att_flags *att_flags;
-	struct mailimap_set *set;
-
-	if (!uids || !json_array_size(uids)) {
-		bbs_warning("No UIDs provided\n");
-		return;
-	}
-
-	set = uidset(uids);
-	if (!set) {
-		return;
-	}
-
-	/* Add flag */
-	flag_list = mailimap_flag_list_new_empty();
-	flag = mailimap_flag_new_seen();
-	res = mailimap_flag_list_add(flag_list, flag);
-	if (res != MAILIMAP_NO_ERROR) {
-		bbs_warning("LIST add failed: %s\n", maildriver_strerror(res));
-		mailimap_flag_free(flag);
-		goto cleanup;
-	}
 
 	if (sign > 0) {
-		att_flags = mailimap_store_att_flags_new_set_flags_silent(flag_list);
+		att_flags = mailimap_store_att_flags_new_add_flags_silent(flag_list);
 	} else {
 		att_flags = mailimap_store_att_flags_new_remove_flags_silent(flag_list);
 	}
@@ -1844,6 +1817,66 @@ cleanup:
 	mailimap_flag_list_free(flag_list);
 	mailimap_set_free(set);
 }
+
+/*!
+ * \brief Add or remove an arbitrary flag from a message.
+ * \param client
+ * \param uid
+ * \param sign 1 to store flag, -1 to remove flag
+ */
+static void handle_store(struct imap_client *client, int sign, json_t *uids, const char *flagname)
+{
+	int res;
+	struct mailimap_flag_list *flag_list;
+	struct mailimap_flag *flag;
+	struct mailimap_set *set;
+	char *keyword = NULL;
+
+	if (!uids || !json_array_size(uids)) {
+		bbs_warning("No UIDs provided\n");
+		return;
+	}
+
+	set = uidset(uids);
+	if (!set) {
+		return;
+	}
+
+	flag_list = mailimap_flag_list_new_empty();
+	if (!strcasecmp(flagname, "\\Seen")) {
+		flag = mailimap_flag_new_seen();
+	} else if (!strcasecmp(flagname, "\\Deleted")) {
+		flag = mailimap_flag_new_deleted();
+	} else if (!strcasecmp(flagname, "\\Flagged")) {
+		flag = mailimap_flag_new_flagged();
+	} else if (!strcasecmp(flagname, "\\Answered")) {
+		flag = mailimap_flag_new_answered();
+	} else {
+		keyword = strdup(flagname);
+		flag = mailimap_flag_new_flag_keyword(keyword);
+	}
+	res = mailimap_flag_list_add(flag_list, flag);
+	if (res != MAILIMAP_NO_ERROR) {
+		bbs_warning("LIST add failed: %s\n", maildriver_strerror(res));
+		mailimap_flag_free(flag);
+		mailimap_flag_list_free(flag_list);
+		mailimap_set_free(set);
+		free_if(keyword);
+		return;
+	}
+
+	return __handle_store(client, sign, set, flag_list);
+}
+
+/*!
+ * \brief Add or remove the \Seen flag from a message.
+ * \param client
+ * \param uid
+ * \param sign 1 to store flag, -1 to remove flag
+ */
+#define handle_store_seen(client, sign, uids) handle_store(client, sign, uids, "\\Seen")
+
+#define handle_store_deleted(client, sign, uids) handle_store(client, sign, uids, "\\Deleted")
 
 static void handle_move(struct imap_client *client, json_t *uids, const char *newmbox)
 {
@@ -2051,6 +2084,18 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 		} else if (!strcmp(command, "SEEN")) {
 			handle_store_seen(client, +1, json_object_get(root, "uids"));
 			/* Frontend will handle toggling unread/read visibility and updating folder counts */
+		} else if (!strcmp(command, "DELETE")) {
+			handle_store_deleted(client, +1, json_object_get(root, "uids"));
+			REFRESH_LISTING("DELETE"); /* XXX Frontend can easily handle marking it as Deleted on its end, and should */
+		} else if (!strcmp(command, "EXPUNGE")) {
+			/* XXX We need to get an updated total message count now, as ours is out of date,
+			 * and we don't easily know how many messages were expunged (same problem discussed in "MOVE" below) */
+			res = mailimap_expunge(client->imap);
+			if (res != MAILIMAP_NO_ERROR) {
+				bbs_error("EXPUNGE failed: %s\n", strerror(errno));
+			} else {
+				REFRESH_LISTING("EXPUNGE");
+			}
 		} else if (!strcmp(command, "MOVE")) {
 			handle_move(client, json_object_get(root, "uids"), json_object_string_value(root, "folder"));
 			/* Problem here is libetpan flushes all existing pending output when issuing a command.
