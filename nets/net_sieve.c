@@ -254,7 +254,7 @@ doneupload:
 			sieve_send(sieve, "NO Must be authenticated");
 			return 0;
 		}
-		bbs_user_destroy(sieve->node->user);
+		bbs_node_logout(sieve->node);
 		sieve_send(sieve, "OK");
 	} else if (!strcasecmp(command, "LOGOUT")) {
 		sieve_send(sieve, "OK");

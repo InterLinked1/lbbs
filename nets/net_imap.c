@@ -40,6 +40,7 @@
  * \note Supports RFC 7162 CONDSTORE (obsoletes RFC 4551)
  * \note Supports RFC 7162 QRESYNC (obsoletes RFC 5162)
  * \note Supports RFC 7889 APPENDLIMIT
+ * \note Supports RFC 8437 UNAUTHENTICATE
  * \note Supports RFC 8438 STATUS=SIZE
  * \note Supports RFC 9208 QUOTA
  *
@@ -74,7 +75,7 @@
 /* List of capabilities: https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml */
 /* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
 /* XXX URLAUTH is advertised so that SMTP BURL will function in Trojita, even though we don't need URLAUTH since we have a direct trust */
-#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT SPECIAL-USE LIST-EXTENDED LIST-STATUS XLIST CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS LITERAL+ MULTIAPPEND APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC STATUS=SIZE"
+#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT UNAUTHENTICATE SPECIAL-USE LIST-EXTENDED LIST-STATUS XLIST CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS LITERAL+ MULTIAPPEND APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC STATUS=SIZE"
 
 /* Capabilities advertised by popular mail providers, for reference/comparison, both pre and post authentication:
  * - Office 365
@@ -714,7 +715,9 @@ static void imap_destroy(struct imap_session *imap)
 	}
 	stringlist_empty(&imap->remotemailboxes);
 	if (imap->mbox != imap->mymbox) {
-		mailbox_unwatch(imap->mbox);
+		if (imap->mbox) {
+			mailbox_unwatch(imap->mbox);
+		}
 		imap->mbox = imap->mymbox;
 		imap->mymbox = NULL;
 	}
@@ -728,7 +731,6 @@ static void imap_destroy(struct imap_session *imap)
 	free_if(imap->clientid);
 	free_if(imap->activefolder);
 	free_if(imap->folder);
-	pthread_mutex_destroy(&imap->lock);
 }
 
 /*! \brief Faster than strncat, since we store our position between calls, but maintain its safety */
@@ -3392,6 +3394,11 @@ static int load_virtual_mailbox(struct imap_session *imap, const char *path)
 			return 0;
 		}
 		/* If it's to a different server, tear down the existing connection first. */
+		/* XXX An optimization here is if the remote server supports the UNAUTHENTICATE capability,
+		 * we can reuse the connection instead of tearing it down and building a new one
+		 * (if it's the same server (hostname), but different user/account)
+		 * Unfortunately, no major providers support the UNAUTHENTICATE extension,
+		 * so this wouldn't help much at the moment, but would be nice to some day (assuming support exists). */
 		imap_close_remote_mailbox(imap);
 	}
 
@@ -9294,6 +9301,18 @@ static int imap_process(struct imap_session *imap, char *s)
 			return 0;
 		}
 		return finish_auth(imap, 0);
+	} else if (!strcasecmp(command, "UNAUTHENTICATE")) {
+		if (!bbs_user_is_registered(imap->node->user)) {
+			/* Before authentication check, because we cannot respond with a NO if this fails,
+			 * we can only send an untagged BYE and disconnect.
+			 * This shouldn't really happen anyways.
+			 */
+			imap_send(imap, "BYE Not currently logged in");
+			return -1;
+		}
+		bbs_node_logout(imap->node);
+		imap_destroy(imap);
+		imap_reply(imap, "OK Logged out");
 	/* Past this point, must be logged in. */
 	} else if (!bbs_user_is_registered(imap->node->user)) {
 		bbs_warning("'%s' command may not be used in the unauthenticated state\n", command);
@@ -9755,6 +9774,7 @@ cleanup:
 	}
 #endif
 	imap_destroy(&imap);
+	pthread_mutex_destroy(&imap.lock);
 }
 
 static void *__imap_handler(void *varg)
