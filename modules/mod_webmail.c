@@ -46,6 +46,7 @@ struct imap_client {
 	/* Flags */
 	unsigned int canidle:1;
 	unsigned int idling:1;
+	unsigned int has_move:1;
 	unsigned int has_status_size:1;
 	unsigned int has_list_status:1;
 };
@@ -313,6 +314,7 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client, s
 #endif
 	}
 	SET_BITFIELD(client->canidle, mailimap_has_idle(imap));
+	SET_BITFIELD(client->has_move, mailimap_has_extension(imap, "MOVE"));
 	SET_BITFIELD(client->has_status_size, mailimap_has_extension(imap, "STATUS=SIZE"));
 	SET_BITFIELD(client->has_list_status, mailimap_has_extension(imap, "LIST-STATUS"));
 	*data = imap;
@@ -1876,7 +1878,7 @@ static void handle_store(struct imap_client *client, int sign, json_t *uids, con
  */
 #define handle_store_seen(client, sign, uids) handle_store(client, sign, uids, "\\Seen")
 
-#define handle_store_deleted(client, sign, uids) handle_store(client, sign, uids, "\\Deleted")
+#define handle_store_deleted(client, uids) handle_store(client, +1, uids, "\\Deleted")
 
 static void handle_move(struct imap_client *client, json_t *uids, const char *newmbox)
 {
@@ -1893,15 +1895,25 @@ static void handle_move(struct imap_client *client, json_t *uids, const char *ne
 		return;
 	}
 
-	res = mailimap_uid_move(client->imap, set, newmbox);
-	if (res != MAILIMAP_NO_ERROR) {
-		bbs_warning("UID MOVE failed: %s\n", maildriver_strerror(res));
-	} else {
-		if (client->messages >= json_array_size(uids)) {
-			uint32_t newcount = client->messages - (uint32_t) json_array_size(uids);
-			bbs_debug(5, "Updated folder count from %u to %u\n", client->messages, newcount);
-			client->messages = newcount;
+	if (client->has_move) {
+		res = mailimap_uid_move(client->imap, set, newmbox);
+		if (res != MAILIMAP_NO_ERROR) {
+			bbs_warning("UID MOVE failed: %s\n", maildriver_strerror(res));
 		}
+	} else {
+		/* You're kidding me... right? */
+		res = mailimap_uid_copy(client->imap, set, newmbox);
+		if (res != MAILIMAP_NO_ERROR) {
+			bbs_warning("UID COPY failed: %s\n", maildriver_strerror(res));
+		} else {
+			handle_store_deleted(client, uids);
+			/* XXX Should we do an EXPUNGE automatically? It could be dangerous! */
+		}
+	}
+	if (res == MAILIMAP_NO_ERROR && client->messages >= json_array_size(uids)) {
+		uint32_t newcount = client->messages - (uint32_t) json_array_size(uids);
+		bbs_debug(5, "Updated folder count from %u to %u\n", client->messages, newcount);
+		client->messages = newcount;
 	}
 	mailimap_set_free(set);
 }
@@ -2085,7 +2097,7 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 			handle_store_seen(client, +1, json_object_get(root, "uids"));
 			/* Frontend will handle toggling unread/read visibility and updating folder counts */
 		} else if (!strcmp(command, "DELETE")) {
-			handle_store_deleted(client, +1, json_object_get(root, "uids"));
+			handle_store_deleted(client, json_object_get(root, "uids"));
 			REFRESH_LISTING("DELETE"); /* XXX Frontend can easily handle marking it as Deleted on its end, and should */
 		} else if (!strcmp(command, "EXPUNGE")) {
 			/* XXX We need to get an updated total message count now, as ours is out of date,
