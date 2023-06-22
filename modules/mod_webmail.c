@@ -36,6 +36,7 @@
 struct imap_client {
 	struct mailimap *imap;
 	int imapfd;			/* File descriptor, important for polling an idle connection */
+	int idlestart;		/* Time that IDLE started, to avoid timing out */
 	/* Cache */
 	int page;
 	int pagesize;
@@ -1966,11 +1967,34 @@ static void idle_start(struct ws_session *ws, struct imap_client *client)
 		if (res != MAILIMAP_NO_ERROR) {
 			bbs_warning("Failed to start IDLE: %s\n", maildriver_strerror(res));
 		} else {
+			client->idlestart = (int) time(NULL);
 			client->imapfd = mailimap_idle_get_fd(client->imap);
 			client->idling = 1;
-			websocket_set_custom_poll_fd(ws, client->imapfd, SEC_MS(290)); /* Under 5 minutes (WebSocket timeout) */
+			websocket_set_custom_poll_fd(ws, client->imapfd, SEC_MS(1740)); /* Just under 30 minutes */
 		}
 	}
+}
+
+static void idle_continue(struct ws_session *ws, struct imap_client *client)
+{
+	int left, now = (int) time(NULL);
+
+	bbs_assert(client->idling);
+	bbs_assert(client->imapfd != -1);
+
+	/* If the IMAP server sent an "* OK Still here",
+	 * then we're just going to continue idling.
+	 * However, there are 2 important things to keep in mind here:
+	 *
+	 * In total, the IDLE should end before 30 minutes from when we started idling.
+	 * If we just continue without updating any state, it'd be 30 minutes
+	 * without hearing anything from the server, which is NOT the same thing,
+	 * and will possibly lead to a connection timeout in the case that the
+	 * server keeps sending us "* OK Still here" and nothing else within that 30 minutes.
+	 */
+
+	left = now - client->idlestart;
+	websocket_set_custom_poll_fd(ws, client->imapfd, SEC_MS(left));
 }
 
 static int on_poll_activity(struct ws_session *ws, void *data)
@@ -1996,7 +2020,12 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	if (STARTS_WITH(idledata, "* ")) {
 		char *tmp = idledata + 2;
 		if (!strlen_zero(tmp)) {
-			int seqno = atoi(tmp); /* It'll stop where it needs to */
+			int seqno;
+			if (STARTS_WITH(idledata, "OK Still here")) {
+				idle_continue(ws, client);
+				return 0; /* Ignore */
+			}
+			seqno = atoi(tmp); /* It'll stop where it needs to */
 			tmp = strchr(tmp, ' '); /* Skip the sequence number */
 			if (!strlen_zero(tmp)) {
 				tmp++;
@@ -2019,6 +2048,7 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	}
 	if (!reason) {
 		bbs_warning("Unhandled IDLE response: %s%s", idledata, ends_in_crlf ? "" : "\n");
+		idle_continue(ws, client);
 		return 0; /* No need to start the IDLE again, we never stopped it */
 	}
 	idle_stop(ws, client);

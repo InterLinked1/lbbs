@@ -182,15 +182,6 @@ void websocket_attach_user_data(struct ws_session *ws, void *data)
 void websocket_set_custom_poll_fd(struct ws_session *ws, int fd, int pollms)
 {
 	ws->pollfd = fd;
-	/* After 5 minutes without any ping pong, WebSocket clients will close the connection.
-	 * (At least, Chromium will.)
-	 * So ping at least as frequently as just under every 5 minutes. */
-	if (pollms > MAX_WEBSOCKET_POLL_MS - SEC_MS(5) || pollms < 0) {
-		if (pollms > MAX_WEBSOCKET_POLL_MS) {
-			bbs_warning("Poll timeout truncated to %d\n", MAX_WEBSOCKET_POLL_MS - SEC_MS(5));
-		}
-		pollms = MAX_WEBSOCKET_POLL_MS - SEC_MS(5);
-	}
 	ws->pollms = pollms;
 }
 
@@ -773,6 +764,8 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 	int want_ping = 0;
 	char ping_data[15];
 	struct pollfd pfds[2];
+	int lastping, elapsed_ms, max_ms, pollms;
+	int app_ms_elapsed = 0;
 
 	/* no memset needed, directly initialize all values */
 	ws.node = node;
@@ -833,11 +826,44 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 	pfds[1].fd = -1;
 	pfds[1].events = POLLIN;
 
+	lastping = (int) time(NULL);
+
 	for (;;) {
+		int this_poll_start;
 		nfds_t numfds = ws.pollfd == -1 ? 1 : 2;
 		pfds[1].fd = ws.pollfd;
 		pfds[0].revents = pfds[1].revents = 0;
-		res = poll(pfds, numfds, ws.pollms);
+
+		/* We need to ping the client at least every MAX_WEBSOCKET_POLL_MS. */
+		this_poll_start = (int) time(NULL);
+		elapsed_ms = this_poll_start - lastping;
+		max_ms = MAX_WEBSOCKET_POLL_MS - elapsed_ms;
+		if (ws.pollms >= 0) {
+			pollms = ws.pollms - app_ms_elapsed;
+			if (pollms <= 0) {
+				/* Shouldn't happen */
+				bbs_warning("pollms now %d? (%d - %d)\n", pollms, ws.pollms, app_ms_elapsed);
+			}
+		} else {
+			pollms = -1;
+		}
+		/* After 5 minutes without any ping pong, WebSocket clients will close the connection.
+		 * (At least, Chromium will.)
+		 * So ping at least as frequently as just under every 5 minutes.
+		 * If the application's poll interval is longer than the permitted poll interval for WebSocket ping,
+		 * (or infinite, i.e. -1), use the shorter interval. */
+		if (pollms >= max_ms || pollms < 0) {
+#ifdef DEBUG_POLL
+			bbs_debug(9, "Actually polling for %d ms instead of %d ms\n", max_ms, pollms);
+#endif
+			pollms = max_ms;
+		} else {
+#ifdef DEBUG_POLL
+			bbs_debug(10, "Actually polling for %d ms\n", pollms);
+#endif
+		}
+
+		res = poll(pfds, numfds, pollms);
 		if (res < 0) {
 			if (errno = EINTR) {
 				continue;
@@ -854,7 +880,14 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 				} /* else, if client already closed, don't try writing any further */
 				break;
 			} else {
-				struct wss_frame *frame = wss_client_frame(client);
+				struct wss_frame *frame;
+
+				/* Since the poll was interrupted, calculate how much time elapsed. */
+				int now = (int) time(NULL);
+				int elapsed = now - this_poll_start;
+				app_ms_elapsed += SEC_MS(elapsed);
+
+				frame = wss_client_frame(client);
 				bbs_debug(1, "WebSocket '%s' frame received\n", wss_frame_name(frame));
 				switch (wss_frame_opcode(frame)) {
 					case WS_OPCODE_TEXT:
@@ -862,6 +895,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 							wss_frame_destroy(frame);
 							goto done; /* Can't break out of loop from within switch */
 						}
+						app_ms_elapsed = 0;
 						break;
 					case WS_OPCODE_BINARY:
 						/* Do something... */
@@ -892,26 +926,55 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 			}
 		} else if (pfds[1].revents) {
 			/* Activity on the application's file descriptor of interest. Let it know. */
+			app_ms_elapsed = 0;
 			if (route->callbacks->on_poll_activity) {
 				if (route->callbacks->on_poll_activity(&ws, ws.data)) {
 					break;
 				}
 			}
 		} else {
-			int framelen;
+			int framelen, now;
 			/* Send a ping if we haven't heard anything in a while */
 			if (++want_ping > 1) {
 				/* Already had a ping outstanding that wasn't ponged. Disconnect. */
 				bbs_debug(3, "Still haven't received ping reply, disconnecting client\n");
 				break;
 			}
+
+			/* Keep track of how much of the application's poll interval has actually elapsed. */
+			now = (int) time(NULL);
+			if (ws.pollms >= 0) {
+				app_ms_elapsed += pollms;
+				/* This is obviously not very granular at the ms level, since we're doing math with seconds.
+				 * This is fine for the applications using this module at the moment,
+				 * but it begs the question why we expose ms-level granularity if it'll only be accurate at the level of seconds.
+				 * Mostly because people are used to the poll interface of ms, not s,
+				 * but I haven't convinced myself that's not just an excuse :)
+				 */
+#ifdef DEBUG_POLL
+				bbs_debug(9, "%d ms have now elapsed into poll (%d ms just now)\n", app_ms_elapsed, pollms);
+#endif
+			}
+
 			/* Use current timestamp as our ping data */
-			framelen = snprintf(ping_data, sizeof(ping_data), "%ld", time(NULL));
+			lastping = now;
+			framelen = snprintf(ping_data, sizeof(ping_data), "%d", now);
 			wss_write(client, WS_OPCODE_PING, ping_data, (size_t) framelen);
-			/* Nothing happened. Let the application know. */
-			if (route->callbacks->on_poll_timeout) {
-				if (route->callbacks->on_poll_timeout(&ws, ws.data)) {
-					break;
+
+			/* Just because poll timed out at the WebSocket protocol level,
+			 * doesn't mean it did from an application perspective,
+			 * since we may use a shorter poll interval than the application requested.
+			 * If we did, then pollms will be shorter than ws.pollms.
+			 * If they're the same, then this is an actual expiration to forward to the application.
+			 * Note this also handles the -1 case (infinite timeout), since, by definition,
+			 * a timeout cannot occur if the timeout is infinite. */
+			if (ws.pollms >= 0 && app_ms_elapsed >= ws.pollms) {
+				/* Nothing happened. Let the application know. */
+				app_ms_elapsed = 0;
+				if (route->callbacks->on_poll_timeout) {
+					if (route->callbacks->on_poll_timeout(&ws, ws.data)) {
+						break;
+					}
 				}
 			}
 		}
