@@ -1975,9 +1975,9 @@ static void idle_start(struct ws_session *ws, struct imap_client *client)
 	}
 }
 
-static void idle_continue(struct ws_session *ws, struct imap_client *client)
+static void idle_continue(struct imap_client *client)
 {
-	int left, now = (int) time(NULL);
+	int left, elapsed, now = (int) time(NULL);
 
 	bbs_assert(client->idling);
 	bbs_assert(client->imapfd != -1);
@@ -1993,8 +1993,9 @@ static void idle_continue(struct ws_session *ws, struct imap_client *client)
 	 * server keeps sending us "* OK Still here" and nothing else within that 30 minutes.
 	 */
 
-	left = now - client->idlestart;
-	websocket_set_custom_poll_fd(ws, client->imapfd, SEC_MS(left));
+	elapsed = now - client->idlestart;
+	left = 1740 - elapsed; /* Don't do math inside the SEC_MS macro. It won't work properly. */
+	bbs_debug(9, "IDLE time remaining: %d s (%d s elapsed)\n", left, elapsed);
 }
 
 static int on_poll_activity(struct ws_session *ws, void *data)
@@ -2021,8 +2022,8 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 		char *tmp = idledata + 2;
 		if (!strlen_zero(tmp)) {
 			int seqno;
-			if (STARTS_WITH(idledata, "OK Still here")) {
-				idle_continue(ws, client);
+			if (STARTS_WITH(tmp, "OK Still here")) {
+				idle_continue(client);
 				return 0; /* Ignore */
 			}
 			seqno = atoi(tmp); /* It'll stop where it needs to */
@@ -2048,7 +2049,7 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	}
 	if (!reason) {
 		bbs_warning("Unhandled IDLE response: %s%s", idledata, ends_in_crlf ? "" : "\n");
-		idle_continue(ws, client);
+		idle_continue(client);
 		return 0; /* No need to start the IDLE again, we never stopped it */
 	}
 	idle_stop(ws, client);
