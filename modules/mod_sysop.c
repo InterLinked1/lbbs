@@ -313,6 +313,18 @@ static void rsysop_cleanup(void *varg)
 	free(fds);
 }
 
+static void print_time(int fdout)
+{
+	char timebuf[40];
+	time_t now;
+	struct tm nowdate;
+
+	now = (int) time(NULL);
+	localtime_r(&now, &nowdate);
+	strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M:%S %P %Z", &nowdate);
+	bbs_dprintf(fdout, "%s\n", timebuf);
+}
+
 static void *sysop_handler(void *varg)
 {
 	char buf[1];
@@ -375,6 +387,7 @@ static void *sysop_handler(void *varg)
 					bbs_dprintf(sysopfdout, "n - List active nodes\n");
 					bbs_dprintf(sysopfdout, "q - Shut down the BBS (with confirmation)\n");
 					bbs_dprintf(sysopfdout, "s - Show BBS system status\n");
+					bbs_dprintf(sysopfdout, "t - Show BBS system time\n");
 					bbs_dprintf(sysopfdout, "u - Show list of users\n");
 					bbs_dprintf(sysopfdout, "UP -> Previous command\n");
 					bbs_dprintf(sysopfdout, "DN -> More recent command\n");
@@ -425,6 +438,9 @@ static void *sysop_handler(void *varg)
 					break;
 				case 's':
 					bbs_view_settings(sysopfdout);
+					break;
+				case 't':
+					print_time(sysopfdout);
 					break;
 				case 'u':
 					bbs_users_dump(sysopfdout, 10);
