@@ -270,6 +270,8 @@ static void ssl_cleanup_fds(void)
 
 static pthread_t ssl_thread;
 
+/*! \note It's possible it might not be in the list, because the owner thread has already called ssl_unregister_fd,
+ * in which case there's no need to do anything. */
 #define MARK_DEAD(ssl) \
 	RWLIST_TRAVERSE(&sslfds, sfd, entry) { \
 		if (sfd->ssl == ssl) { \
@@ -277,9 +279,6 @@ static pthread_t ssl_thread;
 			break; \
 		} \
 	} \
-	if (!sfd) { \
-		bbs_error("Couldn't find SSL %p in list?\n", ssl); \
-	}
 
 /*! \brief Single thread to handle I/O for all TLS connections (which are mainly buffered in chunks anyways) */
 static void *ssl_io_thread(void *unused)
