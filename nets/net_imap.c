@@ -350,6 +350,8 @@ struct imap_session {
 	size_t virtprefixlen;		/* Length of virtprefix */
 	int virtcapabilities;		/* Capabilities of remote IMAP server */
 	char virtdelimiter;			/* Hierarchy delimiter used by remote server */
+	char *virtlist;				/* Result of LIST-STATUS command on remote IMAP server */
+	int virtlisttime;			/* Time that LIST-STATUS command was run */
 	struct stringlist remotemailboxes;	/* List of remote mailboxes */
 	unsigned int uidvalidity;
 	unsigned int uidnext;
@@ -725,6 +727,7 @@ static void imap_destroy(struct imap_session *imap)
 		mailbox_unwatch(imap->mbox); /* We previously started watching it, so stop watching it now. */
 		imap->mbox = NULL;
 	}
+	free_if(imap->virtlist);
 	free_if(imap->savedsearch);
 	/* Do not free tag, since it's stack allocated */
 	free_if(imap->savedtag);
@@ -2327,6 +2330,73 @@ static void status_size_cache_update(struct imap_session *imap, const char *remo
 	fclose(fp);
 }
 
+static int cache_remote_list_status(struct imap_session *imap, const char *rtag, size_t taglen)
+{
+	int res;
+	struct dyn_str dynstr;
+	int i;
+	struct bbs_tcp_client *client = &imap->client;
+	char *buf = client->rldata.buf;
+
+	free_if(imap->virtlist);
+	memset(&dynstr, 0, sizeof(dynstr));
+
+	imap->virtlisttime = (int) time(NULL);
+
+	for (i = 0; ; i++) {
+		res = bbs_readline(client->rfd, &client->rldata, "\r\n", 10000);
+		if (res <= 0) {
+			bbs_warning("IMAP timeout from LIST-STATUS - remote server issue?\n");
+			free_if(dynstr.buf);
+			return -1;
+		}
+		if (!strncmp(buf, rtag, taglen)) {
+			bbs_debug(3, "End of LIST-STATUS response: %s\n", buf);
+			break;
+		}
+		/* Only save STATUS lines */
+		if (STARTS_WITH(buf, "* LIST")) {
+			continue;
+		} else if (!STARTS_WITH(buf, "* STATUS")) {
+			bbs_warning("Unexpected LIST-STATUS response: %s\n", buf);
+			continue;
+		}
+		if (i) {
+			dyn_str_append(&dynstr, "\n", STRLEN("\n"));
+		}
+		dyn_str_append(&dynstr, client->rldata.buf, (size_t) res);
+	}
+	imap->virtlist = dynstr.buf;
+	return 0;
+}
+
+static int remote_status_cached(struct imap_session *imap, const char *mb, char *buf, size_t len)
+{
+	char *tmp, *end;
+	size_t statuslen;
+	char findstr[128];
+
+	snprintf(findstr, sizeof(findstr), "* STATUS \"%s\"", mb);
+	tmp = strstr(imap->virtlist, findstr);
+	if (!tmp && !strchr(mb, ' ')) { /* Retry, without quotes, if the mailbox name has no spaces */
+		snprintf(findstr, sizeof(findstr), "* STATUS \"%s\"", mb);
+		tmp = strstr(imap->virtlist, findstr);
+	}
+	if (!tmp) {
+		bbs_warning("Cached LIST-STATUS response missing response for '%s'\n", mb);
+		return -1;
+	}
+	end = strchr(tmp, '\n');
+	if (end) {
+		statuslen = (size_t) (end - tmp);
+	} else {
+		statuslen = strlen(tmp);
+	}
+	safe_strncpy(buf, tmp, MIN(len, statuslen + 1));
+	bbs_debug(3, "Cached LIST-STATUS for '%s': %s\n", mb, buf);
+	return 0;
+}
+
 static int remote_status(struct imap_session *imap, const char *remotename, const char *items, int size)
 {
 	char buf[1024];
@@ -2338,6 +2408,7 @@ static int remote_status(struct imap_session *imap, const char *remotename, cons
 	char *tmp;
 	struct bbs_tcp_client *client = &imap->client;
 	const char *add1, *add2, *add3;
+	int issue_status = 1;
 
 	client->rldata.buf = buf;
 	client->rldata.len = sizeof(buf);
@@ -2365,32 +2436,52 @@ static int remote_status(struct imap_session *imap, const char *remotename, cons
 	 * Since we're not pipelining these that's fine (and even if we were, it wouldn't be ambiguous
 	 * since the response contains the mailbox name), but this is certainly not a "proper" thing to do... */
 	taglen = (size_t) snprintf(rtag, sizeof(rtag), "A.%s.1 OK", imap->tag);
-	len = snprintf(buf, sizeof(buf), "A.%s.1 STATUS \"%s\" (%s%s%s%s)\r\n", imap->tag, remotename, items, add1, add2, add3);
-	imap_debug(3, "=> %.*s", len, buf);
-	bbs_write(client->wfd, buf, (size_t) len);
-	res = bbs_readline(client->rfd, &client->rldata, "\r\n", 5000);
-	if (res <= 0) {
-		return -1;
+
+	/* If the remote server supports LIST-STATUS, do that (once), rather than doing a STATUS on each mailbox there
+	 * Cache the results locally and reuse that for the same virtual mailbox. */
+	if (imap->virtlist && imap->virtlisttime < (int) time(NULL) - 10) {
+		/* If the cached LIST-STATUS response is more than 10 seconds old, consider it stale.
+		 * The use case here is for replying to a LIST-STATUS query or a client querying STATUS
+		 * of every mailbox in succession, if these are spread out the statuses could have changed since. */
+		bbs_debug(8, "Cached LIST-STATUS response is stale, purging\n");
+		free_if(imap->virtlist);
 	}
-	if (!STARTS_WITH(buf, "* STATUS ")) {
-		bbs_warning("Unexpected response: %s\n", buf);
-		return -1;
+	if (!imap->virtlist && imap->virtcapabilities & IMAP_CAPABILITY_LIST_STATUS) { /* Try LIST-STATUS if it's the first mailbox */
+		len = snprintf(buf, sizeof(buf), "A.%s.1 LIST \"\" \"*\" RETURN (STATUS (%s%s%s%s))\r\n", imap->tag, items, add1, add2, add3);
+		imap_debug(3, "=> %.*s", len, buf);
+		bbs_write(client->wfd, buf, (size_t) len);
+		cache_remote_list_status(imap, rtag, taglen);
 	}
-	safe_strncpy(remote_status_resp, buf, sizeof(remote_status_resp)); /* Save the STATUS response from the server */
-	res = bbs_readline(client->rfd, &client->rldata, "\r\n", 5000);
-	if (res <= 0) {
-		return -1;
-	}
-	if (strncasecmp(buf, rtag, taglen)) {
-		bbs_warning("Unexpected response: %s\n", buf);
-		return -1;
+	if (imap->virtlist) {
+		if (!remote_status_cached(imap, remotename, remote_status_resp, sizeof(remote_status_resp))) {
+			bbs_debug(8, "Reusing cached LIST-STATUS response for '%s'\n", remotename);
+			issue_status = 0;
+		}
 	}
 
-	/*! \todo If something higher up is doing a LIST-STATUS, and the remote server supports LIST-STATUS,
-	 * do that (once), rather than doing a STATUS on each mailbox there
-	 * What we can do is keep a local cache: issue LIST-STATUS once, store all the results,
-	 * and then when we enter this function for a specific mailbox, before issuing a STATUS query, check that cache first.
-	 */
+	if (issue_status) {
+		/* XXX Same tag is reused here, so we expect the same prefix (rtag) */
+		len = snprintf(buf, sizeof(buf), "A.%s.1 STATUS \"%s\" (%s%s%s%s)\r\n", imap->tag, remotename, items, add1, add2, add3);
+		imap_debug(3, "=> %.*s", len, buf);
+		bbs_write(client->wfd, buf, (size_t) len);
+		res = bbs_readline(client->rfd, &client->rldata, "\r\n", 5000);
+		if (res <= 0) {
+			return -1;
+		}
+		if (!STARTS_WITH(buf, "* STATUS ")) {
+			bbs_warning("Unexpected response: %s\n", buf);
+			return -1;
+		}
+		safe_strncpy(remote_status_resp, buf, sizeof(remote_status_resp)); /* Save the STATUS response from the server */
+		res = bbs_readline(client->rfd, &client->rldata, "\r\n", 5000);
+		if (res <= 0) {
+			return -1;
+		}
+		if (strncasecmp(buf, rtag, taglen)) {
+			bbs_warning("Unexpected response: %s (doesn't start with %.*s)\n", buf, (int) taglen, rtag);
+			return -1;
+		}
+	}
 
 	/*
 	 * The other optimization is caching the SIZE for servers that don't support STATUS=SIZE.
@@ -3401,6 +3492,8 @@ static int load_virtual_mailbox(struct imap_session *imap, const char *path)
 		 * so this wouldn't help much at the moment, but would be nice to some day (assuming support exists). */
 		imap_close_remote_mailbox(imap);
 	}
+
+	free_if(imap->virtlist); /* Any cached LIST-STATUS response is no longer relevant */
 
 	snprintf(virtcachefile, sizeof(virtcachefile), "%s/.imapremote", mailbox_maildir(imap->mymbox));
 	fp = fopen(virtcachefile, "r");

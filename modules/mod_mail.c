@@ -1519,15 +1519,10 @@ int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid)
 	return 0;
 }
 
-int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct bbs_user *user, int *capsptr)
+static int imap_client_capability(struct bbs_tcp_client *client, int *capsptr)
 {
 	char *cur, *capstring;
-	int res, caps = 0;
-	char *encoded = NULL;
-
-	IMAP_CLIENT_EXPECT(client, "* OK");
-	IMAP_CLIENT_SEND(client, "a0 CAPABILITY");
-	IMAP_CLIENT_EXPECT(client, "* CAPABILITY ");
+	int caps = 0;
 
 #define PARSE_CAPABILITY(name, flag) \
 	else if (!strcmp(cur, name)) { \
@@ -1547,18 +1542,25 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 		PARSE_CAPABILITY("QRESYNC", IMAP_CAPABILITY_QRESYNC)
 		PARSE_CAPABILITY("SASL-IR", IMAP_CAPABILITY_SASL_IR)
 		PARSE_CAPABILITY("LITERAL+", IMAP_CAPABILITY_LITERAL_PLUS)
+		PARSE_CAPABILITY("LITERAL-", IMAP_CAPABILITY_LITERAL_MINUS)
 		PARSE_CAPABILITY("AUTH=PLAIN", IMAP_CAPABILITY_AUTH_PLAIN)
 		PARSE_CAPABILITY("AUTH=XOAUTH2", IMAP_CAPABILITY_AUTH_XOAUTH2)
 		PARSE_CAPABILITY("ACL", IMAP_CAPABILITY_ACL)
 		PARSE_CAPABILITY("QUOTA", IMAP_CAPABILITY_QUOTA)
+		PARSE_CAPABILITY("LIST-EXTENDED", IMAP_CAPABILITY_LIST_EXTENDED)
+		PARSE_CAPABILITY("LIST-STATUS", IMAP_CAPABILITY_LIST_STATUS)
 		PARSE_CAPABILITY("STATUS=SIZE", IMAP_CAPABILITY_STATUS_SIZE)
 		PARSE_CAPABILITY("UNSELECT", IMAP_CAPABILITY_UNSELECT)
 		PARSE_CAPABILITY("BINARY", IMAP_CAPABILITY_BINARY)
-		else if (STARTS_WITH(cur, "X") || STARTS_WITH(cur, "AUTH=") || !strcmp(cur, "CHILDREN") || !strcmp(cur, "UNSELECT") || !strcmp(cur, "NAMESPACE") || !strcmp(cur, "ID") || !strcmp(cur, "SORT") || !strcmp(cur, "MOVE") || !strcmp(cur, "UIDPLUS") || !strcmp(cur, "XLIST") || !strcmp(cur, "I18NLEVEL=1") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "RIGHTS=") || !strcmp(cur, "WITHIN") || !strcmp(cur, "ESEARCH") || !strcmp(cur, "ESORT") || !strcmp(cur, "SEARCHRES") || !strcmp(cur, "COMPRESSED=DEFLATE")) {
+		else if (STARTS_WITH(cur, "X") || STARTS_WITH(cur, "AUTH=") || !strcmp(cur, "SPECIAL-USE") || !strcmp(cur, "CHILDREN") || !strcmp(cur, "UNSELECT") || !strcmp(cur, "NAMESPACE") || !strcmp(cur, "ID") || !strcmp(cur, "SORT") || !strcmp(cur, "MOVE") || !strcmp(cur, "UIDPLUS") || !strcmp(cur, "XLIST") || !strcmp(cur, "I18NLEVEL=1") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "RIGHTS=") || !strcmp(cur, "WITHIN") || !strcmp(cur, "ESEARCH") || !strcmp(cur, "ESORT") || !strcmp(cur, "SEARCHRES") || !strcmp(cur, "COMPRESS=DEFLATE") || !strcmp(cur, "COMPRESS=DEFLATE")  || !strcmp(cur, "UTF8=ACCEPT")) {
 			/* Don't care */
 		} else if (!strcmp(cur, "LOGINDISABLED")) { /* RFC 3501 7.2.1 */
-			bbs_warning("IMAP server %s does not support login\n", url->host);
+			/* Could happen if we connect to a plain text port and STARTTLS is required.
+			 * Here we only support implicit TLS */
+			bbs_warning("IMAP server does not support login\n");
 			return -1;
+		} else if (STARTS_WITH(cur, "APPENDLIMIT=")) {
+			/*! \todo This should be stored somewhere */
 		} else {
 			bbs_warning("Unknown IMAP capability: %s\n", cur);
 		}
@@ -1566,8 +1568,25 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 
 #undef PARSE_CAPABILITY
 
+	*capsptr = caps;
+	return 0;
+}
+
+int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct bbs_user *user, int *capsptr)
+{
+	int res, caps;
+	char *encoded = NULL;
+
+	IMAP_CLIENT_EXPECT(client, "* OK");
+	IMAP_CLIENT_SEND(client, "a0 CAPABILITY");
+	IMAP_CLIENT_EXPECT(client, "* CAPABILITY ");
+
+	if (imap_client_capability(client, capsptr)) {
+		return -1;
+	}
 	IMAP_CLIENT_EXPECT(client, "a0 OK");
 
+	caps = *capsptr;
 	if (STARTS_WITH(url->pass, "oauth:")) { /* OAuth authentication */
 		char token[512];
 		char decoded[568];
@@ -1617,6 +1636,9 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 		return -1;
 	}
 	if (STARTS_WITH(client->buf, "* CAPABILITY")) {
+		if (imap_client_capability(client, capsptr)) {
+			return -1;
+		}
 		IMAP_CLIENT_EXPECT(client, "a1 OK");
 	} else {
 		if (!strstr(client->buf, "a1 OK")) {
@@ -1628,9 +1650,15 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 			bbs_warning("Login failed, got '%s'\n", client->buf);
 			return -1;
 		}
+		/* Request capabilities again, in case we have more now, now that we're logged in */
+		IMAP_CLIENT_SEND(client, "a2 CAPABILITY");
+		IMAP_CLIENT_EXPECT(client, "* CAPABILITY ");
+		if (imap_client_capability(client, capsptr)) {
+			return -1;
+		}
+		IMAP_CLIENT_EXPECT(client, "a2 OK");
 	}
 
-	*capsptr = caps;
 	return 0;
 
 cleanup:
