@@ -137,6 +137,7 @@ static int imaps_port = DEFAULT_IMAPS_PORT;
 static int imap_enabled = 0, imaps_enabled = 1;
 
 static int allow_idle = 1;
+static int idle_notify_interval = 600; /* Every 10 minutes, by default */
 
 /*! \brief Allow storage of messages up to 5MB. User can decide if that's really a good use of mail quota or not... */
 #define MAX_APPEND_SIZE 5000000
@@ -9209,23 +9210,24 @@ cleanup:
 #define FORWARD_VIRT_MBOX_MODIFIED(count) FORWARD_VIRT_MBOX_MODIFIED_PREFIX(count, "")
 #define FORWARD_VIRT_MBOX_MODIFIED_UID(count) FORWARD_VIRT_MBOX_MODIFIED_PREFIX(count, "UID ")
 
+static int idle_stop(struct imap_session *imap)
+{
+	imap->idle = 0;
+	/* IDLE for virtual mailboxes (proxied) is handled in the IDLE command itself */
+	_imap_reply(imap, "%s OK IDLE terminated\r\n", imap->savedtag); /* Use tag from IDLE request */
+	free_if(imap->savedtag);
+	return 0;
+}
+
 static int imap_process(struct imap_session *imap, char *s)
 {
 	int res, replacecount;
 	char *command;
 
 	if (imap->idle || (imap->alerted == 1 && !strcasecmp(s, "DONE"))) {
-		/* IDLE for virtual mailboxes (proxied) is handled in the IDLE command itself */
 		/* Thunderbird clients will still send "DONE" if we send a tagged reply during the IDLE,
-		 * but Microsoft Outlook will not, so handle both cases, i.e. tolerate the redundant DONE.
-		 */
-		if (strlen_zero(s) || strcasecmp(s, "DONE")) { /* Command should be "DONE" */
-			bbs_warning("Improper IDLE termination (received '%s')\n", S_IF(s));
-		}
-		imap->idle = 0;
-		_imap_reply(imap, "%s OK IDLE terminated\r\n", imap->savedtag); /* Use tag from IDLE request */
-		free_if(imap->savedtag);
-		return 0;
+		 * but Microsoft Outlook will not, so handle both cases, i.e. tolerate the redundant DONE. */
+		return idle_stop(imap);
 	} else if (imap->alerted == 1) {
 		imap->alerted = 2;
 	}
@@ -9555,6 +9557,8 @@ static int imap_process(struct imap_session *imap, char *s)
 		IMAP_NO_READONLY(imap);
 		handle_append(imap, s);
 	} else if (allow_idle && !strcasecmp(command, "IDLE")) {
+#define MAX_IDLE_MS SEC_MS(1800) /* 30 minutes */
+		int idleleft = MAX_IDLE_MS;
 		if (imap->virtmbox) {
 			/* IDLE for up to (just under) 30 minutes.
 			 * Note that client_command_passthru will restart the timer each time there is activity,
@@ -9572,14 +9576,33 @@ static int imap_process(struct imap_session *imap, char *s)
 		REQUIRE_SELECTED(imap);
 		/* RFC 2177 IDLE */
 		_imap_reply(imap, "+ idling\r\n");
-		REPLACE(imap->savedtag, imap->tag);
-		imap->idle = 1;
+		REPLACE(imap->savedtag, imap->tag); /* We still save the tag to deal with Thunderbird bug in the other path to idle_stop */
+		imap->idle = 1; /* This is used by other threads that may send the client data while it's idling. */
 		/* Note that IDLE only applies to the currently selected mailbox (folder).
 		 * Thus, in traversing all the IMAP sessions, simply sharing the same mbox isn't enough.
 		 * imap->dir also needs to match (same currently selected folder).
 		 *
-		 * One simplification this implementation makes is that
+		 * XXX One simplification this implementation makes is that
 		 * IDLE only works for the INBOX, since that's probably the only folder most people care about much. */
+		for (;;) {
+			int pollms = MIN(SEC_MS(idle_notify_interval), idleleft);
+			res = bbs_poll(imap->rfd, pollms);
+			if (res < 0) {
+				imap->idle = 0;
+				return -1; /* Client disconnected */
+			} else if (res > 0) {
+				break; /* Client terminated the idle. Stop idling and return to read the next command. */
+			} else {
+				/* Nothing yet. Send an "IDLE ping" to check in... */
+				imap_send(imap, "OK Still here");
+				idleleft -= pollms;
+				if (idleleft <= 0) {
+					bbs_warning("IDLE expired without any activity\n");
+					return -1; /* Disconnect the client now */
+				}
+			}
+		}
+		return 0;
 	} else if (!strcasecmp(command, "SETQUOTA")) {
 		/* Requires QUOTASET, which we don't advertise in our capabilities, so clients shouldn't call this anyways... */
 		imap_reply(imap, "NO [NOPERM] Permission Denied"); /* Users cannot adjust their own quotas, nice try... */
@@ -9895,6 +9918,7 @@ static int load_config(void)
 	}
 
 	bbs_config_val_set_true(cfg, "general", "allowidle", &allow_idle);
+	bbs_config_val_set_true(cfg, "general", "idlenotifyinterval", &idle_notify_interval);
 
 	/* IMAP */
 	bbs_config_val_set_true(cfg, "imap", "enabled", &imap_enabled);
