@@ -164,9 +164,10 @@ int bbs_term_makeraw(int fd)
 {
 	struct termios t;
 
-	bbs_assert(isatty(fd));
-
-	if (tcgetattr(fd, &t) == -1) {
+	if (!isatty(fd)) {
+		bbs_error("File descriptor %d is not a TTY\n", fd);
+		return -1;
+	} else if (tcgetattr(fd, &t) == -1) {
 		bbs_error("tcgetattr: %s\n", strerror(errno));
 		return -1;
 	}
@@ -189,9 +190,10 @@ int tty_set_line_discipline(int fd)
 {
 	struct termios t;
 
-	bbs_assert(isatty(fd));
-
-	if (tcgetattr(fd, &t) == -1) {
+	if (!isatty(fd)) {
+		bbs_error("File descriptor %d is not a TTY\n", fd);
+		return -1;
+	} else if (tcgetattr(fd, &t) == -1) {
 		bbs_error("tcgetattr: %s\n", strerror(errno));
 		return -1;
 	}
