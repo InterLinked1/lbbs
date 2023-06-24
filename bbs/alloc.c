@@ -119,7 +119,7 @@ void *__bbs_memdup(void *ptr, size_t size, const char *file, int line, const cha
 	newptr = malloc(size + 1); /* +1 in case it's a string */
 	LOG_ALLOC_FAILURE(newptr, realloc);
 	if (ALLOC_SUCCESS(newptr)) {
-		char *end = ptr + size - 1;
+		char *end = newptr + size;
 		memcpy(newptr, ptr, size);
 		*end = '\0'; /* Null terminate, in case it's a string */
 	}
