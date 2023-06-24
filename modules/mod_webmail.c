@@ -1941,6 +1941,33 @@ static void handle_copy(struct imap_client *client, json_t *uids, const char *ne
 	mailimap_set_free(set);
 }
 
+static void handle_append(struct imap_client *client, const char *message, size_t size, const char *date, const char *flags)
+{
+	int res;
+	size_t realsize;
+
+	if (strlen_zero(message)) {
+		bbs_warning("Empty APPEND message?\n");
+		return;
+	}
+	realsize = strlen(message);
+	if (realsize != size) { /* Some people say trust but verify. Here, we don't trust and verify. */
+		bbs_warning("Purported size is %lu, but actual size is %lu?\n", size, realsize);
+		size = realsize;
+	}
+
+	if (date || flags) {
+		bbs_error("APPEND with size/date not currently supported\n");
+		/*! \todo Support flags/date */
+	}
+	res = mailimap_append_simple(client->imap, client->mailbox, message, size);
+	if (res != MAILIMAP_NO_ERROR) {
+		bbs_warning("APPEND failed: %s\n", maildriver_strerror(res));
+	} else {
+		client->messages++; /* Manually update count */
+	}
+}
+
 #define REFRESH_LISTING(reason) handle_fetchlist(ws, client, reason, client->page, client->pagesize)
 
 static void idle_stop(struct ws_session *ws, struct imap_client *client)
@@ -2093,6 +2120,11 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 	int res = -1;
 	struct imap_client *client = data;
 
+	if (strlen_zero(buf)) {
+		bbs_warning("Empty message received from client?\n");
+		return -1;
+	}
+
 	idle_stop(ws, client);
 
 	root = json_loads(buf, 0, &error);
@@ -2154,6 +2186,9 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 		} else if (!strcmp(command, "COPY")) {
 			handle_copy(client, json_object_get(root, "uids"), json_object_string_value(root, "folder"));
 			REFRESH_LISTING("COPY");
+		} else if (!strcmp(command, "APPEND")) {
+			handle_append(client, json_object_string_value(root, "message"), (size_t) json_object_number_value(root, "size"), json_object_string_value(root, "date"), json_object_string_value(root, "flags"));
+			REFRESH_LISTING("APPEND");
 		} else {
 			bbs_warning("Command unknown: %s\n", command);
 		}
