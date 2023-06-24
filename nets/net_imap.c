@@ -7856,8 +7856,10 @@ static int populate_thread_data(struct imap_session *imap, struct thread_message
 					int len = bbs_term_line(linebuf);
 					dyn_str_append(&dynstr, linebuf, (size_t) len);
 					continue;
+				} else {
+					in_ref = 0;
+					gotinfo++;
 				}
-				gotinfo++;
 			}
 			if (gotinfo == 5 || !strcmp(linebuf, "\r\n")) {
 				break; /* End of headers, or got everything we need already, whichever comes first. */
@@ -8034,7 +8036,9 @@ static void free_thread_msgids(struct thread_messageid *msgids)
 #ifdef DEBUG_THREADING
 static char spaces[] = "                                                                        ";
 
-static int __dump_thread(struct thread_messageid *msgids, int level)
+#define MAX_THREAD_DEPTH 128
+
+static int __dump_thread(struct thread_messageid *msgids, int level, unsigned int maxcount)
 {
 	struct thread_messageid *t;
 	int c = 0;
@@ -8052,15 +8056,25 @@ static int __dump_thread(struct thread_messageid *msgids, int level)
 	while (t) {
 		static char buf[100];
 		char date[21] = "";
+		const char *msgid = bbs_str_isprint(t->msgid) ? t->msgid : "(unprintable)";
 		if (t->sent) {
 			strftime(date, sizeof(date), "%d %b %Y %H:%M:%S", t->sent);
 		}
-		snprintf(buf, sizeof(buf), "%.*s%s %s", level, spaces, level ? "|-" : "", t->msgid);
-		bbs_debug(5, "%20s [%2d%c] %s [%d]\n", date, level, t->children ? '+' : ' ', buf, t->id);
+		snprintf(buf, sizeof(buf), "%.*s%s %s", level, spaces, level ? "|-" : "", msgid);
+		bbs_debug(5, "%20s [%2d%c] %s [%d] %p\n", date, level, t->children ? '+' : ' ', buf, t->id, t);
 		c++;
+		/* If there's a bug in our threading logic and we have a loop, don't keep going forever */
+		if (level > (int) maxcount) {
+			bbs_error("Folder only has %d messages, but we've recursed to level %d?\n", maxcount, level);
+			break;
+		} else if (level > MAX_THREAD_DEPTH) {
+			/* Very deep threads are possible... but probably not super common. Either way, avoid stack overflow. */
+			bbs_warning("Reached maximum thread depth exceed (%d), aborting\n", maxcount);
+			break;
+		}
 		/* Iterate over children, if any. */
 		if (t->children) {
-			c += __dump_thread(t->children, level + 1);
+			c += __dump_thread(t->children, level + 1, maxcount);
 		}
 		t = t->next;
 	}
@@ -8068,7 +8082,7 @@ static int __dump_thread(struct thread_messageid *msgids, int level)
 	return c;
 }
 
-static void dump_thread_msgids(struct thread_messageid *msgids)
+static void dump_thread_msgids(struct thread_messageid *msgids, unsigned int maxcount)
 {
 	struct thread_messageid *t;
 	int d = 0, c = 0;
@@ -8080,7 +8094,7 @@ static void dump_thread_msgids(struct thread_messageid *msgids)
 		/* Recursively dump anything that doesn't have a parent (since these are the top level of a thread)
 		 * and they will handle all their children. */
 		if (!t->parent) {
-			d += __dump_thread(t, 0);
+			d += __dump_thread(t, 0, maxcount);
 		}
 		t = t->llnext;
 	}
@@ -8349,7 +8363,7 @@ static void thread_remove(struct thread_messageid *t)
 		/* Remove ourselves from the parent's child list. */
 		bbs_assert_exists(t->parent->children); /* If we have a parent, our parent must have children. */
 		next = t->parent->children;
-		bbs_debug(5, "Pruning ourselves from our parent's children (%s)\n", t->msgid);
+		bbs_debug(5, "Pruning ourselves from our parent's children: %s\n", t->msgid);
 		while (next) {
 			if (next == t) {
 				/* Found ourself. Remove ourselves from inbetween the previous and next child. */
@@ -8361,10 +8375,10 @@ static void thread_remove(struct thread_messageid *t)
 				break;
 			}
 			prev = next;
-			next = t->next;
+			next = prev->next;
 		}
 		if (!next) {
-			bbs_warning("Didn't find ourself (%s) in parent's list of children?\n", t->msgid);
+			bbs_warning("Didn't find ourself (%s) in parent's (%s) list of children?\n", t->msgid, t->parent->msgid);
 		}
 	}
 
@@ -8372,12 +8386,14 @@ static void thread_remove(struct thread_messageid *t)
 }
 
 /*! \brief RFC 5256 REFERENCES algorithm Step 3 */
-static int thread_references_step3(struct thread_messageid *msgids)
+static int thread_references_step3(struct thread_messageid *msgids, unsigned int maxcount)
 {
 	struct thread_messageid *t;
 
 #ifdef DEBUG_THREADING
-	dump_thread_msgids(msgids);
+	dump_thread_msgids(msgids, maxcount);
+#else
+	UNUSED(maxcount);
 #endif
 
 	/* Prune dummy messages */
@@ -8581,7 +8597,7 @@ static void thread_generate_list_recurse(struct dyn_str *dynstr, struct thread_m
 	}
 }
 
-static char *thread_generate_list(struct thread_messageid *msgids)
+static char *thread_generate_list(struct thread_messageid *msgids, unsigned int maxcount)
 {
 	struct dyn_str dynstr;
 	struct thread_messageid *next;
@@ -8589,7 +8605,9 @@ static char *thread_generate_list(struct thread_messageid *msgids)
 	memset(&dynstr, 0, sizeof(dynstr));
 
 #ifdef DEBUG_THREADING
-	dump_thread_msgids(msgids);
+	dump_thread_msgids(msgids, maxcount);
+#else
+	UNUSED(maxcount);
 #endif
 
 	next = msgids->llnext; /* Skip dummy root */
@@ -8746,7 +8764,7 @@ static int test_thread_orderedsubject(void)
 
 	mres = thread_orderedsubject(&tmsgids, msgs, (int) num_msgs);
 	bbs_test_assert_equals(0, mres);
-	list = thread_generate_list(&tmsgids);
+	list = thread_generate_list(&tmsgids, i);
 	bbs_test_assert(list != NULL);
 	bbs_test_assert_str_equals(list, "(9)(1 (2)(3)(4)(5))(6)(7)(8)(10)(11)(12 (13)(14)(15)(16)(17)(18)(19)(20))");
 	res = 0;
@@ -8851,11 +8869,11 @@ static int test_thread_references(void)
 
 	mres = thread_references_step1(&tmsgids, msgs, (int) num_msgs);
 	bbs_test_assert_equals(0, mres);
-	mres = thread_references_step3(&tmsgids);
+	mres = thread_references_step3(&tmsgids, i);
 	bbs_test_assert_equals(0, mres);
 	mres = thread_references_step4(&tmsgids, &outlen);
 	bbs_test_assert_equals(0, mres);
-	list = thread_generate_list(&tmsgids);
+	list = thread_generate_list(&tmsgids, i);
 	bbs_test_assert(list != NULL);
 	bbs_test_assert_str_equals(list, "(9)(7)(8)(6)(1 2 3 4 5)(10)(11 (12)(13 (15 (17 (19)(20))(18))(16))(14))");
 	res = 0;
@@ -8893,7 +8911,7 @@ static int do_threading(struct imap_session *imap, unsigned int *a, size_t lengt
 		/* RFC 5256 REFERENCES algorithm.
 		 * Also a good writeup by the original author of the algorithm, here: https://www.jwz.org/doc/threading.html */
 		thread_references_step1(&tmsgids, msgs, (int) length); /* Steps 1, 2, and 6 */
-		thread_references_step3(&tmsgids);
+		thread_references_step3(&tmsgids, imap->totalcur + imap->totalnew);
 		thread_references_step4(&tmsgids, &outlen);
 		/* We skip step 5 of the algorithm.
 		 * I consider this part "optional", since nowadays all compliant MUAs should be setting the References header,
@@ -8909,7 +8927,7 @@ static int do_threading(struct imap_session *imap, unsigned int *a, size_t lengt
 	}
 
 	/* At this point, threads are sorted. All we need to do now is generate the list. */
-	list = thread_generate_list(&tmsgids);
+	list = thread_generate_list(&tmsgids, imap->totalcur + imap->totalnew);
 	free_thread_msgids(&tmsgids);
 	imap_send(imap, "THREAD %s", S_IF(list));
 	free_if(list);
