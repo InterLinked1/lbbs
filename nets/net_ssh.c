@@ -512,6 +512,9 @@ static int shell_request(ssh_session session, ssh_channel channel, void *userdat
 		/* Client requested a shell without a pty */
 		bbs_error("Client requested SSH shell without a PTY?\n");
 		return SSH_ERROR;
+	} else if (!node) {
+		bbs_warning("No node exists for SSH connection, declining shell\n");
+		return SSH_ERROR;
 	}
 	cdata->child_stdout = cdata->child_stdin = cdata->pty_master;
 	/* Run the BBS on this node */
