@@ -389,6 +389,9 @@ static int mailimap_list_status(mailimap *session, clist **list_result)
 	int error_code;
 
 #define LIST_STATUS_CMD "LIST \"\" \"*\" RETURN (STATUS (MESSAGES RECENT UNSEEN SIZE))\r\n"
+/* RFC 5258 Sec 4: Technically, if the server supports LIST-EXTENDED and we don't ask for CHILDREN explicitly,
+ * it's not obligated to return these attributes */
+#define LIST_STATUS_CHILDREN_CMD "LIST \"\" \"*\" RETURN (CHILDREN STATUS (MESSAGES RECENT UNSEEN SIZE))\r\n"
 
 	if ((session->imap_state != MAILIMAP_STATE_AUTHENTICATED) && (session->imap_state != MAILIMAP_STATE_SELECTED)) {
 		return MAILIMAP_ERROR_BAD_STATE;
@@ -399,9 +402,16 @@ static int mailimap_list_status(mailimap *session, clist **list_result)
 	}
 
 	/* XXX mailimap_send_crlf and mailimap_send_custom_command aren't public */
-	r = (int) mailstream_write(session->imap_stream, LIST_STATUS_CMD, STRLEN(LIST_STATUS_CMD));
-	if (r != STRLEN(LIST_STATUS_CMD)) {
-		return MAILIMAP_ERROR_STREAM;
+	if (mailimap_has_extension(session, "LIST-EXTENDED")) {
+		r = (int) mailstream_write(session->imap_stream, LIST_STATUS_CHILDREN_CMD, STRLEN(LIST_STATUS_CHILDREN_CMD));
+		if (r != STRLEN(LIST_STATUS_CHILDREN_CMD)) {
+			return MAILIMAP_ERROR_STREAM;
+		}
+	} else {
+		r = (int) mailstream_write(session->imap_stream, LIST_STATUS_CMD, STRLEN(LIST_STATUS_CMD));
+		if (r != STRLEN(LIST_STATUS_CMD)) {
+			return MAILIMAP_ERROR_STREAM;
+		}
 	}
 
 	if (mailstream_flush(session->imap_stream) == -1) {

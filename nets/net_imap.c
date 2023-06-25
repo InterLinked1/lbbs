@@ -3389,11 +3389,17 @@ cleanup:
 /*! \brief Mutex to prevent recursion */
 static pthread_mutex_t virt_lock; /* XXX Should most definitely be per mailbox struct, not global */
 
-static int imap_client_list(struct bbs_tcp_client *client, const char *prefix, FILE *fp)
+static int imap_client_list(struct bbs_tcp_client *client, int caps, const char *prefix, FILE *fp)
 {
 	int res;
 
-	IMAP_CLIENT_SEND(client, "a3 LIST \"\" \"*\"");
+	if (caps & IMAP_CAPABILITY_LIST_EXTENDED) {
+		/* RFC 5258 Sec 4: Technically, if the server supports LIST-EXTENDED and we don't ask for CHILDREN explicitly,
+		 * it's not obligated to return these attributes */
+		IMAP_CLIENT_SEND(client, "a3 LIST \"\" \"*\" RETURN (CHILDREN)");
+	} else {
+		IMAP_CLIENT_SEND(client, "a3 LIST \"\" \"*\"");
+	}
 
 	for (;;) {
 		char fullmailbox[256];
@@ -3674,7 +3680,7 @@ static int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 				continue;
 			}
 			if (!my_imap_client_login(&client, &url, imap)) {
-				imap_client_list(&client, prefix, fp2);
+				imap_client_list(&client, imap->virtcapabilities, prefix, fp2);
 			}
 			bbs_tcp_client_cleanup(&client);
 		}
