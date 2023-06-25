@@ -1024,6 +1024,83 @@ static clist *sortall(struct imap_client *client, const char *sort)
 	return list;
 }
 
+static int contains_attachments_1part(struct mailimap_body_type_1part *type_1part)
+{
+	struct mailimap_body_fld_dsp *disp;
+
+	/* Using the logic here:
+	 * https://stackoverflow.com/questions/28366248/imap-best-way-to-detect-the-presence-of-an-attachment-in-a-message/28368829#28368829
+	 *
+	 * "Parse the BODYSTRUCTURE and if test each bodypart. If its content-type is multipart, it's not an attachment.
+	 * If its content-type is text, then you have to look at its content-disposition, which may be either inline or attachment.
+	 * If it has another content-type, then it is an attachment."
+	 */
+	switch (type_1part->bd_type) {
+		case MAILIMAP_BODY_TYPE_1PART_BASIC:
+#ifdef DEBUG_ATTACHMENTS
+			bbs_debug(6, "1-part basic\n");
+#endif
+			/* It's an attachment */
+			return 1;
+		case MAILIMAP_BODY_TYPE_1PART_MSG:
+#ifdef DEBUG_ATTACHMENTS
+			bbs_debug(6, "1-part msg\n");
+#endif
+			break;
+		case MAILIMAP_BODY_TYPE_1PART_TEXT:
+			/* It could be an attachment, depending on the disposition */
+			disp = type_1part->bd_ext_1part->bd_disposition;
+			if (disp) {
+#ifdef DEBUG_ATTACHMENTS
+				bbs_debug(6, "1-part text: %s\n", disp->dsp_type);
+#endif
+				if (!strcasecmp(disp->dsp_type, "attachment")) {
+					return 1;
+				}
+			} else {
+				bbs_debug(6, "1-part text\n");
+			}
+			break;
+	}
+	return 0;
+}
+
+static int contains_attachments(struct mailimap_body *imap_body);
+
+static int contains_attachments_mpart(struct mailimap_body_type_mpart *p)
+{
+	clistiter *cur;
+#ifdef DEBUG_ATTACHMENTS
+	bbs_debug(6, "mpart - %s\n", p->bd_media_subtype);
+#endif
+	for (cur = clist_begin(p->bd_list); cur; cur = clist_next(cur)) {
+		struct mailimap_body *imap_body = clist_content(cur);
+		if (contains_attachments(imap_body)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int contains_attachments(struct mailimap_body *imap_body)
+{
+	switch (imap_body->bd_type) {
+		case MAILIMAP_BODY_1PART:
+			if (contains_attachments_1part(imap_body->bd_data.bd_body_1part)) {
+				return 1;
+			}
+			break;
+		case MAILIMAP_BODY_MPART:
+			if (contains_attachments_mpart(imap_body->bd_data.bd_body_mpart)) {
+				return 1;
+			}
+			break;
+		default:
+			break;
+	}
+	return 0;
+}
+
 static void fetchlist(struct ws_session *ws, struct imap_client *client, const char *reason, int start, int end, int page, int numpages, const char *sort)
 {
 	int expected, res, c = 0;
@@ -1086,6 +1163,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, mailimap_fetch_att_new_flags()); /* Flags */
 	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, mailimap_fetch_att_new_internaldate()); /* INTERNALDATE */
 	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, mailimap_fetch_att_new_rfc822_size()); /* Size */
+	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, mailimap_fetch_att_new_bodystructure()); /* BODYSTRUCTURE (for attachments) */
 
 	/* Headers */
 	hdrlist = clist_new();
@@ -1168,6 +1246,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 			struct mailimap_msg_att_item *item = clist_content(cur2);
 			if (item->att_type == MAILIMAP_MSG_ATT_ITEM_STATIC) {
 				struct mailimap_msg_att_body_section *msg_att_body_section;
+				struct mailimap_body *imap_body;
 				char headersbuf[2048];
 				switch (item->att_data.att_static->att_type) {
 					case MAILIMAP_MSG_ATT_UID:
@@ -1184,7 +1263,6 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 #ifdef EXTRA_DEBUG
 						bbs_debug(5, "Matching headers: %s\n", msg_att_body_section->sec_body_part);
 #endif
-
 						/* Manual hacky workaround */
 						/* Seems calling mailmime_parse and fetch_mime_recurse here is pointless
 						 * since we still have to do append_header_meta on those fields anyways,
@@ -1192,11 +1270,14 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 						safe_strncpy(headersbuf, msg_att_body_section->sec_body_part, sizeof(headersbuf));
 						append_header_meta(msgitem, headersbuf, 1);
 						break;
+					case MAILIMAP_MSG_ATT_BODYSTRUCTURE:
+						imap_body = item->att_data.att_static->att_data.att_bodystructure;
+						json_object_set_new(msgitem, "attachments", json_boolean(contains_attachments(imap_body)));
+						break;
 					case MAILIMAP_MSG_ATT_RFC822_HEADER:
 					case MAILIMAP_MSG_ATT_ENVELOPE:
 					case MAILIMAP_MSG_ATT_RFC822_TEXT:
 					case MAILIMAP_MSG_ATT_BODY:
-					case MAILIMAP_MSG_ATT_BODYSTRUCTURE:
 					default:
 						bbs_warning("Unhandled FETCH response item\n");
 						break;
