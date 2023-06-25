@@ -7630,7 +7630,7 @@ static int sort_compare(const void *aptr, const void *bptr, void *varg)
 				res = hdra ? hdrb ? 0 : -1 : 1; /* If a date is invalid, it sorts first */
 			} else {
 				diff = (long int) difftime(stata.st_mtime, statb.st_mtime); /* If difftime is positive, tm1 > tm2 */
-				res = diff < 0 ? 1 : diff > 0 ? -1 : 0;
+				res = diff > 0 ? 1 : diff < 0 ? -1 : 0;
 			}
 		} else if (STARTS_WITH(criterion, "CC")) {
 			GET_HEADERS("Cc");
@@ -7647,7 +7647,7 @@ static int sort_compare(const void *aptr, const void *bptr, void *varg)
 				t1 = mktime(&tm1);
 				t2 = mktime(&tm2);
 				diff = (long int) difftime(t1, t2); /* If difftime is positive, tm1 > tm2 */
-				res = diff < 0 ? 1 : diff > 0 ? -1 : 0;
+				res = diff > 0 ? 1 : diff < 0 ? -1 : 0;
 			}
 		} else if (STARTS_WITH(criterion, "FROM")) {
 			GET_HEADERS("From");
@@ -9210,8 +9210,26 @@ cleanup:
 		return imap_client_send_wait_response(imap, -1, 5000, "%s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
 	}
 
+#define FORWARD_VIRT_MBOX_CAPABILITY(cap) \
+	if (imap->virtmbox) { \
+		if (!(imap->virtcapabilities & (cap))) { \
+			imap_reply(imap, "NO %s command not available for this mailbox", command); \
+			return 0; \
+		} \
+		return imap_client_send_wait_response(imap, -1, 5000, "%s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
+	}
+
 #define FORWARD_VIRT_MBOX_UID() \
 	if (imap->virtmbox) { \
+		return imap_client_send_wait_response(imap, -1, 5000, "UID %s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
+	}
+
+#define FORWARD_VIRT_MBOX_UID_CAPABILITY(cap) \
+	if (imap->virtmbox) { \
+		if (!(imap->virtcapabilities & (cap))) { \
+			imap_reply(imap, "NO %s command not available for this mailbox", command); \
+			return 0; \
+		} \
 		return imap_client_send_wait_response(imap, -1, 5000, "UID %s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
 	}
 
@@ -9509,6 +9527,15 @@ static int imap_process(struct imap_session *imap, char *s)
 		return handle_copy(imap, s, 0);
 	} else if (!strcasecmp(command, "MOVE")) {
 		REQUIRE_ARGS(s);
+		/*! \todo MOVE can be easily emulated if the remote server doesn't support it.
+		 * We just do a COPY, EXPUNGE.
+		 * Also note that the below check only catches if the source folder is remote,
+		 * not if the destination is.
+		 * But currently, either both have to be local or both have to be remote, so that's fine. */
+		if (imap->virtmbox && !(imap->virtcapabilities & IMAP_CAPABILITY_MOVE)) {
+			imap_reply(imap, "NO MOVE not supported for this mailbox");
+			return 0;
+		}
 		FORWARD_VIRT_MBOX_MODIFIED(1);
 		REQUIRE_SELECTED(imap);
 		IMAP_NO_READONLY(imap);
@@ -9521,17 +9548,26 @@ static int imap_process(struct imap_session *imap, char *s)
 		return handle_store(imap, s, 0);
 	} else if (!strcasecmp(command, "SEARCH")) {
 		REQUIRE_ARGS(s);
-		FORWARD_VIRT_MBOX();
+		FORWARD_VIRT_MBOX_CAPABILITY(IMAP_CAPABILITY_SEARCH);
 		REQUIRE_SELECTED(imap);
 		return handle_search(imap, s, 0);
 	} else if (!strcasecmp(command, "SORT")) {
 		REQUIRE_ARGS(s);
-		FORWARD_VIRT_MBOX();
+		/*! \todo Clients will be confused if we advertise the SORT capability
+		 * but the remote mailbox doesn't support it, so we have to reject a request.
+		 * We could implement a "SORT" proxy where we do something like:
+		 * - FETCH 1:* for all the relevant criteria (e.g. for ARRIVAL, we want INTERNALDATE)
+		 * - Sort them locally
+		 * - Return the result (and potentially cache it)
+		 * Probably not feasible for SEARCH, because that might require requesting potentially the entire mailbox, e.g. for body search
+		 * For THREAD we could do FETCH 1:* (RFC822.HEADER[References In-Reply-To])
+		 */
+		FORWARD_VIRT_MBOX_CAPABILITY(IMAP_CAPABILITY_SORT);
 		REQUIRE_SELECTED(imap);
 		return handle_sort(imap, s, 0);
 	} else if (!strcasecmp(command, "THREAD")) {
 		REQUIRE_ARGS(s);
-		FORWARD_VIRT_MBOX();
+		FORWARD_VIRT_MBOX_CAPABILITY(IMAP_CAPABILITY_THREAD_ORDEREDSUBJECT | IMAP_CAPABILITY_THREAD_REFERENCES);
 		REQUIRE_SELECTED(imap);
 		return handle_thread(imap, s, 0);
 	} else if (!strcasecmp(command, "UID")) {
@@ -9548,19 +9584,23 @@ static int imap_process(struct imap_session *imap, char *s)
 			FORWARD_VIRT_MBOX_MODIFIED_UID(1);
 			return handle_copy(imap, s, 1);
 		} else if (!strcasecmp(command, "MOVE")) {
+			if (imap->virtmbox && !(imap->virtcapabilities & IMAP_CAPABILITY_MOVE)) {
+				imap_reply(imap, "NO MOVE not supported for this mailbox");
+				return 0;
+			}
 			FORWARD_VIRT_MBOX_MODIFIED_UID(1);
 			return handle_move(imap, s, 1);
 		} else if (!strcasecmp(command, "STORE")) {
 			FORWARD_VIRT_MBOX_UID();
 			return handle_store(imap, s, 1);
 		} else if (!strcasecmp(command, "SEARCH")) {
-			FORWARD_VIRT_MBOX_UID();
+			FORWARD_VIRT_MBOX_UID_CAPABILITY(IMAP_CAPABILITY_SEARCH);
 			return handle_search(imap, s, 1);
 		} else if (!strcasecmp(command, "SORT")) {
-			FORWARD_VIRT_MBOX_UID();
+			FORWARD_VIRT_MBOX_UID_CAPABILITY(IMAP_CAPABILITY_SORT);
 			return handle_sort(imap, s, 1);
 		} else if (!strcasecmp(command, "THREAD")) {
-			FORWARD_VIRT_MBOX_UID();
+			FORWARD_VIRT_MBOX_UID_CAPABILITY(IMAP_CAPABILITY_THREAD_ORDEREDSUBJECT | IMAP_CAPABILITY_THREAD_REFERENCES);
 			return handle_thread(imap, s, 1);
 		} else {
 			imap_reply(imap, "BAD Invalid UID command");

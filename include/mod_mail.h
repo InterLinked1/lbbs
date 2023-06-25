@@ -297,10 +297,16 @@ int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid);
 #define IMAP_CAPABILITY_ACL (1 << 10)
 #define IMAP_CAPABILITY_QUOTA (1 << 11)
 #define IMAP_CAPABILITY_LIST_EXTENDED (1 << 12)
-#define IMAP_CAPABILITY_LIST_STATUS (1 << 13)
-#define IMAP_CAPABILITY_STATUS_SIZE (1 << 14)
-#define IMAP_CAPABILITY_UNSELECT (1 << 15)
-#define IMAP_CAPABILITY_BINARY (1 << 16)
+#define IMAP_CAPABILITY_SPECIAL_USE (1 << 13)
+#define IMAP_CAPABILITY_LIST_STATUS (1 << 14)
+#define IMAP_CAPABILITY_STATUS_SIZE (1 << 15)
+#define IMAP_CAPABILITY_UNSELECT (1 << 16)
+#define IMAP_CAPABILITY_SEARCH (1 << 17)
+#define IMAP_CAPABILITY_SORT (1 << 18)
+#define IMAP_CAPABILITY_THREAD_ORDEREDSUBJECT (1 << 19)
+#define IMAP_CAPABILITY_THREAD_REFERENCES (1 << 20)
+#define IMAP_CAPABILITY_MOVE (1 << 21)
+#define IMAP_CAPABILITY_BINARY (1 << 22)
 
 /*!
  * \brief Log in to a remote IMAP server

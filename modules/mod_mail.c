@@ -1548,11 +1548,17 @@ static int imap_client_capability(struct bbs_tcp_client *client, int *capsptr)
 		PARSE_CAPABILITY("ACL", IMAP_CAPABILITY_ACL)
 		PARSE_CAPABILITY("QUOTA", IMAP_CAPABILITY_QUOTA)
 		PARSE_CAPABILITY("LIST-EXTENDED", IMAP_CAPABILITY_LIST_EXTENDED)
+		PARSE_CAPABILITY("SPECIAL-USE", IMAP_CAPABILITY_SPECIAL_USE)
 		PARSE_CAPABILITY("LIST-STATUS", IMAP_CAPABILITY_LIST_STATUS)
 		PARSE_CAPABILITY("STATUS=SIZE", IMAP_CAPABILITY_STATUS_SIZE)
 		PARSE_CAPABILITY("UNSELECT", IMAP_CAPABILITY_UNSELECT)
+		PARSE_CAPABILITY("SEARCH", IMAP_CAPABILITY_SEARCH)
+		PARSE_CAPABILITY("SORT", IMAP_CAPABILITY_SORT)
+		PARSE_CAPABILITY("THREAD=ORDEREDSUBJECT", IMAP_CAPABILITY_THREAD_ORDEREDSUBJECT)
+		PARSE_CAPABILITY("THREAD=REFERENCES", IMAP_CAPABILITY_THREAD_REFERENCES)
+		PARSE_CAPABILITY("MOVE", IMAP_CAPABILITY_MOVE)
 		PARSE_CAPABILITY("BINARY", IMAP_CAPABILITY_BINARY)
-		else if (STARTS_WITH(cur, "X") || STARTS_WITH(cur, "AUTH=") || !strcmp(cur, "SPECIAL-USE") || !strcmp(cur, "CHILDREN") || !strcmp(cur, "UNSELECT") || !strcmp(cur, "NAMESPACE") || !strcmp(cur, "ID") || !strcmp(cur, "SORT") || !strcmp(cur, "MOVE") || !strcmp(cur, "UIDPLUS") || !strcmp(cur, "XLIST") || !strcmp(cur, "I18NLEVEL=1") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "RIGHTS=") || !strcmp(cur, "WITHIN") || !strcmp(cur, "ESEARCH") || !strcmp(cur, "ESORT") || !strcmp(cur, "SEARCHRES") || !strcmp(cur, "COMPRESS=DEFLATE") || !strcmp(cur, "COMPRESS=DEFLATE")  || !strcmp(cur, "UTF8=ACCEPT")) {
+		else if (STARTS_WITH(cur, "X") || STARTS_WITH(cur, "AUTH=") || !strcmp(cur, "SPECIAL-USE") || !strcmp(cur, "CHILDREN") || !strcmp(cur, "NAMESPACE") || !strcmp(cur, "ID") || !strcmp(cur, "UIDPLUS") || !strcmp(cur, "XLIST") || !strcmp(cur, "I18NLEVEL=1") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "RIGHTS=") || !strcmp(cur, "WITHIN") || !strcmp(cur, "ESEARCH") || !strcmp(cur, "ESORT") || !strcmp(cur, "SEARCHRES") || !strcmp(cur, "COMPRESS=DEFLATE") || !strcmp(cur, "COMPRESS=DEFLATE") || !strcmp(cur, "UTF8=ACCEPT")) {
 			/* Don't care */
 		} else if (!strcmp(cur, "LOGINDISABLED")) { /* RFC 3501 7.2.1 */
 			/* Could happen if we connect to a plain text port and STARTTLS is required.
