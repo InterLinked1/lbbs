@@ -53,6 +53,7 @@
 #include "include/config.h"
 #include "include/net.h"
 #include "include/utils.h"
+#include "include/os.h"
 #include "include/base64.h"
 #include "include/node.h"
 #include "include/auth.h"
@@ -2811,12 +2812,19 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 			if (sizestring) {
 				sizestring++;
 				if (!strlen_zero(sizestring)) {
+					long freebytes;
 					unsigned int sizebytes = (unsigned int) atoi(sizestring);
 					if (sizebytes >= max_message_size) {
 						smtp_reply(smtp, 552, 5.3.4, "Message too large");
 						return 0;
 					}
 					smtp->sizepreview = sizebytes;
+					freebytes = bbs_disk_bytes_free();
+					if ((long) smtp->sizepreview > freebytes) {
+						bbs_warning("Disk full? Need %lu bytes to receive message, but only %ld available\n", smtp->sizepreview, freebytes);
+						smtp_reply(smtp, 452, 4.3.1, "Insufficient system storage");
+						return 0;
+					}
 				} else {
 					bbs_warning("Malformed MAIL directive: %s\n", s);
 				}

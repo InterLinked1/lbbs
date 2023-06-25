@@ -22,6 +22,7 @@
 #include <stdio.h> /* use snprintf */
 #include <string.h> /* use strerror */
 #include <sys/utsname.h> /* use uname */
+#include <sys/statvfs.h> /* use statvfs */
 
 #include "include/os.h"
 
@@ -49,4 +50,17 @@ int bbs_init_os_info(void)
 	}
 	bbs_debug(5, "OS info: %s\n", osver);
 	return 0;
+}
+
+long bbs_disk_bytes_free(void)
+{
+	struct statvfs stat;
+	const char *path = "/"; /* Root partition */
+
+	if (statvfs(path, &stat)) {
+		bbs_error("statvfs failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	return (long) (stat.f_bsize * stat.f_bavail); /* Return number of free bytes */
 }
