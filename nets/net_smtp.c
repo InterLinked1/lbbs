@@ -155,8 +155,11 @@ struct smtp_session {
 	char template[64];
 	FILE *fp;
 	unsigned long datalen;
+	unsigned long sizepreview;	/* Size as advertised in the MAIL FROM */
+	unsigned int maxsize;	/* Max message size permitted (used for mailing lists) */
 	int hopcount;			/* Number of hops so far according to count of Received headers in message. */
 	char *helohost;			/* Hostname for HELO/EHLO */
+	char *contenttype;		/* Primary Content-Type of message */
 	/* AUTH: Temporary */
 	char *authuser;			/* Authentication username */
 	char *fromheaderaddress;	/* Address in the From: header */
@@ -173,6 +176,7 @@ struct smtp_session {
 	unsigned int datafail:1;	/* Data failure */
 	unsigned int inauth:2;	/* Whether currently doing AUTH (1 = need PLAIN, 2 = need LOGIN user, 3 = need LOGIN pass) */
 	unsigned int sentself:1;
+	unsigned int ptonly:1;	/* Message must be plain text for acceptance (used for mailing lists) */
 };
 
 static void smtp_reset_data(struct smtp_session *smtp)
@@ -189,6 +193,11 @@ static void smtp_reset_data(struct smtp_session *smtp)
 static void smtp_reset(struct smtp_session *smtp)
 {
 	smtp_reset_data(smtp);
+	/* XXX In reality, we want to zero most (but not all) of the struct.
+	 * Consider moving the flags and session specific stuff to a separate struct,
+	 * so we can more easily wipe that just using a single memset call */
+	smtp->ptonly = 0;
+	smtp->maxsize = 0;
 	smtp->indata = 0;
 	smtp->indataheaders = 0;
 	smtp->inauth = 0;
@@ -196,6 +205,7 @@ static void smtp_reset(struct smtp_session *smtp)
 	free_if(smtp->authuser);
 	free_if(smtp->fromheaderaddress);
 	free_if(smtp->from);
+	free_if(smtp->contenttype);
 	smtp->datalen = 0;
 	smtp->datafail = 0;
 	smtp->numrecipients = 0;
@@ -433,6 +443,41 @@ static int add_recipient(struct smtp_session *smtp, int local, const char *s, in
 	return 0;
 }
 
+struct mailing_list {
+	char *recipients;
+	char *senders;
+	/* Attributes */
+	unsigned int maxsize;	/* Maximum permitted posting size */
+	unsigned int ptonly:1;	/* Plain text only? */
+};
+
+static void parse_mailing_list(struct mailing_list *l, char *s)
+{
+	char *attributes;
+
+	memset(l, 0, sizeof(struct mailing_list));
+
+	l->recipients = strsep(&s, "|");
+	l->senders = strsep(&s, "|");
+	attributes = strsep(&s, "|");
+	if (!strlen_zero(attributes)) {
+		char *attr;
+		while ((attr = strsep(&attributes, ","))) {
+			char *name, *value = attr;
+			name = strsep(&value, "=");
+			if (strlen_zero(name)) {
+				continue;
+			} else if (!strcasecmp(name, "maxsize")) {
+				l->maxsize = (unsigned int) atoi(S_IF(value));
+			} else if (!strcasecmp(name, "ptonly")) {
+				l->ptonly = 1;
+			} else {
+				bbs_warning("Unknown mailing list attribute: %s\n", name);
+			}
+		}
+	}
+}
+
 static int handle_rcpt(struct smtp_session *smtp, char *s)
 {
 	int local, res;
@@ -476,6 +521,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 		recipients = mailbox_expand_list(user, domain);
 		if (recipients) { /* It's a mailing list */
 			int added = 0;
+			struct mailing_list list;
 			char *senders, *recip, *recips, *dup = strdup(recipients);
 
 			if (ALLOC_FAILURE(dup)) {
@@ -483,13 +529,13 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 				return 0;
 			}
 			bbs_debug(8, "List %s: %s\n", user, dup);
-			recips = dup;
-			senders = strchr(recips, '|');
+			parse_mailing_list(&list, dup);
+			recips = list.recipients;
+			senders = list.senders;
 			if (senders) {
 				int authorized = 0;
 				char *sender;
-				*senders++ = '\0';
-				bbs_debug(6, "List %s (recipients: %s) (senders: %s)\n", user, recips, senders);
+				bbs_debug(6, "List %s (recipients: %s) (senders: %s), maxsize=%u, ptonly=%d\n", user, recips, senders, list.maxsize, list.ptonly);
 				/* Check if sender is authorized to send to this list. */
 				/* Could be multiple authorizations, so check against all of them. */
 				while ((sender = strsep(&senders, ","))) {
@@ -497,24 +543,34 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 						authorized = 1;
 						bbs_debug(6, "Message authorized via local user membership\n");
 						break;
-					} else if (!strchr(sender, '@') && smtp->fromlocal && !strcmp(bbs_username(smtp->node->user), sender)) { /* Local user match? */
+					} else if (smtp->fromlocal && !strcasecmp(bbs_username(smtp->node->user), sender)) { /* Local user match? */
 						authorized = 1;
 						bbs_debug(6, "Message authorized via explicit local mapping\n");
 						break;
-					} else if (!strcmp(smtp->from, sender)) { /* Any arbitrary match? (including external senders) */
+					} else if (!strcasecmp(smtp->from, sender)) { /* Any arbitrary match? (including external senders) */
 						authorized = 1;
 						bbs_debug(6, "Message authorized via explicit generic mapping\n");
 						break;
 					}
 				}
 				if (!authorized) {
-					bbs_warning("Unauthorized attempt to post to list %s by %s\n", user, smtp->from);
+					bbs_warning("Unauthorized attempt to post to list %s by %s (%s) (fromlocal: %d)\n",
+						user, smtp->from, smtp->fromlocal ? bbs_username(smtp->node->user) : "", smtp->fromlocal);
 					smtp_reply(smtp, 550, 5.7.1, "You are not authorized to post to this list");
 					return 0;
 				}
 			} else {
 				bbs_debug(6, "List %s (recipients: %s)\n", user, recips);
 			}
+			/* Save attributes for later, since we don't have the body yet and can't do these checks now. */
+			smtp->maxsize = list.maxsize;
+			if (smtp->sizepreview && smtp->sizepreview > smtp->maxsize) {
+				/* If the client told us in advance how large the message will be,
+				 * and we already know it's going to be too large, reject it now. */
+				smtp_reply(smtp, 552, 5.3.4, "Message too large");
+				return 0;
+			}
+			smtp->ptonly = list.ptonly;
 			/* Send a copy of the message to everyone the list. */
 			while ((recip = strsep(&recips, ","))) {
 				if (strlen_zero(recip)) {
@@ -2233,6 +2289,18 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 		return 0;
 	}
 
+	if (smtp->maxsize > 0 && smtp->datalen > smtp->maxsize) {
+		smtp_reply(smtp, 552, 5.3.4, "Message too large (maximum size permitted is %u bytes)", smtp->maxsize);
+		return 0;
+	}
+	if (smtp->ptonly) {
+		bbs_debug(6, "Analyzing content type: %s\n", smtp->contenttype);
+		if (smtp->contenttype && !STARTS_WITH(smtp->contenttype, "text/plain")) {
+			smtp_reply_nostatus(smtp, 550, "Only plain text emails permitted to this destination");
+			return 0;
+		}
+	}
+
 	/* SMTP callbacks for outgoing messages */
 	if (smtp->msa || smtp->fromlocal) {
 		char newfile[256];
@@ -2595,7 +2663,7 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 	} else if (smtp->indata) {
 		int res;
 
-		if (!strcmp(s, ".")) {
+		if (!strcmp(s, ".")) { /* Entire message has now been received */
 			smtp->indata = 0;
 			if (smtp->datafail) {
 				smtp->datafail = 0;
@@ -2613,6 +2681,7 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 			}
 			fclose(smtp->fp); /* Have to close and reopen in read mode anyways */
 			smtp->fp = NULL;
+			bbs_debug(5, "Handling receipt of %lu-byte message\n", smtp->datalen);
 			res = do_deliver(smtp, smtp->template, smtp->datalen);
 			unlink(smtp->template);
 			smtp->datalen = 0;
@@ -2629,6 +2698,14 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 				REPLACE(smtp->fromheaderaddress, newfromhdraddr);
 			} else if (STARTS_WITH(s, "Received:")) {
 				smtp->hopcount++;
+			} else if (!smtp->contenttype && STARTS_WITH(s, "Content-Type:")) {
+				const char *tmp = s + STRLEN("Content-Type:");
+				if (!strlen_zero(tmp)) {
+					ltrim(tmp);
+				}
+				if (!strlen_zero(tmp)) {
+					REPLACE(smtp->contenttype, tmp);
+				}
 			} else if (!len) {
 				smtp->indataheaders = 0; /* CR LF on its own indicates end of headers */
 			}
@@ -2739,6 +2816,7 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 						smtp_reply(smtp, 552, 5.3.4, "Message too large");
 						return 0;
 					}
+					smtp->sizepreview = sizebytes;
 				} else {
 					bbs_warning("Malformed MAIL directive: %s\n", s);
 				}
