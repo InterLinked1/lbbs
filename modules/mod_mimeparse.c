@@ -32,6 +32,7 @@
 #include <errno.h>
 
 #include "include/module.h"
+#include "include/utils.h" /* use bbs_str_count */
 
 #include "include/mod_mimeparse.h"
 
@@ -43,6 +44,9 @@
  * - performance optimizations by avoiding unnecessary allocations
  * - elimination of duplicated code
  * - memory leaks fixed
+ * - BODYSTRUCTURE response formatting fixes. The sample in gmime is just plain wrong.
+ *   This has been improved through adjustments from RFC 3501 BODYSTRUCTURE
+ *   and cross-referencing with other IMAP servers.
  */
 
 static char *escape_string(const char *string)
@@ -76,14 +80,30 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 	GMimeParamList *params;
 	const char *subtype;
 	GMimeParam *param;
+	GMimeContentDisposition *disposition = NULL;
 	int i, n;
 
 	g_string_append_c(gs, '(');
 
+	if (GMIME_IS_MULTIPART(part)) {
+		GMimeMultipart *multipart = (GMimeMultipart *) part;
+
+		n = g_mime_multipart_get_count(multipart);
+		for (i = 0; i < n; i++) {
+			GMimeObject *subpart = g_mime_multipart_get_part(multipart, i);
+			write_part_bodystructure(subpart, gs);
+		}
+	}
+
+	/* Body type */
 	content_type = g_mime_object_get_content_type(part);
+	if (!GMIME_IS_MULTIPART(part)) {
+		g_string_append_printf(gs, "\"%s\" ", g_mime_content_type_get_media_type(content_type));
+	} else {
+		g_string_append(gs, " "); /* Don't include "multipart" if it's multipart */
+	}
 
-	g_string_append_printf(gs, "\"%s\" ", g_mime_content_type_get_media_type(content_type));
-
+	/* Body subtype */
 	if ((subtype = g_mime_content_type_get_media_subtype(content_type))) {
 		g_string_append_printf(gs, "\"%s\" ", subtype);
 	} else {
@@ -101,26 +121,21 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 			param = g_mime_param_list_get_parameter_at(params, i);
 			g_string_append_printf(gs, "\"%s\" \"%s\"", g_mime_param_get_name(param), g_mime_param_get_value(param));	
 		}
-		g_string_append(gs, ")");
+		g_string_append(gs, ") ");
 	} else {
 		g_string_append(gs, "NIL ");
 	}
-	
-	if (GMIME_IS_MULTIPART(part)) {
-		GMimeMultipart *multipart = (GMimeMultipart *) part;
 
-		n = g_mime_multipart_get_count(multipart);
-		for (i = 0; i < n; i++) {
-			GMimeObject *subpart = g_mime_multipart_get_part(multipart, i);
-			write_part_bodystructure(subpart, gs);
-		}
+	if (GMIME_IS_MULTIPART(part)) {
+		/* Already did it */
 	} else if (GMIME_IS_MESSAGE_PART(part)) {
 		GMimeMessage *message;
 		const char *str;
 		char *nstring;
-		
+
+		bbs_debug(3, "XXX mpart\n");
 		message = GMIME_MESSAGE_PART(part)->message;
-		
+
 		/* print envelope */
 		g_string_append_c(gs, '(');
 
@@ -147,6 +162,7 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 
 #undef MIME_HEADER
 
+		/* Body parameter parenthesized list */
 		if ((str = g_mime_message_get_message_id(message))) {
 			nstring = escape_string(str);
 			g_string_append_printf(gs, "\"%s\"", nstring);
@@ -160,54 +176,72 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 		/* print body */
 		write_part_bodystructure((GMimeObject *) message->mime_part, gs);
 	} else if (GMIME_IS_PART(part)) {
-		GMimeContentDisposition *disposition;
+		disposition = g_mime_object_get_content_disposition(part); /* Save for later */
 
-		disposition = g_mime_object_get_content_disposition(part);
+		/* Body ID and body description */
+		g_string_append(gs, "NIL NIL ");
 
-		if (disposition) {
-			g_string_append_printf(gs, "\"%s\" ", g_mime_content_disposition_get_disposition(disposition));
-
-			params = g_mime_content_disposition_get_parameters(disposition);
-			if ((n = g_mime_param_list_length(params)) > 0) {
-				g_string_append_c(gs, '(');
-				for (i = 0; i < n; i++) {
-					if (i > 0) {
-						g_string_append_c(gs, ' ');
-					}
-					param = g_mime_param_list_get_parameter_at(params, i);
-					g_string_append_printf(gs, "\"%s\" \"%s\"", g_mime_param_get_name(param), g_mime_param_get_value(param));
-				}
-				g_string_append(gs, ") ");
-				
-			} else {
-				g_string_append(gs, "NIL ");
-			}
-		} else {
-			g_string_append(gs, "NIL NIL ");
-		}
-
+		/* Body encoding */
 		switch (g_mime_part_get_content_encoding((GMimePart *) part)) {
 		case GMIME_CONTENT_ENCODING_7BIT:
-			g_string_append(gs, "\"7bit\"");
+			g_string_append(gs, "\"7BIT\"");
 			break;
 		case GMIME_CONTENT_ENCODING_8BIT:
-			g_string_append(gs, "\"8bit\"");
+			g_string_append(gs, "\"8BIT\"");
 			break;
 		case GMIME_CONTENT_ENCODING_BINARY:
-			g_string_append(gs, "\"binary\"");
+			g_string_append(gs, "\"BINARY\"");
 			break;
 		case GMIME_CONTENT_ENCODING_BASE64:
-			g_string_append(gs, "\"base64\"");
+			g_string_append(gs, "\"BASE64\"");
 			break;
 		case GMIME_CONTENT_ENCODING_QUOTEDPRINTABLE:
-			g_string_append(gs, "\"quoted-printable\"");
+			g_string_append(gs, "\"QUOTED-PRINTABLE\"");
 			break;
 		case GMIME_CONTENT_ENCODING_UUENCODE:
-			g_string_append(gs, "\"x-uuencode\"");
+			g_string_append(gs, "\"X-UUENCODE\"");
 			break;
 		default:
 			g_string_append(gs, "NIL");
 		}
+	} else {
+		bbs_debug(3, "XXX none\n");
+	}
+
+	/* Body size */
+	if (!GMIME_IS_MULTIPART(part)) {
+		/* Body size */
+		char *s = g_mime_object_to_string(part, NULL);
+		g_string_append_printf(gs, " %lu", strlen(S_IF(s))); /*! \todo BUGBUG FIXME This is NOT the correct value!!! */
+		/* XXX MESSAGE/RFC822 is also specifically called out in the RFC, but not handled here yet */
+		if (!strcasecmp(g_mime_content_type_get_media_type(content_type), "TEXT")) {
+			g_string_append_printf(gs, " %d", bbs_str_count(S_IF(s), '\n'));
+		}
+		free_if(s);
+		g_string_append(gs, " NIL"); /* Non-multipart extension data: body MD5 */
+	}
+
+	if (disposition) {
+		/* This is kind of a continuation of the previous block.
+		 * Since this is an extension, it absolutely must come after the NIL for body MD5 */
+		g_string_append(gs, " (");
+		g_string_append_printf(gs, "\"%s\" ", g_mime_content_disposition_get_disposition(disposition));
+
+		params = g_mime_content_disposition_get_parameters(disposition);
+		if ((n = g_mime_param_list_length(params)) > 0) {
+			g_string_append_c(gs, '(');
+			for (i = 0; i < n; i++) {
+				if (i > 0) {
+					g_string_append_c(gs, ' ');
+				}
+				param = g_mime_param_list_get_parameter_at(params, i);
+				g_string_append_printf(gs, "\"%s\" \"%s\"", g_mime_param_get_name(param), g_mime_param_get_value(param));
+			}
+			g_string_append(gs, ")");
+		} else {
+			g_string_append(gs, "NIL");
+		}
+		g_string_append(gs, ")");
 	}
 
 	g_string_append_c(gs, ')');
@@ -245,9 +279,8 @@ char *mime_make_bodystructure(const char *itemname, const char *file)
 	}
 
 	str = g_string_new("");
-	g_string_append_printf(str, "%s (", itemname);
+	g_string_append_printf(str, "%s ", itemname);
 	write_part_bodystructure(message->mime_part, str);
-	g_string_append(str, ")");
 	result = g_string_free(str, FALSE); /* Free the g_string but not the buffer */
 	g_object_unref(message);
 	return result; /* gchar is just a typedef for char, so this returns a char */
