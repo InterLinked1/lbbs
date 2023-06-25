@@ -714,7 +714,7 @@ void mailbox_quota_adjust_usage(struct mailbox *mbox, int bytes)
 	mailbox_uid_lock(mbox); /* Borrow the UID lock since we need to do this atomically */
 	if (mbox->quotavalid) {
 		mbox->quotausage += (unsigned int) bytes;
-		if (unlikely(mbox->quotausage > mailbox_quota(mbox))) {
+		if (mbox->quotausage > mailbox_quota(mbox)) {
 			/* Could also happen if we underflow below 0, since quotausage is unsigned */
 			/* Either our adjustments to the cached value went off somewhere, or we didn't check the quota somewhere. Either way, somebody screwed up. */
 			bbs_error("Mailbox quota usage (%u) exceeds quota allowed (%lu)\n", mbox->quotausage, mailbox_quota(mbox));
@@ -755,7 +755,11 @@ unsigned long mailbox_quota_remaining(struct mailbox *mbox)
 
 	if (mbox->quotavalid) {
 		/* Use the cached quota calculations if mailbox usage hasn't really changed */
-		return quota - mbox->quotausage;
+		if (quota > mbox->quotausage) {
+			return quota - mbox->quotausage;
+		}
+		bbs_debug(5, "No quota remaining in this mailbox (%u used, %lu available)\n", mbox->quotausage, quota);
+		return 0; /* Already over quota */
 	}
 
 	tmp = bbs_dir_size(mailbox_maildir(mbox));
@@ -768,10 +772,11 @@ unsigned long mailbox_quota_remaining(struct mailbox *mbox)
 	quotaused = (unsigned long) tmp;
 	mbox->quotausage = (unsigned int) quotaused;
 	mbox->quotavalid = 1; /* This can be cached until invalidated again */
-	quota -= quotaused;
-	if (quota <= 0) {
+	if (quotaused >= quota) {
+		bbs_debug(5, "No quota remaining in this mailbox (%lu used, %lu available)\n", quotaused, quota);
 		return 0; /* Quota already exceeded. Don't cast to unsigned or it will underflow and be huge. */
 	}
+	quota -= quotaused;
 	return (unsigned long) (quota - quotaused);
 }
 

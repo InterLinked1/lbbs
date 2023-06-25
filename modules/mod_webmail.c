@@ -1297,6 +1297,7 @@ static void handle_fetchlist(struct ws_session *ws, struct imap_client *client, 
 {
 	uint32_t total;
 	int numpages, start, end;
+	const char *oldsort = client->sort;
 
 	if (page < 1) {
 		page = 1;
@@ -1309,9 +1310,11 @@ static void handle_fetchlist(struct ws_session *ws, struct imap_client *client, 
 	client->page = page;
 	client->pagesize = pagesize;
 	client->uid = 0;
-	free_if(client->sort);
-	if (sort && strcmp(sort, "none")) {
-		client->sort = strdup(sort);
+	if (!(client->sort && sort && !strcmp(sort, client->sort))) { /* Don't free and strdup if the string is the same */
+		free_if(client->sort);
+		if (sort && (sort == oldsort || strcmp(sort, "none"))) { /* If sort is aliased with what client->sort was, it's invalid, so duplicate */
+			client->sort = strdup(sort);
+		}
 	}
 
 	/* A mailbox MUST be currently selected here */
