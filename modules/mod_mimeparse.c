@@ -44,7 +44,7 @@
  * - performance optimizations by avoiding unnecessary allocations
  * - elimination of duplicated code
  * - memory leaks fixed
- * - BODYSTRUCTURE response formatting fixes. The sample in gmime is just plain wrong.
+ * - BODYSTRUCTURE response formatting fixes. The sample in gmime cannot be used as is.
  *   This has been improved through adjustments from RFC 3501 BODYSTRUCTURE
  *   and cross-referencing with other IMAP servers.
  */
@@ -133,7 +133,6 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 		const char *str;
 		char *nstring;
 
-		bbs_debug(3, "XXX mpart\n");
 		message = GMIME_MESSAGE_PART(part)->message;
 
 		/* print envelope */
@@ -204,20 +203,66 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 		default:
 			g_string_append(gs, "NIL");
 		}
-	} else {
-		bbs_debug(3, "XXX none\n");
 	}
 
 	/* Body size */
 	if (!GMIME_IS_MULTIPART(part)) {
 		/* Body size */
-		char *s = g_mime_object_to_string(part, NULL);
-		g_string_append_printf(gs, " %lu", strlen(S_IF(s))); /*! \todo BUGBUG FIXME This is NOT the correct value!!! */
+		GMimeStream *stream;
+		ssize_t bodysize;
+		size_t newlines = 0;
+		char *s;
+
+		/* Use a null stream since we don't actually care about the content, only its length (and # of newlines) */
+		stream = g_mime_stream_null_new();
+		if (GMIME_IS_TEXT_PART(part)) {
+			g_mime_stream_null_set_count_newlines((GMimeStreamNull*) stream, TRUE);
+		}
+		bodysize = g_mime_object_write_to_stream((GMimeObject*) part, NULL, stream);
+		if (bodysize == -1) {
+			bbs_error("Failed to write part to GMime stream\n");
+		} else {
+			newlines = ((GMimeStreamNull*) stream)->newlines; /* no accessor method, but this is # of newlines */
+		}
+
+		/* bodysize here includes the headers for the MIME part too, but we only want
+		 * the body here, so subtract that out */
+		s = g_mime_object_get_headers((GMimeObject*) part, NULL);
+		if (s) {
+			/* We only want the body length, so subtract the length of the headers */
+			size_t headerslen, headerlines;
+			headerslen = strlen(s);
+			headerlines = (size_t) bbs_str_count(s, '\n'); /* Ends in newline, so need to add 1 */
+#ifdef EXTRA_DEBUG
+			bbs_debug(5, "Entire part: %ld bytes, %lu lines / Headers: %lu bytes, %lu lines\n", bodysize, newlines, headerslen, headerlines);
+#endif
+			if (headerslen > (size_t) bodysize) {
+				bbs_error("%ld bytes total, but header is %lu bytes?\n", bodysize, headerslen);
+			} else {
+				bodysize -= (ssize_t) headerslen;
+			}
+			if (bodysize > 2) { /* End of headers CR LF CR LF. One of the newlines is included, the other is not. */
+				bodysize -= 2;
+			}
+			if (GMIME_IS_TEXT_PART(part)) {
+				if (headerlines >= newlines) {
+					bbs_error("%lu lines total (%ld bytes), but header has %lu lines?\n", newlines, bodysize, headerlines);
+				} else {
+					newlines -= headerlines;
+				}
+				if (newlines > 0) {
+					newlines--; /* For CR LF for end of headers */
+				}
+			}
+			g_free(s);
+		}
+		g_object_unref(stream);
+
+		g_string_append_printf(gs, " %ld", bodysize); /* Number of bytes in part */
 		/* XXX MESSAGE/RFC822 is also specifically called out in the RFC, but not handled here yet */
 		if (!strcasecmp(g_mime_content_type_get_media_type(content_type), "TEXT")) {
-			g_string_append_printf(gs, " %d", bbs_str_count(S_IF(s), '\n'));
+			g_string_append_printf(gs, " %lu", newlines); /* Number of newlines in part */
 		}
-		free_if(s);
 		g_string_append(gs, " NIL"); /* Non-multipart extension data: body MD5 */
 	}
 
@@ -265,6 +310,7 @@ char *mime_make_bodystructure(const char *itemname, const char *file)
 
 	stream = g_mime_stream_fs_new(fd);
 	parser = g_mime_parser_new_with_stream(stream);
+	g_mime_parser_set_persist_stream(parser, FALSE);
 	g_mime_parser_set_format(parser, format);
 	g_object_unref(stream);
 
@@ -289,6 +335,8 @@ char *mime_make_bodystructure(const char *itemname, const char *file)
 static int load_module(void)
 {
 	g_mime_init();
+	/* Use CR LF for email messages, not LF, or our calculations for body size will be off */
+	g_mime_format_options_set_newline_format(g_mime_format_options_get_default(), GMIME_NEWLINE_FORMAT_DOS);
 	return 0;
 }
 

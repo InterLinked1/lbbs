@@ -732,6 +732,34 @@
    obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
    fun:g_mime_parser_construct_message
 }
+{
+   MIMEPARSE_GMIME_run
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:calloc
+   fun:g_malloc0
+   fun:g_type_class_ref
+   ...
+   fun:write_part_bodystructure
+}
+# This seems to be a constant memory leak: only happens once, due to g_mime_parser_set_persist_stream(parser, FALSE)
+{
+   MIMEPARSE_GMIME_run
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   fun:g_malloc0
+   fun:g_type_class_ref
+   fun:g_type_class_ref
+   fun:g_type_class_ref
+   fun:g_object_new_with_properties
+   fun:g_object_new
+   fun:g_mime_stream_fs_new_with_bounds
+   fun:mime_make_bodystructure
+   fun:process_fetch_finalize
+   fun:process_fetch
+   fun:handle_fetch
+}
 
 
 {
