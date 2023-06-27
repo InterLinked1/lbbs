@@ -273,10 +273,13 @@ int bbs_tcp_connect(const char *hostname, int port)
 	char ip[256];
 	int e;
 	struct addrinfo hints, *res, *ai;
+	struct sockaddr_in sin;
+	socklen_t slen = sizeof(sin);
 	struct sockaddr_in *saddr_in; /* IPv4 */
 	struct sockaddr_in6 *saddr_in6; /* IPv6 */
 	int sfd = -1;
 	struct timeval timeout;
+	int lport = 0;
 
 	/* Resolve the hostname */
 	memset(&hints, 0, sizeof(hints));
@@ -327,7 +330,14 @@ int bbs_tcp_connect(const char *hostname, int port)
 		setsockopt(sfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 	}
 
-	bbs_debug(1, "Connected to %s:%d\n", hostname, port);
+	/* Figure out what port we're using locally for this connection */
+	if (getsockname(sfd, (struct sockaddr *) &sin, &slen)) {
+		bbs_warning("getsockname failed: %s\n", strerror(errno));
+	} else {
+		lport = ntohs(sin.sin_port);
+	}
+
+	bbs_debug(1, "Connected to %s:%d using port %d\n", hostname, port, lport);
 	return sfd;
 }
 
