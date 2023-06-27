@@ -3792,8 +3792,10 @@ static int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 		imap_send(imap, "%s %s", lcmd->cmd, line);
 		virtmboxaccount = virtmboxname + 1; /* Skip Other Users. (Other Users already skipped at this point, so skip the delimiter) */
 
+#define MAILBOX_SELECTABLE(flags) (!strcasestr(flags, "\\NonExistent") && !strcasestr(flags, "\\NoSelect"))
+
 		/* Handle LIST-STATUS and STATUS=SIZE for remote mailboxes. */
-		if (lcmd->retstatus && !strcasestr(line, "\\Noselect")) { /* Don't call STATUS on a NoSelect mailbox */
+		if (lcmd->retstatus && MAILBOX_SELECTABLE(line)) { /* Don't call STATUS on a NoSelect mailbox */
 			/* Replace the remote hierarchy delimiter with our own, solely for set_maildir. */
 			bbs_strreplace(fullmboxname, remotedelim, HIERARCHY_DELIMITER_CHAR);
 			/* Use fullmboxname, for full mailbox name (from our perspective), NOT virtmboxname */

@@ -84,6 +84,21 @@ static void libetpan_log(mailimap *session, int log_type, const char *str, size_
 
 #define MAILIMAP_ERROR(r) (r != MAILIMAP_NO_ERROR && r != MAILIMAP_NO_ERROR_AUTHENTICATED && r != MAILIMAP_NO_ERROR_NON_AUTHENTICATED)
 
+static char *find_mailbox_response_line(char *restrict s, const char *cmd, const char *mb, int *skiplenptr)
+{
+	char *tmp;
+	int skiplen;
+	char findbuf[64];
+	skiplen = snprintf(findbuf, sizeof(findbuf), "* %s \"%s\" (", cmd, mb);
+	tmp = strstr(s, findbuf);
+	if (!tmp && !strchr(mb, ' ')) { /* If not found, try the unquoted version */
+		skiplen = snprintf(findbuf, sizeof(findbuf), "* %s %s (", cmd, mb);
+		tmp = strstr(s, findbuf);
+	}
+	*skiplenptr = skiplen;
+	return tmp;
+}
+
 static int client_status_command(struct imap_client *client, struct mailimap *imap, const char *mbox, json_t *folder, uint32_t *messages, char *listresp)
 {
 	int res = 0;
@@ -93,15 +108,9 @@ static int client_status_command(struct imap_client *client, struct mailimap *im
 
 	if (listresp) {
 		char *tmp;
-		char findbuf[64];
 		int skiplen;
 		/* See if we can get what we want from the log message. */
-		skiplen = snprintf(findbuf, sizeof(findbuf), "* STATUS \"%s\" (", mbox);
-		tmp = strstr(listresp, findbuf);
-		if (!tmp && !strchr(mbox, ' ')) { /* If not found, try the unquoted version */
-			skiplen = snprintf(findbuf, sizeof(findbuf), "* STATUS %s (", mbox);
-			tmp = strstr(listresp, findbuf);
-		}
+		tmp = find_mailbox_response_line(listresp, "STATUS", mbox, &skiplen);
 		if (!tmp) {
 			bbs_warning("No STATUS response for mailbox '%s'\n", mbox);
 			/* Manually ask for it now, as usual */
@@ -539,6 +548,9 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 					case MAILIMAP_MBX_LIST_OFLAG_FLAG_EXT:
 						/* These don't include any backslashes, so don't in the other ones above either: */
 						json_array_append_new(flagsarr, json_string(oflag->of_flag_ext));
+						if (!strcasecmp(oflag->of_flag_ext, "NonExistent")) {
+							noselect = 1;
+						}
 						break;
 				}
 			}
