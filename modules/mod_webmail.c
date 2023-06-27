@@ -1058,7 +1058,9 @@ static int contains_attachments_1part(struct mailimap_body_type_1part *type_1par
 					return 1;
 				}
 			} else {
+#ifdef DEBUG_ATTACHMENTS
 				bbs_debug(6, "1-part text\n");
+#endif
 			}
 			break;
 	}
@@ -1101,6 +1103,102 @@ static int contains_attachments(struct mailimap_body *imap_body)
 	return 0;
 }
 
+static void fetchlist_single(struct mailimap_msg_att *msg_att, json_t *arr)
+{
+	json_t *msgitem;
+	clistiter *cur2;
+
+	msgitem = json_object();
+	if (!msgitem) {
+		return;
+	}
+	json_array_append_new(arr, msgitem);
+	json_object_set_new(msgitem, "seqno", json_integer(msg_att->att_number));
+
+	for (cur2 = clist_begin(msg_att->att_list); cur2; cur2 = clist_next(cur2)) {
+		struct mailimap_msg_att_item *item = clist_content(cur2);
+		if (item->att_type == MAILIMAP_MSG_ATT_ITEM_STATIC) {
+			struct mailimap_msg_att_body_section *msg_att_body_section;
+			struct mailimap_body *imap_body;
+			char headersbuf[2048];
+			switch (item->att_data.att_static->att_type) {
+				case MAILIMAP_MSG_ATT_UID:
+					json_object_set_new(msgitem, "uid", json_integer(item->att_data.att_static->att_data.att_uid));
+					break;
+				case MAILIMAP_MSG_ATT_INTERNALDATE:
+					append_internaldate(msgitem, item->att_data.att_static->att_data.att_internal_date);
+					break;
+				case MAILIMAP_MSG_ATT_RFC822_SIZE:
+					json_object_set_new(msgitem, "size", json_integer(item->att_data.att_static->att_data.att_rfc822_size));
+					break;
+				case MAILIMAP_MSG_ATT_BODY_SECTION:
+					msg_att_body_section = item->att_data.att_static->att_data.att_body_section;
+#ifdef EXTRA_DEBUG
+					bbs_debug(5, "Matching headers: %s\n", msg_att_body_section->sec_body_part);
+#endif
+					/* Manual hacky workaround */
+					/* Seems calling mailmime_parse and fetch_mime_recurse here is pointless
+					 * since we still have to do append_header_meta on those fields anyways,
+					 * or they don't show up. Can't just parse headers into mailmime_parse. */
+					safe_strncpy(headersbuf, msg_att_body_section->sec_body_part, sizeof(headersbuf));
+					append_header_meta(msgitem, headersbuf, 1);
+					break;
+				case MAILIMAP_MSG_ATT_BODYSTRUCTURE:
+					imap_body = item->att_data.att_static->att_data.att_bodystructure;
+					json_object_set_new(msgitem, "attachments", json_boolean(contains_attachments(imap_body)));
+					break;
+				case MAILIMAP_MSG_ATT_RFC822_HEADER:
+				case MAILIMAP_MSG_ATT_ENVELOPE:
+				case MAILIMAP_MSG_ATT_RFC822_TEXT:
+				case MAILIMAP_MSG_ATT_BODY:
+				default:
+					bbs_warning("Unhandled FETCH response item\n");
+					break;
+			}
+		} else {
+			struct mailimap_msg_att_dynamic *dynamic = item->att_data.att_dyn;
+			clistiter *dcur;
+			json_t *flagsarr = json_array();
+			json_object_set_new(msgitem, "flags", flagsarr);
+			if (dynamic && dynamic->att_list) {
+				for (dcur = clist_begin(dynamic->att_list); dcur; dcur = clist_next(dcur)) {
+					struct mailimap_flag_fetch *flag = clist_content(dcur);
+					switch (flag->fl_type) {
+						case MAILIMAP_FLAG_FETCH_RECENT:
+							bbs_debug(5, "Recent\n");
+							break;
+						case MAILIMAP_FLAG_FETCH_OTHER:
+							switch (flag->fl_flag->fl_type) {
+								case MAILIMAP_FLAG_ANSWERED:
+									json_array_append_new(flagsarr, json_string("\\Answered"));
+									break;
+								case MAILIMAP_FLAG_FLAGGED:
+									json_array_append_new(flagsarr, json_string("\\Flagged"));
+									break;
+								case MAILIMAP_FLAG_DELETED:
+									json_array_append_new(flagsarr, json_string("\\Deleted"));
+									break;
+								case MAILIMAP_FLAG_SEEN:
+									json_array_append_new(flagsarr, json_string("\\Seen"));
+									break;
+								case MAILIMAP_FLAG_DRAFT:
+									json_array_append_new(flagsarr, json_string("\\Draft"));
+									break;
+								case MAILIMAP_FLAG_KEYWORD:
+									json_array_append_new(flagsarr, json_string(flag->fl_flag->fl_data.fl_keyword));
+									break;
+								case MAILIMAP_FLAG_EXTENSION:
+									json_array_append_new(flagsarr, json_string(flag->fl_flag->fl_data.fl_extension));
+									break;
+							}
+							break;
+					}
+				}
+			}
+		}
+	}
+}
+
 static void fetchlist(struct ws_session *ws, struct imap_client *client, const char *reason, int start, int end, int page, int numpages, const char *sort)
 {
 	int expected, res, c = 0;
@@ -1108,7 +1206,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 	struct mailimap_fetch_type *fetch_type = NULL;
 	struct mailimap_fetch_att *fetch_att = NULL;
 	clist *fetch_result;
-	clistiter *cur;
+	clistiter *cur, *cur2;
 	clist *hdrlist;
 	char *headername = NULL;
 	struct mailimap_header_list *imap_hdrlist;
@@ -1121,7 +1219,10 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 
 	/* Fetch: UID, flags, size, from, to, subject, internaldate,
 	 * +with attributes: priority headers, contains attachments */
-	if (sort && client->has_sort) {
+	if (sort && !client->has_sort) {
+		sort = NULL; /* If server doesn't support sort, we can't sort */
+	}
+	if (sort) {
 		int index = 1;
 		/*! \todo Cache this between FETCHLIST calls */
 		clist *sorted = sortall(client, sort); /* This could be somewhat slow, since we have sort the ENTIRE mailbox every time */
@@ -1207,17 +1308,18 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 	/* Fetch! By sequence number, not UID. */
 	res = mailimap_fetch(client->imap, set, fetch_type, &fetch_result);
 	mailimap_fetch_type_free(fetch_type);
-	mailimap_set_free(set);
 	/* Don't go to cleanup past this point, so no need to set fetch_type/set to NULL */
 	if (MAILIMAP_ERROR(res)) {
 		bbs_warning("FETCH failed: %s\n", maildriver_strerror(res));
 		/* fetch_result and everything that went into it is already freed */
+		mailimap_set_free(set);
 		return;
 	}
 
 	root = json_object();
 	if (!root) {
 		mailimap_fetch_list_free(fetch_result);
+		mailimap_set_free(set);
 		return;
 	}
 
@@ -1230,102 +1332,52 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 	arr = json_array();
 	json_object_set_new(root, "data", arr);
 
-	for (cur = clist_begin(fetch_result); cur; cur = clist_next(cur)) {
-		json_t *msgitem;
-		clistiter *cur2;
-		struct mailimap_msg_att *msg_att = clist_content(cur);
-
-		msgitem = json_object();
-		if (!msgitem) {
-			continue;
-		}
-		json_array_append_new(arr, msgitem);
-		json_object_set_new(msgitem, "seqno", json_integer(msg_att->att_number));
-
-		for (cur2 = clist_begin(msg_att->att_list); cur2; cur2 = clist_next(cur2)) {
-			struct mailimap_msg_att_item *item = clist_content(cur2);
-			if (item->att_type == MAILIMAP_MSG_ATT_ITEM_STATIC) {
-				struct mailimap_msg_att_body_section *msg_att_body_section;
-				struct mailimap_body *imap_body;
-				char headersbuf[2048];
-				switch (item->att_data.att_static->att_type) {
-					case MAILIMAP_MSG_ATT_UID:
-						json_object_set_new(msgitem, "uid", json_integer(item->att_data.att_static->att_data.att_uid));
-						break;
-					case MAILIMAP_MSG_ATT_INTERNALDATE:
-						append_internaldate(msgitem, item->att_data.att_static->att_data.att_internal_date);
-						break;
-					case MAILIMAP_MSG_ATT_RFC822_SIZE:
-						json_object_set_new(msgitem, "size", json_integer(item->att_data.att_static->att_data.att_rfc822_size));
-						break;
-					case MAILIMAP_MSG_ATT_BODY_SECTION:
-						msg_att_body_section = item->att_data.att_static->att_data.att_body_section;
-#ifdef EXTRA_DEBUG
-						bbs_debug(5, "Matching headers: %s\n", msg_att_body_section->sec_body_part);
-#endif
-						/* Manual hacky workaround */
-						/* Seems calling mailmime_parse and fetch_mime_recurse here is pointless
-						 * since we still have to do append_header_meta on those fields anyways,
-						 * or they don't show up. Can't just parse headers into mailmime_parse. */
-						safe_strncpy(headersbuf, msg_att_body_section->sec_body_part, sizeof(headersbuf));
-						append_header_meta(msgitem, headersbuf, 1);
-						break;
-					case MAILIMAP_MSG_ATT_BODYSTRUCTURE:
-						imap_body = item->att_data.att_static->att_data.att_bodystructure;
-						json_object_set_new(msgitem, "attachments", json_boolean(contains_attachments(imap_body)));
-						break;
-					case MAILIMAP_MSG_ATT_RFC822_HEADER:
-					case MAILIMAP_MSG_ATT_ENVELOPE:
-					case MAILIMAP_MSG_ATT_RFC822_TEXT:
-					case MAILIMAP_MSG_ATT_BODY:
-					default:
-						bbs_warning("Unhandled FETCH response item\n");
-						break;
+	if (sort) {
+		/* We need to add the messages in the order of the SORT response.
+		 * This is O(n^2), unfortunately (although the # of messages for FETCHLIST
+		 * should be relatively small, certainly not N).
+		 * We can't use qsort directly to sort the messages first and then do a linear scan,
+		 * because it's in the custom clist (linked list).
+		 * XXX We could however create an array of pointers and sort the pointers... */
+		clist *set_list = set->set_list;
+		for (cur2 = clist_begin(set_list); cur2; cur2 = clist_next(cur2)) {
+			struct mailimap_set_item *item = clist_content(cur2);
+			/* This is the nice thing about using a single set item for every message
+			 * when we sort, even if we could use a range. It makes this step easier,
+			 * since item->set_first == item->set_last */
+			uint32_t seqno = item->set_first;
+			bbs_assert(item->set_first == item->set_last);
+			/* Look for this message in the linked list of FETCH responses,
+			 * since they could be in any order.
+			 * Worst case we have to do a linear scan for every message. */
+			for (cur = clist_begin(fetch_result); cur; cur = clist_next(cur)) {
+				struct mailimap_msg_att *msg_att = clist_content(cur);
+				if (msg_att->att_number != seqno) {
+					continue;
 				}
-			} else {
-				struct mailimap_msg_att_dynamic *dynamic = item->att_data.att_dyn;
-				clistiter *dcur;
-				json_t *flagsarr = json_array();
-				json_object_set_new(msgitem, "flags", flagsarr);
-				if (dynamic && dynamic->att_list) {
-					for (dcur = clist_begin(dynamic->att_list); dcur; dcur = clist_next(dcur)) {
-						struct mailimap_flag_fetch *flag = clist_content(dcur);
-						switch (flag->fl_type) {
-							case MAILIMAP_FLAG_FETCH_RECENT:
-								bbs_debug(5, "Recent\n");
-								break;
-							case MAILIMAP_FLAG_FETCH_OTHER:
-								switch (flag->fl_flag->fl_type) {
-									case MAILIMAP_FLAG_ANSWERED:
-										json_array_append_new(flagsarr, json_string("\\Answered"));
-										break;
-									case MAILIMAP_FLAG_FLAGGED:
-										json_array_append_new(flagsarr, json_string("\\Flagged"));
-										break;
-									case MAILIMAP_FLAG_DELETED:
-										json_array_append_new(flagsarr, json_string("\\Deleted"));
-										break;
-									case MAILIMAP_FLAG_SEEN:
-										json_array_append_new(flagsarr, json_string("\\Seen"));
-										break;
-									case MAILIMAP_FLAG_DRAFT:
-										json_array_append_new(flagsarr, json_string("\\Draft"));
-										break;
-									case MAILIMAP_FLAG_KEYWORD:
-										json_array_append_new(flagsarr, json_string(flag->fl_flag->fl_data.fl_keyword));
-										break;
-									case MAILIMAP_FLAG_EXTENSION:
-										json_array_append_new(flagsarr, json_string(flag->fl_flag->fl_data.fl_extension));
-										break;
-								}
-								break;
-						}
-					}
-				}
+				fetchlist_single(msg_att, arr);
+				seqno = 0;
+				c++;
+				break;
+			}
+			if (seqno) {
+				/* This shouldn't happened. The message was in the SORT response,
+				 * and barring some awesome race condition, if we FETCH it,
+				 * then it should be in the response as well.
+				 * Regardless, we're still adding messages in the proper order.
+				 */
+				bbs_warning("No FETCH response for seqno %u?\n", seqno);
 			}
 		}
-		c++;
+	} else {
+		/* Not sorted. Order doesn't matter. */
+		for (cur = clist_begin(fetch_result); cur; cur = clist_next(cur)) {
+			struct mailimap_msg_att *msg_att = clist_content(cur);
+			fetchlist_single(msg_att, arr);
+			c++;
+		}
 	}
+	mailimap_set_free(set);
 
 	/* The messages are in ascending order here.
 	 * They are displayed newest first in the the webmail client,
