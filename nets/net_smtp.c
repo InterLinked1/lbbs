@@ -565,7 +565,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 			}
 			/* Save attributes for later, since we don't have the body yet and can't do these checks now. */
 			smtp->maxsize = list.maxsize;
-			if (smtp->sizepreview && smtp->sizepreview > smtp->maxsize) {
+			if (smtp->sizepreview && smtp->maxsize && smtp->sizepreview > smtp->maxsize) {
 				/* If the client told us in advance how large the message will be,
 				 * and we already know it's going to be too large, reject it now. */
 				smtp_reply(smtp, 552, 5.3.4, "Message too large");
@@ -2104,6 +2104,8 @@ static int injectmail(MAILER_PARAMS)
 	if (!fp) {
 		return -1;
 	}
+	/*! \note Lines must be no longer than 998 lines. bbs_make_email_file file doesn't enforce that,
+	 * the overarching application needs to. */
 	bbs_make_email_file(fp, subject, body, to, from, replyto, errorsto, NULL, 0);
 	length = ftell(fp);
 	fclose(fp);
