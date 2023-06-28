@@ -1465,7 +1465,18 @@ static void handle_fetchlist(struct ws_session *ws, struct imap_client *client, 
 	/* A mailbox MUST be currently selected here */
 	total = client->messages;
 	if (!total) {
+		json_t *root = json_object();
 		bbs_debug(5, "Mailbox is empty, no listing to provide\n");
+		if (root) {
+			/* Send an empty list to refresh the current mailbox to empty */
+			json_object_set_new(root, "response", json_string("FETCHLIST"));
+			json_object_set_new(root, "cause", json_string(reason));
+			json_object_set_new(root, "mailbox", json_string(client->mailbox));
+			json_object_set_new(root, "page", json_integer(page));
+			json_object_set_new(root, "numpages", json_integer(1));
+			json_object_set_new(root, "data", json_array());
+			json_send(ws, root);
+		}
 		return;
 	}
 
