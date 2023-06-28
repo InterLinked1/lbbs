@@ -89,6 +89,8 @@ const char *bbs_event_name(enum bbs_event_type type)
 			return "NODE_SHORT_SESSION";
 		case EVENT_NODE_LOGIN_FAILED:
 			return "NODE_LOGIN_FAILED";
+		case EVENT_NODE_BAD_REQUEST:
+			return "NODE_BAD_REQUEST";
 		case EVENT_USER_REGISTRATION:
 			return "USER_REGISTRATION";
 		case EVENT_USER_LOGIN:
@@ -151,6 +153,7 @@ int bbs_event_dispatch_custom(struct bbs_node *node, enum bbs_event_type type, c
 			/* Fall through */
 		case EVENT_NODE_SHORT_SESSION:
 		case EVENT_NODE_LOGIN_FAILED:
+		case EVENT_NODE_BAD_REQUEST:
 			if (!node) {
 				bbs_error("Can't create an event without a node\n");
 				return -1;

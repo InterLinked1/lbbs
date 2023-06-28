@@ -196,6 +196,7 @@ static int event_cb(struct bbs_event *event)
 	switch (event->type) {
 		case EVENT_NODE_LOGIN_FAILED:
 		case EVENT_NODE_SHORT_SESSION:
+		case EVENT_NODE_BAD_REQUEST:
 			if (!strcmp(event->ipaddr, "127.0.0.1")) {
 				return 1; /* Ignore localhost */
 			}
@@ -208,7 +209,9 @@ static int event_cb(struct bbs_event *event)
 			/*! \todo Some protocols probably need to be exempted from this, e.g. Finger, Gopher, HTTP (to some extent), etc.
 			 * For HTTP, if the request is bad, we should send an event, but if it's a successful request, then it's okay. */
 			inet_pton(AF_INET, event->ipaddr, &(sa.sin_addr));
-			process_bad_ip(&sa.sin_addr, event->ipaddr, event->type == EVENT_NODE_LOGIN_FAILED, event->username);
+			process_bad_ip(&sa.sin_addr, event->ipaddr,
+				/* Treat bad requests as harshly as login failures */
+				event->type == EVENT_NODE_LOGIN_FAILED || event->type == EVENT_NODE_BAD_REQUEST, event->username);
 			return 1;
 		case EVENT_USER_REGISTRATION:
 			/* Relatively speaking, it's a pretty big deal whenever a new user registers.

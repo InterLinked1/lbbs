@@ -51,6 +51,7 @@
 #include "include/base64.h"
 #include "include/hash.h"
 #include "include/crypt.h"
+#include "include/event.h"
 
 #include "include/mod_http.h"
 
@@ -243,14 +244,18 @@ int http_set_header(struct http_session *http, const char *header, const char *v
 enum http_response_code http_redirect_https(struct http_session *http, int port)
 {
 	char full_url[PATH_MAX];
+	char host[256];
 
 	/* This function must not be called if we're already secure, or we'll just end up in a loop, redirecting to ourself. */
 	bbs_assert(!http->secure);
 
+	/* The current host might already include a port, so strip it if so */
+	safe_strncpy(host, http->req->host, sizeof(host));
+	bbs_strterm(host, ':');
 	if (port != 443) {
-		snprintf(full_url, sizeof(full_url), "https://%s:443%s", http->req->host, http->req->uri);
+		snprintf(full_url, sizeof(full_url), "https://%s:%d%s", host, port, http->req->uri);
 	} else {
-		snprintf(full_url, sizeof(full_url), "https://%s%s", http->req->host, http->req->uri);
+		snprintf(full_url, sizeof(full_url), "https://%s%s", host, http->req->uri);
 	}
 	http_redirect(http, HTTP_REDIRECT_PERMANENT, full_url);
 	return HTTP_REDIRECT_PERMANENT;
@@ -643,6 +648,8 @@ static int process_headers(struct http_session *http)
 				unsigned int port = (unsigned int) atoi(portstr);
 				if (port != http->node->port) {
 					bbs_warning("Host port %u does not match actual port %u\n", port, http->node->port);
+					/* This is almost certainly an illegitimate request. */
+					bbs_event_dispatch(http->node, EVENT_NODE_BAD_REQUEST);
 				}
 			}
 		}
@@ -756,6 +763,12 @@ static int process_headers(struct http_session *http)
 			}
 			free(cookies);
 		}
+	}
+
+	if (http->req->method & HTTP_METHOD_CONNECT) {
+		/* The CONNECT method is for proxy servers, which we aren't one.
+		 * This is almost certainly spam traffic. */
+		bbs_event_dispatch(http->node, EVENT_NODE_BAD_REQUEST);
 	}
 
 	return 0;
