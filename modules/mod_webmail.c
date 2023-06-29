@@ -99,6 +99,60 @@ static char *find_mailbox_response_line(char *restrict s, const char *cmd, const
 	return tmp;
 }
 
+static int client_status_basic(mailimap *imap, const char *mbox, uint32_t *unseen, uint32_t *total)
+{
+	int res = 0;
+	struct mailimap_status_att_list *att_list;
+	struct mailimap_mailbox_data_status *status;
+	clistiter *cur;
+
+	att_list = mailimap_status_att_list_new_empty();
+	if (!att_list) {
+		return -1;
+	}
+	if (unseen) {
+		res = mailimap_status_att_list_add(att_list, MAILIMAP_STATUS_ATT_UNSEEN);
+	}
+	if (total) {
+		res = mailimap_status_att_list_add(att_list, MAILIMAP_STATUS_ATT_MESSAGES);
+	}
+
+	if (res) {
+		bbs_warning("Failed to add message: %s\n", maildriver_strerror(res));
+		goto cleanup;
+	}
+	res = mailimap_status(imap, mbox, att_list, &status);
+
+	if (res != MAILIMAP_NO_ERROR) {
+		bbs_warning("STATUS failed: %s\n", maildriver_strerror(res));
+		goto cleanup;
+	}
+	res = 0;
+
+	for (cur = clist_begin(status->st_info_list); cur; cur = clist_next(cur)) {
+		struct mailimap_status_info *status_info = clist_content(cur);
+		switch (status_info->st_att) {
+			case MAILIMAP_STATUS_ATT_UNSEEN:
+				if (unseen) {
+					*unseen = status_info->st_value;
+				}
+				break;
+			case MAILIMAP_STATUS_ATT_MESSAGES:
+				if (total) {
+					*total = status_info->st_value;
+				}
+				break;
+			default:
+				break;
+		}
+	}
+	mailimap_mailbox_data_status_free(status);
+
+cleanup:
+	mailimap_status_att_list_free(att_list);
+	return res;
+}
+
 static int client_status_command(struct imap_client *client, struct mailimap *imap, const char *mbox, json_t *folder, uint32_t *messages, char *listresp)
 {
 	int res = 0;
@@ -685,7 +739,26 @@ static int client_imap_select(struct ws_session *ws, struct imap_client *client,
 {
 	json_t *root, *flags;
 	clistiter *cur;
-	int res = mailimap_select(imap, name);
+	int res;
+	uint32_t num_unseen = 0;
+
+	/* For some reason, the SELECT response can't give you the number of unread messages.
+	 * We need to explicitly ask for the STATUS to get that.
+	 * Do so and send it along because that will help the frontend.
+	 * What could pose a problem is that with IMAP, you are not SUPPOSED to
+	 * issue a STATUS for the currently selected mailbox.
+	 * Personally, I think this is stupid, since there's no other way to get this information,
+	 * and so what if you want that for the currently selected mailbox?
+	 * We therefore ask for the STATUS before doing the SELECT, to maximize compatibility with
+	 * servers that may adhere to such a dumb limitation, but that won't help if this mailbox
+	 * was already selected anyways, and we're merely reselecting it.
+	 */
+	res = client_status_basic(imap, name, &num_unseen, NULL);
+	if (res != MAILIMAP_NO_ERROR) {
+		return -1;
+	}
+
+	res = mailimap_select(imap, name);
 	if (res != MAILIMAP_NO_ERROR) {
 		return -1;
 	}
@@ -702,6 +775,8 @@ static int client_imap_select(struct ws_session *ws, struct imap_client *client,
 	json_object_set_new(root, "readonly", json_boolean(imap->imap_selection_info->sel_perm == MAILIMAP_MAILBOX_READONLY));
 	json_object_set_new(root, "exists", json_integer(imap->imap_selection_info->sel_exists));
 	json_object_set_new(root, "recent", json_integer(imap->imap_selection_info->sel_recent));
+
+	json_object_set_new(root, "unseen", json_integer(num_unseen));
 
 	client->messages = imap->imap_selection_info->sel_exists;
 	REPLACE(client->mailbox, name);
@@ -2437,12 +2512,17 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 			handle_store_deleted(client, json_object_get(root, "uids"));
 			REFRESH_LISTING("DELETE"); /* XXX Frontend can easily handle marking it as Deleted on its end, and should */
 		} else if (!strcmp(command, "EXPUNGE")) {
-			/* XXX We need to get an updated total message count now, as ours is out of date,
-			 * and we don't easily know how many messages were expunged (same problem discussed in "MOVE" below) */
 			res = mailimap_expunge(client->imap);
 			if (res != MAILIMAP_NO_ERROR) {
 				bbs_error("EXPUNGE failed: %s\n", strerror(errno));
 			} else {
+				/* XXX We don't know how many messages were expunged since we're not currently able to
+				 * receive all the IDLE data.
+				 * Thus, explicitly ask for the # of messages in the currently selected mailboxes.
+				 * Again, this is something clients SHOULD NOT do, but we kind of have to... */
+				uint32_t num_total = 0;
+				res = client_status_basic(client->imap, client->mailbox, NULL, &num_total);
+				client->messages = num_total;
 				REFRESH_LISTING("EXPUNGE");
 			}
 		} else if (!strcmp(command, "MOVE")) {
