@@ -3395,8 +3395,12 @@ static int imap_client_list(struct bbs_tcp_client *client, int caps, const char 
 
 	if (caps & IMAP_CAPABILITY_LIST_EXTENDED) {
 		/* RFC 5258 Sec 4: Technically, if the server supports LIST-EXTENDED and we don't ask for CHILDREN explicitly,
-		 * it's not obligated to return these attributes */
-		IMAP_CLIENT_SEND(client, "a3 LIST \"\" \"*\" RETURN (CHILDREN)");
+		 * it's not obligated to return these attributes. Ditto for SPECIAL-USE. */
+		if (caps & IMAP_CAPABILITY_SPECIAL_USE) {
+			IMAP_CLIENT_SEND(client, "a3 LIST \"\" \"*\" RETURN (CHILDREN SPECIAL-USE)");
+		} else {
+			IMAP_CLIENT_SEND(client, "a3 LIST \"\" \"*\" RETURN (CHILDREN)");
+		}
 	} else {
 		IMAP_CLIENT_SEND(client, "a3 LIST \"\" \"*\"");
 	}
