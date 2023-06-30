@@ -45,6 +45,8 @@ export CFLAGS
 export EXE
 export LIBS
 
+export SUBMAKE
+
 # This is the first target, so it's the default for just "make":
 all : bbs $(MOD_SUBDIR) external
 	@echo " +--------- LBBS has been compiled ---------+"

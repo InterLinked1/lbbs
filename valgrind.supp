@@ -668,9 +668,7 @@
    fun:g_object_new
    fun:g_mime_stream_fs_new_with_bounds
    fun:mime_make_bodystructure
-   fun:process_fetch
-   fun:handle_fetch
-   fun:imap_process
+   ...
 }
 {
    MIMEPARSE_GMIME_run

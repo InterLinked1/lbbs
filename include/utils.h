@@ -16,7 +16,7 @@
 
 #include "include/readline.h"
 
-#if defined(BBS_IN_CORE) || defined(BBS_MODULE_SELF)
+#ifdef BBS_MAIN_PROCESS
 #include "include/string.h"
 #endif
 

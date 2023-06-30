@@ -31,6 +31,18 @@ $(DEPENDS):
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^
 
+IMAP_SRC = $(wildcard net_imap/*.c)
+IMAP_OBJ = $(patsubst %.c,%.o,$(IMAP_SRC))
+
+# Subdirectory with components for net_imap
+net_imap:
+	@echo " +--------- make $@ ---------+"
+	$(SUBMAKE) --no-builtin-rules -C $@ all
+
+net_imap.so : net_imap.o net_imap
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $<).so $(IMAP_OBJ) $<
+
 net_ssh.so : net_ssh.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(SSHLIB)
@@ -47,3 +59,4 @@ net_ws.so : net_ws.o
 .SECONDARY: $(patsubst %.c,%.o,$(MOD_SRC))
 
 .PHONY: all
+.PHONY: net_imap

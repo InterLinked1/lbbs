@@ -405,10 +405,16 @@ void bbs_log_backtrace(void);
 struct bbs_module;
 /* Internal/forward declaration, BBS_MODULE_SELF should be used instead. */
 struct bbs_module *BBS_MODULE_SELF_SYM(void);
+#elif defined(BBS_MODULE_SUBFILE)
+/* This is part of a module but not the main module file. Do nothing. */
 #else
 #error "Externally compiled modules must declare BBS_MODULE_SELF_SYM."
 #endif
 #endif /* TEST_IN_CORE / TEST_MODULE_SELF_SYM */
+
+#if defined(BBS_IN_CORE) || defined(BBS_MODULE_SELF) || defined(BBS_MODULE_SUBFILE)
+#define BBS_MAIN_PROCESS
+#endif
 
 /*! \brief Whether the BBS is fully started */
 int bbs_is_fully_started(void);
