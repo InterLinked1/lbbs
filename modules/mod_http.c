@@ -250,7 +250,7 @@ enum http_response_code http_redirect_https(struct http_session *http, int port)
 	bbs_assert(!http->secure);
 
 	/* The current host might already include a port, so strip it if so */
-	safe_strncpy(host, http->req->host, sizeof(host));
+	safe_strncpy(host, S_OR(http->req->host, bbs_hostname()), sizeof(host));
 	bbs_strterm(host, ':');
 	if (port != 443) {
 		snprintf(full_url, sizeof(full_url), "https://%s:%d%s", host, port, http->req->uri);
