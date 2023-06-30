@@ -35,6 +35,7 @@
 
 struct imap_client {
 	struct mailimap *imap;
+	struct ws_session *ws;
 	int imapfd;			/* File descriptor, important for polling an idle connection */
 	int idlestart;		/* Time that IDLE started, to avoid timing out */
 	/* Cache */
@@ -83,6 +84,59 @@ static void libetpan_log(mailimap *session, int log_type, const char *str, size_
 }
 
 #define MAILIMAP_ERROR(r) (r != MAILIMAP_NO_ERROR && r != MAILIMAP_NO_ERROR_AUTHENTICATED && r != MAILIMAP_NO_ERROR_NON_AUTHENTICATED)
+
+static int json_send(struct ws_session *ws, json_t *root)
+{
+	char *s = json_dumps(root, 0);
+	if (s) {
+		size_t len = strlen(s);
+		websocket_sendtext(ws, s, len);
+		free(s);
+	} else {
+		bbs_warning("Failed to dump JSON string: was it allocated?\n");
+	}
+	json_decref(root);
+	return s ? 0 : -1;
+}
+
+static void client_clear_status(struct ws_session *ws)
+{
+	/* XXX In theory, we could just send a fixed string here, no need to use jansson at all for this. */
+	json_t *json = json_object();
+	if (!json) {
+		return;
+	}
+	json_object_set_new(json, "response", json_string("status")); /* Lowercase, to indicate it's not IMAP protocol related */
+	json_object_set_new(json, "status", json_string(""));
+	json_send(ws, json);
+}
+
+#define client_set_status(ws, fmt, ...) __client_set_status(ws, 0, fmt, ## __VA_ARGS__)
+#define client_set_error(ws, fmt, ...) __client_set_status(ws, 1, fmt, ## __VA_ARGS__)
+
+static void __attribute__ ((format (gnu_printf, 3, 4))) __client_set_status(struct ws_session *ws, int fatal, const char *fmt, ...)
+{
+	/* A fixed buffer of this size should be plenty for status messages.
+	 * If it weren't for the JSON, this whole thing would involve 0 allocations! */
+	char buf[256];
+	va_list ap;
+	json_t *json;
+
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+
+	bbs_debug(5, "New status: %s\n", buf);
+
+	json = json_object();
+	if (!json) {
+		return;
+	}
+	json_object_set_new(json, "response", json_string("status")); /* Lowercase, to indicate it's not IMAP protocol related */
+	json_object_set_new(json, "error", json_boolean(fatal));
+	json_object_set_new(json, "msg", json_string(buf));
+	json_send(ws, json);
+}
 
 static char *find_mailbox_response_line(char *restrict s, const char *cmd, const char *mb, int *skiplenptr)
 {
@@ -250,6 +304,7 @@ static int client_status_command(struct imap_client *client, struct mailimap *im
 		bbs_warning("Failed to add message: %s\n", maildriver_strerror(res));
 		goto cleanup;
 	}
+	client_set_status(client->ws, "Querying status of %s", mbox);
 	res = mailimap_status(imap, mbox, att_list, &status);
 
 	if (res != MAILIMAP_NO_ERROR) {
@@ -292,20 +347,6 @@ cleanup:
 	return res;
 }
 
-static int json_send(struct ws_session *ws, json_t *root)
-{
-	char *s = json_dumps(root, 0);
-	if (s) {
-		size_t len = strlen(s);
-		websocket_sendtext(ws, s, len);
-		free(s);
-	} else {
-		bbs_warning("Failed to dump JSON string: was it allocated?\n");
-	}
-	json_decref(root);
-	return s ? 0 : -1;
-}
-
 #define CLIENT_REQUIRE_VAR(name) \
 	if (!name) { \
 		bbs_warning("Missing required session variable '%s'\n", #name); \
@@ -344,6 +385,7 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client, s
 	timeout = mailimap_get_timeout(imap);
 	/* Timeout needs to be sufficiently large... e.g. FETCH 1:* (SIZE) can take quite a few seconds on large mailboxes. */
 	mailimap_set_timeout(imap, 25); /* If the IMAP server hasn't responded by now, I doubt it ever will */
+	client_set_status(ws, "Connecting to %s:%u", hostname, port);
 	if (secure) {
 		res = mailimap_ssl_connect(imap, hostname, port);
 	} else {
@@ -351,12 +393,14 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client, s
 	}
 	if (MAILIMAP_ERROR(res)) {
 		bbs_warning("Failed to establish IMAP session to %s:%d\n", hostname, port);
+		client_set_error(ws, "IMAP server connection failed");
 		goto cleanup;
 	}
 	mailimap_set_timeout(imap, timeout); /* Reset once logged in */
 	res = mailimap_login(imap, username, password);
 	if (MAILIMAP_ERROR(res)) {
 		bbs_warning("Failed to login to IMAP server as %s\n", username);
+		client_set_error(ws, "IMAP server login failed");
 		goto cleanup;
 	}
 	res = mailimap_capability(imap, &capdata);
@@ -409,6 +453,11 @@ static uint32_t fetch_size(struct mailimap_msg_att *msg_att)
 	return 0;
 }
 
+struct list_status_cb {
+	struct imap_client *client;
+	struct dyn_str *dynstr;
+};
+
 static void list_status_logger(mailstream *imap_stream, int log_type, const char *str, size_t size, void *context)
 {
 	/* This is a hack due to the limitations of libetpan.
@@ -424,7 +473,9 @@ static void list_status_logger(mailstream *imap_stream, int log_type, const char
 	 * We still let libetpan handle parsing the LIST responses and we only manually parse the STATUS responses.
 	 */
 
-	struct dyn_str *dynstr = context;
+	struct list_status_cb *cb = context;
+	struct imap_client *client = cb->client;
+	struct dyn_str *dynstr = cb->dynstr;
 
 	UNUSED(imap_stream);
 
@@ -441,6 +492,20 @@ static void list_status_logger(mailstream *imap_stream, int log_type, const char
 
 	/* Can be broken up across multiple log callback calls, so append to a dynstr */
 	bbs_debug(6, "Log callback of %lu bytes for LIST-STATUS\n", size);
+	/* Since this can take quite a bit of time, send an update here */
+	if (size > STRLEN("* STATUS ") && STARTS_WITH(str, "* STATUS ")) {
+		const char *mb = str + STRLEN("* STATUS ");
+		size_t maxlen = size - STRLEN("* STATUS ");
+		if (maxlen > 1) {
+			const char *end = memchr(mb + 1, *mb == '"' ? '"' : ' ', maxlen);
+			size_t mblen = end ? (size_t) (end - mb) : maxlen;
+			if (*mb == '"') {
+				mb++;
+				mblen--;
+			}
+			client_set_status(client->ws, "Queried status of %.*s", (int) mblen, mb);
+		}
+	}
 	dyn_str_append(dynstr, str, size);
 }
 
@@ -526,8 +591,12 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 	 * Obviously, a server that supports both LIST-STATUS and STATUS=SIZE is the holy grail of IMAP servers, and we should take advantage of that.
 	 */
 
+	client_set_status(client->ws, "Querying folder list");
 	if (details && client->has_list_status && client->has_status_size) {
+		struct list_status_cb cb;
 		struct dyn_str dynstr;
+		cb.dynstr = &dynstr;
+		cb.client = client;
 		memset(&dynstr, 0, sizeof(dynstr));
 		/* Fundamentally, libetpan does not support LIST-STATUS.
 		 * It did not support STATUS=SIZE either, but it was easy to patch it support that
@@ -540,7 +609,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 		 * The time savings from doing a single LIST-STATUS command over N STATUS commands
 		 * is worth the overhead in setting up a separate connection. */
 		bbs_debug(4, "Nice, both LIST-STATUS and STATUS=SIZE are supported!\n"); /* Somebody please give the poor IMAP server a pay raise */
-		mailstream_set_logger(imap->imap_stream, list_status_logger, &dynstr);
+		mailstream_set_logger(imap->imap_stream, list_status_logger, &cb);
 		res = mailimap_list_status(imap, &imap_list);
 		mailstream_set_logger(imap->imap_stream, NULL, NULL);
 		listresp = dynstr.buf;
@@ -626,6 +695,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 					struct mailimap_set *set = mailimap_set_new_interval(1, 0); /* fetch in interval 1:* */
 
 					bbs_debug(2, "IMAP server does not support RFC 8438. Manually calculating mailbox size for %s\n", name);
+					client_set_status(client->ws, "Calculating size of %s", name);
 					/* Must SELECT mailbox */
 					res = mailimap_select(imap, name);
 					if (res != MAILIMAP_NO_ERROR) {
@@ -665,6 +735,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 
 	free_if(listresp);
 	mailimap_list_result_free(imap_list);
+	client_clear_status(client->ws);
 
 	if (needunselect) {
 		/* UNSELECT itself is an extension. Only do if supported. */
@@ -2572,6 +2643,7 @@ static int on_open(struct ws_session *ws)
 	}
 
 	websocket_attach_user_data(ws, client);
+	client->ws = ws;
 	if (client_imap_init(ws, client, &imap)) {
 		goto done;
 	}
