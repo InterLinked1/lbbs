@@ -648,8 +648,7 @@ static int process_headers(struct http_session *http)
 				unsigned int port = (unsigned int) atoi(portstr);
 				if (port != http->node->port) {
 					bbs_warning("Host port %u does not match actual port %u\n", port, http->node->port);
-					/* This is almost certainly an illegitimate request. */
-					bbs_event_dispatch(http->node, EVENT_NODE_BAD_REQUEST);
+					return HTTP_BAD_REQUEST;
 				}
 			}
 		}
@@ -1834,6 +1833,10 @@ static void http_handler(struct bbs_node *node, int secure)
 			bbs_warning("Meant to send %lu bytes, but actually sent %lu?\n", http.res->contentlength, http.res->sentbytes);
 		}
 		log_response(&http);
+		if (http.res->code == HTTP_BAD_REQUEST) {
+			/* This is almost certainly an illegitimate request. */
+			bbs_event_dispatch(http.node, EVENT_NODE_BAD_REQUEST);
+		}
 		http_request_cleanup(http.req);
 	} while (res >= 0 && http.req->keepalive);
 
