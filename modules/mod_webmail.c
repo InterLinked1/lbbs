@@ -966,6 +966,34 @@ static void append_internaldate(json_t *json, struct mailimap_date_time *dt)
 	return append_datetime(json, "received", buf);
 }
 
+/*! \brief Remove all unprintable characters from a string, in place */
+static void remove_unprintable(char *restrict s)
+{
+	char *d = s;
+	while (*s) {
+		if (isprint(*s)) {
+			*d++ = *s++;
+		} else {
+			s++;
+		}
+	}
+	*d = '\0';
+}
+
+static void remove_unprintable_len(char *restrict s, size_t *restrict len)
+{
+	char *d = s;
+	while (*s) {
+		if (isprint(*s)) {
+			*d++ = *s++;
+		} else {
+			s++;
+			*len -= 1;
+		}
+	}
+	*d = '\0';
+}
+
 static char *mime_header_decode(const char *s)
 {
 	size_t cur_token;
@@ -992,10 +1020,24 @@ static char *mime_header_decode(const char *s)
 	if (!decoded) {
 		bbs_warning("Failed to decode MIME header\n");
 	}
+
+	/* XXX Hack: Some of the encoded strings can have weird artifacts in them when decoded.
+	 * e.g.:
+	 * =?windows-1252?Q?foo=AE_bonus?= =?windows-1252?Q?_bar=3F?=
+	 * turns into
+	 * foo<unprintable> bonus bar?
+	 *
+	 * Possibly a bug with mailmime_encoded_phrase_parse, not really sure.
+	 *
+	 * We shouldn't have to do this, but json_object_set_new will fail if we're not UTF-8 compliant.
+	 * So remove any such characters if there are any.
+	 */
+	remove_unprintable(decoded);
+
 	return decoded;
 }
 
-static void append_header_single(json_t *restrict json, int *importance, int fetchlist, json_t *to, json_t *cc, const char *hdrname, const char *hdrval)
+static void append_header_single(json_t *restrict json, int *importance, int fetchlist, json_t *to, json_t *cc, const char *hdrname, char *restrict hdrval)
 {
 	/* This is one of the headers we wanted.
 	 * FETCHLIST: Date, Subject, From, Cc, To, X-Priority, Importance, X-MSMail-Priority, or Priority.
@@ -1036,6 +1078,7 @@ static void append_header_single(json_t *restrict json, int *importance, int fet
 				json_array_append_new(cc, json_string(hdrval));
 			} else if (!strcasecmp(hdrname, "Subject")) {
 				json_object_set_new(json, "subject", json_string(hdrval));
+				bbs_debug(3, "set subj: %s\n", hdrval);
 			} else if (!strcasecmp(hdrname, "Date")) {
 				struct tm sent;
 				/* from parse_sent_date in net_imap: */
@@ -1043,7 +1086,9 @@ static void append_header_single(json_t *restrict json, int *importance, int fet
 					bbs_warning("Failed to parse as date: %s\n", hdrval);
 				}
 				__append_datetime(json, "sent", &sent);
-			} /* else, there shouldn't be anything unaccounted for, since we only fetched specific headers of interest */
+			} else { /* else, there shouldn't be anything unaccounted for, since we only fetched specific headers of interest */
+				bbs_warning("Unanticipated header: %s\n", hdrname);
+			}
 			free_if(decoded);
 		} else {
 			/* Only care about these headers when fetching a full message.
@@ -1086,7 +1131,6 @@ static void append_header_meta(json_t *restrict json, char *headers, int fetchli
 
 		if (isspace(header[0])) {
 			/* Continuation of previous header */
-			hdrname = prevheadername;
 			dyn_str_append(&dynstr, prevval, strlen(prevval));
 			prevval = header;
 		} else {
@@ -1096,19 +1140,17 @@ static void append_header_meta(json_t *restrict json, char *headers, int fetchli
 				append_header_single(json, &importance, fetchlist, to, cc, prevheadername, dynstr.buf);
 				free(dynstr.buf);
 				memset(&dynstr, 0, sizeof(dynstr));
+			} else if (prevval) {
+				append_header_single(json, &importance, fetchlist, to, cc, prevheadername, prevval);
 			}
 			/* New header */
 			hdrname = strsep(&hdrval, ":");
 			prevheadername = hdrname;
+			if (!strlen_zero(hdrval)) {
+				ltrim(hdrval);
+			}
 			prevval = hdrval;
 		}
-
-		if (!strlen_zero(hdrval)) {
-			ltrim(hdrval);
-			bbs_strterm(hdrval, '\r');
-			append_header_single(json, &importance, fetchlist, to, cc, hdrname, hdrval);
-		}
-		hdrname = hdrval = NULL;
 	}
 
 	/* If we had a previous multiline header, flush it */
@@ -1116,6 +1158,8 @@ static void append_header_meta(json_t *restrict json, char *headers, int fetchli
 		dyn_str_append(&dynstr, prevval, strlen(prevval));
 		append_header_single(json, &importance, fetchlist, to, cc, prevheadername, dynstr.buf);
 		free(dynstr.buf);
+	} else if (prevval) {
+		append_header_single(json, &importance, fetchlist, to, cc, prevheadername, prevval);
 	}
 
 	if (importance) {
@@ -1964,7 +2008,18 @@ static int fetch_mime(json_t *root, int html, const char *msg_body, size_t msg_s
 		if (MAILIMAP_ERROR(res)) {
 			json_object_set_new(root, "body", json_stringn(body, len));
 		} else {
-			json_object_set_new(root, "body", json_stringn(result, resultlen));
+			json_t *jsonbody = json_stringn(result, resultlen);
+			if (!jsonbody) {
+				/* Could happen if body does not contain valid UTF-8 */
+				remove_unprintable_len(result, &resultlen); /* XXX Hacky workaround */
+				jsonbody = json_stringn(result, resultlen);
+				if (!jsonbody) {
+					bbs_warning("Failed to encode body %p (%lu) as JSON\n", result, resultlen);
+				} else {
+					bbs_warning("Message body is not valid UTF-8\n");
+				}
+			}
+			json_object_set_new(root, "body", jsonbody);
 			mailmime_decoded_part_free(result);
 		}
 	} else {
