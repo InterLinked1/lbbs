@@ -128,8 +128,9 @@ extern int imap_debug_level;
 		bufpos += (typeof((buflen))) _bytes; \
 		buflen -= (typeof((buflen))) _bytes; \
 		if ((int) buflen <= 0) { \
-			bbs_warning("Buffer truncation\n"); \
+			bbs_warning("Buffer truncation (%lu)\n", (size_t) buflen); \
 			*(bufstart + bufsize - 1) = '\0';  \
+			buflen = 0; \
 		} \
 	}
 
@@ -139,8 +140,9 @@ extern int imap_debug_level;
 		bufpos += (typeof((buflen))) _bytes; \
 		buflen -= (typeof((buflen))) _bytes; \
 		if ((int) buflen <= 0) { \
-			bbs_warning("Buffer truncation\n"); \
+			bbs_warning("Buffer truncation (%lu)\n", (size_t) buflen); \
 			*(bufstart + bufsize - 1) = '\0';  \
+			buflen = 0; \
 		} \
 	}
 

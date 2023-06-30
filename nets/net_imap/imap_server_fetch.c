@@ -265,7 +265,7 @@ static int process_fetch_rfc822header(const char *fullname, char *response, size
 
 static int process_fetch_finalize(struct imap_session *imap, struct fetch_request *fetchreq, int seqno, const char *fullname, char *response, size_t responselen, char **buf, int *len)
 {
-	char headers[8192] = ""; /* XXX Large enough for all headers, etc.? Better might be sendfile, no buffering */
+	char headers[10000] = ""; /* XXX Large enough for all headers, etc.? Better might be sendfile, no buffering */
 	char rangebuf[32] = "";
 	int multiline = 0;
 	size_t bodylen = 0;
