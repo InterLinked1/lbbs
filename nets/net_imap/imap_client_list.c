@@ -178,10 +178,7 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 		/* Note that we cache all the directories on all servers at once, since we truncate the file. */
 		while ((fgets(line, sizeof(line), fp))) {
 			char *prefix, *server;
-			struct bbs_url url;
-			struct bbs_tcp_client client;
-			int secure = 0;
-			char buf[1024]; /* Must be large enough to get all the CAPABILITYs, or bbs_readline will throw a warning about buffer exhaustion and return 0 */
+			struct imap_client *client;
 
 			l++;
 			server = line;
@@ -190,26 +187,12 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 				continue; /* Skip commented lines */
 			}
 
-			memset(&url, 0, sizeof(url));
-			if (bbs_parse_url(&url, server)) {
-				bbs_warning("Malformed URL on line %d: %s\n", l, server); /* Include the line number since bbs_parse_url "used up" the string */
+			client = imap_client_get_by_url(imap, prefix, server);
+			bbs_memzero(server, strlen(server)); /* Contains password */
+			if (!client) {
 				continue;
 			}
-			if (!strcmp(url.prot, "imaps")) {
-				secure = 1;
-			} else if (strcmp(url.prot, "imap")) {
-				bbs_warning("Unsupported protocol: %s\n", url.prot);
-				continue;
-			}
-			/* Expect a URL like imap://user:password@imap.example.com:993/mailbox */
-			memset(&client, 0, sizeof(client));
-			if (bbs_tcp_client_connect(&client, &url, secure, buf, sizeof(buf))) {
-				continue;
-			}
-			if (!my_imap_client_login(&client, &url, imap)) {
-				imap_client_list(&client, imap->virtcapabilities, prefix, fp2);
-			}
-			bbs_tcp_client_cleanup(&client);
+			imap_client_list(&client->client, client->virtcapabilities, prefix, fp2);
 		}
 		fclose(fp);
 		rewind(fp2); /* Rewind cache to the beginning, in case we just wrote it */
@@ -334,7 +317,7 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 			/* Use fullmboxname, for full mailbox name (from our perspective), NOT virtmboxname */
 			if (set_maildir(imap, fullmboxname)) {
 				bbs_error("Failed to set maildir for mailbox '%s'\n", fullmboxname);
-			} else if (!imap->virtmbox) {
+			} else if (!imap->client) {
 				/* We know we called set_maildir for a remote mailbox, so it should always be remote */
 				bbs_warning("No virtual/remote mailbox active?\n");
 			} else {
@@ -343,18 +326,18 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 				 * but we strip all hierarchy delimiters before doing that anyways. */
 				char statuscmd[84];
 				const char *items = lcmd->retstatus;
-				char *remotename = remote_mailbox_name(imap, fullmboxname); /* Convert local delimiter (back) to remote */
+				char *remotename = remote_mailbox_name(imap->client, fullmboxname); /* Convert local delimiter (back) to remote */
 				int want_size = strstr(lcmd->retstatus, "SIZE") ? 1 : 0;
 				REPLACE(imap->activefolder, fullmboxname);
 
 				/* We also need to remove SIZE from lcmd->retstatus if it's not supported by the remote */
-				if (want_size && !(imap->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
+				if (want_size && !(imap->client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
 					safe_strncpy(statuscmd, lcmd->retstatus, sizeof(statuscmd));
 					items = remove_size(statuscmd);
 				}
 
 				/* Always use remote_status, never direct passthrough, to avoid sending a tagged OK response each time */
-				remote_status(imap, remotename, items, want_size);
+				remote_status(imap->client, remotename, items, want_size);
 			}
 			/* Most of it is already in the remote format... convert it all so bbs_strterm will stop at the right spot */
 			bbs_strreplace(fullmboxname, HIERARCHY_DELIMITER_CHAR, remotedelim);

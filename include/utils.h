@@ -319,6 +319,13 @@ void bbs_socket_close(int *socket);
 void bbs_socket_thread_shutdown(int *socket, pthread_t thread);
 
 /*!
+ * \brief Check whether a socket has been closed by the remote peer, without reading from it
+ * \param fd
+ * \retval 1 if closed, 0 if no activity
+ */
+int bbs_socket_pending_shutdown(int fd);
+
+/*!
  * \brief Listen on a TCP socket
  * \param port TCP port number
  * \param name Name of network service

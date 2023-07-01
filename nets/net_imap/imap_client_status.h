@@ -15,4 +15,4 @@
 
 char *remove_size(char *restrict s);
 
-int remote_status(struct imap_session *imap, const char *remotename, const char *items, int size);
+int remote_status(struct imap_client *client, const char *remotename, const char *items, int size);

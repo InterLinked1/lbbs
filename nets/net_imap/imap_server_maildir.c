@@ -181,13 +181,13 @@ int set_maildir(struct imap_session *imap, const char *mailbox)
 		/* Mailbox doesn't exist on this server, and there is no mapping for it to any remote */
 		imap_reply(imap, "NO [NONEXISTENT] No such mailbox '%s'", mailbox);
 fail:
-		if (imap->virtmbox) {
+		if (imap->client) {
 			imap_close_remote_mailbox(imap);
 		}
 		return -1;
 	}
 
-	if (imap->virtmbox) {
+	if (imap->client) {
 		imap_close_remote_mailbox(imap);
 	}
 

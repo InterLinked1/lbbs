@@ -476,6 +476,22 @@ void bbs_socket_thread_shutdown(int *socket, pthread_t thread)
 	bbs_pthread_join(thread, NULL);
 }
 
+int bbs_socket_pending_shutdown(int fd)
+{
+	char c;
+	ssize_t res;
+
+	if (bbs_poll(fd, 0) == 0) {
+		/* No activity pending on the socket, so it's still open. */
+		return 0;
+	}
+
+	/* Something is pending on the socket. Try to peek a byte,
+	 * and if that fails, assume the remote end probably closed the connection. */
+	res = recv(fd, &c, 1, MSG_PEEK);
+	return res <= 0;
+}
+
 struct tcp_listener {
 	void *(*handler)(void *varg);
 	void *module;

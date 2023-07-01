@@ -153,6 +153,9 @@ static int idle_notify_interval = 600; /* Every 10 minutes, by default */
 /*! \brief Allow storage of messages up to 25MB. User can decide if that's really a good use of mail quota or not... */
 static unsigned int max_append_size = SIZE_MB(25);
 
+/* Used extern by imap_client.c */
+unsigned int maxuserproxies = 10;
+
 struct preauth_ip {
 	const char *range;
 	const char *username;
@@ -397,9 +400,7 @@ static void imap_mbox_watcher(struct mailbox *mbox, const char *newfile)
 
 static void imap_destroy(struct imap_session *imap)
 {
-	if (imap->virtmbox) {
-		imap_close_remote_mailbox(imap);
-	}
+	imap_shutdown_clients(imap);
 	stringlist_empty(&imap->remotemailboxes);
 	if (imap->mbox != imap->mymbox) {
 		if (imap->mbox) {
@@ -412,7 +413,6 @@ static void imap_destroy(struct imap_session *imap)
 		mailbox_unwatch(imap->mbox); /* We previously started watching it, so stop watching it now. */
 		imap->mbox = NULL;
 	}
-	free_if(imap->virtlist);
 	free_if(imap->savedsearch);
 	/* Do not free tag, since it's stack allocated */
 	free_if(imap->savedtag);
@@ -896,7 +896,7 @@ static int pseudo_status_size(struct imap_session *imap, char *s, const char *re
 	/* However, since we told the IMAP client we support STATUS=SIZE,
 	 * it's going to expect the size of the folder in the STATUS of the response.
 	 * Transparently calculate the folder size the manual way behind the scenes and inform the client. */
-	if (remote_status(imap, remotename, items, 1)) {
+	if (remote_status(imap->client, remotename, items, 1)) {
 		return -1;
 	}
 
@@ -1050,10 +1050,10 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 	if (set_maildir(imap, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX". It may also change the active (account) mailbox. */
 		return 0;
 	}
-	if (imap->virtmbox) {
-		char *remotename = remote_mailbox_name(imap, mailbox);
+	if (imap->client) {
+		char *remotename = remote_mailbox_name(imap->client, mailbox);
 		REPLACE(imap->folder, mailbox);
-		return imap_client_send_wait_response(imap, -1, 5000, "%s \"%s\"\r\n", readonly == CMD_SELECT ? "SELECT" : "EXAMINE", remotename); /* Reconstruct the SELECT, fortunately this is not too bad */
+		return imap_client_send_wait_response(imap->client, -1, 5000, "%s \"%s\"\r\n", readonly == CMD_SELECT ? "SELECT" : "EXAMINE", remotename); /* Reconstruct the SELECT, fortunately this is not too bad */
 	}
 	IMAP_REQUIRE_ACL(imap->acl, IMAP_ACL_READ);
 	if (readonly == CMD_SELECT) {
@@ -1108,14 +1108,14 @@ static int handle_status(struct imap_session *imap, char *s)
 	if (set_maildir(imap, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX". It may also change the active (account) mailbox. */
 		return 0;
 	}
-	if (imap->virtmbox) {
-		char *remotename = remote_mailbox_name(imap, mailbox);
+	if (imap->client) {
+		char *remotename = remote_mailbox_name(imap->client, mailbox);
 		REPLACE(imap->activefolder, mailbox);
 		/* If the client wants SIZE but the remote server doesn't support it, we'll have to fake it by translating */
-		if (strstr(s, "SIZE") && !(imap->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
+		if (strstr(s, "SIZE") && !(imap->client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
 			return pseudo_status_size(imap, s, remotename);
 		} else {
-			return imap_client_send_wait_response(imap, -1, 5000, "STATUS \"%s\" %s\r\n", remotename, s);
+			return imap_client_send_wait_response(imap->client, -1, 5000, "STATUS \"%s\" %s\r\n", remotename, s);
 		}
 	}
 
@@ -2705,30 +2705,30 @@ static int handle_setacl(struct imap_session *imap, char *s, int delete)
 
 static int test_remote_mailbox_substitution(void)
 {
-	struct imap_session imap;
+	struct imap_client client;
 	char buf[256];
 
-	memset(&imap, 0, sizeof(imap));
-	safe_strncpy(imap.virtprefix, "Other Users.foobar", sizeof(imap.virtprefix));
-	imap.virtprefixlen = STRLEN("Other Users.foobar");
+	memset(&client, 0, sizeof(client));
+	client.virtprefix = "Other Users.foobar";
+	client.virtprefixlen = STRLEN("Other Users.foobar");
 
 	safe_strncpy(buf, "a1 UID COPY 149 \"Other Users.foobar.INBOX\"", sizeof(buf));
-	bbs_test_assert_equals(1, imap_substitute_remote_command(&imap, buf));
+	bbs_test_assert_equals(1, imap_substitute_remote_command(&client, buf));
 	bbs_test_assert_str_equals(buf, "a1 UID COPY 149 \"INBOX\"");
 
 	safe_strncpy(buf, "copy 149 \"Other Users.foobar.Sent\"", sizeof(buf));
-	bbs_test_assert_equals(1, imap_substitute_remote_command(&imap, buf));
+	bbs_test_assert_equals(1, imap_substitute_remote_command(&client, buf));
 	bbs_test_assert_str_equals(buf, "copy 149 \"Sent\"");
 
 	/* With different remote hierarchy delimiter. */
-	imap.virtdelimiter = '/';
+	client.virtdelimiter = '/';
 	safe_strncpy(buf, "copy 149 \"Other Users.foobar.Sub.Folder\"", sizeof(buf));
-	bbs_test_assert_equals(1, imap_substitute_remote_command(&imap, buf));
+	bbs_test_assert_equals(1, imap_substitute_remote_command(&client, buf));
 	bbs_test_assert_str_equals(buf, "copy 149 \"Sub/Folder\"");
 
 	/* Including with spaces */
 	safe_strncpy(buf, "copy 149 \"Other Users.foobar.Sub.Folder with spaces.sub\"", sizeof(buf));
-	bbs_test_assert_equals(1, imap_substitute_remote_command(&imap, buf));
+	bbs_test_assert_equals(1, imap_substitute_remote_command(&client, buf));
 	bbs_test_assert_str_equals(buf, "copy 149 \"Sub/Folder with spaces/sub\"");
 
 	return 0;
@@ -2739,41 +2739,41 @@ cleanup:
 
 /* There must not be extra spaces between tokens. Gimap is not tolerant of them. */
 #define FORWARD_VIRT_MBOX() \
-	if (imap->virtmbox) { \
-		return imap_client_send_wait_response(imap, -1, 5000, "%s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
+	if (imap->client) { \
+		return imap_client_send_wait_response(imap->client, -1, 5000, "%s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
 	}
 
 #define FORWARD_VIRT_MBOX_CAPABILITY(cap) \
-	if (imap->virtmbox) { \
-		if (!(imap->virtcapabilities & (cap))) { \
+	if (imap->client) { \
+		if (!(imap->client->virtcapabilities & (cap))) { \
 			imap_reply(imap, "NO %s command not available for this mailbox", command); \
 			return 0; \
 		} \
-		return imap_client_send_wait_response(imap, -1, 5000, "%s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
+		return imap_client_send_wait_response(imap->client, -1, 5000, "%s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
 	}
 
 #define FORWARD_VIRT_MBOX_UID() \
-	if (imap->virtmbox) { \
-		return imap_client_send_wait_response(imap, -1, 5000, "UID %s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
+	if (imap->client) { \
+		return imap_client_send_wait_response(imap->client, -1, 5000, "UID %s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
 	}
 
 #define FORWARD_VIRT_MBOX_UID_CAPABILITY(cap) \
-	if (imap->virtmbox) { \
-		if (!(imap->virtcapabilities & (cap))) { \
+	if (imap->client) { \
+		if (!(imap->client->virtcapabilities & (cap))) { \
 			imap_reply(imap, "NO %s command not available for this mailbox", command); \
 			return 0; \
 		} \
-		return imap_client_send_wait_response(imap, -1, 5000, "UID %s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
+		return imap_client_send_wait_response(imap->client, -1, 5000, "UID %s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
 	}
 
 #define FORWARD_VIRT_MBOX_MODIFIED_PREFIX(count, prefix) \
-	if (imap->virtmbox) { \
-		replacecount = imap_substitute_remote_command(imap, s); \
+	if (imap->client) { \
+		replacecount = imap_substitute_remote_command(imap->client, s); \
 		if (replacecount != count) { /* Number of replacements must be all or nothing */ \
 			imap_reply(imap, "NO Cannot move/copy between home and remote servers\n"); \
 			return 0; \
 		} \
-		return imap_client_send_wait_response(imap, -1, 5000, prefix "%s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
+		return imap_client_send_wait_response(imap->client, -1, 5000, prefix "%s%s%s\r\n", command, !strlen_zero(s) ? " " : "", S_IF(s)); \
 	}
 
 #define FORWARD_VIRT_MBOX_MODIFIED(count) FORWARD_VIRT_MBOX_MODIFIED_PREFIX(count, "")
@@ -2836,7 +2836,7 @@ static int imap_process(struct imap_session *imap, char *s)
 	 * A command is not "in progress" until the complete command has been received; in particular, a command is not "in progress" during the negotiation of command continuation.
 	 */
 
-	if (imap->pending && !imap->virtmbox) { /* Not necessary to lock just to read the flag. Only if we're actually going to read data. */
+	if (imap->pending && !imap->client) { /* Not necessary to lock just to read the flag. Only if we're actually going to read data. */
 		struct readline_data rldata2;
 
 		/* If it's a command during which we're not allowed to send an EXPUNGE, then don't send it now. */
@@ -2882,12 +2882,19 @@ static int imap_process(struct imap_session *imap, char *s)
 		if (imap->folder) {
 			/* Since we internally changed the active mailbox, change it back to the mailbox that's still really selected.
 			 * Internally, this will also close the remote if needed. */
+
+			/*! \todo Ideally, try to do away with this hack of temporarily changing the IMAP structure
+			 * and then changing it back here. It's disruptive, inefficient, and more likely to have bugs.
+			 * Most of the traversal data has now been moved into its own structure.
+			 * The remaining bits (curdir, newdir, etc.) should be moved there as well
+			 * so we can do an entire STATUS command without having any side effects in the first place,
+			 * and then we don't need this whole code block either to fix up the mess STATUS made. */
 			bbs_debug(4, "Reverting temporary STATUS override to previously selected %s\n", imap->folder);
 			set_maildir(imap, imap->folder);
 		} else {
 			/* If no mailbox was selected when we did the STATUS, then just close the remote */
 			bbs_debug(4, "Reverting temporary STATUS override to unselected\n");
-			if (imap->virtmbox) {
+			if (imap->client) {
 				imap_close_remote_mailbox(imap);
 			}
 			imap->dir[0] = '\0'; /* This is how we know we're unselected */
@@ -3040,7 +3047,7 @@ static int imap_process(struct imap_session *imap, char *s)
 			imap_reply(imap, "OK EXPUNGE completed");
 		}
 	} else if (!strcasecmp(command, "UNSELECT")) { /* Same as CLOSE, without the implicit auto-expunging */
-		if (imap->virtmbox) {
+		if (imap->client) {
 			imap_close_remote_mailbox(imap);
 		} else {
 			close_mailbox(imap);
@@ -3065,7 +3072,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		 * Also note that the below check only catches if the source folder is remote,
 		 * not if the destination is.
 		 * But currently, either both have to be local or both have to be remote, so that's fine. */
-		if (imap->virtmbox && !(imap->virtcapabilities & IMAP_CAPABILITY_MOVE)) {
+		if (imap->client && !(imap->client->virtcapabilities & IMAP_CAPABILITY_MOVE)) {
 			imap_reply(imap, "NO MOVE not supported for this mailbox");
 			return 0;
 		}
@@ -3105,7 +3112,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		return handle_thread(imap, s, 0);
 	} else if (!strcasecmp(command, "UID")) {
 		REQUIRE_ARGS(s);
-		if (!imap->virtmbox) { /* Ultimately, FORWARD_VIRT_MBOX will intercept this command, if it's valid */
+		if (!imap->client) { /* Ultimately, FORWARD_VIRT_MBOX will intercept this command, if it's valid */
 			REQUIRE_SELECTED(imap);
 		}
 		command = strsep(&s, " ");
@@ -3117,7 +3124,7 @@ static int imap_process(struct imap_session *imap, char *s)
 			FORWARD_VIRT_MBOX_MODIFIED_UID(1);
 			return handle_copy(imap, s, 1);
 		} else if (!strcasecmp(command, "MOVE")) {
-			if (imap->virtmbox && !(imap->virtcapabilities & IMAP_CAPABILITY_MOVE)) {
+			if (imap->client && !(imap->client->virtcapabilities & IMAP_CAPABILITY_MOVE)) {
 				imap_reply(imap, "NO MOVE not supported for this mailbox");
 				return 0;
 			}
@@ -3140,7 +3147,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		}
 	} else if (!strcasecmp(command, "APPEND")) {
 		REQUIRE_ARGS(s);
-		if (imap->virtmbox) {
+		if (imap->client) {
 			/*! \todo This needs careful attention for virtual mappings */
 			imap_reply(imap, "NO Operation not supported for virtual mailboxes");
 			return 0;
@@ -3150,7 +3157,7 @@ static int imap_process(struct imap_session *imap, char *s)
 	} else if (allow_idle && !strcasecmp(command, "IDLE")) {
 #define MAX_IDLE_MS SEC_MS(1800) /* 30 minutes */
 		int idleleft = MAX_IDLE_MS;
-		if (imap->virtmbox) {
+		if (imap->client) {
 			/* IDLE for up to (just under) 30 minutes.
 			 * Note that client_command_passthru will restart the timer each time there is activity,
 			 * but real mail clients should terminate the IDLE when they get an untagged response
@@ -3158,7 +3165,7 @@ static int imap_process(struct imap_session *imap, char *s)
 			 * Furthermore, it is NOT our responsibility to terminate the IDLE automatically after 29 minutes.
 			 * It's the client's job to do that. If we get disconnected, we'll disconnect as well.
 			 */
-			return imap_client_send_wait_response(imap, imap->rfd, 1790000, "%s\r\n", command); /* No trailing spaces! Gimap doesn't like that */
+			return imap_client_send_wait_response(imap->client, imap->rfd, 1790000, "%s\r\n", command); /* No trailing spaces! Gimap doesn't like that */
 		}
 		/* XXX Outlook often tries to IDLE without selecting a mailbox, which is kind of bizarre.
 		 * Technically though, RFC 2177 says IDLE is valid in either the authenticated or selected states.
@@ -3203,8 +3210,8 @@ static int imap_process(struct imap_session *imap, char *s)
 		imap_reply(imap, "OK GETQUOTA complete");
 	} else if (!strcasecmp(command, "GETQUOTAROOT")) {
 		REQUIRE_ARGS(s);
-		if (imap->virtmbox) {
-			if (!(imap->virtcapabilities & IMAP_CAPABILITY_QUOTA)) {
+		if (imap->client) {
+			if (!(imap->client->virtcapabilities & IMAP_CAPABILITY_QUOTA)) {
 				/* Not really anything nice we can do here. There is no "default" we can provide,
 				 * and since our capabilities include QUOTA, the client will think we've gone and lied to it now.
 				 * Apologies, dear client. If only you knew all the tricks we were playing on you right now. */
@@ -3261,8 +3268,8 @@ static int imap_process(struct imap_session *imap, char *s)
 		char buf[256];
 		int myacl;
 		REQUIRE_ARGS(s);
-		if (imap->virtmbox) {
-			if (!(imap->virtcapabilities & IMAP_CAPABILITY_ACL)) {
+		if (imap->client) {
+			if (!(imap->client->virtcapabilities & IMAP_CAPABILITY_ACL)) {
 				/* Remote server doesn't support ACLs.
 				 * Don't send a MYRIGHTS command since the server will reject it.
 				 * Just assume everything is allowed, which is reasonable. */
@@ -3443,7 +3450,6 @@ static void imap_handler(struct bbs_node *node, int secure)
 	}
 
 	memset(&imap, 0, sizeof(imap));
-	imap.client.fd = -1;
 	imap.rfd = rfd;
 	imap.wfd = wfd;
 	imap.node = node;
@@ -3511,6 +3517,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "general", "allowidle", &allow_idle);
 	bbs_config_val_set_true(cfg, "general", "idlenotifyinterval", &idle_notify_interval);
 	bbs_config_val_set_uint(cfg, "general", "maxappendsize", &max_append_size);
+	bbs_config_val_set_uint(cfg, "general", "maxuserproxies", &maxuserproxies);
 
 	/* IMAP */
 	bbs_config_val_set_true(cfg, "imap", "enabled", &imap_enabled);

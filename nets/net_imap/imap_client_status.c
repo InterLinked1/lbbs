@@ -49,12 +49,13 @@ char *remove_size(char *restrict s)
 	return s;
 }
 
-static FILE *status_size_cache_file_load(struct imap_session *imap, const char *remotename, int write)
+static FILE *status_size_cache_file_load(struct imap_client *client, const char *remotename, int write)
 {
 	char cache_dir[256];
 	char cache_file_name[534];
 	int cachedirlen;
 	FILE *fp;
+	struct imap_session *imap = client->imap;
 
 	/* Put them in a subdirectory of the maildir, so it doesn't clutter up the maildir.
 	 * The name just has to NOT start with the hierarchy delimiter (or it would be a maildir) */
@@ -62,14 +63,14 @@ static FILE *status_size_cache_file_load(struct imap_session *imap, const char *
 	if (write && eaccess(cache_dir, R_OK) && mkdir(cache_dir, 0700)) {
 		bbs_error("mkdir(%s) failed: %s\n", cache_dir, strerror(errno));
 	}
-	snprintf(cache_file_name, sizeof(cache_file_name), "%s/.imapremote.size.%s.%s", cache_dir, imap->virtprefix, remotename);
+	snprintf(cache_file_name, sizeof(cache_file_name), "%s/.imapremote.size.%s.%s", cache_dir, client->virtprefix, remotename);
 	/* Replace the remote delimiter with a period.
 	 * The actual character in this case isn't super important,
 	 * and it doesn't need to be our local delimiter (which is just a coincidence).
 	 * It just needs to be deterministic and make this path unique on the filesystem,
 	 * and it can't be / as that would indicate a subdirectory.
 	 * Period is just a good choice, for the same reason it's a good choice for the maildir++ delimiter. */
-	bbs_strreplace(cache_file_name + cachedirlen + 1, imap->virtdelimiter, '.');
+	bbs_strreplace(cache_file_name + cachedirlen + 1, client->virtdelimiter, '.');
 	fp = fopen(cache_file_name, write ? "w" : "r");
 	if (!fp) {
 		if (write) {
@@ -80,14 +81,14 @@ static FILE *status_size_cache_file_load(struct imap_session *imap, const char *
 	return fp;
 }
 
-static int status_size_cache_fetch(struct imap_session *imap, const char *remotename, const char *remote_status_resp, size_t *mb_size)
+static int status_size_cache_fetch(struct imap_client *client, const char *remotename, const char *remote_status_resp, size_t *mb_size)
 {
 	char buf[256];
 	size_t curlen;
 	FILE *fp;
 	char *tmp;
 
-	fp = status_size_cache_file_load(imap, remotename, 0);
+	fp = status_size_cache_file_load(client, remotename, 0);
 	if (!fp) {
 		bbs_debug(9, "Cache file does not exist\n");
 		return -1; /* Not an error, just the cache file didn't exist (probably the first time) */
@@ -119,9 +120,9 @@ static int status_size_cache_fetch(struct imap_session *imap, const char *remote
 	return 0;
 }
 
-static void status_size_cache_update(struct imap_session *imap, const char *remotename, const char *remote_status_resp)
+static void status_size_cache_update(struct imap_client *client, const char *remotename, const char *remote_status_resp)
 {
-	FILE *fp = status_size_cache_file_load(imap, remotename, 1);
+	FILE *fp = status_size_cache_file_load(client, remotename, 1);
 
 	/* Using a separate file for every single remote folder is... not very efficient.
 	 * But it's very easy to deal with, much easier than using a single file for all remote boxes,
@@ -137,21 +138,21 @@ static void status_size_cache_update(struct imap_session *imap, const char *remo
 	fclose(fp);
 }
 
-static int cache_remote_list_status(struct imap_session *imap, const char *rtag, size_t taglen)
+static int cache_remote_list_status(struct imap_client *client, const char *rtag, size_t taglen)
 {
 	int res;
 	struct dyn_str dynstr;
 	int i;
-	struct bbs_tcp_client *client = &imap->client;
-	char *buf = client->rldata.buf;
+	struct bbs_tcp_client *tcpclient = &client->client;
+	char *buf = tcpclient->rldata.buf;
 
-	free_if(imap->virtlist);
+	free_if(client->virtlist);
 	memset(&dynstr, 0, sizeof(dynstr));
 
-	imap->virtlisttime = (int) time(NULL);
+	client->virtlisttime = (int) time(NULL);
 
 	for (i = 0; ; i++) {
-		res = bbs_readline(client->rfd, &client->rldata, "\r\n", 10000);
+		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 10000);
 		if (res <= 0) {
 			bbs_warning("IMAP timeout from LIST-STATUS - remote server issue?\n");
 			free_if(dynstr.buf);
@@ -171,23 +172,23 @@ static int cache_remote_list_status(struct imap_session *imap, const char *rtag,
 		if (i) {
 			dyn_str_append(&dynstr, "\n", STRLEN("\n"));
 		}
-		dyn_str_append(&dynstr, client->rldata.buf, (size_t) res);
+		dyn_str_append(&dynstr, tcpclient->rldata.buf, (size_t) res);
 	}
-	imap->virtlist = dynstr.buf;
+	client->virtlist = dynstr.buf;
 	return 0;
 }
 
-static int remote_status_cached(struct imap_session *imap, const char *mb, char *buf, size_t len)
+static int remote_status_cached(struct imap_client *client, const char *mb, char *buf, size_t len)
 {
 	char *tmp, *end;
 	size_t statuslen;
 	char findstr[128];
 
 	snprintf(findstr, sizeof(findstr), "* STATUS \"%s\"", mb);
-	tmp = strstr(imap->virtlist, findstr);
+	tmp = strstr(client->virtlist, findstr);
 	if (!tmp && !strchr(mb, ' ')) { /* Retry, without quotes, if the mailbox name has no spaces */
 		snprintf(findstr, sizeof(findstr), "* STATUS \"%s\"", mb);
-		tmp = strstr(imap->virtlist, findstr);
+		tmp = strstr(client->virtlist, findstr);
 	}
 	if (!tmp) {
 		bbs_warning("Cached LIST-STATUS response missing response for '%s'\n", mb);
@@ -204,7 +205,7 @@ static int remote_status_cached(struct imap_session *imap, const char *mb, char 
 	return 0;
 }
 
-int remote_status(struct imap_session *imap, const char *remotename, const char *items, int size)
+int remote_status(struct imap_client *client, const char *remotename, const char *items, int size)
 {
 	char buf[1024];
 	char converted[256];
@@ -213,12 +214,14 @@ int remote_status(struct imap_session *imap, const char *remotename, const char 
 	size_t taglen;
 	int len, res;
 	char *tmp;
-	struct bbs_tcp_client *client = &imap->client;
+	struct imap_session *imap = client->imap;
+	struct bbs_tcp_client *tcpclient = &client->client;
+	const char *tag = client->imap->tag;
 	const char *add1, *add2, *add3;
 	int issue_status = 1;
 
-	client->rldata.buf = buf;
-	client->rldata.len = sizeof(buf);
+	tcpclient->rldata.buf = buf;
+	tcpclient->rldata.len = sizeof(buf);
 
 	/* In order for caching of SIZE to be reliable, we must invalidate it whenever anything
 	 * in the original STATUS response, including UIDNEXT/UIDVALIDITY. These are needed to
@@ -235,32 +238,32 @@ int remote_status(struct imap_session *imap, const char *remotename, const char 
 	 * These will also get returned in the response (even if the client didn't ask for them),
 	 * but that's not really an issue, since it's getting more than what it asked for.
 	 */
-	add1 = !(imap->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE) && !strstr(items, "UIDNEXT") ? " UIDNEXT" : "";
-	add2 = !(imap->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE) && !strstr(items, "UIDVALIDITY") ? " UIDVALIDITY" : "";
-	add3 = !(imap->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE) && !strstr(items, "MESSAGES") ? " MESSAGES" : "";
+	add1 = !(client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE) && !strstr(items, "UIDNEXT") ? " UIDNEXT" : "";
+	add2 = !(client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE) && !strstr(items, "UIDVALIDITY") ? " UIDVALIDITY" : "";
+	add3 = !(client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE) && !strstr(items, "MESSAGES") ? " MESSAGES" : "";
 
 	/* XXX The tag sent to the remote end will be the same for every single mailbox (for LIST-STATUS)
 	 * Since we're not pipelining these that's fine (and even if we were, it wouldn't be ambiguous
 	 * since the response contains the mailbox name), but this is certainly not a "proper" thing to do... */
-	taglen = (size_t) snprintf(rtag, sizeof(rtag), "A.%s.1 OK", imap->tag);
+	taglen = (size_t) snprintf(rtag, sizeof(rtag), "A.%s.1 OK", tag);
 
 	/* If the remote server supports LIST-STATUS, do that (once), rather than doing a STATUS on each mailbox there
 	 * Cache the results locally and reuse that for the same virtual mailbox. */
-	if (imap->virtlist && imap->virtlisttime < (int) time(NULL) - 10) {
+	if (client->virtlist && client->virtlisttime < (int) time(NULL) - 10) {
 		/* If the cached LIST-STATUS response is more than 10 seconds old, consider it stale.
 		 * The use case here is for replying to a LIST-STATUS query or a client querying STATUS
 		 * of every mailbox in succession, if these are spread out the statuses could have changed since. */
 		bbs_debug(8, "Cached LIST-STATUS response is stale, purging\n");
-		free_if(imap->virtlist);
+		free_if(client->virtlist);
 	}
-	if (!imap->virtlist && imap->virtcapabilities & IMAP_CAPABILITY_LIST_STATUS) { /* Try LIST-STATUS if it's the first mailbox */
-		len = snprintf(buf, sizeof(buf), "A.%s.1 LIST \"\" \"*\" RETURN (STATUS (%s%s%s%s))\r\n", imap->tag, items, add1, add2, add3);
+	if (!client->virtlist && client->virtcapabilities & IMAP_CAPABILITY_LIST_STATUS) { /* Try LIST-STATUS if it's the first mailbox */
+		len = snprintf(buf, sizeof(buf), "A.%s.1 LIST \"\" \"*\" RETURN (STATUS (%s%s%s%s))\r\n", tag, items, add1, add2, add3);
 		imap_debug(3, "=> %.*s", len, buf);
-		bbs_write(client->wfd, buf, (size_t) len);
-		cache_remote_list_status(imap, rtag, taglen);
+		bbs_write(tcpclient->wfd, buf, (size_t) len);
+		cache_remote_list_status(client, rtag, taglen);
 	}
-	if (imap->virtlist) {
-		if (!remote_status_cached(imap, remotename, remote_status_resp, sizeof(remote_status_resp))) {
+	if (client->virtlist) {
+		if (!remote_status_cached(client, remotename, remote_status_resp, sizeof(remote_status_resp))) {
 			bbs_debug(8, "Reusing cached LIST-STATUS response for '%s'\n", remotename);
 			issue_status = 0;
 		}
@@ -268,10 +271,10 @@ int remote_status(struct imap_session *imap, const char *remotename, const char 
 
 	if (issue_status) {
 		/* XXX Same tag is reused here, so we expect the same prefix (rtag) */
-		len = snprintf(buf, sizeof(buf), "A.%s.1 STATUS \"%s\" (%s%s%s%s)\r\n", imap->tag, remotename, items, add1, add2, add3);
+		len = snprintf(buf, sizeof(buf), "A.%s.1 STATUS \"%s\" (%s%s%s%s)\r\n", tag, remotename, items, add1, add2, add3);
 		imap_debug(3, "=> %.*s", len, buf);
-		bbs_write(client->wfd, buf, (size_t) len);
-		res = bbs_readline(client->rfd, &client->rldata, "\r\n", 5000);
+		bbs_write(tcpclient->wfd, buf, (size_t) len);
+		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 5000);
 		if (res <= 0) {
 			return -1;
 		}
@@ -280,7 +283,7 @@ int remote_status(struct imap_session *imap, const char *remotename, const char 
 			return -1;
 		}
 		safe_strncpy(remote_status_resp, buf, sizeof(remote_status_resp)); /* Save the STATUS response from the server */
-		res = bbs_readline(client->rfd, &client->rldata, "\r\n", 5000);
+		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 5000);
 		if (res <= 0) {
 			return -1;
 		}
@@ -311,36 +314,36 @@ int remote_status(struct imap_session *imap, const char *remotename, const char 
 		 * (And given webmail clients are probably the most interested in SIZE, since they have no persistent state between sessions,
 		 *  speed matters the most there and nobody wants to wait a minute for a webmail client to load.)
 		 */
-		if (!status_size_cache_fetch(imap, remotename, remote_status_resp, &mb_size)) {
+		if (!status_size_cache_fetch(client, remotename, remote_status_resp, &mb_size)) {
 			cached = 1;
 			bbs_debug(5, "Reusing previously cached SIZE: %lu\n", mb_size);
 		} else if (!strstr(remote_status_resp, "MESSAGES 0")) { /* If we know the folder is empty, we know SIZE is 0 without asking */
 			/* EXAMINE it so it's read only */
 			/* XXX This will reuse imap->tag for the tag here... which isn't ideal but should be accepted.
 			 * Since we're not pipelining our commands, it doesn't really matter anyways. */
-			res = imap_client_send_wait_response_noecho(imap, -1, 5000, "%s \"%s\"\r\n", "EXAMINE", remotename);
+			res = imap_client_send_wait_response_noecho(client, -1, 5000, "%s \"%s\"\r\n", "EXAMINE", remotename);
 			if (res) {
 				return res;
 			}
 
 			/* Need to reinitialize again since client_command_passthru modifies this */
-			client->rldata.buf = buf;
-			client->rldata.len = sizeof(buf);
+			tcpclient->rldata.buf = buf;
+			tcpclient->rldata.len = sizeof(buf);
 
 			/* imap->tag gets reused multiple times for different commands here...
 			 * something we SHOULD not do but servers are supposed to (MUST) tolerate. */
-			taglen = strlen(imap->tag);
-			bbs_write(client->wfd, imap->tag, taglen);
-			SWRITE(client->wfd, " FETCH 1:* (RFC822.SIZE)\r\n");
-			imap_debug(3, "=> %s FETCH 1:* (RFC822.SIZE)\n", imap->tag);
+			taglen = strlen(tag);
+			bbs_write(tcpclient->wfd, tag, taglen);
+			SWRITE(tcpclient->wfd, " FETCH 1:* (RFC822.SIZE)\r\n");
+			imap_debug(3, "=> %s FETCH 1:* (RFC822.SIZE)\n", tag);
 			for (;;) {
 				const char *sizestr;
-				res = bbs_readline(client->rfd, &client->rldata, "\r\n", 10000);
+				res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 10000);
 				if (res <= 0) {
 					bbs_warning("IMAP timeout from FETCH 1:* (RFC822.SIZE) - remote server issue?\n");
 					return -1;
 				}
-				if (!strncmp(buf, imap->tag, taglen)) {
+				if (!strncmp(buf, tag, taglen)) {
 					bbs_debug(3, "End of FETCH response: %s\n", buf);
 					break;
 				}
@@ -371,7 +374,7 @@ int remote_status(struct imap_session *imap, const char *remotename, const char 
 		if (!cached) {
 			/* Cache all of this for next time, so we don't have to issue a FETCH 1:* (which can be VERY slow)
 			 * unless the mailbox has been modified in some way. */
-			status_size_cache_update(imap, remotename, remote_status_resp);
+			status_size_cache_update(client, remotename, remote_status_resp);
 		}
 	}
 
@@ -381,8 +384,8 @@ int remote_status(struct imap_session *imap, const char *remotename, const char 
 	tmp = strrchr(remote_status_resp, '('); /* Again, look for the last ( since the mailbox name could contain it */
 
 	safe_strncpy(converted, remotename, sizeof(converted));
-	bbs_strreplace(converted, imap->virtdelimiter, HIERARCHY_DELIMITER_CHAR); /* Convert remote delimiter back to local for client response */
+	bbs_strreplace(converted, client->virtdelimiter, HIERARCHY_DELIMITER_CHAR); /* Convert remote delimiter back to local for client response */
 
-	imap_send(imap, "STATUS \"%s%c%s\" %s", imap->virtprefix, HIERARCHY_DELIMITER_CHAR, converted, tmp); /* Send the modified response */
+	imap_send(imap, "STATUS \"%s%c%s\" %s", client->virtprefix, HIERARCHY_DELIMITER_CHAR, converted, tmp); /* Send the modified response */
 	return 0;
 }

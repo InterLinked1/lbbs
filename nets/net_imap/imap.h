@@ -20,6 +20,24 @@
 #include "include/utils.h"
 #include "include/stringlist.h"
 
+/*! \note mod_webmail also has an imap_client struct. These are not the same. */
+struct imap_client {
+	const char *name;			/* Same as virtprefix */
+	const char *virtprefix;		/* Mapping prefix defined in .imapremote */
+	struct imap_session *imap;	/* Pointer to the IMAP session that owns this connection */
+	size_t virtprefixlen;		/* Length of virtprefix */
+	int virtcapabilities;		/* Capabilities of remote IMAP server */
+	char virtdelimiter;			/* Hierarchy delimiter used by remote server */
+	char *virtlist;				/* Result of LIST-STATUS command on remote IMAP server */
+	int virtlisttime;			/* Time that LIST-STATUS command was run */
+	RWLIST_ENTRY(imap_client) entry;
+	struct bbs_url url;
+	struct bbs_tcp_client client;	/* TCP client for virtual mailbox access on remote servers */	
+	char data[0];
+};
+
+RWLIST_HEAD(imap_client_list, imap_client);
+
 struct imap_session {
 	int rfd;
 	int wfd;
@@ -35,12 +53,8 @@ struct imap_session {
 	char dir[256];
 	char newdir[260]; /* 4 more, for /new and /cur */
 	char curdir[260];
-	char virtprefix[260];		/* Mapping prefix defined in .imapremote */
-	size_t virtprefixlen;		/* Length of virtprefix */
-	int virtcapabilities;		/* Capabilities of remote IMAP server */
-	char virtdelimiter;			/* Hierarchy delimiter used by remote server */
-	char *virtlist;				/* Result of LIST-STATUS command on remote IMAP server */
-	int virtlisttime;			/* Time that LIST-STATUS command was run */
+	struct imap_client *client;			/* Current IMAP client for proxied connections to remote servers (if any) */
+	struct imap_client_list clients;	/* List of all IMAP clients to remote servers */
 	struct stringlist remotemailboxes;	/* List of remote mailboxes */
 	unsigned int uidvalidity;
 	unsigned int uidnext;
@@ -48,7 +62,6 @@ struct imap_session {
 	int acl;					/* Cached ACL for current directory. We allowed to cache per a mailbox by the RFC. */
 	char *savedsearch;			/* SEARCHRES */
 	char *clientid;				/* Client ID */
-	struct bbs_tcp_client client;	/* TCP client for virtual mailbox access on remote servers */
 	struct readline_data *rldata;	/* Pointer to rldata used for reading input from client */
 	char appendkeywords[27];	/* APPEND keywords (custom flags) */
 	unsigned int numappendkeywords:5; /* Number of append keywords. We only need 5 bits since this cannot exceed 26. */
@@ -68,7 +81,6 @@ struct imap_session {
 	unsigned int readonly:1;	/* SELECT vs EXAMINE */
 	unsigned int inauth:1;
 	unsigned int idle:1;		/* Whether IDLE is active */
-	unsigned int virtmbox:1;	/* Currently in a virtual mailbox */
 	unsigned int dnd:1;			/* Do Not Disturb: Whether client is executing a FETCH, STORE, or SEARCH command (EXPUNGE responses are not allowed) */
 	unsigned int pending:1;		/* Delayed output is pending in pfd pipe */
 	unsigned int alerted:2;		/* An alert has been delivered to this client */
