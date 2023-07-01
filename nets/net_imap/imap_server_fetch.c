@@ -36,9 +36,10 @@
  * Some of these might seem silly, but they are all only used once, so gcc should inline them anyways.
  * process_fetch was getting too big and overwhelming to work on so that's the main reason for compartmentalizing these. */
 
-static int process_fetch_flags(struct imap_session *imap, const char *filename, int markseen, char *response, size_t responselen, char **buf, int *len)
+static int process_fetch_flags(struct imap_session *imap, const char *filename, int markseen, int recent, char *response, size_t responselen, char **buf, int *len)
 {
 	char inflags[53];
+	int c = 0;
 	const char *flags = strchr(filename, ':'); /* maildir flags */
 	if (!flags) {
 		bbs_error("Message file %s contains no flags?\n", filename);
@@ -46,11 +47,17 @@ static int process_fetch_flags(struct imap_session *imap, const char *filename, 
 	}
 	if (markseen && !strchr(flags, FLAG_SEEN)) {
 		/* FYI, clients like Thunderbird do not use this: they PEEK the body and then explicitly STORE the Seen flag */
-		inflags[0] = FLAG_SEEN;
-		inflags[1] = '\0';
-		safe_strncpy(inflags + 1, flags, sizeof(inflags) - 1);
-		flags = inflags;
+		inflags[c++] = FLAG_SEEN;
 		bbs_debug(6, "Appending seen flag since message wasn't already seen\n");
+	}
+	if (recent) {
+		/* Add the phony maildir filename character for Recent, so it can get printed in the response */
+		inflags[c++] = FLAG_RECENT;
+	}
+	if (c) {
+		inflags[c] = '\0';
+		safe_strncpy(inflags + c, flags, sizeof(inflags) - (size_t) c);
+		flags = inflags;
 	}
 	generate_flag_names_full(imap, flags, response, responselen, buf, len);
 	return 0;
@@ -569,7 +576,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		unsigned int msguid;
 		unsigned long modseq = 0;
 		char fullname[516];
-		int markseen;
+		int markseen, recent;
 
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			goto cleanup;
@@ -601,7 +608,23 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		 * So what we do is check if we need to mark as seen, but not actually mark as seen until the END of the loop.
 		 * Consequently, we have to append the seen flag to the flags response manually if needed. */
 		markseen = (fetchreq->bodyargs && !fetchreq->bodypeek) || fetchreq->rfc822text;
-		if (fetchreq->flags && process_fetch_flags(imap, entry->d_name, markseen, response, sizeof(response), &buf, &len)) {
+
+		/* We don't store the \Recent flag anywhere, it's a computed flag.
+		 * \Recent corresponds to messages that were in the new directory (as opposed to cur)
+		 * at the time that the mailbox was selected (EXAMINE and STATUS do not move messages out of new, so \Recent is unchanged by these).
+		 * When we do the traversal, we note the lowest # sequence numbered message that was in the new directory,
+		 * as well as the highest.
+		 * Then later, when we do a FETCH, we can send the \Recent flag if the sequence number of the message falls in this window.
+		 * However, I think after a message is fetched, a message should no longer really be considered "Recent".
+		 * However, this implementation would consider the messages that were recent at selection-time recent
+		 * until the mailbox is re-selected.
+		 * Only one client should consider a message Recent, since subsequent clients will not find these messages in
+		 * the new dir at selection time. So it does still mostly work as expected, and the RFC also says if we're not
+		 * sure if a message is recent, to consider it recent, so there is nothing definitively wrong with the approach taken here.
+		 * Importantly, messages that were not Recent at the time the mailbox was selected will never be considered Recent.
+		 */
+		recent = (unsigned int) seqno >= imap->minrecent && (unsigned int) seqno <= imap->maxrecent;
+		if (fetchreq->flags && process_fetch_flags(imap, entry->d_name, markseen, recent, response, sizeof(response), &buf, &len)) {
 			goto cleanup;
 		}
 		if (fetchreq->rfc822size && process_fetch_size(entry->d_name, response, sizeof(response), &buf, &len)) {

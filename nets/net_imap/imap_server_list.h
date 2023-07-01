@@ -24,6 +24,9 @@
 #define DIR_INBOX (1 << 7)
 #define DIR_SUBSCRIBED (1 << 8)
 
+#define DIR_MARKED (1 << 9)
+#define DIR_UNMARKED (1 << 10)
+
 #define DIR_SPECIALUSE (DIR_DRAFTS | DIR_JUNK | DIR_SENT | DIR_TRASH)
 
 #define IS_SPECIAL_NAME(s) (!strcmp(s, "INBOX") || !strcmp(s, "Drafts") || !strcmp(s, "Junk") || !strcmp(s, "Sent") || !strcmp(s, "Trash"))
@@ -38,6 +41,9 @@
 
 #define ATTR_INBOX "\\Inbox"
 #define ATTR_SUBSCRIBED "\\Subscribed"
+
+#define ATTR_MARKED "\\Marked"
+#define ATTR_UNMARKED "\\Unmarked"
 
 #define ASSOC_ATTR(flag, string) SAFE_FAST_COND_APPEND(buf, len, pos, left, (attrs & flag), string)
 

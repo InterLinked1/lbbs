@@ -183,6 +183,8 @@ int __parse_flags_string(struct imap_session *imap, char *s, const char *directo
 			flags |= FLAG_BIT_DELETED;
 		} else if (!strcasecmp(f, FLAG_NAME_DRAFT)) {
 			flags |= FLAG_BIT_DRAFT;
+		} else if (!strcasecmp(f, FLAG_NAME_RECENT)) {
+			bbs_warning("The \\Recent flag cannot be set by clients\n");
 		} else if (*f == '\\') {
 			bbs_warning("Failed to parse flag: %s\n", f); /* Unknown non-custom flag */
 		} else if (imap) { /* else, it's a custom flag (keyword), if we have a mailbox, check the translation. */
@@ -275,6 +277,7 @@ void gen_flag_names(const char *flagstr, char *fullbuf, size_t len)
 	SAFE_FAST_COND_APPEND(fullbuf, len, buf, left, strchr(flagstr, FLAG_FLAGGED), FLAG_NAME_FLAGGED);
 	SAFE_FAST_COND_APPEND(fullbuf, len, buf, left, strchr(flagstr, FLAG_SEEN), FLAG_NAME_SEEN);
 	SAFE_FAST_COND_APPEND(fullbuf, len, buf, left, strchr(flagstr, FLAG_TRASHED), FLAG_NAME_DELETED);
+	SAFE_FAST_COND_APPEND(fullbuf, len, buf, left, strchr(flagstr, FLAG_RECENT), FLAG_NAME_RECENT);
 }
 
 int restrict_flags(int acl, int *flags)

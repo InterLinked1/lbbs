@@ -436,7 +436,9 @@ static void imap_destroy(struct imap_session *imap)
 	imap->uidnext = 0; \
 	imap_traverse(imap->curdir, callback, imap); \
 	imap->innew = 1; \
+	imap->minrecent = imap->totalcur + 1; \
 	imap_traverse(imap->newdir, callback, imap); \
+	imap->maxrecent = imap->totalcur + imap->totalnew; \
 	if (!imap->uidvalidity || !imap->uidnext) { \
 		get_uidnext(imap, imap->dir); \
 	} \
@@ -660,6 +662,13 @@ static int imap_expunge(struct imap_session *imap, int silent)
 		 *
 		 * So every time we delete a message, decrement 1 so we're where we should be. */
 		imap->expungeindex -= 1;
+		/* Decrement the highest # seqno that should be considered \Recent in this mailbox.
+		 * XXX Not perfect, because if a bunch of new messages arrive post-selection,
+		 * those won't be considered recent, and then if we expunge them, we'll inappropriately
+		 * narrow the window of messages considered "Recent".
+		 * But \Recent is most important when a client fetches the list of recent messages
+		 * right when the mailbox is selected, so this probably doesn't pose a huge issue in practice... */
+		imap->maxrecent--;
 next:
 		free(entry);
 	}
@@ -1342,8 +1351,6 @@ static int handle_list(struct imap_session *imap, char *s, enum list_cmd_type cm
 	 * \HasNoChildren - MANDATORY
 	 * \Subscribed
 	 * \Important
-	 * \Marked - contains messages added since last time mailbox was selected.
-	 * \Unmarked - does not contain additional messages since last select.
 	 *
 	 * RFC 6154 SPECIAL-USE attributes (not always explicitly advertised, but this supersedes the deprecated XLIST)
 	 * \All
@@ -1367,8 +1374,6 @@ static int handle_list(struct imap_session *imap, char *s, enum list_cmd_type cm
 	 * Even though XLIST is deprecated, it is still needed as some clients (e.g. some versions of Microsoft Outlook)
 	 * support XLIST but not SPECIAL-USE.
 	 */
-
-	/*! \todo Add support for displaying Marked and Unmarked */
 
 	if (!lcmd->specialuse && lcmd->patterns == 1 && strlen_zero(lcmd->mailboxes[0])) {
 		/* This is a special case. Just return hierarchy delimiter and root name of reference */

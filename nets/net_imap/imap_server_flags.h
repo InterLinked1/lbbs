@@ -18,16 +18,19 @@
 #define FLAG_BIT_ANSWERED (1 << 2)
 #define FLAG_BIT_DELETED (1 << 3)
 #define FLAG_BIT_DRAFT (1 << 4)
+/* This flag is special, since it is not explicitly stored at all, it is purely computed, and cannot be set by clients */
+#define FLAG_BIT_RECENT (1 << 5)
 /*! \note Must be the number of FLAG_BIT macros */
-#define NUM_FLAG_BITS 5
+#define NUM_FLAG_BITS 6
 
 #define FLAG_NAME_FLAGGED "\\Flagged"
 #define FLAG_NAME_SEEN "\\Seen"
 #define FLAG_NAME_ANSWERED "\\Answered"
 #define FLAG_NAME_DELETED "\\Deleted"
 #define FLAG_NAME_DRAFT "\\Draft"
+#define FLAG_NAME_RECENT "\\Recent"
 
-#define IMAP_FLAGS FLAG_NAME_FLAGGED " " FLAG_NAME_SEEN " " FLAG_NAME_ANSWERED " " FLAG_NAME_DELETED " " FLAG_NAME_DRAFT
+#define IMAP_FLAGS FLAG_NAME_FLAGGED " " FLAG_NAME_SEEN " " FLAG_NAME_ANSWERED " " FLAG_NAME_DELETED " " FLAG_NAME_DRAFT " " FLAG_NAME_RECENT
 
 /* maildir flags, that appear in a single string and must appear in ASCII order: https://cr.yp.to/proto/maildir.html */
 #define FLAG_DRAFT 'D'
@@ -36,6 +39,7 @@
 #define FLAG_REPLIED 'R'
 #define FLAG_SEEN 'S'
 #define FLAG_TRASHED 'T'
+#define FLAG_RECENT 'U' /* This is a phony flag, it never goes in the maildir filename, it's just for ease of printing flag names */
 
 #define SET_LETTER_IF_FLAG(flag, letter) \
 	if (flags & flag) { \

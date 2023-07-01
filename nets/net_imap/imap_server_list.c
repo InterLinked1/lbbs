@@ -127,18 +127,56 @@ static int imap_dir_has_subfolders(const char *path, const char *prefix)
 	return res;
 }
 
-static int get_attributes(const char *parentdir, const char *mailbox)
+static int imap_dir_contains_files(const char *path)
 {
-	int flags = 0;
+	DIR *dir;
+	struct dirent *entry;
+	int res = 0;
+
+	/* Order doesn't matter here */
+	if (!(dir = opendir(path))) {
+		bbs_debug(3, "Error opening directory - %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+
+	while ((entry = readdir(dir)) != NULL) {
+		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		res = 1;
+		break;
+	}
+
+	closedir(dir);
+	return res;
+}
+
+static int get_attributes(const char *parentdir, const char *mailbox, const char *maildir, int flags)
+{
+	char newdir[512];
+	int res;
 
 	/* Great, we've just turned this into an n^2 operation now (the downside of IMAP hierarchy being only 2 levels on disk):
 	 * But HasNoChildren and HasChildren are mandatory in the RFC, and they're pretty important attributes for the client, so compute them.
 	 * In reality, it shouldn't take *too* terribly long since the number of folders (all folders, recursively), is still likely to be
 	 * (some kind of small) constant, not even linear, so it's sublinear * sublinear. */
-	if (imap_dir_has_subfolders(parentdir, mailbox)) {
-		flags |= DIR_HAS_CHILDREN;
-	} else {
-		flags |= DIR_NO_CHILDREN;
+	if (!(flags & DIR_HAS_CHILDREN)) { /* If we already know it does, don't need to check here */
+		res = imap_dir_has_subfolders(parentdir, mailbox);
+		if (res == 1) {
+			flags |= DIR_HAS_CHILDREN;
+		} else if (res == 0) {
+			flags |= DIR_NO_CHILDREN;
+		}
+	}
+
+	/* If the mailbox has any \Recent messages (e.g. there are files in the new directory),
+	 * then it's \Marked. Otherwise, it's \Unmarked. */
+	snprintf(newdir, sizeof(newdir), "%s/new", maildir);
+	res = imap_dir_contains_files(newdir);
+	if (res == 1) {
+		flags |= DIR_MARKED;
+	} else if (res == 0) {
+		flags |= DIR_UNMARKED;
 	}
 
 	/* Special folders that must be named as such on our end: let the client know these are special using RFC 6154 */
@@ -171,6 +209,8 @@ void build_attributes_string(char *buf, size_t len, int attrs)
 	ASSOC_ATTR(DIR_TRASH, ATTR_TRASH);
 	ASSOC_ATTR(DIR_INBOX, ATTR_INBOX);
 	ASSOC_ATTR(DIR_SUBSCRIBED, ATTR_SUBSCRIBED);
+	ASSOC_ATTR(DIR_MARKED, ATTR_MARKED);
+	ASSOC_ATTR(DIR_UNMARKED, ATTR_UNMARKED);
 
 	if (left <= 0) {
 		bbs_error("Truncation occured when building attribute string (%lu)\n", left);
@@ -243,11 +283,12 @@ static int list_scandir_single(struct imap_session *imap, struct list_command *l
 		 * in this same directory with the maildir++ format (e.g. for mailbox public, there is .Sent folder in public, e.g. public/.Sent,
 		 * but public.Sent does not exist anywhere on disk.
 		 * But we know it has children, since every mailbox has Sent/Drafts/Junk/etc. so just hardcode that here: */
-		flags = DIR_HAS_CHILDREN;
-	} else {
-		/* We always return special use attributes, regardless of lcmd->retspecialuse */
-		flags = get_attributes(listscandir, leafname);
+		flags |= DIR_HAS_CHILDREN;
 	}
+
+	/* We always return special use attributes, regardless of lcmd->retspecialuse */
+	flags = get_attributes(listscandir, leafname, fulldir, flags);
+
 	if (lcmd->cmdtype == CMD_XLIST && strstr(leafname, "INBOX")) { /* XXX This is not the right way to detect this */
 		flags |= DIR_INBOX;
 	}

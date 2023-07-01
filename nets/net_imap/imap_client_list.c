@@ -277,6 +277,12 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 		 * Ideally, we'd have common code for that, but there we construct the flags,
 		 * and here we basically do passthrough from whatever the server told us.
 		 * In particular, if lcmd->retsubscribed, we should append \\Subscribed.
+		 *
+		 * - We should also tack on \HasChildren or \HasNoChildren based on the folders received.
+		 * - We should also tack on \Marked or \Unmarked based on whether there are new messages that haven't been seen yet.
+		 *   Determining if this is the case might be a little bit tricky.
+		 *   An easy case that should result in no false negatives is if the cached STATUS response has changed or not.
+		 *   (Of course, that means we'll have to do the STATUS *before* returning the LIST response, and even if we're not doing LIST-STATUS)
 		 */
 
 		/* If the remote server's hierarchy delimiter differs from ours,

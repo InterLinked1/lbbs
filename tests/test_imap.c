@@ -161,6 +161,10 @@ static int run(void)
 	/* EXAMINE traversal should NOT result in messages being moved */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", send_count);
 
+	/* Check for marked flag on INBOX */
+	SWRITE(client1, "a2b LIST \"\" \"INBOX\"" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "\\Marked) \".\" \"INBOX\""); /* INBOX should be marked since it has recent messages */
+
 	/* SELECT */
 	SWRITE(client1, "a3 SELECT \"INBOX\"" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "* " XSTR(TARGET_MESSAGES) " EXISTS");
@@ -172,8 +176,16 @@ static int run(void)
 	SWRITE(client1, "a4 LIST \"\" \"\"" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "a4 OK LIST");
 
+	/* Check for marked flag on INBOX, it should no longer be there */
+	SWRITE(client1, "a4a LIST \"\" \"INBOX\"" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "\\Unmarked) \".\" \"INBOX\"");
+
+	/* However, messages in this mailbox should all have the \Recent flag */
+	SWRITE(client1, "a4b FETCH 1 (FLAGS)" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "\\Recent");
+
 	/* LIST-EXTENDED and LIST-STATUS extensions */
-	SWRITE(client1, "a4a LIST (SUBSCRIBED) \"\" (\"INBOX\") RETURN (STATUS (MESSAGES UNSEEN SIZE))" ENDL);
+	SWRITE(client1, "a4c LIST (SUBSCRIBED) \"\" (\"INBOX\") RETURN (STATUS (MESSAGES UNSEEN SIZE))" ENDL);
 	/* Dunno the actual size here, but if it's present that's probably correct */
 	CLIENT_EXPECT_EVENTUALLY(client1, "* STATUS \"INBOX\" (MESSAGES " XSTR(TARGET_MESSAGES) " UNSEEN " XSTR(TARGET_MESSAGES) " SIZE ");
 	CLIENT_DRAIN(client1);

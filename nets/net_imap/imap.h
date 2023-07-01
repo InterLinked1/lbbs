@@ -58,6 +58,8 @@ struct imap_session {
 	/* Traversal flags */
 	unsigned int totalnew;		/* In "new" maildir. Will be moved to "cur" when seen. */
 	unsigned int totalcur;		/* In "cur" maildir. */
+	unsigned int minrecent;		/* Smallest sequence number message that is considered \Recent */
+	unsigned int maxrecent;		/* Largest sequence number message that is considered \Recent (possibly redundant?) */
 	unsigned int totalunseen;	/* Messages with Unseen flag (or more rather, without the Seen flag). */
 	unsigned long totalsize;	/* Total size of mailbox */
 	unsigned int firstunseen;	/* Oldest message that is not Seen. */
