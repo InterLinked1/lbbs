@@ -1800,7 +1800,7 @@ static int handle_append(struct imap_session *imap, char *s)
 		sizestr = strchr(s, '{');
 		if (!sizestr) {
 			imap_reply(imap, "NO [CLIENTBUG] Missing message literal size");
-			goto cleanup;
+			goto cleanup2;
 		}
 		*sizestr++ = '\0';
 		synchronizing = strchr(sizestr, '+') ? 0 : 1;
@@ -1852,13 +1852,36 @@ static int handle_append(struct imap_session *imap, char *s)
 		appendsize = atoi(sizestr); /* Read this many bytes */
 		if (appendsize <= 0) {
 			imap_reply(imap, "NO [CLIENTBUG] Invalid message literal size");
-			goto cleanup;
+			goto cleanup2;
 		} else if (appendsize >= MAX_APPEND_SIZE) {
-			imap_reply(imap, "NO [LIMIT] Message too large"); /* [TOOBIG] could also be appropriate */
-			goto cleanup;
+			if (!synchronizing) {
+				/* Read and ignore this many bytes, so we don't interpret all those bytes as potential commands afterwards.
+				 * This is to avoid leaving the message in the buffer and trying to parse it all as IMAP commands,
+				 * which would result in spamming the logs, and also present a security risk if any of the lines in the message
+				 * is a potentially valid IMAP command. */
+				bbs_readline_discard_n(imap->rfd, imap->rldata, SEC_MS(10), (size_t) (appendsize + 2)); /* Read the bytes + trailing CR LF and throw them away */
+				bbs_debug(5, "Discarded %d bytes\n", appendsize);
+				/* This is obviously wasteful of bandwidth. Client should've supported the APPENDLIMIT extension, though,
+				 * so I'm not sympathetic. Get with the program already, know your limits! */
+				/* The reason for not sending the NO until afterwards is to guarantee the client won't stop sending
+				 * the message before we receive all of it. Even though that would save bandwidth, that would
+				 * confuse our ability to parse the message properly and be certain of the client's state. */
+				imap_reply(imap, "NO [LIMIT] Message too large"); /* [TOOBIG] could also be appropriate */
+				continue; /* Don't disconnect the client, otherwise Thunderbird won't display the [NO] message. For MULTIAPPEND, repeat for all. */
+			} else {
+				imap_reply(imap, "NO [LIMIT] Message too large");
+				goto cleanup;
+			}
 		} else if ((unsigned long) appendsize >= quotaleft) {
-			imap_reply(imap, "NO [OVERQUOTA] Insufficient quota remaining");
-			goto cleanup;
+			if (!synchronizing) {
+				bbs_readline_discard_n(imap->rfd, imap->rldata, SEC_MS(10), (size_t) (appendsize + 2));
+				bbs_debug(5, "Discarded %d bytes\n", appendsize + 2);
+				imap_reply(imap, "NO [OVERQUOTA] Insufficient quota remaining");
+				continue;
+			} else {
+				imap_reply(imap, "NO [OVERQUOTA] Insufficient quota remaining");
+				goto cleanup;
+			}
 		}
 
 		appendfile = maildir_mktemp(appenddir, appendtmp, sizeof(appendtmp), appendnew);
@@ -3078,7 +3101,7 @@ static int imap_process(struct imap_session *imap, char *s)
 			return 0;
 		}
 		IMAP_NO_READONLY(imap);
-		handle_append(imap, s);
+		return handle_append(imap, s);
 	} else if (allow_idle && !strcasecmp(command, "IDLE")) {
 #define MAX_IDLE_MS SEC_MS(1800) /* 30 minutes */
 		int idleleft = MAX_IDLE_MS;

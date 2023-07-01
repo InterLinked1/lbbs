@@ -1078,7 +1078,6 @@ static void append_header_single(json_t *restrict json, int *importance, int fet
 				json_array_append_new(cc, json_string(hdrval));
 			} else if (!strcasecmp(hdrname, "Subject")) {
 				json_object_set_new(json, "subject", json_string(hdrval));
-				bbs_debug(3, "set subj: %s\n", hdrval);
 			} else if (!strcasecmp(hdrname, "Date")) {
 				struct tm sent;
 				/* from parse_sent_date in net_imap: */
