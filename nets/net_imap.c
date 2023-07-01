@@ -421,28 +421,62 @@ static void imap_destroy(struct imap_session *imap)
 	free_if(imap->folder);
 }
 
-#define get_uidnext(imap, directory) mailbox_get_next_uid(imap->mbox, directory, 0, &imap->uidvalidity, &imap->uidnext)
+struct imap_traversal {
+	struct imap_session *imap;
+	unsigned int uidvalidity;
+	unsigned int uidnext;
+	/* Traversal flags: subset of IMAP session structure */
+	unsigned int totalnew;		/* In "new" maildir. Will be moved to "cur" when seen. */
+	unsigned int totalcur;		/* In "cur" maildir. */
+	unsigned int minrecent;		/* Smallest sequence number message that is considered \Recent */
+	unsigned int maxrecent;		/* Largest sequence number message that is considered \Recent (possibly redundant?) */
+	unsigned int totalunseen;	/* Messages with Unseen flag (or more rather, without the Seen flag). */
+	unsigned long totalsize;	/* Total size of mailbox */
+	unsigned int firstunseen;	/* Oldest message that is not Seen. */
+	unsigned int innew:1;		/* So we can use the same callback for both new and cur. Does not persist outside of traversal. */
+	unsigned int readonly:1;	/* SELECT vs EXAMINE */
+};
+
+#define get_uidnext_traverse(imap, directory) mailbox_get_next_uid(imap->mbox, directory, 0, &traversal.uidvalidity, &traversal.uidnext)
 
 /* We traverse cur first, since messages from new are moved to cur, and we don't want to double count them */
-#define IMAP_TRAVERSAL(imap, callback) \
+#define IMAP_TRAVERSAL(imap, traversal, callback, rdonly) \
+	memset(&traversal, 0, sizeof(traversal)); \
 	MAILBOX_TRYRDLOCK(imap); \
-	imap->totalnew = 0; \
-	imap->totalcur = 0; \
-	imap->totalsize = 0; \
-	imap->totalunseen = 0; \
-	imap->firstunseen = 0; \
-	imap->innew = 0; \
-	imap->uidvalidity = 0; \
-	imap->uidnext = 0; \
-	imap_traverse(imap->curdir, callback, imap); \
-	imap->innew = 1; \
-	imap->minrecent = imap->totalcur + 1; \
-	imap_traverse(imap->newdir, callback, imap); \
-	imap->maxrecent = imap->totalcur + imap->totalnew; \
-	if (!imap->uidvalidity || !imap->uidnext) { \
-		get_uidnext(imap, imap->dir); \
+	traversal.imap = imap; \
+	traversal.readonly = rdonly; \
+	traversal.totalnew = 0; \
+	traversal.totalcur = 0; \
+	traversal.totalsize = 0; \
+	traversal.totalunseen = 0; \
+	traversal.firstunseen = 0; \
+	traversal.innew = 0; \
+	traversal.uidvalidity = 0; \
+	traversal.uidnext = 0; \
+	imap_traverse(imap->curdir, callback, &traversal); \
+	traversal.innew = 1; \
+	traversal.minrecent = traversal.totalcur + 1; \
+	imap_traverse(imap->newdir, callback, &traversal); \
+	traversal.maxrecent = traversal.totalcur + traversal.totalnew; \
+	if (!traversal.uidvalidity || !traversal.uidnext) { \
+		get_uidnext_traverse(imap, imap->dir); \
 	} \
 	mailbox_unlock(imap->mbox);
+
+static void save_traversal(struct imap_session *imap, struct imap_traversal *traversal)
+{
+#define TRAVERSAL_PERSIST(name) imap->name = traversal->name
+	TRAVERSAL_PERSIST(totalnew);
+	TRAVERSAL_PERSIST(totalcur);
+	TRAVERSAL_PERSIST(totalsize);
+	TRAVERSAL_PERSIST(totalunseen);
+	TRAVERSAL_PERSIST(innew);
+	TRAVERSAL_PERSIST(uidvalidity);
+	TRAVERSAL_PERSIST(uidnext);
+	TRAVERSAL_PERSIST(minrecent);
+	TRAVERSAL_PERSIST(maxrecent);
+#undef TRAVERSAL_PERSIST
+}
 
 static int test_flags_parsing(void)
 {
@@ -506,26 +540,27 @@ enum select_type {
 	CMD_STATUS = 2,
 };
 
-static int on_select(const char *dir_name, const char *filename, struct imap_session *imap)
+static int on_select(const char *dir_name, const char *filename, struct imap_traversal *traversal)
 {
 	char *flags;
 	char newfile[512];
 	unsigned long size;
+	struct imap_session *imap = traversal->imap;
 
 #ifdef EXTRA_DEBUG
-	imap_debug(9, "Analyzing file %s/%s (readonly: %d)\n", dir_name, filename, imap->readonly);
+	imap_debug(9, "Analyzing file %s/%s (readonly: %d)\n", dir_name, filename, traversal->readonly);
 #endif
 
 	/* RECENT is not the same as UNSEEN.
 	 * In the context of maildir, RECENT refers to messages in the new directory.
 	 * UNSEEN is messages that aren't read (i.e. not marked as \Seen). */
 
-	if (imap->innew) {
-		imap->totalnew += 1;
-		imap->totalunseen += 1; /* If it's in the new dir, it definitely can't have been seen yet. */
+	if (traversal->innew) {
+		traversal->totalnew += 1;
+		traversal->totalunseen += 1; /* If it's in the new dir, it definitely can't have been seen yet. */
 		
 	} else {
-		imap->totalcur += 1;
+		traversal->totalcur += 1;
 		flags = strchr(filename, ':');
 		if (!flags++) {
 			bbs_error("File %s/%s is noncompliant with maildir\n", dir_name, filename);
@@ -534,25 +569,25 @@ static int on_select(const char *dir_name, const char *filename, struct imap_ses
 			maildir_parse_uid_from_filename(filename, &uid);
 			flags++;
 			if (!strchr(flags, FLAG_SEEN)) {
-				imap->totalunseen += 1;
+				traversal->totalunseen += 1;
 				/* scandir will traverse in the order files were added,
 				 * which if the mailbox were read-only, would line up with the filename ordering,
 				 * but otherwise there's no guarantee of this, since messages can be moved.
 				 * So explicitly look for the message with the smallest UID.
 				 */
-				if (!imap->firstunseen) {
-					imap->firstunseen = uid; /* If it's the first unseen message in the traversal, use that. */
+				if (!traversal->firstunseen) {
+					traversal->firstunseen = uid; /* If it's the first unseen message in the traversal, use that. */
 				} else {
-					imap->firstunseen = MIN(imap->firstunseen, uid); /* Otherwise, keep the lowest numbered one. */
+					traversal->firstunseen = MIN(traversal->firstunseen, uid); /* Otherwise, keep the lowest numbered one. */
 				}
 			}
 			
 		}
 	}
 
-	if (imap->innew) {
-		if (!imap->readonly) {
-			maildir_move_new_to_cur_file(imap->mbox, imap->dir, imap->curdir, imap->newdir, filename, &imap->uidvalidity, &imap->uidnext, newfile, sizeof(newfile));
+	if (traversal->innew) {
+		if (!traversal->readonly) {
+			maildir_move_new_to_cur_file(imap->mbox, imap->dir, imap->curdir, imap->newdir, filename, &traversal->uidvalidity, &traversal->uidnext, newfile, sizeof(newfile));
 			filename = newfile;
 		} else {
 			/* Need to stat to get the file size the regular way since parse_size_from_filename will fail. */
@@ -562,14 +597,14 @@ static int on_select(const char *dir_name, const char *filename, struct imap_ses
 			if (stat(fullname, &st)) {
 				bbs_error("stat(%s) failed: %s\n", fullname, strerror(errno));
 			} else {
-				imap->totalsize += (unsigned long) st.st_size;
+				traversal->totalsize += (unsigned long) st.st_size;
 			}
 			return 0;
 		}
 	}
 
 	if (!parse_size_from_filename(filename, &size)) {
-		imap->totalsize += size;
+		traversal->totalsize += size;
 	}
 
 	return 0;
@@ -683,7 +718,7 @@ next:
 	return 0;
 }
 
-static int imap_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, struct imap_session *imap), struct imap_session *imap)
+static int imap_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, struct imap_traversal *traversal), struct imap_traversal *traversal)
 {
 	struct dirent *entry, **entries;
 	int files, fno = 0;
@@ -699,7 +734,7 @@ static int imap_traverse(const char *path, int (*on_file)(const char *dir_name, 
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			continue;
 		}
-		if ((res = on_file(path, entry->d_name, imap))) {
+		if ((res = on_file(path, entry->d_name, traversal))) {
 			break; /* If the handler returns non-zero then stop */
 		}
 	}
@@ -869,23 +904,23 @@ static int pseudo_status_size(struct imap_session *imap, char *s, const char *re
 	return 0;
 }
 
-static void construct_status(struct imap_session *imap, const char *s, char *buf, size_t len, unsigned long maxmodseq)
+static void construct_status(struct imap_session *imap, struct imap_traversal *traversal, const char *s, char *buf, size_t len, unsigned long maxmodseq)
 {
 	char *pos = buf;
 	size_t left = len;
 	unsigned int appendlimit;
 
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "MESSAGES"), "MESSAGES %d", imap->totalnew + imap->totalcur);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "RECENT"), "RECENT %d", imap->totalnew);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDNEXT"), "UIDNEXT %d", imap->uidnext + 1);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDVALIDITY"), "UIDVALIDITY %d", imap->uidvalidity);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "MESSAGES"), "MESSAGES %d", traversal->totalnew + traversal->totalcur);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "RECENT"), "RECENT %d", traversal->totalnew);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDNEXT"), "UIDNEXT %d", traversal->uidnext + 1);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDVALIDITY"), "UIDVALIDITY %d", traversal->uidvalidity);
 	/* Unlike with SELECT, this is the TOTAL number of unseen messages, not merely the first one */
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UNSEEN"), "UNSEEN %d", imap->totalunseen);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UNSEEN"), "UNSEEN %d", traversal->totalunseen);
 	appendlimit = MIN((unsigned int) mailbox_quota(imap->mbox), max_append_size);
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %u", appendlimit);
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "HIGHESTMODSEQ"), "HIGHESTMODSEQ %lu", maxmodseq);
 	/* RFC 8438 STATUS=SIZE extension */
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "SIZE"), "SIZE %lu", imap->totalsize);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "SIZE"), "SIZE %lu", traversal->totalsize);
 }
 
 static int select_examine_response(struct imap_session *imap, enum select_type readonly, char *s, unsigned long maxmodseq, int was_selected, struct mailbox *oldmbox)
@@ -1005,6 +1040,7 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 	char *mailbox;
 	int was_selected = !s_strlen_zero(imap->dir);
 	unsigned long maxmodseq;
+	struct imap_traversal traversal;
 	struct mailbox *oldmbox = imap->mbox;
 
 	REQUIRE_ARGS(s); /* Mailbox can contain spaces, so don't use strsep for it if it's in quotes */
@@ -1029,7 +1065,8 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 
 	imap->readonly = readonly == CMD_EXAMINE;
 	mailbox_has_activity(imap->mbox); /* Clear any activity flag since we're about to do a traversal. */
-	IMAP_TRAVERSAL(imap, on_select);
+	IMAP_TRAVERSAL(imap, traversal, on_select, imap->readonly);
+	save_traversal(imap, &traversal);
 	maxmodseq = maildir_max_modseq(imap->mbox, imap->curdir);
 	return select_examine_response(imap, readonly, s, maxmodseq, was_selected, oldmbox);
 }
@@ -1037,6 +1074,7 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 int local_status(struct imap_session *imap, const char *mailbox, const char *items)
 {
 	char status_items[84] = "";
+	struct imap_traversal traversal;
 
 	/*! \todo Since this is local and we can control it,
 	 * we could cache the STATUS stats and invalidate them as needed */
@@ -1044,14 +1082,11 @@ int local_status(struct imap_session *imap, const char *mailbox, const char *ite
 	/* imap->folder will still contain the currently selected mailbox.
 	 * imap->activefolder will now contain the mailbox for STATUS. */
 	REPLACE(imap->activefolder, mailbox);
-	imap->readonly = 0;
 	mailbox_has_activity(imap->mbox); /* Clear any activity flag since we're about to do a traversal. */
-	IMAP_TRAVERSAL(imap, on_select);
+	IMAP_TRAVERSAL(imap, traversal, on_select, 1); /* Read only traversal: Do not move messages from new to cur */
 
-	/*! \todo imap->totalnew and imap->totalcur, etc. are now for this other mailbox we one-offed, rather than currently selected.
-	 * Will that mess anything up? Maybe we should save these in tmp vars, and only set on the imap struct if readonly <= 1? */
 	if (!strlen_zero(items)) {
-		construct_status(imap, items, status_items, sizeof(status_items), maildir_max_modseq(imap->mbox, imap->curdir));
+		construct_status(imap, &traversal, items, status_items, sizeof(status_items), maildir_max_modseq(imap->mbox, imap->curdir));
 	}
 	imap_send(imap, "STATUS \"%s\" (%s)", mailbox, status_items); /* Quotes needed if mailbox name contains spaces */
 	return 0;
@@ -1518,10 +1553,12 @@ unsigned int imap_msg_in_range(struct imap_session *imap, int seqno, const char 
 static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 {
 	if (mailbox_has_activity(imap->mbox)) {
+		struct imap_traversal traversal;
 		/* There are new messages since we last checked. */
 		/* Move any new messages from new to cur so we can find them. */
 		imap_debug(4, "Doing traversal again since our view of %s is stale\n", imap->dir);
-		IMAP_TRAVERSAL(imap, on_select);
+		IMAP_TRAVERSAL(imap, traversal, on_select, imap->readonly);
+		save_traversal(imap, &traversal);
 	}
 	return handle_fetch_full(imap, s, usinguid);
 }
