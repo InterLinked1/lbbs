@@ -150,8 +150,8 @@ static int imap_enabled = 0, imaps_enabled = 1;
 static int allow_idle = 1;
 static int idle_notify_interval = 600; /* Every 10 minutes, by default */
 
-/*! \brief Allow storage of messages up to 5MB. User can decide if that's really a good use of mail quota or not... */
-#define MAX_APPEND_SIZE 5000000
+/*! \brief Allow storage of messages up to 25MB. User can decide if that's really a good use of mail quota or not... */
+static unsigned int max_append_size = SIZE_MB(25);
 
 struct preauth_ip {
 	const char *range;
@@ -864,13 +864,16 @@ static void construct_status(struct imap_session *imap, const char *s, char *buf
 {
 	char *pos = buf;
 	size_t left = len;
+	unsigned int appendlimit;
+
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "MESSAGES"), "MESSAGES %d", imap->totalnew + imap->totalcur);
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "RECENT"), "RECENT %d", imap->totalnew);
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDNEXT"), "UIDNEXT %d", imap->uidnext + 1);
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDVALIDITY"), "UIDVALIDITY %d", imap->uidvalidity);
 	/* Unlike with SELECT, this is the TOTAL number of unseen messages, not merely the first one */
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UNSEEN"), "UNSEEN %d", imap->totalunseen);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %lu", mailbox_quota(imap->mbox));
+	appendlimit = MIN((unsigned int) mailbox_quota(imap->mbox), max_append_size);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %u", appendlimit);
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "HIGHESTMODSEQ"), "HIGHESTMODSEQ %lu", maxmodseq);
 	/* RFC 8438 STATUS=SIZE extension */
 	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "SIZE"), "SIZE %lu", imap->totalsize);
@@ -1853,7 +1856,7 @@ static int handle_append(struct imap_session *imap, char *s)
 		if (appendsize <= 0) {
 			imap_reply(imap, "NO [CLIENTBUG] Invalid message literal size");
 			goto cleanup2;
-		} else if (appendsize >= MAX_APPEND_SIZE) {
+		} else if ((unsigned int) appendsize >= max_append_size) {
 			if (!synchronizing) {
 				/* Read and ignore this many bytes, so we don't interpret all those bytes as potential commands afterwards.
 				 * This is to avoid leaving the message in the buffer and trying to parse it all as IMAP commands,
@@ -3465,6 +3468,7 @@ static int load_config(void)
 
 	bbs_config_val_set_true(cfg, "general", "allowidle", &allow_idle);
 	bbs_config_val_set_true(cfg, "general", "idlenotifyinterval", &idle_notify_interval);
+	bbs_config_val_set_uint(cfg, "general", "maxappendsize", &max_append_size);
 
 	/* IMAP */
 	bbs_config_val_set_true(cfg, "imap", "enabled", &imap_enabled);
