@@ -75,7 +75,6 @@ enum imap_search_type {
 	IMAP_SEARCH_SEQUENCE_NUMBER_SET,
 };
 
-#ifdef DEBUG_SEARCH
 static const char *imap_search_key_name(enum imap_search_type type)
 {
 	switch (type) {
@@ -164,7 +163,6 @@ static const char *imap_search_key_name(enum imap_search_type type)
 			return NULL;
 	}
 }
-#endif
 
 struct imap_search_key;
 
@@ -218,7 +216,7 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 
 	RWLIST_TRAVERSE(skeys, skey, entry) {
 		/* Indent according to the recursion depth */
-		size_t bytes = snprintf(buf, sizeof(buf), "=%%= %*.s %s -> ", 3 * depth, "", imap_search_key_name(skey->type));
+		size_t bytes = (size_t) snprintf(buf, sizeof(buf), "=%%= %*.s %s -> ", 3 * depth, "", imap_search_key_name(skey->type));
 		dyn_str_append(str, buf, bytes);
 		switch (skey->type) {
 			case IMAP_SEARCH_ANSWERED:
@@ -235,18 +233,18 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 			case IMAP_SEARCH_UNFLAGGED:
 			case IMAP_SEARCH_UNKEYWORD:
 			case IMAP_SEARCH_UNSEEN:
-				bytes = snprintf(buf, sizeof(buf), "\n");
+				bytes = (size_t) snprintf(buf, sizeof(buf), "\n");
 				dyn_str_append(str, buf, bytes);
 				break;
 			case IMAP_SEARCH_LARGER:
 			case IMAP_SEARCH_SMALLER:
 			case IMAP_SEARCH_OLDER:
 			case IMAP_SEARCH_YOUNGER:
-				bytes = snprintf(buf, sizeof(buf), "%d\n", skey->child.number);
+				bytes = (size_t) snprintf(buf, sizeof(buf), "%d\n", skey->child.number);
 				dyn_str_append(str, buf, bytes);
 				break;
 			case IMAP_SEARCH_MODSEQ:
-				bytes = snprintf(buf, sizeof(buf), "%lu\n", skey->child.longnumber);
+				bytes = (size_t) snprintf(buf, sizeof(buf), "%lu\n", skey->child.longnumber);
 				dyn_str_append(str, buf, bytes);
 				break;
 			case IMAP_SEARCH_BCC:
@@ -266,13 +264,13 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 			case IMAP_SEARCH_TO:
 			case IMAP_SEARCH_SEQUENCE_NUMBER_SET:
 			case IMAP_SEARCH_UID:
-				bytes = snprintf(buf, sizeof(buf), "%s\n", S_IF(skey->child.string));
+				bytes = (size_t) snprintf(buf, sizeof(buf), "%s\n", S_IF(skey->child.string));
 				dyn_str_append(str, buf, bytes);
 				break;
 			case IMAP_SEARCH_NOT:
 			case IMAP_SEARCH_OR:
 			case IMAP_SEARCH_AND:
-				bytes = snprintf(buf, sizeof(buf), "\n");
+				bytes = (size_t) snprintf(buf, sizeof(buf), "\n");
 				dyn_str_append(str, buf, bytes);
 				dump_imap_search_keys(skey->child.keys, str, depth + 1);
 				break;
@@ -285,6 +283,43 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 	}
 }
 #endif
+
+static int flag_fixup(struct imap_search_key *sk)
+{
+	/* Some IMAP clients don't use the proper search keys for things like
+	 * RECENT, DELETED, NEW, etc. so try to support them for compatibility. */
+
+	if (sk->type == IMAP_SEARCH_KEYWORD || sk->type == IMAP_SEARCH_UNKEYWORD) {
+		enum imap_search_type origtype = sk->type;
+		int inverted = origtype == IMAP_SEARCH_UNKEYWORD;
+		const char *orig = imap_search_key_name(origtype);
+		const char *s = sk->child.string;
+		if (s[0] == '\\') { /* Flag, not a keyword */
+			/* And some clients will send \\ instead of just \? So just use strstr */
+			if (!inverted && strstr(s, "Recent")) {
+				sk->type = IMAP_SEARCH_RECENT;
+			} else if (strstr(s, "Seen")) {
+				sk->type = inverted ? IMAP_SEARCH_UNSEEN : IMAP_SEARCH_SEEN;
+			} else if (strstr(s, "Deleted")) {
+				sk->type = inverted ? IMAP_SEARCH_UNDELETED : IMAP_SEARCH_DELETED;
+			} else if (strstr(s, "Draft")) {
+				sk->type = inverted ? IMAP_SEARCH_UNDRAFT : IMAP_SEARCH_DRAFT;
+			} else if (strstr(s, "Flagged")) {
+				sk->type = inverted ? IMAP_SEARCH_UNFLAGGED : IMAP_SEARCH_FLAGGED;
+			} else if (strstr(s, "Answered")) {
+				sk->type = inverted ? IMAP_SEARCH_UNANSWERED : IMAP_SEARCH_ANSWERED;
+			} else {
+				bbs_warning("Cannot convert flag %s for compatibility\n", s);
+				return -1;
+			}
+		}
+		if (sk->type != origtype) {
+			/* Please, fix your IMAP client! */
+			bbs_debug(1, "Converted %s %s to %s for compatibility\n", orig, s, imap_search_key_name(sk->type));
+		}
+	}
+	return 0;
+}
 
 #define SEARCH_PARSE_FLAG(name) \
 	else if (!strcasecmp(next, #name)) { \
@@ -364,6 +399,9 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 			*s = NULL; \
 		} \
 		nk->child.string = begin; /* This is not dynamically allocated, and does not need to be freed. */ \
+		if (flag_fixup(nk)) { \
+			return -1; \
+		} \
 		listsize++; \
 	}
 
@@ -476,7 +514,6 @@ static int parse_search_query(struct imap_session *imap, struct imap_search_keys
 		SEARCH_PARSE_FLAG(UNDELETED)
 		SEARCH_PARSE_FLAG(UNDRAFT)
 		SEARCH_PARSE_FLAG(UNFLAGGED)
-		SEARCH_PARSE_FLAG(UNKEYWORD)
 		SEARCH_PARSE_FLAG(UNSEEN)
 		SEARCH_PARSE_INT(LARGER)
 		SEARCH_PARSE_INT(SMALLER)
@@ -493,6 +530,7 @@ static int parse_search_query(struct imap_session *imap, struct imap_search_keys
 		SEARCH_PARSE_STRING(FROM)
 		SEARCH_PARSE_STRING(HEADER)
 		SEARCH_PARSE_STRING(KEYWORD)
+		SEARCH_PARSE_STRING(UNKEYWORD)
 		SEARCH_PARSE_STRING(ON)
 		SEARCH_PARSE_STRING(SENTBEFORE)
 		SEARCH_PARSE_STRING(SENTON)
@@ -521,6 +559,7 @@ static int parse_search_query(struct imap_session *imap, struct imap_search_keys
 			listsize++;
 		} else {
 			bbs_warning("Foreign IMAP search key: %s\n", next);
+			return -1;
 		}
 checklistsize:
 		switch (parent_type) {
@@ -726,11 +765,11 @@ static int search_sent_date(struct imap_search *search, struct tm *tm)
 	break;
 
 #define SEARCH_FLAG_MATCH(flag) \
-	retval = (search->flags & flag) ? 1 : 0; \
+	retval = (search->flags & flag); \
 	break;
 
 #define SEARCH_FLAG_NOT_MATCH(flag) \
-	retval = (search->flags & flag) ? 0 : 1; \
+	retval = !(search->flags & flag); \
 	break;
 
 #define SEARCH_STAT() \
@@ -864,10 +903,14 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 			case IMAP_SEARCH_UNKEYWORD:
 			case IMAP_SEARCH_KEYWORD:
 				/* This is not very efficient, since we reparse the keywords for every message, but the keyword mapping is the same for everything in this mailbox. */
+				if (strlen_zero(skey->child.string)) {
+					bbs_warning("No keyword?\n");
+					break;
+				}
 				parse_keyword(search->imap, skey->child.string, search->imap->dir, 0);
 				/* imap->appendkeywords is now set. */
 				if (search->imap->numappendkeywords != 1) {
-					bbs_warning("Expected %d keyword, got %d?\n", 1, search->imap->numappendkeywords);
+					bbs_warning("Expected %d keyword, got %d? (%s)\n", 1, search->imap->numappendkeywords, skey->child.string);
 					break;
 				}
 				retval = strchr(search->keywords, search->imap->appendkeywords[0]) ? 1 : 0;
@@ -1097,6 +1140,7 @@ static int do_search(struct imap_session *imap, char *s, unsigned int **a, int u
 
 #ifdef DEBUG_SEARCH
 	{
+		struct dyn_str dynstr;
 		memset(&dynstr, 0, sizeof(dynstr));
 		dump_imap_search_keys(&skeys, &dynstr, 0);
 		bbs_debug(3, "IMAP search tree:\n%s", dynstr.buf);

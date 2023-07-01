@@ -55,6 +55,7 @@ struct imap_client {
 	unsigned int has_list_status:1;
 	/* Sorting */
 	char *sort;
+	char *filter;
 };
 
 static void libetpan_log(mailimap *session, int log_type, const char *str, size_t size, void *context)
@@ -1166,59 +1167,81 @@ static void append_header_meta(json_t *restrict json, char *headers, int fetchli
 	}
 }
 
-static clist *sortall(struct imap_client *client, const char *sort)
+static clist *sortall(struct imap_client *client, const char *sort, const char *search, int *sorted)
 {
 	int res = -1;
 	clist *list = NULL;
-	struct mailimap_sort_key *key = NULL;
+	struct mailimap_sort_key *sortkey = NULL;
 	struct mailimap_search_key *searchkey = NULL;
 
-	/* These seem backwards because, in a way, they are.
-	 * The pagination logic is written to expect the "first" result on the last page and show the "last"
-	 * result at the beginning, so that on an unsorted mailbox, the latest results show up on the first page.
-	 * Therefore, we flip all the orderings here, e.g. to sort in descending order, we really ask the server
-	 * to do an ascending sort, so that when the last results are used for the first page, the largest items
-	 * show up there, making it feel like a descending sort. */
-	if (!strcmp(sort, "sent-desc")) {
-		key = mailimap_sort_key_new_date(0);
-	} else if (!strcmp(sort, "sent-asc")) {
-		key = mailimap_sort_key_new_date(1);
-	} else if (!strcmp(sort, "received-desc")) {
-		key = mailimap_sort_key_new_arrival(0);
-	} else if (!strcmp(sort, "received-asc")) {
-		key = mailimap_sort_key_new_arrival(1);
-	} else if (!strcmp(sort, "size-desc")) {
-		key = mailimap_sort_key_new_size(0);
-	} else if (!strcmp(sort, "size-asc")) {
-		key = mailimap_sort_key_new_size(1);
-	} else if (!strcmp(sort, "subject-asc")) {
-		key = mailimap_sort_key_new_subject(1);
-	} else if (!strcmp(sort, "subject-desc")) {
-		key = mailimap_sort_key_new_subject(0);
-	} else if (!strcmp(sort, "from-asc")) {
-		key = mailimap_sort_key_new_from(1);
-	} else if (!strcmp(sort, "from-desc")) {
-		key = mailimap_sort_key_new_from(0);
-	} else if (!strcmp(sort, "to-asc")) {
-		key = mailimap_sort_key_new_to(1);
-	} else if (!strcmp(sort, "to-desc")) {
-		key = mailimap_sort_key_new_to(0);
+	if (sort) {
+		/* These seem backwards because, in a way, they are.
+		 * The pagination logic is written to expect the "first" result on the last page and show the "last"
+		 * result at the beginning, so that on an unsorted mailbox, the latest results show up on the first page.
+		 * Therefore, we flip all the orderings here, e.g. to sort in descending order, we really ask the server
+		 * to do an ascending sort, so that when the last results are used for the first page, the largest items
+		 * show up there, making it feel like a descending sort. */
+		if (!strcmp(sort, "sent-desc")) {
+			sortkey = mailimap_sort_key_new_date(0);
+		} else if (!strcmp(sort, "sent-asc")) {
+			sortkey = mailimap_sort_key_new_date(1);
+		} else if (!strcmp(sort, "received-desc")) {
+			sortkey = mailimap_sort_key_new_arrival(0);
+		} else if (!strcmp(sort, "received-asc")) {
+			sortkey = mailimap_sort_key_new_arrival(1);
+		} else if (!strcmp(sort, "size-desc")) {
+			sortkey = mailimap_sort_key_new_size(0);
+		} else if (!strcmp(sort, "size-asc")) {
+			sortkey = mailimap_sort_key_new_size(1);
+		} else if (!strcmp(sort, "subject-asc")) {
+			sortkey = mailimap_sort_key_new_subject(1);
+		} else if (!strcmp(sort, "subject-desc")) {
+			sortkey = mailimap_sort_key_new_subject(0);
+		} else if (!strcmp(sort, "from-asc")) {
+			sortkey = mailimap_sort_key_new_from(1);
+		} else if (!strcmp(sort, "from-desc")) {
+			sortkey = mailimap_sort_key_new_from(0);
+		} else if (!strcmp(sort, "to-asc")) {
+			sortkey = mailimap_sort_key_new_to(1);
+		} else if (!strcmp(sort, "to-desc")) {
+			sortkey = mailimap_sort_key_new_to(0);
+		} else {
+			bbs_warning("Unsupported sort criteria: '%s'\n", sort);
+		}
+		if (!sortkey) {
+			return NULL;
+		}
+	}
+
+	if (search) {
+		if (!strcmp(search, "recent")) {
+			/* libetpan does not support the RECENT search key - its list of search keys is incomplete.
+			 * As a workaround, use the keyword, however this is probably not compatible with all IMAP servers */
+			searchkey = mailimap_search_key_new_keyword(strdup("\\Recent"));
+		} else if (!strcmp(search, "unseen")) {
+			searchkey = mailimap_search_key_new_unkeyword(strdup("\\Seen"));
+		} else {
+			bbs_warning("Unsupported search criteria: '%s'\n", search);
+		}
 	} else {
-		bbs_warning("Unsupported sort criteria: '%s'\n", sort);
+		searchkey = mailimap_search_key_new_all();
 	}
-	if (!key) {
-		return NULL;
-	}
-
-	searchkey = mailimap_search_key_new_all();
 	if (!searchkey) {
-		mailimap_sort_key_free(key);
+		if (sortkey) {
+			mailimap_sort_key_free(sortkey);
+		}
 		return NULL;
 	}
 
-	res = mailimap_sort(client->imap, "UTF-8", key, searchkey, &list);
+	if (sortkey) {
+		res = mailimap_sort(client->imap, "UTF-8", sortkey, searchkey, &list);
+		mailimap_sort_key_free(sortkey);
+		*sorted = 1;
+	} else {
+		res = mailimap_search(client->imap, "UTF-8", searchkey, &list);
+		*sorted = 0;
+	}
 	mailimap_search_key_free(searchkey);
-	mailimap_sort_key_free(key);
 	if (res != MAILIMAP_NO_ERROR) {
 		bbs_warning("SORT failed: %s\n", maildriver_strerror(res));
 	}
@@ -1400,7 +1423,7 @@ static void fetchlist_single(struct mailimap_msg_att *msg_att, json_t *arr)
 	}
 }
 
-static void fetchlist(struct ws_session *ws, struct imap_client *client, const char *reason, int start, int end, int page, int numpages, const char *sort)
+static void fetchlist(struct ws_session *ws, struct imap_client *client, const char *reason, int start, int end, int page, int pagesize, int numpages, const char *sort, const char *filter)
 {
 	int expected, res, c = 0;
 	struct mailimap_set *set = NULL;
@@ -1413,67 +1436,96 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 	struct mailimap_header_list *imap_hdrlist;
 	struct mailimap_section *section;
 	json_t *root = NULL, *arr;
+	int added = 0;
 
 	/* start to end is inclusive */
 	expected = end - start + 1;
-	bbs_debug(3, "Fetching message listing %d:%d (page %d of %d)\n", start, end, page, numpages);
+	bbs_debug(3, "Fetching message listing %d:%d (page %d of %d), sort: %s, filter: %s\n", start, end, page, numpages, S_IF(sort), S_IF(filter));
 
 	/* Fetch: UID, flags, size, from, to, subject, internaldate,
 	 * +with attributes: priority headers, contains attachments */
 	if (sort && !client->has_sort) {
+		bbs_debug(3, "Can't sort, sort not available\n");
+		client_set_status(ws, "Your IMAP server does not support SORT");
 		sort = NULL; /* If server doesn't support sort, we can't sort */
 	}
-	if (sort) {
+	/* Thankfully, SEARCH is not an extension, it should be supported by all IMAP servers */
+	if (sort || filter) {
 		int index = 1;
+		int sortlist;
 		/*! \todo Cache this between FETCHLIST calls */
-		clist *sorted = sortall(client, sort); /* This could be somewhat slow, since we have sort the ENTIRE mailbox every time */
+		clist *sorted = sortall(client, sort, filter, &sortlist); /* This could be somewhat slow, since we have sort the ENTIRE mailbox every time */
 		if (!sorted) {
 			return;
 		}
 		set = mailimap_set_new_empty();
 		if (!set) {
-			mailimap_sort_result_free(sorted);
+			sortlist ? mailimap_sort_result_free(sorted) : mailimap_search_result_free(sorted);
 			return;
+		}
+		if (filter) {
+			/* Since # messages is not client->messages, we need to paginate accordingly. */
+			int total = clist_count(sorted);
+			/* The # pages could be different since # of results could be anything */
+			numpages = (total + (pagesize - 1)) / pagesize; /* avoid ceil() */
+			if (page > numpages) {
+				bbs_debug(3, "Capping page to %d\n", numpages);
+				page = numpages;
+			}
+			/* Recalculate */
+			start = total - (pagesize * page) + 1;
+			if (start < 1) {
+				start = 1;
+			}
+			end = start + (pagesize - 1);
 		}
 		for (cur = clist_begin(sorted); cur; index++, cur = clist_next(cur)) {
 			uint32_t *seqno;
+			/* The break early optimizations only work if we're sorted in a very specific order */
 			if (index < start) {
+				bbs_debug(3, "Skipping #%d\n", index);
 				continue;
 			}
 			seqno = clist_content(cur);
 			res = mailimap_set_add_single(set, *seqno);
+			added++;
 			if (res != MAILIMAP_NO_ERROR) {
 				bbs_error("Failed to add sorted seqno to list: %u\n", *seqno);
-				mailimap_sort_result_free(sorted);
+				sortlist ? mailimap_sort_result_free(sorted) : mailimap_search_result_free(sorted);
 				return;
 			}
 			if (index >= end) {
+				bbs_debug(3, "Stopping at #%d\n", index);
 				break;
 			}
 		}
-		mailimap_sort_result_free(sorted);
+		bbs_debug(6, "SEARCH/SORT matched %d result%s\n", added, ESS(added));
+		sortlist ? mailimap_sort_result_free(sorted) : mailimap_search_result_free(sorted);
 	} else {
 		set = mailimap_set_new_interval((uint32_t) start, (uint32_t) end);
+		added = (end - start + 1);
 	}
 
-	fetch_type = mailimap_fetch_type_new_fetch_att_list_empty();
+	/* In the case of a filter, there might not be anything */
+	if (added) {
+		fetch_type = mailimap_fetch_type_new_fetch_att_list_empty();
 
-	/* UID */
-	fetch_att = mailimap_fetch_att_new_uid();
-	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
+		/* UID */
+		fetch_att = mailimap_fetch_att_new_uid();
+		mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
 
-	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, mailimap_fetch_att_new_flags()); /* Flags */
-	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, mailimap_fetch_att_new_internaldate()); /* INTERNALDATE */
-	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, mailimap_fetch_att_new_rfc822_size()); /* Size */
-	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, mailimap_fetch_att_new_bodystructure()); /* BODYSTRUCTURE (for attachments) */
+		mailimap_fetch_type_new_fetch_att_list_add(fetch_type, mailimap_fetch_att_new_flags()); /* Flags */
+		mailimap_fetch_type_new_fetch_att_list_add(fetch_type, mailimap_fetch_att_new_internaldate()); /* INTERNALDATE */
+		mailimap_fetch_type_new_fetch_att_list_add(fetch_type, mailimap_fetch_att_new_rfc822_size()); /* Size */
+		mailimap_fetch_type_new_fetch_att_list_add(fetch_type, mailimap_fetch_att_new_bodystructure()); /* BODYSTRUCTURE (for attachments) */
 
-	/* Headers */
-	hdrlist = clist_new();
-	if (!hdrlist) {
-		mailimap_set_free(set);
-		mailimap_fetch_att_free(fetch_att);
-		return;
-	}
+		/* Headers */
+		hdrlist = clist_new();
+		if (!hdrlist) {
+			mailimap_set_free(set);
+			mailimap_fetch_att_free(fetch_att);
+			return;
+		}
 
 #define FETCH_HEADER(name) \
 	headername = strdup(name); \
@@ -1482,39 +1534,40 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 		goto cleanup; \
 	}
 
-	FETCH_HEADER("Date");
-	FETCH_HEADER("Subject");
-	FETCH_HEADER("From");
-	FETCH_HEADER("To");
-	FETCH_HEADER("X-Priority");
-	FETCH_HEADER("Importance");
-	FETCH_HEADER("X-MSMail-Priority");
-	FETCH_HEADER("Priority");
+		FETCH_HEADER("Date");
+		FETCH_HEADER("Subject");
+		FETCH_HEADER("From");
+		FETCH_HEADER("To");
+		FETCH_HEADER("X-Priority");
+		FETCH_HEADER("Importance");
+		FETCH_HEADER("X-MSMail-Priority");
+		FETCH_HEADER("Priority");
 
-	imap_hdrlist = mailimap_header_list_new(hdrlist);
-	section = mailimap_section_new_header_fields(imap_hdrlist);
-	if (!section) {
-		goto cleanup2;
-	}
-	fetch_att = mailimap_fetch_att_new_body_peek_section(section);
-	if (!fetch_att) {
-		goto cleanup2;
-	}
-	res = mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
-	if (MAILIMAP_ERROR(res)) {
-		goto cleanup;
-	}
-	fetch_att = NULL;
+		imap_hdrlist = mailimap_header_list_new(hdrlist);
+		section = mailimap_section_new_header_fields(imap_hdrlist);
+		if (!section) {
+			goto cleanup2;
+		}
+		fetch_att = mailimap_fetch_att_new_body_peek_section(section);
+		if (!fetch_att) {
+			goto cleanup2;
+		}
+		res = mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
+		if (MAILIMAP_ERROR(res)) {
+			goto cleanup;
+		}
+		fetch_att = NULL;
 
-	/* Fetch! By sequence number, not UID. */
-	res = mailimap_fetch(client->imap, set, fetch_type, &fetch_result);
-	mailimap_fetch_type_free(fetch_type);
-	/* Don't go to cleanup past this point, so no need to set fetch_type/set to NULL */
-	if (MAILIMAP_ERROR(res)) {
-		bbs_warning("FETCH failed: %s\n", maildriver_strerror(res));
-		/* fetch_result and everything that went into it is already freed */
-		mailimap_set_free(set);
-		return;
+		/* Fetch! By sequence number, not UID. */
+		res = mailimap_fetch(client->imap, set, fetch_type, &fetch_result);
+		mailimap_fetch_type_free(fetch_type);
+		/* Don't go to cleanup past this point, so no need to set fetch_type/set to NULL */
+		if (MAILIMAP_ERROR(res)) {
+			bbs_warning("FETCH failed: %s\n", maildriver_strerror(res));
+			/* fetch_result and everything that went into it is already freed */
+			mailimap_set_free(set);
+			return;
+		}
 	}
 
 	root = json_object();
@@ -1532,6 +1585,11 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 
 	arr = json_array();
 	json_object_set_new(root, "data", arr);
+
+	if (!added) {
+		/* If we filtered, there might not be any results */
+		goto finalize;
+	}
 
 	if (sort) {
 		/* We need to add the messages in the order of the SORT response.
@@ -1578,21 +1636,24 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 			c++;
 		}
 	}
-	mailimap_set_free(set);
 
 	/* The messages are in ascending order here.
 	 * They are displayed newest first in the the webmail client,
 	 * but we let frontend JavaScript reverse this JSON array,
 	 * since jansson doesn't have a function to reverse arrays? */
 
-	if (c != expected) {
+	if (c != expected && !filter) { /* If we filtered, there might be fewer results than expected? */
 		bbs_warning("Expected to fetch %d (%d:%d) messages but only fetched %d?\n", expected, start, end, c);
 	}
+
+	mailimap_fetch_list_free(fetch_result);
+
+finalize:
+	mailimap_set_free(set);
 
 	/* XXX Should this be done only for SELECT, not each FETCHLIST? */
 	append_quota(root, client);
 
-	mailimap_fetch_list_free(fetch_result);
 	json_send(ws, root);
 	return;
 
@@ -1627,11 +1688,12 @@ cleanup2:
 	json_decref(root);
 }
 
-static void handle_fetchlist(struct ws_session *ws, struct imap_client *client, const char *reason, int page, int pagesize, const char *sort)
+static void handle_fetchlist(struct ws_session *ws, struct imap_client *client, const char *reason, int page, int pagesize, const char *sort, const char *filter)
 {
 	uint32_t total;
 	int numpages, start, end;
 	const char *oldsort = client->sort;
+	const char *oldfilter = client->filter;
 
 	if (page < 1) {
 		page = 1;
@@ -1648,6 +1710,12 @@ static void handle_fetchlist(struct ws_session *ws, struct imap_client *client, 
 		free_if(client->sort);
 		if (sort && (sort == oldsort || strcmp(sort, "none"))) { /* If sort is aliased with what client->sort was, it's invalid, so duplicate */
 			client->sort = strdup(sort);
+		}
+	}
+	if (!(client->filter && filter && !strcmp(filter, client->filter))) {
+		free_if(client->filter);
+		if (filter && (filter == oldfilter || strcmp(filter, "none"))) {
+			client->filter = strdup(filter);
 		}
 	}
 
@@ -1683,7 +1751,7 @@ static void handle_fetchlist(struct ws_session *ws, struct imap_client *client, 
 	} else if (end > (int) total) {
 		end = (int) total; /* End can't be beyond the max # of messages */
 	}
-	return fetchlist(ws, client, reason, start, end, page, numpages, client->sort);
+	return fetchlist(ws, client, reason, start, end, page, pagesize, numpages, client->sort, client->filter);
 }
 
 static void fetch_mime_recurse_single(const char **body, size_t *len, struct mailmime_data *data)
@@ -2440,7 +2508,7 @@ static void handle_append(struct imap_client *client, const char *message, size_
 	}
 }
 
-#define REFRESH_LISTING(reason) handle_fetchlist(ws, client, reason, client->page, client->pagesize, client->sort)
+#define REFRESH_LISTING(reason) handle_fetchlist(ws, client, reason, client->page, client->pagesize, client->sort, client->filter)
 
 static void idle_stop(struct ws_session *ws, struct imap_client *client)
 {
@@ -2620,9 +2688,9 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 			goto cleanup;
 		}
 		/* Send an unsolicited list of messages (implicitly fetch the first page). */
-		handle_fetchlist(ws, client, command, 1, json_object_int_value(root, "pagesize"), json_object_string_value(root, "sort"));
+		handle_fetchlist(ws, client, command, 1, json_object_int_value(root, "pagesize"), json_object_string_value(root, "sort"), json_object_string_value(root, "filter"));
 	} else if (!strcmp(command, "FETCHLIST")) {
-		handle_fetchlist(ws, client, command, json_object_int_value(root, "page"), json_object_int_value(root, "pagesize"), json_object_string_value(root, "sort"));
+		handle_fetchlist(ws, client, command, json_object_int_value(root, "page"), json_object_int_value(root, "pagesize"), json_object_string_value(root, "sort"), json_object_string_value(root, "filter"));
 	} else if (client->mailbox) {
 		/* SELECTed state only */
 		if (!strcmp(command, "FETCH")) {
@@ -2723,6 +2791,7 @@ static int on_close(struct ws_session *ws, void *data)
 	mailimap_free(client->imap); /* Must exist, or we would have rejected in on_open */
 	free_if(client->mailbox);
 	free_if(client->sort);
+	free_if(client->filter);
 	free(client);
 	return 0;
 }
