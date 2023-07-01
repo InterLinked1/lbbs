@@ -1366,7 +1366,7 @@ static void fetchlist_single(struct mailimap_msg_att *msg_att, json_t *arr)
 					struct mailimap_flag_fetch *flag = clist_content(dcur);
 					switch (flag->fl_type) {
 						case MAILIMAP_FLAG_FETCH_RECENT:
-							bbs_debug(5, "Recent\n");
+							json_array_append_new(flagsarr, json_string("\\Recent"));
 							break;
 						case MAILIMAP_FLAG_FETCH_OTHER:
 							switch (flag->fl_flag->fl_type) {
