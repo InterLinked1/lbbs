@@ -30,7 +30,13 @@ int __attribute__ ((format (gnu_printf, 6, 7))) __imap_client_send_wait_response
 /*! \retval Number of replacements made */
 int imap_substitute_remote_command(struct imap_client *client, char *s);
 
-/*! \brief Whether a specific mailbox path has a virtual mapping to a mailbox on a remote server */
-int load_virtual_mailbox(struct imap_session *imap, const char *path);
+/*!
+ * \brief Load a remote mailbox
+ * \param imap
+ * \param path
+ * \param[out] exists Whether the mailbox exists (e.g. mailbox may have a mapping that exists, but be currently unavailable)
+ * \return client, or NULL if not available/doesn't exist
+ */
+struct imap_client *load_virtual_mailbox(struct imap_session *imap, const char *path, int *exists);
 
 char *remote_mailbox_name(struct imap_client *client, char *restrict mailbox);

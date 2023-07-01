@@ -159,6 +159,9 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 		fp2 = fopen(virtcachefile, "r");
 	}
 
+	/* The first part here (simply getting the list of mailboxes from the remote server)
+	 * doesn't really need to be multithreaded. It could, in theory, but the benefit is almost nil
+	 * after the first time this is built, since typically we reuse the cached version thereafter. */
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 	/* gcc thinks fp2 can be used uninitialized here. If it is, the conditional will short circuit, so it can't be. */
 	if (forcerescan || !fp2) {
@@ -312,12 +315,14 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 
 		/* Handle LIST-STATUS and STATUS=SIZE for remote mailboxes. */
 		if (lcmd->retstatus && MAILBOX_SELECTABLE(line)) { /* Don't call STATUS on a NoSelect mailbox */
+			struct imap_traversal traversal;
+			memset(&traversal, 0, sizeof(traversal));
 			/* Replace the remote hierarchy delimiter with our own, solely for set_maildir. */
 			bbs_strreplace(fullmboxname, remotedelim, HIERARCHY_DELIMITER_CHAR);
 			/* Use fullmboxname, for full mailbox name (from our perspective), NOT virtmboxname */
-			if (set_maildir(imap, fullmboxname)) {
+			if (set_maildir_readonly(imap, &traversal, fullmboxname)) {
 				bbs_error("Failed to set maildir for mailbox '%s'\n", fullmboxname);
-			} else if (!imap->client) {
+			} else if (!traversal.client) {
 				/* We know we called set_maildir for a remote mailbox, so it should always be remote */
 				bbs_warning("No virtual/remote mailbox active?\n");
 			} else {
@@ -326,18 +331,17 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 				 * but we strip all hierarchy delimiters before doing that anyways. */
 				char statuscmd[84];
 				const char *items = lcmd->retstatus;
-				char *remotename = remote_mailbox_name(imap->client, fullmboxname); /* Convert local delimiter (back) to remote */
+				char *remotename = remote_mailbox_name(traversal.client, fullmboxname); /* Convert local delimiter (back) to remote */
 				int want_size = strstr(lcmd->retstatus, "SIZE") ? 1 : 0;
-				REPLACE(imap->activefolder, fullmboxname);
 
 				/* We also need to remove SIZE from lcmd->retstatus if it's not supported by the remote */
-				if (want_size && !(imap->client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
+				if (want_size && !(traversal.client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
 					safe_strncpy(statuscmd, lcmd->retstatus, sizeof(statuscmd));
 					items = remove_size(statuscmd);
 				}
 
 				/* Always use remote_status, never direct passthrough, to avoid sending a tagged OK response each time */
-				remote_status(imap->client, remotename, items, want_size);
+				remote_status(traversal.client, remotename, items, want_size);
 			}
 			/* Most of it is already in the remote format... convert it all so bbs_strterm will stop at the right spot */
 			bbs_strreplace(fullmboxname, HIERARCHY_DELIMITER_CHAR, remotedelim);
@@ -345,7 +349,7 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 
 		bbs_strterm(virtmboxaccount, remotedelim); /* Just the account portion, so we can use stringlist_contains later */
 
-		/* Keep track of parent mailboxe names that are remote */
+		/* Keep track of parent mailbox names that are remote */
 		if (!stringlist_contains(&imap->remotemailboxes, virtmboxaccount)) {
 			stringlist_push(&imap->remotemailboxes, virtmboxaccount);
 		}

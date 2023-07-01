@@ -331,10 +331,12 @@ static int list_scandir_single(struct imap_session *imap, struct list_command *l
 		!strlen_zero(extended_data_items) ? " " : "", S_IF(extended_data_items)); /* Always send the delimiter */
 
 	if (lcmd->retstatus && IMAP_HAS_ACL(myacl, IMAP_ACL_READ)) { /* Part 2 for LIST-STATUS: actually send listing if we can */
-		if (set_maildir(imap, fullmailboxname)) {
+		struct imap_traversal traversal;
+		memset(&traversal, 0, sizeof(traversal));
+		if (set_maildir_readonly(imap, &traversal, fullmailboxname)) {
 			bbs_error("Failed to set maildir for %s\n", mailboxname);
 		} else {
-			local_status(imap, fullmailboxname, lcmd->retstatus); /* We know this folder is local, not remote */
+			local_status(imap, &traversal, fullmailboxname, lcmd->retstatus); /* We know this folder is local, not remote */
 		}
 	}
 

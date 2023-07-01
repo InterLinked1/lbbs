@@ -417,51 +417,42 @@ static void imap_destroy(struct imap_session *imap)
 	/* Do not free tag, since it's stack allocated */
 	free_if(imap->savedtag);
 	free_if(imap->clientid);
-	free_if(imap->activefolder);
 	free_if(imap->folder);
 }
 
-struct imap_traversal {
-	struct imap_session *imap;
-	unsigned int uidvalidity;
-	unsigned int uidnext;
-	/* Traversal flags: subset of IMAP session structure */
-	unsigned int totalnew;		/* In "new" maildir. Will be moved to "cur" when seen. */
-	unsigned int totalcur;		/* In "cur" maildir. */
-	unsigned int minrecent;		/* Smallest sequence number message that is considered \Recent */
-	unsigned int maxrecent;		/* Largest sequence number message that is considered \Recent (possibly redundant?) */
-	unsigned int totalunseen;	/* Messages with Unseen flag (or more rather, without the Seen flag). */
-	unsigned long totalsize;	/* Total size of mailbox */
-	unsigned int firstunseen;	/* Oldest message that is not Seen. */
-	unsigned int innew:1;		/* So we can use the same callback for both new and cur. Does not persist outside of traversal. */
-	unsigned int readonly:1;	/* SELECT vs EXAMINE */
-};
-
-#define get_uidnext_traverse(imap, directory) mailbox_get_next_uid(imap->mbox, directory, 0, &traversal.uidvalidity, &traversal.uidnext)
-
 /* We traverse cur first, since messages from new are moved to cur, and we don't want to double count them */
 #define IMAP_TRAVERSAL(imap, traversal, callback, rdonly) \
-	memset(&traversal, 0, sizeof(traversal)); \
-	MAILBOX_TRYRDLOCK(imap); \
-	traversal.imap = imap; \
-	traversal.readonly = rdonly; \
-	traversal.totalnew = 0; \
-	traversal.totalcur = 0; \
-	traversal.totalsize = 0; \
-	traversal.totalunseen = 0; \
-	traversal.firstunseen = 0; \
-	traversal.innew = 0; \
-	traversal.uidvalidity = 0; \
-	traversal.uidnext = 0; \
-	imap_traverse(imap->curdir, callback, &traversal); \
-	traversal.innew = 1; \
-	traversal.minrecent = traversal.totalcur + 1; \
-	imap_traverse(imap->newdir, callback, &traversal); \
-	traversal.maxrecent = traversal.totalcur + traversal.totalnew; \
-	if (!traversal.uidvalidity || !traversal.uidnext) { \
-		get_uidnext_traverse(imap, imap->dir); \
+	if (mailbox_rdlock(traversal->mbox)) { \
+		imap_reply(imap, "NO [INUSE] Mailbox busy"); \
+		return 0; \
 	} \
-	mailbox_unlock(imap->mbox);
+	traversal->imap = imap; \
+	traversal->readonly = rdonly; \
+	traversal->totalnew = 0; \
+	traversal->totalcur = 0; \
+	traversal->totalsize = 0; \
+	traversal->totalunseen = 0; \
+	traversal->firstunseen = 0; \
+	traversal->innew = 0; \
+	traversal->uidvalidity = 0; \
+	traversal->uidnext = 0; \
+	imap_traverse(traversal->curdir, callback, traversal); \
+	traversal->innew = 1; \
+	traversal->minrecent = traversal->totalcur + 1; \
+	imap_traverse(traversal->newdir, callback, traversal); \
+	traversal->maxrecent = traversal->totalcur + traversal->totalnew; \
+	if (!traversal->uidvalidity || !traversal->uidnext) { \
+		mailbox_get_next_uid(traversal->mbox, traversal->dir, 0, &traversal->uidvalidity, &traversal->uidnext); \
+	} \
+	mailbox_unlock(traversal->mbox);
+
+static void set_traversal(struct imap_session *imap, struct imap_traversal *traversal)
+{
+	traversal->mbox = imap->mbox;
+	strcpy(traversal->dir, imap->dir);
+	strcpy(traversal->curdir, imap->curdir);
+	strcpy(traversal->newdir, imap->newdir);
+}
 
 static void save_traversal(struct imap_session *imap, struct imap_traversal *traversal)
 {
@@ -545,7 +536,6 @@ static int on_select(const char *dir_name, const char *filename, struct imap_tra
 	char *flags;
 	char newfile[512];
 	unsigned long size;
-	struct imap_session *imap = traversal->imap;
 
 #ifdef EXTRA_DEBUG
 	imap_debug(9, "Analyzing file %s/%s (readonly: %d)\n", dir_name, filename, traversal->readonly);
@@ -558,7 +548,6 @@ static int on_select(const char *dir_name, const char *filename, struct imap_tra
 	if (traversal->innew) {
 		traversal->totalnew += 1;
 		traversal->totalunseen += 1; /* If it's in the new dir, it definitely can't have been seen yet. */
-		
 	} else {
 		traversal->totalcur += 1;
 		flags = strchr(filename, ':');
@@ -587,7 +576,7 @@ static int on_select(const char *dir_name, const char *filename, struct imap_tra
 
 	if (traversal->innew) {
 		if (!traversal->readonly) {
-			maildir_move_new_to_cur_file(imap->mbox, imap->dir, imap->curdir, imap->newdir, filename, &traversal->uidvalidity, &traversal->uidnext, newfile, sizeof(newfile));
+			maildir_move_new_to_cur_file(traversal->mbox, traversal->dir, traversal->curdir, traversal->newdir, filename, &traversal->uidvalidity, &traversal->uidnext, newfile, sizeof(newfile));
 			filename = newfile;
 		} else {
 			/* Need to stat to get the file size the regular way since parse_size_from_filename will fail. */
@@ -886,21 +875,25 @@ static void low_quota_alert(struct imap_session *imap)
 	}
 }
 
-static int pseudo_status_size(struct imap_session *imap, char *s, const char *remotename)
+static int pseudo_status_size(struct imap_client *client, char *s, const char *remotename)
 {
 	const char *items;
 
 	s = remove_size(s);
 	items = parensep(&s);
+	if (!items) {
+		imap_reply(client->imap, "NO [CLIENTBUG] Syntax error");
+		return 0;
+	}
 
 	/* However, since we told the IMAP client we support STATUS=SIZE,
 	 * it's going to expect the size of the folder in the STATUS of the response.
 	 * Transparently calculate the folder size the manual way behind the scenes and inform the client. */
-	if (remote_status(imap->client, remotename, items, 1)) {
+	if (remote_status(client, remotename, items, 1)) {
 		return -1;
 	}
 
-	imap_reply(imap, "OK STATUS");
+	imap_reply(client->imap, "OK STATUS");
 	return 0;
 }
 
@@ -1040,7 +1033,7 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 	char *mailbox;
 	int was_selected = !s_strlen_zero(imap->dir);
 	unsigned long maxmodseq;
-	struct imap_traversal traversal;
+	struct imap_traversal traversal, *traversalptr = &traversal;
 	struct mailbox *oldmbox = imap->mbox;
 
 	REQUIRE_ARGS(s); /* Mailbox can contain spaces, so don't use strsep for it if it's in quotes */
@@ -1065,28 +1058,23 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 
 	imap->readonly = readonly == CMD_EXAMINE;
 	mailbox_has_activity(imap->mbox); /* Clear any activity flag since we're about to do a traversal. */
-	IMAP_TRAVERSAL(imap, traversal, on_select, imap->readonly);
+	memset(&traversal, 0, sizeof(traversal));
+	set_traversal(imap, &traversal);
+	IMAP_TRAVERSAL(imap, traversalptr, on_select, imap->readonly);
 	save_traversal(imap, &traversal);
 	maxmodseq = maildir_max_modseq(imap->mbox, imap->curdir);
 	return select_examine_response(imap, readonly, s, maxmodseq, was_selected, oldmbox);
 }
 
-int local_status(struct imap_session *imap, const char *mailbox, const char *items)
+int local_status(struct imap_session *imap, struct imap_traversal *traversal, const char *mailbox, const char *items)
 {
 	char status_items[84] = "";
-	struct imap_traversal traversal;
 
-	/*! \todo Since this is local and we can control it,
-	 * we could cache the STATUS stats and invalidate them as needed */
-
-	/* imap->folder will still contain the currently selected mailbox.
-	 * imap->activefolder will now contain the mailbox for STATUS. */
-	REPLACE(imap->activefolder, mailbox);
-	mailbox_has_activity(imap->mbox); /* Clear any activity flag since we're about to do a traversal. */
+	mailbox_has_activity(traversal->mbox); /* Clear any activity flag since we're about to do a traversal. */
 	IMAP_TRAVERSAL(imap, traversal, on_select, 1); /* Read only traversal: Do not move messages from new to cur */
 
 	if (!strlen_zero(items)) {
-		construct_status(imap, &traversal, items, status_items, sizeof(status_items), maildir_max_modseq(imap->mbox, imap->curdir));
+		construct_status(imap, traversal, items, status_items, sizeof(status_items), maildir_max_modseq(traversal->mbox, traversal->curdir));
 	}
 	imap_send(imap, "STATUS \"%s\" (%s)", mailbox, status_items); /* Quotes needed if mailbox name contains spaces */
 	return 0;
@@ -1100,27 +1088,32 @@ static int handle_status(struct imap_session *imap, char *s)
 	 * since STATUS must not modify the selected folder.
 	 * This is handled earlier in imap_process (look for "Reverting temporary STATUS override"). */
 	char *mailbox;
+	struct imap_traversal traversal;
 
 	REQUIRE_ARGS(s); /* Mailbox can contain spaces, so don't use strsep for it if it's in quotes */
 	SHIFT_OPTIONALLY_QUOTED_ARG(mailbox, s); /* The STATUS command will have additional arguments (and possibly SELECT, for CONDSTORE/QRESYNC) */
 
 	/* This modifies the current maildir even for STATUS, but the STATUS command will restore the old one afterwards. */
-	if (set_maildir(imap, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX". It may also change the active (account) mailbox. */
+	memset(&traversal, 0, sizeof(traversal));
+	if (set_maildir_readonly(imap, &traversal, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX". It may also change the active (account) mailbox. */
 		return 0;
 	}
-	if (imap->client) {
-		char *remotename = remote_mailbox_name(imap->client, mailbox);
-		REPLACE(imap->activefolder, mailbox);
+	if (traversal.client) {
+		char *remotename = remote_mailbox_name(traversal.client, mailbox);
 		/* If the client wants SIZE but the remote server doesn't support it, we'll have to fake it by translating */
-		if (strstr(s, "SIZE") && !(imap->client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
-			return pseudo_status_size(imap, s, remotename);
+		if (strstr(s, "SIZE") && !(traversal.client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
+			return pseudo_status_size(traversal.client, s, remotename);
 		} else {
-			return imap_client_send_wait_response(imap->client, -1, 5000, "STATUS \"%s\" %s\r\n", remotename, s);
+			return pseudo_status_size(traversal.client, s, remotename);
+			/* XXX This won't work right as is: the mailbox name in the STATUS reply needs to be translated
+			 * from the remote name to our local name for it. Until we do that, pseudo_status_size does that
+			 * (even though it's otherwise overkill for this, since it will return a bunch of other stuff) */
+			return imap_client_send_wait_response(traversal.client, -1, 5000, "STATUS \"%s\" %s\r\n", remotename, s);
 		}
 	}
 
-	IMAP_REQUIRE_ACL(imap->acl, IMAP_ACL_READ);
-	local_status(imap, mailbox, s);
+	IMAP_REQUIRE_ACL(traversal.acl, IMAP_ACL_READ);
+	local_status(imap, &traversal, mailbox, s);
 	imap_reply(imap, "OK STATUS completed");
 	return 0;
 }
@@ -1553,11 +1546,12 @@ unsigned int imap_msg_in_range(struct imap_session *imap, int seqno, const char 
 static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 {
 	if (mailbox_has_activity(imap->mbox)) {
-		struct imap_traversal traversal;
+		struct imap_traversal traversal, *traversalptr = &traversal;
 		/* There are new messages since we last checked. */
 		/* Move any new messages from new to cur so we can find them. */
 		imap_debug(4, "Doing traversal again since our view of %s is stale\n", imap->dir);
-		IMAP_TRAVERSAL(imap, traversal, on_select, imap->readonly);
+		memset(&traversal, 0, sizeof(traversal));
+		IMAP_TRAVERSAL(imap, traversalptr, on_select, imap->readonly);
 		save_traversal(imap, &traversal);
 	}
 	return handle_fetch_full(imap, s, usinguid);
@@ -2864,42 +2858,6 @@ static int imap_process(struct imap_session *imap, char *s)
 			imap->pending = 0;
 			pthread_mutex_unlock(&imap->lock);
 		}
-	}
-
-	if (imap->activefolder && strcasecmp(command, "STATUS")) {
-		/* STATUS does not change the currently selected mailbox in IMAP.
-		 * However, if a client issues multiple STATUS commands for multiple
-		 * mailboxes on the same remote account, we want to be able to reuse
-		 * that IMAP client connection.
-		 *
-		 * To account for this, internally STATUS really does update the
-		 * active mailbox. It will set imap->activefolder but not change
-		 * imap->folder. Thus, whenever the client is done issuing STATUS
-		 * commands, we'll end up inside this branch here.
-		 *
-		 * At THAT point, we can then replace the connection for STATUS
-		 * with whatever we should have for the currently selected mailbox. */
-		if (imap->folder) {
-			/* Since we internally changed the active mailbox, change it back to the mailbox that's still really selected.
-			 * Internally, this will also close the remote if needed. */
-
-			/*! \todo Ideally, try to do away with this hack of temporarily changing the IMAP structure
-			 * and then changing it back here. It's disruptive, inefficient, and more likely to have bugs.
-			 * Most of the traversal data has now been moved into its own structure.
-			 * The remaining bits (curdir, newdir, etc.) should be moved there as well
-			 * so we can do an entire STATUS command without having any side effects in the first place,
-			 * and then we don't need this whole code block either to fix up the mess STATUS made. */
-			bbs_debug(4, "Reverting temporary STATUS override to previously selected %s\n", imap->folder);
-			set_maildir(imap, imap->folder);
-		} else {
-			/* If no mailbox was selected when we did the STATUS, then just close the remote */
-			bbs_debug(4, "Reverting temporary STATUS override to unselected\n");
-			if (imap->client) {
-				imap_close_remote_mailbox(imap);
-			}
-			imap->dir[0] = '\0'; /* This is how we know we're unselected */
-		}
-		FREE(imap->activefolder);
 	}
 
 	if (!strcasecmp(command, "NOOP")) {

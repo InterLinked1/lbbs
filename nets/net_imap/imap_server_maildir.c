@@ -29,7 +29,23 @@
 #include "nets/net_imap/imap_server_acl.h"
 #include "nets/net_imap/imap_client.h"
 
-int imap_translate_dir(struct imap_session *imap, const char *directory, char *buf, size_t len, int *acl)
+static void set_current_mailbox(struct imap_session *imap, struct mailbox *mbox)
+{
+	struct mailbox *old = imap->mbox;
+	if (old == mbox) {
+		return; /* No need to do anything */
+	}
+	if (old) {
+		mailbox_unwatch(old); /* Stop watching whatever other/shared mailbox we were watching */
+	}
+	imap->mbox = mbox;
+	/*! \todo Might be ideal to always be watching ALL mailboxes to which we have access, rather than only non-personal ones when we SELECT them */
+	if (mbox) {
+		mailbox_watch(mbox);
+	}
+}
+
+static int __imap_translate_dir(struct imap_session *imap, const char *directory, char *buf, size_t len, int *acl, struct mailbox **mboxptr)
 {
 	enum mailbox_namespace ns;
 	const char *remainder;
@@ -41,11 +57,8 @@ int imap_translate_dir(struct imap_session *imap, const char *directory, char *b
 	/* With the maildir format, the INBOX is the top-level maildir for a user.
 	 * Other directories are subdirectories */
 	if (!strcasecmp(directory, "INBOX")) {
-		if (imap->mbox != imap->mymbox) {
-			mailbox_unwatch(imap->mbox); /* Stop watching whatever other/shared mailbox we were watching */
-		}
-		imap->mbox = imap->mymbox;
-		safe_strncpy(buf, mailbox_maildir(imap->mbox), len);
+		mbox = imap->mymbox;
+		safe_strncpy(buf, mailbox_maildir(mbox), len);
 		ns = NAMESPACE_PRIVATE;
 	} else if (strstr(directory, "..")) {
 		bbs_warning("Invalid IMAP directory: %s\n", directory);
@@ -70,11 +83,9 @@ int imap_translate_dir(struct imap_session *imap, const char *directory, char *b
 			if (!mbox) {
 				return -1;
 			}
-			imap->mbox = mbox;
 			remainder += strlen(name);
 			snprintf(buf, len, "%s/%s%s%s", mailbox_maildir(NULL), name, !strlen_zero(remainder) ? "/" : "", remainder);
-			mailbox_maildir_init(mailbox_maildir(imap->mbox)); /* Edge case: initialize if needed (necessary if user is accessing via POP before any messages ever delivered to it via SMTP) */
-			mailbox_watch(imap->mbox);
+			mailbox_maildir_init(mailbox_maildir(mbox)); /* Edge case: initialize if needed (necessary if user is accessing via POP before any messages ever delivered to it via SMTP) */
 			ns = NAMESPACE_SHARED;
 		} else if (STARTS_WITH(directory, OTHER_NAMESPACE_PREFIX)) {
 			char username[64];
@@ -117,9 +128,7 @@ int imap_translate_dir(struct imap_session *imap, const char *directory, char *b
 			if (!mbox) {
 				return -1;
 			}
-			imap->mbox = mbox;
 			mailbox_maildir_init(mailbox_maildir(imap->mbox)); /* Edge case: initialize if needed (necessary if user is accessing via POP before any messages ever delivered to it via SMTP) */
-			mailbox_watch(imap->mbox); /*! \todo Might be ideal to always be watching ALL mailboxes to which we have access, rather than only non-personal ones when we SELECT them */
 			ns = NAMESPACE_OTHER;
 		} else { /* Personal namespace */
 			/* For subdirectories, if they don't exist, don't automatically create them. */
@@ -129,11 +138,7 @@ int imap_translate_dir(struct imap_session *imap, const char *directory, char *b
 			 * So we should always reset to our personal mailbox here first. */
 			snprintf(buf, len, "%s/.%s", mailbox_maildir(imap->mymbox), directory); /* Always evaluate in the context of our personal mailbox */
 			ns = NAMESPACE_PRIVATE;
-			if (imap->mbox != imap->mymbox) {
-				/* Switch back to personal mailbox if needed */
-				mailbox_unwatch(imap->mbox); /* Stop watching whatever other/shared mailbox we were watching */
-				imap->mbox = imap->mymbox;
-			}
+			mbox = imap->mymbox; /* Switch back to personal mailbox if needed */
 		}
 		if (eaccess(buf, R_OK)) {
 			bbs_debug(5, "Directory %s does not exist\n", buf);
@@ -142,7 +147,17 @@ int imap_translate_dir(struct imap_session *imap, const char *directory, char *b
 		}
 	}
 
+	*mboxptr = mbox;
+
 	load_acl(imap, buf, ns, acl); /* If we succeeded so far, get the user's ACLs for this mailbox */
+	return res;
+}
+
+int imap_translate_dir(struct imap_session *imap, const char *directory, char *buf, size_t len, int *acl)
+{
+	struct mailbox *mbox = NULL;
+	int res = __imap_translate_dir(imap, directory, buf, len, acl, &mbox);
+	set_current_mailbox(imap, mbox);
 	return res;
 }
 
@@ -155,28 +170,22 @@ int set_maildir(struct imap_session *imap, const char *mailbox)
 		return -1;
 	}
 
-	/* Don't close the virtmbox, if there is one,
+	/* Don't immediately close the remote mailbox (imap_close_remote_mailbox), if there is one,
 	 * because if we're selecting a different mailbox on the same remote account,
 	 * we can just reuse the connection. */
 	if (imap_translate_dir(imap, mailbox, dir, sizeof(dir), &acl)) {
-		int res = load_virtual_mailbox(imap, mailbox);
-		if (res >= 0) {
-			/* XXX If a user named a mailbox "foobar" and then a foobar user was created,
-			 * the other user's mailbox would take precedence over the virtual mailbox mapping.
-			 * That's probably not a good thing... it would be nice to have a 4th namespace for this, but we don't. */
+		int exists = 0;
+		struct imap_client *client = load_virtual_mailbox(imap, mailbox, &exists);
+		if (client) {
+			imap->client = client; /* Set as active remote client (and currently in remote mailbox) */
 			bbs_debug(6, "Mailbox '%s' has a virtual mapping\n", mailbox);
-			if (res) { /* Mapping exists, but couldn't connect for some reason */
-				imap_reply(imap, "NO Remote server unavailable");
-				goto fail;
-			}
 			imap->acl = 0; /* ACL not used for virtual mapped mailboxes. If the client does GETACL, that should passthrough to the remote. */
 			/* This isn't really in a mailbox, since it's a remote, but use the private mailbox structure since nothing else would make sense */
-			if (imap->mbox != imap->mymbox) {
-				/* Switch back to personal mailbox if needed */
-				mailbox_unwatch(imap->mbox); /* Stop watching whatever other/shared mailbox we were watching */
-				imap->mbox = imap->mymbox; /* XXX Could we even set imap->mbox to NULL? In theory, it should now be used for virtual mailboxes. */
-			}
+			set_current_mailbox(imap, imap->mymbox); /* Switch back to personal mailbox if needed... (somewhat arbitrary) */
 			return 0;
+		} else if (exists) { /* Mapping exists, but couldn't connect for some reason */
+			imap_reply(imap, "NO Remote server unavailable");
+			goto fail;
 		}
 		/* Mailbox doesn't exist on this server, and there is no mapping for it to any remote */
 		imap_reply(imap, "NO [NONEXISTENT] No such mailbox '%s'", mailbox);
@@ -200,6 +209,41 @@ fail:
 	snprintf(imap->newdir, sizeof(imap->newdir), "%s/new", imap->dir);
 	snprintf(imap->curdir, sizeof(imap->curdir), "%s/cur", imap->dir);
 	return mailbox_maildir_init(imap->dir);
+}
+
+int set_maildir_readonly(struct imap_session *imap, struct imap_traversal *traversal, const char *mailbox)
+{
+	char dir[256];
+	int res;
+
+	if (strlen_zero(mailbox)) {
+		imap_reply(imap, "BAD [CLIENTBUG] Missing argument");
+		return -1;
+	}
+
+	res = __imap_translate_dir(imap, mailbox, dir, sizeof(dir), &traversal->acl, &traversal->mbox);
+
+	if (res) {
+		int exists = 0;
+		struct imap_client *client = load_virtual_mailbox(imap, mailbox, &exists);
+		if (client) {
+			traversal->client = client;
+			bbs_debug(6, "Mailbox '%s' has a virtual mapping\n", mailbox);
+			return 0;
+		} else if (exists) {
+			imap_reply(imap, "NO Remote server unavailable");
+			return -1;
+		}
+		/* Mailbox doesn't exist on this server, and there is no mapping for it to any remote */
+		imap_reply(imap, "NO [NONEXISTENT] No such mailbox '%s'", mailbox);
+		return -1;
+	}
+
+	IMAP_REQUIRE_ACL(traversal->acl, IMAP_ACL_READ);
+	safe_strncpy(traversal->dir, dir, sizeof(traversal->dir));
+	snprintf(traversal->newdir, sizeof(traversal->newdir), "%s/new", traversal->dir);
+	snprintf(traversal->curdir, sizeof(traversal->curdir), "%s/cur", traversal->dir);
+	return mailbox_maildir_init(traversal->dir);
 }
 
 long parse_modseq_from_filename(const char *filename, unsigned long *modseq)

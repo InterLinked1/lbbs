@@ -417,10 +417,9 @@ int imap_substitute_remote_command(struct imap_client *client, char *s)
 	return replacements;
 }
 
-int load_virtual_mailbox(struct imap_session *imap, const char *path)
+struct imap_client *load_virtual_mailbox(struct imap_session *imap, const char *path, int *exists)
 {
 	FILE *fp;
-	int res = -1;
 	char virtcachefile[256];
 	char buf[256];
 
@@ -428,21 +427,25 @@ int load_virtual_mailbox(struct imap_session *imap, const char *path)
 		/* Reuse the same connection if it's the same account. */
 		if (!strncmp(imap->client->virtprefix, path, imap->client->virtprefixlen)) {
 			bbs_debug(5, "Reusing existing active connection for %s\n", path);
-			return 0;
+			*exists = 1;
+			return imap->client;
 		}
-		/* If it's to a different server, tear down the existing connection first. */
-		/* XXX An optimization here is if the remote server supports the UNAUTHENTICATE capability,
-		 * we can reuse the connection instead of tearing it down and building a new one
+		/* An optimization here is if the remote server supports the UNAUTHENTICATE capability,
+		 * we can reuse the connection instead of establishing a new one
 		 * (if it's the same server (hostname), but different user/account)
 		 * Unfortunately, no major providers support the UNAUTHENTICATE extension,
-		 * so this wouldn't help much at the moment, but would be nice to some day (assuming support exists). */
+		 * so this wouldn't help much at the moment, but would be nice to some day (assuming support exists).
+		 * Also, now that we support concurrent connections, there'd be no reason to do this,
+		 * since we'd have to keep logging out and back in. Just use a new connection.
+		 */
 		imap_close_remote_mailbox(imap);
 	}
 
+	*exists = 0;
 	snprintf(virtcachefile, sizeof(virtcachefile), "%s/.imapremote", mailbox_maildir(imap->mymbox));
 	fp = fopen(virtcachefile, "r");
 	if (!fp) {
-		return -1;
+		return NULL;
 	}
 	while ((fgets(buf, sizeof(buf), fp))) {
 		char *mpath, *urlstr = buf;
@@ -463,18 +466,17 @@ int load_virtual_mailbox(struct imap_session *imap, const char *path)
 		prefixlen = (size_t) (urlstr - mpath - 1); /* Subtract 1 for the space between. */
 		if (!strncmp(mpath, path, prefixlen)) {
 			struct imap_client *client = imap_client_get_by_url(imap, mpath, urlstr);
+			*exists = 1;
 			bbs_memzero(urlstr, strlen(urlstr)); /* Contains password */
 			if (!client) {
-				res = 1;
 				break;
 			}
-			imap->client = client; /* Set as active remote client (and currently in remote mailbox) */
-			res = 0;
-			break;
+			fclose(fp);
+			return client;
 		}
 	}
 	fclose(fp);
-	return res;
+	return NULL;
 }
 
 char *remote_mailbox_name(struct imap_client *client, char *restrict mailbox)

@@ -46,7 +46,6 @@ struct imap_session {
 	struct mailbox *mbox;		/* Current mailbox (mailbox as in entire mailbox, not just a mailbox folder) */
 	struct mailbox *mymbox;		/* Pointer to user's private/personal mailbox. */
 	char *folder;				/* Currently selected mailbox */
-	char *activefolder;			/* Currently connected mailbox (i.e. STATUS updates this, but not folder) */
 	char *savedtag;
 	int pfd[2];					/* Pipe for delayed responses */
 	/* maildir */
@@ -88,6 +87,29 @@ struct imap_session {
 	unsigned int qresync:1;		/* Whether a client has enabled the QRESYNC capability */
 	pthread_mutex_t lock;		/* Lock for IMAP session */
 	RWLIST_ENTRY(imap_session) entry;	/* Next active session */
+};
+
+struct imap_traversal {
+	struct imap_session *imap;
+	struct imap_client *client;
+	struct mailbox *mbox;
+	unsigned int uidvalidity;
+	unsigned int uidnext;
+	int acl;					/* ACL for the mailbox being traversed */
+	/* Traversal flags: subset of IMAP session structure */
+	unsigned int totalnew;		/* In "new" maildir. Will be moved to "cur" when seen. */
+	unsigned int totalcur;		/* In "cur" maildir. */
+	unsigned int minrecent;		/* Smallest sequence number message that is considered \Recent */
+	unsigned int maxrecent;		/* Largest sequence number message that is considered \Recent (possibly redundant?) */
+	unsigned int totalunseen;	/* Messages with Unseen flag (or more rather, without the Seen flag). */
+	unsigned long totalsize;	/* Total size of mailbox */
+	unsigned int firstunseen;	/* Oldest message that is not Seen. */
+	unsigned int innew:1;		/* So we can use the same callback for both new and cur. Does not persist outside of traversal. */
+	unsigned int readonly:1;	/* SELECT vs EXAMINE */
+	/* maildir */
+	char dir[256];
+	char newdir[260]; /* 4 more, for /new and /cur */
+	char curdir[260];
 };
 
 #define HIERARCHY_DELIMITER "."
@@ -166,4 +188,4 @@ int imap_in_range(struct imap_session *imap, const char *s, int num);
 
 unsigned int imap_msg_in_range(struct imap_session *imap, int seqno, const char *filename, const char *sequences, int usinguid, int *error);
 
-int local_status(struct imap_session *imap, const char *mailbox, const char *items);
+int local_status(struct imap_session *imap, struct imap_traversal *traversal, const char *mailbox, const char *items);
