@@ -552,6 +552,11 @@ static int subsystem_request(ssh_session session, ssh_channel channel, const cha
 			return SSH_ERROR;
 		}
 
+		if (!cdata->user) {
+			bbs_warning("Rejecting unauthenticated SFTP access\n");
+			return SSH_ERROR;
+		}
+
 		cdata->node = bbs_node_request(ssh_get_fd(session), "SFTP");
 		if (!cdata->node) {
 			return SSH_ERROR;
