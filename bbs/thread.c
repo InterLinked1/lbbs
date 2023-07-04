@@ -67,13 +67,12 @@ struct thread_list_t {
 	int start;
 	int end;
 	unsigned int detached:1;
-	unsigned int killable:1;
 	unsigned int waitingjoin:1;
 };
 
 static RWLIST_HEAD_STATIC(thread_list, thread_list_t);
 
-static void thread_register(char *name, int detached, int killable)
+static void thread_register(char *name, int detached)
 {
 	struct thread_list_t *new = calloc(1, sizeof(*new));
 
@@ -86,7 +85,6 @@ static void thread_register(char *name, int detached, int killable)
 	new->lwp = bbs_gettid();
 	new->name = name; /* steal the allocated memory for the thread name */
 	SET_BITFIELD(new->detached, detached);
-	SET_BITFIELD(new->killable, killable);
 	RWLIST_WRLOCK(&thread_list);
 	RWLIST_INSERT_TAIL(&thread_list, new, list);
 	RWLIST_UNLOCK(&thread_list);
@@ -138,35 +136,7 @@ static int __thread_unregister(pthread_t id, const char *file, int line, const c
 
 static const char *thread_state_name(struct thread_list_t *cur)
 {
-	if (cur->killable) {
-		bbs_assert(cur->detached);
-		return "killable";
-	}
 	return cur->detached ? "detached" : cur->waitingjoin ? "waitjoin" : "joinable";
-}
-
-int __bbs_thread_cancel_killable(const char *filename)
-{
-	struct thread_list_t *x;
-	int killed = 0;
-
-	RWLIST_RDLOCK(&thread_list);
-	RWLIST_TRAVERSE(&thread_list, x, list) {
-		if (!x->killable) {
-			continue;
-		}
-		if (!strstr(x->name, filename)) {
-			continue;
-		}
-		bbs_debug(3, "Killing detached thread %d\n", x->lwp);
-		/* Don't remove from the list yet. Just cancel it. The thread will still unregister itself once killed. */
-		pthread_cancel(x->id);
-		pthread_kill(x->id, SIGURG);
-		killed++;
-	}
-	RWLIST_UNLOCK(&thread_list);
-	bbs_debug(3, "Killed %d detached thread%s spawned by %s\n", killed, ESS(killed), filename);
-	return killed;
 }
 
 void bbs_thread_cleanup(void)
@@ -347,7 +317,6 @@ struct thr_arg {
 	void *data;
 	char *name;
 	unsigned int detached:1;
-	unsigned int killable:1;
 };
 
 static void *thread_run(void *data)
@@ -360,7 +329,7 @@ static void *thread_run(void *data)
 	 * keep a copy of the pointer and then thread_unregister will
 	 * free the memory */
 	free(data);
-	thread_register(a.name, a.detached, a.killable);
+	thread_register(a.name, a.detached);
 	pthread_cleanup_push(thread_unregister, (void *) pthread_self());
 
 	ret = a.start_routine(a.data);
@@ -385,7 +354,6 @@ static int create_thread(pthread_t *thread, pthread_attr_t *attr, void *(*start_
 	a->start_routine = start_routine;
 	a->data = data;
 	a->detached = detached ? 1 : 0;
-	a->killable = detached == 2 ? 1 : 0;
 	start_routine = thread_run;
 	res = asprintf(&a->name, "%-21s started by thread %d at %s:%d %s()", start_fn, bbs_gettid(), file, line, func);
 	if (unlikely(res < 0)) {
@@ -424,11 +392,6 @@ static int __bbs_pthread_create_detached_full(pthread_t *thread, pthread_attr_t 
 int __bbs_pthread_create_detached(pthread_t *thread, pthread_attr_t *attr, void *(*start_routine)(void *), void *data, const char *file, const char *func, int line, const char *start_fn)
 {
 	return __bbs_pthread_create_detached_full(thread, attr, start_routine, data, file, func, line, start_fn, 1);
-}
-
-int __bbs_pthread_create_detached_killable(pthread_t *thread, pthread_attr_t *attr, void *(*start_routine)(void *), void *data, const char *file, const char *func, int line, const char *start_fn)
-{
-	return __bbs_pthread_create_detached_full(thread, attr, start_routine, data, file, func, line, start_fn, 2);
 }
 
 int __bbs_pthread_create(pthread_t *thread, pthread_attr_t *attr, void *(*start_routine)(void *), void *data, const char *file, const char *func, int line, const char *start_fn)

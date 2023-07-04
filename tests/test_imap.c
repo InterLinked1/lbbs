@@ -657,6 +657,10 @@ static int run(void)
 
 	dprintf(client1, "e14 SELECT INBOX (QRESYNC (%u 1))" ENDL, uidvalidity);
 	CLIENT_EXPECT_EVENTUALLY(client1, "FETCH"); /* Should get all flag changes since MODSEQ 1 */
+	CLIENT_DRAIN(client1);
+
+	SWRITE(client1, "e15a NOOP" ENDL);
+	CLIENT_EXPECT(client1, "e15a OK");
 
 	dprintf(client1, "e15 SELECT INBOX (QRESYNC (%u 1))" ENDL, uidvalidity);
 	CLIENT_EXPECT_EVENTUALLY(client1, "VANISHED"); /* Repeat, to make sure we also got a VANISHED response */

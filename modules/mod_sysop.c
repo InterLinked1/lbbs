@@ -48,8 +48,6 @@
 
 extern int option_nofork;
 
-static pthread_t sysop_thread = 0;
-
 #define my_set_stdout_logging(fdout, setting) if (fdout == STDOUT_FILENO) { bbs_set_stdout_logging(setting); } else { bbs_set_fd_logging(fdout, setting); }
 
 /* Since we now support remote consoles, bbs_printf is not logical to use in this module */
@@ -60,6 +58,8 @@ static pthread_t sysop_thread = 0;
 /* Use the macro to suppress unused macro warning with -Wunused-macros */
 #ifdef bbs_printf
 #endif
+
+static int unloading = 0;
 
 static void show_copyright(int fd, int footer)
 {
@@ -298,19 +298,33 @@ static int sysop_command(int fdin, int fdout, const char *s)
 	return res;
 }
 
-struct sysop_fd {
+struct sysop_console {
+	int sfd;
 	int fdin;
 	int fdout;
+	pthread_t thread;
+	unsigned int remote:1;
+	unsigned int dead:1;
+	RWLIST_ENTRY(sysop_console) entry;
 };
 
-static void rsysop_cleanup(void *varg)
+static RWLIST_HEAD_STATIC(consoles, sysop_console);
+
+static void console_cleanup(struct sysop_console *console)
 {
-	struct sysop_fd *fds = varg;
-	if (fds->fdin != STDIN_FILENO) {
-		bbs_remove_logging_fd(fds->fdout);
-		close(fds->fdin);
+	RWLIST_WRLOCK(&consoles);
+	RWLIST_REMOVE(&consoles, console, entry);
+	if (console->remote) {
+		/* If unloading, these have already been closed */
+		if (!console->dead) {
+			bbs_remove_logging_fd(console->fdout);
+			bbs_socket_close(&console->fdin);
+			bbs_socket_close(&console->fdout);
+			bbs_socket_close(&console->sfd);
+		}
 	}
-	free(fds);
+	free(console);
+	RWLIST_UNLOCK(&consoles);
 }
 
 static void print_time(int fdout)
@@ -333,13 +347,12 @@ static void *sysop_handler(void *varg)
 	struct pollfd pfd;
 	int sysopfdin, sysopfdout;
 	const char *histentry;
-	struct sysop_fd *fds = varg;
+	struct sysop_console *console = varg;
 
-	sysopfdin = fds->fdin;
-	sysopfdout = fds->fdout;
+	sysopfdin = console->fdin;
+	sysopfdout = console->fdout;
 
-	pthread_cleanup_push(rsysop_cleanup, fds); /* When remote console exits or is killed, close PTY slave */
-	if (sysopfdout != STDOUT_FILENO) {
+	if (console->remote) {
 		bbs_add_logging_fd(sysopfdout);
 	}
 
@@ -366,7 +379,7 @@ static void *sysop_handler(void *varg)
 		pthread_testcancel();
 		if (res < 0) {
 			if (errno != EINTR) {
-				bbs_error("poll returned %d: %s\n", res, strerror(errno));
+				bbs_debug(3, "poll returned %d: %s\n", res, strerror(errno));
 				break;
 			}
 			continue;
@@ -548,51 +561,46 @@ static void *sysop_handler(void *varg)
 					break;
 			}
 		} else {
-			bbs_error("poll returned %d, but no POLLIN?\n", res);
-			if (pfd.revents & BBS_POLL_QUIT) {
-				break;
+			if (!(pfd.revents & BBS_POLL_QUIT)) {
+				bbs_error("poll returned %d, but no POLLIN?\n", res);
 			}
 			break;
 		}
 	}
 
 cleanup:
-	pthread_cleanup_pop(1);
+	bbs_debug(2, "Sysop console %d/%d thread exiting\n", sysopfdin, sysopfdout);
+	console_cleanup(console);
 	return NULL;
 }
 
-static int launch_sysop_console(int remote, int fdin, int fdout)
+static int launch_sysop_console(int remote, int sfd, int fdin, int fdout)
 {
-	struct sysop_fd *fds;
+	int res = 0;
+	struct sysop_console *console;
 
-	fds = calloc(1, sizeof(*fds));
-	if (ALLOC_FAILURE(fds)) {
+	console = calloc(1, sizeof(*console));
+	if (ALLOC_FAILURE(console)) {
 		return -1;
 	}
 
-	fds->fdin = fdin;
-	fds->fdout = fdout;
+	console->sfd = sfd; /* Socket file descriptor */
+	console->fdin = fdin; /* PTY */
+	console->fdout = fdout;
+	SET_BITFIELD(console->remote, remote);
 
-	if (remote) {
-		pthread_t rthread;
-		/* Remote console. Make it detached so we don't have to keep track of it and join it later. */
-		/* Note there is no SIGINT handler for remote consoles,
-		 * so ^C will just exit the remote console without killing the BBS.
-		 */
-		if (bbs_pthread_create_detached_killable(&rthread, NULL, sysop_handler, fds)) {
-			bbs_error("Failed to create remote sysop thread for %d/%d\n", fdin, fdout);
-			free(fds);
-			return -1;
-		}
-	} else {
-		/* This is the foreground sysop console */
-		if (bbs_pthread_create(&sysop_thread, NULL, sysop_handler, fds)) {
-			bbs_error("Failed to create foreground sysop thread for %d/%d\n", fdin, fdout);
-			free(fds);
-			return -1;
-		}
+	RWLIST_WRLOCK(&consoles);
+	RWLIST_INSERT_HEAD(&consoles, console, entry);
+	/* Note there is no SIGINT handler for remote consoles,
+	 * so ^C will just exit the remote console without killing the BBS. */
+	if (bbs_pthread_create_detached(&console->thread, NULL, sysop_handler, console)) {
+		bbs_error("Failed to create %s sysop thread for %d/%d\n", remote ? "remote" : "foreground", fdin, fdout);
+		RWLIST_REMOVE(&consoles, console, entry);
+		free(console);
+		res = -1;
 	}
-	return 0;
+	RWLIST_UNLOCK(&consoles);
+	return res;
 }
 
 static int uds_socket = -1; /*!< UDS socket for allowing incoming local UNIX connections */
@@ -624,6 +632,9 @@ static void *remote_sysop_listener(void *unused)
 		if (!pfd.revents) {
 			continue; /* Shouldn't happen? */
 		}
+		if (unloading) {
+			break;
+		}
 		len = sizeof(sunaddr);
 		sfd = accept(uds_socket, (struct sockaddr *) &sunaddr, &len);
 		if (sfd < 0) {
@@ -642,7 +653,7 @@ static void *remote_sysop_listener(void *unused)
 		}
 		bbs_unbuffer_input(aslave, 0); /* Disable canonical mode and echo on this PTY slave */
 		bbs_dprintf(aslave, TERM_CLEAR); /* Clear the screen on connect */
-		launch_sysop_console(1, aslave, aslave); /* Launch sysop console for this connection */
+		launch_sysop_console(1, sfd, aslave, aslave); /* Launch sysop console for this connection */
 	}
 	return NULL;
 }
@@ -651,25 +662,52 @@ static void *remote_sysop_listener(void *unused)
 
 static int unload_module(void)
 {
-	/* This module may have created detached threads that will never exit of their own volition.
-	 * Kill them now. */
-	bbs_thread_cancel_killable();
+	struct sysop_console *console;
+
+	unloading = 1;
 
 	if (uds_socket != -1) {
 		bbs_socket_thread_shutdown(&uds_socket, uds_thread);
 		unlink(BBS_SYSOP_SOCKET);
 	}
-	if (sysop_thread != (long unsigned int) -1) {
-		bbs_debug(3, "Waiting for sysop thread to exit\n");
-		/* A bit difficult to avoid pthread_cancel here since shutdowns can be initiated in this module.
-		 * Use caution if trying to improve this. */
-		bbs_pthread_cancel_kill(sysop_thread);
-		bbs_pthread_join(sysop_thread, NULL);
-		if (option_nofork) {
-			bbs_buffer_input(STDIN_FILENO, 1); /* Be nice: re-enable canonical mode and echo to leave the TTY in a sane state. */
+
+	/* Close all the consoles. */
+	RWLIST_RDLOCK(&consoles);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&consoles, console, entry) {
+		bbs_debug(3, "Instructing %s sysop console %d/%d to exit\n", console->remote ? "remote" : "foreground", console->fdin, console->fdout);
+		console->dead = 1;
+		if (console->remote) {
+			bbs_remove_logging_fd(console->fdout); /* Must do before bbs_socket_close since that sets fd to -1 */
+			/* Should cause the console thread to exit */
+			bbs_socket_close(&console->fdout);
+			bbs_socket_close(&console->fdin);
+			bbs_socket_close(&console->sfd);
+		} else {
+			bbs_buffer_input(console->fdin, 1); /* Be nice: re-enable canonical mode and echo to leave the TTY in a sane state. */
+			/* A bit difficult to avoid pthread_cancel here since shutdowns can be initiated in this module.
+			 * Use caution if trying to improve this. */
+			bbs_pthread_cancel_kill(console->thread);
+			RWLIST_REMOVE_CURRENT(entry);
+			free(console);
 		}
-		bbs_debug(2, "Sysop thread has exited\n");
 	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(&consoles);
+
+	/* This is not pretty, but need to wait until the list is empty - console threads are detached so we have nothing to join,
+	 * and we can't make them non-detached because console threads can exit on their own, without anyone to join them. */
+	for (;;) {
+		int empty;
+		bbs_debug(3, "Waiting for all sysop consoles to exit\n");
+		RWLIST_RDLOCK(&consoles);
+		empty = RWLIST_EMPTY(&consoles);
+		RWLIST_UNLOCK(&consoles);
+		if (empty) {
+			break;
+		}
+		usleep(10000);
+	}
+
 	bbs_history_shutdown();
 	return 0;
 }
@@ -685,7 +723,7 @@ static int load_module(void)
 	bbs_history_init();
 
 	if (option_nofork) {
-		launch_sysop_console(0, STDIN_FILENO, STDOUT_FILENO);
+		launch_sysop_console(0, STDIN_FILENO, STDIN_FILENO, STDOUT_FILENO);
 	} else {
 		bbs_debug(3, "BBS not started with foreground console, declining to load foreground sysop console\n");
 	}
