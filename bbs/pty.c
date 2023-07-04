@@ -136,12 +136,12 @@ static void *pty_master_fd(void *varg)
 	struct pty_fds *ptyfds = varg;
 	struct pollfd fds[2];
 	char buf[4096]; /* According to termios(3) man page, the canonical mode buffer of the PTY is 4096, so this should always be large enough */
-	size_t bytes_read, bytes_wrote;
+	ssize_t bytes_read, bytes_wrote;
 
 	/* Save relevant fields. */
 	fds[0].fd = ptyfds->fd;
 	fds[1].fd = ptyfds->amaster;
-	fds[0].events = fds[1].events = POLLIN;
+	fds[0].events = fds[1].events = POLLIN | POLLPRI | POLLERR | POLLNVAL;
 	free(ptyfds);
 
 	bbs_debug(10, "Starting generic PTY master for %d <=> %d\n", fds[1].fd, fds[0].fd);
@@ -162,27 +162,37 @@ static void *pty_master_fd(void *varg)
 			continue;
 		}
 		if (fds[0].revents & POLLIN) { /* Got input on socket -> pty */
-			bytes_read = (size_t) read(fds[0].fd, buf, sizeof(buf));
+			bytes_read = read(fds[0].fd, buf, sizeof(buf));
 			if (bytes_read <= 0) {
 				close(fds[1].fd); /* Close the other side */
 				close(fds[0].fd); /* Close our side, since nobody else will */
 				break; /* We'll read 0 bytes upon disconnect */
 			}
-			bytes_wrote = (size_t) write(fds[1].fd, buf, bytes_read);
+			bytes_wrote = write(fds[1].fd, buf, (size_t) bytes_read);
 			if (bytes_wrote != bytes_read) {
-				bbs_error("Expected to write %ld bytes, only wrote %ld\n", bytes_read, bytes_wrote);
+				bbs_error("Expected to write %ld bytes, only wrote %ld (%s)\n", bytes_read, bytes_wrote, strerror(errno));
+				if (bytes_wrote == -1) {
+					close(fds[1].fd);
+					close(fds[0].fd);
+					break;
+				}
 			}
 		} else if (fds[1].revents & POLLIN) { /* Got input from pty -> socket */
-			bytes_read = (size_t) read(fds[1].fd, buf, sizeof(buf) - 1);
+			bytes_read = read(fds[1].fd, buf, sizeof(buf) - 1);
 			if (bytes_read <= 0) {
 				bbs_debug(10, "pty master read returned %ld (%s)\n", bytes_read, strerror(errno));
 				close(fds[0].fd); /* Close the other side */
 				close(fds[1].fd); /* Close our side, since nobody else will */
 				break; /* We'll read 0 bytes upon disconnect */
 			}
-			bytes_wrote = (size_t) write(fds[0].fd, buf, bytes_read);
+			bytes_wrote = write(fds[0].fd, buf, (size_t) bytes_read);
 			if (bytes_wrote != bytes_read) {
-				bbs_error("Expected to write %ld bytes, only wrote %ld\n", bytes_read, bytes_wrote);
+				bbs_error("Expected to write %ld bytes, only wrote %ld (%s)\n", bytes_read, bytes_wrote, strerror(errno));
+				if (bytes_wrote == -1) {
+					close(fds[1].fd);
+					close(fds[0].fd);
+					break;
+				}
 			}
 		} else {
 			break;

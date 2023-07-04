@@ -1929,8 +1929,13 @@ int bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
 
 int bbs_write(int fd, const char *buf, size_t len)
 {
+	struct pollfd pfd;
 	size_t left = len;
 	size_t written = 0;
+
+	pfd.fd = fd;
+	pfd.events = POLLOUT;
+
 	for (;;) {
 		ssize_t res = write(fd, buf, left);
 		if (res <= 0) {
@@ -1943,7 +1948,10 @@ int bbs_write(int fd, const char *buf, size_t len)
 		if (left <= 0) {
 			break;
 		}
-		usleep(10); /* Avoid tight loop */
+		/* Instead of just usleep'ing for an arbitrary time, poll to wait until this file descriptor is writable again.
+		 * If it's still not writable after 10 ms, we'll just try again anyways. */
+		pfd.revents = 0;
+		res = poll(&pfd, 1, 10); /* Avoid tight loop */
 	}
 	return (int) written;
 }

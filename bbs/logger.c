@@ -32,6 +32,7 @@
 #include <sys/stat.h> /* use mkdir */
 #include <sys/types.h>
 #include <pthread.h>
+#include <poll.h>
 
 #include "include/utils.h" /* use bbs_gettid, bbs_tvnow */
 #include "include/linkedlists.h"
@@ -439,9 +440,12 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 		term_puts(fullbuf);
 		RWLIST_RDLOCK(&remote_log_fds);
 		RWLIST_TRAVERSE(&remote_log_fds, rfd, entry) {
+			/* Prevent libc_write from blocking if there's a ton of logging going on. */
+			bbs_unblock_fd(rfd->fd);
 			if (fd_logging[rfd->fd]) {
 				write(rfd->fd, fullbuf, (size_t) bytes);
 			}
+			bbs_block_fd(rfd->fd);
 		}
 		RWLIST_UNLOCK(&remote_log_fds);
 		if (fulldynamic) {
