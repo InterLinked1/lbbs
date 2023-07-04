@@ -877,11 +877,13 @@ static void low_quota_alert(struct imap_session *imap)
 	}
 }
 
-static int pseudo_status_size(struct imap_client *client, char *s, const char *remotename)
+static int handle_remote_status(struct imap_client *client, char *s, const char *remotename, int wantsize, int dropsize)
 {
 	const char *items;
 
-	s = remove_size(s);
+	if (dropsize) {
+		s = remove_size(s);
+	}
 	items = parensep(&s);
 	if (!items) {
 		imap_reply(client->imap, "NO [CLIENTBUG] Syntax error");
@@ -891,7 +893,7 @@ static int pseudo_status_size(struct imap_client *client, char *s, const char *r
 	/* However, since we told the IMAP client we support STATUS=SIZE,
 	 * it's going to expect the size of the folder in the STATUS of the response.
 	 * Transparently calculate the folder size the manual way behind the scenes and inform the client. */
-	if (remote_status(client, remotename, items, 1)) {
+	if (remote_status(client, remotename, items, wantsize)) {
 		return -1;
 	}
 
@@ -1102,15 +1104,28 @@ static int handle_status(struct imap_session *imap, char *s)
 	}
 	if (traversal.client) {
 		char *remotename = remote_mailbox_name(traversal.client, mailbox);
+		int wantsize = strstr(s, "SIZE") ? 1 : 0;
 		/* If the client wants SIZE but the remote server doesn't support it, we'll have to fake it by translating */
-		if (strstr(s, "SIZE") && !(traversal.client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
-			return pseudo_status_size(traversal.client, s, remotename);
+		if (wantsize && !(traversal.client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
+			return handle_remote_status(traversal.client, s, remotename, wantsize, 1);
 		} else {
-			return pseudo_status_size(traversal.client, s, remotename); /* XXX Temporary workaround */
-			/*! \todo XXX This won't work right as is: the mailbox name in the STATUS reply needs to be translated
-			 * from the remote name to our local name for it. Until we do that, pseudo_status_size does that
-			 * (even though it's otherwise overkill for this, since it will return a bunch of other stuff) */
+			/* Also use handle_remote_status instead of passthrough, because passthrough won't return the correct remote mailbox name.
+			 * (It'll be the raw mailbox name on the remote server, instead of what our client thinks the name is).
+			 * Also, internally, if the client doesn't support LIST-STATUS but the remote server does,
+			 * we can use LIST-STATUS in our remote request and satisfy a series of client STATUS commands much more quickly
+			 * than just doing pure passthrough.
+			 *
+			 * The only downside is the abstract STATUS translator will request all STATUS items (e.g. UIDVALIDITY, UIDNEXT, etc.)
+			 * even if the client didn't ask for these. Clients must be able to tolerate getting more than they asked for,
+			 * so this is not a correctness issue, just a potential performance consideration.
+			 * That said, things like UIDVALIDITY and UIDNEXT should be very cheap for the server to provide anyways.
+			 * So there are more benefits of doing it this way than drawbacks.
+			 */
+#if 1
+			return handle_remote_status(traversal.client, s, remotename, wantsize, 0);
+#else
 			return imap_client_send_wait_response(traversal.client, -1, 5000, "STATUS \"%s\" %s\r\n", remotename, s);
+#endif
 		}
 	}
 
