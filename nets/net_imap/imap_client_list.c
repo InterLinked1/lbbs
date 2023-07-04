@@ -29,6 +29,7 @@
 #include "nets/net_imap/imap_server_list.h"
 #include "nets/net_imap/imap_client_list.h"
 #include "nets/net_imap/imap_client_status.h" /* use remove_size */
+#include "nets/net_imap/imap_client_parallel.h"
 
 /*! \brief Mutex to prevent recursion */
 static pthread_mutex_t virt_lock = PTHREAD_MUTEX_INITIALIZER; /* XXX Should most definitely be per mailbox struct, not global */
@@ -125,6 +126,87 @@ static int imap_client_list(struct bbs_tcp_client *client, int caps, const char 
 	return 0;
 }
 
+static int remote_list_status(struct imap_session *imap, char *fullmboxname, const char *items)
+{
+	struct imap_traversal traversal;
+	memset(&traversal, 0, sizeof(traversal));
+
+	if (set_maildir_readonly(imap, &traversal, fullmboxname)) {
+		bbs_error("Failed to set maildir for mailbox '%s'\n", fullmboxname);
+		return -1;
+	} else if (!traversal.client) {
+		/* We know we called set_maildir for a remote mailbox, so it should always be remote */
+		bbs_warning("No virtual/remote mailbox active?\n");
+		return -1;
+	} else {
+		/* remote_mailbox_name may modify fullmboxname (if the hierarchy delimiters differ)
+		 * This is fine since the only further use is below when pushing to the stringlish,
+		 * but we strip all hierarchy delimiters before doing that anyways. */
+		char statuscmd[84];
+		char *remotename = remote_mailbox_name(traversal.client, fullmboxname); /* Convert local delimiter (back) to remote */
+		int want_size = strstr(items, "SIZE") ? 1 : 0;
+
+		/* We also need to remove SIZE from items if it's not supported by the remote */
+		if (want_size && !(traversal.client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
+			safe_strncpy(statuscmd, items, sizeof(statuscmd));
+			items = remove_size(statuscmd);
+		}
+
+		/* Always use remote_status, never direct passthrough, to avoid sending a tagged OK response each time */
+		remote_status(traversal.client, remotename, items, want_size);
+		return 0;
+	}
+}
+
+struct remote_list_status_info {
+	struct imap_session *imap;
+	char *fullmboxname;
+	const char *items;
+	char data[];
+};
+
+static void *remote_list_status_dup(void *data)
+{
+	size_t mboxlen, itemslen;
+	struct remote_list_status_info *r, *orig = data;
+
+	/* XXX If we knew that the remote server for this connection
+	 * (e.g. imap->client->name ~== the prefix part of fullmboxname)
+	 * supports LIST-STATUS (and, but not or, STATUS=SIZE),
+	 * it might make sense to return NULL since this will be a fast operation. */
+
+	mboxlen = strlen(orig->fullmboxname);
+	itemslen = strlen(orig->items);
+
+	r = calloc(1, sizeof(*r) + mboxlen + itemslen + 2);
+	if (ALLOC_FAILURE(r)) {
+		return NULL;
+	}
+	strcpy(r->data, orig->fullmboxname); /* Safe */
+	strcpy(r->data + mboxlen + 1, orig->items); /* Safe */
+	r->fullmboxname = r->data;
+	r->items = r->data + mboxlen + 1;
+	r->imap = orig->imap;
+	return r;
+}
+
+static int remote_list_status_cb(void *data)
+{
+	struct remote_list_status_info *r = data;
+	/* Marshall arguments and execute */
+	return remote_list_status(r->imap, r->fullmboxname, r->items);
+}
+
+static int remote_list_status_parallel(struct imap_parallel *p, const char *restrict prefix, struct imap_session *imap, char *fullmboxname, const char *items)
+{
+	struct remote_list_status_info rinfo; /* No memset needed */
+
+	rinfo.imap = imap;
+	rinfo.fullmboxname = fullmboxname;
+	rinfo.items = items;
+	return imap_client_parallel_schedule_task(p, prefix, &rinfo, remote_list_status_cb, remote_list_status_dup, free);
+}
+
 int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 {
 	FILE *fp2;
@@ -134,6 +216,7 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	int l = 0;
 	struct stat st, st2;
 	int forcerescan = 0;
+	struct imap_parallel p;
 
 	/* Folders from the proxied mailbox will need to be translated back and forth */
 	if (pthread_mutex_trylock(&virt_lock)) {
@@ -204,6 +287,7 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	/* At this point, we should be able to send whatever is in the cache */
 
 	stringlist_empty(&imap->remotemailboxes);
+	memset(&p, 0, sizeof(p));
 	while ((fgets(line, sizeof(line), fp2))) {
 		char relativepath[256];
 		char remotedelim;
@@ -315,34 +399,20 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 
 		/* Handle LIST-STATUS and STATUS=SIZE for remote mailboxes. */
 		if (lcmd->retstatus && MAILBOX_SELECTABLE(line)) { /* Don't call STATUS on a NoSelect mailbox */
-			struct imap_traversal traversal;
-			memset(&traversal, 0, sizeof(traversal));
+			char prefix[84];
+			const char *prefixstart, *delim;
 			/* Replace the remote hierarchy delimiter with our own, solely for set_maildir. */
 			bbs_strreplace(fullmboxname, remotedelim, HIERARCHY_DELIMITER_CHAR);
-			/* Use fullmboxname, for full mailbox name (from our perspective), NOT virtmboxname */
-			if (set_maildir_readonly(imap, &traversal, fullmboxname)) {
-				bbs_error("Failed to set maildir for mailbox '%s'\n", fullmboxname);
-			} else if (!traversal.client) {
-				/* We know we called set_maildir for a remote mailbox, so it should always be remote */
-				bbs_warning("No virtual/remote mailbox active?\n");
-			} else {
-				/* remote_mailbox_name may modify fullmboxname (if the hierarchy delimiters differ)
-				 * This is fine since the only further use is below when pushing to the stringlish,
-				 * but we strip all hierarchy delimiters before doing that anyways. */
-				char statuscmd[84];
-				const char *items = lcmd->retstatus;
-				char *remotename = remote_mailbox_name(traversal.client, fullmboxname); /* Convert local delimiter (back) to remote */
-				int want_size = strstr(lcmd->retstatus, "SIZE") ? 1 : 0;
 
-				/* We also need to remove SIZE from lcmd->retstatus if it's not supported by the remote */
-				if (want_size && !(traversal.client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
-					safe_strncpy(statuscmd, lcmd->retstatus, sizeof(statuscmd));
-					items = remove_size(statuscmd);
-				}
-
-				/* Always use remote_status, never direct passthrough, to avoid sending a tagged OK response each time */
-				remote_status(traversal.client, remotename, items, want_size);
+			prefixstart = virtmboxname;
+			if (*prefixstart == HIERARCHY_DELIMITER_CHAR) {
+				prefixstart++;
 			}
+			delim = strchr(prefixstart, HIERARCHY_DELIMITER_CHAR);
+			safe_strncpy(prefix, prefixstart, MIN(sizeof(prefix), (size_t) (S_OR(delim, prefixstart) - prefixstart + 1))); /* Prefix from .imapremote */
+			/* Use fullmboxname, for full mailbox name (from our perspective), NOT virtmboxname */
+			remote_list_status_parallel(&p, prefix, imap, fullmboxname, lcmd->retstatus);
+
 			/* Most of it is already in the remote format... convert it all so bbs_strterm will stop at the right spot */
 			bbs_strreplace(fullmboxname, HIERARCHY_DELIMITER_CHAR, remotedelim);
 		}
@@ -355,6 +425,8 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 		}
 	}
 	fclose(fp2);
+
+	imap_client_parallel_join(&p);
 
 	pthread_mutex_unlock(&virt_lock);
 	return 0;
