@@ -156,6 +156,8 @@ static unsigned int max_append_size = SIZE_MB(25);
 /* Used extern by imap_client.c */
 unsigned int maxuserproxies = 10;
 
+#define MAX_USER_PROXIES 32
+
 struct preauth_ip {
 	const char *range;
 	const char *username;
@@ -1104,8 +1106,8 @@ static int handle_status(struct imap_session *imap, char *s)
 		if (strstr(s, "SIZE") && !(traversal.client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
 			return pseudo_status_size(traversal.client, s, remotename);
 		} else {
-			return pseudo_status_size(traversal.client, s, remotename);
-			/* XXX This won't work right as is: the mailbox name in the STATUS reply needs to be translated
+			return pseudo_status_size(traversal.client, s, remotename); /* XXX Temporary workaround */
+			/*! \todo XXX This won't work right as is: the mailbox name in the STATUS reply needs to be translated
 			 * from the remote name to our local name for it. Until we do that, pseudo_status_size does that
 			 * (even though it's otherwise overkill for this, since it will return a bunch of other stuff) */
 			return imap_client_send_wait_response(traversal.client, -1, 5000, "STATUS \"%s\" %s\r\n", remotename, s);
@@ -3476,6 +3478,10 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "general", "idlenotifyinterval", &idle_notify_interval);
 	bbs_config_val_set_uint(cfg, "general", "maxappendsize", &max_append_size);
 	bbs_config_val_set_uint(cfg, "general", "maxuserproxies", &maxuserproxies);
+	if (maxuserproxies > MAX_USER_PROXIES) {
+		bbs_warning("Maximum maxuserproxies is %u\n", MAX_USER_PROXIES);
+		maxuserproxies = MAX_USER_PROXIES;
+	}
 
 	/* IMAP */
 	bbs_config_val_set_true(cfg, "imap", "enabled", &imap_enabled);

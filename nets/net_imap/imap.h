@@ -30,9 +30,12 @@ struct imap_client {
 	char virtdelimiter;			/* Hierarchy delimiter used by remote server */
 	char *virtlist;				/* Result of LIST-STATUS command on remote IMAP server */
 	int virtlisttime;			/* Time that LIST-STATUS command was run */
+	int lastactive;				/* Last active time */
+	unsigned int dead:1;		/* Connection is already dead */
 	RWLIST_ENTRY(imap_client) entry;
-	struct bbs_url url;
-	struct bbs_tcp_client client;	/* TCP client for virtual mailbox access on remote servers */	
+	struct bbs_tcp_client client;	/* TCP client for virtual mailbox access on remote servers */
+	/*! \note Must be large enough to get all the CAPABILITYs/headers, or bbs_readline will throw a warning about buffer exhaustion and return 0 */
+	char buf[8192];					/* Readline buffer */
 	char data[0];
 };
 

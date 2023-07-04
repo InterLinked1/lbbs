@@ -40,7 +40,9 @@ static void client_link(struct imap_session *imap, struct imap_client *client)
 static void client_destroy(struct imap_client *client)
 {
 	bbs_debug(5, "Destroying IMAP client %s\n", client->name);
-	SWRITE(client->client.wfd, "bye LOGOUT\r\n"); /* This is optional, but be nice */
+	if (!client->dead) {
+		SWRITE(client->client.wfd, "bye LOGOUT\r\n"); /* This is optional, but be nice */
+	}
 	bbs_tcp_client_cleanup(&client->client);
 	free_if(client->virtlist);
 	free(client);
@@ -100,171 +102,19 @@ static struct imap_client *client_new(const char *name)
 	return client;
 }
 
-/*! \brief Find or create the appropriate IMAP client session */
-static struct imap_client *imap_client_get(struct imap_session *imap, const char *name, int *new)
-{
-	unsigned int current = 0;
-	struct imap_client *client;
-
-	if (!maxuserproxies) {
-		bbs_warning("IMAP client proxy functionality is disabled\n");
-		return NULL;
-	}
-
-	RWLIST_WRLOCK(&imap->clients);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&imap->clients, client, entry) {
-		current++;
-		if (!strcmp(name, client->name)) {
-			*new = 0;
-			bbs_debug(5, "Reusing existing client connection for %s\n", name);
-			/* Make sure this connection is still live.
-			 * If it was idle long enough, the remote IMAP server may have timed us out
-			 * and closed the connection, in which case we need to close this and make a new one.
-			 */
-			/* We explicitly use fd, not rfd, in case it's using TLS, so we can
-			 * query the actual TCP socket, not a pipe within the BBS,
-			 * (which isn't serviced if it's not being used). */
-			if (bbs_socket_pending_shutdown(client->client.fd)) {
-				bbs_verb(4, "Proxied connection for %s has been closed by the remote peer, reopening\n", name);
-				RWLIST_REMOVE_CURRENT(entry);
-				client_destroy(client);
-				client = NULL;
-			}
-			break;
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
-	if (!client) {
-		while (current >= maxuserproxies) {
-			/* We'll need to disconnect a connection in order to make room for this one. */
-			bbs_debug(3, "Need to free up some client connections to make room for new connection\n");
-			client = RWLIST_REMOVE_HEAD(&imap->clients, entry);
-			bbs_assert_exists(client);
-			client_destroy(client);
-			current--;
-		}
-		client = client_new(name);
-		if (ALLOC_FAILURE(client)) {
-			RWLIST_UNLOCK(&imap->clients);
-			return NULL;
-		}
-		/* We have to do this again, because the URL pointers are specific to the allocated memory */
-		client_link(imap, client);
-		*new = 1;
-		bbs_debug(5, "Set up new client connection for %s\n", name);
-	}
-	RWLIST_UNLOCK(&imap->clients);
-
-	return client;
-}
-
-static int my_imap_client_login(struct imap_client *client, struct bbs_url *url)
-{
-	struct bbs_tcp_client *tcpclient = &client->client;
-	return imap_client_login(tcpclient, url, client->imap->node->user, &client->virtcapabilities);
-}
-
-struct imap_client *imap_client_get_by_url(struct imap_session *imap, const char *name, char *restrict urlstr)
-{
-	struct imap_client *client;
-	struct bbs_url url;
-	int secure, new;
-	char *tmp;
-	char buf[1024]; /* Must be large enough to get all the CAPABILITYs, or bbs_readline will throw a warning about buffer exhaustion and return 0 */
-
-	memset(&url, 0, sizeof(url));
-	if (bbs_parse_url(&url, urlstr)) {
-		return NULL;
-	} else if (!strcmp(url.prot, "imaps")) {
-		secure = 1;
-	} else if (strcmp(url.prot, "imap")) {
-		bbs_warning("Unsupported protocol: %s\n", url.prot);
-		return NULL;
-	}
-
-	client = imap_client_get(imap, name, &new);
-	if (!client) {
-		return NULL;
-	} else if (!new) {
-		/* XXX Maybe check to see if the connection is still alive/active?
-		 * And if not, just fall through here and try to reconnect
-		 * For example, we could issue a "NOOP" here to see if that works.
-		 */
-		return client;
-	}
-
-	/* Expect a URL like imap://user:password@imap.example.com:993/mailbox */
-	memset(&client->client, 0, sizeof(client->client));
-	if (bbs_tcp_client_connect(&client->client, &url, secure, buf, sizeof(buf))) {
-		goto cleanup;
-	}
-	if (my_imap_client_login(client, &url)) {
-		goto cleanup;
-	}
-
-	/* Need to determine the hierarchy delimiter on the remote server,
-	 * so that we can make replacements as needed, including for SELECT.
-	 * We do store this in the .imapremote.cache file,
-	 * but that's not the file we opened.
-	 * It's not stored in .imapremote itself.
-	 * Simplest thing is just issue: a0 LIST "" ""
-	 * which will return the hierarchy delimiter and not much else.
-	 * Maybe not efficient in terms of network RTT,
-	 * but we only do this once, when we login and setup the connection, so not too bad.
-	 */
-	IMAP_CLIENT_SEND(&client->client, "dlm LIST \"\" \"\"");
-	IMAP_CLIENT_EXPECT(&client->client, "* LIST");
-	/* Parse out the hierarchy delimiter */
-	tmp = strchr(buf, '"');
-	if (!tmp) {
-		bbs_warning("Invalid LIST response: %s\n", buf);
-		goto cleanup;
-	}
-	tmp++;
-	if (strlen_zero(tmp)) {
-		goto cleanup;
-	}
-	client->virtdelimiter = *tmp;
-	bbs_debug(6, "Remote server's hierarchy delimiter is '%c'\n", client->virtdelimiter);
-	IMAP_CLIENT_EXPECT(&client->client, "dlm OK");
-
-	/* Enable any capabilities enabled by the client that the server supports */
-	if (client->virtcapabilities & IMAP_CAPABILITY_ENABLE) {
-		if (imap->qresync && (client->virtcapabilities & IMAP_CAPABILITY_QRESYNC)) {
-			IMAP_CLIENT_SEND(&client->client, "cap0 ENABLE QRESYNC");
-			IMAP_CLIENT_EXPECT(&client->client, "* ENABLED QRESYNC");
-			IMAP_CLIENT_EXPECT(&client->client, "cap0 OK");
-		} else if (imap->condstore && (client->virtcapabilities & IMAP_CAPABILITY_CONDSTORE)) {
-			IMAP_CLIENT_SEND(&client->client, "cap0 ENABLE CONDSTORE");
-			IMAP_CLIENT_EXPECT(&client->client, "* ENABLED CONDSTORE");
-			IMAP_CLIENT_EXPECT(&client->client, "cap0 OK");
-		}
-	}
-
-	return client;
-
-cleanup:
-	client_unlink(imap, client);
-	return NULL;
-}
-
 static int client_command_passthru(struct imap_client *client, int fd, const char *tag, int taglen, const char *cmd, int cmdlen, int ms, int echo)
 {
 	int res;
-	char buf[8192];
 	struct pollfd pfds[2];
 	int client_said_something = 0;
 	struct imap_session *imap = client->imap;
 	struct bbs_tcp_client *tcpclient = &client->client;
 
-	/* We initialized bbs_readline with a NULL buffer, fix that: */
-	tcpclient->rldata.buf = buf;
-	tcpclient->rldata.len = sizeof(buf);
-
 	pfds[0].fd = tcpclient->rfd;
 	pfds[1].fd = fd;
 
 	for (;;) {
+		char *buf = client->buf;
 		if (fd != -1) {
 			res = bbs_multi_poll(pfds, 2, ms); /* If returns 1, client->rfd had activity, if 2, it was fd */
 			if (res == 2) {
@@ -306,6 +156,7 @@ static int client_command_passthru(struct imap_client *client, int fd, const cha
 				/* We did something we shouldn't have, oops */
 				bbs_warning("Command '%.*s%.*s' failed: %s\n", taglen, tag, cmdlen > 2 ? cmdlen - 2 : cmdlen, cmd, buf); /* Don't include trailing CR LF */
 			}
+			client->lastactive = (int) time(NULL); /* Successfully just got data from remote server */
 			break; /* That's all, folks! */
 		}
 		if (client_said_something) {
@@ -350,6 +201,198 @@ int __attribute__ ((format (gnu_printf, 6, 7))) __imap_client_send_wait_response
 	res = client_command_passthru(client, fd, tagbuf, taglen, buf, len, ms, echo) <= 0;
 	free(buf);
 	return res;
+}
+
+/*!
+ * \brief Check to ensure a connection is still alive
+ * \retval 0 if still alive, -1 if not
+ */
+static int imap_client_keepalive_check(struct imap_client *client)
+{
+	struct bbs_tcp_client *tcpclient = &client->client;
+	int res = imap_client_send_wait_response_noecho(client, -1, SEC_MS(2), "NOOP\r\n"); /* Yeah, this will result in tag reuse... */
+	if (res) {
+		bbs_warning("Reuse keepalive check failed\n");
+		return -1;
+	}
+	if (bbs_socket_pending_shutdown(tcpclient->fd)) {
+		bbs_verb(4, "Proxied connection for %s has been closed by the remote peer\n", client->name);
+		return -1;
+	}
+	return 0; /* Seems to still be alive and well */
+}
+
+static int connection_stale(struct imap_client *client)
+{
+	int now;
+	struct bbs_tcp_client *tcpclient = &client->client;
+	/* Make sure this connection is still live.
+	 * If it was idle long enough, the remote IMAP server may have timed us out
+	 * and closed the connection, in which case we need to close this and make a new one.
+	 * Even if we weren't idling very long, the server could have closed the connection
+	 * at any point for any reason.
+	 */
+
+	/* We explicitly use fd, not rfd, in case it's using TLS, so we can
+	 * query the actual TCP socket, not a pipe within the BBS,
+	 * (which isn't serviced if it's not being used). */
+	if (bbs_socket_pending_shutdown(tcpclient->fd)) {
+		bbs_verb(4, "Proxied connection for %s has been closed by the remote peer, reconnecting\n", client->name);
+		return -1;
+	}
+
+	/* It could still be the case that this socket is no longer usable, because as soon as try to use it,
+	 * it will disconnect on us. So explicitly send a NOOP and see if we get a response.
+	 * Because this check adds an additional RTT, only do this if we haven't heard from the server super recently.
+	 * If we have, then this is just unnecessary. */
+	now = (int) time(NULL);
+	if (now < client->lastactive + 10) {
+		bbs_debug(5, "Received output from remote server within last 10 seconds, fast reuse\n");
+		return 0; /* Should be okay to reuse without doing an explicit keep alive check */
+	}
+	return imap_client_keepalive_check(client);
+}
+
+/*! \brief Find or create the appropriate IMAP client session */
+static struct imap_client *imap_client_get(struct imap_session *imap, const char *name, int *new)
+{
+	unsigned int current = 0;
+	struct imap_client *client;
+
+	if (!maxuserproxies) {
+		bbs_warning("IMAP client proxy functionality is disabled\n");
+		return NULL;
+	}
+
+	RWLIST_WRLOCK(&imap->clients);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&imap->clients, client, entry) {
+		current++;
+		if (!strcmp(name, client->name)) {
+			*new = 0;
+			bbs_debug(5, "Reusing existing client connection for %s\n", name);
+			if (connection_stale(client)) {
+				RWLIST_REMOVE_CURRENT(entry);
+				client->dead = 1;
+				client_destroy(client);
+				client = NULL;
+			}
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	if (!client) {
+		while (current >= maxuserproxies) {
+			/* We'll need to disconnect a connection in order to make room for this one. */
+			bbs_debug(3, "Need to free up some client connections to make room for new connection\n");
+			client = RWLIST_REMOVE_HEAD(&imap->clients, entry);
+			bbs_assert_exists(client);
+			client_destroy(client);
+			current--;
+		}
+		client = client_new(name);
+		if (ALLOC_FAILURE(client)) {
+			RWLIST_UNLOCK(&imap->clients);
+			return NULL;
+		}
+		/* We have to do this again, because the URL pointers are specific to the allocated memory */
+		client_link(imap, client);
+		*new = 1;
+		bbs_debug(5, "Set up new client connection for %s\n", name);
+	}
+	RWLIST_UNLOCK(&imap->clients);
+
+	return client;
+}
+
+static int my_imap_client_login(struct imap_client *client, struct bbs_url *url)
+{
+	struct bbs_tcp_client *tcpclient = &client->client;
+	return imap_client_login(tcpclient, url, client->imap->node->user, &client->virtcapabilities);
+}
+
+struct imap_client *imap_client_get_by_url(struct imap_session *imap, const char *name, char *restrict urlstr)
+{
+	struct imap_client *client;
+	struct bbs_url url;
+	int secure, new;
+	char *tmp, *buf;
+
+	memset(&url, 0, sizeof(url));
+	if (bbs_parse_url(&url, urlstr)) {
+		return NULL;
+	} else if (!strcmp(url.prot, "imaps")) {
+		secure = 1;
+	} else if (strcmp(url.prot, "imap")) {
+		bbs_warning("Unsupported protocol: %s\n", url.prot);
+		return NULL;
+	}
+
+	client = imap_client_get(imap, name, &new);
+	if (!client) {
+		return NULL;
+	} else if (!new) {
+		/* XXX Maybe check to see if the connection is still alive/active?
+		 * And if not, just fall through here and try to reconnect
+		 * For example, we could issue a "NOOP" here to see if that works.
+		 */
+		return client;
+	}
+
+	/* Expect a URL like imap://user:password@imap.example.com:993/mailbox */
+	memset(&client->client, 0, sizeof(client->client));
+	if (bbs_tcp_client_connect(&client->client, &url, secure, client->buf, sizeof(client->buf))) {
+		goto cleanup;
+	}
+	if (my_imap_client_login(client, &url)) {
+		goto cleanup;
+	}
+
+	/* Need to determine the hierarchy delimiter on the remote server,
+	 * so that we can make replacements as needed, including for SELECT.
+	 * We do store this in the .imapremote.cache file,
+	 * but that's not the file we opened.
+	 * It's not stored in .imapremote itself.
+	 * Simplest thing is just issue: a0 LIST "" ""
+	 * which will return the hierarchy delimiter and not much else.
+	 * Maybe not efficient in terms of network RTT,
+	 * but we only do this once, when we login and setup the connection, so not too bad.
+	 */
+	IMAP_CLIENT_SEND(&client->client, "dlm LIST \"\" \"\"");
+	IMAP_CLIENT_EXPECT(&client->client, "* LIST");
+	/* Parse out the hierarchy delimiter */
+	buf = client->buf;
+	tmp = strchr(buf, '"');
+	if (!tmp) {
+		bbs_warning("Invalid LIST response: %s\n", buf);
+		goto cleanup;
+	}
+	tmp++;
+	if (strlen_zero(tmp)) {
+		goto cleanup;
+	}
+	client->virtdelimiter = *tmp;
+	bbs_debug(6, "Remote server's hierarchy delimiter is '%c'\n", client->virtdelimiter);
+	IMAP_CLIENT_EXPECT(&client->client, "dlm OK");
+
+	/* Enable any capabilities enabled by the client that the server supports */
+	if (client->virtcapabilities & IMAP_CAPABILITY_ENABLE) {
+		if (imap->qresync && (client->virtcapabilities & IMAP_CAPABILITY_QRESYNC)) {
+			IMAP_CLIENT_SEND(&client->client, "cap0 ENABLE QRESYNC");
+			IMAP_CLIENT_EXPECT(&client->client, "* ENABLED QRESYNC");
+			IMAP_CLIENT_EXPECT(&client->client, "cap0 OK");
+		} else if (imap->condstore && (client->virtcapabilities & IMAP_CAPABILITY_CONDSTORE)) {
+			IMAP_CLIENT_SEND(&client->client, "cap0 ENABLE CONDSTORE");
+			IMAP_CLIENT_EXPECT(&client->client, "* ENABLED CONDSTORE");
+			IMAP_CLIENT_EXPECT(&client->client, "cap0 OK");
+		}
+	}
+
+	client->lastactive = (int) time(NULL); /* Mark as active since we just successfully did I/O with it */
+	return client;
+
+cleanup:
+	client_unlink(imap, client);
+	return NULL;
 }
 
 int imap_substitute_remote_command(struct imap_client *client, char *s)
@@ -449,7 +492,7 @@ struct imap_client *load_virtual_mailbox(struct imap_session *imap, const char *
 	}
 	while ((fgets(buf, sizeof(buf), fp))) {
 		char *mpath, *urlstr = buf;
-		size_t prefixlen;
+		size_t prefixlen, urlstrlen;
 		mpath = strsep(&urlstr, "|");
 		/* We are not looking for an exact match.
 		 * Essentially, the user defines a "subtree" in the .imapremote file,
@@ -464,15 +507,29 @@ struct imap_client *load_virtual_mailbox(struct imap_session *imap, const char *
 
 		/* Instead of doing prefixlen = strlen(mpath), we can just subtract the pointers */
 		prefixlen = (size_t) (urlstr - mpath - 1); /* Subtract 1 for the space between. */
+		urlstrlen = strlen(urlstr);
 		if (!strncmp(mpath, path, prefixlen)) {
-			struct imap_client *client = imap_client_get_by_url(imap, mpath, urlstr);
-			*exists = 1;
-			bbs_memzero(urlstr, strlen(urlstr)); /* Contains password */
-			if (!client) {
-				break;
-			}
+			struct imap_client *client;
+
+			/* XXX This is most strange.
+			 * This shouldn't matter, but if this fclose occurs AFTER imap_client_get_by_url,
+			 * and we end up recreating the client (because it's stale, connection timed out, etc.)
+			 * it will mess up the new client's TCP connection, and the next time we try to use the
+			 * socket, we'll get a POLLHUP.
+			 * i.e. before fclose it works perfectly fine, and after fclose, the socket returns POLLHUP.
+			 * Mind you, this is a shiny, brand new socket that we just created and successfully read from and wrote to!
+			 * This is pretty obvious code smell, but valgrind doesn't pick anything up,
+			 * and in theory we can do an fclose immediately too, so this works fine,
+			 * I'm not just not satisfied that I can't explain why we need to do this here.
+			 */
 			fclose(fp);
+
+			client = imap_client_get_by_url(imap, mpath, urlstr);
+			*exists = 1;
+			bbs_memzero(urlstr, urlstrlen); /* Contains password */
 			return client;
+		} else {
+			bbs_memzero(urlstr, urlstrlen); /* Contains password */
 		}
 	}
 	fclose(fp);

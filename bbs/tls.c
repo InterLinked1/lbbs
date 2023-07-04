@@ -295,7 +295,6 @@ static void *ssl_io_thread(void *unused)
 	char buf[8192];
 	int pending;
 	int inovertime = 0, overtime = 0;
-	int needprune = 0;
 	char err_msg[1024];
 
 	UNUSED(unused);
@@ -311,7 +310,6 @@ static void *ssl_io_thread(void *unused)
 				break; /* We're shutting down. */
 			}
 			needcreate = 0;
-			needprune = 0;
 			free_if(pfds);
 			free_if(ssl_list);
 			free_if(readpipes);
@@ -344,11 +342,14 @@ static void *ssl_io_thread(void *unused)
 			RWLIST_TRAVERSE(&sslfds, sfd, entry) {
 				ssl_list[i / 2] = sfd->ssl;
 				readpipes[i / 2] = sfd->readpipe[1]; /* Write end of read pipe */
+				pfds[i].fd = sfd->fd;
 				if (sfd->dead) {
 					readpipes[i / 2] = -2; /* Indicate this SSL is dead, don't read from it. */
+					pfds[i].events = 0; /* Don't care about any events for this connection, it's dead */
+					bbs_debug(10, "Skipping dead SSL connection\n");
+				} else {
+					pfds[i].events = POLLIN;
 				}
-				pfds[i].fd = sfd->fd;
-				pfds[i].events = POLLIN;
 				i++;
 				pfds[i].fd = sfd->writepipe[0];
 				pfds[i].events = POLLIN;
@@ -410,9 +411,7 @@ static void *ssl_io_thread(void *unused)
 				int readpipe = readpipes[i / 2];
 				if (readpipe == -2) {
 					/* Don't bother trying to call SSL_read again, we'll just get the error we got last time (SYSCALL or ZERO_RETURN) */
-					if (needprune++ < 5) { /* Try to temper the warnings at least */
-						bbs_debug(10, "Skipping dead SSL connection\n"); /* This may spam the debug logs until whatever is using this SSL fd cleans it up */
-					}
+					bbs_debug(5, "Skipping dead SSL connection\n");
 					continue;
 				} else if (inovertime) {
 					pending = SSL_pending(ssl);
@@ -436,7 +435,7 @@ static void *ssl_io_thread(void *unused)
 					switch (err) {
 						case SSL_ERROR_NONE:
 						case SSL_ERROR_WANT_READ:
-							bbs_debug(10, "SSL_read for %p returned %d (%s)\n", ssl, ores, ssl_strerror(err));
+							bbs_debug(7, "SSL_read for %p returned %d (%s)\n", ssl, ores, ssl_strerror(err));
 							continue; /* Move on to other connections, come back to this one later */
 						case SSL_ERROR_SYSCALL:
 						case SSL_ERROR_ZERO_RETURN:

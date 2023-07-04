@@ -213,7 +213,6 @@ fail:
 
 int set_maildir_readonly(struct imap_session *imap, struct imap_traversal *traversal, const char *mailbox)
 {
-	char dir[256];
 	int res;
 
 	if (strlen_zero(mailbox)) {
@@ -221,7 +220,7 @@ int set_maildir_readonly(struct imap_session *imap, struct imap_traversal *trave
 		return -1;
 	}
 
-	res = __imap_translate_dir(imap, mailbox, dir, sizeof(dir), &traversal->acl, &traversal->mbox);
+	res = __imap_translate_dir(imap, mailbox, traversal->dir, sizeof(traversal->dir), &traversal->acl, &traversal->mbox);
 
 	if (res) {
 		int exists = 0;
@@ -240,7 +239,6 @@ int set_maildir_readonly(struct imap_session *imap, struct imap_traversal *trave
 	}
 
 	IMAP_REQUIRE_ACL(traversal->acl, IMAP_ACL_READ);
-	safe_strncpy(traversal->dir, dir, sizeof(traversal->dir));
 	snprintf(traversal->newdir, sizeof(traversal->newdir), "%s/new", traversal->dir);
 	snprintf(traversal->curdir, sizeof(traversal->curdir), "%s/cur", traversal->dir);
 	return mailbox_maildir_init(traversal->dir);

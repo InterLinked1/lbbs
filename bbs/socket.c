@@ -1921,6 +1921,7 @@ int bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
 		if (left <= 0) {
 			break;
 		}
+		usleep(10); /* Avoid tight loop */
 	}
 	bbs_node_unlock(node);
 	return (int) written;
@@ -1942,6 +1943,7 @@ int bbs_write(int fd, const char *buf, size_t len)
 		if (left <= 0) {
 			break;
 		}
+		usleep(10); /* Avoid tight loop */
 	}
 	return (int) written;
 }

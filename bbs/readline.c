@@ -133,7 +133,7 @@ int bbs_readline(int fd, struct readline_data *restrict rldata, const char *rest
 		}
 		res = bbs_poll_read(fd, timeout, rldata->pos, (size_t) rldata->left - 1); /* Subtract 1 for NUL */
 		if (res <= 0) {
-			bbs_debug(3, "read returned %d (%s)\n", res, res < 0 ? strerror(errno) : "");
+			bbs_debug(3, "bbs_poll_read returned %d\n", res);
 			return res - 1; /* see the doxygen notes: we should return 0 only if we read just the delimiter. */
 		}
 		rldata->pos[res] = '\0'; /* Safe. Null terminate so we can use string functions. */

@@ -154,7 +154,7 @@ static int cache_remote_list_status(struct imap_client *client, const char *rtag
 	for (i = 0; ; i++) {
 		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 10000);
 		if (res <= 0) {
-			bbs_warning("IMAP timeout from LIST-STATUS - remote server issue?\n");
+			bbs_warning("IMAP timeout (res: %d) from LIST-STATUS - remote server issue?\n", res);
 			free_if(dynstr.buf);
 			return -1;
 		}
@@ -207,24 +207,21 @@ static int remote_status_cached(struct imap_client *client, const char *mb, char
 
 int remote_status(struct imap_client *client, const char *remotename, const char *items, int size)
 {
-	char buf[1024];
 	char converted[256];
 	char remote_status_resp[1024];
 	char rtag[64];
 	size_t taglen;
 	int len, res;
-	char *tmp;
+	char *tmp, *buf;
+	char cmd[1024];
 	struct imap_session *imap = client->imap;
 	struct bbs_tcp_client *tcpclient = &client->client;
 	const char *tag = client->imap->tag;
 	const char *add1, *add2, *add3;
 	int issue_status = 1;
 
-	tcpclient->rldata.buf = buf;
-	tcpclient->rldata.len = sizeof(buf);
-
 	/* In order for caching of SIZE to be reliable, we must invalidate it whenever anything
-	 * in the original STATUS response, including UIDNEXT/UIDVALIDITY. These are needed to
+	 * in the original STATUS response changes, including UIDNEXT/UIDVALIDITY. These are needed to
 	 * reliably detect changes to the mailbox (e.g. if a message is added and delete,
 	 * with MESSAGES/UNSEEN/RECENT alone, those might not change, but SIZE would probably
 	 * change if the added message is different from the deleted message.
@@ -256,10 +253,11 @@ int remote_status(struct imap_client *client, const char *remotename, const char
 		bbs_debug(8, "Cached LIST-STATUS response is stale, purging\n");
 		free_if(client->virtlist);
 	}
+	buf = client->buf;
 	if (!client->virtlist && client->virtcapabilities & IMAP_CAPABILITY_LIST_STATUS) { /* Try LIST-STATUS if it's the first mailbox */
-		len = snprintf(buf, sizeof(buf), "A.%s.1 LIST \"\" \"*\" RETURN (STATUS (%s%s%s%s))\r\n", tag, items, add1, add2, add3);
-		imap_debug(3, "=> %.*s", len, buf);
-		bbs_write(tcpclient->wfd, buf, (size_t) len);
+		len = snprintf(cmd, sizeof(cmd), "A.%s.1 LIST \"\" \"*\" RETURN (STATUS (%s%s%s%s))\r\n", tag, items, add1, add2, add3);
+		imap_debug(3, "=> %.*s", len, cmd);
+		bbs_write(tcpclient->wfd, cmd, (size_t) len);
 		cache_remote_list_status(client, rtag, taglen);
 	}
 	if (client->virtlist) {
@@ -271,9 +269,9 @@ int remote_status(struct imap_client *client, const char *remotename, const char
 
 	if (issue_status) {
 		/* XXX Same tag is reused here, so we expect the same prefix (rtag) */
-		len = snprintf(buf, sizeof(buf), "A.%s.1 STATUS \"%s\" (%s%s%s%s)\r\n", tag, remotename, items, add1, add2, add3);
-		imap_debug(3, "=> %.*s", len, buf);
-		bbs_write(tcpclient->wfd, buf, (size_t) len);
+		len = snprintf(cmd, sizeof(cmd), "A.%s.1 STATUS \"%s\" (%s%s%s%s)\r\n", tag, remotename, items, add1, add2, add3);
+		imap_debug(3, "=> %.*s", len, cmd);
+		bbs_write(tcpclient->wfd, cmd, (size_t) len);
 		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 5000);
 		if (res <= 0) {
 			return -1;
@@ -325,10 +323,6 @@ int remote_status(struct imap_client *client, const char *remotename, const char
 			if (res) {
 				return res;
 			}
-
-			/* Need to reinitialize again since client_command_passthru modifies this */
-			tcpclient->rldata.buf = buf;
-			tcpclient->rldata.len = sizeof(buf);
 
 			/* imap->tag gets reused multiple times for different commands here...
 			 * something we SHOULD not do but servers are supposed to (MUST) tolerate. */
