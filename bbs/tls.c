@@ -342,21 +342,25 @@ static void *ssl_io_thread(void *unused)
 			RWLIST_TRAVERSE(&sslfds, sfd, entry) {
 				ssl_list[i / 2] = sfd->ssl;
 				readpipes[i / 2] = sfd->readpipe[1]; /* Write end of read pipe */
-				pfds[i].fd = sfd->fd;
 				if (sfd->dead) {
+					numdead++;
+					/* Don't care about any events for this connection, it's dead.
+					 * We're going to leave it in the linked list until the consumer removes it, but that may not happen immediately. */
 					readpipes[i / 2] = -2; /* Indicate this SSL is dead, don't read from it. */
-					pfds[i].events = 0; /* Don't care about any events for this connection, it's dead */
-					bbs_debug(10, "Skipping dead SSL connection\n");
+					/* We cannot merely do pfds[i].events = 0 to ignore this fd: 0 implicitly includes POLLHUP, POLLERR, and POLLNVAL.
+					 * Another option might be closing some file descriptors as soon as they become dead,
+					 * rather than waiting until ssl_fd_free. */
+					pfds[i].events = 0;
+					pfds[i].fd = -1; /* Interestingly, this does not seem to trigger a POLLNVAL */
+					bbs_debug(7, "Skipping dead SSL connection at index %d / %d\n", i, i/2);
 				} else {
-					pfds[i].events = POLLIN;
+					pfds[i].fd = sfd->fd;
+					pfds[i].events = POLLIN | POLLPRI | POLLERR | POLLNVAL;
 				}
 				i++;
 				pfds[i].fd = sfd->writepipe[0];
-				pfds[i].events = POLLIN;
+				pfds[i].events = POLLIN | POLLPRI | POLLERR | POLLNVAL;
 				i++; /* cppcheck thought this was redundant, it's not */
-				if (sfd->dead) {
-					numdead++;
-				}
 			}
 			RWLIST_UNLOCK(&sslfds);
 			if (numfds != prevfds) {
@@ -410,8 +414,10 @@ static void *ssl_io_thread(void *unused)
 				SSL *ssl = ssl_list[i / 2];
 				int readpipe = readpipes[i / 2];
 				if (readpipe == -2) {
-					/* Don't bother trying to call SSL_read again, we'll just get the error we got last time (SYSCALL or ZERO_RETURN) */
-					bbs_debug(5, "Skipping dead SSL connection\n");
+					/* Don't bother trying to call SSL_read again, we'll just get the error we got last time (SYSCALL or ZERO_RETURN)
+					 * However, this shouldn't even happen anymore, because when we rebuild the poll structure,
+					 * we explicitly mark the dead connections as "don't poll". */
+					bbs_warning("Skipping dead SSL connection at index %d / %d\n", i, i/2);
 					continue;
 				} else if (inovertime) {
 					pending = SSL_pending(ssl);
