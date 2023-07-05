@@ -713,19 +713,6 @@ static int get_header(FILE *fp, const char *header, size_t headerlen, char *buf,
 	return -1;
 }
 
-static int parse_sent_date(const char *s, struct tm *tm)
-{
-	/* Multiple possible date formats:
-	 * 15 Oct 2002 23:57:35 +0300
-	 * Tues, 15 Oct 2002 23:57:35 +0300
-	 */
-	if (!strptime(s, "%a, %d %b %Y %H:%M:%S %z", tm) && !strptime(s, "%d %b %Y %H:%M:%S %z", tm)) {
-		bbs_warning("Failed to parse as date: %s\n", s);
-		return -1;
-	}
-	return 0;
-}
-
 static int search_sent_date(struct imap_search *search, struct tm *tm)
 {
 	char linebuf[1001];
@@ -754,7 +741,7 @@ static int search_sent_date(struct imap_search *search, struct tm *tm)
 		pos = linebuf + STRLEN("Date:");
 		ltrim(pos);
 		bbs_strterm(pos, '\r');
-		return parse_sent_date(pos, tm);
+		return bbs_parse_rfc822_date(pos, tm);
 	}
 	bbs_warning("Didn't find a date in message\n");
 	return -1;
@@ -1519,8 +1506,8 @@ static int sort_compare(const void *aptr, const void *bptr, void *varg)
 			GET_HEADERS("Date");
 			bbs_strterm(buf1, '\r');
 			bbs_strterm(buf2, '\r');
-			hdra = parse_sent_date(buf1, &tm1);
-			hdrb = parse_sent_date(buf2, &tm2);
+			hdra = bbs_parse_rfc822_date(buf1, &tm1);
+			hdrb = bbs_parse_rfc822_date(buf2, &tm2);
 			if (hdra || hdrb) {
 				res = hdra ? hdrb ? 0 : -1 : 1; /* If a date is invalid, it sorts first */
 			} else {
@@ -1750,7 +1737,7 @@ static int populate_thread_data(struct imap_session *imap, struct thread_message
 				char *s = linebuf + STRLEN("Date:");
 				ltrim(s);
 				bbs_term_line(s);
-				parse_sent_date(s, &msgs[i].sent);
+				bbs_parse_rfc822_date(s, &msgs[i].sent);
 				gotinfo++;
 			} else if (STARTS_WITH(linebuf, "In-Reply-To:")) {
 				char *s = linebuf + STRLEN("In-Reply-To:");
@@ -2621,7 +2608,7 @@ int test_thread_orderedsubject(void)
 	}
 	msgs[i].id = i + 1;
 	snprintf(date, sizeof(date), "Tues, 2 Jan 2001 14:14:14 -0300");
-	parse_sent_date(date, &msgs[i].sent); /* XXX Currently fails, so date will be first of all of them */
+	bbs_parse_rfc822_date(date, &msgs[i].sent); /* XXX Currently fails, so date will be first of all of them */
 	msgs[i].sent.tm_sec = (int) i; /* So they're not exactly the same */
 	i++;
 	for (; i < 11; i++) {
@@ -2703,7 +2690,7 @@ int test_thread_references(void)
 	/* 8 doesn't have a Message-ID, just to throw us off */
 	msgs[i].id = i + 1;
 	snprintf(date, sizeof(date), "Tues, 2 Jan 2001 14:14:14 -0300");
-	parse_sent_date(date, &msgs[i].sent); /* XXX Currently fails, so date will be first of all of them */
+	bbs_parse_rfc822_date(date, &msgs[i].sent); /* XXX Currently fails, so date will be first of all of them */
 	snprintf(msgs[i].subject, sizeof(msgs[i].subject), "Message with no Msg-ID");
 	i++;
 	for (; i < 11; i++) {

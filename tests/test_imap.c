@@ -655,7 +655,10 @@ static int run(void)
 	dprintf(client1, "e13 ENABLE QRESYNC" ENDL);
 	CLIENT_EXPECT(client1, "QRESYNC");
 
-	usleep(10000);
+	/* XXX See comment below for e15a: */
+	CLIENT_DRAIN(client1);
+	SWRITE(client1, "e14a NOOP" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "e14a OK");
 
 	dprintf(client1, "e14 SELECT INBOX (QRESYNC (%u 1))" ENDL, uidvalidity);
 	CLIENT_EXPECT_EVENTUALLY(client1, "FETCH"); /* Should get all flag changes since MODSEQ 1 */

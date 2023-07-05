@@ -888,3 +888,28 @@ void print_days_elapsed(int start, int end, char *buf, size_t len)
 	sec = diff;
 	snprintf(buf, len, "%d day%s, %d hr%s, %d min%s, %d sec%s", days, ESS(days), hr, ESS(hr), min, ESS(min), sec, ESS(sec));
 }
+
+int bbs_parse_rfc822_date(const char *s, struct tm *tm)
+{
+	char *t;
+
+	/* Multiple possible date formats:
+	 * 15 Oct 2002 23:57:35 +0300
+	 * Tues, 15 Oct 2002 23:57:35 +0300
+	 *  Mon, 3 Jul 2023 22:01:33 GMT */
+	if ((t = strptime(s, "%a, %d %b %Y %H:%M:%S %z", tm)) || (t = strptime(s, "%d %b %Y %H:%M:%S %z", tm))) {
+		return 0;
+	}
+
+	/* I've encountered some emails where the date is something like this:
+	 * Mon, 3 Jul 2023 22:01:33 GMT
+	 * Note that instead of an offset, you just have a TZ abbreviation.
+	 * Valid according to RFC 822 5.1, but not according to RFC 2822 3.3, and not very common. */
+	if ((t = strptime(s, "%a, %d %b %Y %H:%M:%S %Z", tm))) {
+		bbs_debug(1, "Non-RFC2822 compliant date: %s (%s)\n", s, t);
+		return 0;
+	}
+
+	bbs_warning("Failed to parse as date: %s\n", s);
+	return -1;
+}

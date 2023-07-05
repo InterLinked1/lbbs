@@ -181,6 +181,7 @@ void websocket_attach_user_data(struct ws_session *ws, void *data)
 
 void websocket_set_custom_poll_fd(struct ws_session *ws, int fd, int pollms)
 {
+	bbs_assert(fd); /* Shouldn't be 0, should be -1 for none or positive otherwise */
 	ws->pollfd = fd;
 	ws->pollms = pollms;
 }

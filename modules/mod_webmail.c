@@ -940,8 +940,12 @@ static void __append_datetime(json_t *json, const char *field, struct tm *tm)
 	/* Send the epoch time, and the client can display it in
 	 * its local timezone / preferred format without us needing to know. */
 #ifdef DEBUG_DATETIME
-	bbs_debug(5, "Parsed datetime -> epoch %lu (had offset %ld)\n", epoch, offset);
+	bbs_debug(5, "Parsed datetime -> epoch %ld (had offset %ld)\n", epoch, offset);
 #endif
+	if (epoch < 0) { /* It should never be negative... */
+		bbs_warning("Date parsed to %ld? (%ld/%ld)\n", epoch, offset, timegm(tm));
+		return;
+	}
 	json_object_set_new(json, field, json_integer(epoch));
 }
 
@@ -1081,11 +1085,10 @@ static void append_header_single(json_t *restrict json, int *importance, int fet
 				json_object_set_new(json, "subject", json_string(hdrval));
 			} else if (!strcasecmp(hdrname, "Date")) {
 				struct tm sent;
-				/* from parse_sent_date in net_imap: */
-				if (!strptime(hdrval, "%a, %d %b %Y %H:%M:%S %z", &sent) && !strptime(hdrval, "%d %b %Y %H:%M:%S %z", &sent)) {
-					bbs_warning("Failed to parse as date: %s\n", hdrval);
+				memset(&sent, 0, sizeof(sent));
+				if (!bbs_parse_rfc822_date(hdrval, &sent)) {
+					__append_datetime(json, "sent", &sent);
 				}
-				__append_datetime(json, "sent", &sent);
 			} else { /* else, there shouldn't be anything unaccounted for, since we only fetched specific headers of interest */
 				bbs_warning("Unanticipated header: %s\n", hdrname);
 			}
@@ -2535,7 +2538,6 @@ static void idle_start(struct ws_session *ws, struct imap_client *client)
 			bbs_warning("Failed to start IDLE: %s\n", maildriver_strerror(res));
 		} else {
 			client->idlestart = (int) time(NULL);
-			client->imapfd = mailimap_idle_get_fd(client->imap);
 			client->idling = 1;
 		}
 	}
@@ -2582,6 +2584,12 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 
 	/* IDLE activity! */
 	idledata = mailimap_read_line(client->imap);
+	if (!idledata) {
+		bbs_error("IDLE activity, but no data?\n");
+		idle_stop(ws, client);
+		idle_start(ws, client);
+		return 0;
+	}
 	ends_in_crlf = !strlen_zero(idledata) ? strchr(idledata, '\n') ? 1 : 0 : 0;
 	bbs_debug(3, "IDLE activity detected: %s%s", idledata, ends_in_crlf ? "" : "\n");
 	if (STARTS_WITH(idledata, "* ")) {
@@ -2771,13 +2779,14 @@ static int on_open(struct ws_session *ws)
 		return -1;
 	}
 
-	websocket_attach_user_data(ws, client);
 	client->ws = ws;
+	websocket_attach_user_data(ws, client);
 	if (client_imap_init(ws, client, &imap)) {
 		goto done;
 	}
 	list_response(ws, client, imap);
 	client->imap = imap;
+	client->imapfd = mailimap_idle_get_fd(imap);
 
 	/* Regardless of whether a mailbox is selected and is idling, we
 	 * need to do something at least every 30 minutes, or the IMAP server will disconnect us. */

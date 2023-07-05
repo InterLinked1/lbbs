@@ -571,3 +571,11 @@ void print_time_elapsed(int start, int end, char *buf, size_t len);
  * \param len Size of buffer. Minimum 36 recommended.
  */
 void print_days_elapsed(int start, int end, char *buf, size_t len);
+
+/*!
+ * \brief Parse an RFC822/RFC2822 date (i.e. date from an email header)
+ * \param s
+ * \param[out] tm
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_parse_rfc822_date(const char *s, struct tm *tm);
