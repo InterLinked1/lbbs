@@ -279,8 +279,10 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 		/* Don't immediately emit a warning, because the thread may be just about to exit
 		 * and thus wasn't waitingjoin when we checked. This prevents superflous warnings,
 		 * by waiting to join for a brief moment and only warning if the thread doesn't join in that time. */
-		ts.tv_sec = 0;
-		ts.tv_nsec = 30000000; /* 30 ms */
+		if (clock_gettime(CLOCK_REALTIME, &ts) == -1) {
+			bbs_error("clock_gettime failed: %s\n", strerror(errno));
+		}
+		ts.tv_sec++; /* Wait up to a second */
 		res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts); /* This is not POSIX portable */
 		if (res && res == ETIMEDOUT) {
 			/* The thread hasn't exited yet. At this point, it's more likely that something is actually wrong. */
