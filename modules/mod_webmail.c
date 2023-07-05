@@ -2512,6 +2512,7 @@ static void handle_append(struct imap_client *client, const char *message, size_
 
 static void idle_stop(struct ws_session *ws, struct imap_client *client)
 {
+	UNUSED(ws); /* Formerly used to adjust net_ws timeout, not currently used */
 	if (client->idling) {
 		int res;
 		bbs_debug(5, "Stopping IDLE\n");
@@ -2519,14 +2520,13 @@ static void idle_stop(struct ws_session *ws, struct imap_client *client)
 		if (res != MAILIMAP_NO_ERROR) {
 			bbs_warning("Failed to stop IDLE: %s\n", maildriver_strerror(res));
 			client->idling = 0;
-			/* net_ws will convert -1 to the maximum allowed poll time */
-			websocket_set_custom_poll_fd(ws, -1, -1);
 		}
 	}
 }
 
 static void idle_start(struct ws_session *ws, struct imap_client *client)
 {
+	UNUSED(ws); /* Formerly used to adjust net_ws timeout, not currently used */
 	if (client->canidle) {
 		int res;
 		bbs_debug(5, "Starting IDLE...\n");
@@ -2537,7 +2537,6 @@ static void idle_start(struct ws_session *ws, struct imap_client *client)
 			client->idlestart = (int) time(NULL);
 			client->imapfd = mailimap_idle_get_fd(client->imap);
 			client->idling = 1;
-			websocket_set_custom_poll_fd(ws, client->imapfd, SEC_MS(1740)); /* Just under 30 minutes */
 		}
 	}
 }
@@ -2574,7 +2573,7 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	int ends_in_crlf;
 
 	if (!client->idling) {
-		bbs_debug(7, "IDLE not active, ignoring...\n");
+		bbs_debug(5, "Not currently idling, ignoring...\n");
 		return 0;
 	} else if (strlen_zero(client->mailbox)) {
 		bbs_error("Client mailbox not set?\n");
@@ -2618,8 +2617,10 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	}
 	if (!reason) {
 		bbs_warning("Unhandled IDLE response: %s%s", idledata, ends_in_crlf ? "" : "\n");
-		idle_continue(client);
-		return 0; /* No need to start the IDLE again, we never stopped it */
+		/* Stop and start the IDLE again, just to be safe */
+		idle_stop(ws, client);
+		idle_start(ws, client);
+		return 0;
 	}
 	idle_stop(ws, client);
 
@@ -2649,6 +2650,12 @@ static int on_poll_timeout(struct ws_session *ws, void *data)
 		/* Just restart the IDLE before it times out */
 		idle_stop(ws, client);
 		idle_start(ws, client);
+	} else {
+		/* Prevent IMAP connection timeout by sending a NOOP to the server, since we're not idling. */
+		int res = mailimap_noop(client->imap);
+		if (res != MAILIMAP_NO_ERROR) {
+			bbs_warning("IMAP NOOP failed: %s\n", maildriver_strerror(res));
+		}
 	}
 
 	return 0;
@@ -2771,6 +2778,11 @@ static int on_open(struct ws_session *ws)
 	}
 	list_response(ws, client, imap);
 	client->imap = imap;
+
+	/* Regardless of whether a mailbox is selected and is idling, we
+	 * need to do something at least every 30 minutes, or the IMAP server will disconnect us. */
+	websocket_set_custom_poll_fd(ws, client->imapfd, SEC_MS(1740)); /* Just under 30 minutes */
+
 	/* Don't start IDLING yet. No mailbox is yet selected. */
 	return 0;
 

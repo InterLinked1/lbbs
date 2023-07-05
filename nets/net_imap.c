@@ -53,7 +53,7 @@
 /*! \todo IMAP functionality not yet implemented/supported:
  * - RFC 4469 CATENATE
  * - RFC 4959 SASL-IR
- * - RFC 4978 COMPRESS
+ * - RFC 4978 COMPRESS=DEFLATE
  * - RFC 5255 LANGUAGE
  * - RFC 5257 ANNOTATE, RFC 5464 ANNOTATE (METADATA)
  * - RFC 5258 LIST extensions (obsoletes 3348)
@@ -64,10 +64,13 @@
  * - RFC 6203 FUZZY SEARCH
  * - RFC 6237 ESEARCH (MULTISEARCH)
  * - RFC 6785 IMAPSIEVE
- * - RFC 6855 UTF-8
+ * - RFC 6855 UTF8=ACCEPT, UTF8=ONLY
  * - RFC 7888 LITERAL-
  * - RFC 8970 PREVIEW
+ * - RFC 9394 PARTIAL
  * - BINARY extensions (RFC 3516, 4466)
+ * - CLIENTID: https://datatracker.ietf.org/doc/html/draft-yu-imap-client-id-10
+ *             https://datatracker.ietf.org/doc/html/draft-storey-smtp-client-id-15
  * Other capabilities: AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH AUTH=XOAUTH2
  */
 
@@ -3399,6 +3402,7 @@ static void handle_client(struct imap_session *imap)
 			bbs_debug(6, "%p => %s\n", imap, buf);
 		}
 		if (imap_process(imap, buf)) {
+			imap_send(imap, "BYE %s server terminating connection", IMAP_REV);
 			break;
 		}
 	}

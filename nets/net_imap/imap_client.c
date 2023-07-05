@@ -387,6 +387,17 @@ struct imap_client *imap_client_get_by_url(struct imap_session *imap, const char
 		}
 	}
 
+	/* Yandex explicitly violates RFC 3501 5.4, which
+	 * specifies inactivity timers MUST be at least 30 minutes.
+	 * With Yandex, if a mailbox is not selected, it'll
+	 * disconnect you after about 2 minutes and 45 seconds.
+	 *
+	 * In theory, this should not be an issue as it's transparent
+	 * to the user: if the connection is dead the next time we need it,
+	 * we can just make a new one. It just worsens performance,
+	 * and I haven't found an elegant workaround to this...
+	 */
+
 	client->lastactive = (int) time(NULL); /* Mark as active since we just successfully did I/O with it */
 	return client;
 
