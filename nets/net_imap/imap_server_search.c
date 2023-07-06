@@ -75,6 +75,7 @@ enum imap_search_type {
 	IMAP_SEARCH_SEQUENCE_NUMBER_SET,
 };
 
+#ifdef DEBUG_SEARCH
 static const char *imap_search_key_name(enum imap_search_type type)
 {
 	switch (type) {
@@ -163,6 +164,7 @@ static const char *imap_search_key_name(enum imap_search_type type)
 			return NULL;
 	}
 }
+#endif
 
 struct imap_search_key;
 
@@ -284,43 +286,6 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 }
 #endif
 
-static int flag_fixup(struct imap_search_key *sk)
-{
-	/* Some IMAP clients don't use the proper search keys for things like
-	 * RECENT, DELETED, NEW, etc. so try to support them for compatibility. */
-
-	if (sk->type == IMAP_SEARCH_KEYWORD || sk->type == IMAP_SEARCH_UNKEYWORD) {
-		enum imap_search_type origtype = sk->type;
-		int inverted = origtype == IMAP_SEARCH_UNKEYWORD;
-		const char *orig = imap_search_key_name(origtype);
-		const char *s = sk->child.string;
-		if (s[0] == '\\') { /* Flag, not a keyword */
-			/* And some clients will send \\ instead of just \? So just use strstr */
-			if (!inverted && strstr(s, "Recent")) {
-				sk->type = IMAP_SEARCH_RECENT;
-			} else if (strstr(s, "Seen")) {
-				sk->type = inverted ? IMAP_SEARCH_UNSEEN : IMAP_SEARCH_SEEN;
-			} else if (strstr(s, "Deleted")) {
-				sk->type = inverted ? IMAP_SEARCH_UNDELETED : IMAP_SEARCH_DELETED;
-			} else if (strstr(s, "Draft")) {
-				sk->type = inverted ? IMAP_SEARCH_UNDRAFT : IMAP_SEARCH_DRAFT;
-			} else if (strstr(s, "Flagged")) {
-				sk->type = inverted ? IMAP_SEARCH_UNFLAGGED : IMAP_SEARCH_FLAGGED;
-			} else if (strstr(s, "Answered")) {
-				sk->type = inverted ? IMAP_SEARCH_UNANSWERED : IMAP_SEARCH_ANSWERED;
-			} else {
-				bbs_warning("Cannot convert flag %s for compatibility\n", s);
-				return -1;
-			}
-		}
-		if (sk->type != origtype) {
-			/* Please, fix your IMAP client! */
-			bbs_debug(1, "Converted %s %s to %s for compatibility\n", orig, s, imap_search_key_name(sk->type));
-		}
-	}
-	return 0;
-}
-
 #define SEARCH_PARSE_FLAG(name) \
 	else if (!strcasecmp(next, #name)) { \
 		nk = imap_search_add(skeys, IMAP_SEARCH_ ## name); \
@@ -399,9 +364,6 @@ static int flag_fixup(struct imap_search_key *sk)
 			*s = NULL; \
 		} \
 		nk->child.string = begin; /* This is not dynamically allocated, and does not need to be freed. */ \
-		if (flag_fixup(nk)) { \
-			return -1; \
-		} \
 		listsize++; \
 	}
 

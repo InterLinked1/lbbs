@@ -1170,83 +1170,226 @@ static void append_header_meta(json_t *restrict json, char *headers, int fetchli
 	}
 }
 
-static clist *sortall(struct imap_client *client, const char *sort, const char *search, int *sorted)
+/*! \brief XXX Basically mailimap_status / mailimap_sort, but with support for using search keys libetpan does not support
+ * That said, it does not support all the search keys, just a subset of ones we care about. Hence, fuller, not full. */
+static int mailimap_search_sort_fuller(mailimap *session, const char *sortkey, const char *searchkey, clist **outlist)
+{
+	char cmd[256];
+	size_t cmdlen;
+	struct mailimap_response *response;
+	int r;
+	int error_code;
+	clistiter *cur = NULL;
+	clist *sort_result = NULL;
+
+	if ((session->imap_state != MAILIMAP_STATE_AUTHENTICATED) && (session->imap_state != MAILIMAP_STATE_SELECTED)) {
+		return MAILIMAP_ERROR_BAD_STATE;
+	}
+	r = mailimap_send_current_tag(session);
+	if (r != MAILIMAP_NO_ERROR) {
+		return r;
+	}
+
+	/* XXX mailimap_send_crlf and mailimap_send_custom_command aren't public */
+	if (sortkey) {
+		cmdlen = (size_t) snprintf(cmd, sizeof(cmd), "SORT (%s) UTF-8 %s\r\n", sortkey, searchkey);
+	} else {
+		cmdlen = (size_t) snprintf(cmd, sizeof(cmd), "SEARCH %s\r\n", searchkey);
+	}
+
+	r = (int) mailstream_write(session->imap_stream, cmd, cmdlen);
+	if (r != (int) cmdlen) {
+		return MAILIMAP_ERROR_STREAM;
+	}
+
+	if (mailstream_flush(session->imap_stream) == -1) {
+		return MAILIMAP_ERROR_STREAM;
+	}
+	if (mailimap_read_line(session) == NULL) {
+		return MAILIMAP_ERROR_STREAM;
+	}
+	r = mailimap_parse_response(session, &response);
+	if (r != MAILIMAP_NO_ERROR) {
+		return r;
+	}
+
+	for (cur = clist_begin(session->imap_response_info->rsp_extension_list); cur; cur = clist_next(cur)) {
+		struct mailimap_extension_data *ext_data = clist_content(cur);
+		if (ext_data->ext_extension->ext_id == MAILIMAP_EXTENSION_SORT) {
+			if (sortkey && !sort_result) {
+				sort_result = ext_data->ext_data;
+				ext_data->ext_data = NULL;
+				ext_data->ext_type = -1;
+			}
+		}
+		mailimap_extension_data_free(ext_data);
+	}
+	clist_free(session->imap_response_info->rsp_extension_list);
+	session->imap_response_info->rsp_extension_list = NULL;
+
+	if (!sort_result) {
+		sort_result = session->imap_response_info->rsp_search_result;
+		session->imap_response_info->rsp_search_result = NULL;
+	}
+
+	/* session->imap_response only contains the last line (e.g. LIST completed) */
+	error_code = response->rsp_resp_done->rsp_data.rsp_tagged->rsp_cond_state->rsp_type;
+	mailimap_response_free(response);
+	*outlist = sort_result;
+
+	switch (error_code) {
+		case MAILIMAP_RESP_COND_STATE_OK:
+			return MAILIMAP_NO_ERROR;
+		default:
+			return MAILIMAP_ERROR_LIST;
+	}
+}
+
+#define LIBETPAN_SEARCH_KEYS_BROKEN_ABI 1
+
+static struct mailimap_search_key *mailimap_search_key_new_type(int sk_type)
+{
+  return mailimap_search_key_new(sk_type, NULL, NULL, NULL, NULL, NULL,
+	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL);
+}
+
+static clist *sortall(struct imap_client *client, const char *sort, const char *search, int *searched, int *sorted)
 {
 	int res = -1;
 	clist *list = NULL;
-	struct mailimap_sort_key *sortkey = NULL;
-	struct mailimap_search_key *searchkey = NULL;
 
-	if (sort) {
-		/* These seem backwards because, in a way, they are.
-		 * The pagination logic is written to expect the "first" result on the last page and show the "last"
-		 * result at the beginning, so that on an unsorted mailbox, the latest results show up on the first page.
-		 * Therefore, we flip all the orderings here, e.g. to sort in descending order, we really ask the server
-		 * to do an ascending sort, so that when the last results are used for the first page, the largest items
-		 * show up there, making it feel like a descending sort. */
-		if (!strcmp(sort, "sent-desc")) {
-			sortkey = mailimap_sort_key_new_date(0);
-		} else if (!strcmp(sort, "sent-asc")) {
-			sortkey = mailimap_sort_key_new_date(1);
-		} else if (!strcmp(sort, "received-desc")) {
-			sortkey = mailimap_sort_key_new_arrival(0);
-		} else if (!strcmp(sort, "received-asc")) {
-			sortkey = mailimap_sort_key_new_arrival(1);
-		} else if (!strcmp(sort, "size-desc")) {
-			sortkey = mailimap_sort_key_new_size(0);
-		} else if (!strcmp(sort, "size-asc")) {
-			sortkey = mailimap_sort_key_new_size(1);
-		} else if (!strcmp(sort, "subject-asc")) {
-			sortkey = mailimap_sort_key_new_subject(1);
-		} else if (!strcmp(sort, "subject-desc")) {
-			sortkey = mailimap_sort_key_new_subject(0);
-		} else if (!strcmp(sort, "from-asc")) {
-			sortkey = mailimap_sort_key_new_from(1);
-		} else if (!strcmp(sort, "from-desc")) {
-			sortkey = mailimap_sort_key_new_from(0);
-		} else if (!strcmp(sort, "to-asc")) {
-			sortkey = mailimap_sort_key_new_to(1);
-		} else if (!strcmp(sort, "to-desc")) {
-			sortkey = mailimap_sort_key_new_to(0);
-		} else {
-			bbs_warning("Unsupported sort criteria: '%s'\n", sort);
+	if (LIBETPAN_SEARCH_KEYS_BROKEN_ABI) {
+		if (sort) {
+			/* Yes, these seem flipped. See comment below. */
+			if (!strcmp(sort, "sent-desc")) {
+				sort = "DATE";
+			} else if (!strcmp(sort, "sent-asc")) {
+				sort = "REVERSE DATE";
+			} else if (!strcmp(sort, "received-desc")) {
+				sort = "ARRIVAL";
+			} else if (!strcmp(sort, "received-asc")) {
+				sort = "REVERSE ARRIVAL";
+			} else if (!strcmp(sort, "size-desc")) {
+				sort = "SIZE";
+			} else if (!strcmp(sort, "size-asc")) {
+				sort = "REVERSE SIZE";
+			} else if (!strcmp(sort, "subject-asc")) {
+				sort = "REVERSE SUBJECT";
+			} else if (!strcmp(sort, "subject-desc")) {
+				sort = "SUBJECT";
+			} else if (!strcmp(sort, "from-asc")) {
+				sort = "REVERSE FROM";
+			} else if (!strcmp(sort, "from-desc")) {
+				sort = "FROM";
+			} else if (!strcmp(sort, "to-asc")) {
+				sort = "REVERSE TO";
+			} else if (!strcmp(sort, "to-desc")) {
+				sort = "TO";
+			} else {
+				bbs_warning("Unsupported sort criteria: '%s'\n", sort);
+			}
 		}
-		if (!sortkey) {
+		if (search) {
+			if (!strcmp(search, "recent")) {
+				search = "RECENT";
+			} else if (!strcmp(search, "unseen")) {
+				search = "UNSEEN";
+			} else {
+				bbs_warning("Unsupported search criteria: '%s'\n", search);
+			}
+		}
+		*sorted = *searched = 0;
+		res = mailimap_search_sort_fuller(client->imap, sort, search, &list);
+	} else {
+		struct mailimap_sort_key *sortkey = NULL;
+		struct mailimap_search_key *searchkey = NULL;
+		if (sort) {
+			/* These seem backwards because, in a way, they are.
+			 * The pagination logic is written to expect the "first" result on the last page and show the "last"
+			 * result at the beginning, so that on an unsorted mailbox, the latest results show up on the first page.
+			 * Therefore, we flip all the orderings here, e.g. to sort in descending order, we really ask the server
+			 * to do an ascending sort, so that when the last results are used for the first page, the largest items
+			 * show up there, making it feel like a descending sort. */
+			if (!strcmp(sort, "sent-desc")) {
+				sortkey = mailimap_sort_key_new_date(0);
+			} else if (!strcmp(sort, "sent-asc")) {
+				sortkey = mailimap_sort_key_new_date(1);
+			} else if (!strcmp(sort, "received-desc")) {
+				sortkey = mailimap_sort_key_new_arrival(0);
+			} else if (!strcmp(sort, "received-asc")) {
+				sortkey = mailimap_sort_key_new_arrival(1);
+			} else if (!strcmp(sort, "size-desc")) {
+				sortkey = mailimap_sort_key_new_size(0);
+			} else if (!strcmp(sort, "size-asc")) {
+				sortkey = mailimap_sort_key_new_size(1);
+			} else if (!strcmp(sort, "subject-asc")) {
+				sortkey = mailimap_sort_key_new_subject(1);
+			} else if (!strcmp(sort, "subject-desc")) {
+				sortkey = mailimap_sort_key_new_subject(0);
+			} else if (!strcmp(sort, "from-asc")) {
+				sortkey = mailimap_sort_key_new_from(1);
+			} else if (!strcmp(sort, "from-desc")) {
+				sortkey = mailimap_sort_key_new_from(0);
+			} else if (!strcmp(sort, "to-asc")) {
+				sortkey = mailimap_sort_key_new_to(1);
+			} else if (!strcmp(sort, "to-desc")) {
+				sortkey = mailimap_sort_key_new_to(0);
+			} else {
+				bbs_warning("Unsupported sort criteria: '%s'\n", sort);
+			}
+			if (!sortkey) {
+				return NULL;
+			}
+		}
+
+		if (search) {
+			if (!strcmp(search, "recent")) {
+				/* XXX LIBETPAN_SEARCH_KEYS_BROKEN_ABI. Something is not right here.
+				 * For some reason, when this is actually sent, RECENT becomes ON and UNSEEN becomes UNFLAGGED.
+				 * ON is 1 before RECENT and UNFLAGGED is 2 before UNSEEN, so this almost seems like
+				 * some kind of ordering/ABI issue, even though that doesn't seem to fit.
+				 * Not only is that wrong, but it will almost certainly lead to a crash.
+				 * The code seems to be correct and it seems to work this way in other projects,
+				 * so I'm not entirely sure what the issue is here. For now, we build the command manually.
+				 */
+				searchkey = mailimap_search_key_new_type(MAIL_SEARCH_KEY_RECENT);
+			} else if (!strcmp(search, "unseen")) {
+				searchkey = mailimap_search_key_new_type(MAIL_SEARCH_KEY_UNSEEN);
+			} else {
+				bbs_warning("Unsupported search criteria: '%s'\n", search);
+			}
+		} else {
+			searchkey = mailimap_search_key_new_all();
+		}
+		if (!searchkey) {
+			if (sortkey) {
+				mailimap_sort_key_free(sortkey);
+			}
 			return NULL;
 		}
-	}
 
-	if (search) {
-		if (!strcmp(search, "recent")) {
-			/* libetpan does not support the RECENT search key - its list of search keys is incomplete.
-			 * As a workaround, use the keyword, however this is probably not compatible with all IMAP servers */
-			searchkey = mailimap_search_key_new_keyword(strdup("\\Recent"));
-		} else if (!strcmp(search, "unseen")) {
-			searchkey = mailimap_search_key_new_unkeyword(strdup("\\Seen"));
-		} else {
-			bbs_warning("Unsupported search criteria: '%s'\n", search);
-		}
-	} else {
-		searchkey = mailimap_search_key_new_all();
-	}
-	if (!searchkey) {
 		if (sortkey) {
+			res = mailimap_sort(client->imap, "UTF-8", sortkey, searchkey, &list);
 			mailimap_sort_key_free(sortkey);
+			*sorted = 1;
+			*searched = 0;
+		} else {
+			res = mailimap_search(client->imap, "UTF-8", searchkey, &list);
+			*sorted = 0;
+			*searched = 1;
 		}
-		return NULL;
+		mailimap_search_key_free(searchkey);
 	}
 
-	if (sortkey) {
-		res = mailimap_sort(client->imap, "UTF-8", sortkey, searchkey, &list);
-		mailimap_sort_key_free(sortkey);
-		*sorted = 1;
-	} else {
-		res = mailimap_search(client->imap, "UTF-8", searchkey, &list);
-		*sorted = 0;
-	}
-	mailimap_search_key_free(searchkey);
 	if (res != MAILIMAP_NO_ERROR) {
-		bbs_warning("SORT failed: %s\n", maildriver_strerror(res));
+		bbs_warning("%s failed: %s\n", *sorted ? "SORT" : "SEARCH", maildriver_strerror(res));
+		/* Wish there was an easy way to get the actual tagged NO response, so we could pass that on.
+		 * If SORT failed, it's probably beacuse it's not supported for this mailbox.
+		 * SEARCH is part of the base specification so it's always supported.
+		 * (the scenario being the server itself supports it but perhaps a proxied mailbox doesn't) */
+		if (*sorted) {
+			client_set_error(client->ws, "Sort failed or not supported for this mailbox");
+		}
 	}
 	return list;
 }
@@ -1455,15 +1598,19 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 	/* Thankfully, SEARCH is not an extension, it should be supported by all IMAP servers */
 	if (sort || filter) {
 		int index = 1;
-		int sortlist;
+		int searchlist, sortlist;
 		/*! \todo Cache this between FETCHLIST calls */
-		clist *sorted = sortall(client, sort, filter, &sortlist); /* This could be somewhat slow, since we have sort the ENTIRE mailbox every time */
+		clist *sorted = sortall(client, sort, filter, &searchlist, &sortlist); /* This could be somewhat slow, since we have sort the ENTIRE mailbox every time */
 		if (!sorted) {
 			return;
 		}
 		set = mailimap_set_new_empty();
 		if (!set) {
-			sortlist ? mailimap_sort_result_free(sorted) : mailimap_search_result_free(sorted);
+			if (sortlist) {
+				mailimap_sort_result_free(sorted);
+			} else if (searchlist) {
+				mailimap_search_result_free(sorted);
+			}
 			return;
 		}
 		if (filter) {
@@ -1471,6 +1618,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 			int total = clist_count(sorted);
 			/* The # pages could be different since # of results could be anything */
 			numpages = (total + (pagesize - 1)) / pagesize; /* avoid ceil() */
+			bbs_debug(5, "Total # messages: %d, # pages: %d, requested page: %d\n", total, numpages, page);
 			if (page > numpages) {
 				bbs_debug(3, "Capping page to %d\n", numpages);
 				page = numpages;
@@ -1484,9 +1632,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 		}
 		for (cur = clist_begin(sorted); cur; index++, cur = clist_next(cur)) {
 			uint32_t *seqno;
-			/* The break early optimizations only work if we're sorted in a very specific order */
 			if (index < start) {
-				bbs_debug(3, "Skipping #%d\n", index);
 				continue;
 			}
 			seqno = clist_content(cur);
@@ -1494,16 +1640,23 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 			added++;
 			if (res != MAILIMAP_NO_ERROR) {
 				bbs_error("Failed to add sorted seqno to list: %u\n", *seqno);
-				sortlist ? mailimap_sort_result_free(sorted) : mailimap_search_result_free(sorted);
+				if (sortlist) {
+					mailimap_sort_result_free(sorted);
+				} else if (searchlist) {
+					mailimap_search_result_free(sorted);
+				}
 				return;
 			}
 			if (index >= end) {
-				bbs_debug(3, "Stopping at #%d\n", index);
 				break;
 			}
 		}
 		bbs_debug(6, "SEARCH/SORT matched %d result%s\n", added, ESS(added));
-		sortlist ? mailimap_sort_result_free(sorted) : mailimap_search_result_free(sorted);
+		if (sortlist) {
+			mailimap_sort_result_free(sorted);
+		} else if (searchlist) {
+			mailimap_search_result_free(sorted);
+		}
 	} else {
 		set = mailimap_set_new_interval((uint32_t) start, (uint32_t) end);
 		added = (end - start + 1);
