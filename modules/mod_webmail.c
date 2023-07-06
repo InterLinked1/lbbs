@@ -2575,6 +2575,12 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	int ends_in_crlf;
 
 	if (!client->idling) {
+		/* If there was activity (as opposed to a timeout) and we're not idling,
+		 * this likely indicates the IMAP server disconnected on us. */
+		if (bbs_socket_pending_shutdown(client->imapfd)) {
+			bbs_debug(3, "Remote IMAP server appears to have disconnected\n");
+			return -1;
+		}
 		bbs_debug(5, "Not currently idling, ignoring...\n");
 		return 0;
 	} else if (strlen_zero(client->mailbox)) {
@@ -2624,6 +2630,12 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 		}
 	}
 	if (!reason) {
+		/* Check if the remote IMAP server may have disconnected us */
+		if (bbs_socket_pending_shutdown(client->imapfd)) {
+			bbs_debug(3, "Remote IMAP server appears to have disconnected\n");
+			client->idling = 0; /* No need to send a DONE during cleanup, if the server is already gone */
+			return -1;
+		}
 		bbs_warning("Unhandled IDLE response: %s%s", idledata, ends_in_crlf ? "" : "\n");
 		/* Stop and start the IDLE again, just to be safe */
 		idle_stop(ws, client);
