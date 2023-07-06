@@ -3066,7 +3066,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		return handle_store(imap, s, 0);
 	} else if (!strcasecmp(command, "SEARCH")) {
 		REQUIRE_ARGS(s);
-		FORWARD_VIRT_MBOX_CAPABILITY(IMAP_CAPABILITY_SEARCH);
+		FORWARD_VIRT_MBOX();
 		REQUIRE_SELECTED(imap);
 		return handle_search(imap, s, 0);
 	} else if (!strcasecmp(command, "SORT")) {
@@ -3112,7 +3112,7 @@ static int imap_process(struct imap_session *imap, char *s)
 			FORWARD_VIRT_MBOX_UID();
 			return handle_store(imap, s, 1);
 		} else if (!strcasecmp(command, "SEARCH")) {
-			FORWARD_VIRT_MBOX_UID_CAPABILITY(IMAP_CAPABILITY_SEARCH);
+			FORWARD_VIRT_MBOX_UID();
 			return handle_search(imap, s, 1);
 		} else if (!strcasecmp(command, "SORT")) {
 			FORWARD_VIRT_MBOX_UID_CAPABILITY(IMAP_CAPABILITY_SORT);

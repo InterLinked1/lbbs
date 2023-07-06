@@ -24,6 +24,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 static int pre(void)
 {
@@ -117,8 +118,13 @@ static unsigned int get_uidvalidity(int fd, const char *mailbox)
 	char buf[256];
 	char *s;
 	static int c = 0;
+	unsigned int uidv, minuidv;
 
-	dprintf(fd, "u%d SELECT %s\r\n", ++c, mailbox);
+	/* Less data in the response if we use STATUS as opposed to SELECT (buffer size of 256 was also too small for SELECT) */
+	dprintf(fd, "u%d STATUS \"%s\" (UIDVALIDITY)\r\n", ++c, mailbox);
+	/* XXX This should be using reliable readline, or the value might be truncated by a partial read.
+	 * This is a hacky workaround for now, to make it more likely we read the entire number the first read: */
+	usleep(10000);
 	if (test_client_expect_eventually_buf(fd, SEC_MS(5), "UIDVALIDITY ", __LINE__, buf, sizeof(buf))) {
 		return 0;
 	}
@@ -128,7 +134,16 @@ static unsigned int get_uidvalidity(int fd, const char *mailbox)
 	}
 	s += STRLEN("UIDVALIDITY ");
 	CLIENT_DRAIN(fd);
-	return (unsigned int) atoi(s);
+
+	bbs_debug(3, "Mailbox %s has UIDVALIDITY %s\n", mailbox, s);
+	uidv = (unsigned int) atoi(s);
+	/* These tests definitely don't take 1,000 seconds to execute,
+	 * and since the mailbox is created for this test, the UIDVALIDITY shouldn't be less than this. */
+	minuidv = (unsigned int) time(NULL) - 1000;
+	if (uidv < minuidv) {
+		bbs_error("Unexpected UIDVALIDITY: %u\n", uidv);
+	}
+	return uidv;
 }
 
 static int run(void)
@@ -655,29 +670,17 @@ static int run(void)
 	dprintf(client1, "e13 ENABLE QRESYNC" ENDL);
 	CLIENT_EXPECT(client1, "QRESYNC");
 
-	/* XXX See comment below for e15a: */
-	CLIENT_DRAIN(client1);
-	SWRITE(client1, "e14a NOOP" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "e14a OK");
-
 	dprintf(client1, "e14 SELECT INBOX (QRESYNC (%u 1))" ENDL, uidvalidity);
 	CLIENT_EXPECT_EVENTUALLY(client1, "FETCH"); /* Should get all flag changes since MODSEQ 1 */
-	CLIENT_DRAIN(client1);
-
-	/* Added this NOOP to resolve e15 failing in the CI (but not locally). e15 wouldn't be received by the IMAP server,
-	 * and I guess this gives us some wiggle room there to compensate */
-	SWRITE(client1, "e15a NOOP" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(client1, "e15a OK");
 
 	dprintf(client1, "e15 SELECT INBOX (QRESYNC (%u 1))" ENDL, uidvalidity);
 	CLIENT_EXPECT_EVENTUALLY(client1, "VANISHED"); /* Repeat, to make sure we also got a VANISHED response */
 
 	SWRITE(client1, "e16 UID FETCH 1:* (FLAGS) (CHANGEDSINCE 1 VANISHED)" ENDL);
-	CLIENT_EXPECT(client1, "VANISHED"); /* Should get a VANISHED response */
-	CLIENT_DRAIN(client1);
+	CLIENT_EXPECT_EVENTUALLY(client1, "VANISHED"); /* Should get a VANISHED response */
 
 	SWRITE(client1, "e17 IDLE" ENDL);
-	CLIENT_EXPECT(client1, "+");
+	CLIENT_EXPECT_EVENTUALLY(client1, "+");
 
 	/* Now, if another client expunges a message, we should get a VANISHED response, not an EXPUNGE response */
 	client2 = test_make_socket(143);
