@@ -31,34 +31,45 @@
 #include "nets/net_imap/imap_client_status.h" /* use remove_size */
 #include "nets/net_imap/imap_client_parallel.h"
 
-/*! \brief Mutex to prevent recursion */
-static pthread_mutex_t virt_lock = PTHREAD_MUTEX_INITIALIZER; /* XXX Should most definitely be per mailbox struct, not global */
-
-static int imap_client_list(struct bbs_tcp_client *client, int caps, const char *prefix, FILE *fp)
+static int remote_list(struct imap_client *client, struct list_command *lcmd, const char *prefix)
 {
+	char *s;
+	struct stringlist matchedmailboxes;
+	struct imap_session *imap = client->imap;
+	struct bbs_tcp_client *tcpclient = &client->client;
+	int caps = client->virtcapabilities;
+	const char *subprefix;
 	int res;
 
+	memset(&matchedmailboxes, 0, sizeof(matchedmailboxes));
+
+	/* Don't send LIST-STATUS here, even if the remote server supports it,
+	 * because imap_client_status.c is responsible for STATUS and LIST-STATUS
+	 * And even if we have something to limit the scope of the search,
+	 * since LIST could contain multiple patterns, we really need to use list_mailbox_pattern_matches
+	 * to check that, since the mailbox names are different remotely so we can't just easily pass through the LIST arguments.
+	 */
 	if (caps & IMAP_CAPABILITY_LIST_EXTENDED) {
 		/* RFC 5258 Sec 4: Technically, if the server supports LIST-EXTENDED and we don't ask for CHILDREN explicitly,
 		 * it's not obligated to return these attributes. Ditto for SPECIAL-USE. */
 		if (caps & IMAP_CAPABILITY_SPECIAL_USE) {
-			IMAP_CLIENT_SEND(client, "a3 LIST \"\" \"*\" RETURN (CHILDREN SPECIAL-USE)");
+			IMAP_CLIENT_SEND(tcpclient, "a3 LIST \"\" \"*\" RETURN (CHILDREN SPECIAL-USE)");
 		} else {
-			IMAP_CLIENT_SEND(client, "a3 LIST \"\" \"*\" RETURN (CHILDREN)");
+			IMAP_CLIENT_SEND(tcpclient, "a3 LIST \"\" \"*\" RETURN (CHILDREN)");
 		}
 	} else {
-		IMAP_CLIENT_SEND(client, "a3 LIST \"\" \"*\"");
+		IMAP_CLIENT_SEND(tcpclient, "a3 LIST \"\" \"*\"");
 	}
 
 	for (;;) {
 		char fullmailbox[256];
 		char *p1, *p2, *delimiter;
-		const char *attributes;
-		res = bbs_readline(client->rfd, &client->rldata, "\r\n", 200);
+		const char *attributes, *virtmboxname;
+		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 200);
 		if (res < 0) {
 			break;
 		}
-		if (STARTS_WITH(client->buf, "a3 OK")) {
+		if (STARTS_WITH(tcpclient->buf, "a3 OK")) {
 			break; /* Done */
 		}
 		/* The responses are something like this:
@@ -66,14 +77,14 @@ static int imap_client_list(struct bbs_tcp_client *client, int caps, const char 
 		 *     * LIST () "." "INBOX"
 		 */
 		/* Skip the first 2 spaces */
-		p1 = client->buf;
+		p1 = tcpclient->buf;
 		p2 = p1;
 		if (skipn(&p2, ' ', 2) != 2) {
-			bbs_warning("Invalid LIST response: %s\n", client->buf);
+			bbs_warning("Invalid LIST response: %s\n", tcpclient->buf);
 			continue;
 		}
 		if (strlen_zero(p2)) {
-			bbs_warning("Unexpected LIST response: %s\n", client->buf); /* Probably screwed up now anyways */
+			bbs_warning("Unexpected LIST response: %s\n", tcpclient->buf); /* Probably screwed up now anyways */
 			continue;
 		}
 		/* Should now be at (). But this can contain multiple words, so use parensep, not strsep */
@@ -113,235 +124,11 @@ static int imap_client_list(struct bbs_tcp_client *client, int caps, const char 
 			} else {
 				bbs_debug(8, "Mailbox '%s' has no attributes\n", p2);
 			}
+			if (!strlen_zero(attributes)) {
+				bbs_debug(3, "Remote IMAP server does not support SPECIAL-USE, adding heuristically\n");
+			}
 			/*! \todo Would be nice to say HasChildren or HasNoChildren here, too, if the server didn't say */
 		}
-		snprintf(fullmailbox, sizeof(fullmailbox), "%s%s%s", prefix, delimiter, p2);
-		/* If the hierarchy delimiter differs from ours, then fullmailbox will contain multiple delimiters.
-		 * The prefix uses ours and the remote mailbox part uses theirs.
-		 * The translation happens when this gets used later. */
-		fprintf(fp, "(%s) \"%s\" \"%s\"\n", attributes, delimiter, fullmailbox); /* Cache the folders so we don't have to keep hitting the server up */
-		/* If this doesn't match the filter, we won't actually send it to the client, but still save it to the cache, so it's complete. */
-	}
-
-	return 0;
-}
-
-static int remote_list_status(struct imap_session *imap, char *fullmboxname, const char *items)
-{
-	struct imap_traversal traversal;
-	memset(&traversal, 0, sizeof(traversal));
-
-	if (set_maildir_readonly(imap, &traversal, fullmboxname)) {
-		bbs_error("Failed to set maildir for mailbox '%s'\n", fullmboxname);
-		return -1;
-	} else if (!traversal.client) {
-		/* We know we called set_maildir for a remote mailbox, so it should always be remote */
-		bbs_warning("No virtual/remote mailbox active?\n");
-		return -1;
-	} else {
-		/* remote_mailbox_name may modify fullmboxname (if the hierarchy delimiters differ)
-		 * This is fine since the only further use is below when pushing to the stringlish,
-		 * but we strip all hierarchy delimiters before doing that anyways. */
-		char statuscmd[84];
-		char *remotename = remote_mailbox_name(traversal.client, fullmboxname); /* Convert local delimiter (back) to remote */
-		int want_size = strstr(items, "SIZE") ? 1 : 0;
-
-		/* We also need to remove SIZE from items if it's not supported by the remote */
-		if (want_size && !(traversal.client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
-			safe_strncpy(statuscmd, items, sizeof(statuscmd));
-			items = remove_size(statuscmd);
-		}
-
-		/* Always use remote_status, never direct passthrough, to avoid sending a tagged OK response each time */
-		remote_status(traversal.client, remotename, items, want_size);
-		return 0;
-	}
-}
-
-struct remote_list_status_info {
-	struct imap_session *imap;
-	char *fullmboxname;
-	const char *items;
-	char data[];
-};
-
-static void *remote_list_status_dup(void *data)
-{
-	size_t mboxlen, itemslen;
-	struct remote_list_status_info *r, *orig = data;
-
-	/* XXX If we knew that the remote server for this connection
-	 * (e.g. imap->client->name ~== the prefix part of fullmboxname)
-	 * supports LIST-STATUS (and, but not or, STATUS=SIZE),
-	 * it might make sense to return NULL since this will be a fast operation. */
-
-	mboxlen = strlen(orig->fullmboxname);
-	itemslen = strlen(orig->items);
-
-	r = calloc(1, sizeof(*r) + mboxlen + itemslen + 2);
-	if (ALLOC_FAILURE(r)) {
-		return NULL;
-	}
-	strcpy(r->data, orig->fullmboxname); /* Safe */
-	strcpy(r->data + mboxlen + 1, orig->items); /* Safe */
-	r->fullmboxname = r->data;
-	r->items = r->data + mboxlen + 1;
-	r->imap = orig->imap;
-	return r;
-}
-
-static int remote_list_status_cb(void *data)
-{
-	struct remote_list_status_info *r = data;
-	/* Marshall arguments and execute */
-	return remote_list_status(r->imap, r->fullmboxname, r->items);
-}
-
-static int remote_list_status_parallel(struct imap_parallel *p, const char *restrict prefix, struct imap_session *imap, char *fullmboxname, const char *items)
-{
-	struct remote_list_status_info rinfo; /* No memset needed */
-
-	rinfo.imap = imap;
-	rinfo.fullmboxname = fullmboxname;
-	rinfo.items = items;
-	return imap_client_parallel_schedule_task(p, prefix, &rinfo, remote_list_status_cb, remote_list_status_dup, free);
-}
-
-int list_virtual(struct imap_session *imap, struct list_command *lcmd)
-{
-	FILE *fp2;
-	char virtfile[256];
-	char virtcachefile[256];
-	char line[256];
-	int l = 0;
-	struct stat st, st2;
-	int forcerescan = 0;
-	struct imap_parallel p;
-
-	/* Folders from the proxied mailbox will need to be translated back and forth */
-	if (pthread_mutex_trylock(&virt_lock)) {
-		bbs_warning("Possible recursion inhibited\n");
-		return -1;
-	}
-
-	snprintf(virtfile, sizeof(virtfile), "%s/.imapremote", mailbox_maildir(imap->mymbox));
-	snprintf(virtcachefile, sizeof(virtcachefile), "%s/.imapremote.cache", mailbox_maildir(imap->mymbox));
-	bbs_debug(3, "Checking virtual mailboxes in %s\n", virtcachefile);
-
-	if (stat(virtfile, &st)) {
-		pthread_mutex_unlock(&virt_lock);
-		return -1;
-	}
-	if (stat(virtcachefile, &st2) || st.st_mtim.tv_sec > st2.st_mtim.tv_sec) {
-		/* .imapremote has been modified since .imapremote.cache was written, or .imapremote.cache doesn't even exist yet */
-		bbs_debug(4, "Control file has changed since cache file was last rebuilt, need to rebuild again\n");
-		forcerescan = 1;
-	}
-	if (!forcerescan) {
-		/* A bit non-optimal since we'll fail 2 fopens if a user isn't using virtual mailboxes */
-		fp2 = fopen(virtcachefile, "r");
-	}
-
-	/* The first part here (simply getting the list of mailboxes from the remote server)
-	 * doesn't really need to be multithreaded. It could, in theory, but the benefit is almost nil
-	 * after the first time this is built, since typically we reuse the cached version thereafter. */
-#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
-	/* gcc thinks fp2 can be used uninitialized here. If it is, the conditional will short circuit, so it can't be. */
-	if (forcerescan || !fp2) {
-#pragma GCC diagnostic pop /* -Wcast-qual */
-		FILE *fp = fopen(virtfile, "r");
-		if (!fp) {
-			pthread_mutex_unlock(&virt_lock);
-			return -1;
-		}
-		fp2 = fopen(virtcachefile, "w+");
-		if (!fp2) {
-			fclose(fp);
-			pthread_mutex_unlock(&virt_lock);
-			return -1;
-		}
-
-		/* Note that we cache all the directories on all servers at once, since we truncate the file. */
-		while ((fgets(line, sizeof(line), fp))) {
-			char *prefix, *server;
-			struct imap_client *client;
-
-			l++;
-			server = line;
-			prefix = strsep(&server, "|"); /* Use pipe in case mailbox name contains spaces */
-			if (!strncmp(prefix, "# ", 2)) {
-				continue; /* Skip commented lines */
-			}
-
-			client = imap_client_get_by_url(imap, prefix, server);
-			bbs_memzero(server, strlen(server)); /* Contains password */
-			if (!client) {
-				continue;
-			}
-			imap_client_list(&client->client, client->virtcapabilities, prefix, fp2);
-		}
-		fclose(fp);
-		rewind(fp2); /* Rewind cache to the beginning, in case we just wrote it */
-	}
-
-	/* At this point, we should be able to send whatever is in the cache */
-
-	stringlist_empty(&imap->remotemailboxes);
-	memset(&p, 0, sizeof(p));
-	while ((fgets(line, sizeof(line), fp2))) {
-		char relativepath[256];
-		char remotedelim;
-		const char *virtmboxaccount;
-		char *tmp, *fullmboxname, *virtmboxname = relativepath;
-
-		/* Extract the user facing mailbox path from the LIST response in the cache file */
-		bbs_strterm(line, '\n'); /* Strip trailing LF */
-		safe_strncpy(relativepath, line, sizeof(relativepath));
-		if (skipn_noparen(&virtmboxname, ' ', 2) != 2) {
-			bbs_warning("Invalid LIST response: %s\n", line); /* Garbage in the cache file */
-			continue;
-		}
-		STRIP_QUOTES(virtmboxname);
-
-		/* Check if it matches the LIST filters */
-		if (strncmp(virtmboxname, lcmd->reference, lcmd->reflen)) {
-			bbs_debug(8, "Virtual mailbox '%s' doesn't match reference %s\n", virtmboxname, lcmd->reference);
-			continue;
-		}
-
-		fullmboxname = virtmboxname;
-
-		/* Need to do specifically for remote mailboxes, we can't just add a fixed skiplen (could be multiple patterns) */
-		if (STARTS_WITH(virtmboxname, OTHER_NAMESPACE_PREFIX)) {
-			virtmboxname += STRLEN(OTHER_NAMESPACE_PREFIX);
-		} else if (STARTS_WITH(virtmboxname, SHARED_NAMESPACE_PREFIX)) {
-			virtmboxname += STRLEN(SHARED_NAMESPACE_PREFIX);
-		}
-		if (!list_mailbox_pattern_matches(lcmd, virtmboxname)) {
-			bbs_debug(8, "Virtual mailbox '%s' does not match any list pattern\n", virtmboxname);
-			continue;
-		}
-
-		/* Skip "virtual folders" that people don't really want, since they duplicate other folders,
-		 * in case they're not actually disabled for IMAP access online.
-		 * That way the client doesn't even have a chance to learn they exist,
-		 * in case it's not configured to ignore those / not synchronize them.
-		 */
-		tmp = strstr(virtmboxname, "[Gmail]/");
-		if (tmp) {
-			const char *rest = tmp + STRLEN("[Gmail]/");
-			if (!strcmp(rest, "All Mail") || !strcmp(rest, "Important") || !strcmp(rest, "Starred")) {
-				bbs_debug(5, "Omitting unwanted folder '%s' from listing\n", virtmboxname);
-				continue;
-			}
-		}
-
-		/* Matches prefix, send it */
-		if (lcmd->specialuse && !strstr(line, "\\")) {
-			/* If it's a special use mailbox, there should be a backslash present, somewhere */
-			continue;
-		}
-
 		/*! \todo FIXME Not everything implemented in list_scandir_single is implemented here.
 		 * e.g. XLIST, adding \\Subscribed.
 		 * Ideally, we'd have common code for that, but there we construct the flags,
@@ -354,80 +141,206 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 		 *   An easy case that should result in no false negatives is if the cached STATUS response has changed or not.
 		 *   (Of course, that means we'll have to do the STATUS *before* returning the LIST response, and even if we're not doing LIST-STATUS)
 		 */
+		if (lcmd->specialuse && !strlen_zero(attributes)) {
+			if (strstr(attributes, "\\Drafts") || strstr(attributes, "\\Sent") || strstr(attributes, "\\Junk") || strstr(attributes, "\\Trash")) {
+				bbs_debug(7, "Ignoring SPECIAL-USE mailbox\n");
+				continue;
+			}
+		}
 
+		snprintf(fullmailbox, sizeof(fullmailbox), "%s%s%s", prefix, delimiter, p2);
 		/* If the remote server's hierarchy delimiter differs from ours,
 		 * then we need to use our hierarchy delimiter locally,
-		 * but translate when sending commands to the remote server.
-		 *
-		 * e.g. something like:
-		 * (\NoSelect) "/" "Other Users.gmail.[Gmail]/Something"
-		 *
-		 * The first part uses our hierarchy delimiter, and the remote part could be different.
-		 * Change "/" to "." (our delimiter) in the response to the client,
-		 * and replace the remote's delimiter with ours wherever it appears
-		 *
-		 * So the above might transform to:
-		 * (\NoSelect) "." "Other Users.gmail.[Gmail].Something"
-		 *
-		 * The great thing here is we don't need to recreate the string.
-		 * We're replacing one character with another, so we can
-		 * do the replacement in place.
-		 */
-		tmp = line;
-		/* This must succeed since we did at least this much above.
-		 * And you might think, this is a bit silly, why not use strsep?
-		 * Ah, but strsep splits the string up, which we don't want to do. */
-		skipn_noparen(&tmp, ' ', 1);
-		tmp++; /* Skip opening quote */
-		remotedelim = *tmp;
-		*tmp = HIERARCHY_DELIMITER_CHAR;
-		skipn_noparen(&tmp, ' ', 1);
-		tmp++; /* Skip opening quote */
+		 * but translate when sending commands to the remote server. */
+		bbs_strreplace(fullmailbox, client->virtdelimiter, HIERARCHY_DELIMITER_CHAR);
 
-		/* Now, do replacements where needed on the remote name */
-		while (*tmp) {
-			if (*tmp == remotedelim) {
-				*tmp = HIERARCHY_DELIMITER_CHAR;
-			}
-			tmp++;
+		/* Check if it matches the LIST filters */
+		if (strncmp(fullmailbox, lcmd->reference, lcmd->reflen)) {
+			bbs_debug(8, "Virtual mailbox '%s' doesn't match reference %s\n", fullmailbox, lcmd->reference);
+			continue;
 		}
 
-		imap_send(imap, "%s %s", lcmd->cmd, line);
-		virtmboxaccount = virtmboxname + 1; /* Skip Other Users. (Other Users already skipped at this point, so skip the delimiter) */
+		/* Need to do specifically for remote mailboxes, we can't just add a fixed skiplen (could be multiple patterns) */
+		virtmboxname = fullmailbox;
+		if (STARTS_WITH(virtmboxname, OTHER_NAMESPACE_PREFIX)) {
+			virtmboxname += STRLEN(OTHER_NAMESPACE_PREFIX);
+		} else if (STARTS_WITH(virtmboxname, SHARED_NAMESPACE_PREFIX)) {
+			virtmboxname += STRLEN(SHARED_NAMESPACE_PREFIX);
+		}
+		if (!list_mailbox_pattern_matches(lcmd, virtmboxname)) {
+			bbs_debug(8, "Virtual mailbox '%s' does not match any list pattern\n", virtmboxname);
+			continue;
+		}
+		if (STARTS_WITH(p2, "[Gmail]/")) {
+			/* Skip "virtual folders" that people don't really want, since they duplicate other folders,
+			 * in case they're not actually disabled for IMAP access online.
+			 * That way the client doesn't even have a chance to learn they exist,
+			 * in case it's not configured to ignore those / not synchronize them.
+			 */
+			const char *rest = p2 + STRLEN("[Gmail]/");
+			if (!strcmp(rest, "All Mail") || !strcmp(rest, "Important") || !strcmp(rest, "Starred")) {
+				bbs_debug(5, "Omitting unwanted folder '%s' from listing\n", p2);
+				continue;
+			}
+		}
 
-#define MAILBOX_SELECTABLE(flags) (!strcasestr(flags, "\\NonExistent") && !strcasestr(flags, "\\NoSelect"))
+		/* Matches prefix, send it (but send our hierarchy delimiter, not remote delimiter) */
+		imap_send(imap, "%s (%s) \"%c\" \"%s\"", lcmd->cmd, attributes, HIERARCHY_DELIMITER_CHAR, fullmailbox);
 
+#define MAILBOX_SELECTABLE(flags) (strlen_zero(attributes) || (!strcasestr(flags, "\\NonExistent") && !strcasestr(flags, "\\NoSelect")))
 		/* Handle LIST-STATUS and STATUS=SIZE for remote mailboxes. */
-		if (lcmd->retstatus && MAILBOX_SELECTABLE(line)) { /* Don't call STATUS on a NoSelect mailbox */
-			char prefix[84];
-			const char *prefixstart, *delim;
-			/* Replace the remote hierarchy delimiter with our own, solely for set_maildir. */
-			bbs_strreplace(fullmboxname, remotedelim, HIERARCHY_DELIMITER_CHAR);
-
-			prefixstart = virtmboxname;
-			if (*prefixstart == HIERARCHY_DELIMITER_CHAR) {
-				prefixstart++;
-			}
-			delim = strchr(prefixstart, HIERARCHY_DELIMITER_CHAR);
-			safe_strncpy(prefix, prefixstart, MIN(sizeof(prefix), (size_t) (S_OR(delim, prefixstart) - prefixstart + 1))); /* Prefix from .imapremote */
-			/* Use fullmboxname, for full mailbox name (from our perspective), NOT virtmboxname */
-			remote_list_status_parallel(&p, prefix, imap, fullmboxname, lcmd->retstatus);
-
-			/* Most of it is already in the remote format... convert it all so bbs_strterm will stop at the right spot */
-			bbs_strreplace(fullmboxname, HIERARCHY_DELIMITER_CHAR, remotedelim);
-		}
-
-		bbs_strterm(virtmboxaccount, remotedelim); /* Just the account portion, so we can use stringlist_contains later */
-
-		/* Keep track of parent mailbox names that are remote */
-		if (!stringlist_contains(&imap->remotemailboxes, virtmboxaccount)) {
-			stringlist_push(&imap->remotemailboxes, virtmboxaccount);
+		if (lcmd->retstatus && MAILBOX_SELECTABLE(attributes)) { /* Don't call STATUS on a NoSelect mailbox */
+			/* Keep track of mailboxes that match */
+			stringlist_push(&matchedmailboxes, p2);
 		}
 	}
-	fclose(fp2);
+
+	/* Skip Other Users. (Other Users already skipped at this point, so skip the delimiter) */
+	subprefix = prefix;
+	if (STARTS_WITH(subprefix, OTHER_NAMESPACE_PREFIX)) {
+		subprefix += STRLEN(OTHER_NAMESPACE_PREFIX) + 1;
+	} else if (STARTS_WITH(subprefix, SHARED_NAMESPACE_PREFIX)) {
+		subprefix += STRLEN(SHARED_NAMESPACE_PREFIX) + 1;
+	}
+	/* Keep track of parent mailbox names that are remote */
+	stringlist_push(&imap->remotemailboxes, subprefix);
+
+	/* Now that the LIST response is finished, if we're doing LIST-STATUS, get the STATUS of any mailboxes that matched.
+	 * imap_client_status.c will send a LIST-STATUS to the remote end and cache that if needed,
+	 * but we don't have to worry about the details of that here.
+	 *
+	 * Because we're popping them off in reverse order, the STATUS responses
+	 * will be in the reverse order of the LIST responses. There's nothing wrong with that,
+	 * since clients can't expect any particular order, though it is admittedly a bit weird.
+	 */
+	while ((s = stringlist_pop(&matchedmailboxes))) {
+		char statuscmd[84];
+		const char *items = lcmd->retstatus;
+		int want_size = strstr(items, "SIZE") ? 1 : 0;
+		/* We also need to remove SIZE from items if it's not supported by the remote */
+		if (want_size && !(caps & IMAP_CAPABILITY_STATUS_SIZE)) {
+			safe_strncpy(statuscmd, items, sizeof(statuscmd));
+			items = remove_size(statuscmd);
+		}
+
+		/* Always use remote_status, never direct passthrough, to avoid sending a tagged OK response each time */
+		remote_status(client, s, items, want_size);
+		free(s);
+	}
+
+	return 0;
+}
+
+struct remote_list_info {
+	struct imap_client *client;
+	struct list_command *lcmd;
+	const char *prefix;
+	char data[];
+};
+
+static void *remote_list_dup(void *data)
+{
+	size_t prefixlen;
+	struct remote_list_info *r, *orig = data;
+
+	prefixlen = strlen(orig->prefix);
+
+	r = calloc(1, sizeof(*r) + prefixlen + 1);
+	if (ALLOC_FAILURE(r)) {
+		return NULL;
+	}
+	strcpy(r->data, orig->prefix); /* Safe */
+	r->prefix = r->data;
+	r->client = orig->client;
+	r->lcmd = orig->lcmd;
+	return r;
+}
+
+static int remote_list_cb(void *data)
+{
+	struct remote_list_info *r = data;
+	/* Marshall arguments and execute */
+	return remote_list(r->client, r->lcmd, r->prefix);
+}
+
+static int remote_list_parallel(struct imap_parallel *p, const char *restrict prefix, struct imap_client *client, struct list_command *lcmd)
+{
+	struct remote_list_info rinfo; /* No memset needed */
+
+	rinfo.client = client;
+	rinfo.lcmd = lcmd;
+	rinfo.prefix = prefix;
+	return imap_client_parallel_schedule_task(p, prefix, &rinfo, remote_list_cb, remote_list_dup, free);
+}
+
+/*! \brief Mutex to prevent recursion */
+static pthread_mutex_t virt_lock = PTHREAD_MUTEX_INITIALIZER; /* XXX Should most definitely be per mailbox struct, not global */
+
+int list_virtual(struct imap_session *imap, struct list_command *lcmd)
+{
+	FILE *fp;
+	char virtfile[256];
+	char line[256];
+	int l = 0;
+	struct stat st;
+	struct imap_parallel p;
+
+	/* Folders from the proxied mailbox will need to be translated back and forth */
+	if (pthread_mutex_trylock(&virt_lock)) {
+		bbs_warning("Possible recursion inhibited\n");
+		return -1;
+	}
+
+	snprintf(virtfile, sizeof(virtfile), "%s/.imapremote", mailbox_maildir(imap->mymbox));
+	bbs_debug(3, "Checking virtual mailboxes in %s\n", virtfile);
+
+	if (stat(virtfile, &st)) {
+		pthread_mutex_unlock(&virt_lock);
+		return -1;
+	}
+
+	/* It turns out that we can't just send the cached LIST response from when we first built the cache file,
+	 * because the assumption that mailbox attributes do not change is wrong.
+	 * In particular, the \Marked and \Unmarked attributes could change at any time,
+	 * and there is no way to determine if they have without actually asking the server.
+	 * Therefore, we need to do a live LIST command for every remote server, every time.
+	 *
+	 * So the approach here is to issue one LIST per remote server,
+	 * and if we're doing a LIST-STATUS, we can also do that for all received mailboxes, at the same time.
+	 *
+	 * For now, we still keep a cached folder list, but that isn't used anymore at the moment,
+	 * and .imapremote.cache could possibly be removed in the future if there's no good use case for it. */
+	fp = fopen(virtfile, "r");
+	if (!fp) {
+		pthread_mutex_unlock(&virt_lock);
+		return -1;
+	}
+
+	stringlist_empty(&imap->remotemailboxes);
+	memset(&p, 0, sizeof(p));
+
+	/* Note that we cache all the directories on all servers at once, since we truncate the file. */
+	while ((fgets(line, sizeof(line), fp))) {
+		char *prefix, *server;
+		struct imap_client *client;
+
+		l++;
+		server = line;
+		prefix = strsep(&server, "|"); /* Use pipe in case mailbox name contains spaces */
+		if (!strncmp(prefix, "# ", 2)) {
+			continue; /* Skip commented lines */
+		}
+
+		client = imap_client_get_by_url(imap, prefix, server);
+		bbs_memzero(server, strlen(server)); /* Contains password */
+		if (!client) {
+			continue;
+		}
+		remote_list_parallel(&p, prefix, client, lcmd);
+	}
+	fclose(fp);
 
 	imap_client_parallel_join(&p);
-
 	pthread_mutex_unlock(&virt_lock);
 	return 0;
 }
