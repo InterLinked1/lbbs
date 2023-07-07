@@ -2587,6 +2587,8 @@ static void handle_store(struct imap_client *client, int sign, json_t *uids, con
 
 #define handle_store_deleted(client, uids) handle_store(client, +1, uids, "\\Deleted")
 
+#define handle_store_flagged(client, sign, uids) handle_store(client, sign, uids, "\\Flagged")
+
 static void handle_move(struct imap_client *client, json_t *uids, const char *newmbox)
 {
 	int res;
@@ -2927,6 +2929,12 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 		} else if (!strcmp(command, "SEEN")) {
 			handle_store_seen(client, +1, json_object_get(root, "uids"));
 			/* Frontend will handle toggling unread/read visibility and updating folder counts */
+		} else if (!strcmp(command, "UNFLAG")) {
+			handle_store_flagged(client, -1, json_object_get(root, "uids"));
+			REFRESH_LISTING("UNFLAG");
+		} else if (!strcmp(command, "FLAG")) {
+			handle_store_flagged(client, +1, json_object_get(root, "uids"));
+			REFRESH_LISTING("FLAG");
 		} else if (!strcmp(command, "DELETE")) {
 			handle_store_deleted(client, json_object_get(root, "uids"));
 			REFRESH_LISTING("DELETE"); /* XXX Frontend can easily handle marking it as Deleted on its end, and should */
