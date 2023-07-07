@@ -33,14 +33,21 @@
 
 #include <libetpan/libetpan.h>
 
+#define IDLE_REFRESH_EXISTS (1 << 0)
+#define IDLE_REFRESH_EXPUNGE (1 << 1)
+#define IDLE_REFRESH_FETCH (1 << 2)
+
 struct imap_client {
 	struct mailimap *imap;
 	struct ws_session *ws;
 	int imapfd;			/* File descriptor, important for polling an idle connection */
 	int idlestart;		/* Time that IDLE started, to avoid timing out */
+	int idlerefresh;	/* Reasons for refreshing page listing during IDLE */
 	/* Cache */
 	int page;
 	int pagesize;
+	int start;
+	int end;
 	/* Cached */
 	char *mailbox;		/* Current mailbox name */
 	uint32_t messages;	/* Cached number of messages in selected mailbox */
@@ -1662,6 +1669,9 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 		added = (end - start + 1);
 	}
 
+	client->start = start;
+	client->end = end;
+
 	/* In the case of a filter, there might not be anything */
 	if (added) {
 		fetch_type = mailimap_fetch_type_new_fetch_att_list_empty();
@@ -2675,8 +2685,8 @@ static void idle_stop(struct ws_session *ws, struct imap_client *client)
 		res = mailimap_idle_done(client->imap);
 		if (res != MAILIMAP_NO_ERROR) {
 			bbs_warning("Failed to stop IDLE: %s\n", maildriver_strerror(res));
-			client->idling = 0;
 		}
+		client->idling = 0;
 	}
 }
 
@@ -2719,13 +2729,69 @@ static void idle_continue(struct imap_client *client)
 	bbs_debug(9, "IDLE time remaining: %d s (%d s elapsed)\n", left, elapsed);
 }
 
+static void process_idle(struct imap_client *client, char *s)
+{
+	char *tmp;
+	int seqno;
+
+	bbs_debug(3, "IDLE data: %s", s); /* Already ends in LF */
+	if (!STARTS_WITH(s, "* ")) {
+		bbs_warning("Unexpected IDLE response (not untagged): %s\n", s);
+		return;
+	}
+	tmp = s + 2;
+	if (strlen_zero(tmp)) {
+		bbs_warning("Partial IDLE response: %s\n", s);
+		return;
+	}
+
+	if (STARTS_WITH(tmp, "OK Still here")) {
+		idle_continue(client);
+		return; /* Ignore */
+	}
+	seqno = atoi(tmp); /* It'll stop where it needs to */
+	tmp = strchr(tmp, ' '); /* Skip the sequence number */
+	if (!strlen_zero(tmp)) {
+		tmp++;
+	}
+	if (strlen_zero(tmp)) {
+		bbs_warning("Invalid IDLE data: %s\n", s);
+		return;
+	}
+
+	/* What we do next depends on what the untagged response is */
+	if (STARTS_WITH(tmp, "EXISTS")) {
+		uint32_t previewseqno = (uint32_t) seqno;
+		client->messages = previewseqno; /* Update number of messages in this mailbox */
+		client->idlerefresh |= IDLE_REFRESH_EXISTS;
+	} else if (STARTS_WITH(tmp, "EXPUNGE")) {
+		if (client->messages) {
+			client->messages--; /* Assume we lost one */
+			/* Always refresh: even if it wasn't visible, this has shifted the number of messages,
+			 * and perhaps the number of pages has now changed. */
+			client->idlerefresh |= IDLE_REFRESH_EXPUNGE;
+		} else {
+			bbs_warning("EXPUNGE on empty mailbox?\n");
+		}
+	} else if (STARTS_WITH(tmp, "FETCH")) {
+		/* This is most likely an update in flags.
+		 * If the message in question is visible on the current page,
+		 * refresh the current message listing.
+		 * Otherwise, ignore it, since it's not visible anyways. */
+		if (seqno >= client->start && seqno <= client->end) {
+			client->idlerefresh |= IDLE_REFRESH_FETCH;
+		} else {
+			bbs_debug(6, "Ignoring FETCH update since not visible on current page\n");
+		}
+	} else {
+		bbs_debug(3, "Ignoring IDLE data: %s\n", s);
+	}
+}
+
 static int on_poll_activity(struct ws_session *ws, void *data)
 {
-	const char *reason = NULL;
 	struct imap_client *client = data;
-	uint32_t previewseqno = 0;
 	char *idledata;
-	int ends_in_crlf;
 
 	if (!client->idling) {
 		/* If there was activity (as opposed to a timeout) and we're not idling,
@@ -2742,75 +2808,55 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	}
 
 	/* IDLE activity! */
+	bbs_debug(5, "IDLE activity detected...\n");
+	client->idlerefresh = 0;
 	idledata = mailimap_read_line(client->imap);
 	if (!idledata) {
-		bbs_error("IDLE activity, but no data?\n");
-		idle_stop(ws, client);
-		idle_start(ws, client);
-		return 0;
-	}
-	ends_in_crlf = !strlen_zero(idledata) ? strchr(idledata, '\n') ? 1 : 0 : 0;
-	bbs_debug(3, "IDLE activity detected: %s%s", idledata, ends_in_crlf ? "" : "\n");
-	if (STARTS_WITH(idledata, "* ")) {
-		char *tmp = idledata + 2;
-		if (!strlen_zero(tmp)) {
-			int seqno;
-			if (STARTS_WITH(tmp, "OK Still here")) {
-				idle_continue(client);
-				return 0; /* Ignore */
-			}
-			seqno = atoi(tmp); /* It'll stop where it needs to */
-			tmp = strchr(tmp, ' '); /* Skip the sequence number */
-			if (!strlen_zero(tmp)) {
-				tmp++;
-			}
-			if (!strlen_zero(tmp)) {
-				if (STARTS_WITH(tmp, "EXISTS")) {
-					reason = "EXISTS";
-					previewseqno = (uint32_t) seqno;
-					client->messages = previewseqno; /* Update number of messages in this mailbox */
-				} else if (STARTS_WITH(tmp, "EXPUNGE")) {
-					reason = "EXPUNGE";
-					if (client->messages) {
-						client->messages--; /* Assume we lost one */
-					} else {
-						bbs_warning("EXPUNGE on empty mailbox?\n");
-					}
-				} else if (STARTS_WITH(tmp, "FETCH")) {
-					/* XXX Not currently used */
-				}
-			}
-		}
-	}
-	if (!reason) {
 		/* Check if the remote IMAP server may have disconnected us */
 		if (bbs_socket_pending_shutdown(client->imapfd)) {
 			bbs_debug(3, "Remote IMAP server appears to have disconnected\n");
 			client->idling = 0; /* No need to send a DONE during cleanup, if the server is already gone */
 			return -1;
 		}
-		bbs_warning("Unhandled IDLE response: %s%s", idledata, ends_in_crlf ? "" : "\n");
-		/* Stop and start the IDLE again, just to be safe */
+		bbs_error("IDLE activity, but no data?\n");
 		idle_stop(ws, client);
 		idle_start(ws, client);
 		return 0;
 	}
-	idle_stop(ws, client);
+	do {
+		process_idle(client, idledata); /* Process a single line of data received during an IDLE */
+		/* mailimap_read_line will block, so we need to ensure that we break if there's no more data to read.
+		 * We can't use poll, because multiple lines may be in the internal buffer already.
+		 * Timeouts don't help either, since libetpan doesn't use them for this call.
+		 * Checking the stream buffer length works, but if we're too quick, we might not have read it all yet,
+		 * which is why we also need to poll for a little bit, in case there are other untagged messages on the way.
+		 * Would be nice if there was something like mailimap_lines_available(), but there isn't...
+		 */
+		if ((client->imap->imap_stream && client->imap->imap_stream->read_buffer_len) || bbs_poll(client->imapfd, 100) > 0) {
+			idledata = mailimap_read_line(client->imap);
+		} else {
+			break;
+		}
+	} while (idledata);
 
-	/* In our case, since we're webmail, we can cheat a little and just refresh the current listing.
-	 * The nice thing is this handles both EXISTS and EXPUNGE responses just fine. */
-
-	/* Send the update and restart the IDLE */
-	REFRESH_LISTING(reason);
-
-	if (previewseqno) {
-		/* Send the metadata for message with this sequence number as an unsolicited EXISTS.
-		 * It's probably this message, assuming there's only 1 more message.
-		 * (In the unlikely case there's more than one, we wouldn't want to show multiple notifications anyways, just one suffices.)
-		 * Do NOT automark as seen. This is not a FETCH. */
-		send_preview(ws, client, previewseqno);
+	if (client->idlerefresh) { /* If there were multiple lines in the IDLE update, batch any updates up and send a single refresh */
+		int r = client->idlerefresh;
+		const char *reason = r & IDLE_REFRESH_EXISTS ? "EXISTS" : r & IDLE_REFRESH_FETCH ? "FETCH" : r & IDLE_REFRESH_EXPUNGE ? "EXPUNGE" : "";
+		/* In our case, since we're webmail, we can cheat a little and just refresh the current listing.
+		 * The nice thing is this handles both EXISTS and EXPUNGE responses just fine. */
+		idle_stop(ws, client);
+		REFRESH_LISTING(reason);
+		if (r & IDLE_REFRESH_EXISTS) {
+			/* Send the metadata for message with this sequence number as an unsolicited EXISTS.
+			 * It's probably this message, assuming there's only 1 more message.
+			 * (In the unlikely case there's more than one, we wouldn't want to show multiple notifications anyways, just one suffices.)
+			 * Do NOT automark as seen. This is not a FETCH. */
+			send_preview(ws, client, client->messages);
+		}
+		client->idlerefresh = 0;
 	}
 
+	/* That's all, resume idling if we stopped */
 	idle_start(ws, client);
 	return 0;
 }
