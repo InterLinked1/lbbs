@@ -96,6 +96,15 @@
  * - Yandex
  * Guest: IMAP4rev1 CHILDREN UNSELECT LITERAL+ NAMESPACE XLIST BINARY UIDPLUS ENABLE ID AUTH=PLAIN AUTH=XOAUTH2 IDLE MOVE
  * Auth:  IMAP4rev1 CHILDREN UNSELECT LITERAL+ NAMESPACE XLIST BINARY UIDPLUS ENABLE ID IDLE MOVE
+ *
+ * Capabilities supported by Thunderbird client:
+ * https://wiki.mozilla.org/MailNews:Supported_IMAP_extensions
+ * https://github.com/mozilla/releases-comm-central/blob/master/mailnews/imap/src/nsImapServerResponseParser.cpp#L1880
+ * AUTH=LOGIN, AUTH=PLAIN, AUTH=CRAM-MD5, AUTH=NTLM, AUTH=GSSAPI, AUTH=MSN, AUTH=EXTERNAL, AUTH=XOAUTH2,
+ * STARTTLS, LOGINDISABLED, XSENDER, IMAP4, IMAP4rev1, X-NO-ATOMIC-RENAME, X-NON-HIERARCHICAL-RENAME,
+ * NAMESPACE, ID, ACL, XSERVERINFO, UIDPLUS, LITERAL+, XAOL-OPTION, X-GM-EXT-1, QUOTA, LANGUAGE, IDLE,
+ * CONDSTORE, ENABLE, LIST-EXTENDED, XLIST, SPECIAL-USE, COMPRESS=DEFLATE, MOVE, HIGHESTMODSEQ, CLIENTID,
+ * UTF8=ACCEPT, UTF8=ONLY
  */
 
 #include "include/bbs.h"
@@ -1102,6 +1111,7 @@ static int handle_status(struct imap_session *imap, char *s)
 
 	/* This modifies the current maildir even for STATUS, but the STATUS command will restore the old one afterwards. */
 	memset(&traversal, 0, sizeof(traversal));
+	set_traversal(imap, &traversal);
 	if (set_maildir_readonly(imap, &traversal, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX". It may also change the active (account) mailbox. */
 		return 0;
 	}
@@ -1571,6 +1581,7 @@ static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 		/* Move any new messages from new to cur so we can find them. */
 		imap_debug(4, "Doing traversal again since our view of %s is stale\n", imap->dir);
 		memset(&traversal, 0, sizeof(traversal));
+		set_traversal(imap, &traversal);
 		IMAP_TRAVERSAL(imap, traversalptr, on_select, imap->readonly);
 		save_traversal(imap, &traversal);
 	}
@@ -1752,7 +1763,8 @@ cleanup:
 	if (error) {
 		imap_reply(imap, "BAD Invalid saved search");
 	} else {
-		imap_reply(imap, "OK [COPYUID %u %s %s] COPY completed", uidvalidity, S_IF(olduidstr), S_IF(newuidstr));
+		/* Yes, the MOVE response sends COPYUID. See RFC 6851 4.3 */
+		imap_reply(imap, "OK [COPYUID %u %s %s] MOVE completed", uidvalidity, S_IF(olduidstr), S_IF(newuidstr));
 	}
 
 	/* EXPUNGE untagged responses are sent in realtime (already done), just update HIGHESTMODSEQ now */
@@ -3402,7 +3414,6 @@ static void handle_client(struct imap_session *imap)
 			bbs_debug(6, "%p => %s\n", imap, buf);
 		}
 		if (imap_process(imap, buf)) {
-			imap_send(imap, "BYE %s server terminating connection", IMAP_REV);
 			break;
 		}
 	}

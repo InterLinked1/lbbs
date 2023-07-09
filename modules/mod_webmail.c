@@ -2478,7 +2478,26 @@ cleanup:
 static struct mailimap_set *uidset(json_t *uids)
 {
 	size_t i;
-	struct mailimap_set *set = mailimap_set_new_empty();
+	struct mailimap_set *set;
+
+	if (json_is_string(uids) && json_string_value(uids)) {
+		if (!strcmp(json_string_value(uids), "1:*")) {
+			/* All messages in mailbox */
+			set = mailimap_set_new_interval(1, 0);
+			return set;
+		} else {
+			/* Must use an array for everything else */
+			bbs_warning("Invalid UID set: %s\n", json_string_value(uids));
+			return NULL;
+		}
+	}
+
+	if (!uids || !json_is_array(uids) || !json_array_size(uids)) {
+		bbs_warning("No UIDs provided\n");
+		return NULL;
+	}
+
+	set = mailimap_set_new_empty();
 	if (!set) {
 		return NULL;
 	}
@@ -2541,11 +2560,6 @@ static void handle_store(struct imap_client *client, int sign, json_t *uids, con
 	struct mailimap_set *set;
 	char *keyword = NULL;
 
-	if (!uids || !json_array_size(uids)) {
-		bbs_warning("No UIDs provided\n");
-		return;
-	}
-
 	set = uidset(uids);
 	if (!set) {
 		return;
@@ -2594,11 +2608,6 @@ static void handle_move(struct imap_client *client, json_t *uids, const char *ne
 	int res;
 	struct mailimap_set *set;
 
-	if (!uids || !json_array_size(uids)) {
-		bbs_warning("No UIDs provided\n");
-		return;
-	}
-
 	set = uidset(uids);
 	if (!set) {
 		return;
@@ -2619,8 +2628,20 @@ static void handle_move(struct imap_client *client, json_t *uids, const char *ne
 			/* XXX Should we do an EXPUNGE automatically? It could be dangerous! */
 		}
 	}
-	if (res == MAILIMAP_NO_ERROR && client->messages >= json_array_size(uids)) {
-		uint32_t newcount = client->messages - (uint32_t) json_array_size(uids);
+	if (res == MAILIMAP_NO_ERROR) {
+		uint32_t newcount;
+		if (json_is_array(uids) && client->messages >= json_array_size(uids)) {
+			newcount = client->messages - (uint32_t) json_array_size(uids);
+		} else {
+			newcount = 0; /* It was a 1:* operation */
+			/* Issue a NOOP, for some reason whenever we IDLE after a folder gets completely emptied,
+			 * libetpan isn't able to parse the "+ idling" confirmation if we just go right into that,
+			 * seemingly due to the parser not being in the right state. This gets things back in sync. */
+			res = mailimap_noop(client->imap);
+			if (res != MAILIMAP_NO_ERROR) {
+				bbs_warning("IMAP NOOP failed: %s\n", maildriver_strerror(res));
+			}
+		}
 		bbs_debug(5, "Updated folder count from %u to %u\n", client->messages, newcount);
 		client->messages = newcount;
 	}
@@ -2631,11 +2652,6 @@ static void handle_copy(struct imap_client *client, json_t *uids, const char *ne
 {
 	int res;
 	struct mailimap_set *set;
-
-	if (!uids || !json_array_size(uids)) {
-		bbs_warning("No UIDs provided\n");
-		return;
-	}
 
 	set = uidset(uids);
 	if (!set) {
@@ -2695,7 +2711,7 @@ static void idle_stop(struct ws_session *ws, struct imap_client *client)
 static void idle_start(struct ws_session *ws, struct imap_client *client)
 {
 	UNUSED(ws); /* Formerly used to adjust net_ws timeout, not currently used */
-	if (client->canidle) {
+	if (client->canidle && !client->idling) { /* Don't IDLE again if already idling... */
 		int res;
 		bbs_debug(5, "Starting IDLE...\n");
 		res = mailimap_idle(client->imap);
@@ -2937,7 +2953,20 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 			REFRESH_LISTING("FLAG");
 		} else if (!strcmp(command, "DELETE")) {
 			handle_store_deleted(client, json_object_get(root, "uids"));
-			REFRESH_LISTING("DELETE"); /* XXX Frontend can easily handle marking it as Deleted on its end, and should */
+			/* In theory, the frontend could handle marking messages as Deleted locally,
+			 * without us sending a refreshed message listing.
+			 * However, it is possible that the message list has actually changed in other ways.
+			 * For example, Outlook.com will actually expunge the message when something
+			 * in the Trash is marked as deleted.
+			 * (An untagged EXPUNGE is sent when this happens; however, we can only
+			 * process untagged messages when we're idling, so we'll miss that here
+			 * as we're not expecting). libetpan would need to support callbacks for
+			 * all untagged responses for us to be able to receive this.
+			 * For this reason, it is not only okay to refresh the listing, we must do so
+			 * in order to display it properly. The frontend cannot accurately guess
+			 * what the IMAP server did.
+			 */
+			REFRESH_LISTING("DELETE");
 		} else if (!strcmp(command, "EXPUNGE")) {
 			res = mailimap_expunge(client->imap);
 			if (res != MAILIMAP_NO_ERROR) {
