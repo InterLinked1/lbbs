@@ -1025,7 +1025,7 @@ static int select_examine_response(struct imap_session *imap, enum select_type r
 	 * RFC 7162 3.1.2.1 shows "LIMITED" appearing at the end of a PERMANENTFLAGS response, so we do that here,
 	 * as clients are limited in how many custom flags (keywords) can be used (26 for the entire mailbox)
 	 */
-	imap_send(imap, "OK [PERMANENTFLAGS (%s%s \\*)] Limited", IMAP_FLAGS, numkeywords > 0 ? keywords : ""); /* Include \* to indicate we support IMAP keywords */
+	imap_send(imap, "OK [PERMANENTFLAGS (%s%s \\*)] Limited", IMAP_PERSISTENT_FLAGS, numkeywords > 0 ? keywords : ""); /* Include \* to indicate we support IMAP keywords */
 	imap_send(imap, "%u EXISTS", imap->totalnew + imap->totalcur); /* Number of messages in the mailbox. */
 	imap_send(imap, "%u RECENT", imap->totalnew); /* Number of messages with \Recent flag (maildir: new, instead of cur). */
 	if (imap->firstunseen) {
