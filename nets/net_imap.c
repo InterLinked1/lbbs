@@ -364,13 +364,15 @@ static int num_messages(const char *path)
 /* Dummy usage for -Wunused-macros */
 #endif
 
-/*! \brief Callback for new messages (delivered by SMTP to the INBOX) */
-static void imap_mbox_watcher(struct mailbox *mbox, const char *newfile)
+/*!
+ * \brief Callback for sending EXISTS alerts to idling clients
+ * \param mbox
+ * \param directory Full directory of the maildir in which the new message has appeared
+ */
+static void __imap_mbox_watcher(struct mailbox *mbox, const char *directory)
 {
 	int numtotal = -1;
 	struct imap_session *s;
-
-	UNUSED(newfile);
 
 	/* Notify anyone watching this mailbox, specifically the INBOX. */
 	RWLIST_RDLOCK(&sessions);
@@ -381,7 +383,7 @@ static void imap_mbox_watcher(struct mailbox *mbox, const char *newfile)
 			 * This works out as we can only send untagged responses during IDLE for the currently selected mailbox. */
 			continue; /* Different mailbox (account) */
 		}
-		if (strcmp(s->dir, mailbox_maildir(mbox))) {
+		if (strcmp(s->dir, directory)) { /* They have to be the same IMAP mailbox (folder), not just the same mbox struct */
 			continue; /* Different folders. */
 		}
 		/* Hey, this client is on the same exact folder right now! Send it an unsolicited, untagged response. */
@@ -395,8 +397,8 @@ static void imap_mbox_watcher(struct mailbox *mbox, const char *newfile)
 			bbs_error("Expected at least %d message, but calculated %d?\n", 1, numtotal);
 			continue; /* Don't send the client something clearly bogus */
 		}
-		pthread_mutex_lock(&s->lock);
 
+		pthread_mutex_lock(&s->lock); /* Since we're locked here, we can't use imap_send within: */
 		/* RFC 3501 Section 7: unilateral response */
 		if (!s->idle) { /* We are only free to send responses whenever we want if the client is idling. */
 			dprintf(s->pfd[1], "* %d EXISTS\r\n", numtotal); /* Number of messages in the mailbox. */
@@ -410,6 +412,13 @@ static void imap_mbox_watcher(struct mailbox *mbox, const char *newfile)
 		pthread_mutex_unlock(&s->lock);
 	}
 	RWLIST_UNLOCK(&sessions);
+}
+
+/*! \brief Callback for new messages (delivered by SMTP to the INBOX) */
+static void imap_mbox_watcher(struct mailbox *mbox, const char *newfile)
+{
+	UNUSED(newfile);
+	__imap_mbox_watcher(mbox, mailbox_maildir(mbox));
 }
 
 static void imap_destroy(struct imap_session *imap)
@@ -2058,7 +2067,7 @@ static int handle_append(struct imap_session *imap, char *s)
 
 	if (appends) {
 		/* RFC 3501 6.3.11: We SHOULD notify the client via an untagged EXISTS. */
-		imap_mbox_watcher(imap->mbox, NULL);
+		__imap_mbox_watcher(imap->mbox, appenddir);
 	}
 
 cleanup:
@@ -3168,10 +3177,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		imap->idle = 1; /* This is used by other threads that may send the client data while it's idling. */
 		/* Note that IDLE only applies to the currently selected mailbox (folder).
 		 * Thus, in traversing all the IMAP sessions, simply sharing the same mbox isn't enough.
-		 * imap->dir also needs to match (same currently selected folder).
-		 *
-		 * XXX One simplification this implementation makes is that
-		 * IDLE only works for the INBOX, since that's probably the only folder most people care about much. */
+		 * imap->dir also needs to match (same currently selected folder). */
 		for (;;) {
 			int pollms = MIN(SEC_MS(idle_notify_interval), idleleft);
 			res = bbs_poll(imap->rfd, pollms);
