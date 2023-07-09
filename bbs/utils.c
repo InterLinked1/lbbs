@@ -689,6 +689,17 @@ int bbs_file_exists(const char *path)
 	return stat(path, &st) ? 0 : 1;
 }
 
+int bbs_ensure_directory_exists(const char *path)
+{
+	if (eaccess(path, R_OK)) {
+		if (mkdir(path, 0700)) {
+			bbs_error("mkdir(%s) failed: %s\n", path, strerror(errno));
+			return -1;
+		}
+	}
+	return 0;
+}
+
 FILE *bbs_mkftemp(char *template, mode_t mode)
 {
 	FILE *p;

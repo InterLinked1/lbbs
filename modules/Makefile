@@ -41,6 +41,10 @@ mod_http.so : mod_http.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lmagic
 
+mod_lmdb.so : mod_lmdb.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -llmdb
+
 mod_mimeparse.so : mod_mimeparse.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(GMIME_LIBS)

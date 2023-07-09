@@ -143,6 +143,15 @@ const char *mailbox_maildir(struct mailbox *mbox);
 int mailbox_id(struct mailbox *mbox);
 
 /*!
+ * \brief Get a unique prefix ID for the mailbox (across all mailboxes)
+ * \param[in] mbox Mailbox. Must not be NULL.
+ * \param[out] buf Buffer in which to store unique prefix.
+ * \param[in] len Length of buf.
+ * \retval 0 on success, -1 on failure
+ */
+int mailbox_uniqueid(struct mailbox *mbox, char *buf, size_t len);
+
+/*!
  * \brief Ensure that maildir directories exist in the specified directory
  * \retval 0 on success, -1 on failure
  */

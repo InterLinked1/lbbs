@@ -23,6 +23,9 @@ apt-get install -y binutils # binutils, for objdump
 # mod_mysql, mod_mysql_auth
 apt-get install -y libmariadb-dev libmariadb-dev-compat # MariaDB (MySQL) dev headers
 
+# mod_lmdb
+apt-get install -y liblmdb-dev
+
 # mod_http
 apt-get install -y libmagic-dev
 

@@ -492,6 +492,14 @@ long bbs_dir_size(const char *path);
 int bbs_file_exists(const char *path);
 
 /*!
+ * \brief Ensure that a directory exists, creating it if necessary
+ * \param path Directory to create if needed
+ * \note The parent directory should exist, this is not recursive
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_ensure_directory_exists(const char *path);
+
+/*!
  * \brief Create a temporary FILE*
  * \param template template ending in XXXXXX to pass to mkstemp
  * \param mode File mode for chmod

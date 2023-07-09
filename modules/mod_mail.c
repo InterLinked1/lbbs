@@ -471,17 +471,6 @@ const char *mailbox_expand_list(const char *user, const char *domain)
 	return l->target; /* l cannot be removed until mod_mail is unloaded, at which point its dependents would no longer be running, so this is safe. */
 }
 
-static int create_if_nexist(const char *path)
-{
-	if (eaccess(path, R_OK)) {
-		if (mkdir(path, 0700)) {
-			bbs_error("mkdir(%s) failed: %s\n", path, strerror(errno));
-			return -1;
-		}
-	}
-	return 0;
-}
-
 /*!
  * \brief Retrieve a mailbox, creating it if it does not already exist
  * \retval mailbox on success, NULL on failure
@@ -535,13 +524,13 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid, const char *n
 		/* Create any needed special directories for the user. */
 		/* directories are prefixed with a . for maildir++ format */
 		snprintf(newdirname, sizeof(newdirname), "%s/.%s", mbox->maildir, "Drafts");
-		create_if_nexist(newdirname);
+		bbs_ensure_directory_exists(newdirname);
 		snprintf(newdirname, sizeof(newdirname), "%s/.%s", mbox->maildir, "Junk");
-		create_if_nexist(newdirname);
+		bbs_ensure_directory_exists(newdirname);
 		snprintf(newdirname, sizeof(newdirname), "%s/.%s", mbox->maildir, "Sent");
-		create_if_nexist(newdirname);
+		bbs_ensure_directory_exists(newdirname);
 		snprintf(newdirname, sizeof(newdirname), "%s/.%s", mbox->maildir, "Trash");
-		create_if_nexist(newdirname);
+		bbs_ensure_directory_exists(newdirname);
 		/* Skip All and Flagged (virtual folders) */
 		/* Skip Archive */
 	}
@@ -785,13 +774,13 @@ int mailbox_maildir_init(const char *path)
 	char buf[256];
 	int res = 0;
 
-	res |= create_if_nexist(path);
+	res |= bbs_ensure_directory_exists(path);
 	snprintf(buf, sizeof(buf), "%s/new", path);
-	res |= create_if_nexist(buf);
+	res |= bbs_ensure_directory_exists(buf);
 	snprintf(buf, sizeof(buf), "%s/cur", path);
-	res |= create_if_nexist(buf);
+	res |= bbs_ensure_directory_exists(buf);
 	snprintf(buf, sizeof(buf), "%s/tmp", path);
-	res |= create_if_nexist(buf);
+	res |= bbs_ensure_directory_exists(buf);
 
 	return res;
 }
@@ -807,6 +796,20 @@ const char *mailbox_maildir(struct mailbox *mbox)
 int mailbox_id(struct mailbox *mbox)
 {
 	return (int) mbox->id;
+}
+
+int mailbox_uniqueid(struct mailbox *mbox, char *buf, size_t len)
+{
+	/* We need a unique prefix based on the mailbox.
+	 * All mailboxes either have an ID or have a name. */
+	if (mbox->id) {
+		snprintf(buf, len, "%u", mbox->id);
+	} else if (mbox->name) {
+		safe_strncpy(buf, mbox->name, len);
+	} else {
+		return -1;
+	}
+	return 0;
 }
 
 int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf)

@@ -22,6 +22,7 @@
 #include <poll.h>
 
 #include "include/node.h"
+#include "include/kvs.h"
 
 #include "include/mod_mail.h"
 
@@ -49,52 +50,50 @@ char *remove_size(char *restrict s)
 	return s;
 }
 
-static FILE *status_size_cache_file_load(struct imap_client *client, const char *remotename, int write)
+static size_t status_size_cache_key_name(struct imap_client *client, const char *remotename, char *buf, size_t len)
 {
-	char cache_dir[256];
-	char cache_file_name[534];
-	int cachedirlen;
-	FILE *fp;
+	char prefix[32];
+	int keylen;
 	struct imap_session *imap = client->imap;
 
-	/* Put them in a subdirectory of the maildir, so it doesn't clutter up the maildir.
-	 * The name just has to NOT start with the hierarchy delimiter (or it would be a maildir) */
-	cachedirlen = snprintf(cache_dir, sizeof(cache_dir), "%s/__cache", mailbox_maildir(imap->mymbox));
-	if (write && eaccess(cache_dir, R_OK) && mkdir(cache_dir, 0700)) {
-		bbs_error("mkdir(%s) failed: %s\n", cache_dir, strerror(errno));
+	/* We need a unique prefix based on the mailbox.
+	 * All mailboxes either have an ID or have a name. */
+	if (mailbox_uniqueid(imap->mymbox, prefix, sizeof(prefix))) {
+		return 0;
 	}
-	snprintf(cache_file_name, sizeof(cache_file_name), "%s/.imapremote.size.%s.%s", cache_dir, client->virtprefix, remotename);
+
+	keylen = snprintf(buf, len, "net_imap.%s.status.%s.%s", prefix, client->virtprefix, remotename);
+
 	/* Replace the remote delimiter with a period.
 	 * The actual character in this case isn't super important,
 	 * and it doesn't need to be our local delimiter (which is just a coincidence).
-	 * It just needs to be deterministic and make this path unique on the filesystem,
-	 * and it can't be / as that would indicate a subdirectory.
-	 * Period is just a good choice, for the same reason it's a good choice for the maildir++ delimiter. */
-	bbs_strreplace(cache_file_name + cachedirlen + 1, client->virtdelimiter, '.');
-	fp = fopen(cache_file_name, write ? "w" : "r");
-	if (!fp) {
-		if (write) {
-			bbs_error("fopen(%s) failed: %s\n", cache_file_name, strerror(errno));
-		}
-		return NULL;
-	}
-	return fp;
+	 * It just needs to be deterministic and make this path unique,
+	 * and it can't be / as that would indicate a subdirectory (if KVS store is backed by disk).
+	 * Period is just a good choice, for the same reason it's a good choice for the maildir++ delimiter.
+	 *
+	 * Technically this step isn't necessary, but doing it ensures that if the remote hierarchy delimiter
+	 * every changes, that is transparent here.
+	 */
+	bbs_strreplace(buf, client->virtdelimiter, '.');
+	return (size_t) keylen;
 }
 
 static int status_size_cache_fetch(struct imap_client *client, const char *remotename, const char *remote_status_resp, size_t *mb_size)
 {
 	char buf[256];
 	size_t curlen;
-	FILE *fp;
+	char key[256];
+	size_t keylen;
 	char *tmp;
 
-	fp = status_size_cache_file_load(client, remotename, 0);
-	if (!fp) {
+	keylen = status_size_cache_key_name(client, remotename, key, sizeof(key));
+	if (!keylen) {
+		return -1;
+	}
+	if (bbs_kvs_get(key, keylen, buf, sizeof(buf), NULL)) {
 		bbs_debug(9, "Cache file does not exist\n");
 		return -1; /* Not an error, just the cache file didn't exist (probably the first time) */
 	}
-	fgets(buf, sizeof(buf), fp);
-	fclose(fp);
 
 	curlen = strlen(remote_status_resp);
 
@@ -122,20 +121,13 @@ static int status_size_cache_fetch(struct imap_client *client, const char *remot
 
 static void status_size_cache_update(struct imap_client *client, const char *remotename, const char *remote_status_resp)
 {
-	FILE *fp = status_size_cache_file_load(client, remotename, 1);
+	char key[256];
+	size_t keylen;
 
-	/* Using a separate file for every single remote folder is... not very efficient.
-	 * But it's very easy to deal with, much easier than using a single file for all remote boxes,
-	 * especially if some require changes and some don't.
-	 * And to put it in perspective, it might add a few ms of overhead per mailbox (at most),
-	 * whereas the caching itself is potentially saving seconds, so the bar is already very low, so to speak,
-	 * and this is very easy to reason about and should be bug-free.
-	 */
-	if (!fp) {
-		return;
+	keylen = status_size_cache_key_name(client, remotename, key, sizeof(key));
+	if (keylen) {
+		bbs_kvs_put(key, keylen, remote_status_resp, strlen(remote_status_resp));
 	}
-	fprintf(fp, "%s\n", remote_status_resp);
-	fclose(fp);
 }
 
 static int cache_remote_list_status(struct imap_client *client, const char *rtag, size_t taglen)
