@@ -29,10 +29,5 @@ long parse_modseq_from_filename(const char *filename, unsigned long *modseq);
 
 int parse_size_from_filename(const char *filename, unsigned long *size);
 
-void free_scandir_entries(struct dirent **entries, int numfiles);
-
 /*! \brief Find the disk filename of a message, given its sequence number or UID in a cur maildir folder */
 int imap_msg_to_filename(const char *directory, int seqno, unsigned int uid, char *buf, size_t len);
-
-/*! \brief Sort callback for scandir */
-int uidsort(const struct dirent **da, const struct dirent **db);

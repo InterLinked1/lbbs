@@ -55,7 +55,7 @@ static const char *testfilter = NULL;
 
 int startup_run_unit_tests;
 
-#define VALGRIND_LOGFILE "/tmp/test_lbbs_valgrind.log"
+#define VALGRIND_LOGFILE "/tmp/test_lbbs/valgrind.log"
 
 static const char *loglevel2str(enum bbs_log_level level)
 {
@@ -343,6 +343,7 @@ int test_client_expect_eventually_buf(int fd, int ms, const char *restrict s, in
 			buf[bytes] = '\0'; /* Safe */
 			/* Probably ends in LF, so skip one here */
 			bbs_debug(10, "Analyzing output: %s", buf); /* Particularly under valgrind, we'll end up reading individual lines more than chunks, so using CLIENT_DRAIN is especially important */
+			/* XXX Should use bbs_readline_append for reliability */
 			if (strstr(buf, s)) {
 				return 0;
 			}
@@ -728,6 +729,11 @@ static int run_test(const char *filename, int multiple)
 		int64_t sec_dif, usec_dif, tot_dif;
 		int core_before = 0;
 		pid_t childpid = -1;
+		if (eaccess(TEST_ROOT_DIR, R_OK) && mkdir(TEST_ROOT_DIR, 0700)) {
+			bbs_error("Failed to create %s: %s\n", TEST_ROOT_DIR, strerror(errno));
+			res = -1;
+			goto cleanup;
+		}
 		if (reset_test_configs()) { /* Reset before each test */
 			res = -1;
 			goto cleanup;

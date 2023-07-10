@@ -36,7 +36,7 @@ static int pre(void)
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_smtp.conf");
 
-	system("rm -rf /tmp/test_lbbs_maildir"); /* Purge the contents of the directory, if it existed. */
+	system("rm -rf /tmp/test_lbbs/maildir"); /* Purge the contents of the directory, if it existed. */
 	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
 	system("cp .rules " TEST_MAIL_DIR);
 	return 0;
@@ -210,7 +210,7 @@ static int run(void)
 	/* Test that FILE action works */
 
 	/* .uidvalidity is only created on message retrieval, so create a fake file */
-	system("touch /tmp/test_lbbs_maildir/1/.fake");
+	system("touch /tmp/test_lbbs/maildir/1/.fake");
 
 	STANDARD_ENVELOPE_BEGIN();
 	SWRITE(clientfd, "From: " TEST_EMAIL_EXTERNAL ENDL);
@@ -220,6 +220,7 @@ static int run(void)
 	CLIENT_EXPECT(clientfd, "250");
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3); /* Message dropped silently */
 
+	SWRITE(clientfd, "QUIT");
 	res = 0;
 
 cleanup:

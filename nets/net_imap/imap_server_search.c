@@ -1590,7 +1590,7 @@ int handle_sort(struct imap_session *imap, char *s, int usinguid)
 		sort.numfiles = scandir(imap->curdir, &sort.entries, NULL, uidsort); /* cur dir only */
 		if (sort.numfiles >= 0) {
 			qsort_r(a, (size_t) results, sizeof(unsigned int), sort_compare, &sort); /* Actually sort the results, conveniently already in an array. */
-			free_scandir_entries(sort.entries, sort.numfiles);
+			bbs_free_scandir_entries(sort.entries, sort.numfiles);
 			free(sort.entries);
 		}
 	}
@@ -1737,7 +1737,7 @@ static int populate_thread_data(struct imap_session *imap, struct thread_message
 		msgs[i].id = a[i];
 	}
 
-	free_scandir_entries(sort.entries, sort.numfiles);
+	bbs_free_scandir_entries(sort.entries, sort.numfiles);
 	free(sort.entries);
 	return 0;
 }

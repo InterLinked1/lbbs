@@ -378,7 +378,7 @@ int list_scandir(struct imap_session *imap, struct list_command *lcmd, int level
 				if (!strcmp(entry->d_name, "cur") || !strcmp(entry->d_name, "new") || !strcmp(entry->d_name, "tmp") || !strcmp(entry->d_name, "mailq")) {
 					goto cleanup;
 				}
-				if (!strcmp(entry->d_name, ".mailq")) {
+				if (!maildir_is_mailbox(entry->d_name)) {
 					goto cleanup; /* Not a mailbox */
 				}
 			}

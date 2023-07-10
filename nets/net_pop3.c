@@ -295,7 +295,14 @@ static int on_delete(const char *dir_name, const char *filename, struct pop3_ses
 	/* It would be more efficient to batch deletions like with IMAP, but that would require moving this outside of the callback,
 	 * and given POP3 is just not intended to be as smart as IMAP, I am not sure that is worth the effort. */
 	maildir_parse_uid_from_filename(filename, &msguid);
-	maildir_indicate_expunged(pop3->mbox, dir_name, &msguid, 1);
+	/* We pass NULL for the seqno argument.
+	 * Because POP3 doesn't do an ordered traversal, number is not necessarily the sequence number.
+	 * Yes, we could do an ordered traversal using maildir_ordererd_traverse, but
+	 * more importantly, since only IMAP needs the sequence number list,
+	 * and because POP3 exclusively locks the mailbox,
+	 * this means that there aren't any IMAP clients that can be connected to this mailbox,
+	 * and thus IMAP will not end up consuming this event anyways. Therefore, we don't need to provide sequence numbers. */
+	maildir_indicate_expunged(EVENT_MESSAGE_EXPUNGE, pop3->node, pop3->mbox, dir_name, &msguid, NULL, 1, 0);
 	return 0;
 }
 
@@ -626,6 +633,7 @@ static int pop3_process(struct pop3_session *pop3, char *s)
 		snprintf(pop3->curdir, sizeof(pop3->curdir), "%s/cur", mailbox_maildir(pop3->mbox));
 		snprintf(pop3->newdir, sizeof(pop3->newdir), "%s/new", mailbox_maildir(pop3->mbox));
 		snprintf(pop3->trashmaildir, sizeof(pop3->trashmaildir), "%s/.Trash", mailbox_maildir(pop3->mbox));
+		mailbox_dispatch_event_basic(EVENT_LOGIN, pop3->node, pop3->mbox, NULL);
 		POP3_TRAVERSAL(pop3); /* Do our initial traversal of the mailbox to get stats */
 		/* Past this point (during the remainder of the session), we must never process the new directory again (in fact, nothing in the BBS is allowed to, or able to) */
 	/* APOP not supported */
@@ -766,6 +774,7 @@ static void pop3_handler(struct bbs_node *node, int secure)
 	pop3.node = node;
 
 	handle_client(&pop3);
+	mailbox_dispatch_event_basic(EVENT_LOGOUT, node, NULL, NULL);
 
 #ifdef HAVE_OPENSSL
 	if (secure) { /* implies ssl */

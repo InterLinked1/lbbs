@@ -18,6 +18,160 @@ struct mailbox;
 struct bbs_user;
 struct bbs_url;
 struct bbs_tcp_client;
+struct dirent;
+
+/*! \brief RFC 5423 Section 4 message store events */
+enum mailbox_event_type {
+	/* Message Addition and Deletion */
+	EVENT_MESSAGE_APPEND = (1 << 0),			/*!< Message(s) appended */
+	EVENT_MESSAGE_EXPIRE = (1 << 1),			/*!< Message(s) expired */
+	EVENT_MESSAGE_EXPUNGE = (1 << 2),			/*!< Message(s) expunged */
+	EVENT_MESSAGE_NEW = (1 << 3),				/*!< Message delivered */
+	EVENT_QUOTA_EXCEED = (1 << 4),				/*!< Operation failed due to exceeding quota */
+	EVENT_QUOTA_WITHIN = (1 << 5),				/*!< Quota usage is now under the quota limit */
+	EVENT_QUOTA_CHANGE = (1 << 6),				/*!< Quota limit changed. Not currently a supported event. */
+	/* Message flag changes */
+	EVENT_MESSAGE_READ = (1 << 7),				/*!< Message(s) marked as seen */
+	EVENT_MESSAGE_TRASH = (1 << 8),				/*!< Message(s) marked as deleted */
+	EVENT_FLAGS_SET = (1 << 9),					/*!< Message(s) had flags added */
+	EVENT_FLAGS_CLEAR = (1 << 10),				/*!< Message(s) had flags removed */
+	/* Access accounting */
+	EVENT_LOGIN = (1 << 11),					/*!< User login */
+	EVENT_LOGOUT = (1 << 12),					/*!< User logout */
+	/* Mailbox management */
+	/*! \note IMAP uses MailboxName to encompass create, delete, and rename */
+	EVENT_MAILBOX_CREATE = (1 << 13),			/*!< Mailbox created or newly accessible */
+	EVENT_MAILBOX_DELETE = (1 << 14),			/*!< Mailbox deleted or no longer accessible */
+	EVENT_MAILBOX_RENAME = (1 << 15),			/*!< Mailbox renamed */
+	EVENT_MAILBOX_SUBSCRIBE = (1 << 16),		/*!< Mailbox added to subscription list */
+	EVENT_MAILBOX_UNSUBSCRIBE = (1 << 17),		/*!< Mailbox removed from subscription list */
+	/* IMAP specific, and none of these are currently supported yet, since the underlying extensions aren't supported yet */
+	EVENT_METADATA_CHANGE = (1 << 18),			/*!< Metadata changed (RFC 5464 METADATA) */
+	EVENT_SERVER_METADATA_CHANGE = (1 << 19),
+	EVENT_ANNOTATION_CHANGE = (1 << 20),		/*!< Message annotation changed */
+};
+
+/*! \brief Get the name of a mailbox event type */
+const char *mailbox_event_type_name(enum mailbox_event_type type);
+
+/*! \brief RFC 5423 Section 5 event parameters */
+enum mailbox_event_parameter {
+	EVENT_PARAMETER_ADMIN = (1 << 0),				/*!< Message access: authentication identity, if distinct from authorization identity */
+	EVENT_PARAMETER_BODYSTRUCTURE = (1 << 1),		/*!< May be included with MessageAppend and MessageNew: BODYSTRUCTURE of message */
+	EVENT_PARAMETER_CLIENT_IP = (1 << 2),			/*!< Message access: client IPv4 or IPv6 address */
+	EVENT_PARAMETER_CLIENT_PORT = (1 << 3),			/*!< Message access: client port */
+	EVENT_PARAMETER_DISK_QUOTA = (1 << 4),			/*!< QuotaExceed, QuotaWithin, QuotaChange: disk quota in KB */
+	EVENT_PARAMETER_DISK_USED = (1 << 5),			/*!< QuotaExceed, QuotaWithin: quota used in KB */
+	EVENT_PARAMETER_ENVELOPE = (1 << 6),			/*!< May be included with MessageNew: SMTP envelope */
+	EVENT_PARAMETER_FLAG_NAMES = (1 << 7),			/*!< FlagsSet, FlagsClear: (space separated) list of flags/keywords added/removed */
+	EVENT_PARAMETER_MAILBOX_ID = (1 << 8),			/*!< MailboxRename and mailbox affecting effects. URI describing mailbox */
+	EVENT_PARAMETER_MAX_MESSAGES = (1 << 9),		/*!< QuotaExceed, QuotaWithin: limit on # of messages in a mailbox */
+	EVENT_PARAMETER_MESSAGE_CONTENT = (1 << 10),	/*!< May be included with MessageAppend, MessageNew: entire message */
+	EVENT_PARAMETER_MESSAGE_SIZE = (1 << 11),		/*!< May be included with MessageAppend, MessageNew: size of message */
+	EVENT_PARAMETER_MESSAGES = (1 << 12),			/*!< QuotaExceed, QuotaWithin: Number of messages in mailbox */
+	EVENT_PARAMETER_MODSEQ = (1 << 13),				/*!< Any single-message notification */
+	EVENT_PARAMETER_OLD_MAILBOX_ID = (1 << 14),		/*!< URI for old name of renamed mailbox */
+	EVENT_PARAMETER_PID = (1 << 15),				/*!< Process ID */
+	EVENT_PARAMETER_PROCESS = (1 << 16),			/*!< Process name */
+	EVENT_PARAMETER_SERVER_DOMAIN = (1 << 17),		/*!< Login, optionally Logout: local domain name or IP address used for access */
+	EVENT_PARAMETER_SERVER_PORT	= (1 << 18),		/*!< Login, optionally Logout: local port number used for access */
+	EVENT_PARAMETER_SERVER_FQDN = (1 << 19),		/*!< FQDN of server generating event */
+	EVENT_PARAMETER_SERVICE = (1 << 20),			/*!< Name of event-triggering service */
+	EVENT_PARAMETER_TAGS = (1 << 21),				/*!< Tags */
+	EVENT_PARAMETER_TIMESTAMP = (1 << 22),			/*!< Timestamp */
+	EVENT_PARAMETER_UIDNEXT = (1 << 23),			/*!< Any mailbox-related notification: UIDNEXT */
+	EVENT_PARAMETER_UIDSET = (1 << 24),				/*!< MessageExpires, MessageExpunges, MessageRead, MessageTrash, FlagsSet, FlagsClear: set of UIDs */
+	EVENT_PARAMETER_URI = (1 << 25),				/*!< All notifications: IMAP URL */
+	EVENT_PARAMETER_USER = (1 << 26),				/*!< Message access: Authorization identifier used */
+};
+
+struct mailbox_event {
+	enum mailbox_event_type type;	/*!< Type of event */
+	struct bbs_node *node;			/*!< Client that triggered the operation (includes IP, port, protocol, user) */
+	struct mailbox *mbox;			/*!< Mailbox for event */
+	const char *maildir;			/*!< Maildir for event */
+	/* uid and uids/numuids are mutually exclusive: a list may be provided, or a single UID, or neither */
+	unsigned int *uids;				/*!< UID(s) of messages */
+	unsigned int *seqnos;			/*!< Sequence numbers of messages */
+	int numuids;					/*!< Number of UIDs/seqnos in uids and seqnos list */
+	unsigned long modseq;			/*!< MODSEQ */
+	size_t msgsize;					/*!< RFC822 SIZE */
+	const char *flagnames;			/*!< Flag names, for FlagsSet and FlagsClear */
+	unsigned int messageaccess:1;	/*!< If client is using a message access protocol */
+	/* Automatic properties */
+	unsigned long id;				/*!< Event ID */
+	time_t timestamp;				/*!< Event time */
+	/* Computed properties */
+	unsigned int uidvalidity;		/*!< UIDVALIDITY of mailbox */
+	unsigned int uidnext;			/*!< UIDNEXT of message */
+	/* Module specific flags */
+	unsigned int expungesilent:1;	/*!< net_imap EXPUNGE/CLOSE: Do not send untagged EXPUNGE responses */
+	const char *oldmaildir;			/*!< net_imap RENAME: Old mailbox name */
+};
+
+#define mailbox_register_watcher(callback) __mailbox_register_watcher(callback, BBS_MODULE_SELF)
+
+/*! \brief Register a mailbox watching application (intended for IMAP) */
+int __mailbox_register_watcher(void (*callback)(struct mailbox_event *event), void *mod);
+
+/*! \brief Unregister a mailbox watching application */
+int mailbox_unregister_watcher(void (*callback)(struct mailbox_event *event));
+
+/*!
+ * \brief Broadcast a mailbox event
+ * \param event Mailbox event
+ */
+void mailbox_dispatch_event(struct mailbox_event *event);
+
+/*!
+ * \brief Initialize basic properties of a mailbox event
+ * \param[out] e Initialized event. The event will be zeroed and have attributes set to the other parameters.
+ * \param[in] node
+ * \param[in] mbox
+ * \param[in] maildir
+ * \note This is purely a convenience function, useful for many events, but is not needed to create and dispatch an event
+ */
+void mailbox_initialize_event(struct mailbox_event *e, enum mailbox_event_type type, struct bbs_node *node, struct mailbox *mbox, const char *maildir);
+
+/*!
+ * \brief Convenience function to dispatch an event for simple events
+ * \param type Event type
+ * \param node
+ * \param mbox
+ * \param maildir
+ */
+void mailbox_dispatch_event_basic(enum mailbox_event_type type, struct bbs_node *node, struct mailbox *mbox, const char *maildir);
+
+/*!
+ * \brief Indicate a message has been delivered to a mailbox
+ * \param node Client node that triggered this notification
+ * \param mbox
+ * \param maildir Maildir directory
+ * \param newfile Full path of new message
+ * \param size Length of message in bytes
+ * \note This will also set the activity flag for the mailbox.
+ */
+void mailbox_notify_new_message(struct bbs_node *node, struct mailbox *mbox, const char *maildir, const char *newfile, size_t size);
+
+/*!
+ * \brief Indicate quota is exceeded for a mailbox
+ * \param node
+ * \param mbox
+ */
+void mailbox_notify_quota_exceeded(struct bbs_node *node, struct mailbox *mbox);
+
+/*! \brief Get the uidvalidity parameter of a mailbox event */
+unsigned int mailbox_event_uidvalidity(struct mailbox_event *e);
+
+/*! \brief Get the uidnext parameter of a mailbox event */
+unsigned int mailbox_event_uidnext(struct mailbox_event *e);
+
+/*!
+ * \brief Check if a mailbox has activity (this includes any maildir in the mailbox)
+ * \retval 1 if mailbox has activity, 0 if not
+ * \note Calling this function will clear the activity flag so multiple simultaneous calls will not all return 1
+ */
+int mailbox_has_activity(struct mailbox *mbox);
 
 /*!
  * \brief Check whether an SMTP domain or domain literal matches a local domain or hostname
@@ -92,27 +246,6 @@ void mailbox_watch(struct mailbox *mbox);
 /*! \brief Stop watching a mailbox for new messages. This SHOULD be called at some point during execution if mailbox_watch is called. */
 void mailbox_unwatch(struct mailbox *mbox);
 
-/*!
- * \brief Called by producer applications (e.g. SMTP) to indicate new messages are available for subscribers actively watching the mailbox
- * \note This will also set the activity flag for the mailbox.
- */
-void mailbox_notify(struct mailbox *mbox, const char *newfile);
-
-/*!
- * \brief Check if a mailbox has activity
- * \retval 1 if mailbox has activity, 0 if not
- * \note Calling this function will clear the activity flag so multiple simultaneous calls will not all return 1
- */
-int mailbox_has_activity(struct mailbox *mbox);
-
-#define mailbox_register_watcher(callback) __mailbox_register_watcher(callback, BBS_MODULE_SELF)
-
-/*! \brief Register a mailbox watching application (intended for IMAP) */
-int __mailbox_register_watcher(void (*callback)(struct mailbox *mbox, const char *newfile), void *mod);
-
-/*! \brief Unregister a mailbox watching application */
-int mailbox_unregister_watcher(void (*callback)(struct mailbox *mbox, const char *newfile));
-
 /*! \brief Invalidate the cached quota usage for this mailbox */
 void mailbox_invalidate_quota_cache(struct mailbox *mbox);
 
@@ -123,8 +256,11 @@ void mailbox_invalidate_quota_cache(struct mailbox *mbox);
  */
 void mailbox_quota_adjust_usage(struct mailbox *mbox, int bytes);
 
-/*! \brief Get the quota of a mailbox in bytes */
+/*! \brief Get the quota limit of a mailbox in bytes */
 unsigned long mailbox_quota(struct mailbox *mbox);
+
+/*! \brief Get the quota usage of a mailbox in bytes */
+unsigned long mailbox_quota_used(struct mailbox *mbox);
 
 /*! \brief Get the quota remaining (available) of a mailbox in bytes */
 unsigned long mailbox_quota_remaining(struct mailbox *mbox);
@@ -135,12 +271,24 @@ unsigned long mailbox_quota_remaining(struct mailbox *mbox);
  */
 const char *mailbox_maildir(struct mailbox *mbox);
 
+/*! \brief Get the string length of a mailbox's maildir */
+size_t mailbox_maildir_len(struct mailbox *mbox);
+
 /*!
- * \brief Get the mailbox ID of a mailbox (same as the user ID of the user that owns this mailbox)
+ * \brief Get the mailbox ID of a mailbox for personal mailboxes (same as the user ID of the user that owns this mailbox)
  * \param mbox Mailbox. Must not be NULL.
- * \retval positive mailbox ID
+ * \return positive mailbox ID, for personal mailboxes
+ * \retval 0 if not a personal mailbox
  */
 int mailbox_id(struct mailbox *mbox);
+
+/*!
+ * \brief Get the mailbox name of a mailbox for non-personal mailboxes
+ * \param mbox Mailbox. Must not be NULL.
+ * \return Mailbox name, if non-personal
+ * \retval NULL, if personal
+ */
+const char *mailbox_name(struct mailbox *mbox);
 
 /*!
  * \brief Get a unique prefix ID for the mailbox (across all mailboxes)
@@ -152,10 +300,24 @@ int mailbox_id(struct mailbox *mbox);
 int mailbox_uniqueid(struct mailbox *mbox, char *buf, size_t len);
 
 /*!
+ * \brief Get the maximum number of messages permitted in a mailbox (any maildir in the mailbox)
+ * \return Maximum number of messages allowed in a mailbox
+ */
+unsigned long mailbox_max_messages(struct mailbox *mbox);
+
+/*!
  * \brief Ensure that maildir directories exist in the specified directory
  * \retval 0 on success, -1 on failure
  */
 int mailbox_maildir_init(const char *path);
+
+/*!
+ * \brief Whether a maildir is a mailbox (as opposed to some kind of special system maildir)
+ * \param basename Base name of directory inside the root maildir
+ * \retval 1 maildir is a mailbox (either personal or shared)
+ * \retval 0 maildir is a special system maildir
+ */
+int maildir_is_mailbox(const char *basename);
 
 /*!
  * \brief Create a unique file in the tmp subdirectory of a maildir
@@ -184,15 +346,18 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 
 /*!
  * \brief Indicate a sequence of expunges
+ * \param type (either EVENT_MESSAGE_EXPUNGE or EVENT_MESSAGE_EXPIRE)
  * \param mbox
  * \param directory Full system path of the cur directory for this maildir
  * \param uids A list of message UIDs for expunged messages
+ * \param seqnos A list of sequence numbers for expunged messages
  * \param length Number of expunged messages in the list
+ * \param silent For IMAP, 1 to inhibit untagged EXPUNGE responses, 0 otherwise
  * \retval The new HIGHESTMODSEQ for the mailbox
  * \note For performance reasons, calls to this function should be batched if possible (which is why it takes a list, rather than only a single UID)
  * \note This function MUST be called whenever messages are expunged from a directory, by IMAP, POP3, or SMTP
  */
-unsigned long maildir_indicate_expunged(struct mailbox *mbox, const char *directory, unsigned int *uids, int length);
+unsigned long maildir_indicate_expunged(enum mailbox_event_type type, struct bbs_node *node, struct mailbox *mbox, const char *directory, unsigned int *uids, unsigned int *seqnos, int length, int silent);
 
 /*!
  * \brief Get the highest MODSEQ (modification sequence number) in a maildir
@@ -288,6 +453,12 @@ int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const c
  * \retval 0 on success, -1 on failure
  */
 int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid);
+
+/*! \brief Sort callback for scandir (for maildirs) */
+int uidsort(const struct dirent **da, const struct dirent **db);
+
+/*! \brief Perform an ordered traversal of a maildir cur directory */
+int maildir_ordererd_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), void *obj);
 
 /* IMAP client */
 #define IMAP_CLIENT_EXPECT(client, s) if (bbs_tcp_client_expect(client, "\r\n", 1, 2000, s)) { bbs_debug(3, "Didn't receive expected '%s'\n", s); goto cleanup; }

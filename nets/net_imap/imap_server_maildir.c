@@ -282,16 +282,6 @@ int parse_size_from_filename(const char *filename, unsigned long *size)
 	return 0;
 }
 
-void free_scandir_entries(struct dirent **entries, int numfiles)
-{
-	int fno = 0;
-	struct dirent *entry;
-
-	while (fno < numfiles && (entry = entries[fno++])) {
-		free(entry);
-	}
-}
-
 int imap_msg_to_filename(const char *directory, int seqno, unsigned int uid, char *buf, size_t len)
 {
 	struct dirent *entry;
@@ -339,61 +329,8 @@ int imap_msg_to_filename(const char *directory, int seqno, unsigned int uid, cha
 				break;
 			}
 		}
-		free_scandir_entries(entries, files); /* Free all at once, since we might break out of the loop early */
+		bbs_free_scandir_entries(entries, files); /* Free all at once, since we might break out of the loop early */
 		free(entries);
 		return res;
 	}
-}
-
-int uidsort(const struct dirent **da, const struct dirent **db)
-{
-	unsigned int auid, buid;
-	int failures = 0;
-	const char *a = (*da)->d_name;
-	const char *b = (*db)->d_name;
-
-	/* We still have to deal with stuff like ., .., etc. here.
-	 * We're iterating over the "cur" directory of a maildir,
-	 * which will not have subfolders, so we should not encounter any. */
-
-	/* Don't care about these, just return any *consistent* ordering. */
-	if (!strcmp(a, ".") || !strcmp(a, "..")) {
-		return strcmp(a, b);
-	} else if (!strcmp(b, ".") || !strcmp(b, "..")) {
-		return strcmp(a, b);
-	}
-
-	/* Note: Sequence numbers MUST be ordered by ascending unique identifiers, according to RFC 9051 2.3.1.2.
-	 * So using any consistent ordering is not sufficient; they must be ordered by UID.
-	 * For this reason, we use uidsort as the compare function instead of alphasort,
-	 * since alphasort will sort by the order messages were originally created in any maildir.
-	 * This is irrelevant for our purposes.
-	 *
-	 * Kind of learned this the hard way, too. Clients like Thunderbird-based clients will do
-	 * funky things the sequence numbers are not in the right order.
-	 * For example, just using opendir instead of scandir (which means arbitrary ordering, not even consistent ordering)
-	 * leads to "flip floppings" where some messages are visible at one point, and if you click "Get Messages"
-	 * to refresh, a different set of messages is shown (mostly overlapping, but the start/end is disjoint).
-	 * Clicking "Get Messages" again goes back again, and so forth, flip flopping back and forth.
-	 * This same thing happens even when using scandir with alphasort if messages in the directory
-	 * are not in UID order. This can happen when moving/copying messages between folders.
-	 * A simple mailbox test won't catch this, but in real world mailboxes, this is likely to happen.
-	 */
-
-	failures += !!maildir_parse_uid_from_filename(a, &auid);
-	failures += !!maildir_parse_uid_from_filename(b, &buid);
-
-	if (failures == 2) {
-		/* If this is the new dir instead of a cur dir, then there won't be any UIDs. Key is that either both or neither filename must have UIDs. */
-		auid = (unsigned int) atoi(a);
-		buid = (unsigned int) atoi(b);
-	} else if (unlikely(failures == 1)) {
-		bbs_error("Failed to parse UID for %s / %s\n", a, b);
-		return 0;
-	} else if (unlikely(auid == buid)) {
-		bbs_error("Message UIDs are equal? (%u = %u)\n", auid, buid);
-		return 0;
-	}
-
-	return auid < buid ? -1 : 1;
 }

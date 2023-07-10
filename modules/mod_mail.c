@@ -15,6 +15,7 @@
  * \brief E-Mail Resource Module
  *
  * \note Common e-mail resources for SMTP, POP3, and IMAP4 servers
+ * \note Supports RFC 5423 Message Store Events
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -27,6 +28,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <dirent.h>
+#include <libgen.h> /* use dirname */
 
 #include "include/linkedlists.h"
 #include "include/module.h"
@@ -41,7 +43,7 @@
 
 #include "include/mod_mail.h"
 
-static char maildir[248] = "";
+static char root_maildir[248] = "";
 static char catchall[256] = "";
 static unsigned int maxquota = 10000000;
 static unsigned int trashdays = 7;
@@ -57,12 +59,13 @@ struct mailbox {
 	unsigned int quota;					/* Total quota for this mailbox */
 	unsigned int quotausage;			/* Cached quota usage calculation */
 	char maildir[266];					/* User's mailbox directory, on disk. */
-	int maildirlen;						/* Length of maildir */
+	size_t maildirlen;					/* Length of maildir */
 	pthread_rwlock_t lock;				/* R/W lock for entire mailbox. R/W instead of a mutex, because POP write locks the entire mailbox, IMAP can just read lock. */
 	pthread_mutex_t uidlock;			/* Mutex for UID operations. */
 	RWLIST_ENTRY(mailbox) entry;		/* Next mailbox */
 	unsigned int activity:1;			/* Mailbox has activity */
 	unsigned int quotavalid:1;			/* Whether cached quota calculations may still be used */
+	unsigned int overquota:1;			/* Cached determination of being over quota (to compare later) */
 	char *name;
 };
 
@@ -111,33 +114,243 @@ int mail_domain_is_local(const char *domain)
 	return 0;
 }
 
-static void (*watchcallback)(struct mailbox *mbox, const char *newfile) = NULL;
-static void *watchmod = NULL;
+struct mailbox_watcher {
+	void (*watchcallback)(struct mailbox_event *event);
+	void *watchmod;
+	RWLIST_ENTRY(mailbox_watcher) entry;
+};
 
-int __mailbox_register_watcher(void (*callback)(struct mailbox *mbox, const char *newfile), void *mod)
+static RWLIST_HEAD_STATIC(watchers, mailbox_watcher);
+
+int __mailbox_register_watcher(void (*callback)(struct mailbox_event *event), void *mod)
 {
-	/* Can only be one (IMAP). Could support more, but that's all we need this for,
-	 * so no need to add complexity by maintaining a list of callbacks at the moment. */
-	if (watchcallback) {
-		bbs_error("A mailbox watcher is already registered.\n");
+	struct mailbox_watcher *w;
+
+	w = calloc(1, sizeof(*w));
+	if (ALLOC_FAILURE(w)) {
 		return -1;
 	}
 
-	watchcallback = callback;
-	watchmod = mod;
+	w->watchcallback = callback;
+	w->watchmod = mod;
+
+	RWLIST_WRLOCK(&watchers);
+	RWLIST_INSERT_HEAD(&watchers, w, entry);
+	RWLIST_UNLOCK(&watchers);
 	return 0;
 }
 
-int mailbox_unregister_watcher(void (*callback)(struct mailbox *mbox, const char *newfile))
+int mailbox_unregister_watcher(void (*callback)(struct mailbox_event *event))
 {
-	if (watchcallback != callback) {
-		bbs_error("Mailbox watcher %p does not match registered provider %p\n", callback, watchcallback);
+	struct mailbox_watcher *w;
+
+	RWLIST_WRLOCK(&watchers);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&watchers, w, entry) {
+		if (w->watchcallback == callback) {
+			RWLIST_REMOVE_CURRENT(entry);
+			free(w);
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(&watchers);
+
+	if (!w) {
+		bbs_error("Mailbox watcher %p not currently registered\n", callback);
 		return -1;
 	}
 
-	watchcallback = NULL;
-	watchmod = NULL;
 	return 0;
+}
+
+const char *mailbox_event_type_name(enum mailbox_event_type type)
+{
+	switch (type) {
+		case EVENT_MESSAGE_APPEND:
+			return "MessageAppend";
+		case EVENT_MESSAGE_EXPIRE:
+			return "MessageExpire";
+		case EVENT_MESSAGE_EXPUNGE:
+			return "MessageExpunge";
+		case EVENT_MESSAGE_NEW:
+			return "MessageNew";
+		case EVENT_QUOTA_EXCEED:
+			return "QuotaExceed";
+		case EVENT_QUOTA_WITHIN:
+			return "QuotaChange";
+		case EVENT_QUOTA_CHANGE:
+			return "QuotaChange";
+		case EVENT_MESSAGE_READ:
+			return "MessageRead";
+		case EVENT_MESSAGE_TRASH:
+			return "MessageTrash";
+		case EVENT_FLAGS_SET:
+			return "FlagsSet";
+		case EVENT_FLAGS_CLEAR:
+			return "FlagsClear";
+		case EVENT_LOGIN:
+			return "Login";
+		case EVENT_LOGOUT:
+			return "Logout";
+		case EVENT_MAILBOX_CREATE:
+			return "MailboxCreate";
+		case EVENT_MAILBOX_DELETE:
+			return "MailboxDelete";
+		case EVENT_MAILBOX_RENAME:
+			return "MailboxRename";
+		case EVENT_MAILBOX_SUBSCRIBE:
+			return "MailboxSubscribe";
+		case EVENT_MAILBOX_UNSUBSCRIBE:
+			return "MailboxUnsubscribe";
+		case EVENT_METADATA_CHANGE:
+			return "MetadataChange";
+		case EVENT_SERVER_METADATA_CHANGE:
+			return "ServerMetadataChange";
+		case EVENT_ANNOTATION_CHANGE:
+			return "AnnotationChange";
+		/* No default case */
+	}
+	bbs_assert(0);
+	return NULL;
+}
+
+static pthread_mutex_t eventidlock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned long next_eventid = 0;
+
+void mailbox_dispatch_event(struct mailbox_event *event)
+{
+	struct mailbox_watcher *w;
+
+	pthread_mutex_lock(&eventidlock);
+	event->id = ++next_eventid;
+	pthread_mutex_unlock(&eventidlock);
+
+	bbs_debug(6, "Dispatching mailbox event '%s'\n", mailbox_event_type_name(event->type));
+
+	/* Sanity checks */
+	bbs_assert(!event->uids || event->numuids > 0); /* If we provided UIDs, then we must specify how many */
+	bbs_assert(!event->maildir || event->maildir[0] == '/'); /* This is supposed to be a full path, not relative */
+
+	/* At this point in time, we have an event,
+	 * with all the information that was "free" for the caller to provide.
+	 * e.g. If the caller already knew the MODSEQ, it should be filled in,
+	 * but if not, no effort has been made to fill in missing information.
+	 * If events request information that we don't have,
+	 * we can go and fetch that information as needed,
+	 * but otherwise, there's no point in doing the work up front, potentially needlessly. */
+
+	time(&event->timestamp);
+
+	if (!strcmp(event->node->protname, "IMAP") || !strcmp(event->node->protname, "POP3")) {
+		event->messageaccess = 1;
+	}
+
+	RWLIST_RDLOCK(&watchers);
+	RWLIST_TRAVERSE(&watchers, w, entry) {
+		bbs_module_ref(w->watchmod);
+		w->watchcallback(event);
+		bbs_module_unref(w->watchmod);
+	}
+	RWLIST_UNLOCK(&watchers);
+}
+
+void mailbox_initialize_event(struct mailbox_event *e, enum mailbox_event_type type, struct bbs_node *node, struct mailbox *mbox, const char *maildir)
+{
+	memset(e, 0, sizeof(struct mailbox_event));
+	e->type = type;
+	e->node = node;
+	e->mbox = mbox;
+	e->maildir = maildir;
+}
+
+void mailbox_dispatch_event_basic(enum mailbox_event_type type, struct bbs_node *node, struct mailbox *mbox, const char *maildir)
+{
+	struct mailbox_event e;
+	mailbox_initialize_event(&e, type, node, mbox, maildir);
+	mailbox_dispatch_event(&e);
+}
+
+void mailbox_notify_new_message(struct bbs_node *node, struct mailbox *mbox, const char *maildir, const char *newfile, size_t size)
+{
+	struct mailbox_event e;
+	struct stat st;
+
+	/* Update mailbox quota to account for new message.
+	 * We don't do this for APPEND in net_imap, since we update the quota for each message when processed. */
+	if (stat(newfile, &st)) {
+		mailbox_invalidate_quota_cache(mbox);
+	} else {
+		mailbox_quota_adjust_usage(mbox, (int) st.st_size);
+	}
+	/* Set activity on this mailbox */
+	mailbox_uid_lock(mbox); /* Borrow the UID lock since we need to do this atomically */
+	mbox->activity = 1;
+	mailbox_uid_unlock(mbox);
+
+	/*! \todo FIXME RFC 5423 4.1 says MessageNew MUST provide both UIDVALIDITY and UID.
+	 * UIDVALIDITY could be done easily, but we currently have no way of providing a UID.
+	 * This is because UIDs are not assigned until a maildir-reading process (net_imap) moves messages
+	 * from the new subdir to the cur subdir of the maildir.
+	 * Thus, there is literally no UID assigned at this point in time we can provide.
+	 * We also can't "speculate" what the UID will be. Further messages could be appended to the mailbox
+	 * between now and when the messages are moved to cur, so even if the ordering of moving messages
+	 * from new to cur was deterministic, that still wouldn't help.
+	 * What we *could* do is, if any subscribers (IMAP clients, specifically) want the UID attribute
+	 * for a MessageNew event, implicitly move the message from new to cur NOW, which will assign it a UID.
+	 * Otherwise, there is really no good workaround. */
+
+	mailbox_initialize_event(&e, EVENT_MESSAGE_NEW, node, mbox, maildir);
+	e.msgsize = size;
+	mailbox_dispatch_event(&e);
+}
+
+void mailbox_notify_quota_exceeded(struct bbs_node *node, struct mailbox *mbox)
+{
+	struct mailbox_event e;
+
+	/* The quota should already be cached for this mailbox (since we just calculated we're over it),
+	 * so calling mailbox_quota_remaining and mailbox_quota are not expensive.
+	 * However, we don't need to call them here and cache it on the event,
+	 * we can just get it in realtime as needed. */
+
+	mailbox_initialize_event(&e, EVENT_QUOTA_EXCEED, node, mbox, NULL);
+	mailbox_dispatch_event(&e);
+}
+
+unsigned int mailbox_event_uidvalidity(struct mailbox_event *e)
+{
+	if (!e->uidvalidity) {
+		if (!e->mbox || !e->maildir) {
+			bbs_error("No mailbox and/or maildir\n");
+			return 0;
+		}
+		mailbox_get_next_uid(e->mbox, e->maildir, 0, &e->uidvalidity, &e->uidnext);
+	}
+	return e->uidvalidity;
+}
+
+unsigned int mailbox_event_uidnext(struct mailbox_event *e)
+{
+	if (!e->uidnext) {
+		if (!e->mbox || !e->maildir) {
+			bbs_error("No mailbox and/or maildir\n");
+			return 0;
+		}
+		mailbox_get_next_uid(e->mbox, e->maildir, 0, &e->uidvalidity, &e->uidnext);
+	}
+	return e->uidnext;
+}
+
+int mailbox_has_activity(struct mailbox *mbox)
+{
+	int res;
+
+	mailbox_uid_lock(mbox); /* Borrow the UID lock since we need to do this atomically */
+	/* XXX A problem with this is that mailbox_has_activity will apply to all folders in an account, even if *this* maildir hasn't changed... */
+	res = mbox->activity;
+	mbox->activity = 0; /* If it was, we ate it */
+	mailbox_uid_unlock(mbox);
+	return res;
 }
 
 static int (*sieve_validate)(const char *filename, struct mailbox *mbox, char **errormsg) = NULL;
@@ -505,11 +718,11 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid, const char *n
 			mbox->name = strdup(name);
 		}
 		if (userid) {
-			snprintf(mbox->maildir, sizeof(mbox->maildir), "%s/%u", maildir, userid);
+			snprintf(mbox->maildir, sizeof(mbox->maildir), "%s/%u", root_maildir, userid);
 		} else {
-			snprintf(mbox->maildir, sizeof(mbox->maildir), "%s/%s", maildir, name);
+			snprintf(mbox->maildir, sizeof(mbox->maildir), "%s/%s", root_maildir, name);
 		}
-		mbox->maildirlen = (int) strlen(mbox->maildir);
+		mbox->maildirlen = strlen(mbox->maildir);
 		RWLIST_INSERT_HEAD(&mailboxes, mbox, entry);
 		/* Before we return the mailbox to a mail server module for operations,
 		 * make sure that the user's mail directory actually exists. */
@@ -657,41 +870,6 @@ void mailbox_unwatch(struct mailbox *mbox)
 	mailbox_uid_unlock(mbox);
 }
 
-void mailbox_notify(struct mailbox *mbox, const char *newfile)
-{
-	struct stat st;
-
-	if (stat(newfile, &st)) {
-		mailbox_invalidate_quota_cache(mbox);
-	} else {
-		mailbox_quota_adjust_usage(mbox, (int) st.st_size);
-	}
-
-	if (!mbox->watchers) {
-		return; /* Nobody is watching the mailbox right now, so no need to bother notifying any watchers. */
-	}
-
-	mailbox_uid_lock(mbox); /* Borrow the UID lock since we need to do this atomically */
-	mbox->activity = 1;
-	mailbox_uid_unlock(mbox);
-
-	if (watchcallback) {
-		bbs_module_ref(watchmod);
-		watchcallback(mbox, newfile);
-		bbs_module_unref(watchmod);
-	}
-}
-
-int mailbox_has_activity(struct mailbox *mbox)
-{
-	int res;
-	mailbox_uid_lock(mbox); /* Borrow the UID lock since we need to do this atomically */
-	res = mbox->activity;
-	mbox->activity = 0; /* If it was, we ate it */
-	mailbox_uid_unlock(mbox);
-	return res;
-}
-
 void mailbox_invalidate_quota_cache(struct mailbox *mbox)
 {
 	bbs_debug(5, "Cached quota usage for mailbox %d has been invalidated\n", mailbox_id(mbox));
@@ -735,6 +913,28 @@ unsigned long mailbox_quota(struct mailbox *mbox)
 	return mbox->quota;
 }
 
+unsigned long mailbox_quota_used(struct mailbox *mbox)
+{
+	unsigned long quotaused;
+	long tmp;
+
+	if (mbox->quotavalid) {
+		/* Use the cached quota calculations if mailbox usage hasn't really changed */
+		return mbox->quotausage;
+	}
+
+	tmp = bbs_dir_size(mailbox_maildir(mbox));
+	if (tmp < 0) {
+		/* An error occured, so we have no idea how much space is used. */
+		bbs_warning("Unable to calculate quota usage for mailbox %p\n", mbox);
+		return 0;
+	}
+	quotaused = (unsigned long) tmp;
+	mbox->quotausage = (unsigned int) quotaused;
+	mbox->quotavalid = 1; /* This can be cached until invalidated again */
+	return quotaused;
+}
+
 unsigned long mailbox_quota_remaining(struct mailbox *mbox)
 {
 	unsigned long quota, quotaused;
@@ -763,10 +963,22 @@ unsigned long mailbox_quota_remaining(struct mailbox *mbox)
 	mbox->quotavalid = 1; /* This can be cached until invalidated again */
 	if (quotaused >= quota) {
 		bbs_debug(5, "No quota remaining in this mailbox (%lu used, %lu available)\n", quotaused, quota);
+		mbox->overquota = 1;
 		return 0; /* Quota already exceeded. Don't cast to unsigned or it will underflow and be huge. */
 	}
 	quota -= quotaused;
 	return (unsigned long) (quota - quotaused);
+}
+
+#define MAX_UID 4294967295
+
+unsigned long mailbox_max_messages(struct mailbox *mbox)
+{
+	UNUSED(mbox);
+	/* XXX Currently we do not really support limits on the number of messages
+	 * in a mailbox (though we probably should)
+	 * The absolute max is the highest possible UID, so it will never be more than that. */
+	return MAX_UID;
 }
 
 int mailbox_maildir_init(const char *path)
@@ -785,17 +997,37 @@ int mailbox_maildir_init(const char *path)
 	return res;
 }
 
+int maildir_is_mailbox(const char *basename)
+{
+	if (!strcmp(basename, "mailq") || !strcmp(basename, "lists")) {
+		return 0;
+	}
+	/* Otherwise, if it's a numeric directory, it's a user's personal mailbox,
+	 * and if it's not, then it's a named shared mailbox. */
+	return 1;
+}
+
 const char *mailbox_maildir(struct mailbox *mbox)
 {
 	if (!mbox) {
-		return maildir;
+		return root_maildir;
 	}
 	return mbox->maildir;
+}
+
+size_t mailbox_maildir_len(struct mailbox *mbox)
+{
+	return mbox->maildirlen;
 }
 
 int mailbox_id(struct mailbox *mbox)
 {
 	return (int) mbox->id;
+}
+
+const char *mailbox_name(struct mailbox *mbox)
+{
+	return mbox->name;
 }
 
 int mailbox_uniqueid(struct mailbox *mbox, char *buf, size_t len)
@@ -1179,7 +1411,33 @@ char *maildir_get_expunged_since_modseq(const char *directory, unsigned long las
 	}
 }
 
-unsigned long maildir_indicate_expunged(struct mailbox *mbox, const char *directory, unsigned int *uids, int length)
+static void expire_expunge_event(enum mailbox_event_type type, struct bbs_node *node, struct mailbox *mbox, const char *curdir, unsigned int *uids, unsigned int *seqnos, int length, int silent, unsigned long maxmodseq)
+{
+	char buf[256];
+	const char *maildir;
+	struct mailbox_event e;
+
+	/* Our callers all provide the curdir, and some don't have the maildir handy easily, so just create it here */
+	safe_strncpy(buf, curdir, sizeof(buf));
+	maildir = dirname(buf);
+
+	mailbox_initialize_event(&e, type, node, mbox, maildir);
+	e.uids = uids;
+	e.seqnos = seqnos;
+	e.numuids = length;
+	e.modseq = maxmodseq;
+	SET_BITFIELD(e.expungesilent, silent); /* Used by net_imap */
+	mailbox_dispatch_event(&e);
+
+	if (mbox->overquota && mailbox_quota_remaining(mbox) > 0) {
+		/* We're no longer over quota. */
+		mbox->overquota = 0;
+		mailbox_initialize_event(&e, EVENT_QUOTA_WITHIN, node, mbox, NULL); /* No maildir needed for this event */
+		mailbox_dispatch_event(&e);
+	}
+}
+
+unsigned long maildir_indicate_expunged(enum mailbox_event_type type, struct bbs_node *node, struct mailbox *mbox, const char *directory, unsigned int *uids, unsigned int *seqnos, int length, int silent)
 {
 	char modseqfile[256];
 	unsigned long maxmodseq;
@@ -1277,6 +1535,8 @@ unsigned long maildir_indicate_expunged(struct mailbox *mbox, const char *direct
 	}
 	fclose(fp);
 #endif
+
+	expire_expunge_event(type, node, mbox, directory, uids, seqnos, length, silent, maxmodseq);
 	return maxmodseq;
 }
 
@@ -1688,15 +1948,104 @@ cleanup:
  * For exmaple, mkstemp safely returns a unique temporary filename.
  */
 
-static int on_mailbox_trash(const char *dir_name, const char *filename, void *obj)
+int uidsort(const struct dirent **da, const struct dirent **db)
+{
+	unsigned int auid, buid;
+	int failures = 0;
+	const char *a = (*da)->d_name;
+	const char *b = (*db)->d_name;
+
+	/* We still have to deal with stuff like ., .., etc. here.
+	 * We're iterating over the "cur" directory of a maildir,
+	 * which will not have subfolders, so we should not encounter any. */
+
+	/* Don't care about these, just return any *consistent* ordering. */
+	if (!strcmp(a, ".") || !strcmp(a, "..")) {
+		return strcmp(a, b);
+	} else if (!strcmp(b, ".") || !strcmp(b, "..")) {
+		return strcmp(a, b);
+	}
+
+	/* Note: Sequence numbers MUST be ordered by ascending unique identifiers, according to RFC 9051 2.3.1.2.
+	 * So using any consistent ordering is not sufficient; they must be ordered by UID.
+	 * For this reason, we use uidsort as the compare function instead of alphasort,
+	 * since alphasort will sort by the order messages were originally created in any maildir.
+	 * This is irrelevant for our purposes.
+	 *
+	 * Kind of learned this the hard way, too. Clients like Thunderbird-based clients will do
+	 * funky things the sequence numbers are not in the right order.
+	 * For example, just using opendir instead of scandir (which means arbitrary ordering, not even consistent ordering)
+	 * leads to "flip floppings" where some messages are visible at one point, and if you click "Get Messages"
+	 * to refresh, a different set of messages is shown (mostly overlapping, but the start/end is disjoint).
+	 * Clicking "Get Messages" again goes back again, and so forth, flip flopping back and forth.
+	 * This same thing happens even when using scandir with alphasort if messages in the directory
+	 * are not in UID order. This can happen when moving/copying messages between folders.
+	 * A simple mailbox test won't catch this, but in real world mailboxes, this is likely to happen.
+	 */
+
+	failures += !!maildir_parse_uid_from_filename(a, &auid);
+	failures += !!maildir_parse_uid_from_filename(b, &buid);
+
+	if (failures == 2) {
+		/* If this is the new dir instead of a cur dir, then there won't be any UIDs. Key is that either both or neither filename must have UIDs. */
+		auid = (unsigned int) atoi(a);
+		buid = (unsigned int) atoi(b);
+	} else if (unlikely(failures == 1)) {
+		bbs_error("Failed to parse UID for %s / %s\n", a, b);
+		return 0;
+	} else if (unlikely(auid == buid)) {
+		bbs_error("Message UIDs are equal? (%u = %u)\n", auid, buid);
+		return 0;
+	}
+
+	return auid < buid ? -1 : 1;
+}
+
+int maildir_ordererd_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), void *obj)
+{
+	struct dirent *entry, **entries;
+	int files, fno = 0;
+	int res = 0;
+	int seqno = 0;
+
+	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
+	files = scandir(path, &entries, NULL, uidsort);
+	if (files < 0) {
+		bbs_error("scandir(%s) failed: %s\n", path, strerror(errno));
+		return -1;
+	}
+	while (fno < files && (entry = entries[fno++])) {
+		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		seqno++;
+		if ((res = on_file(path, entry->d_name, seqno, obj))) {
+			break; /* If the handler returns non-zero then stop */
+		}
+	}
+	bbs_free_scandir_entries(entries, files); /* Free all at once at the end, in case we break from the loop early */
+	free(entries);
+	return res;
+}
+
+struct trash_traversal {
+	unsigned int *a;	/* For UIDs */
+	unsigned int *sa;	/* For sequence numbers */
+	int lengths;
+	int allocsizes;
+	struct mailbox *mbox;
+};
+
+static int on_mailbox_trash(const char *dir_name, const char *filename, int seqno, void *obj)
 {
 	struct stat st;
 	char fullname[256];
 	int tstamp;
 	int trashsec = 86400 * (int) trashdays;
 	int elapsed, now = (int) time(NULL);
-	struct mailbox *mbox = obj;
 	unsigned int msguid;
+	struct trash_traversal *traversal = obj;
+	struct mailbox *mbox = traversal->mbox;
 
 	/* For autopurging, we don't care if the Deleted flag is set or not.
 	 * (If it were set, an IMAP user already flagged it for permanent deletion and it would just be awaiting expunge) */
@@ -1717,12 +2066,7 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, void *ob
 			mailbox_quota_adjust_usage(mbox, (int) -st.st_size); /* Subtract file size from quota usage */
 		}
 		maildir_parse_uid_from_filename(filename, &msguid);
-		/*! \todo Since many messages are probably deleted at the same time,
-		 * it would be more efficient to store a list of message UIDs deleted
-		 * and pass them to this function at once at the end.
-		 * Not as critical as in net_imap though since this is a background task.
-		 */
-		maildir_indicate_expunged(mbox, dir_name, &msguid, 1);
+		uintlist_append2(&traversal->a, &traversal->sa, &traversal->lengths, &traversal->allocsizes, msguid, (unsigned int) seqno);
 	}
 	return 0;
 }
@@ -1733,29 +2077,37 @@ static void scan_mailboxes(void)
 	struct dirent *entry;
 	char trashdir[515];
 
-	/* Traverse each mailbox top-level maildir */
-	if (!(dir = opendir(maildir))) {
-		bbs_error("Error opening directory - %s: %s\n", maildir, strerror(errno));
+	/* Traverse each mailbox top-level maildir. The order of maildir traversal does not matter. */
+	if (!(dir = opendir(root_maildir))) {
+		bbs_error("Error opening directory - %s: %s\n", root_maildir, strerror(errno));
 		return;
 	}
 	while ((entry = readdir(dir)) != NULL) {
 		struct mailbox *mbox;
 		unsigned int mboxnum;
+		struct trash_traversal traversal;
 		if (entry->d_type != DT_DIR || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			continue;
 		}
-		mboxnum = (unsigned int) atoi(entry->d_name);
-		if (!mboxnum) {
-			continue; /* Ignore non-numeric directories, these are other things (e.g. mailq) */
+		if (!maildir_is_mailbox(entry->d_name)) {
+			continue;
 		}
-		snprintf(trashdir, sizeof(trashdir), "%s/%s/.Trash/cur", maildir, entry->d_name);
+		snprintf(trashdir, sizeof(trashdir), "%s/%s/.Trash/cur", root_maildir, entry->d_name);
 		if (eaccess(trashdir, R_OK)) {
 			bbs_debug(2, "Directory %s doesn't exist?\n", trashdir); /* It should if it's a maildir we created, unless user has never accessed it yet. */
 			continue;
 		}
 		bbs_debug(3, "Analyzing trash folder %s\n", trashdir);
+		mboxnum = (unsigned int) atoi(entry->d_name);
 		mbox = mailbox_find_or_create(mboxnum, mboxnum ? NULL : entry->d_name);
-		bbs_dir_traverse(trashdir, on_mailbox_trash, mbox, -1); /* Traverse files in the Trash folder */
+		memset(&traversal, 0, sizeof(traversal));
+		traversal.mbox = mbox;
+		maildir_ordererd_traverse(trashdir, on_mailbox_trash, &traversal); /* Traverse files in the Trash folder */
+		if (traversal.lengths) {
+			maildir_indicate_expunged(EVENT_MESSAGE_EXPIRE, NULL, mbox, entry->d_name, traversal.a, traversal.sa, traversal.lengths, 0);
+			free_if(traversal.a);
+			free_if(traversal.sa);
+		}
 	}
 
 	closedir(dir);
@@ -1785,15 +2137,15 @@ static int load_config(void)
 		return -1;
 	}
 
-	if (bbs_config_val_set_str(cfg, "general", "maildir", maildir, sizeof(maildir))) {
+	if (bbs_config_val_set_str(cfg, "general", "maildir", root_maildir, sizeof(root_maildir))) {
 		return -1;
 	}
 	bbs_config_val_set_str(cfg, "general", "catchall", catchall, sizeof(catchall));
 	bbs_config_val_set_uint(cfg, "general", "quota", &maxquota);
 	bbs_config_val_set_uint(cfg, "general", "trashdays", &trashdays);
 
-	if (eaccess(maildir, X_OK)) { /* This is a directory, so we better have execute permissions on it */
-		bbs_error("Directory %s does not exist\n", maildir);
+	if (eaccess(root_maildir, X_OK)) { /* This is a directory, so we better have execute permissions on it */
+		bbs_error("Directory %s does not exist\n", root_maildir);
 		return -1;
 	}
 

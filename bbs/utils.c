@@ -489,6 +489,16 @@ int bbs_dir_traverse_dirs(const char *path, int (*on_file)(const char *dir_name,
 	return __bbs_dir_traverse(path, on_file, obj, max_depth, 1);
 }
 
+void bbs_free_scandir_entries(struct dirent **entries, int numfiles)
+{
+	int fno = 0;
+	struct dirent *entry;
+
+	while (fno < numfiles && (entry = entries[fno++])) {
+		free(entry);
+	}
+}
+
 int bbs_dir_has_file_prefix(const char *path, const char *prefix)
 {
 	DIR *dir;
@@ -677,6 +687,29 @@ long bbs_dir_size(const char *path)
 	}
 	bbs_debug(6, "Directory %s size is %ld bytes\n", path, size);
 	return size;
+}
+
+int bbs_dir_num_files(const char *path)
+{
+	DIR *dir;
+	struct dirent *entry;
+	int num = 0;
+
+	/* Order doesn't matter here, we just want the total number of messages, so fine (and faster) to use opendir instead of scandir */
+	if (!(dir = opendir(path))) {
+		bbs_error("Error opening directory - %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+
+	while ((entry = readdir(dir)) != NULL) {
+		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		num++;
+	}
+
+	closedir(dir);
+	return num;
 }
 
 int bbs_file_exists(const char *path)

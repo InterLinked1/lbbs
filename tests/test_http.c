@@ -25,7 +25,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#define TEST_WWW_DIR "/tmp/test_lbbs_www"
+#define TEST_WWW_DIR "/tmp/test_lbbs/www"
 
 static int pre(void)
 {

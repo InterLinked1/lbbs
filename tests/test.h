@@ -47,9 +47,10 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #undef bbs_verb
 
 #define LBBS_BINARY "/usr/sbin/lbbs"
-#define TEST_CONFIG_DIR "/tmp/test_lbbs_etc"
-#define TEST_MAIL_DIR "/tmp/test_lbbs_maildir"
-#define TEST_NEWS_DIR "/tmp/test_lbbs_newsdir"
+#define TEST_ROOT_DIR "/tmp/test_lbbs"
+#define TEST_CONFIG_DIR DIRCAT(TEST_ROOT_DIR, "/etc")
+#define TEST_MAIL_DIR DIRCAT(TEST_ROOT_DIR, "/maildir")
+#define TEST_NEWS_DIR DIRCAT(TEST_ROOT_DIR, "/newsdir")
 
 /* Yuck, but why reinvent the wheel */
 #define TEST_ADD_CONFIG(filename) system("cp " filename " " TEST_CONFIG_DIR)
@@ -107,6 +108,14 @@ int test_client_drain(int fd, int ms);
 	int _dir_cnt = test_dir_file_count(dir); \
 	if (_dir_cnt != cnt) { \
 		bbs_error("Expected to find %d file%s in directory %s but actually found %d?\n", cnt, ESS(cnt), dir, _dir_cnt); \
+		goto cleanup; \
+	} \
+}
+
+#define DIRECTORY_EXPECT_EXISTS(dir) { \
+	int _dir_cnt = test_dir_file_count(dir); \
+	if (_dir_cnt < 0) { \
+		bbs_error("Directory %s does not exist\n", dir); \
 		goto cleanup; \
 	} \
 }

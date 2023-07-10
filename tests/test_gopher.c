@@ -25,7 +25,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#define TEST_GOPHER_DIR "/tmp/test_lbbs_gopherdir"
+#define TEST_GOPHER_DIR "/tmp/test_lbbs/gopherdir"
 
 static int pre(void)
 {

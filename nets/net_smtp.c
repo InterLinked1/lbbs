@@ -322,6 +322,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 /*! \brief RFC4954 Authentication */
 static int handle_auth(struct smtp_session *smtp, char *s)
 {
+	int res;
 	int inauth = smtp->inauth;
 
 	smtp->inauth = 0;
@@ -334,7 +335,6 @@ static int handle_auth(struct smtp_session *smtp, char *s)
 	}
 
 	if (inauth == 1) {
-		int res;
 		unsigned char *decoded;
 		char *authorization_id, *authentication_id, *password;
 
@@ -351,19 +351,13 @@ static int handle_auth(struct smtp_session *smtp, char *s)
 		free(decoded);
 
 		/* Have a combined username and password */
-		if (res) {
-			/* Don't really know if it was a decoding failure or invalid username/password */
-			smtp_reply(smtp, 535, 5.7.8, "Authentication credentials invalid");
-			return 0;
-		}
-		smtp_reply(smtp, 235, 2.7.0, "Authentication successful");
+		goto logindone;
 	} else if (inauth == 2) {
 		REPLACE(smtp->authuser, s);
 		smtp->inauth = 3; /* Get password */
 		_smtp_reply(smtp, "334 UGFzc3dvcmQ6\r\n"); /* Prompt for password (base64 encoded) */
 	} else if (inauth == 3) {
 	int userlen, passlen;
-		int res;
 		unsigned char *user, *pass;
 		/* Have a password, and a stored username */
 		user = base64_decode((unsigned char*) smtp->authuser, (int) strlen(smtp->authuser), &userlen);
@@ -380,13 +374,18 @@ static int handle_auth(struct smtp_session *smtp, char *s)
 		res = bbs_authenticate(smtp->node, (char*) user, (char*) pass);
 		free(user);
 		free(pass);
-		if (res) {
-			smtp_reply(smtp, 535, 5.7.8, "Authentication credentials invalid");
-			return 0;
-		}
-		smtp_reply(smtp, 235, 2.7.0, "Authentication successful");
+		goto logindone;
 	} else {
 		bbs_assert(0);
+	}
+	return 0;
+
+logindone:
+	if (res) {
+		smtp_reply(smtp, 535, 5.7.8, "Authentication credentials invalid");
+	} else {
+		smtp_reply(smtp, 235, 2.7.0, "Authentication successful");
+		mailbox_dispatch_event_basic(EVENT_LOGIN, smtp->node, NULL, NULL);
 	}
 	return 0;
 }
@@ -1315,6 +1314,7 @@ static inline void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_pr
  * \param len Length of newfilebuf
  * \retval 0 on success, nonzero on error
  */
+/*! \todo Can smtp be NULL to this function? If so, we have a problem */
 static int appendmsg(struct smtp_session *smtp, struct mailbox *mbox, struct smtp_msg_process *mproc, const char *recipient, int srcfd, size_t datalen, char *newfilebuf, size_t len)
 {
 	char tmpfile[256];
@@ -1329,6 +1329,7 @@ static int appendmsg(struct smtp_session *smtp, struct mailbox *mbox, struct smt
 	bbs_debug(5, "Mailbox %d has %lu bytes quota remaining (need %lu)\n", mailbox_id(mbox), quotaleft, datalen);
 	if (quotaleft < datalen) {
 		/* Mailbox is full, insufficient quota remaining for this message. */
+		mailbox_notify_quota_exceeded(smtp->node, mbox);
 		return -2;
 	}
 
@@ -1382,7 +1383,7 @@ static int appendmsg(struct smtp_session *smtp, struct mailbox *mbox, struct smt
 			 * If/when IMAP NOTIFY support is added, we still need to notify mod_mail about new messages,
 			 * here and everywhere else in net_smtp where messages are saved to disk.
 			 */
-			mailbox_notify(mbox, newfile);
+			mailbox_notify_new_message(smtp->node, mbox, mailbox_maildir(mbox), newfile, datalen);
 		}
 	}
 	return 0;
@@ -1465,6 +1466,7 @@ static int return_dead_letter(const char *from, const char *to, const char *msgf
 	char newfile[256];
 	char *user, *domain;
 	FILE *fp;
+	size_t size;
 
 	/* This server does not relay mail from the outside,
 	 * so we're only responsible for dispatching Delivery Failure notices
@@ -1528,6 +1530,7 @@ static int return_dead_letter(const char *from, const char *to, const char *msgf
 	}
 	/* Don't have bbs_make_email_file delete the message, since we always want it deleted. */
 	res = bbs_make_email_file(fp, "Undelivered Message Returned to Sender", body, from, fromaddr, NULL, NULL, tmpattach, 0);
+	size = (size_t) ftell(fp);
 	fclose(fp);
 
 	/* Deliver the message. */
@@ -1535,7 +1538,7 @@ static int return_dead_letter(const char *from, const char *to, const char *msgf
 		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
 		return -1;
 	} else {
-		mailbox_notify(mbox, newfile);
+		mailbox_notify_new_message(NULL, mbox, mailbox_maildir(mbox), newfile, size);
 	}
 
 	if (unlink(tmpattach)) {
@@ -1561,6 +1564,7 @@ static int notify_stalled_delivery(const char *from, const char *to, const char 
 	char newfile[256];
 	char *user, *domain;
 	FILE *fp;
+	size_t size;
 
 	safe_strncpy(dupaddr, from, sizeof(dupaddr));
 	if (bbs_parse_email_address(dupaddr, NULL, &user, &domain)) {
@@ -1600,6 +1604,7 @@ static int notify_stalled_delivery(const char *from, const char *to, const char 
 		return -1;
 	}
 	res = bbs_make_email_file(fp, "Message Delivery Delayed", body, from, fromaddr, NULL, NULL, NULL, 0);
+	size = (size_t) ftell(fp);
 	fclose(fp);
 
 	/* Deliver the message. */
@@ -1607,7 +1612,7 @@ static int notify_stalled_delivery(const char *from, const char *to, const char 
 		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
 		return -1;
 	} else {
-		mailbox_notify(mbox, newfile);
+		mailbox_notify_new_message(NULL, mbox, mailbox_maildir(mbox), newfile, size);
 	}
 	return res;
 }
@@ -2999,6 +3004,7 @@ static void smtp_handler(struct bbs_node *node, int msa, int secure)
 	SET_BITFIELD(smtp.msa, msa);
 
 	handle_client(&smtp, &ssl);
+	mailbox_dispatch_event_basic(EVENT_LOGOUT, node, NULL, NULL);
 
 #ifdef HAVE_OPENSSL
 	/* Note that due to STARTTLS, smtp.secure might not always equal secure at this point (session could start off insecure and end up secure) */

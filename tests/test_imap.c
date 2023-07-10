@@ -32,10 +32,12 @@ static int pre(void)
 	test_preload_module("mod_mimeparse.so");
 	test_load_module("net_smtp.so");
 	test_load_module("net_imap.so");
+	test_load_module("mod_mail_events.so");
 
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_smtp.conf");
 	TEST_ADD_CONFIG("net_imap.conf");
+	TEST_ADD_CONFIG("mod_mail_events.conf");
 
 	system("rm -rf " TEST_MAIL_DIR); /* Purge the contents of the directory, if it existed. */
 	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
@@ -211,14 +213,14 @@ static int run(void)
 	/* Make sure the created folder shows up in LIST, and exists on disk. */
 	SWRITE(client1, "a6 LIST \"\" \"*\"" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "foobar");
-	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.foobar", 0); /* This function would return -1 if the directory did not exist, so 0 means it exists */
+	DIRECTORY_EXPECT_EXISTS(TEST_MAIL_DIR "/1/.foobar");
 	CLIENT_DRAIN(client1);
 
 	/* RENAME */
 	SWRITE(client1, "a7 RENAME foobar barfoo" ENDL);
 	CLIENT_EXPECT(client1, "a7 OK RENAME");
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.foobar", -1);
-	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.barfoo", 0);
+	DIRECTORY_EXPECT_EXISTS(TEST_MAIL_DIR "/1/.barfoo");
 
 	/* DELETE */
 	SWRITE(client1, "a8 DELETE barfoo" ENDL);

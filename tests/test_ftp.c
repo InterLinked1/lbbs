@@ -25,7 +25,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#define TEST_TRANSFERS_DIR "/tmp/test_lbbs_ftp"
+#define TEST_TRANSFERS_DIR "/tmp/test_lbbs/ftp"
 
 static int pre(void)
 {

@@ -29,6 +29,7 @@
 
 /* Forward declarations */
 struct bbs_user;
+struct dirent;
 
 /*!
  * \brief Generate a UUID (universally unique identifier), all lowercase
@@ -463,6 +464,13 @@ int bbs_dir_traverse(const char *path, int (*bbs_file_on_file)(const char *dir_n
 int bbs_dir_traverse_dirs(const char *path, int (*on_file)(const char *dir_name, const char *filename, void *obj), void *obj, int max_depth);
 
 /*!
+ * \brief Free all of the individual dirent entries in a scandir dirents**
+ * \param entries Entries to be freed
+ * \param numfiles Number of items in entries
+ */
+void bbs_free_scandir_entries(struct dirent **entries, int numfiles);
+
+/*!
  * \brief Determine whether a directory has any files starting with a named prefix
  * \param path Directory to check, non-recursively
  * \param prefix Prefix with which a file must start for there to be a "match"
@@ -483,6 +491,14 @@ int bbs_dir_has_subdirs(const char *path);
  * \retval -1 on failure, size in bytes on success
  */
 long bbs_dir_size(const char *path);
+
+/*!
+ * \brief Get the number of files in a directory
+ * \param path Directory to traverse recursively
+ * \retval -1 on failure
+ * \return number of files on success
+ */
+int bbs_dir_num_files(const char *path);
 
 /*!
  * \brief Check if a file exists

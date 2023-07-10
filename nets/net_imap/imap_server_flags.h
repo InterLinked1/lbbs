@@ -31,7 +31,7 @@
 #define FLAG_NAME_RECENT "\\Recent"
 
 #define IMAP_PERSISTENT_FLAGS FLAG_NAME_FLAGGED " " FLAG_NAME_SEEN " " FLAG_NAME_ANSWERED " " FLAG_NAME_DELETED " " FLAG_NAME_DRAFT
-#define IMAP_FLAGS  IMAP_PERSISTENT_FLAGS " " FLAG_NAME_RECENT
+#define IMAP_FLAGS IMAP_PERSISTENT_FLAGS " " FLAG_NAME_RECENT
 
 /* maildir flags, that appear in a single string and must appear in ASCII order: https://cr.yp.to/proto/maildir.html */
 #define FLAG_DRAFT 'D'
