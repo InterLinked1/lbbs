@@ -102,7 +102,7 @@ static struct imap_client *client_new(const char *name)
 	return client;
 }
 
-static int client_command_passthru(struct imap_client *client, int fd, const char *tag, int taglen, const char *cmd, int cmdlen, int ms, int echo)
+static int client_command_passthru(struct imap_client *client, int fd, const char *tag, int taglen, const char *cmd, int cmdlen, int ms, int echo, int (*cb)(struct imap_client *client, const char *buf, size_t len, void *cbdata), void *cbdata)
 {
 	int res;
 	struct pollfd pfds[2];
@@ -114,6 +114,7 @@ static int client_command_passthru(struct imap_client *client, int fd, const cha
 	pfds[1].fd = fd;
 
 	for (;;) {
+		int cbres = 0;
 		char *buf = client->buf;
 		if (fd != -1) {
 			res = bbs_multi_poll(pfds, 2, ms); /* If returns 1, client->rfd had activity, if 2, it was fd */
@@ -141,6 +142,13 @@ static int client_command_passthru(struct imap_client *client, int fd, const cha
 		if (res < 0) { /* Could include remote server disconnect */
 			return res;
 		}
+		if (cb) {
+			cbres = cb(client, buf, (size_t) res, cbdata);
+			if (cbres < 0) {
+				res = -1;
+				break;
+			}
+		}
 		if (echo) {
 			/* Go ahead and relay it */
 			bbs_write(imap->wfd, buf, (unsigned int) res);
@@ -166,7 +174,7 @@ static int client_command_passthru(struct imap_client *client, int fd, const cha
 	return res;
 }
 
-int __attribute__ ((format (gnu_printf, 6, 7))) __imap_client_send_wait_response(struct imap_client *client, int fd, int ms, int echo, int lineno, const char *fmt, ...)
+int __attribute__ ((format (gnu_printf, 8, 9))) __imap_client_send_wait_response(struct imap_client *client, int fd, int ms, int echo, int lineno, int (*cb)(struct imap_client *client, const char *buf, size_t len, void *cbdata), void *cbdata, const char *fmt, ...)
 {
 	char *buf;
 	int len, res;
@@ -198,7 +206,7 @@ int __attribute__ ((format (gnu_printf, 6, 7))) __imap_client_send_wait_response
 	bbs_write(client->client.wfd, buf, (unsigned int) len);
 	imap_debug(7, "=> %s%s", tagbuf, buf);
 	/* Read until we get the tagged respones */
-	res = client_command_passthru(client, fd, tagbuf, taglen, buf, len, ms, echo) <= 0;
+	res = client_command_passthru(client, fd, tagbuf, taglen, buf, len, ms, echo, cb, cbdata) <= 0;
 	free(buf);
 	return res;
 }

@@ -1234,6 +1234,38 @@ static int select_examine_response(struct imap_session *imap, enum select_type r
 
 static int sharedflagrights = IMAP_ACL_SEEN | IMAP_ACL_WRITE;
 
+static int remote_select_cb(struct imap_client *client, const char *buf, size_t len, void *cbdata)
+{
+	/* RFC 4551 3.1.2 says we must send a NOMODSEQ response code if this mailbox
+	 * doesn't support modification sequences.
+	 * For remote mailboxes, if the remote server doesn't support MODSEQ,
+	 * we may need to dynamically inject a NOMODSEQ response into the SELECT/EXAMINE reply. */
+	int *modseq = cbdata;
+
+	/* Client doesn't care */
+	if (!client->imap->qresync && !client->imap->condstore) {
+		return 0;
+	}
+
+	/* Remote server already handles it */
+	if (client->virtcapabilities & (IMAP_CAPABILITY_CONDSTORE | IMAP_CAPABILITY_QRESYNC)) {
+		return 0; /* The remote server should send a HIGHESTMODSEQ or NOMODSEQ response (if compliant) */
+	}
+
+	if (!memmem(buf, len, "* ", STRLEN("* "))) {
+		if (!*modseq) { /* modseq should never be 1 here, if the remote server supports CONDSTORE/QRESYNC (we'd have returned 0 above) */
+			/* If we didn't get a HIGHESTMODSEQ response,
+			 * we need to indicate no support at this time. */
+			imap_send(client->imap, "* OK [NOMODSEQ] Unsupported");
+		}
+	}
+	if (memmem(buf, len, "HIGHESTMODSEQ", STRLEN("HIGHESTMODSEQ"))) {
+		bbs_warning("Remote server sent %.*s\n", (int) len, buf);
+		*modseq = 1;
+	}
+	return 0;
+}
+
 /*! \brief SELECT/EXAMINE handler */
 static int handle_select(struct imap_session *imap, char *s, enum select_type readonly)
 {
@@ -1251,9 +1283,11 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 		return 0;
 	}
 	if (imap->client) {
+		int modseq = 0;
 		char *remotename = remote_mailbox_name(imap->client, mailbox);
 		REPLACE(imap->folder, mailbox);
-		return imap_client_send_wait_response(imap->client, -1, 5000, "%s \"%s\"\r\n", readonly == CMD_SELECT ? "SELECT" : "EXAMINE", remotename); /* Reconstruct the SELECT, fortunately this is not too bad */
+		/* Reconstruct the SELECT, fortunately this is not too bad */
+		return imap_client_send_wait_response_cb(imap->client, -1, 5000, remote_select_cb, &modseq, "%s \"%s\"\r\n", readonly == CMD_SELECT ? "SELECT" : "EXAMINE", remotename);
 	}
 	IMAP_REQUIRE_ACL(imap->acl, IMAP_ACL_READ);
 	if (readonly == CMD_SELECT) {
