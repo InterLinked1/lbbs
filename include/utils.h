@@ -33,7 +33,7 @@ struct dirent;
 
 /*!
  * \brief Generate a UUID (universally unique identifier), all lowercase
- * \returns UUID on success, NULL on failure
+ * \return UUID on success, NULL on failure
  */
 char *bbs_uuid(void);
 
@@ -53,14 +53,23 @@ void dyn_str_reset(struct dyn_str *dynstr);
  * \param s Data to append. The buffer will be dynamically expanded if needed.
  * \param len Length of s (use strlen if needed first)
  * \retval -1 on failure
- * \retval on success, actual length of the string currently in the dyn_str buffer (not the current allocation size)
+ * \return On success, actual length of the string currently in the dyn_str buffer (not the current allocation size)
  */
 int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len);
 
 /*!
+ * \brief Append to a dyn_str using a format string
+ * \param dynstr
+ * \param fmt printf-style format string
+ * \retval -1 on failure
+ * \return On success, actual length of the string currently in the dyn_str buffer (not the current allocation size)
+ */
+int __attribute__ ((format (gnu_printf, 2, 3))) dyn_str_append_fmt(struct dyn_str *dynstr, const char *fmt, ...);
+
+/*!
  * \brief Get the length of a dyn_str
  * \param dynstr
- * \retval Length of string
+ * \return Length of string
  */
 #define dyn_str_len(dynstr) (dynstr->used)
 

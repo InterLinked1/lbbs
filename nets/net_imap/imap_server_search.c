@@ -213,13 +213,11 @@ static void imap_search_free(struct imap_search_keys *skeys)
 /*! \brief Dump a parsed IMAP search query structure as a hierarchical tree for debugging */
 static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str *str, int depth)
 {
-	char buf[512];
 	struct imap_search_key *skey;
 
 	RWLIST_TRAVERSE(skeys, skey, entry) {
 		/* Indent according to the recursion depth */
-		size_t bytes = (size_t) snprintf(buf, sizeof(buf), "=%%= %*.s %s -> ", 3 * depth, "", imap_search_key_name(skey->type));
-		dyn_str_append(str, buf, bytes);
+		dyn_str_append_fmt(str, "=%%= %*.s %s -> ", 3 * depth, "", imap_search_key_name(skey->type));
 		switch (skey->type) {
 			case IMAP_SEARCH_ANSWERED:
 			case IMAP_SEARCH_DELETED:
@@ -235,19 +233,16 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 			case IMAP_SEARCH_UNFLAGGED:
 			case IMAP_SEARCH_UNKEYWORD:
 			case IMAP_SEARCH_UNSEEN:
-				bytes = (size_t) snprintf(buf, sizeof(buf), "\n");
-				dyn_str_append(str, buf, bytes);
+				dyn_str_append_fmt(str, "\n", 1);
 				break;
 			case IMAP_SEARCH_LARGER:
 			case IMAP_SEARCH_SMALLER:
 			case IMAP_SEARCH_OLDER:
 			case IMAP_SEARCH_YOUNGER:
-				bytes = (size_t) snprintf(buf, sizeof(buf), "%d\n", skey->child.number);
-				dyn_str_append(str, buf, bytes);
+				dyn_str_append_fmt(str, "%d\n", skey->child.number);
 				break;
 			case IMAP_SEARCH_MODSEQ:
-				bytes = (size_t) snprintf(buf, sizeof(buf), "%lu\n", skey->child.longnumber);
-				dyn_str_append(str, buf, bytes);
+				dyn_str_append_fmt(str, "%lu\n", skey->child.longnumber);
 				break;
 			case IMAP_SEARCH_BCC:
 			case IMAP_SEARCH_BEFORE:
@@ -266,14 +261,12 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 			case IMAP_SEARCH_TO:
 			case IMAP_SEARCH_SEQUENCE_NUMBER_SET:
 			case IMAP_SEARCH_UID:
-				bytes = (size_t) snprintf(buf, sizeof(buf), "%s\n", S_IF(skey->child.string));
-				dyn_str_append(str, buf, bytes);
+				dyn_str_append_fmt(str, "%s\n", S_IF(skey->child.string));
 				break;
 			case IMAP_SEARCH_NOT:
 			case IMAP_SEARCH_OR:
 			case IMAP_SEARCH_AND:
-				bytes = (size_t) snprintf(buf, sizeof(buf), "\n");
-				dyn_str_append(str, buf, bytes);
+				dyn_str_append(str, "\n", 1);
 				dump_imap_search_keys(skey->child.keys, str, depth + 1);
 				break;
 			case IMAP_SEARCH_ALL:
@@ -2397,8 +2390,6 @@ static int thread_references_step4(struct thread_messageid *msgids, int *lengthp
 
 static void thread_generate_list_recurse(struct dyn_str *dynstr, struct thread_messageid *msgids, int level)
 {
-	char buf[20];
-	int len;
 	int multiple;
 	struct thread_messageid *next = msgids;
 
@@ -2414,8 +2405,7 @@ static void thread_generate_list_recurse(struct dyn_str *dynstr, struct thread_m
 			if (multiple) {
 				dyn_str_append(dynstr, "(", 1);
 			}
-			len = snprintf(buf, sizeof(buf), "%d%s", next->id, next->children ? " " : "");
-			dyn_str_append(dynstr, buf, (size_t) len);
+			dyn_str_append_fmt(dynstr, "%d%s", next->id, next->children ? " " : "");
 			thread_generate_list_recurse(dynstr, next->children, level + 1);
 			if (multiple) {
 				dyn_str_append(dynstr, ") ", 1);

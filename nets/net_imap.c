@@ -2345,8 +2345,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 
 	if (do_unchangedsince) { /* CONDSTORE support using MODSEQ */
 		struct dyn_str dynstr;
-		char buf[25];
-		int len = 0;
+		int changed = 0;
 		/* Check that all the desired messages have a modseq <= unchangedsince */
 		memset(&dynstr, 0, sizeof(dynstr));
 		while (fno < files && (entry = entries[fno++])) {
@@ -2368,12 +2367,12 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 				/* It's not clear from the RFC if ranges are fine or if it strictly has to be a comma-separated list,
 				 * since there are no examples of consecutive messages.
 				 * So we just play it safe here and make a comma-separated list */
-				len = snprintf(buf, sizeof(buf), ",%u", usinguid ? msguid : (unsigned int) seqno);
-				dyn_str_append(&dynstr, buf, (size_t) len);
+				dyn_str_append_fmt(&dynstr, ",%u", usinguid ? msguid : (unsigned int) seqno);
+				changed = 1;
 			}
 		}
 		seqno = fno = 0;
-		if (len) { /* Failed the UNCHANGEDSINCE test. At least one message had a newer modseq */
+		if (changed) { /* Failed the UNCHANGEDSINCE test. At least one message had a newer modseq */
 			/* Skip 1st char since it's a comma */
 			imap_reply(imap, "OK [MODIFIED %s] Conditional STORE failed", dynstr.buf + 1); /* Dunno why we reply OK instead of NO, but that's what the RFC says... */
 			free_if(dynstr.buf);

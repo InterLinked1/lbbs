@@ -59,7 +59,7 @@ void dyn_str_reset(struct dyn_str *dynstr)
 
 int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
 {
-	size_t newlen;
+	size_t requiredlen, newlen;
 
 	if (!dynstr->buf) {
 		dynstr->buf = malloc(len + 1); /* use malloc, not strdup, in case the buffer contains data after what we want to copy */
@@ -71,22 +71,47 @@ int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
 		dynstr->len = len;
 		dynstr->used = len;
 		return (int) len;
-		}
+	}
 
 	/* Do we have enough room in the existing buffer? */
-	newlen = dynstr->used + len;
+	requiredlen = dynstr->used + len;
+	/* Double memory allocation as needed, rather than linear increase, to make reallocations amortized constant time */
+	newlen = dynstr->len;
+	while (newlen < requiredlen) {
+		newlen *= 2;
+	}
+
 	if (newlen >= dynstr->len) {
 		char *newbuf = realloc(dynstr->buf, newlen + 1); /* Add NULL terminator */
 		if (ALLOC_FAILURE(newbuf)) {
 			return -1;
 		}
 		dynstr->buf = newbuf;
-		dynstr->len = newlen;
-		dynstr->buf[newlen] = '\0';
+		dynstr->len = requiredlen;
+		dynstr->buf[requiredlen] = '\0';
 	}
 	memcpy(dynstr->buf + dynstr->used, s, len);
-	dynstr->used = newlen;
-	return (int) newlen;
+	dynstr->used = requiredlen;
+	return (int) requiredlen;
+}
+
+int __attribute__ ((format (gnu_printf, 2, 3))) dyn_str_append_fmt(struct dyn_str *dynstr, const char *fmt, ...)
+{
+	char *buf;
+	int len;
+	va_list ap;
+
+	va_start(ap, fmt);
+	len = vasprintf(&buf, fmt, ap);
+	va_end(ap);
+
+	if (len < 0) {
+		return -1;
+	}
+
+	len = dyn_str_append(dynstr, buf, (size_t) len);
+	free(buf);
+	return len;
 }
 
 int bbs_parse_url(struct bbs_url *url, char *restrict s)
