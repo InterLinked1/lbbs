@@ -165,7 +165,7 @@ struct smtp_session {
 	char *authuser;			/* Authentication username */
 	char *fromheaderaddress;	/* Address in the From: header */
 	char *listname;				/* Name of mailing list */
-	unsigned int numresets;		/* Number of RSETs */
+	unsigned int failures;		/* Number of protocol violations or failures */
 	unsigned int msa:1;		/* Whether connection was to the Message Submission Agent port (as opposed to the Mail Transfer Agent port) */
 	unsigned int secure:1;	/* Whether session is secure (TLS, STARTTLS) */
 	unsigned int dostarttls:1;	/* Whether we are initiating STARTTLS */
@@ -237,24 +237,28 @@ static struct stringlist blacklist;
 #define REQUIRE_ARGS(s) \
 	if (!s || !*s) { \
 		smtp_reply(smtp, 501, 5.5.2, "Syntax Error"); \
+		smtp->failures++; \
 		return 0; \
 	}
 
 #define REQUIRE_HELO() \
 	if (!smtp->gothelo) { \
 		smtp_reply(smtp, 503, 5.5.1, "EHLO/HELO first."); \
+		smtp->failures++; \
 		return 0; \
 	}
 
 #define REQUIRE_MAIL_FROM() \
 	if (!smtp->from) { \
 		smtp_reply(smtp, 503, 5.5.1, "MAIL first."); \
+		smtp->failures++; \
 		return 0; \
 	}
 
 #define REQUIRE_RCPT() \
 	if (!smtp->numrecipients) { \
 		smtp_reply(smtp, 503, 5.5.1, "RCPT first."); \
+		smtp->failures++; \
 		return 0; \
 	}
 
@@ -640,6 +644,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 		free(address);
 		if (!smtp->fromlocal) { /* External user trying to send us mail that's not for us. */
 			smtp_reply(smtp, 550, 5.7.0, "Mail relay denied. Forwarding to remote hosts disabled"); /* We're not an open relay. */
+			smtp->failures++;
 			return 0;
 		}
 		/* It's a submission of outgoing mail, do no further validation here. */
@@ -2735,8 +2740,16 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 	command = strsep(&s, " ");
 	REQUIRE_ARGS(command);
 
+	/* Slow down spam using tarpit like techniques */
+	if (smtp->failures) {
+		bbs_debug(4, "%p: Current number of SMTP failures: %d\n", smtp, smtp->failures);
+		if (smtp->failures > 3) {
+			usleep(2500000 * smtp->failures);
+		}
+	}
+
 	if (!strcasecmp(command, "RSET")) {
-		if (smtp->numresets++ > 50) { /* Don't let SMTP clients keep trying forever */
+		if (smtp->failures > 50) { /* Don't let SMTP clients keep trying forever */
 			bbs_debug(3, "Forcibly disconnecting client for too many resets\n");
 			return -1;
 		}
@@ -2856,7 +2869,7 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 		if (strlen_zero(from)) {
 			/* Empty MAIL FROM. This means postmaster, i.e. an email that should not be auto-replied to. */
 			/* XXX This does bypass some checks below, but we shouldn't reject such mail. */
-			bbs_debug(5, "MAILFROM is empty\n");
+			bbs_debug(5, "MAIL FROM is empty\n");
 			smtp->fromlocal = 0;
 			REPLACE(smtp->from, "");
 			smtp_reply(smtp, 250, 2.0.0, "OK");
