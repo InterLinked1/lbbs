@@ -2747,7 +2747,7 @@ static void idle_continue(struct imap_client *client)
 	bbs_debug(9, "IDLE time remaining: %d s (%d s elapsed)\n", left, elapsed);
 }
 
-static void process_idle(struct imap_client *client, char *s)
+static int process_idle(struct imap_client *client, char *s)
 {
 	char *tmp;
 	int seqno;
@@ -2755,17 +2755,17 @@ static void process_idle(struct imap_client *client, char *s)
 	bbs_debug(3, "IDLE data: %s", s); /* Already ends in LF */
 	if (!STARTS_WITH(s, "* ")) {
 		bbs_warning("Unexpected IDLE response (not untagged): %s\n", s);
-		return;
+		return -1;
 	}
 	tmp = s + 2;
 	if (strlen_zero(tmp)) {
 		bbs_warning("Partial IDLE response: %s\n", s);
-		return;
+		return -1;
 	}
 
 	if (STARTS_WITH(tmp, "OK Still here")) {
 		idle_continue(client);
-		return; /* Ignore */
+		return 0; /* Ignore */
 	}
 	seqno = atoi(tmp); /* It'll stop where it needs to */
 	tmp = strchr(tmp, ' '); /* Skip the sequence number */
@@ -2774,7 +2774,7 @@ static void process_idle(struct imap_client *client, char *s)
 	}
 	if (strlen_zero(tmp)) {
 		bbs_warning("Invalid IDLE data: %s\n", s);
-		return;
+		return -1;
 	}
 
 	/* What we do next depends on what the untagged response is */
@@ -2790,6 +2790,7 @@ static void process_idle(struct imap_client *client, char *s)
 			client->idlerefresh |= IDLE_REFRESH_EXPUNGE;
 		} else {
 			bbs_warning("EXPUNGE on empty mailbox?\n");
+			return -1;
 		}
 	} else if (STARTS_WITH(tmp, "FETCH")) {
 		/* This is most likely an update in flags.
@@ -2804,12 +2805,14 @@ static void process_idle(struct imap_client *client, char *s)
 	} else {
 		bbs_debug(3, "Ignoring IDLE data: %s\n", s);
 	}
+	return 0;
 }
 
 static int on_poll_activity(struct ws_session *ws, void *data)
 {
 	struct imap_client *client = data;
 	char *idledata;
+	int res = 0;
 
 	if (!client->idling) {
 		/* If there was activity (as opposed to a timeout) and we're not idling,
@@ -2842,7 +2845,7 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 		return 0;
 	}
 	do {
-		process_idle(client, idledata); /* Process a single line of data received during an IDLE */
+		res |= process_idle(client, idledata); /* Process a single line of data received during an IDLE */
 		/* mailimap_read_line will block, so we need to ensure that we break if there's no more data to read.
 		 * We can't use poll, because multiple lines may be in the internal buffer already.
 		 * Timeouts don't help either, since libetpan doesn't use them for this call.
@@ -2856,6 +2859,10 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 			break;
 		}
 	} while (idledata);
+
+	if (res) {
+		idle_stop(ws, client);
+	}
 
 	if (client->idlerefresh) { /* If there were multiple lines in the IDLE update, batch any updates up and send a single refresh */
 		int r = client->idlerefresh;

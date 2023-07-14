@@ -323,6 +323,9 @@ unsigned int mailbox_event_uidvalidity(struct mailbox_event *e)
 		if (!e->mbox || !e->maildir) {
 			bbs_error("No mailbox and/or maildir\n");
 			return 0;
+		} else if (e->type == EVENT_MAILBOX_DELETE) {
+			bbs_debug(3, "Mailbox has been deleted\n");
+			return 0;
 		}
 		mailbox_get_next_uid(e->mbox, e->maildir, 0, &e->uidvalidity, &e->uidnext);
 	}
@@ -334,6 +337,9 @@ unsigned int mailbox_event_uidnext(struct mailbox_event *e)
 	if (!e->uidnext) {
 		if (!e->mbox || !e->maildir) {
 			bbs_error("No mailbox and/or maildir\n");
+			return 0;
+		} else if (e->type == EVENT_MAILBOX_DELETE) {
+			bbs_debug(3, "Mailbox has been deleted\n");
 			return 0;
 		}
 		mailbox_get_next_uid(e->mbox, e->maildir, 0, &e->uidvalidity, &e->uidnext);

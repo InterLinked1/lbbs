@@ -91,4 +91,7 @@ void build_attributes_string(char *buf, size_t len, int attrs);
 
 int list_mailbox_pattern_matches(struct list_command *lcmd, const char *dirname);
 
+/*! \brief Traverse all the mailboxes for a user in a namespace */
+int list_iterate(struct imap_session *imap, struct list_command *lcmd, int level, const char *prefix, const char *listscandir, int (*cb)(struct imap_session *imap, struct list_command *lcmd, const char *name, void *data), void *data);
+
 int list_scandir(struct imap_session *imap, struct list_command *lcmd, int level, const char *prefix, const char *listscandir);

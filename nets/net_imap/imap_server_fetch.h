@@ -36,5 +36,11 @@ struct fetch_request {
 /*! \brief strsep-like FETCH items tokenizer */
 char *fetchitem_sep(char **s);
 
-/*! \brief Retrieve data associated with a message */
-int handle_fetch_full(struct imap_session *imap, char *s, int usinguid);
+/*!
+ * \brief Retrieve data associated with a message
+ * \param imap
+ * \param s FETCH command arguments
+ * \param usinguid UID FETCH instead of FETCH
+ * \param tagged Whether to send a tagged reply at the end of the command
+ */
+int handle_fetch_full(struct imap_session *imap, char *s, int usinguid, int tagged);

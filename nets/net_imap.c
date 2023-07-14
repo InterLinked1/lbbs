@@ -33,6 +33,8 @@
  * \note Supports RFC 5256 THREAD (ORDEREDSUBJECT and REFERENCES)
  * \note Supports RFC 5258 LIST-EXTENDED
  * \note Supports RFC 5267 ESORT
+ * \note Supports RFC 5423 mail store events
+ * \note Supports RFC 5465 NOTIFY
  * \note Supports RFC 5530 Response Codes
  * \note Supports RFC 5819 LIST-STATUS
  * \note Supports RFC 6154 SPECIAL-USE (but not CREATE-SPECIAL-USE)
@@ -58,7 +60,6 @@
  * - RFC 5257 ANNOTATE, RFC 5464 ANNOTATE (METADATA)
  * - RFC 5258 LIST extensions (obsoletes 3348)
  * - RFC 5267 CONTEXT=SEARCH and CONTEXT=SORT
- * - RFC 5423 events and RFC 5465 NOTIFY
  * - RFC 5738 UTF8
  * - RFC 5957 DISPLAYFROM/DISPLAYTO
  * - RFC 6203 FUZZY SEARCH
@@ -144,6 +145,7 @@
 #include "nets/net_imap/imap_server_list.h"
 #include "nets/net_imap/imap_server_fetch.h"
 #include "nets/net_imap/imap_server_search.h"
+#include "nets/net_imap/imap_server_notify.h"
 #include "nets/net_imap/imap_client.h"
 #include "nets/net_imap/imap_client_list.h"
 #include "nets/net_imap/imap_client_status.h"
@@ -237,206 +239,6 @@ static inline void reset_saved_search(struct imap_session *imap)
 	imap->savedsearch = 0;
 }
 
-void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned int uid, unsigned long modseq, const char *newflags)
-{
-	struct imap_session *s;
-	char normalmsg[256];
-	char condstoremsg[256];
-	int normallen, condlen;
-
-	/* Prepare both types of messages.
-	 * Each client currently in this same mailbox will get one message or the other,
-	 * depending on its value of imap->condstore
-	 */
-	normallen = snprintf(normalmsg, sizeof(normalmsg), "* %d FETCH (%s)\r\n", seqno, newflags);
-	condlen = snprintf(condstoremsg, sizeof(condstoremsg), "* %d FETCH (UID %u MODSEQ %lu %s)\r\n", seqno, uid, modseq, newflags); /* RFC 7162 3.2.4 */
-
-	/*! \todo If # mailbox_watchers on the current mailbox is 1 (the entire account, not just this folder),
-	 * we could probably bail out early here, since we know it's just us... */
-
-	RWLIST_RDLOCK(&sessions);
-	RWLIST_TRAVERSE(&sessions, s, entry) {
-		if (s == imap || s->mbox != imap->mbox || strcmp(s->dir, imap->dir)) {
-			continue;
-		}
-		/* Hey, this client is on the same exact folder right now! Send it an unsolicited, untagged response. */
-		pthread_mutex_lock(&s->lock);
-		if (!s->idle) { /* We are only free to send responses whenever we want if the client is idling. */
-			bbs_write(s->pfd[1], s->condstore ? condstoremsg : normalmsg, (unsigned int) (s->condstore ? condlen : normallen));
-			s->pending = 1;
-			imap_debug(4, "%p <= %s", s, s->condstore ? condstoremsg : normalmsg); /* Already ends in CR LF */
-		} else {
-			bbs_write(s->wfd, s->condstore ? condstoremsg : normalmsg, (unsigned int) (s->condstore ? condlen : normallen));
-			imap_debug(4, "%p <= %s", s, s->condstore ? condstoremsg : normalmsg); /* Already ends in CR LF */
-		}
-		pthread_mutex_unlock(&s->lock);
-	}
-	RWLIST_UNLOCK(&sessions);
-}
-
-static void send_untagged_expunge(struct bbs_node *node, struct mailbox *mbox, const char *maildir, int silent, unsigned int *uid, unsigned int *seqno, int length)
-{
-	struct imap_session *s;
-	char *str2, *str = NULL;
-	size_t slen = 0, slen2; /* slen does not actually need to be initialized, but this avoids an erroneous -Wmaybe-uninitialized with gcc */
-	int delay;
-
-	if (!length) {
-		return;
-	}
-
-	/* This can only happen when POP3 expunges messages, and this mailbox cannot be in use when POP3 is using the mailbox.
-	 * So if seqno were ever NULL here, that would be a bug on multiple fronts. */
-	bbs_assert_exists(seqno);
-
-	/* Send VANISHED responses to any clients that enabled QRESYNC, and normal EXPUNGE responses to everyone else. */
-	RWLIST_RDLOCK(&sessions);
-	RWLIST_TRAVERSE(&sessions, s, entry) {
-		/* This one also goes to ourself... unless silent */
-		if (s->mbox != mbox || strcmp(s->dir, maildir)) {
-			continue;
-		}
-		if (s->node == node && silent) {
-			continue;
-		}
-		pthread_mutex_lock(&s->lock);
-		delay = s->idle || s->node == node ? 0 : 1; /* Only send immediately if in IDLE, or if it's the current client (which obviously is NOT idling) */
-		if (s->qresync) { /* VANISHED */
-			if (!str) {
-				/* Don't waste time generating a VANISHED response in advance if we're not going to send it to any clients.
-				 * Most clients don't even support QRESYNC, so most of the time this won't be even be useful.
-				 * Do it automatically as needed if/when we encounter the first supporting client. */
-				str = gen_uintlist(uid, length);
-				slen = strlen(S_IF(str));
-				/* Add length of * VANISHED + CR LF */
-				slen2 = slen + STRLEN("* VANISHED ") + STRLEN("\r\n");
-				str2 = malloc(slen2 + 1); /* For deletions of multiple sequences, this could be of any arbitrary length. Not likely, but possible. */
-				if (ALLOC_SUCCESS(str2)) {
-					strcpy(str2, "* VANISHED ");
-					strcpy(str2 + STRLEN("* VANISHED "), str);
-					strcpy(str2 + STRLEN("* VANISHED ") + slen, "\r\n");
-					free(str);
-					str = str2;
-					slen = slen2;
-				}
-			}
-			bbs_write(delay ? s->pfd[1] : s->wfd, str, (unsigned int) slen);
-			imap_debug(4, "%p <= %s\r\n", s, str);
-		} else { /* EXPUNGE */
-			int i;
-			for (i = 0; i < length; i++) {
-				char normalmsg[64];
-				int normallen = snprintf(normalmsg, sizeof(normalmsg), "* %u EXPUNGE\r\n", seqno[i]);
-				bbs_write(delay ? s->pfd[1] : s->wfd, normalmsg, (unsigned int) normallen);
-				imap_debug(4, "%p <= %s", s, normalmsg);
-			}
-		}
-		if (delay) {
-			s->pending = 1;
-			reset_saved_search(s); /* Since messages were expunged, invalidate any saved search */
-		}
-		pthread_mutex_unlock(&s->lock);
-	}
-	RWLIST_UNLOCK(&sessions);
-	free_if(str);
-}
-
-/*! \brief Callback for sending EXISTS alerts to idling clients */
-static void send_untagged_exists(struct bbs_node *node, struct mailbox *mbox, const char *maildir)
-{
-	int numtotal = -1;
-	struct imap_session *s;
-
-	/* Notify anyone watching this mailbox, specifically the INBOX. */
-	RWLIST_RDLOCK(&sessions);
-	RWLIST_TRAVERSE(&sessions, s, entry) {
-		if (s->mbox != mbox) {
-			/* Note that we always watch our personal mailbox (s->mymbox), but the current mailbox, s->mbox,
-			 * may be different.
-			 * This works out as we can only send untagged responses during IDLE for the currently selected mailbox. */
-			continue; /* Different mailbox (account) */
-		}
-		if (strcmp(s->dir, maildir)) { /* They have to be the same IMAP mailbox (folder), not just the same mbox struct */
-			continue; /* Different folders. */
-		}
-		/* Hey, this client is on the same exact folder right now! Send it an unsolicited, untagged response. */
-		if (numtotal == -1) {
-			/* Compute how many messages exist. */
-			numtotal = bbs_dir_num_files(s->newdir) + bbs_dir_num_files(s->curdir);
-			bbs_debug(4, "Calculated %d message%s in INBOX %d currently\n", numtotal, ESS(numtotal), mailbox_id(mbox));
-		}
-		if (numtotal < 1) { /* Calculate the number of messages "just in time", only if somebody is actually in the INBOX right now. */
-			/* Should be at least 1, because this callback is triggered when we get a NEW message. So there's at least that one. */
-			bbs_error("Expected at least %d message, but calculated %d?\n", 1, numtotal);
-			continue; /* Don't send the client something clearly bogus */
-		}
-
-		pthread_mutex_lock(&s->lock); /* Since we're locked here, we can't use imap_send within: */
-		/* RFC 3501 Section 7: unilateral response */
-		if (!s->idle) { /* We are only free to send responses whenever we want if the client is idling. */
-			dprintf(s->pfd[1], "* %d EXISTS\r\n", numtotal); /* Number of messages in the mailbox. */
-			imap_debug(4, "%p <= * %d EXISTS\r\n", s, numtotal);
-			s->pending = 1;
-			/* No need to reset saved search for new messages (only do that for EXPUNGE) */
-		} else {
-			dprintf(s->wfd, "* %d EXISTS\r\n", numtotal); /* Number of messages in the mailbox. */
-			imap_debug(4, "%p <= * %d EXISTS\r\n", s, numtotal);
-		}
-		pthread_mutex_unlock(&s->lock);
-		if (s->node != node) {
-			/*! \todo Future support for RFC 5465 NOTIFY. Don't send FETCH responses to the initiator of the event. */
-		}
-	}
-	RWLIST_UNLOCK(&sessions);
-}
-
-/*! \brief Callback for all mailbox events */
-static void imap_mbox_watcher(struct mailbox_event *event)
-{
-	/* Accessing certain fields directly, e.g. event->type is okay,
-	 * but resist the urge to access other internals directly.
-	 * Instead, we must use the appropriate accessor methods,
-	 * because if the information is not current available,
-	 * it will be automatically retrieved if possible.
-	 * This includes UIDVALIDITY, UIDNEXT, etc.
-	 */
-
-	switch (event->type) {
-		case EVENT_MESSAGE_APPEND:
-		case EVENT_MESSAGE_NEW:
-			send_untagged_exists(event->node, event->mbox, event->maildir);
-			break;
-		case EVENT_MESSAGE_EXPUNGE:
-		case EVENT_MESSAGE_EXPIRE:
-			send_untagged_expunge(event->node, event->mbox, event->maildir, event->expungesilent, event->uids, event->seqnos, event->numuids);
-			break;
-		default:
-			break;
-	}
-}
-
-static void imap_destroy(struct imap_session *imap)
-{
-	imap_shutdown_clients(imap);
-	stringlist_empty(&imap->remotemailboxes);
-	if (imap->mbox != imap->mymbox) {
-		if (imap->mbox) {
-			mailbox_unwatch(imap->mbox);
-		}
-		imap->mbox = imap->mymbox;
-		imap->mymbox = NULL;
-	}
-	if (imap->mbox) {
-		mailbox_unwatch(imap->mbox); /* We previously started watching it, so stop watching it now. */
-		imap->mbox = NULL;
-	}
-	free_if(imap->savedsearch);
-	/* Do not free tag, since it's stack allocated */
-	free_if(imap->savedtag);
-	free_if(imap->clientid);
-	free_if(imap->folder);
-}
-
 /* We traverse cur first, since messages from new are moved to cur, and we don't want to double count them */
 #define IMAP_TRAVERSAL(imap, traversal, callback, rdonly) \
 	if (mailbox_rdlock(traversal->mbox)) { \
@@ -484,6 +286,428 @@ static void save_traversal(struct imap_session *imap, struct imap_traversal *tra
 	TRAVERSAL_PERSIST(minrecent);
 	TRAVERSAL_PERSIST(maxrecent);
 #undef TRAVERSAL_PERSIST
+}
+
+static void construct_status(struct imap_session *imap, struct imap_traversal *traversal, const char *s, char *buf, size_t len, unsigned long maxmodseq)
+{
+	char *pos = buf;
+	size_t left = len;
+	unsigned int appendlimit;
+
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "MESSAGES"), "MESSAGES %d", traversal->totalnew + traversal->totalcur);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "RECENT"), "RECENT %d", traversal->totalnew);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDNEXT"), "UIDNEXT %d", traversal->uidnext + 1);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDVALIDITY"), "UIDVALIDITY %d", traversal->uidvalidity);
+	/* Unlike with SELECT, this is the TOTAL number of unseen messages, not merely the first one */
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UNSEEN"), "UNSEEN %d", traversal->totalunseen);
+	appendlimit = MIN((unsigned int) mailbox_quota(imap->mbox), max_append_size);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %u", appendlimit);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "HIGHESTMODSEQ"), "HIGHESTMODSEQ %lu", maxmodseq);
+	/* RFC 8438 STATUS=SIZE extension */
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "SIZE"), "SIZE %lu", traversal->totalsize);
+}
+
+#define imap_send_update(imap, s, len) __imap_send_update(imap, s, len, 0, 0)
+#define __imap_send_update(imap, s, len, forcenow, invalidate) __imap_send_update_log(imap, s, len, forcenow, invalidate, __LINE__)
+
+/*! \note Must be called with imap locked */
+static void __imap_send_update_log(struct imap_session *imap, const char *s, size_t len, int forcenow, int invalidate, int line)
+{
+	int delay = 0;
+
+	/* We are only free to send responses whenever we want if the client is idling, or if NOTIFY SELECTED is active. */
+	delay = !imap_sequence_numbers_prohibited(imap) && !imap->idle;
+
+	/* Since we're locked in this function, we CANNOT use imap_send */
+	if (delay && !forcenow) {
+		imap_debug(4, "%d: %p <= %s", line, imap, s); /* Already ends in CR LF */
+		bbs_write(imap->pfd[1], s, len);
+		imap->pending = 1;
+		if (invalidate) {
+			reset_saved_search(imap); /* Since messages were expunged, invalidate any saved search */
+		}
+	} else {
+		imap_debug(4, "%d: %p <= %s", line, imap, s); /* Already ends in CR LF */
+		bbs_write(imap->wfd, s, (unsigned int) len);
+	}
+}
+
+static void generate_status(struct imap_session *imap, const char *folder, char *buf, size_t len, const char *items)
+{
+	struct imap_traversal traversal;
+	memset(&traversal, 0, sizeof(traversal));
+	set_traversal(imap, &traversal); /* Set the traversal based on imap, not s */
+	set_maildir_readonly(imap, &traversal, folder); /* Yes, use s session but imap->folder */
+	/* If CONDSTORE/QRESYNC enabled, we need at least HIGHESTMODSEQ and UIDVALIDITY.
+	 * Otherwise, we need UNSEEN.
+	 * Since the traversal gets all of these anyways, we may as well include everything needed for both cases. */
+	construct_status(imap, &traversal, items, buf, len, maildir_max_modseq(traversal.mbox, traversal.curdir));
+}
+
+static int generate_mailbox_name(unsigned int userid, const char *restrict fulldir, char *restrict buf, size_t len)
+{
+	size_t rootlen, fulllen;
+	unsigned int muserid;
+	const char *rootdir = mailbox_maildir(NULL);
+
+	rootlen = strlen(rootdir);
+	fulllen = strlen(fulldir);
+
+	if (fulllen <= rootlen) {
+		bbs_error("Maildir length %lu <= root maildir length %lu?\n", fulllen, rootlen);
+		return -1;
+	}
+
+	fulldir += rootlen;
+	if (*fulldir == '/') {
+		fulldir++;
+	}
+
+	if (strlen_zero(fulldir)) {
+		bbs_error("Invalid maildir\n");
+		return -1;
+	}
+
+	muserid = (unsigned int) atoi(fulldir);
+	if (muserid) {
+		const char *bname = basename(fulldir);
+		/* User dir */
+		if (muserid == userid) {
+			/* It's our personal mailbox */
+			if (atoi(bname)) {
+				/* INBOX */
+				safe_strncpy(buf, "INBOX", len);
+			} else {
+				/* Skip leading . for maildir++ */
+				bname++; /* Skip leading . */
+				safe_strncpy(buf, bname, len);
+			}
+		} else {
+			/* Another user (Other Users) */
+			char username[64];
+			if (bbs_username_from_userid(muserid, username, sizeof(username))) {
+				bbs_warning("No user for maildir %s\n", fulldir);
+				return -1;
+			}
+			snprintf(buf, len, OTHER_NAMESPACE_PREFIX HIERARCHY_DELIMITER "%s.%s", username, bname);
+		}
+	} else {
+		snprintf(buf, len, SHARED_NAMESPACE_PREFIX HIERARCHY_DELIMITER "%s", fulldir);
+	}
+	return 0;
+}
+
+void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned int uid, unsigned long modseq, const char *newflags)
+{
+	struct imap_session *s;
+	char normalmsg[256];
+	char condstoremsg[256];
+	char status_items[256];
+	size_t normallen, condlen;
+	int didstatus = 0;
+
+	/* Prepare both types of messages.
+	 * Each client currently in this same mailbox will get one message or the other,
+	 * depending on its value of imap->condstore
+	 */
+	normallen = (size_t) snprintf(normalmsg, sizeof(normalmsg), "* %d FETCH (%s)\r\n", seqno, newflags);
+	condlen = (size_t) snprintf(condstoremsg, sizeof(condstoremsg), "* %d FETCH (UID %u MODSEQ %lu %s)\r\n", seqno, uid, modseq, newflags); /* RFC 7162 3.2.4 */
+
+	RWLIST_RDLOCK(&sessions);
+	RWLIST_TRAVERSE(&sessions, s, entry) {
+		int res;
+		char mboxname[256];
+		if (s == imap) { /* Skip if the update was caused by the client */
+			continue;
+		}
+		/* imap->folder is maybe not the same name for s.
+		 * We convert the maildir path to the name for s, though this is a little bit roundabout.
+		 * Would be easier if generate_status could accept a maildir as well instead of just a name.
+		 * This also applies anywhere else generate_status is called.
+		 */
+		/*! \todo Ideally this would be a static mail store based callback, and then instead of imap->dir we could use e->maildir */
+		generate_mailbox_name(s->node->user->id, imap->dir, mboxname, sizeof(mboxname));
+		res = imap_notify_applicable(s, NULL, mboxname, imap->dir, IMAP_EVENT_FLAG_CHANGE);
+		if (!res) {
+			continue;
+		}
+		if (res == -1 && !didstatus) {
+			generate_status(imap, mboxname, status_items, sizeof(status_items), "UNSEEN MESSAGES UIDVALIDITY HIGHESTMODSEQ");
+			didstatus = 1;
+		}
+		pthread_mutex_lock(&s->lock);
+		if (res == -1) { /* Not currently selected */
+			char statusmsgfull[256];
+			/* The same STATUS response can be used for all clients, but the mailbox name might be different */
+			size_t statuslenfull = (size_t) snprintf(statusmsgfull, sizeof(statusmsgfull), "* STATUS \"%s\" (%s)\r\n", mboxname, status_items);
+			imap_send_update(s, statusmsgfull, statuslenfull);
+		} else { /* Currently selected */
+			imap_send_update(s, s->condstore ? condstoremsg : normalmsg, s->condstore ? condlen : normallen);
+		}
+		pthread_mutex_unlock(&s->lock);
+	}
+	RWLIST_UNLOCK(&sessions);
+}
+
+static void send_untagged_expunge(struct bbs_node *node, struct mailbox *mbox, const char *maildir, int silent, unsigned int *uid, unsigned int *seqno, int length)
+{
+	char status_items[256];
+	int didstatus = 0;
+	struct imap_session *s;
+	char *str2, *str = NULL;
+	size_t slen = 0, slen2; /* slen does not actually need to be initialized, but this avoids an erroneous -Wmaybe-uninitialized with gcc */
+
+	if (!length) {
+		return;
+	}
+
+	/* This can only happen when POP3 expunges messages, and this mailbox cannot be in use when POP3 is using the mailbox.
+	 * So if seqno were ever NULL here, that would be a bug on multiple fronts. */
+	bbs_assert_exists(seqno);
+
+	/* Send VANISHED responses to any clients that enabled QRESYNC, and normal EXPUNGE responses to everyone else. */
+	RWLIST_RDLOCK(&sessions);
+	RWLIST_TRAVERSE(&sessions, s, entry) {
+		int res;
+		int forcenow = s->node == node; /* Echo untagged EXPUNGE to the sender in realtime, while the initiating command is running */
+		char mboxname[256];
+		/* This one also goes to ourself... unless silent */
+		if (s->node == node && silent) {
+			continue;
+		}
+		/* We can't pass the mailbox name into send_untagged_expunge anyways,
+		 * because mailbox names might be different for different users (e.g. Other Users) */
+		generate_mailbox_name(s->node->user->id, maildir, mboxname, sizeof(mboxname));
+		res = imap_notify_applicable(s, mbox, mboxname, maildir, IMAP_EVENT_MESSAGE_EXPUNGE);
+		if (!res) {
+			continue;
+		}
+		if (res == -1 && !didstatus) {
+			/* RFC 5465 5.3 */
+			generate_status(s, mboxname, status_items, sizeof(status_items), "UIDNEXT MESSAGES HIGHESTMODSEQ");
+			didstatus = 1;
+		}
+		pthread_mutex_lock(&s->lock);
+		if (res == -1) {
+			char statusmsgfull[256];
+			size_t statuslenfull = (size_t) snprintf(statusmsgfull, sizeof(statusmsgfull), "* STATUS \"%s\" (%s)\r\n", mboxname, status_items);
+			__imap_send_update(s, statusmsgfull, statuslenfull, forcenow, 1);
+		} else {
+			if (s->qresync) { /* VANISHED */
+				if (!str) {
+					/* Don't waste time generating a VANISHED response in advance if we're not going to send it to any clients.
+					 * Most clients don't even support QRESYNC, so most of the time this won't be even be useful.
+					 * Do it automatically as needed if/when we encounter the first supporting client. */
+					str = gen_uintlist(uid, length);
+					slen = strlen(S_IF(str));
+					/* Add length of * VANISHED + CR LF */
+					slen2 = slen + STRLEN("* VANISHED ") + STRLEN("\r\n");
+					str2 = malloc(slen2 + 1); /* For deletions of multiple sequences, this could be of any arbitrary length. Not likely, but possible. */
+					if (ALLOC_SUCCESS(str2)) {
+						strcpy(str2, "* VANISHED ");
+						strcpy(str2 + STRLEN("* VANISHED "), str);
+						strcpy(str2 + STRLEN("* VANISHED ") + slen, "\r\n");
+						free(str);
+						str = str2;
+						slen = slen2;
+					}
+				}
+				__imap_send_update(s, str, slen, forcenow, 1);
+			} else { /* EXPUNGE */
+				int i;
+				for (i = 0; i < length; i++) {
+					char normalmsg[64];
+					size_t normallen = (size_t) snprintf(normalmsg, sizeof(normalmsg), "* %u EXPUNGE\r\n", seqno[i]);
+					__imap_send_update(s, normalmsg, normallen, forcenow, 1);
+				}
+			}
+		}
+		pthread_mutex_unlock(&s->lock);
+	}
+	RWLIST_UNLOCK(&sessions);
+	free_if(str);
+}
+
+/*! \brief Callback for sending EXISTS alerts to idling clients */
+static void send_untagged_exists(struct bbs_node *node, struct mailbox *mbox, const char *maildir)
+{
+	char buf[256];
+	char status_items[256];
+	int didstatus = 0;
+	size_t len = 0;
+	int numtotal = -1;
+	struct imap_session *s;
+
+	/* Notify anyone watching this mailbox, specifically the INBOX. */
+	RWLIST_RDLOCK(&sessions);
+	RWLIST_TRAVERSE(&sessions, s, entry) {
+		int res;
+		char mboxname[256];
+		const char *fetchargs = NULL;
+
+		generate_mailbox_name(s->node->user->id, maildir, mboxname, sizeof(mboxname));
+
+		res = imap_notify_applicable_fetchargs(s, mbox, mboxname, maildir, IMAP_EVENT_MESSAGE_NEW, &fetchargs);
+		if (!res) {
+			continue;
+		}
+		if (res == 1) {
+			if (numtotal == -1) { /* Calculate the number of messages "just in time", only if needed. */
+				/* Compute how many messages exist. */
+				numtotal = bbs_dir_num_files(s->newdir) + bbs_dir_num_files(s->curdir);
+				bbs_debug(4, "Calculated %d message%s in INBOX %d currently\n", numtotal, ESS(numtotal), mailbox_id(mbox));
+				len = (size_t) snprintf(buf, sizeof(buf), "* %d EXISTS\r\n", numtotal); /* Number of messages in the mailbox. */
+			}
+			if (numtotal < 1) {
+				/* Should be at least 1, because this callback is triggered when we get a NEW message. So there's at least that one. */
+				bbs_error("Expected at least %d message, but calculated %d?\n", 1, numtotal);
+				continue; /* Don't send the client something clearly bogus */
+			}
+		}
+
+		if (res == -1 && !didstatus) {
+			/* STATUS (RFC 5465 5.2) */
+			generate_status(s, mboxname, status_items, sizeof(status_items), "UIDNEXT MESSAGES HIGHESTMODSEQ");
+			didstatus = 1;
+		}
+
+		/* Note that we're allowed to send just a single untagged EXISTS for multiple events (RFC 5465 3.2),
+		 * but we'd need to send a FETCH per matching message.
+		 * Again for \Recent messages this is going to be tricky/impossible. */
+
+		pthread_mutex_lock(&s->lock);
+		/* RFC 3501 Section 7: unilateral response */
+		if (res == -1) {
+			char statusmsgfull[256];
+			size_t statuslenfull = (size_t) snprintf(statusmsgfull, sizeof(statusmsgfull), "* STATUS \"%s\" (%s)\r\n", mboxname, status_items);
+			imap_send_update(s, statusmsgfull, statuslenfull);
+			pthread_mutex_unlock(&s->lock);
+		} else {
+			imap_send_update(s, buf, len);
+			pthread_mutex_unlock(&s->lock);
+			/* Unlock because send_fetch_response assumes an unlocked session.
+			 * XXX Since sessions, the session technically can't disappear on us,
+			 * but this does leave open the possibility of interleaved writes. */
+			/* XXX Also for \Recent messages, FETCH might not work properly */
+			if (fetchargs && s->node != node) { /* Never send FETCH responses to initiator of event */
+				char fetchargsfull[256];
+				snprintf(fetchargsfull, sizeof(fetchargsfull), "%d (%s)", numtotal, fetchargs);
+				handle_fetch_full(s, fetchargsfull, 0, 0);
+			}
+		}
+	}
+	RWLIST_UNLOCK(&sessions);
+}
+
+static void send_untagged_list(enum mailbox_event_type type, struct mailbox *mbox, const char *maildir, const char *oldmaildir)
+{
+	struct imap_session *s;
+
+	/* Notify anyone watching this mailbox, specifically the INBOX. */
+	RWLIST_RDLOCK(&sessions);
+	RWLIST_TRAVERSE(&sessions, s, entry) {
+		int res;
+		char buf[256];
+		char olddir[256], newdir[256];
+		size_t len = 0;
+		const char *fetchargs = NULL;
+
+		/* Mailbox names could be different for different users, so need to do per session, not just once */
+		generate_mailbox_name(s->node->user->id, maildir, newdir, sizeof(newdir));
+
+		res = imap_notify_applicable_fetchargs(s, mbox, newdir, maildir, IMAP_EVENT_MESSAGE_NEW, &fetchargs);
+		if (!res) {
+			continue;
+		}
+
+		/* RFC 5465 5.4 */
+
+		/* XXX SHOULD also include \HasChildren or \HasNoChildren */
+		switch (type) {
+			case EVENT_MAILBOX_CREATE:
+				len = (size_t) snprintf(buf, sizeof(buf), "* LIST (\\Subscribed) \"%c\" \"%s\"\r\n", HIERARCHY_DELIMITER_CHAR, newdir);
+				break;
+			case EVENT_MAILBOX_DELETE:
+				len = (size_t) snprintf(buf, sizeof(buf), "* LIST (\\NonExistent) \"%c\" \"%s\"\r\n", HIERARCHY_DELIMITER_CHAR, newdir);
+				break;
+			case EVENT_MAILBOX_RENAME:
+				generate_mailbox_name(s->node->user->id, oldmaildir, olddir, sizeof(olddir));
+				len = (size_t) snprintf(buf, sizeof(buf), "* LIST (\\Subscribed) \"%c\" \"%s\" (\"OLDNAME\" (\"%s\"))\r\n", HIERARCHY_DELIMITER_CHAR, newdir, olddir);
+				break;
+			default:
+				break;
+		}
+
+		pthread_mutex_lock(&s->lock);
+		imap_send_update(s, buf, len);
+		pthread_mutex_unlock(&s->lock);
+	}
+	RWLIST_UNLOCK(&sessions);
+}
+
+/*! \brief Callback for all mailbox events */
+static void imap_mbox_watcher(struct mailbox_event *event)
+{
+	/* Accessing certain fields directly, e.g. event->type is okay,
+	 * but resist the urge to access other internals directly.
+	 * Instead, we must use the appropriate accessor methods,
+	 * because if the information is not current available,
+	 * it will be automatically retrieved if possible.
+	 * This includes UIDVALIDITY, UIDNEXT, etc.
+	 */
+
+	switch (event->type) {
+		case EVENT_MESSAGE_APPEND:
+		case EVENT_MESSAGE_NEW:
+			send_untagged_exists(event->node, event->mbox, event->maildir);
+			break;
+		case EVENT_MESSAGE_EXPUNGE:
+		case EVENT_MESSAGE_EXPIRE:
+			send_untagged_expunge(event->node, event->mbox, event->maildir, event->expungesilent, event->uids, event->seqnos, event->numuids);
+			break;
+		case EVENT_MAILBOX_CREATE:
+		case EVENT_MAILBOX_DELETE:
+		case EVENT_MAILBOX_RENAME:
+			send_untagged_list(event->type, event->mbox, event->maildir, event->oldmaildir);
+			break;
+		case EVENT_MAILBOX_SUBSCRIBE:
+		case EVENT_MAILBOX_UNSUBSCRIBE:
+			/* We should basically do send_untagged_list,
+			 * however we can ignore currently since all mailboxes are implicitly subscribed
+			 * so no change occurs here. */
+		/*! \todo If METADATA extension added, updates need to be sent here */
+		/*! \todo ACL changes should also be taken into account.
+		 * Fortunately, ACLs can be changed through the IMAP protocol which means we could get events for them.
+		 * The standard mail store events don't include ACL events, but we could add events
+		 * and then use those here to get updates.
+		 * We need to send a LIST with \NoAccess if ACL was removed (no longer have access to a mailbox)
+		 * and without \NoAccess if access is now granted (but wasn't previously). */
+		default:
+			break;
+	}
+}
+
+static void imap_destroy(struct imap_session *imap)
+{
+	imap_shutdown_clients(imap);
+	stringlist_empty(&imap->remotemailboxes);
+	if (imap->mbox != imap->mymbox) {
+		if (imap->mbox) {
+			mailbox_unwatch(imap->mbox);
+		}
+		imap->mbox = imap->mymbox;
+		imap->mymbox = NULL;
+	}
+	if (imap->mbox) {
+		mailbox_unwatch(imap->mbox); /* We previously started watching it, so stop watching it now. */
+		imap->mbox = NULL;
+	}
+	imap_notify_cleanup(imap);
+	free_if(imap->savedsearch);
+	/* Do not free tag, since it's stack allocated */
+	free_if(imap->savedtag);
+	free_if(imap->clientid);
+	free_if(imap->folder);
 }
 
 static int test_flags_parsing(void)
@@ -897,25 +1121,6 @@ static int handle_remote_status(struct imap_client *client, char *s, const char 
 
 	imap_reply(client->imap, "OK STATUS");
 	return 0;
-}
-
-static void construct_status(struct imap_session *imap, struct imap_traversal *traversal, const char *s, char *buf, size_t len, unsigned long maxmodseq)
-{
-	char *pos = buf;
-	size_t left = len;
-	unsigned int appendlimit;
-
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "MESSAGES"), "MESSAGES %d", traversal->totalnew + traversal->totalcur);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "RECENT"), "RECENT %d", traversal->totalnew);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDNEXT"), "UIDNEXT %d", traversal->uidnext + 1);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDVALIDITY"), "UIDVALIDITY %d", traversal->uidvalidity);
-	/* Unlike with SELECT, this is the TOTAL number of unseen messages, not merely the first one */
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UNSEEN"), "UNSEEN %d", traversal->totalunseen);
-	appendlimit = MIN((unsigned int) mailbox_quota(imap->mbox), max_append_size);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %u", appendlimit);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "HIGHESTMODSEQ"), "HIGHESTMODSEQ %lu", maxmodseq);
-	/* RFC 8438 STATUS=SIZE extension */
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "SIZE"), "SIZE %lu", traversal->totalsize);
 }
 
 static int select_examine_response(struct imap_session *imap, enum select_type readonly, char *s, unsigned long maxmodseq, int was_selected, struct mailbox *oldmbox)
@@ -1571,7 +1776,7 @@ static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 		IMAP_TRAVERSAL(imap, traversalptr, on_select, imap->readonly);
 		save_traversal(imap, &traversal);
 	}
-	return handle_fetch_full(imap, s, usinguid);
+	return handle_fetch_full(imap, s, usinguid, 1);
 }
 
 static int handle_copy(struct imap_session *imap, char *s, int usinguid)
@@ -2002,6 +2207,17 @@ static int handle_append(struct imap_session *imap, char *s)
 			set_file_mtime(newfilename, appenddate);
 		}
 
+		/* Send the APPEND event before we set any flags,
+		 * because the EXISTS response must go out before any flag change events. */
+		uintlist_append(&a, &lengths, &allocsizes, uidnext);
+		/* RFC 3501 6.3.11: We SHOULD notify the client via an untagged EXISTS. */
+		mailbox_initialize_event(&e, EVENT_MESSAGE_APPEND, imap->node, imap->mbox, appenddir);
+		e.uids = &uidnext;
+		e.numuids = 1;
+		e.uidvalidity = uidvalidity;
+		e.msgsize = (size_t) size;
+		mailbox_dispatch_event(&e);
+
 		/* Now, apply any flags to the message... (yet a third rename, potentially) */
 		if (appendflags) {
 			int seqno;
@@ -2025,14 +2241,6 @@ static int handle_append(struct imap_session *imap, char *s)
 		 * Of course, we've already dispatched notifications for those, so we'd also
 		 * need to send expunge events for those at that point... and I feel like
 		 * that isn't the spirit of an "atomic" operation... */
-		uintlist_append(&a, &lengths, &allocsizes, uidnext);
-		/* RFC 3501 6.3.11: We SHOULD notify the client via an untagged EXISTS. */
-		mailbox_initialize_event(&e, EVENT_MESSAGE_APPEND, imap->node, imap->mbox, appenddir);
-		e.uids = &uidnext;
-		e.numuids = 1;
-		e.uidvalidity = uidvalidity;
-		e.msgsize = (size_t) size;
-		mailbox_dispatch_event(&e);
 	}
 
 	/* RFC 4315 3: if client doesn't have permission to SELECT/EXAMINE, do not send UIDPLUS response */
@@ -2871,6 +3079,12 @@ cleanup:
 #define FORWARD_VIRT_MBOX_MODIFIED(count) FORWARD_VIRT_MBOX_MODIFIED_PREFIX(count, "")
 #define FORWARD_VIRT_MBOX_MODIFIED_UID(count) FORWARD_VIRT_MBOX_MODIFIED_PREFIX(count, "UID ")
 
+#define REQUIRE_SEQNO_ALLOWED() \
+	if (imap_sequence_numbers_prohibited(imap)) { \
+		imap_reply(imap, "BAD [CLIENTBUG] Sequence numbers may not be used"); \
+		return 0; \
+	}
+
 static int idle_stop(struct imap_session *imap)
 {
 	imap->idle = 0;
@@ -2880,36 +3094,9 @@ static int idle_stop(struct imap_session *imap)
 	return 0;
 }
 
-static int imap_process(struct imap_session *imap, char *s)
+static int flush_updates(struct imap_session *imap, const char *command, const char *s)
 {
-	int res, replacecount;
-	char *command;
-
-	if (imap->idle || (imap->alerted == 1 && !strcasecmp(s, "DONE"))) {
-		/* Thunderbird clients will still send "DONE" if we send a tagged reply during the IDLE,
-		 * but Microsoft Outlook will not, so handle both cases, i.e. tolerate the redundant DONE. */
-		return idle_stop(imap);
-	} else if (imap->alerted == 1) {
-		imap->alerted = 2;
-	}
-
-	if (imap->inauth) {
-		return handle_auth(imap, s);
-	}
-
-	if (strlen_zero(s)) {
-		imap_send(imap, "BAD [CLIENTBUG] Invalid tag"); /* There isn't a tag, so we can't do a tagged reply */
-		return 0; /* Ignore empty lines at this point (can't do this if in an APPEND) */
-	}
-
-	/* IMAP clients MUST use a different tag each command, but in practice this is treated as a SHOULD. Common IMAP servers do not enforce this. */
-	imap->tag = strsep(&s, " "); /* Tag for client to identify responses to its request */
-	command = strsep(&s, " ");
-
-	if (!imap->tag || !command) {
-		imap_send(imap, "BAD [CLIENTBUG] Missing arguments.");
-		return 0;
-	}
+	int res;
 
 	/* EXPUNGE responses MUST NOT be sent during FETCH, STORE, or SEARCH, or when no command is in progress (RFC 3501, 9051, and also 2180)
 	 * RFC 5256 also says not allowed during SORT (but UID SORT is fine). (UID commands don't use sequence numbers)
@@ -2959,6 +3146,42 @@ static int imap_process(struct imap_session *imap, char *s)
 			pthread_mutex_unlock(&imap->lock);
 		}
 	}
+	return 0;
+}
+
+static int imap_process(struct imap_session *imap, char *s)
+{
+	int replacecount;
+	char *command;
+	int res = 0;
+
+	if (imap->idle || (imap->alerted == 1 && !strcasecmp(s, "DONE"))) {
+		/* Thunderbird clients will still send "DONE" if we send a tagged reply during the IDLE,
+		 * but Microsoft Outlook will not, so handle both cases, i.e. tolerate the redundant DONE. */
+		return idle_stop(imap);
+	} else if (imap->alerted == 1) {
+		imap->alerted = 2;
+	}
+
+	if (imap->inauth) {
+		return handle_auth(imap, s);
+	}
+
+	if (strlen_zero(s)) {
+		imap_send(imap, "BAD [CLIENTBUG] Invalid tag"); /* There isn't a tag, so we can't do a tagged reply */
+		goto done; /* Ignore empty lines at this point (can't do this if in an APPEND) */
+	}
+
+	/* IMAP clients MUST use a different tag each command, but in practice this is treated as a SHOULD. Common IMAP servers do not enforce this. */
+	imap->tag = strsep(&s, " "); /* Tag for client to identify responses to its request */
+	command = strsep(&s, " ");
+
+	if (!imap->tag || !command) {
+		imap_send(imap, "BAD [CLIENTBUG] Missing arguments.");
+		goto done;
+	}
+
+	flush_updates(imap, command, s);
 
 	if (!strcasecmp(command, "NOOP")) {
 		FORWARD_VIRT_MBOX();
@@ -2979,7 +3202,7 @@ static int imap_process(struct imap_session *imap, char *s)
 	} else if (!strcasecmp(command, "AUTHENTICATE")) {
 		if (bbs_user_is_registered(imap->node->user)) {
 			imap_reply(imap, "NO [CLIENTBUG] Already logged in");
-			return 0;
+			goto done;
 		}
 		/* AUTH=PLAIN => AUTHENTICATE, which is preferred to LOGIN. */
 		command = strsep(&s, " ");
@@ -3005,7 +3228,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		STRIP_QUOTES(pass);
 		if (bbs_user_is_registered(imap->node->user)) {
 			imap_reply(imap, "NO [CLIENTBUG] Already logged in");
-			return 0;
+			goto done;
 		}
 		/* Strip the domain, if present,
 		 * but the domain must match our domain, if present. */
@@ -3014,7 +3237,7 @@ static int imap_process(struct imap_session *imap, char *s)
 			*domain++ = '\0';
 			if (strlen_zero(domain) || strcmp(domain, bbs_hostname())) {
 				imap_reply(imap, "NO [AUTHENTICATIONFAILED] Invalid username or password"); /* No such mailbox, since wrong domain! */
-				return 0;
+				goto done;
 			}
 		}
 		res = bbs_authenticate(imap->node, user, pass);
@@ -3027,9 +3250,9 @@ static int imap_process(struct imap_session *imap, char *s)
 			} else {
 				imap_reply(imap, "NO [AUTHENTICATIONFAILED] Invalid username or password");
 			}
-			return 0;
+			goto done;
 		}
-		return finish_auth(imap, 0);
+		res = finish_auth(imap, 0);
 	} else if (!strcasecmp(command, "UNAUTHENTICATE")) {
 		if (!bbs_user_is_registered(imap->node->user)) {
 			/* Before authentication check, because we cannot respond with a NO if this fails,
@@ -3047,17 +3270,17 @@ static int imap_process(struct imap_session *imap, char *s)
 		bbs_warning("'%s' command may not be used in the unauthenticated state\n", command);
 		imap_reply(imap, "BAD Not logged in"); /* Not necessarily a client bug, could be our fault too if we don't implement something */
 	} else if (!strcasecmp(command, "SELECT")) {
-		return handle_select(imap, s, CMD_SELECT);
+		res = handle_select(imap, s, CMD_SELECT);
 	} else if (!strcasecmp(command, "EXAMINE")) {
-		return handle_select(imap, s, CMD_EXAMINE);
+		res = handle_select(imap, s, CMD_EXAMINE);
 	} else if (!strcasecmp(command, "STATUS")) {
-		return handle_status(imap, s);
+		res = handle_status(imap, s);
 	} else if (!strcasecmp(command, "NAMESPACE")) {
 		/* Good article for understanding namespaces: https://utcc.utoronto.ca/~cks/space/blog/sysadmin/IMAPPrefixesClientAndServer */
 		imap_send(imap, "NAMESPACE %s %s %s", PRIVATE_NAMESPACE, OTHER_NAMESPACE, SHARED_NAMESPACE);
 		imap_reply(imap, "NAMESPACE command completed");
 	} else if (!strcasecmp(command, "LIST")) {
-		return handle_list(imap, s, CMD_LIST);
+		res = handle_list(imap, s, CMD_LIST);
 	} else if (!strcasecmp(command, "LSUB")) { /* Deprecated in RFC 9051 (IMAP4rev2), but clients still use it */
 		/* Bit of a hack: just assume all folders are subscribed
 		 * All clients share the subscription list, so clients should try to LSUB before they SUBSCRIBE to anything.
@@ -3067,19 +3290,19 @@ static int imap_process(struct imap_session *imap, char *s)
 		 * We have stubs for SUBSCRIBE and UNSUBSCRIBE as well, but the LSUB response is actually the only important one.
 		 * Since we return all folders as subscribed, clients shouldn't try to subscribe to anything.
 		 */
-		return handle_list(imap, s, CMD_LSUB);
+		res = handle_list(imap, s, CMD_LSUB);
 	} else if (!strcasecmp(command, "XLIST")) {
-		return handle_list(imap, s, CMD_XLIST);
+		res = handle_list(imap, s, CMD_XLIST);
 	} else if (!strcasecmp(command, "CREATE")) {
 		/*! \todo need to modify mailbox names like select, but can then pass it on (do in the commands) */
 		IMAP_NO_READONLY(imap);
-		return handle_create(imap, s);
+		res = handle_create(imap, s);
 	} else if (!strcasecmp(command, "DELETE")) {
 		IMAP_NO_READONLY(imap);
-		return handle_delete(imap, s);
+		res = handle_delete(imap, s);
 	} else if (!strcasecmp(command, "RENAME")) {
 		IMAP_NO_READONLY(imap);
-		return handle_rename(imap, s);
+		res = handle_rename(imap, s);
 	} else if (!strcasecmp(command, "CHECK")) {
 		FORWARD_VIRT_MBOX(); /* Perhaps the remote server does something with CHECK... forward it just in case */
 		imap_reply(imap, "OK CHECK Completed"); /* Nothing we need to do now */
@@ -3112,19 +3335,22 @@ static int imap_process(struct imap_session *imap, char *s)
 		}
 		imap_reply(imap, "OK UNSELECT completed");
 	} else if (!strcasecmp(command, "FETCH")) {
+		REQUIRE_SEQNO_ALLOWED();
 		FORWARD_VIRT_MBOX();
 		REQUIRE_SELECTED(imap);
-		return handle_fetch(imap, s, 0);
+		res = handle_fetch(imap, s, 0);
 	} else if (!strcasecmp(command, "COPY")) {
+		REQUIRE_SEQNO_ALLOWED();
 		/* The client may think two mailboxes are on the same server, when in reality they are not.
 		 * If virtual mailbox, destination must also be on that server. Otherwise, reject the operation.
 		 * We would need to transparently do an APPEND otherwise (which could be done, but isn't at the moment). */
 		FORWARD_VIRT_MBOX_MODIFIED(1);
 		REQUIRE_SELECTED(imap);
 		IMAP_NO_READONLY(imap);
-		return handle_copy(imap, s, 0);
+		res = handle_copy(imap, s, 0);
 	} else if (!strcasecmp(command, "MOVE")) {
 		REQUIRE_ARGS(s);
+		REQUIRE_SEQNO_ALLOWED();
 		/*! \todo MOVE can be easily emulated if the remote server doesn't support it.
 		 * We just do a COPY, EXPUNGE.
 		 * Also note that the below check only catches if the source folder is remote,
@@ -3132,25 +3358,28 @@ static int imap_process(struct imap_session *imap, char *s)
 		 * But currently, either both have to be local or both have to be remote, so that's fine. */
 		if (imap->client && !(imap->client->virtcapabilities & IMAP_CAPABILITY_MOVE)) {
 			imap_reply(imap, "NO MOVE not supported for this mailbox");
-			return 0;
+			goto done;
 		}
 		FORWARD_VIRT_MBOX_MODIFIED(1);
 		REQUIRE_SELECTED(imap);
 		IMAP_NO_READONLY(imap);
-		return handle_move(imap, s, 0);
+		res = handle_move(imap, s, 0);
 	} else if (!strcasecmp(command, "STORE")) {
 		REQUIRE_ARGS(s);
+		REQUIRE_SEQNO_ALLOWED();
 		FORWARD_VIRT_MBOX();
 		REQUIRE_SELECTED(imap);
 		IMAP_NO_READONLY(imap);
-		return handle_store(imap, s, 0);
+		res = handle_store(imap, s, 0);
 	} else if (!strcasecmp(command, "SEARCH")) {
 		REQUIRE_ARGS(s);
+		REQUIRE_SEQNO_ALLOWED();
 		FORWARD_VIRT_MBOX();
 		REQUIRE_SELECTED(imap);
-		return handle_search(imap, s, 0);
+		res = handle_search(imap, s, 0);
 	} else if (!strcasecmp(command, "SORT")) {
 		REQUIRE_ARGS(s);
+		REQUIRE_SEQNO_ALLOWED();
 		/*! \todo Clients will be confused if we advertise the SORT capability
 		 * but the remote mailbox doesn't support it, so we have to reject a request.
 		 * We could implement a "SORT" proxy where we do something like:
@@ -3162,12 +3391,13 @@ static int imap_process(struct imap_session *imap, char *s)
 		 */
 		FORWARD_VIRT_MBOX_CAPABILITY(IMAP_CAPABILITY_SORT);
 		REQUIRE_SELECTED(imap);
-		return handle_sort(imap, s, 0);
+		res = handle_sort(imap, s, 0);
 	} else if (!strcasecmp(command, "THREAD")) {
 		REQUIRE_ARGS(s);
+		REQUIRE_SEQNO_ALLOWED();
 		FORWARD_VIRT_MBOX_CAPABILITY(IMAP_CAPABILITY_THREAD_ORDEREDSUBJECT | IMAP_CAPABILITY_THREAD_REFERENCES);
 		REQUIRE_SELECTED(imap);
-		return handle_thread(imap, s, 0);
+		res = handle_thread(imap, s, 0);
 	} else if (!strcasecmp(command, "UID")) {
 		REQUIRE_ARGS(s);
 		if (!imap->client) { /* Ultimately, FORWARD_VIRT_MBOX will intercept this command, if it's valid */
@@ -3177,29 +3407,31 @@ static int imap_process(struct imap_session *imap, char *s)
 		REQUIRE_ARGS(command);
 		if (!strcasecmp(command, "FETCH")) {
 			FORWARD_VIRT_MBOX_UID();
-			return handle_fetch(imap, s, 1);
+			res = handle_fetch(imap, s, 1);
 		} else if (!strcasecmp(command, "COPY")) {
 			FORWARD_VIRT_MBOX_MODIFIED_UID(1);
-			return handle_copy(imap, s, 1);
+			res = handle_copy(imap, s, 1);
 		} else if (!strcasecmp(command, "MOVE")) {
 			if (imap->client && !(imap->client->virtcapabilities & IMAP_CAPABILITY_MOVE)) {
 				imap_reply(imap, "NO MOVE not supported for this mailbox");
-				return 0;
+				goto done;
 			}
 			FORWARD_VIRT_MBOX_MODIFIED_UID(1);
-			return handle_move(imap, s, 1);
+			res = handle_move(imap, s, 1);
 		} else if (!strcasecmp(command, "STORE")) {
 			FORWARD_VIRT_MBOX_UID();
-			return handle_store(imap, s, 1);
+			res = handle_store(imap, s, 1);
 		} else if (!strcasecmp(command, "SEARCH")) {
 			FORWARD_VIRT_MBOX_UID();
+			/* Should not send queued untagged updates after SEARCH or UID SEARCH,
+			 * so just return immediately. */
 			return handle_search(imap, s, 1);
 		} else if (!strcasecmp(command, "SORT")) {
 			FORWARD_VIRT_MBOX_UID_CAPABILITY(IMAP_CAPABILITY_SORT);
-			return handle_sort(imap, s, 1);
+			res = handle_sort(imap, s, 1);
 		} else if (!strcasecmp(command, "THREAD")) {
 			FORWARD_VIRT_MBOX_UID_CAPABILITY(IMAP_CAPABILITY_THREAD_ORDEREDSUBJECT | IMAP_CAPABILITY_THREAD_REFERENCES);
-			return handle_thread(imap, s, 1);
+			res = handle_thread(imap, s, 1);
 		} else {
 			imap_reply(imap, "BAD Invalid UID command");
 		}
@@ -3208,10 +3440,10 @@ static int imap_process(struct imap_session *imap, char *s)
 		if (imap->client) {
 			/*! \todo This needs careful attention for virtual mappings */
 			imap_reply(imap, "NO Operation not supported for virtual mailboxes");
-			return 0;
+			goto done;
 		}
 		IMAP_NO_READONLY(imap);
-		return handle_append(imap, s);
+		res = handle_append(imap, s);
 	} else if (allow_idle && !strcasecmp(command, "IDLE")) {
 #define MAX_IDLE_MS SEC_MS(1800) /* 30 minutes */
 		int idleleft = MAX_IDLE_MS;
@@ -3231,9 +3463,9 @@ static int imap_process(struct imap_session *imap, char *s)
 		 * For now, clients attempting that will be summarily rebuffed. */
 		REQUIRE_SELECTED(imap);
 		/* RFC 2177 IDLE */
-		_imap_reply(imap, "+ idling\r\n");
 		REPLACE(imap->savedtag, imap->tag); /* We still save the tag to deal with Thunderbird bug in the other path to idle_stop */
-		imap->idle = 1; /* This is used by other threads that may send the client data while it's idling. */
+		imap->idle = 1; /* This is used by other threads that may send the client data while it's idling. Set before sending response. */
+		_imap_reply(imap, "+ idling\r\n");
 		/* Note that IDLE only applies to the currently selected mailbox (folder).
 		 * Thus, in traversing all the IMAP sessions, simply sharing the same mbox isn't enough.
 		 * imap->dir also needs to match (same currently selected folder). */
@@ -3247,15 +3479,20 @@ static int imap_process(struct imap_session *imap, char *s)
 				break; /* Client terminated the idle. Stop idling and return to read the next command. */
 			} else {
 				/* Nothing yet. Send an "IDLE ping" to check in... */
-				imap_send(imap, "OK Still here");
 				idleleft -= pollms;
 				if (idleleft <= 0) {
 					bbs_warning("IDLE expired without any activity\n");
 					return -1; /* Disconnect the client now */
+				} else {
+					imap_send(imap, "OK Still here");
 				}
 			}
 		}
-		return 0;
+		return 0; /* We used res for other stuff during the command, no need to check for updates right after an IDLE */
+	} else if (!strcasecmp(command, "NOTIFY")) {
+		/* RFC 5465 NOTIFY */
+		REQUIRE_ARGS(s);
+		res = handle_notify(imap, s);
 	} else if (!strcasecmp(command, "SETQUOTA")) {
 		/* Requires QUOTASET, which we don't advertise in our capabilities, so clients shouldn't call this anyways... */
 		imap_reply(imap, "NO [NOPERM] Permission Denied"); /* Users cannot adjust their own quotas, nice try... */
@@ -3271,7 +3508,7 @@ static int imap_process(struct imap_session *imap, char *s)
 				 * and since our capabilities include QUOTA, the client will think we've gone and lied to it now.
 				 * Apologies, dear client. If only you knew all the tricks we were playing on you right now. */
 				imap_reply(imap, "NO Quota unavailable for this mailbox");
-				return 0;
+				goto done;
 			}
 			/* XXX Since the remote quota will differ from ours, could this mess up the client if we don't translate the quota root? */
 			FORWARD_VIRT_MBOX_MODIFIED(1);
@@ -3316,7 +3553,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		STRIP_QUOTES(resource);
 		if (strcmp(mechanism, "INTERNAL")) {
 			imap_reply(imap, "NO [CANNOT] Only INTERNAL mechanism allowed");
-			return 0;
+			goto done;
 		}
 		/* This really makes a mockery of RFC 4467.
 		 * Trojita expects to be able to use GENURLAUTH
@@ -3341,7 +3578,7 @@ static int imap_process(struct imap_session *imap, char *s)
 				generate_acl_string(myacl, buf, sizeof(buf));
 				imap_send(imap, "MYRIGHTS %s %s", s, buf);
 				imap_reply(imap, "OK MYRIGHTS completed");
-				return 0;
+				goto done;
 			}
 			FORWARD_VIRT_MBOX_MODIFIED(1);
 		}
@@ -3349,7 +3586,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		/* If we don't have permission to list the mailbox, then we must reply with No such mailbox to avoid leaking its existence */
 		if (imap_translate_dir(imap, s, buf, sizeof(buf), &myacl) || !IMAP_HAS_ACL(myacl, IMAP_ACL_LOOKUP)) {
 			imap_reply(imap, "NO [NONEXISTENT] No such mailbox");
-			return 0;
+			goto done;
 		}
 		IMAP_REQUIRE_ACL(myacl, IMAP_ACL_LOOKUP | IMAP_ACL_READ | IMAP_ACL_INSERT | IMAP_ACL_MAILBOX_CREATE | IMAP_ACL_MAILBOX_DELETE | IMAP_ACL_ADMINISTER);
 		generate_acl_string(myacl, buf, sizeof(buf));
@@ -3367,7 +3604,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		/* If we don't have permission to list the mailbox, then we must reply with No such mailbox to avoid leaking its existence */
 		if (imap_translate_dir(imap, mailbox, buf, sizeof(buf), &myacl) || !IMAP_HAS_ACL(myacl, IMAP_ACL_LOOKUP)) {
 			imap_reply(imap, "NO [NONEXISTENT] No such mailbox");
-			return 0;
+			goto done;
 		}
 		IMAP_REQUIRE_ACL(myacl, IMAP_ACL_ADMINISTER);
 		/* First chunk is rights always granted to this user in the mailbox.
@@ -3392,7 +3629,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		/* If we don't have permission to list the mailbox, then we must reply with No such mailbox to avoid leaking its existence */
 		if (imap_translate_dir(imap, s, buf, sizeof(buf), &myacl) || !IMAP_HAS_ACL(myacl, IMAP_ACL_LOOKUP)) {
 			imap_reply(imap, "NO [NONEXISTENT] No such mailbox");
-			return 0;
+			goto done;
 		}
 		IMAP_REQUIRE_ACL(myacl, IMAP_ACL_ADMINISTER);
 		getacl(imap, buf, s);
@@ -3400,11 +3637,11 @@ static int imap_process(struct imap_session *imap, char *s)
 	} else if (!strcasecmp(command, "SETACL")) {
 		REQUIRE_ARGS(s);
 		FORWARD_VIRT_MBOX_MODIFIED(1);
-		return handle_setacl(imap, s, 0);
+		res = handle_setacl(imap, s, 0);
 	} else if (!strcasecmp(command, "DELETEACL")) {
 		REQUIRE_ARGS(s);
 		FORWARD_VIRT_MBOX_MODIFIED(1);
-		return handle_setacl(imap, s, 1);
+		res = handle_setacl(imap, s, 1);
 	} else if (!strcasecmp(command, "ENABLE")) {
 		char *cap;
 		int enabled = 0;
@@ -3438,7 +3675,13 @@ static int imap_process(struct imap_session *imap, char *s)
 		imap_reply(imap, "BAD Command not supported.");
 	}
 
-	return 0;
+done:
+	if (res) {
+		bbs_debug(4, "%s command returned %d\n", command, res);
+	} else {
+		flush_updates(imap, command, NULL);
+	}
+	return res;
 }
 
 static void handle_client(struct imap_session *imap)

@@ -543,7 +543,7 @@ static int mark_seen(struct imap_session *imap, int seqno, const char *fullname,
 	return 0;
 }
 
-static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_request *fetchreq, const char *sequences)
+static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_request *fetchreq, const char *sequences, int tagged)
 {
 	struct dirent *entry, **entries;
 	int files, fno = 0;
@@ -657,10 +657,12 @@ cleanup:
 	if (!fetched) {
 		bbs_debug(6, "FETCH command did not return any matching results\n");
 	}
-	if (error) {
-		imap_reply(imap, "BAD Invalid saved search");
-	} else {
-		imap_reply(imap, "OK %sFETCH Completed", usinguid ? "UID " : "");
+	if (tagged) {
+		if (error) {
+			imap_reply(imap, "BAD Invalid saved search");
+		} else {
+			imap_reply(imap, "OK %sFETCH Completed", usinguid ? "UID " : "");
+		}
 	}
 	return 0;
 }
@@ -742,7 +744,7 @@ char *fetchitem_sep(char **s)
 	return begin;
 }
 
-int handle_fetch_full(struct imap_session *imap, char *s, int usinguid)
+int handle_fetch_full(struct imap_session *imap, char *s, int usinguid, int tagged)
 {
 	char *sequences;
 	char *items, *item;
@@ -866,5 +868,5 @@ int handle_fetch_full(struct imap_session *imap, char *s, int usinguid)
 	}
 
 	/* Process the request, for each message that matches sequence number. */
-	return process_fetch(imap, usinguid, &fetchreq, sequences);
+	return process_fetch(imap, usinguid, &fetchreq, sequences, tagged);
 }

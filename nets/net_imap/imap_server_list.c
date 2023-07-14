@@ -343,6 +343,90 @@ static int list_scandir_single(struct imap_session *imap, struct list_command *l
 	return 1;
 }
 
+/*! \note XXX Essentially just a stripped down version of list_scandir */
+int list_iterate(struct imap_session *imap, struct list_command *lcmd, int level, const char *prefix, const char *listscandir, int (*cb)(struct imap_session *imap, struct list_command *lcmd, const char *name, void *data), void *data)
+{
+	struct dirent *entry, **entries;
+	int files, fno = 0;
+
+	/* Handle INBOX, since that's also a special case. */
+	if (level == 0 && lcmd->ns == NAMESPACE_PRIVATE) {
+		if (cb(imap, lcmd, "INBOX", data)) {
+			return -1;
+		}
+	}
+
+	files = scandir(listscandir, &entries, NULL, alphasort);
+	if (files < 0) {
+		bbs_error("scandir(%s) failed: %s\n", mailbox_maildir(imap->mbox), strerror(errno));
+		return -1;
+	}
+	while (fno < files && (entry = entries[fno++])) {
+		char fulldir[257];
+		char mailboxbuf[256];
+		char relativepath[512];
+		const char *mailboxname = entry->d_name;
+
+		/* Only care about directories, not files. */
+		if (entry->d_type != DT_DIR || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			goto cleanup;
+		}
+
+		if (level == 0) {
+			if (lcmd->ns != NAMESPACE_PRIVATE) {
+				if (!strcmp(entry->d_name, "cur") || !strcmp(entry->d_name, "new") || !strcmp(entry->d_name, "tmp")) {
+					goto cleanup;
+				}
+				if (!maildir_is_mailbox(entry->d_name)) {
+					goto cleanup; /* Not a mailbox */
+				}
+			}
+		}
+
+		if (level == 0 && lcmd->ns == NAMESPACE_OTHER && isdigit(*entry->d_name)) {
+			unsigned int userid = (unsigned int) atoi(entry->d_name);
+			if (userid == imap->node->user->id) {
+				goto cleanup; /* Skip ourself */
+			}
+			if (bbs_username_from_userid(userid, mailboxbuf, sizeof(mailboxbuf))) {
+				bbs_warning("No user for maildir %s\n", entry->d_name);
+				goto cleanup;
+			}
+			str_tolower(mailboxbuf); /* Convert to all lowercase since that's the convention we use for email */
+			mailboxname = mailboxbuf; /* e.g. jsmith instead of 1 */
+		} else if (level == 0 && lcmd->ns == NAMESPACE_SHARED && !isdigit(*entry->d_name)) {
+			mailboxname = entry->d_name; /* Mailbox name stays the same, this is technically a redundant instruction */
+		} else if (*entry->d_name != '.') {
+			goto cleanup; /* Not a maildir++ directory (or it's an INBOX folder) */
+		}
+
+		if (lcmd->ns == NAMESPACE_PRIVATE) {
+			safe_strncpy(relativepath, entry->d_name + 1, sizeof(relativepath));
+		} else if (level == 1) {
+			snprintf(relativepath, sizeof(relativepath), ".%s%s", prefix, entry->d_name);
+		} else {
+			snprintf(relativepath, sizeof(relativepath), ".%s", mailboxname);
+		}
+
+		if (*mailboxname == HIERARCHY_DELIMITER_CHAR) {
+			mailboxname++;
+		}
+
+		if (cb(imap, lcmd, relativepath, data)) {
+			goto cleanup;
+		}
+
+		snprintf(fulldir, sizeof(fulldir), "%s/%s", listscandir, entry->d_name);
+		if (level == 0 && lcmd->ns != NAMESPACE_PRIVATE) {
+			list_iterate(imap, lcmd, 1, mailboxname, fulldir, cb, data);
+		}
+cleanup:
+		free(entry);
+	}
+	free(entries);
+	return 0;
+}
+
 int list_scandir(struct imap_session *imap, struct list_command *lcmd, int level, const char *prefix, const char *listscandir)
 {
 	struct dirent *entry, **entries;
@@ -375,7 +459,7 @@ int list_scandir(struct imap_session *imap, struct list_command *lcmd, int level
 
 		if (level == 0) {
 			if (lcmd->ns != NAMESPACE_PRIVATE) {
-				if (!strcmp(entry->d_name, "cur") || !strcmp(entry->d_name, "new") || !strcmp(entry->d_name, "tmp") || !strcmp(entry->d_name, "mailq")) {
+				if (!strcmp(entry->d_name, "cur") || !strcmp(entry->d_name, "new") || !strcmp(entry->d_name, "tmp")) {
 					goto cleanup;
 				}
 				if (!maildir_is_mailbox(entry->d_name)) {
