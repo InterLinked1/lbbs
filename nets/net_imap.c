@@ -3228,24 +3228,23 @@ static int handle_idle(struct imap_session *imap)
 #define MAX_IDLE_MS SEC_MS(1800) /* 30 minutes */
 	int idleleft = MAX_IDLE_MS;
 	int res;
-	int lastactivity;
+	int lastactivity, idlestarted;
 
 	if (imap->client) {
-		/* IDLE for up to (just under) 30 minutes.
-		 * Note that client_command_passthru will restart the timer each time there is activity,
-		 * but real mail clients should terminate the IDLE when they get an untagged response
-		 * and do a FETCH anyways (at least, in response to EXISTS, not EXPUNGE).
-		 * Furthermore, it is NOT our responsibility to terminate the IDLE automatically after 29 minutes.
-		 * It's the client's job to do that. If we get disconnected, we'll disconnect as well.
-		 */
-		return imap_client_send_wait_response(imap->client, imap->rfd, 1790000, "IDLE\r\n"); /* No trailing spaces! Gimap doesn't like that */
+		/* If not already idling on the currently selected mailbox, and can't start, abort. Otherwise, proceed as usual. */
+		if (!imap->client->idling && imap_client_idle_start(imap->client)) {
+			imap_reply(imap, "NO IDLE failed");
+			return 0;
+		}
+	} else {
+		REQUIRE_SELECTED(imap);
 	}
 
 	/* XXX Outlook often tries to IDLE without selecting a mailbox, which is kind of bizarre.
 	 * Technically though, RFC 2177 says IDLE is valid in either the authenticated or selected states.
 	 * How it's used in the authenticated (but non-selected) state, I don't really know.
 	 * For now, clients attempting that will be summarily rebuffed. */
-	REQUIRE_SELECTED(imap);
+
 	/* RFC 2177 IDLE */
 	REPLACE(imap->savedtag, imap->tag); /* We still save the tag to deal with Thunderbird bug in the other path to idle_stop */
 	imap->idle = 1; /* This is used by other threads that may send the client data while it's idling. Set before sending response. */
@@ -3253,11 +3252,10 @@ static int handle_idle(struct imap_session *imap)
 	/* Note that IDLE only applies to the currently selected mailbox (folder).
 	 * Thus, in traversing all the IMAP sessions, simply sharing the same mbox isn't enough.
 	 * imap->dir also needs to match (same currently selected folder). */
-	lastactivity = (int) time(NULL);
+	idlestarted = lastactivity = (int) time(NULL);
 	for (;;) {
 		struct imap_client *client = NULL;
 		int pollms = MIN(SEC_MS(IMAP_IDLE_POLL_INTERVAL_SEC), idleleft);
-		/* XXX We also want to be able to do NOTIFY/IDLE on remote servers if idling on a remote mailbox (as above) */
 		res = imap_poll(imap, pollms, &client);
 		if (res < 0) {
 			imap->idle = 0;
@@ -3265,7 +3263,12 @@ static int handle_idle(struct imap_session *imap)
 		} else if (res > 0) {
 			struct bbs_tcp_client *tcpclient;
 			int sendstatus = 0;
+
 			if (!client) {
+				if (imap->client) {
+					/* Stop idling on the selected mailbox (remote) */
+					imap_client_idle_stop(imap->client);
+				}
 				imap_clients_renew_idle(imap); /* In case some of them are close to expiring, renew them now before returning */
 				break; /* Client terminated the idle. Stop idling and return to read the next command. */
 			}
@@ -3284,57 +3287,66 @@ static int handle_idle(struct imap_session *imap)
 				/* This shouldn't happen, if we're not in IDLE, the server isn't allowed to send us unsolicited data. */
 				bbs_warning("Got activity on a client that wasn't idling? (%s)\n", client->virtprefix);
 				continue;
-			}
-			do {
-				int seqno;
-				char *s = tcpclient->rldata.buf;
+			} else if (imap->client == client) {
+				/* This is the actual mailbox that is selected. Just relay anything we receive. */
+				_imap_reply(imap, "%s\r\n", tcpclient->rldata.buf);
+			} else {
+				do {
+					int seqno;
+					char *s = tcpclient->rldata.buf;
 
-				bbs_debug(4, "Received during IDLE: %s\n", tcpclient->rldata.buf);
+					bbs_debug(4, "Received during IDLE: %s\n", tcpclient->rldata.buf);
 
-				if (!STARTS_WITH(s, "*")) {
-					bbs_warning("Unexpected data during background IDLE for '%s': %s\n", client->virtprefix, s);
-					continue;
+					if (!STARTS_WITH(s, "*")) {
+						bbs_warning("Unexpected data during background IDLE for '%s': %s\n", client->virtprefix, s);
+						continue;
+					}
+					s += 2;
+					if (strlen_zero(s)) {
+						continue;
+					}
+					seqno = atoi(s);
+					strsep(&s, " ");
+					if (strlen_zero(s) || !seqno) {
+						continue;
+					}
+					if (STARTS_WITH(s, "EXISTS") || STARTS_WITH(s, "EXPUNGE") || STARTS_WITH(s, "FETCH")) {
+						/* In theory, client->bgmailbox contains the mailbox name so we could just
+						 * construct our own STATUS response (e.g. for EXISTS, with MESSAGES),
+						 * and send that.
+						 * But RFC 5465 has specific requirements for what the STATUS message must contain,
+						 * and that includes stuff that won't be obvious here (e.g. UIDVALIDITY, UIDNEXT, etc.)
+						 * So, we're really just going to have to stop the IDLE at the end of this,
+						 * get the STATUS of the mailbox, and send it back (modifying the name in the response, of course). */
+						sendstatus = 1;
+					}
+					/* We should get at least one line, but there may be more.
+					 * Poll just this fd quickly to exhaust it before returning to main poll.
+					 * Wait max 500ms for further lines, e.g. FETCH. Waiting long enough
+					 * helps because it avoids getting another response soon afterwards
+					 * and then having to do another stop IDLE, do STATUS, start IDLE sequence for that. */
+				} while (bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 500) > 0);
+				if (sendstatus) {
+					/* Is NOTIFY enabled for this mailbox? If not, ignore it */
+					if (imap_notify_applicable(imap, NULL, client->bgmailbox, NULL, IMAP_EVENT_MESSAGE_NEW | IMAP_EVENT_MESSAGE_EXPUNGE | IMAP_EVENT_FLAG_CHANGE)) {
+						/* Stop the IDLE, get the STATUS, then restart the IDLE */
+						if (imap_client_idle_stop(client)) {
+							continue;
+						}
+						/* Leave client->bgmailbox as is, since we're going to restart it momentarily */
+						/* Clients SHOULD NOT issue a STATUS on the currently selected mailbox.
+						 * But servers MUST be able to deal with it.
+						 * However, ideally, we would store the SELECT and be able to construct what the STATUS response would be.
+						 * It's reasonable to assume UIDVALIDITY will not change (though we'd get an untagged response if it did),
+						 * but UIDNEXT might be less predictable, since it's not guaranteed to increase 1 by 1. */
+						/* Again, bgmailbox is always an INBOX so we just hardcode that for now */
+						imap_client_send_wait_response_cb_noecho(client, -1, SEC_MS(5), notify_status_cb, NULL, "STATUS \"%s\" (%s%s)\r\n", "INBOX", "MESSAGES UNSEEN UIDNEXT UIDVALIDITY", (imap->condstore || imap->qresync) && client->virtcapabilities & IMAP_CAPABILITY_CONDSTORE ? " HIGHESTMODSEQ" : ""); /* Covers all cases: MessageNew, MessageExpunge, FlagChange */
+						imap_client_idle_start(client); /* Mailbox is still selected, no need to reselect */
+						lastactivity = (int) time(NULL);
+					} else {
+						bbs_debug(7, "NOTIFY not enabled for %s, ignoring\n", client->bgmailbox);
+					}
 				}
-				s += 2;
-				if (strlen_zero(s)) {
-					continue;
-				}
-				seqno = atoi(s);
-				strsep(&s, " ");
-				if (strlen_zero(s) || !seqno) {
-					continue;
-				}
-				if (STARTS_WITH(s, "EXISTS") || STARTS_WITH(s, "EXPUNGE") || STARTS_WITH(s, "FETCH")) {
-					/* In theory, client->bgmailbox contains the mailbox name so we could just
-					 * construct our own STATUS response (e.g. for EXISTS, with MESSAGES),
-					 * and send that.
-					 * But RFC 5465 has specific requirements for what the STATUS message must contain,
-					 * and that includes stuff that won't be obvious here (e.g. UIDVALIDITY, UIDNEXT, etc.)
-					 * So, we're really just going to have to stop the IDLE at the end of this,
-					 * get the STATUS of the mailbox, and send it back (modifying the name in the response, of course). */
-					sendstatus = 1;
-				}
-				/* We should get at least one line, but there may be more.
-				 * Poll just this fd quickly to exhaust it before returning to main poll.
-				 * Wait max 500ms for further lines, e.g. FETCH. Waiting long enough
-				 * helps because it avoids getting another response soon afterwards
-				 * and then having to do another stop IDLE, do STATUS, start IDLE sequence for that. */
-			} while (bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 500) > 0);
-			if (sendstatus) {
-				/* Stop the IDLE, get the STATUS, then restart the IDLE */
-				if (imap_client_idle_stop(client)) {
-					continue;
-				}
-				/* Leave client->bgmailbox as is, since we're going to restart it momentarily */
-				/* Clients SHOULD NOT issue a STATUS on the currently selected mailbox.
-				 * But servers MUST be able to deal with it.
-				 * However, ideally, we would store the SELECT and be able to construct what the STATUS response would be.
-				 * It's reasonable to assume UIDVALIDITY will not change (though we'd get an untagged response if it did),
-				 * but UIDNEXT might be less predictable, since it's not guaranteed to increase 1 by 1. */
-				/* Again, bgmailbox is always an INBOX so we just hardcode that for now */
-				imap_client_send_wait_response_cb_noecho(client, -1, SEC_MS(5), notify_status_cb, NULL, "STATUS \"%s\" (%s%s)\r\n", "INBOX", "MESSAGES UNSEEN UIDNEXT UIDVALIDITY", (imap->condstore || imap->qresync) && client->virtcapabilities & IMAP_CAPABILITY_CONDSTORE ? " HIGHESTMODSEQ" : ""); /* Covers all cases: MessageNew, MessageExpunge, FlagChange */
-				imap_client_idle_start(client); /* Mailbox is still selected, no need to reselect */
-				lastactivity = (int) time(NULL);
 			}
 			imap_clients_renew_idle(imap);
 		} else {
@@ -3348,6 +3360,11 @@ static int handle_idle(struct imap_session *imap)
 				int elapsed = now - lastactivity;
 				/* If we're coming up on the deadline (with a little bit of wiggle room, +/- in either direction), go ahead and do it */
 				if (elapsed >= idle_notify_interval - (IMAP_IDLE_POLL_INTERVAL_SEC / 2)) {
+					if (idlestarted < now - 1801) {
+						/* It's been 30 minutes, so RFC 3501 now permits us to disconnect the client. */
+						bbs_warning("IDLE expired\n");
+						return -1;
+					}
 					imap_send(imap, "OK Still here");
 					lastactivity = now;
 				}

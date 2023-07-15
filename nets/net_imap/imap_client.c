@@ -199,6 +199,11 @@ void imap_client_idle_notify(struct imap_client *client)
 {
 	char mailbox[128];
 
+	if (client->idling) {
+		bbs_warning("Already idling on %s?\n", client->virtprefix);
+		return;
+	}
+
 	bbs_debug(6, "Checking if we should background IDLE for %s...\n", client->virtprefix);
 
 	/* Even if NOTIFY is not enabled by the client currently,
@@ -238,10 +243,11 @@ void imap_client_idle_notify(struct imap_client *client)
 
 	/* Do not check if NOTIFY is enabled using imap_notify_applicable.
 	 * The client might not have enabled NOTIFY yet,
-	 * and this may not be safe to call if imap->notify is NULL. */
+	 * and this may not be safe to call if imap->notify is NULL.
+	 * We check if NOTIFY applies to this mailbox inside handle_idle itself. */
 
 	/* First, select the mailbox for which we want NOTIFY updates.
-	 * Use EXAMINE as maybe that will preserve \Recent flags too. */
+	 * Use EXAMINE as that should hopefully preserve \Recent flags too. */
 	if (imap_client_send_wait_response_noecho(client, -1, SEC_MS(5), "EXAMINE \"%s\"\r\n", "INBOX")) { /* remote name */
 		bbs_warning("Failed to EXAMINE '%s'\n", mailbox);
 	}
