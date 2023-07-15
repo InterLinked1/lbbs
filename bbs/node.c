@@ -373,6 +373,21 @@ int bbs_node_input_unreplace(struct bbs_node *node, char in)
 	return res;
 }
 
+int bbs_node_safe_sleep(struct bbs_node *node, int ms)
+{
+	struct pollfd pfd;
+	bbs_debug(6, "Sleeping on node %d for %d ms\n", node->id, ms);
+	/* We're polling the raw socket fd since that's closed if node is kicked (or at shutdown),
+	 * and that's all we care about here. We're not actually doing any I/O on this fd.
+	 * Avoid using bbs_poll because we don't care about (and shouldn't be affected by) POLLIN.
+	 * This thus allows this to function like a sleep operation, interrupted only if the remote
+	 * client disconnects or is disconnected. */
+	pfd.fd = node->fd;
+	pfd.events = 0; /* This implicitly includes events like POLLERR and remote disconnect */
+	pfd.revents = 0;
+	return poll(&pfd, 1, ms);
+}
+
 static int kill_pid(pid_t *pidptr)
 {
 	int i;

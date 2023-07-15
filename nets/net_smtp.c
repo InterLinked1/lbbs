@@ -2743,8 +2743,11 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 	/* Slow down spam using tarpit like techniques */
 	if (smtp->failures) {
 		bbs_debug(4, "%p: Current number of SMTP failures: %d\n", smtp, smtp->failures);
-		if (smtp->failures > 3) {
-			usleep(2500000 * smtp->failures);
+		if (smtp->failures > 3) { /* Do not do this with <= 3 or we'll slow down the test suite (and get test failures) */
+			/* Exponential delay as # of failures increases: */
+			if (bbs_node_safe_sleep(smtp->node, 1000 * (1 << smtp->failures))) {
+				return -1;
+			}
 		}
 	}
 

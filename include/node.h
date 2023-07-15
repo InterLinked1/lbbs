@@ -191,6 +191,14 @@ int bbs_node_input_replace(struct bbs_node *node, char in, char out);
 int bbs_node_input_unreplace(struct bbs_node *node, char in);
 
 /*!
+ * \brief Suspend execution of a node. This is a safe alternative to usleep for anything more than a few dozen ms.
+ * \param node
+ * \param ms Milliseconds for which to sleep.
+ * \return Same as bbs_poll
+ */
+int bbs_node_safe_sleep(struct bbs_node *node, int ms);
+
+/*!
  * \brief Kill the child process associated with a node
  * \param node
  * \retval 0 on success, -1 on failure

@@ -483,7 +483,9 @@ static int __bbs_dir_traverse(const char *path, int (*on_file)(const char *dir_n
 #undef sprintf /* This is safe */
 				sprintf(full_path, "%s/%s", isroot ? "" : path, entry->d_name);
 			}
+#ifdef EXTRA_DEBUG
 			bbs_debug(4, "Recursing into %s\n", full_path);
+#endif
 			if ((res = __bbs_dir_traverse(full_path, on_file, obj, max_depth, dironly))) {
 				free(full_path);
 				break;
@@ -680,7 +682,9 @@ static int __bbs_dir_size(const char *path, long *size, int max_depth)
 				}
 				sprintf(full_path, "%s/%s", isroot ? "" : path, entry->d_name); /* Safe */
 			}
+#ifdef EXTRA_DEBUG
 			bbs_debug(4, "Recursing into %s\n", full_path);
+#endif
 			res = __bbs_dir_size(full_path, size, max_depth);
 			if (res) {
 				free(full_path);
