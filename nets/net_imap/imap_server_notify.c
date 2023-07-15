@@ -30,6 +30,7 @@
 #include "nets/net_imap/imap_server_acl.h"
 #include "nets/net_imap/imap_server_list.h"
 #include "nets/net_imap/imap_server_notify.h"
+#include "nets/net_imap/imap_client.h"
 
 enum notify_mailbox_specifier {
 	/* Selected mailbox (overrides everything else) */
@@ -152,11 +153,11 @@ int imap_notify_applicable(struct imap_session *imap, struct mailbox *mbox, cons
 int imap_notify_applicable_fetchargs(struct imap_session *imap, struct mailbox *mbox, const char *folder, const char *maildir, enum mailbox_event_type e, const char **fetchargs)
 {
 	bbs_assert_exists(imap);
-	bbs_assert_exists(folder);
-	bbs_assert_exists(maildir);
 
 	if (!imap->notify) {
 		/* Basically, is it the same mailbox that's selected? */
+		bbs_assert_exists(folder);
+		bbs_assert_exists(maildir);
 		return (imap->mbox == mbox && imap->folder && !strcmp(folder, imap->folder)) || !strcmp(maildir, imap->dir);
 	} else {
 		struct imap_notify *notify = imap->notify;
@@ -228,7 +229,11 @@ static int mailbox_watchable(struct imap_session *imap, char *s)
 
 	/* 1. If not an existing mailbox, MUST ignore it */
 	if (imap_translate_dir(imap, s, fullmaildir, sizeof(fullmaildir), &myacl)) {
-		bbs_debug(1, "Mailbox '%s' does not exist\n", s);
+		/* Maybe it's a remote mapping? In which case, allow it */
+		if (mailbox_remotely_mapped(imap, s)) {
+			return 1;
+		}
+		bbs_debug(1, "Mailbox '%s' does not exist and is not remotely mapped\n", s);
 		return 0;
 	}
 	/* If can't LIST, MUST ignore it */
@@ -537,11 +542,4 @@ int handle_notify(struct imap_session *imap, char *s)
 
 	imap_reply(imap, "OK NOTIFY done");
 	return 0;
-
-	// b notify set status (selected MessageNew (uid body.peek[header.fields (from to subject)]) MessageExpunge) (subtree Lists MessageNew)
-	// e notify set (selected MessageNew (uid body.peek[header.fields (from to subject)]) MessageExpunge) (subtree Lists MessageNew) (mailboxes misc MessageNew)
-	// a notify set (mailboxes INBOX (Messagenew messageExpunge)) (personal (SubscriptionChange))
-	// a notify set (selected (Messagenew (uid flags) messageExpunge)) (personal (MessageNew FlagChange MessageExpunge))
-	
-	// The server SHOULD omit notifying the client if the event is caused by this client.  For example, if the client issues CREATE and has requested a MailboxName event that would cover the newly created mailbox, the server SHOULD NOT notify the client of the MailboxName change.
 }

@@ -16,3 +16,5 @@
 char *remove_size(char *restrict s);
 
 int remote_status(struct imap_client *client, const char *remotename, const char *items, int size);
+
+int imap_client_send_converted_status_response(struct imap_client *client, const char *remotename, const char *response);

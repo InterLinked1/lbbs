@@ -199,14 +199,12 @@ static int remote_status_cached(struct imap_client *client, const char *mb, char
 
 int remote_status(struct imap_client *client, const char *remotename, const char *items, int size)
 {
-	char converted[256];
 	char remote_status_resp[1024];
 	char rtag[64];
 	size_t taglen;
 	int len, res;
 	char *tmp, *buf;
 	char cmd[1024];
-	struct imap_session *imap = client->imap;
 	struct bbs_tcp_client *tcpclient = &client->client;
 	const char *tag = client->imap->tag;
 	const char *add1, *add2, *add3;
@@ -364,14 +362,24 @@ int remote_status(struct imap_client *client, const char *remotename, const char
 		}
 	}
 
+	return imap_client_send_converted_status_response(client, remotename, remote_status_resp);
+}
+
+int imap_client_send_converted_status_response(struct imap_client *client, const char *remotename, const char *response)
+{
+	char converted[256];
+	char *tmp;
+	struct imap_session *imap = client->imap;
+
 	/* Replace remote mailbox name with our name for it.
 	 * To do this, insert imap->virtprefix before the mailbox name.
 	 * In practice, easier to just reconstruct the STATUS as needed. */
-	tmp = strrchr(remote_status_resp, '('); /* Again, look for the last ( since the mailbox name could contain it */
+	tmp = strrchr(response, '('); /* Again, look for the last ( since the mailbox name could contain it */
 
 	safe_strncpy(converted, remotename, sizeof(converted));
 	bbs_strreplace(converted, client->virtdelimiter, HIERARCHY_DELIMITER_CHAR); /* Convert remote delimiter back to local for client response */
 
 	imap_send(imap, "STATUS \"%s%c%s\" %s", client->virtprefix, HIERARCHY_DELIMITER_CHAR, converted, tmp); /* Send the modified response */
+
 	return 0;
 }

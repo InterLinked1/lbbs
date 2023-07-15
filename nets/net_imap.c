@@ -79,7 +79,7 @@
 /* List of capabilities: https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml */
 /* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
 /* XXX URLAUTH is advertised so that SMTP BURL will function in Trojita, even though we don't need URLAUTH since we have a direct trust */
-#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT UNAUTHENTICATE SPECIAL-USE LIST-EXTENDED LIST-STATUS XLIST CHILDREN IDLE NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS LITERAL+ MULTIAPPEND APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC STATUS=SIZE"
+#define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT UNAUTHENTICATE SPECIAL-USE LIST-EXTENDED LIST-STATUS XLIST CHILDREN IDLE NOTIFY NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS LITERAL+ MULTIAPPEND APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC STATUS=SIZE"
 
 /* Capabilities advertised by popular mail providers, for reference/comparison, both pre and post authentication:
  * - Office 365
@@ -288,25 +288,6 @@ static void save_traversal(struct imap_session *imap, struct imap_traversal *tra
 #undef TRAVERSAL_PERSIST
 }
 
-static void construct_status(struct imap_session *imap, struct imap_traversal *traversal, const char *s, char *buf, size_t len, unsigned long maxmodseq)
-{
-	char *pos = buf;
-	size_t left = len;
-	unsigned int appendlimit;
-
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "MESSAGES"), "MESSAGES %d", traversal->totalnew + traversal->totalcur);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "RECENT"), "RECENT %d", traversal->totalnew);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDNEXT"), "UIDNEXT %d", traversal->uidnext + 1);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDVALIDITY"), "UIDVALIDITY %d", traversal->uidvalidity);
-	/* Unlike with SELECT, this is the TOTAL number of unseen messages, not merely the first one */
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UNSEEN"), "UNSEEN %d", traversal->totalunseen);
-	appendlimit = MIN((unsigned int) mailbox_quota(imap->mbox), max_append_size);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %u", appendlimit);
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "HIGHESTMODSEQ"), "HIGHESTMODSEQ %lu", maxmodseq);
-	/* RFC 8438 STATUS=SIZE extension */
-	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "SIZE"), "SIZE %lu", traversal->totalsize);
-}
-
 #define imap_send_update(imap, s, len) __imap_send_update(imap, s, len, 0, 0)
 #define __imap_send_update(imap, s, len, forcenow, invalidate) __imap_send_update_log(imap, s, len, forcenow, invalidate, __LINE__)
 
@@ -332,22 +313,14 @@ static void __imap_send_update_log(struct imap_session *imap, const char *s, siz
 	}
 }
 
-static void generate_status(struct imap_session *imap, const char *folder, char *buf, size_t len, const char *items)
-{
-	struct imap_traversal traversal;
-	memset(&traversal, 0, sizeof(traversal));
-	set_traversal(imap, &traversal); /* Set the traversal based on imap, not s */
-	set_maildir_readonly(imap, &traversal, folder); /* Yes, use s session but imap->folder */
-	/* If CONDSTORE/QRESYNC enabled, we need at least HIGHESTMODSEQ and UIDVALIDITY.
-	 * Otherwise, we need UNSEEN.
-	 * Since the traversal gets all of these anyways, we may as well include everything needed for both cases. */
-	construct_status(imap, &traversal, items, buf, len, maildir_max_modseq(traversal.mbox, traversal.curdir));
-}
+/* Forward declaration */
+static int generate_status(struct imap_session *imap, const char *folder, char *buf, size_t len, const char *items);
 
-static int generate_mailbox_name(unsigned int userid, const char *restrict fulldir, char *restrict buf, size_t len)
+static int generate_mailbox_name(unsigned int userid, const char *restrict maildir, char *restrict buf, size_t len)
 {
 	size_t rootlen, fulllen;
 	unsigned int muserid;
+	const char *fulldir = maildir;
 	const char *rootdir = mailbox_maildir(NULL);
 
 	rootlen = strlen(rootdir);
@@ -394,6 +367,7 @@ static int generate_mailbox_name(unsigned int userid, const char *restrict fulld
 	} else {
 		snprintf(buf, len, SHARED_NAMESPACE_PREFIX HIERARCHY_DELIMITER "%s", fulldir);
 	}
+	bbs_debug(6, "maildir %s => '%s'\n", maildir, buf);
 	return 0;
 }
 
@@ -535,6 +509,7 @@ static void send_untagged_exists(struct bbs_node *node, struct mailbox *mbox, co
 	char status_items[256];
 	int didstatus = 0;
 	size_t len = 0;
+	int numrecent = -1;
 	int numtotal = -1;
 	struct imap_session *s;
 
@@ -554,9 +529,14 @@ static void send_untagged_exists(struct bbs_node *node, struct mailbox *mbox, co
 		if (res == 1) {
 			if (numtotal == -1) { /* Calculate the number of messages "just in time", only if needed. */
 				/* Compute how many messages exist. */
-				numtotal = bbs_dir_num_files(s->newdir) + bbs_dir_num_files(s->curdir);
+				numrecent = bbs_dir_num_files(s->newdir);
+				numtotal = numrecent + bbs_dir_num_files(s->curdir);
 				bbs_debug(4, "Calculated %d message%s in INBOX %d currently\n", numtotal, ESS(numtotal), mailbox_id(mbox));
-				len = (size_t) snprintf(buf, sizeof(buf), "* %d EXISTS\r\n", numtotal); /* Number of messages in the mailbox. */
+				if (numrecent) {
+					len = (size_t) snprintf(buf, sizeof(buf), "* %d EXISTS\r\n* %d RECENT\r\n", numtotal, numrecent);
+				} else {
+					len = (size_t) snprintf(buf, sizeof(buf), "* %d EXISTS\r\n", numtotal); /* Number of messages in the mailbox. */
+				}
 			}
 			if (numtotal < 1) {
 				/* Should be at least 1, because this callback is triggered when we get a NEW message. So there's at least that one. */
@@ -566,8 +546,8 @@ static void send_untagged_exists(struct bbs_node *node, struct mailbox *mbox, co
 		}
 
 		if (res == -1 && !didstatus) {
-			/* STATUS (RFC 5465 5.2) */
-			generate_status(s, mboxname, status_items, sizeof(status_items), "UIDNEXT MESSAGES HIGHESTMODSEQ");
+			/* STATUS (RFC 5465 5.2). Also include UNSEEN since this may be unread and the client will want to know to update unread count. */
+			generate_status(s, mboxname, status_items, sizeof(status_items), "UIDNEXT MESSAGES UNSEEN HIGHESTMODSEQ");
 			didstatus = 1;
 		}
 
@@ -599,7 +579,7 @@ static void send_untagged_exists(struct bbs_node *node, struct mailbox *mbox, co
 	RWLIST_UNLOCK(&sessions);
 }
 
-static void send_untagged_list(enum mailbox_event_type type, struct mailbox *mbox, const char *maildir, const char *oldmaildir)
+static void send_untagged_list(struct bbs_node *node, enum mailbox_event_type type, struct mailbox *mbox, const char *maildir, const char *oldmaildir)
 {
 	struct imap_session *s;
 
@@ -611,6 +591,11 @@ static void send_untagged_list(enum mailbox_event_type type, struct mailbox *mbo
 		char olddir[256], newdir[256];
 		size_t len = 0;
 		const char *fetchargs = NULL;
+
+		if (node == s->node) {
+			/* RFC 5465 Section 5: avoid notifying client if this was caused by that client */
+			continue;
+		}
 
 		/* Mailbox names could be different for different users, so need to do per session, not just once */
 		generate_mailbox_name(s->node->user->id, maildir, newdir, sizeof(newdir));
@@ -668,7 +653,7 @@ static void imap_mbox_watcher(struct mailbox_event *event)
 		case EVENT_MAILBOX_CREATE:
 		case EVENT_MAILBOX_DELETE:
 		case EVENT_MAILBOX_RENAME:
-			send_untagged_list(event->type, event->mbox, event->maildir, event->oldmaildir);
+			send_untagged_list(event->node, event->type, event->mbox, event->maildir, event->oldmaildir);
 			break;
 		case EVENT_MAILBOX_SUBSCRIBE:
 		case EVENT_MAILBOX_UNSUBSCRIBE:
@@ -1305,6 +1290,45 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 	save_traversal(imap, &traversal);
 	maxmodseq = maildir_max_modseq(imap->mbox, imap->curdir);
 	return select_examine_response(imap, readonly, s, maxmodseq, was_selected, oldmbox);
+}
+
+static void construct_status(struct imap_session *imap, struct imap_traversal *traversal, const char *s, char *buf, size_t len, unsigned long maxmodseq)
+{
+	char *pos = buf;
+	size_t left = len;
+	unsigned int appendlimit;
+
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "MESSAGES"), "MESSAGES %d", traversal->totalnew + traversal->totalcur);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "RECENT"), "RECENT %d", traversal->totalnew);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDNEXT"), "UIDNEXT %d", traversal->uidnext + 1);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UIDVALIDITY"), "UIDVALIDITY %d", traversal->uidvalidity);
+	/* Unlike with SELECT, this is the TOTAL number of unseen messages, not merely the first one */
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "UNSEEN"), "UNSEEN %d", traversal->totalunseen);
+	appendlimit = MIN((unsigned int) mailbox_quota(imap->mbox), max_append_size);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "APPENDLIMIT"), "APPENDLIMIT %u", appendlimit);
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "HIGHESTMODSEQ"), "HIGHESTMODSEQ %lu", maxmodseq);
+	/* RFC 8438 STATUS=SIZE extension */
+	SAFE_FAST_COND_APPEND(buf, len, pos, left, strstr(s, "SIZE"), "SIZE %lu", traversal->totalsize);
+}
+
+static int generate_status(struct imap_session *imap, const char *folder, char *buf, size_t len, const char *items)
+{
+	struct imap_traversal traversalstack, *traversal = &traversalstack;
+	memset(&traversalstack, 0, sizeof(traversalstack));
+	set_traversal(imap, &traversalstack); /* Set the traversal based on imap, not s */
+	if (set_maildir_readonly(imap, &traversalstack, folder)) { /* Yes, use s session but imap->folder */
+		bbs_error("Failed to set maildir for %s\n", folder);
+		*buf = '\0';
+		return -1;
+	}
+
+	IMAP_TRAVERSAL(imap, traversal, on_select, 1); /* Read only traversal: Do not move messages from new to cur */
+
+	/* If CONDSTORE/QRESYNC enabled, we need at least HIGHESTMODSEQ and UIDVALIDITY.
+	 * Otherwise, we need UNSEEN.
+	 * Since the traversal gets all of these anyways, we may as well include everything needed for both cases. */
+	construct_status(imap, traversal, items, buf, len, maildir_max_modseq(traversal->mbox, traversal->curdir));
+	return 0;
 }
 
 int local_status(struct imap_session *imap, struct imap_traversal *traversal, const char *mailbox, const char *items)
@@ -3182,6 +3206,146 @@ static int flush_updates(struct imap_session *imap, const char *command, const c
 	return 0;
 }
 
+static int notify_status_cb(struct imap_client *client, const char *buf, size_t len, void *cbdata)
+{
+	if (len < STRLEN("* STATUS") || !STARTS_WITH(buf, "* STATUS")) {
+		return 0;
+	}
+
+	UNUSED(len);
+	UNUSED(cbdata);
+
+	/* In this case, buf should be NULL terminated */
+
+	bbs_debug(3, "Raw STATUS response: %s\n", buf);
+
+	/* XXX Again, because only INBOX is supported for remote NOTIFY proxy */
+	return imap_client_send_converted_status_response(client, "INBOX", buf);
+}
+
+static int handle_idle(struct imap_session *imap)
+{
+#define MAX_IDLE_MS SEC_MS(1800) /* 30 minutes */
+	int idleleft = MAX_IDLE_MS;
+	int res;
+
+	if (imap->client) {
+		/* IDLE for up to (just under) 30 minutes.
+		 * Note that client_command_passthru will restart the timer each time there is activity,
+		 * but real mail clients should terminate the IDLE when they get an untagged response
+		 * and do a FETCH anyways (at least, in response to EXISTS, not EXPUNGE).
+		 * Furthermore, it is NOT our responsibility to terminate the IDLE automatically after 29 minutes.
+		 * It's the client's job to do that. If we get disconnected, we'll disconnect as well.
+		 */
+		return imap_client_send_wait_response(imap->client, imap->rfd, 1790000, "IDLE\r\n"); /* No trailing spaces! Gimap doesn't like that */
+	}
+
+	/* XXX Outlook often tries to IDLE without selecting a mailbox, which is kind of bizarre.
+	 * Technically though, RFC 2177 says IDLE is valid in either the authenticated or selected states.
+	 * How it's used in the authenticated (but non-selected) state, I don't really know.
+	 * For now, clients attempting that will be summarily rebuffed. */
+	REQUIRE_SELECTED(imap);
+	/* RFC 2177 IDLE */
+	REPLACE(imap->savedtag, imap->tag); /* We still save the tag to deal with Thunderbird bug in the other path to idle_stop */
+	imap->idle = 1; /* This is used by other threads that may send the client data while it's idling. Set before sending response. */
+	_imap_reply(imap, "+ idling\r\n");
+	/* Note that IDLE only applies to the currently selected mailbox (folder).
+	 * Thus, in traversing all the IMAP sessions, simply sharing the same mbox isn't enough.
+	 * imap->dir also needs to match (same currently selected folder). */
+	for (;;) {
+		struct imap_client *client = NULL;
+		int pollms = MIN(SEC_MS(idle_notify_interval), idleleft);
+		/* XXX We also want to be able to do NOTIFY/IDLE on remote servers if idling on a remote mailbox (as above) */
+		res = imap->notify ? imap_poll(imap, pollms, &client) : bbs_poll(imap->rfd, pollms);
+		if (res < 0) {
+			imap->idle = 0;
+			return -1; /* Client disconnected */
+		} else if (res > 0) {
+			struct bbs_tcp_client *tcpclient;
+			int sendstatus = 0;
+			if (!client) {
+				break; /* Client terminated the idle. Stop idling and return to read the next command. */
+			}
+			/* For remote NOTIFY: Some remote IMAP server sent us something.
+			 * If it's something important, send our client an untagged STATUS for that mailbox. */
+			tcpclient = &client->client;
+			if (bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 100) < 0) { /* Must service the activity to satisfy poll */
+				bbs_warning("Got activity on remote client connection for '%s' but failed to read line from it?\n", client->virtprefix);
+				continue;
+			}
+			if (!client->idling) {
+				/* This shouldn't happen, if we're not in IDLE, the server isn't allowed to send us unsolicited data. */
+				bbs_warning("Got activity on a client that wasn't idling? (%s)\n", client->virtprefix);
+				continue;
+			}
+			do {
+				int seqno;
+				char *s = tcpclient->rldata.buf;
+
+				bbs_debug(4, "Received during IDLE: %s\n", tcpclient->rldata.buf);
+
+				if (!STARTS_WITH(s, "*")) {
+					bbs_warning("Unexpected data during background IDLE for '%s': %s\n", client->virtprefix, s);
+					continue;
+				}
+				s += 2;
+				if (strlen_zero(s)) {
+					continue;
+				}
+				seqno = atoi(s);
+				strsep(&s, " ");
+				if (strlen_zero(s) || !seqno) {
+					continue;
+				}
+				if (STARTS_WITH(s, "EXISTS") || STARTS_WITH(s, "EXPUNGE") || STARTS_WITH(s, "FETCH")) {
+					/* In theory, client->bgmailbox contains the mailbox name so we could just
+					 * construct our own STATUS response (e.g. for EXISTS, with MESSAGES),
+					 * and send that.
+					 * But RFC 5465 has specific requirements for what the STATUS message must contain,
+					 * and that includes stuff that won't be obvious here (e.g. UIDVALIDITY, UIDNEXT, etc.)
+					 * So, we're really just going to have to stop the IDLE at the end of this,
+					 * get the STATUS of the mailbox, and send it back (modifying the name in the response, of course). */
+					sendstatus = 1;
+				}
+				/* We should get at least one line, but there may be more.
+				 * Poll just this fd quickly to exhaust it before returning to main poll.
+				 * Wait max 500ms for further lines, e.g. FETCH. Waiting long enough
+				 * helps because it avoids getting another response soon afterwards
+				 * and then having to do another stop IDLE, do STATUS, start IDLE sequence for that. */
+			} while (bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 500) > 0);
+			if (sendstatus) {
+				/* Stop the IDLE, get the STATUS, then restart the IDLE */
+				if (imap_client_idle_stop(client)) {
+					continue;
+				}
+				/* Leave client->bgmailbox as is, since we're going to restart it momentarily */
+				/* Clients SHOULD NOT issue a STATUS on the currently selected mailbox.
+				 * But servers MUST be able to deal with it.
+				 * However, ideally, we would store the SELECT and be able to construct what the STATUS response would be.
+				 * It's reasonable to assume UIDVALIDITY will not change (though we'd get an untagged response if it did),
+				 * but UIDNEXT might be less predictable, since it's not guaranteed to increase 1 by 1. */
+				/* Again, bgmailbox is always an INBOX so we just hardcode that for now */
+				imap_client_send_wait_response_cb_noecho(client, -1, SEC_MS(5), notify_status_cb, NULL, "STATUS \"%s\" (%s%s)\r\n", "INBOX", "MESSAGES UNSEEN UIDNEXT UIDVALIDITY", (imap->condstore || imap->qresync) && client->virtcapabilities & IMAP_CAPABILITY_CONDSTORE ? " HIGHESTMODSEQ" : ""); /* Covers all cases: MessageNew, MessageExpunge, FlagChange */
+				imap_client_idle_start(client); /* Mailbox is still selected, no need to reselect */
+			}
+		} else {
+			/* Nothing yet. Send an "IDLE ping" to check in... */
+			idleleft -= pollms;
+			if (idleleft <= 0) {
+				bbs_warning("IDLE expired without any activity\n");
+				return -1; /* Disconnect the client now */
+			} else {
+				imap_send(imap, "OK Still here");
+				/* XXX If we wanted to be a little more robust, we could
+				 * also periodically ping the remote servers, e.g. stop the IDLE and restart (but not this frequently),
+				 * to help prevent remote timeouts.
+				 * For example, Yandex likes to disconnect clients prematurely. */
+			}
+		}
+	}
+	return 0;
+}
+
 static int imap_process(struct imap_session *imap, char *s)
 {
 	int replacecount;
@@ -3478,50 +3642,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		IMAP_NO_READONLY(imap);
 		res = handle_append(imap, s);
 	} else if (allow_idle && !strcasecmp(command, "IDLE")) {
-#define MAX_IDLE_MS SEC_MS(1800) /* 30 minutes */
-		int idleleft = MAX_IDLE_MS;
-		if (imap->client) {
-			/* IDLE for up to (just under) 30 minutes.
-			 * Note that client_command_passthru will restart the timer each time there is activity,
-			 * but real mail clients should terminate the IDLE when they get an untagged response
-			 * and do a FETCH anyways (at least, in response to EXISTS, not EXPUNGE).
-			 * Furthermore, it is NOT our responsibility to terminate the IDLE automatically after 29 minutes.
-			 * It's the client's job to do that. If we get disconnected, we'll disconnect as well.
-			 */
-			return imap_client_send_wait_response(imap->client, imap->rfd, 1790000, "%s\r\n", command); /* No trailing spaces! Gimap doesn't like that */
-		}
-		/* XXX Outlook often tries to IDLE without selecting a mailbox, which is kind of bizarre.
-		 * Technically though, RFC 2177 says IDLE is valid in either the authenticated or selected states.
-		 * How it's used in the authenticated (but non-selected) state, I don't really know.
-		 * For now, clients attempting that will be summarily rebuffed. */
-		REQUIRE_SELECTED(imap);
-		/* RFC 2177 IDLE */
-		REPLACE(imap->savedtag, imap->tag); /* We still save the tag to deal with Thunderbird bug in the other path to idle_stop */
-		imap->idle = 1; /* This is used by other threads that may send the client data while it's idling. Set before sending response. */
-		_imap_reply(imap, "+ idling\r\n");
-		/* Note that IDLE only applies to the currently selected mailbox (folder).
-		 * Thus, in traversing all the IMAP sessions, simply sharing the same mbox isn't enough.
-		 * imap->dir also needs to match (same currently selected folder). */
-		for (;;) {
-			int pollms = MIN(SEC_MS(idle_notify_interval), idleleft);
-			res = bbs_poll(imap->rfd, pollms);
-			if (res < 0) {
-				imap->idle = 0;
-				return -1; /* Client disconnected */
-			} else if (res > 0) {
-				break; /* Client terminated the idle. Stop idling and return to read the next command. */
-			} else {
-				/* Nothing yet. Send an "IDLE ping" to check in... */
-				idleleft -= pollms;
-				if (idleleft <= 0) {
-					bbs_warning("IDLE expired without any activity\n");
-					return -1; /* Disconnect the client now */
-				} else {
-					imap_send(imap, "OK Still here");
-				}
-			}
-		}
-		return 0; /* We used res for other stuff during the command, no need to check for updates right after an IDLE */
+		return handle_idle(imap); /* No need to check for updates right after an IDLE */
 	} else if (!strcasecmp(command, "NOTIFY")) {
 		/* RFC 5465 NOTIFY */
 		REQUIRE_ARGS(s);

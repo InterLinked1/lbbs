@@ -228,6 +228,7 @@ static int remote_list(struct imap_client *client, struct list_command *lcmd, co
 		free(s);
 	}
 
+	imap_client_idle_notify(client); /* Don't need the client anymore for now... */
 	return 0;
 }
 

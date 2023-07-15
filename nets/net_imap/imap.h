@@ -31,6 +31,8 @@ struct imap_client {
 	char *virtlist;				/* Result of LIST-STATUS command on remote IMAP server */
 	int virtlisttime;			/* Time that LIST-STATUS command was run */
 	int lastactive;				/* Last active time */
+	char *bgmailbox;			/* Mail for background IDLE */
+	unsigned int idling:1;		/* Idling, unattended */
 	unsigned int dead:1;		/* Connection is already dead */
 	RWLIST_ENTRY(imap_client) entry;
 	struct bbs_tcp_client client;	/* TCP client for virtual mailbox access on remote servers */

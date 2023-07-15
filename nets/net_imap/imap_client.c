@@ -45,6 +45,7 @@ static void client_destroy(struct imap_client *client)
 	}
 	bbs_tcp_client_cleanup(&client->client);
 	free_if(client->virtlist);
+	free_if(client->bgmailbox);
 	free(client);
 }
 
@@ -69,7 +70,153 @@ void imap_shutdown_clients(struct imap_session *imap)
 	RWLIST_WRLOCK_REMOVE_ALL(&imap->clients, entry, client_destroy);
 }
 
-/* XXX We may want to keep the connection alive, and just mark it as no longer the active one (e.g. imap->client = NULL) */
+int imap_poll(struct imap_session *imap, int ms, struct imap_client **clientout)
+{
+	struct pollfd *pfds;
+	nfds_t numfds;
+	int res = -1;
+	struct imap_client *client;
+
+	*clientout = NULL;
+
+	/* Poll the IMAP session and all clients */
+	RWLIST_RDLOCK(&imap->clients); /* Okay to read lock, nobody else is using this for the duration of this function */
+	numfds = (nfds_t) RWLIST_SIZE(&imap->clients, client, entry);
+	numfds++; /* Plus the main session itself (our client) */
+
+	pfds = calloc(numfds, sizeof(*pfds));
+	if (ALLOC_FAILURE(pfds)) {
+		goto cleanup;
+	}
+
+	bbs_debug(5, "Polling %lu fd%s for IMAP client\n", numfds, ESS(numfds));
+
+	for (;;) {
+		int pres, i = 0;
+		pfds[i].events = POLLIN;
+		pfds[i].revents = 0;
+		pfds[i].fd = imap->rfd;
+		RWLIST_TRAVERSE(&imap->clients, client, entry) {
+			i++;
+			pfds[i].events = POLLIN;
+			pfds[i].revents = 0;
+			pfds[i].fd = client->client.rfd;
+		}
+		pres = poll(pfds, numfds, ms);
+		if (pres < 0) {
+			if (errno == EINTR) {
+				continue;
+			}
+			bbs_warning("poll failed: %s\n", strerror(errno));
+			break;
+		} else if (pres == 0) {
+			res = 0;
+			break;
+		}
+		/* Something got activity! Time to service it. */
+		res = 1;
+		i = 0;
+		if (pfds[i].revents) {
+			bbs_debug(8, "IMAP poll returned %d for main IMAP client\n", pres);
+			break;
+		}
+		RWLIST_TRAVERSE(&imap->clients, client, entry) {
+			i++;
+			if (pfds[i].revents) {
+				*clientout = client;
+				bbs_debug(8, "IMAP poll returned %d for remote IMAP client %s\n", pres, client->virtprefix);
+				goto cleanup; /* Can't break in double loop */
+			}
+		}
+	}
+
+cleanup:
+	free(pfds);
+	RWLIST_UNLOCK(&imap->clients);
+	return res;
+}
+
+int imap_client_idle_start(struct imap_client *client)
+{
+	/* Now, IDLE on it so we get updates for that mailbox */
+	SWRITE(client->client.wfd, "idle IDLE\r\n");
+	if (bbs_tcp_client_expect(&client->client, "\r\n", 1, SEC_MS(1), "+")) {
+		bbs_warning("Failed to start IDLE\n");
+		return -1;
+	}
+	client->idling = 1;
+	return 0;
+}
+
+int imap_client_idle_stop(struct imap_client *client)
+{
+	SWRITE(client->client.wfd, "DONE\r\n");
+	if (bbs_tcp_client_expect(&client->client, "\r\n", 1, SEC_MS(1), "idle OK")) { /* tagged OK response */
+		bbs_warning("Failed to terminate IDLE for %s\n", client->virtprefix);
+		return -1;
+	}
+	client->idling = 0;
+	return 0;
+}
+
+void imap_client_idle_notify(struct imap_client *client)
+{
+	char mailbox[128];
+
+	bbs_debug(6, "Checking if we should background IDLE for %s...\n", client->virtprefix);
+
+	/* Even if NOTIFY is not enabled by the client currently,
+	 * the client may enable it in the future.
+	 * Therefore, just because !client->imap->notify doesn't mean we shouldn't bother. */
+
+	/* To emulate NOTIFY support (in a way) for remote mailboxes,
+	 * what we can do is, if the client has expressed interest
+	 * in being notified of updates to a folder on this server,
+	 * do an IDLE on that folder in the background.
+	 * (This will only work for one folder at a time, so the INBOX
+	 * takes precedence if more than one folder is specified.)
+	 * Then, if we detect an update while our client is idling,
+	 * we can read the update and then do a STATUS if necessary
+	 * and pass that to our client. This way, it more or less
+	 * feels like a native NOTIFY to our client, although it only
+	 * works on only one remote folder on each server. In practice,
+	 * this limitation may be fine as usually only the INBOX is worth watching.
+	 *
+	 * XXX Also, we could also do a direct NOTIFY downstream to the remote server,
+	 * if supported, but almost no providers support NOTIFY anyways,
+	 * whereas IDLE is pretty universal so this fallback is more important. */
+	if (!(client->virtcapabilities & IMAP_CAPABILITY_IDLE)) {
+		bbs_warning("Remote IMAP server does not support IDLE, lame...\n");
+		return;
+	}
+
+	/* XXX Currently we are hardcoded to just monitor the INBOX.
+	 * Not really much else we can do without either:
+	 * a) The remote server also supporting NOTIFY (fat chance)
+	 * b) Opening a separate TCP connection for every single mailbox and idling on it (yikes!)
+	 */
+
+	/* Determine what mailbox we'll monitor remotely.
+	 * XXX Currently just hardcoded to prefer the INBOX. */
+	snprintf(mailbox, sizeof(mailbox), "%s%c%s", client->virtprefix, HIERARCHY_DELIMITER_CHAR, "INBOX");
+
+	/* Do not check if NOTIFY is enabled using imap_notify_applicable.
+	 * The client might not have enabled NOTIFY yet,
+	 * and this may not be safe to call if imap->notify is NULL. */
+
+	/* First, select the mailbox for which we want NOTIFY updates.
+	 * Use EXAMINE as maybe that will preserve \Recent flags too. */
+	if (imap_client_send_wait_response_noecho(client, -1, SEC_MS(5), "EXAMINE \"%s\"\r\n", "INBOX")) { /* remote name */
+		bbs_warning("Failed to EXAMINE '%s'\n", mailbox);
+	}
+
+	/* Now, IDLE on it so we get updates for that mailbox */
+	if (!imap_client_idle_start(client)) {
+		bbs_debug(5, "Set up background IDLE for '%s'\n", mailbox);
+		REPLACE(client->bgmailbox, mailbox);
+	}
+}
+
 void imap_close_remote_mailbox(struct imap_session *imap)
 {
 	struct imap_client *client = imap->client;
@@ -82,6 +229,8 @@ void imap_close_remote_mailbox(struct imap_session *imap)
 	/* We ideally want to keep the connection alive for faster reuse if needed later. */
 	if (maxuserproxies <= 1) {
 		client_unlink(imap, client);
+	} else {
+		imap_client_idle_notify(client);
 	}
 }
 
@@ -234,6 +383,16 @@ static int connection_stale(struct imap_client *client)
 {
 	int now;
 	struct bbs_tcp_client *tcpclient = &client->client;
+
+	/* If it's running an IDLE in the background, stop it */
+	if (client->idling) {
+		if (imap_client_idle_stop(client)) {
+			return -1;
+		}
+		bbs_debug(5, "Successfully stopped background IDLE on client, reusing\n");
+		return 0;
+	}
+
 	/* Make sure this connection is still live.
 	 * If it was idle long enough, the remote IMAP server may have timed us out
 	 * and closed the connection, in which case we need to close this and make a new one.
@@ -479,11 +638,12 @@ int imap_substitute_remote_command(struct imap_client *client, char *s)
 	return replacements;
 }
 
-struct imap_client *load_virtual_mailbox(struct imap_session *imap, const char *path, int *exists)
+static struct imap_client *__load_virtual_mailbox(struct imap_session *imap, const char *path, int *exists, int load, int prefixonly)
 {
 	FILE *fp;
 	char virtcachefile[256];
 	char buf[256];
+	size_t pathlen;
 
 	if (imap->client) {
 		/* Reuse the same connection if it's the same account. */
@@ -501,6 +661,10 @@ struct imap_client *load_virtual_mailbox(struct imap_session *imap, const char *
 		 * since we'd have to keep logging out and back in. Just use a new connection.
 		 */
 		imap_close_remote_mailbox(imap);
+	}
+
+	if (prefixonly) {
+		pathlen = strlen(path);
 	}
 
 	*exists = 0;
@@ -527,8 +691,13 @@ struct imap_client *load_virtual_mailbox(struct imap_session *imap, const char *
 		/* Instead of doing prefixlen = strlen(mpath), we can just subtract the pointers */
 		prefixlen = (size_t) (urlstr - mpath - 1); /* Subtract 1 for the space between. */
 		urlstrlen = strlen(urlstr);
+		if (prefixonly && !strncmp(path, mpath, pathlen)) {
+			fclose(fp);
+			*exists = 1;
+			return NULL;
+		}
 		if (!strncmp(mpath, path, prefixlen)) {
-			struct imap_client *client;
+			struct imap_client *client = NULL;
 
 			/* XXX This is most strange.
 			 * This shouldn't matter, but if this fclose occurs AFTER imap_client_get_by_url,
@@ -543,8 +712,10 @@ struct imap_client *load_virtual_mailbox(struct imap_session *imap, const char *
 			 */
 			fclose(fp);
 
-			client = imap_client_get_by_url(imap, mpath, urlstr);
 			*exists = 1;
+			if (load) {
+				client = imap_client_get_by_url(imap, mpath, urlstr);
+			}
 			bbs_memzero(urlstr, urlstrlen); /* Contains password */
 			return client;
 		} else {
@@ -553,6 +724,18 @@ struct imap_client *load_virtual_mailbox(struct imap_session *imap, const char *
 	}
 	fclose(fp);
 	return NULL;
+}
+
+struct imap_client *load_virtual_mailbox(struct imap_session *imap, const char *path, int *exists)
+{
+	return __load_virtual_mailbox(imap, path, exists, 1, 0);
+}
+
+int mailbox_remotely_mapped(struct imap_session *imap, const char *path)
+{
+	int exists = 0;
+	__load_virtual_mailbox(imap, path, &exists, 0, 1);
+	return exists;
 }
 
 char *remote_mailbox_name(struct imap_client *client, char *restrict mailbox)
