@@ -97,8 +97,6 @@ int imap_poll(struct imap_session *imap, int ms, struct imap_client **clientout)
 		goto cleanup;
 	}
 
-	bbs_debug(5, "Polling %lu fd%s for IMAP session %p\n", numfds, ESS(numfds), imap);
-
 	for (;;) {
 		int pres, i = 0;
 		pfds[i].events = POLLIN;

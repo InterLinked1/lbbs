@@ -233,11 +233,22 @@ static int remote_list(struct imap_client *client, struct list_command *lcmd, co
 }
 
 struct remote_list_info {
-	struct imap_client *client;
 	struct list_command *lcmd;
 	const char *prefix;
+	struct imap_session *imap;
+	char *server;
 	char data[];
 };
+
+static void remote_list_destroy(void *data)
+{
+	struct remote_list_info *r = data;
+	if (!strlen_zero(r->server)) {
+		bbs_memzero(r->server, strlen(r->server)); /* Contains password */
+	}
+	free(r->server);
+	free(r);
+}
 
 static void *remote_list_dup(void *data)
 {
@@ -252,26 +263,40 @@ static void *remote_list_dup(void *data)
 	}
 	strcpy(r->data, orig->prefix); /* Safe */
 	r->prefix = r->data;
-	r->client = orig->client;
 	r->lcmd = orig->lcmd;
+	r->imap = orig->imap;
+
+	/* Allocate this separately, so that we can destroy it securely */
+	r->server = strdup(orig->server);
+	if (ALLOC_FAILURE(r->server)) {
+		free(r);
+		return NULL;
+	}
 	return r;
 }
 
 static int remote_list_cb(void *data)
 {
 	struct remote_list_info *r = data;
+	struct imap_client *client = imap_client_get_by_url(r->imap, r->prefix, r->server);
+	bbs_memzero(r->server, strlen(r->server)); /* Contains password */
 	/* Marshall arguments and execute */
-	return remote_list(r->client, r->lcmd, r->prefix);
+	return remote_list(client, r->lcmd, r->prefix);
 }
 
-static int remote_list_parallel(struct imap_parallel *p, const char *restrict prefix, struct imap_client *client, struct list_command *lcmd)
+static int remote_list_parallel(struct imap_parallel *p, const char *restrict prefix, struct list_command *lcmd, struct imap_session *imap, const char *server)
 {
 	struct remote_list_info rinfo; /* No memset needed */
 
-	rinfo.client = client;
 	rinfo.lcmd = lcmd;
 	rinfo.prefix = prefix;
-	return imap_client_parallel_schedule_task(p, prefix, &rinfo, remote_list_cb, remote_list_dup, free);
+	rinfo.imap = imap;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
+	/* This variable will not be modified, but since the dynamic version allocates and frees it, the type cannot be const */
+	rinfo.server = (char*) server;
+#pragma GCC diagnostic pop
+	return imap_client_parallel_schedule_task(p, prefix, &rinfo, remote_list_cb, remote_list_dup, remote_list_destroy);
 }
 
 /*! \brief Mutex to prevent recursion */
@@ -323,7 +348,6 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	/* Note that we cache all the directories on all servers at once, since we truncate the file. */
 	while ((fgets(line, sizeof(line), fp))) {
 		char *prefix, *server;
-		struct imap_client *client;
 
 		l++;
 		server = line;
@@ -332,12 +356,10 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 			continue; /* Skip commented lines */
 		}
 
-		client = imap_client_get_by_url(imap, prefix, server);
-		bbs_memzero(server, strlen(server)); /* Contains password */
-		if (!client) {
-			continue;
-		}
-		remote_list_parallel(&p, prefix, client, lcmd);
+		/* We don't actually create the client here,
+		 * since TCP and IMAP setup time takes a while,
+		 * we do it inside the job itself! */
+		remote_list_parallel(&p, prefix, lcmd, imap, server);
 	}
 	fclose(fp);
 
