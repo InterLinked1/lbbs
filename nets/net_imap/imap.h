@@ -32,6 +32,8 @@ struct imap_client {
 	int virtlisttime;			/* Time that LIST-STATUS command was run */
 	int lastactive;				/* Last active time */
 	char *bgmailbox;			/* Mail for background IDLE */
+	int idlestarted;			/* Time that IDLE started */
+	int maxidlesec;				/* Max amount of time for which we can IDLE */
 	unsigned int idling:1;		/* Idling, unattended */
 	unsigned int dead:1;		/* Connection is already dead */
 	RWLIST_ENTRY(imap_client) entry;

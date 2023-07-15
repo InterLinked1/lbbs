@@ -3228,6 +3228,7 @@ static int handle_idle(struct imap_session *imap)
 #define MAX_IDLE_MS SEC_MS(1800) /* 30 minutes */
 	int idleleft = MAX_IDLE_MS;
 	int res;
+	int lastactivity;
 
 	if (imap->client) {
 		/* IDLE for up to (just under) 30 minutes.
@@ -3252,11 +3253,12 @@ static int handle_idle(struct imap_session *imap)
 	/* Note that IDLE only applies to the currently selected mailbox (folder).
 	 * Thus, in traversing all the IMAP sessions, simply sharing the same mbox isn't enough.
 	 * imap->dir also needs to match (same currently selected folder). */
+	lastactivity = (int) time(NULL);
 	for (;;) {
 		struct imap_client *client = NULL;
-		int pollms = MIN(SEC_MS(idle_notify_interval), idleleft);
+		int pollms = MIN(SEC_MS(IMAP_IDLE_POLL_INTERVAL_SEC), idleleft);
 		/* XXX We also want to be able to do NOTIFY/IDLE on remote servers if idling on a remote mailbox (as above) */
-		res = imap->notify ? imap_poll(imap, pollms, &client) : bbs_poll(imap->rfd, pollms);
+		res = imap_poll(imap, pollms, &client);
 		if (res < 0) {
 			imap->idle = 0;
 			return -1; /* Client disconnected */
@@ -3264,6 +3266,7 @@ static int handle_idle(struct imap_session *imap)
 			struct bbs_tcp_client *tcpclient;
 			int sendstatus = 0;
 			if (!client) {
+				imap_clients_renew_idle(imap); /* In case some of them are close to expiring, renew them now before returning */
 				break; /* Client terminated the idle. Stop idling and return to read the next command. */
 			}
 			/* For remote NOTIFY: Some remote IMAP server sent us something.
@@ -3271,6 +3274,10 @@ static int handle_idle(struct imap_session *imap)
 			tcpclient = &client->client;
 			if (bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 100) < 0) { /* Must service the activity to satisfy poll */
 				bbs_warning("Got activity on remote client connection for '%s' but failed to read line from it?\n", client->virtprefix);
+				/* The remote peer probably closed the connection, and this client is now dead.
+				 * We need to remove this now or poll will keep triggering for this client. */
+				client->dead = 1;
+				imap_client_unlink(imap, client);
 				continue;
 			}
 			if (!client->idling) {
@@ -3327,7 +3334,9 @@ static int handle_idle(struct imap_session *imap)
 				/* Again, bgmailbox is always an INBOX so we just hardcode that for now */
 				imap_client_send_wait_response_cb_noecho(client, -1, SEC_MS(5), notify_status_cb, NULL, "STATUS \"%s\" (%s%s)\r\n", "INBOX", "MESSAGES UNSEEN UIDNEXT UIDVALIDITY", (imap->condstore || imap->qresync) && client->virtcapabilities & IMAP_CAPABILITY_CONDSTORE ? " HIGHESTMODSEQ" : ""); /* Covers all cases: MessageNew, MessageExpunge, FlagChange */
 				imap_client_idle_start(client); /* Mailbox is still selected, no need to reselect */
+				lastactivity = (int) time(NULL);
 			}
+			imap_clients_renew_idle(imap);
 		} else {
 			/* Nothing yet. Send an "IDLE ping" to check in... */
 			idleleft -= pollms;
@@ -3335,11 +3344,14 @@ static int handle_idle(struct imap_session *imap)
 				bbs_warning("IDLE expired without any activity\n");
 				return -1; /* Disconnect the client now */
 			} else {
-				imap_send(imap, "OK Still here");
-				/* XXX If we wanted to be a little more robust, we could
-				 * also periodically ping the remote servers, e.g. stop the IDLE and restart (but not this frequently),
-				 * to help prevent remote timeouts.
-				 * For example, Yandex likes to disconnect clients prematurely. */
+				int now = (int) time(NULL);
+				int elapsed = now - lastactivity;
+				/* If we're coming up on the deadline (with a little bit of wiggle room, +/- in either direction), go ahead and do it */
+				if (elapsed >= idle_notify_interval - (IMAP_IDLE_POLL_INTERVAL_SEC / 2)) {
+					imap_send(imap, "OK Still here");
+					lastactivity = now;
+				}
+				imap_clients_renew_idle(imap);
 			}
 		}
 	}

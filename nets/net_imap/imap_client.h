@@ -17,6 +17,13 @@
 void imap_shutdown_clients(struct imap_session *imap);
 
 /*!
+ * \brief Unlink and destroy a client
+ * \param imap
+ * \param client
+ */
+void imap_client_unlink(struct imap_session *imap, struct imap_client *client);
+
+/*!
  * \brief Poll an IMAP session and all remote sessions for activity
  * \param imap
  * \param ms Poll time, in ms
@@ -40,6 +47,11 @@ int imap_client_idle_start(struct imap_client *client);
  * \retval 0 on success, -1 on failure
  */
 int imap_client_idle_stop(struct imap_client *client);
+
+#define IMAP_IDLE_POLL_INTERVAL_SEC 30
+
+/*! \brief Renew IDLE on all idling clients that are close to expiring */
+void imap_clients_renew_idle(struct imap_session *imap);
 
 void imap_client_idle_notify(struct imap_client *client);
 

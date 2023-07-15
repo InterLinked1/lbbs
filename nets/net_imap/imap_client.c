@@ -49,7 +49,7 @@ static void client_destroy(struct imap_client *client)
 	free(client);
 }
 
-static void client_unlink(struct imap_session *imap, struct imap_client *client)
+void imap_client_unlink(struct imap_session *imap, struct imap_client *client)
 {
 	struct imap_client *c;
 
@@ -84,12 +84,20 @@ int imap_poll(struct imap_session *imap, int ms, struct imap_client **clientout)
 	numfds = (nfds_t) RWLIST_SIZE(&imap->clients, client, entry);
 	numfds++; /* Plus the main session itself (our client) */
 
+	bbs_debug(5, "Polling %lu fd%s for IMAP session %p\n", numfds, ESS(numfds), imap);
+
+	if (numfds == 1) {
+		/* No remote clients, just the main client */
+		RWLIST_UNLOCK(&imap->clients);
+		return bbs_poll(imap->rfd, ms);
+	}
+
 	pfds = calloc(numfds, sizeof(*pfds));
 	if (ALLOC_FAILURE(pfds)) {
 		goto cleanup;
 	}
 
-	bbs_debug(5, "Polling %lu fd%s for IMAP client\n", numfds, ESS(numfds));
+	bbs_debug(5, "Polling %lu fd%s for IMAP session %p\n", numfds, ESS(numfds), imap);
 
 	for (;;) {
 		int pres, i = 0;
@@ -145,6 +153,7 @@ int imap_client_idle_start(struct imap_client *client)
 		return -1;
 	}
 	client->idling = 1;
+	client->idlestarted = (int) time(NULL);
 	return 0;
 }
 
@@ -157,6 +166,35 @@ int imap_client_idle_stop(struct imap_client *client)
 	}
 	client->idling = 0;
 	return 0;
+}
+
+void imap_clients_renew_idle(struct imap_session *imap)
+{
+	struct imap_client *client;
+	int now = (int) time(NULL);
+
+	/* Renew all the IDLEs on remote servers, periodically,
+	 * to keep the IMAP connection alive. */
+
+	RWLIST_RDLOCK(&imap->clients);
+	RWLIST_TRAVERSE(&imap->clients, client, entry) {
+		int maxage;
+		if (!client->idling) {
+			continue;
+		}
+		/* This is when the connection may be terminated.
+		 * We need to renew the connection BEFORE then. */
+		maxage = client->idlestarted + client->maxidlesec;
+		/* We check every minute, so we shouldn't miss anything this way. */
+		if (maxage < now + IMAP_IDLE_POLL_INTERVAL_SEC + 10) { /* Add a little bit of wiggle room */
+			int age = now - client->idlestarted;
+			bbs_debug(4, "Client '%s' needs to renew IDLE (%d/%d s elapsed)...\n", client->virtprefix, age, client->maxidlesec);
+			if (imap_client_idle_stop(client) || imap_client_idle_start(client)) {
+				continue;
+			}
+		}
+	}
+	RWLIST_UNLOCK(&imap->clients);
 }
 
 void imap_client_idle_notify(struct imap_client *client)
@@ -228,7 +266,7 @@ void imap_close_remote_mailbox(struct imap_session *imap)
 	imap->client = NULL;
 	/* We ideally want to keep the connection alive for faster reuse if needed later. */
 	if (maxuserproxies <= 1) {
-		client_unlink(imap, client);
+		imap_client_unlink(imap, client);
 	} else {
 		imap_client_idle_notify(client);
 	}
@@ -562,14 +600,19 @@ struct imap_client *imap_client_get_by_url(struct imap_session *imap, const char
 	 * In theory, this should not be an issue as it's transparent
 	 * to the user: if the connection is dead the next time we need it,
 	 * we can just make a new one. It just worsens performance,
-	 * and I haven't found an elegant workaround to this...
+	 * so it's good to keep alive if possible...
 	 */
+	if (!strcmp(url.host, "imap.yandex.com")) {
+		client->maxidlesec = 120; /* 2 minutes */
+	} else {
+		client->maxidlesec = 1800; /* 30 minutes */
+	}
 
 	client->lastactive = (int) time(NULL); /* Mark as active since we just successfully did I/O with it */
 	return client;
 
 cleanup:
-	client_unlink(imap, client);
+	imap_client_unlink(imap, client);
 	return NULL;
 }
 
