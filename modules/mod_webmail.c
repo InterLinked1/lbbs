@@ -36,6 +36,7 @@
 #define IDLE_REFRESH_EXISTS (1 << 0)
 #define IDLE_REFRESH_EXPUNGE (1 << 1)
 #define IDLE_REFRESH_FETCH (1 << 2)
+#define IDLE_REFRESH_STATUS (1 << 3)
 
 struct imap_client {
 	struct mailimap *imap;
@@ -60,6 +61,7 @@ struct imap_client {
 	unsigned int has_thread:1;
 	unsigned int has_status_size:1;
 	unsigned int has_list_status:1;
+	unsigned int has_notify:1;
 	/* Sorting */
 	char *sort;
 	char *filter;
@@ -215,6 +217,61 @@ cleanup:
 	return res;
 }
 
+static void parse_status(struct imap_client *client, json_t *folder, char *restrict tmp, uint32_t *messages, int expect)
+{
+	char *str;
+	uint32_t num;
+
+	if (strlen_zero(tmp)) {
+		bbs_warning("Malformed STATUS response\n");
+		return;
+	}
+
+	str = strstr(tmp, "MESSAGES ");
+	if (str) {
+		str += STRLEN("MESSAGES ");
+		if (!strlen_zero(str)) {
+			num = (uint32_t) atol(str);
+			*messages = num;
+			json_object_set_new(folder, "messages", json_integer(num));
+		}
+	} else if (expect) {
+		bbs_warning("Failed to parse MESSAGES\n");
+	}
+	str = strstr(tmp, "RECENT ");
+	if (str) {
+		str += STRLEN("RECENT ");
+		if (!strlen_zero(str)) {
+			num = (uint32_t) atol(str);
+			json_object_set_new(folder, "recent", json_integer(num));
+		}
+	} else if (expect) {
+		bbs_warning("Failed to parse RECENT\n");
+	}
+	str = strstr(tmp, "UNSEEN ");
+	if (str) {
+		str += STRLEN("UNSEEN ");
+		if (!strlen_zero(str)) {
+			num = (uint32_t) atol(str);
+			json_object_set_new(folder, "unseen", json_integer(num));
+		}
+	} else if (expect) {
+		bbs_warning("Failed to parse UNSEEN\n");
+	}
+	if (client->has_status_size) {
+		str = strstr(tmp, "SIZE ");
+		if (str) {
+			str += STRLEN("SIZE ");
+			if (!strlen_zero(str)) {
+				num = (uint32_t) atol(str);
+				json_object_set_new(folder, "size", json_integer(num));
+			}
+		} else if (expect) {
+			bbs_warning("Failed to parse SIZE\n");
+		}
+	}
+}
+
 static int client_status_command(struct imap_client *client, struct mailimap *imap, const char *mbox, json_t *folder, uint32_t *messages, char *listresp)
 {
 	int res = 0;
@@ -233,60 +290,8 @@ static int client_status_command(struct imap_client *client, struct mailimap *im
 		} else {
 			/* Parse what we want from the STATUS response.
 			 * Normally not a great idea, but STATUS responses are easy to parse. */
-			char *str;
-			uint32_t num;
 			tmp += skiplen;
-			if (strlen_zero(tmp)) {
-				bbs_warning("Malformed STATUS response\n");
-			} else {
-				str = strstr(tmp, "MESSAGES ");
-				if (str) {
-					str += STRLEN("MESSAGES ");
-					if (!strlen_zero(str)) {
-						num = (uint32_t) atol(str);
-						*messages = num;
-						json_object_set_new(folder, "messages", json_integer(num));
-					}
-				}
-				if (!str) {
-					bbs_warning("Failed to parse MESSAGES\n");
-				}
-				str = strstr(tmp, "RECENT ");
-				if (str) {
-					str += STRLEN("RECENT ");
-					if (!strlen_zero(str)) {
-						num = (uint32_t) atol(str);
-						json_object_set_new(folder, "recent", json_integer(num));
-					}
-				}
-				if (!str) {
-					bbs_warning("Failed to parse RECENT\n");
-				}
-				str = strstr(tmp, "UNSEEN ");
-				if (str) {
-					str += STRLEN("UNSEEN ");
-					if (!strlen_zero(str)) {
-						num = (uint32_t) atol(str);
-						json_object_set_new(folder, "unseen", json_integer(num));
-					}
-				}
-				if (!str) {
-					bbs_warning("Failed to parse UNSEEN\n");
-				}
-				if (client->has_status_size) {
-					str = strstr(tmp, "SIZE ");
-					if (str) {
-						str += STRLEN("SIZE ");
-						if (!strlen_zero(str)) {
-							num = (uint32_t) atol(str);
-							json_object_set_new(folder, "size", json_integer(num));
-						}
-					}
-					if (!str) {
-						bbs_warning("Failed to parse SIZE\n");
-					}
-				}
-			}
+			parse_status(client, folder, tmp, messages, 1);
 			/* Look at all the time we saved! Profit and return */
 			return 0;
 		}
@@ -353,6 +358,22 @@ static int client_status_command(struct imap_client *client, struct mailimap *im
 cleanup:
 	mailimap_status_att_list_free(att_list);
 	return res;
+}
+
+static void send_status_update(struct imap_client *client, const char *mbox, char *restrict data)
+{
+	json_t *json;
+	uint32_t messages;
+
+	json = json_object();
+	if (!json) {
+		return;
+	}
+
+	json_object_set_new(json, "response", json_string("STATUS"));
+	json_object_set_new(json, "name", json_string(mbox));
+	parse_status(client, json, data, &messages, 0);
+	json_send(client->ws, json);
 }
 
 #define CLIENT_REQUIRE_VAR(name) \
@@ -439,6 +460,7 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client, s
 	SET_BITFIELD(client->has_thread, mailimap_has_extension(imap, "THREAD=REFERENCES"));
 	SET_BITFIELD(client->has_status_size, mailimap_has_extension(imap, "STATUS=SIZE"));
 	SET_BITFIELD(client->has_list_status, mailimap_has_extension(imap, "LIST-STATUS"));
+	SET_BITFIELD(client->has_notify, mailimap_has_extension(imap, "NOTIFY"));
 	*data = imap;
 	return 0;
 
@@ -584,6 +606,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 	clistiter *cur;
 	int needunselect = 0;
 	char *listresp = NULL;
+	int numother = 0;
 
 	/* There are a few different scenarios here, depending on supported extensions:
 	 * LIST-STATUS     STATUS=SIZE        # commands Approach
@@ -600,6 +623,10 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 	 */
 
 	client_set_status(client->ws, "Querying folder list");
+
+	/* XXX First, we should do a LIST "" "" to get the namespace names, e.g. Other Users and Shared Folders,
+	 * rather than just assuming that's what they're called. */
+
 	if (details && client->has_list_status && client->has_status_size) {
 		struct list_status_cb cb;
 		struct dyn_str dynstr;
@@ -610,12 +637,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 		 * It did not support STATUS=SIZE either, but it was easy to patch it support that
 		 * (and mod_webmail requires such a patched version of libetpan).
 		 * Rather than trying to kludge libetpan to support LIST-STATUS,
-		 * it's easier to just send it the command we want and parse it ourselves.
-		 *
-		 * XXX Since I don't know how to read/write directly using libetpan's connection,
-		 * we open up a 2nd IMAP connection here for the LIST-STATUS operation.
-		 * The time savings from doing a single LIST-STATUS command over N STATUS commands
-		 * is worth the overhead in setting up a separate connection. */
+		 * it's easier to just send it the command we want and parse it ourselves. */
 		bbs_debug(4, "Nice, both LIST-STATUS and STATUS=SIZE are supported!\n"); /* Somebody please give the poor IMAP server a pay raise */
 		mailstream_set_logger(imap->imap_stream, list_status_logger, &cb);
 		res = mailimap_list_status(imap, &imap_list);
@@ -649,6 +671,10 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 		folder = json_object();
 		if (!folder) {
 			continue;
+		}
+
+		if (client->has_notify && !strncmp(name, "Other Users.", STRLEN("Other Users."))) {
+			numother++;
 		}
 
 		json_object_set_new(folder, "name", json_string(name));
@@ -738,6 +764,70 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 					json_object_set_new(folder, "uidnext", json_integer(imap->imap_selection_info->sel_uidnext));
 				}
 			}
+		}
+	}
+
+	if (client->has_notify) { /* Construct the NOTIFY command */
+		char cmd[2048];
+		struct dyn_str dynstr;
+		int otherinboxonly = numother > 10;
+
+		/* If the NOTIFY capability is supported, we'll use it to keep on top of updates to other mailboxes
+		 * (not just the currently selected one).
+		 * We can use the personal selector to get updates to all mailboxes in the personal namespace.
+		 * This will leave mailboxes in the "Other Users" and "Shared Folders" namespaces... we could name
+		 * them all individually (there's no patterns allowed in the NOTIFY command), but if there's a large
+		 * number of mailboxes, this might be too much (and the server could reject the command).
+		 *
+		 * This is most true for Shared Folders, however; Other Users should be relatively bounded in size.
+		 *
+		 * So our final approach is:
+		 * - Personal namespace: subscribe all
+		 * - Other Users namespace:
+		 *  |- If < OTHER_USERS_WATCHALL_THRESHOLD total folders:
+		 *    - subscribe all (entire subtree)
+		 *     Else, only subscribe to all the "INBOX" or "Inbox" folders we encounter.
+		 * - Shared Folders namespace:
+		 *  - Subscribe to all the "INBOX" or "Inbox" folders we encounter.
+		 */
+
+#define OTHER_USERS_WATCHALL_THRESHOLD 25
+
+		memset(&dynstr, 0, sizeof(dynstr));
+		if (numother > OTHER_USERS_WATCHALL_THRESHOLD) {
+			for (cur = clist_begin(imap_list); cur; cur = clist_next(cur)) {
+				struct mailimap_mailbox_list *mb_list = clist_content(cur);
+				const char *name = mb_list->mb_name;
+				if (!strncmp(name, "Other Users.", STRLEN("Other Users."))) {
+					if (otherinboxonly && !strcasestr(name, "INBOX")) {
+						continue;
+					}
+				} else if (!strncmp(name, "Shared Folders.", STRLEN("Shared Folders."))) {
+					if (!strcasestr(name, "INBOX")) {
+						continue;
+					}
+				} else {
+					continue; /* Personal namespace */
+				}
+				dyn_str_append(&dynstr, " \"", STRLEN(" \""));
+				dyn_str_append(&dynstr, name, strlen(name));
+				dyn_str_append(&dynstr, "\"", STRLEN("\""));
+			}
+		}
+
+		/* We just want notifications when something happens, having an untagged FETCH sent to us isn't that important.
+		 * We can wake up and do some work if really needed. */
+		if (dynstr.buf) {
+			snprintf(cmd, sizeof(cmd), "NOTIFY SET (SELECTED-DELAYED (MessageNew MessageExpunge FlagChange)) %s(personal (MessageNew MessageExpunge)) (mailboxes%s (MessageNew MessageExpunge))",
+				numother <= OTHER_USERS_WATCHALL_THRESHOLD ? "(subtree \"Other Users\" (MessageNew MessageExpunge FlagChange))" : "",
+				dynstr.buf);
+			FREE(dynstr.buf);
+		} else {
+			snprintf(cmd, sizeof(cmd), "NOTIFY SET (SELECTED-DELAYED (MessageNew MessageExpunge FlagChange)) (personal (MessageNew MessageExpunge))%s", numother ? " (subtree \"Other Users\" (MessageNew MessageExpunge))" : "");
+		}
+		res = mailimap_custom_command(imap, cmd);
+		if (MAILIMAP_ERROR(res)) {
+			bbs_warning("NOTIFY SET failed\n");
 		}
 	}
 
@@ -2764,46 +2854,61 @@ static int process_idle(struct imap_client *client, char *s)
 	}
 
 	if (STARTS_WITH(tmp, "OK Still here")) {
-		idle_continue(client);
-		return 0; /* Ignore */
-	}
-	seqno = atoi(tmp); /* It'll stop where it needs to */
-	tmp = strchr(tmp, ' '); /* Skip the sequence number */
-	if (!strlen_zero(tmp)) {
-		tmp++;
-	}
-	if (strlen_zero(tmp)) {
-		bbs_warning("Invalid IDLE data: %s\n", s);
-		return -1;
-	}
-
-	/* What we do next depends on what the untagged response is */
-	if (STARTS_WITH(tmp, "EXISTS")) {
-		uint32_t previewseqno = (uint32_t) seqno;
-		client->messages = previewseqno; /* Update number of messages in this mailbox */
-		client->idlerefresh |= IDLE_REFRESH_EXISTS;
-	} else if (STARTS_WITH(tmp, "EXPUNGE")) {
-		if (client->messages) {
-			client->messages--; /* Assume we lost one */
-			/* Always refresh: even if it wasn't visible, this has shifted the number of messages,
-			 * and perhaps the number of pages has now changed. */
-			client->idlerefresh |= IDLE_REFRESH_EXPUNGE;
-		} else {
-			bbs_warning("EXPUNGE on empty mailbox?\n");
+		idle_continue(client); /* Ignore */
+	} else if (STARTS_WITH(tmp, "STATUS")) {
+		char *mbname;
+		client->idlerefresh |= IDLE_REFRESH_STATUS;
+		tmp += STRLEN("STATUS");
+		if (strlen_zero(tmp)) {
+			bbs_warning("Incomplete STATUS response\n");
 			return -1;
 		}
-	} else if (STARTS_WITH(tmp, "FETCH")) {
-		/* This is most likely an update in flags.
-		 * If the message in question is visible on the current page,
-		 * refresh the current message listing.
-		 * Otherwise, ignore it, since it's not visible anyways. */
-		if (seqno >= client->start && seqno <= client->end) {
-			client->idlerefresh |= IDLE_REFRESH_FETCH;
-		} else {
-			bbs_debug(6, "Ignoring FETCH update since not visible on current page\n");
+		ltrim(tmp);
+		mbname = quotesep(&tmp); /* Get the mailbox name where the update occured. */
+		if (!mbname) {
+			return -1;
 		}
+		/* Send the STATUS info to the frontend. */
+		send_status_update(client, mbname, tmp);
 	} else {
-		bbs_debug(3, "Ignoring IDLE data: %s\n", s);
+		seqno = atoi(tmp); /* It'll stop where it needs to */
+		tmp = strchr(tmp, ' '); /* Skip the sequence number */
+		if (!strlen_zero(tmp)) {
+			tmp++;
+		}
+		if (strlen_zero(tmp)) {
+			bbs_warning("Invalid IDLE data: %s\n", s);
+			return -1;
+		}
+
+		/* What we do next depends on what the untagged response is */
+		if (STARTS_WITH(tmp, "EXISTS")) {
+			uint32_t previewseqno = (uint32_t) seqno;
+			client->messages = previewseqno; /* Update number of messages in this mailbox */
+			client->idlerefresh |= IDLE_REFRESH_EXISTS;
+		} else if (STARTS_WITH(tmp, "EXPUNGE")) {
+			if (client->messages) {
+				client->messages--; /* Assume we lost one */
+				/* Always refresh: even if it wasn't visible, this has shifted the number of messages,
+				 * and perhaps the number of pages has now changed. */
+				client->idlerefresh |= IDLE_REFRESH_EXPUNGE;
+			} else {
+				bbs_warning("EXPUNGE on empty mailbox?\n");
+				return -1;
+			}
+		} else if (STARTS_WITH(tmp, "FETCH")) {
+			/* This is most likely an update in flags.
+			 * If the message in question is visible on the current page,
+			 * refresh the current message listing.
+			 * Otherwise, ignore it, since it's not visible anyways. */
+			if (seqno >= client->start && seqno <= client->end) {
+				client->idlerefresh |= IDLE_REFRESH_FETCH;
+			} else {
+				bbs_debug(6, "Ignoring FETCH update since not visible on current page\n");
+			}
+		} else {
+			bbs_debug(3, "Ignoring IDLE data: %s\n", s);
+		}
 	}
 	return 0;
 }
@@ -2822,9 +2927,13 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 			return -1;
 		}
 		bbs_debug(5, "Not currently idling, ignoring...\n");
+		idle_stop(ws, client);
+		idle_start(ws, client);
 		return 0;
 	} else if (strlen_zero(client->mailbox)) {
 		bbs_error("Client mailbox not set?\n");
+		idle_stop(ws, client);
+		idle_start(ws, client);
 		return 0;
 	}
 
@@ -2858,12 +2967,13 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 		} else {
 			break;
 		}
-	} while (idledata);
+	} while (idledata && !res);
 
 	if (res) {
 		idle_stop(ws, client);
 	}
 
+	client->idlerefresh &= ~IDLE_REFRESH_STATUS; /* This doesn't count for needing a page refresh */
 	if (client->idlerefresh) { /* If there were multiple lines in the IDLE update, batch any updates up and send a single refresh */
 		int r = client->idlerefresh;
 		const char *reason = r & IDLE_REFRESH_EXISTS ? "EXISTS" : r & IDLE_REFRESH_FETCH ? "FETCH" : r & IDLE_REFRESH_EXPUNGE ? "EXPUNGE" : "";
