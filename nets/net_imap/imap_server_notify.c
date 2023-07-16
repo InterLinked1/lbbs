@@ -157,8 +157,7 @@ int imap_notify_applicable_fetchargs(struct imap_session *imap, struct mailbox *
 	if (!imap->notify) {
 		/* Basically, is it the same mailbox that's selected? */
 		bbs_assert_exists(folder);
-		bbs_assert_exists(maildir);
-		return (imap->mbox == mbox && imap->folder && !strcmp(folder, imap->folder)) || !strcmp(maildir, imap->dir);
+		return (imap->mbox == mbox && imap->folder && !strcmp(folder, imap->folder)) || (maildir && !strcmp(maildir, imap->dir));
 	} else {
 		struct imap_notify *notify = imap->notify;
 		struct notify_watch *w;

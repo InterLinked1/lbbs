@@ -2506,7 +2506,6 @@ static void handle_fetch(struct ws_session *ws, struct imap_client *client, uint
 	for (cur = clist_begin(msg_att->att_list); cur ; cur = clist_next(cur)) {
 		struct mailimap_msg_att_item *item = clist_content(cur);
 		if (item->att_type == MAILIMAP_MSG_ATT_ITEM_STATIC) {
-			//struct mailimap_msg_att_body_section *msg_att_body_section;
 			size_t msg_size;
 			char *msg_body;
 			char *eoh;

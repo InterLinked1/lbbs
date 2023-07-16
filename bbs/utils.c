@@ -76,7 +76,9 @@ int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len)
 	/* Do we have enough room in the existing buffer? */
 	requiredlen = dynstr->used + len;
 	/* Double memory allocation as needed, rather than linear increase, to make reallocations amortized constant time */
-	newlen = dynstr->len;
+	/* In the strange case that newlen is 0, multiplying by 2 is still 0, so add 1 so doubling works.
+	 * This could happen if the first call to dyn_str_append has a length of 0. */
+	newlen = dynstr->len ? dynstr->len : 1;
 	while (newlen < requiredlen) {
 		newlen *= 2;
 	}
