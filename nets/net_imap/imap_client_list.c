@@ -280,6 +280,12 @@ static int remote_list_cb(void *data)
 	struct remote_list_info *r = data;
 	struct imap_client *client = imap_client_get_by_url(r->imap, r->prefix, r->server);
 	bbs_memzero(r->server, strlen(r->server)); /* Contains password */
+
+	if (!client) {
+		bbs_error("Failed to get client for %s\n", r->prefix);
+		return -1;
+	}
+
 	/* Marshall arguments and execute */
 	return remote_list(client, r->lcmd, r->prefix);
 }

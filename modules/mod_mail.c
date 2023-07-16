@@ -1804,8 +1804,24 @@ static int imap_client_capability(struct bbs_tcp_client *client, int *capsptr)
 	}
 
 	/* Enable any capabilities the client may have enabled. */
-	capstring = client->buf + STRLEN("* CAPABILITY ");
+	capstring = strstr(client->buf, "* CAPABILITY ");
+	if (capstring) {
+		capstring += STRLEN("* CAPABILITY ");
+	} else {
+		capstring = strstr(client->buf, "[CAPABILITY ");
+		if (capstring) {
+			capstring += STRLEN("[CAPABILITY ");
+			bbs_strterm(capstring, ']'); /* This is part of a larger response, don't parse anything after or including ] */
+		}
+	}
+	if (strlen_zero(capstring)) {
+		bbs_error("CAPABILITIES response doesn't contain capabilities? '%s'\n", client->buf);
+		return -1;
+	}
 	bbs_debug(5, "Capabilities: %s\n", capstring);
+	if (strlen_zero(capstring)) {
+		return -1;
+	}
 	while ((cur = strsep(&capstring, " "))) { /* It's okay to consume the capabilities, nobody else needs them */
 		if (strlen_zero(cur) || !strcmp(cur, "IMAP4rev1") || !strcmp(cur, "IMAP4")) {
 			continue;
@@ -1833,6 +1849,8 @@ static int imap_client_capability(struct bbs_tcp_client *client, int *capsptr)
 		PARSE_CAPABILITY("BINARY", IMAP_CAPABILITY_BINARY)
 		else if (STARTS_WITH(cur, "X") || STARTS_WITH(cur, "AUTH=") || !strcmp(cur, "SPECIAL-USE") || !strcmp(cur, "CHILDREN") || !strcmp(cur, "NAMESPACE") || !strcmp(cur, "ID") || !strcmp(cur, "UIDPLUS") || !strcmp(cur, "XLIST") || !strcmp(cur, "I18NLEVEL=1") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "RIGHTS=") || !strcmp(cur, "WITHIN") || !strcmp(cur, "ESEARCH") || !strcmp(cur, "ESORT") || !strcmp(cur, "SEARCHRES") || !strcmp(cur, "COMPRESS=DEFLATE") || !strcmp(cur, "COMPRESS=DEFLATE") || !strcmp(cur, "UTF8=ACCEPT")) {
 			/* Don't care */
+		} else if (!strcmp(cur, "CLIENTACCESSRULES") || !strcmp(cur, "CLIENTNETWORKPRESENCELOCATION") || !strcmp(cur, "BACKENDAUTHENTICATE")) {
+			/* Esoteric Microsoft stuff, don't care */
 		} else if (!strcmp(cur, "LOGINDISABLED")) { /* RFC 3501 7.2.1 */
 			/* Could happen if we connect to a plain text port and STARTTLS is required.
 			 * Here we only support implicit TLS */
@@ -1855,15 +1873,44 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 {
 	int res, caps;
 	char *encoded = NULL;
+	int ok_had_caps = 0;
 
-	IMAP_CLIENT_EXPECT(client, "* OK");
-	IMAP_CLIENT_SEND(client, "a0 CAPABILITY");
-	IMAP_CLIENT_EXPECT(client, "* CAPABILITY ");
-
-	if (imap_client_capability(client, capsptr)) {
-		return -1;
+	/* Parse the server greeting until we get an untagged OK response,
+	 * processing the CAPABILITIES if we get an untagged CAPABILITY response. */
+	for (;;) {
+		res = bbs_readline(client->rfd, &client->rldata, "\r\n", 2500);
+		if (res <= 0) {
+			bbs_warning("No response from IMAP server %s:%d?\n", url->host, url->port);
+			return -1;
+		}
+		if (STARTS_WITH(client->buf, "* CAPABILITY")) {
+			ok_had_caps = 1; /* Don't need to parse again until authenticated */
+			if (imap_client_capability(client, capsptr)) { /* Parse unauthenticated capabilities */
+				return -1;
+			}
+		}
+		if (STARTS_WITH(client->buf, "* OK")) {
+			break;
+		}
 	}
-	IMAP_CLIENT_EXPECT(client, "a0 OK");
+
+	if (!ok_had_caps) {
+		/* If the OK response contained capabilities, avoid an extra RTT to ask for something we already got. */
+		ok_had_caps = strstr(client->buf, "[CAPABILITY") ? 1 : 0;
+		/* Gmail will send an untagged CAPABILITIES response rather than including them in the OK response.
+		 * This is somewhat nonstandard, and although we handle it below, we don't handle it here,
+		 * since we only have access to the last response at this point. */
+		if (!ok_had_caps) {
+			IMAP_CLIENT_SEND(client, "a0 CAPABILITY");
+			IMAP_CLIENT_EXPECT(client, "* CAPABILITY ");
+		}
+		if (imap_client_capability(client, capsptr)) { /* Parse unauthenticated capabilities */
+			return -1;
+		}
+		if (!ok_had_caps) {
+			IMAP_CLIENT_EXPECT(client, "a0 OK");
+		}
+	}
 
 	caps = *capsptr;
 	if (STARTS_WITH(url->pass, "oauth:")) { /* OAuth authentication */
@@ -1908,7 +1955,8 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 		IMAP_CLIENT_SEND(client, "a1 LOGIN \"%s\" \"%s\"", url->user, url->pass);
 	}
 
-	/* Gmail sends the capabilities again when you log in, so tolerate CAPABILITY then OK as well as just OK. */
+	/* Gimap (Gmail) sends the capabilities again when you log in,
+	 * so tolerate CAPABILITY then OK as well as just OK (possibly also with CAPABILITY). */
 	res = bbs_readline(client->rfd, &client->rldata, "\r\n", 2500);
 	if (res <= 0) {
 		bbs_warning("No response from IMAP server %s:%d?\n", url->host, url->port);
@@ -1930,12 +1978,17 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 			return -1;
 		}
 		/* Request capabilities again, in case we have more now, now that we're logged in */
-		IMAP_CLIENT_SEND(client, "a2 CAPABILITY");
-		IMAP_CLIENT_EXPECT(client, "* CAPABILITY ");
-		if (imap_client_capability(client, capsptr)) {
+		ok_had_caps = strstr(client->buf, "[CAPABILITY") ? 1 : 0;
+		if (!ok_had_caps) {
+			IMAP_CLIENT_SEND(client, "a2 CAPABILITY");
+			IMAP_CLIENT_EXPECT(client, "* CAPABILITY ");
+		}
+		if (imap_client_capability(client, capsptr)) { /* Parse authenticated capabilities */
 			return -1;
 		}
-		IMAP_CLIENT_EXPECT(client, "a2 OK");
+		if (!ok_had_caps) {
+			IMAP_CLIENT_EXPECT(client, "a2 OK");
+		}
 	}
 
 	return 0;
