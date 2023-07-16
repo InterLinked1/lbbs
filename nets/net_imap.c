@@ -72,6 +72,7 @@
  * - BINARY extensions (RFC 3516, 4466)
  * - CLIENTID: https://datatracker.ietf.org/doc/html/draft-yu-imap-client-id-10
  *             https://datatracker.ietf.org/doc/html/draft-storey-smtp-client-id-15
+ * - UIDONLY: https://www.rfc-editor.org/rfc/internet-drafts/draft-ietf-extra-imap-uidonly-01.html
  * Other capabilities: AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH AUTH=XOAUTH2
  */
 
@@ -261,7 +262,7 @@ static inline void reset_saved_search(struct imap_session *imap)
 	imap_traverse(traversal->newdir, callback, traversal); \
 	traversal->maxrecent = traversal->totalcur + traversal->totalnew; \
 	if (!traversal->uidvalidity || !traversal->uidnext) { \
-		mailbox_get_next_uid(traversal->mbox, traversal->dir, 0, &traversal->uidvalidity, &traversal->uidnext); \
+		mailbox_get_next_uid(traversal->mbox, traversal->imap->node, traversal->dir, 0, &traversal->uidvalidity, &traversal->uidnext); \
 	} \
 	mailbox_unlock(traversal->mbox);
 
@@ -630,6 +631,32 @@ static void send_untagged_list(struct bbs_node *node, enum mailbox_event_type ty
 	RWLIST_UNLOCK(&sessions);
 }
 
+static void send_untagged_uidvalidity(struct mailbox *mbox, const char *maildir, unsigned int uidvalidity)
+{
+	char buf[256];
+	size_t len;
+	struct imap_session *s;
+
+	/* This should never happen, but if the UIDVALIDITY of a mailbox changes,
+	 * we MUST notify any clients currently using it.
+	 * Use same format as UIDVALIDITY response to SELECT/EXAMINE (RFC 2683 3.4.3) */
+	len = (size_t) snprintf(buf, sizeof(buf), "* OK [UIDVALIDITY %u] New UIDVALIDITY value!\r\n", uidvalidity);
+
+	/* Notify anyone watching this mailbox, specifically the INBOX. */
+	RWLIST_RDLOCK(&sessions);
+	RWLIST_TRAVERSE(&sessions, s, entry) {
+		if (s->mbox != mbox || strcmp(s->dir, maildir)) {
+			continue;
+		}
+
+		/* If same mailbox selected, send UIDVALIDITY */
+		pthread_mutex_lock(&s->lock);
+		imap_send_update(s, buf, len);
+		pthread_mutex_unlock(&s->lock);
+	}
+	RWLIST_UNLOCK(&sessions);
+}
+
 /*! \brief Callback for all mailbox events */
 static void imap_mbox_watcher(struct mailbox_event *event)
 {
@@ -667,6 +694,9 @@ static void imap_mbox_watcher(struct mailbox_event *event)
 		 * and then use those here to get updates.
 		 * We need to send a LIST with \NoAccess if ACL was removed (no longer have access to a mailbox)
 		 * and without \NoAccess if access is now granted (but wasn't previously). */
+		case EVENT_MAILBOX_UIDVALIDITY_CHANGE:
+			send_untagged_uidvalidity(event->mbox, event->maildir, mailbox_event_uidvalidity(event));
+			break;
 		default:
 			break;
 	}
@@ -805,7 +835,7 @@ static int on_select(const char *dir_name, const char *filename, int seqno, void
 
 	if (traversal->innew) {
 		if (!traversal->readonly) {
-			maildir_move_new_to_cur_file(traversal->mbox, traversal->dir, traversal->curdir, traversal->newdir, filename, &traversal->uidvalidity, &traversal->uidnext, newfile, sizeof(newfile));
+			maildir_move_new_to_cur_file(traversal->mbox, traversal->imap->node, traversal->dir, traversal->curdir, traversal->newdir, filename, &traversal->uidvalidity, &traversal->uidnext, newfile, sizeof(newfile));
 			filename = newfile;
 		} else {
 			/* Need to stat to get the file size the regular way since parse_size_from_filename will fail. */
@@ -1897,7 +1927,7 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 				break; /* Insufficient quota remaining */
 			}
 		}
-		uidres = (unsigned int) maildir_copy_msg_filename(imap->mbox, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext, newfile, sizeof(newfile));
+		uidres = (unsigned int) maildir_copy_msg_filename(imap->mbox, imap->node, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext, newfile, sizeof(newfile));
 		if (!uidres) {
 			continue;
 		}
@@ -1984,7 +2014,7 @@ static int handle_move(struct imap_session *imap, char *s, int usinguid)
 		}
 
 		snprintf(srcfile, sizeof(srcfile), "%s/%s", imap->curdir, entry->d_name);
-		uidres = (unsigned int) maildir_move_msg_filename(imap->mbox, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext, newname, sizeof(newname));
+		uidres = (unsigned int) maildir_move_msg_filename(imap->mbox, imap->node, srcfile, entry->d_name, newboxdir, &uidvalidity, &uidnext, newname, sizeof(newname));
 		if (!uidres) {
 			goto cleanup;
 		}
@@ -2244,7 +2274,7 @@ static int handle_append(struct imap_session *imap, char *s)
 		snprintf(curdir, sizeof(curdir), "%s/cur", appenddir);
 		snprintf(newdir, sizeof(newdir), "%s/new", appenddir);
 		/* RFC says the Recent flag should be set: since we're moving this to "cur" immediately, it won't be... */
-		res = maildir_move_new_to_cur_file(imap->mbox, appenddir, curdir, newdir, filename, &uidvalidity, &uidnext, newfilename, sizeof(newfilename));
+		res = maildir_move_new_to_cur_file(imap->mbox, imap->node, appenddir, curdir, newdir, filename, &uidvalidity, &uidnext, newfilename, sizeof(newfilename));
 		if (res < 0) {
 			imap_reply(imap, "NO [SERVERBUG] Append failed");
 			goto cleanup;
@@ -2808,6 +2838,12 @@ static int handle_delete(struct imap_session *imap, char *s)
 		return 0;
 	}
 
+	/* RFC 2683 3.4.12: Don't allow deleting the selected mailbox. */
+	if (!strcmp(imap->dir, path)) {
+		imap_reply(imap, "NO May not delete currently selected mailbox");
+		return 0;
+	}
+
 	IMAP_REQUIRE_ACL(destacl, IMAP_ACL_MAILBOX_DELETE);
 
 	/* If the hierarchy really matched, it would be easier in this case, since we could
@@ -2822,6 +2858,7 @@ static int handle_delete(struct imap_session *imap, char *s)
 		return 0;
 	}
 
+	/* We're a nice server: we allow deleting non-empty mailboxes */
 	MAILBOX_TRYRDLOCK(imap);
 	if (recursive_rmdir(path)) {
 		mailbox_unlock(imap->mbox);
@@ -2981,10 +3018,10 @@ static int finish_auth(struct imap_session *imap, int auth)
 	 * As an optimization, we could save an RTT by sending them unsolicited */
 
 	if (auth) {
-		_imap_reply(imap, "%s OK Success\r\n", imap->savedtag ? imap->savedtag : imap->tag); /* Use tag from AUTHENTICATE request */
+		_imap_reply(imap, "%s OK [CAPABILITY %s] Success\r\n", imap->savedtag ? imap->savedtag : imap->tag, IMAP_CAPABILITIES); /* Use tag from AUTHENTICATE request */
 		free_if(imap->savedtag);
 	} else {
-		imap_reply(imap, "OK Login completed");
+		imap_reply(imap, "OK [CAPABILITY %s] Login completed", IMAP_CAPABILITIES);
 	}
 	return 0;
 }
@@ -3889,9 +3926,9 @@ static void handle_client(struct imap_session *imap)
 	}
 
 	if (bbs_user_is_registered(imap->node->user)) {
-		imap_send(imap, "PREAUTH %s server logged in as %s", IMAP_REV, bbs_username(imap->node->user));
+		imap_send(imap, "PREAUTH [CAPABILITY %s] %s server logged in as %s", IMAP_CAPABILITIES, IMAP_REV, bbs_username(imap->node->user));
 	} else {
-		imap_send(imap, "OK %s Service Ready", IMAP_REV);
+		imap_send(imap, "OK [CAPABILITY %s] %s Service Ready", IMAP_CAPABILITIES, IMAP_REV);
 	}
 
 	for (;;) {

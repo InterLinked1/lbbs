@@ -290,7 +290,7 @@ static int on_delete(const char *dir_name, const char *filename, struct pop3_ses
 	snprintf(newdir, sizeof(newdir), "%s/.Trash", dir_name);
 
 	bbs_debug(5, "Deleting message %d (%s)\n", number, fullpath);
-	maildir_move_msg(pop3->mbox, fullpath, filename, pop3->trashmaildir, NULL, NULL); /* Move message to Trash folder */
+	maildir_move_msg(pop3->mbox, pop3->node, fullpath, filename, pop3->trashmaildir, NULL, NULL); /* Move message to Trash folder */
 
 	/* It would be more efficient to batch deletions like with IMAP, but that would require moving this outside of the callback,
 	 * and given POP3 is just not intended to be as smart as IMAP, I am not sure that is worth the effort. */
@@ -336,7 +336,7 @@ static int on_stat(const char *dir_name, const char *filename, struct pop3_sessi
 		int res;
 		/* If we wanted to hash the file here, we would do it first, because maildir_move_new_to_cur will move it to a new location.
 		 * However, we don't need to compute UIDL here, so we can do that later, once everything is in the cur directory. */
-		res = maildir_move_new_to_cur(pop3->mbox, mailbox_maildir(pop3->mbox), pop3->curdir, pop3->newdir, filename, NULL, NULL);
+		res = maildir_move_new_to_cur(pop3->mbox, pop3->node, mailbox_maildir(pop3->mbox), pop3->curdir, pop3->newdir, filename, NULL, NULL);
 		if (res > 0) {
 			pop3->totalbytes += (unsigned int) res;
 		}

@@ -49,6 +49,8 @@ enum mailbox_event_type {
 	EVENT_METADATA_CHANGE = (1 << 18),			/*!< Metadata changed (RFC 5464 METADATA) */
 	EVENT_SERVER_METADATA_CHANGE = (1 << 19),
 	EVENT_ANNOTATION_CHANGE = (1 << 20),		/*!< Message annotation changed */
+	/* Internal events (not part of any RFC, only used by the BBS) */
+	EVENT_MAILBOX_UIDVALIDITY_CHANGE = (1 << 21)	/*!< UIDVALIDITY reset */
 };
 
 /*! \brief Get the name of a mailbox event type */
@@ -332,6 +334,7 @@ int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf);
 /*!
  * \brief Get the next or current UID value of a mailbox directory, atomically
  * \param mbox Mailbox
+ * \param node
  * \param directory Full system path of directory
  * \param allocate Whether to generate a new valid message UID or simply returning the current maximum UID value
  * \param[out] newuidvalidity The UIDVALIDITY of this directory
@@ -342,7 +345,7 @@ int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf);
  * \note This operation internally maintains the .uidvalidity of a maildir directory.
  * \todo This function should really be renamed maildir_get_next_uid, it's a maildir function, not a mailbox function. Currently, it's a misnomer.
  */
-unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, int allocate, unsigned int *newuidvalidity, unsigned int *newuidnext);
+unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, const char *directory, int allocate, unsigned int *newuidvalidity, unsigned int *newuidnext);
 
 /*!
  * \brief Indicate a sequence of expunges
@@ -389,6 +392,7 @@ unsigned long maildir_new_modseq(struct mailbox *mbox, const char *directory);
 /*!
  * \brief Move a message from the new directory to the cur directory, atomically
  * \param mbox Mailbox
+ * \param node
  * \param dir Full system path to the active maildir directory
  * \param curdir Full system path to cur directory (should be an immediate subdirectory of dir)
  * \param newdir Full system path to new directory (should be an immediate subdirectory of dir)
@@ -397,11 +401,12 @@ unsigned long maildir_new_modseq(struct mailbox *mbox, const char *directory);
  * \param[out] uidnext The current maximum UID in this directory (this is somewhat of a misnomer, you need to add 1 to compute the actual UIDNEXT)
  * \retval -1 on failure, number of bytes in file on success (useful for POP3)
  */
-int maildir_move_new_to_cur(struct mailbox *mbox, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext);
+int maildir_move_new_to_cur(struct mailbox *mbox, struct bbs_node *node, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext);
 
 /*!
  * \brief Move a message from the new directory to the cur directory, atomically
  * \param mbox Mailbox
+ * \param node
  * \param dir Full system path to the active maildir directory
  * \param curdir Full system path to cur directory (should be an immediate subdirectory of dir)
  * \param newdir Full system path to new directory (should be an immediate subdirectory of dir)
@@ -412,11 +417,12 @@ int maildir_move_new_to_cur(struct mailbox *mbox, const char *dir, const char *c
  * \param len Length of newpath
  * \retval -1 on failure, number of bytes in file on success (useful for POP3)
  */
-int maildir_move_new_to_cur_file(struct mailbox *mbox, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext, char *newpath, size_t len);
+int maildir_move_new_to_cur_file(struct mailbox *mbox, struct bbs_node *node, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext, char *newpath, size_t len);
 
 /*!
  * \brief Move a message from one maildir to another maildir (including a subdirectory of the same account), adjusting the UID as needed
  * \param mbox Mailbox
+ * \param node
  * \param curfile Full path to current file
  * \param curfilename The base name of the current file
  * \param destmaildir The directory path of the maildir to which the message should be moved (do not include new or cur at the end)
@@ -424,11 +430,12 @@ int maildir_move_new_to_cur_file(struct mailbox *mbox, const char *dir, const ch
  * \param[out] uidnext The new max UID of the destination maildir
  * \retval 0 on failure, UID of new message file on success
  */
-int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext);
+int maildir_move_msg(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext);
 
 /*!
  * \brief Move a message from one maildir to another maildir (including a subdirectory of the same account), adjusting the UID as needed
  * \param mbox Mailbox
+ * \param node
  * \param curfile Full path to current file
  * \param curfilename The base name of the current file
  * \param destmaildir The directory path of the maildir to which the message should be moved (do not include new or cur at the end)
@@ -438,13 +445,13 @@ int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curf
  * \param len Size of newfile
  * \retval 0 on failure, UID of new message file on success
  */
-int maildir_move_msg_filename(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len);
+int maildir_move_msg_filename(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len);
 
 /*! \brief Same as maildir_move_msg, but deep copy the message instead of moving it. The original file is left intact. */
-int maildir_copy_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext);
+int maildir_copy_msg(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext);
 
 /*! \brief Same as maildir_copy_msg, but also store the new filename of the message, like maildir_move_msg_filename */
-int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len);
+int maildir_copy_msg_filename(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len);
 
 /*!
  * \brief Get the UID of a maildir file in cur directory
@@ -454,7 +461,12 @@ int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const c
  */
 int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid);
 
-/*! \brief Sort callback for scandir (for maildirs) */
+/*!
+ * \brief Sort callback for scandir (for maildirs)
+ * \note This function may not be specified as a callback parameter inside modules (outside of mod_mail) directly,
+ *       because RTLD_LAZY does not ignore unresolved data arguments, only unresolved functions.
+ *       See comments at top of nets/net_imap/imap_server_maildir.c
+ */
 int uidsort(const struct dirent **da, const struct dirent **db);
 
 /*! \brief Perform an ordered traversal of a maildir cur directory */

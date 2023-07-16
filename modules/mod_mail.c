@@ -208,6 +208,8 @@ const char *mailbox_event_type_name(enum mailbox_event_type type)
 			return "ServerMetadataChange";
 		case EVENT_ANNOTATION_CHANGE:
 			return "AnnotationChange";
+		case EVENT_MAILBOX_UIDVALIDITY_CHANGE:
+			return "UIDVALIDITYChange";
 		/* No default case */
 	}
 	bbs_assert(0);
@@ -327,7 +329,7 @@ unsigned int mailbox_event_uidvalidity(struct mailbox_event *e)
 			bbs_debug(3, "Mailbox has been deleted\n");
 			return 0;
 		}
-		mailbox_get_next_uid(e->mbox, e->maildir, 0, &e->uidvalidity, &e->uidnext);
+		mailbox_get_next_uid(e->mbox, e->node, e->maildir, 0, &e->uidvalidity, &e->uidnext);
 	}
 	return e->uidvalidity;
 }
@@ -342,7 +344,7 @@ unsigned int mailbox_event_uidnext(struct mailbox_event *e)
 			bbs_debug(3, "Mailbox has been deleted\n");
 			return 0;
 		}
-		mailbox_get_next_uid(e->mbox, e->maildir, 0, &e->uidvalidity, &e->uidnext);
+		mailbox_get_next_uid(e->mbox, e->node, e->maildir, 0, &e->uidvalidity, &e->uidnext);
 	}
 	return e->uidnext;
 }
@@ -1130,10 +1132,11 @@ static int parse_uidfile(FILE *fp, const char *uidfile, unsigned int *uidvalidit
 	return 0;
 }
 
-unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, int allocate, unsigned int *newuidvalidity, unsigned int *newuidnext)
+unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, const char *directory, int allocate, unsigned int *newuidvalidity, unsigned int *newuidnext)
 {
 	FILE *fp = NULL;
 	char uidfile[256];
+	int uidvchange = 0;
 	unsigned int uidvalidity = 0, uidnext = 0;
 	int ascii = 0;
 
@@ -1206,6 +1209,9 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 		/* UIDVALIDITY must be strictly increasing, so time is a good thing to use. */
 		uidvalidity = (unsigned int) time(NULL); /* If this isn't the first access to this folder, this will invalidate the client's cache of this entire folder. */
 		/* Since we're starting over, we must broadcast the new UIDVALIDITY value (we always do for SELECTs). */
+		if (allocate) {
+			uidvchange = 1; /* Don't do this if !allocate, or we could recurse if callbacks try to read the current UIDVALIDITY */
+		}
 	}
 
 	/* See RFC 3501 2.3.1.1. The next UID must be at least UIDNEXT, but it could be greater than it, too. */
@@ -1271,6 +1277,13 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, const char *directory, i
 	*newuidvalidity = uidvalidity;
 	*newuidnext = uidnext;
 	mailbox_uid_unlock(mbox);
+
+	if (uidvchange) {
+		/* Don't do this while mailbox UID lock is held, or we could cause a deadlock
+		 * if an event callback is triggered that tries to grab that lock. */
+		mailbox_dispatch_event_basic(EVENT_MAILBOX_UIDVALIDITY_CHANGE, node, mbox, directory);
+	}
+
 	return uidnext;
 }
 
@@ -1542,7 +1555,9 @@ unsigned long maildir_indicate_expunged(enum mailbox_event_type type, struct bbs
 	fclose(fp);
 #endif
 
-	expire_expunge_event(type, node, mbox, directory, uids, seqnos, length, silent, maxmodseq);
+	if (length) {
+		expire_expunge_event(type, node, mbox, directory, uids, seqnos, length, silent, maxmodseq);
+	}
 	return maxmodseq;
 }
 
@@ -1560,12 +1575,12 @@ unsigned long maildir_new_modseq(struct mailbox *mbox, const char *directory)
 	return modseq;
 }
 
-int maildir_move_new_to_cur(struct mailbox *mbox, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext)
+int maildir_move_new_to_cur(struct mailbox *mbox, struct bbs_node *node, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext)
 {
-	return maildir_move_new_to_cur_file(mbox, dir, curdir, newdir, filename, uidvalidity, uidnext, NULL, 0);
+	return maildir_move_new_to_cur_file(mbox, node, dir, curdir, newdir, filename, uidvalidity, uidnext, NULL, 0);
 }
 
-int maildir_move_new_to_cur_file(struct mailbox *mbox, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext, char *newpath, size_t len)
+int maildir_move_new_to_cur_file(struct mailbox *mbox, struct bbs_node *node, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext, char *newpath, size_t len)
 {
 	char oldname[256];
 	char newname[272];
@@ -1621,7 +1636,7 @@ int maildir_move_new_to_cur_file(struct mailbox *mbox, const char *dir, const ch
 	 * Would be better to read the file at the beginning of the directory traversal,
 	 * update in memory only as we traverse the directory, and then write the final value
 	 * to the file and close it after the traversal ends. */
-	uid = mailbox_get_next_uid(mbox, dir, 1, &newuidvalidity, &newuidnext);
+	uid = mailbox_get_next_uid(mbox, node, dir, 1, &newuidvalidity, &newuidnext);
 	if (!uid) {
 		return -1; /* Don't continue if we failed to get a UID */
 	}
@@ -1647,7 +1662,7 @@ int maildir_move_new_to_cur_file(struct mailbox *mbox, const char *dir, const ch
 	return bytes;
 }
 
-static int gen_newname(struct mailbox *mbox, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newpath, size_t newpathlen)
+static int gen_newname(struct mailbox *mbox, struct bbs_node *node, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newpath, size_t newpathlen)
 {
 	char newname[156];
 	unsigned int uid;
@@ -1661,7 +1676,7 @@ static int gen_newname(struct mailbox *mbox, const char *curfilename, const char
 	/* If moving to .Trash, we do NOT set the Deleted flag.
 	 * That is set by the client when it requests to delete messages from the Trash folder. */
 
-	uid = mailbox_get_next_uid(mbox, destmaildir, 1, &newuidvalidity, &newuidnext);
+	uid = mailbox_get_next_uid(mbox, node, destmaildir, 1, &newuidvalidity, &newuidnext);
 	if (!uid) {
 		bbs_error("Failed to allocate a UID for message\n");
 		return -1; /* Failed to get a UID, don't move it */
@@ -1698,17 +1713,17 @@ static int gen_newname(struct mailbox *mbox, const char *curfilename, const char
 	return (int) uid;
 }
 
-int maildir_move_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext)
+int maildir_move_msg(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext)
 {
-	return maildir_move_msg_filename(mbox, curfile, curfilename, destmaildir, uidvalidity, uidnext, NULL, 0);
+	return maildir_move_msg_filename(mbox, node, curfile, curfilename, destmaildir, uidvalidity, uidnext, NULL, 0);
 }
 
-int maildir_move_msg_filename(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len)
+int maildir_move_msg_filename(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len)
 {
 	char newpath[272];
 	int uid;
 
-	uid = gen_newname(mbox, curfilename, destmaildir, uidvalidity, uidnext, newpath, sizeof(newpath));
+	uid = gen_newname(mbox, node, curfilename, destmaildir, uidvalidity, uidnext, newpath, sizeof(newpath));
 	if (uid <= 0) {
 		return -1;
 	}
@@ -1723,19 +1738,19 @@ int maildir_move_msg_filename(struct mailbox *mbox, const char *curfile, const c
 	return uid;
 }
 
-int maildir_copy_msg(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext)
+int maildir_copy_msg(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext)
 {
-	return maildir_copy_msg_filename(mbox, curfile, curfilename, destmaildir, uidvalidity, uidnext, NULL, 0);
+	return maildir_copy_msg_filename(mbox, node, curfile, curfilename, destmaildir, uidvalidity, uidnext, NULL, 0);
 }
 
-int maildir_copy_msg_filename(struct mailbox *mbox, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len)
+int maildir_copy_msg_filename(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len)
 {
 	char newpath[272];
 	unsigned int uid;
 	int origfd, newfd;
 	int size, copied;
 
-	uid = (unsigned int) gen_newname(mbox, curfilename, destmaildir, uidvalidity, uidnext, newpath, sizeof(newpath));
+	uid = (unsigned int) gen_newname(mbox, node, curfilename, destmaildir, uidvalidity, uidnext, newpath, sizeof(newpath));
 	if (!uid) {
 		return -1;
 	}
