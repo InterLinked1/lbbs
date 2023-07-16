@@ -977,7 +977,7 @@ static int search_dir(struct imap_session *imap, const char *dirname, int newdir
 
 	now = (int) time(NULL); /* Only compute this once, not for each file */
 
-	files = scandir(dirname, &entries, NULL, uidsort);
+	files = scandir(dirname, &entries, NULL, imap_uidsort);
 	if (files < 0) {
 		bbs_error("scandir(%s) failed: %s\n", dirname, strerror(errno));
 		return -1;
@@ -1580,7 +1580,7 @@ int handle_sort(struct imap_session *imap, char *s, int usinguid)
 		sort.imap = imap;
 		sort.sortexpr = sortexpr;
 		SET_BITFIELD(sort.usinguid, usinguid);
-		sort.numfiles = scandir(imap->curdir, &sort.entries, NULL, uidsort); /* cur dir only */
+		sort.numfiles = scandir(imap->curdir, &sort.entries, NULL, imap_uidsort); /* cur dir only */
 		if (sort.numfiles >= 0) {
 			qsort_r(a, (size_t) results, sizeof(unsigned int), sort_compare, &sort); /* Actually sort the results, conveniently already in an array. */
 			bbs_free_scandir_entries(sort.entries, sort.numfiles);
@@ -1649,7 +1649,7 @@ static int populate_thread_data(struct imap_session *imap, struct thread_message
 	 * We obviously don't want to call scandir or opendir for each message. */
 	memset(&sort, 0, sizeof(sort));
 	sort.imap = imap;
-	sort.numfiles = scandir(imap->curdir, &sort.entries, NULL, uidsort); /* cur dir only */
+	sort.numfiles = scandir(imap->curdir, &sort.entries, NULL, imap_uidsort); /* cur dir only */
 	if (sort.numfiles < 0) {
 		return -1;
 	}

@@ -13,8 +13,11 @@
  *
  */
 
-/* Forward declaration for uidsort */
+/* Forward declaration for imap_uidsort */
 #include <dirent.h>
+
+/*! \brief Wrapper around uidsort */
+int imap_uidsort(const struct dirent **da, const struct dirent **db);
 
 /*! \brief Translate an IMAP directory path to the full path of the IMAP mailbox on disk */
 int imap_translate_dir(struct imap_session *imap, const char *directory, char *buf, size_t len, int *acl);

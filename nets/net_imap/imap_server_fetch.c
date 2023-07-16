@@ -552,7 +552,7 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 	int fetched = 0;
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
-	files = scandir(imap->curdir, &entries, NULL, uidsort);
+	files = scandir(imap->curdir, &entries, NULL, imap_uidsort);
 	if (files < 0) {
 		bbs_error("scandir(%s) failed: %s\n", imap->curdir, strerror(errno));
 		return -1;

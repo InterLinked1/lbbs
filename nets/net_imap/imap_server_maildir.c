@@ -29,6 +29,19 @@
 #include "nets/net_imap/imap_server_acl.h"
 #include "nets/net_imap/imap_client.h"
 
+int imap_uidsort(const struct dirent **da, const struct dirent **db)
+{
+	/* From dlopen(3):
+	 * "Lazy binding is performed only for function references;
+	 * references to variables are always immediately bound when the shared object is loaded."
+	 *
+	 * In other words, unresolved function references are fine with RTLD_LAZY, but unresolved variables are NOT.
+	 * This matters because uidsort is used as a callback to several IMAP functions.
+	 * For this reason, we have an in-module wrapper around this function, so that there are no unresolved data references,
+	 * (since they all point to this function), only an unresolved function call in this function, which is fine with RTLD_LAZY. */
+	return uidsort(da, db);
+}
+
 static void set_current_mailbox(struct imap_session *imap, struct mailbox *mbox)
 {
 	struct mailbox *old = imap->mbox;
@@ -313,7 +326,7 @@ int imap_msg_to_filename(const char *directory, int seqno, unsigned int uid, cha
 		int res = 1;
 
 		/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
-		files = scandir(directory, &entries, NULL, uidsort);
+		files = scandir(directory, &entries, NULL, imap_uidsort);
 		if (files < 0) {
 			bbs_error("scandir(%s) failed: %s\n", directory, strerror(errno));
 			return -1;

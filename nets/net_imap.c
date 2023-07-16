@@ -181,7 +181,7 @@ unsigned int maxuserproxies = 10;
 #define opendir __Do_not_use_readdir_or_opendir_use_scandir
 #define readdir __Do_not_use_readdir_or_opendir_use_scandir
 #define closedir __Do_not_use_readdir_or_opendir_use_scandir
-#define alphasort __Do_not_use_alphasort_use_uidsort
+#define alphasort __Do_not_use_alphasort_use_imap_uidsort
 #if defined(opendir) || defined(readdir) || defined(closedir) || defined(alphasort)
 /* Dummy usage for -Wunused-macros */
 #endif
@@ -856,7 +856,7 @@ static int imap_expunge(struct imap_session *imap, int silent)
 
 	MAILBOX_TRYRDLOCK(imap);
 
-	files = scandir(dir_name, &entries, NULL, uidsort);
+	files = scandir(dir_name, &entries, NULL, imap_uidsort);
 	if (files < 0) {
 		bbs_error("scandir(%s) failed: %s\n", dir_name, strerror(errno));
 		mailbox_unlock(imap->mbox);
@@ -962,7 +962,7 @@ static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, cons
 	}
 
 	/* Now send any pending flag changes */
-	files = scandir(imap->curdir, &entries, NULL, uidsort);
+	files = scandir(imap->curdir, &entries, NULL, imap_uidsort);
 	if (files < 0) {
 		bbs_error("scandir(%s) failed: %s\n", imap->curdir, strerror(errno));
 		free_if(uidrangebuf);
@@ -1870,7 +1870,7 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 	IMAP_REQUIRE_ACL(destacl, IMAP_ACL_INSERT); /* Must be able to copy to dest dir */
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
-	files = scandir(imap->curdir, &entries, NULL, uidsort);
+	files = scandir(imap->curdir, &entries, NULL, imap_uidsort);
 	if (files < 0) {
 		bbs_error("scandir(%s) failed: %s\n", imap->curdir, strerror(errno));
 		return -1;
@@ -1966,7 +1966,7 @@ static int handle_move(struct imap_session *imap, char *s, int usinguid)
 	MAILBOX_TRYRDLOCK(imap);
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
-	files = scandir(imap->curdir, &entries, NULL, uidsort);
+	files = scandir(imap->curdir, &entries, NULL, imap_uidsort);
 	if (files < 0) {
 		bbs_error("scandir(%s) failed: %s\n", imap->curdir, strerror(errno));
 		return -1;
@@ -2361,7 +2361,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 	}
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
-	files = scandir(imap->curdir, &entries, NULL, uidsort);
+	files = scandir(imap->curdir, &entries, NULL, imap_uidsort);
 	if (files < 0) {
 		bbs_error("scandir(%s) failed: %s\n", imap->curdir, strerror(errno));
 		return -1;
@@ -2845,7 +2845,7 @@ static int sub_rename(const char *path, const char *prefix, const char *newprefi
 	size_t prefixlen = strlen(prefix);
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
-	files = scandir(path, &entries, NULL, uidsort);
+	files = scandir(path, &entries, NULL, imap_uidsort);
 	if (files < 0) {
 		bbs_error("scandir(%s) failed: %s\n", path, strerror(errno));
 		return -1;
