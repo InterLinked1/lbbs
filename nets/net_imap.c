@@ -3336,16 +3336,16 @@ static int handle_idle(struct imap_session *imap)
 
 					if (!STARTS_WITH(s, "*")) {
 						bbs_warning("Unexpected data during background IDLE for '%s': %s\n", client->virtprefix, s);
-						continue;
+						break;
 					}
 					s += 2;
 					if (strlen_zero(s)) {
-						continue;
+						break;
 					}
 					seqno = atoi(s);
 					strsep(&s, " ");
 					if (strlen_zero(s) || !seqno) {
-						continue;
+						break;
 					}
 					if (STARTS_WITH(s, "EXISTS") || STARTS_WITH(s, "EXPUNGE") || STARTS_WITH(s, "FETCH")) {
 						/* In theory, client->bgmailbox contains the mailbox name so we could just
