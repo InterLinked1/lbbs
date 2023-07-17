@@ -54,7 +54,7 @@ void bbs_dump_mem(unsigned const char *restrict s, size_t len);
  * \param c Character of interest
  * \return Number of instances
  */
-int bbs_str_count(const char *restrict s, char c);
+int bbs_str_count(const char *restrict s, char c) __attribute__ ((pure));
 
 /*!
  * \brief Get the number of instances of a character in a region of memory
@@ -63,7 +63,7 @@ int bbs_str_count(const char *restrict s, char c);
  * \param c Character of interest
  * \return Number of instances
  */
-int bbs_strncount(const char *restrict s, size_t len, char c);
+int bbs_strncount(const char *restrict s, size_t len, char c) __attribute__ ((pure));
 
 /*!
  * \brief Terminate a string at the end of the first line (first CR or LF character)
@@ -95,7 +95,7 @@ void safe_strncpy(char *restrict dst, const char *restrict src, size_t size) __a
  * \param len Length of bug
  * \retval 0 on success, -1 on failure (truncation)
  */
-int bbs_strcpy_nospaces(const char *restrict s, char *restrict buf, size_t len);
+int bbs_strcpy_nospaces(const char *restrict s, char *restrict buf, size_t len) __attribute__((nonnull (1,2)));
 
 /*!
  * \brief Remove a substring from a string in place
@@ -103,7 +103,7 @@ int bbs_strcpy_nospaces(const char *restrict s, char *restrict buf, size_t len);
  * \param word Substring of which instances will be removed
  * \param wordlen Length of word
  */
-void bbs_str_remove_substring(char *restrict s, const char *word, size_t wordlen);
+void bbs_str_remove_substring(char *restrict s, const char *word, size_t wordlen) __attribute__((nonnull (1,2)));
 
 /*!
  * \brief Replace all instances of character in a string with another character
@@ -118,14 +118,14 @@ void bbs_strreplace(char *restrict s, char find, char repl);
  * \param s String to check
  * \retval 1 if yes, 0 if no
  */
-int bbs_str_isprint(const char *restrict s);
+int bbs_str_isprint(const char *restrict s) __attribute__ ((pure));
 
 /*!
  * \brief Whether a string contains some non-space printable character
  * \param s String to check
  * \retval 1 if yes, 0 if no
  */
-int bbs_str_anyprint(const char *restrict s);
+int bbs_str_anyprint(const char *restrict s) __attribute__ ((pure));
 
 /*! \brief Convert a string to all lowercase */
 void str_tolower(char *restrict s);

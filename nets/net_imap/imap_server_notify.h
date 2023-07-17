@@ -56,7 +56,7 @@
  * \retval -1 if update should be sent, mailboxb not currently selected
  * \retval 0 if update should not be sent
  */
-int imap_notify_applicable(struct imap_session *imap, struct mailbox *mbox, const char *folder, const char *maildir, enum mailbox_event_type e);
+int imap_notify_applicable(struct imap_session *imap, struct mailbox *mbox, const char *folder, const char *maildir, enum mailbox_event_type e) __attribute__((nonnull (1)));
 
 /*!
  * \brief Whether an IMAP update should be indicated to a client
@@ -70,7 +70,7 @@ int imap_notify_applicable(struct imap_session *imap, struct mailbox *mbox, cons
  * \retval -1 if update should be sent, mailboxb not currently selected
  * \retval 0 if update should not be sent
  */
-int imap_notify_applicable_fetchargs(struct imap_session *imap, struct mailbox *mbox, const char *folder, const char *maildir, enum mailbox_event_type e, const char **fetchargs);
+int imap_notify_applicable_fetchargs(struct imap_session *imap, struct mailbox *mbox, const char *folder, const char *maildir, enum mailbox_event_type e, const char **fetchargs) __attribute__((nonnull (1)));
 
 void imap_notify_cleanup(struct imap_session *imap);
 

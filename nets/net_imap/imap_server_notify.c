@@ -152,8 +152,6 @@ int imap_notify_applicable(struct imap_session *imap, struct mailbox *mbox, cons
 
 int imap_notify_applicable_fetchargs(struct imap_session *imap, struct mailbox *mbox, const char *folder, const char *maildir, enum mailbox_event_type e, const char **fetchargs)
 {
-	bbs_assert_exists(imap);
-
 	if (!imap->notify) {
 		/* Basically, is it the same mailbox that's selected? */
 		bbs_assert_exists(folder);

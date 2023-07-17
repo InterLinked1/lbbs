@@ -100,13 +100,15 @@ static void log_cb(struct mailbox_event *e)
 	localtime_r(&e->timestamp, &tm);
 	strftime(timebuf, sizeof(timebuf), "%FT%T%z", &tm); /* RFC 3339 timestamp */
 	fprintf(fp, "timestamp: %s\n", timebuf);
-	fprintf(fp, "service: %s\n", service_name(e->node));
-	if (e->messageaccess) {
-		/* Mandatory: admin, if authorization identity != authentication identity */
-		fprintf(fp, "clientIP: %s\n", e->node->ip);
-		fprintf(fp, "clientPort: %u\n", e->node->rport);
-		if (bbs_user_is_registered(e->node->user)) {
-			fprintf(fp, "user: %s\n", bbs_username(e->node->user));
+	if (e->node) { /* e->node can be NULL for the EXPUNGE event (scan_mailboxes in mod_mail) */
+		fprintf(fp, "service: %s\n", service_name(e->node));
+		if (e->messageaccess) {
+			/* Mandatory: admin, if authorization identity != authentication identity */
+			fprintf(fp, "clientIP: %s\n", e->node->ip);
+			fprintf(fp, "clientPort: %u\n", e->node->rport);
+			if (bbs_user_is_registered(e->node->user)) {
+				fprintf(fp, "user: %s\n", bbs_username(e->node->user));
+			}
 		}
 	}
 

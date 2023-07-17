@@ -297,7 +297,7 @@ static int on_delete(const char *dir_name, const char *filename, struct pop3_ses
 	maildir_parse_uid_from_filename(filename, &msguid);
 	/* We pass NULL for the seqno argument.
 	 * Because POP3 doesn't do an ordered traversal, number is not necessarily the sequence number.
-	 * Yes, we could do an ordered traversal using maildir_ordererd_traverse, but
+	 * Yes, we could do an ordered traversal using maildir_ordered_traverse, but
 	 * more importantly, since only IMAP needs the sequence number list,
 	 * and because POP3 exclusively locks the mailbox,
 	 * this means that there aren't any IMAP clients that can be connected to this mailbox,

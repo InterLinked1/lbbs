@@ -55,7 +55,7 @@ void dyn_str_reset(struct dyn_str *dynstr);
  * \retval -1 on failure
  * \return On success, actual length of the string currently in the dyn_str buffer (not the current allocation size)
  */
-int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len);
+int dyn_str_append(struct dyn_str *dynstr, const char *s, size_t len) __attribute__((nonnull (1, 2)));
 
 /*!
  * \brief Append to a dyn_str using a format string
@@ -541,7 +541,7 @@ FILE *bbs_mkftemp(char *template, mode_t mode);
  * \retval -1 on failure, number of bytes copied on success
  * \note srcfd and destfd are closed by this function, regardless of outcome
  */
-int bbs_copy_file(int srcfd, int destfd, int start, int bytes);
+int bbs_copy_file(int srcfd, int destfd, int start, int bytes); /* gcc has fd_arg attributes, but not widely supported yet */
 
 /*!
  * \brief Load the contents of a file into a string

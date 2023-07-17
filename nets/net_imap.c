@@ -968,7 +968,7 @@ next:
 
 static int imap_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), struct imap_traversal *traversal)
 {
-	return maildir_ordererd_traverse(path, on_file, traversal);
+	return maildir_ordered_traverse(path, on_file, traversal);
 }
 
 static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, const char *uidrange, char *seqrange)

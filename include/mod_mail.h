@@ -123,7 +123,7 @@ int mailbox_unregister_watcher(void (*callback)(struct mailbox_event *event));
  * \brief Broadcast a mailbox event
  * \param event Mailbox event
  */
-void mailbox_dispatch_event(struct mailbox_event *event);
+void mailbox_dispatch_event(struct mailbox_event *event) __attribute__((nonnull (1)));
 
 /*!
  * \brief Initialize basic properties of a mailbox event
@@ -133,7 +133,7 @@ void mailbox_dispatch_event(struct mailbox_event *event);
  * \param[in] maildir
  * \note This is purely a convenience function, useful for many events, but is not needed to create and dispatch an event
  */
-void mailbox_initialize_event(struct mailbox_event *e, enum mailbox_event_type type, struct bbs_node *node, struct mailbox *mbox, const char *maildir);
+void mailbox_initialize_event(struct mailbox_event *e, enum mailbox_event_type type, struct bbs_node *node, struct mailbox *mbox, const char *maildir) __attribute__((nonnull (1, 3)));
 
 /*!
  * \brief Convenience function to dispatch an event for simple events
@@ -142,7 +142,7 @@ void mailbox_initialize_event(struct mailbox_event *e, enum mailbox_event_type t
  * \param mbox
  * \param maildir
  */
-void mailbox_dispatch_event_basic(enum mailbox_event_type type, struct bbs_node *node, struct mailbox *mbox, const char *maildir);
+void mailbox_dispatch_event_basic(enum mailbox_event_type type, struct bbs_node *node, struct mailbox *mbox, const char *maildir) __attribute__((nonnull (2)));
 
 /*!
  * \brief Indicate a message has been delivered to a mailbox
@@ -153,14 +153,14 @@ void mailbox_dispatch_event_basic(enum mailbox_event_type type, struct bbs_node 
  * \param size Length of message in bytes
  * \note This will also set the activity flag for the mailbox.
  */
-void mailbox_notify_new_message(struct bbs_node *node, struct mailbox *mbox, const char *maildir, const char *newfile, size_t size);
+void mailbox_notify_new_message(struct bbs_node *node, struct mailbox *mbox, const char *maildir, const char *newfile, size_t size) __attribute__((nonnull (2, 3, 4)));
 
 /*!
  * \brief Indicate quota is exceeded for a mailbox
  * \param node
  * \param mbox
  */
-void mailbox_notify_quota_exceeded(struct bbs_node *node, struct mailbox *mbox);
+void mailbox_notify_quota_exceeded(struct bbs_node *node, struct mailbox *mbox) __attribute__((nonnull (1, 2)));
 
 /*! \brief Get the uidvalidity parameter of a mailbox event */
 unsigned int mailbox_event_uidvalidity(struct mailbox_event *e);
@@ -182,7 +182,7 @@ int mailbox_has_activity(struct mailbox *mbox);
  * \retval 1 if matches
  * \retval 0 if doesn't match
  */
-int smtp_domain_matches(const char *domain, const char *addr);
+int smtp_domain_matches(const char *domain, const char *addr) __attribute__((nonnull (1, 2)));
 
 /*! \brief Check whether a particular domain's mail is handled local to the BBS */
 int mail_domain_is_local(const char *domain);
@@ -215,7 +215,7 @@ struct mailbox *mailbox_get_by_userid(unsigned int userid);
  * \param domain Domain portion of address
  * \returns list of addresses, NULL if address does not resolve to a mailing list
  */
-const char *mailbox_expand_list(const char *user, const char *domain);
+const char *mailbox_expand_list(const char *user, const char *domain) __attribute__((nonnull (1)));
 
 /*!
  * \brief Attempt to obtain a read lock on mailbox
@@ -270,8 +270,9 @@ unsigned long mailbox_quota_remaining(struct mailbox *mbox);
 /*!
  * \brief Get the maildir of a mailbox
  * \param mbox Mailbox. If NULL, the top-level maildir path will be returned.
+ * \return Full path to home maildir of mailbox.
  */
-const char *mailbox_maildir(struct mailbox *mbox);
+const char *mailbox_maildir(struct mailbox *mbox) __attribute__((returns_nonnull));
 
 /*! \brief Get the string length of a mailbox's maildir */
 size_t mailbox_maildir_len(struct mailbox *mbox);
@@ -345,7 +346,7 @@ int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf);
  * \note This operation internally maintains the .uidvalidity of a maildir directory.
  * \todo This function should really be renamed maildir_get_next_uid, it's a maildir function, not a mailbox function. Currently, it's a misnomer.
  */
-unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, const char *directory, int allocate, unsigned int *newuidvalidity, unsigned int *newuidnext);
+unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, const char *directory, int allocate, unsigned int *newuidvalidity, unsigned int *newuidnext) __attribute__((nonnull (1, 2, 3, 5, 6)));
 
 /*!
  * \brief Indicate a sequence of expunges
@@ -353,14 +354,14 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, c
  * \param mbox
  * \param directory Full system path of the cur directory for this maildir
  * \param uids A list of message UIDs for expunged messages
- * \param seqnos A list of sequence numbers for expunged messages
+ * \param seqnos A list of sequence numbers for expunged messages. Must not be NULL unless called from POP3 (due to exclusivity invariant)
  * \param length Number of expunged messages in the list
  * \param silent For IMAP, 1 to inhibit untagged EXPUNGE responses, 0 otherwise
  * \retval The new HIGHESTMODSEQ for the mailbox
  * \note For performance reasons, calls to this function should be batched if possible (which is why it takes a list, rather than only a single UID)
  * \note This function MUST be called whenever messages are expunged from a directory, by IMAP, POP3, or SMTP
  */
-unsigned long maildir_indicate_expunged(enum mailbox_event_type type, struct bbs_node *node, struct mailbox *mbox, const char *directory, unsigned int *uids, unsigned int *seqnos, int length, int silent);
+unsigned long maildir_indicate_expunged(enum mailbox_event_type type, struct bbs_node *node, struct mailbox *mbox, const char *directory, unsigned int *uids, unsigned int *seqnos, int length, int silent) __attribute__((nonnull (3, 4, 5)));
 
 /*!
  * \brief Get the highest MODSEQ (modification sequence number) in a maildir
@@ -379,7 +380,7 @@ unsigned long maildir_max_modseq(struct mailbox *mbox, const char *directory);
  * \param uidrange Range of UIDs in request
  * \return NULL on failure or no results, list of UIDs otherwise
  */
-char *maildir_get_expunged_since_modseq(const char *directory, unsigned long lastmodseq, char *uidrangebuf, unsigned int minuid, const char *uidrange);
+char *maildir_get_expunged_since_modseq(const char *directory, unsigned long lastmodseq, char *uidrangebuf, unsigned int minuid, const char *uidrange) __attribute__((nonnull (1, 3)));
 
 /*!
  * \brief Get a modification sequence suitable for assigning to a new (e.g. APPEND, COPY, MOVE), new -> cur message
@@ -401,7 +402,7 @@ unsigned long maildir_new_modseq(struct mailbox *mbox, const char *directory);
  * \param[out] uidnext The current maximum UID in this directory (this is somewhat of a misnomer, you need to add 1 to compute the actual UIDNEXT)
  * \retval -1 on failure, number of bytes in file on success (useful for POP3)
  */
-int maildir_move_new_to_cur(struct mailbox *mbox, struct bbs_node *node, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext);
+int maildir_move_new_to_cur(struct mailbox *mbox, struct bbs_node *node, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext) __attribute__((nonnull (1, 2, 3, 4, 5, 6)));
 
 /*!
  * \brief Move a message from the new directory to the cur directory, atomically
@@ -417,7 +418,7 @@ int maildir_move_new_to_cur(struct mailbox *mbox, struct bbs_node *node, const c
  * \param len Length of newpath
  * \retval -1 on failure, number of bytes in file on success (useful for POP3)
  */
-int maildir_move_new_to_cur_file(struct mailbox *mbox, struct bbs_node *node, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext, char *newpath, size_t len);
+int maildir_move_new_to_cur_file(struct mailbox *mbox, struct bbs_node *node, const char *dir, const char *curdir, const char *newdir, const char *filename, unsigned int *uidvalidity, unsigned int *uidnext, char *newpath, size_t len) __attribute__((nonnull (1, 2, 3, 4, 5)));
 
 /*!
  * \brief Move a message from one maildir to another maildir (including a subdirectory of the same account), adjusting the UID as needed
@@ -430,7 +431,7 @@ int maildir_move_new_to_cur_file(struct mailbox *mbox, struct bbs_node *node, co
  * \param[out] uidnext The new max UID of the destination maildir
  * \retval 0 on failure, UID of new message file on success
  */
-int maildir_move_msg(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext);
+int maildir_move_msg(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext) __attribute__((nonnull (1, 2, 3, 4, 5)));
 
 /*!
  * \brief Move a message from one maildir to another maildir (including a subdirectory of the same account), adjusting the UID as needed
@@ -445,13 +446,13 @@ int maildir_move_msg(struct mailbox *mbox, struct bbs_node *node, const char *cu
  * \param len Size of newfile
  * \retval 0 on failure, UID of new message file on success
  */
-int maildir_move_msg_filename(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len);
+int maildir_move_msg_filename(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len) __attribute__((nonnull (1, 2, 3, 4)));
 
 /*! \brief Same as maildir_move_msg, but deep copy the message instead of moving it. The original file is left intact. */
-int maildir_copy_msg(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext);
+int maildir_copy_msg(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext) __attribute__((nonnull (1, 2, 3, 4, 5, 6, 7)));
 
 /*! \brief Same as maildir_copy_msg, but also store the new filename of the message, like maildir_move_msg_filename */
-int maildir_copy_msg_filename(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len);
+int maildir_copy_msg_filename(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext, char *newfile, size_t len) __attribute__((nonnull (1, 2, 3, 4, 5, 6, 7)));
 
 /*!
  * \brief Get the UID of a maildir file in cur directory
@@ -459,7 +460,7 @@ int maildir_copy_msg_filename(struct mailbox *mbox, struct bbs_node *node, const
  * \param[out] uid
  * \retval 0 on success, -1 on failure
  */
-int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid);
+int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid) __attribute__((nonnull (1, 2)));
 
 /*!
  * \brief Sort callback for scandir (for maildirs)
@@ -470,7 +471,7 @@ int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid);
 int uidsort(const struct dirent **da, const struct dirent **db);
 
 /*! \brief Perform an ordered traversal of a maildir cur directory */
-int maildir_ordererd_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), void *obj);
+int maildir_ordered_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), void *obj);
 
 /* IMAP client */
 #define IMAP_CLIENT_EXPECT(client, s) if (bbs_tcp_client_expect(client, "\r\n", 1, 2000, s)) { bbs_debug(3, "Didn't receive expected '%s'\n", s); goto cleanup; }

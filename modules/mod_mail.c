@@ -2075,7 +2075,7 @@ int uidsort(const struct dirent **da, const struct dirent **db)
 	return auid < buid ? -1 : 1;
 }
 
-int maildir_ordererd_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), void *obj)
+int maildir_ordered_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), void *obj)
 {
 	struct dirent *entry, **entries;
 	int files, fno = 0;
@@ -2176,7 +2176,7 @@ static void scan_mailboxes(void)
 		mbox = mailbox_find_or_create(mboxnum, mboxnum ? NULL : entry->d_name);
 		memset(&traversal, 0, sizeof(traversal));
 		traversal.mbox = mbox;
-		maildir_ordererd_traverse(trashdir, on_mailbox_trash, &traversal); /* Traverse files in the Trash folder */
+		maildir_ordered_traverse(trashdir, on_mailbox_trash, &traversal); /* Traverse files in the Trash folder */
 		if (traversal.lengths) {
 			maildir_indicate_expunged(EVENT_MESSAGE_EXPIRE, NULL, mbox, entry->d_name, traversal.a, traversal.sa, traversal.lengths, 0);
 			free_if(traversal.a);
