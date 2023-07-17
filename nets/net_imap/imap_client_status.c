@@ -78,10 +78,19 @@ static size_t status_size_cache_key_name(struct imap_client *client, const char 
 	return (size_t) keylen;
 }
 
-static int status_size_cache_fetch(struct imap_client *client, const char *remotename, const char *remote_status_resp, size_t *mb_size)
+static void status_size_cache_update(struct imap_client *client, const char *remotename, const char *remote_status_resp)
 {
-	char buf[256];
-	size_t curlen;
+	char key[256];
+	size_t keylen;
+
+	keylen = status_size_cache_key_name(client, remotename, key, sizeof(key));
+	if (keylen) {
+		bbs_kvs_put(key, keylen, remote_status_resp, strlen(remote_status_resp));
+	}
+}
+
+static int status_size_cache_fetch(struct imap_client *client, const char *remotename, size_t *mb_size, char *buf, size_t len)
+{
 	char key[256];
 	size_t keylen;
 	char *tmp;
@@ -90,25 +99,16 @@ static int status_size_cache_fetch(struct imap_client *client, const char *remot
 	if (!keylen) {
 		return -1;
 	}
-	if (bbs_kvs_get(key, keylen, buf, sizeof(buf), NULL)) {
+	if (bbs_kvs_get(key, keylen, buf, len, NULL)) {
 		bbs_debug(9, "Cache file does not exist\n");
 		return -1; /* Not an error, just the cache file didn't exist (probably the first time) */
 	}
 
-	curlen = strlen(remote_status_resp);
-
-	/* We subtract 2 as the last characters won't match.
-	 * In the raw response from the server, we'll have a ) at the end for end of response,
-	 * but in the cached version, we appended the SIZE so there'll be a space there e.g. " SIZE XXX" */
-	if (strncmp(remote_status_resp, buf, curlen - 2)) {
-		bbs_debug(6, "Cached size is outdated ('%.*s' !~= '%.*s')\n", (int) (curlen - 2), remote_status_resp, (int) (curlen - 2), buf);
-		return -1;
-	}
-
 	/* Reuse the SIZE from last time */
-	tmp = strstr(buf + curlen - 2, "SIZE ");
+	tmp = strstr(buf, "SIZE ");
 	if (!tmp) {
 		bbs_warning("Cache file missing size?\n");
+		return -1;
 	}
 	tmp += STRLEN("SIZE ");
 	if (strlen_zero(tmp)) {
@@ -119,15 +119,282 @@ static int status_size_cache_fetch(struct imap_client *client, const char *remot
 	return 0;
 }
 
-static void status_size_cache_update(struct imap_client *client, const char *remotename, const char *remote_status_resp)
+static int status_size_fetch_all(struct imap_client *client, const char *tag, size_t *mb_size)
 {
-	char key[256];
-	size_t keylen;
+	int res;
+	size_t taglen;
+	struct bbs_tcp_client *tcpclient = &client->client;
+	char *buf = tcpclient->rldata.buf;
 
-	keylen = status_size_cache_key_name(client, remotename, key, sizeof(key));
-	if (keylen) {
-		bbs_kvs_put(key, keylen, remote_status_resp, strlen(remote_status_resp));
+	/* imap->tag gets reused multiple times for different commands here...
+	 * something we SHOULD not do but servers are supposed to (MUST) tolerate. */
+	taglen = strlen(tag);
+	bbs_write(tcpclient->wfd, tag, taglen);
+	SWRITE(tcpclient->wfd, " FETCH 1:* (RFC822.SIZE)\r\n");
+	imap_debug(3, "=> %s FETCH 1:* (RFC822.SIZE)\n", tag);
+	for (;;) {
+		const char *sizestr;
+		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 10000);
+		if (res <= 0) {
+			bbs_warning("IMAP timeout from FETCH 1:* (RFC822.SIZE) - remote server issue?\n");
+			return -1;
+		}
+		if (!strncmp(buf, tag, taglen)) {
+			bbs_debug(3, "End of FETCH response: %s\n", buf);
+			break;
+		}
+		/* Should get a response like this: * 48 FETCH (RFC822.SIZE 548) */
+		sizestr = strstr(buf, "RFC822.SIZE ");
+		if (!sizestr) {
+			bbs_warning("Unexpected response line: %s\n", buf);
+			continue;
+		}
+		sizestr = sizestr + STRLEN("RFC822.SIZE ");
+		if (strlen_zero(sizestr)) {
+			bbs_warning("Server sent empty size: %s\n", buf);
+			continue;
+		}
+		mb_size += (size_t) atoi(sizestr);
 	}
+
+	return 0;
+}
+
+#define parse_status_item(full, keyword, result) __parse_status_item(full, keyword, STRLEN(keyword), result)
+
+static int __parse_status_item(const char *full, const char *keyword, size_t keywordlen, int *result)
+{
+	const char *tmp = strstr(full, keyword);
+	if (!tmp) {
+		return -1;
+	}
+	tmp += keywordlen;
+	if (*tmp++ != ' ') {
+		return -1;
+	}
+	if (strlen_zero(tmp)) {
+		return -1;
+	}
+	*result = atoi(tmp);
+	return 0;
+}
+
+static int status_size_fetch_incremental(struct imap_client *client, const char *tag, size_t *mb_size, const char *old, const char *new)
+{
+	char cmd[64];
+	size_t cmdlen;
+	int res;
+	size_t taglen;
+	struct bbs_tcp_client *tcpclient = &client->client;
+	char *buf = tcpclient->rldata.buf;
+	int oldv, newv;
+	int oldmessages, newmessages, oldnext, newnext;
+	int netincrease, added, expunged;
+	int received;
+
+	/* Compare MESSAGES and UIDNEXT from the old and new responses */
+	if (parse_status_item(old, "UIDVALIDITY", &oldv) || parse_status_item(new, "UIDVALIDITY", &newv)) {
+		bbs_warning("UIDVALIDITY parsing error\n");
+		return -1;
+	}
+	if (oldv != newv) {
+		bbs_verb(4, "Remote UIDVALIDITY changed from %d to %d\n", oldv, newv);
+		return -1;
+	}
+	if (parse_status_item(old, "MESSAGES", &oldmessages) || parse_status_item(new, "MESSAGES", &newmessages)) {
+		bbs_warning("MESSAGES parsing error\n");
+		return -1;
+	}
+	if (parse_status_item(old, "UIDNEXT", &oldnext) || parse_status_item(new, "UIDNEXT", &newnext)) {
+		bbs_warning("UIDNEXT parsing error\n");
+		return -1;
+	}
+
+	/* If UIDNEXT increased more, some messages were expunged.
+	 * If MESSAGES increased more... well, technically this should not be possible
+	 * (it would imply messages were added without increasing UIDNEXT), but in this IMAP server,
+	 * we do a read only traversal to compute STATUS and the \Recent messages aren't yet assigned a UID...
+	 * a compliant IMAP server might not have this issue, though).
+	 *
+	 * If UIDNEXT stayed the same, but MESSAGES decreased, then messages were expunged.
+	 *
+	 * Examples:
+	 * Added = new UIDNEXT - old UIDNEXT (assuming this increments by 1, which is a reasonable assumption, though not guaranteed by the RFC)
+	 * Net Increase = new MESSAGES - old MESSAGES
+	 * Expunged = calculate indirectly:
+	 * -Expunged + Added = (new MESSAGES - old MESSAGES)
+	 * => -Expunged = Net Increase - added
+	 * => Expunged = Added - Net Increase
+	 *
+	 *     --- OLD ---      --- NEW ---   - Net +/-  - Added - Expunged - Useful? (can we do an incremental fetch?)
+	 * MESSAGES UIDNEXT MESSAGES UIDNEXT
+	 *    25      75      20      75          -5         0        5       No
+	 *    25      75      20      80          -5         5       10       No
+	 *    25      75      25      80           0         5        5       No
+	 *    25      75      26      80           1         5        4       No
+	 *    25      75      30      80           5         5        0       Yes (do an incremental FETCH)
+	 *    25      75      25      75           0         0        0       Yes (but this is a simpler case, just reuse)
+	 *
+	 *
+	 * In all cases, when the Expunged count is 0, that's when we can use this shortcut.
+	 */
+	netincrease = newmessages - oldmessages;
+	added = newnext - oldnext;
+	expunged = added - netincrease;
+
+	if (expunged > 0) {
+		bbs_debug(7, "Messages have been expunged (MESSAGES %d -> %d, UIDNEXT %d -> %d)\n", oldmessages, newmessages, oldnext, newnext);
+		return -1;
+	} else if (expunged < 0) {
+		bbs_warning("%d messages expunged? (MESSAGES %d -> %d, UIDNEXT %d -> %d)\n", expunged, oldmessages, newmessages, oldnext, newnext);
+		return -1;
+	}
+
+	/* We can do an incremental fetch! */
+	bbs_debug(7, "No messages expunged since last time, %d added (MESSAGES %d -> %d, UIDNEXT %d -> %d)\n", added, oldmessages, newmessages, oldnext, newnext);
+
+	/* imap->tag gets reused multiple times for different commands here...
+	 * something we SHOULD not do but servers are supposed to (MUST) tolerate. */
+	taglen = strlen(tag);
+
+	cmdlen = (size_t) snprintf(cmd, sizeof(cmd), "%s UID FETCH %d:* (RFC822.SIZE)\r\n", tag, oldnext);
+	bbs_write(tcpclient->wfd, cmd, cmdlen);
+	imap_debug(3, "=> %s", cmd);
+
+	for (received = 0;;) {
+		const char *sizestr;
+		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 5000);
+		if (res <= 0) {
+			bbs_warning("IMAP timeout from UID FETCH (RFC822.SIZE) - remote server issue?\n");
+			return -1;
+		}
+		if (!strncmp(buf, tag, taglen)) {
+			bbs_debug(3, "End of FETCH response: %s\n", buf);
+			break;
+		}
+		/* Should get a response like this: * 48 FETCH (RFC822.SIZE 548) */
+		sizestr = strstr(buf, "RFC822.SIZE ");
+		if (!sizestr) {
+			bbs_warning("Unexpected response line: %s\n", buf);
+			continue;
+		}
+		sizestr = sizestr + STRLEN("RFC822.SIZE ");
+		if (strlen_zero(sizestr)) {
+			bbs_warning("Server sent empty size: %s\n", buf);
+			continue;
+		}
+		mb_size += (size_t) atoi(sizestr);
+		received++;
+	}
+
+	if (received != added) {
+		bbs_warning("Expected to get %d message sizes, but got %d?\n", added, received);
+		return -1;
+	}
+
+	return 0;
+}
+
+static int append_size_item(struct imap_client *client, const char *remotename, const char *remote_status_resp, const char *tag)
+{
+	size_t curlen;
+	char buf[256];
+	size_t mb_size = 0;
+	int cached = 0;
+	char *tmp;
+
+	/* Check the cache to see if we've already done a FETCH 1:* before and if the mailbox has changed since.
+	 * If not, the SIZE will be the same as last time, and we can just return that.
+	 * This is an EXTREMELY IMPORTANT optimization, because this operation can take a VERY long time on large mailboxes.
+	 * It can easily take a couple to several seconds - a rule of thumb might be 1 second per 10,000 messages.
+	 * It's a lot of data being received, a lot of calculations, and probably even more work for the poor IMAP server to compute.
+	 * Multiply this by a lot of mailboxes, and this can literally save time on the order of a minute.
+	 * (And given webmail clients are probably the most interested in SIZE, since they have no persistent state between sessions,
+	 *  speed matters the most there and nobody wants to wait a minute for a webmail client to load.)
+	 */
+
+	/* Get the STATUS response and size from last time */
+	if (status_size_cache_fetch(client, remotename, &mb_size, buf, sizeof(buf))) {
+		return -1;
+	}
+
+	curlen = strlen(remote_status_resp);
+
+	/* We subtract 2 as the last characters won't match.
+	 * In the raw response from the server, we'll have a ) at the end for end of response,
+	 * but in the cached version, we appended the SIZE so there'll be a space there e.g. " SIZE XXX" */
+	if (!strncmp(remote_status_resp, buf, curlen - 2)) {
+		/* The STATUS response is completely the same as last time, so we can just reuse the SIZE directly. */
+		cached = 1;
+	} else if (strstr(remote_status_resp, "MESSAGES 0")) {
+		/* If there are no messages, SIZE must be 0 */
+	} else {
+		/* EXAMINE it so it's read only */
+		/* XXX This will reuse imap->tag for the tag here... which isn't ideal but should be accepted.
+		 * Since we're not pipelining our commands, it doesn't really matter anyways. */
+		int res = imap_client_send_wait_response_noecho(client, -1, 5000, "%s \"%s\"\r\n", "EXAMINE", remotename);
+		if (res) {
+			return res;
+		}
+
+		/* Okay, so the mailbox has changed since last time... but don't just go right to FETCH 1:* just yet.
+		 * Check if we can calculate the size incrementally. This should be possible when, compared with the cached response:
+		 * - new messages have been added to the mailbox
+		 * - no messages have been expunged from the mailbox
+		 *
+		 * If this is the case, we can simply fetch all messages by UID starting with the *old* UIDNEXT.
+		 * e.g. (simplified example:)
+		 *
+		 * OLD: * STATUS "INBOX" (MESSAGES 2000 UIDNEXT 2085 SIZE 974605)
+		 * NEW: * STATUS "INBOX" (MESSAGES 2003 UIDNEXT 2088 ?????????)
+		 *
+		 * In the above case, we can just do UID FETCH 2085:* instead of doing FETCH 1:*,
+		 * which means we only need to fetch 3 messages, not 2003.
+		 *
+		 * This case occurs when MESSAGES and UIDNEXT have increased by the same amount.
+		 *
+		 * If any messages were expunged, we CANNOT optimize, because we don't know which messages were removed.
+		 * However, if the mailbox change was purely additive, we can then simply add the difference to the old size.
+		 *
+		 * In the grand scheme of things, this optimization is probably even more important than the one above,
+		 * which can only be used when the mailbox has not changed at all. It's much more likely that messages
+		 * have been added (though probably not as likely as some messages having also or only been expunged).
+		 *
+		 * This is an optimization on multiple fronts, for example, FETCH 1:* on a message of ~75,000 messages:
+		 * - takes about 10 seconds
+		 * - involves sending 2.5 MB of FETCH responses
+		 * - involves 75,000 calculations (at the macro level)
+		 *... regardless of how many messages were actually added (even just 1!).
+		 *
+		 * This optimization doesn't help with all cases, or even most of them, but it should help some,
+		 * particularly for non-INBOX "filing"/"archive" mailboxes which generally only increase in size over time.
+		 */
+
+		/* Can we calculate the size incrementally? */
+		if (status_size_fetch_incremental(client, tag, &mb_size, buf, remote_status_resp)) { /* Add to what we already had */
+			/* If not, resort to FETCH 1:* fallback as last resort */
+			mb_size = 0;
+			if (status_size_fetch_all(client, tag, &mb_size)) {
+				return -1;
+			}
+		}
+	}
+
+	/* Modify the originally returned response to include the SIZE attribute */
+	/* Find LAST instance, since we can't assume there's only one pair of parentheses, the mailbox name could contain parentheses */
+	tmp = strrchr(remote_status_resp, ')');
+	if (!tmp) {
+		return -1;
+	}
+	*tmp = '\0';
+	snprintf(tmp, sizeof(remote_status_resp) - (size_t) (tmp - remote_status_resp), " SIZE %lu)", mb_size);
+
+	if (!cached) {
+		/* Cache all of this for next time, so we don't have to issue a FETCH 1:* (which can be VERY slow)
+		 * unless the mailbox has been modified in some way. */
+		status_size_cache_update(client, remotename, remote_status_resp);
+	}
+	return 0;
 }
 
 static int cache_remote_list_status(struct imap_client *client, const char *rtag, size_t taglen)
@@ -203,7 +470,7 @@ int remote_status(struct imap_client *client, const char *remotename, const char
 	char rtag[64];
 	size_t taglen;
 	int len, res;
-	char *tmp, *buf;
+	char *buf;
 	char cmd[1024];
 	struct bbs_tcp_client *tcpclient = &client->client;
 	const char *tag = client->imap->tag;
@@ -291,74 +558,9 @@ int remote_status(struct imap_client *client, const char *remotename, const char
 	 */
 
 	if (size && !strstr(remote_status_resp, "SIZE ")) { /* If we want SIZE and the server didn't send it, calculate it. */
-		size_t mb_size = 0;
-		int cached = 0;
-		/* Check the cache to see if we've already done a FETCH 1:* before and if the mailbox has changed since.
-		 * If not, the SIZE will be the same as last time, and we can just return that.
-		 * This is an EXTREMELY IMPORTANT optimization, because this operation can take a VERY long time on large mailboxes.
-		 * It can easily take a couple to several seconds - a rule of thumb might be 1 second per 10,000 messages.
-		 * It's a lot of data being received, a lot of calculations, and probably even more work for the poor IMAP server to compute.
-		 * Multiply this by a lot of mailboxes, and this can literally save time on the order of a minute.
-		 * (And given webmail clients are probably the most interested in SIZE, since they have no persistent state between sessions,
-		 *  speed matters the most there and nobody wants to wait a minute for a webmail client to load.)
-		 */
-		if (!status_size_cache_fetch(client, remotename, remote_status_resp, &mb_size)) {
-			cached = 1;
-			bbs_debug(5, "Reusing previously cached SIZE: %lu\n", mb_size);
-		} else if (!strstr(remote_status_resp, "MESSAGES 0")) { /* If we know the folder is empty, we know SIZE is 0 without asking */
-			/* EXAMINE it so it's read only */
-			/* XXX This will reuse imap->tag for the tag here... which isn't ideal but should be accepted.
-			 * Since we're not pipelining our commands, it doesn't really matter anyways. */
-			res = imap_client_send_wait_response_noecho(client, -1, 5000, "%s \"%s\"\r\n", "EXAMINE", remotename);
-			if (res) {
-				return res;
-			}
-
-			/* imap->tag gets reused multiple times for different commands here...
-			 * something we SHOULD not do but servers are supposed to (MUST) tolerate. */
-			taglen = strlen(tag);
-			bbs_write(tcpclient->wfd, tag, taglen);
-			SWRITE(tcpclient->wfd, " FETCH 1:* (RFC822.SIZE)\r\n");
-			imap_debug(3, "=> %s FETCH 1:* (RFC822.SIZE)\n", tag);
-			for (;;) {
-				const char *sizestr;
-				res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 10000);
-				if (res <= 0) {
-					bbs_warning("IMAP timeout from FETCH 1:* (RFC822.SIZE) - remote server issue?\n");
-					return -1;
-				}
-				if (!strncmp(buf, tag, taglen)) {
-					bbs_debug(3, "End of FETCH response: %s\n", buf);
-					break;
-				}
-				/* Should get a response like this: * 48 FETCH (RFC822.SIZE 548) */
-				sizestr = strstr(buf, "RFC822.SIZE ");
-				if (!sizestr) {
-					bbs_warning("Unexpected response line: %s\n", buf);
-					continue;
-				}
-				sizestr = sizestr + STRLEN("RFC822.SIZE ");
-				if (strlen_zero(sizestr)) {
-					bbs_warning("Server sent empty size: %s\n", buf);
-					continue;
-				}
-				mb_size += (size_t) atoi(sizestr);
-			}
-		} /* else, if no messages, assume size is 0 */
-
-		/* Modify the originally returned response to include the SIZE attribute */
-		/* Find LAST instance, since we can't assume there's only one pair of parentheses, the mailbox name could contain parentheses */
-		tmp = strrchr(remote_status_resp, ')');
-		if (!tmp) {
-			return -1;
-		}
-		*tmp = '\0';
-		snprintf(tmp, sizeof(remote_status_resp) - (size_t) (tmp - remote_status_resp), " SIZE %lu)", mb_size);
-
-		if (!cached) {
-			/* Cache all of this for next time, so we don't have to issue a FETCH 1:* (which can be VERY slow)
-			 * unless the mailbox has been modified in some way. */
-			status_size_cache_update(client, remotename, remote_status_resp);
+		res = append_size_item(client, remotename, remote_status_resp, tag);
+		if (res) {
+			return res;
 		}
 	}
 
