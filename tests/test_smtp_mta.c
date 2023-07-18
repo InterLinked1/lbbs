@@ -107,8 +107,8 @@ static int run(void)
 	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL_NONEXISTENT ">\r\n");
 	CLIENT_EXPECT(clientfd, "550"); /* No such user */
 
-	/* Try a local recipient (that exists) this time */
-	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL ">\r\n");
+	/* Try a local recipient (that exists) this time, using only the username portion (with domain is tested in subsequent tests) */
+	SWRITE(clientfd, "RCPT TO:<" TEST_USER ">\r\n");
 	CLIENT_EXPECT(clientfd, "250");
 
 	/* Send the body */
@@ -133,6 +133,26 @@ static int run(void)
 
 	/* Verify that the email message actually exists on disk. */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 2);
+
+	/* Test email subaddressing, i.e. anything at or after the + symbol in the user portion is ignored */
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL "> SIZE=100000\r\n"); /* Not the real size but it doesn't matter */
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "RCPT TO:<" TEST_USER "+alias1>\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	if (send_body(clientfd)) {
+		goto cleanup;
+	}
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3);
+
+	/* Repeat, with a host portion */
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL "> SIZE=100000\r\n"); /* Not the real size but it doesn't matter */
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "RCPT TO:<" TEST_USER "+alias2@" TEST_HOSTNAME ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	if (send_body(clientfd)) {
+		goto cleanup;
+	}
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 4);
 
 	/* Ensure mail loops are prevented */
 	SWRITE(clientfd, "RSET" ENDL);

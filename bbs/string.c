@@ -249,6 +249,19 @@ void safe_strncpy(char *restrict dst, const char *restrict src, size_t size)
 	*dst = '\0';
 }
 
+void bbs_strncpy_until(char *restrict dst, const char *restrict src, size_t size, char term)
+{
+	/* Copy the username, not including spaces */
+	while (*src && *src != term && size) {
+		*dst++ = *src++;
+		size--;
+	}
+	if (unlikely(!size)) {
+		dst--;
+	}
+	*dst = '\0';
+}
+
 int bbs_strcpy_nospaces(const char *restrict s, char *restrict buf, size_t len)
 {
 	/* Copy the username, not including spaces */

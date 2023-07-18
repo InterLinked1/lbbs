@@ -1751,8 +1751,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 		return_dead_letter(realfrom, realto, fullname, size, metalen, buf);
 	} else {
 		char tmpbuf[256];
-		safe_strncpy(tmpbuf, fullname, sizeof(tmpbuf));
-		bbs_strterm(tmpbuf, '.');
+		bbs_strncpy_until(tmpbuf, fullname, sizeof(tmpbuf), '.');
 		/* Store retry information in the filename itself, so we don't have to modify the file, we can just rename it. Inspired by IMAP. */
 		snprintf(newname, sizeof(newname), "%s.%d", tmpbuf, newretries);
 		if (rename(fullname, newname)) {
@@ -2132,8 +2131,7 @@ static int injectmail(MAILER_PARAMS)
 	/* This is just for the MAIL FROM, so just the address, no name */
 	tmpaddr = strchr(from, '<');
 	if (tmpaddr) {
-		safe_strncpy(sender, tmpaddr + 1, sizeof(sender));
-		bbs_strterm(sender, '>');
+		bbs_strncpy_until(sender, tmpaddr + 1, sizeof(sender), '>');
 	} else {
 		safe_strncpy(sender, from, sizeof(sender));
 	}

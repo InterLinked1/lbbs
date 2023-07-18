@@ -48,9 +48,9 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 
 #define LBBS_BINARY "/usr/sbin/lbbs"
 #define TEST_ROOT_DIR "/tmp/test_lbbs"
-#define TEST_CONFIG_DIR DIRCAT(TEST_ROOT_DIR, "/etc")
-#define TEST_MAIL_DIR DIRCAT(TEST_ROOT_DIR, "/maildir")
-#define TEST_NEWS_DIR DIRCAT(TEST_ROOT_DIR, "/newsdir")
+#define TEST_CONFIG_DIR DIRCAT(TEST_ROOT_DIR, "etc")
+#define TEST_MAIL_DIR DIRCAT(TEST_ROOT_DIR, "maildir")
+#define TEST_NEWS_DIR DIRCAT(TEST_ROOT_DIR, "newsdir")
 
 /* Yuck, but why reinvent the wheel */
 #define TEST_ADD_CONFIG(filename) system("cp " filename " " TEST_CONFIG_DIR)

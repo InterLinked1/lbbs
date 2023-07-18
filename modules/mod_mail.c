@@ -766,9 +766,16 @@ static struct mailbox *mailbox_get(unsigned int userid, const char *user, const 
 
 	/* If we have a user ID, use that directly. */
 	if (!userid && (!domain || smtp_domain_matches(bbs_hostname(), domain))) { /* Only for primary domain */
+		char userpart[64];
 		if (strlen_zero(user)) {
 			bbs_error("Must specify at least either a user ID or name\n");
 			return NULL;
+		}
+		if (strchr(user, '+')) {
+			/* Email subaddressing, using the plus symbol. Ignore the subaddress portion for the lookup.
+			 * Many mail servers support this convention to allow for users to use implicit aliases. */
+			bbs_strncpy_until(userpart, user, sizeof(userpart), '+');
+			user = userpart;
 		}
 		/* Check for mailbox with this name, explicitly (e.g. shared mailboxes) */
 		snprintf(mboxpath, sizeof(mboxpath), "%s/%s", mailbox_maildir(NULL), user);

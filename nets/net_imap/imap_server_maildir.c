@@ -90,8 +90,7 @@ static int __imap_translate_dir(struct imap_session *imap, const char *directory
 			if (strlen_zero(remainder)) {
 				return -1;
 			}
-			safe_strncpy(name, remainder, sizeof(name));
-			bbs_strterm(name, '.');
+			bbs_strncpy_until(name, remainder, sizeof(name), '.');
 			mbox = mailbox_get_by_username(name);
 			if (!mbox) {
 				return -1;
@@ -115,8 +114,7 @@ static int __imap_translate_dir(struct imap_session *imap, const char *directory
 			if (strlen_zero(remainder)) {
 				return -1;
 			}
-			safe_strncpy(username, remainder, sizeof(username));
-			bbs_strterm(username, HIERARCHY_DELIMITER_CHAR);
+			bbs_strncpy_until(username, remainder, sizeof(username), HIERARCHY_DELIMITER_CHAR);
 			if (stringlist_contains(&imap->remotemailboxes, username)) {
 				/* If we know there's a virtual/remote mailbox mapping, skip a DB call that will likely return nothing anyways.
 				 * This has the benefit that if a user explicitly defines a mapping in .imapremote,

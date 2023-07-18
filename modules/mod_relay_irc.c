@@ -716,13 +716,11 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		char nick[64];
 		const char *meaction;
 		const char *ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
-		safe_strncpy(nick, msg, sizeof(nick));
-		bbs_strterm(nick, ' ');
+		bbs_strncpy_until(nick, msg, sizeof(nick), ' ');
 		meaction = strstr(msg, "[ACTION] ");
 		if (meaction) {
 			meaction += STRLEN("[ACTION] ");
-			safe_strncpy(actionmsg, meaction, sizeof(actionmsg));
-			bbs_strterm(actionmsg, '\n'); /* XXX Seems to be a LF in the message, get rid of it */
+			bbs_strncpy_until(actionmsg, meaction, sizeof(actionmsg), '\n'); /* XXX Seems to be a LF in the message, get rid of it */
 			snprintf(sysmsg, sizeof(sysmsg), "PRIVMSG %s :%cACTION %s%c", ourchan, 0x01, actionmsg, 0x01);
 			bbs_dump_string(sysmsg);
 			bbs_debug(3, "Intercepting CTCP action by %s/%s (%s -> %s) - '%s'\n", clientname, nick, channel, ourchan, actionmsg);

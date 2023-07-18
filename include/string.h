@@ -92,7 +92,17 @@ void safe_strncpy(char *restrict dst, const char *restrict src, size_t size) __a
  * \brief Copy s into buf, except for any whitespace characters
  * \param s Original string
  * \param[out] buf
- * \param len Length of bug
+ * \param len Length of buf
+ * \param term Terminating character (this character and any subsequent ones will not be copied)
+ * \note This is a more optimized way to do the same thing as safe_strncpy followed immediately by bbs_strterm
+ */
+void bbs_strncpy_until(char *restrict dst, const char *restrict src, size_t size, char term) __attribute__((nonnull (1,2)));
+
+/*!
+ * \brief Copy s into buf, except for any whitespace characters
+ * \param s Original string
+ * \param[out] buf
+ * \param len Length of buf
  * \retval 0 on success, -1 on failure (truncation)
  */
 int bbs_strcpy_nospaces(const char *restrict s, char *restrict buf, size_t len) __attribute__((nonnull (1,2)));
