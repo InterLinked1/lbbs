@@ -90,6 +90,50 @@ cleanup:
 	return -1;
 }
 
+static int send_message2(int client1, size_t extrabytes)
+{
+	char subject[32];
+
+	if (!send_count++) {
+		CLIENT_EXPECT(client1, "220");
+		SWRITE(client1, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+		CLIENT_EXPECT_EVENTUALLY(client1, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
+	} else {
+		SWRITE(client1, "RSET" ENDL);
+		CLIENT_EXPECT(client1, "250");
+	}
+
+	SWRITE(client1, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
+	CLIENT_EXPECT(client1, "250");
+	SWRITE(client1, "RCPT TO:<" TEST_EMAIL2 ">\r\n");
+	CLIENT_EXPECT(client1, "250");
+	SWRITE(client1, "DATA\r\n");
+	CLIENT_EXPECT(client1, "354");
+
+	snprintf(subject, sizeof(subject), "Subject: Message %d" ENDL, send_count);
+
+	SWRITE(client1, "Date: Sun, 1 Jan 2023 05:33:29 -0700" ENDL);
+	SWRITE(client1, "From: " TEST_EMAIL_EXTERNAL ENDL);
+	write(client1, subject, strlen(subject));
+	SWRITE(client1, "To: " TEST_EMAIL2 ENDL);
+	SWRITE(client1, "Content-Type: text/plain" ENDL);
+	SWRITE(client1, ENDL);
+	SWRITE(client1, "This is a test email message." ENDL);
+	SWRITE(client1, "....Let's hope it gets delivered properly." ENDL); /* Test byte stuffing */
+	if (extrabytes) {
+		extrabytes = MIN(sizeof(subject), extrabytes);
+		memset(subject, 'a', extrabytes);
+		write(client1, subject, extrabytes);
+		SWRITE(client1, ENDL);
+	}
+	SWRITE(client1, "." ENDL); /* EOM */
+	CLIENT_EXPECT(client1, "250");
+	return 0;
+
+cleanup:
+	return -1;
+}
+
 static int make_messages(int nummsg)
 {
 	int clientfd;
@@ -103,6 +147,22 @@ static int make_messages(int nummsg)
 	while (send_count < nummsg) {
 		send_message(clientfd, 0);
 	}
+	close(clientfd); /* Close SMTP connection */
+
+	return 0;
+}
+
+static int make_messages2(void)
+{
+	int clientfd;
+
+	clientfd = test_make_socket(25);
+	if (clientfd < 0) {
+		return -1;
+	}
+
+	send_count = 0;
+	send_message2(clientfd, 0);
 	close(clientfd); /* Close SMTP connection */
 
 	return 0;
@@ -170,7 +230,7 @@ static int run(void)
 	CLIENT_EXPECT(client1, "c2 BAD");
 
 	/* NOTIFY with a selected mailbox */
-	SWRITE(client1, "c3 NOTIFY SET STATUS (SELECTED-DELAYED (MessageNew (FLAGS) MessageExpunge FlagChange)) (personal (MessageNew (FLAGS) MessageExpunge MailboxName FlagChange))" ENDL);
+	SWRITE(client1, "c3 NOTIFY SET STATUS (SELECTED-DELAYED (MessageNew (FLAGS) MessageExpunge FlagChange)) (personal (MessageNew (FLAGS) MessageExpunge MailboxName FlagChange)) (subtree \"Other Users\" (MessageNew (FLAGS) MessageExpunge MailboxName FlagChange))" ENDL);
 	CLIENT_EXPECT(client1, "* STATUS"); /* If NOTIFY SET STATUS for different mailboxes, we should get a STATUS for those */
 
 	/* Test FlagChange in current mailbox: should get FETCH */
@@ -247,10 +307,60 @@ static int run(void)
 	CLIENT_EXPECT(client2, "d7 OK");
 	CLIENT_EXPECT(client1, "NonExistent");
 
+	SWRITE(client2, "z997 LOGOUT" ENDL);
+	CLIENT_EXPECT(client2, "* BYE");
+
+	/* Should never get events for other users, even though we're subscribed, because we're not authorized */
+	client2 = test_make_socket(143);
+	if (client2 < 0) {
+		return -1;
+	}
+
+	/* Connect and log in */
+	CLIENT_EXPECT(client2, "OK");
+	SWRITE(client2, "e1 LOGIN \"" TEST_USER2 "\" \"" TEST_PASS2 "\"" ENDL);
+	CLIENT_EXPECT(client2, "e1 OK");
+
+	SWRITE(client2, "e2 SELECT INBOX" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client2, "e2 OK");
+	SWRITE(client2, "e3 IDLE" ENDL);
+	CLIENT_EXPECT(client2, "+ idling");
+
+	if (make_messages2()) {
+		goto cleanup;
+	}
+
+	/* User 2 should see this... */
+	CLIENT_EXPECT(client2, "* 1 EXISTS");
+
+	/* ... But not user 1 */
 	SWRITE(client1, "DONE" ENDL);
-	CLIENT_EXPECT(client1, "d2 OK");
+	CLIENT_EXPECT(client1, "d2 OK"); /* Should not have gotten any untagged response */
+	SWRITE(client1, "e4 IDLE" ENDL);
+	CLIENT_EXPECT(client1, "+ idling");
+
+	/* If user 2 adds user 1 to the ACL, that's a different matter */
+	SWRITE(client2, "DONE" ENDL);
+	CLIENT_EXPECT(client2, "e3 OK");
+	SWRITE(client2, "e5 SETACL INBOX " TEST_USER " lrs" ENDL);
+	CLIENT_EXPECT(client2, "e5 OK");
+	SWRITE(client2, "e6 IDLE" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client2, "+ idling");
+
+	if (make_messages2()) {
+		goto cleanup;
+	}
+
+	/* Now they should both get it */
+	CLIENT_EXPECT(client1, "* STATUS"); /* Not selected */
+	CLIENT_EXPECT(client2, "* 2 EXISTS"); /* Selected */
 
 	/* LOGOUT */
+	SWRITE(client1, "DONE" ENDL);
+	CLIENT_EXPECT(client1, "e4 OK");
+	SWRITE(client2, "DONE" ENDL);
+	CLIENT_EXPECT(client2, "e6 OK");
+
 	SWRITE(client2, "z998 LOGOUT" ENDL);
 	CLIENT_EXPECT(client2, "* BYE");
 	SWRITE(client1, "z999 LOGOUT" ENDL);

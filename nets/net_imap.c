@@ -317,12 +317,18 @@ static void __imap_send_update_log(struct imap_session *imap, const char *s, siz
 /* Forward declaration */
 static int generate_status(struct imap_session *imap, const char *folder, char *buf, size_t len, const char *items);
 
-static int generate_mailbox_name(unsigned int userid, const char *restrict maildir, char *restrict buf, size_t len)
+static int generate_mailbox_name(struct imap_session *imap, const char *restrict maildir, char *restrict buf, size_t len)
 {
 	size_t rootlen, fulllen;
+	unsigned int userid = imap->node->user->id;
 	unsigned int muserid;
 	const char *fulldir = maildir;
 	const char *rootdir = mailbox_maildir(NULL);
+	int acl = 0;
+
+	if (!bbs_user_is_registered(imap->node->user)) {
+		return -1;
+	}
 
 	rootlen = strlen(rootdir);
 	fulllen = strlen(fulldir);
@@ -342,6 +348,17 @@ static int generate_mailbox_name(unsigned int userid, const char *restrict maild
 		return -1;
 	}
 
+	/* As part of the conversion, we also need to check ACL:
+	 * Do we have permission to access this maildir? If not, don't even proceed.
+	 * imap_notify_applicable doesn't verify we have permission to access the maildir in question,
+	 * only whether it's in scope of the watch. Since arbitrary mailboxes can be specified in the NOTIFY command,
+	 * (e.g. using subtree), here is where we actually check if the user has permission.
+	 * We don't wait for generate_status, because that only needs to be called once per event (the contents of the STATUS message are the same),
+	 * so even though that also could check for ACL and abort otherwise, it would be wasteful since it'd also be recomputing*
+	 * the STATUS for every session.
+	 * This way, we only make N + 1 calls to the ACL file, rather than N calls,
+	 * but the STATUS message is only generated at most once, rather than at most N times. */
+
 	muserid = (unsigned int) atoi(fulldir);
 	if (muserid) {
 		const char *bname = basename(fulldir);
@@ -356,18 +373,35 @@ static int generate_mailbox_name(unsigned int userid, const char *restrict maild
 				bname++; /* Skip leading . */
 				safe_strncpy(buf, bname, len);
 			}
+			/* No need to check our own ACL, we should have full permission */
 		} else {
 			/* Another user (Other Users) */
 			char username[64];
+			load_acl(imap, maildir, NAMESPACE_OTHER, &acl);
+			if (!(acl & IMAP_ACL_READ)) {
+				bbs_debug(6, "IMAP user %s not authorized to get notifications for %s\n", bbs_username(imap->node->user), maildir);
+				return -1; /* Not an error, we just don't have permission for this mailbox, skip it */
+			}
 			if (bbs_username_from_userid(muserid, username, sizeof(username))) {
 				bbs_warning("No user for maildir %s\n", fulldir);
 				return -1;
 			}
-			snprintf(buf, len, OTHER_NAMESPACE_PREFIX HIERARCHY_DELIMITER "%s.%s", username, bname);
+			/* If bname is just the user ID, then this is another user's INBOX */
+			if (strchr(bname, HIERARCHY_DELIMITER_CHAR)) {
+				snprintf(buf, len, OTHER_NAMESPACE_PREFIX HIERARCHY_DELIMITER "%s.%s", username, bname);
+			} else {
+				snprintf(buf, len, OTHER_NAMESPACE_PREFIX HIERARCHY_DELIMITER "%s", username);
+			}
 		}
 	} else {
+		load_acl(imap, maildir, NAMESPACE_SHARED, &acl);
+		if (!(acl & IMAP_ACL_READ)) {
+			bbs_debug(6, "IMAP user %s not authorized to get notifications for %s\n", bbs_username(imap->node->user), maildir);
+			return -1; /* Not an error, we just don't have permission for this mailbox, skip it */
+		}
 		snprintf(buf, len, SHARED_NAMESPACE_PREFIX HIERARCHY_DELIMITER "%s", fulldir);
 	}
+
 	bbs_debug(6, "maildir %s => '%s'\n", maildir, buf);
 	return 0;
 }
@@ -401,7 +435,9 @@ void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned int uid,
 		 * This also applies anywhere else generate_status is called.
 		 */
 		/*! \todo Ideally this would be a static mail store based callback, and then instead of imap->dir we could use e->maildir */
-		generate_mailbox_name(s->node->user->id, imap->dir, mboxname, sizeof(mboxname));
+		if (generate_mailbox_name(s, imap->dir, mboxname, sizeof(mboxname))) {
+			continue;
+		}
 		res = imap_notify_applicable(s, NULL, mboxname, imap->dir, IMAP_EVENT_FLAG_CHANGE);
 		if (!res) {
 			continue;
@@ -452,7 +488,9 @@ static void send_untagged_expunge(struct bbs_node *node, struct mailbox *mbox, c
 		}
 		/* We can't pass the mailbox name into send_untagged_expunge anyways,
 		 * because mailbox names might be different for different users (e.g. Other Users) */
-		generate_mailbox_name(s->node->user->id, maildir, mboxname, sizeof(mboxname));
+		if (generate_mailbox_name(s, maildir, mboxname, sizeof(mboxname))) {
+			continue;
+		}
 		res = imap_notify_applicable(s, mbox, mboxname, maildir, IMAP_EVENT_MESSAGE_EXPUNGE);
 		if (!res) {
 			continue;
@@ -521,7 +559,9 @@ static void send_untagged_exists(struct bbs_node *node, struct mailbox *mbox, co
 		char mboxname[256];
 		const char *fetchargs = NULL;
 
-		generate_mailbox_name(s->node->user->id, maildir, mboxname, sizeof(mboxname));
+		if (generate_mailbox_name(s, maildir, mboxname, sizeof(mboxname))) {
+			continue;
+		}
 
 		res = imap_notify_applicable_fetchargs(s, mbox, mboxname, maildir, IMAP_EVENT_MESSAGE_NEW, &fetchargs);
 		if (!res) {
@@ -599,7 +639,9 @@ static void send_untagged_list(struct bbs_node *node, enum mailbox_event_type ty
 		}
 
 		/* Mailbox names could be different for different users, so need to do per session, not just once */
-		generate_mailbox_name(s->node->user->id, maildir, newdir, sizeof(newdir));
+		if (generate_mailbox_name(s, maildir, newdir, sizeof(newdir))) {
+			continue;
+		}
 
 		res = imap_notify_applicable_fetchargs(s, mbox, newdir, maildir, IMAP_EVENT_MESSAGE_NEW, &fetchargs);
 		if (!res) {
@@ -617,7 +659,9 @@ static void send_untagged_list(struct bbs_node *node, enum mailbox_event_type ty
 				len = (size_t) snprintf(buf, sizeof(buf), "* LIST (\\NonExistent) \"%c\" \"%s\"\r\n", HIERARCHY_DELIMITER_CHAR, newdir);
 				break;
 			case EVENT_MAILBOX_RENAME:
-				generate_mailbox_name(s->node->user->id, oldmaildir, olddir, sizeof(olddir));
+				if (generate_mailbox_name(s, oldmaildir, olddir, sizeof(olddir))) {
+					break;
+				}
 				len = (size_t) snprintf(buf, sizeof(buf), "* LIST (\\Subscribed) \"%c\" \"%s\" (\"OLDNAME\" (\"%s\"))\r\n", HIERARCHY_DELIMITER_CHAR, newdir, olddir);
 				break;
 			default:

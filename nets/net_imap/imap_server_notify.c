@@ -226,6 +226,10 @@ static int mailbox_watchable(struct imap_session *imap, char *s)
 
 	/* 1. If not an existing mailbox, MUST ignore it */
 	if (imap_translate_dir(imap, s, fullmaildir, sizeof(fullmaildir), &myacl)) {
+		/* If it's a prefix, allow it: */
+		if (STARTS_WITH(s, OTHER_NAMESPACE_PREFIX) || STARTS_WITH(s, SHARED_NAMESPACE_PREFIX)) {
+			return 1;
+		}
 		/* Maybe it's a remote mapping? In which case, allow it */
 		if (mailbox_remotely_mapped(imap, s)) {
 			return 1;
