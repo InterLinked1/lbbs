@@ -221,6 +221,7 @@ static void *telnets_handler(void *varg)
 	/* Set up TLS, then do the handshake, then proceed as normal. */
 	ssl = ssl_new_accept(node->fd, &node->rfd, &node->wfd);
 	if (!ssl) {
+		bbs_node_exit(node); /* Since we're not calling bbs_node_handler, we're responsible for manually cleaning the node up */
 		return NULL;
 	}
 
@@ -243,6 +244,7 @@ static void *tty_handler(void *varg)
 		bbs_debug(5, "Connection accepted on secure TTY port\n");
 		ssl = ssl_new_accept(node->fd, &node->rfd, &node->wfd);
 		if (!ssl) {
+			bbs_node_exit(node);
 			return NULL;
 		}
 	}
