@@ -45,6 +45,7 @@
 #include "include/user.h" /* use bbs_user_dump */
 #include "include/notify.h"
 #include "include/startup.h"
+#include "include/alertpipe.h"
 
 extern int option_nofork;
 
@@ -59,6 +60,7 @@ extern int option_nofork;
 #ifdef bbs_printf
 #endif
 
+static int console_alertpipe[2];
 static int unloading = 0;
 
 static void show_copyright(int fd, int footer)
@@ -312,16 +314,15 @@ static RWLIST_HEAD_STATIC(consoles, sysop_console);
 
 static void console_cleanup(struct sysop_console *console)
 {
+	bbs_assert(console->remote);
 	RWLIST_WRLOCK(&consoles);
 	RWLIST_REMOVE(&consoles, console, entry);
-	if (console->remote) {
-		/* If unloading, these have already been closed */
-		if (!console->dead) {
-			bbs_remove_logging_fd(console->fdout);
-			bbs_socket_close(&console->fdin);
-			bbs_socket_close(&console->fdout);
-			bbs_socket_close(&console->sfd);
-		}
+	/* If unloading, these have already been closed */
+	if (!console->dead) {
+		bbs_remove_logging_fd(console->fdout);
+		bbs_socket_close(&console->fdin);
+		bbs_socket_close(&console->fdout);
+		bbs_socket_close(&console->sfd);
 	}
 	free(console);
 	RWLIST_UNLOCK(&consoles);
@@ -344,7 +345,7 @@ static void *sysop_handler(void *varg)
 	char buf[1];
 	char cmdbuf[256];
 	int res;
-	struct pollfd pfd;
+	struct pollfd pfds[2];
 	int sysopfdin, sysopfdout;
 	const char *histentry;
 	struct sysop_console *console = varg;
@@ -367,16 +368,18 @@ static void *sysop_handler(void *varg)
 		goto cleanup;
 	}
 
-	pfd.fd = sysopfdin;
-	pfd.events = POLLIN | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
+	pfds[0].fd = sysopfdin;
+	pfds[0].events = POLLIN | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
+
+	pfds[1].fd = console_alertpipe[0];
+	pfds[1].events = POLLIN;
 
 	show_copyright(sysopfdout, 1);
 
 	histentry = NULL; /* initiailization must be after pthread_cleanup_push to avoid "variable might be clobbered" warning */
 	for (;;) {
-		pfd.revents = 0;
-		res = poll(&pfd, 1, -1);
-		pthread_testcancel();
+		pfds[0].revents = pfds[1].revents = 0;
+		res = poll(pfds, console->remote ? 1 : 2, -1);
 		if (res < 0) {
 			if (errno != EINTR) {
 				bbs_debug(3, "poll returned %d: %s\n", res, strerror(errno));
@@ -384,7 +387,12 @@ static void *sysop_handler(void *varg)
 			}
 			continue;
 		}
-		if (pfd.revents & POLLIN) {
+		if (pfds[1].revents) {
+			bbs_alertpipe_read(console_alertpipe);
+			my_set_stdout_logging(sysopfdout, 1);
+			bbs_buffer_input(sysopfdin, 1);
+			break;
+		} else if (pfds[0].revents & POLLIN) {
 			ssize_t bytes_read = read(sysopfdin, buf, sizeof(buf));
 			if (bytes_read <= 0) {
 				bbs_debug(5, "read returned %ld\n", bytes_read);
@@ -463,13 +471,18 @@ static void *sysop_handler(void *varg)
 						int do_quit = 0;
 						my_set_stdout_logging(sysopfdout, 0); /* Disable logging so other stuff isn't trying to write to STDOUT at the same time. */
 						bbs_dprintf(sysopfdout, "\n%sReally shut down the BBS? [YN] %s", COLOR(COLOR_RED), COLOR_RESET);
-						res = poll(&pfd, 1, 10000);
+						res = poll(pfds, console->remote ? 1 : 2, 10000);
 						if (res < 0) {
 							if (errno != EINTR) {
 								bbs_error("poll returned %d: %s\n", res, strerror(errno));
 							}
 						} else if (res == 0) {
 							bbs_dprintf(sysopfdout, "\nShutdown attempt expired\n");
+						} else if (pfds[1].revents) {
+							/* alertpipe had activity in the meantime */
+							my_set_stdout_logging(sysopfdout, 1);
+							bbs_buffer_input(sysopfdin, 1);
+							goto cleanup;
 						} else {
 							bytes_read = read(sysopfdin, buf, 1);
 							if (bytes_read <= 0) {
@@ -529,13 +542,17 @@ static void *sysop_handler(void *varg)
 					bbs_dprintf(sysopfdout, "/");
 					my_set_stdout_logging(sysopfdout, 0); /* Disable logging so other stuff isn't trying to write to STDOUT at the same time. */
 					bbs_buffer_input(sysopfdin, 1);
-					res = poll(&pfd, 1, 300000);
+					res = poll(pfds, console->remote ? 1 : 2, 300000);
 					if (res < 0) {
 						if (errno != EINTR) {
 							bbs_error("poll returned %d: %s\n", res, strerror(errno));
 						}
 					} else if (res == 0) {
 						bbs_dprintf(sysopfdout, "\nCommand expired\n");
+					} else if (pfds[1].revents) {
+						my_set_stdout_logging(sysopfdout, 1);
+						bbs_buffer_input(sysopfdin, 1);
+						goto cleanup;
 					} else {
 						bytes_read = read(sysopfdin, cmdbuf, sizeof(cmdbuf) - 1);
 						if (bytes_read <= 0) {
@@ -561,7 +578,7 @@ static void *sysop_handler(void *varg)
 					break;
 			}
 		} else {
-			if (!(pfd.revents & BBS_POLL_QUIT)) {
+			if (!(pfds[0].revents & BBS_POLL_QUIT)) {
 				bbs_error("poll returned %d, but no POLLIN?\n", res);
 			}
 			break;
@@ -569,8 +586,10 @@ static void *sysop_handler(void *varg)
 	}
 
 cleanup:
-	bbs_debug(2, "Sysop console %d/%d thread exiting\n", sysopfdin, sysopfdout);
-	console_cleanup(console);
+	bbs_debug(2, "Sysop console (fd %d/%d) thread exiting\n", sysopfdin, sysopfdout);
+	if (console->remote) {
+		console_cleanup(console);
+	}
 	return NULL;
 }
 
@@ -593,11 +612,15 @@ static int launch_sysop_console(int remote, int sfd, int fdin, int fdout)
 	RWLIST_INSERT_HEAD(&consoles, console, entry);
 	/* Note there is no SIGINT handler for remote consoles,
 	 * so ^C will just exit the remote console without killing the BBS. */
-	if (bbs_pthread_create_detached(&console->thread, NULL, sysop_handler, console)) {
+	if (remote) {
+		bbs_pthread_create_detached(&console->thread, NULL, sysop_handler, console);
+	} else {
+		bbs_pthread_create(&console->thread, NULL, sysop_handler, console);
+	}
+	if (res) {
 		bbs_error("Failed to create %s sysop thread for %d/%d\n", remote ? "remote" : "foreground", fdin, fdout);
 		RWLIST_REMOVE(&consoles, console, entry);
 		free(console);
-		res = -1;
 	}
 	RWLIST_UNLOCK(&consoles);
 	return res;
@@ -665,6 +688,7 @@ static int unload_module(void)
 	struct sysop_console *console;
 
 	unloading = 1;
+	bbs_alertpipe_write(console_alertpipe);
 
 	if (uds_socket != -1) {
 		bbs_socket_thread_shutdown(&uds_socket, uds_thread);
@@ -683,16 +707,17 @@ static int unload_module(void)
 			bbs_socket_close(&console->fdin);
 			bbs_socket_close(&console->sfd);
 		} else {
-			bbs_buffer_input(console->fdin, 1); /* Be nice: re-enable canonical mode and echo to leave the TTY in a sane state. */
-			/* A bit difficult to avoid pthread_cancel here since shutdowns can be initiated in this module.
-			 * Use caution if trying to improve this. */
-			bbs_pthread_cancel_kill(console->thread);
 			RWLIST_REMOVE_CURRENT(entry);
+			bbs_pthread_join(console->thread, NULL);
 			free(console);
 		}
 	}
 	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&consoles);
+
+	if (option_nofork) {
+		bbs_alertpipe_close(console_alertpipe);
+	}
 
 	/* This is not pretty, but need to wait until the list is empty - console threads are detached so we have nothing to join,
 	 * and we can't make them non-detached because console threads can exit on their own, without anyone to join them. */
@@ -723,6 +748,10 @@ static int load_module(void)
 	bbs_history_init();
 
 	if (option_nofork) {
+		if (bbs_alertpipe_create(console_alertpipe)) {
+			bbs_history_shutdown();
+			return -1;
+		}
 		launch_sysop_console(0, STDIN_FILENO, STDIN_FILENO, STDOUT_FILENO);
 	} else {
 		bbs_debug(3, "BBS not started with foreground console, declining to load foreground sysop console\n");
@@ -732,7 +761,8 @@ static int load_module(void)
 	/* Start a thread to allow remote sysop console connections */
 	if (bbs_make_unix_socket(&uds_socket, BBS_SYSOP_SOCKET, "0600", -1, -1) || bbs_pthread_create(&uds_thread, NULL, remote_sysop_listener, NULL)) {
 		if (!option_nofork) {
-			/* Nothing to clean up, we didn't create a foreground console, and the remote handler failed */
+			/* Nothing major to clean up, we didn't create a foreground console, and the remote handler failed */
+			bbs_history_shutdown();
 			return -1; /* Only fatal if daemonized, since otherwise there would be no sysop consoles at all */
 		}
 	}
