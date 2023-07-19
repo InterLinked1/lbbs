@@ -865,25 +865,38 @@ static void list_response(struct ws_session *ws, struct imap_client *client, str
 	json_t *root = json_object();
 	json_t *arr;
 
-	if (!root) {
-		bbs_error("Failed to create JSON root\n");
-		return;
+	/* If the server does not support LIST-STATUS, then do a preliminary LIST,
+	 * because afterwards, we'll have to fall back to issuing a STATUS for
+	 * every mailbox, and this can take quite some time. Therefore, the preliminary
+	 * LIST at least allows displaying the mailbox names in the client, even
+	 * though there are no details for any of them and the interface isn't usable yet.
+	 *
+	 * If the LIST-STATUS extension is supported, we're going to get all
+	 * the responses much more quickly, and it's probably okay to just do
+	 * the single detailed LIST, which saves time overall by avoiding redundancy,
+	 * at the expense of the folder pane taking a little longer to display anything. */
+
+	if (!client->has_list_status) {
+		if (!root) {
+			bbs_error("Failed to create JSON root\n");
+			return;
+		}
+		arr = json_array();
+		json_object_set_new(root, "response", json_string("LIST"));
+		json_object_set_new(root, "data", arr);
+
+		if (client_list_command(client, imap, arr, delim, 0)) {
+			goto cleanup;
+		}
+
+		json_object_set_new(root, "delimiter", json_string(delim));
+		json_send(ws, root);
+
+		/* We just sent a list of folder names.
+		 * Now, send the full details, in a second response since this will take a second.
+		 * This allows the UI to be more responsive for the user. */
 	}
-	arr = json_array();
-	json_object_set_new(root, "response", json_string("LIST"));
-	json_object_set_new(root, "data", arr);
 
-	if (client_list_command(client, imap, arr, delim, 0)) {
-		goto cleanup;
-	}
-
-	json_object_set_new(root, "delimiter", json_string(delim));
-	json_send(ws, root);
-
-	/* We just sent a list of folder names.
-	 * Now, send the full details, in a second response since this will take a second.
-	 * This allows the UI to be more responsive for the user.
-	 */
 	root = json_object();
 	if (!root) {
 		bbs_error("Failed to create JSON root\n");
