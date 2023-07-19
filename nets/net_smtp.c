@@ -965,6 +965,7 @@ static int try_send(struct smtp_session *smtp, const char *hostname, int port, i
 			bbs_debug(3, "Failed to set up TLS\n");
 			goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
 		}
+		bbs_readline_flush(rldata); /* Prevent STARTTLS response injection by resetting the buffer after TLS upgrade */
 		/* Start over again. */
 		caps = 0;
 		res = smtp_client_handshake(rldata, rfd, wfd, buf, hostname, &caps);
@@ -2986,6 +2987,10 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 				break; /* Just abort */
 			}
 			smtp->secure = 1;
+			/* Prevent STARTTLS command injection by resetting the buffer after TLS upgrade:
+			 * http://www.postfix.org/CVE-2011-0411.html
+			 * https://blog.apnic.net/2021/11/18/vulnerabilities-show-why-starttls-should-be-avoided-if-possible/ */
+			bbs_readline_flush(&rldata);
 		}
 	}
 }

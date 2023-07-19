@@ -481,6 +481,7 @@ static void handle_client(struct sieve_session *sieve, SSL **sslptr)
 				bbs_error("Failed to create SSL\n");
 				break; /* Just abort */
 			}
+			bbs_readline_flush(&rldata); /* Prevent STARTTLS command injection by resetting the buffer after TLS upgrade */
 			sieve->secure = 1;
 			if (handle_capability(sieve)) { /* Must reissue after STARTTLS */
 				return;

@@ -46,6 +46,12 @@ void bbs_readline_init(struct readline_data *rldata, char *buf, size_t len)
 	rldata->leftover = 0;
 }
 
+void bbs_readline_flush(struct readline_data *rldata)
+{
+	readline_buffer_reset(rldata);
+	rldata->leftover = 0;
+}
+
 static char *readline_pre_read(struct readline_data *restrict rldata, const char *delim, int *resptr)
 {
 	char *firstdelim = NULL;

@@ -43,6 +43,12 @@ struct readline_data {
 void bbs_readline_init(struct readline_data *rldata, char *buf, size_t len);
 
 /*!
+ * \brief Flush any remaining data in the readline buffer
+ * \note This should be done immediately after whenever STARTTLS is performed
+ */
+void bbs_readline_flush(struct readline_data *rldata);
+
+/*!
  * \brief Get number of bytes of data currently available in buffer
  * \param rldata
  * \param process 1 if readline data needs to be shifted and processed after a previous read

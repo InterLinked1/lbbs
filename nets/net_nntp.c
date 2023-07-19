@@ -1281,6 +1281,7 @@ static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 			nntp->secure = 1;
 			free_if(nntp->currentgroup);
 			nntp->currentarticle = 0;
+			bbs_readline_flush(&rldata); /* Prevent STARTTLS command injection by resetting the buffer after TLS upgrade */
 		}
 	}
 }
