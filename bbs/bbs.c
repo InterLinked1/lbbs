@@ -85,6 +85,7 @@ static pid_t bbs_pid;
 static int bbs_start_time;
 
 static int sig_alert_pipe[2] = { -1, -1 };
+static int abort_startup = 0;
 static int shutting_down = 0;
 static int shutdown_restart = 0;
 
@@ -488,6 +489,11 @@ int bbs_is_fully_started(void)
 	return fully_started;
 }
 
+int bbs_abort_startup(void)
+{
+	return abort_startup;
+}
+
 int bbs_is_shutting_down(void)
 {
 	return shutting_down;
@@ -585,6 +591,13 @@ static void __sigint_handler(int num)
 		return;
 	}
 
+	if (!fully_started) {
+		/* This typically happens when something blcoks startup, e.g. binding to a port already in use, with force bind.
+		 * To properly handle this, whatever is doing whatever it is should be prepared to abort if needed. */
+		bbs_debug(3, "SIGINT received prior to BBS being fully started\n");
+		abort_startup = 1;
+	}
+
 	/* If somebody is subscribed to the SIGINT handler, dispatch it to them and ignore it. */
 	/* XXX Currently we allow 1 external subscriber at a time. In theory if we wanted more than one possible,
 	 * we could maintain a linked list of subscribers, but that seems like overkill right now,
@@ -671,6 +684,11 @@ void bbs_request_module_unload(const char *name, int reload)
 		bbs_error("write() failed: %s\n", strerror(errno));
 	}
 	pthread_mutex_unlock(&sig_lock);
+}
+
+int bbs_safe_sleep(int ms)
+{
+	return bbs_poll(sig_alert_pipe[0], ms);
 }
 
 static void *monitor_sig_flags(void *unused)

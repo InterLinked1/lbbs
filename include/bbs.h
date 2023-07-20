@@ -419,6 +419,9 @@ struct bbs_module *BBS_MODULE_SELF_SYM(void);
 /*! \brief Whether the BBS is fully started */
 int bbs_is_fully_started(void);
 
+/*! \brief Whether startup is being aborted */
+int bbs_abort_startup(void);
+
 /*! \brief Whether the BBS is currently shutting down */
 int bbs_is_shutting_down(void);
 
@@ -438,6 +441,15 @@ int bbs_view_settings(int fd);
  * \note You must use this function to trigger an unload/reload of a module from itself.
  */
 void bbs_request_module_unload(const char *name, int reload);
+
+/*!
+ * \brief Suspend execution of a BBS thread
+ * \param ms Number of milliseconds
+ * \retval 0 if sleep returned uneventfully
+ * \retval -1 if error occured
+ * \retval 1 if activity occured (e.g. BBS shutdown)
+ */
+int bbs_safe_sleep(int ms);
 
 /*!
  * \brief Subscribe SIGINT alertpipe

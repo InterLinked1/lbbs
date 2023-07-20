@@ -161,7 +161,10 @@ int bbs_make_tcp_socket(int *sock, int port)
 
 			/* We can't reuse the original socket after bind fails, make a new one. */
 			close(*sock);
-			usleep(500000);
+			if (bbs_safe_sleep(500)) {
+				bbs_verb(4, "Aborting socket bind due to exceptional BBS activity\n");
+				break;
+			}
 			*sock = socket(AF_INET, SOCK_STREAM, 0);
 			if (*sock < 0) {
 				bbs_error("Unable to recreate TCP socket: %s\n", strerror(errno));

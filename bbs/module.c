@@ -748,7 +748,7 @@ static int on_file_preload(const char *dir_name, const char *filename, void *obj
 		autoload_loaded++;
 	}
 
-	return 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
+	return bbs_abort_startup() ? 1 : 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
 }
 
 static int on_file_autoload(const char *dir_name, const char *filename, void *obj)
@@ -788,7 +788,7 @@ static int on_file_autoload(const char *dir_name, const char *filename, void *ob
 		autoload_loaded++;
 	}
 
-	return 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
+	return bbs_abort_startup() ? 1 : 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
 }
 
 static int load_config(void)
