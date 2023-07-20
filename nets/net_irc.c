@@ -935,7 +935,8 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, char
 			}
 		} else {
 			pthread_mutex_lock(&user2->lock); /* Serialize writes to this user */
-			dprintf(user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), notice ? "NOTICE" : "PRIVMSG", user2->nickname, message);
+			/* Use bbs_writef instead of dprintf, as the latter can cause valgrind to report definite (constant) memory leaks on some systems */
+			bbs_writef(user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), notice ? "NOTICE" : "PRIVMSG", user2->nickname, message);
 			pthread_mutex_unlock(&user2->lock);
 			if (user2->away) {
 				send_numeric(user, 301, "%s :%s\r\n", user2->nickname, S_IF(user2->awaymsg));

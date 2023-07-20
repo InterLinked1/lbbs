@@ -217,9 +217,7 @@
    fun:_dl_catch_exception
    fun:_dl_catch_error
    fun:_dlerror_run
-   fun:dlopen@@GLIBC_2.2.5
-   fun:load_dlopen
-   fun:load_dynamic_module
+   ...
 }
 {
    GOBJECT
