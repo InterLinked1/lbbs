@@ -38,6 +38,17 @@
 #include <sched.h> /* use clone */
 #include <syscall.h>
 
+#ifdef __linux__
+#include <linux/version.h>
+#if LINUX_VERSION_CODE > KERNEL_VERSION(5,9,0)
+#include <linux/close_range.h>
+#if !defined(close_range) && defined(SYS_close_range)
+/* The Linux API should be available, but glibc might not have a wrapper for it */
+#define close_range(min, max, flags) syscall(SYS_close_range, min, max, flags)
+#endif /* close_range */
+#endif /* LINUX_VERSION_CODE */
+#endif /* __linux__ */
+
 #include "include/node.h"
 #include "include/system.h"
 #include "include/utils.h"
@@ -154,10 +165,76 @@ static int fdlimit = -1;
 #define child_debug(level, ...) ;
 #endif
 
+static int intsort(const void *a, const void *b)
+{
+	int x = *(const int*) a;
+	int y = *(const int*) b;
+
+	return (x > y) - (x < y);
+}
+
+#ifndef close_range
+#define close_range(min, max, flags) my_close_range(min, max)
+static void my_close_range(int start, int end)
+{
+	int i;
+	for (i = start; i <= end; i++) {
+		close(i);
+	}
+}
+#endif
+
+static void cleanup_fds(int maxfd, int fdin, int fdout, int exclude)
+{
+	int minfd = 0;
+	int exempt = 0;
+	int fds[4];
+
+	/* Don't close these file descriptors */
+	if (fdin >= 0) {
+		fds[exempt++] = fdin;
+	}
+	if (fdout >= 0 && fdout != fdin) { /* These are often the same, if so, no need to include twice */
+		fds[exempt++] = fdout;
+	}
+	if (exclude >= 0) {
+		fds[exempt++] = exclude;
+	}
+
+	/* Sort the file descriptors */
+	qsort(fds, (size_t) exempt, sizeof(int), intsort);
+
+#ifdef DEBUG_CHILD
+	/* Leave STDIN/STDOUT/STDERR open for debugging messages */
+	minfd = STDERR_FILENO + 1;
+#endif
+
+	child_debug(5, "Cleaning up file descriptors [%d, %d], %d exempt: %d, %d, %d\n", minfd, maxfd, exempt, fdin, fdout, exclude);
+
+	/* Close all open file descriptors, so the child doesn't inherit any of them, except for node->slavefd
+	 * And yes, we close STDIN/STDOUT/STDERR as well since these refer to the sysop console, if there even is one.
+	 * The BBS node has nothing to do with that. */
+
+	/* If first is greater than last, close_range will return EINVAL,
+	 * so we can just pass in the next excluded fd - 1 for each chunk. */
+	if (exempt > 0) {
+		close_range(minfd, fds[0] - 1, 0);
+		minfd = fds[0] + 1;
+		if (exempt > 1) {
+			close_range(minfd, fds[1] - 1, 0);
+			minfd = fds[1] + 1;
+			if (exempt > 2) {
+				close_range(minfd, fds[2] - 1, 0);
+				minfd = fds[2] + 1;
+			}
+		}
+	}
+	close_range(minfd, maxfd, 0);
+}
+
 static int exec_pre(int fdin, int fdout, int exclude)
 {
 	struct rlimit rl;
-	int i;
 
 	getrlimit(RLIMIT_NOFILE, &rl);
 	if (fdlimit == -1) {
@@ -173,22 +250,7 @@ static int exec_pre(int fdin, int fdout, int exclude)
 		child_debug(7, "fdlimit %d\n", fdlimit);
 	}
 
-	/* Close all open file descriptors, so the child doesn't inherit any of them, except for node->slavefd
-	 * And yes, we close STDIN/STDOUT/STDERR as well since these refer to the sysop console, if there even is one.
-	 * The BBS node has nothing to do with that.
-	 */
-#ifdef DEBUG_CHILD
-	/* Leave STDIN/STDOUT/STDERR open for debugging messages */
-	for (i = STDERR_FILENO + 1; i < fdlimit; i++) {
-#else
-	for (i = 0; i < fdlimit; i++) {
-#endif
-		if (i == fdin || i == fdout || i == exclude) {
-			child_debug(7, "Not closing fd %d\n", i);
-			continue;
-		}
-		close(i);
-	}
+	cleanup_fds(fdlimit, fdin, fdout, exclude);
 
 	/* Assign the appropriate file descriptors */
 	if (fdin != -1) {
