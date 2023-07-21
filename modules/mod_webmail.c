@@ -98,6 +98,7 @@ static void libetpan_log(mailimap *session, int log_type, const char *str, size_
 static int json_send(struct ws_session *ws, json_t *root)
 {
 	char *s = json_dumps(root, 0);
+	json_decref(root);
 	if (s) {
 		size_t len = strlen(s);
 		websocket_sendtext(ws, s, len);
@@ -105,7 +106,6 @@ static int json_send(struct ws_session *ws, json_t *root)
 	} else {
 		bbs_warning("Failed to dump JSON string: was it allocated?\n");
 	}
-	json_decref(root);
 	return s ? 0 : -1;
 }
 
@@ -862,8 +862,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 static void list_response(struct ws_session *ws, struct imap_client *client, struct mailimap *imap)
 {
 	char delim[2];
-	json_t *root = json_object();
-	json_t *arr;
+	json_t *root, *arr;
 
 	/* If the server does not support LIST-STATUS, then do a preliminary LIST,
 	 * because afterwards, we'll have to fall back to issuing a STATUS for
@@ -877,6 +876,7 @@ static void list_response(struct ws_session *ws, struct imap_client *client, str
 	 * at the expense of the folder pane taking a little longer to display anything. */
 
 	if (!client->has_list_status) {
+		root = json_object();
 		if (!root) {
 			bbs_error("Failed to create JSON root\n");
 			return;
@@ -942,6 +942,7 @@ static int client_imap_select(struct ws_session *ws, struct imap_client *client,
 
 	res = mailimap_select(imap, name);
 	if (res != MAILIMAP_NO_ERROR) {
+		bbs_warning("SELECT '%s' failed: %s\n", name, maildriver_strerror(res));
 		return -1;
 	}
 

@@ -61,6 +61,19 @@ void imap_close_remote_mailbox(struct imap_session *imap);
 /*! \brief Retrieve or create a new IMAP client connection by name and URL */
 struct imap_client *imap_client_get_by_url(struct imap_session *imap, const char *name, char *restrict urlstr);
 
+/*!
+ * \brief Send a printf-formatted buffer on an IMAP client
+ * \param client
+ * \param log Whether to log the command
+ * \param fmt
+ * \retval -1 on failure
+ * \return Same as write
+ */
+int __attribute__ ((format (gnu_printf, 3, 4))) __imap_client_send_log(struct imap_client *client, int log, const char *fmt, ...);
+
+#define imap_client_send(client, fmt, ...) __imap_client_send_log(client, 0, fmt, ## __VA_ARGS__)
+#define imap_client_send_log(client, fmt, ...) __imap_client_send_log(client, 1, fmt, ## __VA_ARGS__)
+
 #define imap_client_send_wait_response(client, fd, ms, fmt, ...) __imap_client_send_wait_response(client, fd, ms, 1, __LINE__, NULL, NULL, fmt, ## __VA_ARGS__)
 #define imap_client_send_wait_response_cb(client, fd, ms, cb, cbdata, fmt, ...) __imap_client_send_wait_response(client, fd, ms, 1, __LINE__, cb, cbdata, fmt, ## __VA_ARGS__)
 #define imap_client_send_wait_response_noecho(client, fd, ms, fmt, ...) __imap_client_send_wait_response(client, fd, ms, 0, __LINE__, NULL, NULL, fmt, ## __VA_ARGS__)

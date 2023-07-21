@@ -475,6 +475,7 @@ int maildir_ordered_traverse(const char *path, int (*on_file)(const char *dir_na
 
 /* IMAP client */
 #define IMAP_CLIENT_EXPECT(client, s) if (bbs_tcp_client_expect(client, "\r\n", 1, 2000, s)) { bbs_debug(3, "Didn't receive expected '%s'\n", s); goto cleanup; }
+#define IMAP_CLIENT_EXPECT_EVENTUALLY(client, x, s) if (bbs_tcp_client_expect(client, "\r\n", x, 2000, s)) { bbs_debug(3, "Didn't receive expected '%s', got '%s'\n", s, (client)->rldata.buf); goto cleanup; }
 #define IMAP_CLIENT_SEND(client, fmt, ...) bbs_tcp_client_send(client, fmt "\r\n", ## __VA_ARGS__);
 
 #define IMAP_CAPABILITY_IDLE (1 << 0)
@@ -499,6 +500,7 @@ int maildir_ordered_traverse(const char *path, int (*on_file)(const char *dir_na
 #define IMAP_CAPABILITY_THREAD_REFERENCES (1 << 19)
 #define IMAP_CAPABILITY_MOVE (1 << 20)
 #define IMAP_CAPABILITY_BINARY (1 << 21)
+#define IMAP_CAPABILITY_MULTIAPPEND (1 << 22)
 
 /*!
  * \brief Log in to a remote IMAP server

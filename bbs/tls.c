@@ -338,11 +338,11 @@ static void *ssl_io_thread(void *unused)
 			i = 0;
 			pfds[i].fd = ssl_alert_pipe[0];
 			pfds[i].events = POLLIN;
-			i++;
 			RWLIST_TRAVERSE(&sslfds, sfd, entry) {
+				i++;
 				ssl_list[i / 2] = sfd->ssl;
 				readpipes[i / 2] = sfd->readpipe[1]; /* Write end of read pipe */
-				if (sfd->dead) {
+				if (sfd->dead) { /* Don't read from dead connections */
 					numdead++;
 					/* Don't care about any events for this connection, it's dead.
 					 * We're going to leave it in the linked list until the consumer removes it, but that may not happen immediately. */
@@ -352,15 +352,16 @@ static void *ssl_io_thread(void *unused)
 					 * rather than waiting until ssl_fd_free. */
 					pfds[i].events = 0;
 					pfds[i].fd = -1; /* Interestingly, this does not seem to trigger a POLLNVAL */
-					bbs_debug(7, "Skipping dead SSL connection at index %d / %d\n", i, i/2);
+					bbs_debug(7, "Skipping dead SSL read connection %p at index %d / %d\n", sfd->ssl, i, i/2);
 				} else {
 					pfds[i].fd = sfd->fd;
 					pfds[i].events = POLLIN | POLLPRI | POLLERR | POLLNVAL;
 				}
 				i++;
 				pfds[i].fd = sfd->writepipe[0];
+				/* If it's dead, we still need to read from the writepipe and discard,
+				 * or otherwise it might block a writing thread */
 				pfds[i].events = POLLIN | POLLPRI | POLLERR | POLLNVAL;
-				i++; /* cppcheck thought this was redundant, it's not */
 			}
 			RWLIST_UNLOCK(&sslfds);
 			if (numfds != prevfds) {
@@ -457,7 +458,7 @@ static void *ssl_io_thread(void *unused)
 						default:
 							break;
 					}
-					bbs_debug(6, "SSL_read returned %d (%s)\n", ores, ssl_strerror(err));
+					bbs_debug(6, "SSL_read for %p returned %d (%s)\n", ssl, ores, ssl_strerror(err));
 					/* Socket closed the connection, pass it on. */
 					close(readpipe);
 					needcreate = 1;
@@ -484,6 +485,7 @@ static void *ssl_io_thread(void *unused)
 				}
 			} else if (!overtime) { /* sfd->writepipe has activity */
 				int write_attempts = 0;
+				int readpipe = readpipes[(i - 1) / 2]; /* If SSL connection is dead, can't write to it either */
 				/* Read from writepipe and relay to socket using SSL_write */
 				SSL *ssl = ssl_list[(i - 1) / 2];
 				ores = (int) read(pfds[i].fd, buf, sizeof(buf));
@@ -493,6 +495,12 @@ static void *ssl_io_thread(void *unused)
 					 * but it will close the node fd (socket) so we don't need to close here. */
 					MARK_DEAD(ssl); /* What we can do now though is mark it as dead */
 					needcreate = 1; /* Rebuild the iterator so we don't repeatedly try reading from a dead connection */
+					continue;
+				}
+				if (readpipe == -2) {
+					/* If the SSL connection is known to be dead, we know we can't write to it, don't try.
+					 * We still read the data to avoid causing writes to the pipe to block, but we basically throw it away. */
+					bbs_warning("Can't write to dead SSL connection %p, discarding %d bytes\n", ssl, ores);
 					continue;
 				}
 				do {

@@ -22,6 +22,9 @@ int imap_uidsort(const struct dirent **da, const struct dirent **db);
 /*! \brief Translate an IMAP directory path to the full path of the IMAP mailbox on disk */
 int imap_translate_dir(struct imap_session *imap, const char *directory, char *buf, size_t len, int *acl);
 
+/*! \brief Same as imap_translate_dir, but do not update the currently active mbox */
+int imap_translate_dir_readonly(struct imap_session *imap, const char *directory, char *buf, size_t len, int *acl);
+
 /*! \brief Set the current maildir (e.g. SELECT, EXAMINE) */
 int set_maildir(struct imap_session *imap, const char *mailbox);
 

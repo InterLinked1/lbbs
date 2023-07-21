@@ -67,6 +67,7 @@
  * - RFC 6785 IMAPSIEVE
  * - RFC 6855 UTF8=ACCEPT, UTF8=ONLY
  * - RFC 7888 LITERAL-
+ * - RFC 8514 SAVEDATE
  * - RFC 8970 PREVIEW
  * - RFC 9394 PARTIAL
  * - BINARY extensions (RFC 3516, 4466)
@@ -120,6 +121,7 @@
 #include <ftw.h>
 #include <poll.h>
 #include <utime.h>
+#include <sys/sendfile.h>
 
 #include "include/tls.h"
 
@@ -1898,6 +1900,7 @@ unsigned int imap_msg_in_range(struct imap_session *imap, int seqno, const char 
 
 static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 {
+	bbs_assert_exists(imap->mbox);
 	if (mailbox_has_activity(imap->mbox)) {
 		struct imap_traversal traversal, *traversalptr = &traversal;
 		/* There are new messages since we last checked. */
@@ -1911,10 +1914,9 @@ static int handle_fetch(struct imap_session *imap, char *s, int usinguid)
 	return handle_fetch_full(imap, s, usinguid, 1);
 }
 
-static int handle_copy(struct imap_session *imap, char *s, int usinguid)
+static int handle_copy(struct imap_session *imap, const char *sequences, const char *newbox, int usinguid)
 {
 	struct dirent *entry, **entries;
-	char *sequences, *newbox;
 	char newboxdir[256];
 	char srcfile[516];
 	int files, fno = 0;
@@ -1928,10 +1930,6 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 	int destacl;
 	int error = 0;
 	char newfile[256];
-
-	sequences = strsep(&s, " "); /* Messages, specified by sequence number or by UID (if usinguid) */
-	REQUIRE_ARGS(sequences);
-	SHIFT_OPTIONALLY_QUOTED_ARG(newbox, s);
 
 	/* We'll be moving into the cur directory. Don't specify here, maildir_copy_msg tacks on the /cur implicitly. */
 	if (imap_translate_dir(imap, newbox, newboxdir, sizeof(newboxdir), &destacl)) { /* Destination directory doesn't exist. */
@@ -2006,10 +2004,9 @@ static int handle_copy(struct imap_session *imap, char *s, int usinguid)
 }
 
 /*! \brief Basically a simpler version of handle_copy, with some expunging responses */
-static int handle_move(struct imap_session *imap, char *s, int usinguid)
+static int handle_move(struct imap_session *imap, const char *sequences, const char *newbox, int usinguid)
 {
 	struct dirent *entry, **entries;
-	char *sequences, *newbox;
 	char newboxdir[256];
 	char srcfile[516];
 	int files, fno = 0;
@@ -2022,10 +2019,6 @@ static int handle_move(struct imap_session *imap, char *s, int usinguid)
 	int destacl;
 	int error = 0;
 	char newname[256];
-
-	sequences = strsep(&s, " "); /* Messages, specified by sequence number or by UID (if usinguid) */
-	REQUIRE_ARGS(sequences);
-	SHIFT_OPTIONALLY_QUOTED_ARG(newbox, s);
 
 	/* We'll be moving into the cur directory. Don't specify here, maildir_move_msg_filename tacks on the /cur implicitly. */
 	if (imap_translate_dir(imap, newbox, newboxdir, sizeof(newboxdir), &destacl)) { /* Destination directory doesn't exist. */
@@ -2102,12 +2095,29 @@ cleanup:
 	return 0;
 }
 
+static __attribute__ ((const)) long utc_offset(void)
+{
+	struct tm ltm, gtm;
+	time_t now = time(NULL);
+
+	memset(&ltm, 0, sizeof(ltm));
+	memset(&gtm, 0, sizeof(gtm));
+
+	localtime_r(&now, &ltm);
+	gmtime_r(&now, &gtm);
+
+	return ltm.tm_gmtoff - gtm.tm_gmtoff;
+}
+
 /*! \brief Set the INTERNALDATE of a message */
 static int set_file_mtime(const char *filename, const char *appenddate)
 {
 	struct tm tm;
 	struct stat st;
 	struct utimbuf updated;
+	long offset;
+
+	memset(&tm, 0, sizeof(tm));
 
 	/* e.g. 23-Jul-2002 19:39:23 -0400 */
 	if (!strptime(appenddate, "%d-%b-%Y %H:%M:%S %z", &tm)) {
@@ -2122,13 +2132,130 @@ static int set_file_mtime(const char *filename, const char *appenddate)
 	updated.actime = st.st_atime; /* Preserve atime */
 	tm.tm_isdst = -1; /* Figure out Daylight Saving for us, or we might end up off by an hour. */
 	/* Do actually use mktime, not timegm. The mtime needs to be in the server's time, even if it's not UTC. */
-	updated.modtime = mktime(&tm);
+
+	offset = utc_offset();
+	bbs_debug(6, "Date %s (message offset: %ld, system offset: %ld)\n", appenddate, tm.tm_gmtoff, offset);
+
+	/* mktime wants a local time.
+	 * tm.tm_gmtoff is the offset in the message date
+	 * offset is currently the system's offset.
+	 * For example, if the system is UTC-4, and the message is UTC+1,
+	 * then we need to subtract 5 hours from whatever strptime gave us.
+	 */
+	offset = offset - tm.tm_gmtoff;
+	updated.modtime = mktime(&tm) + offset;
 
 	if (utime(filename, &updated)) {
 		bbs_error("utime(%s) failed: %s\n", filename, strerror(errno));
 		return -1;
 	}
 	return 0;
+}
+
+/*! \brief Process a message appended to a mailbox */
+static int process_append(struct imap_session *imap, const char *appenddir, const char *appendtmp,
+	const char *appendnew, const char *appenddate, int appendflags, unsigned int *uidvalidity, unsigned int *uidnext,
+	unsigned int **a, int *lengths, int *allocsizes)
+{
+	int res;
+	char newfilename[256];
+	char curdir[260], newdir[260];
+	char *filename;
+	struct mailbox_event e;
+	unsigned long size;
+
+	filename = strrchr(appendnew, '/');
+	if (!filename) {
+		bbs_error("Invalid filename: %s\n", appendnew);
+		unlink(appendtmp);
+		return -1;
+	}
+	filename++; /* Just the base name now */
+	if (rename(appendtmp, appendnew)) {
+		bbs_error("rename %s -> %s failed: %s\n", appendtmp, appendnew, strerror(errno));
+		unlink(appendtmp);
+		return -1;
+	}
+
+	/* File has been moved from tmp to new.
+	 * Now, move it to cur.
+	 * This is a 2-stage rename because we don't have a function to move an arbitrary
+	 * file into a mailbox folder, only one that's already in cur,
+	 * and the only function that properly initializes a filename is maildir_move_new_to_cur. */
+	snprintf(curdir, sizeof(curdir), "%s/cur", appenddir);
+	snprintf(newdir, sizeof(newdir), "%s/new", appenddir);
+	/* RFC says the Recent flag should be set: since we're moving this to "cur" immediately, it won't be... */
+	res = maildir_move_new_to_cur_file(imap->mbox, imap->node, appenddir, curdir, newdir, filename, uidvalidity, uidnext, newfilename, sizeof(newfilename));
+	if (res < 0) {
+		return res;
+	}
+
+	/* maildir_move_new_to_cur_file conveniently put the size in the filename for us,
+	 * so we can just update the quota usage accordingly rather than having to invalidate it. */
+	if (parse_size_from_filename(newfilename, &size)) {
+		/* It's too late to stat now as a fallback, the file's gone, who knows how big it was now. */
+		mailbox_invalidate_quota_cache(imap->mbox);
+	} else {
+		mailbox_quota_adjust_usage(imap->mbox, (int) -size);
+	}
+
+	if (!strlen_zero(appenddate)) {
+		/* Maintain the INTERNALDATE of the message by using what the client gave us.
+		 * Since we need the filename, do it while we still know a valid filename. */
+		set_file_mtime(newfilename, appenddate);
+	}
+
+	/* Send the APPEND event before we set any flags,
+	 * because the EXISTS response must go out before any flag change events. */
+	uintlist_append(a, lengths, allocsizes, *uidnext);
+	/* RFC 3501 6.3.11: We SHOULD notify the client via an untagged EXISTS. */
+	mailbox_initialize_event(&e, EVENT_MESSAGE_APPEND, imap->node, imap->mbox, appenddir);
+	e.uids = uidnext;
+	e.numuids = 1;
+	e.uidvalidity = *uidvalidity;
+	e.msgsize = (size_t) size;
+	mailbox_dispatch_event(&e);
+
+	/* Now, apply any flags to the message... (yet a third rename, potentially) */
+	if (appendflags) {
+		int seqno;
+		char newflagletters[53];
+		/* Generate flag letters from flag bits */
+		gen_flag_letters(appendflags, newflagletters, sizeof(newflagletters));
+		if (imap->numappendkeywords) {
+			strncat(newflagletters, imap->appendkeywords, sizeof(newflagletters) - 1);
+		}
+		seqno = bbs_dir_num_files(newdir) + bbs_dir_num_files(curdir); /* XXX Clunky, but compute the sequence number of this message as the # of messages in this mailbox */
+		if (maildir_msg_setflags(imap, seqno, newfilename, newflagletters)) {
+			bbs_warning("Failed to set flags for %s\n", newfilename);
+		}
+		bbs_debug(3, "Received %d-byte upload (flags: %s)\n", res, newflagletters);
+	} else {
+		bbs_debug(3, "Received %d-byte upload\n", res);
+	}
+	return 0;
+}
+
+static void append_response(struct imap_session *imap, int acl, unsigned int *a, int length, unsigned int uidvalidity, unsigned int uidnext)
+{
+	/* RFC 4315 3: if client doesn't have permission to SELECT/EXAMINE, do not send UIDPLUS response */
+	if (IMAP_HAS_ACL(acl, IMAP_ACL_READ)) {
+		if (length == 1) {
+			/* Don't add 1, this is the current message UID, not UIDNEXT */
+			imap_reply(imap, "OK [APPENDUID %u %u] APPEND completed", uidvalidity, uidnext);
+		} else if (length > 1) {
+			/* MULTIAPPEND response */
+			char *list = uintlist_to_ranges(a, length);
+			if (ALLOC_SUCCESS(list)) {
+				imap_reply(imap, "OK [APPENDUID %u %s] APPEND completed", uidvalidity, list);
+				free(list);
+			} else {
+				imap_reply(imap, "OK APPEND completed");
+			}
+		}
+	} else {
+		imap_reply(imap, "OK APPEND completed");
+	}
 }
 
 static int handle_append(struct imap_session *imap, char *s)
@@ -2168,12 +2295,6 @@ static int handle_append(struct imap_session *imap, char *s)
 		char appendtmp[260];		/* APPEND tmp name */
 		char appendnew[260];		/* APPEND new name */
 		char appenddatebuf[28];		/* APPEND date */
-		char curdir[260];
-		char newdir[260];
-		char newfilename[256];
-		char *filename;
-		unsigned long size;
-		struct mailbox_event e;
 
 		if (appends > 0) {
 			/* If it's the first line, we already read it.
@@ -2293,80 +2414,12 @@ static int handle_append(struct imap_session *imap, char *s)
 			unlink(appendnew);
 			goto cleanup2; /* Disconnect if we failed to receive the upload properly, since we're probably all screwed up now */
 		}
-
-		/* Process the upload */
 		close(appendfile);
-		filename = strrchr(appendnew, '/');
-		if (!filename) {
-			bbs_error("Invalid filename: %s\n", appendnew);
-			imap_reply(imap, "NO [SERVERBUG] Append failed");
-			unlink(appendnew);
-			goto cleanup;
-		}
-		filename++; /* Just the base name now */
-		if (rename(appendtmp, appendnew)) {
-			bbs_error("rename %s -> %s failed: %s\n", appendtmp, appendnew, strerror(errno));
+		if (process_append(imap, appenddir, appendtmp, appendnew, appenddate, appendflags, &uidvalidity, &uidnext, &a, &lengths, &allocsizes)) {
 			imap_reply(imap, "NO [SERVERBUG] Append failed");
 			goto cleanup;
 		}
 
-		/* File has been moved from tmp to new.
-		 * Now, move it to cur.
-		 * This is a 2-stage rename because we don't have a function to move an arbitrary
-		 * file into a mailbox folder, only one that's already in cur,
-		 * and the only function that properly initializes a filename is maildir_move_new_to_cur. */
-		snprintf(curdir, sizeof(curdir), "%s/cur", appenddir);
-		snprintf(newdir, sizeof(newdir), "%s/new", appenddir);
-		/* RFC says the Recent flag should be set: since we're moving this to "cur" immediately, it won't be... */
-		res = maildir_move_new_to_cur_file(imap->mbox, imap->node, appenddir, curdir, newdir, filename, &uidvalidity, &uidnext, newfilename, sizeof(newfilename));
-		if (res < 0) {
-			imap_reply(imap, "NO [SERVERBUG] Append failed");
-			goto cleanup;
-		}
-
-		/* maildir_move_new_to_cur_file conveniently put the size in the filename for us,
-		 * so we can just update the quota usage accordingly rather than having to invalidate it. */
-		if (parse_size_from_filename(newfilename, &size)) {
-			/* It's too late to stat now as a fallback, the file's gone, who knows how big it was now. */
-			mailbox_invalidate_quota_cache(imap->mbox);
-		} else {
-			mailbox_quota_adjust_usage(imap->mbox, (int) -size);
-		}
-
-		if (!strlen_zero(appenddate)) {
-			/* Maintain the INTERNALDATE of the message by using what the client gave us.
-			 * Since we need the filename, do it while we still know a valid filename. */
-			set_file_mtime(newfilename, appenddate);
-		}
-
-		/* Send the APPEND event before we set any flags,
-		 * because the EXISTS response must go out before any flag change events. */
-		uintlist_append(&a, &lengths, &allocsizes, uidnext);
-		/* RFC 3501 6.3.11: We SHOULD notify the client via an untagged EXISTS. */
-		mailbox_initialize_event(&e, EVENT_MESSAGE_APPEND, imap->node, imap->mbox, appenddir);
-		e.uids = &uidnext;
-		e.numuids = 1;
-		e.uidvalidity = uidvalidity;
-		e.msgsize = (size_t) size;
-		mailbox_dispatch_event(&e);
-
-		/* Now, apply any flags to the message... (yet a third rename, potentially) */
-		if (appendflags) {
-			int seqno;
-			char newflagletters[53];
-			/* Generate flag letters from flag bits */
-			gen_flag_letters(appendflags, newflagletters, sizeof(newflagletters));
-			if (imap->numappendkeywords) {
-				strncat(newflagletters, imap->appendkeywords, sizeof(newflagletters) - 1);
-			}
-			seqno = bbs_dir_num_files(newdir) + bbs_dir_num_files(curdir); /* XXX Clunky, but compute the sequence number of this message as the # of messages in this mailbox */
-			if (maildir_msg_setflags(imap, seqno, newfilename, newflagletters)) {
-				bbs_warning("Failed to set flags for %s\n", newfilename);
-			}
-			bbs_debug(3, "Received %d-byte upload (flags: %s)\n", res, newflagletters);
-		} else {
-			bbs_debug(3, "Received %d-byte upload\n", res);
-		}
 		/* XXX RFC 3502 says MULTIAPPEND should be atomic, but this is not.
 		 * One way to make it atomic would be, if a failure occurs,
 		 * go ahead and remove all the messages accumulated in the uintlist so far.
@@ -2375,24 +2428,7 @@ static int handle_append(struct imap_session *imap, char *s)
 		 * that isn't the spirit of an "atomic" operation... */
 	}
 
-	/* RFC 4315 3: if client doesn't have permission to SELECT/EXAMINE, do not send UIDPLUS response */
-	if (IMAP_HAS_ACL(imap->acl, IMAP_ACL_READ)) {
-		if (appends == 1) {
-			/* Don't add 1, this is the current message UID, not UIDNEXT */
-			imap_reply(imap, "OK [APPENDUID %u %u] APPEND completed", uidvalidity, uidnext);
-		} else if (appends > 1) {
-			/* MULTIAPPEND response */
-			char *list = uintlist_to_ranges(a, appends);
-			if (ALLOC_SUCCESS(list)) {
-				imap_reply(imap, "OK [APPENDUID %u %s] APPEND completed", uidvalidity, list);
-				free(list);
-			} else {
-				imap_reply(imap, "OK APPEND completed");
-			}
-		}
-	} else {
-		imap_reply(imap, "OK APPEND completed");
-	}
+	append_response(imap, imap->acl, a, appends, uidvalidity, uidnext);
 
 cleanup:
 	free_if(a);
@@ -2401,6 +2437,499 @@ cleanup:
 cleanup2:
 	free_if(a);
 	return -1;
+}
+
+struct copy_append {
+	struct imap_session *imap;
+	struct imap_client *appendclient;
+	const char *sequences;
+	const char *remotename;
+	const char *tagged_resp;
+	unsigned int usinguid:1;
+	unsigned int synchronizing:1;
+	unsigned int multiappend:1;
+	int appended;
+};
+
+static int copy_append_move_cb(const char *dir_name, const char *filename, int seqno, void *obj)
+{
+	struct copy_append *ca = obj;
+	unsigned int msguid;
+	char fullname[256];
+	int error = 0;
+
+	msguid = imap_msg_in_range(ca->imap, seqno, filename, ca->sequences, ca->usinguid, &error);
+	if (error) {
+		return -1;
+	}
+	if (!msguid) {
+		return 0; /* Not in range */
+	}
+
+	snprintf(fullname, sizeof(fullname), "%s/%s", dir_name, filename);
+	if (unlink(fullname)) {
+		bbs_error("unlink(%s) failed: %s\n", fullname, strerror(errno));
+	}
+	return 0;
+}
+
+static int copy_append_cb(const char *dir_name, const char *filename, int seqno, void *obj)
+{
+	struct copy_append *ca = obj;
+	unsigned int msguid;
+	char fullname[256];
+	int error = 0;
+	struct stat st;
+	struct tm modtime;
+	char timebuf[40];
+	const char *flags;
+	char flagnames[256];
+	char *pos = flagnames;
+	int len = (int) sizeof(flagnames);
+	size_t size;
+	int res, fd;
+	off_t offset = 0;
+
+	msguid = imap_msg_in_range(ca->imap, seqno, filename, ca->sequences, ca->usinguid, &error);
+	if (error) {
+		return -1;
+	}
+	if (!msguid) {
+		return 0; /* Not in range */
+	}
+
+	snprintf(fullname, sizeof(fullname), "%s/%s", dir_name, filename);
+
+	/* Flags */
+	flags = strchr(filename, ':'); /* maildir flags */
+	if (!flags) {
+		bbs_error("Message file %s contains no flags?\n", filename);
+		return -1;
+	}
+	generate_flag_names_full(ca->imap, flags, flagnames, sizeof(flagnames), &pos, &len);
+	/* Here's something awkward: if you were to just send flagnames as is in the APPEND command,
+	 * then something like FLAGS (\Seen) might be sent as the flag contents,
+	 * and libetpan has issues with mailbox flags that contain parentheses,
+	 * so this is an easy way to screw yourself if you do this with a mailbox you can't easily nuke. */
+	flags = flagnames + STRLEN("FLAGS "); /* Skip FLAGS, but not opening parenthesis. */
+
+	/* INTERNALDATE */
+	if (stat(fullname, &st)) {
+		bbs_error("stat(%s) failed: %s\n", fullname, strerror(errno));
+		return -1;
+	}
+	strftime(timebuf, sizeof(timebuf), "%d-%b-%Y %H:%M:%S %z", localtime_r(&st.st_mtim.tv_sec, &modtime));
+
+	/* We could use parse_size_from_filename, but we already called stat(), so we might as well use that size for free */
+	if (st.st_size < 0) {
+		bbs_error("Invalid size: %ld\n", st.st_size);
+		return -1;
+	}
+#pragma GCC diagnostic ignored "-Wconversion"
+	size = (size_t) st.st_size;
+
+	/* APPEND this message */
+	if (!ca->appended || !ca->multiappend) {
+		/* flagnames already includes the parentheses, so don't include additional ones here */
+		res = imap_client_send_log(ca->appendclient, "%s APPEND \"%s\" %s \"%s\" {%lu%s}\r\n", ca->imap->tag, ca->remotename, flags, timebuf, size, ca->synchronizing ? "" : "+");
+		if (res < 0) {
+			goto cleanup;
+		}
+		if (ca->synchronizing) {
+			IMAP_CLIENT_EXPECT(&ca->appendclient->client, "+");
+		}
+	}
+
+	/* Do the actual upload. */
+	fd = open(fullname, O_RDONLY);
+	if (fd < 0) {
+		bbs_error("open(%s) failed: %s\n", fullname, strerror(errno));
+		return -1;
+	}
+	res = sendfile(ca->appendclient->client.wfd, fd, &offset, size);
+#pragma GCC diagnostic pop
+	close(fd);
+	if (res != (int) size) {
+		bbs_warning("Wanted to write %ld bytes but only wrote %d\n", size, res);
+		return -1;
+	}
+
+	if (!ca->multiappend) {
+		SWRITE(ca->appendclient->client.wfd, "\r\n");
+		/* Could get an untagged EXISTS at this point */
+		IMAP_CLIENT_EXPECT_EVENTUALLY(&ca->appendclient->client, 5, ca->tagged_resp);
+	}
+
+	ca->appended++;
+	return 0;
+
+cleanup:
+	return -1;
+}
+
+/*!
+ * \brief Transparently MOVE or COPY where the source and/or destination are (different) remote servers, using APPEND
+ * \param imap
+ * \param dest Destination mailbox name (local or remote)
+ * \param sequences Message or UID sequences
+ * \param usinguid UID command?
+ * \param move Whether to delete the original message after copying it
+ */
+static int handle_remote_move(struct imap_session *imap, char *dest, const char *sequences, int usinguid, int move)
+{
+	int res;
+	unsigned int *a = NULL;
+	int alengths = 0;
+	int allocsizes = 0;
+	size_t taglen;
+	struct imap_client *destclient; 
+	struct imap_traversal traversalstack;
+	const char *remotename;
+	int synchronizing, multiappend;
+	char *flags = NULL, *idate = NULL;
+	int appended = 0;
+	char tagged_resp[64];
+	unsigned int uidvalidity = 0, uidnext = 0;
+
+	/* Whether we're doing MOVE or COPY, we always copy first, since there is no way to "move" between servers.
+	 * We'll purge if the copy succeeds to emulate move, just like when the MOVE extension isn't supported.
+	 * The easier case is when source is local and destination is remote.
+	 * If source is remote, messages returned may not be in the order of the uintlist. The fetch items may not even be in order. */
+
+	memset(&traversalstack, 0, sizeof(traversalstack));
+	set_traversal(imap, &traversalstack);
+	if (set_maildir_readonly(imap, &traversalstack, dest)) {
+		bbs_error("Failed to set maildir for %s\n", dest);
+		return -1;
+	}
+	destclient = traversalstack.client; /* dest is remote if traversal->client; source is remote if imap->client */
+	remotename = destclient ? remote_mailbox_name(traversalstack.client, dest) : NULL;
+	synchronizing = destclient ? !(destclient->virtcapabilities & IMAP_CAPABILITY_LITERAL_PLUS) : 0;
+	/* MOVE/COPY is supposed to be atomic, so if MULTIAPPEND is available, we should take advantage of it */
+	multiappend = destclient ? destclient->virtcapabilities & IMAP_CAPABILITY_MULTIAPPEND : 0;
+
+	/* No setup needed for source, since that mailbox is already selected.
+	 * No setup needed for dest, either, since the APPEND mailbox doesn't need to be selected. */
+
+	if (!destclient) {
+		/* Ensure we have sufficient ACLs for the destination folder */
+		IMAP_REQUIRE_ACL(traversalstack.acl, IMAP_ACL_INSERT);
+	}
+
+	snprintf(tagged_resp, sizeof(tagged_resp), "%s OK", imap->tag);
+
+	if (imap->client) { /* Source is remote, destination is either local or another remote */
+		/* RFC 4549 4.2.2.2: Moving a message from a remote mailbox to a local one */
+		struct bbs_tcp_client *tcpclient = &imap->client->client;
+		res = imap_client_send_log(imap->client, "%s %sFETCH %s (INTERNALDATE FLAGS BODY.PEEK[])\r\n", imap->tag, usinguid ? "UID " : "", sequences);
+		if (res < 0) {
+			goto cleanup;
+		}
+		/* We'll do all the actual parsing per message */
+		taglen = strlen(imap->tag);
+		for (;;) {
+			char appendtmp[260], appendnew[260];
+			int items_received = 0;
+			int destfd = -1;
+			char *tmp, *s, *buf = tcpclient->rldata.buf;
+			res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", SEC_MS(5));
+			if (res <= 0) {
+				bbs_warning("FETCH command timed out\n");
+				goto cleanup;
+			}
+			/* Should get an untagged response, not a tagged NO response */
+			if (!strncmp(buf, imap->tag, taglen)) {
+				break; /* That's all, folks! */
+			}
+			if (!strcmp(buf, ")")) {
+				continue; /* End of previous */
+			}
+			if (!STARTS_WITH(buf, "* ")) {
+				bbs_warning("Unexpected response: %s\n", buf);
+				goto cleanup;
+			}
+			/* Parse the FETCH response, e.g.
+			 * * 42 FETCH (FLAGS (\Seen) INTERNALDATE 2023-01-01 12:00:00 BODY.TEXT[] {742}
+			 * [742 bytes]<CR><LF>
+			 *
+			 * * 42 FETCH (INTERNALDATE 2023-01-01 12:00:00 BODY.TEXT[] {742}
+			 * [742 bytes] FLAGS (\Seen){742} */
+			s = buf + 2; /* Skip " *" */
+			if (strlen_zero(s)) {
+				bbs_warning("Truncated FETCH response?\n");
+				goto cleanup;
+			}
+			tmp = strsep(&s, " "); /* Skip sequence number (don't care) */
+			tmp = strsep(&s, " ");
+			if (strlen_zero(tmp) || strcmp(tmp, "FETCH")) {
+				bbs_warning("Unexpected token: %s\n", tmp);
+				goto cleanup;
+			}
+			if (strlen_zero(s) || *s != '(') {
+				bbs_warning("Unexpected token: %s\n", s);
+				goto cleanup;
+			}
+			s++;
+			while (!strlen_zero(s) && items_received < 3) {
+				tmp = strsep(&s, " ");
+				if (!strcasecmp(tmp, "FLAGS")) {
+					char *flagstr = parensep(&s);
+					if (!strlen_zero(flagstr)) {
+						flags = strdup(flagstr);
+					}
+					items_received++;
+				} else if (!strcasecmp(tmp, "INTERNALDATE")) {
+					char *datestr = quotesep(&s);
+					if (!strlen_zero(datestr)) {
+						if (!isdigit(*datestr)) {
+							bbs_warning("Invalid date: %s\n", datestr); /* Probably a parsing issue */
+							goto cleanup;
+						}
+						idate = strdup(datestr);
+					}
+					items_received++;
+				} else if (STARTS_WITH(tmp, "BODY")) {
+					long size;
+					char *literalstr = strsep(&s, " ");
+					if (destfd != -1) { /* If we got multiple BODY response items */
+						bbs_warning("Already have a destination file descriptor?\n");
+						break;
+					}
+					if (strlen_zero(literalstr) || *literalstr != '{') {
+						bbs_warning("Unexpected token: %s\n", tmp);
+						break;
+					}
+					literalstr++;
+					size = atol(literalstr);
+					if (size < 0) {
+						bbs_warning("Invalid size: %ld\n", size);
+						break;
+					}
+					items_received++;
+					/* Once we get to this point, we need to be ready to copy the source message to the destination,
+					 * even if we haven't gotten all of the other items yet (but hopefully we have!) */
+					if (destclient) {
+						destfd = destclient->client.wfd;
+						/* Preamble for APPEND */
+						/* XXX Hopefully we have received all 3 items in this case, since we need it before the append date */
+						if (items_received != 3) {
+							bbs_warning("Not all metadata will be copied: only received %d/3 FETCH items so far\n", items_received);
+						}
+						if (multiappend && appended) {
+							if (idate) {
+								res = imap_client_send(destclient, "(%s) \"%s\" {%ld%s}\r\n", S_IF(flags), idate, size, synchronizing ? "" : "+");
+							} else {
+								res = imap_client_send(destclient, "(%s) {%ld%s}\r\n", S_IF(flags), size, synchronizing ? "" : "+");
+							}
+						} else {
+							if (idate) {
+								res = imap_client_send_log(destclient, "%s APPEND \"%s\" (%s) \"%s\" {%ld%s}\r\n",
+									imap->tag, remotename, S_IF(flags), idate, size, synchronizing ? "" : "+");
+							} else {
+								res = imap_client_send_log(destclient, "%s APPEND \"%s\" (%s) {%ld%s}\r\n",
+									imap->tag, remotename, S_IF(flags), size, synchronizing ? "" : "+");
+							}
+						}
+						/* If synchronizing, must wait for go ahead */
+						if (synchronizing) {
+							IMAP_CLIENT_EXPECT(&destclient->client, "+");
+						}
+					} else {
+						destfd = maildir_mktemp(traversalstack.dir, appendtmp, sizeof(appendtmp), appendnew);
+						if (destfd < 0) {
+							break;
+						}
+					}
+					/* Actual copy the message from source to dest */
+					res = bbs_readline_getn(tcpclient->rfd, destfd, &tcpclient->rldata, SEC_MS(10), (size_t) size);
+					if (res != size) {
+						bbs_warning("Wanted to copy message of size %lu, but only got %d bytes?\n", size, res);
+						break;
+					}
+				}
+			}
+			if (items_received < 3) {
+				bbs_warning("Incomplete download, only got %d/3 items\n", items_received);
+				goto cleanup;
+			}
+			/* Finish processing */
+			if (destclient) {
+				if (!multiappend) {
+					SWRITE(destclient->client.wfd, "\r\n");
+					/* Could get an untagged EXISTS at this point */
+					IMAP_CLIENT_EXPECT_EVENTUALLY(&destclient->client, 5, tagged_resp); /* tagged OK */
+				}
+			} else {
+				if (destfd != -1) {
+					int appendflags = parse_flags_string(imap, flags);
+					close(destfd); /* Close the file and handle new message as usual */
+					if (process_append(imap, traversalstack.dir, appendtmp, appendnew, idate, appendflags, &uidvalidity, &uidnext, &a, &alengths, &allocsizes)) {
+						imap_reply(imap, "NO [SERVERBUG] Append failed");
+						goto cleanup;
+					}
+				}
+			}
+			free_if(flags);
+			free_if(idate);
+			appended++;
+		}
+		if (destclient && multiappend) {
+			SWRITE(destclient->client.wfd, "\r\n");
+			/* Well, hopefully that all worked! */
+			IMAP_CLIENT_EXPECT(&destclient->client, " OK"); /* tagged OK */
+		}
+		if (move) {
+			/* Now that we copied everything to the destination mailbox, delete the source */
+			res |= imap_client_send_wait_response_noecho(imap->client, -1, SEC_MS(5), "STORE +FLAGS.SILENT (\\Deleted)\r\n");
+			/* We should also EXPUNGE here, technically, but that should be left for the user to do explicitly,
+			 * in case there are other messages present that are marked as \Deleted whose time to be expunged
+			 * has not necessarily yet come. */
+		}
+
+		/* XXX If destclient, in theory if the remote server supports UIDPLUS, we could keep track of the dest UID
+		 * for each message, but we definitely can't do a passthrough of the response since there could be many messages involved. */
+		if (!destclient && usinguid && IMAP_HAS_ACL(imap->acl, IMAP_ACL_READ)) {
+			char *newuidstr = gen_uintlist(a, alengths);
+			imap_reply(imap, "OK [COPYUID %u %s %s] %s completed", uidvalidity, sequences, S_IF(newuidstr), move ? "MOVE" : "COPY");
+			free_if(newuidstr);
+		} else {
+			imap_reply(imap, "OK %s completed", move ? "MOVE" : "COPY");
+		}
+	} else { /* Source is local, destination is definitely remote */
+		struct copy_append ca;
+
+		/* No memset needed, everything is explicitly initialized */
+		ca.imap = imap;
+		ca.appendclient = destclient;
+		ca.remotename = remotename;
+		ca.sequences = sequences;
+		ca.tagged_resp = tagged_resp;
+		SET_BITFIELD(ca.usinguid, usinguid);
+		SET_BITFIELD(ca.synchronizing, synchronizing);
+		SET_BITFIELD(ca.multiappend, multiappend);
+		ca.appended = 0;
+
+		res = maildir_ordered_traverse(imap->curdir, copy_append_cb, &ca);
+		if (!res) {
+			if (multiappend) {
+				SWRITE(destclient->client.wfd, "\r\n");
+				/* Well, hopefully that all worked! */
+				IMAP_CLIENT_EXPECT(&destclient->client, " OK"); /* tagged OK */
+			}
+			if (move) {
+				/* Now, delete all the source messages if this was a move operation */
+				maildir_ordered_traverse(imap->curdir, copy_append_move_cb, &ca); /* Delete */
+			}
+			imap_reply(imap, "OK %s completed", move ? "MOVE" : "COPY");
+		} else {
+			imap_reply(imap, "NO %s failed", move ? "MOVE" : "COPY");
+		}
+	}
+
+	if (destclient) {
+		if (destclient->virtcapabilities & IMAP_CAPABILITY_IDLE) {
+			imap_client_idle_start(destclient);
+		}
+	}
+
+	free_if(flags);
+	free_if(idate);
+	free_if(a);
+	return 0;
+
+cleanup:
+	bbs_warning("Transparent move/copy failed\n");
+	free_if(flags);
+	free_if(idate);
+	free_if(a);
+	return -1;
+}
+
+static int handle_copy_move(struct imap_session *imap, char *s, int usinguid, int move)
+{
+	int res;
+	const char *sequences;
+	char *newbox;
+	int differentservers = 0;
+
+	REQUIRE_ARGS(s);
+	if (!imap->client) {
+		REQUIRE_SELECTED(imap);
+		IMAP_NO_READONLY(imap);
+	}
+
+	sequences = strsep(&s, " "); /* Messages, specified by sequence number or by UID (if usinguid) */
+	REQUIRE_ARGS(sequences);
+	SHIFT_OPTIONALLY_QUOTED_ARG(newbox, s);
+
+	/* The client may think two mailboxes are on the same server, when in reality they are not.
+	 * If virtual mailbox, destination must also be on that server. Otherwise, reject the operation.
+	 * We would need to transparently do an APPEND otherwise (which could be done, but isn't at the moment). */
+
+	/* There are 3 cases to handle here:
+	 * 1) Both mailboxes are local
+	 * 2) Both mailboxes are on the same remote server
+	 * 3) One mailbox is local and one is remote, or both are remote but on different remote servers
+	 *
+	 * Case 1 can be handled normally.
+	 * Case 2 can be handled through forwarding.
+	 * Case 3 requires special handling to make the operation transparent, and we use handle_remote_move for that. */
+	
+	if (imap->client) {
+		if (strncmp(newbox, imap->folder, imap->client->virtprefixlen) || *(newbox + imap->client->virtprefixlen) != HIERARCHY_DELIMITER_CHAR) {
+			differentservers = 1;
+		}
+	} else {
+		/* Still possible that destination is remote. */
+		int destacl;
+		char path[256];
+		if (imap_translate_dir_readonly(imap, newbox, path, sizeof(path), &destacl)) {
+			differentservers = 1; /* Assume it's on some remote (if it's not, then it doesn't exist anywhere, and will fail anyways */
+		}
+	}
+
+	if (differentservers) {
+		bbs_debug(6, "Transparent copy/move between different servers (=> %s)\n", newbox);
+		bbs_assert(imap->client || imap->mbox); /* Either a local mailbox is active or a remote one is */
+		res = handle_remote_move(imap, newbox, sequences, usinguid, move);
+	} else if (imap->client) {
+		int domove = move && imap->client->virtcapabilities & IMAP_CAPABILITY_MOVE;
+		bbs_debug(6, "Transparent copy/move within remote server\n");
+		if (move && !domove) { /* Emulate MOVE if the server doesn't support it */
+			char *find;
+			char *buf = imap->client->client.rldata.buf;
+			/* Server doesn't support MOVE, so we do a COPY instead.
+			 * I sincerely hope that the client issued a UID command in this case, otherwise there's no guarantee
+			 * that the sequence numbers will stay consistent between commands. */
+			res = imap_client_send_wait_response_noecho(imap->client, -1, SEC_MS(5), "%s%s %s \"%s\"\r\n", usinguid ? "UID " : "", "COPY", sequences, newbox);
+			/* Send the response we received, but change "COPY" to "MOVE", since that's the command the client issued */
+			if (!res) {
+				res |= imap_client_send_wait_response_noecho(imap->client, -1, SEC_MS(5), "%sSTORE %s +FLAGS.SILENT (\\Deleted)\r\n", usinguid ? "UID " : "", sequences);
+			}
+			/* Replace COPY with MOVE, but do not replace COPYUID with MOVEUID (that's not a thing!) */
+			find = strstr(buf, "COPY ");
+			if (!find) {
+				bbs_warning("Unexpected COPY response: %s\n", buf);
+				return -1;
+			}
+			memcpy(find, "MOVE", STRLEN("MOVE"));
+			if (res) {
+				return res;
+			}
+			_imap_reply(imap, "%s\r\n", buf);
+		} else {
+			res = imap_client_send_wait_response(imap->client, -1, SEC_MS(5), "%s%s %s \"%s\"\r\n", usinguid ? "UID " : "", domove ? "MOVE" : "COPY", sequences, newbox);
+		}
+	} else {
+		/* It's a normal local operation */
+		if (move) {
+			res = handle_move(imap, sequences, newbox, usinguid);
+		} else {
+			res = handle_copy(imap, sequences, newbox, usinguid);
+		}
+	}
+
+	return res;
 }
 
 /*! \brief Modify the flags for a message */
@@ -3215,7 +3744,6 @@ cleanup:
 	}
 
 #define FORWARD_VIRT_MBOX_MODIFIED(count) FORWARD_VIRT_MBOX_MODIFIED_PREFIX(count, "")
-#define FORWARD_VIRT_MBOX_MODIFIED_UID(count) FORWARD_VIRT_MBOX_MODIFIED_PREFIX(count, "UID ")
 
 #define REQUIRE_SEQNO_ALLOWED() \
 	if (imap_sequence_numbers_prohibited(imap)) { \
@@ -3648,29 +4176,10 @@ static int imap_process(struct imap_session *imap, char *s)
 		res = handle_fetch(imap, s, 0);
 	} else if (!strcasecmp(command, "COPY")) {
 		REQUIRE_SEQNO_ALLOWED();
-		/* The client may think two mailboxes are on the same server, when in reality they are not.
-		 * If virtual mailbox, destination must also be on that server. Otherwise, reject the operation.
-		 * We would need to transparently do an APPEND otherwise (which could be done, but isn't at the moment). */
-		FORWARD_VIRT_MBOX_MODIFIED(1);
-		REQUIRE_SELECTED(imap);
-		IMAP_NO_READONLY(imap);
-		res = handle_copy(imap, s, 0);
+		res = handle_copy_move(imap, s, 0, 0);
 	} else if (!strcasecmp(command, "MOVE")) {
-		REQUIRE_ARGS(s);
 		REQUIRE_SEQNO_ALLOWED();
-		/*! \todo MOVE can be easily emulated if the remote server doesn't support it.
-		 * We just do a COPY, EXPUNGE.
-		 * Also note that the below check only catches if the source folder is remote,
-		 * not if the destination is.
-		 * But currently, either both have to be local or both have to be remote, so that's fine. */
-		if (imap->client && !(imap->client->virtcapabilities & IMAP_CAPABILITY_MOVE)) {
-			imap_reply(imap, "NO MOVE not supported for this mailbox");
-			goto done;
-		}
-		FORWARD_VIRT_MBOX_MODIFIED(1);
-		REQUIRE_SELECTED(imap);
-		IMAP_NO_READONLY(imap);
-		res = handle_move(imap, s, 0);
+		res = handle_copy_move(imap, s, 0, 1);
 	} else if (!strcasecmp(command, "STORE")) {
 		REQUIRE_ARGS(s);
 		REQUIRE_SEQNO_ALLOWED();
@@ -3716,15 +4225,9 @@ static int imap_process(struct imap_session *imap, char *s)
 			FORWARD_VIRT_MBOX_UID();
 			res = handle_fetch(imap, s, 1);
 		} else if (!strcasecmp(command, "COPY")) {
-			FORWARD_VIRT_MBOX_MODIFIED_UID(1);
-			res = handle_copy(imap, s, 1);
+			res = handle_copy_move(imap, s, 1, 0);
 		} else if (!strcasecmp(command, "MOVE")) {
-			if (imap->client && !(imap->client->virtcapabilities & IMAP_CAPABILITY_MOVE)) {
-				imap_reply(imap, "NO MOVE not supported for this mailbox");
-				goto done;
-			}
-			FORWARD_VIRT_MBOX_MODIFIED_UID(1);
-			res = handle_move(imap, s, 1);
+			res = handle_copy_move(imap, s, 1, 1);
 		} else if (!strcasecmp(command, "STORE")) {
 			FORWARD_VIRT_MBOX_UID();
 			res = handle_store(imap, s, 1);

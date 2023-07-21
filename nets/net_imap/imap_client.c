@@ -298,6 +298,7 @@ static int client_command_passthru(struct imap_client *client, int fd, const cha
 	int res;
 	struct pollfd pfds[2];
 	int client_said_something = 0;
+	int c = 0;
 	struct imap_session *imap = client->imap;
 	struct bbs_tcp_client *tcpclient = &client->client;
 
@@ -348,6 +349,10 @@ static int client_command_passthru(struct imap_client *client, int fd, const cha
 #ifdef DEBUG_REMOTE_RESPONSES
 		/* NEVER enable this in production because this will be a huge volume of data */
 		imap_debug(10, "<= %.*s\n", res, buf);
+#else
+		if (c++ < 15 && res > 2 && !strncmp(buf, "* ", STRLEN("* "))) {
+			imap_debug(7, "<= %.*s\n", res, buf);
+		}
 #endif
 		if (!strncmp(buf, tag, (size_t) taglen)) {
 			imap_debug(10, "<= %.*s\n", res, buf);
@@ -365,7 +370,29 @@ static int client_command_passthru(struct imap_client *client, int fd, const cha
 	return res;
 }
 
-int __attribute__ ((format (gnu_printf, 8, 9))) __imap_client_send_wait_response(struct imap_client *client, int fd, int ms, int echo, int lineno, int (*cb)(struct imap_client *client, const char *buf, size_t len, void *cbdata), void *cbdata, const char *fmt, ...)
+int __imap_client_send_log(struct imap_client *client, int log, const char *fmt, ...)
+{
+	char buf[1024]; /* IMAP commands shouldn't be longer than this anyways */
+	int len;
+	va_list ap;
+
+	va_start(ap, fmt);
+	len = vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+
+	if (len >= (int) sizeof(buf)) {
+		bbs_warning("Truncation occured writing %d bytes to buffer of size %lu\n", len, sizeof(buf));
+		return -1;
+	}
+
+	if (log) {
+		bbs_debug(3, "%p => %.*s", client, len, buf);
+	}
+
+	return bbs_write(client->client.wfd, buf, (size_t) len);
+}
+
+int __imap_client_send_wait_response(struct imap_client *client, int fd, int ms, int echo, int lineno, int (*cb)(struct imap_client *client, const char *buf, size_t len, void *cbdata), void *cbdata, const char *fmt, ...)
 {
 	char *buf;
 	int len, res;
@@ -707,7 +734,6 @@ static struct imap_client *__load_virtual_mailbox(struct imap_session *imap, con
 		 * Also, now that we support concurrent connections, there'd be no reason to do this,
 		 * since we'd have to keep logging out and back in. Just use a new connection.
 		 */
-		imap_close_remote_mailbox(imap);
 	}
 
 	if (prefixonly) {

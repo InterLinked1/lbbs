@@ -887,14 +887,16 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 				} /* else, if client already closed, don't try writing any further */
 				break;
 			} else {
-				int now, elapsed;
+				int now, elapsed, cres;
 				struct wss_frame *frame;
 
 				frame = wss_client_frame(client);
 				bbs_debug(1, "WebSocket '%s' frame received\n", wss_frame_name(frame));
 				switch (wss_frame_opcode(frame)) {
 					case WS_OPCODE_TEXT:
-						if (route->callbacks->on_text_message && route->callbacks->on_text_message(&ws, ws.data, wss_frame_payload(frame), wss_frame_payload_length(frame))) {
+						cres = route->callbacks->on_text_message && route->callbacks->on_text_message(&ws, ws.data, wss_frame_payload(frame), wss_frame_payload_length(frame));
+						if (cres) {
+							bbs_debug(5, "Text callback returned %d\n", cres);
 							wss_frame_destroy(frame);
 							goto done; /* Can't break out of loop from within switch */
 						}
@@ -938,7 +940,9 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 			/* Activity on the application's file descriptor of interest. Let it know. */
 			/* Do not reset app_ms_elapsed to 0 here. There is no guarantee the application will send WebSocket data. */
 			if (route->callbacks->on_poll_activity) {
-				if (route->callbacks->on_poll_activity(&ws, ws.data)) {
+				int cres = route->callbacks->on_poll_activity(&ws, ws.data);
+				if (cres) {
+					bbs_debug(5, "Poll activity callback returned %d\n", cres);
 					break;
 				}
 			}
@@ -986,7 +990,9 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 				/* Nothing happened. Let the application know. */
 				app_ms_elapsed = 0;
 				if (route->callbacks->on_poll_timeout) {
-					if (route->callbacks->on_poll_timeout(&ws, ws.data)) {
+					int cres = route->callbacks->on_poll_timeout(&ws, ws.data);
+					if (cres) {
+						bbs_debug(5, "Poll timeout callback returned %d\n", cres);
 						break;
 					}
 				}

@@ -172,6 +172,13 @@ int imap_translate_dir(struct imap_session *imap, const char *directory, char *b
 	return res;
 }
 
+int imap_translate_dir_readonly(struct imap_session *imap, const char *directory, char *buf, size_t len, int *acl)
+{
+	struct mailbox *mbox = NULL;
+	int res = __imap_translate_dir(imap, directory, buf, len, acl, &mbox);
+	return res;
+}
+
 int set_maildir(struct imap_session *imap, const char *mailbox)
 {
 	char dir[256];
@@ -187,6 +194,13 @@ int set_maildir(struct imap_session *imap, const char *mailbox)
 	if (imap_translate_dir(imap, mailbox, dir, sizeof(dir), &acl)) {
 		int exists = 0;
 		struct imap_client *client = load_virtual_mailbox(imap, mailbox, &exists);
+		if (imap->client && client != imap->client) {
+			/* Close the previously selected remote mailbox (if on a different server), if needed.
+			 * Do this here rather than in __load_virtual_mailbox, because when we're acquiring
+			 * a remote mailbox handle for handle_remote_move, we should not just close and start idling
+			 * in the background on the currently selected mailbox. */
+			imap_close_remote_mailbox(imap);
+		}
 		if (client) {
 			imap->client = client; /* Set as active remote client (and currently in remote mailbox) */
 			bbs_debug(6, "Mailbox '%s' has a virtual mapping\n", mailbox);

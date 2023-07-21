@@ -848,26 +848,31 @@ struct mailbox *mailbox_get_by_userid(unsigned int userid)
 
 int mailbox_rdlock(struct mailbox *mbox)
 {
+	bbs_assert_exists(mbox);
 	return pthread_rwlock_tryrdlock(&mbox->lock);
 }
 
 int mailbox_wrlock(struct mailbox *mbox)
 {
+	bbs_assert_exists(mbox);
 	return pthread_rwlock_trywrlock(&mbox->lock);
 }
 
 void mailbox_unlock(struct mailbox *mbox)
 {
+	bbs_assert_exists(mbox);
 	pthread_rwlock_unlock(&mbox->lock);
 }
 
 int mailbox_uid_lock(struct mailbox *mbox)
 {
+	bbs_assert_exists(mbox);
 	return pthread_mutex_lock(&mbox->uidlock);
 }
 
 void mailbox_uid_unlock(struct mailbox *mbox)
 {
+	bbs_assert_exists(mbox);
 	pthread_mutex_unlock(&mbox->uidlock);
 }
 
@@ -1869,6 +1874,7 @@ static int imap_client_capability(struct bbs_tcp_client *client, int *capsptr)
 		PARSE_CAPABILITY("THREAD=REFERENCES", IMAP_CAPABILITY_THREAD_REFERENCES)
 		PARSE_CAPABILITY("MOVE", IMAP_CAPABILITY_MOVE)
 		PARSE_CAPABILITY("BINARY", IMAP_CAPABILITY_BINARY)
+		PARSE_CAPABILITY("MULTIAPPEND", IMAP_CAPABILITY_MULTIAPPEND)
 		else if (STARTS_WITH(cur, "X") || STARTS_WITH(cur, "AUTH=") || !strcmp(cur, "SPECIAL-USE") || !strcmp(cur, "CHILDREN") || !strcmp(cur, "NAMESPACE") || !strcmp(cur, "ID") || !strcmp(cur, "UIDPLUS") || !strcmp(cur, "XLIST") || !strcmp(cur, "I18NLEVEL=1") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "RIGHTS=") || !strcmp(cur, "WITHIN") || !strcmp(cur, "ESEARCH") || !strcmp(cur, "ESORT") || !strcmp(cur, "SEARCHRES") || !strcmp(cur, "COMPRESS=DEFLATE") || !strcmp(cur, "COMPRESS=DEFLATE") || !strcmp(cur, "UTF8=ACCEPT")) {
 			/* Don't care */
 		} else if (!strcmp(cur, "CLIENTACCESSRULES") || !strcmp(cur, "CLIENTNETWORKPRESENCELOCATION") || !strcmp(cur, "BACKENDAUTHENTICATE")) {
