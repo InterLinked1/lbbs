@@ -541,6 +541,13 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 			menusequence[res] = '\0'; /* Null terminate */
 			bbs_node_unbuffer(node);
 
+			if (res == 1 && menusequence[0] == 0) {
+				/* User pressed / and then pressed ENTER. Logically, this should do nothing. */
+				optreq = NULL;
+				opt = 0;
+				continue;
+			}
+
 			/* Everything in the sequence must be alphanumeric: either a letter or number */
 			if (!valid_menusequence(menusequence)) {
 				bbs_node_writef(node, "%sInvalid skip menu sequence%s\n", COLOR(COLOR_RED), COLOR_RESET);
@@ -580,9 +587,12 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 		/* Hey, guess what, we're still holding a RDLOCK on the menu. See what this option is for. */
 		/* We don't need to call MENUITEM_NOT_APPLICABLE here to check if it applies, it wouldn't be in the options buffer if it wasn't */
 		menuitem = find_menuitem(menu, opt);
-		bbs_assert_exists(menuitem); /* It was in the menu and the menu hasn't changed, it better exist. */
-		if (unlikely(!menuitem)) {
-			return -1;
+		/* It was in the menu and the menu hasn't changed, it better exist. */
+		if (!menuitem) {
+			bbs_warning("Could not find option '%c' in menu '%s'\n", opt, menu->name);
+			optreq = NULL;
+			opt = 0;
+			continue; /* Display menu again */
 		}
 		node->menuitem = menuitem->name;
 
