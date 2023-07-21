@@ -53,6 +53,7 @@
  */
 
 /*! \todo IMAP functionality not yet implemented/supported:
+ * - RFC 3516, 4466 BINARY, RFC 5524 URLAUTH=BINARY
  * - RFC 4469 CATENATE
  * - RFC 4959 SASL-IR
  * - RFC 4978 COMPRESS=DEFLATE
@@ -60,17 +61,22 @@
  * - RFC 5257 ANNOTATE, RFC 5464 ANNOTATE (METADATA)
  * - RFC 5258 LIST extensions (obsoletes 3348)
  * - RFC 5267 CONTEXT=SEARCH and CONTEXT=SORT
+ * - RFC 5466 FILTERS
+ * - RFC 5550 URL-PARTIAL
  * - RFC 5738 UTF8
- * - RFC 5957 DISPLAYFROM/DISPLAYTO
+ * - RFC 5957 SORT=DISPLAY, DISPLAYFROM/DISPLAYTO
  * - RFC 6203 FUZZY SEARCH
- * - RFC 6237 ESEARCH (MULTISEARCH)
+ * - RFC 6237 ESEARCH, RFC 7377 MULTISEARCH
  * - RFC 6785 IMAPSIEVE
  * - RFC 6855 UTF8=ACCEPT, UTF8=ONLY
  * - RFC 7888 LITERAL-
+ * - RFC 8440 LIST-MYRIGHTS
+ * - RFC 8457 Important keyword
+ * - RFC 8474 OBJECTID
+ * - RFC 8508 REPLACE
  * - RFC 8514 SAVEDATE
  * - RFC 8970 PREVIEW
  * - RFC 9394 PARTIAL
- * - BINARY extensions (RFC 3516, 4466)
  * - CLIENTID: https://datatracker.ietf.org/doc/html/draft-yu-imap-client-id-10
  *             https://datatracker.ietf.org/doc/html/draft-storey-smtp-client-id-15
  * - UIDONLY: https://www.rfc-editor.org/rfc/internet-drafts/draft-ietf-extra-imap-uidonly-01.html
@@ -2487,8 +2493,7 @@ static int copy_append_cb(const char *dir_name, const char *filename, int seqno,
 	char *pos = flagnames;
 	int len = (int) sizeof(flagnames);
 	size_t size;
-	int res, fd;
-	off_t offset = 0;
+	ssize_t wres;
 
 	msguid = imap_msg_in_range(ca->imap, seqno, filename, ca->sequences, ca->usinguid, &error);
 	if (error) {
@@ -2525,13 +2530,12 @@ static int copy_append_cb(const char *dir_name, const char *filename, int seqno,
 		bbs_error("Invalid size: %ld\n", st.st_size);
 		return -1;
 	}
-#pragma GCC diagnostic ignored "-Wconversion"
 	size = (size_t) st.st_size;
 
 	/* APPEND this message */
 	if (!ca->appended || !ca->multiappend) {
 		/* flagnames already includes the parentheses, so don't include additional ones here */
-		res = imap_client_send_log(ca->appendclient, "%s APPEND \"%s\" %s \"%s\" {%lu%s}\r\n", ca->imap->tag, ca->remotename, flags, timebuf, size, ca->synchronizing ? "" : "+");
+		int res = imap_client_send_log(ca->appendclient, "%s APPEND \"%s\" %s \"%s\" {%lu%s}\r\n", ca->imap->tag, ca->remotename, flags, timebuf, size, ca->synchronizing ? "" : "+");
 		if (res < 0) {
 			goto cleanup;
 		}
@@ -2541,16 +2545,9 @@ static int copy_append_cb(const char *dir_name, const char *filename, int seqno,
 	}
 
 	/* Do the actual upload. */
-	fd = open(fullname, O_RDONLY);
-	if (fd < 0) {
-		bbs_error("open(%s) failed: %s\n", fullname, strerror(errno));
-		return -1;
-	}
-	res = sendfile(ca->appendclient->client.wfd, fd, &offset, size);
-#pragma GCC diagnostic pop
-	close(fd);
-	if (res != (int) size) {
-		bbs_warning("Wanted to write %ld bytes but only wrote %d\n", size, res);
+	wres = bbs_send_file(fullname, ca->appendclient->client.wfd);
+	if (wres != (ssize_t) size) {
+		bbs_warning("Wanted to write %ld bytes but only wrote %ld\n", size, wres);
 		return -1;
 	}
 

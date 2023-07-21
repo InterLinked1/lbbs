@@ -27,7 +27,6 @@
 #include <ctype.h>
 #include <signal.h>
 #include <unistd.h>
-#include <sys/sendfile.h>
 #include <dirent.h>
 
 #include "include/tls.h"
@@ -399,30 +398,6 @@ static char *get_article_id(struct nntp_session *nntp, int number)
 	return nntp->articleid;
 }
 
-static int sendfile_full(const char *filepath, int wfd)
-{
-	int fd, sent;
-	off_t size, offset;
-
-	fd = open(filepath, O_RDONLY, 0600);
-	if (fd < 0) {
-		bbs_error("open(%s) failed: %s\n", filepath, strerror(errno));
-		return -1;
-	}
-	size = lseek(fd, 0, SEEK_END);
-	lseek(fd, 0, SEEK_SET);
-	offset = 0;
-	sent = (int) sendfile(wfd, fd, &offset, (size_t) size);
-	close(fd);
-	if (sent != size) {
-		bbs_error("Wanted to write %lu bytes but only wrote %d?\n", size, sent);
-		return -1;
-	} else {
-		bbs_debug(6, "Sent %d bytes to fd %d\n", sent, wfd);
-	}
-	return 0;
-}
-
 static int on_head(const char *dir_name, const char *filename, struct nntp_session *nntp, int number, int msgfilter, const char *msgidfilter)
 {
 	FILE *fp;
@@ -489,7 +464,7 @@ static int on_article(const char *dir_name, const char *filename, struct nntp_se
 
 	snprintf(fullpath, sizeof(fullpath), "%s/%s", dir_name, filename);
 	nntp_send(nntp, 220, "%d <%s> Article follows", number, msgid);
-	if (sendfile_full(fullpath, nntp->wfd)) {
+	if (bbs_send_file(fullpath, nntp->wfd) < 0) {
 		return -1; /* Just disconnect */
 	}
 	dprintf(nntp->wfd, ".\r\n"); /* Termination character. */
@@ -1045,7 +1020,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, int len)
 			/* List all groups available, in current state. */
 			nntp_send(nntp, 215, "Newsgroup listing follows");
 			/* name, high water mark, low water mark, current status (posting permitted: y/n/m (moderated) */
-			if (sendfile_full(newsgroups_file, nntp->wfd)) {
+			if (bbs_send_file(newsgroups_file, nntp->wfd) < 0) {
 				return -1; /* Just disconnect */
 			}
 			_nntp_send(nntp, ".\r\n");

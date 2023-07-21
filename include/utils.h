@@ -544,6 +544,15 @@ FILE *bbs_mkftemp(char *template, mode_t mode);
 int bbs_copy_file(int srcfd, int destfd, int start, int bytes); /* gcc has fd_arg attributes, but not widely supported yet */
 
 /*!
+ * \brief Send all the data in a file to a file descriptor
+ * \param filepath Filename
+ * \param wfd Destination file descriptor
+ * \retval -1 on failure
+ * \return Number of bytes sent on succes
+ */
+ssize_t bbs_send_file(const char *filepath, int wfd);
+
+/*!
  * \brief Load the contents of a file into a string
  * \param filename Full path to file
  * \param maxsize Maximum file size to load into a string (for safety reasons, to avoid allocating enormous amounts of memory). 0 for no limit.

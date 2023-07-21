@@ -808,7 +808,7 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 	/* If copy_file_range fails, the syscall probably isn't available on this system. */
 #if 0
 	if (copied == -1 && errno == ENOSYS) {
-		/* copy_file_range glibc function doesn't exist on this function. */
+		/* copy_file_range glibc function doesn't exist on this system. */
 		bbs_debug(5, "copy_file_range glibc wrapper doesn't exist?\n");
 		copied = (int) syscall(__NR_copy_file_range, srcfd, &offset, destfd, NULL, (size_t) bytes, 0);
 	}
@@ -826,6 +826,30 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 	}
 	close(destfd);
 	return copied;
+}
+
+ssize_t bbs_send_file(const char *filepath, int wfd)
+{
+	int fd;
+	ssize_t sent;
+	off_t size, offset;
+
+	fd = open(filepath, O_RDONLY, 0600);
+	if (fd < 0) {
+		bbs_error("open(%s) failed: %s\n", filepath, strerror(errno));
+		return -1;
+	}
+	size = lseek(fd, 0, SEEK_END);
+	lseek(fd, 0, SEEK_SET);
+	offset = 0;
+	sent = sendfile(wfd, fd, &offset, (size_t) size);
+	close(fd);
+	if (sent != size) {
+		bbs_error("Wanted to write %lu bytes but only wrote %ld?\n", size, sent);
+		return -1;
+	}
+	bbs_debug(6, "Sent %ld bytes to fd %d\n", sent, wfd);
+	return sent;
 }
 
 char *bbs_file_to_string(const char *filename, size_t maxsize, int *length)
