@@ -927,7 +927,7 @@ int bbs_node_set_speed(struct bbs_node *node, unsigned int bps)
 		return 0;
 	}
 
-	cps = bps + (8 - 1) / 8; /* Round characters per second up */
+	cps = (bps + (8 - 1)) / 8; /* Round characters per second up */
 	pauseus = 1000000 / cps; /* Round pause time between chars down */
 	node->bps = bps;
 	node->speed = pauseus;

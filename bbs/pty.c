@@ -357,10 +357,10 @@ int bbs_node_spy(int fdin, int fdout, unsigned int nodenum)
 }
 
 /*! \brief Emulated speed control for non-serial file descriptors */
-static ssize_t slow_write(int fd, int fd2, const char *restrict buf, size_t len, unsigned int sleepms)
+static ssize_t slow_write(struct pollfd *restrict pfds, int fd, int fd2, ssize_t sofar, char **restrict buf, size_t *restrict len, unsigned int sleepus, int *restrict input)
 {
 	size_t c;
-	ssize_t total_bytes = 0;
+	ssize_t total_bytes = sofar;
 
 	/* This function exists because it is not possible to use termios
 	 * to set the speed of non-serial terminals.
@@ -394,20 +394,27 @@ static ssize_t slow_write(int fd, int fd2, const char *restrict buf, size_t len,
 	 * We should have a way to interrupt output from the terminal, e.g. if this is taking too long.
 	 */
 
-	for (c = 0; c < len; c++) {
+	for (c = 0; *len; c++) {
 		ssize_t res, res2 = 0;
 		if (c) {
-			usleep(sleepms); /* delay in us between each character for I/O */
+			usleep(sleepus); /* delay in us between each character for I/O */
+			/* Sleep for a fixed time rather than polling, because if we were to
+			 * receive and process input, then the output speed would get thrown off. */
+			if (poll(pfds, 1, 0) > 0) { /* This is not very efficient, but it's the best we can do with poll. */
+				*input = 1;
+				return total_bytes;
+			}
 		}
-		res = write(fd, buf, 1);
+		res = write(fd, *buf, 1);
 		if (fd2 != -1) {
-			res2 = write(fd2, buf, 1);
+			res2 = write(fd2, *buf, 1);
 		}
 		if (res <= 0 || (fd2 != -1 && res2 <= 0)) {
 			return res;
 		}
-		total_bytes += res;
-		buf++;
+		total_bytes++; /* res must be 1 here */
+		(*buf)++;
+		(*len)--;
 	}
 	return total_bytes;
 }
@@ -437,16 +444,26 @@ static void trigger_node_disconnect(struct bbs_node *node)
 	bbs_node_unlock(node);
 }
 
+/* According to termios(3) man page, the canonical mode buffer of the PTY is 4096, so this should always be large enough */
+#define PTY_BUFFER_SIZE 4096
+
 void *pty_master(void *varg)
 {
 	struct bbs_node *node = varg;
 	int pres;
 	struct pollfd fds[3];
-	char buf[4096]; /* According to termios(3) man page, the canonical mode buffer of the PTY is 4096, so this should always be large enough */
-	char strippedbuf[sizeof(buf)];
+	char readbuf[PTY_BUFFER_SIZE];
+	char writebuf[PTY_BUFFER_SIZE];
+	char strippedbuf[PTY_BUFFER_SIZE];
 	ssize_t bytes_read, bytes_wrote;
 	long unsigned int numfds;
 	int emulated_crlf = 0, just_did_emulated_crlf = 0;
+	/* Expanded scope for slow_write */
+	size_t slow_bytes_left = 0;
+	ssize_t last_bytes_read = 0;
+	ssize_t lastbyteswrote = 0;
+	char *relaybuf = NULL;
+	unsigned int speed = 0;
 
 	/* Save relevant fields. */
 	unsigned int nodeid;
@@ -477,8 +494,12 @@ void *pty_master(void *varg)
 
 	/* Relay data between terminal (socket side) and pty master */
 	for (;;) {
-		unsigned int speed = 0;
 		int spy = 0, spyfdin, spyfdout = -1;
+
+		if (slow_bytes_left) {
+			goto finishoutput;
+		}
+
 		fds[0].fd = rfd;
 		fds[1].fd = amaster;
 		fds[0].events = fds[1].events = POLLIN;
@@ -517,8 +538,10 @@ void *pty_master(void *varg)
 			continue;
 		}
 
+gotinput:
 		if (fds[0].revents & POLLIN) { /* Got input on socket -> pty */
-			bytes_read = read(rfd, buf, sizeof(buf));
+			char *buf = readbuf;
+			bytes_read = read(rfd, readbuf, sizeof(readbuf));
 			if (bytes_read <= 0) {
 				bbs_debug(10, "socket read returned %ld\n", bytes_read);
 				/* If the PTY master exits, need to get rid of the node. This should do the trick. */
@@ -527,9 +550,9 @@ void *pty_master(void *varg)
 			}
 #ifdef DEBUG_PTY
 			if (isprint(*buf)) {
-				bbs_debug(10, "Node %d: master->slave(%d): %.*s (%d %d)\n", nodeid, bytes_read, bytes_read, buf, *buf, bytes_read > 1 ? *(buf + 1) : -1);
+				bbs_debug(10, "Node %d: master->slave(%ld): %.*s (%d %d)\n", nodeid, bytes_read, (int) bytes_read, buf, *buf, bytes_read > 1 ? *(buf + 1) : -1);
 			} else {
-				bbs_debug(10, "Node %d: master->slave(%d): (%d %d)\n", nodeid, bytes_read, *buf, bytes_read > 1 ? *(buf + 1) : -1);
+				bbs_debug(10, "Node %d: master->slave(%ld): (%d %d)\n", nodeid, bytes_read, *buf, bytes_read > 1 ? *(buf + 1) : -1);
 			}
 #endif
 			if (bytes_read == 2 && *buf == '\r' && *(buf + 1) == '\0') { /* Probably faster than strncmp, and performance really matters here */
@@ -581,13 +604,13 @@ void *pty_master(void *varg)
 				emulated_crlf = just_did_emulated_crlf = 0;
 			}
 			/* We only slow output, not input, so don't use slow_write here, regardless of the speed */
-			bytes_wrote = write(amaster, buf, (size_t) bytes_read);
+			bytes_wrote = bbs_write(amaster, buf, (size_t) bytes_read);
 			/* Don't relay user input to sysop for spying here. If we're supposed to, it'll get echoed back in the output. */
 			if (bytes_wrote != bytes_read) {
 				bbs_error("Expected to write %ld bytes, only wrote %ld\n", bytes_read, bytes_wrote);
 				return NULL;
 			}
-			if (bytes_read == 1 && *buf == 3) {
+			if (bytes_read == 1 && *buf >= 1 && *buf <= 26) {
 				/* In general, we should not intercept messages between 1 and 26 (^A through ^Z).
 				 * They'll pass through fine to children on their own, i.e. ^D, etc. do what you'd expect.
 				 * Handle ^C explicitly here though in case in the future we want to things when we *don't* have a child,
@@ -595,7 +618,7 @@ void *pty_master(void *varg)
 				 * All other CTRL keys can just pass through directly.
 				 */
 				/* 3 = ETX (^C / SIGINT) */
-				if (node->childpid) {
+				if (node->childpid && *buf == 3) {
 					/* If executing a child process, also pass SIGINT on, in addition to writing it to the PTY slave */
 #if 0
 					/* Never mind, this doesn't work (even when run as root)
@@ -633,13 +656,29 @@ void *pty_master(void *varg)
 						bbs_error("SIGINT failed: %s\n", strerror(errno));
 					}
 				} else {
-					bbs_debug(3, "Ignoring ^C and not forwarding it\n");
+					switch (*buf) {
+						case 3: /* ^C */
+						case 26: /* ^Z. The PAUSE/BREAK key typically maps to this, so that's why this is included. */
+							slow_bytes_left = 0;
+							/* Cancel any pending terminal output. This allows users to abort
+							 * a large amount of output, particularly with emulated baud rate. */
+							bbs_debug(3, "Received ^%c, cancelling pending output\n", 'A' - 1 + *buf);
+							break;
+						default:
+							/* XXX In the future, could be used by the BBS to do certain things too */
+							bbs_debug(3, "Ignoring ^%c and not forwarding it\n", 'A' - 1 + *buf);
+					}
 					continue;
 				}
 			}
 		} else if (fds[1].revents & POLLIN) { /* Got input from pty -> socket */
-			char *relaybuf = buf;
-			bytes_read = read(amaster, buf, sizeof(buf) - 1);
+			relaybuf = writebuf;
+
+			if (slow_bytes_left) {
+				goto finishoutput;
+			}
+
+			bytes_read = read(amaster, writebuf, sizeof(writebuf) - 1);
 			if (bytes_read <= 0) {
 				bbs_debug(10, "pty master read returned %ld (%s)\n", bytes_read, strerror(errno));
 				break; /* We'll read 0 bytes upon disconnect */
@@ -650,41 +689,62 @@ void *pty_master(void *varg)
 			 * so this is disabled unless absolutely needed, even with DEBUG_PTY.
 			 */
 #if 0
-			bbs_debug(10, "Node %u: slave->master(%d): %.*s\n", nodeid, bytes_read, bytes_read, buf);
+			bbs_debug(10, "Node %u: slave->master(%d): %.*s\n", nodeid, bytes_read, bytes_read, writebuf);
 #endif
 #endif /* DEBUG_PTY */
 			if (!ansi) {
 				int strippedlen;
 				/* Strip ANSI escape sequences from output for terminal, e.g. TTY/TDD */
-				buf[bytes_read] = '\0'; /* NUL terminate for bbs_ansi_strip */
-				if (!bbs_ansi_strip(buf, (int) bytes_read, strippedbuf, sizeof(strippedbuf), &strippedlen)) {
+				writebuf[bytes_read] = '\0'; /* NUL terminate for bbs_ansi_strip */
+				/*! \todo XXX This should always get smaller... so couldn't this be done in place? */
+				if (!bbs_ansi_strip(writebuf, (int) bytes_read, strippedbuf, sizeof(strippedbuf), &strippedlen)) {
 					bytes_read = strippedlen;
 					relaybuf = strippedbuf;
 				} /* else, failed to strip, just write the original data (possibly containing ANSI escape sequences) */
 			}
 			if (speed) {
 				/* Slow write to both real socket and spying fd simultaneously */
-				bytes_wrote = slow_write(wfd, spyfdout, relaybuf, (size_t) bytes_read, speed);
+				int input;
+				last_bytes_read = bytes_read;
+				slow_bytes_left = (size_t) bytes_read;
+
+				lastbyteswrote = 0;
+finishoutput:
+				input = 0;
+				/* This might seem redundant (we just did the reverse), but is necessary if we just jump here,
+				 * otherwise, bytes_read won't have the right value below */
+				bytes_read = last_bytes_read;
+				bytes_wrote = slow_write(fds, wfd, spyfdout, lastbyteswrote, &relaybuf, &slow_bytes_left, speed, &input);
+				if (input && bytes_wrote >= 0) {
+					/* goto is usually used judiciously in the BBS.
+					 * This is an exception, this function is a mess, and we should clean this up.
+					 * Here, we're interrupting writing output halfway through so we can read and write input,
+					 * then return back to writing the output where we left off. */
+					lastbyteswrote = bytes_wrote;
+					goto gotinput;
+				}
+				slow_bytes_left = 0;
 			} else {
-				bytes_wrote = write(wfd, relaybuf, (size_t) bytes_read);
+				bytes_wrote = bbs_write(wfd, relaybuf, (size_t) bytes_read);
 				if (spy && bytes_wrote == bytes_read) {
-					bytes_wrote = write(spyfdout, relaybuf, (size_t) bytes_read);
+					bytes_wrote = bbs_write(spyfdout, relaybuf, (size_t) bytes_read);
 				}
 			}
 			if (bytes_wrote != bytes_read) {
 				bbs_error("Expected to write %ld bytes, only wrote %ld\n", bytes_read, bytes_wrote);
 			}
 		} else if (numfds == 3 && fds[2].revents & POLLIN) { /* Got input from sysop (node spying) -> pty */
-			bytes_read = read(spyfdin, buf, sizeof(buf));
+			char *buf = readbuf;
+			bytes_read = read(spyfdin, readbuf, sizeof(readbuf));
 			if (bytes_read <= 0) {
 				bbs_debug(10, "pty spy_in read returned %ld (%s)\n", bytes_read, strerror(errno));
 				break; /* We'll read 0 bytes upon disconnect */
 			}
 #ifdef DEBUG_PTY
 			if (isprint(*buf)) {
-				bbs_debug(10, "Node %d: spy_in->slave(%d): %.*s (%d %d)\n", nodeid, bytes_read, bytes_read, buf, *buf, bytes_read > 1 ? *(buf + 1) : -1);
+				bbs_debug(10, "Node %d: spy_in->slave(%ld): %.*s (%d %d)\n", nodeid, bytes_read, (int) bytes_read, buf, *buf, bytes_read > 1 ? *(buf + 1) : -1);
 			} else {
-				bbs_debug(10, "Node %d: spy_in->slave(%d): (%d %d)\n", nodeid, bytes_read, *buf, bytes_read > 1 ? *(buf + 1) : -1);
+				bbs_debug(10, "Node %d: spy_in->slave(%ld): (%d %d)\n", nodeid, bytes_read, *buf, bytes_read > 1 ? *(buf + 1) : -1);
 			}
 #endif
 			if (bytes_read == 2 && *buf == '\r' && *(buf + 1) == '\0') { /* Probably faster than strncmp, and performance really matters here */

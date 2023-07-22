@@ -351,7 +351,7 @@ static void *ssl_io_thread(void *unused)
 					 * Another option might be closing some file descriptors as soon as they become dead,
 					 * rather than waiting until ssl_fd_free. */
 					pfds[i].events = 0;
-					pfds[i].fd = -1; /* Interestingly, this does not seem to trigger a POLLNVAL */
+					pfds[i].fd = -1; /* This does not trigger a POLLNVAL, negative fds are ignored by poll (see poll(2)) */
 					bbs_debug(7, "Skipping dead SSL read connection %p at index %d / %d\n", sfd->ssl, i, i/2);
 				} else {
 					pfds[i].fd = sfd->fd;
