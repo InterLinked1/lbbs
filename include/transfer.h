@@ -67,6 +67,15 @@ int bbs_transfer_timeout(void);
 /*! \brief Get maximum upload file size, in bytes */
 int bbs_transfer_max_upload_size(void);
 
+/*!
+ * \brief Get the path on disk user's home directory
+ * \param node
+ * \param[out] buf
+ * \param len Size of buf
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_transfer_home_dir(struct bbs_node *node, char *buf, size_t len)  __attribute__((nonnull (1, 2)));
+
 /*! \brief Get the user-facing transfer path from a full disk path */
 const char *bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpath);
 

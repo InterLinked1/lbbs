@@ -66,3 +66,6 @@ int bbs_execvp_fd_headless(struct bbs_node *node, int fdin, int fdout, const cha
 
 /*! \brief Same as bbs_execvp_fd_headless, but allow passing an envp */
 int bbs_execvpe_fd_headless(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[], char *const envp[]);
+
+/*! \brief Load system.conf config at startup */
+int bbs_init_system(void);

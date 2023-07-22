@@ -37,6 +37,7 @@
 #include <sys/mount.h>
 #include <sched.h> /* use clone */
 #include <syscall.h>
+#include <dirent.h>
 
 #ifdef __linux__
 #include <linux/version.h>
@@ -49,11 +50,39 @@
 #endif /* LINUX_VERSION_CODE */
 #endif /* __linux__ */
 
+#include "include/config.h"
 #include "include/node.h"
 #include "include/system.h"
 #include "include/utils.h"
 #include "include/term.h"
 #include "include/user.h"
+#include "include/transfer.h"
+
+static char hostname[84] = "bbs";
+static char templatedir[256] = "./rootfs";
+static char rundir[256] = "/tmp/lbbs/rootfs";
+static const char *oldrootname = "/.old";
+
+static int load_config(void)
+{
+	struct bbs_config *cfg = bbs_config_load("system.conf", 0);
+
+	if (!cfg) {
+		return 0;
+	}
+
+	bbs_config_val_set_str(cfg, "container", "hostname", hostname, sizeof(hostname));
+	bbs_config_val_set_path(cfg, "container", "templatedir", templatedir, sizeof(templatedir));
+	bbs_config_val_set_path(cfg, "container", "rundir", rundir, sizeof(rundir));
+
+	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
+	return 0;
+}
+
+int bbs_init_system(void)
+{
+	return load_config();
+}
 
 /* Can be used to debug controlling terminal for child
  * (best done with something like /bin/bash, since it will complain if it can't set the terminal process group
@@ -416,10 +445,114 @@ static int setup_namespace(pid_t pid)
 	return 0;
 }
 
-static const char *hostname = "bbs";
-static const char *newroot = "./rootfs";
-static const char *oldroot = "./rootfs/.old";
-static const char *oldrootname = "/.old";
+static void temp_container_root(char *buf, size_t len, int pid)
+{
+	snprintf(buf, len, "%s/%d", rundir, pid);
+}
+
+static int clone_container(char *rootdir, size_t rootlen, int pid)
+{
+	/* templatedir contains a base, template root filesystem.
+	 * However, we need to clone certain directories for a functional "container",
+	 * since they need to be writable. */
+
+	DIR *dir;
+	struct dirent *entry;
+
+	if (!(dir = opendir(templatedir))) {
+		bbs_error("Error opening directory - %s: %s\n", templatedir, strerror(errno));
+		return -1;
+	}
+
+	/* Each session (not just each user) gets its own directory. So use the current PID, not the user ID. */
+	temp_container_root(rootdir, rootlen, pid);
+	if (!eaccess(rootdir, R_OK) && bbs_delete_directory(rootdir)) {
+		/* If it exists, delete it, it must be leftover from a previous session with the same PID.
+		 * Can't be an in-use session because that would imply a second process with the same PID. */
+		return -1;
+	}
+
+	/* Now, make the directory fresh */
+	if (mkdir(rootdir, 0700)) {
+		bbs_error("mkdir(%s) failed: %s\n", rootdir, strerror(errno));
+		return -1;
+	}
+
+	while ((entry = readdir(dir)) != NULL) { /* Don't just bail out if errno becomes set, modules could set errno when we load them. */
+		char fulldir[PATH_MAX];
+		char symlinkdir[PATH_MAX];
+		if (entry->d_type != DT_DIR || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		/* A Debian container should have these top-level directories:
+		 * /bin
+		 * /boot
+		 * /dev
+		 * /etc
+		 * /home
+		 * /lib
+		 * /lib64
+		 * /media
+		 * /mnt
+		 * /opt
+		 * /proc
+		 * /root
+		 * /run
+		 * /sbin
+		 * /srv
+		 * /sys
+		 * /tmp
+		 * /usr
+		 * /var
+		 */
+
+		snprintf(fulldir, sizeof(fulldir), "%s/%s", templatedir, entry->d_name);
+		snprintf(symlinkdir, sizeof(symlinkdir), "%s/%s", rootdir, entry->d_name);
+
+		/* We can't bind without a directory existing there already */
+		if (mkdir(symlinkdir, 0700)) {
+			bbs_error("mkdir(%s) failed: %s\n", symlinkdir, strerror(errno));
+			return -1;
+		}
+
+		/* Don't symlink these, we'll make fresh copies momentarily */
+		if (!strcmp(entry->d_name, "proc") || !strcmp(entry->d_name, "tmp") || !strcmp(entry->d_name, "home")) {
+			continue;
+		}
+		/* MS_REMOUNT is needed for MS_RDONLY to actually take effect for this mountpoint. See mount(2).
+		 * However, it's a bit peculiar. MS_REMOUNT can only be used if it's already mounted.
+		 * So we have to mount it first without MS_REMOUNT, then mount again with MS_REMOUNT. */
+		if (mount(fulldir, symlinkdir, "ext4", MS_BIND | MS_REC | MS_RDONLY, NULL)) {
+			bbs_error("mount %s as %s failed: %s\n", fulldir, symlinkdir, strerror(errno));
+			return -1;
+		}
+		if (mount(fulldir, symlinkdir, "ext4", MS_REMOUNT | MS_BIND | MS_REC | MS_RDONLY, NULL)) {
+			bbs_error("mount %s as %s failed: %s\n", fulldir, symlinkdir, strerror(errno));
+			return -1;
+		}
+	}
+	closedir(dir);
+
+	return 0;
+}
+
+/*! \brief Read from a file descriptor until it closes */
+static ssize_t full_read(int fd, char *restrict buf, size_t len)
+{
+	ssize_t total = 0;
+	for (;;) {
+		ssize_t res = read(fd, buf, len);
+		if (res < 0) {
+			return res;
+		} else if (!res) { /* In the unlikely case that we exhaust the buffer, if len is 0, it will return 0 anyways */
+			break;
+		}
+		total += res;
+		buf += res;
+		len -= (size_t) res;
+	}
+	return total;
+}
 
 static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[], char *const envp[], int isolated)
 {
@@ -428,10 +561,10 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 	int fd = fdout;
 	int res = -1;
 	int pfd[2], procpipe[2];
-	char fullpath[256] = "", fullterm[32] = "", fulluser[48] = "";
+	char fullpath[256] = "", fullterm[32] = "", fulluser[48] = "", homeenv[433] = "HOME=";
 	char *parentpath;
-#define MYENVP_SIZE 4
-	char *myenvp[MYENVP_SIZE] = { fullpath, fullterm, NULL, NULL }; /* End with 2 NULLs so we can add something if needed */
+#define MYENVP_SIZE 5 /* End with 3 NULLs so we can add up to 2 env vars if needed */
+	char *myenvp[MYENVP_SIZE] = { fullpath, fullterm, NULL, NULL, NULL }; /* Last NULL is always the sentinel */
 
 	if (!envp) {
 		envp = myenvp;
@@ -483,8 +616,8 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		flags &= ~CLONE_SIGHAND;
 #endif
 
-		if (eaccess(newroot, R_OK)) {
-			bbs_error("rootfs directory '%s' does not exist\n", newroot);
+		if (eaccess(templatedir, R_OK)) {
+			bbs_error("rootfs template directory '%s' does not exist\n", templatedir);
 			return -1;
 		} else if (pipe(procpipe)) {
 			bbs_error("pipe failed: %s\n", strerror(errno));
@@ -556,22 +689,66 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 			}
 		}
 
-#define SYSCALL_OR_DIE(func, ...) if (func(__VA_ARGS__) < 0) { fprintf(stderr, #func " failed: %s\n", strerror(errno)); _exit(errno); }
+#define SYSCALL_OR_DIE(func, ...) if (func(__VA_ARGS__) < 0) { fprintf(stderr, #func " failed (ln %d): %s\n", __LINE__, strerror(errno)); _exit(errno); }
 #ifndef pivot_root
 #define pivot_root(new, old) syscall(SYS_pivot_root, new, old)
 #endif
 
 		if (isolated) {
 			struct utsname uts;
-			char c;
+			char pidbuf[15];
+			char oldroot[384 + STRLEN("/.old")], newroot[384];
+			char homedir[438];
 
 			/* Wait until parent has updated mappings. */
-			res = (int) read(procpipe[0], &c, 1);
-			if (res != 1) {
+			res = (int) full_read(procpipe[0], pidbuf, sizeof(pidbuf));
+			if (res < 1) {
 				fprintf(stderr, "read returned %d for fd %d: %s\n", res, procpipe[0], strerror(errno));
 				_exit(errno);
 			}
 			close(procpipe[0]);
+
+			/* Prepare temporary container */
+			if (clone_container(newroot, sizeof(newroot), atoi(pidbuf))) {
+				_exit(errno);
+			}
+
+			/* Instead of showing root@bbs if we're launching a shell, which is just confusing, show the BBS username */
+			if (node && envp == myenvp) {
+				char *tmp;
+				char masterhomedir[256];
+
+				const char *username = bbs_user_is_registered(node->user) ? bbs_username(node->user) : "guest";
+				/* Used if /root/.bashrc in rootfs contains this prompt override:
+				 * PS1='${debian_chroot:+($debian_chroot)}$BBS_USER@\h:\w\$ '
+				 */
+				myenvp[2] = fulluser;
+				snprintf(fulluser, sizeof(fulluser), "BBS_USER=%s", username);
+				/* Make it all lowercase, per *nix conventions */
+				username = tmp = fulluser + STRLEN("BBS_USER=");
+				while (*tmp) {
+					*tmp= (char) tolower(*tmp);
+					tmp++;
+				}
+
+				/* Make the user's home directory accessible within the container, at /home/${BBS_USERNAME} in the container */
+				if (bbs_transfer_home_dir(node, masterhomedir, sizeof(masterhomedir))) {
+					_exit(errno);
+				}
+				snprintf(homeenv + STRLEN("HOME="), sizeof(homeenv) - STRLEN("HOME="), "/home/%s", username);
+				snprintf(homedir, sizeof(homedir), "%s/home/%s", newroot, username);
+				SYSCALL_OR_DIE(mkdir, homedir, 0700);
+				SYSCALL_OR_DIE(mount, masterhomedir, homedir, "bind", MS_BIND | MS_REC, NULL);
+
+				/* Also set the $HOME var to change the home directory from /root to /home/${BBS_USERNAME} */
+				myenvp[3] = homeenv;
+				/* However, now that we changed $HOME, bash for example will look for /home/${BBS_USERNAME}/.bashrc, not /root/.bashrc
+				 * So if the files in /root do not exist in the user's home directory, copy them there. */
+				
+			}
+
+			snprintf(oldroot, sizeof(oldroot), "%s%s", newroot, oldrootname);
+
 			SYSCALL_OR_DIE(sethostname, hostname, strlen(hostname)); /* Change hostname in child's UTS namespace */
 			SYSCALL_OR_DIE(uname, &uts);
 
@@ -585,30 +762,45 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 			SYSCALL_OR_DIE(chdir, "/");
 			SYSCALL_OR_DIE(umount2, oldrootname, MNT_DETACH);
 
+			if (node && envp == myenvp) {
+				FILE *fp;
+				/* cd to the home directory; this way, if this is launching a shell session,
+				 * it's a better user experience. Only makes sense to do this after we've changed the root. */
+				SYSCALL_OR_DIE(chdir, homeenv + STRLEN("HOME="));
+				/* We also have to handle the motd (Message of the Day).
+				 * The shell does not display the MOTD, the login program does after login before spawning the shell.
+				 * So, if there's an /etc/motd in the container, display its contents before we actually call exec.
+				 * Of course, we should only do this if we are actually launching a shell!
+				 * Fortunately, /etc/shells contains the list of shells, so we don't need to guess or hardcode a list. */
+				fp = fopen("/etc/shells", "r");
+				if (fp) {
+					char line[64];
+					int is_shell = 0;
+					while ((fgets(line, sizeof(line), fp))) {
+						bbs_strterm(line, '\n');
+						if (!strcmp(line, filename)) {
+							is_shell = 1;
+							break;
+						}
+					}
+					fclose(fp);
+					if (is_shell) {
+						fp = fopen("/etc/motd", "r");
+						if (fp) {
+							while ((fgets(line, sizeof(line), fp))) {
+								fputs(line, stdout); /* Use fputs instead of puts, since puts adds its own newline */
+							}
+							fclose(fp);
+						}
+					}
+				}
+			}
+
 			/* It would be "nice to have" cgroup integration here as well,
 			 * to control resource usage within the container environment.
 			 * However, you have to be root to create a cgroup so we can't do this automatically
 			 * (unless we're root, which hopefully we're not!)
 			 * However, a user could set up a cgroup and pass in cgexec as the progname. */
-
-			/* Instead of showing root@bbs if we're launching a shell, which is just confusing, show the BBS username */
-			if (node) {
-				const char *username = bbs_user_is_registered(node->user) ? bbs_username(node->user) : "guest";
-				if (envp == myenvp) {
-					char *tmp;
-					/* Used if /root/.bashrc in rootfs contains this prompt override:
-					 * PS1='${debian_chroot:+($debian_chroot)}$BBS_USER@\h:\w\$ '
-					 */
-					myenvp[MYENVP_SIZE - 2] = fulluser;
-					snprintf(fulluser, sizeof(fulluser), "BBS_USER=%s", username);
-					/* Make it all lowercase, per *nix conventions */
-					tmp = fulluser + STRLEN("BBS_USER=");
-					while (*tmp) {
-						*tmp= (char) tolower(*tmp);
-						tmp++;
-					}
-				}
-			}
 		}
 
 		res = execvpe(filename, argv, envp);
@@ -635,8 +827,10 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		close(procpipe[0]);
 		res = setup_namespace(pid);
 		if (!res) {
-			char c = 0;
-			write(procpipe[1], &c, 1); /* Write to write end of pipe, to signal that UID/GID maps have been updated. */
+			char childpid[10];
+			/* Also write the child PID, since with CLONE_NEWPID, the child can't use getpid() to get the real child PID */
+			size_t pidlen = (size_t) snprintf(childpid, sizeof(childpid), "%d", pid);
+			write(procpipe[1], childpid, pidlen); /* Write to write end of pipe, to signal that UID/GID maps have been updated. */
 		}
 		close(procpipe[1]);
 	}
@@ -672,6 +866,14 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		 * Just blindly set it to 0.
 		 */
 		node->childpid = 0;
+	}
+	if (isolated) {
+		char rootdir[268];
+		/* Clean up the temporary container, if one was created */
+		temp_container_root(rootdir, sizeof(rootdir), pid);
+		if (!eaccess(rootdir, R_OK) && bbs_delete_directory(rootdir)) {
+			bbs_warning("Failed to remove temporary container rootfs: %s\n", rootdir);
+		}
 	}
 	if (fd == -1) {
 		if (bbs_poll(pfd[0], 0) == 0) {

@@ -525,6 +525,13 @@ int bbs_file_exists(const char *path);
 int bbs_ensure_directory_exists(const char *path);
 
 /*!
+ * \brief Recursively delete a directory
+ * \param path Directory to delete, recursively
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_delete_directory(const char *path);
+
+/*!
  * \brief Create a temporary FILE*
  * \param template template ending in XXXXXX to pass to mkstemp
  * \param mode File mode for chmod

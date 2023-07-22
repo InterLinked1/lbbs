@@ -124,7 +124,6 @@
 #include <signal.h>
 #include <unistd.h>
 #include <dirent.h>
-#include <ftw.h>
 #include <poll.h>
 #include <utime.h>
 #include <sys/sendfile.h>
@@ -3361,35 +3360,6 @@ static int handle_create(struct imap_session *imap, char *s)
 	return 0;
 }
 
-static int nftw_rm(const char *path, const struct stat *st, int flag, struct FTW *f)
-{
-	int res;
-
-	UNUSED(st);
-	UNUSED(f);
-
-	if (flag == FTW_DP) { /* directory */
-		res = rmdir(path);
-	} else {
-		res = unlink(path);
-	}
-	if (res) {
-		bbs_error("Failed to remove %s: %s\n", path, strerror(errno));
-	}
-	return res;
-}
-
-static int recursive_rmdir(const char *path)
-{
-	/* can't use rmdir, since that's only good for empty directories.
-	 * A maildir will NEVER be empty, so use nftw instead. */
-	if (nftw(path, nftw_rm, 2, FTW_MOUNT | FTW_PHYS | FTW_DEPTH)) {
-		bbs_error("nftw(%s) failed: %s\n", path, strerror(errno));
-		return -1;
-	}
-	return 0;
-}
-
 static int handle_delete(struct imap_session *imap, char *s)
 {
 	char path[256];
@@ -3430,7 +3400,7 @@ static int handle_delete(struct imap_session *imap, char *s)
 
 	/* We're a nice server: we allow deleting non-empty mailboxes */
 	MAILBOX_TRYRDLOCK(imap);
-	if (recursive_rmdir(path)) {
+	if (bbs_delete_directory(path)) {
 		mailbox_unlock(imap->mbox);
 		imap_reply(imap, "NO [SERVERBUG] DELETE failed");
 		return 0;

@@ -123,6 +123,15 @@ int transfer_make_longname(const char *file, struct stat *st, char *buf, size_t 
 	return snprintf(p, len - (size_t) (p - buf), " %s %s", modtime, file);
 }
 
+int bbs_transfer_home_dir(struct bbs_node *node, char *buf, size_t len)
+{
+	if (!bbs_user_is_registered(node->user)) {
+		return -1;
+	}
+	snprintf(buf, len, "%s/home/%d", rootdir, node->user->id);
+	return bbs_ensure_directory_exists(buf);
+}
+
 /*! \note This implementation assumes the userpath is always a subset of the diskpath */
 const char *bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpath)
 {

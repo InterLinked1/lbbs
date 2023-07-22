@@ -50,6 +50,7 @@
 #include "include/module.h" /* use load_modules */
 #include "include/alertpipe.h"
 #include "include/os.h"
+#include "include/system.h"
 #include "include/config.h"
 #include "include/menu.h"
 #include "include/mail.h"
@@ -779,7 +780,7 @@ static int write_pid(void)
 
 static int load_config(void)
 {
-	const char *val;
+	int tmp;
 	struct bbs_config *cfg = bbs_config_load("bbs.conf", 0);
 
 	if (!cfg) {
@@ -787,33 +788,21 @@ static int load_config(void)
 	}
 
 	/* Run user/group */
-	val = bbs_config_val(cfg, "run", "user");
-	if (!strlen_zero(val)) {
-		runuser = strdup(val);
-	}
-	val = bbs_config_val(cfg, "run", "group");
-	if (!strlen_zero(val)) {
-		rungroup = strdup(val);
-	}
-	val = bbs_config_val(cfg, "run", "dumpcore");
-	if (!strlen_zero(val)) {
-		option_dumpcore = S_TRUE(val);
-	}
+	bbs_config_val_set_dstr(cfg, "run", "user", &runuser);
+	bbs_config_val_set_dstr(cfg, "run", "group", &rungroup);
+	bbs_config_val_set_true(cfg, "run", "dumpcore", &option_dumpcore);
 
 	/* Logger options */
-	val = bbs_config_val(cfg, "logger", "verbose");
-	if (!strlen_zero(val)) {
-		bbs_set_verbose(atoi(val));
-		fprintf(stderr, "Verbose level set to %d\n", atoi(val));
+	if (!bbs_config_val_set_int(cfg, "logger", "verbose", &tmp)) {
+		bbs_set_verbose(tmp);
+		fprintf(stderr, "Verbose level set to %d\n", tmp);
 	}
-	val = bbs_config_val(cfg, "logger", "debug");
-	if (!strlen_zero(val)) {
-		bbs_set_debug(atoi(val));
-		fprintf(stderr, "Debug level set to %d\n", atoi(val));
+	if (!bbs_config_val_set_int(cfg, "logger", "debug", &tmp)) {
+		bbs_set_debug(tmp);
+		fprintf(stderr, "Debug level set to %d\n", tmp);
 	}
-	val = bbs_config_val(cfg, "logger", "logfile_debug");
-	if (!strlen_zero(val)) {
-		max_logfile_debug_level = atoi(val);
+	if (!bbs_config_val_set_int(cfg, "logger", "logfile_debug", &tmp)) {
+		max_logfile_debug_level = tmp;
 		fprintf(stderr, "Max log file debug level set to %d\n", max_logfile_debug_level);
 	}
 
@@ -898,6 +887,7 @@ int main(int argc, char *argv[])
 	CHECK_INIT(atexit(bbs_atexit));
 	CHECK_INIT(bbs_init_os_info());
 	CHECK_INIT(bbs_vars_init());
+	CHECK_INIT(bbs_init_system());
 	CHECK_INIT(bbs_mail_init());
 	CHECK_INIT(bbs_load_menus(0));
 	CHECK_INIT(bbs_load_nodes());
