@@ -147,7 +147,7 @@ int imap_client_idle_start(struct imap_client *client)
 {
 	/* Now, IDLE on it so we get updates for that mailbox */
 	SWRITE(client->client.wfd, "idle IDLE\r\n");
-	if (bbs_tcp_client_expect(&client->client, "\r\n", 1, SEC_MS(1), "+")) {
+	if (bbs_tcp_client_expect(&client->client, "\r\n", 1, SEC_MS(3), "+")) {
 		bbs_warning("Failed to start IDLE\n");
 		return -1;
 	}
@@ -159,7 +159,7 @@ int imap_client_idle_start(struct imap_client *client)
 int imap_client_idle_stop(struct imap_client *client)
 {
 	SWRITE(client->client.wfd, "DONE\r\n");
-	if (bbs_tcp_client_expect(&client->client, "\r\n", 1, SEC_MS(1), "idle OK")) { /* tagged OK response */
+	if (bbs_tcp_client_expect(&client->client, "\r\n", 1, SEC_MS(3), "idle OK")) { /* tagged OK response */
 		bbs_warning("Failed to terminate IDLE for %s\n", client->virtprefix);
 		return -1;
 	}

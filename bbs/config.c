@@ -302,7 +302,11 @@ static struct bbs_config *config_parse(const char *name)
 		return NULL;
 	}
 
-	snprintf(fullname, sizeof(fullname), "%s/%s", bbs_config_dir(), name);
+	if (*name == '/') { /* Full path */
+		safe_strncpy(fullname, name, sizeof(fullname));
+	} else { /* Path relative to config dir */
+		snprintf(fullname, sizeof(fullname), "%s/%s", bbs_config_dir(), name);
+	}
 	if (access(fullname, R_OK)) {
 		/* Config files are optional, not mandatory, so this is a warning only, not an error. */
 		bbs_warning("Config file %s does not exist\n", fullname);

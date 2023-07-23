@@ -100,7 +100,7 @@ static int status_size_cache_fetch(struct imap_client *client, const char *remot
 		return -1;
 	}
 	if (bbs_kvs_get(key, keylen, buf, len, NULL)) {
-		bbs_debug(9, "Cache file does not exist\n");
+		bbs_debug(9, "Cached value does not exist\n");
 		return -1; /* Not an error, just the cache file didn't exist (probably the first time) */
 	}
 
@@ -302,6 +302,7 @@ static int append_size_item(struct imap_client *client, const char *remotename, 
 	size_t mb_size = 0;
 	int cached = 0;
 	char *tmp;
+	int try_cached = 1;
 
 	/* Check the cache to see if we've already done a FETCH 1:* before and if the mailbox has changed since.
 	 * If not, the SIZE will be the same as last time, and we can just return that.
@@ -315,7 +316,7 @@ static int append_size_item(struct imap_client *client, const char *remotename, 
 
 	/* Get the STATUS response and size from last time */
 	if (status_size_cache_fetch(client, remotename, &mb_size, buf, sizeof(buf))) {
-		return -1;
+		try_cached = 0;
 	}
 
 	curlen = strlen(remote_status_resp);
@@ -323,7 +324,7 @@ static int append_size_item(struct imap_client *client, const char *remotename, 
 	/* We subtract 2 as the last characters won't match.
 	 * In the raw response from the server, we'll have a ) at the end for end of response,
 	 * but in the cached version, we appended the SIZE so there'll be a space there e.g. " SIZE XXX" */
-	if (!strncmp(remote_status_resp, buf, curlen - 2)) {
+	if (try_cached && !strncmp(remote_status_resp, buf, curlen - 2)) {
 		/* The STATUS response is completely the same as last time, so we can just reuse the SIZE directly. */
 		cached = 1;
 	} else if (strstr(remote_status_resp, "MESSAGES 0")) {

@@ -31,10 +31,11 @@
 #include "include/user.h"
 #include "include/oauth.h"
 #include "include/json.h"
+#include "include/transfer.h"
 
 /* Helpful resources:
  * https://github.com/google/gmail-oauth2-tools/wiki/OAuth2DotPyRunThrough
- * This is useful, but it doesn't quite work anymore, but it gets you most of the way there.
+ * This is useful; it doesn't quite work anymore, but it gets you most of the way there.
  */
 
 struct oauth_client {
@@ -74,16 +75,19 @@ static int add_oauth_client(const char *name, const char *clientid, const char *
 	}
 
 	/* Allocate */
-	RWLIST_WRLOCK(&clients);
-	RWLIST_TRAVERSE(&clients, client, entry) {
-		if (!strcmp(client->name, name)) {
-			bbs_error("Client '%s' already defined\n", name);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&clients, client, entry) {
+		if (userid == client->userid && !strcmp(client->name, name)) {
+			bbs_debug(3, "Client '%s', user ID %u already defined, replacing\n", name, userid);
+			/* If a user updated the .oauth.conf file in his/her home directory,
+			 * we'll need to rescan it, and we'll call add_oauth_client again.
+			 * We should update the existing config entry, rather than just aborting. */
+			RWLIST_REMOVE_CURRENT(entry);
 			break;
 		}
 	}
+	RWLIST_TRAVERSE_SAFE_END;
 	if (client) {
-		RWLIST_UNLOCK(&clients);
-		return -1;
+		free_client(client);
 	}
 	namelen = strlen(name);
 	idlen = strlen(clientid);
@@ -92,7 +96,6 @@ static int add_oauth_client(const char *name, const char *clientid, const char *
 	urllen = strlen(posturl);
 	client = calloc(1, sizeof(*client) + namelen + idlen + secretlen + refreshlen + urllen + 5); /* NULs for each of them */
 	if (ALLOC_FAILURE(client)) {
-		RWLIST_UNLOCK(&clients);
 		return -1;
 	}
 	/* All safe */
@@ -128,7 +131,6 @@ static int add_oauth_client(const char *name, const char *clientid, const char *
 	pthread_mutex_init(&client->lock, NULL);
 
 	RWLIST_INSERT_HEAD(&clients, client, entry);
-	RWLIST_UNLOCK(&clients);
 	return 0;
 }
 
@@ -213,34 +215,31 @@ cleanup:
 	return res;
 }
 
-static int get_oauth_token(struct bbs_user *user, const char *name, char *buf, size_t len)
-{
-	int res = -1;
-	struct oauth_client *client;
+#define MAX_USER_OAUTH_TOKENS 50
 
-	RWLIST_RDLOCK(&clients);
-	RWLIST_TRAVERSE(&clients, client, entry) {
-		if (!strcmp(client->name, name)) {
-			if (client->userid && (!bbs_user_is_registered(user) || user->id != client->userid)) {
-				bbs_warning("OAuth user '%s' restricted to user %u (rejecting %u\n", name, client->userid, user->id);
-				continue;
-			}
-			res = fetch_token(client, buf, len);
-			break;
-		}
-	}
-	RWLIST_UNLOCK(&clients);
-	return res;
-}
-
-static int load_config(void)
+static int load_config_file(const char *filename, unsigned int forceuserid, const char *match)
 {
 	struct bbs_config *cfg;
 	struct bbs_config_section *section = NULL;
 	struct bbs_keyval *keyval = NULL;
+	int namematch = 0;
+	int added = 0;
 
-	cfg = bbs_config_load("mod_oauth.conf", 1);
+	/*! \note
+	 * This module config is a little bit different.
+	 * We do read in a general module config file, but in addition to that,
+	 * we also read config files in each user's home directory (as needed, not all upfront),
+	 * since this is something that users need to be able to configure themselves.
+	 * Thus, while it's possible to configure things in the general config file,
+	 * it's expected that most configuration will be done by users in their own config files.
+	 */
+
+	/* If there are concurrent calls to get a user token, we need to serialize these
+	 * to one thread doesn't free a cfg while another thread is still using it. */
+	RWLIST_WRLOCK(&clients);
+	cfg = bbs_config_load(filename, 1); /* Use cached version if available, if user has updated config, we'll reparse */
 	if (!cfg) {
+		RWLIST_UNLOCK(&clients);
 		return -1;
 	}
 
@@ -271,9 +270,64 @@ static int load_config(void)
 				bbs_warning("Unknown config directive: %s\n", key);
 			}
 		}
+		if (forceuserid) {
+			userid = forceuserid;
+		}
+		if (match && !strcmp(bbs_config_section_name(section), match)) {
+			namematch = 1;
+		}
 		add_oauth_client(bbs_config_section_name(section), clientid, clientsecret, refreshtoken, accesstoken, posturl, expires, userid);
+		if (forceuserid && added++ > MAX_USER_OAUTH_TOKENS) {
+			/* Prevent a user from loading an unbounded amount of token mappings into memory. */
+			bbs_warning("Maximum user OAuth token mappings exceeded, ignoring remaining mappings\n");
+			break;
+		}
 	}
-	return 0;
+	RWLIST_UNLOCK(&clients);
+	return !match || namematch ? 0 : -1;
+}
+
+static int get_oauth_token(struct bbs_user *user, const char *name, char *buf, size_t len)
+{
+	int res = -1;
+	struct oauth_client *client;
+	unsigned int userid = bbs_user_is_registered(user) ? user->id : 0;
+
+	RWLIST_RDLOCK(&clients);
+	RWLIST_TRAVERSE(&clients, client, entry) {
+		/* Because users can name their token mappings, the name on its own is not unique.
+		 * However, the name + user ID should be. So either it's the user's token,
+		 * or it's a token that anybody can use. */
+		if (!strcmp(client->name, name) && (!client->userid || client->userid == userid)) {
+			res = fetch_token(client, buf, len);
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&clients);
+
+	if (!client || res) { /* Didn't find a matching token, or it failed the first time */
+		/* Didn't find any matching OAuth token. Look in the user's home directory and see if it's there. */
+		char useroauthfile[256];
+		snprintf(useroauthfile, sizeof(useroauthfile), "%s/home/%d/.oauth.conf", bbs_transfer_rootdir(), userid);
+		if (!load_config_file(useroauthfile, userid, name)) { /* Only counts if we specifically loaded a section with the given name */
+			/* Repeat, since we just now added a section named that */
+			RWLIST_RDLOCK(&clients);
+			RWLIST_TRAVERSE(&clients, client, entry) {
+				if (!strcmp(client->name, name) && (!client->userid || client->userid == userid)) {
+					res = fetch_token(client, buf, len);
+					break;
+				}
+			}
+			RWLIST_UNLOCK(&clients);
+		}
+	}
+
+	return res;
+}
+
+static int load_config(void)
+{
+	return load_config_file("mod_oauth.conf", 0, NULL);
 }
 
 static int load_module(void)
