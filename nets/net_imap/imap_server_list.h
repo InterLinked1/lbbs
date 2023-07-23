@@ -61,6 +61,7 @@ struct list_command {
 	size_t patterns;			/*!< Number of mailboxes in pattern */
 	const char **mailboxes;		/*!< List of mailbox patterns */
 	int *skiplens;				/*!< List of skip lengths */
+	enum mailbox_namespace *nslist;	/*!< List of namespaces */
 	/* Selection options */
 	unsigned int subscribed:1;	/*!< RFC 5258 SUBSCRIBED selection option - mailboxes to which we're subscribed. */
 	unsigned int remote:1;		/*!< RFC 5258 REMOTE selection option - mailboxes using RFC 2193 mailbox referrals (N/A for us) */

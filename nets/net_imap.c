@@ -1522,6 +1522,7 @@ static void list_command_destroy(struct list_command *lcmd)
 {
 	free_if(lcmd->mailboxes);
 	free_if(lcmd->skiplens);
+	free_if(lcmd->nslist);
 }
 
 static void process_parsed_mailbox(struct list_command *lcmd, const char *s, size_t index)
@@ -1532,9 +1533,11 @@ static void process_parsed_mailbox(struct list_command *lcmd, const char *s, siz
 	if (STARTS_WITH(s, OTHER_NAMESPACE_PREFIX)) {
 		lcmd->anyother = 1;
 		lcmd->skiplens[index] = STRLEN(OTHER_NAMESPACE_PREFIX);
+		lcmd->nslist[index] = NAMESPACE_OTHER; /* This must be in the Other Users namespace to match */
 	} else if (STARTS_WITH(s, SHARED_NAMESPACE_PREFIX)) {
 		lcmd->anyshared = 1;
 		lcmd->skiplens[index] = STRLEN(SHARED_NAMESPACE_PREFIX);
+		lcmd->nslist[index] = NAMESPACE_SHARED; /* This must be in the shared namespace to match */
 	} else if (list_wildcard_match(s)) { /* Is this a broad query (list everything?) */
 		lcmd->anyshared = lcmd->anyother = 1;
 	}
@@ -1616,13 +1619,15 @@ static int parse_list_cmd(struct imap_session *imap, struct list_command *lcmd, 
 		lcmd->patterns /= 2; /* 2 quotes per mailbox */
 		lcmd->mailboxes = calloc(lcmd->patterns, sizeof(*lcmd->mailboxes));
 		if (ALLOC_FAILURE(lcmd->mailboxes)) {
-			imap_reply(imap, "NO [SERVERBUG] Allocation failure");
-			return -1;
+			goto abort;
 		}
 		lcmd->skiplens = calloc(lcmd->patterns, sizeof(*lcmd->skiplens));
 		if (ALLOC_FAILURE(lcmd->skiplens)) {
-			imap_reply(imap, "NO [SERVERBUG] Allocation failure");
-			return -1;
+			goto abort;
+		}
+		lcmd->nslist = calloc(lcmd->patterns, sizeof(*lcmd->nslist));
+		if (ALLOC_FAILURE(lcmd->nslist)) {
+			goto abort;
 		}
 		/* All mailbox names are quoted */
 		while ((mbox = quotesep(&tmp))) {
@@ -1639,13 +1644,15 @@ static int parse_list_cmd(struct imap_session *imap, struct list_command *lcmd, 
 		lcmd->patterns = 1;
 		lcmd->mailboxes = calloc(lcmd->patterns, sizeof(*lcmd->mailboxes));
 		if (ALLOC_FAILURE(lcmd->mailboxes)) {
-			imap_reply(imap, "NO [SERVERBUG] Allocation failure");
-			return -1;
+			goto abort;
 		}
 		lcmd->skiplens = calloc(lcmd->patterns, sizeof(*lcmd->skiplens));
 		if (ALLOC_FAILURE(lcmd->skiplens)) {
-			imap_reply(imap, "NO [SERVERBUG] Allocation failure");
-			return -1;
+			goto abort;
+		}
+		lcmd->nslist = calloc(lcmd->patterns, sizeof(*lcmd->nslist));
+		if (ALLOC_FAILURE(lcmd->nslist)) {
+			goto abort;
 		}
 		tmp = quotesep(&s);
 		if (!tmp) {
@@ -1702,6 +1709,10 @@ static int parse_list_cmd(struct imap_session *imap, struct list_command *lcmd, 
 	lcmd->reflen = strlen(lcmd->reference);
 
 	return 0;
+
+abort:
+	imap_reply(imap, "NO [SERVERBUG] Allocation failure");
+	return -1;
 }
 
 static int handle_list(struct imap_session *imap, char *s, enum list_cmd_type cmdtype)
@@ -1786,6 +1797,15 @@ static int handle_list(struct imap_session *imap, char *s, enum list_cmd_type cm
 #endif
 
 	/* Do 3 traversals: once each for private, shared, and other namespaces (+virtual mappings) */
+
+	/*! \todo BUGBUG The LIST implementation is better than it was originally, but it's still rather a hacky kludge.
+	 * For example, a LIST "" "Other*" will not return mailboxes in the Other Users namespace,
+	 * even though  a LIST "" "Other Users*" will (even though the former should be a superset of the latter).
+	 * In particular, handling for the 3 different namespaces is often handled specially, further complicating
+	 * things and adding lots of edge cases.
+	 * Most common LIST patterns such as list everything, list Other Users, and list Shared Folders, will work properly,
+	 * but there are lots of gaps and edge cases not handled correctly. */
+
 	lcmd->ns = NAMESPACE_PRIVATE;
 	list_scandir(imap, lcmd, 0, lcmd->reference, mailbox_maildir(imap->mbox)); /* Recursively LIST */
 	/* For shared and other users, we use the root maildir since that's where the maildirs for each account are located. */

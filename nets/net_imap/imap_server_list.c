@@ -240,8 +240,13 @@ int list_mailbox_pattern_matches(struct list_command *lcmd, const char *dirname)
 	/* It just needs to match one (any) of them */
 	for (i = 0; i < lcmd->patterns; i++) {
 #ifdef DEBUG_LIST_MATCH
-		imap_debug(10, "Checking '%s' against '%s'\n", dirname, lcmd->mailboxes[i] + lcmd->skiplens[i]);
+		imap_debug(10, "Checking '%s' against (%d) '%s'\n", dirname, lcmd->nslist[i], lcmd->mailboxes[i] + lcmd->skiplens[i]);
 #endif
+		if (lcmd->nslist[i] == NAMESPACE_OTHER && lcmd->ns != NAMESPACE_OTHER) {
+			continue;
+		} else if (lcmd->nslist[i] == NAMESPACE_SHARED && lcmd->ns != NAMESPACE_SHARED) {
+			continue;
+		}
 		/* lcmd->mailboxes[i] is guaranteed to be at least lcmd->skiplens[i] chars long */
 		if (list_match(dirname, lcmd->mailboxes[i] + lcmd->skiplens[i])) { /* Compare mailbox with the pattern (on the right) */
 			return 1;
