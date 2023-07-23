@@ -13,6 +13,6 @@
  *
  */
 
-/*! \brief Allow a LIST against mailboxes on other mail servers, configured in the .imapremote file in a user's root maildir */
+/*! \brief Allow a LIST against mailboxes on other mail servers, configured in the .imapremote file in a user's home directory */
 /*! \note XXX Virtual mailboxes already have a meaning in some IMAP contexts, so maybe "remote mailboxes" would be a better name? */
 int list_virtual(struct imap_session *imap, struct list_command *lcmd);

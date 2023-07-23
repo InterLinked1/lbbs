@@ -22,6 +22,7 @@
 #include <poll.h>
 
 #include "include/node.h"
+#include "include/transfer.h"
 
 #include "include/mod_mail.h"
 
@@ -746,6 +747,15 @@ int imap_substitute_remote_command(struct imap_client *client, char *s)
 	return replacements;
 }
 
+int imap_client_mapping_file(struct imap_session *imap, char *buf, size_t len)
+{
+	if (bbs_transfer_home_dir(imap->node, buf, len)) {
+		return -1;
+	}
+	strncat(buf, "/.imapremote", len - 1);
+	return 0;
+}
+
 static struct imap_client *__load_virtual_mailbox(struct imap_session *imap, const char *path, int *exists, int load, int prefixonly)
 {
 	FILE *fp;
@@ -775,7 +785,9 @@ static struct imap_client *__load_virtual_mailbox(struct imap_session *imap, con
 	}
 
 	*exists = 0;
-	snprintf(virtcachefile, sizeof(virtcachefile), "%s/.imapremote", mailbox_maildir(imap->mymbox));
+	if (imap_client_mapping_file(imap, virtcachefile, sizeof(virtcachefile))) {
+		return NULL;
+	}
 	fp = fopen(virtcachefile, "r");
 	if (!fp) {
 		return NULL;

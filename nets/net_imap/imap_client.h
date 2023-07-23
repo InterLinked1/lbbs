@@ -91,6 +91,15 @@ int __attribute__ ((format (gnu_printf, 8, 9))) __imap_client_send_wait_response
 int imap_substitute_remote_command(struct imap_client *client, char *s);
 
 /*!
+ * \brief Get the path to the .imapremote file
+ * \param imap
+ * \param[out] buf
+ * \param len
+ * \retval 0 on success, -1 on failure
+ */
+int imap_client_mapping_file(struct imap_session *imap, char *buf, size_t len);
+
+/*!
  * \brief Load a remote mailbox
  * \param imap
  * \param path
@@ -108,4 +117,5 @@ struct imap_client *load_virtual_mailbox(struct imap_session *imap, const char *
  */
 int mailbox_remotely_mapped(struct imap_session *imap, const char *path);
 
+/*! \brief Convert a local mailbox name to its name on a remote server */
 char *remote_mailbox_name(struct imap_client *client, char *restrict mailbox);

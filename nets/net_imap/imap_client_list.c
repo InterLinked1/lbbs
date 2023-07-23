@@ -314,7 +314,6 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	char virtfile[256];
 	char line[256];
 	int l = 0;
-	struct stat st;
 	struct imap_parallel p;
 
 	/* Folders from the proxied mailbox will need to be translated back and forth */
@@ -323,13 +322,10 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 		return -1;
 	}
 
-	snprintf(virtfile, sizeof(virtfile), "%s/.imapremote", mailbox_maildir(imap->mymbox));
-	bbs_debug(3, "Checking virtual mailboxes in %s\n", virtfile);
-
-	if (stat(virtfile, &st)) {
-		pthread_mutex_unlock(&virt_lock);
+	if (imap_client_mapping_file(imap, virtfile, sizeof(virtfile))) {
 		return -1;
 	}
+	bbs_debug(3, "Checking virtual mailboxes in %s\n", virtfile);
 
 	/* It turns out that we can't just send the cached LIST response from when we first built the cache file,
 	 * because the assumption that mailbox attributes do not change is wrong.

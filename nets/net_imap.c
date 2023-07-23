@@ -2917,7 +2917,7 @@ static int handle_copy_move(struct imap_session *imap, char *s, int usinguid, in
 			/* Server doesn't support MOVE, so we do a COPY instead.
 			 * I sincerely hope that the client issued a UID command in this case, otherwise there's no guarantee
 			 * that the sequence numbers will stay consistent between commands. */
-			res = imap_client_send_wait_response_noecho(imap->client, -1, SEC_MS(5), "%s%s %s \"%s\"\r\n", usinguid ? "UID " : "", "COPY", sequences, newbox);
+			res = imap_client_send_wait_response_noecho(imap->client, -1, SEC_MS(5), "%s%s %s \"%s\"\r\n", usinguid ? "UID " : "", "COPY", sequences, remote_mailbox_name(imap->client, newbox));
 			/* Send the response we received, but change "COPY" to "MOVE", since that's the command the client issued */
 			if (!res) {
 				res |= imap_client_send_wait_response_noecho(imap->client, -1, SEC_MS(5), "%sSTORE %s +FLAGS.SILENT (\\Deleted)\r\n", usinguid ? "UID " : "", sequences);
@@ -2934,7 +2934,7 @@ static int handle_copy_move(struct imap_session *imap, char *s, int usinguid, in
 			}
 			_imap_reply(imap, "%s\r\n", buf);
 		} else {
-			res = imap_client_send_wait_response(imap->client, -1, SEC_MS(5), "%s%s %s \"%s\"\r\n", usinguid ? "UID " : "", domove ? "MOVE" : "COPY", sequences, newbox);
+			res = imap_client_send_wait_response(imap->client, -1, SEC_MS(5), "%s%s %s \"%s\"\r\n", usinguid ? "UID " : "", domove ? "MOVE" : "COPY", sequences, remote_mailbox_name(imap->client, newbox));
 		}
 	} else {
 		/* It's a normal local operation */
