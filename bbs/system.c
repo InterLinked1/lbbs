@@ -62,6 +62,9 @@ static char hostname[84] = "bbs";
 static char templatedir[256] = "./rootfs";
 static char rundir[256] = "/tmp/lbbs/rootfs";
 static const char *oldrootname = "/.old";
+static int maxmemory = 0;
+static int maxcpu = 0;
+static int minnice = 0;
 
 static int load_config(void)
 {
@@ -74,6 +77,14 @@ static int load_config(void)
 	bbs_config_val_set_str(cfg, "container", "hostname", hostname, sizeof(hostname));
 	bbs_config_val_set_path(cfg, "container", "templatedir", templatedir, sizeof(templatedir));
 	bbs_config_val_set_path(cfg, "container", "rundir", rundir, sizeof(rundir));
+	bbs_config_val_set_int(cfg, "container", "maxmemory", &maxmemory);
+	bbs_config_val_set_int(cfg, "container", "maxcpu", &maxcpu);
+	if (!bbs_config_val_set_int(cfg, "container", "minnice", &minnice)) {
+		if (minnice < -20 || minnice > 20) {
+			bbs_error("minnice value '%d' is invalid\n", minnice);
+			return -1;
+		}
+	}
 
 	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
 	return 0;
@@ -265,7 +276,9 @@ static int exec_pre(int fdin, int fdout, int exclude)
 {
 	struct rlimit rl;
 
-	getrlimit(RLIMIT_NOFILE, &rl);
+	if (getrlimit(RLIMIT_NOFILE, &rl)) {
+		return -1;
+	}
 	if (fdlimit == -1) {
 		/* This is the first time anything is calling exec_pre */
 		fdlimit = (int) sysconf(_SC_OPEN_MAX);
@@ -536,6 +549,57 @@ static int clone_container(char *rootdir, size_t rootlen, int pid)
 	return 0;
 }
 
+static int set_limit(int resource, int value)
+{
+	rlim_t limit;
+	struct rlimit r;
+
+	if (!value) { /* Nothing to set */
+		return 0;
+	} else if (value < 0) {
+		bbs_error("Invalid rlimit value, ignoring: %d\n", value);
+		return 0;
+	}
+
+	limit = (unsigned long) value;
+	memset(&r, 0, sizeof(r));
+
+	if (getrlimit(resource, &r)) {
+		bbs_error("getrlimit failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	/* Set soft and hard limits */
+	if (r.rlim_cur > limit) {
+		r.rlim_cur = limit;
+	}
+	if (r.rlim_max > limit) {
+		r.rlim_max = limit;
+	}
+
+	if (setrlimit(resource, &r)) {
+		bbs_error("setrlimit failed: %s\n", strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+static int set_limits(void)
+{
+	int res = 0;
+
+	/* Control resource consumption inside the container */
+	/* Not RLIMIT_DATA, which isn't as encompassing */
+	res = set_limit(RLIMIT_AS, 1024 * maxmemory); /* Value is in KB, so convert MB to bytes */
+	if (!res) {
+		res = set_limit(RLIMIT_CPU, maxcpu);
+	}
+	if (!res && minnice) {
+		res = set_limit(RLIMIT_NICE, 20 - minnice); /* Ceiling = 20 - value, so value = 20 - ceiling */
+	}
+	return res;
+}
+
 /*! \brief Read from a file descriptor until it closes */
 static ssize_t full_read(int fd, char *restrict buf, size_t len)
 {
@@ -700,6 +764,10 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 			char oldroot[384 + STRLEN("/.old")], newroot[384];
 			char homedir[438];
 
+			if (set_limits()) {
+				_exit(errno);
+			}
+
 			/* Wait until parent has updated mappings. */
 			res = (int) full_read(procpipe[0], pidbuf, sizeof(pidbuf));
 			if (res < 1) {
@@ -802,12 +870,6 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 				 * It is the first shell session that we're spawning, but it's just a program being launched from the BBS.
 				 * So currently, it's not considered a login shell, and that's probably just fine. */
 			}
-
-			/* It would be "nice to have" cgroup integration here as well,
-			 * to control resource usage within the container environment.
-			 * However, you have to be root to create a cgroup so we can't do this automatically
-			 * (unless we're root, which hopefully we're not!)
-			 * However, a user could set up a cgroup and pass in cgexec as the progname. */
 		}
 
 		res = execvpe(filename, argv, envp);
