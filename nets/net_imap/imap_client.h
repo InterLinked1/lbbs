@@ -48,7 +48,13 @@ int imap_client_idle_start(struct imap_client *client);
  */
 int imap_client_idle_stop(struct imap_client *client);
 
-#define IMAP_IDLE_POLL_INTERVAL_SEC 30
+/*!
+ * \brief Get the number of seconds until the next IDLE expiration occurs (across all idling clients)
+ * \param imap
+ * \retval 0 if no clients are idling
+ * \return Number of seconds until next expiration
+ */
+int imap_clients_next_idle_expiration(struct imap_session *imap);
 
 /*! \brief Renew IDLE on all idling clients that are close to expiring */
 void imap_clients_renew_idle(struct imap_session *imap);

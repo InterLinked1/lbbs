@@ -84,7 +84,7 @@ int imap_poll(struct imap_session *imap, int ms, struct imap_client **clientout)
 	numfds = (nfds_t) RWLIST_SIZE(&imap->clients, client, entry);
 	numfds++; /* Plus the main session itself (our client) */
 
-	bbs_debug(5, "Polling %lu fd%s for IMAP session %p\n", numfds, ESS(numfds), imap);
+	bbs_debug(5, "Polling %lu fd%s for IMAP session %p (for %ds)\n", numfds, ESS(numfds), imap, ms / 1000);
 
 	if (numfds == 1) {
 		/* No remote clients, just the main client */
@@ -166,6 +166,38 @@ int imap_client_idle_stop(struct imap_client *client)
 	return 0;
 }
 
+int imap_clients_next_idle_expiration(struct imap_session *imap)
+{
+	int min_maxage = 0;
+	struct imap_client *client;
+	int now = (int) time(NULL);
+
+	/* Renew all the IDLEs on remote servers, periodically,
+	 * to keep the IMAP connection alive. */
+
+	RWLIST_RDLOCK(&imap->clients);
+	RWLIST_TRAVERSE(&imap->clients, client, entry) {
+		int maxage;
+		if (!client->idling) {
+			continue;
+		}
+		/* This is when the connection may be terminated.
+		 * We need to renew the connection BEFORE then. */
+		maxage = client->idlestarted + client->maxidlesec;
+		if (!min_maxage || maxage < min_maxage) {
+			min_maxage = maxage;
+		}
+	}
+	RWLIST_UNLOCK(&imap->clients);
+	if (min_maxage) {
+		min_maxage = min_maxage - now;
+		if (min_maxage < 0) {
+			bbs_warning("Next expiration is in the past? (%ds ago)\n", min_maxage);
+		}
+	}
+	return min_maxage;
+}
+
 void imap_clients_renew_idle(struct imap_session *imap)
 {
 	struct imap_client *client;
@@ -183,8 +215,8 @@ void imap_clients_renew_idle(struct imap_session *imap)
 		/* This is when the connection may be terminated.
 		 * We need to renew the connection BEFORE then. */
 		maxage = client->idlestarted + client->maxidlesec;
-		/* We check every minute, so we shouldn't miss anything this way. */
-		if (maxage < now + IMAP_IDLE_POLL_INTERVAL_SEC + 10) { /* Add a little bit of wiggle room */
+		/* If we're not going to call this function to check for renewals before it's due to expire, renew it now */
+		if (maxage < now + 15) { /* Add a little bit of wiggle room */
 			int age = now - client->idlestarted;
 			bbs_debug(4, "Client '%s' needs to renew IDLE (%d/%d s elapsed)...\n", client->virtprefix, age, client->maxidlesec);
 			if (imap_client_idle_stop(client) || imap_client_idle_start(client)) {

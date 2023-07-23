@@ -3801,7 +3801,8 @@ static int notify_status_cb(struct imap_client *client, const char *buf, size_t 
 
 static int handle_idle(struct imap_session *imap)
 {
-#define MAX_IDLE_MS SEC_MS(1800) /* 30 minutes */
+#define MAX_IDLE_SEC 1800 /* 30 minutes */
+#define MAX_IDLE_MS SEC_MS(MAX_IDLE_SEC)
 	int idleleft = MAX_IDLE_MS;
 	int res;
 	int lastactivity, idlestarted;
@@ -3828,10 +3829,28 @@ static int handle_idle(struct imap_session *imap)
 	/* Note that IDLE only applies to the currently selected mailbox (folder).
 	 * Thus, in traversing all the IMAP sessions, simply sharing the same mbox isn't enough.
 	 * imap->dir also needs to match (same currently selected folder). */
-	idlestarted = lastactivity = (int) time(NULL);
+	idlestarted = (int) time(NULL);
 	for (;;) {
 		struct imap_client *client = NULL;
-		int pollms = MIN(SEC_MS(IMAP_IDLE_POLL_INTERVAL_SEC), idleleft);
+
+		/* Rather than use a constant IMAP poll interval, time it based on when the next "interesting" thing is going to happen:
+		 * - IMAP client IDLE expiration
+		 * - IMAP ping (keepalive)
+		 * - IDLE timeout
+		 */
+		int poll_interval, pollms;
+		int now = (int) time(NULL);
+		int next_idle_exp = imap_clients_next_idle_expiration(imap); /* First IDLE expiration across all remote clients */
+		int idle_exp = idlestarted + MAX_IDLE_SEC + 1 - now; /* Our client's IDLE expiration */
+
+		poll_interval = MIN(idle_exp, idle_notify_interval);
+		if (next_idle_exp) {
+			poll_interval = MIN(next_idle_exp - 10, poll_interval);
+		}
+		poll_interval = poll_interval < 0 ? 0 : poll_interval;
+
+		lastactivity = now;
+		pollms = SEC_MS(poll_interval);
 		res = imap_poll(imap, pollms, &client);
 		if (res < 0) {
 			imap->idle = 0;
@@ -3932,15 +3951,16 @@ static int handle_idle(struct imap_session *imap)
 				bbs_warning("IDLE expired without any activity\n");
 				return -1; /* Disconnect the client now */
 			} else {
-				int now = (int) time(NULL);
-				int elapsed = now - lastactivity;
-				/* If we're coming up on the deadline (with a little bit of wiggle room, +/- in either direction), go ahead and do it */
-				if (elapsed >= idle_notify_interval - (IMAP_IDLE_POLL_INTERVAL_SEC / 2)) {
-					if (idlestarted < now - 1801) {
-						/* It's been 30 minutes, so RFC 3501 now permits us to disconnect the client. */
-						bbs_warning("IDLE expired\n");
-						return -1;
-					}
+				int elapsed;
+				now = (int) time(NULL);
+				elapsed = now - lastactivity;
+				if (idlestarted < now - MAX_IDLE_SEC - 1) {
+					/* It's been 30 minutes, so RFC 3501 now permits us to disconnect the client. */
+					bbs_warning("IDLE expired\n");
+					return -1;
+				}
+				/* If we're coming up on the ping deadline (with a little bit of wiggle room, +/- in either direction), go ahead and do it */
+				if (elapsed >= idle_notify_interval - 1) {
 					imap_send(imap, "OK Still here");
 					lastactivity = now;
 				}
