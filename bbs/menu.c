@@ -359,7 +359,27 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *rest
 				bbs_error("Needed %d characters to display option '%c', but we only have %d?\n", real_len, menuitem->opt, longest);
 			}
 			chunk_len = longest + (byte_len - real_len); /* In theory, byte_len - real_len should be constant for ALL menu items */
-			bbs_node_writef(node, "%-*s", chunk_len, sub_full);
+			if (node->ansi) {
+				int jump_len;
+				/* Instead of space padding menu items, use ANSI escape sequences to jump where needed.
+				 * This makes a big difference on slow connections (e.g. 300, 1200 bps), since otherwise we're sending a byte for every space,
+				 * whereas jumping around reduces the size of the menu download.
+				 * Normally, bbs_node_ansi_write (called by bbs_node_write as appropriate) will also handle this automatically,
+				 * but this is the canonical application for this type of optimization, and we may as well avoid
+				 * prematurely adding a lot of spaces and then skipping them right away. In other places, it's not as simple.
+				 */
+				bbs_node_write(node, sub_full, (size_t) byte_len);
+				jump_len = longest - real_len; /* We need to jump forward this many spaces */
+				if (jump_len) {
+					/* This will be 0 for the longest option.
+					 * An escape sequence to move forward 0 characters is obviously useless and unnecessary.
+					 * Furthermore, it's also wrong, as 0 will be treated as 1 and thus add an extra column. */
+					bbs_node_writef(node, "\e[%dC", jump_len); /* Cursor forward N characters */
+				}
+			} else {
+				/* This is guaranteed to be correct, but results in more bytes being sent on the wire */
+				bbs_node_writef(node, "%-*s", chunk_len, sub_full);
+			}
 #ifdef DEBUG_MENU_DRAW
 			bbs_debug(7, "Displaying option '%c' in row group %d, col group %d, total size %d bytes (%d cols)\n", menuitem->opt, rows_used, outcol, chunk_len, longest);
 #endif

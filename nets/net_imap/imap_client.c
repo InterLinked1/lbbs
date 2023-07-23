@@ -375,7 +375,9 @@ static int client_command_passthru(struct imap_client *client, int fd, const cha
 		}
 		if (echo) {
 			/* Go ahead and relay it */
-			bbs_write(imap->wfd, buf, (unsigned int) res);
+			if (res > 0) { /* If it was just an empty line, don't bother calling write() with 0 bytes */
+				bbs_write(imap->wfd, buf, (unsigned int) res);
+			}
 			SWRITE(imap->wfd, "\r\n");
 		}
 #ifdef DEBUG_REMOTE_RESPONSES

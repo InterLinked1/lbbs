@@ -794,6 +794,13 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 						}
 					}
 				}
+				/* Other things to keep in mind for shells specifically:
+				 * bash will print exit after it closes. This is standard behavior (for bash) whenever exiting
+				 * an interactive shell that is not a login shell.
+				 * A login shell has a - at the beginning of its progname, e.g. echo $0 will show -bash instead of bash.
+				 * It *might* make sense to consider this is a login shell, but it also might not.
+				 * It is the first shell session that we're spawning, but it's just a program being launched from the BBS.
+				 * So currently, it's not considered a login shell, and that's probably just fine. */
 			}
 
 			/* It would be "nice to have" cgroup integration here as well,

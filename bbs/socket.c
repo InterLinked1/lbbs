@@ -1902,61 +1902,145 @@ int bbs_node_flush_input(struct bbs_node *node)
 	return res;
 }
 
-int bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
+static ssize_t full_write(struct pollfd *pfd, int fd, const char *restrict buf, size_t len)
 {
 	size_t left = len;
-	size_t written = 0;
-	REQUIRE_SLAVE_FD(node);
-	/* So helgrind doesn't complain about data race if node is shut down
-	 * and slavefd closed during write */
-	bbs_node_lock(node);
-	for (;;) {
-		ssize_t res;
-		res = write(node->slavefd, buf, left);
-		if (res <= 0) {
-			bbs_debug(5, "Node %d: write returned %ld\n", node->id, res);
-			bbs_node_unlock(node);
-			return (int) res;
-		}
-		buf += res;
-		written += (size_t) res;
-		left -= (size_t) res;
-		if (left <= 0) {
-			break;
-		}
-		usleep(10); /* Avoid tight loop */
-	}
-	bbs_node_unlock(node);
-	return (int) written;
-}
-
-int bbs_write(int fd, const char *buf, size_t len)
-{
-	struct pollfd pfd;
-	size_t left = len;
-	size_t written = 0;
-
-	pfd.fd = fd;
-	pfd.events = POLLOUT;
+	ssize_t written = 0;
 
 	for (;;) {
 		ssize_t res = write(fd, buf, left);
 		if (res <= 0) {
-			bbs_debug(5, "fd %d: write returned %ld: %s\n", fd, res, res ? strerror(errno) : "");
-			return (int) res;
+			if (res == 0) {
+				/* POSIX write never returns 0, unless the buffer length is 0, so this is suspect...
+				 * If the buffer length was 0, shame on the application for trying to write 0 bytes.
+				 * If it wasn't, then something has gone terribly wrong. */
+				bbs_warning("write returned 0 (buffer length: %lu)\n", len);
+				bbs_log_backtrace();
+			}
+			return res;
 		}
 		buf += res;
-		written += (size_t) res;
+		written += res;
 		left -= (size_t) res;
 		if (left <= 0) {
 			break;
 		}
 		/* Instead of just usleep'ing for an arbitrary time, poll to wait until this file descriptor is writable again.
 		 * If it's still not writable after 10 ms, we'll just try again anyways. */
-		pfd.revents = 0;
-		res = poll(&pfd, 1, 10); /* Avoid tight loop */
+		pfd->revents = 0;
+		res = poll(pfd, 1, 10); /* Avoid tight loop */
 	}
+	return written;
+}
+
+static int bbs_node_ansi_write(struct bbs_node *node, const char *restrict buf, size_t len)
+{
+	struct pollfd pfd;
+	size_t left = len;
+	size_t written = 0;
+	char *sp;
+
+	pfd.fd = node->slavefd;
+	pfd.events = POLLOUT;
+
+	REQUIRE_SLAVE_FD(node);
+	/* So helgrind doesn't complain about data race if node is shut down
+	 * and slavefd closed during write */
+	bbs_node_lock(node);
+	while (left > 0) {
+		ssize_t res;
+		size_t bytes;
+
+#define MIN_SKIP_SPACES "    "
+		/* The printf formatting arguments are often used for alignment by space padding.
+		 * However, sending a large number of spaces over the wire is not efficient.
+		 * We can use the "Cursor Forward" ANSI escape sequence for supporting terminals
+		 * to speed this up.
+		 * The escape sequence itself is going to be at least 4 characters,
+		 * so if it's less than 4 characters, we may as well send individual spaces. */
+		sp = memmem(buf, left, MIN_SKIP_SPACES, STRLEN(MIN_SKIP_SPACES));
+		if (sp != buf) { /* Edge case: if we're starting with spaces, skip writing anything for now */
+			/* Must be non-NULL (> 0x0) and not starting at the current position */
+			bytes = sp > buf ? ((size_t) (sp - buf)) : left; /* If sp, then it must be within left, so no need for bounds check */
+			bbs_assert(bytes <= node->cols); /* We wouldn't have called this function if this weren't true, so part of the buffer can't be larger */
+			res = full_write(&pfd, node->slavefd, buf, bytes);
+			if (res < 0) {
+				bbs_debug(5, "Node %d: write (%lu bytes) returned %ld\n", node->id, bytes, res);
+				bbs_node_unlock(node);
+				return (int) res;
+			}
+			buf += res;
+			written += (size_t) res;
+			left -= (size_t) res;
+		}
+
+		if (sp) { /* Skip spaces */
+			char esc_seq[15];
+			size_t esc_len;
+			int skipped = 4;
+			/* We already know 4 spaces follow, no need to count those */
+			buf += 4;
+			written += 4;
+			left -= 4;
+			while (*buf == ' ' && left--) {
+				buf++;
+				written++;
+				skipped++;
+			}
+			/* At least 4, so always send an escape sequence (must be at least 1 for that) */
+			esc_len = (size_t) snprintf(esc_seq, sizeof(esc_seq), "\e[%dC", skipped);
+			res = full_write(&pfd, node->slavefd, esc_seq, esc_len);
+			if (res < 0) {
+				bbs_debug(5, "Node %d: write returned %ld\n", node->id, res);
+				bbs_node_unlock(node);
+				return (int) res;
+			}
+			/* Already incremented to account for these spaces, don't add anything further */
+		}
+	}
+	bbs_node_unlock(node);
 	return (int) written;
+}
+
+int bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
+{
+	struct pollfd pfd;
+	size_t left = len;
+	ssize_t res;
+
+	if (node->ansi && node->cols && len <= node->cols) {
+		return bbs_node_ansi_write(node, buf, len);
+	}
+
+	pfd.fd = node->slavefd;
+	pfd.events = POLLOUT;
+
+	REQUIRE_SLAVE_FD(node);
+	/* So helgrind doesn't complain about data race if node is shut down
+	 * and slavefd closed during write */
+	bbs_node_lock(node);
+	res = full_write(&pfd, node->slavefd, buf, left);
+	if (res <= 0) {
+		bbs_debug(5, "Node %d: write returned %ld\n", node->id, res);
+	}
+	bbs_node_unlock(node);
+	return (int) res;
+}
+
+int bbs_write(int fd, const char *buf, size_t len)
+{
+	struct pollfd pfd;
+	size_t left = len;
+	ssize_t res;
+
+	pfd.fd = fd;
+	pfd.events = POLLOUT;
+
+	res = full_write(&pfd, fd, buf, left);
+	if (res <= 0) {
+		bbs_debug(5, "fd %d: write returned %ld: %s\n", fd, res, res ? strerror(errno) : "");
+	}
+	return (int) res;
 }
 
 /* Note: In case this gets forgotten about and somebody thinks that some of the bbs_node functions
