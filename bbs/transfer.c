@@ -128,6 +128,10 @@ int bbs_transfer_home_dir(struct bbs_node *node, char *buf, size_t len)
 	if (!bbs_user_is_registered(node->user)) {
 		return -1;
 	}
+	if (!rootlen) {
+		bbs_debug(3, "No transfer root directory is configured\n");
+		return -1;
+	}
 	snprintf(buf, len, "%s/home/%d", rootdir, node->user->id);
 	return bbs_ensure_directory_exists(buf);
 }
@@ -297,13 +301,18 @@ int bbs_transfer_set_disk_path_up(struct bbs_node *node, const char *diskpath, c
 	return __transfer_set_path(node, "disk_path_up", diskpath, tmp, buf, len, 0); /* Parent guaranteed to exist, so don't verify that it does, that's unnecessary. */
 }
 
+int bbs_transfer_available(void)
+{
+	return rootlen ? 1 : 0;
+}
+
 int bbs_transfer_config_load(void)
 {
 	char homedir[256];
 	struct bbs_config *cfg = bbs_config_load("transfers.conf", 1); /* Load cached version, since multiple transfer protocols may use this config */
 
 	if (!cfg) {
-		return -1; /* Decline to load if there is no config. */
+		return 0; /* Transfers will be disabled, but don't abort startup. */
 	}
 
 	idletimeout = 60000;
@@ -313,7 +322,7 @@ int bbs_transfer_config_load(void)
 	}
 	if (bbs_config_val_set_path(cfg, "transfers", "rootdir", rootdir, sizeof(rootdir))) { /* Must explicitly specify */
 		bbs_error("No rootdir specified, transfers will be disabled\n");
-		return -1;
+		return 0; /* Transfers will be disabled, but don't abort startup. */
 	}
 	/* Auto create the root home dir if it doesn't exist already. */
 	snprintf(homedir, sizeof(homedir), "%s/%s", rootdir, "home");

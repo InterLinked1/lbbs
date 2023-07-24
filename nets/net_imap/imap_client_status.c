@@ -129,9 +129,7 @@ static int status_size_fetch_all(struct imap_client *client, const char *tag, si
 	/* imap->tag gets reused multiple times for different commands here...
 	 * something we SHOULD not do but servers are supposed to (MUST) tolerate. */
 	taglen = strlen(tag);
-	bbs_write(tcpclient->wfd, tag, taglen);
-	SWRITE(tcpclient->wfd, " FETCH 1:* (RFC822.SIZE)\r\n");
-	imap_debug(3, "=> %s FETCH 1:* (RFC822.SIZE)\n", tag);
+	imap_client_send(client, "%s FETCH 1:* (RFC822.SIZE)\r\n", tag);
 	for (;;) {
 		const char *sizestr;
 		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 10000);
@@ -181,8 +179,6 @@ static int __parse_status_item(const char *full, const char *keyword, size_t key
 
 static int status_size_fetch_incremental(struct imap_client *client, const char *tag, size_t *mb_size, const char *old, const char *new)
 {
-	char cmd[64];
-	size_t cmdlen;
 	int res;
 	size_t taglen;
 	struct bbs_tcp_client *tcpclient = &client->client;
@@ -256,10 +252,7 @@ static int status_size_fetch_incremental(struct imap_client *client, const char 
 	/* imap->tag gets reused multiple times for different commands here...
 	 * something we SHOULD not do but servers are supposed to (MUST) tolerate. */
 	taglen = strlen(tag);
-
-	cmdlen = (size_t) snprintf(cmd, sizeof(cmd), "%s UID FETCH %d:* (RFC822.SIZE)\r\n", tag, oldnext);
-	bbs_write(tcpclient->wfd, cmd, cmdlen);
-	imap_debug(3, "=> %s", cmd);
+	imap_client_send(client, "%s UID FETCH %d:* (RFC822.SIZE)\r\n", tag, oldnext);
 
 	for (received = 0;;) {
 		const char *sizestr;
@@ -298,11 +291,10 @@ static int status_size_fetch_incremental(struct imap_client *client, const char 
 static int append_size_item(struct imap_client *client, const char *remotename, const char *remote_status_resp, const char *tag)
 {
 	size_t curlen;
-	char buf[256];
+	char buf[256] = ""; /* Might not be a cached STATUS */
 	size_t mb_size = 0;
 	int cached = 0;
 	char *tmp;
-	int try_cached = 1;
 
 	/* Check the cache to see if we've already done a FETCH 1:* before and if the mailbox has changed since.
 	 * If not, the SIZE will be the same as last time, and we can just return that.
@@ -315,16 +307,14 @@ static int append_size_item(struct imap_client *client, const char *remotename, 
 	 */
 
 	/* Get the STATUS response and size from last time */
-	if (status_size_cache_fetch(client, remotename, &mb_size, buf, sizeof(buf))) {
-		try_cached = 0;
-	}
+	status_size_cache_fetch(client, remotename, &mb_size, buf, sizeof(buf));
 
 	curlen = strlen(remote_status_resp);
 
 	/* We subtract 2 as the last characters won't match.
 	 * In the raw response from the server, we'll have a ) at the end for end of response,
 	 * but in the cached version, we appended the SIZE so there'll be a space there e.g. " SIZE XXX" */
-	if (try_cached && !strncmp(remote_status_resp, buf, curlen - 2)) {
+	if (!strncmp(remote_status_resp, buf, curlen - 2)) {
 		/* The STATUS response is completely the same as last time, so we can just reuse the SIZE directly. */
 		cached = 1;
 	} else if (strstr(remote_status_resp, "MESSAGES 0")) {
@@ -470,9 +460,8 @@ int remote_status(struct imap_client *client, const char *remotename, const char
 	char remote_status_resp[1024];
 	char rtag[64];
 	size_t taglen;
-	int len, res;
+	int res;
 	char *buf;
-	char cmd[1024];
 	struct bbs_tcp_client *tcpclient = &client->client;
 	const char *tag = client->imap->tag;
 	const char *add1, *add2, *add3;
@@ -513,9 +502,7 @@ int remote_status(struct imap_client *client, const char *remotename, const char
 	}
 	buf = client->buf;
 	if (!client->virtlist && client->virtcapabilities & IMAP_CAPABILITY_LIST_STATUS) { /* Try LIST-STATUS if it's the first mailbox */
-		len = snprintf(cmd, sizeof(cmd), "A.%s.1 LIST \"\" \"*\" RETURN (STATUS (%s%s%s%s))\r\n", tag, items, add1, add2, add3);
-		imap_debug(3, "=> %.*s", len, cmd);
-		bbs_write(tcpclient->wfd, cmd, (size_t) len);
+		imap_client_send(client, "A.%s.1 LIST \"\" \"*\" RETURN (STATUS (%s%s%s%s))\r\n", tag, items, add1, add2, add3);
 		cache_remote_list_status(client, rtag, taglen);
 	}
 	if (client->virtlist) {
@@ -527,9 +514,7 @@ int remote_status(struct imap_client *client, const char *remotename, const char
 
 	if (issue_status) {
 		/* XXX Same tag is reused here, so we expect the same prefix (rtag) */
-		len = snprintf(cmd, sizeof(cmd), "A.%s.1 STATUS \"%s\" (%s%s%s%s)\r\n", tag, remotename, items, add1, add2, add3);
-		imap_debug(3, "=> %.*s", len, cmd);
-		bbs_write(tcpclient->wfd, cmd, (size_t) len);
+		imap_client_send(client, "A.%s.1 STATUS \"%s\" (%s%s%s%s)\r\n", tag, remotename, items, add1, add2, add3);
 		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 5000);
 		if (res <= 0) {
 			return -1;

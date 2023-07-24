@@ -28,6 +28,14 @@ RWLIST_HEAD(stringlist, stringitem);
 int stringlist_contains(struct stringlist *list, const char *s);
 
 /*!
+ * \brief Whether a stringlist contains a string, case-insensitively
+ * \param list
+ * \param s Search string. Case insensitive.
+ * \retval 1 if contains, 0 if not
+ */
+int stringlist_case_contains(struct stringlist *list, const char *s);
+
+/*!
  * \brief Remove the first encountered occurence of a string from a stringlist
  * \param list
  * \param s Search string. Case sensitive.

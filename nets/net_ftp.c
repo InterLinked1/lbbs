@@ -769,7 +769,8 @@ static int load_config(void)
 {
 	struct bbs_config *cfg;
 
-	if (bbs_transfer_config_load()) {
+	if (!bbs_transfer_available()) {
+		bbs_error("Transfers are disabled\n");
 		return -1;
 	}
 

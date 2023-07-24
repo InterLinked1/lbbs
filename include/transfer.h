@@ -140,10 +140,14 @@ int __bbs_transfer_set_disk_path_relative(struct bbs_node *node, const char *cur
 int bbs_transfer_set_disk_path_up(struct bbs_node *node, const char *diskpath, char *buf, size_t len);
 
 /*!
+ * \brief Whether or not file transfers are possible
+ * \retval 1 if possible
+ * \retval 0 if not possible
+ */
+int bbs_transfer_available(void);
+
+/*!
  * \brief Load transfer settings config
- * \note This is safe to call multiple times, but must be called before using settings at least once.
- *       Therefore, all modules that need these settings should call this function when loading.
- * \retval 0 on success, -1 on failure. If failure occurs, any dependent module must not
- *         attempt to make use of any file transfer functionality configured here.
+ * \retval 0 on success, -1 on failure.
  */
 int bbs_transfer_config_load(void);

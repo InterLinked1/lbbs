@@ -917,6 +917,8 @@ static int ssl_load_config(void)
 	return res;
 }
 
+static int thread_launched = 0;
+
 static int setup_ssl_io(void)
 {
 	if (bbs_alertpipe_create(ssl_alert_pipe)) {
@@ -925,6 +927,7 @@ static int setup_ssl_io(void)
 	if (bbs_pthread_create(&ssl_thread, NULL, ssl_io_thread, NULL)) {
 		return -1;
 	}
+	thread_launched = 1;
 	return 0;
 }
 #endif /* HAVE_OPENSSL */
@@ -963,8 +966,10 @@ void ssl_server_shutdown(void)
 	}
 	RWLIST_WRLOCK_REMOVE_ALL(&sni_certs, entry, sni_free);
 	/* Do not use pthread_cancel, let the thread clean up */
-	bbs_alertpipe_write(ssl_alert_pipe); /* Tell thread to exit */
-	bbs_pthread_join(ssl_thread, NULL);
+	if (thread_launched) {
+		bbs_alertpipe_write(ssl_alert_pipe); /* Tell thread to exit */
+		bbs_pthread_join(ssl_thread, NULL);
+	}
 	bbs_alertpipe_close(ssl_alert_pipe);
 	ssl_cleanup_fds();
 	if (ssl_was_available) {

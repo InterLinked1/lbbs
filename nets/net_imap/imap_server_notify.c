@@ -117,7 +117,10 @@ static struct notify_watch *notify_get_match(struct imap_session *imap, const ch
 			if (w->spec == NOTIFY_PERSONAL && (STARTS_WITH(name, OTHER_NAMESPACE_PREFIX) || STARTS_WITH(name, SHARED_NAMESPACE_PREFIX))) {
 				continue; /* Not in personal namespace */
 			}
-			if (w->spec == NOTIFY_MAILBOXES && !stringlist_contains(&w->mbnames, name)) {
+			/* These checks specifically are case-insensitive. So Inbox is treated the same as INBOX, etc.
+			 * Most IMAP servers are case-insensitive when it comes to mailbox names,
+			 * although this IMAP server is not, since they map directly to a directory structure. */
+			if (w->spec == NOTIFY_MAILBOXES && !stringlist_case_contains(&w->mbnames, name)) {
 				continue;
 			}
 			if (w->spec == NOTIFY_SUBTREE) {
@@ -126,7 +129,7 @@ static struct notify_watch *notify_get_match(struct imap_session *imap, const ch
 				struct stringitem *i = NULL;
 				RWLIST_RDLOCK(&w->mbnames);
 				while ((s = stringlist_next(&w->mbnames, &i))) {
-					if (!strncmp(name, s, strlen(s))) {
+					if (!strncasecmp(name, s, strlen(s))) {
 						RWLIST_UNLOCK(&w->mbnames);
 						return w;
 					}

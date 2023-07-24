@@ -323,6 +323,7 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	}
 
 	if (imap_client_mapping_file(imap, virtfile, sizeof(virtfile))) {
+		pthread_mutex_unlock(&virt_lock);
 		return -1;
 	}
 	bbs_debug(3, "Checking virtual mailboxes in %s\n", virtfile);

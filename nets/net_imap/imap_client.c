@@ -159,7 +159,7 @@ int imap_client_idle_start(struct imap_client *client)
 int imap_client_idle_stop(struct imap_client *client)
 {
 	SWRITE(client->client.wfd, "DONE\r\n");
-	if (bbs_tcp_client_expect(&client->client, "\r\n", 1, SEC_MS(3), "idle OK")) { /* tagged OK response */
+	if (bbs_tcp_client_expect(&client->client, "\r\n", 2, SEC_MS(3), "idle OK")) { /* tagged OK response */
 		bbs_warning("Failed to terminate IDLE for %s\n", client->virtprefix);
 		return -1;
 	}
@@ -207,8 +207,8 @@ void imap_clients_renew_idle(struct imap_session *imap)
 	/* Renew all the IDLEs on remote servers, periodically,
 	 * to keep the IMAP connection alive. */
 
-	RWLIST_RDLOCK(&imap->clients);
-	RWLIST_TRAVERSE(&imap->clients, client, entry) {
+	RWLIST_WRLOCK(&imap->clients);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&imap->clients, client, entry) {
 		int maxage;
 		if (!client->idling) {
 			continue;
@@ -221,10 +221,16 @@ void imap_clients_renew_idle(struct imap_session *imap)
 			int age = now - client->idlestarted;
 			bbs_debug(4, "Client '%s' needs to renew IDLE (%d/%d s elapsed)...\n", client->virtprefix, age, client->maxidlesec);
 			if (imap_client_idle_stop(client) || imap_client_idle_start(client)) {
+				client->dead = 1;
+				if (imap->client != client) {
+					RWLIST_REMOVE_CURRENT(entry);
+					client_destroy(client);
+				}
 				continue;
 			}
 		}
 	}
+	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&imap->clients);
 }
 

@@ -44,6 +44,19 @@ int stringlist_contains(struct stringlist *list, const char *s)
 	return i ? 1 : 0;
 }
 
+int stringlist_case_contains(struct stringlist *list, const char *s)
+{
+	struct stringitem *i;
+	RWLIST_RDLOCK(list);
+	RWLIST_TRAVERSE(list, i, entry) {
+		if (!strcasecmp(i->s, s)) {
+			break;
+		}
+	}
+	RWLIST_UNLOCK(list);
+	return i ? 1 : 0;
+}
+
 int stringlist_remove(struct stringlist *list, const char *s)
 {
 	struct stringitem *i;
