@@ -276,6 +276,7 @@ static pthread_t ssl_thread;
 	RWLIST_TRAVERSE(&sslfds, sfd, entry) { \
 		if (sfd->ssl == ssl) { \
 			sfd->dead = 1; \
+			bbs_debug(5, "SSL connection %p now marked as dead\n", sfd->ssl); \
 			break; \
 		} \
 	} \

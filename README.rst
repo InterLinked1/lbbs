@@ -287,7 +287,7 @@ I have multiple hostnames. Is SNI (Server Name Indication) supported?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Yes, LBBS supports SNI as both a client and a server. Refer to :code:`tls.conf` for configuration details.
 
-How can I server webpages using the embedded web server?
+How can I serve webpages using the embedded web server?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 There are 3 methods supported by the web server:
 
@@ -385,10 +385,65 @@ Sieve rules can be edited by users directly using the ManageSieve protocol (net_
 In contrast, MailScript rules can only be modified by the sysop directly on the server. Additionally,
 MailScript allows for potentially dangerous operations out of the box, and should not normally be exposed to users.
 
-It is recommended that Sieve be used for filtering if possible, since this is a standardized and well support protocol.
+It is recommended that Sieve be used for filtering if possible, since this is a standardized and well supported protocol.
 MailScript is a nonstandard syntax that was invented purely for this software, so it is not portable anywhere else.
 However, if the current Sieve implementation does not meet certain needs but MailScript does, feel free to use that as well.
 Both filtering engines can be used in conjunction with each other.
+
+How do I enable spam filtering?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+There is a builtin module for SpamAssassin integration. SpamAssassin installation and configuration is largely beyond the scope of this document, but here is a decent quickstart:
+
+Installation
+------------
+
+* Install SpamAssassin: :code:`apt-get install -y spamassassin`. You do not need :code:`spamass-milter` since milters are not currently supported.
+
+* Create your preference file, e.g. :code:`/etc/spamassassin/config.cf`::
+
+   # Required score to be considered spam (5 is the default, and should generally be left alone)
+   required_score      5
+
+   # Heavily penalize HTML only emails
+   score MIME_HTML_ONLY 2.10
+
+   # Don't modify original message (apart from adding headers)
+   report_safe 0
+
+   # Bayes DB (specify a path and sa-learn will create the DB for you)
+   bayes_path /var/lib/spamassassin/bayesdb/bayes
+
+* Go ahead and run `sa-compile` to compile your rule set into a more efficient form for runtime.
+
+Training
+--------
+
+SpamAssassin needs to be trained for optimal filtering results. It is best trained on real spam (and ham, or non-spam) messages. You can tell SpamAssassin about actual spam (:code:`sa-learn --spam /path/to/spam/folder`) or ham (:code:`sa-learn --ham /path/to/ham/folder`).
+
+SpamAssassin can work reasonably well out of the box, but will get better with training. If you receive spam, don't delete them - put them in a special folder (e.g. Junk) and rerun :code:`sa-learn` periodically.
+
+You can also run on multiple folders - careful though, if users have a Sieve rule to move suspected spam to Junk, this could train on false positives if this is run before they react and correct that. Therefore, if your mail server is small, you may just want to do this manually periodically after receiving Spam::
+
+   sa-learn --spam /home/bbs/maildir/*/Junk/{cur,new}
+   sa-learn --ham /home/bbs/maildir/*/cur
+
+Once you've trained the Bayes model, you can delete the spam messages if you wish. Rerunning the model on existing messages is fine too - the model will skip messages it's already seen, so there's no harm in not deleting them immediately, if you have the disk space.
+
+Adding Spam Headers
+-------------------
+
+SpamAssassin can be called by the SMTP server on incoming emails delivered from external recipients. This should be done automatically provided that :code:`mod_spamassassin` is loaded and SpamAssassin is installed and configured properly.
+SpamAssassin will add some headers to each message, which can then be used in a Sieve script or MailScript rule to filter suspected spam into the Junk folder (but SpamAssassin on its own will not filter mail, just identify messages it thinks are spam).
+
+SpamAssassin is best used before-queue, since this prevents backscatter by ensuring spam results are available for filtering rules to use (allowing recipients to outright reject highly suspected spam, for instance). :code:`mod_spamassassin` invokes SpamAssassin during the SMTP delivery process to allow this.
+
+When invoked directly (e.g. as :code:`/usr/bin/spamassassin`), SpamAssassin will read the message from the BBS on STDIN and output the modified message on STDOUT. Because the BBS only needs SpamAssassin to prepend headers at the top, it will *not* use the entire returned body from SpamAssassin. Instead, it will prepend all of the SpamAssassin headers and ignore everything else, since that would just involve copying the remainder of the message back again for no reason. This contrasts with with more conventional facilities that mail transfer agents provide for modifying message bodies on delivery.
+
+Filtering Spam
+--------------
+
+SpamAssassin will tag spam appropriately, but not do anything to it. That's where Sieve rules can help filter spam to the right place (or even reject it during the SMTP session). There are a few headers that SpamAssassin will add, e.g. :code:`X-Spam-Status`. Users can customize what they want to do with spam and their threshold for spam filtering using a Sieve rule. The most common rule is to move suspected spam to the user's Junk folder.
 
 How can I improve the efficiency of my email submissions?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

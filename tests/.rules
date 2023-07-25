@@ -4,21 +4,21 @@ MATCH DIRECTION IN
 MATCH SIZE <= 15
 # This is redundant and doesn't really make sense... but the condition should match if the previous one did
 MATCH NOT SIZE > 1000000
-ACTION MOVETO .Junk
+ACTION MOVETO Junk
 ACTION EXIT # Stop processing all rules
 ENDRULE
 
 RULE
 MATCH DIRECTION IN
 MATCH HEADER Subject EQUALS Test Subject 1
-ACTION MOVETO .Trash
+ACTION MOVETO Trash
 ACTION RETURN # Stop processing all rules in this file
 ENDRULE
 
 RULE
 MATCH DIRECTION IN
 MATCH HEADER From EQUALS Some string here
-ACTION MOVETO .Trash
+ACTION MOVETO Trash
 ACTION BREAK # Stop processing the current rule (redundant)
 ENDRULE
 
@@ -44,15 +44,15 @@ IF RETVAL == 1
 	MATCH HEADER Subject EQUALS Test Subject 4
 	TEST HEADER Subject EQUALS Not equal to this
 	IF NOT RETVAL == 0
-		ACTION MOVETO .Trash
+		ACTION MOVETO Trash
 		ACTION DROP
 	ENDIF
 	ACTION NOOP These actions should execute
-	ACTION MOVETO .Junk
+	ACTION MOVETO Junk
 ENDIF
 COMMENT
 	ACTION NOOP This should not execute
-	ACTION MOVETO .Trash
+	ACTION MOVETO Trash
 	ACTION DROP
 ENDCOMMENT
 ACTION NOOP This should be visible

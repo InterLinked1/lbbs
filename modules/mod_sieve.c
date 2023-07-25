@@ -225,13 +225,14 @@ static int my_fileinto(sieve2_context_t *s, void *varg)
 		}
 	}
 
+	/* INBOX is excluded here, because fileinto INBOX is redundant; it's being filed elsewhere FROM the INBOX */
 	if (sieve->mproc->userid) {
-		snprintf(newdir, sizeof(newdir), "%s/%d/%s", mailbox_maildir(NULL), sieve->mproc->userid, mailbox);
+		snprintf(newdir, sizeof(newdir), "%s/%d/.%s", mailbox_maildir(NULL), sieve->mproc->userid, mailbox);
 	} else {
-		snprintf(newdir, sizeof(newdir), "%s/%s", mailbox_maildir(sieve->mproc->mbox), mailbox);
+		snprintf(newdir, sizeof(newdir), "%s/.%s", mailbox_maildir(sieve->mproc->mbox), mailbox);
 	}
 
-	free_if(sieve->mproc->newdir);
+	free_if(sieve->mproc->newdir); /* Free first, instead of using REPLACE, because if this fails, the previous mailbox should not linger */
 	if (eaccess(newdir, R_OK)) {
 		bbs_warning("FILEINTO %s failed (no such mailbox)\n", mailbox);
 		return SIEVE2_ERROR_FAIL;

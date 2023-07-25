@@ -1,17 +1,17 @@
 require [ "envelope", "subaddress", "fileinto", "reject", "notify", "vacation" ];
 
 if size :under 15 {
-	fileinto ".Junk";
+	fileinto "Junk";
 	stop;
 }
 
 if header :is "Subject" "Test Subject 1" {
-	fileinto ".Trash";
+	fileinto "Trash";
 	stop;
 }
 
 if header :is "From" "Some string here" {
-	fileinto ".Trash";
+	fileinto "Trash";
 	stop;
 }
 
@@ -27,10 +27,10 @@ if header :is "Subject" "Test Subject 3" {
 
 if header :is "Subject" "Test Subject 4" {
 	if header :is "Subject" "No equal to this" {
-		fileinto ".Trash";
+		fileinto "Trash";
 		discard;
 	}
-	fileinto ".Junk"; # This is a comment
+	fileinto "Junk"; # This is a comment
 }
 
 if allof (header :is "Subject" "Test Subject 5", header :contains "Cc" "example.org") {

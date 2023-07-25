@@ -1459,8 +1459,8 @@ static int appendmsg(struct smtp_session *smtp, struct mailbox *mbox, struct smt
 
 	if (mproc->newdir) {
 		char newdir[512];
-		/*! \todo We need to prepend a dot here if the mailbox name is not INBOX */
-		snprintf(newdir, sizeof(newdir), "%s/%s", mailbox_maildir(mbox), mproc->newdir);
+		/* Doesn't account for INBOX, but fileinto INBOX would be redundant, since it's already going there by default. */
+		snprintf(newdir, sizeof(newdir), "%s/.%s", mailbox_maildir(mbox), mproc->newdir);
 		free(mproc->newdir);
 		if (eaccess(newdir, R_OK)) {
 			bbs_warning("maildir %s does not exist. Defaulting to INBOX\n", newdir);
@@ -1500,22 +1500,16 @@ static int appendmsg(struct smtp_session *smtp, struct mailbox *mbox, struct smt
 		return -1;
 	} else {
 		/* Because the notification is delivered before we actually return success to the sending client,
-		 * this can result in the somewhat strange experience of receiving an email send to yourself
+		 * this can result in the somewhat strange experience of receiving an email sent to yourself
 		 * before it seems that the email has been fully sent.
-		 * This is just a side effect of processing the email completely synchronously
-		 * "real" mail servers typically queue the message to decouple it. We just deliver it immediately.
+		 * This is just a side effect of processing the email completely synchronously (if delivered locally).
+		 * "Real" mail servers typically queue the message to decouple it. We just deliver it immediately.
 		 */
 		bbs_debug(6, "Delivered message to %s\n", newfile);
 		if (newfilebuf) {
 			safe_strncpy(newfilebuf, newfile, len);
 		}
-		if (!mproc->newdir && recipient) { /* Reference is invalid by now, but we only care about if it existed */
-			/*! \todo For now, no need to notify ourselves for saving copies of Sent messages. Clients probably aren't idling on the Sent folder anyways
-			 * If/when IMAP NOTIFY support is added, we still need to notify mod_mail about new messages,
-			 * here and everywhere else in net_smtp where messages are saved to disk.
-			 */
-			mailbox_notify_new_message(smtp->node, mbox, mailbox_maildir(mbox), newfile, datalen);
-		}
+		mailbox_notify_new_message(smtp->node, mbox, mailbox_maildir(mbox), newfile, datalen);
 	}
 	return 0;
 }
@@ -3008,6 +3002,8 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 			return 0;
 		}
 
+		smtp->fromlocal = smtp->msa; /* XXX This is kind of a redundant variable, although usage is slightly different */
+
 		/* XXX If MAIL FROM is empty (<>), it's implicitly postermaster [at] (HELO domain), according to RFC 5321 4.5.5 */
 
 		REQUIRE_ARGS(s);
@@ -3067,19 +3063,12 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 		tmp = strchr(from, '@');
 		REQUIRE_ARGS(tmp); /* Must be user@domain */
 		tmp++; /* Skip @ */
-		if (mail_domain_is_local(tmp)) {
-			/* It's one of our addresses. Authentication is required. */
-			if (!bbs_user_is_registered(smtp->node->user)) {
-				smtp_reply(smtp, 530, 5.7.0, "Authentication required");
-				return 0;
-			}
-			smtp->fromlocal = 1;
-		} else {
-			smtp->fromlocal = 0; /* It's not something that belongs to us. No authentication required. */
-			if (strlen_zero(smtp->helohost) || (requirefromhelomatch && !smtp_domain_matches(smtp->helohost, tmp))) {
-				smtp_reply(smtp, 530, 5.7.0, "HELO/EHLO domain does not match MAIL FROM domain");
-				return 0;
-			}
+		/* Don't require authentication simply because the sending domain is local.
+		 * There may be other servers that are authorized to send mail from such domains.
+		 * If it's not legitimate, the SPF checks should reveal that. */
+		if (strlen_zero(smtp->helohost) || (requirefromhelomatch && !smtp_domain_matches(smtp->helohost, tmp))) {
+			smtp_reply(smtp, 530, 5.7.0, "HELO/EHLO domain does not match MAIL FROM domain");
+			return 0;
 		}
 		if (stringlist_contains(&blacklist, tmp)) { /* Entire domain is blacklisted */
 			smtp_reply(smtp, 554, 5.7.1, "This domain is blacklisted");

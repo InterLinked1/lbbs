@@ -260,10 +260,11 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 		char newdir[512];
 		REQUIRE_ARG(s);
 		if (!STARTS_WITH(s, "imap:") && !STARTS_WITH(s, "imaps:")) {
+			/* Doesn't support INBOX */
 			if (mproc->userid) {
-				snprintf(newdir, sizeof(newdir), "%s/%d/%s", mailbox_maildir(NULL), mproc->userid, s);
+				snprintf(newdir, sizeof(newdir), "%s/%d/.%s", mailbox_maildir(NULL), mproc->userid, s);
 			} else {
-				snprintf(newdir, sizeof(newdir), "%s/%s", mailbox_maildir(mproc->mbox), s);
+				snprintf(newdir, sizeof(newdir), "%s/.%s", mailbox_maildir(mproc->mbox), s);
 			}
 			if (eaccess(newdir, R_OK)) {
 				bbs_warning("MOVETO failed: %s\n", strerror(errno));
