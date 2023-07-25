@@ -29,7 +29,7 @@ static int pre(void)
 {
 	test_preload_module("mod_auth_static.so");
 	test_preload_module("mod_mail.so");
-	test_load_module("net_smtp.so");
+	test_preload_module("net_smtp.so");
 	test_load_module("mod_sieve.so");
 
 	TEST_ADD_CONFIG("mod_auth_static.conf");

@@ -61,6 +61,10 @@ mod_sieve.so : mod_sieve.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lsieve
 
+mod_smtp_filter_spf.so : mod_smtp_filter_spf.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lspf2
+
 mod_webmail.o : mod_webmail.c mod_webmail.d
 	@echo "== Compiling $@"
 	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) $(ETPANCFLAGS) -c $<

@@ -19,7 +19,6 @@
  * \note Supports RFC1893 Enhanced Status Codes
  * \note Supports RFC1870 Size Declarations
  * \note Supports RFC6409 Message Submission
- * \note Supports RFC7208 Sender Policy Framework (SPF) Validation
  * \note Supports RFC4468 BURL
  *
  * \author Naveen Albert <bbs@phreaknet.org>
@@ -41,12 +40,6 @@
 #include <arpa/nameser.h>
 #include <resolv.h>
 
-/* Don't redeclare things from arpa/nameser.h */
-#pragma GCC diagnostic ignored "-Wunused-macros"
-#define HAVE_NS_TYPE
-#include <spf2/spf.h>
-#pragma GCC diagnostic pop
-
 #include "include/tls.h"
 
 #include "include/module.h"
@@ -64,6 +57,7 @@
 #include "include/oauth.h"
 
 #include "include/mod_mail.h"
+#include "include/net_smtp.h"
 
 /* SMTP relay port (mail transfer agents) */
 #define DEFAULT_SMTP_PORT 25
@@ -165,6 +159,7 @@ struct smtp_session {
 	char *authuser;			/* Authentication username */
 	char *fromheaderaddress;	/* Address in the From: header */
 	char *listname;				/* Name of mailing list */
+	time_t received;			/* Time that message was received */
 	unsigned int failures;		/* Number of protocol violations or failures */
 	unsigned int msa:1;		/* Whether connection was to the Message Submission Agent port (as opposed to the Mail Transfer Agent port) */
 	unsigned int secure:1;	/* Whether session is secure (TLS, STARTTLS) */
@@ -1116,7 +1111,72 @@ cleanup:
 	return res;
 }
 
-static const char *smtp_protname(struct smtp_session *smtp)
+void smtp_timestamp(time_t received, char *buf, size_t len)
+{
+    struct tm smtpdate;
+
+	/* Timestamp is something like Wed, 22 Feb 2023 03:02:22 +0300 */
+    localtime_r(&received, &smtpdate);
+	strftime(buf, len, "%a, %b %e %Y %H:%M:%S %z", &smtpdate);
+}
+
+struct smtp_filter {
+	enum smtp_filter_type type;
+	enum smtp_filter_scope scope;
+	enum smtp_direction direction;
+	struct smtp_filter_provider *provider;
+	int priority;
+	void *mod;
+	RWLIST_ENTRY(smtp_filter) entry;
+};
+
+static RWLIST_HEAD_STATIC(filters, smtp_filter);
+
+static const char *smtp_filter_type_name(enum smtp_filter_type type)
+{
+	switch (type) {
+		case SMTP_FILTER_PREPEND: return "PREPEND";
+		/* No default */
+	}
+	bbs_assert(0);
+	return NULL;
+}
+
+int __smtp_filter_register(struct smtp_filter_provider *provider, enum smtp_filter_type type, enum smtp_filter_scope scope, enum smtp_direction dir, int priority, void *mod)
+{
+	struct smtp_filter *f = calloc(1, sizeof(*f));
+	if (ALLOC_FAILURE(f)) {
+		return -1;
+	}
+	f->provider = provider;
+	f->type = type;
+	f->scope = scope;
+	f->direction = dir;
+	f->priority = priority;
+	f->mod = mod;
+	RWLIST_WRLOCK(&filters);
+	RWLIST_INSERT_SORTED(&filters, f, entry, priority);
+	RWLIST_UNLOCK(&filters);
+	return 0;
+}
+
+int smtp_filter_unregister(struct smtp_filter_provider *provider)
+{
+	struct smtp_filter *f;
+	RWLIST_WRLOCK(&filters);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&filters, f, entry) {
+		if (f->provider == provider) {
+			RWLIST_REMOVE_CURRENT(entry);
+			free(f);
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(&filters);
+	return f ? 0 : -1;
+}
+
+const char *smtp_protname(struct smtp_session *smtp)
 {
 	/* RFC 2822, RFC 3848, RFC 2033 */
 	if (smtp->ehlo) {
@@ -1132,115 +1192,110 @@ static const char *smtp_protname(struct smtp_session *smtp)
 	return "SMTP";
 }
 
-static inline void smtp_timestamp(char *buf, size_t len)
+int smtp_should_validate_spf(struct smtp_session *smtp)
 {
-	time_t smtpnow;
-    struct tm smtpdate;
-
-	/* Timestamp is something like Wed, 22 Feb 2023 03:02:22 +0300 */
-	smtpnow = (int) time(NULL);
-    localtime_r(&smtpnow, &smtpdate);
-	strftime(buf, len, "%a, %b %e %Y %H:%M:%S %z", &smtpdate);
+	return validatespf && !smtp->fromlocal;
 }
 
-/*! \brief Prepend a Received header to the received email */
-static int prepend_received(struct smtp_session *smtp, const char *recipient, int fd)
+int smtp_should_preserve_privacy(struct smtp_session *smtp)
 {
-	const char *prot;
-	char timestamp[40];
-
-	smtp_timestamp(timestamp, sizeof(timestamp));
-
-	prot = smtp_protname(smtp);
-	/* We don't include a message ID since we don't generate/use any internally (even though the queue probably should...). */
-	if (smtp->fromlocal && !add_received_msa) {
-		/* For messages received by message submission agents, mask the sender's real IP address */
-		dprintf(fd, "Received: from [HIDDEN] (Authenticated sender: %s)\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
-			smtp->from, bbs_hostname(), prot, recipient, timestamp);
-	} else {
-		char hostname[256];
-		bbs_get_hostname(smtp->node->ip, hostname, sizeof(hostname)); /* Look up the sending IP */
-		dprintf(fd, "Received: from %s (%s [%s])\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
-			hostname, hostname, smtp->node->ip, bbs_hostname(), prot, recipient, timestamp); /* recipient already in <> */
-	}
-	return 0;
+	return smtp->fromlocal && !add_received_msa;
 }
 
-SPF_server_t *spf_server;
-
-/*! \brief RFC 7208 SPF verification */
-static int prepend_spf(struct smtp_session *smtp, const char *recipient, int fd)
+int smtp_is_bulk_mailing(struct smtp_session *smtp)
 {
-	SPF_request_t *spf_request;
-	SPF_response_t *spf_response = NULL;
-	const char *domain;
+	return smtp->listname ? 1 : 0;
+}
 
-	UNUSED(recipient);
+time_t smtp_received_time(struct smtp_session *smtp)
+{
+	return smtp->received;
+}
 
-	/* Only MAIL FROM and HELO identities are within scope of SPF. */
-	domain = strchr(smtp->from, '@');
-	if (!domain) {
-		bbs_error("Invalid domain: %s\n", smtp->from);
-		return -1;
-	}
-	domain++;
+int smtp_filter_write(struct smtp_filter_data *f, const char *fmt, ...)
+{
+	va_list ap;
+	char *buf;
+	int len;
 
-	/* use libspf2's SPF validation... no need to reinvent the wheel here. */
-	spf_request = SPF_request_new(spf_server);
-	if (!spf_request) {
-		bbs_error("Failed to request new SPF\n");
-		return -1;
-	}
-	SPF_request_set_ipv4_str(spf_request, smtp->node->ip);
-	SPF_request_set_env_from(spf_request, domain);
-
-#define VALID_SPF(s) (!strcmp(s, "pass") || !strcmp(s, "fail") || !strcmp(s, "softfail") || !strcmp(s, "neutral") || !strcmp(s, "none") || !strcmp(s, "temperror") || !strcmp(s, "permerror"))
-
-	SPF_request_query_mailfrom(spf_request, &spf_response);
-	if (spf_response) {
-		const char *spfresult = SPF_strresult(SPF_response_result(spf_response));
-		bbs_debug(5, "Received-SPF: %s\n", SPF_response_get_received_spf_value(spf_response));
-		if (VALID_SPF(spfresult)) {
-			dprintf(fd, "%s\r\n", SPF_response_get_received_spf(spf_response));
-		} else {
-			bbs_warning("Unexpected SPF result: %s\n", spfresult);
+	if (f->outputfd == -1) {
+		strcpy(f->outputfile, "/tmp/smtpXXXXXX");
+		f->outputfd = mkstemp(f->outputfile);
+		if (f->outputfd < 0) {
+			bbs_error("mkstemp failed: %s\n", strerror(errno));
+			return -1;
 		}
-		SPF_response_free(spf_response);
-		/*! \todo If SPF result is fail, automatically move to Junk folder? (as opposed to INBOX) */
-	} else {
-		bbs_warning("Failed to get SPF response for %s\n", smtp->from);
+		bbs_debug(2, "Creating temporary output file (fd %d)\n", f->outputfd);
 	}
-	SPF_request_free(spf_request);
-	return 0;
+
+	va_start(ap, fmt);
+	len = vasprintf(&buf, fmt, ap);
+	va_end(ap);
+
+	if (len < 0) {
+		return -1;
+	}
+
+	bbs_write(f->outputfd, buf, (size_t) len);
+	bbs_debug(6, "Prepending: %s\n", buf);
+
+	free(buf);
+	return len;
 }
 
-static int prepend_both(struct smtp_session *smtp, const char *recipient, int fd)
+int smtp_filter_add_header(struct smtp_filter_data *f, const char *name, const char *value)
 {
-	/* Additional headers added during final delivery.
-	 * The Received headers must be newest to oldest.
-	 * Not sure about the other headers: by convention, they usually appear after the original ones, but not sure it really matters. */
-	if (validatespf && !smtp->fromlocal) { /* Don't do SPF if the message was just submitted... that would definitely fail. */
-		prepend_spf(smtp, recipient, fd);
-	}
-	if (smtp->listname) {
-		/* If sent to a mailing list (or more rather, any of the recipients was a mailing list), indicate bulk precedence.
-		 * Discouraged by RFC 2076, but this is common practice nonetheless. */
-		dprintf(fd, "Precedence: bulk\r\n");
-	}
-	prepend_received(smtp, recipient, fd);
-	return 0;
+	return smtp_filter_write(f, "%s: %s\r\n", name, value);
 }
 
-static int prepend_incoming(struct smtp_session *smtp, const char *recipient, int fd)
+/*! \note This is currently only executed once the entire message has been received.
+ * If milter support is added, we'll need hooks at each stage of the delivery process (MAIL FROM, RCPT TO, etc.) */
+static void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 {
-	/* This is a good place to tack on Return-Path (receiving MTA does this) */
-	dprintf(fd, "Return-Path: %s\r\n", smtp->from); /* Envelope From - smtp-> doesn't have <> so this works out just fine. */
-	return prepend_both(smtp, recipient, fd);
-}
+	struct smtp_filter *f;
 
-static int prepend_outgoing(struct smtp_session *smtp, const char *recipient, int fd)
-{
-	return prepend_both(smtp, recipient, fd);
+	if (!fdata->smtp) {
+		bbs_error("Cannot run filters without an SMTP session\n");
+		return;
+	}
+
+	fdata->dir = dir;
+	fdata->from = fdata->smtp->from;
+	fdata->node = fdata->smtp->node;
+
+	RWLIST_RDLOCK(&filters);
+	RWLIST_TRAVERSE(&filters, f, entry) {
+		if (f->direction & fdata->dir) {
+			int res = 0;
+			/* Filter applicable to this direction */
+			if (f->scope == SMTP_SCOPE_INDIVIDUAL) {
+				if (!fdata->recipient) {
+					continue;
+				}
+			} else {
+				if (fdata->recipient) {
+					continue;
+				}
+			}
+			/* Filter applicable to scope */
+			bbs_debug(5, "Executing %s SMTP filter %s %p...\n", dir == SMTP_DIRECTION_IN ? "incoming" : "outgoing", smtp_filter_type_name(f->type), f);
+			bbs_module_ref(f->mod);
+			if (f->type == SMTP_FILTER_PREPEND) {
+				bbs_assert_exists(f->provider);
+				res = f->provider->on_body(fdata);
+			} else {
+				bbs_error("Filter type %d not supported\n", f->type);
+			}
+			bbs_module_unref(f->mod);
+			lseek(fdata->inputfd, 0, SEEK_SET); /* Rewind to beginning of file */
+			if (res == 1) {
+				break;
+			} else if (res < 0) {
+				bbs_warning("%s SMTP filter %s %p failed to execute\n", dir == SMTP_DIRECTION_IN ? "Incoming" : "Outgoing", smtp_filter_type_name(f->type), f);
+			}
+		}
+	}
+	RWLIST_UNLOCK(&filters);
 }
 
 static void notify_firstmsg(struct mailbox *mbox)
@@ -1308,13 +1363,76 @@ static inline void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_pr
 	mproc->forward = &smtp->recipients; /* Tack on forwarding targets to the recipients list */
 }
 
+struct smtp_processor {
+	int (*cb)(struct smtp_msg_process *proc);
+	void *mod;
+	RWLIST_ENTRY(smtp_processor) entry;
+};
+
+static RWLIST_HEAD_STATIC(processors, smtp_processor);
+
+/*! \note This is in mod_mail instead of net_smtp since the BBS doesn't currently support
+ * modules that both have dependencies and are dependencies of other modules,
+ * since the module autoloader only does a single pass to load modules that export global symbols.
+ * e.g. mod_mailscript depending on net_smtp, which depends on mod_mail.
+ * So we make both mod_mailscript and net_smtp depend on mod_mail directly.
+ * If this is resolved in the future, it may make sense to move this to net_smtp. */
+int __smtp_register_processor(int (*cb)(struct smtp_msg_process *mproc), void *mod)
+{
+	struct smtp_processor *proc;
+
+	proc = calloc(1, sizeof(*proc));
+	if (ALLOC_FAILURE(proc)) {
+		return -1;
+	}
+
+	proc->cb = cb;
+	proc->mod = mod;
+
+	RWLIST_WRLOCK(&processors);
+	RWLIST_INSERT_TAIL(&processors, proc, entry);
+	RWLIST_UNLOCK(&processors);
+	return 0;
+}
+
+int smtp_unregister_processor(int (*cb)(struct smtp_msg_process *mproc))
+{
+	struct smtp_processor *proc;
+
+	proc = RWLIST_WRLOCK_REMOVE_BY_FIELD(&processors, cb, cb, entry);
+	if (!proc) {
+		bbs_error("Couldn't remove processor %p\n", cb);
+		return -1;
+	}
+	free(proc);
+	return 0;
+}
+
+int smtp_run_callbacks(struct smtp_msg_process *mproc)
+{
+	int res = 0;
+	struct smtp_processor *proc;
+
+	RWLIST_RDLOCK(&processors);
+	RWLIST_TRAVERSE(&processors, proc, entry) {
+		bbs_module_ref(proc->mod);
+		res |= proc->cb(mproc);
+		bbs_module_unref(proc->mod);
+		if (res) {
+			break; /* Stop processing immediately if a processor returns nonzero */
+		}
+	}
+	RWLIST_UNLOCK(&processors);
+	return res;
+}
+
 /*!
  * \brief Save a message to a maildir folder
  * \param smtp SMTP session
  * \param mbox Mailbox to which message is being appended
  * \param mproc
  * \param recipient Recipient address (incoming), NULL for saving copies of sent messages (outgoing)
- * \param srcfd
+ * \param srcfd Source file descriptor containing message
  * \param datalen Length of message
  * \param[out] newfilebuf Saved filename
  * \param len Length of newfilebuf
@@ -1341,6 +1459,7 @@ static int appendmsg(struct smtp_session *smtp, struct mailbox *mbox, struct smt
 
 	if (mproc->newdir) {
 		char newdir[512];
+		/*! \todo We need to prepend a dot here if the mailbox name is not INBOX */
 		snprintf(newdir, sizeof(newdir), "%s/%s", mailbox_maildir(mbox), mproc->newdir);
 		free(mproc->newdir);
 		if (eaccess(newdir, R_OK)) {
@@ -1358,18 +1477,24 @@ static int appendmsg(struct smtp_session *smtp, struct mailbox *mbox, struct smt
 	}
 
 	if (recipient) { /* For incoming messages, but not for saving copies of outgoing messages */
-		prepend_incoming(smtp, recipient, fd);
+		struct smtp_filter_data filterdata;
+		memset(&filterdata, 0, sizeof(filterdata));
+		filterdata.smtp = smtp;
+		filterdata.recipient = recipient;
+		filterdata.inputfd = srcfd;
+		filterdata.size = datalen;
+		filterdata.outputfd = fd;
+		smtp_run_filters(&filterdata, SMTP_DIRECTION_IN);
 	}
 
 	/* Write the entire body of the message. */
 	res = bbs_copy_file(srcfd, fd, 0, (int) datalen);
+	close(fd);
 	if (res != (int) datalen) {
 		bbs_error("Failed to write %lu bytes to %s, only wrote %d\n", datalen, tmpfile, res);
-		close(fd);
 		return -1;
 	}
 
-	close(fd);
 	if (rename(tmpfile, newfile)) {
 		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
 		return -1;
@@ -1509,6 +1634,7 @@ static int return_dead_letter(const char *from, const char *to, const char *msgf
 	/* Skip first metalen characters, and send msgsize - metalen, to copy over just the message itself. */
 	bbs_copy_file(origfd, attachfd, (int) metalen, (int) (msgsize - metalen));
 	close(origfd);
+	close(attachfd);
 	snprintf(fromaddr, sizeof(fromaddr), "mailer-daemon@%s", bbs_hostname()); /* We can be whomever we want to say we are... but let's be a mailer daemon. */
 
 	/* XXX This is not a standard bounce message format (we need multipart/report for that)
@@ -1894,6 +2020,7 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		int fd;
 		char qdir[256];
 		char tmpfile[256], newfile[256];
+		struct smtp_filter_data filterdata;
 
 		if (!queue_outgoing) {
 			return -1;
@@ -1922,7 +2049,15 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		 */
 
 		dprintf(fd, "MAIL FROM:<%s>\nRCPT TO:%s\n", smtp->from, recipient); /* First 2 lines contain metadata, and recipient is already enclosed in <> */
-		prepend_outgoing(smtp, recipient, fd);
+
+		memset(&filterdata, 0, sizeof(filterdata));
+		filterdata.smtp = smtp;
+		filterdata.recipient = recipient;
+		filterdata.inputfd = srcfd;
+		filterdata.size = datalen;
+		filterdata.outputfd = fd;
+		smtp_run_filters(&filterdata, SMTP_DIRECTION_OUT);
+
 		/* Write the entire body of the message. */
 		res = bbs_copy_file(srcfd, fd, 0, (int) datalen);
 		if (res != (int) datalen) {
@@ -2023,11 +2158,56 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 	int mres;
 	int res = 0;
 	int srcfd;
+	struct smtp_filter_data filterdata;
+
+	/* Preserve the actual received time for the Received header, in case filters take a moment to run */
+	smtp->received = time(NULL);
 
 	srcfd = open(filename, O_RDONLY);
 	if (srcfd < 0) {
 		bbs_error("open(%s) failed: %s\n", filename, strerror(errno));
 		return -1;
+	}
+
+	/* Ordering here is important. For local delivery:
+	 * 1) First, filters are run for the message itself (SMTP_SCOPE_COMBINED). Filters may MODIFY the data, but may do nothing at all.
+	 *    This first stage is where spam filtering should be done to prepend spam-related headers.
+	 * 2) Then, smtp_mproc callbacks are run. These callbacks are READ ONLY and are action-oriented.
+	 *    This might be where a user has a rule like "If spam header says this is spam, move it to Junk".
+	 *    Importantly, the spam filter MUST have already run and modified the message by this point.
+	 * 3) Finally, filters are run AGAIN for the message, for each individual recipient. This is where the Received header, etc. are prepended.
+	 *    Note that it's possible we might abort at Step 2 if a rule says to reject the message.
+	 *    This is fine, because the filters at step 3 only matter if we're going to deliver the message anyways. Otherwise, why bother?
+	 *
+	 * Only after all of this is the message actually written into the user's maildir.
+	 */
+	memset(&filterdata, 0, sizeof(filterdata));
+	filterdata.smtp = smtp;
+	filterdata.recipient = NULL; /* This is for the message as a whole, not each recipient. Just making that explicit. */
+	filterdata.inputfd = srcfd;
+	filterdata.size = datalen;
+	filterdata.outputfd = -1;
+	smtp_run_filters(&filterdata, SMTP_DIRECTION_IN);
+
+	/* Since outputfd was originally -1, if it's not any longer,
+	 * that means the source has been modified and we should use that as the new source */
+	if (filterdata.outputfd != -1) {
+		int oldsrcfd = srcfd;
+		srcfd = filterdata.outputfd;
+		bbs_debug(6, "New source file descriptor: %d -> %d\n", oldsrcfd, srcfd);
+
+		/* Since we had to make a new interim file, copy the original message and append it to the newly created file. */
+		if (bbs_copy_file(oldsrcfd, srcfd, 0, (int) datalen) != (int) datalen) {
+			return -1;
+		}
+		close(oldsrcfd);
+		datalen = (size_t) lseek(srcfd, 0, SEEK_CUR); /* Get new size of data */
+		close(srcfd);
+		srcfd = open(filterdata.outputfile, O_RDONLY);
+		if (srcfd < 0) {
+			bbs_error("open(%s) failed: %s\n", filterdata.outputfile, strerror(errno));
+			return -1;
+		}
 	}
 
 	if (smtp->listname && archivelists) {
@@ -2090,7 +2270,13 @@ next:
 		free_if(dup);
 		free(recipient);
 	}
+
 	close(srcfd);
+	if (filterdata.outputfd != -1) {
+		if (unlink(filterdata.outputfile)) {
+			bbs_error("unlink(%s) failed: %s\n", filterdata.outputfile, strerror(errno));
+		}
+	}
 	return res;
 }
 
@@ -2416,7 +2602,8 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 				/* Still prepend a Received header, but less descriptive than normal (don't include Authenticated sender) since we're relaying */
 				if (smtp->fromlocal && !add_received_msa) {
 					char timestamp[40];
-					smtp_timestamp(timestamp, sizeof(timestamp));
+					time_t now = time(NULL);
+					smtp_timestamp(now, timestamp, sizeof(timestamp));
 					prependlen = snprintf(prepend, sizeof(prepend), "Received: from [HIDDEN]\r\n\tby %s with %s\r\n\t%s\r\n",
 						bbs_hostname(), smtp_protname(smtp), timestamp);
 				}
@@ -3148,20 +3335,12 @@ static int load_module(void)
 
 	pthread_mutex_init(&queue_lock, NULL);
 
-	spf_server = SPF_server_new(SPF_DNS_CACHE, 0);
-	if (!spf_server) {
-		bbs_error("Failed to create SPF server\n");
-		goto cleanup;
-	}
-
 	if (bbs_pthread_create(&queue_thread, NULL, queue_handler, NULL)) {
-		SPF_server_free(spf_server);
 		goto cleanup;
 	}
 
 	/* If we can't start the TCP listeners, decline to load */
 	if (bbs_start_tcp_listener3(smtp_enabled ? smtp_port : 0, smtps_enabled ? smtps_port : 0, msa_enabled ? msa_port : 0, "SMTP", "SMTPS", "SMTP (MSA)", __smtp_handler)) {
-		SPF_server_free(spf_server);
 		goto cleanup;
 	}
 
@@ -3190,10 +3369,9 @@ static int unload_module(void)
 	if (msa_enabled) {
 		bbs_stop_tcp_listener(msa_port);
 	}
-	SPF_server_free(spf_server);
 	stringlist_empty(&blacklist);
 	pthread_mutex_destroy(&queue_lock);
 	return 0;
 }
 
-BBS_MODULE_INFO_DEPENDENT("RFC5321 SMTP MTA/MSA Servers", "mod_mail.so");
+BBS_MODULE_INFO_FLAGS_DEPENDENT("RFC5321 SMTP MTA/MSA Servers", MODFLAG_GLOBAL_SYMBOLS, "mod_mail.so");

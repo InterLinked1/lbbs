@@ -292,7 +292,7 @@ static int exec_pre(int fdin, int fdout, int exclude)
 		child_debug(7, "fdlimit %d\n", fdlimit);
 	}
 
-	cleanup_fds(fdlimit, fdin, fdout, exclude);
+	cleanup_fds(fdlimit - 1, fdin, fdout, exclude);
 
 	/* Assign the appropriate file descriptors */
 	if (fdin != -1) {

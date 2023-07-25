@@ -42,9 +42,11 @@
 #include "include/module.h"
 #include "include/utils.h"
 #include "include/mail.h"
-#include "include/mod_mail.h"
 #include "include/stringlist.h"
 #include "include/linkedlists.h"
+
+#include "include/mod_mail.h"
+#include "include/net_smtp.h"
 
 struct sieve_exec {
 	char **header;
@@ -671,4 +673,4 @@ static int unload_module(void)
 	return smtp_unregister_processor(sieve);
 }
 
-BBS_MODULE_INFO_DEPENDENT("RFC5228 Sieve Filtering", "mod_mail.so");
+BBS_MODULE_INFO_DEPENDENT("RFC5228 Sieve Filtering", "net_smtp.so");

@@ -48,6 +48,8 @@ Key features and capabilities include:
 
     * Built-in OAuth2 proxy, allowing the BBS to log in to remote IMAP servers using OAuth2, while your IMAP client uses your normal BBS credentials
 
+  * SPF and SpamAssassin support
+
   * Filtering
 
     * Sieve filtering scripts and ManageSieve service

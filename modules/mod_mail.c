@@ -423,69 +423,6 @@ int sieve_validate_script(const char *filename, struct mailbox *mbox, char **err
 	return res;
 }
 
-struct smtp_processor {
-	int (*cb)(struct smtp_msg_process *proc);
-	void *mod;
-	RWLIST_ENTRY(smtp_processor) entry;
-};
-
-static RWLIST_HEAD_STATIC(processors, smtp_processor);
-
-/*! \note This is in mod_mail instead of net_smtp since the BBS doesn't currently support
- * modules that both have dependencies and are dependencies of other modules,
- * since the module autoloader only does a single pass to load modules that export global symbols.
- * e.g. mod_mailscript depending on net_smtp, which depends on mod_mail.
- * So we make both mod_mailscript and net_smtp depend on mod_mail directly.
- * If this is resolved in the future, it may make sense to move this to net_smtp. */
-int __smtp_register_processor(int (*cb)(struct smtp_msg_process *mproc), void *mod)
-{
-	struct smtp_processor *proc;
-
-	proc = calloc(1, sizeof(*proc));
-	if (ALLOC_FAILURE(proc)) {
-		return -1;
-	}
-
-	proc->cb = cb;
-	proc->mod = mod;
-
-	RWLIST_WRLOCK(&processors);
-	RWLIST_INSERT_TAIL(&processors, proc, entry);
-	RWLIST_UNLOCK(&processors);
-	return 0;
-}
-
-int smtp_unregister_processor(int (*cb)(struct smtp_msg_process *mproc))
-{
-	struct smtp_processor *proc;
-
-	proc = RWLIST_WRLOCK_REMOVE_BY_FIELD(&processors, cb, cb, entry);
-	if (!proc) {
-		bbs_error("Couldn't remove processor %p\n", cb);
-		return -1;
-	}
-	free(proc);
-	return 0;
-}
-
-int smtp_run_callbacks(struct smtp_msg_process *mproc)
-{
-	int res = 0;
-	struct smtp_processor *proc;
-
-	RWLIST_RDLOCK(&processors);
-	RWLIST_TRAVERSE(&processors, proc, entry) {
-		bbs_module_ref(proc->mod);
-		res |= proc->cb(mproc);
-		bbs_module_unref(proc->mod);
-		if (res) {
-			break; /* Stop processing immediately if a processor returns nonzero */
-		}
-	}
-	RWLIST_UNLOCK(&processors);
-	return res;
-}
-
 /* E-Mail Address Alias */
 struct alias {
 	int userid;
@@ -1785,6 +1722,7 @@ int maildir_copy_msg_filename(struct mailbox *mbox, struct bbs_node *node, const
 
 	copied = bbs_copy_file(origfd, newfd, 0, size);
 	close(origfd);
+	close(newfd);
 	if (copied != size) {
 		if (unlink(newpath)) {
 			bbs_error("Failed to delete %s: %s\n", newpath, strerror(errno));

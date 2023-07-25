@@ -821,6 +821,7 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 {
 	int copied;
 	off_t offset;
+	int fellback = 0;
 
 	if (bytes <= 0) { /* Something's not right. */
 		bbs_warning("Wanted to copy %d bytes from file descriptor %d?\n", bytes, srcfd);
@@ -845,16 +846,16 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 #endif
 	if (copied == -1 && errno == ENOSYS) {
 		/* Okay, the actual syscall doesn't even exist. Fall back to sendfile. */
+		fellback = 1;
 		copied = (int) sendfile(destfd, srcfd, &offset, (size_t) bytes);
 	}
 	if (copied == -1) {
-		bbs_error("copy %d -> %d failed: %s\n", srcfd, destfd, strerror(errno));
+		bbs_error("%s %d -> %d failed: %s\n", fellback ? "sendfile" : "copy_file_range", srcfd, destfd, strerror(errno));
 		return -1;
 	} else if (copied != bytes) {
 		bbs_error("Wanted to copy %d bytes but only copied %d?\n", bytes, copied);
 		return -1;
 	}
-	close(destfd);
 	return copied;
 }
 

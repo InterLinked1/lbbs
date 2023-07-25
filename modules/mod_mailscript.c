@@ -26,10 +26,12 @@
 
 #include "include/module.h"
 #include "include/system.h"
-#include "include/mod_mail.h"
 #include "include/stringlist.h"
 #include "include/variables.h"
 #include "include/utils.h"
+
+#include "include/mod_mail.h"
+#include "include/net_smtp.h"
 
 #define REQUIRE_ARG(s) \
 	if (strlen_zero(s)) { \
@@ -479,4 +481,4 @@ static int unload_module(void)
 	return smtp_unregister_processor(mailscript);
 }
 
-BBS_MODULE_INFO_DEPENDENT("SMTP MailScript Engine", "mod_mail.so");
+BBS_MODULE_INFO_DEPENDENT("SMTP MailScript Engine", "net_smtp.so");

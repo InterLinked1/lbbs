@@ -546,7 +546,6 @@ FILE *bbs_mkftemp(char *template, mode_t mode);
  * \param start Offset from start, in bytes, from which to start copying
  * \param bytes Number of bytes to copy, starting from start
  * \retval -1 on failure, number of bytes copied on success
- * \note srcfd and destfd are closed by this function, regardless of outcome
  */
 int bbs_copy_file(int srcfd, int destfd, int start, int bytes); /* gcc has fd_arg attributes, but not widely supported yet */
 
