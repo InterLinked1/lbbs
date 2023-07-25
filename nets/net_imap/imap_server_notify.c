@@ -163,7 +163,7 @@ int imap_notify_applicable_fetchargs(struct imap_session *imap, struct mailbox *
 		struct imap_notify *notify = imap->notify;
 		struct notify_watch *w;
 		enum mailbox_event_type events;
-		int selected = (imap->folder && folder && !strcmp(imap->folder, folder)) || (imap->dir && maildir && !strcmp(imap->dir, maildir));
+		int selected = (imap->folder && folder && !strcmp(imap->folder, folder)) || (!s_strlen_zero(imap->dir) && maildir && !strcmp(imap->dir, maildir));
 
 		if (notify->none) {
 			return 0;

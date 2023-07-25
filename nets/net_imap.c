@@ -3994,7 +3994,7 @@ static int handle_idle(struct imap_session *imap)
 static int imap_process(struct imap_session *imap, char *s)
 {
 	int replacecount;
-	char *command;
+	char *command = NULL; /* XXX Should not need to be initialized, but gcc 12 complains if it's not */
 	int res = 0;
 
 	if (imap->idle || (imap->alerted == 1 && !strcasecmp(s, "DONE"))) {

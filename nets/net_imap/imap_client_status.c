@@ -256,6 +256,7 @@ static int status_size_fetch_incremental(struct imap_client *client, const char 
 
 	for (received = 0;;) {
 		const char *sizestr;
+		size_t msg_size;
 		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 5000);
 		if (res <= 0) {
 			bbs_warning("IMAP timeout from UID FETCH (RFC822.SIZE) - remote server issue?\n");
@@ -276,12 +277,17 @@ static int status_size_fetch_incremental(struct imap_client *client, const char 
 			bbs_warning("Server sent empty size: %s\n", buf);
 			continue;
 		}
-		mb_size += (size_t) atoi(sizestr);
+		msg_size = (size_t) atoi(sizestr);
+		if (!msg_size) {
+			bbs_warning("Received empty size: %s\n", buf);
+			continue;
+		}
+		mb_size += msg_size;
 		received++;
 	}
 
 	if (received != added) {
-		bbs_warning("Expected to get %d message sizes, but got %d?\n", added, received);
+		bbs_warning("Expected to get %d message sizes, but got %d? (=> %lu B)\n", added, received, *mb_size);
 		return -1;
 	}
 
@@ -515,22 +521,32 @@ int remote_status(struct imap_client *client, const char *remotename, const char
 	if (issue_status) {
 		/* XXX Same tag is reused here, so we expect the same prefix (rtag) */
 		imap_client_send(client, "A.%s.1 STATUS \"%s\" (%s%s%s%s)\r\n", tag, remotename, items, add1, add2, add3);
-		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 5000);
-		if (res <= 0) {
-			return -1;
-		}
-		if (!STARTS_WITH(buf, "* STATUS ")) {
-			bbs_warning("Unexpected response: %s\n", buf);
-			return -1;
+		for (;;) {
+			res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 5000);
+			if (res <= 0) {
+				return -1;
+			}
+			/* Tolerate unrelated untagged responses interleaved */
+			if (STARTS_WITH(buf, "* STATUS ")) {
+				break;
+			} else if (!STARTS_WITH(buf, "* ")) {
+				return -1;
+			}
 		}
 		safe_strncpy(remote_status_resp, buf, sizeof(remote_status_resp)); /* Save the STATUS response from the server */
-		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 5000);
-		if (res <= 0) {
-			return -1;
-		}
-		if (strncasecmp(buf, rtag, taglen)) {
-			bbs_warning("Unexpected response: %s (doesn't start with %.*s)\n", buf, (int) taglen, rtag);
-			return -1;
+		for (;;) {
+			res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 5000);
+			if (res <= 0) {
+				return -1;
+			}
+			if (STARTS_WITH(buf, "* ")) { /* Tolerate unrelated untagged responses interleaved */
+				continue;
+			}
+			if (strncasecmp(buf, rtag, taglen)) {
+				bbs_warning("Unexpected response: %s (doesn't start with %.*s)\n", buf, (int) taglen, rtag);
+				return -1;
+			}
+			break;
 		}
 	}
 
