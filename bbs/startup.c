@@ -25,17 +25,16 @@
 #include "include/startup.h"
 
 struct startup_callback {
-	/*! Callback function */
-	int (*execute)(void);
-	/* Next entry */
-	RWLIST_ENTRY(startup_callback) entry;
+	int (*execute)(void);	/*!< Callback function */
+	int priority;			/*!< Priority */
+	RWLIST_ENTRY(startup_callback) entry; /*!< Next entry */
 };
 
 static RWLIST_HEAD_STATIC(callbacks, startup_callback);
 
 static int started = 0;
 
-int bbs_register_startup_callback(int (*execute)(void))
+int bbs_register_startup_callback(int (*execute)(void), int priority)
 {
 	struct startup_callback *cb;
 
@@ -51,8 +50,9 @@ int bbs_register_startup_callback(int (*execute)(void))
 		return -1;
 	}
 	cb->execute = execute;
+	cb->priority = priority;
 	/* Tail insert, so they run in the order registered */
-	RWLIST_INSERT_TAIL(&callbacks, cb, entry);
+	RWLIST_INSERT_SORTED(&callbacks, cb, entry, priority);
 	bbs_debug(3, "Registered startup callback %p\n", execute);
 	RWLIST_UNLOCK(&callbacks);
 	return 0;

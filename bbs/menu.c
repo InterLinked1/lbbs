@@ -887,7 +887,7 @@ int bbs_load_menus(int reload)
 		 * We can't check the sanity of menus.conf until all modules have registered,
 		 * since menu handlers aren't yet registered right now, so we have to wait to verify them.
 		 * Register a callback. */
-		bbs_register_startup_callback(check_menus);
+		bbs_register_startup_callback(check_menus, STARTUP_PRIORITY_DEFAULT);
 	}
 	return res;
 }

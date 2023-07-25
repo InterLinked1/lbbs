@@ -94,7 +94,7 @@ int bbs_mail_init(void)
 {
 	int res = load_config();
 	if (config_exists) {
-		bbs_register_startup_callback(check_mailers);
+		bbs_register_startup_callback(check_mailers, STARTUP_PRIORITY_DEFAULT);
 	}
 	return res;
 }

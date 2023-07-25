@@ -695,7 +695,7 @@ int __bbs_start_tcp_listener(int port, const char *name, void *(*handler)(void *
 	pthread_mutex_lock(&tcp_start_lock);
 	if (!bbs_is_fully_started()) {
 		if (!tcp_multilistener_started) {
-			bbs_register_startup_callback(start_tcp_multilistener);
+			bbs_register_startup_callback(start_tcp_multilistener, STARTUP_PRIORITY_URGENT);
 			tcp_multilistener_started = 1;
 		}
 	} else {

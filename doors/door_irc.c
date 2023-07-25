@@ -1330,7 +1330,7 @@ static int load_module(void)
 		if (bbs_is_fully_started()) {
 			start_clients();
 		} else {
-			bbs_register_startup_callback(start_clients);
+			bbs_register_startup_callback(start_clients, STARTUP_PRIORITY_DEPENDENT);
 		}
 	}
 	REQUIRE_FULL_LOAD(res);

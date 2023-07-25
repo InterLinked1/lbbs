@@ -769,7 +769,7 @@ static int load_module(void)
 #pragma GCC diagnostic pop
 
 	if (!bbs_is_fully_started() && option_nofork) {
-		bbs_register_startup_callback(show_copyright_fg);
+		bbs_register_startup_callback(show_copyright_fg, STARTUP_PRIORITY_DEFAULT);
 	}
 
 	return 0;
