@@ -243,8 +243,10 @@ void mailbox_dispatch_event(struct mailbox_event *event)
 
 	time(&event->timestamp);
 
-	if (!strcmp(event->node->protname, "IMAP") || !strcmp(event->node->protname, "POP3")) {
-		event->messageaccess = 1;
+	if (event->node) {
+		if (!strcmp(event->node->protname, "IMAP") || !strcmp(event->node->protname, "POP3")) {
+			event->messageaccess = 1;
+		}
 	}
 
 	RWLIST_RDLOCK(&watchers);
