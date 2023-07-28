@@ -61,6 +61,10 @@ mod_sieve.so : mod_sieve.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lsieve
 
+mod_slack.so : mod_slack.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lslackrtm
+
 mod_smtp_filter_spf.so : mod_smtp_filter_spf.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lspf2

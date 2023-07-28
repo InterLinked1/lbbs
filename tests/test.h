@@ -78,6 +78,11 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #define TEST_SASL2 "dGVzdHVzZXIyAHRlc3R1c2VyMgBQQHNzdzByRA=="
 #define TEST_EMAIL2 TEST_USER2 "@" TEST_HOSTNAME
 
+#define TEST_USER3 "testuser3"
+#define TEST_PASS3 "P@ssw0rD"
+#define TEST_HASH3 "$2y$10$0hcFFDyIUBkNcqMPw9G0t.vR.c8oBArJJOE1tK1atcPWkk9XBhvzK"
+#define TEST_SASL3 "dGVzdHVzZXIyAHRlc3R1c2VyMgBQQHNzdzByRA=="
+
 #define ENDL "\r\n"
 
 int test_dir_file_count(const char *directory);

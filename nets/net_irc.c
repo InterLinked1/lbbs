@@ -36,6 +36,7 @@
 #include "include/stringlist.h"
 #include "include/ansi.h"
 #include "include/notify.h"
+#include "include/alertpipe.h"
 
 #include "include/net_irc.h"
 
@@ -62,7 +63,7 @@
 
 /* Hostmask stuff */
 #define IDENT_PREFIX_FMT "%s!%s@%s"
-#define IDENT_PREFIX_ARGS(user) user->nickname, user->username, user->hostname
+#define IDENT_PREFIX_ARGS(user) (user)->nickname, (user)->username, (user)->hostname
 
 #define send_reply(user, fmt, ...) bbs_debug(3, "%p <= " fmt, user, ## __VA_ARGS__); if (user->wfd != -1) { pthread_mutex_lock(&user->lock); dprintf(user->wfd, fmt, ## __VA_ARGS__); pthread_mutex_unlock(&user->lock); }
 #define send_numeric(user, numeric, fmt, ...) send_reply(user, "%03d %s :" fmt, numeric, user->nickname, ## __VA_ARGS__)
@@ -812,8 +813,105 @@ int _irc_relay_raw_send(const char *channel, const char *msg, void *mod)
 	return 0;
 }
 
+static void channel_print_topic(struct irc_user *user, struct irc_channel *channel)
+{
+	if (channel->topic) {
+		if (!user) { /* Broadcast (topic change) */
+			send_numeric_broadcast(channel, NULL, 332, "%s :%s\r\n", channel->name, S_IF(channel->topic));
+			send_numeric_broadcast(channel, user, 333, "%s %s %d\r\n", channel->name, channel->topicsetby, channel->topicsettime);
+		} else {
+			send_numeric2(user, 332, "%s :%s\r\n", channel->name, S_IF(channel->topic));
+			send_numeric2(user, 333, "%s %s %d\r\n", channel->name, channel->topicsetby, channel->topicsettime);
+		}
+	} else {
+		if (!user) {
+			send_numeric_broadcast(channel, user, 331, "%s :No topic is set\r\n", channel->name);
+		} else {
+			send_numeric2(user, 331, "%s :No topic is set\r\n", channel->name);
+		}
+	}
+}
+
+int irc_relay_set_topic(const char *channel, const char *topic)
+{
+	char buf[128];
+	struct irc_channel *c = get_channel(channel);
+
+	if (!c) {
+		bbs_warning("Could not find channel %s?\n", channel);
+		return -1;
+	}
+
+	pthread_mutex_lock(&c->lock);
+	REPLACE(c->topic, topic);
+	snprintf(buf, sizeof(buf),IDENT_PREFIX_FMT, IDENT_PREFIX_ARGS(&user_messageserv));
+	REPLACE(c->topicsetby, buf);
+	c->topicsettime = (unsigned int) time(NULL);
+	channel_print_topic(NULL, c);
+	chanserv_broadcast("TOPIC", c->name, (&user_messageserv)->nickname, topic);
+	return 0;
+}
+
+int _irc_relay_send_multiline(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *hostsender, const char *msg, int(*transform)(const char *line, char *buf, size_t len), const char *ircuser, void *mod)
+{
+	char linebuf[512];
+	char *dup, *lines;
+	const char *line;
+
+	/*! \todo What if message lines are > 512 characters? */
+
+	if (!strchr(msg, '\n')) { /* Avoid unnecessarily allocating memory if we don't have to. */
+		line = msg;
+		if (transform) {
+			if (transform(msg, linebuf, sizeof(linebuf)) < 0) {
+				return -1;
+			}
+			line = linebuf;
+		}
+		return _irc_relay_send(channel, modes, relayname, sender, hostsender, line, ircuser, 0, mod);
+	}
+
+	dup = strdup(msg);
+	if (ALLOC_FAILURE(dup)) {
+		return -1;
+	}
+	lines = dup;
+	while ((line = strsep(&lines, "\n"))) {
+		bbs_strterm(line, '\r');
+		if (transform) {
+			if (transform(line, linebuf, sizeof(linebuf)) < 0) {
+				return -1;
+			}
+			line = linebuf;
+		}
+		_irc_relay_send(channel, CHANNEL_USER_MODE_NONE, relayname, sender, hostsender, line, ircuser, 0, mod);
+	}
+	free(dup);
+	return 0;
+}
+
+/* XXX 100% horrible horrible (hopefully temporary) kludge - a total lock hack: In this case, it's to emulate recursive locking for this thread stack:
+Thread #8's call to pthread_rwlock_rdlock failed
+==168664==    with error code 35 (EDEADLK: Resource deadlock would occur)
+==168664==    at 0x483E751: pthread_rwlock_rdlock_WRK (hg_intercepts.c:2242)
+==168664==    by 0x6746963: _irc_relay_send (net_irc.c:937) <--- try to RDLOCK
+==168664==    by 0x485C960: netirc_cb (mod_relay_irc.c:575)
+==168664==    by 0x673C00B: relay_broadcast (net_irc.c:793)
+==168664==    by 0x673C00B: relay_broadcast (net_irc.c:777)
+==168664==    by 0x673C00B: drop_member_if_present (net_irc.c:2522)
+==168664==    by 0x673C00B: leave_all_channels.constprop.0 (net_irc.c:2575) <---- initial WRLOCK
+==168664==    by 0x67420D1: handle_client (net_irc.c:2979)
+==168664==    by 0x67461C4: irc_handler (net_irc.c:3320)
+==168664==    by 0x67461C4: __irc_handler (net_irc.c:3338)
+==168664==    by 0x13DBF9: thread_run (thread.c:337)
+==168664==    by 0x483F876: mythread_wrapper (hg_intercepts.c:387)
+==168664==    by 0x4EABEA6: start_thread (pthread_create.c:477)
+==168664==    by 0x4FC1A2E: clone (clone.S:95)
+*/
+static pthread_t channels_locked = 0;
+
 /*! \brief Somewhat condensed version of privmsg, for relay integration */
-int _irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *msg, void *mod)
+int _irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *hostsender, const char *msg, const char *ircuser, int notice, void *mod)
 {
 	char hostname[84];
 	struct irc_channel *c;
@@ -827,7 +925,10 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 		return -1;
 	}
 
-	snprintf(hostname, sizeof(hostname), "%s/%s", relayname, sender);
+	/* If something specific specified, use the override, otherwise use the same thing.
+	 * This allows relay modules to customize the hostmask if they want. */
+	hostsender = hostsender ? hostsender : sender;
+	snprintf(hostname, sizeof(hostname), "%s/%s", relayname, hostsender);
 
 	/* It's not our job to filter messages, clients can do that. For example, decimal 1 is legitimate for CTCP commands. */
 
@@ -838,22 +939,55 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 			bbs_debug(7, "No such user: %s\n", channel);
 			return -1;
 		}
-		pthread_mutex_lock(&user2->lock); /* Serialize writes to this user */
-		dprintf(user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, "PRIVMSG", user2->nickname, msg);
-		pthread_mutex_unlock(&user2->lock);
+		/* notice is only true when the relay module is sending a message as part of a relay callback,
+		 * in which case user is already locked. Don't lock again, or we'll deadlock.
+		 * If !notice, this isn't the case. */
+		if (!notice) {
+			pthread_mutex_lock(&user2->lock); /* Serialize writes to this user */
+		}
+		dprintf(user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, notice ? "NOTICE" : "PRIVMSG", user2->nickname, msg);
+		if (!notice) {
+			pthread_mutex_unlock(&user2->lock);
+		}
 		/* Don't care if user is away in this case */
 		return 0;
 	}
 
 	/*! \todo simplify using get_channel, get_member? But then we may have more locking issues... */
-	RWLIST_RDLOCK(&channels);
+	/* Grab a RDLOCK, unless this thread already has it WRLOCK'ed in a higher stack frame,
+	 * which can happen if something is being relayed in response to a callback firing. */
+	if (channels_locked != pthread_self()) {
+		RWLIST_RDLOCK(&channels);
+	}
 	RWLIST_TRAVERSE(&channels, c, entry) {
 		if (!strcmp(c->name, channel)) {
 			break;
 		}
 	}
-	RWLIST_UNLOCK(&channels);
+	if (channels_locked != pthread_self()) {
+		RWLIST_UNLOCK(&channels);
+	}
+
 	if (!c) {
+		if (ircuser) {
+			/* If this is a personal relay, then the channel may not exist currently, because the user hasn't joined it,
+			 * but if the user is online, s/he will probably want to join. */
+			struct irc_user *u = get_user(ircuser);
+			if (!u) {
+				/* User is offline, nothing we can do... maybe we could send an email notification about a missed message,
+				 * but blindly do this would not be feasible. If the user missed 500 messages while not on IRC,
+				 * then that would be 500 emails... */
+				return -1;
+			}
+			/* We cannot deliver the message to the channel, but since it's a private relay,
+			 * and the user is online, just send a PM with the message.
+			 * Also invite the user to join to receive further messages "normally". */
+			send_reply(u, ":" IDENT_PREFIX_FMT " INVITE %s %s\r\n", IDENT_PREFIX_ARGS(&user_messageserv), u->nickname, channel);
+			pthread_mutex_lock(&u->lock);
+			/* Use bbs_writef instead of dprintf, as the latter can cause valgrind to report definite (constant) memory leaks on some systems */
+			bbs_writef(u->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(&user_messageserv), "NOTICE", u->nickname, msg);
+			pthread_mutex_unlock(&u->lock);
+		}
 		return -1;
 	}
 
@@ -870,6 +1004,29 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 			bbs_debug(3, "You're neither voiced nor a channel operator\r\n"); /* Channel moderated, unable to send */
 			return -1;
 		}
+	}
+
+	if (ircuser) {
+		/* This channel exists, so that means that there is at least one user in it.
+		 * However, we don't actually know that the user (or users) are authorized to receive this message.
+		 * So, explicitly check the channel membership. If there is anyone present besides ircuser,
+		 * kick the user from the channel. */
+		struct irc_member *member;
+		RWLIST_WRLOCK(&c->members);
+		RWLIST_TRAVERSE_SAFE_BEGIN(&c->members, member, entry) {
+			struct irc_user *kicked = member->user;
+			if (!strcmp(kicked->nickname, ircuser)) {
+				continue;
+			}
+			bbs_auth("Dropping unauthorized user %s from relayed channel %s\n", kicked->nickname, c->name);
+			RWLIST_REMOVE_CURRENT(entry);
+			c->membercount -= 1;
+			free(member);
+			/* Already locked, so don't try to recursively lock: */
+			channel_broadcast_nolock(c, NULL, ":" IDENT_PREFIX_FMT " KICK %s %s :%s\r\n", IDENT_PREFIX_ARGS(&user_messageserv), c->name, kicked->nickname, "Not authorized to receive relayed messages");
+		}
+		RWLIST_TRAVERSE_SAFE_END;
+		RWLIST_UNLOCK(&c->members);
 	}
 
 	channel_broadcast_selective(c, NULL, minmode, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, "PRIVMSG", c->name, msg);
@@ -1351,25 +1508,6 @@ static void handle_modes(struct irc_user *user, char *s)
 	}
 }
 
-static void channel_print_topic(struct irc_user *user, struct irc_channel *channel)
-{
-	if (channel->topic) {
-		if (!user) { /* Broadcast (topic change) */
-			send_numeric_broadcast(channel, NULL, 332, "%s :%s\r\n", channel->name, S_IF(channel->topic));
-			send_numeric_broadcast(channel, user, 333, "%s %s %d\r\n", channel->name, channel->topicsetby, channel->topicsettime);
-		} else {
-			send_numeric2(user, 332, "%s :%s\r\n", channel->name, S_IF(channel->topic));
-			send_numeric2(user, 333, "%s %s %d\r\n", channel->name, channel->topicsetby, channel->topicsettime);
-		}
-	} else {
-		if (!user) {
-			send_numeric_broadcast(channel, user, 331, "%s :No topic is set\r\n", channel->name);
-		} else {
-			send_numeric2(user, 331, "%s :No topic is set\r\n", channel->name);
-		}
-	}
-}
-
 /*! \todo this isn't locking safe */
 static void handle_topic(struct irc_user *user, char *s)
 {
@@ -1550,6 +1688,40 @@ static int channels_in_common(struct irc_user *u1, struct irc_user *u2)
 
 	/* If channel is not NULL here, then we found a common channel. */
 	return channel ? 1 : 0;
+}
+
+int __irc_relay_numeric_response(int fd, const char *fmt, ...)
+{
+	char buf[512]; /* An IRC message can't be longer than this anyways */
+	int len;
+	va_list ap;
+
+	va_start(ap, fmt);
+	len = vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+
+	bbs_debug(9, "%.*s", len, buf);
+	bbs_write(fd, buf, (size_t) len);
+	return len;
+}
+
+void irc_relay_who_response(int fd, const char *relayname, const char *ircusername, const char *hostsuffix, const char *uniqueid, int active)
+{
+	char mask[96];
+	char userflags[3];
+	int hopcount = 2; /* Since we're going through a relay, use an incremented hop count */
+
+	snprintf(mask, sizeof(mask), "%s/%s", relayname, hostsuffix);
+
+	/* We consider users to be active in a channel as long as they're in it, so offline is the equivalent of "away" in IRC */
+	snprintf(userflags, sizeof(userflags), "%c%s", active ? 'G' : 'H', "");
+	/* IRC numeric 352 */
+	irc_relay_numeric_response(fd, 352, "%s %s %s %s %s %s %s :%d %s\r\n", ircusername, "*", hostsuffix, mask, bbs_hostname(), hostsuffix, userflags, hopcount, uniqueid);
+}
+
+void irc_relay_names_response(int fd, const char *ircusername, const char *channel, const char *names)
+{
+	irc_relay_numeric_response(fd, 353, "%s %s %s :%s", ircusername, PUBLIC_CHANNEL_PREFIX, channel, names);
 }
 
 static void handle_who(struct irc_user *user, char *s)
@@ -2422,6 +2594,7 @@ static void leave_all_channels(struct irc_user *user, const char *leavecmd, cons
 	/* Remove from all channels the user is currently in, and broadcast a message to each of them.
 	 * Because we might remove a user if this is the last user in the channel, we need a WRLOCK. */
 	RWLIST_WRLOCK(&channels);
+	channels_locked = pthread_self();
 	/* We're going to have to traverse channels to find channels anyways,
 	 * so simply traversing them all and seeing if the user is a member of each
 	 * isn't as bad when you think about it that way. */
@@ -2829,8 +3002,8 @@ static void handle_client(struct irc_user *user)
 			} else if (!strcasecmp(command, "QUIT")) {
 				bbs_debug(3, "User %p wants to quit: %s\n", user, S_IF(s));
 				rtrim(s);
+				graceful_close = 1;
 				leave_all_channels(user, "QUIT", s);
-				graceful_close = 1; /* Defaults to 1 anyways, but this is definitely graceful */
 				break; /* We're done. */
 			} else if (!strcasecmp(command, "AWAY")) {
 				if (!strlen_zero(s) && strlen(s) > MAX_AWAY_LEN) {
@@ -3046,6 +3219,8 @@ static int alertmsg(unsigned int userid, const char *msg)
 	return res;
 }
 
+static int ping_alertpipe[2] = { -1, -1 };
+
 /* The threading model here is pretty basic.
  * We have one thread per client.
  * Each of these threads will wait for activity from the client.
@@ -3070,18 +3245,19 @@ static void *ping_thread(void *unused)
 
 	for (;;) {
 		int now, clients = 0;
-		usleep(PING_TIME * 1000); /* convert ms to us */
+		if (bbs_poll(ping_alertpipe[0], PING_TIME)) {
+			break;
+		}
 
-		bbs_pthread_disable_cancel();
 		now = (int) time(NULL);
 		RWLIST_RDLOCK(&users);
 		RWLIST_TRAVERSE(&users, user, entry) {
 			/* Prevent concurrent writes to a user */
 			pthread_mutex_lock(&user->lock);
 			if (need_restart || (user->lastping && user->lastpong < now - 2 * PING_TIME)) {
-				char buf[32];
+				char buf[32] = "";
 				/* Client never responded to the last ping. Disconnect it. */
-				if (!need_restart) {
+				if (!need_restart && user->lastpong) {
 					bbs_debug(3, "Ping expired for %p: last ping=%d, last pong=%d (now %d)\n", user, user->lastping, user->lastpong, now);
 					snprintf(buf, sizeof(buf), "Ping timeout: %d seconds", now - user->lastpong); /* No CR LF */
 				}
@@ -3116,10 +3292,8 @@ static void *ping_thread(void *unused)
 			bbs_module_unload("mod_discord"); /* mod_discord depends on net_irc, so we can't unload while it's loaded. */
 			bbs_module_unload("mod_relay_irc"); /* Ditto */
 			bbs_request_module_unload(file_without_ext, need_restart - 1);
-			bbs_pthread_enable_cancel();
 			break;
 		}
-		bbs_pthread_enable_cancel();
 	}
 	return NULL;
 }
@@ -3287,12 +3461,18 @@ static int load_module(void)
 	pthread_mutex_init(&motd_lock, NULL);
 	loadtime = (int) time(NULL);
 
+	if (bbs_alertpipe_create(ping_alertpipe)) {
+		goto decline;
+	}
+
 	if (bbs_pthread_create(&irc_ping_thread, NULL, ping_thread, NULL)) {
 		bbs_error("Unable to create IRC ping thread.\n");
+		bbs_alertpipe_close(ping_alertpipe);
 		goto decline;
 	}
 
 	if (bbs_start_tcp_listener3(irc_enabled ? irc_port : 0, ircs_enabled ? ircs_port : 0, 0, "IRC", "IRCS", NULL, __irc_handler)) {
+		bbs_alertpipe_close(ping_alertpipe);
 		goto decline;
 	}
 
@@ -3307,7 +3487,7 @@ decline:
 static int unload_module(void)
 {
 	bbs_unregister_alerter(alertmsg);
-	pthread_cancel(irc_ping_thread);
+	bbs_alertpipe_write(ping_alertpipe);
 	bbs_pthread_join(irc_ping_thread, NULL);
 	if (irc_enabled) {
 		bbs_stop_tcp_listener(irc_port);
@@ -3319,6 +3499,7 @@ static int unload_module(void)
 	destroy_operators();
 	pthread_mutex_destroy(&motd_lock);
 	free_if(motdstring);
+	bbs_alertpipe_close(ping_alertpipe);
 	return 0;
 }
 

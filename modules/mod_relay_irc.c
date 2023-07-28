@@ -558,7 +558,7 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 			}
 			bbs_irc_client_msg(cp->client2, cp->channel2, "%s", msg); /* Don't call bbs_irc_client_msg with a NULL client or it will use the default (first) one in door_irc */
 		} else { /* Relay to native IRC server */
-			irc_relay_send(cp->channel2, CHANNEL_USER_MODE_NONE, S_OR(cp->client1, "IRC"), S_OR(sender, cp->channel1), msg);
+			irc_relay_send(cp->channel2, CHANNEL_USER_MODE_NONE, S_OR(cp->client1, "IRC"), S_OR(sender, cp->channel1), NULL, msg, NULL);
 		}
 	} else {
 		/* It came from channel2, so send to channel1 */
@@ -572,7 +572,7 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 			}
 			bbs_irc_client_msg(cp->client1, cp->channel1, "%s", msg);
 		} else {
-			irc_relay_send(cp->channel1, CHANNEL_USER_MODE_NONE, S_OR(cp->client2, "IRC"), S_OR(sender, cp->channel2), msg);
+			irc_relay_send(cp->channel1, CHANNEL_USER_MODE_NONE, S_OR(cp->client2, "IRC"), S_OR(sender, cp->channel2), NULL, msg, NULL);
 		}
 	}
 
@@ -618,7 +618,7 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 			bbs_strterm(recipient, ':'); /* strip : */
 			snprintf(sendername, sizeof(sendername), "%s/%s", clientname, sender);
 			bbs_debug(8, "Received private message: %s -> %s: %s\n", sendername, recipient, message);
-			irc_relay_send(recipient, CHANNEL_USER_MODE_NONE, clientname, sendername, message);
+			irc_relay_send(recipient, CHANNEL_USER_MODE_NONE, clientname, sendername, NULL, message, NULL);
 			return;
 		}
 		bbs_debug(9, "No relay match for channel %s/%s\n", clientname, channel);
@@ -761,7 +761,7 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 					/* Now we have a unique nick that doesn't conflict with this same nick on our local IRC server */
 				}
 			}
-			irc_relay_send(cp->channel2, CHANNEL_USER_MODE_NONE, S_OR(cp->client1, clientname), sendnick, msg);
+			irc_relay_send(cp->channel2, CHANNEL_USER_MODE_NONE, S_OR(cp->client1, clientname), sendnick, NULL, msg, NULL);
 		}
 	} else {
 		/* It came from channel2, so send to channel1 */
@@ -788,7 +788,7 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 					/* Now we have a unique nick that doesn't conflict with this same nick on our local IRC server */
 				}
 			}
-			irc_relay_send(cp->channel1, CHANNEL_USER_MODE_NONE, S_OR(cp->client2, clientname), sendnick, msg);
+			irc_relay_send(cp->channel1, CHANNEL_USER_MODE_NONE, S_OR(cp->client2, clientname), sendnick, NULL, msg, NULL);
 		}
 	}
 }

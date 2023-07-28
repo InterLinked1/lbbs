@@ -193,6 +193,9 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
 		curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
 	}
+	if (c->cookies) {
+		curl_easy_setopt(curl, CURLOPT_COOKIE, c->cookies);
+	}
 	if (!strlen_zero(c->ranges)) {
 		curl_easy_setopt(curl, CURLOPT_RANGE, c->ranges);
 	}

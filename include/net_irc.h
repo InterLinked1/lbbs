@@ -113,21 +113,81 @@ int irc_relay_register(int (*relay_send)(const char *channel, const char *sender
 /*! \brief Unregister a relay previously registered using irc_relay_register */
 int irc_relay_unregister(int (*relay_send)(const char *channel, const char *sender, const char *msg));
 
-#define irc_relay_send(channel, modes, relayname, sender, msg) _irc_relay_send(channel, modes, relayname, sender, msg, BBS_MODULE_SELF)
+#define irc_relay_send_multiline(channel, modes, relayname, sender, hostsender, msg, transform, ircuser) _irc_relay_send_multiline(channel, modes, relayname, sender, hostsender, msg, transform, ircuser, BBS_MODULE_SELF)
+
+/*!
+ * \brief Send a (possibly multiline) message to an IRC channel
+ * \param channel IRC channel name
+ * \param modes User modes
+ * \param relayname Name of relay provider
+ * \param sender Name of sender (for IRC)
+ * \param hostsender
+ * \param msg
+ * \param transform Callback function to run on each line of the message. Return -1 to abort sending of message.
+ * \param ircuser If non-NULL, indicates a personal relay for the specified IRC user.
+ *                If this user is currently online but not in this channel, s/he will be invited to the channel.
+ * \param mod Module
+ * \retval 0 on success, -1 on failure (message not relayed)
+ */
+int _irc_relay_send_multiline(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *hostsender, const char *msg, int(*transform)(const char *line, char *buf, size_t len), const char *ircuser, void *mod);
+
+#define irc_relay_send(channel, modes, relayname, sender, hostsender, msg, ircuser) _irc_relay_send(channel, modes, relayname, sender, hostsender, msg, ircuser, 0, BBS_MODULE_SELF)
+
+#define irc_relay_send_notice(channel, modes, relayname, sender, hostsender, msg, ircuser) _irc_relay_send(channel, modes, relayname, sender, hostsender, msg, ircuser, 1, BBS_MODULE_SELF)
 
 /*!
  * \brief Send a message to an IRC channel
  * \retval 0 on success, -1 on failure (message not relayed)
  */
-int _irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *msg, void *mod);
+int _irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *hostsender, const char *msg, const char *ircuser, int notice, void *mod);
+
+/*!
+ * \brief Set the channel topic (from a relay)
+ * \param channel Channel name
+ * \param topic Topic description
+ * \retval 0 on success, -1 on failure
+ */
+int irc_relay_set_topic(const char *channel, const char *topic);
 
 #define irc_relay_raw_send(channel, msg) _irc_relay_raw_send(channel, msg, BBS_MODULE_SELF)
 
 /*!
- * \brief Send a raw message to an IRC channel (e.g. for system messages)
+ * \brief Send a raw message to an IRC channel (e.g. for system messages). Do not include CR LF.
  * \retval 0 on success, -1 on failure (message not relayed)
  */
 int _irc_relay_raw_send(const char *channel, const char *msg, void *mod);
+
+/*!
+ * \brief Send an arbitary numeric response from a relay module.
+ * \param fd
+ * \param numeric
+ * \param fmt printf-style arguments. Do not include trailing CR LF.
+ */
+#define irc_relay_numeric_response(fd, numeric, fmt, ...) __irc_relay_numeric_response(fd, "%03d " fmt "\r\n", numeric, ## __VA_ARGS__)
+
+int __attribute__ ((format (gnu_printf, 2, 3))) __irc_relay_numeric_response(int fd, const char *fmt, ...);
+
+/*!
+ * \brief Generate a 352 numeric WHO response from a relay module
+ * \param fd File descriptor of IRC client. net_irc has locked the client for writing when triggering callbacks that should call this function
+ *           so interleaved writes are not possible.
+ * \param relayname Name of relay
+ * \param ircusername IRC username representation of the client
+ * \param hostsuffix Suffix for hostmask
+ * \param uniqueid Unique identifier of user on relay
+ * \param active Whether user is currently active
+ */
+void irc_relay_who_response(int fd, const char *relayname, const char *ircusername, const char *hostsuffix, const char *uniqueid, int active);
+
+/*!
+ * \brief Generate a 353 numeric NAMES response from a relay module
+ * \param fd File descriptor of IRC client. net_irc has locked the client for writing when triggering callbacks that should call this function
+ *           so interleaved writes are not possible.
+ * \param ircusername IRC username representation of the client
+ * \param channel IRC channel name
+ * \param names List of space-separated names to send in this response
+ */
+void irc_relay_names_response(int fd, const char *ircusername, const char *channel, const char *names);
 
 /*! \brief Register a ChanServ (channel services) provider */
 int irc_chanserv_register(void (*privmsg)(const char *username, char *msg), void (*eventcb)(const char *command, const char *channel, const char *username, const char *data), void *mod);

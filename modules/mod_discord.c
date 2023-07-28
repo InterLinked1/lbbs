@@ -768,22 +768,17 @@ static struct chan_pair *find_mapping_irc(const char *channel)
 	return cp; /* It's okay to return unlocked since at this point, items can't be removed from the list until the module is unloaded anyways. */
 }
 
-#define fdprint_log(fd, fmt, ...) dprintf(fd, fmt, ## __VA_ARGS__); bbs_debug(9, fmt, ## __VA_ARGS__);
-
 static void dump_user(int fd, const char *requsername, struct user *u)
 {
-	char mask[96];
 	char userflags[3];
 	char combined[84];
-	int hopcount = 2; /* Since we're going through a relay, use an incremented hop count */
+	char unique[25];
 
 	snprintf(combined, sizeof(combined), "%s#%s", u->username, u->discriminator);
-	snprintf(mask, sizeof(mask), "%s/%s", "Discord", combined);
 	/* We consider users to be active in a channel as long as they're in it, so offline is the equivalent of "away" in IRC */
 	snprintf(userflags, sizeof(userflags), "%c%s", u->status == STATUS_IDLE || u->status == STATUS_OFFLINE ? 'G' : 'H', "");
-#undef dprintf
-	/* IRC numeric 352: see the 352 numeric in net_irc for more info. */
-	fdprint_log(fd, "%03d %s " "%s %s %s %s %s %s :%d %lu\r\n", 352, requsername, "*", combined, mask, bbs_hostname(), combined, userflags, hopcount, u->user_id);
+	snprintf(unique, sizeof(unique), "%lu", u->user_id);
+	irc_relay_who_response(fd, "Discord", requsername, combined, unique, !(u->status == STATUS_IDLE || u->status == STATUS_OFFLINE));
 }
 
 /*!
@@ -818,7 +813,6 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 		struct chan_pair *cp = find_mapping_irc(channel);
 		if (!cp) {
 			/* No relay exists for this channel */
-			bbs_debug(6, "No relay exists for channel %s\n", channel);
 			return 0;
 		}
 
@@ -843,13 +837,13 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 				len += snprintf(buf + len, sizeof(buf) - (size_t) len, "%s%s#%s", len ? " " : "", u->username, u->discriminator);
 				if (len >= 400) { /* Stop well short of the 512 character message limit and clear the buffer */
 					len = 0;
-					fdprint_log(fd, "%03d %s " "%s %s :%s\r\n", numeric, requsername, PUBLIC_CHANNEL_PREFIX, cp->irc_channel, buf);
+					irc_relay_names_response(fd, requsername, cp->irc_channel, buf);
 				}
 			}
 		}
 		RWLIST_UNLOCK(&users);
 		if (len > 0) {
-			fdprint_log(fd, "%03d %s " "%s %s :%s\r\n", numeric, requsername, PUBLIC_CHANNEL_PREFIX, cp->irc_channel, buf); /* Last one */
+			irc_relay_names_response(fd, requsername, cp->irc_channel, buf); /* Last one */
 		}
 		return 0; /* Other modules could contain matches as well */
 	} else if (user && (numeric == 353 || numeric == 318)) { /* Only for WHO and WHOIS, not NAMES */
@@ -869,9 +863,9 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 			int signon = (int) u->guild_joined / 1000; /* Probably the most sensical value to use? */
 			snprintf(combined, sizeof(combined), "%s#%s", u->username, u->discriminator);
 			snprintf(mask, sizeof(mask), "%s/%s", "Discord", combined);
-			fdprint_log(fd, "%03d %s " "%s %s %s * :%lu\r\n", 311, requsername, combined, combined, mask, u->user_id);
-			fdprint_log(fd, "%03d %s " "%s %s :%s\r\n", 312, requsername, combined, "Discord", "Discord Relay");
-			fdprint_log(fd, "%03d %s " "%s %d %u :seconds idle, signon time\r\n", 317, requsername, combined, idle, signon);
+			irc_relay_numeric_response(fd, 311, "%s " "%s %s %s * :%lu", requsername, combined, combined, mask, u->user_id);
+			irc_relay_numeric_response(fd, 312, "%s " "%s %s :%s", requsername, combined, "Discord", "Discord Relay");
+			irc_relay_numeric_response(fd, 317, "%s " "%s %d %u :seconds idle, signon time\r\n", requsername, combined, idle, signon);
 		}
 		return 1; /* Success, stop traversal, since only one module will have a match, and it's us. */
 	}
@@ -993,11 +987,11 @@ static int discord_send(const char *channel, const char *sender, const char *msg
 	return 0;
 }
 
-static void substitute_nicks(char *line, char *buf, size_t len)
+static int substitute_nicks(const char *line, char *buf, size_t len)
 {
 	char *pos = buf;
 	size_t left = len - 1;
-	char *start = NULL, *c = line;
+	const char *start = NULL, *c = line;
 
 	/* Need to substitute stuff like <@1234567890> to @jsmith */
 	while (*c) {
@@ -1006,10 +1000,11 @@ static void substitute_nicks(char *line, char *buf, size_t len)
 		} else if (start && *c == '>') {
 			struct user *u;
 			unsigned long userid;
-			*c = '\0';
-			userid = (unsigned long) atol(start);
+			int userlen = (int) (c - start);
+
+			userid = (unsigned long) atol(start); /* atol will stop at the first non-numeric character */
 			u = find_user(userid);
-			bbs_debug(5, "Substituted %s (%lu) -> %s\n", start, userid, u ? u->username : "");
+			bbs_debug(5, "Substituted %.*s (%lu) -> %s\n", userlen, start, userid, u ? u->username : "");
 			if (u) {
 				size_t bytes = (size_t) snprintf(pos, left, "@%s", u->username);
 				pos += bytes;
@@ -1023,6 +1018,7 @@ static void substitute_nicks(char *line, char *buf, size_t len)
 		c++;
 	}
 	*pos = '\0';
+	return 0;
 }
 
 static void relay_message(struct discord *client, struct chan_pair *cp, const struct discord_message *event)
@@ -1055,11 +1051,7 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 		return;
 	}
 
-	if (!strchr(event->content, '\n')) { /* Avoid unnecessarily allocating memory if we don't have to. */
-		substitute_nicks(event->content, subline, sizeof(subline));
-		irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, subline);
-	} else {
-		char *dup, *line, *lines;
+	if (strchr(event->content, '\n')) {
 		/* event->content could contain multiple lines. We need to relay each of them to IRC separately. */
 		if (cp->multiline) {
 			char mbuf[256];
@@ -1087,24 +1079,16 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 				return; /* Don't relay the message if set to block/drop */
 			}
 		}
-		dup = strdup(event->content);
-		if (ALLOC_FAILURE(dup)) {
-			return;
-		}
-		lines = dup;
-		while ((line = strsep(&lines, "\n"))) {
-			bbs_strterm(line, '\n');
-			substitute_nicks(line, subline, sizeof(subline));
-			irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, subline);
-		}
-		free(dup);
 	}
+
+	irc_relay_send_multiline(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, NULL, subline, substitute_nicks, NULL);
+
 	if (attachments && attachments->size) {
 		int i;
 		/* Send messages with the links to any attachments */
 		for (i = 0; i < attachments->size; i++) {
 			struct discord_attachment *attachment = &attachments->array[i];
-			irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, attachment->url);
+			irc_relay_send(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, NULL, attachment->url, NULL);
 		}
 	}
 }
@@ -1136,7 +1120,7 @@ static int on_dm_receive(struct discord *client, const struct discord_message *e
 	*colon = '\0'; /* strip : */
 	snprintf(sendername, sizeof(sendername), "%s#%s", event->author->username, event->author->discriminator);
 	bbs_debug(8, "Received private message: %s -> %s: %s\n", sendername, recipient, message);
-	irc_relay_send(recipient, CHANNEL_USER_MODE_NONE, "Discord", sendername, message);
+	irc_relay_send_multiline(recipient, CHANNEL_USER_MODE_NONE, "Discord", sendername, NULL, message, NULL, NULL);
 	return 0;
 }
 

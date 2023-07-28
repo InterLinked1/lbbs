@@ -61,7 +61,7 @@ Key features and capabilities include:
 
 * Native realtime chat
 
-* Internet Relay Chat client and server (including ChanServ), with native IRC and Discord relays
+* Internet Relay Chat client and server (including ChanServ), with native IRC, Slack, and Discord relays
 
 * Emulated slow baud rate support
 
@@ -138,6 +138,8 @@ Config files go in :code:`/etc/lbbs` and are as follows:
 * :code:`mod_oauth.conf` - OAuth2 token configuration
 
 * :code:`mod_relay_irc.conf` - IRC/IRC relay configuration
+
+* :code:`mod_slack.conf` - Slack/IRC relay configuration
 
 * :code:`modules.conf` - module loading settings (to disable a module, you do it here)
 

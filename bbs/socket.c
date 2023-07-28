@@ -195,7 +195,7 @@ int bbs_make_tcp_socket(int *sock, int port)
 			*sock = -1;
 			return -1;
 		}
-	}
+		}
 	if (listen(*sock, 10) < 0) {
 		bbs_error("Unable to listen on TCP socket on port %d: %s\n", port, strerror(errno));
 		close(*sock);
@@ -533,6 +533,7 @@ static void *tcp_multilistener(void *unused)
 	static RWLIST_HEAD_STATIC(listeners_local, tcp_listener);
 	int num_sockets = 0;
 	struct pollfd *pfds = NULL;
+	int exiting = 0;
 	int rebuild = 1; /* This thread isn't started unless there's a listener, so we need to build a list from the get go. */
 
 	UNUSED(unused);
@@ -540,6 +541,12 @@ static void *tcp_multilistener(void *unused)
 	for (;;) {
 		int i, res;
 		struct tcp_listener *l, *l2;
+		if (bbs_is_shutting_down() && !exiting) {
+			/* Stop accepting connections on this socket. We do this to prevent an influx of connections
+			 * from blocking shutdown. */
+			exiting = 1;
+			rebuild = 1;
+		}
 		if (rebuild) {
 			/* Clear our copy and rebuild. Keep in mind this is not a common operation,
 			 * so we do it this way to optimize performance for when a listener accepts a connection (don't need to hold any locks),
@@ -573,7 +580,7 @@ static void *tcp_multilistener(void *unused)
 				i++;
 				bbs_assert(i <= num_sockets + 1);
 				pfds[i].fd = l->socket;
-				pfds[i].events = POLLIN;
+				pfds[i].events = exiting ? POLLHUP : POLLIN; /* Ignore new connections during shutdown */
 			}
 		}
 		for (i = 0; i < num_sockets + 1; i++) {
@@ -611,14 +618,15 @@ static void *tcp_multilistener(void *unused)
 			len = sizeof(sinaddr);
 			sfd = accept(pfds[i].fd, (struct sockaddr *) &sinaddr, &len);
 			bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
-			bbs_debug(1, "Accepting new %s connection from %s\n", l->name, new_ip);
 
 			if (sfd < 0) {
 				if (errno != EINTR) {
-					bbs_warning("accept returned %d: %s\n", sfd, strerror(errno));
+					bbs_warning("accept returned %d (fd %d, %s, %s): %s\n", sfd, pfds[i].fd, l->name, new_ip, strerror(errno));
 				}
 				continue;
 			}
+
+			bbs_debug(1, "Accepting new %s connection from %s\n", l->name, new_ip);
 
 			/* Note that l->name is const memory allocated as part of l.
 			 * That means the listener must not go away while any nodes are using it

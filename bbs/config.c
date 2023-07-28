@@ -179,6 +179,17 @@ int bbs_config_val_set_true(struct bbs_config *cfg, const char *section_name, co
 	return -1;
 }
 
+struct bbs_config_section *bbs_config_section_get(struct bbs_config *cfg, const char *name)
+{
+	struct bbs_config_section *sect;
+	RWLIST_TRAVERSE(&cfg->sections, sect, entry) {
+		if (!strcmp(sect->name, name)) {
+			break;
+		}
+	}
+	return sect;
+}
+
 struct bbs_keyval *bbs_config_section_walk(struct bbs_config_section *section, struct bbs_keyval *keyval)
 {
 	if (!keyval) {

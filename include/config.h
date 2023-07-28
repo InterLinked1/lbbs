@@ -109,6 +109,15 @@ int bbs_config_val_set_port(struct bbs_config *cfg, const char *section_name, co
 int bbs_config_val_set_true(struct bbs_config *cfg, const char *section_name, const char *key, int *var);
 
 /*!
+ * \brief Get a specific config section by name
+ * \param cfg
+ * \param name Name of section
+ * \return section if found
+ * \param NULL if not found
+ */
+struct bbs_config_section *bbs_config_section_get(struct bbs_config *cfg, const char *name);
+
+/*!
  * \brief Traverse a config section
  * \param section
  * \param keyval Previous key value pair. NULL to start at beginning.

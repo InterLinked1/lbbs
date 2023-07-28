@@ -20,6 +20,7 @@ struct bbs_curl {
 	const char *url;			/*!< URL to request */
 	const char *postfields;		/*!< POST request body */
 	const char *ranges;			/*!< Range header ranges */
+	const char *cookies;		/*!< Request cookies */
 	/* Output fields */
 	int http_code;
 	char *response;				/*!< Response body */

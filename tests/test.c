@@ -49,6 +49,7 @@ static int option_debug = 0;
 static int option_debug_bbs = 0;
 static char option_debug_bbs_str[12] = "-";
 static int option_errorcheck = 0;
+static int option_helgrind = 0;
 static int option_gen_supp = 0;
 static int option_exit_failure = 0;
 static const char *testfilter = NULL;
@@ -134,7 +135,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 
 static int parse_options(int argc, char *argv[])
 {
-	static const char *getopt_settings = "?dDegt:x";
+	static const char *getopt_settings = "?dDeglt:x";
 	int c;
 
 	while ((c = getopt(argc, argv, getopt_settings)) != -1) {
@@ -147,6 +148,7 @@ static int parse_options(int argc, char *argv[])
 			fprintf(stderr, "-e     Run the BBS under valgrind to check for errors and warnings.\n");
 			fprintf(stderr, "-g     Also generate valgrind suppressions for the valgrind report.\n");
 			fprintf(stderr, "-h     Show this help and exit.\n");
+			fprintf(stderr, "-h     Run the BBS under helgrind to check for locking errors.\n");
 			fprintf(stderr, "-t     Run a specific named test. Include the test_ prefix but not the .so suffix.\n");
 			fprintf(stderr, "-x     Exit on the first failure.\n");
 			return -1;
@@ -170,6 +172,10 @@ static int parse_options(int argc, char *argv[])
 			break;
 		case 'g':
 			option_gen_supp = 1;
+			break;
+		case 'l':
+			option_errorcheck = 1;
+			option_helgrind = 1;
 			break;
 		case 't':
 			testfilter = optarg;
@@ -501,14 +507,15 @@ static int test_bbs_spawn(const char *directory)
 		"valgrind",
 		"--show-error-list=yes",
 		"--keep-debuginfo=yes",
-		"--leak-check=full",
+		option_helgrind ? "--tool=helgrind" : "--leak-check=full",
 		"--track-fds=yes",
-		"--track-origins=yes",
-		"--show-leak-kinds=all",
+		option_helgrind ? "--tool=helgrind" : "--track-origins=yes",
+		option_helgrind ? "--tool=helgrind" : "--show-leak-kinds=all",
 		"--suppressions=../valgrind.supp", /* Move up one directory from tests, since that's where this file is */
 		/* =yes is not suitable for non-interactive usage: https://valgrind.org/docs/manual/manual-core.html#manual-core.suppress */
 		option_gen_supp ? "--gen-suppressions=all" : "--gen-suppressions=no",
-		"--log-file=" VALGRIND_LOGFILE,
+		option_helgrind ? "--tool=helgrind" : "--log-file=" VALGRIND_LOGFILE,
+		option_helgrind ? "--tool=helgrind" : "--tool=memcheck",
 		LBBS_BINARY,
 		/* Begin options */
 		"-b", /* Force reuse bind ports */
@@ -775,7 +782,8 @@ static int run_test(const char *filename, int multiple)
 			modulefp = fopen(TEST_CONFIG_DIR "/mod_auth_static.conf", "w");
 			if (modulefp) {
 				fprintf(modulefp, "[users]\r\n%s=%s\r\n", TEST_USER, TEST_HASH);
-				fprintf(modulefp, "[users]\r\n%s=%s\r\n", TEST_USER2, TEST_HASH2);
+				fprintf(modulefp, "%s=%s\r\n", TEST_USER2, TEST_HASH2);
+				fprintf(modulefp, "%s=%s\r\n", TEST_USER3, TEST_HASH3);
 				fclose(modulefp);
 			}
 			if (option_autoload_all) {
