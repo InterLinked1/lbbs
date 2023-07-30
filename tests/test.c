@@ -834,8 +834,13 @@ static int run_test(const char *filename, int multiple)
 		usec_dif = (1000000 + end.tv_usec - start.tv_usec) / 1000 - 1000;
 		tot_dif = sec_dif + usec_dif;
 		if (option_errorcheck) {
+			int vres;
 			/* Check valgrind.log report for potential issues. */
-			res |= analyze_valgrind();
+			vres = analyze_valgrind();
+			res |= vres;
+			if (vres) {
+				bbs_error("valgrind checks failed\n");
+			}
 		}
 		/* We called chdir before we spawned the BBS, so the core dump should be in the current directory if there is one. */
 		if (!core_before && !eaccess("core", R_OK)) {

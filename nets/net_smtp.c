@@ -944,7 +944,17 @@ static int try_send(struct smtp_session *smtp, const char *hostname, int port, i
 	bbs_readline_init(&rldata_stack, buf, len);
 
 	/* The logic for being an SMTP client with an SMTP MTA is pretty straightforward. */
-	SMTP_EXPECT(rfd, 1000, "220");
+
+	/* This is somewhat uncommon, but server banners COULD be multiline.
+	 * If they are, wait to receive the full greeting before proceeding, or it's a protocol violation.
+	 * Also be prepared to wait a while, in case the receiving mail server implements tarpitting. */
+	do {
+		res = bbs_expect_line(rfd, SEC_MS(10), rldata, "220");
+		bbs_debug(9, "<= %s\n", buf);
+	} while (STARTS_WITH(buf, "220-"));
+	if (!STARTS_WITH(buf, "220")) {
+		goto cleanup;
+	}
 
 	res = smtp_client_handshake(rldata, rfd, wfd, buf, hostname, &caps);
 	if (res) {
