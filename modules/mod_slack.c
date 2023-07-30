@@ -750,7 +750,7 @@ static int slack_send(const char *channel, const char *sender, const char *msg)
 	}
 	relay = cp->relay;
 
-	if (sender && relay->ircuser && strcmp(relay->ircuser, sender)) {
+	if (sender && relay->ircuser && strcasecmp(relay->ircuser, sender)) {
 		notify_unauthorized(sender, channel, relay->ircuser);
 		return 0;
 	}
@@ -811,7 +811,7 @@ static int privmsg(const char *recipient, const char *sender, const char *msg)
 
 	relay = u->relay;
 
-	if (sender && relay->ircuser && strcmp(relay->ircuser, sender)) {
+	if (sender && relay->ircuser && strcasecmp(relay->ircuser, sender)) {
 		notify_unauthorized(sender, recipient, relay->ircuser);
 		return 0;
 	}
@@ -879,7 +879,7 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 		}
 
 		relay = cp->relay;
-		if (relay->ircuser && strcmp(relay->ircuser, requsername)) {
+		if (relay->ircuser && strcasecmp(relay->ircuser, requsername)) {
 			notify_unauthorized(requsername, channel, relay->ircuser);
 			return 0;
 		}
@@ -913,7 +913,7 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 		}
 
 		relay = u->relay;
-		if (relay->ircuser && strcmp(relay->ircuser, requsername)) {
+		if (relay->ircuser && strcasecmp(relay->ircuser, requsername)) {
 			notify_unauthorized(requsername, channel, relay->ircuser);
 			return 0;
 		}

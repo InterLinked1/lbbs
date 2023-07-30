@@ -1015,7 +1015,10 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 		RWLIST_WRLOCK(&c->members);
 		RWLIST_TRAVERSE_SAFE_BEGIN(&c->members, member, entry) {
 			struct irc_user *kicked = member->user;
-			if (!strcmp(kicked->nickname, ircuser)) {
+			if (!strcasecmp(kicked->nickname, ircuser)) {
+				continue;
+			}
+			if (IS_SERVICE(kicked)) {
 				continue;
 			}
 			bbs_auth("Dropping unauthorized user %s from relayed channel %s\n", kicked->nickname, c->name);

@@ -45,6 +45,7 @@ struct chan_pair {
 	const char *channel1;
 	const char *client2;
 	const char *channel2;
+	const char *ircuser;
 	unsigned int relaysystem:1;
 	RWLIST_ENTRY(chan_pair) entry;
 	char data[0];
@@ -58,17 +59,23 @@ static void list_cleanup(void)
 	RWLIST_WRLOCK_REMOVE_ALL(&mappings, entry, free);
 }
 
-static int add_pair(const char *client1, const char *channel1, const char *client2, const char *channel2, int relaysystem)
+static int add_pair(const char *client1, const char *channel1, const char *client2, const char *channel2, const char *ircuser, int relaysystem)
 {
 	char *pos;
 	struct chan_pair *cp;
-	size_t client1len, channel1len, client2len, channel2len;
+	size_t client1len, channel1len, client2len, channel2len, userlen;
+
+	if (ircuser && client1 && client2) {
+		bbs_error("ircuser may not be specified if both client1 and client2 are provided\n");
+		return -1;
+	}
 
 	/* Add NULs here if needed */
 	client1len = client1 ? strlen(client1) + 1 : 0;
 	client2len = client2 ? strlen(client2) + 1 : 0;
 	channel1len = strlen(channel1) + 1;
 	channel2len = strlen(channel2) + 1;
+	userlen = ircuser ? strlen(ircuser) + 1 : 0;
 
 	RWLIST_WRLOCK(&mappings);
 	RWLIST_TRAVERSE(&mappings, cp, entry) {
@@ -97,7 +104,7 @@ static int add_pair(const char *client1, const char *channel1, const char *clien
 		return -1;
 	}
 
-	cp = calloc(1, sizeof(*cp) + client1len + client2len + channel1len + channel2len); /* NULs are included above */
+	cp = calloc(1, sizeof(*cp) + client1len + client2len + channel1len + channel2len + userlen); /* NULs are included above */
 	if (ALLOC_FAILURE(cp)) {
 		RWLIST_UNLOCK(&mappings);
 		return -1;
@@ -124,6 +131,11 @@ static int add_pair(const char *client1, const char *channel1, const char *clien
 	cp->channel2 = pos;
 	pos += channel2len;
 
+	if (ircuser) {
+		strcpy(pos, ircuser);
+		cp->ircuser = pos;
+	}
+
 	SET_BITFIELD(cp->relaysystem, relaysystem);
 
 	RWLIST_INSERT_HEAD(&mappings, cp, entry);
@@ -142,9 +154,29 @@ static struct chan_pair *find_chanpair(const char *client, const char *channel)
 
 	bbs_assert_exists(channel);
 
-	RWLIST_WRLOCK(&mappings);
+	RWLIST_RDLOCK(&mappings);
 	RWLIST_TRAVERSE(&mappings, cp, entry) {
 		if (MAP1_MATCH(cp, client, channel) || MAP2_MATCH(cp, client, channel)) {
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&mappings);
+	return cp;
+}
+
+static struct chan_pair *find_chanpair_by_client(const char *client)
+{
+	struct chan_pair *cp = NULL;
+
+	if (!client) {
+		return NULL;
+	}
+
+	RWLIST_RDLOCK(&mappings);
+	RWLIST_TRAVERSE(&mappings, cp, entry) {
+		if (cp->client1 && !strcmp(cp->client1, client)) {
+			break;
+		} else if (cp->client2 && !strcmp(cp->client2, client)) {
 			break;
 		}
 	}
@@ -376,6 +408,23 @@ cleanup:
 	return res;
 }
 
+static void notify_unauthorized(const char *sender, const char *channel, const char *ircuser)
+{
+	/* Right channel, wrong permissions */
+	char notice[256];
+	/* Could log to either the auth or warning levels... nothing is wrong with the system,
+	 * this is just something possibly malicious. */
+	bbs_warning("Dropped attempt by %s to access/post to %s, since this is a personal relay for %s\n", sender, channel, ircuser);
+	/* Notify the sender, since someone could genuinely join a channel and think they're alone,
+	 * and begin posting, because the NAMES reply came back empty.
+	 * Privacy is preserved since the message is NOT relayed,
+	 * but we need to notify the sender that this is somebody else's relay channel.
+	 * Hopefully s/he will leave voluntarily, but if not, things are still good. */
+	/* XXX Doesn't really make sense to send as the sender? But we don't have access to MessageServ here... */
+	snprintf(notice, sizeof(notice), "You do not have permission to relay messages in %s", channel); /* Don't disclose who does, either */
+	irc_relay_send_notice(sender, CHANNEL_USER_MODE_NONE, "IRC", sender, NULL, notice, NULL); /* XXX This mask is not meaningful (IRC/sender) */
+}
+
 /*!
  * \param fd
  * \param numeric: 318 = WHOIS, 352 = WHO, 353 = NAMES
@@ -431,6 +480,11 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 		return 0;
 	}
 
+	if (cp->ircuser && strcasecmp(cp->ircuser, requsername)) {
+		notify_unauthorized(requsername, channel, cp->ircuser);
+		return 0;
+	}
+
 	if (numeric != 318) {
 		channel = cp->client1 ? cp->channel1 : cp->channel2;
 		origchan = cp->client1 ? cp->channel2 : cp->channel1;
@@ -459,7 +513,11 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 		/* Determine who's in the "real" channel using our client */
 		/* Only one request at a time, to prevent interleaving of responses */
 		wait_response(fd, requsername, numeric, cp->client2, channel, origchan, fullnick, nick);
-		return 0; /* Even though we matched, there could be matches in other relays */
+		/*! \todo BUGBUG Regarding the below comment, we need to return 1
+		 * to stop the traversal and indicate a user was found, which IS appropriate here.
+		 * But in the cases where multiple relay modules could match, we should probably still
+		 * return 1, and net_irc can traverse all the callbacks anyways. */
+		return 1; /* Even though we matched, there could be matches in other relays */
 	} else if (!cp->client2) {
 		/* It came from channel1, so provide names from channel1 */
 		bbs_debug(8, "Relaying nicknames from %s/%s\n", S_IF(cp->client1), cp->channel1);
@@ -480,19 +538,25 @@ static int privmsg_cb(const char *recipient, const char *sender, const char *msg
 {
 	char buf[128];
 	char *clientname, *destrecip;
+	struct chan_pair *cp;
 
 	safe_strncpy(buf, recipient, sizeof(buf));
 	/* Format is clientname/recipient */
 	destrecip = buf;
 	clientname = strsep(&destrecip, "/");
 
-	if (!client_exists(clientname)) { /* Not something we care about */
+	cp = client_exists(clientname);
+	if (!cp) { /* Not something we care about */
 		bbs_debug(9, "No relay match for client %s (%s -> %s)\n", clientname, sender, recipient);
 		return 0;
 	}
 
 	/* Something with this client name exists, in door_irc. */
-	bbs_irc_client_msg(clientname, destrecip, "<%s> %s", sender, msg);
+	if (cp->ircuser) {
+		bbs_irc_client_msg(clientname, destrecip, "%s", msg); /* Don't prepend username for personal relays */
+	} else {
+		bbs_irc_client_msg(clientname, destrecip, "<%s> %s", sender, msg);
+	}
 	return 1;
 }
 
@@ -517,6 +581,11 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 	}
 
 	/*! \todo Is there the potential for loops here, currently? If it's a NOTICE, drop it and don't relay?  */
+
+	if (sender && cp->ircuser && strcasecmp(cp->ircuser, sender)) {
+		notify_unauthorized(sender, channel, cp->ircuser);
+		return 0;
+	}
 
 	if (!sender && !cp->relaysystem) {
 		bbs_debug(8, "Not relaying system message\n");
@@ -550,7 +619,7 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 		/* It came from channel1, so send to channel2 */
 		bbs_debug(8, "Relaying from %s/%s => %s/%s: %s\n", S_IF(cp->client1), cp->channel1, S_IF(cp->client2), cp->channel2, msg);
 		if (cp->client2) {
-			if (sender) { /* We're sending to a real IRC channel using a client, so we need to pack the sender name into the message itself, if present. */
+			if (sender && !cp->ircuser) { /* We're sending to a real IRC channel using a client, so we need to pack the sender name into the message itself, if present. */
 				if (!ctcp) {
 					snprintf(fullmsg, sizeof(fullmsg), "<%s> %s", sender, msg);
 				}
@@ -558,13 +627,13 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 			}
 			bbs_irc_client_msg(cp->client2, cp->channel2, "%s", msg); /* Don't call bbs_irc_client_msg with a NULL client or it will use the default (first) one in door_irc */
 		} else { /* Relay to native IRC server */
-			irc_relay_send(cp->channel2, CHANNEL_USER_MODE_NONE, S_OR(cp->client1, "IRC"), S_OR(sender, cp->channel1), NULL, msg, NULL);
+			irc_relay_send(cp->channel2, CHANNEL_USER_MODE_NONE, S_OR(cp->client1, "IRC"), S_OR(sender, cp->channel1), NULL, msg, cp->ircuser);
 		}
 	} else {
 		/* It came from channel2, so send to channel1 */
 		bbs_debug(8, "Relaying from %s/%s => %s/%s: %s\n", S_IF(cp->client2), cp->channel2, S_IF(cp->client1), cp->channel1, msg);
 		if (cp->client1) {
-			if (sender) { /* We're sending to a real IRC channel using a client, so we need to pack the sender name into the message itself, if present. */
+			if (sender && !cp->ircuser) { /* We're sending to a real IRC channel using a client, so we need to pack the sender name into the message itself, if present. */
 				if (!ctcp) {
 					snprintf(fullmsg, sizeof(fullmsg), "<%s> %s", sender, msg);
 				}
@@ -572,7 +641,7 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 			}
 			bbs_irc_client_msg(cp->client1, cp->channel1, "%s", msg);
 		} else {
-			irc_relay_send(cp->channel1, CHANNEL_USER_MODE_NONE, S_OR(cp->client2, "IRC"), S_OR(sender, cp->channel2), NULL, msg, NULL);
+			irc_relay_send(cp->channel1, CHANNEL_USER_MODE_NONE, S_OR(cp->client2, "IRC"), S_OR(sender, cp->channel2), NULL, msg, cp->ircuser);
 		}
 	}
 
@@ -590,23 +659,33 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		return;
 	}
 
+	/* XXX In theory we should only need to do one traversal here. By the name alone, we should know if it's a channel or username */
 	cp = find_chanpair(clientname, channel);
 	if (!cp) { /* Probably not something we care about. It could be a private message, though. */
+		cp = find_chanpair_by_client(clientname); /* If the client exists, then we can relay a private message */
+
+		/* For a private message, channel is our (used for the relay) IRC user's username */
 		if (*msg == '<') {
 			/* Format is <sender> message.
 			 * Our expected format is <sender> <recipient>: message, so we can actually route it the right user on the IRC server.
 			 * Message will appear to be sent by clientname/<sender>. */
 			char dup[512];
 			char sendername[84];
-			char *message, *sender, *recipient;
+			const char *recipient;
+			char *message, *sender;
 			safe_strncpy(dup, msg, sizeof(dup));
 			message = dup;
 			sender = strsep(&message, " ");
-			recipient = strsep(&message, " ");
-			if (strlen_zero(recipient) || strlen_zero(message)) {
-				bbs_debug(8, "Private message is not properly addressed, ignoring\n");
-				/* Don't send an autoresponse saying "please use this messaging format", since there may be other consumers */
-				return;
+			if (cp && cp->ircuser) {
+				recipient = cp->ircuser;
+			} else { /* Only if not for a private relay */
+				char *recipienttmp = strsep(&message, " ");
+				if (strlen_zero(recipienttmp) || strlen_zero(message)) {
+					bbs_debug(8, "Private message is not properly addressed, ignoring\n");
+					/* Don't send an autoresponse saying "please use this messaging format", since there may be other consumers */
+					return;
+				}
+				recipient = recipienttmp;
 			}
 			/* Strip <> */
 			if (*sender == '<') {
@@ -618,7 +697,7 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 			bbs_strterm(recipient, ':'); /* strip : */
 			snprintf(sendername, sizeof(sendername), "%s/%s", clientname, sender);
 			bbs_debug(8, "Received private message: %s -> %s: %s\n", sendername, recipient, message);
-			irc_relay_send(recipient, CHANNEL_USER_MODE_NONE, clientname, sendername, NULL, message, NULL);
+			irc_relay_send(recipient, CHANNEL_USER_MODE_NONE, clientname, sendername, NULL, message, cp ? cp->ircuser : NULL);
 			return;
 		}
 		bbs_debug(9, "No relay match for channel %s/%s\n", clientname, channel);
@@ -761,7 +840,7 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 					/* Now we have a unique nick that doesn't conflict with this same nick on our local IRC server */
 				}
 			}
-			irc_relay_send(cp->channel2, CHANNEL_USER_MODE_NONE, S_OR(cp->client1, clientname), sendnick, NULL, msg, NULL);
+			irc_relay_send(cp->channel2, CHANNEL_USER_MODE_NONE, S_OR(cp->client1, clientname), sendnick, NULL, msg, cp->ircuser);
 		}
 	} else {
 		/* It came from channel2, so send to channel1 */
@@ -788,7 +867,7 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 					/* Now we have a unique nick that doesn't conflict with this same nick on our local IRC server */
 				}
 			}
-			irc_relay_send(cp->channel1, CHANNEL_USER_MODE_NONE, S_OR(cp->client2, clientname), sendnick, NULL, msg, NULL);
+			irc_relay_send(cp->channel1, CHANNEL_USER_MODE_NONE, S_OR(cp->client2, clientname), sendnick, NULL, msg, cp->ircuser);
 		}
 	}
 }
@@ -809,6 +888,7 @@ static int load_config(void)
 
 	while ((section = bbs_config_walk(cfg, section))) {
 		const char *client1 = NULL, *client2 = NULL, *channel1 = NULL, *channel2 = NULL;
+		const char *ircuser = NULL;
 		int relaysystem = 1;
 		if (!strcmp(bbs_config_section_name(section), "general")) {
 			continue; /* Not a channel mapping section, skip */
@@ -828,6 +908,8 @@ static int load_config(void)
 				channel2 = value;
 			} else if (!strcasecmp(key, "relaysystem")) {
 				relaysystem = S_TRUE(value);
+			} else if (!strcasecmp(key, "ircuser")) {
+				ircuser = value;
 			} else {
 				bbs_warning("Unknown directive: %s\n", key);
 			}
@@ -836,7 +918,7 @@ static int load_config(void)
 			bbs_warning("Section %s is incomplete, ignoring\n", bbs_config_section_name(section));
 			continue;
 		}
-		add_pair(client1, channel1, client2, channel2, relaysystem);
+		add_pair(client1, channel1, client2, channel2, ircuser, relaysystem);
 	}
 
 	return 0;

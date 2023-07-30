@@ -821,6 +821,13 @@ static int run_test(const char *filename, int multiple)
 				kill(childpid, SIGINT); /* Ask it to exit nicely. */
 				waitpid(childpid, &wstatus, 0); /* Wait for child to exit */
 				bbs_debug(3, "Child process %d has exited\n", childpid);
+				if (WIFSIGNALED(wstatus)) { /* Child terminated by signal (probably SIGSEGV?) */
+#if __GLIBC__ >= 2 && __GLIBC_MINOR__ >= 32
+					bbs_error("Process %d (%s) killed, signal %s\n", childpid, filename, sigdescr_np(WTERMSIG(wstatus)));
+#else
+					bbs_error("Process %d (%s) killed, signal %s\n", childpid, filename, sys_siglist[WTERMSIG(wstatus)]);
+#endif
+				}
 			}
 		} else {
 			memcpy(&end, &start, sizeof(end));
