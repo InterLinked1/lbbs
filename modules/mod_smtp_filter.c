@@ -50,7 +50,7 @@ static int prepend_received(struct smtp_filter_data *f)
 
 static int builtin_filter_cb(struct smtp_filter_data *f)
 {
-	if (f->dir == SMTP_DIRECTION_IN) {
+	if (f->dir & (SMTP_DIRECTION_IN | SMTP_DIRECTION_SUBMIT)) {
 		/* This is a good place to tack on Return-Path (receiving MTA does this) */
 		smtp_filter_add_header(f, "Return-Path", f->from); /* Envelope From - doesn't have <> so this works out just fine. */
 	}
@@ -74,7 +74,7 @@ struct smtp_filter_provider builtin_filter = {
 
 static int load_module(void)
 {
-	smtp_filter_register(&builtin_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_INDIVIDUAL, SMTP_DIRECTION_IN | SMTP_DIRECTION_OUT, 1);
+	smtp_filter_register(&builtin_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_INDIVIDUAL, SMTP_DIRECTION_IN | SMTP_DIRECTION_SUBMIT | SMTP_DIRECTION_OUT, 1);
 	return 0;
 }
 

@@ -36,14 +36,15 @@ enum smtp_filter_scope {
 };
 
 enum smtp_direction {
-	SMTP_DIRECTION_IN = (1 << 0),
-	SMTP_DIRECTION_OUT = (1 << 1),
+	SMTP_DIRECTION_SUBMIT = (1 << 0),	/*!< Message submission */
+	SMTP_DIRECTION_IN = (1 << 1),		/*!< Incoming mail from another MTA */
+	SMTP_DIRECTION_OUT = (1 << 2),		/*!< Outgoing mail to another MTA */
 };
 
 struct smtp_filter_data {
 	struct smtp_session *smtp;		/*!< SMTP session */
 	int inputfd;					/*!< File descriptor from which message can be read */
-	const char *recipient;			/*!< Recipient (RCPT TO). Only available if the scope is SMTP_SCOPE_INDIVIDUAL */
+	const char *recipient;			/*!< Recipient (RCPT TO). Only available for SMTP_DIRECTION_IN and SMTP_DIRECTION_SUBMIT, and if the scope is SMTP_SCOPE_INDIVIDUAL */
 	size_t size;					/*!< Message length */
 	enum smtp_direction dir;		/*!< Direction */
 	int received;					/*!< Time that message was received */
@@ -53,6 +54,7 @@ struct smtp_filter_data {
 	/* INTERNAL: Do not access these fields directly. Use the publicly exposed functions. */
 	int outputfd;					/*!< File descriptor to write to, to prepend to message */
 	char outputfile[64];			/*!< Temporary output file name */
+	char *body;						/*!< RFC822 message as string */
 };
 
 struct smtp_filter_provider {
@@ -94,6 +96,9 @@ int smtp_is_bulk_mailing(struct smtp_session *smtp);
 
 /*! \brief Time that message was received */
 time_t smtp_received_time(struct smtp_session *smtp);
+
+/*! \brief Get RFC822 message as string */
+const char *smtp_message_body(struct smtp_filter_data *f);
 
 /*! \brief Prepend arbitrary data to a message */
 int __attribute__ ((format (gnu_printf, 2, 3))) smtp_filter_write(struct smtp_filter_data *f, const char *fmt, ...);

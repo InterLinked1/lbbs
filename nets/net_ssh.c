@@ -801,7 +801,11 @@ static void handle_session(ssh_event event, ssh_session session)
 		node_started = 1;
 
 		if (!strcmp(cdata.node->protname, "SFTP")) {
-			do_sftp(cdata.node, session, sdata.channel);
+			if (cdata.node && bbs_user_is_registered(cdata.node->user)) {
+				do_sftp(cdata.node, session, sdata.channel);
+			} else {
+				bbs_warning("Rejecting anonymous SFTP access\n");
+			}
 		} else {
 			/* If stdout valid, add stdout to be monitored by the poll event. */
 			/* Skip stderr, the BBS doesn't use it, since we're not launching a shell. */

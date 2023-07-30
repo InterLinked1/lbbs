@@ -29,7 +29,10 @@ apt-get install -y liblmdb-dev
 # mod_http
 apt-get install -y libmagic-dev
 
-# net_smtp
+# mod_smtp_filter_dkim
+apt-get install -y libopendkim-dev
+
+# mod_smtp_filter_spf
 apt-get install -y libspf2-dev
 
 # mod_mimeparse

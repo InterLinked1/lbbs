@@ -60,7 +60,7 @@ struct bbs_user {
 #define bbs_user_email(user) (bbs_user_is_guest(user) ? user->guestemail : user->email)
 
 /*! \brief Privilege level of user */
-#define bbs_user_priv(user) user->priv
+#define bbs_user_priv(user) (user ? user->priv : 0)
 
 /*!
  * \brief Get username of a BBS user.

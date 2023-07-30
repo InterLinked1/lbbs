@@ -830,7 +830,7 @@ static void process_capabilities(int *caps, const char *capname)
 			bbs_debug(3, "Supports oauth2\n");
 			*caps |= SMTP_CAPABILITY_AUTH_XOAUTH2;
 		}
-	} else if (STARTS_WITH(capname, "SIZE ")) {
+	} else if (STARTS_WITH(capname, "SIZE")) { /* The argument containing the size is optional */
 		/*! \todo parse and store the limit, abort early if our message length is greater than this */
 	} else if (!strcasecmp(capname, "CHUNKING") || !strcasecmp(capname, "SMTPUTF8") || !strcasecmp(capname, "VRFY") || !strcasecmp(capname, "ETRN") || !strcasecmp(capname, "DSN") || !strcasecmp(capname, "HELP")) {
 		/* Don't care about */
@@ -1144,7 +1144,18 @@ static const char *smtp_filter_type_name(enum smtp_filter_type type)
 
 int __smtp_filter_register(struct smtp_filter_provider *provider, enum smtp_filter_type type, enum smtp_filter_scope scope, enum smtp_direction dir, int priority, void *mod)
 {
-	struct smtp_filter *f = calloc(1, sizeof(*f));
+	struct smtp_filter *f;
+
+	/* Not all combinations of scope and direction are supported */
+	if (scope == SMTP_SCOPE_COMBINED && dir == SMTP_DIRECTION_OUT) {
+		bbs_error("Combined filters not supported for outgoing direction\n");
+		return -1;
+	} else if (scope == SMTP_SCOPE_INDIVIDUAL && dir == SMTP_DIRECTION_SUBMIT) {
+		bbs_error("Individual filters not supported for submission direction\n");
+		return -1;
+	}
+
+	f = calloc(1, sizeof(*f));
 	if (ALLOC_FAILURE(f)) {
 		return -1;
 	}
@@ -1212,6 +1223,25 @@ time_t smtp_received_time(struct smtp_session *smtp)
 	return smtp->received;
 }
 
+const char *smtp_message_body(struct smtp_filter_data *f)
+{
+	if (!f->body) {
+		ssize_t res;
+		f->body = malloc(f->size + 1);
+		if (ALLOC_FAILURE(f->body)) {
+			return NULL;
+		}
+		res = read(f->inputfd, f->body, f->size);
+		if (res != (ssize_t) f->size) {
+			bbs_warning("Wanted to read %lu bytes but read %ld?\n", f->size, res);
+			FREE(f->body);
+			return NULL;
+		}
+		f->body[f->size] = '\0';
+	}
+	return f->body;
+}
+
 int smtp_filter_write(struct smtp_filter_data *f, const char *fmt, ...)
 {
 	va_list ap;
@@ -1248,11 +1278,29 @@ int smtp_filter_add_header(struct smtp_filter_data *f, const char *name, const c
 	return smtp_filter_write(f, "%s: %s\r\n", name, value);
 }
 
+static const char *smtp_filter_direction_name(enum smtp_direction dir)
+{
+	if (dir & SMTP_DIRECTION_IN) {
+		if (dir & SMTP_DIRECTION_OUT) {
+			return dir & SMTP_DIRECTION_SUBMIT ? "SUBMIT|OUT|IN" : "IN|OUT";
+		} else {
+			return dir & SMTP_DIRECTION_SUBMIT ? "SUBMIT|IN" : "IN";
+		}
+	} else if (dir & SMTP_DIRECTION_OUT) {
+		return dir & SMTP_DIRECTION_SUBMIT ? "SUBMIT|OUT" : "OUT";
+	} else if (dir & SMTP_DIRECTION_SUBMIT) {
+		return "SUBMIT";
+	} else {
+		return "NONE";
+	}
+}
+
 /*! \note This is currently only executed once the entire message has been received.
  * If milter support is added, we'll need hooks at each stage of the delivery process (MAIL FROM, RCPT TO, etc.) */
 static void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 {
 	struct smtp_filter *f;
+	enum smtp_filter_scope scope = fdata->recipient ? SMTP_SCOPE_INDIVIDUAL : SMTP_SCOPE_COMBINED;
 
 	if (!fdata->smtp) {
 		bbs_error("Cannot run filters without an SMTP session\n");
@@ -1263,38 +1311,46 @@ static void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction
 	fdata->from = fdata->smtp->from;
 	fdata->node = fdata->smtp->node;
 
+	bbs_debug(4, "Running %s (%s) filters\n", scope == SMTP_SCOPE_COMBINED ? "COMBINED" : "INDIVIDUAL", smtp_filter_direction_name(dir));
+
 	RWLIST_RDLOCK(&filters);
 	RWLIST_TRAVERSE(&filters, f, entry) {
-		if (f->direction & fdata->dir) {
-			int res = 0;
-			/* Filter applicable to this direction */
-			if (f->scope == SMTP_SCOPE_INDIVIDUAL) {
-				if (!fdata->recipient) {
-					continue;
-				}
-			} else {
-				if (fdata->recipient) {
-					continue;
-				}
+		int res = 0;
+		if (!(f->direction & fdata->dir)) {
+			bbs_debug(5, "Ignoring %s SMTP filter %s %p (wrong direction)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+			continue;
+		}
+		/* Filter applicable to this direction */
+		if (f->scope == SMTP_SCOPE_INDIVIDUAL) {
+			if (!fdata->recipient) {
+				bbs_debug(5, "Ignoring %s SMTP filter %s %p (wrong scope)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+				continue;
 			}
-			/* Filter applicable to scope */
-			bbs_debug(5, "Executing %s SMTP filter %s %p...\n", dir == SMTP_DIRECTION_IN ? "incoming" : "outgoing", smtp_filter_type_name(f->type), f);
-			bbs_module_ref(f->mod);
-			if (f->type == SMTP_FILTER_PREPEND) {
-				bbs_assert_exists(f->provider);
-				res = f->provider->on_body(fdata);
-			} else {
-				bbs_error("Filter type %d not supported\n", f->type);
-			}
-			bbs_module_unref(f->mod);
-			lseek(fdata->inputfd, 0, SEEK_SET); /* Rewind to beginning of file */
-			if (res == 1) {
-				break;
-			} else if (res < 0) {
-				bbs_warning("%s SMTP filter %s %p failed to execute\n", dir == SMTP_DIRECTION_IN ? "Incoming" : "Outgoing", smtp_filter_type_name(f->type), f);
+		} else {
+			if (fdata->recipient) {
+				bbs_debug(5, "Ignoring %s SMTP filter %s %p (wrong scope)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+				continue;
 			}
 		}
+		/* Filter applicable to scope */
+		bbs_debug(5, "Executing %s SMTP filter %s %p...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+		bbs_module_ref(f->mod);
+		if (f->type == SMTP_FILTER_PREPEND) {
+			bbs_assert_exists(f->provider);
+			res = f->provider->on_body(fdata);
+		} else {
+			bbs_error("Filter type %d not supported\n", f->type);
+		}
+		bbs_module_unref(f->mod);
+		lseek(fdata->inputfd, 0, SEEK_SET); /* Rewind to beginning of file */
+		if (res == 1) {
+			bbs_debug(5, "Aborting filter execution\n");
+			break;
+		} else if (res < 0) {
+			bbs_warning("%s SMTP filter %s %p failed to execute\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+		}
 	}
+	free_if(fdata->body);
 	RWLIST_UNLOCK(&filters);
 }
 
@@ -1484,7 +1540,7 @@ static int appendmsg(struct smtp_session *smtp, struct mailbox *mbox, struct smt
 		filterdata.inputfd = srcfd;
 		filterdata.size = datalen;
 		filterdata.outputfd = fd;
-		smtp_run_filters(&filterdata, SMTP_DIRECTION_IN);
+		smtp_run_filters(&filterdata, smtp->msa ? SMTP_DIRECTION_SUBMIT : SMTP_DIRECTION_IN);
 	}
 
 	/* Write the entire body of the message. */
@@ -2174,6 +2230,9 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 	 *    This is fine, because the filters at step 3 only matter if we're going to deliver the message anyways. Otherwise, why bother?
 	 *
 	 * Only after all of this is the message actually written into the user's maildir.
+	 *
+	 * Note that DKIM signing is down for SUBMIT scope, and MailScript rules for SMTP_MSG_DIRECTION_OUT have already run,
+	 * so if headers were rewritten by rules, that's already done by the time of DKIM signing.
 	 */
 	memset(&filterdata, 0, sizeof(filterdata));
 	filterdata.smtp = smtp;
@@ -2181,7 +2240,7 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 	filterdata.inputfd = srcfd;
 	filterdata.size = datalen;
 	filterdata.outputfd = -1;
-	smtp_run_filters(&filterdata, SMTP_DIRECTION_IN);
+	smtp_run_filters(&filterdata, smtp->msa ? SMTP_DIRECTION_SUBMIT : SMTP_DIRECTION_IN);
 
 	/* Since outputfd was originally -1, if it's not any longer,
 	 * that means the source has been modified and we should use that as the new source */

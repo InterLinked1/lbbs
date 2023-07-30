@@ -48,7 +48,7 @@ Key features and capabilities include:
 
     * Built-in OAuth2 proxy, allowing the BBS to log in to remote IMAP servers using OAuth2, while your IMAP client uses your normal BBS credentials
 
-  * SPF and SpamAssassin support
+  * SPF, DKIM, and SpamAssassin support
 
   * Filtering
 
@@ -447,6 +447,25 @@ Filtering Spam
 
 SpamAssassin will tag spam appropriately, but not do anything to it. That's where Sieve rules can help filter spam to the right place (or even reject it during the SMTP session). There are a few headers that SpamAssassin will add, e.g. :code:`X-Spam-Status`. Users can customize what they want to do with spam and their threshold for spam filtering using a Sieve rule. The most common rule is to move suspected spam to the user's Junk folder.
 
+Email sent from the BBS keeps going to people's spam!
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Email deliverability is beyond the scope of this guide, but there are a few things you'll want to ensure:
+
+* SPF records are configured for any domains from which you send email
+
+* MX records are configured for any domains from which you send email
+
+* rDNS is configured for any IP addresses from which you send email (used for FCrDNS). If you use DigitalOcean, your `Droplet name must be the rDNS hostname <https://docs.digitalocean.com/products/networking/dns/how-to/manage-records/#ptr-rdns-records>`_. The rDNS hostname must resolve to your IP but does not need to match your mail domain, nor encompass all of them.
+
+* DKIM is configured (see :code:`mod_smtp_filter_dkim.conf`)
+
+Additionally, there are many online tools that can do some deliverability checks for you, which may catch common configuration errors and mistakes:
+
+* `Mail Tester <https://www.mail-tester.com>`_
+
+* `Postmastery <https://www.postmastery.com/email-deliverability-test/>`_
+
 How can I improve the efficiency of my email submissions?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -628,6 +647,8 @@ Usage:
 
 Note that if the BBS was compiled with optimizations enabled (anything except -O0, e.g -Og, -O1, -O2, -O3), then some variables may be optimized out in the backtrace.
 If you submit an issue, please recompile the BBS without optimization (change to :code:`-O0` in the top-level Makefile) and get a backtrace from an unoptimized system. Otherwise, important details may be missing as the backtrace is incomplete.
+
+If you are not getting core dumps, ensure the current directory (in which the BBS was started or is currently running) is writable by the BBS user. Otherwise, it cannot dump a core there.
 
 ABI Compatibility
 ~~~~~~~~~~~~~~~~~
