@@ -325,7 +325,7 @@ although certain implementation details may differ.
 
 Does the BBS provide any kind of webmail access?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-You can use `wssmail <https://github.com/InterLinked1/wssmail>`_, a fast and efficient webamil client designed with the BBS's mail server in mind (but may be used with any mail server).
+You can use `wssmail <https://github.com/InterLinked1/wssmail>`_, a fast and efficient webmail client designed with the BBS's mail server in mind (but may be used with any mail server).
 LBBS comes with the mod_webmail module, which is a backend module for wssmail.
 
 Note that only the webmail backend is a BBS module. The corresponding webmail frontend is a required but separately maintained project. (In theory, the frontend could have multiple implementations as well.)

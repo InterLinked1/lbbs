@@ -1,7 +1,7 @@
 
 RULE
 MATCH DIRECTION IN
-MATCH SIZE <= 15
+MATCH SIZE <= 70
 # This is redundant and doesn't really make sense... but the condition should match if the previous one did
 MATCH NOT SIZE > 1000000
 ACTION MOVETO Junk

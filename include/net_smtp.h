@@ -51,6 +51,10 @@ struct smtp_filter_data {
 	/* Duplicated fields: these are simply duplicated from smtp: */
 	struct bbs_node *node;			/*!< Node */
 	const char *from;				/*!< Envelope from */
+	/* Set by filter callbacks */
+	char *spf;						/*!< Allocated SPF header value */
+	char *dkim;						/*!< Allocated DKIM results */
+	char *dmarc;					/*!< Allocated DMARC results */
 	/* INTERNAL: Do not access these fields directly. Use the publicly exposed functions. */
 	int outputfd;					/*!< File descriptor to write to, to prepend to message */
 	char outputfile[64];			/*!< Temporary output file name */
@@ -87,6 +91,9 @@ const char *smtp_protname(struct smtp_session *smtp);
 
 /*! \brief Whether SPF validation should be performed */
 int smtp_should_validate_spf(struct smtp_session *smtp);
+
+/*! \brief Whether DKIM validation should be performed */
+int smtp_should_validate_dkim(struct smtp_session *smtp);
 
 /*! \brief Whether the sender's privacy should be protected */
 int smtp_should_preserve_privacy(struct smtp_session *smtp);

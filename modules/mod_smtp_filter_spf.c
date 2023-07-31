@@ -66,6 +66,9 @@ static int prepend_spf(struct smtp_filter_data *f)
 		const char *spfresult = SPF_strresult(SPF_response_result(spf_response));
 		if (VALID_SPF(spfresult)) {
 			smtp_filter_add_header(f, "Received-SPF", SPF_response_get_received_spf_value(spf_response));
+			/* We can use just the short name for Authentication-Results header.
+			 * No need to duplicate the entire header value for that. */
+			REPLACE(f->spf, spfresult);
 		} else {
 			bbs_warning("Unexpected SPF result: %s\n", spfresult);
 		}

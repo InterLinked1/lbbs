@@ -829,6 +829,7 @@ static int run_test(const char *filename, int multiple)
 #endif
 				}
 			}
+			bbs_debug(3, "Test return code so far is %d\n", res);
 		} else {
 			memcpy(&end, &start, sizeof(end));
 		}

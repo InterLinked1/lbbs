@@ -1,6 +1,6 @@
 require [ "envelope", "subaddress", "fileinto", "reject", "notify", "vacation" ];
 
-if size :under 15 {
+if size :under 70 {
 	fileinto "Junk";
 	stop;
 }

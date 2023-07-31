@@ -57,7 +57,7 @@ void bbs_dump_mem(unsigned const char *restrict s, size_t len);
 int bbs_str_count(const char *restrict s, char c) __attribute__ ((pure));
 
 /*!
- * \brief Get the number of instances of a character in a region of memory
+	* \brief Get the number of instances of a character in a region of memory
  * \param s String
  * \param len Number of bytes to search
  * \param c Character of interest
@@ -89,7 +89,7 @@ int bbs_term_line(char *restrict c);
 void safe_strncpy(char *restrict dst, const char *restrict src, size_t size) __attribute__((nonnull (1,2)));
 
 /*!
- * \brief Copy s into buf, except for any whitespace characters
+ * \brief Copy a substring of s into buf, proceeding until a certain character is found
  * \param s Original string
  * \param[out] buf
  * \param len Length of buf

@@ -69,6 +69,10 @@ mod_smtp_filter_dkim.so : mod_smtp_filter_dkim.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lopendkim
 
+mod_smtp_filter_dmarc.so : mod_smtp_filter_dmarc.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lopendmarc
+
 mod_smtp_filter_spf.so : mod_smtp_filter_spf.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lspf2

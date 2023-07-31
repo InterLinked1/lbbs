@@ -14,12 +14,13 @@
  *
  * \brief RFC5321 Simple Mail Transfer Protocol (SMTP) Server (Mail Transfer Agent and Message Submission Agent)
  *
+ * \note Supports RFC1870 Size Declarations
+ * \note Supports RFC1893 Enhanced Status Codes
  * \note Supports RFC3207 STARTTLS
  * \note Supports RFC4954 AUTH
- * \note Supports RFC1893 Enhanced Status Codes
- * \note Supports RFC1870 Size Declarations
- * \note Supports RFC6409 Message Submission
  * \note Supports RFC4468 BURL
+ * \note Supports RFC6409 Message Submission
+ * \note Supports RFC8601 Authentication-Results
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -173,6 +174,7 @@ struct smtp_session {
 	unsigned int inauth:2;	/* Whether currently doing AUTH (1 = need PLAIN, 2 = need LOGIN user, 3 = need LOGIN pass) */
 	unsigned int sentself:1;
 	unsigned int ptonly:1;	/* Message must be plain text for acceptance (used for mailing lists) */
+	unsigned int dkimsig:1;	/* Message has a DKIM-Signature header */
 };
 
 static void smtp_reset_data(struct smtp_session *smtp)
@@ -196,6 +198,7 @@ static void smtp_reset(struct smtp_session *smtp)
 	smtp->maxsize = 0;
 	smtp->indata = 0;
 	smtp->indataheaders = 0;
+	smtp->dkimsig = 0;
 	smtp->inauth = 0;
 	smtp->hopcount = 0;
 	free_if(smtp->authuser);
@@ -1218,6 +1221,11 @@ int smtp_should_validate_spf(struct smtp_session *smtp)
 	return validatespf && !smtp->fromlocal;
 }
 
+int smtp_should_validate_dkim(struct smtp_session *smtp)
+{
+	return smtp->dkimsig;
+}
+
 int smtp_should_preserve_privacy(struct smtp_session *smtp)
 {
 	return smtp->fromlocal && !add_received_msa;
@@ -1362,6 +1370,29 @@ static void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction
 	}
 	free_if(fdata->body);
 	RWLIST_UNLOCK(&filters);
+
+	if (scope == SMTP_SCOPE_COMBINED && dir == SMTP_DIRECTION_IN) {
+#define HEADER_CONTINUE "	"
+		char *buf;
+		int len;
+		/* Add Authentication-Results header with the results of various tests */
+		len = asprintf(&buf, "%s;" "%s%s%s%s" "%s%s" "%s%s",
+			bbs_hostname(),
+			fdata->spf ? "\r\n" HEADER_CONTINUE "spf=" : "", fdata->spf ? fdata->spf : "", fdata->spf ? " smtp.mailfrom=" : "", fdata->spf ? fdata->smtp->from : "",
+			fdata->dkim ? "\r\n" HEADER_CONTINUE "dkim=" : "", S_IF(fdata->dkim),
+			fdata->dmarc ? "\r\n" HEADER_CONTINUE "dmarc=" : "", S_IF(fdata->dmarc)
+		);
+		if (likely(len > 0)) {
+			smtp_filter_add_header(fdata, "Authentication-Results", buf);
+		}
+		free(buf);
+#undef HEADER_CONTINUE
+	}
+
+	/* Should only be set if we execute the above if block, but just in case... */
+	free_if(fdata->spf);
+	free_if(fdata->dkim);
+	free_if(fdata->dmarc);
 }
 
 static void notify_firstmsg(struct mailbox *mbox)
@@ -2968,6 +2999,8 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 				if (!strlen_zero(tmp)) {
 					REPLACE(smtp->contenttype, tmp);
 				}
+			} else if (!smtp->dkimsig && STARTS_WITH(s, "DKIM-Signature")) {
+				smtp->dkimsig = 1;
 			} else if (!len) {
 				smtp->indataheaders = 0; /* CR LF on its own indicates end of headers */
 			}
