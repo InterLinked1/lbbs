@@ -327,7 +327,7 @@ static int generate_status(struct imap_session *imap, const char *folder, char *
 static int generate_mailbox_name(struct imap_session *imap, const char *restrict maildir, char *restrict buf, size_t len)
 {
 	size_t rootlen, fulllen;
-	unsigned int userid = imap->node->user->id;
+	unsigned int userid;
 	unsigned int muserid;
 	const char *fulldir = maildir;
 	const char *rootdir = mailbox_maildir(NULL);
@@ -337,6 +337,7 @@ static int generate_mailbox_name(struct imap_session *imap, const char *restrict
 		return -1;
 	}
 
+	userid = imap->node->user->id;
 	rootlen = strlen(rootdir);
 	fulllen = strlen(fulldir);
 
