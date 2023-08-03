@@ -27,21 +27,24 @@
 #include "include/linkedlists.h"
 
 #include "include/net_smtp.h"
-
-struct dkim_domain {
-	const char *domain;
-	const char *selector;
-	const char *key;
-	RWLIST_ENTRY(dkim_domain) entry;
-	unsigned int strictheaders:1;
-	unsigned int strictbody:1;
-	unsigned int sha256:1;
-	char data[];
-};
+#include "include/mod_smtp_filter_dkim.h"
 
 static RWLIST_HEAD_STATIC(domains, dkim_domain);
 
 static DKIM_LIB *lib;
+
+struct dkim_domain *smtp_get_dkim_domain(const char *name)
+{
+	struct dkim_domain *d;
+	/* It's okay to traverse without locking,
+	 * since the module can't unload while it's in use. */
+	RWLIST_TRAVERSE(&domains, d, entry) {
+		if (!strcmp(d->domain, name)) {
+			return d;
+		}
+	}
+	return NULL;
+}
 
 static int dkim_sign_filter_cb(struct smtp_filter_data *f)
 {
@@ -67,22 +70,15 @@ static int dkim_sign_filter_cb(struct smtp_filter_data *f)
 
 	snprintf(uniqueid, sizeof(uniqueid), "%lu", time(NULL));
 
-	RWLIST_RDLOCK(&domains);
-	RWLIST_TRAVERSE(&domains, d, entry) {
-		if (!strcmp(d->domain, domain)) {
-			break;
-		}
-	}
+	d = smtp_get_dkim_domain(domain);
 	if (!d) {
 		/* DKIM not applicable for this domain */
-		RWLIST_UNLOCK(&domains);
 		bbs_debug(3, "DKIM not applicable for domain %s\n", domain);
 		return 0;
 	}
 
 	body = smtp_message_body(f);
 	if (!body) {
-		RWLIST_UNLOCK(&domains);
 		bbs_warning("Message is empty?\n");
 		return 0;
 	}
@@ -99,7 +95,6 @@ static int dkim_sign_filter_cb(struct smtp_filter_data *f)
 	if (statp != DKIM_STAT_OK) {
 		bbs_error("Failed to set up DKIM signing: %d (%s)\n", statp, dkim_geterror(dkim));
 		if (!dkim) {
-			RWLIST_UNLOCK(&domains);
 			return 0;
 		}
 		goto cleanup;
@@ -136,7 +131,6 @@ static int dkim_sign_filter_cb(struct smtp_filter_data *f)
 
 cleanup:
 	dkim_free(dkim);
-	RWLIST_UNLOCK(&domains);
 	return 0;
 }
 
@@ -186,7 +180,7 @@ static int dkim_verify_filter_cb(struct smtp_filter_data *f)
 		goto cleanup;
 	}
 
-	/* Since the headers and body aren't parse, just chunk it all at once */
+	/* Since the headers and body aren't parsed, just chunk it all at once */
 	statp = dkim_chunk(dkim, (unsigned char*) body, f->size);
 #pragma GCC diagnostic pop
 	if (statp != DKIM_STAT_OK) {
@@ -397,6 +391,7 @@ static int load_config(void)
 		d->selector = d->data + namelen + 1;
 		strcpy(d->data + namelen + selectorlen + 2, secretkey);
 		d->key = d->data + namelen + selectorlen + 2;
+		d->keylen = keylen;
 		SET_BITFIELD(d->strictheaders, strictheaders);
 		SET_BITFIELD(d->strictbody, strictbody);
 		SET_BITFIELD(d->sha256, sha256);
@@ -447,4 +442,4 @@ static int load_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_DEPENDENT("RFC6376 DKIM Signing/Verification", "net_smtp.so");
+BBS_MODULE_INFO_FLAGS_DEPENDENT("RFC6376 DKIM Signing/Verification", MODFLAG_GLOBAL_SYMBOLS, "net_smtp.so");

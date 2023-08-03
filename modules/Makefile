@@ -65,6 +65,10 @@ mod_slack.so : mod_slack.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lslackrtm
 
+mod_smtp_filter_arc.so : mod_smtp_filter_arc.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -L/usr/local/lib -Wl,-rpath -Wl,/usr/local/lib -lopenarc
+
 mod_smtp_filter_dkim.so : mod_smtp_filter_dkim.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lopendkim

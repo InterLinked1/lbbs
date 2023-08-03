@@ -40,15 +40,8 @@ static int prepend_spf(struct smtp_filter_data *f)
 {
 	SPF_request_t *spf_request;
 	SPF_response_t *spf_response = NULL;
-	const char *domain;
 
 	/* Only MAIL FROM and HELO identities are within scope of SPF. */
-	domain = strchr(f->from, '@');
-	if (!domain) {
-		bbs_error("Invalid domain: %s\n", f->from);
-		return -1;
-	}
-	domain++;
 
 	/* use libspf2's SPF validation... no need to reinvent the wheel here. */
 	spf_request = SPF_request_new(spf_server);
@@ -57,7 +50,7 @@ static int prepend_spf(struct smtp_filter_data *f)
 		return -1;
 	}
 	SPF_request_set_ipv4_str(spf_request, f->node->ip);
-	SPF_request_set_env_from(spf_request, domain);
+	SPF_request_set_env_from(spf_request, f->from);
 
 #define VALID_SPF(s) (!strcmp(s, "pass") || !strcmp(s, "fail") || !strcmp(s, "softfail") || !strcmp(s, "neutral") || !strcmp(s, "none") || !strcmp(s, "temperror") || !strcmp(s, "permerror"))
 

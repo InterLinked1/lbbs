@@ -55,6 +55,8 @@ struct smtp_filter_data {
 	char *spf;						/*!< Allocated SPF header value */
 	char *dkim;						/*!< Allocated DKIM results */
 	char *dmarc;					/*!< Allocated DMARC results */
+	char *arc;						/*!< Allocated ARC results */
+	char *authresults;				/*!< Allocated Authentication-Results header */
 	/* INTERNAL: Do not access these fields directly. Use the publicly exposed functions. */
 	int outputfd;					/*!< File descriptor to write to, to prepend to message */
 	char outputfile[64];			/*!< Temporary output file name */

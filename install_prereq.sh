@@ -32,6 +32,9 @@ apt-get install -y libmagic-dev
 # mod_smtp_filter_dkim
 apt-get install -y libopendkim-dev
 
+# mod_smtp_filter_arc
+scripts/libopenarc.sh
+
 # mod_smtp_filter_dmarc
 apt-get install -y libopendmarc-dev
 

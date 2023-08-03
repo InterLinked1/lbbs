@@ -54,7 +54,7 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 	DMARC_POLICY_T *pctx;
 	char dmarc_domain[256];
 	char dmarc_result[sizeof(dmarc_domain) + 128];
-	const char *result;
+	const char *result = NULL;
 	int p, sp;
 
 	domain = strchr(f->from, '@');
@@ -209,8 +209,8 @@ static int load_module(void)
 		return -1;
 	}
 
-	/* Wait until SPF and DKIM have completed (priorities 1 and 2 respectively) before making any DMARC assessment */
-	smtp_filter_register(&dmarc_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 3);
+	/* Wait until SPF and DKIM/ARC have completed (priorities 1 and 2 respectively) before making any DMARC assessment */
+	smtp_filter_register(&dmarc_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 5);
 	return 0;
 }
 

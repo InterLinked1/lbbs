@@ -35,7 +35,11 @@ static int pre(void)
 
 static int run(void)
 {
-	return test_bbs_expect("100%", SEC_MS(5)); /* Unit tests are fast, so shouldn't take very long to execute them all */
+	int res = test_bbs_expect(COLOR(COLOR_SUCCESS) "100%" COLOR_RESET, SEC_MS(5)); /* Unit tests are fast, so shouldn't take very long to execute them all */
+	if (res) {
+		bbs_error("Failed to receive expected output\n");
+	}
+	return res;
 }
 
 TEST_MODULE_INFO_STANDARD("Unit Tests");

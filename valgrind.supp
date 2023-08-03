@@ -31,18 +31,11 @@
    SSH_MODULE
    Memcheck:Leak
    match-leak-kinds: reachable
-   fun:malloc
-   fun:strdup
-   fun:_dl_load_cache_lookup
-   fun:_dl_map_object
+   ...
    fun:openaux
    fun:_dl_catch_exception
    fun:_dl_map_object_deps
-   fun:dl_open_worker
-   fun:_dl_catch_exception
-   fun:_dl_open
-   fun:dlopen_doit
-   fun:_dl_catch_exception
+   ...
 }
 {
    DLOPEN
@@ -50,12 +43,24 @@
    match-leak-kinds: reachable
    fun:malloc
    ...
-   fun:call_init
-   fun:_dl_init
    fun:dl_open_worker
    fun:_dl_catch_exception
    fun:_dl_open
    fun:dlopen_doit
+   ...
+}
+{
+   DLOPEN
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:call_init
+   ...
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+   fun:_dl_open
+   fun:dlopen_doit
+   ...
 }
 {
    SSH_MODULE
@@ -129,23 +134,15 @@
    SSH_MODULE
    Memcheck:Leak
    match-leak-kinds: reachable
+   ...
    fun:malloc
    fun:allocate_dtv_entry
    fun:allocate_and_init
-   fun:tls_get_addr_tail.isra.0
+   ...
    fun:__tls_get_addr
    fun:ssh_get_log_level
    fun:_ssh_log
-   fun:ssh_pki_import_privkey_base64
-   fun:ssh_pki_import_privkey_file
-   obj:/usr/lib/x86_64-linux-gnu/libssh.so.4.7.4
-   fun:ssh_bind_listen
-   fun:start_ssh
-   fun:load_module
-   fun:start_resource
-   fun:load_resource.constprop.10
-   fun:on_file_autoload
-   fun:on_file_autoload
+   ...
 }
 {
    TLS
@@ -210,14 +207,16 @@
    match-leak-kinds: reachable
    ...
    fun:add_to_global_resize
-   fun:dl_open_worker
-   fun:_dl_catch_exception
-   fun:_dl_open
-   fun:dlopen_doit
-   fun:_dl_catch_exception
-   fun:_dl_catch_error
-   fun:_dlerror_run
    ...
+}
+{
+   GOBJECT
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:realloc
+   fun:g_realloc
+   ...
+   fun:_dl_init
 }
 {
    GOBJECT
@@ -235,6 +234,16 @@
    fun:g_type_class_ref
    fun:g_type_class_ref
    fun:g_object_new_with_properties
+}
+	{
+   GOBJECT
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   ...
+   fun:g_rec_mutex_lock
+   fun:g_type_class_ref
+   ...
 }
 {
    GOBJECT
@@ -270,6 +279,19 @@
    GOBJECT
    Memcheck:Leak
    match-leak-kinds: reachable
+   ...
+   fun:call_init
+   fun:call_init
+   fun:_dl_init
+   fun:dl_open_worker
+   fun:_dl_catch_exception
+   fun:_dl_open
+   ...
+}
+{
+   GOBJECT
+   Memcheck:Leak
+   match-leak-kinds: reachable
    fun:malloc
    fun:realloc
    fun:g_realloc
@@ -278,6 +300,17 @@
    fun:call_init
    fun:_dl_init
    fun:dl_open_worker
+}
+{
+   GLIB
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   ...
+   fun:g_private_get
+   ...
+   fun:_dl_init
+   ...
 }
 {
    GLIB
@@ -294,14 +327,23 @@
    fun:_dl_catch_exception
 }
 {
+   GLIB
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   fun:g_malloc
+   ...
+   fun:_dl_init
+   ...
+}
+{
    GLIB_GOBJECT
    Memcheck:Leak
    match-leak-kinds: reachable
    fun:malloc
-   obj:/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.6600.8
+   ...
    fun:g_rw_lock_writer_lock
-   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
-   fun:call_init.part.0
+   ...
    fun:call_init
    fun:_dl_init
    fun:_dl_catch_exception
@@ -356,19 +398,25 @@
    GOBJECT_init
    Memcheck:Leak
    match-leak-kinds: possible
-   fun:realloc
+   ...
    fun:g_realloc
-   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   ...
    fun:g_type_register_static
-   fun:g_param_type_register_static
-   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
-   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
-   fun:call_init.part.0
+   ...
    fun:call_init
-   fun:_dl_init
-   fun:_dl_catch_exception
-   fun:dl_open_worker
-   fun:_dl_catch_exception
+   ...
+}
+{
+   GOBJECT_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_realloc
+   ...
+   fun:g_type_register_static
+   ...
+   fun:call_init
+   ...
 }
 {
    GMIME_INIT
@@ -458,11 +506,15 @@
    Memcheck:Leak
    match-leak-kinds: possible
    ...
-   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
    fun:g_type_register_fundamental
-   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
-   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
-   fun:call_init.part.0
+   ...
+}
+{
+   GOBJECT_init
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_type_register_fundamental
    ...
 }
 {
@@ -844,14 +896,13 @@
    DLCLOSE
    Memcheck:Leak
    match-leak-kinds: reachable
-   fun:malloc
-   fun:_dl_close_worker
+   ...
    fun:_dl_close_worker
    fun:_dl_close
    fun:_dl_catch_exception
    fun:_dl_catch_error
    fun:_dlerror_run
-   fun:dlclose
+   ...
    fun:logged_dlclose
    fun:unload_dynamic_module
    fun:unload_modules_helper

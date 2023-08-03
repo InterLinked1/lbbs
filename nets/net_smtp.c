@@ -20,7 +20,6 @@
  * \note Supports RFC4954 AUTH
  * \note Supports RFC4468 BURL
  * \note Supports RFC6409 Message Submission
- * \note Supports RFC8601 Authentication-Results
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -425,10 +424,18 @@ static int add_recipient(struct smtp_session *smtp, int local, const char *s, in
 	char buf[256];
 	const char *recipient = s;
 
-	/* Assume local user if no domain present */
-	if (assumelocal && !strchr(recipient, '@')) {
-		snprintf(buf, sizeof(buf), "%s@%s", recipient, bbs_hostname());
-		recipient = buf;
+	if (strchr(recipient, '@')) { /* If it's external, make sure it's in the full format */
+		if (!local) {
+			/* In the case of mailing list expansion, recipients are added without the <>, need to add them */
+			snprintf(buf, sizeof(buf), "<%s>", recipient);
+			recipient = buf;
+		}
+	} else {
+		/* Assume local user if no domain present */
+		if (assumelocal) {
+			snprintf(buf, sizeof(buf), "%s@%s", recipient, bbs_hostname());
+			recipient = buf;
+		}
 	}
 
 	if (stringlist_contains(&smtp->recipients, recipient)) {
@@ -524,6 +531,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 		if (recipients) { /* It's a mailing list */
 			int added = 0;
 			struct mailing_list list;
+			char listaddr[256];
 			char *senders, *recip, *recips, *dup = strdup(recipients);
 
 			if (ALLOC_FAILURE(dup)) {
@@ -534,7 +542,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 			parse_mailing_list(&list, dup);
 			recips = list.recipients;
 			senders = list.senders;
-			if (senders) {
+			if (!strlen_zero(senders)) {
 				int authorized = 0;
 				char *sender;
 				bbs_debug(6, "List %s (recipients: %s) (senders: %s), maxsize=%u, ptonly=%d\n", user, recips, senders, list.maxsize, list.ptonly);
@@ -566,6 +574,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 			}
 			/* Save attributes for later, since we don't have the body yet and can't do these checks now. */
 			smtp->maxsize = list.maxsize;
+			smtp->fromlocal = 1; /* Since we're relaying the message out potentially, pretend it originated locally */
 			if (smtp->sizepreview && smtp->maxsize && smtp->sizepreview > smtp->maxsize) {
 				/* If the client told us in advance how large the message will be,
 				 * and we already know it's going to be too large, reject it now. */
@@ -619,7 +628,8 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 			}
 			bbs_debug(3, "Message expanded to %d recipient%s on mailing list %s\n", added, ESS(added), user);
 			smtp_reply(smtp, 250, 2.0.0, "OK");
-			REPLACE(smtp->listname, user);
+			snprintf(listaddr, sizeof(listaddr), "%s@%s", user, domain);
+			REPLACE(smtp->listname, listaddr);
 			return 0;
 		}
 
@@ -1160,10 +1170,7 @@ int __smtp_filter_register(struct smtp_filter_provider *provider, enum smtp_filt
 	struct smtp_filter *f;
 
 	/* Not all combinations of scope and direction are supported */
-	if (scope == SMTP_SCOPE_COMBINED && dir == SMTP_DIRECTION_OUT) {
-		bbs_error("Combined filters not supported for outgoing direction\n");
-		return -1;
-	} else if (scope == SMTP_SCOPE_INDIVIDUAL && dir == SMTP_DIRECTION_SUBMIT) {
+	if (scope == SMTP_SCOPE_INDIVIDUAL && dir == SMTP_DIRECTION_SUBMIT) {
 		bbs_error("Individual filters not supported for submission direction\n");
 		return -1;
 	}
@@ -1228,7 +1235,7 @@ int smtp_should_validate_dkim(struct smtp_session *smtp)
 
 int smtp_should_preserve_privacy(struct smtp_session *smtp)
 {
-	return smtp->fromlocal && !add_received_msa;
+	return smtp->msa && !add_received_msa;
 }
 
 int smtp_is_bulk_mailing(struct smtp_session *smtp)
@@ -1338,6 +1345,13 @@ static void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction
 			bbs_debug(5, "Ignoring %s SMTP filter %s %p (wrong direction)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
 			continue;
 		}
+
+		/*! \todo SMTP_SCOPE_COMBINED is not currently supported for SMTP_DIRECTION_OUT.
+		 * That is treated as SMTP_SCOPE_INDIVIDUAL for now, for the sake of transparency. */
+		if (fdata->dir == SMTP_DIRECTION_OUT && f->scope == SMTP_SCOPE_COMBINED) {
+			bbs_debug(3, "Treating COMBINED filter as individual due to current lack of native COMBINED/OUT support\n");
+		} else
+
 		/* Filter applicable to this direction */
 		if (f->scope == SMTP_SCOPE_INDIVIDUAL) {
 			if (!fdata->recipient) {
@@ -1368,31 +1382,14 @@ static void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction
 			bbs_warning("%s SMTP filter %s %p failed to execute\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
 		}
 	}
-	free_if(fdata->body);
 	RWLIST_UNLOCK(&filters);
 
-	if (scope == SMTP_SCOPE_COMBINED && dir == SMTP_DIRECTION_IN) {
-#define HEADER_CONTINUE "	"
-		char *buf;
-		int len;
-		/* Add Authentication-Results header with the results of various tests */
-		len = asprintf(&buf, "%s;" "%s%s%s%s" "%s%s" "%s%s",
-			bbs_hostname(),
-			fdata->spf ? "\r\n" HEADER_CONTINUE "spf=" : "", fdata->spf ? fdata->spf : "", fdata->spf ? " smtp.mailfrom=" : "", fdata->spf ? fdata->smtp->from : "",
-			fdata->dkim ? "\r\n" HEADER_CONTINUE "dkim=" : "", S_IF(fdata->dkim),
-			fdata->dmarc ? "\r\n" HEADER_CONTINUE "dmarc=" : "", S_IF(fdata->dmarc)
-		);
-		if (likely(len > 0)) {
-			smtp_filter_add_header(fdata, "Authentication-Results", buf);
-		}
-		free(buf);
-#undef HEADER_CONTINUE
-	}
-
-	/* Should only be set if we execute the above if block, but just in case... */
+	free_if(fdata->body);
 	free_if(fdata->spf);
 	free_if(fdata->dkim);
+	free_if(fdata->arc);
 	free_if(fdata->dmarc);
+	free_if(fdata->authresults);
 }
 
 static void notify_firstmsg(struct mailbox *mbox)
@@ -2071,6 +2068,12 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 		}
 	}
 
+	bbs_assert_exists(recipient);
+	if (*recipient != '<') {
+		bbs_warning("Invalid recipient: %s\n", recipient);
+		return -1;
+	}
+
 	if (!always_queue && !send_async) {  /* Try to send it synchronously */
 		struct stringlist mxservers;
 		/* Start by trying to deliver it directly, immediately, right now. */
@@ -2182,9 +2185,9 @@ static int external_delivery(struct smtp_session *smtp, const char *recipient, c
 					free(filenamedup);
 				}
 			}
-			bbs_debug(4, "Successfully queued message for immediate delivery\n");
+			bbs_debug(4, "Successfully queued message for immediate delivery: <%s> -> %s\n", smtp->from, recipient);
 		} else {
-			bbs_debug(4, "Successfully queued message for delayed delivery\n");
+			bbs_debug(4, "Successfully queued message for delayed delivery: <%s> -> %s\n", smtp->from, recipient);
 		}
 	}
 	return 0;
@@ -2304,6 +2307,10 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		}
 	}
 
+	if (smtp->listname) {
+		/* Now that we've run all the IN filters, pretend it's originating locally for mailing list */
+		REPLACE(smtp->from, smtp->listname);
+	}
 	if (smtp->listname && archivelists) {
 		archive_list_msg(smtp, srcfd);
 	}
@@ -2594,7 +2601,7 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 	}
 
 	/* SMTP callbacks for outgoing messages */
-	if (smtp->msa || smtp->fromlocal) {
+	if (smtp->msa) {
 		char newfile[256];
 		int savedcopy = 0;
 		int srcfd = -1;
@@ -2753,7 +2760,7 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 		}
 	}
 
-	if (smtp->fromlocal || smtp->msa) {
+	if (smtp->msa) {
 		/* Verify the address used is one the sender is authorized to use. */
 		char fromdup[256];
 
