@@ -554,12 +554,25 @@ static int load_resource(const char *restrict resource_name, unsigned int suppre
 /* Forward declaration */
 static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int force, int *usecount, struct stringlist *removed);
 
+struct bbs_module_ref {
+	struct bbs_module *m;
+	const char *name;
+	RWLIST_ENTRY(bbs_module_ref) entry;
+	char data[0];
+};
+
+RWLIST_HEAD(module_list, bbs_module_ref);
+
 /*! \note modules list must be locked when calling */
 static int unload_dependencies(struct bbs_module *mod, struct stringlist *restrict removed)
 {
-	int usecount;
 	struct bbs_module *m;
 	int res = 0;
+	struct module_list list;
+	struct bbs_module_ref *r;
+
+	/* Make a list of modules to unload upfront */
+	memset(&list, 0, sizeof(list));
 
 	/* I thought about perhaps checking how many dependencies exist,
 	 * and only going ahead with unloading them if the number of dependencies
@@ -579,17 +592,42 @@ static int unload_dependencies(struct bbs_module *mod, struct stringlist *restri
 	 * with the module names as they exist in the list. No need to build the full name
 	 * in a buffer each time. */
 
-	/* Use a safe traversal since the list may get modified while we're traversing it. */
-	RWLIST_TRAVERSE_SAFE_BEGIN(&modules, m, entry) {
+	RWLIST_TRAVERSE(&modules, m, entry) {
 		if (mod == m) {
 			continue; /* Skip ourself, we're already working on it... (and if it happened to specify itself, for whatever reason, that would result in infinite recursion) */
 		}
 		if (strlen_zero(m->info->dependencies)) {
 			continue; /* Module doesn't have any dependencies, let alone on the relevant module. */
 		}
+		/* Because all module names end in .so, this (correctly) won't erroneously
+		 * include module names that are otherwise prefixes of another module. */
 		if (!strstr(m->info->dependencies, mod->name)) {
 			continue;
 		}
+		bbs_debug(6, "Adding %s to unload list, since it depends on %s\n", m->name, mod->name);
+		r = calloc(1, sizeof(*r) + strlen(m->name) + 1);
+		if (ALLOC_FAILURE(r)) {
+			/* If we can't unload a dependency, this is all going to fail */
+			RWLIST_REMOVE_ALL(&list, entry, free);
+			return -1;
+		}
+		strcpy(r->data, m->name); /* Safe */
+		r->name = r->data;
+		r->m = m;
+		RWLIST_INSERT_HEAD(&list, r, entry);
+	}
+
+	while ((r = RWLIST_REMOVE_HEAD(&list, entry))) {
+		int usecount;
+		/* The module MAY have already been unloaded, in which case m is no longer valid memory.
+		 * Check to see if it's in the list. */
+		if (stringlist_contains(removed, r->name)) {
+			free(r);
+			continue;
+		}
+		/* m is still valid memory since module has not been unloaded */
+		m = r->m;
+		free(r);
 		bbs_verb(5, "Unloading %s, since it depends on %s\n", m->name, mod->name);
 		if (!unload_resource_nolock(m, 0, &usecount, removed)) {
 			res = -1;
@@ -603,7 +641,7 @@ static int unload_dependencies(struct bbs_module *mod, struct stringlist *restri
 		/* Actually unload the dependent. */
 		unload_dynamic_module(m);
 	}
-	RWLIST_TRAVERSE_SAFE_END;
+
 	return res;
 }
 
