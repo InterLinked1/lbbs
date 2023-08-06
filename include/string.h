@@ -57,7 +57,16 @@ void bbs_dump_mem(unsigned const char *restrict s, size_t len);
 int bbs_str_count(const char *restrict s, char c) __attribute__ ((pure));
 
 /*!
-	* \brief Get the number of instances of a character in a region of memory
+ * \brief Get a substring starting after a specified character
+ * \param s String to search
+ * \param c Character after which the desired substring begins
+ * \return Substring starting after specified character
+ * \return NULL if c not found or no substring follows
+ */
+const char *bbs_strcnext(const char *restrict s, char c);
+
+/*!
+ * \brief Get the number of instances of a character in a region of memory
  * \param s String
  * \param len Number of bytes to search
  * \param c Character of interest

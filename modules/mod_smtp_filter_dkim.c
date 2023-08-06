@@ -55,15 +55,10 @@ static int dkim_sign_filter_cb(struct smtp_filter_data *f)
 	struct dkim_domain *d;
 	unsigned char *sig;
 	size_t siglen;
-	const char *from = f->from;
-	const char *domain = strchr(from, '@');
+	const char *domain;
 
+	domain = bbs_strcnext(f->from, '@');
 	if (!domain) {
-		bbs_warning("Sender has no domain?\n");
-		return 0;
-	}
-	domain++;
-	if (strlen_zero(domain)) {
 		bbs_warning("Sender has no domain?\n");
 		return 0;
 	}

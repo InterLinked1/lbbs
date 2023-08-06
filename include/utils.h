@@ -74,12 +74,12 @@ int __attribute__ ((format (gnu_printf, 2, 3))) dyn_str_append_fmt(struct dyn_st
 #define dyn_str_len(dynstr) (dynstr->used)
 
 struct bbs_url {
-	char *prot;
-	char *user;
-	char *pass;
-	char *host;
+	const char *prot;
+	const char *user;
+	char *pass;			/* Not const, so it can be zeroed when no longer needed */
+	const char *host;
 	int port;
-	char *resource;
+	const char *resource;
 };
 
 /*!
@@ -263,6 +263,15 @@ void bbs_tcp_client_cleanup(struct bbs_tcp_client *client);
 int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, int secure, char *buf, size_t len);
 
 /*!
+ * \brief Perform STARTTLS on a TCP client
+ * \param client
+ * \param hostname
+ * \retval 0 on success, -1 on failure
+ * \note The readline buffer is reset on success to prevent response injection attacks
+ */
+int bbs_tcp_client_starttls(struct bbs_tcp_client *client, const char *hostname);
+
+/*!
  * \brief Send data on a TCP client connection
  * \param client
  * \param fmt printf-style format string
@@ -413,6 +422,15 @@ int bbs_get_hostname(const char *ip, char *buf, size_t len);
 int bbs_get_remote_ip(struct sockaddr_in *sinaddr, char *buf, size_t len);
 
 /*!
+ * \brief Get remote IP address, from a file descriptor
+ * \param fd
+ * \param[out] buf
+ * \param len
+ * \retval 0 on success, -1 on failure
+*/
+int bbs_get_fd_ip(int fd, char *buf, size_t len);
+
+/*!
  * \brief Save remote IP address
  * \param sinaddr
  * \param node
@@ -530,6 +548,13 @@ int bbs_ensure_directory_exists(const char *path);
  * \retval 0 on success, -1 on failure
  */
 int bbs_delete_directory(const char *path);
+
+/*!
+ * \brief Delete a file that is assumed to exist
+ * \param path Full path of file to delete
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_delete_file(const char *path);
 
 /*!
  * \brief Create a temporary FILE*

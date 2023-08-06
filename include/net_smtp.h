@@ -13,6 +13,15 @@
  *
  */
 
+/* SMTP relay port (mail transfer agents) */
+#define DEFAULT_SMTP_PORT 25
+
+/* Mainly for encrypted SMTP message submission agents, though not explicitly in the RFC */
+#define DEFAULT_SMTPS_PORT 465
+
+/* Mainly for message submission agents, not encrypted by default, but may use STARTTLS */
+#define DEFAULT_SMTP_MSA_PORT 587
+
 struct smtp_session;
 
 /*!
@@ -88,6 +97,9 @@ int __smtp_filter_register(struct smtp_filter_provider *provider, enum smtp_filt
  */
 int smtp_filter_unregister(struct smtp_filter_provider *provider);
 
+/*! \brief Get the BBS node of an SMTP session */
+struct bbs_node *smtp_node(struct smtp_session *smtp);
+
 /*! \brief Get SMTP protocol used */
 const char *smtp_protname(struct smtp_session *smtp);
 
@@ -97,11 +109,26 @@ int smtp_should_validate_spf(struct smtp_session *smtp);
 /*! \brief Whether DKIM validation should be performed */
 int smtp_should_validate_dkim(struct smtp_session *smtp);
 
+/*! \brief Whether this is a message submission */
+int smtp_is_message_submission(struct smtp_session *smtp);
+
 /*! \brief Whether the sender's privacy should be protected */
 int smtp_should_preserve_privacy(struct smtp_session *smtp);
 
-/*! \brief Whether this is a bulk mailing */
-int smtp_is_bulk_mailing(struct smtp_session *smtp);
+/*!
+ * \brief Get the estimated message size provided in MAIL FROM (SIZE=)
+ * \return Size provided during MAIL FROM (may or may not be accurate!)
+ * \return 0 if no estimated size provided
+ */
+size_t smtp_message_estimated_size(struct smtp_session *smtp);
+
+/*!
+ * \brief Get the Content-Type of a message, if available
+ * \param smtp
+ * \return Content-Type value
+ * \return NULL if unavailable
+ */
+const char *smtp_message_content_type(struct smtp_session *smtp);
 
 /*! \brief Time that message was received */
 time_t smtp_received_time(struct smtp_session *smtp);
@@ -114,6 +141,9 @@ int __attribute__ ((format (gnu_printf, 2, 3))) smtp_filter_write(struct smtp_fi
 
 /*! \brief Prepend a header to a message */
 int smtp_filter_add_header(struct smtp_filter_data *f, const char *name, const char *value);
+
+/*! \brief Run a group of SMTP filters */
+void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir);
 
 /* == SMTP processor callbacks - these determine what will happen to a message, based on the message, but do not modify it == */
 
@@ -143,6 +173,9 @@ struct smtp_msg_process {
 	char *relayroute;			/*!< Relay route */
 };
 
+/*! \brief Initialize an smtp_msg_process structure for use */
+void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_process *mproc);
+
 /*!
  * \brief Register an SMTP processor callback to run on each message received or sent
  * \param cb Callback that should return nonzero to stop processing further callbacks
@@ -158,3 +191,105 @@ int smtp_unregister_processor(int (*cb)(struct smtp_msg_process *mproc));
  * \brief Run SMTP callbacks for a message (only called by net_smtp)
  */
 int smtp_run_callbacks(struct smtp_msg_process *mproc);
+
+struct smtp_response {
+	/* Response */
+	int code;
+	const char *subcode;
+	const char *reply;
+};
+
+#define smtp_abort(r, c, sub, msg) \
+	r->code = c; \
+	r->subcode = #sub; \
+	r->reply = msg;
+
+struct smtp_delivery_agent {
+	/*! \brief RCPT TO handler: can we deliver to this address? */
+	/*! \retval 0 if this recipient cannot be handled by this delivery agent, 1 if yes, -1 if no and no other handler may handle it */
+	int (*exists)(struct smtp_session *smtp, struct smtp_response *resp, const char *address, const char *user, const char *domain, int fromlocal, int tolocal);
+	/*! \brief Deliver message (final delivery) */
+	int (*deliver)(struct smtp_session *smtp, struct smtp_response *resp, const char *from, const char *recipient, const char *user, const char *domain, int fromlocal, int tolocal, int srcfd, size_t datalen, void **freedata);
+
+	/* Supplementary (and very optional) callbacks, only need to be provided by one module */
+	/*! \brief Save a copy of a sent message */
+	int (*save_copy)(struct smtp_session *smtp, struct smtp_msg_process *mproc, int srcfd, size_t datalen, char *newfile, size_t newfilelen);
+	/*! \brief Relay a message through another message submission agent */
+	int (*relay)(struct smtp_session *smtp, struct smtp_msg_process *mproc, int srcfd, size_t datalen, struct stringlist *recipients);
+};
+
+#define smtp_register_delivery_handler(agent, priority) __smtp_register_delivery_handler(agent, priority, BBS_MODULE_SELF)
+
+/*!
+ * \brief Register an SMTP delivery agent
+ * \param agent
+ * \param priority Used for preference ordering. Like MX priorities, lower is more important.
+ * \param void
+ * \retval 0 on success, -1 on failure
+ */
+int __smtp_register_delivery_handler(struct smtp_delivery_agent *agent, int priority, void *mod);
+
+/*!
+ * \brief Unregister an SMTP delivery agent
+ * \param agent
+ * \retval 0 on success, -1 on failure
+ */
+int smtp_unregister_delivery_agent(struct smtp_delivery_agent *agent);
+
+/*! \brief RFC 3464 2.3.3 Action field values */
+enum smtp_delivery_action {
+	DELIVERY_FAILED,
+	DELIVERY_DELAYED,
+	DELIVERY_DELIVERED,
+	DELIVERY_RELAYED,
+	DELIVERY_EXPANDED,
+};
+
+struct smtp_delivery_outcome;
+
+/*!
+ * \brief Create a delivery status notification for a recipient
+ * \param recipient Email address of the recipient for which delivery failed
+ * \param hostname Hostname of the remote MTA. NULL for local mail server.
+ * \param ipaddr IP address of the remote MTA. NULL for local mail server.
+ * \param status Status code
+ * \param error The error as reported by the remote (or local) MTA.
+ * \param stage The stage of delivery, e.g. "end of DATA", "RCPT TO", etc.
+ * \param prot Protocol name for this stage, e.g. smtp, x-unix, etc.
+ * \param action Delivery action
+ * \param retryuntil Time until which message delivery will be retried (only if action is DELIVERY_DELAYED)
+ * \return NULL on failure
+ * \return Delivery failure, which must be freed using smtp_delivery_outcome_free
+ */
+struct smtp_delivery_outcome *smtp_delivery_outcome_new(const char *recipient, const char *hostname, const char *ipaddr, const char *status, const char *error, const char *prot, const char *stage, enum smtp_delivery_action action, struct tm *retryuntil);
+
+/*!
+ * \brief Free smtp_delivery_outcome (or multiple) allocated by smtp_delivery_outcome_new
+ * \param f
+ * \param n Number of elements (must be contiguous)
+ */
+void smtp_delivery_outcome_free(struct smtp_delivery_outcome **f, int n);
+
+/*!
+ * \brief Deliver an SMTP non-delivery report (bounce), originating from the postmaster
+ * \param sendinghost HELO/EHLO hostname of MTA that sent us this message. NULL if not available.
+ * \param arrival Time that message was originally delivered by sender for delivery
+ * \param sender Email address that will receive the non-delivery report
+ * \param srcfd File descriptor from which original message may be read.
+ * \param offset Offset, in bytes, into srcfd from which to begin copying
+ * \param msglen Number of bytes to read from srcfd.
+ * \param f Delivery failure
+ * \param n Number of delivery failures (must be contiguous)
+ * \retval 0 if bounce was delivered or queued, -1 on failure
+ * \note You should ignore the return code, because there is nothing that can be done if the bounce fails to be delivered.
+ */
+int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, int srcfd, int offset, size_t msglen, struct smtp_delivery_outcome **f, int n);
+
+/*!
+ * \brief Inject a message to deliver via SMTP, from outside of the SMTP protocol
+ * \param mailfrom MAIL FROM. Do not include <>.
+ * \param recipients List of recipients for RCPT TO. Must include <>. This list will be consumed and be empty be valid upon returning.
+ * \param filename Entire RFC822 message
+ * \return Same as expand_and_deliver's return value.
+ */
+int smtp_inject(const char *mailfrom, struct stringlist *recipients, const char *filename, size_t length);

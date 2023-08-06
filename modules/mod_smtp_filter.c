@@ -58,11 +58,6 @@ static int builtin_filter_cb(struct smtp_filter_data *f)
 	 * The Received headers must be newest to oldest.
 	 * Not sure about the other headers: by convention, they usually appear after the original ones, but not sure it really matters. */
 
-	if (smtp_is_bulk_mailing(f->smtp)) {
-		/* If sent to a mailing list (or more rather, any of the recipients was a mailing list), indicate bulk precedence.
-		 * Discouraged by RFC 2076, but this is common practice nonetheless. */
-		smtp_filter_add_header(f, "Precedence", "bulk");
-	}
 	prepend_received(f);
 	return 0;
 }

@@ -437,16 +437,6 @@ struct alias {
 
 static RWLIST_HEAD_STATIC(aliases, alias);
 
-struct listserv {
-	const char *user;
-	const char *domain;
-	const char *target;
-	RWLIST_ENTRY(listserv) entry;		/* Next alias */
-	char data[];
-};
-
-static RWLIST_HEAD_STATIC(listservs, listserv);
-
 static void mailbox_free(struct mailbox *mbox)
 {
 	pthread_rwlock_destroy(&mbox->lock);
@@ -460,7 +450,6 @@ static void mailbox_cleanup(void)
 	/* Clean up mailboxes */
 	RWLIST_WRLOCK_REMOVE_ALL(&mailboxes, entry, mailbox_free);
 	RWLIST_WRLOCK_REMOVE_ALL(&aliases, entry, free);
-	RWLIST_WRLOCK_REMOVE_ALL(&listservs, entry, free);
 	stringlist_empty(&local_domains);
 }
 
@@ -491,17 +480,12 @@ static const char *resolve_alias(const char *user, const char *domain)
 /*! \note domain must be initialized to NULL before calling this function */
 static void parse_user_domain(char *buf, size_t len, const char *address, char **user, char **domain)
 {
-	char *tmp;
-
 	safe_strncpy(buf, address, len);
 	*user = buf;
-	tmp = strchr(buf, '@');
-	if (tmp) {
-		*tmp++ = '\0';
-		if (!strlen_zero(tmp)) {
-			*domain = tmp;
-		}
-	}
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
+	*domain = (char*) bbs_strcnext(buf, '@');
+#pragma GCC diagnostic pop
 }
 
 static void add_alias(const char *aliasname, const char *target)
@@ -556,79 +540,6 @@ static void add_alias(const char *aliasname, const char *target)
 	RWLIST_INSERT_HEAD(&aliases, alias, entry);
 	bbs_debug(3, "Added alias mapping %s%s%s => %s\n", alias->aliasuser, alias->aliasdomain ? "@" : "", S_IF(alias->aliasdomain), alias->target);
 	RWLIST_UNLOCK(&aliases);
-}
-
-static void add_listserv(const char *listname, const char *target)
-{
-	struct listserv *l;
-	size_t listlen, domainlen, targetlen;
-	char *listuser, *listdomain = NULL;
-	char listbuf[256];
-
-	parse_user_domain(listbuf, sizeof(listbuf), listname, &listuser, &listdomain);
-
-	if (strlen_zero(target)) {
-		bbs_error("Empty membership for listserv %s\n", listname);
-		return;
-	}
-
-	RWLIST_WRLOCK(&listservs);
-	RWLIST_TRAVERSE(&listservs, l, entry) {
-		if (!strcmp(l->user, listuser)) {
-			if (!l->domain || (listdomain && !strcmp(l->domain, listdomain))) {
-				break;
-			}
-		}
-	}
-	if (l) {
-		bbs_warning("List %s already defined: %s\n", l->user, l->target);
-		RWLIST_UNLOCK(&listservs);
-		return;
-	}
-	listlen = strlen(listuser);
-	domainlen = listdomain ? strlen(listdomain) : 0;
-	targetlen = strlen(target);
-	l = calloc(1, sizeof(*l) + listlen + domainlen + targetlen + 3);
-	if (ALLOC_FAILURE(l)) {
-		RWLIST_UNLOCK(&listservs);
-		return;
-	}
-	strcpy(l->data, listuser);
-	strcpy(l->data + listlen + 1, target);
-	if (listdomain) {
-		strcpy(l->data + listlen + targetlen + 2, listdomain);
-		l->domain = l->data + listlen + targetlen + 2;
-	}
-	l->user = l->data;
-	/* Store the actual target name directly, instead of converting to a username immediately, since mod_mysql might not be loaded when the config is parsed. */
-	l->target = l->data + listlen + 1;
-	RWLIST_INSERT_HEAD(&listservs, l, entry);
-	bbs_debug(3, "Added listserv mapping %s%s%s => %s\n", l->user, l->domain ? "@" : "", S_IF(l->domain), l->target);
-	RWLIST_UNLOCK(&listservs);
-}
-
-const char *mailbox_expand_list(const char *user, const char *domain)
-{
-	struct listserv *l;
-
-	RWLIST_RDLOCK(&listservs);
-	RWLIST_TRAVERSE(&listservs, l, entry) {
-		if (!strcmp(l->user, user)) {
-			if (!l->domain) { /* If l->domain is NULL, that means it's unqualified, and always matches. */
-				break;
-			} else if (domain && !strcmp(l->domain, domain)) { /* l->domain must match domain */
-				break;
-			} else if (!domain && !strcmp(l->domain, bbs_hostname())) { /* Empty domain matches the primary hostname */
-				break;
-			}
-		}
-	}
-	if (!l) {
-		RWLIST_UNLOCK(&listservs);
-		return NULL;
-	}
-	RWLIST_UNLOCK(&listservs);
-	return l->target; /* l cannot be removed until mod_mail is unloaded, at which point its dependents would no longer be running, so this is safe. */
 }
 
 /*!
@@ -2186,11 +2097,6 @@ static int load_config(void)
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				const char *key = bbs_keyval_key(keyval), *value = bbs_keyval_val(keyval);
 				add_alias(key, value);
-			}
-		} else if (!strcmp(bbs_config_section_name(section), "lists")) {
-			while ((keyval = bbs_config_section_walk(section, keyval))) {
-				const char *key = bbs_keyval_key(keyval), *value = bbs_keyval_val(keyval);
-				add_listserv(key, value);
 			}
 		} else if (!strcmp(bbs_config_section_name(section), "domains")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {

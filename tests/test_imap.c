@@ -30,7 +30,8 @@ static int pre(void)
 {
 	test_preload_module("mod_mail.so");
 	test_preload_module("mod_mimeparse.so");
-	test_load_module("net_smtp.so");
+	test_preload_module("net_smtp.so");
+	test_load_module("mod_smtp_delivery_local.so");
 	test_load_module("net_imap.so");
 	test_load_module("mod_mail_events.so");
 

@@ -472,6 +472,8 @@ int test_bbs_expect(const char *s, int ms)
 	return -1;
 }
 
+static pid_t current_child = 0;
+
 #pragma GCC diagnostic ignored "-Wcast-qual"
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
@@ -568,6 +570,7 @@ static int test_bbs_spawn(const char *directory)
 	}
 	/* Start a thread to handle the output from the BBS process */
 	pthread_create(&bbs_io_thread, NULL, io_relay, bbspfd);
+	current_child = child;
 	return child;
 }
 #pragma GCC diagnostic pop
@@ -584,10 +587,11 @@ static void close_pipes(void)
 static void sigint_handler(int sig)
 {
 	(void) sig;
-	do_abort = 1;
-	/* The nice thing about the spawned BBS is that it's a child process,
-	 * so when we exit, it'll automatically receive a SIGCHLD.
-	 * We don't explicitly need to terminate it here. */
+	do_abort++;
+	if (do_abort > 1 && current_child > 0) {
+		/* We already asked nicely. Be a bit more forceful now. */
+		kill(current_child, SIGQUIT);
+	}
 	close_pipes();
 }
 
@@ -820,6 +824,7 @@ static int run_test(const char *filename, int multiple)
 				int wstatus;
 				kill(childpid, SIGINT); /* Ask it to exit nicely. */
 				waitpid(childpid, &wstatus, 0); /* Wait for child to exit */
+				current_child = 0;
 				bbs_debug(3, "Child process %d has exited\n", childpid);
 				if (WIFSIGNALED(wstatus)) { /* Child terminated by signal (probably SIGSEGV?) */
 #if __GLIBC__ >= 2 && __GLIBC_MINOR__ >= 32
@@ -940,6 +945,7 @@ int main(int argc, char *argv[])
 
 	stop_bbs(); /* If the BBS is already running, stop it. */
 	signal(SIGINT, sigint_handler); /* Catch SIGINT since cleanup could be very messy */
+	signal(SIGPIPE, SIG_IGN); /* Ignore SIGPIPE to avoid exiting on failed write to pipe */
 
 	bbs_debug(1, "Looking for tests in %s\n", XSTR(TEST_DIR));
 	chdir(XSTR(TEST_DIR));

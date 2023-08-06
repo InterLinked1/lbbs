@@ -376,6 +376,19 @@ int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, i
 	return 0;
 }
 
+int bbs_tcp_client_starttls(struct bbs_tcp_client *client, const char *hostname)
+{
+	bbs_assert(!client->secure);
+	client->ssl = ssl_client_new(client->fd, &client->rfd, &client->wfd, hostname);
+	if (!client->ssl) {
+		bbs_warning("Failed to do STARTTLS\n");
+		return -1;
+	}
+	client->secure = 1;
+	bbs_readline_flush(&client->rldata); /* Prevent STARTTLS response injection by resetting the buffer after TLS upgrade */
+	return 0;
+}
+
 int __attribute__ ((format (gnu_printf, 2, 3))) bbs_tcp_client_send(struct bbs_tcp_client *client, const char *fmt, ...)
 {
 	char *buf;
@@ -990,6 +1003,17 @@ int bbs_get_remote_ip(struct sockaddr_in *sinaddr, char *buf, size_t len)
 	struct in_addr ip_addr = sinaddr->sin_addr;
 	inet_ntop(AF_INET, &ip_addr, buf, (socklen_t) len); /* XXX Assumes IPv4 */
 	return 0;
+}
+
+int bbs_get_fd_ip(int fd, char *buf, size_t len)
+{
+	struct sockaddr_in sinaddr;
+	socklen_t slen = sizeof(sinaddr);
+	if (getpeername(fd, &sinaddr, &slen)) {
+		bbs_error("getpeername(%d) failed: %s\n", fd, strerror(errno));
+		return -1;
+	}
+	return bbs_get_remote_ip(&sinaddr, buf, len);
 }
 
 int bbs_save_remote_ip(struct sockaddr_in *sinaddr, struct bbs_node *node)

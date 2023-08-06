@@ -31,6 +31,17 @@ struct stringitem {
 	char *s; /* Avoid a FSM, so that we can return the separately allocated string to the caller in stringlist_pop */
 };
 
+int stringlist_size(struct stringlist *list)
+{
+	struct stringitem *i;
+	return RWLIST_SIZE(list, i, entry);
+}
+
+int stringlist_is_empty(struct stringlist *list)
+{
+	return RWLIST_EMPTY(list);
+}
+
 int stringlist_contains(struct stringlist *list, const char *s)
 {
 	struct stringitem *i;
@@ -149,5 +160,30 @@ int stringlist_push_tail(struct stringlist *list, const char *s)
 	}
 	i->s = sdup;
 	RWLIST_INSERT_TAIL(list, i, entry);
+	return 0;
+}
+
+int stringlist_push_list(struct stringlist *list, const char *s)
+{
+	struct stringitem *i;
+	char *items, *item, *listdup = strdup(s);
+
+	if (ALLOC_FAILURE(listdup)) {
+		return -1;
+	}
+
+	items = listdup;
+	while ((item = strsep(&items, ","))) {
+		char *sdup = strdup(item);
+		i = calloc(1, sizeof(*i));
+		if (ALLOC_FAILURE(i)) {
+			free(sdup);
+			return -1;
+		}
+		i->s = sdup;
+		RWLIST_INSERT_HEAD(list, i, entry);
+	}
+
+	free(listdup);
 	return 0;
 }

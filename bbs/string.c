@@ -203,6 +203,19 @@ int bbs_str_count(const char *restrict s, char c)
 	return count;
 }
 
+const char *bbs_strcnext(const char *restrict s, char c)
+{
+	const char *tmp = strchr(s, c);
+	if (!tmp) {
+		return NULL;
+	}
+	tmp++;
+	if (strlen_zero(tmp)) {
+		return NULL;
+	}
+	return tmp;
+}
+
 int bbs_strncount(const char *restrict s, size_t len, char c)
 {
 	size_t i;

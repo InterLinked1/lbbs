@@ -275,10 +275,10 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host)
 		start = addr; /* Not enclosed in <> */
 	}
 
-	domain = strchr(start, '@');
-	if (domain) {
-		domain++;
-	} /* else, no domain, it's just a username */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
+	domain = (char*) bbs_strcnext(start, '@'); /* else, no domain, it's just a username */
+#pragma GCC diagnostic pop
 
 	if (!user && !host) {
 		return 0; /* We only confirmed that this was a valid address. */
@@ -789,6 +789,17 @@ int bbs_delete_directory(const char *path)
 	 * A maildir will NEVER be empty, so use nftw instead. */
 	if (nftw(path, nftw_rm, 2, FTW_MOUNT | FTW_PHYS | FTW_DEPTH)) {
 		bbs_error("nftw(%s) failed: %s\n", path, strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+int bbs_delete_file(const char *path)
+{
+	/* Could use either remove(2) or unlink(2),
+	 * but since we know it's a file, unlink is more appropriate. */
+	if (unlink(path)) {
+		bbs_error("unlink(%s) failed: %s\n", path, strerror(errno));
 		return -1;
 	}
 	return 0;

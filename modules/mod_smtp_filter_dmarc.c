@@ -50,20 +50,16 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 	const char *domain;
 	OPENDMARC_STATUS_T status;
 	int spf_alignment, dkim_alignment;
-	int is_ipv6 = !bbs_hostname_is_ipv4(f->node->ip); /* If it's not IPv4, must be IPv6? */
+	int is_ipv6;
 	DMARC_POLICY_T *pctx;
 	char dmarc_domain[256];
 	char dmarc_result[sizeof(dmarc_domain) + 128];
 	const char *result = NULL;
 	int p, sp;
 
-	domain = strchr(f->from, '@');
+	is_ipv6 = !bbs_hostname_is_ipv4(f->node->ip); /* If it's not IPv4, must be IPv6? */
+	domain = bbs_strcnext(f->from, '@');
 	if (!domain) {
-		bbs_warning("Missing domain for received email?\n");
-		return 0;
-	}
-	domain++;
-	if (strlen_zero(domain)) {
 		bbs_warning("Missing domain for received email?\n");
 		return 0;
 	}

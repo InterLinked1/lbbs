@@ -193,6 +193,24 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 #define SET_BITFIELD(field, value) field = (unsigned) (value & 0x1)
 #define SET_BITFIELD2(field, value) field = (unsigned) (value & 0x3)
 
+/*!
+ * \brief Fill in the appropriate bytes of a flexible struct member for a constant string
+ * \param var struct
+ * \param dataptr A pointer that is initialized (before any calls to this macro) to the flexible struct member
+ * \param field The name of the struct field to set.
+ * \param name The name of the field and the name of the variable to copy (must be named the same). Variable must not be uninitialized.
+ * \param len The number of bytes required to store this variable (strlen + 1)
+ */
+#define SET_FSM_STRING_VAR(var, dataptr, field, name, len) \
+		if (!strlen_zero(name)) { \
+			strcpy(dataptr, name); \
+			var->field = dataptr; \
+			dataptr += len; \
+		}
+
+/*! \brief Get number of bytes needed to store a string */
+#define STRING_ALLOC_SIZE(s) (!strlen_zero(s) ? strlen(s) + 1 : 0)
+
 #define STARTS_WITH(s, start) (!strncasecmp(s, start, STRLEN(start)))
 
 /*!

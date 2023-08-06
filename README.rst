@@ -68,6 +68,7 @@ Key features and capabilities include:
 * TDD/TTY (telecommunications device for the deaf) support
 
 * Sysop capabilities
+
   * Node spying
   * Kick nodes
 
@@ -140,6 +141,8 @@ Config files go in :code:`/etc/lbbs` and are as follows:
 * :code:`mod_relay_irc.conf` - IRC/IRC relay configuration
 
 * :code:`mod_slack.conf` - Slack/IRC relay configuration
+
+* :code:`mod_smtp_mailing_lists.conf` - Mailing list configuration
 
 * :code:`modules.conf` - module loading settings (to disable a module, you do it here)
 

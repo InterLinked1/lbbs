@@ -47,10 +47,6 @@ net_ssh.so : net_ssh.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(SSHLIB)
 
-net_smtp.so : net_smtp.o
-	@echo "== Linking $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lresolv
-
 net_ws.so : net_ws.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lwss

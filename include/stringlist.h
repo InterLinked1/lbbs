@@ -20,6 +20,15 @@ struct stringitem;
 RWLIST_HEAD(stringlist, stringitem);
 
 /*!
+ * \brief Get the number of items in a stringlist
+ * \return Number of items
+ */
+int stringlist_size(struct stringlist *list);
+
+/*! \brief Whether a stringlist is empty */
+int stringlist_is_empty(struct stringlist *list);
+
+/*!
  * \brief Whether a stringlist contains a string
  * \param list
  * \param s Search string. Case sensitive.
@@ -81,3 +90,11 @@ int stringlist_push(struct stringlist *list, const char *s);
  * \retval 0 on success, -1 on failure
  */
 int stringlist_push_tail(struct stringlist *list, const char *s);
+
+/*!
+ * \brief Add all the items in a comma-separated list to a stringlist
+ * \param list
+ * \param s List of items to add
+ * \retval 0 on total success, -1 on partial or complete failure
+ */
+int stringlist_push_list(struct stringlist *list, const char *s);

@@ -110,7 +110,7 @@ int bbs_make_email_file(FILE *p, const char *subject, const char *body, const ch
 	char *attachmentsbuf, *attachmentlist, *attachment;
 	struct timeval when;
 	int res = 0;
-	time_t t = (int) time(NULL);
+	time_t t = time(NULL);
 
 	gettimeofday(&when, NULL);
 	gethostname(host, sizeof(host) - 1);
@@ -123,7 +123,6 @@ int bbs_make_email_file(FILE *p, const char *subject, const char *body, const ch
 
 	strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S %z", localtime_r(&t, &tm));
 	fprintf(p, "Date: %s" ENDL, date);
-	fprintf(p, "Return-Path: %s" ENDL, from); /* Can be needed for email deliverability (SPF) */
 	fprintf(p, "Sender: %s" ENDL, from);
 	fprintf(p, "From: %s" ENDL, from);
 	if (!strlen_zero(replyto)) {

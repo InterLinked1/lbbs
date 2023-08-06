@@ -183,24 +183,6 @@ static void add_channel_member(struct chan_pair *cp, struct slack_user *u)
 	RWLIST_INSERT_HEAD(&cp->members, m, entry);
 }
 
-/*!
- * \brief Fill in the appropriate bytes of a flexible struct member for a constant string
- * \param var struct
- * \param dataptr A pointer that is initialized (before any calls to this macro) to the flexible struct member
- * \param field The name of the struct field to set.
- * \param name The name of the field and the name of the variable to copy (must be named the same). Variable must not be uninitialized.
- * \param len The number of bytes required to store this variable (strlen + 1)
- */
-#define SET_FSM_STRING_VAR(var, dataptr, field, name, len) \
-		if (!strlen_zero(name)) { \
-			strcpy(dataptr, name); \
-			var->field = dataptr; \
-			dataptr += len; \
-		}
-
-/*! \brief Get number of bytes needed to store a string */
-#define STRING_ALLOC_SIZE(s) (!strlen_zero(s) ? strlen(s) + 1 : 0)
-
 static json_t *slack_curl_get(struct slack_relay *relay, const char *url)
 {
 	char cookies[512];
