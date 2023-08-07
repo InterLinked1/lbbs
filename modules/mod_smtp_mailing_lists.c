@@ -229,7 +229,7 @@ static int add_list_headers(struct mailing_list *l, FILE *fp, const char *from)
  */
 static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp, int srcfd, size_t origlen)
 {
-	int res;
+	ssize_t res;
 	int consumed = 0;
 	int body_bytes;
 	int got_subject = 0;
@@ -249,7 +249,7 @@ static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp,
 			return -1;
 		}
 		/* Actual bytes consumed from srcfd should be res + 2 (CR LF) */
-		consumed += res + 2;
+		consumed += (int) res + 2;
 		if (!res) {
 			fprintf(fp, "\r\n");
 			break; /* EOH (end of headers) */
@@ -317,7 +317,7 @@ static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp,
 	body_bytes = (int) origlen - consumed;
 	res = bbs_copy_file(srcfd, fileno(fp), consumed, body_bytes);
 	if (res != body_bytes) {
-		bbs_error("Failed to write %d bytes, only wrote %d\n", body_bytes, res);
+		bbs_error("Failed to write %d bytes, only wrote %lu\n", body_bytes, res);
 		return -1;
 	}
 

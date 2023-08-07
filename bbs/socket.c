@@ -386,90 +386,6 @@ int bbs_tcp_connect(const char *hostname, int port)
 	return sfd;
 }
 
-void bbs_tcp_client_cleanup(struct bbs_tcp_client *client)
-{
-	if (client->ssl) {
-		ssl_close(client->ssl);
-		client->ssl = NULL;
-	}
-	close_if(client->fd);
-}
-
-int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, int secure, char *buf, size_t len)
-{
-	client->fd = bbs_tcp_connect(url->host, url->port);
-	if (client->fd < 0) {
-		return -1;
-	}
-	client->wfd = client->rfd = client->fd;
-	SET_BITFIELD(client->secure, secure);
-	client->buf = buf;
-	client->len = len;
-	if (client->secure) {
-		client->ssl = ssl_client_new(client->fd, &client->rfd, &client->wfd, url->host);
-		if (!client->ssl) {
-			bbs_debug(3, "Failed to set up TLS\n");
-			close_if(client->fd);
-			return -1;
-		}
-		bbs_debug(5, "Implicit TLS completed\n");
-	}
-	bbs_readline_init(&client->rldata, client->buf, client->len);
-	return 0;
-}
-
-int bbs_tcp_client_starttls(struct bbs_tcp_client *client, const char *hostname)
-{
-	bbs_assert(!client->secure);
-	client->ssl = ssl_client_new(client->fd, &client->rfd, &client->wfd, hostname);
-	if (!client->ssl) {
-		bbs_warning("Failed to do STARTTLS\n");
-		return -1;
-	}
-	client->secure = 1;
-	bbs_readline_flush(&client->rldata); /* Prevent STARTTLS response injection by resetting the buffer after TLS upgrade */
-	return 0;
-}
-
-int __attribute__ ((format (gnu_printf, 2, 3))) bbs_tcp_client_send(struct bbs_tcp_client *client, const char *fmt, ...)
-{
-	char *buf;
-	int len, res;
-	va_list ap;
-
-	if (!strchr(fmt, '%')) {
-		return bbs_write(client->wfd, fmt, strlen(fmt));
-	}
-
-	/* Do not use vdprintf, I have not had good experiences with that... */
-	va_start(ap, fmt);
-	len = vasprintf(&buf, fmt, ap);
-	va_end(ap);
-
-	if (len < 0) {
-		return -1;
-	}
-	res = bbs_write(client->wfd, buf, (size_t) len);
-	free(buf);
-	return res;
-}
-
-int bbs_tcp_client_expect(struct bbs_tcp_client *client, const char *delim, int attempts, int ms, const char *str)
-{
-	while (attempts-- > 0) {
-		int res = bbs_readline(client->rfd, &client->rldata, delim, ms);
-		if (res < 0) {
-			return -1;
-		}
-		bbs_debug(7, "<= %s\n", client->buf);
-		if (strstr(client->buf, str)) {
-			return 0;
-		}
-	}
-	bbs_warning("Missing expected response (%s), got: %s\n", str, client->buf);
-	return 1;
-}
-
 int bbs_timed_accept(int socket, int ms, const char *ip)
 {
 	struct sockaddr_in sinaddr;
@@ -1511,7 +1427,7 @@ int bbs_node_tpoll(struct bbs_node *node, int ms)
 		 * Note that because we're writing directly to the socket fd,
 		 * we must do CR LF, not just LF.
 		 */
-		SWRITE(node->wfd, COLOR_RESET "\r\nYou've been inactive too long.\r\n");
+		NODE_SWRITE(node, node->wfd, COLOR_RESET "\r\nYou've been inactive too long.\r\n");
 		bbs_verb(4, "Node %d timed out due to inactivity\n", node->id);
 	}
 	return res;
@@ -1580,7 +1496,7 @@ int bbs_expect(int fd, int ms, char *buf, size_t len, const char *str)
 
 int bbs_expect_line(int fd, int ms, struct readline_data *rldata, const char *str)
 {
-	int res;
+	ssize_t res;
 
 	rldata->buf[0] = '\0'; /* Clear the buffer, in case we don't read anything at all. */
 	res = bbs_readline(fd, rldata, "\r\n", ms);
@@ -1976,7 +1892,7 @@ int bbs_node_flush_input(struct bbs_node *node)
 	return res;
 }
 
-static ssize_t full_write(struct pollfd *pfd, int fd, const char *restrict buf, size_t len)
+static ssize_t timed_write(struct pollfd *pfd, int fd, const char *restrict buf, size_t len, int ms)
 {
 	size_t left = len;
 	ssize_t written = 0;
@@ -2002,9 +1918,17 @@ static ssize_t full_write(struct pollfd *pfd, int fd, const char *restrict buf, 
 		/* Instead of just usleep'ing for an arbitrary time, poll to wait until this file descriptor is writable again.
 		 * If it's still not writable after 10 ms, we'll just try again anyways. */
 		pfd->revents = 0;
-		res = poll(pfd, 1, 10); /* Avoid tight loop */
+		res = poll(pfd, 1, ms); /* Avoid tight loop */
+		if (ms != -1 && !res) {
+			break;
+		}
 	}
 	return written;
+}
+
+static ssize_t full_write(struct pollfd *pfd, int fd, const char *restrict buf, size_t len)
+{
+	return timed_write(pfd, fd, buf, len, -1);
 }
 
 static int bbs_node_ansi_write(struct bbs_node *node, const char *restrict buf, size_t len)
@@ -2076,11 +2000,22 @@ static int bbs_node_ansi_write(struct bbs_node *node, const char *restrict buf, 
 	return (int) written;
 }
 
-int bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
+#define DETECT_IMPROPER_NODE_WRITES
+
+ssize_t bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
 {
 	struct pollfd pfd;
 	size_t left = len;
 	ssize_t res;
+
+#ifdef DETECT_IMPROPER_NODE_WRITES
+	if (node->thread != pthread_self()) {
+		/* These kinds of writes are dangerous, because if any thread besides the node thread
+		 * blocks writing to a node, then it's game over for the BBS due to our threading and I/O model.
+		 * These writes should be using bbs_node_any_fd_write instead. */
+		bbs_warning("Attempt to write to node %d by thread %lu\n", node->id, pthread_self());
+	}
+#endif
 
 	if (node->ansi && node->cols && len <= node->cols) {
 		return bbs_node_ansi_write(node, buf, len);
@@ -2094,14 +2029,14 @@ int bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
 	 * and slavefd closed during write */
 	bbs_node_lock(node);
 	res = full_write(&pfd, node->slavefd, buf, left);
-	if (res <= 0) {
-		bbs_debug(5, "Node %d: write returned %ld\n", node->id, res);
+	if (res <= 0 || res != (ssize_t) len) {
+		bbs_debug(5, "Node %d: write returned %lu/%lu\n", node->id, res, len);
 	}
 	bbs_node_unlock(node);
 	return (int) res;
 }
 
-int bbs_write(int fd, const char *buf, size_t len)
+ssize_t bbs_write(int fd, const char *buf, size_t len)
 {
 	struct pollfd pfd;
 	size_t left = len;
@@ -2117,15 +2052,144 @@ int bbs_write(int fd, const char *buf, size_t len)
 	return (int) res;
 }
 
+ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)
+{
+	struct pollfd pfd;
+	ssize_t res;
+	if (bbs_unblock_fd(fd)) {
+		return -1;
+	}
+
+	pfd.fd = fd;
+	pfd.events = POLLOUT;
+
+	res = timed_write(&pfd, fd, buf, len, ms);
+	if (res <= 0) {
+		bbs_error("write(%d) failed (%lu): %s\n", fd, res, strerror(errno));
+	} else if (res != (ssize_t) len) {
+		bbs_warning("Wanted to write %lu bytes to fd %d, only wrote %lu\n", len, fd, res);
+	}
+
+	bbs_block_fd(fd); /* Restore */
+	return res;
+}
+
+ssize_t bbs_node_fd_write(struct bbs_node *node, int fd, const char *buf, size_t len)
+{
+	ssize_t res;
+	bbs_assert_exists(node);
+
+#ifdef DETECT_IMPROPER_NODE_WRITES
+	if (node->thread != pthread_self()) {
+		/* See comment in bbs_node_write */
+		bbs_warning("Attempt to write to node %d by thread %lu\n", node->id, pthread_self());
+	}
+#endif
+
+	bbs_node_lock(node);
+	res = bbs_write(fd, buf, len);
+	bbs_node_unlock(node);
+
+	return res;
+}
+
+ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...)
+{
+	char *buf;
+	int len;
+	ssize_t res;
+	va_list ap;
+
+	if (!strchr(fmt, '%')) {
+		return bbs_node_fd_write(node, fd, fmt, strlen(fmt));
+	}
+
+	va_start(ap, fmt);
+	len = vasprintf(&buf, fmt, ap);
+	va_end(ap);
+
+	if (len < 0) {
+		return -1;
+	}
+
+	res = bbs_node_fd_write(node, fd, buf, (size_t) len);
+	free(buf);
+	return res;
+}
+
+ssize_t bbs_node_any_fd_write(struct bbs_node *node, int fd, const char *buf, size_t len)
+{
+	ssize_t res;
+
+	/* In case the node thread is blocked on I/O,
+	 * we do NOT try to lock the node in this function normally.
+	 * Instead, we use trylock to avoid possible deadlocks. */
+	bbs_assert_exists(node);
+
+	if (node->thread == pthread_self()) {
+		/* The caller could have used bbs_node_fd_write directly, but maybe it was iterating over a list of clients,
+		 * in which case it would be convenient to just use this function for all of them, since it's more general. */
+		bbs_node_lock(node);
+	} else {
+		int tries = 10;
+		int lockres;
+		/* Wait up to 100 ms to grab the lock */
+		for (;;) {
+			lockres = bbs_node_trylock(node);
+			if (!lockres) { /* Success */
+				break;
+			}
+			if (!--tries) {
+				bbs_warning("Failed to lock node %d, write failed\n", node->id);
+				return 0; /* I/O did not fail, we just did not get a chance to do any, so this is an accurate return value */
+			}
+			if (bbs_node_safe_sleep(node, 10)) { /* Avoid tight loop. Wait 10 ms, then try again */
+				return -1;
+			}
+		}
+	}
+
+	/* Try to write the full data, but abort if we can't make progress */
+	res = bbs_timed_write(fd, buf, len, 500);
+	bbs_node_unlock(node);
+
+	return res;
+}
+
+ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_any_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...)
+{
+	char *buf;
+	int len;
+	ssize_t res;
+	va_list ap;
+
+	if (!strchr(fmt, '%')) {
+		return bbs_node_any_fd_write(node, fd, fmt, strlen(fmt));
+	}
+
+	va_start(ap, fmt);
+	len = vasprintf(&buf, fmt, ap);
+	va_end(ap);
+
+	if (len < 0) {
+		return -1;
+	}
+
+	res = bbs_node_any_fd_write(node, fd, buf, (size_t) len);
+	free(buf);
+	return res;
+}
+
 /* Note: In case this gets forgotten about and somebody thinks that some of the bbs_node functions
  * can be easily refactored: it's not that simple, because bbs_node_write is NOT the same
  * as calling bbs_write with node->slavefd. In particular, the bbs_node I/O functions may
  * acquire node locks. The regular I/O functions do not do this.
  * For that reason, you can't simply have bbs_node_writef call bbs_writef under the hood, etc. */
-int __attribute__ ((format (gnu_printf, 2, 3))) bbs_node_writef(struct bbs_node *node, const char *fmt, ...)
+ssize_t __attribute__ ((format (gnu_printf, 2, 3))) bbs_node_writef(struct bbs_node *node, const char *fmt, ...)
 {
 	char *buf;
-	int len, res;
+	int len;
+	ssize_t res;
 	va_list ap;
 
 	if (!strchr(fmt, '%')) {
@@ -2147,10 +2211,11 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_node_writef(struct bbs_node 
 	return res;
 }
 
-int __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(int fd, const char *fmt, ...)
+ssize_t __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(int fd, const char *fmt, ...)
 {
 	char *buf;
-	int len, res;
+	int len;
+	ssize_t res;
 	va_list ap;
 
 	if (!strchr(fmt, '%')) {
@@ -2177,7 +2242,7 @@ int bbs_node_clear_screen(struct bbs_node *node)
 	if (!node->ansi) {
 		return 0;
 	}
-	return bbs_node_write(node, TERM_CLEAR, STRLEN(TERM_CLEAR));
+	return bbs_node_write(node, TERM_CLEAR, STRLEN(TERM_CLEAR)) == STRLEN(TERM_CLEAR) ? 0 : -1;
 }
 
 int bbs_node_clear_line(struct bbs_node *node)
@@ -2185,7 +2250,7 @@ int bbs_node_clear_line(struct bbs_node *node)
 	if (!node->ansi) {
 		return 0;
 	}
-	return bbs_node_write(node, TERM_RESET_LINE, STRLEN(TERM_RESET_LINE));
+	return bbs_node_write(node, TERM_RESET_LINE, STRLEN(TERM_RESET_LINE)) == STRLEN(TERM_RESET_LINE) ? 0 : -1;
 }
 
 int bbs_node_set_term_title(struct bbs_node *node, const char *s)
@@ -2193,15 +2258,17 @@ int bbs_node_set_term_title(struct bbs_node *node, const char *s)
 	if (!node->ansi) {
 		return 0;
 	}
-	return bbs_node_writef(node, TERM_TITLE_FMT, s); /* for xterm, screen, etc. */
+	return bbs_node_writef(node, TERM_TITLE_FMT, s) <= 0 ? -1 : 0; /* for xterm, screen, etc. */
 }
+
+#define TERM_ICON "\033]1;%s\007"
 
 int bbs_node_set_term_icon(struct bbs_node *node, const char *s)
 {
 	if (!node->ansi) {
 		return 0;
 	}
-	return bbs_node_writef(node, "\033]1;%s\007", s);
+	return bbs_node_writef(node, TERM_ICON, s) <= 0 ? -1 : 0;
 }
 
 int bbs_node_reset_color(struct bbs_node *node)
@@ -2209,7 +2276,7 @@ int bbs_node_reset_color(struct bbs_node *node)
 	if (!node->ansi) {
 		return 0;
 	}
-	return bbs_node_write(node, COLOR_RESET, STRLEN(COLOR_RESET));
+	return bbs_node_write(node, COLOR_RESET, STRLEN(COLOR_RESET)) == STRLEN(COLOR_RESET) ? 0 : -1;
 }
 
 int bbs_node_draw_line(struct bbs_node *node, char c)
@@ -2228,7 +2295,7 @@ int bbs_node_draw_line(struct bbs_node *node, char c)
 	buf[i++] = '\n'; /* New line */
 	buf[i] = '\0';
 	/* Write all at once */
-	return bbs_node_write(node, buf, cols + 1); /* No need to actually write the NUL, just through the LF */
+	return bbs_node_write(node, buf, cols + 1) == cols + 1 ? 0 : -1; /* No need to actually write the NUL, just through the LF */
 }
 
 int bbs_node_ring_bell(struct bbs_node *node)
@@ -2239,7 +2306,7 @@ int bbs_node_ring_bell(struct bbs_node *node)
 	/* This function should be sparingly used. Users are annoyed if the bell goes off all the time.
 	 * So log every time it's used. */
 	bbs_debug(7, "Ringing bell for node %d\n", node->id);
-	return bbs_node_write(node, TERM_BELL, STRLEN(TERM_BELL));
+	return bbs_node_write(node, TERM_BELL, STRLEN(TERM_BELL)) == STRLEN(TERM_BELL) ? 0 : -1;
 }
 
 #define HIT_KEY_PROMPT_LONG "Hit a key, any key..."

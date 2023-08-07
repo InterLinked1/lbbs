@@ -768,7 +768,7 @@ static struct chan_pair *find_mapping_irc(const char *channel)
 	return cp; /* It's okay to return unlocked since at this point, items can't be removed from the list until the module is unloaded anyways. */
 }
 
-static void dump_user(int fd, const char *requsername, struct user *u)
+static void dump_user(struct bbs_node *node, int fd, const char *requsername, struct user *u)
 {
 	char userflags[3];
 	char combined[84];
@@ -778,7 +778,7 @@ static void dump_user(int fd, const char *requsername, struct user *u)
 	/* We consider users to be active in a channel as long as they're in it, so offline is the equivalent of "away" in IRC */
 	snprintf(userflags, sizeof(userflags), "%c%s", u->status == STATUS_IDLE || u->status == STATUS_OFFLINE ? 'G' : 'H', "");
 	snprintf(unique, sizeof(unique), "%lu", u->user_id);
-	irc_relay_who_response(fd, "Discord", requsername, combined, unique, !(u->status == STATUS_IDLE || u->status == STATUS_OFFLINE));
+	irc_relay_who_response(node, fd, "Discord", requsername, combined, unique, !(u->status == STATUS_IDLE || u->status == STATUS_OFFLINE));
 }
 
 /*!
@@ -788,7 +788,7 @@ static void dump_user(int fd, const char *requsername, struct user *u)
  * \param channel
  * \param user
  */
-static int nicklist(int fd, int numeric, const char *requsername, const char *channel, const char *user)
+static int nicklist(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user)
 {
 	/* We should do absolutely nothing if a user/channel does not exist,
 	 * since the relay nicklist callbacks runs for all registered relays,
@@ -832,18 +832,18 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 			}
 #endif
 			if (numeric == 352) {
-				dump_user(fd, requsername, u); /* Include in WHO response */
+				dump_user(node, fd, requsername, u); /* Include in WHO response */
 			} else if (numeric == 353) {
 				len += snprintf(buf + len, sizeof(buf) - (size_t) len, "%s%s#%s", len ? " " : "", u->username, u->discriminator);
 				if (len >= 400) { /* Stop well short of the 512 character message limit and clear the buffer */
 					len = 0;
-					irc_relay_names_response(fd, requsername, cp->irc_channel, buf);
+					irc_relay_names_response(node, fd, requsername, cp->irc_channel, buf);
 				}
 			}
 		}
 		RWLIST_UNLOCK(&users);
 		if (len > 0) {
-			irc_relay_names_response(fd, requsername, cp->irc_channel, buf); /* Last one */
+			irc_relay_names_response(node, fd, requsername, cp->irc_channel, buf); /* Last one */
 		}
 		return 0; /* Other modules could contain matches as well */
 	} else if (user && (numeric == 353 || numeric == 318)) { /* Only for WHO and WHOIS, not NAMES */
@@ -855,7 +855,7 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 		}
 
 		if (numeric == 353) {
-			dump_user(fd, requsername, u);
+			dump_user(node, fd, requsername, u);
 		} else if (numeric == 318) {
 			char mask[96];
 			char combined[84];
@@ -863,9 +863,9 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 			int signon = (int) u->guild_joined / 1000; /* Probably the most sensical value to use? */
 			snprintf(combined, sizeof(combined), "%s#%s", u->username, u->discriminator);
 			snprintf(mask, sizeof(mask), "%s/%s", "Discord", combined);
-			irc_relay_numeric_response(fd, 311, "%s " "%s %s %s * :%lu", requsername, combined, combined, mask, u->user_id);
-			irc_relay_numeric_response(fd, 312, "%s " "%s %s :%s", requsername, combined, "Discord", "Discord Relay");
-			irc_relay_numeric_response(fd, 317, "%s " "%s %d %u :seconds idle, signon time\r\n", requsername, combined, idle, signon);
+			irc_relay_numeric_response(node, fd, 311, "%s " "%s %s %s * :%lu", requsername, combined, combined, mask, u->user_id);
+			irc_relay_numeric_response(node, fd, 312, "%s " "%s %s :%s", requsername, combined, "Discord", "Discord Relay");
+			irc_relay_numeric_response(node, fd, 317, "%s " "%s %d %u :seconds idle, signon time\r\n", requsername, combined, idle, signon);
 		}
 		return 1; /* Success, stop traversal, since only one module will have a match, and it's us. */
 	}

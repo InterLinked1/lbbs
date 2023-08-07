@@ -899,7 +899,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 			char childpid[10];
 			/* Also write the child PID, since with CLONE_NEWPID, the child can't use getpid() to get the real child PID */
 			size_t pidlen = (size_t) snprintf(childpid, sizeof(childpid), "%d", pid);
-			write(procpipe[1], childpid, pidlen); /* Write to write end of pipe, to signal that UID/GID maps have been updated. */
+			bbs_write(procpipe[1], childpid, pidlen); /* Write to write end of pipe, to signal that UID/GID maps have been updated. */
 		}
 		close(procpipe[1]);
 	}

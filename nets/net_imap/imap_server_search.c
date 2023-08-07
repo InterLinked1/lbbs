@@ -22,6 +22,7 @@
 #include <ctype.h>
 #include <search.h>
 
+#include "include/node.h"
 #include "include/test.h"
 #include "include/range.h"
 

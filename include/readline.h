@@ -69,7 +69,7 @@ int readline_bytes_available(struct readline_data *restrict rldata, int process)
  *         not including the delimiter.
  * \note The actual number of bytes read may be greater than the number of bytes returned. These bytes will be returned in subsequent calls to this function.
  */
-int bbs_readline(int fd, struct readline_data *restrict rldata, const char *restrict delim, int timeout);
+ssize_t bbs_readline(int fd, struct readline_data *restrict rldata, const char *restrict delim, int timeout);
 
 /*!
  * \brief Read exactly n bytes from a file descriptor and write them to another file descriptor
@@ -82,7 +82,7 @@ int bbs_readline(int fd, struct readline_data *restrict rldata, const char *rest
  * \return number of bytes read
  * \note The written data is NOT NUL-terminated, this is a binary operation
  */
-int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata, int timeout, size_t n);
+ssize_t bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata, int timeout, size_t n);
 
 /*!
  * \brief Read exactly n bytes from a file descriptor and append them to a dyn_str
@@ -94,7 +94,7 @@ int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata,
  * \retval -1 on failure
  * \return number of bytes read
  */
-int bbs_readline_getn_dynstr(int fd, struct dyn_str *restrict dynstr, struct readline_data *restrict rldata, int timeout, size_t n);
+ssize_t bbs_readline_getn_dynstr(int fd, struct dyn_str *restrict dynstr, struct readline_data *restrict rldata, int timeout, size_t n);
 
 /*!
  * \brief Read exactly n bytes from a file descriptor and store them in a dynamically allocated buffer
@@ -116,7 +116,7 @@ char *bbs_readline_getn_str(int fd, struct readline_data *restrict rldata, int t
  * \param n Number of bytes to read and discard
  * \retval Number of bytes discarded on success, -1 on failure
  */
-int bbs_readline_discard_n(int fd, struct readline_data *restrict rldata, int timeout, size_t n);
+ssize_t bbs_readline_discard_n(int fd, struct readline_data *restrict rldata, int timeout, size_t n);
 
 /*!
  * \brief Set the boundary until which data should be read

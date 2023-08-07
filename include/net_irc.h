@@ -106,7 +106,7 @@ const char *irc_channel_topic(const char *channel);
  * \retval 0 on success, -1 on failure
  */
 int irc_relay_register(int (*relay_send)(const char *channel, const char *sender, const char *msg),
-	int (*nicklist)(int fd, int numeric, const char *requsername, const char *channel, const char *user),
+	int (*nicklist)(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user),
 	int (*privmsg)(const char *recipient, const char *sender, const char *user),
 	void *mod);
 
@@ -159,16 +159,18 @@ int _irc_relay_raw_send(const char *channel, const char *msg, void *mod);
 
 /*!
  * \brief Send an arbitary numeric response from a relay module.
+ * \param node
  * \param fd
  * \param numeric
  * \param fmt printf-style arguments. Do not include trailing CR LF.
  */
-#define irc_relay_numeric_response(fd, numeric, fmt, ...) __irc_relay_numeric_response(fd, "%03d " fmt "\r\n", numeric, ## __VA_ARGS__)
+#define irc_relay_numeric_response(node, fd, numeric, fmt, ...) __irc_relay_numeric_response(node, fd, "%03d " fmt "\r\n", numeric, ## __VA_ARGS__)
 
-int __attribute__ ((format (gnu_printf, 2, 3))) __irc_relay_numeric_response(int fd, const char *fmt, ...);
+int __attribute__ ((format (gnu_printf, 3, 4))) __irc_relay_numeric_response(struct bbs_node *node, int fd, const char *fmt, ...);
 
 /*!
  * \brief Generate a 352 numeric WHO response from a relay module
+ * \param node
  * \param fd File descriptor of IRC client. net_irc has locked the client for writing when triggering callbacks that should call this function
  *           so interleaved writes are not possible.
  * \param relayname Name of relay
@@ -177,17 +179,18 @@ int __attribute__ ((format (gnu_printf, 2, 3))) __irc_relay_numeric_response(int
  * \param uniqueid Unique identifier of user on relay
  * \param active Whether user is currently active
  */
-void irc_relay_who_response(int fd, const char *relayname, const char *ircusername, const char *hostsuffix, const char *uniqueid, int active);
+void irc_relay_who_response(struct bbs_node *node, int fd, const char *relayname, const char *ircusername, const char *hostsuffix, const char *uniqueid, int active);
 
 /*!
  * \brief Generate a 353 numeric NAMES response from a relay module
+ * \param node
  * \param fd File descriptor of IRC client. net_irc has locked the client for writing when triggering callbacks that should call this function
  *           so interleaved writes are not possible.
  * \param ircusername IRC username representation of the client
  * \param channel IRC channel name
  * \param names List of space-separated names to send in this response
  */
-void irc_relay_names_response(int fd, const char *ircusername, const char *channel, const char *names);
+void irc_relay_names_response(struct bbs_node *node, int fd, const char *ircusername, const char *channel, const char *names);
 
 /*! \brief Register a ChanServ (channel services) provider */
 int irc_chanserv_register(void (*privmsg)(const char *username, char *msg), void (*eventcb)(const char *command, const char *channel, const char *username, const char *data), void *mod);

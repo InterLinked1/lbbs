@@ -324,6 +324,8 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 #define swrite(fd, s) write(fd, s, strlen(s))
 #define SWRITE(fd, s) write(fd, s, STRLEN(s))
 
+#define NODE_SWRITE(node, fd, s) bbs_node_fd_write(node, fd, s, STRLEN(s))
+
 /*! \brief Terminate str at first occurence of c, if it exists */
 #define bbs_strterm(str, c) { \
 	char *strterm_str = strchr(str, c); \

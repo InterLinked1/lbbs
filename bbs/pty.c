@@ -278,9 +278,12 @@ int bbs_node_spy(int fdin, int fdout, unsigned int nodenum)
 		return 0;
 	}
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-result"
 	/* Clear the screen to start. */
 	SWRITE(fdout, COLOR_RESET); /* Reset color too, just in case */
 	SWRITE(fdout, TERM_CLEAR);
+#pragma GCC diagnostic pop
 
 	bbs_node_pty_lock(node);
 	node->spy = 1;
@@ -315,8 +318,11 @@ int bbs_node_spy(int fdin, int fdout, unsigned int nodenum)
 
 		/* Reset the terminal. */
 		bbs_buffer_input(fdin, 1); /* Rebuffer input */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-result"
 		SWRITE(fdout, COLOR_RESET);
 		SWRITE(fdout, TERM_CLEAR);
+#pragma GCC diagnostic pop
 	} else {
 		int res;
 		struct pollfd pfd;

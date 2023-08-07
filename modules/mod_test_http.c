@@ -298,6 +298,9 @@ cleanup:
 	return HTTP_INTERNAL_SERVER_ERROR;
 }
 
+/* No need to bother checking the return value of write. If it failed, the tests will also fail anyways. */
+#pragma GCC diagnostic ignored "-Wunused-result"
+
 static int test_http_post_multipart_basic(void)
 {
 	int mres, res = -1;

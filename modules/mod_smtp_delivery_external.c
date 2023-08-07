@@ -326,7 +326,8 @@ static void smtp_tx_data_reset(struct smtp_tx_data *tx)
 static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const char *hostname, int port, int secure, const char *username, const char *password, const char *sender, const char *recipient, struct stringlist *recipients,
 	const char *prepend, size_t prependlen, int datafd, off_t offset, size_t writelen, char *buf, size_t len)
 {
-	int res = -1, wrote = 0;
+	int res = -1;
+	ssize_t wrote = 0;
 	struct bbs_tcp_client client;
 	struct bbs_url url;
 	off_t send_offset = offset;
@@ -526,7 +527,7 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 		goto cleanup;
 	}
 	wrote += res;
-	bbs_debug(5, "Sent %d bytes\n", wrote);
+	bbs_debug(5, "Sent %lu bytes\n", wrote);
 	/* RFC 5321 4.5.3.2.6 */
 	SMTP_CLIENT_EXPECT_FINAL(&client, MIN_MS(10), "250"); /* Okay, this email is somebody else's problem now. */
 

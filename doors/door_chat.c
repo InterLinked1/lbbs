@@ -249,7 +249,7 @@ static int __chat_send(struct channel *channel, struct participant *sender, cons
 		 * can be reserved for the IRC module. Let's keep it simple here.
 		 */
 		if (!NODE_IS_TDD(p->node)) {
-			write(p->chatpipe[1], datestr, timelen); /* Don't send timestamps to TDDs, for brevity */
+			res = write(p->chatpipe[1], datestr, timelen); /* Don't send timestamps to TDDs, for brevity */
 		}
 		res = write(p->chatpipe[1], msg, len);
 		if (res <= 0) {

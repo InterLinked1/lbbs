@@ -66,8 +66,7 @@ static void sieve_cleanup(struct sieve_session *sieve)
 	}
 }
 
-#undef dprintf
-#define sieve_send(sieve, fmt, ...) dprintf(sieve->wfd, fmt "\r\n", ## __VA_ARGS__); bbs_debug(5, "%p <= " fmt "\n", sieve, ## __VA_ARGS__);
+#define sieve_send(sieve, fmt, ...) bbs_node_fd_writef(sieve->node, sieve->wfd, fmt "\r\n", ## __VA_ARGS__); bbs_debug(5, "%p <= " fmt "\n", sieve, ## __VA_ARGS__);
 
 static int handle_capability(struct sieve_session *sieve)
 {
@@ -446,7 +445,7 @@ static void handle_client(struct sieve_session *sieve, SSL **sslptr)
 	}
 
 	for (;;) {
-		int res = bbs_readline(sieve->rfd, &rldata, "\r\n", 300000); /* Must be at least 30 minutes per RFC 5804, though that seems excessive */
+		ssize_t res = bbs_readline(sieve->rfd, &rldata, "\r\n", 300000); /* Must be at least 30 minutes per RFC 5804, though that seems excessive */
 		if (res < 0) {
 			break;
 		}

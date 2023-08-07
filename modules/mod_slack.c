@@ -832,9 +832,9 @@ static int channel_contains_user(struct chan_pair *cp, struct slack_user *u)
 	return m ? 1 : 0;
 }
 
-static void dump_user(int fd, const char *requsername, struct slack_user *u)
+static void dump_user(struct bbs_node *node, int fd, const char *requsername, struct slack_user *u)
 {
-	irc_relay_who_response(fd, "Slack", requsername, u->ircusername, u->userid, u->active);
+	irc_relay_who_response(node, fd, "Slack", requsername, u->ircusername, u->userid, u->active);
 }
 
 /*!
@@ -844,7 +844,7 @@ static void dump_user(int fd, const char *requsername, struct slack_user *u)
  * \param channel
  * \param user
  */
-static int nicklist(int fd, int numeric, const char *requsername, const char *channel, const char *user)
+static int nicklist(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user)
 {
 	if (!expose_members) {
 		bbs_debug(5, "Ignoring since exposemembers=no\n");
@@ -872,18 +872,18 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 				continue; /* User not in this channel */
 			}
 			if (numeric == 352) {
-				dump_user(fd, requsername, u); /* Include in WHO response */
+				dump_user(node, fd, requsername, u); /* Include in WHO response */
 			} else if (numeric == 353) {
 				len += snprintf(buf + len, sizeof(buf) - (size_t) len, "%s%s", len ? " " : "", u->ircusername);
 				if (len >= 400) { /* Stop well short of the 512 character message limit and clear the buffer */
 					len = 0;
-					irc_relay_names_response(fd, requsername, cp->irc, buf);
+					irc_relay_names_response(node, fd, requsername, cp->irc, buf);
 				}
 			}
 		}
 		RWLIST_UNLOCK(&relay->users);
 		if (len > 0) {
-			irc_relay_names_response(fd, requsername, cp->irc, buf); /* Last one */
+			irc_relay_names_response(node, fd, requsername, cp->irc, buf); /* Last one */
 		}
 		return 0; /* Other modules could contain matches as well */
 	} else if (user && (numeric == 353 || numeric == 318)) { /* Only for WHO and WHOIS, not NAMES */
@@ -901,15 +901,15 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 		}
 
 		if (numeric == 353) {
-			dump_user(fd, requsername, u);
+			dump_user(node, fd, requsername, u);
 		} else if (numeric == 318) {
-			irc_relay_numeric_response(fd, 311, "%s %s %s %s * :%s", requsername, u->ircusername, u->ircusername, u->ircusername, u->userid);
-			irc_relay_numeric_response(fd, 312, "%s %s %s :%s", requsername, u->ircusername, "Slack", u->relay->name);
+			irc_relay_numeric_response(node, fd, 311, "%s %s %s %s * :%s", requsername, u->ircusername, u->ircusername, u->ircusername, u->userid);
+			irc_relay_numeric_response(node, fd, 312, "%s %s %s :%s", requsername, u->ircusername, "Slack", u->relay->name);
 			if (!u->active && u->status) {
 				/* IRC doesn't have a generic "status message", users can only set if they're /away
 				 * But if the user is away and has a status message, no reason not to send that!
 				 * (Especially since these *are* often used as "away" messages. */
-				irc_relay_numeric_response(fd, 301, "%s %s :%s", requsername, u->ircusername, u->status);
+				irc_relay_numeric_response(node, fd, 301, "%s %s :%s", requsername, u->ircusername, u->status);
 			}
 		}
 		return 1; /* Success, stop traversal, since only one module will have a match, and it's us. */

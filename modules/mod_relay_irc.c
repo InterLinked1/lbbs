@@ -236,11 +236,11 @@ static void numeric_cb(const char *clientname, const char *prefix, int numeric, 
 	/* Since we have to format it here anyways, do all the formatting here */
 	len = snprintf(mybuf, sizeof(mybuf), ":%s %d %s\n", S_OR(prefix, bbs_hostname()), numeric, msg); /* Use LF to delimit on the other end */
 	bbs_debug(9, "Numeric %s\n", prefix);
-	write(nickpipe[1], mybuf, (size_t) len);
+	bbs_write(nickpipe[1], mybuf, (size_t) len);
 }
 
 /*! \todo This info should be cached locally for a while (there could be lots of these requests in a busy channel...) */
-static int wait_response(int fd, const char *requsername, int numeric, const char *clientname, const char *channel, const char *origchan, const char *fullnick, const char *nick)
+static int wait_response(struct bbs_node *node, int fd, const char *requsername, int numeric, const char *clientname, const char *channel, const char *origchan, const char *fullnick, const char *nick)
 {
 	char buf[3092];
 	int res = -1;
@@ -295,12 +295,11 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 #define PREFIX_NAMES
 
 #ifdef RELAY_DEBUG
-#define SEND_RESP(fd, fmt, ...) bbs_debug(9, fmt, ## __VA_ARGS__); dprintf(fd, fmt, ## __VA_ARGS__);
+#define SEND_RESP(fd, fmt, ...) bbs_debug(9, fmt, ## __VA_ARGS__); bbs_node_fd_writef(node, fd, fmt, ## __VA_ARGS__);
 #else
-#define SEND_RESP(fd, fmt, ...) dprintf(fd, fmt, ## __VA_ARGS__)
+#define SEND_RESP(fd, fmt, ...) bbs_node_fd_writef(node, fd, fmt, ## __VA_ARGS__)
 #endif
 
-#undef dprintf
 	/* Now, parse the response, and send the results back. */
 	bufpos = buf;
 	while ((line = strsep(&bufpos, "\n"))) {
@@ -437,7 +436,7 @@ static void notify_unauthorized(const char *sender, const char *channel, const c
  * \param channel
  * \param user
  */
-static int nicklist(int fd, int numeric, const char *requsername, const char *channel, const char *user)
+static int nicklist(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user)
 {
 	struct chan_pair *cp;
 	char fullnick[84], fullnick2[84];
@@ -517,7 +516,7 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 		}
 		/* Determine who's in the "real" channel using our client */
 		/* Only one request at a time, to prevent interleaving of responses */
-		wait_response(fd, requsername, numeric, cp->client2, channel, origchan, fullnick, nick);
+		wait_response(node, fd, requsername, numeric, cp->client2, channel, origchan, fullnick, nick);
 		/*! \todo BUGBUG Regarding the below comment, we need to return 1
 		 * to stop the traversal and indicate a user was found, which IS appropriate here.
 		 * But in the cases where multiple relay modules could match, we should probably still
@@ -530,7 +529,7 @@ static int nicklist(int fd, int numeric, const char *requsername, const char *ch
 			bbs_warning("Both clients are NULL?\n");
 			return 0; /* See comments above in first map case */
 		}
-		wait_response(fd, requsername, numeric, cp->client1, channel, origchan, fullnick, nick);
+		wait_response(node, fd, requsername, numeric, cp->client1, channel, origchan, fullnick, nick);
 		return 0; /* Even though we matched, there could be matches in other relays */
 	} else {
 		bbs_debug(8, "Case we don't care about\n");

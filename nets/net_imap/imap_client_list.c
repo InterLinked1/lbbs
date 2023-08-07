@@ -39,7 +39,7 @@ static int remote_list(struct imap_client *client, struct list_command *lcmd, co
 	struct bbs_tcp_client *tcpclient = &client->client;
 	int caps = client->virtcapabilities;
 	const char *subprefix;
-	int res;
+	ssize_t res;
 
 	memset(&matchedmailboxes, 0, sizeof(matchedmailboxes));
 

@@ -43,9 +43,6 @@
 #define DEFAULT_IRC_PORT 6667
 #define DEFAULT_IRCS_PORT 6697
 
-/* Allow this module to use dprintf */
-#undef dprintf
-
 #define IRC_SERVER_VERSION BBS_NAME "-" BBS_VERSION "-irc"
 
 /*! \brief Clients will be pinged every 2 minutes, and have 2 minutes to respond. */
@@ -65,7 +62,7 @@
 #define IDENT_PREFIX_FMT "%s!%s@%s"
 #define IDENT_PREFIX_ARGS(user) (user)->nickname, (user)->username, (user)->hostname
 
-#define send_reply(user, fmt, ...) bbs_debug(3, "%p <= " fmt, user, ## __VA_ARGS__); if (user->wfd != -1) { pthread_mutex_lock(&user->lock); dprintf(user->wfd, fmt, ## __VA_ARGS__); pthread_mutex_unlock(&user->lock); }
+#define send_reply(user, fmt, ...) bbs_debug(3, "%p <= " fmt, user, ## __VA_ARGS__); if (user->wfd != -1) { bbs_node_any_fd_writef(user->node, user->wfd, fmt, ## __VA_ARGS__); }
 #define send_numeric(user, numeric, fmt, ...) send_reply(user, "%03d %s :" fmt, numeric, user->nickname, ## __VA_ARGS__)
 #define send_numeric2(user, numeric, fmt, ...) send_reply(user, "%03d %s " fmt, numeric, user->nickname, ## __VA_ARGS__)
 #define send_numeric_broadcast(channel, user, numeric, fmt, ...) channel_broadcast(channel, user, "%03d %s " fmt, numeric, irc_hostname, ## __VA_ARGS__)
@@ -214,7 +211,7 @@ static RWLIST_HEAD_STATIC(channels, irc_channel);	/* Container for all channels 
 
 struct irc_relay {
 	int (*relay_send)(const char *channel, const char *sender, const char *msg);
-	int (*nicklist)(int fd, int numeric, const char *requsername, const char *channel, const char *user);
+	int (*nicklist)(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user);
 	int (*privmsg)(const char *recipient, const char *sender, const char *user);
 	void *mod;
 	RWLIST_ENTRY(irc_relay) entry;
@@ -268,7 +265,7 @@ static int add_operator(const char *name, const char *password)
  */
 
 int irc_relay_register(int (*relay_send)(const char *channel, const char *sender, const char *msg),
-	int (*nicklist)(int fd, int numeric, const char *requsername, const char *channel, const char *user),
+	int (*nicklist)(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user),
 	int (*privmsg)(const char *recipient, const char *sender, const char *user),
 	void *mod)
 {
@@ -733,9 +730,7 @@ static int __channel_broadcast(int lock, struct irc_channel *channel, struct irc
 			continue; /* Skip those who don't have at least a certain privilege (e.g. for moderating messages only to ops) */
 		}
 		/* Careful here... we want member->user, not user */
-		pthread_mutex_lock(&member->user->lock); /* Serialize writes to this user */
-		write(member->user->wfd, buf, (size_t) len); /* Use write instead of dprintf, because we already have the length, and it's just a simple string now */
-		pthread_mutex_unlock(&member->user->lock);
+		bbs_node_any_fd_write(member->user->node, member->user->wfd, buf, (size_t) len);
 		sent++;
 	}
 	if (lock) {
@@ -939,16 +934,20 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 			bbs_debug(7, "No such user: %s\n", channel);
 			return -1;
 		}
+#if 0 /* No longer applies: bbs_node_any_fd_writef handles serialization */
 		/* notice is only true when the relay module is sending a message as part of a relay callback,
 		 * in which case user is already locked. Don't lock again, or we'll deadlock.
 		 * If !notice, this isn't the case. */
 		if (!notice) {
 			pthread_mutex_lock(&user2->lock); /* Serialize writes to this user */
 		}
-		dprintf(user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, notice ? "NOTICE" : "PRIVMSG", user2->nickname, msg);
+#endif
+		bbs_node_any_fd_writef(user2->node, user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, notice ? "NOTICE" : "PRIVMSG", user2->nickname, msg);
+#if 0
 		if (!notice) {
 			pthread_mutex_unlock(&user2->lock);
 		}
+#endif
 		/* Don't care if user is away in this case */
 		return 0;
 	}
@@ -983,10 +982,7 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 			 * and the user is online, just send a PM with the message.
 			 * Also invite the user to join to receive further messages "normally". */
 			send_reply(u, ":" IDENT_PREFIX_FMT " INVITE %s %s\r\n", IDENT_PREFIX_ARGS(&user_messageserv), u->nickname, channel);
-			pthread_mutex_lock(&u->lock);
-			/* Use bbs_writef instead of dprintf, as the latter can cause valgrind to report definite (constant) memory leaks on some systems */
-			bbs_writef(u->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(&user_messageserv), "NOTICE", u->nickname, msg);
-			pthread_mutex_unlock(&u->lock);
+			bbs_node_any_fd_writef(u->node, u->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(&user_messageserv), "NOTICE", u->nickname, msg);
 		}
 		return -1;
 	}
@@ -1094,10 +1090,7 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, char
 				return -1;
 			}
 		} else {
-			pthread_mutex_lock(&user2->lock); /* Serialize writes to this user */
-			/* Use bbs_writef instead of dprintf, as the latter can cause valgrind to report definite (constant) memory leaks on some systems */
-			bbs_writef(user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), notice ? "NOTICE" : "PRIVMSG", user2->nickname, message);
-			pthread_mutex_unlock(&user2->lock);
+			bbs_node_any_fd_writef(user2->node, user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), notice ? "NOTICE" : "PRIVMSG", user2->nickname, message);
 			if (user2->away) {
 				send_numeric(user, 301, "%s :%s\r\n", user2->nickname, S_IF(user2->awaymsg));
 			}
@@ -1693,7 +1686,7 @@ static int channels_in_common(struct irc_user *u1, struct irc_user *u2)
 	return channel ? 1 : 0;
 }
 
-int __irc_relay_numeric_response(int fd, const char *fmt, ...)
+int __irc_relay_numeric_response(struct bbs_node *node, int fd, const char *fmt, ...)
 {
 	char buf[512]; /* An IRC message can't be longer than this anyways */
 	int len;
@@ -1704,11 +1697,16 @@ int __irc_relay_numeric_response(int fd, const char *fmt, ...)
 	va_end(ap);
 
 	bbs_debug(9, "%.*s", len, buf);
-	bbs_write(fd, buf, (size_t) len);
+	if (node) {
+		bbs_node_fd_write(node, fd, buf, (size_t) len);
+	} else {
+		/* XXX I think it's possible for node to be NULL here? Just in case... */
+		bbs_write(fd, buf, (size_t) len);
+	}
 	return len;
 }
 
-void irc_relay_who_response(int fd, const char *relayname, const char *ircusername, const char *hostsuffix, const char *uniqueid, int active)
+void irc_relay_who_response(struct bbs_node *node, int fd, const char *relayname, const char *ircusername, const char *hostsuffix, const char *uniqueid, int active)
 {
 	char mask[96];
 	char userflags[3];
@@ -1719,12 +1717,12 @@ void irc_relay_who_response(int fd, const char *relayname, const char *ircuserna
 	/* We consider users to be active in a channel as long as they're in it, so offline is the equivalent of "away" in IRC */
 	snprintf(userflags, sizeof(userflags), "%c%s", active ? 'G' : 'H', "");
 	/* IRC numeric 352 */
-	irc_relay_numeric_response(fd, 352, "%s %s %s %s %s %s %s :%d %s\r\n", ircusername, "*", hostsuffix, mask, bbs_hostname(), hostsuffix, userflags, hopcount, uniqueid);
+	irc_relay_numeric_response(node, fd, 352, "%s %s %s %s %s %s %s :%d %s\r\n", ircusername, "*", hostsuffix, mask, bbs_hostname(), hostsuffix, userflags, hopcount, uniqueid);
 }
 
-void irc_relay_names_response(int fd, const char *ircusername, const char *channel, const char *names)
+void irc_relay_names_response(struct bbs_node *node, int fd, const char *ircusername, const char *channel, const char *names)
 {
-	irc_relay_numeric_response(fd, 353, "%s %s %s :%s", ircusername, PUBLIC_CHANNEL_PREFIX, channel, names);
+	irc_relay_numeric_response(node, fd, 353, "%s %s %s :%s", ircusername, PUBLIC_CHANNEL_PREFIX, channel, names);
 }
 
 static void handle_who(struct irc_user *user, char *s)
@@ -1758,12 +1756,11 @@ static void handle_who(struct irc_user *user, char *s)
 		RWLIST_UNLOCK(&channel->members);
 		if (channel->relay) {
 			/* Now, pull in any "unreal" members from other protocols */
-			pthread_mutex_lock(&user->lock); /* Lock the user here so the relay module can use dprintf without worrying about race conditions */
 			RWLIST_RDLOCK(&relays);
 			RWLIST_TRAVERSE(&relays, relay, entry) {
 				if (relay->nicklist) {
 					bbs_module_ref(relay->mod);
-					res = relay->nicklist(user->wfd, 352, user->username, s, NULL);
+					res = relay->nicklist(user->node, user->wfd, 352, user->username, s, NULL);
 					bbs_module_unref(relay->mod);
 				}
 				if (res) {
@@ -1771,7 +1768,6 @@ static void handle_who(struct irc_user *user, char *s)
 				}
 			}
 			RWLIST_UNLOCK(&relays);
-			pthread_mutex_unlock(&user->lock);
 		}
 	} else {
 		struct irc_user *whouser = get_user(s);
@@ -1779,12 +1775,11 @@ static void handle_who(struct irc_user *user, char *s)
 			dump_who(user, whouser, NULL);
 		} else if (!opersonly) { /* Relays don't have any operators */
 			/* Check relays, we don't have a channel handle so we don't really know if the user exists in a relay */
-			pthread_mutex_lock(&user->lock);
 			RWLIST_RDLOCK(&relays);
 			RWLIST_TRAVERSE(&relays, relay, entry) {
 				if (relay->nicklist) {
 					bbs_module_ref(relay->mod);
-					res = relay->nicklist(user->wfd, 352, user->username, NULL, s);
+					res = relay->nicklist(user->node, user->wfd, 352, user->username, NULL, s);
 					bbs_module_unref(relay->mod);
 				}
 				if (res) {
@@ -1792,7 +1787,6 @@ static void handle_who(struct irc_user *user, char *s)
 				}
 			}
 			RWLIST_UNLOCK(&relays);
-			pthread_mutex_unlock(&user->lock);
 		}
 		if (!whouser && !res) {
 			send_numeric2(user, 401, "%s :No such nick/channel\r\n", s);
@@ -1828,12 +1822,11 @@ static void handle_whois(struct irc_user *user, char *s)
 	if (!u) {
 		int res = 0;
 		struct irc_relay *relay;
-		pthread_mutex_lock(&user->lock);
 		RWLIST_RDLOCK(&relays);
 		RWLIST_TRAVERSE(&relays, relay, entry) {
 			if (relay->nicklist) {
 				bbs_module_ref(relay->mod);
-				res = relay->nicklist(user->wfd, 318, user->username, NULL, s);
+				res = relay->nicklist(user->node, user->wfd, 318, user->username, NULL, s);
 				bbs_module_unref(relay->mod);
 			}
 			if (res) {
@@ -1841,7 +1834,6 @@ static void handle_whois(struct irc_user *user, char *s)
 			}
 		}
 		RWLIST_UNLOCK(&relays);
-		pthread_mutex_unlock(&user->lock);
 		if (!res) {
 			send_numeric2(user, 401, "%s :No such nick/channel\r\n", s);
 		} else {
@@ -2269,7 +2261,7 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 		RWLIST_TRAVERSE(&relays, relay, entry) {
 			if (relay->nicklist) {
 				bbs_module_ref(relay->mod);
-				res = relay->nicklist(user->wfd, 353, user->username, channel->name, NULL);
+				res = relay->nicklist(user->node, user->wfd, 353, user->username, channel->name, NULL);
 				bbs_module_unref(relay->mod);
 			}
 			if (res) {
@@ -2781,7 +2773,8 @@ static int handle_user(struct irc_user *user)
 static void handle_client(struct irc_user *user)
 {
 	int capnegotiate = 0;
-	int res, started = 0;
+	ssize_t res;
+	int started = 0;
 	char buf[513];
 	int sasl_attempted = 0;
 	int graceful_close = 0;
@@ -2800,7 +2793,7 @@ static void handle_client(struct irc_user *user)
 		if (res <= 0) {
 			/* Don't set graceful_close to 0 here, since after a QUIT, the client may close the connection first.
 			 * The QUIT message should be whatever the client sent, since it was graceful, not connection closed by remote host. */
-			bbs_debug(3, "poll/read returned %d\n", res);
+			bbs_debug(3, "poll/read returned %lu\n", res);
 			break;
 		}
 		bbs_strterm(s, '\r');
@@ -3139,9 +3132,7 @@ static void handle_client(struct irc_user *user)
 				RWLIST_RDLOCK(&users);
 				RWLIST_TRAVERSE(&users, u, entry) {
 					if (u->modes & USER_MODE_WALLOPS) {
-						pthread_mutex_lock(&u->lock); /* Serialize writes to this user */
-						dprintf(u->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), "WALLOPS", u->nickname, s);
-						pthread_mutex_unlock(&u->lock);
+						bbs_node_any_fd_writef(u->node, u->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), "WALLOPS", u->nickname, s);
 					}
 				}
 				RWLIST_UNLOCK(&users);
@@ -3255,8 +3246,6 @@ static void *ping_thread(void *unused)
 		now = (int) time(NULL);
 		RWLIST_RDLOCK(&users);
 		RWLIST_TRAVERSE(&users, user, entry) {
-			/* Prevent concurrent writes to a user */
-			pthread_mutex_lock(&user->lock);
 			if (need_restart || (user->lastping && user->lastpong < now - 2 * PING_TIME)) {
 				char buf[32] = "";
 				/* Client never responded to the last ping. Disconnect it. */
@@ -3271,11 +3260,10 @@ static void *ping_thread(void *unused)
 				bbs_debug(5, "Shutting down client on node %d\n", user->node->id);
 				shutdown(user->node->fd, SHUT_RDWR); /* Make the client handler thread break */
 			} else {
-				dprintf(user->wfd, "PING :%d\r\n", now);
+				bbs_node_any_fd_writef(user->node, user->wfd, "PING :%d\r\n", now);
 				user->lastping = now;
 				clients++;
 			}
-			pthread_mutex_unlock(&user->lock);
 		}
 		RWLIST_UNLOCK(&users);
 		if (clients) {

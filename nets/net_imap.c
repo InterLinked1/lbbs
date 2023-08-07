@@ -310,14 +310,14 @@ static void __imap_send_update_log(struct imap_session *imap, const char *s, siz
 	/* Since we're locked in this function, we CANNOT use imap_send */
 	if (delay && !forcenow) {
 		imap_debug(4, "%d: %p <= %s", line, imap, s); /* Already ends in CR LF */
-		bbs_write(imap->pfd[1], s, len);
+		bbs_node_any_fd_write(imap->node, imap->pfd[1], s, len);
 		imap->pending = 1;
 		if (invalidate) {
 			reset_saved_search(imap); /* Since messages were expunged, invalidate any saved search */
 		}
 	} else {
 		imap_debug(4, "%d: %p <= %s", line, imap, s); /* Already ends in CR LF */
-		bbs_write(imap->wfd, s, (unsigned int) len);
+		bbs_node_any_fd_write(imap->node, imap->wfd, s, (unsigned int) len);
 	}
 }
 
@@ -2314,7 +2314,8 @@ static int handle_append(struct imap_session *imap, char *s)
 
 	for (appends = 0;; appends++) {
 		unsigned long quotaleft;
-		int appendsize, appendfile, appendflags = 0, res;
+		int appendsize, appendfile, appendflags = 0;
+		ssize_t res;
 		char *flags, *sizestr;
 		char *appenddate = NULL;
 		int synchronizing;
@@ -2333,7 +2334,7 @@ static int handle_append(struct imap_session *imap, char *s)
 				break;
 			} else if (res < 0) {
 				bbs_debug(3, "Client exited abruptly during APPEND?\n");
-				return res;
+				return res ? -1 : 0;
 			}
 			s = imap->rldata->buf;
 		}
@@ -2435,7 +2436,7 @@ static int handle_append(struct imap_session *imap, char *s)
 		}
 		res = bbs_readline_getn(imap->rfd, appendfile, imap->rldata, 5000, (size_t) appendsize);
 		if (res != appendsize) {
-			bbs_warning("Client wanted to append %d bytes, but sent %d?\n", appendsize, res);
+			bbs_warning("Client wanted to append %d bytes, but sent %lu?\n", appendsize, res);
 			close(appendfile);
 			unlink(appendnew);
 			goto cleanup2; /* Disconnect if we failed to receive the upload properly, since we're probably all screwed up now */
@@ -2555,7 +2556,7 @@ static int copy_append_cb(const char *dir_name, const char *filename, int seqno,
 	/* APPEND this message */
 	if (!ca->appended || !ca->multiappend) {
 		/* flagnames already includes the parentheses, so don't include additional ones here */
-		int res = imap_client_send_log(ca->appendclient, "%s APPEND \"%s\" %s \"%s\" {%lu%s}\r\n", ca->imap->tag, ca->remotename, flags, timebuf, size, ca->synchronizing ? "" : "+");
+		ssize_t res = imap_client_send_log(ca->appendclient, "%s APPEND \"%s\" %s \"%s\" {%lu%s}\r\n", ca->imap->tag, ca->remotename, flags, timebuf, size, ca->synchronizing ? "" : "+");
 		if (res < 0) {
 			goto cleanup;
 		}
@@ -2572,7 +2573,9 @@ static int copy_append_cb(const char *dir_name, const char *filename, int seqno,
 	}
 
 	if (!ca->multiappend) {
-		SWRITE(ca->appendclient->client.wfd, "\r\n");
+		if (SWRITE(ca->appendclient->client.wfd, "\r\n") != STRLEN("\r\n")) {
+			return -1;
+		}
 		/* Could get an untagged EXISTS at this point */
 		IMAP_CLIENT_EXPECT_EVENTUALLY(&ca->appendclient->client, 5, ca->tagged_resp);
 	}
@@ -2594,7 +2597,7 @@ cleanup:
  */
 static int handle_remote_move(struct imap_session *imap, char *dest, const char *sequences, int usinguid, int move)
 {
-	int res;
+	ssize_t res;
 	unsigned int *a = NULL;
 	int alengths = 0;
 	int allocsizes = 0;
@@ -2760,7 +2763,7 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 					/* Actual copy the message from source to dest */
 					res = bbs_readline_getn(tcpclient->rfd, destfd, &tcpclient->rldata, SEC_MS(10), (size_t) size);
 					if (res != size) {
-						bbs_warning("Wanted to copy message of size %lu, but only got %d bytes?\n", size, res);
+						bbs_warning("Wanted to copy message of size %lu, but only got %lu bytes?\n", size, res);
 						break;
 					}
 				}
@@ -2772,7 +2775,9 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 			/* Finish processing */
 			if (destclient) {
 				if (!multiappend) {
-					SWRITE(destclient->client.wfd, "\r\n");
+					if (SWRITE(destclient->client.wfd, "\r\n") != STRLEN("\r\n")) {
+						goto cleanup;
+					}
 					/* Could get an untagged EXISTS at this point */
 					IMAP_CLIENT_EXPECT_EVENTUALLY(&destclient->client, 5, tagged_resp); /* tagged OK */
 				}
@@ -2791,7 +2796,9 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 			appended++;
 		}
 		if (destclient && multiappend) {
-			SWRITE(destclient->client.wfd, "\r\n");
+			if (SWRITE(destclient->client.wfd, "\r\n") != STRLEN("\r\n")) {
+				goto cleanup;
+			}
 			/* Well, hopefully that all worked! */
 			IMAP_CLIENT_EXPECT(&destclient->client, " OK"); /* tagged OK */
 		}
@@ -2829,7 +2836,9 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 		res = maildir_ordered_traverse(imap->curdir, copy_append_cb, &ca);
 		if (!res) {
 			if (multiappend) {
-				SWRITE(destclient->client.wfd, "\r\n");
+				if (SWRITE(destclient->client.wfd, "\r\n") != STRLEN("\r\n")) {
+					goto cleanup;
+				}
 				/* Well, hopefully that all worked! */
 				IMAP_CLIENT_EXPECT(&destclient->client, " OK"); /* tagged OK */
 			}
@@ -3750,7 +3759,7 @@ static int idle_stop(struct imap_session *imap)
 
 static int flush_updates(struct imap_session *imap, const char *command, const char *s)
 {
-	int res;
+	ssize_t res;
 
 	/* EXPUNGE responses MUST NOT be sent during FETCH, STORE, or SEARCH, or when no command is in progress (RFC 3501, 9051, and also 2180)
 	 * RFC 5256 also says not allowed during SORT (but UID SORT is fine). (UID commands don't use sequence numbers)
@@ -4489,7 +4498,7 @@ static void handle_client(struct imap_session *imap)
 	for (;;) {
 		const char *word2;
 		/* Autologout timer should not be less than 30 minutes, according to the RFC. We'll uphold that, for clients that are logged in. */
-		int res = bbs_readline(imap->rfd, &rldata, "\r\n", bbs_user_is_registered(imap->node->user) ? MIN_MS(30) : MIN_MS(1));
+		ssize_t res = bbs_readline(imap->rfd, &rldata, "\r\n", bbs_user_is_registered(imap->node->user) ? MIN_MS(30) : MIN_MS(1));
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {

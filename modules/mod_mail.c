@@ -1752,7 +1752,8 @@ static int imap_client_capability(struct bbs_tcp_client *client, int *capsptr)
 
 int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct bbs_user *user, int *capsptr)
 {
-	int res, caps;
+	ssize_t res;
+	int caps;
 	char *encoded = NULL;
 	int ok_had_caps = 0;
 

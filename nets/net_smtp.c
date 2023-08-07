@@ -23,11 +23,15 @@
  * \note Supports RFC6409 Message Submission
  *
  * \todo Not currently supported:
- * - VRFY, ETRN (somewhat intentionally) - could be useful when authenticated, though
+ * - RFC 2852 DELIVERBY
  * - RFC 3030 CHUNKING, BDAT, BINARYMIME
  * - RFC 3461 DSN (the format is mostly implemented, but needs fuller integration)
  * - RFC 3798 Message Disposition Notification
  * - RFC 6531 SMTPUTF8
+ *
+ * \note Not currently supported:
+ * - VRFY, ETRN (somewhat intentionally) - could be useful when authenticated, though
+ * - RFC 2645 ATRN (Authenticated TURN), RFC 1985 ETRN
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -84,10 +88,15 @@ static int archivelists = 1;
 /*! \brief Max message size, in bytes */
 static unsigned int max_message_size = 300000;
 
-/* Allow this module to use dprintf */
-#undef dprintf
-
-#define _smtp_reply(smtp, fmt, ...) bbs_debug(6, "%p <= " fmt, smtp, ## __VA_ARGS__); dprintf(smtp->wfd, fmt, ## __VA_ARGS__);
+/*! \todo Instead of having to account for a NULL node, use a dummy node structure
+ * when we don't have one to simplify code? Writes could even go to /dev/null */
+#define _smtp_reply(smtp, fmt, ...) \
+	bbs_debug(6, "%p <= " fmt, smtp, ## __VA_ARGS__); \
+	if (smtp->node) { \
+		bbs_node_fd_writef(smtp->node, smtp->wfd, fmt, ## __VA_ARGS__); \
+	} else { \
+		bbs_writef(smtp->wfd, fmt, ## __VA_ARGS__); \
+	}
 
 /*! \brief Final SMTP response with this code */
 #define smtp_resp_reply(smtp, code, subcode, reply) _smtp_reply(smtp, "%d %s %s\r\n", code, subcode, reply)
@@ -425,6 +434,13 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 	SET_BITFIELD(smtp->ehlo, ehlo);
 
 	if (ehlo) {
+		/* We dereference smtp->node twice here (smtp->node->ip)
+		 * and the smtp_reply macros eventually do a check for smtp->node being NULL.
+		 * Because of that, gcc thinks that smtp->node here could be a NULL dereference.
+		 * However, that check is only for SMTP replies (e.g. for injection),
+		 * any SMTP session in this function will have a node. This can be safely ignored. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnull-dereference"
 		smtp_reply0_nostatus(smtp, 250, "%s at your service [%s]", bbs_hostname(), smtp->node->ip);
 		/* The RFC says that login should only be allowed on secure connections,
 		 * but if we don't allow login on plaintext connections, then they're functionally useless. */
@@ -450,6 +466,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		smtp_reply_nostatus(smtp, 250, "ENHANCEDSTATUSCODES");
 	} else {
 		smtp_reply_nostatus(smtp, 250, "%s at your service [%s]", bbs_hostname(), smtp->node->ip);
+#pragma GCC diagnostic pop
 	}
 	return 0;
 }
@@ -2200,7 +2217,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 
 	for (;;) {
 		size_t len;
-		int res = bbs_readline(smtp->rfd, rldata, "\r\n", MIN_MS(3)); /* RFC 5321 4.5.3.2.5 */
+		ssize_t res = bbs_readline(smtp->rfd, rldata, "\r\n", MIN_MS(3)); /* RFC 5321 4.5.3.2.5 */
 		if (res < 0) {
 			return -1;
 		}
@@ -2208,6 +2225,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 		len = (size_t) res;
 		bbs_debug(8, "%p => [%lu data bytes]\n", smtp, len); /* This could be a lot of output, don't show it all. */
 		if (!strcmp(s, ".")) { /* Entire message has now been received */
+			int dres;
 			fclose(fp); /* Have to close and reopen in read mode anyways */
 			if (datafail) {
 				if (smtp->tflags.datalen >= max_message_size) {
@@ -2228,14 +2246,14 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 			bbs_debug(5, "Handling receipt of %lu-byte message\n", smtp->tflags.datalen);
 
 			smtp->datafile = template;
-			res = do_deliver(smtp, template, smtp->tflags.datalen);
+			dres = do_deliver(smtp, template, smtp->tflags.datalen);
 			smtp->datafile = NULL;
 
 			bbs_delete_file(template);
 			smtp->tflags.datalen = 0;
 			/* RFC 5321 4.1.1.4: After DATA, must clear buffers */
 			smtp_reset(smtp);
-			return res;
+			return dres;
 		}
 
 		if (datafail) {
@@ -2391,7 +2409,7 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 	}
 
 	for (;;) {
-		int res = bbs_readline(smtp->rfd, &rldata, "\r\n", MIN_MS(5)); /* RFC 5321 4.5.3.2.7 */
+		ssize_t res = bbs_readline(smtp->rfd, &rldata, "\r\n", MIN_MS(5)); /* RFC 5321 4.5.3.2.7 */
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {

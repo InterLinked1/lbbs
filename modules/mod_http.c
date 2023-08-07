@@ -133,7 +133,7 @@ static RWLIST_HEAD_STATIC(routes, http_route);
 static RWLIST_HEAD_STATIC(sessions, session);
 
 #define http_send_header(http, fmt, ...) \
-	dprintf(http->wfd, fmt, ## __VA_ARGS__); \
+	bbs_node_fd_writef(http->node, http->wfd, fmt, ## __VA_ARGS__); \
 	http_debug(5, "<= " fmt, ## __VA_ARGS__);
 
 static const char *http_response_code_name(enum http_response_code code)
@@ -232,7 +232,7 @@ static void http_send_headers(struct http_session *http)
 		http_send_header(http, "%s: %s\r\n", key, value);
 		bbs_vars_remove_first(&http->res->headers);
 	}
-	SWRITE(http->wfd, "\r\n"); /* CR LF to indicate end of headers */
+	NODE_SWRITE(http->node, http->wfd, "\r\n"); /* CR LF to indicate end of headers */
 	http->res->sentheaders = 1;
 }
 
@@ -306,7 +306,7 @@ static void send_chunk(struct http_session *http, const char *buf, size_t len)
 
 	http_send_header(http, "%x\r\n", (unsigned int) len); /* Doesn't count towards body length, so don't use __http_write */
 	__http_write(http, buf, len);
-	dprintf(http->wfd, "\r\n"); /* Doesn't count towards length */
+	bbs_node_fd_writef(http->node, http->wfd, "\r\n"); /* Doesn't count towards length */
 }
 
 static void flush_buffer(struct http_session *http, int final)
@@ -347,9 +347,9 @@ static void flush_buffer(struct http_session *http, int final)
 	http->res->chunkedleft = sizeof(http->res->chunkbuf);
 	http->res->chunkedbytes = 0;
 	if (final) {
-		dprintf(http->wfd, "0\r\n"); /* This is the beginning of the end. Optional footers may follow. */
+		bbs_node_fd_writef(http->node, http->wfd, "0\r\n"); /* This is the beginning of the end. Optional footers may follow. */
 		/* If we wanted to send optional footers, we could do so here. But we don't. */
-		dprintf(http->wfd, "\r\n"); /* Very end of chunked transfer */
+		bbs_node_fd_writef(http->node, http->wfd, "\r\n"); /* Very end of chunked transfer */
 	}
 }
 
@@ -892,7 +892,7 @@ static int read_body(struct http_session *http, char *buf, int discard)
 		for (;;) {
 			/* Determine how large the next chunk is */
 			unsigned int chunksize;
-			int res = bbs_readline(http->rfd, http->rldata, "\r\n", SEC_MS(10));
+			ssize_t res = bbs_readline(http->rfd, http->rldata, "\r\n", SEC_MS(10));
 			if (res <= 0) {
 				free_if(dynstr.buf);
 				bbs_warning("Failed to read all or part of chunked upload?\n");
@@ -931,7 +931,7 @@ static int read_body(struct http_session *http, char *buf, int discard)
 
 		/* Read and discard any trailer entity-header lines, indicated by a blank line. */
 		for (;;) {
-			int res = bbs_readline(http->rfd, http->rldata, "\r\n", SEC_MS(5));
+			ssize_t res = bbs_readline(http->rfd, http->rldata, "\r\n", SEC_MS(5));
 			if (res < 0) {
 				return -1; /* At this point, http->req->body is cleaned up on exit so we don't need to free it here */
 			} else if (res == 0) {
@@ -1594,7 +1594,7 @@ static void route_unref(struct http_route *route)
 
 int http_parse_request(struct http_session *http, char *buf)
 {
-	int res;
+	ssize_t res;
 	size_t requestsize;
 	size_t headerlen = 0;
 
@@ -1725,7 +1725,7 @@ static int http_handle_request(struct http_session *http, char *buf)
 		/* Send a 100 Continue intermediate response if we're good so far. */
 		http->res->sent100 = 1;
 		http_send_header(http, "HTTP/1.1 100 Continue\r\n");
-		dprintf(http->wfd, "\r\n");
+		bbs_node_fd_writef(http->node, http->wfd, "\r\n");
 		/* XXX If libcurl gets a 100 followed by a 404, it will be very unhappy (it will hang forever). */
 	}
 
@@ -2285,7 +2285,8 @@ static int cgi_run(struct http_session *http, const char *filename, char *const 
 		_exit(errno);
 	} else {
 		char buf[1024];
-		int status, bytes;
+		int status;
+		ssize_t bytes;
 		int pollms = SEC_MS(20); /* Effectively, lower bounds the maximum amount of time a CGI script is allowed to execute */
 		struct readline_data rldata;
 
@@ -2318,7 +2319,7 @@ static int cgi_run(struct http_session *http, const char *filename, char *const 
 			/* Use only LF as a delimiter since, unlike HTTP, these can be CR LF or just LF delimited. */
 			bytes = bbs_readline(stdout[0], &rldata, "\n", SEC_MS(30)); /* Wait up to 30 seconds for the CGI script to send headers */
 			if (bytes < 0) {
-				bbs_debug(4, "readline returned %d before end of headers\n", bytes);
+				bbs_debug(4, "readline returned %lu before end of headers\n", bytes);
 				goto cleanup;
 			}
 			if (bytes == 0 || (bytes == 1 && buf[0] == '\r')) {
@@ -2329,7 +2330,7 @@ static int cgi_run(struct http_session *http, const char *filename, char *const 
 			val = buf;
 			hdr = strsep(&val, ":");
 			if (!val) {
-				bbs_warning("CGI script emitted header '%s' with no value (line length %d)?\n", hdr, bytes);
+				bbs_warning("CGI script emitted header '%s' with no value (line length %lu)?\n", hdr, bytes);
 				goto cleanup;
 			}
 			ltrim(val);

@@ -746,7 +746,10 @@ static long bbs_is_running(void)
 		bbs_debug(5, "PID file %s does not exist\n", BBS_PID_FILE);
 		return 0; /* PID file doesn't exist? No way to tell. */
 	}
-	fscanf(f, "%ld", &file_pid);
+	if (fscanf(f, "%ld", &file_pid) == EOF) {
+		bbs_debug(5, "PID file %s does not contain a PID\n", BBS_PID_FILE);
+		return 0;
+	}
 	fclose(f);
 	if (!file_pid) {
 		bbs_warning("Failed to parse PID from %s\n", BBS_PID_FILE);

@@ -86,8 +86,7 @@ static void pop3_destroy(struct pop3_session *pop3)
 	free_if(pop3->folder);
 }
 
-#undef dprintf
-#define pop3_send(pop3, fmt, ...) bbs_debug(4, "%p <= " fmt, pop3, ## __VA_ARGS__); dprintf(pop3->wfd, fmt, ## __VA_ARGS__);
+#define pop3_send(pop3, fmt, ...) bbs_debug(4, "%p <= " fmt, pop3, ## __VA_ARGS__); bbs_node_fd_writef(pop3->node, pop3->wfd, fmt, ## __VA_ARGS__);
 #define pop3_ok(pop3, fmt, ...) pop3_send(pop3, "+OK " fmt "\r\n", ## __VA_ARGS__)
 #define pop3_err(pop3, fmt, ...) pop3_send(pop3, "-ERR " fmt "\r\n", ## __VA_ARGS__)
 
@@ -502,7 +501,7 @@ static int on_retr(const char *dir_name, const char *filename, struct pop3_sessi
 		bbs_error("Wanted to send %d bytes but only sent %d?\n", realsize, res);
 	}
 	bbs_debug(6, "Sent %d bytes\n", res);
-	dprintf(pop3->wfd, ".\r\n");
+	bbs_node_fd_writef(pop3->node, pop3->wfd, ".\r\n");
 	fclose(fp);
 	return 0;
 }
@@ -537,7 +536,7 @@ static int on_top(const char *dir_name, const char *filename, struct pop3_sessio
 				break;
 			}
 		}
-		dprintf(pop3->wfd, "%s", msgbuf); /* msgbuf already includes CR LF */
+		bbs_node_fd_writef(pop3->node, pop3->wfd, "%s", msgbuf); /* msgbuf already includes CR LF */
 		if (headersdone && lineno >= pop3->toplines) {
 			break; /* That was the last line we wanted to read. */
 		}
@@ -546,7 +545,7 @@ static int on_top(const char *dir_name, const char *filename, struct pop3_sessio
 		}
 	}
 	fclose(fp);
-	dprintf(pop3->wfd, ".\r\n"); /* Termination character. */
+	bbs_node_fd_writef(pop3->node, pop3->wfd, ".\r\n"); /* Termination character. */
 	return 0;
 }
 
@@ -728,7 +727,7 @@ static void handle_client(struct pop3_session *pop3)
 	pop3_ok(pop3, "POP3 Server Ready");
 
 	for (;;) {
-		int res = bbs_readline(pop3->rfd, &rldata, "\r\n", MIN_MS(3));
+		ssize_t res = bbs_readline(pop3->rfd, &rldata, "\r\n", MIN_MS(3));
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {

@@ -97,12 +97,13 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 		 * Some of these headers are multiple lines.
 		 * So keep prepending lines until we get to a line that does not begin with a space,
 		 * and does not begin wtih X-Spam. */
-		res = bbs_readline(output[0], &rldata, "\r\n", SEC_MS(20));
-		if (res < 0) {
+		ssize_t rres = bbs_readline(output[0], &rldata, "\r\n", SEC_MS(20));
+		if (rres < 0) {
 			/* Timeout */
 			bbs_warning("Timeout waiting for SpamAssassin\n");
+			res = -1;
 			break;
-		} else if (res == 0) {
+		} else if (rres == 0) {
 			/* This would be end of headers (CR LF).
 			 * It's unlikely that there would be ONLY SpamAssassin headers and nothing else,
 			 * but it could happen... */
@@ -111,7 +112,6 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 		}
 		/* Don't use isspace because we don't want to count newlines */
 		if (buf[0] != ' ' && buf[0] != '\t' && !STARTS_WITH(buf, "X-Spam-")) {
-			res = 0;
 			break;
 		}
 		smtp_filter_write(f, "%s\r\n", buf);

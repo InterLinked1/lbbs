@@ -283,6 +283,12 @@ int bbs_node_lock(struct bbs_node *node)
 	return pthread_mutex_lock(&node->lock);
 }
 
+int bbs_node_trylock(struct bbs_node *node)
+{
+	bbs_assert_exists(node);
+	return pthread_mutex_trylock(&node->lock);
+}
+
 int bbs_node_unlock(struct bbs_node *node)
 {
 	bbs_assert_exists(node);
@@ -501,7 +507,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 		 * Don't use bbs_node_reset_color because we already hold the node lock, so we can't call bbs_node_write,
 		 * as that will try to get a recursive lock.
 		 */
-		SWRITE(node->wfd, COLOR_RESET);
+		NODE_SWRITE(node, node->wfd, COLOR_RESET);
 	}
 
 	if (node->ptythread) {
@@ -653,20 +659,25 @@ int bbs_nodes_print(int fd)
 	RWLIST_TRAVERSE(&nodes, n, entry) {
 		char menufull[16];
 		int lwp;
-		bbs_node_lock(n);
+		/* Do not lock the node here.
+		 * Even though we are accessing some properties of the node which could change,
+		 * because the node list is locked, there is no possibility of the node itself
+		 * disappearing out from underneath us.
+		 * Because most of the I/O done in the BBS is blocking, if a BBS node is blocked
+		 * in a write, nodes could be blocked for very long times, and if any thread
+		 * besides the node thread tries to write to it, that could cause that thread to
+		 * block waiting on the lock, causing a cascading deadlock. */
 		print_time_elapsed(n->created, now, elapsed, sizeof(elapsed));
 		snprintf(menufull, sizeof(menufull), "%s%s%s%s", S_IF(n->menu), n->menuitem ? " (" : "", S_IF(n->menuitem), n->menuitem ? ")" : "");
 		lwp = bbs_pthread_tid(n->thread);
 		bbs_dprintf(fd, "%3d %8s %9s %3dx%3d %-15s %-15s %15s %5u %1s %1s %6d %3d %3d %3d %3d %3d %s\n",
 			n->id, n->protname, elapsed, n->cols, n->rows, bbs_username(n->user), menufull, n->ip, n->rport, BBS_YN(n->echo), BBS_YN(n->buffered),
 			lwp, n->rfd, n->wfd, n->amaster, n->slavefd, n->spyfd, n->slavename);
-		bbs_node_unlock(n);
 		c++;
 	}
 	RWLIST_UNLOCK(&nodes);
 
 	bbs_dprintf(fd, "%d active node%s\n", c, ESS(c));
-
 	return 0;
 }
 
@@ -1040,8 +1051,7 @@ static int _bbs_intro(struct bbs_node *node)
 	NEG_RETURN(bbs_node_reset_color(node));
 	NEG_RETURN(bbs_node_writef(node, "%s  Version %d.%d.%d\n", BBS_TAGLINE, BBS_MAJOR_VERSION, BBS_MINOR_VERSION, BBS_PATCH_VERSION));
 	NEG_RETURN(bbs_node_writef(node, "%s connection from: %s\n", node->protname, node->ip));
-	usleep(300000);
-	return 0;
+	return bbs_node_safe_sleep(node, 300) < 0 ? -1 : 0;
 }
 
 static int node_intro(struct bbs_node *node)
@@ -1226,7 +1236,7 @@ static int node_handler_term(struct bbs_node *node)
 		bbs_node_set_speed(node, defaultbps);
 	}
 
-	if (!NODE_IS_TDD(node) && bbs_node_set_term_title(node, bbs_name_buf) <= 0) {
+	if (!NODE_IS_TDD(node) && bbs_node_set_term_title(node, bbs_name_buf) < 0) {
 		bbs_debug(5, "Exiting\n");
 		return -1;
 	} else if (tty_set_line_discipline(node->slavefd)) {

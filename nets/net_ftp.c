@@ -151,9 +151,9 @@ static int ftp_pasv_new(int *sockfd)
 	close_if(fd); /* Close connection when done. This is the EOF that signals the client that the file transfer has completed. */ \
 	ftp->rfd2 = ftp->wfd2 = -1;
 
-static int ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir, const char *file, const char *flags)
+static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir, const char *file, const char *flags)
 {
-	int res = 0;
+	ssize_t res = 0;
 	char fullfile[386];
 	char buf[512];
 	FILE *fp;
@@ -196,7 +196,7 @@ static int ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir,
 			bbs_warning("File transfer stalled, aborting\n");
 			break;
 		}
-		res = (int) read(ftp->rfd2, buf, sizeof(buf));
+		res = read(ftp->rfd2, buf, sizeof(buf));
 		if (res <= 0) {
 			res = 0; /* End of transfer */
 			break;
@@ -206,9 +206,9 @@ static int ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir,
 			res = -1;
 			break;
 		}
-		x = fprintf(fp, "%.*s", res, buf);
+		x = fprintf(fp, "%.*s", (int) res, buf);
 		if (x != res) {
-			bbs_warning("Wanted to write %d bytes but only wrote %d\n", res, x);
+			bbs_warning("Wanted to write %lu bytes but only wrote %d\n", res, x);
 			res = -1;
 			break;
 		}
@@ -234,7 +234,7 @@ static void *ftp_handler(void *varg)
 	char username[64] = "";
 	char fulldir[256];	/* Path on disk */
 	char *command, *rest, *next;
-	int res;
+	ssize_t res;
 	struct bbs_node *node = varg;
 	int invalids = 0;
 	int pasv_port, pasv_fd = -1;

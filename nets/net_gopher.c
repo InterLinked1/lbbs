@@ -36,8 +36,6 @@
 static int gopher_port = DEFAULT_GOPHER_PORT;
 static char gopher_root[256] = "";
 
-#undef dprintf
-
 /* Types that we support:
  * 0 - text file
  * 1 - directory (submenu)
@@ -57,7 +55,7 @@ static int directory_menu(const char *dir_name, const char *filename, int dir, v
 	const char *parent = dir_name + strlen(gopher_root);
 
 	/* Format is <type><display string>\t<selector string>\t<hostname>\t<port>\r\n */
-	dprintf(node->fd, "%c%s\t%s/%s\t%s\t%d\r\n", dir ? GOPHER_DIRECTORY : GOPHER_FILE, filename, parent, filename, bbs_hostname(), gopher_port);
+	bbs_node_fd_writef(node, node->fd, "%c%s\t%s/%s\t%s\t%d\r\n", dir ? GOPHER_DIRECTORY : GOPHER_FILE, filename, parent, filename, bbs_hostname(), gopher_port);
 	bbs_debug(4, "%c%s\t%s/%s\t%s\t%d\r\n", dir ? GOPHER_DIRECTORY : GOPHER_FILE, filename, parent, filename, bbs_hostname(), gopher_port);
 	return 0;
 }
@@ -92,8 +90,8 @@ static void *gopher_handler(void *varg)
 
 	/* Dangerous path request or nonexistent file */
 	if (strstr(buf, "..") || stat(fullpath, &st)) {
-		dprintf(node->fd, "%c'%s' doesn't exist!\r\n", GOPHER_ERROR, buf);
-		dprintf(node->fd, "%c'This resource cannot be located.\r\n", GOPHER_INFO);
+		bbs_node_fd_writef(node, node->fd, "%c'%s' doesn't exist!\r\n", GOPHER_ERROR, buf);
+		bbs_node_fd_writef(node, node->fd, "%c'This resource cannot be located.\r\n", GOPHER_INFO);
 		goto cleanup;
 	}
 
@@ -118,12 +116,12 @@ static void *gopher_handler(void *varg)
 			bbs_error("fopen failed: %s\n", strerror(errno));
 		}
 	} else { /* Anything else doesn't exist as far as the user is concerned */
-		dprintf(node->fd, "%c'%s' doesn't exist!\r\n", GOPHER_ERROR, buf);
-		dprintf(node->fd, "%c'This resource cannot be located.\r\n", GOPHER_INFO);
+		bbs_node_fd_writef(node, node->fd, "%c'%s' doesn't exist!\r\n", GOPHER_ERROR, buf);
+		bbs_node_fd_writef(node, node->fd, "%c'This resource cannot be located.\r\n", GOPHER_INFO);
 	}
 
 	/* XXX Lynx gopher client seems to display the period. Not sure why, but not all Gopher servers send the trailing period. */
-	dprintf(node->fd, ".\r\n"); /* End with period on a line by itself */
+	bbs_node_fd_writef(node, node->fd, ".\r\n"); /* End with period on a line by itself */
 
 cleanup:
 	bbs_node_exit(node);

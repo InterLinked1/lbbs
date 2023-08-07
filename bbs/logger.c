@@ -443,7 +443,12 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 			/* Prevent libc_write from blocking if there's a ton of logging going on. */
 			bbs_unblock_fd(rfd->fd);
 			if (fd_logging[rfd->fd]) {
-				write(rfd->fd, fullbuf, (size_t) bytes);
+				ssize_t wres = write(rfd->fd, fullbuf, (size_t) bytes);
+				if (wres != (ssize_t) bytes) {
+					/* Well, we can't log a message if we failed to log a message.
+					 * That would probably not work out well. */
+					fprintf(stderr, "Failed to log %d-byte message\n", bytes);
+				}
 			}
 			bbs_block_fd(rfd->fd);
 		}

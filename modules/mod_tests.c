@@ -220,6 +220,9 @@ cleanup:
 	return -1;
 }
 
+/* No need to bother checking the return value of write. If it failed, the tests will also fail anyways. */
+#pragma GCC diagnostic ignored "-Wunused-result"
+
 static int test_readline_helper(void)
 {
 	int mres, res = -1;
@@ -235,29 +238,29 @@ static int test_readline_helper(void)
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 
 	SWRITE(pfd[1], "abcd\r\nefg");
-	mres = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
+	mres = (int) bbs_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(4, mres);
 	bbs_test_assert_str_equals(buf, "abcd");
 	SWRITE(pfd[1], "hi\r\nj");
-	mres = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
+	mres = (int) bbs_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(5, mres);
 	bbs_test_assert_str_equals(buf, "efghi");
 	SWRITE(pfd[1], "k\r\nlmno\r\npqrs\r\n");
-	mres = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
+	mres = (int) bbs_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(2, mres);
 	bbs_test_assert_str_equals(buf, "jk");
-	mres = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
+	mres = (int) bbs_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(4, mres);
 	bbs_test_assert_str_equals(buf, "lmno");
-	mres = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
+	mres = (int) bbs_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(4, mres);
 	bbs_test_assert_str_equals(buf, "pqrs");
 	SWRITE(pfd[1], "tuv\r\n");
-	mres = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
+	mres = (int) bbs_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(3, mres);
 	bbs_test_assert_str_equals(buf, "tuv");
 	SWRITE(pfd[1], "wxyz\r\n");
-	mres = bbs_readline(pfd[0], &rldata, "\r\n", 1000);
+	mres = (int) bbs_readline(pfd[0], &rldata, "\r\n", 1000);
 	bbs_test_assert_equals(4, mres);
 	bbs_test_assert_str_equals(buf, "wxyz");
 
@@ -281,31 +284,31 @@ static int test_readline_append(void)
 
 #undef sprintf
 	len = sprintf(inbuf, "Test1\nTest2\nTe");
-	mres = bbs_readline_append(&rldata, "\n", inbuf, (size_t) len, &ready);
+	mres = (int) bbs_readline_append(&rldata, "\n", inbuf, (size_t) len, &ready);
 	bbs_test_assert_equals(len, mres);
 	bbs_test_assert_equals(1, ready);
 	bbs_test_assert_str_equals(buf, "Test1");
 
 	inbuf[0] = '\0';
-	mres = bbs_readline_append(&rldata, "\n", inbuf, 0, &ready);
+	mres = (int) bbs_readline_append(&rldata, "\n", inbuf, 0, &ready);
 	bbs_test_assert_equals(0, mres);
 	bbs_test_assert_equals(1, ready);
 	bbs_test_assert_str_equals(buf, "Test2");
 
 	inbuf[0] = '\0';
-	mres = bbs_readline_append(&rldata, "\n", inbuf, 0, &ready);
+	mres = (int) bbs_readline_append(&rldata, "\n", inbuf, 0, &ready);
 	bbs_test_assert_equals(0, mres);
 	bbs_test_assert_equals(0, ready);
 	bbs_test_assert_str_equals(buf, "Te");
 
 	len = sprintf(inbuf, "st3\nTest4\n");
-	mres = bbs_readline_append(&rldata, "\n", inbuf, (size_t) len, &ready);
+	mres = (int) bbs_readline_append(&rldata, "\n", inbuf, (size_t) len, &ready);
 	bbs_test_assert_equals(len, mres);
 	bbs_test_assert_equals(1, ready);
 	bbs_test_assert_str_equals(buf, "Test3");
 
 	inbuf[0] = '\0';
-	mres = bbs_readline_append(&rldata, "\n", inbuf, 0, &ready);
+	mres = (int) bbs_readline_append(&rldata, "\n", inbuf, 0, &ready);
 	bbs_test_assert_equals(0, mres);
 	bbs_test_assert_equals(1, ready);
 	bbs_test_assert_str_equals(buf, "Test4");
@@ -336,14 +339,14 @@ static int test_readline_getn(void)
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 
 	SWRITE(pfd[1], "abcd\r\nefg");
-	mres = bbs_readline_getn(pfd[0], pfd2[1], &rldata, 1000, 3);
+	mres = (int) bbs_readline_getn(pfd[0], pfd2[1], &rldata, 1000, 3);
 	bbs_test_assert_equals(3, mres);
 	mres = (int) read(pfd2[0], buf2, sizeof(buf2));
 	bbs_test_assert_equals(3, mres);
 	buf2[mres] = '\0'; /* Returned string is not NUL-terminated so do that for strcmp */
 	bbs_test_assert_str_equals(buf2, "abc");
 
-	mres = bbs_readline_getn(pfd[0], pfd2[1], &rldata, 1000, 4);
+	mres = (int) bbs_readline_getn(pfd[0], pfd2[1], &rldata, 1000, 4);
 	bbs_test_assert_equals(4, mres);
 	mres = (int) read(pfd2[0], buf2, sizeof(buf2));
 	bbs_test_assert_equals(4, mres);
@@ -351,7 +354,7 @@ static int test_readline_getn(void)
 	bbs_test_assert_str_equals(buf2, "d\r\ne");
 
 	SWRITE(pfd[1], "foobar");
-	mres = bbs_readline_getn(pfd[0], pfd2[1], &rldata, 1000, 8);
+	mres = (int) bbs_readline_getn(pfd[0], pfd2[1], &rldata, 1000, 8);
 	bbs_test_assert_equals(8, mres);
 	mres = (int) read(pfd2[0], buf2, sizeof(buf2));
 	bbs_test_assert_equals(8, mres);
@@ -391,7 +394,7 @@ static int test_readline_boundary(void)
 	bbs_readline_set_boundary(&rldata, "--seperator--");
 
 	SWRITE(pfd[1], "abcdefg--seperator--hijklmno");
-	mres = bbs_readline_get_until(pfd[0], &dynstr, &rldata, 1000, 4096);
+	mres = (int) bbs_readline_get_until(pfd[0], &dynstr, &rldata, 1000, 4096);
 	bbs_test_assert_equals(0, mres);
 	bbs_test_assert_str_exists_equals(dynstr.buf, "abcdefg");
 	bbs_test_assert_str_equals(buf, "hijklmno");
@@ -399,7 +402,7 @@ static int test_readline_boundary(void)
 	dyn_str_reset(&dynstr);
 
 	SWRITE(pfd[1], "p--seperator--qrstuv");
-	mres = bbs_readline_get_until(pfd[0], &dynstr, &rldata, 1000, 4096);
+	mres = (int) bbs_readline_get_until(pfd[0], &dynstr, &rldata, 1000, 4096);
 	bbs_test_assert_equals(0, mres);
 	bbs_test_assert_str_exists_equals(dynstr.buf, "hijklmnop");
 	bbs_test_assert_str_equals(buf, "qrstuv");
@@ -407,7 +410,7 @@ static int test_readline_boundary(void)
 	dyn_str_reset(&dynstr);
 
 	SWRITE(pfd[1], "wxyz--seperator--");
-	mres = bbs_readline_get_until(pfd[0], &dynstr, &rldata, 1000, 4096);
+	mres = (int) bbs_readline_get_until(pfd[0], &dynstr, &rldata, 1000, 4096);
 	bbs_test_assert_equals(0, mres);
 	bbs_test_assert_str_exists_equals(dynstr.buf, "qrstuvwxyz");
 

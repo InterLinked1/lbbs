@@ -122,7 +122,7 @@ static int readline_post_read(struct readline_data *restrict rldata, const char 
 
 #ifdef BBS_IN_CORE
 /*! \brief Helper function to read a single line from a file descriptor, with a timeout (for any single read) */
-int bbs_readline(int fd, struct readline_data *restrict rldata, const char *restrict delim, int timeout)
+ssize_t bbs_readline(int fd, struct readline_data *restrict rldata, const char *restrict delim, int timeout)
 {
 	int res;
 	char *firstdelim;
@@ -152,9 +152,10 @@ int bbs_readline(int fd, struct readline_data *restrict rldata, const char *rest
 	return readline_post_read(rldata, delim, firstdelim, res);
 }
 
-static int __bbs_readline_getn(int fd, int destfd, struct dyn_str *restrict dynstr, struct readline_data *restrict rldata, int timeout, size_t n)
+static ssize_t __bbs_readline_getn(int fd, int destfd, struct dyn_str *restrict dynstr, struct readline_data *restrict rldata, int timeout, size_t n)
 {
-	int res, wres;
+	ssize_t wres;
+	int res;
 	size_t left_in_buffer, written = 0, remaining = n;
 
 	/* First, use anything that's already in the buffer from a previous read.
@@ -233,12 +234,12 @@ static int __bbs_readline_getn(int fd, int destfd, struct dyn_str *restrict dyns
 	return (int) written;
 }
 
-int bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata, int timeout, size_t n)
+ssize_t bbs_readline_getn(int fd, int destfd, struct readline_data *restrict rldata, int timeout, size_t n)
 {
 	return __bbs_readline_getn(fd, destfd, NULL, rldata, timeout, n);
 }
 
-int bbs_readline_getn_dynstr(int fd, struct dyn_str *restrict dynstr, struct readline_data *restrict rldata, int timeout, size_t n)
+ssize_t bbs_readline_getn_dynstr(int fd, struct dyn_str *restrict dynstr, struct readline_data *restrict rldata, int timeout, size_t n)
 {
 	return __bbs_readline_getn(fd, -1, dynstr, rldata, timeout, n);
 }
@@ -254,7 +255,7 @@ char *bbs_readline_getn_str(int fd, struct readline_data *restrict rldata, int t
 	return dynstr.buf;
 }
 
-int bbs_readline_discard_n(int fd, struct readline_data *restrict rldata, int timeout, size_t n)
+ssize_t bbs_readline_discard_n(int fd, struct readline_data *restrict rldata, int timeout, size_t n)
 {
 	return bbs_readline_getn(fd, -1, rldata, timeout, n); /* Read the bytes and throw them away */
 }

@@ -156,6 +156,12 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod);
 /*! Lock a BBS node */
 int bbs_node_lock(struct bbs_node *node);
 
+/*!
+ * \brief Try locking a BBS node
+ * \retval 0 if successful, -1 if failed to acquire lock
+ */
+int __attribute__ ((warn_unused_result)) bbs_node_trylock(struct bbs_node *node);
+
 /*! Unlock a BBS node */
 int bbs_node_unlock(struct bbs_node *node);
 
@@ -451,10 +457,69 @@ int bbs_node_flush_input(struct bbs_node *node);
  * \param len Number of bytes to write
  * \retval Same as write()
  */
-int bbs_node_write(struct bbs_node *node, const char *buf, size_t len);
+ssize_t bbs_node_write(struct bbs_node *node, const char *buf, size_t len);
 
-/*! \brief Same as bbs_node_write, but directly on a file descriptor */
-int bbs_write(int fd, const char *buf, size_t len);
+/*!
+ * \brief Same as bbs_node_write, but directly on a file descriptor
+ * \note Do not use this function to write to file descriptors associated with a node (whether node->fd, node->slavefd, or any other node fd).
+ *       Use bbs_node_fd_write instead. (Same thing for the formatted versions of both.)
+ */
+ssize_t bbs_write(int fd, const char *buf, size_t len);
+
+/*!
+ * \brief Write to a file descriptor without blocking
+ * \param fd File descriptor
+ * \param buf Buffer to write
+ * \param len Length of buf
+ * \param ms Maximum number of milliseconds to wait before aborting
+ */
+ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms);
+
+/*!
+ * \brief Write to a file descriptor associated with a node (but not necessarily the node file descriptor)
+ * \param node Node associated with this file descriptor
+ * \param fd File descriptor to which to write
+ * \param buf Data to write
+ * \param len Length of buf
+ * \retval Same as write()
+ * \note This function may only be used by the thread handling a node
+ * \note This function provides its own concurrency control. Callers should not hold any locks when calling this function.
+ */
+ssize_t bbs_node_fd_write(struct bbs_node *node, int fd, const char *buf, size_t len);
+
+/*!
+ * \brief Write formatted data to a file descriptor associated with a node (but not necessarily the node file descriptor)
+ * \param node Node associated with this file descriptor
+ * \param fd File descriptor to which to write
+ * \param fmt printf-style format string
+ * \retval Same as write()
+ * \note This function may only be used by the thread handling a node
+ * \note This function provides its own concurrency control. Callers should not hold any locks when calling this function.
+ */
+ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...);
+
+/*!
+ * \brief Write to a file descriptor associated with a node (but not necessarily the node file descriptor)
+ * \param node Node associated with this file descriptor
+ * \param fd File descriptor to which to write
+ * \param buf Data to write
+ * \param len Length of buf
+ * \retval Same as write()
+ * \note Unlike bbs_write, this does not guarantee the buffer will be fully written before returning.
+ *       Applications SHOULD use bbs_node_fd_write instead of this function when writing from the node thread.
+ */
+ssize_t bbs_node_any_fd_write(struct bbs_node *node, int fd, const char *buf, size_t len);
+
+/*!
+ * \brief Write formatted data to a file descriptor associated with a node (but not necessarily the node file descriptor)
+ * \param node Node associated with this file descriptor
+ * \param fd File descriptor to which to write
+ * \param fmt printf-style format string
+ * \retval Same as write()
+ * \note Unlike bbs_write, this does not guarantee the buffer will be fully written before returning.
+ *       Applications SHOULD use bbs_node_fd_write instead of this function when writing from the node thread.
+ */
+ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_any_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...);
 
 /*!
  * \brief printf-style wrapper for bbs_node_write.
@@ -462,25 +527,25 @@ int bbs_write(int fd, const char *buf, size_t len);
  * \param fmt printf-format string
  * \retval Same as write()
  */
-int bbs_node_writef(struct bbs_node *node, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) ;
+ssize_t bbs_node_writef(struct bbs_node *node, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) ;
 
 /*!
  * \brief Same as bbs_node_writef, but directly on a file descriptor
  * \note This is not exactly the same thing as a function like dprintf, since it returns the value returned by write()
  */
-int bbs_writef(int fd, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) ;
+ssize_t bbs_writef(int fd, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) ;
 
 /*!
  * \brief Clear the terminal screen on a node's connected TTY
  * \param node
- * \retval Same as write()
+ * \retval -1 on failure, 0 on success
  */
 int bbs_node_clear_screen(struct bbs_node *node);
 
 /*!
  * \brief Clear the current line on a node's connected TTY
  * \param node
- * \retval Same as write()
+ * \retval -1 on failure, 0 on success
  */
 int bbs_node_clear_line(struct bbs_node *node);
 
@@ -488,7 +553,7 @@ int bbs_node_clear_line(struct bbs_node *node);
  * \brief Set the terminal title
  * \param node
  * \param s Title text. This is what will show up in the terminal emulator's window title, taskbar, etc.
- * \retval Same as write()
+ * \retval -1 on failure, 0 on success
  */
 int bbs_node_set_term_title(struct bbs_node *node, const char *s);
 
@@ -496,14 +561,14 @@ int bbs_node_set_term_title(struct bbs_node *node, const char *s);
  * \brief Set the terminal icon
  * \param node
  * \param s Icon text
- * \retval Same as write()
+ * \retval -1 on failure, 0 on success
  */
 int bbs_node_set_term_icon(struct bbs_node *node, const char *s);
 
 /*!
  * \brief Reset color to normal on a node's connected TTY
  * \param node
- * \retval Same as write()
+ * \retval -1 on failure, 0 on success
  */
 int bbs_node_reset_color(struct bbs_node *node);
 
@@ -511,14 +576,14 @@ int bbs_node_reset_color(struct bbs_node *node);
  * \brief Draw a line of a specified character across the screen
  * \param node
  * \param c Character to repeat all the way across the screen
- * \retval Same as write()
+ * \retval -1 on failure, 0 on success
  */
 int bbs_node_draw_line(struct bbs_node *node, char c);
 
 /*!
  * \brief Trigger bell / alert sound on a node's connected TTY
  * \param node
- * \retval Same as write()
+ * \retval -1 on failure, 0 on success
  */
 int bbs_node_ring_bell(struct bbs_node *node);
 

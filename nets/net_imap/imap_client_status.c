@@ -121,7 +121,7 @@ static int status_size_cache_fetch(struct imap_client *client, const char *remot
 
 static int status_size_fetch_all(struct imap_client *client, const char *tag, size_t *mb_size)
 {
-	int res;
+	ssize_t res;
 	size_t taglen;
 	struct bbs_tcp_client *tcpclient = &client->client;
 	char *buf = tcpclient->rldata.buf;
@@ -179,7 +179,7 @@ static int __parse_status_item(const char *full, const char *keyword, size_t key
 
 static int status_size_fetch_incremental(struct imap_client *client, const char *tag, size_t *mb_size, const char *old, const char *new)
 {
-	int res;
+	ssize_t res;
 	size_t taglen;
 	struct bbs_tcp_client *tcpclient = &client->client;
 	char *buf = tcpclient->rldata.buf;
@@ -282,7 +282,7 @@ static int status_size_fetch_incremental(struct imap_client *client, const char 
 			bbs_warning("Received empty size: %s\n", buf);
 			continue;
 		}
-		mb_size += msg_size;
+		*mb_size += msg_size;
 		received++;
 	}
 
@@ -396,7 +396,7 @@ static int append_size_item(struct imap_client *client, const char *remotename, 
 
 static int cache_remote_list_status(struct imap_client *client, const char *rtag, size_t taglen)
 {
-	int res;
+	ssize_t res;
 	struct dyn_str dynstr;
 	int i;
 	struct bbs_tcp_client *tcpclient = &client->client;
@@ -410,7 +410,7 @@ static int cache_remote_list_status(struct imap_client *client, const char *rtag
 	for (i = 0; ; i++) {
 		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 10000);
 		if (res <= 0) {
-			bbs_warning("IMAP timeout (res: %d) from LIST-STATUS - remote server issue?\n", res);
+			bbs_warning("IMAP timeout (res: %lu) from LIST-STATUS - remote server issue?\n", res);
 			free_if(dynstr.buf);
 			return -1;
 		}
@@ -461,12 +461,12 @@ static int remote_status_cached(struct imap_client *client, const char *mb, char
 	return 0;
 }
 
-int remote_status(struct imap_client *client, const char *remotename, const char *items, int size)
+ssize_t remote_status(struct imap_client *client, const char *remotename, const char *items, int size)
 {
 	char remote_status_resp[1024];
 	char rtag[64];
 	size_t taglen;
-	int res;
+	ssize_t res;
 	char *buf;
 	struct bbs_tcp_client *tcpclient = &client->client;
 	const char *tag = client->imap->tag;

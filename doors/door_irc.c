@@ -755,7 +755,7 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 			continue; /* Channel filter doesn't match for this participant */
 		}
 		if (!NODE_IS_TDD(p->node)) {
-			write(p->chatpipe[1], datestr, timelen); /* Don't send timestamps to TDDs, for brevity */
+			res = write(p->chatpipe[1], datestr, timelen); /* Don't send timestamps to TDDs, for brevity */
 		}
 		res = write(p->chatpipe[1], msg, (size_t) len);
 		if (res <= 0) {
@@ -1238,7 +1238,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 				 * We use a timeout of 0, because if there isn't another message ready already,
 				 * then we should just go back to the outer poll.
 				 */
-				res = bbs_readline(node->slavefd, &rldata, "\r\n", 0);
+				res = (int) bbs_readline(node->slavefd, &rldata, "\r\n", 0);
 			} while (res > 0);
 		} else { /* Shouldn't happen */
 			bbs_warning("irc_poll returned activity, but neither client nor server has pending data?\n");

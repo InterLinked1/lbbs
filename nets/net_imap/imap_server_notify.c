@@ -21,6 +21,7 @@
 
 #include <string.h>
 
+#include "include/node.h"
 #include "include/linkedlists.h"
 
 #include "include/mod_mail.h"

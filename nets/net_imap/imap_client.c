@@ -42,7 +42,10 @@ static void client_destroy(struct imap_client *client)
 {
 	bbs_debug(5, "Destroying IMAP client %s\n", client->name);
 	if (!client->dead) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-result"
 		SWRITE(client->client.wfd, "bye LOGOUT\r\n"); /* This is optional, but be nice */
+#pragma GCC diagnostic pop
 	}
 	bbs_tcp_client_cleanup(&client->client);
 	free_if(client->virtlist);
@@ -146,7 +149,9 @@ cleanup:
 int imap_client_idle_start(struct imap_client *client)
 {
 	/* Now, IDLE on it so we get updates for that mailbox */
-	SWRITE(client->client.wfd, "idle IDLE\r\n");
+	if (SWRITE(client->client.wfd, "idle IDLE\r\n") < 0) {
+		return -1;
+	}
 	if (bbs_tcp_client_expect(&client->client, "\r\n", 1, SEC_MS(3), "+")) {
 		bbs_warning("Failed to start IDLE\n");
 		return -1;
@@ -158,7 +163,9 @@ int imap_client_idle_start(struct imap_client *client)
 
 int imap_client_idle_stop(struct imap_client *client)
 {
-	SWRITE(client->client.wfd, "DONE\r\n");
+	if (SWRITE(client->client.wfd, "DONE\r\n") < 0) {
+		return -1;
+	}
 	if (bbs_tcp_client_expect(&client->client, "\r\n", 2, SEC_MS(3), "idle OK")) { /* tagged OK response */
 		bbs_warning("Failed to terminate IDLE for %s\n", client->virtprefix);
 		return -1;
@@ -332,9 +339,9 @@ static struct imap_client *client_new(const char *name)
 	return client;
 }
 
-static int client_command_passthru(struct imap_client *client, int fd, const char *tag, int taglen, const char *cmd, int cmdlen, int ms, int echo, int (*cb)(struct imap_client *client, const char *buf, size_t len, void *cbdata), void *cbdata)
+static ssize_t client_command_passthru(struct imap_client *client, int fd, const char *tag, int taglen, const char *cmd, int cmdlen, int ms, int echo, int (*cb)(struct imap_client *client, const char *buf, size_t len, void *cbdata), void *cbdata)
 {
-	int res;
+	ssize_t res;
 	struct pollfd pfds[2];
 	int client_said_something = 0;
 	int c = 0;
@@ -362,7 +369,7 @@ static int client_command_passthru(struct imap_client *client, int fd, const cha
 				if (res <= 0) {
 					return -1; /* Client disappeared during idle / server shutdown */
 				}
-				imap_debug(10, "=> %.*s", res, buf2); /* "DONE" already includes CR LF */
+				imap_debug(10, "=> %.*s", (int) res, buf2); /* "DONE" already includes CR LF */
 				res = (int) write(tcpclient->wfd, buf2, (size_t) res);
 				continue;
 			}
@@ -385,18 +392,21 @@ static int client_command_passthru(struct imap_client *client, int fd, const cha
 			if (res > 0) { /* If it was just an empty line, don't bother calling write() with 0 bytes */
 				bbs_write(imap->wfd, buf, (unsigned int) res);
 			}
-			SWRITE(imap->wfd, "\r\n");
+			if (SWRITE(imap->wfd, "\r\n") < 0) {
+				res = -1;
+				break;
+			}
 		}
 #ifdef DEBUG_REMOTE_RESPONSES
 		/* NEVER enable this in production because this will be a huge volume of data */
-		imap_debug(10, "<= %.*s\n", res, buf);
+		imap_debug(10, "<= %.*s\n", (int) res, buf);
 #else
 		if (c++ < 15 && res > 2 && !strncmp(buf, "* ", STRLEN("* "))) {
-			imap_debug(7, "<= %.*s\n", res, buf);
+			imap_debug(7, "<= %.*s\n", (int) res, buf);
 		}
 #endif
 		if (!strncmp(buf, tag, (size_t) taglen)) {
-			imap_debug(10, "<= %.*s\n", res, buf);
+			imap_debug(10, "<= %.*s\n", (int) res, buf);
 			if (STARTS_WITH(buf + taglen, "BAD")) {
 				/* We did something we shouldn't have, oops */
 				bbs_warning("Command '%.*s%.*s' failed: %s\n", taglen, tag, cmdlen > 2 ? cmdlen - 2 : cmdlen, cmd, buf); /* Don't include trailing CR LF */
@@ -411,7 +421,7 @@ static int client_command_passthru(struct imap_client *client, int fd, const cha
 	return res;
 }
 
-int __imap_client_send_log(struct imap_client *client, int log, const char *fmt, ...)
+ssize_t __imap_client_send_log(struct imap_client *client, int log, const char *fmt, ...)
 {
 	char buf[1024]; /* IMAP commands shouldn't be longer than this anyways */
 	int len;

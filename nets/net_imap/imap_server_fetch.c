@@ -23,6 +23,8 @@
 #include <sys/sendfile.h>
 #include <dirent.h>
 
+#include "include/node.h"
+
 #include "include/mod_mail.h"
 #include "include/mod_mimeparse.h"
 
@@ -483,11 +485,11 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 			/* If request used RFC822, use that. If it used BODY, use BODY */
 			snprintf(resptype, sizeof(resptype), "%s%s", fetchreq->rfc822 ? "RFC822" : fetchreq->rfc822text ? "RFC822.TEXT" : skipheaders ? "BODY[TEXT]" : "BODY[]", rangebuf);
 
-			imap_send(imap, "%d FETCH (%s%s%s %s {%ld}", seqno, S_IF(dyn), dyn ? " " : "", response, resptype, size); /* No close paren here, last dprintf will do that */
+			imap_send(imap, "%d FETCH (%s%s%s %s {%ld}", seqno, S_IF(dyn), dyn ? " " : "", response, resptype, size); /* No close paren here, last write will do that */
 
 			pthread_mutex_lock(&imap->lock);
 			res = (int) sendfile(imap->wfd, fileno(fp), &offset, (size_t) size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
-			dprintf(imap->wfd, ")\r\n"); /* And the finale (don't use imap_send for this) */
+			bbs_node_fd_writef(imap->node, imap->wfd, ")\r\n"); /* And the finale (don't use imap_send for this) */
 			pthread_mutex_unlock(&imap->lock);
 
 			fclose(fp);

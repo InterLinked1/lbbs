@@ -13,7 +13,7 @@ all: $(TEST_EXE) $(MOD_SO)
 
 %.o : %.c
 	@echo "== Compiling $@"
-	$(CC) $(CFLAGS) -fPIC -DTEST_MODULE=\"$(basename $^)\" -DTEST_MODULE_SELF_SYM=__internal_$(basename $^)_self $(INC) -c $^
+	$(CC) $(CFLAGS) -Wno-unused-result -fPIC -DTEST_MODULE=\"$(basename $^)\" -DTEST_MODULE_SELF_SYM=__internal_$(basename $^)_self $(INC) -c $^
 
 readline.o : ../bbs/readline.c
 	cp ../bbs/readline.c .

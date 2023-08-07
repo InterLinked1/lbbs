@@ -93,7 +93,9 @@ static int rlogin_handshake(struct bbs_node *node)
 	s3 = s2 + strlen(s2) + 1;
 	s4 = s3 + strlen(s3) + 1;
 	bbs_debug(3, "Got %d-byte connection string (%s/%s/%s/%s)\n", res, s1, s2, s3, s4);
-	SWRITE(node->fd, "\0"); /* Send 0-byte to ACK and change to data transfer mode */
+	if (SWRITE(node->fd, "\0") != STRLEN("\0")) { /* Send 0-byte to ACK and change to data transfer mode */
+		return -1;
+	}
 
 	/* XXX Even when done before bind, seems to have no effect */
 	/* RFC 6093 SO_OOBINLINE */

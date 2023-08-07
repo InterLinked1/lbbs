@@ -136,8 +136,7 @@ static void nntp_destroy(struct nntp_session *nntp)
 	UNUSED(nntp);
 }
 
-#undef dprintf
-#define _nntp_send(nntp, fmt, ...) bbs_debug(4, "%p <= " fmt, nntp, ## __VA_ARGS__); dprintf(nntp->wfd, fmt, ## __VA_ARGS__);
+#define _nntp_send(nntp, fmt, ...) bbs_debug(4, "%p <= " fmt, nntp, ## __VA_ARGS__); bbs_node_fd_writef(nntp->node, nntp->wfd, fmt, ## __VA_ARGS__);
 #define nntp_send(nntp, code, fmt, ...) _nntp_send(nntp, "%d " fmt "\r\n", code, ## __VA_ARGS__)
 
 #define REQUIRE_ARGS(s) \
@@ -467,7 +466,7 @@ static int on_article(const char *dir_name, const char *filename, struct nntp_se
 	if (bbs_send_file(fullpath, nntp->wfd) < 0) {
 		return -1; /* Just disconnect */
 	}
-	dprintf(nntp->wfd, ".\r\n"); /* Termination character. */
+	bbs_node_fd_writef(nntp->node, nntp->wfd, ".\r\n"); /* Termination character. */
 	return 1; /* Stop traversal */
 }
 
@@ -512,11 +511,11 @@ static int on_body(const char *dir_name, const char *filename, struct nntp_sessi
 	nntp_send(nntp, 220, "%d <%s>", number, msgid);
 	/* XXX Easy, but not as efficient as calculating offset and then using sendfile... */
 	while ((fgets(linebuf, sizeof(linebuf), fp))) {
-		dprintf(nntp->wfd, "%s", linebuf);
+		bbs_node_fd_writef(nntp->node, nntp->wfd, "%s", linebuf);
 	}
 	fclose(fp);
 
-	dprintf(nntp->wfd, ".\r\n"); /* Termination character. */
+	bbs_node_fd_writef(nntp->node, nntp->wfd, ".\r\n"); /* Termination character. */
 	return 1; /* Stop traversal */
 }
 
@@ -755,7 +754,7 @@ static int sender_authorized(struct nntp_session *nntp)
 		return 0; \
 	}
 
-static int nntp_process(struct nntp_session *nntp, char *s, int len)
+static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 {
 	char *command;
 
@@ -1226,7 +1225,7 @@ static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 	nntp_send(nntp, 200, "%s Newsgroup Service Ready, posting permitted", bbs_hostname());
 
 	for (;;) {
-		int res = bbs_readline(nntp->rfd, &rldata, "\r\n", MIN_MS(5));
+		ssize_t res = bbs_readline(nntp->rfd, &rldata, "\r\n", MIN_MS(5));
 		if (res < 0) {
 			/* We should NOT send any response to the client when terminating a connection due to timeout. */
 			break;
@@ -1241,7 +1240,7 @@ static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 		} else {
 			bbs_debug(6, "%p => %s\n", nntp, buf);
 		}
-		if (nntp_process(nntp, buf, res)) {
+		if (nntp_process(nntp, buf, (size_t) res)) {
 			break;
 		}
 		if (nntp->dostarttls) {

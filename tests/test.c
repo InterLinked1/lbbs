@@ -390,15 +390,18 @@ static void *io_relay(void *varg)
 	}
 
 	for (;;) {
-		ssize_t res;
+		ssize_t res, wres;
 		res = read(pipefd[0], buf, sizeof(buf) - 1);
 		if (res <= 0) {
 			bbs_debug(4, "read returned %ld\n", res);
 			return NULL;
 		}
-		write(logfd, buf, (size_t) res);
+		wres = write(logfd, buf, (size_t) res);
+		if (wres != res) {
+			bbs_error("Wanted to write %lu bytes, only wrote %lu\n", res, wres);
+		}
 		if (option_debug) {
-			write(STDERR_FILENO, buf, (size_t) res);
+			wres = write(STDERR_FILENO, buf, (size_t) res);
 		}
 		if (bbs_expect_str) {
 			int rounds = 0;
@@ -465,7 +468,10 @@ int test_bbs_expect(const char *s, int ms)
 	}
 	if (res > 0 && pfd.revents) {
 		char c;
-		read(notifypfd[0], &c, 1);
+		ssize_t rres = read(notifypfd[0], &c, 1);
+		if (rres < 1) {
+			bbs_warning("read returned %lu: %s\n", rres, strerror(errno));
+		}
 		return 0;
 	}
 	bbs_warning("Failed to receive expected output: %s (got: %s)\n", s, expectbuf);
@@ -638,7 +644,9 @@ static int reset_test_configs(void)
 		}
 	} else { /* If it does, remove anything currently in it so we start fresh. */
 		/* Yuck, but why reinvent the wheel? */
-		system("rm " TEST_CONFIG_DIR "/*.conf");
+		if (system("rm " TEST_CONFIG_DIR "/*.conf")) {
+			bbs_error("Failed to delete files: %s\n", strerror(errno));
+		}
 	}
 	return 0;
 }
@@ -791,7 +799,9 @@ static int run_test(const char *filename, int multiple)
 				fclose(modulefp);
 			}
 			if (option_autoload_all) {
-				system("cp *.conf " TEST_CONFIG_DIR);
+				if (system("cp *.conf " TEST_CONFIG_DIR)) {
+					bbs_error("Failed to copy files: %s\n", strerror(errno));
+				}
 			}
 		}
 		/* If we're running all the tests, skip those that should only be run standalone */
@@ -907,7 +917,10 @@ static void stop_bbs(void)
 		bbs_debug(5, "PID file %s does not exist\n", BBS_PID_FILE);
 		return; /* PID file doesn't exist? No way to tell. */
 	}
-	fscanf(f, "%ld", &file_pid);
+	if (fscanf(f, "%ld", &file_pid) == EOF) {
+		bbs_debug(5, "PID file %s does not contain a PID\n", BBS_PID_FILE);
+		return;
+	}
 	fclose(f);
 	if (!file_pid) {
 		bbs_warning("Failed to parse PID from %s\n", BBS_PID_FILE);
@@ -948,7 +961,9 @@ int main(int argc, char *argv[])
 	signal(SIGPIPE, SIG_IGN); /* Ignore SIGPIPE to avoid exiting on failed write to pipe */
 
 	bbs_debug(1, "Looking for tests in %s\n", XSTR(TEST_DIR));
-	chdir(XSTR(TEST_DIR));
+	if (chdir(XSTR(TEST_DIR))) {
+		bbs_error("chdir(%s) failed: %s\n", XSTR(TEST_DIR), strerror(errno));
+	}
 
 	if (testfilter) { /* Single test */
 		snprintf(fullpath, sizeof(fullpath), "%s/%s.so", XSTR(TEST_DIR), testfilter);
