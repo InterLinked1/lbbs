@@ -69,6 +69,8 @@
 #if defined(BBS_IN_CORE)
 #define gets(s) Do_not_use_gets__use_fgets
 #define strcat(dst, src) Do_not_use_strcat__use_strncat
+#define strncat Do_not_use_strncat__use_bbs_append_string
+#define strlcat Do_not_use_strlcat__use_bbs_append_string
 #define sprintf(fmt, ...) Do_not_use_sprintf__use_snprintf
 #define vsprintf(s, fmt, arg) Do_not_use_vsprintf__use_vsnprintf
 /* Force usage of poll instead of the deprecated and unsafe select */
@@ -181,6 +183,41 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 #define STRLEN(s) ( (sizeof(s)/sizeof(s[0])) - sizeof(s[0]) )
 
 #define ENSURE_STRLEN(s) if (strlen_zero(s)) { return -1; }
+
+/*! \brief Faster than strncat, since we store our position between calls, but maintain its safety */
+#define SAFE_FAST_COND_APPEND(bufstart, bufsize, bufpos, buflen, cond, fmt, ...) \
+	if (buflen > 0 && (cond)) { \
+		int _bytes = snprintf(bufpos, (size_t) buflen, bufpos == bufstart ? fmt : " " fmt, ## __VA_ARGS__); \
+		bufpos += (typeof((buflen))) _bytes; \
+		buflen -= (typeof((buflen))) _bytes; \
+		if ((int) buflen <= 0) { \
+			bbs_warning("Buffer truncation (%lu)\n", (size_t) buflen); \
+			*(bufstart + bufsize - 1) = '\0';  \
+			buflen = 0; \
+		} \
+	}
+
+/*! \brief Same as SAFE_FAST_COND_APPEND, but don't automatically append a space first */
+#define SAFE_FAST_COND_APPEND_NOSPACE(bufstart, bufsize, bufpos, buflen, cond, fmt, ...) \
+	if (buflen > 0 && (cond)) { \
+		int _bytes = snprintf(bufpos, (size_t) buflen, fmt, ## __VA_ARGS__); \
+		bufpos += (typeof((buflen))) _bytes; \
+		buflen -= (typeof((buflen))) _bytes; \
+		if ((int) buflen <= 0) { \
+			bbs_warning("Buffer truncation (%lu)\n", (size_t) buflen); \
+			*(bufstart + bufsize - 1) = '\0';  \
+			buflen = 0; \
+		} \
+	}
+
+#define SAFE_FAST_BUF_INIT(buf, size, bufvar, lenvar) \
+	bufvar = buf; \
+	lenvar = size; \
+	buf[0] = '\0';
+
+#define SAFE_FAST_APPEND(bufstart, bufsize, bufpos, buflen, fmt, ...) SAFE_FAST_COND_APPEND(bufstart, bufsize, bufpos, buflen, 1, fmt, ## __VA_ARGS__)
+
+#define SAFE_FAST_APPEND_NOSPACE(bufstart, bufsize, bufpos, buflen, fmt, ...) SAFE_FAST_COND_APPEND_NOSPACE(bufstart, bufsize, bufpos, buflen, 1, fmt, ## __VA_ARGS__)
 
 #undef MIN
 #define MIN(a, b) ({ typeof(a) __a = (a); typeof(b) __b = (b); ((__a > __b) ? __b : __a);})

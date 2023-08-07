@@ -464,7 +464,9 @@ static const char *resolve_alias(const char *user, const char *domain)
 
 	RWLIST_RDLOCK(&aliases);
 	RWLIST_TRAVERSE(&aliases, alias, entry) {
-		if (!strcmp(alias->aliasuser, user)) {
+		/* RFC 5321 4.5.1: postmaster match must be case-insensitive.
+		 * We allow all other matches to be made case-sensitively. */
+		if (!strcmp(alias->aliasuser, user) || (!strcmp(alias->aliasuser, "postmaster") && !strcasecmp(user, "postmaster"))) {
 			/* Unqualified match, or domain must match */
 			bbs_debug(7, "Analyzing: %s @ %s / %s @ %s\n", user, domain, alias->aliasuser, alias->aliasdomain);
 			if (!alias->aliasdomain || (domain && !strcmp(alias->aliasdomain, domain))) {

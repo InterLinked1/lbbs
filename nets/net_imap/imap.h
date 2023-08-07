@@ -167,31 +167,6 @@ extern int imap_debug_level;
 		return 0; \
 	}
 
-/*! \brief Faster than strncat, since we store our position between calls, but maintain its safety */
-#define SAFE_FAST_COND_APPEND(bufstart, bufsize, bufpos, buflen, cond, fmt, ...) \
-	if (buflen > 0 && (cond)) { \
-		int _bytes = snprintf(bufpos, (size_t) buflen, bufpos == bufstart ? fmt : " " fmt, ## __VA_ARGS__); \
-		bufpos += (typeof((buflen))) _bytes; \
-		buflen -= (typeof((buflen))) _bytes; \
-		if ((int) buflen <= 0) { \
-			bbs_warning("Buffer truncation (%lu)\n", (size_t) buflen); \
-			*(bufstart + bufsize - 1) = '\0';  \
-			buflen = 0; \
-		} \
-	}
-
-#define SAFE_FAST_COND_APPEND_NOSPACE(bufstart, bufsize, bufpos, buflen, cond, fmt, ...) \
-	if (buflen > 0 && (cond)) { \
-		int _bytes = snprintf(bufpos, (size_t) buflen, fmt, ## __VA_ARGS__); \
-		bufpos += (typeof((buflen))) _bytes; \
-		buflen -= (typeof((buflen))) _bytes; \
-		if ((int) buflen <= 0) { \
-			bbs_warning("Buffer truncation (%lu)\n", (size_t) buflen); \
-			*(bufstart + bufsize - 1) = '\0';  \
-			buflen = 0; \
-		} \
-	}
-
 void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned int uid, unsigned long modseq, const char *newflags);
 
 int imap_in_range(struct imap_session *imap, const char *s, int num);

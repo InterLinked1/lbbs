@@ -14,12 +14,20 @@
  *
  * \brief RFC5321 Simple Mail Transfer Protocol (SMTP) Server (Mail Transfer Agent and Message Submission Agent)
  *
- * \note Supports RFC1870 Size Declarations
+ * \note Supports RFC1870 Message Size Declarations
  * \note Supports RFC1893 Enhanced Status Codes
  * \note Supports RFC3207 STARTTLS
  * \note Supports RFC4954 AUTH
  * \note Supports RFC4468 BURL
+ * \note Supports RFC6152 8BITMIME
  * \note Supports RFC6409 Message Submission
+ *
+ * \todo Not currently supported:
+ * - VRFY, ETRN (somewhat intentionally) - could be useful when authenticated, though
+ * - RFC 3030 CHUNKING, BDAT, BINARYMIME
+ * - RFC 3461 DSN (the format is mostly implemented, but needs fuller integration)
+ * - RFC 3798 Message Disposition Notification
+ * - RFC 6531 SMTPUTF8
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -32,6 +40,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/sendfile.h>
+#include <sys/ioctl.h>
 
 #include <dirent.h> /* for msg_to_filename */
 
@@ -56,7 +65,8 @@
 #define MAX_LOCAL_RECIPIENTS 100
 #define MAX_EXTERNAL_RECIPIENTS 10
 
-#define MAX_HOPS 50
+/* RFC 5321 6.3 */
+#define MAX_HOPS 100
 
 static int smtp_port = DEFAULT_SMTP_PORT;
 static int smtps_port = DEFAULT_SMTPS_PORT;
@@ -103,6 +113,13 @@ static unsigned int max_message_size = 300000;
  * without authentication allowed spammers to use MTAs as a means of distributing spam...
  */
 
+static char smtp_hostname_buf[256];
+
+const char *smtp_hostname(void)
+{
+	return smtp_hostname_buf;
+}
+
 struct smtp_session {
 	struct bbs_node *node;
 	int rfd;
@@ -113,18 +130,17 @@ struct smtp_session {
 	struct stringlist recipients;
 	struct stringlist sentrecipients;
 
-	char template[64];
-	FILE *fp;
-
 	char *helohost;				/* Hostname for HELO/EHLO */
 	char *contenttype;			/* Primary Content-Type of message */
 	/* AUTH: Temporary */
 	char *authuser;				/* Authentication username */
 	char *fromheaderaddress;	/* Address in the From: header */
 
+	const char *datafile;
+
 	struct {
 		unsigned long datalen;
-		unsigned long sizepreview;	/* Size as advertised in the MAIL FROM */
+		unsigned long sizepreview;	/* Size as advertised in the MAIL FROM size declaration */
 		int hopcount;				/* Number of hops so far according to count of Received headers in message. */
 
 		int numrecipients;
@@ -134,11 +150,9 @@ struct smtp_session {
 		time_t received;			/* Time that message was received */
 		unsigned int dostarttls:1;	/* Whether we are initiating STARTTLS */
 
-		unsigned int indata:1;		/* Whether client is currently sending email body (DATA) */
-		unsigned int indataheaders:1;	/* Whether client is currently sending headers for the message */
-		unsigned int datafail:1;	/* Data failure */
 		unsigned int inauth:2;		/* Whether currently doing AUTH (1 = need PLAIN, 2 = need LOGIN user, 3 = need LOGIN pass) */
 		unsigned int dkimsig:1;		/* Message has a DKIM-Signature header */
+		unsigned int is8bit:1;		/* 8BITMIME */
 	} tflags; /* Transaction flags */
 
 	/* Not affected by RSET */
@@ -150,21 +164,8 @@ struct smtp_session {
 	unsigned int secure:1;		/* Whether session is secure (TLS, STARTTLS) */
 };
 
-static void smtp_reset_data(struct smtp_session *smtp)
-{
-	if (smtp->fp) {
-		fclose(smtp->fp);
-		smtp->fp = NULL;
-		if (unlink(smtp->template)) {
-			bbs_error("Failed to delete %s: %s\n", smtp->template, strerror(errno));
-		}
-		smtp->template[0] = '\0';
-	}
-}
-
 static void smtp_reset(struct smtp_session *smtp)
 {
-	smtp_reset_data(smtp);
 	free_if(smtp->authuser);
 	free_if(smtp->fromheaderaddress);
 	free_if(smtp->from);
@@ -199,6 +200,12 @@ static struct stringlist blacklist;
 		return 0; \
 	}
 
+/* RFC 5321 4.1.1 - RSET, DATA, QUIT do not permit parameters */
+#define REQUIRE_EMPTY(s) \
+	if (!strlen_zero(s)) { \
+		smtp_reply(smtp, 501, 5.5.2, "Syntax Error"); \
+	}
+
 #define REQUIRE_HELO() \
 	if (!smtp->gothelo) { \
 		smtp_reply(smtp, 503, 5.5.1, "EHLO/HELO first."); \
@@ -220,11 +227,167 @@ static struct stringlist blacklist;
 		return 0; \
 	}
 
+/*!
+ * \brief Slow down suspicious connections using tarpitting techniques
+ * \param smtp
+ * \param code If nonzero, a code to include in intermittent nonfinal responses. 0 to sleep only.
+ * \retval -1 to disconnect, 0 to continue
+ */
+static int smtp_tarpit(struct smtp_session *smtp, int code, const char *message)
+{
+	/* Tarpitting is the practice of slowing down suspicious (likely spam)
+	 * senders, often in response to protocol violations, frustrating their progress
+	 * and simultaneously preoccupying them for a long time, preventing them
+	 * from spamming other servers.
+	 * This deters many spam attempts from incompliant SMTP clients,
+	 * but should have no effect on any compliant MTAs. */
+
+	if (!smtp->failures) {
+		return 0;
+	}
+	bbs_debug(4, "%p: Current number of SMTP failures: %d\n", smtp, smtp->failures);
+	if (smtp->failures <= 4) {
+		/* Do not do this with <= 4 or we'll slow down the test suite when it's testing bad behavior (and get test failures) */
+		if (smtp->failures <= 2 || !strcmp(smtp->node->ip, "127.0.0.1")) {
+			return 0;
+		}
+	}
+
+	/* We don't want to wait too long inbetween or, in practice, some clients will disconnect and reconnect, e.g. sendmail-msp */
+	if (code) {
+		int i;
+		/* Start with 5 second delay, and it only goes up from there.
+		 * Maximum of 4 minutes, 55 seconds per tarpit, since 5 minutes is the timeout for many commands. */
+		int max = MIN((int) smtp->failures - 3, 59);
+		for (i = 0; i < max; i++) {
+			if (bbs_node_safe_sleep(smtp->node, SEC_MS(5))) { /* 5 seconds each one */
+				return -1;
+			}
+			message = S_OR(message, "Processing...");
+			smtp_reply0_nostatus(smtp, code, "%s", message);
+		}
+	} else { /* All we can do here is sleep, no longer than 15 seconds. */
+		/* Exponential delay as # of failures increases: */
+		int sleepms = MIN(SEC_MS(1) * (1 << smtp->failures), SEC_MS(15));
+		if (bbs_node_safe_sleep(smtp->node, sleepms)) {
+			return -1;
+		}
+	}
+	return 0;
+}
+
+/*! \brief Forward-confirmed reverse DNS (FCrDNS) check */
+static int fcrdns_check(struct smtp_session *smtp)
+{
+	char hostname[256];
+	char ip[256];
+
+	/* This is a relatively lenient check that most any legitimate SMTP server should pass.
+	 * The hostname provided by the MTA must resolve to the IP address of the connection,
+	 * as suggested in RFC 1912 2.1.
+	 * If this fails, we won't reject the connection outright, but we'll heavily penalize it. */
+
+	/* This check succeeds if:
+	 * 1) The sending IP has a valid PTR record which resolves to a valid hostname
+	 * 2) The hostname has an A record matching the sending IP address
+	 *
+	 * Importantly, the hostname mentioned above may not and does not have to be
+	 * related to the SMTP transaction, i.e. the HELO hostname. This makes sense,
+	 * as a single SMTP server may be hosting multiple domains, and the above procedure
+	 * only allows for the PTR record to resolve to a single domain.
+	 *
+	 * Thanks to this, we can do this check immediately, before even the HELO,
+	 * and we can do it while we're waiting to see if the client will speak out of turn.
+	 */
+
+	if (bbs_get_hostname(smtp->node->ip, hostname, sizeof(hostname))) { /* Get reverse PTR record for client's IP */
+		bbs_warning("Unable to look up reverse DNS record for %s\n", smtp->node->ip);
+		smtp->failures += 4; /* Heavy penalty */
+	} else if (!bbs_hostname_has_ip(hostname, smtp->node->ip)) { /* Ensure that there's a match, with at least one A record */
+		bbs_warning("FCrDNS check failed: %s != %s", ip, smtp->node->ip);
+		smtp->failures += 5;
+	}
+	return 0;
+}
+
+static int handle_connect(struct smtp_session *smtp)
+{
+	if (!smtp->msa) {
+		/* We're allowed to send multiple banner lines, just with any other SMTP response.
+		 * This is something that postscreen does for postfix (PREGREET check).
+		 * After sending a line, if we get any input from the client, that is invalid.
+		 * Clients MUST wait until the server banner finishes before sending anything.
+		 * Additionally, the multiline response may possibly confuse spammers, but shouldn't
+		 * confuse any compliant SMTP client.
+		 */
+		smtp_reply0_nostatus(smtp, 220, "%s ESMTP Service Ready", bbs_hostname());
+
+		/*! \todo This would be a good place to check blacklist IPs (currently we only allow blacklisting hostnames).
+		 * This would allow us to avoid a DNS request for known bad sender IPs. */
+
+		if (fcrdns_check(smtp)) {
+			/* This isn't if the FCrDNS check fails, it's if we couldn't do the check at all.
+			 * In this case, things are really broken, and we should just abort the connection. */
+			/* XXX We changed the response code from nonfinal 220 to final 421, not sure that's actually valid... */
+			smtp_reply_nostatus(smtp, 421, "Service unavailable, closing transmission channel");
+			return -1;
+		}
+
+		if (smtp_tarpit(smtp, 220, "Waiting for service to initialize...")) {
+			return -1;
+		}
+
+		/* This works even with TLS, because of the TLS I/O thread, it's either socket or pipe activity.
+		 * Then again, that doesn't matter because for MTAs, TLS isn't yet set up at this point in the connection,
+		 * so the SMTP file descriptor refers to the actual node socket, not a pipe. */
+		if (bbs_poll(smtp->rfd, 100)) { /* Guarantees up to a minimum 100ms sleep */
+			/* We don't know what was received (or even how many bytes) since we haven't called read() yet, but we could peek: */
+			size_t bytes = 0;
+			if (ioctl(smtp->rfd, FIONREAD, &bytes)) {
+				bbs_error("ioctl failed: %s\n", strerror(errno));
+				return -1;
+			}
+			bbs_warning("Pregreet: %lu bytes received before banner finished\n", bytes);
+			smtp->failures += 3;
+			if (smtp_tarpit(smtp, 220, "Waiting for service to initialize...")) {
+				return -1;
+			}
+		}
+	}
+	smtp_reply_nostatus(smtp, 220, "%s ESMTP Service Ready", bbs_hostname());
+	return 0;
+}
+
+static int smtp_ip_mismatch(const char *actual, const char *hostname)
+{
+	char buf[256];
+
+	if (!strcmp(actual, "127.0.0.1")) {
+		return 0; /* Ignore for localhost */
+	}
+
+	/* This should be either a domain name or address literal (enclosed in []).
+	 * If it's just a raw IP address, that is not valid.
+	 * IPv6 literals as described in RFC 5321 4.1.3 are not supported. */
+	if (bbs_hostname_is_ipv4(hostname)) {
+		return -1;
+	} else if (*hostname == '[' && *(hostname + 1)) {
+		/* Domain literal */
+		bbs_strncpy_until(buf, hostname + 1, sizeof(buf), ']');
+		hostname = buf;
+	}
+	if (!bbs_ip_match_ipv4(actual, hostname)) {
+		return -1;
+	}
+	return 0;
+}
+
 static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 {
 	if (strlen_zero(s)) {
 		/* Submissions won't contain any data for HELO/EHLO, only relayers will. */
 		if (!smtp->msa) {
+			/* RFC 5321 4.1.1.1 */
 			smtp_reply(smtp, 501, 5.5.4, "Empty HELO/EHLO argument not allowed, closing connection.");
 			return -1;
 		}
@@ -234,16 +397,25 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		 * "An SMTP server MAY verify that the domain name parameter in the EHLO command
 		 * actually corresponds to the IP address of the client.
 		 * However, the server MUST NOT refuse to accept a message for this reason if the verification fails:
-		 * the information about verification failure is for logging and tracing only. */
-		/* Another reason to not enforce: many IPs may be authorized to send mail for a domain,
-		 * but hostname will resolve only to one of those IPs. In other words, we can't assume
-		 * any relationship between hostname resolution and authorized IPs for sending mail.
-		 * This is the kind of problem SPF records are better off at handling anyways.
+		 * the information about verification failure is for logging and tracing only.
+		 *
+		 * However, RFC 7208 is more favorable to this practice, and indeed RECOMMENDS that
+		 * this hostname be used for SPF verification.
+		 * Because this is still useful information, we don't block any clients if the HELO hostname
+		 * does not match the connection IP, but if it doesn't, we do penalize the connection.
 		 */
+		if (!smtp->msa && smtp_ip_mismatch(smtp->node->ip, smtp->helohost)) { /* Message submission is exempt from these checks, the HELO hostname is not useful anyways */
+			bbs_warning("HELO/EHLO hostname '%s' does not resolve to client IP %s\n", smtp->helohost, smtp->node->ip);
+			/* This is suspicious. It is not invalid, but it very well might be.
+			 * I'm aware that this doesn't support IPv6. IPv4 is pretty important for email,
+			 * if you're sending email using an IPv6 address, then that'll be penalized as well. */
+			smtp->failures += 2;
+		}
 	}
 
 	if (smtp->gothelo) {
-		/* RFC 5321 4.1.4 says a duplicate EHLO is treated as a RSET */
+		/* RFC 5321 4.1.4 says a duplicate EHLO is treated as a RSET.
+		 * Don't penalize clients that do this either, since it's useful for delivering multiple messages at a time. */
 		smtp_reset(smtp);
 		smtp_reply(smtp, 250, 2.1.5, "Flushed");
 		return 0;
@@ -262,6 +434,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		}
 		smtp_reply0_nostatus(smtp, 250, "PIPELINING");
 		smtp_reply0_nostatus(smtp, 250, "SIZE %u", max_message_size); /* RFC 1870 */
+		smtp_reply0_nostatus(smtp, 250, "8BITMIME"); /* RFC 6152 */
 		if (!smtp->secure && ssl_available()) {
 			smtp_reply0_nostatus(smtp, 250, "STARTTLS");
 		}
@@ -422,18 +595,158 @@ int smtp_unregister_delivery_agent(struct smtp_delivery_agent *agent)
 	return h ? 0 : -1;
 }
 
-static int add_recipient(struct smtp_session *smtp, int local, const char *s, int assumelocal)
+/*! \brief Parse parameter data in MAIL FROM */
+static int parse_mail_parameters(struct smtp_session *smtp, char *s)
 {
-	char buf[256];
-	const char *recipient = s;
+	char *d;
 
-	if (!strchr(recipient, '@')) {
-		/* Assume local user if no domain present */
-		if (assumelocal) {
-			snprintf(buf, sizeof(buf), "%s@%s", recipient, bbs_hostname());
-			recipient = buf;
+	while ((d = strsep(&s, " "))) {
+		char *ext = strsep(&d, "=");
+		if (strlen_zero(ext)) {
+			bbs_warning("No extension name?\n");
+			continue;
+		} else if (strlen_zero(d)) {
+			bbs_warning("Empty extension data value\n");
+			continue;
+		} else if (!strcasecmp(ext, "SIZE")) {
+			long freebytes;
+			unsigned int sizebytes;
+			/* RFC 1870 Message Size Declaration */
+			if (smtp->tflags.sizepreview) {
+				bbs_warning("Duplicate SIZE declaration (%lu)\n", smtp->tflags.sizepreview);
+				smtp->failures++;
+				continue;
+			}
+			sizebytes = (unsigned int) atoi(d);
+			if (sizebytes >= max_message_size) {
+				smtp_reply(smtp, 552, 5.3.4, "Message too large");
+				return -1;
+			}
+			smtp->tflags.sizepreview = sizebytes;
+			freebytes = bbs_disk_bytes_free();
+			if ((long) smtp->tflags.sizepreview > freebytes) {
+				bbs_warning("Disk full? Need %lu bytes to receive message, but only %ld available\n", smtp->tflags.sizepreview, freebytes);
+				smtp_reply(smtp, 452, 4.3.1, "Insufficient system storage");
+				return -1;
+			}
+		} else if (!strcasecmp(ext, "AUTH")) {
+			/* RFC 4954 Section 5
+			 * This allows an SMTP user that is authorized to send mail on behalf of multiple identities
+			 * to specify as which identity this message is being sent. If we actually supported this,
+			 * we'd want to check to ensure that the user is authenticated already.
+			 * Currently, we don't really support this so just ignore. This is valid:
+			 * The RFC allows such implementations to parse and discard;
+			 * we don't pass empty AUTH=<> on since we don't authenticate to other servers for submissions,
+			 * and we don't trust any other MTAs, so that's fine. */
+			bbs_warning("Ignoring AUTH identity: %s\n", d);
+		} else if (!strcasecmp(ext, "BODY")) {
+			/* RFC 6152 8BITMIME
+			 * In my experience, most mail that requires 8BITMIME is spam.
+			 * But it's probably not our place to reject such mail. */
+			if (!strcasecmp(d, "8BITMIME")) {
+				smtp->tflags.is8bit = 1;
+				smtp->failures++; /* Penalize 8-bit messages. These are probably spam. */
+			} else if (!strcasecmp(d, "7BIT")) {
+				smtp->tflags.is8bit = 0;
+			} else {
+				bbs_warning("Invalid BODY type: %s\n", d);
+				smtp->failures++;
+			}
+		} else {
+			bbs_warning("Unknown SMTP MAIL parameter: %s\n", ext);
+			smtp_reply(smtp, 455, 4.5.1, "Unsupported parameter");
+			return -1;
 		}
 	}
+
+	return 0;
+}
+
+/*! \brief Parse MAIL FROM */
+static int handle_mail(struct smtp_session *smtp, char *s)
+{
+	char *tmp, *from;
+	REQUIRE_HELO();
+	REQUIRE_ARGS(s);
+	if (!STARTS_WITH(s, "FROM:")) {
+		smtp_reply(smtp, 501, 5.5.4, "Unrecognized parameter");
+		return 0;
+	}
+	s += STRLEN("FROM:");
+
+	/* If the connection was to the MSA port, then we only accept outgoing mail from our users, not incoming mail. */
+	if (smtp->msa && !bbs_user_is_registered(smtp->node->user)) {
+		smtp_reply(smtp, 530, 5.7.0, "Authentication required");
+		return 0;
+	}
+
+	/* fromlocal is slightly different from msa.
+	 * fromlocal indicates the message is from an MSA or originating locally (e.g. bounce messages).
+	 * fromlocal is a superset of MSA */
+	smtp->fromlocal = smtp->msa;
+
+	REQUIRE_ARGS(s);
+	if (*s != '<') {
+		/* No space is permitted between MAIL FROM: and the opening < for the recipient. */
+		bbs_warning("Malformed MAIL FROM (contains extraneous space): %s\n", s);
+		smtp->failures++;
+		ltrim(s);
+		REQUIRE_ARGS(s);
+	}
+
+	from = strsep(&s, " ");
+	if (!strlen_zero(s) && parse_mail_parameters(smtp, s)) {
+		return 0; /* Already returned an error code */
+	}
+	if (*from != '<') {
+		smtp_reply(smtp, 501, 5.1.7, "Syntax error in MAIL command"); /* Email address must be enclosed in <> */
+		return 0;
+	}
+	if (!*(from + 1)) {
+		smtp_reply(smtp, 501, 5.1.7, "Syntax error in MAIL command"); /* Email address must be enclosed in <> */
+		return 0;
+	}
+	if (*from != '<' || !*(from + 1) || !(tmp = strchr(from, '>'))) {
+		smtp_reply(smtp, 501, 5.1.7, "Syntax error in MAIL command"); /* Email address must be enclosed in <> */
+		return 0;
+	}
+	*tmp = '\0'; /* Stop at < */
+	from++; /* Skip < */
+	/* Can use MAIL FROM more than once (to replace previous one) */
+	if (strlen_zero(from)) {
+		/* Empty MAIL FROM. This means postmaster, i.e. an email that should not be auto-replied to.
+		 * This does bypass some checks below, but we shouldn't reject such mail. */
+		bbs_debug(5, "MAIL FROM is empty\n");
+		smtp->fromlocal = 0;
+		REPLACE(smtp->from, "");
+		smtp_reply(smtp, 250, 2.0.0, "OK");
+		return 0;
+	}
+	tmp = strchr(from, '@');
+	REQUIRE_ARGS(tmp); /* Must be user@domain */
+	tmp++; /* Skip @ */
+	/* Don't require authentication simply because the sending domain is local.
+	 * There may be other servers that are authorized to send mail from such domains.
+	 * If it's not legitimate, the SPF checks should reveal that. */
+	if (strlen_zero(smtp->helohost) || (requirefromhelomatch && !smtp_domain_matches(smtp->helohost, tmp))) {
+		smtp_reply(smtp, 530, 5.7.0, "HELO/EHLO domain does not match MAIL FROM domain");
+		return 0;
+	}
+	if (stringlist_contains(&blacklist, tmp)) { /* Entire domain is blacklisted */
+		smtp_reply(smtp, 554, 5.7.1, "This domain is blacklisted");
+		return 0;
+	} else if (stringlist_contains(&blacklist, from)) { /* This user is blacklisted */
+		smtp_reply(smtp, 554, 5.7.1, "This email address is blacklisted");
+		return 0;
+	}
+	REPLACE(smtp->from, from);
+	smtp_reply(smtp, 250, 2.1.0, "OK");
+	return 0;
+}
+
+static int add_recipient(struct smtp_session *smtp, int local, const char *s)
+{
+	const char *recipient = s;
 
 	if (stringlist_contains(&smtp->recipients, recipient)) {
 		/* Recipient was already added. */
@@ -457,6 +770,20 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 	struct smtp_delivery_handler *h;
 	struct smtp_response error;
 
+	if (strncasecmp(s, "TO:", 3)) {
+		smtp_reply(smtp, 501, 5.5.4, "Unrecognized parameter");
+		return 0;
+	}
+	s += 3;
+	REQUIRE_ARGS(s);
+
+	if (*s != '<') {
+		/* Space not permitted between : and < */
+		bbs_warning("Extraneous space in RCPT TO: %s\n", s);
+		smtp->failures++;
+		ltrim(s);
+	}
+
 	/* If MAIL FROM is an address that belongs to us,
 	 * then authentication is required. Any recipients are allowed.
 	 * If not, it's an external email, no authentication is required,
@@ -470,6 +797,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 
 	if (!smtp->fromlocal && !accept_relay_in) {
 		smtp_reply(smtp, 550, 5.7.1, "Mail not accepted externally here");
+		smtp->failures++;
 		return 0;
 	}
 
@@ -482,6 +810,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 	if (bbs_parse_email_address(address, NULL, &user, &domain)) {
 		free(address);
 		smtp_reply(smtp, 501, 5.1.7, "Syntax error in RCPT command"); /* Email address must be enclosed in <> */
+		smtp->failures++;
 		return 0;
 	}
 
@@ -510,7 +839,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 		smtp->failures++;
 		return 0;
 	}
-	/* Don't unlock handlers yet because error is filled in with memory from handler modules.
+	/* Don't unlock handlers until here because error is filled in with memory from handler modules.
 	 * Therefore these modules cannot unregister until we're done with that. */
 	RWLIST_UNLOCK(&handlers);
 
@@ -520,7 +849,7 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 	}
 
 	/* Actually add the recipient to the recipient list. */
-	res = add_recipient(smtp, local, s, 0);
+	res = add_recipient(smtp, local, s);
 	if (res == 1) {
 		smtp_reply(smtp, 250, 2.1.5, "OK, duplicate recipients will be consolidated.");
 	} else {
@@ -744,6 +1073,7 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 
 	fdata->dir = dir;
 	fdata->from = fdata->smtp->from;
+	fdata->helohost = fdata->smtp->helohost;
 	fdata->node = fdata->smtp->node;
 
 	bbs_debug(4, "Running %s (%s) filters\n", scope == SMTP_SCOPE_COMBINED ? "COMBINED" : "INDIVIDUAL", smtp_filter_direction_name(dir));
@@ -810,7 +1140,7 @@ void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_process *mproc)
 {
 	memset(mproc, 0, sizeof(struct smtp_msg_process));
 	mproc->fd = smtp->wfd;
-	safe_strncpy(mproc->datafile, smtp->template, sizeof(mproc->datafile));
+	mproc->datafile = smtp->datafile;
 	mproc->node = smtp->node;
 	mproc->from = smtp->from;
 	mproc->forward = &smtp->recipients; /* Tack on forwarding targets to the recipients list */
@@ -1339,7 +1669,7 @@ int smtp_inject(const char *mailfrom, struct stringlist *recipients, const char 
 	smtp.from = (char*) mailfrom;
 #pragma GCC diagnostic pop
 
-	safe_strncpy(smtp.template, filename, sizeof(smtp.template));
+	smtp.datafile = filename;
 
 	memcpy(&smtp.recipients, recipients, sizeof(smtp.recipients));
 
@@ -1742,7 +2072,7 @@ static int handle_burl(struct smtp_session *smtp, char *s)
 	REQUIRE_MAIL_FROM();
 	REQUIRE_RCPT();
 	REQUIRE_ARGS(s);
-	smtp_reset_data(smtp);
+
 	/* Wow! A client that actually supports BURL! That's a rare one...
 	 * (at the time of this programming, only Trojita does. Maybe Thunderbird forks will some day?)
 	 * In the meantime, this is a feature that almost nobody can use. */
@@ -1753,12 +2083,9 @@ static int handle_burl(struct smtp_session *smtp, char *s)
 		smtp_reply(smtp, 554, 5.7.0, "Invalid BURL command");
 		return 0;
 	}
-	/*! \todo RFC 4468 says we MUST support 8BITMIME extension if we support BURL
-	 * We probably already do without doing anything, but verify that and add that to the EHLO response */
 
 	/* We'll get a URL that looks something like this:
-	 * imap://jsmith@imap.example.com/Sent;UIDVALIDITY=1677584102/;UID=8;urlauth=submit+jsmith:internal
-	 */
+	 * imap://jsmith@imap.example.com/Sent;UIDVALIDITY=1677584102/;UID=8;urlauth=submit+jsmith:internal */
 	bbs_debug(5, "BURL URL: %s\n", imapurl);
 	if (STARTS_WITH(imapurl, "imap://")) {
 		imapurl += STRLEN("imap://");
@@ -1849,19 +2176,40 @@ static int handle_burl(struct smtp_session *smtp, char *s)
 	return 0;
 }
 
-static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
+static int handle_data(struct smtp_session *smtp, char *s, struct readline_data *rldata)
 {
-	char *command;
+	FILE *fp;
+	char template[256];
+	int datafail = 0;
+	int indataheaders = 1;
 
-	if (smtp->tflags.inauth) {
-		return handle_auth(smtp, s);
-	} else if (smtp->tflags.indata) {
-		int res;
+	REQUIRE_HELO();
+	REQUIRE_MAIL_FROM();
+	REQUIRE_RCPT();
+	REQUIRE_EMPTY(s);
 
+	strcpy(template, "/tmp/smtpXXXXXX");
+	fp = bbs_mkftemp(template, 0600);
+	if (!fp) {
+		smtp_reply_nostatus(smtp, 452, "Server error, unable to allocate buffer");
+		return -1;
+	}
+
+	/* Begin reading data. */
+	smtp_reply_nostatus(smtp, 354, "Start mail input; end with a period on a line by itself");
+
+	for (;;) {
+		size_t len;
+		int res = bbs_readline(smtp->rfd, rldata, "\r\n", MIN_MS(3)); /* RFC 5321 4.5.3.2.5 */
+		if (res < 0) {
+			return -1;
+		}
+		s = rldata->buf;
+		len = (size_t) res;
+		bbs_debug(8, "%p => [%lu data bytes]\n", smtp, len); /* This could be a lot of output, don't show it all. */
 		if (!strcmp(s, ".")) { /* Entire message has now been received */
-			smtp->tflags.indata = 0;
-			if (smtp->tflags.datafail) {
-				smtp->tflags.datafail = 0;
+			fclose(fp); /* Have to close and reopen in read mode anyways */
+			if (datafail) {
 				if (smtp->tflags.datalen >= max_message_size) {
 					/* Message too large. */
 					smtp_reply(smtp, 552, 5.2.3, "Your message exceeded our message size limits");
@@ -1869,25 +2217,32 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 					/* Message not successfully received in totality, so reject it. */
 					smtp_reply(smtp, 451, 4.3.0, "Message not received successfully, try again");
 				}
-				return 0;
+				bbs_delete_file(template);
+				break;
 			} else if (smtp->tflags.hopcount >= MAX_HOPS) {
 				smtp_reply(smtp, 554, 5.6.0, "Message exceeded %d hops, this may indicate a mail loop", MAX_HOPS);
-				return 0;
+				bbs_delete_file(template);
+				break;
 			}
-			fclose(smtp->fp); /* Have to close and reopen in read mode anyways */
-			smtp->fp = NULL;
+
 			bbs_debug(5, "Handling receipt of %lu-byte message\n", smtp->tflags.datalen);
-			res = do_deliver(smtp, smtp->template, smtp->tflags.datalen);
-			bbs_delete_file(smtp->template);
+
+			smtp->datafile = template;
+			res = do_deliver(smtp, template, smtp->tflags.datalen);
+			smtp->datafile = NULL;
+
+			bbs_delete_file(template);
 			smtp->tflags.datalen = 0;
+			/* RFC 5321 4.1.1.4: After DATA, must clear buffers */
+			smtp_reset(smtp);
 			return res;
 		}
 
-		if (smtp->tflags.datafail) {
-			return 0; /* Corruption already happened, just ignore the rest of the message for now. */
+		if (datafail) {
+			continue; /* Corruption already happened, just ignore the rest of the message for now. */
 		}
 
-		if (smtp->tflags.indataheaders) {
+		if (indataheaders) {
 			if ((smtp->fromlocal || smtp->msa) && STARTS_WITH(s, "From:")) {
 				const char *newfromhdraddr = S_IF(s + 5);
 				REPLACE(smtp->fromheaderaddress, newfromhdraddr);
@@ -1904,35 +2259,38 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 			} else if (!smtp->tflags.dkimsig && STARTS_WITH(s, "DKIM-Signature")) {
 				smtp->tflags.dkimsig = 1;
 			} else if (!len) {
-				smtp->tflags.indataheaders = 0; /* CR LF on its own indicates end of headers */
+				indataheaders = 0; /* CR LF on its own indicates end of headers */
 			}
 		}
 
 		if (smtp->tflags.datalen + len >= max_message_size) {
-			smtp->tflags.datafail = 1;
+			datafail = 1;
 			smtp->tflags.datalen = max_message_size; /* This isn't really true, this is so we can detect that the message was too large. */
 		}
 
-		res = bbs_append_stuffed_line_message(smtp->fp, s, len); /* Should return len + 2, unless it was byte stuffed, in which case it'll be len + 1 */
+		res = bbs_append_stuffed_line_message(fp, s, len); /* Should return len + 2, unless it was byte stuffed, in which case it'll be len + 1 */
 		if (res < 0) {
-			smtp->tflags.datafail = 1;
+			datafail = 1;
 		}
 		smtp->tflags.datalen += (long unsigned) res;
-		return 0;
+	}
+	return 0;
+}
+
+static int smtp_process(struct smtp_session *smtp, char *s, struct readline_data *rldata)
+{
+	char *command;
+
+	if (smtp->tflags.inauth) {
+		return handle_auth(smtp, s);
 	}
 
 	command = strsep(&s, " ");
 	REQUIRE_ARGS(command);
 
 	/* Slow down spam using tarpit like techniques */
-	if (smtp->failures) {
-		bbs_debug(4, "%p: Current number of SMTP failures: %d\n", smtp, smtp->failures);
-		if (smtp->failures > 4) { /* Do not do this with <= 3 or we'll slow down the test suite (and get test failures) */
-			/* Exponential delay as # of failures increases: */
-			if (bbs_node_safe_sleep(smtp->node, 1000 * (1 << smtp->failures))) {
-				return -1;
-			}
-		}
+	if (smtp_tarpit(smtp, 0, NULL)) {
+		return -1;
 	}
 
 	if (!strcasecmp(command, "RSET")) {
@@ -1940,11 +2298,13 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 			bbs_debug(3, "Forcibly disconnecting client for too many resets\n");
 			return -1;
 		}
+		REQUIRE_EMPTY(s);
 		smtp_reset(smtp);
 		smtp_reply(smtp, 250, 2.1.5, "Flushed");
 	} else if (!strcasecmp(command, "NOOP")) {
 		smtp_reply(smtp, 250, 2.0.0, "OK");
 	} else if (!strcasecmp(command, "QUIT")) {
+		REQUIRE_EMPTY(s);
 		smtp_reply(smtp, 221, 2.0.0, "Closing connection");
 		return -1; /* Will destroy SMTP session after returning */
 	} else if (!strcasecmp(command, "HELO")) {
@@ -1991,127 +2351,28 @@ static int smtp_process(struct smtp_session *smtp, char *s, size_t len)
 			}
 		}
 	} else if (!strcasecmp(command, "MAIL")) {
-		char *tmp, *from;
-		REQUIRE_HELO();
-		REQUIRE_ARGS(s);
-		if (strncasecmp(s, "FROM:", 5)) {
-			smtp_reply(smtp, 501, 5.5.4, "Unrecognized parameter");
-			return 0;
-		}
-		s += 5;
-
-		/* If the connection was to the MSA port, then we only accept outgoing mail from our users, not incoming mail. */
-		if (smtp->msa && !bbs_user_is_registered(smtp->node->user)) {
-			smtp_reply(smtp, 530, 5.7.0, "Authentication required");
-			return 0;
-		}
-
-		smtp->fromlocal = smtp->msa; /* XXX This is kind of a redundant variable, although usage is slightly different */
-
-		REQUIRE_ARGS(s);
-		ltrim(s);
-		REQUIRE_ARGS(s);
-		from = strsep(&s, " ");
-		if (!strlen_zero(s)) {
-			char *sizestring;
-			/* Part of the SIZE extension. For ESMTP, something like SIZE=XXX */
-			sizestring = strchr(s, '=');
-			if (sizestring) {
-				sizestring++;
-				if (!strlen_zero(sizestring)) {
-					long freebytes;
-					unsigned int sizebytes = (unsigned int) atoi(sizestring);
-					if (sizebytes >= max_message_size) {
-						smtp_reply(smtp, 552, 5.3.4, "Message too large");
-						return 0;
-					}
-					smtp->tflags.sizepreview = sizebytes;
-					freebytes = bbs_disk_bytes_free();
-					if ((long) smtp->tflags.sizepreview > freebytes) {
-						bbs_warning("Disk full? Need %lu bytes to receive message, but only %ld available\n", smtp->tflags.sizepreview, freebytes);
-						smtp_reply(smtp, 452, 4.3.1, "Insufficient system storage");
-						return 0;
-					}
-				} else {
-					bbs_warning("Malformed MAIL directive: %s\n", s);
-				}
-			}
-		}
-		bbs_debug(3, "%s/%s\n", from, s);
-		if (*from != '<') {
-			smtp_reply(smtp, 501, 5.1.7, "Syntax error in MAIL command"); /* Email address must be enclosed in <> */
-			return 0;
-		}
-		if (!*(from + 1)) {
-			smtp_reply(smtp, 501, 5.1.7, "Syntax error in MAIL command"); /* Email address must be enclosed in <> */
-			return 0;
-		}
-		if (*from != '<' || !*(from + 1) || !(tmp = strchr(from, '>'))) {
-			smtp_reply(smtp, 501, 5.1.7, "Syntax error in MAIL command"); /* Email address must be enclosed in <> */
-			return 0;
-		}
-		*tmp = '\0'; /* Stop at < */
-		from++; /* Skip < */
-		/* Can use MAIL FROM more than once (to replace previous one) */
-		if (strlen_zero(from)) {
-			/* Empty MAIL FROM. This means postmaster, i.e. an email that should not be auto-replied to.
-			 * This does bypass some checks below, but we shouldn't reject such mail. */
-			bbs_debug(5, "MAIL FROM is empty\n");
-			smtp->fromlocal = 0;
-			REPLACE(smtp->from, "");
-			smtp_reply(smtp, 250, 2.0.0, "OK");
-			return 0;
-		}
-		tmp = strchr(from, '@');
-		REQUIRE_ARGS(tmp); /* Must be user@domain */
-		tmp++; /* Skip @ */
-		/* Don't require authentication simply because the sending domain is local.
-		 * There may be other servers that are authorized to send mail from such domains.
-		 * If it's not legitimate, the SPF checks should reveal that. */
-		if (strlen_zero(smtp->helohost) || (requirefromhelomatch && !smtp_domain_matches(smtp->helohost, tmp))) {
-			smtp_reply(smtp, 530, 5.7.0, "HELO/EHLO domain does not match MAIL FROM domain");
-			return 0;
-		}
-		if (stringlist_contains(&blacklist, tmp)) { /* Entire domain is blacklisted */
-			smtp_reply(smtp, 554, 5.7.1, "This domain is blacklisted");
-			return 0;
-		} else if (stringlist_contains(&blacklist, from)) { /* This user is blacklisted */
-			smtp_reply(smtp, 554, 5.7.1, "This email address is blacklisted");
-			return 0;
-		}
-		REPLACE(smtp->from, from);
-		smtp_reply(smtp, 250, 2.1.0, "OK");
+		return handle_mail(smtp, s);
 	} else if (!strcasecmp(command, "RCPT")) {
 		REQUIRE_HELO();
 		REQUIRE_MAIL_FROM();
 		REQUIRE_ARGS(s);
-		if (strncasecmp(s, "TO:", 3)) {
-			smtp_reply(smtp, 501, 5.5.4, "Unrecognized parameter");
-			return 0;
-		}
-		s += 3;
-		REQUIRE_ARGS(s);
-		ltrim(s);
 		return handle_rcpt(smtp, s);
 	} else if (!strcasecmp(command, "DATA")) {
-		REQUIRE_HELO();
-		REQUIRE_MAIL_FROM();
-		REQUIRE_RCPT();
-		smtp_reset_data(smtp);
-		strcpy(smtp->template, "/tmp/smtpXXXXXX");
-		smtp->fp = bbs_mkftemp(smtp->template, 0600);
-		if (!smtp->fp) {
-			smtp_reply_nostatus(smtp, 452, "Server error, unable to allocate buffer");
-		} else {
-			/* Begin reading data. */
-			smtp->tflags.indata = 1;
-			smtp->tflags.indataheaders = 1;
-			smtp_reply_nostatus(smtp, 354, "Start mail input; end with a period on a line by itself");
-		}
+		return handle_data(smtp, s, rldata);
 	} else if (!strcasecmp(command, "BURL")) {
 		return handle_burl(smtp, s);
+	} else if (!strcasecmp(command, "VRFY")) {
+		smtp_reply(smtp, 502, 5.5.1, "Unsupported command");
+	} else if (!strcasecmp(command, "EXPN")) {
+		smtp_reply(smtp, 502, 5.5.1, "Unsupported command");
+	} else if (!strcasecmp(command, "HELP")) {
+		/* RFC 4.1.1.8 says servers SHOULD support HELP and that they MAY support HELP for specific commands (we don't) */
+		smtp_reply0_nostatus(smtp, 214, "This server supports the following commands:");
+		smtp_reply_nostatus(smtp, 214, "HELO EHLO RSET HELP QUIT STARTTLS AUTH MAIL RCPT DATA BURL");
 	} else { /* GENURLAUTH */
-		/* Deliberately not supported: VRFY, EXPN */
+		if (smtp_tarpit(smtp, 502, NULL)) {
+			return -1;
+		}
 		smtp_reply(smtp, 502, 5.5.1, "Unrecognized command");
 	}
 
@@ -2125,10 +2386,12 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 
-	smtp_reply_nostatus(smtp, 220, "%s ESMTP Service Ready", bbs_hostname());
+	if (handle_connect(smtp)) {
+		return;
+	}
 
 	for (;;) {
-		int res = bbs_readline(smtp->rfd, &rldata, "\r\n", 60000); /* Wait 60 seconds, that ought to be plenty even for manual testing... real SMTP clients won't need more than a couple seconds. */
+		int res = bbs_readline(smtp->rfd, &rldata, "\r\n", MIN_MS(5)); /* RFC 5321 4.5.3.2.7 */
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {
@@ -2140,16 +2403,12 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 			}
 			break;
 		}
-		if (smtp->tflags.indata) {
-			bbs_debug(8, "%p => [%d data bytes]\n", smtp, res); /* This could be a lot of output, don't show it all. */
+		if (STARTS_WITH(buf, "AUTH PLAIN ")) {
+			bbs_debug(6, "%p => AUTH PLAIN ******\n", smtp);
 		} else {
-			if (STARTS_WITH(buf, "AUTH PLAIN ")) {
-				bbs_debug(6, "%p => AUTH PLAIN ******\n", smtp);
-			} else {
-				bbs_debug(6, "%p => %s\n", smtp, buf);
-			}
+			bbs_debug(6, "%p => %s\n", smtp, buf);
 		}
-		if (smtp_process(smtp, buf, (size_t) res)) {
+		if (smtp_process(smtp, buf, &rldata)) {
 			break;
 		}
 		if (smtp->tflags.dostarttls) {
@@ -2165,7 +2424,8 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 			smtp->secure = 1;
 			/* Prevent STARTTLS command injection by resetting the buffer after TLS upgrade:
 			 * http://www.postfix.org/CVE-2011-0411.html
-			 * https://blog.apnic.net/2021/11/18/vulnerabilities-show-why-starttls-should-be-avoided-if-possible/ */
+			 * https://blog.apnic.net/2021/11/18/vulnerabilities-show-why-starttls-should-be-avoided-if-possible/
+			 * Also RFC 3207 Section 6 */
 			bbs_readline_flush(&rldata);
 		}
 	}
@@ -2295,6 +2555,13 @@ static int load_module(void)
 		goto cleanup;
 	}
 
+	if (bbs_hostname_is_ipv4(bbs_hostname())) {
+		/* Address literals are surrounded in [], per RFC 5321 4.1.3 */
+		snprintf(smtp_hostname_buf, sizeof(smtp_hostname_buf), "[%s]", bbs_hostname());
+	} else {
+		safe_strncpy(smtp_hostname_buf, bbs_hostname(), sizeof(smtp_hostname_buf));
+	}
+
 	/* If we can't start the TCP listeners, decline to load */
 	if (bbs_start_tcp_listener3(smtp_enabled ? smtp_port : 0, smtps_enabled ? smtps_port : 0, msa_enabled ? msa_port : 0, "SMTP", "SMTPS", "SMTP (MSA)", __smtp_handler)) {
 		goto cleanup;
@@ -2302,6 +2569,7 @@ static int load_module(void)
 
 	bbs_register_tests(tests);
 	bbs_register_mailer(injectmail, 1);
+
 	return 0;
 
 cleanup:

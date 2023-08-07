@@ -73,7 +73,7 @@ static int run(void)
 		return -1;
 	}
 
-	CLIENT_EXPECT(clientfd, "220");
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "220 ");
 
 	/* Try doing invalid things */
 	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
@@ -167,13 +167,28 @@ static int run(void)
 	SWRITE(clientfd, "DATA\r\n");
 	CLIENT_EXPECT(clientfd, "354");
 	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:29 -0700" ENDL);
-	for (i = 0; i < 55; i++) {
+	for (i = 0; i < 105; i++) {
 		SWRITE(clientfd, "Received: from foobar.example.com" ENDL);
 	}
 	SWRITE(clientfd, ENDL);
 	SWRITE(clientfd, "Test" ENDL);
 	SWRITE(clientfd, "." ENDL); /* EOM */
 	CLIENT_EXPECT(clientfd, "554"); /* Mail loop detected */
+
+	/* Test pregreeting */
+	close(clientfd);
+	clientfd = test_make_socket(25);
+	if (clientfd < 0) {
+		return -1;
+	}
+
+	/* Commit a protocol violation before sending data before receiving the full banner */
+	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+	res = test_bbs_expect("Pregreet", SEC_MS(2)); /* Check that we successfully detected pregreet via console warning */
+	if (res) {
+		goto cleanup;
+	}
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
 
 	res = 0;
 

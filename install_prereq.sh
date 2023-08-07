@@ -13,6 +13,7 @@ apt-get install -y libcap-dev # <sys/capability.h>
 apt-get install -y libedit-dev # <histedit.h>
 apt-get install -y libuuid1 uuid-dev # <uuid/uuid.h>
 apt-get install -y libreadline-dev # <readline/history.h>
+apt-get install -y libbsd-dev # <bsd/string.h>
 
 # net_ssh
 apt-get install -y libssh-dev # libssh

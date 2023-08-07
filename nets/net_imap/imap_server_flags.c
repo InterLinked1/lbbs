@@ -21,6 +21,7 @@
 
 #include <string.h>
 #include <ctype.h>
+#include <bsd/string.h>
 
 #include "include/mod_mail.h"
 
@@ -357,7 +358,7 @@ int translate_maildir_flags(struct imap_session *imap, const char *oldmaildir, c
 	 */
 	gen_flag_letters(oldflags, newflagletters, sizeof(newflagletters)); /* Copy the old uppercase flags over */
 	if (IMAP_HAS_ACL(imap->acl, IMAP_ACL_WRITE)) {
-		strncat(newflagletters, imap->appendkeywords, sizeof(newflagletters) - 1); /* Append the keywords */
+		bbs_append_string(newflagletters, imap->appendkeywords, sizeof(newflagletters) - 1); /* Append the keywords */
 	}
 
 	bbs_debug(5, "Flags for %s have changed to '%s' due to location/permission change\n", oldfilename, newflagletters);

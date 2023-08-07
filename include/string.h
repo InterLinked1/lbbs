@@ -117,6 +117,15 @@ void bbs_strncpy_until(char *restrict dst, const char *restrict src, size_t size
 int bbs_strcpy_nospaces(const char *restrict s, char *restrict buf, size_t len) __attribute__((nonnull (1,2)));
 
 /*!
+ * \brief Append a string to a buffer
+ * \param dst Destination buffer, which is null terminated
+ * \param src String to append to dst
+ * \param len Length of dst
+ * \return Total length of src after the append
+ */
+size_t bbs_append_string(char *restrict dst, const char *src, size_t len);
+
+/*!
  * \brief Remove a substring from a string in place
  * \param s String to modify
  * \param word Substring of which instances will be removed

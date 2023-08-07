@@ -2249,7 +2249,7 @@ static int process_append(struct imap_session *imap, const char *appenddir, cons
 		/* Generate flag letters from flag bits */
 		gen_flag_letters(appendflags, newflagletters, sizeof(newflagletters));
 		if (imap->numappendkeywords) {
-			strncat(newflagletters, imap->appendkeywords, sizeof(newflagletters) - 1);
+			bbs_append_string(newflagletters, imap->appendkeywords, sizeof(newflagletters) - 1);
 		}
 		seqno = bbs_dir_num_files(newdir) + bbs_dir_num_files(curdir); /* XXX Clunky, but compute the sequence number of this message as the # of messages in this mailbox */
 		if (maildir_msg_setflags(imap, seqno, newfilename, newflagletters)) {
@@ -3130,7 +3130,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 			char oldname[516];
 			/* Generate flag letters from flag bits */
 			gen_flag_letters(newflags, newflagletters, sizeof(newflagletters));
-			strncat(newflagletters, keywords, sizeof(newflagletters) - 1);
+			bbs_append_string(newflagletters, keywords, sizeof(newflagletters) - 1);
 			snprintf(oldname, sizeof(oldname), "%s/%s", imap->curdir, entry->d_name);
 			/* RFC 3501 6.4.6: We SHOULD send an untagged FETCH when flags change from an external source (not us). This handles that: */
 			if (maildir_msg_setflags_modseq(imap, seqno, oldname, newflagletters, &newmodseq)) {
@@ -3244,7 +3244,7 @@ static int process_flags(struct imap_session *imap, char *s, int usinguid, const
 		char changedflagletters[32];
 		gen_flag_letters(opflags, changedflagletters, sizeof(changedflagletters));
 		if (imap->numappendkeywords) {
-			strncat(changedflagletters, imap->appendkeywords, sizeof(changedflagletters) - 1);
+			strncat(changedflagletters, imap->appendkeywords, sizeof(changedflagletters) - 1 - strlen(changedflagletters));
 		}
 		gen_flag_names(changedflagletters, changedflags, sizeof(changedflags));
 		if (imap->numappendkeywords) {

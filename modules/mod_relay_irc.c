@@ -24,6 +24,7 @@
 #include <ctype.h>
 #include <signal.h>
 #include <unistd.h>
+#include <bsd/string.h>
 
 #include "include/linkedlists.h"
 #include "include/config.h"
@@ -308,8 +309,12 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 		int mynumeric;
 #ifdef PREFIX_NAMES
 		char restbuf[512] = "";
+		char *restpos;
+		size_t restlen;
 		char *restptr;
 		char newnick[64];
+
+		SAFE_FAST_BUF_INIT(restbuf, sizeof(restbuf), restpos, restlen);
 #endif
 		if (strlen_zero(line)) {
 			continue; /* It happens... */
@@ -371,7 +376,7 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 				if (rest && *rest == ':') {
 					int n = 0;
 					rest++;
-					strncat(restbuf, ":", sizeof(restbuf) - 1);
+					SAFE_FAST_APPEND_NOSPACE(restbuf, sizeof(restbuf), restpos, restlen, ":");
 
 					while ((restptr = strsep(&rest, " "))) {
 						/* Use clientname rather than channel name on the other network (channel names could be the same, and are longer)
@@ -384,7 +389,7 @@ static int wait_response(int fd, const char *requsername, int numeric, const cha
 							restptr++;
 						}
 						snprintf(newnick, sizeof(newnick), "%s%s/%s", n ? " " : "", clientname, restptr);
-						strncat(restbuf, newnick, sizeof(restbuf) - 1);
+						SAFE_FAST_APPEND_NOSPACE(restbuf, sizeof(restbuf), restpos, restlen, "%s", newnick);
 						n++;
 					}
 					rest = restbuf;

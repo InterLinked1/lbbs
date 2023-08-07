@@ -37,7 +37,9 @@ static int process_message(struct smtp_filter_data *f, ARC_MESSAGE *msg)
 	ARC_STAT stat;
 	size_t headerslen, bodylen;
 	char *headers, *header, *dup = NULL;
-	char full_header[1024] = "";
+	char full_header[4096];
+	char *hdrbuf;
+	size_t hdrlen;
 	const char *body, *dkimsig;
 
 	body = smtp_message_body(f);
@@ -59,6 +61,7 @@ static int process_message(struct smtp_filter_data *f, ARC_MESSAGE *msg)
 	}
 
 	dup = headers;
+	SAFE_FAST_BUF_INIT(full_header, sizeof(full_header), hdrbuf, hdrlen);
 
 	/* This is annoying. Unlike libopendmarc, we don't have the option of alternately just passing in the entire message to libopenarc.
 	 * So we have to do the work of manually iterating over the headers.
@@ -75,13 +78,12 @@ static int process_message(struct smtp_filter_data *f, ARC_MESSAGE *msg)
 			if (stat != ARC_STAT_OK) {
 				bbs_warning("ARC header add failed: %s\n", full_header);
 			}
-			full_header[0] = '\0';
+			SAFE_FAST_BUF_INIT(full_header, sizeof(full_header), hdrbuf, hdrlen);
 		}
-		/* XXX Using strncat is not very efficient here */
-		if (full_header[0]) {
-			strncat(full_header, "\r\n", sizeof(full_header) - 1); /* Continuing multiline header */
+		if (full_header[0]) { /* Continuing multiline header */
+			SAFE_FAST_APPEND_NOSPACE(full_header, sizeof(full_header), hdrbuf, hdrlen, "\r\n");
 		}
-		strncat(full_header, header, sizeof(full_header) - 1);
+		SAFE_FAST_APPEND_NOSPACE(full_header, sizeof(full_header), hdrbuf, hdrlen, "%s", header);
 	}
 
 	/* Last header */
@@ -105,11 +107,8 @@ static int process_message(struct smtp_filter_data *f, ARC_MESSAGE *msg)
 		body += 2;
 		bodylen -= 2;
 	}
-#if 1
-	if (strlen(body) != bodylen) {
-		bbs_warning("Predicted body size %lu but actually %lu?\n", bodylen, strlen(body));
-		bodylen = strlen(body);
-	}
+#ifdef EXTRA_CHECKS
+	bbs_assert(strlen(body) == bodylen);
 #endif
 
 #pragma GCC diagnostic ignored "-Wcast-qual"

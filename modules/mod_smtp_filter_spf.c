@@ -30,6 +30,7 @@
 
 #include "include/module.h"
 #include "include/node.h"
+#include "include/utils.h" /* use bbs_hostname_is_ipv4 */
 
 #include "include/net_smtp.h"
 
@@ -49,8 +50,15 @@ static int prepend_spf(struct smtp_filter_data *f)
 		bbs_error("Failed to request new SPF\n");
 		return -1;
 	}
-	SPF_request_set_ipv4_str(spf_request, f->node->ip);
-	SPF_request_set_env_from(spf_request, f->from);
+	if (bbs_hostname_is_ipv4(f->node->ip)) {
+		SPF_request_set_ipv4_str(spf_request, f->node->ip);
+	} else {
+		SPF_request_set_ipv6_str(spf_request, f->node->ip);
+	}
+	/* HELO/EHLO hostname used for verification if MAIL FROM is empty (e.g. postmaster bounce)
+	 * This is RECOMMENDED by RFC 7208. */
+	SPF_request_set_helo_dom(spf_request, f->helohost);
+	SPF_request_set_env_from(spf_request, f->from); /* Envelope from (MAIL FROM) */
 
 #define VALID_SPF(s) (!strcmp(s, "pass") || !strcmp(s, "fail") || !strcmp(s, "softfail") || !strcmp(s, "neutral") || !strcmp(s, "none") || !strcmp(s, "temperror") || !strcmp(s, "permerror"))
 
@@ -66,7 +74,6 @@ static int prepend_spf(struct smtp_filter_data *f)
 			bbs_warning("Unexpected SPF result: %s\n", spfresult);
 		}
 		SPF_response_free(spf_response);
-		/*! \todo If SPF result is fail, automatically move to Junk folder? (as opposed to INBOX) */
 	} else {
 		bbs_warning("Failed to get SPF response for %s\n", f->from);
 	}

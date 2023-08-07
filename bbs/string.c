@@ -23,6 +23,9 @@
 #include <string.h>
 #include <ctype.h> /* use isprint, isspace */
 
+#undef strlcat
+#include <bsd/string.h>
+
 #include "include/string.h"
 
 int bbs_printable_strlen(const char *restrict s)
@@ -286,6 +289,11 @@ int bbs_strcpy_nospaces(const char *restrict s, char *restrict buf, size_t len)
 	}
 	*buf = '\0'; /* Null terminate */
 	return len > 1 ? 0 : -1;
+}
+
+size_t bbs_append_string(char *restrict dst, const char *src, size_t len)
+{
+	return strlcat(dst, src, len); /* Requires -lbsd */
 }
 
 void bbs_str_remove_substring(char *restrict s, const char *word, size_t wordlen)

@@ -24,6 +24,9 @@
 
 struct smtp_session;
 
+/*! \brief Get the SMTP hostname of the local SMTP server, suitable for use in HELO/EHLO */
+const char *smtp_hostname(void);
+
 /*!
  * \brief Get a timestamp string appropriate for the Received header
  * \param received Received time
@@ -60,6 +63,7 @@ struct smtp_filter_data {
 	/* Duplicated fields: these are simply duplicated from smtp: */
 	struct bbs_node *node;			/*!< Node */
 	const char *from;				/*!< Envelope from */
+	const char *helohost;			/*!< HELO/EHLO hostname */
 	/* Set by filter callbacks */
 	char *spf;						/*!< Allocated SPF header value */
 	char *dkim;						/*!< Allocated DKIM results */
@@ -156,7 +160,7 @@ struct smtp_msg_process {
 	struct mailbox *mbox;		/*!< Mailbox (incoming only) */
 	struct bbs_user *user;		/*!< BBS user (outgoing only) */
 	struct bbs_node *node;		/*!< BBS node */
-	char datafile[128];			/*!< Name of email data file */
+	const char *datafile;		/*!< Name of email data file */
 	FILE *fp;					/*!< Email data file (used internally only) */
 	const char *from;			/*!< Envelope from */
 	const char *recipient;		/*!< Envelope to - only for INCOMING messages */

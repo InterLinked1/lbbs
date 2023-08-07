@@ -240,12 +240,29 @@ static void process_capabilities(int *restrict caps, int *restrict maxsendsize, 
 	}
 }
 
+/*! \brief Await a final SMTP response code */
+static int smtp_client_expect_final(struct bbs_tcp_client *restrict client, int ms, const char *code, size_t codelen)
+{
+	int res;
+	/* Read until we get a response that isn't the desired code or isn't a nonfinal response */
+	do {
+		res = bbs_tcp_client_expect(client, "\r\n", 1, ms, code);
+		bbs_debug(3, "Found '%s': %s\n", code, client->rldata.buf);
+	} while (!strncmp(client->rldata.buf, code, codelen) && client->rldata.buf[codelen] == '-');
+	if (res) {
+		bbs_warning("Expected '%s', got: %s\n", code, client->rldata.buf);
+	}
+	return res;
+}
+
+#define SMTP_CLIENT_EXPECT_FINAL(client, ms, code) if (smtp_client_expect_final(client, ms, code, STRLEN(code))) { goto cleanup; }
+
 static int smtp_client_handshake(struct bbs_tcp_client *restrict client, const char *hostname, int *restrict capsptr, int *restrict maxsendsize)
 {
 	int res = 0;
 
-	smtp_client_send(client, "EHLO %s\r\n", bbs_hostname());
-	res = bbs_tcp_client_expect(client, "\r\n", 1, SEC_MS(15), "250");
+	smtp_client_send(client, "EHLO %s\r\n", smtp_hostname());
+	res = smtp_client_expect_final(client, MIN_MS(5), "250", STRLEN("250")); /* Won't return 250 if ESMTP not supported */
 	if (res) { /* Fall back to HELO if EHLO not supported */
 		if (require_starttls_out) { /* STARTTLS is only supported by EHLO, not HELO */
 			bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
@@ -253,8 +270,8 @@ static int smtp_client_handshake(struct bbs_tcp_client *restrict client, const c
 			goto cleanup;
 		}
 		bbs_debug(3, "SMTP server %s does not support ESMTP, falling back to regular SMTP\n", hostname);
-		smtp_client_send(client, "HELO %s\r\n", bbs_hostname());
-		SMTP_EXPECT(client, SEC_MS(15), "250");
+		smtp_client_send(client, "HELO %s\r\n", smtp_hostname());
+		SMTP_CLIENT_EXPECT_FINAL(client, MIN_MS(5), "250");
 	} else {
 		/* Keep reading the rest of the multiline EHLO */
 		while (STARTS_WITH(client->rldata.buf, "250-")) {
@@ -309,7 +326,7 @@ static void smtp_tx_data_reset(struct smtp_tx_data *tx)
 static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const char *hostname, int port, int secure, const char *username, const char *password, const char *sender, const char *recipient, struct stringlist *recipients,
 	const char *prepend, size_t prependlen, int datafd, off_t offset, size_t writelen, char *buf, size_t len)
 {
-	int res, wrote = 0;
+	int res = -1, wrote = 0;
 	struct bbs_tcp_client client;
 	struct bbs_url url;
 	off_t send_offset = offset;
@@ -352,16 +369,7 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 
 	bbs_debug(3, "Attempting delivery of %lu-byte message from %s -> %s via %s\n", writelen, sender, recipient, hostname);
 
-	/* This is somewhat uncommon, but server banners COULD be multiline.
-	 * If they are, wait to receive the full greeting before proceeding, or it's a protocol violation.
-	 * Also be prepared to wait a while, in case the receiving mail server implements tarpitting. */
-	do {
-		res = bbs_tcp_client_expect(&client, "\r\n", 1, SEC_MS(10), "220");
-		bbs_debug(9, "<= %s\n", buf);
-	} while (STARTS_WITH(buf, "220-"));
-	if (!STARTS_WITH(buf, "220")) {
-		goto cleanup;
-	}
+	SMTP_CLIENT_EXPECT_FINAL(&client, MIN_MS(5), "220"); /* RFC 5321 4.5.3.2.1 (though for final 220, not any of them) */
 
 	res = smtp_client_handshake(&client, hostname, &caps, &maxsendsize);
 	if (res) {
@@ -372,7 +380,7 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 	if (caps & SMTP_CAPABILITY_STARTTLS) {
 		if (!secure) {
 			smtp_client_send(&client, "STARTTLS\r\n");
-			SMTP_EXPECT(&client, 2500, "220");
+			SMTP_CLIENT_EXPECT_FINAL(&client, 2500, "220");
 			bbs_debug(3, "Starting TLS\n");
 			if (bbs_tcp_client_starttls(&client, hostname)) {
 				goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
@@ -474,11 +482,11 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 	tx->prot = "smtp";
 	tx->stage = "MAIL FROM";
 	if (bbs_hostname_is_ipv4(domain)) {
-		smtp_client_send(&client, "MAIL FROM:<%s@[%s]>\r\n", user, domain);
+		smtp_client_send(&client, "MAIL FROM:<%s@[%s]>\r\n", user, domain); /* Domain literal for IP address */
 	} else {
 		smtp_client_send(&client, "MAIL FROM:<%s@%s>\r\n", user, domain); /* sender lacks <>, but recipient has them */
 	}
-	SMTP_EXPECT(&client, SEC_MS(10), "250");
+	SMTP_CLIENT_EXPECT_FINAL(&client, MIN_MS(5), "250"); /* RFC 5321 4.5.3.2.2 */
 	tx->stage = "RCPT FROM";
 	if (recipient) {
 		if (*recipient == '<') {
@@ -487,12 +495,12 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 			bbs_warning("Queue file recipient did not contain <>\n"); /* Support broken queue files, but make some noise */
 			smtp_client_send(&client, "RCPT TO:<%s>\r\n", recipient);
 		}
-		SMTP_EXPECT(&client, SEC_MS(10), "250");
+		SMTP_CLIENT_EXPECT_FINAL(&client, MIN_MS(5), "250"); /* RFC 5321 4.5.3.2.3 */
 	} else if (recipients) {
 		char *r;
 		while ((r = stringlist_pop(recipients))) {
 			smtp_client_send(&client, "RCPT TO:%s\r\n", r);
-			SMTP_EXPECT(&client, SEC_MS(10), "250");
+			SMTP_CLIENT_EXPECT_FINAL(&client, MIN_MS(5), "250"); /* RFC 5321 4.5.3.2.3 */
 			free(r);
 		}
 	} else {
@@ -501,7 +509,7 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 	}
 	tx->stage = "DATA";
 	smtp_client_send(&client, "DATA\r\n");
-	SMTP_EXPECT(&client, SEC_MS(10), "354");
+	SMTP_CLIENT_EXPECT_FINAL(&client, MIN_MS(2), "354"); /* RFC 5321 4.5.3.2.4 */
 	if (prepend && prependlen) {
 		wrote = bbs_write(client.wfd, prepend, (unsigned int) prependlen);
 	}
@@ -519,7 +527,8 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 	}
 	wrote += res;
 	bbs_debug(5, "Sent %d bytes\n", wrote);
-	SMTP_EXPECT(&client, 5000, "250"); /* Okay, this email is somebody else's problem now. */
+	/* RFC 5321 4.5.3.2.6 */
+	SMTP_CLIENT_EXPECT_FINAL(&client, MIN_MS(10), "250"); /* Okay, this email is somebody else's problem now. */
 
 	bbs_debug(3, "Message successfully delivered to %s\n", recipient);
 	res = 0;
@@ -721,6 +730,8 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 		/* Send a delivery failure response, then delete the file. */
 		bbs_warning("Delivery of message %s from %s to %s has failed permanently after %d retries\n", fullname, realfrom, realto, newretries);
 		/* To the dead letter office we go */
+		/* XXX buf will only contain the last line of the SMTP transaction, since it was using the readline buffer
+		 * Thus, if we got a multiline error, only the last line is currently included in the non-delivery report */
 		smtp_trigger_dsn(DELIVERY_FAILED, &tx, &created, realfrom, realto, buf, fileno(fp), metalen, size - metalen);
 		fclose(fp);
 		bbs_delete_file(fullname);
@@ -754,6 +765,15 @@ static void *queue_handler(void *unused)
 	usleep(10000000); /* Wait 10 seconds after the module loads, then try to flush anything in the queue. */
 
 	for (;;) {
+		/*! \todo Implement smarter queuing:
+		 * - Rather than retrying delivery for all queued messages at fixed intervals, use exponential backoff per message
+		 * - Store envelope message separately from the file so we don't need to hackily start sending from a file into the offset,
+		 *   and so we can easily store other information out of band for queuing purposes.
+		 * - Use a separate thread (or some kind of pseudo threadpool) to deliver messages, so a single message delivery taking a long time
+		 *   won't block the rest of the queue.
+		 * - If delivering the same message to multiple recipients on a single server, it would be nice
+		 *   to be able to do that in a single transaction. Sharing a queue file might make sense in this scenarios?
+		 */
 		bbs_pthread_disable_cancel();
 		pthread_mutex_lock(&queue_lock);
 		bbs_dir_traverse(queue_dir, on_queue_file, NULL, -1);
@@ -888,7 +908,9 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 			return -1; /* Can't queue */
 		}
 		fd = maildir_mktemp(qdir, tmpfile, sizeof(tmpfile) - 3, newfile);
-		strncat(newfile, ".0", sizeof(newfile) - 1);
+
+#undef strcat
+		strcat(newfile, ".0"); /* Safe */
 		if (fd < 0) {
 			return -1;
 		}

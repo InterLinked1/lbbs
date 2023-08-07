@@ -229,6 +229,14 @@ int bbs_unblock_fd(int fd);
 int bbs_block_fd(int fd);
 
 /*!
+ * \brief Check whether a given hostname has an A record for a particular IP address
+ * \param hostname Hostname to check
+ * \param ip IP address for which to check
+ * \retval 1 if there is a match, 0 if there are no matches
+ */
+int bbs_hostname_has_ip(const char *hostname, const char *ip);
+
+/*!
  * \brief Resolve a hostname to an IP address
  * \param hostname Hostname or IP address
  * \param[out] buf IP address

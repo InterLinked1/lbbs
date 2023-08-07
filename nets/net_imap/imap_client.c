@@ -608,10 +608,6 @@ struct imap_client *imap_client_get_by_url(struct imap_session *imap, const char
 	if (!client) {
 		return NULL;
 	} else if (!new) {
-		/* XXX Maybe check to see if the connection is still alive/active?
-		 * And if not, just fall through here and try to reconnect
-		 * For example, we could issue a "NOOP" here to see if that works.
-		 */
 		return client;
 	}
 
@@ -626,9 +622,7 @@ struct imap_client *imap_client_get_by_url(struct imap_session *imap, const char
 
 	/* Need to determine the hierarchy delimiter on the remote server,
 	 * so that we can make replacements as needed, including for SELECT.
-	 * We do store this in the .imapremote.cache file,
-	 * but that's not the file we opened.
-	 * It's not stored in .imapremote itself.
+	 * This is not stored in .imapremote itself.
 	 * Simplest thing is just issue: a0 LIST "" ""
 	 * which will return the hierarchy delimiter and not much else.
 	 * Maybe not efficient in terms of network RTT,
@@ -672,6 +666,7 @@ struct imap_client *imap_client_get_by_url(struct imap_session *imap, const char
 	 * In theory, this should not be an issue as it's transparent
 	 * to the user: if the connection is dead the next time we need it,
 	 * we can just make a new one. It just worsens performance,
+	 * and means users won't receive IDLE/NOTIFY notifications for those accounts,
 	 * so it's good to keep alive if possible...
 	 */
 	if (!strcmp(url.host, "imap.yandex.com")) {
@@ -758,7 +753,7 @@ int imap_client_mapping_file(struct imap_session *imap, char *buf, size_t len)
 	if (bbs_transfer_home_dir(imap->node, buf, len)) {
 		return -1;
 	}
-	strncat(buf, "/.imapremote", len - 1);
+	bbs_append_string(buf, "/.imapremote", len - 1);
 	return 0;
 }
 

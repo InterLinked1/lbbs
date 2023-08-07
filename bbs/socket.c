@@ -236,6 +236,48 @@ int bbs_block_fd(int fd)
 	return 0;
 }
 
+int bbs_hostname_has_ip(const char *hostname, const char *ip)
+{
+	char buf[256];
+	socklen_t len = sizeof(buf);
+	int e;
+	struct addrinfo hints, *res, *ai;
+	struct sockaddr_in *saddr_in; /* IPv4 */
+	struct sockaddr_in6 *saddr_in6; /* IPv6 */
+
+	/* Resolve the hostname */
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = AF_UNSPEC; /* IPv4 or IPv6 */
+	hints.ai_socktype = SOCK_STREAM; /* TCP */
+
+	e = getaddrinfo(hostname, NULL, &hints, &res);
+	if (e) {
+		bbs_error("getaddrinfo(%s): %s\n", hostname, gai_strerror(e));
+		return 0;
+	}
+
+	for (ai = res; ai; ai = ai->ai_next) {
+		if (ai->ai_family == AF_INET) {
+			saddr_in = (struct sockaddr_in *) ai->ai_addr;
+			inet_ntop(ai->ai_family, &saddr_in->sin_addr, buf, len); /* Print IPv4*/
+			if (!strcmp(buf, ip)) {
+				freeaddrinfo(res);
+				return 1;
+			}
+		} else if (ai->ai_family == AF_INET6) {
+			saddr_in6 = (struct sockaddr_in6 *) ai->ai_addr;
+			inet_ntop(ai->ai_family, &saddr_in6->sin6_addr, buf, len); /* Print IPv6 */
+			if (!strcmp(buf, ip)) {
+				freeaddrinfo(res);
+				return 1;
+			}
+		}
+	}
+
+	freeaddrinfo(res);
+	return 0;
+}
+
 int bbs_resolve_hostname(const char *hostname, char *buf, size_t len)
 {
 	int e;
@@ -250,7 +292,7 @@ int bbs_resolve_hostname(const char *hostname, char *buf, size_t len)
 
 	e = getaddrinfo(hostname, NULL, &hints, &res);
 	if (e) {
-		bbs_error("getaddrinfo (%s): %s\n", hostname, gai_strerror(e));
+		bbs_error("getaddrinfo(%s): %s\n", hostname, gai_strerror(e));
 		return -1;
 	}
 
@@ -267,7 +309,7 @@ int bbs_resolve_hostname(const char *hostname, char *buf, size_t len)
 
 	freeaddrinfo(res);
 
-	bbs_debug(5, "Resolve hostname %s to %s\n", hostname, buf);
+	bbs_debug(5, "Resolved hostname %s to %s\n", hostname, buf);
 	return 0;
 }
 
