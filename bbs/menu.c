@@ -880,14 +880,10 @@ int bbs_load_menus(int reload)
 {
 	int res;
 	res = load_config(reload);
-	if (reload) {
-		check_menus(); /* Reload, so we can just directly execute the sanity checks now */
-	} else {
-		/* We're just starting the BBS now.
-		 * We can't check the sanity of menus.conf until all modules have registered,
-		 * since menu handlers aren't yet registered right now, so we have to wait to verify them.
-		 * Register a callback. */
-		bbs_register_startup_callback(check_menus, STARTUP_PRIORITY_DEFAULT);
-	}
+
+	/* We can't check the sanity of menus.conf until all modules have registered,
+	 * since menu handlers aren't yet registered right now, so we have to wait to verify them. */
+	bbs_run_when_started(check_menus, STARTUP_PRIORITY_DEFAULT);
+
 	return res;
 }

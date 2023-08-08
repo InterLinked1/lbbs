@@ -35,5 +35,16 @@
  */
 int bbs_register_startup_callback(int (*execute)(void), int priority);
 
+/*!
+ * \brief Helper function to execute a callback function when the BBS is fully started.
+ *        If the BBS is still starting, this is equivalent to calling bbs_register_startup_callback.
+ *        If the BBS is already started, the callback is run immediately.
+ * \param execute Callback function to run
+ * \param priority Startup callback priority. Lower number priorities will be run earlier.
+ *                 Simple callbacks with no dependencies (especially those that may be dependencies of other callbacks) must be run first.
+ * \retval 0 on success, -1 on failure
+*/
+int bbs_run_when_started(int (*execute)(void), int priority);
+
 /*! \brief Run all startup callbacks */
 int bbs_run_startup_callbacks(void);

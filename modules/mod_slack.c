@@ -1128,12 +1128,7 @@ static int load_config(void)
 	RWLIST_UNLOCK(&relays);
 
 	/* Actually launch each relay in its own thread */
-	if (bbs_is_fully_started()) {
-		start_clients();
-	} else {
-		bbs_register_startup_callback(start_clients, STARTUP_PRIORITY_DEPENDENT);
-	}
-
+	bbs_run_when_started(start_clients, STARTUP_PRIORITY_DEPENDENT);
 	return 0;
 }
 

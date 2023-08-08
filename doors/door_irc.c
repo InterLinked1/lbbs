@@ -1298,7 +1298,6 @@ static int unload_module(void)
 
 	while ((client = RWLIST_REMOVE_HEAD(&clients, entry))) {
 		struct participant *p;
-		irc_client_destroy(client->client);
 		/* If there are any clients still connected, boot them */
 		while ((p = RWLIST_REMOVE_HEAD(&client->participants, entry))) {
 			/* XXX Because the usecount will be positive if clients are being used, the handling to remove participants may be kind of moot */
@@ -1306,6 +1305,7 @@ static int unload_module(void)
 			bbs_socket_close(&p->chatpipe[1]); /* Close write end of pipe to kick the node from the client */
 		}
 		bbs_pthread_join(client->thread, NULL);
+		irc_client_destroy(client->client);
 		if (client->logfile) {
 			fclose(client->logfile);
 		}
@@ -1326,12 +1326,7 @@ static int load_module(void)
 	irc_log_callback(__client_log); /* Set up logging */
 	res = bbs_register_door("irc", irc_client_exec);
 	if (!res) {
-		/* Start the clients now, unless the BBS is still starting */
-		if (bbs_is_fully_started()) {
-			start_clients();
-		} else {
-			bbs_register_startup_callback(start_clients, STARTUP_PRIORITY_DEPENDENT);
-		}
+		bbs_run_when_started(start_clients, STARTUP_PRIORITY_DEPENDENT);
 	}
 	REQUIRE_FULL_LOAD(res);
 }

@@ -58,6 +58,15 @@ int bbs_register_startup_callback(int (*execute)(void), int priority)
 	return 0;
 }
 
+int bbs_run_when_started(int (*execute)(void), int priority)
+{
+	if (bbs_is_fully_started()) {
+		return execute();
+	} else {
+		return bbs_register_startup_callback(execute, priority);
+	}
+}
+
 int bbs_run_startup_callbacks(void)
 {
 	struct startup_callback *cb;
