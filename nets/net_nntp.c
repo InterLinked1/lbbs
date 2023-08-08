@@ -1247,7 +1247,7 @@ static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 			/* RFC 4642 */
 			bbs_debug(3, "Starting TLS\n");
 			nntp->dostarttls = 0;
-			*sslptr = ssl_new_accept(nntp->node->fd, &nntp->rfd, &nntp->wfd);
+			*sslptr = ssl_node_new_accept(nntp->node, &nntp->rfd, &nntp->wfd);
 			if (!*sslptr) {
 				bbs_error("Failed to create SSL\n");
 				break; /* Just abort */
@@ -1271,7 +1271,7 @@ static void nntp_handler(struct bbs_node *node, int secure, int reader)
 
 	/* Start TLS if we need to */
 	if (secure) {
-		ssl = ssl_new_accept(node->fd, &rfd, &wfd);
+		ssl = ssl_node_new_accept(node, &rfd, &wfd);
 		if (!ssl) {
 			bbs_error("Failed to create SSL\n");
 			return;

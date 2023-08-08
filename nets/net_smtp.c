@@ -2434,7 +2434,7 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 			/* You might think this would be more complicated, but nope, this is literally all there is to it. */
 			bbs_debug(3, "Starting TLS\n");
 			smtp->tflags.dostarttls = 0;
-			*sslptr = ssl_new_accept(smtp->node->fd, &smtp->rfd, &smtp->wfd);
+			*sslptr = ssl_node_new_accept(smtp->node, &smtp->rfd, &smtp->wfd);
 			if (!*sslptr) {
 				bbs_error("Failed to create SSL\n");
 				break; /* Just abort */
@@ -2460,7 +2460,7 @@ static void smtp_handler(struct bbs_node *node, int msa, int secure)
 
 	/* Start TLS if we need to */
 	if (secure) {
-		ssl = ssl_new_accept(node->fd, &rfd, &wfd);
+		ssl = ssl_node_new_accept(node, &rfd, &wfd);
 		if (!ssl) {
 			bbs_error("Failed to create SSL\n");
 			return;

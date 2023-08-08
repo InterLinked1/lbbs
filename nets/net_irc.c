@@ -62,7 +62,22 @@
 #define IDENT_PREFIX_FMT "%s!%s@%s"
 #define IDENT_PREFIX_ARGS(user) (user)->nickname, (user)->username, (user)->hostname
 
-#define send_reply(user, fmt, ...) bbs_debug(3, "%p <= " fmt, user, ## __VA_ARGS__); if (user->wfd != -1) { bbs_node_any_fd_writef(user->node, user->wfd, fmt, ## __VA_ARGS__); }
+/*! \note Since not all users have a node (e.g. builtin services) */
+#define irc_other_thread_writef(node, fd, fmt, ...) \
+	if (node) { \
+		bbs_node_any_fd_writef(node, fd, fmt, ## __VA_ARGS__); \
+	} else { \
+		bbs_writef(fd, fmt, ## __VA_ARGS__); \
+	}
+
+#define irc_other_thread_write(node, fd, buf, len) \
+	if (node) { \
+		bbs_node_any_fd_write(node, fd, buf, len); \
+	} else { \
+		bbs_write(fd, buf, len); \
+	}
+
+#define send_reply(user, fmt, ...) bbs_debug(3, "%p <= " fmt, user, ## __VA_ARGS__); irc_other_thread_writef(user->node, user->wfd, fmt, ## __VA_ARGS__);
 #define send_numeric(user, numeric, fmt, ...) send_reply(user, "%03d %s :" fmt, numeric, user->nickname, ## __VA_ARGS__)
 #define send_numeric2(user, numeric, fmt, ...) send_reply(user, "%03d %s " fmt, numeric, user->nickname, ## __VA_ARGS__)
 #define send_numeric_broadcast(channel, user, numeric, fmt, ...) channel_broadcast(channel, user, "%03d %s " fmt, numeric, irc_hostname, ## __VA_ARGS__)
@@ -730,7 +745,7 @@ static int __channel_broadcast(int lock, struct irc_channel *channel, struct irc
 			continue; /* Skip those who don't have at least a certain privilege (e.g. for moderating messages only to ops) */
 		}
 		/* Careful here... we want member->user, not user */
-		bbs_node_any_fd_write(member->user->node, member->user->wfd, buf, (size_t) len);
+		irc_other_thread_write(member->user->node, member->user->wfd, buf, (size_t) len);
 		sent++;
 	}
 	if (lock) {
@@ -934,7 +949,7 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 			bbs_debug(7, "No such user: %s\n", channel);
 			return -1;
 		}
-#if 0 /* No longer applies: bbs_node_any_fd_writef handles serialization */
+		#if 0 /* No longer applies: irc_other_thread_writef handles serialization */
 		/* notice is only true when the relay module is sending a message as part of a relay callback,
 		 * in which case user is already locked. Don't lock again, or we'll deadlock.
 		 * If !notice, this isn't the case. */
@@ -942,7 +957,7 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 			pthread_mutex_lock(&user2->lock); /* Serialize writes to this user */
 		}
 #endif
-		bbs_node_any_fd_writef(user2->node, user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, notice ? "NOTICE" : "PRIVMSG", user2->nickname, msg);
+		irc_other_thread_writef(user2->node, user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, notice ? "NOTICE" : "PRIVMSG", user2->nickname, msg);
 #if 0
 		if (!notice) {
 			pthread_mutex_unlock(&user2->lock);
@@ -982,7 +997,7 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 			 * and the user is online, just send a PM with the message.
 			 * Also invite the user to join to receive further messages "normally". */
 			send_reply(u, ":" IDENT_PREFIX_FMT " INVITE %s %s\r\n", IDENT_PREFIX_ARGS(&user_messageserv), u->nickname, channel);
-			bbs_node_any_fd_writef(u->node, u->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(&user_messageserv), "NOTICE", u->nickname, msg);
+			irc_other_thread_writef(u->node, u->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(&user_messageserv), "NOTICE", u->nickname, msg);
 		}
 		return -1;
 	}
@@ -1090,7 +1105,7 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, char
 				return -1;
 			}
 		} else {
-			bbs_node_any_fd_writef(user2->node, user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), notice ? "NOTICE" : "PRIVMSG", user2->nickname, message);
+			irc_other_thread_writef(user2->node, user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), notice ? "NOTICE" : "PRIVMSG", user2->nickname, message);
 			if (user2->away) {
 				send_numeric(user, 301, "%s :%s\r\n", user2->nickname, S_IF(user2->awaymsg));
 			}
@@ -3132,7 +3147,7 @@ static void handle_client(struct irc_user *user)
 				RWLIST_RDLOCK(&users);
 				RWLIST_TRAVERSE(&users, u, entry) {
 					if (u->modes & USER_MODE_WALLOPS) {
-						bbs_node_any_fd_writef(u->node, u->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), "WALLOPS", u->nickname, s);
+						irc_other_thread_writef(u->node, u->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), "WALLOPS", u->nickname, s);
 					}
 				}
 				RWLIST_UNLOCK(&users);
@@ -3260,7 +3275,7 @@ static void *ping_thread(void *unused)
 				bbs_debug(5, "Shutting down client on node %d\n", user->node->id);
 				shutdown(user->node->fd, SHUT_RDWR); /* Make the client handler thread break */
 			} else {
-				bbs_node_any_fd_writef(user->node, user->wfd, "PING :%d\r\n", now);
+				irc_other_thread_writef(user->node, user->wfd, "PING :%d\r\n", now);
 				user->lastping = now;
 				clients++;
 			}
@@ -3315,7 +3330,7 @@ static void irc_handler(struct bbs_node *node, int secure)
 
 	/* Start TLS if we need to */
 	if (secure) {
-		ssl = ssl_new_accept(node->fd, &rfd, &wfd);
+		ssl = ssl_node_new_accept(node, &rfd, &wfd);
 		if (!ssl) {
 			bbs_error("Failed to create SSL\n");
 			return;

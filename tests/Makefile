@@ -21,7 +21,7 @@ readline.o : ../bbs/readline.c
 
 test.o : test.c
 	@echo "== Linking $@"
-	$(CC) $(CFLAGS) -DTEST_IN_CORE -DTEST_DIR=$(CURDIR) $(INC) -c $^
+	$(CC) $(CFLAGS) -Wno-unused-result -DTEST_IN_CORE -DTEST_DIR=$(CURDIR) $(INC) -c $^
 
 $(TEST_EXE) : test.o readline.o
 	$(CC) $(CFLAGS) -Wl,--export-dynamic -o $(TEST_EXE) *.o -ldl -lpthread

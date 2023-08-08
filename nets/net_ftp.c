@@ -125,7 +125,7 @@ static int ftp_pasv_new(int *sockfd)
 	ftp->rfd2 = ftp->wfd2 = pasv_fd; \
 	if (ftp->securedata) { \
 		bbs_debug(3, "Setting up TLS on data channel\n"); \
-		ssl2 = ssl_new_accept(pasv_fd, &ftp->rfd2, &ftp->wfd2); \
+		ssl2 = ssl_new_accept(ftp->node, pasv_fd, &ftp->rfd2, &ftp->wfd2); \
 		if (!ssl2) { \
 			bbs_error("Failed to create SSL\n"); \
 			__data_res = -1; \
@@ -259,7 +259,7 @@ static void *ftp_handler(void *varg)
 
 	/* Start TLS if we need to */
 	if (!strcmp(node->protname, "FTPS")) {
-		ssl = ssl_new_accept(node->fd, &ftp->rfd, &ftp->wfd);
+		ssl = ssl_node_new_accept(node, &ftp->rfd, &ftp->wfd);
 		if (!ssl) {
 			goto cleanup;
 		}
@@ -349,7 +349,7 @@ static void *ftp_handler(void *varg)
 			/* AUTH TLS / AUTH SSL = RFC2228 opportunistic encryption */
 			if (!ssl && ssl_available()) {
 				res = ftp_write(ftp, 234, "Begin TLS negotiation\r\n");
-				ssl = ssl_new_accept(node->fd, &ftp->rfd, &ftp->wfd);
+				ssl = ssl_node_new_accept(node, &ftp->rfd, &ftp->wfd);
 				if (!ssl) {
 					bbs_error("Failed to create SSL\n");
 					break; /* Just abort */

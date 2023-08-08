@@ -275,6 +275,17 @@ static void auth_fail(ssh_session session, const char *username)
 	bbs_event_broadcast(&event);
 }
 
+static void request_fail(ssh_session session, enum bbs_event_type type)
+{
+	struct bbs_event event;
+
+	/* Don't have a node, so need to dispatch manually */
+	memset(&event, 0, sizeof(event));
+	event.type = type;
+	save_remote_ip(session, NULL, event.ipaddr, sizeof(event.ipaddr));
+	bbs_event_broadcast(&event);
+}
+
 #ifdef ALLOW_ANON_AUTH
 static int auth_none(ssh_session session, const char *user, void *userdata)
 {
@@ -718,6 +729,7 @@ static void handle_session(ssh_event event, ssh_session session)
 
 	if (ssh_handle_key_exchange(session) != SSH_OK) {
 		bbs_error("%s\n", ssh_get_error(session));
+		request_fail(session, EVENT_NODE_ENCRYPTION_FAILED);
 		return;
 	}
 	if (ssh_event_add_session(event, session) != SSH_OK) {
@@ -738,6 +750,7 @@ static void handle_session(ssh_event event, ssh_session session)
 			/* If client disconnects during login stage, this could happen.
 			 * Hence, it's a warning, not an error, as it's not our fault. */
 			bbs_warning("%s\n", ssh_get_error(session));
+			request_fail(session, EVENT_NODE_BAD_REQUEST);
 			return;
 		}
 	}

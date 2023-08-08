@@ -1031,7 +1031,7 @@ static void ws_direct_handler(struct bbs_node *node, int secure)
 
 	/* Start TLS if we need to */
 	if (secure) {
-		ssl = ssl_new_accept(node->fd, &http.rfd, &http.wfd);
+		ssl = ssl_node_new_accept(node, &http.rfd, &http.wfd);
 		if (!ssl) {
 			return; /* Disconnect. */
 		}

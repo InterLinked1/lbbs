@@ -390,18 +390,15 @@ static void *io_relay(void *varg)
 	}
 
 	for (;;) {
-		ssize_t res, wres;
+		ssize_t res;
 		res = read(pipefd[0], buf, sizeof(buf) - 1);
 		if (res <= 0) {
 			bbs_debug(4, "read returned %ld\n", res);
 			return NULL;
 		}
-		wres = write(logfd, buf, (size_t) res);
-		if (wres != res) {
-			bbs_error("Wanted to write %lu bytes, only wrote %lu\n", res, wres);
-		}
+		write(logfd, buf, (size_t) res);
 		if (option_debug) {
-			wres = write(STDERR_FILENO, buf, (size_t) res);
+			write(STDERR_FILENO, buf, (size_t) res);
 		}
 		if (bbs_expect_str) {
 			int rounds = 0;

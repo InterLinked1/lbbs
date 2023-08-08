@@ -13,6 +13,8 @@
  *
  */
 
+struct bbs_node;
+
 /* I know we link with -lssl statically in the main binary, this is just for semantics, mainly */
 #define HAVE_OPENSSL
 
@@ -27,13 +29,26 @@ const char *ssl_strerror(int err);
 
 /*!
  * \brief Create a new SSL structure for a file descriptor for a server TLS session
+ * \param node BBS node
+ * \param fd Server file descriptor returned previously by accept()
+ * \param[out] rfd File descriptor for reading from connection (data has been decrypted)
+ * \param[out] wfd File descriptor for writing to connection (data will be encrypted)
+ * \retval ssl on success, NULL on failure
+ * \note This may be used immediately after accept or later in the session (e.g. STARTTLS)
+ * \note In most cases, ssl_node_new_accept should be used, instead of using this function directly.
+ */
+SSL *ssl_new_accept(struct bbs_node *node, int fd, int *rfd, int *wfd);
+
+/*!
+ * \brief Set up TLS for a node's socket file descriptor
+ * \param node BBS node. NULL if not associated with a node.
  * \param fd Server file descriptor returned previously by accept()
  * \param[out] rfd File descriptor for reading from connection (data has been decrypted)
  * \param[out] wfd File descriptor for writing to connection (data will be encrypted)
  * \retval ssl on success, NULL on failure
  * \note This may be used immediately after accept or later in the session (e.g. STARTTLS)
  */
-SSL *ssl_new_accept(int fd, int *rfd, int *wfd);
+SSL *ssl_node_new_accept(struct bbs_node *node, int *rfd, int *wfd) __attribute__((nonnull (1)));
 
 /*!
  * \brief Create a new SSL structure for a file descriptor for a client TLS session

@@ -28,10 +28,12 @@
 #include <openssl/opensslv.h>
 #endif
 
+#include "include/node.h"
 #include "include/linkedlists.h"
 #include "include/config.h"
 #include "include/alertpipe.h"
 #include "include/utils.h"
+#include "include/event.h"
 
 #ifdef HAVE_OPENSSL
 static char root_certs[84] = "/etc/ssl/certs/ca-certificates.crt";
@@ -607,7 +609,19 @@ static int ssl_servername_cb(SSL *s, int *ad, void *arg)
 }
 #endif /* HAVE_OPENSSL */
 
-SSL *ssl_new_accept(int fd, int *rfd, int *wfd)
+SSL *ssl_node_new_accept(struct bbs_node *node, int *rfd, int *wfd)
+{
+	SSL *ssl = ssl_new_accept(node, node->fd, rfd, wfd);
+	if (rfd) {
+		node->rfd = *rfd;
+	}
+	if (wfd) {
+		node->wfd = *wfd;
+	}
+	return ssl;
+}
+
+SSL *ssl_new_accept(struct bbs_node *node, int fd, int *rfd, int *wfd)
 {
 #ifdef HAVE_OPENSSL
 	int res;
@@ -649,6 +663,10 @@ accept:
 		}
 		bbs_error("SSL error %d: %d (%s = %s)\n", res, sslerr, ssl_strerror(sslerr), ERR_error_string(ERR_get_error(), NULL));
 		SSL_free(ssl);
+		/* If TLS setup fails, it's probably garbage traffic and safe to penalize: */
+		if (node) {
+			bbs_event_dispatch(node, EVENT_NODE_ENCRYPTION_FAILED);
+		}
 		return NULL;
 	}
 	readfd = SSL_get_rfd(ssl);

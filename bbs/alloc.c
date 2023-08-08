@@ -56,13 +56,13 @@ static __thread int alloc_fail_count = 0;
 		return val; \
 	} \
 
-#define LOG_ALLOC_FAILURE(ptr, funcname) \
+#define LOG_ALLOC_FAILURE(ptr, funcname, fmt, ...) \
 	if (unlikely(!ptr)) { \
 		alloc_fail_count++; \
 		if (alloc_fail_count == 1) { \
-			bbs_error(#funcname " failed in %s() at %s:%d\n", func, file, line); \
+			bbs_error(#funcname "(" fmt ") failed in %s() at %s:%d\n", ## __VA_ARGS__, func, file, line); \
 		} else { \
-			fprintf(stderr, #funcname " failed in %s() at %s:%d\n", func, file, line); \
+			fprintf(stderr, #funcname "(" fmt ") failed in %s() at %s:%d\n", ## __VA_ARGS__, func, file, line); \
 		} \
 		alloc_fail_count--; \
 	}
@@ -72,7 +72,7 @@ void *__bbs_malloc(size_t size, const char *file, int line, const char *func)
 	void *ptr;
 	RAND_MEMORY_FAIL(malloc, NULL);
 	ptr = malloc(size);
-	LOG_ALLOC_FAILURE(ptr, malloc);
+	LOG_ALLOC_FAILURE(ptr, malloc, "%lu", size);
 	return ptr;
 }
 
@@ -81,7 +81,7 @@ void *__bbs_calloc(size_t nmemb, size_t size, const char *file, int line, const 
 	void *ptr;
 	RAND_MEMORY_FAIL(calloc, NULL);
 	ptr = calloc(nmemb, size);
-	LOG_ALLOC_FAILURE(ptr, calloc);
+	LOG_ALLOC_FAILURE(ptr, calloc, "%lu,%lu", nmemb, size);
 	return ptr;
 }
 
@@ -90,7 +90,7 @@ void *__bbs_realloc(void *ptr, size_t size, const char *file, int line, const ch
 	void *newptr;
 	RAND_MEMORY_FAIL(realloc, NULL);
 	newptr = realloc(ptr, size);
-	LOG_ALLOC_FAILURE(newptr, realloc);
+	LOG_ALLOC_FAILURE(newptr, realloc, "%lu", size);
 	return newptr;
 }
 
@@ -99,7 +99,7 @@ void *__bbs_strdup(const char *s, const char *file, int line, const char *func)
 	void *ptr;
 	RAND_MEMORY_FAIL(strdup, NULL);
 	ptr = strdup(s);
-	LOG_ALLOC_FAILURE(ptr, strdup);
+	LOG_ALLOC_FAILURE(ptr, strdup, "");
 	return ptr;
 }
 
@@ -108,7 +108,7 @@ void *__bbs_strndup(const char *s, size_t n, const char *file, int line, const c
 	void *ptr;
 	RAND_MEMORY_FAIL(strndup, NULL);
 	ptr = strndup(s, n);
-	LOG_ALLOC_FAILURE(ptr, strndup);
+	LOG_ALLOC_FAILURE(ptr, strndup, "%lu", n);
 	return ptr;
 }
 
@@ -117,7 +117,7 @@ void *__bbs_memdup(void *ptr, size_t size, const char *file, int line, const cha
 	void *newptr;
 	RAND_MEMORY_FAIL(realloc, NULL);
 	newptr = malloc(size + 1); /* +1 in case it's a string */
-	LOG_ALLOC_FAILURE(newptr, realloc);
+	LOG_ALLOC_FAILURE(newptr, realloc, "%lu", size);
 	if (ALLOC_SUCCESS(newptr)) {
 		char *end = newptr + size;
 		memcpy(newptr, ptr, size);
@@ -140,7 +140,7 @@ int __attribute__ ((format (gnu_printf, 2, 0))) __bbs_vasprintf(char **strp, con
 	va_end(ap2);
 	ptr = malloc((unsigned int) size + 1);
 	if (!ptr) {
-		LOG_ALLOC_FAILURE(ptr, vasprintf);
+		LOG_ALLOC_FAILURE(ptr, vasprintf, "%d", size);
 		va_end(ap);
 		return -1;
 	}
@@ -165,7 +165,7 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 	va_end(ap2);
 	ptr = malloc((unsigned int) size + 1);
 	if (!ptr) {
-		LOG_ALLOC_FAILURE(ptr, asprintf);
+		LOG_ALLOC_FAILURE(ptr, asprintf, "%d", size);
 		va_end(ap);
 		return -1;
 	}

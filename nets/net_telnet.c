@@ -219,7 +219,7 @@ static void *telnets_handler(void *varg)
 	 * as another intermediary layer that looks for 255 bytes,
 	 * and add yet a fourth thread! */
 	/* Set up TLS, then do the handshake, then proceed as normal. */
-	ssl = ssl_new_accept(node->fd, &node->rfd, &node->wfd);
+	ssl = ssl_node_new_accept(node, &node->rfd, &node->wfd);
 	if (!ssl) {
 		bbs_node_exit(node); /* Since we're not calling bbs_node_handler, we're responsible for manually cleaning the node up */
 		return NULL;
@@ -242,7 +242,7 @@ static void *tty_handler(void *varg)
 		/* Use TDD for both secure and plaintext TDD. Used in NODE_IS_TDD macro. */
 		node->protname = "TDD";
 		bbs_debug(5, "Connection accepted on secure TTY port\n");
-		ssl = ssl_new_accept(node->fd, &node->rfd, &node->wfd);
+		ssl = ssl_node_new_accept(node, &node->rfd, &node->wfd);
 		if (!ssl) {
 			bbs_node_exit(node);
 			return NULL;

@@ -475,7 +475,7 @@ static void handle_client(struct sieve_session *sieve, SSL **sslptr)
 		if (sieve->dostarttls) { /* RFC3207 STARTTLS */
 			bbs_debug(3, "Starting TLS\n");
 			sieve->dostarttls = 0;
-			*sslptr = ssl_new_accept(sieve->node->fd, &sieve->rfd, &sieve->wfd);
+			*sslptr = ssl_node_new_accept(sieve->node, &sieve->rfd, &sieve->wfd);
 			if (!*sslptr) {
 				bbs_error("Failed to create SSL\n");
 				break; /* Just abort */
