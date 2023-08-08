@@ -88,6 +88,7 @@ static int bbs_start_time;
 
 static int sig_alert_pipe[2] = { -1, -1 };
 static int abort_startup = 0;
+static int want_shutdown = 0;
 static int shutting_down = 0;
 static int shutdown_restart = 0;
 
@@ -606,7 +607,7 @@ static void __sigint_handler(int num)
 	 * especially since we're inside a signal handler. */
 	if (sigint_alert_pipe) {
 		bbs_debug(2, "Got SIGINT with subscriber, skipping built-in handling\n"); /* XXX not safe */
-		if (bbs_alertpipe_write(sigint_alert_pipe)) {
+		if (bbs_alertpipe_write(sigint_alert_pipe) < 0) {
 			/* Don't use BBS log functions within a signal handler */
 			if (option_nofork) {
 				fprintf(stderr, "%s: write() failed: %s\n", __func__, strerror(errno));
@@ -614,8 +615,11 @@ static void __sigint_handler(int num)
 		}
 		/* XXX Should we go ahead and automatically remove the subscriber? (set sigint_alert_pipe to NULL?)
 		 * Right now we rely on the subscriber to do this manually. If someone forgets, this could be bad. */
-	} else if (bbs_alertpipe_write(sig_alert_pipe)) {
-		bbs_debug(2, "Got SIGINT, requesting shutdown\n"); /* XXX not safe */
+		 return;
+	}
+	bbs_debug(2, "Got SIGINT, requesting shutdown\n"); /* XXX technically not safe to use in signal handler */
+	want_shutdown = 1;
+	if (bbs_alertpipe_write(sig_alert_pipe) < 0) {
 		/* Don't use BBS log functions within a signal handler */
 		if (option_nofork) {
 			fprintf(stderr, "%s: write() failed: %s\n", __func__, strerror(errno));
@@ -666,6 +670,7 @@ void bbs_request_shutdown(int restart)
 	bbs_debug(5, "Requesting shutdown\n");
 	pthread_mutex_lock(&sig_lock);
 	shutdown_restart = restart;
+	want_shutdown = 1;
 	if (bbs_alertpipe_write(sig_alert_pipe)) {
 		bbs_error("write() failed: %s\n", strerror(errno));
 	}
@@ -708,11 +713,14 @@ static void *monitor_sig_flags(void *unused)
 			task_reload ? bbs_module_reload(task_modulename, 0) : bbs_module_unload(task_modulename);
 			task_modulename[0] = '\0';
 			pthread_mutex_unlock(&sig_lock);
-		} else {
+		} else if (want_shutdown) {
 			pthread_mutex_unlock(&sig_lock);
 			bbs_debug(1, "Shutdown requested\n");
 			bbs_shutdown();
 			break;
+		} else {
+			/* Shouldn't ever happen... */
+			bbs_warning("Received unactionable activity on sig alert pipe?\n");
 		}
 	}
 

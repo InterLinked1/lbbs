@@ -103,7 +103,7 @@ static int start_ssh(void)
 	if (!sshbind) {
 		bbs_error("ssh_bind_new failed\n");
 		return -1;
-	}
+		}
 
 	/* Set default keys */
 	if (load_key_rsa) {
@@ -783,7 +783,11 @@ static void handle_session(ssh_event event, ssh_session session)
 				break;
 			}
 			if (node_started) {
-				if (thread_has_exited(cdata.nodethread)) {
+				if (!cdata.nodethread) {
+					/* Happens in the case that we get (and reject) an anonymous SFTP connection */
+					bbs_warning("No node thread, disconnecting\n");
+					break;
+				} else if (thread_has_exited(cdata.nodethread)) {
 					/* The node started but disappeared, i.e. server disconnected the node.
 					 * Time for us to die. */
 					bbs_debug(3, "Node thread has now exited\n");
