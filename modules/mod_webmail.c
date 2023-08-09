@@ -1082,25 +1082,36 @@ static void append_internaldate(json_t *json, struct mailimap_date_time *dt)
 	return append_datetime(json, "received", buf);
 }
 
+#ifdef EXTRA_CHECKS
 /*! \brief Remove all unprintable characters from a string, in place */
-static void remove_unprintable(char *restrict s)
+static int remove_unprintable(char *restrict s)
 {
+	int i = 0;
 	char *d = s;
 	while (*s) {
-		if (isprint(*s)) {
+		/*! \todo UTF-8 is encoded using the upper nibble,
+		 * using values 128 through 255.
+		 * char is usually signed by default, so this really SHOULD be an unsigned type.
+		 * As a lazy fix, we're compiling with -funsigned-char for now to make that so,
+		 * but we should really be using unsigned char where needed in this source file.
+		 * Once all the types in this file are converted, we can remove that compiler option.
+		 */
+		if (isprint(*s) || *s >= 128) {
 			*d++ = *s++;
 		} else {
 			s++;
+			i++;
 		}
 	}
 	*d = '\0';
+	return i;
 }
 
 static void remove_unprintable_len(char *restrict s, size_t *restrict len)
 {
 	char *d = s;
 	while (*s) {
-		if (isprint(*s)) {
+		if (isprint(*s) || *s >= 128) {
 			*d++ = *s++;
 		} else {
 			s++;
@@ -1109,12 +1120,16 @@ static void remove_unprintable_len(char *restrict s, size_t *restrict len)
 	}
 	*d = '\0';
 }
+#endif
 
 static char *mime_header_decode(const char *s)
 {
 	size_t cur_token;
 	int encoded = 0;
 	char *decoded = NULL;
+#ifdef EXTRA_CHECKS
+	int removed;
+#endif
 
 	/* Decode header per RFC 2047 */
 	/* See also: https://github.com/dinhvh/libetpan/issues/24 */
@@ -1131,12 +1146,13 @@ static char *mime_header_decode(const char *s)
 	}
 	cur_token = 0;
 	/* Decode any RFC 2047 encoded words */
-#define DEST_CHARSET "iso-8859-1"
-	mailmime_encoded_phrase_parse(DEST_CHARSET, s, strlen(s), &cur_token, DEST_CHARSET, &decoded);
+
+	mailmime_encoded_phrase_parse("iso-8859-1", s, strlen(s), &cur_token, "utf-8", &decoded);
 	if (!decoded) {
 		bbs_warning("Failed to decode MIME header\n");
 	}
 
+#ifdef EXTRA_CHECKS
 	/* XXX Hack: Some of the encoded strings can have weird artifacts in them when decoded.
 	 * e.g.:
 	 * =?windows-1252?Q?foo=AE_bonus?= =?windows-1252?Q?_bar=3F?=
@@ -1147,8 +1163,15 @@ static char *mime_header_decode(const char *s)
 	 *
 	 * We shouldn't have to do this, but json_object_set_new will fail if we're not UTF-8 compliant.
 	 * So remove any such characters if there are any.
+	 *
+	 * UPDATE: This is probably because char was signed and these were negative values.
+	 * Since this should be unsigned, I am not sure this is a problem anymore.
 	 */
-	remove_unprintable(decoded);
+	removed = remove_unprintable(decoded);
+	if (removed) {
+		bbs_warning("%d unprintable character%s removed\n", removed, ESS(removed));
+	}
+#endif
 
 	return decoded;
 }
@@ -2356,8 +2379,9 @@ static int fetch_mime(json_t *root, int html, const char *msg_body, size_t msg_s
 		} else {
 			json_t *jsonbody = json_stringn(result, resultlen);
 			if (!jsonbody) {
-				/* Could happen if body does not contain valid UTF-8 */
-				remove_unprintable_len(result, &resultlen); /* XXX Hacky workaround */
+#ifdef EXTRA_CHECKS
+				remove_unprintable_len(result, &resultlen);
+#endif
 				jsonbody = json_stringn(result, resultlen);
 				if (!jsonbody) {
 					bbs_warning("Failed to encode body %p (%lu) as JSON\n", result, resultlen);

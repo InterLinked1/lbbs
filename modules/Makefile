@@ -87,7 +87,7 @@ mod_smtp_filter_spf.so : mod_smtp_filter_spf.o
 
 mod_webmail.o : mod_webmail.c mod_webmail.d
 	@echo "== Compiling $@"
-	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) $(ETPANCFLAGS) -c $<
+	$(CC) $(CFLAGS) -funsigned-char -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) $(ETPANCFLAGS) -c $<
 
 mod_webmail.so : mod_webmail.o
 	@echo "== Linking $@"
