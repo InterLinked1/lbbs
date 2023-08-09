@@ -2813,7 +2813,7 @@ static int handle_append(struct imap_client *client, const char *message, size_t
 
 #define REFRESH_LISTING(reason) handle_fetchlist(ws, client, reason, client->page, client->pagesize, client->sort, client->filter)
 
-static void idle_stop(struct ws_session *ws, struct imap_client *client)
+static int idle_stop(struct ws_session *ws, struct imap_client *client)
 {
 	UNUSED(ws); /* Formerly used to adjust net_ws timeout, not currently used */
 	if (client->idling) {
@@ -2822,12 +2822,14 @@ static void idle_stop(struct ws_session *ws, struct imap_client *client)
 		res = mailimap_idle_done(client->imap);
 		if (res != MAILIMAP_NO_ERROR) {
 			bbs_warning("Failed to stop IDLE: %s\n", maildriver_strerror(res));
+			return -1;
 		}
 		client->idling = 0;
 	}
+	return 0;
 }
 
-static void idle_start(struct ws_session *ws, struct imap_client *client)
+static int idle_start(struct ws_session *ws, struct imap_client *client)
 {
 	UNUSED(ws); /* Formerly used to adjust net_ws timeout, not currently used */
 	if (client->canidle && !client->idling) { /* Don't IDLE again if already idling... */
@@ -2836,11 +2838,13 @@ static void idle_start(struct ws_session *ws, struct imap_client *client)
 		res = mailimap_idle(client->imap);
 		if (res != MAILIMAP_NO_ERROR) {
 			bbs_warning("Failed to start IDLE: %s\n", maildriver_strerror(res));
+			return -1;
 		} else {
 			client->idlestart = (int) time(NULL);
 			client->idling = 1;
 		}
 	}
+	return 0;
 }
 
 static void idle_continue(struct imap_client *client)
@@ -2957,13 +2961,11 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 		}
 		bbs_debug(5, "Not currently idling, ignoring...\n");
 		idle_stop(ws, client);
-		idle_start(ws, client);
-		return 0;
+		return idle_start(ws, client);
 	} else if (strlen_zero(client->mailbox)) {
 		bbs_error("Client mailbox not set?\n");
 		idle_stop(ws, client);
-		idle_start(ws, client);
-		return 0;
+		return idle_start(ws, client);
 	}
 
 	/* IDLE activity! */
@@ -2979,8 +2981,7 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 		}
 		bbs_error("IDLE activity, but no data?\n");
 		idle_stop(ws, client);
-		idle_start(ws, client);
-		return 0;
+		return idle_start(ws, client);
 	}
 	do {
 		res |= process_idle(client, idledata); /* Process a single line of data received during an IDLE */
@@ -3021,8 +3022,7 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	}
 
 	/* That's all, resume idling if we stopped */
-	idle_start(ws, client);
-	return 0;
+	return idle_start(ws, client);
 }
 
 static int on_poll_timeout(struct ws_session *ws, void *data)

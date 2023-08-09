@@ -313,7 +313,7 @@ static int fcrdns_check(struct smtp_session *smtp)
 		bbs_warning("Unable to look up reverse DNS record for %s\n", smtp->node->ip);
 		smtp->failures += 4; /* Heavy penalty */
 	} else if (!bbs_hostname_has_ip(hostname, smtp->node->ip)) { /* Ensure that there's a match, with at least one A record */
-		bbs_warning("FCrDNS check failed: %s != %s", ip, smtp->node->ip);
+		bbs_warning("FCrDNS check failed: %s != %s\n", ip, smtp->node->ip);
 		smtp->failures += 5;
 	}
 	return 0;
