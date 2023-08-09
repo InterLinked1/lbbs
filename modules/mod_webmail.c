@@ -1680,7 +1680,7 @@ static void fetchlist_single(struct mailimap_msg_att *msg_att, json_t *arr)
 	}
 }
 
-static void fetchlist(struct ws_session *ws, struct imap_client *client, const char *reason, int start, int end, int page, int pagesize, int numpages, const char *sort, const char *filter)
+static int fetchlist(struct ws_session *ws, struct imap_client *client, const char *reason, int start, int end, int page, int pagesize, int numpages, const char *sort, const char *filter)
 {
 	int expected, res, c = 0;
 	struct mailimap_set *set = NULL;
@@ -1713,7 +1713,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 		/*! \todo Cache this between FETCHLIST calls */
 		clist *sorted = sortall(client, sort, filter, &searchlist, &sortlist); /* This could be somewhat slow, since we have sort the ENTIRE mailbox every time */
 		if (!sorted) {
-			return;
+			return -1;
 		}
 		set = mailimap_set_new_empty();
 		if (!set) {
@@ -1722,7 +1722,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 			} else if (searchlist) {
 				mailimap_search_result_free(sorted);
 			}
-			return;
+			return -1;
 		}
 		if (filter) {
 			/* Since # messages is not client->messages, we need to paginate accordingly. */
@@ -1756,7 +1756,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 				} else if (searchlist) {
 					mailimap_search_result_free(sorted);
 				}
-				return;
+				return -1;
 			}
 			if (index >= end) {
 				break;
@@ -1794,7 +1794,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 		if (!hdrlist) {
 			mailimap_set_free(set);
 			mailimap_fetch_att_free(fetch_att);
-			return;
+			return -1;
 		}
 
 #define FETCH_HEADER(name) \
@@ -1836,7 +1836,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 			bbs_warning("FETCH failed: %s\n", maildriver_strerror(res));
 			/* fetch_result and everything that went into it is already freed */
 			mailimap_set_free(set);
-			return;
+			return -1;
 		}
 	}
 
@@ -1844,7 +1844,7 @@ static void fetchlist(struct ws_session *ws, struct imap_client *client, const c
 	if (!root) {
 		mailimap_fetch_list_free(fetch_result);
 		mailimap_set_free(set);
-		return;
+		return -1;
 	}
 
 	json_object_set_new(root, "response", json_string("FETCHLIST"));
@@ -1925,7 +1925,7 @@ finalize:
 	append_quota(root, client);
 
 	json_send(ws, root);
-	return;
+	return 0;
 
 cleanup:
 	mailimap_set_free(set);
@@ -1944,7 +1944,7 @@ cleanup:
 		mailimap_fetch_type_free(fetch_type);
 	}
 	json_decref(root);
-	return;
+	return -1;
 
 cleanup2:
 	mailimap_set_free(set);
@@ -1956,9 +1956,10 @@ cleanup2:
 		mailimap_fetch_type_free(fetch_type);
 	}
 	json_decref(root);
+	return -1;
 }
 
-static void handle_fetchlist(struct ws_session *ws, struct imap_client *client, const char *reason, int page, int pagesize, const char *sort, const char *filter)
+static int handle_fetchlist(struct ws_session *ws, struct imap_client *client, const char *reason, int page, int pagesize, const char *sort, const char *filter)
 {
 	uint32_t total;
 	int numpages, start, end;
@@ -2004,7 +2005,7 @@ static void handle_fetchlist(struct ws_session *ws, struct imap_client *client, 
 			json_object_set_new(root, "data", json_array());
 			json_send(ws, root);
 		}
-		return;
+		return -1;
 	}
 
 	/* Calculate pagination */
@@ -2017,7 +2018,7 @@ static void handle_fetchlist(struct ws_session *ws, struct imap_client *client, 
 	end = start + (pagesize - 1);
 	if (end < 1) {
 		end = 0; /* But we must not pass 1:0 to libetpan, or that will turn into 1:* */
-		return;
+		return -1;
 	} else if (end > (int) total) {
 		end = (int) total; /* End can't be beyond the max # of messages */
 	}
@@ -2214,6 +2215,14 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 			}
 			break;
 		case MAILMIME_MESSAGE:
+			/* A message could have multiple Subject, etc. headers if it contains an RFC 822 message
+			 * as an attachment, e.g. a non-delivery report. In that case, the first one we encounter
+			 * is the real one, and everything else afterwards should be ignored. */
+#define json_set_header(root, name, value) \
+	if (!json_object_string_value(root, name)) { \
+		json_object_set_new(root, name, value); \
+	}
+
 			if (mime->mm_data.mm_message.mm_fields) {
 				/* Use the MIME decoded headers to both handle decoding and so we don't have to parse headers ourselves */
 				if (clist_begin(mime->mm_data.mm_message.mm_fields->fld_list)) {
@@ -2222,9 +2231,9 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 					to = json_array();
 					cc = json_array();
 					replyto = json_array();
-					json_object_set_new(root, "to", to);
-					json_object_set_new(root, "cc", cc);
-					json_object_set_new(root, "replyto", replyto);
+					json_set_header(root, "to", to);
+					json_set_header(root, "cc", cc);
+					json_set_header(root, "replyto", replyto);
 					for (cur = clist_begin(mffields->fld_list); cur; cur = clist_next(cur)) {
 						clistiter *fcur;
 						struct mailimf_subject *subject;
@@ -2253,7 +2262,7 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 									name = decoded ? decoded : mb->mb_display_name;
 									snprintf(frombuf, sizeof(frombuf), "%s%s<%s>", S_IF(name), !strlen_zero(name) ? " " : "", mb->mb_addr_spec);
 									bbs_debug(6, "From: %s\n", frombuf);
-									json_object_set_new(root, "from", json_string(frombuf));
+									json_set_header(root, "from", json_string(frombuf));
 									free_if(decoded);
 								}
 								break;
@@ -2271,12 +2280,12 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 								decoded = subject ? mime_header_decode(subject->sbj_value) : NULL;
 								name = decoded ? decoded : subject->sbj_value;
 								bbs_debug(5, "Subject: %s\n", name);
-								json_object_set_new(root, "subject", json_string(name));
+								json_set_header(root, "subject", json_string(name));
 								free_if(decoded);
 								break;
 							case MAILIMF_FIELD_MESSAGE_ID:
 								bbs_debug(5, "Message-ID: %s\n", f->fld_data.fld_message_id->mid_value);
-								json_object_set_new(root, "messageid", json_string(f->fld_data.fld_message_id->mid_value));
+								json_set_header(root, "messageid", json_string(f->fld_data.fld_message_id->mid_value));
 								break;
 							/* Skip Reply-To and References here, we just want the raw versions for FETCH,
 							 * not the parsed versions, and we don't need them for FETCHLIST */
@@ -2463,7 +2472,7 @@ cleanup:
 	json_decref(root);
 }
 
-static void handle_fetch(struct ws_session *ws, struct imap_client *client, uint32_t uid, int html, int raw)
+static int handle_fetch(struct ws_session *ws, struct imap_client *client, uint32_t uid, int html, int raw)
 {
 	int res;
 	struct mailimap_set *set;
@@ -2477,12 +2486,12 @@ static void handle_fetch(struct ws_session *ws, struct imap_client *client, uint
 
 	if (!uid) {
 		bbs_warning("Invalid UID: %u\n", uid);
-		return;
+		return -1;
 	}
 
 	root = json_object();
 	if (!root) {
-		return;
+		return -1;
 	}
 
 /* Automatically mark selected messages as Seen. This is typically expected behavior. */
@@ -2567,7 +2576,7 @@ static void handle_fetch(struct ws_session *ws, struct imap_client *client, uint
 	mailimap_set_free(set);
 	mailimap_fetch_type_free(fetch_type);
 	mailimap_fetch_list_free(fetch_result);
-	return;
+	return 0;
 
 cleanup:
 	mailimap_set_free(set);
@@ -2576,6 +2585,7 @@ cleanup:
 		mailimap_fetch_list_free(fetch_result);
 	}
 	json_decref(root);
+	return -1;
 }
 
 static struct mailimap_set *uidset(json_t *uids)
@@ -2621,7 +2631,7 @@ static struct mailimap_set *uidset(json_t *uids)
 	return set;
 }
 
-static void __handle_store(struct imap_client *client, int sign, struct mailimap_set *set, struct mailimap_flag_list *flag_list)
+static int __handle_store(struct imap_client *client, int sign, struct mailimap_set *set, struct mailimap_flag_list *flag_list)
 {
 	int res;
 	struct mailimap_store_att_flags *att_flags;
@@ -2642,11 +2652,12 @@ static void __handle_store(struct imap_client *client, int sign, struct mailimap
 	/* Regardless of whether it failed or not, we're done */
 	mailimap_store_att_flags_free(att_flags);
 	mailimap_set_free(set);
-	return;
+	return 0;
 
 cleanup:
 	mailimap_flag_list_free(flag_list);
 	mailimap_set_free(set);
+	return -1;
 }
 
 /*!
@@ -2655,7 +2666,7 @@ cleanup:
  * \param uid
  * \param sign 1 to store flag, -1 to remove flag
  */
-static void handle_store(struct imap_client *client, int sign, json_t *uids, const char *flagname)
+static int handle_store(struct imap_client *client, int sign, json_t *uids, const char *flagname)
 {
 	int res;
 	struct mailimap_flag_list *flag_list;
@@ -2665,7 +2676,7 @@ static void handle_store(struct imap_client *client, int sign, json_t *uids, con
 
 	set = uidset(uids);
 	if (!set) {
-		return;
+		return -1;
 	}
 
 	flag_list = mailimap_flag_list_new_empty();
@@ -2688,7 +2699,7 @@ static void handle_store(struct imap_client *client, int sign, json_t *uids, con
 		mailimap_flag_list_free(flag_list);
 		mailimap_set_free(set);
 		free_if(keyword);
-		return;
+		return -1;
 	}
 
 	return __handle_store(client, sign, set, flag_list);
@@ -2706,14 +2717,14 @@ static void handle_store(struct imap_client *client, int sign, json_t *uids, con
 
 #define handle_store_flagged(client, sign, uids) handle_store(client, sign, uids, "\\Flagged")
 
-static void handle_move(struct imap_client *client, json_t *uids, const char *newmbox)
+static int handle_move(struct imap_client *client, json_t *uids, const char *newmbox)
 {
 	int res;
 	struct mailimap_set *set;
 
 	set = uidset(uids);
 	if (!set) {
-		return;
+		return -1;
 	}
 
 	if (client->has_move) {
@@ -2749,33 +2760,36 @@ static void handle_move(struct imap_client *client, json_t *uids, const char *ne
 		client->messages = newcount;
 	}
 	mailimap_set_free(set);
+	return res; /* libetpan defines MAILIMAP_NO_ERROR as 0, so we're good */
 }
 
-static void handle_copy(struct imap_client *client, json_t *uids, const char *newmbox)
+static int handle_copy(struct imap_client *client, json_t *uids, const char *newmbox)
 {
 	int res;
 	struct mailimap_set *set;
 
 	set = uidset(uids);
 	if (!set) {
-		return;
+		return -1;
 	}
 
 	res = mailimap_uid_copy(client->imap, set, newmbox);
 	if (res != MAILIMAP_NO_ERROR) {
 		bbs_warning("UID COPY failed: %s\n", maildriver_strerror(res));
+		return -1;
 	}
 	mailimap_set_free(set);
+	return 0;
 }
 
-static void handle_append(struct imap_client *client, const char *message, size_t size, const char *date, const char *flags)
+static int handle_append(struct imap_client *client, const char *message, size_t size, const char *date, const char *flags)
 {
 	int res;
 	size_t realsize;
 
 	if (strlen_zero(message)) {
 		bbs_warning("Empty APPEND message?\n");
-		return;
+		return -1;
 	}
 	realsize = strlen(message);
 	if (realsize != size) { /* Some people say trust but verify. Here, we don't trust and verify. */
@@ -2790,9 +2804,11 @@ static void handle_append(struct imap_client *client, const char *message, size_
 	res = mailimap_append_simple(client->imap, client->mailbox, message, size);
 	if (res != MAILIMAP_NO_ERROR) {
 		bbs_warning("APPEND failed: %s\n", maildriver_strerror(res));
+		return -1;
 	} else {
 		client->messages++; /* Manually update count */
 	}
+	return 0;
 }
 
 #define REFRESH_LISTING(reason) handle_fetchlist(ws, client, reason, client->page, client->pagesize, client->sort, client->filter)
@@ -3062,27 +3078,27 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 			goto cleanup;
 		}
 		/* Send an unsolicited list of messages (implicitly fetch the first page). */
-		handle_fetchlist(ws, client, command, 1, json_object_int_value(root, "pagesize"), json_object_string_value(root, "sort"), json_object_string_value(root, "filter"));
+		res = handle_fetchlist(ws, client, command, 1, json_object_int_value(root, "pagesize"), json_object_string_value(root, "sort"), json_object_string_value(root, "filter"));
 	} else if (!strcmp(command, "FETCHLIST")) {
-		handle_fetchlist(ws, client, command, json_object_int_value(root, "page"), json_object_int_value(root, "pagesize"), json_object_string_value(root, "sort"), json_object_string_value(root, "filter"));
+		res = handle_fetchlist(ws, client, command, json_object_int_value(root, "page"), json_object_int_value(root, "pagesize"), json_object_string_value(root, "sort"), json_object_string_value(root, "filter"));
 	} else if (client->mailbox) {
 		/* SELECTed state only */
 		if (!strcmp(command, "FETCH")) {
-			handle_fetch(ws, client, (uint32_t) json_object_int_value(root, "uid"), json_object_bool_value(root, "html"), json_object_bool_value(root, "raw"));
+			res = handle_fetch(ws, client, (uint32_t) json_object_int_value(root, "uid"), json_object_bool_value(root, "html"), json_object_bool_value(root, "raw"));
 		} else if (!strcmp(command, "UNSEEN")) {
-			handle_store_seen(client, -1, json_object_get(root, "uids"));
+			res = handle_store_seen(client, -1, json_object_get(root, "uids"));
 			/* Frontend will handle toggling unread/read visibility and updating folder counts */
 		} else if (!strcmp(command, "SEEN")) {
-			handle_store_seen(client, +1, json_object_get(root, "uids"));
+			res = handle_store_seen(client, +1, json_object_get(root, "uids"));
 			/* Frontend will handle toggling unread/read visibility and updating folder counts */
 		} else if (!strcmp(command, "UNFLAG")) {
-			handle_store_flagged(client, -1, json_object_get(root, "uids"));
+			res = handle_store_flagged(client, -1, json_object_get(root, "uids"));
 			REFRESH_LISTING("UNFLAG");
 		} else if (!strcmp(command, "FLAG")) {
-			handle_store_flagged(client, +1, json_object_get(root, "uids"));
+			res = handle_store_flagged(client, +1, json_object_get(root, "uids"));
 			REFRESH_LISTING("FLAG");
 		} else if (!strcmp(command, "DELETE")) {
-			handle_store_deleted(client, json_object_get(root, "uids"));
+			res = handle_store_deleted(client, json_object_get(root, "uids"));
 			/* In theory, the frontend could handle marking messages as Deleted locally,
 			 * without us sending a refreshed message listing.
 			 * However, it is possible that the message list has actually changed in other ways.
@@ -3112,28 +3128,36 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 				REFRESH_LISTING("EXPUNGE");
 			}
 		} else if (!strcmp(command, "MOVE")) {
-			handle_move(client, json_object_get(root, "uids"), json_object_string_value(root, "folder"));
-			/* Problem here is libetpan flushes all existing pending output when issuing a command.
-			 * This includes NOOP and IDLE, so if there's an untagged * EXISTS already waiting for us, we'll never see it.
-			 * We could just poll and call readline, since there SHOULD be an untagged * EXISTS,
-			 * but we don't know how many, so that gets very tricky.
-			 *
-			 * So, just assume that the number of messages in the mailbox has decreased by how many messages
-			 * were moved, and update our count and then refresh (handle_move does the calculation)
-			 * This of course assumes we won't ever see the corresponding EXPUNGE responses for these messages (but since we won't, it works)
-			 */
-			REFRESH_LISTING("MOVE");
+			res = handle_move(client, json_object_get(root, "uids"), json_object_string_value(root, "folder"));
+			if (!res) {
+				/* Problem here is libetpan flushes all existing pending output when issuing a command.
+				 * This includes NOOP and IDLE, so if there's an untagged * EXISTS already waiting for us, we'll never see it.
+				 * We could just poll and call readline, since there SHOULD be an untagged * EXISTS,
+				 * but we don't know how many, so that gets very tricky.
+				 *
+				 * So, just assume that the number of messages in the mailbox has decreased by how many messages
+				 * were moved, and update our count and then refresh (handle_move does the calculation)
+				 * This of course assumes we won't ever see the corresponding EXPUNGE responses for these messages (but since we won't, it works)
+				 */
+				REFRESH_LISTING("MOVE");
+			}
 		} else if (!strcmp(command, "COPY")) {
-			handle_copy(client, json_object_get(root, "uids"), json_object_string_value(root, "folder"));
+			res = handle_copy(client, json_object_get(root, "uids"), json_object_string_value(root, "folder"));
 			REFRESH_LISTING("COPY");
 		} else if (!strcmp(command, "APPEND")) {
-			handle_append(client, json_object_string_value(root, "message"), (size_t) json_object_number_value(root, "size"), json_object_string_value(root, "date"), json_object_string_value(root, "flags"));
+			res = handle_append(client, json_object_string_value(root, "message"), (size_t) json_object_number_value(root, "size"), json_object_string_value(root, "date"), json_object_string_value(root, "flags"));
 			REFRESH_LISTING("APPEND");
 		} else {
 			bbs_warning("Command unknown: %s\n", command);
 		}
 	} else {
 		bbs_warning("Command unknown or invalid in current state: %s\n", command);
+	}
+
+	if (res) {
+		/* This is more of an error, but only a temporary one */
+		bbs_warning("%s operation failed\n", command);
+		client_set_status(client->ws, "%s operation failed", command);
 	}
 
 	/*! \todo XXX Improvement: Only start idling if we've been inactive for at least a few seconds...

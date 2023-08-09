@@ -1450,6 +1450,7 @@ int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, in
 	}
 
 	fflush(fp);
+	fprintf(fp, "--%s--\r\n", bound); /* Last one, so include 2 dashes after the boundary */
 	length = (size_t) ftell(fp);
 	fclose(fp);
 

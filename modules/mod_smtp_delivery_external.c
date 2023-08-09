@@ -249,13 +249,15 @@ static int smtp_client_expect_final(struct bbs_tcp_client *restrict client, int 
 		res = bbs_tcp_client_expect(client, "\r\n", 1, ms, code);
 		bbs_debug(3, "Found '%s': %s\n", code, client->rldata.buf);
 	} while (!strncmp(client->rldata.buf, code, codelen) && client->rldata.buf[codelen] == '-');
-	if (res) {
+	if (res > 0) {
 		bbs_warning("Expected '%s', got: %s\n", code, client->rldata.buf);
+	} else if (res < 0) {
+		bbs_warning("Failed to receive '%s'\n", code);
 	}
 	return res;
 }
 
-#define SMTP_CLIENT_EXPECT_FINAL(client, ms, code) if (smtp_client_expect_final(client, ms, code, STRLEN(code))) { goto cleanup; }
+#define SMTP_CLIENT_EXPECT_FINAL(client, ms, code) if ((res = smtp_client_expect_final(client, ms, code, STRLEN(code)))) { goto cleanup; }
 
 static int smtp_client_handshake(struct bbs_tcp_client *restrict client, const char *hostname, int *restrict capsptr, int *restrict maxsendsize)
 {
@@ -717,15 +719,17 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	}
 	stringlist_empty(&mxservers);
 
+	newretries = atoi(retries); /* This is actually current # of retries, not new # yet */
 	if (!res) {
 		/* Successful delivery. */
+		bbs_debug(6, "Delivery successful after %d attempt%s, discarding queue file\n", newretries, ESS(newretries));
 		smtp_trigger_dsn(DELIVERY_DELIVERED, &tx, &created, realfrom, realto, buf, fileno(fp), metalen, size - metalen);
 		fclose(fp);
 		bbs_delete_file(fullname);
 		return 0;
 	}
 
-	newretries = atoi(retries) + 1;
+	newretries++; /* Now it's the new number */
 	bbs_debug(3, "Delivery of %s to %s has been attempted %d/%d times\n", fullname, realto, newretries, max_retries);
 	if (res > 0 || newretries >= (int) max_retries) {
 		/* Send a delivery failure response, then delete the file. */

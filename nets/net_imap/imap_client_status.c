@@ -469,9 +469,12 @@ ssize_t remote_status(struct imap_client *client, const char *remotename, const 
 	ssize_t res;
 	char *buf;
 	struct bbs_tcp_client *tcpclient = &client->client;
-	const char *tag = client->imap->tag;
+	const char *tag;
 	const char *add1, *add2, *add3;
 	int issue_status = 1;
+
+	bbs_assert_exists(client->imap); /* Added in response to a segfault observed on the following line */
+	tag = client->imap->tag;
 
 	/* In order for caching of SIZE to be reliable, we must invalidate it whenever anything
 	 * in the original STATUS response changes, including UIDNEXT/UIDVALIDITY. These are needed to
@@ -583,7 +586,7 @@ int imap_client_send_converted_status_response(struct imap_client *client, const
 	safe_strncpy(converted, remotename, sizeof(converted));
 	bbs_strreplace(converted, client->virtdelimiter, HIERARCHY_DELIMITER_CHAR); /* Convert remote delimiter back to local for client response */
 
-	imap_send(imap, "STATUS \"%s%c%s\" %s", client->virtprefix, HIERARCHY_DELIMITER_CHAR, converted, tmp); /* Send the modified response */
+	imap_parallel_send(imap, "STATUS \"%s%c%s\" %s", client->virtprefix, HIERARCHY_DELIMITER_CHAR, converted, tmp); /* Send the modified response */
 
 	return 0;
 }

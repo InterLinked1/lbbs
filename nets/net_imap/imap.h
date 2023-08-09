@@ -155,10 +155,24 @@ enum mailbox_namespace {
 extern int imap_debug_level;
 #endif
 
+/*!
+ * \note For use within possibly or definitely parallel jobs. This is separate to avoid overhead of checking if we know it's not parallel.
+ */
+#define _imap_parallel_reply(imap, fmt, ...) \
+	if (imap->node->thread == pthread_self()) { \
+		_imap_reply(imap, fmt, ## __VA_ARGS__); \
+	} else { \
+		__imap_parallel_reply(imap, fmt, ## __VA_ARGS__); \
+	}
+
+#define __imap_parallel_reply(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); bbs_node_any_fd_writef(imap->node, imap->wfd, fmt, ## __VA_ARGS__);
+
 #define _imap_reply_nolock(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); bbs_node_fd_writef(imap->node, imap->wfd, fmt, ## __VA_ARGS__);
-#define _imap_reply(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); pthread_mutex_lock(&imap->lock); bbs_node_fd_writef(imap->node, imap->wfd, fmt, ## __VA_ARGS__); pthread_mutex_unlock(&imap->lock);
+#define _imap_reply(imap, fmt, ...) _imap_reply_nolock(imap, fmt, ## __VA_ARGS__)
 #define imap_send(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
 #define imap_reply(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", imap->tag, ## __VA_ARGS__)
+
+#define imap_parallel_send(imap, fmt, ...) _imap_parallel_reply(imap, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
 
 #define REQUIRE_ARGS(s) \
 	if (!s || !*s) { \

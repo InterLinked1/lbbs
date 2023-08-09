@@ -762,7 +762,12 @@ int handle_fetch_full(struct imap_session *imap, char *s, int usinguid, int tagg
 	 * So the correct way to parse here should be to count the ( and ), adding +1 and -1 respectively,
 	 * until we get back to 0, and then stop.
 	 */
-	items = parensep(&s);
+	if (*s == '(') {
+		items = parensep(&s);
+	} else {
+		items = s; /* Parentheses optional for just a single item */
+		s = NULL;
+	}
 
 	memset(&fetchreq, 0, sizeof(fetchreq));
 

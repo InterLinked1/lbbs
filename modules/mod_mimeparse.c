@@ -74,7 +74,34 @@ static char *escape_string(const char *string)
 	return g_string_free(str, FALSE);
 }
 
-static void write_part_bodystructure(GMimeObject *part, GString *gs)
+static void add_envelope(GMimeMessage *message, GString *gs)
+{
+	char *nstring;
+	const char *str = g_mime_object_get_header((GMimeObject *) message, "Date");
+	g_string_append_printf(gs, "\"%s\" ", str);
+
+#define MIME_HEADER(name) \
+if ((str = g_mime_object_get_header((GMimeObject *) message, name))) { \
+	nstring = escape_string(str); \
+	g_string_append_printf(gs, "\"%s\" ", nstring); \
+	g_free(nstring); \
+} else { \
+	g_string_append_printf(gs, "\"%s\" ", ""); \
+} \
+
+	MIME_HEADER("Subject");
+	MIME_HEADER("From");
+	MIME_HEADER("Sender");
+	MIME_HEADER("Reply-To");
+	MIME_HEADER("To");
+	MIME_HEADER("Cc");
+	MIME_HEADER("Bcc"); /* Should this even exist? */
+	MIME_HEADER("In-Reply-To");
+
+#undef MIME_HEADER
+}
+
+static void write_part_bodystructure(GMimeObject *part, GString *gs, int level)
 {
 	GMimeContentType *content_type;
 	GMimeParamList *params;
@@ -82,6 +109,12 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 	GMimeParam *param;
 	GMimeContentDisposition *disposition = NULL;
 	int i, n;
+	int rfc822;
+
+	if (level++ > 100) {
+		bbs_error("Maximum BODYSTRUCTURE recursion reached\n");
+		return;
+	}
 
 	g_string_append_c(gs, '(');
 
@@ -91,12 +124,16 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 		n = g_mime_multipart_get_count(multipart);
 		for (i = 0; i < n; i++) {
 			GMimeObject *subpart = g_mime_multipart_get_part(multipart, i);
-			write_part_bodystructure(subpart, gs);
+			write_part_bodystructure(subpart, gs, level);
 		}
 	}
 
 	/* Body type */
 	content_type = g_mime_object_get_content_type(part);
+	subtype = g_mime_content_type_get_media_subtype(content_type);
+
+	rfc822 = !strcasecmp(g_mime_content_type_get_media_type(content_type), "message") && subtype && !strcasecmp(subtype, "rfc822");
+
 	if (!GMIME_IS_MULTIPART(part)) {
 		g_string_append_printf(gs, "\"%s\" ", g_mime_content_type_get_media_type(content_type));
 	} else {
@@ -104,7 +141,7 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 	}
 
 	/* Body subtype */
-	if ((subtype = g_mime_content_type_get_media_subtype(content_type))) {
+	if (subtype) {
 		g_string_append_printf(gs, "\"%s\" ", subtype);
 	} else {
 		g_string_append(gs, "\"\"");
@@ -128,38 +165,17 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 
 	if (GMIME_IS_MULTIPART(part)) {
 		/* Already did it */
-	} else if (GMIME_IS_MESSAGE_PART(part)) {
+	} else if (GMIME_IS_MESSAGE_PART(part) && !rfc822) {
 		GMimeMessage *message;
 		const char *str;
 		char *nstring;
 
 		message = GMIME_MESSAGE_PART(part)->message;
 
-		/* print envelope */
 		g_string_append_c(gs, '(');
 
-		str = g_mime_object_get_header((GMimeObject *) message, "Date");
-		g_string_append_printf(gs, "\"%s\" ", str);
-
-#define MIME_HEADER(name) \
-	if ((str = g_mime_object_get_header((GMimeObject *) message, name))) { \
-		nstring = escape_string(str); \
-		g_string_append_printf(gs, "\"%s\" ", nstring); \
-		g_free(nstring); \
-	} else { \
-		g_string_append_printf(gs, "\"%s\" ", ""); \
-	} \
-
-		MIME_HEADER("Subject");
-		MIME_HEADER("From");
-		MIME_HEADER("Sender");
-		MIME_HEADER("Reply-To");
-		MIME_HEADER("To");
-		MIME_HEADER("Cc");
-		MIME_HEADER("Bcc"); /* Should this even exist? */
-		MIME_HEADER("In-Reply-To");
-
-#undef MIME_HEADER
+		/* print envelope */
+		add_envelope(message, gs);
 
 		/* Body parameter parenthesized list */
 		if ((str = g_mime_message_get_message_id(message))) {
@@ -173,12 +189,19 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 		g_string_append(gs, ") ");
 
 		/* print body */
-		write_part_bodystructure((GMimeObject *) message->mime_part, gs);
+		write_part_bodystructure((GMimeObject *) message->mime_part, gs, level);
 	} else if (GMIME_IS_PART(part)) {
+		const char *contentid;
 		disposition = g_mime_object_get_content_disposition(part); /* Save for later */
 
 		/* Body ID and body description */
-		g_string_append(gs, "NIL NIL ");
+		contentid = g_mime_object_get_content_id((GMimeObject *) part);
+		if (contentid) {
+			/* Body ID would be (quoted) contents of Content-ID header, if there is one */
+			g_string_append_printf(gs, "\"<%s>\" NIL ", contentid);
+		} else {
+			g_string_append(gs, "NIL NIL ");
+		}
 
 		/* Body encoding */
 		switch (g_mime_part_get_content_encoding((GMimePart *) part)) {
@@ -203,10 +226,17 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 		default:
 			g_string_append(gs, "NIL");
 		}
+	} else if (rfc822) {
+		/* Body ID and body description */
+		g_string_append(gs, "NIL NIL ");
+
+		/* This is not a part, so we can't do the above (though maybe there's a different function?)
+		 * It's either 7-bit or 8-bit, just make it work for now: */
+		g_string_append(gs, "NIL"); /* XXX Not sure if it's 7-bit or 8-bit, can't use g_mime_part_get_content_encoding */
 	}
 
 	/* Body size */
-	if (!GMIME_IS_MULTIPART(part)) {
+	if (!GMIME_IS_MULTIPART(part)) { /* Includes RFC822 message */
 		/* Body size */
 		GMimeStream *stream;
 		ssize_t bodysize;
@@ -215,7 +245,7 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 
 		/* Use a null stream since we don't actually care about the content, only its length (and # of newlines) */
 		stream = g_mime_stream_null_new();
-		if (GMIME_IS_TEXT_PART(part)) {
+		if (GMIME_IS_TEXT_PART(part) || rfc822) {
 			g_mime_stream_null_set_count_newlines((GMimeStreamNull*) stream, TRUE);
 		}
 		bodysize = g_mime_object_write_to_stream((GMimeObject*) part, NULL, stream);
@@ -244,7 +274,7 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 			if (bodysize > 2) { /* End of headers CR LF CR LF. One of the newlines is included, the other is not. */
 				bodysize -= 2;
 			}
-			if (GMIME_IS_TEXT_PART(part)) {
+			if (GMIME_IS_TEXT_PART(part) || rfc822) {
 				if (headerlines >= newlines) {
 					bbs_error("%lu lines total (%ld bytes), but header has %lu lines?\n", newlines, bodysize, headerlines);
 				} else {
@@ -259,14 +289,32 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs)
 		g_object_unref(stream);
 
 		g_string_append_printf(gs, " %ld", bodysize); /* Number of bytes in part */
-		/* XXX MESSAGE/RFC822 is also specifically called out in the RFC, but not handled here yet */
-		if (!strcasecmp(g_mime_content_type_get_media_type(content_type), "TEXT")) {
+
+		if (rfc822) {
+			/* Envelope structure, body structure */
+			GMimeMessage *message = GMIME_MESSAGE_PART(part)->message;
+			g_string_append(gs, " (");
+#if 0
+			add_envelope(message, gs);
+#else
+			/* libetpan chokes on the envelope we send here, and I know this works, so just send NILs for now, for compatibility.
+			 * I've seen other IMAP servers do this, so maybe there's a good reason for that.
+			 * (I suspect it probably has to do with not properly handling certain characters, e.g. parentheses)
+			 * libetpan also has this issue with parsing FLAGS/PERMANENTFLAGS. */
+			g_string_append(gs, "NIL NIL NIL NIL NIL NIL NIL NIL NIL NIL");
+#endif
+			g_string_append_c(gs, ')');
+			write_part_bodystructure((GMimeObject *) message->mime_part, gs, level);
+		}
+
+		if (rfc822 || !strcasecmp(g_mime_content_type_get_media_type(content_type), "TEXT")) {
 			g_string_append_printf(gs, " %lu", newlines); /* Number of newlines in part */
 		}
 		g_string_append(gs, " NIL"); /* Non-multipart extension data: body MD5 */
 	}
 
-	if (disposition) {
+	/* Extensions */
+	if (!rfc822 && disposition) {
 		/* This is kind of a continuation of the previous block.
 		 * Since this is an extension, it absolutely must come after the NIL for body MD5 */
 		g_string_append(gs, " (");
@@ -301,6 +349,11 @@ char *mime_make_bodystructure(const char *itemname, const char *file)
 	GString *str;
 	gchar *result;
 	int fd;
+#ifdef CHECK_VALIDITY
+	int p = 0;
+	int in_quoted = 0;
+	char *s;
+#endif
 
 	fd = open(file, O_RDONLY, 0);
 	if (fd < 0) {
@@ -326,7 +379,43 @@ char *mime_make_bodystructure(const char *itemname, const char *file)
 
 	str = g_string_new("");
 	g_string_append_printf(str, "%s ", itemname);
-	write_part_bodystructure(message->mime_part, str);
+	write_part_bodystructure(message->mime_part, str, 0);
+
+#ifdef CHECK_VALIDITY
+	/* Ensure the result is well parenthesized */
+	s = str->str;
+	while (*s) {
+		if (in_quoted) {
+			if (*s == '\\') {
+				/* Next " is escaped, don't count that */
+				if (*(s + 1)) {
+					s++;
+				}
+			} else if (*s == '"') {
+				in_quoted = 0;
+			}
+		} else {
+			if (*s == '(') {
+				p++;
+			} else if (*s == ')') {
+				p--;
+			} else if (*s == '"') {
+				in_quoted = 1;
+			}
+		}
+		s++;
+	}
+
+	if (p != 0) {
+		bbs_warning("BODYSTRUCTURE is malformed, parentheses score was %d\n", p);
+		/* If there are unterminated parentheses, we can fix that easily. Too many is not handled here.
+		 * This should never happen anyways. */
+		while (p-- > 0) {
+			g_string_append(str, ")");
+		}
+	}
+#endif
+
 	result = g_string_free(str, FALSE); /* Free the g_string but not the buffer */
 	g_object_unref(message);
 	return result; /* gchar is just a typedef for char, so this returns a char */

@@ -185,7 +185,7 @@ static int remote_list(struct imap_client *client, struct list_command *lcmd, co
 		}
 
 		/* Matches prefix, send it (but send our hierarchy delimiter, not remote delimiter) */
-		imap_send(imap, "%s (%s) \"%c\" \"%s\"", lcmd->cmd, attributes, HIERARCHY_DELIMITER_CHAR, fullmailbox);
+		imap_parallel_send(imap, "%s (%s) \"%c\" \"%s\"", lcmd->cmd, attributes, HIERARCHY_DELIMITER_CHAR, fullmailbox);
 
 #define MAILBOX_SELECTABLE(flags) (strlen_zero(attributes) || (!strcasestr(flags, "\\NonExistent") && !strcasestr(flags, "\\NoSelect")))
 		/* Handle LIST-STATUS and STATUS=SIZE for remote mailboxes. */

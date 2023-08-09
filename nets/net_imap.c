@@ -4264,12 +4264,6 @@ static int imap_process(struct imap_session *imap, char *s)
 		}
 	} else if (!strcasecmp(command, "APPEND")) {
 		REQUIRE_ARGS(s);
-		if (imap->client) {
-			/*! \todo This needs careful attention for virtual mappings */
-			imap_reply(imap, "NO Operation not supported for virtual mailboxes");
-			goto done;
-		}
-		IMAP_NO_READONLY(imap);
 		res = handle_append(imap, s);
 	} else if (allow_idle && !strcasecmp(command, "IDLE")) {
 		return handle_idle(imap); /* No need to check for updates right after an IDLE */
