@@ -167,7 +167,8 @@ int imap_client_idle_stop(struct imap_client *client)
 	if (SWRITE(client->client.wfd, "DONE\r\n") < 0) {
 		return -1;
 	}
-	if (bbs_tcp_client_expect(&client->client, "\r\n", 2, SEC_MS(3), "idle OK")) { /* tagged OK response */
+	/* There could be some untagged updates sent that we're just seeing now, be tolerant of receiving a few of those */
+	if (bbs_tcp_client_expect(&client->client, "\r\n", 10, SEC_MS(3), "idle OK")) { /* tagged OK response */
 		bbs_warning("Failed to terminate IDLE for %s\n", client->virtprefix);
 		return -1;
 	}

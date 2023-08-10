@@ -202,7 +202,7 @@ int bbs_transfer_home_config_file(unsigned int userid, const char *name, char *b
 		return -1;
 	}
 	snprintf(buf, len, "%s/home/%d/.config/%s", rootdir, userid, name);
-	return bbs_file_exists(buf);
+	return !bbs_file_exists(buf);
 }
 
 /*! \note This implementation assumes the userpath is always a subset of the diskpath */

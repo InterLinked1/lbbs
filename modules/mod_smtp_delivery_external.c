@@ -14,6 +14,8 @@
  *
  * \brief External mail queuing and delivery
  *
+ * \note Supports RFC 7505 Null MX
+ *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
@@ -65,7 +67,14 @@ struct mx_record {
 
 RWLIST_HEAD(mx_records, mx_record);
 
-/*! \brief Fill the results list with the MX results in order of priority */
+/*!
+ * \brief Fill the results list with the MX results in order of priority
+ * \param domain
+ * \param[out] results
+ * \retval 0 on success
+ * \retval -1 on failure
+ * \retval -2 if domain accepts no mail
+ */
 static int lookup_mx_all(const char *domain, struct stringlist *results)
 {
 	char *hostname, *tmp;
@@ -124,6 +133,9 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 		 *
 		 * If there is no MX record, we'll get something like:
 		 * example.com.               1D IN MX        0 .
+		 * This is actually a special case in RFC 7505, which indicates the domain
+		 * receives no mail. In this case, we should NOT fall back to the A or AAAA record.
+		 * We should immediately abort.
 		 */
 
 		tmp = strstr(hostname, "MX");
@@ -142,7 +154,12 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 		}
 
 		if (strlen_zero(hostname)) { /* No MX record */
-			continue;
+			/* The record was just a ., which means
+			 * the domain accepts no mail. */
+			RWLIST_REMOVE_ALL(&mxs, entry, free);
+			stringlist_empty(results);
+			bbs_warning("Domain %s does not accept mail\n", domain);
+			return -2;
 		}
 
 		/* Insert in order of priority */
@@ -157,7 +174,7 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 	}
 
 	if (!added) {
-		bbs_error("No MX records available for %s\n", domain);
+		bbs_warning("No MX records available for %s\n", domain);
 		return -1;
 	}
 
@@ -691,33 +708,40 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	}
 
 	memset(&mxservers, 0, sizeof(mxservers));
-	if (lookup_mx_all(domain, &mxservers)) {
-		char a_ip[256];
-		/* Fall back to trying the A record */
-		if (bbs_resolve_hostname(domain, a_ip, sizeof(a_ip))) {
-			bbs_warning("Recipient domain %s does not have any MX or A records\n", domain);
-			/* Just treat as undeliverable at this point and return to sender (if no MX records now, probably won't be any the next time we try) */
-			/* Send a delivery failure response, then delete the file. */
-			bbs_warning("Delivery of message %s from %s to %s has failed permanently (no MX records)\n", fullname, realfrom, realto);
-			/* There isn't any SMTP level error at this point yet, we have to make our own error message for the bounce message */
-			snprintf(buf, sizeof(buf), "No MX record(s) located for hostname %s", domain); /* No status code */
-			smtp_tx_data_reset(&tx);
-			safe_strncpy(tx.hostname, domain, sizeof(tx.hostname));
-			smtp_trigger_dsn(DELIVERY_FAILED, &tx, &created, realfrom, realto, buf, fileno(fp), metalen, size - metalen);
-			fclose(fp);
-			bbs_delete_file(fullname);
-			return 0;
+	res = lookup_mx_all(domain, &mxservers);
+	if (res == -2) {
+		smtp_tx_data_reset(&tx);
+		/* Do not set tx.hostname, since this message is from us, not the remote server */
+		snprintf(buf, sizeof(buf), "Domain does not accept mail");
+	} else {
+		if (res) {
+			char a_ip[256];
+			/* Fall back to trying the A record */
+			if (bbs_resolve_hostname(domain, a_ip, sizeof(a_ip))) {
+				bbs_warning("Recipient domain %s does not have any MX or A records\n", domain);
+				/* Just treat as undeliverable at this point and return to sender (if no MX records now, probably won't be any the next time we try) */
+				/* Send a delivery failure response, then delete the file. */
+				bbs_warning("Delivery of message %s from %s to %s has failed permanently (no MX records)\n", fullname, realfrom, realto);
+				/* There isn't any SMTP level error at this point yet, we have to make our own error message for the bounce message */
+				snprintf(buf, sizeof(buf), "No MX record(s) located for hostname %s", domain); /* No status code */
+				smtp_tx_data_reset(&tx);
+				/* Do not set tx.hostname, since this message is from us, not the remote server */
+				smtp_trigger_dsn(DELIVERY_FAILED, &tx, &created, realfrom, realto, buf, fileno(fp), metalen, size - metalen);
+				fclose(fp);
+				bbs_delete_file(fullname);
+				return 0;
+			}
+			bbs_warning("Recipient domain %s does not have any MX records, falling back to A record %s\n", domain, a_ip);
+			stringlist_push(&mxservers, a_ip);
 		}
-		bbs_warning("Recipient domain %s does not have any MX records, falling back to A record %s\n", domain, a_ip);
-		stringlist_push(&mxservers, a_ip);
-	}
 
-	/* Try all the MX servers in order, if necessary */
-	while (res < 0 && (hostname = stringlist_pop(&mxservers))) {
-		res = try_send(NULL, &tx, hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, fileno(fp), (off_t) metalen, size - metalen, buf, sizeof(buf));
-		free(hostname);
+		/* Try all the MX servers in order, if necessary */
+		while (res < 0 && (hostname = stringlist_pop(&mxservers))) {
+			res = try_send(NULL, &tx, hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, fileno(fp), (off_t) metalen, size - metalen, buf, sizeof(buf));
+			free(hostname);
+		}
+		stringlist_empty(&mxservers);
 	}
-	stringlist_empty(&mxservers);
 
 	newretries = atoi(retries); /* This is actually current # of retries, not new # yet */
 	if (!res) {
@@ -731,7 +755,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 
 	newretries++; /* Now it's the new number */
 	bbs_debug(3, "Delivery of %s to %s has been attempted %d/%d times\n", fullname, realto, newretries, max_retries);
-	if (res > 0 || newretries >= (int) max_retries) {
+	if (res == -2 || res > 0 || newretries >= (int) max_retries) {
 		/* Send a delivery failure response, then delete the file. */
 		bbs_warning("Delivery of message %s from %s to %s has failed permanently after %d retries\n", fullname, realfrom, realto, newretries);
 		/* To the dead letter office we go */
@@ -835,8 +859,8 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 {
 #ifndef BUGGY_SEND_IMMEDIATE
 	char buf[256] = "";
-	int res = -1;
 #endif
+	int res = -1;
 
 	UNUSED(user);
 	UNUSED(freedata);
@@ -866,7 +890,12 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 		struct stringlist mxservers;
 		/* Start by trying to deliver it directly, immediately, right now. */
 		memset(&mxservers, 0, sizeof(mxservers));
-		if (lookup_mx_all(domain, &mxservers)) {
+		res = lookup_mx_all(domain, &mxservers);
+		if (res == -2) {
+			smtp_abort(resp, 553, 5.1.2, "Recipient domain does not accept mail.");
+			return -1;
+		}
+		if (res) {
 			smtp_abort(resp, 553, 5.1.2, "Recipient domain not found.");
 			return -1;
 		}
@@ -897,7 +926,6 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 		int doasync;
 #else
 	if (1) {
-		int res;
 #endif
 		int fd;
 		char qdir[256];
