@@ -77,6 +77,10 @@ static int load_config(void)
 	bbs_config_val_set_str(cfg, "container", "hostname", hostname, sizeof(hostname));
 	bbs_config_val_set_path(cfg, "container", "templatedir", templatedir, sizeof(templatedir));
 	bbs_config_val_set_path(cfg, "container", "rundir", rundir, sizeof(rundir));
+	if (!s_strlen_zero(rundir)) {
+		bbs_verb(3, "Creating %s\n", rundir);
+		bbs_ensure_directory_exists_recursive(rundir);
+	}
 	bbs_config_val_set_int(cfg, "container", "maxmemory", &maxmemory);
 	bbs_config_val_set_int(cfg, "container", "maxcpu", &maxcpu);
 	if (!bbs_config_val_set_int(cfg, "container", "minnice", &minnice)) {
@@ -799,20 +803,21 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 					tmp++;
 				}
 
-				/* Make the user's home directory accessible within the container, at /home/${BBS_USERNAME} in the container */
-				if (bbs_transfer_home_dir(node, masterhomedir, sizeof(masterhomedir))) {
-					_exit(errno);
-				}
-				snprintf(homeenv + STRLEN("HOME="), sizeof(homeenv) - STRLEN("HOME="), "/home/%s", username);
-				snprintf(homedir, sizeof(homedir), "%s/home/%s", newroot, username);
-				SYSCALL_OR_DIE(mkdir, homedir, 0700);
-				SYSCALL_OR_DIE(mount, masterhomedir, homedir, "bind", MS_BIND | MS_REC, NULL);
+				if (bbs_user_is_registered(node->user)) {
+					/* Make the user's home directory accessible within the container, at /home/${BBS_USERNAME} in the container */
+					if (bbs_transfer_home_dir(node->user->id, masterhomedir, sizeof(masterhomedir))) {
+						_exit(errno);
+					}
+					snprintf(homeenv + STRLEN("HOME="), sizeof(homeenv) - STRLEN("HOME="), "/home/%s", username);
+					snprintf(homedir, sizeof(homedir), "%s/home/%s", newroot, username);
+					SYSCALL_OR_DIE(mkdir, homedir, 0700);
+					SYSCALL_OR_DIE(mount, masterhomedir, homedir, "bind", MS_BIND | MS_REC, NULL);
 
-				/* Also set the $HOME var to change the home directory from /root to /home/${BBS_USERNAME} */
-				myenvp[3] = homeenv;
-				/* However, now that we changed $HOME, bash for example will look for /home/${BBS_USERNAME}/.bashrc, not /root/.bashrc
-				 * So if the files in /root do not exist in the user's home directory, copy them there. */
-				
+					/* Also set the $HOME var to change the home directory from /root to /home/${BBS_USERNAME} */
+					myenvp[3] = homeenv;
+					/* However, now that we changed $HOME, bash for example will look for /home/${BBS_USERNAME}/.bashrc, not /root/.bashrc
+					 * So if the files in /root do not exist in the user's home directory, copy them there. */
+				}
 			}
 
 			snprintf(oldroot, sizeof(oldroot), "%s%s", newroot, oldrootname);

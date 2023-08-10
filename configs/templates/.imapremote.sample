@@ -1,0 +1,5 @@
+# .imapremote - Personal virtual mappings for remote IMAP mailboxes
+# Any mailboxes defined here will be available to you when logged in to the IMAP server, as if they were local.
+# The sysop may have configured a maximum number of remote connections that may be defined here
+
+# Other Users.foobar|imaps://bob@example.com:password@example.com:993

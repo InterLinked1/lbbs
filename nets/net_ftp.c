@@ -166,6 +166,7 @@ static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *full
 		return ftp_write(ftp, 450, "File uploads denied for user\n");
 	}
 
+	bbs_transfer_home_dir_init(ftp->node);
 	if (bbs_transfer_set_disk_path_relative_nocheck(ftp->node, bbs_transfer_get_user_path(ftp->node, fulldir), file, fullfile, sizeof(fullfile))) {
 		return ftp_write(ftp, 450, "File \"%s\" not allowed\n", file);
 	}

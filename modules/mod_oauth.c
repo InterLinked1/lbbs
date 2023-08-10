@@ -305,10 +305,16 @@ static int get_oauth_token(struct bbs_user *user, const char *name, char *buf, s
 	}
 	RWLIST_UNLOCK(&clients);
 
+	if (!user) {
+		return -1;
+	}
+
 	if (!client || res) { /* Didn't find a matching token, or it failed the first time */
 		/* Didn't find any matching OAuth token. Look in the user's home directory and see if it's there. */
 		char useroauthfile[256];
-		snprintf(useroauthfile, sizeof(useroauthfile), "%s/home/%d/.oauth.conf", bbs_transfer_rootdir(), userid);
+		if (bbs_transfer_home_config_file(userid, ".oauth.conf", useroauthfile, sizeof(useroauthfile))) {
+			return -1;
+		}
 		if (!load_config_file(useroauthfile, userid, name)) { /* Only counts if we specifically loaded a section with the given name */
 			/* Repeat, since we just now added a section named that */
 			RWLIST_RDLOCK(&clients);

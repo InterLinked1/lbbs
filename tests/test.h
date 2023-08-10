@@ -51,6 +51,8 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #define TEST_CONFIG_DIR DIRCAT(TEST_ROOT_DIR, "etc")
 #define TEST_MAIL_DIR DIRCAT(TEST_ROOT_DIR, "maildir")
 #define TEST_NEWS_DIR DIRCAT(TEST_ROOT_DIR, "newsdir")
+#define TEST_TRANSFER_DIR DIRCAT(TEST_ROOT_DIR, "ftp")
+#define TEST_HOME_DIR_ROOT DIRCAT(TEST_TRANSFER_DIR, "home")
 
 /* Yuck, but why reinvent the wheel */
 #define TEST_ADD_CONFIG(filename) system("cp " filename " " TEST_CONFIG_DIR)

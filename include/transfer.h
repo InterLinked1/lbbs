@@ -68,13 +68,53 @@ int bbs_transfer_timeout(void);
 int bbs_transfer_max_upload_size(void);
 
 /*!
- * \brief Get the path on disk user's home directory
- * \param node
+ * \brief Get the path on disk for a user's home directory (~)
+ * \param userid
  * \param[out] buf
  * \param len Size of buf
  * \retval 0 on success, -1 on failure
+ * \note Calling this function implictly creates the directory if it does not already exist
  */
-int bbs_transfer_home_dir(struct bbs_node *node, char *buf, size_t len)  __attribute__((nonnull (1, 2)));
+int bbs_transfer_home_dir(unsigned int userid, char *buf, size_t len);
+
+/*!
+ * \brief Initialize a home directory, if needed, for the currently authenticated user
+ * \param node
+ * \retval 0 on success, -1 on failure
+ * \note This function should be called to autocreate a user's home directory if needed (e.g. for FTP, SFTP)
+ */
+int bbs_transfer_home_dir_init(struct bbs_node *node);
+
+/*!
+ * \brief Get the path on disk for a user's configuration directory (~/.config)
+ * \param userid
+ * \param[out] buf
+ * \param len Size of buf
+ * \retval 0 on success, -1 on failure
+ * \note Calling this function implictly creates the directory if it does not already exist
+ */
+int bbs_transfer_home_config_dir(unsigned int userid, char *buf, size_t len);
+
+/*!
+ * \brief Get the path on disk of a subdirectory in a user's home directory
+ * \param userid
+ * \param name Name of subdirectory
+ * \param[out] buf
+ * \param len Size of buf
+ * \retval 0 on success, -1 on failure
+ * \note Calling this function DOES NOT implicitly create the directory, if it does not already exist
+ */
+int bbs_transfer_home_config_subdir(unsigned int userid, const char *name, char *buf, size_t len);
+
+/*!
+ * \brief Get the path on disk for a user's named configuration file
+ * \param userid
+ * \param name Name of configuration file in the configuration directory. By convention, SHOULD begin with a period (.)
+ * \param[out] buf
+ * \param len Size of buf
+ * \retval 0 if configuration file exists, -1 on failure or if file does not exist
+ */
+int bbs_transfer_home_config_file(unsigned int userid, const char *name, char *buf, size_t len);
 
 /*! \brief Get the user-facing transfer path from a full disk path */
 const char *bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpath);

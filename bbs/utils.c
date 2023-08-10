@@ -31,6 +31,7 @@
 #include <uuid/uuid.h> /* use uuid_generate, uuid_unparse */
 #include <syscall.h>
 #include <sys/sendfile.h>
+#include <libgen.h> /* use dirname */
 
 #include "include/utils.h"
 #include "include/node.h" /* use bbs_poll_read */
@@ -757,6 +758,23 @@ int bbs_file_exists(const char *path)
 int bbs_ensure_directory_exists(const char *path)
 {
 	if (eaccess(path, R_OK)) {
+		if (mkdir(path, 0700)) {
+			bbs_error("mkdir(%s) failed: %s\n", path, strerror(errno));
+			return -1;
+		}
+	}
+	return 0;
+}
+
+int bbs_ensure_directory_exists_recursive(const char *path)
+{
+	if (eaccess(path, R_OK)) {
+		/* Recursively create parents as needed */
+		if (bbs_str_count(path, '/') > 2) {
+			char parent[PATH_MAX];
+			safe_strncpy(parent, path, sizeof(parent));
+			bbs_ensure_directory_exists_recursive(dirname(parent));
+		}
 		if (mkdir(path, 0700)) {
 			bbs_error("mkdir(%s) failed: %s\n", path, strerror(errno));
 			return -1;

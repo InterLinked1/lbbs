@@ -26,9 +26,12 @@
 #include "include/node.h" /* for node->user */
 #include "include/user.h"
 #include "include/utils.h"
+#include "include/system.h"
 
 static char rootdir[84];
-static int rootlen;
+static char homedirtemplate[256];
+
+static size_t rootlen;
 static int privs[5];
 static int access_priv, download_priv, upload_priv, delete_priv, newdir_priv;
 static int idletimeout;
@@ -123,17 +126,83 @@ int transfer_make_longname(const char *file, struct stat *st, char *buf, size_t 
 	return snprintf(p, len - (size_t) (p - buf), " %s %s", modtime, file);
 }
 
-int bbs_transfer_home_dir(struct bbs_node *node, char *buf, size_t len)
+static int recursive_copy(const char *srcfiles, const char *dest)
 {
-	if (!bbs_user_is_registered(node->user)) {
-		return -1;
-	}
+	/* It can probably do a better job than we can */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+#pragma GCC diagnostic ignored "-Wcast-qual"
+	char *const argv[] = { "cp", "-r", (char*) srcfiles, (char*) dest, NULL };
+#pragma GCC diagnostic pop
+	return bbs_execvp(NULL, argv[0], argv);
+}
+
+int bbs_transfer_home_dir(unsigned int userid, char *buf, size_t len)
+{
 	if (!rootlen) {
 		bbs_debug(3, "No transfer root directory is configured\n");
 		return -1;
 	}
-	snprintf(buf, len, "%s/home/%d", rootdir, node->user->id);
+	snprintf(buf, len, "%s/home/%d", rootdir, userid);
+	if (eaccess(buf, X_OK)) {
+		char srcfiles[258];
+		if (bbs_ensure_directory_exists(buf)) { /* Autocreate directory structure */
+			return -1;
+		}
+		/* We just created the user's home directory.
+		 * Copy the template files in. */
+		if (!s_strlen_zero(homedirtemplate)) {
+			bbs_verb(5, "Initializing home directory %s from template directory %s\n", buf, homedirtemplate);
+			/* It's kind of weird, to copy the contents OF a directory,
+			 * when the destination already exists, you have to use ., not * */
+			snprintf(srcfiles, sizeof(srcfiles), "%s/.", homedirtemplate);
+			recursive_copy(srcfiles, buf);
+		}
+	}
+	return 0;
+}
+
+int bbs_transfer_home_dir_init(struct bbs_node *node)
+{
+	char homedir[256];
+	if (!bbs_user_is_registered(node->user)) {
+		return -1;
+	}
+	/* Initialize if needed */
+	return bbs_transfer_home_dir(node->user->id, homedir, sizeof(homedir));
+}
+
+int bbs_transfer_home_config_dir(unsigned int userid, char *buf, size_t len)
+{
+	if (bbs_transfer_home_dir(userid, buf, len)) {
+		return -1;
+	}
+	/* XDG Base Directory Specification says user config files should go in ~/.config,
+	 * so we use the same convention here
+	 * $XDG_CONFIG_HOME
+	 * https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
+	 *
+	 * Some user-related things, like Sieve/MailScript rules, still go in other places,
+	 * like the user's maildir.
+	 */
+	snprintf(buf, len, "%s/home/%d/.config", rootdir, userid);
 	return bbs_ensure_directory_exists(buf);
+}
+
+int bbs_transfer_home_config_subdir(unsigned int userid, const char *dir, char *buf, size_t len)
+{
+	/* Do not autocreate home directory, or any parent directories, or anything else */
+	snprintf(buf, len, "%s/home/%d/%s", rootdir, userid, dir);
+	return 0;
+}
+
+int bbs_transfer_home_config_file(unsigned int userid, const char *name, char *buf, size_t len)
+{
+	if (bbs_transfer_home_config_dir(userid, buf, len)) {
+		return -1;
+	}
+	snprintf(buf, len, "%s/home/%d/.config/%s", rootdir, userid, name);
+	return bbs_file_exists(buf);
 }
 
 /*! \note This implementation assumes the userpath is always a subset of the diskpath */
@@ -146,7 +215,7 @@ const char *bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpa
 	/* This isn't solely just to ensure that nothing funny is going on.
 	 * If diskpath is shorter than rootdir for whatever reason,
 	 * then userpath points to invalid memory, and we must not access it. */
-	if (strncmp(diskpath, rootdir, (size_t) rootlen)) {
+	if (strncmp(diskpath, rootdir, rootlen)) {
 		bbs_warning("Disk path '%s' is outside of transfer root '%s'\n", diskpath, rootdir);
 		return NULL;
 	}
@@ -293,7 +362,7 @@ int bbs_transfer_set_disk_path_up(struct bbs_node *node, const char *diskpath, c
 	bbs_debug(7, "final: %s\n", tmp);
 
 	/* We must not allow anyone to escape out of the transfer directory! */
-	if ((int) strlen(tmp) < rootlen) {
+	if (strlen(tmp) < rootlen) {
 		bbs_warning("Attempt to navigate outside of rootdir: %s\n", tmp);
 		return -1;
 	}
@@ -326,13 +395,17 @@ int bbs_transfer_config_load(void)
 	}
 	/* Auto create the root home dir if it doesn't exist already. */
 	snprintf(homedir, sizeof(homedir), "%s/%s", rootdir, "home");
-	if (eaccess(homedir, R_OK) && mkdir(homedir, 0600)) {
-		bbs_error("mkdir(%s) failed: %s\n", homedir, strerror(errno));
+	if (bbs_ensure_directory_exists(homedir)) {
 		return -1;
 	}
 
+	/* Template dir */
+	if (bbs_config_val_set_path(cfg, "transfers", "homedirtemplate", homedirtemplate, sizeof(homedirtemplate))) {
+		homedirtemplate[0] = '\0';
+	}
+
 	bbs_config_val_set_int(cfg, "transfers", "maxuploadsize", &max_upload_size);
-	rootlen = (int) strlen(rootdir);
+	rootlen = strlen(rootdir);
 
 	access_priv = 0;
 	download_priv = 0;

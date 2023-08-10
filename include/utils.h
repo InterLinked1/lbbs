@@ -231,6 +231,9 @@ int bbs_file_exists(const char *path);
  */
 int bbs_ensure_directory_exists(const char *path);
 
+/*! \brief Same as bbs_ensure_directory_exists, but recursively creating parent directories as needed */
+int bbs_ensure_directory_exists_recursive(const char *path);
+
 /*!
  * \brief Recursively delete a directory
  * \param path Directory to delete, recursively

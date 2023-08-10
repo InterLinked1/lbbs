@@ -120,10 +120,22 @@ scripts :
 	cp -n scripts/* /var/lib/lbbs/scripts
 	chmod +x /var/lib/lbbs/scripts/*
 
+templates :
+	@if [ ! -d /var/lib/lbbs ]; then\
+		mkdir /var/lib/lbbs;\
+	fi
+	@if [ ! -d /var/lib/lbbs/templates ]; then\
+		mkdir /var/lib/lbbs/templates;\
+	fi
+	@if [ ! -d /var/lib/lbbs/templates/.config ]; then\
+		mkdir /var/lib/lbbs/templates/.config;\
+	fi
+	cp -r -n configs/templates/. /var/lib/lbbs/templates/.config
+
 install : all bininstall modinstall extinstall scripts
 	@echo " +--- LBBS and associated modules have been installed ---+"
 
-samples :
+samples : templates
 	@if [ ! -d /etc/lbbs ]; then\
 		mkdir /etc/lbbs;\
 	fi

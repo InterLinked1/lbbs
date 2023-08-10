@@ -92,7 +92,9 @@ static enum http_response_code home_dir_handler(struct http_session *http)
 		bbs_debug(6, "No such user '%s'\n", username);
 		return HTTP_NOT_FOUND;
 	}
-	snprintf(user_home_dir, sizeof(user_home_dir), "%s/home/%u/public_html", bbs_transfer_rootdir(), userid);
+	if (bbs_transfer_home_config_subdir(userid, "public_html", user_home_dir, sizeof(user_home_dir))) {
+		return HTTP_INTERNAL_SERVER_ERROR; /* Will still return 0 if directory does not exist, so this is a serious error */
+	}
 	uri = http->req->uri + STRLEN("/~") + strlen(username);
 	return http_serve_static_or_cgi(http, uri, user_home_dir, 1, 0, NULL); /* Serve only static files (no CGI) */
 }

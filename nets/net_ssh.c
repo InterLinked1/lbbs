@@ -1290,6 +1290,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 		goto cleanup;
 	}
 
+	bbs_transfer_home_dir_init(node);
 	for (;;) {
 		sftp_client_message msg;
 #if 0
