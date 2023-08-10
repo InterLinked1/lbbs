@@ -20,7 +20,7 @@ sed -i 's/#Port 22/Port 22222/' /etc/ssh/sshd_config
 service ssh restart
 
 # Create a non-root user for the BBS:
-adduser -c "BBS" bbs --disabled-password --gecos ""
+adduser -c "BBS" bbs --disabled-password --shell /usr/sbin/nologin --gecos ""
 
 # Install MariaDB: https://www.digitalocean.com/community/tutorials/how-to-install-mariadb-on-debian-11
 apt-get -y install mariadb-server
@@ -38,7 +38,7 @@ mysql_secure_installation
 cd /usr/local/src
 git clone https://github.com/InterLinked1/lbbs.git
 cd lbbs
-./install_prereq.sh
+./scripts/install_prereq.sh
 make
 make tests
 make install

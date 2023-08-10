@@ -80,10 +80,10 @@ Installation
 
 To install LBBS, you will need to compile it from source. Fortunately, we've made this as easy as possible::
 
-     cd /usr/src
+     cd /usr/local/src
      git clone https://github.com/InterLinked1/lbbs.git
      cd lbbs
-     ./install_prereq.sh
+     ./scripts/install_prereq.sh
      make
      make install
      make samples
@@ -96,7 +96,7 @@ At the console, press :code:`?` or :code:`h` for a list of available commands. Y
 
 Some configuration of the BBS will be needed before you can use it. Consult the sample configs in :code:`/etc/lbbs` for an overview of settings you may need to configure. At a minimum, you will need to add a menu to the BBS (:code:`menus.conf`).
 
-LBBS is best run on a modern version of Debian Linux (Debian 10 or Debian 11). Note that LBBS likely is not currently portable to non-Linux systems, e.g. BSD or UNIX. It likely won't be a lot of work to make it more portable, but that work hasn't been done yet since I only test and run BBSes on Linux. Additionally, LBBS requires gcc to compile, since it uses some gcc-specific compiler extensions.
+LBBS is best run on a modern version of Debian Linux (Debian 11 or 12). It should also compile on most other commonly used Linux distros. A recent version of gcc is required (e.g. >= 11). Note that LBBS likely is not currently portable to non-Linux systems, e.g. BSD or UNIX. It likely won't be a lot of work to make it more portable, but that work hasn't been done yet since I only test and run BBSes on Linux. Additionally, LBBS requires gcc to compile, since it uses some gcc-specific compiler extensions.
 
 **WARNING: Do not run the BBS as root!** Create a non-root user and configure the BBS to run as that instead. See :code:`lbbs -?` or :code:`/etc/lbbs/bbs.conf` to configure the run user and run group.
 

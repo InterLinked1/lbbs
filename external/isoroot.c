@@ -145,7 +145,10 @@ static int child_exec(void *varg)
 		exit(errno);
 	}
 
-	chdir("/"); /* Change to new root since we changed it */
+	if (chdir("/")) { /* Change to new root since we changed it */
+		fprintf(stderr, "chdir failed: %s\n", strerror(errno));
+		exit(errno);
+	}
 
 	if (umount2("/.old", MNT_DETACH)) {
 		fprintf(stderr, "umount2 failed: %s\n", strerror(errno));

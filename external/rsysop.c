@@ -61,7 +61,7 @@ int main(int argc, char *argv[])
 	struct sockaddr_un sunaddr;
 	int res;
 	struct pollfd pfds[2];
-	char c;
+	char buf[8192];
 	int sockfd;
 
 	(void) argc;
@@ -111,17 +111,17 @@ int main(int argc, char *argv[])
 			break;
 		}
 		if (pfds[0].revents) {
-			res = read(STDIN_FILENO, &c, 1);
+			res = read(STDIN_FILENO, buf, sizeof(buf));
 			if (res <= 0) {
 				break;
 			}
-			write(sockfd, &c, 1);
+			write(sockfd, buf, (size_t) res);
 		} else if (pfds[1].revents) {
-			res = read(sockfd, &c, 1);
+			res = read(sockfd, buf, sizeof(buf));
 			if (res <= 0) {
 				break;
 			}
-			write(STDIN_FILENO, &c, 1);
+			write(STDIN_FILENO, buf, (size_t) res);
 		}
 	}
 

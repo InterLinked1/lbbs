@@ -10,7 +10,7 @@ INC = -I..
 SSHLIB=-lssh
 
 # Since we don't use autoconf:
-SFTP_SERVER_FREE_EXISTS = $(shell objdump -T /usr/lib/x86_64-linux-gnu/libssh.so /lib/x86_64-linux-gnu/libssh.so  2>&1 | grep "sftp_server_free" | wc -l)
+SFTP_SERVER_FREE_EXISTS = $(shell objdump -T /usr/lib/x86_64-linux-gnu/libssh.so /lib/x86_64-linux-gnu/libssh.so /usr/lib64/libssh.so 2>&1 | grep "sftp_server_free" | wc -l)
 
 ifneq ($(SFTP_SERVER_FREE_EXISTS),0)
 	CFLAGS += -DHAVE_SFTP_SERVER_FREE
