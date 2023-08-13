@@ -1897,8 +1897,22 @@ static ssize_t timed_write(struct pollfd *pfd, int fd, const char *restrict buf,
 	size_t left = len;
 	ssize_t written = 0;
 
-	for (;;) {
-		ssize_t res = write(fd, buf, left);
+	do {
+		ssize_t res;
+
+		/* Wait until the file descriptor becomes writable (again) */
+		pfd->revents = 0;
+		res = poll(pfd, 1, ms); /* Avoid tight loop */
+		if (!res) {
+			bbs_debug(2, "File descriptor %d did not become writable after %d ms\n", fd, ms);
+			break;
+		} else if (!(pfd->revents & POLLOUT)) {
+			/* Got activity but fd is not writable.
+			 * Probably a disconnect. */
+			bbs_debug(2, "Exceptional activity (%s) while writing on fd %d\n", poll_revent_name(pfd->revents), fd);
+			break;
+		}
+		res = write(fd, buf, left);
 		if (res <= 0) {
 			if (res == 0) {
 				/* POSIX write never returns 0, unless the buffer length is 0, so this is suspect...
@@ -1912,23 +1926,30 @@ static ssize_t timed_write(struct pollfd *pfd, int fd, const char *restrict buf,
 		buf += res;
 		written += res;
 		left -= (size_t) res;
-		if (left <= 0) {
-			break;
-		}
-		/* Instead of just usleep'ing for an arbitrary time, poll to wait until this file descriptor is writable again.
-		 * If it's still not writable after 10 ms, we'll just try again anyways. */
-		pfd->revents = 0;
-		res = poll(pfd, 1, ms); /* Avoid tight loop */
-		if (ms != -1 && !res) {
-			break;
-		}
-	}
+	} while (left > 0);
 	return written;
 }
 
 static ssize_t full_write(struct pollfd *pfd, int fd, const char *restrict buf, size_t len)
 {
-	return timed_write(pfd, fd, buf, len, -1);
+	/* We could use a poll time of -1, in theory,
+	 * to block "forever". However, we don't actually
+	 * ever want to block "forever", just long enough
+	 * as is reasonable, perhaps, for TCP buffers to drain, etc.
+	 * If that doesn't happen in a reasonably timely manner,
+	 * we're not making any progress at all,
+	 * the remote side isn't responsive and
+	 * we should just disconnect. */
+	ssize_t bytes = timed_write(pfd, fd, buf, len, SEC_MS(60));
+	if (!bytes) {
+		/* Applications should be checking this return value regularly
+		 * to terminate node execution if needed.
+		 * In this particular case, a return value of 0 is logically
+		 * interpreted as a total failure and should result in disconnect. */
+		bbs_error("Failed to fully write %lu bytes to fd %d\n", len, fd);
+		return -1;
+	}
+	return bytes;
 }
 
 static int bbs_node_ansi_write(struct bbs_node *node, const char *restrict buf, size_t len)
@@ -2150,7 +2171,7 @@ ssize_t bbs_node_any_fd_write(struct bbs_node *node, int fd, const char *buf, si
 	}
 
 	/* Try to write the full data, but abort if we can't make progress */
-	res = bbs_timed_write(fd, buf, len, 500);
+	res = bbs_timed_write(fd, buf, len, SEC_MS(1));
 	bbs_node_unlock(node);
 
 	return res;
