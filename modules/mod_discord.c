@@ -33,6 +33,7 @@
 #include "include/module.h"
 #include "include/utils.h"
 #include "include/node.h" /* use bbs_hostname */
+#include "include/startup.h"
 
 #include "include/net_irc.h"
 
@@ -1260,23 +1261,8 @@ static int load_config(void)
 	return 0;
 }
 
-static int load_module(void)
+static int start_discord_relay(void)
 {
-	if (load_config()) {
-		return -1;
-	}
-
-	ccord_global_init();
-	if (!s_strlen_zero(configfile)) {
-		discord_client = discord_config_init(configfile);
-	} else {
-		discord_client = discord_init(token);
-	}
-	if (!discord_client) {
-		bbs_error("Failed to initialize Discord client using %s\n", !s_strlen_zero(configfile) ? "config file" : "token");
-		return -1;
-	}
-
 	discord_add_intents(discord_client, DISCORD_GATEWAY_MESSAGE_CONTENT | DISCORD_GATEWAY_GUILD_MESSAGES | DISCORD_GATEWAY_GUILD_PRESENCES | DISCORD_GATEWAY_GUILDS | DISCORD_GATEWAY_GUILD_MEMBERS | DISCORD_GATEWAY_DIRECT_MESSAGES | DISCORD_GATEWAY_PRESENCE_UPDATE);
 
 	discord_set_on_ready(discord_client, &on_ready);
@@ -1301,6 +1287,27 @@ static int load_module(void)
 	}
 	irc_relay_register(discord_send, nicklist, privmsg, BBS_MODULE_SELF);
 	return 0;
+}
+
+static int load_module(void)
+{
+	if (load_config()) {
+		return -1;
+	}
+
+	ccord_global_init();
+	if (!s_strlen_zero(configfile)) {
+		discord_client = discord_config_init(configfile);
+	} else {
+		discord_client = discord_init(token);
+	}
+	if (!discord_client) {
+		bbs_error("Failed to initialize Discord client using %s\n", !s_strlen_zero(configfile) ? "config file" : "token");
+		ccord_global_cleanup();
+		return -1;
+	}
+
+	return bbs_run_when_started(start_discord_relay, STARTUP_PRIORITY_DEFAULT);
 }
 
 static int unload_module(void)

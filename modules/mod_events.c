@@ -61,6 +61,7 @@ static void ban_ip(const char *addr)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-qual"
 	char *ipaddr = (char*) addr;
+
 	if (is_root()) {
 		char *argv[] = { "/usr/sbin/iptables", "-A", "INPUT", "-s", ipaddr, "-j", "DROP", NULL };
 		res = bbs_execvp_fd(NULL, -1, -1, "/usr/sbin/iptables", argv);
@@ -209,7 +210,10 @@ static int event_cb(struct bbs_event *event)
 			/*! \todo IPs are currently stored as strings throughout the BBS (e.g. node->ipaddr). We should store them as an struct in_addr instead for efficiency. */
 			/*! \todo Some protocols probably need to be exempted from this, e.g. Finger, Gopher, HTTP (to some extent), etc.
 			 * For HTTP, if the request is bad, we should send an event, but if it's a successful request, then it's okay. */
-			inet_pton(AF_INET, event->ipaddr, &(sa.sin_addr));
+			if (!inet_pton(AF_INET, event->ipaddr, &(sa.sin_addr))) {
+				bbs_error("Invalid IP address: %s\n", event->ipaddr); /* Bug somewhere else */
+				return -1;
+			}
 			process_bad_ip(&sa.sin_addr, event->ipaddr,	event->username, event->type);
 			return 1;
 		case EVENT_USER_REGISTRATION:

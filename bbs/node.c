@@ -507,7 +507,10 @@ static void node_shutdown(struct bbs_node *node, int unique)
 		 * Don't use bbs_node_reset_color because we already hold the node lock, so we can't call bbs_node_write,
 		 * as that will try to get a recursive lock.
 		 */
-		NODE_SWRITE(node, node->wfd, COLOR_RESET);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-result"
+		SWRITE(node->wfd, COLOR_RESET); /* Node is already locked, don't use NODE_SWRITE */
+#pragma GCC diagnostic pop
 	}
 
 	if (node->ptythread) {

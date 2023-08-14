@@ -90,6 +90,21 @@ static struct fdleaks {
 	tmp->isopen = 1;            \
 }
 
+#define LOG_FAILURE() \
+	if (errno == EMFILE) { \
+		/* Possible file descriptor exhaustion, dump file descriptors to aid in debugging */ \
+		bbs_fd_dump(-1); \
+	} \
+
+#define STORE_COMMON_HELPER(fd, name, fmt, ...) \
+	if (fd > -1) { \
+		if (fd < (int) ARRAY_LEN(fdleaks)) { \
+			STORE_COMMON(fd, name, fmt, ## __VA_ARGS__); \
+		} \
+	} else { \
+		LOG_FAILURE(); \
+	}
+
 int __fdleak_open(const char *file, int line, const char *func, const char *path, int flags, ...)
 {
 	int res;
@@ -97,37 +112,33 @@ int __fdleak_open(const char *file, int line, const char *func, const char *path
 	int mode;
 
 	if (flags & O_CREAT) {
+		char sflags[80];
 		va_start(ap, flags);
 		mode = va_arg(ap, int);
 		va_end(ap);
 		res = open(path, flags, mode);
-		if (res > -1 && res < (int) ARRAY_LEN(fdleaks)) {
-			char sflags[80];
-			snprintf(sflags, sizeof(sflags), "O_CREAT%s%s%s%s%s%s%s%s",
-				flags & O_APPEND ? "|O_APPEND" : "",
-				flags & O_EXCL ? "|O_EXCL" : "",
-				flags & O_NONBLOCK ? "|O_NONBLOCK" : "",
-				flags & O_TRUNC ? "|O_TRUNC" : "",
-				flags & O_RDWR ? "|O_RDWR" : "",
+		snprintf(sflags, sizeof(sflags), "O_CREAT%s%s%s%s%s%s%s%s",
+			flags & O_APPEND ? "|O_APPEND" : "",
+			flags & O_EXCL ? "|O_EXCL" : "",
+			flags & O_NONBLOCK ? "|O_NONBLOCK" : "",
+			flags & O_TRUNC ? "|O_TRUNC" : "",
+			flags & O_RDWR ? "|O_RDWR" : "",
 #if O_RDONLY == 0
-				!(flags & (O_WRONLY | O_RDWR)) ? "|O_RDONLY" : "",
+			!(flags & (O_WRONLY | O_RDWR)) ? "|O_RDONLY" : "",
 #else
-				flags & O_RDONLY ? "|O_RDONLY" : "",
+			flags & O_RDONLY ? "|O_RDONLY" : "",
 #endif
-				flags & O_WRONLY ? "|O_WRONLY" : "",
-				"");
-			flags &= ~(O_CREAT | O_APPEND | O_EXCL | O_NONBLOCK | O_TRUNC | O_RDWR | O_RDONLY | O_WRONLY);
-			if (flags) {
-				STORE_COMMON(res, "open", "\"%s\",%s|%d,%04o", path, sflags, flags, mode);
-			} else {
-				STORE_COMMON(res, "open", "\"%s\",%s,%04o", path, sflags, mode);
-			}
+			flags & O_WRONLY ? "|O_WRONLY" : "",
+			"");
+		flags &= ~(O_CREAT | O_APPEND | O_EXCL | O_NONBLOCK | O_TRUNC | O_RDWR | O_RDONLY | O_WRONLY);
+		if (flags) {
+			STORE_COMMON_HELPER(res, "open", "\"%s\",%s|%d,%04o", path, sflags, flags, mode);
+		} else {
+			STORE_COMMON_HELPER(res, "open", "\"%s\",%s,%04o", path, sflags, mode);
 		}
 	} else {
 		res = open(path, flags);
-		if (res > -1 && res < (int) ARRAY_LEN(fdleaks)) {
-			STORE_COMMON(res, "open", "\"%s\",%d", path, flags);
-		}
+		STORE_COMMON_HELPER(res, "open", "\"%s\",%d", path, flags);
 	}
 	return res;
 }
@@ -136,11 +147,7 @@ int __fdleak_accept(int socket, struct sockaddr *address, socklen_t *address_len
 	const char *file, int line, const char *func)
 {
 	int res = accept(socket, address, address_len);
-
-	if (res >= 0) {
-		STORE_COMMON(res, "accept", "{%d}", socket);
-	}
-
+	STORE_COMMON_HELPER(res, "accept", "{%d}", socket);
 	return res;
 }
 
@@ -151,9 +158,7 @@ int __fdleak_pipe(int *fds, const char *file, int line, const char *func)
 		return res;
 	}
 	for (i = 0; i < 2; i++) {
-		if (fds[i] > -1 && fds[i] < (int) ARRAY_LEN(fdleaks)) {
-			STORE_COMMON(fds[i], "pipe", "{%d,%d}", fds[0], fds[1]);
-		}
+		STORE_COMMON_HELPER(fds[i], "pipe", "{%d,%d}", fds[0], fds[1]);
 	}
 	return 0;
 }
@@ -166,9 +171,7 @@ int __fdleak_socketpair(int domain, int type, int protocol, int sv[2],
 		return res;
 	}
 	for (i = 0; i < 2; i++) {
-		if (sv[i] > -1 && sv[i] < (int) ARRAY_LEN(fdleaks)) {
-			STORE_COMMON(sv[i], "socketpair", "{%d,%d}", sv[0], sv[1]);
-		}
+		STORE_COMMON_HELPER(sv[i], "socketpair", "{%d,%d}", sv[0], sv[1]);
 	}
 	return 0;
 }
@@ -176,11 +179,7 @@ int __fdleak_socketpair(int domain, int type, int protocol, int sv[2],
 int __fdleak_eventfd(unsigned int initval, int flags, const char *file, int line, const char *func)
 {
 	int res = eventfd(initval, flags);
-
-	if (res >= 0) {
-		STORE_COMMON(res, "eventfd", "{%d}", res);
-	}
-
+	STORE_COMMON_HELPER(res, "eventfd", "{%d}", res);
 	return res;
 }
 
@@ -190,8 +189,10 @@ int __fdleak_socket(int domain, int type, int protocol, const char *file, int li
 	const char *sproto = NULL;
 	struct protoent *pe;
 	int res = socket(domain, type, protocol);
-	if (res < 0 || res >= (int) ARRAY_LEN(fdleaks)) {
-		return res;
+	if (res < 0) {
+		LOG_FAILURE();
+	} else if (res >= (int) ARRAY_LEN(fdleaks)) {
+		bbs_warning("File descriptor %d out of logging range\n", res);
 	}
 
 	if ((pe = getprotobynumber(protocol))) {
@@ -253,9 +254,7 @@ FILE *__fdleak_fopen(const char *path, const char *mode, const char *file, int l
 		return res;
 	}
 	fd = fileno(res);
-	if (fd > -1 && fd < (int) ARRAY_LEN(fdleaks)) {
-		STORE_COMMON(fd, "fopen", "\"%s\",\"%s\"", path, mode);
-	}
+	STORE_COMMON_HELPER(fd, "fopen", "\"%s\",\"%s\"", path, mode);
 	return res;
 }
 
@@ -275,23 +274,17 @@ int __fdleak_fclose(FILE *ptr)
 int __fdleak_dup2(int oldfd, int newfd, const char *file, int line, const char *func)
 {
 	int res = dup2(oldfd, newfd);
-	if (res < 0 || res >= (int) ARRAY_LEN(fdleaks)) {
-		return res;
-	}
 	/* On success, newfd will be closed automatically if it was already
 	 * open. We don't need to mention anything about that, we're updating
 	 * the value anyway. */
-	STORE_COMMON(res, "dup2", "%d,%d", oldfd, newfd); /* res == newfd */
+	STORE_COMMON_HELPER(res, "dup2", "%d,%d", oldfd, newfd); /* res == newfd */
 	return res;
 }
 
 int __fdleak_dup(int oldfd, const char *file, int line, const char *func)
 {
 	int res = dup(oldfd);
-	if (res < 0 || res >= (int) ARRAY_LEN(fdleaks)) {
-		return res;
-	}
-	STORE_COMMON(res, "dup2", "%d", oldfd);
+	STORE_COMMON_HELPER(res, "dup2", "%d", oldfd);
 	return res;
 }
 
@@ -351,6 +344,13 @@ static int print_fds(int fd)
 	return 0;
 }
 
+#define fd_log(fd, fmt, ...) \
+	if (fd == -1) { \
+		bbs_warning(fmt, ## __VA_ARGS__); \
+	} else { \
+		bbs_dprintf(fd, fmt, ## __VA_ARGS__); \
+	}
+
 int bbs_fd_dump(int fd)
 {
 #if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
@@ -366,16 +366,18 @@ int bbs_fd_dump(int fd)
 			struct tm opendate;
 			localtime_r(&fdleaks[i].now, &opendate);
 			strftime(datestring, sizeof(datestring), "%F %T", &opendate);
-			bbs_dprintf(fd, "%5u [%s] %18s:%-5d %-25s %s(%s)\n", i, datestring, fdleaks[i].file, fdleaks[i].line, fdleaks[i].function, fdleaks[i].callname, fdleaks[i].callargs);
+			fd_log(fd, "%5u [%s] %18s:%-5d %-25s %s(%s)\n", i, datestring, fdleaks[i].file, fdleaks[i].line, fdleaks[i].function, fdleaks[i].callname, fdleaks[i].callargs);
 			opened++;
 		}
 	}
-	print_fds(fd); /* Print fds we don't know about */
+	if (fd != -1) { /* If we're out of file descriptors, we can't do this anyways since it requires one */
+		print_fds(fd); /* Print fds we don't know about */
+	}
 	/* Add 1 because readdir in print_fds will open a FD */
-	bbs_dprintf(fd, "Open files: %u (%d) / %d\n", opened, num_open_fds() + 1, (int) rl.rlim_cur); /* XXX RLIM_INFINITY? */
+	fd_log(fd, "Open files: %u (%d) / %d\n", opened, num_open_fds() + 1, (int) rl.rlim_cur); /* XXX RLIM_INFINITY? */
 
 #else
-	bbs_dprintf("%s compiled without DEBUG_FD_LEAKS\n", __FILE__);
+	fd_log("%s compiled without DEBUG_FD_LEAKS\n", __FILE__);
 #endif
 	return 0;
 }

@@ -400,6 +400,7 @@ extern int option_dumpcore; /* Actually, this functions as a forward declaration
 extern int option_dumpcore;
 #endif
 #define bbs_assert(x) __bbs_assert(x, #x, __FILE__, __LINE__, __func__)
+#define bbs_soft_assert(x) __bbs_soft_assert(x, #x, __FILE__, __LINE__, __func__)
 void __bbs_assert_nonfatal(const char *condition_str, const char *file, int line, const char *function);
 void __attribute__((noreturn)) __bbs_assert_fatal(const char *condition_str, const char *file, int line, const char *function);
 
@@ -408,6 +409,13 @@ static inline void __attribute__((always_inline)) __bbs_assert(int condition, co
 	if (__builtin_expect(!condition, 1)) {
 		/* If we're not set to dump core, then what's the point of aborting? We won't get a core dump, so just continue. */
 		option_dumpcore ? __bbs_assert_fatal(condition_str, file, line, function) : __bbs_assert_nonfatal(condition_str, file, line, function);
+	}
+}
+
+static inline void __attribute__((always_inline)) __bbs_soft_assert(int condition, const char *condition_str, const char *file, int line, const char *function)
+{
+	if (__builtin_expect(!condition, 1)) {
+		__bbs_assert_nonfatal(condition_str, file, line, function);
 	}
 }
 

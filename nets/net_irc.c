@@ -63,19 +63,9 @@
 #define IDENT_PREFIX_ARGS(user) (user)->nickname, (user)->username, (user)->hostname
 
 /*! \note Since not all users have a node (e.g. builtin services) */
-#define irc_other_thread_writef(node, fd, fmt, ...) \
-	if (node) { \
-		bbs_node_any_fd_writef(node, fd, fmt, ## __VA_ARGS__); \
-	} else { \
-		bbs_writef(fd, fmt, ## __VA_ARGS__); \
-	}
+#define irc_other_thread_writef(node, fd, fmt, ...) bbs_auto_fd_writef(node, fd, fmt, ## __VA_ARGS__);
 
-#define irc_other_thread_write(node, fd, buf, len) \
-	if (node) { \
-		bbs_node_any_fd_write(node, fd, buf, len); \
-	} else { \
-		bbs_write(fd, buf, len); \
-	}
+#define irc_other_thread_write(node, fd, buf, len) bbs_auto_fd_writef(node, fd, buf, len);
 
 #define send_reply(user, fmt, ...) bbs_debug(3, "%p <= " fmt, user, ## __VA_ARGS__); irc_other_thread_writef(user->node, user->wfd, fmt, ## __VA_ARGS__);
 #define send_numeric(user, numeric, fmt, ...) send_reply(user, "%03d %s :" fmt, numeric, user->nickname, ## __VA_ARGS__)
@@ -1712,12 +1702,7 @@ int __irc_relay_numeric_response(struct bbs_node *node, int fd, const char *fmt,
 	va_end(ap);
 
 	bbs_debug(9, "%.*s", len, buf);
-	if (node) {
-		bbs_node_fd_write(node, fd, buf, (size_t) len);
-	} else {
-		/* XXX I think it's possible for node to be NULL here? Just in case... */
-		bbs_write(fd, buf, (size_t) len);
-	}
+	bbs_auto_fd_writef(node, fd, buf, (size_t) len);
 	return len;
 }
 

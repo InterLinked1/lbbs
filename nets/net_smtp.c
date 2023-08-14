@@ -88,15 +88,9 @@ static int archivelists = 1;
 /*! \brief Max message size, in bytes */
 static unsigned int max_message_size = 300000;
 
-/*! \todo Instead of having to account for a NULL node, use a dummy node structure
- * when we don't have one to simplify code? Writes could even go to /dev/null */
 #define _smtp_reply(smtp, fmt, ...) \
 	bbs_debug(6, "%p <= " fmt, smtp, ## __VA_ARGS__); \
-	if (smtp->node) { \
-		bbs_node_fd_writef(smtp->node, smtp->wfd, fmt, ## __VA_ARGS__); \
-	} else { \
-		bbs_writef(smtp->wfd, fmt, ## __VA_ARGS__); \
-	}
+	bbs_auto_fd_writef(smtp->node, smtp->wfd, fmt, ## __VA_ARGS__); \
 
 /*! \brief Final SMTP response with this code */
 #define smtp_resp_reply(smtp, code, subcode, reply) _smtp_reply(smtp, "%d %s %s\r\n", code, subcode, reply)
@@ -2220,6 +2214,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 		size_t len;
 		ssize_t res = bbs_readline(smtp->rfd, rldata, "\r\n", MIN_MS(3)); /* RFC 5321 4.5.3.2.5 */
 		if (res < 0) {
+			bbs_delete_file(template);
 			return -1;
 		}
 		s = rldata->buf;
@@ -2236,11 +2231,9 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 					/* Message not successfully received in totality, so reject it. */
 					smtp_reply(smtp, 451, 4.3.0, "Message not received successfully, try again");
 				}
-				bbs_delete_file(template);
 				break;
 			} else if (smtp->tflags.hopcount >= MAX_HOPS) {
 				smtp_reply(smtp, 554, 5.6.0, "Message exceeded %d hops, this may indicate a mail loop", MAX_HOPS);
-				bbs_delete_file(template);
 				break;
 			}
 
@@ -2293,6 +2286,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 		}
 		smtp->tflags.datalen += (long unsigned) res;
 	}
+	bbs_delete_file(template);
 	return 0;
 }
 

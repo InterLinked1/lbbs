@@ -508,7 +508,7 @@ void *pty_master(void *varg)
 
 		fds[0].fd = rfd;
 		fds[1].fd = amaster;
-		fds[0].events = fds[1].events = POLLIN;
+		fds[0].events = fds[1].events = POLLIN | BBS_POLL_QUIT;
 		fds[0].revents = fds[1].revents = 0;
 		numfds = 2;
 		/* Don't try to acquire the regular node lock since that would deadlock during a shutdown. */

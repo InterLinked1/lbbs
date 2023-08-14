@@ -959,7 +959,10 @@ int bbs_get_hostname(const char *ip, char *buf, size_t len)
 int bbs_get_remote_ip(struct sockaddr_in *sinaddr, char *buf, size_t len)
 {
 	struct in_addr ip_addr = sinaddr->sin_addr;
-	inet_ntop(AF_INET, &ip_addr, buf, (socklen_t) len); /* XXX Assumes IPv4 */
+	if (!inet_ntop(AF_INET, &ip_addr, buf, (socklen_t) len)) { /* XXX Assumes IPv4 */
+		bbs_error("Failed to get IP address: %s\n", strerror(errno));
+		return -1;
+	}
 	return 0;
 }
 
@@ -978,7 +981,9 @@ int bbs_save_remote_ip(struct sockaddr_in *sinaddr, struct bbs_node *node)
 {
 	char addrstr[64];
 
-	bbs_get_remote_ip(sinaddr, addrstr, sizeof(addrstr));
+	if (bbs_get_remote_ip(sinaddr, addrstr, sizeof(addrstr))) {
+		return -1;
+	}
 	node->ip = strdup(addrstr);
 	node->rport = ntohs(sinaddr->sin_port);
 	if (ALLOC_FAILURE(node->ip)) {
@@ -1086,9 +1091,9 @@ const char *poll_revent_name(int revents)
 		return "POLLHUP";
 	} else if (revents & POLLNVAL) {
 		return "POLLNVAL";
+	} else {
+		return "(None)";
 	}
-	bbs_assert(0);
-	return NULL;
 }
 
 /* XXX This duplicates code, we should combine core logic of bbs_poll and bbs_node_poll */
@@ -1897,6 +1902,8 @@ static ssize_t timed_write(struct pollfd *pfd, int fd, const char *restrict buf,
 	size_t left = len;
 	ssize_t written = 0;
 
+	bbs_soft_assert(fd >= 0); /* != -1 */
+
 	do {
 		ssize_t res;
 
@@ -2098,7 +2105,6 @@ ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)
 ssize_t bbs_node_fd_write(struct bbs_node *node, int fd, const char *buf, size_t len)
 {
 	ssize_t res;
-	bbs_assert_exists(node);
 
 #ifdef DETECT_IMPROPER_NODE_WRITES
 	if (node->thread != pthread_self()) {
@@ -2134,6 +2140,36 @@ ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_fd_writef(struct bb
 	}
 
 	res = bbs_node_fd_write(node, fd, buf, (size_t) len);
+	free(buf);
+	return res;
+}
+
+ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_auto_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...)
+{
+	char *buf;
+	int len;
+	ssize_t res;
+	va_list ap;
+
+	if (!node && fd < 0) {
+		/* e.g. mod_chanserv writes */
+		bbs_debug(3, "Discarding write output (no node and no fd)\n");
+		return 0;
+	}
+
+	if (!strchr(fmt, '%')) {
+		return node ? bbs_node_fd_write(node, fd, fmt, strlen(fmt)) : bbs_write(fd, fmt, strlen(fmt));
+	}
+
+	va_start(ap, fmt);
+	len = vasprintf(&buf, fmt, ap);
+	va_end(ap);
+
+	if (len < 0) {
+		return -1;
+	}
+
+	res = node ? bbs_node_fd_write(node, fd, buf, (size_t) len) : bbs_write(fd, buf, (size_t) len);
 	free(buf);
 	return res;
 }

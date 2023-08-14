@@ -268,7 +268,9 @@ static void auth_fail(ssh_session session, const char *username)
 	 * since that requires a node. Do it manually. */
 	memset(&event, 0, sizeof(event));
 	event.type = EVENT_NODE_LOGIN_FAILED;
-	save_remote_ip(session, NULL, event.ipaddr, sizeof(event.ipaddr));
+	if (save_remote_ip(session, NULL, event.ipaddr, sizeof(event.ipaddr))) {
+		return;
+	}
 	if (!strlen_zero(username)) {
 		safe_strncpy(event.username, username, sizeof(event.username));
 	}
@@ -282,8 +284,9 @@ static void request_fail(ssh_session session, enum bbs_event_type type)
 	/* Don't have a node, so need to dispatch manually */
 	memset(&event, 0, sizeof(event));
 	event.type = type;
-	save_remote_ip(session, NULL, event.ipaddr, sizeof(event.ipaddr));
-	bbs_event_broadcast(&event);
+	if (!save_remote_ip(session, NULL, event.ipaddr, sizeof(event.ipaddr))) {
+		bbs_event_broadcast(&event);
+	}
 }
 
 #ifdef ALLOW_ANON_AUTH

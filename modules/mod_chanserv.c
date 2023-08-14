@@ -28,6 +28,7 @@
 #include "include/config.h"
 #include "include/module.h"
 #include "include/utils.h"
+#include "include/startup.h"
 
 #include "include/net_irc.h"
 
@@ -1011,7 +1012,7 @@ static void event_cb(const char *cmd, const char *channel, const char *username,
 	}
 }
 
-static void chanserv_init(void)
+static int chanserv_init(void)
 {
 	const char *sql = "SELECT name, topic, modelock, guard, keeptopic FROM channels WHERE guard > ?";
 	MYSQL *mysql = NULL;
@@ -1023,7 +1024,7 @@ static void chanserv_init(void)
 
 	mysql = sql_connect_db(buf_dbhostname, buf_dbusername, buf_dbpassword, buf_dbname);
 	if (!mysql) {
-		return;
+		return 0;
 	}
 
 	stmt = mysql_stmt_init(mysql);
@@ -1091,7 +1092,7 @@ stmtcleanup:
 
 cleanup:
 	mysql_close(mysql);
-	return;
+	return 0;
 }
 
 static int load_config(void)
@@ -1123,7 +1124,7 @@ static int load_module(void)
 	if (irc_chanserv_register(process_privmsg, event_cb, BBS_MODULE_SELF)) {
 		return -1;
 	}
-	chanserv_init();
+	bbs_run_when_started(chanserv_init, STARTUP_PRIORITY_DEPENDENT);
 	return 0;
 }
 #pragma GCC diagnostic pop

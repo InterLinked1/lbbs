@@ -485,7 +485,7 @@ ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms);
  * \note This function may only be used by the thread handling a node
  * \note This function provides its own concurrency control. Callers should not hold any locks when calling this function.
  */
-ssize_t bbs_node_fd_write(struct bbs_node *node, int fd, const char *buf, size_t len);
+ssize_t bbs_node_fd_write(struct bbs_node *node, int fd, const char *buf, size_t len) __attribute__ ((nonnull (1)));
 
 /*!
  * \brief Write formatted data to a file descriptor associated with a node (but not necessarily the node file descriptor)
@@ -496,7 +496,13 @@ ssize_t bbs_node_fd_write(struct bbs_node *node, int fd, const char *buf, size_t
  * \note This function may only be used by the thread handling a node
  * \note This function provides its own concurrency control. Callers should not hold any locks when calling this function.
  */
-ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...);
+ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...) __attribute__ ((nonnull (1)));;
+
+/*!
+ * \brief Similar to bbs_node_fd_writef, but node may be NULL (in which case bbs_writef is used automatically)
+ * \note This is a convenience wrapper. Use bbs_write (node is always NULL) or bbs_node_fd_write (node is never NULL) directly if appropriate.
+ */
+ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_auto_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...);
 
 /*!
  * \brief Write to a file descriptor associated with a node (but not necessarily the node file descriptor)
@@ -603,7 +609,7 @@ void bbs_node_begin(struct bbs_node *node);
 /*! \brief Stop handling a node
  * \note Not needed if you use bbs_node_handler
  */
-void bbs_node_exit(struct bbs_node *node) __attribute__ ((nonnull (1))) ;
+void bbs_node_exit(struct bbs_node *node) __attribute__ ((nonnull (1)));
 
 /*!
  * \brief Top-level node handler

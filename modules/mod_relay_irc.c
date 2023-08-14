@@ -295,9 +295,9 @@ static int wait_response(struct bbs_node *node, int fd, const char *requsername,
 #define PREFIX_NAMES
 
 #ifdef RELAY_DEBUG
-#define SEND_RESP(fd, fmt, ...) bbs_debug(9, fmt, ## __VA_ARGS__); bbs_node_fd_writef(node, fd, fmt, ## __VA_ARGS__);
+#define SEND_RESP(fd, fmt, ...) bbs_debug(9, fmt, ## __VA_ARGS__); bbs_auto_fd_writef(node, fd, fmt, ## __VA_ARGS__);
 #else
-#define SEND_RESP(fd, fmt, ...) bbs_node_fd_writef(node, fd, fmt, ## __VA_ARGS__)
+#define SEND_RESP(fd, fmt, ...) bbs_auto_fd_writef(node, fd, fmt, ## __VA_ARGS__)
 #endif
 
 	/* Now, parse the response, and send the results back. */
