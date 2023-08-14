@@ -43,8 +43,10 @@ static int prepend_received(struct smtp_filter_data *f)
 	} else {
 		char hostname[256];
 		bbs_get_hostname(f->node->ip, hostname, sizeof(hostname)); /* Look up the sending IP */
+		/* The first hostname is the HELO/EHLO hostname.
+		 * The second one is the reverse DNS hostname */
 		smtp_filter_write(f, "Received: from %s (%s [%s])\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
-			hostname, hostname, f->node->ip, bbs_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
+			f->helohost, hostname, f->node->ip, bbs_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
 	}
 	return 0;
 }

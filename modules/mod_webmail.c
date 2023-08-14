@@ -413,7 +413,7 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client, s
 	mailimap_set_logger(imap, libetpan_log, client);
 	timeout = mailimap_get_timeout(imap);
 	/* Timeout needs to be sufficiently large... e.g. FETCH 1:* (SIZE) can take quite a few seconds on large mailboxes. */
-	mailimap_set_timeout(imap, 25); /* If the IMAP server hasn't responded by now, I doubt it ever will */
+	mailimap_set_timeout(imap, 60); /* If the IMAP server hasn't responded by now, I doubt it ever will */
 	client_set_status(ws, "Connecting to %s:%u", hostname, port);
 	if (secure) {
 		res = mailimap_ssl_connect(imap, hostname, port);
@@ -2028,7 +2028,7 @@ static int handle_fetchlist(struct ws_session *ws, struct imap_client *client, c
 			json_object_set_new(root, "data", json_array());
 			json_send(ws, root);
 		}
-		return -1;
+		return 0;
 	}
 
 	/* Calculate pagination */

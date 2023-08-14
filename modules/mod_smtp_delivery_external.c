@@ -736,6 +736,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 		}
 
 		/* Try all the MX servers in order, if necessary */
+		res = -1; /* Make condition true to start */
 		while (res < 0 && (hostname = stringlist_pop(&mxservers))) {
 			res = try_send(NULL, &tx, hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, fileno(fp), (off_t) metalen, size - metalen, buf, sizeof(buf));
 			free(hostname);

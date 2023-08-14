@@ -123,6 +123,7 @@ static int status_size_fetch_all(struct imap_client *client, const char *tag, si
 {
 	ssize_t res;
 	size_t taglen;
+	int msgcount;
 	struct bbs_tcp_client *tcpclient = &client->client;
 	char *buf = tcpclient->rldata.buf;
 
@@ -130,8 +131,9 @@ static int status_size_fetch_all(struct imap_client *client, const char *tag, si
 	 * something we SHOULD not do but servers are supposed to (MUST) tolerate. */
 	taglen = strlen(tag);
 	imap_client_send(client, "%s FETCH 1:* (RFC822.SIZE)\r\n", tag);
-	for (;;) {
+	for (msgcount = 0; ; msgcount++) {
 		const char *sizestr;
+		size_t msgsize;
 		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 10000);
 		if (res <= 0) {
 			bbs_warning("IMAP timeout from FETCH 1:* (RFC822.SIZE) - remote server issue?\n");
@@ -152,7 +154,17 @@ static int status_size_fetch_all(struct imap_client *client, const char *tag, si
 			bbs_warning("Server sent empty size: %s\n", buf);
 			continue;
 		}
-		mb_size += (size_t) atoi(sizestr);
+		msgcount++;
+		msgsize = (size_t) atol(sizestr);
+		if (!msgsize) {
+			bbs_warning("Failed to parse SIZE: %s\n", sizestr);
+		}
+		*mb_size += msgsize;
+	}
+
+	if (!msgcount) {
+		/* We wouldn't have called this if MESSAGES is 0 */
+		bbs_warning("FETCH command returned no sizes?\n");
 	}
 
 	return 0;
@@ -299,8 +311,9 @@ static int append_size_item(struct imap_client *client, const char *remotename, 
 	size_t curlen;
 	char buf[256] = ""; /* Might not be a cached STATUS */
 	size_t mb_size = 0;
-	int cached = 0;
+	int cached = 0, force = 0;
 	char *tmp;
+	int any_messages;
 
 	/* Check the cache to see if we've already done a FETCH 1:* before and if the mailbox has changed since.
 	 * If not, the SIZE will be the same as last time, and we can just return that.
@@ -317,13 +330,24 @@ static int append_size_item(struct imap_client *client, const char *remotename, 
 
 	curlen = strlen(remote_status_resp);
 
+	any_messages = !strstr(remote_status_resp, "MESSAGES 0");
+
 	/* We subtract 2 as the last characters won't match.
 	 * In the raw response from the server, we'll have a ) at the end for end of response,
 	 * but in the cached version, we appended the SIZE so there'll be a space there e.g. " SIZE XXX" */
 	if (!strncmp(remote_status_resp, buf, curlen - 2)) {
 		/* The STATUS response is completely the same as last time, so we can just reuse the SIZE directly. */
-		cached = 1;
-	} else if (strstr(remote_status_resp, "MESSAGES 0")) {
+		if (any_messages && !mb_size) {
+			bbs_warning("Non-empty mailbox, but cached mailbox size was 0?\n");
+			/* Bad cache. Refetch */
+			force = 1;
+		} else {
+			cached = 1;
+		}
+	}
+	if (cached) {
+		/* Reuse */
+	} else if (!any_messages) {
 		/* If there are no messages, SIZE must be 0 */
 	} else {
 		/* EXAMINE it so it's read only */
@@ -368,12 +392,17 @@ static int append_size_item(struct imap_client *client, const char *remotename, 
 		 */
 
 		/* Can we calculate the size incrementally? */
-		if (status_size_fetch_incremental(client, tag, &mb_size, buf, remote_status_resp)) { /* Add to what we already had */
+		if (force || status_size_fetch_incremental(client, tag, &mb_size, buf, remote_status_resp)) { /* Add to what we already had */
 			/* If not, resort to FETCH 1:* fallback as last resort */
 			mb_size = 0;
 			if (status_size_fetch_all(client, tag, &mb_size)) {
 				return -1;
 			}
+		}
+		if (!mb_size) {
+			/* We know that the message count is positive, so how can the size be 0?
+			 * Teach me the secret to messages that require no space! */
+			bbs_warning("Non-empty mailbox size is 0?\n");
 		}
 	}
 
