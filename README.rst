@@ -134,6 +134,8 @@ Config files go in :code:`/etc/lbbs` and are as follows:
 
 * :code:`mod_discord.conf` - Discord/IRC relay configuration
 
+* :code:`mod_events.conf` - Decoupled event handler configuration
+
 * :code:`mod_mail.conf` - General email server configuration
 
 * :code:`mod_oauth.conf` - OAuth2 token configuration

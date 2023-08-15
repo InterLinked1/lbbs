@@ -25,15 +25,20 @@
 #include <arpa/inet.h>
 
 #include "include/module.h"
+#include "include/config.h"
 #include "include/node.h"
 #include "include/event.h"
 #include "include/notify.h"
 #include "include/system.h"
 #include "include/linkedlists.h"
+#include "include/stringlist.h"
 #include "include/utils.h" /* use bbs_str_isprint */
 
 /* Don't ban private IP addresses, under any circumstances */
 #define IGNORE_LOCAL_NETS
+
+/*! \brief Whitelisted IP addresses */
+struct stringlist ip_whitelist;
 
 struct ip_block {
 	struct in_addr addr;		/* IP address */
@@ -190,6 +195,19 @@ static void process_bad_ip(struct in_addr *addr, const char *straddr, const char
 	}
 }
 
+static int ip_whitelisted(const char *ip)
+{
+	const char *s;
+	struct stringitem *i = NULL;
+
+	while ((s = stringlist_next(&ip_whitelist, &i))) {
+		if (bbs_ip_match_ipv4(ip, s)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 static int event_cb(struct bbs_event *event)
 {
 	struct sockaddr_in sa;
@@ -199,6 +217,10 @@ static int event_cb(struct bbs_event *event)
 		case EVENT_NODE_SHORT_SESSION:
 		case EVENT_NODE_BAD_REQUEST:
 		case EVENT_NODE_ENCRYPTION_FAILED:
+			if (strlen_zero(event->ipaddr)) {
+				bbs_error("Missing IP address\n");
+				return -1;
+			}
 			if (!strcmp(event->ipaddr, "127.0.0.1")) {
 				return 1; /* Ignore localhost */
 			}
@@ -207,6 +229,9 @@ static int event_cb(struct bbs_event *event)
 				return 1; /* Ignore private CIDR ranges (at least Class A and C, since Class B is 172.16-172.31) */
 			}
 #endif
+			if (ip_whitelisted(event->ipaddr)) {
+				return 1; /* Ignore event if IP is whitelisted */
+			}
 			/*! \todo IPs are currently stored as strings throughout the BBS (e.g. node->ipaddr). We should store them as an struct in_addr instead for efficiency. */
 			/*! \todo Some protocols probably need to be exempted from this, e.g. Finger, Gopher, HTTP (to some extent), etc.
 			 * For HTTP, if the request is bad, we should send an event, but if it's a successful request, then it's okay. */
@@ -228,8 +253,42 @@ static int event_cb(struct bbs_event *event)
 	}
 }
 
+static int load_config(void)
+{
+	struct bbs_config *cfg;
+	struct bbs_config_section *section = NULL;
+
+	cfg = bbs_config_load("mod_events.conf", 1);
+	if (!cfg) {
+		return 0;
+	}
+
+	/* IP whitelist */
+	while ((section = bbs_config_walk(cfg, section))) {
+		struct bbs_keyval *keyval = NULL;
+		if (strcmp(bbs_config_section_name(section), "whitelist")) {
+			continue; /* Not the whitelist section */
+		}
+		while ((keyval = bbs_config_section_walk(section, keyval))) {
+			const char *key = bbs_keyval_key(keyval);
+			if (!stringlist_contains(&ip_whitelist, key)) {
+				stringlist_push(&ip_whitelist, key);
+				bbs_verb(5, "Whitelisted IP/CIDR %s\n", key);
+			}
+		}
+	}
+
+	return 0;
+}
+
 static int load_module(void)
 {
+	memset(&ip_whitelist, 0, sizeof(ip_whitelist));
+
+	if (load_config()) {
+		stringlist_empty(&ip_whitelist);
+		return -1;
+	}
 	return bbs_register_event_consumer(event_cb);
 }
 
@@ -237,6 +296,7 @@ static int unload_module(void)
 {
 	int res = bbs_unregister_event_consumer(event_cb);
 	RWLIST_WRLOCK_REMOVE_ALL(&ipblocks, entry, free);
+	stringlist_empty(&ip_whitelist);
 	return res;
 }
 
