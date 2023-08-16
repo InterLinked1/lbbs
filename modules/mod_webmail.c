@@ -372,6 +372,7 @@ static void send_status_update(struct imap_client *client, const char *mbox, cha
 
 	json_object_set_new(json, "response", json_string("STATUS"));
 	json_object_set_new(json, "name", json_string(mbox));
+	json_object_set_new(json, "recent", json_boolean(1));
 	parse_status(client, json, data, &messages, 0);
 	json_send(client->ws, json);
 }
@@ -730,10 +731,10 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 
 					bbs_debug(2, "IMAP server does not support RFC 8438. Manually calculating mailbox size for %s\n", name);
 					client_set_status(client->ws, "Calculating size of %s", name);
-					/* Must SELECT mailbox */
-					res = mailimap_select(imap, name);
+					/* Must EXAMINE mailbox */
+					res = mailimap_examine(imap, name);
 					if (res != MAILIMAP_NO_ERROR) {
-						bbs_warning("Failed to SELECT mailbox '%s'\n", name);
+						bbs_warning("Failed to EXAMINE mailbox '%s'\n", name);
 					} else {
 						fetch_type = mailimap_fetch_type_new_fetch_att_list_empty();
 						fetch_att = mailimap_fetch_att_new_rfc822_size();
@@ -2687,8 +2688,9 @@ cleanup:
 /*!
  * \brief Add or remove an arbitrary flag from a message.
  * \param client
- * \param uid
  * \param sign 1 to store flag, -1 to remove flag
+ * \param uids
+ * \param flagname
  */
 static int handle_store(struct imap_client *client, int sign, json_t *uids, const char *flagname)
 {
@@ -3068,6 +3070,43 @@ static int on_poll_timeout(struct ws_session *ws, void *data)
 	return 0;
 }
 
+#define SEND_STATUS_IF_NEEDED(refresh) \
+	if (!res && json_is_string(json_object_get(root, "uids")) && json_string_value(json_object_get(root, "uids")) && !strcmp(json_string_value(json_object_get(root, "uids")), "1:*")) { \
+		send_status(client); \
+		if (refresh) { \
+			REFRESH_LISTING(command); \
+		} \
+	}
+
+static int send_status(struct imap_client *client)
+{
+	uint32_t total = 0;
+	json_t *root;
+
+	root = json_object();
+	if (!root) {
+		return -1;
+	}
+
+	json_object_set_new(root, "response", json_string("STATUS"));
+	json_object_set_new(root, "name", json_string(client->mailbox));
+	json_object_set_new(root, "recent", json_boolean(0));
+
+	/* Frontend will handle toggling unread/read visibility,
+	 * and updating folder counts,
+	 * unless this is a 1:* operation, in which case it doesn't have enough information
+	 * to do that on its own. */
+	if (client_status_command(client, client->imap, client->mailbox, root, &total, NULL)) {
+		/* If server supports RFC 8438, we'll also update the size as part of this. If not, size will remain stale
+		 * (doesn't matter for SEEN/UNSEEN though) */
+		json_decref(root);
+		return -1;
+	}
+
+	client_set_status(client->ws, "%s", ""); /* Clear "Querying status of..." message */
+	return json_send(client->ws, root);
+}
+
 static int on_text_message(struct ws_session *ws, void *data, const char *buf, size_t len)
 {
 	json_t *root;
@@ -3111,10 +3150,10 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 			res = handle_fetch(ws, client, (uint32_t) json_object_int_value(root, "uid"), json_object_bool_value(root, "html"), json_object_bool_value(root, "raw"));
 		} else if (!strcmp(command, "UNSEEN")) {
 			res = handle_store_seen(client, -1, json_object_get(root, "uids"));
-			/* Frontend will handle toggling unread/read visibility and updating folder counts */
+			SEND_STATUS_IF_NEEDED(1);
 		} else if (!strcmp(command, "SEEN")) {
 			res = handle_store_seen(client, +1, json_object_get(root, "uids"));
-			/* Frontend will handle toggling unread/read visibility and updating folder counts */
+			SEND_STATUS_IF_NEEDED(1);
 		} else if (!strcmp(command, "UNFLAG")) {
 			res = handle_store_flagged(client, -1, json_object_get(root, "uids"));
 			REFRESH_LISTING("UNFLAG");
