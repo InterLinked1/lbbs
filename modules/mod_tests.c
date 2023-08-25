@@ -548,6 +548,47 @@ cleanup:
 	return -1;
 }
 
+static int test_quoted_printable_decode(void)
+{
+	char buf[256];
+	char ref[256];
+	size_t len;
+	int res;
+
+	strcpy(buf, "one=20two=20three=20four=92five=\r\n six");
+	res = bbs_quoted_printable_decode(buf, &len, 1);
+	bbs_test_assert_equals(res, 0);
+	bbs_test_assert_str_equals(buf, "one two three fourfive six");
+
+	strcpy(buf, "one=20two=20three=20four=92five=\r\n six");
+	res = bbs_quoted_printable_decode(buf, &len, 0);
+	bbs_test_assert_equals(res, 0);
+	snprintf(ref, sizeof(ref), "one two three four%cfive six", 0x92);
+	bbs_test_assert_str_equals(buf, ref);
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
+static int test_utf8_remove_invalid(void)
+{
+	char buf[256];
+	size_t len;
+	int res;
+
+	len = (size_t) snprintf(buf, sizeof(buf), "one two three four%cfive six", 0x92);
+	res = bbs_utf8_remove_invalid((unsigned char*) buf, &len);
+	bbs_test_assert_equals(res, 1);
+	bbs_test_assert_str_equals(buf, "one two three fourfive six");
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
 #ifdef EXTRA_TESTS
 static int test_curl_failure(void)
 {
@@ -590,6 +631,8 @@ static struct bbs_unit_test tests[] =
 	{ "IPv4 Address Detection", test_ipv4_detection },
 	{ "URL Parsing", test_url_parsing },
 	{ "URL Decoding", test_url_decoding },
+	{ "Quoted Printable Decode", test_quoted_printable_decode },
+	{ "UTF8 Remove Invalid", test_utf8_remove_invalid },
 #ifdef EXTRA_TESTS
 	{ "cURL Failure", test_curl_failure },
 #endif

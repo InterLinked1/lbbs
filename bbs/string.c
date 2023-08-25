@@ -459,3 +459,161 @@ char *quotesep(char **str)
 	*str = s;
 	return ret;
 }
+
+int bbs_quoted_printable_decode(char *restrict s, size_t *restrict len, int printonly)
+{
+	char *d = s;
+	size_t index = 0;
+	*len = 0;
+	while (*s) {
+		if (*s == '=') {
+			unsigned int hex;
+			s++;
+			index++;
+			if (!*s) {
+				bbs_warning("Invalid quoted-printable sequence (abruptly terminated)\n");
+				return -1;
+			}
+			if (*s == '\r') {
+				/* Soft line break (since we must wrap by pos 76) */
+				s++;
+				index++;
+				if (*s != '\n') {
+					bbs_warning("Invalid quoted-printable sequence (CR not followed by LF)\n");
+					return -1;
+				}
+			} else {
+				char hexcode[3];
+				hexcode[0] = *s;
+				s++;
+				index++;
+				if (!*s) {
+					bbs_warning("Invalid quoted-printable sequence (abruptly terminated)\n");
+					return -1;
+				}
+				hexcode[1] = *s;
+				hexcode[2] = '\0';
+				if (sscanf(hexcode, "%x", &hex) != 1) {
+					bbs_warning("Failed to decode %s\n", hexcode);
+				}
+				if (!printonly || isprint((char) hex)) { /* XXX isprint check only works for single-byte UTF-8 characters */
+					*d++ = (char) hex;
+					*len += 1;
+					bbs_debug(5, "Decoded quoted printable[%lu] %s -> %d (%c)\n", index, hexcode, hex, hex);
+				} else {
+					/* Don't add invalid UTF-8 characters in the first place */
+					bbs_warning("Invalid quoted printable[%lu] %s -> %d (%c)\n", index, hexcode, hex, hex);
+				}
+			}
+			s++;
+			index++;
+		} else {
+			if (*s <= 32 && !isspace(*s)) {
+				bbs_warning("Illegal quoted-printable character: %d\n", *s);
+				return -1;
+			}
+			*d++ = *s++;
+			index++;
+			*len += 1;
+		}
+	}
+	*d = '\0';
+	return 0;
+}
+
+/*
+ * BEGIN THIRD PARTY CODE
+ *
+ * Copyright (c) 2008-2010 Björn Höhrmann <bjoern@hoehrmann.de>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ *
+ * See http://bjoern.hoehrmann.de/utf-8/decoder/dfa/ for details.
+ */
+
+#define UTF8_ACCEPT 0
+#define UTF8_REJECT 12
+
+static const uint8_t utf8d[] = {
+	/* The first part of the table maps bytes to character classes that
+	 * to reduce the size of the transition table and create bitmasks. */
+	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+	1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,  9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,
+	7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+	8,8,2,2,2,2,2,2,2,2,2,2,2,2,2,2,  2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+	10,3,3,3,3,3,3,3,3,3,3,3,3,4,3,3, 11,6,6,6,5,8,8,8,8,8,8,8,8,8,8,8,
+
+	/* The second part is a transition table that maps a combination
+	 * of a state of the automaton and a character class to a state. */
+	0,12,24,36,60,96,84,12,12,12,48,72, 12,12,12,12,12,12,12,12,12,12,12,12,
+	12, 0,12,12,12,12,12, 0,12, 0,12,12, 12,24,12,12,12,12,12,24,12,24,12,12,
+	12,12,12,12,12,12,12,24,12,12,12,12, 12,24,12,12,12,12,12,12,12,24,12,12,
+	12,12,12,12,12,12,12,36,12,36,12,12, 12,36,12,12,12,12,12,36,12,36,12,12,
+	12,36,12,12,12,12,12,12,12,12,12,12,
+};
+
+static inline uint32_t decode(uint32_t *state, uint32_t byte)
+{
+	uint32_t type = utf8d[byte];
+	*state = utf8d[256 + *state + type];
+	return *state;
+}
+/* END THIRD PARTY CODE */
+
+int bbs_utf8_remove_invalid(unsigned char *restrict s, size_t *restrict len)
+{
+	int i = 0;
+	unsigned char *start, *first = s;
+	unsigned char *d = s;
+	uint32_t state = UTF8_ACCEPT;
+
+	start = s;
+	while (*s) {
+		uint32_t res = decode(&state, (uint8_t) *s);
+		if (res == UTF8_REJECT) {
+			size_t utflen;
+			/* There is U+FFFD for "invalid/unknown" UTF-8 character (question mark ? icon), but this requires 3 bytes,
+			 * so we can't do an in place replacement without possibly running out of space.
+			 * We just remove invalid characters without replacement. */
+			utflen = (size_t) (s - start); /* Length of invalid UTF-8 character, in bytes */
+			*len -= utflen;
+			d -= (utflen - 1);
+			bbs_debug(1, "Invalid UTF-8 sequence(%d) (%X...) encountered (position %ld)\n",
+				(int) utflen, *(start + 1), s - first);
+			/* Start the next chunk fresh */
+			s++;
+			i++;
+			state = UTF8_ACCEPT;
+			start = s;
+		} else {
+			if (res == UTF8_ACCEPT) {
+				start = s;
+			}
+			*d++ = *s++;
+		}
+	}
+	if (i) {
+		bbs_warning("%d invalid UTF-8 sequence%s removed\n", i, ESS(i));
+	}
+	*d = '\0';
+	return i;
+}

@@ -1083,50 +1083,13 @@ static void append_internaldate(json_t *json, struct mailimap_date_time *dt)
 	return append_datetime(json, "received", buf);
 }
 
-#ifdef EXTRA_CHECKS
-/*! \brief Remove all unprintable characters from a string, in place */
-static int remove_unprintable(char *restrict s)
-{
-	int i = 0;
-	char *d = s;
-	while (*s) {
-		/*! \todo UTF-8 is encoded using the upper nibble,
-		 * using values 128 through 255.
-		 * char is usually signed by default, so this really SHOULD be an unsigned type.
-		 * As a lazy fix, we're compiling with -funsigned-char for now to make that so,
-		 * but we should really be using unsigned char where needed in this source file.
-		 * Once all the types in this file are converted, we can remove that compiler option.
-		 */
-		if (isprint(*s) || *s >= 128) {
-			*d++ = *s++;
-		} else {
-			s++;
-			i++;
-		}
-	}
-	*d = '\0';
-	return i;
-}
-
-static void remove_unprintable_len(char *restrict s, size_t *restrict len)
-{
-	char *d = s;
-	while (*s) {
-		if (isprint(*s) || *s >= 128) {
-			*d++ = *s++;
-		} else {
-			s++;
-			*len -= 1;
-		}
-	}
-	*d = '\0';
-}
-#endif
+#define EXTRA_CHECKS
 
 static char *mime_header_decode(const char *s)
 {
 	size_t cur_token;
 	int encoded = 0;
+	size_t len;
 	char *decoded = NULL;
 #ifdef EXTRA_CHECKS
 	int removed;
@@ -1168,7 +1131,8 @@ static char *mime_header_decode(const char *s)
 	 * UPDATE: This is probably because char was signed and these were negative values.
 	 * Since this should be unsigned, I am not sure this is a problem anymore.
 	 */
-	removed = remove_unprintable(decoded);
+	len = strlen(decoded);
+	removed = bbs_utf8_remove_invalid((unsigned char*) decoded, &len);
 	if (removed) {
 		bbs_warning("%d unprintable character%s removed\n", removed, ESS(removed));
 	}
@@ -2378,20 +2342,64 @@ static int fetch_mime(json_t *root, int html, const char *msg_body, size_t msg_s
 		if (MAILIMAP_ERROR(res)) {
 			json_object_set_new(root, "body", json_stringn(body, len));
 		} else {
-			json_t *jsonbody = json_stringn(result, resultlen);
+			json_t *jsonbody = NULL;
+			char *d_body = result;
+			char *decoded = NULL;
+
+			/* 7-bit and 8-bit don't need any special handling.
+			 * Quoted printable needs to be decoded appropriately (below).
+			 * Base64 is (in practice) only used for attachments, not the actual message content.
+			 * Similar for binary, if that's even used at all. */
+			if (encoding == MAILMIME_MECHANISM_QUOTED_PRINTABLE) {
+				size_t qlen = 0;
+#if 0
+				size_t index;
+				/* This doesn't work: */
+				int dres = mailmime_quoted_printable_body_parse(result, resultlen, &index, &decoded, &qlen, 0);
+				if (dres == MAILIMAP_NO_ERROR && decoded) {
+#else
+				decoded = strndup(body, len);
+				/* We pass in 0 to bbs_quoted_printable_decode since bbs_utf8_remove_invalid handles invalid UTF-8 more robustly,
+				 * so all invalid character removal is done in the second pass. */
+				if (ALLOC_SUCCESS(decoded) && !bbs_quoted_printable_decode(decoded, &qlen, 0)) { /* Need to operate on original body, mailmime_part_parse removes quoted printable stuff */
+#endif
+					bbs_debug(3, "Translated quoted-printable body of length %lu to body of length %lu\n", resultlen, qlen);
+					jsonbody = json_stringn(decoded, qlen);
+#ifdef EXTRA_CHECKS
+					if (!jsonbody) {
+						bbs_utf8_remove_invalid((unsigned char*) decoded, &qlen);
+						jsonbody = json_stringn(decoded, qlen);
+					}
+#endif
+					if (!jsonbody) {
+						bbs_warning("Failed to encode decoded quoted-printable body %p (%lu) as JSON\n", d_body, qlen);
+						/* Just encode the non-decoded version... will be incomplete (missing quoted-printable stuff) but mostly faithful */
+					} else {
+						resultlen = qlen;
+						d_body = decoded;
+					}
+				} else {
+					bbs_warning("Could not decode quoted printable body?\n");
+				}
+			}
+			/*! \todo Support RFC 2392 inline cid: links */
+			if (!jsonbody) {
+				jsonbody = json_stringn(d_body, resultlen);
+			}
 			if (!jsonbody) {
 #ifdef EXTRA_CHECKS
-				remove_unprintable_len(result, &resultlen);
+				bbs_utf8_remove_invalid((unsigned char*) d_body, &resultlen);
+				jsonbody = json_stringn(d_body, resultlen);
 #endif
-				jsonbody = json_stringn(result, resultlen);
 				if (!jsonbody) {
-					bbs_warning("Failed to encode body %p (%lu) as JSON\n", result, resultlen);
+					bbs_warning("Failed to encode body %p (%lu) as JSON\n", d_body, resultlen);
 				} else {
-					bbs_warning("Message body is not valid UTF-8\n");
+					bbs_warning("Message body is not valid UTF-8 and has been converted with omissions\n");
 				}
 			}
 			json_object_set_new(root, "body", jsonbody);
 			mailmime_decoded_part_free(result);
+			free_if(decoded);
 		}
 	} else {
 		if (expect_body) {

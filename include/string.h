@@ -184,3 +184,20 @@ char *parensep(char **str);
  * \note Nested quotes are not supported
  */
 char *quotesep(char **str);
+
+/*!
+ * \brief Decode RFC 2045 6.7 Quoted Printable string, in place
+ * \param s String to decode in place
+ * \param[out] len Length of decoded string (no more than original)
+ * \param Whether to decode only printable characters
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_quoted_printable_decode(char *restrict s, size_t *restrict len, int printonly);
+
+/*!
+ * \brief Remove all unprintable characters from a string, in place
+ * \param s String for which invalid UTF-8 characters should be removed
+ * \param len Current length of string (and final length, afterwards)
+ * \retval Number of characters removed
+ */
+int bbs_utf8_remove_invalid(unsigned char *restrict s, size_t *restrict len);
