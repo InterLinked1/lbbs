@@ -277,8 +277,9 @@ static void *remote_list_dup(void *data)
 
 static int remote_list_cb(void *data)
 {
+	int res;
 	struct remote_list_info *r = data;
-	struct imap_client *client = imap_client_get_by_url(r->imap, r->prefix, r->server);
+	struct imap_client *client = imap_client_get_by_url_parallel(r->imap, r->prefix, r->server);
 	bbs_memzero(r->server, strlen(r->server)); /* Contains password */
 
 	if (!client) {
@@ -287,7 +288,9 @@ static int remote_list_cb(void *data)
 	}
 
 	/* Marshall arguments and execute */
-	return remote_list(client, r->lcmd, r->prefix);
+	res = remote_list(client, r->lcmd, r->prefix);
+	client->active = 0; /* Mark client as no longer being used, so if we need to make room for a new client during the parallel job, we can kick this one */
+	return res;
 }
 
 static int remote_list_parallel(struct imap_parallel *p, const char *restrict prefix, struct list_command *lcmd, struct imap_session *imap, const char *server)

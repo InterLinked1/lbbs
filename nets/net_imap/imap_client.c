@@ -158,6 +158,7 @@ int imap_client_idle_start(struct imap_client *client)
 		return -1;
 	}
 	client->idling = 1;
+	client->active = 1;
 	client->idlestarted = (int) time(NULL);
 	return 0;
 }
@@ -173,6 +174,7 @@ int imap_client_idle_stop(struct imap_client *client)
 		return -1;
 	}
 	client->idling = 0;
+	client->active = 0;
 	return 0;
 }
 
@@ -316,6 +318,7 @@ void imap_close_remote_mailbox(struct imap_session *imap)
 	}
 	/* Mark this connection as no longer active */
 	imap->client = NULL;
+	client->active = 0;
 	/* We ideally want to keep the connection alive for faster reuse if needed later. */
 	if (maxuserproxies <= 1) {
 		imap_client_unlink(imap, client);
@@ -454,6 +457,11 @@ int __imap_client_send_wait_response(struct imap_client *client, int fd, int ms,
 	va_list ap;
 	const char *tag = client->imap->tag;
 
+	if (strlen_zero(tag)) {
+		bbs_warning("No active IMAP tag, using generic one\n");
+		tag = "tag";
+	}
+
 	va_start(ap, fmt);
 	len = vasprintf(&buf, fmt, ap);
 	va_end(ap);
@@ -542,8 +550,23 @@ static int connection_stale(struct imap_client *client)
 	return imap_client_keepalive_check(client);
 }
 
+static struct imap_client *find_inactive_client(struct imap_session *imap)
+{
+	struct imap_client *client;
+
+	RWLIST_TRAVERSE_SAFE_BEGIN(&imap->clients, client, entry) {
+		if (!client->active) {
+			RWLIST_REMOVE_CURRENT(entry);
+			return client;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+
+	return NULL;
+}
+
 /*! \brief Find or create the appropriate IMAP client session */
-static struct imap_client *imap_client_get(struct imap_session *imap, const char *name, int *new)
+static struct imap_client *imap_client_get(struct imap_session *imap, const char *name, int *new, int parallel)
 {
 	unsigned int current = 0;
 	struct imap_client *client;
@@ -571,11 +594,27 @@ static struct imap_client *imap_client_get(struct imap_session *imap, const char
 	RWLIST_TRAVERSE_SAFE_END;
 	if (!client) {
 		while (current >= maxuserproxies) {
+			int retries = 50;
 			/* We'll need to disconnect a connection in order to make room for this one. */
-			bbs_debug(3, "Need to free up some client connections to make room for new connection\n");
-			client = RWLIST_REMOVE_HEAD(&imap->clients, entry);
-			bbs_assert_exists(client);
-			client_destroy(client);
+			bbs_debug(3, "Need to free up a client connection to make room for a new one\n");
+			client = find_inactive_client(imap); /* We must not try to remove a client that is currently in use (perhaps by an ongoing parallel job) */
+			if (!client && parallel) {
+				bbs_warning("Not currently any room for additional IMAP clients, waiting up to 10 seconds...\n");
+				while (!client && retries--) {
+					/* If this is a parallel job, wait for a client to become available, up to a certain amount of time */
+					if (bbs_node_safe_sleep(imap->node, 250)) { /* XXX Instead of polling, get notified when a client is no longer active? */
+						break;
+					}
+					client = find_inactive_client(imap);
+				}
+			}
+			if (!client) {
+				/* If all current clients are in use, then we may need to wait */
+				bbs_warning("Unable to make room for new IMAP client\n");
+				RWLIST_UNLOCK(&imap->clients);
+				return NULL;
+			}
+			client_destroy(client); /* This client has already been removed from the list */
 			current--;
 		}
 		client = client_new(name);
@@ -590,6 +629,7 @@ static struct imap_client *imap_client_get(struct imap_session *imap, const char
 	}
 	RWLIST_UNLOCK(&imap->clients);
 
+	client->active = 1; /* If somebody's requesting it, automark as active */
 	return client;
 }
 
@@ -599,7 +639,7 @@ static int my_imap_client_login(struct imap_client *client, struct bbs_url *url)
 	return imap_client_login(tcpclient, url, client->imap->node->user, &client->virtcapabilities);
 }
 
-struct imap_client *imap_client_get_by_url(struct imap_session *imap, const char *name, char *restrict urlstr)
+struct imap_client *__imap_client_get_by_url(struct imap_session *imap, const char *name, char *restrict urlstr, int parallel)
 {
 	struct imap_client *client;
 	struct bbs_url url;
@@ -616,7 +656,7 @@ struct imap_client *imap_client_get_by_url(struct imap_session *imap, const char
 		return NULL;
 	}
 
-	client = imap_client_get(imap, name, &new);
+	client = imap_client_get(imap, name, &new, parallel);
 	if (!client) {
 		return NULL;
 	} else if (!new) {

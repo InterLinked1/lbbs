@@ -64,8 +64,11 @@ void imap_client_idle_notify(struct imap_client *client);
 /*! \brief Disconnect the current active proxied client connection */
 void imap_close_remote_mailbox(struct imap_session *imap);
 
+#define imap_client_get_by_url(imap, name, urlstr) __imap_client_get_by_url(imap, name, urlstr, 0)
+#define imap_client_get_by_url_parallel(imap, name, urlstr) __imap_client_get_by_url(imap, name, urlstr, 1)
+
 /*! \brief Retrieve or create a new IMAP client connection by name and URL */
-struct imap_client *imap_client_get_by_url(struct imap_session *imap, const char *name, char *restrict urlstr);
+struct imap_client *__imap_client_get_by_url(struct imap_session *imap, const char *name, char *restrict urlstr, int parallel);
 
 /*!
  * \brief Send a printf-formatted buffer on an IMAP client

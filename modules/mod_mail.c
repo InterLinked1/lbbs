@@ -1679,6 +1679,8 @@ static int imap_client_capability(struct bbs_tcp_client *client, int *capsptr)
 	else if (!strcmp(cur, name)) { \
 		caps |= flag; \
 	}
+#define IGNORE_CAPABILITY(name) \
+	else if (!strcmp(cur, name)) { }
 
 	/* Enable any capabilities the client may have enabled. */
 	capstring = strstr(client->buf, "* CAPABILITY ");
@@ -1722,13 +1724,41 @@ static int imap_client_capability(struct bbs_tcp_client *client, int *capsptr)
 		PARSE_CAPABILITY("SORT", IMAP_CAPABILITY_SORT)
 		PARSE_CAPABILITY("THREAD=ORDEREDSUBJECT", IMAP_CAPABILITY_THREAD_ORDEREDSUBJECT)
 		PARSE_CAPABILITY("THREAD=REFERENCES", IMAP_CAPABILITY_THREAD_REFERENCES)
+		IGNORE_CAPABILITY("THREAD=REFS")
 		PARSE_CAPABILITY("MOVE", IMAP_CAPABILITY_MOVE)
 		PARSE_CAPABILITY("BINARY", IMAP_CAPABILITY_BINARY)
 		PARSE_CAPABILITY("MULTIAPPEND", IMAP_CAPABILITY_MULTIAPPEND)
-		else if (STARTS_WITH(cur, "X") || STARTS_WITH(cur, "AUTH=") || !strcmp(cur, "SPECIAL-USE") || !strcmp(cur, "CHILDREN") || !strcmp(cur, "NAMESPACE") || !strcmp(cur, "ID") || !strcmp(cur, "UIDPLUS") || !strcmp(cur, "XLIST") || !strcmp(cur, "I18NLEVEL=1") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "ANNOTATION") || !strcmp(cur, "RIGHTS=") || !strcmp(cur, "WITHIN") || !strcmp(cur, "ESEARCH") || !strcmp(cur, "ESORT") || !strcmp(cur, "SEARCHRES") || !strcmp(cur, "COMPRESS=DEFLATE") || !strcmp(cur, "COMPRESS=DEFLATE") || !strcmp(cur, "UTF8=ACCEPT")) {
+		/* Not currently used */
+		IGNORE_CAPABILITY("LOGIN-REFERRALS")
+		IGNORE_CAPABILITY("SORT=DISPLAY")
+		IGNORE_CAPABILITY("URL-PARTIAL")
+		IGNORE_CAPABILITY("CATENATE")
+		IGNORE_CAPABILITY("CONTEXT=SEARCH")
+		IGNORE_CAPABILITY("SNIPPET=FUZZY")
+		IGNORE_CAPABILITY("PREVIEW=FUZZY")
+		IGNORE_CAPABILITY("SAVEDATE")
+		IGNORE_CAPABILITY("NOTIFY")
+		IGNORE_CAPABILITY("SPECIAL-USE")
+		IGNORE_CAPABILITY("CHILDREN")
+		IGNORE_CAPABILITY("NAMESPACE")
+		IGNORE_CAPABILITY("ID")
+		IGNORE_CAPABILITY("UIDPLUS")
+		IGNORE_CAPABILITY("XLIST")
+		IGNORE_CAPABILITY("I18NLEVEL=1")
+		IGNORE_CAPABILITY("ANNOTATION")
+		IGNORE_CAPABILITY("RIGHTS=")
+		IGNORE_CAPABILITY("WITHIN")
+		IGNORE_CAPABILITY("ESEARCH")
+		IGNORE_CAPABILITY("ESORT")
+		IGNORE_CAPABILITY("SEARCHRES")
+		IGNORE_CAPABILITY("COMPRESS=DEFLATE")
+		IGNORE_CAPABILITY("UTF8=ACCEPT")
+		/* Esoteric Microsoft stuff, don't care */
+		IGNORE_CAPABILITY("CLIENTACCESSRULES")
+		IGNORE_CAPABILITY("CLIENTNETWORKPRESENCELOCATION")
+		IGNORE_CAPABILITY("BACKENDAUTHENTICATE")
+		else if (STARTS_WITH(cur, "X") || STARTS_WITH(cur, "AUTH=")) {
 			/* Don't care */
-		} else if (!strcmp(cur, "CLIENTACCESSRULES") || !strcmp(cur, "CLIENTNETWORKPRESENCELOCATION") || !strcmp(cur, "BACKENDAUTHENTICATE")) {
-			/* Esoteric Microsoft stuff, don't care */
 		} else if (!strcmp(cur, "LOGINDISABLED")) { /* RFC 3501 7.2.1 */
 			/* Could happen if we connect to a plain text port and STARTTLS is required.
 			 * Here we only support implicit TLS */
@@ -1742,6 +1772,7 @@ static int imap_client_capability(struct bbs_tcp_client *client, int *capsptr)
 	}
 
 #undef PARSE_CAPABILITY
+#undef IGNORE_CAPABILITY
 
 	*capsptr = caps;
 	return 0;
