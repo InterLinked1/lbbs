@@ -427,8 +427,13 @@ static ssize_t slow_write(struct pollfd *restrict pfds, int fd, int fd2, ssize_t
 
 static void trigger_node_disconnect(struct bbs_node *node)
 {
-	bbs_node_lock(node);
-	/* Client disconnected */
+	/* Client disconnected.
+	 * Do not lock the node, because if a shutdown of the node is ongoing,
+	 * the node is already locked, and the lock will not be released
+	 * until it's ready to be freed.
+	 * If that's the case, then it'll wait until this thread has joined,
+	 * so in practice there should not be any concurrency issues here (in that particular scenario)... */
+
 	/* Close the slave, this will cause bbs_node_poll, bbs_node_read, bbs_node_write, etc. to return -1.
 	 * That will cause the node to exit and it will subsequently join this thread. */
 	if (node->slavefd != -1) {
@@ -446,8 +451,6 @@ static void trigger_node_disconnect(struct bbs_node *node)
 	/* If there's a child process running for this node, then this might not be sufficient.
 	 * Go ahead and make it exit. */
 	bbs_node_kill_child(node);
-
-	bbs_node_unlock(node);
 }
 
 /* According to termios(3) man page, the canonical mode buffer of the PTY is 4096, so this should always be large enough */

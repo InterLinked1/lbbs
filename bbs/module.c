@@ -45,6 +45,8 @@ struct bbs_module {
 		/*! This module is awaiting a reload. */
 		unsigned int reloadpending:1;
 	} flags;
+	/*! Load order */
+	int loadorder;
 	/* Next entry */
 	RWLIST_ENTRY(bbs_module) entry;
 	/*! The name of the module. */
@@ -490,6 +492,8 @@ static void unload_dynamic_module(struct bbs_module *mod)
 	}
 }
 
+static int loadindex = 0;
+
 /*! \note modules list must be locked */
 static int start_resource(struct bbs_module *mod)
 {
@@ -505,8 +509,10 @@ static int start_resource(struct bbs_module *mod)
 		return res;
 	}
 
-	/* Make sure the newly started module is at the end of the list */
-	RWLIST_INSERT_TAIL(&modules, mod, entry);
+	mod->loadorder = ++loadindex; /* This is atomic since list is locked. This is strictly increasing, not decremented when a module unloads. */
+
+	/* Insert alphabetically */
+	RWLIST_INSERT_SORTALPHA(&modules, mod, entry, name);
 	return 0;
 }
 
@@ -1018,11 +1024,11 @@ int bbs_list_modules(int fd)
 	int c = 0;
 	struct bbs_module *mod;
 
-	bbs_dprintf(fd, "%-25s %3s %s\n", "Module Name", "Use", "Description");
+	bbs_dprintf(fd, "%6s %-35s %3s %s\n", "Load #", "Module Name", "Use", "Description");
 
 	RWLIST_RDLOCK(&modules);
 	RWLIST_TRAVERSE(&modules, mod, entry) {
-		bbs_dprintf(fd, "%-25s %3d %s\n", mod->name, mod->usecount, mod->info->description);
+		bbs_dprintf(fd, "%6d %-35s %3d %s\n", mod->loadorder, mod->name, mod->usecount, mod->info->description);
 		c++;
 	}
 	RWLIST_UNLOCK(&modules);

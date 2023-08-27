@@ -718,6 +718,13 @@ static int analyze_valgrind(void)
 	return res;
 }
 
+static void stop_bbs_pid(pid_t childpid)
+{
+	kill(childpid, SIGINT); /* Ask it to exit nicely. */
+	usleep(1000);
+	kill(childpid, SIGINT); /* Again, to confirm */
+}
+
 static int run_test(const char *filename, int multiple)
 {
 	int res = 0;
@@ -829,7 +836,7 @@ static int run_test(const char *filename, int multiple)
 			gettimeofday(&end, NULL);
 			if (childpid != -1) {
 				int wstatus;
-				kill(childpid, SIGINT); /* Ask it to exit nicely. */
+				stop_bbs_pid(childpid);
 				waitpid(childpid, &wstatus, 0); /* Wait for child to exit */
 				current_child = 0;
 				bbs_debug(3, "Child process %d has exited\n", childpid);
@@ -931,7 +938,7 @@ static void stop_bbs(void)
 		bbs_debug(5, "Process %ld no longer exists\n", file_pid);
 		return;
 	}
-	kill((pid_t) file_pid, SIGINT); /* Ask it to exit nicely. */
+	stop_bbs_pid((pid_t) file_pid);
 	usleep(1500000);
 	/* If it's still running, then forcibly kill it. */
 	if (stat(procpath, &st) == -1 && errno == ENOENT) {

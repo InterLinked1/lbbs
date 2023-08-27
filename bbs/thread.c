@@ -40,7 +40,7 @@ int bbs_gettid(void)
 
 	/* If we've called this before, return the cached value to avoid a system call.
 	 * Since every call to __bbs_log calls bbs_gettid, this is an important optimization. */
-	if (my_tid) {
+	if (likely(my_tid)) {
 		return my_tid;
 	}
 
@@ -72,6 +72,8 @@ struct thread_list_t {
 
 static RWLIST_HEAD_STATIC(thread_list, thread_list_t);
 
+static int lifetime_threads = 0;
+
 static void thread_register(char *name, int detached)
 {
 	struct thread_list_t *new = calloc(1, sizeof(*new));
@@ -87,6 +89,7 @@ static void thread_register(char *name, int detached)
 	SET_BITFIELD(new->detached, detached);
 	RWLIST_WRLOCK(&thread_list);
 	RWLIST_INSERT_TAIL(&thread_list, new, list);
+	lifetime_threads++;
 	RWLIST_UNLOCK(&thread_list);
 	bbs_debug(3, "Thread %d spawned from %s\n", new->lwp, new->name);
 }
@@ -198,7 +201,7 @@ int bbs_dump_threads(int fd)
 		bbs_dprintf(fd, "%3d %6d (%9lu) [%12p] (%s %10s) %s\n", threads, cur->lwp, cur->id, (void *) cur->id, thread_state_name(cur), elapsed, cur->name);
 	}
 	RWLIST_UNLOCK(&thread_list);
-	bbs_dprintf(fd, "%d active threads registered (may be incomplete).\n", threads);
+	bbs_dprintf(fd, "%d active threads registered, %d lifetime threads (may be incomplete).\n", threads, lifetime_threads);
 	return 0;
 }
 
@@ -282,15 +285,17 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 		if (clock_gettime(CLOCK_REALTIME, &ts) == -1) {
 			bbs_error("clock_gettime failed: %s\n", strerror(errno));
 		}
-		ts.tv_sec++; /* Wait up to a second */
+		ts.tv_sec = 1; /* Wait up to a second */
 		res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts); /* This is not POSIX portable */
 		if (res && res == ETIMEDOUT) {
 			/* The thread hasn't exited yet. At this point, it's more likely that something is actually wrong. */
 			bbs_warning("Thread %d is not currently waiting to be joined\n", lwp);
 			/* Now, proceed as normal and do a ~blocking pthread_join */
-			/* Seems that after using pthread_timedjoin_np, you can't do a blocking pthread_join anymore. So loop */
+			/* Seems that after using pthread_timedjoin_np, you can't do a blocking pthread_join anymore? So loop */
 			while (res && res == ETIMEDOUT) {
-				bbs_debug(9, "Thread %lu not yet joined\n", thread);
+				bbs_debug(9, "Thread %lu not yet joined after %lus\n", thread, ts.tv_sec);
+				bbs_safe_sleep(50);
+				ts.tv_sec = 1; /* XXX Even this doesn't seem to make it work right */
 				res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts);
 			}
 		}

@@ -318,6 +318,33 @@ struct {								\
 }
 
 /*!
+ * \brief Inserts a list entry into a alphabetically sorted list
+ * \param head Pointer to the list head structure
+ * \param elm Pointer to the entry to be inserted
+ * \param field Name of the list entry field (declared using RWLIST_ENTRY())
+ * \param sortfield Name of the field on which the list is sorted
+ */
+#define RWLIST_INSERT_SORTALPHA(head, elm, field, sortfield) {          \
+	if (!(head)->first) {                                               \
+		(head)->first = (elm);                                          \
+		(head)->last = (elm);                                           \
+	} else {                                                            \
+		typeof((head)->first) __cur = (head)->first, __prev = NULL;     \
+		while (__cur && strcmp(__cur->sortfield, elm->sortfield) < 0) { \
+			__prev = __cur;                                             \
+			__cur = __cur->field.next;                                  \
+		}                                                               \
+		if (!__prev) {                                                  \
+			RWLIST_INSERT_HEAD(head, elm, field);                       \
+		} else if (!__cur) {                                            \
+			RWLIST_INSERT_TAIL(head, elm, field);                       \
+		} else {                                                        \
+			RWLIST_INSERT_AFTER(head, __prev, elm, field);              \
+		}                                                               \
+	}                                                                   \
+}
+
+/*!
  * \brief Removes and returns the head entry from a list.
  * \param head This is a pointer to the list head structure
  * \param field This is the name of the field (declared using RWLIST_ENTRY())

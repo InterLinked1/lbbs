@@ -584,8 +584,12 @@ void bbs_sigint_set_alertpipe(int p[2])
 	sigint_alert_pipe = p;
 }
 
+static time_t last_shutdown_attempt = 0;
+
 static void __sigint_handler(int num)
 {
+	time_t now;
+
 	UNUSED(num);
 
 	if (getpid() != bbs_pid) {
@@ -616,6 +620,17 @@ static void __sigint_handler(int num)
 		/* XXX Should we go ahead and automatically remove the subscriber? (set sigint_alert_pipe to NULL?)
 		 * Right now we rely on the subscriber to do this manually. If someone forgets, this could be bad. */
 		 return;
+	}
+	now = time(NULL);
+	if (!last_shutdown_attempt || last_shutdown_attempt < now - 10) {
+		/* ^C in a remote console just exits the console, while
+		 * ^C in the foreground console terminates the BBS.
+		 * It is easy to forget which console you are in and
+		 * accidentally kill the entire BBS when you just meant to exit the console.
+		 * Try to prevent this from happening by asking if that's what the sysop really wants. */
+		last_shutdown_attempt = now;
+		printf("\n%sReally shut down the BBS? Press ^C again within 10s to confirm.%s\n", COLOR(COLOR_RED), COLOR_RESET); /* XXX technically not safe to use in signal handler */
+		return;
 	}
 	bbs_debug(2, "Got SIGINT, requesting shutdown\n"); /* XXX technically not safe to use in signal handler */
 	want_shutdown = 1;

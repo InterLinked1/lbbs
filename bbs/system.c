@@ -192,7 +192,15 @@ static void waitpidexit(pid_t pid, const char *filename, int *res)
 
 	if (*res > 0) {
 		/* Sometimes it can be legitimate for programs to exit nonzero, and that's not our fault. */
-		bbs_debug(1, "Command failed (%d - %s): %s\n", *res, strerror(*res), filename);
+		switch (*res) {
+			/* These are probably due to misconfigurations, and should be raised to the sysop's attention */
+			case ENOENT:
+			case EPERM:
+				bbs_warning("Command failed (%d - %s): %s\n", *res, strerror(*res), filename);
+				break;
+			default:
+				bbs_debug(1, "Command failed (%d - %s): %s\n", *res, strerror(*res), filename);
+		}
 	} else {
 		bbs_debug(4, "Command execution finished (%s): res = %d\n", filename, *res);
 	}

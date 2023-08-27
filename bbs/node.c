@@ -180,6 +180,8 @@ const char *bbs_name(void)
 	return bbs_name_buf;
 }
 
+static int lifetime_nodes = 0;
+
 struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 {
 	struct bbs_node *node = NULL, *prev = NULL;
@@ -270,6 +272,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 	} else {
 		RWLIST_INSERT_HEAD(&nodes, node, entry); /* This is the first node. */
 	}
+	lifetime_nodes++;
 	RWLIST_UNLOCK(&nodes);
 
 	bbs_debug(1, "Allocated new node with ID %u\n", node->id);
@@ -680,7 +683,7 @@ int bbs_nodes_print(int fd)
 	}
 	RWLIST_UNLOCK(&nodes);
 
-	bbs_dprintf(fd, "%d active node%s\n", c, ESS(c));
+	bbs_dprintf(fd, "%d active node%s, %d lifetime node%s\n", c, ESS(c), lifetime_nodes, ESS(lifetime_nodes));
 	return 0;
 }
 
