@@ -2430,6 +2430,10 @@ static void send_preview(struct ws_session *ws, struct imap_client *client, uint
 	set = mailimap_set_new_single(seqno);
 	fetch_type = mailimap_fetch_type_new_fetch_att_list_empty();
 
+	if (!fetch_type) {
+		return;
+	}
+
 	fetch_att = mailimap_fetch_att_new_uid();
 	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
 
@@ -2443,6 +2447,7 @@ static void send_preview(struct ws_session *ws, struct imap_client *client, uint
 	res = mailimap_fetch(client->imap, set, fetch_type, &fetch_result);
 	if (MAILIMAP_ERROR(res)) {
 		bbs_warning("FETCH failed: %s\n", maildriver_strerror(res));
+		fetch_result = NULL;
 		goto cleanup;
 	}
 
@@ -2456,7 +2461,6 @@ static void send_preview(struct ws_session *ws, struct imap_client *client, uint
 	for (cur = clist_begin(msg_att->att_list); cur ; cur = clist_next(cur)) {
 		struct mailimap_msg_att_item *item = clist_content(cur);
 		if (item->att_type == MAILIMAP_MSG_ATT_ITEM_STATIC) {
-			//struct mailimap_msg_att_body_section *msg_att_body_section;
 			size_t msg_size;
 			char *msg_body;
 			char *eoh;
@@ -2496,7 +2500,7 @@ static void send_preview(struct ws_session *ws, struct imap_client *client, uint
 	return;
 
 cleanup:
-	bbs_debug(3, "preview failed\n");
+	bbs_debug(3, "Preview failed\n");
 	mailimap_set_free(set);
 	mailimap_fetch_type_free(fetch_type);
 	if (fetch_result) {
