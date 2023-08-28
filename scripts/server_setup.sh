@@ -1,10 +1,10 @@
 #!/bin/sh
-# BBS Setup Guide for Debian 11
+# BBS Setup Guide for Debian 11/12
 
 # This is a high-level sample script that can be used to fully set up a Linux server for running LBBS.
 # This is NOT a fully unattended script, some commands (e.g. mysql_secure_installation) are interactive.
 
-# If you want to upgrade to Debian 12 instead of Debian 11:
+# If you currently have Debian 11, but want to upgrade to Debian 12:
 # sed -i 's/bullseye/bookworm/g' /etc/apt/source-list
 # apt-get update && apt-get upgrade && apt-get dist-upgrade && reboot
 

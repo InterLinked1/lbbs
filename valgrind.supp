@@ -92,9 +92,7 @@
    fun:_dl_catch_exception
    fun:_dl_catch_error
    fun:_dlerror_run
-   fun:dlopen@@GLIBC_2.2.5
-   fun:load_dlopen
-   fun:load_dynamic_module
+   ...
 }
 {
    SSH_MODULE
@@ -197,9 +195,7 @@
    fun:_dl_catch_exception
    fun:_dl_catch_error
    fun:_dlerror_run
-   fun:dlopen@@GLIBC_2.2.5
-   fun:load_dlopen
-   fun:check_dependencies
+   ...
 }
 {
    GMIME_load
@@ -451,16 +447,10 @@
    Memcheck:Leak
    match-leak-kinds: reachable
    ...
-   obj:/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.6600.8
-   obj:/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.6600.8
-   obj:/usr/lib/x86_64-linux-gnu/libglib-2.0.so.0.6600.8
    fun:g_hash_table_insert
-   fun:g_quark_from_string
-   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
+   ...
    fun:g_type_register_static
-   fun:g_mime_filter_get_type
-   fun:g_mime_init
-   fun:load_module
+   ...
 }
 {
    GOBJECT_init
@@ -883,14 +873,10 @@
    match-leak-kinds: reachable
    fun:malloc
    ...
-   fun:_dl_open
-   fun:dlopen_doit
    fun:_dl_catch_exception
    fun:_dl_catch_error
    fun:_dlerror_run
-   fun:dlopen@@GLIBC_2.2.5
-   fun:load_dlopen.constprop.12
-   fun:load_dynamic_module.constprop.11
+   ...
 }
 {
    DLCLOSE

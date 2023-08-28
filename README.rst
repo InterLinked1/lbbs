@@ -322,6 +322,35 @@ in :code:`configs/menus.conf`. Please also read the caveats, notes, and warnings
 The :code:`isoroot` program in the :code:`external` directory also demonstrates how this functionality works in a standalone manner,
 if you want to test your container environment separately.
 
+How do I set up TLS certificates?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+You will need to get TLS certificates from a certificate authority to support protocols that use TLS for encryption.
+
+We recommend using a free certificate authority, like Let's Encrypt.
+
+The below steps show how you can get free 3-month TLS certificates from Let's Encrypt that will renew automatically as needed.
+
+There are multiple ACME clients you can use; Certbot is another one. acme.sh is used here because it's lightweight; certbot installs quite a bunch of stuff (like snapd) that you probably don't otherwise need or want.
+
+The guidance here uses a webroot in the BBS itself. There is an option to use a port, but this is misleading; if you run the ACME client in standalone mode, the BBS web server CANNOT be running at the same time. While this may be fine initially, it will be problematic for renewals. The webroot method ensures that certificates can be renewed without issue, as long as the BBS is running.
+
+Finally, certificates will be stored in /etc/letsencrypt (just like Certbot), rather than inside your home directory (the default). You can obtain a certificate for multiple hostnames at the same time (see example in step 4):
+
+1. Enable HTTP (but not HTTPS (yet), which will fail without a TLS certificate configured) in :code:`net_http.conf`.
+
+2. Start the BBS (or reload net_http if it's already running)
+
+3. :code:`curl https://get.acme.sh | sh`
+
+4. :code:`~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --always-force-new-domain-key --issue -w /home/bbs/www --cert-home /etc/letsencrypt -d example.com -d example.net -d example.org`
+
+5. Update permissions: :code:`chown -R bbs /etc/letsencrypt/ && chgrp -R bbs /etc/letsencrypt/`
+
+6. Now, update :code:`tls.conf` with the path to the cert and key (cert key) that ACME spits out.
+
+7. Restart the BBS for TLS changes to take effect.
+
 What format does the BBS use to store email?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

@@ -1,0 +1,20 @@
+--k-and-r-style
+--dont-format-comments
+--use-tabs
+--tab-size 4
+--line-length 200
+--blank-lines-after-procedures
+--braces-after-func-def-line
+--braces-on-if-line
+--braces-on-struct-decl-line
+--cuddle-else
+--remove-preprocessor-space
+--no-blank-lines-after-declarations
+--no-blank-lines-after-commas
+--dont-break-function-decl-args
+--no-space-after-function-call-names
+--no-space-after-parentheses
+--space-after-for
+--space-after-if
+--space-after-while
+--left-justify-declarations
