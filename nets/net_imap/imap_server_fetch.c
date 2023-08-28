@@ -521,6 +521,19 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 	return 0;
 }
 
+/*! \brief Get beginning of keyword letters in a filename, if present */
+static const char *keywords_start(const char *restrict filename)
+{
+	const char *flagstr = strchr(filename, ':');
+	if (!flagstr++) {
+		return NULL;
+	}
+	while (isupper(*flagstr)) {
+		flagstr++;
+	}
+	return flagstr;
+}
+
 static int mark_seen(struct imap_session *imap, int seqno, const char *fullname, const char *filename)
 {
 	int newflags;
@@ -533,13 +546,23 @@ static int mark_seen(struct imap_session *imap, int seqno, const char *fullname,
 		bbs_error("File %s is noncompliant with maildir\n", filename);
 		return -1;
 	}
+
 	/* If not already seen, mark as unseen */
 	if (!(newflags & FLAG_BIT_SEEN)) {
 		char newflagletters[256];
+		const char *keywords;
 		bbs_debug(6, "Implicitly marking message as seen\n");
 		newflags |= FLAG_BIT_SEEN;
 		/* Generate flag letters from flag bits */
 		gen_flag_letters(newflags, newflagletters, sizeof(newflagletters));
+
+		/* No point in parsing the existing keywords only to convert them back and append.
+		 * Just copy over from filename directly. */
+		keywords = keywords_start(filename);
+
+		if (!strlen_zero(keywords)) {
+			bbs_append_string(newflagletters, keywords, sizeof(newflagletters) - 1);
+		}
 		maildir_msg_setflags_notify(imap, seqno, fullname, newflagletters);
 	}
 	return 0;

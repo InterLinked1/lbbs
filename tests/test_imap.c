@@ -471,6 +471,13 @@ static int run(void)
 	SWRITE(client1, "a39 FETCH 1 (FLAGS)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "$label3");
 
+	/* Mark as seen, implicitly */
+	SWRITE(client1, "a40 FETCH 1 (BODY[])" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "a40 OK");
+
+	SWRITE(client1, "a41 FETCH 1 FLAGS" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "\\Seen $label3"); /* Previously existing keyword should still be here */
+
 	/* ACLs and shared mailboxes */
 	client2 = test_make_socket(143);
 	if (client2 < 0) {

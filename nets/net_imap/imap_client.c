@@ -455,11 +455,14 @@ int __imap_client_send_wait_response(struct imap_client *client, int fd, int ms,
 	char tagbuf[15];
 	int taglen;
 	va_list ap;
-	const char *tag = client->imap->tag;
+	const char *tag = "tag";
 
-	if (strlen_zero(tag)) {
+	if (!client->imap) {
+		bbs_warning("No active IMAP client?\n"); /* Shouldn't happen... */
+	} else if (strlen_zero(client->imap->tag)) {
 		bbs_warning("No active IMAP tag, using generic one\n");
-		tag = "tag";
+	} else {
+		tag = client->imap->tag;
 	}
 
 	va_start(ap, fmt);
