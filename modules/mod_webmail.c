@@ -1177,6 +1177,9 @@ static void append_header_single(json_t *restrict json, int *importance, int fet
 			if (!strcasecmp(hdrname, "From")) {
 				json_object_set_new(json, "from", json_string(hdrval));
 			} else if (!strcasecmp(hdrname, "To")) {
+				/* XXX Multiple recipients can be specified in (or split across) header lines,
+				 * and the frontend assumes that each recipient is in its own line, currently,
+				 * so recipients can be truncated for FETCHLIST (but won't be for regular FETCH) */
 				json_array_append_new(to, json_string(hdrval));
 			} else if (!strcasecmp(hdrname, "Cc")) {
 				json_array_append_new(cc, json_string(hdrval));
@@ -1589,7 +1592,7 @@ static void fetchlist_single(struct mailimap_msg_att *msg_att, json_t *arr)
 		if (item->att_type == MAILIMAP_MSG_ATT_ITEM_STATIC) {
 			struct mailimap_msg_att_body_section *msg_att_body_section;
 			struct mailimap_body *imap_body;
-			char headersbuf[2048];
+			char headersbuf[8192]; /* Should be large enough for most email headers */
 			switch (item->att_data.att_static->att_type) {
 				case MAILIMAP_MSG_ATT_UID:
 					json_object_set_new(msgitem, "uid", json_integer(item->att_data.att_static->att_data.att_uid));
@@ -1602,9 +1605,6 @@ static void fetchlist_single(struct mailimap_msg_att *msg_att, json_t *arr)
 					break;
 				case MAILIMAP_MSG_ATT_BODY_SECTION:
 					msg_att_body_section = item->att_data.att_static->att_data.att_body_section;
-#ifdef EXTRA_DEBUG
-					bbs_debug(5, "Matching headers: %s\n", msg_att_body_section->sec_body_part);
-#endif
 					/* Manual hacky workaround */
 					/* Seems calling mailmime_parse and fetch_mime_recurse here is pointless
 					 * since we still have to do append_header_meta on those fields anyways,
