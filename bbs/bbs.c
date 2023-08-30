@@ -629,7 +629,11 @@ static void __sigint_handler(int num)
 		 * accidentally kill the entire BBS when you just meant to exit the console.
 		 * Try to prevent this from happening by asking if that's what the sysop really wants. */
 		last_shutdown_attempt = now;
-		printf("\n%sReally shut down the BBS? Press ^C again within 10s to confirm.%s\n", COLOR(COLOR_RED), COLOR_RESET); /* XXX technically not safe to use in signal handler */
+		if (!strlen_zero(bbs_hostname())) {
+			printf("\n%sReally shut down the BBS on %s? Press ^C again within 10s to confirm.%s\n", COLOR(COLOR_RED), bbs_hostname(), COLOR_RESET); /* XXX technically not safe to use in signal handler */
+		} else {
+			printf("\n%sReally shut down the BBS? Press ^C again within 10s to confirm.%s\n", COLOR(COLOR_RED), COLOR_RESET); /* XXX technically not safe to use in signal handler */
+		}
 		return;
 	}
 	bbs_debug(2, "Got SIGINT, requesting shutdown\n"); /* XXX technically not safe to use in signal handler */
@@ -710,6 +714,7 @@ void bbs_request_module_unload(const char *name, int reload)
 
 int bbs_safe_sleep(int ms)
 {
+	bbs_soft_assert(ms > 0);
 	return bbs_poll(sig_alert_pipe[0], ms);
 }
 

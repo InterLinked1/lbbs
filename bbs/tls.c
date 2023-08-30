@@ -407,7 +407,12 @@ static void *ssl_io_thread(void *unused)
 				res--; /* Processed one event. Break the loop as soon as there are no more, to avoid traversing all like with select(). */
 			}
 			if (!inovertime && pfds[i].revents != POLLIN) { /* Something exceptional happened, probably something going away */
-				bbs_debug(5, "SSL at index %d / %d = %s\n", i, i/2, poll_revent_name(pfds[i].revents));
+				if (pfds[i].revents & POLLNVAL) {
+					bbs_debug(5, "Skipping SSL at index %d / %d = %s\n", i, i/2, poll_revent_name(pfds[i].revents));
+					continue; /* Don't try to read(), that would fail */
+				} else {
+					bbs_debug(5, "SSL at index %d / %d = %s\n", i, i/2, poll_revent_name(pfds[i].revents));
+				}
 			}
 			if (!inovertime && i == 0) {
 				bbs_alertpipe_read(ssl_alert_pipe);

@@ -387,6 +387,8 @@ int bbs_node_safe_sleep(struct bbs_node *node, int ms)
 	struct pollfd pfd;
 	int res;
 
+	bbs_soft_assert(ms > 0);
+
 	bbs_debug(6, "Sleeping on node %d for %d ms\n", node->id, ms);
 	/* We're polling the raw socket fd since that's closed if node is kicked (or at shutdown),
 	 * and that's all we care about here. We're not actually doing any I/O on this fd.

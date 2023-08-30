@@ -272,6 +272,11 @@ static int smtp_tarpit(struct smtp_session *smtp, int code, const char *message)
 	} else { /* All we can do here is sleep, no longer than 15 seconds. */
 		/* Exponential delay as # of failures increases: */
 		int sleepms = MIN(SEC_MS(1) * (1 << smtp->failures), SEC_MS(15));
+		if (sleepms <= 0) {
+			/* If the bit shift results in a negative, fix it */
+			sleepms = SEC_MS(15);
+		}
+		bbs_debug(3, "Tarpitting node %d for %d ms\n", smtp->node->id, sleepms);
 		if (bbs_node_safe_sleep(smtp->node, sleepms)) {
 			return -1;
 		}
