@@ -884,6 +884,9 @@ int _irc_relay_send_multiline(const char *channel, enum channel_user_modes modes
 			}
 			line = linebuf;
 		}
+		if (strlen_zero(line)) {
+			continue;
+		}
 		_irc_relay_send(channel, CHANNEL_USER_MODE_NONE, relayname, sender, hostsender, line, ircuser, 0, mod);
 	}
 	free(dup);
@@ -919,9 +922,11 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 
 	/*! \todo need to respond with appropriate numerics here */
 	if (strlen_zero(msg)) {
+		bbs_debug(5, "Ignoring empty message\n");
 		return -1;
 	}
 	if (strlen(msg) >= 510) { /* Include CR LF */
+		bbs_debug(5, "Message too long to relay to IRC: %lu bytes\n", strlen(msg));
 		return -1;
 	}
 
@@ -939,7 +944,7 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 			bbs_debug(7, "No such user: %s\n", channel);
 			return -1;
 		}
-		#if 0 /* No longer applies: irc_other_thread_writef handles serialization */
+#if 0 /* No longer applies: irc_other_thread_writef handles serialization */
 		/* notice is only true when the relay module is sending a message as part of a relay callback,
 		 * in which case user is already locked. Don't lock again, or we'll deadlock.
 		 * If !notice, this isn't the case. */
@@ -981,6 +986,7 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 				/* User is offline, nothing we can do... maybe we could send an email notification about a missed message,
 				 * but blindly do this would not be feasible. If the user missed 500 messages while not on IRC,
 				 * then that would be 500 emails... */
+				bbs_debug(5, "Message not deliverable, %s is not online\n", ircuser);
 				return -1;
 			}
 			/* We cannot deliver the message to the channel, but since it's a private relay,

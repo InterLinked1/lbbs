@@ -87,7 +87,7 @@ struct user {
 	unsigned int admin:1;	/* Guild admin */
 	int numroles;
 	const char *username;
-	const char *discriminator;
+	const char *discriminator; /*! \todo Discriminators are deprecated in Discord now, so a unique (not conflicting with regular IRC) name is needed that doesn't use these, e.g. Discord/<name> */
 	enum user_status status;
 	RWLIST_ENTRY(user) entry;
 	char data[];
@@ -1028,7 +1028,6 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 	struct discord_attachments *attachments;
 	char sendertmp[84];
 	char sender[84];
-	char subline[512];
 
 	author = event->author;
 	snprintf(sendertmp, sizeof(sendertmp), "%s#%s", author->username, author->discriminator);
@@ -1082,7 +1081,7 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 		}
 	}
 
-	irc_relay_send_multiline(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, NULL, subline, substitute_nicks, NULL);
+	irc_relay_send_multiline(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, NULL, event->content, substitute_nicks, NULL);
 
 	if (attachments && attachments->size) {
 		int i;
