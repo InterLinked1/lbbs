@@ -561,12 +561,6 @@ int bbs_dir_has_file_prefix(const char *path, const char *prefix)
 	}
 
 	closedir(dir);
-
-	if (res < 0 && errno) {
-		bbs_error("Error while reading directories (%d) - %s: %s\n", res, path, strerror(errno));
-		res = -1;
-	}
-
 	return res;
 }
 
@@ -598,12 +592,6 @@ int bbs_dir_has_subdirs(const char *path)
 	}
 
 	closedir(dir);
-
-	if (res < 0 && errno) {
-		bbs_error("Error while reading directories (%d) - %s: %s\n", res, path, strerror(errno));
-		res = -1;
-	}
-
 	return res;
 }
 
@@ -682,6 +670,7 @@ static int __bbs_dir_size(const char *path, long *size, int max_depth)
 				/* Don't use alloca or allocate on the stack, because we're in a loop */
 				full_path = malloc(strlen(path) + strlen(entry->d_name) + 2);
 				if (!full_path) {
+					closedir(dir);
 					return -1;
 				}
 				sprintf(full_path, "%s/%s", isroot ? "" : path, entry->d_name); /* Safe */
@@ -829,7 +818,9 @@ FILE *bbs_mkftemp(char *template, mode_t mode)
 	int pfd;
 
 	pfd = mkstemp(template); /* template will get updated to contain the actual filename */
-	chmod(template, mode);
+	if (chmod(template, mode)) {
+		bbs_warning("Failed to set permissions for %s: %s\n", template, strerror(errno));
+	}
 
 	if (pfd == -1) {
 		/* It's not specified if mkstemp sets errno, but check it anyways */

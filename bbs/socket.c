@@ -300,11 +300,12 @@ int bbs_resolve_hostname(const char *hostname, char *buf, size_t len)
 		if (ai->ai_family == AF_INET) {
 			saddr_in = (struct sockaddr_in *) ai->ai_addr;
 			inet_ntop(ai->ai_family, &saddr_in->sin_addr, buf, (socklen_t) len); /* Print IPv4*/
+			break; /* Use the 1st one that works */
 		} else if (ai->ai_family == AF_INET6) {
 			saddr_in6 = (struct sockaddr_in6 *) ai->ai_addr;
 			inet_ntop(ai->ai_family, &saddr_in6->sin6_addr, buf, (socklen_t) len); /* Print IPv6 */
+			break; /* Use the 1st one that works */
 		}
-		break; /* Use the 1st one that works */
 	}
 
 	freeaddrinfo(res);
@@ -357,7 +358,12 @@ int bbs_tcp_connect(const char *hostname, int port)
 		 * Using SO_SNDTIMEO works on Linux and is easier than doing bbs_unblock_fd before and bbs_block_fd after. */
 		timeout.tv_sec = 4; /* Wait up to 4 seconds to connect */
 		timeout.tv_usec = 0;
-		setsockopt(sfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+		if (setsockopt(sfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout))) {
+			bbs_error("setsockopt failed: %s\n", strerror(errno));
+			close(sfd);
+			sfd = -1;
+			continue;
+		}
 		if (connect(sfd, ai->ai_addr, ai->ai_addrlen)) {
 			bbs_error("connect: %s\n", strerror(errno));
 			close(sfd);

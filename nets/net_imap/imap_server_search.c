@@ -2079,6 +2079,7 @@ static int thread_references_step1(struct thread_messageid *tmsgids, struct thre
 #endif
 				childmsg = push_threadmsgid(tmsgids, ref, 1);
 				if (ALLOC_FAILURE(childmsg)) {
+					free(refdup);
 					return -1;
 				}
 			}
@@ -2222,7 +2223,6 @@ static int thread_references_step3(struct thread_messageid *msgids, unsigned int
 #endif
 
 	/* Prune dummy messages */
-	t = msgids;
 	t = msgids->llnext; /* Skip the dummy root */
 	while (t) {
 		struct thread_messageid *next = t->llnext; /* Since we could free t within the loop */

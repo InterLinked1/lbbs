@@ -1565,6 +1565,7 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 	total = stringlist_size(&smtp->recipients);
 	if (total < 1) {
 		bbs_warning("Message has no recipients?\n");
+		close(srcfd);
 		return -1;
 	}
 
@@ -2220,6 +2221,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 		ssize_t res = bbs_readline(smtp->rfd, rldata, "\r\n", MIN_MS(3)); /* RFC 5321 4.5.3.2.5 */
 		if (res < 0) {
 			bbs_delete_file(template);
+			fclose(fp);
 			return -1;
 		}
 		s = rldata->buf;

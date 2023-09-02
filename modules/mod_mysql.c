@@ -594,9 +594,11 @@ int sql_fetch_columns(int bind_ints[], long long bind_longs[], char *bind_string
 			break;
 		case 'b': /* Blob */
 			bbs_warning("Blobs are currently unsupported\n");
+			va_end(ap);
 			return -1;
 		default:
 			bbs_warning("Unknown SQL format type specifier: %c\n", *cur);
+			va_end(ap);
 			return -1;
 		}
 	}

@@ -570,6 +570,7 @@ static int on_xover(const char *dir_name, const char *filename, struct nntp_sess
 	find_header(fp, "From:", &author, authorbuf, sizeof(authorbuf));
 	find_header(fp, "Date:", &date, datebuf, sizeof(datebuf));
 
+	fclose(fp);
 	if (!stat(fullpath, &st)) {
 		snprintf(bytecountbuf, sizeof(bytecountbuf), "%ld", st.st_size);
 	}

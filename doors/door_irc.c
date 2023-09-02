@@ -190,6 +190,7 @@ static int load_config(void)
 		ircl = irc_client_new(hostname, port, username, password);
 		if (!ircl) {
 			free(client);
+			free_if(msgscript);
 			continue;
 		}
 		irc_client_autojoin(ircl, autojoin);
@@ -306,6 +307,7 @@ static struct participant *join_client(struct bbs_node *node, const char *name)
 	}
 	if (!client) {
 		bbs_error("IRC client %s doesn't exist\n", name);
+		RWLIST_UNLOCK(&clients);
 		return NULL;
 	}
 	/* Okay, we have the client. Add the newcomer to it. */

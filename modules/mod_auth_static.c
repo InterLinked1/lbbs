@@ -120,6 +120,7 @@ static struct bbs_user **get_users(void)
 	RWLIST_RDLOCK(&users);
 	userlist = malloc((size_t) (RWLIST_SIZE(&users, u, entry) + 1) * sizeof(*user)); /* The list will be NULL terminated, so add 1 */
 	if (ALLOC_FAILURE(userlist)) {
+		RWLIST_UNLOCK(&users);
 		return NULL;
 	}
 	/* Keep list locked here so count can't change on us */

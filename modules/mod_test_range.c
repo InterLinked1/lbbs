@@ -67,6 +67,7 @@ static int test_range_generation(void)
 	return 0;
 
 cleanup:
+	free_if(ranges);
 	return -1;
 }
 

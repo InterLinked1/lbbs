@@ -352,7 +352,7 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 	off_t send_offset = offset;
 	int caps = 0, maxsendsize = 0;
 	char sendercopy[64];
-	char *user, *domain;
+	char *user, *domain, *saslstr = NULL;
 
 	bbs_assert(datafd != -1);
 	bbs_assert(writelen > 0);
@@ -483,7 +483,7 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 				}
 			}
 		} else if (caps & SMTP_CAPABILITY_AUTH_LOGIN) {
-			char *saslstr = bbs_sasl_encode(username, username, password);
+			saslstr = bbs_sasl_encode(username, username, password);
 			if (!saslstr) {
 				res = -1;
 				goto cleanup;
@@ -554,6 +554,7 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 	res = 0;
 
 cleanup:
+	free_if(saslstr);
 	if (res > 0) {
 		smtp_client_send(&client, "QUIT\r\n");
 	}

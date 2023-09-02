@@ -778,6 +778,9 @@ unsigned long mailbox_quota(struct mailbox *mbox)
 		fclose(fp);
 	} else {
 		mbox->quota = (unsigned int) maxquota;
+		if (fp) {
+			fclose(fp);
+		}
 	}
 	return mbox->quota;
 }
@@ -1221,6 +1224,7 @@ static unsigned long __maildir_modseq(struct mailbox *mbox, const char *director
 	if (res != 1) {
 		bbs_error("Error reading HIGHESTMODSEQ from %s\n", modseqfile);
 		/* No sane thing we can do here either */
+		fclose(fp);
 		return 0;
 	}
 

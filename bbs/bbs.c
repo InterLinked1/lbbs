@@ -740,6 +740,7 @@ static void *monitor_sig_flags(void *unused)
 			break;
 		} else {
 			/* Shouldn't ever happen... */
+			pthread_mutex_unlock(&sig_lock);
 			bbs_warning("Received unactionable activity on sig alert pipe?\n");
 		}
 	}
@@ -776,6 +777,7 @@ static long bbs_is_running(void)
 	}
 	if (fscanf(f, "%ld", &file_pid) == EOF) {
 		bbs_debug(5, "PID file %s does not contain a PID\n", BBS_PID_FILE);
+		fclose(f);
 		return 0;
 	}
 	fclose(f);

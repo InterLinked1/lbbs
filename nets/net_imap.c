@@ -2040,7 +2040,7 @@ static int handle_move(struct imap_session *imap, const char *sequences, const c
 	unsigned int *olduids = NULL, *newuids = NULL, *expunged = NULL, *expungedseqs = NULL;
 	int lengths = 0, allocsizes = 0;
 	int exp_lengths = 0, exp_allocsizes = 0;
-	unsigned int uidvalidity, uidnext, uidres;
+	unsigned int uidvalidity = 0, uidnext, uidres;
 	char *olduidstr = NULL, *newuidstr = NULL;
 	int destacl;
 	int error = 0;
@@ -2062,6 +2062,7 @@ static int handle_move(struct imap_session *imap, const char *sequences, const c
 	files = scandir(imap->curdir, &entries, NULL, imap_uidsort);
 	if (files < 0) {
 		bbs_error("scandir(%s) failed: %s\n", imap->curdir, strerror(errno));
+		mailbox_unlock(imap->mbox);
 		return -1;
 	}
 	while (fno < files && (entry = entries[fno++])) {
@@ -2770,6 +2771,7 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 			}
 			if (items_received < 3) {
 				bbs_warning("Incomplete download, only got %d/3 items\n", items_received);
+				close_if(destfd);
 				goto cleanup;
 			}
 			/* Finish processing */

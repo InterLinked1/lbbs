@@ -135,7 +135,10 @@ static int curl_common_setup(CURL **curl_ptr, const char *url)
 	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1);
 	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20); /* Max 20 seconds */
 
-	curl_easy_setopt(curl, CURLOPT_URL, url);
+	if (curl_easy_setopt(curl, CURLOPT_URL, url)) {
+		bbs_warning("Failed to set cURL option CURLOPT_URL\n");
+		return -1;
+	}
 	return 0;
 }
 
@@ -187,7 +190,10 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 	if (fp) {
 		/* Write response body to a file */
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, NULL);
-		curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
+		if (curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp)) {
+			bbs_warning("Failed to set cURL opt CURLOPT_WRITEDATA\n");
+			return -1;
+		}
 	} else {
 		/* Write response body to an allocated string */
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
@@ -304,7 +310,10 @@ int bbs_curl_post(struct bbs_curl *c)
 	if (curl_common_setup(&curl, c->url)) {
 		return -1;
 	}
-	curl_easy_setopt(curl, CURLOPT_POST, 1);
+	if (curl_easy_setopt(curl, CURLOPT_POST, 1)) {
+		bbs_warning("Failed to set cURL option CURLOPT_POST\n");
+		return -1;
+	}
 	if (c->postfields) {
 		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, c->postfields);
 	} else {

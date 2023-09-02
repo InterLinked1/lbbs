@@ -273,7 +273,7 @@ static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp,
 			firstword = strsep(&subjectcopy, " ");
 			/* Ignore Re:, Fwd:, Fw:, and such prefixes. In fact, just ignore all prefixes. */
 			tmp = strchr(firstword, ':');
-			if (tmp && !++tmp) { /* Ends in : */
+			if (tmp && !*++tmp) { /* Ends in : */
 				has_prefix = 1;
 			} else if (!strcmp(l->tag, firstword)) {
 				has_prefix = 1;

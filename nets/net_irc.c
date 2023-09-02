@@ -3324,6 +3324,7 @@ static void irc_handler(struct bbs_node *node, int secure)
 		ssl = ssl_node_new_accept(node, &rfd, &wfd);
 		if (!ssl) {
 			bbs_error("Failed to create SSL\n");
+			free(user);
 			return;
 		}
 	} else {

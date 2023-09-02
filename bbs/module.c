@@ -627,7 +627,7 @@ static int unload_dependencies(struct bbs_module *mod, struct stringlist *restri
 		int usecount;
 		/* The module MAY have already been unloaded, in which case m is no longer valid memory.
 		 * Check to see if it's in the list. */
-		if (stringlist_contains(removed, r->name)) {
+		if (removed && stringlist_contains(removed, r->name)) {
 			free(r);
 			continue;
 		}

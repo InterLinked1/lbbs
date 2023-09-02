@@ -606,6 +606,7 @@ static int on_message(struct slack_event *event, const char *channel, const char
 		pthread_mutex_lock(&u->lock);
 		if (!strcmp(u->lastmsg, text)) {
 			pthread_mutex_unlock(&cp->lock);
+			pthread_mutex_unlock(&u->lock);
 			bbs_debug(4, "Not echoing our own direct message post...\n");
 			return 0;
 		}
@@ -967,7 +968,9 @@ static int start_clients(void)
 	struct slack_relay *relay;
 	RWLIST_RDLOCK(&relays);
 	RWLIST_TRAVERSE(&relays, relay, entry) {
-		bbs_pthread_create(&relay->thread, NULL, slack_relay, relay);
+		if (bbs_pthread_create(&relay->thread, NULL, slack_relay, relay)) {
+			bbs_warning("Failed to start Slack relay %s\n", relay->name);
+		}
 	}
 	RWLIST_UNLOCK(&relays);
 	return 0;

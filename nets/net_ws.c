@@ -872,7 +872,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 
 		res = poll(pfds, numfds, pollms);
 		if (res < 0) {
-			if (errno = EINTR) {
+			if (errno == EINTR) {
 				continue;
 			}
 			bbs_warning("poll failed: %s\n", strerror(errno));

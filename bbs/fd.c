@@ -222,9 +222,9 @@ int __fdleak_socket(int domain, int type, int protocol, const char *file, int li
 	}
 
 	if (sproto) {
-		STORE_COMMON(res, "socket", "%s,%s,\"%s\"", sdomain, stype, sproto);
+		STORE_COMMON_HELPER(res, "socket", "%s,%s,\"%s\"", sdomain, stype, sproto);
 	} else {
-		STORE_COMMON(res, "socket", "%s,%s,\"%d\"", sdomain, stype, protocol);
+		STORE_COMMON_HELPER(res, "socket", "%s,%s,\"%d\"", sdomain, stype, protocol);
 	}
 	return res;
 }

@@ -1272,9 +1272,9 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 	char buf[PATH_MAX]; /* for realpath */
 	sftp_session sftp;
 	int res;
-	FILE *fp;
+	FILE *fp = NULL;
 	int fd;
-	DIR *dir;
+	DIR *dir = NULL;
 	struct sftp_info *info;
 	ssh_string handle;
 	struct stat st;
@@ -1380,7 +1380,13 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 					sftp_reply_status(msg, SSH_FX_INVALID_HANDLE, "Invalid handle");
 				} else {
 					sftp_handle_remove(msg->sftp, info);
-					info->type == TYPE_DIR ? closedir(info->dir) : fclose(info->file);
+					if (info->type == TYPE_DIR) {
+						closedir(info->dir);
+						dir = NULL;
+					} else {
+						fclose(info->file);
+						fp = NULL;
+					}
 					free_if(info->name);
 					free_if(info->realpath);
 					free(info);
@@ -1450,9 +1456,13 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 		sftp_client_message_free(msg);
 	}
 
-	/*! \todo BUGBUG FIXME XXX Need to implicitly close anything that's open to prevent resource leaks (don't trust the client to clean up) */
-
 cleanup:
+	if (fp) {
+		fclose(fp);
+	}
+	if (dir) {
+		closedir(dir);
+	}
 	sftp_server_free(sftp);
 	return SSH_ERROR;
 }

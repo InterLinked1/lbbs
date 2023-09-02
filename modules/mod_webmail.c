@@ -1236,6 +1236,10 @@ static void append_header_meta(json_t *restrict json, char *headers, int fetchli
 
 		if (isspace(header[0])) {
 			/* Continuation of previous header */
+			if (!prevval) {
+				bbs_warning("No previous header to continue?\n");
+				continue;
+			}
 			dyn_str_append(&dynstr, prevval, strlen(prevval));
 			prevval = header;
 		} else {
@@ -2266,7 +2270,7 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 							case MAILIMF_FIELD_SUBJECT:
 								subject = f->fld_data.fld_subject;
 								decoded = subject ? mime_header_decode(subject->sbj_value) : NULL;
-								name = decoded ? decoded : subject->sbj_value;
+								name = decoded ? decoded : subject ? subject->sbj_value : NULL;
 								bbs_debug(5, "Subject: %s\n", name);
 								json_set_header(root, "subject", json_string(name));
 								free_if(decoded);

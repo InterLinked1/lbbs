@@ -388,6 +388,7 @@ static int my_getheader(sieve2_context_t *s, void *varg)
 	fp = fopen(sieve->mproc->datafile, "r");
 	if (!fp) {
 		bbs_error("Failed to open %s: %s\n", sieve->mproc->datafile, strerror(errno));
+		free(headers);
 		return SIEVE2_ERROR_FAIL;
 	}
 

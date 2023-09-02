@@ -254,6 +254,7 @@ static int wait_response(struct bbs_node *node, int fd, const char *requsername,
 	numericclient = clientname;
 	if (pipe(nickpipe)) {
 		bbs_error("pipe failed: %s\n", strerror(errno));
+		pthread_mutex_unlock(&nicklock);
 		return -1;
 	}
 	switch (numeric) {
@@ -860,16 +861,14 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 			if (*msg == '<') {
 				safe_strncpy(msgbuf, msg, sizeof(msgbuf));
 				tmp = strchr(msgbuf, '>');
-				if (msg) {
-					*tmp++ = '\0';
-					msg = tmp;
-					sendnick = msgbuf + 1;
-					/* Okay, now the message is just the message, and we have extracted the real sender name */
-					snprintf(nativenick, sizeof(nativenick), "%s/%s", clientname,  sendnick);
+				*tmp++ = '\0';
+				msg = tmp;
+				sendnick = msgbuf + 1;
+				/* Okay, now the message is just the message, and we have extracted the real sender name */
+				snprintf(nativenick, sizeof(nativenick), "%s/%s", clientname,  sendnick);
 #pragma GCC diagnostic pop /* -Wformat-truncation */
-					sendnick = nativenick;
-					/* Now we have a unique nick that doesn't conflict with this same nick on our local IRC server */
-				}
+				sendnick = nativenick;
+				/* Now we have a unique nick that doesn't conflict with this same nick on our local IRC server */
 			}
 			irc_relay_send(cp->channel1, CHANNEL_USER_MODE_NONE, S_OR(cp->client2, clientname), sendnick, NULL, msg, cp->ircuser);
 		}

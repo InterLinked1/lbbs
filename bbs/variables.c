@@ -228,6 +228,7 @@ int bbs_node_var_set(struct bbs_node *node, const char *key, const char *value)
 		if (!node->vars) {
 			vars = calloc(1, sizeof(*vars));
 			if (ALLOC_FAILURE(vars)) {
+				bbs_node_unlock(node);
 				return -1;
 			}
 			bbs_debug(5, "Allocated variable list for node %d\n", node->id);

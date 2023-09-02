@@ -143,6 +143,7 @@ int uintlist_append2(unsigned int **a, unsigned int **b, int *lengths, int *allo
 			newb = realloc(*b, (size_t) newallocsize * sizeof(unsigned int));
 			if (ALLOC_FAILURE(newb)) {
 				/* This is tricky. We expanded a but failed to expand b. Keep the smaller size for our records. */
+				free(newa);
 				return -1;
 			}
 			*allocsizes = newallocsize;
