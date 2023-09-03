@@ -131,15 +131,27 @@ static int curl_common_setup(CURL **curl_ptr, const char *url)
 	/* see https://curl.se/libcurl/c/ for documentation */
 
 	/* curl_easy_setopt: https://curl.se/libcurl/c/curl_easy_setopt.html */
-	curl_easy_setopt(curl, CURLOPT_USERAGENT, BBS_CURL_USER_AGENT);
-	curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1);
-	curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20); /* Max 20 seconds */
-
+	if (curl_easy_setopt(curl, CURLOPT_USERAGENT, BBS_CURL_USER_AGENT)) {
+		bbs_warning("Failed to set cURL user agent\n");
+		goto cleanup;
+	}
+	if (curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1)) {
+		bbs_warning("Failed to set cURL option NOSIGNAL\n");
+		goto cleanup;
+	}
+	if (curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20)) { /* Max 20 seconds */
+		bbs_warning("Failed to set cURL timeout\n");
+		goto cleanup;
+	}
 	if (curl_easy_setopt(curl, CURLOPT_URL, url)) {
 		bbs_warning("Failed to set cURL option CURLOPT_URL\n");
-		return -1;
+		goto cleanup;
 	}
 	return 0;
+
+cleanup:
+	curl_easy_cleanup(curl);
+	return -1;
 }
 
 #ifdef DEBUG_CURL
@@ -197,7 +209,9 @@ static int curl_common_run(CURL *curl, struct bbs_curl *c, FILE *fp)
 	} else {
 		/* Write response body to an allocated string */
 		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-		curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+		if (curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response)) {
+			bbs_warning("Failed to set cURL WRITEDATA\n");
+		}
 	}
 	if (c->cookies) {
 		curl_easy_setopt(curl, CURLOPT_COOKIE, c->cookies);
@@ -312,10 +326,11 @@ int bbs_curl_post(struct bbs_curl *c)
 	}
 	if (curl_easy_setopt(curl, CURLOPT_POST, 1)) {
 		bbs_warning("Failed to set cURL option CURLOPT_POST\n");
-		return -1;
 	}
 	if (c->postfields) {
-		curl_easy_setopt(curl, CURLOPT_POSTFIELDS, c->postfields);
+		if (curl_easy_setopt(curl, CURLOPT_POSTFIELDS, c->postfields)) {
+			bbs_warning("Failed to set POST fields\n");
+		}
 	} else {
 		bbs_debug(5, "No post fields in CURL POST... interesting...\n"); /* Not necessarily wrong, but strange... */
 	}

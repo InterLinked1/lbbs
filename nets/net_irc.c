@@ -196,13 +196,13 @@ struct irc_channel {
 	char *password;						/* Channel password */
 	char *topic;						/* Channel topic */
 	char *topicsetby;					/* Ident of who set the channel topic */
-	unsigned int topicsettime;			/* Epoch time of when the topic was last set */
+	time_t topicsettime;				/* Epoch time of when the topic was last set */
 	struct channel_members members;		/* List of users currently in this channel */
 	enum channel_modes modes;			/* Channel modes (non-user specific) */
 	unsigned int limit;					/* Limit on number of users in channel (only enforced on joins) */
 	unsigned int throttleusers;			/* Users allowed to join per interval */
 	unsigned int throttleinterval;		/* Throttle interval duration (s) */
-	unsigned int throttlebegin;			/* When last throttle interval began */
+	time_t throttlebegin;				/* When last throttle interval began */
 	unsigned int throttlecount;			/* # of users that joined in the last throttle interval */
 	struct stringlist invited;			/* String list of invited nicks */
 	FILE *fp;							/* Optional log file to which to log all channel activity */
@@ -818,10 +818,10 @@ static void channel_print_topic(struct irc_user *user, struct irc_channel *chann
 	if (channel->topic) {
 		if (!user) { /* Broadcast (topic change) */
 			send_numeric_broadcast(channel, NULL, 332, "%s :%s\r\n", channel->name, S_IF(channel->topic));
-			send_numeric_broadcast(channel, user, 333, "%s %s %d\r\n", channel->name, channel->topicsetby, channel->topicsettime);
+			send_numeric_broadcast(channel, user, 333, "%s %s %" TIME_T_FMT "\r\n", channel->name, channel->topicsetby, channel->topicsettime);
 		} else {
 			send_numeric2(user, 332, "%s :%s\r\n", channel->name, S_IF(channel->topic));
-			send_numeric2(user, 333, "%s %s %d\r\n", channel->name, channel->topicsetby, channel->topicsettime);
+			send_numeric2(user, 333, "%s %s %" TIME_T_FMT "\r\n", channel->name, channel->topicsetby, channel->topicsettime);
 		}
 	} else {
 		if (!user) {
@@ -846,7 +846,7 @@ int irc_relay_set_topic(const char *channel, const char *topic)
 	REPLACE(c->topic, topic);
 	snprintf(buf, sizeof(buf),IDENT_PREFIX_FMT, IDENT_PREFIX_ARGS(&user_messageserv));
 	REPLACE(c->topicsetby, buf);
-	c->topicsettime = (unsigned int) time(NULL);
+	c->topicsettime = time(NULL);
 	channel_print_topic(NULL, c);
 	chanserv_broadcast("TOPIC", c->name, (&user_messageserv)->nickname, topic);
 	return 0;
@@ -861,12 +861,13 @@ int _irc_relay_send_multiline(const char *channel, enum channel_user_modes modes
 	/*! \todo What if message lines are > 512 characters? */
 
 	if (!strchr(msg, '\n')) { /* Avoid unnecessarily allocating memory if we don't have to. */
-		line = msg;
 		if (transform) {
 			if (transform(msg, linebuf, sizeof(linebuf)) < 0) {
 				return -1;
 			}
 			line = linebuf;
+		} else {
+			line = msg;
 		}
 		return _irc_relay_send(channel, modes, relayname, sender, hostsender, line, ircuser, 0, mod);
 	}
@@ -1137,7 +1138,7 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, char
 		return -1;
 	}
 
-	if (channel->modes & CHANNEL_MODE_MODERATED && !authorized_atleast(m, CHANNEL_USER_MODE_VOICE)) {
+	if (channel->modes & CHANNEL_MODE_MODERATED && (!m || !authorized_atleast(m, CHANNEL_USER_MODE_VOICE))) {
 		if (channel->modes & CHANNEL_MODE_REDUCED_MODERATION) {
 			minmode = CHANNEL_USER_MODE_HALFOP;
 		} else {
@@ -1225,10 +1226,6 @@ static int print_member_mode(struct irc_member *member, struct irc_channel *chan
 static int print_user_mode(struct irc_user *user)
 {
 	char usermode[16];
-	if (!user) {
-		send_numeric2(user, 401, "%s :No such nick/channel\r\n", ""); /* Whoops */
-		return -1;
-	}
 	get_user_modes(usermode, sizeof(usermode), user);
 	send_reply(user, ":%s MODE %s :%s\r\n", user->nickname, user->nickname, usermode);
 	return 0;
@@ -1543,7 +1540,7 @@ static void handle_topic(struct irc_user *user, char *s)
 			REPLACE(channel->topic, s);
 			snprintf(buf, sizeof(buf),IDENT_PREFIX_FMT, IDENT_PREFIX_ARGS(user));
 			REPLACE(channel->topicsetby, buf);
-			channel->topicsettime = (unsigned int) time(NULL);
+			channel->topicsettime = time(NULL);
 			channel_print_topic(NULL, channel);
 			chanserv_broadcast("TOPIC", channel->name, user->nickname, s);
 		}
@@ -1592,7 +1589,7 @@ static void handle_invite(struct irc_user *user, char *s)
 	}
 
 	RWLIST_WRLOCK(&channel->invited);
-	if (!stringlist_contains(&channel->invited, nick)) {
+	if (!stringlist_contains_locked(&channel->invited, nick)) {
 		stringlist_push(&channel->invited, nick); /* Add nick to invite list so we can keep track of the invite */
 	}
 	RWLIST_UNLOCK(&channel->invited);
@@ -1655,7 +1652,10 @@ static void dump_who(struct irc_user *user, struct irc_user *whouser, struct irc
 	send_numeric2(user, 352, "%s %s %s %s %s %s :%d %s\r\n", chan, whouser->username, whouser->hostname, irc_hostname, whouser->nickname, userflags, hopcount, whouser->realname);
 }
 
-/*! \brief Whether two users share any IRC channels in common */
+/*!
+ * \brief Whether two users share any IRC channels in common
+ * \note channel->members must be RDLOCK'd when calling
+ */
 static int channels_in_common(struct irc_user *u1, struct irc_user *u2)
 {
 	/* XXX This is not the most efficient algorithm. It's just the easiest implementation that works now.
@@ -1672,7 +1672,7 @@ static int channels_in_common(struct irc_user *u1, struct irc_user *u2)
 	RWLIST_RDLOCK(&channels);
 	RWLIST_TRAVERSE(&channels, channel, entry) {
 		struct irc_member *m1 = NULL, *m2 = NULL, *m;
-		RWLIST_RDLOCK(&channel->members);
+		/* channel->members is already RDLOCK'd */
 		RWLIST_TRAVERSE(&channel->members, m, entry) {
 			if (m->user == u1) {
 				m1 = m;
@@ -1680,7 +1680,6 @@ static int channels_in_common(struct irc_user *u1, struct irc_user *u2)
 				m2 = m;
 			}
 		}
-		RWLIST_UNLOCK(&channel->members);
 		if (m1 && m2) {
 			/* Both u1 and u2 are members of this channel. */
 			break;
@@ -1932,7 +1931,7 @@ static void handle_list(struct irc_user *user, char *s)
 	struct irc_channel *channel;
 	unsigned int minmembers = 0, maxmembers = 0;
 	unsigned int mintopicage = 0, maxtopicage = 0;
-	unsigned int now = (unsigned int) time(NULL);
+	time_t now = time(NULL);
 	char *elistcond, *conds;
 
 	conds = s;
@@ -1950,10 +1949,10 @@ static void handle_list(struct irc_user *user, char *s)
 				break;
 			case 'T':
 				elistcond++;
-				if (*elistcond == '<' && !strlen_zero(elistcond + 1)) {
-					maxtopicage = (unsigned int) atoi(elistcond + 1);
-				} else if (*elistcond == '>' && !strlen_zero(elistcond + 1)) {
-					mintopicage = (unsigned int) atoi(elistcond + 1);
+				if (*elistcond == '<' && *++elistcond) {
+					maxtopicage = (unsigned int) atoi(elistcond);
+				} else if (*elistcond == '>' && *++elistcond) {
+					mintopicage = (unsigned int) atoi(elistcond);
 				}
 				break;
 			default:
@@ -2203,6 +2202,7 @@ static void handle_oper(struct irc_user *user, char *s)
 					int res;
 					struct bbs_user *u = bbs_user_request();
 					if (!u) {
+						RWLIST_UNLOCK(&operators);
 						return; /* Not much we can do... */
 					}
 					res = bbs_user_authenticate(u, name, pw);
@@ -2364,7 +2364,7 @@ static int join_channel(struct irc_user *user, char *name)
 			return -1;
 		}
 		if (channel->modes & CHANNEL_MODE_THROTTLED && channel->throttleusers > 0 && channel->throttleinterval > 0) {
-			unsigned int now = (unsigned int) time(NULL);
+			time_t now = time(NULL);
 
 			pthread_mutex_lock(&channel->lock);
 			if (channel->throttlebegin < now - channel->throttleinterval) {
@@ -2939,7 +2939,7 @@ static void handle_client(struct irc_user *user)
 				if (user->password) {
 					bbs_memzero(user->password, strlen(user->password)); /* Destroy password before freeing it */
 				}
-				free(user->password);
+				FREE(user->password);
 				if (authres) {
 					send_numeric(user, 464, "Password incorrect\r\n");
 				} else {

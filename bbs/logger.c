@@ -137,7 +137,7 @@ static int fd_logging[1024]; /* Array for constant time access instead of a link
 
 int bbs_set_fd_logging(int fd, int enabled)
 {
-	if (!IN_BOUNDS(fd, 0, (int) ARRAY_LEN(fd_logging))) {
+	if (!ARRAY_IN_BOUNDS(fd, fd_logging)) {
 		bbs_error("Cannot set logging for fd %d: out of bounds\n", fd);
 		return -1;
 	}

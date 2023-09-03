@@ -219,7 +219,7 @@ static int __chat_send(struct channel *channel, struct participant *sender, cons
 #endif
 
 	/* Calculate the current time once, for everyone, using the server's time (sorry if participants are in different time zones) */
-	now = (int) time(NULL);
+	now = time(NULL);
 	localtime_r(&now, &sendtime);
 	/* So, %P is lowercase and %p is uppercase. Just consult your local strftime(3) man page if you don't believe me. Good grief. */
 	strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime); /* mm-dd hh:mm:ssPP + space at end (before message) = 17 chars */

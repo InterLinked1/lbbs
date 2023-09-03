@@ -263,6 +263,8 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
  */
 #define IN_BOUNDS(x, min, max) (x >= min && x <= max)
 
+#define ARRAY_IN_BOUNDS(x, arr) (x >= 0 && x <= (int) (ARRAY_LEN(arr) - 1))
+
 #define SIZE_MB(bytes) (bytes * 1024 * 1024)
 #define SIZE_KB(bytes) (bytes * 1024)
 

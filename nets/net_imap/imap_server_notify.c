@@ -507,6 +507,7 @@ int handle_notify(struct imap_session *imap, char *s)
 		int res;
 		res = add_watch(imap, notify, ws);
 		if (res < 0) {
+			RWLIST_UNLOCK(&notify->watchlist);
 			return 0;
 		}
 		added += res;

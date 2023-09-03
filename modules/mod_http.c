@@ -721,7 +721,9 @@ static int process_headers(struct http_session *http)
 
 				/* Always set, even if incorrect password, so we know that we attempted Basic Auth */
 				REPLACE(http->req->username, username);
-				bbs_authenticate(http->node, username, password);
+				if (bbs_authenticate(http->node, username, password)) {
+					bbs_auth("Basic authentication attempt failed for %s\n", username);
+				}
 				/* Destroy the password before freeing it */
 				bbs_memzero(decoded, (size_t) outlen);
 				free(decoded);
@@ -1981,7 +1983,7 @@ static int mime_type(const char *filename, char *buf, size_t len)
 	if (!strcmp(buf, "text/plain") && !strcmp(ext, "html")) {
 		safe_strncpy(buf, "text/html", len);
 	} else if (!mime) {
-		safe_strncpy(buf, DEFAULT_MIME_TYPE, sizeof(buf));
+		safe_strncpy(buf, DEFAULT_MIME_TYPE, len);
 	}
 
 	return 0;
@@ -1997,6 +1999,7 @@ static long int range_parse(char *range, long int size, long int *a, long int *b
 		/* A manual strsep, basically */
 		start = end;
 		end = strrchr(start, '-'); /* Will never return NULL */
+		bbs_assert_exists(end);
 		contains_dash = end != range ? 1 : 0;
 		if (contains_dash) {
 			*end++ = '\0';
@@ -2169,7 +2172,7 @@ enum http_response_code http_static(struct http_session *http, const char *filen
 	/* Logic here is basically that in __http_write, but as a wrapper around sendfile instead of bbs_write */
 	if (http->res->sentheaders) {
 		bbs_warning("Headers have already been sent?\n");
-		close(fd);
+		close_if(fd);
 		return HTTP_INTERNAL_SERVER_ERROR;
 	} else {
 		http_send_headers(http);
@@ -2353,7 +2356,7 @@ static int cgi_run(struct http_session *http, const char *filename, char *const 
 				bbs_warning("CGI script %s possibly stalled?\n", filename);
 				goto cleanup;
 			}
-			bytes = (int) read(stdout[0], buf, sizeof(buf));
+			bytes = read(stdout[0], buf, sizeof(buf));
 			if (bytes < 0) {
 				bbs_error("read failed: %s\n", strerror(errno));
 			} else if (bytes == 0) {
@@ -2734,7 +2737,7 @@ static int load_module(void)
 static int unload_module(void)
 {
 	/* Remove any lingering sessions */
-	RWLIST_REMOVE_ALL(&sessions, entry, session_free);
+	RWLIST_WRLOCK_REMOVE_ALL(&sessions, entry, session_free);
 	return 0;
 }
 

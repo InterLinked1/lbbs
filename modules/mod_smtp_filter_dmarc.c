@@ -55,7 +55,7 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 	char dmarc_domain[256];
 	char dmarc_result[sizeof(dmarc_domain) + 128];
 	const char *result = NULL;
-	int p, sp;
+	int p = 0, sp = 0;
 
 	is_ipv6 = !bbs_hostname_is_ipv4(f->node->ip); /* If it's not IPv4, must be IPv6? */
 	domain = bbs_strcnext(f->from, '@');

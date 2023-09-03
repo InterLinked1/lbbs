@@ -419,10 +419,10 @@ static int valid_temp_token(const char *username, const char *password)
 static int login_is_cached(struct bbs_node *node, const char *username, const char *hash)
 {
 	struct cached_login *l;
-	int now, cutoff;
+	time_t now, cutoff;
 	int remaining = 0;
 
-	now = (int) time(NULL);
+	now = time(NULL);
 	cutoff = now - MAX_CACHE_AGE;
 
 	/* Purge any stale cached logins. */
@@ -653,16 +653,21 @@ int bbs_authenticate(struct bbs_node *node, const char *username, const char *pa
 		}
 	}
 
-	if (!username && !password) {
-		/* Guest login */
-		if (!bbs_guest_login_allowed()) {
-			/* Reject guest login, since not permitted */
-			bbs_auth("Guest login rejected for node %d (disabled)\n", node->id);
-			return -1;
+	if (!username) {
+		if (!password) {
+			/* Guest login */
+			if (!bbs_guest_login_allowed()) {
+				/* Reject guest login, since not permitted */
+				bbs_auth("Guest login rejected for node %d (disabled)\n", node->id);
+				return -1;
+			}
+			bbs_auth("Node %d logged in as Guest\n", node->id);
+			node->user->priv = 0; /* Guest */
+			return 0;
 		}
-		bbs_auth("Node %d logged in as Guest\n", node->id);
-		node->user->priv = 0; /* Guest */
-		return 0;
+		/* No username, but got a password, huh? */
+		bbs_auth("Rejecting password login without username on node %d\n", node->id);
+		return -1;
 	}
 
 	/* Not a guest, somebody needs to actual verify the username and password. */

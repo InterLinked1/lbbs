@@ -859,8 +859,10 @@ static int check_menus(void)
 				if (!egress_possible && (!strcmp(menuitem->action, "quit") || !strcmp(menuitem->action, "fastquit") || !strcmp(menuitem->action, "return"))) {
 					egress_possible = 1;
 				} else if (!strcmp(handler_name, "menu")) {
-					/* If it's a menu, make the menu it references actually exists. */
-					if (!find_menu(args)) {
+					/* If it's a menu, make sure the menu it references actually exists. */
+					if (strlen_zero(args)) {
+						bbs_warning("Menu item 'menu' requires an argument\n");
+					} else if (!find_menu(args)) {
 						bbs_warning("Menu '%s' referenced by %s => %c does not exist\n", args, menu->name, menuitem->opt);
 					}
 				}

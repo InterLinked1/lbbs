@@ -603,14 +603,16 @@ static int on_message(struct slack_event *event, const char *channel, const char
 
 	/* Don't echo something we just posted */
 	if (*channel == 'D') { /* Direct message */
-		pthread_mutex_lock(&u->lock);
-		if (!strcmp(u->lastmsg, text)) {
-			pthread_mutex_unlock(&cp->lock);
+		if (u) {
+			pthread_mutex_lock(&u->lock);
+			if (!strcmp(u->lastmsg, text)) {
+				pthread_mutex_unlock(&cp->lock);
+				pthread_mutex_unlock(&u->lock);
+				bbs_debug(4, "Not echoing our own direct message post...\n");
+				return 0;
+			}
 			pthread_mutex_unlock(&u->lock);
-			bbs_debug(4, "Not echoing our own direct message post...\n");
-			return 0;
 		}
-		pthread_mutex_unlock(&u->lock);
 		if (relay->ircuser) {
 			/* Relay direct messages directly to a specific user, if this is a personal relay.
 			 * If it's not, then see if the message includes a username at the beginning.

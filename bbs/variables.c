@@ -381,7 +381,7 @@ const char *bbs_node_var_get(struct bbs_node *node, const char *key)
 	/* Check if it's a global variable. */
 	value = bbs_var_find(&global_vars, key);
 	/* If no global, and node has vars, check there */
-	if (!value && node->vars) {
+	if (!value && node && node->vars) {
 		value = bbs_var_find(node->vars, key);
 	}
 	return value;

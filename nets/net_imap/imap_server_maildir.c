@@ -331,6 +331,7 @@ int imap_msg_to_filename(const char *directory, int seqno, unsigned int uid, cha
 				return 0;
 			}
 		}
+		closedir(dir);
 		return 1;
 	} else {
 		struct dirent **entries;

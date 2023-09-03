@@ -157,6 +157,7 @@ static int run_scheduler(struct imap_parallel *p)
 	 * to many seconds, so a few ms of overhead is perfectly fine for the simplicity of this interface. */
 	if (bbs_pthread_create(&t->thread, NULL, run_task, t)) {
 		t->started = 0;
+		RWLIST_UNLOCK(&p->tasks);
 		return 0; /* We still need to run this task */
 	}
 	/* Successfully scheduled something */
@@ -218,6 +219,7 @@ int imap_client_parallel_schedule_task(struct imap_parallel *p, const char *rest
 		 * However, pthreads has no equivalent to "wait for any thread", you have to specify a particular thread. */
 		if (bbs_alertpipe_create(p->alertpipe)) {
 			cleanup(datadup);
+			free(t);
 			return cb(data);
 		}
 		p->initialized = 1;

@@ -190,7 +190,7 @@ static struct user *find_user_by_username(const char *s)
 	RWLIST_RDLOCK(&users);
 	RWLIST_TRAVERSE(&users, u, entry) {
 		/* STARTS_WITH uses STRLEN, not strlen, so just use strncmp */
-		if (!strncmp(u->username, u->username, strlen(u->username))) { /* If it starts with, it's probably going to be a match, but confirm */
+		if (!strncmp(u->username, s, strlen(u->username))) { /* If it starts with, it's probably going to be a match, but confirm */
 			snprintf(buf, sizeof(buf), "%s#%s", u->username, u->discriminator);
 			if (!strcmp(s, buf)) {
 				break;
@@ -402,7 +402,7 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 /*! \brief Can't get all the presences on startup (does not appear to be a concord issue, but perhaps an API issue?) */
 #define BUGGY_PRESENCE_FETCH
 
-		missed.array = calloc((size_t) retry_now, sizeof(u64snowflake *));
+		missed.array = calloc((size_t) retry_now, sizeof(u64snowflake));
 		if (ALLOC_SUCCESS(missed.array)) {
 			char empty[] = "";
 			struct discord_request_guild_members params = {

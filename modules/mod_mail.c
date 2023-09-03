@@ -1239,6 +1239,11 @@ static unsigned long __maildir_modseq(struct mailbox *mbox, const char *director
 	return max_modseq;
 }
 
+char *maildir_get_expunged_since_modseq_range(const char *directory, unsigned long lastmodseq, char *uidrangebuf, unsigned int minuid, const char *uidrange)
+{
+	return maildir_get_expunged_since_modseq(directory, lastmodseq, uidrangebuf, minuid, uidrange);
+}
+
 char *maildir_get_expunged_since_modseq(const char *directory, unsigned long lastmodseq, char *uidrangebuf, unsigned int minuid, const char *uidrange)
 {
 	char modseqfile[256];
@@ -1356,7 +1361,9 @@ unsigned long maildir_indicate_expunged(enum mailbox_event_type type, struct bbs
 	/* Check if we created the file or opened an existing one by getting our position.
 	 * If the file is empty, write HIGHESTMODSEQ first, then the expunged messages.
 	 * Otherwise, append all the expunged messages, then seek back to the beginning and overwrite HIGHESTMODSEQ. */
-	fseek(fp, -1, SEEK_END);
+	if (fseek(fp, -1, SEEK_END)) {
+		bbs_warning("fseek failed: %s\n", strerror(errno));
+	}
 	pos = ftell(fp);
 	bbs_debug(7, "Current position is %ld\n", pos);
 	created = pos == 0;

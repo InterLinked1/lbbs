@@ -163,9 +163,7 @@ void bbs_dump_mem(unsigned const char *restrict s, size_t len)
 	unsigned int start;
 	char buf[3 * 16 + 1] = "";
 	char ascii[16 + 1] = "";
-	if (ALLOC_FAILURE(buf)) {
-		return;
-	}
+
 	start = 0;
 	for (i = 0; i < len; i++) {
 		int pos = (int) (i % 16);

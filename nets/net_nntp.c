@@ -1356,22 +1356,22 @@ static int load_config(void)
 	stringlist_empty(&inpeers);
 	stringlist_empty(&outpeers);
 
+	RWLIST_WRLOCK(&inpeers);
+	RWLIST_WRLOCK(&outpeers);
 	while ((section = bbs_config_walk(cfg, section))) {
 		if (!strcasecmp(bbs_config_section_name(section), "trusted")) {
-			RWLIST_WRLOCK(&inpeers);
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				/* Internally we don't actually differentiate between host=,ip=,user= when storing config in memory */
 				stringlist_push(&inpeers, bbs_keyval_val(keyval));
 			}
-			RWLIST_UNLOCK(&inpeers);
 		} else if (!strcasecmp(bbs_config_section_name(section), "relayto")) {
-			RWLIST_WRLOCK(&outpeers);
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				stringlist_push(&outpeers, bbs_keyval_val(keyval));
 			}
-			RWLIST_UNLOCK(&outpeers);
 		}
 	}
+	RWLIST_UNLOCK(&inpeers);
+	RWLIST_UNLOCK(&outpeers);
 
 	return 0;
 }

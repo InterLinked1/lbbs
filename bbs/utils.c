@@ -481,7 +481,8 @@ static int __bbs_dir_traverse(const char *path, int (*on_file)(const char *dir_n
 			if (!full_path) {
 				/* Don't use alloca or allocate on the stack, because we're in a loop */
 				full_path = malloc(strlen(path) + strlen(entry->d_name) + 2);
-				if (!full_path) {
+				if (ALLOC_FAILURE(full_path)) {
+					closedir(dir);
 					return -1;
 				}
 #undef sprintf /* This is safe */

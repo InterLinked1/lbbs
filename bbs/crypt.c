@@ -229,6 +229,7 @@ int bbs_password_salt_and_hash(const char *password, char *buf, size_t len)
 	}
 	if (strlen(hash) >= len) {
 		bbs_error("Truncation with buffer of size %lu\n", len);
+		free(hash);
 		return -1;
 	}
 	safe_strncpy(buf, hash, len);

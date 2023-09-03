@@ -1011,8 +1011,10 @@ next:
 
 	mailbox_unlock(imap->mbox);
 	/* Batch HIGHESTMODSEQ bookkeeping for EXPUNGEs */
-	imap->highestmodseq = maildir_indicate_expunged(EVENT_MESSAGE_EXPUNGE, imap->node, imap->mbox, imap->curdir, expunged, expungedseqs, exp_lengths, silent); 
-	free_if(expunged);
+	if (expunged) {
+		imap->highestmodseq = maildir_indicate_expunged(EVENT_MESSAGE_EXPUNGE, imap->node, imap->mbox, imap->curdir, expunged, expungedseqs, exp_lengths, silent);
+		free(expunged);
+	}
 	free_if(expungedseqs);
 
 	return 0;
@@ -1038,7 +1040,7 @@ static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, cons
 
 	if (uidrange) {
 		uidrangebuf = malloc(strlen(uidrange) + 1); /* We could use strdup, but in_range_allocated always calls strcpy, so malloc avoids unnecessary copying here */
-		if (!uidrangebuf) {
+		if (ALLOC_FAILURE(uidrangebuf)) {
 			return;
 		}
 	}
@@ -1109,7 +1111,11 @@ static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, cons
 	}
 
 	/* First, send any expunges since last time */
-	expunged = maildir_get_expunged_since_modseq(imap->curdir, lastmodseq, uidrangebuf, minuid, uidrange);
+	if (uidrange) {
+		expunged = maildir_get_expunged_since_modseq_range(imap->curdir, lastmodseq, uidrangebuf, minuid, uidrange);
+	} else { /* Arguments are exactly the same. This just allows nonnull to be enforced for _range variant. */
+		expunged = maildir_get_expunged_since_modseq(imap->curdir, lastmodseq, uidrangebuf, minuid, uidrange);
+	}
 	imap_send(imap, "VANISHED (EARLIER) %s", S_IF(expunged));
 	free_if(expunged);
 
@@ -1950,7 +1956,7 @@ static int handle_copy(struct imap_session *imap, const char *sequences, const c
 	int numcopies = 0;
 	unsigned int *olduids = NULL, *newuids = NULL;
 	int lengths = 0, allocsizes = 0;
-	unsigned int uidvalidity, uidnext, uidres;
+	unsigned int uidvalidity = 0, uidnext, uidres;
 	char *olduidstr = NULL, *newuidstr = NULL;
 	long quotaleft;
 	int destacl;
@@ -2111,13 +2117,15 @@ cleanup:
 	}
 
 	/* EXPUNGE untagged responses are sent in realtime (already done), just update HIGHESTMODSEQ now */
-	imap->highestmodseq = maildir_indicate_expunged(EVENT_MESSAGE_EXPUNGE, imap->node, imap->mbox, imap->curdir, expunged, expungedseqs, exp_lengths, 0);
+	if (expunged) {
+		imap->highestmodseq = maildir_indicate_expunged(EVENT_MESSAGE_EXPUNGE, imap->node, imap->mbox, imap->curdir, expunged, expungedseqs, exp_lengths, 0);
+		free(expunged);
+	}
 
 	mailbox_unlock(imap->mbox);
 
 	free_if(olduidstr);
 	free_if(newuidstr);
-	free_if(expunged);
 	free_if(expungedseqs);
 	return 0;
 }
@@ -2335,7 +2343,7 @@ static int handle_append(struct imap_session *imap, char *s)
 				break;
 			} else if (res < 0) {
 				bbs_debug(3, "Client exited abruptly during APPEND?\n");
-				return res ? -1 : 0;
+				return -1;
 			}
 			s = imap->rldata->buf;
 		}
@@ -2696,7 +2704,7 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 				if (!strcasecmp(tmp, "FLAGS")) {
 					char *flagstr = parensep(&s);
 					if (!strlen_zero(flagstr)) {
-						flags = strdup(flagstr);
+						REPLACE(flagstr, flags);
 					}
 					items_received++;
 				} else if (!strcasecmp(tmp, "INTERNALDATE")) {
@@ -2704,9 +2712,10 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 					if (!strlen_zero(datestr)) {
 						if (!isdigit(*datestr)) {
 							bbs_warning("Invalid date: %s\n", datestr); /* Probably a parsing issue */
+							close_if(destfd);
 							goto cleanup;
 						}
-						idate = strdup(datestr);
+						REPLACE(datestr, idate);
 					}
 					items_received++;
 				} else if (STARTS_WITH(tmp, "BODY")) {
@@ -2778,6 +2787,7 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 			if (destclient) {
 				if (!multiappend) {
 					if (SWRITE(destclient->client.wfd, "\r\n") != STRLEN("\r\n")) {
+						close_if(destfd);
 						goto cleanup;
 					}
 					/* Could get an untagged EXISTS at this point */
@@ -4030,7 +4040,7 @@ static int imap_process(struct imap_session *imap, char *s)
 	imap->tag = strsep(&s, " "); /* Tag for client to identify responses to its request */
 	command = strsep(&s, " ");
 
-	if (!imap->tag || !command) {
+	if (!imap->tag || strlen_zero(command)) {
 		imap_send(imap, "BAD [CLIENTBUG] Missing arguments.");
 		goto done;
 	}
@@ -4458,7 +4468,7 @@ static int imap_process(struct imap_session *imap, char *s)
 done:
 	if (res) {
 		bbs_debug(4, "%s command returned %d\n", command, res);
-	} else {
+	} else if (!strlen_zero(command)) {
 		flush_updates(imap, command, NULL);
 	}
 	return res;

@@ -145,10 +145,12 @@ static void log_cb(struct mailbox_event *e)
 	switch (e->type) {
 		case EVENT_QUOTA_EXCEED:
 		case EVENT_QUOTA_WITHIN:
+			bbs_assert_exists(e->mbox);
 			fprintf(fp, "maxMessages: %lu\n", mailbox_max_messages(e->mbox));
 			/* Mandatory: messages - # of messages in this maildir (could also include for NEW, APPEND, EXPUNGE, EXPIRE events */
 			/* Fall through */
 		case EVENT_QUOTA_CHANGE:
+			bbs_assert_exists(e->mbox);
 			fprintf(fp, "diskQuota: %lu\n", mailbox_quota(e->mbox));
 			fprintf(fp, "diskUsed: %lu\n", mailbox_quota_used(e->mbox));
 			break;

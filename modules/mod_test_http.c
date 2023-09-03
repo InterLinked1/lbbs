@@ -312,11 +312,12 @@ static int test_http_post_multipart_basic(void)
 	struct http_route_uri tests[] = {
 		{ NULL, DEFAULT_TEST_HTTP_PORT, "/upload", HTTP_METHOD_POST, post_binary_upload },
 	};
-	mres = register_uris(tests, ARRAY_LEN(tests));
-	bbs_test_assert_equals(mres, 0);
 
 	memset(&url, 0, sizeof(url));
 	memset(&client, 0, sizeof(client));
+
+	mres = register_uris(tests, ARRAY_LEN(tests));
+	bbs_test_assert_equals(mres, 0);
 
 	/* localhost might try ::1 before 127.0.0.1, so be explicit here: */
 	snprintf(urlstr, sizeof(urlstr), "http://127.0.0.1:%u", DEFAULT_TEST_HTTP_PORT);
@@ -376,11 +377,12 @@ static int test_http_post_file_upload(void)
 	struct http_route_uri tests[] = {
 		{ NULL, DEFAULT_TEST_HTTP_PORT, "/fileupload", HTTP_METHOD_POST, post_file_upload },
 	};
-	mres = register_uris(tests, ARRAY_LEN(tests));
-	bbs_test_assert_equals(mres, 0);
 
 	memset(&url, 0, sizeof(url));
 	memset(&client, 0, sizeof(client));
+
+	mres = register_uris(tests, ARRAY_LEN(tests));
+	bbs_test_assert_equals(mres, 0);
 
 	/* localhost might try ::1 before 127.0.0.1, so be explicit here: */
 	snprintf(urlstr, sizeof(urlstr), "http://127.0.0.1:%u", DEFAULT_TEST_HTTP_PORT);
@@ -449,11 +451,12 @@ static int test_http_header_continuation(void)
 	struct http_route_uri tests[] = {
 		{ NULL, DEFAULT_TEST_HTTP_PORT, "/headers", HTTP_METHOD_POST, post_header_continue },
 	};
-	mres = register_uris(tests, ARRAY_LEN(tests));
-	bbs_test_assert_equals(mres, 0);
 
 	memset(&url, 0, sizeof(url));
 	memset(&client, 0, sizeof(client));
+
+	mres = register_uris(tests, ARRAY_LEN(tests));
+	bbs_test_assert_equals(mres, 0);
 
 	/* localhost might try ::1 before 127.0.0.1, so be explicit here: */
 	snprintf(urlstr, sizeof(urlstr), "http://127.0.0.1:%u", DEFAULT_TEST_HTTP_PORT);
@@ -632,11 +635,12 @@ static int test_http_websocket_upgrade(void)
 	struct http_route_uri tests[] = {
 		{ NULL, DEFAULT_TEST_HTTP_PORT, "/ws", HTTP_METHOD_GET, websocket_server_upgrade },
 	};
-	mres = register_uris(tests, ARRAY_LEN(tests));
-	bbs_test_assert_equals(mres, 0);
 
 	memset(&url, 0, sizeof(url));
 	memset(&client, 0, sizeof(client));
+
+	mres = register_uris(tests, ARRAY_LEN(tests));
+	bbs_test_assert_equals(mres, 0);
 
 	/* localhost might try ::1 before 127.0.0.1, so be explicit here: */
 	snprintf(urlstr, sizeof(urlstr), "http://127.0.0.1:%u", DEFAULT_TEST_HTTP_PORT);
@@ -705,11 +709,12 @@ static int test_http_session(void)
 		{ NULL, DEFAULT_TEST_HTTP_PORT, "/sessionset", HTTP_METHOD_GET, set_session },
 		{ NULL, DEFAULT_TEST_HTTP_PORT, "/sessionget", HTTP_METHOD_GET, get_session },
 	};
-	mres = register_uris(tests, ARRAY_LEN(tests));
-	bbs_test_assert_equals(mres, 0);
 
 	memset(&url, 0, sizeof(url));
 	memset(&client, 0, sizeof(client));
+
+	mres = register_uris(tests, ARRAY_LEN(tests));
+	bbs_test_assert_equals(mres, 0);
 
 	/* localhost might try ::1 before 127.0.0.1, so be explicit here: */
 	snprintf(urlstr, sizeof(urlstr), "http://127.0.0.1:%u", DEFAULT_TEST_HTTP_PORT);

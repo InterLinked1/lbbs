@@ -33,8 +33,18 @@ int stringlist_is_empty(struct stringlist *list);
  * \param list
  * \param s Search string. Case sensitive.
  * \retval 1 if contains, 0 if not
+ * \note Must not be WRLOCK'd when calling
  */
 int stringlist_contains(struct stringlist *list, const char *s);
+
+/*!
+ * \brief Whether a stringlist contains a string
+ * \param list
+ * \param s Search string. Case sensitive.
+ * \retval 1 if contains, 0 if not
+ * \note Must be locked when calling
+ */
+int stringlist_contains_locked(struct stringlist *list, const char *s);
 
 /*!
  * \brief Whether a stringlist contains a string, case-insensitively

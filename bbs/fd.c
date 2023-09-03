@@ -240,7 +240,7 @@ int __fdleak_close(int fd, const char *file, int line, const char *func)
 		bbs_log_backtrace(); /* Get a backtrace to see what made the invalid close, in case immediate caller isn't enough detail. */
 	}
 	res = close(fd);
-	if (!res && IN_BOUNDS(fd, 0, (int) ARRAY_LEN(fdleaks))) {
+	if (!res && ARRAY_IN_BOUNDS(fd, fdleaks)) {
 		fdleaks[fd].isopen = 0;
 	}
 	return res;
@@ -264,7 +264,7 @@ int __fdleak_fclose(FILE *ptr)
 
 	bbs_assert_exists(ptr);
 	fd = fileno(ptr);
-	if ((res = fclose(ptr)) || fd < 0 || fd >= (int) ARRAY_LEN(fdleaks)) {
+	if ((res = fclose(ptr) || !ARRAY_IN_BOUNDS(0, fdleaks))) {
 		return res;
 	}
 	fdleaks[fd].isopen = 0;
@@ -326,7 +326,7 @@ static int print_fds(int fd)
 		if (entry->d_type == DT_LNK) {
 			int fdnum = atoi(entry->d_name);
 			/* Only care about ones we don't know about */
-			if (IN_BOUNDS(fdnum, 0, (int) ARRAY_LEN(fdleaks) - 1) && fdleaks[fdnum].isopen) {
+			if (ARRAY_IN_BOUNDS(fdnum, fdleaks) && fdleaks[fdnum].isopen) {
 				continue; /* We know about it */
 			}
 			snprintf(path, sizeof(path), "/proc/self/fd/%s", entry->d_name);

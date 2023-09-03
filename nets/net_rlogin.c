@@ -99,7 +99,9 @@ static int rlogin_handshake(struct bbs_node *node)
 
 	/* XXX Even when done before bind, seems to have no effect */
 	/* RFC 6093 SO_OOBINLINE */
-	setsockopt(node->fd, SOL_SOCKET, SO_OOBINLINE, &on, sizeof(on));
+	if (setsockopt(node->fd, SOL_SOCKET, SO_OOBINLINE, &on, sizeof(on))) {
+		bbs_warning("Failed to set option OOBINLINE\n");
+	}
 
 	/* RFC 1282 Get the window size
 	 * Server sends 0x80 to get current window size.

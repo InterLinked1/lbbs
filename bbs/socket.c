@@ -347,6 +347,8 @@ int bbs_tcp_connect(const char *hostname, int port)
 			saddr_in6 = (struct sockaddr_in6 *) ai->ai_addr;
 			saddr_in6->sin6_port = htons((uint16_t) port);
 			inet_ntop(ai->ai_family, &saddr_in6->sin6_addr, ip, sizeof(ip)); /* Print IPv6 */
+		} else {
+			continue;
 		}
 		sfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
 		if (sfd == -1) {
@@ -378,7 +380,9 @@ int bbs_tcp_connect(const char *hostname, int port)
 		return -1;
 	} else {
 		timeout.tv_sec = 0; /* Change back to fully blocking */
-		setsockopt(sfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+		if (setsockopt(sfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout))) {
+			bbs_warning("Failed to make file descriptor %d blocking again: %s\n", sfd, strerror(errno));
+		}
 	}
 
 	/* Figure out what port we're using locally for this connection */
@@ -1525,6 +1529,12 @@ int bbs_expect_line(int fd, int ms, struct readline_data *rldata, const char *st
 static char bbs_tread(int fd, int ms)
 {
 	signed char res;
+
+	if (fd < 0) {
+		bbs_error("Invalid file descriptor: %d\n", fd);
+		bbs_soft_assert(fd >= 0); /* Trigger a backtrace dump */
+		return -1;
+	}
 
 	bbs_assert(ms > 0); /* There would be no reason to use bbs_node_tpoll over bbs_node_poll unless ms > 0. */
 	res = (char) bbs_poll(fd, ms);

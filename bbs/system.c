@@ -494,12 +494,14 @@ static int clone_container(char *rootdir, size_t rootlen, int pid)
 	if (!eaccess(rootdir, R_OK) && bbs_delete_directory(rootdir)) {
 		/* If it exists, delete it, it must be leftover from a previous session with the same PID.
 		 * Can't be an in-use session because that would imply a second process with the same PID. */
+		closedir(dir);
 		return -1;
 	}
 
 	/* Now, make the directory fresh */
 	if (mkdir(rootdir, 0700)) {
 		bbs_error("mkdir(%s) failed: %s\n", rootdir, strerror(errno));
+		closedir(dir);
 		return -1;
 	}
 

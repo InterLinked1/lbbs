@@ -184,8 +184,10 @@ void load_acl(struct imap_session *imap, const char *directory, enum mailbox_nam
 		/* Traverse up to the .acl directory in the parent dir */
 		/*! \todo Probably should not do this actually, if no .acl file in current, apply defaults immediately */
 		slash = strrchr(fullname, '/');
+		bbs_assert_exists(slash);
 		*slash = '\0'; /* This will always succeed, slash can never be NULL */
 		slash = strrchr(fullname, '/');
+		bbs_assert_exists(slash);
 		*slash = '\0'; /* This will always succeed, slash can never be NULL */
 		if (!strcmp(fullname, mailbox_maildir(NULL))) {
 			/* XXX About as efficient as calculating strlen(mailbox_maildir(NULL)) in advance, since we have to get the length of this anyways,
@@ -294,6 +296,7 @@ int setacl(struct imap_session *imap, const char *directory, const char *mailbox
 		 * but another thread could be trying to access it too. So that's why we have a lock. */
 		if (action == -1) {
 			bbs_debug(3, "No rights to remove - no ACL match for %s\n", user);
+			pthread_mutex_unlock(&acl_lock);
 			return 0;
 		}
 		fp = fopen(fullname, "w");

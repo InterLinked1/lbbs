@@ -346,7 +346,7 @@ int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf);
  * \note This operation internally maintains the .uidvalidity of a maildir directory.
  * \todo This function should really be renamed maildir_get_next_uid, it's a maildir function, not a mailbox function. Currently, it's a misnomer.
  */
-unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, const char *directory, int allocate, unsigned int *newuidvalidity, unsigned int *newuidnext) __attribute__((nonnull (1, 2, 3, 5, 6)));
+unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, const char *directory, int allocate, unsigned int *newuidvalidity, unsigned int *newuidnext) __attribute__((nonnull (1, 3, 5, 6)));
 
 /*!
  * \brief Indicate a sequence of expunges
@@ -380,7 +380,10 @@ unsigned long maildir_max_modseq(struct mailbox *mbox, const char *directory);
  * \param uidrange Range of UIDs in request
  * \return NULL on failure or no results, list of UIDs otherwise
  */
-char *maildir_get_expunged_since_modseq(const char *directory, unsigned long lastmodseq, char *uidrangebuf, unsigned int minuid, const char *uidrange) __attribute__((nonnull (1, 3)));
+char *maildir_get_expunged_since_modseq_range(const char *directory, unsigned long lastmodseq, char *uidrangebuf, unsigned int minuid, const char *uidrange) __attribute__((nonnull (1, 3, 5)));
+
+/*! \brief Same as maildir_get_expunged_since_modseq_range, but uidrangebuf and uidrange may be NULL */
+char *maildir_get_expunged_since_modseq(const char *directory, unsigned long lastmodseq, char *uidrangebuf, unsigned int minuid, const char *uidrange) __attribute__((nonnull (1)));
 
 /*!
  * \brief Get a modification sequence suitable for assigning to a new (e.g. APPEND, COPY, MOVE), new -> cur message

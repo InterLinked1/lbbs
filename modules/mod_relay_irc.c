@@ -832,18 +832,16 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 			if (*msg == '<') {
 				safe_strncpy(msgbuf, msg, sizeof(msgbuf));
 				tmp = strchr(msgbuf, '>');
-				if (msg) {
-					*tmp++ = '\0';
-					msg = tmp;
-					sendnick = msgbuf + 1;
-					/* Okay, now the message is just the message, and we have extracted the real sender name */
+				*tmp++ = '\0';
+				msg = tmp;
+				sendnick = msgbuf + 1;
+				/* Okay, now the message is just the message, and we have extracted the real sender name */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-truncation"
-					/* Truncation is acceptable since a nickname isn't going to be that long, and I'm not allocating a larger buffer to silence the warning. */
-					snprintf(nativenick, sizeof(nativenick), "%s/%s", clientname,  sendnick); /* Use the clientname, not the channel name on the other side */
-					sendnick = nativenick;
-					/* Now we have a unique nick that doesn't conflict with this same nick on our local IRC server */
-				}
+				/* Truncation is acceptable since a nickname isn't going to be that long, and I'm not allocating a larger buffer to silence the warning. */
+				snprintf(nativenick, sizeof(nativenick), "%s/%s", clientname,  sendnick); /* Use the clientname, not the channel name on the other side */
+				sendnick = nativenick;
+				/* Now we have a unique nick that doesn't conflict with this same nick on our local IRC server */
 			}
 			irc_relay_send(cp->channel2, CHANNEL_USER_MODE_NONE, S_OR(cp->client1, clientname), sendnick, NULL, msg, cp->ircuser);
 		}
@@ -861,6 +859,10 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 			if (*msg == '<') {
 				safe_strncpy(msgbuf, msg, sizeof(msgbuf));
 				tmp = strchr(msgbuf, '>');
+				if (!tmp) {
+					bbs_warning("Missing closing >\n");
+					return;
+				}
 				*tmp++ = '\0';
 				msg = tmp;
 				sendnick = msgbuf + 1;

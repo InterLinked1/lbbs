@@ -55,6 +55,17 @@ int stringlist_contains(struct stringlist *list, const char *s)
 	return i ? 1 : 0;
 }
 
+int stringlist_contains_locked(struct stringlist *list, const char *s)
+{
+	struct stringitem *i;
+	RWLIST_TRAVERSE(list, i, entry) {
+		if (!strcmp(i->s, s)) {
+			break;
+		}
+	}
+	return i ? 1 : 0;
+}
+
 int stringlist_case_contains(struct stringlist *list, const char *s)
 {
 	struct stringitem *i;
@@ -178,6 +189,7 @@ int stringlist_push_list(struct stringlist *list, const char *s)
 		i = calloc(1, sizeof(*i));
 		if (ALLOC_FAILURE(i)) {
 			free(sdup);
+			free(listdup);
 			return -1;
 		}
 		i->s = sdup;

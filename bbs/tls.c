@@ -899,11 +899,11 @@ static int ssl_load_config(void)
 	}
 	bbs_verb(5, "Added default TLS certificate\n");
 
+	RWLIST_WRLOCK(&sni_certs);
 	while ((section = bbs_config_walk(cfg, section))) {
 		if (!strcmp(bbs_config_section_name(section), "tls")) {
 			continue; /* Already processed */
 		} else if (!strcmp(bbs_config_section_name(section), "sni")) {
-			RWLIST_WRLOCK(&sni_certs);
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				char certbuf[512];
 				char *cert, *key;
@@ -931,11 +931,11 @@ static int ssl_load_config(void)
 				}
 				sni_push(bbs_keyval_key(keyval), ctx);
 			}
-			RWLIST_UNLOCK(&sni_certs);
 		} else {
 			bbs_error("Invalid section '%s', ignoring\n", bbs_config_section_name(section));
 		}
 	}
+	RWLIST_UNLOCK(&sni_certs);
 
 	bbs_config_free(cfg);
 	return res;

@@ -184,6 +184,7 @@ static int load_config(void)
 		bbs_config_val_set_dstr(cfg, bbs_config_section_name(section), "msgscript", &msgscript);
 		client = calloc(1, sizeof(*client) + strlen(bbs_config_section_name(section)) + 1);
 		if (ALLOC_FAILURE(client)) {
+			free_if(msgscript);
 			continue;
 		}
 		strcpy(client->name, bbs_config_section_name(section)); /* Safe */
@@ -758,6 +759,9 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 		}
 		if (!NODE_IS_TDD(p->node)) {
 			res = write(p->chatpipe[1], datestr, timelen); /* Don't send timestamps to TDDs, for brevity */
+			if (res <= 0) {
+				bbs_error("write failed: %s\n", strerror(errno));
+			}
 		}
 		res = write(p->chatpipe[1], msg, (size_t) len);
 		if (res <= 0) {

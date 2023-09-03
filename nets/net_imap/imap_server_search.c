@@ -839,6 +839,10 @@ static int search_keys_eval(struct imap_search_keys *skeys, enum imap_search_typ
 				SEARCH_HEADER_MATCH("From");
 			case IMAP_SEARCH_HEADER:
 				hdrval = strchr(skey->child.string, ' ');
+				if (!hdrval) {
+					bbs_warning("No header?\n");
+					break;
+				}
 				len = (size_t) (hdrval - skey->child.string);
 				ltrim(hdrval);
 				retval = search_header(search, skey->child.string, len, hdrval);
@@ -1748,11 +1752,11 @@ static int thread_ordered_subject_compare(const void *aptr, const void *bptr)
 	res = subjectcmp(a->subject, b->subject);
 	if (!res) {
 		/* Subjects match. Use date as a tiebreaker. */
-		int t1, t2;
+		time_t t1, t2;
 		long diff;
 		struct thread_message *ac = (struct thread_message*) a, *bc = (struct thread_message*) b; /* discard const pointer for mktime */
-		t1 = (int) mktime(&ac->sent);
-		t2 = (int) mktime(&bc->sent);
+		t1 = mktime(&ac->sent);
+		t2 = mktime(&bc->sent);
 		diff = (long int) difftime(t1, t2); /* If difftime is positive, tm1 > tm2 */
 		res = diff < 0 ? -1 : diff > 0 ? 1 : 0;
 	}
@@ -2360,7 +2364,7 @@ static int thread_references_step4(struct thread_messageid *msgids, int *lengthp
 		next = next->llnext;
 	}
 
-	qsort(msgptrs, (size_t) length, sizeof(struct thread_messageid**), thread_toplevel_datesort);
+	qsort(msgptrs, (size_t) length, sizeof(struct thread_messageid*), thread_toplevel_datesort);
 
 	/* Okay, now we have a sorted array of pointers, go ahead and update the linked list. */
 #if defined(DEBUG_THREADING) && 0

@@ -206,9 +206,11 @@ int sql_fmt_autonull(char *fmt, ...)
 			break;
 		case 'b': /* Blob */
 			bbs_warning("Blobs are currently unsupported\n");
+			va_end(ap);
 			return -1;
 		default:
 			bbs_warning("Unknown SQL format type specifier: %c\n", *cur);
+			va_end(ap);
 			return -1;
 		}
 		if (isupper(fmt[i])) {

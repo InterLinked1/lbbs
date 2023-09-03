@@ -1329,6 +1329,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 				} else if (!(info = alloc_sftp_info())) {
 					handle_errno(msg);
 					closedir(dir); /* Do this after so we don't mess up errno */
+					dir = NULL;
 				} else {
 					info->dir = dir;
 					info->type = TYPE_DIR;

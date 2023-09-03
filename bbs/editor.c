@@ -178,10 +178,7 @@ int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const ch
 					s += 80; /* Advance to next row of output */
 					left -= 80;
 				}
-				/* If there's anything remaining, print it, if not, stop now */
-				if (!left) {
-					s = NULL;
-				}
+				/* At least 1 character remains */
 			}
 #ifdef DEBUG_PAGING
 			bbs_debug(10, "[%d/%d] row %d (want %d): lines_eff: %d, extra LFs: %d, ends in LF: %d\n",

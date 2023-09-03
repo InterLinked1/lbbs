@@ -1114,6 +1114,7 @@ static char *mime_header_decode(const char *s)
 	mailmime_encoded_phrase_parse("iso-8859-1", s, strlen(s), &cur_token, "utf-8", &decoded);
 	if (!decoded) {
 		bbs_warning("Failed to decode MIME header\n");
+		return NULL;
 	}
 
 #ifdef EXTRA_CHECKS
@@ -1678,7 +1679,7 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 	struct mailimap_set *set = NULL;
 	struct mailimap_fetch_type *fetch_type = NULL;
 	struct mailimap_fetch_att *fetch_att = NULL;
-	clist *fetch_result;
+	clist *fetch_result = NULL;
 	clistiter *cur, *cur2;
 	clist *hdrlist;
 	char *headername = NULL;
@@ -1834,7 +1835,9 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 
 	root = json_object();
 	if (!root) {
-		mailimap_fetch_list_free(fetch_result);
+		if (fetch_result) {
+			mailimap_fetch_list_free(fetch_result);
+		}
 		mailimap_set_free(set);
 		return -1;
 	}

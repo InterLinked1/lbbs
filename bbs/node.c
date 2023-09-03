@@ -530,7 +530,9 @@ static void node_shutdown(struct bbs_node *node, int unique)
 			/* The sysop was spying on this node when it got disconnected.
 			 * Let the sysop know this node is dead. */
 			bbs_dprintf(node->spyfd, COLOR_RESET "\nNode %d has disconnected.\nPress ^C to exit spy mode.\n", node->id);
+			bbs_node_pty_lock(node);
 			node->spy = 0;
+			bbs_node_pty_unlock(node);
 		}
 	}
 
@@ -659,7 +661,7 @@ int bbs_nodes_print(int fd)
 	char elapsed[24];
 	struct bbs_node *n;
 	int c = 0;
-	int now = (int) time(NULL);
+	time_t now = time(NULL);
 
 	bbs_dprintf(fd, "%3s %8s %9s %7s %-15s %-15s %15s %5s %1s %1s %6s %3s %3s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "USER", "MENU/PAGE", "IP ADDRESS", "RPORT", "E", "B", "TID", "FD", "RFD", "WFD", "MST", "SLV", "SPY", "SLV NAME");
 

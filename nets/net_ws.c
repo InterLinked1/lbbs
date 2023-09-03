@@ -766,7 +766,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 	struct wss_client *client;
 	int res;
 	int want_ping = 0;
-	char ping_data[15];
+	char ping_data[15] = "";
 	struct pollfd pfds[2];
 	time_t lastping;
 	int max_ms;

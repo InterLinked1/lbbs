@@ -139,6 +139,7 @@ int __bbs_register_test(const char *name, int (*execute)(void), void *mod)
 
 	test = calloc(1, sizeof(*test) + strlen(name) + 1);
 	if (ALLOC_FAILURE(test)) {
+		RWLIST_UNLOCK(&tests);
 		return -1;
 	}
 
@@ -148,7 +149,6 @@ int __bbs_register_test(const char *name, int (*execute)(void), void *mod)
 
 	RWLIST_INSERT_TAIL(&tests, test, entry);
 	RWLIST_UNLOCK(&tests);
-
 	return 0;
 }
 
