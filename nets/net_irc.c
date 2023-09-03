@@ -89,7 +89,7 @@ static int require_sasl = 1;
 static int require_chanserv = 1;
 static int log_channels = 0;
 
-static int loadtime = 0;
+static time_t loadtime = 0;
 static int need_restart = 0;
 
 static char irc_hostname[84];
@@ -136,10 +136,10 @@ struct irc_user {
 	enum user_modes modes;			/* User's modes (apply to the user globally, not just a specific channel) */
 	int rfd;						/* Read file descriptor */
 	int wfd;						/* Write file descriptor */
-	int joined;						/* Time joined */
-	int lastactive;					/* Time of last JOIN, PART, PRIVMSG, NOTICE, etc. */
-	int lastping;					/* Last ping sent */
-	int lastpong;					/* Last pong received */
+	time_t joined;					/* Time joined */
+	time_t lastactive;				/* Time of last JOIN, PART, PRIVMSG, NOTICE, etc. */
+	time_t lastping;				/* Last ping sent */
+	time_t lastpong;				/* Last pong received */
 	pthread_mutex_t lock;			/* User lock */
 	char *awaymsg;					/* Away message */
 	unsigned int away:1;			/* User is currently away (default is 0, i.e. user is here) */
@@ -747,7 +747,7 @@ static int __channel_broadcast(int lock, struct irc_channel *channel, struct irc
 		struct tm logdate;
 		char datestr[20];
 		/* Calculate our current timestamp, for logging sanity */
-		lognow = (int) time(NULL);
+		lognow = time(NULL);
 		localtime_r(&lognow, &logdate);
 		strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 		fprintf(channel->fp, "[%s] %s", datestr, buf); /* Assume it ends in CR LF (it better!) */
@@ -763,7 +763,7 @@ static int __channel_broadcast(int lock, struct irc_channel *channel, struct irc
 static void user_setactive(struct irc_user *user)
 {
 	pthread_mutex_lock(&user->lock);
-	user->lastactive = (int) time(NULL);
+	user->lastactive = time(NULL);
 	pthread_mutex_unlock(&user->lock);
 }
 
@@ -1821,7 +1821,7 @@ static int suppress_channel(struct irc_user *user, struct irc_channel *channel)
 
 static void handle_whois(struct irc_user *user, char *s)
 {
-	int now;
+	time_t now;
 	char umodes[15];
 	struct irc_channel *channel;
 	struct irc_user *u = get_user(s);
@@ -1848,7 +1848,7 @@ static void handle_whois(struct irc_user *user, char *s)
 		return;
 	}
 
-	now = (int) time(NULL);
+	now = time(NULL);
 	get_user_modes(umodes, sizeof(umodes), u);
 
 	if (!IS_SERVICE(u)) {
@@ -1905,7 +1905,7 @@ static void handle_whois(struct irc_user *user, char *s)
 		send_numeric2(user, 379, "%s :is using modes %s\r\n", u->nickname, umodes);
 	}
 	if (!IS_SERVICE(u)) {
-		send_numeric2(user, 317, "%s %d %d :seconds idle, signon time\r\n", u->nickname, now - u->lastactive, u->joined);
+		send_numeric2(user, 317, "%s %" TIME_T_FMT " %" TIME_T_FMT " :seconds idle, signon time\r\n", u->nickname, now - u->lastactive, u->joined);
 	}
 	if (user->modes & USER_MODE_SECURE) {
 		send_numeric2(user, 671, "%s :is using a secure connection\r\n", u->nickname);
@@ -2616,7 +2616,7 @@ static int channel_count(void)
 	return c;
 }
 
-static int motd_last_read = 0;
+static time_t motd_last_read = 0;
 static pthread_mutex_t motd_lock;
 
 /*! \brief Message of the Day */
@@ -2629,7 +2629,7 @@ static void motd(struct irc_user *user)
 	pthread_mutex_lock(&motd_lock);
 	if (!s_strlen_zero(motd_file)) { /* Custom MOTD text */
 		/* Reread the MOTD from disk at most once an hour. */
-		int now = (int) time(NULL);
+		time_t now = time(NULL);
 		if (!motd_last_read || motd_last_read < now - 3600) {
 			free_if(motdstring);
 			motdstring = bbs_file_to_string(motd_file, 4096, NULL);
@@ -2915,7 +2915,7 @@ static void handle_client(struct irc_user *user)
 			char *current, *command = strsep(&s, " ");
 			if (!strcasecmp(command, "PONG")) {
 				pthread_mutex_lock(&user->lock);
-				user->lastpong = (int) time(NULL);
+				user->lastpong = time(NULL);
 				pthread_mutex_unlock(&user->lock);
 			} else if (!strcasecmp(command, "PING")) { /* Usually servers ping clients, but clients can ping servers too */
 				send_reply(user, "PONG %s\r\n", S_IF(s)); /* Don't add another : because it's still in s, if present. */
@@ -3113,7 +3113,7 @@ static void handle_client(struct irc_user *user)
 				time_t lognow;
 				struct tm logdate;
 				char datestr[20];
-				lognow = (int) time(NULL);
+				lognow = time(NULL);
 				localtime_r(&lognow, &logdate);
 				strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 				send_numeric(user, 391, "%s\r\n", datestr);
@@ -3244,20 +3244,21 @@ static void *ping_thread(void *unused)
 	UNUSED(unused);
 
 	for (;;) {
-		int now, clients = 0;
+		time_t now;
+		int clients = 0;
 		if (bbs_poll(ping_alertpipe[0], PING_TIME)) {
 			break;
 		}
 
-		now = (int) time(NULL);
+		now = time(NULL);
 		RWLIST_RDLOCK(&users);
 		RWLIST_TRAVERSE(&users, user, entry) {
 			if (need_restart || (user->lastping && user->lastpong < now - 2 * PING_TIME)) {
 				char buf[32] = "";
 				/* Client never responded to the last ping. Disconnect it. */
 				if (!need_restart && user->lastpong) {
-					bbs_debug(3, "Ping expired for %p: last ping=%d, last pong=%d (now %d)\n", user, user->lastping, user->lastpong, now);
-					snprintf(buf, sizeof(buf), "Ping timeout: %d seconds", now - user->lastpong); /* No CR LF */
+					bbs_debug(3, "Ping expired for %p: last ping=%" TIME_T_FMT ", last pong=%" TIME_T_FMT " (now %" TIME_T_FMT ")\n", user, user->lastping, user->lastpong, now);
+					snprintf(buf, sizeof(buf), "Ping timeout: %" TIME_T_FMT " seconds", now - user->lastpong); /* No CR LF */
 				}
 				leave_all_channels(user, "QUIT", need_restart ? "Server restart" : buf);
 				if (!need_restart) {
@@ -3266,7 +3267,7 @@ static void *ping_thread(void *unused)
 				bbs_debug(5, "Shutting down client on node %d\n", user->node->id);
 				shutdown(user->node->fd, SHUT_RDWR); /* Make the client handler thread break */
 			} else {
-				irc_other_thread_writef(user->node, user->wfd, "PING :%d\r\n", now);
+				irc_other_thread_writef(user->node, user->wfd, "PING :%" TIME_T_FMT "\r\n", now);
 				user->lastping = now;
 				clients++;
 			}
@@ -3335,7 +3336,7 @@ static void irc_handler(struct bbs_node *node, int secure)
 	user->wfd = wfd;
 	user->node = node;
 	user->modes = USER_MODE_NONE;
-	user->joined = (int) time(NULL);
+	user->joined = time(NULL);
 	user->hostname = strdup(node->ip);
 	user->modes |= USER_MODE_WALLOPS; /* Receive wallops by default */
 	if (secure) {
@@ -3457,7 +3458,7 @@ static int load_module(void)
 	}
 
 	pthread_mutex_init(&motd_lock, NULL);
-	loadtime = (int) time(NULL);
+	loadtime = time(NULL);
 
 	if (bbs_alertpipe_create(ping_alertpipe)) {
 		goto decline;

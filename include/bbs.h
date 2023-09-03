@@ -31,6 +31,8 @@
 #include <assert.h>
 #include <stddef.h> /* use NULL */
 #include <unistd.h>
+#include <time.h> /* time_t cannot be forward declared, since it's a typedef */
+
 #if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
 #include <stdlib.h>
 #include <string.h>
@@ -39,7 +41,7 @@
 #include <sys/socket.h>
 #include <fcntl.h>
 #include <sys/eventfd.h>
-#endif
+#endif /* DEBUG_FD_LEAKS */
 
 #include "include/logger.h"
 
@@ -249,6 +251,9 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 #define STRING_ALLOC_SIZE(s) (!strlen_zero(s) ? strlen(s) + 1 : 0)
 
 #define STARTS_WITH(s, start) (!strncasecmp(s, start, STRLEN(start)))
+
+/*! \brief printf format specifier for time_t variables */
+#define TIME_T_FMT "ld"
 
 /*!
  * \brief Check if an argument is within bounds
@@ -491,7 +496,7 @@ int bbs_abort_startup(void);
 int bbs_is_shutting_down(void);
 
 /*! \brief Get BBS startup time */
-int bbs_starttime(void);
+time_t bbs_starttime(void);
 
 /*! \brief Get BBS config directory */
 const char *bbs_config_dir(void);

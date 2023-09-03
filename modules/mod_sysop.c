@@ -334,7 +334,7 @@ static void print_time(int fdout)
 	time_t now;
 	struct tm nowdate;
 
-	now = (int) time(NULL);
+	now = time(NULL);
 	localtime_r(&now, &nowdate);
 	strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M:%S %P %Z", &nowdate);
 	bbs_dprintf(fdout, "%s\n", timebuf);

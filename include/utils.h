@@ -313,7 +313,7 @@ int bbs_time_friendly_now(char *buf, size_t len);
  * \param len Length of buf. Should be at least 29 (no larger is necessary)
  * \retval same as strftime (number of bytes written, -1 on failure)
  */
-int bbs_time_friendly(int epoch, char *buf, size_t len);
+int bbs_time_friendly(time_t epoch, char *buf, size_t len);
 
 /*!
  * \brief Print time elapsed e.g. 0:33:21
@@ -324,7 +324,7 @@ int bbs_time_friendly(int epoch, char *buf, size_t len);
  * \param buf Buffer.
  * \param len Size of buffer. Minimum 12 recommended.
  */
-void print_time_elapsed(int start, int end, char *buf, size_t len);
+void print_time_elapsed(time_t start, time_t end, char *buf, size_t len);
 
 /*!
  * \brief Print days elapsed e.g. (0 days, 0 hrs, 33 mins, 21 secs)
@@ -335,7 +335,7 @@ void print_time_elapsed(int start, int end, char *buf, size_t len);
  * \param buf Buffer.
  * \param len Size of buffer. Minimum 36 recommended.
  */
-void print_days_elapsed(int start, int end, char *buf, size_t len);
+void print_days_elapsed(time_t start, time_t end, char *buf, size_t len);
 
 /*!
  * \brief Parse an RFC822/RFC2822 date (i.e. date from an email header)

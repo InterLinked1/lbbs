@@ -39,7 +39,7 @@
 static int expose_members = 1;
 static unsigned int ignore_join_start = 0;
 
-static int modstart;
+static time_t modstart;
 
 struct chan_pair {
 	const char *client1;
@@ -934,7 +934,7 @@ static int load_module(void)
 	}
 
 	pthread_mutex_init(&nicklock, NULL);
-	modstart = (int) time(NULL);
+	modstart = time(NULL);
 
 	irc_relay_register(netirc_cb, nicklist, privmsg_cb, BBS_MODULE_SELF);
 	bbs_irc_client_msg_callback_register(doormsg_cb, numeric_cb, BBS_MODULE_SELF);

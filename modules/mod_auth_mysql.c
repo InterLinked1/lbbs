@@ -262,7 +262,7 @@ cleanup:
 static int invalid_birthday(struct tm *tm)
 {
 	struct tm nowtime;
-	time_t timenow = (int) time(NULL);
+	time_t timenow = time(NULL);
 
 	gmtime_r(&timenow, &nowtime);
 

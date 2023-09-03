@@ -122,7 +122,7 @@ struct http_listener {
 struct session {
 	char sessid[SESSION_ID_LENGTH + 1];	/*!< Session ID (may change) */
 	struct bbs_vars vars;				/*!< Session variables */
-	int created;						/*!< Session creation time */
+	time_t created;						/*!< Session creation time */
 	RWLIST_ENTRY(session) entry;		/*!< Next session */
 	unsigned int usecount;				/*!< Number of clients using this session */
 	unsigned int secure:1;				/*!< Session only used securely? */
@@ -1321,7 +1321,7 @@ static int session_duration = 7200; /* 2 hours */
 static struct session *http_session_find(const char *sessid)
 {
 	struct session *sess;
-	int expired_threshold = (int) time(NULL) - session_duration;
+	time_t expired_threshold = time(NULL) - (time_t) session_duration;
 
 	RWLIST_WRLOCK(&sessions);
 	/* First, purge any expired sessions that aren't in use */
@@ -1402,7 +1402,7 @@ static struct session *http_session_set(struct http_session *http, int secure, i
 		RWLIST_INSERT_HEAD(&sessions, sess, entry);
 		sess->usecount += 1;
 		SET_BITFIELD(sess->secure, secure);
-		sess->created = (int) time(NULL);
+		sess->created = time(NULL);
 	}
 	RWLIST_UNLOCK(&sessions);
 
@@ -2067,7 +2067,7 @@ enum http_response_code http_static(struct http_session *http, const char *filen
 		time_t timenow, timemod, timemodsince;
 
 		memset(&nowtime, 0, sizeof(nowtime));
-		timenow = (int) time(NULL);
+		timenow = time(NULL);
 		gmtime_r(&timenow, &nowtime);
 
 		timemod = mktime(&modtime); /* mktime is thread safe */

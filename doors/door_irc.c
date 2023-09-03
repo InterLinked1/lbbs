@@ -501,7 +501,7 @@ static void handle_ctcp(struct client *client, struct irc_client *ircl, const ch
 				time_t nowtime;
 				struct tm nowdate;
 
-				nowtime = (int) time(NULL);
+				nowtime = time(NULL);
 				localtime_r(&nowtime, &nowdate);
 				strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M:%S %P %Z", &nowdate);
 				irc_client_ctcp_reply(ircl, msg->prefix, ctcp, timebuf);
@@ -711,7 +711,7 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 	struct participant *p;
 
 	/* Calculate the current time once, for everyone, using the server's time (sorry if participants are in different time zones) */
-	now = (int) time(NULL);
+	now = time(NULL);
 	localtime_r(&now, &sendtime);
 	/* So, %P is lowercase and %p is uppercase. Just consult your local strftime(3) man page if you don't believe me. Good grief. */
 	strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime); /* mm-dd hh:mm:ssPP + space at end (before message) = 17 chars */
@@ -1146,7 +1146,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 
 			/* Make our timestamp */
 			if (!NODE_IS_TDD(node)) {
-				now = (int) time(NULL);
+				now = time(NULL);
 				localtime_r(&now, &sendtime);
 				strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime);
 			}
@@ -1201,7 +1201,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 									*tmp = '\0'; /* Strip everything except the nickname from the prefix */
 								}
 								if (!NODE_IS_TDD(node)) {
-									now = (int) time(NULL);
+									now = time(NULL);
 									localtime_r(&now, &sendtime);
 									strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime);
 								}

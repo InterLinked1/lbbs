@@ -45,9 +45,10 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, int seqn
 {
 	struct stat st;
 	char fullname[256];
-	int tstamp;
+	time_t tstamp;
 	int trashsec = 86400 * (int) trashdays;
-	int elapsed, now = (int) time(NULL);
+	time_t elapsed;
+	time_t now = time(NULL);
 	unsigned int msguid;
 	struct trash_traversal *traversal = obj;
 	struct mailbox *mbox = traversal->mbox;
@@ -60,9 +61,9 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, int seqn
 		bbs_error("stat(%s) failed: %s\n", fullname, strerror(errno));
 		return 0;
 	}
-	tstamp = (int) st.st_ctime;
+	tstamp = st.st_ctime;
 	elapsed = now - tstamp;
-	bbs_debug(7, "Encountered in trash: %s (%d s ago)\n", fullname, elapsed);
+	bbs_debug(7, "Encountered in trash: %s (%" TIME_T_FMT " s ago)\n", fullname, elapsed);
 	if (elapsed > trashsec) {
 		if (unlink(fullname)) {
 			bbs_error("unlink(%s) failed: %s\n", fullname, strerror(errno));

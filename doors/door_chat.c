@@ -38,7 +38,7 @@ struct participant {
 	/* Reference to our channel, for speed of finding it again (we can do pointer comparisons instead of string comparisons) */
 	struct channel *channel;
 	/* Join time */
-	int jointime;
+	time_t jointime;
 	/* Pipe to store data */
 	int chatpipe[2];
 	/* Next participant */
@@ -131,7 +131,7 @@ static struct participant *join_channel(struct bbs_node *node, const char *name)
 	}
 	p->node = node;
 	p->channel = channel;
-	p->jointime = (int) time(NULL);
+	p->jointime = time(NULL);
 	if (pipe(p->chatpipe)) {
 		bbs_error("Failed to create pipe\n");
 		if (newchan) {
@@ -170,7 +170,7 @@ static int print_channel_participants(struct bbs_node *node, struct channel *cha
 	char elapsed[24];
 	int c = 0;
 	struct participant *p;
-	int now = (int) time(NULL);
+	time_t now = time(NULL);
 
 	bbs_node_writef(node, "%4s %9s %s\n", "Node", "Elapsed", "User");
 	RWLIST_RDLOCK(&channel->participants);

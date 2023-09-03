@@ -563,7 +563,7 @@ struct imap_search {
 	FILE *fp;
 	int flags;
 	int seqno;
-	int now;
+	time_t now;
 	unsigned long maxmodseq;
 	struct imap_session *imap;
 	unsigned int new:1;
@@ -974,9 +974,9 @@ static int search_dir(struct imap_session *imap, const char *dirname, int newdir
 	unsigned int uid;
 	unsigned int seqno = 0;
 	char keywords[27] = "";
-	int now;
+	time_t now;
 
-	now = (int) time(NULL); /* Only compute this once, not for each file */
+	now = time(NULL); /* Only compute this once, not for each file */
 
 	files = scandir(dirname, &entries, NULL, imap_uidsort);
 	if (files < 0) {
@@ -2527,7 +2527,7 @@ int test_thread_orderedsubject(void)
 	int res = -1, mres;
 	struct thread_message *msgs;
 	struct thread_messageid tmsgids;
-	time_t now = (int) time(NULL);
+	time_t now = time(NULL);
 	unsigned int i;
 	char date[34];
 	const size_t num_msgs = 20;
@@ -2603,7 +2603,7 @@ int test_thread_references(void)
 	int res = -1, mres;
 	struct thread_message *msgs;
 	struct thread_messageid tmsgids;
-	time_t now = (int) time(NULL);
+	time_t now = time(NULL);
 	unsigned int i;
 	int outlen;
 	char date[34];

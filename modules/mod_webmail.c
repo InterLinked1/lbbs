@@ -42,7 +42,7 @@ struct imap_client {
 	struct mailimap *imap;
 	struct ws_session *ws;
 	int imapfd;			/* File descriptor, important for polling an idle connection */
-	int idlestart;		/* Time that IDLE started, to avoid timing out */
+	time_t idlestart;	/* Time that IDLE started, to avoid timing out */
 	int idlerefresh;	/* Reasons for refreshing page listing during IDLE */
 	/* Cache */
 	int page;
@@ -2882,7 +2882,7 @@ static int idle_start(struct ws_session *ws, struct imap_client *client)
 			bbs_warning("Failed to start IDLE: %s\n", maildriver_strerror(res));
 			return -1;
 		} else {
-			client->idlestart = (int) time(NULL);
+			client->idlestart = time(NULL);
 			client->idling = 1;
 		}
 	}
@@ -2891,7 +2891,8 @@ static int idle_start(struct ws_session *ws, struct imap_client *client)
 
 static void idle_continue(struct imap_client *client)
 {
-	int left, elapsed, now = (int) time(NULL);
+	time_t left, elapsed;
+	time_t now = time(NULL);
 
 	bbs_assert(client->idling);
 	bbs_assert(client->imapfd != -1);
@@ -2909,7 +2910,7 @@ static void idle_continue(struct imap_client *client)
 
 	elapsed = now - client->idlestart;
 	left = 1740 - elapsed; /* Don't do math inside the SEC_MS macro. It won't work properly. */
-	bbs_debug(9, "IDLE time remaining: %d s (%d s elapsed)\n", left, elapsed);
+	bbs_debug(9, "IDLE time remaining: %" TIME_T_FMT " s (%" TIME_T_FMT " s elapsed)\n", left, elapsed);
 }
 
 static int process_idle(struct imap_client *client, char *s)

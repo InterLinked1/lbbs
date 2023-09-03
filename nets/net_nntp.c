@@ -870,7 +870,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 		char datestr[15];
 		time_t timenow;
 		struct tm nowtime;
-		timenow = (int) time(NULL);
+		timenow = time(NULL);
 		gmtime_r(&timenow, &nowtime);
 		strftime(datestr, sizeof(datestr), "%Y%m%d%H%M%S", &nowtime); /* yyyymmddhhmmss */
 		nntp_send(nntp, 111, "%s", datestr);

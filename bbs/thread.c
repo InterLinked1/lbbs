@@ -64,8 +64,8 @@ struct thread_list_t {
 	char *name;
 	pthread_t id;
 	int lwp;
-	int start;
-	int end;
+	time_t start;
+	time_t end;
 	unsigned int detached:1;
 	unsigned int waitingjoin:1;
 };
@@ -82,7 +82,7 @@ static void thread_register(char *name, int detached)
 		return;
 	}
 
-	new->start = (int) time(NULL);
+	new->start = time(NULL);
 	new->id = pthread_self();
 	new->lwp = bbs_gettid();
 	new->name = name; /* steal the allocated memory for the thread name */
@@ -108,7 +108,7 @@ static int __thread_unregister(pthread_t id, const char *file, int line, const c
 				remove = 1;
 			} else {
 				x->waitingjoin = 1;
-				x->end = (int) time(NULL);
+				x->end = time(NULL);
 			}
 			lwp = x->lwp;
 			break;
@@ -146,7 +146,7 @@ void bbs_thread_cleanup(void)
 {
 	char elapsed[24];
 	struct thread_list_t *x;
-	int now = (int) time(NULL);
+	time_t now = time(NULL);
 
 	/* All spawned threads should have exited by now. Let's see if that's the case. */
 	RWLIST_WRLOCK(&thread_list);
@@ -191,7 +191,7 @@ int bbs_dump_threads(int fd)
 	char elapsed[24];
 	int threads = 0;
 	struct thread_list_t *cur;
-	int now = (int) time(NULL);
+	time_t now = time(NULL);
 
 	bbs_dprintf(fd, "%3d %6d (%s)\n", 0, getpid(), "PID / main thread");
 	RWLIST_RDLOCK(&thread_list);

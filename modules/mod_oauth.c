@@ -46,8 +46,8 @@ struct oauth_client {
 	const char *posturl;
 	char *accesstoken;
 	RWLIST_ENTRY(oauth_client) entry;
-	int tokentime;
-	int expires;
+	time_t tokentime;
+	time_t expires;
 	unsigned int userid;
 	pthread_mutex_t lock;
 	char data[0];
@@ -122,7 +122,7 @@ static int add_oauth_client(const char *name, const char *clientid, const char *
 	/* Access token is optional */
 	if (accesstoken) {
 		client->accesstoken = strdup(accesstoken);
-		client->tokentime = (int) time(NULL); /* Assumed to be valid as of now. */
+		client->tokentime = time(NULL); /* Assumed to be valid as of now. */
 	}
 
 	client->expires = expires;
@@ -145,8 +145,9 @@ static int fetch_token(struct oauth_client *client, char *buf, size_t len)
 	const char *newtoken;
 	json_t *json;
 	json_error_t jansson_error = {};
-	int now = (int) time(NULL);
-	int expires, expiretime;
+	time_t now = time(NULL);
+	int expires;
+	time_t expiretime;
 	int res = -1;
 
 	pthread_mutex_lock(&client->lock);
@@ -162,8 +163,8 @@ static int fetch_token(struct oauth_client *client, char *buf, size_t len)
 		pthread_mutex_unlock(&client->lock);
 		return 0;
 	} else if (client->tokentime) {
-		int ago = now - expiretime;
-		bbs_debug(5, "Token refresh required (expired %d seconds ago)\n", ago);
+		time_t ago = now - expiretime;
+		bbs_debug(5, "Token refresh required (expired %" TIME_T_FMT " seconds ago)\n", ago);
 	}
 
 	/* Get a new token */

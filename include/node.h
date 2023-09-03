@@ -50,7 +50,7 @@ struct bbs_node {
 	unsigned short int port;	/*!< Local port number */
 	pthread_mutex_t lock;		/*!< Node lock */
 	pthread_mutex_t ptylock;	/*!< Node PTY lock */
-	int created;				/*!< Creation time */
+	time_t created;				/*!< Creation time */
 	pid_t childpid;				/*!< Child PID of process node is currently exec'ing (0 if none) */
 	unsigned int bps;			/*!< Emulated terminal speed */
 	unsigned int speed;			/*!< Pause time for emulated terminal speed, in us */

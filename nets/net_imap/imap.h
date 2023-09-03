@@ -29,10 +29,10 @@ struct imap_client {
 	int virtcapabilities;		/* Capabilities of remote IMAP server */
 	char virtdelimiter;			/* Hierarchy delimiter used by remote server */
 	char *virtlist;				/* Result of LIST-STATUS command on remote IMAP server */
-	int virtlisttime;			/* Time that LIST-STATUS command was run */
-	int lastactive;				/* Last active time */
+	time_t virtlisttime;		/* Time that LIST-STATUS command was run */
+	time_t lastactive;			/* Last active time */
 	char *bgmailbox;			/* Mail for background IDLE */
-	int idlestarted;			/* Time that IDLE started */
+	time_t idlestarted;			/* Time that IDLE started */
 	int maxidlesec;				/* Max amount of time for which we can IDLE */
 	unsigned int active:1;		/* Client is currently in use */
 	unsigned int idling:1;		/* Idling, unattended */

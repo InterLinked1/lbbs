@@ -81,7 +81,7 @@ static struct fdleaks {
 
 #define STORE_COMMON(offset, name, ...) { \
 	struct fdleaks *tmp = &fdleaks[offset]; \
-	tmp->now = (int) time(NULL); \
+	tmp->now = time(NULL); \
 	COPY(tmp->file, file);      \
 	tmp->line = line;           \
 	COPY(tmp->function, func);  \

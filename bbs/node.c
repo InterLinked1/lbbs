@@ -249,7 +249,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 
 	node->user = NULL; /* No user exists yet. We calloc'd so this is already NULL, but this documents that user may not exist at first. */
 	node->active = 1;
-	node->created = (int) time(NULL);
+	node->created = time(NULL);
 	/* Assume TTY will be in canonical mode with echo enabled to start. */
 	node->echo = 1;
 	node->buffered = 1;
@@ -480,7 +480,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	pthread_t node_thread;
 	unsigned int nodeid;
 	int skipjoin;
-	int now;
+	time_t now;
 	int wasloggedin = 0;
 
 	/* Prevent node from being freed until we release the lock. */
@@ -493,7 +493,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	node->active = 0;
 	bbs_debug(2, "Terminating node %d\n", node->id);
 
-	now = (int) time(NULL);
+	now = time(NULL);
 
 	bbs_node_kill_child(node);
 
@@ -696,7 +696,7 @@ int bbs_node_info(int fd, unsigned int nodenum)
 	struct bbs_node *n;
 	char menufull[16];
 	int lwp;
-	int now = (int) time(NULL);
+	time_t now = time(NULL);
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
@@ -1183,7 +1183,7 @@ static int bbs_node_splash(struct bbs_node *node)
 
 	if (bbs_starttime() > (int) minuptimedisplayed) {
 		char timebuf[24];
-		int now = (int) time(NULL);
+		time_t now = time(NULL);
 		print_time_elapsed(bbs_starttime(), now, timebuf, sizeof(timebuf)); /* Formatting for timebuf (11 chars) should be enough for 11 years uptime, I think that's good enough */
 		if (!NODE_IS_TDD(node)) {
 			char daysbuf[36];

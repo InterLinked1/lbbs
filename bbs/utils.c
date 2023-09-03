@@ -970,7 +970,7 @@ int bbs_time_friendly_short_now(char *buf, size_t len)
 	time_t lognow;
 	struct tm logdate;
 
-	lognow = (int) time(NULL);
+	lognow = time(NULL);
 	localtime_r(&lognow, &logdate);
 	/* 01/01 01:01pm = 13 chars */
 	return (int) strftime(buf, len, "%m/%d %I:%M%P", &logdate);
@@ -981,33 +981,28 @@ int bbs_time_friendly_now(char *buf, size_t len)
 	time_t lognow;
 	struct tm logdate;
 
-	lognow = (int) time(NULL);
+	lognow = time(NULL);
 	localtime_r(&lognow, &logdate);
 	/* Sat Dec 31 2000 09:45 am EST =  29 chars */
 	return (int) strftime(buf, len, "%a %b %e %Y %I:%M %P %Z", &logdate);
 }
 
-int bbs_time_friendly(int epoch, char *buf, size_t len)
+int bbs_time_friendly(time_t epoch, char *buf, size_t len)
 {
-	time_t lognow;
 	struct tm logdate;
-	/* Accept an int and cast internally for ease of usage: callers can directly provide int timestamps
-	 * without having to manually cast to time_t on the stack and provide a pointer */
-	time_t epocht = (time_t) epoch;
 
-	lognow = time(&epocht);
-	localtime_r(&lognow, &logdate);
+	localtime_r(&epoch, &logdate);
 	/* Sat Dec 31 2000 09:45 am EST =  29 chars */
 	return (int) strftime(buf, len, "%a %b %e %Y %I:%M %P %Z", &logdate);
 }
 
-void print_time_elapsed(int start, int end, char *buf, size_t len)
+void print_time_elapsed(time_t start, time_t end, char *buf, size_t len)
 {
-	int diff;
-	int hr, min, sec;
+	time_t diff;
+	time_t hr, min, sec;
 
 	if (!end) {
-		end = (int) time(NULL);
+		end = time(NULL);
 	}
 
 	diff = end - start;
@@ -1016,16 +1011,16 @@ void print_time_elapsed(int start, int end, char *buf, size_t len)
 	min = diff / 60;
 	diff -= (min * 60);
 	sec = diff;
-	snprintf(buf, len, "%d:%02d:%02d", hr, min, sec);
+	snprintf(buf, len, "%" TIME_T_FMT ":%02" TIME_T_FMT ":%02" TIME_T_FMT, hr, min, sec);
 }
 
-void print_days_elapsed(int start, int end, char *buf, size_t len)
+void print_days_elapsed(time_t start, time_t end, char *buf, size_t len)
 {
-	int diff;
-	int days, hr, min, sec;
+	time_t diff;
+	time_t days, hr, min, sec;
 
 	if (!end) {
-		end = (int) time(NULL);
+		end = time(NULL);
 	}
 
 	diff = end - start;
@@ -1036,7 +1031,7 @@ void print_days_elapsed(int start, int end, char *buf, size_t len)
 	min = diff / 60;
 	diff -= (min * 60);
 	sec = diff;
-	snprintf(buf, len, "%d day%s, %d hr%s, %d min%s, %d sec%s", days, ESS(days), hr, ESS(hr), min, ESS(min), sec, ESS(sec));
+	snprintf(buf, len, "%" TIME_T_FMT " day%s, %" TIME_T_FMT " hr%s, %" TIME_T_FMT " min%s, %" TIME_T_FMT " sec%s", days, ESS(days), hr, ESS(hr), min, ESS(min), sec, ESS(sec));
 }
 
 int bbs_parse_rfc822_date(const char *s, struct tm *tm)

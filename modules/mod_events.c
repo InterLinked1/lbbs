@@ -42,7 +42,7 @@ struct stringlist ip_whitelist;
 
 struct ip_block {
 	struct in_addr addr;		/* IP address */
-	int epoch;				/* Epoch time of last auth failure */
+	time_t epoch;				/* Epoch time of last auth failure */
 	struct timeval lastfail;	/* Granular time of last auth failure */
 	unsigned int authfails;		/* Total number of auth fails */
 	unsigned int authhits;		/* Total number of uncompleted connections (never logged in) */
@@ -90,12 +90,12 @@ static void process_bad_ip(struct in_addr *addr, const char *straddr, const char
 	int c = 0;
 	struct ip_block *ip, *oldest_offender = NULL;
 	struct timeval nowtime;
-	int now, nowthresh;
+	time_t now, nowthresh;
 	unsigned long diff;
-	int least_recent_offend_time = 0;
+	time_t least_recent_offend_time = 0;
 	int repeat_offender, do_ban;
 
-	now = (int) time(NULL);
+	now = time(NULL);
 	nowthresh = now - GOOD_NEIGHBOR_SEC;
 	gettimeofday(&nowtime, NULL);
 
@@ -137,7 +137,7 @@ static void process_bad_ip(struct in_addr *addr, const char *straddr, const char
 		}
 		memcpy(&ip->addr, addr, sizeof(ip->addr));
 	} else {
-		int secsince = now - ip->epoch;
+		time_t secsince = now - ip->epoch;
 		/* If it's been at least 30 seconds since the last offense, reset quickhits to 0. */
 		if (secsince > 30) {
 			ip->quickhits = 0;
@@ -171,7 +171,7 @@ static void process_bad_ip(struct in_addr *addr, const char *straddr, const char
 				ip->quickhits++;
 			}
 		}
-		bbs_debug(2, "IP address %s blacklist score: %d/%d/%d/%d (last offense: %ds/%luus ago\n", straddr, ip->authfails, ip->authhits, ip->quickfails, ip->quickhits, now - ip->epoch, diff);
+		bbs_debug(2, "IP address %s blacklist score: %d/%d/%d/%d (last offense: %" TIME_T_FMT "s/%luus ago\n", straddr, ip->authfails, ip->authhits, ip->quickfails, ip->quickhits, now - ip->epoch, diff);
 	} else {
 		bbs_debug(2, "IP address %s blacklist score: %d/%d/%d/%d (first offense)\n", straddr, ip->authfails, ip->authhits, ip->quickfails, ip->quickhits);
 	}

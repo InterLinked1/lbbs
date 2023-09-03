@@ -365,7 +365,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 #pragma GCC diagnostic ignored "-Waggregate-return"
 	now = bbs_tvnow();
 #pragma GCC diagnostic pop
-	lognow = (int) time(NULL);
+	lognow = time(NULL);
 	localtime_r(&lognow, &logdate);
 	strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 

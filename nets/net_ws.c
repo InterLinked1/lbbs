@@ -768,7 +768,9 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 	int want_ping = 0;
 	char ping_data[15];
 	struct pollfd pfds[2];
-	int lastping, max_ms, pollms;
+	time_t lastping;
+	int max_ms;
+	int pollms;
 	int app_ms_elapsed = 0;
 
 	/* no memset needed, directly initialize all values */
@@ -830,18 +832,18 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 	pfds[1].fd = -1;
 	pfds[1].events = POLLIN;
 
-	lastping = (int) time(NULL);
+	lastping = time(NULL);
 
 	for (;;) {
-		int this_poll_start, elapsed_sec;
+		time_t this_poll_start, elapsed_sec;
 		nfds_t numfds = ws.pollfd == -1 ? 1 : 2;
 		pfds[1].fd = ws.pollfd;
 		pfds[0].revents = pfds[1].revents = 0;
 
 		/* We need to ping the client at least every MAX_WEBSOCKET_PING_MS. */
-		this_poll_start = (int) time(NULL);
+		this_poll_start = time(NULL);
 		elapsed_sec = this_poll_start - lastping;
-		max_ms = MAX_WEBSOCKET_PING_MS - SEC_MS(elapsed_sec);
+		max_ms = (int) (MAX_WEBSOCKET_PING_MS - SEC_MS(elapsed_sec));
 #ifdef DEBUG_POLL
 		bbs_debug(10, "ws.pollms: %d, %d s / %d ms have elapsed since last ping, %d ms is max allowed\n", ws.pollms, elapsed_sec, app_ms_elapsed, max_ms);
 #endif
@@ -887,7 +889,8 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 				} /* else, if client already closed, don't try writing any further */
 				break;
 			} else {
-				int now, elapsed, cres;
+				time_t now, elapsed;
+				int cres;
 				struct wss_frame *frame;
 
 				frame = wss_client_frame(client);
@@ -931,12 +934,12 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 
 				/* Since the poll was interrupted, calculate how much time elapsed.
 				 * Compute after so the amount of time taken by the callback doesn't skew this. */
-				now = (int) time(NULL);
+				now = time(NULL);
 				elapsed = now - this_poll_start;
-				app_ms_elapsed += SEC_MS(elapsed);
+				app_ms_elapsed += (int) SEC_MS(elapsed);
 			}
 		} else if (pfds[1].revents) {
-			int now, elapsed;
+			time_t now, elapsed;
 			/* Activity on the application's file descriptor of interest. Let it know. */
 			/* Do not reset app_ms_elapsed to 0 here. There is no guarantee the application will send WebSocket data. */
 			if (route->callbacks->on_poll_activity) {
@@ -947,11 +950,12 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 				}
 			}
 			/* Since the poll was interrupted, calculate how much time elapsed. Compute after callback executed. */
-			now = (int) time(NULL);
+			now = time(NULL);
 			elapsed = now - this_poll_start;
-			app_ms_elapsed += SEC_MS(elapsed);
+			app_ms_elapsed += (int) SEC_MS(elapsed); /* Difference will fit in an int */
 		} else {
-			int framelen, now;
+			int framelen;
+			time_t now;
 			/* Send a ping if we haven't heard anything in a while */
 			if (++want_ping > 1) {
 				/* Already had a ping outstanding that wasn't ponged. Disconnect. */
@@ -960,7 +964,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 			}
 
 			/* Keep track of how much of the application's poll interval has actually elapsed. */
-			now = (int) time(NULL);
+			now = time(NULL);
 			if (ws.pollms >= 0) {
 				app_ms_elapsed += pollms;
 				/* This is obviously not very granular at the ms level, since we're doing math with seconds.
@@ -976,7 +980,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 
 			/* Use current timestamp as our ping data */
 			lastping = now;
-			framelen = snprintf(ping_data, sizeof(ping_data), "%d", now);
+			framelen = snprintf(ping_data, sizeof(ping_data), "%" TIME_T_FMT, now);
 			wss_write(client, WS_OPCODE_PING, ping_data, (size_t) framelen);
 
 			/* Just because poll timed out at the WebSocket protocol level,

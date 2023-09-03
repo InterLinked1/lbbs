@@ -84,7 +84,7 @@ char *rungroup = NULL, *runuser = NULL, *config_dir = NULL;
 
 static pid_t bbs_pid;
 
-static int bbs_start_time;
+static time_t bbs_start_time;
 
 static int sig_alert_pipe[2] = { -1, -1 };
 static int abort_startup = 0;
@@ -330,7 +330,7 @@ static int run_init(int argc, char *argv[])
 }
 #pragma GCC diagnostic pop
 
-int bbs_starttime(void)
+time_t bbs_starttime(void)
 {
 	return bbs_start_time;
 }
@@ -347,9 +347,9 @@ int bbs_view_settings(int fd)
 {
 	char timebuf[24];
 	char daysbuf[36];
-	int now;
+	time_t now;
 
-	now = (int) time(NULL);
+	now = time(NULL);
 	print_time_elapsed(bbs_start_time, now, timebuf, sizeof(timebuf));
 	print_days_elapsed(bbs_start_time, now, daysbuf, sizeof(daysbuf));
 
@@ -891,7 +891,7 @@ int main(int argc, char *argv[])
 	}
 
 	bbs_debug(1, "Starting BBS on PID %d, running as user '%s' and group '%s', using '%s'\n", bbs_pid, S_IF(runuser), S_IF(rungroup), bbs_config_dir());
-	bbs_start_time = (int) time(NULL);
+	bbs_start_time = time(NULL);
 
 	if (argc > 0 && !strstr(argv[0], BBS_NAME)) {
 		/* argv[0] is typically the program name, by convention.

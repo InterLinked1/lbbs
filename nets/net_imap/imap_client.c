@@ -159,7 +159,7 @@ int imap_client_idle_start(struct imap_client *client)
 	}
 	client->idling = 1;
 	client->active = 1;
-	client->idlestarted = (int) time(NULL);
+	client->idlestarted = time(NULL);
 	return 0;
 }
 
@@ -180,16 +180,16 @@ int imap_client_idle_stop(struct imap_client *client)
 
 int imap_clients_next_idle_expiration(struct imap_session *imap)
 {
-	int min_maxage = 0;
+	time_t min_maxage = 0;
 	struct imap_client *client;
-	int now = (int) time(NULL);
+	time_t now = time(NULL);
 
 	/* Renew all the IDLEs on remote servers, periodically,
 	 * to keep the IMAP connection alive. */
 
 	RWLIST_RDLOCK(&imap->clients);
 	RWLIST_TRAVERSE(&imap->clients, client, entry) {
-		int maxage;
+		time_t maxage;
 		if (!client->idling) {
 			continue;
 		}
@@ -204,23 +204,23 @@ int imap_clients_next_idle_expiration(struct imap_session *imap)
 	if (min_maxage) {
 		min_maxage = min_maxage - now;
 		if (min_maxage < 0) {
-			bbs_warning("Next expiration is in the past? (%ds ago)\n", min_maxage);
+			bbs_warning("Next expiration is in the past? (%" TIME_T_FMT "s ago)\n", min_maxage);
 		}
 	}
-	return min_maxage;
+	return (int) min_maxage; /* This is number of seconds until, it will fit in an int */
 }
 
 void imap_clients_renew_idle(struct imap_session *imap)
 {
 	struct imap_client *client;
-	int now = (int) time(NULL);
+	time_t now = time(NULL);
 
 	/* Renew all the IDLEs on remote servers, periodically,
 	 * to keep the IMAP connection alive. */
 
 	RWLIST_WRLOCK(&imap->clients);
 	RWLIST_TRAVERSE_SAFE_BEGIN(&imap->clients, client, entry) {
-		int maxage;
+		time_t maxage;
 		if (!client->idling) {
 			continue;
 		}
@@ -229,8 +229,8 @@ void imap_clients_renew_idle(struct imap_session *imap)
 		maxage = client->idlestarted + client->maxidlesec;
 		/* If we're not going to call this function to check for renewals before it's due to expire, renew it now */
 		if (maxage < now + 15) { /* Add a little bit of wiggle room */
-			int age = now - client->idlestarted;
-			bbs_debug(4, "Client '%s' needs to renew IDLE (%d/%d s elapsed)...\n", client->virtprefix, age, client->maxidlesec);
+			time_t age = now - client->idlestarted;
+			bbs_debug(4, "Client '%s' needs to renew IDLE (%" TIME_T_FMT "/%d s elapsed)...\n", client->virtprefix, age, client->maxidlesec);
 			if (imap_client_idle_stop(client) || imap_client_idle_start(client)) {
 				client->dead = 1;
 				if (imap->client != client) {
@@ -416,7 +416,7 @@ static ssize_t client_command_passthru(struct imap_client *client, int fd, const
 				/* We did something we shouldn't have, oops */
 				bbs_warning("Command '%.*s%.*s' failed: %s\n", taglen, tag, cmdlen > 2 ? cmdlen - 2 : cmdlen, cmd, buf); /* Don't include trailing CR LF */
 			}
-			client->lastactive = (int) time(NULL); /* Successfully just got data from remote server */
+			client->lastactive = time(NULL); /* Successfully just got data from remote server */
 			break; /* That's all, folks! */
 		}
 		if (client_said_something) {
@@ -514,7 +514,7 @@ static int imap_client_keepalive_check(struct imap_client *client)
 
 static int connection_stale(struct imap_client *client)
 {
-	int now;
+	time_t now;
 	struct bbs_tcp_client *tcpclient = &client->client;
 
 	/* If it's running an IDLE in the background, stop it */
@@ -545,7 +545,7 @@ static int connection_stale(struct imap_client *client)
 	 * it will disconnect on us. So explicitly send a NOOP and see if we get a response.
 	 * Because this check adds an additional RTT, only do this if we haven't heard from the server super recently.
 	 * If we have, then this is just unnecessary. */
-	now = (int) time(NULL);
+	now = time(NULL);
 	if (now < client->lastactive + 10) {
 		bbs_debug(5, "Received output from remote server within last 10 seconds, fast reuse\n");
 		return 0; /* Should be okay to reuse without doing an explicit keep alive check */
@@ -730,7 +730,7 @@ struct imap_client *__imap_client_get_by_url(struct imap_session *imap, const ch
 		client->maxidlesec = 1800; /* 30 minutes */
 	}
 
-	client->lastactive = (int) time(NULL); /* Mark as active since we just successfully did I/O with it */
+	client->lastactive = time(NULL); /* Mark as active since we just successfully did I/O with it */
 	return client;
 
 cleanup:

@@ -41,7 +41,7 @@ static int ibbs_exec(struct bbs_node *node, const char *args)
 
 	UNUSED(args);
 
-	now = (int) time(NULL);
+	now = time(NULL);
 	localtime_r(&now, &nowdate);
 #pragma GCC diagnostic ignored "-Wformat-y2k"
 	strftime(mmyy, sizeof(mmyy), "%m%y", &nowdate); /* 2-digit month, 2-digit year */

@@ -335,7 +335,7 @@ static struct bbs_config *config_parse(const char *name)
 		fclose(fp);
 		return NULL;
 	}
-	cfg->parsetime = (int) time(NULL);
+	cfg->parsetime = time(NULL);
 	cfg->name = strdup(name);
 	if (ALLOC_FAILURE(cfg->name)) {
 		free(cfg);

@@ -3835,9 +3835,9 @@ static int handle_idle(struct imap_session *imap)
 {
 #define MAX_IDLE_SEC 1800 /* 30 minutes */
 #define MAX_IDLE_MS SEC_MS(MAX_IDLE_SEC)
-	int idleleft = MAX_IDLE_MS;
+	time_t idleleft = MAX_IDLE_MS;
 	int res;
-	int lastactivity, idlestarted;
+	time_t lastactivity, idlestarted;
 
 	if (imap->client) {
 		/* If not already idling on the currently selected mailbox, and can't start, abort. Otherwise, proceed as usual. */
@@ -3861,7 +3861,7 @@ static int handle_idle(struct imap_session *imap)
 	/* Note that IDLE only applies to the currently selected mailbox (folder).
 	 * Thus, in traversing all the IMAP sessions, simply sharing the same mbox isn't enough.
 	 * imap->dir also needs to match (same currently selected folder). */
-	idlestarted = (int) time(NULL);
+	idlestarted = time(NULL);
 	for (;;) {
 		struct imap_client *client = NULL;
 
@@ -3871,9 +3871,9 @@ static int handle_idle(struct imap_session *imap)
 		 * - IDLE timeout
 		 */
 		int poll_interval, pollms;
-		int now = (int) time(NULL);
+		time_t now = time(NULL);
 		int next_idle_exp = imap_clients_next_idle_expiration(imap); /* First IDLE expiration across all remote clients */
-		int idle_exp = idlestarted + MAX_IDLE_SEC + 1 - now; /* Our client's IDLE expiration */
+		int idle_exp = (int) (idlestarted + MAX_IDLE_SEC + 1 - now); /* Our client's IDLE expiration */
 
 		poll_interval = MIN(idle_exp, idle_notify_interval);
 		if (next_idle_exp) {
@@ -3969,7 +3969,7 @@ static int handle_idle(struct imap_session *imap)
 						/* Again, bgmailbox is always an INBOX so we just hardcode that for now */
 						imap_client_send_wait_response_cb_noecho(client, -1, SEC_MS(5), notify_status_cb, NULL, "STATUS \"%s\" (%s%s)\r\n", "INBOX", "MESSAGES UNSEEN UIDNEXT UIDVALIDITY", (imap->condstore || imap->qresync) && client->virtcapabilities & IMAP_CAPABILITY_CONDSTORE ? " HIGHESTMODSEQ" : ""); /* Covers all cases: MessageNew, MessageExpunge, FlagChange */
 						imap_client_idle_start(client); /* Mailbox is still selected, no need to reselect */
-						lastactivity = (int) time(NULL);
+						lastactivity = time(NULL);
 					} else {
 						bbs_debug(7, "NOTIFY not enabled for %s, ignoring\n", client->bgmailbox);
 					}
@@ -3983,8 +3983,8 @@ static int handle_idle(struct imap_session *imap)
 				bbs_warning("IDLE expired without any activity\n");
 				return -1; /* Disconnect the client now */
 			} else {
-				int elapsed;
-				now = (int) time(NULL);
+				time_t elapsed;
+				now = time(NULL);
 				elapsed = now - lastactivity;
 				if (idlestarted < now - MAX_IDLE_SEC - 1) {
 					/* It's been 30 minutes, so RFC 3501 now permits us to disconnect the client. */

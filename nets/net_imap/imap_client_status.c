@@ -434,7 +434,7 @@ static int cache_remote_list_status(struct imap_client *client, const char *rtag
 	free_if(client->virtlist);
 	memset(&dynstr, 0, sizeof(dynstr));
 
-	client->virtlisttime = (int) time(NULL);
+	client->virtlisttime = time(NULL);
 
 	for (i = 0; ; i++) {
 		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 10000);
@@ -531,7 +531,7 @@ ssize_t remote_status(struct imap_client *client, const char *remotename, const 
 
 	/* If the remote server supports LIST-STATUS, do that (once), rather than doing a STATUS on each mailbox there
 	 * Cache the results locally and reuse that for the same virtual mailbox. */
-	if (client->virtlist && client->virtlisttime < (int) time(NULL) - 10) {
+	if (client->virtlist && client->virtlisttime < time(NULL) - 10) {
 		/* If the cached LIST-STATUS response is more than 10 seconds old, consider it stale.
 		 * The use case here is for replying to a LIST-STATUS query or a client querying STATUS
 		 * of every mailbox in succession, if these are spread out the statuses could have changed since. */

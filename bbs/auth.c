@@ -288,7 +288,7 @@ static int do_authenticate(struct bbs_user *user, const char *username, const ch
 struct cached_login {
 	char *username;
 	char *ip;
-	int added;
+	time_t added;
 	char hash[65];
 	RWLIST_ENTRY(cached_login) entry;
 };
@@ -297,7 +297,7 @@ static RWLIST_HEAD_STATIC(cached_logins, cached_login);
 
 struct pw_auth_token {
 	char *username;
-	int added;
+	time_t added;
 	char token[48];
 	RWLIST_ENTRY(pw_auth_token) entry;
 };
@@ -378,7 +378,7 @@ int bbs_user_temp_authorization_token(struct bbs_user *user, char *buf, size_t l
 		return -1;
 	}
 	t->username = strdup(bbs_username(user));
-	t->added = (int) time(NULL);
+	t->added = time(NULL);
 	RWLIST_INSERT_TAIL(&auth_tokens, t, entry);
 	RWLIST_UNLOCK(&auth_tokens);
 	safe_strncpy(buf, t->token, len);
@@ -389,10 +389,10 @@ int bbs_user_temp_authorization_token(struct bbs_user *user, char *buf, size_t l
 static int valid_temp_token(const char *username, const char *password)
 {
 	struct pw_auth_token *t;
-	int now, cutoff;
+	time_t now, cutoff;
 	int match = 0;
 
-	now = (int) time(NULL);
+	now = time(NULL);
 	cutoff = now - MAX_TOKEN_AGE;
 
 	/* Purge any stale tokens. */
@@ -516,7 +516,7 @@ static int login_cache(struct bbs_node *node, const char *username, const char *
 	if (ALLOC_FAILURE(l)) {
 		return -1;
 	}
-	l->added = (int) time(NULL);
+	l->added = time(NULL);
 	l->username = strdup(username);
 	safe_strncpy(l->hash, hash, sizeof(l->hash)); /* Could just use strcpy too, if we trust the hash is legitimate. */
 	l->ip = strdup(node->ip);
