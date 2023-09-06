@@ -135,6 +135,12 @@ int __fdleak_dup(int oldfd, const char *file, int line, const char *func);
 int bbs_fd_dump(int fd);
 #endif /* DEBUG_FD_LEAKS */
 
+/*!
+ * \brief Release as much free memory from the top of the heap as possible
+ * \return Number of bytes released by the kernel
+ */
+size_t bbs_malloc_trim(void);
+
 #if defined(REDIRECT_LIBC_ALLOC) && REDIRECT_LIBC_ALLOC == 1
 #define malloc(size) __bbs_malloc(size, __FILE__, __LINE__, __func__)
 #define calloc(nmemb, size) __bbs_calloc(nmemb, size, __FILE__, __LINE__, __func__)

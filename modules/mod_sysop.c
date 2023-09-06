@@ -282,6 +282,11 @@ static int sysop_command(int fdin, int fdout, const char *s)
 	} else if (!strcmp(s, "testemail")) {
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_mail(0, NULL, NULL, NULL, "Test Email", "This is a test email.\r\n\t--LBBS");
+	} else if (!strcmp(s, "mtrim")) {
+		size_t released;
+		my_set_stdout_logging(fdout, 1);
+		released = bbs_malloc_trim();
+		bbs_dprintf(fdout, "%lu bytes released\n", released);
 	} else if (!strcmp(s, "assert")) {
 		/* Development testing only: this command is not listed */
 		char *tmp = NULL;
@@ -441,6 +446,7 @@ static void *sysop_handler(void *varg)
 					bbs_dprintf(sysopfdout, "/runtests           - Run all unit tests\n");
 					bbs_dprintf(sysopfdout, "/runtest <test>     - Run a specific unit test\n");
 					bbs_dprintf(sysopfdout, "/testemail          - Send a test email to the sysop\n");
+					bbs_dprintf(sysopfdout, "/mtrim              - Manually release free memory at the top of the heap\n");
 					bbs_dprintf(sysopfdout, " == Administrative ==\n");
 					bbs_dprintf(sysopfdout, "/load <module>      - Load dynamic module\n");
 					bbs_dprintf(sysopfdout, "/waitload <module>  - Keep retrying load of dynamic module until it succeeds\n");

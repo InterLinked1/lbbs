@@ -954,6 +954,9 @@ int main(int argc, char *argv[])
 	/* Run any callbacks registered during startup, now that we're fully started. */
 	bbs_run_startup_callbacks();
 
+	/* Release excess memory used by startup */
+	bbs_malloc_trim();
+
 	if (!bbs_num_auth_providers()) {
 		bbs_warning("There are no auth providers currently registered. User login will fail.\n");
 	}

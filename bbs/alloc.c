@@ -176,3 +176,21 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 	return size;
 }
 #endif
+
+#include <malloc.h> /* use malloc_trim */
+#include <unistd.h> /* use sbrk */
+
+size_t bbs_malloc_trim(void)
+{
+	int res;
+	size_t diff;
+	void *before, *after;
+
+	before = sbrk(0); /* Find current location of program break */
+	res = malloc_trim(0); /* Release as much free memory from the top of the heap as possible */
+	after = sbrk(0); /* Get new location of program break */
+
+	diff = (size_t) (before - after); /* Number of bytes released (which should be based on the page size) */
+	bbs_debug(2, "malloc_trim: %d, before: %p, after: %p, bytes released: %lu\n", res, before, after, diff);
+	return diff;
+}
