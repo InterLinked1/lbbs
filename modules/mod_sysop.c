@@ -115,10 +115,25 @@ static void show_warranty(int fd)
 	"POSSIBILITY OF SUCH DAMAGES.\n");
 }
 
-static int sysop_command(int fdin, int fdout, const char *s)
+struct sysop_console {
+	int sfd;
+	int fdin;
+	int fdout;
+	pthread_t thread;
+	unsigned int remote:1;
+	unsigned int dead:1;
+	unsigned int log:1;
+	RWLIST_ENTRY(sysop_console) entry;
+};
+
+static RWLIST_HEAD_STATIC(consoles, sysop_console);
+
+static int sysop_command(struct sysop_console *console, const char *s)
 {
 	int res = 0;
 	static char file_without_ext[] = __FILE__;
+	int fdin = console->fdin;
+	int fdout = console->fdout;
 
 	/* This only has an effect the first time */
 	bbs_strterm(file_without_ext, '.'); /* There's no macro like __FILE__ w/o ext, so this is what we gotta do. */
@@ -134,6 +149,7 @@ static int sysop_command(int fdin, int fdout, const char *s)
 		ENSURE_STRLEN(s);
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		res = bbs_module_load(s);
+		my_set_stdout_logging(fdout, console->log);
 	} else if (STARTS_WITH(s, "waitload ")) {
 		struct pollfd pfd;
 		s += STRLEN("waitload ");
@@ -176,6 +192,7 @@ static int sysop_command(int fdin, int fdout, const char *s)
 		} else {
 			res = bbs_module_unload(s);
 		}
+		my_set_stdout_logging(fdout, console->log);
 	} else if (STARTS_WITH(s, "reload ")) {
 		s += STRLEN("reload ");
 		ENSURE_STRLEN(s);
@@ -185,6 +202,7 @@ static int sysop_command(int fdin, int fdout, const char *s)
 		} else {
 			res = bbs_module_reload(s, 0);
 		}
+		my_set_stdout_logging(fdout, console->log);
 	} else if (STARTS_WITH(s, "qreload ")) {
 		s += STRLEN("qreload ");
 		ENSURE_STRLEN(s);
@@ -196,21 +214,25 @@ static int sysop_command(int fdin, int fdout, const char *s)
 		} else {
 			res = bbs_module_reload(s, 1);
 		}
+		my_set_stdout_logging(fdout, console->log);
 	} else if (STARTS_WITH(s, "verbose ")) {
 		s += STRLEN("verbose ");
 		ENSURE_STRLEN(s);
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_set_verbose(atoi(s));
+		my_set_stdout_logging(fdout, console->log);
 	} else if (STARTS_WITH(s, "debug ")) {
 		s += STRLEN("debug ");
 		ENSURE_STRLEN(s);
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_set_debug(atoi(s));
+		my_set_stdout_logging(fdout, console->log);
 	} else if (!strcmp(s, "variables")) {
 		bbs_node_vars_dump(fdout, NULL);
 	} else if (!strcmp(s, "menureload")) {
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_load_menus(1);
+		my_set_stdout_logging(fdout, console->log);
 	} else if (!strcmp(s, "menus")) {
 		bbs_dump_menus(fdout);
 	} else if (!strcmp(s, "menuhandlers")) {
@@ -236,9 +258,11 @@ static int sysop_command(int fdin, int fdout, const char *s)
 		ENSURE_STRLEN(s);
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_node_shutdown_node((unsigned int) atoi(s));
+		my_set_stdout_logging(fdout, console->log);
 	} else if (!strcmp(s, "kickall")) {
 		my_set_stdout_logging(fdout, 1);
 		bbs_node_shutdown_all(0);
+		my_set_stdout_logging(fdout, console->log);
 	} else if (STARTS_WITH(s, "node ")) {
 		s += 5;
 		ENSURE_STRLEN(s);
@@ -274,11 +298,13 @@ static int sysop_command(int fdin, int fdout, const char *s)
 	} else if (!strcmp(s, "runtests")) {
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_run_tests(fdout);
+		my_set_stdout_logging(fdout, console->log);
 	} else if (STARTS_WITH(s, "runtest ")) {
 		s += STRLEN("runtest ");
 		ENSURE_STRLEN(s);
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_run_test(fdout, s);
+		my_set_stdout_logging(fdout, console->log);
 	} else if (!strcmp(s, "testemail")) {
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_mail(0, NULL, NULL, NULL, "Test Email", "This is a test email.\r\n\t--LBBS");
@@ -287,11 +313,13 @@ static int sysop_command(int fdin, int fdout, const char *s)
 		my_set_stdout_logging(fdout, 1);
 		released = bbs_malloc_trim();
 		bbs_dprintf(fdout, "%lu bytes released\n", released);
+		my_set_stdout_logging(fdout, console->log);
 	} else if (!strcmp(s, "assert")) {
 		/* Development testing only: this command is not listed */
 		char *tmp = NULL;
 		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
 		bbs_assert_exists(tmp);
+		my_set_stdout_logging(fdout, console->log);
 	} else if (!strcmp(s, "copyright")) {
 		show_copyright(fdout, 0);
 	} else if (!strcmp(s, "license")) {
@@ -304,18 +332,6 @@ static int sysop_command(int fdin, int fdout, const char *s)
 	}
 	return res;
 }
-
-struct sysop_console {
-	int sfd;
-	int fdin;
-	int fdout;
-	pthread_t thread;
-	unsigned int remote:1;
-	unsigned int dead:1;
-	RWLIST_ENTRY(sysop_console) entry;
-};
-
-static RWLIST_HEAD_STATIC(consoles, sysop_console);
 
 static void console_cleanup(struct sysop_console *console)
 {
@@ -358,6 +374,7 @@ static void *sysop_handler(void *varg)
 	sysopfdin = console->fdin;
 	sysopfdout = console->fdout;
 
+	console->log = 1; /* Logging to console enabled by default */
 	if (console->remote) {
 		bbs_add_logging_fd(sysopfdout);
 	}
@@ -394,7 +411,7 @@ static void *sysop_handler(void *varg)
 		}
 		if (pfds[1].revents) {
 			bbs_alertpipe_read(console_alertpipe);
-			my_set_stdout_logging(sysopfdout, 1);
+			my_set_stdout_logging(sysopfdout, console->log);
 			bbs_buffer_input(sysopfdin, 1);
 			break;
 		} else if (pfds[0].revents & POLLIN) {
@@ -410,6 +427,7 @@ static void *sysop_handler(void *varg)
 					bbs_dprintf(sysopfdout, "? - Show help\n");
 					bbs_dprintf(sysopfdout, "c - Clear screen\n");
 					bbs_dprintf(sysopfdout, "h - Show help\n");
+					bbs_dprintf(sysopfdout, "l - Enable/disable logging to this console\n");
 					bbs_dprintf(sysopfdout, "n - List active nodes\n");
 					bbs_dprintf(sysopfdout, "q - Shut down the BBS (with confirmation)\n");
 					bbs_dprintf(sysopfdout, "s - Show BBS system status\n");
@@ -460,6 +478,11 @@ static void *sysop_handler(void *varg)
 				case 'c':
 					bbs_dprintf(sysopfdout, TERM_CLEAR); /* TERM_CLEAR doesn't end in a newline, so normally, flush output, but bbs_printf does this for us. */
 					break;
+				case 'l':
+					SET_BITFIELD(console->log, !console->log); /* Save the new log setting */
+					my_set_stdout_logging(sysopfdout, console->log); /* Make it take effect immediately */
+					bbs_dprintf(sysopfdout, "Logging is now %s for %s console\n", console->log ? "enabled" : "disabled", console->remote ? "this remote" : "the foreground");
+					break;
 				case 'n':
 					bbs_nodes_print(sysopfdout);
 					break;
@@ -486,7 +509,7 @@ static void *sysop_handler(void *varg)
 							bbs_dprintf(sysopfdout, "\nShutdown attempt expired\n");
 						} else if (pfds[1].revents) {
 							/* alertpipe had activity in the meantime */
-							my_set_stdout_logging(sysopfdout, 1);
+							my_set_stdout_logging(sysopfdout, console->log);
 							bbs_buffer_input(sysopfdin, 1);
 							goto cleanup;
 						} else {
@@ -498,7 +521,7 @@ static void *sysop_handler(void *varg)
 							}
 						}
 						bbs_dprintf(sysopfdout, "\n");
-						my_set_stdout_logging(sysopfdout, 1); /* If running in foreground, re-enable STDOUT logging */
+						my_set_stdout_logging(sysopfdout, console->log); /* If running in foreground, re-enable STDOUT logging */
 						if (do_quit) {
 							bbs_request_shutdown(0);
 						}
@@ -537,9 +560,9 @@ static void *sysop_handler(void *varg)
 						histentry = NULL;
 						my_set_stdout_logging(sysopfdout, 0); /* Disable logging so other stuff isn't trying to write to STDOUT at the same time. */
 						bbs_buffer_input(sysopfdin, 1);
-						res = sysop_command(sysopfdin, sysopfdout, cmdbuf);
+						res = sysop_command(console, cmdbuf);
 						bbs_unbuffer_input(sysopfdin, 0);
-						my_set_stdout_logging(sysopfdout, 1); /* If running in foreground, re-enable STDOUT logging */
+						my_set_stdout_logging(sysopfdout, console->log); /* If running in foreground, re-enable STDOUT logging */
 					} else {
 						bbs_dprintf(sysopfdout, "\n"); /* Print newline for convenience */
 					}
@@ -556,7 +579,7 @@ static void *sysop_handler(void *varg)
 					} else if (res == 0) {
 						bbs_dprintf(sysopfdout, "\nCommand expired\n");
 					} else if (pfds[1].revents) {
-						my_set_stdout_logging(sysopfdout, 1);
+						my_set_stdout_logging(sysopfdout, console->log);
 						bbs_buffer_input(sysopfdin, 1);
 						goto cleanup;
 					} else {
@@ -568,11 +591,11 @@ static void *sysop_handler(void *varg)
 							bbs_term_line(cmdbuf);
 							/* Save in history */
 							bbs_history_add(cmdbuf);
-							res = sysop_command(sysopfdin, sysopfdout, cmdbuf);
+							res = sysop_command(console, cmdbuf);
 						}
 					}
 					bbs_unbuffer_input(sysopfdin, 0);
-					my_set_stdout_logging(sysopfdout, 1); /* If running in foreground, re-enable STDOUT logging */
+					my_set_stdout_logging(sysopfdout, console->log); /* If running in foreground, re-enable STDOUT logging */
 					break;
 				default:
 					if (isprint(buf[0])) {
