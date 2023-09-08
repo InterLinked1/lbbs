@@ -721,9 +721,9 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 
 	/* If sender is set, it's safe to use even with no locks, because the sender is a calling function of this one */
 	if (sender) {
-		bbs_debug(7, "Broadcasting to %s,%s (except node %d): %s%.*s\n", client->name, channel, sender->node->id, datestr, len, msg);
+		bbs_debug(7, "Broadcasting %s to %s,%s (except node %d): %s%.*s\n", dorelay ? "to IRC" : "from IRC", client->name, channel, sender->node->id, datestr, len, msg);
 	} else {
-		bbs_debug(7, "Broadcasting to %s,%s: %s%.*s\n", client->name, channel, datestr, len, msg);
+		bbs_debug(7, "Broadcasting %s to %s,%s: %s%.*s\n", dorelay ? "to IRC" : "from IRC", client->name, channel, datestr, len, msg);
 	}
 
 	/* Relay the message to everyone */

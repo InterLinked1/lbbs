@@ -930,6 +930,9 @@ static int discord_send(const char *channel, const char *sender, const char *msg
 			.components = NULL,
 		};
 		/* Manually parse system messages for join/part/etc. */
+		/*! \todo There is a new @silent feature that prevents some notification functionality,
+		 * however for bots, it can't just be prefixed test, so the underlying library
+		 * would need to support this. */
 		if (!sender && *msg == ':') {
 			char tmpbuf[128];
 			char *username, *action, *channame;

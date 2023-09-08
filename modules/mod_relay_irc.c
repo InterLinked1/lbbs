@@ -705,6 +705,21 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 			irc_relay_send(recipient, CHANNEL_USER_MODE_NONE, clientname, sendername, NULL, message, cp ? cp->ircuser : NULL);
 			return;
 		}
+
+		/*! \note Client quit messages will actually fall through here
+		 * e.g. "No relay match for channel libera/:Client Quit"
+		 * This is because the message doesn't include a channel name,
+		 * and relays are set per channel, not per network.
+		 * If we know that a user on a remote IRC network has quit,
+		 * we don't know what channels we can relay the quit message to,
+		 * since we don't keep track (persistently) of what remote users
+		 * are in what remote channels on remote IRC networks.
+		 *
+		 * So, joins and leaves will relay through, but quits will not.
+		 *
+		 * \todo Add some workaround (perhaps keeping track of IRC members in the underlying client module)
+		 * that will allow us to relay quits to the proper place.
+		 */
 		bbs_debug(9, "No relay match for channel %s/%s\n", clientname, channel);
 		return;
 	}
@@ -722,7 +737,7 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 	 * This is done for the interception cases below.
 	 */
 
-	/* XXX This is klunky... we're getting JOIN/PART messages through the PRIVMSG callback, due to how door_irc is structured (which is really an issue there, not here) */
+	/* XXX This is clunky... we're getting JOIN/PART messages through the PRIVMSG callback, due to how door_irc is structured (which is really an issue there, not here) */
 	w = strchr(msg, ' ');
 	if (w && !strcmp(w, " has " COLOR(COLOR_GREEN) "joined" COLOR_RESET "\n")) {
 		char sysmsg[92];
@@ -743,7 +758,6 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		bbs_debug(3, "Intercepting JOIN by %s/%s (%s -> %s)\n", clientname, nick, channel, ourchan);
 		if (!cp->relaysystem) {
 			bbs_debug(8, "Not relaying system message\n");
-			return;
 		} else if (ignore_join_start && time(NULL) < modstart + (int) ignore_join_start) {
 			bbs_debug(2, "Not relaying JOIN by %s/%s (%s -> %s) due to startupjoinignore setting.\n", clientname, nick, channel, ourchan);
 		} else if (MAP1_MATCH(cp, clientname, channel)) {
@@ -766,7 +780,6 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		bbs_debug(3, "Intercepting PART by %s/%s (%s -> %s)\n", clientname, nick, channel, ourchan);
 		if (!cp->relaysystem) {
 			bbs_debug(8, "Not relaying system message\n");
-			return;
 		} else if (MAP1_MATCH(cp, clientname, channel)) {
 			irc_relay_raw_send(cp->channel2, sysmsg);
 		} else {
@@ -787,7 +800,6 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		bbs_debug(3, "Intercepting QUIT by %s/%s (%s -> %s)\n", clientname, nick, channel, ourchan);
 		if (!cp->relaysystem) {
 			bbs_debug(8, "Not relaying system message\n");
-			return;
 		} else if (MAP1_MATCH(cp, clientname, channel)) {
 			irc_relay_raw_send(cp->channel2, sysmsg);
 		} else {

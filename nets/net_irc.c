@@ -804,6 +804,16 @@ int _irc_relay_raw_send(const char *channel, const char *msg, void *mod)
 {
 	struct irc_channel *c = get_channel(channel);
 	if (!c) {
+		/* If there aren't any members in the channel, it doesn't exist,
+		 * so relaying to it will fail.
+		 * This includes the case where some non-IRC service A is relaying
+		 * to a non-native IRC network C. The relay flow here is:
+		 * A -> B -> C (where B is net_irc, the native IRC network)
+		 * However, if there are no members of B's channel,
+		 * then we stop here.
+		 * The solution that allows relaying from A to C even when B does not
+		 * exist is to... make it exist, e.g. guard the channel with ChanServ. */
+		bbs_warning("Failed to relay to nonexistent channel %s (no members)\n", channel);
 		return -1;
 	}
 	channel_broadcast_nolock(c, NULL, "%s\r\n", msg);
