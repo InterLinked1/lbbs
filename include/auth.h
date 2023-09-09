@@ -179,8 +179,7 @@ int __bbs_register_auth_provider(const char *name, int (*provider)(AUTH_PROVIDER
  */
 int bbs_unregister_auth_provider(int (*provider)(AUTH_PROVIDER_PARAMS));
 
-/*! \brief List registered auth providers */
-int bbs_list_auth_providers(int fd);
-
 /*! \brief Get number of auth providers currently registered */
 int bbs_num_auth_providers(void);
+
+int bbs_init_auth(void);

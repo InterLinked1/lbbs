@@ -32,24 +32,16 @@
 #include "include/pty.h"
 #include "include/module.h"
 #include "include/term.h"
-#include "include/menu.h"
-#include "include/variables.h"
-#include "include/handler.h"
-#include "include/door.h"
-#include "include/net.h"
 #include "include/mail.h"
-#include "include/test.h"
 #include "include/history.h"
 #include "include/utils.h" /* use bbs_dump_threads */
-#include "include/auth.h" /* use bbs_list_auth_providers */
-#include "include/user.h" /* use bbs_user_dump */
-#include "include/notify.h"
 #include "include/startup.h"
 #include "include/alertpipe.h"
+#include "include/cli.h"
 
 extern int option_nofork;
 
-#define my_set_stdout_logging(fdout, setting) if (fdout == STDOUT_FILENO) { bbs_set_stdout_logging(setting); } else { bbs_set_fd_logging(fdout, setting); }
+#define my_set_stdout_logging bbs_cli_set_stdout_logging
 
 /* Since we now support remote consoles, bbs_printf is not logical to use in this module */
 #ifdef bbs_printf
@@ -128,208 +120,67 @@ struct sysop_console {
 
 static RWLIST_HEAD_STATIC(consoles, sysop_console);
 
+static int cli_testemail(struct bbs_cli_args *a)
+{
+	UNUSED(a);
+	return bbs_mail(0, NULL, NULL, NULL, "Test Email", "This is a test email.\r\n\t--LBBS");
+}
+
+static int cli_mtrim(struct bbs_cli_args *a)
+{
+	size_t released = bbs_malloc_trim();
+	bbs_dprintf(a->fdout, "%lu bytes released\n", released);
+	return 0;
+}
+
+static int cli_assert(struct bbs_cli_args *a)
+{
+	/* Development testing only: this command is not listed */
+	char *tmp = NULL;
+	UNUSED(a);
+	bbs_assert_exists(tmp);
+	return 0;
+}
+
+static int cli_copyright(struct bbs_cli_args *a)
+{
+	show_copyright(a->fdout, 0);
+	return 0;
+}
+
+static int cli_license(struct bbs_cli_args *a)
+{
+	show_license(a->fdout);
+	return 0;
+}
+
+static int cli_warranty(struct bbs_cli_args *a)
+{
+	show_warranty(a->fdout);
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_sysop[] = {
+	BBS_CLI_COMMAND(cli_testemail, "testemail", 1, "Send test email to sysop", NULL),
+	BBS_CLI_COMMAND(cli_mtrim, "mtrim", 1, "Manually release free memory at the top of the heap", NULL),
+	BBS_CLI_COMMAND(cli_assert, "assert", 1, "Manually trigger an assertion (WARNING: May abort BBS)", NULL),
+	BBS_CLI_COMMAND(cli_copyright, "copyright", 1, "Show copyright notice", NULL),
+	BBS_CLI_COMMAND(cli_license, "license", 1, "Show license notice", NULL),
+	BBS_CLI_COMMAND(cli_warranty, "warranty", 1, "Show warranty notice", NULL),
+};
+
 static int sysop_command(struct sysop_console *console, const char *s)
 {
-	int res = 0;
-	static char file_without_ext[] = __FILE__;
-	int fdin = console->fdin;
-	int fdout = console->fdout;
+	int res;
 
-	/* This only has an effect the first time */
-	bbs_strterm(file_without_ext, '.'); /* There's no macro like __FILE__ w/o ext, so this is what we gotta do. */
+	my_set_stdout_logging(console->fdout, console->log);
+	res = bbs_cli_exec(console->fdin, console->fdout, s);
+	my_set_stdout_logging(console->fdout, console->log); /* Reset, in case a CLI command changed it */
 
-	if (!strcmp(s, "halt")) {
-		bbs_request_shutdown(-1);
-	} else if (!strcmp(s, "shutdown")) {
-		bbs_request_shutdown(0);
-	} else if (!strcmp(s, "restart")) {
-		bbs_request_shutdown(1);
-	} else if (STARTS_WITH(s, "load ")) {
-		s += STRLEN("load ");
-		ENSURE_STRLEN(s);
-		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
-		res = bbs_module_load(s);
-		my_set_stdout_logging(fdout, console->log);
-	} else if (STARTS_WITH(s, "waitload ")) {
-		struct pollfd pfd;
-		s += STRLEN("waitload ");
-		ENSURE_STRLEN(s);
-		memset(&pfd, 0, sizeof(pfd));
-		pfd.fd = fdin;
-		pfd.events = POLLIN;
-		/* Since the terminal is in canonical mode, we need a newline for poll() to wake up.
-		 * That's fine, just say so. */
-		/* XXX Should check that s is at least a valid module, otherwise it will never load
-		 * Also, if it's already loaded, we shouldn't wait at all. */
-		if (!bbs_module_exists(s)) {
-			bbs_dprintf(fdout, "Module '%s' does not exist\n", s);
-		} else if (bbs_module_running(s)) {
-			bbs_dprintf(fdout, "Module '%s' is already running\n", s);
-		} else {
-			/* Technically, a small race condition is possible here.
-			 * The module might not be running when we check above
-			 * but be running before we call bbs_module_load.
-			 * In that case, we'd just sit here. Very unlikely though,
-			 * and not really possible unless the user is manipulating modules.
-			 */
-			bbs_dprintf(fdout, "Waiting until module '%s' loads. Press ENTER to cancel retry: ", s); /* No newline */
-			do {
-				res = bbs_module_load(s);
-				/* Allow the call to be interrupted. */
-			} while (res && poll(&pfd, 1, 500) == 0);
-			if (res) {
-				bbs_dprintf(fdout, TERM_RESET_LINE "Load retry cancelled\n");
-			} else {
-				bbs_dprintf(fdout, TERM_RESET_LINE "Module loaded\n");
-			}
-		}
-	} else if (STARTS_WITH(s, "unload ")) {
-		s += STRLEN("unload ");
-		ENSURE_STRLEN(s);
-		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
-		if (!strncasecmp(s, file_without_ext, strlen(file_without_ext))) {
-			bbs_request_module_unload(s, 0);
-		} else {
-			res = bbs_module_unload(s);
-		}
-		my_set_stdout_logging(fdout, console->log);
-	} else if (STARTS_WITH(s, "reload ")) {
-		s += STRLEN("reload ");
-		ENSURE_STRLEN(s);
-		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
-		if (!strncasecmp(s, file_without_ext, strlen(file_without_ext))) {
-			bbs_request_module_unload(s, 1);
-		} else {
-			res = bbs_module_reload(s, 0);
-		}
-		my_set_stdout_logging(fdout, console->log);
-	} else if (STARTS_WITH(s, "qreload ")) {
-		s += STRLEN("qreload ");
-		ENSURE_STRLEN(s);
-		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
-		/* Nothing increments the ref count of this module (mod_sysop) currently,
-		 * so reloads will always succeed anyways, not get queued */
-		if (!strncasecmp(s, file_without_ext, strlen(file_without_ext))) {
-			bbs_request_module_unload(s, 1);
-		} else {
-			res = bbs_module_reload(s, 1);
-		}
-		my_set_stdout_logging(fdout, console->log);
-	} else if (STARTS_WITH(s, "verbose ")) {
-		s += STRLEN("verbose ");
-		ENSURE_STRLEN(s);
-		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
-		bbs_set_verbose(atoi(s));
-		my_set_stdout_logging(fdout, console->log);
-	} else if (STARTS_WITH(s, "debug ")) {
-		s += STRLEN("debug ");
-		ENSURE_STRLEN(s);
-		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
-		bbs_set_debug(atoi(s));
-		my_set_stdout_logging(fdout, console->log);
-	} else if (!strcmp(s, "variables")) {
-		bbs_node_vars_dump(fdout, NULL);
-	} else if (!strcmp(s, "menureload")) {
-		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
-		bbs_load_menus(1);
-		my_set_stdout_logging(fdout, console->log);
-	} else if (!strcmp(s, "menus")) {
-		bbs_dump_menus(fdout);
-	} else if (!strcmp(s, "menuhandlers")) {
-		bbs_list_menu_handlers(fdout);
-	} else if (STARTS_WITH(s, "menu ")) {
-		s += 5;
-		ENSURE_STRLEN(s);
-		bbs_dump_menu(fdout, s);
-	} else if (!strcmp(s, "doors")) {
-		bbs_list_doors(fdout);
-	} else if (!strcmp(s, "modules")) {
-		bbs_list_modules(fdout);
-	} else if (!strcmp(s, "nets")) {
-		bbs_list_network_protocols(fdout);
-	} else if (!strcmp(s, "authproviders")) {
-		bbs_list_auth_providers(fdout);
-	} else if (!strcmp(s, "threads")) {
-		bbs_dump_threads(fdout);
-	} else if (!strcmp(s, "fds")) {
-		bbs_fd_dump(fdout);
-	} else if (STARTS_WITH(s, "kick ")) {
-		s += 5;
-		ENSURE_STRLEN(s);
-		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
-		bbs_node_shutdown_node((unsigned int) atoi(s));
-		my_set_stdout_logging(fdout, console->log);
-	} else if (!strcmp(s, "kickall")) {
-		my_set_stdout_logging(fdout, 1);
-		bbs_node_shutdown_all(0);
-		my_set_stdout_logging(fdout, console->log);
-	} else if (STARTS_WITH(s, "node ")) {
-		s += 5;
-		ENSURE_STRLEN(s);
-		bbs_node_info(fdout, (unsigned int) atoi(s));
-	} else if (STARTS_WITH(s, "user ")) {
-		s += 5;
-		ENSURE_STRLEN(s);
-		if (bbs_user_dump(fdout, s, 10)) {
-			bbs_dprintf(fdout, "No such user '%s'\n", s);
-		}
-	} else if (STARTS_WITH(s, "spy ")) {
-		s += 4;
-		ENSURE_STRLEN(s);
-		bbs_node_spy(fdin, fdout, (unsigned int) atoi(s));
-	} else if (STARTS_WITH(s, "alert ")) {
-		char *dup = strdup(S_IF(s + STRLEN("alert ")));
-		if (ALLOC_SUCCESS(dup)) {
-			unsigned int userid;
-			char *username, *msg = dup;
-			username = strsep(&msg, " ");
-			userid = bbs_userid_from_username(username);
-			if (userid) {
-				if (bbs_alert_user(userid, DELIVERY_EPHEMERAL, "%s", msg)) {
-					bbs_dprintf(fdout, "Failed to deliver message\n");
-				} else {
-					bbs_dprintf(fdout, "Message delivered\n");
-				}
-			} else {
-				bbs_dprintf(fdout, "No such user '%s'\n", username);
-			}
-			free(dup);
-		}
-	} else if (!strcmp(s, "runtests")) {
-		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
-		bbs_run_tests(fdout);
-		my_set_stdout_logging(fdout, console->log);
-	} else if (STARTS_WITH(s, "runtest ")) {
-		s += STRLEN("runtest ");
-		ENSURE_STRLEN(s);
-		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
-		bbs_run_test(fdout, s);
-		my_set_stdout_logging(fdout, console->log);
-	} else if (!strcmp(s, "testemail")) {
-		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
-		bbs_mail(0, NULL, NULL, NULL, "Test Email", "This is a test email.\r\n\t--LBBS");
-	} else if (!strcmp(s, "mtrim")) {
-		size_t released;
-		my_set_stdout_logging(fdout, 1);
-		released = bbs_malloc_trim();
-		bbs_dprintf(fdout, "%lu bytes released\n", released);
-		my_set_stdout_logging(fdout, console->log);
-	} else if (!strcmp(s, "assert")) {
-		/* Development testing only: this command is not listed */
-		char *tmp = NULL;
-		my_set_stdout_logging(fdout, 1); /* We want to be able to see the logging */
-		bbs_assert_exists(tmp);
-		my_set_stdout_logging(fdout, console->log);
-	} else if (!strcmp(s, "copyright")) {
-		show_copyright(fdout, 0);
-	} else if (!strcmp(s, "license")) {
-		show_license(fdout);
-	} else if (!strcmp(s, "warranty")) {
-		show_warranty(fdout);
-	} else {
-		res = -1;
-		bbs_dprintf(fdout, "ERROR: Invalid command: '%s'. Press '?' for help.\n", s);
+	if (res && errno == ENOENT) {
+		bbs_dprintf(console->fdout, "ERROR: Invalid command: '%s'. Press '?' for help.\n", s);
 	}
+
 	return res;
 }
 
@@ -435,45 +286,7 @@ static void *sysop_handler(void *varg)
 					bbs_dprintf(sysopfdout, "u - Show list of users\n");
 					bbs_dprintf(sysopfdout, "UP -> Previous command\n");
 					bbs_dprintf(sysopfdout, "DN -> More recent command\n");
-					bbs_dprintf(sysopfdout, " == Sysoping ==\n");
-					bbs_dprintf(sysopfdout, "/kickall            - Kick all connected nodes\n");
-					bbs_dprintf(sysopfdout, "/kick <nodenum>     - Kick specified node\n");
-					bbs_dprintf(sysopfdout, "/node <nodenum>     - View information about a node\n");
-					bbs_dprintf(sysopfdout, "/user <username>    - View information about a user\n");
-					bbs_dprintf(sysopfdout, "/spy <nodenum>      - Spy on a node (^C to stop)\n");
-					bbs_dprintf(sysopfdout, "/alert <user> <msg> - Send a message to a user\n");
-					bbs_dprintf(sysopfdout, "/menureload         - Reload menus\n");
-					bbs_dprintf(sysopfdout, " == Operational ==\n");
-					bbs_dprintf(sysopfdout, "/debug <level>      - Set debug level\n");
-					bbs_dprintf(sysopfdout, "/verbose <level>    - Set verbose level\n");
-					bbs_dprintf(sysopfdout, "/variables          - List all global variables\n");
-					bbs_dprintf(sysopfdout, "/menu <name>        - Dump a menu\n");
-					bbs_dprintf(sysopfdout, "/menus              - View list of menus\n");
-					bbs_dprintf(sysopfdout, "/menuhandlers       - View list of menu handlers\n");
-					bbs_dprintf(sysopfdout, "/doors              - View list of doors\n");
-					bbs_dprintf(sysopfdout, "/modules            - View list of loaded modules\n");
-					bbs_dprintf(sysopfdout, "/nets               - View list of network protocols\n");
-					bbs_dprintf(sysopfdout, "/authproviders      - View list of registered auth providers\n");
-					bbs_dprintf(sysopfdout, " == Licensing == \n");
-					bbs_dprintf(sysopfdout, "/copyright          - Show copyright notice\n");
-					bbs_dprintf(sysopfdout, "/license            - Show license notice\n");
-					bbs_dprintf(sysopfdout, "/warranty           - Show warranty notice\n");
-					bbs_dprintf(sysopfdout, " == Development & Debugging == \n");
-					bbs_dprintf(sysopfdout, "/threads            - View list of active registered threads\n");
-					bbs_dprintf(sysopfdout, "/fds                - View list of open file descriptors\n");
-					bbs_dprintf(sysopfdout, "/runtests           - Run all unit tests\n");
-					bbs_dprintf(sysopfdout, "/runtest <test>     - Run a specific unit test\n");
-					bbs_dprintf(sysopfdout, "/testemail          - Send a test email to the sysop\n");
-					bbs_dprintf(sysopfdout, "/mtrim              - Manually release free memory at the top of the heap\n");
-					bbs_dprintf(sysopfdout, " == Administrative ==\n");
-					bbs_dprintf(sysopfdout, "/load <module>      - Load dynamic module\n");
-					bbs_dprintf(sysopfdout, "/waitload <module>  - Keep retrying load of dynamic module until it succeeds\n");
-					bbs_dprintf(sysopfdout, "/unload <module>    - Unload dynamic module\n");
-					bbs_dprintf(sysopfdout, "/reload <module>    - Unload and load dynamic module\n");
-					bbs_dprintf(sysopfdout, "/qreload <module>   - Unload and load dynamic module, queuing if necessary\n");
-					bbs_dprintf(sysopfdout, "/halt               - Immediately (uncleanly) halt the BBS (DANGER!)\n");
-					bbs_dprintf(sysopfdout, "/shutdown (^C)      - Shut down the BBS (no confirmation)\n");
-					bbs_dprintf(sysopfdout, "/restart            - Restart the BBS\n");
+					bbs_cli_exec(sysopfdin, sysopfdout, "help");
 					break;
 				case 'c':
 					bbs_dprintf(sysopfdout, TERM_CLEAR); /* TERM_CLEAR doesn't end in a newline, so normally, flush output, but bbs_printf does this for us. */
@@ -484,7 +297,7 @@ static void *sysop_handler(void *varg)
 					bbs_dprintf(sysopfdout, "Logging is now %s for %s console\n", console->log ? "enabled" : "disabled", console->remote ? "this remote" : "the foreground");
 					break;
 				case 'n':
-					bbs_nodes_print(sysopfdout);
+					bbs_cli_exec(sysopfdin, sysopfdout, "nodes");
 					break;
 				case 's':
 					bbs_view_settings(sysopfdout);
@@ -493,7 +306,7 @@ static void *sysop_handler(void *varg)
 					print_time(sysopfdout);
 					break;
 				case 'u':
-					bbs_users_dump(sysopfdout, 10);
+					bbs_cli_exec(sysopfdin, sysopfdout, "users");
 					break;
 				case 'q':
 					{
@@ -521,9 +334,8 @@ static void *sysop_handler(void *varg)
 							}
 						}
 						bbs_dprintf(sysopfdout, "\n");
-						my_set_stdout_logging(sysopfdout, console->log); /* If running in foreground, re-enable STDOUT logging */
 						if (do_quit) {
-							bbs_request_shutdown(0);
+							bbs_cli_exec(sysopfdin, sysopfdout, "shutdown");
 						}
 					}
 					break;
@@ -716,6 +528,7 @@ static int unload_module(void)
 {
 	struct sysop_console *console;
 
+	bbs_cli_unregister_multiple(cli_commands_sysop);
 	unloading = 1;
 	bbs_alertpipe_write(console_alertpipe);
 
@@ -801,6 +614,7 @@ static int load_module(void)
 		bbs_register_startup_callback(show_copyright_fg, STARTUP_PRIORITY_DEFAULT);
 	}
 
+	bbs_cli_register_multiple(cli_commands_sysop);
 	return 0;
 }
 

@@ -61,3 +61,6 @@ int __bbs_register_tests(struct bbs_unit_test tests[], unsigned int len, void *m
 int __bbs_unregister_tests(struct bbs_unit_test tests[], unsigned int len);
 
 #define bbs_unregister_tests(tests) __bbs_unregister_tests(tests, ARRAY_LEN(tests))
+
+/*! \brief Initialize tests */
+int bbs_init_tests(void);

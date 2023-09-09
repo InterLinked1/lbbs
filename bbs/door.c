@@ -25,6 +25,7 @@
 #include "include/door.h"
 #include "include/linkedlists.h"
 #include "include/module.h"
+#include "include/cli.h"
 
 struct bbs_door {
 	/*! Door function */
@@ -105,22 +106,6 @@ cleanup:
 	return res;
 }
 
-int bbs_list_doors(int fd)
-{
-	int c = 0;
-	struct bbs_door *door;
-
-	RWLIST_RDLOCK(&doors);
-	RWLIST_TRAVERSE(&doors, door, entry) {
-		/* Doors can't be unregistered by modules without a WRLOCK being obtained.
-		 * Since we're holding a RDLOCK, it's safe to go ahead and print the module name. */
-		bbs_dprintf(fd, "%3d => %-15s (%s)\n", ++c, door->name, bbs_module_name(door->module));
-	}
-	RWLIST_UNLOCK(&doors);
-	bbs_dprintf(fd, "%d door%s registered\n", c, ESS(c));
-	return 0;
-}
-
 int bbs_door_exec(struct bbs_node *node, const char *name, const char *args)
 {
 	int res;
@@ -141,4 +126,29 @@ int bbs_door_exec(struct bbs_node *node, const char *name, const char *args)
 	res = door->execute(node, args);
 	bbs_module_unref(door->module);
 	return res;
+}
+
+static int cli_doors(struct bbs_cli_args *a)
+{
+	int c = 0;
+	struct bbs_door *door;
+
+	RWLIST_RDLOCK(&doors);
+	RWLIST_TRAVERSE(&doors, door, entry) {
+		/* Doors can't be unregistered by modules without a WRLOCK being obtained.
+		 * Since we're holding a RDLOCK, it's safe to go ahead and print the module name. */
+		bbs_dprintf(a->fdout, "%3d => %-15s (%s)\n", ++c, door->name, bbs_module_name(door->module));
+	}
+	RWLIST_UNLOCK(&doors);
+	bbs_dprintf(a->fdout, "%d door%s registered\n", c, ESS(c));
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_doors[] = {
+	BBS_CLI_COMMAND(cli_doors, "doors", 1, "List all doors", NULL),
+};
+
+int bbs_init_doors(void)
+{
+	return bbs_cli_register_multiple(cli_commands_doors);
 }

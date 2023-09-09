@@ -33,6 +33,7 @@
 #include <dirent.h>
 
 #include "include/utils.h"
+#include "include/cli.h"
 
 #define FDLEAKS_NUM_FDS 1024
 
@@ -59,6 +60,98 @@ static struct fdleaks {
 	char callargs[100];
 	time_t now;
 } fdleaks[FDLEAKS_NUM_FDS];
+
+/*! \brief Get number of file descriptors open by current process */
+static int num_open_fds(void)
+{
+	DIR *dp = opendir("/proc/self/fd");
+	struct dirent *de;
+	int count = 0;
+
+	if (!dp) {
+		return -1;
+	}
+
+	while ((de = readdir(dp)) != NULL) {
+		count++;
+	}
+	closedir(dp);
+
+	return count - 3; /* don't count ., .., self */
+}
+
+static int print_fds(int fd)
+{
+	DIR *dir;
+	struct dirent *entry;
+	char path[512];
+	char symlink[256];
+	ssize_t bytes;
+
+	if (!(dir = opendir("/proc/self/fd"))) {
+		bbs_error("Error opening directory - %s: %s\n", path, strerror(errno));
+		return -1;
+	}
+
+	while ((entry = readdir(dir)) != NULL) {
+		if (entry->d_type == DT_LNK) {
+			int fdnum = atoi(entry->d_name);
+			/* Only care about ones we don't know about */
+			if (ARRAY_IN_BOUNDS(fdnum, fdleaks) && fdleaks[fdnum].isopen) {
+				continue; /* We know about it */
+			}
+			snprintf(path, sizeof(path), "/proc/self/fd/%s", entry->d_name);
+			bytes = readlink(path, symlink, sizeof(symlink) - 1);
+			if (bytes == -1) {
+				bbs_error("readlink: %s\n", strerror(errno));
+				continue;
+			}
+			symlink[bytes] = '\0'; /* Safe (readlink does not null terminate) */
+			bbs_dprintf(fd, "%5s => %s\n", entry->d_name, symlink);
+		}
+	}
+
+	closedir(dir);
+	return 0;
+}
+
+#define fd_log(fd, fmt, ...) \
+	if (fd == -1) { \
+		bbs_warning(fmt, ## __VA_ARGS__); \
+	} else { \
+		bbs_dprintf(fd, fmt, ## __VA_ARGS__); \
+	}
+
+static int bbs_fd_dump(int fd)
+{
+#if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
+	unsigned int i, opened = 0;
+	struct rlimit rl;
+	char datestring[256];
+
+	getrlimit(RLIMIT_NOFILE, &rl);
+
+	for (i = 0; i < ARRAY_LEN(fdleaks); i++) {
+		/* Some of the assigned fds are >= ARRAY_LEN(fdleaks), so not all will show up here */
+		if (fdleaks[i].isopen) {
+			struct tm opendate;
+			localtime_r(&fdleaks[i].now, &opendate);
+			strftime(datestring, sizeof(datestring), "%F %T", &opendate);
+			fd_log(fd, "%5u [%s] %18s:%-5d %-25s %s(%s)\n", i, datestring, fdleaks[i].file, fdleaks[i].line, fdleaks[i].function, fdleaks[i].callname, fdleaks[i].callargs);
+			opened++;
+		}
+	}
+	if (fd != -1) { /* If we're out of file descriptors, we can't do this anyways since it requires one */
+		print_fds(fd); /* Print fds we don't know about */
+	}
+	/* Add 1 because readdir in print_fds will open a FD */
+	fd_log(fd, "Open files: %u (%d) / %d\n", opened, num_open_fds() + 1, (int) rl.rlim_cur); /* XXX RLIM_INFINITY? */
+
+#else
+	fd_log("%s compiled without DEBUG_FD_LEAKS\n", __FILE__);
+#endif
+	return 0;
+}
 
 /* COPY does safe_strncpy(dst, src, sizeof(dst)), except:
  * - if it doesn't fit, it copies the value after the slash
@@ -290,94 +383,14 @@ int __fdleak_dup(int oldfd, const char *file, int line, const char *func)
 
 #endif /* DEBUG_FD_LEAKS */
 
-/*! \brief Get number of file descriptors open by current process */
-static int num_open_fds(void)
+static int cli_fds(struct bbs_cli_args *a)
 {
-	DIR *dp = opendir("/proc/self/fd");
-	struct dirent *de;
-	int count = 0;
-
-	if (!dp) {
-		return -1;
-	}
-
-	while ((de = readdir(dp)) != NULL) {
-		count++;
-	}
-	closedir(dp);
-
-	return count - 3; /* don't count ., .., self */
+	return bbs_fd_dump(a->fdout);
 }
 
-static int print_fds(int fd)
+BBS_CLI_COMMAND_SINGLE(cli_fds, "fds", 1, "View list of open file descriptors", NULL);
+
+int bbs_fd_init(void)
 {
-	DIR *dir;
-	struct dirent *entry;
-	char path[512];
-	char symlink[256];
-	ssize_t bytes;
-
-	if (!(dir = opendir("/proc/self/fd"))) {
-		bbs_error("Error opening directory - %s: %s\n", path, strerror(errno));
-		return -1;
-	}
-
-	while ((entry = readdir(dir)) != NULL) {
-		if (entry->d_type == DT_LNK) {
-			int fdnum = atoi(entry->d_name);
-			/* Only care about ones we don't know about */
-			if (ARRAY_IN_BOUNDS(fdnum, fdleaks) && fdleaks[fdnum].isopen) {
-				continue; /* We know about it */
-			}
-			snprintf(path, sizeof(path), "/proc/self/fd/%s", entry->d_name);
-			bytes = readlink(path, symlink, sizeof(symlink) - 1);
-			if (bytes == -1) {
-				bbs_error("readlink: %s\n", strerror(errno));
-				continue;
-			}
-			symlink[bytes] = '\0'; /* Safe (readlink does not null terminate) */
-			bbs_dprintf(fd, "%5s => %s\n", entry->d_name, symlink);
-		}
-	}
-
-	closedir(dir);
-	return 0;
-}
-
-#define fd_log(fd, fmt, ...) \
-	if (fd == -1) { \
-		bbs_warning(fmt, ## __VA_ARGS__); \
-	} else { \
-		bbs_dprintf(fd, fmt, ## __VA_ARGS__); \
-	}
-
-int bbs_fd_dump(int fd)
-{
-#if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
-	unsigned int i, opened = 0;
-	struct rlimit rl;
-	char datestring[256];
-
-	getrlimit(RLIMIT_NOFILE, &rl);
-
-	for (i = 0; i < ARRAY_LEN(fdleaks); i++) {
-		/* Some of the assigned fds are >= ARRAY_LEN(fdleaks), so not all will show up here */
-		if (fdleaks[i].isopen) {
-			struct tm opendate;
-			localtime_r(&fdleaks[i].now, &opendate);
-			strftime(datestring, sizeof(datestring), "%F %T", &opendate);
-			fd_log(fd, "%5u [%s] %18s:%-5d %-25s %s(%s)\n", i, datestring, fdleaks[i].file, fdleaks[i].line, fdleaks[i].function, fdleaks[i].callname, fdleaks[i].callargs);
-			opened++;
-		}
-	}
-	if (fd != -1) { /* If we're out of file descriptors, we can't do this anyways since it requires one */
-		print_fds(fd); /* Print fds we don't know about */
-	}
-	/* Add 1 because readdir in print_fds will open a FD */
-	fd_log(fd, "Open files: %u (%d) / %d\n", opened, num_open_fds() + 1, (int) rl.rlim_cur); /* XXX RLIM_INFINITY? */
-
-#else
-	fd_log("%s compiled without DEBUG_FD_LEAKS\n", __FILE__);
-#endif
-	return 0;
+	return bbs_cli_register(&cli_command); /* Automatically unregistered at shutdown */
 }

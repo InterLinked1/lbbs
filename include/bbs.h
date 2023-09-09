@@ -132,7 +132,7 @@ int __fdleak_fclose(FILE *ptr);
 int __fdleak_dup2(int oldfd, int newfd, const char *file, int line, const char *func);
 int __fdleak_dup(int oldfd, const char *file, int line, const char *func);
 
-int bbs_fd_dump(int fd);
+int bbs_fd_init(void);
 #endif /* DEBUG_FD_LEAKS */
 
 /*!
@@ -535,9 +535,3 @@ int bbs_safe_sleep(int ms);
  * \note This temporarily overrides normal default SIGINT handling (shutdown the BBS) while active
  */
 void bbs_sigint_set_alertpipe(int p[2]);
-
-/*!
- * \brief Request BBS shutdown
- * \param restart 1 to restart the BBS after shutdown, 0 for normal shutdown, -1 for immediate halt
- */
-void bbs_request_shutdown(int restart);

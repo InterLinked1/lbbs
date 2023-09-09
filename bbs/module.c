@@ -25,6 +25,7 @@
 #include <dlfcn.h>
 #include <linux/limits.h> /* use PATH_MAX */
 #include <unistd.h> /* use usleep */
+#include <poll.h>
 
 #include "include/linkedlists.h"
 #include "include/stringlist.h"
@@ -32,6 +33,7 @@
 #include "include/config.h"
 #include "include/utils.h" /* use bbs_dir_traverse */
 #include "include/node.h"
+#include "include/cli.h"
 
 #define BBS_MODULE_DIR DIRCAT("/usr/lib", DIRCAT(BBS_NAME, "modules"))
 
@@ -915,30 +917,6 @@ static int autoload_modules(void)
 	return 0;
 }
 
-int load_modules(void)
-{
-	int res, c = 0; /* XXX If this is not uninitialized, gcc does not throw a warning, why not??? */
-	struct bbs_module *mod;
-
-	/* No modules should be registered on startup. */
-	RWLIST_WRLOCK(&modules);
-	RWLIST_TRAVERSE(&modules, mod, entry) {
-		bbs_assert(0);
-	}
-	RWLIST_UNLOCK(&modules);
-
-	res = autoload_modules();
-
-	RWLIST_WRLOCK(&modules);
-	RWLIST_TRAVERSE(&modules, mod, entry) {
-		c++;
-	}
-	RWLIST_UNLOCK(&modules);
-
-	bbs_assert(c == autoload_loaded);
-	return res;
-}
-
 int bbs_module_load(const char *name)
 {
 	int res;
@@ -999,7 +977,8 @@ int bbs_module_reload(const char *name, int try_delayed)
 	return res;
 }
 
-int bbs_module_exists(const char *name)
+/*! \brief Whether a module exists in the module directory on disk (regardless of whether it's active or running) */
+static int bbs_module_exists(const char *name)
 {
 	char fn[PATH_MAX];
 	size_t resource_in_len = strlen(name);
@@ -1013,13 +992,14 @@ int bbs_module_exists(const char *name)
 	return bbs_file_exists(fn);
 }
 
-int bbs_module_running(const char *name)
+/*! \brief Whether a module is currently running or not */
+static int bbs_module_running(const char *name)
 {
 	struct bbs_module *mod = find_resource(name);
 	return mod ? 1 : 0;
 }
 
-int bbs_list_modules(int fd)
+static int list_modules(int fd)
 {
 	int c = 0;
 	struct bbs_module *mod;
@@ -1034,6 +1014,197 @@ int bbs_list_modules(int fd)
 	RWLIST_UNLOCK(&modules);
 	bbs_dprintf(fd, "%d module%s loaded\n", c, ESS(c));
 	return 0;
+}
+
+static int cli_modules(struct bbs_cli_args *a)
+{
+	return list_modules(a->fdout);
+}
+
+static int cli_load(struct bbs_cli_args *a)
+{
+	bbs_cli_set_stdout_logging(a->fdout, 1); /* We want to be able to see the logging */
+	return bbs_module_load(a->argv[1]);
+}
+
+static int cli_loadwait(struct bbs_cli_args *a)
+{
+	int res;
+	struct pollfd pfd;
+	const char *s = a->argv[1];
+
+	memset(&pfd, 0, sizeof(pfd));
+	pfd.fd = a->fdin;
+	pfd.events = POLLIN;
+
+	/* Since the terminal is in canonical mode, we need a newline for poll() to wake up.
+	 * That's fine, just say so. */
+
+	if (!bbs_module_exists(s)) {
+		bbs_dprintf(a->fdout, "Module '%s' does not exist\n", s);
+		return -1;
+	} else if (bbs_module_running(s)) {
+		bbs_dprintf(a->fdout, "Module '%s' is already running\n", s);
+		return -1;
+	}
+
+	/* Technically, a small race condition is possible here.
+	 * The module might not be running when we check above, but be running before we call bbs_module_load.
+	 * In that case, we'd just sit here. Very unlikely though, and not really possible unless the user is manipulating modules. */
+	bbs_dprintf(a->fdout, "Waiting until module '%s' loads. Press ENTER to cancel retry: ", s); /* No newline */
+	do {
+		res = bbs_module_load(s);
+		/* Allow the call to be interrupted. */
+	} while (res && poll(&pfd, 1, 500) == 0);
+	if (res) {
+		bbs_dprintf(a->fdout, TERM_RESET_LINE "Load retry cancelled\n");
+		return 1;
+	}
+	bbs_dprintf(a->fdout, TERM_RESET_LINE "Module loaded\n");
+	return 0;
+}
+
+#define SYSOP_CLI_MOD_NAME "mod_sysop"
+
+static int threadsafe_unload(const char *s)
+{
+	if (!strncasecmp(s, SYSOP_CLI_MOD_NAME, strlen(SYSOP_CLI_MOD_NAME))) {
+		/* The sysop can't unload the sysop module directly in the same thread.
+		 * We need to have another thread do it for us, asynchronously. */
+		bbs_request_module_unload(s, 0);
+		return 0;
+	}
+	return bbs_module_unload(s);
+}
+
+static int threadsafe_reload(const char *s, int queued)
+{
+	if (!strncasecmp(s, SYSOP_CLI_MOD_NAME, strlen(SYSOP_CLI_MOD_NAME))) {
+		bbs_request_module_unload(s, 1);
+		return 0;
+	}
+	return bbs_module_reload(s, queued);
+}
+
+static int cli_unload(struct bbs_cli_args *a)
+{
+	const char *s = a->argv[1];
+	bbs_cli_set_stdout_logging(a->fdout, 1); /* We want to be able to see the logging */
+	return threadsafe_unload(s);
+}
+
+static int cli_unloadwait(struct bbs_cli_args *a)
+{
+	int res;
+	struct pollfd pfd;
+	const char *s = a->argv[1];
+
+	memset(&pfd, 0, sizeof(pfd));
+	pfd.fd = a->fdin;
+	pfd.events = POLLIN;
+
+	/* Since the terminal is in canonical mode, we need a newline for poll() to wake up.
+	 * That's fine, just say so. */
+
+	if (!bbs_module_running(s)) {
+		bbs_dprintf(a->fdout, "Module '%s' is not currently running\n", s);
+		return -1;
+	}
+
+	bbs_dprintf(a->fdout, "Waiting until module '%s' unloads. Press ENTER to cancel retry: ", s); /* No newline */
+	do {
+		res = threadsafe_unload(s);
+		/* Allow the call to be interrupted. */
+	} while (res && poll(&pfd, 1, 500) == 0);
+	if (res) {
+		bbs_dprintf(a->fdout, TERM_RESET_LINE "Unload retry cancelled\n");
+		return 1;
+	}
+	bbs_dprintf(a->fdout, TERM_RESET_LINE "Module unloaded\n");
+	return 0;
+}
+
+static int cli_reload(struct bbs_cli_args *a)
+{
+	const char *s = a->argv[1];
+	bbs_cli_set_stdout_logging(a->fdout, 1); /* We want to be able to see the logging */
+	return threadsafe_reload(s, 0);
+}
+
+static int cli_reloadwait(struct bbs_cli_args *a)
+{
+	int res;
+	struct pollfd pfd;
+	const char *s = a->argv[1];
+
+	memset(&pfd, 0, sizeof(pfd));
+	pfd.fd = a->fdin;
+	pfd.events = POLLIN;
+
+	/* Since the terminal is in canonical mode, we need a newline for poll() to wake up.
+	 * That's fine, just say so. */
+
+	if (!bbs_module_running(s)) {
+		bbs_dprintf(a->fdout, "Module '%s' is not currently running\n", s);
+		return -1;
+	}
+
+	bbs_dprintf(a->fdout, "Waiting until module '%s' reloads. Press ENTER to cancel retry: ", s); /* No newline */
+	do {
+		res = threadsafe_reload(s, 0);
+		/* Allow the call to be interrupted. */
+	} while (res && poll(&pfd, 1, 500) == 0);
+	if (res) {
+		bbs_dprintf(a->fdout, TERM_RESET_LINE "Reload retry cancelled\n");
+		return 1;
+	}
+	bbs_dprintf(a->fdout, TERM_RESET_LINE "Module reloaded\n");
+	return 0;
+}
+
+static int cli_reloadqueue(struct bbs_cli_args *a)
+{
+	const char *s = a->argv[1];
+	bbs_cli_set_stdout_logging(a->fdout, 1); /* We want to be able to see the logging */
+	/* Nothing increments the ref count of mod_sysop currently,
+	 * so reloads will always succeed anyways, not get queued */
+	return threadsafe_reload(s, 1);
+}
+
+static struct bbs_cli_entry cli_commands_modules[] = {
+	BBS_CLI_COMMAND(cli_modules, "modules", 1, "List loaded modules", NULL),
+	BBS_CLI_COMMAND(cli_load, "load", 2, "Load dynamic module", "load <module>"),
+	BBS_CLI_COMMAND(cli_loadwait, "loadwait", 2, "Keep retrying load of dynamic module until it successfully loads", "loadwait <module>"),
+	BBS_CLI_COMMAND(cli_unload, "unload", 2, "Unload dynamic module", "unload <module>"),
+	BBS_CLI_COMMAND(cli_unloadwait, "unloadwait", 2, "Keep retrying load of dynamic module until it successfully unloads", "unloadwait <module>"),
+	BBS_CLI_COMMAND(cli_reload, "reload", 2, "Hotswap (unload and load) dynamic module", "reload <module>"),
+	BBS_CLI_COMMAND(cli_reloadwait, "reloadwait", 2, "Keep retrying hotswap reload of dynamic module until successful", "reloadwait <module>"),
+	BBS_CLI_COMMAND(cli_reloadqueue, "reloadqueue", 2, "Unload and load dynamic module, queuing if necessary", "reloadqueue <module>"),
+};
+
+int load_modules(void)
+{
+	int res, c = 0; /* XXX If this is not uninitialized, gcc does not throw a warning, why not??? */
+	struct bbs_module *mod;
+
+	/* No modules should be registered on startup. */
+	RWLIST_WRLOCK(&modules);
+	RWLIST_TRAVERSE(&modules, mod, entry) {
+		bbs_assert(0);
+	}
+	RWLIST_UNLOCK(&modules);
+
+	res = autoload_modules();
+
+	RWLIST_WRLOCK(&modules);
+	RWLIST_TRAVERSE(&modules, mod, entry) {
+		c++;
+	}
+	RWLIST_UNLOCK(&modules);
+
+	bbs_assert(c == autoload_loaded);
+	bbs_cli_register(cli_commands_modules);
+	return res;
 }
 
 /*! \brief Cleanly unload everything we can */
@@ -1133,5 +1304,6 @@ int unload_modules(void)
 	}
 	RWLIST_UNLOCK(&modules);
 
+	bbs_cli_unregister(cli_commands_modules);
 	return 0;
 }

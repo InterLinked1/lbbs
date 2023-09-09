@@ -31,6 +31,7 @@
 
 #include "include/utils.h"
 #include "include/linkedlists.h"
+#include "include/cli.h"
 
 static __thread int my_tid = 0;
 
@@ -142,6 +143,38 @@ static const char *thread_state_name(struct thread_list_t *cur)
 	return cur->detached ? "detached" : cur->waitingjoin ? "waitjoin" : "joinable";
 }
 
+/*!
+ * \brief Print list of active BBS threads
+ * \warning This may not include all threads, such as those that do not use the BBS pthread creation wrappers (external libraries, etc.)
+ */
+static int cli_threads(struct bbs_cli_args *a)
+{
+	char elapsed[24];
+	int threads = 0;
+	struct thread_list_t *cur;
+	time_t now = time(NULL);
+
+	bbs_dprintf(a->fdout, "%3d %6d (%s)\n", 0, getpid(), "PID / main thread");
+	RWLIST_RDLOCK(&thread_list);
+	RWLIST_TRAVERSE(&thread_list, cur, list) {
+		threads++;
+		print_time_elapsed(cur->waitingjoin ? cur->end : cur->start, now, elapsed, sizeof(elapsed));
+		bbs_dprintf(a->fdout, "%3d %6d (%9lu) [%12p] (%s %10s) %s\n", threads, cur->lwp, cur->id, (void *) cur->id, thread_state_name(cur), elapsed, cur->name);
+	}
+	RWLIST_UNLOCK(&thread_list);
+	bbs_dprintf(a->fdout, "%d active threads registered, %d lifetime threads (may be incomplete).\n", threads, lifetime_threads);
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_threads[] = {
+	BBS_CLI_COMMAND(cli_threads, "threads", 1, "List registered threads", NULL),
+};
+
+int bbs_init_threads(void)
+{
+	return bbs_cli_register_multiple(cli_commands_threads);
+}
+
 void bbs_thread_cleanup(void)
 {
 	char elapsed[24];
@@ -184,25 +217,6 @@ int bbs_pthread_tid(pthread_t thread)
 	RWLIST_UNLOCK(&thread_list);
 
 	return lwp;
-}
-
-int bbs_dump_threads(int fd)
-{
-	char elapsed[24];
-	int threads = 0;
-	struct thread_list_t *cur;
-	time_t now = time(NULL);
-
-	bbs_dprintf(fd, "%3d %6d (%s)\n", 0, getpid(), "PID / main thread");
-	RWLIST_RDLOCK(&thread_list);
-	RWLIST_TRAVERSE(&thread_list, cur, list) {
-		threads++;
-		print_time_elapsed(cur->waitingjoin ? cur->end : cur->start, now, elapsed, sizeof(elapsed));
-		bbs_dprintf(fd, "%3d %6d (%9lu) [%12p] (%s %10s) %s\n", threads, cur->lwp, cur->id, (void *) cur->id, thread_state_name(cur), elapsed, cur->name);
-	}
-	RWLIST_UNLOCK(&thread_list);
-	bbs_dprintf(fd, "%d active threads registered, %d lifetime threads (may be incomplete).\n", threads, lifetime_threads);
-	return 0;
 }
 
 void bbs_pthread_disable_cancel(void)

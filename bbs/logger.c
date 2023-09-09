@@ -36,6 +36,7 @@
 
 #include "include/utils.h" /* use bbs_gettid, bbs_tvnow */
 #include "include/linkedlists.h"
+#include "include/cli.h"
 
 /* bbs.c */
 extern int option_debug;
@@ -79,6 +80,29 @@ int bbs_set_debug(int newlevel)
 	return old;
 }
 
+static int cli_verbose(struct bbs_cli_args *a)
+{
+	int res;
+
+	bbs_cli_set_stdout_logging(a->fdout, 1); /* We want to be able to see the logging */
+	res = bbs_set_verbose(atoi(a->argv[1]));
+	return res < 0 ? res : 0;
+}
+
+static int cli_debug(struct bbs_cli_args *a)
+{
+	int res;
+
+	bbs_cli_set_stdout_logging(a->fdout, 1); /* We want to be able to see the logging */
+	res = bbs_set_debug(atoi(a->argv[1]));
+	return res < 0 ? res : 0;
+}
+
+static struct bbs_cli_entry cli_commands_logger[] = {
+	BBS_CLI_COMMAND(cli_verbose, "verbose", 2, "Set verbose log level", "verbose <newlevel>"),
+	BBS_CLI_COMMAND(cli_debug, "debug", 2, "Set debug log level", "debug <newlevel>"),
+};
+
 int bbs_log_init(int nofork)
 {
 	static char logfile[PATH_MAX];
@@ -110,6 +134,9 @@ int bbs_log_init(int nofork)
 	fprintf(logfp, "=== BBS logger initialization (pid %d) ===\n", bbs_gettid());
 	if (logstdout) {
 		fflush(stdout);
+	}
+	if (bbs_cli_register_multiple(cli_commands_logger)) {
+		return -1;
 	}
 	return 0;
 }
@@ -198,6 +225,8 @@ int bbs_log_close(void)
 {
 	bbs_assert(logfp != NULL);
 	bbs_debug(1, "Shutting down BBS logger\n");
+
+	/* The CLI shuts down before logging, so the logging CLI commands have already been removed at this point */
 
 	fclose(logfp);
 	logfp = NULL;

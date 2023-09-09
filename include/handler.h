@@ -55,3 +55,9 @@ int menu_handler_exists(const char *name, int *needargs);
  * \retval 0 normal menu item return (success)
  */
 int menu_handler_exec(struct bbs_node *node, const char *name, char *args);
+
+/*!
+ * \brief Initialize menu handlers
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_init_menu_handlers(void);

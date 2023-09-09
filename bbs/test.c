@@ -27,6 +27,7 @@
 #include "include/module.h"
 #include "include/test.h"
 #include "include/utils.h" /* use bbs_tvdiff_ms */
+#include "include/cli.h"
 
 struct bbs_test {
 	int (*execute)(void);		/*!< Test callback function */
@@ -118,6 +119,26 @@ int bbs_run_test(int fd, const char *name)
 int bbs_run_tests(int fd)
 {
 	return bbs_run_test(fd, NULL);
+}
+
+static int cli_runtest(struct bbs_cli_args *a)
+{
+	return bbs_run_test(a->fdout, a->argv[1]);
+}
+
+static int cli_runtests(struct bbs_cli_args *a)
+{
+	return bbs_run_tests(a->fdout);
+}
+
+static struct bbs_cli_entry cli_commands_tests[] = {
+	BBS_CLI_COMMAND(cli_runtest, "runtest", 2, "Execute a specific unit test", "runtest <test>"),
+	BBS_CLI_COMMAND(cli_runtests, "runtests", 1, "Execute all unit tests", NULL),
+};
+
+int bbs_init_tests(void)
+{
+	return bbs_cli_register_multiple(cli_commands_tests);
 }
 
 int __bbs_register_test(const char *name, int (*execute)(void), void *mod)

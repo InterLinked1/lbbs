@@ -65,6 +65,10 @@
 #include "include/event.h"
 #include "include/test.h"
 #include "include/transfer.h"
+#include "include/cli.h"
+#include "include/handler.h"
+#include "include/net.h"
+#include "include/door.h"
 
 static char *_argv[256];
 
@@ -86,11 +90,17 @@ static pid_t bbs_pid;
 
 static time_t bbs_start_time;
 
+enum shutdown_type {
+	SHUTDOWN_NORMAL = 0,
+	SHUTDOWN_RESTART,
+	SHUTDOWN_HALT,
+};
+
 static int sig_alert_pipe[2] = { -1, -1 };
 static int abort_startup = 0;
 static int want_shutdown = 0;
 static int shutting_down = 0;
-static int shutdown_restart = 0;
+static enum shutdown_type shutdown_type = SHUTDOWN_NORMAL;
 
 static pthread_mutex_t sig_lock;
 
@@ -508,7 +518,7 @@ static void cleanup(void)
 	bbs_alertpipe_close(sig_alert_pipe);
 
 	/* Shutdown logging last. */
-	if (shutdown_restart) {
+	if (shutdown_type == SHUTDOWN_RESTART) {
 		bbs_verb(2, "BBS is now restarting\n");
 	} else {
 		bbs_verb(2, "Finalizing shutdown\n");
@@ -525,7 +535,7 @@ static void cleanup(void)
 		unlink(BBS_PID_FILE); /* Remove PID file. This is necessary for restart to succeed. */
 	}
 	shutdown_finished = 1;
-	if (shutdown_restart) {
+	if (shutdown_type == SHUTDOWN_RESTART) {
 		int i;
 		/* Mark all file descriptors for closing on exec */
 		for (i = 3; i < 32768; i++) {
@@ -546,7 +556,7 @@ static void bbs_shutdown(void)
 	}
 	shutting_down = 1;
 	bbs_event_dispatch(NULL, EVENT_SHUTDOWN);
-	if (shutdown_restart == -1) {
+	if (shutdown_type == SHUTDOWN_HALT) {
 		bbs_warning("Halting BBS\n");
 		/* Fast exit (halt), don't clean up */
 		exit(EXIT_FAILURE);
@@ -568,6 +578,7 @@ static void bbs_shutdown(void)
 	bbs_free_menus(); /* Clean up menus */
 	bbs_configs_free_all(); /* Clean up any remaining configs that modules didn't. */
 	bbs_vars_cleanup();
+	bbs_cli_unregister_remaining();
 	pthread_mutex_unlock(&sig_lock); /* Don't release the lock until the very end */
 	pthread_mutex_destroy(&sig_lock);
 	cleanup();
@@ -684,16 +695,24 @@ static void __sigwinch_handler(int num)
 	}
 }
 
-void bbs_request_shutdown(int restart)
+/*!
+ * \brief Request BBS shutdown
+ * \param type
+ * \retval 0 on success, -1 on failure
+ */
+static int bbs_request_shutdown(enum shutdown_type type)
 {
 	bbs_debug(5, "Requesting shutdown\n");
 	pthread_mutex_lock(&sig_lock);
-	shutdown_restart = restart;
+	shutdown_type = type;
 	want_shutdown = 1;
 	if (bbs_alertpipe_write(sig_alert_pipe)) {
 		bbs_error("write() failed: %s\n", strerror(errno));
+		pthread_mutex_unlock(&sig_lock);
+		return -1;
 	}
 	pthread_mutex_unlock(&sig_lock);
+	return 0;
 }
 
 static char task_modulename[64] = "";
@@ -717,6 +736,30 @@ int bbs_safe_sleep(int ms)
 	bbs_soft_assert(ms > 0);
 	return bbs_poll(sig_alert_pipe[0], ms);
 }
+
+static int cli_halt(struct bbs_cli_args *a)
+{
+	UNUSED(a);
+	return bbs_request_shutdown(SHUTDOWN_HALT);
+}
+
+static int cli_shutdown(struct bbs_cli_args *a)
+{
+	UNUSED(a);
+	return bbs_request_shutdown(SHUTDOWN_NORMAL);
+}
+
+static int cli_restart(struct bbs_cli_args *a)
+{
+	UNUSED(a);
+	return bbs_request_shutdown(SHUTDOWN_RESTART);
+}
+
+static struct bbs_cli_entry cli_commands_bbs[] = {
+	BBS_CLI_COMMAND(cli_shutdown, "shutdown", 1, "Shut down the BBS (no confirmation). Also ^C", NULL),
+	BBS_CLI_COMMAND(cli_restart, "restart", 1, "Restart the BBS", NULL),
+	BBS_CLI_COMMAND(cli_halt, "halt", 1, "Immediately (uncleanly) halt the BBS (DANGER!)", NULL),
+};
 
 static void *monitor_sig_flags(void *unused)
 {
@@ -919,13 +962,22 @@ int main(int argc, char *argv[])
 
 	bbs_verb(1, "Initializing BBS\n");
 	CHECK_INIT(atexit(bbs_atexit));
+	CHECK_INIT(bbs_cli_load());
+	CHECK_INIT(bbs_cli_register_multiple(cli_commands_bbs));
 	CHECK_INIT(bbs_init_os_info());
+	CHECK_INIT(bbs_fd_init());
 	CHECK_INIT(bbs_vars_init());
+	CHECK_INIT(bbs_init_threads());
 	CHECK_INIT(bbs_init_system());
 	CHECK_INIT(bbs_transfer_config_load());
 	CHECK_INIT(bbs_mail_init());
 	CHECK_INIT(bbs_load_menus(0));
+	CHECK_INIT(bbs_init_menu_handlers());
 	CHECK_INIT(bbs_load_nodes());
+	/* Most of these here are purely registering sysop CLI commands */
+	CHECK_INIT(bbs_init_nets());
+	CHECK_INIT(bbs_init_doors());
+	CHECK_INIT(bbs_init_tests());
 
 	ssl_server_init(); /* If this fails for some reason, that's okay. Other failures will ensue, but this is not fatal. */
 
@@ -957,9 +1009,6 @@ int main(int argc, char *argv[])
 	/* Release excess memory used by startup */
 	bbs_malloc_trim();
 
-	if (!bbs_num_auth_providers()) {
-		bbs_warning("There are no auth providers currently registered. User login will fail.\n");
-	}
 	if (is_root() && !runuser) {
 		bbs_warning("BBS is running as root. This may compromise the security of your system.\n");
 	}

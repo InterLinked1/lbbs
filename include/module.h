@@ -90,15 +90,6 @@ int bbs_module_unload(const char *name);
  */
 int bbs_module_reload(const char *name, int try_delayed);
 
-/*! \brief Whether a module exists in the module directory on disk (regardless of whether it's active or running) */
-int bbs_module_exists(const char *name);
-
-/*! \brief Whether a module is currently running or not */
-int bbs_module_running(const char *name);
-
-/*! \brief Print currently loaded modules */
-int bbs_list_modules(int fd);
-
 /*! \brief Autoload all modules */
 int load_modules(void);
 

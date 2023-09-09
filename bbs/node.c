@@ -42,6 +42,8 @@
 #include "include/module.h" /* use bbs_module_unref */
 #include "include/utils.h" /* use print_time_elapsed */
 #include "include/event.h"
+#include "include/notify.h"
+#include "include/cli.h"
 
 #define DEFAULT_MAX_NODES 64
 
@@ -109,11 +111,6 @@ static int load_config(void)
 int bbs_guest_login_allowed(void)
 {
 	return allow_guest;
-}
-
-int bbs_load_nodes(void)
-{
-	return load_config();
 }
 
 unsigned int bbs_node_count(void)
@@ -656,14 +653,14 @@ int bbs_node_shutdown_all(int shutdown)
 	return 0;
 }
 
-int bbs_nodes_print(int fd)
+static int cli_nodes(struct bbs_cli_args *a)
 {
 	char elapsed[24];
 	struct bbs_node *n;
 	int c = 0;
 	time_t now = time(NULL);
 
-	bbs_dprintf(fd, "%3s %8s %9s %7s %-15s %-15s %15s %5s %1s %1s %6s %3s %3s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "USER", "MENU/PAGE", "IP ADDRESS", "RPORT", "E", "B", "TID", "FD", "RFD", "WFD", "MST", "SLV", "SPY", "SLV NAME");
+	bbs_dprintf(a->fdout, "%3s %8s %9s %7s %-15s %-15s %15s %5s %1s %1s %6s %3s %3s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "USER", "MENU/PAGE", "IP ADDRESS", "RPORT", "E", "B", "TID", "FD", "RFD", "WFD", "MST", "SLV", "SPY", "SLV NAME");
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
@@ -680,18 +677,34 @@ int bbs_nodes_print(int fd)
 		print_time_elapsed(n->created, now, elapsed, sizeof(elapsed));
 		snprintf(menufull, sizeof(menufull), "%s%s%s%s", S_IF(n->menu), n->menuitem ? " (" : "", S_IF(n->menuitem), n->menuitem ? ")" : "");
 		lwp = bbs_pthread_tid(n->thread);
-		bbs_dprintf(fd, "%3d %8s %9s %3dx%3d %-15s %-15s %15s %5u %1s %1s %6d %3d %3d %3d %3d %3d %3d %s\n",
+		bbs_dprintf(a->fdout, "%3d %8s %9s %3dx%3d %-15s %-15s %15s %5u %1s %1s %6d %3d %3d %3d %3d %3d %3d %s\n",
 			n->id, n->protname, elapsed, n->cols, n->rows, bbs_username(n->user), menufull, n->ip, n->rport, BBS_YN(n->echo), BBS_YN(n->buffered),
 			lwp, n->fd, n->rfd, n->wfd, n->amaster, n->slavefd, n->spyfd, n->slavename);
 		c++;
 	}
 	RWLIST_UNLOCK(&nodes);
 
-	bbs_dprintf(fd, "%d active node%s, %d lifetime node%s\n", c, ESS(c), lifetime_nodes, ESS(lifetime_nodes));
+	bbs_dprintf(a->fdout, "%d active node%s, %d lifetime node%s\n", c, ESS(c), lifetime_nodes, ESS(lifetime_nodes));
 	return 0;
 }
 
-int bbs_node_info(int fd, unsigned int nodenum)
+static int cli_kick(struct bbs_cli_args *a)
+{
+	int node = atoi(a->argv[1]);
+	if (node <= 0) {
+		bbs_dprintf(a->fdout, "Invalid node %s\n", a->argv[1]);
+		return -1;
+	}
+	return bbs_node_shutdown_node((unsigned int) node);
+}
+
+static int cli_kickall(struct bbs_cli_args *a)
+{
+	UNUSED(a);
+	return bbs_node_shutdown_all(0);
+}
+
+static int node_info(int fd, unsigned int nodenum)
 {
 	char elapsed[24];
 	char connecttime[29];
@@ -773,6 +786,16 @@ int bbs_node_info(int fd, unsigned int nodenum)
 
 	RWLIST_UNLOCK(&nodes);
 	return 0;
+}
+
+static int cli_node(struct bbs_cli_args *a)
+{
+	int node = atoi(a->argv[1]);
+	if (node <= 0) {
+		bbs_dprintf(a->fdout, "Invalid node %s\n", a->argv[1]);
+		return -1;
+	}
+	return node_info(a->fdout, (unsigned int) node);
 }
 
 int bbs_user_online(unsigned int userid)
@@ -1313,4 +1336,70 @@ void *bbs_node_handler(void *varg)
 	bbs_node_exit(node);
 
 	return NULL;
+}
+
+static int cli_spy(struct bbs_cli_args *a)
+{
+	int node = atoi(a->argv[1]);
+	if (node <= 0) {
+		bbs_dprintf(a->fdout, "Invalid node %s\n", a->argv[1]);
+		return -1;
+	}
+	return bbs_node_spy(a->fdin, a->fdout, (unsigned int) node);
+}
+
+static int cli_user(struct bbs_cli_args *a)
+{
+	const char *username = a->argv[1];
+	if (bbs_user_dump(a->fdout, username, 10)) {
+		bbs_dprintf(a->fdout, "No such user '%s'\n", username);
+		return -1;
+	}
+	return 0;
+}
+
+static int cli_users(struct bbs_cli_args *a)
+{
+	return bbs_users_dump(a->fdout, 10);
+}
+
+static int cli_alert(struct bbs_cli_args *a)
+{
+	unsigned int userid;
+	const char *msg;
+
+	userid = bbs_userid_from_username(a->argv[1]);
+	if (!userid) {
+		bbs_dprintf(a->fdout, "No such user '%s'\n", a->argv[1]);
+		return -1;
+	}
+
+	msg = a->command + STRLEN("alert "); /* We know it starts with this */
+	msg = bbs_strcnext(msg, ' '); /* Skip the next space, after the username. Now, we have the beginning of the message */
+
+	if (bbs_alert_user(userid, DELIVERY_EPHEMERAL, "%s", msg)) {
+		bbs_dprintf(a->fdout, "Failed to deliver message\n");
+		return -1;
+	} else {
+		bbs_dprintf(a->fdout, "Message delivered\n");
+		return 0;
+	}
+}
+
+static struct bbs_cli_entry cli_commands_nodes[] = {
+	/* Node commands */
+	BBS_CLI_COMMAND(cli_nodes, "nodes", 1, "List all nodes", NULL),
+	BBS_CLI_COMMAND(cli_node, "node", 2, "View information about specified node", "node <nodenum>"),
+	BBS_CLI_COMMAND(cli_kick, "kick", 2, "Kick specified node", "kick <nodenum>"),
+	BBS_CLI_COMMAND(cli_kickall, "kickall", 1, "Kick all nodes", NULL),
+	BBS_CLI_COMMAND(cli_spy, "spy", 2, "Spy on specified node (^C to stop)", "spy <nodenum>"),
+	/* User commands */
+	BBS_CLI_COMMAND(cli_user, "user", 2, "View information about specified user", "user <username>"),
+	BBS_CLI_COMMAND(cli_users, "users", 1, "List all users", NULL),
+	BBS_CLI_COMMAND(cli_alert, "alert", 3, "Send a message to a user", "alert <username> <message>"),
+};
+
+int bbs_load_nodes(void)
+{
+	return load_config() || bbs_cli_register_multiple(cli_commands_nodes);
 }

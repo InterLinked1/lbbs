@@ -24,6 +24,7 @@
 
 #include "include/linkedlists.h"
 #include "include/net.h"
+#include "include/cli.h"
 
 struct net_prot {
 	unsigned int port;
@@ -68,6 +69,23 @@ int bbs_unregister_network_protocol(unsigned int port)
 	return 0;
 }
 
+int bbs_protocol_port(const char *name)
+{
+	unsigned int port = 0;
+	struct net_prot *prot;
+
+	RWLIST_RDLOCK(&prots);
+	RWLIST_TRAVERSE(&prots, prot, entry) {
+		if (!strcmp(name, prot->name)) {
+			port = prot->port;
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&prots);
+
+	return (int) port;
+}
+
 int bbs_list_network_protocols(int fd)
 {
 	int i = 0;
@@ -90,19 +108,16 @@ int bbs_list_network_protocols(int fd)
 	return 0;
 }
 
-int bbs_protocol_port(const char *name)
+static int cli_nets(struct bbs_cli_args *a)
 {
-	unsigned int port = 0;
-	struct net_prot *prot;
+	return bbs_list_network_protocols(a->fdout);
+}
 
-	RWLIST_RDLOCK(&prots);
-	RWLIST_TRAVERSE(&prots, prot, entry) {
-		if (!strcmp(name, prot->name)) {
-			port = prot->port;
-			break;
-		}
-	}
-	RWLIST_UNLOCK(&prots);
+static struct bbs_cli_entry cli_commands_nets[] = {
+	BBS_CLI_COMMAND(cli_nets, "nets", 1, "List all network protocols", NULL),
+};
 
-	return (int) port;
+int bbs_init_nets(void)
+{
+	return bbs_cli_register_multiple(cli_commands_nets);
 }

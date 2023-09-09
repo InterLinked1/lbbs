@@ -37,9 +37,3 @@ void bbs_free_menus(void);
 
 /*! \brief Load or reload menus */
 int bbs_load_menus(int reload);
-
-/*! \brief Print out a menu and all its menu items in detail */
-int bbs_dump_menu(int fd, const char *menuname);
-
-/*! \brief Print menu list */
-int bbs_dump_menus(int fd);

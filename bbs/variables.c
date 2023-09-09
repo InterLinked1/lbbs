@@ -28,6 +28,7 @@
 #include "include/node.h"
 #include "include/config.h"
 #include "include/utils.h"
+#include "include/cli.h"
 
 /*! \brief Opaque structure for a variable (really, a list of variables) */
 struct bbs_var {
@@ -74,12 +75,6 @@ const char *bbs_vars_peek_head(struct bbs_vars *vars, char **value)
 	return NULL;
 }
 
-void bbs_vars_cleanup(void)
-{
-	/* Destroy any global variables that remain */
-	bbs_vars_destroy(&global_vars);
-}
-
 static int load_config(void)
 {
 	struct bbs_config_section *section = NULL;
@@ -122,10 +117,63 @@ static int load_config(void)
 	return 0;
 }
 
+static int vars_dump(int fd, struct bbs_vars *vars)
+{
+	if (vars) {
+		int c = 0;
+		struct bbs_var *v;
+
+		RWLIST_RDLOCK(vars);
+		RWLIST_TRAVERSE(vars, v, entry) {
+			char safebuf[256];
+			if (!c++) {
+				bbs_dprintf(fd, "== %sVariables ==\n", vars == &global_vars ? "Global " : "Node ");
+				if (vars == &global_vars) {
+					/* Include pseudo globals (builtins) */
+					bbs_dprintf(fd, "%-20s : %s\n", "BBS_TIME", "<DYNAMIC> e.g. 01/01 01:01pm");
+					bbs_dprintf(fd, "%-20s : %s\n", "BBS_TIME_LONG", "<DYNAMIC> e.g. Sat Dec 31 2000 09:45 am EST");
+				}
+			}
+			if (!bbs_str_safe_print(v->value, safebuf, sizeof(safebuf))) {
+				bbs_dprintf(fd, "%-20s : %s\n", v->key, safebuf);
+			} else {
+				/* Print only the name */
+				bbs_dprintf(fd, "%-20s : <UNPRINTABLE>\n", v->key);
+			}
+		}
+		RWLIST_UNLOCK(vars);
+		bbs_dprintf(fd, "%d variable%s\n", c, ESS(c));
+	} else {
+		bbs_dprintf(fd, "No variables\n");
+	}
+	return 0;
+}
+
+int bbs_node_vars_dump(int fd, struct bbs_node *node)
+{
+	/* If there are vars for a node, print them (vars_dump handles NULL) */
+	return vars_dump(fd, node->vars);
+}
+
+static int cli_variables(struct bbs_cli_args *a)
+{
+	return vars_dump(a->fdout, &global_vars); /* Dump globals */
+}
+
+static struct bbs_cli_entry cli_commands_variables[] = {
+	BBS_CLI_COMMAND(cli_variables, "variables", 1, "List global variables", NULL),
+};
+
+void bbs_vars_cleanup(void)
+{
+	bbs_cli_unregister_multiple(cli_commands_variables);
+	/* Destroy any global variables that remain */
+	bbs_vars_destroy(&global_vars);
+}
+
 int bbs_vars_init(void)
 {
-	/* There's not actually anything to init, per se. Just read variables from variables.conf and load them. */
-	return load_config();
+	return load_config() || bbs_cli_register_multiple(cli_commands_variables);
 }
 
 int bbs_varlist_last_var_append(struct bbs_vars *vars, const char *s)
@@ -273,49 +321,6 @@ int __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_var_set_fmt(struct bbs_
 	res = bbs_node_var_set(node, key, buf);
 	free(buf);
 	return res;
-}
-
-static int vars_dump(int fd, struct bbs_vars *vars)
-{
-	if (vars) {
-		int c = 0;
-		struct bbs_var *v;
-
-		RWLIST_RDLOCK(vars);
-		RWLIST_TRAVERSE(vars, v, entry) {
-			char safebuf[256];
-			if (!c++) {
-				bbs_dprintf(fd, "== %sVariables ==\n", vars == &global_vars ? "Global " : "Node ");
-				if (vars == &global_vars) {
-					/* Include pseudo globals (builtins) */
-					bbs_dprintf(fd, "%-20s : %s\n", "BBS_TIME", "<DYNAMIC> e.g. 01/01 01:01pm");
-					bbs_dprintf(fd, "%-20s : %s\n", "BBS_TIME_LONG", "<DYNAMIC> e.g. Sat Dec 31 2000 09:45 am EST");
-				}
-			}
-			if (!bbs_str_safe_print(v->value, safebuf, sizeof(safebuf))) {
-				bbs_dprintf(fd, "%-20s : %s\n", v->key, safebuf);
-			} else {
-				/* Print only the name */
-				bbs_dprintf(fd, "%-20s : <UNPRINTABLE>\n", v->key);
-			}
-		}
-		RWLIST_UNLOCK(vars);
-		bbs_dprintf(fd, "%d variable%s\n", c, ESS(c));
-	} else {
-		bbs_dprintf(fd, "No variables\n");
-	}
-	return 0;
-}
-
-int bbs_node_vars_dump(int fd, struct bbs_node *node)
-{
-	if (node) {
-		/* If there are vars for a node, print them (vars_dump handles NULL) */
-		return vars_dump(fd, node->vars);
-	} else {
-		/* Dump globals */
-		return vars_dump(fd, &global_vars);
-	}
 }
 
 const char *bbs_var_find(struct bbs_vars *vars, const char *key)

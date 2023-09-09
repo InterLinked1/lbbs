@@ -246,17 +246,6 @@ unsigned int bbs_node_shutdown_mod(void *mod);
  */
 int bbs_node_shutdown_all(int shutdown);
 
-/*! \brief Print node list */
-int bbs_nodes_print(int fd);
-
-/*!
- * \brief Print information about a node
- * \param fd File descriptor to which to print info
- * \param nodenum Node number
- * \retval 0 (always)
- */
-int bbs_node_info(int fd, unsigned int nodenum);
-
 /*!
  * \brief Check whether a user is active on any nodes
  * \param userid User ID of user to check for activity

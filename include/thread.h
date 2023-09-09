@@ -66,9 +66,5 @@ void bbs_thread_cleanup(void);
  */
 int bbs_pthread_tid(pthread_t thread);
 
-/*!
- * \brief Print list of active BBS threads
- * \param fd File descriptor to which to print thread listing
- * \warning This may not include all threads, such as those that do not use the BBS pthread creation wrappers (external libraries, etc.)
- */
-int bbs_dump_threads(int fd);
+/*! \brief Initialize threads */
+int bbs_init_threads(void);

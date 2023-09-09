@@ -33,6 +33,8 @@
 #include "include/hash.h" /* use hash_sha256 */
 #include "include/event.h"
 #include "include/crypt.h"
+#include "include/startup.h"
+#include "include/cli.h"
 
 /*! \note Even though multiple auth providers are technically allowed, in general only 1 should be registered.
  * The original thinking behind allowing multiple is to allow alternates for authentication
@@ -203,27 +205,6 @@ int bbs_unregister_auth_provider(int (*provider)(AUTH_PROVIDER_PARAMS))
 	} else {
 		free(p);
 	}
-	return 0;
-}
-
-int bbs_list_auth_providers(int fd)
-{
-	int c = 0;
-	struct auth_provider *p;
-
-	RWLIST_RDLOCK(&providers);
-	RWLIST_TRAVERSE(&providers, p, entry) {
-		/* Printing out numbers isn't just nice,
-		 * since providers are called in this order, it's super important
-		 * to make that clear. */
-		c++;
-		/* A module won't be able to unregister without first unregistering
-		 * the provider, which it can't do right now since the list is locked,
-		 * so accessing the module is safe. */
-		bbs_dprintf(fd, " %d => %-30s (%s)\n", c, p->name, bbs_module_name(p->module));
-	}
-	RWLIST_UNLOCK(&providers);
-	bbs_dprintf(fd, "%d registered auth provider%s\n", c, ESS(c));
 	return 0;
 }
 
@@ -801,4 +782,43 @@ struct bbs_user **bbs_user_list(void)
 	bbs_module_unref(userlistmod);
 
 	return userlist;
+}
+
+static int cli_authproviders(struct bbs_cli_args *a)
+{
+	int c = 0;
+	struct auth_provider *p;
+
+	RWLIST_RDLOCK(&providers);
+	RWLIST_TRAVERSE(&providers, p, entry) {
+		/* Printing out numbers isn't just nice,
+		 * since providers are called in this order, it's super important
+		 * to make that clear. */
+		c++;
+		/* A module won't be able to unregister without first unregistering
+		 * the provider, which it can't do right now since the list is locked,
+		 * so accessing the module is safe. */
+		bbs_dprintf(a->fdout, " %d => %-30s (%s)\n", c, p->name, bbs_module_name(p->module));
+	}
+	RWLIST_UNLOCK(&providers);
+	bbs_dprintf(a->fdout, "%d registered auth provider%s\n", c, ESS(c));
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_auth[] = {
+	BBS_CLI_COMMAND(cli_authproviders, "authproviders", 1, "List all auth providers", NULL),
+};
+
+static int check_authproviders(void)
+{
+	if (!bbs_num_auth_providers()) {
+		bbs_warning("There are no auth providers currently registered. User login will fail.\n");
+	}
+	return 0;
+}
+
+int bbs_init_auth(void)
+{
+	bbs_run_when_started(check_authproviders, STARTUP_PRIORITY_DEFAULT);
+	return bbs_cli_register_multiple(cli_commands_auth);
 }

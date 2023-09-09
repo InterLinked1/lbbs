@@ -34,6 +34,7 @@
 #include "include/variables.h"
 #include "include/utils.h"
 #include "include/startup.h"
+#include "include/cli.h"
 
 static int case_sensitive = 0;
 
@@ -77,11 +78,6 @@ static void menu_free(struct bbs_menu *menu)
 	free_if(menu->display);
 	free(menu->name);
 	free(menu);
-}
-
-void bbs_free_menus(void)
-{
-	RWLIST_REMOVE_ALL(&menus, entry, menu_free);
 }
 
 static int menu_item_link(struct bbs_menu *menu, struct bbs_menu_item *menuitem)
@@ -152,7 +148,7 @@ static struct bbs_menu *find_menu(const char *menuname)
 	return menu;
 }
 
-int bbs_dump_menu(int fd, const char *menuname)
+static int bbs_dump_menu(int fd, const char *menuname)
 {
 	int c = 0;
 	struct bbs_menu *menu;
@@ -189,7 +185,8 @@ int bbs_dump_menu(int fd, const char *menuname)
 	return 0;
 }
 
-int bbs_dump_menus(int fd)
+/*! \brief Print menu list */
+static int bbs_dump_menus(int fd)
 {
 	int c = 0;
 	struct bbs_menu *menu;
@@ -878,6 +875,28 @@ static int check_menus(void)
 	return 0;
 }
 
+static int cli_menureload(struct bbs_cli_args *a)
+{
+	bbs_cli_set_stdout_logging(a->fdout, 1); /* We want to be able to see the logging */
+	return bbs_load_menus(1);
+}
+
+static int cli_menus(struct bbs_cli_args *a)
+{
+	return bbs_dump_menus(a->fdout);
+}
+
+static int cli_menu(struct bbs_cli_args *a)
+{
+	return bbs_dump_menu(a->fdout, a->argv[1]);
+}
+
+static struct bbs_cli_entry cli_commands_menu[] = {
+	BBS_CLI_COMMAND(cli_menureload, "menureload", 1, "Reload menus", NULL),
+	BBS_CLI_COMMAND(cli_menus, "menus", 1, "List all menus", NULL),
+	BBS_CLI_COMMAND(cli_menu, "menu", 2, "Dump a menu", "menu <name>"),
+};
+
 int bbs_load_menus(int reload)
 {
 	int res;
@@ -887,5 +906,12 @@ int bbs_load_menus(int reload)
 	 * since menu handlers aren't yet registered right now, so we have to wait to verify them. */
 	bbs_run_when_started(check_menus, STARTUP_PRIORITY_DEFAULT);
 
+	res |= bbs_cli_register_multiple(cli_commands_menu);
 	return res;
+}
+
+void bbs_free_menus(void)
+{
+	bbs_cli_unregister_multiple(cli_commands_menu);
+	RWLIST_REMOVE_ALL(&menus, entry, menu_free);
 }

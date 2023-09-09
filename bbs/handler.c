@@ -26,6 +26,7 @@
 #include "include/linkedlists.h"
 #include "include/module.h"
 #include "include/variables.h"
+#include "include/cli.h"
 
 struct menu_handler {
 	/*! Menu handler function */
@@ -109,22 +110,6 @@ cleanup:
 	return res;
 }
 
-int bbs_list_menu_handlers(int fd)
-{
-	int c = 0;
-	struct menu_handler *handler;
-
-	RWLIST_RDLOCK(&handlers);
-	RWLIST_TRAVERSE(&handlers, handler, entry) {
-		/* Handlers can't be unregistered by modules without a WRLOCK being obtained.
-		 * Since we're holding a RDLOCK, it's safe to go ahead and print the module name. */
-		bbs_dprintf(fd, "%3d => %-15s (%s)\n", ++c, handler->name, bbs_module_name(handler->module));
-	}
-	RWLIST_UNLOCK(&handlers);
-	bbs_dprintf(fd, "%d menu handler%s registered\n", c, ESS(c));
-	return 0;
-}
-
 int menu_handler_exists(const char *name, int *needargs)
 {
 	struct menu_handler *handler;
@@ -178,4 +163,29 @@ int menu_handler_exec(struct bbs_node *node, const char *name, char *args)
 	bbs_debug(5, "Menu handler %s returned %d\n", name, res);
 	bbs_module_unref(handler->module);
 	return res;
+}
+
+static int cli_menuhandlers(struct bbs_cli_args *a)
+{
+	int c = 0;
+	struct menu_handler *handler;
+
+	RWLIST_RDLOCK(&handlers);
+	RWLIST_TRAVERSE(&handlers, handler, entry) {
+		/* Handlers can't be unregistered by modules without a WRLOCK being obtained.
+		 * Since we're holding a RDLOCK, it's safe to go ahead and print the module name. */
+		bbs_dprintf(a->fdout, "%3d => %-15s (%s)\n", ++c, handler->name, bbs_module_name(handler->module));
+	}
+	RWLIST_UNLOCK(&handlers);
+	bbs_dprintf(a->fdout, "%d menu handler%s registered\n", c, ESS(c));
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_handlers[] = {
+	BBS_CLI_COMMAND(cli_menuhandlers, "menuhandlers", 1, "List all menu handlers", NULL),
+};
+
+int bbs_init_menu_handlers(void)
+{
+	return bbs_cli_register_multiple(cli_commands_handlers);
 }

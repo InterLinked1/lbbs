@@ -32,9 +32,6 @@ int __bbs_register_door(const char *name, int (*execute)(DOOR_PARAMS), void *mod
 /*! \brief Unregister a door */
 int bbs_unregister_door(const char *name);
 
-/*! \brief Print list of doors */
-int bbs_list_doors(int fd);
-
 /*!
  * \brief Execute a named door
  * \param node
@@ -43,3 +40,6 @@ int bbs_list_doors(int fd);
  * \retval 0 on success, -1 on failure
  */
 int bbs_door_exec(struct bbs_node *node, const char *name, const char *args);
+
+/*! \brief Initialize doors */
+int bbs_init_doors(void);
