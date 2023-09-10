@@ -485,13 +485,24 @@ ssize_t bbs_node_fd_write(struct bbs_node *node, int fd, const char *buf, size_t
  * \note This function may only be used by the thread handling a node
  * \note This function provides its own concurrency control. Callers should not hold any locks when calling this function.
  */
-ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...) __attribute__ ((nonnull (1)));;
+ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...) __attribute__ ((nonnull (1)));
 
 /*!
  * \brief Similar to bbs_node_fd_writef, but node may be NULL (in which case bbs_writef is used automatically)
  * \note This is a convenience wrapper. Use bbs_write (node is always NULL) or bbs_node_fd_write (node is never NULL) directly if appropriate.
  */
 ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_auto_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...);
+
+/*!
+ * \brief Hybrid between bbs_auto_fd_writef and bbs_node_any_fd_write. Use ONLY when writing to either a node not owned by the current thread or a file descriptor not associated with a node.
+ *        This is the most lenient high-level bbs_write I/O function that exists, since it tolerates both a NULL node and writing to a node owned by a different thread.
+ * \param node Node associated with this file descriptor. May be NULL.
+ * \param fd File descriptor to which to write
+ * \param fmt printf-style format string
+ * \retval Same as write()
+ * \note Usage: If node is never NULL, use bbs_node_any_fd_write instead. If node always belongs to the current thread, use bbs_auto_fd_writef.
+ */
+ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_auto_any_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...);
 
 /*!
  * \brief Write to a file descriptor associated with a node (but not necessarily the node file descriptor)
@@ -503,7 +514,7 @@ ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_auto_fd_writef(struct bb
  * \note Unlike bbs_write, this does not guarantee the buffer will be fully written before returning.
  *       Applications SHOULD use bbs_node_fd_write instead of this function when writing from the node thread.
  */
-ssize_t bbs_node_any_fd_write(struct bbs_node *node, int fd, const char *buf, size_t len);
+ssize_t bbs_node_any_fd_write(struct bbs_node *node, int fd, const char *buf, size_t len) __attribute__ ((nonnull (1)));
 
 /*!
  * \brief Write formatted data to a file descriptor associated with a node (but not necessarily the node file descriptor)
@@ -514,7 +525,7 @@ ssize_t bbs_node_any_fd_write(struct bbs_node *node, int fd, const char *buf, si
  * \note Unlike bbs_write, this does not guarantee the buffer will be fully written before returning.
  *       Applications SHOULD use bbs_node_fd_write instead of this function when writing from the node thread.
  */
-ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_any_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...);
+ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_any_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...) __attribute__ ((nonnull (1)));
 
 /*!
  * \brief printf-style wrapper for bbs_node_write.
@@ -522,13 +533,13 @@ ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_any_fd_writef(struc
  * \param fmt printf-format string
  * \retval Same as write()
  */
-ssize_t bbs_node_writef(struct bbs_node *node, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) ;
+ssize_t bbs_node_writef(struct bbs_node *node, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) __attribute__ ((nonnull (1)));
 
 /*!
  * \brief Same as bbs_node_writef, but directly on a file descriptor
  * \note This is not exactly the same thing as a function like dprintf, since it returns the value returned by write()
  */
-ssize_t bbs_writef(int fd, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3))) ;
+ssize_t bbs_writef(int fd, const char *fmt, ...) __attribute__ ((format (gnu_printf, 2, 3)));
 
 /*!
  * \brief Clear the terminal screen on a node's connected TTY

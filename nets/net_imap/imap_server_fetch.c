@@ -429,7 +429,7 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 		long size, fullsize;
 		skipheaders |= (fetchreq->rfc822text && !fetchreq->rfc822); /* Other conditions in which we skip sending headers */
 		if (sendbody) {
-			int res;
+			ssize_t res;
 			char resptype[48];
 			off_t offset;
 			fp = fopen(fullname, "r");
@@ -488,15 +488,15 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 			imap_send(imap, "%d FETCH (%s%s%s %s {%ld}", seqno, S_IF(dyn), dyn ? " " : "", response, resptype, size); /* No close paren here, last write will do that */
 
 			pthread_mutex_lock(&imap->lock);
-			res = (int) sendfile(imap->wfd, fileno(fp), &offset, (size_t) size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
+			res = sendfile(imap->wfd, fileno(fp), &offset, (size_t) size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
 			bbs_node_fd_writef(imap->node, imap->wfd, ")\r\n"); /* And the finale (don't use imap_send for this) */
 			pthread_mutex_unlock(&imap->lock);
 
 			fclose(fp);
-			if (res != size) {
-				bbs_error("sendfile failed (%d != %ld): %s\n", res, size, strerror(errno));
+			if (res != (ssize_t) size) {
+				bbs_error("sendfile(%s) failed (%ld != %ld): %s\n", fullname, res, size, strerror(errno));
 			} else {
-				imap_debug(5, "Sent %d/%ld-byte body for %s\n", res, fullsize, fullname); /* either partial or entire body */
+				imap_debug(5, "Sent %ld/%ld-byte body for %s\n", res, fullsize, fullname); /* either partial or entire body */
 			}
 		} else {
 			const char *headersptr = headers;

@@ -37,6 +37,7 @@
 #include "include/ansi.h"
 #include "include/notify.h"
 #include "include/alertpipe.h"
+#include "include/cli.h"
 
 #include "include/net_irc.h"
 
@@ -63,9 +64,10 @@
 #define IDENT_PREFIX_ARGS(user) (user)->nickname, (user)->username, (user)->hostname
 
 /*! \note Since not all users have a node (e.g. builtin services) */
-#define irc_other_thread_writef(node, fd, fmt, ...) bbs_auto_fd_writef(node, fd, fmt, ## __VA_ARGS__);
+#define irc_other_thread_writef(node, fd, fmt, ...) bbs_auto_any_fd_writef(node, fd, fmt, ## __VA_ARGS__);
 
-#define irc_other_thread_write(node, fd, buf, len) bbs_auto_fd_writef(node, fd, buf, len);
+/* There isn't a bbs_auto_fd_write, so ignore the length */
+#define irc_other_thread_write(node, fd, buf, len) bbs_auto_any_fd_writef(node, fd, "%s", buf);
 
 #define send_reply(user, fmt, ...) bbs_debug(3, "%p <= " fmt, user, ## __VA_ARGS__); irc_other_thread_writef(user->node, user->wfd, fmt, ## __VA_ARGS__);
 #define send_numeric(user, numeric, fmt, ...) send_reply(user, "%03d %s :" fmt, numeric, user->nickname, ## __VA_ARGS__)
@@ -3293,18 +3295,86 @@ static void *ping_thread(void *unused)
 			/* Okay, at this point, all the users should be kicked and gone.
 			 * There shouldn't be any users left of this module.
 			 * Now, request the BBS core unload and load us again. */
-
-			/*! \todo BUGBUG FIXME mod_discord won't load again once we do, this is a crummy solution.
-			 * We need something in module.c that will unload any dependencies,
-			 * reload us, and then load all the dependencies again. */
-			bbs_module_unload("mod_discord"); /* mod_discord depends on net_irc, so we can't unload while it's loaded. */
-			bbs_module_unload("mod_relay_irc"); /* Ditto */
 			bbs_request_module_unload(file_without_ext, need_restart - 1);
 			break;
 		}
 	}
 	return NULL;
 }
+
+static int cli_irc_users(struct bbs_cli_args *a)
+{
+	struct irc_user *user;
+	char modes[53];
+	int i = 0;
+	time_t now = time(NULL);
+
+	bbs_dprintf(a->fdout, "%3s %2s %4s %-20s %4s %-15s %-20s %s\n", "#", "Op", "Node", "User", "Ping", "Modes", "Nick", "Hostmask");
+	RWLIST_RDLOCK(&users);
+	RWLIST_TRAVERSE(&users, user, entry) {
+		time_t ping = user->lastpong ? now - user->lastpong : -1;
+		++i;
+		get_user_modes(modes, sizeof(modes), user);
+		bbs_dprintf(a->fdout, "%3d %2s %4d %-20s %4" TIME_T_FMT " %-15s %-20s %s\n",
+			i, user->modes & USER_MODE_OPERATOR ? "*" : "", user->node->id, bbs_username(user->node->user), ping, modes, user->nickname, user->hostname);
+	}
+	RWLIST_UNLOCK(&users);
+	bbs_dprintf(a->fdout, "%d user%s online\n", i, ESS(i));
+	return 0;
+}
+
+static int cli_irc_channels(struct bbs_cli_args *a)
+{
+	int i = 0;
+	char modes[53];
+	struct irc_channel *channel;
+
+	bbs_dprintf(a->fdout, "%-20s %4s %3s %-20s %s\n", "Channel", "Mbrs", "Rly", "Modes", "Topic");
+	RWLIST_RDLOCK(&channels);
+	RWLIST_TRAVERSE(&channels, channel, entry) {
+		get_channel_modes(modes, sizeof(modes), channel);
+		bbs_dprintf(a->fdout, "%-20s %4d %3s %-20s %s\n", channel->name, channel->membercount, BBS_YN(channel->relay), modes, S_IF(channel->topic));
+		i++;
+	}
+	RWLIST_UNLOCK(&channels);
+	bbs_dprintf(a->fdout, "%d channel%s\n", i, ESS(i));
+	return 0;
+}
+
+static int cli_irc_members(struct bbs_cli_args *a)
+{
+	int i = 0;
+	char modes[53];
+	struct irc_member *member;
+	struct irc_channel *channel = get_channel(a->argv[2]);
+
+	if (!channel) {
+		bbs_dprintf(a->fdout, "No such channel: %s\n", a->argv[2]);
+		return -1;
+	}
+
+	bbs_dprintf(a->fdout, "%4s %-20s %-20s %s\n", "Node", "Modes", "Nick", "Hostmask");
+	RWLIST_RDLOCK(&channel->members);
+	RWLIST_TRAVERSE(&channel->members, member, entry) {
+		get_channel_user_modes(modes, sizeof(modes), member);
+		/* Don't dereference the node, things like ChanServ and other services don't have one */
+		if (member->user->node) {
+			bbs_dprintf(a->fdout, "%4d %-20s %-20s %s\n", member->user->node->id, modes, member->user->nickname, member->user->hostname);
+		} else {
+			bbs_dprintf(a->fdout, "%4s %-20s %-20s %s\n", "", modes, member->user->nickname, member->user->hostname);
+		}
+		i++;
+	}
+	RWLIST_UNLOCK(&channel->members);
+	bbs_dprintf(a->fdout, "%d member%s in channel %s\n", i, ESS(i), a->argv[2]);
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_irc[] = {
+	BBS_CLI_COMMAND(cli_irc_users, "irc users", 2, "List all IRC users", NULL),
+	BBS_CLI_COMMAND(cli_irc_channels, "irc chans", 2, "List all IRC channels", NULL),
+	BBS_CLI_COMMAND(cli_irc_members, "irc members", 3, "List all members in an IRC channel", "irc members <channel>"),
+};
 
 /*! \brief Thread to handle a single IRC/IRCS client */
 static void irc_handler(struct bbs_node *node, int secure)
@@ -3486,6 +3556,7 @@ static int load_module(void)
 	}
 
 	bbs_register_alerter(alertmsg, 5);
+	bbs_cli_register_multiple(cli_commands_irc);
 	return 0;
 
 decline:
@@ -3495,6 +3566,7 @@ decline:
 
 static int unload_module(void)
 {
+	bbs_cli_unregister_multiple(cli_commands_irc);
 	bbs_unregister_alerter(alertmsg);
 	bbs_alertpipe_write(ping_alertpipe);
 	bbs_pthread_join(irc_ping_thread, NULL);

@@ -310,7 +310,9 @@ int bbs_resolve_hostname(const char *hostname, char *buf, size_t len)
 
 	freeaddrinfo(res);
 
-	bbs_debug(5, "Resolved hostname %s to %s\n", hostname, buf);
+	if (strcmp(hostname, buf)) {
+		bbs_debug(5, "Resolved hostname %s to %s\n", hostname, buf);
+	}
 	return 0;
 }
 
@@ -2190,6 +2192,36 @@ ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_auto_fd_writef(struct bb
 	return res;
 }
 
+ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_auto_any_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...)
+{
+	char *buf;
+	int len;
+	ssize_t res;
+	va_list ap;
+
+	if (!node && fd < 0) {
+		/* e.g. mod_chanserv writes */
+		bbs_debug(3, "Discarding write output (no node and no fd)\n");
+		return 0;
+	}
+
+	if (!strchr(fmt, '%')) {
+		return node ? bbs_node_any_fd_write(node, fd, fmt, strlen(fmt)) : bbs_write(fd, fmt, strlen(fmt));
+	}
+
+	va_start(ap, fmt);
+	len = vasprintf(&buf, fmt, ap);
+	va_end(ap);
+
+	if (len < 0) {
+		return -1;
+	}
+
+	res = bbs_node_any_fd_write(node, fd, buf, (size_t) len);
+	free(buf);
+	return res;
+}
+
 ssize_t bbs_node_any_fd_write(struct bbs_node *node, int fd, const char *buf, size_t len)
 {
 	ssize_t res;
@@ -2197,7 +2229,6 @@ ssize_t bbs_node_any_fd_write(struct bbs_node *node, int fd, const char *buf, si
 	/* In case the node thread is blocked on I/O,
 	 * we do NOT try to lock the node in this function normally.
 	 * Instead, we use trylock to avoid possible deadlocks. */
-	bbs_assert_exists(node);
 
 	if (node->thread == pthread_self()) {
 		/* The caller could have used bbs_node_fd_write directly, but maybe it was iterating over a list of clients,

@@ -33,6 +33,7 @@
 #include "include/linkedlists.h"
 #include "include/stringlist.h"
 #include "include/utils.h" /* use bbs_str_isprint */
+#include "include/cli.h"
 
 /* Don't ban private IP addresses, under any circumstances */
 #define IGNORE_LOCAL_NETS
@@ -195,6 +196,27 @@ static void process_bad_ip(struct in_addr *addr, const char *straddr, const char
 	}
 }
 
+static int cli_ips(struct bbs_cli_args *a)
+{
+	struct ip_block *ip;
+	time_t now = time(NULL);
+
+	bbs_dprintf(a->fdout, "%-55s %13s %11s %11s %11s %11s\n", "Address", "Last Fail (s)", "Auth Fails", "Auth Hits", "Quick Fails", "Quick Hits");
+	RWLIST_RDLOCK(&ipblocks);
+	RWLIST_TRAVERSE(&ipblocks, ip, entry) {
+		char buf[56];
+		time_t ago;
+		if (!inet_ntop(AF_INET, &ip->addr, buf, (socklen_t) sizeof(buf))) { /* XXX Assumes IPv4 */
+			bbs_error("Failed to get IP address: %s\n", strerror(errno));
+			continue;
+		}
+		ago = now - ip->epoch;
+		bbs_dprintf(a->fdout, "%-55s %13" TIME_T_FMT " %11d %11d %11d %11d\n", buf, ago, ip->authfails, ip->authhits, ip->quickfails, ip->quickhits);
+	}
+	RWLIST_UNLOCK(&ipblocks);
+	return 0;
+}
+
 static int ip_whitelisted(const char *ip)
 {
 	const char *s;
@@ -281,6 +303,10 @@ static int load_config(void)
 	return 0;
 }
 
+static struct bbs_cli_entry cli_commands_events[] = {
+	BBS_CLI_COMMAND(cli_ips, "ips", 1, "List flagged IP addresses", NULL),
+};
+
 static int load_module(void)
 {
 	memset(&ip_whitelist, 0, sizeof(ip_whitelist));
@@ -289,12 +315,14 @@ static int load_module(void)
 		stringlist_empty(&ip_whitelist);
 		return -1;
 	}
+	bbs_cli_register_multiple(cli_commands_events);
 	return bbs_register_event_consumer(event_cb);
 }
 
 static int unload_module(void)
 {
 	int res = bbs_unregister_event_consumer(event_cb);
+	bbs_cli_unregister_multiple(cli_commands_events);
 	RWLIST_WRLOCK_REMOVE_ALL(&ipblocks, entry, free);
 	stringlist_empty(&ip_whitelist);
 	return res;

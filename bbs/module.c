@@ -1203,7 +1203,7 @@ int load_modules(void)
 	RWLIST_UNLOCK(&modules);
 
 	bbs_assert(c == autoload_loaded);
-	bbs_cli_register(cli_commands_modules);
+	bbs_cli_register_multiple(cli_commands_modules);
 	return res;
 }
 
@@ -1304,6 +1304,6 @@ int unload_modules(void)
 	}
 	RWLIST_UNLOCK(&modules);
 
-	bbs_cli_unregister(cli_commands_modules);
+	bbs_cli_register_multiple(cli_commands_modules);
 	return 0;
 }

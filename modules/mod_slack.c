@@ -32,6 +32,7 @@
 #include "include/node.h" /* use bbs_hostname */
 #include "include/startup.h"
 #include "include/curl.h"
+#include "include/cli.h"
 
 #include "include/json.h"
 
@@ -920,6 +921,113 @@ static int nicklist(struct bbs_node *node, int fd, int numeric, const char *requ
 	return 0;
 }
 
+static int cli_slack_relays(struct bbs_cli_args *a)
+{
+	int i = 0;
+	struct slack_relay *r;
+
+	bbs_dprintf(a->fdout, "%-20s (%s)\n", "Name", "IRC User (Private Relay)");
+	RWLIST_RDLOCK(&relays);
+	RWLIST_TRAVERSE(&relays, r, entry) {
+		bbs_dprintf(a->fdout, "%-20s %s\n", r->name, S_IF(r->ircuser));
+		i++;
+	}
+	RWLIST_UNLOCK(&relays);
+	bbs_dprintf(a->fdout, "%d relay%s\n", i, ESS(i));
+	return 0;
+}
+
+static int cli_slack_channels(struct bbs_cli_args *a)
+{
+	int i = 0;
+	int match = 0;
+	struct slack_relay *r;
+
+	bbs_dprintf(a->fdout, "%-20s %-30s %-20s\n", "Slack Channel ID", "Slack Channel Name", "IRC Channel");
+	RWLIST_RDLOCK(&relays);
+	RWLIST_TRAVERSE(&relays, r, entry) {
+		struct chan_pair *cp;
+
+		RWLIST_RDLOCK(&r->mappings);
+		RWLIST_TRAVERSE(&r->mappings, cp, entry) {
+			i++;
+			/* This check could be done in the outer loop, if we didn't want to count all the channels. */
+			if (a->argc == 3 && strcasecmp(r->name, a->argv[2])) { /* Optional relay filter */
+				continue;
+			}
+			bbs_dprintf(a->fdout, "%-20s %-30s %-20s\n", cp->slack, cp->name, cp->irc);
+			match++;
+		}
+		RWLIST_UNLOCK(&r->mappings);
+	}
+	RWLIST_UNLOCK(&relays);
+	bbs_dprintf(a->fdout, "%d/%d relay%s\n", match, i, ESS(i));
+	return 0;
+}
+
+static int cli_slack_users(struct bbs_cli_args *a)
+{
+	int i = 0;
+	int match = 0;
+	struct slack_relay *r;
+
+	bbs_dprintf(a->fdout, "%-20s %1s %-30s %-20s\n", "Slack User ID", "A", "Slack Username", "Slack Real Name");
+	RWLIST_RDLOCK(&relays);
+	RWLIST_TRAVERSE(&relays, r, entry) {
+		struct slack_user *u;
+
+		RWLIST_RDLOCK(&r->users);
+		RWLIST_TRAVERSE(&r->users, u, entry) {
+			i++;
+			/* This check could be done in the outer loop, if we didn't want to count all the users. */
+			if (a->argc == 3 && strcasecmp(r->name, a->argv[2])) { /* Optional relay filter */
+				continue;
+			}
+			bbs_dprintf(a->fdout, "%-20s %1s %-30s %-20s\n", u->userid, u->active ? "*" : "", u->username, u->realname);
+			match++;
+		}
+		RWLIST_UNLOCK(&r->users);
+	}
+	RWLIST_UNLOCK(&relays);
+	bbs_dprintf(a->fdout, "%d/%d user%s\n", match, i, ESS(i));
+	return 0;
+}
+
+static int cli_slack_members(struct bbs_cli_args *a)
+{
+	int i = 0;
+	struct slack_relay *r;
+
+	bbs_dprintf(a->fdout, "%-20s %-30s %-20s\n", "Slack Channel ID", "Slack Channel Name", "IRC Channel");
+	RWLIST_RDLOCK(&relays);
+	RWLIST_TRAVERSE(&relays, r, entry) {
+		struct chan_pair *cp;
+		RWLIST_RDLOCK(&r->mappings);
+		RWLIST_TRAVERSE(&r->mappings, cp, entry) {
+			struct member *m;
+			if (strcmp(cp->slack, a->argv[2])) {
+				continue;
+			}
+			RWLIST_TRAVERSE(&cp->members, m, entry) {
+				struct slack_user *u = m->u;
+				bbs_dprintf(a->fdout, "%-20s %1s %-30s %-20s\n", u->userid, u->active ? "*" : "", u->username, u->realname);
+				i++;
+			}
+		}
+		RWLIST_UNLOCK(&r->mappings);
+	}
+	RWLIST_UNLOCK(&relays);
+	bbs_dprintf(a->fdout, "%d member%s\n", i, ESS(i));
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_slack[] = {
+	BBS_CLI_COMMAND(cli_slack_relays, "slack relays", 2, "List all Slack relays", NULL),
+	BBS_CLI_COMMAND(cli_slack_channels, "slack chans", 2, "List Slack channels", "slack chans [<relay>]"),
+	BBS_CLI_COMMAND(cli_slack_users, "slack users", 2, "List Slack users", "slack users [<relay>]"),
+	BBS_CLI_COMMAND(cli_slack_members, "slack members", 2, "List a Slack channel's members", "slack members <channel>"),
+};
+
 struct slack_callbacks slack_callbacks = {
 	.message = on_message,
 	.message_changed = on_message, /* Treat edited message the same as a new message */
@@ -1152,11 +1260,13 @@ static int load_module(void)
 	}
 
 	irc_relay_register(slack_send, nicklist, privmsg, BBS_MODULE_SELF);
+	bbs_cli_register_multiple(cli_commands_slack);
 	return 0;
 }
 
 static int unload_module(void)
 {
+	bbs_cli_unregister_multiple(cli_commands_slack);
 	irc_relay_unregister(slack_send);
 	RWLIST_WRLOCK_REMOVE_ALL(&relays, entry, relay_free);
 	return 0;

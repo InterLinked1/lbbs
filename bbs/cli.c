@@ -187,6 +187,7 @@ int bbs_cli_exec(int fdin, int fdout, const char *s)
 	RWLIST_RDLOCK(&cmds); /* Make sure the command isn't removed before we increase its refcount (which will then ensure it isn't removed) */
 	c = find_cli_cmd(s);
 	if (!c) {
+		RWLIST_UNLOCK(&cmds);
 		bbs_debug(1, "No matching CLI command for '%s'\n", s); /* Not a warning, user could fat finger a typo */
 		errno = ENOENT;
 		return -1;
@@ -222,7 +223,9 @@ int bbs_cli_exec(int fdin, int fdout, const char *s)
 		a.argv = argv;
 		a.command = s;
 		res = c->e->handler(&a);
-		bbs_debug(4, "Command '%s' returned %d\n", s, res);
+		if (res) {
+			bbs_debug(2, "Command '%s' returned %d\n", s, res);
+		}
 	}
 	if (c->mod) {
 		bbs_module_unref(c->mod);

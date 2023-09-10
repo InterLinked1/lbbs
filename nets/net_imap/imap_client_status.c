@@ -439,7 +439,7 @@ static int cache_remote_list_status(struct imap_client *client, const char *rtag
 	for (i = 0; ; i++) {
 		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 10000);
 		if (res <= 0) {
-			bbs_warning("IMAP timeout (res: %lu) from LIST-STATUS - remote server issue?\n", res);
+			bbs_warning("IMAP timeout (res: %ld) from LIST-STATUS - remote server issue?\n", res);
 			free_if(dynstr.buf);
 			return -1;
 		}

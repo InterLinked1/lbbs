@@ -34,6 +34,7 @@
 #include "include/utils.h"
 #include "include/node.h" /* use bbs_hostname */
 #include "include/startup.h"
+#include "include/cli.h"
 
 #include "include/net_irc.h"
 
@@ -214,6 +215,24 @@ static enum user_status status_from_str(const char *s)
 	} else {
 		return STATUS_NONE;
 	}
+}
+
+static const char *status_str(enum user_status status)
+{
+	switch (status) {
+		case STATUS_IDLE:
+			return "idle";
+		case STATUS_DND:
+			return "dnd";
+		case STATUS_ONLINE:
+			return "online";
+		case STATUS_OFFLINE:
+			return "offline";
+		case STATUS_NONE:
+			return "none";
+	}
+	bbs_assert(0);
+	return NULL;
 }
 
 static void remove_user(struct discord_user *user)
@@ -1182,6 +1201,45 @@ static void on_message_update(struct discord *client, const struct discord_messa
 	}
 }
 
+static int cli_discord_mappings(struct bbs_cli_args *a)
+{
+	int i = 0;
+	struct chan_pair *cp;
+
+	bbs_dprintf(a->fdout, "%-20s %-20s %-20s %-20s\n", "Guild ID", "Channel ID", "Discord", "IRC");
+	RWLIST_RDLOCK(&mappings);
+	RWLIST_TRAVERSE(&mappings, cp, entry) {
+		bbs_dprintf(a->fdout, "%-20lu %-20lu %-20s %-20s\n", cp->guild_id, cp->channel_id, cp->discord_channel, cp->irc_channel);
+		i++;
+	}
+	RWLIST_UNLOCK(&mappings);
+	bbs_dprintf(a->fdout, "%d mapping%s\n", i, ESS(i));
+	return 0;
+}
+
+static int cli_discord_users(struct bbs_cli_args *a)
+{
+	int i = 0;
+	struct user *u;
+
+	bbs_dprintf(a->fdout, "%-20s %7s %5s\n", "User", "Status", "Roles");
+	RWLIST_RDLOCK(&users);
+	RWLIST_TRAVERSE(&users, u, entry) {
+		char buf[48];
+		snprintf(buf, sizeof(buf), "%s#%s\n", u->username, u->discriminator);
+		bbs_dprintf(a->fdout, "%-20s %7s %5d" "%s\n", buf, status_str(u->status), u->numroles, u->admin ? " [Guild Admin]" : "");
+		i++;
+	}
+	RWLIST_UNLOCK(&users);
+	bbs_dprintf(a->fdout, "%d user%s\n", i, ESS(i));
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_discord[] = {
+	BBS_CLI_COMMAND(cli_discord_mappings, "discord mappings", 2, "List Discord mappings", NULL),
+	BBS_CLI_COMMAND(cli_discord_users, "discord users", 2, "List Discord users", NULL),
+};
+
 static void *discord_relay(void *varg)
 {
 	struct discord *client = varg;
@@ -1309,12 +1367,14 @@ static int load_module(void)
 		return -1;
 	}
 
+	bbs_cli_register_multiple(cli_commands_discord);
 	return bbs_run_when_started(start_discord_relay, STARTUP_PRIORITY_DEFAULT);
 }
 
 static int unload_module(void)
 {
 	discord_ready = 0;
+	bbs_cli_unregister_multiple(cli_commands_discord);
 	irc_relay_unregister(discord_send);
 
 	ccord_shutdown_async();

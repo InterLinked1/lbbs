@@ -34,6 +34,7 @@
 #include "include/alertpipe.h"
 #include "include/utils.h"
 #include "include/event.h"
+#include "include/cli.h"
 
 #ifdef HAVE_OPENSSL
 static char root_certs[84] = "/etc/ssl/certs/ca-certificates.crt";
@@ -176,6 +177,7 @@ struct ssl_fd {
 	int readpipe[2];
 	int writepipe[2];
 	unsigned int dead:1;
+	unsigned int client:1;
 	RWLIST_ENTRY(ssl_fd) entry;
 };
 
@@ -183,7 +185,7 @@ static RWLIST_HEAD_STATIC(sslfds, ssl_fd);
 
 static int ssl_alert_pipe[2] = { -1, -1 };
 
-static int ssl_register_fd(SSL *ssl, int fd, int *rfd, int *wfd)
+static int ssl_register_fd(SSL *ssl, int fd, int *rfd, int *wfd, int client)
 {
 	struct ssl_fd *sfd;
 
@@ -225,6 +227,8 @@ static int ssl_register_fd(SSL *ssl, int fd, int *rfd, int *wfd)
 	}
 	*rfd = sfd->readpipe[0];
 	*wfd = sfd->writepipe[1];
+
+	SET_BITFIELD(sfd->client, client);
 
 	RWLIST_INSERT_HEAD(&sslfds, sfd, entry);
 	RWLIST_UNLOCK(&sslfds);
@@ -282,6 +286,31 @@ static pthread_t ssl_thread;
 			break; \
 		} \
 	} \
+
+/*! \brief Dump TLS sessions */
+static int cli_tls(struct bbs_cli_args *a)
+{
+	int i = 0;
+	int x = 0;
+	struct ssl_fd *sfd;
+
+	RWLIST_RDLOCK(&sslfds);
+	RWLIST_TRAVERSE(&sslfds, sfd, entry) {
+		int readpipe, writepipe;
+		i++;
+		x++;
+		readpipe = sfd->readpipe[1]; /* Write end of read pipe */
+		i++;
+		writepipe = sfd->writepipe[0];
+		if (i == 2) { /* First one, print header */
+			bbs_dprintf(a->fdout, "%3s %4s %6s %16s %16s %-10s %-7s\n", "#", "Type", "Status", "SFD", "SSL", "Indices", "FDs");
+		}
+		bbs_dprintf(a->fdout, "%3d %4s %6s %16p %16p [%3d/%3d] %3d / %3d\n", x, sfd->client ? "C" : "S", sfd->dead ? "Dead" : "Alive", sfd, sfd->ssl, i - 1, (i - 1) / 2, readpipe, writepipe);
+	}
+	RWLIST_UNLOCK(&sslfds);
+	bbs_dprintf(a->fdout, "Polling %d file descriptor%s (%d connection%s)\n", i + 1, ESS(i + 1), i / 2, ESS(i / 2));
+	return 0;
+}
 
 /*! \brief Single thread to handle I/O for all TLS connections (which are mainly buffered in chunks anyways) */
 static void *ssl_io_thread(void *unused)
@@ -355,7 +384,7 @@ static void *ssl_io_thread(void *unused)
 					 * rather than waiting until ssl_fd_free. */
 					pfds[i].events = 0;
 					pfds[i].fd = -1; /* This does not trigger a POLLNVAL, negative fds are ignored by poll (see poll(2)) */
-					bbs_debug(7, "Skipping dead SSL read connection %p at index %d / %d\n", sfd->ssl, i, i/2);
+					bbs_debug(7, "Skipping dead SSL read connection %p at index %d / %d\n", sfd->ssl, i, i / 2);
 				} else {
 					pfds[i].fd = sfd->fd;
 					pfds[i].events = POLLIN | POLLPRI | POLLERR | POLLNVAL;
@@ -408,7 +437,10 @@ static void *ssl_io_thread(void *unused)
 			}
 			if (!inovertime && pfds[i].revents != POLLIN) { /* Something exceptional happened, probably something going away */
 				if (pfds[i].revents & POLLNVAL) {
+					SSL *ssl = ssl_list[i / 2];
 					bbs_debug(5, "Skipping SSL at index %d / %d = %s\n", i, i/2, poll_revent_name(pfds[i].revents));
+					MARK_DEAD(ssl);
+					needcreate = 1;
 					continue; /* Don't try to read(), that would fail */
 				} else {
 					bbs_debug(5, "SSL at index %d / %d = %s\n", i, i/2, poll_revent_name(pfds[i].revents));
@@ -626,6 +658,8 @@ SSL *ssl_node_new_accept(struct bbs_node *node, int *rfd, int *wfd)
 	return ssl;
 }
 
+static pthread_rwlock_t ssl_cert_lock = PTHREAD_RWLOCK_INITIALIZER;
+
 SSL *ssl_new_accept(struct bbs_node *node, int fd, int *rfd, int *wfd)
 {
 #ifdef HAVE_OPENSSL
@@ -644,8 +678,10 @@ SSL *ssl_new_accept(struct bbs_node *node, int fd, int *rfd, int *wfd)
 
 	/* No need to call SSL_CTX_set_session_cache_mode(ssl_ctx, SSL_SESS_CACHE_SERVER) - this is the default */
 
+	pthread_rwlock_rdlock(&ssl_cert_lock);
 	ssl = SSL_new(ssl_ctx);
 	if (!ssl) {
+		pthread_rwlock_unlock(&ssl_cert_lock);
 		bbs_error("Failed to create SSL\n");
 		return NULL;
 	}
@@ -659,6 +695,7 @@ accept:
 		int sslerr = SSL_get_error(ssl, res);
 		if (sslerr == SSL_ERROR_WANT_READ) {
 			if (++attempts > 3000) { /* 3 seconds */
+				pthread_rwlock_unlock(&ssl_cert_lock);
 				bbs_warning("SSL_accept timed out\n");
 				SSL_free(ssl);
 				return NULL;
@@ -666,6 +703,7 @@ accept:
 			usleep(1000);
 			goto accept; /* This just works out to be cleaner than using any kind of loop here */
 		}
+		pthread_rwlock_unlock(&ssl_cert_lock);
 		bbs_error("SSL error %d: %d (%s = %s)\n", res, sslerr, ssl_strerror(sslerr), ERR_error_string(ERR_get_error(), NULL));
 		SSL_free(ssl);
 		/* If TLS setup fails, it's probably garbage traffic and safe to penalize: */
@@ -674,6 +712,8 @@ accept:
 		}
 		return NULL;
 	}
+	pthread_rwlock_unlock(&ssl_cert_lock);
+
 	readfd = SSL_get_rfd(ssl);
 	writefd = SSL_get_wfd(ssl);
 	if (readfd != writefd || readfd != fd) {
@@ -681,7 +721,7 @@ accept:
 	}
 
 	if (rfd && wfd) {
-		if (ssl_register_fd(ssl, fd, rfd, wfd)) {
+		if (ssl_register_fd(ssl, fd, rfd, wfd, 0)) {
 			SSL_free(ssl);
 			return NULL;
 		}
@@ -801,7 +841,7 @@ connect:
 
 	SSL_CTX_free(ctx);
 	if (rfd && wfd) {
-		if (ssl_register_fd(ssl, fd, rfd, wfd)) {
+		if (ssl_register_fd(ssl, fd, rfd, wfd, 1)) {
 			SSL_free(ssl);
 			return NULL;
 		}
@@ -866,7 +906,7 @@ static SSL_CTX *tls_ctx_create(const char *cert, const char *key)
 	return ctx;
 }
 
-static int ssl_load_config(void)
+static int ssl_load_config(int reload)
 {
 	int res = 0;
 	struct bbs_config *cfg;
@@ -876,7 +916,9 @@ static int ssl_load_config(void)
 	cfg = bbs_config_load("tls.conf", 0);
 
 	if (!cfg) {
-		bbs_warning("SSL/TLS will be unavailable since tls.conf is missing\n");
+		if (!reload) {
+			bbs_warning("SSL/TLS will be unavailable since tls.conf is missing\n");
+		}
 		return -1; /* Impossible to do TLS server stuff if we don't know what the server key/cert are */
 	}
 
@@ -941,7 +983,81 @@ static int ssl_load_config(void)
 	return res;
 }
 
+static int tls_cleanup(void)
+{
+#ifdef HAVE_OPENSSL
+	if (ssl_ctx) {
+		SSL_CTX_free(ssl_ctx);
+		ssl_ctx = NULL;
+	}
+	RWLIST_WRLOCK_REMOVE_ALL(&sni_certs, entry, sni_free);
+#endif
+	return 0;
+}
+
 static int thread_launched = 0;
+static int locks_initialized = 0;
+
+/*! \brief Limited support for reloading configuration (e.g. new certificates) */
+static int cli_tlsreload(struct bbs_cli_args *a)
+{
+	struct ssl_fd *sfd;
+
+	if (!locks_initialized) {
+		bbs_dprintf(a->fdout, "TLS may only be reloaded if it initialized during startup. Restart the BBS to load new configuration.\n");
+		return -1;
+	}
+
+	pthread_rwlock_rdlock(&ssl_cert_lock);
+
+	/* Currently, we only keep one reference for each ctx.
+	 * If we reference counted them using SSL_CTX_up_ref, then we could call SSL_CTX_free for each connection,
+	 * and this would allow us to leave an existing ctx associated with a connection and trust it'll get cleaned up properly.
+	 * For now, we require that no connections are using any context, e.g. we cannot have any clients to reload,
+	 * so admittedly this reload functionality is not as powerful as it could be.
+	 *
+	 * Alternately, if we're not going to add reference counting, instead of destroying the ctx's now,
+	 * we could add them to a free list and do it at shutdown. But this will result in a growing leak over time,
+	 * if there are lots of reloads.
+	 */
+
+	RWLIST_WRLOCK(&sslfds);
+	RWLIST_TRAVERSE(&sslfds, sfd, entry) {
+		if (sfd->client) {
+			continue; /* Clients are fine, they don't use any permanent ctx, they just make their own temporarily during the connection. */
+		} else if (sfd->dead) {
+			continue; /* If it's dead, I guess it's not coming back to life... */
+		}
+		break;
+	}
+	if (sfd) { /* At least server session exists */
+		bbs_dprintf(a->fdout, "TLS may not be reloaded while any server sessions are in use. Kick any TLS sessions and try again.\n");
+		RWLIST_UNLOCK(&sslfds);
+		pthread_rwlock_unlock(&ssl_cert_lock);
+		return -1;
+	}
+
+	ssl_is_available = 0; /* Ensure any new connections are rejected until we're done reloading. */
+	RWLIST_UNLOCK(&sslfds); /* tls_cleanup will lock the list again, so unlock it for now. */
+
+	tls_cleanup();
+
+	if (ssl_load_config(1)) {
+		pthread_rwlock_unlock(&ssl_cert_lock);
+		bbs_debug(5, "Failed to reload TLS configuration, TLS will now be disabled.\n");
+		return -1;
+	}
+
+	ssl_is_available = 1;
+	pthread_rwlock_unlock(&ssl_cert_lock);
+
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_tls[] = {
+	BBS_CLI_COMMAND(cli_tls, "tls", 1, "List all TLS sessions", NULL),
+	BBS_CLI_COMMAND(cli_tlsreload, "tlsreload", 1, "Reload existing TLS configuration", NULL),
+};
 
 static int setup_ssl_io(void)
 {
@@ -958,10 +1074,11 @@ static int setup_ssl_io(void)
 
 int ssl_server_init(void)
 {
+	bbs_cli_register_multiple(cli_commands_tls);
 #ifdef HAVE_OPENSSL
 	setup_ssl_io(); /* Even if we can't be a TLS server, we can still be a TLS client. */
 
-	if (ssl_load_config()) {
+	if (ssl_load_config(0)) {
 		bbs_debug(5, "TLS will not be available\n");
 		return -1;
 	}
@@ -970,6 +1087,7 @@ int ssl_server_init(void)
 		return -1;
 	}
 
+	locks_initialized = 1;
 	ssl_is_available = 1;
 	return 0;
 #else
@@ -980,15 +1098,13 @@ int ssl_server_init(void)
 
 void ssl_server_shutdown(void)
 {
-	int ssl_was_available = ssl_is_available;
 	ssl_is_available = 0;
 	ssl_shutting_down = 1;
+
 #ifdef HAVE_OPENSSL
-	if (ssl_ctx) {
-		SSL_CTX_free(ssl_ctx);
-		ssl_ctx = NULL;
-	}
-	RWLIST_WRLOCK_REMOVE_ALL(&sni_certs, entry, sni_free);
+	tls_cleanup();
+
+	bbs_cli_unregister_multiple(cli_commands_tls);
 	/* Do not use pthread_cancel, let the thread clean up */
 	if (thread_launched) {
 		bbs_alertpipe_write(ssl_alert_pipe); /* Tell thread to exit */
@@ -996,7 +1112,7 @@ void ssl_server_shutdown(void)
 	}
 	bbs_alertpipe_close(ssl_alert_pipe);
 	ssl_cleanup_fds();
-	if (ssl_was_available) {
+	if (locks_initialized) {
 		lock_cleanup();
 	}
 #endif

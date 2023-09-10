@@ -35,6 +35,7 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 	char *argv[16];
 	char args[64];
 	int res;
+	ssize_t spliced;
 	int input[2], output[2];
 	char buf[1024];
 	struct readline_data rldata;
@@ -72,8 +73,9 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 	/* We cannot use bbs_copy_file because that will attempt to use copy_file_range,
 	 * which only works for regular files.
 	 * In this case, since the destination is a pipe, we can use splice(2) */
-	if (splice(f->inputfd, &off_in, input[1], NULL, f->size, 0) != (ssize_t) f->size) {
-		bbs_error("splice %d -> %d failed: %s\n", f->inputfd, input[1], strerror(errno));
+	spliced = splice(f->inputfd, &off_in, input[1], NULL, f->size, 0);
+	if (spliced != (ssize_t) f->size) {
+		bbs_error("splice %d -> %d failed (%lu != %ld): %s\n", f->inputfd, input[1], spliced, f->size, strerror(errno));
 		res = -1;
 		goto cleanup;
 	}
