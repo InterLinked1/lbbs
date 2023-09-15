@@ -43,7 +43,9 @@ int bbs_str_process_backspaces(const char *restrict s, char *restrict buf, size_
 int bbs_str_safe_print(const char *restrict s, char *restrict buf, size_t len);
 
 /*! \brief Dump an ASCII representation of a string to the BBS debug log level */
-void bbs_dump_string(const char *restrict s);
+#define bbs_dump_string(s) __bbs_dump_string(s, __FILE__, __func__, __LINE__)
+
+void __bbs_dump_string(const char *restrict s, const char *file, const char *func, int line);
 
 /*! \brief Dump an hex representation of a buffer to the BBS debug log level */
 void bbs_dump_mem(unsigned const char *restrict s, size_t len);

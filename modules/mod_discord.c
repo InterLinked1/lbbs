@@ -1088,7 +1088,7 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 				.components = NULL,
 			};
 			/* Drop or warn depending on setting.
-			 * This logic has to be in this module (not mod_relay_irc),
+			 * This logic has to be in this module (not mod_irc_relay),
 			 * because only this module knows whether the original message was multiple lines.
 			 * Once we relay a message for each line, that information is lost. */
 			if (cp->multiline == 2) {
@@ -1345,7 +1345,7 @@ static int start_discord_relay(void)
 		ccord_global_cleanup();
 		return -1;
 	}
-	irc_relay_register(discord_send, nicklist, privmsg, BBS_MODULE_SELF);
+	irc_relay_register(discord_send, nicklist, privmsg);
 	return 0;
 }
 

@@ -120,8 +120,6 @@ Config files go in :code:`/etc/lbbs` and are as follows:
 
 * :code:`bbs.conf` - key startup settings
 
-* :code:`door_irc.conf` - IRC clients
-
 * :code:`mail.conf` - Email configuration
 
 * :code:`menus.conf` - BBS menus, menu items and options. **This is the heart of LBBS configuration.**
@@ -140,7 +138,9 @@ Config files go in :code:`/etc/lbbs` and are as follows:
 
 * :code:`mod_oauth.conf` - OAuth2 token configuration
 
-* :code:`mod_relay_irc.conf` - IRC/IRC relay configuration
+* :code:`mod_irc_client.conf` - IRC client configuration
+
+* :code:`mod_irc_relay.conf` - IRC/IRC relay configuration
 
 * :code:`mod_slack.conf` - Slack/IRC relay configuration
 
@@ -345,11 +345,13 @@ Finally, certificates will be stored in /etc/letsencrypt (just like Certbot), ra
 
 4. :code:`~/.acme.sh/acme.sh --set-default-ca --server letsencrypt --always-force-new-domain-key --issue -w /home/bbs/www --cert-home /etc/letsencrypt -d example.com -d example.net -d example.org`
 
-5. Update permissions: :code:`chown -R bbs /etc/letsencrypt/ && chgrp -R bbs /etc/letsencrypt/`
+5. Run :code:`crontab -e` and inspect the :code:`--home` argument in the cron job that was added. It should be :code:`/etc/letsencrypt` (or whatever path you chose for :code:`--cert-home`). If not, update it.
 
-6. Now, update :code:`tls.conf` with the path to the cert and key (cert key) that ACME spits out.
+6. Update permissions: :code:`chown -R bbs /etc/letsencrypt/ && chgrp -R bbs /etc/letsencrypt/`
 
-7. Restart the BBS for TLS changes to take effect.
+7. Now, update :code:`tls.conf` with the path to the cert and key (cert key) that ACME spits out.
+
+8. Restart the BBS for TLS changes to take effect. In the future, you can also run :code:`/tlsreload` to reload certificates without a full restart.
 
 What format does the BBS use to store email?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

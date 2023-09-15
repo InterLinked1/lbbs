@@ -66,8 +66,8 @@
 /*! \note Since not all users have a node (e.g. builtin services) */
 #define irc_other_thread_writef(node, fd, fmt, ...) bbs_auto_any_fd_writef(node, fd, fmt, ## __VA_ARGS__);
 
-/* There isn't a bbs_auto_fd_write, so ignore the length */
-#define irc_other_thread_write(node, fd, buf, len) bbs_auto_any_fd_writef(node, fd, "%s", buf);
+/* There isn't a bbs_auto_any_fd_write */
+#define irc_other_thread_write(node, fd, buf, len) bbs_auto_any_fd_writef(node, fd, "%.*s", (int) len, buf);
 
 #define send_reply(user, fmt, ...) bbs_debug(3, "%p <= " fmt, user, ## __VA_ARGS__); irc_other_thread_writef(user->node, user->wfd, fmt, ## __VA_ARGS__);
 #define send_numeric(user, numeric, fmt, ...) send_reply(user, "%03d %s :" fmt, numeric, user->nickname, ## __VA_ARGS__)
@@ -271,7 +271,7 @@ static int add_operator(const char *name, const char *password)
  * in modules.conf to guarantee things will work properly. So, whatever...
  */
 
-int irc_relay_register(int (*relay_send)(const char *channel, const char *sender, const char *msg),
+int __irc_relay_register(int (*relay_send)(const char *channel, const char *sender, const char *msg),
 	int (*nicklist)(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user),
 	int (*privmsg)(const char *recipient, const char *sender, const char *user),
 	void *mod)
@@ -911,7 +911,7 @@ Thread #8's call to pthread_rwlock_rdlock failed
 ==168664==    with error code 35 (EDEADLK: Resource deadlock would occur)
 ==168664==    at 0x483E751: pthread_rwlock_rdlock_WRK (hg_intercepts.c:2242)
 ==168664==    by 0x6746963: _irc_relay_send (net_irc.c:937) <--- try to RDLOCK
-==168664==    by 0x485C960: netirc_cb (mod_relay_irc.c:575)
+==168664==    by 0x485C960: netirc_cb (mod_irc_relay.c:575)
 ==168664==    by 0x673C00B: relay_broadcast (net_irc.c:793)
 ==168664==    by 0x673C00B: relay_broadcast (net_irc.c:777)
 ==168664==    by 0x673C00B: drop_member_if_present (net_irc.c:2522)
@@ -945,7 +945,7 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 
 	/* If something specific specified, use the override, otherwise use the same thing.
 	 * This allows relay modules to customize the hostmask if they want. */
-	hostsender = hostsender ? hostsender : sender;
+	hostsender = S_OR(hostsender, sender);
 	snprintf(hostname, sizeof(hostname), "%s/%s", relayname, hostsender);
 
 	/* It's not our job to filter messages, clients can do that. For example, decimal 1 is legitimate for CTCP commands. */
@@ -2861,18 +2861,32 @@ static void handle_client(struct irc_user *user)
 					bbs_warning("Unhandled message: %s %s\n", command, s);
 				}
 			} else if (capnegotiate == 2) {
-				if (!strcmp(s, "CAP REQ :multi-prefix")) { /* See https://ircv3.net/specs/extensions/multi-prefix */
-					send_reply(user, "CAP * ACK :multi-prefix\r\n"); /* Colon technically optional, since there's only one capability */
-					/* SASL *not* supported */
-					/* Don't increment capnegotiate, just wait for the client to send CAP END */
-					user->multiprefix = 1;
-				} else if (!strcmp(s, "CAP REQ :multi-prefix sasl")) {
-					send_reply(user, "CAP * ACK :multi-prefix sasl\r\n");
-					capnegotiate++;
-					user->multiprefix = 1;
-				} else if (!strcmp(s, "CAP REQ :sasl")) {
-					send_reply(user, "CAP * ACK :sasl\r\n");
-					capnegotiate++;
+				int multiple = 0;
+				if (STARTS_WITH(s, "CAP REQ ")) {
+					/* Tolerate either e.g. CAP REQ :multi-prefix or CAP REQ multi-prefix (colon is not always mandatory) */
+					s += STRLEN("CAP REQ ");
+					REQUIRE_PARAMETER(user, s);
+					if (*s == ':') { /* Colon technically optional, if there's only one capability */
+						multiple = 1;
+						s++;
+					}
+					REQUIRE_PARAMETER(user, s);
+					/* Not very robust, these are the few cases that matter to us: */
+					if (!strcmp(s, "multi-prefix")) { /* See https://ircv3.net/specs/extensions/multi-prefix */
+						send_reply(user, "CAP * ACK :multi-prefix\r\n"); /* Colon technically optional, since there's only one capability */
+						/* SASL *not* supported */
+						/* Don't increment capnegotiate, just wait for the client to send CAP END */
+						user->multiprefix = 1;
+					} else if (!strcmp(s, "sasl")) {
+						send_reply(user, "CAP * ACK :sasl\r\n");
+						capnegotiate++;
+					} else if (multiple && !strcmp(s, "multi-prefix sasl")) {
+						send_reply(user, "CAP * ACK :multi-prefix sasl\r\n");
+						capnegotiate++;
+						user->multiprefix = 1;
+					} else {
+						bbs_warning("Unhandled message: %s\n", s);
+					}
 				} else if (strcmp(s, "CAP END")) {
 					bbs_warning("Unhandled message: %s\n", s);
 				}

@@ -21,19 +21,9 @@ $(DEPENDS):
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^
 
-irc.o : lirc/irc.c
-	@echo "== Compiling $@"
-	$(CC) $(CFLAGS) -fPIC $(INC) -c $^
-
-# Target executed only if lirc directory doesn't exist (since it's not PHONY)
-lirc :
-	@if [ ! -d lirc ]; then\
-		git clone https://github.com/InterLinked1/lirc.git lirc;\
-	fi
-
-door_irc.so : lirc door_irc.o irc.o
+door_irc.so : door_irc.o
 	@echo "== Linking $@"
-	$(CC) -shared -fPIC -o door_irc.so door_irc.o irc.o -lssl -lcrypto
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lirc
 
 # Don't automatically remove intermediate .o files, to prevent unnecessary recompilations
 .SECONDARY: $(patsubst %.c,%.o,$(MOD_SRC))

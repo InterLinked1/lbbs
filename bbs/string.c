@@ -122,7 +122,7 @@ int bbs_str_safe_print(const char *restrict s, char *restrict buf, size_t len)
 	return 0;
 }
 
-void bbs_dump_string(const char *restrict s)
+void __bbs_dump_string(const char *restrict s, const char *file, const char *func, int line)
 {
 	char buf[1024];
 	char *pos = buf;
@@ -154,7 +154,7 @@ void bbs_dump_string(const char *restrict s)
 	}
 
 	*pos = '\0';
-	bbs_debug(8, "String Dump: '%s'\n", buf);
+	__bbs_log(LOG_DEBUG, 8, file, line, func, "String Dump: '%s'\n", buf);
 }
 
 void bbs_dump_mem(unsigned const char *restrict s, size_t len)

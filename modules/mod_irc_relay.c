@@ -31,10 +31,12 @@
 #include "include/module.h"
 #include "include/utils.h"
 #include "include/node.h" /* use bbs_hostname */
+#include "include/cli.h"
+#include "include/stringlist.h"
 
 /* Since this is an IRC/IRC relay, we depend on both the server and client modules */
 #include "include/net_irc.h"
-#include "include/door_irc.h"
+#include "include/mod_irc_client.h"
 
 static int expose_members = 1;
 static unsigned int ignore_join_start = 0;
@@ -49,15 +51,22 @@ struct chan_pair {
 	const char *ircuser;
 	unsigned int relaysystem:1;
 	RWLIST_ENTRY(chan_pair) entry;
+	struct stringlist members;
 	char data[0];
 };
 
 static RWLIST_HEAD_STATIC(mappings, chan_pair);
 
+static void chan_pair_cleanup(struct chan_pair *cp)
+{
+	stringlist_empty(&cp->members);
+	free(cp);
+}
+
 static void list_cleanup(void)
 {
 	/* Clean up mappings */
-	RWLIST_WRLOCK_REMOVE_ALL(&mappings, entry, free);
+	RWLIST_WRLOCK_REMOVE_ALL(&mappings, entry, chan_pair_cleanup);
 }
 
 static int add_pair(const char *client1, const char *channel1, const char *client2, const char *channel2, const char *ircuser, int relaysystem)
@@ -165,6 +174,11 @@ static struct chan_pair *find_chanpair(const char *client, const char *channel)
 	return cp;
 }
 
+/*! \note c can be NULL, client must not be NULL */
+#define CLIENT_MATCH(c, client) (!strlen_zero(c) && !strcmp(c, client))
+
+#define EITHER_CLIENT_MATCH(cp, client) (CLIENT_MATCH(cp->client1, client) || CLIENT_MATCH(cp->client2, client))
+
 static struct chan_pair *find_chanpair_by_client(const char *client)
 {
 	struct chan_pair *cp = NULL;
@@ -175,9 +189,7 @@ static struct chan_pair *find_chanpair_by_client(const char *client)
 
 	RWLIST_RDLOCK(&mappings);
 	RWLIST_TRAVERSE(&mappings, cp, entry) {
-		if (cp->client1 && !strcmp(cp->client1, client)) {
-			break;
-		} else if (cp->client2 && !strcmp(cp->client2, client)) {
+		if (EITHER_CLIENT_MATCH(cp, client)) {
 			break;
 		}
 	}
@@ -189,11 +201,9 @@ static struct chan_pair *client_exists(const char *client)
 {
 	struct chan_pair *cp = NULL;
 
-	RWLIST_WRLOCK(&mappings);
+	RWLIST_RDLOCK(&mappings);
 	RWLIST_TRAVERSE(&mappings, cp, entry) {
-		if (!strlen_zero(cp->client1) && !strcmp(client, cp->client1)) {
-			break;
-		} else if (!strlen_zero(cp->client2) && !strcmp(client, cp->client2)) {
+		if (EITHER_CLIENT_MATCH(cp, client)) {
 			break;
 		}
 	}
@@ -205,9 +215,9 @@ static struct chan_pair *find_chanpair_reverse(const char *clientname)
 {
 	struct chan_pair *cp = NULL;
 
-	RWLIST_WRLOCK(&mappings);
+	RWLIST_RDLOCK(&mappings);
 	RWLIST_TRAVERSE(&mappings, cp, entry) {
-		if (!cp->client1 && cp->client2 &&  !strcmp(cp->client2, clientname)) {
+		if (!cp->client1 && cp->client2 && !strcmp(cp->client2, clientname)) {
 			break;
 		}
 		if (!cp->client2 && cp->client1 && !strcmp(cp->client1, clientname)) {
@@ -218,11 +228,11 @@ static struct chan_pair *find_chanpair_reverse(const char *clientname)
 	return cp;
 }
 
-static pthread_mutex_t nicklock;
+static pthread_mutex_t nicklock = PTHREAD_MUTEX_INITIALIZER;
 static int nickpipe[2] = { -1, -1 };
 static const char *numericclient = NULL;
 
-/*! \brief Numeric messages of interest from door_irc clients */
+/*! \brief Numeric messages of interest from IRC clients */
 static void numeric_cb(const char *clientname, const char *prefix, int numeric, const char *msg)
 {
 	int len;
@@ -240,7 +250,7 @@ static void numeric_cb(const char *clientname, const char *prefix, int numeric, 
 }
 
 /*! \todo This info should be cached locally for a while (there could be lots of these requests in a busy channel...) */
-static int wait_response(struct bbs_node *node, int fd, const char *requsername, int numeric, const char *clientname, const char *channel, const char *origchan, const char *fullnick, const char *nick)
+static int wait_response(struct bbs_node *node, int fd, const char *requsername, int numeric, struct chan_pair *cp, const char *clientname, const char *channel, const char *origchan, const char *fullnick, const char *nick)
 {
 	char buf[3092];
 	int res = -1;
@@ -303,6 +313,7 @@ static int wait_response(struct bbs_node *node, int fd, const char *requsername,
 
 	/* Now, parse the response, and send the results back. */
 	bufpos = buf;
+	stringlist_empty(&cp->members);
 	while ((line = strsep(&bufpos, "\n"))) {
 		const char *w1, *w2, *w3, *w4, *w5, *w6, *w7, *w8;
 		char *rest;
@@ -372,6 +383,15 @@ static int wait_response(struct bbs_node *node, int fd, const char *requsername,
 				w5 = strsep(&rest, " ");
 				w5 = origchan; /* Replace channel name */
 				res = 0;
+
+				/* This is used to work around a particular limitation that we face.
+				 * When a user quits an IRC channel on another network and that gets relayed through here,
+				 * we'd like to relay the quit to all the channels that user was in.
+				 * However, the QUIT message is not associated with a channel (it's network wide),
+				 * so we need to keep track of the channels that a user is in.
+				 * More straightforward, we keep track of the users in a channel, which allows us to determine that. */
+				stringlist_push(&cp->members, w8); /* Keep track of the username without the client name prefixed */
+
 #ifdef PREFIX_NAMES
 				if (rest && *rest == ':') {
 					int n = 0;
@@ -411,6 +431,40 @@ cleanup:
 	nickpipe[0] = nickpipe[1] = -1;
 	pthread_mutex_unlock(&nicklock);
 	return res;
+}
+
+static int cp_contains_user(struct chan_pair *cp, const char *username)
+{
+	int res;
+
+	/* XXX This is a global mutex (not even a rwlock), so this is not optimal */
+	pthread_mutex_lock(&nicklock);
+	res = stringlist_contains(&cp->members, username);
+	pthread_mutex_unlock(&nicklock);
+
+	return res;
+}
+
+static int cli_irc_relaymembers(struct bbs_cli_args *a)
+{
+	struct chan_pair *cp;
+
+	RWLIST_RDLOCK(&mappings);
+	RWLIST_TRAVERSE(&mappings, cp, entry) {
+		const char *s;
+		int c = 0;
+		struct stringitem *i = NULL;
+		bbs_dprintf(a->fdout, "Client %s/%s - channels %s/%s\n", S_IF(cp->client1), S_IF(cp->client2), cp->channel1, cp->channel2);
+		while ((s = stringlist_next(&cp->members, &i))) {
+			bbs_dprintf(a->fdout, "- %s\n", s);
+			c++;
+		}
+		if (c) {
+			bbs_dprintf(a->fdout, "-- %d member%s\n", c, ESS(c));
+		}
+	}
+	RWLIST_UNLOCK(&mappings);
+	return 0;
 }
 
 static void notify_unauthorized(const char *sender, const char *channel, const char *ircuser)
@@ -517,7 +571,7 @@ static int nicklist(struct bbs_node *node, int fd, int numeric, const char *requ
 		}
 		/* Determine who's in the "real" channel using our client */
 		/* Only one request at a time, to prevent interleaving of responses */
-		wait_response(node, fd, requsername, numeric, cp->client2, channel, origchan, fullnick, nick);
+		wait_response(node, fd, requsername, numeric, cp, cp->client2, channel, origchan, fullnick, nick);
 		/*! \todo BUGBUG Regarding the below comment, we need to return 1
 		 * to stop the traversal and indicate a user was found, which IS appropriate here.
 		 * But in the cases where multiple relay modules could match, we should probably still
@@ -530,7 +584,7 @@ static int nicklist(struct bbs_node *node, int fd, int numeric, const char *requ
 			bbs_warning("Both clients are NULL?\n");
 			return 0; /* See comments above in first map case */
 		}
-		wait_response(node, fd, requsername, numeric, cp->client1, channel, origchan, fullnick, nick);
+		wait_response(node, fd, requsername, numeric, cp, cp->client1, channel, origchan, fullnick, nick);
 		return 0; /* Even though we matched, there could be matches in other relays */
 	} else {
 		bbs_debug(8, "Case we don't care about\n");
@@ -556,11 +610,11 @@ static int privmsg_cb(const char *recipient, const char *sender, const char *msg
 		return 0;
 	}
 
-	/* Something with this client name exists, in door_irc. */
+	/* An IRC client with this client name exists, in mod_irc_client. */
 	if (cp->ircuser) {
-		bbs_irc_client_msg(clientname, destrecip, "%s", msg); /* Don't prepend username for personal relays */
+		bbs_irc_client_msg(clientname, destrecip, NULL, "%s", msg); /* Don't prepend username for personal relays */
 	} else {
-		bbs_irc_client_msg(clientname, destrecip, "<%s> %s", sender, msg);
+		bbs_irc_client_msg(clientname, destrecip, NULL, "<%s> %s", sender, msg);
 	}
 	return 1;
 }
@@ -630,7 +684,7 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 				}
 				msg = fullmsg;
 			}
-			bbs_irc_client_msg(cp->client2, cp->channel2, "%s", msg); /* Don't call bbs_irc_client_msg with a NULL client or it will use the default (first) one in door_irc */
+			bbs_irc_client_msg(cp->client2, cp->channel2, sender, "%s", msg); /* Don't call bbs_irc_client_msg with a NULL client or it will use the default (first) one in mod_irc_client */
 		} else { /* Relay to native IRC server */
 			irc_relay_send(cp->channel2, CHANNEL_USER_MODE_NONE, S_OR(cp->client1, "IRC"), S_OR(sender, cp->channel1), NULL, msg, cp->ircuser);
 		}
@@ -644,7 +698,7 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 				}
 				msg = fullmsg;
 			}
-			bbs_irc_client_msg(cp->client1, cp->channel1, "%s", msg);
+			bbs_irc_client_msg(cp->client1, cp->channel1, sender, "%s", msg);
 		} else {
 			irc_relay_send(cp->channel1, CHANNEL_USER_MODE_NONE, S_OR(cp->client2, "IRC"), S_OR(sender, cp->channel2), NULL, msg, cp->ircuser);
 		}
@@ -653,14 +707,50 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 	return 0;
 }
 
-/*! \brief Callback for messages received on door_irc client (from some server to our client) */
-static void doormsg_cb(const char *clientname, const char *channel, const char *msg)
+static void relay_quit(const char *clientname, const char *username, const char *msg)
 {
+	char sysmsg[512];
 	struct chan_pair *cp;
-	const char *w;
 
-	if (strlen_zero(channel)) {
-		bbs_debug(9, "No channel for message from %s\n", clientname); /* Includes things like nick changes */
+	snprintf(sysmsg, sizeof(sysmsg), ":%s/%s QUIT :%s", clientname, username, S_IF(msg));
+	bbs_debug(3, "Intercepting QUIT by %s/%s\n", clientname, username);
+	RWLIST_RDLOCK(&mappings);
+	RWLIST_TRAVERSE(&mappings, cp, entry) {
+		/* We're looking for a match on the remote side (the local side could be NULL). */
+		if (!EITHER_CLIENT_MATCH(cp, clientname)) {
+			continue;
+		}
+		if (!cp->relaysystem) {
+			bbs_debug(8, "Not relaying system message for client %s/%s\n", S_IF(cp->client1), S_IF(cp->client2));
+			continue;
+		}
+		if (cp_contains_user(cp, username)) {
+			bbs_debug(6, "Client %s, channel %s contains user %s, relaying QUIT...\n", clientname, username, username);
+			if (!cp->channel2) { /* We're relaying from the remote client to the native network */
+				irc_relay_raw_send(cp->channel2, sysmsg);
+			} else {
+				irc_relay_raw_send(cp->channel1, sysmsg);
+			}
+		}
+	}
+	RWLIST_UNLOCK(&mappings);
+}
+
+/*! \brief Callback for messages received on IRC client (from some server to our client) */
+static void command_cb(const char *clientname, enum irc_callback_msg_type type, const char *channel, const char *prefix, int ctcp, const char *msg)
+{
+	char nativenick[64];
+	char sysmsg[512];
+	const char *ourchan;
+	struct chan_pair *cp;
+
+	if (type == CMD_QUIT) {
+		/* Client quit messages don't have a channel associated with them (and there could be multiple).
+		 * Since relays are per channel, not per network, we need to determine what channels this user was in, and relay to those channels.
+		 * For this, we rely on clients on the network doing a periodic NAMES query,
+		 * which we then cache in a list for each cp, which we'll consult now.
+		 * There could be multiple cp's to which we need to relay, but we only need to check all the chan pairs for this client. */
+		relay_quit(clientname, prefix, msg);
 		return;
 	}
 
@@ -670,7 +760,7 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 		cp = find_chanpair_by_client(clientname); /* If the client exists, then we can relay a private message */
 
 		/* For a private message, channel is our (used for the relay) IRC user's username */
-		if (*msg == '<') {
+		if (!strlen_zero(msg) && *msg == '<') {
 			/* Format is <sender> message.
 			 * Our expected format is <sender> <recipient>: message, so we can actually route it the right user on the IRC server.
 			 * Message will appear to be sent by clientname/<sender>. */
@@ -706,21 +796,12 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 			return;
 		}
 
-		/*! \note Client quit messages will actually fall through here
-		 * e.g. "No relay match for channel libera/:Client Quit"
-		 * This is because the message doesn't include a channel name,
-		 * and relays are set per channel, not per network.
-		 * If we know that a user on a remote IRC network has quit,
-		 * we don't know what channels we can relay the quit message to,
-		 * since we don't keep track (persistently) of what remote users
-		 * are in what remote channels on remote IRC networks.
-		 *
-		 * So, joins and leaves will relay through, but quits will not.
-		 *
-		 * \todo Add some workaround (perhaps keeping track of IRC members in the underlying client module)
-		 * that will allow us to relay quits to the proper place.
-		 */
 		bbs_debug(9, "No relay match for channel %s/%s\n", clientname, channel);
+		return;
+	}
+
+	if (strlen_zero(channel)) {
+		bbs_debug(9, "No channel for message from %s\n", clientname);
 		return;
 	}
 
@@ -737,155 +818,102 @@ static void doormsg_cb(const char *clientname, const char *channel, const char *
 	 * This is done for the interception cases below.
 	 */
 
-	/* XXX This is clunky... we're getting JOIN/PART messages through the PRIVMSG callback, due to how door_irc is structured (which is really an issue there, not here) */
-	w = strchr(msg, ' ');
-	if (w && !strcmp(w, " has " COLOR(COLOR_GREEN) "joined" COLOR_RESET "\n")) {
-		char sysmsg[92];
-		char nick[64];
-		const char *ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
-		safe_strncpy(nick, msg, sizeof(nick));
-		bbs_strterm(nick, ' '); /* cut off " has joined" */
-		if (strlen(nick) >= sizeof(nick)) {
-			bbs_warning("Potential IRC loop detected, dropping message\n");
-			return;
-		}
-		/* Leave the hostmask (stuff after ~) intact... I guess? */
-		/* The channel name to use is not channel, which is what the channel name is on the other side (client side).
-		 * We need to use the name on OUR side. */
-		/* Tack the client name on as a prefix, so it matches with the nicklist and doesn't cause a mixup
-		 * Worst case scenario, the same nick might be in use on both sides, and this will really confuse clients if they're told they did something they didn't. */
-		snprintf(sysmsg, sizeof(sysmsg), ":%s/%s JOIN %s", clientname, nick, ourchan);
-		bbs_debug(3, "Intercepting JOIN by %s/%s (%s -> %s)\n", clientname, nick, channel, ourchan);
-		if (!cp->relaysystem) {
-			bbs_debug(8, "Not relaying system message\n");
-		} else if (ignore_join_start && time(NULL) < modstart + (int) ignore_join_start) {
-			bbs_debug(2, "Not relaying JOIN by %s/%s (%s -> %s) due to startupjoinignore setting.\n", clientname, nick, channel, ourchan);
-		} else if (MAP1_MATCH(cp, clientname, channel)) {
-			irc_relay_raw_send(cp->channel2, sysmsg);
-		} else {
-			irc_relay_raw_send(cp->channel1, sysmsg);
-		}
-		return;
-	} else if (w && !strcmp(w, " has " COLOR(COLOR_RED) "left" COLOR_RESET "\n")) {
-		char sysmsg[92];
-		char nick[64];
-		const char *ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
-		safe_strncpy(nick, msg, sizeof(nick));
-		bbs_strterm(nick, ' '); /* cut off " has left" */
-		if (strlen(nick) >= sizeof(nick)) {
-			bbs_warning("Potential IRC loop detected, dropping message\n");
-			return;
-		}
-		snprintf(sysmsg, sizeof(sysmsg), ":%s/%s PART %s", clientname, nick, ourchan);
-		bbs_debug(3, "Intercepting PART by %s/%s (%s -> %s)\n", clientname, nick, channel, ourchan);
-		if (!cp->relaysystem) {
-			bbs_debug(8, "Not relaying system message\n");
-		} else if (MAP1_MATCH(cp, clientname, channel)) {
-			irc_relay_raw_send(cp->channel2, sysmsg);
-		} else {
-			irc_relay_raw_send(cp->channel1, sysmsg);
-		}
-		return;
-	} else if (w && STARTS_WITH(w, " has " COLOR(COLOR_RED) "quit" COLOR_RESET "\n")) {
-		char sysmsg[92];
-		char nick[64];
-		const char *ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
-		safe_strncpy(nick, msg, sizeof(nick));
-		bbs_strterm(nick, ' '); /* cut off " has quit" */
-		if (strlen(nick) >= sizeof(nick)) {
-			bbs_warning("Potential IRC loop detected, dropping message\n");
-			return;
-		}
-		snprintf(sysmsg, sizeof(sysmsg), ":%s/%s QUIT %s", clientname, nick, ourchan);
-		bbs_debug(3, "Intercepting QUIT by %s/%s (%s -> %s)\n", clientname, nick, channel, ourchan);
-		if (!cp->relaysystem) {
-			bbs_debug(8, "Not relaying system message\n");
-		} else if (MAP1_MATCH(cp, clientname, channel)) {
-			irc_relay_raw_send(cp->channel2, sysmsg);
-		} else {
-			irc_relay_raw_send(cp->channel1, sysmsg);
-		}
-		return;
-	} else if (w && STARTS_WITH(msg, "[ACTION] ")) { /* Hack to detect CTCP messages, since we've lost the 0x01 and all that */
-		char sysmsg[512];
-		char actionmsg[493];
-		char nick[64];
-		const char *meaction;
-		const char *ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
-		bbs_strncpy_until(nick, msg, sizeof(nick), ' ');
-		meaction = strstr(msg, "[ACTION] ");
-		if (meaction) {
-			meaction += STRLEN("[ACTION] ");
-			bbs_strncpy_until(actionmsg, meaction, sizeof(actionmsg), '\n'); /* XXX Seems to be a LF in the message, get rid of it */
-			snprintf(sysmsg, sizeof(sysmsg), "PRIVMSG %s :%cACTION %s%c", ourchan, 0x01, actionmsg, 0x01);
-			bbs_dump_string(sysmsg);
-			bbs_debug(3, "Intercepting CTCP action by %s/%s (%s -> %s) - '%s'\n", clientname, nick, channel, ourchan, actionmsg);
-			if (MAP1_MATCH(cp, clientname, channel)) {
+	switch (type) {
+		case CMD_JOIN:
+			/* Leave the hostmask (stuff after ~) intact... I guess? */
+			/* The channel name to use is not channel, which is what the channel name is on the other side (client side).
+			 * We need to use the name on OUR side. */
+			/* Tack the client name on as a prefix, so it matches with the nicklist and doesn't cause a mixup
+			 * Worst case scenario, the same nick might be in use on both sides, and this will really confuse clients if they're told they did something they didn't. */
+			ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
+			snprintf(sysmsg, sizeof(sysmsg), ":%s/%s JOIN %s", clientname, prefix, ourchan);
+			bbs_debug(3, "Intercepting JOIN by %s/%s (%s -> %s)\n", clientname, prefix, channel, ourchan);
+			if (strlen(prefix) >= 64) {
+				bbs_warning("Potential IRC loop detected, dropping message\n");
+			} else if (!cp->relaysystem) {
+				bbs_debug(8, "Not relaying system message\n");
+			} else if (ignore_join_start && time(NULL) < modstart + (int) ignore_join_start) {
+				bbs_debug(2, "Not relaying JOIN by %s/%s (%s -> %s) due to startupjoinignore setting.\n", clientname, prefix, channel, ourchan);
+			} else if (MAP1_MATCH(cp, clientname, channel)) {
 				irc_relay_raw_send(cp->channel2, sysmsg);
 			} else {
 				irc_relay_raw_send(cp->channel1, sysmsg);
 			}
-			return;
-		}
-	}
-
-	/* Relay it to the other side of the mapping */
-	if (MAP1_MATCH(cp, clientname, channel)) {
-		/* It came from channel1, so send to channel2 */
-		bbs_debug(8, "Relaying from %s/%s => %s/%s\n", S_IF(cp->client1), cp->channel1, S_IF(cp->client2), cp->channel2);
-		if (cp->client2) {
-			bbs_irc_client_msg(cp->client2, cp->channel2, "%s", msg);
-		} else {
-			char nativenick[64];
-			char msgbuf[512];
-			char *tmp;
-			const char *sendnick = cp->channel1;
-			/* Message format is something like "<sender> Actual message" */
-			if (*msg == '<') {
-				safe_strncpy(msgbuf, msg, sizeof(msgbuf));
-				tmp = strchr(msgbuf, '>');
-				*tmp++ = '\0';
-				msg = tmp;
-				sendnick = msgbuf + 1;
-				/* Okay, now the message is just the message, and we have extracted the real sender name */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wformat-truncation"
-				/* Truncation is acceptable since a nickname isn't going to be that long, and I'm not allocating a larger buffer to silence the warning. */
-				snprintf(nativenick, sizeof(nativenick), "%s/%s", clientname,  sendnick); /* Use the clientname, not the channel name on the other side */
-				sendnick = nativenick;
-				/* Now we have a unique nick that doesn't conflict with this same nick on our local IRC server */
+			/* To keep our users list up to date, even if nobody on the network is issuing a NAMES query */
+			if (!cp_contains_user(cp, prefix)) {
+				pthread_mutex_lock(&nicklock);
+				stringlist_push(&cp->members, prefix);
+				pthread_mutex_unlock(&nicklock);
 			}
-			irc_relay_send(cp->channel2, CHANNEL_USER_MODE_NONE, S_OR(cp->client1, clientname), sendnick, NULL, msg, cp->ircuser);
-		}
-	} else {
-		/* It came from channel2, so send to channel1 */
-		bbs_debug(8, "Relaying from %s/%s => %s/%s\n", S_IF(cp->client2), cp->channel2, S_IF(cp->client1), cp->channel1);
-		if (cp->client1) {
-			bbs_irc_client_msg(cp->client1, cp->channel1, "%s", msg);
-		} else {
-			char nativenick[64];
-			char msgbuf[512];
-			char *tmp;
-			const char *sendnick = cp->channel2;
-			/* Message format is something like "<sender> Actual message" */
-			if (*msg == '<') {
-				safe_strncpy(msgbuf, msg, sizeof(msgbuf));
-				tmp = strchr(msgbuf, '>');
-				if (!tmp) {
-					bbs_warning("Missing closing >\n");
-					return;
+			break;
+		case CMD_PART:
+			ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
+			snprintf(sysmsg, sizeof(sysmsg), ":%s/%s PART %s", clientname, prefix, ourchan);
+			bbs_debug(3, "Intercepting PART by %s/%s (%s -> %s)\n", clientname, prefix, channel, ourchan);
+			if (strlen(prefix) >= 64) {
+				bbs_warning("Potential IRC loop detected, dropping message\n");
+			} else if (!cp->relaysystem) {
+				bbs_debug(8, "Not relaying system message\n");
+			} else if (MAP1_MATCH(cp, clientname, channel)) {
+				irc_relay_raw_send(cp->channel2, sysmsg);
+			} else {
+				irc_relay_raw_send(cp->channel1, sysmsg);
+			}
+			/* To keep our users list up to date, even if nobody on the network is issuing a NAMES query */
+			if (cp_contains_user(cp, prefix)) {
+				pthread_mutex_lock(&nicklock);
+				stringlist_remove(&cp->members, prefix);
+				pthread_mutex_unlock(&nicklock);
+			}
+			break;
+		case CMD_QUIT: /* This is academic, as QUIT is handled above */
+			bbs_assert(0);
+#if 0
+			ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
+			snprintf(sysmsg, sizeof(sysmsg), ":%s/%s QUIT :%s", clientname, prefix, S_IF(msg));
+			bbs_debug(3, "Intercepting QUIT by %s/%s (%s)\n", clientname, prefix, S_IF(msg));
+			if (strlen(prefix) >= 64) {
+				bbs_warning("Potential IRC loop detected, dropping message\n");
+			} else if (!cp->relaysystem) {
+				bbs_debug(8, "Not relaying system message\n");
+			} else if (MAP1_MATCH(cp, clientname, channel)) {
+				irc_relay_raw_send(cp->channel2, sysmsg);
+			} else {
+				irc_relay_raw_send(cp->channel1, sysmsg);
+			}
+#endif
+			break;
+		case CMD_PRIVMSG:
+			snprintf(nativenick, sizeof(nativenick), "%s/%s", clientname, prefix);
+			if (ctcp) {
+				/* Must be an ACTION */
+				ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
+				bbs_debug(3, "Intercepting CTCP action by %s/%s (%s -> %s) - '%s'\n", clientname, prefix, channel, ourchan, msg);
+				snprintf(sysmsg, sizeof(sysmsg), "%cACTION %s%c", 0x01, msg, 0x01);
+				bbs_dump_string(sysmsg);
+				msg = sysmsg;
+			}
+			/* Relay it to the other side of the mapping */
+			if (MAP1_MATCH(cp, clientname, channel)) {
+				/* It came from channel1, so send to channel2 */
+				bbs_debug(8, "Relaying from %s/%s => %s/%s\n", S_IF(cp->client1), cp->channel1, S_IF(cp->client2), cp->channel2);
+				if (cp->client2) { /* Relay to another (remote) IRC channel */
+					bbs_irc_client_msg(cp->client2, cp->channel2, prefix, "%s", msg);
+				} else { /* Relay to local IRC network */
+					irc_relay_send(cp->channel2, CHANNEL_USER_MODE_NONE, S_OR(cp->client1, clientname), nativenick, NULL, msg, cp->ircuser);
 				}
-				*tmp++ = '\0';
-				msg = tmp;
-				sendnick = msgbuf + 1;
-				/* Okay, now the message is just the message, and we have extracted the real sender name */
-				snprintf(nativenick, sizeof(nativenick), "%s/%s", clientname,  sendnick);
-#pragma GCC diagnostic pop /* -Wformat-truncation */
-				sendnick = nativenick;
-				/* Now we have a unique nick that doesn't conflict with this same nick on our local IRC server */
+			} else {
+				/* It came from channel2, so send to channel1 */
+				bbs_debug(8, "Relaying from %s/%s => %s/%s\n", S_IF(cp->client2), cp->channel2, S_IF(cp->client1), cp->channel1);
+				if (cp->client1) { /* Relay to another (remote) IRC channel */
+					bbs_irc_client_msg(cp->client1, cp->channel1, prefix, "%s", msg);
+				} else { /* Relay to local IRC network */
+					irc_relay_send(cp->channel1, CHANNEL_USER_MODE_NONE, S_OR(cp->client2, clientname), nativenick, NULL, msg, cp->ircuser);
+				}
 			}
-			irc_relay_send(cp->channel1, CHANNEL_USER_MODE_NONE, S_OR(cp->client2, clientname), sendnick, NULL, msg, cp->ircuser);
-		}
+			break;
+		default:
+			break;
 	}
 }
 
@@ -893,10 +921,10 @@ static int load_config(void)
 {
 	struct bbs_config_section *section = NULL;
 	struct bbs_keyval *keyval = NULL;
-	struct bbs_config *cfg = bbs_config_load("mod_relay_irc.conf", 1);
+	struct bbs_config *cfg = bbs_config_load("mod_irc_relay.conf", 1);
 
 	if (!cfg) {
-		bbs_error("File 'mod_relay_irc.conf' is missing, declining to load\n");
+		bbs_error("File 'mod_irc_relay.conf' is missing, declining to load\n");
 		return -1;
 	}
 
@@ -941,27 +969,44 @@ static int load_config(void)
 	return 0;
 }
 
+static int cli_irc_relays(struct bbs_cli_args *a)
+{
+	struct chan_pair *cp;
+
+	bbs_dprintf(a->fdout, "%-20s %-20s %-20s %-20s %9s %s\n", "Client 1", "Channel 1", "Client 2", "Channel 2", "RelaySys?", "IRC User");
+	RWLIST_RDLOCK(&mappings);
+	RWLIST_TRAVERSE(&mappings, cp, entry) {
+		bbs_dprintf(a->fdout, "%-20s %-20s %-20s %-20s %9s %s\n", S_IF(cp->client1), S_IF(cp->channel1), S_IF(cp->client2), S_IF(cp->channel2), BBS_YN(cp->relaysystem), S_IF(cp->ircuser));
+	}
+	RWLIST_UNLOCK(&mappings);
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_irc[] = {
+	BBS_CLI_COMMAND(cli_irc_relays, "irc relays", 2, "List all IRC-IRC relays", NULL),
+	BBS_CLI_COMMAND(cli_irc_relaymembers, "irc relaymembers", 2, "List all known users in all remote IRC clients", NULL),
+};
+
 static int load_module(void)
 {
 	if (load_config()) {
 		return -1;
 	}
 
-	pthread_mutex_init(&nicklock, NULL);
 	modstart = time(NULL);
-
-	irc_relay_register(netirc_cb, nicklist, privmsg_cb, BBS_MODULE_SELF);
-	bbs_irc_client_msg_callback_register(doormsg_cb, numeric_cb, BBS_MODULE_SELF);
+	irc_relay_register(netirc_cb, nicklist, privmsg_cb);
+	bbs_irc_client_msg_callback_register(command_cb, numeric_cb);
+	bbs_cli_register_multiple(cli_commands_irc);
 	return 0;
 }
 
 static int unload_module(void)
 {
-	bbs_irc_client_msg_callback_unregister(doormsg_cb);
+	bbs_cli_unregister_multiple(cli_commands_irc);
+	bbs_irc_client_msg_callback_unregister(command_cb);
 	irc_relay_unregister(netirc_cb);
 	list_cleanup();
-	pthread_mutex_destroy(&nicklock);
 	return 0;
 }
 
-BBS_MODULE_INFO_DEPENDENT("IRC/IRC Relay", "net_irc.so,door_irc.so");
+BBS_MODULE_INFO_DEPENDENT("IRC/IRC Relay", "net_irc.so,mod_irc_client.so");

@@ -29,12 +29,12 @@ static int pre(void)
 {
 	/* Don't load mod_chanserv.so since we don't want to muck with any channel registrations on this server */
 	test_preload_module("net_irc.so");
-	test_preload_module("door_irc.so");
-	test_load_module("mod_relay_irc.so");
+	test_preload_module("mod_irc_client.so");
+	test_load_module("mod_irc_relay.so");
 
 	TEST_ADD_CONFIG("net_irc.conf");
-	TEST_ADD_CONFIG("door_irc.conf");
-	TEST_ADD_CONFIG("mod_relay_irc.conf");
+	TEST_ADD_CONFIG("mod_irc_client.conf");
+	TEST_ADD_CONFIG("mod_irc_relay.conf");
 	return 0;
 }
 
@@ -90,7 +90,7 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(client2, "JOIN #test2");
 
 	/* Okay, user 1 is now connected to #test1 and user 2 is connected to #test2
-	 * Per mod_relay_irc.conf, these channels are set up as a relay pair.
+	 * Per mod_irc_relay.conf, these channels are set up as a relay pair.
 	 * So messages sent to one channel should be received by users in the other. */
 
 	/* Messages within a channel should reach the other guy */

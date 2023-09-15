@@ -47,7 +47,11 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libssh-dev"
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN binutils" # objdump
 PACKAGES_FEDORA="$PACKAGES_FEDORA libssh-devel"
 
+# lirc (mod_irc_client)
+scripts/lirc.sh
+
 # MariaDB (MySQL) dev headers (mod_mysql, mod_mysql_auth)
+# mariadb-server is also required to run a local DBMS, but this is not required for either compilation or operation.
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libmariadb-dev libmariadb-dev-compat"
 PACKAGES_FEDORA="$PACKAGES_FEDORA mariadb105-devel"
 
@@ -85,8 +89,6 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libopendmarc-dev"
 # mod_sieve
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libsieve2-dev"
 # MISSING: RPM package
-
-# TODO: door_irc dependencies should be moved here
 
 OS=$(( uname -s ))
 if [ -f /etc/debian_version ]; then

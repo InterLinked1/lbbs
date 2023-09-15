@@ -906,7 +906,9 @@ int bbs_load_menus(int reload)
 	 * since menu handlers aren't yet registered right now, so we have to wait to verify them. */
 	bbs_run_when_started(check_menus, STARTUP_PRIORITY_DEFAULT);
 
-	res |= bbs_cli_register_multiple(cli_commands_menu);
+	if (!reload) {
+		res |= bbs_cli_register_multiple(cli_commands_menu);
+	}
 	return res;
 }
 

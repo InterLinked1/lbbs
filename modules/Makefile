@@ -41,6 +41,10 @@ mod_http.so : mod_http.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lmagic
 
+mod_irc_client.so : mod_irc_client.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lirc
+
 mod_lmdb.so : mod_lmdb.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -llmdb

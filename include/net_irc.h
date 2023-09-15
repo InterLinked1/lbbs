@@ -95,6 +95,8 @@ enum channel_user_modes irc_get_channel_member_modes(const char *channel, const 
  */
 const char *irc_channel_topic(const char *channel);
 
+#define irc_relay_register(relay_send, nicklist, privmsg) __irc_relay_register(relay_send, nicklist, privmsg, BBS_MODULE_SELF)
+
 /*!
  * \brief Register a relay function that will be used to receive messages sent on IRC channels for rebroadcast on other protocols.
  * \param relay_send Callback function. Note that sender could be NULL, but will contain the sending user's nickname, if available.
@@ -105,7 +107,7 @@ const char *irc_channel_topic(const char *channel);
  * \param mod Module reference.
  * \retval 0 on success, -1 on failure
  */
-int irc_relay_register(int (*relay_send)(const char *channel, const char *sender, const char *msg),
+int __irc_relay_register(int (*relay_send)(const char *channel, const char *sender, const char *msg),
 	int (*nicklist)(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user),
 	int (*privmsg)(const char *recipient, const char *sender, const char *user),
 	void *mod);
@@ -136,7 +138,16 @@ int _irc_relay_send_multiline(const char *channel, enum channel_user_modes modes
 #define irc_relay_send_notice(channel, modes, relayname, sender, hostsender, msg, ircuser) _irc_relay_send(channel, modes, relayname, sender, hostsender, msg, ircuser, 1, BBS_MODULE_SELF)
 
 /*!
- * \brief Send a message to an IRC channel
+ * \brief Send a single message to an IRC channel
+ * \param channel IRC channel name
+ * \param modes User modes
+ * \param relayname Name of relay provider
+ * \param sender Name of sender (for IRC)
+ * \param hostsender
+ * \param msg
+ * \param ircuser If non-NULL, indicates a personal relay for the specified IRC user.
+ *                If this user is currently online but not in this channel, s/he will be invited to the channel.
+ * \param mod Module
  * \retval 0 on success, -1 on failure (message not relayed)
  */
 int _irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *hostsender, const char *msg, const char *ircuser, int notice, void *mod);

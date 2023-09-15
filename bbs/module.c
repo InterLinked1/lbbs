@@ -1304,6 +1304,6 @@ int unload_modules(void)
 	}
 	RWLIST_UNLOCK(&modules);
 
-	bbs_cli_register_multiple(cli_commands_modules);
+	bbs_cli_unregister_multiple(cli_commands_modules);
 	return 0;
 }

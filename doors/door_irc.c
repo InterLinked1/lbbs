@@ -33,19 +33,19 @@
 #include "include/linkedlists.h"
 #include "include/utils.h"
 #include "include/config.h"
-#include "include/startup.h"
-#include "include/system.h"
 #include "include/auth.h"
 
-#include "include/door_irc.h"
+#define EXPOSE_IRC_MSG
 
-#include "lirc/irc.h"
+/* Most IRC client stuff is handled directly in mod_irc_client,
+ * but for one-off connections, door_irc still runs a client directly. */
+#include <lirc/irc.h>
 
-static int unloading = 0;
+#include "include/mod_irc_client.h"
 
 struct participant {
 	struct bbs_node *node;
-	struct client *client;				/* Reference to the underlying client */
+	struct client_relay *client;		/* Reference to the underlying client */
 	const char *channel;				/* Channel */
 	int chatpipe[2];					/* Pipe to store data */
 	RWLIST_ENTRY(participant) entry;	/* Next participant */
@@ -53,233 +53,21 @@ struct participant {
 
 RWLIST_HEAD(participants, participant);
 
-struct client {
-	RWLIST_ENTRY(client) entry; 		/* Next client */
+struct client_relay {
+	RWLIST_ENTRY(client_relay) entry; 	/* Next client */
 	struct participants participants; 	/* List of participants */
-	struct irc_client *client;			/* IRC client */
-	pthread_t thread;					/* Thread for relay */
-	char *msgscript;					/* Message handler hook script (e.g. for bot actions) */
-	unsigned int log:1;					/* Log to log file */
-	unsigned int callbacks:1;			/* Execute callbacks for messages received by this client */
-	FILE *logfile;						/* Log file */
-	char name[0];						/* Unique client name */
+	const char *name;					/* Unique client name */
+	char data[];
 };
 
-RWLIST_HEAD_STATIC(clients, client);
+RWLIST_HEAD_STATIC(door_irc_clients, client_relay);
 
-struct irc_msg_callback {
-	void (*msg_cb)(const char *clientname, const char *channel, const char *msg);
-	void (*numeric_cb)(const char *clientname, const char *prefix, int numeric, const char *msg);
-	void *mod;
-	RWLIST_ENTRY(irc_msg_callback) entry;
-};
-
-static RWLIST_HEAD_STATIC(msg_callbacks, irc_msg_callback); /* Container for all message callbacks */
-
-/* Export global symbols for these 3 functions */
-
-int bbs_irc_client_msg_callback_register(void (*msg_cb)(const char *clientname, const char *channel, const char *msg), void (*numeric_cb)(const char *clientname, const char *prefix, int numeric, const char *msg), void *mod)
-{
-	struct irc_msg_callback *cb;
-
-	RWLIST_WRLOCK(&msg_callbacks);
-	RWLIST_TRAVERSE(&msg_callbacks, cb, entry) {
-		if (msg_cb == cb->msg_cb) {
-			break;
-		}
-	}
-	if (cb) {
-		bbs_error("Callback %p is already registered\n", msg_cb);
-		RWLIST_UNLOCK(&msg_callbacks);
-		return -1;
-	}
-	cb = calloc(1, sizeof(*cb));
-	if (ALLOC_FAILURE(cb)) {
-		RWLIST_UNLOCK(&msg_callbacks);
-		return -1;
-	}
-	cb->msg_cb = msg_cb;
-	cb->numeric_cb = numeric_cb;
-	cb->mod = mod;
-	RWLIST_INSERT_HEAD(&msg_callbacks, cb, entry);
-	bbs_module_ref(BBS_MODULE_SELF); /* Bump our module ref count */
-	RWLIST_UNLOCK(&msg_callbacks);
-	return 0;
-}
-
-/* No need for a separate cleanup function since this module cannot be unloaded until all relays have unregistered */
-
-int bbs_irc_client_msg_callback_unregister(void (*msg_cb)(const char *clientname, const char *channel, const char *msg))
-{
-	struct irc_msg_callback *cb;
-
-	cb = RWLIST_WRLOCK_REMOVE_BY_FIELD(&msg_callbacks, msg_cb, msg_cb, entry);
-	if (cb) {
-		free(cb);
-		bbs_module_unref(BBS_MODULE_SELF); /* And decrement the module ref count back again */
-	} else {
-		bbs_error("Callback %p was not previously registered\n", msg_cb);
-		return -1;
-	}
-	return 0;
-}
-
-static void __client_log(enum irc_log_level level, int sublevel, const char *file, int line, const char *func, const char *msg)
-{
-	/* Log messages already have a newline, don't add another one */
-	switch (level) {
-		case IRC_LOG_ERR:
-			__bbs_log(LOG_ERROR, 0, file, line, func, "%s", msg);
-			break;
-		case IRC_LOG_WARN:
-			__bbs_log(LOG_WARNING, 0, file, line, func, "%s", msg);
-			break;
-		case IRC_LOG_INFO:
-			__bbs_log(LOG_NOTICE, 0, file, line, func, "%s", msg);
-			break;
-		case IRC_LOG_DEBUG:
-			__bbs_log(LOG_DEBUG, sublevel, file, line, func, "%s", msg);
-			break;
-	}
-}
-
-static int load_config(void)
-{
-	struct bbs_config_section *section = NULL;
-	struct bbs_config *cfg = bbs_config_load("door_irc.conf", 1);
-
-	if (!cfg) {
-		bbs_error("File 'door_irc.conf' is missing: IRC client declining to start\n");
-		return -1; /* Abort, if we have no users, we can't start */
-	}
-
-	RWLIST_WRLOCK(&clients);
-	while ((section = bbs_config_walk(cfg, section))) {
-		struct client *client;
-		int flags = 0;
-		struct irc_client *ircl;
-		char *msgscript = NULL;
-		const char *hostname, *username, *password, *autojoin;
-		unsigned int port = 0;
-		int tls = 0, tlsverify = 0, sasl = 0, logfile = 0, callbacks = 1;
-		if (!strcmp(bbs_config_section_name(section), "general")) {
-			continue; /* Skip [general] */
-		}
-		/* It's a client section */
-		if (strchr(bbs_config_section_name(section), ' ')) {
-			bbs_warning("Config section name '%s' contains spaces, please avoid this\n", bbs_config_section_name(section));
-			continue; /* Client names will get used in IRC relays, and IRC doesn't permit spaces in nicknames */
-		}
-		hostname = bbs_config_sect_val(section, "hostname");
-		username = bbs_config_sect_val(section, "username");
-		password = bbs_config_sect_val(section, "password");
-		autojoin = bbs_config_sect_val(section, "autojoin");
-		/* XXX This is not efficient, there should be versions that take section directly */
-		bbs_config_val_set_uint(cfg, bbs_config_section_name(section), "port", &port);
-		bbs_config_val_set_true(cfg, bbs_config_section_name(section), "tls", &tls);
-		bbs_config_val_set_true(cfg, bbs_config_section_name(section), "tlsverify", &tlsverify);
-		bbs_config_val_set_true(cfg, bbs_config_section_name(section), "sasl", &sasl);
-		bbs_config_val_set_true(cfg, bbs_config_section_name(section), "logfile", &logfile);
-		bbs_config_val_set_true(cfg, bbs_config_section_name(section), "callbacks", &callbacks);
-		bbs_config_val_set_dstr(cfg, bbs_config_section_name(section), "msgscript", &msgscript);
-		client = calloc(1, sizeof(*client) + strlen(bbs_config_section_name(section)) + 1);
-		if (ALLOC_FAILURE(client)) {
-			free_if(msgscript);
-			continue;
-		}
-		strcpy(client->name, bbs_config_section_name(section)); /* Safe */
-		ircl = irc_client_new(hostname, port, username, password);
-		if (!ircl) {
-			free(client);
-			free_if(msgscript);
-			continue;
-		}
-		irc_client_autojoin(ircl, autojoin);
-		if (tls) {
-			flags |= IRC_CLIENT_USE_TLS;
-		}
-		if (tlsverify) {
-			flags |= IRC_CLIENT_VERIFY_SERVER;
-		}
-		if (sasl) {
-			flags |= IRC_CLIENT_USE_SASL;
-		}
-		irc_client_set_flags(ircl, flags);
-		client->client = ircl;
-		SET_BITFIELD(client->log, logfile);
-		SET_BITFIELD(client->callbacks, callbacks);
-		client->msgscript = msgscript;
-		/* Go ahead and warn now if it doesn't exist. Set it either way, as it could be fixed during runtime. */
-		if (client->msgscript && access(client->msgscript, X_OK)) {
-			bbs_warning("File %s does not exist or is not executable\n", client->msgscript);
-		}
-		RWLIST_INSERT_TAIL(&clients, client, entry); /* Tail insert so first client is always first */
-	}
-	RWLIST_UNLOCK(&clients);
-	return 0;
-}
-
-static void client_free(struct client *client)
-{
-	if (client->msgscript) {
-		free(client->msgscript);
-	}
-	free(client);
-}
-
-/* Forward declaration */
-static void *client_relay(void *varg);
-
-static int start_clients(void)
-{
-	struct client *client;
-	int started = 0;
-
-	RWLIST_WRLOCK(&clients);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&clients, client, entry) {
-		int res = irc_client_connect(client->client); /* Actually connect */
-		if (!res) {
-			res = irc_client_login(client->client); /* Authenticate */
-		}
-		if (!res && !irc_client_connected(client->client)) {
-			bbs_error("Attempted to start client '%s', but disconnected prematurely?\n", client->name);
-			res = -1;
-		}
-		if (res) {
-			/* Connection failed? Remove it */
-			bbs_error("Failed to start IRC client '%s'\n", client->name);
-			irc_client_destroy(client->client);
-			RWLIST_REMOVE_CURRENT(entry);
-			client_free(client);
-		} else {
-			started++;
-			/* Now, start the event loop to receive messages from the server */
-			if (bbs_pthread_create(&client->thread, NULL, client_relay, (void*) client)) {
-				return -1;
-			}
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&clients);
-	if (started) {
-		bbs_verb(4, "Started %d IRC client%s\n", started, ESS(started));
-	}
-	return 0;
-}
-
-static void leave_client(struct client *client, struct participant *participant)
+static void leave_client(struct client_relay *client, struct participant *participant)
 {
 	struct participant *p;
 
 	/* Lock the entire list first */
-	RWLIST_WRLOCK(&clients);
-	if (unloading) {
-		RWLIST_UNLOCK(&clients);
-		/* If the module is being unloaded, the client no longer exists.
-		 * The participant list has also been freed. Just free ourselves and get out of here. */
-		free(participant);
-		return;
-	}
+	RWLIST_WRLOCK(&door_irc_clients);
 	RWLIST_WRLOCK(&client->participants);
 	p = RWLIST_REMOVE(&client->participants, participant, entry);
 	if (p) {
@@ -292,29 +80,47 @@ static void leave_client(struct client *client, struct participant *participant)
 		bbs_error("Failed to remove participant %p (node %d) from client %s?\n", participant, participant->node->id, client->name);
 	}
 	RWLIST_UNLOCK(&client->participants);
-	RWLIST_UNLOCK(&clients);
+	if (RWLIST_EMPTY(&client->participants)) {
+		client = RWLIST_REMOVE(&door_irc_clients, client, entry);
+		bbs_assert_exists(client);
+		free(client);
+	}
+	RWLIST_UNLOCK(&door_irc_clients);
 }
 
 static struct participant *join_client(struct bbs_node *node, const char *name)
 {
 	struct participant *p;
-	struct client *client;
+	struct client_relay *client;
 
-	RWLIST_WRLOCK(&clients);
-	RWLIST_TRAVERSE(&clients, client, entry) {
+	RWLIST_WRLOCK(&door_irc_clients);
+	RWLIST_TRAVERSE(&door_irc_clients, client, entry) {
 		if (!strcasecmp(client->name, name)) {
 			break;
 		}
 	}
 	if (!client) {
-		bbs_error("IRC client %s doesn't exist\n", name);
-		RWLIST_UNLOCK(&clients);
-		return NULL;
+		/* If it doesn't exist yet, dynamically create it
+		 * if it's a client that exists in mod_irc_client. */
+		if (bbs_irc_client_exists(name)) {
+			client = calloc(1, sizeof(*client) + strlen(name) + 1);
+		}
+		if (!client) {
+			bbs_error("IRC client %s doesn't exist\n", name);
+			RWLIST_UNLOCK(&door_irc_clients);
+			return NULL;
+		}
+		bbs_assert_exists(name);
+		strcpy(client->data, name); /* Safe */
+		client->name = client->data;
+		bbs_debug(3, "Dynamically created client '%s'\n", client->name);
+		bbs_assert_exists(client->name);
+		RWLIST_INSERT_HEAD(&door_irc_clients, client, entry);
 	}
 	/* Okay, we have the client. Add the newcomer to it. */
 	p = calloc(1, sizeof(*p));
 	if (ALLOC_FAILURE(p)) {
-		RWLIST_UNLOCK(&clients);
+		RWLIST_UNLOCK(&door_irc_clients);
 		return NULL;
 	}
 	p->node = node;
@@ -322,388 +128,20 @@ static struct participant *join_client(struct bbs_node *node, const char *name)
 	if (pipe(p->chatpipe)) {
 		bbs_error("Failed to create pipe\n");
 		free(p);
-		RWLIST_UNLOCK(&clients);
+		RWLIST_UNLOCK(&door_irc_clients);
 		return NULL;
 	}
 	RWLIST_INSERT_HEAD(&client->participants, p, entry);
-	RWLIST_UNLOCK(&clients);
+	RWLIST_UNLOCK(&door_irc_clients);
 	return p;
 }
 
 /* Forward declarations */
-static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client *client, struct participant *sender, const char *channel, int dorelay, const char *fmt, ...);
-static int __chat_send(struct client *client, struct participant *sender, const char *channel, int dorelay, const char *msg, int len);
-
-/*! \brief Optional hook for bots for user messages and PRIVMSGs from channel */
-static void bot_handler(struct client *client, int fromirc, const char *channel, const char *sender, const char *body)
-{
-	char *line, *dest, *outmsg;
-	char buf[IRC_MAX_MSG_LEN + 1];
-#pragma GCC diagnostic ignored "-Wcast-qual"
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
-	char *argv[6] = { (char*) client->msgscript, fromirc ? "1" : "0", (char*) channel, (char*) sender, (char*) body, NULL };
-#pragma GCC diagnostic pop
-#pragma GCC diagnostic pop
-	int res;
-	int stdout[2];
-
-	/* If fromirc, then it's a message from IRC.
-	 * Otherwise, it's a message to IRC, sent from a BBS user.
-	 * They're both PRIVMSGs, it's just the direction.
-	 */
-
-	if (strlen_zero(client->msgscript)) {
-		return;
-	}
-	if (access(client->msgscript, X_OK)) {
-		bbs_error("File %s does not exist or is not executable\n", client->msgscript); /* If not caught by now, this is fatal for script execution */
-		return;
-	}
-
-	/* Create a pipe for receiving output. */
-	if (pipe(stdout)) {
-		bbs_error("pipe failed: %s\n", strerror(errno)); /* Log first, since close may change errno */
-		return;
-	}
-
-	/* Invoke the script synchronously.
-	 *
-	 * Before some criticizes this as having a lot of overhead, private messages in IRC channels
-	 * aren't something that occurs frequently enough for this to be an issue, generally speaking.
-	 * Several forks a minute is fine. Several forks a second, maybe that would not be so fine.
-	 *
-	 * Also, even if this blocks for some reason, this thread can be killed using pthread_cancel during unload.
-	 * The nice thing about this being a separate script is it can be updated while the BBS is running,
-	 * and it doesn't matter what language it's using. A little flavor of CGI :)
-	 */
-
-	res = bbs_execvp_fd(NULL, -1, stdout[1], client->msgscript, argv); /* No STDIN, only STDOUT */
-	bbs_debug(5, "Script '%s' returned %d\n", client->msgscript, res);
-	if (res) {
-		goto cleanup; /* Ignore non-zero return values */
-	}
-
-	/* If there's output in the pipe, send it to the channel */
-	/* Poll first, in case there's no data in the pipe or this would block. */
-	if (bbs_poll(stdout[0], 0) == 0) {
-		bbs_debug(4, "No data in script's STDOUT pipe\n"); /* Not necessarily an issue, the script could have returned 0 but printed nothing */
-		goto cleanup;
-	}
-	res = (int) read(stdout[0], buf, sizeof(buf) - 1); /* Luckily, we are bounded by the max length of an IRC message anyways */
-	if (res <= 0) {
-		bbs_error("read returned %d\n", res);
-		goto cleanup;
-	}
-	buf[res] = '\0';
-	outmsg = buf;
-
-	if (strlen_zero(outmsg)) {
-		goto cleanup; /* Output is empty. Do nothing. */
-	}
-
-	/* First word of output is the target channel or username.
-	 * In most cases, this will be the same, but for example,
-	 * we might want to message the sender privately, rather than
-	 * posting to the channel publicly.
-	 * Or maybe we should post to a different channel.
-	 * The possibilities are endless!
-	 */
-	dest = strsep(&outmsg, " ");
-	if (strlen_zero(outmsg)) {
-		bbs_warning("Script output contained a target but no message, ignoring\n");
-		goto cleanup;
-	}
-
-	bbs_debug(4, "Sending to %s: %s\n", dest, outmsg);
-
-	/* Relay the message to wherever it should go */
-	while ((line = strsep(&outmsg, "\n"))) { /* If response contains multiple lines, we need to send multiple messages */
-		char *cr = strchr(line, '\r');
-		if (cr) {
-			*cr = '\0';
-		}
-		/* Can't be over 512 characters since that's as large as the buffer is anyways. (We ignore anything over that) */
-		if (!strcmp(channel, dest)) {
-			/* It's going back to the same channel. Send it to everyone. */
-			__chat_send(client, NULL, dest, 1, line, (int) strlen(line));
-		} else {
-			/* It's going to a different channel, or to a user. */
-			/* Call irc_client_msg directly, and don't relay it to local users.
-			 * Note that according to the IRC specs, PRIVMSG may solicit automated replies
-			 * whereas NOTICE may not (and NOTICE is indeed ignored for bot handling).
-			 * We reply using a PRIVMSG rather than a NOTICE because in practice,
-			 * NOTICEs are also more disruptive.
-			 */
-			irc_client_msg(client->client, dest, line); /* XXX This only works for targeting IRC users, not local BBS users */
-		}
-	}
-
-cleanup:
-	close(stdout[0]);
-	close(stdout[1]);
-	return;
-}
+static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client_relay *client, struct participant *sender, const char *channel, int dorelay, const char *fmt, ...);
 
 #define relay_to_local(client, channel, fmt, ...) _chat_send(client, NULL, channel, 0, fmt, __VA_ARGS__)
 
-static void handle_ctcp(struct client *client, struct irc_client *ircl, const char *channel, struct bbs_node *node, struct irc_msg *msg, char *body)
-{
-	/* CTCP command: known extended data = ACTION, VERSION, TIME, PING, DCC, SED, etc. */
-	/* Remember: CTCP requests use PRIVMSG, responses use NOTICE! */
-	char *tmp, *ctcp_name;
-	enum irc_ctcp ctcp;
-
-	body++; /* Skip leading \001 */
-	if (!*body) {
-		bbs_error("Nothing after \\001?\n");
-		return;
-	}
-	/* Don't print the trailing \001 */
-	tmp = strchr(body, 0x01);
-	if (tmp) {
-		*tmp = '\0';
-	} else {
-		bbs_error("Couldn't find trailing \\001?\n");
-	}
-
-	ctcp_name = strsep(&body, " ");
-
-	tmp = strchr(msg->prefix, '!');
-	if (tmp) {
-		*tmp = '\0'; /* Strip everything except the nickname from the prefix */
-	}
-
-	ctcp = irc_ctcp_from_string(ctcp_name);
-	if (ctcp < 0) {
-		bbs_error("Unsupported CTCP extended data type: %s\n", ctcp_name);
-		return;
-	}
-
-	if (!strcmp(msg->command, "PRIVMSG")) {
-		switch (ctcp) {
-		case CTCP_ACTION: /* /me, /describe */
-			if (client) {
-				relay_to_local(client, channel, "[ACTION] <%s> %s\n", msg->prefix, body);
-				bot_handler(client, 1, channel, msg->prefix, body);
-			} else {
-				bbs_node_writef(node, "[ACTION] <%s> %s\n", msg->prefix, body);
-			}
-			break;
-		case CTCP_VERSION:
-			irc_client_ctcp_reply(ircl, msg->prefix, ctcp, BBS_SHORTNAME " / LIRC 0.1.0");
-			break;
-		case CTCP_PING:
-			irc_client_ctcp_reply(ircl, msg->prefix, ctcp, body); /* Reply with the data that was sent */
-			break;
-		case CTCP_TIME:
-			{
-				char timebuf[32];
-				time_t nowtime;
-				struct tm nowdate;
-
-				nowtime = time(NULL);
-				localtime_r(&nowtime, &nowdate);
-				strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M:%S %P %Z", &nowdate);
-				irc_client_ctcp_reply(ircl, msg->prefix, ctcp, timebuf);
-			}
-			break;
-		default:
-			bbs_warning("Unhandled CTCP extended data type: %s\n", ctcp_name);
-		}
-	} else { /* NOTICE (reply) */
-		/* Ignore */
-	}
-}
-
-static void handle_irc_msg(struct client *client, struct irc_msg *msg)
-{
-	if (msg->numeric) {
-		/* Just ignore all these */
-		switch (msg->numeric) {
-		/* Needed by mod_relay_irc: */
-		case 311:
-		case 312:
-		case 315:
-		case 317:
-		case 318:
-		case 319:
-		case 330:
-		case 352:
-		case 353:
-		case 366:
-		case 671:
-		/* XXX Missing any numeric for WHO, WHOIS, NAMES replies? */
-			if (client->callbacks) {
-				struct irc_msg_callback *cb;
-				/* Reconstruct the raw response */
-				RWLIST_RDLOCK(&msg_callbacks);
-				RWLIST_TRAVERSE(&msg_callbacks, cb, entry) {
-					if (cb->numeric_cb) {
-						bbs_module_ref(cb->mod);
-						cb->numeric_cb(client->name, msg->prefix, msg->numeric, msg->body);
-						bbs_module_unref(cb->mod);
-					}
-				}
-				RWLIST_UNLOCK(&msg_callbacks);
-			}
-			break;
-		default:
-			bbs_debug(5, "Got numeric: prefix: %s, num: %d, body: %s\n", msg->prefix, msg->numeric, msg->body);
-		}
-		return;
-	}
-	/* else, it's a command */
-	if (!msg->command) {
-		assert(0);
-	}
-	if (!strcmp(msg->command, "PRIVMSG") || !strcmp(msg->command, "NOTICE")) { /* This is intentionally first, as it's the most common one. */
-		/* NOTICE is same as PRIVMSG, but should never be acknowledged (replied to), to prevent loops, e.g. for use with bots. */
-		char *channel, *body = msg->body;
-
-		/* Format of msg->body here is CHANNEL :BODY */
-		channel = strsep(&body, " ");
-		body++; /* Skip : */
-
-		if (*body == 0x01) { /* sscanf stripped off the leading : */
-			handle_ctcp(client, client->client, channel, NULL, msg, body);
-		} else {
-			char *tmp = strchr(msg->prefix, '!');
-			if (tmp) {
-				*tmp = '\0'; /* Strip everything except the nickname from the prefix */
-			}
-			relay_to_local(client, channel, "<%s> %s\n", msg->prefix, body);
-			if (!strcmp(msg->command, "PRIVMSG")) {
-				bot_handler(client, 1, channel, msg->prefix, body);
-			}
-		}
-	} else if (!strcmp(msg->command, "PING")) {
-		/* Reply with the same data that it sent us (some servers may actually require that) */
-		int sres = irc_send(client->client, "PONG :%s", msg->body ? msg->body + 1 : ""); /* If there's a body, skip the : and bounce the rest back */
-		if (sres) {
-			return;
-		}
-	} else if (!strcmp(msg->command, "JOIN")) {
-		relay_to_local(client, msg->body, "%s has %sjoined%s\n", msg->prefix, COLOR(COLOR_GREEN), COLOR_RESET);
-	} else if (!strcmp(msg->command, "PART")) {
-		relay_to_local(client, msg->body, "%s has %sleft%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
-	} else if (!strcmp(msg->command, "QUIT")) {
-		relay_to_local(client, msg->body, "%s has %squit%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
-	} else if (!strcmp(msg->command, "KICK")) {
-		relay_to_local(client, msg->body, "%s has been %skicked%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
-	} else if (!strcmp(msg->command, "NICK")) {
-		relay_to_local(client, NULL, "%s is %snow known as%s %s\n", msg->prefix, COLOR(COLOR_CYAN), COLOR_RESET, msg->body);
-	} else if (!strcmp(msg->command, "MODE")) {
-		/* Ignore */
-	} else if (!strcmp(msg->command, "ERROR")) {
-		/* Ignore, do not send errors to users */
-	} else if (!strcmp(msg->command, "TOPIC")) {
-		/* Ignore */
-	} else {
-		bbs_warning("Unhandled command: prefix: %s, command: %s, body: %s\n", msg->prefix, msg->command, msg->body);
-	}
-}
-
-static void *client_relay(void *varg)
-{
-	struct client *client = varg;
-	/* Thread will get killed on shutdown */
-
-	int res = 0;
-	char readbuf[IRC_MAX_MSG_LEN + 1];
-	struct irc_msg msg;
-	char *prevbuf, *mybuf = readbuf;
-	size_t prevlen, mylen = sizeof(readbuf) - 1;
-	char *start, *eom;
-	int rounds;
-	char logfile[256];
-
-	snprintf(logfile, sizeof(logfile), "%s/irc_%s.txt", BBS_LOG_DIR, client->name);
-
-	if (client->log) {
-		client->logfile = fopen(logfile, "a"); /* Create or append */
-		if (!client->logfile) {
-			bbs_error("Failed to open log file %s: %s\n", logfile, strerror(errno));
-			return NULL;
-		}
-	}
-
-	start = readbuf;
-	for (;;) {
-begin:
-		rounds = 0;
-		if (mylen <= 1) {
-			/* IRC max message is 512, but we could have received multiple messages in one read() */
-			char *a;
-			/* Shift current message to beginning of the whole buffer */
-			for (a = readbuf; *start; a++, start++) {
-				*a = *start;
-			}
-			*a = '\0';
-			mybuf = a;
-			mylen = sizeof(readbuf) - 1 - (size_t) (mybuf - readbuf);
-			start = readbuf;
-			if (mylen <= 1) { /* Couldn't shift, whole buffer was full */
-				/* Could happen but this would not be valid. Abort read and reset. */
-				bbs_error("Buffer truncation!\n");
-				start = readbuf;
-				mybuf = readbuf;
-				mylen = sizeof(readbuf) - 1;
-			}
-		}
-		/* Wait for data from server */
-		if (res != sizeof(readbuf) - 1) {
-			/* XXX We don't poll if we read() into an entirely full buffer and there's still more data to read.
-			 * poll() won't return until there's even more data (but it feels like it should). */
-			res = irc_poll(client->client, -1, -1);
-			if (res <= 0) {
-				break;
-			}
-		}
-		prevbuf = mybuf;
-		prevlen = mylen;
-		res = irc_read(client->client, mybuf, (int) mylen);
-		if (res <= 0) {
-			break;
-		}
-
-		mybuf[res] = '\0'; /* Safe */
-		do {
-			eom = strstr(mybuf, "\r\n");
-			if (!eom) {
-				/* read returned incomplete message */
-				mybuf = prevbuf + res;
-				mylen = prevlen - (size_t) res;
-				goto begin; /* In a double loop, can't continue */
-			}
-
-			/* Got more than one message? */
-			if (*(eom + 2)) {
-				*(eom + 1) = '\0'; /* Null terminate before the next message starts */
-			}
-
-			memset(&msg, 0, sizeof(msg));
-			if (client->logfile) {
-				fprintf(client->logfile, "%s\n", start); /* Append to log file */
-			}
-			if (!irc_parse_msg(&msg, start)) {
-				handle_irc_msg(client, &msg);
-			}
-
-			mylen -= (unsigned long) (eom + 2 - mybuf);
-			start = mybuf = eom + 2;
-			rounds++;
-		} while (mybuf && *mybuf);
-
-		start = mybuf = readbuf; /* Reset to beginning */
-		mylen = sizeof(readbuf) - 1;
-	}
-
-	bbs_debug(3, "IRC client '%s' thread has exited\n", client->name);
-	return NULL;
-}
-
-static int __chat_send(struct client *client, struct participant *sender, const char *channel, int dorelay, const char *msg, int len)
+static int __chat_send(struct client_relay *client, struct participant *sender, const char *channel, int dorelay, const char *msg, int len)
 {
 	time_t now;
 	struct tm sendtime;
@@ -729,19 +167,7 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 	/* Relay the message to everyone */
 	RWLIST_RDLOCK(&client->participants);
 	if (dorelay) {
-		irc_client_msg(client->client, channel, msg); /* Actually send to IRC */
-	} else {
-		if (client->callbacks) {
-			struct irc_msg_callback *cb;
-			/* Only execute callback on messages received *FROM* IRC client, not messages *TO* it. */
-			RWLIST_RDLOCK(&msg_callbacks);
-			RWLIST_TRAVERSE(&msg_callbacks, cb, entry) {
-				bbs_module_ref(cb->mod);
-				cb->msg_cb(client->name, channel, msg);
-				bbs_module_unref(cb->mod);
-			}
-			RWLIST_UNLOCK(&msg_callbacks);
-		}
+		bbs_irc_client_send(client->name, channel, msg); /* Actually send to IRC */
 	}
 	RWLIST_TRAVERSE(&client->participants, p, entry) {
 		ssize_t res;
@@ -755,7 +181,7 @@ static int __chat_send(struct client *client, struct participant *sender, const 
 		}
 		/* XXX Restricts users to a single channel, currently */
 		if (!strlen_zero(channel) && strcmp(p->channel, channel)) {
-			continue; /* Channel filter doesn't match for this participant */
+			continue; /* Channel filter doesn't match for this participant. A participant can only be in 1 channel via this door (unlike IRC in general). */
 		}
 		if (!NODE_IS_TDD(p->node)) {
 			res = write(p->chatpipe[1], datestr, timelen); /* Don't send timestamps to TDDs, for brevity */
@@ -781,7 +207,7 @@ static int __chat_send(struct client *client, struct participant *sender, const 
  * See http://www.unixwiz.net/techtips/gnu-c-attributes.html#compat
  * We only need the redundant declarations for static functions with attributes.
  */
-static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client *client, struct participant *sender, const char *channel, int dorelay, const char *fmt, ...);
+static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client_relay *client, struct participant *sender, const char *channel, int dorelay, const char *fmt, ...);
 
 /*!
  * \param client
@@ -790,7 +216,7 @@ static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client 
  * \param dorelay
  * \param fmt
  */
-static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client *client, struct participant *sender, const char *channel, int dorelay, const char *fmt, ...)
+static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client_relay *client, struct participant *sender, const char *channel, int dorelay, const char *fmt, ...)
 {
 	char *buf;
 	int res, len;
@@ -814,88 +240,12 @@ static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client 
 }
 #pragma GCC diagnostic pop
 
-int __attribute__ ((format (gnu_printf, 2, 3))) bbs_irc_client_send(const char *clientname, const char *fmt, ...)
-{
-	struct client *client;
-	char *buf;
-	int res, len;
-	va_list ap;
-
-	RWLIST_RDLOCK(&clients);
-	RWLIST_TRAVERSE(&clients, client, entry) {
-		if (!clientname) {
-			break; /* Just use the first one (default) */
-		}
-		if (!strcasecmp(client->name, clientname)) {
-			break;
-		}
-	}
-	if (!client) {
-		bbs_warning("IRC client %s doesn't exist\n", S_IF(clientname));
-		RWLIST_UNLOCK(&clients);
-		return -1;
-	}
-
-	va_start(ap, fmt);
-	len = vasprintf(&buf, fmt, ap);
-	va_end(ap);
-
-	if (len < 0) {
-		RWLIST_UNLOCK(&clients);
-		return -1;
-	}
-
-	/* Directly send raw message to IRC (don't relay locally) */
-	res = irc_send(client->client, "%s", buf);
-	RWLIST_UNLOCK(&clients);
-	free(buf);
-	return res;
-}
-
-int __attribute__ ((format (gnu_printf, 3, 4))) bbs_irc_client_msg(const char *clientname, const char *channel, const char *fmt, ...)
-{
-	struct client *client;
-	char *buf;
-	int res, len;
-	va_list ap;
-
-	RWLIST_RDLOCK(&clients);
-	RWLIST_TRAVERSE(&clients, client, entry) {
-		if (!clientname) {
-			break; /* Just use the first one (default) */
-		}
-		if (!strcasecmp(client->name, clientname)) {
-			break;
-		}
-	}
-	if (!client) {
-		bbs_warning("IRC client %s doesn't exist\n", S_IF(clientname));
-		RWLIST_UNLOCK(&clients);
-		return -1;
-	}
-
-	va_start(ap, fmt);
-	len = vasprintf(&buf, fmt, ap);
-	va_end(ap);
-
-	if (len < 0) {
-		RWLIST_UNLOCK(&clients);
-		return -1;
-	}
-
-	/* Send to IRC */
-	res = __chat_send(client, NULL, channel, 1, buf, len);
-	RWLIST_UNLOCK(&clients);
-	free(buf);
-	return res;
-}
-
 static int participant_relay(struct bbs_node *node, struct participant *p, const char *channel)
 {
 	char buf[384];
 	char buf2[sizeof(buf)];
 	int res;
-	struct client *c = p->client;
+	struct client_relay *c = p->client;
 
 	/* Join the channel */
 	bbs_node_clear_screen(node);
@@ -946,7 +296,6 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 			}
 			bbs_node_unbuffer(node);
 			chat_send(c, p, channel, "<%s@%d> %s", bbs_username(node->user), node->id, buf2); /* buf2 already contains a newline from the user pressing ENTER, so don't add another one */
-			bot_handler(c, 0, channel, bbs_username(node->user), buf2);
 		} else if (res == 2) {
 			/* Pipe has activity: Received a message */
 			res = 0;
@@ -964,7 +313,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 			if (strcasestr(buf, bbs_username(node->user))) {
 				bbs_debug(3, "Message contains '%s', alerting user\n", bbs_username(node->user));
 				/* If the message contains our username, ring the bell.
-				 * (Most IRC clients also do this for mentions.) */
+				 * (Most IRC door_irc_clients also do this for mentions.) */
 				if (bbs_node_ring_bell(node) < 0) {
 					res = -1;
 					break;
@@ -975,6 +324,83 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 
 	chat_send(c, NULL, channel, "%s@%d has left %s\n", bbs_username(node->user), node->id, channel);
 	return res;
+}
+
+/*! \note Must be called locked */
+static struct client_relay *find_client(const char *name)
+{
+	struct client_relay *c = NULL;
+
+	RWLIST_TRAVERSE(&door_irc_clients, c, entry) {
+		bbs_assert(!RWLIST_EMPTY(&c->participants)); /* Shouldn't be any non-empty door_irc_clients */
+		if (!strcmp(c->name, name)) {
+			return c;
+		}
+	}
+	return c;
+}
+
+/*! \brief Callback for messages received on IRC client (from some server to our client) */
+static void command_cb(const char *clientname, enum irc_callback_msg_type type, const char *channel, const char *prefix, int ctcp, const char *msg)
+{
+	struct client_relay *client;
+
+	RWLIST_RDLOCK(&door_irc_clients);
+
+	client = find_client(clientname);
+	if (!client) {
+		RWLIST_UNLOCK(&door_irc_clients);
+		return;
+	}
+
+	/* Don't release the lock until the callback finishes executing.
+	 * Since it's just a read lock, this won't block anything else. */
+
+	switch (type) {
+		/* These have a channel */
+		case CMD_PRIVMSG:
+		case CMD_NOTICE:
+			if (ctcp) {
+				/* The only CTCP messages that pass through to callbacks are ACTIONs. */
+				relay_to_local(client, channel, "[ACTION] <%s> %s\n", prefix, msg);
+			} else {
+				relay_to_local(client, channel, "<%s> %s\n", prefix, msg);
+			}
+			break;
+		case CMD_JOIN:
+			relay_to_local(client, channel, "%s has %sjoined%s\n", prefix, COLOR(COLOR_GREEN), COLOR_RESET);
+			break;
+		case CMD_PART:
+			relay_to_local(client, channel, "%s has %sleft%s\n", prefix, COLOR(COLOR_RED), COLOR_RESET);
+			break;
+		case CMD_KICK:
+			relay_to_local(client, channel, "%s has been %skicked%s\n", prefix, COLOR(COLOR_RED), COLOR_RESET);
+			break;
+		case CMD_TOPIC:
+			relay_to_local(client, channel, "%s has %schanged the topic%s of %s\n", prefix, COLOR_GREEN, COLOR_RESET, msg);
+			break;
+		case CMD_MODE:
+			break; /* Ignore */
+		/* These do not have a channel */
+		case CMD_QUIT:
+			/* We should relay this message to all channels that contain this user,
+			 * but we don't currently have a mechanism to do that, so just ignore it... */
+#if 0
+			relay_to_local(client, NULL, "%s has %squit%s\n", prefix, COLOR(COLOR_RED), COLOR_RESET);
+#endif
+			break;
+		case CMD_NICK:
+			/* Same comment as QUIT */
+#if 0
+			relay_to_local(client, NULL, "%s is %snow known as%s %s\n", prefix, COLOR(COLOR_CYAN), COLOR_RESET, msg);
+#endif
+			break;
+		case CMD_PING:
+		case CMD_UNSUPPORTED:
+			break;
+	}
+
+	RWLIST_UNLOCK(&door_irc_clients);
 }
 
 /*! \note channel could be char* and that would be fine, but we don't need to modify it, so const char* works */
@@ -1112,7 +538,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 		 * the message from IRC is printed out immediately and the user continues typing on the next line.
 		 * Not super ideal, but since the node is buffered here, we can't easily fix this without unbuffering
 		 * the first character and then buffering the rest, and not printing during that time
-		 * (this is what door_irc and door_chat do for the shared clients normally).
+		 * (this is what door_irc and door_chat do for the shared door_irc_clients normally).
 		 */
 
 		/* Client is buffered, so if poll returns, that means we have a full message from it */
@@ -1121,15 +547,8 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 			break;
 		}
 
-		/* XXX This is embarassing. irc_poll returns 1 if poll() returned for either fd, but doesn't tell us which fd.
-		 * We should update that API to return 1 for fd 0 and 2 for fd 1, just like in socket.c.
-		 * Seriously... we are calling poll() 3 times here for every loop!!!
-		 * - Once in irc_poll
-		 * - bbs_node_poll and possibly irc_poll again, with timeout of 0.
-		 * - Finally in bbs_readline (fortunately, we don't call irc_poll the 2nd time in this case, so it's always 3 times, never 4)
-		 *
-		 * In the meantime, we manually poll again with no timeout to see if it was the client that has activity. */
-		if (bbs_node_poll(node, 0) > 0) {
+		/* If res == 1, the IRC client had activity, if == 2, the slave had activity */
+		if (res == 2) {
 			char clientbuf[512]; /* Use a separate buf so that bbs_readline gets its own buf for the server reads */
 
 			/* No need to use a fancy bbs_node_readline struct, since we can reasonably expect to get 1 full line at a time, nothing more, nothing less */
@@ -1156,9 +575,10 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 			}
 
 			bbs_node_writef(node, "%s<%s> %s\n", datestr, irc_client_username(ircl), clientbuf); /* Echo the user's own message */
-		} else if (irc_poll(ircl, 0, -1) > 0) { /* Must've been the server. */
+		} else { /* Must've been the server. */
 			char tmpbuf[2048];
 			int ready;
+			ssize_t bres;
 			/* bbs_readline internally will call poll(), but we already polled inside irc_poll,
 			 * and then poll() again to see which file descriptor had activity,
 			 * so just pass 0 as poll should always return > 0 anyways, immediately,
@@ -1167,7 +587,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 			/* Another clunky thing. Need to get data using irc_read, but we want to buffer it using a bbs_node_readline struct.
 			 * So use bbs_readline_append.
 			 */
-			res = irc_read(ircl, tmpbuf, sizeof(tmpbuf));
+			bres = irc_read(ircl, tmpbuf, sizeof(tmpbuf));
 			res = bbs_readline_append(&rldata, "\r\n", tmpbuf, (size_t) res, &ready);
 			if (!ready) {
 				continue;
@@ -1184,58 +604,89 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 				}
 				/* Parse message from server */
 				memset(&msg_stack, 0, sizeof(msg_stack));
-				if (!irc_parse_msg(&msg_stack, buf)) {
-					/* Condensed version of what handle_irc_msg does */
-					if (msg->numeric) {
-						bbs_node_writef(node, "%s %d %s\n", NODE_IS_TDD(node) ? "" : S_IF(msg->prefix), msg->numeric, msg->body);
-					} else {
-						bbs_assert_exists(msg->command);
-						if (!strcmp(msg->command, "PRIVMSG") || !strcmp(msg->command, "NOTICE")) { /* This is intentionally first, as it's the most common one. */
+				if (!irc_parse_msg(msg, buf) && !irc_parse_msg_type(msg)) {
+					/* Condensed version of what command_cb does */
+					switch (irc_msg_type(msg)) {
+						case IRC_NUMERIC:
+							bbs_node_writef(node, "%s %d %s\n", NODE_IS_TDD(node) ? "" : S_IF(irc_msg_prefix(msg)), irc_msg_numeric(msg), irc_msg_body(msg));
+							break;
+						case IRC_CMD_PRIVMSG:
+						case IRC_CMD_NOTICE:
 							/* NOTICE is same as PRIVMSG, but should never be acknowledged (replied to), to prevent loops, e.g. for use with bots. */
-							char *channel_name, *body = msg->body;
+							bbs_strterm(irc_msg_prefix(msg), '!'); /* Strip everything except the nickname from the prefix */
+							if (irc_msg_is_ctcp(msg) && !irc_parse_msg_ctcp(msg)) {
+								if (irc_msg_type(msg) == IRC_CMD_PRIVMSG) { /* Ignore NOTICE */
+									enum irc_ctcp_type ctcp = irc_msg_ctcp_type(msg);
+									switch (irc_msg_ctcp_type(msg)) {
+										case CTCP_ACTION:
+											if (!NODE_IS_TDD(node)) {
+												now = time(NULL);
+												localtime_r(&now, &sendtime);
+												strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime);
+											}
+											bbs_node_writef(node, "[ACTION] %s<%s> %s\n", datestr, irc_msg_prefix(msg), irc_msg_body(msg));
+											break;
+										/* Mirrors CTCP handling in mod_irc_client: */
+										case CTCP_VERSION:
+											irc_client_ctcp_reply(ircl, irc_msg_prefix(msg), ctcp, BBS_SHORTNAME " / LIRC " XSTR(LIRC_MAJOR_VERSION) "." XSTR(LIRC_MINOR_VERSION) "." XSTR(LIRC_PATCH_VERSION));
+											break;
+										case CTCP_PING:
+											irc_client_ctcp_reply(ircl, irc_msg_prefix(msg), ctcp, irc_msg_body(msg)); /* Reply with the data that was sent */
+											break;
+										case CTCP_TIME:
+											{
+												char timebuf[32];
+												time_t nowtime;
+												struct tm nowdate;
 
-							/* Format of msg->body here is CHANNEL :BODY */
-							channel_name = strsep(&body, " ");
-							body++; /* Skip : */
-							if (*body == 0x01) { /* sscanf stripped off the leading : */
-								handle_ctcp(NULL, ircl, channel_name, node, msg, body);
-							} else {
-								char *tmp = strchr(msg->prefix, '!');
-								if (tmp) {
-									*tmp = '\0'; /* Strip everything except the nickname from the prefix */
+												nowtime = time(NULL);
+												localtime_r(&nowtime, &nowdate);
+												strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M:%S %P %Z", &nowdate);
+												irc_client_ctcp_reply(ircl, irc_msg_prefix(msg), ctcp, timebuf);
+											}
+											break;
+										default:
+											break;
+									}
 								}
+							} else {
 								if (!NODE_IS_TDD(node)) {
 									now = time(NULL);
 									localtime_r(&now, &sendtime);
 									strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime);
 								}
-								bbs_node_writef(node, "%s<%s> %s\n", datestr, msg->prefix, body);
+								bbs_node_writef(node, "%s<%s> %s\n", datestr, msg->prefix, irc_msg_body(msg));
 							}
-						} else if (!strcmp(msg->command, "PING")) {
+							break;
+						case IRC_CMD_PING:
 							/* Reply with the same data that it sent us (some servers may actually require that) */
-							int sres = irc_send(ircl, "PONG :%s", msg->body ? msg->body + 1 : ""); /* If there's a body, skip the : and bounce the rest back */
-							if (sres) {
-								return 0;
-							}
-						} else if (!strcmp(msg->command, "JOIN")) {
+							irc_client_pong(ircl, msg);
+							break;
+						case IRC_CMD_JOIN:
 							bbs_node_writef(node, "%s has %sjoined%s\n", msg->prefix, COLOR(COLOR_GREEN), COLOR_RESET);
-						} else if (!strcmp(msg->command, "PART")) {
+							break;
+						case IRC_CMD_PART:
 							bbs_node_writef(node, "%s has %sleft%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
-						} else if (!strcmp(msg->command, "QUIT")) {
+							break;
+						case IRC_CMD_QUIT:
+							/* Since this client is for a single end user, and the server sent us the quit,
+							 * we know it must be relevant to us */
 							bbs_node_writef(node, "%s has %squit%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
-						} else if (!strcmp(msg->command, "KICK")) {
+							break;
+						case IRC_CMD_KICK:
 							bbs_node_writef(node, "%s has been %skicked%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
-						} else if (!strcmp(msg->command, "NICK")) {
-							bbs_node_writef(node, "%s is %snow known as%s %s\n", msg->prefix, COLOR(COLOR_CYAN), COLOR_RESET, msg->body);
-						} else if (!strcmp(msg->command, "MODE")) {
-							/* Ignore */
-						} else if (!strcmp(msg->command, "ERROR")) {
-							/* Ignore, do not send errors to users */
-						} else if (!strcmp(msg->command, "TOPIC")) {
-							bbs_node_writef(node, "Topic is now %s\n", msg->body);
-						} else {
-							bbs_warning("Unhandled command: prefix: %s, command: %s, body: %s\n", msg->prefix, msg->command, msg->body);
-						}
+							break;
+						case IRC_CMD_NICK:
+							bbs_node_writef(node, "%s is %snow known as%s %s\n", msg->prefix, COLOR(COLOR_CYAN), COLOR_RESET, irc_msg_body(msg));
+							break;
+						case IRC_CMD_TOPIC:
+							bbs_node_writef(node, "%s has %schanged the topic%s of %s\n", irc_msg_prefix(msg), COLOR_GREEN, COLOR_RESET, irc_msg_body(msg));
+							break;
+						case IRC_CMD_ERROR:
+						case IRC_CMD_OTHER:
+						case IRC_UNPARSED:
+						default:
+							break;
 					}
 				}
 
@@ -1244,10 +695,8 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 				 * We use a timeout of 0, because if there isn't another message ready already,
 				 * then we should just go back to the outer poll.
 				 */
-				res = (int) bbs_readline(node->slavefd, &rldata, "\r\n", 0);
-			} while (res > 0);
-		} else { /* Shouldn't happen */
-			bbs_warning("irc_poll returned activity, but neither client nor server has pending data?\n");
+				bres = bbs_readline(node->slavefd, &rldata, "\r\n", 0);
+			} while (bres > 0);
 		}
 	}
 
@@ -1297,44 +746,16 @@ static int irc_client_exec(struct bbs_node *node, const char *args)
 
 static int unload_module(void)
 {
-	struct client *client;
-
-	RWLIST_WRLOCK(&clients);
-	unloading = 1;
-
-	while ((client = RWLIST_REMOVE_HEAD(&clients, entry))) {
-		struct participant *p;
-		/* If there are any clients still connected, boot them */
-		while ((p = RWLIST_REMOVE_HEAD(&client->participants, entry))) {
-			/* XXX Because the usecount will be positive if clients are being used, the handling to remove participants may be kind of moot */
-			/* Remove from list, but don't actually free the participant itself. Each node will do that as it leaves. */
-			bbs_socket_close(&p->chatpipe[1]); /* Close write end of pipe to kick the node from the client */
-		}
-		bbs_pthread_join(client->thread, NULL);
-		irc_client_destroy(client->client);
-		if (client->logfile) {
-			fclose(client->logfile);
-		}
-		client_free(client);
-	}
-	RWLIST_UNLOCK(&clients);
-
+	bbs_irc_client_msg_callback_unregister(command_cb);
 	return bbs_unregister_door("irc");
 }
 
 static int load_module(void)
 {
-	int res;
-
-	if (load_config()) {
+	if (bbs_irc_client_msg_callback_register(command_cb, NULL)) { /* No numeric callback needed */
 		return -1;
 	}
-	irc_log_callback(__client_log); /* Set up logging */
-	res = bbs_register_door("irc", irc_client_exec);
-	if (!res) {
-		bbs_run_when_started(start_clients, STARTUP_PRIORITY_DEPENDENT);
-	}
-	REQUIRE_FULL_LOAD(res);
+	return bbs_register_door("irc", irc_client_exec);
 }
 
-BBS_MODULE_INFO_FLAGS("Internet Relay Chat Client", MODFLAG_GLOBAL_SYMBOLS);
+BBS_MODULE_INFO_DEPENDENT("Internet Relay Chat Client", "mod_irc_client.so");

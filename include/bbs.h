@@ -52,6 +52,8 @@
 #define BBS_COPYRIGHT_SHORT STRCAT("(C) 2023 ", BBS_AUTHOR)
 #define BBS_VERSION XSTR(BBS_MAJOR_VERSION) "." XSTR(BBS_MINOR_VERSION) "." XSTR(BBS_PATCH_VERSION)
 
+#define SEMVER_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))
+
 /* Needed (only) by bbs.c and logger.c */
 #define BBS_LOG_DIR DIRCAT("/var/log", BBS_NAME)
 #define MAX_VERBOSE 10

@@ -43,8 +43,6 @@
 #include <slackrtm/slack.h>
 #include <slackrtm/slack-client.h>
 
-#define SEMVER_VERSION(a,b,c) (((a) << 16) + ((b) << 8) + (c))
-
 #define MIN_VERSION_REQUIRED SEMVER_VERSION(0,3,3)
 #if SEMVER_VERSION(SLACK_RTM_LIB_VERSION_MAJOR, SLACK_RTM_LIB_VERSION_MINOR, SLACK_RTM_LIB_VERSION_PATCH) < MIN_VERSION_REQUIRED
 #error "libslackrtm version too old"
@@ -1259,7 +1257,7 @@ static int load_module(void)
 		return -1;
 	}
 
-	irc_relay_register(slack_send, nicklist, privmsg, BBS_MODULE_SELF);
+	irc_relay_register(slack_send, nicklist, privmsg);
 	bbs_cli_register_multiple(cli_commands_slack);
 	return 0;
 }
