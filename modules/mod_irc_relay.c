@@ -50,8 +50,11 @@ struct chan_pair {
 	const char *channel2;
 	const char *ircuser;
 	unsigned int relaysystem:1;
+	unsigned int gotnames:2;	/* Have we queried the NAMES for this channel pair at least once? */
 	RWLIST_ENTRY(chan_pair) entry;
 	struct stringlist members;
+	pthread_t names_thread;
+	pthread_mutex_t names_query_lock;
 	char data[0];
 };
 
@@ -59,7 +62,15 @@ static RWLIST_HEAD_STATIC(mappings, chan_pair);
 
 static void chan_pair_cleanup(struct chan_pair *cp)
 {
+	pthread_mutex_lock(&cp->names_query_lock);
+	if (cp->names_thread) {
+		bbs_pthread_join(cp->names_thread, NULL);
+		cp->names_thread = 0;
+	}
+	pthread_mutex_unlock(&cp->names_query_lock);
+
 	stringlist_empty(&cp->members);
+	pthread_mutex_destroy(&cp->names_query_lock);
 	free(cp);
 }
 
@@ -147,6 +158,7 @@ static int add_pair(const char *client1, const char *channel1, const char *clien
 	}
 
 	SET_BITFIELD(cp->relaysystem, relaysystem);
+	pthread_mutex_init(&cp->names_query_lock, NULL);
 
 	RWLIST_INSERT_HEAD(&mappings, cp, entry);
 	RWLIST_UNLOCK(&mappings);
@@ -245,14 +257,36 @@ static void numeric_cb(const char *clientname, const char *prefix, int numeric, 
 	}
 	/* Since we have to format it here anyways, do all the formatting here */
 	len = snprintf(mybuf, sizeof(mybuf), ":%s %d %s\n", S_OR(prefix, bbs_hostname()), numeric, msg); /* Use LF to delimit on the other end */
-	bbs_debug(9, "Numeric %s\n", prefix);
+	bbs_debug(9, "Numeric %s: %s\n", prefix, mybuf);
+	if (nickpipe[0] == -1) { /* In theory, we could receive this callback at any point. If we didn't call it from wait_response, there's nothing to write to right now */
+		bbs_debug(9, "Ignoring numeric since we didn't ask for it\n");
+		return;
+	}
 	bbs_write(nickpipe[1], mybuf, (size_t) len);
+}
+
+static void cp_add_member(struct chan_pair *cp, const char *username)
+{
+	/* This is used to work around a particular limitation that we face.
+	 * When a user quits an IRC channel on another network and that gets relayed through here,
+	 * we'd like to relay the quit to all the channels that user was in.
+	 * However, the QUIT message is not associated with a channel (it's network wide),
+	 * so we need to keep track of the channels that a user is in.
+	 * More straightforward, we keep track of the users in a channel, which allows us to determine that. */
+	/*! \todo BUGBUG FIXME This assumes that only one channel is remote (once client is NULL, i.e. the local BBS IRC network, and the other is a client to some remote IRC network).
+	 * However, they could BOTH be remote, in which case we'd need to actually keep track of the members of BOTH sides.
+	 * The use case of a remote to remote relay is probably uncommon but is possible so should be handled correctly. */
+	if (strlen_zero(username)) {
+		bbs_error("NAMES username is empty?\n");
+		return;
+	}
+	stringlist_push(&cp->members, username); /* Keep track of the username without the client name prefixed */
 }
 
 /*! \todo This info should be cached locally for a while (there could be lots of these requests in a busy channel...) */
 static int wait_response(struct bbs_node *node, int fd, const char *requsername, int numeric, struct chan_pair *cp, const char *clientname, const char *channel, const char *origchan, const char *fullnick, const char *nick)
 {
-	char buf[3092];
+	char buf[3092] = "";
 	int res = -1;
 	char *bufpos, *line;
 	size_t buflen = sizeof(buf) - 1;
@@ -290,6 +324,7 @@ static int wait_response(struct bbs_node *node, int fd, const char *requsername,
 	}
 
 	/* Read the full response, until there's no more data for 250ms or we get the END OF LIST numeric. Relay each message as soon as we get it. */
+	/*! \todo Rewrite using bbs_readline */
 	bufpos = buf;
 	do {
 		ssize_t readres = read(nickpipe[0], bufpos, buflen);
@@ -384,14 +419,6 @@ static int wait_response(struct bbs_node *node, int fd, const char *requsername,
 				w5 = origchan; /* Replace channel name */
 				res = 0;
 
-				/* This is used to work around a particular limitation that we face.
-				 * When a user quits an IRC channel on another network and that gets relayed through here,
-				 * we'd like to relay the quit to all the channels that user was in.
-				 * However, the QUIT message is not associated with a channel (it's network wide),
-				 * so we need to keep track of the channels that a user is in.
-				 * More straightforward, we keep track of the users in a channel, which allows us to determine that. */
-				stringlist_push(&cp->members, w8); /* Keep track of the username without the client name prefixed */
-
 #ifdef PREFIX_NAMES
 				if (rest && *rest == ':') {
 					int n = 0;
@@ -408,12 +435,23 @@ static int wait_response(struct bbs_node *node, int fd, const char *requsername,
 						while (*restptr == PREFIX_FOUNDER[0] || *restptr == PREFIX_ADMIN[0] || *restptr == PREFIX_OP[0] || *restptr == PREFIX_HALFOP[0] || *restptr == PREFIX_VOICE[0]) {
 							restptr++;
 						}
+
+						cp_add_member(cp, restptr);
 						snprintf(newnick, sizeof(newnick), "%s%s/%s", n ? " " : "", clientname, restptr);
 						SAFE_FAST_APPEND_NOSPACE(restbuf, sizeof(restbuf), restpos, restlen, "%s", newnick);
 						n++;
 					}
 					rest = restbuf;
 					bbs_debug(5, "Translated nicks: %s\n", rest);
+				}
+#else
+				{
+					char namescopy[512];
+					char *name, *namesdup = namescopy;
+					safe_strncpy(namescopy, rest, sizeof(namescopy));
+					while ((name = strsep(&namesdup, " "))) {
+						cp_add_member(cp, name);
+					}
 				}
 #endif
 				SEND_RESP(fd, "%s %s %s %s %s %s\r\n", w1, w2, w3, w4, w5, rest);
@@ -707,6 +745,46 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 	return 0;
 }
 
+static void *names_query(void *varg)
+{
+	const char *channel, *origchan;
+	struct chan_pair *cp = varg;
+
+	channel = cp->client1 ? cp->channel1 : cp->channel2;
+	origchan = cp->client1 ? cp->channel2 : cp->channel1;
+	bbs_debug(3, "First activity for chanpair %s/%s %s/%s, fetching members of channel %s\n", S_IF(cp->client1), S_IF(cp->client2), cp->channel1, cp->channel2, channel);
+	wait_response(NULL, -1, NULL, 353, cp, S_OR(cp->client1, cp->client2), channel, origchan, NULL, NULL);
+
+	cp->gotnames = 2; /* Do not lock names_query_lock here or we could deadlock if somebody waiting for us to exit has it locked. */
+	return NULL;
+}
+
+static void ensure_names_aware(struct chan_pair *cp)
+{
+	/* If we joined the channel with members already in it,
+	 * we're reliant on some user on the local IRC network issuing a "NAMES"
+	 * that allows us to piggyback on that and capture the list of channel members.
+	 * If that never happens and a user quits, then in our current state,
+	 * we're not aware that that user was ever in the channel, so we incorrectly decline to relay it.
+	 * To prevent this, this lazily loads the channel members the first time a chan_pair is referenced.
+	 * We do it lazily since we can't actually be sure that all IRC clients are ready when this module
+	 * loads, since this could load a split instant after mod_irc_client at startup, and if so,
+	 * it's not a good time to be making NAMES requests yet...
+	 */
+	pthread_mutex_lock(&cp->names_query_lock);
+	if (cp->gotnames) {
+		if (cp->gotnames == 2 && cp->names_thread) {
+			/* It's done, join the thread */
+			bbs_pthread_join(cp->names_thread, NULL);
+			cp->names_thread = 0;
+		}
+	} else {
+		cp->gotnames = 1; /* Don't do it again if one is already in progress, so mark completed when we start, rather than when the job finishes */
+		bbs_pthread_create(&cp->names_thread, NULL, names_query, cp);
+	}
+	pthread_mutex_unlock(&cp->names_query_lock);
+}
+
 static void relay_quit(const char *clientname, const char *username, const char *msg)
 {
 	char sysmsg[512];
@@ -717,6 +795,7 @@ static void relay_quit(const char *clientname, const char *username, const char 
 	RWLIST_RDLOCK(&mappings);
 	RWLIST_TRAVERSE(&mappings, cp, entry) {
 		/* We're looking for a match on the remote side (the local side could be NULL). */
+		ensure_names_aware(cp);
 		if (!EITHER_CLIENT_MATCH(cp, clientname)) {
 			continue;
 		}
@@ -799,6 +878,8 @@ static void command_cb(const char *clientname, enum irc_callback_msg_type type, 
 		bbs_debug(9, "No relay match for channel %s/%s\n", clientname, channel);
 		return;
 	}
+
+	ensure_names_aware(cp);
 
 	if (strlen_zero(channel)) {
 		bbs_debug(9, "No channel for message from %s\n", clientname);
@@ -1002,6 +1083,9 @@ static int load_module(void)
 
 static int unload_module(void)
 {
+	if (nickpipe[0] != -1) {
+		shutdown(nickpipe[0], SHUT_RDWR); /* Make any in-progress NAMES query exit now */
+	}
 	bbs_cli_unregister_multiple(cli_commands_irc);
 	bbs_irc_client_msg_callback_unregister(command_cb);
 	irc_relay_unregister(netirc_cb);

@@ -1,10 +1,10 @@
-#!/bin/php
+#!/usr/bin/php
 <?php
 /* Sample IRC bot script for LBBS door_irc module
  * (C) 2023, Naveen Albert
  */
 
-if ($argc < 5) {
+if ($argc !== 5) {
 	fprintf(STDERR, "Invalid number of arguments: %d\n", $argc);
 	/* php doesn't have errno, manually use the appropriate code: https://chromium.googlesource.com/chromiumos/docs/+/master/constants/errnos.md */
 	exit(22); /* EINVAL */
@@ -28,6 +28,8 @@ $handlers = array(
 	'hello' => array('hello. Says hello', 'handler_hello'),
 	'time' => array('time. Provides current time.', 'handler_time'),
 	'define' => array('define <word>. Defines a word.', 'handler_define'),
+	'fprnow' => array('fprnow. Currently playing song on Flower Power Radio', 'handler_fprnow'),
+	'fprrecent' => array('fprrecent. Lists 4 most recently played songs on Flower Power Radio', 'handler_fprrecent'),
 );
 
 if (substr($message, 0, 1) === "!") {
@@ -43,6 +45,7 @@ if (substr($message, 0, 1) === "!") {
 		 $message = substr($message, strlen($command) + 1);
 	}
 	if (!array_key_exists($command, $handlers)) {
+		fprintf(STDERR, "Unknown command: %s\n", $command);
 		echo $prefix . "Sorry, I don't understand that command.";
 	} else {
 		$handler = $handlers[$command];
@@ -109,5 +112,34 @@ function handler_define(String $prefix, bool $fromIRC, String $channel, String $
 	}
 
 	echo $prefix . $s; /* XXX Could be truncated if longer than 512 chars */
+}
+
+/* Currently playing song on Flower Power Radio */
+function handler_fprnow(String $prefix, bool $fromIRC, String $channel, String $sender, String $message) {
+	echo $prefix . " " . file_get_contents("http://nl1.streamingpulse.com:7016/currentsong");
+}
+
+function handler_fprrecent(String $prefix, bool $fromIRC, String $channel, String $sender, String $message) {
+	/* Requires php-dom extension: apt-get install php-dom */
+	$html = file_get_contents("https://widgets.autopo.st/widgets/public/Steve7/recentlyplayed.php");
+	$dom = new DOMDocument();
+	error_reporting(E_ERROR); /* Don't emit warnings for malformed XML */
+	$dom->loadHtml($html);
+	$x = new DOMXpath($dom);
+	$c = 0;
+	foreach($x->query('//td') as $td) {
+		$x = trim($td->textContent);
+		if ($x !== "") {
+			if ($c === 0) {
+				echo $prefix;
+			} else {
+				echo " || "; /* Double up to prevent text formatting inbetween */
+			}
+			echo ++$c . ". " . trim($td->textContent);
+		}
+	}
+	if ($c === 0) {
+		fprintf(STDERR, "Failed to parse song names from response\n");
+	}
 }
 ?>

@@ -60,7 +60,7 @@ struct client_relay {
 	char data[];
 };
 
-RWLIST_HEAD_STATIC(door_irc_clients, client_relay);
+static RWLIST_HEAD_STATIC(door_irc_clients, client_relay);
 
 static void leave_client(struct client_relay *client, struct participant *participant)
 {

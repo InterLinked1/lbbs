@@ -99,7 +99,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 	}
 
 	gettimeofday(&now, NULL);
-	lognow = (int) time(NULL);
+	lognow = time(NULL);
 	localtime_r(&lognow, &logdate);
 	strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 
@@ -725,6 +725,42 @@ static void stop_bbs_pid(pid_t childpid)
 	kill(childpid, SIGINT); /* Again, to confirm */
 }
 
+static void *stop_stuck_bbs(void *unused)
+{
+	UNUSED(unused);
+
+	if (!current_child) {
+		return NULL; /* Maybe it just exited */
+	}
+
+	if (option_errorcheck) {
+		system("vgdb v.info scheduler");
+	} else {
+		/* Before we kill the BBS, dump the current threads to output,
+		 * so we can see what was going on in the postmortem. */
+		system("../scripts/bbs_dumper.sh livedump && cat full.txt");
+	}
+
+	if (current_child) {
+		kill(current_child, SIGTERM);
+		kill(current_child, SIGKILL);
+		/* Now, the main thread should be unblocked from continuing since waitpid will return */
+	}
+	return NULL;
+}
+
+static void sigalrm_handler(int sig)
+{
+	pthread_t child;
+	pthread_attr_t attr;
+
+	UNUSED(sig);
+
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	pthread_create(&child, &attr, stop_stuck_bbs, NULL); /* Not signal safe, but better than doing all that in the current thread */
+}
+
 static int run_test(const char *filename, int multiple)
 {
 	int res = 0;
@@ -837,7 +873,13 @@ static int run_test(const char *filename, int multiple)
 			if (childpid != -1) {
 				int wstatus;
 				stop_bbs_pid(childpid);
+				/* If shutdown gets stuck, don't sit around waiting forever. */
+				alarm(10); /* Wait no more than 10 seconds for BBS to exit. */
 				waitpid(childpid, &wstatus, 0); /* Wait for child to exit */
+				if (!alarm(0)) { /* Cancel any pending alarm */
+					bbs_error("BBS did not shut down in a timely manner, possible deadlock?\n");
+					res = -1; /* Automatic fail, since shutdown was not clean */
+				}
 				current_child = 0;
 				bbs_debug(3, "Child process %d has exited\n", childpid);
 				if (WIFSIGNALED(wstatus)) { /* Child terminated by signal (probably SIGSEGV?) */
@@ -963,6 +1005,7 @@ int main(int argc, char *argv[])
 	stop_bbs(); /* If the BBS is already running, stop it. */
 	signal(SIGINT, sigint_handler); /* Catch SIGINT since cleanup could be very messy */
 	signal(SIGPIPE, SIG_IGN); /* Ignore SIGPIPE to avoid exiting on failed write to pipe */
+	signal(SIGALRM, sigalrm_handler);
 
 	bbs_debug(1, "Looking for tests in %s\n", XSTR(TEST_DIR));
 	if (chdir(XSTR(TEST_DIR))) {

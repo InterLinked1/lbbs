@@ -1214,8 +1214,8 @@ static void unload_modules_helper(void)
 
 	bbs_debug(3, "Auto unloading modules\n");
 
-/* Try 15 times * 0.2 seconds = up to 3 seconds to unload everything cleanly */
-#define MAX_PASSES 15
+/* Try 51 times * 0.2 seconds = up to 10.2 seconds to unload everything cleanly (which means that in the test suite, the alarm should go off and trigger a backtrace dump) */
+#define MAX_PASSES 51
 
 	RWLIST_WRLOCK(&modules);
 	/* Run the loop a max of 5 times. Always do it at least once, but then only if there are still skipped modules remaining.

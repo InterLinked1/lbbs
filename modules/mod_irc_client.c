@@ -56,7 +56,7 @@ struct bbs_irc_client {
 	char name[0];						/* Unique client name */
 };
 
-RWLIST_HEAD_STATIC(irc_clients, bbs_irc_client);
+static RWLIST_HEAD_STATIC(irc_clients, bbs_irc_client);
 
 struct irc_msg_callback {
 	void (*msg_cb)(const char *clientname, enum irc_callback_msg_type type, const char *channel, const char *prefix, int ctcp, const char *msg);
@@ -366,19 +366,24 @@ static int msg_relay(struct bbs_irc_client *client, enum relay_flags flags, enum
 	return 0;
 }
 
-/*! \brief Optional hook for bots for user messages and PRIVMSGs from channel */
-static void bot_handler(struct bbs_irc_client *client, struct irc_msg *msg)
+static void __bot_handler(struct bbs_irc_client *client, enum relay_flags flags, const char *channel, const char *prefix, int ctcp, const char *msg)
 {
 	/* If fromirc, then it's a message from IRC.
 	 * Otherwise, it's a message to IRC, sent from a BBS user.
-	 * They're both PRIVMSGs, it's just the direction. */
-	int fromirc = 1;
-	char *line, *dest, *outmsg;
-	char buf[IRC_MAX_MSG_LEN + 1];
+	 * They're both PRIVMSGs, it's just the direction.
+	 *
+	 * The nomenclature here is a bit misleading: even if !fromirc,
+	 * it could be from IRC, e.g. the local IRC network,
+	 * but it's injected using bbs_irc_client_msg, as opposed to being
+	 * received from an IRC client. */
+	int fromirc = flags & RELAY_FROM_IRC ? 1 : 0;
+	int lines = 0;
+	struct readline_data rldata;
+	char buf[IRC_MAX_MSG_LEN + 1]; /* Luckily, we are bounded by the max length of an IRC message anyways */
 #pragma GCC diagnostic ignored "-Wcast-qual"
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
-	char *argv[6] = { (char*) client->msgscript, fromirc ? "1" : "0", (char*) irc_msg_channel(msg), (char*) irc_msg_prefix(msg), (char*) irc_msg_body(msg), NULL };
+	char *argv[6] = { (char*) client->msgscript, fromirc ? "1" : "0", (char*) channel, (char*) prefix, (char*) msg, NULL };
 #pragma GCC diagnostic pop
 #pragma GCC diagnostic pop
 	int res;
@@ -405,54 +410,68 @@ static void bot_handler(struct bbs_irc_client *client, struct irc_msg *msg)
 	 * and it doesn't matter what language it's using. A little flavor of CGI :)
 	 */
 
+	bbs_readline_init(&rldata, buf, sizeof(buf));
 	res = bbs_execvp_fd(NULL, -1, stdout[1], client->msgscript, argv); /* No STDIN, only STDOUT */
 	bbs_debug(5, "Script '%s' returned %d\n", client->msgscript, res);
 	if (res) {
 		goto cleanup; /* Ignore non-zero return values */
+	} else if (bbs_poll(stdout[0], 0) == 0) {
+		bbs_debug(4, "No data in script's STDOUT pipe\n"); /* Not necessarily an issue, the script could have returned 0 but printed nothing */
 	}
 
 	/* If there's output in the pipe, send it to the channel */
-	/* Poll first, in case there's no data in the pipe or this would block. */
-	if (bbs_poll(stdout[0], 0) == 0) {
-		bbs_debug(4, "No data in script's STDOUT pipe\n"); /* Not necessarily an issue, the script could have returned 0 but printed nothing */
-		goto cleanup;
-	}
-	res = (int) read(stdout[0], buf, sizeof(buf) - 1); /* Luckily, we are bounded by the max length of an IRC message anyways */
-	if (res <= 0) {
-		bbs_error("read returned %d\n", res);
-		goto cleanup;
-	}
-	buf[res] = '\0';
-	outmsg = buf;
+	/* Use reliable readline in case there are multiple lines. We don't need to worry about partial reads since writing is done,
+	 * but we don't want to process more than one line at the same time. */
+	for (;;) { /* Shouldn't have to wait very long, output should be in the pipe ready to read by time process exits */
+		ssize_t bytes;
+		char *dest, *line = buf;
+		/* First word of output is the target channel or username.
+		 * In most cases, this will be the same, but for example,
+		 * we might want to message the sender privately, rather than
+		 * posting to the channel publicly.
+		 * Or maybe we should post to a different channel.
+		 * The possibilities are endless!
+		 */
 
-	if (strlen_zero(outmsg)) {
-		goto cleanup; /* Output is empty. Do nothing. */
-	}
+		bytes = bbs_readline(stdout[0], &rldata, "\n", 10);
+		if (bytes < 0) {
+			/* The last line doesn't have to be NULL terminated, if there's data pending, just process what we got last */
+			if ((bytes = readline_bytes_available(&rldata, 0)) <= 0) {
+				if (!lines) { /* bbs_poll returned positive previously, so how can this be? */
+					bbs_warning("Failed to read any script output data\n");
+				}
+				break;
+			}
+		}
+		if (!bytes) {
+			continue; /* Ignore empty lines */
+		}
 
-	/* First word of output is the target channel or username.
-	 * In most cases, this will be the same, but for example,
-	 * we might want to message the sender privately, rather than
-	 * posting to the channel publicly.
-	 * Or maybe we should post to a different channel.
-	 * The possibilities are endless!
-	 */
-	dest = strsep(&outmsg, " ");
-	if (strlen_zero(outmsg)) {
-		bbs_warning("Script output contained a target but no message, ignoring\n");
-		goto cleanup;
-	}
+		dest = strsep(&line, " ");
+		if (strlen_zero(line)) {
+			bbs_warning("Script output contained a target but no message, ignoring\n");
+			continue;
+		}
 
-	bbs_debug(4, "Sending to %s: %s\n", dest, outmsg);
+		/* XXX system.c dups STDOUT and STDERR to the same fd, so
+		 * if there is STDERR output here, we'll process it just the same,
+		 * even though it should really be ignored. */
 
-	/* Relay the message to wherever it should go */
-	while ((line = strsep(&outmsg, "\n"))) { /* If response contains multiple lines, we need to send multiple messages */
+		bbs_debug(4, "Sending to %s: %s\n", dest, line);
+
+		/* Relay the message to wherever it should go */
 		bbs_strterm(line, '\r');
 		/* Can't be over 512 characters since that's as large as the buffer is anyways. (We ignore anything over that) */
-		if (!strcmp(irc_msg_channel(msg), dest)) {
+		if (!strcmp(channel, dest)) {
 			/* It's going back to the same channel. Send it to everyone. */
-			msg_relay(client, RELAY_TO_IRC | RELAY_FROM_IRC, IRC_CMD_PRIVMSG, dest, irc_msg_prefix(msg), irc_msg_is_ctcp(msg), line, strlen(line));
-		} else {
-			/* It's going to a different channel, or to a user. */
+			/*! \note RELAY_FROM_IRC was removed from the mask here, since that would
+			 * relay the message to the other side (e.g. the local IRC network channel)
+			 * improperly impersonated, i.e. the message posted by the bot would appear
+			 * to be posted by the person to whom the bot was responding.
+			 * Upon further though, it really doesn't make sense to relay bot responses
+			 * in the other direction anyways, hence this simpler (and more correct) behavior. */
+			msg_relay(client, RELAY_TO_IRC, IRC_CMD_PRIVMSG, dest, prefix, ctcp, line, strlen(line));
+		} else { /* It's going to a different channel, or to a user. */
 			/* Call irc_client_msg directly, and don't relay it to local users.
 			 * Note that according to the IRC specs, PRIVMSG may solicit automated replies
 			 * whereas NOTICE may not (and NOTICE is indeed ignored for bot handling).
@@ -461,12 +480,18 @@ static void bot_handler(struct bbs_irc_client *client, struct irc_msg *msg)
 			 */
 			irc_client_msg(client->client, dest, line);
 		}
+		lines++;
 	}
 
 cleanup:
 	close(stdout[0]);
 	close(stdout[1]);
-	return;
+}
+
+/*! \brief Optional hook for bots for user messages and PRIVMSGs from channel */
+static void bot_handler(struct bbs_irc_client *client, struct irc_msg *msg, enum relay_flags flags)
+{
+	return __bot_handler(client, flags, irc_msg_channel(msg), irc_msg_prefix(msg), irc_msg_is_ctcp(msg), irc_msg_body(msg));
 }
 
 static void handle_ctcp(struct bbs_irc_client *client, struct irc_client *ircl, struct irc_msg *msg)
@@ -485,7 +510,7 @@ static void handle_ctcp(struct bbs_irc_client *client, struct irc_client *ircl, 
 	case CTCP_ACTION: /* /me, /describe */
 		/* At this time, the only CTCP command that we pass through to callbacks is ACTION. */
 		msg_relay_to_local(client, msg);
-		bot_handler(client, msg);
+		bot_handler(client, msg, RELAY_FROM_IRC);
 		break;
 	case CTCP_VERSION:
 		irc_client_ctcp_reply(ircl, irc_msg_prefix(msg), ctcp, BBS_SHORTNAME " / LIRC " XSTR(LIRC_MAJOR_VERSION) "." XSTR(LIRC_MINOR_VERSION) "." XSTR(LIRC_PATCH_VERSION));
@@ -553,7 +578,7 @@ static void handle_irc_msg(void *data, struct irc_msg *msg)
 	case IRC_CMD_NOTICE:
 		bbs_strterm(irc_msg_prefix(msg), '!'); /* Strip everything except the nickname from the prefix */
 		if (irc_msg_is_ctcp(msg) && !irc_parse_msg_ctcp(msg)) {
-			handle_ctcp(client, client->client, msg);
+			handle_ctcp(client, client->client, msg); /* handle_ctcp also calls bot_handler */
 		} else {
 			msg_relay_to_local(client, msg);
 
@@ -561,7 +586,7 @@ static void handle_irc_msg(void *data, struct irc_msg *msg)
 			 * Otherwise, a bot response could be received before the message to which it's responding. */
 			if (irc_msg_type(msg) == IRC_CMD_PRIVMSG) {
 				/* Bots can only reply to PRIVMSG, not NOTICE, to prevent loops */
-				bot_handler(client, msg);
+				bot_handler(client, msg, RELAY_FROM_IRC);
 			}
 		}
 		break;
@@ -645,6 +670,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_irc_client_send(const char *
 
 	/* Directly send raw message to IRC (don't relay locally) */
 	res = irc_send(client->client, "%s", buf);
+
 	RWLIST_UNLOCK(&irc_clients);
 	free(buf);
 	return res;
@@ -692,6 +718,7 @@ int __attribute__ ((format (gnu_printf, 4, 5))) bbs_irc_client_msg(const char *c
 	 * Might work if we skip the sending module? Or maybe not??? */
 
 	res = msg_relay(client, RELAY_TO_IRC, IRC_CMD_PRIVMSG, channel, prefix, 0, buf, (size_t) len); /* No prefix */
+
 	RWLIST_UNLOCK(&irc_clients);
 	free(buf);
 	return res;
