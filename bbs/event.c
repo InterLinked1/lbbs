@@ -115,9 +115,9 @@ int bbs_event_broadcast(struct bbs_event *event)
 	RWLIST_RDLOCK(&consumers);
 	RWLIST_TRAVERSE(&consumers, c, entry) {
 		int mres;
-		bbs_module_ref(c->module);
+		bbs_module_ref(c->module, 1);
 		mres = c->callback(event);
-		bbs_module_unref(c->module);
+		bbs_module_unref(c->module, 1);
 		res = MAX(mres, res);
 		if (mres > 1) {
 			break;

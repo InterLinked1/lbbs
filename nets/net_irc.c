@@ -299,7 +299,7 @@ int __irc_relay_register(int (*relay_send)(const char *channel, const char *send
 	relay->privmsg = privmsg;
 	relay->mod = mod;
 	RWLIST_INSERT_HEAD(&relays, relay, entry);
-	bbs_module_ref(BBS_MODULE_SELF); /* Bump our module ref count */
+	bbs_module_ref(BBS_MODULE_SELF, 1); /* Bump our module ref count */
 	RWLIST_UNLOCK(&relays);
 	return 0;
 }
@@ -313,7 +313,7 @@ int irc_relay_unregister(int (*relay_send)(const char *channel, const char *send
 	relay = RWLIST_WRLOCK_REMOVE_BY_FIELD(&relays, relay_send, relay_send, entry);
 	if (relay) {
 		free(relay);
-		bbs_module_unref(BBS_MODULE_SELF); /* And decrement the module ref count back again */
+		bbs_module_unref(BBS_MODULE_SELF, 1); /* And decrement the module ref count back again */
 	} else {
 		bbs_error("Relay %p was not previously registered\n", relay_send);
 		return -1;
@@ -336,7 +336,7 @@ int irc_chanserv_register(void (*privmsg)(const char *username, char *msg), void
 		return -1;
 	}
 	/* This is the right order for these operations. Use reverse order for unregister. */
-	bbs_module_ref(BBS_MODULE_SELF); /* Bump our module ref count */
+	bbs_module_ref(BBS_MODULE_SELF, 2); /* Bump our module ref count */
 	chanserv_mod = mod;
 	chanserv_privmsg = privmsg;
 	chanserv_eventcb = eventcb;
@@ -352,7 +352,7 @@ int irc_chanserv_unregister(void (*privmsg)(const char *username, char *msg))
 	chanserv_privmsg = NULL;
 	chanserv_eventcb = NULL;
 	chanserv_mod = NULL;
-	bbs_module_unref(BBS_MODULE_SELF);
+	bbs_module_unref(BBS_MODULE_SELF, 2);
 	return 0;
 }
 
@@ -362,9 +362,9 @@ static int chanserv_msg(struct irc_user *user, char *s)
 	 * ChanServ will send a PRIVMSG if it needs to.
 	 * It may very well do other things, too. */
 	if (chanserv_privmsg) {
-		bbs_module_ref(chanserv_mod);
+		bbs_module_ref(chanserv_mod, 3);
 		chanserv_privmsg(user->nickname, s);
-		bbs_module_unref(chanserv_mod);
+		bbs_module_unref(chanserv_mod, 3);
 		return 0;
 	} else {
 		return -1;
@@ -791,12 +791,12 @@ static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, 
 #endif
 				continue;
 			}
-			bbs_module_ref(relay->mod);
+			bbs_module_ref(relay->mod, 4);
 			if (relay->relay_send(channel->name, user ? user->nickname : username ? username : NULL, buf)) {
-				bbs_module_unref(relay->mod);
+				bbs_module_unref(relay->mod, 4);
 				break;
 			}
-			bbs_module_unref(relay->mod);
+			bbs_module_unref(relay->mod, 4);
 		}
 		RWLIST_UNLOCK(&relays);
 	}
@@ -1101,12 +1101,12 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, char
 				if (!relay->privmsg) {
 					continue;
 				}
-				bbs_module_ref(relay->mod);
+				bbs_module_ref(relay->mod, 5);
 				if (relay->privmsg(channame, user->nickname, message)) {
-					bbs_module_unref(relay->mod);
+					bbs_module_unref(relay->mod, 5);
 					break;
 				}
-				bbs_module_unref(relay->mod);
+				bbs_module_unref(relay->mod, 5);
 			}
 			RWLIST_UNLOCK(&relays);
 			if (!relay) { /* Didn't exist in a relay either */
@@ -1776,9 +1776,9 @@ static void handle_who(struct irc_user *user, char *s)
 			RWLIST_RDLOCK(&relays);
 			RWLIST_TRAVERSE(&relays, relay, entry) {
 				if (relay->nicklist) {
-					bbs_module_ref(relay->mod);
+					bbs_module_ref(relay->mod, 6);
 					res = relay->nicklist(user->node, user->wfd, 352, user->username, s, NULL);
-					bbs_module_unref(relay->mod);
+					bbs_module_unref(relay->mod, 6);
 				}
 				if (res) {
 					break;
@@ -1795,9 +1795,9 @@ static void handle_who(struct irc_user *user, char *s)
 			RWLIST_RDLOCK(&relays);
 			RWLIST_TRAVERSE(&relays, relay, entry) {
 				if (relay->nicklist) {
-					bbs_module_ref(relay->mod);
+					bbs_module_ref(relay->mod, 7);
 					res = relay->nicklist(user->node, user->wfd, 352, user->username, NULL, s);
-					bbs_module_unref(relay->mod);
+					bbs_module_unref(relay->mod, 7);
 				}
 				if (res) {
 					break;
@@ -1842,9 +1842,9 @@ static void handle_whois(struct irc_user *user, char *s)
 		RWLIST_RDLOCK(&relays);
 		RWLIST_TRAVERSE(&relays, relay, entry) {
 			if (relay->nicklist) {
-				bbs_module_ref(relay->mod);
+				bbs_module_ref(relay->mod, 8);
 				res = relay->nicklist(user->node, user->wfd, 318, user->username, NULL, s);
-				bbs_module_unref(relay->mod);
+				bbs_module_unref(relay->mod, 8);
 			}
 			if (res) {
 				break;
@@ -2278,9 +2278,9 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 		pthread_mutex_lock(&user->lock);
 		RWLIST_TRAVERSE(&relays, relay, entry) {
 			if (relay->nicklist) {
-				bbs_module_ref(relay->mod);
+				bbs_module_ref(relay->mod, 9);
 				res = relay->nicklist(user->node, user->wfd, 353, user->username, channel->name, NULL);
-				bbs_module_unref(relay->mod);
+				bbs_module_unref(relay->mod, 9);
 			}
 			if (res) {
 				break;

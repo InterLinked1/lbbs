@@ -37,6 +37,18 @@
 
 #define BBS_MODULE_DIR DIRCAT("/usr/lib", DIRCAT(BBS_NAME, "modules"))
 
+struct bbs_module_reference {
+	int pair;
+	void *refmod;
+	const char *file;
+	const char *func;
+	int line;
+	RWLIST_ENTRY(bbs_module_reference) entry;
+	char data[];
+};
+
+RWLIST_HEAD(module_refs, bbs_module_reference);
+
 struct bbs_module {
 	const struct bbs_module_info *info;
 	/*! The shared lib. */
@@ -49,6 +61,8 @@ struct bbs_module {
 	} flags;
 	/*! Load order */
 	int loadorder;
+	/* Module references */
+	struct module_refs refs;
 	/* Next entry */
 	RWLIST_ENTRY(bbs_module) entry;
 	/*! The name of the module. */
@@ -142,15 +156,55 @@ void bbs_module_unregister(const struct bbs_module_info *info)
 	}
 }
 
-struct bbs_module *bbs_module_ref(struct bbs_module *mod)
+static void log_module_ref(struct bbs_module *mod, int pair, void *refmod, const char *file, int line, const char *func, int diff)
+{
+	struct bbs_module_reference *r;
+
+	/* refmod can't disappear while we're in this function since it called us.
+	 * However, it could be NULL; it's only non-NULL for modules. */
+	RWLIST_WRLOCK(&mod->refs);
+	if (diff == 1) { /* Ref */
+		size_t filelen = strlen(file);
+		size_t fflen = filelen + strlen(func) + 2;
+
+		r = calloc(1, sizeof(*r) + fflen);
+		if (ALLOC_SUCCESS(r)) {
+			strcpy(r->data, file); /* Safe */
+			r->file = r->data;
+			strcpy(r->data + filelen + 1, func); /* Safe */
+			r->func = r->data + filelen + 1;
+			r->line = line;
+			r->refmod = refmod;
+			r->pair = pair;
+			RWLIST_INSERT_HEAD(&mod->refs, r, entry); /* Head insert absolutely makes perfect sense */
+		}
+	} else { /* Unref */
+		RWLIST_TRAVERSE_SAFE_BEGIN(&mod->refs, r, entry) {
+			if (r->pair == pair && !strcmp(r->file, file)) { /* Pair IDs are only unique within a source file */
+				RWLIST_REMOVE_CURRENT(entry);
+				free(r);
+				break;
+			}
+		}
+		RWLIST_TRAVERSE_SAFE_END;
+		if (!r) { /* Should only happen legitimately if allocation failed during ref */
+			bbs_error("Failed to find existing reference for %s with pair ID %d\n", mod->name, pair - 1);
+		}
+	}
+	RWLIST_UNLOCK(&mod->refs);
+}
+
+struct bbs_module *__bbs_module_ref(struct bbs_module *mod, int pair, void *refmod, const char *file, int line, const char *func)
 {
 	bbs_atomic_fetchadd_int(&mod->usecount, +1);
 	bbs_assert(mod->usecount > 0);
+	log_module_ref(mod, pair, refmod, file, line, func, +1);
 	return mod;
 }
 
-void bbs_module_unref(struct bbs_module *mod)
+void __bbs_module_unref(struct bbs_module *mod, int pair, void *refmod, const char *file, int line, const char *func)
 {
+	log_module_ref(mod, pair, refmod, file, line, func, -1); /* Do this first, since module can't disappear while it has a positive refcount */
 	bbs_atomic_fetchadd_int(&mod->usecount, -1);
 	bbs_assert(mod->usecount >= 0);
 
@@ -185,21 +239,21 @@ static struct bbs_module *find_resource(const char *resource)
 	return mod;
 }
 
-struct bbs_module *bbs_require_module(const char *module)
+struct bbs_module *__bbs_require_module(const char *module, void *refmod)
 {
 	struct bbs_module *mod = find_resource(module);
 	if (mod) {
 		bbs_debug(5, "Module dependency '%s' is satisfied\n", module);
-		bbs_module_ref(mod);
+		__bbs_module_ref(mod, 1, refmod, __FILE__, __LINE__, __func__);
 	} else {
 		bbs_warning("Module %s dependency is not satisfied\n", module);
 	}
 	return mod;
 }
 
-void bbs_unrequire_module(struct bbs_module *mod)
+void __bbs_unrequire_module(struct bbs_module *mod, void *refmod)
 {
-	bbs_module_unref(mod);
+	__bbs_module_unref(mod, 1, refmod, __FILE__, __LINE__, __func__);
 }
 
 static int queue_reload(const char *resource)
@@ -552,7 +606,7 @@ static int load_resource(const char *restrict resource_name, unsigned int suppre
 			dependencies = dependencies_buf;
 			while ((dependency = strsep(&dependencies, ","))) {
 				bbs_debug(9, "%s requires module %s\n", mod->name, dependency);
-				bbs_require_module(dependency);
+				__bbs_require_module(dependency, mod);
 			}
 		}
 	}
@@ -665,7 +719,7 @@ static void dec_refcounts(struct bbs_module *mod)
 			struct bbs_module *m = find_resource(dependency);
 			bbs_debug(9, "No longer depend on module %s\n", dependency);
 			if (m) {
-				bbs_unrequire_module(m);
+				__bbs_unrequire_module(m, mod);
 			} else {
 				bbs_warning("Dependency %s not currently loaded?\n", dependency);
 			}
@@ -1016,9 +1070,56 @@ static int list_modules(int fd)
 	return 0;
 }
 
+/*! \note Modules list must be locked */
+static int list_modulerefs(int fd, const char *name)
+{
+	struct bbs_module *mod;
+	int i = 0;
+
+	bbs_dprintf(fd, "%-30s %3s %2s %-30s %s\n", "Module", "#", "PR", "Reffing Module", "Ref Location");
+
+	RWLIST_TRAVERSE(&modules, mod, entry) {
+		if (!name || !strcasecmp(name, mod->name)) {
+			int c = 0;
+			struct bbs_module_reference *r;
+			/* Dump refs */
+			
+			RWLIST_RDLOCK(&mod->refs);
+			RWLIST_TRAVERSE(&mod->refs, r, entry) {
+				struct bbs_module *refmod = r->refmod;
+				c++;
+				i++;
+				/* Safe to dereference r->refmod (if not NULL), since it can be removed while modules list is locked */
+				bbs_dprintf(fd, "%-30s %3d %2d %-30s %s:%d %s\n", mod->name, c, r->pair, refmod ? refmod->name : "", r->file, r->line, r->func);
+			}
+			RWLIST_UNLOCK(&mod->refs);
+			if (name) {
+				bbs_dprintf(fd, "Module %s has %d reference%s\n", mod->name, c, ESS(c));
+				break;
+			}
+		}
+	}
+	if (name && !mod) {
+		bbs_dprintf(fd, "Module '%s' not found\n", name);
+		return -1;
+	} else if (!name) {
+		bbs_dprintf(fd, "%d total reference%s\n", i, ESS(i));
+	}
+	return 0;
+}
+
 static int cli_modules(struct bbs_cli_args *a)
 {
 	return list_modules(a->fdout);
+}
+
+static int cli_modulerefs(struct bbs_cli_args *a)
+{
+	int res;
+	RWLIST_RDLOCK(&modules);
+	res = list_modulerefs(a->fdout, a->argc >= 2 ? a->argv[1] : NULL);
+	RWLIST_UNLOCK(&modules);
+	return res;
 }
 
 static int cli_load(struct bbs_cli_args *a)
@@ -1173,6 +1274,7 @@ static int cli_reloadqueue(struct bbs_cli_args *a)
 
 static struct bbs_cli_entry cli_commands_modules[] = {
 	BBS_CLI_COMMAND(cli_modules, "modules", 1, "List loaded modules", NULL),
+	BBS_CLI_COMMAND(cli_modulerefs, "modulerefs", 1, "List references on a module", "modulerefs [<module>]"),
 	BBS_CLI_COMMAND(cli_load, "load", 2, "Load dynamic module", "load <module>"),
 	BBS_CLI_COMMAND(cli_loadwait, "loadwait", 2, "Keep retrying load of dynamic module until it successfully loads", "loadwait <module>"),
 	BBS_CLI_COMMAND(cli_unload, "unload", 2, "Unload dynamic module", "unload <module>"),
@@ -1282,6 +1384,17 @@ static void unload_modules_helper(void)
 			/* The first 2 passes (between 1st and 2nd), don't sleep.
 			 * Modules may just have needed a teeny bit more time.
 			 * Afterwards, sleep a bit to increase the chances of successful unload. */
+			if (passes == MAX_PASSES / 2 || passes == MAX_PASSES - 1) {
+				unsigned int numnodes;
+				/* Dump module refs to aid debugging, since something is probably stuck.
+				 * The test suite will kill the BBS before we get to MAX_PASSES,
+				 * so dump it halfway through for that case and at the end for running interactively. */
+				list_modulerefs(STDOUT_FILENO, NULL);
+				numnodes = bbs_node_count();
+				if (numnodes) {
+					bbs_warning("%u node%s still registered\n", numnodes, ESS(numnodes));
+				}
+			}
 			usleep(200000); /* Wait 200 ms and try again */
 		}
 	}

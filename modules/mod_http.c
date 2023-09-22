@@ -1576,7 +1576,7 @@ static struct http_route *find_route(unsigned short int port, const char *hostna
 		pthread_mutex_lock(&route->lock);
 		route->usecount++;
 		pthread_mutex_unlock(&route->lock);
-		bbs_module_ref(route->mod);
+		bbs_module_ref(route->mod, 1);
 	} else {
 		bbs_debug(3, "No matching route for '%s' and no default route!\n", uri);
 	}
@@ -1588,7 +1588,7 @@ static struct http_route *find_route(unsigned short int port, const char *hostna
 
 static void route_unref(struct http_route *route)
 {
-	bbs_module_unref(route->mod);
+	bbs_module_unref(route->mod, 1);
 	pthread_mutex_lock(&route->lock);
 	route->usecount--;
 	pthread_mutex_unlock(&route->lock);

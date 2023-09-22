@@ -287,9 +287,9 @@ int bbs_mail(int async, const char *to, const char *from, const char *replyto, c
 	/* Hand off the delivery of the message itself to the appropriate module */
 	RWLIST_RDLOCK(&mailers);
 	RWLIST_TRAVERSE(&mailers, m, entry) {
-		bbs_module_ref(m->module);
+		bbs_module_ref(m->module, 1);
 		res = m->mailer(async, to, from, replyto, errorsto, subject, body);
-		bbs_module_unref(m->module);
+		bbs_module_unref(m->module, 1);
 		if (res >= 0) {
 			break;
 		}

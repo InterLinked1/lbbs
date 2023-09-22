@@ -147,9 +147,9 @@ static int __bbs_alert_user(unsigned int userid, enum notify_delivery_type persi
 
 	RWLIST_RDLOCK(&alerters);
 	RWLIST_TRAVERSE(&alerters, a, entry) {
-		bbs_module_ref(a->module);
+		bbs_module_ref(a->module, 1);
 		res = a->alerter(userid, msg);
-		bbs_module_unref(a->module);
+		bbs_module_unref(a->module, 1);
 		if (!res) {
 			break;
 		}

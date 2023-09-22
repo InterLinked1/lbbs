@@ -243,9 +243,9 @@ static int do_authenticate(struct bbs_user *user, const char *username, const ch
 	 */
 	RWLIST_RDLOCK(&providers);
 	RWLIST_TRAVERSE(&providers, p, entry) {
-		bbs_module_ref(p->module);
+		bbs_module_ref(p->module, 1);
 		res = p->execute(user, username, password);
-		bbs_module_unref(p->module);
+		bbs_module_unref(p->module, 1);
 		c++;
 		if (!res) {
 			break; /* Somebody granted the login. Stop. */
@@ -706,9 +706,9 @@ int bbs_user_register(struct bbs_node *node)
 
 	node->menu = "Register";
 	bbs_assert_exists(registermod);
-	bbs_module_ref(registermod);
+	bbs_module_ref(registermod, 2);
 	res = registerprovider(node);
-	bbs_module_unref(registermod);
+	bbs_module_unref(registermod, 2);
 	node->menu = NULL;
 
 	if (bbs_user_is_registered(node->user)) { /* we might have returned -1 after registration succeeded on timeout */
@@ -733,9 +733,9 @@ int bbs_user_reset_password(const char *username, const char *password)
 	}
 
 	bbs_assert_exists(pwresetmod);
-	bbs_module_ref(pwresetmod);
+	bbs_module_ref(pwresetmod, 3);
 	res = pwresethandler(username, password);
-	bbs_module_unref(pwresetmod);
+	bbs_module_unref(pwresetmod, 3);
 
 	if (!res) {
 		struct bbs_event event;
@@ -760,9 +760,9 @@ struct bbs_user *bbs_user_info_by_username(const char *username)
 	}
 
 	bbs_assert_exists(userinfomod);
-	bbs_module_ref(userinfomod);
+	bbs_module_ref(userinfomod, 4);
 	user = userinfohandler(username);
-	bbs_module_unref(userinfomod);
+	bbs_module_unref(userinfomod, 4);
 
 	return user;
 }
@@ -777,9 +777,9 @@ struct bbs_user **bbs_user_list(void)
 	}
 
 	bbs_assert_exists(userlistmod);
-	bbs_module_ref(userlistmod);
+	bbs_module_ref(userlistmod, 5);
 	userlist = userlisthandler();
-	bbs_module_unref(userlistmod);
+	bbs_module_unref(userlistmod, 5);
 
 	return userlist;
 }

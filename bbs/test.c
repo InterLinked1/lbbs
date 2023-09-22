@@ -48,11 +48,11 @@ static int test_execute(struct bbs_test *test)
 
 	bbs_debug(5, "Starting test '%s'\n", test->name);
 
-	bbs_module_ref(test->module);
+	bbs_module_ref(test->module, 1);
 	gettimeofday(&begin, NULL);
 	res = test->result = test->execute();
 	gettimeofday(&end, NULL);
-	bbs_module_unref(test->module);
+	bbs_module_unref(test->module, 1);
 
 	bbs_debug(5, "Test '%s' returned %d\n", test->name, res);
 	test->executed = 1;

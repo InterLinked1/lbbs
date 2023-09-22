@@ -248,9 +248,9 @@ void mailbox_dispatch_event(struct mailbox_event *event)
 
 	RWLIST_RDLOCK(&watchers);
 	RWLIST_TRAVERSE(&watchers, w, entry) {
-		bbs_module_ref(w->watchmod);
+		bbs_module_ref(w->watchmod, 1);
 		w->watchcallback(event);
-		bbs_module_unref(w->watchmod);
+		bbs_module_unref(w->watchmod, 1);
 	}
 	RWLIST_UNLOCK(&watchers);
 }
@@ -403,9 +403,9 @@ char *sieve_get_capabilities(void)
 		bbs_error("No Sieve implementation is currently registered\n");
 		return NULL;
 	}
-	bbs_module_ref(sievemod);
+	bbs_module_ref(sievemod, 2);
 	caps = strdup(sieve_capabilities);
-	bbs_module_unref(sievemod);
+	bbs_module_unref(sievemod, 2);
 	return caps;
 }
 
@@ -416,9 +416,9 @@ int sieve_validate_script(const char *filename, struct mailbox *mbox, char **err
 		bbs_error("No Sieve implementation is currently registered\n");
 		return -1;
 	}
-	bbs_module_ref(sievemod);
+	bbs_module_ref(sievemod, 3);
 	res = sieve_validate(filename, mbox, errormsg);
-	bbs_module_unref(sievemod);
+	bbs_module_unref(sievemod, 3);
 	return res;
 }
 

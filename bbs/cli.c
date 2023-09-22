@@ -194,7 +194,7 @@ int bbs_cli_exec(int fdin, int fdout, const char *s)
 	}
 
 	if (c->mod) { /* If it's not part of the core, bump the ref count */
-		bbs_module_ref(c->mod);
+		bbs_module_ref(c->mod, 1);
 	}
 	RWLIST_UNLOCK(&cmds);
 
@@ -228,7 +228,7 @@ int bbs_cli_exec(int fdin, int fdout, const char *s)
 		}
 	}
 	if (c->mod) {
-		bbs_module_unref(c->mod);
+		bbs_module_unref(c->mod, 1);
 	}
 	return res;
 }

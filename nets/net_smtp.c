@@ -836,9 +836,9 @@ static int handle_rcpt(struct smtp_session *smtp, char *s)
 	/* Check if it's a real mailbox (or an alias that maps to one), a mailing list, etc. */
 	RWLIST_RDLOCK(&handlers);
 	RWLIST_TRAVERSE(&handlers, h, entry) {
-		bbs_module_ref(h->mod);
+		bbs_module_ref(h->mod, 1);
 		res = h->agent->exists(smtp, &error, s, user, domain, smtp->fromlocal, local);
-		bbs_module_unref(h->mod);
+		bbs_module_unref(h->mod, 1);
 		if (res) {
 			break;
 		}
@@ -1126,14 +1126,14 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 		}
 		/* Filter applicable to scope */
 		bbs_debug(5, "Executing %s SMTP filter %s %p...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
-		bbs_module_ref(f->mod);
+		bbs_module_ref(f->mod, 2);
 		if (f->type == SMTP_FILTER_PREPEND) {
 			bbs_assert_exists(f->provider);
 			res = f->provider->on_body(fdata);
 		} else {
 			bbs_error("Filter type %d not supported\n", f->type);
 		}
-		bbs_module_unref(f->mod);
+		bbs_module_unref(f->mod, 2);
 		lseek(fdata->inputfd, 0, SEEK_SET); /* Rewind to beginning of file */
 		if (res == 1) {
 			bbs_debug(5, "Aborting filter execution\n");
@@ -1208,9 +1208,9 @@ int smtp_run_callbacks(struct smtp_msg_process *mproc)
 
 	RWLIST_RDLOCK(&processors);
 	RWLIST_TRAVERSE(&processors, proc, entry) {
-		bbs_module_ref(proc->mod);
+		bbs_module_ref(proc->mod, 3);
 		res |= proc->cb(mproc);
-		bbs_module_unref(proc->mod);
+		bbs_module_unref(proc->mod, 3);
 		if (res) {
 			break; /* Stop processing immediately if a processor returns nonzero */
 		}
@@ -1593,9 +1593,9 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		local = mail_domain_is_local(domain);
 		RWLIST_TRAVERSE(&handlers, h, entry) {
 			memset(&resp, 0, sizeof(resp));
-			bbs_module_ref(h->mod);
+			bbs_module_ref(h->mod, 4);
 			mres = h->agent->deliver(smtp, &resp, smtp->from, recipient, user, domain, smtp->fromlocal, local, srcfd, datalen, &freedata);
-			bbs_module_unref(h->mod);
+			bbs_module_unref(h->mod, 4);
 			if (mres) {
 				bbs_debug(6, "SMTP delivery agent returned %d\n", mres);
 				break;
@@ -1932,10 +1932,10 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 					if (!h->agent->save_copy) {
 						continue;
 					}
-					bbs_module_ref(h->mod);
+					bbs_module_ref(h->mod, 5);
 					/* provided by mod_smtp_delivery_local */
 					res = h->agent->save_copy(smtp, &mproc, srcfd, datalen, newfile, sizeof(newfile));
-					bbs_module_unref(h->mod);
+					bbs_module_unref(h->mod, 5);
 					if (!res) {
 						break;
 					}
@@ -1965,10 +1965,10 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 					if (!h->agent->relay) {
 						continue;
 					}
-					bbs_module_ref(h->mod);
+					bbs_module_ref(h->mod, 6);
 					/* provided by mod_smtp_delivery_local */
 					res = h->agent->relay(smtp, &mproc, srcfd, datalen, &smtp->recipients);
-					bbs_module_unref(h->mod);
+					bbs_module_unref(h->mod, 6);
 					if (!res) {
 						break;
 					}

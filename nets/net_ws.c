@@ -168,7 +168,7 @@ static struct ws_route *find_route(const char *uri)
 		}
 	}
 	if (route) {
-		bbs_module_ref(route->mod);
+		bbs_module_ref(route->mod, 1);
 	}
 	RWLIST_UNLOCK(&routes);
 	return route;
@@ -1012,7 +1012,7 @@ done:
 		wss_client_destroy(client);
 		pthread_mutex_destroy(&ws.lock);
 	}
-	bbs_module_unref(route->mod);
+	bbs_module_unref(route->mod, 1);
 	php_vars_destroy(&ws.varlist);
 }
 

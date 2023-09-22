@@ -65,9 +65,9 @@ int bbs_kvs_get(const char *key, size_t keylen, char *buf, size_t len, size_t *o
 		return -1;
 	}
 
-	bbs_module_ref(kvsmod);
+	bbs_module_ref(kvsmod, 1);
 	res = callbacks->get(key, keylen, buf, len, NULL, ptr);
-	bbs_module_unref(kvsmod);
+	bbs_module_unref(kvsmod, 1);
 
 	bbs_debug(6, "KVS GET(%s) => %lu bytes\n", key, *ptr);
 	return res;
@@ -86,9 +86,9 @@ char *bbs_kvs_get_allocated(const char *key, size_t keylen, size_t *outlen)
 		return NULL;
 	}
 
-	bbs_module_ref(kvsmod);
+	bbs_module_ref(kvsmod, 2);
 	res = callbacks->get(key, keylen, NULL, 0, &c, ptr);
-	bbs_module_unref(kvsmod);
+	bbs_module_unref(kvsmod, 2);
 
 	if (res) {
 		return NULL;
@@ -107,9 +107,9 @@ int bbs_kvs_put(const char *key, size_t keylen, const char *value, size_t valuel
 		return -1;
 	}
 
-	bbs_module_ref(kvsmod);
+	bbs_module_ref(kvsmod, 3);
 	res = callbacks->put(key, keylen, value, valuelen);
-	bbs_module_unref(kvsmod);
+	bbs_module_unref(kvsmod, 3);
 
 	bbs_debug(6, "KVS PUT(%s) => %lu bytes\n", key, valuelen);
 	return res;
@@ -124,9 +124,9 @@ int bbs_kvs_del(const char *key, size_t keylen)
 		return -1;
 	}
 
-	bbs_module_ref(kvsmod);
+	bbs_module_ref(kvsmod, 4);
 	res = callbacks->del(key, keylen);
-	bbs_module_unref(kvsmod);
+	bbs_module_unref(kvsmod, 4);
 
 	bbs_debug(6, "KVS DEL(%s)\n", key);
 	return res;

@@ -83,9 +83,9 @@ int bbs_get_oauth_token(struct bbs_user *user, const char *name, char *buf, size
 
 	RWLIST_RDLOCK(&providers);
 	RWLIST_TRAVERSE(&providers, p, entry) {
-		bbs_module_ref(p->module);
+		bbs_module_ref(p->module, 1);
 		res = p->get_token(user, name, buf, len);
-		bbs_module_unref(p->module);
+		bbs_module_unref(p->module, 1);
 		c++;
 		if (!res) {
 			break; /* Somebody granted the login. Stop. */

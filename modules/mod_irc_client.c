@@ -355,9 +355,9 @@ static int msg_relay(struct bbs_irc_client *client, enum relay_flags flags, enum
 			struct irc_msg_callback *cb;
 			RWLIST_RDLOCK(&msg_callbacks);
 			RWLIST_TRAVERSE(&msg_callbacks, cb, entry) {
-				bbs_module_ref(cb->mod);
+				bbs_module_ref(cb->mod, 1);
 				cb->msg_cb(client->name, cb_type, channel, prefix, ctcp, body);
-				bbs_module_unref(cb->mod);
+				bbs_module_unref(cb->mod, 1);
 			}
 			RWLIST_UNLOCK(&msg_callbacks);
 		}
@@ -562,9 +562,9 @@ static void handle_irc_msg(void *data, struct irc_msg *msg)
 				RWLIST_RDLOCK(&msg_callbacks);
 				RWLIST_TRAVERSE(&msg_callbacks, cb, entry) {
 					if (cb->numeric_cb) {
-						bbs_module_ref(cb->mod);
+						bbs_module_ref(cb->mod, 2);
 						cb->numeric_cb(client->name, irc_msg_prefix(msg), irc_msg_numeric(msg), irc_msg_body(msg));
-						bbs_module_unref(cb->mod);
+						bbs_module_unref(cb->mod, 2);
 					}
 				}
 				RWLIST_UNLOCK(&msg_callbacks);

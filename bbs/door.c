@@ -121,10 +121,10 @@ int bbs_door_exec(struct bbs_node *node, const char *name, const char *args)
 	}
 
 	/* Ref module before unlocking */
-	bbs_module_ref(door->module);
+	bbs_module_ref(door->module, 1);
 	RWLIST_UNLOCK(&doors);
 	res = door->execute(node, args);
-	bbs_module_unref(door->module);
+	bbs_module_unref(door->module, 1);
 	return res;
 }
 

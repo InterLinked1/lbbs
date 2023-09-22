@@ -153,7 +153,7 @@ int menu_handler_exec(struct bbs_node *node, const char *name, char *args)
 	}
 
 	/* Ref module before unlocking. The module unload function is what unregisters the handler, but module.c will decline to unload it due to positive use count. */
-	bbs_module_ref(handler->module);
+	bbs_module_ref(handler->module, 1);
 	RWLIST_UNLOCK(&handlers);
 	if (args) {
 		bbs_node_substitute_vars(node, args, subargs, sizeof(subargs));
@@ -161,7 +161,7 @@ int menu_handler_exec(struct bbs_node *node, const char *name, char *args)
 	bbs_debug(5, "Executing menu handler %s (%s)\n", name, args ? subargs : ""); /* Yes, this looks backwards but this is right. If no args, pass NULL */
 	res = handler->execute(node, args ? subargs : NULL); /* Yes, this looks backwards but this is right. If no args, pass NULL */
 	bbs_debug(5, "Menu handler %s returned %d\n", name, res);
-	bbs_module_unref(handler->module);
+	bbs_module_unref(handler->module, 1);
 	return res;
 }
 

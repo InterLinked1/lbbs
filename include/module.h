@@ -44,21 +44,35 @@ struct bbs_module_info {
 /*! \brief Get name of a module */
 const char *bbs_module_name(const struct bbs_module *mod);
 
-/*! \brief Increment ref count of a module */
-struct bbs_module *bbs_module_ref(struct bbs_module *mod);
+/*!
+ * \brief Increment ref count of a module
+ * \param mod
+ * \param pairid A unique ID only used once in a source file for a corresponding ref/unref sequence.
+ */
+#define bbs_module_ref(mod, pairid) __bbs_module_ref(mod, pairid, BBS_MODULE_SELF, __FILE__, __LINE__, __func__)
 
-/*! \brief Decrement ref count of a module */
-void bbs_module_unref(struct bbs_module *mod);
+struct bbs_module *__bbs_module_ref(struct bbs_module *mod, int pair, void *refmod, const char *file, int line, const char *func);
+
+/*!
+ * \brief Decrement ref count of a module
+ * \param mod
+ * \param pairid A unique ID only used once in a source file for a corresponding ref/unref sequence.
+ */
+#define bbs_module_unref(mod, pairid) __bbs_module_unref(mod, pairid, BBS_MODULE_SELF, __FILE__, __LINE__, __func__)
+
+void __bbs_module_unref(struct bbs_module *mod, int pair, void *refmod, const char *file, int line, const char *func);
 
 /*!
  * \brief Indicate that the calling module is dependent on the specified module.
  * \retval module reference on success, NULL on failure
  * \note On module close, you must call bbs_unrequire_module with the returned reference
  */
-struct bbs_module *bbs_require_module(const char *module);
+#define bbs_require_module(module) __bbs_require_module(module, BBS_MODULE_SELF)
+
+struct bbs_module *__bbs_require_module(const char *module, void *refmod);
 
 /*! \brief Indicate that this module is no longer dependent on the specified module. */
-void bbs_unrequire_module(struct bbs_module *mod);
+void __bbs_unrequire_module(struct bbs_module *mod, void *refmod);
 
 /*! \brief Register a module */
 void bbs_module_register(const struct bbs_module_info *modinfo);

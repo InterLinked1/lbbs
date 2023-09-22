@@ -262,7 +262,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 	 * relevant nodes before we attempt to unload or reload the module.
 	 */
 	node->module = mod;
-	bbs_module_ref(mod);
+	bbs_module_ref(mod, 1);
 
 	if (prev) {
 		RWLIST_INSERT_AFTER(&nodes, prev, node, entry); /* Insert at the appropriate index. */
@@ -568,7 +568,7 @@ static void node_free(struct bbs_node *node)
 	/* Wait for node_shutdown to release lock. */
 	bbs_node_lock(node);
 	if (node->module) {
-		bbs_module_unref(node->module);
+		bbs_module_unref(node->module, 1);
 		node->module = NULL;
 	}
 	if (node->vars) {
@@ -650,6 +650,7 @@ int bbs_node_shutdown_all(int shutdown)
 	shutting_down = shutdown;
 	RWLIST_REMOVE_ALL(&nodes, entry, node_shutdown_nonunique); /* Wait for shutdown of each node to finish. */
 	RWLIST_UNLOCK(&nodes);
+	bbs_debug(1, "All nodes have been shut down\n");
 	return 0;
 }
 
@@ -1109,11 +1110,11 @@ static int node_intro(struct bbs_node *node)
 	}
 
 	NEG_RETURN(bbs_node_writef(node, "%s\n", bbs_name_buf)); /* Print BBS name */
-	if (!s_strlen_zero(bbs_tagline)) {
-		NEG_RETURN(bbs_node_writef(node, "%s\n\n", bbs_tagline)); /* Print BBS tagline */
-	}
 
 	if (!NODE_IS_TDD(node)) {
+		if (!s_strlen_zero(bbs_tagline)) {
+			NEG_RETURN(bbs_node_writef(node, "%s\n\n", bbs_tagline)); /* Print BBS tagline */
+		}
 		bbs_time_friendly_now(timebuf, sizeof(timebuf));
 		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "CLIENT", COLOR(COLOR_SECONDARY), "CONN", COLOR(COLOR_PRIMARY), node->protname));
 		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "ADDR", COLOR(COLOR_PRIMARY), node->ip));

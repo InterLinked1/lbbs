@@ -1484,7 +1484,7 @@ static void *ssh_connection(void *varg)
 	 * will fail (be declined) while it's in use, whether we've
 	 * allocated a node (which also refs/unrefs the module), or not.
 	 */
-	bbs_module_ref(BBS_MODULE_SELF);
+	bbs_module_ref(BBS_MODULE_SELF, 1);
 	event = ssh_event_new();
 	if (!event) {
 		bbs_error("Could not create SSH polling context\n");
@@ -1497,7 +1497,7 @@ static void *ssh_connection(void *varg)
 
 	ssh_disconnect(session);
 	ssh_free(session);
-	bbs_module_unref(BBS_MODULE_SELF);
+	bbs_module_unref(BBS_MODULE_SELF, 1);
 	return NULL;
 }
 

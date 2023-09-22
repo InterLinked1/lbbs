@@ -609,6 +609,7 @@ static void *tcp_multilistener(void *unused)
 				continue;
 			}
 
+			bbs_soft_assert(l->name != NULL);
 			bbs_debug(1, "Accepting new %s connection from %s\n", l->name, new_ip);
 
 			/* Note that l->name is const memory allocated as part of l.
