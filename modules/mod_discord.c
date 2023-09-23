@@ -1018,6 +1018,11 @@ static int substitute_nicks(const char *line, char *buf, size_t len)
 
 	/* Need to substitute stuff like <@1234567890> to @jsmith */
 	while (*c) {
+		if (left <= 0) {
+			bbs_warning("Buffer exhaustion when substituting nicks\n");
+			buf[len - 1] = '\0';
+			return -1;
+		}
 		if (!start && *c == '<' && *(c + 1) == '@' && *(c + 2) && strchr(c + 2, '>')) {
 			start = c + 2;
 		} else if (start && *c == '>') {

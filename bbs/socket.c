@@ -1080,7 +1080,9 @@ int bbs_ip_match_ipv4(const char *ip, const char *s)
 		return 0;
 	}
 	/* Resolve the hostname (if it is one) to an IP, then do a direct comparison. */
-	bbs_resolve_hostname(s, resolved_ip, sizeof(resolved_ip));
+	if (bbs_resolve_hostname(s, resolved_ip, sizeof(resolved_ip))) {
+		return 0;
+	}
 	if (!strcmp(ip, resolved_ip)) {
 		bbs_debug(5, "IP match: %s -> %s\n", s, ip);
 		return 1;
