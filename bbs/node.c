@@ -124,7 +124,7 @@ unsigned int bbs_node_count(void)
 	}
 	RWLIST_UNLOCK(&nodes);
 
-return count;
+	return count;
 }
 
 unsigned int bbs_node_mod_count(void *mod)
@@ -665,7 +665,7 @@ static int cli_nodes(struct bbs_cli_args *a)
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
-		char menufull[16];
+		char menufull[26];
 		int lwp;
 		/* Do not lock the node here.
 		 * Even though we are accessing some properties of the node which could change,

@@ -376,7 +376,7 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 				bbs_debug(10, "User has role %lu\n", roles->array[j]);
 			}
 #endif
-			u->roles = calloc((size_t) roles->size, roles->array[0]);
+			u->roles = calloc((size_t) roles->size, sizeof(*u->roles));
 			if (ALLOC_SUCCESS(u->roles)) {
 				u->numroles = roles->size;
 				memcpy(u->roles, roles, sizeof(*u->roles));

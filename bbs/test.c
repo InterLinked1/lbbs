@@ -123,7 +123,13 @@ int bbs_run_tests(int fd)
 
 static int cli_runtest(struct bbs_cli_args *a)
 {
-	return bbs_run_test(a->fdout, a->argv[1]);
+	const char *s = strchr(a->command, ' '); /* Guaranteed to exist, since we have enough arguments */
+	bbs_assert_exists(s);
+	s++;
+	if (strlen_zero(s)) {
+		return -1;
+	}
+	return bbs_run_test(a->fdout, s);
 }
 
 static int cli_runtests(struct bbs_cli_args *a)

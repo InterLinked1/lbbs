@@ -77,7 +77,7 @@ static int rlogin_handshake(struct bbs_node *node)
 	 * server-user-name<null>
 	 * terminal-type/speed<null>
 	 */
-	res = bbs_poll_read(node->fd, SEC_MS(2), buf, sizeof(buf) - 1);
+	res = bbs_poll_read(node->fd, SEC_MS(30), buf, sizeof(buf) - 1); /* Session might be interactive, so give enough time for the user to enter credentials */
 	if (res <= 0) {
 		bbs_warning("Didn't receive connection string\n");
 		return -1;

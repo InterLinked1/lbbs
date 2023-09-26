@@ -32,6 +32,9 @@ int bbs_printable_strlen(const char *restrict s)
 {
 	int c = 0;
 	while (*s) {
+#ifdef DEBUG_PRINTABLE_STRLEN
+		bbs_dump_mem((const unsigned char*) s, strlen(s));
+#endif
 		if (*s == 27) {
 			/* Escape sequences include printable characters, so we need to process them as an entire unit */
 			if (*(s + 1) == '[') {
@@ -44,8 +47,15 @@ int bbs_printable_strlen(const char *restrict s)
 				if (*(s + 2) == '1' && *(s + 3) == ';' && isdigit(*(s + 4)) && isdigit(*(s + 5)) && *(s + 6) == 'm') {
 					/* Color */
 					s += 7; /* Skip the whole escape sequence */
-					continue;
+				} else if (*(s + 2) == '0' && *(s + 3) == 'm') { /* Reset colors */
+					s += 4;
+				} else {
+					bbs_debug(1, "Ignoring possibly unhandled escape sequence\n");
+					s++;
 				}
+			} else {
+				bbs_debug(1, "Ignoring possibly unhandled escape sequence\n");
+				s++;
 			}
 		} else if (isprint(*s)) {
 			s++;

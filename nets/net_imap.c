@@ -4129,6 +4129,12 @@ static int imap_process(struct imap_session *imap, char *s)
 		bbs_node_logout(imap->node);
 		imap_destroy(imap);
 		imap_reply(imap, "OK Logged out");
+	} else if (!strcasecmp(command, "ID")) {
+		/* RFC 2971 (ID extension) */
+		REQUIRE_ARGS(s);
+		REPLACE(imap->clientid, s);
+		imap_send(imap, "ID (\"name\" \"%s.Imap4Server\" \"version\" \"%s\")", BBS_SHORTNAME, BBS_VERSION);
+		imap_reply(imap, "OK ID completed");
 	/* Past this point, must be logged in. */
 	} else if (!bbs_user_is_registered(imap->node->user)) {
 		bbs_warning("'%s' command may not be used in the unauthenticated state\n", command);
@@ -4306,12 +4312,6 @@ static int imap_process(struct imap_session *imap, char *s)
 		imap_send(imap, "QUOTAROOT %s \"\"", s);
 		handle_getquota(imap);
 		imap_reply(imap, "OK GETQUOTAROOT complete");
-	} else if (!strcasecmp(command, "ID")) {
-		/* RFC 2971 (ID extension) */
-		REQUIRE_ARGS(s);
-		REPLACE(imap->clientid, s);
-		imap_send(imap, "ID (\"name\" \"%s.Imap4Server\" \"version\" \"%s\")", BBS_SHORTNAME, BBS_VERSION);
-		imap_reply(imap, "OK ID completed");
 	/* We don't store subscriptions. We just automatically treat all available folders as subscribed.
 	 * Implement for the sake of completeness, even though these commands are really pointless.
 	 * LSUB will return all folders, so clients *shouldn't* try to SUBSCRIBE to something, but if they do, accept it.

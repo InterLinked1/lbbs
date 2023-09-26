@@ -133,8 +133,10 @@ static int test_printable_strlen(void)
 {
 	int res = -1;
 	const char *s = COLOR(COLOR_GREEN) "abc";
+	const char *s2 = COLOR(COLOR_RED) "test" COLOR_RESET;
 
 	bbs_test_assert_equals(bbs_printable_strlen(s), 3);
+	bbs_test_assert_equals(bbs_printable_strlen(s2), 4);
 	return 0;
 
 cleanup:
