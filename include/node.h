@@ -58,6 +58,8 @@ struct bbs_node {
 	unsigned int active:1;		/*!< Active or not */
 	unsigned int buffered:1;	/*!< TTY currently buffered */
 	unsigned int echo:1;		/*!< TTY echo enabled */
+	unsigned int interrupt:1;	/*!< Interrupt request active */
+	unsigned int interruptack:1;/*!< Interrupt request acknowledged by interrupted function */
 	unsigned int spy:1;			/*!< Target of active node spy */
 	unsigned int skipjoin:1;	/*!< If node_shutdown should not join the node thread */
 	unsigned int inmenu:1;		/*!< Whether actively displaying a menu */
@@ -245,6 +247,38 @@ unsigned int bbs_node_shutdown_mod(void *mod);
  * \param shutdown 1 if BBS is shutting down and new node requests should be denied, 0 to simply kick all currently active nodes
  */
 int bbs_node_shutdown_all(int shutdown);
+
+/*!
+ * \brief Asynchronously interrupt a blocking system call on a BBS node
+ * \param nodenum Number of node to interrupt
+ * \retval 0 on success, -1 if node does not exist or cannot be interrupted, 1 on failure to interrupt
+ * \note This function must not be called from a node's own thread.
+ * \note This function only works for nodes with a PTY.
+ */
+int bbs_interrupt_node(unsigned int nodenum);
+
+/*!
+ * \brief Whether or not this node was interrupted by another thread
+ * \param node
+ * \note This function may only be called frm a node's own thread.
+ * \retval 1 if interrupted, 0 if not interrupted
+ */
+int bbs_node_interrupted(struct bbs_node *node);
+
+/*!
+ * \brief Clear the interrupt status for a node
+ * \param node
+ */
+void bbs_node_interrupt_clear(struct bbs_node *node);
+
+/*!
+ * \brief Acknowledge an interrupt system call
+ * \param node
+ * \note Must only be called from a node's own thread
+ */
+#define bbs_node_interrupt_ack(node) __bbs_node_interrupt_ack(node, __FILE__, __LINE__, __func__)
+
+void __bbs_node_interrupt_ack(struct bbs_node *node, const char *file, int line, const char *func);
 
 /*!
  * \brief Check whether a user is active on any nodes

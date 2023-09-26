@@ -1157,8 +1157,8 @@ int bbs_poll(int fd, int ms)
 
 /* XXX For INTERNAL_POLL_THRESHOLD stuff, if ms == -1, instead of asserting, just set ms to INT_MAX or loop forever, internally */
 
-/* XXX bbs_node_poll should really use bbs_multi_poll internally to avoid duplicating code. Might be a tiny performance hit? */
-int bbs_multi_poll(struct pollfd pfds[], int numfds, int ms)
+/* XXX Lots of code duplicated between bbs_node_poll and __bbs_multi_poll */
+static int __bbs_multi_poll(struct bbs_node *node, struct pollfd pfds[], int numfds, int ms)
 {
 	int i, res;
 
@@ -1208,6 +1208,10 @@ int bbs_multi_poll(struct pollfd pfds[], int numfds, int ms)
 				break;
 			}
 			bbs_debug(7, "poll interrupted\n");
+			if (node && node->interrupt) {
+				bbs_node_interrupt_ack(node);
+				return -1;
+			}
 			continue;
 		}
 		if (res > 0) {
@@ -1239,6 +1243,12 @@ int bbs_multi_poll(struct pollfd pfds[], int numfds, int ms)
 	return res;
 }
 
+/* XXX bbs_node_poll should really use bbs_multi_poll internally to avoid duplicating code. Might be a tiny performance hit? */
+int bbs_multi_poll(struct pollfd pfds[], int numfds, int ms)
+{
+	return __bbs_multi_poll(NULL, pfds, numfds, ms);
+}
+
 /* This is not an assertion, since it can legitimately happen sometimes and that would be overkill. */
 #define REQUIRE_SLAVE_FD(node) \
 	if (node->slavefd == -1) { \
@@ -1253,6 +1263,14 @@ int bbs_node_poll2(struct bbs_node *node, int ms, int fd)
 
 	REQUIRE_SLAVE_FD(node);
 
+	if (bbs_node_interrupted(node)) {
+		/* This could happen if the interrupt flag is set while the node thread isn't executing poll(2).
+		 * In that case, we'll be blissfully unaware of the interrupt until bbs_node_poll is called. */
+		bbs_debug(1, "Node %u still has an interrupt pending, declining to poll the slave\n", node->id);
+		bbs_node_interrupt_ack(node);
+		return -1;
+	}
+
 	/* Watch for data written from the master end of the PTY to the slave end. */
 	/* The lock/unlock to get node->slavefd here is a little silly. It just makes helgrind happy. */
 	bbs_node_lock(node);
@@ -1260,7 +1278,7 @@ int bbs_node_poll2(struct bbs_node *node, int ms, int fd)
 	bbs_node_unlock(node);
 	pfds[1].fd = fd;
 
-	return bbs_multi_poll(pfds, 2, ms);
+	return __bbs_multi_poll(node, pfds, 2, ms);
 }
 
 int bbs_node_poll(struct bbs_node *node, int ms)
@@ -1272,6 +1290,14 @@ int bbs_node_poll(struct bbs_node *node, int ms)
 
 	/* We should never be polling indefinitely for a BBS node. */
 	bbs_assert(ms >= 0);
+
+	if (bbs_node_interrupted(node)) {
+		/* This could happen if the interrupt flag is set while the node thread isn't executing poll(2).
+		 * In that case, we'll be blissfully unaware of the interrupt until bbs_node_poll is called. */
+		bbs_debug(1, "Node %u still has an interrupt pending, declining to poll the slave\n", node->id);
+		bbs_node_interrupt_ack(node);
+		return -1;
+	}
 
 	/* Watch for data written from the master end of the PTY to the slave end. */
 	/* The lock/unlock to get node->slavefd here is a little silly. It just makes helgrind happy. */
@@ -1320,6 +1346,10 @@ int bbs_node_poll(struct bbs_node *node, int ms)
 				break;
 			}
 			bbs_debug(7, "poll interrupted\n");
+			if (node->interrupt) {
+				bbs_node_interrupt_ack(node);
+				return -1;
+			}
 			continue;
 		}
 		if (res > 0) {
@@ -1415,6 +1445,7 @@ int bbs_node_tpoll(struct bbs_node *node, int ms)
 		/* This is the first poll if <= MIN_POLL_MS_FOR_WARNING, and possibly if >. */
 		if (!res) {
 			res = bbs_node_poll(node, ms);
+			bbs_debug(3, "XXX res %d\n", res);
 			if (res > 0 && warned) {
 				/* This was a response to the "Are you still there?" prompt, not whatever the BBS was doing.
 				 * Flush the response to ignore everything pending in the input buffer.
@@ -1698,6 +1729,7 @@ int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 	}
 
 	for (;;) {
+		size_t bytes;
 		if (keep_trying) {
 			res = bbs_node_poll(node, 5);
 			if (res == 0) {
@@ -1713,12 +1745,12 @@ int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 			bbs_debug(10, "Node %d: poll returned %d\n", node->id, res);
 			return res;
 		}
-		res = (int) read(node->slavefd, buf, len);
-		if (res <= 0) {
-			bbs_debug(10, "Node %d: read returned %d\n", node->id, res);
-			return res;
+		bytes = (size_t) bbs_node_read(node, buf, len);
+		if (bytes <= 0) {
+			bbs_debug(10, "Node %d: read returned %ld\n", node->id, bytes);
+			return (int) res;
 		}
-		nterm = memchr(buf, '\0', (size_t) res);
+		nterm = memchr(buf, '\0', bytes);
 		/* Telnet may send CR NUL or CR LF, so check CR first, then LF.
 		 * To make things even more confusing, Windows Telnet and SyncTERM seem to send LF LF.
 		 * (Though it could be the PTY line discipline converting things that results in this)
@@ -1731,14 +1763,14 @@ int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 		 * In PuTTY with Telnet, there are ^@'s at the beginning of lines after this function returns.
 		 */
 		if (!term) { /* In the case where we poll again for a few ms (below), this will be true, don't do this again. */
-			term = memchr(buf, '\r', (size_t) res); /* There is no strnchr function. Use memchr. */
+			term = memchr(buf, '\r', bytes); /* There is no strnchr function. Use memchr. */
 			if (!term) {
-				term = memchr(buf, '\n', (size_t) res);
+				term = memchr(buf, '\n', bytes);
 			}
 		}
-		buf += res;
-		left -= (size_t) res;
-		bytes_read += res;
+		buf += bytes;
+		left -= bytes;
+		bytes_read += (int) bytes;
 #ifdef DEBUG_TEXT_IO
 		for (i = 0; i < bytes_read; i++) {
 			bbs_debug(10, "read[%d] %d / '%c'\n", i, startbuf[i], isprint(startbuf[i]) ? startbuf[i] : ' ');

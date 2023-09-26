@@ -695,6 +695,16 @@ static void __sigwinch_handler(int num)
 	}
 }
 
+static void __sigusr1_handler(int num)
+{
+	UNUSED(num);
+	/* By default, if we use pthread_kill to try to send SIGUSR1 to a thread,
+	 * it will terminate the entire BBS.
+	 * Installing this dummy signal handler that does nothing prevents that,
+	 * but still allows system calls to be interrupted, as desired. */
+	bbs_debug(3, "Received SIGUSR1\n");
+}
+
 /*!
  * \brief Request BBS shutdown
  * \param type
@@ -956,6 +966,7 @@ int main(int argc, char *argv[])
 	signal(SIGINT, __sigint_handler);
 	signal(SIGTERM, __sigint_handler);
 	signal(SIGWINCH, __sigwinch_handler);
+	signal(SIGUSR1, __sigusr1_handler);
 	sigaction(SIGPIPE, &ignore_sig_handler, NULL);
 
 #define CHECK_INIT(x) if ((x)) { bbs_shutdown(); exit(EXIT_FAILURE); }

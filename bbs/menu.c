@@ -463,7 +463,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 	struct bbs_menu *menu;
 	struct bbs_menu_item *menuitem;
 	char options[64]; /* No menu will ever have more than this many options... */
-	char menusequence[BBS_MAX_MENUSTACK + 1]; /* No point in reading more options than we can recuse */
+	char menusequence[BBS_MAX_MENUSTACK + 1]; /* No point in reading more options than we can use */
 	int neederror = 0;
 	int forcedrawmenu = 0;
 
@@ -637,6 +637,21 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 			res = menu_handler_exec(node, handler, args);
 			node->inmenu = 1;
 		}
+
+		/* If another thread interrupted the node while it was executing a handler, -1 will get returned (probably by poll(2)).
+		 * This is handy, since the -1 return value should cleanly make the handler exit at that point, since it thinks the node is gone.
+		 * However, the node didn't really exit, we just wanted to interrupt it to get it out of the handler, so correct the return value now. */
+		if (bbs_node_interrupted(node)) {
+			bbs_node_interrupt_clear(node);
+			/* Drain any input received, in case poll was interrupt and there's data available,
+			 * to avoid using user input to interact with the menus. */
+			bbs_debug(2, "Flushing interrupted input\n");
+			bbs_node_unbuffer(node); /* Unbuffer input, so we can properly flush it */
+			bbs_node_flush_input(node);
+			bbs_node_buffer(node);
+			res = 0; /* Either 0 or -3 could make sense */
+		}
+
 		/* Intercept -3 and -2 return values from "return" */
 		if (res == -3) { /* Quit */
 			/* Keep returning -3 until we get to the top-level menu (stack == 1). Only then do we return from the menu system completely and exit normally. */

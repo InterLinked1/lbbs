@@ -1393,6 +1393,8 @@ static void unload_modules_helper(void)
 				numnodes = bbs_node_count();
 				if (numnodes) {
 					bbs_warning("%u node%s still registered\n", numnodes, ESS(numnodes));
+				} else {
+					bbs_debug(2, "All nodes have exited\n");
 				}
 			}
 			usleep(200000); /* Wait 200 ms and try again */

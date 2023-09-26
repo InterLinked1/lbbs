@@ -594,6 +594,7 @@ int bbs_node_unlink(struct bbs_node *node)
 
 	if (!n) {
 		bbs_error("Node %d not found in node list?\n", node->id);
+		bbs_log_backtrace();
 		return -1;
 	}
 
@@ -613,7 +614,7 @@ int bbs_node_shutdown_node(unsigned int nodenum)
 		/* Wait for shutdown of node to finish. */
 		node_shutdown(n, 0);
 	} else {
-		bbs_warning("Node %d not found in node list?\n", nodenum);
+		bbs_error("Node %d not found in node list?\n", nodenum);
 	}
 	RWLIST_UNLOCK(&nodes);
 
@@ -687,6 +688,85 @@ static int cli_nodes(struct bbs_cli_args *a)
 
 	bbs_dprintf(a->fdout, "%d active node%s, %d lifetime node%s\n", c, ESS(c), lifetime_nodes, ESS(lifetime_nodes));
 	return 0;
+}
+
+int bbs_interrupt_node(unsigned int nodenum)
+{
+	int res = -1;
+	struct bbs_node *node = bbs_node_get(nodenum);
+
+	if (!node) {
+		return -1;
+	}
+
+	if (!node->thread) {
+		bbs_debug(1, "Node %u is not owned by a thread, and cannot be interrupted\n", nodenum);
+	} else if (!node->slavefd) {
+		/* If there's no PTY, bbs_node_poll can't be used anyways.
+		 * And if there's no PTY, it's a network protocol that doesn't make sense to interrupt.
+		 * Only terminal protocols should be interrupted. */
+		bbs_debug(1, "Node %u has no PTY\n", nodenum);
+	} else {
+		int err;
+		/* The node thread should never interrupt itself, this is only for other threads to
+		 * interrupt a blocking I/O call. */
+		bbs_assert(node->thread != pthread_self());
+		node->interruptack = 0;
+		node->interrupt = 1; /* Indicate that interrupt was requested */
+
+		bbs_node_kill_child(node); /* If executing an external program, kill it */
+
+		/* Make the I/O function (probably poll(2)) exit with EINTR.
+		 * Less overhead than always polling another alertpipe just for getting out of band alerts like this,
+		 * since we can easily enough check the interrupt status in the necessary places on EINTR. */
+		err = pthread_kill(node->thread, SIGUSR1); /* Uncaught signal, so the blocking I/O call will get interrupted */
+		if (err) {
+			bbs_warning("pthread_kill(%lu) failed: %s\n", node->thread, strerror(err));
+			bbs_node_unlock(node);
+			return 1;
+		}
+
+		bbs_verb(5, "Interrupted node %u\n", nodenum);
+		res = 0;
+	}
+
+	bbs_node_unlock(node);
+	return res;
+}
+
+void __bbs_node_interrupt_ack(struct bbs_node *node, const char *file, int line, const char *func)
+{
+	bbs_assert(node->thread == pthread_self());
+	bbs_debug(2, "Node %u acknowledged interrupt at %s:%d %s()\n", node->id, file, line, func);
+	node->interruptack = 1;
+}
+
+void bbs_node_interrupt_clear(struct bbs_node *node)
+{
+	node->interrupt = 0;
+	/* The interrupt should've been acknowledged (e.g. if poll was interrupted),
+	 * but it's entirely possible the node might have returned without ever calling poll,
+	 * in which case it might never have been acknowledged.
+	 * As far as the node thread is concerned, this doesn't matter.
+	 * Currently, we do nothing based on the value of this variable, but we may in the future... */
+	node->interruptack = 0;
+}
+
+int bbs_node_interrupted(struct bbs_node *node)
+{
+	return node->interrupt;
+}
+
+static int cli_interrupt(struct bbs_cli_args *a)
+{
+	int res, node = atoi(a->argv[1]);
+	if (node <= 0) {
+		bbs_dprintf(a->fdout, "Invalid node %s\n", a->argv[1]);
+		return -1;
+	}
+	res = bbs_interrupt_node((unsigned int) node);
+	bbs_dprintf(a->fdout, "%s node %d\n", res ? "Failed to interrupt" : "Successfully interrupted", node);
+	return res;
 }
 
 static int cli_kick(struct bbs_cli_args *a)
@@ -1391,6 +1471,7 @@ static struct bbs_cli_entry cli_commands_nodes[] = {
 	/* Node commands */
 	BBS_CLI_COMMAND(cli_nodes, "nodes", 1, "List all nodes", NULL),
 	BBS_CLI_COMMAND(cli_node, "node", 2, "View information about specified node", "node <nodenum>"),
+	BBS_CLI_COMMAND(cli_interrupt, "interrupt", 2, "Interrupt specified node", "interrupt <nodenum>"),
 	BBS_CLI_COMMAND(cli_kick, "kick", 2, "Kick specified node", "kick <nodenum>"),
 	BBS_CLI_COMMAND(cli_kickall, "kickall", 1, "Kick all nodes", NULL),
 	BBS_CLI_COMMAND(cli_spy, "spy", 2, "Spy on specified node (^C to stop)", "spy <nodenum>"),

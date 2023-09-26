@@ -70,6 +70,7 @@ Key features and capabilities include:
 * Sysop capabilities
 
   * Node spying
+  * Interrupt nodes
   * Kick nodes
 
 Usage
