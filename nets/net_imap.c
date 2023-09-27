@@ -4457,7 +4457,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		/* Hold the mailbox lock for a moment. */
 		/*! \note This is only used for the test suite, it is not part of any IMAP standard or intended for clients. */
 		MAILBOX_TRYRDLOCK(imap);
-		usleep(3500000); /* 500ms is sufficient normally, but under valgrind, we need more time. Even 2500ms is not enough. */
+		usleep(4000000); /* 500ms is sufficient normally, but under valgrind, we need more time. Even 2500ms is not enough. */
 		mailbox_unlock(imap->mbox);
 		imap_reply(imap, "OK Lock test succeeded");
 	} else {

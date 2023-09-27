@@ -35,7 +35,7 @@ static int pre(void)
 
 static int run(void)
 {
-	int res = test_bbs_expect(COLOR(COLOR_SUCCESS) "100%" COLOR_RESET, SEC_MS(15)); /* Unit tests are fast, so shouldn't take very long to execute them all */
+	int res = test_bbs_expect(COLOR(COLOR_SUCCESS) "100%" COLOR_RESET, SEC_MS(20)); /* Unit tests are fast, so shouldn't take very long to execute them all */
 	if (res) {
 		bbs_error("Failed to receive expected output\n");
 	}

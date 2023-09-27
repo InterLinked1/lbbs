@@ -557,8 +557,8 @@ static void node_shutdown(struct bbs_node *node, int unique)
 			bbs_pthread_join(node_thread, NULL); /* Wait for the bbs_node_handler thread to exit, and then clean it up. */
 		}
 	} else {
-		/* node_thread is what called this, so don't join ourself. Just go ahead and call node_free.
-		 * It is safe to use node here since it will be freed in this thread after we return, no race condition. */
+		/* node_thread is what called this, so don't join ourself.
+		 * The node owning thread will free it subsequently. */
 		bbs_debug(3, "Shutdown pending finalization for node %u\n", nodeid);
 	}
 }
@@ -593,14 +593,14 @@ int bbs_node_unlink(struct bbs_node *node)
 	RWLIST_UNLOCK(&nodes);
 
 	if (!n) {
-		bbs_error("Node %d not found in node list?\n", node->id);
-		bbs_log_backtrace();
-		return -1;
+		/* If bbs_node_shutdown_all was used, nodes are removed from the list
+		 * but not freed there. */
+		bbs_debug(1, "Node %d was already unlinked, freeing directly\n", node->id);
 	}
 
-	node_shutdown(n, 1);
+	node_shutdown(node, 1);
 	/* If unlinking a single node, also free here */
-	node_free(n);
+	node_free(node);
 	return 0;
 }
 
