@@ -1247,16 +1247,25 @@ static int node_intro(struct bbs_node *node)
 	return 0;
 }
 
-int bbs_node_statuses(struct bbs_node *node)
+int bbs_node_statuses(struct bbs_node *node, const char *username)
 {
 	struct bbs_node *n;
 
 	NEG_RETURN(bbs_node_writef(node, "%s%s\n\n", COLOR(COLOR_WHITE), "Node Status"));
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
+		if (username && (!bbs_user_is_registered(node->user) || strcmp(bbs_username(node->user), username))) {
+			continue;
+		}
 		if (n->slavefd != -1) {
-			bbs_node_writef(node, "%s%3d  %s%s%s at %s menu via %s\n",
-				COLOR(COLOR_WHITE), n->id, COLOR(COLOR_PRIMARY), bbs_username(n->user), COLOR(COLOR_SECONDARY), S_IF(n->menu), n->protname);
+			if (username && !strlen_zero(n->menuitem)) {
+				/* Show more details if for a specific user */
+				bbs_node_writef(node, "%s%3d  %s%s%s at %s menu (%s) via %s\n",
+					COLOR(COLOR_WHITE), n->id, COLOR(COLOR_PRIMARY), bbs_username(n->user), COLOR(COLOR_SECONDARY), S_IF(n->menu), n->menuitem, n->protname);
+			} else {
+				bbs_node_writef(node, "%s%3d  %s%s%s at %s menu via %s\n",
+					COLOR(COLOR_WHITE), n->id, COLOR(COLOR_PRIMARY), bbs_username(n->user), COLOR(COLOR_SECONDARY), S_IF(n->menu), n->protname);
+			}
 		} else {
 			bbs_node_writef(node, "%s%3d  %s%s%s connected via %s\n",
 				COLOR(COLOR_WHITE), n->id, COLOR(COLOR_PRIMARY), bbs_username(n->user), COLOR(COLOR_SECONDARY), n->protname);
@@ -1312,7 +1321,7 @@ static int bbs_node_splash(struct bbs_node *node)
 
 	NEG_RETURN(bbs_node_writef(node, "\n")); /* Separation before next section */
 	if (!NODE_IS_TDD(node)) {
-		NEG_RETURN(bbs_node_statuses(node));
+		NEG_RETURN(bbs_node_statuses(node, NULL));
 	}
 	NEG_RETURN(bbs_node_wait_key(node, MIN_MS(2)));
 	return 0;

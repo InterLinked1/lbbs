@@ -76,9 +76,8 @@ static int users_exec(struct bbs_node *node, const char *args)
 
 static int nodes_exec(struct bbs_node *node, const char *args)
 {
-	UNUSED(args);
 	bbs_node_clear_screen(node);
-	bbs_node_statuses(node);
+	bbs_node_statuses(node, args);
 	NEG_RETURN(bbs_node_wait_key(node, MIN_MS(2)));
 	return 0;
 }

@@ -1445,7 +1445,6 @@ int bbs_node_tpoll(struct bbs_node *node, int ms)
 		/* This is the first poll if <= MIN_POLL_MS_FOR_WARNING, and possibly if >. */
 		if (!res) {
 			res = bbs_node_poll(node, ms);
-			bbs_debug(3, "XXX res %d\n", res);
 			if (res > 0 && warned) {
 				/* This was a response to the "Are you still there?" prompt, not whatever the BBS was doing.
 				 * Flush the response to ignore everything pending in the input buffer.

@@ -314,8 +314,12 @@ int bbs_node_update_winsize(struct bbs_node *node, int cols, int rows);
  */
 int bbs_node_set_speed(struct bbs_node *node, unsigned int bps);
 
-/*! \brief Display status of all nodes */
-int bbs_node_statuses(struct bbs_node *node);
+/*!
+ * \brief Display status of all nodes
+ * \param node
+ * \param username Optional username filter. If NULL, all nodes will be included, otherwise only those logged in as the specified user.
+ */
+int bbs_node_statuses(struct bbs_node *node, const char *username);
 
 /*!
  * \brief wrapper around poll()
