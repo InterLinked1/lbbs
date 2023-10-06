@@ -160,15 +160,6 @@ static int cli_warranty(struct bbs_cli_args *a)
 	return 0;
 }
 
-static struct bbs_cli_entry cli_commands_sysop[] = {
-	BBS_CLI_COMMAND(cli_testemail, "testemail", 1, "Send test email to sysop", NULL),
-	BBS_CLI_COMMAND(cli_mtrim, "mtrim", 1, "Manually release free memory at the top of the heap", NULL),
-	BBS_CLI_COMMAND(cli_assert, "assert", 1, "Manually trigger an assertion (WARNING: May abort BBS)", NULL),
-	BBS_CLI_COMMAND(cli_copyright, "copyright", 1, "Show copyright notice", NULL),
-	BBS_CLI_COMMAND(cli_license, "license", 1, "Show license notice", NULL),
-	BBS_CLI_COMMAND(cli_warranty, "warranty", 1, "Show warranty notice", NULL),
-};
-
 static int sysop_command(struct sysop_console *console, const char *s)
 {
 	int res;
@@ -252,7 +243,11 @@ static void *sysop_handler(void *varg)
 	histentry = NULL; /* initiailization must be after pthread_cleanup_push to avoid "variable might be clobbered" warning */
 	for (;;) {
 		pfds[0].revents = pfds[1].revents = 0;
-		res = poll(pfds, console->remote ? 1 : 2, -1);
+		res = poll(pfds, 2, -1);
+		if (console->dead) {
+			bbs_debug(3, "Console %d/%d has been instructed to exit\n", sysopfdin, sysopfdout);
+			break;
+		}
 		if (res < 0) {
 			if (errno != EINTR) {
 				bbs_debug(3, "poll returned %d: %s\n", res, strerror(errno));
@@ -261,7 +256,6 @@ static void *sysop_handler(void *varg)
 			continue;
 		}
 		if (pfds[1].revents) {
-			bbs_alertpipe_read(console_alertpipe);
 			my_set_stdout_logging(sysopfdout, console->log);
 			bbs_buffer_input(sysopfdin, 1);
 			break;
@@ -290,6 +284,7 @@ static void *sysop_handler(void *varg)
 					break;
 				case 'c':
 					bbs_dprintf(sysopfdout, TERM_CLEAR); /* TERM_CLEAR doesn't end in a newline, so normally, flush output, but bbs_printf does this for us. */
+					bbs_dprintf(sysopfdout, "\033[3J"); /* Clear scrollback buffer */
 					break;
 				case 'l':
 					SET_BITFIELD(console->log, !console->log); /* Save the new log setting */
@@ -450,7 +445,7 @@ static int launch_sysop_console(int remote, int sfd, int fdin, int fdout)
 	SET_BITFIELD(console->remote, remote);
 
 	RWLIST_WRLOCK(&consoles);
-	RWLIST_INSERT_HEAD(&consoles, console, entry);
+	RWLIST_INSERT_TAIL(&consoles, console, entry);
 	/* Note there is no SIGINT handler for remote consoles,
 	 * so ^C will just exit the remote console without killing the BBS. */
 	if (remote) {
@@ -522,6 +517,31 @@ static void *remote_sysop_listener(void *unused)
 	return NULL;
 }
 
+static int cli_consoles(struct bbs_cli_args *a)
+{
+	struct sysop_console *console;
+
+	bbs_dprintf(a->fdout, "%1s %5s %5s %4s %3s %s\n", "R", "FD IN", "FD OUT", "Dead", "Log", "Thread");
+	RWLIST_RDLOCK(&consoles);
+	RWLIST_TRAVERSE(&consoles, console, entry) {
+		bbs_dprintf(a->fdout, "%1s %5d %5d %4s %3s %16lu\n", console->remote ? "*" : "", console->fdin, console->fdout, BBS_YN(console->dead), BBS_YN(console->log), console->thread);
+	}
+	RWLIST_UNLOCK(&consoles);
+
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_sysop[] = {
+	BBS_CLI_COMMAND(cli_consoles, "consoles", 1, "List all sysop console sessions", NULL),
+	/* General */
+	BBS_CLI_COMMAND(cli_testemail, "testemail", 1, "Send test email to sysop", NULL),
+	BBS_CLI_COMMAND(cli_mtrim, "mtrim", 1, "Manually release free memory at the top of the heap", NULL),
+	BBS_CLI_COMMAND(cli_assert, "assert", 1, "Manually trigger an assertion (WARNING: May abort BBS)", NULL),
+	BBS_CLI_COMMAND(cli_copyright, "copyright", 1, "Show copyright notice", NULL),
+	BBS_CLI_COMMAND(cli_license, "license", 1, "Show license notice", NULL),
+	BBS_CLI_COMMAND(cli_warranty, "warranty", 1, "Show warranty notice", NULL),
+};
+
 #define BBS_SYSOP_SOCKET DIRCAT(DIRCAT("/var/run", BBS_NAME), "sysop.sock")
 
 static int unload_module(void)
@@ -557,25 +577,30 @@ static int unload_module(void)
 	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&consoles);
 
-	if (option_nofork) {
-		bbs_alertpipe_close(console_alertpipe);
-	}
+	bbs_alertpipe_read(console_alertpipe);
+	bbs_alertpipe_close(console_alertpipe);
 
 	/* This is not pretty, but need to wait until the list is empty - console threads are detached so we have nothing to join,
 	 * and we can't make them non-detached because console threads can exit on their own, without anyone to join them. */
 	for (;;) {
-		int empty;
+		int remaining = 0;
 		bbs_debug(3, "Waiting for all sysop consoles to exit\n");
 		RWLIST_RDLOCK(&consoles);
-		empty = RWLIST_EMPTY(&consoles);
+		RWLIST_TRAVERSE(&consoles, console, entry) {
+			if (console->fdin == -1 && console->fdout == -1) {
+				/* This means the remote console has been shut down, but its thread has not yet exited. */
+				bbs_warning("Stale %s console still registered?\n", console->remote ? "remote" : "foreground");
+			}
+			bbs_debug(3, "%s console %d/%d is still registered\n", console->remote ? "Remote" : "Foreground", console->fdin, console->fdout);
+			remaining++;
+		}
 		RWLIST_UNLOCK(&consoles);
-		if (empty) {
+		if (!remaining) {
 			break;
 		}
-		usleep(10000);
+		usleep(100000);
 	}
 
-	bbs_history_shutdown();
 	return 0;
 }
 
@@ -587,13 +612,10 @@ static int show_copyright_fg(void)
 
 static int load_module(void)
 {
-	bbs_history_init();
-
+	if (bbs_alertpipe_create(console_alertpipe)) {
+		return -1;
+	}
 	if (option_nofork) {
-		if (bbs_alertpipe_create(console_alertpipe)) {
-			bbs_history_shutdown();
-			return -1;
-		}
 		launch_sysop_console(0, STDIN_FILENO, STDIN_FILENO, STDOUT_FILENO);
 	} else {
 		bbs_debug(3, "BBS not started with foreground console, declining to load foreground sysop console\n");
@@ -604,7 +626,6 @@ static int load_module(void)
 	if (bbs_make_unix_socket(&uds_socket, BBS_SYSOP_SOCKET, "0600", -1, -1) || bbs_pthread_create(&uds_thread, NULL, remote_sysop_listener, NULL)) {
 		if (!option_nofork) {
 			/* Nothing major to clean up, we didn't create a foreground console, and the remote handler failed */
-			bbs_history_shutdown();
 			return -1; /* Only fatal if daemonized, since otherwise there would be no sysop consoles at all */
 		}
 	}

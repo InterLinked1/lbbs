@@ -123,6 +123,7 @@ int bbs_history_shutdown(void)
 	 * Once allocated through add_history, the list sticks around forever.
 	 * Manually do so to avoid this memory leak (albeit a constant-size one with respect to history usage). */
 	if (hist_added) {
+		/* This is only safe to call once, which is why bbs_history_shutdown is called by the core during shutdown, not when mod_sysop unloads. */
 		free(history_list()); /* Directly free the list. This is safe only because we called clear_history first so the list contains no allocations. */
 	}
 

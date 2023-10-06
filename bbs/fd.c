@@ -390,6 +390,11 @@ static int cli_fds(struct bbs_cli_args *a)
 
 BBS_CLI_COMMAND_SINGLE(cli_fds, "fds", 1, "View list of open file descriptors", NULL);
 
+void bbs_fd_shutdown(void)
+{
+	bbs_fd_dump(STDOUT_FILENO);
+}
+
 int bbs_fd_init(void)
 {
 	return bbs_cli_register(&cli_command); /* Automatically unregistered at shutdown */

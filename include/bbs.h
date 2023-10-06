@@ -134,6 +134,7 @@ int __fdleak_fclose(FILE *ptr);
 int __fdleak_dup2(int oldfd, int newfd, const char *file, int line, const char *func);
 int __fdleak_dup(int oldfd, const char *file, int line, const char *func);
 
+void bbs_fd_shutdown(void);
 int bbs_fd_init(void);
 #endif /* DEBUG_FD_LEAKS */
 

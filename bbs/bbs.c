@@ -66,6 +66,7 @@
 #include "include/test.h"
 #include "include/transfer.h"
 #include "include/cli.h"
+#include "include/history.h"
 #include "include/handler.h"
 #include "include/net.h"
 #include "include/door.h"
@@ -571,6 +572,7 @@ static void bbs_shutdown(void)
 	unload_modules();
 	pthread_mutex_lock(&sig_lock);
 
+	bbs_history_shutdown(); /* Free history. Must be done in the core, not by mod_sysop, since this may only be called once. */
 	bbs_curl_shutdown(); /* Clean up cURL */
 	ssl_server_shutdown(); /* Shut down SSL/TLS */
 	login_cache_cleanup(); /* Clean up any remaining cached logins */
@@ -579,6 +581,7 @@ static void bbs_shutdown(void)
 	bbs_configs_free_all(); /* Clean up any remaining configs that modules didn't. */
 	bbs_vars_cleanup();
 	bbs_cli_unregister_remaining();
+	bbs_fd_shutdown();
 	pthread_mutex_unlock(&sig_lock); /* Don't release the lock until the very end */
 	pthread_mutex_destroy(&sig_lock);
 	cleanup();
@@ -993,6 +996,8 @@ int main(int argc, char *argv[])
 	ssl_server_init(); /* If this fails for some reason, that's okay. Other failures will ensue, but this is not fatal. */
 
 	CHECK_INIT(bbs_curl_init());
+	CHECK_INIT(bbs_history_init());
+
 	if (!is_root()) {
 		check_cap(0); /* Check before modules load, which may try to bind to privileged ports. */
 	}

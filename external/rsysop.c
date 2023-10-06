@@ -17,6 +17,7 @@
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <errno.h>
@@ -50,10 +51,19 @@ static int term_makeraw(int fd)
 	return 0;
 }
 
-static void sigwinch_handler(int sig)
+static void reset_term(void)
+{
+	tcsetattr(STDIN_FILENO, TCSANOW, &orig); /* Restore the terminal on exit */
+	printf("\e]0;\a");
+	fflush(stdout);
+}
+
+static void sigint_handler(int sig)
 {
 	(void) sig;
-	tcsetattr(STDIN_FILENO, TCSANOW, &orig); /* Restore the terminal on exit */
+	reset_term();
+	fprintf(stderr, "Disconnected from BBS\n"); /* We disconnected from BBS */
+	exit(EXIT_SUCCESS);
 }
 
 int main(int argc, char *argv[])
@@ -66,6 +76,8 @@ int main(int argc, char *argv[])
 
 	(void) argc;
 	(void) argv;
+
+	signal(SIGINT, sigint_handler);
 
 	sockfd = socket(PF_LOCAL, SOCK_STREAM, 0);
 	if (sockfd < 0) {
@@ -125,7 +137,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	sigwinch_handler(SIGINT); /* Restore terminal on server disconnect */
+	reset_term(); /* Restore terminal on server disconnect */
 	fprintf(stderr, "BBS server disconnected\n");
 	return -1; /* If we get here, then the socket closed on us. */
 }
