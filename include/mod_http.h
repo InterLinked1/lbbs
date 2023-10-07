@@ -277,6 +277,14 @@ int http_websocket_handshake(struct http_session *http);
 struct post_field *http_post_param(struct http_session *http, const char *name);
 
 /*!
+ * \brief Get an HTTP query (GET) parameter, if it exists
+ * \param http
+ * \param name Name of query parameter
+ * \return Query parameter, or NULL if not found
+ */
+const char *http_query_param(struct http_session *http, const char *name);
+
+/*!
  * \brief Serve a single, static file
  * \param http
  * \param Full path to file to serve

@@ -52,6 +52,7 @@
 #include "include/hash.h"
 #include "include/crypt.h"
 #include "include/event.h"
+#include "include/cli.h"
 
 #include "include/mod_http.h"
 
@@ -1051,6 +1052,11 @@ static void parse_url_encoded_params(struct http_session *http, enum http_method
 	}
 }
 
+const char *http_query_param(struct http_session *http, const char *name)
+{
+	return bbs_var_find(&http->req->queryparams, name);
+}
+
 static int parse_multipart_part(struct http_session *http, char *s, size_t len)
 {
 	char *header;
@@ -1674,6 +1680,18 @@ int http_parse_request(struct http_session *http, char *buf)
 			bbs_varlist_append(&http->req->headers, tmp, s);
 		}
 	}
+
+	/* Parse any GET parameters */
+	if (parse_uri(http)) {
+		return HTTP_INTERNAL_SERVER_ERROR;
+	}
+
+	/* Valid (and safe) path? */
+	if (strlen_zero(http->req->uri) || strstr(http->req->uri, "..")) {
+		/* We could use realpath, but this just isn't a valid web path */
+		return HTTP_FORBIDDEN;
+	}
+
 	return process_headers(http);
 }
 
@@ -1690,12 +1708,6 @@ static int http_handle_request(struct http_session *http, char *buf)
 		return res;
 	}
 
-	/* Valid (and safe) path? */
-	if (strlen_zero(http->req->uri) || strstr(http->req->uri, "..")) {
-		/* We could use realpath, but this just isn't a valid web path */
-		return HTTP_FORBIDDEN;
-	}
-
 	/* Search for a matching route, before processing the body. */
 	route = find_route(http->node->port, http->req->host, http->req->uri, http->req->method, &methodmismatch, http->req->httpsupgrade ? &secureport : NULL);
 	if (!http->secure && http->req->httpsupgrade && secureport && secureport != http->node->port) {
@@ -1710,11 +1722,6 @@ static int http_handle_request(struct http_session *http, char *buf)
 			bbs_debug(7, "No matching route for %s %s (%u) %s\n", http_method_name(http->req->method), http->req->host, http->node->port, http->req->uri);
 			return HTTP_NOT_FOUND; /* No matching route. How sad. */
 		}
-	}
-
-	/* Parse any GET parameters */
-	if (parse_uri(http)) {
-		goto abort;
 	}
 
 	/* Done processing headers and URL. Move on to the body, if needed. */
@@ -2729,15 +2736,51 @@ int http_unregister_route(enum http_response_code (*handler)(struct http_session
 	return removed ? 0 : -1;
 }
 
-static int load_module(void)
+static int cli_http_routes(struct bbs_cli_args *a)
 {
+	struct http_route *r;
+
+	bbs_dprintf(a->fdout, "%-30s %-30s %5s %6s %7s %s\n", "Prefix", "Hostname", "Port", "Secure", "Use Cnt", "Module");
+	RWLIST_RDLOCK(&routes);
+	RWLIST_TRAVERSE(&routes, r, entry) {
+		bbs_dprintf(a->fdout, "%-30s %-30s %5u %6s %7u %s\n", S_IF(r->prefix), S_IF(r->hostname), r->port, BBS_YN(r->secure), r->usecount, bbs_module_name(r->mod));
+	}
+	RWLIST_UNLOCK(&routes);
 	return 0;
 }
+
+static int cli_http_sessions(struct bbs_cli_args *a)
+{
+	struct session *s;
+
+	bbs_dprintf(a->fdout, "%-48s %s\n", "Session ID", "Use Count");
+	RWLIST_RDLOCK(&sessions);
+	RWLIST_TRAVERSE(&sessions, s, entry) {
+		bbs_dprintf(a->fdout, "%-48s %u\n", s->sessid, s->usecount);
+	}
+	RWLIST_UNLOCK(&sessions);
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_http[] = {
+	BBS_CLI_COMMAND(cli_http_routes, "http routes", 2, "List HTTP routes", NULL),
+	BBS_CLI_COMMAND(cli_http_sessions, "http sessions", 2, "List HTTP sessions", NULL),
+};
 
 static int unload_module(void)
 {
 	/* Remove any lingering sessions */
 	RWLIST_WRLOCK_REMOVE_ALL(&sessions, entry, session_free);
+	bbs_cli_unregister_multiple(cli_commands_http);
+	return 0;
+}
+
+static int load_module(void)
+{
+	if (bbs_cli_register_multiple(cli_commands_http)) {
+		unload_module();
+		return -1;
+	}
 	return 0;
 }
 

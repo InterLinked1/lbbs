@@ -28,6 +28,7 @@
 #include "include/user.h"
 #include "include/utils.h"
 #include "include/json.h"
+#include "include/base64.h"
 
 #include "include/net_ws.h"
 
@@ -54,6 +55,7 @@ struct imap_client {
 	uint32_t messages;	/* Cached number of messages in selected mailbox */
 	uint32_t uid;		/* Current message UID */
 	/* Flags */
+	unsigned int authenticated:1;	/* Logged in yet? */
 	unsigned int canidle:1;
 	unsigned int idling:1;
 	unsigned int has_move:1;
@@ -97,16 +99,17 @@ static void libetpan_log(mailimap *session, int log_type, const char *str, size_
 
 static int json_send(struct ws_session *ws, json_t *root)
 {
+	int res = -1;
 	char *s = json_dumps(root, 0);
 	json_decref(root);
 	if (s) {
 		size_t len = strlen(s);
-		websocket_sendtext(ws, s, len);
+		res = websocket_sendtext(ws, s, len);
 		free(s);
 	} else {
 		bbs_warning("Failed to dump JSON string: was it allocated?\n");
 	}
-	return s ? 0 : -1;
+	return res;
 }
 
 static void client_clear_status(struct ws_session *ws)
@@ -377,71 +380,70 @@ static void send_status_update(struct imap_client *client, const char *mbox, cha
 	json_send(client->ws, json);
 }
 
-#define CLIENT_REQUIRE_VAR(name) \
-	if (!name) { \
-		bbs_warning("Missing required session variable '%s'\n", #name); \
-		return -1; \
-	}
-
-static int client_imap_init(struct ws_session *ws, struct imap_client *client, struct mailimap **data)
+static int load_capabilities(struct imap_client *client, int authenticated)
 {
-	struct mailimap *imap;
-	int res;
-	time_t timeout;
+	json_t *json, *jsoncaps, *jsonauthcaps;
 	struct mailimap_capability_data *capdata;
+	clistiter *cur;
+	int res;
+	struct mailimap *imap = client->imap;
 
-	/* Keep in mind the session is the only way to send data from the frontend to the backend.
-	 * Even if it's direct, we can't POST data since WebSocket upgrades must be GET requests.
-	 * So the data would already have to be somewhere. */
-	const char *hostname = websocket_session_data_string(ws, "server");
-	uint16_t port = (uint16_t) websocket_session_data_number(ws, "port");
-	int secure = websocket_session_data_number(ws, "secure");
-	const char *username = websocket_session_data_string(ws, "username");
-	const char *password = websocket_session_data_string(ws, "password");
-
-	CLIENT_REQUIRE_VAR(hostname);
-	CLIENT_REQUIRE_VAR(port);
-	CLIENT_REQUIRE_VAR(username);
-	CLIENT_REQUIRE_VAR(password);
-#undef CLIENT_REQUIRE_VAR
-
-	imap = mailimap_new(0, NULL);
-	if (!imap) {
-		bbs_error("Failed to create IMAP session\n");
+	res = mailimap_capability(imap, &capdata);
+	if (MAILIMAP_ERROR(res)) {
 		return -1;
 	}
 
-	mailimap_set_logger(imap, libetpan_log, client);
-	timeout = mailimap_get_timeout(imap);
-	/* Timeout needs to be sufficiently large... e.g. FETCH 1:* (SIZE) can take quite a few seconds on large mailboxes. */
-	mailimap_set_timeout(imap, 60); /* If the IMAP server hasn't responded by now, I doubt it ever will */
-	client_set_status(ws, "Connecting to %s:%u", hostname, port);
-	if (secure) {
-		res = mailimap_ssl_connect(imap, hostname, port);
-	} else {
-		res = mailimap_socket_connect(imap, hostname, port);
+	json = json_object();
+	if (!json) {
+		mailimap_capability_data_free(capdata);
+		return -1;
 	}
-	if (MAILIMAP_ERROR(res)) {
-		bbs_warning("Failed to establish IMAP session to %s:%d\n", hostname, port);
-		client_set_error(ws, "IMAP server connection failed");
-		goto cleanup;
+	jsoncaps = json_array();
+	if (!jsoncaps) {
+		mailimap_capability_data_free(capdata);
+		json_decref(json);
+		return -1;
 	}
-	mailimap_set_timeout(imap, timeout); /* Reset once logged in */
-	res = mailimap_login(imap, username, password);
-	if (MAILIMAP_ERROR(res)) {
-		bbs_warning("Failed to login to IMAP server as %s\n", username);
-		client_set_error(ws, "IMAP server login failed");
-		goto cleanup;
+	json_object_set_new(json, "response", json_string("CAPABILITY"));
+	json_object_set_new(json, "capabilities", jsoncaps);
+	jsonauthcaps = json_array();
+	if (!jsonauthcaps) {
+		mailimap_capability_data_free(capdata);
+		json_decref(json);
+		return -1;
 	}
-	res = mailimap_capability(imap, &capdata);
-	if (!MAILIMAP_ERROR(res)) {
-		/* We don't ourselves directly care about the capabilities (at least right now)
-		 * This will just make libetpan aware of them, so functions like mailimap_has_extension
-		 * and mailimap_has_quota return correct and meaningful values.
-		 * Otherwise, if the server doesn't send unsolicited CAPABILITY responses (and most don't),
-		 * these will all be defaulted to false. */
-		mailimap_capability_data_free(capdata); /* This is wasteful of libetpan to duplicate the caps for us to immediately free them... but this is the API */
+
+	for (cur = clist_begin(capdata->cap_list); cur; cur = clist_next(cur)) {
+		struct mailimap_capability *cap = clist_content(cur);
+		if (cap->cap_type == MAILIMAP_CAPABILITY_AUTH_TYPE) {
+			if (strlen_zero(cap->cap_data.cap_auth_type)) {
+				bbs_warning("Skipping empty capability\n");
+				continue;
+			}
+			json_array_append_new(jsonauthcaps, json_string(cap->cap_data.cap_auth_type));
+		} else { /* MAILIMAP_CAPABILITY_NAME */
+			if (strlen_zero(cap->cap_data.cap_name)) {
+				continue;
+			}
+			json_array_append_new(jsoncaps, json_string(cap->cap_data.cap_name));
+		}
 	}
+	json_object_set_new(json, "authcapabilities", jsonauthcaps);
+
+	if (json_send(client->ws, json)) {
+		return -1;
+	}
+	json = NULL;
+
+	/* Now that we've called mailimap_capability, libetpan is aware of what capabilities are available. */
+	mailimap_capability_data_free(capdata);
+
+	if (!authenticated) {
+		/* Don't care yet. Often new capabilities are announced once authenticated,
+		 * so don't bother asking yet. */
+		return 0;
+	}
+
 	if (mailimap_has_id(imap)) {
 #if 0
 		/* This dynamically allocates a lot of memory unnecessarily, and it has a memory leak, so avoid it and do it ourself. */
@@ -455,6 +457,7 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client, s
 		res = mailimap_custom_command(imap, "ID (\"name\" \"wssmail via LBBS (libetpan)\" \"version\" \"" BBS_VERSION "\")");
 #endif
 	}
+
 	SET_BITFIELD(client->canidle, mailimap_has_idle(imap));
 	SET_BITFIELD(client->has_move, mailimap_has_extension(imap, "MOVE"));
 	SET_BITFIELD(client->has_sort, mailimap_has_sort(imap));
@@ -462,11 +465,135 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client, s
 	SET_BITFIELD(client->has_status_size, mailimap_has_extension(imap, "STATUS=SIZE"));
 	SET_BITFIELD(client->has_list_status, mailimap_has_extension(imap, "LIST-STATUS"));
 	SET_BITFIELD(client->has_notify, mailimap_has_extension(imap, "NOTIFY"));
-	*data = imap;
+	return 0;
+}
+
+#define CLIENT_REQUIRE_VAR(name) \
+	if (!name) { \
+		bbs_warning("Missing required variable '%s'\n", #name); \
+		return -1; \
+	}
+
+static int client_imap_login(struct ws_session *ws, struct imap_client *client, struct mailimap *imap, const char *password)
+{
+	int res;
+	int outlen;
+	char *decoded_password;
+	const char *username;
+
+	username = websocket_query_param(ws, "username"); /* Without Remember Me, passed directly over WebSocket during connection setup */
+	if (!username) {
+		username = websocket_cookie_val(ws, "wssmail_webmail", "username"); /* In cookie */
+	}
+	if (!username) {
+		username = websocket_session_data_string(ws, "username"); /* If using sessions (deprecated) */
+	}
+
+	CLIENT_REQUIRE_VAR(username);
+
+	/* Decode the password. The only reason the client base64 encodes it is for obfuscation, not for security.
+	 * This is fundamentally not very secure, but there's not much else we can do since we need to be able
+	 * to send the plain text password to the IMAP server. */
+	decoded_password = (char*) base64_decode((unsigned const char*) password, (int) strlen(password), &outlen);
+	CLIENT_REQUIRE_VAR(decoded_password);
+	res = mailimap_login(imap, username, decoded_password);
+	free(decoded_password);
+
+	if (MAILIMAP_ERROR(res)) {
+		bbs_warning("Failed to login to IMAP server as %s\n", username);
+		client_set_error(ws, "IMAP server login failed");
+		return -1;
+	}
+
+	client_set_status(client->ws, "Successfully logged in as %s", username);
+
+	/* Request capabilities again, since, in practice, they often change once authenticated */
+	if (load_capabilities(client, 1)) {
+		return -1;
+	}
+	client->authenticated = 1;
+	/* Regardless of whether a mailbox is selected and is idling, we
+	 * need to do something at least every 30 minutes, or the IMAP server will disconnect us. */
+	client->imapfd = mailimap_idle_get_fd(imap);
+	websocket_set_custom_poll_fd(ws, client->imapfd, SEC_MS(1740)); /* Just under 30 minutes */
+	/* Don't start IDLING yet. No mailbox is yet selected. */
+	return 0;
+}
+
+static int client_imap_init(struct ws_session *ws, struct imap_client *client)
+{
+	struct mailimap *imap;
+	int res;
+	const char *hostname;
+	uint16_t port;
+	int secure;
+	int explicit = 0;
+
+	hostname = websocket_query_param(ws, "server");
+	if (hostname) { /* If server explicitly specified in the WebSocket URI, use that */
+		const char *tmp = websocket_query_param(ws, "port");
+		if (strlen_zero(tmp)) {
+			bbs_error("Missing query parameter 'port'\n");
+			return -1;
+		}
+		port = (uint16_t) atoi(tmp);
+		tmp = websocket_query_param(ws, "secure");
+		if (strlen_zero(tmp)) {
+			bbs_error("Missing query parameter 'secure'\n");
+			return -1;
+		}
+		secure = S_TRUE(tmp);
+		explicit = 1;
+	} else { /* Else, hopefully we can get it from the cookie the client sent. It's HttpOnly, so the client (in JavaScript) can't even access it. */
+		/* Keep in mind the session is the only way to send data from the frontend to the backend.
+		 * Even if it's direct, we can't POST data since WebSocket upgrades must be GET requests.
+		 * So the data would already have to be somewhere. */
+		hostname = websocket_session_data_string(ws, "server");
+		port = (uint16_t) websocket_session_data_number(ws, "port");
+		secure = websocket_session_data_number(ws, "secure");
+	}
+
+	CLIENT_REQUIRE_VAR(hostname);
+	CLIENT_REQUIRE_VAR(port);
+#undef CLIENT_REQUIRE_VAR
+
+	client_set_status(ws, "Connecting %s (%s) to %s:%u", secure ? "securely" : "insecurely", explicit ? "explicitly" : "implicitly", hostname, port);
+
+	imap = mailimap_new(0, NULL);
+	if (!imap) {
+		bbs_error("Failed to create IMAP session\n");
+		return -1;
+	}
+
+	client->imap = imap;
+
+	mailimap_set_logger(imap, libetpan_log, client);
+	mailimap_set_timeout(imap, 10); /* If the IMAP server hasn't responded by now, I doubt it ever will */
+	if (secure) {
+		res = mailimap_ssl_connect(imap, hostname, port);
+	} else {
+		res = mailimap_socket_connect(imap, hostname, port);
+	}
+	if (MAILIMAP_ERROR(res)) {
+		bbs_warning("Failed to establish IMAP session to %s:%d\n", hostname, port);
+		client_set_error(ws, "IMAP server connection failed");
+		goto cleanup;
+	}
+
+	bbs_debug(5, "Connection established to %s:%u\n", hostname, port);
+
+	/* Timeout needs to be sufficiently large... e.g. FETCH 1:* (SIZE) can take quite a few seconds on large mailboxes. */
+	mailimap_set_timeout(imap, 60); /* If the IMAP server hasn't responded by now, I doubt it ever will */
+
+	if (load_capabilities(client, 0)) {
+		goto cleanup;
+	}
+
 	return 0;
 
 cleanup:
 	mailimap_free(imap);
+	client->imap = NULL;
 	return -1;
 }
 
@@ -2998,6 +3125,11 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	char *idledata;
 	int res = 0;
 
+	if (!client->authenticated) {
+		bbs_warning("Poll activity prior to being authenticated?\n");
+		return -1;
+	}
+
 	if (!client->idling) {
 		/* If there was activity (as opposed to a timeout) and we're not idling,
 		 * this likely indicates the IMAP server disconnected on us. */
@@ -3075,6 +3207,10 @@ static int on_poll_timeout(struct ws_session *ws, void *data)
 {
 	struct imap_client *client = data;
 
+	if (!client->authenticated) {
+		return -1;
+	}
+
 	if (client->idling) {
 		/* Just restart the IDLE before it times out */
 		idle_stop(ws, client);
@@ -3140,7 +3276,9 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 		return -1;
 	}
 
-	idle_stop(ws, client);
+	if (client->authenticated) {
+		idle_stop(ws, client);
+	}
 
 	root = json_loads(buf, 0, &error);
 	if (!root) {
@@ -3154,9 +3292,35 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 		goto cleanup;
 	}
 
-	bbs_debug(4, "Processing command '%s'\n", command);
+	bbs_debug(4, "Processing %s command '%s'\n", client->authenticated ? "authenticated" : "unauthenticated", command);
 
-	if (!strcmp(command, "SELECT")) {
+	if (!client->authenticated) {
+		if (!strcmp(command, "LOGIN")) {
+			res = client_imap_login(ws, client, client->imap, json_object_string_value(root, "password"));
+			if (!res) {
+				json_t *root2;
+				/* Send an AUTHENTICATED response immediately, since the LIST response will take a moment,
+				 * and we want the UI to immediately reflect the fact that we're authenticated */
+				root2 = json_object();
+				if (!root2) {
+					bbs_error("Failed to create JSON root\n");
+					goto cleanup;
+				}
+				json_object_set_new(root2, "response", json_string("AUTHENTICATED"));
+				json_send(ws, root2);
+
+				/* Send unsolicited LIST response once authenticated */
+				list_response(ws, client, client->imap);
+			}
+		} else {
+			bbs_warning("Command unknown: %s\n", command);
+		}
+		return res;
+	}
+
+	if (!strcmp(command, "LIST")) {
+		list_response(ws, client, client->imap); /* Not currently used by the frontend, but sure, allow it to ask for an updated LIST later. */
+	} else if (!strcmp(command, "SELECT")) {
 		if (client_imap_select(ws, client, client->imap, json_object_string_value(root, "folder"))) {
 			goto cleanup;
 		}
@@ -3243,10 +3407,9 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 		client_set_status(client->ws, "%s operation failed", command);
 	}
 
-	/*! \todo XXX Improvement: Only start idling if we've been inactive for at least a few seconds...
-	 * We could do that by setting a short poll timeout, not IDLING, if it expires without
-	 * anything happening, start idling then. */
-	idle_start(ws, client);
+	if (client->mailbox) {
+		idle_start(ws, client);
+	}
 	res = 0;
 
 cleanup:
@@ -3257,33 +3420,23 @@ cleanup:
 static int on_open(struct ws_session *ws)
 {
 	struct imap_client *client;
-	struct mailimap *imap = NULL;
 
 	client = calloc(1, sizeof(*client)); /* Unfortunately, we can't stack allocate this */
 	if (ALLOC_FAILURE(client)) {
 		return -1;
 	}
 
+	client->imapfd = -1;
 	client->ws = ws;
 	websocket_attach_user_data(ws, client);
-	if (client_imap_init(ws, client, &imap)) {
+	if (client_imap_init(ws, client)) {
 		goto done;
 	}
-	list_response(ws, client, imap);
-	client->imap = imap;
-	client->imapfd = mailimap_idle_get_fd(imap);
 
-	/* Regardless of whether a mailbox is selected and is idling, we
-	 * need to do something at least every 30 minutes, or the IMAP server will disconnect us. */
-	websocket_set_custom_poll_fd(ws, client->imapfd, SEC_MS(1740)); /* Just under 30 minutes */
-
-	/* Don't start IDLING yet. No mailbox is yet selected. */
+	websocket_set_custom_poll_fd(ws, client->imapfd, SEC_MS(60)); /* Give the user a minute to authenticate */
 	return 0;
 
 done:
-	if (imap) {
-		mailimap_free(imap);
-	}
 	FREE(client);
 	return -1;
 }

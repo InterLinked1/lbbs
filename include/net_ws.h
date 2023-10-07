@@ -62,6 +62,23 @@ const char *websocket_session_data_string(struct ws_session *ws, const char *key
 int websocket_session_data_number(struct ws_session *ws, const char *key);
 
 /*!
+ * \brief Get a string query parameter from the WebSocket URI
+ * \param ws
+ * \param key Query parameter name
+ * \return Query parameter, or NULL if not found
+ */
+const char *websocket_query_param(struct ws_session *ws, const char *key);
+
+/*!
+ * \brief Get a serialized key value from an HTTP cookie
+ * \param ws
+ * \param cookiename Cookie name. This may be any cookie name, but per ws, only one cookie name is supported.
+ * \param valkey Name of key of member inside the cookie
+ * \return Cookie value, or NULL if not found
+ */
+const char *websocket_cookie_val(struct ws_session *ws, const char *cookiename, const char *valkey);
+
+/*!
  * \brief Set custom polling settings
  * \param ws
  * \param fd Additional file descriptor to poll, or -1 if no additional fd
@@ -74,5 +91,6 @@ void websocket_set_custom_poll_fd(struct ws_session *ws, int fd, int pollms);
  * \param ws
  * \param buf Text data to send. Does not have to be null terminated.
  * \param len Length of buf.
+ * \retval 0 on success, -1 on failure
  */
-void websocket_sendtext(struct ws_session *ws, const char *buf, size_t len);
+int websocket_sendtext(struct ws_session *ws, const char *buf, size_t len);

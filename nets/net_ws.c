@@ -31,6 +31,7 @@
 #include "include/utils.h"
 #include "include/tls.h"
 #include "include/test.h"
+#include "include/cli.h"
 
 /* Needed for mod_http.h */
 #include "include/linkedlists.h"
@@ -95,8 +96,10 @@ struct ws_session {
 	int pollfd;					/*!< Additional fd to poll */
 	int pollms;					/*!< Poll timeout */
 	struct php_varlist varlist;
+	struct php_varlist cookievals;
 	unsigned int proxied:1;		/*!< Reverse proxied or direct? */
 	unsigned int sessionchecked:1;
+	unsigned int cookieschecked:1;
 };
 
 struct ws_route {
@@ -160,10 +163,18 @@ int websocket_route_unregister(const char *uri)
 static struct ws_route *find_route(const char *uri)
 {
 	struct ws_route *route;
+	const char *q;
+	size_t n;
+
+	q = strchr(uri, '?');
+	if (q) {
+		n = (size_t) (q - uri); /* Only compare up to the ? */
+		bbs_debug(3, "Looking for WebSocket route %.*s\n", (int) n, uri);
+	}
 
 	RWLIST_RDLOCK(&routes);
 	RWLIST_TRAVERSE(&routes, route, entry) {
-		if (!strcmp(uri, route->uri)) {
+		if ((!q && !strcmp(uri, route->uri)) || (q && !strncmp(uri, route->uri, n))) {
 			break;
 		}
 	}
@@ -186,11 +197,13 @@ void websocket_set_custom_poll_fd(struct ws_session *ws, int fd, int pollms)
 	ws->pollms = pollms;
 }
 
-void websocket_sendtext(struct ws_session *ws, const char *buf, size_t len)
+int websocket_sendtext(struct ws_session *ws, const char *buf, size_t len)
 {
+	int res;
 	pthread_mutex_lock(&ws->lock);
-	wss_write(ws->client, WS_OPCODE_TEXT, buf, len);
+	res = wss_write(ws->client, WS_OPCODE_TEXT, buf, len);
 	pthread_mutex_unlock(&ws->lock);
+	return res;
 }
 
 static int php_var_append(struct php_varlist *vars, const char *name, enum php_var_type type, void *value, size_t len)
@@ -389,7 +402,7 @@ static int php_unserialize_array(struct php_varlist *vars, char **sptr, const ch
 	return 0;
 }
 
-static int php_unserialize(struct php_varlist *vars, char **sptr, const char *start, size_t len)
+static int php_unserialize_keyname(struct php_varlist *vars, char **sptr, const char *start, size_t len, const char *default_keyname)
 {
 	int res = 0;
 
@@ -425,14 +438,23 @@ static int php_unserialize(struct php_varlist *vars, char **sptr, const char *st
 		char vartype, sep;
 		struct php_varlist *sublist;
 		int tmp, remaining;
-		char *name = strsep(&s, "|");
-		if (strlen_zero(name)) {
+		const char *name;
+		char *tmp_name = strsep(&s, "|");
+		if (strlen_zero(tmp_name)) {
 			/* We're done */
 			break;
 		}
 		if (strlen_zero(s)) {
-			bbs_warning("Key has no value?\n");
-			return -1;
+			if (!default_keyname) {
+				bbs_warning("Key '%s' has no value?\n", tmp_name);
+				return -1;
+			}
+			/* To be compatible with PHP's serialize and unserialize functions, rather than aborting, tolerate */
+			bbs_debug(3, "Key has no value... using '%s' as the key name\n", default_keyname);
+			s = tmp_name;
+			name = default_keyname;
+		} else {
+			name = tmp_name;
 		}
 		vartype = *s++;
 		if (strlen_zero(s)) {
@@ -534,6 +556,12 @@ static int php_unserialize(struct php_varlist *vars, char **sptr, const char *st
 
 	*sptr = s;
 	return 0;
+}
+
+static int php_unserialize(struct php_varlist *vars, char **sptr, const char *start, size_t len)
+{
+	/* Recursive calls always use php_unserialize directly since php_unserialize_keyname is only needed at the top level */
+	return php_unserialize_keyname(vars, sptr, start, len, NULL);
 }
 
 static struct php_var *php_var_find(struct php_varlist *vars, const char *name)
@@ -753,6 +781,55 @@ int websocket_session_data_number(struct ws_session *ws, const char *key)
 	return 0;
 }
 
+const char *websocket_query_param(struct ws_session *ws, const char *key)
+{
+	return http_query_param(ws->http, key);
+}
+
+const char *websocket_cookie_val(struct ws_session *ws, const char *cookiename, const char *valkey)
+{
+	struct php_var *var;
+
+	/* Don't check this more than once */
+	if (!ws->cookieschecked) {
+		const char *cookie;
+		ws->cookieschecked = 1;
+		cookie = http_get_cookie(ws->http, cookiename);
+		if (cookie) {
+			char *dup = strdup(cookie);
+			if (ALLOC_SUCCESS(dup)) {
+				char *dup2 = dup;
+				size_t length;
+				bbs_url_decode(dup);
+				length = strlen(dup);
+				bbs_debug(3, "Unserializing: %s\n", dup);
+				php_unserialize_keyname(&ws->cookievals, &dup2, dup, length, cookiename);
+				bbs_debug(3, "Loaded %lu bytes from cookie %s\n", length, cookiename);
+				free(dup);
+			}
+		} else {
+			bbs_debug(3, "Cookie '%s' does not exist\n", cookiename);
+			return NULL;
+		}
+	}
+
+	var = php_var_find(&ws->cookievals, cookiename);
+	if (!var) {
+		bbs_debug(2, "PHP cookie '%s' not found\n", cookiename);
+		return NULL;
+	}
+	if (var->type != PHP_VAR_ARRAY) {
+		bbs_verb(4, "PHP cookie '%s' not array\n", cookiename);
+		return NULL;
+	}
+	var = php_var_find(var->value.array, valkey);
+	if (!var) {
+		bbs_debug(2, "PHP cookie '%s' member '%s' not found\n", cookiename, valkey);
+		return NULL;
+	}
+	return var->value.string;
+}
+
 /* Add some wiggle room to prevent timeouts right on the threshold */
 #define MAX_WEBSOCKET_PING_MS (MAX_WEBSOCKET_POLL_MS - SEC_MS(5))
 
@@ -781,7 +858,9 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 	/* MAX_WEBSOCKET_POLL_MS is the absolute max. Subtract a few seconds just to be safe, so it's not too close a call. */
 	ws.pollms = MAX_WEBSOCKET_PING_MS;
 	ws.sessionchecked = 0;
+	ws.cookieschecked = 0;
 	memset(&ws.varlist, 0, sizeof(ws.varlist));
+	memset(&ws.cookievals, 0, sizeof(ws.cookievals));
 	SET_BITFIELD(ws.proxied, proxied);
 
 	bbs_verb(5, "Handling %s WebSocket client on node %d to %s\n", proxied ? "proxied" : "direct", node->id, http->req->uri);
@@ -1014,6 +1093,7 @@ done:
 	}
 	bbs_module_unref(route->mod, 1);
 	php_vars_destroy(&ws.varlist);
+	php_vars_destroy(&ws.cookievals);
 }
 
 static void ws_direct_handler(struct bbs_node *node, int secure)
@@ -1151,8 +1231,20 @@ static int load_config(void)
 	return 0;
 }
 
+static int cli_wss_debug(struct bbs_cli_args *a)
+{
+	int level = atoi(a->argv[1]);
+	wss_set_log_level(WS_LOG_DEBUG + level);
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_ws[] = {
+	BBS_CLI_COMMAND(cli_wss_debug, "wssdebug", 2, "Set libwss debug level", "wssdebug <level>"),
+};
+
 static int unload_module(void)
 {
+	bbs_cli_unregister_multiple(cli_commands_ws);
 	bbs_unregister_tests(tests);
 	http_unregister_route(ws_proxy_handler);
 	if (ws_port) {
@@ -1179,17 +1271,22 @@ static int load_module(void)
 
 	/* XXX Need to register all routes? */
 	if (http_get_default_http_port() != -1) {
-		res |= http_register_insecure_route("/ws", (unsigned short int) http_get_default_http_port(), NULL, HTTP_METHOD_GET, ws_proxy_handler);
+		res |= http_register_insecure_route(NULL, (unsigned short int) http_get_default_http_port(), "/ws", HTTP_METHOD_GET, ws_proxy_handler);
 	}
 	if (http_get_default_https_port() != -1) {
-		res |= http_register_secure_route("/ws", (unsigned short int) http_get_default_https_port(), NULL, HTTP_METHOD_GET, ws_proxy_handler);
+		res |= http_register_secure_route(NULL, (unsigned short int) http_get_default_https_port(), "/ws", HTTP_METHOD_GET, ws_proxy_handler);
 	}
 	if (res) {
 		return unload_module();
 	}
 	/* Register listener(s) to accept WebSocket connections directly, e.g. from another reverse proxy (e.g. Apache HTTP server) */
 	res = bbs_start_tcp_listener3(ws_port ? ws_port : 0, wss_port ? wss_port : 0, 0, "WS", "WSS", NULL, __ws_handler);
-	return res ? unload_module() : res;
+	if (res) {
+		unload_module();
+		return -1;
+	}
+	bbs_cli_register_multiple(cli_commands_ws);
+	return 0;
 }
 
 BBS_MODULE_INFO_FLAGS_DEPENDENT("WebSocket Server", MODFLAG_GLOBAL_SYMBOLS, "mod_http.so,net_http.so");

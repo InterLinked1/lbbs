@@ -655,6 +655,7 @@ int __bbs_start_tcp_listener(int port, const char *name, void *(*handler)(void *
 {
 	struct tcp_listener *l;
 	int sfd;
+	int res;
 
 	if (bbs_is_shutting_down()) {
 		return -1;
@@ -664,9 +665,16 @@ int __bbs_start_tcp_listener(int port, const char *name, void *(*handler)(void *
 		return -1;
 	}
 
+	res = bbs_register_network_protocol(name, (unsigned int) port);
+	if (res) {
+		bbs_warning("Failed to register network protocol on port %d\n", port);
+		return -1;
+	}
+
 	l = list_add_listener(port, sfd, name, handler, module);
 	if (ALLOC_FAILURE(l)) {
 		close(sfd);
+		bbs_unregister_network_protocol((unsigned int) port);
 		return -1;
 	}
 
@@ -675,7 +683,6 @@ int __bbs_start_tcp_listener(int port, const char *name, void *(*handler)(void *
 	num_listeners++;
 	RWLIST_UNLOCK(&listeners);
 
-	bbs_register_network_protocol(name, (unsigned int) port);
 	bbs_debug(1, "Registered TCP listener for %s on port %d\n", name, port);
 
 	/* Signal the listener thread there's a new socket on which to listen.

@@ -39,6 +39,12 @@ int bbs_register_network_protocol(const char *name, unsigned int port)
 	struct net_prot *prot;
 
 	RWLIST_WRLOCK(&prots);
+	RWLIST_TRAVERSE(&prots, prot, entry) {
+		if (prot->port == port) {
+			bbs_error("Port %u is already in use by network protocol %s\n", port, prot->name);
+			return -1;
+		}
+	}
 	prot = calloc(1, sizeof(*prot) + strlen(name) + 1);
 	if (ALLOC_FAILURE(prot)) {
 		RWLIST_UNLOCK(&prots);
