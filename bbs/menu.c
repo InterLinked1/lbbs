@@ -29,6 +29,7 @@
 #include "include/linkedlists.h"
 #include "include/node.h"
 #include "include/user.h"
+#include "include/group.h"
 #include "include/term.h"
 #include "include/handler.h"
 #include "include/variables.h"
@@ -42,6 +43,7 @@ struct bbs_menu_item {
 	char opt;
 	char *action;
 	char *name;
+	char *group;
 	unsigned int minpriv;
 	/* Next entry */
 	RWLIST_ENTRY(bbs_menu_item) entry;
@@ -66,6 +68,7 @@ static void menuitem_free(struct bbs_menu_item *menuitem)
 {
 	free_if(menuitem->name);
 	free_if(menuitem->action);
+	free_if(menuitem->group);
 	free(menuitem);
 }
 
@@ -177,6 +180,9 @@ static int bbs_dump_menu(int fd, const char *menuname)
 		if (menuitem->minpriv) {
 			bbs_dprintf(fd, "    Min Priv:  %d\n", menuitem->minpriv);
 		}
+		if (menuitem->group) {
+			bbs_dprintf(fd, "    Group Required: %s\n", menuitem->group);
+		}
 	}
 
 	bbs_dprintf(fd, "Menu contains %d item%s\n", c, ESS(c));
@@ -205,7 +211,7 @@ static int bbs_dump_menus(int fd)
 	return 0;
 }
 
-#define MENUITEM_NOT_APPLICABLE(node, menuitem) (node && node->user && node->user->priv < (int) menuitem->minpriv)
+#define MENUITEM_NOT_APPLICABLE(node, menuitem) (!node || !node->user || (node->user->priv < (int) menuitem->minpriv || (menuitem->group && !bbs_group_contains_user(menuitem->group, bbs_username(node->user)))))
 
 #define DEBUG_MENU_DRAW
 
@@ -804,6 +810,8 @@ static int load_config(int reload)
 					}
 					if (!strcasecmp(k, "minpriv")) {
 						menuitem->minpriv = (unsigned int) atoi(s);
+					} else if (!strcasecmp(k, "requiregroup")) {
+						REPLACE(menuitem->group, s);
 					} else {
 						bbs_warning("Unrecognized menu item modifier '%s'\n", k);
 					}

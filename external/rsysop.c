@@ -62,7 +62,7 @@ static void sigint_handler(int sig)
 {
 	(void) sig;
 	reset_term();
-	fprintf(stderr, "Disconnected from BBS\n"); /* We disconnected from BBS */
+	fprintf(stderr, "\nDisconnected from BBS\n"); /* We disconnected from BBS */
 	exit(EXIT_SUCCESS);
 }
 

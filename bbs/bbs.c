@@ -59,6 +59,7 @@
 #include "include/utils.h" /* use print_time_elapsed, print_days_elapsed */
 #include "include/node.h"
 #include "include/user.h"
+#include "include/group.h"
 #include "include/variables.h"
 #include "include/startup.h"
 #include "include/tls.h"
@@ -578,6 +579,7 @@ static void bbs_shutdown(void)
 	login_cache_cleanup(); /* Clean up any remaining cached logins */
 	username_cache_flush(); /* Clean up any cached username mappings */
 	bbs_free_menus(); /* Clean up menus */
+	bbs_groups_cleanup();
 	bbs_configs_free_all(); /* Clean up any remaining configs that modules didn't. */
 	bbs_vars_cleanup();
 	bbs_cli_unregister_remaining();
@@ -985,6 +987,7 @@ int main(int argc, char *argv[])
 	CHECK_INIT(bbs_init_system());
 	CHECK_INIT(bbs_transfer_config_load());
 	CHECK_INIT(bbs_mail_init());
+	CHECK_INIT(bbs_groups_init());
 	CHECK_INIT(bbs_load_menus(0));
 	CHECK_INIT(bbs_init_menu_handlers());
 	CHECK_INIT(bbs_load_nodes());
