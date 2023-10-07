@@ -575,7 +575,7 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client)
 		res = mailimap_socket_connect(imap, hostname, port);
 	}
 	if (MAILIMAP_ERROR(res)) {
-		bbs_warning("Failed to establish IMAP session to %s:%d\n", hostname, port);
+		bbs_warning("Failed to establish IMAP session to %s:%d (%s)\n", hostname, port, maildriver_strerror(res));
 		client_set_error(ws, "IMAP server connection failed");
 		goto cleanup;
 	}

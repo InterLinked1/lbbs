@@ -98,9 +98,25 @@ static int cli_debug(struct bbs_cli_args *a)
 	return res < 0 ? res : 0;
 }
 
+static int cli_maxdebug(struct bbs_cli_args *a)
+{
+	int oldmax, newmax;
+
+	bbs_cli_set_stdout_logging(a->fdout, 1); /* We want to be able to see the logging */
+	newmax = atoi(a->argv[1]);
+	if (newmax < 0 || newmax > MAX_DEBUG) {
+		return -1;
+	}
+	oldmax = max_logfile_debug_level;
+	max_logfile_debug_level = newmax;
+	bbs_debug(1, "Max file debug level changed from %d to %d\n", oldmax, newmax);
+	return 0;
+}
+
 static struct bbs_cli_entry cli_commands_logger[] = {
 	BBS_CLI_COMMAND(cli_verbose, "verbose", 2, "Set verbose log level", "verbose <newlevel>"),
 	BBS_CLI_COMMAND(cli_debug, "debug", 2, "Set debug log level", "debug <newlevel>"),
+	BBS_CLI_COMMAND(cli_maxdebug, "maxdebug", 2, "Set max file debug log level", "maxdebug <newlevel>"),
 };
 
 int bbs_log_init(int nofork)
