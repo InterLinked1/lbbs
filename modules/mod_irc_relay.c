@@ -174,7 +174,11 @@ static struct chan_pair *find_chanpair(const char *client, const char *channel)
 {
 	struct chan_pair *cp = NULL;
 
-	bbs_assert_exists(channel);
+	if (strlen_zero(channel)) {
+		/* Could be NULL where there's no channel from the remote network, e.g. for NICK command, etc. */
+		bbs_debug(9, "No channel, no match!\n");
+		return NULL;
+	}
 
 	RWLIST_RDLOCK(&mappings);
 	RWLIST_TRAVERSE(&mappings, cp, entry) {
