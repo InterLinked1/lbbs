@@ -333,6 +333,10 @@ static int run(void)
 	SWRITE(client1, "a17 STORE 4 +FLAGS.SILENT (\\Seen)" ENDL); /* Mark message 4 as read */
 	CLIENT_EXPECT(client1, "a17 OK STORE"); /* Immediate success, with no other untagged responses */
 
+	/* Reject unbalanced parentheses in flags */
+	SWRITE(client1, "a17b STORE 4b +FLAGS.SILENT (foo (\\Seen bar)" ENDL);
+	CLIENT_EXPECT(client1, "a17b BAD");
+
 	/* COPY */
 	SWRITE(client1, "a18 COPY 3 Trash" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "3 1] COPY"); /* We'll also read * 14 EXISTS here */

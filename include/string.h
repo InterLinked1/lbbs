@@ -173,6 +173,17 @@ int skipn(char **str, char c, int n);
 int skipn_noparen(char **str, char c, int n);
 
 /*!
+ * \brief Compute how balanced a string is given an open and closing character.
+          For example, this can be used to check if parentheses are properly balanced in a string.
+ * \param s String to check
+ * \param openc Character that constitutes an opening character
+ * \param closec Character that constitutes a closing character
+ * \return Number of times openc appears minus number of times closec appears.
+ *         If the string is properly balanced, this will be 0.
+ */
+int bbs_str_balance_count(const char *restrict s, char openc, char closec);
+
+/*!
  * \brief strsep-like tokenizer that returns the contents of the next substring inside parentheses (handling nested parentheses)
  * \param str
  * \return Substring inside the next outer set of parentheses. str will point to the next unparsed character.

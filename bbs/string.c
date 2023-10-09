@@ -399,6 +399,20 @@ int skipn_noparen(char **str, char c, int n)
 	return count;
 }
 
+int bbs_str_balance_count(const char *restrict s, char openc, char closec)
+{
+	int c = 0;
+	while (*s) {
+		if (*s == openc) {
+			c++;
+		} else if (*s == closec) {
+			c--;
+		}
+		s++;
+	}
+	return c;
+}
+
 char *parensep(char **str)
 {
 	char *ret, *s = *str;

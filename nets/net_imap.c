@@ -4013,6 +4013,44 @@ static int handle_idle(struct imap_session *imap)
 	return 0;
 }
 
+/*! \brief Whether the STORE command contains malformed flag names */
+static int malformed_store(const char *restrict s)
+{
+	/* libetpan has errors when receiving a PERMANENTFLAGS response that contains something like this:
+	 * OK [PERMANENTFLAGS (\Answered \Deleted \Draft \Flagged \Seen (\Seen NonJunk FLAGS \*)] F
+	 *
+	 * This is likely due to it wanting the parentheses to be balanced.
+	 * (\Seen, while not technically a prohibited IMAP command, is likely malformed due
+	 * to a bug somewhere else.
+	 *
+	 * It's imperative that we not allow STORE commands containing such sequences, because broken clients
+	 * like libetpan will not gracefully handle these and abort. IMAP currently has no mechanism to allow clients
+	 * to remove flags from a mailbox, so once malformed flags are written to that mailbox, it will need to be
+	 * deleted and recreated, unless you are the server admin and can (or can have the server admin)
+	 * manually remove the flags from the mailbox.
+	 *
+	 * \todo Add IMAP commands to allow these... though this will likely never be very effective,
+	 * since it's most needed for large mail services, which would be least likely to adopt such an esoteric extension.
+	 *
+	 * The logic here is thus primarily intended to guard against writing bad flags to REMOTE mailboxes,
+	 * not local ones, but we may as well prevent it everywhere. */
+
+	char *tmp = strstr(s, "FLAGS"); /* There can be parentheses in the STORE command itself, so skip those by starting with the FLAGS part */
+	if (!tmp) {
+		return 0; /* This command probably isn't valid either if it doesn't have FLAGS in it? But that can be dealt with later on. */
+	}
+
+	/* The FLAGS argument can contain multiple flags, parenthesized, and that's legitimate.
+	 * But individual flag names may not contain parentheses.
+	 * The easiest way to check is simply to count and ensure the number of parentheses are balanced. */
+
+	if (bbs_str_balance_count(tmp, '(', ')')) {
+		bbs_warning("Malformed flags in STORE command (unbalanced parentheses): %s\n", s);
+		return -1; /* STORE denied! */
+	}
+	return 0;
+}
+
 static int imap_process(struct imap_session *imap, char *s)
 {
 	int replacecount;
@@ -4218,10 +4256,14 @@ static int imap_process(struct imap_session *imap, char *s)
 	} else if (!strcasecmp(command, "STORE")) {
 		REQUIRE_ARGS(s);
 		REQUIRE_SEQNO_ALLOWED();
-		FORWARD_VIRT_MBOX();
-		REQUIRE_SELECTED(imap);
-		IMAP_NO_READONLY(imap);
-		res = handle_store(imap, s, 0);
+		if (malformed_store(s)) {
+			imap_reply(imap, "BAD Invalid flag name");
+		} else {
+			FORWARD_VIRT_MBOX();
+			REQUIRE_SELECTED(imap);
+			IMAP_NO_READONLY(imap);
+			res = handle_store(imap, s, 0);
+		}
 	} else if (!strcasecmp(command, "SEARCH")) {
 		REQUIRE_ARGS(s);
 		REQUIRE_SEQNO_ALLOWED();
@@ -4264,8 +4306,12 @@ static int imap_process(struct imap_session *imap, char *s)
 		} else if (!strcasecmp(command, "MOVE")) {
 			res = handle_copy_move(imap, s, 1, 1);
 		} else if (!strcasecmp(command, "STORE")) {
-			FORWARD_VIRT_MBOX_UID();
-			res = handle_store(imap, s, 1);
+			if (malformed_store(s)) {
+				imap_reply(imap, "BAD Invalid flag name");
+			} else {
+				FORWARD_VIRT_MBOX_UID();
+				res = handle_store(imap, s, 1);
+			}
 		} else if (!strcasecmp(command, "SEARCH")) {
 			FORWARD_VIRT_MBOX_UID();
 			/* Should not send queued untagged updates after SEARCH or UID SEARCH,
