@@ -376,6 +376,10 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 /*! \brief returns the equivalent of logic or for strings: first one if not empty, otherwise second one. */
 #define S_OR(a, b) ({typeof(&((a)[0])) __x = (a); strlen_zero(__x) ? (b) : __x;})
 
+/*! \brief returns the equivalent of logic or for strings, with an additional boolean check: second one if not empty and first one is true, otherwise third one.
+ */
+#define S_COR(a, b, c) ({typeof(&((b)[0])) __x = (b); (a) && !strlen_zero(__x) ? (__x) : (c);})
+
 /*! \brief Print a string if it isn't NULL */
 #define S_IF(a) S_OR(a, "")
 

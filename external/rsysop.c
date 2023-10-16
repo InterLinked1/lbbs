@@ -54,7 +54,7 @@ static int term_makeraw(int fd)
 static void reset_term(void)
 {
 	tcsetattr(STDIN_FILENO, TCSANOW, &orig); /* Restore the terminal on exit */
-	printf("\e]0;\a");
+	printf("\e]2;\a"); /* Restore previous terminal title */
 	fflush(stdout);
 }
 

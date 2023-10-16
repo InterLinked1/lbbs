@@ -803,6 +803,9 @@ static void *monitor_sig_flags(void *unused)
 		}
 	}
 
+	/* Restore previous terminal title */
+	printf("\e]2;\a");
+	fflush(stdout);
 	return NULL;
 }
 

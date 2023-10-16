@@ -209,6 +209,7 @@ static void *sysop_handler(void *varg)
 	char cmdbuf[256];
 	int res;
 	struct pollfd pfds[2];
+	char titlebuf[84];
 	int sysopfdin, sysopfdout;
 	const char *histentry;
 	struct sysop_console *console = varg;
@@ -221,7 +222,9 @@ static void *sysop_handler(void *varg)
 		bbs_add_logging_fd(sysopfdout);
 	}
 
-	bbs_dprintf(sysopfdout, TERM_TITLE_FMT, "Sysop Console");
+	/* Keep it short but descriptive, for a user to differentiate sysop consoles on multiple systems, as well as foreground vs remote. */
+	snprintf(titlebuf, sizeof(titlebuf), "%s%s%s", console->remote ? "Sysop" : "LBBS", S_COR(bbs_hostname(), "@", ""), S_IF(bbs_hostname()));
+	bbs_dprintf(sysopfdout, TERM_TITLE_FMT, titlebuf);
 
 	/* Disable input buffering so we can read a character as soon as it's typed */
 	if (bbs_unbuffer_input(sysopfdin, 0)) {
