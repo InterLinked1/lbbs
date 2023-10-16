@@ -281,7 +281,8 @@ static int smtp_client_handshake(struct bbs_tcp_client *restrict client, const c
 	int res = 0;
 
 	smtp_client_send(client, "EHLO %s\r\n", smtp_hostname());
-	res = smtp_client_expect_final(client, MIN_MS(5), "250", STRLEN("250")); /* Won't return 250 if ESMTP not supported */
+	/* Don't use smtp_client_expect_final as we'll miss reading the capabilities */
+	res = bbs_tcp_client_expect(client, "\r\n", 1, MIN_MS(5), "250"); /* Won't return 250 if ESMTP not supported */
 	if (res) { /* Fall back to HELO if EHLO not supported */
 		if (require_starttls_out) { /* STARTTLS is only supported by EHLO, not HELO */
 			bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
@@ -871,14 +872,18 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 		return 0;
 	}
 
-	bbs_assert(fromlocal);
-	if (!accept_relay_out) {
-		smtp_abort(resp, 550, 5.7.0, "Mail relay denied.");
-		return -1;
-	} else if (fromlocal && minpriv_relay_out) {
-		if (smtp_node(smtp)->user->priv < minpriv_relay_out) {
-			smtp_abort(resp, 550, 5.7.0, "Mail relay denied. Unauthorized to relay external mail.");
+	if (smtp_is_exempt_relay(smtp)) {
+		bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp_node(smtp)->ip, smtp_from_domain(smtp));
+	} else {
+		bbs_assert(fromlocal); /* Shouldn't have slipped through to this point otherwise */
+		if (!accept_relay_out) {
+			smtp_abort(resp, 550, 5.7.0, "Mail relay denied.");
 			return -1;
+		} else if (fromlocal && minpriv_relay_out) {
+			if (smtp_node(smtp)->user->priv < minpriv_relay_out) {
+				smtp_abort(resp, 550, 5.7.0, "Mail relay denied. Unauthorized to relay external mail.");
+				return -1;
+			}
 		}
 	}
 
@@ -1057,6 +1062,12 @@ static int exists(struct smtp_session *smtp, struct smtp_response *resp, const c
 	UNUSED(user);
 	UNUSED(domain);
 
+	if (smtp_is_exempt_relay(smtp)) {
+		/* Allow an external host to relay messages for a domain if it's explicitly authorized to. */
+		bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp_node(smtp)->ip, smtp_from_domain(smtp));
+		return 1;
+	}
+
 	if (!fromlocal) {/* External user trying to send us mail that's not for us. */
 		/* Built in rejection of relayed mail. If another delivery agent wants to override this, it can,
 		 * (e.g. to set up a honeypot), it would just need to have a more urgent priority. */
@@ -1120,10 +1131,12 @@ static int load_module(void)
 
 static int unload_module(void)
 {
+	int res;
+	res = smtp_unregister_delivery_agent(&extdeliver);
 	bbs_pthread_cancel_kill(queue_thread);
 	bbs_pthread_join(queue_thread, NULL);
 	pthread_mutex_destroy(&queue_lock);
-	return smtp_unregister_delivery_agent(&extdeliver);
+	return res;
 }
 
 BBS_MODULE_INFO_DEPENDENT("E-Mail External Delivery", "net_smtp.so");

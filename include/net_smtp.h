@@ -28,6 +28,23 @@ struct smtp_session;
 const char *smtp_hostname(void);
 
 /*!
+ * \brief Whether an external host is allowed to relay mail for a particular domain
+ * \param srcip Client IP address
+ * \param hostname MAIL FROM domain
+ * \retval 1 if explicitly authorized
+ * \retval 0 if not authorized
+ */
+int smtp_relay_authorized(const char *srcip, const char *hostname);
+
+/*!
+ * \brief Whether a message is exempt from certain checks due to it being accepted for relay from another MTA
+ * \param smtp
+ * \retval 1 if exempt
+ * \retval 0 if not exempt
+ */
+int smtp_is_exempt_relay(struct smtp_session *smtp);
+
+/*!
  * \brief Get a timestamp string appropriate for the Received header
  * \param received Received time
  * \param[out] buf
@@ -106,6 +123,12 @@ struct bbs_node *smtp_node(struct smtp_session *smtp);
 
 /*! \brief Get SMTP protocol used */
 const char *smtp_protname(struct smtp_session *smtp);
+
+/*! \brief Get the SMTP MAIL FROM address */
+const char *smtp_from(struct smtp_session *smtp);
+
+/*! \brief Get the SMTP MAIL FROM domain */
+const char *smtp_from_domain(struct smtp_session *smtp);
 
 /*! \brief Whether SPF validation should be performed */
 int smtp_should_validate_spf(struct smtp_session *smtp);

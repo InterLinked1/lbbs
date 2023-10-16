@@ -170,6 +170,11 @@ static int arc_filter_sign_cb(struct smtp_filter_data *f)
 		return 0;
 	}
 
+	if (smtp_is_exempt_relay(f->smtp)) {
+		bbs_debug(2, "Skipping ARC signing (%s explicitly authorized to relay mail from %s)\n", smtp_node(f->smtp)->ip, smtp_from_domain(f->smtp));
+		return 0;
+	}
+
 	/* We sign the message using the same domain that will be used in the outgoing MAIL FROM. */
 	domain = bbs_strcnext(f->from, '@');
 	if (!domain) {

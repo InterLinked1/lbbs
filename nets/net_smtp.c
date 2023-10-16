@@ -61,6 +61,7 @@
 #include "include/stringlist.h"
 #include "include/test.h"
 #include "include/mail.h"
+#include "include/cli.h"
 
 #include "include/mod_mail.h"
 #include "include/net_smtp.h"
@@ -156,6 +157,7 @@ struct smtp_session {
 		unsigned int inauth:2;		/* Whether currently doing AUTH (1 = need PLAIN, 2 = need LOGIN user, 3 = need LOGIN pass) */
 		unsigned int dkimsig:1;		/* Message has a DKIM-Signature header */
 		unsigned int is8bit:1;		/* 8BITMIME */
+		unsigned int relay:1;		/* Message being relayed */
 	} tflags; /* Transaction flags */
 
 	/* Not affected by RSET */
@@ -188,6 +190,60 @@ static void smtp_destroy(struct smtp_session *smtp)
 }
 
 static struct stringlist blacklist;
+
+struct smtp_relay_host {
+	const char *source;			/*!< IP address, hostname, or CIDR range */
+	struct stringlist domains;	/*!< Domains (including wildcards) for which this host is allowed to relay mail */
+	RWLIST_ENTRY(smtp_relay_host) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(authorized_relays, smtp_relay_host);
+
+static void add_authorized_relay(const char *source, const char *domains)
+{
+	struct smtp_relay_host *h;
+
+	if (STARTS_WITH(source, "0.0.0.0")) {
+		/* If someone wants to shoot him/herself in the foot, at least provide a warning */
+		bbs_notice("This server is configured as an open mail relay and may be abused!\n");
+	}
+
+	h = calloc(1, sizeof(*h) + strlen(source) + 1);
+	if (ALLOC_FAILURE(h)) {
+		return;
+	}
+
+	strcpy(h->data, source); /* Safe */
+	h->source = h->data;
+	stringlist_push_list(&h->domains, domains);
+
+	/* Head insert, so later entries override earlier ones, in case multiple match */
+	RWLIST_INSERT_HEAD(&authorized_relays, h, entry);
+}
+
+static void relay_free(struct smtp_relay_host *h)
+{
+	stringlist_empty(&h->domains);
+	free(h);
+}
+
+int smtp_relay_authorized(const char *srcip, const char *hostname)
+{
+	struct smtp_relay_host *h;
+
+	RWLIST_RDLOCK(&authorized_relays);
+	RWLIST_TRAVERSE(&authorized_relays, h, entry) {
+		if (bbs_ip_match_ipv4(srcip, h->source)) {
+			/* Just needs to be allowed by one matching entry */
+			if (stringlist_contains(&h->domains, hostname)) {
+				return 1;
+			}
+		}
+	}
+	RWLIST_UNLOCK(&authorized_relays);
+	return 0;
+}
 
 /*
  * Status code references:
@@ -412,7 +468,11 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		 * Because this is still useful information, we don't block any clients if the HELO hostname
 		 * does not match the connection IP, but if it doesn't, we do penalize the connection.
 		 */
-		if (!smtp->msa && smtp_ip_mismatch(smtp->node->ip, smtp->helohost)) { /* Message submission is exempt from these checks, the HELO hostname is not useful anyways */
+		if (smtp_relay_authorized(smtp->node->ip, smtp->helohost)) {
+			/* The HELO host isn't used for determining if it's allowed to relay,
+			 * but in case the HELO host is something else, we shouldn't penalize it either. */
+			bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp->node->ip, smtp->helohost);
+		} else if (!smtp->msa && smtp_ip_mismatch(smtp->node->ip, smtp->helohost)) { /* Message submission is exempt from these checks, the HELO hostname is not useful anyways */
 			bbs_warning("HELO/EHLO hostname '%s' does not resolve to client IP %s\n", smtp->helohost, smtp->node->ip);
 			/* This is suspicious. It is not invalid, but it very well might be.
 			 * I'm aware that this doesn't support IPv6. IPv4 is pretty important for email,
@@ -741,20 +801,27 @@ static int handle_mail(struct smtp_session *smtp, char *s)
 	tmp = strchr(from, '@');
 	REQUIRE_ARGS(tmp); /* Must be user@domain */
 	tmp++; /* Skip @ */
-	/* Don't require authentication simply because the sending domain is local.
-	 * There may be other servers that are authorized to send mail from such domains.
-	 * If it's not legitimate, the SPF checks should reveal that. */
-	if (strlen_zero(smtp->helohost) || (requirefromhelomatch && !smtp_domain_matches(smtp->helohost, tmp))) {
-		smtp_reply(smtp, 530, 5.7.0, "HELO/EHLO domain does not match MAIL FROM domain");
-		return 0;
+
+	if (smtp_relay_authorized(smtp->node->ip, tmp)) {
+		bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp->node->ip, tmp);
+		smtp->tflags.relay = 1;
+	} else {
+		/* Don't require authentication simply because the sending domain is local.
+		 * There may be other servers that are authorized to send mail from such domains.
+		 * If it's not legitimate, the SPF checks should reveal that. */
+		if (strlen_zero(smtp->helohost) || (requirefromhelomatch && !smtp_domain_matches(smtp->helohost, tmp))) {
+			smtp_reply(smtp, 530, 5.7.0, "HELO/EHLO domain does not match MAIL FROM domain");
+			return 0;
+		}
+		if (stringlist_contains(&blacklist, tmp)) { /* Entire domain is blacklisted */
+			smtp_reply(smtp, 554, 5.7.1, "This domain is blacklisted");
+			return 0;
+		} else if (stringlist_contains(&blacklist, from)) { /* This user is blacklisted */
+			smtp_reply(smtp, 554, 5.7.1, "This email address is blacklisted");
+			return 0;
+		}
 	}
-	if (stringlist_contains(&blacklist, tmp)) { /* Entire domain is blacklisted */
-		smtp_reply(smtp, 554, 5.7.1, "This domain is blacklisted");
-		return 0;
-	} else if (stringlist_contains(&blacklist, from)) { /* This user is blacklisted */
-		smtp_reply(smtp, 554, 5.7.1, "This email address is blacklisted");
-		return 0;
-	}
+
 	REPLACE(smtp->from, from);
 	smtp_reply(smtp, 250, 2.1.0, "OK");
 	return 0;
@@ -968,14 +1035,32 @@ const char *smtp_protname(struct smtp_session *smtp)
 	return "SMTP";
 }
 
+const char *smtp_from(struct smtp_session *smtp)
+{
+	return smtp->from;
+}
+
+const char *smtp_from_domain(struct smtp_session *smtp)
+{
+	if (!smtp->from) {
+		return NULL;
+	}
+	return bbs_strcnext(smtp->from, '@');
+}
+
+int smtp_is_exempt_relay(struct smtp_session *smtp)
+{
+	return smtp->tflags.relay;
+}
+
 int smtp_should_validate_spf(struct smtp_session *smtp)
 {
-	return validatespf && !smtp->fromlocal;
+	return validatespf && !smtp->fromlocal && !smtp->tflags.relay;
 }
 
 int smtp_should_validate_dkim(struct smtp_session *smtp)
 {
-	return smtp->tflags.dkimsig;
+	return smtp->tflags.dkimsig && !smtp->tflags.relay;
 }
 
 int smtp_is_message_submission(struct smtp_session *smtp)
@@ -1150,6 +1235,18 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 	free_if(fdata->arc);
 	free_if(fdata->dmarc);
 	free_if(fdata->authresults);
+}
+
+static int cli_filters(struct bbs_cli_args *a)
+{
+	struct smtp_filter *f;
+	bbs_dprintf(a->fdout, "%-14s %-20s %-8s %s\n", "ID", "Direction", "Type", "Module");
+	RWLIST_RDLOCK(&filters);
+	RWLIST_TRAVERSE(&filters, f, entry) {
+		bbs_dprintf(a->fdout, "%-14p %-20s %-8s %s\n", f, smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), bbs_module_name(f->mod));
+	}
+	RWLIST_UNLOCK(&filters);
+	return 0;
 }
 
 void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_process *mproc)
@@ -2507,6 +2604,10 @@ static void *__smtp_handler(void *varg)
 	return NULL;
 }
 
+static struct bbs_cli_entry cli_commands_smtp[] = {
+	BBS_CLI_COMMAND(cli_filters, "smtp filters", 2, "List all SMTP filters", NULL),
+};
+
 static int load_config(void)
 {
 	struct bbs_config *cfg;
@@ -2540,14 +2641,23 @@ static int load_config(void)
 	/* Blacklist */
 	while ((section = bbs_config_walk(cfg, section))) {
 		struct bbs_keyval *keyval = NULL;
-		if (strcmp(bbs_config_section_name(section), "blacklist")) {
-			continue; /* Not the blacklist section */
-		}
-		while ((keyval = bbs_config_section_walk(section, keyval))) {
-			const char *key = bbs_keyval_key(keyval);
-			if (!stringlist_contains(&blacklist, key)) {
-				stringlist_push(&blacklist, key);
+		const char *key, *val;
+
+		if (!strcmp(bbs_config_section_name(section), "blacklist")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				key = bbs_keyval_key(keyval);
+				if (!stringlist_contains(&blacklist, key)) {
+					stringlist_push(&blacklist, key);
+				}
 			}
+		} else if (!strcmp(bbs_config_section_name(section), "authorized_relays")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				key = bbs_keyval_key(keyval);
+				val = bbs_keyval_val(keyval);
+				add_authorized_relay(key, val);
+			}
+		} else if (strcasecmp(bbs_config_section_name(section), "general")) {
+			bbs_warning("Invalid section name '%s'\n", bbs_config_section_name(section));
 		}
 	}
 
@@ -2589,11 +2699,13 @@ static int load_module(void)
 
 	bbs_register_tests(tests);
 	bbs_register_mailer(injectmail, 1);
+	bbs_cli_register_multiple(cli_commands_smtp);
 
 	return 0;
 
 cleanup:
 	stringlist_empty(&blacklist);
+	RWLIST_WRLOCK_REMOVE_ALL(&authorized_relays, entry, relay_free);
 	return -1;
 }
 
@@ -2601,6 +2713,7 @@ static int unload_module(void)
 {
 	bbs_unregister_mailer(injectmail);
 	bbs_unregister_tests(tests);
+	bbs_cli_unregister_multiple(cli_commands_smtp);
 	if (smtp_enabled) {
 		bbs_stop_tcp_listener(smtp_port);
 	}
@@ -2611,6 +2724,10 @@ static int unload_module(void)
 		bbs_stop_tcp_listener(msa_port);
 	}
 	stringlist_empty(&blacklist);
+	RWLIST_WRLOCK_REMOVE_ALL(&authorized_relays, entry, relay_free);
+	if (!RWLIST_EMPTY(&filters)) {
+		bbs_error("Filter(s) still registered at unload?\n");
+	}
 	return 0;
 }
 

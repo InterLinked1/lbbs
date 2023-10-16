@@ -51,6 +51,25 @@ static int prepend_received(struct smtp_filter_data *f)
 	return 0;
 }
 
+/*! \brief Separate callback for adding Received header to relayed messages, since these could have multiple recipients */
+static int relay_filter_cb(struct smtp_filter_data *f)
+{
+	if (smtp_is_exempt_relay(f->smtp)) {
+		const char *prot;
+		char timestamp[40];
+		char hostname[256];
+
+		prot = smtp_protname(f->smtp);
+		smtp_timestamp(smtp_received_time(f->smtp), timestamp, sizeof(timestamp));
+		bbs_get_hostname(f->node->ip, hostname, sizeof(hostname)); /* Look up the sending IP */
+		/* The first hostname is the HELO/EHLO hostname.
+		 * The second one is the reverse DNS hostname */
+		smtp_filter_write(f, "Received: from %s (%s [%s])\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
+			f->helohost, hostname, f->node->ip, bbs_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
+	}
+	return 0;
+}
+
 static int builtin_filter_cb(struct smtp_filter_data *f)
 {
 	/* This is a good place to tack on Return-Path (receiving MTA does this) */
@@ -69,6 +88,11 @@ static int auth_filter_cb(struct smtp_filter_data *f)
 #define HEADER_CONTINUE "	"
 	char *buf;
 	int len;
+
+	if (smtp_is_exempt_relay(f->smtp)) {
+		return 0;
+	}
+
 	/* Add Authentication-Results header with the results of various tests */
 	len = asprintf(&buf, "%s" "%s%s%s%s" "%s%s" "%s%s" "%s%s",
 		bbs_hostname(),
@@ -96,6 +120,10 @@ struct smtp_filter_provider builtin_filter = {
 	.on_body = builtin_filter_cb,
 };
 
+struct smtp_filter_provider relay_filter = {
+	.on_body = relay_filter_cb,
+};
+
 struct smtp_filter_provider auth_filter = {
 	.on_body = auth_filter_cb,
 };
@@ -103,6 +131,7 @@ struct smtp_filter_provider auth_filter = {
 static int load_module(void)
 {
 	smtp_filter_register(&builtin_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_INDIVIDUAL, SMTP_DIRECTION_IN | SMTP_DIRECTION_SUBMIT, 1);
+	smtp_filter_register(&relay_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_OUT, 1); /* For messages that are being relayed */
 	/* Run this only after the SPF, DKIM, and DMARC filters have run: */
 	smtp_filter_register(&auth_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 5);
 	return 0;
@@ -111,6 +140,7 @@ static int load_module(void)
 static int unload_module(void)
 {
 	smtp_filter_unregister(&builtin_filter);
+	smtp_filter_unregister(&relay_filter);
 	smtp_filter_unregister(&auth_filter);
 	return 0;
 }
