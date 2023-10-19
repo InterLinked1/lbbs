@@ -833,6 +833,8 @@ const char *websocket_cookie_val(struct ws_session *ws, const char *cookiename, 
 /* Add some wiggle room to prevent timeouts right on the threshold */
 #define MAX_WEBSOCKET_PING_MS (MAX_WEBSOCKET_POLL_MS - SEC_MS(5))
 
+static unsigned int max_websocket_timeout_ms = MAX_WEBSOCKET_PING_MS;
+
 /*! \note The details of the underlying WebSocket library are intentionally abstracted away here.
  * WebSocket applications just deal with the net_ws module, the net_ws module deals with
  * the WebSocket library that actually speaks the WebSocket protocol on the wire. */
@@ -856,7 +858,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 	ws.data = NULL;
 	ws.pollfd = -1;
 	/* MAX_WEBSOCKET_POLL_MS is the absolute max. Subtract a few seconds just to be safe, so it's not too close a call. */
-	ws.pollms = MAX_WEBSOCKET_PING_MS;
+	ws.pollms = (int) max_websocket_timeout_ms;
 	ws.sessionchecked = 0;
 	ws.cookieschecked = 0;
 	memset(&ws.varlist, 0, sizeof(ws.varlist));
@@ -919,10 +921,10 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 		pfds[1].fd = ws.pollfd;
 		pfds[0].revents = pfds[1].revents = 0;
 
-		/* We need to ping the client at least every MAX_WEBSOCKET_PING_MS. */
+		/* We need to ping the client at least every max_websocket_timeout_ms. */
 		this_poll_start = time(NULL);
 		elapsed_sec = this_poll_start - lastping;
-		max_ms = (int) (MAX_WEBSOCKET_PING_MS - SEC_MS(elapsed_sec));
+		max_ms = (int) (max_websocket_timeout_ms - SEC_MS(elapsed_sec));
 #ifdef DEBUG_POLL
 		bbs_debug(10, "ws.pollms: %d, %d s / %d ms have elapsed since last ping, %d ms is max allowed\n", ws.pollms, elapsed_sec, app_ms_elapsed, max_ms);
 #endif
@@ -1192,6 +1194,14 @@ static int load_config(void)
 		return -1;
 	}
 
+	if (!bbs_config_val_set_uint(cfg, "general", "pingtimeout", &max_websocket_timeout_ms)) {
+		max_websocket_timeout_ms *= 1000;
+		if (max_websocket_timeout_ms > MAX_WEBSOCKET_PING_MS || max_websocket_timeout_ms < SEC_MS(5)) {
+			bbs_warning("Ping timeout %us is out of range, using %u instead\n", max_websocket_timeout_ms, MAX_WEBSOCKET_PING_MS);
+			max_websocket_timeout_ms = MAX_WEBSOCKET_PING_MS;
+		}
+	}
+
 	bbs_config_val_set_path(cfg, "sessions", "phpsessdir", phpsessdir, sizeof(phpsessdir));
 	bbs_config_val_set_str(cfg, "sessions", "phpsessname", phpsessname, sizeof(phpsessname));
 	bbs_config_val_set_str(cfg, "sessions", "phpsessprefix", phpsessprefix, sizeof(phpsessprefix));
@@ -1221,7 +1231,7 @@ static int load_config(void)
 				/* Now every value is surrounded by commas, including the first and last (makes it easy to use strstr) */
 				allowed_origins = origins.buf;
 			}
-		} else {
+		} else if (strcmp(bbs_config_section_name(section), "general")) {
 			bbs_warning("Unknown section name, ignoring: %s\n", bbs_config_section_name(section));
 		}
 	}
