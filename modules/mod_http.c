@@ -71,7 +71,7 @@
 
 #define http_debug(level, fmt, ...) bbs_debug(level, fmt, ## __VA_ARGS__)
 
-static const char *http_method_name(enum http_method method)
+const char *http_method_name(enum http_method method)
 {
 	switch (method) {
 		case HTTP_METHOD_OPTIONS:
@@ -133,6 +133,11 @@ static RWLIST_HEAD_STATIC(listeners, http_listener);
 static RWLIST_HEAD_STATIC(routes, http_route);
 static RWLIST_HEAD_STATIC(sessions, session);
 
+static enum http_response_code (*proxy_handler)(struct http_session *http) = NULL;
+static void *proxy_handler_mod = NULL;
+static unsigned short int proxy_port = 0;
+static enum http_method proxy_methods = HTTP_METHOD_UNDEF;
+
 #define http_send_header(http, fmt, ...) \
 	bbs_node_fd_writef(http->node, http->wfd, fmt, ## __VA_ARGS__); \
 	http_debug(5, "<= " fmt, ## __VA_ARGS__);
@@ -175,15 +180,20 @@ static const char *http_response_code_name(enum http_response_code code)
 	return "";
 }
 
+void http_send_response_status(struct http_session *http, enum http_response_code code)
+{
+	bbs_assert(!http->res->sentheaders);
+	http->res->sentheaders = 1;
+	http_send_header(http, "HTTP/1.1 %u %s\r\n", code, http_response_code_name(code));
+}
+
 static void http_send_headers(struct http_session *http)
 {
 	const char *key;
 	char *value;
 	enum http_response_code code = http->res->code ? http->res->code : HTTP_OK;
 
-	bbs_assert(!http->res->sentheaders);
-
-	http_send_header(http, "HTTP/1.1 %u %s\r\n", code, http_response_code_name(code));
+	http_send_response_status(http, code);
 
 	/* Note: Headers sent here via http_send_header are not intended to be set by applications,
 	 * since they would be duped in the header list, and not override what is sent here. */
@@ -234,7 +244,6 @@ static void http_send_headers(struct http_session *http)
 		bbs_vars_remove_first(&http->res->headers);
 	}
 	NODE_SWRITE(http->node, http->wfd, "\r\n"); /* CR LF to indicate end of headers */
-	http->res->sentheaders = 1;
 }
 
 int http_set_header(struct http_session *http, const char *header, const char *value)
@@ -407,7 +416,7 @@ int http_writef(struct http_session *http, const char *fmt, ...)
 	return len;
 }
 
-static const char *http_version_name(enum http_version version)
+const char *http_version_name(enum http_version version)
 {
 	switch (version) {
 		case HTTP_VERSION_0_9:
@@ -586,6 +595,7 @@ static int parse_request_line(struct http_session *restrict http, char *s)
 	} else {
 		char *uri;
 		/* Ooh, an absolute URL. Uncommon but could happen.
+		 * (One common use case is with HTTP proxying.)
 		 * Parse out the hostname and the URI from this. */
 		if (STARTS_WITH(tmp, "http://")) {
 			tmp += STRLEN("http://");
@@ -606,6 +616,7 @@ static int parse_request_line(struct http_session *restrict http, char *s)
 		*uri = '\0';
 		http->req->urihost = strdup(tmp);
 		http->req->host = http->req->urihost;
+		http->req->absolute = 1;
 	}
 	if (ALLOC_FAILURE(http->req->uri)) {
 		return HTTP_INTERNAL_SERVER_ERROR;
@@ -646,9 +657,11 @@ static int process_headers(struct http_session *http)
 			if (strlen_zero(portstr)) {
 				bbs_warning("Malformed host: %s\n", value);
 			} else {
-				unsigned int port = (unsigned int) atoi(portstr);
-				if (port != http->node->port) {
-					bbs_warning("Host port %u does not match actual port %u\n", port, http->node->port);
+				http->req->hostport = (unsigned int) atoi(portstr);
+				if (http->req->hostport != http->node->port && !(http->req->method & HTTP_METHOD_CONNECT) && !http->req->absolute) {
+					/* For proxy connections, the port could be anything arbitrary,
+					 * but otherwise, it's not legitimate and we should reject it. */
+					bbs_warning("Host port %u does not match actual port %u\n", http->req->hostport, http->node->port);
 					return HTTP_BAD_REQUEST;
 				}
 			}
@@ -767,13 +780,41 @@ static int process_headers(struct http_session *http)
 		}
 	}
 
-	if (http->req->method & HTTP_METHOD_CONNECT) {
-		/* The CONNECT method is for proxy servers, which we aren't one.
-		 * This is almost certainly spam traffic. */
-		bbs_event_dispatch(http->node, EVENT_NODE_BAD_REQUEST);
-	}
-
 	return 0;
+}
+
+int http_is_proxy_request(struct http_session *http)
+{
+	/* There are two ways that clients establish proxy connections.
+	 *
+	 * A. The traditional way is to connect to a proxy (often on its own dedicated port)
+	 * and simply make the request. The server then replays the request to the target,
+	 * and relays the response. Regular methods, e.g. GET, POST, etc. are used.
+	 *
+	 * B. Another method, specified in RFC 7231 4.3.6, and always used for HTTPS, is to use the CONNECT method
+	 * to the proxy server, establish a tunnel to the destination, and then set up
+	 * TLS and make the actual HTTP requests on top of that.
+	 * A client *could* do this for plain HTTP requests as well, but in practice
+	 * most don't, unless you tell them to (e.g. cURL with the -p option, in addition to -x)
+	 * Because the client could, theoretically, request connection to any arbitrary TCP port,
+	 * servers generally restrict the connection to port 443 (and maybe 80) only.
+	 *
+	 * A. GET http://example.com/file.html HTTP/1.1
+	 * B. CONNECT example.com:443 HTTP/1.1
+	 *
+	 * We support both, for maximum compatibility. For CONNECT requests, it's obvious
+	 * that it's a proxy, but in the first case, it's not as clear cut if we're not
+	 * running on a port dedicated for the proxy. There are two telltale signs:
+	 * - Using an absolute URL in the request header (e.g. http://example.com).
+	 *   This is mandatory for proxy connections, but does not necessarily
+	 *   indicate a proxy connection (even if uncommon, otherwise)
+	 * - Presence of the Proxy-Connection header. In contrast, this is a sure confirmation,
+	 *   but I'm not 100% sure this header will always be present, though it does seem
+	 *   fairly reliable, between cURL and browsers, and seems to be the only thing
+	 *   that CAN actually identify it as a proxy request.
+	 *   Obviously, this header should not be passed forward when replaying the request.
+	 */
+	return http->req->method & HTTP_METHOD_CONNECT || (http->req->absolute && http_request_header(http, "Proxy-Connection"));
 }
 
 int http_websocket_upgrade_requested(struct http_session *http)
@@ -1708,6 +1749,34 @@ static int http_handle_request(struct http_session *http, char *buf)
 		return res;
 	}
 
+	/* Proxy requests really need to be handled before doing anything else, since they're fairly low level.
+	 * We don't want to read or process the body.
+	 * We don't care what the request is for,
+	 * and we don't want to use any of the regular routes. */
+	if (http_is_proxy_request(http)) {
+		/* Pass it off to the proxy handler, if one exists.
+		 * Otherwise, just reject it as unauthorized. */
+		if (!proxy_port && http_get_default_http_port() > 0) {
+			proxy_port = (unsigned short int) http_get_default_http_port();
+		}
+		if (http->node->port != proxy_port) {
+			bbs_debug(3, "Node port %u does not match proxy port %u\n", http->node->port, proxy_port);
+		} else if (!(proxy_methods & http->req->method)) {
+			bbs_debug(3, "Proxy handler does not support %s\n", http_method_name(http->req->method));
+		} else {
+			if (proxy_handler) {
+				bbs_debug(4, "Passing %s proxy request for %s to proxy handler\n", http_method_name(http->req->method), http->req->uri);
+				bbs_module_ref(proxy_handler_mod, 1);
+				code = proxy_handler(http);
+				bbs_module_unref(proxy_handler_mod, 1);
+				return code;
+			}
+			bbs_event_dispatch(http->node, EVENT_NODE_BAD_REQUEST); /* Likely spam traffic. */
+			return HTTP_UNAUTHORIZED;
+		}
+		/* Fall through and treat as non proxy request */
+	}
+
 	/* Search for a matching route, before processing the body. */
 	route = find_route(http->node->port, http->req->host, http->req->uri, http->req->method, &methodmismatch, http->req->httpsupgrade ? &secureport : NULL);
 	if (!http->secure && http->req->httpsupgrade && secureport && secureport != http->node->port) {
@@ -1810,6 +1879,7 @@ static void http_handler(struct bbs_node *node, int secure)
 	}
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
+	http.buf = buf;
 
 	do {
 		res = http_handle_request(&http, buf);
@@ -2124,7 +2194,7 @@ enum http_response_code http_static(struct http_session *http, const char *filen
 				 * Calculate overhead of the multipart headers.
 				 * THIS MUST BE DONE EXACTLY THE SAME WAY THE HEADERS ARE ACTUALLY GENERATED AT THE BOTTOM OF THIS FUNCTION!
 				 */
-				overhead += STRLEN("--" RANGE_SEPARATOR "\r\n");
+				overhead += STRLEN("--" RANGE_SEPARATOR "\r\n"); /* XXX What if RANGE_SEPARATOR appears in the content? */
 				overhead += STRLEN("Content-Range: ");
 				overhead += (size_t) snprintf(bytes_list, sizeof(bytes_list), "bytes %ld-%ld", a, b);
 				overhead += STRLEN("\r\n\r\n"); /* Content-Range CR LF, plus CR LF for end of headers */
@@ -2734,6 +2804,32 @@ int http_unregister_route(enum http_response_code (*handler)(struct http_session
 	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&routes);
 	return removed ? 0 : -1;
+}
+
+int __http_register_proxy_handler(unsigned short int port, enum http_method methods, enum http_response_code (*handler)(struct http_session *http), void *mod)
+{
+	if (proxy_handler) {
+		bbs_error("Proxy handler already registered\n");
+		return -1;
+	}
+	proxy_handler_mod = mod;
+	proxy_handler = handler;
+	proxy_port = port;
+	proxy_methods = methods;
+	return 0;
+}
+
+int http_unregister_proxy_handler(enum http_response_code (*handler)(struct http_session *http))
+{
+	if (handler != proxy_handler) {
+		bbs_error("Proxy handler %p not currently registered\n", handler);
+		return -1;
+	}
+	proxy_handler = NULL;
+	proxy_handler_mod = NULL;
+	proxy_port = 0;
+	proxy_methods = HTTP_METHOD_UNDEF;
+	return 0;
 }
 
 static int cli_http_routes(struct bbs_cli_args *a)

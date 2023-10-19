@@ -23,7 +23,7 @@ Key features and capabilities include:
 
 * File transfers via FTP, SFTP, Gopher, and HTTP/HTTPS
 
-* HTTP 1.1 web server, with WebSocket support
+* HTTP 1.1 web server, with WebSocket and forward-proxy support
 
 * User home directories
 
@@ -42,6 +42,7 @@ Key features and capabilities include:
   * Mailbox quotas
   * Shared mailboxes and ACL controls
   * Multi-domain support
+  * Relay support
   * IMAP NOTIFY support
   * RFC 4468 BURL IMAP and server-side proxied append support, for more efficient (bandwidth saving) email submission
   * Remote mailboxes (IMAP proxy)

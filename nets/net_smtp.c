@@ -237,6 +237,7 @@ int smtp_relay_authorized(const char *srcip, const char *hostname)
 		if (bbs_ip_match_ipv4(srcip, h->source)) {
 			/* Just needs to be allowed by one matching entry */
 			if (stringlist_contains(&h->domains, hostname)) {
+				RWLIST_UNLOCK(&authorized_relays);
 				return 1;
 			}
 		}

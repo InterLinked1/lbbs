@@ -36,6 +36,15 @@ void bbs_vars_remove_first(struct bbs_vars *vars);
  */
 const char *bbs_vars_peek_head(struct bbs_vars *vars, char **value);
 
+/*!
+ * \brief Get the next variable in a variable list
+ * \param vars
+ * \param[out] Next variable for iterator
+ * \param[out] Variable key
+ * \return Next variable value, or NULL if no next value
+ */
+const char *bbs_varlist_next(struct bbs_vars *vars, struct bbs_var **v, const char **key);
+
 /*! \brief Called during shutdown to free global variables */
 void bbs_vars_cleanup(void);
 

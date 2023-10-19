@@ -75,6 +75,22 @@ const char *bbs_vars_peek_head(struct bbs_vars *vars, char **value)
 	return NULL;
 }
 
+const char *bbs_varlist_next(struct bbs_vars *vars, struct bbs_var **v, const char **key)
+{
+	struct bbs_var *vnext;
+	if (!*v) {
+		vnext = RWLIST_FIRST(vars);
+	} else {
+		vnext = RWLIST_NEXT(*v, entry);
+	}
+	*v = vnext; /* Set iterator to next item */
+	if (*v) {
+		*key = vnext->key;
+		return vnext->value;
+	}
+	return NULL;
+}
+
 static int load_config(void)
 {
 	struct bbs_config_section *section = NULL;

@@ -27,6 +27,8 @@ enum http_method {
 	HTTP_METHOD_CONNECT = (1 << 7),
 };
 
+const char *http_method_name(enum http_method method);
+
 enum http_version {
 	HTTP_VERSION_UNKNOWN = 0,
 	HTTP_VERSION_0_9 = (1 << 0),
@@ -103,6 +105,7 @@ struct http_request {
 	unsigned char *body;
 	struct tm modsince;
 	int numheaders;
+	unsigned int hostport;
 	/* Pointers to allocated data */
 	const char *host;
 	const char *querystring;
@@ -113,6 +116,7 @@ struct http_request {
 	unsigned int chunked:1;		/*!< Request uses chunked transfer encoding */
 	unsigned int expect100:1;	/*!< Expecting 100-continue */
 	unsigned int parsedbody:1;
+	unsigned int absolute:1;	/*!< Absolute host used in request */
 };
 
 struct http_response {
@@ -136,10 +140,14 @@ struct http_session {
 	struct http_response resstack;
 	struct bbs_node *node;
 	struct readline_data *rldata;
+	char *buf; /*!< Stack-allocated readline data buffer */
 	int rfd;
 	int wfd;
 	unsigned int secure:1;
 };
+
+/*! \brief Send just the HTTP response code (initial line) */
+void http_send_response_status(struct http_session *http, enum http_response_code code);
 
 /*!
  * \brief Parse an HTTP request that is pending on an http_session's node's file descriptor
@@ -199,6 +207,9 @@ void http_write(struct http_session *http, const char *buf, size_t len);
 /*! \brief Same as http_write, but accept printf-style arguments */
 int __attribute__ ((format (gnu_printf, 2, 3))) http_writef(struct http_session *http, const char *fmt, ...);
 
+/*! \brief Get string representation of an HTTP version number */
+const char *http_version_name(enum http_version version);
+
 /*!
  * \brief Get an HTTP request header, if it exists
  * \param http
@@ -257,6 +268,9 @@ const char *http_session_var(struct http_session *http, const char *name);
  * \retval 0 on success, -1 on failure
  */
 int http_session_set_var(struct http_session *http, const char *name, const char *value);
+
+/*! \brief Whether a request is a proxy request (either tunneled or regular) */
+int http_is_proxy_request(struct http_session *http);
 
 /*! \brief Whether a websocket upgrade was requested by the client */
 int http_websocket_upgrade_requested(struct http_session *http);
@@ -359,3 +373,10 @@ int __http_register_route(const char *hostname, unsigned short int port, unsigne
 
 /*! \brief Unregister a route previously registered using __http_register_route */
 int http_unregister_route(enum http_response_code (*handler)(struct http_session *http));
+
+#define http_register_proxy_handler(port, methods, handler) __http_register_proxy_handler(port, methods, handler, BBS_MODULE_SELF)
+
+int __http_register_proxy_handler(unsigned short int port, enum http_method methods, enum http_response_code (*handler)(struct http_session *http), void *mod);
+
+/*! \brief Unregister a proxy handler */
+int http_unregister_proxy_handler(enum http_response_code (*handler)(struct http_session *http));
