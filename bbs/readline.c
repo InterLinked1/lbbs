@@ -52,7 +52,7 @@ void bbs_readline_flush(struct readline_data *rldata)
 	rldata->leftover = 0;
 }
 
-static char *readline_pre_read(struct readline_data *restrict rldata, const char *delim, int *resptr)
+static char *readline_pre_read(struct readline_data *restrict rldata, const char *delim, ssize_t *resptr)
 {
 	char *firstdelim = NULL;
 
@@ -73,7 +73,7 @@ static char *readline_pre_read(struct readline_data *restrict rldata, const char
 		firstdelim = memmem(rldata->buf, res, delim, strlen(delim)); /* Use buf, not pos, since pos is the beginning of the buffer that remains at this point. */
 		res = rldata->leftover = 0;
 		rldata->leftover = 0;
-		*resptr = (int) res;
+		*resptr = (ssize_t) res;
 	} else {
 		if (!rldata->waiting) {
 			/* bbs_readline never returns without reading a full line,
@@ -99,7 +99,7 @@ int readline_bytes_available(struct readline_data *restrict rldata, int process)
 	return (int) (rldata->pos - rldata->buf);
 }
 
-static int readline_post_read(struct readline_data *restrict rldata, const char *delim, char *restrict firstdelim, int res)
+static int readline_post_read(struct readline_data *restrict rldata, const char *delim, char *restrict firstdelim, ssize_t res)
 {
 	int used, delimlen;
 
@@ -111,7 +111,7 @@ static int readline_post_read(struct readline_data *restrict rldata, const char 
 	firstdelim += delimlen; /* There is the beginning of the rest of the buffer. No, we do not need to add 1 here. */
 	rldata->leftover = (size_t) (rldata->pos - firstdelim); /* Number of bytes leftover. */
 #ifdef EXTRA_DEBUG
-	bbs_debug(8, "Read %lu bytes (%d just now), processing %d and leaving %lu leftover\n", rldata->pos - rldata->buf, res, used, rldata->leftover);
+	bbs_debug(8, "Read %lu bytes (%ld just now), processing %d and leaving %lu leftover\n", rldata->pos - rldata->buf, res, used, rldata->leftover);
 #else
 	UNUSED(res);
 #endif
@@ -124,7 +124,7 @@ static int readline_post_read(struct readline_data *restrict rldata, const char 
 /*! \brief Helper function to read a single line from a file descriptor, with a timeout (for any single read) */
 ssize_t bbs_readline(int fd, struct readline_data *restrict rldata, const char *restrict delim, int timeout)
 {
-	int res;
+	ssize_t res;
 	char *firstdelim;
 
 	firstdelim = readline_pre_read(rldata, delim, &res);
@@ -139,7 +139,7 @@ ssize_t bbs_readline(int fd, struct readline_data *restrict rldata, const char *
 		}
 		res = bbs_poll_read(fd, timeout, rldata->pos, (size_t) rldata->left - 1); /* Subtract 1 for NUL */
 		if (res <= 0) {
-			bbs_debug(3, "bbs_poll_read returned %d\n", res);
+			bbs_debug(3, "bbs_poll_read returned %ld\n", res);
 			return res - 1; /* see the doxygen notes: we should return 0 only if we read just the delimiter. */
 		}
 		rldata->pos[res] = '\0'; /* Safe. Null terminate so we can use string functions. */
@@ -155,7 +155,7 @@ ssize_t bbs_readline(int fd, struct readline_data *restrict rldata, const char *
 static ssize_t __bbs_readline_getn(int fd, int destfd, struct dyn_str *restrict dynstr, struct readline_data *restrict rldata, int timeout, size_t n)
 {
 	ssize_t wres;
-	int res;
+	ssize_t res;
 	size_t left_in_buffer, written = 0, remaining = n;
 
 	/* First, use anything that's already in the buffer from a previous read.
@@ -333,7 +333,7 @@ static int readline_get_until_process(struct dyn_str *dynstr, struct readline_da
 
 int bbs_readline_get_until(int fd, struct dyn_str *dynstr, struct readline_data *restrict rldata, int timeout, size_t maxlen)
 {
-	int res;
+	ssize_t res;
 	size_t left_in_buffer;
 
 	bbs_assert_exists(rldata->boundary); /* Boundary must be initialized first */
@@ -354,7 +354,7 @@ int bbs_readline_get_until(int fd, struct dyn_str *dynstr, struct readline_data 
 		bbs_assert(rldata->pos == rldata->buf);
 		res = bbs_poll_read(fd, timeout, rldata->pos, rldata->left);
 		if (res <= 0) {
-			return res;
+			return -1;
 		}
 		rldata->pos += (size_t) res;
 		rldata->left -= (size_t) res;
@@ -370,7 +370,8 @@ int bbs_readline_append(struct readline_data *restrict rldata, const char *restr
 {
 	char *firstdelim;
 	size_t res;
-	int unused, drain = 0;
+	ssize_t unused;
+	int drain = 0;
 
 	firstdelim = readline_pre_read(rldata, delim, &unused);
 	if (firstdelim) {

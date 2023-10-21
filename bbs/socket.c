@@ -1490,30 +1490,30 @@ int bbs_node_tpoll(struct bbs_node *node, int ms)
 	return res;
 }
 
-int bbs_node_read(struct bbs_node *node, char *buf, size_t len)
+ssize_t bbs_node_read(struct bbs_node *node, char *buf, size_t len)
 {
-	int res;
+	ssize_t res;
 
 	REQUIRE_SLAVE_FD(node);
 
 	bbs_node_lock(node);
-	res = (int) read(node->slavefd, buf, len);
+	res = read(node->slavefd, buf, len);
 	bbs_node_unlock(node);
 	if (res <= 0) {
-		bbs_debug(5, "Node %d: read returned %d\n", node->id, res);
+		bbs_debug(5, "Node %d: read returned %ld\n", node->id, res);
 	}
 
 	if (res == 1) {
-		bbs_debug(10, "Node %d: read %d byte (%d)\n", node->id, res, *buf);
+		bbs_debug(10, "Node %d: read %ld byte (%d)\n", node->id, res, *buf);
 	} else {
-		bbs_debug(10, "Node %d: read %d bytes\n", node->id, res);
+		bbs_debug(10, "Node %d: read %ld bytes\n", node->id, res);
 	}
 	return res;
 }
 
-int bbs_node_poll_read(struct bbs_node *node, int ms, char *buf, size_t len)
+ssize_t bbs_node_poll_read(struct bbs_node *node, int ms, char *buf, size_t len)
 {
-	int res = bbs_node_poll(node, ms);
+	ssize_t res = bbs_node_poll(node, ms);
 	if (res <= 0) {
 		return res;
 	}
@@ -1521,19 +1521,19 @@ int bbs_node_poll_read(struct bbs_node *node, int ms, char *buf, size_t len)
 	return res;
 }
 
-int bbs_poll_read(int fd, int ms, char *buf, size_t len)
+ssize_t bbs_poll_read(int fd, int ms, char *buf, size_t len)
 {
-	int res = bbs_poll(fd, ms);
+	ssize_t res = bbs_poll(fd, ms);
 	if (res <= 0) {
 		return res;
 	}
-	res = (int) read(fd, buf, len);
+	res = read(fd, buf, len);
 	return res;
 }
 
 int bbs_expect(int fd, int ms, char *buf, size_t len, const char *str)
 {
-	int res;
+	ssize_t res;
 
 	*buf = '\0'; /* Clear the buffer, in case we don't read anything at all. */
 	res = bbs_poll_read(fd, ms, buf, len - 1);
@@ -1601,7 +1601,7 @@ char bbs_node_tread(struct bbs_node *node, int ms)
 
 	if (res > 0) {
 		char buf[1];
-		res = (char) bbs_node_read(node, buf, sizeof(buf));
+		res = (signed char) bbs_node_read(node, buf, sizeof(buf));
 		if (res <= 0) {
 			return res;
 		}
@@ -1735,7 +1735,7 @@ int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 	}
 
 	for (;;) {
-		size_t bytes;
+		ssize_t bytes;
 		if (keep_trying) {
 			res = bbs_node_poll(node, 5);
 			if (res == 0) {
@@ -1751,12 +1751,12 @@ int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 			bbs_debug(10, "Node %d: poll returned %d\n", node->id, res);
 			return res;
 		}
-		bytes = (size_t) bbs_node_read(node, buf, len);
+		bytes = bbs_node_read(node, buf, len);
 		if (bytes <= 0) {
 			bbs_debug(10, "Node %d: read returned %ld\n", node->id, bytes);
-			return (int) res;
+			return (int) bytes;
 		}
-		nterm = memchr(buf, '\0', bytes);
+		nterm = memchr(buf, '\0', (size_t) bytes);
 		/* Telnet may send CR NUL or CR LF, so check CR first, then LF.
 		 * To make things even more confusing, Windows Telnet and SyncTERM seem to send LF LF.
 		 * (Though it could be the PTY line discipline converting things that results in this)
@@ -1769,13 +1769,13 @@ int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 		 * In PuTTY with Telnet, there are ^@'s at the beginning of lines after this function returns.
 		 */
 		if (!term) { /* In the case where we poll again for a few ms (below), this will be true, don't do this again. */
-			term = memchr(buf, '\r', bytes); /* There is no strnchr function. Use memchr. */
+			term = memchr(buf, '\r', (size_t) bytes); /* There is no strnchr function. Use memchr. */
 			if (!term) {
-				term = memchr(buf, '\n', bytes);
+				term = memchr(buf, '\n', (size_t) bytes);
 			}
 		}
 		buf += bytes;
-		left -= bytes;
+		left -= (size_t) bytes;
 		bytes_read += (int) bytes;
 #ifdef DEBUG_TEXT_IO
 		for (i = 0; i < bytes_read; i++) {
@@ -1944,7 +1944,7 @@ int bbs_node_flush_input(struct bbs_node *node)
 		if (res <= 0) {
 			break;
 		}
-		res = bbs_node_read(node, buf, sizeof(buf));
+		res = (int) bbs_node_read(node, buf, sizeof(buf));
 		if (res <= 0) {
 			break;
 		}

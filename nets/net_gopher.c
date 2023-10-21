@@ -67,7 +67,7 @@ static void *gopher_handler(void *varg)
 	struct bbs_node *node = varg;
 	char *tmp;
 	struct stat st;
-	int res;
+	ssize_t res;
 
 	/* This thread is running instead of the normal node handler thread */
 	/* Remember, no pseudoterminal is allocated for this node! Can NOT use normal bbs_ I/O functions. */
@@ -109,7 +109,7 @@ static void *gopher_handler(void *varg)
 
 			res = (int) sendfile(node->fd, fileno(fp), &offset, (size_t) size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
 			if (res != size) {
-				bbs_error("sendfile failed (%d): %s\n", res, strerror(errno));
+				bbs_error("sendfile failed (%ld): %s\n", res, strerror(errno));
 			}
 			fclose(fp);
 		} else {

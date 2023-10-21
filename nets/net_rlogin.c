@@ -65,7 +65,8 @@ static int send_urgent(int fd)
 
 static int rlogin_handshake(struct bbs_node *node)
 {
-	int i, res;
+	int i;
+	ssize_t res;
 	char buf[128];
 	unsigned char buf2[128];
 	int on = 1;
@@ -85,14 +86,14 @@ static int rlogin_handshake(struct bbs_node *node)
 	buf[res] = '\0'; /* Safe - just in case we didn't read a NUL */
 	i = bbs_strncount(buf, (size_t) res, '\0');
 	if (i != 4) {
-		bbs_debug(3, "Got %d-byte connection string with %d NULs?\n", res, i);
+		bbs_debug(3, "Got %ld-byte connection string with %d NULs?\n", res, i);
 		return -1;
 	}
 	s1 = buf;
 	s2 = s1 + strlen(s1) + 1;
 	s3 = s2 + strlen(s2) + 1;
 	s4 = s3 + strlen(s3) + 1;
-	bbs_debug(3, "Got %d-byte connection string (%s/%s/%s/%s)\n", res, s1, s2, s3, s4);
+	bbs_debug(3, "Got %ld-byte connection string (%s/%s/%s/%s)\n", res, s1, s2, s3, s4);
 	if (SWRITE(node->fd, "\0") != STRLEN("\0")) { /* Send 0-byte to ACK and change to data transfer mode */
 		return -1;
 	}

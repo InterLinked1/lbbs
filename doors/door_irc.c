@@ -244,7 +244,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 {
 	char buf[384];
 	char buf2[sizeof(buf)];
-	int res;
+	ssize_t res;
 	struct client_relay *c = p->client;
 
 	/* Join the channel */
@@ -276,7 +276,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 			bbs_node_buffer(node);
 			res = bbs_node_poll_read(node, MIN_MS(3), buf + 1, sizeof(buf) - 2); /* Leave the first char in the buffer alone, -1 for null termination, and -1 for the first char */
 			if (res <= 0) {
-				bbs_debug(3, "bbs_node_poll_read returned %d\n", res);
+				bbs_debug(3, "bbs_node_poll_read returned %ld\n", res);
 				if (res == 0) {
 					/* User started a message, but didn't finish before timeout */
 					bbs_node_writef(node, "\n*** TIMEOUT ***\n");
@@ -305,7 +305,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 			}
 			buf[res] = '\0'; /* Safe */
 			/* Don't add a trailing LF, the sent message should already had one. */
-			if (bbs_node_writef(node, "%.*s", res, buf) < 0) {
+			if (bbs_node_writef(node, "%.*s", (int) res, buf) < 0) {
 				res = -1;
 				break;
 			}
@@ -323,7 +323,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 	}
 
 	chat_send(c, NULL, channel, "%s@%d has left %s\n", bbs_username(node->user), node->id, channel);
-	return res;
+	return (int) res;
 }
 
 /*! \note Must be called locked */

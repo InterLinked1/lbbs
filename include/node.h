@@ -366,7 +366,7 @@ int bbs_node_tpoll(struct bbs_node *node, int ms);
  * \param len Size of buf
  * \retval Same as read() i.e. 0 if fd closed, -1 on failure, positive number of bytes read otherwise
  */
-int bbs_node_read(struct bbs_node *node, char *buf, size_t len);
+ssize_t bbs_node_read(struct bbs_node *node, char *buf, size_t len);
 
 /*!
  * \brief wrapper around poll() and read() for BBS node
@@ -376,7 +376,7 @@ int bbs_node_read(struct bbs_node *node, char *buf, size_t len);
  * \param len Size of buf
  * \retval Same as poll() and read()
  */
-int bbs_node_poll_read(struct bbs_node *node, int ms, char *buf, size_t len);
+ssize_t bbs_node_poll_read(struct bbs_node *node, int ms, char *buf, size_t len);
 
 /*!
  * \brief wrapper around poll() and read()
@@ -386,7 +386,7 @@ int bbs_node_poll_read(struct bbs_node *node, int ms, char *buf, size_t len);
  * \param len Size of buf
  * \retval Same as poll() and read()
  */
-int bbs_poll_read(int fd, int ms, char *buf, size_t len);
+ssize_t bbs_poll_read(int fd, int ms, char *buf, size_t len);
 
 /*!
  * \brief wrapper around bbs_poll_read that expects a substring to appear in the read response

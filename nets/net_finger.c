@@ -45,7 +45,7 @@ static void *finger_handler(void *varg)
 	char *username = NULL;
 	char *hostname = NULL;
 	int verbose = 0;
-	int res;
+	ssize_t res;
 
 	/* This thread is running instead of the normal node handler thread */
 	/* Remember, no pseudoterminal is allocated for this node! Can NOT use normal bbs_ I/O functions. */

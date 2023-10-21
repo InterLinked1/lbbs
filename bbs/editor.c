@@ -209,7 +209,7 @@ int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const ch
 
 	/* Actual paging is now required. */
 	for (;;) {
-		int res;
+		ssize_t res;
 		char buf[5];
 		NEG_RETURN(bbs_node_writef(node, s ? ":" : "EOF:")); /* Input prompt */
 		res = bbs_node_poll_read(node, ms, buf, 5); /* Any key shouldn't be more than 5 characters (some keys involve escape sequences) */
@@ -221,7 +221,7 @@ int bbs_pager(struct bbs_node *node, struct pager_info *pginfo, int ms, const ch
 			 */
 		}
 		if (res < 0) {
-			return res;
+			return -1;
 		} else if (!res) {
 			return 1; /* Timeout */
 		}

@@ -300,7 +300,7 @@ static int chat_run(struct bbs_node *node, struct participant *p)
 {
 	char buf[384];
 	char buf2[sizeof(buf)];
-	int res;
+	ssize_t res;
 	int participants;
 	struct channel *c = p->channel;
 
@@ -396,7 +396,7 @@ static int chat_run(struct bbs_node *node, struct participant *p)
 			 * Even if it doesn't, don't blindly add one. Because we write the time and message in 2 separate calls to write(),
 			 * in __chat_send, we could end up doing 2 disjoint reads here, and the first one will only have the timestamp.
 			 */
-			if (bbs_node_writef(node, "%.*s", res, buf) < 0) {
+			if (bbs_node_writef(node, "%.*s", (int) res, buf) < 0) {
 				res = -1;
 				break;
 			}
@@ -414,7 +414,7 @@ static int chat_run(struct bbs_node *node, struct participant *p)
 	}
 
 	chat_send(c, NULL, "%s has left #%s from node %d\n", bbs_username(node->user), c->name, node->id);
-	return res;
+	return (int) res;
 }
 
 static int module_shutdown = 0;
