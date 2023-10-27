@@ -104,13 +104,7 @@ static int cli_group(struct bbs_cli_args *a)
 	return 0;
 }
 
-static struct bbs_cli_entry cli_commands_groups[] = {
-	BBS_CLI_COMMAND(cli_groups, "groups", 1, "List user groups", NULL),
-	BBS_CLI_COMMAND(cli_group, "group", 2, "List members of a user group", "group <name>"),
-};
-
-/*! \todo Currently groups cannot be reloaded, but it might make sense here (and in several other places) to allow this, using some builtin functionality */
-static int load_config(void)
+static int load_groups(void)
 {
 	struct bbs_group *g;
 	struct bbs_config_section *section = NULL;
@@ -121,7 +115,6 @@ static int load_config(void)
 		return 0; /* No custom groups defined */
 	}
 
-	RWLIST_WRLOCK(&groups);
 	while ((section = bbs_config_walk(cfg, section))) {
 		if (!strcmp(bbs_config_section_name(section), "general")) {
 			continue; /* Reserved */
@@ -142,8 +135,33 @@ static int load_config(void)
 		}
 		RWLIST_INSERT_TAIL(&groups, g, entry);
 	}
-	RWLIST_UNLOCK(&groups);
 	bbs_config_free(cfg); /* No longer needed */
+	return 0;
+}
+
+/*! \todo Should use a generic system-wide reload mechanism */
+static int cli_groupreload(struct bbs_cli_args *a)
+{
+	RWLIST_WRLOCK(&groups);
+	RWLIST_REMOVE_ALL(&groups, entry, group_free);
+	load_groups();
+	RWLIST_UNLOCK(&groups);
+	bbs_dprintf(a->fdout, "Groups reloaded\n");
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_groups[] = {
+	BBS_CLI_COMMAND(cli_groups, "groups", 1, "List user groups", NULL),
+	BBS_CLI_COMMAND(cli_group, "group", 2, "List members of a user group", "group <name>"),
+	BBS_CLI_COMMAND(cli_groupreload, "groupreload", 1, "Reload user groups", NULL),
+};
+
+/*! \todo Currently groups cannot be reloaded, but it might make sense here (and in several other places) to allow this, using some builtin functionality */
+static int load_config(void)
+{
+	RWLIST_WRLOCK(&groups);
+	load_groups();
+	RWLIST_UNLOCK(&groups);
 	return 0;
 }
 
