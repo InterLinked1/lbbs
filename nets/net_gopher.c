@@ -24,7 +24,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <signal.h>
-#include <sys/sendfile.h>
 
 #include "include/module.h"
 #include "include/config.h"
@@ -107,10 +106,7 @@ static void *gopher_handler(void *varg)
 			size = (int) ftell(fp);
 			rewind(fp); /* Be kind, rewind */
 
-			res = (int) sendfile(node->fd, fileno(fp), &offset, (size_t) size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
-			if (res != size) {
-				bbs_error("sendfile failed (%ld): %s\n", res, strerror(errno));
-			}
+			res = (int) bbs_sendfile(node->fd, fileno(fp), &offset, (size_t) size); /* We must manually tell it the offset or it will be at the EOF, even with rewind() */
 			fclose(fp);
 		} else {
 			bbs_error("fopen failed: %s\n", strerror(errno));

@@ -503,6 +503,19 @@ ssize_t bbs_write(int fd, const char *buf, size_t len);
 ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms);
 
 /*!
+ * \brief Wrapper around sendfile(2) that attempts to fully copy the requested number of bytes
+ * \param out_fd File descriptor open for writing. May be any file (kernels >= 2.6.33)
+ * \param in_fd File descriptor open for reading. Must support mmap(2)-like operations (i.e. cannot be a socket).
+ *               If offset is NULL, offset of in_fd is adjusted to reflect number of bytes read.
+ * \param offset If non-NULL, offset from which to begin reading; upon return, will be the offset of the first unread byte.
+ *               If NULL, read starting at the offset of in_fd and update the file's offset.
+ * \param count Number of bytes to copy from in_fd to out_fd.
+ * \return Number of bytes written to out_fd
+ * \retval -1 on failure
+ */
+ssize_t bbs_sendfile(int out_fd, int in_fd, off_t *offset, size_t count);
+
+/*!
  * \brief Write to a file descriptor associated with a node (but not necessarily the node file descriptor)
  * \param node Node associated with this file descriptor
  * \param fd File descriptor to which to write

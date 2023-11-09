@@ -20,7 +20,6 @@
 #include "include/bbs.h"
 
 #include <time.h>
-#include <sys/sendfile.h>
 
 #include "include/module.h"
 #include "include/config.h"
@@ -294,7 +293,7 @@ static int upload_file(struct smtp_session *smtp, struct smtp_msg_process *mproc
 		IMAP_CLIENT_EXPECT(&client, "+");
 	}
 
-	res = sendfile(client.wfd, srcfd, &offset, datalen); /* Don't use bbs_copy_file, the target is a pipe/socket, not a file */
+	res = bbs_sendfile(client.wfd, srcfd, &offset, datalen); /* Don't use bbs_copy_file, the target is a pipe/socket, not a file */
 	if (res != (ssize_t) datalen) {
 		bbs_warning("Wanted to upload %lu bytes but only uploaded %ld? (%s)\n", datalen, res, strerror(errno));
 		goto cleanup;

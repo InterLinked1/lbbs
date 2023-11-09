@@ -26,7 +26,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
-#include <sys/sendfile.h>
 #include <dirent.h>
 
 #include "include/module.h"
@@ -551,7 +550,7 @@ static void *ftp_handler(void *varg)
 				if (DATA_INIT()) {
 					break;
 				}
-				res = (int) sendfile(ftp->wfd2, fileno(fp), NULL, (size_t) filestat.st_size); /* More convenient and efficient than manually relaying using read/write */
+				res = (int) bbs_sendfile(ftp->wfd2, fileno(fp), NULL, (size_t) filestat.st_size); /* More convenient and efficient than manually relaying using read/write */
 				DATA_DONE(fp, pasv_fd);
 				if (res != filestat.st_size) {
 					bbs_error("File transfer failed: %s\n", strerror(errno));

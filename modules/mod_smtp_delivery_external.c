@@ -23,7 +23,6 @@
 
 #include <ctype.h>
 #include <time.h>
-#include <sys/sendfile.h>
 
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -250,6 +249,9 @@ static void process_capabilities(int *restrict caps, int *restrict maxsendsize, 
 		}
 	} else if (!strcasecmp(capname, "CHUNKING") || !strcasecmp(capname, "SMTPUTF8") || !strcasecmp(capname, "VRFY") || !strcasecmp(capname, "ETRN") || !strcasecmp(capname, "DSN") || !strcasecmp(capname, "HELP")) {
 		/* Don't care about */
+	} else if (!strcmp(capname, "PIPECONNECT")) {
+		/* Don't care about, at the moment, but could be used in the future to optimize:
+		 * https://www.exim.org/exim-html-current/doc/html/spec_html/ch-main_configuration.html */
 	} else if (!strcmp(capname, "AUTH=LOGIN PLAIN")) {
 		/* Ignore: this SMTP server advertises this capability (even though it's malformed) to support some broken clients */
 	} else {
@@ -536,13 +538,12 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 	}
 
 	/* sendfile will be much more efficient than reading the file ourself, as email body could be quite large, and we don't need to involve userspace. */
-	res = (int) sendfile(client.wfd, datafd, &send_offset, writelen);
+	res = (int) bbs_sendfile(client.wfd, datafd, &send_offset, writelen);
 
 	/* XXX If email doesn't end in CR LF, we need to tack that on. But ONLY if it doesn't already end in CR LF. */
 	smtp_client_send(&client, "\r\n.\r\n"); /* (end of) EOM */
 	tx->stage = "end of DATA";
 	if (res != (int) writelen) { /* Failed to write full message */
-		bbs_error("Wanted to write %lu bytes but wrote only %d?\n", writelen, res);
 		res = -1;
 		goto cleanup;
 	}

@@ -126,7 +126,6 @@
 #include <dirent.h>
 #include <poll.h>
 #include <utime.h>
-#include <sys/sendfile.h>
 
 #include "include/tls.h"
 

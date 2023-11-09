@@ -27,7 +27,6 @@
 #include <ctype.h>
 #include <signal.h>
 #include <unistd.h>
-#include <sys/sendfile.h>
 #include <dirent.h>
 
 #include "include/tls.h"
@@ -496,10 +495,7 @@ static int on_retr(const char *dir_name, const char *filename, struct pop3_sessi
 
 	pop3_ok(pop3, "%u octets", realsize);
 	offset = 0;
-	res = (unsigned int) sendfile(pop3->wfd, fileno(fp), &offset, realsize);
-	if (res != realsize) {
-		bbs_error("Wanted to send %d bytes but only sent %d?\n", realsize, res);
-	}
+	res = (unsigned int) bbs_sendfile(pop3->wfd, fileno(fp), &offset, realsize);
 	bbs_debug(6, "Sent %d bytes\n", res);
 	bbs_node_fd_writef(pop3->node, pop3->wfd, ".\r\n");
 	fclose(fp);

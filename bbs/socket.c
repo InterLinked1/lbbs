@@ -31,6 +31,7 @@
 #include <netdb.h> /* use getnameinfo */
 #include <ifaddrs.h>
 #include <poll.h>
+#include <sys/sendfile.h>
 
 /* #define DEBUG_TEXT_IO */
 
@@ -2159,6 +2160,29 @@ ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)
 
 	bbs_block_fd(fd); /* Restore */
 	return res;
+}
+
+ssize_t bbs_sendfile(int out_fd, int in_fd, off_t *offset, size_t count)
+{
+	/* sendfile (like write) can return before writing all the requested bytes.
+	 * This wrapper function will retry as appropriate to fully write the message as best we can. */
+	ssize_t written = 0;
+
+	for (;;) {
+		ssize_t res = sendfile(out_fd, in_fd, offset, count);
+		if (res < 0) {
+			bbs_error("Failed to write %lu bytes, sendfile %d -> %d failed: %s\n", count, in_fd, out_fd, strerror(errno));
+			return res;
+		}
+		written += res;
+		if (res == (ssize_t) count) {
+			break;
+		}
+		bbs_debug(2, "Wanted to write %lu bytes but was only able to write %ld this round\n", count, res); /* Keep trying */
+		count -= (size_t) res;
+	}
+
+	return written;
 }
 
 ssize_t bbs_node_fd_write(struct bbs_node *node, int fd, const char *buf, size_t len)

@@ -43,7 +43,6 @@
 #include <ctype.h>
 #include <signal.h>
 #include <unistd.h>
-#include <sys/sendfile.h>
 #include <sys/ioctl.h>
 
 #include <dirent.h> /* for msg_to_filename */
@@ -345,7 +344,6 @@ static int smtp_tarpit(struct smtp_session *smtp, int code, const char *message)
 static int fcrdns_check(struct smtp_session *smtp)
 {
 	char hostname[256];
-	char ip[256];
 
 	/* This is a relatively lenient check that most any legitimate SMTP server should pass.
 	 * The hostname provided by the MTA must resolve to the IP address of the connection,
@@ -369,7 +367,7 @@ static int fcrdns_check(struct smtp_session *smtp)
 		bbs_warning("Unable to look up reverse DNS record for %s\n", smtp->node->ip);
 		smtp->failures += 4; /* Heavy penalty */
 	} else if (!bbs_hostname_has_ip(hostname, smtp->node->ip)) { /* Ensure that there's a match, with at least one A record */
-		bbs_warning("FCrDNS check failed: %s != %s\n", ip, smtp->node->ip);
+		bbs_warning("FCrDNS check failed: %s != %s\n", hostname, smtp->node->ip);
 		smtp->failures += 5;
 	}
 	return 0;
@@ -435,6 +433,10 @@ static int smtp_ip_mismatch(const char *actual, const char *hostname)
 	 * If it's just a raw IP address, that is not valid.
 	 * IPv6 literals as described in RFC 5321 4.1.3 are not supported. */
 	if (bbs_hostname_is_ipv4(hostname)) {
+		if (!strcmp(actual, hostname)) {
+			bbs_warning("SMTP IP address '%s' is in non-canonical format\n", hostname); /* Should be surrounded by [] */
+			return 0;
+		}
 		return -1;
 	} else if (*hostname == '[' && *(hostname + 1)) {
 		/* Domain literal */
@@ -1678,6 +1680,10 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 
 		if (duplicate_loop_avoidance(smtp, recipient)) {
 			continue;
+		}
+
+		if (*recipient != '<') {
+			bbs_warning("Malformed recipient: %s\n", recipient);
 		}
 
 		dup = strdup(recipient);

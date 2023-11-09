@@ -34,7 +34,6 @@
 #include <sys/socket.h>
 #include <pthread.h>
 #include <signal.h>
-#include <sys/sendfile.h>
 #include <magic.h>
 #include <sys/wait.h>
 
@@ -2267,10 +2266,9 @@ enum http_response_code http_static(struct http_session *http, const char *filen
 	if (ranges) {
 		if (rangeparts == 1) {
 			offset = a;
-			written = sendfile(http->wfd, fd, &offset, rangebytes);
+			written = bbs_sendfile(http->wfd, fd, &offset, rangebytes);
 			close(fd);
 			if (written != (ssize_t) rangebytes) {
-				bbs_error("sendfile failed (copied %lu bytes instead of %lu)\n", written, rangebytes);
 				http->req->keepalive = 0;
 			}
 			http->res->sentbytes += (size_t) rangebytes;
@@ -2285,9 +2283,8 @@ enum http_response_code http_static(struct http_session *http, const char *filen
 				http_writef(http, "\r\n");
 				offset = a;
 				bbs_debug(5, "Sending %ld-byte range beginning at offset %lu\n", thisrangebytes, offset);
-				written = sendfile(http->wfd, fd, &offset, (size_t) thisrangebytes);
+				written = bbs_sendfile(http->wfd, fd, &offset, (size_t) thisrangebytes);
 				if (written != (ssize_t) thisrangebytes) {
-					bbs_error("sendfile failed (copied %lu bytes instead of %lu)\n", written, thisrangebytes);
 					close(fd);
 					http->req->keepalive = 0;
 					return http->res->code;
@@ -2299,10 +2296,9 @@ enum http_response_code http_static(struct http_session *http, const char *filen
 			http_writef(http, "--%s--", RANGE_SEPARATOR); /* Final multipart boundary */
 		}
 	} else {
-		written = sendfile(http->wfd, fd, &offset, (size_t) st->st_size);
+		written = bbs_sendfile(http->wfd, fd, &offset, (size_t) st->st_size);
 		close(fd);
 		if (written != (ssize_t) st->st_size) {
-			bbs_error("sendfile failed (copied %lu bytes instead of %lu)\n", written, st->st_size);
 			http->req->keepalive = 0;
 		}
 		http->res->sentbytes += (size_t) st->st_size;

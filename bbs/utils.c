@@ -30,7 +30,6 @@
 #include <sys/time.h> /* use gettimeofday */
 #include <uuid/uuid.h> /* use uuid_generate, uuid_unparse */
 #include <syscall.h>
-#include <sys/sendfile.h>
 #include <libgen.h> /* use dirname */
 
 #include "include/utils.h"
@@ -868,7 +867,7 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 	if (copied == -1 && errno == ENOSYS) {
 		/* Okay, the actual syscall doesn't even exist. Fall back to sendfile. */
 		fellback = 1;
-		copied = (int) sendfile(destfd, srcfd, &offset, (size_t) bytes);
+		copied = (int) bbs_sendfile(destfd, srcfd, &offset, (size_t) bytes);
 	}
 	if (copied == -1) {
 		bbs_error("%s %d -> %d failed: %s\n", fellback ? "sendfile" : "copy_file_range", srcfd, destfd, strerror(errno));
@@ -894,7 +893,7 @@ ssize_t bbs_send_file(const char *filepath, int wfd)
 	size = lseek(fd, 0, SEEK_END);
 	lseek(fd, 0, SEEK_SET);
 	offset = 0;
-	sent = sendfile(wfd, fd, &offset, (size_t) size);
+	sent = bbs_sendfile(wfd, fd, &offset, (size_t) size);
 	close(fd);
 	if (sent != size) {
 		bbs_error("Wanted to write %lu bytes but only wrote %ld?\n", size, sent);
