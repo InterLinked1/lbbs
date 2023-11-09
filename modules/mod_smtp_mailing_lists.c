@@ -29,6 +29,7 @@
 #include "include/utils.h"
 #include "include/stringlist.h"
 #include "include/linkedlists.h"
+#include "include/cli.h"
 
 #include "include/mod_mail.h"
 #include "include/net_smtp.h"
@@ -251,7 +252,7 @@ static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp,
 		/* Actual bytes consumed from srcfd should be res + 2 (CR LF) */
 		consumed += (int) res + 2;
 		if (!res) {
-			fprintf(fp, "\r\n");
+			/* We're not done writing *our* headers, so don't end the headers just yet */
 			break; /* EOH (end of headers) */
 		}
 		/* Analyze the header received */
@@ -295,6 +296,7 @@ static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp,
 		} else if (STARTS_WITH(buf, "From:")) {
 			const char *from = buf + STRLEN("From:");
 			if (!strlen_zero(from)) {
+				fprintf(fp, "From:%s\r\n", from); /* Use the original From header */
 				safe_strncpy(from_hdr, from, sizeof(from_hdr));
 			}
 		} else {
@@ -313,6 +315,7 @@ static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp,
 	}
 
 	/* Now, add the message body */
+	fprintf(fp, "\r\n"); /* Finish headers */
 	fflush(fp);
 	body_bytes = (int) origlen - consumed;
 	res = bbs_copy_file(srcfd, fileno(fp), consumed, body_bytes);
@@ -338,9 +341,8 @@ static int list_post_message(struct mailing_list *l, const char *msgfile, size_t
 	const char *s;
 	struct stringlist local;
 	struct stringitem *i = NULL;
-	int localcount = 0, manuallocalcount = 0;
+	int localcount = 0, manuallocalcount = 0, extcount = 0;
 	char mailfrom[265];
-	struct stringlist *r = l->samesenders ? &l->recipients : &l->senders;
 
 	memset(&local, 0, sizeof(local));
 
@@ -353,7 +355,7 @@ static int list_post_message(struct mailing_list *l, const char *msgfile, size_t
 	 * To get the best of both worlds, for any local users, we use a single SMTP transaction, since we trust our own bounces,
 	 * and for external users, we can use VERP, since due to queuing, there's already 1 transaction per external recipient anyways. */
 
-	while ((s = stringlist_next(r, &i))) { /* This list is read only, we must not modify it */
+	while ((s = stringlist_next(&l->recipients, &i))) { /* This list is read only, we must not modify it */
 		char full[256];
 		if (!strcmp(s, "*")) {
 			/* Expands to all active local users */
@@ -401,15 +403,22 @@ static int list_post_message(struct mailing_list *l, const char *msgfile, size_t
 			safe_strncpy(replaced, s, sizeof(replaced));
 			bbs_strreplace(replaced, '@', '=');
 			snprintf(mailfrom, sizeof(mailfrom), "%s@%s+bounce=%s", l->user, S_OR(l->domain, bbs_hostname()), replaced); /* No <> */
-			smtp_inject(mailfrom, &local, msgfile, msglen);
+			smtp_inject(mailfrom, &external, msgfile, msglen); /* Deliver to the external recipient */
+			extcount++;
 		}
 	}
 
+	/* If there are any local recipients, deliver to them all at once */
 	if (localcount) {
 		snprintf(mailfrom, sizeof(mailfrom), "%s@%s+bounce", l->user, S_OR(l->domain, bbs_hostname())); /* No <> */
 		smtp_inject(mailfrom, &local, msgfile, msglen);
 	}
 
+	bbs_debug(2, "Delivered post to %d local user%s (%d explicitly) and %d external user%s\n",
+		localcount, ESS(localcount), manuallocalcount, extcount, ESS(extcount));
+	if (localcount + extcount == 0) {
+		bbs_warning("Mailing list %s@%s has no recipients?\n", l->user, S_OR(l->domain, bbs_hostname()));
+	}
 	return 0;
 }
 
@@ -558,6 +567,52 @@ struct smtp_delivery_agent exploder = {
 	.deliver = blast_exploder,
 };
 
+static int cli_mailing_lists(struct bbs_cli_args *a)
+{
+	struct mailing_list *l;
+
+	RWLIST_TRAVERSE(&lists, l, entry) {
+		bbs_dprintf(a->fdout, "%s%s%s\n", l->user, l->domain ? "@" : "", S_IF(l->domain));
+	}
+	return 0;
+}
+
+static int cli_mailing_list(struct bbs_cli_args *a)
+{
+	struct mailing_list *l;
+	struct stringlist *r;
+	struct stringitem *i = NULL;
+	const char *s;
+
+	l = find_list(a->argv[2], a->argc >= 4 ? a->argv[3] : NULL);
+	if (!l) {
+		bbs_dprintf(a->fdout, "No such list: %s%s%s\n", a->argv[2], a->argc >= 4 ? "@" : "", a->argc >= 4 ? a->argv[3] : "");
+		return 0;
+	}
+
+	/* XXX Could also show other config properties */
+
+	/* Dump recipients and allowed senders */
+	r = l->samesenders ? &l->recipients : &l->senders;
+	bbs_dprintf(a->fdout, "Recipients:\n");
+	while ((s = stringlist_next(&l->recipients, &i))) {
+		bbs_dprintf(a->fdout, " - %s\n", s);
+	}
+	bbs_dprintf(a->fdout, "Authorized Senders: %s\n", stringlist_is_empty(r) ? "All Registered Users" : l->samesenders ? "Same As Recipients" : "");
+	if (!l->samesenders) {
+		while ((s = stringlist_next(r, &i))) {
+			bbs_dprintf(a->fdout, " - %s\n", s);
+		}
+	}
+
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_smtp_mailing_lists[] = {
+	BBS_CLI_COMMAND(cli_mailing_lists, "smtp lists", 2, "Enumerate mailing lists", NULL),
+	BBS_CLI_COMMAND(cli_mailing_list, "smtp list", 3, "Show details of a mailing list", "smtp list <user> [<domain>]"),
+};
+
 static int load_config(void)
 {
 	struct bbs_config *cfg;
@@ -663,12 +718,14 @@ static int load_module(void)
 	if (load_config()) {
 		return -1;
 	}
+	bbs_cli_register_multiple(cli_commands_smtp_mailing_lists);
 	return smtp_register_delivery_handler(&exploder, 5); /* Takes priority over individual user mailboxes */
 }
 
 static int unload_module(void)
 {
 	int res = smtp_unregister_delivery_agent(&exploder);
+	bbs_cli_unregister_multiple(cli_commands_smtp_mailing_lists);
 	RWLIST_WRLOCK_REMOVE_ALL(&lists, entry, list_free);
 	return res;
 }

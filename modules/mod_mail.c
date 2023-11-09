@@ -40,6 +40,7 @@
 #include "include/base64.h"
 #include "include/stringlist.h"
 #include "include/range.h"
+#include "include/cli.h"
 
 #include "include/mod_mail.h"
 
@@ -2008,6 +2009,44 @@ int maildir_ordered_traverse(const char *path, int (*on_file)(const char *dir_na
 	return res;
 }
 
+static int cli_mailboxes(struct bbs_cli_args *a)
+{
+	struct mailbox *mbox;
+	RWLIST_RDLOCK(&mailboxes);
+	RWLIST_TRAVERSE(&mailboxes, mbox, entry) {
+		if (mbox->name) {
+			bbs_dprintf(a->fdout, "%s\n", mbox->name);
+		} else {
+			bbs_dprintf(a->fdout, "User ID: %u\n", mbox->id);
+		}
+	}
+	RWLIST_UNLOCK(&mailboxes);
+	return 0;
+}
+
+static int cli_mailbox(struct bbs_cli_args *a)
+{
+	struct mailbox *mbox = mailbox_get_by_name(a->argv[1], a->argc >= 3 ? a->argv[2] : NULL);
+	if (!mbox) {
+		bbs_dprintf(a->fdout, "No such mailbox: %s%s%s\n", a->argv[1], a->argc >= 3 ? "@" : "", a->argc >= 3 ? a->argv[2] : "");
+		return 0;
+	}
+	bbs_dprintf(a->fdout, "%-20s: %u\n", "User ID", mbox->id);
+	bbs_dprintf(a->fdout, "%-20s: %s\n", "Name", S_IF(mbox->name));
+	bbs_dprintf(a->fdout, "%-20s: %s\n", "Maildir", mbox->maildir);
+	bbs_dprintf(a->fdout, "%-20s: %9lu KB\n", "Total Quota", mailbox_quota(mbox) / 1024);
+	bbs_dprintf(a->fdout, "%-20s: %9lu KB\n", "Quota Used", mailbox_quota_used(mbox) / 1024);
+	bbs_dprintf(a->fdout, "%-20s: %9lu KB\n", "Quota Remaining", mailbox_quota_remaining(mbox) / 1024);
+	bbs_dprintf(a->fdout, "%-20s: %u\n", "# Mailbox Watchers", mbox->watchers);
+	bbs_dprintf(a->fdout, "%-20s: %s\n", "Activity Pending", BBS_YN(mbox->activity));
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_mailboxes[] = {
+	BBS_CLI_COMMAND(cli_mailboxes, "mailboxes", 1, "List currently loaded mailboxes", NULL),
+	BBS_CLI_COMMAND(cli_mailbox, "mailbox", 2, "Show mailbox details", "mailbox <user> [<domain>]"),
+};
+
 static int load_config(void)
 {
 	struct bbs_config *cfg;
@@ -2058,11 +2097,16 @@ static int load_config(void)
 
 static int load_module(void)
 {
-	return load_config();
+	if (load_config()) {
+		return -1;
+	}
+	bbs_cli_register_multiple(cli_commands_mailboxes);
+	return 0;
 }
 
 static int unload_module(void)
 {
+	bbs_cli_unregister_multiple(cli_commands_mailboxes);
 	mailbox_cleanup();
 	return 0;
 }
