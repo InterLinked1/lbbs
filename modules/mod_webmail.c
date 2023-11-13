@@ -69,6 +69,42 @@ struct imap_client {
 	char *filter;
 };
 
+static unsigned int webmail_log_level = 0;
+static FILE *webmail_log_fp = NULL;
+static pthread_mutex_t loglock = PTHREAD_MUTEX_INITIALIZER;
+
+static void __attribute__ ((format (gnu_printf, 3, 4))) webmail_log(int level, struct imap_client *client, const char *fmt, ...);
+
+static void webmail_log(int level, struct imap_client *client, const char *fmt, ...)
+{
+	va_list ap;
+	char datestr[20];
+	time_t lognow;
+	struct tm logdate;
+	struct timeval now;
+
+	if (!webmail_log_fp || (unsigned int) level > webmail_log_level) { /* This is static to this file, so we can't do this in a macro. */
+		return;
+	}
+
+#pragma GCC diagnostic ignored "-Waggregate-return"
+	now = bbs_tvnow();
+#pragma GCC diagnostic pop
+	lognow = time(NULL);
+	localtime_r(&lognow, &logdate);
+	strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
+
+	pthread_mutex_lock(&loglock);
+	fprintf(webmail_log_fp, "[%s.%03d] %p: ", datestr, (int) now.tv_usec / 1000, client);
+
+	va_start(ap, fmt);
+	vfprintf(webmail_log_fp, fmt, ap);
+	va_end(ap);
+
+	pthread_mutex_unlock(&loglock);
+	fflush(webmail_log_fp);
+}
+
 static void libetpan_log(mailimap *session, int log_type, const char *str, size_t size, void *context)
 {
 	UNUSED(session);
@@ -490,6 +526,7 @@ static int client_imap_login(struct ws_session *ws, struct imap_client *client, 
 	}
 
 	CLIENT_REQUIRE_VAR(username);
+	webmail_log(2, client, "=> LOGIN %s\n", username);
 
 	/* Decode the password. The only reason the client base64 encodes it is for obfuscation, not for security.
 	 * This is fundamentally not very secure, but there's not much else we can do since we need to be able
@@ -751,6 +788,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 	 */
 
 	client_set_status(client->ws, "Querying folder list");
+	webmail_log(2, client, "=> LIST\n");
 
 	/* XXX First, we should do a LIST "" "" to get the namespace names, e.g. Other Users and Shared Folders,
 	 * rather than just assuming that's what they're called. */
@@ -841,6 +879,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 			}
 		}
 		json_array_append_new(json, folder);
+		webmail_log(4, client, "<= LIST %s\n", name);
 		if (!details || noselect) {
 			continue;
 		}
@@ -1068,6 +1107,7 @@ static int client_imap_select(struct ws_session *ws, struct imap_client *client,
 		return -1;
 	}
 
+	webmail_log(2, client, "=> SELECT %s\n", name);
 	res = mailimap_select(imap, name);
 	if (res != MAILIMAP_NO_ERROR) {
 		bbs_warning("SELECT '%s' failed: %s\n", name, maildriver_strerror(res));
@@ -1818,6 +1858,7 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 	/* start to end is inclusive */
 	expected = end - start + 1;
 	bbs_debug(3, "Fetching message listing %d:%d (page %d of %d), sort: %s, filter: %s\n", start, end, page, numpages, S_IF(sort), S_IF(filter));
+	webmail_log(4, client, "<= FETCHLIST %d:%d (page %d of %d), sort: %s, filter: %s\n", start, end, page, numpages, S_IF(sort), S_IF(filter));
 
 	/* Fetch: UID, flags, size, from, to, subject, internaldate,
 	 * +with attributes: priority headers, contains attachments */
@@ -2655,6 +2696,8 @@ static int handle_fetch(struct ws_session *ws, struct imap_client *client, uint3
 	struct mailimap_msg_att *msg_att;
 	json_t *root = NULL, *attachments;
 
+	webmail_log(1, client, "=> FETCH %u (%s)\n", uid, raw ? "raw" : html ? "html" : "plaintext");
+
 	if (!uid) {
 		bbs_warning("Invalid UID: %u\n", uid);
 		return -1;
@@ -2768,6 +2811,7 @@ static struct mailimap_set *uidset(json_t *uids)
 		if (!strcmp(json_string_value(uids), "1:*")) {
 			/* All messages in mailbox */
 			set = mailimap_set_new_interval(1, 0);
+			webmail_log(3, NULL, "=> UID 1:*\n");
 			return set;
 		} else {
 			/* Must use an array for everything else */
@@ -2791,9 +2835,10 @@ static struct mailimap_set *uidset(json_t *uids)
 		json_t *j = json_array_get(uids, i);
 		uid = json_integer_value(j);
 		if (uid < 1) {
-			bbs_warning("Invalid UID: %lld\n", uid);
+			bbs_warning("Invalid UID: %llu\n", uid);
 			continue;
 		}
+		webmail_log(3, NULL, "=> UID %llu\n", uid);
 		res = mailimap_set_add_single(set, (uint32_t) uid);
 		if (res != MAILIMAP_NO_ERROR) {
 			bbs_warning("Failed to add UID %lld to list\n", uid);
@@ -2846,6 +2891,8 @@ static int handle_store(struct imap_client *client, int sign, json_t *uids, cons
 	struct mailimap_set *set;
 	char *keyword = NULL;
 
+	webmail_log(1, client, "=> STORE %c%s\n", sign ? '+' : '-', flagname);
+
 	set = uidset(uids);
 	if (!set) {
 		return -1;
@@ -2894,6 +2941,8 @@ static int handle_move(struct imap_client *client, json_t *uids, const char *new
 	int res;
 	struct mailimap_set *set;
 
+	webmail_log(1, client, "=> MOVE %s\n", newmbox);
+
 	set = uidset(uids);
 	if (!set) {
 		return -1;
@@ -2940,6 +2989,8 @@ static int handle_copy(struct imap_client *client, json_t *uids, const char *new
 	int res;
 	struct mailimap_set *set;
 
+	webmail_log(1, client, "=> COPY %s\n", newmbox);
+
 	set = uidset(uids);
 	if (!set) {
 		return -1;
@@ -2958,6 +3009,8 @@ static int handle_append(struct imap_client *client, const char *message, size_t
 {
 	int res;
 	size_t realsize;
+
+	webmail_log(1, client, "=> APPEND {%lu} \"%s\" \"%s\"\n", size, S_IF(date), S_IF(flags));
 
 	if (strlen_zero(message)) {
 		bbs_warning("Empty APPEND message?\n");
@@ -2991,6 +3044,7 @@ static int idle_stop(struct ws_session *ws, struct imap_client *client)
 	if (client->idling) {
 		int res;
 		bbs_debug(5, "Stopping IDLE\n");
+		webmail_log(7, client, "=> IDLE STOP\n");
 		res = mailimap_idle_done(client->imap);
 		if (res != MAILIMAP_NO_ERROR) {
 			bbs_warning("Failed to stop IDLE: %s\n", maildriver_strerror(res));
@@ -3007,6 +3061,7 @@ static int idle_start(struct ws_session *ws, struct imap_client *client)
 	if (client->canidle && !client->idling) { /* Don't IDLE again if already idling... */
 		int res;
 		bbs_debug(5, "Starting IDLE...\n");
+		webmail_log(7, client, "=> IDLE START\n");
 		res = mailimap_idle(client->imap);
 		if (res != MAILIMAP_NO_ERROR) {
 			bbs_warning("Failed to start IDLE: %s\n", maildriver_strerror(res));
@@ -3049,6 +3104,8 @@ static int process_idle(struct imap_client *client, char *s)
 	int seqno;
 
 	bbs_debug(3, "IDLE data: %s", s); /* Already ends in LF */
+	webmail_log(3, client, "<= %s\n", s);
+
 	if (!STARTS_WITH(s, "* ")) {
 		bbs_warning("Unexpected IDLE response (not untagged): %s\n", s);
 		return -1;
@@ -3361,6 +3418,7 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 			 */
 			REFRESH_LISTING("DELETE");
 		} else if (!strcmp(command, "EXPUNGE")) {
+			webmail_log(1, client, "=> EXPUNGE\n");
 			res = mailimap_expunge(client->imap);
 			if (res != MAILIMAP_NO_ERROR) {
 				bbs_error("EXPUNGE failed: %s\n", strerror(errno));
@@ -3434,6 +3492,7 @@ static int on_open(struct ws_session *ws)
 	}
 
 	websocket_set_custom_poll_fd(ws, client->imapfd, SEC_MS(60)); /* Give the user a minute to authenticate */
+	webmail_log(2, client, "New session established\n");
 	return 0;
 
 done:
@@ -3463,13 +3522,40 @@ struct ws_callbacks callbacks = {
 	.on_poll_timeout = on_poll_timeout,
 };
 
+static int load_config(void)
+{
+	char webmail_log_file[256];
+	struct bbs_config *cfg;
+
+	cfg = bbs_config_load("mod_webmail.conf", 1);
+	if (!cfg) {
+		return 0;
+	}
+
+	if (!bbs_config_val_set_str(cfg, "logging", "logfile", webmail_log_file, sizeof(webmail_log_file))) {
+		webmail_log_fp = fopen(webmail_log_file, "a");
+		if (!webmail_log_fp) {
+			bbs_error("Failed to open SMTP log file for appending: %s\n", webmail_log_file);
+		}
+		bbs_config_val_set_uint(cfg, "logging", "loglevel", &webmail_log_level);
+	}
+
+	return 0;
+}
+
 static int load_module(void)
 {
+	if (load_config()) {
+		return -1;
+	}
 	return websocket_route_register("/webmail", &callbacks);
 }
 
 static int unload_module(void)
 {
+	if (webmail_log_fp) {
+		fclose(webmail_log_fp);
+	}
 	return websocket_route_unregister("/webmail");
 }
 
