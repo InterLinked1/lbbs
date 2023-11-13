@@ -569,10 +569,14 @@ static void *ssl_io_thread(void *unused)
 									if (!write_attempts++) { /* Log the first time. Debug, not warning, since this could happen legitimately */
 										bbs_debug(4, "SSL_write returned %ld (%s)\n", wres, ssl_strerror(err));
 									}
-									if (write_attempts < 1000) {
-										usleep(25); /* Don't make the loop super tight, it'll probably take several hunderd/thousand us anyways. */
+									if (write_attempts < 3000) {
+										/* Don't make the loop super tight, it'll probably take several hunderd/thousand us anyways,
+										 * and we don't need to service I/O in realtime.
+										 * Don't make it super loose either, we have other work we need to get on with. */
+										usleep(500);
 										continue;
 									}
+									/* This is more than a second without making any progress, abort. */
 									bbs_error("Max SSL_write retries (%d) exceeded\n", write_attempts);
 									MARK_DEAD(ssl);
 									needcreate = 1;
@@ -596,6 +600,9 @@ static void *ssl_io_thread(void *unused)
 							}
 							bbs_debug(6, "SSL_write returned %ld (%s)\n", wres, ssl_strerror(err));
 							break;
+						} else {
+							/* Reset any time we are able to make progress. */
+							write_attempts = 0;
 						}
 					}
 				} while (wres != ores);
