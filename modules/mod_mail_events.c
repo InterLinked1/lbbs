@@ -210,6 +210,7 @@ static void mbox_event_callback(struct mailbox_event *event)
 	pthread_mutex_lock(&loglock);
 	log_cb(event);
 	pthread_mutex_unlock(&loglock);
+	fflush(fp); /* Explicitly flush to disk so it immediately appears in the logfile. */
 }
 
 static int load_config(void)

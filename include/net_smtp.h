@@ -24,6 +24,8 @@
 
 struct smtp_session;
 
+void __attribute__ ((format (gnu_printf, 3, 4))) bbs_smtp_log(int level, struct smtp_session *smtp, const char *fmt, ...);
+
 /*! \brief Get the SMTP hostname of the local SMTP server, suitable for use in HELO/EHLO */
 const char *smtp_hostname(void);
 

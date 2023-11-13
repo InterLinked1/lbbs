@@ -139,6 +139,7 @@
 #include "include/oauth.h"
 #include "include/base64.h"
 #include "include/range.h"
+#include "include/cli.h"
 
 #include "include/mod_mail.h"
 
@@ -239,6 +240,55 @@ static const char *preauth_username_match(const char *ipaddr)
 }
 
 static RWLIST_HEAD_STATIC(sessions, imap_session);
+
+static int cli_imap_sessions(struct bbs_cli_args *a)
+{
+	struct imap_session *imap;
+
+	bbs_dprintf(a->fdout, "%4s %-25s %-25s %7s %s\n", "Node", "Current Mailbox", "Current Folder", "Proxied", "Client ID");
+	RWLIST_RDLOCK(&sessions);
+	RWLIST_TRAVERSE(&sessions, imap, entry) {
+		char mbox_buf[32];
+		const char *mbox_name = NULL;
+		if (imap->mbox) {
+			mbox_name = mailbox_name(imap->mbox);
+			if (!mbox_name) {
+				snprintf(mbox_buf, sizeof(mbox_buf), "%u", mailbox_id(imap->mbox));
+				mbox_name = mbox_buf;
+			}
+		}
+		bbs_dprintf(a->fdout, "%4u %-25s %-25s %7s %s\n",
+			imap->node->id, S_IF(mbox_name), S_IF(imap->folder), imap->client ? "Yes" : "No", S_IF(imap->clientid));
+	}
+	RWLIST_UNLOCK(&sessions);
+	return 0;
+}
+
+static int cli_imap_clients(struct bbs_cli_args *a)
+{
+	struct imap_session *imap;
+	time_t now = time(NULL);
+
+	bbs_dprintf(a->fdout, "%4s %-25s %6s %4s %9s\n", "Node", "Name", "Active", "Dead", "Idle");
+	RWLIST_RDLOCK(&sessions);
+	RWLIST_TRAVERSE(&sessions, imap, entry) {
+		struct imap_client *client;
+		RWLIST_RDLOCK(&imap->clients);
+		RWLIST_TRAVERSE(&imap->clients, client, entry) {
+			time_t idle_elapsed = now - client->idlestarted;
+			bbs_dprintf(a->fdout, "%4u %-25s %6s %4s %4lu/%4d\n",
+				imap->node->id, client->name, BBS_YN(client->active), BBS_YN(client->dead), client->idling ? idle_elapsed : 0, client->maxidlesec);
+		}
+		RWLIST_UNLOCK(&imap->clients);
+	}
+	RWLIST_UNLOCK(&sessions);
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_imap[] = {
+	BBS_CLI_COMMAND(cli_imap_sessions, "imap sessions", 2, "List IMAP client sessions", NULL),
+	BBS_CLI_COMMAND(cli_imap_clients, "imap clients", 2, "List outbound IMAP client proxies", NULL),
+};
 
 static inline void reset_saved_search(struct imap_session *imap)
 {
@@ -4812,6 +4862,7 @@ static int load_module(void)
 	bbs_register_tests(tests);
 	mailbox_register_watcher(imap_mbox_watcher);
 	bbs_register_alerter(alertmsg, 90);
+	bbs_cli_register_multiple(cli_commands_imap);
 	return 0;
 
 abort:
@@ -4821,6 +4872,7 @@ abort:
 
 static int unload_module(void)
 {
+	bbs_cli_unregister_multiple(cli_commands_imap);
 	bbs_unregister_alerter(alertmsg);
 	bbs_unregister_tests(tests);
 	mailbox_unregister_watcher(imap_mbox_watcher);

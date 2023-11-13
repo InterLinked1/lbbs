@@ -85,6 +85,10 @@ static int validatespf = 1;
 static int add_received_msa = 0;
 static int archivelists = 1;
 
+static FILE *smtplogfp = NULL;
+static unsigned int smtp_log_level = 5;
+static pthread_mutex_t loglock = PTHREAD_MUTEX_INITIALIZER;
+
 /*! \brief Max message size, in bytes */
 static unsigned int max_message_size = 300000;
 
@@ -99,6 +103,36 @@ static unsigned int max_message_size = 300000;
 
 /*! \brief Non-final SMTP response (subsequent responses with the same code follow) */
 #define smtp_reply0_nostatus(smtp, code, fmt, ...) _smtp_reply(smtp, "%d-" fmt "\r\n", code, ## __VA_ARGS__)
+
+void bbs_smtp_log(int level, struct smtp_session *smtp, const char *fmt, ...)
+{
+	va_list ap;
+	char datestr[20];
+	time_t lognow;
+	struct tm logdate;
+	struct timeval now;
+
+	if (!smtplogfp || (unsigned int) level > smtp_log_level) { /* This is static to this file, so we can't do this in a macro. */
+		return;
+	}
+
+#pragma GCC diagnostic ignored "-Waggregate-return"
+	now = bbs_tvnow();
+#pragma GCC diagnostic pop
+	lognow = time(NULL);
+	localtime_r(&lognow, &logdate);
+	strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
+
+	pthread_mutex_lock(&loglock);
+	fprintf(smtplogfp, "[%s.%03d] %p: ", datestr, (int) now.tv_usec / 1000, smtp);
+
+	va_start(ap, fmt);
+	vfprintf(smtplogfp, fmt, ap);
+	va_end(ap);
+
+	pthread_mutex_unlock(&loglock);
+	fflush(smtplogfp);
+}
 
 /*
  * Wikipedia sums up the difference between MTAs/MSAs very nicely, if the difference is confusing:
@@ -1707,6 +1741,7 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		}
 		if (mres == 1) {
 			/* Delivery or queuing to this recipient succeeded */
+			bbs_smtp_log(4, smtp, "Delivery succeeded or queued: %s -> %s\n", smtp->from, recipient);
 			succeeded++;
 		} else if (res < 0) { /* Includes if the message has no handler */
 			/* Process any error message before unlocking the list.
@@ -1714,6 +1749,7 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 			 * just for one of the recipients (otherwise we might send multiple SMTP responses).
 			 * Instead, we have to send a bounce message.
 			 * If this is the only recipient, we can bounce at the SMTP level. */
+			bbs_smtp_log(2, smtp, "Delivery failed: %s -> %s\n", smtp->from, recipient);
 			if (total > 1) {
 				char bouncemsg[512];
 				struct smtp_delivery_outcome *f;
@@ -2074,6 +2110,7 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 					res = h->agent->relay(smtp, &mproc, srcfd, datalen, &smtp->recipients);
 					bbs_module_unref(h->mod, 6);
 					if (!res) {
+						bbs_smtp_log(4, smtp, "Outgoing message successfully relayed for submission: MAIL FROM %s\n", smtp->from);
 						break;
 					}
 				}
@@ -2085,6 +2122,7 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 				smtp_reply(smtp, 250, 2.6.0, "Message accepted for relay");
 			} else {
 				/* XXX If we couldn't relay it immediately, don't queue it, just reject it */
+				bbs_smtp_log(4, smtp, "Relay rejected: MAIL FROM %s\n", smtp->from);
 				smtp_reply(smtp, 550, 5.7.0, "Mail relay rejected.");
 				if (!s_strlen_zero(newfile)) {
 					/* This is the one case where it's convenient to clean up, so we do so.
@@ -2617,6 +2655,7 @@ static struct bbs_cli_entry cli_commands_smtp[] = {
 
 static int load_config(void)
 {
+	char smtp_log_file[256];
 	struct bbs_config *cfg;
 	struct bbs_config_section *section = NULL;
 
@@ -2666,6 +2705,14 @@ static int load_config(void)
 		} else if (strcasecmp(bbs_config_section_name(section), "general")) {
 			bbs_warning("Invalid section name '%s'\n", bbs_config_section_name(section));
 		}
+	}
+
+	if (!bbs_config_val_set_str(cfg, "logging", "logfile", smtp_log_file, sizeof(smtp_log_file))) {
+		smtplogfp = fopen(smtp_log_file, "a");
+		if (!smtplogfp) {
+			bbs_error("Failed to open SMTP log file for appending: %s\n", smtp_log_file);
+		}
+		bbs_config_val_set_uint(cfg, "logging", "loglevel", &smtp_log_level);
 	}
 
 	return 0;
@@ -2734,6 +2781,9 @@ static int unload_module(void)
 	RWLIST_WRLOCK_REMOVE_ALL(&authorized_relays, entry, relay_free);
 	if (!RWLIST_EMPTY(&filters)) {
 		bbs_error("Filter(s) still registered at unload?\n");
+	}
+	if (smtplogfp) {
+		fclose(smtplogfp);
 	}
 	return 0;
 }
