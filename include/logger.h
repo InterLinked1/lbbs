@@ -104,6 +104,8 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 
 #define TERM_TITLE_FMT "\033]2;%s\007"
 
+#define TERM_TITLE_RESTORE_FMT "\e]2;\a"
+
 /*! \brief Ring the bell on the TTY/terminal */
 #define TERM_BELL "\a"
 

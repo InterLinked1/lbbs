@@ -1175,7 +1175,7 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, char
 	}
 	if (channel->modes & CHANNEL_MODE_COLOR_FILTER) {
 		int newlen;
-		if (bbs_ansi_strip(message, (int) msglen, stripbuf, sizeof(stripbuf), &newlen)) {
+		if (bbs_ansi_strip(message, msglen, stripbuf, sizeof(stripbuf), &newlen)) {
 			/* Our fault */
 			send_numeric2(user, 404, "%s :Cannot send to nick/channel\r\n", channame);
 			return -1;
@@ -3525,12 +3525,6 @@ static int load_config(void)
 			}
 		} else if (!strcmp(bbs_config_section_name(section), "nativeopers")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
-				/* Format is simple:
-				 * [opers]
-				 * admin=P@ssw0rd
-				 *
-				 * Currently doesn't allow specifying host/range(s), more granular permissions, etc.
-				 */
 				const char *key = bbs_keyval_key(keyval);
 				add_operator(key, NULL);
 			}

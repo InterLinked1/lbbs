@@ -25,6 +25,7 @@
 #include <math.h> /* use ceil */
 
 #include "include/menu.h"
+#include "include/ansi.h"
 #include "include/config.h"
 #include "include/linkedlists.h"
 #include "include/node.h"
@@ -455,6 +456,20 @@ static int valid_menusequence(const char *restrict s)
 	return 1;
 }
 
+static int menu_set_title(struct bbs_node *node, const char *name)
+{
+	char sub_name[64];
+	char stripped[64];
+	int strippedlen;
+
+	/* We could have something like ${COLOR_RED}Option Name${COLOR_RESET}
+	 * We need to substitute variables and then strip any ANSI sequences,
+	 * before using that for the terminal title. */
+	bbs_node_substitute_vars(node, name, sub_name, sizeof(sub_name));
+	bbs_ansi_strip(sub_name, strlen(sub_name), stripped, sizeof(stripped), &strippedlen);
+	return bbs_node_set_term_title(node, stripped);
+}
+
 /*!
  * \brief Run the BBS on a node
  * \param node node
@@ -462,7 +477,7 @@ static int valid_menusequence(const char *restrict s)
  * \param stack Current stack count
  * \param optreq Option request string
  */
-static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, const char *optreq)
+static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char *menuitemname, int stack, const char *optreq)
 {
 	int res;
 	char opt = 0;
@@ -621,13 +636,24 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 
 		opt = 0; /* Got a valid option, display the menu again next round */
 
+		/* Set the title to the option name */
+		/* XXX Because things like "quit" and "back" are technically options,
+		 * the option name (e.g. "Back") will be displayed as the title temporarily.
+		 * It will almost immediately return, and then unwind the menu stack as much as is needed,
+		 * during which time the title will not be further overwritten.
+		 * Eventually, the BBS will exit or a new title will be overwritten,
+		 * but users may notice this temporarily, and that's what's going on.
+		 * It might be nice to not do this, but that would require breaking menu handler abstraction
+		 * and poking into the option to see what it does, which I don't want to do... */
+		menu_set_title(node, menuitem->name);
+
 		/* Initially, when I started writing this file, all the handlers were just hardcoded into a giant else if !strcmp mess here.
 		 * Now we have handler.c to clean this up and allow the handlers to be compartmentalized.
 		 * Only the menu handler for "menu" itself remains hardcoded in here, since
 		 * we need to be able to recurse efficiently with arguments that other handlers don't (and shouldn't) get. */
 		if (STARTS_WITH(menuitem->action, "menu:")) {
 			/* Execute another menu, recursively */
-			res = bbs_menu_run(node, menuitem->action + 5, stack, optreq ? optreq + 1 : NULL);
+			res = bbs_menu_run(node, menuitem->action + 5, menuitem->name, stack, optreq ? optreq + 1 : NULL);
 		} else {
 			char *handler, *args;
 			/* At this point in the function, we're done with the options buffer, and if we need it again, we'll fill it again.
@@ -672,6 +698,19 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 			break;
 		}
 		optreq = NULL; /* Any argument we had or may have had this round is "used up" now, i.e. don't repeat the option after it returns */
+
+		/* Restore previous terminal title */
+		bbs_node_restore_term_title(node); /* Pop the current title */
+		if (!strlen_zero(menuitemname)) {
+			/* If this is not the top-level menu, then the menu was chosen via an option that had a name for the menu.
+			 * Use that name here since that's the most logical name to display. */
+			menu_set_title(node, menuitemname);
+		} else {
+			/* In case popping the title just resets to the very original title (probably the hostname),
+			 * explicitly set the BBS name as the title, since that's what's set initially and
+			 * displayed the first time a user accesses the root menu (so use that from here on out). */
+			bbs_node_set_term_title(node, bbs_name());
+		}
 	}
 
 	RWLIST_UNLOCK(&menus);
@@ -684,7 +723,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, int stack, 
 
 int bbs_node_menuexec(struct bbs_node *node)
 {
-	return bbs_menu_run(node, DEFAULT_MENU, 0, NULL);
+	return bbs_menu_run(node, DEFAULT_MENU, NULL, 0, NULL);
 }
 
 static int load_config(int reload)

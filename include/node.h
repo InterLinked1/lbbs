@@ -615,6 +615,13 @@ int bbs_node_clear_line(struct bbs_node *node);
 int bbs_node_set_term_title(struct bbs_node *node, const char *s);
 
 /*!
+ * \brief Restore the previous terminal title
+ * \param node
+ * \retval -1 on failure, 0 on success
+ */
+int bbs_node_restore_term_title(struct bbs_node *node);
+
+/*!
  * \brief Set the terminal icon
  * \param node
  * \param s Icon text

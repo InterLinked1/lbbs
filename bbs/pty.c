@@ -706,7 +706,7 @@ gotinput:
 				/* Strip ANSI escape sequences from output for terminal, e.g. TTY/TDD */
 				writebuf[bytes_read] = '\0'; /* NUL terminate for bbs_ansi_strip */
 				/*! \todo XXX This should always get smaller... so couldn't this be done in place? */
-				if (!bbs_ansi_strip(writebuf, (int) bytes_read, strippedbuf, sizeof(strippedbuf), &strippedlen)) {
+				if (!bbs_ansi_strip(writebuf, (size_t) bytes_read, strippedbuf, sizeof(strippedbuf), &strippedlen)) {
 					bytes_read = strippedlen;
 					relaybuf = strippedbuf;
 				} /* else, failed to strip, just write the original data (possibly containing ANSI escape sequences) */

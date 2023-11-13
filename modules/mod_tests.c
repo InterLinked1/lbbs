@@ -152,14 +152,14 @@ static int test_ansi_strip(void)
 	const char *s3 = TERM_CLEAR;
 	char outbuf[32];
 
-	bbs_test_assert_equals(0, bbs_ansi_strip(s, (int) strlen(s), outbuf, sizeof(outbuf), &outlen));
+	bbs_test_assert_equals(0, bbs_ansi_strip(s, strlen(s), outbuf, sizeof(outbuf), &outlen));
 	bbs_test_assert_equals(4, outlen);
 	bbs_test_assert_str_equals(outbuf, " abc");
 
-	bbs_test_assert_equals(0, bbs_ansi_strip(s2, (int) strlen(s2), outbuf, sizeof(outbuf), NULL));
+	bbs_test_assert_equals(0, bbs_ansi_strip(s2, strlen(s2), outbuf, sizeof(outbuf), NULL));
 	bbs_test_assert_str_equals(outbuf, "abc 123 456");
 
-	bbs_test_assert_equals(0, bbs_ansi_strip(s3, (int) strlen(s3), outbuf, sizeof(outbuf), &outlen));
+	bbs_test_assert_equals(0, bbs_ansi_strip(s3, strlen(s3), outbuf, sizeof(outbuf), &outlen));
 	bbs_test_assert_equals(0, outlen);
 	bbs_test_assert_str_equals(outbuf, "");
 

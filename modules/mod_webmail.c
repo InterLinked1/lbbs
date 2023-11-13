@@ -3103,6 +3103,11 @@ static int process_idle(struct imap_client *client, char *s)
 	char *tmp;
 	int seqno;
 
+	if (strlen_zero(s)) {
+		bbs_warning("Empty IDLE response\n");
+		return -1;
+	}
+
 	bbs_debug(3, "IDLE data: %s", s); /* Already ends in LF */
 	webmail_log(3, client, "<= %s\n", s);
 
@@ -3235,7 +3240,9 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	} while (idledata && !res);
 
 	if (res) {
-		idle_stop(ws, client);
+		if (idle_stop(ws, client)) {
+			bbs_warning("Failed to stop IDLE, terminating webmail session\n");
+		}
 	}
 
 	client->idlerefresh &= ~IDLE_REFRESH_STATUS; /* This doesn't count for needing a page refresh */

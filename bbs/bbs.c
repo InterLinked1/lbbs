@@ -804,7 +804,7 @@ static void *monitor_sig_flags(void *unused)
 	}
 
 	/* Restore previous terminal title */
-	printf("\e]2;\a");
+	printf(TERM_TITLE_RESTORE_FMT);
 	fflush(stdout);
 	return NULL;
 }

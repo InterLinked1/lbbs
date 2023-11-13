@@ -2430,6 +2430,14 @@ int bbs_node_set_term_title(struct bbs_node *node, const char *s)
 	return bbs_node_writef(node, TERM_TITLE_FMT, s) <= 0 ? -1 : 0; /* for xterm, screen, etc. */
 }
 
+int bbs_node_restore_term_title(struct bbs_node *node)
+{
+	if (!node->ansi) {
+		return 0;
+	}
+	return bbs_node_write(node, TERM_TITLE_RESTORE_FMT, STRLEN(TERM_TITLE_RESTORE_FMT)) == STRLEN(TERM_RESET_LINE) ? 0 : -1; /* for xterm, screen, etc. */
+}
+
 #define TERM_ICON "\033]1;%s\007"
 
 int bbs_node_set_term_icon(struct bbs_node *node, const char *s)

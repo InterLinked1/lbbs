@@ -24,15 +24,15 @@
 #include "include/ansi.h"
 #include "include/utils.h" /* use bbs_str_safe_print */
 
-int bbs_ansi_strip(const char *restrict in, int inlen, char *restrict out, size_t outlen, int *restrict strippedlen)
+int bbs_ansi_strip(const char *restrict in, size_t inlen, char *restrict out, size_t outlen, int *restrict strippedlen)
 {
 	int outindex = 0;
 
 	/* We're stripping characters. The output can never be larger than the input. */
-	if ((int) outlen < inlen + 1) { /* Add 1 since we need to null terminate the buffer */
+	if (outlen < inlen + 1) { /* Add 1 since we need to null terminate the buffer */
 		/* If outlen > inlen, it's just unnecessarily long.
 		 * If outlen < inlen, there could be truncation. */
-		bbs_warning("ANSI-stripped output could be truncated (%lu < %d + 1)\n", outlen, inlen);
+		bbs_warning("ANSI-stripped output could be truncated (%lu < %lu + 1)\n", outlen, inlen);
 	}
 
 	*out = '\0'; /* In case everything is stripped, null terminate now */
@@ -106,7 +106,7 @@ int bbs_ansi_strip(const char *restrict in, int inlen, char *restrict out, size_
 	}
 
 #ifdef ANSI_DEBUG
-	bbs_debug(7, "insize: %d, outsize: %lu, outlen: %d\n", inlen, outlen, outindex);
+	bbs_debug(7, "insize: %lu, outsize: %lu, outlen: %d\n", inlen, outlen, outindex);
 #endif
 
 	if (outindex >= (int) outlen) {
