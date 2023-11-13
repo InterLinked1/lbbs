@@ -78,9 +78,10 @@ static int autoload_setting = DEFAULT_AUTOLOAD_SETTING;
 
 static int really_register = 0;
 
-struct stringlist modules_preload;
-struct stringlist modules_load;
-struct stringlist modules_noload;
+struct stringlist modules_preload;	/* Preload */
+struct stringlist modules_required;	/* Required, normal load (unless preloaded also) */
+struct stringlist modules_load;		/* Normal load */
+struct stringlist modules_noload;	/* Don't load */
 
 /*! \brief Number of modules we plan to autoload */
 static int autoload_planned = 0;
@@ -844,6 +845,10 @@ static int on_file_preload(const char *dir_name, const char *filename, void *obj
 
 	if (load_resource(filename, 0)) {
 		bbs_error("Failed to autoload %s\n", filename);
+		if (stringlist_contains(&modules_required, filename)) {
+			bbs_error("Aborting startup due to failing to load required module %s\n", filename);
+			return 1;
+		}
 	} else {
 		autoload_loaded++;
 	}
@@ -853,6 +858,7 @@ static int on_file_preload(const char *dir_name, const char *filename, void *obj
 
 static int on_file_autoload(const char *dir_name, const char *filename, void *obj)
 {
+	int required;
 	struct bbs_module *mod = find_resource(filename);
 
 	UNUSED(dir_name);
@@ -870,13 +876,16 @@ static int on_file_autoload(const char *dir_name, const char *filename, void *ob
 		bbs_debug(5, "Not loading dynamic module %s, since it's explicitly noloaded\n", filename);
 		autoload_planned--;
 		return 0;
-	} else if (!autoload_setting) {
-		if (!stringlist_contains(&modules_load, filename)) {
+	}
+
+	required = stringlist_contains(&modules_required, filename);
+	if (!autoload_setting) {
+		if (!required && !stringlist_contains(&modules_load, filename)) {
 			bbs_debug(5, "Not loading dynamic module %s, not explicitly loaded and autoload=no\n", filename);
 			autoload_planned--;
 			return 0;
 		}
-		bbs_debug(5, "Autoloading dynamic module %s, since explicitly loaded\n", filename);
+		bbs_debug(5, "Autoloading dynamic module %s, since explicitly %s\n", filename, required ? "required" : "loaded");
 	} else {
 		/* If autoload=yes and not in the noload list, then don't even bother checking the load list. Just load it. */
 		bbs_debug(5, "Autoloading dynamic module %s (autoload=yes)\n", filename);
@@ -884,8 +893,13 @@ static int on_file_autoload(const char *dir_name, const char *filename, void *ob
 
 	if (load_resource(filename, 0)) {
 		bbs_error("Failed to autoload %s\n", filename);
+		if (required) {
+			bbs_error("Aborting startup due to failing to load required module %s\n", filename);
+			return 1;
+		}
 	} else {
 		autoload_loaded++;
+		stringlist_remove(&modules_required, filename);
 	}
 
 	return bbs_abort_startup() ? 1 : 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
@@ -907,6 +921,7 @@ static int load_config(void)
 	RWLIST_WRLOCK(&modules_load);
 	RWLIST_WRLOCK(&modules_noload);
 	RWLIST_WRLOCK(&modules_preload);
+	RWLIST_WRLOCK(&modules_required);
 	while ((section = bbs_config_walk(cfg, section))) {
 		if (!strcmp(bbs_config_section_name(section), "general")) {
 			continue; /* Skip general, already handled */
@@ -926,6 +941,9 @@ static int load_config(void)
 			} else if (!strcmp(key, "preload")) {
 				bbs_debug(7, "Explicitly planning to preload '%s'\n", value);
 				stringlist_push(&modules_preload, value);
+			} else if (!strcmp(key, "require")) {
+				bbs_debug(7, "Explicitly planning to require '%s'\n", value);
+				stringlist_push(&modules_required, value);
 			} else {
 				bbs_warning("Invalid directive %s=%s, ignoring\n", key, value);
 			}
@@ -934,12 +952,14 @@ static int load_config(void)
 	RWLIST_UNLOCK(&modules_load);
 	RWLIST_UNLOCK(&modules_noload);
 	RWLIST_UNLOCK(&modules_preload);
+	RWLIST_UNLOCK(&modules_required);
 	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
 	return 0;
 }
 
 static int autoload_modules(void)
 {
+	int res = 0;
 	bbs_debug(1, "Autoloading modules\n");
 
 	/* Check config for load settings. */
@@ -953,8 +973,10 @@ static int autoload_modules(void)
 	really_register = 1;
 
 	/* Now, actually try to load them. */
-	bbs_dir_traverse(BBS_MODULE_DIR, on_file_preload, NULL, -1);
-	bbs_dir_traverse(BBS_MODULE_DIR, on_file_autoload, NULL, -1);
+	if (bbs_dir_traverse(BBS_MODULE_DIR, on_file_preload, NULL, -1) || bbs_dir_traverse(BBS_MODULE_DIR, on_file_autoload, NULL, -1)) {
+		res = -1;
+		goto cleanup;
+	}
 
 	if (autoload_planned != autoload_loaded) {
 		/* Some modules failed to autoload */
@@ -963,12 +985,27 @@ static int autoload_modules(void)
 		bbs_debug(1, "Successfully autoloaded %d module%s\n", autoload_planned, ESS(autoload_planned));
 	}
 
+	if (!RWLIST_EMPTY(&modules_required)) {
+		struct stringitem *i = NULL;
+		const char *s;
+		/* We remove a required module from the list when it loads.
+		 * If we didn't already abort, that means we tried to require
+		 * a module that doesn't even exist (hence the traversal didn't encounter it)
+		 * Enumerate which modules and then abort. */
+		res = -1;
+		while ((s = stringlist_next(&modules_required, &i))) {
+			bbs_error("Required module '%s' failed to load\n", s);
+		}
+	}
+
+cleanup:
 	stringlist_empty(&modules_load);
 	stringlist_empty(&modules_noload);
 	stringlist_empty(&modules_preload);
+	stringlist_empty(&modules_required);
 
 	RWLIST_UNLOCK(&modules);
-	return 0;
+	return res;
 }
 
 int bbs_module_load(const char *name)
@@ -1291,21 +1328,19 @@ int load_modules(void)
 
 	/* No modules should be registered on startup. */
 	RWLIST_WRLOCK(&modules);
-	RWLIST_TRAVERSE(&modules, mod, entry) {
-		bbs_assert(0);
-	}
+	bbs_assert(RWLIST_EMPTY(&modules));
 	RWLIST_UNLOCK(&modules);
 
 	res = autoload_modules();
 
 	RWLIST_WRLOCK(&modules);
-	RWLIST_TRAVERSE(&modules, mod, entry) {
-		c++;
-	}
+	c = RWLIST_SIZE(&modules, mod, entry);
 	RWLIST_UNLOCK(&modules);
 
 	bbs_assert(c == autoload_loaded);
-	bbs_cli_register_multiple(cli_commands_modules);
+	if (!res) {
+		bbs_cli_register_multiple(cli_commands_modules);
+	}
 	return res;
 }
 

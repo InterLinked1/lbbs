@@ -202,7 +202,11 @@ static int status_size_fetch_incremental(struct imap_client *client, const char 
 
 	/* Compare MESSAGES and UIDNEXT from the old and new responses */
 	if (parse_status_item(old, "UIDVALIDITY", &oldv) || parse_status_item(new, "UIDVALIDITY", &newv)) {
-		bbs_warning("UIDVALIDITY parsing error\n");
+		if (strlen_zero(old)) {
+			bbs_warning("Empty UIDVALIDITY in comparison, cannot rely on cache (%s / %s)\n", old, new);
+		} else {
+			bbs_warning("UIDVALIDITY parsing error, cannot rely on cache (%s / %s)\n", old, new);
+		}
 		return -1;
 	}
 	if (oldv != newv) {
