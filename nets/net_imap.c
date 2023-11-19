@@ -4414,15 +4414,19 @@ static int imap_process(struct imap_session *imap, char *s)
 	} else if (!strcasecmp(command, "SUBSCRIBE")) {
 		char fullmaildir[256];
 		int myacl;
+		REQUIRE_ARGS(s);
+		STRIP_QUOTES(s);
 		IMAP_NO_READONLY(imap);
 		/* Since we don't check for mailbox existence (and everything is always subscribed anyways), no real need to check ACLs here */
-		bbs_debug(1, "Ignoring sbscription attempt for %s for mailbox %d\n", S_IF(s), mailbox_id(imap->mbox));
+		bbs_debug(1, "Ignoring subscription attempt for %s for mailbox %d\n", S_IF(s), mailbox_id(imap->mbox));
 		imap_reply(imap, "OK SUBSCRIBE completed"); /* Everything available is already subscribed anyways, so can't hurt */
 		imap_translate_dir(imap, s, fullmaildir, sizeof(fullmaildir), &myacl);
 		mailbox_dispatch_event_basic(EVENT_MAILBOX_SUBSCRIBE, imap->node, imap->mbox, fullmaildir);
 	} else if (!strcasecmp(command, "UNSUBSCRIBE")) {
 		char fullmaildir[256];
 		int myacl;
+		REQUIRE_ARGS(s);
+		STRIP_QUOTES(s);
 		IMAP_NO_READONLY(imap);
 		bbs_warning("Unsubscription attempt for %s for mailbox %d\n", S_IF(s), mailbox_id(imap->mbox));
 		imap_reply(imap, "NO [NOPERM] Permission denied");
