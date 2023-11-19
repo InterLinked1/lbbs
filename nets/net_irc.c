@@ -3272,7 +3272,7 @@ static void *ping_thread(void *unused)
 	for (;;) {
 		time_t now;
 		int clients = 0;
-		if (bbs_poll(ping_alertpipe[0], PING_TIME)) {
+		if (bbs_alertpipe_poll(ping_alertpipe, PING_TIME)) {
 			break;
 		}
 

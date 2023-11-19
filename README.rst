@@ -64,6 +64,8 @@ Key features and capabilities include:
 
 * Internet Relay Chat client and server (including ChanServ), with native IRC, Slack, and Discord relays
 
+* Queue agent position system for Asterisk
+
 * Emulated slow baud rate support
 
 * TDD/TTY (telecommunications device for the deaf) support

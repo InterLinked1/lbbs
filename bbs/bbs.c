@@ -781,7 +781,7 @@ static void *monitor_sig_flags(void *unused)
 	UNUSED(unused);
 
 	for (;;) {
-		if (bbs_alertpipe_poll(sig_alert_pipe) <= 0) {
+		if (bbs_alertpipe_poll(sig_alert_pipe, -1) <= 0) {
 			break;
 		}
 		pthread_mutex_lock(&sig_lock);

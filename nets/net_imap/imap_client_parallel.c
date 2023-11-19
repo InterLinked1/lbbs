@@ -256,7 +256,7 @@ int imap_client_parallel_join(struct imap_parallel *p)
 	for (;;) {
 		/* We're interested in threads for tasks that have been started, but aren't yet completed.
 		 * If there aren't any, then everything has finished executing. */
-		res = bbs_alertpipe_poll(p->alertpipe);
+		res = bbs_alertpipe_poll(p->alertpipe, -1);
 		/* A thread exited. */
 		bbs_alertpipe_read(p->alertpipe);
 		res = run_scheduler(p);

@@ -1239,6 +1239,7 @@ static int node_intro(struct bbs_node *node)
 	bbs_node_var_set_fmt(node, "BBS_USERID", "%d", node->user->id);
 	bbs_node_var_set_fmt(node, "BBS_USERPRIV", "%d", node->user->priv);
 	bbs_node_var_set(node, "BBS_USERNAME", bbs_username(node->user));
+	bbs_user_init_vars(node); /* Set any custom variables for this user */
 
 	/*! \todo Notify user's friends that s/he's logged on now */
 	/*! \todo Notify the sysop (sysop console), via BELL, that a new user has logged in, if and only if the sysop console is idle */

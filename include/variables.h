@@ -52,6 +52,13 @@ void bbs_vars_cleanup(void);
 int bbs_vars_init(void);
 
 /*!
+ * \brief Initialize custom user-specific node variables upon user login
+ * \param node Authenticated node
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_user_init_vars(struct bbs_node *node);
+
+/*!
  * \brief Append to the variable added most recently to a list
  * \param vars
  * \param s Data to append

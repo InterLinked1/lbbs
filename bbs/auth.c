@@ -597,6 +597,13 @@ int bbs_user_authenticate(struct bbs_user *user, const char *username, const cha
 	return 0;
 }
 
+static int post_auth(struct bbs_node *node, struct bbs_user *user)
+{
+	bbs_auth("Node %d now logged in as %s (via %s)\n", node->id, bbs_username(user), node->protname);
+	bbs_event_dispatch(node, EVENT_USER_LOGIN);
+	return 0;
+}
+
 int bbs_node_attach_user(struct bbs_node *node, struct bbs_user *user)
 {
 	bbs_assert_exists(node);
@@ -609,7 +616,7 @@ int bbs_node_attach_user(struct bbs_node *node, struct bbs_user *user)
 		return -1;
 	}
 	node->user = user;
-	bbs_auth("Node %d now logged in as %s (via %s)\n", node->id, bbs_username(user), node->protname);
+	post_auth(node, user); /* Manually emit event since bbs_authenticate wasn't used */
 	return 0;
 }
 
@@ -668,13 +675,7 @@ int bbs_authenticate(struct bbs_node *node, const char *username, const char *pa
 		bbs_warning("Username '%s' contains space (may not be compatible with all services)\n", username); /* e.g. IRC */
 	}
 
-	/* Do not run any callbacks for user login here, since this function isn't always
-	 * called on authentication (SSH for example could call bbs_user_authenticate
-	 * and then bbs_node_attach_user).
-	 * Any such stuff should be done in node.c after user login */
-
-	bbs_auth("Node %d now logged in as %s\n", node->id, bbs_username(node->user));
-	bbs_event_dispatch(node, EVENT_USER_LOGIN); /* XXX If bbs_user_authenticate is called directly, this event isn't emitted */
+	post_auth(node, node->user);
 	return 0;
 }
 

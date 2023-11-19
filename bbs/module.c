@@ -761,6 +761,11 @@ static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int for
 		if (force > 1) {
 			bbs_warning("Warning:  Forcing removal of module '%s' with use count %d\n", mod->name, mod->usecount);
 		} else {
+			if (RWLIST_EMPTY(&mod->refs)) {
+				/* The integer count is positive, but our list is empty?
+				 * Critical lack of synchronization! (Probably a bug) */
+				bbs_error("Module '%s' supposedly has use count %d, but refcount list is empty?\n", mod->name, mod->usecount);
+			}
 			bbs_warning("Soft unload failed, '%s' has use count %d\n", mod->name, mod->usecount);
 			return NULL;
 		}

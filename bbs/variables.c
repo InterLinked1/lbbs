@@ -26,6 +26,7 @@
 #include "include/linkedlists.h"
 #include "include/variables.h"
 #include "include/node.h"
+#include "include/user.h"
 #include "include/config.h"
 #include "include/utils.h"
 #include "include/cli.h"
@@ -120,8 +121,8 @@ static int load_config(void)
 
 	while ((section = bbs_config_walk(cfg, section))) {
 		if (strcmp(bbs_config_section_name(section), "variables")) {
-			bbs_warning("Invalid section '%s', ignoring\n", bbs_config_section_name(section));
-			/* [variables] is the only valid section */
+			/* [variables] contains global variables
+			 * Don't load anything else into memory directly. */
 			continue;
 		}
 		while ((keyval = bbs_config_section_walk(section, keyval))) {
@@ -129,7 +130,7 @@ static int load_config(void)
 			bbs_var_set_user(key, value);
 		}
 	}
-	bbs_config_free(cfg);
+	/* Don't free the config, since we'll reference it whenever users log in. */
 	return 0;
 }
 
@@ -190,6 +191,30 @@ void bbs_vars_cleanup(void)
 int bbs_vars_init(void)
 {
 	return load_config() || bbs_cli_register_multiple(cli_commands_variables);
+}
+
+/*! \note Could use a callback for this (allowing NULL modules in event.c),
+ * but just make this callable directly from node.c */
+int bbs_user_init_vars(struct bbs_node *node)
+{
+	struct bbs_config_section *section = NULL;
+	struct bbs_keyval *keyval = NULL;
+	struct bbs_config *cfg = bbs_config_load("variables.conf", 1);
+
+	if (!cfg) {
+		return 0;
+	}
+
+	while ((section = bbs_config_walk(cfg, section))) {
+		if (strcasecmp(bbs_config_section_name(section), bbs_username(node->user))) {
+			continue;
+		}
+		while ((keyval = bbs_config_section_walk(section, keyval))) {
+			const char *key = bbs_keyval_key(keyval), *value = bbs_keyval_val(keyval);
+			bbs_node_var_set(node, key, value);
+		}
+	}
+	return 0;
 }
 
 int bbs_varlist_last_var_append(struct bbs_vars *vars, const char *s)

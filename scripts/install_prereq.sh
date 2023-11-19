@@ -6,7 +6,7 @@
 
 # -- Core
 PACKAGES_DEBIAN="build-essential git" # make, git
-PACKAGES_FEDORA="git gcc binutils-devel wget autoconf libtool"
+PACKAGES_FEDORA="git gcc binutils-devel"
 
 # used by libopenarc, libetpan
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN make automake pkg-config libtool m4"
@@ -35,7 +35,7 @@ PACKAGES_FEDORA="$PACKAGES_FEDORA libuuid-devel"
 
 # <bsd/string.h>
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libbsd-dev"
-PACKAGES_FEDORA="$PACKAGES_FEDORA libbsd-devel"
+PACKAGES_FEDORA="$PACKAGES_DEBIAN libbsd-devel"
 
 # <histedit.h>, <readline/history.h>
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libedit-dev libreadline-dev"
@@ -47,11 +47,13 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libssh-dev"
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN binutils" # objdump
 PACKAGES_FEDORA="$PACKAGES_FEDORA libssh-devel"
 
+# lirc (mod_irc_client)
+scripts/lirc.sh
+
 # MariaDB (MySQL) dev headers (mod_mysql, mod_mysql_auth)
-# mariadb-server is also required to run a local DBMS, but this is not
-# required for either compilation or operation.
+# mariadb-server is also required to run a local DBMS, but this is not required for either compilation or operation.
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libmariadb-dev libmariadb-dev-compat"
-PACKAGES_FEDORA="$PACKAGES_FEDORA mariadb-devel"
+PACKAGES_FEDORA="$PACKAGES_FEDORA mariadb105-devel"
 
 # LMDB (mod_lmdb)
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN liblmdb-dev"
@@ -100,8 +102,8 @@ fi
 
 # == Source Install
 
-# lirc (mod_irc_client)
-scripts/lirc.sh
+# libcami (mod_asterisk_ami)
+scripts/libcami.sh
 
 # libdiscord (mod_discord)
 scripts/libdiscord.sh

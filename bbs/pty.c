@@ -309,7 +309,7 @@ int bbs_node_spy(int fdin, int fdout, unsigned int nodenum)
 	 * Except, we only get signals from ^C on the foreground console.
 	 */
 	if (fgconsole) {
-		if (bbs_alertpipe_poll(spy_alert_pipe) > 0) {
+		if (bbs_alertpipe_poll(spy_alert_pipe, -1) > 0) {
 			bbs_alertpipe_read(spy_alert_pipe);
 		}
 		/* Restore the original handler for ^C */

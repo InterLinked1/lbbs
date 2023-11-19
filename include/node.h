@@ -579,6 +579,27 @@ ssize_t bbs_node_any_fd_write(struct bbs_node *node, int fd, const char *buf, si
 ssize_t __attribute__ ((format (gnu_printf, 3, 4))) bbs_node_any_fd_writef(struct bbs_node *node, int fd, const char *fmt, ...) __attribute__ ((nonnull (1)));
 
 /*!
+ * \brief Write data to an arbitrary node
+ * \param node
+ * \param buf Data to write
+ * \param len Length of bfu
+ * \retval Same as write()
+ * \note Unlike bbs_write, this does not guarantee the buffer will be fully written before returning.
+ *       Applications SHOULD use bbs_node_write instead of this function when writing from the node thread.
+ */
+#define bbs_node_any_write(node, fmt, ...) bbs_node_any_fd_writef(node, node->slavefd, fmt, ## __VA_ARGS__)
+
+/*!
+ * \brief Write formatted data to an arbitrary node
+ * \param node
+ * \param fmt printf-style format string
+ * \retval Same as write()
+ * \note Unlike bbs_write, this does not guarantee the buffer will be fully written before returning.
+ *       Applications SHOULD use bbs_node_writef instead of this function when writing from the node thread.
+ */
+#define bbs_node_any_writef(node, fmt, ...) bbs_node_any_fd_writef(node, node->slavefd, fmt, ## __VA_ARGS__)
+
+/*!
  * \brief printf-style wrapper for bbs_node_write.
  * \param node
  * \param fmt printf-format string

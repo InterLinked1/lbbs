@@ -33,6 +33,14 @@ mod_mimeparse.o : mod_mimeparse.c mod_mimeparse.d
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^
 
+mod_asterisk_ami.so : mod_asterisk_ami.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lcami
+
+mod_asterisk_queues.so : mod_asterisk_queues.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lcami
+
 mod_discord.so : mod_discord.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -ldiscord
@@ -56,6 +64,10 @@ mod_mimeparse.so : mod_mimeparse.o
 mod_mysql.so : mod_mysql.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(MYSQL_LIBS)
+
+mod_ncurses.so : mod_ncurses.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lmenu -lncurses
 
 mod_oauth.so : mod_oauth.o
 	@echo "== Linking $@"

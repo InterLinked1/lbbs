@@ -1,0 +1,266 @@
+/*
+ * LBBS -- The Lightweight Bulletin Board System
+ *
+ * Copyright (C) 2023, Naveen Albert
+ *
+ * Naveen Albert <bbs@phreaknet.org>
+ *
+ * This program is free software, distributed under the terms of
+ * the GNU General Public License Version 2. See the LICENSE file
+ * at the top of the source tree.
+ */
+
+/*! \file
+ *
+ * \brief Asterisk Manager Interface
+ *
+ * \author Naveen Albert <bbs@phreaknet.org>
+ */
+
+#include "include/bbs.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <string.h>
+
+#include <cami/cami.h>
+
+#include "include/module.h"
+#include "include/config.h"
+#include "include/alertpipe.h"
+#include "include/linkedlists.h"
+#include "include/cli.h"
+
+#include "include/mod_asterisk_ami.h"
+
+static int asterisk_up = 0;
+
+struct ami_callback {
+	int (*callback)(struct ami_event *event, const char *eventname);
+	void *mod;
+	RWLIST_ENTRY(ami_callback) entry;
+};
+
+static RWLIST_HEAD_STATIC(callbacks, ami_callback);
+
+static void set_ami_status(int up)
+{
+	asterisk_up = up;
+	bbs_debug(3, "Asterisk Manager Interface is now %s\n", up ? "UP" : "DOWN");
+}
+
+/*! \brief Callback function executing asynchronously when new events are available */
+static void ami_callback(struct ami_event *event)
+{
+	struct ami_callback *cb;
+	const char *eventname;
+
+	eventname = ami_keyvalue(event, "Event");
+	bbs_assert_exists(eventname);
+
+	if (unlikely(!strcmp(eventname, "FullyBooted"))) {
+		set_ami_status(1); /* We get this when Asterisk starts, but also when we connect, so if Asterisk is already running, we're still good. */
+		goto cleanup; /* No need to forward this event to listeners. */
+	}
+
+	RWLIST_RDLOCK(&callbacks);
+	RWLIST_TRAVERSE(&callbacks, cb, entry) {
+		int res;
+		/* Dispatch AMI event to each subscribed callback function */
+		bbs_module_ref(cb->mod, 1);
+		res = cb->callback(event, eventname);
+		bbs_module_unref(cb->mod, 1);
+		/* If callback returns 0, that means it handled it non-exclusively.
+		 * If callback returns -1, that means it's not handling it.
+		 * If callback returns 1, abort callback handling. */
+		if (res == 1) {
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&callbacks);
+
+cleanup:
+	ami_event_free(event); /* Free event when done with it */
+}
+
+int __bbs_ami_callback_register(int (*callback)(struct ami_event *event, const char *eventname), void *mod)
+{
+	struct ami_callback *cb;
+
+	cb = calloc(1, sizeof(*cb));
+	if (ALLOC_FAILURE(cb)) {
+		return -1;
+	}
+
+	cb->callback = callback;
+	cb->mod = mod;
+
+	RWLIST_WRLOCK(&callbacks);
+	RWLIST_INSERT_HEAD(&callbacks, cb, entry);
+	RWLIST_UNLOCK(&callbacks);
+
+	return 0;
+}
+
+int bbs_ami_callback_unregister(int (*callback)(struct ami_event *event, const char *eventname))
+{
+	struct ami_callback *cb;
+
+	RWLIST_WRLOCK(&callbacks);
+	cb = RWLIST_REMOVE_BY_FIELD(&callbacks, callback, callback, entry);
+	RWLIST_UNLOCK(&callbacks);
+
+	if (!cb) {
+		bbs_error("Tried to unregister unregistered callback %p\n", callback);
+		return -1;
+	} else {
+		free(cb);
+	}
+	return 0;
+}
+
+static int ami_log_fd = -1;
+
+static int cli_ami_loglevel(struct bbs_cli_args *a)
+{
+	int newlevel = atoi(a->argv[2]);
+	if (newlevel < 0 || newlevel > 10) {
+		bbs_dprintf(a->fdout, "Invalid log level: %d\n", newlevel);
+		return -1;
+	}
+	ami_set_debug_level(newlevel);
+	return 0;
+}
+
+static int cli_ami_status(struct bbs_cli_args *a)
+{
+	bbs_dprintf(a->fdout, "Asterisk Manager Interface status: %s\n", asterisk_up ? "UP" : "DOWN");
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_ami[] = {
+	BBS_CLI_COMMAND(cli_ami_loglevel, "ami loglevel", 3, "Set CAMI (AMI library) log level", "ami loglevel <newlevel>"),
+	BBS_CLI_COMMAND(cli_ami_status, "ami status", 2, "View Asterisk Manager Interface connection status", NULL),
+};
+
+static int load_config(int open_logfile);
+
+static int ami_alert_pipe[2] = { -1, -1 };
+static int unloading = 0;
+
+static void ami_disconnect_callback(void)
+{
+	int sleep_ms = 500;
+
+	set_ami_status(0);
+	bbs_error("Asterisk Manager Interface connection lost\n");
+
+	if (unloading) {
+		return; /* If we're unloading, don't care */
+	}
+
+	RWLIST_RDLOCK(&callbacks);
+	/* Perhaps Asterisk restarted (or crashed).
+	 * Try to reconnect if it comes back up. */
+	for (;;) {
+		int res = load_config(0);
+		if (!res) {
+			bbs_verb(4, "Asterisk Manager Interface connection re-established\n");
+			set_ami_status(1);
+			break;
+		}
+		if (bbs_alertpipe_poll(ami_alert_pipe, sleep_ms)) {
+			bbs_alertpipe_read(ami_alert_pipe);
+			bbs_debug(3, "AMI reconnect interrupted\n");
+			break;
+		}
+		if (sleep_ms < 64000) { /* Exponential backoff, up to 64 seconds */
+			sleep_ms *= 2;
+		}
+	}
+	RWLIST_UNLOCK(&callbacks);
+}
+
+static int load_config(int open_logfile)
+{
+	int res = 0;
+	struct bbs_config *cfg;
+	char hostname[256];
+	char username[64];
+	char password[92];
+	char logfile[512];
+
+	cfg = bbs_config_load("mod_asterisk_ami.conf", 1);
+	if (!cfg) {
+		return -1;
+	}
+
+	res |= bbs_config_val_set_str(cfg, "ami", "hostname", hostname, sizeof(hostname));
+	res |= bbs_config_val_set_str(cfg, "ami", "username", username, sizeof(username));
+	res |= bbs_config_val_set_str(cfg, "ami", "password", password, sizeof(password));
+
+	if (open_logfile && !bbs_config_val_set_str(cfg, "logging", "logfile", logfile, sizeof(logfile))) {
+		ami_log_fd = open(logfile, O_CREAT | O_APPEND);
+		if (ami_log_fd != -1) {
+			unsigned int loglevel;
+			bbs_config_val_set_uint(cfg, "logging", "loglevel", &loglevel);
+			if (loglevel > 10) {
+				bbs_warning("Maximum AMI debug level is 10\n");
+			}
+			ami_set_debug_level((int) loglevel);
+		} else {
+			bbs_error("Failed to open %s for AMI logging: %s\n", logfile, strerror(errno));
+		}
+	}
+
+	if (!res) {
+		if (ami_connect(hostname, 0, ami_callback, ami_disconnect_callback)) {
+			bbs_error("AMI connection failed to %s\n", hostname);
+			res = -1;
+		} else if (ami_action_login(username, password)) {
+			bbs_error("AMI login failed for user %s@%s\n", username, hostname);
+			res = -1;
+		}
+	}
+
+	/* Fully purge the password from memory */
+	bbs_memzero(password, strlen(password));
+	bbs_config_free(cfg);
+	return res;
+}
+
+static int load_module(void)
+{
+	if (bbs_alertpipe_create(ami_alert_pipe)) {
+		return -1;
+	}
+	if (load_config(1)) {
+		close_if(ami_log_fd);
+		bbs_alertpipe_close(ami_alert_pipe);
+		return -1;
+	}
+	bbs_cli_register_multiple(cli_commands_ami);
+	return 0;
+}
+
+static int unload_module(void)
+{
+	/* If ami_disconnect_callback is currently being executed by some thread,
+	 * get rid of it. */
+	unloading = 1;
+	bbs_alertpipe_write(ami_alert_pipe); /* Wake up anything waiting in ami_disconnect_callback */
+
+	/* If anything was in the body of ami_disconnect_callback,
+	 * it had the list locked. If we can lock the list, that means they're gone. */
+	RWLIST_WRLOCK(&callbacks);
+	RWLIST_UNLOCK(&callbacks);
+
+	bbs_cli_unregister_multiple(cli_commands_ami);
+	ami_disconnect();
+	close_if(ami_log_fd);
+	bbs_alertpipe_close(ami_alert_pipe);
+	return 0;
+}
+
+BBS_MODULE_INFO_FLAGS("Asterisk Manager Interface", MODFLAG_GLOBAL_SYMBOLS);

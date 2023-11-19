@@ -85,12 +85,12 @@ int bbs_alertpipe_close(int alert_pipe[2])
 	return 0;
 }
 
-int bbs_alertpipe_poll(int alert_pipe[2])
+int bbs_alertpipe_poll(int alert_pipe[2], int ms)
 {
 	int res;
 	for (;;) {
 		struct pollfd pfd = { alert_pipe[0], POLLIN, 0 };
-		res = poll(&pfd, 1, -1);
+		res = poll(&pfd, 1, ms);
 		if (res < 0) {
 			if (errno != EINTR) {
 				bbs_warning("poll returned error: %s\n", strerror(errno));

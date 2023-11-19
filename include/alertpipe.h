@@ -38,6 +38,7 @@ int bbs_alertpipe_close(int alert_pipe[2]);
 
 /*!
  * \brief Wait indefinitely for traffic on an alertpipe
+ * \param ms Same as poll()
  * \retval Same as poll()
  */
-int bbs_alertpipe_poll(int alert_pipe[2]);
+int bbs_alertpipe_poll(int alert_pipe[2], int ms);
