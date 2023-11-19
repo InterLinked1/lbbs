@@ -2363,6 +2363,8 @@ static int cgi_run(struct http_session *http, const char *filename, char *const 
 		char buf[1024];
 		int status;
 		ssize_t bytes;
+		size_t total_bytes = 0;
+		int headers = 0, got_headers = 0;
 		int pollms = SEC_MS(20); /* Effectively, lower bounds the maximum amount of time a CGI script is allowed to execute */
 		struct readline_data rldata;
 
@@ -2400,6 +2402,7 @@ static int cgi_run(struct http_session *http, const char *filename, char *const 
 			}
 			if (bytes == 0 || (bytes == 1 && buf[0] == '\r')) {
 				/* End of headers */
+				got_headers = 1;
 				break;
 			}
 			bbs_strterm(buf, '\r'); /* If CR is present, get rid of it */
@@ -2411,12 +2414,17 @@ static int cgi_run(struct http_session *http, const char *filename, char *const 
 			}
 			ltrim(val);
 			http_set_header(http, hdr, val);
+			headers++;
+		}
+		if (!got_headers) {
+			bbs_warning("CGI script did not signal end of headers before response body\n");
 		}
 		/* Now, send the body.
 		 * Note that some (or all) of it may be sitting in the readline buffer. */
 		bytes = readline_bytes_available(&rldata, 1);
 		if (bytes > 0) {
 			http_write(http, buf, (size_t) bytes);
+			total_bytes += (size_t) bytes;
 		}
 		/* Read from the pipe until it closes
 		 * We're done with rldata, so we can reuse buf. */
@@ -2436,8 +2444,18 @@ static int cgi_run(struct http_session *http, const char *filename, char *const 
 				break;
 			}
 			http_write(http, buf, (size_t) bytes);
+			total_bytes += (size_t) bytes;
 		}
 		/* CGI is done executing */
+		bbs_debug(5, "CGI script finished, wrote %d header%s, %lu-byte body\n", headers, ESS(headers), total_bytes);
+		if (!headers && !total_bytes) {
+			bbs_warning("CGI script output was empty (no headers and no body)\n");
+			/* In this case, we never called http_write,
+			 * so we haven't thus far caused anything to be returned for the response.
+			 * Thus, 200 OK headers will be sent automatically,
+			 * but the default keepalive behavior will cause us to hang, so explicitly disable that. */
+			http->req->keepalive = 0;
+		}
 		if (waitpid(child_pid, &status, 0) == -1) { /* This should return immediately since child exited (pipe closed) */
 			bbs_error("waitpid failed: %s\n", strerror(errno));
 			goto cleanup;
@@ -2580,6 +2598,7 @@ enum http_response_code http_serve_static_or_cgi(struct http_session *http, cons
 	/* First, check if such a file exists on disk, corresponding to the URI portion.
 	 * e.g. if uri == /index.html, see if docroot/index.html exists. */
 	snprintf(filename, sizeof(filename), "%s%s", docroot, uri);
+	bbs_strterm(filename, '?'); /* Don't include query string when looking up URL */
 	if (stat(filename, &st)) {
 		if (cgiext) {
 			snprintf(filename, sizeof(filename), "%s%s%s", docroot, uri, cgiext);
