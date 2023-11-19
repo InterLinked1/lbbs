@@ -218,6 +218,10 @@ static enum http_response_code proxy_handler(struct http_session *http)
 
 	/* Want the host without the port attached */
 	if (http->req->method & HTTP_METHOD_CONNECT) {
+		if (strlen_zero(http->req->host)) {
+			bbs_warning("CONNECT request missing hostname\n");
+			return HTTP_BAD_REQUEST;
+		}
 		bbs_strncpy_until(hostbuf, http->req->host, sizeof(hostbuf), ':'); /* Strip : */
 		host = hostbuf;
 	} else {

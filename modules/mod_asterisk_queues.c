@@ -155,8 +155,6 @@ int bbs_queue_call_handler_unregister(const char *name)
 	return 0;
 }
 
-//static pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;
-
 static char system_title[42];
 static char call_menu_title[48];
 static char queue_id_var[64];
