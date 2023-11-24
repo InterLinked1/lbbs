@@ -78,7 +78,7 @@ void imap_shutdown_clients(struct imap_session *imap)
 int imap_poll(struct imap_session *imap, int ms, struct imap_client **clientout)
 {
 	struct pollfd *pfds;
-	nfds_t numfds;
+	int numfds;
 	int res = -1;
 	struct imap_client *client;
 
@@ -86,10 +86,10 @@ int imap_poll(struct imap_session *imap, int ms, struct imap_client **clientout)
 
 	/* Poll the IMAP session and all clients */
 	RWLIST_RDLOCK(&imap->clients); /* Okay to read lock, nobody else is using this for the duration of this function */
-	numfds = (nfds_t) RWLIST_SIZE(&imap->clients, client, entry);
+	numfds = RWLIST_SIZE(&imap->clients, client, entry);
 	numfds++; /* Plus the main session itself (our client) */
 
-	bbs_debug(5, "Polling %lu fd%s for IMAP session %p (for %ds)\n", numfds, ESS(numfds), imap, ms / 1000);
+	bbs_debug(5, "Polling %d fd%s for IMAP session %p (for %ds)\n", numfds, ESS(numfds), imap, ms / 1000);
 
 	if (numfds == 1) {
 		/* No remote clients, just the main client */
@@ -97,7 +97,7 @@ int imap_poll(struct imap_session *imap, int ms, struct imap_client **clientout)
 		return bbs_poll(imap->rfd, ms);
 	}
 
-	pfds = calloc(numfds, sizeof(*pfds));
+	pfds = calloc((size_t) numfds, sizeof(*pfds));
 	if (ALLOC_FAILURE(pfds)) {
 		goto cleanup;
 	}
@@ -113,7 +113,7 @@ int imap_poll(struct imap_session *imap, int ms, struct imap_client **clientout)
 			pfds[i].revents = 0;
 			pfds[i].fd = client->client.rfd;
 		}
-		pres = poll(pfds, numfds, ms);
+		pres = poll(pfds, (nfds_t) numfds, ms);
 		if (pres < 0) {
 			if (errno == EINTR) {
 				continue;

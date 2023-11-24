@@ -24,7 +24,10 @@
 #include <ctype.h> /* use isprint, isspace */
 
 #undef strlcat
+
+#ifdef __linux__
 #include <bsd/string.h>
+#endif
 
 #include "include/string.h"
 

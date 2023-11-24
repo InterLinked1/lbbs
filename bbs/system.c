@@ -34,12 +34,14 @@
 #include <sys/resource.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
-#include <sys/mount.h>
 #include <sched.h> /* use clone */
-#include <syscall.h>
 #include <dirent.h>
 
+#include <sys/mount.h>
+
 #ifdef __linux__
+#define ISOEXEC_SUPPORTED
+#include <syscall.h>
 #include <linux/version.h>
 #if LINUX_VERSION_CODE > KERNEL_VERSION(5,9,0)
 #include <linux/close_range.h>
@@ -61,7 +63,11 @@
 static char hostname[84] = "bbs";
 static char templatedir[256] = "./rootfs";
 static char rundir[256] = "/tmp/lbbs/rootfs";
+
+#ifdef ISOEXEC_SUPPORTED
 static const char *oldrootname = "/.old";
+#endif /* ISOEXEC_SUPPORTED */
+
 static int maxmemory = 0;
 static int maxcpu = 0;
 static int minnice = 0;
@@ -404,6 +410,7 @@ int bbs_execvpe_fd_headless(struct bbs_node *node, int fdin, int fdout, const ch
 	return __bbs_execvpe_fd(node, 0, fdin, fdout, filename, argv, envp, 0);
 }
 
+#ifdef ISOEXEC_SUPPORTED
 static int update_map(const char *mapping, const char *map_file, int map_len)
 {
 	int fd;
@@ -546,6 +553,7 @@ static int clone_container(char *rootdir, size_t rootlen, int pid)
 		if (!strcmp(entry->d_name, "proc") || !strcmp(entry->d_name, "tmp") || !strcmp(entry->d_name, "home")) {
 			continue;
 		}
+#ifdef __linux__
 		/* MS_REMOUNT is needed for MS_RDONLY to actually take effect for this mountpoint. See mount(2).
 		 * However, it's a bit peculiar. MS_REMOUNT can only be used if it's already mounted.
 		 * So we have to mount it first without MS_REMOUNT, then mount again with MS_REMOUNT. */
@@ -557,6 +565,23 @@ static int clone_container(char *rootdir, size_t rootlen, int pid)
 			bbs_error("mount %s as %s failed: %s\n", fulldir, symlinkdir, strerror(errno));
 			return -1;
 		}
+#elif defined(__FreeBSD__)
+		/*! \note
+		 * According to mount(2) for FreeBSD: https://man.freebsd.org/cgi/man.cgi?query=mount&sektion=2&apropos=0&manpath=FreeBSD+14.0-RELEASE+and+Ports
+		 * The data	argument is a pointer to a structure that  contains  the  type specific arguments to mount.
+		 * The format for these argument structures is described in the manual page for each file  system.
+		 *
+		 * TODO FIXME. However, there is no man page for ufs, and there are no examples I can find of what structure we need to use here.
+		 * Thus, this implementation is incomplete (the 4th argument should NOT be NULL).
+		 * Until such time as this is completed, FreeBSD cannot be used for the clone API.
+		 */
+		if (mount("ufs", symlinkdir, MNT_RDONLY, NULL)) {
+			bbs_error("mount %s as %s failed: %s\n", fulldir, symlinkdir, strerror(errno));
+			return -1;
+		}
+#else
+#error "Missing mount implementation"
+#endif
 	}
 	closedir(dir);
 
@@ -608,9 +633,11 @@ static int set_limits(void)
 	if (!res) {
 		res = set_limit(RLIMIT_CPU, maxcpu);
 	}
+#ifdef __linux__
 	if (!res && minnice) {
 		res = set_limit(RLIMIT_NICE, 20 - minnice); /* Ceiling = 20 - value, so value = 20 - ceiling */
 	}
+#endif
 	return res;
 }
 
@@ -631,6 +658,7 @@ static ssize_t full_read(int fd, char *restrict buf, size_t len)
 	}
 	return total;
 }
+#endif /* ISOEXEC_SUPPORTED */
 
 static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[], char *const envp[], int isolated)
 {
@@ -639,10 +667,24 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 	int fd = fdout;
 	int res = -1;
 	int pfd[2], procpipe[2];
-	char fullpath[256] = "", fullterm[32] = "", fulluser[48] = "", homeenv[433] = "HOME=";
+	char fullpath[256] = "", fullterm[32] = "";
+#ifdef ISOEXEC_SUPPORTED
+	/* Only needed if isoexec is supported */
+	char fulluser[48] = "", homeenv[433] = "HOME=";
+#endif /* ISOEXEC_SUPPORTED */
 	char *parentpath;
 #define MYENVP_SIZE 5 /* End with 3 NULLs so we can add up to 2 env vars if needed */
 	char *myenvp[MYENVP_SIZE] = { fullpath, fullterm, NULL, NULL, NULL }; /* Last NULL is always the sentinel */
+
+#ifdef __FreeBSD__
+	if (isolated) {
+		/* The mount() API is not implemented in clone_container for FreeBSD.
+		 * Additionally, CLONE_NEW... is not available for FreeBSD.
+		 * As such, these preclude isoexec from being used on that platform. */
+		bbs_error("Sorry, isoexec(%s) is not supported on FreeBSD\n", filename);
+		return -1;
+	}
+#endif
 
 	if (!envp) {
 		envp = myenvp;
@@ -683,11 +725,13 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		}
 	}
 
+#ifdef ISOEXEC_SUPPORTED
 	/* If we have flags, we need to use clone(2). Otherwise, just use fork(2) */
 	if (isolated) {
 		int flags = 0;
 		/* We need to do more than fork() allows */
 		flags |= SIGCHLD | CLONE_NEWIPC | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWUSER; /* fork() sets SIGCHLD implicitly. */
+
 #if 0
 		flags |= CLONE_CLEAR_SIGHAND; /* Don't inherit any signals from parent. */
 #else
@@ -710,6 +754,9 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		 * but our usage here is portable to x86-64, which is pretty much everything anyways.
 		 */
 		pid = (pid_t) syscall(SYS_clone, flags, NULL, NULL, NULL, 0);
+#else
+	if (0) {
+#endif /* ISOEXEC_SUPPORTED */
 	} else {
 		pid = fork(); /* fork has an implicit SIGCHLD */
 	}
@@ -767,11 +814,11 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 			}
 		}
 
+#ifdef ISOEXEC_SUPPORTED
 #define SYSCALL_OR_DIE(func, ...) if (func(__VA_ARGS__) < 0) { fprintf(stderr, #func " failed (ln %d): %s\n", __LINE__, strerror(errno)); _exit(errno); }
 #ifndef pivot_root
 #define pivot_root(new, old) syscall(SYS_pivot_root, new, old)
 #endif
-
 		if (isolated) {
 			struct utsname uts;
 			char pidbuf[15];
@@ -886,8 +933,18 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 				 * So currently, it's not considered a login shell, and that's probably just fine. */
 			}
 		}
+#endif /* ISOEXEC_SUPPORTED */
 
+#ifdef __FreeBSD__
+		/* FreeBSD doesn't export its execvpe function: https://github.com/openzfs/zfs/pull/12051
+		 * We can't use the execvpe from the above PR since the project's license is incompatible with GPL. */
+		if (envp != myenvp) {
+			bbs_warning("FreeBSD does not support execvpe\n");
+		}
+		res = execvp(filename, argv);
+#else
 		res = execvpe(filename, argv, envp);
+#endif
 		bbs_assert(res == -1);
 
 		/* For menu exec: handler, we hold a RDLOCK on the menu when we get here, and it was locked in this thread,
@@ -907,6 +964,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		_exit(errno);
 	} /* else, parent */
 
+#ifdef ISOEXEC_SUPPORTED
 	if (isolated) {
 		close(procpipe[0]);
 		res = setup_namespace(pid);
@@ -918,6 +976,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		}
 		close(procpipe[1]);
 	}
+#endif /* ISOEXEC_SUPPORTED */
 
 	if (fd == -1) {
 		close(pfd[1]); /* Close write end of pipe */
@@ -951,6 +1010,8 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		 */
 		node->childpid = 0;
 	}
+
+#ifdef ISOEXEC_SUPPORTED
 	if (isolated) {
 		char rootdir[268];
 		/* Clean up the temporary container, if one was created */
@@ -959,6 +1020,8 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 			bbs_warning("Failed to remove temporary container rootfs: %s\n", rootdir);
 		}
 	}
+#endif /* ISOEXEC_SUPPORTED */
+
 	if (fd == -1) {
 		if (bbs_poll(pfd[0], 0) == 0) {
 			/* The child has exited, so all the data that will ever be in the pipe is already here.

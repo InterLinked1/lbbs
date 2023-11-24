@@ -3,10 +3,12 @@
 # == Packages
 # Debian: apt-get
 # Fedora: yum/dnf (RPM)
+# FreeBSD: pkg
 
 # -- Core
 PACKAGES_DEBIAN="build-essential git" # make, git
 PACKAGES_FEDORA="git gcc binutils-devel"
+PACKAGES_FREEBSD="git gcc gmake"
 
 # used by libopenarc, libetpan
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN make automake pkg-config libtool m4"
@@ -46,6 +48,7 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libssh-dev"
 # net_ssh, which requires objdump to test for symbol existence... thanks a lot, libssh
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN binutils" # objdump
 PACKAGES_FEDORA="$PACKAGES_FEDORA libssh-devel"
+PACKAGES_FREEBSD="$PACKAGES_FREEBSD libssh"
 
 # lirc (mod_irc_client)
 scripts/lirc.sh
@@ -54,10 +57,12 @@ scripts/lirc.sh
 # mariadb-server is also required to run a local DBMS, but this is not required for either compilation or operation.
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libmariadb-dev libmariadb-dev-compat"
 PACKAGES_FEDORA="$PACKAGES_FEDORA mariadb105-devel"
+PACKAGES_FREEBSD="$PACKAGES_FREEBSD mariadb106-client"
 
 # LMDB (mod_lmdb)
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN liblmdb-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA lmdb-devel"
+PACKAGES_FREEBSD="$PACKAGES_FREEBSD lmdb"
 
 # <magic.h> (mod_http)
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libmagic-dev"
@@ -69,6 +74,7 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libopendkim-dev"
 # mod_oauth
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libjansson-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA jansson-devel"
+PACKAGES_FREEBSD="$PACKAGES_FREEBSD jansson"
 
 # mod_mimeparse
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libglib2.0-dev libgmime-3.0-dev"
@@ -90,12 +96,19 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libopendmarc-dev"
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libsieve2-dev"
 # MISSING: RPM package
 
+# mod_webmail (libetpan)
+PACKAGES_DEBIAN="$PACKAGES_DEBIAN autoconf"
+PACKAGES_FREEBSD="$PACKAGES_FREEBSD autoconf"
+
 OS=$(( uname -s ))
 if [ -f /etc/debian_version ]; then
 	apt-get update
 	apt-get install -y $PACKAGES_DEBIAN
 elif [ -f /etc/fedora-release ] || [ -f /etc/redhat-release ]; then
 	dnf install -y $PACKAGES_FEDORA
+elif [ "$OS" = "FreeBSD" ]; then
+	pkg update -f
+	pkg install -y $PACKAGES_FREEBSD
 else
 	printf "Could not install %s packages (unsupported distro?)\n" "$OS"
 fi

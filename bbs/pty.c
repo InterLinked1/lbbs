@@ -465,7 +465,7 @@ void *pty_master(void *varg)
 	char writebuf[PTY_BUFFER_SIZE];
 	char strippedbuf[PTY_BUFFER_SIZE];
 	ssize_t bytes_read, bytes_wrote;
-	long unsigned int numfds;
+	nfds_t numfds;
 	int emulated_crlf = 0, just_did_emulated_crlf = 0;
 	/* Expanded scope for slow_write */
 	size_t slow_bytes_left = 0;

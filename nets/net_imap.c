@@ -418,7 +418,8 @@ static int generate_mailbox_name(struct imap_session *imap, const char *restrict
 
 	muserid = (unsigned int) atoi(fulldir);
 	if (muserid) {
-		const char *bname = basename(fulldir);
+		const char *bname;
+		bname = bbs_basename(fulldir);
 		/* User dir */
 		if (muserid == userid) {
 			/* It's our personal mailbox */

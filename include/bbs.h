@@ -95,9 +95,11 @@
 /* Force nonusage of insufficiently portable functions */
 #define gettid() Do_not_use_gettid__use_bbs_gettid
 /* Force usage of BBS thread wrappers */
+#ifdef __linux__
 #define pthread_create(a, b, c, d) Do_not_use_pthread_create__use_bbs_pthread_create
 #define pthread_create_detached(a, b, c, d) Do_not_use_pthread_create__use_bbs_pthread_create_detached->fail(a, b, c, d)
 #define pthread_join(a, b) Do_not_use_pthread_join__use_bbs_pthread_join
+#endif /* __linux__ */
 #endif /* BBS_MAIN_FILE */
 #endif /* BBS_IN_CORE */
 

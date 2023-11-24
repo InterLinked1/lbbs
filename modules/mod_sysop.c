@@ -160,6 +160,16 @@ static int cli_warranty(struct bbs_cli_args *a)
 	return 0;
 }
 
+static int cli_fdclose(struct bbs_cli_args *a)
+{
+	int fd = atoi(a->argv[1]);
+	if (shutdown(fd, SHUT_RDWR)) {
+		bbs_dprintf(a->fdout, "Shutdown failed: %s\n", strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
 static int sysop_command(struct sysop_console *console, const char *s)
 {
 	int res;
@@ -527,7 +537,7 @@ static int cli_consoles(struct bbs_cli_args *a)
 	bbs_dprintf(a->fdout, "%1s %5s %5s %4s %3s %s\n", "R", "FD IN", "FD OUT", "Dead", "Log", "Thread");
 	RWLIST_RDLOCK(&consoles);
 	RWLIST_TRAVERSE(&consoles, console, entry) {
-		bbs_dprintf(a->fdout, "%1s %5d %5d %4s %3s %16lu\n", console->remote ? "*" : "", console->fdin, console->fdout, BBS_YN(console->dead), BBS_YN(console->log), console->thread);
+		bbs_dprintf(a->fdout, "%1s %5d %5d %4s %3s %16lu\n", console->remote ? "*" : "", console->fdin, console->fdout, BBS_YN(console->dead), BBS_YN(console->log), (unsigned long) console->thread);
 	}
 	RWLIST_UNLOCK(&consoles);
 
@@ -543,6 +553,7 @@ static struct bbs_cli_entry cli_commands_sysop[] = {
 	BBS_CLI_COMMAND(cli_copyright, "copyright", 1, "Show copyright notice", NULL),
 	BBS_CLI_COMMAND(cli_license, "license", 1, "Show license notice", NULL),
 	BBS_CLI_COMMAND(cli_warranty, "warranty", 1, "Show warranty notice", NULL),
+	BBS_CLI_COMMAND(cli_fdclose, "fdclose", 2, "Manually close a file descriptor associated with a socket", "fdclose <fd>"),
 };
 
 #define BBS_SYSOP_SOCKET DIRCAT(DIRCAT("/var/run", BBS_NAME), "sysop.sock")

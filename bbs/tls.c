@@ -316,13 +316,14 @@ static int cli_tls(struct bbs_cli_args *a)
 static void *ssl_io_thread(void *unused)
 {
 	struct ssl_fd *sfd;
-	int i, res;
+	int res;
 	struct pollfd *pfds = NULL; /* Will dynamically allocate */
 	int *readpipes = NULL;
 	SSL **ssl_list = NULL;
-	int prevfds = 0;
-	int oldnumfds = 0, numfds = 0;
-	int numssl = 0;
+	/* We use int instead of nfds_t here,
+	 * since we print these out, and nfds_t is signed on some platforms (e.g. Linux)
+	 * and unsigned on others (e.g. FreeBSD), so we can't portably print them. */
+	int i, prevfds = 0, oldnumfds = 0, numfds = 0, numssl = 0;
 	int needcreate = 1;
 	char buf[8192];
 	int pending;
@@ -409,7 +410,7 @@ static void *ssl_io_thread(void *unused)
 			pfds[i].revents = 0;
 		}
 		if (!overtime) {
-			res = poll(pfds, (long unsigned int) numfds, -1);
+			res = poll(pfds, (nfds_t) numfds, -1);
 			if (res <= 0) {
 				if (res == -1 && errno == EINTR) {
 					continue;

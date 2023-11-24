@@ -39,7 +39,6 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 	int input[2], output[2];
 	char buf[1024];
 	struct readline_data rldata;
-	off64_t off_in = 0;
 
 	/* The only thing that this module really does is
 	 * execute the SpamAssassin binary, passing it the email message on STDIN,
@@ -73,7 +72,7 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 	/* We cannot use bbs_copy_file because that will attempt to use copy_file_range,
 	 * which only works for regular files.
 	 * In this case, since the destination is a pipe, we can use splice(2) */
-	spliced = splice(f->inputfd, &off_in, input[1], NULL, f->size, 0);
+	spliced = bbs_splice(f->inputfd, input[1], f->size);
 	if (spliced != (ssize_t) f->size) {
 		bbs_error("splice %d -> %d failed (%lu != %ld): %s\n", f->inputfd, input[1], spliced, f->size, strerror(errno));
 		res = -1;

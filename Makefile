@@ -17,7 +17,22 @@ CFLAGS = -Wall -Werror -Wunused -Wextra -Wparentheses -Wconversion -Wdangling-el
 EXE		= lbbs
 PREFIX	= /usr/local
 BINDIR	= $(PREFIX)/bin
-LIBS	= -lrt -lm -ldl -lbfd -lbsd -lcap -lcrypt -lssl -lcrypto -lcurl -lreadline -luuid -rdynamic
+UNAME_S := $(shell uname -s)
+
+export UNAME_S
+
+LIBS	= -lrt -lm -ldl
+
+LIBS += -lbfd -lcrypt -lssl -lcrypto -lcurl -lreadline -luuid -rdynamic
+
+ifeq ($(UNAME_S),Linux)
+LIBS += -lbsd -lcap
+endif
+
+ifeq ($(UNAME_S),FreeBSD)
+LIBS += -lexecinfo -lintl
+endif
+
 RM		= rm -f
 LN		= ln
 INSTALL = install
@@ -101,6 +116,9 @@ modinstall: $(MOD_SUBDIR)
 	done
 
 extinstall:
+	@if [ ! -d /var/lib ]; then\
+		mkdir /var/lib;\
+	fi
 	@if [ ! -d /var/lib/lbbs ]; then\
 		mkdir /var/lib/lbbs;\
 	fi
@@ -108,7 +126,7 @@ extinstall:
 		mkdir /var/lib/lbbs/external;\
 	fi
 	$(SUBMAKE) --no-builtin-rules -C external install
-	ln -s --force /var/lib/lbbs/external/rsysop /usr/local/sbin/rsysop
+	ln -s -f /var/lib/lbbs/external/rsysop /usr/local/sbin/rsysop
 
 scripts :
 	@if [ ! -d /var/lib/lbbs ]; then\
@@ -145,28 +163,17 @@ doxygen :
 # apt-get install -y doxygen graphviz
 	doxygen Doxyfile.in
 
-# only do these checks if we're actually running a valgrind target
-valgrindver:
-# --show-error-list is only available in valgrind 3.15.0+: https://valgrind.org/docs/manual/dist.news.html
-VALGRIND_VERSION_MAJOR = $(shell valgrind --version | cut -d'-' -f2 | cut -d'.' -f1)
-VALGRIND_VERSION_MINOR = $(shell valgrind --version | cut -d'-' -f2 | cut -d'.' -f2)
-ifeq ($(shell test $(VALGRIND_VERSION_MAJOR) -ge 3 -a $(VALGRIND_VERSION_MINOR) -ge 15; echo $$?),0)
-VALGRIND = valgrind --show-error-list=yes --keep-debuginfo=yes
-else
-VALGRIND = valgrind --keep-debuginfo=yes
-endif
+valgrindfg :
+	@scripts/valgrind.sh "valgrindfg"
 
-valgrindfg : valgrindver
-	$(VALGRIND) --leak-check=full --track-fds=yes --track-origins=yes --show-leak-kinds=all --suppressions=valgrind.supp /usr/sbin/$(EXE) -cb
+valgrind :
+	@scripts/valgrind.sh "valgrind"
 
-valgrind : valgrindver
-	$(VALGRIND) --leak-check=full --track-fds=yes --track-origins=yes --show-leak-kinds=all --suppressions=valgrind.supp --log-fd=9 /usr/sbin/$(EXE) -cb 9>valgrind.txt
+valgrindsupp :
+	@scripts/valgrind.sh "valgrindsupp"
 
-valgrindsupp : valgrindver
-	$(VALGRIND) --leak-check=full --track-fds=yes --track-origins=yes --show-leak-kinds=all --suppressions=valgrind.supp --gen-suppressions=all --log-fd=9 /usr/sbin/$(EXE) -cb 9>valgrind.txt
-
-helgrind : valgrindver
-	$(VALGRIND) --tool=helgrind /usr/sbin/$(EXE) -c
+helgrind :
+	@scripts/valgrind.sh "helgrind"
 
 .PHONY: all
 .PHONY: bbs

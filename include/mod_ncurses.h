@@ -65,7 +65,7 @@ void bbs_ncurses_menu_disable_keybindings(struct bbs_ncurses_menu *menu);
  * \param value Will be duplicated.
  * \retval -1 on failure, 0 on success
  */
-int bbs_ncurses_menu_addopt(struct bbs_ncurses_menu *menu, char key, const char *opt, const char *value)  __nonnull ((1, 3));
+int bbs_ncurses_menu_addopt(struct bbs_ncurses_menu *menu, char key, const char *opt, const char *value)  __attribute__ ((nonnull (1, 3)));
 
 /*!
  * \brief Get the option value of a menu item at a particular index

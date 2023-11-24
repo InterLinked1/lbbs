@@ -38,7 +38,6 @@
 #include <sys/wait.h>
 
 #include "include/tls.h"
-
 #include "include/module.h"
 #include "include/node.h"
 #include "include/auth.h"
@@ -2357,7 +2356,14 @@ static int cgi_run(struct http_session *http, const char *filename, char *const 
 		dup2(stdout[1], STDOUT_FILENO);
 		/* Ignore STDERR_FILENO - that shouldn't go to the HTTP client, at least, maybe to the BBS log? */
 		/* Execute the CGI script */
+#ifdef __FreeBSD__
+		/* See comments about execvpe on FreeBSD in bbs/system.c */
+		bbs_error("execvpe is not supported on FreeBSD\n");
+		UNUSED(envp);
+		res = execvp(filename, argv);
+#else
 		res = execvpe(filename, argv, envp);
+#endif
 		_exit(errno);
 	} else {
 		char buf[1024];
@@ -2543,7 +2549,7 @@ static int cgi_set_envp(struct http_session *http, const char *filename, const c
 	/* Skip REMOTE_IDENT, RFC 1413 identification protocol */
 	cgi_setenvif("REMOTE_USER", "%s", http->req->username);
 	cgi_setenv("REQUEST_METHOD", "%s", http_method_name(http->req->method));
-	cgi_setenv("SCRIPT_NAME", "%s", basename(filename));
+	cgi_setenv("SCRIPT_NAME", "%s", bbs_basename(filename));
 	cgi_setenvif("SERVER_NAME", "%s", http->req->host);
 	cgi_setenv("SERVER_PORT", "%d", http->node->port);
 	cgi_setenv("SERVER_PROTOCOL", "%s", "HTTP/1.1");

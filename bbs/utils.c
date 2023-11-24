@@ -28,9 +28,12 @@
 #include <ftw.h>
 #include <time.h> /* use time */
 #include <sys/time.h> /* use gettimeofday */
+#include <libgen.h> /* use dirname, basename (FreeBSD) */
+
+#ifdef __linux__
 #include <uuid/uuid.h> /* use uuid_generate, uuid_unparse */
 #include <syscall.h>
-#include <libgen.h> /* use dirname */
+#endif
 
 #include "include/utils.h"
 #include "include/node.h" /* use bbs_poll_read */
@@ -39,6 +42,7 @@
 
 char *bbs_uuid(void)
 {
+#ifdef UUID_STR_LEN
 	char *uuid;
 	uuid_t binary_uuid;
 
@@ -49,6 +53,10 @@ char *bbs_uuid(void)
 	}
 	uuid_unparse_lower(binary_uuid, uuid);
 	return uuid;
+#else
+	bbs_error("uuid not supported on this platform\n");
+	return NULL;
+#endif
 }
 
 void dyn_str_reset(struct dyn_str *dynstr)
@@ -363,6 +371,23 @@ int bbs_append_stuffed_line_message(FILE *fp, const char *line, size_t len)
 		return -1;
 	}
 	return (int) len + 2;
+}
+
+const char *bbs_basename(const char *s)
+{
+	/* basename(2) might modify its argument,
+	 * so don't bother using that. */
+	const char *a = s;
+	/* Don't modify the input argument */
+	while (*s) {
+		if (*s == '/') {
+			s++;
+			a = s;
+		} else {
+			s++;
+		}
+	}
+	return a;
 }
 
 int bbs_dir_traverse_items(const char *path, int (*on_file)(const char *dir_name, const char *filename, int dir, void *obj), void *obj)
@@ -877,6 +902,29 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 		return -1;
 	}
 	return copied;
+}
+
+ssize_t bbs_splice(int fd_in, int fd_out, size_t len)
+{
+	/* Use splice(2) if available, otherwise fall back to sendfile(2) */
+#ifdef __linux__
+	off64_t off_in = 0;
+	/* off_in must be NULL if fd_in is a pipe */
+	ssize_t res, written = 0;
+	while (len > 0) {
+		res = splice(fd_in, &off_in, fd_out, NULL, len, 0);
+		if (res < 0) {
+			bbs_error("splice failed: %s\n", strerror(errno));
+			return -1;
+		}
+		len -= (size_t) res;
+		off_in += (off64_t) res;
+	}
+	return written;
+#else
+	off_t offset = 0;
+	return bbs_sendfile(fd_out, fd_in, &offset, len);
+#endif
 }
 
 ssize_t bbs_send_file(const char *filepath, int wfd)

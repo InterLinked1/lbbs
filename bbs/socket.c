@@ -31,7 +31,15 @@
 #include <netdb.h> /* use getnameinfo */
 #include <ifaddrs.h>
 #include <poll.h>
+
+#ifdef __linux__
 #include <sys/sendfile.h>
+#elif defined(__FreeBSD__)
+#include <sys/types.h>
+#include <sys/uio.h>
+#else
+#error "sendfile API unavailable"
+#endif
 
 /* #define DEBUG_TEXT_IO */
 
@@ -102,7 +110,7 @@ int __bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, ui
 		unsigned int p1;
 		mode_t p;
 		sscanf(perm, "%30o", &p1);
-		p = p1;
+		p = (mode_t) p1;
 		if ((chmod(sockfile, p)) < 0) {
 			bbs_error("Unable to change file permissions of %s: %s\n", sockfile, strerror(errno));
 		}
@@ -593,7 +601,7 @@ static void *tcp_multilistener(void *unused)
 		for (i = 0; i < num_sockets + 1; i++) {
 			pfds[i].revents = 0;
 		}
-		res = poll(pfds, (size_t) num_sockets + 1, -1);
+		res = poll(pfds, (nfds_t) num_sockets + 1, -1);
 		if (res < 0) {
 			if (errno != EINTR) {
 				bbs_warning("poll returned error: %s\n", strerror(errno));
@@ -801,7 +809,7 @@ void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, c
 	struct sockaddr_in sinaddr;
 	socklen_t len;
 	struct pollfd pfds[3];
-	long unsigned int nfds = 0;
+	nfds_t nfds = 0;
 	struct bbs_node *node;
 	char new_ip[56];
 
@@ -1014,7 +1022,7 @@ int bbs_get_fd_ip(int fd, char *buf, size_t len)
 {
 	struct sockaddr_in sinaddr;
 	socklen_t slen = sizeof(sinaddr);
-	if (getpeername(fd, &sinaddr, &slen)) {
+	if (getpeername(fd, (struct sockaddr*) &sinaddr, &slen)) {
 		bbs_error("getpeername(%d) failed: %s\n", fd, strerror(errno));
 		return -1;
 	}
@@ -2124,7 +2132,7 @@ ssize_t bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
 		/* These kinds of writes are dangerous, because if any thread besides the node thread
 		 * blocks writing to a node, then it's game over for the BBS due to our threading and I/O model.
 		 * These writes should be using bbs_node_any_fd_write instead. */
-		bbs_warning("Attempt to write to node %d by thread %lu\n", node->id, pthread_self());
+		bbs_warning("Attempt to write to node %d by thread %lu\n", node->id, (unsigned long) pthread_self());
 	}
 #endif
 
@@ -2192,7 +2200,13 @@ ssize_t bbs_sendfile(int out_fd, int in_fd, off_t *offset, size_t count)
 	ssize_t written = 0;
 
 	for (;;) {
+#ifdef __linux__
 		ssize_t res = sendfile(out_fd, in_fd, offset, count);
+#elif defined(__FreeBSD__)
+		ssize_t res = sendfile(out_fd, in_fd, *offset, count, NULL, NULL, 0);
+#else
+#error "Missing sendfile"
+#endif
 		if (res < 0) {
 			bbs_error("Failed to write %lu bytes, sendfile %d -> %d failed: %s\n", count, in_fd, out_fd, strerror(errno));
 			return res;
@@ -2215,7 +2229,7 @@ ssize_t bbs_node_fd_write(struct bbs_node *node, int fd, const char *buf, size_t
 #ifdef DETECT_IMPROPER_NODE_WRITES
 	if (node->thread != pthread_self()) {
 		/* See comment in bbs_node_write */
-		bbs_warning("Attempt to write to node %d by thread %lu\n", node->id, pthread_self());
+		bbs_warning("Attempt to write to node %d by thread %lu\n", node->id, (unsigned long) pthread_self());
 	}
 #endif
 

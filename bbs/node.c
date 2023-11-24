@@ -551,7 +551,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	if (!unique) {
 		/* node is now no longer a valid reference, since bbs_node_handler calls node_free (in another thread) before it quits. */
 		if (skipjoin) {
-			bbs_debug(3, "Skipping join of node %d thread %lu\n", nodeid, node_thread);
+			bbs_debug(3, "Skipping join of node %d thread %lu\n", nodeid, (unsigned long) node_thread);
 		} else { /* Either bbs_node_handler thread is detached, or somebody else is joining it */
 			bbs_debug(3, "Waiting for node %d to exit\n", nodeid);
 			bbs_pthread_join(node_thread, NULL); /* Wait for the bbs_node_handler thread to exit, and then clean it up. */
@@ -721,7 +721,7 @@ int bbs_interrupt_node(unsigned int nodenum)
 		 * since we can easily enough check the interrupt status in the necessary places on EINTR. */
 		err = pthread_kill(node->thread, SIGUSR1); /* Uncaught signal, so the blocking I/O call will get interrupted */
 		if (err) {
-			bbs_warning("pthread_kill(%lu) failed: %s\n", node->thread, strerror(err));
+			bbs_warning("pthread_kill(%lu) failed: %s\n", (unsigned long) node->thread, strerror(err));
 			bbs_node_unlock(node);
 			return 1;
 		}
@@ -1395,7 +1395,7 @@ static int node_handler_term(struct bbs_node *node)
 void bbs_node_begin(struct bbs_node *node)
 {
 	bbs_assert_exists(node);
-	bbs_assert((int) node->thread);
+	bbs_assert((unsigned long) node->thread > 0);
 	bbs_assert(node->fd != -1);
 	bbs_assert_exists(node->protname); /* Will fail if a network comm driver forgets to set before calling bbs_node_handler */
 

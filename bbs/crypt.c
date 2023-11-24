@@ -23,16 +23,19 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <unistd.h>
-#include <crypt.h>
 #include <string.h> /* use strdup */
 #include <ctype.h> /* use isprint, isalnum */
 #include <sys/random.h>
+
+#ifdef __linux__
+#include <crypt.h>
+#endif
 
 #ifdef __GLIBC__
 #include <gnu/libc-version.h>
 #endif
 
-#if !(defined __GLIBC__ && __GLIBC_MINOR__ >= 31)
+#if defined(__linux__) && !(defined __GLIBC__ && __GLIBC_MINOR__ >= 31)
 /* crypt with blowfish, from Openwall, since
  * Debian 10's glibc's crypt doesn't have blowfish support, unlike Debian 11's.
  * blowfish isn't available in Debian 10: https://github.com/NigelCunningham/pam-MySQL/issues/55
@@ -40,6 +43,9 @@
  * XXX crypt_blowfish.c is only needed if NEED_CRYPTO_IMPL is defined.
  */
 #define NEED_CRYPTO_IMPL
+#define NEED_GENSALT_IMPL
+#elif defined(__FreeBSD__)
+#define NEED_GENSALT_IMPL
 #endif
 
 #ifdef NEED_CRYPTO_IMPL
@@ -81,7 +87,7 @@ int bbs_rand_alnum(char *buf, size_t len)
 	return 0;
 }
 
-#ifdef NEED_CRYPTO_IMPL
+#ifdef NEED_GENSALT_IMPL
 /*! \note Thank you, PHP */
 static int php_bin2hex(const unsigned char *old, size_t oldlen, char *result, size_t newlen)
 {
@@ -109,7 +115,7 @@ static int php_bin2hex(const unsigned char *old, size_t oldlen, char *result, si
 
 char *bbs_password_salt(void)
 {
-#ifndef NEED_CRYPTO_IMPL
+#ifndef NEED_GENSALT_IMPL
 	/* cost can be 4-31: https://manpages.debian.org/unstable/libcrypt-dev/crypt.5.en.html */
 	return crypt_gensalt_ra("$2b$", 11, NULL, 0); /* 2b = bcrypt */
 #else
@@ -186,16 +192,16 @@ char *bbs_password_hash(const char *password, const char *salt)
 #ifndef NEED_CRYPTO_IMPL
 #ifdef CRYPT_DEBUG
 	bbs_debug(9, "Using real crypt_r\n");
-#endif
+#endif /* CRYPT_DEBUG */
 	hash = crypt_r(password, salt, &data); /* Use the real crypt_r */
 #else
 #ifdef CRYPT_DEBUG
 	bbs_debug(9, "Using alternate crypt_r\n");
-#endif
+#endif /* CRYPT_DEBUG */
 	data.current_salt[0] = '$';
 	data.current_salt[1] = '2';
 	hash = __crypt_r(password, salt, &data); /* Use our custom implementation of crypt_r */
-#endif
+#endif /* NEED_CRYPTO_IMPL */
 
 	if (strlen_zero(hash)) {
 		bbs_error("Failed to compute hash: %s\n", strerror(errno));

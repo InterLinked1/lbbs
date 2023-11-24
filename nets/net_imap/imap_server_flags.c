@@ -21,7 +21,10 @@
 
 #include <string.h>
 #include <ctype.h>
+
+#ifdef __linux__
 #include <bsd/string.h>
+#endif
 
 #include "include/mod_mail.h"
 

@@ -38,14 +38,18 @@
 #include <signal.h>
 #include <poll.h>
 #include <fcntl.h> /* use O_NONBLOCK */
+
+#ifdef __linux__
 #include <linux/limits.h> /* use PATH_MAX */
-#include <sys/resource.h> /* use rlimit */
 #include <sys/prctl.h> /* use prctl */
+#include <sys/capability.h>
+#include <linux/capability.h>
+#endif
+
+#include <sys/resource.h> /* use rlimit */
 #include <grp.h> /* use getgrnam */
 #include <pwd.h> /* use getpwnam */
 #include <sys/ioctl.h>
-#include <sys/capability.h>
-#include <linux/capability.h>
 
 #include "include/module.h" /* use load_modules */
 #include "include/alertpipe.h"
@@ -147,6 +151,7 @@ static int set_cwd(void)
 
 static void check_cap(int isroot)
 {
+#ifdef __linux__
 	cap_t caps;
 	cap_value_t cap;
 	cap_flag_value_t flag;
@@ -228,9 +233,11 @@ static void check_cap(int isroot)
 cleanup:
 	if (cap_free(caps) == -1) {
 		cap_err("Failed to free process capabilities: %s\n", strerror(errno));
-		return;
 	}
-	return;
+#else
+	UNUSED(isroot);
+	bbs_debug(3, "Capabilities not supported\n");
+#endif /* __linux__ */
 }
 
 #pragma GCC diagnostic ignored "-Wsign-conversion"
@@ -327,10 +334,12 @@ static int run_init(int argc, char *argv[])
 	}
 
 	if (!is_root() && option_dumpcore) {
+#ifdef __linux__
 		if (prctl(PR_SET_DUMPABLE, 1, 0, 0, 0) < 0) {
 			fprintf(stderr, "Unable to set the process for core dumps after changing to a non-root user. %s\n", strerror(errno));
 			return -1;
 		}
+#endif /* __linux__ */
 	}
 
 	if (set_cwd()) {

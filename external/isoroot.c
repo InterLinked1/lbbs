@@ -36,11 +36,16 @@
 #include <sys/utsname.h>
 #include <sys/resource.h>
 #include <sched.h> /* use clone */
+
+#ifdef __linux__
 #include <syscall.h>
+#endif
+
 #include <sys/syscall.h>
 #include <sys/mount.h>
 #include <sched.h>
 
+#ifdef __linux__
 #ifndef pivot_root
 #define pivot_root(new, old) syscall(SYS_pivot_root, new, old)
 #endif
@@ -185,9 +190,16 @@ static int setup_namespace(pid_t pid)
 	close(map_pipe[0]);
 	return 0;
 }
+#endif
 
 int main(int argc, char *argv[])
 {
+#ifndef __linux__
+	(void) argc;
+	(void) argv;
+	fprintf(stderr, "This program only works on Linux\n");
+	return -1;
+#else
 	pid_t child;
 
 	(void) argc;
@@ -220,4 +232,5 @@ int main(int argc, char *argv[])
 
 	fprintf(stderr, "Process %d has exited\n", child);
 	return 0;
+#endif
 }

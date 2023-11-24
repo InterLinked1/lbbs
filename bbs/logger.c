@@ -28,11 +28,14 @@
 #include <unistd.h>
 #include <sys/time.h> /* use gettimeofday */
 #include <unistd.h> /* use write */
-#include <linux/limits.h> /* use PATH_MAX */
 #include <sys/stat.h> /* use mkdir */
 #include <sys/types.h>
 #include <pthread.h>
 #include <poll.h>
+
+#ifdef __linux__
+#include <linux/limits.h> /* use PATH_MAX */
+#endif
 
 #include "include/utils.h" /* use bbs_gettid, bbs_tvnow */
 #include "include/linkedlists.h"

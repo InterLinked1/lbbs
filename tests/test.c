@@ -42,6 +42,7 @@
 #include <netinet/in.h> /* use sockaddr_in */
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <limits.h> /* use PATH_MAX */
 
 #include "include/readline.h"
 
@@ -883,7 +884,7 @@ static int run_test(const char *filename, int multiple)
 				current_child = 0;
 				bbs_debug(3, "Child process %d has exited\n", childpid);
 				if (WIFSIGNALED(wstatus)) { /* Child terminated by signal (probably SIGSEGV?) */
-#if __GLIBC__ >= 2 && __GLIBC_MINOR__ >= 32
+#if defined(__GLIBC__) && __GLIBC__ >= 2 && __GLIBC_MINOR__ >= 32
 					bbs_error("Process %d (%s) killed, signal %s\n", childpid, filename, sigdescr_np(WTERMSIG(wstatus)));
 #else
 					bbs_error("Process %d (%s) killed, signal %s\n", childpid, filename, sys_siglist[WTERMSIG(wstatus)]);

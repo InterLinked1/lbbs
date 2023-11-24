@@ -24,7 +24,10 @@
 #include <string.h>
 #include <ctype.h>
 #include <unistd.h>
+
+#ifdef __linux__
 #include <linux/limits.h> /* use PATH_MAX */
+#endif
 
 #include "include/linkedlists.h"
 #include "include/config.h"

@@ -83,7 +83,11 @@ mod_slack.so : mod_slack.o
 
 mod_smtp_delivery_external.so : mod_smtp_delivery_external.o
 	@echo "== Linking $@"
+ifeq ($(UNAME_S),FreeBSD)
+	$(CC) -shared -fPIC -o $(basename $^).so $^
+else
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lresolv
+endif
 
 mod_smtp_filter_arc.so : mod_smtp_filter_arc.o
 	@echo "== Linking $@"

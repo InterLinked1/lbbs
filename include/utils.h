@@ -150,6 +150,14 @@ int bbs_user_identity_mismatch(struct bbs_user *user, const char *from);
 int bbs_append_stuffed_line_message(FILE *fp, const char *line, size_t len);
 
 /*!
+ * \brief Drop-in replacement for basename(3)
+ * \param s
+ * \return NULL if input is NULL or string ends in a /
+ * \return Basename component of file path
+ */
+const char *bbs_basename(const char *s);
+
+/*!
  * \brief Traverse all the files and directories in a directory, non-recursively
  * \param path Directory to traverse
  * \param on_file Callback function to execute for each file or directory. Should return 0 to continue iterating and non-zero to stop.
@@ -265,6 +273,15 @@ FILE *bbs_mkftemp(char *template, mode_t mode);
  * \retval -1 on failure, number of bytes copied on success
  */
 int bbs_copy_file(int srcfd, int destfd, int start, int bytes); /* gcc has fd_arg attributes, but not widely supported yet */
+
+/*!
+ * \brief Efficiently copy data between two file descriptors.
+ * \param fd_in Input fd. Must NOT be a pipe.
+ * \param fd_out Output fd.
+ * \param len Number of bytes to copy
+ * \retval -1 on failure, number of bytes copied on success
+ */
+ssize_t bbs_splice(int fd_in, int fd_out, size_t len);
 
 /*!
  * \brief Send all the data in a file to a file descriptor

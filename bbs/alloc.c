@@ -182,6 +182,7 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 
 size_t bbs_malloc_trim(void)
 {
+#ifdef __linux__
 	int res;
 	size_t diff;
 	void *before, *after;
@@ -193,4 +194,8 @@ size_t bbs_malloc_trim(void)
 	diff = (size_t) (before - after); /* Number of bytes released (which should be based on the page size) */
 	bbs_debug(2, "malloc_trim: %d, before: %p, after: %p, bytes released: %lu\n", res, before, after, diff);
 	return diff;
+#else
+	bbs_debug(2, "malloc_trim not supported by this platform\n");
+	return 0;
+#endif
 }

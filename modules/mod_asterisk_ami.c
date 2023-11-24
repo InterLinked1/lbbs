@@ -163,7 +163,7 @@ static void ami_disconnect_callback(void)
 	int sleep_ms = 500;
 
 	set_ami_status(0);
-	bbs_error("Asterisk Manager Interface connection lost\n");
+	bbs_warning("Asterisk Manager Interface connection lost\n");
 
 	if (unloading) {
 		return; /* If we're unloading, don't care */
@@ -178,7 +178,9 @@ static void ami_disconnect_callback(void)
 		res = load_config(0);
 		if (!res) {
 			bbs_verb(4, "Asterisk Manager Interface connection re-established\n");
-			set_ami_status(1);
+			/* No need to call set_ami_status(1) here,
+			 * when we reconnect, we'll get a FullyBooted event
+			 * which will do this. */
 			break;
 		}
 		bbs_debug(3, "Waiting %d ms to retry AMI connection...\n", sleep_ms);

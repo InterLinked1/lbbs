@@ -100,7 +100,8 @@ At the console, press :code:`?` or :code:`h` for a list of available commands. Y
 
 Some configuration of the BBS will be needed before you can use it. Consult the sample configs in :code:`/etc/lbbs` for an overview of settings you may need to configure. At a minimum, you will need to add a menu to the BBS (:code:`menus.conf`).
 
-LBBS is best run on a modern version of Debian Linux (Debian 11 or 12). It should also compile on most other commonly used Linux distros. A recent version of gcc is required (e.g. >= 11). Note that LBBS likely is not currently portable to non-Linux systems, e.g. BSD or UNIX. It likely won't be a lot of work to make it more portable, but that work hasn't been done yet since I only test and run BBSes on Linux. Additionally, LBBS requires gcc to compile, since it uses some gcc-specific compiler extensions.
+LBBS is best run on a modern version of Debian Linux (Debian 11 or 12). It should also compile on most other commonly used Linux distros. A recent version of gcc is required (e.g. >= 11).
+The BBS core should compile and install on FreeBSD, but not all module dependencies may be available and some functionality may be degraded.
 
 **WARNING: Do not run the BBS as root!** Create a non-root user and configure the BBS to run as that instead. See :code:`lbbs -?` or :code:`/etc/lbbs/bbs.conf` to configure the run user and run group.
 
@@ -127,6 +128,10 @@ Config files go in :code:`/etc/lbbs` and are as follows:
 * :code:`mail.conf` - Email configuration
 
 * :code:`menus.conf` - BBS menus, menu items and options. **This is the heart of LBBS configuration.**
+
+* :code:`mod_asterisk_ami.conf` - Asterisk Manager Interface
+
+* :code:`mod_asterisk_queues.conf` - Asterisk queues integration
 
 * :code:`mod_auth_mysql.conf` - MySQL/MariaDB auth provider module config
 

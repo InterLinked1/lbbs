@@ -28,7 +28,20 @@
 #include <pthread.h>
 #include <execinfo.h>
 #include <dlfcn.h>
+
+/* Hack for compiling on FreeBSD */
+#if !defined(PACKAGE) && defined(__FreeBSD__)
+#define PACKAGE
+#ifndef PACKAGE_VERSION
+#define PACKAGE_VERSION
 #include <bfd.h>
+#else
+#include <bfd.h>
+#endif /* PACKAGE_VERSION */
+#undef PACKAGE
+#else
+#include <bfd.h>
+#endif /* PACKAGE */
 
 #define BT_MAX_STACK_FRAMES 20
 #define BT_MSG_BUFF_LEN 1024
@@ -238,20 +251,24 @@ void bbs_log_backtrace(void)
 {
 	char **bt_syms;
 	void *array[BT_MAX_STACK_FRAMES]; /* Maximum number of stack frames to dump. */
-	int size;
+
+#ifdef __FreeBSD__
+	size_t i, size;
+#else
+	int i, size;
+#endif
 
 	size = backtrace(array, BT_MAX_STACK_FRAMES);
 	bt_syms = backtrace_symbols(array, size);
 
-	bbs_error("Got %d backtrace records\n", size);
+	bbs_error("Got %d backtrace records\n", (int) size);
 
 	{
 		/* Scope for retstrings, since size is not known at beginning of function */
 		char *retstrings[size];
-		int i;
 #pragma GCC diagnostic pop
 		memset(retstrings, 0, sizeof(*retstrings));
-		bt_get_symbols(array, size, retstrings); /* Get backtraces with friendly symbols */
+		bt_get_symbols(array, (int) size, retstrings); /* Get backtraces with friendly symbols */
 		for (i = 0; i < size; i++) {
 			if (retstrings[i]) {
 				if (strchr(retstrings[i], '\n')) {
@@ -264,16 +281,16 @@ void bbs_log_backtrace(void)
 						if (frame) {
 							*frame++ = '\0';
 						}
-						bbs_error("%2d: %s\n", i, s);
+						bbs_error("%2d: %s\n", (int) i, s);
 						s = frame;
 					} while (frame);
 				} else {
-					bbs_error("%2d: %s\n", i, retstrings[i]);
+					bbs_error("%2d: %s\n", (int) i, retstrings[i]);
 				}
 				free(retstrings[i]); /* Free symbols as we're done using them */
 			} else {
 				/* Fallback to backtrace_symbols output */
-				bbs_error("%2d: %s\n", i, bt_syms[i]);
+				bbs_error("%2d: %s\n", (int) i, bt_syms[i]);
 			}
 		}
 		free(bt_syms);

@@ -27,6 +27,12 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <arpa/nameser.h>
+
+#ifdef __FreeBSD__
+/* Needed for sockaddr_in in resolv.h on FreeBSD */
+#include <netinet/in.h>
+#endif
+
 #include <resolv.h>
 
 #include "include/module.h"

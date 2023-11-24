@@ -23,9 +23,12 @@
 #include <stdio.h>
 #include <string.h>
 #include <dlfcn.h>
-#include <linux/limits.h> /* use PATH_MAX */
 #include <unistd.h> /* use usleep */
 #include <poll.h>
+
+#ifdef __linux__
+#include <linux/limits.h> /* use PATH_MAX */
+#endif
 
 #include "include/linkedlists.h"
 #include "include/stringlist.h"

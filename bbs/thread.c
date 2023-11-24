@@ -29,6 +29,10 @@
 #include <sys/syscall.h>
 #include <signal.h> /* use pthread_kill */
 
+#ifdef __FreeBSD__
+#include <sys/thr.h>
+#endif
+
 #include "include/utils.h"
 #include "include/linkedlists.h"
 #include "include/cli.h"
@@ -53,8 +57,16 @@ int bbs_gettid(void)
 	/* gettid() is not very portable at all.
 	 * It works on Debian 11 but not on Debian 10 for me. */
 	tid = gettid();
-#else
+#elif defined(__linux__)
 	tid = (int) syscall(SYS_gettid);
+#elif defined(__FreeBSD__)
+	{
+		long lwpid;
+		thr_self(&lwpid);
+		tid = (int) lwpid;
+	}
+#else
+#error "gettid not implemented for this platform"
 #endif
 	my_tid = tid; /* Save the value for future reference, so we don't need to do this again. */
 	return tid;
@@ -129,7 +141,7 @@ static int __thread_unregister(pthread_t id, const char *file, int line, const c
 			bbs_debug(3, "Thread %d is exiting (%s)\n", lwp, "must be joined");
 		}
 	} else {
-		bbs_error("Thread %lu not found?\n", id);
+		bbs_error("Thread %lu not found?\n", (unsigned long) id);
 	}
 	/* On shutdown, bbs_thread_cleanup will occur right after all modules have unloaded, i.e. all child threads have exited.
 	 * If we release the lock right after the traversal ends, bbs_thread_cleanup will find the list empty and return, and
@@ -159,7 +171,7 @@ static int cli_threads(struct bbs_cli_args *a)
 	RWLIST_TRAVERSE(&thread_list, cur, list) {
 		threads++;
 		print_time_elapsed(cur->waitingjoin ? cur->end : cur->start, now, elapsed, sizeof(elapsed));
-		bbs_dprintf(a->fdout, "%3d %6d (%9lu) [%12p] (%s %10s) %s\n", threads, cur->lwp, cur->id, (void *) cur->id, thread_state_name(cur), elapsed, cur->name);
+		bbs_dprintf(a->fdout, "%3d %6d (%9lu) [%12p] (%s %10s) %s\n", threads, cur->lwp, (unsigned long) cur->id, (void *) cur->id, thread_state_name(cur), elapsed, cur->name);
 	}
 	RWLIST_UNLOCK(&thread_list);
 	bbs_dprintf(a->fdout, "%d active threads registered, %d lifetime threads (may be incomplete).\n", threads, lifetime_threads);
@@ -240,21 +252,21 @@ int bbs_pthread_cancel_kill(pthread_t thread)
 	res = pthread_cancel(thread);
 	if (res) {
 		if (res == ESRCH) {
-			bbs_debug(3, "Thread %lu no longer exists\n", thread);
+			bbs_debug(3, "Thread %lu no longer exists\n", (unsigned long) thread);
 		} else {
-			bbs_warning("Could not cancel thread %lu: %s\n", thread, strerror(res));
+			bbs_warning("Could not cancel thread %lu: %s\n", (unsigned long) thread, strerror(res));
 		}
 	}
 
 	res = pthread_kill(thread, SIGURG);
 	if (res) {
 		if (res == ESRCH) {
-			bbs_debug(3, "Thread %lu no longer exists\n", thread);
+			bbs_debug(3, "Thread %lu no longer exists\n", (unsigned long) thread);
 		} else {
-			bbs_warning("Could not kill thread %lu: %s\n", thread, strerror(res));
+			bbs_warning("Could not kill thread %lu: %s\n", (unsigned long) thread, strerror(res));
 		}
 	} else {
-		bbs_debug(3, "Killed thread %lu\n", thread);
+		bbs_debug(3, "Killed thread %lu\n", (unsigned long) thread);
 	}
 	return res;
 }
@@ -282,15 +294,16 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 	RWLIST_UNLOCK(&thread_list);
 
 	if (!x) {
-		bbs_error("Thread %lu not registered\n", thread);
+		bbs_error("Thread %lu not registered\n", (unsigned long) thread);
 		return -1;
 	} else if (!lwp) {
 		return -1;
 	}
 
-	bbs_debug(6, "Attempting to join thread %lu (LWP %d) at %s:%d %s()\n", thread, lwp, file, line, func);
+	bbs_debug(6, "Attempting to join thread %lu (LWP %d) at %s:%d %s()\n", (unsigned long) thread, lwp, file, line, func);
 
 	if (!waiting_join) {
+#ifdef __linux__
 		struct timespec ts;
 		/* This is suspicious... we may end up hanging if the thread doesn't exit imminently */
 		/* Don't immediately emit a warning, because the thread may be just about to exit
@@ -313,17 +326,22 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 				res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts);
 			}
 		}
+#else
+		bbs_warning("Thread %d is not currently waiting to be joined\n", lwp);
+		/* This is bad, as we could block indefinitely */
+		res = pthread_join(thread, retval ? retval : &tmp);
+#endif
 	} else {
 		res = pthread_join(thread, retval ? retval : &tmp);
 	}
 
 	if (res) {
-		bbs_error("pthread_join(%lu) at %s:%d %s(): %s\n", thread, file, line, func, strerror(res));
+		bbs_error("pthread_join(%lu) at %s:%d %s(): %s\n", (unsigned long) thread, file, line, func, strerror(res));
 		return res;
 	}
 	res = __thread_unregister(thread, file, line, func);
 	if (res == -1) {
-		bbs_error("Thread %d attempted to join nonjoinable thread %lu at %s:%d %s()\n", bbs_gettid(), thread, file, line, func);
+		bbs_error("Thread %d attempted to join nonjoinable thread %lu at %s:%d %s()\n", bbs_gettid(), (unsigned long) thread, file, line, func);
 		return -1; /* pthread_join may have returned 0, but if the thread was detached (though it can't be here!), we probably can't trust its return value */
 	}
 	return 0;

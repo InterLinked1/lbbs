@@ -543,7 +543,7 @@ static int shell_request(ssh_session session, ssh_channel channel, void *userdat
 		return SSH_ERROR;
 	}
 	cdata->nodethread = node->thread;
-	bbs_debug(3, "Node thread is %lu\n", cdata->nodethread);
+	bbs_debug(3, "Node thread is %lu\n", (unsigned long) cdata->nodethread);
 	return SSH_OK;
 }
 
@@ -601,7 +601,7 @@ static inline int thread_has_exited(pthread_t thread)
 		return 1;
 	}
 	/* Unexpected return value */
-	bbs_warning("pthread_kill(%lu) = %d (%s)\n", thread, res, strerror(res));
+	bbs_warning("pthread_kill(%lu) = %d (%s)\n", (unsigned long) thread, res, strerror(res));
 	return 0;
 }
 

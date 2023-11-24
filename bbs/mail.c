@@ -31,6 +31,10 @@
 #include <unistd.h> /* use close */
 #include <sys/time.h> /* use gettimeofday */
 
+#ifdef __FreeBSD__
+#include <libgen.h> /* use basename */
+#endif
+
 #include "include/base64.h"
 #include "include/mail.h"
 #include "include/config.h"

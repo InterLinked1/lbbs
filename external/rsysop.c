@@ -19,6 +19,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h> /* strerror on FreeBSD */
 #include <unistd.h>
 #include <errno.h>
 #include <signal.h>
