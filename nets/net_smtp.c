@@ -2364,6 +2364,17 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 		if (res < 0) {
 			bbs_delete_file(template);
 			fclose(fp);
+			if (res == -3) {
+				/* Buffer was exhausted.
+				 * RFC 5322 2.1.1 says lines MUST be no longer than 998 characters.
+				 * This is the sending mail user agent's resonsibility, not the responsibility of any MTA.
+				 * Some user agents don't conform to this requirement, and some MTAs will happily relay them anyways.
+				 * In practice, most messages that violate this seem to be spam anyways,
+				 * so we have no reason to tolerate noncompliant messages.
+				 * However, we need to reject it properly with the right error message before disconnecting. */
+				smtp_reply_nostatus(smtp, 550, "Maximum line length exceeded");
+				smtp->failures += 3; /* Semantically, this is a bad client. However, we're just going to disconnect now anyways, so this doesn't really matter. */
+			}
 			return -1;
 		}
 		s = rldata->buf;

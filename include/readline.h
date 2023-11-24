@@ -63,10 +63,13 @@ int readline_bytes_available(struct readline_data *restrict rldata, int process)
  * \param rldata Previously initialized using bbs_readline_init
  * \param delim A delimiter (can be multiple characters). CR LF is typical for most network applications.
  * \param timeout Timeout in ms for any call to poll()
- * \retval -2 on failure, -1 if read or poll returns 0, and number of bytes read in first input chunk otherwise, not including the delimiter.
- *         A return value of 0 means that only the delimiter was read.
- *         If a positive value is returned, the caller can read the input in the buffer passed to bbs_readline_init. It will be null terminated after the first input chunk,
- *         not including the delimiter.
+ * \retval -3 on buffer exhaustion
+ * \retval -2 if read or poll returned -1
+ * \retval -1 if read or poll returned 0
+ * \retval 0 Only the delimiter was read.
+ * \return Number of bytes read in first input chunk otherwise, not including the delimiter.
+ *         Caller can read input in the buffer passed to bbs_readline_init.
+ *         It will be null terminated after the first input chunk, not including the delimiter.
  * \note The actual number of bytes read may be greater than the number of bytes returned. These bytes will be returned in subsequent calls to this function.
  */
 ssize_t bbs_readline(int fd, struct readline_data *restrict rldata, const char *restrict delim, int timeout);

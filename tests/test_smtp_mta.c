@@ -175,6 +175,29 @@ static int run(void)
 	SWRITE(clientfd, "." ENDL); /* EOM */
 	CLIENT_EXPECT(clientfd, "554"); /* Mail loop detected */
 
+#define CHAR_31 "abc def ghi jkl mno prs tuv wxy"
+#define CHAR_248 CHAR_31 CHAR_31 CHAR_31 CHAR_31 CHAR_31 CHAR_31 CHAR_31 CHAR_31
+#define CHAR_992 CHAR_248 CHAR_248 CHAR_248 CHAR_248
+
+	/* Ensure messages with lines over 1,000 characters are rejected */
+	SWRITE(clientfd, "RSET" ENDL);
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "DATA\r\n");
+	CLIENT_EXPECT(clientfd, "354");
+	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:29 -0700" ENDL);
+	SWRITE(clientfd, ENDL);
+	SWRITE(clientfd, "Test" ENDL);
+	SWRITE(clientfd, CHAR_992 ENDL); /* This is okay */
+	SWRITE(clientfd, CHAR_992 CHAR_31 ENDL); /* This is not okay */
+	SWRITE(clientfd, "." ENDL); /* EOM */
+	CLIENT_EXPECT(clientfd, "550"); /* Mail loop detected */
+
 	/* Test pregreeting */
 	close(clientfd);
 	clientfd = test_make_socket(25);

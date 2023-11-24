@@ -135,7 +135,7 @@ ssize_t bbs_readline(int fd, struct readline_data *restrict rldata, const char *
 #endif
 		if (rldata->left - 1 < 2) {
 			bbs_warning("Buffer (size %lu) has been exhausted\n", rldata->len); /* The using application needs to allocate a larger buffer */
-			return -1;
+			return -3;
 		}
 		res = bbs_poll_read(fd, timeout, rldata->pos, (size_t) rldata->left - 1); /* Subtract 1 for NUL */
 		if (res <= 0) {
