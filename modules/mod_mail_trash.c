@@ -126,8 +126,8 @@ static void *trash_monitor(void *unused)
 		bbs_pthread_disable_cancel();
 		scan_mailboxes();
 		bbs_pthread_enable_cancel();
-		/* Not necessary to run more frequently than once per hour. */
-		sleep(60 * 60); /* use sleep instead of usleep since the argument to usleep would overflow an int */
+		/* Not necessary to run more frequently than twice per day. */
+		sleep(60 * 60 * 12); /* use sleep instead of usleep since the argument to usleep would overflow an int */
 	}
 	return NULL;
 }

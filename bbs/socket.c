@@ -53,7 +53,7 @@
 
 extern int option_rebind;
 
-int bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_t uid, gid_t gid)
+int __bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_t uid, gid_t gid, const char *file, int line, const char *func)
 {
 	struct sockaddr_un sunaddr; /* UNIX socket */
 	int res;
@@ -64,7 +64,14 @@ int bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_
 	unlink(sockfile);
 
 	/* Set up the UNIX domain socket. */
+#if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
+	uds_socket = __bbs_socket(PF_LOCAL, SOCK_STREAM, 0, file, line, func);
+#else
+	UNUSED(file);
+	UNUSED(line);
+	UNUSED(func);
 	uds_socket = socket(PF_LOCAL, SOCK_STREAM, 0);
+#endif
 	if (uds_socket < 0) {
 		bbs_error("Unable to create UNIX domain socket: %s\n", strerror(errno));
 		return -1;
@@ -105,13 +112,20 @@ int bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_
 	return 0;
 }
 
-int bbs_make_tcp_socket(int *sock, int port)
+int __bbs_make_tcp_socket(int *sock, int port, const char *file, int line, const char *func)
 {
 	struct sockaddr_in sinaddr; /* Internet socket */
 	const int enable = 1;
 	int res;
 
+#if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
+	*sock = __bbs_socket(AF_INET, SOCK_STREAM, 0, file, line, func);
+#else
+	UNUSED(file);
+	UNUSED(line);
+	UNUSED(func);
 	*sock = socket(AF_INET, SOCK_STREAM, 0);
+#endif
 	if (*sock < 0) {
 		bbs_error("Unable to create TCP socket: %s\n", strerror(errno));
 		return -1;
@@ -317,7 +331,7 @@ int bbs_resolve_hostname(const char *hostname, char *buf, size_t len)
 	return 0;
 }
 
-int bbs_tcp_connect(const char *hostname, int port)
+int __bbs_tcp_connect(const char *hostname, int port, const char *file, int line, const char *func)
 {
 	char ip[256];
 	int e;
@@ -353,7 +367,16 @@ int bbs_tcp_connect(const char *hostname, int port)
 		} else {
 			continue;
 		}
+
+#if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
+		sfd = __bbs_socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol, file, line, func);
+#else
+		UNUSED(file);
+		UNUSED(line);
+		UNUSED(func);
 		sfd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+#endif
+
 		if (sfd == -1) {
 			bbs_error("socket: %s\n", strerror(errno));
 			continue;

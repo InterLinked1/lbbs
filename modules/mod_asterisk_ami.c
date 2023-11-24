@@ -84,6 +84,8 @@ cleanup:
 	ami_event_free(event); /* Free event when done with it */
 }
 
+static int ami_alert_pipe[2] = { -1, -1 };
+
 int __bbs_ami_callback_register(int (*callback)(struct ami_event *event, const char *eventname), void *mod)
 {
 	struct ami_callback *cb;
@@ -96,6 +98,8 @@ int __bbs_ami_callback_register(int (*callback)(struct ami_event *event, const c
 	cb->callback = callback;
 	cb->mod = mod;
 
+	bbs_alertpipe_write(ami_alert_pipe);
+
 	RWLIST_WRLOCK(&callbacks);
 	RWLIST_INSERT_HEAD(&callbacks, cb, entry);
 	RWLIST_UNLOCK(&callbacks);
@@ -106,6 +110,11 @@ int __bbs_ami_callback_register(int (*callback)(struct ami_event *event, const c
 int bbs_ami_callback_unregister(int (*callback)(struct ami_event *event, const char *eventname))
 {
 	struct ami_callback *cb;
+
+	/* If ami_disconnect_callback is currently running,
+	 * we need to interrupt it in order to be able to
+	 * successfully WRLOCK the list. */
+	bbs_alertpipe_write(ami_alert_pipe);
 
 	RWLIST_WRLOCK(&callbacks);
 	cb = RWLIST_REMOVE_BY_FIELD(&callbacks, callback, callback, entry);
@@ -146,8 +155,8 @@ static struct bbs_cli_entry cli_commands_ami[] = {
 
 static int load_config(int open_logfile);
 
-static int ami_alert_pipe[2] = { -1, -1 };
 static int unloading = 0;
+static int reconnecting = 0;
 
 static void ami_disconnect_callback(void)
 {
@@ -160,26 +169,38 @@ static void ami_disconnect_callback(void)
 		return; /* If we're unloading, don't care */
 	}
 
+	reconnecting = 1;
 	RWLIST_RDLOCK(&callbacks);
 	/* Perhaps Asterisk restarted (or crashed).
 	 * Try to reconnect if it comes back up. */
 	for (;;) {
-		int res = load_config(0);
+		int res;
+		res = load_config(0);
 		if (!res) {
 			bbs_verb(4, "Asterisk Manager Interface connection re-established\n");
 			set_ami_status(1);
 			break;
 		}
+		bbs_debug(3, "Waiting %d ms to retry AMI connection...\n", sleep_ms);
 		if (bbs_alertpipe_poll(ami_alert_pipe, sleep_ms)) {
 			bbs_alertpipe_read(ami_alert_pipe);
 			bbs_debug(3, "AMI reconnect interrupted\n");
-			break;
+			if (unloading) {
+				break;
+			}
+			/* Interrupted, but not unloading.
+			 * Probably something else that needs to grab a list lock.
+			 * Suspend the retry for a moment. */
+			RWLIST_UNLOCK(&callbacks);
+			usleep(1); /* Enough to cause the CPU to suspend this thread, and allow something else to grab a WRLOCK */
+			RWLIST_WRLOCK(&callbacks);
 		}
 		if (sleep_ms < 64000) { /* Exponential backoff, up to 64 seconds */
 			sleep_ms *= 2;
 		}
 	}
 	RWLIST_UNLOCK(&callbacks);
+	reconnecting = 0;
 }
 
 static int load_config(int open_logfile)
@@ -253,8 +274,11 @@ static int unload_module(void)
 
 	/* If anything was in the body of ami_disconnect_callback,
 	 * it had the list locked. If we can lock the list, that means they're gone. */
-	RWLIST_WRLOCK(&callbacks);
-	RWLIST_UNLOCK(&callbacks);
+	do {
+		bbs_debug(3, "Attempting to lock callback list to ensure safe unload\n");
+		RWLIST_WRLOCK(&callbacks);
+		RWLIST_UNLOCK(&callbacks);
+	} while (reconnecting);
 
 	bbs_cli_unregister_multiple(cli_commands_ami);
 	ami_disconnect();

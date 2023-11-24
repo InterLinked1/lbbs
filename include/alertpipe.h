@@ -28,7 +28,9 @@ ssize_t bbs_alertpipe_write(int alert_pipe[2]);
 int bbs_alertpipe_read(int alert_pipe[2]);
 
 /*! \brief Initialize an alertpipe */
-int bbs_alertpipe_create(int alert_pipe[2]);
+#define bbs_alertpipe_create(alert_pipe) __bbs_alertpipe_create(alert_pipe, __FILE__, __LINE__, __func__)
+
+int __bbs_alertpipe_create(int alert_pipe[2], const char *file, int line, const char *func);
 
 /*! \brief Close an alertpipe */
 int bbs_alertpipe_close(int alert_pipe[2]);

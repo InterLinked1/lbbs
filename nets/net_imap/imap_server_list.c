@@ -397,7 +397,7 @@ int list_iterate(struct imap_session *imap, struct list_command *lcmd, int level
 				bbs_warning("No user for maildir %s\n", entry->d_name);
 				goto cleanup;
 			}
-			str_tolower(mailboxbuf); /* Convert to all lowercase since that's the convention we use for email */
+			bbs_str_tolower(mailboxbuf); /* Convert to all lowercase since that's the convention we use for email */
 			mailboxname = mailboxbuf; /* e.g. jsmith instead of 1 */
 		} else if (level == 0 && lcmd->ns == NAMESPACE_SHARED && !isdigit(*entry->d_name)) {
 			mailboxname = entry->d_name; /* Mailbox name stays the same, this is technically a redundant instruction */
@@ -482,7 +482,7 @@ int list_scandir(struct imap_session *imap, struct list_command *lcmd, int level
 				bbs_warning("No user for maildir %s\n", entry->d_name);
 				goto cleanup;
 			}
-			str_tolower(mailboxbuf); /* Convert to all lowercase since that's the convention we use for email */
+			bbs_str_tolower(mailboxbuf); /* Convert to all lowercase since that's the convention we use for email */
 			mailboxname = mailboxbuf; /* e.g. jsmith instead of 1 */
 		} else if (level == 0 && lcmd->ns == NAMESPACE_SHARED && !isdigit(*entry->d_name)) {
 			mailboxname = entry->d_name; /* Mailbox name stays the same, this is technically a redundant instruction */

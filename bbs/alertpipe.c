@@ -50,10 +50,20 @@ int bbs_alertpipe_read(int alert_pipe[2])
 	return 0;
 }
 
-int bbs_alertpipe_create(int alert_pipe[2])
+int __bbs_alertpipe_create(int alert_pipe[2], const char *file, int line, const char *func)
 {
 	/* Prefer eventfd to pipe since it's more efficient (only 1 fd needed, rather than 2) */
-	int fd = eventfd(0, EFD_NONBLOCK | EFD_SEMAPHORE);
+	int fd;
+
+#if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
+	fd = __bbs_eventfd(0, EFD_NONBLOCK | EFD_SEMAPHORE, file, line, func);
+#else
+	UNUSED(file);
+	UNUSED(line);
+	UNUSED(func);
+	fd = eventfd(0, EFD_NONBLOCK | EFD_SEMAPHORE);
+#endif
+
 	if (fd > -1) {
 		alert_pipe[0] = alert_pipe[1] = fd;
 		return 0;
@@ -101,6 +111,7 @@ int bbs_alertpipe_poll(int alert_pipe[2], int ms)
 		if (pfd.revents) {
 			return 1;
 		}
+		break;
 	}
 	return res;
 }

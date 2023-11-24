@@ -110,29 +110,29 @@
  */
 
 #if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
-#define	open(a,...)	__fdleak_open(__FILE__,__LINE__,__func__, a, __VA_ARGS__)
-#define pipe(a)		__fdleak_pipe(a, __FILE__,__LINE__,__func__)
-#define socketpair(a,b,c,d)	__fdleak_socketpair(a, b, c, d, __FILE__,__LINE__,__func__)
-#define socket(a,b,c)	__fdleak_socket(a, b, c, __FILE__,__LINE__,__func__)
-#define accept(a,b,c)	__fdleak_accept(a, b, c, __FILE__,__LINE__,__func__)
-#define close(a)	__fdleak_close(a, __FILE__,__LINE__,__func__)
-#define	fopen(a,b)	__fdleak_fopen(a, b, __FILE__,__LINE__,__func__)
-#define	fclose(a)	__fdleak_fclose(a)
-#define	dup2(a,b)	__fdleak_dup2(a, b, __FILE__,__LINE__,__func__)
-#define dup(a)		__fdleak_dup(a, __FILE__,__LINE__,__func__)
-#define eventfd(a,b)	__fdleak_eventfd(a,b, __FILE__,__LINE__,__func__)
+#define	open(a,...)	__bbs_open(__FILE__,__LINE__,__func__, a, __VA_ARGS__)
+#define pipe(a)		__bbs_pipe(a, __FILE__,__LINE__,__func__)
+#define socketpair(a,b,c,d)	__bbs_socketpair(a, b, c, d, __FILE__,__LINE__,__func__)
+#define socket(a,b,c)	__bbs_socket(a, b, c, __FILE__,__LINE__,__func__)
+#define accept(a,b,c)	__bbs_accept(a, b, c, __FILE__,__LINE__,__func__)
+#define close(a)	__bbs_close(a, __FILE__,__LINE__,__func__)
+#define	fopen(a,b)	__bbs_fopen(a, b, __FILE__,__LINE__,__func__)
+#define	fclose(a)	__bbs_fclose(a)
+#define	dup2(a,b)	__bbs_dup2(a, b, __FILE__,__LINE__,__func__)
+#define dup(a)		__bbs_dup(a, __FILE__,__LINE__,__func__)
+#define eventfd(a,b)	__bbs_eventfd(a, b, __FILE__,__LINE__,__func__)
 
-int __fdleak_open(const char *file, int line, const char *func, const char *path, int flags, ...);
-int __fdleak_pipe(int *fds, const char *file, int line, const char *func);
-int __fdleak_socketpair(int domain, int type, int protocol, int sv[2], const char *file, int line, const char *func);
-int __fdleak_socket(int domain, int type, int protocol, const char *file, int line, const char *func);
-int __fdleak_accept(int socket, struct sockaddr *address, socklen_t *address_len, const char *file, int line, const char *func);
-int __fdleak_eventfd(unsigned int initval, int flags, const char *file, int line, const char *func);
-int __fdleak_close(int fd, const char *file, int line, const char *func);
-FILE *__fdleak_fopen(const char *path, const char *mode, const char *file, int line, const char *func);
-int __fdleak_fclose(FILE *ptr);
-int __fdleak_dup2(int oldfd, int newfd, const char *file, int line, const char *func);
-int __fdleak_dup(int oldfd, const char *file, int line, const char *func);
+int __bbs_open(const char *file, int line, const char *func, const char *path, int flags, ...);
+int __bbs_pipe(int *fds, const char *file, int line, const char *func);
+int __bbs_socketpair(int domain, int type, int protocol, int sv[2], const char *file, int line, const char *func);
+int __bbs_socket(int domain, int type, int protocol, const char *file, int line, const char *func);
+int __bbs_accept(int socket, struct sockaddr *address, socklen_t *address_len, const char *file, int line, const char *func);
+int __bbs_eventfd(unsigned int initval, int flags, const char *file, int line, const char *func);
+int __bbs_close(int fd, const char *file, int line, const char *func);
+FILE *__bbs_fopen(const char *path, const char *mode, const char *file, int line, const char *func);
+int __bbs_fclose(FILE *ptr);
+int __bbs_dup2(int oldfd, int newfd, const char *file, int line, const char *func);
+int __bbs_dup(int oldfd, const char *file, int line, const char *func);
 
 void bbs_fd_shutdown(void);
 int bbs_fd_init(void);

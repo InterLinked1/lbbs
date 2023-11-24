@@ -352,10 +352,18 @@ int bbs_str_anyprint(const char *restrict s)
 	return 0;
 }
 
-void str_tolower(char *restrict s)
+void bbs_str_tolower(char *restrict s)
 {
 	while (*s) {
 		*s = (char) tolower(*s);
+		s++;
+	}
+}
+
+void bbs_str_toupper(char *restrict s)
+{
+	while (*s) {
+		*s = (char) toupper(*s);
 		s++;
 	}
 }

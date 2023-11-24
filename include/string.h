@@ -158,7 +158,10 @@ int bbs_str_isprint(const char *restrict s) __attribute__ ((pure));
 int bbs_str_anyprint(const char *restrict s) __attribute__ ((pure));
 
 /*! \brief Convert a string to all lowercase */
-void str_tolower(char *restrict s);
+void bbs_str_tolower(char *restrict s);
+
+/*! \brief Convert a string to all uppercase */
+void bbs_str_toupper(char *restrict s);
 
 /*!
  * \brief Skip a number of occurences of a character in a string

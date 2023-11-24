@@ -198,7 +198,7 @@ static int bbs_fd_dump(int fd)
 		LOG_FAILURE(); \
 	}
 
-int __fdleak_open(const char *file, int line, const char *func, const char *path, int flags, ...)
+int __bbs_open(const char *file, int line, const char *func, const char *path, int flags, ...)
 {
 	int res;
 	va_list ap;
@@ -236,7 +236,7 @@ int __fdleak_open(const char *file, int line, const char *func, const char *path
 	return res;
 }
 
-int __fdleak_accept(int socket, struct sockaddr *address, socklen_t *address_len,
+int __bbs_accept(int socket, struct sockaddr *address, socklen_t *address_len,
 	const char *file, int line, const char *func)
 {
 	int res = accept(socket, address, address_len);
@@ -244,7 +244,7 @@ int __fdleak_accept(int socket, struct sockaddr *address, socklen_t *address_len
 	return res;
 }
 
-int __fdleak_pipe(int *fds, const char *file, int line, const char *func)
+int __bbs_pipe(int *fds, const char *file, int line, const char *func)
 {
 	int i, res = pipe(fds);
 	if (res) {
@@ -256,7 +256,7 @@ int __fdleak_pipe(int *fds, const char *file, int line, const char *func)
 	return 0;
 }
 
-int __fdleak_socketpair(int domain, int type, int protocol, int sv[2],
+int __bbs_socketpair(int domain, int type, int protocol, int sv[2],
 	const char *file, int line, const char *func)
 {
 	int i, res = socketpair(domain, type, protocol, sv);
@@ -269,14 +269,14 @@ int __fdleak_socketpair(int domain, int type, int protocol, int sv[2],
 	return 0;
 }
 
-int __fdleak_eventfd(unsigned int initval, int flags, const char *file, int line, const char *func)
+int __bbs_eventfd(unsigned int initval, int flags, const char *file, int line, const char *func)
 {
 	int res = eventfd(initval, flags);
 	STORE_COMMON_HELPER(res, "eventfd", "{%d}", res);
 	return res;
 }
 
-int __fdleak_socket(int domain, int type, int protocol, const char *file, int line, const char *func)
+int __bbs_socket(int domain, int type, int protocol, const char *file, int line, const char *func)
 {
 	char sdomain[20], stype[20];
 	const char *sproto = NULL;
@@ -322,7 +322,7 @@ int __fdleak_socket(int domain, int type, int protocol, const char *file, int li
 	return res;
 }
 
-int __fdleak_close(int fd, const char *file, int line, const char *func)
+int __bbs_close(int fd, const char *file, int line, const char *func)
 {
 	int res;
 
@@ -339,7 +339,7 @@ int __fdleak_close(int fd, const char *file, int line, const char *func)
 	return res;
 }
 
-FILE *__fdleak_fopen(const char *path, const char *mode, const char *file, int line, const char *func)
+FILE *__bbs_fopen(const char *path, const char *mode, const char *file, int line, const char *func)
 {
 	FILE *res = fopen(path, mode);
 	int fd;
@@ -351,7 +351,7 @@ FILE *__fdleak_fopen(const char *path, const char *mode, const char *file, int l
 	return res;
 }
 
-int __fdleak_fclose(FILE *ptr)
+int __bbs_fclose(FILE *ptr)
 {
 	int fd, res;
 
@@ -364,7 +364,7 @@ int __fdleak_fclose(FILE *ptr)
 	return res;
 }
 
-int __fdleak_dup2(int oldfd, int newfd, const char *file, int line, const char *func)
+int __bbs_dup2(int oldfd, int newfd, const char *file, int line, const char *func)
 {
 	int res = dup2(oldfd, newfd);
 	/* On success, newfd will be closed automatically if it was already
@@ -374,7 +374,7 @@ int __fdleak_dup2(int oldfd, int newfd, const char *file, int line, const char *
 	return res;
 }
 
-int __fdleak_dup(int oldfd, const char *file, int line, const char *func)
+int __bbs_dup(int oldfd, const char *file, int line, const char *func)
 {
 	int res = dup(oldfd);
 	STORE_COMMON_HELPER(res, "dup2", "%d", oldfd);

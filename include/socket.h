@@ -23,7 +23,9 @@
  * \param gid Group ID. -1 to not change.
  * \retval 0 on success, -1 on failure
  */
-int bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_t uid, gid_t gid);
+#define bbs_make_unix_socket(sock, sockfile, perm, uid, gid) __bbs_make_unix_socket(sock, sockfile, perm, uid, gid, __FILE__, __LINE__, __func__)
+
+int __bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_t uid, gid_t gid, const char *file, int line, const char *func);
 
 /*!
  * \brief Create a TCP socket
@@ -31,7 +33,9 @@ int bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_
  * \param port Port number on which to create the socket
  * \retval 0 on success, -1 on failure
  */
-int bbs_make_tcp_socket(int *sock, int port);
+#define bbs_make_tcp_socket(sock, port) __bbs_make_tcp_socket(sock, port, __FILE__, __LINE__, __func__)
+
+int __bbs_make_tcp_socket(int *sock, int port, const char *file, int line, const char *func);
 
 /*! \brief Put a socket in nonblocking mode */
 int bbs_unblock_fd(int fd);
@@ -63,7 +67,9 @@ int bbs_resolve_hostname(const char *hostname, char *buf, size_t len);
  * \retval -1 on failure, socket file descriptor otherwise
  * \note This does not perform TLS negotiation, use ssl_client_new immediately or later in the session for encryption.
  */
-int bbs_tcp_connect(const char *hostname, int port);
+#define bbs_tcp_connect(hostname, port) __bbs_tcp_connect(hostname, port, __FILE__, __LINE__, __func__)
+
+int __bbs_tcp_connect(const char *hostname, int port, const char *file, int line, const char *func);
 
 /*!
  * \brief Wrapper around accept(), with poll timeout

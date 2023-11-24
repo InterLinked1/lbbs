@@ -62,6 +62,7 @@ struct agent {
 	struct bbs_node *node;		/*!< Agent's node */
 	unsigned int idle:1;		/*!< Currently idle? */
 	unsigned int gotwritten:1;	/*!< Another thread wrote onto our terminal while we were idle */
+	unsigned int stale:1;		/*!< Needs stats update */
 	RWLIST_ENTRY(agent) entry;
 };
 
@@ -94,6 +95,7 @@ struct queue {
 	int calls;				/*!< Total # calls */
 	int completed;			/*!< # completed calls */
 	int abandoned;			/*!< # abandoned calls */
+	unsigned int stale:1;	/*!< Needs stats initialization or update */
 	RWLIST_ENTRY(queue) entry;
 	char data[];
 };
@@ -143,7 +145,7 @@ int bbs_queue_call_handler_unregister(const char *name)
 	struct queue_call_handler *qch;
 
 	RWLIST_WRLOCK(&handlers);
-	qch = RWLIST_REMOVE_BY_FIELD(&handlers, name, name, entry);
+	qch = RWLIST_REMOVE_BY_STRING_FIELD(&handlers, name, name, entry);
 	RWLIST_UNLOCK(&handlers);
 
 	if (!qch) {
@@ -229,16 +231,45 @@ static struct queue *find_queue(const char *name)
 	return NULL;
 }
 
-static int queues_init(void)
+static int update_queue_stats(void)
 {
 	int i;
-	/* Initially, get all stats for all queues. */
-	struct ami_response *resp = ami_action("QueueStatus", "");
+	struct queue *q, *lastq;
+	int stale_queues = 0;
+	struct ami_response *resp;
+
+	/* Initially (and as needed), get all stats for all queues. */
+	RWLIST_RDLOCK(&queues);
+	RWLIST_TRAVERSE(&queues, q, entry) {
+		if (q->stale) {
+			/* As long as at least one queue needs to have stats refreshed, make an AMI request.
+			 * If none do, we can avoid making a request altogether.
+			 * We need to update periodically to update global queue stats
+			 * (and similarly for each queue agent), since these change whenever calls are processed.
+			 * We could manually update these stats ourselves based on events,
+			 * but this is probably the easiest way to keep in sync, albeit somewhat wasteful. */
+			stale_queues++;
+			lastq = q;
+		}
+	}
+	if (!stale_queues) {
+		/* No queues are stale right now, skip update. */
+		RWLIST_UNLOCK(&queues);
+		return 0;
+	}
+
+	/* If only one queue needs to be refreshed, then just ask for that one by name. */
+	resp = ami_action("QueueStatus", stale_queues == 1 ? lastq->name : "");
+
 	if (!resp || !resp->success) {
+		RWLIST_UNLOCK(&queues);
+		if (resp) {
+			ami_resp_free(resp);
+		}
 		bbs_error("Failed to get queue stats\n");
 		return -1;
 	}
-	RWLIST_RDLOCK(&queues);
+
 	for (i = 1; i < resp->size - 1; i++) {
 		struct ami_event *e = resp->events[i];
 		const char *event = ami_keyvalue(e, "Event");
@@ -249,6 +280,9 @@ static int queues_init(void)
 			if (!queue) {
 				bbs_debug(5, "Skipping irrelevant queue '%s'\n", queue_name);
 				continue; /* Not one of our queues that we care about */
+			}
+			if (!queue->stale) {
+				continue; /* Queue is already up to date, don't care */
 			}
 			numcalls = ami_keyvalue(e, "Calls");
 			completed = ami_keyvalue(e, "Completed");
@@ -261,12 +295,12 @@ static int queues_init(void)
 			queue->calls = atoi(numcalls);
 			queue->completed = atoi(completed);
 			queue->abandoned = atoi(abandoned);
-			bbs_verb(5, "Added queue %s\n", queue->name);
+			bbs_debug(1, "Updated stats for queue %s\n", queue->name);
+			queue->stale = 0;
 		}
 	}
 	RWLIST_UNLOCK(&queues);
 	ami_resp_free(resp); /* Free response when done with it */
-	bbs_verb(4, "All queues are initialized\n");
 	return 0;
 }
 
@@ -491,6 +525,8 @@ static int ami_callback(struct ami_event *e, const char *eventname)
 	/* Events that print to agents' terminals use \r instead of \n
 	 * to overwrite the current timestamp */
 
+	queue->stale = 1; /* The stats are now stale, and will need to be updated at the next convenient opportunity. */
+
 	if (!strcmp(eventname, "QueueCallerJoin")) {
 		char *queueid, *ani2, *dnis;
 		const char *callerid, *channel, *callername;
@@ -545,11 +581,24 @@ static int ami_callback(struct ami_event *e, const char *eventname)
 #endif
 	} else if (!strcmp(eventname, "AgentConnect")) {
 		const char *holdtime, *ringtime, *member_name, *callerid;
+		struct agent *agent;
+		int agentid;
 		member_name = ami_keyvalue(e, "MemberName");
 		holdtime = ami_keyvalue(e, "HoldTime");
 		ringtime = ami_keyvalue(e, "RingTime");
 		callerid = ami_keyvalue(e, "CallerIDNum");
 		agent_printf(queue, member_name, "%s\r%-15s %-20s %15s [%s/%s]\n", COLOR_RESET, "ACD ANS", queue->title, S_OR(callerid, ""), S_OR(holdtime, ""), S_OR(ringtime, ""));
+
+		/* Since this agent has taken a call, this means the agent's statistics
+		 * will need to be updated to reflect having answered this call. */
+		agentid = atoi(member_name);
+		RWLIST_RDLOCK(&agents);
+		RWLIST_TRAVERSE(&agents, agent, entry) {
+			if (agent->id == agentid) {
+				agent->stale = 1;
+			}
+		}
+		RWLIST_UNLOCK(&agents);
 	} else {
 		bbs_debug(6, "Ignoring queue event: %s\n", eventname); /* We know it's queue related since it contains a Queue key */
 		return -1;
@@ -558,8 +607,7 @@ static int ami_callback(struct ami_event *e, const char *eventname)
 	return 0;
 }
 
-/* XXX CallsTaken is only set when door execution begins, and isn't updated afterwards during execution */
-static int membership_init(struct agent *agent)
+static int update_member_stats(struct agent *agent)
 {
 	int i;
 	struct ami_response *resp = ami_action("QueueStatus", "Member:%d", agent->id);
@@ -567,6 +615,9 @@ static int membership_init(struct agent *agent)
 	/* We still need to initialize the agent-specific stats for all queues.
 	 * This response will be smaller (maybe much smaller) than asking for everything. */
 	if (!resp || !resp->success) {
+		if (resp) {
+			ami_resp_free(resp);
+		}
 		bbs_error("Failed to get queue status for agent %d\n", agent->id);
 		return -1;
 	}
@@ -627,6 +678,12 @@ static int membership_init(struct agent *agent)
 static int queues_status(struct agent *agent)
 {
 	struct queue *queue;
+
+	update_queue_stats();
+	if (agent->stale) {
+		update_member_stats(agent);
+		agent->stale = 0;
+	}
 
 	bbs_node_writef(agent->node, "%-22s %6s\t%6s\t%6s\t%6s\n", "===== ACD QUEUE =====", "!!", "+", "-", "@");
 	RWLIST_RDLOCK(&queues);
@@ -863,7 +920,7 @@ static int agent_exec(struct bbs_node *node, const char *args)
 		return 0;
 	}
 
-	if (membership_init(agent)) {
+	if (update_member_stats(agent)) {
 		goto cleanup;
 	}
 
@@ -1006,6 +1063,7 @@ static int load_config(void)
 		SET_FSM_STRING_VAR(queue, data, name, name, namelen);
 		SET_FSM_STRING_VAR(queue, data, title, title, titlelen);
 		SET_FSM_STRING_VAR(queue, data, handler, handler, handlerlen);
+		queue->stale = 1; /* Needs to be initialized with queue stats */
 		RWLIST_INSERT_TAIL(&queues, queue, entry);
 		bbs_debug(4, "Added queue '%s'\n", name);
 	}
@@ -1036,7 +1094,7 @@ static int load_module(void)
 		RWLIST_REMOVE_ALL(&queues, entry, free);
 		return -1;
 	}
-	if (queues_init()) {
+	if (update_queue_stats()) {
 		RWLIST_REMOVE_ALL(&queues, entry, free);
 		RWLIST_REMOVE_ALL(&calls, entry, free);
 		return -1;
