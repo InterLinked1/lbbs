@@ -26,6 +26,7 @@ struct pollfd;
 
 struct bbs_node {
 	unsigned int id;			/*!< Node number, 1-indexed for user-friendliness */
+	unsigned int lifetimeid;	/*!< Lifetime node number, 1-indexed */
 	int fd;						/*!< Socket file descriptor */
 	int rfd;					/*!< File descriptor for reading */
 	int wfd;					/*!< File descriptor for writing */
@@ -685,13 +686,19 @@ int bbs_node_wait_key(struct bbs_node *node, int ms);
  */
 void bbs_node_begin(struct bbs_node *node);
 
+/*! \brief Begin handling a node from a network protocol
+ * \note Only intended for network protocols that don't use psuedoterminals
+ */
+void bbs_node_net_begin(struct bbs_node *node);
+
 /*! \brief Stop handling a node
  * \note Not needed if you use bbs_node_handler
+ * \note After calling this function, node will no longer be a valid reference
  */
 void bbs_node_exit(struct bbs_node *node) __attribute__ ((nonnull (1)));
 
 /*!
- * \brief Top-level node handler
+ * \brief Top-level node handler for terminal protocols
  * \param varg BBS node
  */
 void *bbs_node_handler(void *varg);

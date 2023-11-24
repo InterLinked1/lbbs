@@ -177,7 +177,7 @@ const char *bbs_name(void)
 	return bbs_name_buf;
 }
 
-static int lifetime_nodes = 0;
+static unsigned int lifetime_nodes = 0;
 
 struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 {
@@ -269,11 +269,10 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 	} else {
 		RWLIST_INSERT_HEAD(&nodes, node, entry); /* This is the first node. */
 	}
-	lifetime_nodes++;
+	node->lifetimeid = lifetime_nodes++;
 	RWLIST_UNLOCK(&nodes);
 
-	bbs_debug(1, "Allocated new node with ID %u\n", node->id);
-
+	bbs_debug(1, "Allocated new node with ID %u (lifetime ID %d)\n", node->id, node->lifetimeid);
 	return node;
 }
 
@@ -686,7 +685,7 @@ static int cli_nodes(struct bbs_cli_args *a)
 	}
 	RWLIST_UNLOCK(&nodes);
 
-	bbs_dprintf(a->fdout, "%d active node%s, %d lifetime node%s\n", c, ESS(c), lifetime_nodes, ESS(lifetime_nodes));
+	bbs_dprintf(a->fdout, "%d active node%s, %u lifetime node%s\n", c, ESS(c), lifetime_nodes, ESS(lifetime_nodes));
 	return 0;
 }
 
@@ -791,7 +790,6 @@ static int node_info(int fd, unsigned int nodenum)
 	char connecttime[29];
 	struct bbs_node *n;
 	char menufull[16];
-	int lwp;
 	time_t now = time(NULL);
 
 	RWLIST_RDLOCK(&nodes);
@@ -826,10 +824,9 @@ static int node_info(int fd, unsigned int nodenum)
 		bbs_dprintf(fd, BBS_FMT_S, title,fallback); \
 	}
 
-	lwp = bbs_pthread_tid(n->thread);
-
 	pthread_mutex_lock(&n->lock);
 	bbs_dprintf(fd, BBS_FMT_D, "#", n->id);
+	bbs_dprintf(fd, BBS_FMT_D, "Lifetime #", n->lifetimeid);
 	bbs_dprintf(fd, BBS_FMT_S, "Protocol", n->protname);
 	bbs_dprintf(fd, BBS_FMT_S, "IP Address", n->ip);
 	bbs_dprintf(fd, BBS_FMT_S, "Connected", connecttime);
@@ -842,9 +839,8 @@ static int node_info(int fd, unsigned int nodenum)
 	bbs_dprintf(fd, BBS_FMT_D, "Node PTY Master FD", n->amaster);
 	bbs_dprintf(fd, BBS_FMT_D, "Node PTY Slave FD", n->slavefd);
 	bbs_dprintf(fd, BBS_FMT_S, "Node PTY Slave Name", n->slavename);
-	if (lwp != -1) {
-		bbs_dprintf(fd, BBS_FMT_D, "Node Thread ID", lwp);
-	}
+	bbs_dprintf(fd, BBS_FMT_D, "Node PTY Thread ID", bbs_pthread_tid(n->ptythread));
+	bbs_dprintf(fd, BBS_FMT_D, "Node Thread ID", bbs_pthread_tid(n->thread));
 	bbs_dprintf(fd, BBS_FMT_S, "User", bbs_username(n->user));
 	if (bbs_user_is_guest(n->user)) {
 		bbs_dprintf(fd, BBS_FMT_S, "Guest Name/Alias",  S_IF(n->user->guestname));
@@ -1403,8 +1399,15 @@ void bbs_node_begin(struct bbs_node *node)
 	bbs_auth("New %s connection to node %d from %s:%u\n", node->protname, node->id, node->ip, node->rport);
 }
 
+void bbs_node_net_begin(struct bbs_node *node)
+{
+	node->thread = pthread_self();
+	bbs_node_begin(node);
+}
+
 void bbs_node_exit(struct bbs_node *node)
 {
+	bbs_debug(3, "Node %d has ended its %s session\n", node->id, node->protname);
 	if (node->active) {
 		/* User quit: unlink and free */
 		bbs_node_unlink(node);

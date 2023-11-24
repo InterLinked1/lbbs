@@ -245,9 +245,7 @@ static void *ftp_handler(void *varg)
 	struct ftp_session ftpstack, *ftp;
 	SSL *ssl = NULL, *ssl2 = NULL;
 
-	/* This thread is running instead of the normal node handler thread */
-	/* Remember, no pseudoterminal is allocated for this node! Can NOT use normal bbs_ I/O functions. */
-	bbs_node_begin(node);
+	bbs_node_net_begin(node);
 
 	if (bbs_get_local_ip(our_ip, sizeof(our_ip))) { /* Determine it just once, now */
 		goto cleanup;

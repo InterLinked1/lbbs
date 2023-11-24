@@ -47,9 +47,7 @@ static void *finger_handler(void *varg)
 	int verbose = 0;
 	ssize_t res;
 
-	/* This thread is running instead of the normal node handler thread */
-	/* Remember, no pseudoterminal is allocated for this node! Can NOT use normal bbs_ I/O functions. */
-	bbs_node_begin(node);
+	bbs_node_net_begin(node);
 
 	/* A RUIP (Remote User Information Program) client has connected to us.
 	 * Note that the GNU finger client doesn't seem to work for me but the Windows one does. Go figure.

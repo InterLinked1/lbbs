@@ -497,8 +497,7 @@ static void *__sieve_handler(void *varg)
 #endif
 	struct sieve_session sieve;
 
-	node->thread = pthread_self();
-	bbs_node_begin(node);
+	bbs_node_net_begin(node);
 
 	memset(&sieve, 0, sizeof(sieve));
 	sieve.rfd = sieve.wfd = node->fd;
@@ -516,8 +515,7 @@ static void *__sieve_handler(void *varg)
 #endif
 	sieve_cleanup(&sieve);
 
-	bbs_debug(3, "Node %d has ended its %s session\n", node->id, node->protname);
-	bbs_node_exit(node); /* node is no longer a valid reference */
+	bbs_node_exit(node);
 	return NULL;
 }
 

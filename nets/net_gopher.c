@@ -68,9 +68,7 @@ static void *gopher_handler(void *varg)
 	struct stat st;
 	ssize_t res;
 
-	/* This thread is running instead of the normal node handler thread */
-	/* Remember, no pseudoterminal is allocated for this node! Can NOT use normal bbs_ I/O functions. */
-	bbs_node_begin(node);
+	bbs_node_net_begin(node);
 
 	/* This is not buffered since there's no pseudoterminal. */
 	res = bbs_poll_read(node->fd, 1000, buf, sizeof(buf) - 1); /* Read the retrieval/selector string from the client */

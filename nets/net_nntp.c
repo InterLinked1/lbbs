@@ -1303,13 +1303,9 @@ static void *__nntp_handler(void *varg)
 {
 	struct bbs_node *node = varg;
 
-	node->thread = pthread_self();
-	bbs_node_begin(node);
-
+	bbs_node_net_begin(node);
 	nntp_handler(node, !strcmp(node->protname, "NNTPS"), !strcmp(node->protname, "NNSP") ? NNTP_MODE_TRANSIT: NNTP_MODE_READER);
-
-	bbs_debug(3, "Node %d has ended its %s session\n", node->id, node->protname);
-	bbs_node_exit(node); /* node is no longer a valid reference */
+	bbs_node_exit(node);
 	return NULL;
 }
 

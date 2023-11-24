@@ -227,6 +227,8 @@ static void *telnets_handler(void *varg)
 
 	if (!telnet_handshake(node)) {
 		bbs_node_handler(node); /* Run the normal node handler */
+	} else {
+		bbs_node_exit(node); /* Manual cleanup */
 	}
 
 	ssl_close(ssl);

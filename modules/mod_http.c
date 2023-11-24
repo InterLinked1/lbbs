@@ -2651,13 +2651,9 @@ static void *__http_handler(void *varg)
 {
 	struct bbs_node *node = varg;
 
-	node->thread = pthread_self();
-	bbs_node_begin(node);
-
+	bbs_node_net_begin(node);
 	http_handler(node, !strcmp(node->protname, "HTTPS") ? 1 : 0); /* Actually handle the HTTP/HTTPS client */
-
-	bbs_debug(3, "Node %d has ended its %s session\n", node->id, node->protname);
-	bbs_node_exit(node); /* node is no longer a valid reference */
+	bbs_node_exit(node);
 	return NULL;
 }
 

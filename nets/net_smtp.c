@@ -2646,14 +2646,11 @@ static void *__smtp_handler(void *varg)
 	struct bbs_node *node = varg;
 	int secure = !strcmp(node->protname, "SMTPS") ? 1 : 0;
 
-	node->thread = pthread_self();
-	bbs_node_begin(node);
+	bbs_node_net_begin(node);
 
 	/* If it's secure, it's for message submission agent, MTAs are never secure by default. */
 	smtp_handler(node, secure || !strcmp(node->protname, "SMTP (MSA)"), secure); /* Actually handle the SMTP/SMTPS/message submission agent client */
-
-	bbs_debug(3, "Node %d has ended its %s session\n", node->id, node->protname);
-	bbs_node_exit(node); /* node is no longer a valid reference */
+	bbs_node_exit(node);
 	return NULL;
 }
 
