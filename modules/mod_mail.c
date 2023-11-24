@@ -210,8 +210,7 @@ const char *mailbox_event_type_name(enum mailbox_event_type type)
 			return "UIDVALIDITYChange";
 		/* No default case */
 	}
-	bbs_assert(0);
-	return NULL;
+	__builtin_unreachable();
 }
 
 static pthread_mutex_t eventidlock = PTHREAD_MUTEX_INITIALIZER;

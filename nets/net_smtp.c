@@ -621,7 +621,7 @@ static int handle_auth(struct smtp_session *smtp, char *s)
 		free(pass);
 		goto logindone;
 	} else {
-		bbs_assert(0);
+		__builtin_unreachable();
 	}
 	return 0;
 
@@ -1005,8 +1005,7 @@ static const char *smtp_filter_type_name(enum smtp_filter_type type)
 		case SMTP_FILTER_PREPEND: return "PREPEND";
 		/* No default */
 	}
-	bbs_assert(0);
-	return NULL;
+	__builtin_unreachable();
 }
 
 int __smtp_filter_register(struct smtp_filter_provider *provider, enum smtp_filter_type type, enum smtp_filter_scope scope, enum smtp_direction dir, int priority, void *mod)
@@ -1417,8 +1416,7 @@ static const char *delivery_action_name(enum smtp_delivery_action action)
 		case DELIVERY_EXPANDED: return "expanded";
 		/* No default */
 	}
-	bbs_assert(0);
-	return NULL;
+	__builtin_unreachable();
 }
 
 static const char *delivery_subject_name(struct smtp_delivery_outcome **f, int n)
@@ -1436,8 +1434,7 @@ static const char *delivery_subject_name(struct smtp_delivery_outcome **f, int n
 		case DELIVERY_EXPANDED: return "Delivery Status Notification (Expanded)";
 		/* No default */
 	}
-	bbs_assert(0);
-	return NULL;
+	__builtin_unreachable();
 }
 
 /* Forward declaration */

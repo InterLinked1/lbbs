@@ -231,8 +231,7 @@ static const char *status_str(enum user_status status)
 		case STATUS_NONE:
 			return "none";
 	}
-	bbs_assert(0);
-	return NULL;
+	__builtin_unreachable();
 }
 
 static void remove_user(struct discord_user *user)

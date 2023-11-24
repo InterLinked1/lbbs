@@ -71,8 +71,7 @@ static const char *loglevel2str(enum bbs_log_level level)
 		default:
 			break;
 	}
-	assert(0);
-	return NULL;
+	__builtin_unreachable();
 }
 
 /*! \brief Minimal implementation of __bbs_log, so we can use the same interface */

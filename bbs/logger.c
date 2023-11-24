@@ -273,8 +273,7 @@ static const char *loglevel2str(enum bbs_log_level level, int term)
 		case LOG_DEBUG:
 			return COLOR_LOG_OR("  DEBUG", COLOR_GREEN, term);
 	}
-	bbs_assert(0);
-	return NULL;
+	__builtin_unreachable();
 }
 
 static const char *verbose_prefix(int level)
@@ -301,7 +300,7 @@ static const char *verbose_prefix(int level)
 		default:
 			bbs_assert(0);
 	}
-	return NULL;
+	__builtin_unreachable();
 }
 
 #define log_puts(msg) fprintf(logfp, "%s", msg); fflush(logfp);

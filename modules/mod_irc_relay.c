@@ -955,7 +955,7 @@ static void command_cb(const char *clientname, enum irc_callback_msg_type type, 
 			}
 			break;
 		case CMD_QUIT: /* This is academic, as QUIT is handled above */
-			bbs_assert(0);
+			__builtin_unreachable();
 #if 0
 			ourchan = MAP1_MATCH(cp, clientname, channel) ? cp->channel2 : cp->channel1;
 			snprintf(sysmsg, sizeof(sysmsg), ":%s/%s QUIT :%s", clientname, prefix, S_IF(msg));
