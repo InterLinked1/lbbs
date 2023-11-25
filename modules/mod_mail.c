@@ -465,7 +465,6 @@ static const char *resolve_alias(const char *user, const char *domain)
 		 * We allow all other matches to be made case-sensitively. */
 		if (!strcmp(alias->aliasuser, user) || (!strcmp(alias->aliasuser, "postmaster") && !strcasecmp(user, "postmaster"))) {
 			/* Unqualified match, or domain must match */
-			bbs_debug(7, "Analyzing: %s @ %s / %s @ %s\n", user, domain, alias->aliasuser, alias->aliasdomain);
 			if (!alias->aliasdomain || (domain && !strcmp(alias->aliasdomain, domain))) {
 				retval = alias->target; /* Safe to return in practice since aliases cannot be unloaded while the module is running */
 				break;

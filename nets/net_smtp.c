@@ -1201,6 +1201,7 @@ static const char *smtp_filter_direction_name(enum smtp_direction dir)
 void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 {
 	struct smtp_filter *f;
+	int total = 0, run = 0;
 	enum smtp_filter_scope scope = fdata->recipient ? SMTP_SCOPE_INDIVIDUAL : SMTP_SCOPE_COMBINED;
 
 	if (!fdata->smtp) {
@@ -1218,6 +1219,7 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 	RWLIST_RDLOCK(&filters);
 	RWLIST_TRAVERSE(&filters, f, entry) {
 		int res = 0;
+		total++;
 		if (!(f->direction & fdata->dir)) {
 			bbs_debug(5, "Ignoring %s SMTP filter %s %p (wrong direction)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
 			continue;
@@ -1242,15 +1244,21 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 			}
 		}
 		if (fdata->dir == SMTP_DIRECTION_IN && !fdata->node) {
-			/* Something like a Delivery Status Notification or other injected mail without a node... filters don't apply anyways. */
-			continue;
+			/* Something like a Delivery Status Notification or other injected mail without a node... filters don't apply anyways.
+			 * Unless, it's simply adding the Received header, in which case, still do it,
+			 * for things like mailing lists which involve using smtp_inject. */
+			if (f->priority != 0) {
+				bbs_debug(5, "Ignoring %s SMTP filter %s %p (no node)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+				continue;
+			}
 		}
 		/* Filter applicable to scope */
-		bbs_debug(5, "Executing %s SMTP filter %s %p...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+		bbs_debug(4, "Executing %s SMTP filter %s %p...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
 		bbs_module_ref(f->mod, 2);
 		if (f->type == SMTP_FILTER_PREPEND) {
 			bbs_assert_exists(f->provider);
 			res = f->provider->on_body(fdata);
+			run++;
 		} else {
 			bbs_error("Filter type %d not supported\n", f->type);
 		}
@@ -1264,6 +1272,8 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 		}
 	}
 	RWLIST_UNLOCK(&filters);
+
+	bbs_debug(6, "Ran %d/%d filter%s (skipped %d)\n", run, total, ESS(total), total - run);
 
 	free_if(fdata->body);
 	free_if(fdata->spf);
@@ -1827,6 +1837,8 @@ int smtp_inject(const char *mailfrom, struct stringlist *recipients, const char 
 	smtp.datafile = filename;
 
 	memcpy(&smtp.recipients, recipients, sizeof(smtp.recipients));
+
+	bbs_debug(5, "Injecting SMTP message MAILFROM <%s>, file: %s, size %lu\n", S_IF(mailfrom), filename, length);
 
 	res = expand_and_deliver(&smtp, filename, length);
 	/* Since these are normally consumed, there is no guarantee to the caller what will be leftover here, so just clean up */

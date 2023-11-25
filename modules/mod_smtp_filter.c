@@ -42,11 +42,17 @@ static int prepend_received(struct smtp_filter_data *f)
 			f->from, bbs_hostname(), prot, f->recipient, timestamp);
 	} else {
 		char hostname[256];
-		bbs_get_hostname(f->node->ip, hostname, sizeof(hostname)); /* Look up the sending IP */
+		/* We allow for running this filter even without a node (e.g. for injected mail, such as mailing list posts). */
+		if (f->node) {
+			bbs_get_hostname(f->node->ip, hostname, sizeof(hostname)); /* Look up the sending IP */
+		}
 		/* The first hostname is the HELO/EHLO hostname.
 		 * The second one is the reverse DNS hostname */
 		smtp_filter_write(f, "Received: from %s (%s [%s])\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
-			f->helohost, hostname, f->node->ip, bbs_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
+			S_OR(f->helohost, "localhost"),
+			f->node ? hostname : "localhost",
+			f->node ? f->node->ip : "127.0.0.1",
+			bbs_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
 	}
 	return 0;
 }
@@ -130,7 +136,7 @@ struct smtp_filter_provider auth_filter = {
 
 static int load_module(void)
 {
-	smtp_filter_register(&builtin_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_INDIVIDUAL, SMTP_DIRECTION_IN | SMTP_DIRECTION_SUBMIT, 1);
+	smtp_filter_register(&builtin_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_INDIVIDUAL, SMTP_DIRECTION_IN | SMTP_DIRECTION_SUBMIT, 0);
 	smtp_filter_register(&relay_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_OUT, 1); /* For messages that are being relayed */
 	/* Run this only after the SPF, DKIM, and DMARC filters have run: */
 	smtp_filter_register(&auth_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 5);

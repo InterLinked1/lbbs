@@ -349,8 +349,11 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 			}
 			/* The RFC says no line should be more than 1,000 octets (bytes).
 			 * Most clients will wrap at 72 characters, but we shouldn't rely on this. */
+#define MAX_HEADER_NAME_LENGTH 72
 			while ((fgets(linebuf, sizeof(linebuf), fp))) {
-				char headername[64];
+				/* I have seen headers as crazy long as this:
+				 * X-MS-Exchange-CrossTenant-OriginalAttributedTenantConnectingIp */
+				char headername[MAX_HEADER_NAME_LENGTH];
 				/* fgets does store the newline, so line should end in CR LF */
 				if (!strcmp(linebuf, "\r\n") || !strcmp(linebuf, "\n")) { /* Some messages include only a LF at end of headers? */
 					break; /* End of headers */
@@ -360,7 +363,7 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 					continue;
 				}
 				headername[0] = ':';
-				safe_strncpy(headername + 1, linebuf, sizeof(headername) - 1); /* Don't copy the whole line. XXX This assumes that no header name is longer than 64 chars. */
+				safe_strncpy(headername + 1, linebuf, sizeof(headername) - 1); /* Don't copy the whole line. XXX This assumes that no header name is longer than MAX_HEADER_NAME_LENGTH chars. */
 				tmp = strchr(headername + 1, ':');
 				if (!tmp) {
 					bbs_warning("Unexpected end of headers: %s\n", linebuf);

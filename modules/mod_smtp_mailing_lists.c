@@ -441,7 +441,7 @@ static int list_post_message(struct mailing_list *l, const char *msgfile, size_t
 			stringlist_push(&external, full);
 			safe_strncpy(replaced, s, sizeof(replaced));
 			bbs_strreplace(replaced, '@', '=');
-			snprintf(mailfrom, sizeof(mailfrom), "%s@%s+bounce=%s", l->user, S_OR(l->domain, bbs_hostname()), replaced); /* No <> */
+			snprintf(mailfrom, sizeof(mailfrom), "%s+bounce=%s@%s", l->user, replaced, S_OR(l->domain, bbs_hostname())); /* No <> */
 			smtp_inject(mailfrom, &external, msgfile, msglen); /* Deliver to the external recipient */
 			extcount++;
 		}
@@ -449,7 +449,7 @@ static int list_post_message(struct mailing_list *l, const char *msgfile, size_t
 
 	/* If there are any local recipients, deliver to them all at once */
 	if (localcount) {
-		snprintf(mailfrom, sizeof(mailfrom), "%s@%s+bounce", l->user, S_OR(l->domain, bbs_hostname())); /* No <> */
+		snprintf(mailfrom, sizeof(mailfrom), "%s+bounce@%s", l->user, S_OR(l->domain, bbs_hostname())); /* No <> */
 		smtp_inject(mailfrom, &local, msgfile, msglen);
 	}
 

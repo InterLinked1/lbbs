@@ -35,9 +35,10 @@
 #include <libetpan/libetpan.h>
 
 #define IDLE_REFRESH_EXISTS (1 << 0)
-#define IDLE_REFRESH_EXPUNGE (1 << 1)
-#define IDLE_REFRESH_FETCH (1 << 2)
-#define IDLE_REFRESH_STATUS (1 << 3)
+#define IDLE_REFRESH_RECENT (1 << 1)
+#define IDLE_REFRESH_EXPUNGE (1 << 2)
+#define IDLE_REFRESH_FETCH (1 << 3)
+#define IDLE_REFRESH_STATUS (1 << 4)
 
 struct imap_client {
 	struct mailimap *imap;
@@ -1466,7 +1467,7 @@ static int mailimap_search_sort_fuller(mailimap *session, const char *sortkey, c
 
 	/* XXX mailimap_send_crlf and mailimap_send_custom_command aren't public */
 	if (sortkey) {
-		cmdlen = (size_t) snprintf(cmd, sizeof(cmd), "SORT (%s) UTF-8 %s\r\n", sortkey, searchkey);
+		cmdlen = (size_t) snprintf(cmd, sizeof(cmd), "SORT (%s) UTF-8 %s\r\n", sortkey, S_OR(searchkey, "ALL"));
 	} else {
 		cmdlen = (size_t) snprintf(cmd, sizeof(cmd), "SEARCH %s\r\n", searchkey);
 	}
@@ -3154,6 +3155,10 @@ static int process_idle(struct imap_client *client, char *s)
 			uint32_t previewseqno = (uint32_t) seqno;
 			client->messages = previewseqno; /* Update number of messages in this mailbox */
 			client->idlerefresh |= IDLE_REFRESH_EXISTS;
+		} else if (STARTS_WITH(tmp, "RECENT")) {
+			/* RECENT is basically always accompanied by EXISTS, so this is almost academic,
+			 * since we don't currently use this flag for anything, but for sake of completeness: */
+			client->idlerefresh |= IDLE_REFRESH_RECENT;
 		} else if (STARTS_WITH(tmp, "EXPUNGE")) {
 			if (client->messages) {
 				client->messages--; /* Assume we lost one */
@@ -3175,7 +3180,7 @@ static int process_idle(struct imap_client *client, char *s)
 				bbs_debug(6, "Ignoring FETCH update since not visible on current page\n");
 			}
 		} else {
-			bbs_debug(3, "Ignoring IDLE data: %s\n", s);
+			bbs_debug(3, "Ignoring IDLE data: %s", s); /* Already ends in LF */
 		}
 	}
 	return 0;
