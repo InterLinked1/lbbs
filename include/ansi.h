@@ -20,5 +20,6 @@
  * \param out Buffer in which the stripped string will be placed
  * \param outlen Size of out. Should be at least inlen, but no more than it.
  * \param strippedlen Will be set to the actual length of the stripped output, not including null terminator.
+ * \retval 0 on success, -1 on failure
  */
 int bbs_ansi_strip(const char *restrict in, size_t inlen, char *restrict out, size_t outlen, int *restrict strippedlen);

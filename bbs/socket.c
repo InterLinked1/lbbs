@@ -2124,7 +2124,6 @@ static int bbs_node_ansi_write(struct bbs_node *node, const char *restrict buf, 
 ssize_t bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
 {
 	struct pollfd pfd;
-	size_t left = len;
 	ssize_t res;
 
 #ifdef DETECT_IMPROPER_NODE_WRITES
@@ -2147,28 +2146,27 @@ ssize_t bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
 	/* So helgrind doesn't complain about data race if node is shut down
 	 * and slavefd closed during write */
 	bbs_node_lock(node);
-	res = full_write(&pfd, node->slavefd, buf, left);
+	res = full_write(&pfd, node->slavefd, buf, len);
 	if (res <= 0 || res != (ssize_t) len) {
 		bbs_debug(5, "Node %d: write returned %lu/%lu\n", node->id, res, len);
 	}
 	bbs_node_unlock(node);
-	return (int) res;
+	return res;
 }
 
 ssize_t bbs_write(int fd, const char *buf, size_t len)
 {
 	struct pollfd pfd;
-	size_t left = len;
 	ssize_t res;
 
 	pfd.fd = fd;
 	pfd.events = POLLOUT;
 
-	res = full_write(&pfd, fd, buf, left);
+	res = full_write(&pfd, fd, buf, len);
 	if (res <= 0) {
 		bbs_debug(5, "fd %d: write returned %ld: %s\n", fd, res, res ? strerror(errno) : "");
 	}
-	return (int) res;
+	return res;
 }
 
 ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)

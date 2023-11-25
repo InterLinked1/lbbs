@@ -707,6 +707,12 @@ gotinput:
 				writebuf[bytes_read] = '\0'; /* NUL terminate for bbs_ansi_strip */
 				/*! \todo XXX This should always get smaller... so couldn't this be done in place? */
 				if (!bbs_ansi_strip(writebuf, (size_t) bytes_read, strippedbuf, sizeof(strippedbuf), &strippedlen)) {
+					if (strippedlen == 0) {
+						bbs_debug(9, "Reduced all %lu bytes to nothing after stripping escape sequences\n", bytes_read);
+						/* There is nothing to write, don't even bother calling bbs_write,
+						 * since we shouldn't call write with 0 bytes. */
+						continue;
+					}
 					bytes_read = strippedlen;
 					relaybuf = strippedbuf;
 				} /* else, failed to strip, just write the original data (possibly containing ANSI escape sequences) */
