@@ -218,8 +218,12 @@ static int save_remote_ip(ssh_session session, struct bbs_node *node, char *buf,
 	socklen_t socklen = sizeof(tmp);
 
 	sfd = ssh_get_fd(session); /* Get fd of the connection */
+	if (sfd < 0) {
+		bbs_error("No file descriptor available for SSH session\n");
+		return -1;
+	}
 	if (getpeername(sfd, &tmp, &socklen)) {
-		bbs_error("getpeername: %s\n", strerror(errno));
+		bbs_error("getpeername(%d): %s\n", sfd, strerror(errno));
 		return -1;
 	}
 
@@ -277,16 +281,15 @@ static void auth_fail(ssh_session session, const char *username)
 	bbs_event_broadcast(&event);
 }
 
-static void request_fail(ssh_session session, enum bbs_event_type type)
+static void request_fail(const char *ip, enum bbs_event_type type)
 {
 	struct bbs_event event;
 
 	/* Don't have a node, so need to dispatch manually */
 	memset(&event, 0, sizeof(event));
 	event.type = type;
-	if (!save_remote_ip(session, NULL, event.ipaddr, sizeof(event.ipaddr))) {
-		bbs_event_broadcast(&event);
-	}
+	safe_strncpy(event.ipaddr, ip, sizeof(event.ipaddr));
+	bbs_event_broadcast(&event);
 }
 
 #ifdef ALLOW_ANON_AUTH
@@ -731,8 +734,10 @@ static void handle_session(ssh_event event, ssh_session session)
 	 * The timeout above is to address that. */
 
 	if (ssh_handle_key_exchange(session) != SSH_OK) {
-		bbs_error("%s\n", ssh_get_error(session));
-		request_fail(session, EVENT_NODE_ENCRYPTION_FAILED);
+		/* This isn't our fault, it's the clients, and since this is typical of
+		 * spammy connections, log it as a debug message. */
+		bbs_debug(1, "Fatal key exchange error: %s\n", ssh_get_error(session));
+		request_fail(ipaddr, EVENT_NODE_ENCRYPTION_FAILED);
 		return;
 	}
 	if (ssh_event_add_session(event, session) != SSH_OK) {
@@ -751,9 +756,9 @@ static void handle_session(ssh_event event, ssh_session session)
 
 		if (ssh_event_dopoll(event, 100) == SSH_ERROR) {
 			/* If client disconnects during login stage, this could happen.
-			 * Hence, it's a warning, not an error, as it's not our fault. */
-			bbs_warning("%s\n", ssh_get_error(session));
-			request_fail(session, EVENT_NODE_BAD_REQUEST);
+			 * Hence, it's not an error, as it's not our fault. */
+			bbs_debug(1, "%s\n", ssh_get_error(session));
+			request_fail(ipaddr, EVENT_NODE_BAD_REQUEST);
 			return;
 		}
 	}
