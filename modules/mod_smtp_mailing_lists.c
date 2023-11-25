@@ -194,8 +194,8 @@ static int add_list_headers(struct mailing_list *l, FILE *fp, const char *from)
 
 	/* Many RFC 2369 headers */
 	fprintf(fp, "List-Id: <%s@%s>\r\n", l->user, rdomain); /* RFC 2919; "" for groups.io and Yahoo Groups; mailman does "list name" <reflector> */
-	fprintf(fp, "List-Subscribe: <%s+%s@%s\r\n", l->user, "subscribe", rdomain); /* groups.io uses +subscribe, mailman uses -request ...?subject=subscribe */
-	fprintf(fp, "List-Unsubscribe: <mailto:%s+%s@%sunsubscribe>\r\n", l->user, "unsubscribe", rdomain);
+	fprintf(fp, "List-Subscribe: <%s+%s@%s>\r\n", l->user, "subscribe", rdomain); /* groups.io uses +subscribe, mailman uses -request ...?subject=subscribe */
+	fprintf(fp, "List-Unsubscribe: <mailto:%s+%s@%s>\r\n", l->user, "unsubscribe", rdomain);
 	/* Skip List-Archive header, this isn't accessible to users */
 	fprintf(fp, "List-Post: <mailto:%s@%s>\r\n", l->user, rdomain); /* mailman includes this */
 	fprintf(fp, "List-Help: <mailto:%s+%s@%s>\r\n", l->user, "help", rdomain); /* groups.io uses +help, mailman uses -request ...?subject=help */
@@ -336,6 +336,34 @@ static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp,
 	return 0;
 }
 
+/*! \brief Whether delivery to this recipient is local (as opposed to external) */
+static int deliver_locally(const char *addr)
+{
+	int local;
+	char address[256];
+	char *user, *domain;
+
+	if (!strchr(addr, '@')) {
+		/* If there's no domain, it must be local, we can't route it anywhere else */
+		return 1;
+	}
+
+	if ((size_t) snprintf(address, sizeof(address), "<%s>", addr) >= sizeof(address)) {
+		/* If buffer truncation occurs, it's not one of our addresses since we don't allow stuff this long */
+		return 0;
+	}
+
+	if (bbs_parse_email_address(address, NULL, &user, &domain)) {
+		return 0; /* Fail safe to "NO" since there must not be false positives */
+	}
+	local = mail_domain_is_local(domain);
+	/* Don't actually need to call mailbox_get_by_name here,
+	 * knowing if the domain is local or not is enough to know
+	 * if this recipient is local or external, which is all that matters.
+	 * We don't care, at this point, whether or not this recipient actually exists. */
+	return local;
+}
+
 static int list_post_message(struct mailing_list *l, const char *msgfile, size_t msglen)
 {
 	const char *s;
@@ -385,7 +413,13 @@ static int list_post_message(struct mailing_list *l, const char *msgfile, size_t
 				bbs_error("Failed to fetch user list\n");
 			}
 			/* Don't break from the loop just yet: list may contain external users too (in other words, may expand to more than just '*') */
-		} else if (!strchr(s, '@')) {
+		} else if (deliver_locally(s)) {
+			/* deliver_locally should be comprehensive.
+			 * It's important to catch all local recipients here,
+			 * because we want to weed out duplicates (e.g. if a recipient
+			 * is specified multiple times, or different addresses resolve
+			 * to the same catch-all address). Any given mailbox only
+			 * needs to receive one copy of this message from this transaction. */
 			snprintf(full, sizeof(full), "<%s>", s);
 			if (!stringlist_contains(&local, full)) {
 				stringlist_push(&local, full);
@@ -394,11 +428,16 @@ static int list_post_message(struct mailing_list *l, const char *msgfile, size_t
 			manuallocalcount++;
 		} else {
 			/* This won't block since external mail is queued and delivered in a separate thread.
-			 * Easier to do it now so we don't have to have another intermediate step of saving the external addresses. */
+			 * Easier to do it now so we don't have to have another intermediate step of saving the external addresses,
+			 * and we have to use a unique bounce address for each delivery anyways.
+			 */
 			struct stringlist external;
 			char replaced[256];
 			memset(&external, 0, sizeof(external));
 			snprintf(full, sizeof(full), "<%s>", s);
+			if (stringlist_contains(&external, full)) {
+				continue;
+			}
 			stringlist_push(&external, full);
 			safe_strncpy(replaced, s, sizeof(replaced));
 			bbs_strreplace(replaced, '@', '=');

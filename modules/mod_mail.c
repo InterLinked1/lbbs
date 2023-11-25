@@ -477,7 +477,7 @@ static const char *resolve_alias(const char *user, const char *domain)
 }
 
 /*! \note domain must be initialized to NULL before calling this function */
-static void parse_user_domain(char *buf, size_t len, const char *address, char **user, char **domain)
+static void parse_user_domain(char *restrict buf, size_t len, const char *restrict address, char **restrict user, char **restrict domain)
 {
 	safe_strncpy(buf, address, len);
 	*user = buf;
@@ -485,6 +485,9 @@ static void parse_user_domain(char *buf, size_t len, const char *address, char *
 #pragma GCC diagnostic ignored "-Wcast-qual"
 	*domain = (char*) bbs_strcnext(buf, '@');
 #pragma GCC diagnostic pop
+	if (*domain && *domain > *user) {
+		*(*domain - 1) = '\0';
+	}
 }
 
 static void add_alias(const char *aliasname, const char *target)
@@ -637,7 +640,7 @@ static struct mailbox *mailbox_get(unsigned int userid, const char *user, const 
 		}
 	}
 
-	/* If we had a user ID or were able to translate the name to one, lookup the mailbox by user ID. */
+	/* If we had a user ID or were able to translate the name to one, look up the mailbox by user ID. */
 	if (userid) {
 		bbs_debug(5, "Found mailbox mapping via username directly\n");
 		mbox = mailbox_find_or_create(userid, NULL);

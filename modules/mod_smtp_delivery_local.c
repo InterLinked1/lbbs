@@ -38,12 +38,13 @@ static int notify_external_firstmsg = 1;
 static int exists(struct smtp_session *smtp, struct smtp_response *resp, const char *address, const char *user, const char *domain, int fromlocal, int tolocal)
 {
 	struct mailbox *mbox;
-	if (!tolocal) {
-		return 0;
-	}
 
 	UNUSED(smtp);
 	UNUSED(address);
+
+	if (!tolocal) {
+		return 0;
+	}
 
 	mbox = mailbox_get_by_name(user, domain);
 	if (!mbox) {
