@@ -3113,6 +3113,20 @@ static int process_idle(struct imap_client *client, char *s)
 	webmail_log(3, client, "<= %s\n", s);
 
 	if (!STARTS_WITH(s, "* ")) {
+		/* Maybe it's a tagged response terminating the IDLE command? */
+		const char *next = bbs_strcnext(s, ' '); /* Skip the tag, assuming that's what it is */
+		if (STARTS_WITH(next, "NO ") || STARTS_WITH(next, "OK ")) { /* Done this way instead of strsep to leave original message intact */
+			next += 3;
+			if (!strlen_zero(next)) {
+				/* Maybe it's an [ALERT] or something like that.
+				 * Should display to the user. */
+				bbs_strterm(s, '\n');
+				bbs_debug(5, "Interesting IDLE response... '%s'\n", next);
+				client_set_status(client->ws, "%s", next);
+				/* on_poll_activity will start IDLE again */
+				return 0;
+			}
+		}
 		bbs_warning("Unexpected IDLE response (not untagged): %s\n", s);
 		return -1;
 	}
@@ -3393,6 +3407,7 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 		if (client_imap_select(ws, client, client->imap, json_object_string_value(root, "folder"))) {
 			goto cleanup;
 		}
+		client_set_status(ws, "%s", ""); /* Clear any previous status message */
 		/* Send an unsolicited list of messages (implicitly fetch the first page). */
 		res = handle_fetchlist(ws, client, command, 1, json_object_int_value(root, "pagesize"), json_object_string_value(root, "sort"), json_object_string_value(root, "filter"));
 	} else if (!strcmp(command, "FETCHLIST")) {

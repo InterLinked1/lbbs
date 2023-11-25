@@ -245,7 +245,7 @@ static int cli_imap_sessions(struct bbs_cli_args *a)
 {
 	struct imap_session *imap;
 
-	bbs_dprintf(a->fdout, "%4s %-25s %-25s %7s %s\n", "Node", "Current Mailbox", "Current Folder", "Proxied", "Client ID");
+	bbs_dprintf(a->fdout, "%4s %-25s %-25s %4s %7s %s\n", "Node", "Current Mailbox", "Current Folder", "Idle", "Proxied", "Client ID");
 	RWLIST_RDLOCK(&sessions);
 	RWLIST_TRAVERSE(&sessions, imap, entry) {
 		char mbox_buf[32];
@@ -257,8 +257,8 @@ static int cli_imap_sessions(struct bbs_cli_args *a)
 				mbox_name = mbox_buf;
 			}
 		}
-		bbs_dprintf(a->fdout, "%4u %-25s %-25s %7s %s\n",
-			imap->node->id, S_IF(mbox_name), S_IF(imap->folder), imap->client ? "Yes" : "No", S_IF(imap->clientid));
+		bbs_dprintf(a->fdout, "%4u %-25s %-25s %4s %7s %s\n",
+			imap->node->id, S_IF(mbox_name), S_IF(imap->folder), BBS_YN(imap->idle), imap->client ? "Yes" : "No", S_IF(imap->clientid));
 	}
 	RWLIST_UNLOCK(&sessions);
 	return 0;
@@ -4829,10 +4829,18 @@ static int alertmsg(unsigned int userid, const char *msg)
 			/* Untested: Trojita */
 		}
 
-		s->alerted = 1;
 		/* Do not send a random untagged EXISTS, e.g. * EXISTS 999999, or that will cause ~Thunderbird to ignore the ALERT */
-		_imap_reply_nolock(s, "%s NO [ALERT] %s\r\n", s->savedtag, msg); /* Use tag from IDLE request. This must be a NO, not an OK. */
-		s->idle = 0; /* Since we sent a tagged reply, the IDLE is technically terminated now. */
+		__imap_parallel_reply(s, "%s NO [ALERT] %s\r\n", s->savedtag, msg); /* Use tag from IDLE request. This must be a NO, not an OK. */
+		if (!strlen_zero(s->clientid) && strstr(s->clientid, "wssmail")) {
+			/* libetpan doesn't seem to care about IDLE replies that aren't a response to a command it sent.
+			 * So we can ignore this and continue on idling. */
+			/* s->idle remains 1, s->alerted remains 0 */
+		} else {
+			s->idle = 0; /* Since we sent a tagged reply, the IDLE is technically terminated now. */
+			/* We only seem to be able to send an alert once for most clients.
+			 * If we're just it's not an issue, then we don't set this flag. */
+			s->alerted = 1;
+		}
 		res = 0;
 		pthread_mutex_unlock(&s->lock);
 	}
