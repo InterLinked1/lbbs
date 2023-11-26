@@ -29,6 +29,7 @@
 #include "include/utils.h"
 #include "include/json.h"
 #include "include/base64.h"
+#include "include/cli.h"
 
 #include "include/net_ws.h"
 
@@ -69,6 +70,17 @@ struct imap_client {
 	char *sort;
 	char *filter;
 };
+
+/* Additional data structure to keep track of
+ * webmail clients in a linked list, since
+ * these are really opaque data structures
+ * that technically belong to net_ws. */
+struct webmail_session {
+	struct imap_client *client;
+	RWLIST_ENTRY(webmail_session) entry;
+};
+
+static RWLIST_HEAD_STATIC(sessions, webmail_session);
 
 static unsigned int webmail_log_level = 0;
 static FILE *webmail_log_fp = NULL;
@@ -3504,10 +3516,17 @@ cleanup:
 
 static int on_open(struct ws_session *ws)
 {
+	struct webmail_session *s;
 	struct imap_client *client;
+
+	s = calloc(1, sizeof(*client));
+	if (ALLOC_FAILURE(s)) {
+		return -1;
+	}
 
 	client = calloc(1, sizeof(*client)); /* Unfortunately, we can't stack allocate this */
 	if (ALLOC_FAILURE(client)) {
+		free(s);
 		return -1;
 	}
 
@@ -3519,27 +3538,66 @@ static int on_open(struct ws_session *ws)
 	}
 
 	websocket_set_custom_poll_fd(ws, client->imapfd, SEC_MS(60)); /* Give the user a minute to authenticate */
+	s->client = client;
+	RWLIST_WRLOCK(&sessions);
+	RWLIST_INSERT_HEAD(&sessions, s, entry);
+	RWLIST_UNLOCK(&sessions);
 	webmail_log(2, client, "New session established\n");
 	return 0;
 
 done:
+	free(s);
 	FREE(client);
 	return -1;
 }
 
 static int on_close(struct ws_session *ws, void *data)
 {
+	struct webmail_session *s;
 	struct imap_client *client = data;
 
 	idle_stop(ws, client);
 	mailimap_logout(client->imap);
 	mailimap_free(client->imap); /* Must exist, or we would have rejected in on_open */
+
+	RWLIST_WRLOCK(&sessions);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&sessions, s, entry) {
+		if (s->client == client) {
+			RWLIST_REMOVE_CURRENT(entry);
+			free(s);
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(&sessions);
+
 	free_if(client->mailbox);
 	free_if(client->sort);
 	free_if(client->filter);
 	free(client);
 	return 0;
 }
+
+static int cli_webmail_sessions(struct bbs_cli_args *a)
+{
+	struct webmail_session *s;
+	time_t now = time(NULL);
+
+	bbs_dprintf(a->fdout, "%7s %4s %4s %4s %s\n", "IMAP FD", "Auth", "Idle", "Page", "Mailbox");
+	RWLIST_RDLOCK(&sessions);
+	RWLIST_TRAVERSE(&sessions, s, entry) {
+		struct imap_client *c = s->client;
+		/* net_ws doesn't expose the node associated with the ws_session, which is fine,
+		 * but that means we can't display the node ID. */
+		bbs_dprintf(a->fdout, "%7d %4s %4d %4d %s\n", c->imapfd, BBS_YN(c->authenticated), c->idling ? (int) (now - c->idlestart) : -1, c->page, S_IF(c->mailbox));
+	}
+	RWLIST_UNLOCK(&sessions);
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_webmail[] = {
+	BBS_CLI_COMMAND(cli_webmail_sessions, "webmail sessions", 2, "Show connected webmail clients", NULL),
+};
 
 struct ws_callbacks callbacks = {
 	.on_open = on_open,
@@ -3575,11 +3633,20 @@ static int load_module(void)
 	if (load_config()) {
 		return -1;
 	}
-	return websocket_route_register("/webmail", &callbacks);
+	return websocket_route_register("/webmail", &callbacks) || bbs_cli_register_multiple(cli_commands_webmail);
 }
 
 static int unload_module(void)
 {
+	bbs_cli_unregister_multiple(cli_commands_webmail);
+
+	RWLIST_WRLOCK(&sessions);
+	if (!RWLIST_EMPTY(&sessions)) {
+		bbs_error("Webmail sessions still present at module unload?\n");
+		RWLIST_REMOVE_ALL(&sessions, entry, free);
+	}
+	RWLIST_UNLOCK(&sessions);
+
 	if (webmail_log_fp) {
 		fclose(webmail_log_fp);
 	}
