@@ -649,6 +649,12 @@ static void chanserv_set(const char *username, char *msg)
 	setting = strsep(&msg, " ");
 	params = msg;
 
+	if (strlen_zero(setting)) {
+		chanserv_notice(username, "Insufficient parameters for SET.");
+		chanserv_notice(username, "Syntax: SET <#channel> <setting> [parameters]");
+		return;
+	}
+
 	if (!strcasecmp(setting, "ENTRYMSG")) {
 		/* XXX 3 cases:
 		 * The entry message for #channel has been cleared.
