@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h> /* use sockaddr_in */
+#include <net/if.h> /* use ifreq */
 #include <sys/un.h>	/* use struct sockaddr_un */
 #include <arpa/inet.h> /* use inet_ntop */
 #include <netdb.h> /* use getnameinfo */
@@ -120,26 +121,59 @@ int __bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, ui
 	return 0;
 }
 
-int __bbs_make_tcp_socket(int *sock, int port, const char *file, int line, const char *func)
+/*!
+ * \brief Create and bind a TCP or UDP socket to a specific port
+ * \param[out] sock Socket file descriptor
+ * \param rebind Whether to try to force reuse of a particular port if already in use
+ * \param type SOCK_DGRAM for UDP or SOCK_STREAM for TCP
+ * \param ip Specific IP/CIDR to which to bind, or NULL for all
+ * \param interface Specific interface to which to bind, or NULL for all
+ * \param file
+ * \param line
+ * \param func
+ * \retval 0 on success, -1 on failure
+ */
+static int __bbs_socket_bind(int *sock, int rebind, int type, int port, const char *ip, const char *interface, const char *file, int line, const char *func)
 {
-	struct sockaddr_in sinaddr; /* Internet socket */
-	const int enable = 1;
 	int res;
+	struct sockaddr_in sinaddr; /* Internet socket */
 
 #if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
-	*sock = __bbs_socket(AF_INET, SOCK_STREAM, 0, file, line, func);
+	*sock = __bbs_socket(AF_INET, type, 0, file, line, func);
 #else
 	UNUSED(file);
 	UNUSED(line);
 	UNUSED(func);
-	*sock = socket(AF_INET, SOCK_STREAM, 0);
+	*sock = socket(AF_INET, type, 0);
 #endif
 	if (*sock < 0) {
-		bbs_error("Unable to create TCP socket: %s\n", strerror(errno));
+		bbs_error("Unable to create %s socket: %s\n", type == SOCK_STREAM ? "TCP" : "UDP", strerror(errno));
 		return -1;
 	}
 
-	if (option_rebind) {
+	memset(&sinaddr, 0, sizeof(sinaddr));
+	sinaddr.sin_family = AF_INET;
+	sinaddr.sin_port = htons((uint16_t) port); /* Public port on which to listen */
+
+	if (!strlen_zero(ip)) {
+		sinaddr.sin_addr.s_addr = inet_addr(ip);
+	} else {
+		sinaddr.sin_addr.s_addr = INADDR_ANY;
+	}
+
+	if (!strlen_zero(interface)) {
+		struct ifreq ifr;
+		memset(&ifr, 0, sizeof(ifr));
+		safe_strncpy(ifr.ifr_name, interface, sizeof(ifr.ifr_name));
+		if (setsockopt(*sock, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr)) < 0) {
+			bbs_error("Failed to set SO_BINDTODEVICE(%s): %s\n", interface, strerror(errno));
+			close(*sock);
+			return -1;
+		}
+	}
+
+	if (rebind && type == SOCK_STREAM) {
+		const int enable = 1;
 		/* This is necessary since trying a bind without reuse and then trying with reuse
 		 * can actually still fail (for some reason...).
 		 * If you reuse the first time, though, it should always work.
@@ -148,85 +182,86 @@ int __bbs_make_tcp_socket(int *sock, int port, const char *file, int line, const
 		 * aren't running, then this may be worth it (e.g. the test framework)
 		 */
 		if (setsockopt(*sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
-			bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
+			bbs_error("Failed to set SO_REUSEADDR: %s\n", strerror(errno));
+			close(*sock);
 			return -1;
 		}
 		if (setsockopt(*sock, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(int)) < 0) {
-			bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
+			bbs_error("Failed to set SO_REUSEPORT: %s\n", strerror(errno));
+			close(*sock);
 			return -1;
 		}
 	}
 
-	memset(&sinaddr, 0, sizeof(sinaddr));
-	sinaddr.sin_family = AF_INET;
-	sinaddr.sin_addr.s_addr = INADDR_ANY;
-	sinaddr.sin_port = htons((uint16_t) port); /* Public TCP port on which to listen */
-
 	res = bind(*sock, (struct sockaddr*) &sinaddr, sizeof(sinaddr));
 	if (res) {
-		while (errno == EADDRINUSE) {
-			/* Don't do this by default.
-			 * If somehow multiple instances of the BBS are running,
-			 * then weird things can happen as a result of multiple BBS processes
-			 * running on the same port. Sometimes things will work, usually they won't.
-			 *
-			 * (We do try really hard in bbs.c to prevent multiple instances of the BBS
-			 *  from being run at the same time, mostly accidentally, and this usually
-			 *  works, but it's not foolproof.)
-			 *
-			 * Therefore, try to bind without reusing first, and only if that fails,
-			 * reuse the port, but make some noise about this just in case. */
-			if (option_rebind) {
-				bbs_error("Port %d was already in use, retrying with reuse\n", port);
-			} else {
-				bbs_warning("Port %d was already in use, retrying with reuse\n", port);
-			}
+		res = errno;
+		close(*sock);
+		errno = res; /* Close but preserve the errno from bind failing */
+	}
+	return res;
+}
 
-			/* We can't reuse the original socket after bind fails, make a new one. */
-			close(*sock);
-			if (bbs_safe_sleep(500)) {
-				bbs_verb(4, "Aborting socket bind due to exceptional BBS activity\n");
-				break;
-			}
-			*sock = socket(AF_INET, SOCK_STREAM, 0);
-			if (*sock < 0) {
-				bbs_error("Unable to recreate TCP socket: %s\n", strerror(errno));
-				return -1;
-			}
-			if (setsockopt(*sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
-				bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
-				return -1;
-			}
-			if (setsockopt(*sock, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(int)) < 0) {
-				bbs_error("Unable to create setsockopt: %s\n", strerror(errno));
-				return -1;
-			}
+static int __bbs_make_ip_socket(int *sock, int port, int type, const char *ip, const char *interface, const char *file, int line, const char *func)
+{
+	int res;
 
-			memset(&sinaddr, 0, sizeof(sinaddr));
-			sinaddr.sin_family = AF_INET;
-			sinaddr.sin_addr.s_addr = INADDR_ANY;
-			sinaddr.sin_port = htons((uint16_t) port); /* Public TCP port on which to listen */
-
-			res = bind(*sock, (struct sockaddr*) &sinaddr, sizeof(sinaddr));
-			if (!option_rebind) {
-				break;
-			}
+	res = __bbs_socket_bind(sock, option_rebind, type, port, ip, interface, file, line, func);
+	while (res && errno == EADDRINUSE) {
+		/* Don't do this by default.
+		 * If somehow multiple instances of the BBS are running,
+		 * then weird things can happen as a result of multiple BBS processes
+		 * running on the same port. Sometimes things will work, usually they won't.
+		 *
+		 * (We do try really hard in bbs.c to prevent multiple instances of the BBS
+		 *  from being run at the same time, mostly accidentally, and this usually
+		 *  works, but it's not foolproof.)
+		 *
+		 * Therefore, try to bind without reusing first, and only if that fails,
+		 * reuse the port, but make some noise about this just in case. */
+		if (option_rebind) {
+			bbs_error("Port %d was already in use, retrying with reuse\n", port);
+		} else {
+			bbs_warning("Port %d was already in use, retrying with reuse\n", port);
 		}
-		if (res) {
-			bbs_error("Unable to bind TCP socket to port %d: %s\n", port, strerror(errno));
+
+		if (bbs_safe_sleep(500)) {
+			bbs_verb(4, "Aborting socket bind due to exceptional BBS activity\n");
+			break;
+		}
+
+		res = __bbs_socket_bind(sock, option_rebind, type, port, ip, interface, file, line, func);
+		if (!option_rebind) {
+			/* If we don't require reuse, try once and then give up */
+			break;
+		}
+	}
+	if (res) {
+		bbs_error("Unable to bind %s socket to port %d: %s\n", type == SOCK_STREAM ? "TCP" : "UDP", port, strerror(errno));
+		*sock = -1;
+		return -1;
+	}
+
+	if (type == SOCK_STREAM) {
+		if (listen(*sock, 10) < 0) {
+			bbs_error("Unable to listen on %s socket on port %d: %s\n", type == SOCK_STREAM ? "TCP" : "UDP", port, strerror(errno));
 			close(*sock);
 			*sock = -1;
 			return -1;
 		}
-		}
-	if (listen(*sock, 10) < 0) {
-		bbs_error("Unable to listen on TCP socket on port %d: %s\n", port, strerror(errno));
-		close(*sock);
-		*sock = -1;
-		return -1;
 	}
-	bbs_debug(1, "Started %s listener on port %d\n", "TCP", port);
+	bbs_debug(1, "Started %s listener on port %d\n", type == SOCK_STREAM ? "TCP" : "UDP", port);
 	return 0;
+}
+
+int __bbs_make_tcp_socket(int *sock, int port, const char *file, int line, const char *func)
+{
+	return __bbs_make_ip_socket(sock, port, SOCK_STREAM, NULL, NULL, file, line, func);
+}
+
+int __bbs_make_udp_socket(int *sock, int port, const char *ip, const char *interface, const char *file, int line, const char *func)
+{
+	return __bbs_make_ip_socket(sock, port, SOCK_DGRAM, ip, interface, file, line, func);
 }
 
 int bbs_unblock_fd(int fd)

@@ -2811,7 +2811,7 @@ static void handle_client(struct irc_user *user)
 		if (res <= 0) {
 			/* Don't set graceful_close to 0 here, since after a QUIT, the client may close the connection first.
 			 * The QUIT message should be whatever the client sent, since it was graceful, not connection closed by remote host. */
-			bbs_debug(3, "poll/read returned %lu\n", res);
+			bbs_debug(3, "bbs_readline returned %ld\n", res);
 			break;
 		}
 		bbs_strterm(s, '\r');

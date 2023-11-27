@@ -28,14 +28,26 @@
 int __bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_t uid, gid_t gid, const char *file, int line, const char *func);
 
 /*!
- * \brief Create a TCP socket
- * \param sock Pointer to socket
+ * \brief Create and bind a TCP socket to a particular port
+ * \param[out] sock Pointer to socket
  * \param port Port number on which to create the socket
  * \retval 0 on success, -1 on failure
  */
 #define bbs_make_tcp_socket(sock, port) __bbs_make_tcp_socket(sock, port, __FILE__, __LINE__, __func__)
 
 int __bbs_make_tcp_socket(int *sock, int port, const char *file, int line, const char *func);
+
+/*!
+ * \brief Create and bind a UDP socket to a particular port
+ * \param[out] sock Pointer to socket
+ * \param port Port number on which to create the socket
+ * \param ip Specific IP/CIDR to which to bind, or NULL for all
+ * \param interface Specific interface to which to bind, or NULL for all
+ * \retval 0 on success, -1 on failure
+ */
+#define bbs_make_udp_socket(sock, port, ip, interface) __bbs_make_udp_socket(sock, port, ip, interface, __FILE__, __LINE__, __func__)
+
+int __bbs_make_udp_socket(int *sock, int port, const char *ip, const char *interface, const char *file, int line, const char *func);
 
 /*! \brief Put a socket in nonblocking mode */
 int bbs_unblock_fd(int fd);

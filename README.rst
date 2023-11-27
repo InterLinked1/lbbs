@@ -169,6 +169,8 @@ Config files go in :code:`/etc/lbbs` and are as follows:
 
 * :code:`net_irc.conf` - Internet Relay Chat server config
 
+* :code:`net_msp.conf` - Message Send Protocol config
+
 * :code:`net_nntp.conf` - Network News Transfer Protocol (NNTP) server config
 
 * :code:`net_pop3.conf` - POP3 server config
@@ -237,6 +239,8 @@ The BBS also comes with some network services that aren't intended for terminal 
 
 * :code:`net_irc` - Internet Relay Chat server
 
+* :code:`net_msp` - Message Send Protocol server
+
 * :code:`net_nntp` - Network News Transfer Protocol (NNTP) server
 
 * :code:`net_pop3` - POP3 server
@@ -282,10 +286,10 @@ The first is as simple as explicitly granting the BBS binary the right to do so,
 This is the recommended approach if it works for you. If not, you can also explicitly allow
 all users to bind to any ports that are at least the specified port number::
 
-    sudo sysctl net.ipv4.ip_unprivileged_port_start=21
+    sudo sysctl net.ipv4.ip_unprivileged_port_start=18
 
-This example would allow any user to bind to ports 21 and above.
-The lowest standard port number currently used by the BBS is 21 (FTP).
+This example would allow any user to bind to ports 18 and above.
+The lowest standard port number currently used by the BBS is 18 (FTP).
 
 Note that this method is not as secure as the first method, but is likely to work even if other methods fail.
 

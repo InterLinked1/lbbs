@@ -23,7 +23,6 @@
 #include "include/bbs.h"
 
 #include <string.h>
-#include <signal.h>
 
 #include "include/module.h"
 #include "include/config.h"
