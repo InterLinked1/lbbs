@@ -89,7 +89,6 @@ static int strnsep(const char **restrict var, char **restrict buf, size_t *restr
 			if (!*len) {
 				*buf = NULL; /* There is nothing more to read, that's the end of the buffer */
 			}
-			bbs_debug(4, "Parsed token '%s'\n", *var);
 			return 0;
 		}
 		if (!*len) {
@@ -280,9 +279,11 @@ static int handle_msp(struct msp *restrict msp, const char *ip)
 	} else {
 		/* Directed to a particular user (or channel). */
 		if (!isalpha(*msp->recip)) {
+			char nativenick[64];
 			/* Begins with a non-numeric character.
 			 * Assume it's the name of an IRC channel. */
-			res = irc_relay_send(msp->recip, CHANNEL_USER_MODE_NONE, "MSP", msp->sender, NULL, msp->message, NULL);
+			snprintf(nativenick, sizeof(nativenick), "%s/%s", "MSP", msp->sender);
+			res = irc_relay_send(msp->recip, CHANNEL_USER_MODE_NONE, "MSP", nativenick, ip, msp->message, NULL);
 			if (res) {
 				MSP_ERROR(msp, "Channel does not exist");
 				return -1;

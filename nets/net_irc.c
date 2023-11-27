@@ -945,8 +945,12 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 
 	/* If something specific specified, use the override, otherwise use the same thing.
 	 * This allows relay modules to customize the hostmask if they want. */
-	hostsender = S_OR(hostsender, sender);
-	snprintf(hostname, sizeof(hostname), "%s/%s", relayname, hostsender);
+	if (!strlen_zero(hostsender)) {
+		/* We were provided a hostname/IP address directly for this part that we can use. */
+		safe_strncpy(hostname, hostsender, sizeof(hostname));
+	} else {
+		snprintf(hostname, sizeof(hostname), "%s/%s", relayname, sender);
+	}
 
 	/* It's not our job to filter messages, clients can do that. For example, decimal 1 is legitimate for CTCP commands. */
 
