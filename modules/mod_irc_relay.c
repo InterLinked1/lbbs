@@ -725,7 +725,9 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 		if (cp->client2) {
 			if (sender && !cp->ircuser) { /* We're sending to a real IRC channel using a client, so we need to pack the sender name into the message itself, if present. */
 				if (!ctcp) {
-					snprintf(fullmsg, sizeof(fullmsg), "<%s> %s", sender, msg);
+					if (snprintf(fullmsg, sizeof(fullmsg), "<%s> %s", sender, msg) >= (int) sizeof(fullmsg)) {
+						bbs_warning("Truncation when prefixing sending username to message\n");
+					}
 				}
 				msg = fullmsg;
 			}
@@ -739,7 +741,9 @@ static int netirc_cb(const char *channel, const char *sender, const char *msg)
 		if (cp->client1) {
 			if (sender && !cp->ircuser) { /* We're sending to a real IRC channel using a client, so we need to pack the sender name into the message itself, if present. */
 				if (!ctcp) {
-					snprintf(fullmsg, sizeof(fullmsg), "<%s> %s", sender, msg);
+					if (snprintf(fullmsg, sizeof(fullmsg), "<%s> %s", sender, msg) >= (int) sizeof(fullmsg)) {
+						bbs_warning("Truncation when prefixing sending username to message\n");
+					}
 				}
 				msg = fullmsg;
 			}

@@ -864,46 +864,141 @@ int irc_relay_set_topic(const char *channel, const char *topic)
 	return 0;
 }
 
-int _irc_relay_send_multiline(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *hostsender, const char *msg, int(*transform)(const char *line, char *buf, size_t len), const char *ircuser, void *mod)
+static int transform_and_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *hostsender, const char *restrict msg, int(*transform)(const char *line, char *buf, size_t len), const char *ircuser, void *mod)
 {
-	char linebuf[512];
-	char *dup, *lines;
-	const char *line;
+	/* The maximum length of a single IRC message is 512 characters,
+	 * but we use a slightly larger buffer here in case the transform
+	 * function replaces substrings with larger substrings.
+	 * If we limit the buffer to 512, and we get a message of the maximum
+	 * length, expansion will fail since truncation will occur.
+	 * This should be good enough to allow reasonable transformation of
+	 * a message of any valid length.
+	 * If the buffer is still too small, we'll dynamically allocate one.
+	 */
+	char linebuf[624];
+	size_t linelen;
+	int res;
+	/* We use both final and line, so that we can accept a const argument (msg)
+	 * and provide a const argument to _irc_relay_send.
+	 * The added complication avoids the need to allocate if the length
+	 * of the message is sufficiently small, which is the common case. */
+	char *line = NULL;
+	const char *final;
+	char *dynbuf = NULL;
 
-	/*! \todo What if message lines are > 512 characters? */
-
-	if (!strchr(msg, '\n')) { /* Avoid unnecessarily allocating memory if we don't have to. */
-		if (transform) {
-			if (transform(msg, linebuf, sizeof(linebuf)) < 0) {
-				return -1;
-			}
-			line = linebuf;
-		} else {
-			line = msg;
-		}
-		return _irc_relay_send(channel, modes, relayname, sender, hostsender, line, ircuser, 0, mod);
-	}
-
-	dup = strdup(msg);
-	if (ALLOC_FAILURE(dup)) {
+	if (strlen_zero(msg)) {
 		return -1;
 	}
-	lines = dup;
-	while ((line = strsep(&lines, "\n"))) {
-		bbs_strterm(line, '\r');
-		if (transform) {
-			if (transform(line, linebuf, sizeof(linebuf)) < 0) {
+
+	if (transform) {
+		size_t origlen = strlen(msg);
+		if (origlen >= sizeof(linebuf) - 50) {
+			/* Stack allocated buffer is probably too small.
+			 * Dynamically allocate. */
+			if (origlen >= 4096) {
+				bbs_warning("Refusing to relay excessively long message of length %lu\n", origlen);
 				return -1;
 			}
+			dynbuf = malloc(origlen + 50);
+			if (ALLOC_FAILURE(dynbuf)) {
+				return -1;
+			}
+			strcpy(dynbuf, msg); /* Safe */
+			res = transform(msg, dynbuf, origlen + 50);
+		} else {
+			res = transform(msg, linebuf, sizeof(linebuf));
+		}
+		if (res < 0) {
+			free_if(dynbuf);
+			return -1;
+		}
+		if (origlen >= sizeof(linebuf) - 50) {
+			line = dynbuf;
+		} else {
 			line = linebuf;
 		}
-		if (strlen_zero(line)) {
-			continue;
-		}
-		_irc_relay_send(channel, CHANNEL_USER_MODE_NONE, relayname, sender, hostsender, line, ircuser, 0, mod);
+		bbs_strterm(line, '\r');
+		final = line;
+	} else {
+		final = msg;
 	}
-	free(dup);
-	return 0;
+
+	linelen = strlen(final);
+	if (linelen > 510 || (!line && strchr(final, '\r'))) {
+		/* If has a trailing CR, we need to strip it.
+		 * Since msg is const, we need to use a buffer to modify if that's the case. */
+		if (linelen > sizeof(linebuf)) {
+			dynbuf = strdup(final);
+			if (ALLOC_FAILURE(dynbuf)) {
+				return -1;
+			}
+			final = line = dynbuf;
+		} else {
+			strcpy(linebuf, final); /* Safe */
+			final = line = linebuf;
+		}
+	}
+
+	/* Truncation becomes likely beyond this point, so split the message up.
+	 * This is because the relay modules may prefix a sender name,
+	 * and the raw IRC message itself prefixes the command name and the channel.
+	 * Thus, we may add something like:
+	 * PRIVMSG #channel :<username>
+	 * and this could be 40-50 bytes, potentially.
+	 * Being conservative on message length here reduces the chance that
+	 * the message will be within bounds within the BBS but exceed 512 when it hits lirc
+	 * to actually generate the final message. */
+	while (linelen > 470) {
+		char c;
+		/* Message is too long to be a single message towards IRC.
+		 * Split it up. */
+		char *end = line + 465; /* Leave room for the relay module to prefix a username later. */
+		const char *midpoint = line + 235;
+		/* Look for a graceful position to split the message (a space).
+		 * In the worst case, there are no spaces, and we should split the
+		 * message in the second half no matter what, so we send a maximum
+		 * of 2-3 messages per ~512 characters. */
+#pragma GCC diagnostic push /* ignore spurious warning */
+#pragma GCC diagnostic ignored "-Wstrict-overflow"
+		while (end > midpoint && !isspace(*end)) {
+			end--;
+		}
+#pragma GCC diagnostic pop
+		/* We are guaranteed here that *end is not the last character in the message. */
+		end++; /* Move back forward past the space. */
+		c = *end; /* Save character at this position. */
+		*end = '\0'; /* NUL terminate to split message. */
+		_irc_relay_send(channel, modes, relayname, sender, hostsender, final, ircuser, 0, mod);
+		*end = c; /* Restore character */
+		final = line = end; /* This is the beginning of the next chunk to send. */
+		linelen = strlen(line);
+	}
+
+	/* Send entire message, if less than max message length, or the last chunk, if it was larger. */
+	res = _irc_relay_send(channel, modes, relayname, sender, hostsender, final, ircuser, 0, mod);
+	free_if(dynbuf);
+	return res;
+}
+
+int _irc_relay_send_multiline(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *hostsender, const char *msg, int(*transform)(const char *line, char *buf, size_t len), const char *ircuser, void *mod)
+{
+	int res = 0;
+	char *dup, *line, *lines;
+
+	if (!strchr(msg, '\n')) { /* Avoid unnecessarily allocating memory if we don't have to. */
+		res |= transform_and_send(channel, modes, relayname, sender, hostsender, msg, transform, ircuser, mod);
+	} else {
+		dup = strdup(msg);
+		if (ALLOC_FAILURE(dup)) {
+			return -1;
+		}
+		lines = dup;
+		while ((line = strsep(&lines, "\n"))) {
+			res |= transform_and_send(channel, modes, relayname, sender, hostsender, line, transform, ircuser, mod);
+		}
+		free(dup);
+	}
+	return res;
 }
 
 /* XXX 100% horrible horrible (hopefully temporary) kludge - a total lock hack: In this case, it's to emulate recursive locking for this thread stack:

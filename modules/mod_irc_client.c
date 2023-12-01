@@ -341,14 +341,20 @@ static const char *callback_msg_type_name(enum irc_callback_msg_type type)
 
 static int msg_relay(struct bbs_irc_client *client, enum relay_flags flags, enum irc_msg_type type, const char *channel, const char *prefix, int ctcp, const char *body, size_t len)
 {
+	int res = 0;
 	const char *scope = flags & RELAY_TO_IRC ? flags & RELAY_FROM_IRC ? "to/from" : "to" : "from";
 	enum irc_callback_msg_type cb_type = callback_msg_type(type);
-	bbs_debug(7, "Broadcasting %s %s client %s, channel %s, prefix %s, CTCP: %d: %.*s\n", callback_msg_type_name(cb_type), scope, client->name, channel, prefix, ctcp, (int) len, body);
+	bbs_debug(7, "Broadcasting %s %s client %s, channel %s, prefix %s, CTCP: %d, length %lu: %.*s\n", callback_msg_type_name(cb_type), scope, client->name, channel, prefix, ctcp, len, (int) len, body);
+
+	if (len > 512) {
+		bbs_warning("%lu-byte message is too long to send to IRC\n", len);
+		return -1;
+	}
 
 	/* Relay the message to everyone */
 	RWLIST_RDLOCK(&irc_clients); /* XXX Really just need to lock *this* client to prevent it from being removed, not all of them */
 	if (flags & RELAY_TO_IRC) {
-		irc_client_msg(client->client, channel, body); /* Actually send to IRC */
+		res = irc_client_msg(client->client, channel, body); /* Actually send to IRC */
 	}
 	if (flags & RELAY_FROM_IRC) { /* Only execute callback on messages received *FROM* IRC client, not messages *TO* it. */
 		if (client->callbacks) {
@@ -363,7 +369,7 @@ static int msg_relay(struct bbs_irc_client *client, enum relay_flags flags, enum
 		}
 	}
 	RWLIST_UNLOCK(&irc_clients);
-	return 0;
+	return res;
 }
 
 static void __bot_handler(struct bbs_irc_client *client, enum relay_flags flags, const char *channel, const char *prefix, int ctcp, const char *msg)
@@ -640,7 +646,7 @@ static void *client_relay(void *varg)
 int __attribute__ ((format (gnu_printf, 2, 3))) bbs_irc_client_send(const char *clientname, const char *fmt, ...)
 {
 	struct bbs_irc_client *client;
-	char *buf;
+	char buf[IRC_MAX_MSG_LEN + 1];
 	int res, len;
 	va_list ap;
 
@@ -660,10 +666,11 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_irc_client_send(const char *
 	}
 
 	va_start(ap, fmt);
-	len = vasprintf(&buf, fmt, ap);
+	len = vsnprintf(buf, sizeof(buf), fmt, ap);
 	va_end(ap);
 
-	if (len < 0) {
+	if (len >= (int) sizeof(buf)) {
+		bbs_warning("Truncation occured trying to send %d-byte IRC message\n", len);
 		RWLIST_UNLOCK(&irc_clients);
 		return -1;
 	}
@@ -672,14 +679,13 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_irc_client_send(const char *
 	res = irc_send(client->client, "%s", buf);
 
 	RWLIST_UNLOCK(&irc_clients);
-	free(buf);
 	return res;
 }
 
 int __attribute__ ((format (gnu_printf, 4, 5))) bbs_irc_client_msg(const char *clientname, const char *channel, const char *prefix, const char *fmt, ...)
 {
 	struct bbs_irc_client *client;
-	char *buf;
+	char buf[IRC_MAX_MSG_LEN + 1];
 	int res, len;
 	va_list ap;
 
@@ -699,10 +705,11 @@ int __attribute__ ((format (gnu_printf, 4, 5))) bbs_irc_client_msg(const char *c
 	}
 
 	va_start(ap, fmt);
-	len = vasprintf(&buf, fmt, ap);
+	len = vsnprintf(buf, sizeof(buf), fmt, ap);
 	va_end(ap);
 
-	if (len < 0) {
+	if (len >= (int) sizeof(buf)) {
+		bbs_warning("Truncation occured trying to format %d-byte IRC message\n", len);
 		RWLIST_UNLOCK(&irc_clients);
 		return -1;
 	}
@@ -720,7 +727,6 @@ int __attribute__ ((format (gnu_printf, 4, 5))) bbs_irc_client_msg(const char *c
 	res = msg_relay(client, RELAY_TO_IRC, IRC_CMD_PRIVMSG, channel, prefix, 0, buf, (size_t) len); /* No prefix */
 
 	RWLIST_UNLOCK(&irc_clients);
-	free(buf);
 	return res;
 }
 
