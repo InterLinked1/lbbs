@@ -151,6 +151,55 @@ struct irc_user {
 	/* Avoid using a flexible struct member since we'll probably strdup both the username and nickname beforehand anyways */
 };
 
+/*! \brief An IRC WHOWAS */
+struct whowas {
+	const char *who;
+	time_t joined;
+	size_t nicklen;
+	RWLIST_ENTRY(whowas) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(whowas_users, whowas);
+
+static void whowas_update(struct irc_user *user, int keep)
+{
+	char buf[128];
+	int len;
+	struct whowas *w;
+
+	if (!user->registered || strlen_zero(user->nickname)) {
+		return;
+	}
+
+	/* If nickname already exists, remove and add again with updated info */
+	RWLIST_WRLOCK(&whowas_users);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&whowas_users, w, entry) {
+		/* If the first word matches, it's the same nickname */
+		if (!strncasecmp(user->nickname, w->who, w->nicklen) && w->nicklen == strlen(user->nickname)) {
+			RWLIST_REMOVE_CURRENT(entry);
+			free(w);
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+
+	if (keep) {
+		/* Format of response RPL_WHOWASUSER (314) */
+		len = snprintf(buf, sizeof(buf), "%s %s %s *: %s", user->nickname, S_IF(user->username), S_IF(user->hostname), S_IF(user->realname));
+
+		w = calloc(1, sizeof(*w) + (size_t) len + 1);
+		if (ALLOC_SUCCESS(w)) {
+			w->joined = user->joined;
+			w->nicklen = strlen(user->nickname);
+			strcpy(w->data, buf); /* Safe */
+			w->who = w->data;
+			RWLIST_INSERT_HEAD(&whowas_users, w, entry);
+		}
+	}
+	RWLIST_UNLOCK(&whowas_users);
+}
+
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 /*! \brief Static user struct for ChanServ operations */
 static struct irc_user user_chanserv = {
@@ -2023,6 +2072,42 @@ static void handle_whois(struct irc_user *user, char *s)
 	send_numeric2(user, 318, "%s :End of /WHOIS list\r\n", s); /* case must be preserved, so use s instead of u->nickname */
 }
 
+static void handle_whowas(struct irc_user *user, char *s)
+{
+	char *username;
+	struct whowas *w;
+
+	username = strsep(&s, " ");
+	/* s (2nd argument) is now the # sessions back to go
+	 * Ambassador will substitute "null" if this is not specified.
+	 * Either way, we ignore this parameter, it's always effectively "1". */
+
+	bbs_debug(2, "WHOWAS lookup for '%s'\n", username);
+
+	RWLIST_RDLOCK(&whowas_users);
+	RWLIST_TRAVERSE(&whowas_users, w, entry) {
+		if (!strncasecmp(w->who, username, w->nicklen)) {
+			if (w->who[w->nicklen] == ' ') { /* Must be a complete match. */
+				char timebuf[56];
+				struct tm logdate;
+				send_numeric2(user, 314, "%s\r\n", w->who);
+				localtime_r(&w->joined, &logdate);
+				strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M %P %Z", &logdate);
+				send_numeric2(user, 330, "%.*s %.*s\r\n", (int) w->nicklen, w->who, (int) w->nicklen, w->who);
+				send_numeric2(user, 312, "%.*s %s %s\r\n", (int) w->nicklen, w->who, irc_hostname, timebuf);
+				break;
+			}
+		}
+	}
+	RWLIST_UNLOCK(&whowas_users);
+
+	if (!w) {
+		send_numeric2(user, 406, "%s :There was no such nickname\r\n", username);
+	}
+
+	send_numeric2(user, 369, "%s :End of WHOWAS\r\n", username); /* case must be preserved, so use s */
+}
+
 static void handle_userhost(struct irc_user *user, char *s)
 {
 	char buf[256];
@@ -2125,7 +2210,7 @@ static void handle_help(struct irc_user *user, char *s)
 	if (strlen_zero(s)) {
 		send_numeric(user, 704, "index * :** Help System **\r\n");
 		/*! \todo add handlers and dynamically generate this? */
-		send_numeric(user, 705, "index AWAY HELP INVITE JOIN KICK LIST MOTD NAMES NOTICE PART PING PONG PRIVMSG QUIT TOPIC USERHOST WHO WHOIS\r\n");
+		send_numeric(user, 705, "index AWAY HELP INVITE JOIN KICK LIST MOTD NAMES NOTICE PART PING PONG PRIVMSG QUIT TOPIC USERHOST WHO WHOIS WHOWAS\r\n");
 		send_numeric(user, 706, "index :End of /HELP\r\n");
 		return;
 	}
@@ -2784,6 +2869,7 @@ static int client_welcome(struct irc_user *user)
 
 	if (user->node->user) {
 		add_user(user);
+		whowas_update(user, 0);
 	}
 
 	RWLIST_RDLOCK(&users);
@@ -3212,7 +3298,11 @@ static void handle_client(struct irc_user *user)
 				/* WHO username or WHO #channel, mask patterns not supported */
 				handle_who(user, s);
 			} else if (!strcasecmp(command, "WHOIS")) {
+				REQUIRE_PARAMETER(user, s);
 				handle_whois(user, s);
+			} else if (!strcasecmp(command, "WHOWAS")) {
+				REQUIRE_PARAMETER(user, s);
+				handle_whowas(user, s);
 			} else if (!strcasecmp(command, "USERHOST")) {
 				handle_userhost(user, s);
 			} else if (!strcasecmp(command, "LIST")) {
@@ -3296,6 +3386,7 @@ quit:
 		leave_all_channels(user, "QUIT", "Remote user closed the connection"); /* poll or read failed */
 	}
 	if (user->registered) {
+		whowas_update(user, 1);
 		unlink_user(user);
 	}
 }
@@ -3436,6 +3527,23 @@ static int cli_irc_users(struct bbs_cli_args *a)
 	return 0;
 }
 
+static int cli_irc_whowas(struct bbs_cli_args *a)
+{
+	struct whowas *w;
+
+	bbs_dprintf(a->fdout, "%-30s %s\n", "Joined", "WHOWAS");
+	RWLIST_RDLOCK(&whowas_users);
+	RWLIST_TRAVERSE(&whowas_users, w, entry) {
+		char timebuf[56];
+		struct tm logdate;
+		localtime_r(&w->joined, &logdate);
+		strftime(timebuf, sizeof(timebuf), "%a %b %e %Y %I:%M %P %Z", &logdate);
+		bbs_dprintf(a->fdout, "%-30s %s\n", timebuf, w->who);
+	}
+	RWLIST_UNLOCK(&whowas_users);
+	return 0;
+}
+
 static int cli_irc_channels(struct bbs_cli_args *a)
 {
 	int i = 0;
@@ -3485,6 +3593,7 @@ static int cli_irc_members(struct bbs_cli_args *a)
 
 static struct bbs_cli_entry cli_commands_irc[] = {
 	BBS_CLI_COMMAND(cli_irc_users, "irc users", 2, "List all IRC users", NULL),
+	BBS_CLI_COMMAND(cli_irc_whowas, "irc whowas", 2, "List all former IRC users", NULL),
 	BBS_CLI_COMMAND(cli_irc_channels, "irc chans", 2, "List all IRC channels", NULL),
 	BBS_CLI_COMMAND(cli_irc_members, "irc members", 3, "List all members in an IRC channel", "irc members <channel>"),
 };
@@ -3679,6 +3788,7 @@ static int unload_module(void)
 	if (ircs_enabled) {
 		bbs_stop_tcp_listener(ircs_port);
 	}
+	RWLIST_WRLOCK_REMOVE_ALL(&whowas_users, entry, free);
 	destroy_channels();
 	destroy_operators();
 	pthread_mutex_destroy(&motd_lock);

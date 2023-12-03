@@ -349,18 +349,19 @@ static int user_register(struct bbs_node *node)
 #define MAX_REG_ATTEMPTS 6
 	int tries = MAX_REG_ATTEMPTS;
 
-	bbs_node_buffer(node); /* Buffer input so we can read line by line */
-
 #define REG_FMT COLOR(COLOR_WHITE)
 #define REG_QLEN 43
 #define get_response(node, qlen, fmt, q, pollms, buf, len, tries, minlen, reqchars) bbs_get_response(node, qlen, fmt q, pollms, buf, len, tries, minlen, reqchars)
 
-	/* Registration notice */
-	NEG_RETURN(bbs_node_clear_screen(node));
-	NONPOS_RETURN(bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_PRIMARY), "New User Registration", COLOR(COLOR_WHITE))); /* Use white for the questions to stand out */
-
 	for (; tries > 0; tries -= 2) {
 		int correct;
+
+		/* Registration notice */
+		NEG_RETURN(bbs_node_clear_screen(node));
+		NONPOS_RETURN(bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_PRIMARY), "New User Registration", COLOR(COLOR_WHITE))); /* Use white for the questions to stand out */
+
+		bbs_node_buffer(node); /* Buffer input so we can read line by line */
+
 		/* No newlines necessary inbetween reads, since echo is on
 		 * and input is terminated by a return. */
 		/* NONZERO_RETURN is a macro that returns x, so we must NOT call it directly with the function itself */
@@ -474,13 +475,21 @@ static int user_register(struct bbs_node *node)
 				return 1;
 			}
 		}
+		bbs_node_writef(node, "\n");
 
-		NEG_RETURN(bbs_node_writef(node, "%-*s", REG_QLEN, REG_FMT "Is the above information correct? "));
+confirm:
+		NEG_RETURN(bbs_node_writef(node, "%-*s", REG_QLEN, REG_FMT "\rIs the above information correct? [Y/N] "));
 		correct = bbs_node_tread(node, MIN_MS(1));
 		if (tolower(correct) == 'y') {
 			break;
+		} else if (tolower(correct) == 'n') {
+			/* Not correct? Start over! */
+			continue;
+		} else if (correct > 0) { /* e.g. just pressed ENTER, since the gender prompt doesn't require that, don't consume that here */
+			/* Invalid */
+			bbs_node_ring_bell(node);
+			goto confirm; /* If we didn't use a goto in this way, we would need to break, and this is simpler to follow */
 		}
-		/* Not correct? Start over! */
 	}
 	if (tries <= 0) {
 		return 1;
