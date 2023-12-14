@@ -433,7 +433,7 @@ const char *bbs_node_var_get(struct bbs_node *node, const char *key)
 	return value;
 }
 
-int bbs_node_var_get_buf(struct bbs_node *node, const char *key, char *buf, size_t len)
+int bbs_node_var_get_buf(struct bbs_node *node, const char *key, char *restrict buf, size_t len)
 {
 	const char *s;
 
@@ -459,7 +459,7 @@ int bbs_node_var_get_buf(struct bbs_node *node, const char *key, char *buf, size
 	return s ? 0 : -1;
 }
 
-int bbs_node_substitute_vars(struct bbs_node *node, const char *sub, char *buf, size_t len)
+int bbs_node_substitute_vars(struct bbs_node *node, const char *sub, char *restrict buf, size_t len)
 {
 	char varname[64];
 	char *bufstart = buf;

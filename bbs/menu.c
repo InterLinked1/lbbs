@@ -470,6 +470,8 @@ static int menu_set_title(struct bbs_node *node, const char *name)
 	return bbs_node_set_term_title(node, stripped);
 }
 
+#define SCRATCH_BUF_SIZE 256
+
 /*!
  * \brief Run the BBS on a node
  * \param node node
@@ -477,7 +479,7 @@ static int menu_set_title(struct bbs_node *node, const char *name)
  * \param stack Current stack count
  * \param optreq Option request string
  */
-static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char *menuitemname, int stack, const char *optreq)
+static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char *menuitemname, int stack, const char *optreq, char *restrict scratchbuf)
 {
 	int res;
 	char opt = 0;
@@ -653,13 +655,15 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 		 * we need to be able to recurse efficiently with arguments that other handlers don't (and shouldn't) get. */
 		if (STARTS_WITH(menuitem->action, "menu:")) {
 			/* Execute another menu, recursively */
-			res = bbs_menu_run(node, menuitem->action + 5, menuitem->name, stack, optreq ? optreq + 1 : NULL);
+			res = bbs_menu_run(node, menuitem->action + 5, menuitem->name, stack, optreq ? optreq + 1 : NULL, scratchbuf);
 		} else {
 			char *handler, *args;
-			/* At this point in the function, we're done with the options buffer, and if we need it again, we'll fill it again.
-			 * So, reuse that buffer since we're in a recursive function, and we really want to avoid stack allocations if possible. */
-			safe_strncpy(options, menuitem->action, sizeof(options));
-			handler = options;
+			/* We need a buffer that is sufficiently long enough to avoid truncation, so use the scratch buffer. */
+			safe_strncpy(scratchbuf, menuitem->action, SCRATCH_BUF_SIZE);
+			if (strlen(scratchbuf) >= SCRATCH_BUF_SIZE - 1) {
+				bbs_warning("Truncation occurred copying menu item arguments into buffer of size %d\n", SCRATCH_BUF_SIZE);
+			}
+			handler = scratchbuf;
 			args = strchr(handler, ':');
 			if (args) {
 				*args++ = '\0'; /* We just want the name of the menu handler to use. */
@@ -723,7 +727,10 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 
 int bbs_node_menuexec(struct bbs_node *node)
 {
-	return bbs_menu_run(node, DEFAULT_MENU, NULL, 0, NULL);
+	/* Declare just once rather than on each stack frame, since bbs_menu_run recurses a lot.
+	 * This allows us to save (BBS_MAX_MENUSTACK - 1) * SCRATCH_BUF_SIZE bytes of stack space. */
+	char scratchbuf[SCRATCH_BUF_SIZE];
+	return bbs_menu_run(node, DEFAULT_MENU, NULL, 0, NULL, scratchbuf);
 }
 
 static int load_config(int reload)

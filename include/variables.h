@@ -137,7 +137,7 @@ const char *bbs_node_var_get(struct bbs_node *node, const char *key);
  * \param len Size of buf.
  * \retval 0 if found, -1 if not found
  */
-int bbs_node_var_get_buf(struct bbs_node *node, const char *key, char *buf, size_t len);
+int bbs_node_var_get_buf(struct bbs_node *node, const char *key, char *restrict buf, size_t len);
 
 /*!
  * \brief Substitute variables in a string
@@ -147,4 +147,4 @@ int bbs_node_var_get_buf(struct bbs_node *node, const char *key, char *buf, size
  * \param len Size of buf.
  * \retval 0 if found, -1 if not found
  */
-int bbs_node_substitute_vars(struct bbs_node *node, const char *sub, char *buf, size_t len);
+int bbs_node_substitute_vars(struct bbs_node *node, const char *sub, char *restrict buf, size_t len);

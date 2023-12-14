@@ -2282,12 +2282,38 @@ static void broadcast_nick_change(struct irc_user *user, const char *oldnick)
 	RWLIST_UNLOCK(&channels);
 }
 
+static void do_identity_update(struct irc_user *user)
+{
+	if (!user->registered) {
+		add_user(user);
+	} else {
+		hostmask(user);
+	}
+}
+
 static void handle_nick(struct irc_user *user, char *s)
 {
 	if (user->node->user && strcasecmp(s, bbs_username(user->node->user))) {
-		/* Don't allow changing nick if already logged in, unless it's to our actual username. */
-		send_numeric(user, 902, "You must use a nick assigned to you\r\n");
-	} else if (bbs_user_exists(s)) {
+		const char *suffix;
+		size_t usernamelen = strlen(bbs_username(user->node->user));
+		/* Don't allow changing nick if already logged in, unless it's to our actual username,
+		 * or something that starts with it, followed by an underscore. */
+		if (strncasecmp(s, bbs_username(user->node->user), usernamelen)) {
+			send_numeric(user, 902, "You must use a nick assigned to you\r\n");
+			return;
+		}
+		/* If username is jsmith, allow jsmith_, jsmith__, jsmith_m, etc.
+		 * But it has to be jsmith or start with jsmith_ */
+		suffix = s + usernamelen;
+		/* If the first n characters match but not the whole string the suffix must be non-empty */
+		bbs_assert(!strlen_zero(suffix));
+		if (*suffix != '_') {
+			send_numeric(user, 902, "You must use a nick assigned to you\r\n");
+			return;
+		}
+	}
+
+	if (bbs_user_exists(s)) {
 		send_numeric(user, 433, "%s :Nickname is already in use.\r\n", s);
 		send_reply(user, "NOTICE AUTH :*** This nickname is registered. Please choose a different nickname, or identify using NickServ\r\n");
 		/* Client will need to send NS IDENTIFY <password> or PRIVMSG NickServ :IDENTIFY <password> */
@@ -2307,9 +2333,10 @@ static void handle_nick(struct irc_user *user, char *s)
 		}
 		user->nickname = newnick;
 		RWLIST_UNLOCK(&users);
+		do_identity_update(user);
 		if (!s_strlen_zero(oldnick)) {
 			send_reply(user, ":%s NICK %s\r\n", oldnick, user->nickname);
-			broadcast_nick_change(user, oldnick); /* XXX Won't actually traverse, if registered users aren't allowed to change nicks? */
+			broadcast_nick_change(user, oldnick);
 		}
 	}
 }
@@ -2341,11 +2368,7 @@ static void handle_identify(struct irc_user *user, char *s)
 		if (strlen_zero(user->nickname) || strcasecmp(username, user->nickname)) {
 			REPLACE(user->nickname, username);
 		}
-		if (!user->registered) {
-			add_user(user);
-		} else {
-			hostmask(user);
-		}
+		do_identity_update(user);
 		send_numeric(user, 900, IDENT_PREFIX_FMT " %s You are now logged in as %s\r\n", IDENT_PREFIX_ARGS(user), user->username, user->username);
 	}
 }
@@ -2945,8 +2968,8 @@ static int do_sasl_auth(struct irc_user *user, char *s)
 		send_numeric(user, 904, "SASL authentication failed\r\n");
 		return -1;
 	}
-	send_numeric(user, 903, "SASL authentication successful\r\n");
 	/* The prefix is nick!ident@host */
+	send_numeric(user, 903, "SASL authentication successful\r\n");
 	send_numeric(user, 900, IDENT_PREFIX_FMT " %s You are now logged in as %s\r\n", IDENT_PREFIX_ARGS(user), user->username, user->username);
 	return 0;
 }
@@ -3028,15 +3051,14 @@ static void handle_client(struct irc_user *user)
 					if (!started) {
 						/* Users that aren't started, and more importantly, in the user list, (!started, !user->registered)
 						 * can change their nickname arbitrarily, but can't use it without identifying. */
-						user->nickname = strdup(s);
+						REPLACE(user->nickname, s);
 						bbs_debug(5, "Nickname is %s\n", user->nickname);
 					}
 				} else if (!strcasecmp(command, "USER")) { /* Whole message is something like 'ambassador * * :New Now Know How' */
 					char *realname;
 					bbs_debug(5, "Username data is %s\n", s);
 					realname = strsep(&s, " ");
-					free_if(user->realname);
-					user->realname = strdup(realname);
+					REPLACE(user->realname, realname);
 					if (handle_user(user)) {
 						break;
 					}
@@ -3098,7 +3120,10 @@ static void handle_client(struct irc_user *user)
 						bbs_error("Client %p already started?\n", user);
 					}
 				} else {
+					char *command;
 					bbs_warning("Unhandled message: %s\n", s);
+					command = strsep(&s, " ");
+					send_numeric2(user, 421, "%s :Unknown command or invalid in current state\r\n", command);
 				}
 			} else {
 				bbs_warning("Unhandled message: %s\n", s);
@@ -3166,7 +3191,7 @@ static void handle_client(struct irc_user *user)
 				send_reply(user, "NOTICE AUTH :*** This server requires SASL for authentication. Please reconnect with SASL enabled.\r\n");
 				goto quit; /* Disconnect at this point, there's no point in lingering around further. */
 			/* We can't necessarily use %s (user->username) instead of %p (user), since if require_sasl == false, we might not have a username still. */
-			} else if (!user->node->user) {
+			} else if (!user->node->user || !user->registered) {
 				char *target;
 				/* Okay to message NickServ without being registered, but nobody else. */
 				/* Can be NS IDENTIFY <password> or a regular PRIVMSG */
@@ -3186,7 +3211,13 @@ static void handle_client(struct irc_user *user)
 						continue;
 					}
 				}
-				send_numeric(user, 451, "You have not registered\r\n");
+				if (!user->node->user) {
+					send_numeric(user, 451, "You have not registered\r\n");
+				} else {
+					send_numeric(user, 433, "Nickname is already in use\r\n");
+				}
+			} else if (!user->registered) {
+				send_numeric(user, 433, "Nickname is already in use\r\n");
 			} else if (!strcasecmp(command, "NS")) { /* NickServ alias */
 				nickserv(user, s);
 			} else if (!strcasecmp(command, "CS")) { /* ChanServ alias (much like NS ~ NickServ) */
@@ -3376,7 +3407,7 @@ static void handle_client(struct irc_user *user)
 			/* Ignore SQUIT for now, since this is a single-server network */
 			} else {
 				send_numeric2(user, 421, "%s :Unknown command\r\n", command);
-				bbs_warning("%p: Unhandled message: %s %s\n", user, command, s);
+				bbs_warning("%p: Unhandled message: %s %s\n", user, command, S_IF(s));
 			}
 		}
 	}

@@ -159,15 +159,19 @@ static int __chat_send(struct client_relay *client, struct participant *sender, 
 
 	/* If sender is set, it's safe to use even with no locks, because the sender is a calling function of this one */
 	if (sender) {
-		bbs_debug(7, "Broadcasting %s to %s,%s (except node %d): %s%.*s\n", dorelay ? "to IRC" : "from IRC", client->name, channel, sender->node->id, datestr, len, msg);
+		bbs_debug(7, "Broadcasting %s -> %s,%s (except node %d): %s%.*s\n", dorelay ? "to IRC" : "from IRC", client->name, channel, sender->node->id, datestr, len, msg);
 	} else {
-		bbs_debug(7, "Broadcasting %s to %s,%s: %s%.*s\n", dorelay ? "to IRC" : "from IRC", client->name, channel, datestr, len, msg);
+		bbs_debug(7, "Broadcasting %s -> %s,%s: %s%.*s\n", dorelay ? "to IRC" : "from IRC", client->name, channel, datestr, len, msg);
 	}
 
 	/* Relay the message to everyone */
 	RWLIST_RDLOCK(&client->participants);
 	if (dorelay) {
-		bbs_irc_client_send(client->name, channel, msg); /* Actually send to IRC */
+		char prefix[32] = "";
+		if (sender) { /* XXX Can this ever be NULL here? */
+			snprintf(prefix, sizeof(prefix), "%s@%u", bbs_username(sender->node->user), sender->node->id);
+		}
+		bbs_irc_client_msg(client->name, channel, prefix, "%s", msg); /* Actually send to IRC */
 	}
 	RWLIST_TRAVERSE(&client->participants, p, entry) {
 		ssize_t res;
@@ -415,6 +419,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 	char usernamebuf[24];
 	char passwordbuf[64];
 	char buf[2048];
+	int underscores = 0;
 	char *username, *password, *hostname, *portstr;
 
 	/* Parse the arguments.
@@ -584,11 +589,14 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 			 * so just pass 0 as poll should always return > 0 anyways, immediately,
 			 * since we haven't read any data yet to quell the poll. */
 
-			/* Another clunky thing. Need to get data using irc_read, but we want to buffer it using a bbs_node_readline struct.
+			/* Another clunky thing. Need to get data using irc_read, but we want to buffer it using a readline_data struct.
 			 * So use bbs_readline_append.
 			 */
 			bres = irc_read(ircl, tmpbuf, sizeof(tmpbuf));
-			res = bbs_readline_append(&rldata, "\r\n", tmpbuf, (size_t) res, &ready);
+			if (bres <= 0) {
+				break;
+			}
+			res = bbs_readline_append(&rldata, "\r\n", tmpbuf, (size_t) bres, &ready);
 			if (!ready) {
 				continue;
 			}
@@ -609,6 +617,22 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 					switch (irc_msg_type(msg)) {
 						case IRC_NUMERIC:
 							bbs_node_writef(node, "%s %d %s\n", NODE_IS_TDD(node) ? "" : S_IF(irc_msg_prefix(msg)), irc_msg_numeric(msg), irc_msg_body(msg));
+							switch (irc_msg_numeric(msg)) {
+								case 433: /* Nickname in use - very likely to happen if already logged in using a regular IRC client */
+									if (underscores++ < 5) {
+										char newnick[32];
+#define UNDERSCORES "_____"
+										snprintf(newnick, sizeof(newnick), "%s%.*s", irc_client_username(ircl), underscores, UNDERSCORES);
+										bbs_debug(1, "Auto-changing nickname to '%s' to avoid conflict\n", newnick);
+										irc_client_change_nick(ircl, newnick);
+										/* Assuming this succeeds, try joining the channel we intended to,
+										 * since that would have failed. */
+										irc_client_channel_join(ircl, channel);
+									}
+									break;
+								default:
+									break;
+							}
 							break;
 						case IRC_CMD_PRIVMSG:
 						case IRC_CMD_NOTICE:
