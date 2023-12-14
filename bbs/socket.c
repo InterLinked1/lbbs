@@ -1855,8 +1855,8 @@ int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 				*term = '\0';
 			}
 			if (!nterm && term) {
-				bbs_debug(2, "Received CR and/or LF from client, but no NUL?\n");
-				/* The NUL could be trailing and we might read it next time.
+				/* Got a CR and/or LF from client, but no NUL.
+				 * The NUL could be trailing and we might read it next time.
 				 * Or maybe there won't be a NUL, certain client+protocols seem to send one, some don't.
 				 * If we do get one, we should get the NUL before returning. If we're not going to get one,
 				 * then it's probably no biggie.
@@ -1872,7 +1872,7 @@ int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
 	if (*startbuf == '\0') {
 		/* This isn't an issue per se in and of itself,
 		 * but probably an irregularity in reading input above. */
-		bbs_warning("First character received was NUL?\n"); /* XXX seems to happen if user just presses ENTER immediately */
+		bbs_debug(1, "First character received was NUL?\n"); /* XXX seems to happen if user just presses ENTER immediately */
 	}
 
 	bbs_debug(10, "Node %d: read(%d) %.*s\n", node->id, bytes_read, bytes_read, startbuf);
@@ -2183,7 +2183,7 @@ ssize_t bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
 	bbs_node_lock(node);
 	res = full_write(&pfd, node->slavefd, buf, len);
 	if (res <= 0 || res != (ssize_t) len) {
-		bbs_debug(5, "Node %d: write returned %lu/%lu\n", node->id, res, len);
+		bbs_debug(5, "Node %d: write returned %ld/%lu\n", node->id, res, len);
 	}
 	bbs_node_unlock(node);
 	return res;
@@ -2217,9 +2217,9 @@ ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)
 
 	res = timed_write(&pfd, fd, buf, len, ms);
 	if (res <= 0) {
-		bbs_error("write(%d) failed (%lu): %s\n", fd, res, strerror(errno));
+		bbs_error("write(%d) failed (%ld): %s\n", fd, res, strerror(errno));
 	} else if (res != (ssize_t) len) {
-		bbs_warning("Wanted to write %lu bytes to fd %d, only wrote %lu\n", len, fd, res);
+		bbs_warning("Wanted to write %lu bytes to fd %d, only wrote %ld\n", len, fd, res);
 	}
 
 	bbs_block_fd(fd); /* Restore */

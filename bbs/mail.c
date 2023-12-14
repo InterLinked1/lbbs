@@ -53,7 +53,7 @@ struct mailer {
 static RWLIST_HEAD_STATIC(mailers, mailer);
 
 #define MESSAGE_ID_PREFIX "LBBS"
-#define ENDL "\n"
+#define ENDL "\r\n"
 #define MAXHOSTNAMELEN   256
 
 static char default_to[84];
@@ -148,7 +148,7 @@ int bbs_make_email_file(FILE *p, const char *subject, const char *body, const ch
 	if (!strlen_zero(errorsto)) {
 		fprintf(p, "Errors-To: %s" ENDL, errorsto);
 	}
-	fprintf(p, ENDL);
+	fprintf(p, ENDL); /* End of headers */
 	fprintf(p, "%s", body);
 	if (strlen_zero(attachments)) {
 		return 0;

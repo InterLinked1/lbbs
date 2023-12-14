@@ -416,7 +416,7 @@ static int kill_pid(pid_t *pidptr)
 	/* Send a SIGINT first, in case that will effect an exit. */
 	if (kill(pid, SIGINT)) {
 		bbs_error("kill failed: %s\n", strerror(errno));
-		}
+	}
 	for (i = 0; *pidptr && i < 25; i++) {
 		/* In practice, even 1 us is enough time for this to work.
 		 * But if some reason it takes longer,
@@ -1407,6 +1407,8 @@ void bbs_node_net_begin(struct bbs_node *node)
 
 void bbs_node_exit(struct bbs_node *node)
 {
+	bbs_soft_assert(node->id > 0);
+	bbs_soft_assert(node->protname != NULL);
 	bbs_debug(3, "Node %d has ended its %s session\n", node->id, node->protname);
 	if (node->active) {
 		/* User quit: unlink and free */

@@ -293,7 +293,7 @@ int bbs_config_free(struct bbs_config *c)
 		config_free(cfg);
 	}
 
-	return cfg ? 0  : -1;
+	return cfg ? 0 : -1;
 }
 
 #define BEGINS_SECTION(s) (*s == '[')

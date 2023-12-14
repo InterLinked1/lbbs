@@ -235,6 +235,10 @@ static int do_authenticate(struct bbs_user *user, const char *username, const ch
 	int c = 0, res = -1;
 	struct auth_provider *p;
 
+	if (!bbs_str_isprint(username)) {
+		return -1;
+	}
+
 	bbs_debug(6, "Attempting password authentication for user '%s'\n", username);
 
 	/* Note that this traversal will proceed in the order that providers were registered,

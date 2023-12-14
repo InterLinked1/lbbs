@@ -4151,6 +4151,9 @@ static int imap_process(struct imap_session *imap, char *s)
 		 */
 		imap_send(imap, "CAPABILITY " IMAP_CAPABILITIES);
 		imap_reply(imap, "OK CAPABILITY completed");
+	} else if (!strcasecmp(command, "STARTTLS")) {
+		imap_reply(imap, "NO Explicit TLS not supported; use implicit TLS instead");
+		return -1; /* Disconnect to prevent a client that wants to use TLS from continuing with plain text */
 	} else if (!strcasecmp(command, "AUTHENTICATE")) {
 		if (bbs_user_is_registered(imap->node->user)) {
 			imap_reply(imap, "NO [CLIENTBUG] Already logged in");

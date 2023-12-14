@@ -299,7 +299,7 @@ void bbs_log_backtrace(void)
 
 void __bbs_assert_nonfatal(const char *condition_str, const char *file, int line, const char *function)
 {
-	__bbs_log(LOG_ERROR, 0, file, line, function, "Failed assertion %s\n", condition_str);
+	__bbs_log(LOG_ERROR, 0, file, line, function, "Failed soft assertion %s\n", condition_str);
 	bbs_log_backtrace(); /* Get a backtrace for the assertion */
 }
 

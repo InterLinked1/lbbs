@@ -53,6 +53,7 @@ static int process_message(struct smtp_filter_data *f, ARC_MESSAGE *msg)
 		headerslen = (size_t) (dkimsig - body);
 		headers = strndup(body, headerslen);
 	} else {
+		bbs_warning("Failed to find end of headers in message\n");
 		headers = strdup(body);
 		headerslen = strlen(body);
 	}
