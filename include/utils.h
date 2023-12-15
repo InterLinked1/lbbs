@@ -266,8 +266,8 @@ FILE *bbs_mkftemp(char *template, mode_t mode);
 
 /*!
  * \brief Efficiently copy part (or all) of a file between two file descriptors
- * \param srcfd File descriptor from which to copy
- * \param destfd Destination file descriptor
+ * \param srcfd File descriptor from which to copy. Must be a regular file.
+ * \param destfd Destination file descriptor. Must be a regular file.
  * \param start Offset from start, in bytes, from which to start copying
  * \param bytes Number of bytes to copy, starting from start
  * \retval -1 on failure, number of bytes copied on success
@@ -277,7 +277,7 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes); /* gcc has fd_ar
 /*!
  * \brief Efficiently copy data between two file descriptors.
  * \param fd_in Input fd. Must NOT be a pipe.
- * \param fd_out Output fd.
+ * \param fd_out Output fd. Must be a pipe.
  * \param len Number of bytes to copy
  * \retval -1 on failure, number of bytes copied on success
  */

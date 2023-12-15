@@ -30,11 +30,74 @@
 #include "include/node.h"
 #include "include/user.h"
 
+#include "include/transfer.h"
+
 #define DEFAULT_FINGER_PORT 79
 
 static int finger_port = DEFAULT_FINGER_PORT;
 
 static int allusersallowed = 0;
+
+/*!
+ * \brief Print a file's contents to a file descriptor
+ * \param wfd File descriptor to which to write.
+ * \param filename Name of file. Assumed to exist.
+ * \param endl Line endings to enforce (NULL if no conversion needed)
+ * \param maxlines Maximum number of lines to print. 0 for no limit. Only supported if endl is not NULL.
+ * \param maxbytes Maximum number of bytes to print. 0 for no limit.
+ * \retval 0 on success, -1 on failure
+ */
+static int print_file(int wfd, const char *filename, const char *endl, int maxlines, size_t maxbytes)
+{
+	int res;
+
+	if (!endl && !maxbytes) {
+		res = bbs_send_file(filename, wfd) <= 0 ? -1 : 0;
+	} else if (!endl) {
+		/* maxbytes != 0 */
+		int fd = open(filename, O_RDONLY);
+		if (fd < 0) {
+			bbs_warning("Failed to open(%s): %s\n", filename, strerror(errno));
+			return -1;
+		}
+		res = bbs_sendfile(wfd, fd, NULL, maxbytes) <= 0 ? -1 : 0;
+		close(fd);
+	} else {
+		/* Read line by line so we can do line ending conversions. */
+		char buf[1024];
+		int lines = 0;
+		size_t written = 0;
+		size_t endlen = strlen(endl);
+		FILE *fp = fopen(filename, "r");
+		if (!fp) {
+			bbs_warning("Failed to fopen(%s): %s\n", filename, strerror(errno));
+			return -1;
+		}
+		while ((fgets(buf, sizeof(buf), fp))) {
+			bbs_term_line(buf);
+			if (maxlines && lines++ >= maxlines) {
+				bbs_debug(1, "Exceeded maximum lines allowed\n");
+				break;
+			}
+			if (maxbytes) {
+				size_t linebytes = strlen(buf);
+				written += linebytes + endlen;
+				/* We could truncate the line early,
+				 * to be more precise,
+				 * or we could just abort now. */
+				if (written > maxbytes) {
+					bbs_debug(1, "Exceeded maximum bytes allowed\n");
+					break;
+				}
+			}
+			bbs_writef(wfd, "%s%s", buf, endl);
+		}
+		res = 0;
+		fclose(fp);
+	}
+
+	return res;
+}
 
 static void *finger_handler(void *varg)
 {
@@ -97,11 +160,32 @@ static void *finger_handler(void *varg)
 	if (!strlen_zero(username)) {
 		if (bbs_user_dump(node->fd, username, 4)) {
 			bbs_debug(1, "No such user: %s\n", username);
+		} else {
+			char pfile[256];
+			unsigned int userid;
+			/* If user exists, also display project and plan, if available */
+			userid = bbs_userid_from_username(username);
+			if (!bbs_transfer_home_config_file(userid, ".project", pfile, sizeof(pfile))) {
+				bbs_node_fd_writef(node, node->fd, "Project: ");
+				if (print_file(node->fd, pfile, "\r\n", 1, 128)) {
+					/* If it failed, add a new line ourselves. */
+					bbs_node_fd_writef(node, node->fd, "\r\n");
+				}
+			}
+			if (!bbs_transfer_home_config_file(userid, ".plan", pfile, sizeof(pfile))) {
+				/* If the user wants the plan to begin on its own line,
+				 * then the first line of the plan can simply be a line break. */
+				bbs_node_fd_writef(node, node->fd, "Plan: ");
+				print_file(node->fd, pfile, "\r\n", 10, 512);
+				/* Don't really care if there's a line break here or not */
+			} else {
+				bbs_node_fd_writef(node, node->fd, "No Plan.\r\n");
+			}
 		}
 	} else {
 		/* All users */
 		if (!allusersallowed) {
-			bbs_dprintf(node->fd, "Finger online user list denied\r\n"); /* Other finger servers don't seem to do this, but the RFC says to... */
+			bbs_node_fd_writef(node, node->fd, "Finger online user list denied\r\n"); /* Other finger servers don't seem to do this, but the RFC says to... */
 		} else {
 			bbs_users_dump(node->fd, 4);
 		}

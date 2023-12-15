@@ -116,8 +116,8 @@ Additionally, regardless of how the BBS is started, the sysop console can be acc
 
 **WARNING:** Note that anyone that can access the :code:`rsysop` program is able to perform sysop tasks on the BBS. Even if the BBS is not running as root, it should be running under an account that is secured to the sysop.
 
-Configuration
-~~~~~~~~~~~~~
+System Configuration
+~~~~~~~~~~~~~~~~~~~~
 
 Configuration of LBBS and modules are done entirely through INI config files. Different parts of LBBS have their own config files, as does each module that uses one.
 
@@ -197,6 +197,21 @@ Each sample config file documents all available options. Refer to the sample con
 
 Additionally, the MailScript rules engine uses a script file called :code:`.rules` in the root maildir and the user's root maildir for manipulating messages.
 A sample MailScript rules file is in :code:`configs/.rules` (though this is not a config file, but a sample rule script file).
+
+User Configuration
+~~~~~~~~~~~~~~~~~~
+
+User configuration goes in :code:`~/.config`, which is a subdirectory of each user's BBS home directory (unrelated to any system home directories).
+
+Users can edit these files either via the BBS shell (if configured by the sysop) or via any enabled file transfer protocols (e.g. FTP, FTPS, SFTP).
+
+* :code:`.imapremote` - IMAP client proxy configuration
+
+* :code:`.oauth.conf` - OAuth authentication configuration (used for IMAP client proxy and SMTP submission)
+
+* :code:`.plan` - UNIX .plan file, used by the Finger protocol
+
+* :code:`.project` - UNIX .project file, used by the Finger protocol. Limited to 1 line.
 
 Network Login Services
 ~~~~~~~~~~~~~~~~~~~~~~
