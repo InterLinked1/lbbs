@@ -145,6 +145,14 @@ static int sql_fetch_strings(const char *username, const char *channel, void cb(
 		}
 
 		while (MYSQL_NEXT_ROW(stmt)) {
+			/* If a row is empty, set the string to empty.
+			 * We need to do this per record, not just once at the beginning,
+			 * since a column could be non-NULL for one record and then NULL for another. */
+			for (i = 0; i < num_fields; i++) {
+				if (bind_null[i]) {
+					strfields[i][0] = '\0';
+				}
+			}
 			cb(username, bind_strings, rownum++, data); /* Only call on success */
 			res = 0;
 		}
@@ -215,6 +223,14 @@ static int sql_fetch_strings2(const char *username, const char *channel, const c
 		}
 
 		while (MYSQL_NEXT_ROW(stmt)) {
+			/* If a row is empty, set the string to empty.
+			 * We need to do this per record, not just once at the beginning,
+			 * since a column could be non-NULL for one record and then NULL for another. */
+			for (i = 0; i < num_fields; i++) {
+				if (bind_null[i]) {
+					strfields[i][0] = '\0';
+				}
+			}
 			cb(username, bind_strings, rownum++, data); /* Only call on success */
 			res = 0;
 		}
@@ -620,11 +636,35 @@ static void chanserv_info(const char *username, char *msg)
 	}
 }
 
+static void chanserv_invite(const char *username, char *channel)
+{
+	int res;
+
+	if (strlen_zero(channel)) {
+		chanserv_notice(username, "	Insufficient parameters for INVITE");
+		chanserv_notice(username, "Syntax: INFO <#channel>");
+		return;
+	}
+
+	/* Only channel operators can invite themselves to a channel */
+	res = channel_unauthorized(channel, username, CHANNEL_USER_MODE_OP);
+	if (res > 0) {
+		/* Channel is already registered with ChanServ */
+		chanserv_notice(username, "You are not authorized to perform this operation.");
+		return;
+	} else if (res < 0) {
+		chanserv_notice(username, "%s is not registered.", channel);
+		return;
+	}
+
+	chanserv_send("INVITE %s %s", username, channel);
+}
+
 static struct chanserv_subcmd chanserv_set_cmds[] =
 {
 	{ "ENTRYMSG", "Sets the channel entry message.", "SET ENTRYMSG allows you to change or set a message sent to all users joining the channel.\r\n" "Syntax: SET <#channel> ENTRYMSG [message]" },
 	{ "GUARD", "Sets whether or not services will inhabit the channel.", "SET GUARD allows you to have ChanServ join your channel.\r\nSyntax: SET <#channel> GUARD ON|OFF" },
-	{ "MLOCK", "Sets channel mode lock.", "MLOCK (or \"mode lock\") allows you to enforce a set of modes on a channel." },
+	{ "MLOCK", "Sets channel mode lock.", "MLOCK (or \"mode lock\") allows you to enforce a set of modes on a channel.\r\nSyntax: SET <#channel> MLOCK [modes]" },
 	{ "KEEPTOPIC", "Enables topic retention.", "SET KEEPTOPIC enables restoration of the old topic after the channel has become empty.\r\nIn some cases, it may revert topic changes after services outages, so it is\r\nnot recommended to turn this on if your channel tends to never empty." }
 };
 
@@ -709,6 +749,8 @@ static void chanserv_set(const char *username, char *msg)
 			if (!strlen_zero(params)) {
 				chanserv_send("MODE %s %s", channel, params);
 			} /* else, leave any existing modes intact if MLOCK if removed. */
+		} else {
+			chanserv_notice(username, "SET MLOCK operation failed.");
 		}
 	} else {
 		chanserv_notice(username, "Invalid ChanServ SET subcommand.");
@@ -863,6 +905,9 @@ static struct chanserv_cmd chanserv_cmds[] =
 		"Syntax: HELP <command> [parameters]" },
 	{ "INFO", chanserv_info, NULL, 0, "Displays information on registrations.", "INFO displays channel information such as registration time, flags, and other details.\r\n"
 		"Syntax: INFO <#channel>" },
+	{ "INVITE", chanserv_invite, NULL, 0, "Invites you to a channel.", "INVITE requests services to invite you to the specified channel\r\n"
+		"This is useful if you use the +i channel mode.\r\n"
+		"Syntax: INVITE <#channel>" },
 	{ "OP", chanserv_op, NULL, 0, "Gives channel ops to a user.", "These commands perform status mode changes on a channel.\r\n"
 		"If the last parameter is omitted the action is performed on the person requesting the command.\r\n"
 		"Syntax: OP <#channel> [nickname]" },

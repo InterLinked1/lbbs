@@ -40,7 +40,7 @@
 
 #include "include/mod_irc_client.h"
 
-#define MIN_VERSION_REQUIRED SEMVER_VERSION(0,2,0)
+#define MIN_VERSION_REQUIRED SEMVER_VERSION(0,2,1)
 #if SEMVER_VERSION(LIRC_VERSION_MAJOR, LIRC_VERSION_MINOR, LIRC_VERSION_PATCH) < MIN_VERSION_REQUIRED
 #error "lirc version too old"
 #endif
@@ -536,6 +536,28 @@ static void handle_ctcp(struct bbs_irc_client *client, struct irc_client *ircl, 
 			irc_client_ctcp_reply(ircl, irc_msg_prefix(msg), ctcp, timebuf);
 		}
 		break;
+	case CTCP_DCC:
+		/* Unimplemented:
+		 * Because DCC can't be used to send files by users behind a firewall,
+		 * it is not very useful these days:
+		 * https://www.kvirc.net/doc/doc_dcc_connection.html
+		 *
+		 * DCC SEND is more interesting than DCC CHAT,
+		 * since it can be used to send files peer-to-peer.
+		 * However, the receiver has to connect to the server (like with FTP active mode),
+		 * making this virtually unusable in the modern Internet.
+		 *
+		 * A neat idea I had was to allow IRC uses to DCC SEND to a bot,
+		 * with integrated relay support, e.g. IRC users could use DCC SEND
+		 * to upload files as attachments to Discord, for example.
+		 * But since users are expected to be behind NAT and a firewall,
+		 * use of DCC is altogether unlikely to work for anyone.
+		 *
+		 * Ambassador does support size, e.g.:
+		 * SEND filename 1216726377 52309 193273
+		 */
+		bbs_warning("Direct Client Connection CHAT/SEND not supported\n");
+		break;
 	default:
 		bbs_warning("Unhandled CTCP extended data type: %s\n", irc_ctcp_name(irc_msg_ctcp_type(msg)));
 	}
@@ -722,9 +744,14 @@ int __attribute__ ((format (gnu_printf, 4, 5))) bbs_irc_client_msg(const char *c
 	 * which is what would happen now.
 	 * Omitting this for now is more correct, but means messages from the local IRC server
 	 * will get relayed to other actual IRC channels but not to door_irc, for example.
-	 * Might work if we skip the sending module? Or maybe not??? */
+	 * Might work if we skip the sending module? Or maybe not???
+	 *
+	 * This is delicate though: with just RELAY_TO_IRC, messages work between
+	 * relay modules and door_irc but not with the native net_irc IRC network.
+	 */
 
-	res = msg_relay(client, RELAY_TO_IRC, IRC_CMD_PRIVMSG, channel, prefix, 0, buf, (size_t) len); /* No prefix */
+	bbs_debug(7, "Relaying message: client '%s' channel '%s' prefix '%s'\n", clientname, channel, S_IF(prefix));
+	res = msg_relay(client, RELAY_TO_IRC | RELAY_FROM_IRC, IRC_CMD_PRIVMSG, channel, prefix, 0, buf, (size_t) len); /* No prefix */
 
 	RWLIST_UNLOCK(&irc_clients);
 	return res;

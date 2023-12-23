@@ -2314,7 +2314,7 @@ static void handle_nick(struct irc_user *user, char *s)
 	}
 
 	if (bbs_user_exists(s)) {
-		send_numeric(user, 433, "%s :Nickname is already in use.\r\n", s);
+		send_numeric(user, 433, "%s\r\n", s);
 		send_reply(user, "NOTICE AUTH :*** This nickname is registered. Please choose a different nickname, or identify using NickServ\r\n");
 		/* Client will need to send NS IDENTIFY <password> or PRIVMSG NickServ :IDENTIFY <password> */
 	} else { /* Nickname is not claimed. It's fine. */
@@ -3445,6 +3445,8 @@ int __chanserv_exec(void *mod, char *s)
 		handle_modes(user, s);
 	} else if (!strcasecmp(command, "TOPIC")) {
 		handle_topic(user, s);
+	} else if (!strcasecmp(command, "INVITE")) {
+		handle_invite(user, s);
 	} else {
 		bbs_error("Command '%s' is unsupported for ChanServ\n", command);
 		return -1;

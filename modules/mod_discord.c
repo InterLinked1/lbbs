@@ -1287,12 +1287,12 @@ static int cli_discord_users(struct bbs_cli_args *a)
 	int i = 0;
 	struct user *u;
 
-	bbs_dprintf(a->fdout, "%-20s %7s %5s\n", "User", "Status", "Roles");
+	bbs_dprintf(a->fdout, "%-40s %7s %5s\n", "User", "Status", "Roles");
 	RWLIST_RDLOCK(&users);
 	RWLIST_TRAVERSE(&users, u, entry) {
 		char buf[48];
 		snprintf(buf, sizeof(buf), "%s#%s\n", u->username, u->discriminator);
-		bbs_dprintf(a->fdout, "%-20s %7s %5d" "%s\n", buf, status_str(u->status), u->numroles, u->admin ? " [Guild Admin]" : "");
+		bbs_dprintf(a->fdout, "%-40s %7s %5d" "%s\n", buf, status_str(u->status), u->numroles, u->admin ? " [Guild Admin]" : "");
 		i++;
 	}
 	RWLIST_UNLOCK(&users);
