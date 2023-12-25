@@ -55,6 +55,7 @@ struct imap_client {
 	/* Cached */
 	char *mailbox;		/* Current mailbox name */
 	uint32_t messages;	/* Cached number of messages in selected mailbox */
+	uint32_t unseen;	/* Cached number of unseen messages in selected mailbox */
 	uint32_t uid;		/* Current message UID */
 	/* Flags */
 	unsigned int authenticated:1;	/* Logged in yet? */
@@ -2029,6 +2030,12 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 	json_object_set_new(root, "page", json_integer(page));
 	json_object_set_new(root, "numpages", json_integer(numpages));
 
+	if (!strcmp(reason, "EXPUNGE")) {
+		json_object_set_new(root, "messages", json_integer(client->messages));
+		/* This is only accurate when we have just asked for it, e.g. when an EXPUNGE occurs */
+		json_object_set_new(root, "unseen", json_integer(client->unseen));
+	}
+
 	arr = json_array();
 	json_object_set_new(root, "data", arr);
 
@@ -3466,9 +3473,10 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 				 * receive all the IDLE data.
 				 * Thus, explicitly ask for the # of messages in the currently selected mailboxes.
 				 * Again, this is something clients SHOULD NOT do, but we kind of have to... */
-				uint32_t num_total = 0;
-				res = client_status_basic(client->imap, client->mailbox, NULL, &num_total);
+				uint32_t num_total = 0, num_unseen = 0;
+				res = client_status_basic(client->imap, client->mailbox, &num_unseen, &num_total);
 				client->messages = num_total;
+				client->unseen = num_unseen;
 				REFRESH_LISTING("EXPUNGE");
 			}
 		} else if (!strcmp(command, "MOVE")) {
