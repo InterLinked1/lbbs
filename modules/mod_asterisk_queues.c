@@ -259,7 +259,7 @@ static int update_queue_stats(void)
 	}
 
 	/* If only one queue needs to be refreshed, then just ask for that one by name. */
-	resp = ami_action("QueueStatus", stale_queues == 1 ? lastq->name : "");
+	resp = ami_action(bbs_ami_session(), "QueueStatus", stale_queues == 1 ? lastq->name : "");
 
 	if (!resp || !resp->success) {
 		RWLIST_UNLOCK(&queues);
@@ -376,7 +376,7 @@ static void prune_dead_calls(int querydead)
 			if (call->dead) {
 				continue;
 			}
-			val = ami_action_getvar("queueuniq", call->channel);
+			val = ami_action_getvar(bbs_ami_session(), "queueuniq", call->channel);
 			if (!val) {
 				call->dead = 1;
 				bbs_debug(3, "Queue call %d is now dead\n", call->id);
@@ -537,12 +537,12 @@ static int ami_callback(struct ami_event *e, const char *eventname)
 			bbs_error("Missing mandatory fields\n");
 			return -1;
 		}
-		queueid = ami_action_getvar(queue_id_var, channel);
+		queueid = ami_action_getvar(bbs_ami_session(), queue_id_var, channel);
 		if (strlen_zero(queueid)) {
 			return -1;
 		}
-		ani2 = ami_action_getvar("CALLERID(ani2)", channel);
-		dnis = ami_action_getvar("CALLERID(DNID)", channel);
+		ani2 = ami_action_getvar(bbs_ami_session(), "CALLERID(ani2)", channel);
+		dnis = ami_action_getvar(bbs_ami_session(), "CALLERID(DNID)", channel);
 		new_call(queue, atoi(queueid), atoi(S_IF(ani2)), channel, callerid, callername, dnis);
 		free_if(queueid);
 		free_if(ani2);
@@ -610,7 +610,7 @@ static int ami_callback(struct ami_event *e, const char *eventname)
 static int update_member_stats(struct agent *agent)
 {
 	int i;
-	struct ami_response *resp = ami_action("QueueStatus", "Member:%d", agent->id);
+	struct ami_response *resp = ami_action(bbs_ami_session(), "QueueStatus", "Member:%d", agent->id);
 
 	/* We still need to initialize the agent-specific stats for all queues.
 	 * This response will be smaller (maybe much smaller) than asking for everything. */

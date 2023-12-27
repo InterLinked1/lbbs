@@ -26,6 +26,13 @@
 
 #include <cami/cami.h>
 
+#define MIN_VERSION_REQUIRED SEMVER_VERSION(0,2,0)
+#if !defined(CAMI_VERSION_MAJOR)
+#error "libcami version too old"
+#elif SEMVER_VERSION(CAMI_VERSION_MAJOR, CAMI_VERSION_MINOR, CAMI_VERSION_PATCH) < MIN_VERSION_REQUIRED
+#pragma message "libcami version " XSTR(CAMI_VERSION_MAJOR) "." XSTR(CAMI_VERSION_MINOR) "." XSTR(CAMI_VERSION_PATCH) " too old"
+#endif
+
 #include "include/module.h"
 #include "include/config.h"
 #include "include/alertpipe.h"
@@ -35,6 +42,7 @@
 #include "include/mod_asterisk_ami.h"
 
 static int asterisk_up = 0;
+static struct ami_session *ami_session = NULL;
 
 struct ami_callback {
 	int (*callback)(struct ami_event *event, const char *eventname);
@@ -44,6 +52,11 @@ struct ami_callback {
 
 static RWLIST_HEAD_STATIC(callbacks, ami_callback);
 
+struct ami_session *bbs_ami_session(void)
+{
+	return ami_session;
+}
+
 static void set_ami_status(int up)
 {
 	asterisk_up = up;
@@ -51,10 +64,12 @@ static void set_ami_status(int up)
 }
 
 /*! \brief Callback function executing asynchronously when new events are available */
-static void ami_callback(struct ami_event *event)
+static void ami_callback(struct ami_session *ami, struct ami_event *event)
 {
 	struct ami_callback *cb;
 	const char *eventname;
+
+	UNUSED(ami);
 
 	eventname = ami_keyvalue(event, "Event");
 	bbs_assert_exists(eventname);
@@ -138,7 +153,7 @@ static int cli_ami_loglevel(struct bbs_cli_args *a)
 		bbs_dprintf(a->fdout, "Invalid log level: %d\n", newlevel);
 		return -1;
 	}
-	ami_set_debug_level(newlevel);
+	ami_set_debug_level(ami_session, newlevel);
 	return 0;
 }
 
@@ -158,9 +173,11 @@ static int load_config(int open_logfile);
 static int unloading = 0;
 static int reconnecting = 0;
 
-static void ami_disconnect_callback(void)
+static void ami_disconnect_callback(struct ami_session *ami)
 {
 	int sleep_ms = 500;
+
+	UNUSED(ami);
 
 	set_ami_status(0);
 	bbs_warning("Asterisk Manager Interface connection lost\n");
@@ -213,6 +230,7 @@ static int load_config(int open_logfile)
 	char username[64];
 	char password[92];
 	char logfile[512];
+	unsigned int loglevel = 0;
 
 	cfg = bbs_config_load("mod_asterisk_ami.conf", 1);
 	if (!cfg) {
@@ -226,27 +244,30 @@ static int load_config(int open_logfile)
 	if (open_logfile && !bbs_config_val_set_str(cfg, "logging", "logfile", logfile, sizeof(logfile))) {
 		ami_log_fd = open(logfile, O_CREAT | O_APPEND);
 		if (ami_log_fd != -1) {
-			unsigned int loglevel;
 			bbs_config_val_set_uint(cfg, "logging", "loglevel", &loglevel);
 			if (loglevel > 10) {
 				bbs_warning("Maximum AMI debug level is 10\n");
 			}
-			ami_set_debug_level((int) loglevel);
 		} else {
 			bbs_error("Failed to open %s for AMI logging: %s\n", logfile, strerror(errno));
 		}
 	}
 
 	if (!res) {
-		if (ami_connect(hostname, 0, ami_callback, ami_disconnect_callback)) {
+		ami_session = ami_connect(hostname, 0, ami_callback, ami_disconnect_callback);
+		if (!ami_session) {
 			bbs_error("AMI connection failed to %s\n", hostname);
 			res = -1;
-		} else if (ami_action_login(username, password)) {
+			goto cleanup;
+		}
+		ami_set_debug_level(ami_session, (int) loglevel);
+		if (ami_action_login(ami_session, username, password)) {
 			bbs_error("AMI login failed for user %s@%s\n", username, hostname);
 			res = -1;
 		}
 	}
 
+cleanup:
 	/* Fully purge the password from memory */
 	bbs_memzero(password, strlen(password));
 	bbs_config_free(cfg);
@@ -283,7 +304,8 @@ static int unload_module(void)
 	} while (reconnecting);
 
 	bbs_cli_unregister_multiple(cli_commands_ami);
-	ami_disconnect();
+	ami_disconnect(ami_session);
+	ami_destroy(ami_session);
 	close_if(ami_log_fd);
 	bbs_alertpipe_close(ami_alert_pipe);
 	return 0;

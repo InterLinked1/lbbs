@@ -17,6 +17,13 @@
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
+/*!
+ * \brief Get the global AMI session
+ * \return NULL if no AMI session active
+ * \return ami session
+ */
+struct ami_session *bbs_ami_session(void);
+
 int __bbs_ami_callback_register(int (*callback)(struct ami_event *event, const char *eventname), void *mod);
 
 /*!
