@@ -85,6 +85,8 @@ static int validatespf = 1;
 static int add_received_msa = 0;
 static int archivelists = 1;
 
+struct stringlist starttls_exempt;
+
 static FILE *smtplogfp = NULL;
 static unsigned int smtp_log_level = 5;
 static pthread_mutex_t loglock = PTHREAD_MUTEX_INITIALIZER;
@@ -483,6 +485,19 @@ static int smtp_ip_mismatch(const char *actual, const char *hostname)
 	return 0;
 }
 
+static int exempt_from_starttls(struct smtp_session *smtp)
+{
+	const char *s;
+	struct stringitem *i = NULL;
+
+	while ((s = stringlist_next(&starttls_exempt, &i))) {
+		if (bbs_ip_match_ipv4(smtp->node->ip, s)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 {
 	if (strlen_zero(s)) {
@@ -540,7 +555,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		smtp_reply0_nostatus(smtp, 250, "%s at your service [%s]", bbs_hostname(), smtp->node->ip);
 		/* The RFC says that login should only be allowed on secure connections,
 		 * but if we don't allow login on plaintext connections, then they're functionally useless. */
-		if (smtp->secure || !require_starttls) {
+		if (smtp->secure || !require_starttls || exempt_from_starttls(smtp)) {
 			smtp_reply0_nostatus(smtp, 250, "AUTH LOGIN PLAIN"); /* RFC-complaint way */
 			smtp_reply0_nostatus(smtp, 250, "AUTH=LOGIN PLAIN"); /* For non-compliant user agents, e.g. Outlook 2003 and older */
 		}
@@ -2501,7 +2516,7 @@ static int smtp_process(struct smtp_session *smtp, char *s, struct readline_data
 		} else {
 			smtp_reply(smtp, 454, 5.5.1, "STARTTLS may not be repeated");
 		}
-	} else if (smtp->msa && !smtp->secure && require_starttls) {
+	} else if (smtp->msa && !smtp->secure && require_starttls && !exempt_from_starttls(smtp)) {
 		smtp_reply(smtp, 504, 5.5.4, "Must issue a STARTTLS command first");
 	} else if (!strcasecmp(command, "AUTH")) {
 		/* https://www.samlogic.net/articles/smtp-commands-reference-auth.htm */
@@ -2509,7 +2524,7 @@ static int smtp_process(struct smtp_session *smtp, char *s, struct readline_data
 			smtp_reply(smtp, 503, 5.5.1, "Bad sequence of commands.");
 		} else if (bbs_user_is_registered(smtp->node->user)) { /* Already authed */
 			smtp_reply(smtp, 503, 5.7.0, "Already authenticated, no identity changes permitted");
-		} else if (!smtp->secure && require_starttls) {
+		} else if (!smtp->secure && require_starttls && !exempt_from_starttls(smtp)) {
 			/* Must not offer PLAIN or LOGIN on insecure connections. */
 			smtp_reply(smtp, 504, 5.5.4, "Must issue a STARTTLS command first");
 		} else {
@@ -2719,6 +2734,14 @@ static int load_config(void)
 				val = bbs_keyval_val(keyval);
 				add_authorized_relay(key, val);
 			}
+		} else if (!strcmp(bbs_config_section_name(section), "starttls_exempt")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				key = bbs_keyval_key(keyval);
+				val = bbs_keyval_val(keyval);
+				if (!stringlist_contains(&starttls_exempt, key)) {
+					stringlist_push(&starttls_exempt, key);
+				}
+			}
 		} else if (strcasecmp(bbs_config_section_name(section), "general")) {
 			bbs_warning("Invalid section name '%s'\n", bbs_config_section_name(section));
 		}
@@ -2796,6 +2819,7 @@ static int unload_module(void)
 	}
 	stringlist_empty(&blacklist);
 	RWLIST_WRLOCK_REMOVE_ALL(&authorized_relays, entry, relay_free);
+	stringlist_empty(&starttls_exempt);
 	if (!RWLIST_EMPTY(&filters)) {
 		bbs_error("Filter(s) still registered at unload?\n");
 	}
