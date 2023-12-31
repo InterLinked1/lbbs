@@ -1913,6 +1913,10 @@ static void http_handler(struct bbs_node *node, int secure)
 		if (http.res->code == HTTP_BAD_REQUEST) {
 			/* This is almost certainly an illegitimate request. */
 			bbs_event_dispatch(http.node, EVENT_NODE_BAD_REQUEST);
+		} else if (http.res->code == HTTP_NOT_FOUND && strcmp(http.req->uri, "/favicon.ico")) {
+			/* Penalize 404s since this is likely bots scanning.
+			 * Exempt favicon.ico since Chromium browsers request this automatically. */
+			bbs_event_dispatch(http.node, EVENT_NODE_BAD_REQUEST);
 		}
 		http_request_cleanup(http.req);
 	} while (res >= 0 && http.req->keepalive);
