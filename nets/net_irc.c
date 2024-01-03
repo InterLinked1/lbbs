@@ -385,7 +385,6 @@ int irc_chanserv_register(void (*privmsg)(const char *username, char *msg), void
 		return -1;
 	}
 	/* This is the right order for these operations. Use reverse order for unregister. */
-	bbs_module_ref(BBS_MODULE_SELF, 2); /* Bump our module ref count */
 	chanserv_mod = mod;
 	chanserv_privmsg = privmsg;
 	chanserv_eventcb = eventcb;
@@ -401,7 +400,6 @@ int irc_chanserv_unregister(void (*privmsg)(const char *username, char *msg))
 	chanserv_privmsg = NULL;
 	chanserv_eventcb = NULL;
 	chanserv_mod = NULL;
-	bbs_module_unref(BBS_MODULE_SELF, 2);
 	return 0;
 }
 

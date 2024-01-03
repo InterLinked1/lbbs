@@ -705,7 +705,9 @@ static void fetch_channels(struct discord *client, u64snowflake guild_id, u64sno
 
 #ifdef RELAY_RCV_EVENTUALLY_FAILS
 		if (echoguildid && echoguildid == guild_id) {
-			if (!strcmp(echochan, channel->name)) {
+			if (strlen_zero(echochan)) {
+				bbs_warning("Echo guild ID is %lu but no echo channel parsed?\n", echoguildid);
+			} else if (!strcmp(echochan, channel->name)) {
 				echochanid = channel->id;
 				bbs_debug(1, "Channel %lu/%lu configured as echo channel\n", echoguildid, echochanid);
 			}
