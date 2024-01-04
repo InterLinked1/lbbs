@@ -1345,7 +1345,7 @@ unsigned long maildir_indicate_expunged(enum mailbox_event_type type, struct bbs
 	maxmodseq = __maildir_modseq(mbox, directory, 1); /* Must be atomic */
 
 	snprintf(modseqfile, sizeof(modseqfile), "%s/../.modseqs", directory);
-	fp = fopen(modseqfile, "wb");
+	fp = fopen(modseqfile, "ab");
 	if (!fp) {
 		bbs_error("Failed to open %s\n", modseqfile);
 		mailbox_uid_unlock(mbox);
@@ -1361,10 +1361,13 @@ unsigned long maildir_indicate_expunged(enum mailbox_event_type type, struct bbs
 	 */
 
 	/* Check if we created the file or opened an existing one by getting our position.
+	 * Per fopen(3), when appending, stream is positioned at end of file.
+	 * Thus, we can use the current file offset when opening the file to determine if we just created it
+	 * (this assumes that we didn't create an empty file early, i.e. if the file existed it was non-empty).
 	 * If the file is empty, write HIGHESTMODSEQ first, then the expunged messages.
 	 * Otherwise, append all the expunged messages, then seek back to the beginning and overwrite HIGHESTMODSEQ. */
 	if (fseek(fp, -1, SEEK_END)) {
-		bbs_warning("fseek failed: %s\n", strerror(errno));
+		bbs_warning("fseek(%s) failed: %s\n", modseqfile, strerror(errno));
 	}
 	pos = ftell(fp);
 	bbs_debug(7, "Current position is %ld\n", pos);

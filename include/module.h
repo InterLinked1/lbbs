@@ -45,9 +45,35 @@ struct bbs_module_info {
 const char *bbs_module_name(const struct bbs_module *mod);
 
 /*!
+ * \brief Whether this module is currently being unloaded
+ * \retval 1 if unload actively being attempted
+ * \retval 0 if not
+ */
+#define bbs_module_is_unloading() __bbs_module_is_unloading(BBS_MODULE_SELF)
+
+int __bbs_module_is_unloading(struct bbs_module *mod);
+
+/*!
+ * \brief Whether this module is currently being unloaded and/or the BBS is shutting down
+ * \retval 1 if unload or shutdown actively being attempted
+ * \retval 0 if not
+ */
+#define bbs_module_is_shutting_down() __bbs_module_is_shutting_down(BBS_MODULE_SELF)
+
+int __bbs_module_is_shutting_down(struct bbs_module *mod);
+
+/*!
+ * \brief Get load time of this module
+ * \return Module load time in epoch time
+ */
+#define bbs_module_load_time() __bbs_module_load_time(BBS_MODULE_SELF)
+
+time_t __bbs_module_load_time(struct bbs_module *mod);
+
+/*!
  * \brief Increment ref count of a module
  * \param mod
- * \param pairid A unique ID only used once in a source file for a corresponding ref/unref sequence.
+ * \param pairid A positive unique ID only used once in a source file for a corresponding ref/unref sequence.
  */
 #define bbs_module_ref(mod, pairid) __bbs_module_ref(mod, pairid, BBS_MODULE_SELF, __FILE__, __LINE__, __func__)
 
@@ -56,7 +82,7 @@ struct bbs_module *__bbs_module_ref(struct bbs_module *mod, int pair, void *refm
 /*!
  * \brief Decrement ref count of a module
  * \param mod
- * \param pairid A unique ID only used once in a source file for a corresponding ref/unref sequence.
+ * \param pairid A positive unique ID only used once in a source file for a corresponding ref/unref sequence.
  */
 #define bbs_module_unref(mod, pairid) __bbs_module_unref(mod, pairid, BBS_MODULE_SELF, __FILE__, __LINE__, __func__)
 

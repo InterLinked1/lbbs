@@ -759,12 +759,17 @@ int __bbs_start_tcp_listener(int port, const char *name, void *(*handler)(void *
 	 * One is better performance.
 	 * The other is that we probably don't want to accept TCP connections before we're fully started, anyways. */
 	pthread_mutex_lock(&tcp_start_lock);
-	if (!bbs_is_fully_started()) {
-		if (!tcp_multilistener_started) {
-			bbs_register_startup_callback(start_tcp_multilistener, STARTUP_PRIORITY_URGENT);
-			tcp_multilistener_started = 1;
-		}
-	} else {
+	if (!tcp_multilistener_started) {
+		/* The first time that a module requests a TCP listener,
+		 * we'll need to either queue the multilistener thread to be started
+		 * once startup completes, or go ahead and start it immediately. */
+		bbs_run_when_started(start_tcp_multilistener, STARTUP_PRIORITY_URGENT);
+		tcp_multilistener_started = 1;
+	} else if (bbs_is_fully_started()) {
+		/* If we already started the listener,
+		 * we only need to signal it if the BBS is already started.
+		 * If it's still starting, the listener thread won't start
+		 * listening until startup finishes anyways. */
 		bbs_alertpipe_write(multilistener_alertpipe);
 	}
 	pthread_mutex_unlock(&tcp_start_lock);

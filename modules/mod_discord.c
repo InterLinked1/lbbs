@@ -846,6 +846,25 @@ static void dump_user(struct bbs_node *node, int fd, const char *requsername, st
 	irc_relay_who_response(node, fd, "Discord", requsername, combined, unique, !(u->status == STATUS_IDLE || u->status == STATUS_OFFLINE));
 }
 
+static inline int discord_is_ready(void)
+{
+	time_t now, diff;
+
+	if (likely(discord_ready)) {
+		return 1;
+	}
+
+	bbs_debug(1, "Discord is %s, dropping message\n", bbs_module_is_shutting_down() ? "shutting down" : "not yet ready");
+	now = time(NULL);
+	diff = now - bbs_module_load_time();
+	if (diff > 60 && !bbs_module_is_shutting_down()) {
+		/* We shouldn't need more than a minute to initialize.
+		 * If this happens, something is probably wrong. */
+		bbs_warning("Discord not yet initialized after %lu seconds?\n", diff);
+	}
+	return 0;
+}
+
 /*!
  * \param fd
  * \param numeric: 318 = WHOIS, 352 = WHO, 353 = NAMES
@@ -865,8 +884,7 @@ static int nicklist(struct bbs_node *node, int fd, int numeric, const char *requ
 	bbs_debug(9, "Nicklist callback for %d: %s/%s\n", numeric, S_IF(channel), S_IF(user));
 #endif
 
-	if (!discord_ready) {
-		bbs_debug(1, "Discord is not yet ready, dropping message\n");
+	if (!discord_is_ready()) {
 		return 0;
 	} else if (!expose_members) {
 		bbs_debug(5, "Ignoring since exposemembers=no\n");
@@ -973,8 +991,7 @@ static int discord_send(const char *channel, const char *sender, const char *msg
 	struct chan_pair *cp;
 	int handled = 0;
 
-	if (!discord_ready) {
-		bbs_debug(1, "Discord is not yet ready, dropping message\n");
+	if (!discord_is_ready()) {
 		return 0;
 	} else if (!(cp = find_mapping_irc(channel))) {
 		/* No relay exists for this channel */

@@ -451,7 +451,7 @@ ssize_t __imap_client_send_log(struct imap_client *client, int log, const char *
 int __imap_client_send_wait_response(struct imap_client *client, int fd, int ms, int echo, int lineno, int (*cb)(struct imap_client *client, const char *buf, size_t len, void *cbdata), void *cbdata, const char *fmt, ...)
 {
 	char *buf;
-	int len, res;
+	int len, res = -1;
 	char tagbuf[15];
 	int taglen;
 	va_list ap;
@@ -484,11 +484,16 @@ int __imap_client_send_wait_response(struct imap_client *client, int fd, int ms,
 #else
 	UNUSED(lineno);
 #endif
-	bbs_write(client->client.wfd, tagbuf, (unsigned int) taglen);
-	bbs_write(client->client.wfd, buf, (unsigned int) len);
+	if (bbs_write(client->client.wfd, tagbuf, (unsigned int) taglen) < 0) {
+		goto cleanup;
+	} else if (bbs_write(client->client.wfd, buf, (unsigned int) len)) {
+		goto cleanup;
+	}
 	imap_debug(7, "=> %s%s", tagbuf, buf);
 	/* Read until we get the tagged respones */
 	res = client_command_passthru(client, fd, tagbuf, taglen, buf, len, ms, echo, cb, cbdata) <= 0;
+
+cleanup:
 	free(buf);
 	return res;
 }

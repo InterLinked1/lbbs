@@ -61,9 +61,13 @@ struct bbs_module {
 	struct {
 		/*! This module is awaiting a reload. */
 		unsigned int reloadpending:1;
+		/*! Actively being unloaded. */
+		unsigned int unloading:1;
 	} flags;
 	/*! Load order */
 	int loadorder;
+	/*! Load time */
+	time_t loadtime;
 	/* Module references */
 	struct module_refs refs;
 	/* Next entry */
@@ -160,7 +164,7 @@ void bbs_module_unregister(const struct bbs_module_info *info)
 	}
 }
 
-static void log_module_ref(struct bbs_module *mod, int pair, void *refmod, const char *file, int line, const char *func, int diff)
+static int log_module_ref(struct bbs_module *mod, int pair, void *refmod, const char *file, int line, const char *func, int diff)
 {
 	struct bbs_module_reference *r;
 
@@ -193,9 +197,12 @@ static void log_module_ref(struct bbs_module *mod, int pair, void *refmod, const
 		RWLIST_TRAVERSE_SAFE_END;
 		if (!r) { /* Should only happen legitimately if allocation failed during ref */
 			bbs_error("Failed to find existing reference for %s with pair ID %d\n", mod->name, pair - 1);
+			RWLIST_UNLOCK(&mod->refs);
+			return -1;
 		}
 	}
 	RWLIST_UNLOCK(&mod->refs);
+	return 0;
 }
 
 struct bbs_module *__bbs_module_ref(struct bbs_module *mod, int pair, void *refmod, const char *file, int line, const char *func)
@@ -208,7 +215,20 @@ struct bbs_module *__bbs_module_ref(struct bbs_module *mod, int pair, void *refm
 
 void __bbs_module_unref(struct bbs_module *mod, int pair, void *refmod, const char *file, int line, const char *func)
 {
-	log_module_ref(mod, pair, refmod, file, line, func, -1); /* Do this first, since module can't disappear while it has a positive refcount */
+	int res;
+	bbs_soft_assert(pair >= 0);
+	res = log_module_ref(mod, pair, refmod, file, line, func, -1); /* Do this first, since module can't disappear while it has a positive refcount */
+	if (pair <= 0) {
+		/* Observed in one stack trace where the pair ID was 0.
+		 * In this case, the assertion below failed, suggesting
+		 * that that the refcount was never bumped for the module
+		 * in the first place.
+		 * Thus, this is likely to be invalid and we should just return.
+		 * Worst that can happen is this was a false positive and
+		 * now mod can never be unloaded while the BBS is running. */
+		bbs_error("Not decrementing refcount of %s (pair ID: %d, decref %s)\n", bbs_module_name(mod), pair, res ? "failed" : "succeeded");
+		return;
+	}
 	bbs_atomic_fetchadd_int(&mod->usecount, -1);
 	bbs_assert(mod->usecount >= 0);
 
@@ -721,7 +741,7 @@ static void dec_refcounts(struct bbs_module *mod)
 		dependencies = dependencies_buf;
 		while ((dependency = strsep(&dependencies, ","))) {
 			struct bbs_module *m = find_resource(dependency);
-			bbs_debug(9, "No longer depend on module %s\n", dependency);
+			bbs_debug(9, "%s no longer depends on module %s\n", bbs_module_name(mod), dependency);
 			if (m) {
 				__bbs_unrequire_module(m, mod);
 			} else {
@@ -729,6 +749,33 @@ static void dec_refcounts(struct bbs_module *mod)
 			}
 		}
 	}
+}
+
+int __bbs_module_is_unloading(struct bbs_module *mod)
+{
+	bbs_assert_exists(mod);
+	return mod->flags.reloadpending;
+}
+
+int __bbs_module_is_shutting_down(struct bbs_module *mod)
+{
+	bbs_assert_exists(mod);
+	return mod->flags.reloadpending || bbs_is_shutting_down();
+}
+
+time_t __bbs_module_load_time(struct bbs_module *mod)
+{
+	bbs_assert_exists(mod);
+	return mod->loadtime;
+}
+
+static inline int __unload_module(struct bbs_module *mod)
+{
+	int res;
+	mod->flags.reloadpending = 1;
+	res = mod->info->unload();
+	mod->flags.reloadpending = 0;
+	return res;
 }
 
 static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int force, int *usecount, struct stringlist *restrict removed)
@@ -775,7 +822,7 @@ static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int for
 	}
 
 	bbs_debug(1, "Unloading %s\n", mod->name);
-	res = mod->info->unload();
+	res = __unload_module(mod);
 	if (res) {
 		bbs_warning("Firm unload failed for %s\n", mod->name);
 		if (force <= 2) {
@@ -1401,7 +1448,7 @@ static void unload_modules_helper(void)
 			}
 			/* Module doesn't appear to still be in use (though internally it may be), so try to unload the module. */
 			bbs_debug(2, "Attempting to unload %s\n", mod->name);
-			if (mod->info->unload()) {
+			if (__unload_module(mod)) {
 				/* Could actually still be cleaning up. Skip on this pass. */
 				bbs_debug(2, "Module %s declined to unload, skipping on pass %d\n", mod->name, passes + 1);
 				if (passes == 0) {
