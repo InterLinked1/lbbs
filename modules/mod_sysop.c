@@ -122,8 +122,12 @@ static RWLIST_HEAD_STATIC(consoles, sysop_console);
 
 static int cli_testemail(struct bbs_cli_args *a)
 {
-	UNUSED(a);
-	return bbs_mail(0, NULL, NULL, NULL, "Test Email", "This is a test email.\r\n\t--LBBS");
+	const char *recipient = a->argc >= 2 ? a->argv[1] : NULL; /* Default to sysop */
+	return bbs_mail(0, recipient, NULL, NULL, "Test Email",
+		"This is a test message generated automatically by the LBBS bulletin board system.\r\n"
+		"You may be receiving this to test deliverability to your address after a previous delivery failure.\r\n"
+		"If you have any questions, please contact your sysop directly; please, do not respond to this message.\r\n"
+		"\t--LBBS\r\n"); /* Email should end with CR LF */
 }
 
 static int cli_mtrim(struct bbs_cli_args *a)
@@ -547,7 +551,7 @@ static int cli_consoles(struct bbs_cli_args *a)
 static struct bbs_cli_entry cli_commands_sysop[] = {
 	BBS_CLI_COMMAND(cli_consoles, "consoles", 1, "List all sysop console sessions", NULL),
 	/* General */
-	BBS_CLI_COMMAND(cli_testemail, "testemail", 1, "Send test email to sysop", NULL),
+	BBS_CLI_COMMAND(cli_testemail, "testemail", 1, "Send test email to a recipient (default: sysop)", "testemail <address>"),
 	BBS_CLI_COMMAND(cli_mtrim, "mtrim", 1, "Manually release free memory at the top of the heap", NULL),
 	BBS_CLI_COMMAND(cli_assert, "assert", 1, "Manually trigger an assertion (WARNING: May abort BBS)", NULL),
 	BBS_CLI_COMMAND(cli_copyright, "copyright", 1, "Show copyright notice", NULL),

@@ -1479,10 +1479,10 @@ static int any_failures(struct smtp_delivery_outcome **f, int n)
 int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, int srcfd, int offset, size_t msglen, struct smtp_delivery_outcome **f, int n)
 {
 	int i, res;
-	char tmpattach[256] = "/tmp/bouncemsgXXXXXX";
+	char tmpattach[32] = "/tmp/bouncemsgXXXXXX";
 	FILE *fp;
 	char bound[256];
-	char date[256], date2[256];
+	char date[50], date2[50];
 	struct tm tm;
 	size_t length;
 	time_t t = time(NULL);
@@ -1502,7 +1502,10 @@ int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, in
 	/* Format of the non-delivery report is defined in RFC 3461 Section 6 */
 
 	/* Generate headers */
-	strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S %z", localtime_r(&t, &tm));
+	if (!strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S %z", localtime_r(&t, &tm))) {
+		bbs_error("strftime failed\n");
+		date[0] = '\0';
+	}
 	fprintf(fp, "Date: %s\r\n", date);
 	fprintf(fp, "From: \"Mail Delivery Subsystem\" <mailer-daemon@%s>\r\n", bbs_hostname());
 	fprintf(fp, "Subject: %s\r\n", delivery_subject_name(f, n));
@@ -1601,11 +1604,11 @@ int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, in
 		bbs_copy_file(srcfd, fileno(fp), offset, (int) msglen);
 
 		fseek(fp, 0, SEEK_END);
-		fprintf(fp, "--%s\r\n", bound);
 	}
 
 	fflush(fp);
-	fprintf(fp, "--%s--\r\n", bound); /* Last one, so include 2 dashes after the boundary */
+	/* Include CR LF first, in case original message did not end with one, to prevent boundary from leaking onto last line of attachment. */
+	fprintf(fp, "\r\n--%s--\r\n", bound); /* Last one, so include 2 dashes after the boundary */
 	length = (size_t) ftell(fp);
 	fclose(fp);
 
