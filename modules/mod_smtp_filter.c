@@ -60,19 +60,28 @@ static int prepend_received(struct smtp_filter_data *f)
 /*! \brief Separate callback for adding Received header to relayed messages, since these could have multiple recipients */
 static int relay_filter_cb(struct smtp_filter_data *f)
 {
-	if (smtp_is_exempt_relay(f->smtp)) {
-		const char *prot;
-		char timestamp[40];
-		char hostname[256];
+	const char *prot;
+	char timestamp[40];
+	char hostname[256];
 
-		prot = smtp_protname(f->smtp);
-		smtp_timestamp(smtp_received_time(f->smtp), timestamp, sizeof(timestamp));
-		bbs_get_hostname(f->node->ip, hostname, sizeof(hostname)); /* Look up the sending IP */
-		/* The first hostname is the HELO/EHLO hostname.
-		 * The second one is the reverse DNS hostname */
-		smtp_filter_write(f, "Received: from %s (%s [%s])\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
-			f->helohost, hostname, f->node->ip, bbs_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
-	}
+	prot = smtp_protname(f->smtp);
+	smtp_timestamp(smtp_received_time(f->smtp), timestamp, sizeof(timestamp));
+	bbs_get_hostname(f->node->ip, hostname, sizeof(hostname)); /* Look up the sending IP */
+
+	/* This is to cover:
+	 * 1) The case of other MTAs that relay their outgoing mail through us (smtp_is_exempt_relay(f->smtp) == 1)
+	 * 2) The case of other MTAs that receive their incoming mail through us.
+	 *
+	 * Note: Originally, only the first case was handled here, but when the ability to forward incoming mail was
+	 * added, the second case had to be considered, and as I can't think of any counterexamples
+	 * to messages running the OUT filter being one or the other, the conditional was removed altogether.
+	 * If we find later that there are OUT messages for which we shouldn't be adding a "Received" header,
+	 * then this logic may need to be refined.
+	 *
+	 * The first hostname is the HELO/EHLO hostname. The second one is the reverse DNS hostname */
+	smtp_filter_write(f, "Received: from %s (%s [%s])\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
+		f->helohost, hostname, f->node->ip, bbs_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
+
 	return 0;
 }
 

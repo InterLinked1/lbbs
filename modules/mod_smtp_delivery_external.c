@@ -73,6 +73,68 @@ struct mx_record {
 
 RWLIST_HEAD(mx_records, mx_record);
 
+/*! \brief List of stringlists for static routes */
+struct static_relay {
+	const char *hostname;
+	struct stringlist routes;
+	RWLIST_ENTRY(static_relay) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(static_relays, static_relay);
+
+/*! \note static_relays should be locked when calling */
+static int add_static_relay(const char *hostname, const char *route)
+{
+	struct static_relay *s;
+
+	s = calloc(1, sizeof(*s) + strlen(hostname) + 1);
+	if (ALLOC_FAILURE(s)) {
+		return -1;
+	}
+	strcpy(s->data, hostname); /* Safe */
+	s->hostname = s->data;
+	stringlist_push_list(&s->routes, route);
+	RWLIST_INSERT_TAIL(&static_relays, s, entry);
+	return 0;
+}
+
+static void free_static_relay(struct static_relay *s)
+{
+	stringlist_empty(&s->routes);
+	free(s);
+}
+
+/*!
+ * \brief Check whether a domain has a defined static route
+ * \internal
+ * \param domain
+ * \return Static routes to use, if defined (override MX lookup)
+ * \return NULL if no static routes (do MX lookup instead)
+ */
+static struct stringlist *get_static_routes(const char *domain)
+{
+	struct stringlist *routes = NULL;
+	struct static_relay *s, *wildcard = NULL;
+
+	RWLIST_RDLOCK(&static_relays);
+	RWLIST_TRAVERSE(&static_relays, s, entry) {
+		if (!strcmp(s->hostname, "*")) {
+			wildcard = s;
+		} else if (!strcasecmp(s->hostname, domain)) {
+			break;
+		}
+	}
+	s = s ? s : wildcard; /* The '*' route is special, and should match last. */
+	if (s) {
+		/* It's okay to return this directly,
+		 * since once added, routes are not removed until the module unloads. */
+		routes = &s->routes;
+	}
+	RWLIST_UNLOCK(&static_relays);
+	return routes;
+}
+
 /*!
  * \brief Fill the results list with the MX results in order of priority
  * \param domain
@@ -97,7 +159,8 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 	if (strlen_zero(domain)) {
 		bbs_error("Missing domain\n");
 		return -1;
-	} else if (bbs_hostname_is_ipv4(domain)) { /* IP address? Just send it there */
+	}
+	if (bbs_hostname_is_ipv4(domain)) { /* IP address? Just send it there */
 		stringlist_push_tail(results, domain);
 		return 0;
 	}
@@ -514,10 +577,15 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 
 	tx->prot = "smtp";
 	tx->stage = "MAIL FROM";
-	if (bbs_hostname_is_ipv4(domain)) {
-		smtp_client_send(&client, "MAIL FROM:<%s@[%s]>\r\n", user, domain); /* Domain literal for IP address */
+	if (!strlen_zero(user)) {
+		if (bbs_hostname_is_ipv4(domain)) {
+			smtp_client_send(&client, "MAIL FROM:<%s@[%s]>\r\n", user, domain); /* Domain literal for IP address */
+		} else {
+			smtp_client_send(&client, "MAIL FROM:<%s@%s>\r\n", user, domain); /* sender lacks <>, but recipient has them */
+		}
 	} else {
-		smtp_client_send(&client, "MAIL FROM:<%s@%s>\r\n", user, domain); /* sender lacks <>, but recipient has them */
+		/* For non-delivery / postmaster sending */
+		smtp_client_send(&client, "MAIL FROM:<>\r\n");
 	}
 	SMTP_CLIENT_EXPECT_FINAL(&client, MIN_MS(5), "250"); /* RFC 5321 4.5.3.2.2 */
 	tx->stage = "RCPT FROM";
@@ -588,6 +656,13 @@ static void smtp_trigger_dsn(enum smtp_delivery_action action, struct smtp_tx_da
 	char *tmp;
 	char status[15] = ""; /* Status code should be the 2nd word? */
 	struct smtp_delivery_outcome *f;
+
+	if (strlen_zero(from)) {
+		/* If this was triggered by a non-delivery report,
+		 * then bail out now, since we can't
+		 * reply if there was no MAIL FROM */
+		return;
+	}
 
 	if (action != DELIVERY_FAILED && !notify_queue) {
 		return;
@@ -681,6 +756,7 @@ static int mailq_file_load(struct mailq_file *restrict mqf, const char *dir_name
 	mqf->realfrom = strchr(mqf->from, '<');
 	mqf->realto = strchr(mqf->recipient, '<');
 
+	/* The actual MAIL FROM can be empty if this is a nondelivery report, so we do not validate that it is non-empty (it may be the empty string). */
 	if (!mqf->realfrom) {
 		bbs_error("Mail queue file MAIL FROM missing <>: %s\n", mqf->fullname);
 		goto cleanup;
@@ -702,7 +778,7 @@ static int mailq_file_load(struct mailq_file *restrict mqf, const char *dir_name
 	}
 
 	safe_strncpy(mqf->todup, mqf->realto, sizeof(mqf->todup));
-	if (strlen_zero(mqf->realfrom) || bbs_parse_email_address(mqf->todup, NULL, &mqf->user, &mqf->domain)) {
+	if (bbs_parse_email_address(mqf->todup, NULL, &mqf->user, &mqf->domain)) {
 		bbs_error("Address parsing error\n");
 		goto cleanup;
 	}
@@ -737,12 +813,48 @@ static int mailq_file_punt(struct mailq_file *mqf)
 	return 0;
 }
 
+/*! \brief Attempt to send a message via SMTP using static routes instead of doing an MX lookup */
+static int try_static_delivery(struct smtp_session *smtp, struct smtp_tx_data *tx, struct stringlist *static_routes, const char *sender, const char *recipient, int datafd, off_t offset, size_t writelen, char *buf, size_t len)
+{
+	const char *route;
+	struct stringitem *i = NULL;
+	int res = -1; /* Make condition true to start */
+	/* Static routes override doing an MX lookup for this domain.
+	 * We have one or more hostnames (with an optionally specified port) to try. */
+	while (res < 0 && (route = stringlist_next(static_routes, &i))) {
+		char hostbuf[256];
+		const char *colon;
+		const char *hostname = route;
+		int port = DEFAULT_SMTP_PORT;
+
+		/* If this is a hostname:port, we need to split.
+		 * Otherwise, we can use it directly. This is more efficient,
+		 * since no allocations or copies are performed in this case. */
+		colon = strchr(route, ':');
+		if (colon) {
+			/* There's a port specified. */
+			bbs_strncpy_until(hostbuf, route, sizeof(hostbuf), ':'); /* Copy just the hostname */
+			hostname = hostbuf;
+			colon++;
+			if (!strlen_zero(colon)) {
+				port = atoi(colon); /* Parse the port */
+				if (port < 1) {
+					bbs_warning("Invalid port in route '%s', defaulting to port %d\n", route, DEFAULT_SMTP_PORT);
+					port = DEFAULT_SMTP_PORT;
+				}
+			}
+		}
+
+		res = try_send(smtp, tx, hostname, port, 0, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, offset, writelen, buf, len);
+	}
+	return res;
+}
+
 static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 {
 	int res = -1;
-	char *hostname;
 	char buf[256] = "";
-	struct stringlist mxservers;
+	struct stringlist *static_routes;
 	struct smtp_tx_data tx;
 	struct mailq_file mqf_stack, *mqf = &mqf_stack;
 
@@ -755,44 +867,49 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 		return 0;
 	}
 
-	bbs_debug(5, "Processing message from %s -> %s\n", mqf->realfrom, mqf->realto);
-	bbs_debug(2, "Retrying delivery of %s (%s -> %s)\n", mqf->fullname, mqf->realfrom, mqf->realto);
-
-	memset(&mxservers, 0, sizeof(mxservers));
-	res = lookup_mx_all(mqf->domain, &mxservers);
-	if (res == -2) {
-		smtp_tx_data_reset(&tx);
-		/* Do not set tx.hostname, since this message is from us, not the remote server */
-		snprintf(buf, sizeof(buf), "Domain does not accept mail");
+	static_routes = get_static_routes(mqf->domain);
+	bbs_debug(2, "Processing message %s (%s -> %s), via %s for '%s'\n", mqf->fullname, mqf->realfrom, mqf->realto, static_routes ? "static route(s)" : "MX lookup", mqf->domain);
+	if (static_routes) {
+		res = try_static_delivery(NULL, &tx, static_routes, mqf->realfrom, mqf->realto, fileno(mqf->fp), (off_t) mqf->metalen, mqf->size - mqf->metalen, buf, sizeof(buf));
 	} else {
-		if (res) {
-			char a_ip[256];
-			/* Fall back to trying the A record */
-			if (bbs_resolve_hostname(mqf->domain, a_ip, sizeof(a_ip))) {
-				bbs_warning("Recipient domain %s does not have any MX or A records\n", mqf->domain);
-				/* Just treat as undeliverable at this point and return to sender (if no MX records now, probably won't be any the next time we try) */
-				/* Send a delivery failure response, then delete the file. */
-				bbs_warning("Delivery of message %s from %s to %s has failed permanently (no MX records)\n", mqf->fullname, mqf->realfrom, mqf->realto);
-				/* There isn't any SMTP level error at this point yet, we have to make our own error message for the bounce message */
-				snprintf(buf, sizeof(buf), "No MX record(s) located for hostname %s", mqf->domain); /* No status code */
-				smtp_tx_data_reset(&tx);
-				/* Do not set tx.hostname, since this message is from us, not the remote server */
-				smtp_trigger_dsn(DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen);
-				fclose(mqf->fp);
-				bbs_delete_file(mqf->fullname);
-				return 0;
+		struct stringlist mxservers;
+		memset(&mxservers, 0, sizeof(mxservers));
+		res = lookup_mx_all(mqf->domain, &mxservers);
+		if (res == -2) {
+			smtp_tx_data_reset(&tx);
+			/* Do not set tx.hostname, since this message is from us, not the remote server */
+			snprintf(buf, sizeof(buf), "Domain does not accept mail");
+		} else {
+			char *hostname;
+			if (res) {
+				char a_ip[256];
+				/* Fall back to trying the A record */
+				if (bbs_resolve_hostname(mqf->domain, a_ip, sizeof(a_ip))) {
+					bbs_warning("Recipient domain %s does not have any MX or A records\n", mqf->domain);
+					/* Just treat as undeliverable at this point and return to sender (if no MX records now, probably won't be any the next time we try) */
+					/* Send a delivery failure response, then delete the file. */
+					bbs_warning("Delivery of message %s from %s to %s has failed permanently (no MX records)\n", mqf->fullname, mqf->realfrom, mqf->realto);
+					/* There isn't any SMTP level error at this point yet, we have to make our own error message for the bounce message */
+					snprintf(buf, sizeof(buf), "No MX record(s) located for hostname %s", mqf->domain); /* No status code */
+					smtp_tx_data_reset(&tx);
+					/* Do not set tx.hostname, since this message is from us, not the remote server */
+					smtp_trigger_dsn(DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen);
+					fclose(mqf->fp);
+					bbs_delete_file(mqf->fullname);
+					return 0;
+				}
+				bbs_warning("Recipient domain %s does not have any MX records, falling back to A record %s\n", mqf->domain, a_ip);
+				stringlist_push(&mxservers, a_ip);
 			}
-			bbs_warning("Recipient domain %s does not have any MX records, falling back to A record %s\n", mqf->domain, a_ip);
-			stringlist_push(&mxservers, a_ip);
-		}
 
-		/* Try all the MX servers in order, if necessary */
-		res = -1; /* Make condition true to start */
-		while (res < 0 && (hostname = stringlist_pop(&mxservers))) {
-			res = try_send(NULL, &tx, hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, mqf->realfrom, mqf->realto, NULL, NULL, 0, fileno(mqf->fp), (off_t) mqf->metalen, mqf->size - mqf->metalen, buf, sizeof(buf));
-			free(hostname);
+			/* Try all the MX servers in order, if necessary */
+			res = -1; /* Make condition true to start */
+			while (res < 0 && (hostname = stringlist_pop(&mxservers))) {
+				res = try_send(NULL, &tx, hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, mqf->realfrom, mqf->realto, NULL, NULL, 0, fileno(mqf->fp), (off_t) mqf->metalen, mqf->size - mqf->metalen, buf, sizeof(buf));
+				free(hostname);
+			}
+			stringlist_empty(&mxservers);
 		}
-		stringlist_empty(&mxservers);
 	}
 
 	mqf->newretries = atoi(mqf->retries); /* This is actually current # of retries, not new # yet */
@@ -961,6 +1078,8 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 
 	if (smtp_is_exempt_relay(smtp)) {
 		bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp_node(smtp)->ip, smtp_from_domain(smtp));
+	} else if (get_static_routes(domain)) {
+		bbs_debug(2, "%s has static route(s)\n", domain);
 	} else {
 		bbs_assert(fromlocal); /* Shouldn't have slipped through to this point otherwise */
 		if (!accept_relay_out) {
@@ -981,10 +1100,17 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 	}
 
 	if (!always_queue && !send_async) {  /* Try to send it synchronously */
-		struct stringlist mxservers;
-		/* Start by trying to deliver it directly, immediately, right now. */
+		struct stringlist mxservers, *static_routes;
+
 		memset(&mxservers, 0, sizeof(mxservers));
-		res = lookup_mx_all(domain, &mxservers);
+
+		/* Start by trying to deliver it directly, immediately, right now. */
+		static_routes = get_static_routes(domain);
+		if (static_routes) {
+			res = 0; /* If a route exists, we're good so far */
+		} else {
+			res = lookup_mx_all(domain, &mxservers);
+		}
 		if (res == -2) {
 			smtp_abort(resp, 553, 5.1.2, "Recipient domain does not accept mail.");
 			return -1;
@@ -994,12 +1120,16 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 			return -1;
 		}
 #ifndef BUGGY_SEND_IMMEDIATE
-		/* Try all the MX servers in order, if necessary */
-		while (res < 0 && (hostname = stringlist_pop(&mxservers))) {
-			res = try_send(NULL, &tx, hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, srcfd, datalen, size - datalen, buf, sizeof(buf));
-			free(hostname);
+		if (static_routes) {
+			res = try_static_delivery(NULL, &tx, static_routes, mqf->realfrom, mqf->realto, fileno(mqf->fp), (off_t) mqf->metalen, mqf->size - mqf->metalen, buf, sizeof(buf));
+		} else {
+			/* Try all the MX servers in order, if necessary */
+			while (res < 0 && (hostname = stringlist_pop(&mxservers))) {
+				res = try_send(NULL, &tx, hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, srcfd, datalen, size - datalen, buf, sizeof(buf));
+				free(hostname);
+			}
+			stringlist_empty(&mxservers);
 		}
-		stringlist_empty(&mxservers);
 
 		if (res > 0) { /* Permanent error */
 			/* We've still got the sender on the socket, just relay the error. */
@@ -1144,6 +1274,8 @@ static int relay(struct smtp_session *smtp, struct smtp_msg_process *mproc, int 
 
 static int exists(struct smtp_session *smtp, struct smtp_response *resp, const char *address, const char *user, const char *domain, int fromlocal, int tolocal)
 {
+	struct stringlist *s;
+
 	UNUSED(smtp);
 	UNUSED(address);
 	UNUSED(user);
@@ -1152,6 +1284,13 @@ static int exists(struct smtp_session *smtp, struct smtp_response *resp, const c
 	if (smtp_is_exempt_relay(smtp)) {
 		/* Allow an external host to relay messages for a domain if it's explicitly authorized to. */
 		bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp_node(smtp)->ip, smtp_from_domain(smtp));
+		return 1;
+	}
+
+	s = get_static_routes(domain);
+	if (s) {
+		/* e.g. we accept mail for another domain by forwarding it to an SMTP MTA that isn't directly exposed to the Internet */
+		bbs_debug(2, "%s has static route(s) defined\n", domain);
 		return 1;
 	}
 
@@ -1173,6 +1312,7 @@ struct smtp_delivery_agent extdeliver = {
 static int load_config(void)
 {
 	struct bbs_config *cfg;
+	struct bbs_config_section *section = NULL;
 
 	cfg = bbs_config_load("net_smtp.conf", 1);
 	if (!cfg) {
@@ -1191,6 +1331,17 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "smtp", "requirestarttls", &require_starttls_out);
 
 	bbs_config_val_set_true(cfg, "privs", "relayout", &minpriv_relay_out);
+
+	while ((section = bbs_config_walk(cfg, section))) {
+		if (!strcmp(bbs_config_section_name(section), "static_relays")) {
+			struct bbs_keyval *keyval = NULL;
+			RWLIST_WRLOCK(&static_relays);
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				add_static_relay(bbs_keyval_key(keyval), bbs_keyval_val(keyval));
+			}
+			RWLIST_UNLOCK(&static_relays);
+		} /* else, ignore. net_smtp will warn about any invalid section names in net_smtp.conf. */
+	}
 
 	if (queue_interval < 60) {
 		queue_interval = 60;
@@ -1225,6 +1376,7 @@ static int unload_module(void)
 	bbs_pthread_cancel_kill(queue_thread);
 	bbs_pthread_join(queue_thread, NULL);
 	pthread_mutex_destroy(&queue_lock);
+	RWLIST_WRLOCK_REMOVE_ALL(&static_relays, entry, free_static_relay);
 	return res;
 }
 

@@ -179,7 +179,7 @@ static int arc_filter_sign_cb(struct smtp_filter_data *f)
 	/* We sign the message using the same domain that will be used in the outgoing MAIL FROM. */
 	domain = bbs_strcnext(f->from, '@');
 	if (!domain) {
-		bbs_warning("No FROM domain?\n");
+		/* If this is a non-delivery report, MAIL FROM is empty so there's no sender at all */
 		return 0;
 	}
 

@@ -85,6 +85,7 @@ static int validatespf = 1;
 static int add_received_msa = 0;
 static int archivelists = 1;
 
+struct stringlist trusted_relays;
 struct stringlist starttls_exempt;
 
 static FILE *smtplogfp = NULL;
@@ -481,6 +482,19 @@ static int smtp_ip_mismatch(const char *actual, const char *hostname)
 	}
 	if (!bbs_ip_match_ipv4(actual, hostname)) {
 		return -1;
+	}
+	return 0;
+}
+
+static int is_trusted_relay(const char *hostname)
+{
+	const char *s;
+	struct stringitem *i = NULL;
+
+	while ((s = stringlist_next(&trusted_relays, &i))) {
+		if (bbs_ip_match_ipv4(hostname, s)) {
+			return 1;
+		}
 	}
 	return 0;
 }
@@ -1106,12 +1120,12 @@ int smtp_is_exempt_relay(struct smtp_session *smtp)
 
 int smtp_should_validate_spf(struct smtp_session *smtp)
 {
-	return validatespf && !smtp->fromlocal && !smtp->tflags.relay;
+	return validatespf && !smtp->fromlocal && !smtp->tflags.relay && (!smtp->node || !is_trusted_relay(smtp->node->ip));
 }
 
 int smtp_should_validate_dkim(struct smtp_session *smtp)
 {
-	return smtp->tflags.dkimsig && !smtp->tflags.relay;
+	return smtp->tflags.dkimsig && !smtp->tflags.relay && (!smtp->node || !is_trusted_relay(smtp->node->ip));
 }
 
 int smtp_is_message_submission(struct smtp_session *smtp)
@@ -1404,7 +1418,7 @@ struct smtp_delivery_outcome *smtp_delivery_outcome_new(const char *recipient, c
 	statuslen = STRING_ALLOC_SIZE(status);
 	errorlen = STRING_ALLOC_SIZE(error);
 
-	f = calloc(1, sizeof(*f) + reciplen + hostlen + iplen + errorlen);
+	f = calloc(1, sizeof(*f) + reciplen + hostlen + iplen + statuslen + errorlen);
 	if (ALLOC_FAILURE(f)) {
 		return NULL;
 	}
@@ -1479,6 +1493,7 @@ static int any_failures(struct smtp_delivery_outcome **f, int n)
 int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, int srcfd, int offset, size_t msglen, struct smtp_delivery_outcome **f, int n)
 {
 	int i, res;
+	char full_sender[256];
 	char tmpattach[32] = "/tmp/bouncemsgXXXXXX";
 	FILE *fp;
 	char bound[256];
@@ -1490,16 +1505,24 @@ int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, in
 	/* The MAIL FROM in non-delivery reports is always empty to prevent looping.
 	 * e.g. if we're bouncing a bounce, just abort. */
 	if (strlen_zero(sender)) {
-		bbs_warning("MAIL FROM is empty, cannot deliver non-delivery report\n");
+		bbs_warning("MAIL FROM is empty, cannot deliver delivery status notification\n");
 		return -1;
 	}
+
+	if (*sender == '<') {
+		/* Sender arrives without <>, so this shouldn't happen */
+		safe_strncpy(full_sender, sender, sizeof(full_sender));
+	} else {
+		snprintf(full_sender, sizeof(full_sender), "<%s>", sender);
+	}
+	bbs_debug(1, "Sending SMTP DSN to %s\n", full_sender);
 
 	fp = bbs_mkftemp(tmpattach, 0600);
 	if (!fp) {
 		return -1;
 	}
 
-	/* Format of the non-delivery report is defined in RFC 3461 Section 6 */
+	/* Format of the DSN report is defined in RFC 3461 Section 6 */
 
 	/* Generate headers */
 	if (!strftime(date, sizeof(date), "%a, %d %b %Y %H:%M:%S %z", localtime_r(&t, &tm))) {
@@ -1509,7 +1532,7 @@ int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, in
 	fprintf(fp, "Date: %s\r\n", date);
 	fprintf(fp, "From: \"Mail Delivery Subsystem\" <mailer-daemon@%s>\r\n", bbs_hostname());
 	fprintf(fp, "Subject: %s\r\n", delivery_subject_name(f, n));
-	fprintf(fp, "To: %s\r\n", sender);
+	fprintf(fp, "To: %s\r\n", full_sender);
 	fprintf(fp, "Auto-Submitted: auto-replied\r\n");
 	fprintf(fp, "Message-ID: <%s-%u-%d@%s>\r\n", "LBBS-NDR", (unsigned int) random(), (int) getpid(), bbs_hostname());
 	fprintf(fp, "MIME-Version: 1.0\r\n");
@@ -1612,7 +1635,7 @@ int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, in
 	length = (size_t) ftell(fp);
 	fclose(fp);
 
-	res = nosmtp_deliver(tmpattach, "", sender, length); /* Empty MAIL FROM for DSNs */
+	res = nosmtp_deliver(tmpattach, "", full_sender, length); /* Empty MAIL FROM for DSNs */
 	unlink(tmpattach);
 	return res;
 }
@@ -2719,12 +2742,14 @@ static int load_config(void)
 	bbs_config_val_set_port(cfg, "msa", "port", &msa_port);
 	bbs_config_val_set_true(cfg, "msa", "requirestarttls", &require_starttls);
 
-	/* Blacklist */
+/*! \brief Section names that are valid but not parsed in the loop */
+#define VALID_SECT_NAME(s) (!strcmp(s, "general") || !strcmp(s, "logging") || !strcmp(s, "privs") || !strcmp(s, "smtp") || !strcmp(s, "smtps") || !strcmp(s, "msa") || !strcmp(s, "static_relays"))
+
 	while ((section = bbs_config_walk(cfg, section))) {
 		struct bbs_keyval *keyval = NULL;
 		const char *key, *val;
 
-		if (!strcmp(bbs_config_section_name(section), "blacklist")) {
+		if (!strcmp(bbs_config_section_name(section), "blacklist")) { /* Blacklist */
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				key = bbs_keyval_key(keyval);
 				if (!stringlist_contains(&blacklist, key)) {
@@ -2737,6 +2762,13 @@ static int load_config(void)
 				val = bbs_keyval_val(keyval);
 				add_authorized_relay(key, val);
 			}
+		} else if (!strcmp(bbs_config_section_name(section), "trusted_relays")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				key = bbs_keyval_key(keyval);
+				if (!stringlist_contains(&trusted_relays, key)) {
+					stringlist_push(&trusted_relays, key);
+				}
+			}
 		} else if (!strcmp(bbs_config_section_name(section), "starttls_exempt")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				key = bbs_keyval_key(keyval);
@@ -2745,7 +2777,7 @@ static int load_config(void)
 					stringlist_push(&starttls_exempt, key);
 				}
 			}
-		} else if (strcasecmp(bbs_config_section_name(section), "general")) {
+		} else if (!VALID_SECT_NAME(bbs_config_section_name(section))) {
 			bbs_warning("Invalid section name '%s'\n", bbs_config_section_name(section));
 		}
 	}
@@ -2822,6 +2854,7 @@ static int unload_module(void)
 	}
 	stringlist_empty(&blacklist);
 	RWLIST_WRLOCK_REMOVE_ALL(&authorized_relays, entry, relay_free);
+	stringlist_empty(&trusted_relays);
 	stringlist_empty(&starttls_exempt);
 	if (!RWLIST_EMPTY(&filters)) {
 		bbs_error("Filter(s) still registered at unload?\n");
