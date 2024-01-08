@@ -810,8 +810,27 @@ static int cli_authproviders(struct bbs_cli_args *a)
 	return 0;
 }
 
+static int cli_cachedauth_list(struct bbs_cli_args *a)
+{
+	struct cached_login *l;
+	bbs_dprintf(a->fdout, "%-15s %s\n", "Username", "IP");
+	RWLIST_TRAVERSE(&cached_logins, l, entry) {
+		bbs_dprintf(a->fdout, "%-15s %s\n", S_IF(l->username), S_IF(l->ip));
+	}
+	return 0;
+}
+
+static int cli_cachedauth_clear(struct bbs_cli_args *a)
+{
+	UNUSED(a);
+	RWLIST_WRLOCK_REMOVE_ALL(&cached_logins, entry, cached_login_destroy);
+	return 0;
+}
+
 static struct bbs_cli_entry cli_commands_auth[] = {
 	BBS_CLI_COMMAND(cli_authproviders, "authproviders", 1, "List all auth providers", NULL),
+	BBS_CLI_COMMAND(cli_cachedauth_list, "cachedauth list", 2, "List all cached authentication", NULL),
+	BBS_CLI_COMMAND(cli_cachedauth_clear, "cachedauth clear", 2, "Clear all cached authentication", NULL),
 };
 
 static int check_authproviders(void)

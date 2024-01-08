@@ -999,6 +999,7 @@ int main(int argc, char *argv[])
 	CHECK_INIT(bbs_init_system());
 	CHECK_INIT(bbs_transfer_config_load());
 	CHECK_INIT(bbs_mail_init());
+	CHECK_INIT(bbs_init_auth());
 	CHECK_INIT(bbs_groups_init());
 	CHECK_INIT(bbs_load_menus(0));
 	CHECK_INIT(bbs_init_menu_handlers());
