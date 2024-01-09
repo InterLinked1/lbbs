@@ -32,9 +32,9 @@ static int prepend_received(struct smtp_filter_data *f)
 	const char *prot;
 	char timestamp[40];
 
+	prot = smtp_protname(f->smtp);
 	smtp_timestamp(smtp_received_time(f->smtp), timestamp, sizeof(timestamp));
 
-	prot = smtp_protname(f->smtp);
 	/* We don't include a message ID since we don't generate/use any internally (even though the queue probably should...). */
 	if (smtp_should_preserve_privacy(f->smtp)) {
 		/* For messages received by message submission agents, mask the sender's real IP address */
@@ -50,6 +50,7 @@ static int prepend_received(struct smtp_filter_data *f)
 		 * The second one is the reverse DNS hostname */
 		smtp_filter_write(f, "Received: from %s (%s [%s])\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
 			S_OR(f->helohost, "localhost"),
+			/* Do not use S_COR for the below two: f->node is not a string */
 			f->node ? hostname : "localhost",
 			f->node ? f->node->ip : "127.0.0.1",
 			bbs_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
@@ -66,7 +67,10 @@ static int relay_filter_cb(struct smtp_filter_data *f)
 
 	prot = smtp_protname(f->smtp);
 	smtp_timestamp(smtp_received_time(f->smtp), timestamp, sizeof(timestamp));
-	bbs_get_hostname(f->node->ip, hostname, sizeof(hostname)); /* Look up the sending IP */
+
+	if (f->node) {
+		bbs_get_hostname(f->node->ip, hostname, sizeof(hostname)); /* Look up the sending IP */
+	}
 
 	/* This is to cover:
 	 * 1) The case of other MTAs that relay their outgoing mail through us (smtp_is_exempt_relay(f->smtp) == 1)
@@ -80,7 +84,11 @@ static int relay_filter_cb(struct smtp_filter_data *f)
 	 *
 	 * The first hostname is the HELO/EHLO hostname. The second one is the reverse DNS hostname */
 	smtp_filter_write(f, "Received: from %s (%s [%s])\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
-		f->helohost, hostname, f->node->ip, bbs_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
+		S_OR(f->helohost, "localhost"),
+		/* Do not use S_COR for the below two: f->node is not a string */
+		f->node ? hostname : "localhost",
+		f->node ? f->node->ip : "127.0.0.1",
+		bbs_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
 
 	return 0;
 }
