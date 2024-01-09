@@ -626,6 +626,7 @@ static void handle_session(ssh_event event, ssh_session session)
 	int n;
 	int node_started = 0;
 	int stdoutfd;
+	int is_sftp = 0;
 	long int timeout; /* in seconds */
 	/* We set the user when we have access to the session userdata,
 	 * but we need to attach it the node when we have access to the
@@ -826,6 +827,7 @@ static void handle_session(ssh_event event, ssh_session session)
 		node_started = 1;
 
 		if (!strcmp(cdata.node->protname, "SFTP")) {
+			is_sftp = 1;
 			if (cdata.node && bbs_user_is_registered(cdata.node->user)) {
 				do_sftp(cdata.node, session, sdata.channel);
 			} else {
@@ -876,7 +878,7 @@ static void handle_session(ssh_event event, ssh_session session)
 		bbs_error("Failed to free SSH event fd\n");
 	}
 
-	if (cdata.node && !strcmp(cdata.node->protname, "SFTP")) {
+	if (cdata.node && is_sftp) {
 		bbs_node_exit(cdata.node);
 	}
 
