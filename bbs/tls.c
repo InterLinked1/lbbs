@@ -873,7 +873,19 @@ sslcleanup:
 int ssl_close(SSL *ssl)
 {
 #ifdef HAVE_OPENSSL
-	int res = ssl_unregister_fd(ssl);
+	int sres, res = ssl_unregister_fd(ssl);
+	sres = SSL_shutdown(ssl);
+	if (sres < 0) {
+		int err = SSL_get_error(ssl, sres);
+		bbs_warning("SSL shutdown failed: %s\n", ssl_strerror(err));
+	} else if (!sres) {
+		/* We sent a close notify, but haven't received one from the peer.
+		 * To be properly conformant, a client should send us a close notify,
+		 * but not every client will, and we don't really care if we get one or not,
+		 * so we just continue, rather than calling SSL_read to wait for proper shutdown
+		 * to finish. */
+		bbs_debug(3, "Exiting without receiving close notify from peer\n");
+	} /* else, if sres == 1, shutdown completed successfully. */
 	SSL_free(ssl);
 	return res;
 #else
@@ -901,14 +913,17 @@ static SSL_CTX *tls_ctx_create(const char *cert, const char *key)
 
 	if (SSL_CTX_use_certificate_chain_file(ctx, cert) <= 0) {
 		bbs_error("Could not load certificate file %s: %s\n", cert, ERR_error_string(ERR_get_error(), NULL));
+		SSL_CTX_free(ctx);
 		return NULL;
 	}
 	if (SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM) <= 0) {
 		bbs_error("Could not load private key file %s: %s\n", key, ERR_error_string(ERR_get_error(), NULL));
+		SSL_CTX_free(ctx);
 		return NULL;
 	}
 	if (SSL_CTX_check_private_key(ctx) != 1) {
 		bbs_error("Private key does not match public certificate\n");
+		SSL_CTX_free(ctx);
 		return NULL;
 	}
 	return ctx;
@@ -999,7 +1014,7 @@ static int tls_cleanup(void)
 		ssl_ctx = NULL;
 	}
 	RWLIST_WRLOCK_REMOVE_ALL(&sni_certs, entry, sni_free);
-#endif
+#endif /* HAVE_OPENSSL */
 	return 0;
 }
 

@@ -45,8 +45,6 @@
    ...
    fun:dl_open_worker
    fun:_dl_catch_exception
-   fun:_dl_open
-   fun:dlopen_doit
    ...
 }
 {
@@ -68,16 +66,7 @@
    match-leak-kinds: reachable
    fun:malloc
    fun:_dl_new_object
-   fun:_dl_map_object_from_fd
-   fun:_dl_map_object
-   fun:openaux
-   fun:_dl_catch_exception
-   fun:_dl_map_object_deps
-   fun:dl_open_worker
-   fun:_dl_catch_exception
-   fun:_dl_open
-   fun:dlopen_doit
-   fun:_dl_catch_exception
+   ...
 }
 {
    SSH_MODULE
@@ -100,16 +89,7 @@
    match-leak-kinds: reachable
    fun:calloc
    fun:_dl_new_object
-   fun:_dl_map_object_from_fd
-   fun:_dl_map_object
-   fun:openaux
-   fun:_dl_catch_exception
-   fun:_dl_map_object_deps
-   fun:dl_open_worker
-   fun:_dl_catch_exception
-   fun:_dl_open
-   fun:dlopen_doit
-   fun:_dl_catch_exception
+   ...
 }
 {
    CURL_libgcrypt

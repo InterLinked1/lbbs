@@ -19,11 +19,11 @@ else
 fi
 
 if [ "$1" = "valgrindfg" ]; then
-	exec $VALGRIND --leak-check=full --track-fds=yes --track-origins=yes --show-leak-kinds=all --suppressions=valgrind.supp /usr/sbin/$EXE -cb
+	exec $VALGRIND --leak-check=full --track-fds=yes --track-origins=yes --show-leak-kinds=all --child-silent-after-fork=yes --suppressions=valgrind.supp /usr/sbin/$EXE -cb
 elif [ "$1" = "valgrind" ]; then
-	exec $VALGRIND --leak-check=full --track-fds=yes --track-origins=yes --show-leak-kinds=all --suppressions=valgrind.supp --log-fd=9 /usr/sbin/$EXE -cb 9>valgrind.txt
+	exec $VALGRIND --leak-check=full --track-fds=yes --track-origins=yes --show-leak-kinds=all --child-silent-after-fork=yes --suppressions=valgrind.supp --log-fd=9 /usr/sbin/$EXE -cb 9>valgrind.txt
 elif [ "$1" = "valgrindsupp" ]; then
-	exec $VALGRIND --leak-check=full --track-fds=yes --track-origins=yes --show-leak-kinds=all --suppressions=valgrind.supp --gen-suppressions=all --log-fd=9 /usr/sbin/$EXE -cb 9>valgrind.txt
+	exec $VALGRIND --leak-check=full --track-fds=yes --track-origins=yes --show-leak-kinds=all --child-silent-after-fork=yes --suppressions=valgrind.supp --gen-suppressions=all --log-fd=9 /usr/sbin/$EXE -cb 9>valgrind.txt
 elif [ "$1" = "helgrind" ]; then
 	$VALGRIND --tool=helgrind /usr/sbin/$EXE -c
 else
