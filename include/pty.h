@@ -31,6 +31,15 @@ int bbs_openpty(int *amaster, int *aslave, char *name, const struct termios *ter
 /*!
  * \brief Create and spawn a generic PTY master relay for arbitrary file descriptors
  * \param fd Socket file descriptor
+ * \param[out] fd The PTY master file descriptor
+ * \note This thread will continue until either file descriptor closes. It should be created detached.
+ * \retval -1 on failure, slave file descriptor on success
+ */
+int __bbs_spawn_pty_master(int fd, int *amaster);
+
+/*!
+ * \brief Create and spawn a generic PTY master relay for arbitrary file descriptors
+ * \param fd Socket file descriptor
  * \note This thread will continue until either file descriptor closes. It should be created detached.
  * \retval -1 on failure, slave file descriptor on success
  */

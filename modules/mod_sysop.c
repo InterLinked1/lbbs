@@ -111,6 +111,7 @@ struct sysop_console {
 	int sfd;
 	int fdin;
 	int fdout;
+	int amaster; /* PTY master fd for this console */
 	pthread_t thread;
 	unsigned int remote:1;
 	unsigned int dead:1;
@@ -217,6 +218,50 @@ static void print_time(int fdout)
 	bbs_dprintf(fdout, "%s\n", timebuf);
 }
 
+static inline void load_hist_command(struct sysop_console *console, const char **s)
+{
+	bbs_dprintf(console->fdout, TERM_RESET_LINE "\r/%s", *s);
+}
+
+static inline void edit_hist_command(struct sysop_console *console, const char **s)
+{
+	/* This addresses the desire to be able to modify commands in history to run a new command.
+	 * This is complicated by the fact that commands are read in buffered mode,
+	 * while most of the rest of console operation is unbuffered.
+	 *
+	 * To allow editing a command from history using e.g. backspace,
+	 * we use a clever trick.
+	 * If we start editing a command by hitting the BACKSPACE / DEL key,
+	 * then we write the command from history into the PTY master fd,
+	 * which will go through the pseudoterminal just as if the user
+	 * had manually typed this.
+	 * Then the buffered editing facilities can be used,
+	 * and we can just read the edited command from the slave as usual.
+	 * Only caveat is that ESC can no longer be used to cancel inputting a command.
+	 * Once you start editing the command, you commit to running SOMETHING...
+	 * What we can do is detect ESC in the ran command and ignore it if ESC is present. */
+	if (console->amaster != -1 && *s) {
+		/* Foreground console doesn't have a PTY created,
+		 * since it doesn't need one. Downside is we can't inject
+		 * a command this way. */
+		size_t cmdlen = strlen(*s);
+		if (cmdlen <= 1) {
+			/* Not much point then */
+			return;
+		}
+
+		/* First, clear the current line before we overwrite on it */
+		if (SWRITE(console->fdout, TERM_RESET_LINE "\r") == -1) {
+			return;
+		}
+
+		bbs_buffer_input(console->fdin, 1); /* We're currently unbuffered, we need to buffer first. */
+		bbs_writef(console->fdout, "/"); /* The / isn't actually buffered, buffering starts after, so just print */
+		bbs_writef(console->amaster, "%.*s", (int) (cmdlen - 1), *s);  /* Write onto the master to spoof the user typing this, minus the last char since user hit backspace */
+		*s = NULL; /* Pretend this is real input, not history browsing anymore */
+	}
+}
+
 static void *sysop_handler(void *varg)
 {
 	char buf[1];
@@ -226,6 +271,7 @@ static void *sysop_handler(void *varg)
 	char titlebuf[84];
 	int sysopfdin, sysopfdout;
 	const char *histentry;
+	int modified_hist = 0;
 	struct sysop_console *console = varg;
 
 	sysopfdin = console->fdin;
@@ -357,19 +403,21 @@ static void *sysop_handler(void *varg)
 						case KEY_UP:
 							histentry = bbs_history_older();
 							if (histentry) {
-								bbs_dprintf(sysopfdout, "\r/%s", histentry);
+								load_hist_command(console, &histentry);
 							}
 							break;
 						case KEY_DOWN:
 							histentry = bbs_history_newer();
 							if (histentry) {
-								bbs_dprintf(sysopfdout, "\r/%s", histentry);
+								load_hist_command(console, &histentry);
 							}
 							break;
 						case KEY_ESC:
 							bbs_history_reset();
 							histentry = NULL;
 							break;
+						case KEY_BACKSPACE:
+							goto backsp;
 						default:
 							/* Ignore */
 							break;
@@ -393,6 +441,7 @@ static void *sysop_handler(void *varg)
 					break;
 				case '/':
 					bbs_dprintf(sysopfdout, "/");
+awaitcmd:
 					my_set_stdout_logging(sysopfdout, 0); /* Disable logging so other stuff isn't trying to write to STDOUT at the same time. */
 					bbs_buffer_input(sysopfdin, 1);
 					res = poll(pfds, console->remote ? 1 : 2, 300000);
@@ -421,11 +470,30 @@ static void *sysop_handler(void *varg)
 					bbs_unbuffer_input(sysopfdin, 0);
 					my_set_stdout_logging(sysopfdout, console->log); /* If running in foreground, re-enable STDOUT logging */
 					break;
+				case 127: /* Forward delete, but many terminal emulators send this for backspace */
+backsp:
+					if (histentry) {
+						edit_hist_command(console, &histentry);
+						modified_hist = 1;
+						goto awaitcmd;
+					}
+					/* Fall through */
 				default:
 					if (isprint(buf[0])) {
 						bbs_debug(5, "Received character %d (%c) on sysop console\n", buf[0], buf[0]);
 					} else {
 						bbs_debug(5, "Received character %d on sysop console\n", buf[0]);
+					}
+					if (modified_hist) {
+						modified_hist = 0;
+						/* Once we hit backspace and start modifying a previous command,
+						 * there is no way to escape from it.
+						 * ESC also doesn't end up in the buffer,
+						 * so we can't tell if ESC was pressed or not.
+						 * However, we can delete the entire command by backing up until the /,
+						 * then hit ENTER, and nothing will try to execute.
+						 * Also, we need to manually print a newline. */
+						bbs_dprintf(sysopfdout, "\n");
 					}
 					bbs_dprintf(sysopfdout, "Invalid command '%c'. Press '?' for help.\n", isprint(buf[0]) ? buf[0] : ' ');
 					break;
@@ -446,7 +514,7 @@ cleanup:
 	return NULL;
 }
 
-static int launch_sysop_console(int remote, int sfd, int fdin, int fdout)
+static int launch_sysop_console(int remote, int sfd, int fdin, int fdout, int amaster)
 {
 	int res = 0;
 	struct sysop_console *console;
@@ -459,6 +527,7 @@ static int launch_sysop_console(int remote, int sfd, int fdin, int fdout)
 	console->sfd = sfd; /* Socket file descriptor */
 	console->fdin = fdin; /* PTY */
 	console->fdout = fdout;
+	console->amaster = amaster;
 	SET_BITFIELD(console->remote, remote);
 
 	RWLIST_WRLOCK(&consoles);
@@ -495,7 +564,7 @@ static void *remote_sysop_listener(void *unused)
 	pfd.events = POLLIN;
 
 	for (;;) {
-		int aslave;
+		int aslave, amaster;
 		int res = poll(&pfd, 1, -1); /* Wait forever for an incoming connection. */
 		pthread_testcancel();
 		if (res < 0) {
@@ -522,14 +591,14 @@ static void *remote_sysop_listener(void *unused)
 		}
 		bbs_verb(4, "Accepting new remote sysop connection\n");
 		/* Now, we need to create a pseudoterminal for the UNIX socket, the sysop thread needs a PTY. */
-		aslave = bbs_spawn_pty_master(sfd);
+		aslave = __bbs_spawn_pty_master(sfd, &amaster);
 		if (aslave == -1) {
 			close(sfd);
 			continue;
 		}
 		bbs_unbuffer_input(aslave, 0); /* Disable canonical mode and echo on this PTY slave */
 		bbs_dprintf(aslave, TERM_CLEAR); /* Clear the screen on connect */
-		launch_sysop_console(1, sfd, aslave, aslave); /* Launch sysop console for this connection */
+		launch_sysop_console(1, sfd, aslave, aslave, amaster); /* Launch sysop console for this connection */
 	}
 	return NULL;
 }
@@ -634,7 +703,7 @@ static int load_module(void)
 		return -1;
 	}
 	if (option_nofork) {
-		launch_sysop_console(0, STDIN_FILENO, STDIN_FILENO, STDOUT_FILENO);
+		launch_sysop_console(0, STDIN_FILENO, STDIN_FILENO, STDOUT_FILENO, -1);
 	} else {
 		bbs_debug(3, "BBS not started with foreground console, declining to load foreground sysop console\n");
 	}

@@ -203,30 +203,36 @@ static void *pty_master_fd(void *varg)
 	return NULL;
 }
 
-int bbs_spawn_pty_master(int fd)
+int __bbs_spawn_pty_master(int fd, int *amaster)
 {
 	pthread_t masterthread;
 	struct pty_fds *ptyfds;
-	int aslave, amaster;
+	int aslave;
 
-	if (bbs_openpty(&amaster, &aslave, NULL, NULL, NULL) != 0) {
+	if (bbs_openpty(amaster, &aslave, NULL, NULL, NULL) != 0) {
 		bbs_error("Failed to openpty\n");
 		return -1;
 	}
 	bbs_unbuffer_input(aslave, 0); /* Disable canonical mode and echo on this PTY slave */
-	bbs_term_makeraw(amaster); /* Make the master side raw */
+	bbs_term_makeraw(*amaster); /* Make the master side raw */
 
 	ptyfds = calloc(1, sizeof(*ptyfds));
 	if (ALLOC_FAILURE(ptyfds)) {
 		return -1;
 	}
-	ptyfds->amaster = amaster;
+	ptyfds->amaster = *amaster;
 	ptyfds->fd = fd;
 	if (bbs_pthread_create_detached(&masterthread, NULL, pty_master_fd, ptyfds)) {
 		free(ptyfds);
 		return -1;
 	}
 	return aslave;
+}
+
+int bbs_spawn_pty_master(int fd)
+{
+	int amaster;
+	return __bbs_spawn_pty_master(fd, &amaster);
 }
 
 int bbs_pty_allocate(struct bbs_node *node)
