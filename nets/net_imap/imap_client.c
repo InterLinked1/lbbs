@@ -486,7 +486,7 @@ int __imap_client_send_wait_response(struct imap_client *client, int fd, int ms,
 #endif
 	if (bbs_write(client->client.wfd, tagbuf, (unsigned int) taglen) < 0) {
 		goto cleanup;
-	} else if (bbs_write(client->client.wfd, buf, (unsigned int) len)) {
+	} else if (bbs_write(client->client.wfd, buf, (unsigned int) len) < 0) {
 		goto cleanup;
 	}
 	imap_debug(7, "=> %s%s", tagbuf, buf);
