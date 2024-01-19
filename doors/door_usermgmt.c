@@ -31,6 +31,36 @@
 #include "include/mail.h"
 #include "include/crypt.h"
 
+/*! \brief Confirm the password of the currently authenticated user */
+static int confirm_current_pw(struct bbs_node *node)
+{
+	struct bbs_user *user;
+	char password[64];
+	int res;
+
+	/* This is a bit silly, but using the publicly availabl APIs,
+	 * we need to allocate a dummy user in order to confirm authentication. */
+
+	user = bbs_user_request();
+	if (!user) {
+		return -1;
+	}
+
+	bbs_node_clear_screen(node);
+	NEG_RETURN(bbs_node_buffer(node));
+	bbs_node_echo_off(node); /* Don't display password */
+	NEG_RETURN(bbs_node_writef(node, "=== Confirm Current Password ===\n"));
+	NEG_RETURN(bbs_node_writef(node, "%-*s", 24, COLOR(COLOR_WHITE) "Old Password: "));
+	NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), password, sizeof(password)));
+	res = bbs_user_authenticate(user, bbs_username(node->user), password);
+	bbs_memzero(password, sizeof(password));
+	bbs_user_destroy(user);
+
+	bbs_node_echo_on(node); /* Restore echo */
+	bbs_node_writef(node, "\n"); /* Since echo was off, we didn't print one */
+	return res;
+}
+
 static int do_reset(struct bbs_node *node, const char *username)
 {
 	char password[73];
@@ -200,6 +230,17 @@ static int pwchange_exec(struct bbs_node *node, const char *args)
 #else
 		return pwreset_exec(node, args); /* Just run the reset handler instead if not logged in */
 #endif
+	}
+
+	/* Authenticated Password Change */
+
+	/* First, ask the user to confirm current password.
+	 * This way if somebody else has terminal access,
+	 * we know it's really the user changing it. */
+	if (confirm_current_pw(node)) {
+		bbs_node_writef(node, "%sSorry, you must confirm your current password to proceed.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET);
+		NEG_RETURN(bbs_node_wait_key(node, SEC_MS(20)));
+		return 0;
 	}
 
 	return do_reset(node, bbs_username(node->user));
