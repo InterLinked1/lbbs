@@ -312,6 +312,11 @@ static int cli_tls(struct bbs_cli_args *a)
 	return 0;
 }
 
+/* Note:
+ * Many frequent TLS-level warnings or errors have been made debug messages here,
+ * because they happen frequently due to client issues.
+ * Most of the time, we're not really concerned with these since there's nothing we can do about that. */
+
 /*! \brief Single thread to handle I/O for all TLS connections (which are mainly buffered in chunks anyways) */
 static void *ssl_io_thread(void *unused)
 {
@@ -483,14 +488,14 @@ static void *ssl_io_thread(void *unused)
 					switch (err) {
 						case SSL_ERROR_NONE:
 						case SSL_ERROR_WANT_READ:
-							bbs_debug(7, "SSL_read for %p returned %d (%s)\n", ssl, ores, ssl_strerror(err));
+							bbs_debug(10, "SSL_read for %p returned %d (%s)\n", ssl, ores, ssl_strerror(err));
 							continue; /* Move on to other connections, come back to this one later */
 						case SSL_ERROR_SYSCALL:
 						case SSL_ERROR_ZERO_RETURN:
 						case SSL_ERROR_SSL:
 							if (err == SSL_ERROR_SSL) {
 								ERR_error_string_n(ERR_get_error(), err_msg, sizeof(err_msg));
-								bbs_error("TLS error: %s\n", err_msg);
+								bbs_debug(1, "TLS error: %s\n", err_msg);
 							}
 							/* This socket is done for, do not retry to read more data,
 							 * e.g. client has closed the connection but server has yet to close its end, and we're in the middle */
@@ -582,15 +587,13 @@ static void *ssl_io_thread(void *unused)
 									MARK_DEAD(ssl);
 									needcreate = 1;
 									break;
-								case SSL_ERROR_NONE:
 								case SSL_ERROR_SYSCALL:
 								case SSL_ERROR_ZERO_RETURN:
 								case SSL_ERROR_SSL:
-									bbs_warning("Wanted to write %d bytes to %p but wrote %ld?\n", ores, ssl, wres);
-									if (err == SSL_ERROR_SSL) {
-										ERR_error_string_n(ERR_get_error(), err_msg, sizeof(err_msg));
-										bbs_error("TLS error: %s\n", err_msg);
-									}
+									ERR_error_string_n(ERR_get_error(), err_msg, sizeof(err_msg));
+									bbs_warning("TLS error: wanted to write %d bytes to %p but wrote %ld? (%s)\n", ores, ssl, wres, err_msg);
+									/* Fall through */
+								case SSL_ERROR_NONE:
 									/* This socket is done for, do not retry to read more data,
 									 * e.g. client has closed the connection but server has yet to close its end, and we're in the middle */
 									MARK_DEAD(ssl);
@@ -712,7 +715,7 @@ accept:
 			goto accept; /* This just works out to be cleaner than using any kind of loop here */
 		}
 		pthread_rwlock_unlock(&ssl_cert_lock);
-		bbs_error("SSL error %d: %d (%s = %s)\n", res, sslerr, ssl_strerror(sslerr), ERR_error_string(ERR_get_error(), NULL));
+		bbs_debug(1, "SSL error %d: %d (%s = %s)\n", res, sslerr, ssl_strerror(sslerr), ERR_error_string(ERR_get_error(), NULL));
 		SSL_free(ssl);
 		/* If TLS setup fails, it's probably garbage traffic and safe to penalize: */
 		if (node) {
@@ -877,7 +880,7 @@ int ssl_close(SSL *ssl)
 	sres = SSL_shutdown(ssl);
 	if (sres < 0) {
 		int err = SSL_get_error(ssl, sres);
-		bbs_warning("SSL shutdown failed: %s\n", ssl_strerror(err));
+		bbs_debug(1, "SSL shutdown failed: %s\n", ssl_strerror(err));
 	} else if (!sres) {
 		/* We sent a close notify, but haven't received one from the peer.
 		 * To be properly conformant, a client should send us a close notify,

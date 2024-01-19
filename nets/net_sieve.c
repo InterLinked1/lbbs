@@ -477,7 +477,6 @@ static void handle_client(struct sieve_session *sieve, SSL **sslptr)
 			sieve->dostarttls = 0;
 			*sslptr = ssl_node_new_accept(sieve->node, &sieve->rfd, &sieve->wfd);
 			if (!*sslptr) {
-				bbs_error("Failed to create SSL\n");
 				break; /* Just abort */
 			}
 			bbs_readline_flush(&rldata); /* Prevent STARTTLS command injection by resetting the buffer after TLS upgrade */

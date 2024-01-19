@@ -183,22 +183,27 @@ static void del_agent(struct agent *agent)
 {
 	struct queue *queue;
 	struct member *member;
-	RWLIST_RDLOCK(&queues);
+
+	RWLIST_WRLOCK(&queues);
 	RWLIST_TRAVERSE(&queues, queue, entry) {
+		/* Remove membership in all queues */
 		RWLIST_WRLOCK(&queue->members);
 		RWLIST_TRAVERSE_SAFE_BEGIN(&queue->members, member, entry) {
 			if (member->agent == agent) {
 				RWLIST_REMOVE_CURRENT(entry);
 				free(member);
-				break;
+				/* Don't break, since an agent can be a member of multiple queues. */
 			}
 		}
 		RWLIST_TRAVERSE_SAFE_END;
 		RWLIST_UNLOCK(&queue->members);
 	}
 	RWLIST_UNLOCK(&queues);
+
 	/* Finally, remove the agent itself, now that there are no longer any references to it,
 	 * besides ours. */
+	RWLIST_WRLOCK_REMOVE_BY_FIELD(&agents, id, agent->id, entry);
+
 	free(agent);
 }
 
@@ -346,6 +351,12 @@ static int cli_asterisk_agents(struct bbs_cli_args *a)
 	return 0;
 }
 
+static void __mark_dead(struct queue_call *call)
+{
+	bbs_debug(3, "Marking queue call %d as dead: %s\n", call->id, call->channel);
+	call->dead = 1;
+}
+
 static void mark_dead(const char *channel)
 {
 	struct queue_call *call;
@@ -356,12 +367,31 @@ static void mark_dead(const char *channel)
 			continue;
 		}
 		if (!strcmp(call->channel, channel)) {
-			bbs_debug(3, "Marking channel as now dead: %s\n", channel);
-			call->dead = 1;
+			__mark_dead(call);
 			break;
 		}
 	}
 	RWLIST_UNLOCK(&calls);
+}
+
+static int call_is_dead(struct queue_call *call)
+{
+	char *val;
+	if (call->dead) {
+		return -1;
+	}
+	val = ami_action_getvar(bbs_ami_session(), "queueuniq", call->channel);
+	if (!val) {
+		__mark_dead(call);
+		return 1;
+	}
+	if (strlen_zero(val)) {
+		__mark_dead(call);
+		free(val);
+		return 1;
+	}
+	free(val);
+	return 0;
 }
 
 static void prune_dead_calls(int querydead)
@@ -372,23 +402,7 @@ static void prune_dead_calls(int querydead)
 		/* Only hold a RDLOCK while we're making AMI calls. */
 		RWLIST_RDLOCK(&calls);
 		RWLIST_TRAVERSE(&calls, call, entry) {
-			char *val;
-			if (call->dead) {
-				continue;
-			}
-			val = ami_action_getvar(bbs_ami_session(), "queueuniq", call->channel);
-			if (!val) {
-				call->dead = 1;
-				bbs_debug(3, "Queue call %d is now dead\n", call->id);
-				continue;
-			}
-			if (strlen_zero(val)) {
-				call->dead = 1;
-				bbs_debug(3, "Queue call %d is now dead\n", call->id);
-				free(val);
-				continue;
-			}
-			free(val);
+			call_is_dead(call);
 		}
 		RWLIST_UNLOCK(&calls);
 	}
@@ -400,7 +414,7 @@ static void prune_dead_calls(int querydead)
 		 * an agent is handling it, so don't remove it yet. */
 		if (call->dead && !call->refcount) {
 			RWLIST_REMOVE_CURRENT(entry);
-			bbs_debug(3, "Pruning dead queue call %d\n", call->id);
+			bbs_debug(3, "Pruning dead queue call %d (%s)\n", call->id, call->channel);
 			free(call);
 		}
 	}
@@ -433,8 +447,24 @@ static __nonnull ((1, 5)) struct queue_call *new_call(struct queue *queue, int q
 	chanlen = strlen(channel) + 1;
 	cnamlen = strlen(cnam) + 1;
 
+	RWLIST_WRLOCK(&calls);
+
+	/* First, make sure this call isn't already in the list.
+	 * If it is, we don't want to add it again. */
+	RWLIST_TRAVERSE(&calls, call, entry) {
+		if (call->id == queueid) {
+			/* If it's already in the list, but dead, mark it as dead and replace it. */
+			if (!call_is_dead(call)) {
+				bbs_debug(2, "Queue call %d already in call list, declining to duplicate\n", queueid);
+				RWLIST_UNLOCK(&calls);
+				return NULL;
+			}
+		}
+	}
+
 	call = calloc(1, sizeof(*call) + chanlen + cnamlen);
 	if (ALLOC_FAILURE(call)) {
+		RWLIST_UNLOCK(&calls);
 		return NULL;
 	}
 
@@ -454,11 +484,10 @@ static __nonnull ((1, 5)) struct queue_call *new_call(struct queue *queue, int q
 	SET_FSM_STRING_VAR(call, data, channel, channel, chanlen);
 	SET_FSM_STRING_VAR(call, data, cnam, cnam, cnamlen);
 
-	RWLIST_WRLOCK(&calls);
 	RWLIST_INSERT_TAIL(&calls, call, entry);
 	RWLIST_UNLOCK(&calls);
 
-	bbs_debug(4, "Added call from '%s' to queue '%s' as call %d\n", S_IF(ani), queue->name, queueid);
+	bbs_debug(4, "Added call from '%s' (%s) to queue '%s' as call %d\n", S_IF(ani), channel, queue->name, queueid);
 	return call;
 }
 
@@ -527,6 +556,8 @@ static int ami_callback(struct ami_event *e, const char *eventname)
 
 	queue->stale = 1; /* The stats are now stale, and will need to be updated at the next convenient opportunity. */
 
+	bbs_debug(7, "Processing queue event '%s'\n", eventname);
+
 	if (!strcmp(eventname, "QueueCallerJoin")) {
 		char *queueid, *ani2, *dnis;
 		const char *callerid, *channel, *callername;
@@ -555,7 +586,7 @@ static int ami_callback(struct ami_event *e, const char *eventname)
 		if (strlen_zero(member_name)) {
 			return -1;
 		}
-		agent_printf(queue, member_name, "%s\r%s%-15s %-20s %15s\n", COLOR_RESET, TERM_BELL, "ACD RING", queue->title, S_OR(callerid, ""));
+		agent_printf(queue, member_name, "%s\r%s%-15s %-22s %15s\n", COLOR_RESET, TERM_BELL, "ACD RING", queue->title, S_OR(callerid, ""));
 	} else if (!strcmp(eventname, "QueueCallerAbandon")) {
 		const char *originalpos, *pos, *holdtime, *channel, *callerid;
 		originalpos = ami_keyvalue(e, "OriginalPosition");
@@ -564,7 +595,7 @@ static int ami_callback(struct ami_event *e, const char *eventname)
 		channel = ami_keyvalue(e, "Channel");
 		callerid = ami_keyvalue(e, "CallerIDNum");
 		/* This is the actual "caller hung up before agent answered" event */
-		agent_printf(queue, NULL, "%s\r%s%-15s %-20s %15s %s>%s [%s]\n", COLOR_RESET, TERM_BELL, "ACD DC", queue->title, S_OR(callerid, ""), S_OR(originalpos, ""), S_OR(pos, ""), S_OR(holdtime, ""));
+		agent_printf(queue, NULL, "%s\r%s%-15s %-22s %15s %s>%s [%s]\n", COLOR_RESET, TERM_BELL, "ACD DC", queue->title, S_OR(callerid, ""), S_OR(originalpos, ""), S_OR(pos, ""), S_OR(holdtime, ""));
 		mark_dead(channel); /* Probably safe to unregister directly if we wanted to, but just mark as dead for now */
 	} else if (!strcmp(eventname, "QueueCallerLeave")) {
 		const char *count, *pos, *callerid;
@@ -739,6 +770,12 @@ static int handle_call(struct agent *agent, struct queue_call *call)
 	qch_info.dnis = call->dnis;
 	qch_info.cnam = call->cnam;
 
+	/* At this point, there is junk left in the input buffer,
+	 * probably from running the ncurses menu.
+	 * Flush anything out so stray input isn't consumed in
+	 * the next poll/read operation. */
+	bbs_node_flush_input(agent->node);
+
 	res = qch->handler(&qch_info);
 	bbs_module_unref(qch->mod, 1);
 
@@ -769,7 +806,7 @@ static int select_call(struct agent *agent)
 		char optkey[5];
 		char optvalbuf[128];
 		snprintf(optkey, sizeof(optkey), "%4d", call->id);
-		snprintf(optvalbuf, sizeof(optvalbuf), "%4d   %-20s %02d %15lu   %-15s\n", call->id, call->queue->title, call->ani2, call->ani, call->cnam);
+		snprintf(optvalbuf, sizeof(optvalbuf), "%4d   %-20s %02d %15lu   %-15s", call->id, call->queue->title, call->ani2, call->ani, call->cnam);
 		bbs_ncurses_menu_addopt(&menu, 0, optkey, optvalbuf);
 		call_count++;
 	}
@@ -781,6 +818,17 @@ static int select_call(struct agent *agent)
 		bbs_node_ring_bell(agent->node);
 		return 0;
 	}
+
+	/* Clear the agent's terminal.
+	 * This is a subtle optimization. ncurses saves the previous window and restores it
+	 * afterwards. Right now, the previous window is the main queue page showing all queues' status.
+	 * Because bbs_ncurses_menu_getopt triggers a single run of ncurses, returns,
+	 * and then based on the chosen option, potentially another run of ncurses is triggered,
+	 * this would result in the main queue page briefly displaying again before being replaced by another menu.
+	 * This is distracting and, on slower terminals, will waste time.
+	 * Clearing the screen here ensures there is nothing to restore when the menu returns.
+	 * When we need to display the queue screen again, we're going to print it again explicitly anyways. */
+	bbs_node_clear_screen(agent->node);
 
 	bbs_ncurses_menu_set_title(&menu, call_menu_title);
 	snprintf(subtitle, sizeof(subtitle), "%4s   %-20s %2s %15s   %-15s", "ID #", "ACD QUEUE", "II", "ANI", "NAME");
@@ -806,6 +854,11 @@ static int select_call(struct agent *agent)
 	RWLIST_WRLOCK(&calls);
 	RWLIST_TRAVERSE(&calls, call, entry) {
 		if (call->id == callid) {
+			if (call_is_dead(call)) {
+				bbs_debug(3, "Call %d became dead before agent could handle it\n", call->id);
+				call = NULL; /* Don't handle this call. It's dead. */
+				break;
+			}
 			/* Prevent call from disappearing, while an agent is handling it. */
 			call->refcount++;
 			break;

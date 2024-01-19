@@ -126,7 +126,6 @@ static int ftp_pasv_new(int *sockfd)
 		bbs_debug(3, "Setting up TLS on data channel\n"); \
 		ssl2 = ssl_new_accept(ftp->node, pasv_fd, &ftp->rfd2, &ftp->wfd2); \
 		if (!ssl2) { \
-			bbs_error("Failed to create SSL\n"); \
 			__data_res = -1; \
 		} else if (require_reuse && !SSL_session_reused(ssl2)) { \
 			bbs_warning("TLS session was not reused\n"); \
@@ -349,7 +348,6 @@ static void *ftp_handler(void *varg)
 				res = ftp_write(ftp, 234, "Begin TLS negotiation\r\n");
 				ssl = ssl_node_new_accept(node, &ftp->rfd, &ftp->wfd);
 				if (!ssl) {
-					bbs_error("Failed to create SSL\n");
 					break; /* Just abort */
 				}
 				/* Must reauthorize */

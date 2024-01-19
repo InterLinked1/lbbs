@@ -771,9 +771,12 @@ int bbs_file_exists(const char *path)
 
 int bbs_ensure_directory_exists(const char *path)
 {
-	if (eaccess(path, R_OK)) {
+	if (eaccess(path, R_OK | X_OK)) {
+		int derr = errno;
 		if (mkdir(path, 0700)) {
-			bbs_error("mkdir(%s) failed: %s\n", path, strerror(errno));
+			/* The directory probably already exists, but we can't access it for some reason. */
+			bbs_warning("mkdir(%s) failed: %s\n", path, strerror(errno));
+			bbs_error("Can't access directory %s: %s\n", path, strerror(derr));
 			return -1;
 		}
 	}
@@ -782,7 +785,8 @@ int bbs_ensure_directory_exists(const char *path)
 
 int bbs_ensure_directory_exists_recursive(const char *path)
 {
-	if (eaccess(path, R_OK)) {
+	if (eaccess(path, R_OK | X_OK)) {
+		int derr = errno;
 		/* Recursively create parents as needed */
 		if (bbs_str_count(path, '/') > 2) {
 			char parent[PATH_MAX];
@@ -790,7 +794,9 @@ int bbs_ensure_directory_exists_recursive(const char *path)
 			bbs_ensure_directory_exists_recursive(dirname(parent));
 		}
 		if (mkdir(path, 0700)) {
-			bbs_error("mkdir(%s) failed: %s\n", path, strerror(errno));
+			/* The directory probably already exists, but we can't access it for some reason. */
+			bbs_warning("mkdir(%s) failed: %s\n", path, strerror(errno));
+			bbs_error("Can't access directory %s: %s\n", path, strerror(derr));
 			return -1;
 		}
 	}

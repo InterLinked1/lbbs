@@ -323,7 +323,7 @@ static struct bbs_config *config_parse(const char *name)
 	}
 	if (access(fullname, R_OK)) {
 		/* Config files are optional, not mandatory, so this is a warning only, not an error. */
-		bbs_warning("Config file %s does not exist\n", fullname);
+		bbs_notice("Config file %s does not exist\n", fullname);
 		return NULL;
 	}
 	fp = fopen(fullname, "r");

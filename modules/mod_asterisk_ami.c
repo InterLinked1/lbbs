@@ -42,6 +42,7 @@
 #include "include/mod_asterisk_ami.h"
 
 static int asterisk_up = 0;
+static int post_reconnect = 0;
 static struct ami_session *ami_session = NULL;
 
 struct ami_callback {
@@ -67,15 +68,41 @@ static void set_ami_status(int up)
 static void ami_callback(struct ami_session *ami, struct ami_event *event)
 {
 	struct ami_callback *cb;
+	int do_reload = 0;
 	const char *eventname;
 
 	UNUSED(ami);
+
+	if (bbs_module_is_shutting_down()) {
+		ami_event_free(event);
+		return; /* If we're unloading, don't care */
+	}
 
 	eventname = ami_keyvalue(event, "Event");
 	bbs_assert_exists(eventname);
 
 	if (unlikely(!strcmp(eventname, "FullyBooted"))) {
-		set_ami_status(1); /* We get this when Asterisk starts, but also when we connect, so if Asterisk is already running, we're still good. */
+		/* We get this when Asterisk starts, but also when we connect, so if Asterisk is already running, we're still good.
+		 * However, I've seen that sometimes, e.g. when Asterisk restarts, we get the FullyBooted event,
+		 * but the AMI connection is dead after that. So, just to make sure it's really working,
+		 * send a dummy action and make sure we get a response. */
+		if (post_reconnect) {
+			/* This is one of the few commands that will probably work,
+			 * regardless of the permissions for this manager user. */
+			struct ami_response *resp = ami_action(ami, "ListCommands", "");
+			if (!resp) {
+				bbs_error("Failed to get response to 'ListCommands' sanity check\n");
+				/* We're probably screwed up at this point.
+				 * The only thing we could do is a hard unload/load
+				 * of the module. */
+				do_reload = 1;
+				goto cleanup;
+			}
+			ami_resp_free(resp);
+			bbs_debug(2, "AMI reconnect sanity check succeeded\n");
+			post_reconnect = 0;
+		}
+		set_ami_status(1);
 		goto cleanup; /* No need to forward this event to listeners. */
 	}
 
@@ -97,6 +124,9 @@ static void ami_callback(struct ami_session *ami, struct ami_event *event)
 
 cleanup:
 	ami_event_free(event); /* Free event when done with it */
+	if (do_reload) {
+		bbs_request_module_unload("mod_asterisk_ami", 1);
+	}
 }
 
 static int ami_alert_pipe[2] = { -1, -1 };
@@ -170,8 +200,16 @@ static struct bbs_cli_entry cli_commands_ami[] = {
 
 static int load_config(int open_logfile);
 
-static int unloading = 0;
 static int reconnecting = 0;
+
+static void cleanup_ami(void)
+{
+	struct ami_session *s = ami_session;
+	ami_session = NULL;
+	ami_disconnect(s);
+	ami_destroy(s);
+	close_if(ami_log_fd);
+}
 
 static void ami_disconnect_callback(struct ami_session *ami)
 {
@@ -182,12 +220,13 @@ static void ami_disconnect_callback(struct ami_session *ami)
 	set_ami_status(0);
 	bbs_warning("Asterisk Manager Interface connection lost\n");
 
-	if (unloading) {
+	if (bbs_module_is_shutting_down()) {
 		return; /* If we're unloading, don't care */
 	}
 
 	reconnecting = 1;
 	RWLIST_RDLOCK(&callbacks);
+	cleanup_ami();
 	/* Perhaps Asterisk restarted (or crashed).
 	 * Try to reconnect if it comes back up. */
 	for (;;) {
@@ -195,6 +234,7 @@ static void ami_disconnect_callback(struct ami_session *ami)
 		res = load_config(0);
 		if (!res) {
 			bbs_verb(4, "Asterisk Manager Interface connection re-established\n");
+			post_reconnect = 1;
 			/* No need to call set_ami_status(1) here,
 			 * when we reconnect, we'll get a FullyBooted event
 			 * which will do this. */
@@ -204,14 +244,15 @@ static void ami_disconnect_callback(struct ami_session *ami)
 		if (bbs_alertpipe_poll(ami_alert_pipe, sleep_ms)) {
 			bbs_alertpipe_read(ami_alert_pipe);
 			bbs_debug(3, "AMI reconnect interrupted\n");
-			if (unloading) {
+			if (bbs_module_is_shutting_down()) {
+				bbs_debug(3, "Aborting reconnect\n");
 				break;
 			}
 			/* Interrupted, but not unloading.
 			 * Probably something else that needs to grab a list lock.
 			 * Suspend the retry for a moment. */
 			RWLIST_UNLOCK(&callbacks);
-			usleep(1); /* Enough to cause the CPU to suspend this thread, and allow something else to grab a WRLOCK */
+			usleep(10); /* Enough to cause the CPU to suspend this thread, and allow something else to grab a WRLOCK */
 			RWLIST_WRLOCK(&callbacks);
 		}
 		if (sleep_ms < 64000) { /* Exponential backoff, up to 64 seconds */
@@ -242,11 +283,12 @@ static int load_config(int open_logfile)
 	res |= bbs_config_val_set_str(cfg, "ami", "password", password, sizeof(password));
 
 	if (open_logfile && !bbs_config_val_set_str(cfg, "logging", "logfile", logfile, sizeof(logfile))) {
-		ami_log_fd = open(logfile, O_CREAT | O_APPEND);
+		ami_log_fd = open(logfile, O_WRONLY | O_CREAT | O_APPEND, 0644);
 		if (ami_log_fd != -1) {
 			bbs_config_val_set_uint(cfg, "logging", "loglevel", &loglevel);
 			if (loglevel > 10) {
 				bbs_warning("Maximum AMI debug level is 10\n");
+				loglevel = 10;
 			}
 		} else {
 			bbs_error("Failed to open %s for AMI logging: %s\n", logfile, strerror(errno));
@@ -254,16 +296,20 @@ static int load_config(int open_logfile)
 	}
 
 	if (!res) {
-		ami_session = ami_connect(hostname, 0, ami_callback, ami_disconnect_callback);
-		if (!ami_session) {
+		struct ami_session *s = ami_connect(hostname, 0, ami_callback, ami_disconnect_callback);
+		if (!s) {
 			bbs_error("AMI connection failed to %s\n", hostname);
 			res = -1;
 			goto cleanup;
 		}
-		ami_set_debug_level(ami_session, (int) loglevel);
-		if (ami_action_login(ami_session, username, password)) {
+		ami_set_debug(s, ami_log_fd);
+		ami_set_debug_level(s, (int) loglevel);
+		if (ami_action_login(s, username, password)) {
 			bbs_error("AMI login failed for user %s@%s\n", username, hostname);
+			ami_disconnect(s);
 			res = -1;
+		} else {
+			ami_session = s;
 		}
 	}
 
@@ -292,7 +338,6 @@ static int unload_module(void)
 {
 	/* If ami_disconnect_callback is currently being executed by some thread,
 	 * get rid of it. */
-	unloading = 1;
 	bbs_alertpipe_write(ami_alert_pipe); /* Wake up anything waiting in ami_disconnect_callback */
 
 	/* If anything was in the body of ami_disconnect_callback,
@@ -304,9 +349,7 @@ static int unload_module(void)
 	} while (reconnecting);
 
 	bbs_cli_unregister_multiple(cli_commands_ami);
-	ami_disconnect(ami_session);
-	ami_destroy(ami_session);
-	close_if(ami_log_fd);
+	cleanup_ami();
 	bbs_alertpipe_close(ami_alert_pipe);
 	return 0;
 }

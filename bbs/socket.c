@@ -1012,7 +1012,12 @@ int bbs_get_local_ip(char *buf, size_t len)
 	}
 
 	for (iface = iflist; res && iface; iface = iface->ifa_next) {
-		int af = iface->ifa_addr->sa_family;
+		int af;
+		if (!iface->ifa_addr) {
+			/* This can be NULL for interfaces without an IP address assigned. */
+			continue;
+		}
+		af = iface->ifa_addr->sa_family;
 		switch (af) {
 			case AF_INET:
 				sinaddr = ((struct sockaddr_in *) iface->ifa_addr);
@@ -2253,7 +2258,9 @@ ssize_t bbs_sendfile(int out_fd, int in_fd, off_t *offset, size_t count)
 		if (res == (ssize_t) count) {
 			break;
 		}
-		bbs_debug(2, "Wanted to write %lu bytes but was only able to write %ld this round\n", count, res); /* Keep trying */
+		/* It's typical for sendfile to only send 8,192 bytes at a time,
+		 * so for sending much more than that, this can be a very spammy message. */
+		bbs_debug(10, "Wanted to write %lu bytes but was only able to write %ld this round\n", count, res); /* Keep trying */
 		count -= (size_t) res;
 	}
 

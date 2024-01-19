@@ -40,7 +40,9 @@
 
 #include "include/net_irc.h"
 
+static int discord_started = 0;
 static int discord_ready = 0;
+static int force_unloading = 0;
 static struct discord *discord_client = NULL;
 static pthread_t discord_thread;
 
@@ -793,7 +795,12 @@ static void on_ready(struct discord *client, const struct discord_ready *event)
 	UNUSED(client);
 	UNUSED(event);
 
-	discord_ready = 1;
+	if (discord_started) {
+		bbs_error("Discord already ready?\n");
+		return;
+	}
+
+	discord_started = discord_ready = 1;
 	bbs_debug(1, "Succesfully connected to Discord as %s#%s\n", event->user->username, event->user->discriminator);
 
 	load_channels(client, event->guilds);
@@ -1436,13 +1443,13 @@ static void *monitor_relay(void *unused)
 		usleep(5000000);
 	}
 
-	for (;;) {
+	while (!bbs_module_is_shutting_down()) {
 		bbs_pthread_disable_cancel();
 		generate_test_ping();
 		bbs_pthread_enable_cancel();
 
-		/* 2 seconds ought to be plenty of time */
-		usleep(2000000);
+		/* 5 seconds ought to be plenty of time */
+		usleep(5000000);
 
 		/* Check if the post echoed */
 		bbs_pthread_disable_cancel();
@@ -1465,12 +1472,13 @@ static void *monitor_relay(void *unused)
 			bbs_error("Failed to receive echo of test post from Discord... forcing module reload\n");
 			/* Completely unload and load the module,
 			 * to ensure libdiscord gets a fresh start. */
+			force_unloading = 1;
 			bbs_request_module_unload("mod_discord", 1);
 			bbs_pthread_enable_cancel();
 			break;
 		}
 
-		sleep(600); /* Check every 10 minutes */
+		bbs_safe_sleep(MIN_MS(10)); /* Check every 10 minutes */
 	}
 
 	return NULL;
@@ -1542,15 +1550,24 @@ static int unload_module(void)
 	irc_relay_unregister(discord_send);
 
 	if (monitor_thread) {
-		bbs_pthread_cancel_kill(monitor_thread);
+		if (!force_unloading) {
+			/* If we're forcing a reload,
+			 * then monitor_thread is already exiting on its own. */
+			bbs_pthread_cancel_kill(monitor_thread);
+		}
+		bbs_pthread_join(monitor_thread, NULL);
 	}
 
 	ccord_shutdown_async();
 	bbs_debug(3, "Waiting for Discord thread to exit...\n"); /* This may take a moment */
 	bbs_pthread_join(discord_thread, NULL);
+	bbs_debug(3, "Joined Discord thread, cleaning up\n");
 	discord_cleanup(discord_client);
+	bbs_debug(3, "Discord cleanup finished\n");
 
 	ccord_global_cleanup();
+	bbs_debug(3, "Concord global cleanup finished\n");
+
 	list_cleanup();
 	return 0;
 }

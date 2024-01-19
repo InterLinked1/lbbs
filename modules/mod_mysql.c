@@ -350,12 +350,23 @@ int sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *fmt, ...
 
 int sql_stmt_fetch(MYSQL_STMT *stmt)
 {
+	const char *errstr;
 	int res = mysql_stmt_fetch(stmt);
 	switch (res) {
 	case 0: /* Success */
 		break;
 	case 1: /* Failure */
-		bbs_error("SQL STMT fetch failed: %s\n", mysql_stmt_error(stmt));
+		errstr = mysql_stmt_error(stmt);
+		if (!strcmp(errstr, "Commands out of sync; you can't run this command now")) {
+			/* XXX Since the beginning, this error happens any time we
+			 * do authentication or most types of prepared statement queries, really.
+			 * As far as I can tell, nothing is actually wrong; everything that is supposed to work, works.
+			 * So log this as a debug, rather than an error, to avoid confusing people,
+			 * until we can figure out why this is happening. */
+			bbs_debug(2, "SQL STMT fetch failed: %s\n", errstr);
+		} else {
+			bbs_error("SQL STMT fetch failed: %s\n", errstr);
+		}
 		break;
 	case MYSQL_NO_DATA:
 		bbs_debug(3, "SQL STMT fetch returned no more data\n");

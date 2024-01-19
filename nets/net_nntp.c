@@ -1250,7 +1250,6 @@ static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 			nntp->dostarttls = 0;
 			*sslptr = ssl_node_new_accept(nntp->node, &nntp->rfd, &nntp->wfd);
 			if (!*sslptr) {
-				bbs_error("Failed to create SSL\n");
 				break; /* Just abort */
 			}
 			nntp->secure = 1;
@@ -1274,7 +1273,6 @@ static void nntp_handler(struct bbs_node *node, int secure, int reader)
 	if (secure) {
 		ssl = ssl_node_new_accept(node, &rfd, &wfd);
 		if (!ssl) {
-			bbs_error("Failed to create SSL\n");
 			return;
 		}
 	} else {

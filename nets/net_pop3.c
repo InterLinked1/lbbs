@@ -756,7 +756,6 @@ static void pop3_handler(struct bbs_node *node, int secure)
 	if (secure) {
 		ssl = ssl_node_new_accept(node, &rfd, &wfd);
 		if (!ssl) {
-			bbs_error("Failed to create SSL\n");
 			return;
 		}
 	} else {

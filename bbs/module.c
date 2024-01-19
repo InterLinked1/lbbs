@@ -348,11 +348,15 @@ static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ex
 	if (resource_being_loaded) {
 		const char *dlerror_msg = S_IF(dlerror());
 
-		bbs_warning("Module %s didn't register itself during load?\n", resource_in);
+		if (!suppress_logging) {
+			bbs_warning("Module %s didn't register itself during load?\n", resource_in);
+		}
 
 		resource_being_loaded = NULL;
 		if (mod->lib) {
-			bbs_error("Module '%s' did not register itself during load\n", resource_in);
+			if (!suppress_logging) {
+				bbs_error("Module '%s' did not register itself during load\n", resource_in);
+			}
 			logged_dlclose(resource_in, mod->lib);
 		} else if (!suppress_logging) {
 			bbs_error("Error loading module '%s': %s\n", resource_in, dlerror_msg);
@@ -374,6 +378,7 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 	size_t resource_in_len = strlen(resource_in);
 	const char *so_ext = "";
 	struct bbs_module *mod;
+	int retry;
 
 	if (resource_in_len < 4 || strcasecmp(resource_in + resource_in_len - 3, ".so")) {
 		so_ext = ".so";
@@ -381,7 +386,12 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 
 	snprintf(fn, sizeof(fn), "%s/%s%s", BBS_MODULE_DIR, resource_in, so_ext);
 
-	mod = load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_LOCAL, suppress_logging);
+	/* If we're going to try loading dependencies and then call load_dlopen again,
+	 * any warnings can be ignored the first time, since they were probably due
+	 * to missing symbols (and if not, we'll try again anyways, and log that time). */
+	retry = stringlist_contains(&modules_preload, resource_in);
+
+	mod = load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_LOCAL, suppress_logging || retry);
 	if (!mod) {
 		/* XXX. Here, we consider the case of modules that are both depended on by other modules
 		 * and themselves depend on yet other modules.
@@ -404,7 +414,7 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 		 * Also, this is no longer safe from accidental infinte recursion. We will crash (stack overflow) if there is a dependency loop here.
 		 * If we have a better way of handling this in the future, this hack can be removed:
 		 */
-		if (stringlist_contains(&modules_preload, resource_in)) {
+		if (retry) {
 			/* Only bother checking if it's a preload module.
 			 * Otherwise, checking dependencies now isn't going to do anything for us.
 			 * Also only do this during autoload (the preload list will be emptied once autoload finishes).
@@ -881,7 +891,8 @@ static int on_file_preload(const char *dir_name, const char *filename, void *obj
 	UNUSED(obj);
 
 	if (mod) {
-		bbs_error("Module %s is already loaded\n", filename);
+		/* Could happen due to the auto-preloading that can happen if trying to resolve dependencies. */
+		bbs_debug(1, "Module %s is already loaded\n", filename);
 		return 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
 	}
 

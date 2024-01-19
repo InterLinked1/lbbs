@@ -21,6 +21,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <curses.h>
 #include <menu.h>
 #include <unistd.h>
@@ -45,6 +46,7 @@ void bbs_ncurses_menu_destroy(struct bbs_ncurses_menu *menu)
 {
 	int i;
 	for (i = 0; i < menu->num_options; i++) {
+		bbs_assert_exists(menu->options[i]);
 		free(menu->options[i]);
 		free_if(menu->optvals[i]);
 	}
@@ -68,6 +70,8 @@ void bbs_ncurses_menu_disable_keybindings(struct bbs_ncurses_menu *menu)
 
 int bbs_ncurses_menu_addopt(struct bbs_ncurses_menu *menu, char key, const char *opt, const char *value)
 {
+	char *n;
+
 	if (menu->num_options >= MAX_NCURSES_MENU_OPTIONS) {
 		bbs_warning("Maximum number of options (%d) reached for menu\n", menu->num_options);
 		return -1;
@@ -76,8 +80,24 @@ int bbs_ncurses_menu_addopt(struct bbs_ncurses_menu *menu, char key, const char 
 	 * we silently change that to a space, which is internally used to indicate no binding. */
 	menu->keybind[menu->num_options] = key ? key : ' ';
 	menu->options[menu->num_options] = strdup(opt);
-	bbs_debug(6, "Added menu option %d with key binding '%c'\n", menu->num_options, key ? key : ' ');
-	menu->optvals[menu->num_options] = !strlen_zero(value) ? strdup(value) : NULL;
+	if (ALLOC_SUCCESS(menu->options[menu->num_options]) && ((n = strchr(menu->options[menu->num_options], '\n')))) {
+		bbs_warning("Option '%s' includes a newline\n", menu->options[menu->num_options]);
+		*n = '\0';
+	}
+	if (!strlen_zero(value)) {
+		menu->optvals[menu->num_options] = strdup(value);
+#ifdef RTRIM_MENU_OPTIONS
+		if (ALLOC_SUCCESS(menu->optvals[menu->num_options])) {
+			/* snprintf is often used to generate the display text with precise formatting.
+			 * If there is trailing whitespace, we can cut that off.
+			 * The downside is the option highlighting may look a little inconsistent. */
+			rtrim(menu->optvals[menu->num_options]);
+		}
+#endif
+	} else {
+		menu->optvals[menu->num_options] = NULL;
+	}
+	bbs_debug(6, "Added menu option %d with key binding '%c': '%s' => '%s'\n", menu->num_options, key ? key : ' ', opt, S_IF(value));
 	menu->num_options++;
 	return 0;
 }
@@ -115,7 +135,7 @@ char bbs_ncurses_menu_getopt_selection(struct bbs_node *node, struct bbs_ncurses
 	return bbs_ncurses_menu_getopt_key(menu, res);
 }
 
-#define MENU_WIDTH 76
+#define MENU_WIDTH 78
 #define MENU_PAGE_NUM_OPTIONS 10
 
 enum print_pos {
@@ -145,16 +165,16 @@ static void __print_pos(WINDOW *win, int starty, int startx, int width, const ch
 		width = MENU_WIDTH;
 	}
 
-	length = (int) strlen(string);
-	temp = (1.0 * width - length) / 2;
-	x = startx + (int) temp;
 	wattron(win, color);
 	switch (print_pos) {
 		case PRINT_MIDDLE:
+			length = (int) strlen(string);
+			temp = (1.0 * width - length) / 2;
+			x = startx + (int) temp;
 			mvwprintw(win, y, x, "%s", string);
 			break;
 		case PRINT_LEFT:
-			mvwprintw(win, y, 2, "%s", string);
+			mvwprintw(win, y, 1 + x, "%s", string);
 			break;
 	}
 	wattroff(win, color);
@@ -173,13 +193,22 @@ static int run_menu(const char *title, const char *subtitle, int num_choices, IT
 	/* Create menu */
 	menu = new_menu(options);
 
+#define MENU_BEGIN_COL 1
+#define MENU_BEGIN_ROW 1
+#define MENU_LINES MENU_PAGE_NUM_OPTIONS + 5
+#define MENU_NCOLS MENU_WIDTH - 2
+
+/* This is how many rows in we begin listing options.
+ * The heading of the menu takes up 3 rows, plus 1 more if we're displaying a subtitle. */
+#define MENU_SKIP_ROWS 3 + show_subtitle
+
 	/* Create window for menu */
-	win = newwin(MENU_PAGE_NUM_OPTIONS + 5, MENU_WIDTH, 2, 2);
+	win = newwin(MENU_LINES, MENU_WIDTH, MENU_BEGIN_COL, MENU_BEGIN_ROW);
 	keypad(win, TRUE);
 
 	/* Set main window and sub window */
 	set_menu_win(menu, win);
-	set_menu_sub(menu, derwin(win, MENU_PAGE_NUM_OPTIONS, MENU_WIDTH - 2, 3 + show_subtitle, 1));
+	set_menu_sub(menu, derwin(win, MENU_PAGE_NUM_OPTIONS, MENU_NCOLS, MENU_SKIP_ROWS, MENU_BEGIN_ROW));
 	set_menu_format(menu, MENU_PAGE_NUM_OPTIONS, 1);
 	set_menu_mark(menu, " * "); /* Set "selected" item string */
 
@@ -189,7 +218,8 @@ static int run_menu(const char *title, const char *subtitle, int num_choices, IT
 
 	/* This will print left-aligned text on the same line as the title, which could be useful but not what we want here... */
 	if (show_subtitle) {
-		print_left(win, 1 + show_subtitle, 0, MENU_WIDTH, subtitle, COLOR_PAIR(2));
+		/* The selection icon takes up 3 columns, so start at column 3 */
+		print_left(win, 1 + show_subtitle, 3, MENU_WIDTH, subtitle, COLOR_PAIR(2));
 	}
 	mvwaddch(win, 2 + show_subtitle, 0, '|');
 	mvwhline(win, 2 + show_subtitle, 1, '-', MENU_WIDTH - 2);
@@ -238,6 +268,14 @@ static int run_menu(const char *title, const char *subtitle, int num_choices, IT
 		default:
 			if (optkeys) {
 				curpos = strchr(optkeys, c);
+				/* Key bindings are case insensitive */
+				if (!curpos) {
+					char otherc;
+					char cbuf[2];
+					snprintf(cbuf, sizeof(cbuf), "%c", c); /* Avoid conversion error from int to char by doing this way */
+					otherc = (char) (islower(cbuf[0]) ? toupper(c) : tolower(c));
+					curpos = strchr(optkeys, otherc);
+				}
 				if (curpos && c != ' ') { /* Space indicates no key binding */
 					offset = (int) (curpos - optkeys); /* Calculate index in string */
 					if (offset < num_choices) {
@@ -289,16 +327,19 @@ static int ncurses_menu(struct bbs_ncurses_menu *menu)
 	init_pair(2, COLOR_GREEN, COLOR_BLACK);
 	curs_set(0); /* Disable cursor */
 
-	/* Yes, you need to allocate N+1, or you get segfaults with 3 menu items... */
+	/* options is NULL terminated, so size is n + 1 */
 	options = calloc((size_t) menu->num_options + 1, sizeof(ITEM *));
+	if (!options) {
+		return -1;
+	}
+	options[menu->num_options] = NULL;
 	/* Create items */
 	for (i = 0; i < menu->num_options; i++) {
 		/* Even though we can mutate menu independent of the parent, don't.
 		 * This way, we can avoid having to do copy on write altogether. */
-		options[i] = new_item(menu->options[i], menu->optvals[i] ? menu->optvals[i] : "");
-		if (strlen_zero(menu->options[i])) {
-			bbs_warning("Option %d is empty\n", i);
-		}
+		/* Ignore the description parameter and pass in everything we want to display in the value. */
+		const char *o = !strlen_zero(menu->optvals[i]) ? menu->optvals[i] : menu->options[i];
+		options[i] = new_item(o, "");
 	}
 
 	selected_item = run_menu(menu->title, menu->subtitle, menu->num_options, options, menu->keybind);
@@ -360,7 +401,7 @@ int bbs_ncurses_menu_getopt(struct bbs_node *node, struct bbs_ncurses_menu *menu
 		 * Tie these to the node, just like in system.c. */
 		dup2(node->slavefd, STDIN_FILENO);
 		dup2(node->slavefd, STDOUT_FILENO);
-		close(STDERR_FILENO);
+		dup2(node->slavefd, STDERR_FILENO); /* Not really needed, but avoid triggering assertion in forked process (which ends up in logs) */
 
 		/* The environment (in particular, the TERM variable) isn't set properly
 		 * at this point for ncurses (it may be, incidentally, if the BBS is running in the foreground,

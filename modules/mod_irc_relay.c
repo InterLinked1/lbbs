@@ -290,6 +290,21 @@ static void cp_add_member(struct chan_pair *cp, const char *username)
 	stringlist_push(&cp->members, username); /* Keep track of the username without the client name prefixed */
 }
 
+static const char *numeric_name(int numeric)
+{
+	switch (numeric) {
+		case 318:
+			return "WHOIS";
+		case 352:
+			return "WHO";
+		case 353:
+			return "NAMES";
+		default:
+			return NULL;
+	}
+	__builtin_unreachable();
+}
+
 /*! \todo This info should be cached locally for a while (there could be lots of these requests in a busy channel...) */
 static int wait_response(struct bbs_node *node, int fd, const char *requsername, int numeric, struct chan_pair *cp, const char *clientname, const char *channel, const char *origchan, const char *fullnick, const char *nick)
 {
@@ -310,13 +325,11 @@ static int wait_response(struct bbs_node *node, int fd, const char *requsername,
 	}
 	switch (numeric) {
 		case 318:
-			bbs_irc_client_send(clientname, "WHOIS %s", nick);
+			bbs_irc_client_send(clientname, "%s %s", numeric_name(numeric), nick);
 			break;
 		case 352:
-			bbs_irc_client_send(clientname, "WHO %s", channel);
-			break;
 		case 353:
-			bbs_irc_client_send(clientname, "NAMES %s", channel);
+			bbs_irc_client_send(clientname, "%s %s", numeric_name(numeric), channel);
 			break;
 		default:
 			bbs_error("Numeric %d not supported\n", numeric);
@@ -325,7 +338,7 @@ static int wait_response(struct bbs_node *node, int fd, const char *requsername,
 	/* Wait for the response to our request. */
 	res = bbs_poll(nickpipe[0], 3000);
 	if (res <= 0) {
-		bbs_warning("Didn't receive response to WHO/WHOIS/NAMES (%d) query: returned %d\n", numeric, res);
+		bbs_warning("Didn't receive response to %s (%d) query: returned %d (%s/%s/%s)\n", numeric_name(numeric), numeric, res, clientname, origchan, channel);
 		res = -1;
 		goto cleanup;
 	}

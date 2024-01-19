@@ -2429,7 +2429,8 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 		}
 		s = rldata->buf;
 		len = (size_t) res;
-		bbs_debug(8, "%p => [%lu data bytes]\n", smtp, len); /* This could be a lot of output, don't show it all. */
+		/* This is a very spammy message for large emails: */
+		bbs_debug(10, "%p => [%lu data bytes]\n", smtp, len); /* This could be a lot of output, don't show it all. */
 		if (!strcmp(s, ".")) { /* Entire message has now been received */
 			int dres;
 			fclose(fp); /* Have to close and reopen in read mode anyways */
@@ -2641,7 +2642,6 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 			smtp->tflags.dostarttls = 0;
 			*sslptr = ssl_node_new_accept(smtp->node, &smtp->rfd, &smtp->wfd);
 			if (!*sslptr) {
-				bbs_error("Failed to create SSL\n");
 				break; /* Just abort */
 			}
 			smtp->secure = 1;
@@ -2667,7 +2667,6 @@ static void smtp_handler(struct bbs_node *node, int msa, int secure)
 	if (secure) {
 		ssl = ssl_node_new_accept(node, &rfd, &wfd);
 		if (!ssl) {
-			bbs_error("Failed to create SSL\n");
 			return;
 		}
 	} else {

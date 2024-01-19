@@ -305,6 +305,7 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 	if (!waiting_join) {
 #ifdef __linux__
 		struct timespec ts;
+		int waits = 0;
 		/* This is suspicious... we may end up hanging if the thread doesn't exit imminently */
 		/* Don't immediately emit a warning, because the thread may be just about to exit
 		 * and thus wasn't waitingjoin when we checked. This prevents superflous warnings,
@@ -314,8 +315,19 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 		}
 		ts.tv_sec = 1; /* Wait up to a second */
 		res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts); /* This is not POSIX portable */
-		if (res && res == ETIMEDOUT) {
-			/* The thread hasn't exited yet. At this point, it's more likely that something is actually wrong. */
+		while (res == ETIMEDOUT && ++waits < 200) {
+			/* It seems pthread_timedjoin_np doesn't always wait and sometimes returns immediately,
+			 * in which case it's possible that no time has actually passed.
+			 * If this is the case, then manually sleep and check again first. */
+			/* Wait a few hundred ms. Okay to make a blocking call since pthread_join is expected to possibly block anyways.
+			 * Still split up into multiple waits to avoid sleeping longer than is really needed... */
+			bbs_safe_sleep(25);
+			res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts);
+		}
+		if (res == ETIMEDOUT) {
+			/* The thread hasn't exited yet. At this point, it's more likely that something is actually wrong.
+			 * This isn't always the case, for threads that might take a long time to clean up and exit,
+			 * but most of the time, it shouldn't take more than a second. */
 			bbs_warning("Thread %d is not currently waiting to be joined\n", lwp);
 			/* Now, proceed as normal and do a ~blocking pthread_join */
 			/* Seems that after using pthread_timedjoin_np, you can't do a blocking pthread_join anymore? So loop */

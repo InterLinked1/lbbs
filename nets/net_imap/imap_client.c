@@ -166,6 +166,7 @@ int imap_client_idle_start(struct imap_client *client)
 int imap_client_idle_stop(struct imap_client *client)
 {
 	if (SWRITE(client->client.wfd, "DONE\r\n") < 0) {
+		bbs_error("Failed to write to idling client, must be dead\n");
 		return -1;
 	}
 	/* There could be some untagged updates sent that we're just seeing now, be tolerant of receiving a few of those */
