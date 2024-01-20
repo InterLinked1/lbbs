@@ -702,6 +702,7 @@ static int update_member_stats(struct agent *agent)
 		RWLIST_UNLOCK(&queue->members);
 	}
 	RWLIST_UNLOCK(&queues);
+	ami_resp_free(resp);
 	return 0;
 }
 

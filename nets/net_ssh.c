@@ -256,7 +256,9 @@ static int process_stdout(socket_t fd, int revents, void *userdata)
 			bbs_debug(3, "len: %d\n", n);
 		}
 	} else {
+#ifdef EXTRA_DEBUG
 		bbs_debug(3, "channel: %p, events: %s\n", channel, poll_revent_name(revents));
+#endif
 		if (revents & POLLHUP) {
 			sdata->dead = 1;
 		}
