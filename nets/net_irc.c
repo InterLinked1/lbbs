@@ -38,6 +38,7 @@
 #include "include/notify.h"
 #include "include/alertpipe.h"
 #include "include/cli.h"
+#include "include/ratelimit.h"
 
 #include "include/net_irc.h"
 
@@ -258,6 +259,7 @@ struct irc_channel {
 	struct stringlist invited;			/* String list of invited nicks */
 	FILE *fp;							/* Optional log file to which to log all channel activity */
 	RWLIST_ENTRY(irc_channel) entry;	/* Next channel */
+	struct bbs_rate_limit ratelimit;	/* Time that last relayed message was sent */
 	unsigned int relay:1;				/* Enable relaying */
 	pthread_mutex_t lock;				/* Channel lock */
 	char data[];						/* Flexible struct member for channel name */
@@ -1030,6 +1032,7 @@ static int transform_and_send(const char *channel, enum channel_user_modes modes
 int _irc_relay_send_multiline(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *hostsender, const char *msg, int(*transform)(const char *line, char *buf, size_t len), const char *ircuser, void *mod)
 {
 	int res = 0;
+	int line_count = 0;
 	char *dup, *line, *lines;
 
 	if (!strchr(msg, '\n')) { /* Avoid unnecessarily allocating memory if we don't have to. */
@@ -1041,6 +1044,19 @@ int _irc_relay_send_multiline(const char *channel, enum channel_user_modes modes
 		}
 		lines = dup;
 		while ((line = strsep(&lines, "\n"))) {
+			if (++line_count > 1) {
+				/* Max of 5 messages to IRC per second,
+				 * so sleep 200 ms between each message we send.
+				 * This should avoid getting rejected by the rate limiter... */
+				bbs_debug(1, "Sleeping 200 ms to avoid spamming IRC (line %d)\n", line_count);
+				bbs_safe_sleep(200);
+				if (line_count > 10) {
+					/* Okay, now this is getting ridiculous... abort. */
+					free(dup);
+					bbs_warning("Truncating excessively long message relayed to IRC\n");
+					return 1;
+				}
+			}
 			res |= transform_and_send(channel, modes, relayname, sender, hostsender, line, transform, ircuser, mod);
 		}
 		free(dup);
@@ -1073,6 +1089,7 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 {
 	char hostname[84];
 	struct irc_channel *c;
+	
 	enum channel_user_modes minmode = CHANNEL_USER_MODE_NONE;
 
 	/*! \todo need to respond with appropriate numerics here */
@@ -1197,6 +1214,48 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 		RWLIST_TRAVERSE_SAFE_END;
 		RWLIST_UNLOCK(&c->members);
 	}
+
+	/* One has to be careful when relaying messages from "modern" walled gardens like Slack and Discord to an IRC channel,
+	 * since these applications allow users to easily construct messages that are not tolerated on IRC.
+	 * Libera, for example, will drop a client if it sends more than 5 messages in the same second.
+	 * Therefore, if a relay is providing us with spammy input, we MUST either truncate them or sleep between transmissions.
+	 *
+	 * There are several places this could be done (going further down the call stack):
+	 * - net_irc: in _irc_relay_send_multiline, when processing multiline message
+	 * - net_irc: in _irc_relay_send (broader), to handle any transmissions into an IRC relay
+	 * - mod_irc_relay: per each individual IRC relay (in mod_irc_relay)
+	 * - mod_irc_client: Transmissions towards each IRC client
+	 *
+	 * The last one is not suitable, since it's too specific to individual IRC clients, and we may not want to rate limit everything.
+	 * The first one is not specific enough, since a user could send many individual messages at once that aren't multiline,
+	 *   even though this may be the most common way of triggering this issue.
+	 * The middle two are more suitable places to have these kinds of guardrails.
+	 * The tiebreaker comes down to whether or not we should prevent flooding of all messages to the network IRC server,
+	 * or specifically relays as well, and it makes sense that we should do both.
+	 *
+	 * _irc_relay_send is not ideal for enforcing rate limiting because it doesn't know where the message came from
+	 * (specifically, there is no data structure available here where we can keep track of rate limiting by sender / sending module).
+	 * However, it is better than nothing considering net_irc could keep track of rate limiting on a per-user basis,
+	 * but relayed messages aren't associated with users, so this will just have to do. If we detect a large amount
+	 * of traffic coming into the IRC channel from *ALL* sources, we can act upon that.
+	 *
+	 * Therefore, we take a two-pronged approach:
+	 * - _irc_relay_send should ENFORCE rate limiting for ALL relayed-in traffic, since at this point, we don't know where the message came from.
+	 *   This won't apply to _irc_relay_raw_send or privmsg (non-relayed PRIVMSG), but it will apply to all messages from "outside" the BBS going through it.
+	 * - Individual relay modules (e.g. mod_discord) should DISCOURAGE and RESTRICT flooding but truncating or dropping messages,
+	 *   so as to proactively prevent flooding before _irc_relay_send has to drop messages as a last resort, and inform senders about the overload.
+	 */
+	pthread_mutex_lock(&c->lock);
+	/* Atomically check since this this function can be called from multiple threads. */
+	if (bbs_rate_limit_exceeded(&c->ratelimit)) {
+		pthread_mutex_unlock(&c->lock);
+		bbs_warning("Rate limit exceeded, dropping message...\n");
+		/* Drop message if rate limit exceeded.
+		 * Unlike per-user rate limits,
+		 * we can't notify anyone about this. */
+		return -1;
+	}
+	pthread_mutex_unlock(&c->lock);
 
 	channel_broadcast_selective(c, NULL, minmode, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, "PRIVMSG", c->name, msg);
 	relay_broadcast(c, NULL, sender, msg, mod);
@@ -2547,6 +2606,7 @@ static int join_channel(struct irc_user *user, char *name)
 			channel->modes |= CHANNEL_MODE_REGISTERED_ONLY;
 		}
 		channel->fp = NULL;
+		bbs_rate_limit_init(&channel->ratelimit, 1000, 5); /* No more than 5 messages per second */
 		pthread_mutex_init(&channel->lock, NULL);
 		if (log_channels) {
 			char logfile[256];

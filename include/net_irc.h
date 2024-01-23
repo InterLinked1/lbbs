@@ -129,7 +129,9 @@ int irc_relay_unregister(int (*relay_send)(const char *channel, const char *send
  * \param ircuser If non-NULL, indicates a personal relay for the specified IRC user.
  *                If this user is currently online but not in this channel, s/he will be invited to the channel.
  * \param mod Module
- * \retval 0 on success, -1 on failure (message not relayed)
+ * \retval 0 on success
+ * \retval -1 on failure (message not relayed)
+ * \retval 1 Partial success (e.g. message truncated due to consisting of too many lines)
  */
 int _irc_relay_send_multiline(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *hostsender, const char *msg, int(*transform)(const char *line, char *buf, size_t len), const char *ircuser, void *mod);
 

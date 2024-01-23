@@ -1124,6 +1124,7 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 	struct discord_attachments *attachments;
 	char sendertmp[84];
 	char sender[84];
+	int res;
 
 	author = event->author;
 	snprintf(sendertmp, sizeof(sendertmp), "%s#%s", author->username, author->discriminator);
@@ -1177,7 +1178,24 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 		}
 	}
 
-	irc_relay_send_multiline(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, NULL, event->content, substitute_nicks, NULL);
+	res = irc_relay_send_multiline(cp->irc_channel, CHANNEL_USER_MODE_NONE, "Discord", sender, NULL, event->content, substitute_nicks, NULL);
+	if (res > 0 && cp->multiline >= 0) {
+		/* The first part of the message was sent,
+		 * but it was eventually truncated. */
+		char mbuf[256];
+		struct discord_create_message params = {
+			.content = mbuf,
+			.message_reference = &(struct discord_message_reference) {
+				.message_id = 0, /* Irrelevant, we're not replying to a channel thread (IRC doesn't have the concept of threads anyways) */
+				.channel_id = cp->channel_id,
+				.guild_id = cp->guild_id,
+				.fail_if_not_exists = false, /* Send as a normal message, not an in-thread reply */
+			},
+			.components = NULL,
+		};
+		snprintf(mbuf, sizeof(mbuf), "%s: Your multi-line message has been truncated due to excessive length and/or line count. IRC participants have not received it in its entirety.", author->username);
+		discord_create_message(client, cp->channel_id, &params, NULL);
+	}
 
 	if (attachments && attachments->size) {
 		int i;
