@@ -1287,7 +1287,7 @@ static void on_message_update(struct discord *client, const struct discord_messa
 
 	UNUSED(client);
 	if (!event->author) {
-		bbs_error("Event has no author?\n");
+		bbs_warning("Event has no author?\n");
 		return;
 	}
 	if (event->author->bot) {

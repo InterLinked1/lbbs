@@ -99,6 +99,9 @@ struct slack_relay {
 	RWLIST_ENTRY(slack_relay) entry;
 	struct slack_client *slack;
 	unsigned int relaysystem:1;
+	unsigned int error:1;		/*!< Relay in fatal error state */
+	unsigned int preservethreading:1;	/*!< Try to preserve threading in replies */
+	unsigned int prefixthread:1;	/*!< Whether to prefix messages with the thread ID */
 	const char *name;
 	const char *ircuser;		/*!< IRC username, if this is a personal relay (i.e. intended for just one IRC user) */
 	const char *token;
@@ -312,7 +315,7 @@ static struct slack_user *load_user(struct slack_relay *relay, const char *useri
 	return user;
 }
 
-static void load_users(struct slack_relay *relay, int limit)
+static int load_users(struct slack_relay *relay, int limit)
 {
 	char url[256];
 	size_t index;
@@ -321,7 +324,7 @@ static void load_users(struct slack_relay *relay, int limit)
 	snprintf(url, sizeof(url), "https://slack.com/api/users.list?token=%s&limit=%d", relay->token, limit);
 	json = slack_curl_get(relay, url);
 	if (!json) {
-		return;
+		return -1;
 	}
 
 	RWLIST_WRLOCK(&relay->users);
@@ -332,6 +335,7 @@ static void load_users(struct slack_relay *relay, int limit)
 	RWLIST_UNLOCK(&relay->users);
 
 	json_decref(json);
+	return 0;
 }
 
 static void load_members(struct slack_relay *relay, struct chan_pair *cp, const char *channelid, int limit)
@@ -370,7 +374,7 @@ static void load_members(struct slack_relay *relay, struct chan_pair *cp, const 
 	bbs_debug(5, "Added %d user%s to channel %s\n", c, ESS(c), channelid);
 }
 
-static void load_channels(struct slack_relay *relay, int limit)
+static int load_channels(struct slack_relay *relay, int limit)
 {
 	char url[256];
 	size_t index;
@@ -380,7 +384,7 @@ static void load_channels(struct slack_relay *relay, int limit)
 	snprintf(url, sizeof(url), "https://slack.com/api/users.conversations?token=%s&exclude_archived=true&types=public_channel,private_channel", relay->token);
 	json = slack_curl_get(relay, url);
 	if (!json) {
-		return;
+		return -1;
 	}
 
 	channels = json_object_get(json, "channels");
@@ -406,15 +410,17 @@ static void load_channels(struct slack_relay *relay, int limit)
 	RWLIST_UNLOCK(&relay->users);
 
 	json_decref(json);
+	return 0;
 }
 
-static void load_presence(struct slack_relay *relay, int limit)
+static int load_presence(struct slack_relay *relay, int limit)
 {
 	struct slack_user *u;
 	int c = 0;
+	int res = 0;
 	json_t *userids = json_array();
 	if (!userids) {
-		return;
+		return -1;
 	}
 
 	RWLIST_RDLOCK(&relay->users);
@@ -432,10 +438,13 @@ static void load_presence(struct slack_relay *relay, int limit)
 
 	if (slack_users_presence_query(relay->slack, userids)) {
 		bbs_warning("Failed to send presence query request\n");
+		res = -1;
 	} else if (slack_users_presence_subscribe(relay->slack, userids)) {
 		bbs_warning("Failed to send presence subscribe request\n");
+		res = -1;
 	}
 	json_decref(userids);
+	return res;
 }
 
 static struct slack_user *slack_user_by_irc_username(const char *ircusername)
@@ -572,6 +581,7 @@ static const char *slack_user_dm_id(struct slack_user *u)
 static int on_message(struct slack_event *event, const char *channel, const char *thread_ts, const char *ts, const char *user, const char *text)
 {
 	char dup[4000];
+	char prefixed[4096];
 	struct slack_user *u;
 	const char *ircusername;
 	struct slack_client *slack = slack_event_get_userdata(event);
@@ -651,6 +661,10 @@ static int on_message(struct slack_event *event, const char *channel, const char
 	 * no other attributes are. However, this is what will be most natural to use for the "IRC username".
 	 * In most small workspaces, this should not pose an issue; however, if a collision occurs
 	 * (and we don't check for this), then unexpected behavior may occur. */
+	if (relay->prefixthread) {
+		snprintf(prefixed, sizeof(prefixed), "%s: %s", S_OR(thread_ts, ts), text);
+		text = prefixed;
+	}
 	irc_relay_send_multiline(destination, CHANNEL_USER_MODE_NONE, "Slack", ircusername, user, text, NULL, relay->ircuser);
 	return 0;
 }
@@ -724,10 +738,53 @@ static void notify_unauthorized(const char *sender, const char *channel, const c
 	irc_relay_send_notice(sender, CHANNEL_USER_MODE_NONE, "Slack", sender, NULL, notice, NULL);
 }
 
+#define SLACK_TS_LENGTH 17
+
+static inline void parse_parent_thread(struct slack_relay *relay, char *restrict ts, const char **restrict thread_ts, char const **restrict msg)
+{
+	const char *word2;
+	long word1len, tsl;
+
+	if (!relay->preservethreading || strlen_zero(*msg)) {
+		/* Do nothing */
+		return;
+	}
+
+	safe_strncpy(ts, *msg, SLACK_TS_LENGTH + 2);
+	tsl = atol(ts); /* Parse timestamp, at least up until period */
+	if (tsl <= 0) {
+		return; /* Can't be a valid ts */
+	}
+
+	word2 = strchr(*msg, ' ');
+	if (!word2) {
+		return; /* Only one word? */
+	}
+
+	word1len = word2 - *msg;
+	/* Accept ts rest of message and ts: rest of message */
+	if (word1len != SLACK_TS_LENGTH && (word1len != SLACK_TS_LENGTH + 1 || *(*msg + SLACK_TS_LENGTH) != ':')) {
+		bbs_debug(5, "Not prefixed with a ts after all\n");
+		return; /* More afterwards, so can't be just a timestamp */
+	}
+
+	if (word1len == SLACK_TS_LENGTH + 1) {
+		/* Ditch the trailing : */
+		*(ts + SLACK_TS_LENGTH) = '\0';
+	}
+
+	/* Assume that it's a valid timestamp. */
+	bbs_debug(7, "Message seems to be prefixed with a Slack ts (%s)\n", ts);
+	*thread_ts = ts;
+	*msg = word2 + 1;
+}
+
 static int slack_send(const char *channel, const char *sender, const char *msg)
 {
 	char buf[532];
+	char ts[SLACK_TS_LENGTH + 2];
 	struct slack_relay *relay;
+	const char *thread_ts = NULL;
 	struct chan_pair *cp = find_irc_channel(channel);
 	if (!cp) {
 		return 0; /* No relay exists for this channel */
@@ -753,6 +810,8 @@ static int slack_send(const char *channel, const char *sender, const char *msg)
 		}
 	}
 
+	parse_parent_thread(relay, ts, &thread_ts, &msg);
+
 	if (!relay->ircuser) {
 		/* Many:many relay, identify the user */
 		if (sender) {
@@ -771,7 +830,7 @@ static int slack_send(const char *channel, const char *sender, const char *msg)
 	safe_strncpy(cp->lastmsg, msg, sizeof(cp->lastmsg));
 	pthread_mutex_unlock(&cp->lock);
 
-	if (slack_channel_post_message(relay->slack, cp->slack, NULL, msg)) {
+	if (slack_channel_post_message(relay->slack, cp->slack, thread_ts, msg)) {
 		bbs_error("Failed to post message to channel %s\n", channel);
 	}
 	return 0;
@@ -780,8 +839,10 @@ static int slack_send(const char *channel, const char *sender, const char *msg)
 static int privmsg(const char *recipient, const char *sender, const char *msg)
 {
 	char buf[532];
+	char ts[SLACK_TS_LENGTH + 2];
 	const char *dmchannel;
 	struct slack_relay *relay;
+	const char *thread_ts = NULL;
 	struct slack_user *u = slack_user_by_irc_username(recipient);
 	if (!u) {
 		return 0;
@@ -800,6 +861,8 @@ static int privmsg(const char *recipient, const char *sender, const char *msg)
 		return 0;
 	}
 
+	parse_parent_thread(relay, ts, &thread_ts, &msg);
+
 	if (!relay->ircuser) {
 		/* Many:many relay, identify the user */
 		if (sender) {
@@ -815,7 +878,7 @@ static int privmsg(const char *recipient, const char *sender, const char *msg)
 	safe_strncpy(u->lastmsg, msg, sizeof(u->lastmsg));
 	pthread_mutex_unlock(&u->lock);
 
-	if (slack_channel_post_message(relay->slack, dmchannel, NULL, msg)) {
+	if (slack_channel_post_message(relay->slack, dmchannel, thread_ts, msg)) {
 		bbs_error("Failed to post message to channel %s\n", dmchannel);
 	}
 	return 1;
@@ -924,10 +987,10 @@ static int cli_slack_relays(struct bbs_cli_args *a)
 	int i = 0;
 	struct slack_relay *r;
 
-	bbs_dprintf(a->fdout, "%-20s (%s)\n", "Name", "IRC User (Private Relay)");
+	bbs_dprintf(a->fdout, "%-20s %6s %18s %13s (%s)\n", "Name", "Status", "Preserve Threading", "Prefix Thread", "IRC User (Private Relay)");
 	RWLIST_RDLOCK(&relays);
 	RWLIST_TRAVERSE(&relays, r, entry) {
-		bbs_dprintf(a->fdout, "%-20s %s\n", r->name, S_IF(r->ircuser));
+		bbs_dprintf(a->fdout, "%-20s %6s %18s %13s %s\n", r->name, r->error ? "Error" : "Normal", BBS_YN(r->preservethreading), BBS_YN(r->prefixthread), S_IF(r->ircuser));
 		i++;
 	}
 	RWLIST_UNLOCK(&relays);
@@ -941,7 +1004,7 @@ static int cli_slack_channels(struct bbs_cli_args *a)
 	int match = 0;
 	struct slack_relay *r;
 
-	bbs_dprintf(a->fdout, "%-20s %-30s %-20s\n", "Slack Channel ID", "Slack Channel Name", "IRC Channel");
+	bbs_dprintf(a->fdout, "%-20s %-30s %-20s %s\n", "Slack Channel ID", "Slack Channel Name", "IRC Channel", "Status");
 	RWLIST_RDLOCK(&relays);
 	RWLIST_TRAVERSE(&relays, r, entry) {
 		struct chan_pair *cp;
@@ -953,7 +1016,7 @@ static int cli_slack_channels(struct bbs_cli_args *a)
 			if (a->argc == 3 && strcasecmp(r->name, a->argv[2])) { /* Optional relay filter */
 				continue;
 			}
-			bbs_dprintf(a->fdout, "%-20s %-30s %-20s\n", cp->slack, cp->name, cp->irc);
+			bbs_dprintf(a->fdout, "%-20s %-30s %-20s %s\n", cp->slack, S_IF(cp->name), cp->irc, r->error ? "Error" : "Normal");
 			match++;
 		}
 		RWLIST_UNLOCK(&r->mappings);
@@ -1051,23 +1114,32 @@ static void slack_log(int level, int len, const char *file, const char *function
 
 #define SLACK_REQUEST_USER_LIMIT 500
 
-static void *slack_relay(void *varg)
+static void *slack_relay_run(void *varg)
 {
+	int res;
 	struct slack_relay *relay = varg;
 	struct slack_client *slack = relay->slack;
 
 	/* Connect to Slack */
 	if (slack_client_connect(slack)) {
-		bbs_error("Slack client connection failed\n");
+		bbs_error("Slack client connection failed for relay %s\n", relay->name);
 		return NULL;
 	}
 
 	slack_client_set_autoreconnect(slack, 1); /* Enable autoreconnect since this is supposed to be a long lived relay */
-	load_users(relay, SLACK_REQUEST_USER_LIMIT); /* Load all users (or at least as many as we can) in advance */
-	load_channels(relay, SLACK_REQUEST_USER_LIMIT); /* Load channels next, which will also load members (which is why we do load_users first) */
-	load_presence(relay, SLACK_REQUEST_USER_LIMIT); /* Finally, load presence, for all users that share channels with us */
-
-	slack_event_loop(slack, &slack_callbacks); /* Run event loop */
+	res = load_users(relay, SLACK_REQUEST_USER_LIMIT); /* Load all users (or at least as many as we can) in advance */
+	if (!res) {
+		res = load_channels(relay, SLACK_REQUEST_USER_LIMIT); /* Load channels next, which will also load members (which is why we do load_users first) */
+	}
+	if (!res) {
+		res = load_presence(relay, SLACK_REQUEST_USER_LIMIT); /* Finally, load presence, for all users that share channels with us */
+	}
+	if (!res) {
+		slack_event_loop(slack, &slack_callbacks); /* Run event loop */
+	} else {
+		bbs_error("Failed to set up Slack relay %s\n", relay->name);
+		relay->error = 1;
+	}
 	return NULL;
 }
 
@@ -1076,7 +1148,7 @@ static int start_clients(void)
 	struct slack_relay *relay;
 	RWLIST_RDLOCK(&relays);
 	RWLIST_TRAVERSE(&relays, relay, entry) {
-		if (bbs_pthread_create(&relay->thread, NULL, slack_relay, relay)) {
+		if (bbs_pthread_create(&relay->thread, NULL, slack_relay_run, relay)) {
 			bbs_warning("Failed to start Slack relay %s\n", relay->name);
 		}
 	}
@@ -1107,6 +1179,7 @@ static int load_config(void)
 		const char *ircuser = NULL;
 		const char *mapname = NULL;
 		struct slack_client *slack;
+		int preservethreading = 0, prefixthread = 0;
 		size_t namelen, tokenlen = 0, gwserverlen = 0, cookie_d_len = 0, entlen = 0, cookie_ds_len = 0, ircuserlen = 0;
 		size_t datalen;
 		char *data;
@@ -1151,6 +1224,10 @@ static int load_config(void)
 				ircuserlen = strlen(ircuser) + 1;
 			} else if (!strcasecmp(key, "mapping")) {
 				mapname = value;
+			} else if (!strcasecmp(key, "preservethreading")) {
+				preservethreading = S_TRUE(value);
+			} else if (!strcasecmp(key, "prefixthread")) {
+				prefixthread = S_TRUE(value);
 			} else if (!strcasecmp(key, "type")) { /* We know it's type=relay */
 				continue;
 			} else {
@@ -1182,6 +1259,8 @@ static int load_config(void)
 			continue;
 		}
 		SET_BITFIELD(relay->relaysystem, relaysystem);
+		SET_BITFIELD(relay->prefixthread, prefixthread);
+		SET_BITFIELD(relay->preservethreading, preservethreading);
 		data = relay->data;
 
 		SET_FSM_STRING_VAR(relay, data, name, bbs_config_section_name(section), namelen);
@@ -1198,6 +1277,11 @@ static int load_config(void)
 			const char *ircchanname = bbs_keyval_val(keyval);
 			size_t slacklen, irclen;
 			struct chan_pair *cp;
+
+			if (!strcasecmp(slackchanid, "type") && !strcasecmp(ircchanname, "mapping")) {
+				/* Don't include type=mapping, that's not a mapping */
+				continue;
+			}
 
 			slacklen = strlen(slackchanid) + 1;
 			irclen = strlen(ircchanname) + 1;
