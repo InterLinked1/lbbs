@@ -578,6 +578,81 @@ static const char *slack_user_dm_id(struct slack_user *u)
 	return u->dmchannel;
 }
 
+static struct slack_user *find_username_all_channels(const char *userid)
+{
+	struct slack_relay *r;
+
+	RWLIST_RDLOCK(&relays);
+	RWLIST_TRAVERSE(&relays, r, entry) {
+		struct slack_user *u;
+
+		RWLIST_RDLOCK(&r->users);
+		RWLIST_TRAVERSE(&r->users, u, entry) {
+			if (!strcmp(u->userid, userid)) {
+				RWLIST_UNLOCK(&r->users);
+				RWLIST_UNLOCK(&relays);
+				return u;
+			}
+		}
+		RWLIST_UNLOCK(&r->users);
+	}
+	RWLIST_UNLOCK(&relays);
+	return NULL;
+}
+
+static int substitute_mentions(const char *line, char *buf, size_t len)
+{
+	char *pos = buf;
+	size_t left = len - 1;
+	const char *start = NULL, *c = line;
+
+	/* Need to substitute stuff like <@UA1BCDEF2> to @jsmith
+	 * We don't substitute channels for a couple reasons:
+	 * - They're more ambiguous, and do we use the Slack name or the IRC name?
+	 * - Not everyone has access to all channels. Slack will mask a channel name
+	 *   if a recipient of a message doesn't have access to it.
+	 *   We can only send one thing to IRC, so decoding channel names
+	 *   risks breaching privacy of the channel. */
+	while (*c) {
+		if (left <= 0) {
+			bbs_warning("Buffer exhaustion when substituting nicks\n");
+			buf[len - 1] = '\0';
+			return -1;
+		}
+		if (!start && *c == '<' && *(c + 1) == '@' && *(c + 2) && strchr(c + 2, '>')) {
+			start = c + 2;
+		} else if (start && *c == '>') {
+			/* User IDs are 9 characters (excluding the @ symbol) and start with U. */
+			char userid[10];
+			struct slack_user *u;
+
+			safe_strncpy(userid, start, sizeof(userid));
+			bbs_debug(3, "Searching for username to replace '%s'\n", userid);
+			/* XXX This is not ideal,
+			 * but since this callback function doesn't receive any private callback data,
+			 * we don't know which relay this is for, so we have to search them all.
+			 * This is still correct, since user IDs are unique across all workspaces,
+			 * but it's not as efficient.
+			 * To make this faster, we could have irc_relay_send_multiline accept private callback data
+			 * (which would be the relay), and then just check the users in that relay here. */
+			u = find_username_all_channels(userid);
+			bbs_debug(5, "Substituted %s -> %s\n", userid, u ? u->username : "");
+			if (u) {
+				size_t bytes = (size_t) snprintf(pos, left, "@%s", u->username);
+				pos += bytes;
+				left -= bytes;
+			}
+			start = NULL;
+		} else if (!start) {
+			*pos++ = *c;
+			left--;
+		}
+		c++;
+	}
+	*pos = '\0';
+	return 0;
+}
+
 static int on_message(struct slack_event *event, const char *channel, const char *thread_ts, const char *ts, const char *user, const char *text)
 {
 	char dup[4000];
@@ -665,7 +740,7 @@ static int on_message(struct slack_event *event, const char *channel, const char
 		snprintf(prefixed, sizeof(prefixed), "%s: %s", S_OR(thread_ts, ts), text);
 		text = prefixed;
 	}
-	irc_relay_send_multiline(destination, CHANNEL_USER_MODE_NONE, "Slack", ircusername, user, text, NULL, relay->ircuser);
+	irc_relay_send_multiline(destination, CHANNEL_USER_MODE_NONE, "Slack", ircusername, user, text, substitute_mentions, relay->ircuser);
 	return 0;
 }
 
