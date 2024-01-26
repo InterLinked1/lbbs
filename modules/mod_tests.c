@@ -222,6 +222,27 @@ cleanup:
 	return -1;
 }
 
+static int test_lf_crlf(void)
+{
+	char buf[256];
+	char *out = NULL;
+
+	strcpy(buf, "a1\na2\na3\n");
+	bbs_test_assert_equals(3, bbs_str_contains_bare_lf(buf));
+	out = bbs_str_bare_lf_to_crlf(buf);
+	if (!out) {
+		goto cleanup;
+	}
+	bbs_test_assert_str_equals(out, "a1\r\na2\r\na3\r\n");
+	free(out);
+
+	return 0;
+
+cleanup:
+	free_if(out);
+	return -1;
+}
+
 /* No need to bother checking the return value of write. If it failed, the tests will also fail anyways. */
 #pragma GCC diagnostic ignored "-Wunused-result"
 
@@ -624,6 +645,7 @@ static struct bbs_unit_test tests[] =
 	{ "Backspace Processing", test_backspace_processing },
 	{ "String Copy w/o Spaces", test_strcpy_nospaces },
 	{ "String Remove Substring", test_str_remove_substring },
+	{ "LF to CR LF Conversion", test_lf_crlf },
 	{ "Readline Helper", test_readline_helper },
 	{ "Readline Append", test_readline_append },
 	{ "Readline getn", test_readline_getn },

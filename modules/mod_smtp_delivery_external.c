@@ -398,6 +398,45 @@ static void smtp_tx_data_reset(struct smtp_tx_data *tx)
 	tx->stage = NULL;
 }
 
+#ifdef DEBUG_MAIL_DATA
+#define debug_data(srcfd, offset, writelen) __debug_data(srcfd, offset, writelen, __LINE__)
+static int __debug_data(int srcfd, off_t offset, size_t writelen, int lineno)
+{
+	/* Some built in dumping is included,
+	 * since most connections probably use STARTTLS,
+	 * making it more difficult to use tcpdump / tcpflow to debug. */
+	/* WARNING: This could malloc a lot of data. Do not define DEBUG_MAIL_DATA in production!
+	 * Only compile with it when actively debugging a delivery issue. */
+	char *debugbuf;
+
+	if (lseek(srcfd, offset, SEEK_SET) == -1) {
+		bbs_error("lseek failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	debugbuf = malloc(writelen + 1); /* NUL terminate for bbs_str_contains_bare_lf */
+	if (ALLOC_SUCCESS(debugbuf)) {
+		ssize_t rres = bbs_timed_read(srcfd, debugbuf, writelen, 50);
+		if (rres > 0) {
+			int bare_lf;
+			debugbuf[writelen] = '\0'; /* NUL terminate for bbs_str_contains_bare_lf */
+			bare_lf = bbs_str_contains_bare_lf(debugbuf);
+			if (bare_lf) {
+				bbs_warning("Line %d: message contains %d bare LF%s and may be rejected by receiving MTA\n", lineno, bare_lf, ESS(bare_lf));
+				bbs_debug(7, "Dumping %ld-byte body:\n", rres);
+				bbs_dump_mem((const unsigned char*) debugbuf, (size_t) rres);
+				free(debugbuf);
+				return 1;
+			}
+		} else if (rres < 0) {
+			bbs_error("read failed: %s\n", strerror(errno));
+		}
+		free(debugbuf);
+	}
+	return 0;
+}
+#endif
+
 /*!
  * \brief Attempt to send an external message to another mail transfer agent or message submission agent
  * \param smtp SMTP session. Generally, this will be NULL except for relayed messages, which are typically the only time this is needed.
@@ -425,10 +464,12 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 	ssize_t wrote = 0;
 	struct bbs_tcp_client client;
 	struct bbs_url url;
-	off_t send_offset = offset;
+	off_t send_offset;
 	int caps = 0, maxsendsize = 0;
 	char sendercopy[64];
 	char *user, *domain, *saslstr = NULL;
+
+#define SMTP_EOM "\r\n.\r\n"
 
 	bbs_assert(datafd != -1);
 	bbs_assert(writelen > 0);
@@ -446,6 +487,23 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 	memset(&url, 0, sizeof(url));
 	url.host = hostname;
 	url.port = port;
+
+#ifdef DEBUG_MAIL_DATA
+	/* Dump the DATA of the transaction to the CLI for debugging purposes. */
+	if (prepend && prependlen) {
+		bbs_dump_mem((const unsigned char*) prepend, prependlen);
+	}
+	if (debug_data(datafd, offset, writelen)) {
+		/* Proactively reject the message ourselves,
+		 * before even establishing a connection to another MTA,
+		 * which would make us look bad. */
+		if (strstr(hostname, "me.com") || strstr(hostname, "icloud.com")) {
+			snprintf(buf, len, "Bare <LF> detected (in DATA command)");
+			return 1; /* Return permanent failure */
+		}
+	}
+	bbs_dump_mem((const unsigned char*) SMTP_EOM, STRLEN(SMTP_EOM));
+#endif
 
 	tx->prot = "x-tcp";
 	if (bbs_tcp_client_connect(&client, &url, secure, buf, len)) {
@@ -616,10 +674,11 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 	}
 
 	/* sendfile will be much more efficient than reading the file ourself, as email body could be quite large, and we don't need to involve userspace. */
+	send_offset = offset;
 	res = (int) bbs_sendfile(client.wfd, datafd, &send_offset, writelen);
 
 	/* XXX If email doesn't end in CR LF, we need to tack that on. But ONLY if it doesn't already end in CR LF. */
-	smtp_client_send(&client, "\r\n.\r\n"); /* (end of) EOM */
+	smtp_client_send(&client, SMTP_EOM); /* (end of) EOM */
 	tx->stage = "end of DATA";
 	if (res != (int) writelen) { /* Failed to write full message */
 		res = -1;
@@ -717,7 +776,7 @@ static int mailq_file_load(struct mailq_file *restrict mqf, const char *dir_name
 	struct stat st;
 
 	snprintf(mqf->fullname, sizeof(mqf->fullname), "%s/%s", dir_name, filename);
-	mqf->fp = fopen(mqf->fullname, "r");
+	mqf->fp = fopen(mqf->fullname, "rb");
 	if (!mqf->fp) {
 		bbs_error("Failed to open %s: %s\n", mqf->fullname, strerror(errno));
 		return -1;
@@ -1207,6 +1266,7 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 			return -1;
 		}
 		close(fd);
+
 #ifndef BUGGY_SEND_IMMEDIATE
 		doasync = send_async;
 		if (doasync) {
@@ -1225,9 +1285,10 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 				 * Do note that this is mainly a WORKAROUND for BUGGY_SEND_IMMEDIATE. */
 				if (bbs_pthread_create_detached(&sendthread, NULL, smtp_async_send, filenamedup)) {
 					free(filenamedup);
+				} else {
+					bbs_debug(4, "Successfully queued message for immediate delivery: <%s> -> %s\n", from, recipient);
 				}
 			}
-			bbs_debug(4, "Successfully queued message for immediate delivery: <%s> -> %s\n", from, recipient);
 		} else {
 			bbs_debug(4, "Successfully queued message for delayed delivery: <%s> -> %s\n", from, recipient);
 		}

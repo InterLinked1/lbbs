@@ -495,11 +495,23 @@ ssize_t bbs_node_write(struct bbs_node *node, const char *buf, size_t len);
 ssize_t bbs_write(int fd, const char *buf, size_t len);
 
 /*!
+ * \brief Read a specified amount of data from a file descriptor
+ * \param fd File descriptor
+ * \param[out] buf
+ * \param len
+ * \param ms Maximum time in ms to wait after each read call for further data
+ * \retval Same as read
+ */
+ssize_t bbs_timed_read(int fd, char *restrict buf, size_t len, int ms);
+
+/*!
  * \brief Write to a file descriptor without blocking
  * \param fd File descriptor
  * \param buf Buffer to write
  * \param len Length of buf
  * \param ms Maximum number of milliseconds to wait before aborting
+ * \return Number of bytes written to out_fd
+ * \retval -1 on failure
  */
 ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms);
 

@@ -85,6 +85,22 @@ int bbs_strncount(const char *restrict s, size_t len, char c) __attribute__ ((pu
 int bbs_term_line(char *restrict c);
 
 /*!
+ * \brief Whether a NUL-terminated string contains bare line feeds (LF characters not immediately preceded by a CR)
+ * \param s String to search
+ * \retval 0 if no bare LFs
+ * \return Number of bare LFs in string
+ */
+int bbs_str_contains_bare_lf(const char *s);
+
+/*!
+ * \brief Convert all bare LFs in a NUL-terminated string to CR LF sequences
+ * \param inbuf Input string
+ * \return NULL on allocation failure
+ * \return Allocated string on success (including no bare LFs), which must be freed
+ */
+char *bbs_str_bare_lf_to_crlf(const char *inbuf);
+
+/*!
  * \brief Size-limited null-terminating string copy.
  * \param dst The destination buffer.
  * \param src The source string

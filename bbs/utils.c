@@ -957,14 +957,14 @@ ssize_t bbs_send_file(const char *filepath, int wfd)
 	return sent;
 }
 
-char *bbs_file_to_string(const char *filename, size_t maxsize, int *length)
+char *bbs_file_to_string(const char *filename, size_t maxsize, int *restrict length)
 {
 	char *s = NULL;
 	FILE *fp;
 	size_t size;
 	size_t res;
 
-	fp = fopen(filename, "r");
+	fp = fopen(filename, "rb");
 	if (!fp) {
 		bbs_error("fopen(%s) failed: %s\n", filename, strerror(errno));
 		return NULL;
@@ -989,8 +989,11 @@ char *bbs_file_to_string(const char *filename, size_t maxsize, int *length)
 	res = fread(s, 1, size, fp);
 	if (res != size) {
 		bbs_error("Wanted to read %lu bytes but only read %lu\n", size, res);
+		free(s);
+		return NULL;
 	}
 	s[res] = '\0'; /* Safe */
+
 cleanup:
 	fclose(fp);
 	return s;

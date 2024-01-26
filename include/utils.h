@@ -299,7 +299,7 @@ ssize_t bbs_send_file(const char *filepath, int wfd);
  * \param[out] length The length of the output string, not including the NUL terminator
  * \returns string on success, NULL on failure
  */
-char *bbs_file_to_string(const char *filename, size_t maxsize, int *length);
+char *bbs_file_to_string(const char *filename, size_t maxsize, int *restrict length);
 
 /*! \brief Get a timeval for the current time */
 struct timeval bbs_tvnow(void);

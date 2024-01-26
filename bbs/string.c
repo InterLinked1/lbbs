@@ -263,6 +263,79 @@ int bbs_term_line(char *restrict c)
 	return len;
 }
 
+int bbs_str_contains_bare_lf(const char *s)
+{
+	int prev_cr = 0;
+	int bare_lf = 0;
+
+	for (; *s; s++) {
+		if (*s == '\r') {
+			prev_cr = 1;
+		} else {
+			if (*s == '\n' && !prev_cr) {
+				bare_lf++;
+				/* For just a boolean answer, we could break (return 1) now,
+				 * but since the common case is, presumably, no bare LFs,
+				 * we'll end up searching the entire string most of the time,
+				 * so we might as well do that now and return a specific answer. */
+			}
+			prev_cr = 0;
+		}
+	}
+	return bare_lf;
+}
+
+char *bbs_str_bare_lf_to_crlf(const char *inbuf)
+{
+	size_t newlen, oldlen = 0;
+	const char *s;
+	char *newbuf, *d;
+	size_t bare_lf = 0;
+	int prev_cr;
+
+	/* First, see how many bare LFs there are, so we can compute
+	 * the length of the new string.
+	 * We'll compute the original length too as we go,
+	 * so we only need 1 pass rather than 2. */
+	for (s = inbuf, prev_cr = 0; *s; s++, oldlen++) {
+		if (*s == '\r') {
+			prev_cr = 1;
+		} else {
+			if (*s == '\n' && !prev_cr) {
+				bare_lf++;
+			}
+			prev_cr = 0;
+		}
+	}
+
+	bbs_debug(5, "Input has %lu bare LFs\n", bare_lf);
+	if (!bare_lf) {
+		/* No bare line feeds detected. */
+		return strdup(inbuf);
+	}
+
+	newlen = oldlen + bare_lf + 1; /* Plus NUL */
+	newbuf = malloc(newlen);
+	if (ALLOC_FAILURE(newbuf)) {
+		return NULL;
+	}
+
+	for (s = inbuf, d = newbuf, prev_cr = 0; *s; s++) {
+		if (*s == '\r') {
+			prev_cr = 1;
+		} else {
+			if (*s == '\n' && !prev_cr) {
+				/* Insert the missing CR */
+				*d++ = '\r';
+			}
+			prev_cr = 0;
+		}
+		*d++ = *s;
+	}
+	*d = '\0';
+	return newbuf;
+}
+
 /* XXX Have to pass -Wno-null-dereference to the linker for this function with -flto */
 void safe_strncpy(char *restrict dst, const char *restrict src, size_t size)
 {

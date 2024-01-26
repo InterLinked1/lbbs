@@ -1196,8 +1196,11 @@ int smtp_filter_write(struct smtp_filter_data *f, const char *fmt, ...)
 		return -1;
 	}
 
-	bbs_write(f->outputfd, buf, (size_t) len);
 	bbs_debug(6, "Prepending: %s\n", buf);
+	if (bbs_str_contains_bare_lf(buf)) {
+		bbs_warning("Appended data that contains bare LFs! Message is not RFC-compliant!\n");
+	}
+	bbs_write(f->outputfd, buf, (size_t) len);
 
 	free(buf);
 	return len;

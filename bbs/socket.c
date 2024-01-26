@@ -2033,6 +2033,29 @@ int bbs_node_flush_input(struct bbs_node *node)
 	return res;
 }
 
+ssize_t bbs_timed_read(int fd, char *restrict buf, size_t len, int ms)
+{
+	ssize_t bytes = 0;
+
+	for (;;) {
+		ssize_t res = read(fd, buf, len);
+		if (res <= 0) {
+			return res;
+		}
+		bytes += res;
+		buf += res;
+		len -= (long unsigned) res;
+		if (len <= 0) {
+			bbs_debug(7, "Buffer (size %lu) is now full\n", len);
+			return res;
+		}
+		if (bbs_poll(fd, ms) <= 0) {
+			return res;
+		}
+	}
+	__builtin_unreachable();
+}
+
 static ssize_t timed_write(struct pollfd *pfd, int fd, const char *restrict buf, size_t len, int ms)
 {
 	size_t left = len;

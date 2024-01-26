@@ -167,6 +167,12 @@ static int arc_filter_sign_cb(struct smtp_filter_data *f)
 	const char *domain;
 	const unsigned char *error;
 
+	/* If there wasn't already a DKIM-Signature,
+	 * then there's no point in adding ARC headers. */
+	if (!smtp_should_validate_dkim(f->smtp)) {
+		return 0;
+	}
+
 	if (!smtp_message_body(f)) {
 		return 0;
 	}
@@ -221,9 +227,50 @@ static int arc_filter_sign_cb(struct smtp_filter_data *f)
 	 * ARC-Authentication-Results
 	 * However, here they appear in reverse order (amongst these headers). Not actually sure that matters, just pointing it out. */
 	for (; arc_seal; arc_seal = arc_hdr_next(arc_seal)) {
+		char real_header_name[128];
+		const char *colon;
+		char *fixedval;
 		const char *hdr = (const char*) arc_hdr_name(arc_seal, NULL);
 		const char *val = (const char*) arc_hdr_value(arc_seal);
-		smtp_filter_add_header(f, hdr, val);
+		/* libopenarc is broken, in the most horribly way.
+		 * It inserts bare LF's into the ARC-Message-Signature header when adding line breaks,
+		 * rather than CR LF as it should:
+		 * https://github.com/trusteddomainproject/OpenARC/blob/develop/libopenarc/arc.c#L644
+		 *
+		 * THIS IS NOT RFC 5322 COMPLIANT!!!
+		 *
+		 * This may cause other MTAs to reject any mail we send that is ARC signed,
+		 * since the signing is not done properly.
+		 *
+		 * libopenarc is basically abandonware and this is unlikely to be fixed upstream,
+		 * so we convert all bare LFs to CR LFs, after the fact.
+		 *
+		 * Then, to add insult to injury, arc_hdr_name is frequently not parsed right.
+		 * It often includes part of the header value as well (it appears libopenarc
+		 * may be delimiting on ": " rather than ":"...)
+		 * So, work around that as well.
+		 */
+
+		colon = strchr(hdr, ':');
+		if (colon) {
+			bbs_strncpy_until(real_header_name, hdr, sizeof(real_header_name), ':');
+			hdr = real_header_name;
+			bbs_debug(3, "libopenarc did not parse header/value correctly for header '%s', fixing that...\n", hdr);
+		}
+
+		if (bbs_str_contains_bare_lf(val)) {
+			bbs_debug(1, "%s header contains bare LFs, converting them to CR LF for RFC compliance\n", hdr);
+			fixedval = bbs_str_bare_lf_to_crlf(val);
+			if (ALLOC_FAILURE(fixedval)) {
+				/* If allocation fails, skip the header entirely,
+				 * rather than appending an invalid header. */
+				continue;
+			}
+			smtp_filter_add_header(f, hdr, fixedval);
+			free(fixedval);
+		} else {
+			smtp_filter_add_header(f, hdr, val);
+		}
 	}
 
 cleanup:
