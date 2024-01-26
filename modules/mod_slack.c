@@ -95,6 +95,8 @@ struct chan_pair {
 
 RWLIST_HEAD(chan_pairs, chan_pair);
 
+#define SLACK_TS_LENGTH 17
+
 struct slack_relay {
 	RWLIST_ENTRY(slack_relay) entry;
 	struct slack_client *slack;
@@ -112,6 +114,8 @@ struct slack_relay {
 	struct chan_pairs mappings;
 	struct slack_users users;
 	pthread_t thread;
+	pthread_mutex_t lock;
+	char last_ts[SLACK_TS_LENGTH + 1];
 	char data[];
 };
 
@@ -144,6 +148,7 @@ static void relay_free(struct slack_relay *relay)
 	}
 	RWLIST_WRLOCK_REMOVE_ALL(&relay->mappings, entry, cp_free);
 	RWLIST_WRLOCK_REMOVE_ALL(&relay->users, entry, slack_user_free);
+	pthread_mutex_destroy(&relay->lock);
 	free(relay);
 }
 
@@ -737,8 +742,21 @@ static int on_message(struct slack_event *event, const char *channel, const char
 	 * In most small workspaces, this should not pose an issue; however, if a collision occurs
 	 * (and we don't check for this), then unexpected behavior may occur. */
 	if (relay->prefixthread) {
-		snprintf(prefixed, sizeof(prefixed), "%s: %s", S_OR(thread_ts, ts), text);
-		text = prefixed;
+		/* If this is the first message in a thread, just include the ts.
+		 * If it's a reply to a message in a thread, prefix the ts with a '>',
+		 * which allows recipients on IRC to distinguish replies from top-level messages. */
+		const char *eff_ts = S_OR(thread_ts, ts);
+		if (!strlen_zero(eff_ts)) {
+			snprintf(prefixed, sizeof(prefixed), "%s%s: %s", thread_ts ? ">" : "", eff_ts, text);
+			text = prefixed;
+			/* Also keep track of the last active ts.
+			 * on_message can only be called once per relay at a time since there's a single thread dispatching events,
+			 * but multiple threads could try sending messages (using this variable) simultaneously,
+			 * so this needs to be atomic with that. */
+			pthread_mutex_lock(&relay->lock);
+			safe_strncpy(relay->last_ts, eff_ts, sizeof(relay->last_ts));
+			pthread_mutex_unlock(&relay->lock);
+		}
 	}
 	irc_relay_send_multiline(destination, CHANNEL_USER_MODE_NONE, "Slack", ircusername, user, text, substitute_mentions, relay->ircuser);
 	return 0;
@@ -813,8 +831,6 @@ static void notify_unauthorized(const char *sender, const char *channel, const c
 	irc_relay_send_notice(sender, CHANNEL_USER_MODE_NONE, "Slack", sender, NULL, notice, NULL);
 }
 
-#define SLACK_TS_LENGTH 17
-
 static inline void parse_parent_thread(struct slack_relay *relay, char *restrict ts, const char **restrict thread_ts, char const **restrict msg)
 {
 	const char *word2;
@@ -822,6 +838,27 @@ static inline void parse_parent_thread(struct slack_relay *relay, char *restrict
 
 	if (!relay->preservethreading || strlen_zero(*msg)) {
 		/* Do nothing */
+		return;
+	}
+
+	if (*(*msg) == '>') {
+		(*msg)++;
+		if (strlen_zero(*msg)) {
+			return;
+		}
+		/* If it starts with >,
+		 * that's short hand for "reply in thread in the last active thread" */
+		pthread_mutex_lock(&relay->lock);
+		if (!strlen_zero(relay->last_ts)) {
+			safe_strncpy(ts, relay->last_ts, SLACK_TS_LENGTH + 2);
+			pthread_mutex_unlock(&relay->lock);
+			*thread_ts = ts;
+			bbs_debug(5, "Replying to last active thread: %s\n", ts);
+		} else {
+			pthread_mutex_unlock(&relay->lock);
+			bbs_debug(3, "No last ts on file, can't reply in thread\n");
+			/* Just post a top level message */
+		}
 		return;
 	}
 
@@ -1333,6 +1370,7 @@ static int load_config(void)
 		if (ALLOC_FAILURE(relay)) {
 			continue;
 		}
+		pthread_mutex_init(&relay->lock, NULL);
 		SET_BITFIELD(relay->relaysystem, relaysystem);
 		SET_BITFIELD(relay->prefixthread, prefixthread);
 		SET_BITFIELD(relay->preservethreading, preservethreading);
