@@ -204,6 +204,18 @@ cleanup:
 	return res;
 }
 
+static int test_str_ends_with(void)
+{
+	bbs_test_assert_equals(1, bbs_str_ends_with("big string with substring", "substring"));
+	bbs_test_assert_equals(1, bbs_str_ends_with("substring", "substring"));
+	bbs_test_assert_equals(0, bbs_str_ends_with("string", "substring"));
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
 static int test_str_remove_substring(void)
 {
 	char buf[256];
@@ -644,6 +656,7 @@ static struct bbs_unit_test tests[] =
 	{ "ANSI Stripping", test_ansi_strip },
 	{ "Backspace Processing", test_backspace_processing },
 	{ "String Copy w/o Spaces", test_strcpy_nospaces },
+	{ "String Ends With", test_str_ends_with },
 	{ "String Remove Substring", test_str_remove_substring },
 	{ "LF to CR LF Conversion", test_lf_crlf },
 	{ "Readline Helper", test_readline_helper },

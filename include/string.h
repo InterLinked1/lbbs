@@ -144,6 +144,15 @@ int bbs_strcpy_nospaces(const char *restrict s, char *restrict buf, size_t len) 
 size_t bbs_append_string(char *restrict dst, const char *src, size_t len);
 
 /*!
+ * \brief Check whether a string ends with another string
+ * \param s String to search
+ * \param sub Substring to check if s ends in it
+ * \retval 0 if s does not end in sub
+ * \retval 1 if s ends in sub
+ */
+int bbs_str_ends_with(const char *s, const char *sub) __attribute__((nonnull (1,2)));
+
+/*!
  * \brief Remove a substring from a string in place
  * \param s String to modify
  * \param word Substring of which instances will be removed

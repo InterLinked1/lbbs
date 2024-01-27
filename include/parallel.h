@@ -52,8 +52,8 @@ void bbs_parallel_init(struct bbs_parallel *p, unsigned int min, unsigned int ma
  * \param prefix Prefix unique for concurrency restrictions. No tasks with the same prefix will be concurrently scheduled.
  * \param data Callback data to pass to callback functions
  * \param cb Callback function to execute task
- * \param duplicate Function that duplicates data and returns a heap allocated version of it
- * \param cleanup Function to destroy a heap allocated callback data structure
+ * \param duplicate Function that duplicates data and returns a heap allocated version of it. NULL if data is heap-allocated already and this is not necessary.
+ * \param cleanup Function to destroy a heap allocated callback data structure. NULL if data does not need to be destroyed.
  * \return Task return code, if executed immediately
  * \return Scheduler return code, if not being executed immediately.
  * \note You must call bbs_parallel_join to ensure all tasks finish execeution, at some point before p goes out of scope

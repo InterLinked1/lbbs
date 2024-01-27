@@ -212,16 +212,22 @@ int bbs_parallel_schedule_task(struct bbs_parallel *p, const char *restrict pref
 	}
 
 	/* Set up a parallel task instead */
-	datadup = duplicate(data); /* Allocate a heap allocated version of the stack structure since we can't execute this in the current thread */
-	if (!datadup) {
-		/* If duplicate function returns NULL, then we must execute in serial.
-		 * imap/imap_client_list.c: This might not always indicate failure. Maybe for this task, it's been determined that it's better to do it this way
-		 * (e.g. the remote server supports LIST-STATUS, so this will be a fast operation) */
-		return cb(data);
+	if (duplicate) {
+		datadup = duplicate(data); /* Allocate a heap allocated version of the stack structure since we can't execute this in the current thread */
+		if (!datadup) {
+			/* If duplicate function returns NULL, then we must execute in serial.
+			 * imap/imap_client_list.c: This might not always indicate failure. Maybe for this task, it's been determined that it's better to do it this way
+			 * (e.g. the remote server supports LIST-STATUS, so this will be a fast operation) */
+			return cb(data);
+		}
+	} else {
+		datadup = data; /* Just use the data directly, if we don't need to duplicate it */
 	}
 	t = calloc(1, sizeof(*t));
 	if (ALLOC_FAILURE(t)) {
-		cleanup(datadup);
+		if (cleanup) {
+			cleanup(datadup);
+		}
 		return cb(data);
 	}
 
@@ -231,7 +237,9 @@ int bbs_parallel_schedule_task(struct bbs_parallel *p, const char *restrict pref
 		 * Basically, something like waitpid(-1, &wstatus, 0);
 		 * However, pthreads has no equivalent to "wait for any thread", you have to specify a particular thread. */
 		if (bbs_alertpipe_create(p->alertpipe)) {
-			cleanup(datadup);
+			if (cleanup) {
+				cleanup(datadup);
+			}
 			free(t);
 			return cb(data);
 		}
@@ -299,7 +307,9 @@ int bbs_parallel_join(struct bbs_parallel *p)
 		if (t->thread) { /* If this task was/is the last user of this thread, clean it up */
 			bbs_pthread_join(t->thread, NULL);
 		}
-		t->cleanup(t->data);
+		if (t->cleanup) {
+			t->cleanup(t->data);
+		}
 		free(t);
 	}
 	RWLIST_UNLOCK(&p->tasks);

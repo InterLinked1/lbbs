@@ -47,6 +47,7 @@
 #include "include/oauth.h"
 #include "include/base64.h"
 #include "include/cli.h"
+#include "include/parallel.h"
 
 #include "include/mod_mail.h"
 #include "include/net_smtp.h"
@@ -61,7 +62,7 @@ static int send_async = 1;
 static int always_queue = 0;
 static int notify_queue = 0;
 static pthread_t queue_thread = 0;
-static pthread_mutex_t queue_lock;
+static pthread_rwlock_t queue_lock;
 static char queue_dir[256];
 static unsigned int queue_interval = 60;
 static unsigned int max_retries = 10;
@@ -784,6 +785,47 @@ static void smtp_trigger_dsn(enum smtp_delivery_action action, struct smtp_tx_da
 	}
 }
 
+enum mailq_run_type {
+	QUEUE_RUN_PERIODIC,		/*!< Periodic queue run */
+	QUEUE_RUN_FORCED,		/*!< On-demand queue run */
+	QUEUE_RUN_STAT,			/*!< Not a real queue run, just for statistical purposes */
+};
+
+/*! \brief A single run of the mail queue */
+struct mailq_run {
+	enum mailq_run_type type;
+	time_t runstart;	/* Time that queue run started */
+	struct bbs_parallel *parallel;	/* Parallel task set, if running in parallel. NULL if serial. */
+	/* Queue run filters to control what messages are processed */
+	const char *hostsuffix;	/* Domain or suffix of domain, e.g. com, example.com, sub.example.com, etc. Queued processing will be restricted to matches. */
+	/* Queue run statistics */
+	/* processed is a subset of total, delivered + failed + delayed should = processed */
+	int total;			/* Total number of queued messages considered */
+	int processed;		/* Total number of queued messages processed. */
+	int delivered;		/* Total number of queued messages actually delivered and removed from queue. */
+	int failed;			/* Total number of queued messages failed permanently and removed from queue. */
+	int delayed;		/* Total number of queued messages not yet delivered and remaining in queue. */
+	/* Misc */
+	int clifd;				/* CLI file descriptor */
+	pthread_mutex_t lock;
+};
+
+static inline void mailq_run_init(struct mailq_run *qrun, enum mailq_run_type type)
+{
+	/* We could individually initialize each element in the struct,
+	 * but as the struct probably has no padding,
+	 * it's probably faster to just zero the whole darn thing. */
+	memset(qrun, 0, sizeof(struct mailq_run));
+	qrun->type = type;
+	pthread_mutex_init(&qrun->lock, NULL);
+	qrun->runstart = time(NULL);
+}
+
+static inline void mailq_run_cleanup(struct mailq_run *qrun)
+{
+	pthread_mutex_destroy(&qrun->lock);
+}
+
 #define MAILQ_FILENAME_SIZE 516
 
 /*! \brief A single message in the mail queue */
@@ -801,44 +843,27 @@ struct mailq_file {
 	time_t retriedtime;	/*!< time_t of retried */
 	char fullname[MAILQ_FILENAME_SIZE];
 	char from[1000], recipient[1000], todup[256];
+	struct mailq_run *qrun;	/*!< mailq_run to which this mailq_file belongs */
 };
 
-static inline void mailq_file_init(struct mailq_file *mqf)
+static inline void mailq_file_init(struct mailq_file *mqf, struct mailq_run *qrun)
 {
 	memset(mqf, 0, sizeof(struct mailq_file));
+	mqf->qrun = qrun;
 }
 
-enum mailq_run_type {
-	QUEUE_RUN_PERIODIC,		/*!< Periodic queue run */
-	QUEUE_RUN_FORCED,		/*!< On-demand queue run */
-	QUEUE_RUN_STAT,			/*!< Not a real queue run, just for statistical purposes */
-};
-
-/*! \brief A single run of the mail queue */
-struct mailq_run {
-	enum mailq_run_type type;
-	time_t runstart;	/* Time that queue run started */
-	/* Queue run filters to control what messages are processed */
-	const char *hostsuffix;	/* Domain or suffix of domain, e.g. com, example.com, sub.example.com, etc. Queued processing will be restricted to matches. */
-	/* Queue run statistics */
-	/* processed is a subset of total, delivered + failed + delayed should = processed */
-	int total;			/* Total number of queued messages considered */
-	int processed;		/* Total number of queued messages processed. */
-	int delivered;		/* Total number of queued messages actually delivered and removed from queue. */
-	int failed;			/* Total number of queued messages failed permanently and removed from queue. */
-	int delayed;		/* Total number of queued messages not yet delivered and remaining in queue. */
-	/* Misc */
-	int clifd;				/* CLI file descriptor */
-};
-
-static inline void mailq_run_init(struct mailq_run *qrun, enum mailq_run_type type)
+/*! \brief Cleanup callback called for parallel invocations */
+static void mailq_file_destroy(void *varg)
 {
-	/* We could individually initialize each element in the struct,
-	 * but as the struct probably has no padding,
-	 * it's probably faster to just zero the whole darn thing. */
-	memset(qrun, 0, sizeof(struct mailq_run));
-	qrun->type = type;
-	qrun->runstart = time(NULL);
+	struct mailq_file *mqf = varg;
+	/* If the file is still open, close it.
+	 * Normally, we always close the file in process_queue_file,
+	 * so this would only happen if allocating the task itself failed for some reason,
+	 * and we had to abort and call the cleanup function. */
+	if (mqf->fp) {
+		fclose(mqf->fp);
+	}
+	free(mqf);
 }
 
 static void reset_accessed_time(struct mailq_file *restrict mqf)
@@ -955,7 +980,7 @@ static int mailq_file_load(struct mailq_file *restrict mqf, const char *dir_name
 
 	/* These variants are more useful for printing timestamps */
 	memset(&mqf->created, 0, sizeof(mqf->created));
-	memset(&mqf->created, 0, sizeof(mqf->retried));
+	memset(&mqf->retried, 0, sizeof(mqf->retried));
 	/* st_mtim is the time of the last modifications.
 	 * We don't modify queue files after they are created,
 	 * (renaming does not update this timestamp)
@@ -1081,7 +1106,8 @@ static inline time_t queue_retry_threshold(int retrycount)
 static inline int skip_qfile(struct mailq_run *qrun, struct mailq_file *mqf)
 {
 	/* This queue run may have filters applied to it */
-	if (!strlen_zero(qrun->hostsuffix) && !strlen_zero(mqf->domain)) {
+	if (!strlen_zero(qrun->hostsuffix) && !strlen_zero(mqf->domain) && !bbs_str_ends_with(mqf->domain, qrun->hostsuffix)) {
+		/* Domain must end in hostsuffix, to match. */
 #ifdef DEBUG_QUEUES
 		bbs_debug(8, "Skipping queue file %s (domain '%s' does not match filter '*%s')\n", mqf->fullname, mqf->domain, qrun->hostsuffix);
 #endif
@@ -1125,37 +1151,28 @@ static inline int skip_qfile(struct mailq_run *qrun, struct mailq_file *mqf)
 	return 0;
 }
 
-static int on_queue_file(const char *dir_name, const char *filename, void *obj)
+/* If processing in parallel, multiple queue files could be processed simultaneously,
+ * so we need to make sure increments are atomic.
+ * If not parallel, everything is serial, and there is no need to lock and unlock. */
+#define QUEUE_INCR_STAT(field) \
+	if (qrun->parallel) { \
+		pthread_mutex_lock(&qrun->lock); \
+	} \
+	qrun->field++; \
+	if (qrun->parallel) { \
+		pthread_mutex_unlock(&qrun->lock); \
+	}
+
+static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 {
 	int res = -1;
 	char buf[256] = "";
 	struct stringlist *static_routes;
 	struct smtp_tx_data tx;
-	struct mailq_run *qrun = obj;
-	struct mailq_file mqf_stack, *mqf = &mqf_stack;
 
-	mailq_file_init(&mqf_stack);
 	memset(&tx, 0, sizeof(tx));
 
-	bbs_assert_exists(qrun);
-	qrun->total++;
-
-	if (mailq_file_load(&mqf_stack, dir_name, filename)) {
-		/* If a queue is malformed, this will continue indefinitely,
-		 * since we never increment its retry count.
-		 * The sysop will need to manually remove the broken queued message. */
-		return 0;
-	}
-
-	if (skip_qfile(qrun, mqf)) {
-		fclose(mqf->fp);
-		/* Not sure when the access times are changed: when the file is opened, or closed, or both,
-		 * but just to be completely safe, we only reset the timestamps after closing. */
-		reset_accessed_time(mqf);
-		return 0;
-	}
-
-	qrun->processed++;
+	QUEUE_INCR_STAT(processed);
 
 	static_routes = get_static_routes(mqf->domain);
 	bbs_debug(2, "Processing message %s (%s -> %s), via %s for '%s'\n", mqf->fullname, mqf->realfrom, mqf->realto, static_routes ? "static route(s)" : "MX lookup", mqf->domain);
@@ -1185,8 +1202,9 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 					/* Do not set tx.hostname, since this message is from us, not the remote server */
 					smtp_trigger_dsn(DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen);
 					fclose(mqf->fp);
+					mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
 					bbs_delete_file(mqf->fullname);
-					qrun->failed++;
+					QUEUE_INCR_STAT(failed);
 					return 0;
 				}
 				bbs_warning("Recipient domain %s does not have any MX records, falling back to A record %s\n", mqf->domain, a_ip);
@@ -1210,8 +1228,9 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 		bbs_smtp_log(4, NULL, "Delivery succeeded after queuing: %s -> %s\n", mqf->realfrom, mqf->realto);
 		smtp_trigger_dsn(DELIVERY_DELIVERED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen);
 		fclose(mqf->fp);
+		mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
 		bbs_delete_file(mqf->fullname);
-		qrun->delivered++;
+		QUEUE_INCR_STAT(delivered);
 		return 0;
 	}
 
@@ -1225,18 +1244,127 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 		 * Thus, if we got a multiline error, only the last line is currently included in the non-delivery report */
 		smtp_trigger_dsn(DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen);
 		fclose(mqf->fp);
+		mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
 		bbs_delete_file(mqf->fullname);
-		qrun->failed++;
+		QUEUE_INCR_STAT(failed);
 		return 0;
 	} else {
 		bbs_smtp_log(3, NULL, "Delivery delayed after queuing: %s -> %s\n", mqf->realfrom, mqf->realto);
 		mailq_file_punt(mqf); /* Try again later */
 		smtp_trigger_dsn(DELIVERY_DELAYED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen);
-		qrun->delayed++;
+		QUEUE_INCR_STAT(delayed);
 	}
 
 	fclose(mqf->fp);
+	mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
 	return 0;
+}
+
+static int parallel_process_queue_file_cb(void *data)
+{
+	struct mailq_file *mqf = data;
+	return process_queue_file(mqf->qrun, mqf);
+}
+
+/*! \brief Primary callback to process each queue file */
+static int on_queue_file(const char *dir_name, const char *filename, void *obj)
+{
+	struct mailq_run *qrun = obj;
+	struct mailq_file mqf_stack, *mqf = &mqf_stack;
+
+	if (qrun->parallel) {
+		/* Heap allocate since we'll need this after we return */
+		mqf = malloc(sizeof(struct mailq_file)); /* malloc instead of calloc since mailq_file_init will memset regardless */
+		if (ALLOC_FAILURE(mqf)) {
+			return 0;
+		}
+	}
+
+	mailq_file_init(mqf, qrun);
+
+	/* Whether we're processing the queue in parallel or not,
+	 * we always do this stuff sequentially.
+	 * In the parallel case, in particular if we have a filter,
+	 * we may not even end up processing most files in the queue.
+	 * It would be extremely wasteful to create a task for everything,
+	 * only to abort most of them because we're going to skip the file.
+	 * Therefore, synchronously check what will need to be processed first,
+	 * since that doesn't take an appreciable amount of time,
+	 * and only create a task if we're actually going to process it.
+	 * This also allows us to avoid locking for incrementing total here. */
+
+	bbs_assert_exists(qrun);
+	qrun->total++;
+
+	if (mailq_file_load(mqf, dir_name, filename)) {
+		/* If a queue is malformed, this will continue indefinitely,
+		 * since we never increment its retry count.
+		 * The sysop will need to manually remove the broken queued message. */
+		return 0;
+	}
+
+	if (skip_qfile(qrun, mqf)) {
+		fclose(mqf->fp); /* Not necessary to set mqf->fp to NULL, since we're not calling mailq_file_destroy */
+		/* Not sure when the access times are changed: when the file is opened, or closed, or both,
+		 * but just to be completely safe, we only reset the timestamps after closing. */
+		reset_accessed_time(mqf);
+		return 0;
+	}
+
+	if (qrun->parallel) {
+		/* Schedule the task now but return immediately */
+		/* filename: Every queue file is allowed to be processed in parallel, so use a unique prefix for each queue file, e.g. the filename works great. */
+		/* mqf: Only a single callback argument can be provided, but mqf has a reference to qrun */
+		/* duplicate: NULL, since we already heap allocated. */
+		/* cleanup: We do need to clean up the heap allocated structure, even though we didn't duplicate it */
+		bbs_parallel_schedule_task(qrun->parallel, filename, mqf, parallel_process_queue_file_cb, NULL, mailq_file_destroy);
+	} else {
+		/* Process the queued message now, synchronously */
+		process_queue_file(qrun, mqf);
+	}
+	return 0; /* Return 0 regardless of individual task success, to continue processing the queue */
+}
+
+/* Don't parallelize unless there's at least 2 messages in the queue,
+ * and only delivery 5 messages concurrently */
+#define QUEUE_PARALLELIZATION_THRESHOLD 2
+#define MAX_QUEUE_PARALLELIZATION 5
+
+/*! \brief Traverse and process the mail queue */
+static int run_queue(struct mailq_run *qrun, int (*queue_file_cb)(const char *dir_name, const char *filename, void *obj))
+{
+	int res;
+	int queued_messages;
+
+	/*! \todo Implement smarter queuing:
+	 * - Store envelope message separately from the file so we don't need to hackily start sending from a file into the offset,
+	 *   and so we can easily store other information out of band for queuing purposes.
+	 * - If delivering the same message to multiple recipients on a single server, it would be nice
+	 *   to be able to do that in a single transaction. Sharing a queue file might make sense in this scenario?
+	 */
+
+	pthread_rwlock_wrlock(&queue_lock);
+	queued_messages = bbs_dir_num_files(queue_dir);
+	bbs_debug(7, "Processing mail queue (%d message%s)\n", queued_messages, ESS(queued_messages));
+	/* If the number of queued messages is relatively small, we can just process them serially.
+	 * It's not worth the overhead of parallelization.
+	 * On the other hand, if there's more than a couple, then we probably want to parallelize if possible.
+	 * If we're just gathering statistics, then we should run synchronously,
+	 * since we want the ordering to be consistent and that's not going to take long. */
+	if (qrun->type != QUEUE_RUN_STAT && queued_messages >= QUEUE_PARALLELIZATION_THRESHOLD) {
+		/* Process in parallel, to some degree */
+		struct bbs_parallel p;
+		bbs_parallel_init(&p, QUEUE_PARALLELIZATION_THRESHOLD, MAX_QUEUE_PARALLELIZATION);
+		qrun->parallel = &p;
+		res = bbs_dir_traverse(queue_dir, queue_file_cb, qrun, -1);
+		bbs_parallel_join(&p);
+	} else {
+		/* Process serially */
+		res = bbs_dir_traverse(queue_dir, queue_file_cb, qrun, -1);
+	}
+	pthread_rwlock_unlock(&queue_lock);
+
+	return res;
 }
 
 /*! \brief Periodically retry delivery of outgoing mail */
@@ -1253,26 +1381,15 @@ static void *queue_handler(void *unused)
 
 	for (;;) {
 		struct mailq_run qrun;
-		/*! \todo Implement smarter queuing:
-		 * - Rather than retrying delivery for all queued messages at fixed intervals, use exponential backoff per message
-		 * - Store envelope message separately from the file so we don't need to hackily start sending from a file into the offset,
-		 *   and so we can easily store other information out of band for queuing purposes.
-		 * - Use a separate thread (or some kind of pseudo threadpool) to deliver messages, so a single message delivery taking a long time
-		 *   won't block the rest of the queue. If we do this, we still need to wait join all threads before we unlock.
-		 *   We would also cap the number of threads active at any given time, so there would still be a serial component,
-		 *   sort of like the parallel task framework used in net_imap for remote client operations.
-		 * - If delivering the same message to multiple recipients on a single server, it would be nice
-		 *   to be able to do that in a single transaction. Sharing a queue file might make sense in this scenario?
-		 */
+
 		mailq_run_init(&qrun, QUEUE_RUN_PERIODIC);
 		bbs_pthread_disable_cancel();
-		pthread_mutex_lock(&queue_lock);
-		bbs_dir_traverse(queue_dir, on_queue_file, &qrun, -1);
-		pthread_mutex_unlock(&queue_lock);
+		run_queue(&qrun, on_queue_file);
 		if (qrun.total) {
 			/* Only log a message if something happened. If the queue was empty, don't bother. */
 			bbs_debug(1, "%d/%d message%s processed: %d delivered, %d failed, %d delayed\n", qrun.processed, qrun.total, ESS(qrun.total), qrun.delivered, qrun.failed, qrun.delayed);
 		}
+		mailq_run_cleanup(&qrun);
 		bbs_pthread_enable_cancel();
 
 		/* We set this at the end, rather than the beginning, because
@@ -1296,7 +1413,7 @@ static int on_queue_file_cli_mailq(const char *dir_name, const char *filename, v
 	time_t next_queue_run, next_retry_time;
 	struct tm est_retry;
 
-	mailq_file_init(&mqf_stack);
+	mailq_file_init(&mqf_stack, qrun);
 
 	if (mailq_file_load(&mqf_stack, dir_name, filename)) {
 		return 0;
@@ -1341,8 +1458,12 @@ static int on_queue_file_cli_mailq(const char *dir_name, const char *filename, v
 
 	/* Ensure the format is synchronized with the heading in cli_mailq */
 	/* Printing mqf->retries this way is already 1-indexed as well. */
-	bbs_dprintf(qrun->clifd, "%7d %-25s %-25s %-25s %-20s %-35s %s\n", mqf->retries, arrival_date, retry_date, next_retry_date, filename, mqf->realfrom, mqf->realto);
+	bbs_dprintf(qrun->clifd, "%7d %-25s %-25s %-25s %-20s %5ld %-35s %s\n",
+		mqf->retries, arrival_date, retry_date, next_retry_date, filename,
+		(mqf->size + 1023) / 1024, /* Display size in KB, rounded up to the nearest KB */
+		mqf->realfrom, mqf->realto);
 	fclose(mqf->fp);
+	reset_accessed_time(mqf); /* This was just for stats, we didn't actually do anything, so reset */
 	return 0;
 }
 
@@ -1356,12 +1477,10 @@ static int cli_mailq(struct bbs_cli_args *a)
 		qrun.hostsuffix = a->argv[1];
 	}
 
-	bbs_dprintf(a->fdout, "%7s %-25s %-25s %-25s %-20s %-35s %s\n", "Retries", "Orig Date", "Last Retry", "Est. Next Retry", "Filename", "Sender", "Recipient");
-	pthread_mutex_lock(&queue_lock);
-	bbs_dir_traverse(queue_dir, on_queue_file_cli_mailq, &qrun, -1);
-	pthread_mutex_unlock(&queue_lock);
-
+	bbs_dprintf(a->fdout, "%7s %-25s %-25s %-25s %-20s %5s %-35s %s\n", "Retries", "Orig Date", "Last Retry", "Est. Next Retry", "Filename", "Size", "Sender", "Recipient");
+	run_queue(&qrun, on_queue_file_cli_mailq);
 	bbs_dprintf(a->fdout, "%d message%s currently in mail queue\n", qrun.total, ESS(qrun.total));
+	mailq_run_cleanup(&qrun);
 	return 0;
 }
 
@@ -1375,11 +1494,9 @@ static int cli_runq(struct bbs_cli_args *a)
 	}
 
 	/* Process the queue, now, synchronously */
-	pthread_mutex_lock(&queue_lock);
-	bbs_dir_traverse(queue_dir, on_queue_file, &qrun, -1);
-	pthread_mutex_unlock(&queue_lock);
-
+	run_queue(&qrun, on_queue_file);
 	bbs_dprintf(a->fdout, "%d/%d message%s processed: %d delivered, %d failed, %d delayed\n", qrun.processed, qrun.total, ESS(qrun.total), qrun.delivered, qrun.failed, qrun.delayed);
+	mailq_run_cleanup(&qrun);
 	return 0;
 }
 
@@ -1401,15 +1518,14 @@ static void *smtp_async_send(void *varg)
 
 	/* Acquiring this lock is not guaranteed to happen immediately,
 	 * but that's okay since this thread is running asynchronously. */
-	pthread_mutex_lock(&queue_lock);
+	pthread_rwlock_rdlock(&queue_lock);
 	/* We could move it to the tmp dir to prevent a conflict with the periodic queue thread,
 	 * but the nice thing about doing it exactly the same way is that if delivery fails temporarily
 	 * this first round, it'll be automatically handled by the queue retry logic.
 	 * So we can always report 250 success here immediately.
 	 * In fact, this doesn't even need to be done in this thread.
 	 * The downside, of course, is that locking is needed to ensure
-	 * we don't try to send the same message twice.
-	 */
+	 * we don't try to send the same message twice. */
 
 	snprintf(fullname, sizeof(fullname), "%s/%s", mailnewdir, filename);
 	if (!bbs_file_exists(fullname)) {
@@ -1421,12 +1537,28 @@ static void *smtp_async_send(void *varg)
 		 * so we can detect that and bail. */
 		bbs_debug(5, "Ooh, file %s was already handled before its owner got a chance to send it asynchronously\n", fullname);
 	} else {
+		/* We do need to lock, because we need to prevent the entire queue running at the same time
+		 * that smtp_async_send is trying to send a message, to prevent possible duplicate delivery.
+		 * However, there is a subtle but very important difference here:
+		 * whole queue handlers should NEVER be running simultaneously, because they traverse all messages.
+		 * Each invocation of smtp_async_send is for a unique message, so it is perfectly fine
+		 * to have many invocations of smtp_async_send running simultaneously (and in fact,
+		 * not allowing this would be bad since it would unnecessarily bottleneck concurrent outgoing mail).
+		 *
+		 * This is nicely captured by using a rwlock instead of a mutex.
+		 * We rdlock in smtp_async_send, since it's okay for this to be running multiple times,
+		 * since they're operating on different messages.
+		 * Everywhere else, we wrlock.
+		 * This ensures that only smtp_async_send, and nothing else, is doing queue stuff concurrently
+		 * (The queue can be processed in parallel, but we lock only once at the top level while processing the queue). */
+
 		struct mailq_run qrun;
 		mailq_run_init(&qrun, QUEUE_RUN_FORCED); /* We're forcing the queue to run for a specific message, technically */
 		on_queue_file(mailnewdir, filename, &qrun);
+		mailq_run_cleanup(&qrun);
 	}
 
-	pthread_mutex_unlock(&queue_lock);
+	pthread_rwlock_unlock(&queue_lock);
 	free(filename);
 	return NULL;
 }
@@ -1731,9 +1863,9 @@ static int load_module(void)
 		bbs_error("mkdir(%s) failed: %s\n", queue_dir, strerror(errno));
 		return -1;
 	}
-	pthread_mutex_init(&queue_lock, NULL);
+	pthread_rwlock_init(&queue_lock, NULL);
 	if (bbs_pthread_create(&queue_thread, NULL, queue_handler, NULL)) {
-		pthread_mutex_destroy(&queue_lock);
+		pthread_rwlock_destroy(&queue_lock);
 		return -1;
 	}
 	bbs_cli_register_multiple(cli_commands_mailq);
@@ -1747,7 +1879,7 @@ static int unload_module(void)
 	bbs_cli_unregister_multiple(cli_commands_mailq);
 	bbs_pthread_cancel_kill(queue_thread);
 	bbs_pthread_join(queue_thread, NULL);
-	pthread_mutex_destroy(&queue_lock);
+	pthread_rwlock_destroy(&queue_lock);
 	RWLIST_WRLOCK_REMOVE_ALL(&static_relays, entry, free_static_relay);
 	return res;
 }

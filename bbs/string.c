@@ -380,6 +380,21 @@ size_t bbs_append_string(char *restrict dst, const char *src, size_t len)
 	return strlcat(dst, src, len); /* Requires -lbsd */
 }
 
+int bbs_str_ends_with(const char *s, const char *sub)
+{
+	size_t len1, len2, diff;
+
+	len1 = strlen(s);
+	len2 = strlen(sub);
+
+	if (len2 > len1) {
+		/* If sub is longer than s, s can't possibly end in it */
+		return 0;
+	}
+	diff = len1 - len2;
+	return !strcmp(s + diff, sub);
+}
+
 void bbs_str_remove_substring(char *restrict s, const char *word, size_t wordlen)
 {
 	char *dst = s;
