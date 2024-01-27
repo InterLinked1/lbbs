@@ -16,22 +16,23 @@
  *
  * \note Supports RFC1870 Message Size Declarations
  * \note Supports RFC1893 Enhanced Status Codes
+ * \note Supports RFC1985 ETRN (Remote Message Queue Starting)
  * \note Supports RFC3207 STARTTLS
  * \note Supports RFC4954 AUTH
  * \note Supports RFC4468 BURL
  * \note Supports RFC6152 8BITMIME
  * \note Supports RFC6409 Message Submission
  *
- * \todo Not currently supported:
+ * \todo Not currently supported, but would be nice to support eventually:
+ * - RFC 2645 ATRN (Authenticated TURN)
  * - RFC 2852 DELIVERBY
  * - RFC 3030 CHUNKING, BDAT, BINARYMIME
  * - RFC 3461 DSN (the format is mostly implemented, but needs fuller integration)
  * - RFC 3798 Message Disposition Notification
  * - RFC 6531 SMTPUTF8
  *
- * \note Not currently supported:
- * - VRFY, ETRN (somewhat intentionally) - could be useful when authenticated, though
- * - RFC 2645 ATRN (Authenticated TURN), RFC 1985 ETRN
+ * \note Not currently supported, and no current plans to support:
+ * - VRFY, EXPN (somewhat intentionally) - could be useful when authenticated, though
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -737,6 +738,42 @@ int smtp_unregister_delivery_agent(struct smtp_delivery_agent *agent)
 	return h ? 0 : -1;
 }
 
+/*! \todo FIXME Any time we have a single callback (not a list like delivery agents, with its own R/W list lock),
+ * we need a rwlock for the callback.
+ * Most such callbacks in the BBS don't have this.
+ * Might be worth creating an abstraction (e.g. bbs_module_callback) to simplify this. */
+static pthread_rwlock_t smtp_queue_processor_lock;
+static int (*smtp_queue_processor)(struct smtp_session *smtp, const char *cmd, const char *args) = NULL;
+static void *smtp_queue_processor_mod = NULL;
+
+int __smtp_register_queue_processor(int (*queue_processor)(struct smtp_session *smtp, const char *cmd, const char *args), void *mod)
+{
+	pthread_rwlock_wrlock(&smtp_queue_processor_lock);
+	if (smtp_queue_processor) {
+		pthread_rwlock_unlock(&smtp_queue_processor_lock);
+		bbs_error("SMTP On Demand Mail Relay already registered\n");
+		return -1;
+	}
+	smtp_queue_processor = queue_processor;
+	smtp_queue_processor_mod = mod;
+	pthread_rwlock_unlock(&smtp_queue_processor_lock);
+	return 0;
+}
+
+int smtp_unregister_queue_processor(int (*queue_processor)(struct smtp_session *smtp, const char *cmd, const char *args))
+{
+	pthread_rwlock_wrlock(&smtp_queue_processor_lock);
+	if (smtp_queue_processor != queue_processor) {
+		pthread_rwlock_unlock(&smtp_queue_processor_lock);
+		bbs_error("SMTP On Demand Relay %p not registered\n", queue_processor);
+		return -1;
+	}
+	smtp_queue_processor_mod = NULL;
+	smtp_queue_processor = NULL;
+	pthread_rwlock_unlock(&smtp_queue_processor_lock);
+	return 0;
+}
+
 /*! \brief Parse parameter data in MAIL FROM */
 static int parse_mail_parameters(struct smtp_session *smtp, char *s)
 {
@@ -799,6 +836,72 @@ static int parse_mail_parameters(struct smtp_session *smtp, char *s)
 			smtp_reply(smtp, 455, 4.5.1, "Unsupported parameter");
 			return -1;
 		}
+	}
+
+	return 0;
+}
+
+static int handle_etrn(struct smtp_session *smtp, char *s)
+{
+	int res;
+	char *args;
+
+	if (smtp->from) {
+		/* RFC 1985 5: Illegal during transactions */
+		smtp_reply(smtp, 502, 5.5.1, "Unsupported command");
+		return 0;
+	}
+
+	args = strsep(&s, " ");
+	if (strlen_zero(args)) {
+		smtp_reply(smtp, 501, 5.5.1, "Missing required parameter for ETRN");
+		return 0;
+	}
+
+	pthread_rwlock_rdlock(&smtp_queue_processor_lock);
+	if (!smtp_queue_processor) {
+		/* No queue processor registered, so ETRN not supported */
+		pthread_rwlock_unlock(&smtp_queue_processor_lock);
+		smtp_reply(smtp, 501, 5.5.4, "Unrecognized parameter");
+		return 0;
+	}
+	bbs_module_ref(smtp_queue_processor_mod, 7);
+	/* Technically, as soon as we ref the module,
+	 * we are safe to unlock, since the module can no longer
+	 * be unloaded until it's unreffed. However, it does
+	 * no harm to hold a read lock longer, either. */
+	res = smtp_queue_processor(smtp, "ETRN", args);
+	bbs_module_unref(smtp_queue_processor_mod, 7);
+	pthread_rwlock_unlock(&smtp_queue_processor_lock);
+
+	switch (res) {
+		case 250:
+			smtp_reply_nostatus(smtp, 250, "OK, queue processed");
+			break;
+		case 251:
+			smtp_reply_nostatus(smtp, 251, "OK, no messages waiting");
+			break;
+		case 252:
+			smtp_reply_nostatus(smtp, 252, "OK, pending messages queued");
+			break;
+		/* 253 allows us to be specific about how many messages,
+		 * but mod_smtp_delivery_external doesn't pass that up to us,
+		 * so this is unused. */
+		case 458:
+			smtp_reply_nostatus(smtp, 458, "Unable to queue messages");
+			break;
+		case 459:
+			smtp_reply_nostatus(smtp, 459, "Requested queuing not allowed");
+			break;
+		case 500:
+			smtp_reply_nostatus(smtp, 500, "Syntax Error");
+			break;
+		case 501:
+			smtp_reply_nostatus(smtp, 501, "Syntax Error in Parameters");
+			break;
+		default:
+			bbs_error("Unexpected SMTP response code %d\n", res);
+			smtp_reply_nostatus(smtp, 500, "Syntax Error");
 	}
 
 	return 0;
@@ -1208,6 +1311,9 @@ int smtp_filter_write(struct smtp_filter_data *f, const char *fmt, ...)
 
 int smtp_filter_add_header(struct smtp_filter_data *f, const char *name, const char *value)
 {
+	if (strchr(name, ':')) {
+		bbs_warning("Invalid header name: %s\n", name);
+	}
 	return smtp_filter_write(f, "%s: %s\r\n", name, value);
 }
 
@@ -2577,6 +2683,9 @@ static int smtp_process(struct smtp_session *smtp, char *s, struct readline_data
 				smtp_reply(smtp, 504, 5.7.4, "Unrecognized Authentication Type");
 			}
 		}
+	} else if (!strcasecmp(command, "ETRN")) {
+		REQUIRE_ARGS(s);
+		return handle_etrn(smtp,s);
 	} else if (!strcasecmp(command, "MAIL")) {
 		return handle_mail(smtp, s);
 	} else if (!strcasecmp(command, "RCPT")) {

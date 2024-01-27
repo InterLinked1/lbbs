@@ -233,6 +233,22 @@ struct smtp_response {
 	r->subcode = #sub; \
 	r->reply = msg;
 
+int __smtp_register_queue_processor(int (*queue_processor)(struct smtp_session *smtp, const char *cmd, const char *args), void *mod);
+
+/*!
+ * \brief Register queue processor
+ * \param queue_processor Queue processor callback, which returns an SMTP numeric response code
+ * \retval 0 on success, -1 on failure
+ */
+#define smtp_register_queue_processor(queue_processor) __smtp_register_queue_processor(queue_processor, BBS_MODULE_SELF)
+
+/*!
+ * \brief Unregister queue processor
+ * \param queue_processor Queue processor callback
+ * \retval 0 on success, -1 on failure
+ */
+int smtp_unregister_queue_processor(int (*queue_processor)(struct smtp_session *smtp, const char *cmd, const char *args));
+
 struct smtp_delivery_agent {
 	/*! \brief RCPT TO handler: can we deliver to this address? */
 	/*! \retval 0 if this recipient cannot be handled by this delivery agent, 1 if yes, -1 if no and no other handler may handle it */

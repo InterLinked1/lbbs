@@ -797,7 +797,8 @@ struct mailq_run {
 	time_t runstart;	/* Time that queue run started */
 	struct bbs_parallel *parallel;	/* Parallel task set, if running in parallel. NULL if serial. */
 	/* Queue run filters to control what messages are processed */
-	const char *hostsuffix;	/* Domain or suffix of domain, e.g. com, example.com, sub.example.com, etc. Queued processing will be restricted to matches. */
+	const char *host_match;	/* Domain restriction for queue processing */
+	const char *host_ends_with;	/* Domain or suffix of domain, e.g. com, example.com, sub.example.com, etc. Queued processing will be restricted to matches. */
 	/* Queue run statistics */
 	/* processed is a subset of total, delivered + failed + delayed should = processed */
 	int total;			/* Total number of queued messages considered */
@@ -1106,16 +1107,24 @@ static inline time_t queue_retry_threshold(int retrycount)
 static inline int skip_qfile(struct mailq_run *qrun, struct mailq_file *mqf)
 {
 	/* This queue run may have filters applied to it */
-	if (!strlen_zero(qrun->hostsuffix) && !strlen_zero(mqf->domain) && !bbs_str_ends_with(mqf->domain, qrun->hostsuffix)) {
-		/* Domain must end in hostsuffix, to match. */
+
+	/* Yeah, if we have a filter, we're possibly going to open
+	 * all the files in the queue, only to almost immediately close most of them.
+	 * One of our assumptions is the queue isn't going to be super large.
+	 * If it were, it would very much be worth using a single queue "control file"
+	 * with metadata about all the queue files, to avoid unnecessary file I/O. */
+
+	if (!strlen_zero(qrun->host_match) && !strlen_zero(mqf->domain) && strcmp(mqf->domain, qrun->host_match)) {
+		/* Exact match required */
 #ifdef DEBUG_QUEUES
-		bbs_debug(8, "Skipping queue file %s (domain '%s' does not match filter '*%s')\n", mqf->fullname, mqf->domain, qrun->hostsuffix);
+		bbs_debug(8, "Skipping queue file %s (domain '%s' does not match filter '%s')\n", mqf->fullname, mqf->domain, qrun->host_match);
 #endif
-		/* Yeah, if we have a filter, we're possibly going to open
-		 * all the files in the queue, only to almost immediately close most of them.
-		 * One of our assumptions is the queue isn't going to be super large.
-		 * If it were, it would very much be worth using a single queue "control file"
-		 * with metadata about all the queue files, to avoid unnecessary file I/O. */
+		return 1;
+	} else if (!strlen_zero(qrun->host_ends_with) && !strlen_zero(mqf->domain) && !bbs_str_ends_with(mqf->domain, qrun->host_ends_with)) {
+		/* Domain must end in host_ends_with, to match. */
+#ifdef DEBUG_QUEUES
+		bbs_debug(8, "Skipping queue file %s (domain '%s' does not match filter '*%s')\n", mqf->fullname, mqf->domain, qrun->host_ends_with);
+#endif
 		return 1;
 	}
 
@@ -1403,6 +1412,65 @@ static void *queue_handler(void *unused)
 	return NULL;
 }
 
+/*! \brief Queue processor callback */
+static int queue_processor(struct smtp_session *smtp, const char *cmd, const char *args)
+{
+	int res = 250; /* Start with 250 OK by default */
+	struct mailq_run qrun;
+
+	UNUSED(smtp); /* For now, this is unused, but could be useful in the future */
+
+	mailq_run_init(&qrun, QUEUE_RUN_FORCED);
+
+	/* The RFCs suggest that queue processing should be done asynchronously
+	 * when requested. Currently, we do it synchronously, since it's simpler.
+	 * If we change it to async, we will need to copy the args and either
+	 * spawn a new thread or make the regular queue_handler thread do this for us. */
+
+	if (!strcmp(cmd, "ETRN")) {
+		/* RFC 1985 Remote Message Queue Starting */
+		if (*args == '@') {
+			/* RFC 1985 5.3: subdomain option character */
+			args++;
+			if (strlen_zero(args)) {
+				res = 501;
+			}
+			qrun.host_ends_with = args;
+		} else if (*args == '#') {
+			/* RFC 1985 5.3: non-domain queue */
+			/* Currently, we don't support any such queues, so reject */
+			res = 458;
+			goto cleanup;
+		} else {
+			qrun.host_match = args;
+		}
+		run_queue(&qrun, on_queue_file);
+		/* One benefit of running the queue synchronously
+		 * if that we now have more specific information about what happened.
+		 * (Could also be done if we waited for all tasks to be created and returned
+		 * before running them.) */
+		if (qrun.processed) {
+			res = 252;
+			/* The 253 response code allows us to say how many messages
+			 * are pending, but the current callback interface doesn't
+			 * give us a way to provide that back to net_smtp,
+			 * since we can't use smtp_reply directly here.
+			 * So we'll only be able say some number pending, rather than the specific number,
+			 * even though we've got that information right here! */
+		} else {
+			res = 251;
+		}
+	} else {
+		bbs_error("SMTP command '%s' is foreign to queue processor\n", cmd);
+		res = 500;
+		goto cleanup;
+	}
+
+cleanup:
+	mailq_run_cleanup(&qrun);
+	return res;
+}
+
 static int on_queue_file_cli_mailq(const char *dir_name, const char *filename, void *obj)
 {
 	struct mailq_run *qrun = obj;
@@ -1474,7 +1542,7 @@ static int cli_mailq(struct bbs_cli_args *a)
 	mailq_run_init(&qrun, QUEUE_RUN_STAT);
 	qrun.clifd = a->fdout;
 	if (a->argc >= 2) {
-		qrun.hostsuffix = a->argv[1];
+		qrun.host_ends_with = a->argv[1];
 	}
 
 	bbs_dprintf(a->fdout, "%7s %-25s %-25s %-25s %-20s %5s %-35s %s\n", "Retries", "Orig Date", "Last Retry", "Est. Next Retry", "Filename", "Size", "Sender", "Recipient");
@@ -1490,7 +1558,7 @@ static int cli_runq(struct bbs_cli_args *a)
 
 	mailq_run_init(&qrun, QUEUE_RUN_FORCED);
 	if (a->argc >= 2) {
-		qrun.hostsuffix = a->argv[1];
+		qrun.host_ends_with = a->argv[1];
 	}
 
 	/* Process the queue, now, synchronously */
@@ -1869,6 +1937,7 @@ static int load_module(void)
 		return -1;
 	}
 	bbs_cli_register_multiple(cli_commands_mailq);
+	smtp_register_queue_processor(queue_processor);
 	return smtp_register_delivery_handler(&extdeliver, 90); /* Lowest priority */
 }
 
@@ -1876,6 +1945,7 @@ static int unload_module(void)
 {
 	int res;
 	res = smtp_unregister_delivery_agent(&extdeliver);
+	smtp_unregister_queue_processor(queue_processor);
 	bbs_cli_unregister_multiple(cli_commands_mailq);
 	bbs_pthread_cancel_kill(queue_thread);
 	bbs_pthread_join(queue_thread, NULL);
