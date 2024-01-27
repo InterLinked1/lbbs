@@ -51,6 +51,7 @@
 #include "include/crypt.h"
 #include "include/event.h"
 #include "include/cli.h"
+#include "include/callback.h"
 
 #include "include/mod_http.h"
 
@@ -131,8 +132,8 @@ static RWLIST_HEAD_STATIC(listeners, http_listener);
 static RWLIST_HEAD_STATIC(routes, http_route);
 static RWLIST_HEAD_STATIC(sessions, session);
 
-static enum http_response_code (*proxy_handler)(struct http_session *http) = NULL;
-static void *proxy_handler_mod = NULL;
+BBS_SINGULAR_CALLBACK_DECLARE(proxy_handler, enum http_response_code, struct http_session *http);
+/* Extra information for the callback that isn't handled by the regular singular callback interface: */
 static unsigned short int proxy_port = 0;
 static enum http_method proxy_methods = HTTP_METHOD_UNDEF;
 
@@ -1762,11 +1763,10 @@ static int http_handle_request(struct http_session *http, char *buf)
 		} else if (!(proxy_methods & http->req->method)) {
 			bbs_debug(3, "Proxy handler does not support %s\n", http_method_name(http->req->method));
 		} else {
-			if (proxy_handler) {
+			if (!bbs_singular_callback_execute_pre(&proxy_handler)) {
 				bbs_debug(4, "Passing %s proxy request for %s to proxy handler\n", http_method_name(http->req->method), http->req->uri);
-				bbs_module_ref(proxy_handler_mod, 1);
-				code = proxy_handler(http);
-				bbs_module_unref(proxy_handler_mod, 1);
+				code = BBS_SINGULAR_CALLBACK_EXECUTE(proxy_handler)(http);
+				bbs_singular_callback_execute_post(&proxy_handler);
 				return code;
 			}
 			bbs_event_dispatch(http->node, EVENT_NODE_BAD_REQUEST); /* Likely spam traffic. */
@@ -2829,28 +2829,23 @@ int http_unregister_route(enum http_response_code (*handler)(struct http_session
 
 int __http_register_proxy_handler(unsigned short int port, enum http_method methods, enum http_response_code (*handler)(struct http_session *http), void *mod)
 {
-	if (proxy_handler) {
-		bbs_error("Proxy handler already registered\n");
-		return -1;
+	int res = bbs_singular_callback_register(&proxy_handler, handler, mod);
+	if (!res) {
+		/* Not 100% perfect, since we're no longer holding the lock, but probably fine */
+		proxy_port = port;
+		proxy_methods = methods;
 	}
-	proxy_handler_mod = mod;
-	proxy_handler = handler;
-	proxy_port = port;
-	proxy_methods = methods;
-	return 0;
+	return res;
 }
 
 int http_unregister_proxy_handler(enum http_response_code (*handler)(struct http_session *http))
 {
-	if (handler != proxy_handler) {
-		bbs_error("Proxy handler %p not currently registered\n", handler);
-		return -1;
+	int res = bbs_singular_callback_unregister(&proxy_handler, handler);
+	if (!res) {
+		proxy_port = 0;
+		proxy_methods = HTTP_METHOD_UNDEF;
 	}
-	proxy_handler = NULL;
-	proxy_handler_mod = NULL;
-	proxy_port = 0;
-	proxy_methods = HTTP_METHOD_UNDEF;
-	return 0;
+	return res;
 }
 
 static int cli_http_routes(struct bbs_cli_args *a)
@@ -2889,6 +2884,7 @@ static int unload_module(void)
 	/* Remove any lingering sessions */
 	RWLIST_WRLOCK_REMOVE_ALL(&sessions, entry, session_free);
 	bbs_cli_unregister_multiple(cli_commands_http);
+	bbs_singular_callback_destroy(&proxy_handler);
 	return 0;
 }
 

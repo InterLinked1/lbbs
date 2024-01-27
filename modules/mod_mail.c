@@ -41,6 +41,7 @@
 #include "include/stringlist.h"
 #include "include/range.h"
 #include "include/cli.h"
+#include "include/callback.h"
 
 #include "include/mod_mail.h"
 
@@ -360,65 +361,59 @@ int mailbox_has_activity(struct mailbox *mbox)
 	return res;
 }
 
-static int (*sieve_validate)(const char *filename, struct mailbox *mbox, char **errormsg) = NULL;
-static char *sieve_capabilities = NULL;
-static void *sievemod = NULL;
+BBS_SINGULAR_CALLBACK_DECLARE(sieve_validate, int, const char *filename, struct mailbox *mbox, char **errormsg);
+static char *sieve_capabilities = NULL; /* Additional callback data not handled by singular callback interface */
 
 int __sieve_register_provider(int (*validate)(const char *filename, struct mailbox *mbox, char **errormsg), char *capabilities, void *mod)
 {
+	int res;
 	if (strlen_zero(capabilities)) {
 		bbs_error("Missing capabilities\n");
 		return -1;
-	} else if (sieve_validate) {
-		bbs_error("A Sieve implementation is already registered.\n");
-		free(capabilities);
-		return -1;
 	}
-
-	sieve_capabilities = capabilities; /* Steal the reference */
-	sieve_validate = validate;
-	sievemod = mod;
-	return 0;
+	res = bbs_singular_callback_register(&sieve_validate, validate, mod);
+	if (!res) {
+		sieve_capabilities = capabilities; /* Steal the reference */
+	} else {
+		free(capabilities);
+	}
+	return res;
 }
 
 int sieve_unregister_provider(int (*validate)(const char *filename, struct mailbox *mbox, char **errormsg))
 {
-	if (sieve_validate != validate) {
-		bbs_error("Sieve implementation %p does not match registered provider %p\n", validate, sieve_validate);
-		return -1;
+	int res = bbs_singular_callback_unregister(&sieve_validate, validate);
+	if (!res) {
+		FREE(sieve_capabilities);
 	}
-
-	sieve_validate = NULL;
-	sievemod = NULL;
-	free(sieve_capabilities);
-	sieve_capabilities = NULL;
-	return 0;
+	return res;
 }
 
 char *sieve_get_capabilities(void)
 {
 	char *caps;
-	/* Technically not safe to just return directly, since the module could go away while we're using it? */
-	if (!sieve_capabilities) {
+
+	/* Technically not safe to just return directly, since the module could go away while we're using it?
+	 * So duplicate it and return that. */
+
+	if (bbs_singular_callback_execute_pre(&sieve_validate)) {
 		bbs_error("No Sieve implementation is currently registered\n");
 		return NULL;
 	}
-	bbs_module_ref(sievemod, 2);
 	caps = strdup(sieve_capabilities);
-	bbs_module_unref(sievemod, 2);
+	bbs_singular_callback_execute_post(&sieve_validate);
 	return caps;
 }
 
 int sieve_validate_script(const char *filename, struct mailbox *mbox, char **errormsg)
 {
 	int res;
-	if (!sieve_validate) {
+	if (bbs_singular_callback_execute_pre(&sieve_validate)) {
 		bbs_error("No Sieve implementation is currently registered\n");
 		return -1;
 	}
-	bbs_module_ref(sievemod, 3);
-	res = sieve_validate(filename, mbox, errormsg);
-	bbs_module_unref(sievemod, 3);
+	res = BBS_SINGULAR_CALLBACK_EXECUTE(sieve_validate)(filename, mbox, errormsg);
+	bbs_singular_callback_execute_post(&sieve_validate);
 	return res;
 }
 
@@ -2112,6 +2107,7 @@ static int unload_module(void)
 {
 	bbs_cli_unregister_multiple(cli_commands_mailboxes);
 	mailbox_cleanup();
+	bbs_singular_callback_destroy(&sieve_validate);
 	return 0;
 }
 

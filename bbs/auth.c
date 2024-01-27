@@ -35,6 +35,7 @@
 #include "include/crypt.h"
 #include "include/startup.h"
 #include "include/cli.h"
+#include "include/callback.h"
 
 /*! \note Even though multiple auth providers are technically allowed, in general only 1 should be registered.
  * The original thinking behind allowing multiple is to allow alternates for authentication
@@ -54,116 +55,56 @@ struct auth_provider {
 
 static RWLIST_HEAD_STATIC(providers, auth_provider);
 
-static int (*registerprovider)(struct bbs_node *node) = NULL;
-static void *registermod = NULL;
+/* Unlike auth providers, there is only 1 user registration handler */
+BBS_SINGULAR_CALLBACK_DECLARE(registerprovider, int, struct bbs_node *node);
 
-static int (*pwresethandler)(const char *username, const char *password) = NULL;
-static void *pwresetmod = NULL;
+/* Only one password reset handler */
+BBS_SINGULAR_CALLBACK_DECLARE(pwresethandler, int, const char *username, const char *password);
 
-static struct bbs_user* (*userinfohandler)(const char *username) = NULL;
-static void *userinfomod = NULL;
+/* Only one user info handler */
+BBS_SINGULAR_CALLBACK_DECLARE(userinfohandler, struct bbs_user *, const char *username);
 
-static struct bbs_user** (*userlisthandler)(void) = NULL;
-static void *userlistmod = NULL;
+/* Only one user list handler */
+BBS_SINGULAR_CALLBACK_DECLARE(userlisthandler, struct bbs_user**, void);
 
 int __bbs_register_user_registration_provider(int (*regprovider)(struct bbs_node *node), void *mod)
 {
-	/* Unlike auth providers, there is only 1 user registration handler */
-	if (registerprovider) {
-		bbs_error("A user registration provider is already registered.\n");
-		return -1;
-	}
-
-	registerprovider = regprovider;
-	registermod = mod;
-	return 0;
+	return bbs_singular_callback_register(&registerprovider, regprovider, mod);
 }
 
 int bbs_unregister_user_registration_provider(int (*regprovider)(struct bbs_node *node))
 {
-	if (regprovider != registerprovider) {
-		bbs_error("User registration provider does not match registered provider\n");
-		return -1;
-	}
-
-	registerprovider = NULL;
-	registermod = NULL;
-	return 0;
+	return bbs_singular_callback_unregister(&registerprovider, regprovider);
 }
 
 int __bbs_register_password_reset_handler(int (*handler)(const char *username, const char *password), void *mod)
 {
-	/* Only one password reset handler */
-	if (pwresethandler) {
-		bbs_error("A password reset handler is already registered.\n");
-		return -1;
-	}
-
-	pwresethandler = handler;
-	pwresetmod = mod;
-	return 0;
+	return bbs_singular_callback_register(&pwresethandler, handler, mod);
 }
 
 int bbs_unregister_password_reset_handler(int (*handler)(const char *username, const char *password))
 {
-	if (handler != pwresethandler) {
-		bbs_error("Password reset handler does not match registered handler\n");
-		return -1;
-	}
-
-	pwresethandler = NULL;
-	pwresetmod = NULL;
-	return 0;
+	return bbs_singular_callback_unregister(&pwresethandler, handler);
 }
 
 int __bbs_register_user_info_handler(struct bbs_user* (*handler)(const char *username), void *mod)
 {
-	/* Only one user info handler */
-	if (userinfohandler) {
-		bbs_error("A user info handler is already registered.\n");
-		return -1;
-	}
-
-	userinfohandler = handler;
-	userinfomod = mod;
-	return 0;
+	return bbs_singular_callback_register(&userinfohandler, handler, mod);
 }
 
 int bbs_unregister_user_info_handler(struct bbs_user* (*handler)(const char *username))
 {
-	if (handler != userinfohandler) {
-		bbs_error("User info handler does not match registered handler\n");
-		return -1;
-	}
-
-	userinfohandler = NULL;
-	userinfomod = NULL;
-	return 0;
+	return bbs_singular_callback_unregister(&userinfohandler, handler);
 }
 
 int __bbs_register_user_list_handler(struct bbs_user** (*handler)(void), void *mod)
 {
-	/* Only one user list handler */
-	if (userlisthandler) {
-		bbs_error("A user list handler is already registered.\n");
-		return -1;
-	}
-
-	userlisthandler = handler;
-	userlistmod = mod;
-	return 0;
+	return bbs_singular_callback_register(&userlisthandler, handler, mod);
 }
 
 int bbs_unregister_user_list_handler(struct bbs_user** (*handler)(void))
 {
-	if (handler != userlisthandler) {
-		bbs_error("User list handler does not match registered handler\n");
-		return -1;
-	}
-
-	userlisthandler = NULL;
-	userlistmod = NULL;
-	return 0;
+	return bbs_singular_callback_unregister(&userlisthandler, handler);
 }
 
 int __bbs_register_auth_provider(const char *name, int (*provider)(AUTH_PROVIDER_PARAMS), void *mod)
@@ -219,7 +160,7 @@ int bbs_num_auth_providers(void)
 	}
 	RWLIST_UNLOCK(&providers);
 
-	if (!registerprovider) {
+	if (!bbs_singular_callback_registered(&registerprovider)) {
 		/* This is kind of kludgy way to check this to warn,
 		 * but that way we don't need to expose this separately to bbs.c,
 		 * since it calls this function to ensure we have auth providers already.
@@ -704,16 +645,14 @@ int bbs_user_register(struct bbs_node *node)
 {
 	int res;
 
-	if (!registerprovider) {
+	if (bbs_singular_callback_execute_pre(&registerprovider)) {
 		bbs_error("No user registration provider is currently registered, registration rejected\n");
 		return -1;
 	}
 
 	node->menu = "Register";
-	bbs_assert_exists(registermod);
-	bbs_module_ref(registermod, 2);
-	res = registerprovider(node);
-	bbs_module_unref(registermod, 2);
+	res = BBS_SINGULAR_CALLBACK_EXECUTE(registerprovider)(node);
+	bbs_singular_callback_execute_post(&registerprovider);
 	node->menu = NULL;
 
 	if (bbs_user_is_registered(node->user)) { /* we might have returned -1 after registration succeeded on timeout */
@@ -732,15 +671,13 @@ int bbs_user_reset_password(const char *username, const char *password)
 {
 	int res;
 
-	if (!pwresethandler) {
+	if (bbs_singular_callback_execute_pre(&pwresethandler)) {
 		bbs_error("No password reset handler is currently registered\n");
 		return -1;
 	}
 
-	bbs_assert_exists(pwresetmod);
-	bbs_module_ref(pwresetmod, 3);
-	res = pwresethandler(username, password);
-	bbs_module_unref(pwresetmod, 3);
+	res = BBS_SINGULAR_CALLBACK_EXECUTE(pwresethandler)(username, password);
+	bbs_singular_callback_execute_post(&pwresethandler);
 
 	if (!res) {
 		struct bbs_event event;
@@ -759,15 +696,13 @@ struct bbs_user *bbs_user_info_by_username(const char *username)
 {
 	struct bbs_user *user = NULL;
 
-	if (!userinfohandler) {
+	if (bbs_singular_callback_execute_pre(&userinfohandler)) {
 		bbs_error("No user info handler is currently registered\n");
 		return NULL;
 	}
 
-	bbs_assert_exists(userinfomod);
-	bbs_module_ref(userinfomod, 4);
-	user = userinfohandler(username);
-	bbs_module_unref(userinfomod, 4);
+	user = BBS_SINGULAR_CALLBACK_EXECUTE(userinfohandler)(username);
+	bbs_singular_callback_execute_post(&userinfohandler);
 
 	return user;
 }
@@ -776,15 +711,13 @@ struct bbs_user **bbs_user_list(void)
 {
 	struct bbs_user **userlist = NULL;
 
-	if (!userlisthandler) {
+	if (bbs_singular_callback_execute_pre(&userlisthandler)) {
 		bbs_error("No user list handler is currently registered\n");
 		return NULL;
 	}
 
-	bbs_assert_exists(userlistmod);
-	bbs_module_ref(userlistmod, 5);
-	userlist = userlisthandler();
-	bbs_module_unref(userlistmod, 5);
+	userlist = BBS_SINGULAR_CALLBACK_EXECUTE(userlisthandler)();
+	bbs_singular_callback_execute_post(&userlisthandler);
 
 	return userlist;
 }

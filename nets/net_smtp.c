@@ -62,6 +62,7 @@
 #include "include/test.h"
 #include "include/mail.h"
 #include "include/cli.h"
+#include "include/callback.h"
 
 #include "include/mod_mail.h"
 #include "include/net_smtp.h"
@@ -577,6 +578,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		smtp_reply0_nostatus(smtp, 250, "PIPELINING");
 		smtp_reply0_nostatus(smtp, 250, "SIZE %u", max_message_size); /* RFC 1870 */
 		smtp_reply0_nostatus(smtp, 250, "8BITMIME"); /* RFC 6152 */
+		smtp_reply0_nostatus(smtp, 250, "ETRN"); /* RFC 1985 */
 		if (!smtp->secure && ssl_available()) {
 			smtp_reply0_nostatus(smtp, 250, "STARTTLS");
 		}
@@ -738,40 +740,16 @@ int smtp_unregister_delivery_agent(struct smtp_delivery_agent *agent)
 	return h ? 0 : -1;
 }
 
-/*! \todo FIXME Any time we have a single callback (not a list like delivery agents, with its own R/W list lock),
- * we need a rwlock for the callback.
- * Most such callbacks in the BBS don't have this.
- * Might be worth creating an abstraction (e.g. bbs_module_callback) to simplify this. */
-static pthread_rwlock_t smtp_queue_processor_lock;
-static int (*smtp_queue_processor)(struct smtp_session *smtp, const char *cmd, const char *args) = NULL;
-static void *smtp_queue_processor_mod = NULL;
+BBS_SINGULAR_CALLBACK_DECLARE(smtp_queue_processor, int, struct smtp_session *smtp, const char *cmd, const char *args);
 
 int __smtp_register_queue_processor(int (*queue_processor)(struct smtp_session *smtp, const char *cmd, const char *args), void *mod)
 {
-	pthread_rwlock_wrlock(&smtp_queue_processor_lock);
-	if (smtp_queue_processor) {
-		pthread_rwlock_unlock(&smtp_queue_processor_lock);
-		bbs_error("SMTP On Demand Mail Relay already registered\n");
-		return -1;
-	}
-	smtp_queue_processor = queue_processor;
-	smtp_queue_processor_mod = mod;
-	pthread_rwlock_unlock(&smtp_queue_processor_lock);
-	return 0;
+	return bbs_singular_callback_register(&smtp_queue_processor, queue_processor, mod);
 }
 
 int smtp_unregister_queue_processor(int (*queue_processor)(struct smtp_session *smtp, const char *cmd, const char *args))
 {
-	pthread_rwlock_wrlock(&smtp_queue_processor_lock);
-	if (smtp_queue_processor != queue_processor) {
-		pthread_rwlock_unlock(&smtp_queue_processor_lock);
-		bbs_error("SMTP On Demand Relay %p not registered\n", queue_processor);
-		return -1;
-	}
-	smtp_queue_processor_mod = NULL;
-	smtp_queue_processor = NULL;
-	pthread_rwlock_unlock(&smtp_queue_processor_lock);
-	return 0;
+	return bbs_singular_callback_unregister(&smtp_queue_processor, queue_processor);
 }
 
 /*! \brief Parse parameter data in MAIL FROM */
@@ -858,21 +836,13 @@ static int handle_etrn(struct smtp_session *smtp, char *s)
 		return 0;
 	}
 
-	pthread_rwlock_rdlock(&smtp_queue_processor_lock);
-	if (!smtp_queue_processor) {
+	if (bbs_singular_callback_execute_pre(&smtp_queue_processor)) {
 		/* No queue processor registered, so ETRN not supported */
-		pthread_rwlock_unlock(&smtp_queue_processor_lock);
 		smtp_reply(smtp, 501, 5.5.4, "Unrecognized parameter");
 		return 0;
 	}
-	bbs_module_ref(smtp_queue_processor_mod, 7);
-	/* Technically, as soon as we ref the module,
-	 * we are safe to unlock, since the module can no longer
-	 * be unloaded until it's unreffed. However, it does
-	 * no harm to hold a read lock longer, either. */
-	res = smtp_queue_processor(smtp, "ETRN", args);
-	bbs_module_unref(smtp_queue_processor_mod, 7);
-	pthread_rwlock_unlock(&smtp_queue_processor_lock);
+	res = BBS_SINGULAR_CALLBACK_EXECUTE(smtp_queue_processor)(smtp, "ETRN", args);
+	bbs_singular_callback_execute_post(&smtp_queue_processor);
 
 	switch (res) {
 		case 250:
@@ -2934,6 +2904,7 @@ static int load_module(void)
 
 	/* If we can't start the TCP listeners, decline to load */
 	if (bbs_start_tcp_listener3(smtp_enabled ? smtp_port : 0, smtps_enabled ? smtps_port : 0, msa_enabled ? msa_port : 0, "SMTP", "SMTPS", "SMTP (MSA)", __smtp_handler)) {
+		bbs_singular_callback_destroy(&smtp_queue_processor);
 		goto cleanup;
 	}
 
@@ -2973,6 +2944,7 @@ static int unload_module(void)
 	if (smtplogfp) {
 		fclose(smtplogfp);
 	}
+	bbs_singular_callback_destroy(&smtp_queue_processor);
 	return 0;
 }
 
