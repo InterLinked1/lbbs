@@ -9,33 +9,42 @@
 
 /*! \file
  *
- * \brief IMAP Client Parallel Operation Framework
+ * \brief Parallel Task Framework
  *
  */
 
 #include "include/linkedlists.h"
 
-struct imap_parallel_task {
-	struct imap_parallel *p;		/* Parent to which this task belongs */
+struct bbs_parallel_task {
+	struct bbs_parallel *p;		/* Parent to which this task belongs */
 	unsigned long hash;				/* Prefix hash value */
 	int (*cb)(void *data);			/* Callback to execute the task */
 	void (*cleanup)(void *data);	/* Cleanup function */
 	void *data;						/* Callback data for the task */
 	pthread_t thread;				/* Thread responsible for the task */
 	int res;						/* Return code of task */
-	RWLIST_ENTRY(imap_parallel_task) entry;
+	RWLIST_ENTRY(bbs_parallel_task) entry;
 	unsigned int started:1;			/* Task has been started (i.e. is either running or completed) */
 	unsigned int completed:1;		/* Task has been completed */
 };
 
-RWLIST_HEAD(parallel_tasks, imap_parallel_task);
+RWLIST_HEAD(parallel_tasks, bbs_parallel_task);
 
-struct imap_parallel {
+struct bbs_parallel {
 	struct parallel_tasks tasks;
 	int alertpipe[2];
+	unsigned int min_parallel_tasks;	/* Minimum number of tasks to run in parallel */
+	unsigned int max_parallel_tasks;	/* Maximum number of tasks to run in parallel */
 	unsigned int waiting:1;			/* In the "waiting" phase, i.e. there are no more tasks to schedule */
 	unsigned int initialized:1;
 };
+
+/*!
+ * \brief Init a bbs_parallel
+ * \param min Minimum number of tasks to run in parallel instead of serially. This option is currently ignored.
+ * \param max Maximum number of tasks that may run in parallel at once
+ */
+void bbs_parallel_init(struct bbs_parallel *p, unsigned int min, unsigned int max);
 
 /*!
  * \brief Schedule a task for execution. The task may be executed immediately or delayed, in a separate thread
@@ -47,13 +56,13 @@ struct imap_parallel {
  * \param cleanup Function to destroy a heap allocated callback data structure
  * \return Task return code, if executed immediately
  * \return Scheduler return code, if not being executed immediately.
- * \note You must call imap_client_parallel_join to ensure all tasks finish execeution, at some point before p goes out of scope
+ * \note You must call bbs_parallel_join to ensure all tasks finish execeution, at some point before p goes out of scope
  * \note This function should only be called from the (same) parent thread
  */
-int imap_client_parallel_schedule_task(struct imap_parallel *p, const char *restrict prefix, void *data, int (*cb)(void *data), void *(*duplicate)(void *data), void (*cleanup)(void *data));
+int bbs_parallel_schedule_task(struct bbs_parallel *p, const char *restrict prefix, void *data, int (*cb)(void *data), void *(*duplicate)(void *data), void (*cleanup)(void *data));
 
 /*!
  * \brief Wait for all pending tasks to finish execution
  * \retval Bitwise OR of all task return values, ORed with the status of this function (0 on success, nonzero on failure)
  */
-int imap_client_parallel_join(struct imap_parallel *p);
+int bbs_parallel_join(struct bbs_parallel *p);

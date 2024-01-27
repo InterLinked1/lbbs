@@ -20,6 +20,7 @@
 #include "include/bbs.h"
 
 #include "include/node.h"
+#include "include/parallel.h"
 
 #include "include/mod_mail.h"
 
@@ -29,7 +30,8 @@
 #include "nets/net_imap/imap_server_list.h"
 #include "nets/net_imap/imap_client_list.h"
 #include "nets/net_imap/imap_client_status.h" /* use remove_size */
-#include "nets/net_imap/imap_client_parallel.h"
+
+extern unsigned int maxuserproxies;
 
 static int remote_list(struct imap_client *client, struct list_command *lcmd, const char *prefix)
 {
@@ -293,7 +295,7 @@ static int remote_list_cb(void *data)
 	return res;
 }
 
-static int remote_list_parallel(struct imap_parallel *p, const char *restrict prefix, struct list_command *lcmd, struct imap_session *imap, const char *server)
+static int remote_list_parallel(struct bbs_parallel *p, const char *restrict prefix, struct list_command *lcmd, struct imap_session *imap, const char *server)
 {
 	struct remote_list_info rinfo; /* No memset needed */
 
@@ -305,7 +307,7 @@ static int remote_list_parallel(struct imap_parallel *p, const char *restrict pr
 	/* This variable will not be modified, but since the dynamic version allocates and frees it, the type cannot be const */
 	rinfo.server = (char*) server;
 #pragma GCC diagnostic pop
-	return imap_client_parallel_schedule_task(p, prefix, &rinfo, remote_list_cb, remote_list_dup, remote_list_destroy);
+	return bbs_parallel_schedule_task(p, prefix, &rinfo, remote_list_cb, remote_list_dup, remote_list_destroy);
 }
 
 /*! \brief Mutex to prevent recursion */
@@ -317,7 +319,7 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	char virtfile[256];
 	char line[256];
 	int l = 0;
-	struct imap_parallel p;
+	struct bbs_parallel p;
 
 	/* Folders from the proxied mailbox will need to be translated back and forth */
 	if (pthread_mutex_trylock(&virt_lock)) {
@@ -349,7 +351,7 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	}
 
 	stringlist_empty(&imap->remotemailboxes);
-	memset(&p, 0, sizeof(p));
+	bbs_parallel_init(&p, 2, maxuserproxies);
 
 	/* Note that we cache all the directories on all servers at once, since we truncate the file. */
 	while ((fgets(line, sizeof(line), fp))) {
@@ -369,7 +371,7 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	}
 	fclose(fp);
 
-	imap_client_parallel_join(&p);
+	bbs_parallel_join(&p);
 	pthread_mutex_unlock(&virt_lock);
 	return 0;
 }

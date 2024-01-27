@@ -12,7 +12,7 @@
 
 /*! \file
  *
- * \brief IMAP Client Parallel Operation Framework
+ * \brief Parallel Task Framework
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -20,27 +20,37 @@
 #include "include/bbs.h"
 
 #include "include/alertpipe.h"
-
-#include "nets/net_imap/imap.h"
-#include "nets/net_imap/imap_client.h"
-#include "nets/net_imap/imap_client_parallel.h"
-
-extern unsigned int maxuserproxies;
+#include "include/parallel.h"
+#include "include/utils.h"
 
 /* Yes, this kind of looks like a threadpool.
  * No, it's not a threadpool. */
 
-/* Unlike normal non-parallel operations, we need to carefully coordinate
+/*! \note This code was originally written specifically for and embedded in net_imap.
+ * While the code is completely generic, there are still some net_imap specific comments
+ * that have been left here. */
+
+/* imap/imap_client_list.c: Unlike normal non-parallel operations, we need to carefully coordinate
  * use of the different imap_client's, because we can't have 2 threads
  * trying to use the same client at once.
  * Naturally won't happen for LIST, where we do one per account,
  * but could happen for STATUS if we do potentially multiple folders/acct at once. */
 
-#define MAX_CONCURRENT_TASKS 10
+#define DEBUG_PARALLEL_TASKS
 
-static int task_match(struct imap_parallel *p, int started, int completed, struct imap_parallel_task *task, unsigned long hash)
+void bbs_parallel_init(struct bbs_parallel *p, unsigned int min, unsigned int max)
 {
-	struct imap_parallel_task *t;
+	memset(p, 0, sizeof(struct bbs_parallel));
+	p->min_parallel_tasks = min;
+	p->max_parallel_tasks = max;
+#ifdef DEBUG_PARALLEL_TASKS
+	bbs_debug(7, "Initializing parallel task set (parallelism range: %u-%u)\n", min, max);
+#endif
+}
+
+static int task_match(struct bbs_parallel *p, int started, int completed, struct bbs_parallel_task *task, unsigned long hash)
+{
+	struct bbs_parallel_task *t;
 	RWLIST_TRAVERSE(&p->tasks, t, entry) {
 		if (t == task) {
 			continue;
@@ -59,10 +69,10 @@ static int task_match(struct imap_parallel *p, int started, int completed, struc
 }
 
 /*! \note Must be called locked */
-static struct imap_parallel_task *next_task(struct imap_parallel *p, int maxconcurrent, int *throttled)
+static struct bbs_parallel_task *next_task(struct bbs_parallel *p, unsigned int maxconcurrent, int *throttled)
 {
-	int total_running = 0;
-	struct imap_parallel_task *t;
+	unsigned int total_running = 0;
+	struct bbs_parallel_task *t;
 	RWLIST_TRAVERSE(&p->tasks, t, entry) {
 		if (t->started) { /* t->started implies t->completed, no need to check that as well */
 			if (!t->completed) {
@@ -71,7 +81,7 @@ static struct imap_parallel_task *next_task(struct imap_parallel *p, int maxconc
 			continue;
 		}
 		/* We can't execute this task if another task is currently running with the same hash. */
-		/* This absolutely MUST be enforced. imap_client's are not thread safe,
+		/* imap/imap_client_list.c: This absolutely MUST be enforced. imap_client's are not thread safe,
 		 * we cannot have two different tasks using the same underlying imap_client at ANY time. */
 		if (task_match(p, 1, 0, t, t->hash)) {
 #ifdef DEBUG_PARALLEL_TASKS
@@ -83,10 +93,10 @@ static struct imap_parallel_task *next_task(struct imap_parallel *p, int maxconc
 	}
 	if (maxconcurrent && total_running >= maxconcurrent) { /* Reached concurrent thread limit */
 		*throttled = 1;
-		bbs_debug(6, "Delaying subsequent task execution (currently at %d concurrent)\n", total_running);
+		bbs_debug(6, "Delaying subsequent task execution (currently at %u concurrent)\n", total_running);
 		return NULL;
 	} else if (!t && total_running) { /* Couldn't find a suitable task */
-		bbs_debug(6, "Unable to find suitable task for immediate execution (%d running)\n", total_running);
+		bbs_debug(6, "Unable to find suitable task for immediate execution (%u running)\n", total_running);
 		*throttled = 1;
 		return NULL;
 	}
@@ -96,12 +106,12 @@ static struct imap_parallel_task *next_task(struct imap_parallel *p, int maxconc
 static void *run_task(void *varg)
 {
 	int throttled = 0;
-	struct imap_parallel_task *t = varg;
-	struct imap_parallel *p = t->p;
+	struct bbs_parallel_task *t = varg;
+	struct bbs_parallel *p = t->p;
 
 	bbs_debug(6, "Spawned thread for task %p\n", t);
 	for (;;) {
-		struct imap_parallel_task *t2;
+		struct bbs_parallel_task *t2;
 		t->res = t->cb(t->data);
 		t->completed = 1;
 
@@ -136,15 +146,15 @@ static void *run_task(void *varg)
 }
 
 /* \retval 0 if a task was scheduled, -1 if tasks could not be scheduled, 1 if there are no further tasks to schedule */
-static int run_scheduler(struct imap_parallel *p)
+static int run_scheduler(struct bbs_parallel *p)
 {
 	int remaining = 0;
 	int throttled = 0;
-	struct imap_parallel_task *t;
+	struct bbs_parallel_task *t;
 
 	/* Look through the list for a suitable task to schedule */
 	RWLIST_WRLOCK(&p->tasks);
-	t = next_task(p, MAX_CONCURRENT_TASKS, &throttled);
+	t = next_task(p, p->max_parallel_tasks, &throttled);
 	if (!t) {
 		/* Perhaps we've reached the concurrent execution limit */
 		RWLIST_UNLOCK(&p->tasks);
@@ -181,20 +191,23 @@ static unsigned long fast_hash(unsigned const char *restrict s)
 	return hash;
 }
 
-int imap_client_parallel_schedule_task(struct imap_parallel *p, const char *restrict prefix, void *data, int (*cb)(void *data), void *(*duplicate)(void *data), void (*cleanup)(void *data))
+int bbs_parallel_schedule_task(struct bbs_parallel *p, const char *restrict prefix, void *data, int (*cb)(void *data), void *(*duplicate)(void *data), void (*cleanup)(void *data))
 {
-	struct imap_parallel_task *t;
+	struct bbs_parallel_task *t;
 	void *datadup;
 
 	/* XXX Or if we know there won't be any more tasks coming (either only 1, or this is the last one),
 	 * we might as well just do it directly as well */
-	if (maxuserproxies <= 1) {
-		/* Use the stack allocated version directly, since we won't be able to take advantage of concurrent proxies anyways. */
-		/* XXX Problem is this MIGHT not be safe if one is already in use, in a parallel task?
+	if (p->max_parallel_tasks <= 1) {
+		/* Use the stack allocated version directly, since we won't be able to take advantage of concurrency anyways. */
+		/* imap/imap_client_list.c: XXX Problem is this MIGHT not be safe if one is already in use, in a parallel task?
 		 * imap_client_get should create a new client if we already have one but it's in use for a parallel job.
 		 * That'll take care of the case where a static job like this requests it,
 		 * or if we accidentally request it for a parallel job (which shouldn't happen,
 		 * since we shouldn't be scheduling tasks for the same IMAP client at the same time). */
+#ifdef DEBUG_PARALLEL_TASKS
+		bbs_debug(7, "Parallelism inhibited (max parallel tasks: %u), running task serially\n", p->max_parallel_tasks);
+#endif
 		return cb(data);
 	}
 
@@ -202,7 +215,7 @@ int imap_client_parallel_schedule_task(struct imap_parallel *p, const char *rest
 	datadup = duplicate(data); /* Allocate a heap allocated version of the stack structure since we can't execute this in the current thread */
 	if (!datadup) {
 		/* If duplicate function returns NULL, then we must execute in serial.
-		 * This might not always indicate failure. Maybe for this task, it's been determined that it's better to do it this way
+		 * imap/imap_client_list.c: This might not always indicate failure. Maybe for this task, it's been determined that it's better to do it this way
 		 * (e.g. the remote server supports LIST-STATUS, so this will be a fast operation) */
 		return cb(data);
 	}
@@ -242,12 +255,15 @@ int imap_client_parallel_schedule_task(struct imap_parallel *p, const char *rest
 	return run_scheduler(p);
 }
 
-int imap_client_parallel_join(struct imap_parallel *p)
+int bbs_parallel_join(struct bbs_parallel *p)
 {
-	struct imap_parallel_task *t;
+	struct bbs_parallel_task *t;
 	int res; /* Maybe there are no tasks (everything was executed serially), assume success by default */
 
 	if (!p->initialized) {
+#ifdef DEBUG_PARALLEL_TASKS
+		bbs_debug(3, "No parallel tasks initialized, nothing to join\n");
+#endif
 		return 0;
 	}
 
