@@ -1436,12 +1436,16 @@ void *bbs_node_handler(void *varg)
 
 static int cli_spy(struct bbs_cli_args *a)
 {
+	int res;
 	int node = atoi(a->argv[1]);
 	if (node <= 0) {
 		bbs_dprintf(a->fdout, "Invalid node %s\n", a->argv[1]);
 		return -1;
 	}
-	return bbs_node_spy(a->fdin, a->fdout, (unsigned int) node);
+	bbs_cli_set_stdout_logging(a->fdout, 0);
+	res = bbs_node_spy(a->fdin, a->fdout, (unsigned int) node);
+	/* Let mod_sysop re-enable logging to stdout, if configured */
+	return res;
 }
 
 static int cli_user(struct bbs_cli_args *a)

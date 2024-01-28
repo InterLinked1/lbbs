@@ -275,12 +275,18 @@ int bbs_node_spy(int fdin, int fdout, unsigned int nodenum)
 	node = bbs_node_get(nodenum); /* This returns node locked */
 	if (!node) {
 		bbs_dprintf(fdout, "No such node: %u\n", nodenum);
+		if (fgconsole) {
+			bbs_alertpipe_close(spy_alert_pipe);
+		}
 		return 0;
 	}
 
 	if (!NODE_HAS_PTY(node)) {
 		bbs_dprintf(fdout, "Node %d does not have a PTY attached (protocol: %s)\n", node->id, node->protname);
 		bbs_node_unlock(node);
+		if (fgconsole) {
+			bbs_alertpipe_close(spy_alert_pipe);
+		}
 		return 0;
 	}
 
@@ -299,7 +305,7 @@ int bbs_node_spy(int fdin, int fdout, unsigned int nodenum)
 		bbs_sigint_set_alertpipe(spy_alert_pipe);
 	}
 	bbs_unbuffer_input(fdin, 0); /* Unbuffer input, so that sysop can type on the node's TTY in real time, not just flushed after line breaks. */
-	bbs_node_pty_lock(node);
+	bbs_node_pty_unlock(node);
 	bbs_node_unlock(node); /* We're done with the node. */
 
 	bbs_verb(3, "Spying begun on node %d\n", nodenum);
@@ -350,7 +356,8 @@ int bbs_node_spy(int fdin, int fdout, unsigned int nodenum)
 				break;
 			}
 		} while (res >= 0); /* poll should not return 0, since we passed -1 for ms */
-		/* Remote console socket is now closed */
+		/* Remote console socket is now closed.
+		 * Because it's closed from rsysop towards the BBS, we can't reset the terminal here. */
 	}
 
 	/* Log this message after the screen was cleared, as the sysop will likely see it,
@@ -359,6 +366,7 @@ int bbs_node_spy(int fdin, int fdout, unsigned int nodenum)
 
 	node = bbs_node_get(nodenum);
 	if (!node) {
+		bbs_debug(3, "Node %d disappeared while we were spying on it\n", nodenum);
 		return 0;
 	}
 	node->spy = 0;
@@ -623,7 +631,7 @@ gotinput:
 			/* Don't relay user input to sysop for spying here. If we're supposed to, it'll get echoed back in the output. */
 			if (bytes_wrote != bytes_read) {
 				bbs_error("Expected to write %ld bytes, only wrote %ld\n", bytes_read, bytes_wrote);
-				return NULL;
+				break;
 			}
 			if (bytes_read == 1 && *buf >= 1 && *buf <= 26) {
 				/* In general, we should not intercept messages between 1 and 26 (^A through ^Z).
@@ -759,7 +767,7 @@ finishoutput:
 			bytes_read = read(spyfdin, readbuf, sizeof(readbuf));
 			if (bytes_read <= 0) {
 				bbs_debug(10, "pty spy_in read returned %ld (%s)\n", bytes_read, strerror(errno));
-				break; /* We'll read 0 bytes upon disconnect */
+				continue; /* We'll read 0 bytes upon disconnect */
 			}
 #ifdef DEBUG_PTY
 			if (isprint(*buf)) {
@@ -783,7 +791,7 @@ finishoutput:
 				bytes_wrote = write(amaster, buf, (size_t) bytes_read);
 				if (bytes_wrote != bytes_read) {
 					bbs_error("Expected to write %ld bytes, only wrote %ld\n", bytes_read, bytes_wrote);
-					return NULL;
+					break;
 				}
 			} else {
 				bbs_warning("Got spy input for node %d, but not a spy target?\n", nodeid);
