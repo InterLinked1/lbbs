@@ -474,7 +474,7 @@ static void __bot_handler(struct bbs_irc_client *client, enum relay_flags flags,
 			 * relay the message to the other side (e.g. the local IRC network channel)
 			 * improperly impersonated, i.e. the message posted by the bot would appear
 			 * to be posted by the person to whom the bot was responding.
-			 * Upon further though, it really doesn't make sense to relay bot responses
+			 * Upon further thought, it really doesn't make sense to relay bot responses
 			 * in the other direction anyways, hence this simpler (and more correct) behavior. */
 			msg_relay(client, RELAY_TO_IRC, IRC_CMD_PRIVMSG, dest, prefix, ctcp, line, strlen(line));
 		} else { /* It's going to a different channel, or to a user. */
@@ -748,10 +748,15 @@ int __attribute__ ((format (gnu_printf, 4, 5))) bbs_irc_client_msg(const char *c
 	 *
 	 * This is delicate though: with just RELAY_TO_IRC, messages work between
 	 * relay modules and door_irc but not with the native net_irc IRC network.
+	 *
+	 * XXX And RELAY_FROM_IRC is causing echoes on relay modules (e.g. mod_discord)
+	 * so I'm removing that again. Need to figure this all out properly...
+	 * it may be as simple as doing just RELAY_TO_IRC sometimes and both other times,
+	 * but this is currently not 100% right.
 	 */
 
 	bbs_debug(7, "Relaying message: client '%s' channel '%s' prefix '%s'\n", clientname, channel, S_IF(prefix));
-	res = msg_relay(client, RELAY_TO_IRC | RELAY_FROM_IRC, IRC_CMD_PRIVMSG, channel, prefix, 0, buf, (size_t) len); /* No prefix */
+	res = msg_relay(client, RELAY_TO_IRC, IRC_CMD_PRIVMSG, channel, prefix, 0, buf, (size_t) len); /* No prefix */
 
 	RWLIST_UNLOCK(&irc_clients);
 	return res;

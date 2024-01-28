@@ -73,6 +73,10 @@ mod_oauth.so : mod_oauth.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -ljansson
 
+mod_operator.so : mod_operator.o
+	@echo "== Linking $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -ljansson
+
 mod_sieve.so : mod_sieve.o
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lsieve

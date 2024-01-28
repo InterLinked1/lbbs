@@ -965,8 +965,6 @@ static inline time_t queue_retry_threshold(int retrycount)
 	__builtin_unreachable();
 }
 
-#define DEBUG_QUEUES
-
 static inline int skip_qfile(struct mailq_run *qrun, struct mailq_file *mqf)
 {
 	/* This queue run may have filters applied to it */
