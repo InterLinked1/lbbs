@@ -220,6 +220,7 @@ static void print_time(int fdout)
 
 static inline void load_hist_command(struct sysop_console *console, const char **s)
 {
+	my_set_stdout_logging(console->fdout, 0); /* Disable logging so other stuff isn't trying to write to STDOUT at the same time. */
 	bbs_dprintf(console->fdout, TERM_RESET_LINE "\r/%s", *s);
 }
 
@@ -415,6 +416,8 @@ static void *sysop_handler(void *varg)
 						case KEY_ESC:
 							bbs_history_reset();
 							histentry = NULL;
+							my_set_stdout_logging(sysopfdout, console->log); /* If running in foreground, re-enable STDOUT logging */
+							bbs_dprintf(sysopfdout, "\n"); /* Print new line since we had history on the line */
 							break;
 						case KEY_BACKSPACE:
 							goto backsp;

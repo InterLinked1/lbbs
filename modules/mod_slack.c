@@ -1194,11 +1194,23 @@ static int cli_slack_members(struct bbs_cli_args *a)
 	return 0;
 }
 
+static int cli_slack_debug(struct bbs_cli_args *a)
+{
+	int level = atoi(a->argv[2]);
+	if (level < 0) {
+		level = 0;
+	}
+	slack_set_log_level(level);
+	bbs_dprintf(a->fdout, "Set libslackrtm debug level to %d\n", level);
+	return 0;
+}
+
 static struct bbs_cli_entry cli_commands_slack[] = {
 	BBS_CLI_COMMAND(cli_slack_relays, "slack relays", 2, "List all Slack relays", NULL),
 	BBS_CLI_COMMAND(cli_slack_channels, "slack chans", 2, "List Slack channels", "slack chans [<relay>]"),
 	BBS_CLI_COMMAND(cli_slack_users, "slack users", 2, "List Slack users", "slack users [<relay>]"),
 	BBS_CLI_COMMAND(cli_slack_members, "slack members", 2, "List a Slack channel's members", "slack members <channel>"),
+	BBS_CLI_COMMAND(cli_slack_debug, "slack debug", 3, "Set Slack library debug level", "slack debug <level>"),
 };
 
 struct slack_callbacks slack_callbacks = {
@@ -1440,15 +1452,12 @@ static int load_config(void)
 	return 0;
 }
 
-#define DEBUG_SLACK
-
 static int load_module(void)
 {
 	/* Initialize the library */
 	slack_set_logger(slack_log);
-#ifdef DEBUG_SLACK
-	slack_set_log_level(SLACK_LOG_DEBUG + 7);
-#endif
+
+	/* Don't enable debug logging by default, but CLI command can be used to enable, if desired */
 
 	if (load_config()) {
 		return -1;

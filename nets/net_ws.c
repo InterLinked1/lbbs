@@ -926,7 +926,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 		elapsed_sec = this_poll_start - lastping;
 		max_ms = (int) (max_websocket_timeout_ms - SEC_MS(elapsed_sec));
 #ifdef DEBUG_POLL
-		bbs_debug(10, "ws.pollms: %d, %d s / %d ms have elapsed since last ping, %d ms is max allowed\n", ws.pollms, elapsed_sec, app_ms_elapsed, max_ms);
+		bbs_debug(10, "ws.pollms: %d, %d s / %ld ms have elapsed since last ping, %d ms is max allowed\n", ws.pollms, elapsed_sec, app_ms_elapsed, max_ms);
 #endif
 		if (ws.pollms >= 0) {
 			pollms = ws.pollms - app_ms_elapsed;
@@ -965,6 +965,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 			res = wss_read(client, SEC_MS(55), 1); /* Pass in 1 since we already know poll returned activity for this fd */
 			if (res < 0) {
 				bbs_debug(3, "Failed to read WebSocket frame\n");
+				bbs_debug(7, "ws.pollms: %d, %ld s / %d ms have elapsed since last ping, %d ms is max allowed\n", ws.pollms, elapsed_sec, app_ms_elapsed, max_ms);
 				if (wss_error_code(client)) {
 					wss_close(client, wss_error_code(client));
 				} /* else, if client already closed, don't try writing any further */
@@ -1104,7 +1105,7 @@ static void ws_direct_handler(struct bbs_node *node, int secure)
 	int res;
 
 	/* needed for HTTP structure */
-	char buf[1024];
+	char buf[2048]; /* Accomodate cookies for other domains being sent, which could result in a huge Cookie header */
 	struct readline_data rldata;
 	struct http_session http;
 
@@ -1270,11 +1271,11 @@ static int load_module(void)
 		return -1;
 	}
 	wss_set_logger(ws_log);
-	wss_set_log_level(WS_LOG_DEBUG + 5);
-	/* Register reverse proxy routes if needed */
+	/* Don't enable debug logging by default, but CLI command can be used to do so, if desired */
 
 	bbs_register_tests(tests);
 
+	/* Register reverse proxy routes if needed */
 	/* XXX Need to register all routes? */
 	if (http_get_default_http_port() != -1) {
 		res |= http_register_insecure_route(NULL, (unsigned short int) http_get_default_http_port(), "/ws", HTTP_METHOD_GET, ws_proxy_handler);

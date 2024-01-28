@@ -432,6 +432,7 @@ static int cache_remote_list_status(struct imap_client *client, const char *rtag
 	ssize_t res;
 	struct dyn_str dynstr;
 	int i;
+	int unexpected = 0;
 	struct bbs_tcp_client *tcpclient = &client->client;
 	char *buf = tcpclient->rldata.buf;
 
@@ -440,7 +441,7 @@ static int cache_remote_list_status(struct imap_client *client, const char *rtag
 
 	client->virtlisttime = time(NULL);
 
-	for (i = 0; ; i++) {
+	for (i = 0; unexpected < 3; i++) {
 		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 10000);
 		if (res <= 0) {
 			bbs_warning("IMAP timeout (res: %ld) from LIST-STATUS - remote server issue?\n", res);
@@ -456,6 +457,7 @@ static int cache_remote_list_status(struct imap_client *client, const char *rtag
 			continue;
 		} else if (!STARTS_WITH(buf, "* STATUS")) {
 			bbs_warning("Unexpected LIST-STATUS response: %s\n", buf);
+			unexpected++;
 			continue;
 		}
 		if (i) {
@@ -551,7 +553,10 @@ ssize_t remote_status(struct imap_client *client, const char *remotename, const 
 	buf = client->buf;
 	if (!client->virtlist && client->virtcapabilities & IMAP_CAPABILITY_LIST_STATUS) { /* Try LIST-STATUS if it's the first mailbox */
 		imap_client_send(client, "A.%s.1 LIST \"\" \"*\" RETURN (STATUS (%s%s%s%s))\r\n", tag, items, add1, add2, add3);
-		cache_remote_list_status(client, rtag, taglen);
+		if (cache_remote_list_status(client, rtag, taglen)) {
+			bbs_error("Remote IMAP command failed: A.%s.1 LIST \"\" \"*\" RETURN (STATUS (%s%s%s%s))\r\n", tag, items, add1, add2, add3);
+			return -1;
+		}
 	}
 	if (client->virtlist) {
 		if (!remote_status_cached(client, remotename, remote_status_resp, sizeof(remote_status_resp))) {
