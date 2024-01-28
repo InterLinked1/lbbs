@@ -514,6 +514,25 @@ static int exempt_from_starttls(struct smtp_session *smtp)
 	return 0;
 }
 
+static inline int is_benign_ip_mismatch(const char *helohost, const char *srcip)
+{
+	/* Not all mismatches are malicious.
+	 * This covers the case of a private IP tunnel between two SMTP servers.
+	 * The egress IP may differ from the actual source route IP of the connecting server.
+	 * However, if this is the case, then there is probably an entry for the domain
+	 * by BOTH IP addresses in [authorized_relays]. */
+
+	if (bbs_hostname_is_ipv4(helohost)) {
+		/* This workaround only works if the HELO hostname is a domain,
+		 * rather than an IP address. If it's a hostname, we can check
+		 * if the source IP is authorized to send mail as that domain.
+		 * If we just have an IP address, we don't have enough information. */
+		return 0;
+	}
+
+	return smtp_relay_authorized(srcip, helohost);
+}
+
 static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 {
 	if (strlen_zero(s)) {
@@ -540,7 +559,8 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 			/* The HELO host isn't used for determining if it's allowed to relay,
 			 * but in case the HELO host is something else, we shouldn't penalize it either. */
 			bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp->node->ip, smtp->helohost);
-		} else if (!smtp->msa && smtp_ip_mismatch(smtp->node->ip, smtp->helohost)) { /* Message submission is exempt from these checks, the HELO hostname is not useful anyways */
+		} else if (!smtp->msa && smtp_ip_mismatch(smtp->node->ip, smtp->helohost) && !is_benign_ip_mismatch(smtp->helohost, smtp->node->ip)) {
+			/* Message submission is exempt from these checks, the HELO hostname is not useful anyways */
 			bbs_warning("HELO/EHLO hostname '%s' does not resolve to client IP %s\n", smtp->helohost, smtp->node->ip);
 			/* This is suspicious. It is not invalid, but it very well might be.
 			 * I'm aware that this doesn't support IPv6. IPv4 is pretty important for email,
