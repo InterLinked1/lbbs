@@ -43,6 +43,7 @@ Key features and capabilities include:
   * Shared mailboxes and ACL controls
   * Multi-domain support
   * Relay support
+  * Advanced queuing support
   * IMAP NOTIFY support
   * RFC 4468 BURL IMAP and server-side proxied append support, for more efficient (bandwidth saving) email submission
   * Remote mailboxes (IMAP proxy)
@@ -152,6 +153,8 @@ Config files go in :code:`/etc/lbbs` and are as follows:
 * :code:`mod_irc_relay.conf` - IRC/IRC relay configuration
 
 * :code:`mod_slack.conf` - Slack/IRC relay configuration
+
+* :code:`mod_smtp_fetchmail.conf` - SMTP remote message queue management
 
 * :code:`mod_smtp_mailing_lists.conf` - Mailing list configuration
 
