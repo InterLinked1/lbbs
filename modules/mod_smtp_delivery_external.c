@@ -51,6 +51,7 @@
 
 #include "include/mod_mail.h"
 #include "include/net_smtp.h"
+#include "include/mod_smtp_client.h"
 
 static int accept_relay_out = 1;
 static int minpriv_relay_out = 0;
@@ -292,126 +293,6 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 	return 0;
 }
 
-#define SMTP_EXPECT(client, ms, str) \
-	res = bbs_tcp_client_expect(client, "\r\n", 1, ms, str); \
-	if (res) { bbs_warning("Expected '%s', got: %s\n", str, (client)->rldata.buf); goto cleanup; } else { bbs_debug(9, "Found '%s': %s\n", str, (client)->rldata.buf); }
-
-#define smtp_client_send(client, fmt, ...) bbs_tcp_client_send(client, fmt, ## __VA_ARGS__); bbs_debug(3, " => " fmt, ## __VA_ARGS__);
-
-#define SMTP_CAPABILITY_STARTTLS (1 << 0)
-#define SMTP_CAPABILITY_PIPELINING (1 << 1)
-#define SMTP_CAPABILITY_8BITMIME (1 << 2)
-#define SMTP_CAPABILITY_ENHANCEDSTATUSCODES (1 << 3)
-#define SMTP_CAPABILITY_AUTH_LOGIN (1 << 4)
-#define SMTP_CAPABILITY_AUTH_PLAIN (1 << 5)
-#define SMTP_CAPABILITY_AUTH_XOAUTH2 (1 << 6)
-
-static void process_capabilities(int *restrict caps, int *restrict maxsendsize, const char *capname)
-{
-	if (strlen_zero(capname) || !isupper(*capname)) { /* Capabilities are all uppercase XXX but is that required by the RFC? */
-		return;
-	}
-
-#define PARSE_CAPABILITY(name, flag) \
-	else if (!strcmp(capname, name)) { \
-		*caps |= flag; \
-	}
-
-	if (0) {
-		/* Unused */
-	}
-	PARSE_CAPABILITY("STARTTLS", SMTP_CAPABILITY_STARTTLS)
-	PARSE_CAPABILITY("PIPELINING", SMTP_CAPABILITY_PIPELINING)
-	PARSE_CAPABILITY("8BITMIME", SMTP_CAPABILITY_8BITMIME)
-	PARSE_CAPABILITY("ENHANCEDSTATUSCODES", SMTP_CAPABILITY_ENHANCEDSTATUSCODES)
-#undef PARSE_CAPABILITY
-	else if (STARTS_WITH(capname, "AUTH ")) {
-		capname += STRLEN("AUTH ");
-		if (strstr(capname, "LOGIN")) {
-			*caps |= SMTP_CAPABILITY_AUTH_LOGIN;
-		}
-		if (strstr(capname, "PLAIN")) {
-			*caps |= SMTP_CAPABILITY_AUTH_PLAIN;
-		}
-		if (strstr(capname, "XOAUTH2")) {
-			bbs_debug(3, "Supports oauth2\n");
-			*caps |= SMTP_CAPABILITY_AUTH_XOAUTH2;
-		}
-	} else if (STARTS_WITH(capname, "SIZE")) { /* The argument containing the size is optional */
-		const char *size = capname + STRLEN("SIZE");
-		if (!strlen_zero(size)) {
-			/* If there's a limit provided in the capabilities, store it and abort early if message length exceeds this */
-			size++;
-			if (!strlen_zero(size)) {
-				*maxsendsize = atoi(size);
-			}
-		}
-	} else if (!strcasecmp(capname, "CHUNKING") || !strcasecmp(capname, "SMTPUTF8") || !strcasecmp(capname, "BINARYMIME")
-		|| !strcasecmp(capname, "VRFY") || !strcasecmp(capname, "ETRN") || !strcasecmp(capname, "DSN") || !strcasecmp(capname, "HELP")) {
-		/* Don't care about */
-	} else if (!strcmp(capname, "PIPECONNECT")) {
-		/* Don't care about, at the moment, but could be used in the future to optimize:
-		 * https://www.exim.org/exim-html-current/doc/html/spec_html/ch-main_configuration.html */
-	} else if (!strcmp(capname, "AUTH=LOGIN PLAIN")) {
-		/* Ignore: this SMTP server advertises this capability (even though it's malformed) to support some broken clients */
-	} else if (!strcmp(capname, "OK")) {
-		/* This is not a real capability, just ignore it. Yahoo seems to do this. */
-	} else {
-		bbs_warning("Unknown capability advertised: %s\n", capname);
-	}
-}
-
-/*! \brief Await a final SMTP response code */
-static int smtp_client_expect_final(struct bbs_tcp_client *restrict client, int ms, const char *code, size_t codelen)
-{
-	int res;
-	/* Read until we get a response that isn't the desired code or isn't a nonfinal response */
-	do {
-		res = bbs_tcp_client_expect(client, "\r\n", 1, ms, code);
-		bbs_debug(3, "Found '%s': %s\n", code, client->rldata.buf);
-	} while (!strncmp(client->rldata.buf, code, codelen) && client->rldata.buf[codelen] == '-');
-	if (res > 0) {
-		bbs_warning("Expected '%s', got: %s\n", code, client->rldata.buf);
-	} else if (res < 0) {
-		bbs_warning("Failed to receive '%s'\n", code);
-	}
-	return res;
-}
-
-#define SMTP_CLIENT_EXPECT_FINAL(client, ms, code) if ((res = smtp_client_expect_final(client, ms, code, STRLEN(code)))) { goto cleanup; }
-
-static int smtp_client_handshake(struct bbs_tcp_client *restrict client, const char *hostname, int *restrict capsptr, int *restrict maxsendsize)
-{
-	int res = 0;
-
-	smtp_client_send(client, "EHLO %s\r\n", smtp_hostname());
-	/* Don't use smtp_client_expect_final as we'll miss reading the capabilities */
-	res = bbs_tcp_client_expect(client, "\r\n", 1, MIN_MS(5), "250"); /* Won't return 250 if ESMTP not supported */
-	if (res) { /* Fall back to HELO if EHLO not supported */
-		if (require_starttls_out) { /* STARTTLS is only supported by EHLO, not HELO */
-			bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
-			res = 1;
-			goto cleanup;
-		}
-		bbs_debug(3, "SMTP server %s does not support ESMTP, falling back to regular SMTP\n", hostname);
-		smtp_client_send(client, "HELO %s\r\n", smtp_hostname());
-		SMTP_CLIENT_EXPECT_FINAL(client, MIN_MS(5), "250");
-	} else {
-		/* Keep reading the rest of the multiline EHLO */
-		while (STARTS_WITH(client->rldata.buf, "250-")) {
-			bbs_debug(9, "<= %s\n", client->rldata.buf);
-			process_capabilities(capsptr, maxsendsize, client->rldata.buf + 4);
-			res = bbs_tcp_client_expect(client, "\r\n", 1, SEC_MS(15), "250");
-		}
-		bbs_debug(9, "<= %s\n", client->rldata.buf);
-		process_capabilities(capsptr, maxsendsize, client->rldata.buf + 4);
-		bbs_debug(6, "Finished processing multiline EHLO\n");
-	}
-
-cleanup:
-	return res;
-}
-
 struct smtp_tx_data {
 	char hostname[256];
 	char ipaddr[128];
@@ -491,10 +372,8 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 {
 	int res = -1;
 	ssize_t wrote = 0;
-	struct bbs_tcp_client client;
-	struct bbs_url url;
+	struct bbs_smtp_client smtpclient;
 	off_t send_offset;
-	int caps = 0, maxsendsize = 0;
 	char sendercopy[64];
 	char *user, *domain, *saslstr = NULL;
 
@@ -511,11 +390,6 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 		bbs_error("Invalid email address: %s\n", sender);
 		return -1;
 	}
-
-	memset(&client, 0, sizeof(client));
-	memset(&url, 0, sizeof(url));
-	url.host = hostname;
-	url.port = port;
 
 #ifdef DEBUG_MAIL_DATA
 	/* Dump the DATA of the transaction to the CLI for debugging purposes. */
@@ -535,45 +409,34 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 #endif
 
 	tx->prot = "x-tcp";
-	if (bbs_tcp_client_connect(&client, &url, secure, buf, len)) {
+	if (bbs_smtp_client_connect(&smtpclient, smtp_hostname(), hostname, port, secure, buf, len)) {
 		/* Unfortunately, we can't try an alternate port as there is no provision
 		 * for letting other SMTP MTAs know that they should try some port besides 25.
 		 * So if your ISP blocks incoming traffic on port 25 or you can't use port 25
 		 * for whatever reason, you're kind of out luck: you won't be able to receive
 		 * mail from the outside world. */
-		bbs_debug(3, "Failed to set up TCP connection to %s\n", hostname);
 		snprintf(buf, len, "Connection refused");
 		return -1;
 	}
 
 	smtp_tx_data_reset(tx);
-	bbs_get_fd_ip(client.fd, tx->ipaddr, sizeof(tx->ipaddr));
+	bbs_get_fd_ip(smtpclient.client.fd, tx->ipaddr, sizeof(tx->ipaddr));
 	safe_strncpy(tx->hostname, hostname, sizeof(tx->hostname));
 
 	bbs_debug(3, "Attempting delivery of %lu-byte message from %s -> %s via %s\n", writelen, sender, recipient, hostname);
 
-	SMTP_CLIENT_EXPECT_FINAL(&client, MIN_MS(5), "220"); /* RFC 5321 4.5.3.2.1 (though for final 220, not any of them) */
+	SMTP_CLIENT_EXPECT_FINAL(&smtpclient, MIN_MS(5), "220"); /* RFC 5321 4.5.3.2.1 (though for final 220, not any of them) */
 
-	res = smtp_client_handshake(&client, hostname, &caps, &maxsendsize);
+	res = bbs_smtp_client_handshake(&smtpclient, require_starttls_out);
 	if (res) {
 		goto cleanup;
 	}
 
 	tx->prot = "smtp";
-	if (caps & SMTP_CAPABILITY_STARTTLS) {
-		if (!secure) {
-			smtp_client_send(&client, "STARTTLS\r\n");
-			SMTP_CLIENT_EXPECT_FINAL(&client, 2500, "220");
-			bbs_debug(3, "Starting TLS\n");
-			if (bbs_tcp_client_starttls(&client, hostname)) {
-				goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
-			}
-			/* Start over again. */
-			caps = 0;
-			res = smtp_client_handshake(&client, hostname, &caps, &maxsendsize);
-			if (res) {
-				goto cleanup;
-			}
+
+	if (smtpclient.caps & SMTP_CAPABILITY_STARTTLS) {
+		if (!secure && bbs_smtp_client_starttls(&smtpclient)) {
+			goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
 		}
 	} else if (require_starttls_out) {
 		bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
@@ -584,11 +447,11 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 		bbs_warning("SMTP server %s does not support STARTTLS. This message will not be transmitted securely!\n", hostname);
 	}
 
-	if (maxsendsize && (int) (prependlen + writelen) > maxsendsize) {
+	if (smtpclient.maxsendsize && (int) (prependlen + writelen) > smtpclient.maxsendsize) {
 		/* We know the message we're trying to send is larger than the max message size the server will accept.
 		 * Just abort now. */
-		bbs_warning("Total message size (%lu) is larger than server accepts (%d)\n", prependlen + writelen, maxsendsize);
-		snprintf(buf, len, "Message too large (%lu bytes, maximum is %d)", prependlen + writelen, maxsendsize);
+		bbs_warning("Total message size (%lu) is larger than server accepts (%d)\n", prependlen + writelen, smtpclient.maxsendsize);
+		snprintf(buf, len, "Message too large (%lu bytes, maximum is %d)", prependlen + writelen, smtpclient.maxsendsize);
 		res = 1;
 		goto cleanup;
 	}
@@ -601,7 +464,7 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 			char *encoded;
 			const char *oauthprofile = password + STRLEN("oauth:");
 
-			if (!(caps & SMTP_CAPABILITY_AUTH_XOAUTH2)) {
+			if (!(smtpclient.caps & SMTP_CAPABILITY_AUTH_XOAUTH2)) {
 				bbs_warning("SMTP server does not support XOAUTH2\n");
 				snprintf(buf, len, "XOAUTH2 not supported");
 				res = -1;
@@ -630,31 +493,31 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 				res = -1;
 				goto cleanup;
 			}
-			smtp_client_send(&client, "AUTH XOAUTH2 %s\r\n", encoded);
+			bbs_smtp_client_send(&smtpclient, "AUTH XOAUTH2 %s\r\n", encoded);
 			free(encoded);
-			res = bbs_tcp_client_expect(&client, "\r\n", 1, SEC_MS(5), "235");
+			res = bbs_tcp_client_expect(&smtpclient.client, "\r\n", 1, SEC_MS(5), "235");
 			if (res) {
 				/* If we get 334 here, that means we failed: https://developers.google.com/gmail/imap/xoauth2-protocol#smtp_protocol_exchange
 				 * We should send an empty reply to get the error message. */
 				if (STARTS_WITH(buf, "334")) {
-					smtp_client_send(&client, "\r\n");
-					SMTP_EXPECT(&client, SEC_MS(5), "235"); /* We're not actually going to get a 235, but send the error to the console and abort */
+					bbs_smtp_client_send(&smtpclient, "\r\n");
+					SMTP_EXPECT(&smtpclient, SEC_MS(5), "235"); /* We're not actually going to get a 235, but send the error to the console and abort */
 					bbs_warning("Huh? It worked?\n"); /* Shouldn't happen */
 				} else {
 					bbs_warning("Expected '%s', got: %s\n", "235", buf);
 					goto cleanup;
 				}
 			}
-		} else if (caps & SMTP_CAPABILITY_AUTH_LOGIN) {
+		} else if (smtpclient.caps & SMTP_CAPABILITY_AUTH_LOGIN) {
 			saslstr = bbs_sasl_encode(username, username, password);
 			if (!saslstr) {
 				res = -1;
 				goto cleanup;
 			}
-			smtp_client_send(&client, "AUTH PLAIN\r\n"); /* AUTH PLAIN is preferred to the deprecated AUTH LOGIN */
-			SMTP_EXPECT(&client, SEC_MS(10), "334");
-			smtp_client_send(&client, "%s\r\n", saslstr);
-			SMTP_EXPECT(&client, SEC_MS(10), "235");
+			bbs_smtp_client_send(&smtpclient, "AUTH PLAIN\r\n"); /* AUTH PLAIN is preferred to the deprecated AUTH LOGIN */
+			SMTP_EXPECT(&smtpclient, SEC_MS(10), "334");
+			bbs_smtp_client_send(&smtpclient, "%s\r\n", saslstr);
+			SMTP_EXPECT(&smtpclient, SEC_MS(10), "235");
 		} else {
 			bbs_warning("No mutual login methods available\n");
 			res = -1;
@@ -666,29 +529,29 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 	tx->stage = "MAIL FROM";
 	if (!strlen_zero(user)) {
 		if (bbs_hostname_is_ipv4(domain)) {
-			smtp_client_send(&client, "MAIL FROM:<%s@[%s]>\r\n", user, domain); /* Domain literal for IP address */
+			bbs_smtp_client_send(&smtpclient, "MAIL FROM:<%s@[%s]>\r\n", user, domain); /* Domain literal for IP address */
 		} else {
-			smtp_client_send(&client, "MAIL FROM:<%s@%s>\r\n", user, domain); /* sender lacks <>, but recipient has them */
+			bbs_smtp_client_send(&smtpclient, "MAIL FROM:<%s@%s>\r\n", user, domain); /* sender lacks <>, but recipient has them */
 		}
 	} else {
 		/* For non-delivery / postmaster sending */
-		smtp_client_send(&client, "MAIL FROM:<>\r\n");
+		bbs_smtp_client_send(&smtpclient, "MAIL FROM:<>\r\n");
 	}
-	SMTP_CLIENT_EXPECT_FINAL(&client, MIN_MS(5), "250"); /* RFC 5321 4.5.3.2.2 */
+	SMTP_CLIENT_EXPECT_FINAL(&smtpclient, MIN_MS(5), "250"); /* RFC 5321 4.5.3.2.2 */
 	tx->stage = "RCPT FROM";
 	if (recipient) {
 		if (*recipient == '<') {
-			smtp_client_send(&client, "RCPT TO:%s\r\n", recipient);
+			bbs_smtp_client_send(&smtpclient, "RCPT TO:%s\r\n", recipient);
 		} else {
 			bbs_warning("Queue file recipient did not contain <>\n"); /* Support broken queue files, but make some noise */
-			smtp_client_send(&client, "RCPT TO:<%s>\r\n", recipient);
+			bbs_smtp_client_send(&smtpclient, "RCPT TO:<%s>\r\n", recipient);
 		}
-		SMTP_CLIENT_EXPECT_FINAL(&client, MIN_MS(5), "250"); /* RFC 5321 4.5.3.2.3 */
+		SMTP_CLIENT_EXPECT_FINAL(&smtpclient, MIN_MS(5), "250"); /* RFC 5321 4.5.3.2.3 */
 	} else if (recipients) {
 		char *r;
 		while ((r = stringlist_pop(recipients))) {
-			smtp_client_send(&client, "RCPT TO:%s\r\n", r);
-			SMTP_CLIENT_EXPECT_FINAL(&client, MIN_MS(5), "250"); /* RFC 5321 4.5.3.2.3 */
+			bbs_smtp_client_send(&smtpclient, "RCPT TO:%s\r\n", r);
+			SMTP_CLIENT_EXPECT_FINAL(&smtpclient, MIN_MS(5), "250"); /* RFC 5321 4.5.3.2.3 */
 			free(r);
 		}
 	} else {
@@ -696,18 +559,18 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 		goto cleanup;
 	}
 	tx->stage = "DATA";
-	smtp_client_send(&client, "DATA\r\n");
-	SMTP_CLIENT_EXPECT_FINAL(&client, MIN_MS(2), "354"); /* RFC 5321 4.5.3.2.4 */
+	bbs_smtp_client_send(&smtpclient, "DATA\r\n");
+	SMTP_CLIENT_EXPECT_FINAL(&smtpclient, MIN_MS(2), "354"); /* RFC 5321 4.5.3.2.4 */
 	if (prepend && prependlen) {
-		wrote = bbs_write(client.wfd, prepend, (unsigned int) prependlen);
+		wrote = bbs_write(smtpclient.client.wfd, prepend, (unsigned int) prependlen);
 	}
 
 	/* sendfile will be much more efficient than reading the file ourself, as email body could be quite large, and we don't need to involve userspace. */
 	send_offset = offset;
-	res = (int) bbs_sendfile(client.wfd, datafd, &send_offset, writelen);
+	res = (int) bbs_sendfile(smtpclient.client.wfd, datafd, &send_offset, writelen);
 
 	/* XXX If email doesn't end in CR LF, we need to tack that on. But ONLY if it doesn't already end in CR LF. */
-	smtp_client_send(&client, SMTP_EOM); /* (end of) EOM */
+	bbs_smtp_client_send(&smtpclient, SMTP_EOM); /* (end of) EOM */
 	tx->stage = "end of DATA";
 	if (res != (int) writelen) { /* Failed to write full message */
 		res = -1;
@@ -716,7 +579,7 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 	wrote += res;
 	bbs_debug(5, "Sent %lu bytes\n", wrote);
 	/* RFC 5321 4.5.3.2.6 */
-	SMTP_CLIENT_EXPECT_FINAL(&client, MIN_MS(10), "250"); /* Okay, this email is somebody else's problem now. */
+	SMTP_CLIENT_EXPECT_FINAL(&smtpclient, MIN_MS(10), "250"); /* Okay, this email is somebody else's problem now. */
 
 	bbs_debug(3, "Message successfully delivered to %s\n", recipient);
 	res = 0;
@@ -724,9 +587,9 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 cleanup:
 	free_if(saslstr);
 	if (res > 0) {
-		smtp_client_send(&client, "QUIT\r\n");
+		bbs_smtp_client_send(&smtpclient, "QUIT\r\n");
 	}
-	bbs_tcp_client_cleanup(&client);
+	bbs_smtp_client_destroy(&smtpclient);
 
 	/* Check if it's a permanent error, if it's not, return -1 instead of 1 */
 	if (res > 0) {
@@ -1412,13 +1275,70 @@ static void *queue_handler(void *unused)
 	return NULL;
 }
 
+/*!
+ * \brief Whether an IP address is authorized for a domain by source route
+ * \param ip IP address
+ * \param domain Domain
+ * \retval 1 if yes, 0 if no
+ */
+static int authorized_for_hostname(const char *ip, const char *domain)
+{
+	int res;
+	struct stringlist mxservers, *static_routes;
+
+	memset(&mxservers, 0, sizeof(mxservers));
+
+	/* Start by trying to deliver it directly, immediately, right now. */
+	static_routes = get_static_routes(domain);
+	if (static_routes) {
+		struct stringitem *i = NULL;
+		const char *route;
+		while ((route = stringlist_next(static_routes, &i))) {
+			char hostbuf[256];
+			const char *colon;
+			const char *hostname = route;
+
+			/* If this is a hostname:port, we need to split.
+			 * Otherwise, we can use it directly. This is more efficient,
+			 * since no allocations or copies are performed in this case. */
+			colon = strchr(route, ':');
+			if (colon) {
+				/* There's a port specified. */
+				bbs_strncpy_until(hostbuf, route, sizeof(hostbuf), ':'); /* Copy just the hostname */
+				hostname = hostbuf;
+			}
+			if (bbs_ip_match_ipv4(ip, hostname)) {
+				return 1;
+			}
+		}
+	} else {
+		char *hostname;
+		res = lookup_mx_all(domain, &mxservers);
+		while (res < 0 && (hostname = stringlist_pop(&mxservers))) {
+			if (bbs_ip_match_ipv4(ip, hostname)) {
+				free(hostname);
+				stringlist_empty(&mxservers);
+				return 1;
+			}
+			free(hostname);
+		}
+		stringlist_empty(&mxservers);
+	}
+	return 0;
+}
+
 /*! \brief Queue processor callback */
 static int queue_processor(struct smtp_session *smtp, const char *cmd, const char *args)
 {
 	int res = 250; /* Start with 250 OK by default */
 	struct mailq_run qrun;
+	int identity_confirmed = 0;
 
 	UNUSED(smtp); /* For now, this is unused, but could be useful in the future */
+
+	if (smtp_is_message_submission(smtp)) {
+		return 458;
+	}
 
 	mailq_run_init(&qrun, QUEUE_RUN_FORCED);
 
@@ -1444,12 +1364,29 @@ static int queue_processor(struct smtp_session *smtp, const char *cmd, const cha
 		} else {
 			qrun.host_match = args;
 		}
+
 		run_queue(&qrun, on_queue_file);
+
+		/* The RFC makes no mention of such security considerations,
+		 * but it would be a good idea to avoid leaking too much information
+		 * if the connected host is asking for somebody else's mail to be relayed.
+		 * But we shouldn't use bbs_ip_match_ipv4, we should use static_routes.
+		 */
+		if (authorized_for_hostname(smtp_node(smtp)->ip, args)) {
+			identity_confirmed = 1;
+		} else {
+			bbs_debug(3, "Requested mail for '%s', but source IP address does not match source route\n", args);
+		}
+
 		/* One benefit of running the queue synchronously
 		 * if that we now have more specific information about what happened.
 		 * (Could also be done if we waited for all tasks to be created and returned
 		 * before running them.) */
-		if (qrun.processed) {
+		if (!identity_confirmed) {
+			/* If we're not sure if this host is authorized,
+			 * just provide a generic response, to avoid leaking info. */
+			res = 250;
+		} else if (qrun.processed) {
 			res = 252;
 			/* The 253 response code allows us to say how many messages
 			 * are pending, but the current callback interface doesn't
@@ -1954,4 +1891,4 @@ static int unload_module(void)
 	return res;
 }
 
-BBS_MODULE_INFO_DEPENDENT("E-Mail External Delivery", "net_smtp.so");
+BBS_MODULE_INFO_DEPENDENT("E-Mail External Delivery", "net_smtp.so,mod_smtp_client.so");
