@@ -6,9 +6,6 @@ DEPENDS := $(patsubst %.c,%.d,$(MOD_SRC))
 # the include directory is in the parent
 INC = -I..
 
-# SSHLIB=$(pkg-config --libs libssh)
-SSHLIB=-lssh
-
 # Since we don't use autoconf:
 SFTP_SERVER_FREE_EXISTS = $(shell objdump -T /usr/lib/x86_64-linux-gnu/libssh.so /lib/x86_64-linux-gnu/libssh.so /usr/lib64/libssh.so 2>&1 | grep "sftp_server_free" | wc -l)
 
@@ -43,9 +40,10 @@ net_imap.so : net_imap.o net_imap
 	@echo "== Linking $@"
 	$(CC) -shared -fPIC -o $(basename $<).so $(IMAP_OBJ) $<
 
+# SSHLIB=$(pkg-config --libs libssh)
 net_ssh.so : net_ssh.o
 	@echo "== Linking $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ $(SSHLIB)
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lssh
 
 net_ws.so : net_ws.o
 	@echo "== Linking $@"

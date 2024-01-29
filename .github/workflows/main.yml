@@ -29,6 +29,7 @@ jobs:
           echo Beginning build
           sudo sed -i 's/azure\.//' /etc/apt/sources.list
           sudo ./scripts/install_prereq.sh
+          sudo make modcheck
           sudo make
           sudo make install
           sudo make samples

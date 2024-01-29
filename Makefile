@@ -80,6 +80,12 @@ external tests :
 	@echo " +--------- make $@ ---------+"
 	$(SUBMAKE) --no-builtin-rules -C $@ all
 
+modcheck : external
+	@external/modman -t
+
+modconfig : external
+	@external/modman -d
+
 clean :
 	$(RM) bbs/$(EXE) bbs/*.d bbs/*.i bbs/*.o
 	$(RM) include/*.gch
@@ -113,6 +119,7 @@ modinstall: $(MOD_SUBDIR)
 	@for i in $(MOD_SUBDIR); do \
 		echo " -> Installing modules in $${i}"; \
 		$(INSTALL) -m 755 $${i}/*.so /usr/lib/lbbs/modules; \
+		find /usr/lib/lbbs/modules -size 0 -delete; \
 	done
 
 extinstall:

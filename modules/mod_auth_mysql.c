@@ -26,6 +26,9 @@
 #include <string.h>
 #include <time.h>
 
+/* Included here, for modman */
+#include <mysql/mysql.h>
+
 #include "include/mod_mysql.h"
 
 #include "include/module.h"

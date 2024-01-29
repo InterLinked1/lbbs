@@ -11,7 +11,6 @@ GMIME_LIBS=$(shell pkg-config --libs glib-2.0 gmime-3.0)
 MYSQL_LIBS := $(shell mysql_config --libs)
 
 ETPANCFLAGS=-I/usr/local/include
-ETPANLDDFLAGS=-lssl -lcrypto -ldb-5.3 -lz -L/usr/local/lib -Wl,-rpath=/usr/local/lib/ -letpan
 
 all: $(MOD_SO)
 	@echo "== Compiling modules"
@@ -115,7 +114,7 @@ mod_webmail.o : mod_webmail.c mod_webmail.d
 
 mod_webmail.so : mod_webmail.o
 	@echo "== Linking $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -ljansson $(ETPANLDDFLAGS)
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -ljansson -lssl -lcrypto -ldb-5.3 -lz -L/usr/local/lib -Wl,-rpath=/usr/local/lib/ -letpan
 
 # Don't automatically remove intermediate .o files, to prevent unnecessary recompilations
 .SECONDARY: $(patsubst %.c,%.o,$(MOD_SRC))

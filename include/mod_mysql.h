@@ -17,7 +17,6 @@
  * Full MySQL/MariaDB C API documentation available here:
  * https://mariadb.com/kb/en/mariadb-connectorc-api-functions/
  */
-#include <mysql/mysql.h>
 
 #define DB_NAME_ARGS sql_dbname(), !strlen_zero(sql_dbname()) ? "." : ""
 

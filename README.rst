@@ -89,9 +89,14 @@ To install LBBS, you will need to compile it from source. Fortunately, we've mad
      git clone https://github.com/InterLinked1/lbbs.git
      cd lbbs
      ./scripts/install_prereq.sh
+     make modcheck
+     make modconfig
      make
      make install
      make samples
+
+(Running :code:`make modcheck` is optional. It will tell you all the modules that are available and which will be disabled for the current build.
+Running :code:`make modconfig` is what actually makes changes to the build environment, disabling any modules with unmet dependencies.)
 
 If you are setting up a Linux server from scratch, you may also want to refer to :code:`scripts/server_setup.sh` for a more complete script to set up your BBS server.
 

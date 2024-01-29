@@ -23,6 +23,9 @@
 #include <stdarg.h>
 #include <string.h>
 
+/* Included here, for modman */
+#include <mysql/mysql.h>
+
 #include "include/mod_mysql.h"
 
 #include "include/config.h"

@@ -39,6 +39,7 @@ cd /usr/local/src
 git clone https://github.com/InterLinked1/lbbs.git
 cd lbbs
 ./scripts/install_prereq.sh
+make modconfig
 make
 make tests
 make install
