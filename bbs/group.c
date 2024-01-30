@@ -24,6 +24,7 @@
 #include "include/stringlist.h"
 #include "include/cli.h"
 #include "include/group.h"
+#include "include/reload.h"
 
 /* Currently, groups must be defined statically in groups.conf.
  * If this becomes a hindrance, this could be dynamized. */
@@ -140,20 +141,19 @@ static int load_groups(void)
 }
 
 /*! \todo Should use a generic system-wide reload mechanism */
-static int cli_groupreload(struct bbs_cli_args *a)
+static int reload_groups(int fd)
 {
 	RWLIST_WRLOCK(&groups);
 	RWLIST_REMOVE_ALL(&groups, entry, group_free);
 	load_groups();
 	RWLIST_UNLOCK(&groups);
-	bbs_dprintf(a->fdout, "Groups reloaded\n");
+	bbs_dprintf(fd, "Reloaded groups\n");
 	return 0;
 }
 
 static struct bbs_cli_entry cli_commands_groups[] = {
 	BBS_CLI_COMMAND(cli_groups, "groups", 1, "List user groups", NULL),
 	BBS_CLI_COMMAND(cli_group, "group", 2, "List members of a user group", "group <name>"),
-	BBS_CLI_COMMAND(cli_groupreload, "groupreload", 1, "Reload user groups", NULL),
 };
 
 /*! \todo Currently groups cannot be reloaded, but it might make sense here (and in several other places) to allow this, using some builtin functionality */
@@ -175,6 +175,7 @@ int bbs_groups_cleanup(void)
 int bbs_groups_init(void)
 {
 	load_config();
+	bbs_register_reload_handler("groups", "Reload BBS user groups", reload_groups);
 	bbs_cli_register_multiple(cli_commands_groups);
 	return 0;
 }

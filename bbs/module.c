@@ -33,6 +33,7 @@
 #include "include/linkedlists.h"
 #include "include/stringlist.h"
 #include "include/module.h"
+#include "include/reload.h"
 #include "include/config.h"
 #include "include/utils.h" /* use bbs_dir_traverse */
 #include "include/node.h"
@@ -932,7 +933,7 @@ static int on_file_autoload(const char *dir_name, const char *filename, void *ob
 
 	if (mod) {
 		if (!stringlist_contains(&modules_preload, filename)) { /* If it was preloaded, then it's legitimate */
-			bbs_error("Module %s is already loaded\n", filename);
+			bbs_debug(1, "Module %s is already loaded\n", filename);
 		}
 		return 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
 	}
@@ -1328,11 +1329,126 @@ static int cli_unloadwait(struct bbs_cli_args *a)
 	return 0;
 }
 
+struct reload_handler {
+	const char *name;
+	const char *description;
+	int (*reloader)(int fd);
+	RWLIST_ENTRY(reload_handler) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(reload_handlers, reload_handler);
+
+int bbs_register_reload_handler(const char *name, const char *description, int (*reloader)(int fd))
+{
+	struct reload_handler *r;
+	size_t namelen;
+
+	if (strchr(name, '_')) {
+		bbs_warning("Reload handler '%s' contains forbidden character\n", name);
+		return -1;
+	}
+
+	namelen = strlen(name);
+
+	RWLIST_WRLOCK(&reload_handlers);
+	RWLIST_TRAVERSE(&reload_handlers, r, entry) {
+		if (!strcmp(name, r->name)) {
+			RWLIST_UNLOCK(&reload_handlers);
+			bbs_error("Reload handler '%s' already registered\n", name);
+			return -1;
+		}
+	}
+
+	r = calloc(1, sizeof(*r) + namelen + strlen(description) + 2);
+	if (ALLOC_FAILURE(r)) {
+		RWLIST_UNLOCK(&reload_handlers);
+		return -1;
+	}
+
+	r->reloader = reloader;
+	strcpy(r->data, name); /* Safe */
+	strcpy(r->data + namelen + 1, description);
+	r->name = r->data;
+	r->description = r->data + namelen + 1;
+	RWLIST_INSERT_TAIL(&reload_handlers, r, entry);
+	RWLIST_UNLOCK(&reload_handlers);
+	return 0;
+}
+
+static int cli_reloadhandlers(struct bbs_cli_args *a)
+{
+	struct reload_handler *r;
+
+	bbs_dprintf(a->fdout, "%-20s %s\n", "Name", "Description");
+	RWLIST_RDLOCK(&reload_handlers);
+	RWLIST_TRAVERSE(&reload_handlers, r, entry) {
+		bbs_dprintf(a->fdout, "%-20s %s\n", r->name, r->description);
+	}
+	RWLIST_UNLOCK(&reload_handlers);
+	return 0;
+}
+
+static int reload_core(const char *name, int fd)
+{
+	int res = 0;
+	int reloaded = 0;
+	struct reload_handler *r;
+
+	if (bbs_is_shutting_down()) {
+		/* Can't reload if shutting down, particularly as
+		 * some stuff in the core will start unregistering
+		 * and cleaning up, past a certain point of shutdown. */
+		return -1;
+	}
+
+	/* There should never be more than one reload happening at a time,
+	 * so just write lock, even though we're not changing the list. */
+	RWLIST_WRLOCK(&reload_handlers);
+	RWLIST_TRAVERSE(&reload_handlers, r, entry) {
+		if (!name || !strcmp(name, r->name)) {
+			int rres;
+			/* These are all in the core, so no need to ref/unref a module.
+			 * Just execute the callback. */
+			rres = r->reloader(fd);
+			if (!res) {
+				reloaded++;
+			}
+			res |= rres;
+		}
+	}
+	RWLIST_UNLOCK(&reload_handlers);
+	if (!res && reloaded) {
+		/* We reloaded at least one thing, and everything reloaded successfully */
+		return 0;
+	}
+	if (res) {
+		/* Handler(s) failed to reload */
+		bbs_dprintf(fd, "Full or partial reload failure\n");
+		return res;
+	}
+	/* Either something failed to reload, or we didn't actually reload anything (typo in target) */
+	bbs_dprintf(fd, "No such component to reload: '%s'\n", name);
+	return 1;
+}
+
 static int cli_reload(struct bbs_cli_args *a)
 {
-	const char *s = a->argv[1];
 	bbs_cli_set_stdout_logging(a->fdout, 1); /* We want to be able to see the logging */
-	return threadsafe_reload(s, 0);
+
+	/* Request to reload a specific module */
+	if (a->argc >= 2) {
+		const char *s = a->argv[1];
+		/* If it's a module name, it contains an underscore */
+		if (strchr(s, '_')) {
+			return threadsafe_reload(s, 0);
+		} else {
+			return reload_core(s, a->fdout);
+		}
+	}
+
+	/* Reload all core components */
+	return reload_core(NULL, a->fdout);
 }
 
 static int cli_reloadwait(struct bbs_cli_args *a)
@@ -1382,7 +1498,8 @@ static struct bbs_cli_entry cli_commands_modules[] = {
 	BBS_CLI_COMMAND(cli_loadwait, "loadwait", 2, "Keep retrying load of dynamic module until it successfully loads", "loadwait <module>"),
 	BBS_CLI_COMMAND(cli_unload, "unload", 2, "Unload dynamic module", "unload <module>"),
 	BBS_CLI_COMMAND(cli_unloadwait, "unloadwait", 2, "Keep retrying load of dynamic module until it successfully unloads", "unloadwait <module>"),
-	BBS_CLI_COMMAND(cli_reload, "reload", 2, "Hotswap (unload and load) dynamic module", "reload <module>"),
+	BBS_CLI_COMMAND(cli_reload, "reload", 1, "Hotswap (unload and load) dynamic module or run a specific (or all) core reload handler(s)", "reload [<module>]"),
+	BBS_CLI_COMMAND(cli_reloadhandlers, "reloadhandlers", 1, "List all core reload handlers", NULL),
 	BBS_CLI_COMMAND(cli_reloadwait, "reloadwait", 2, "Keep retrying hotswap reload of dynamic module until successful", "reloadwait <module>"),
 	BBS_CLI_COMMAND(cli_reloadqueue, "reloadqueue", 2, "Unload and load dynamic module, queuing if necessary", "reloadqueue <module>"),
 };
@@ -1521,5 +1638,7 @@ int unload_modules(void)
 	RWLIST_UNLOCK(&modules);
 
 	bbs_cli_unregister_multiple(cli_commands_modules);
+
+	RWLIST_WRLOCK_REMOVE_ALL(&reload_handlers, entry, free);
 	return 0;
 }

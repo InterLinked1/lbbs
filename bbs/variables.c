@@ -30,6 +30,7 @@
 #include "include/config.h"
 #include "include/utils.h"
 #include "include/cli.h"
+#include "include/reload.h"
 
 /*! \brief Opaque structure for a variable (really, a list of variables) */
 struct bbs_var {
@@ -134,6 +135,14 @@ static int load_config(void)
 	return 0;
 }
 
+static int vars_reload(int fd)
+{
+	RWLIST_WRLOCK_REMOVE_ALL(&global_vars, entry, bbs_var_destroy);
+	load_config();
+	bbs_dprintf(fd, "Reloaded variables\n");
+	return 0;
+}
+
 static int vars_dump(int fd, struct bbs_vars *vars)
 {
 	if (vars) {
@@ -190,7 +199,7 @@ void bbs_vars_cleanup(void)
 
 int bbs_vars_init(void)
 {
-	return load_config() || bbs_cli_register_multiple(cli_commands_variables);
+	return load_config() || bbs_register_reload_handler("variables", "Reload global and per-user variables", vars_reload) || bbs_cli_register_multiple(cli_commands_variables);
 }
 
 /*! \note Could use a callback for this (allowing NULL modules in event.c),
@@ -413,21 +422,19 @@ static int builtin_var_expand(struct bbs_node *node, const char *name, char *buf
 	}
 }
 
-/*! \note Not really safe, unless node is locked before/after. Since we're not locking in this function, only in bbs_var_find, var could go away */
 const char *bbs_node_var_get(struct bbs_node *node, const char *key)
 {
-	const char *value;
+	const char *value = NULL;
 
-#if 0
-	/* We don't support built-ins, do a dummy check here in case we're using this somewhere we shouldn't be. */
-	/* XXX Never mind, this is always called from bbs_var_get_buf so this would always falsely throw a warning */
-	builtin_var_expand(node, key, NULL, 0);
-#endif
+	/* Since this function returns a direct reference to the variable,
+	 * we don't check global variables, only node variables,
+	 * so we can require that the node be locked.
+	 * This avoids the caller having to acquire a global variable read lock,
+	 * and manually unlock afterwards, just in case the variable returned
+	 * is global. */
 
-	/* Check if it's a global variable. */
-	value = bbs_var_find(&global_vars, key);
-	/* If no global, and node has vars, check there */
-	if (!value && node && node->vars) {
+	/* If node has vars, check there */
+	if (node->vars) {
 		value = bbs_var_find(node->vars, key);
 	}
 	return value;
@@ -435,7 +442,7 @@ const char *bbs_node_var_get(struct bbs_node *node, const char *key)
 
 int bbs_node_var_get_buf(struct bbs_node *node, const char *key, char *restrict buf, size_t len)
 {
-	const char *s;
+	const char *s = NULL;
 
 	/* Built-in vars that aren't really true variables, but treated as such. */
 	if (!builtin_var_expand(node, key, buf, len)) {
@@ -443,23 +450,30 @@ int bbs_node_var_get_buf(struct bbs_node *node, const char *key, char *restrict 
 	}
 
 	RWLIST_RDLOCK(&global_vars); /* Guarantee thread safety for globals. In case the variable is global, RDLOCK it here. We may RDLOCK again in bbs_var_find, but that's okay. */
-	if (node) {
-		bbs_node_lock(node); /* Guarantee thread safety for node variables. */
-	}
-	s = bbs_node_var_get(node, key);
+
+	/* Check if it's a global variable. */
+	s = bbs_var_find(&global_vars, key);
 	if (s) {
 		safe_strncpy(buf, s, len);
-	} else {
-		*buf = '\0'; /* Be nice and at least null terminate, in case the caller doesn't check the return value. */
+		RWLIST_UNLOCK(&global_vars);
+		return 0;
 	}
+
 	if (node) {
+		bbs_node_lock(node); /* Guarantee thread safety for node variables. */
+		s = bbs_node_var_get(node, key);
+		if (s) {
+			safe_strncpy(buf, s, len);
+		} else {
+			*buf = '\0'; /* Be nice and at least null terminate, in case the caller doesn't check the return value. */
+		}
 		bbs_node_unlock(node);
 	}
 	RWLIST_UNLOCK(&global_vars);
 	return s ? 0 : -1;
 }
 
-int bbs_node_substitute_vars(struct bbs_node *node, const char *sub, char *restrict buf, size_t len)
+static int substitute_vars(struct bbs_node *node, struct bbs_vars *vars, const char *sub, char *restrict buf, size_t len)
 {
 	char varname[64];
 	char *bufstart = buf;
@@ -525,8 +539,18 @@ int bbs_node_substitute_vars(struct bbs_node *node, const char *sub, char *restr
 		 * Truncation shouldn't occur because we already checked for that.
 		 */
 		safe_strncpy(varname, s, (size_t) MIN((int) sizeof(varname), end - s + 1));
-		bbs_debug(5, "Substituting variable '%s'\n", varname);
-		bbs_node_var_get_buf(node, varname, buf, len);
+		bbs_debug(5, "Substituting variable '%s' (using %s)\n", varname, node ? "node" : "varlist");
+		if (vars) {
+			const char *val = bbs_var_find(vars, varname);
+			if (val) {
+				int bytes = snprintf(buf, len, "%s", val);
+				buf += bytes;
+				len -= (size_t) bytes;
+			}
+		} else {
+			/* node can be NULL, that's fine */
+			bbs_node_var_get_buf(node, varname, buf, len);
+		}
 		/* After substitution occurs, find the null termination and update our pointers. */
 		while (*buf) {
 			if (len <= 1) {
@@ -542,4 +566,14 @@ int bbs_node_substitute_vars(struct bbs_node *node, const char *sub, char *restr
 	*buf = '\0'; /* Null terminate */
 	bbs_debug(3, "Substituted '%s' to '%s'\n", sub, bufstart);
 	return 0;
+}
+
+int bbs_varlist_substitute_vars(struct bbs_vars *vars, const char *sub, char *restrict buf, size_t len)
+{
+	return substitute_vars(NULL, vars, sub, buf, len);
+}
+
+int bbs_node_substitute_vars(struct bbs_node *node, const char *sub, char *restrict buf, size_t len)
+{
+	return substitute_vars(node, NULL, sub, buf, len);
 }

@@ -35,6 +35,7 @@
 #include "include/utils.h"
 #include "include/event.h"
 #include "include/cli.h"
+#include "include/reload.h"
 
 #ifdef HAVE_OPENSSL
 static char root_certs[84] = "/etc/ssl/certs/ca-certificates.crt";
@@ -1025,12 +1026,12 @@ static int thread_launched = 0;
 static int locks_initialized = 0;
 
 /*! \brief Limited support for reloading configuration (e.g. new certificates) */
-static int cli_tlsreload(struct bbs_cli_args *a)
+static int tlsreload(int fd)
 {
 	struct ssl_fd *sfd;
 
 	if (!locks_initialized) {
-		bbs_dprintf(a->fdout, "TLS may only be reloaded if it initialized during startup. Restart the BBS to load new configuration.\n");
+		bbs_dprintf(fd, "TLS may only be reloaded if it initialized during startup. Restart the BBS to load new configuration.\n");
 		return -1;
 	}
 
@@ -1057,7 +1058,7 @@ static int cli_tlsreload(struct bbs_cli_args *a)
 		break;
 	}
 	if (sfd) { /* At least server session exists */
-		bbs_dprintf(a->fdout, "TLS may not be reloaded while any server sessions are in use. Kick any TLS sessions and try again.\n");
+		bbs_dprintf(fd, "TLS may not be reloaded while any server sessions are in use. Kick any TLS sessions and try again.\n");
 		RWLIST_UNLOCK(&sslfds);
 		pthread_rwlock_unlock(&ssl_cert_lock);
 		return -1;
@@ -1077,12 +1078,12 @@ static int cli_tlsreload(struct bbs_cli_args *a)
 	ssl_is_available = 1;
 	pthread_rwlock_unlock(&ssl_cert_lock);
 
+	bbs_dprintf(fd, "Reloaded TLS configuration\n");
 	return 0;
 }
 
 static struct bbs_cli_entry cli_commands_tls[] = {
 	BBS_CLI_COMMAND(cli_tls, "tls", 1, "List all TLS sessions", NULL),
-	BBS_CLI_COMMAND(cli_tlsreload, "tlsreload", 1, "Reload existing TLS configuration", NULL),
 };
 
 static int setup_ssl_io(void)
@@ -1100,6 +1101,7 @@ static int setup_ssl_io(void)
 
 int ssl_server_init(void)
 {
+	bbs_register_reload_handler("tls", "Reload TLS certificates and configuration", tlsreload);
 	bbs_cli_register_multiple(cli_commands_tls);
 #ifdef HAVE_OPENSSL
 	setup_ssl_io(); /* Even if we can't be a TLS server, we can still be a TLS client. */

@@ -107,6 +107,7 @@ int bbs_node_var_set_fmt(struct bbs_node *node, const char *key, const char *fmt
  * \param vars
  * \param key Name of variable. Case-sensitive.
  * \returns value if found, NULL if not found
+ * \note It is assumed that, if this function is called directly, the caller controls the varlist and will ensure variables are not removed from it while calling this function.
  */
 const char *bbs_var_find(struct bbs_vars *vars, const char *key);
 
@@ -122,12 +123,13 @@ int bbs_node_vars_dump(int fd, struct bbs_node *node);
 
 /*!
  * \brief Get a variable
- * \param node If provided, the node will also be searched for variables, after global variables.
+ * \param node Node to search for variables. This node MUST be locked when calling this function. Global variables will NOT be searched using this function.
  * \param key Name of variable. Case-sensitive.
  * \warning The node must be locked while calling this function to ensure race condition safety. This function is not safe for global variables. Avoid if possible.
- * \returns value if found, NULL if not found
+ * \returns value if found, NULL if not found. If non-NULL, do not keep a reference after unlocking the node.
+ * \warning This function is not safe to use if node is not locked when calling, since a direct reference to the variable is returned.
  */
-const char *bbs_node_var_get(struct bbs_node *node, const char *key);
+const char *bbs_node_var_get(struct bbs_node *node, const char *key) __attribute__((nonnull (1, 2)));
 
 /*!
  * \brief Get a variable
@@ -140,11 +142,21 @@ const char *bbs_node_var_get(struct bbs_node *node, const char *key);
 int bbs_node_var_get_buf(struct bbs_node *node, const char *key, char *restrict buf, size_t len);
 
 /*!
- * \brief Substitute variables in a string
+ * \brief Substitute variables in a string, using an arbitrary varlist
+ * \param vars Variable list
+ * \param sub Original string from which to substitute variables
+ * \param buf Buffer into which to copy variable value, if it exists. If the variable is not found, the buffer will be null terminated as a courtesy.
+ * \param len Size of buf.
+ * \retval 0 if found, -1 if not found
+ */
+int bbs_varlist_substitute_vars(struct bbs_vars *vars, const char *sub, char *restrict buf, size_t len) __attribute__((nonnull (1, 2, 3)));
+
+/*!
+ * \brief Substitute variables in a string, using a node's variables
  * \param node If provided, the node will also be searched for variables, after global variables.
  * \param sub Original string from which to substitute variables
  * \param buf Buffer into which to copy variable value, if it exists. If the variable is not found, the buffer will be null terminated as a courtesy.
  * \param len Size of buf.
  * \retval 0 if found, -1 if not found
  */
-int bbs_node_substitute_vars(struct bbs_node *node, const char *sub, char *restrict buf, size_t len);
+int bbs_node_substitute_vars(struct bbs_node *node, const char *sub, char *restrict buf, size_t len) __attribute__((nonnull (2, 3)));

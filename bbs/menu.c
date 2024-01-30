@@ -37,6 +37,7 @@
 #include "include/utils.h"
 #include "include/startup.h"
 #include "include/cli.h"
+#include "include/reload.h"
 
 static int case_sensitive = 0;
 
@@ -944,10 +945,13 @@ static int check_menus(void)
 	return 0;
 }
 
-static int cli_menureload(struct bbs_cli_args *a)
+static int reload_menus(int fd)
 {
-	bbs_cli_set_stdout_logging(a->fdout, 1); /* We want to be able to see the logging */
-	return bbs_load_menus(1);
+	int res = bbs_load_menus(1);
+	if (!res) {
+		bbs_dprintf(fd, "Reloaded menus\n");
+	}
+	return res;
 }
 
 static int cli_menus(struct bbs_cli_args *a)
@@ -961,7 +965,6 @@ static int cli_menu(struct bbs_cli_args *a)
 }
 
 static struct bbs_cli_entry cli_commands_menu[] = {
-	BBS_CLI_COMMAND(cli_menureload, "menureload", 1, "Reload menus", NULL),
 	BBS_CLI_COMMAND(cli_menus, "menus", 1, "List all menus", NULL),
 	BBS_CLI_COMMAND(cli_menu, "menu", 2, "Dump a menu", "menu <name>"),
 };
@@ -976,6 +979,7 @@ int bbs_load_menus(int reload)
 	bbs_run_when_started(check_menus, STARTUP_PRIORITY_DEFAULT);
 
 	if (!reload) {
+		bbs_register_reload_handler("menus", "Reload BBS menus", reload_menus);
 		res |= bbs_cli_register_multiple(cli_commands_menu);
 	}
 	return res;
