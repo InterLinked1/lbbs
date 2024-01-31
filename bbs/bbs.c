@@ -887,6 +887,11 @@ static int load_config(void)
 	int tmp;
 	struct bbs_config *cfg = bbs_config_load("bbs.conf", 0);
 
+	/* No reload handler is registered for bbs.conf settings,
+	 * since these settings won't have any impact after
+	 * the BBS is started (technically, we could set the
+	 * dumpcore setting later, but it's not worth it). */
+
 	if (!cfg) {
 		return 0;
 	}

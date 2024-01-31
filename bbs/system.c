@@ -59,6 +59,7 @@
 #include "include/term.h"
 #include "include/user.h"
 #include "include/transfer.h"
+#include "include/reload.h"
 
 static char hostname[84] = "bbs";
 static char templatedir[256] = "./rootfs";
@@ -84,7 +85,7 @@ static int load_config(void)
 	bbs_config_val_set_path(cfg, "container", "templatedir", templatedir, sizeof(templatedir));
 	bbs_config_val_set_path(cfg, "container", "rundir", rundir, sizeof(rundir));
 	if (!s_strlen_zero(rundir)) {
-		bbs_verb(3, "Creating %s\n", rundir);
+		bbs_debug(1, "Ensuring directory exists: %s\n", rundir);
 		bbs_ensure_directory_exists_recursive(rundir);
 	}
 	bbs_config_val_set_int(cfg, "container", "maxmemory", &maxmemory);
@@ -96,12 +97,21 @@ static int load_config(void)
 		}
 	}
 
-	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
+	return 0;
+}
+
+static int reload_container(int fd)
+{
+	/* No locking is needed, since these are only accessed in the child process,
+	 * so in fact, locks would do no good. */
+	load_config();
+	bbs_dprintf(fd, "Reloaded isoexec container settings\n");
 	return 0;
 }
 
 int bbs_init_system(void)
 {
+	bbs_register_reload_handler("container", "Reload isoexec container settings", reload_container);
 	return load_config();
 }
 

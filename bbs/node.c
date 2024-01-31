@@ -44,6 +44,7 @@
 #include "include/event.h"
 #include "include/notify.h"
 #include "include/cli.h"
+#include "include/reload.h"
 
 #define DEFAULT_MAX_NODES 64
 
@@ -85,6 +86,13 @@ static int load_config(void)
 		return 0;
 	}
 
+	/* Since these are technically static buffers, this memory will always be valid as long as
+	 * the BBS is running. Some of these are returned through APIs (e.g. bbs_hostname()),
+	 * and as such, we can't feasibly do locking of these variables,
+	 * but it's okay since the worst that can happen is we happen to read while
+	 * we're updating the buffer, in which case the name may be partially the old and new value.
+	 * Now, if we were using bbs_config_val_set_dstr, that would NOT be safe! */
+
 	if (bbs_config_val_set_str(cfg, "bbs", "name", bbs_name_buf, sizeof(bbs_name_buf))) {
 		bbs_warning("No name is configured for this BBS in nodes.conf - BBS will be impersonal!\n");
 	}
@@ -105,6 +113,14 @@ static int load_config(void)
 		idlemins = idlemins * 60000; /* Convert minutes to milliseconds just once, up front */
 	}
 
+	return 0;
+}
+
+static int reload_nodes(int fd)
+{
+	/* Reload without locking, since we technically can */
+	load_config();
+	bbs_dprintf(fd, "Reloaded node settings\n");
 	return 0;
 }
 
@@ -1502,5 +1518,6 @@ static struct bbs_cli_entry cli_commands_nodes[] = {
 
 int bbs_load_nodes(void)
 {
+	bbs_register_reload_handler("nodes", "Reload node configuration", reload_nodes);
 	return load_config() || bbs_cli_register_multiple(cli_commands_nodes);
 }

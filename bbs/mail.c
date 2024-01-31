@@ -42,6 +42,7 @@
 #include "include/module.h"
 #include "include/linkedlists.h"
 #include "include/startup.h"
+#include "include/reload.h"
 
 struct mailer {
 	int (*mailer)(MAILER_PARAMS);
@@ -78,6 +79,18 @@ static int load_config(void)
 	return 0;
 }
 
+static int reload_mail(int fd)
+{
+	RWLIST_WRLOCK(&mailers);
+	default_to[0] = '\0';
+	default_from[0] = '\0';
+	default_errorsto[0] = '\0';
+	load_config();
+	RWLIST_UNLOCK(&mailers);
+	bbs_dprintf(fd, "Reloaded mail defaults\n");
+	return 0;
+}
+
 static int check_mailers(void)
 {
 	struct mailer *m;
@@ -97,6 +110,7 @@ static int check_mailers(void)
 int bbs_mail_init(void)
 {
 	int res = load_config();
+	bbs_register_reload_handler("mail", "Reload mail defaults", reload_mail);
 	if (config_exists) {
 		bbs_register_startup_callback(check_mailers, STARTUP_PRIORITY_DEFAULT);
 	}
@@ -272,6 +286,7 @@ int bbs_mail(int async, const char *to, const char *from, const char *replyto, c
 	const char *errorsto;
 
 	/* Use default email addresses if necessary */
+	RWLIST_RDLOCK(&mailers);
 	errorsto = default_errorsto;
 	if (strlen_zero(from)) {
 		from = default_from;
@@ -281,15 +296,16 @@ int bbs_mail(int async, const char *to, const char *from, const char *replyto, c
 	}
 
 	if (strlen_zero(to)) {
+		RWLIST_UNLOCK(&mailers);
 		bbs_error("No recipient provided, and no default in mail.conf, aborting\n");
 		return -1;
 	} else if (strlen_zero(from)) {
+		RWLIST_UNLOCK(&mailers);
 		bbs_error("No sender address provided, and no default in mail.conf, aborting\n");
 		return -1;
 	}
 
 	/* Hand off the delivery of the message itself to the appropriate module */
-	RWLIST_RDLOCK(&mailers);
 	RWLIST_TRAVERSE(&mailers, m, entry) {
 		bbs_module_ref(m->module, 1);
 		res = m->mailer(async, to, from, replyto, errorsto, subject, body);
