@@ -2754,7 +2754,7 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 				if (!strcasecmp(tmp, "FLAGS")) {
 					char *flagstr = parensep(&s);
 					if (!strlen_zero(flagstr)) {
-						REPLACE(flagstr, flags);
+						REPLACE(flags, flagstr);
 					}
 					items_received++;
 				} else if (!strcasecmp(tmp, "INTERNALDATE")) {
@@ -2765,7 +2765,7 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 							close_if(destfd);
 							goto cleanup;
 						}
-						REPLACE(datestr, idate);
+						REPLACE(idate, datestr);
 					}
 					items_received++;
 				} else if (STARTS_WITH(tmp, "BODY")) {
@@ -2866,7 +2866,7 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 		}
 		if (move) {
 			/* Now that we copied everything to the destination mailbox, delete the source */
-			res |= imap_client_send_wait_response_noecho(imap->client, -1, SEC_MS(5), "STORE +FLAGS.SILENT (\\Deleted)\r\n");
+			res |= imap_client_send_wait_response_noecho(imap->client, -1, SEC_MS(5), "%sSTORE %s +FLAGS.SILENT (\\Deleted)\r\n", usinguid ? "UID " : "", sequences);
 			/* We should also EXPUNGE here, technically, but that should be left for the user to do explicitly,
 			 * in case there are other messages present that are marked as \Deleted whose time to be expunged
 			 * has not necessarily yet come. */
