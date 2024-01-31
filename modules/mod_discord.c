@@ -1017,10 +1017,10 @@ static int discord_send(const char *channel, const char *sender, const char *msg
 			},
 			.components = NULL,
 		};
+
 		/* Manually parse system messages for join/part/etc. */
-		/*! \todo There is a new @silent feature that prevents some notification functionality,
-		 * however for bots, it can't just be prefixed test, so the underlying library
-		 * would need to support this. */
+		/* XXX This code may actually not be used? Join/quit/part/etc. messages already come in formatted,
+		 * so this code path doesn't actually get hit. Could be dead code but needs investigation. */
 		if (!sender && *msg == ':') {
 			char tmpbuf[128];
 			char *username, *action, *channame;
@@ -1073,6 +1073,17 @@ static int discord_send(const char *channel, const char *sender, const char *msg
 		if (!handled) {
 			/* Use ** (markdown) to bold the username, just like many IRC clients do. For system messages, italicize them. */
 			snprintf(mbuf, sizeof(mbuf), sender ? "**<%s>** %s" : "*%s%s*", S_IF(sender), msg);
+		}
+		if (!sender) { /* If a system-generated message */
+			/* Added to the library later: */
+#ifdef DISCORD_MESSAGE_SUPPRESS_NOTIFICATIONS
+			/* Discord allows notifications to be suppressed using @silent.
+			 * We can do that from a bot by setting the below flag.
+			 * This makes sense for join, leave, part, etc. notifications,
+			 * since those are not real messages, and we don't want to bother
+			 * people with them. */
+			params.flags = DISCORD_MESSAGE_SUPPRESS_NOTIFICATIONS;
+#endif
 		}
 		discord_create_message(discord_client, cp->channel_id, &params, NULL);
 	}

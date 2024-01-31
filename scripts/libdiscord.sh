@@ -12,6 +12,7 @@ else
 	cd concord
 	git stash
 	git pull
+	make clean
 fi
 # Use the dev branch for latest bug fixes
 git checkout dev
