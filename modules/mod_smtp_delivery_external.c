@@ -391,6 +391,12 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 		return -1;
 	}
 
+	if (!strlen_zero(user) && strlen_zero(domain)) {
+		/* Can't pass NULL domain to bbs_hostname_is_ipv4 */
+		bbs_error("Invalid email address (user=%s, empty domain)\n", user);
+		return -1;
+	}
+
 #ifdef DEBUG_MAIL_DATA
 	/* Dump the DATA of the transaction to the CLI for debugging purposes. */
 	if (prepend && prependlen) {

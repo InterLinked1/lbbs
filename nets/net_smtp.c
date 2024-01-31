@@ -2307,6 +2307,8 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 	if (smtp->msa) {
 		/* Verify the address used is one the sender is authorized to use. */
 		char fromdup[256];
+		char fromhdrdup[256];
+		char *fromaddr;
 
 		bbs_assert(smtp->node->user->id > 0); /* Must be logged in for MSA. */
 
@@ -2320,11 +2322,25 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 			smtp_reply(smtp, 550, 5.7.1, "Missing From header");
 			return 0;
 		}
+		safe_strncpy(fromhdrdup, smtp->fromheaderaddress, sizeof(fromhdrdup));
 		/* If the two addresses are exactly the same, no need to do the same check twice. */
 		if (strcmp(smtp->from, smtp->fromheaderaddress) && check_identity(smtp, smtp->fromheaderaddress)) {
 			return 0;
 		}
 		/* We're good: the From header is either the actual username, or an alias that maps to it. */
+		/* If the From header differs from the MAIL FROM address, we should use the From header,
+		 * since for DKIM signing, etc. this is the relevant domain. */
+		fromaddr = strchr(fromhdrdup, '<');
+		if (fromaddr) {
+			fromaddr++;
+			if (!strlen_zero(fromaddr)) {
+				bbs_strterm(fromaddr, '>');
+			}
+		} else {
+			fromaddr = fromhdrdup;
+		}
+		bbs_debug(4, "Updating internal from address from '%s' to '%s'\n", smtp->from, fromaddr);
+		REPLACE(smtp->from, fromaddr);
 		free_if(smtp->fromheaderaddress);
 	}
 

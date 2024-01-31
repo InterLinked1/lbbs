@@ -100,7 +100,10 @@ static void process_capabilities(int *restrict caps, int *restrict maxsendsize, 
 	} else if (!strcmp(capname, "OK")) {
 		/* This is not a real capability, just ignore it. Yahoo seems to do this. */
 	} else {
-		bbs_warning("Unknown capability advertised: %s\n", capname);
+		/* Capabilities should be all uppercase and a single word */
+		if (!strchr(capname, ' ')) {
+			bbs_warning("Unknown capability advertised: %s\n", capname);
+		}
 	}
 }
 

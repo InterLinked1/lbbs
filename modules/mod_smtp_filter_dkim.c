@@ -57,7 +57,7 @@ static int dkim_sign_filter_cb(struct smtp_filter_data *f)
 	size_t siglen;
 	const char *domain;
 
-	domain = bbs_strcnext(f->from, '@');
+	domain = smtp_from_domain(f->smtp);
 	if (!domain) {
 		bbs_warning("Sender has no domain?\n");
 		return 0;
@@ -157,7 +157,6 @@ static int dkim_verify_filter_cb(struct smtp_filter_data *f)
 
 	body = smtp_message_body(f);
 	if (!body) {
-		RWLIST_UNLOCK(&domains);
 		bbs_warning("Message is empty?\n");
 		return 0;
 	}
@@ -169,7 +168,6 @@ static int dkim_verify_filter_cb(struct smtp_filter_data *f)
 	if (statp != DKIM_STAT_OK) {
 		bbs_error("Failed to set up DKIM signing: %d (%s)\n", statp, dkim_geterror(dkim));
 		if (!dkim) {
-			RWLIST_UNLOCK(&domains);
 			return 0;
 		}
 		goto cleanup;
@@ -301,7 +299,6 @@ static int dkim_verify_filter_cb(struct smtp_filter_data *f)
 
 cleanup:
 	dkim_free(dkim);
-	RWLIST_UNLOCK(&domains);
 	return 0;
 }
 
