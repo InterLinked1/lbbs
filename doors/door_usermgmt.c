@@ -246,13 +246,53 @@ static int pwchange_exec(struct bbs_node *node, const char *args)
 	return do_reset(node, bbs_username(node->user));
 }
 
+static int termmgmt_exec(struct bbs_node *node, const char *args)
+{
+	char c;
+
+	UNUSED(args);
+
+	if (NODE_IS_TDD(node)) {
+		/* If in TDD mode, stuck in TDD mode,
+		 * since this is more of an internal mode for TDDs */
+		bbs_node_writef(node, "TDD mode enabled\n");
+		NEG_RETURN(bbs_node_wait_key(node, SEC_MS(20)));
+		return 0;
+	}
+
+	bbs_node_clear_screen(node);
+	bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_PRIMARY), "Terminal Settings", COLOR_RESET);
+	bbs_node_writef(node, "%s%10s%s %s\n", COLOR(COLOR_SECONDARY), "ANSI", COLOR_RESET, node->ansi ? "Yes" : "No");
+	if (node->bps) {
+		bbs_node_writef(node, "%s%10s%s %d bps\n", COLOR(COLOR_SECONDARY), "Speed", COLOR_RESET, node->bps);
+	} else {
+		bbs_node_writef(node, "%s%10s%s %s\n", COLOR(COLOR_SECONDARY), "Speed", COLOR_RESET, "Unthrottled");
+	}
+	bbs_node_writef(node, "%s<A>%s Toggle ANSI %s<*>%s Exit\n", COLOR(COLOR_SECONDARY), COLOR_RESET, COLOR(COLOR_SECONDARY), COLOR_RESET);
+	c = bbs_node_tread(node, MIN_MS(2));
+	switch (c) {
+		case 'a':
+		case 'A':
+			SET_BITFIELD(node->ansi, !node->ansi);
+			bbs_node_writef(node, "ANSI %s\n", node->ansi ? "enabled" : "disabled");
+			break;
+		default:
+			return c < 0 ? -1 : 0;
+	}
+	bbs_node_clear_screen(node);
+	return 0;
+}
+
 static int load_module(void)
 {
-	return bbs_register_door("pwchange", pwchange_exec);
+	bbs_register_door("pwchange", pwchange_exec);
+	bbs_register_door("termmgmt", termmgmt_exec);
+	return 0;
 }
 
 static int unload_module(void)
 {
+	bbs_unregister_door("termmgmt");
 	return bbs_unregister_door("pwchange");
 }
 
