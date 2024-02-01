@@ -46,7 +46,7 @@
 #endif
 
 struct bbs_irc_client {
-	RWLIST_ENTRY(bbs_irc_client) entry; 		/* Next client */
+	RWLIST_ENTRY(bbs_irc_client) entry; /* Next client */
 	struct irc_client *client;			/* IRC client */
 	pthread_t thread;					/* Thread for relay */
 	char *msgscript;					/* Message handler hook script (e.g. for bot actions) */
@@ -339,28 +339,80 @@ static const char *callback_msg_type_name(enum irc_callback_msg_type type)
 
 #define msg_relay_to_local(client, msg) msg_relay(client, RELAY_FROM_IRC, irc_msg_type(msg), irc_msg_channel(msg), irc_msg_prefix(msg), irc_msg_is_ctcp(msg), irc_msg_body(msg), strlen(S_IF(irc_msg_body(msg))))
 
-static int msg_relay(struct bbs_irc_client *client, enum relay_flags flags, enum irc_msg_type type, const char *channel, const char *prefix, int ctcp, const char *body, size_t len)
+#define msg_relay(client, flags, type, channel, prefix, ctcp, body, len) __msg_relay(NULL, client, flags, type, channel, prefix, ctcp, body, len)
+
+static int __msg_relay(const void *sendingmod, struct bbs_irc_client *client, enum relay_flags flags, enum irc_msg_type type, const char *channel, const char *prefix, int ctcp, const char *body, size_t len)
 {
 	int res = 0;
 	const char *scope = flags & RELAY_TO_IRC ? flags & RELAY_FROM_IRC ? "to/from" : "to" : "from";
 	enum irc_callback_msg_type cb_type = callback_msg_type(type);
-	bbs_debug(7, "Broadcasting %s %s client %s, channel %s, prefix %s, CTCP: %d, length %lu: %.*s\n", callback_msg_type_name(cb_type), scope, client->name, channel, prefix, ctcp, len, (int) len, body);
 
 	if (len > 512) {
 		bbs_warning("%lu-byte message is too long to send to IRC\n", len);
 		return -1;
 	}
 
+	bbs_debug(7, "Broadcasting %s %s client %s, channel %s, prefix %s, CTCP: %d, length %lu: %.*s\n", callback_msg_type_name(cb_type), scope, client->name, channel, prefix, ctcp, len, (int) len, body);
+
 	/* Relay the message to everyone */
 	RWLIST_RDLOCK(&irc_clients); /* XXX Really just need to lock *this* client to prevent it from being removed, not all of them */
 	if (flags & RELAY_TO_IRC) {
-		res = irc_client_msg(client->client, channel, body); /* Actually send to IRC */
+		/* Send this message to the remote IRC network */
+		res = irc_client_msg(client->client, channel, body);
 	}
+
+	/* IRC message flow is basically this:
+	 *                                                                               door_irc
+	 *                                                                                  ^
+	 *                                                                                  |
+	 * Relay modules (mod_discord, mod_slack, etc.) <=> net_irc <=> mod_irc_relay <=> mod_irc_client
+	 *
+	 * So say a message comes in from mod_discord. The flow is as follows:
+	 *
+	 * mod_discord calls net_irc:irc_relay_send_multiline
+	 * net_irc:irc_relay_send_multiline -> _irc_relay_send -> relay_broadcast
+	 *  ==> calls relay_send callback for each registered relay (skipping the sender, e.g. mod_discord)
+	 *    -> SKIP mod_discord
+	 *    -> mod_slack
+	 *    -> mod_irc_relay:netirc_cb
+	 *       |-> mod_irc_client:bbs_irc_client_msg
+	 *         |-> msg_relay
+	 *          --> irc_client_msg ---> remote IRC channel
+	 *          ==> calls msg_cb callback for each registered IRC client msg callback
+	 *            -> door_irc  <--- this is correct
+	 *            -> mod_irc_relay <--- this is not correct
+	 *
+	 * Aha! Now notice we have gone mod_discord -> net_irc -> mod_irc_relay -> mod_irc_client -> mod_irc_relay...
+	 *
+	 * This isn't even a loop caused by the relays themselves, it's a loop caused by THIS function inappropriately
+	 * "boomeranging" messages back around again.
+	 *
+	 * To prevent this, we now receive a module reference here that we check, and we do NOT send it back
+	 * where it came from. mod_irc_relay passes a reference to itself when calling mod_irc_client:bbs_irc_client_msg,
+	 * which we get here and allows us to skip that.
+	 */
+
 	if (flags & RELAY_FROM_IRC) { /* Only execute callback on messages received *FROM* IRC client, not messages *TO* it. */
+		/* This message came from the remote IRC network.
+		 * Send it to consumers:
+		 * - door_irc
+		 * - mod_irc_relay -> forward to IRC relay modules (e.g. mod_discord, mod_slack, etc.)
+		 */
+		if (strlen_zero(prefix)) {
+			/* This is NULL when door_irc calls bbs_irc_client_msg.
+			 * Everything is correct for RELAY_TO_IRC,
+			 * but in this case, we should use the same of the IRC username. */
+			prefix = irc_client_username(client->client);
+			bbs_debug(7, "Prefix is empty, using '%s' as the prefix\n", prefix);
+		}
 		if (client->callbacks) {
 			struct irc_msg_callback *cb;
 			RWLIST_RDLOCK(&msg_callbacks);
 			RWLIST_TRAVERSE(&msg_callbacks, cb, entry) {
+				if (cb->mod == sendingmod) {
+					bbs_debug(7, "Not relaying message back where it came from (%p)\n", cb->mod);
+					continue;
+				}
 				bbs_module_ref(cb->mod, 1);
 				cb->msg_cb(client->name, cb_type, channel, prefix, ctcp, body);
 				bbs_module_unref(cb->mod, 1);
@@ -704,7 +756,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_irc_client_send(const char *
 	return res;
 }
 
-int __attribute__ ((format (gnu_printf, 4, 5))) bbs_irc_client_msg(const char *clientname, const char *channel, const char *prefix, const char *fmt, ...)
+int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_irc_client_msg(const void *sendingmod, const char *clientname, const char *channel, const char *prefix, const char *fmt, ...)
 {
 	struct bbs_irc_client *client;
 	char buf[IRC_MAX_MSG_LEN + 1];
@@ -738,25 +790,27 @@ int __attribute__ ((format (gnu_printf, 4, 5))) bbs_irc_client_msg(const char *c
 
 	/* Send to IRC (and relay to anything local) */
 
-	/*! \todo FIXME Should also include RELAY_FROM_IRC,
-	 * but if we're sending a message from the local IRC network to an IRC channel,
-	 * we shouldn't also process it as if it were originally received from IRC,
-	 * which is what would happen now.
-	 * Omitting this for now is more correct, but means messages from the local IRC server
-	 * will get relayed to other actual IRC channels but not to door_irc, for example.
-	 * Might work if we skip the sending module? Or maybe not???
+	/* This part has been tricky to get right (and has been wrong several times).
 	 *
-	 * This is delicate though: with just RELAY_TO_IRC, messages work between
-	 * relay modules and door_irc but not with the native net_irc IRC network.
+	 * If the flags were RELAY_TO_IRC | RELAY_FROM_IRC, then messages from relay channels
+	 * will get echoed back to the relay, which shouldn't happen. It was as if the
+	 * message originated from IRC.
 	 *
-	 * XXX And RELAY_FROM_IRC is causing echoes on relay modules (e.g. mod_discord)
-	 * so I'm removing that again. Need to figure this all out properly...
-	 * it may be as simple as doing just RELAY_TO_IRC sometimes and both other times,
-	 * but this is currently not 100% right.
+	 * If the flags were just RELAY_TO_IRC, then messages from door_irc don't get
+	 * relayed to relay modules, and integration with the native net_irc IRC net
+	 * is also broken.
+	 *
+	 * Each flag combo was right in some scenarios and wrong in others.
+	 * It depends on where the message came from.
+	 *
+	 * Now that this been more thoroughly analyze, we use both flags, but ensure that
+	 * the message isn't inappropriately "looped" around if RELAY_FROM_IRC is present.
+	 * We do this by passing a reference to mod_irc_relay in mod_irc_relay:netirc_cb,
+	 * which allows us to prevent us from triggering that callback in __msg_relay.
 	 */
 
 	bbs_debug(7, "Relaying message: client '%s' channel '%s' prefix '%s'\n", clientname, channel, S_IF(prefix));
-	res = msg_relay(client, RELAY_TO_IRC, IRC_CMD_PRIVMSG, channel, prefix, 0, buf, (size_t) len); /* No prefix */
+	res = __msg_relay(sendingmod, client, RELAY_TO_IRC | RELAY_FROM_IRC, IRC_CMD_PRIVMSG, channel, prefix, 0, buf, (size_t) len); /* No prefix */
 
 	RWLIST_UNLOCK(&irc_clients);
 	return res;

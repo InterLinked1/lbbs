@@ -891,12 +891,15 @@ static inline void parse_parent_thread(struct slack_relay *relay, char *restrict
 	*msg = word2 + 1;
 }
 
-static int slack_send(const char *channel, const char *sender, const char *msg)
+static int slack_send(struct irc_relay_message *rmsg)
 {
 	char buf[532];
 	char ts[SLACK_TS_LENGTH + 2];
 	struct slack_relay *relay;
 	const char *thread_ts = NULL;
+	const char *channel = rmsg->channel;
+	const char *sender = rmsg->sender;
+	const char *msg = rmsg->msg;
 	struct chan_pair *cp = find_irc_channel(channel);
 	if (!cp) {
 		return 0; /* No relay exists for this channel */

@@ -168,7 +168,7 @@ static int __chat_send(struct client_relay *client, struct participant *sender, 
 	RWLIST_RDLOCK(&client->participants);
 	if (dorelay) {
 		char prefix[32] = "";
-		if (sender) { /* XXX Can this ever be NULL here? */
+		if (sender) { /* Yes, sender can be NULL */
 			snprintf(prefix, sizeof(prefix), "%s@%u", bbs_username(sender->node->user), sender->node->id);
 		}
 		bbs_irc_client_msg(client->name, channel, prefix, "%s", msg); /* Actually send to IRC */
@@ -244,6 +244,14 @@ static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client_
 }
 #pragma GCC diagnostic pop
 
+static int print_help(struct bbs_node *node)
+{
+	bbs_node_writef(node, "== Embedded LBBS Chat Client ==\n");
+	bbs_node_writef(node, "/help   - Print help\n");
+	bbs_node_writef(node, "/quit   - Quit channel\n");
+	return 0;
+}
+
 static int participant_relay(struct bbs_node *node, struct participant *p, const char *channel)
 {
 	char buf[384];
@@ -297,6 +305,8 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 			/* strcasecmp will fail because the buffer has a LF at the end. Use strncasecmp, so anything starting with /help or /quit will technically match too */
 			if (STARTS_WITH(buf2, "/quit")) {
 				break; /* Quit */
+			} else if (STARTS_WITH(buf2, "/help")) {
+				print_help(node);
 			}
 			bbs_node_unbuffer(node);
 			chat_send(c, p, channel, "<%s@%d> %s", bbs_username(node->user), node->id, buf2); /* buf2 already contains a newline from the user pressing ENTER, so don't add another one */
@@ -569,6 +579,8 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 			 * Unless the user typed /quit, we can basically just build a message and send it to the channel. */
 			if (!strcasecmp(clientbuf, "/quit")) {
 				break;
+			} else if (!strcasecmp(clientbuf, "/help")) {
+				print_help(node);
 			}
 			irc_client_msg(ircl, channel, clientbuf); /* Actually send to IRC */
 

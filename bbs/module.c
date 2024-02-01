@@ -1424,7 +1424,7 @@ static int reload_core(const char *name, int fd)
 	}
 	if (res) {
 		/* Handler(s) failed to reload */
-		bbs_dprintf(fd, "Full or partial reload failure\n");
+		bbs_dprintf(fd, "%s\n", name ? "Reload failed" : "Full or partial reload failure");
 		return res;
 	}
 	/* Either something failed to reload, or we didn't actually reload anything (typo in target) */

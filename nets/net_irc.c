@@ -268,7 +268,7 @@ struct irc_channel {
 static RWLIST_HEAD_STATIC(channels, irc_channel);	/* Container for all channels */
 
 struct irc_relay {
-	int (*relay_send)(const char *channel, const char *sender, const char *msg);
+	int (*relay_send)(struct irc_relay_message *rmsg);
 	int (*nicklist)(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user);
 	int (*privmsg)(const char *recipient, const char *sender, const char *user);
 	void *mod;
@@ -322,7 +322,7 @@ static int add_operator(const char *name, const char *password)
  * in modules.conf to guarantee things will work properly. So, whatever...
  */
 
-int __irc_relay_register(int (*relay_send)(const char *channel, const char *sender, const char *msg),
+int __irc_relay_register(int (*relay_send)(struct irc_relay_message *rmsg),
 	int (*nicklist)(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user),
 	int (*privmsg)(const char *recipient, const char *sender, const char *user),
 	void *mod)
@@ -357,7 +357,7 @@ int __irc_relay_register(int (*relay_send)(const char *channel, const char *send
 
 /* No need for a separate cleanup function since this module cannot be unloaded until all relays have unregistered */
 
-int irc_relay_unregister(int (*relay_send)(const char *channel, const char *sender, const char *msg))
+int irc_relay_unregister(int (*relay_send)(struct irc_relay_message *rmsg))
 {
 	struct irc_relay *relay;
 
@@ -829,6 +829,13 @@ static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, 
 {
 	/* Now, relay it to any other external integrations that may exist. */
 	struct irc_relay *relay;
+	struct irc_relay_message rmsg;
+
+	memset(&rmsg, 0, sizeof(rmsg));
+	rmsg.channel = channel->name;
+	rmsg.sender = user ? user->nickname : username ? username : NULL;
+	rmsg.msg = buf;
+	rmsg.sendingmod = sendingmod;
 
 	if (channel->relay) {
 		RWLIST_RDLOCK(&relays);
@@ -841,7 +848,7 @@ static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, 
 				continue;
 			}
 			bbs_module_ref(relay->mod, 4);
-			if (relay->relay_send(channel->name, user ? user->nickname : username ? username : NULL, buf)) {
+			if (relay->relay_send(&rmsg)) {
 				bbs_module_unref(relay->mod, 4);
 				break;
 			}
@@ -1982,11 +1989,13 @@ static void handle_who(struct irc_user *user, char *s)
 			RWLIST_TRAVERSE(&relays, relay, entry) {
 				if (relay->nicklist) {
 					bbs_module_ref(relay->mod, 6);
-					res = relay->nicklist(user->node, user->wfd, 352, user->username, s, NULL);
+					/* Callbacks will return 0 for no match, 1 for match.
+					 * However, multiple relay modules could have members in the channel,
+					 * so we should not break early if nicklist callback returns 1;
+					 * we need to check all the relays for matches.
+					 * As long as at least one relay had members, we'll report success. */
+					res += relay->nicklist(user->node, user->wfd, 352, user->username, s, NULL);
 					bbs_module_unref(relay->mod, 6);
-				}
-				if (res) {
-					break;
 				}
 			}
 			RWLIST_UNLOCK(&relays);
@@ -2001,6 +2010,8 @@ static void handle_who(struct irc_user *user, char *s)
 			RWLIST_TRAVERSE(&relays, relay, entry) {
 				if (relay->nicklist) {
 					bbs_module_ref(relay->mod, 7);
+					/* Unlike the above case, a specific user can only exist in one relay,
+					 * so as soon as we find a match, we can break. */
 					res = relay->nicklist(user->node, user->wfd, 352, user->username, NULL, s);
 					bbs_module_unref(relay->mod, 7);
 				}

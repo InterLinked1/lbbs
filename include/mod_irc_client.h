@@ -61,10 +61,22 @@ int bbs_irc_client_send(const char *clientname, const char *fmt, ...) __attribut
 
 /*!
  * \brief Send a PRIVMSG message to an IRC channel using a mod_irc_client client (can be used anywhere in the BBS)
+ * \param sendingmod Sending module or NULL.
  * \param clientname Name of client configured in mod_irc_client.conf. NULL to use default (first one).
  * \param channel Channel name.
  * \param prefix. Sender prefix.
  * \param fmt printf-style format string
  * \retval 0 on success, -1 on failure
  */
-int bbs_irc_client_msg(const char *clientname, const char *channel, const char *prefix, const char *fmt, ...) __attribute__ ((format (gnu_printf, 4, 5)));
+int __bbs_irc_client_msg(const void *sendingmod, const char *clientname, const char *channel, const char *prefix, const char *fmt, ...) __attribute__ ((format (gnu_printf, 5, 6)));
+
+/* This is very important.
+ * Previously, it was possible for loops to occur in mod_irc_client,
+ * where mod_irc_relay would call mod_irc_client, which would
+ * then call a callback for mod_irc_relay, boomeranging the message.
+ * It SHOULD call the other callbacks, but not this particular one,
+ * since this is where it came from (or through) in the first place.
+ * So, instead of passing rmsg->sendingmod, we pass this module
+ * as the source module reference, since that's what mod_irc_client
+ * will compare against to determine if it should skip a callback. */
+#define bbs_irc_client_msg(clientname, channel, prefix, fmt, ...) __bbs_irc_client_msg(BBS_MODULE_SELF, clientname, channel, prefix, fmt, ## __VA_ARGS__)

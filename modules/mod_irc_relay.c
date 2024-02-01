@@ -264,7 +264,7 @@ static void numeric_cb(const char *clientname, const char *prefix, int numeric, 
 	}
 	/* Since we have to format it here anyways, do all the formatting here */
 	len = snprintf(mybuf, sizeof(mybuf), ":%s %d %s\n", S_OR(prefix, bbs_hostname()), numeric, msg); /* Use LF to delimit on the other end */
-	bbs_debug(9, "Numeric %s: %s\n", prefix, mybuf);
+	bbs_debug(9, "Numeric %d: %s", numeric, mybuf); /* Already ends in LF */
 	if (nickpipe[0] == -1) { /* In theory, we could receive this callback at any point. If we didn't call it from wait_response, there's nothing to write to right now */
 		bbs_debug(9, "Ignoring numeric since we didn't ask for it\n");
 		return;
@@ -629,12 +629,15 @@ static int nicklist(struct bbs_node *node, int fd, int numeric, const char *requ
 		}
 		/* Determine who's in the "real" channel using our client */
 		/* Only one request at a time, to prevent interleaving of responses */
-		wait_response(node, fd, requsername, numeric, cp, cp->client2, channel, origchan, fullnick, nick);
-		/*! \todo BUGBUG Regarding the below comment, we need to return 1
-		 * to stop the traversal and indicate a user was found, which IS appropriate here.
-		 * But in the cases where multiple relay modules could match, we should probably still
-		 * return 1, and net_irc can traverse all the callbacks anyways. */
-		return 1; /* Even though we matched, there could be matches in other relays */
+		if (wait_response(node, fd, requsername, numeric, cp, cp->client2, channel, origchan, fullnick, nick)) {
+			/* Didn't have anything to offer from this module. */
+			return 0;
+		}
+		/* We return 0 if there weren't any matches in this module, so that net_irc
+		 * can continue invoking relay callbacks to see if anyone else matches.
+		 * If we DO have some matches, we return 1, but there could still be matches
+		 * in other relays, so net_irc will continue iterating. */
+		return 1;
 	} else if (!cp->client2) {
 		/* It came from channel1, so provide names from channel1 */
 		bbs_debug(8, "Relaying nicknames from %s/%s\n", S_IF(cp->client1), cp->channel1);
@@ -680,12 +683,15 @@ static int privmsg_cb(const char *recipient, const char *sender, const char *msg
 /* XXX Lots of duplicated code follows */
 
 /*! \brief Callback for messages received on native IRC server (from our server to the channel) */
-static int netirc_cb(const char *channel, const char *sender, const char *msg)
+static int netirc_cb(struct irc_relay_message *rmsg)
 {
 	char fullmsg[510];
 	int ctcp = 0;
 	struct chan_pair *cp;
 	const char *clientname = NULL; /* Came from native IRC server. We need a pointer, can't use NULL directly. */
+	const char *channel = rmsg->channel;
+	const char *sender = rmsg->sender;
+	const char *msg = rmsg->msg;
 
 	/* Message came from the native IRC server.
 	 * This means that either client1 or client2 is NULL, and for the corresponding one,

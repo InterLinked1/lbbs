@@ -376,10 +376,17 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 
 		bbs_debug(8, "User %d/%d: %lu => %s#%s [%s] (%s) - %d role(s)\n", i + 1, members->size, user->id, user->username, user->discriminator, S_IF(member->nick), presencestatus, roles ? roles->size : 0);
 		u = add_user(user, event->guild_id, presence ? presence->status : "none", member->joined_at);
-#if 0
+#ifdef DEBUG_PERMISSIONS
+		/*! \todo BUGBUG Permissions aren't set for ANY users,
+		 * so we never think admins are admins.
+		 * Thus, implicit membership for admins is hidden to us,
+		 * we won't see them as being in the channel if they don't have
+		 * an explicit membership (via user or role) in a channel.
+		 *
+		 * Related, guild owner ID is always 0 as well... */
 		{
 			int j;
-			for (j = 0; j < 40; j++) {
+			for (j = 0; j < 64; j++) {
 				if (member->permissions & (1 << j)) {
 					bbs_debug(8, "User %s#%s has permission %d\n", user->username, user->discriminator, j);
 				}
@@ -400,7 +407,7 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 			u->roles = calloc((size_t) roles->size, sizeof(*u->roles));
 			if (ALLOC_SUCCESS(u->roles)) {
 				u->numroles = roles->size;
-				memcpy(u->roles, roles, sizeof(*u->roles));
+				memcpy(u->roles, roles->array, sizeof(*u->roles));
 			}
 		}
 	}
@@ -633,6 +640,8 @@ static void link_permissions(struct chan_pair *cp, struct discord_overwrites *ov
 	 * we can check if a user is in the channel by seeing if the user
 	 * is in cp->users, or if the user has any of the roles in cp->roles */
 	int j;
+	int allowed_members = 0, allowed_roles = 0;
+
 	RWLIST_WRLOCK(&cp->members);
 	for (j = 0; j < overwrites->size; j++) {
 		struct u64snowflake_entry *e;
@@ -663,12 +672,15 @@ static void link_permissions(struct chan_pair *cp, struct discord_overwrites *ov
 		if (overwrite->type == 1) { /* it's a user, explicitly */
 			RWLIST_INSERT_HEAD(&cp->members, e, entry);
 			bbs_debug(3, "Granted permission for channel %s to user %lu\n", cp->discord_channel, e->id);
+			allowed_members++;
 		} else { /* 0 = it's a role */
 			RWLIST_INSERT_HEAD(&cp->roles, e, entry);
 			bbs_debug(3, "Granted permission for channel %s to role %lu\n", cp->discord_channel, e->id);
+			allowed_roles++;
 		}
 	}
 	RWLIST_UNLOCK(&cp->members);
+	bbs_debug(3, "Channel %s permits %d user%s and %d role%s\n", cp->discord_channel, allowed_members, ESS(allowed_members), allowed_roles, ESS(allowed_roles));
 }
 
 static void fetch_channels(struct discord *client, u64snowflake guild_id, u64snowflake guild_owner)
@@ -993,8 +1005,11 @@ static int privmsg(const char *recipient, const char *sender, const char *msg)
 	return 1;
 }
 
-static int discord_send(const char *channel, const char *sender, const char *msg)
+static int discord_send(struct irc_relay_message *rmsg)
 {
+	const char *channel = rmsg->channel;
+	const char *sender = rmsg->sender;
+	const char *msg = rmsg->msg;
 	struct chan_pair *cp;
 	int handled = 0;
 
@@ -1342,12 +1357,12 @@ static int cli_discord_users(struct bbs_cli_args *a)
 	int i = 0;
 	struct user *u;
 
-	bbs_dprintf(a->fdout, "%-40s %7s %5s\n", "User", "Status", "Roles");
+	bbs_dprintf(a->fdout, "%-48s %7s %5s\n", "User", "Status", "Roles");
 	RWLIST_RDLOCK(&users);
 	RWLIST_TRAVERSE(&users, u, entry) {
 		char buf[48];
-		snprintf(buf, sizeof(buf), "%s#%s\n", u->username, u->discriminator);
-		bbs_dprintf(a->fdout, "%-40s %7s %5d" "%s\n", buf, status_str(u->status), u->numroles, u->admin ? " [Guild Admin]" : "");
+		snprintf(buf, sizeof(buf), "%s#%s", u->username, u->discriminator);
+		bbs_dprintf(a->fdout, "%-48s %7s %5d" "%s\n", buf, status_str(u->status), u->numroles, u->admin ? " [Guild Admin]" : "");
 		i++;
 	}
 	RWLIST_UNLOCK(&users);
@@ -1355,9 +1370,69 @@ static int cli_discord_users(struct bbs_cli_args *a)
 	return 0;
 }
 
+static int cli_discord_user(struct bbs_cli_args *a)
+{
+	int i;
+	struct user *u = find_user_by_username(a->argv[2]);
+	if (!u) {
+		bbs_dprintf(a->fdout, "No such user '%s'\n", a->argv[2]);
+		return 0;
+	}
+	bbs_dprintf(a->fdout, "%-13s: %lu\n", "User ID", u->user_id);
+	bbs_dprintf(a->fdout, "%-13s: %lu\n", "Guild ID", u->guild_id);
+	bbs_dprintf(a->fdout, "%-13s: %lu\n", "Joined Guild", u->guild_joined);
+	bbs_dprintf(a->fdout, "%-13s: %s#%s\n", "Username", u->username, u->discriminator);
+	bbs_dprintf(a->fdout, "%-13s: %s\n", "Admin", u->admin ? "Yes" : "No");
+	bbs_dprintf(a->fdout, "%-13s: %s\n", "Status", status_str(u->status));
+	bbs_dprintf(a->fdout, "%-13s: %d\n", "Roles", u->numroles);
+	for (i = 0; i < u->numroles; i++) {
+		bbs_dprintf(a->fdout,"  => %lu\n", u->roles[i]);
+	}
+	return 0;
+}
+
+static int cli_discord_channel(struct bbs_cli_args *a)
+{
+	int num_users = 0, roles = 0;
+	struct u64snowflake_entry *e;
+	struct user *u;
+	struct chan_pair *cp;
+
+	cp = find_mapping_irc(a->argv[2]); /* Look up by IRC channel name */
+	if (!cp) {
+		bbs_dprintf(a->fdout, "No channel exists mapped to %s\n", a->argv[2]);
+		return 0;
+	}
+
+	/* Rather than iterating cp->members, which only contains explicit user and role memberships,
+	 * iterate over all users and use channel_contains_user, which checks by both explicit user membership,
+	 * and implicit via role membership. */
+	RWLIST_RDLOCK(&users);
+	RWLIST_TRAVERSE(&users, u, entry) {
+		if (!channel_contains_user(cp, u)) {
+			continue; /* User not in this channel */
+		}
+		bbs_dprintf(a->fdout, "User %lu: %s#%s\n", u->user_id, u->username, u->discriminator);
+		num_users++;
+	}
+	RWLIST_UNLOCK(&users);
+
+	RWLIST_RDLOCK(&cp->roles);
+	RWLIST_TRAVERSE(&cp->roles, e, entry) {
+		bbs_dprintf(a->fdout, "Role %lu\n", e->id);
+		roles++;
+	}
+	RWLIST_UNLOCK(&cp->roles);
+
+	bbs_dprintf(a->fdout, "Channel %lu contains %d user%s and %d role%s\n", cp->channel_id, num_users, ESS(num_users), roles, ESS(roles));
+	return 0;
+}
+
 static struct bbs_cli_entry cli_commands_discord[] = {
 	BBS_CLI_COMMAND(cli_discord_mappings, "discord mappings", 2, "List Discord mappings", NULL),
 	BBS_CLI_COMMAND(cli_discord_users, "discord users", 2, "List Discord users", NULL),
+	BBS_CLI_COMMAND(cli_discord_user, "discord user", 3, "Show info about Discord user", "discord user <username>"),
+	BBS_CLI_COMMAND(cli_discord_channel, "discord channel", 3, "List Discord users in a mapped channel (by IRC channel name)", "discord channel <irc-chan-name>"),
 };
 
 static void *discord_relay(void *varg)
@@ -1461,6 +1536,9 @@ static void generate_test_ping(void)
 		.components = NULL,
 	};
 	monitor_status = MONITOR_WAITING;
+#ifdef DISCORD_MESSAGE_SUPPRESS_NOTIFICATIONS
+	params.flags = DISCORD_MESSAGE_SUPPRESS_NOTIFICATIONS;
+#endif
 	discord_create_message(discord_client, echochanid, &params, NULL);
 }
 
