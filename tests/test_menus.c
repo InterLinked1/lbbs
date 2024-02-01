@@ -28,6 +28,7 @@
 static int pre(void)
 {
 	test_load_module("mod_handlers.so");
+	test_load_module("mod_events.so");
 	test_load_module("net_telnet.so");
 
 	/* no net_telnet.conf needed, defaults are sufficient */

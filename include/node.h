@@ -119,6 +119,9 @@ unsigned int bbs_node_mod_count(void *mod);
  */
 unsigned int bbs_max_nodenum(void);
 
+/*! \brief Get the configured minimum uptime to display */
+unsigned int bbs_min_uptime_threshold(void);
+
 /*!
  * \brief Get the configured idle timeout in ms
  * \note Certain scenarios warrant using a custom or specified value,
@@ -138,6 +141,12 @@ const char *bbs_hostname(void);
 
 /*! \brief Get configured BBS name */
 const char *bbs_name(void);
+
+/*! \brief Get configured BBS tagline */
+const char *bbs_tagline(void);
+
+/*! \brief Get configured BBS sysop */
+const char *bbs_sysop(void);
 
 /*!
  * \brief Used by network comm drivers to request a BBS node

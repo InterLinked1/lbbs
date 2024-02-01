@@ -35,7 +35,6 @@
 #include "include/variables.h"
 #include "include/term.h"
 #include "include/pty.h"
-#include "include/os.h"
 #include "include/menu.h"
 #include "include/auth.h"
 #include "include/config.h"
@@ -66,9 +65,9 @@ static unsigned int defaultbps = 0;
 static unsigned int idlemins = 0;
 
 static char bbs_name_buf[32] = "BBS"; /* A simple default so this is never empty. */
-static char bbs_tagline[84] = "";
+static char bbs_tagline_buf[84] = "";
 static char bbs_hostname_buf[92] = "";
-static char bbs_sysop[16] = "";
+static char bbs_sysop_buf[16] = "";
 static char bbs_exitmsg[484] = "";
 
 static int load_config(void)
@@ -96,9 +95,9 @@ static int load_config(void)
 	if (bbs_config_val_set_str(cfg, "bbs", "name", bbs_name_buf, sizeof(bbs_name_buf))) {
 		bbs_warning("No name is configured for this BBS in nodes.conf - BBS will be impersonal!\n");
 	}
-	bbs_config_val_set_str(cfg, "bbs", "tagline", bbs_tagline, sizeof(bbs_tagline));
+	bbs_config_val_set_str(cfg, "bbs", "tagline", bbs_tagline_buf, sizeof(bbs_tagline_buf));
 	bbs_config_val_set_str(cfg, "bbs", "hostname", bbs_hostname_buf, sizeof(bbs_hostname_buf));
-	bbs_config_val_set_str(cfg, "bbs", "sysop", bbs_sysop, sizeof(bbs_sysop));
+	bbs_config_val_set_str(cfg, "bbs", "sysop", bbs_sysop_buf, sizeof(bbs_sysop_buf));
 	bbs_config_val_set_uint(cfg, "bbs", "minuptimedisplayed", &minuptimedisplayed);
 	bbs_config_val_set_str(cfg, "bbs", "exitmsg", bbs_exitmsg, sizeof(bbs_exitmsg));
 	bbs_config_val_set_uint(cfg, "nodes", "maxnodes", &maxnodes);
@@ -173,6 +172,11 @@ unsigned int bbs_max_nodenum(void)
 	return maxnodenum;
 }
 
+unsigned int bbs_min_uptime_threshold(void)
+{
+	return minuptimedisplayed;
+}
+
 unsigned int bbs_idle_ms(void)
 {
 	return idlemins;
@@ -191,6 +195,16 @@ const char *bbs_hostname(void)
 const char *bbs_name(void)
 {
 	return bbs_name_buf;
+}
+
+const char *bbs_tagline(void)
+{
+	return bbs_tagline_buf;
+}
+
+const char *bbs_sysop(void)
+{
+	return bbs_sysop_buf;
 }
 
 static unsigned int lifetime_nodes = 0;
@@ -1182,53 +1196,10 @@ static int _bbs_intro(struct bbs_node *node)
 
 static int node_intro(struct bbs_node *node)
 {
-	char timebuf[29];
-
-	if (!NODE_IS_TDD(node)) {
-		NEG_RETURN(bbs_node_clear_screen(node));
-		NEG_RETURN(bbs_node_writef(node, "%s %d.%d.%d  %s\n\n", BBS_TAGLINE, BBS_MAJOR_VERSION, BBS_MINOR_VERSION, BBS_PATCH_VERSION, BBS_COPYRIGHT));
-		usleep(150000);
-		NEG_RETURN(bbs_node_writef(node, COLOR(COLOR_PRIMARY)));
-	} else {
-		/* Print some spaces as TDD carrier starts up, so we don't clip the beginning of output,
-		 * and because the TDD could be in FIGS mode and this gives it a chance to get into LTRS mode. */
-		NEG_RETURN(bbs_node_writef(node, "%10s", ""));
-		/* Since the server will keep going until we block (hit a key),
-		 * sleep explicitly as it will take some for the TDD to print the output anyways.
-		 * This will allow the sysop to begin spying on the node here and catch the next output.
-		 * Really, mainly to help with testing and debugging. */
-		usleep(2500000);
-		NEG_RETURN(bbs_node_writef(node, "%s %d.%d.%d  %s\n\n", BBS_SHORTNAME, BBS_MAJOR_VERSION, BBS_MINOR_VERSION, BBS_PATCH_VERSION, BBS_COPYRIGHT_SHORT));
+	/* Display any pre-auth banners */
+	if (bbs_event_dispatch(node, EVENT_NODE_INTERACTIVE_START)) {
+		return -1;
 	}
-
-	NEG_RETURN(bbs_node_writef(node, "%s\n", bbs_name_buf)); /* Print BBS name */
-
-	if (!NODE_IS_TDD(node)) {
-		if (!s_strlen_zero(bbs_tagline)) {
-			NEG_RETURN(bbs_node_writef(node, "%s\n\n", bbs_tagline)); /* Print BBS tagline */
-		}
-		bbs_time_friendly_now(timebuf, sizeof(timebuf));
-		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "CLIENT", COLOR(COLOR_SECONDARY), "CONN", COLOR(COLOR_PRIMARY), node->protname));
-		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "ADDR", COLOR(COLOR_PRIMARY), node->ip));
-		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%dx%d\n", "", "", COLOR(COLOR_SECONDARY), "TERM", COLOR(COLOR_PRIMARY), node->cols, node->rows));
-		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "SERVER", COLOR(COLOR_SECONDARY), "NAME", COLOR(COLOR_WHITE), bbs_name_buf));
-		if (!s_strlen_zero(bbs_hostname_buf)) {
-			NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "ADDR", COLOR(COLOR_PRIMARY), bbs_hostname_buf));
-		}
-		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%d %s(of %s%d%s) - %s%s\n", "", "", COLOR(COLOR_SECONDARY), "NODE", COLOR(COLOR_PRIMARY),
-			node->id, COLOR(COLOR_SECONDARY), COLOR(COLOR_PRIMARY), bbs_maxnodes(), COLOR(COLOR_SECONDARY), COLOR(COLOR_PRIMARY), bbs_get_osver()));
-		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "TIME", COLOR(COLOR_PRIMARY), timebuf));
-		if (!s_strlen_zero(bbs_hostname_buf)) {
-			NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "ADMN", COLOR(COLOR_PRIMARY), bbs_sysop));
-		}
-	} else {
-		bbs_time_friendly_short_now(timebuf, sizeof(timebuf)); /* Use condensed date for TDDs */
-		NEG_RETURN(bbs_node_writef(node, "Node %d - %s\n", node->id, timebuf));
-	}
-
-	usleep(300000);
-
-	NEG_RETURN(bbs_node_wait_key(node, SEC_MS(75)));
 
 	/* Some protocols like SSH may support direct login of users. Otherwise, do a normal login. */
 	if (!bbs_node_logged_in(node)) {
@@ -1243,20 +1214,9 @@ static int node_intro(struct bbs_node *node)
 	 * We do it here rather than in bbs_authenticate, because the SSH module can do native login
 	 * where bbs_node_logged_in will be true right above here.
 	 * So doing it here ensures that, no matter how authentication happened, we run the code. */
-
-	/* Make some basic variables available that can be used in menus.conf scripting
-	 * For example, something in the menu could say Welcome ${BBS_USERNAME}!
-	 */
-	bbs_node_var_set_fmt(node, "BBS_NODENUM", "%d", node->id);
-	bbs_node_var_set_fmt(node, "BBS_USERID", "%d", node->user->id);
-	bbs_node_var_set_fmt(node, "BBS_USERPRIV", "%d", node->user->priv);
-	bbs_node_var_set(node, "BBS_USERNAME", bbs_username(node->user));
-	bbs_user_init_vars(node); /* Set any custom variables for this user */
-
-	/*! \todo Notify user's friends that s/he's logged on now */
-	/*! \todo Notify the sysop (sysop console), via BELL, that a new user has logged in, if and only if the sysop console is idle */
-
-	NEG_RETURN(bbs_node_writef(node, COLOR_RESET "\r\n"));
+	if (bbs_event_dispatch(node, EVENT_NODE_INTERACTIVE_LOGIN)) {
+		return -1;
+	}
 	return 0;
 }
 
@@ -1288,66 +1248,15 @@ int bbs_node_statuses(struct bbs_node *node, const char *username)
 	return 0;
 }
 
-static int bbs_node_splash(struct bbs_node *node)
-{
-	node->menu = "welcome"; /* Not really a menu, but it's a page and we should give it a name */
-	NEG_RETURN(bbs_node_clear_screen(node));
-
-#if 0
-	NEG_RETURN(bbs_node_writef(node, "%sLast few callers:\n\n", COLOR(COLOR_PRIMARY)));
-	/*! \todo Finish this: need to be able to retrieve past authentication info, e.g. from DB */
-#endif
-
-	/* System stats */
-	if (!NODE_IS_TDD(node)) {
-		NEG_RETURN(bbs_node_writef(node, "%s%-20s: %s%s\n", COLOR(COLOR_SECONDARY), "System", COLOR(COLOR_PRIMARY), bbs_name_buf));
-		NEG_RETURN(bbs_node_writef(node, "%s%6s%s %4u%9s%s: %s%s\n", COLOR(COLOR_SECONDARY), "User #", COLOR(COLOR_PRIMARY), node->user->id, "", COLOR(COLOR_SECONDARY), COLOR(COLOR_PRIMARY), bbs_username(node->user)));
-	} else {
-		/* Omit the # sign since TDDs display # as $ */
-		NEG_RETURN(bbs_node_writef(node, "User %d - %s\n", node->user->id, bbs_username(node->user)));
-	}
-
-	/*! \todo Add more stats here, e.g. num logins today, since started, lifetime, etc. */
-
-	if (bbs_starttime() > (int) minuptimedisplayed) {
-		char timebuf[24];
-		time_t now = time(NULL);
-		print_time_elapsed(bbs_starttime(), now, timebuf, sizeof(timebuf)); /* Formatting for timebuf (11 chars) should be enough for 11 years uptime, I think that's good enough */
-		if (!NODE_IS_TDD(node)) {
-			char daysbuf[36];
-			print_days_elapsed(bbs_starttime(), now, daysbuf, sizeof(daysbuf));
-			NEG_RETURN(bbs_node_writef(node, "%s%6s%s %2s%-11s%s: %s%s\n", COLOR(COLOR_SECONDARY), "Uptime", COLOR(COLOR_PRIMARY), "", timebuf, COLOR(COLOR_SECONDARY), COLOR(COLOR_PRIMARY), daysbuf));
-		} else {
-			NEG_RETURN(bbs_node_writef(node, "Uptime %s\n", timebuf)); /* Only print the condensed uptime */
-		}
-	}
-
-#if 0
-	/*! \todo Finish these and make them work */
-	NEG_RETURN(bbs_node_writef(node, "%s%-20s: %s%5d %s%-9s%s%6d%s%s\n", COLOR(COLOR_SECONDARY), "Logons Today", COLOR(COLOR_PRIMARY), 1, COLOR(COLOR_SECONDARY), "(Max ", COLOR(COLOR_PRIMARY), 22, COLOR(COLOR_SECONDARY), ")"));
-	NEG_RETURN(bbs_node_writef(node, "%s%-20s: %s%5d %s%-9s%s%6d%s%s\n", COLOR(COLOR_SECONDARY), "Time on Today", COLOR(COLOR_PRIMARY), 26, COLOR(COLOR_SECONDARY), "(Max ", COLOR(COLOR_PRIMARY), 86, COLOR(COLOR_SECONDARY), ")"));
-	NEG_RETURN(bbs_node_writef(node, "%s%-20s: %s%5d %s%-9s%s%6d%s%s\n", COLOR(COLOR_SECONDARY), "Mail Waiting", COLOR(COLOR_PRIMARY), 0, COLOR(COLOR_SECONDARY), "(Unread ", COLOR(COLOR_PRIMARY), 0, COLOR(COLOR_SECONDARY), ")"));
-#endif
-	if (!s_strlen_zero(bbs_sysop) && !NODE_IS_TDD(node)) {
-		NEG_RETURN(bbs_node_writef(node, "%s%-20s: %s%s\n", COLOR(COLOR_SECONDARY), "Sysop is", COLOR(COLOR_PRIMARY), bbs_sysop));
-	}
-
-	NEG_RETURN(bbs_node_writef(node, "\n")); /* Separation before next section */
-	if (!NODE_IS_TDD(node)) {
-		NEG_RETURN(bbs_node_statuses(node, NULL));
-	}
-	NEG_RETURN(bbs_node_wait_key(node, MIN_MS(2)));
-	return 0;
-}
-
 static int bbs_goodbye(struct bbs_node *node)
 {
-	char sub[512];
-
 	NEG_RETURN(bbs_node_clear_screen(node));
-	bbs_node_substitute_vars(node, bbs_exitmsg, sub, sizeof(sub));
-	NEG_RETURN(bbs_node_writef(node, "%s", sub));
-	NEG_RETURN(bbs_node_wait_key(node, SEC_MS(12)));
+	if (!s_strlen_zero(bbs_exitmsg)) {
+		char sub[512];
+		bbs_node_substitute_vars(node, bbs_exitmsg, sub, sizeof(sub));
+		NEG_RETURN(bbs_node_writef(node, "%s", sub));
+		NEG_RETURN(bbs_node_wait_key(node, SEC_MS(12))); /* Give time to display message before session closes */
+	}
 	return 0;
 }
 
@@ -1389,11 +1298,7 @@ static int node_handler_term(struct bbs_node *node)
 	/* Should be authenticated by now (either as a user or continuing as guest) */
 	bbs_assert(bbs_node_logged_in(node));
 
-	/* Display welcome updates and alerts */
-	if (bbs_node_splash(node)) {
-		bbs_debug(5, "Exiting\n");
-		return -1;
-	} else if (bbs_node_menuexec(node)) { /* Run the BBS on this node. */
+	if (bbs_node_menuexec(node)) { /* Run the BBS on this node. */
 		return -1;
 	}
 

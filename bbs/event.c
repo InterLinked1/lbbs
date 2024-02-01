@@ -95,6 +95,10 @@ const char *bbs_event_name(enum bbs_event_type type)
 			return "NODE_BAD_REQUEST";
 		case EVENT_USER_REGISTRATION:
 			return "USER_REGISTRATION";
+		case EVENT_NODE_INTERACTIVE_START:
+			return "NODE_INTERACTIVE_START";
+		case EVENT_NODE_INTERACTIVE_LOGIN:
+			return "NODE_INTERACTIVE_LOGIN";
 		case EVENT_USER_LOGIN:
 			return "USER_LOGIN";
 		case EVENT_USER_LOGOFF:
@@ -174,6 +178,16 @@ int bbs_event_dispatch_custom(struct bbs_node *node, enum bbs_event_type type, c
 			if (node->ip) {
 				safe_strncpy(event.ipaddr, node->ip, sizeof(event.ipaddr));
 			}
+			break;
+		case EVENT_NODE_INTERACTIVE_START:
+		case EVENT_NODE_INTERACTIVE_LOGIN:
+			if (!node) {
+				bbs_error("Can't create an event without a node\n");
+				return -1;
+			}
+			/* Allow direct access to node for these callbacks,
+			 * to promote modularity */
+			event.node = node;
 			break;
 		/* No default, so we'll have to explicitly handle any newly added events. */
 	}
