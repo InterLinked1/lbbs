@@ -256,6 +256,11 @@ int bbs_pty_allocate(struct bbs_node *node)
 
 	bbs_assert(isatty(node->amaster));
 	bbs_assert(isatty(node->slavefd));
+
+	/* Assume TTY will be in canonical mode with echo enabled to start. */
+	node->echo = 1;
+	node->buffered = 1;
+
 	return 0;
 }
 
@@ -498,7 +503,6 @@ void *pty_master(void *varg)
 	amaster = node->amaster;
 	rfd = node->rfd;
 	wfd = node->wfd;
-	ansi = node->ansi;
 	bbs_node_unlock(node);
 
 	bbs_debug(10, "Starting PTY master for node %d: %d => %s\n", nodeid, amaster, node->slavename);
@@ -530,6 +534,7 @@ void *pty_master(void *varg)
 		numfds = 2;
 		/* Don't try to acquire the regular node lock since that would deadlock during a shutdown. */
 		bbs_node_pty_lock(node);
+		ansi = node->ansi; /* Check each time since this can be toggled during node runtime */
 		speed = node->speed;
 		spy = node->spy;
 		if (spy) {

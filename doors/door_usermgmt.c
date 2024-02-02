@@ -273,8 +273,12 @@ static int termmgmt_exec(struct bbs_node *node, const char *args)
 	switch (c) {
 		case 'a':
 		case 'A':
+			/* If disabling, reset color, just in case */
+			bbs_node_writef(node, "%s", COLOR_RESET);
 			SET_BITFIELD(node->ansi, !node->ansi);
+			bbs_node_safe_sleep(node, 10); /* Pause, to allow the PTY thread to send the reset and then see the ANSI state before reading further */
 			bbs_node_writef(node, "ANSI %s\n", node->ansi ? "enabled" : "disabled");
+			NEG_RETURN(bbs_node_wait_key(node, SEC_MS(75)));
 			break;
 		default:
 			return c < 0 ? -1 : 0;

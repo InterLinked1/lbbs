@@ -277,9 +277,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 	node->user = NULL; /* No user exists yet. We calloc'd so this is already NULL, but this documents that user may not exist at first. */
 	node->active = 1;
 	node->created = time(NULL);
-	/* Assume TTY will be in canonical mode with echo enabled to start. */
-	node->echo = 1;
-	node->buffered = 1;
+
 	node->protname = protname;
 	node->ansi = 1; /* Assume nodes support ANSI escape sequences by default. */
 
@@ -680,6 +678,17 @@ static int interrupt_node(struct bbs_node *node)
 			return 1;
 		}
 
+		if (node->buffered) {
+			/* Since the pseudoterminal is buffered, poll won't return any activity at all
+			 * until a buffered line has been received.
+			 * Spoof an ENTER on the master side of the PTY towards the slave, since
+			 * we'll just throw away whatever the slave receives anyways. */
+			bbs_debug(1, "Node %u is currently buffered, spoofing line return on slave\n", node->id);
+			if (SWRITE(node->amaster, "\n") < 0) {
+				bbs_warning("Failed to write to master side to wake up buffered poll: %s\n", strerror(errno));
+			}
+		}
+
 		bbs_verb(5, "Interrupted node %u\n", node->id);
 		res = 0;
 	}
@@ -745,7 +754,7 @@ static int cli_nodes(struct bbs_cli_args *a)
 	int c = 0;
 	time_t now = time(NULL);
 
-	bbs_dprintf(a->fdout, "%3s %9s %9s %7s %-15s %-25s %15s %5s %1s %1s %7s %3s %3s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "USER", "MENU/PAGE", "IP ADDRESS", "RPORT", "E", "B", "TID", "FD", "RFD", "WFD", "MST", "SLV", "SPY", "SLV NAME");
+	bbs_dprintf(a->fdout, "%3s %9s %9s %7s %4s %-15s %-25s %15s %5s %1s %1s %3s %7s %3s %3s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "ANSI", "USER", "MENU/PAGE", "IP ADDRESS", "RPORT", "E", "B", "INT", "TID", "FD", "RFD", "WFD", "MST", "SLV", "SPY", "SLV NAME");
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
@@ -762,8 +771,9 @@ static int cli_nodes(struct bbs_cli_args *a)
 		print_time_elapsed(n->created, now, elapsed, sizeof(elapsed));
 		snprintf(menufull, sizeof(menufull), "%s%s%s%s", S_IF(n->menu), n->menuitem ? " (" : "", S_IF(n->menuitem), n->menuitem ? ")" : "");
 		lwp = bbs_pthread_tid(n->thread);
-		bbs_dprintf(a->fdout, "%3d %9s %9s %3dx%3d %-15s %-25s %15s %5u %1s %1s %7d %3d %3d %3d %3d %3d %3d %s\n",
-			n->id, n->protname, elapsed, n->cols, n->rows, bbs_username(n->user), menufull, n->ip, n->rport, BBS_YN(n->echo), BBS_YN(n->buffered),
+		bbs_dprintf(a->fdout, "%3d %9s %9s %3dx%3d %4s %-15s %-25s %15s %5u %1s %1s %3s %7d %3d %3d %3d %3d %3d %3d %s\n",
+			n->id, n->protname, elapsed, n->cols, n->rows, n->ansi ? "Yes" : "No", bbs_username(n->user), menufull, n->ip, n->rport, BBS_YN(n->echo), BBS_YN(n->buffered),
+			bbs_node_interrupted(n) ? "*" : "",
 			lwp, n->fd, n->rfd, n->wfd, n->amaster, n->slavefd, n->spyfd, n->slavename);
 		c++;
 	}
