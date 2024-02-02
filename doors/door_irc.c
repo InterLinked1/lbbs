@@ -136,42 +136,55 @@ static struct participant *join_client(struct bbs_node *node, const char *name)
 	return p;
 }
 
-/* Forward declarations */
-static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client_relay *client, struct participant *sender, const char *channel, int dorelay, const char *fmt, ...);
+#ifdef PRINT_DATE
+#define TIME_FMT "%m-%d %I:%M:%S%P" /* mm-dd hh:mm:ssPP + space at end (before message) = 17 chars */
+#else
+/* Takes up less space, and losing the date won't matter in busy channels anyways */
+#define TIME_FMT "%I:%M:%S%P"
+#endif
 
-#define relay_to_local(client, channel, fmt, ...) _chat_send(client, NULL, channel, 0, fmt, __VA_ARGS__)
-
-static int __chat_send(struct client_relay *client, struct participant *sender, const char *channel, int dorelay, const char *msg, int len)
+/*!
+ * \brief Actually send a message from door_irc to other door clients and, optionally, to IRC
+ * \param client
+ * \param sender If NULL, the message will be sent to the sender, if specified, the message will not be sent to this participant
+ * \param channel
+ * \param unfmtmsg Message to send to IRC, if present. NULL if do not relay to IRC.
+ * \param fmtmsg Message to relay to local door clients. Cannot be NULL.
+ * \param fmtmsglen Length of fmtmsg
+ * \retval 0 on success, -1 on failure
+ */
+static int __attribute__ ((nonnull (5))) __chat_send(struct client_relay *client, struct participant *sender, const char *channel, const char *unfmtmsg, const char *fmtmsg, int fmtmsglen)
 {
 	time_t now;
 	struct tm sendtime;
-	char datestr[18];
+	char datestr[18 + STRLEN(COLOR(COLOR_BLUE)) + STRLEN(COLOR_RESET) + 1]; /* Add 1 for space at end */
 	size_t timelen;
 	struct participant *p;
 
 	/* Calculate the current time once, for everyone, using the server's time (sorry if participants are in different time zones) */
 	now = time(NULL);
 	localtime_r(&now, &sendtime);
-	/* So, %P is lowercase and %p is uppercase. Just consult your local strftime(3) man page if you don't believe me. Good grief. */
-	strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime); /* mm-dd hh:mm:ssPP + space at end (before message) = 17 chars */
-	timelen = strlen(datestr); /* Should be 17 */
-	bbs_assert(timelen == 17);
+	/* So, %P is lowercase and %p is uppercase. Just consult your local strftime(3) man page if you don't believe me. Good grief! */
+	timelen = (size_t) sprintf(datestr, "%s", COLOR(COLOR_BLUE)); /* Safe */
+	timelen += strftime(datestr + timelen, sizeof(datestr) - timelen, TIME_FMT, &sendtime); /* mm-dd hh:mm:ssPP + space at end (before message) = 17 chars */
+	timelen += (size_t) snprintf(datestr + timelen, sizeof(datestr) - timelen, "%s ", COLOR_RESET);
 
 	/* If sender is set, it's safe to use even with no locks, because the sender is a calling function of this one */
 	if (sender) {
-		bbs_debug(7, "Broadcasting %s -> %s,%s (except node %d): %s%.*s\n", dorelay ? "to IRC" : "from IRC", client->name, channel, sender->node->id, datestr, len, msg);
+		bbs_debug(7, "Broadcasting %s -> %s,%s (except node %d): %s\n", unfmtmsg ? "to IRC" : "from IRC", client->name, channel, sender->node->id, datestr);
 	} else {
-		bbs_debug(7, "Broadcasting %s -> %s,%s: %s%.*s\n", dorelay ? "to IRC" : "from IRC", client->name, channel, datestr, len, msg);
+		bbs_debug(7, "Broadcasting %s -> %s,%s: %s\n", unfmtmsg ? "to IRC" : "from IRC", client->name, channel, datestr);
 	}
 
 	/* Relay the message to everyone */
 	RWLIST_RDLOCK(&client->participants);
-	if (dorelay) {
+	if (unfmtmsg) {
 		char prefix[32] = "";
 		if (sender) { /* Yes, sender can be NULL */
 			snprintf(prefix, sizeof(prefix), "%s@%u", bbs_username(sender->node->user), sender->node->id);
 		}
-		bbs_irc_client_msg(client->name, channel, prefix, "%s", msg); /* Actually send to IRC */
+		/* Do not include any color formatting in the message we send to IRC, that's only for local door clients */
+		bbs_irc_client_msg(client->name, channel, prefix, "%s", unfmtmsg); /* Actually send to IRC */
 	}
 	RWLIST_TRAVERSE(&client->participants, p, entry) {
 		ssize_t res;
@@ -193,7 +206,7 @@ static int __chat_send(struct client_relay *client, struct participant *sender, 
 				bbs_error("write failed: %s\n", strerror(errno));
 			}
 		}
-		res = write(p->chatpipe[1], msg, (size_t) len);
+		res = write(p->chatpipe[1], fmtmsg, (size_t) fmtmsglen);
 		if (res <= 0) {
 			bbs_error("write failed: %s\n", strerror(errno));
 			continue; /* Even if one send fails, don't fail all of them */
@@ -203,15 +216,7 @@ static int __chat_send(struct client_relay *client, struct participant *sender, 
 	return 0;
 }
 
-#define chat_send(client, sender, channel, fmt, ...) _chat_send(client, sender, channel, 1, fmt, __VA_ARGS__)
-
-#pragma GCC diagnostic ignored "-Wredundant-decls"
-/*
- * Forward declaration needed since __attribute__ can only be used with declarations, not definitions.
- * See http://www.unixwiz.net/techtips/gnu-c-attributes.html#compat
- * We only need the redundant declarations for static functions with attributes.
- */
-static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client_relay *client, struct participant *sender, const char *channel, int dorelay, const char *fmt, ...);
+#define relay_to_local(client, channel, fmt, ...) _relay_to_local(client, NULL, channel, fmt, __VA_ARGS__)
 
 /*!
  * \param client
@@ -220,35 +225,79 @@ static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client_
  * \param dorelay
  * \param fmt
  */
-static int __attribute__ ((format (gnu_printf, 5, 6))) _chat_send(struct client_relay *client, struct participant *sender, const char *channel, int dorelay, const char *fmt, ...)
+static int __attribute__ ((format (gnu_printf, 4, 5))) _relay_to_local(struct client_relay *client, struct participant *sender, const char *channel, const char *fmt, ...)
 {
-	char *buf;
-	int res, len;
+	char buf[513]; /* Messages can't be longer than this anyways */
+	int len;
 	va_list ap;
 
-	if (!strchr(fmt, '%')) {
-		/* No format specifiers in the format string, just do it directly to avoid an unnecessary allocation. */
-		return __chat_send(client, sender, channel, dorelay, fmt, (int) strlen(fmt));
-	}
-
 	va_start(ap, fmt);
-	len = vasprintf(&buf, fmt, ap);
+	len = vsnprintf(buf, sizeof(buf), fmt, ap);
 	va_end(ap);
-
-	if (len < 0) {
+	if (len >= (int) (sizeof(buf) - 1)) {
 		return -1;
 	}
-	res = __chat_send(client, sender, channel, dorelay, buf, len);
-	free(buf);
-	return res;
-}
-#pragma GCC diagnostic pop
 
-static int print_help(struct bbs_node *node)
+	return __chat_send(client, sender, channel, NULL, buf, len);
+}
+
+static int __attribute__ ((format (gnu_printf, 5, 6))) chat_msg(struct client_relay *c, struct participant *p, const char *channel, struct bbs_node *node, const char *fmt, ...)
 {
-	bbs_node_writef(node, "== Embedded LBBS Chat Client ==\n");
-	bbs_node_writef(node, "/help   - Print help\n");
-	bbs_node_writef(node, "/quit   - Quit channel\n");
+	char buf[513], fmtbuf[513]; /* Messages can't be longer than this anyways */
+	int len, fmtbuflen;
+	va_list ap;
+
+	va_start(ap, fmt);
+	len = vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+
+	if (len >= (int) (sizeof(buf) - 1)) {
+		return -1;
+	}
+
+	fmtbuflen = snprintf(fmtbuf, sizeof(fmtbuf), "%s%s@%d%s ", COLOR(COLOR_RED), bbs_username(node->user), node->id, COLOR_RESET);
+	va_start(ap, fmt);
+	fmtbuflen += vsnprintf(fmtbuf + (size_t) fmtbuflen, sizeof(fmtbuf) - (size_t) len, fmt, ap);
+	va_end(ap);
+	if (fmtbuflen >= (int) (sizeof(fmtbuf) - 1)) {
+		return -1;
+	}
+
+	return __chat_send(c, p, channel, buf, fmtbuf, fmtbuflen);
+}
+
+static int chat_cmd(struct client_relay *c, struct participant *p, const char *channel, struct bbs_node *node, enum irc_msg_type type)
+{
+	char buf[512], fmtbuf[512];
+	int fmtlen;
+
+	switch (type) {
+		case IRC_CMD_JOIN:
+			snprintf(buf, sizeof(buf), "%s@%d has joined %s\n", bbs_username(node->user), node->id, channel);
+			fmtlen = snprintf(fmtbuf, sizeof(fmtbuf), "- %s%s@%d %shas joined %s%s%s\n",
+				COLOR(COLOR_RED), bbs_username(node->user), node->id, COLOR_RESET, COLOR(COLOR_CYAN), channel, COLOR_RESET);
+			return __chat_send(c, p, channel, buf, fmtbuf, fmtlen);
+		case IRC_CMD_PART:
+			snprintf(buf, sizeof(buf), "%s@%d has left %s\n", bbs_username(node->user), node->id, channel);
+			fmtlen = snprintf(fmtbuf, sizeof(fmtbuf), "- %s%s@%d %shas left %s%s%s\n",
+				COLOR(COLOR_RED), bbs_username(node->user), node->id, COLOR_RESET, COLOR(COLOR_CYAN), channel, COLOR_RESET);
+			return __chat_send(c, p, channel, buf, fmtbuf, fmtlen);
+		default:
+			bbs_warning("Unhandled command: %d\n", type);
+			return -1;
+	}
+	__builtin_unreachable();
+}
+
+static int print_help(struct bbs_node *node, int full)
+{
+	bbs_node_writef(node, "%s== Embedded LBBS Chat Client ==\n", COLOR(COLOR_RED));
+#define HELP_ITEM(cmd, help) bbs_node_writef(node, "%s%-10s%s - %s\n", COLOR(COLOR_CYAN), cmd, COLOR_RESET, help)
+	HELP_ITEM("/help", "Print help");
+	HELP_ITEM("/quit", "Quit channel");
+	if (full) {
+		HELP_ITEM("/who", "List users in the current channel");
+	}
 	return 0;
 }
 
@@ -257,11 +306,14 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 	char buf[384];
 	char buf2[sizeof(buf)];
 	ssize_t res;
+	int slowterm;
 	struct client_relay *c = p->client;
+
+	slowterm = node->bps && node->bps < 2400;
 
 	/* Join the channel */
 	bbs_node_clear_screen(node);
-	chat_send(c, NULL, channel, "%s@%d has joined %s\n", bbs_username(node->user), p->node->id, channel);
+	chat_cmd(c, NULL, channel, node, IRC_CMD_JOIN);
 
 	bbs_node_unbuffer(node); /* Unbuffer so we can receive keys immediately. Otherwise, might print a message while user is typing */
 
@@ -280,7 +332,9 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 			if (buf[0] == '\n') { /* User just pressed ENTER. Um, okay. */
 				continue;
 			}
-			bbs_node_writef(node, "%c", buf[0]);
+
+			bbs_node_write(node, buf, 1); /* Echo first character of line */
+
 			/* Now, buffer input */
 			/* XXX The user will be able to use terminal line editing, except for the first char */
 			/* XXX ESC should cancel */
@@ -291,7 +345,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 				bbs_debug(3, "bbs_node_poll_read returned %ld\n", res);
 				if (res == 0) {
 					/* User started a message, but didn't finish before timeout */
-					bbs_node_writef(node, "\n*** TIMEOUT ***\n");
+					bbs_node_writef(node, "\n*** %sTIMEOUT%s ***\n", COLOR(COLOR_RED), COLOR_RESET);
 					bbs_node_flush_input(node); /* Discard any pending input */
 					continue;
 				}
@@ -303,13 +357,23 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 			bbs_str_process_backspaces(buf, buf2, sizeof(buf2));
 
 			/* strcasecmp will fail because the buffer has a LF at the end. Use strncasecmp, so anything starting with /help or /quit will technically match too */
-			if (STARTS_WITH(buf2, "/quit")) {
-				break; /* Quit */
-			} else if (STARTS_WITH(buf2, "/help")) {
-				print_help(node);
+			if (buf[0] == '/') {
+				if (STARTS_WITH(buf2, "/quit")) {
+					break; /* Quit */
+				} else if (STARTS_WITH(buf2, "/help")) {
+					print_help(node, 0);
+				} else {
+					bbs_node_writef(node, "%sInvalid command%s (type %s/help%s for usage)\n", COLOR(COLOR_RED), COLOR_RESET, COLOR(COLOR_WHITE), COLOR_RESET);
+				}
+				bbs_node_unbuffer(node);
+				continue; /* Don't actually send this input as a message */
 			}
 			bbs_node_unbuffer(node);
-			chat_send(c, p, channel, "<%s@%d> %s", bbs_username(node->user), node->id, buf2); /* buf2 already contains a newline from the user pressing ENTER, so don't add another one */
+			if (!slowterm) {
+				bbs_node_writef(node, "\033[F"); /* Go up one line since we already pressed enter */
+				bbs_node_clear_line(node); /* Overwrite typed message with nicely formatted timestamp + message instead */
+			}
+			chat_msg(c, slowterm ? p : NULL, channel, node, "%s", buf2); /* buf2 already contains a newline from the user pressing ENTER, so don't add another one */
 		} else if (res == 2) {
 			/* Pipe has activity: Received a message */
 			res = 0;
@@ -319,7 +383,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 			}
 			buf[res] = '\0'; /* Safe */
 			/* Don't add a trailing LF, the sent message should already had one. */
-			if (bbs_node_writef(node, "%.*s", (int) res, buf) < 0) {
+			if (bbs_node_write(node, buf, (size_t) res) < 0) {
 				res = -1;
 				break;
 			}
@@ -336,7 +400,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 		}
 	}
 
-	chat_send(c, NULL, channel, "%s@%d has left %s\n", bbs_username(node->user), node->id, channel);
+	chat_cmd(c, NULL, channel, node, IRC_CMD_PART);
 	return (int) res;
 }
 
@@ -430,7 +494,16 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 	char passwordbuf[64];
 	char buf[2048];
 	int underscores = 0;
+	int slowterm;
+	char newnick[32];
 	char *username, *password, *hostname, *portstr;
+	struct {
+		int namescount;	/* Count of 353 NAMES */
+		unsigned int gotnames:1;
+		unsigned int wantnames:1;
+	} chanstate;
+
+	memset(&chanstate, 0, sizeof(chanstate));
 
 	/* Parse the arguments.
 	 * Format is:
@@ -536,6 +609,8 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 		goto cleanup;
 	}
 
+	slowterm = node->bps && node->bps < 2400;
+
 	/* Instead of spawning a client_relay thread with a pseudo client and running an event loop,
 	 * handle the connection in the current thread.
 	 * This does complicate things just a little bit, as can be seen below.
@@ -577,10 +652,18 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 
 			/* Parse the user's message. Note this isn't IRC syntax, it's just STDIN input.
 			 * Unless the user typed /quit, we can basically just build a message and send it to the channel. */
-			if (!strcasecmp(clientbuf, "/quit")) {
-				break;
-			} else if (!strcasecmp(clientbuf, "/help")) {
-				print_help(node);
+			if (clientbuf[0] == '/') {
+				if (!strcmp(clientbuf, "/quit")) {
+					break; /* Quit */
+				} else if (!strcmp(clientbuf, "/help")) {
+					print_help(node, 1);
+				} else if (!strcmp(clientbuf, "/who")) {
+					chanstate.wantnames = 1;
+					irc_send(ircl, "NAMES %s", channel);
+				} else {
+					bbs_node_writef(node, "%sInvalid command%s (type %s/help%s for usage)\n", COLOR(COLOR_RED), COLOR_RESET, COLOR(COLOR_WHITE), COLOR_RESET);
+				}
+				continue; /* Don't actually send this input as a message */
 			}
 			irc_client_msg(ircl, channel, clientbuf); /* Actually send to IRC */
 
@@ -588,10 +671,14 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 			if (!NODE_IS_TDD(node)) {
 				now = time(NULL);
 				localtime_r(&now, &sendtime);
-				strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime);
+				strftime(datestr, sizeof(datestr), TIME_FMT " ", &sendtime);
 			}
 
-			bbs_node_writef(node, "%s<%s> %s\n", datestr, irc_client_username(ircl), clientbuf); /* Echo the user's own message */
+			if (!slowterm) {
+				bbs_node_writef(node, "\033[F"); /* Go up one line since we already pressed enter */
+				bbs_node_clear_line(node);
+				bbs_node_writef(node, "%s%s%s<%s>%s %s\n", COLOR(COLOR_BLUE), datestr, COLOR(COLOR_RED), irc_client_nickname(ircl), COLOR_RESET, clientbuf); /* Echo the user's own message */
+			}
 		} else { /* Must've been the server. */
 			char tmpbuf[2048];
 			int ready;
@@ -625,24 +712,53 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 				/* Parse message from server */
 				memset(&msg_stack, 0, sizeof(msg_stack));
 				if (!irc_parse_msg(msg, buf) && !irc_parse_msg_type(msg)) {
+					char *tmp;
 					/* Condensed version of what command_cb does */
 					switch (irc_msg_type(msg)) {
 						case IRC_NUMERIC:
-							bbs_node_writef(node, "%s %d %s\n", NODE_IS_TDD(node) ? "" : S_IF(irc_msg_prefix(msg)), irc_msg_numeric(msg), irc_msg_body(msg));
 							switch (irc_msg_numeric(msg)) {
+								case 353:
+									/* Count names */
+									tmp = strchr(irc_msg_body(msg), ':'); /* It's everything after this, one nick per word */
+									if (tmp) {
+										int words = bbs_word_count(tmp);
+										chanstate.namescount += words;
+										tmp++;
+										if (chanstate.wantnames && !strlen_zero(tmp)) {
+											/* Print names to term */
+											bbs_node_writef(node, "%s* %s%s%s\n", COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), tmp, COLOR_RESET);
+										}
+									}
+									break;
+								case 366:
+									/* End of names, print total */
+									if (!chanstate.gotnames) {
+										bbs_node_writef(node, "%s*%s Welcome to %s%s%s, channel now occupied by %s%d%s user%s%s\n",
+										COLOR(COLOR_WHITE), COLOR(COLOR_CYAN), COLOR(COLOR_WHITE), channel, COLOR(COLOR_CYAN), COLOR(COLOR_WHITE), chanstate.namescount, COLOR(COLOR_CYAN), ESS(chanstate.namescount), COLOR_RESET);
+									} else if (chanstate.wantnames) {
+										bbs_node_writef(node, "%s*%s Channel %s%s%s currently occupied by %s%d%s user%s%s\n",
+										COLOR(COLOR_WHITE), COLOR(COLOR_CYAN), COLOR(COLOR_WHITE), channel, COLOR(COLOR_CYAN), COLOR(COLOR_WHITE), chanstate.namescount, COLOR(COLOR_CYAN), ESS(chanstate.namescount), COLOR_RESET);
+									}
+									chanstate.namescount = 0; /* Reset */
+									chanstate.gotnames = 1;
+									chanstate.wantnames = 0;
+									break;
 								case 433: /* Nickname in use - very likely to happen if already logged in using a regular IRC client */
 									if (underscores++ < 5) {
-										char newnick[32];
 #define UNDERSCORES "_____"
 										snprintf(newnick, sizeof(newnick), "%s%.*s", irc_client_username(ircl), underscores, UNDERSCORES);
 										bbs_debug(1, "Auto-changing nickname to '%s' to avoid conflict\n", newnick);
+										/* This doesn't actually change the return value of irc_client_nickname, until we get an IRC_CMD_NICK */
 										irc_client_change_nick(ircl, newnick);
-										/* Assuming this succeeds, try joining the channel we intended to,
-										 * since that would have failed. */
+										/* Assuming this succeeds, try joining the channel we intended to, since that would have failed. */
 										irc_client_channel_join(ircl, channel);
+										/* Don't display this message */
+										break;
 									}
-									break;
+									/* Fall through */
 								default:
+									bbs_debug(3, "Unhandled numeric %s %d %s\n", NODE_IS_TDD(node) ? "" : S_IF(irc_msg_prefix(msg)), irc_msg_numeric(msg), irc_msg_body(msg));
+									bbs_node_writef(node, "%s %d %s\n", NODE_IS_TDD(node) ? "" : S_IF(irc_msg_prefix(msg)), irc_msg_numeric(msg), irc_msg_body(msg));
 									break;
 							}
 							break;
@@ -658,7 +774,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 											if (!NODE_IS_TDD(node)) {
 												now = time(NULL);
 												localtime_r(&now, &sendtime);
-												strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime);
+												strftime(datestr, sizeof(datestr), TIME_FMT " ", &sendtime);
 											}
 											bbs_node_writef(node, "[ACTION] %s<%s> %s\n", datestr, irc_msg_prefix(msg), irc_msg_body(msg));
 											break;
@@ -689,9 +805,9 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 								if (!NODE_IS_TDD(node)) {
 									now = time(NULL);
 									localtime_r(&now, &sendtime);
-									strftime(datestr, sizeof(datestr), "%m-%d %I:%M:%S%P ", &sendtime);
+									strftime(datestr, sizeof(datestr), TIME_FMT " ", &sendtime);
 								}
-								bbs_node_writef(node, "%s<%s> %s\n", datestr, msg->prefix, irc_msg_body(msg));
+								bbs_node_writef(node, "%s%s%s<%s>%s %s\n", COLOR(COLOR_BLUE), datestr, COLOR(COLOR_RED), msg->prefix, COLOR_RESET, irc_msg_body(msg));
 							}
 							break;
 						case IRC_CMD_PING:
@@ -699,24 +815,28 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 							irc_client_pong(ircl, msg);
 							break;
 						case IRC_CMD_JOIN:
-							bbs_node_writef(node, "%s has %sjoined%s\n", msg->prefix, COLOR(COLOR_GREEN), COLOR_RESET);
+							bbs_node_writef(node, "- %s%s%s has %sjoined%s\n", COLOR(COLOR_RED), msg->prefix, COLOR_RESET, COLOR(COLOR_GREEN), COLOR_RESET);
 							break;
 						case IRC_CMD_PART:
-							bbs_node_writef(node, "%s has %sleft%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
+							bbs_node_writef(node, "- %s%s%s has %sleft%s\n", COLOR(COLOR_RED), msg->prefix, COLOR_RESET, COLOR(COLOR_RED), COLOR_RESET);
 							break;
 						case IRC_CMD_QUIT:
 							/* Since this client is for a single end user, and the server sent us the quit,
 							 * we know it must be relevant to us */
-							bbs_node_writef(node, "%s has %squit%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
+							bbs_node_writef(node, "- %s%s%s has %squit%s\n", COLOR(COLOR_RED), msg->prefix, COLOR_RESET, COLOR(COLOR_RED), COLOR_RESET);
 							break;
 						case IRC_CMD_KICK:
-							bbs_node_writef(node, "%s has been %skicked%s\n", msg->prefix, COLOR(COLOR_RED), COLOR_RESET);
+							bbs_node_writef(node, "- %s%s%s has been %skicked%s\n", COLOR(COLOR_RED), msg->prefix, COLOR_RESET, COLOR(COLOR_RED), COLOR_RESET);
 							break;
 						case IRC_CMD_NICK:
-							bbs_node_writef(node, "%s is %snow known as%s %s\n", msg->prefix, COLOR(COLOR_CYAN), COLOR_RESET, irc_msg_body(msg));
+							if (!strcmp(msg->prefix, irc_client_nickname(ircl))) {
+								/* Our nickname changed. Update the client's internal state. */
+								irc_client_set_nick(ircl, newnick);
+							}
+							bbs_node_writef(node, "- %s%s%s is %snow known as %s%s%s\n", COLOR(COLOR_RED), msg->prefix, COLOR_RESET, COLOR(COLOR_CYAN), COLOR(COLOR_RED), irc_msg_body(msg), COLOR_RESET);
 							break;
 						case IRC_CMD_TOPIC:
-							bbs_node_writef(node, "%s has %schanged the topic%s of %s\n", irc_msg_prefix(msg), COLOR_GREEN, COLOR_RESET, irc_msg_body(msg));
+							bbs_node_writef(node, "- %s%s%s has %schanged the topic%s of %s\n", COLOR(COLOR_RED), irc_msg_prefix(msg), COLOR_RESET, COLOR_GREEN, COLOR_RESET, irc_msg_body(msg));
 							break;
 						case IRC_CMD_ERROR:
 						case IRC_CMD_OTHER:

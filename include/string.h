@@ -50,6 +50,9 @@ void __bbs_dump_string(const char *restrict s, const char *file, const char *fun
 /*! \brief Dump an hex representation of a buffer to the BBS debug log level */
 void bbs_dump_mem(unsigned const char *restrict s, size_t len);
 
+/*! \brief Get number of words in a string */
+#define bbs_word_count(s) (bbs_str_count(s, ' ') + (*s ? 1 : 0))
+
 /*!
  * \brief Get the number of instances of a character in a NUL-terminated string
  * \param s String
