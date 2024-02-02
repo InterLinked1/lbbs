@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "include/door.h"
+#include "include/node.h"
 #include "include/linkedlists.h"
 #include "include/module.h"
 #include "include/cli.h"
@@ -110,6 +111,7 @@ int bbs_door_exec(struct bbs_node *node, const char *name, const char *args)
 {
 	int res;
 	struct bbs_door *door;
+	struct bbs_module *prevmod;
 
 	RWLIST_RDLOCK(&doors);
 	door = find_door(name);
@@ -123,7 +125,10 @@ int bbs_door_exec(struct bbs_node *node, const char *name, const char *args)
 	/* Ref module before unlocking */
 	bbs_module_ref(door->module, 1);
 	RWLIST_UNLOCK(&doors);
+	prevmod = node->doormod; /* Unless we're nesting door calls, node->doormod should be NULL at this point, but save it just in case */
+	node->doormod = door->module;
 	res = door->execute(node, args);
+	node->doormod = prevmod; /* Restore */
 	bbs_module_unref(door->module, 1);
 	return res;
 }

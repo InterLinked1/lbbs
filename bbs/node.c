@@ -149,7 +149,7 @@ unsigned int bbs_node_mod_count(void *mod)
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, node, entry) {
-		if (node->module == mod) {
+		if (node->module == mod || node->doormod == mod) {
 			count++;
 		}
 	}
@@ -650,6 +650,42 @@ int bbs_node_shutdown_node(unsigned int nodenum)
 	return n ? 0 : -1;
 }
 
+static int interrupt_node(struct bbs_node *node)
+{
+	int res = -1;
+	if (!node->thread) {
+		bbs_debug(1, "Node %u is not owned by a thread, and cannot be interrupted\n", node->id);
+	} else if (!node->slavefd) {
+		/* If there's no PTY, bbs_node_poll can't be used anyways.
+		 * And if there's no PTY, it's a network protocol that doesn't make sense to interrupt.
+		 * Only terminal protocols should be interrupted. */
+		bbs_debug(1, "Node %u has no PTY\n", node->id);
+	} else {
+		int err;
+		/* The node thread should never interrupt itself, this is only for other threads to
+		 * interrupt a blocking I/O call. */
+		bbs_assert(node->thread != pthread_self());
+		node->interruptack = 0;
+		node->interrupt = 1; /* Indicate that interrupt was requested */
+
+		bbs_node_kill_child(node); /* If executing an external program, kill it */
+
+		/* Make the I/O function (probably poll(2)) exit with EINTR.
+		 * Less overhead than always polling another alertpipe just for getting out of band alerts like this,
+		 * since we can easily enough check the interrupt status in the necessary places on EINTR. */
+		err = pthread_kill(node->thread, SIGUSR1); /* Uncaught signal, so the blocking I/O call will get interrupted */
+		if (err) {
+			bbs_warning("pthread_kill(%lu) failed: %s\n", (unsigned long) node->thread, strerror(err));
+			bbs_node_unlock(node);
+			return 1;
+		}
+
+		bbs_verb(5, "Interrupted node %u\n", node->id);
+		res = 0;
+	}
+	return res;
+}
+
 unsigned int bbs_node_shutdown_mod(void *mod)
 {
 	struct bbs_node *n;
@@ -657,14 +693,32 @@ unsigned int bbs_node_shutdown_mod(void *mod)
 
 	RWLIST_WRLOCK(&nodes);
 	RWLIST_TRAVERSE_SAFE_BEGIN(&nodes, n, entry) {
-		if (n->module != mod) {
-			continue;
+		if (n->doormod == mod) {
+			int res;
+			/* "Dump" any nodes executing door modules from their current door.
+			 * We don't need to kick these nodes, just interrupt them. */
+			bbs_verb(5, "Interrupting node %u to allow %s to unload\n", n->id, bbs_module_name(mod));
+			/* Can't use bbs_interrupt_node since that will call bbs_node_get,
+			 * which invokes a RDLOCK on the node list.
+			 * Since we already hold a WRLOCK, that would cause a deadlock.
+			 * Instead, use interrupt_node directly. */
+			bbs_node_lock(n);
+			res = interrupt_node(n);
+			bbs_node_unlock(n);
+			/* Wait for this node to exit the door */
+			if (!res && bbs_node_interrupt_wait(n, 250)) { /* Don't wait more than 250 ms for the node to exit the door */
+				count++;
+			}
+		} else if (n->module == mod) {
+			/* Kill any nodes that might be using a particular network module;
+			 * since they created the node and "own it", we can't unload them
+			 * without killing all their nodes. */
+			RWLIST_REMOVE_CURRENT(entry);
+			/* Wait for shutdown of node to finish. */
+			bbs_verb(5, "Kicking node %u to allow %s to unload\n", n->id, bbs_module_name(mod));
+			node_shutdown(n, 0);
+			count++;
 		}
-		RWLIST_REMOVE_CURRENT(entry);
-		/* Wait for shutdown of node to finish. */
-		node_shutdown(n, 0);
-		count++;
-		break;
 	}
 	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&nodes);
@@ -721,43 +775,14 @@ static int cli_nodes(struct bbs_cli_args *a)
 
 int bbs_interrupt_node(unsigned int nodenum)
 {
-	int res = -1;
+	int res;
 	struct bbs_node *node = bbs_node_get(nodenum);
 
 	if (!node) {
 		return -1;
 	}
 
-	if (!node->thread) {
-		bbs_debug(1, "Node %u is not owned by a thread, and cannot be interrupted\n", nodenum);
-	} else if (!node->slavefd) {
-		/* If there's no PTY, bbs_node_poll can't be used anyways.
-		 * And if there's no PTY, it's a network protocol that doesn't make sense to interrupt.
-		 * Only terminal protocols should be interrupted. */
-		bbs_debug(1, "Node %u has no PTY\n", nodenum);
-	} else {
-		int err;
-		/* The node thread should never interrupt itself, this is only for other threads to
-		 * interrupt a blocking I/O call. */
-		bbs_assert(node->thread != pthread_self());
-		node->interruptack = 0;
-		node->interrupt = 1; /* Indicate that interrupt was requested */
-
-		bbs_node_kill_child(node); /* If executing an external program, kill it */
-
-		/* Make the I/O function (probably poll(2)) exit with EINTR.
-		 * Less overhead than always polling another alertpipe just for getting out of band alerts like this,
-		 * since we can easily enough check the interrupt status in the necessary places on EINTR. */
-		err = pthread_kill(node->thread, SIGUSR1); /* Uncaught signal, so the blocking I/O call will get interrupted */
-		if (err) {
-			bbs_warning("pthread_kill(%lu) failed: %s\n", (unsigned long) node->thread, strerror(err));
-			bbs_node_unlock(node);
-			return 1;
-		}
-
-		bbs_verb(5, "Interrupted node %u\n", nodenum);
-		res = 0;
-	}
+	res = interrupt_node(node);
 
 	bbs_node_unlock(node);
 	return res;
@@ -784,6 +809,26 @@ void bbs_node_interrupt_clear(struct bbs_node *node)
 int bbs_node_interrupted(struct bbs_node *node)
 {
 	return node->interrupt;
+}
+
+int bbs_node_interrupt_wait(struct bbs_node *node, int ms)
+{
+	int elapsed = 0;
+
+	for (;;) {
+		if (!bbs_node_interrupted(node)) {
+			/* Interrupt was cleared */
+			return 1;
+		}
+		/* XXX Ideally, we would use an alertpipe or something
+		 * of the sort, to avoid the need to poll for interrupt clear. */
+		usleep(10000); /* Wait 10 ms */
+		elapsed += 10;
+		if (ms > 0 && elapsed >= ms) {
+			return 0;
+		}
+	}
+	__builtin_unreachable();
 }
 
 static int cli_interrupt(struct bbs_cli_args *a)

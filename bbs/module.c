@@ -661,7 +661,7 @@ struct bbs_module_ref {
 RWLIST_HEAD(module_list, bbs_module_ref);
 
 /*! \note modules list must be locked when calling */
-static int unload_dependencies(struct bbs_module *mod, struct stringlist *restrict removed)
+static int unload_dependencies(struct bbs_module *mod, int force, struct stringlist *restrict removed)
 {
 	struct bbs_module *m;
 	int res = 0;
@@ -726,7 +726,7 @@ static int unload_dependencies(struct bbs_module *mod, struct stringlist *restri
 		m = r->m;
 		free(r);
 		bbs_verb(5, "Unloading %s, since it depends on %s\n", m->name, mod->name);
-		if (!unload_resource_nolock(m, 0, &usecount, removed)) {
+		if (!unload_resource_nolock(m, force, &usecount, removed)) {
 			res = -1;
 			bbs_warning("Failed to unload module %s, which depends on %s\n", m->name, mod->name);
 			continue;
@@ -793,7 +793,7 @@ static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int for
 {
 	int res;
 
-	bbs_debug(2, "Module %s has use count %d\n", mod->name, mod->usecount);
+	bbs_debug(2, "Module %s has use count %d (force: %d)\n", mod->name, mod->usecount, force);
 	*usecount = mod->usecount;
 
 	/* Automatically unload any other modules that may depend on this module. */
@@ -806,21 +806,21 @@ static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int for
 			 * If a node is executing a door, for example, that won't apply: the module will have
 			 * a refcount due to the usage, but we won't be able to kick the node in this manner here. */
 			if (nodes_usecount > 0) {
-				unsigned int kicked = bbs_node_shutdown_mod(mod); /* Kick all the nodes created by this module. */
-				if (kicked != nodes_usecount) {
-					bbs_warning("Wanted to kick %u nodes but only kicked %u?\n", nodes_usecount, kicked);
-				} else if (kicked) {
+				unsigned int removed_nodes = bbs_node_shutdown_mod(mod); /* Kick all the nodes created by this module. */
+				if (removed_nodes != nodes_usecount) {
+					bbs_warning("Wanted to kick %u nodes but only removed %u?\n", nodes_usecount, removed_nodes);
+				} else if (removed_nodes) {
 					usleep(10000); /* Wait for actual node exits to complete, to increase chance of success */
-					bbs_debug(3, "Kicked %d node%s\n", kicked, ESS(kicked));
+					bbs_debug(3, "Removed %d node%s from module %s\n", removed_nodes, ESS(removed_nodes), bbs_module_name(mod));
 				}
 			}
 		}
-		unload_dependencies(mod, removed);
+		unload_dependencies(mod, force, removed);
 	}
 
 	if (mod->usecount > 0) {
 		if (force > 1) {
-			bbs_warning("Warning:  Forcing removal of module '%s' with use count %d\n", mod->name, mod->usecount);
+			bbs_warning("Warning: Forcing removal of module '%s' with use count %d\n", mod->name, mod->usecount);
 		} else {
 			if (RWLIST_EMPTY(&mod->refs)) {
 				/* The integer count is positive, but our list is empty?

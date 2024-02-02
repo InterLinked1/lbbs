@@ -40,6 +40,7 @@ struct bbs_node {
 	pthread_t thread;			/*!< Thread handling socket I/O */
 	pthread_t ptythread;		/*!< Thread handling PTY master */
 	struct bbs_module *module;	/*!< Module reference for socket/network driver module */
+	struct bbs_module *doormod;	/*!< Module reference for current door being executed */
 	const char *protname;		/*!< Socket driver protocol name */
 	struct bbs_user *user;		/*!< Active user of a BBS node */
 	struct bbs_vars *vars;		/*!< Variables */
@@ -107,9 +108,10 @@ int bbs_load_nodes(void);
 unsigned int bbs_node_count(void);
 
 /*!
- * \brief Get number of allocated nodes created by a certain module
+ * \brief Get number of allocated nodes currently using a certain module
  * \param mod Module reference
- * \retval Number of current nodes created by mod
+ * \retval Number of current nodes created by or using mod
+ * \note Works for nets and doors only
  */
 unsigned int bbs_node_mod_count(void *mod);
 
@@ -246,9 +248,10 @@ int bbs_node_unlink(struct bbs_node *node);
 int bbs_node_shutdown_node(unsigned int nodenum);
 
 /*!
- * \brief Request a shut down of all nodes created using a particular module
+ * \brief Request any nodes using a particular module be kicked from that module
  * \param mod Module reference
- * \return Number of nodes kicked
+ * \note For nets, this will kick the module. For doors, it will interrupt the node to force it to exit the door.
+ * \return Number of nodes kicked from this module
  */
 unsigned int bbs_node_shutdown_mod(void *mod);
 
@@ -274,6 +277,16 @@ int bbs_interrupt_node(unsigned int nodenum);
  * \retval 1 if interrupted, 0 if not interrupted
  */
 int bbs_node_interrupted(struct bbs_node *node);
+
+/*!
+ * \brief Wait for an interrupted node to acknowledge and clear the interrupt
+ * \param node
+ * \param ms If positive, maximum number of milliseconds to wait
+ * \retval 1 if interrupt cleared, 0 if timer expired (like poll)
+ * \note May be called in any thread, as long as node is guaranteed to remain a valid reference
+ *       for the duration of this function (e.g. owning thread owns the node or holds a global node list lock)
+ */
+int bbs_node_interrupt_wait(struct bbs_node *node, int ms);
 
 /*!
  * \brief Clear the interrupt status for a node
