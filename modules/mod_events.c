@@ -263,13 +263,20 @@ static int interactive_start(struct bbs_node *node)
 	NEG_RETURN(bbs_node_writef(node, "%s\n", bbs_name())); /* Print BBS name */
 
 	if (!NODE_IS_TDD(node)) {
+		char speed[NODE_SPEED_BUFSIZ_LARGE];
 		if (!s_strlen_zero(bbs_tagline())) {
 			NEG_RETURN(bbs_node_writef(node, "%s\n\n", bbs_tagline())); /* Print BBS tagline */
 		}
 		bbs_time_friendly_now(timebuf, sizeof(timebuf));
+
 		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "CLIENT", COLOR(COLOR_SECONDARY), "CONN", COLOR(COLOR_PRIMARY), node->protname));
 		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "ADDR", COLOR(COLOR_PRIMARY), node->ip));
-		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%dx%d\n", "", "", COLOR(COLOR_SECONDARY), "TERM", COLOR(COLOR_PRIMARY), node->cols, node->rows));
+		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%dx%d %s\n", "", "", COLOR(COLOR_SECONDARY), "TERM", COLOR(COLOR_PRIMARY), node->cols, node->rows, node->ansi ? "ANSI" : ""));
+
+		bbs_node_format_speed(node, speed, sizeof(speed));
+		/* We use "LINK" instead of "SPEED" since it's 4 characters */
+		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "LINK", COLOR(COLOR_PRIMARY), speed));
+
 		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "SERVER", COLOR(COLOR_SECONDARY), "NAME", COLOR(COLOR_WHITE), bbs_name()));
 		if (!s_strlen_zero(bbs_hostname())) {
 			NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "ADDR", COLOR(COLOR_PRIMARY), bbs_hostname()));

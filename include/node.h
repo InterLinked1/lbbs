@@ -27,7 +27,8 @@ struct pollfd;
 struct bbs_node {
 	unsigned int id;			/*!< Node number, 1-indexed for user-friendliness */
 	unsigned int lifetimeid;	/*!< Lifetime node number, 1-indexed */
-	int fd;						/*!< Socket file descriptor */
+	int sfd;					/*!< Node socket file descriptor */
+	int fd;						/*!< Node "real" file descriptor */
 	int rfd;					/*!< File descriptor for reading */
 	int wfd;					/*!< File descriptor for writing */
 	int amaster;				/*!< PTY master file descriptor */
@@ -54,6 +55,7 @@ struct bbs_node {
 	pthread_mutex_t ptylock;	/*!< Node PTY lock */
 	time_t created;				/*!< Creation time */
 	pid_t childpid;				/*!< Child PID of process node is currently exec'ing (0 if none) */
+	long int calcbps;			/*!< Calculated terminal speed (from measurements) */
 	unsigned int bps;			/*!< Emulated terminal speed */
 	unsigned int speed;			/*!< Pause time for emulated terminal speed, in us */
 	/* Node flags */
@@ -66,6 +68,7 @@ struct bbs_node {
 	unsigned int skipjoin:1;	/*!< If node_shutdown should not join the node thread */
 	unsigned int inmenu:1;		/*!< Whether actively displaying a menu */
 	unsigned int ansi:1;		/*!< Terminal supports ANSI escape sequences */
+	unsigned int slow:1;		/*!< Terminal is using slow connection */
 	/* TDD stuff */
 	char ioreplace[10][2];		/*!< Character replacement for TDDs and other keyboard input-limited endpoints. 2D list with 10 slots. */
 	unsigned int ioreplaces;	/*!< Number of characters currently being replaced. Purely for speed of access in pty.c */
@@ -73,6 +76,10 @@ struct bbs_node {
 	RWLIST_ENTRY(bbs_node) entry;
 };
 
+/*! \brief Node is running an interactive terminal protocol */
+#define NODE_INTERACTIVE(node) (node->amaster != -1)
+
+/*! \brief Node is interactive and has an active pseudoterminal */
 #define NODE_HAS_PTY(node) (node->slavefd != -1)
 
 /*!
@@ -336,6 +343,20 @@ int bbs_node_update_winsize(struct bbs_node *node, int cols, int rows);
  * \retval 0 on success, -1 on failure.
  */
 int bbs_node_set_speed(struct bbs_node *node, unsigned int bps);
+
+#define NODE_SPEED_BUFSIZ_SMALL 6
+#define NODE_SPEED_BUFSIZ_LARGE 10
+
+/*!
+ * \brief Create a friendly representation of the node speed
+ * \param node
+ * \param buf
+ * \param len Size of buf, which should be NODE_SPEED_BUFSIZ_SMALL or NODE_SPEED_BUFSIZ_LARGE.
+ * \retval -1 if speed is <= 0
+ * \retval 0 if speed is > 0 and <= 64kbps
+ * \retval 1 if speed is > 64kbps
+ */
+int bbs_node_format_speed(struct bbs_node *node, char *restrict buf, size_t len);
 
 /*!
  * \brief Display status of all nodes

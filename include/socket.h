@@ -56,6 +56,14 @@ int bbs_unblock_fd(int fd);
 int bbs_block_fd(int fd);
 
 /*!
+ * \brief Enable or disable Nagle's algorithm
+ * \param fd
+ * \param enabled 1 to disable Nagle's algorithm, 0 to enable
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_set_fd_tcp_nodelay(int fd, int enabled);
+
+/*!
  * \brief Check whether a given hostname has an A record for a particular IP address
  * \param hostname Hostname to check
  * \param ip IP address for which to check

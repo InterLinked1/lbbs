@@ -388,6 +388,9 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 /*! \brief Print singular or plural ending */
 #define ESS(x) ((x) == 1 ? "" : "s")
 
+/*! \brief Print Yes or No */
+#define BBS_YESNO(x) (x ? "Yes" : "No")
+
 /*! \brief Print Y or N */
 #define BBS_YN(x) (x ? "Y" : "N")
 

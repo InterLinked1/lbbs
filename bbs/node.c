@@ -30,6 +30,7 @@
 #include <sys/ioctl.h>
 #include <limits.h>
 
+#include "include/time.h" /* use timespecsub */
 #include "include/node.h"
 #include "include/user.h"
 #include "include/variables.h"
@@ -267,6 +268,10 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 	 * due to the way that TLS relaying is implemented in the BBS. */
 	node->rfd = node->wfd = fd;
 
+	/* By default, the socket file descriptor is the same as the regular file descriptor.
+	 * Only net_ssh overrides this. */
+	node->sfd = fd;
+
 	/* Not all nodes will get a pseudoterminal, so initialize to -1 so if not, we don't try to close STDIN erroneously on shutdown */
 	node->amaster = -1;
 	node->slavefd = -1;
@@ -297,7 +302,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 	} else {
 		RWLIST_INSERT_HEAD(&nodes, node, entry); /* This is the first node. */
 	}
-	node->lifetimeid = lifetime_nodes++;
+	node->lifetimeid = ++lifetime_nodes; /* Starts at 0 so increment first before assigning */
 	RWLIST_UNLOCK(&nodes);
 
 	bbs_debug(1, "Allocated new node with ID %u (lifetime ID %d)\n", node->id, node->lifetimeid);
@@ -754,11 +759,13 @@ static int cli_nodes(struct bbs_cli_args *a)
 	int c = 0;
 	time_t now = time(NULL);
 
-	bbs_dprintf(a->fdout, "%3s %9s %9s %7s %4s %-15s %-25s %15s %5s %1s %1s %3s %7s %3s %3s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "ANSI", "USER", "MENU/PAGE", "IP ADDRESS", "RPORT", "E", "B", "INT", "TID", "FD", "RFD", "WFD", "MST", "SLV", "SPY", "SLV NAME");
+	bbs_dprintf(a->fdout, "%3s %9s %9s %7s %4s %5s %4s %-15s %-25s %15s %5s %1s %1s %1s %7s %3s %3s %3s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "ANSI", "SPEED", "SLOW", "USER", "MENU/PAGE/LOCATION", "IP ADDRESS", "RPORT", "E", "B", "!", "TID", "SFD", "FD", "RFD", "WFD", "MST", "SLV", "SPY", "SLV NAME");
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
 		char menufull[26];
+		char termsize[8];
+		char speed[NODE_SPEED_BUFSIZ_SMALL];
 		int lwp;
 		/* Do not lock the node here.
 		 * Even though we are accessing some properties of the node which could change,
@@ -771,10 +778,22 @@ static int cli_nodes(struct bbs_cli_args *a)
 		print_time_elapsed(n->created, now, elapsed, sizeof(elapsed));
 		snprintf(menufull, sizeof(menufull), "%s%s%s%s", S_IF(n->menu), n->menuitem ? " (" : "", S_IF(n->menuitem), n->menuitem ? ")" : "");
 		lwp = bbs_pthread_tid(n->thread);
-		bbs_dprintf(a->fdout, "%3d %9s %9s %3dx%3d %4s %-15s %-25s %15s %5u %1s %1s %3s %7d %3d %3d %3d %3d %3d %3d %s\n",
-			n->id, n->protname, elapsed, n->cols, n->rows, n->ansi ? "Yes" : "No", bbs_username(n->user), menufull, n->ip, n->rport, BBS_YN(n->echo), BBS_YN(n->buffered),
+
+		if (NODE_INTERACTIVE(n)) {
+			snprintf(termsize, sizeof(termsize), "%dx%d", n->cols, n->rows);
+			bbs_node_format_speed(n, speed, sizeof(speed));
+		} else {
+			termsize[0] = speed[0] = '\0';
+		}
+
+		bbs_dprintf(a->fdout, "%3d %9s %9s %7s %4s %5s %4s %-15s %-25s %15s %5u %1s %1s %1s %7d %3d %3d %3d %3d",
+			n->id, n->protname, elapsed, termsize, NODE_INTERACTIVE(n) ? BBS_YESNO(n->ansi) : "", speed, NODE_INTERACTIVE(n) ? BBS_YN(n->slow) : " ", bbs_username(n->user), menufull, n->ip, n->rport, NODE_INTERACTIVE(n) ? BBS_YN(n->echo) : "", NODE_INTERACTIVE(n) ? BBS_YN(n->buffered) : "",
 			bbs_node_interrupted(n) ? "*" : "",
-			lwp, n->fd, n->rfd, n->wfd, n->amaster, n->slavefd, n->spyfd, n->slavename);
+			lwp, n->sfd, n->fd, n->rfd, n->wfd);
+		if (NODE_INTERACTIVE(n)) {
+			bbs_dprintf(a->fdout, " %3d %3d %3d %s", n->amaster, n->slavefd, n->spyfd, n->slavename);
+		}
+		bbs_dprintf(a->fdout, "\n");
 		c++;
 	}
 	RWLIST_UNLOCK(&nodes);
@@ -916,9 +935,18 @@ static int node_info(int fd, unsigned int nodenum)
 	bbs_dprintf(fd, BBS_FMT_S, "IP Address", n->ip);
 	bbs_dprintf(fd, BBS_FMT_S, "Connected", connecttime);
 	bbs_dprintf(fd, BBS_FMT_S, "Elapsed", elapsed);
-	bbs_dprintf(fd, BBS_FMT_DSD, "Term Size", n->cols, "x", n->rows);
-	bbs_dprintf(fd, BBS_FMT_S, "Term Echo", BBS_YN(n->echo));
-	bbs_dprintf(fd, BBS_FMT_S, "Term Buffered", BBS_YN(n->buffered));
+
+	if (NODE_INTERACTIVE(n)) {
+		char speed[NODE_SPEED_BUFSIZ_LARGE];
+		bbs_node_format_speed(n, speed, sizeof(speed));
+		bbs_dprintf(fd, BBS_FMT_DSD, "Term Size", n->cols, "x", n->rows);
+		bbs_dprintf(fd, BBS_FMT_S, "Term ANSI", BBS_YN(n->ansi));
+		bbs_dprintf(fd, BBS_FMT_S, "Term Speed", speed);
+		bbs_dprintf(fd, BBS_FMT_S, "Term Echo", BBS_YN(n->echo));
+		bbs_dprintf(fd, BBS_FMT_S, "Term Buffered", BBS_YN(n->buffered));
+	}
+
+	bbs_dprintf(fd, BBS_FMT_D, "Node Network FD", n->sfd);
 	bbs_dprintf(fd, BBS_FMT_D, "Node Read FD", n->rfd);
 	bbs_dprintf(fd, BBS_FMT_D, "Node Write FD", n->wfd);
 	bbs_dprintf(fd, BBS_FMT_D, "Node PTY Master FD", n->amaster);
@@ -1240,13 +1268,351 @@ static int authenticate(struct bbs_node *node)
 	return 0;
 }
 
+static inline long ns_since(struct timespec *start, struct timespec *now)
+{
+	struct timespec diff;
+	timespecsub(now, start, &diff);
+	return (1000000000 * diff.tv_sec) + (diff.tv_nsec);
+}
+
+static inline int record_start_time(struct timespec *restrict start)
+{
+	if (clock_gettime(CLOCK_MONOTONIC_RAW, start)) {
+		bbs_error("clock_gettime failed: %s\n", strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+static inline int read_cursor_pos_response_single(struct bbs_node *node, int timeout)
+{
+	ssize_t res;
+	char c;
+
+	/* It could take a moment to get the first character */
+	res = bbs_node_poll(node, timeout);
+	if (res <= 0) {
+		if (!res) {
+			bbs_debug(3, "No response to cursor position query after 3 seconds...\n");
+		}
+		return res ? -1 : 0;
+	}
+	/* We read and poll separately because bbs_node_tread triggers the "timed out due to inactivity" log message */
+	res = bbs_node_read(node, &c, 1);
+	if (res <= 0) {
+		return res ? -1 : 0;
+	}
+	do {
+		res = bbs_node_poll(node, SEC_MS(5));
+		if (res <= 0) {
+			if (!res) {
+				/* We started getting something but didn't get a fully response to the cursor position query.
+				 * Could be other random data or maybe corruption? */
+				bbs_debug(1, "Incomplete response to cursor position query...\n");
+			}
+			return res ? -1 : 0;
+		}
+		res = bbs_node_read(node, &c, 1);
+		if (res <= 0) {
+			return res ? -1 : 0;
+		}
+	} while (c != 'R');
+	return 1;
+}
+
+/*!
+ * \brief Read cursor position response
+ * \param node
+ * \retval -1 on node disconnect
+ * \retval 1 if positive cursor position query response received
+ * \retval 0 Non-ANSI terminal (no positive response)
+ */
+static inline int read_cursor_pos_response(struct bbs_node *node, struct timespec *restrict start, const char *restrict buf, int len)
+{
+	int i;
+	int res;
+	int retries = 0;
+
+	if (record_start_time(start)) {
+		return 0;
+	}
+	if (bbs_node_write(node, buf, (size_t) len) < (ssize_t) len) {
+		return -1;
+	}
+	/* Most modern terminals support ANSI and will response immediately,
+	 * so don't wait too long for that. */
+	res = read_cursor_pos_response_single(node, SEC_MS(3));
+	if (res) {
+		return res;
+	}
+
+	/* Modem connections can take (significantly) longer to handshake
+	 * and negotiate, and it's a good to require a character to be
+	 * pressed on the user's side before sending anything for real,
+	 * or stuff will get missed. */
+	for (i = 0; i < 5; i++) {
+		ssize_t pres;
+		bbs_node_writef(node, "%sPress ENTER: ", i ? "\r" : "");
+		pres = bbs_node_poll(node, SEC_MS(4));
+		if (pres < 0) {
+			return -1;
+		} else if (pres) {
+			/* Reset start time, since we're really starting now */
+			if (record_start_time(start)) {
+				return 0;
+			}
+			/* Resend, now that we know. */
+			if (bbs_node_write(node, buf, (size_t) len) < 0) {
+				return -1;
+			}
+			/* We got input from the terminal, so that means
+			 * this is after the CONNECT, and we're really synchronized.
+			 * Go ahead and do the test again. */
+			res = read_cursor_pos_response_single(node, SEC_MS(5));
+			if (res || retries) {
+				if (retries) {
+					bbs_warning("Failed to read cursor position query response, poor data connection?\n");
+				}
+				return res;
+			}
+			/* Sometimes this fails with low-speed modem connections
+			 * without error correction (e.g. 300 / 1200 bps)
+			 * due to corruption on the link; try again
+			 * if it fails the first time, but only once. */
+			retries++;
+		}
+	}
+
+	bbs_verb(4, "No input received from node, disconnecting...\n");
+	return -1;
+}
+
+/*! \brief Round to the nearest modem speed */
+static inline long int estimate_bps(long int bps)
+{
+	if (bps < 75) {
+		return 45;
+	} else if (bps < 150) {
+		return 110;
+	} else if (bps < 450) {
+		return 300;
+	} else if (bps < 900) {
+		return 600;
+	} else if (bps < 1800) {
+		return 1200;
+	} else if (bps < 3600) {
+		return 2400;
+	} else if (bps < 7200) {
+		return 4800;
+	} else if (bps < 12000) {
+		return 9600;
+	} else if (bps < 16800) {
+		return 14400;
+	} else if (bps < 24000) {
+		return 19200;
+	} else if (bps < 30000) {
+		return 28800;
+	} else if (bps < 32400) {
+		return 31200;
+	} else if (bps < 36000) {
+		return 33600;
+	} else if (bps < 64000) {
+		return 56000;
+	} else if (bps < 72000) {
+		return 64000;
+	} else {
+		return bps;
+	}
+}
+
+int bbs_node_format_speed(struct bbs_node *node, char *restrict buf, size_t len)
+{
+	if (node->calcbps <= 0) {
+		safe_strncpy(buf, len >= STRLEN("Unknown") + 1 ? "Unknown" : "???", len);
+		return -1;
+	} else if (node->calcbps < 10000) {
+		/* gcc thinks the buffer could be too small for a long, but since we're checking the size, it can't be */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+		snprintf(buf, len, "%ld", node->calcbps);
+		return 0;
+	} else if (node->calcbps <= 64000) {
+		long kbps = node->calcbps / 1000;
+		snprintf(buf, len, "%ld.%ldk", kbps, (node->calcbps - (1000 * kbps)) / 100); /* Display with 1 decimal point, using integer math */
+#pragma GCC diagnostic pop
+		return 0;
+	} else { /* Broadband */
+		safe_strncpy(buf, len >= STRLEN("Broadband") + 1 ? "Broadband" : " BrdBd", len);
+		return 1;
+	}
+}
+
+/*!
+ * \brief Check whether the client's terminal supports ANSI and how fast it is
+ * \param node
+ * \retval -1 node disconnected
+ * \retval 0 Successful ANSI handshake
+ * \retval 1 Failed ANSI handshake
+ */
+static int init_term_properties_automatic(struct bbs_node *node)
+{
+	struct timespec start, end;
+	long ns, bps;
+	int bits;
+	double ns_factor;
+	ssize_t res;
+	char buf[256];
+	int bytes;
+
+	/* Prepare it into a buffer first and send all at once, so we know exactly how many bytes we sent. */
+	bytes = snprintf(buf, sizeof(buf),
+		"%s%s"
+		"%s  Version %d.%d.%d\n"
+		"%s connection from: %s\n"
+		/* Try to determine the speed of the connected terminal.
+		 * No, we don't need any fancy black magic to do that.
+		 * Just query the terminal with something that should elicit
+		 * a response from most terminals, and time when we get the response. */
+		"\033[6n", /* Ask for cursor position, don't care what it is, just want to get a response. */
+		TERM_CLEAR, COLOR_RESET,
+		BBS_TAGLINE, BBS_MAJOR_VERSION, BBS_MINOR_VERSION, BBS_PATCH_VERSION,
+		node->protname, node->ip);
+
+	if (record_start_time(&start)) {
+		return 1;
+	} else if (bbs_set_fd_tcp_nodelay(node->sfd, 1)) { /* Temporarily disable Nagle's algorithm, so that we can flush packets immediately. */
+		return 1;
+	} else if (bbs_node_unbuffer(node)) {
+		return 1;
+	}
+
+	/* Most modern terminals support ANSI and will response immediately,
+	 * so don't wait too long for that. */
+	res = read_cursor_pos_response(node, &start, buf, bytes);
+	if (res <= 0) {
+		return res ? -1 : 1;
+	}
+
+	/* Terminal supports ANSI escape sequences. Already initialized to 1, but be explicit.
+	 * We initialize to 1, by the way, or bbs_node_write would automatically strip ANSI,
+	 * but we want to assume nodes support ANSI for the test, or it won't work. */
+	node->ansi = 1;
+
+	if (clock_gettime(CLOCK_MONOTONIC_RAW, &end)) {
+		bbs_error("clock_gettime failed: %s\n", strerror(errno));
+		return 1;
+	}
+
+	ns = ns_since(&start, &end);
+	bbs_debug(1, "%ld ns elapsed for cursor position query (sent %d bytes)\n", ns, bytes);
+
+	/* It might seem like it would be a good idea to divide ns by 2, since
+	 * the actual time it took the data to get to the client should be ~half the RTT.
+	 * But we sent a lot more data to the client than it sent us, so that download
+	 * to the client is probably a much larger portion of the elapsed time than the upload.
+	 * So, compromise between halving and not half and take, say, 80%.
+	 *
+	 * Normally, we also want to account for Nagle's delay, since we don't open
+	 * sockets with that option disabled, but Nagle's algorithm is disabled
+	 * for these calculations.
+	 *
+	 * This isn't going to be super accurate either way, since we sent such a small
+	 * amount of data that the margin for error is huge. We'd want to send a lot more
+	 * data to maximize the amount of "goodput" in arriving at these calculations.
+	 *
+	 * If the client is on any kind of sub-broadband connection, that's almost certainly
+	 * going to be the bottleneck and will domination the calculations. */
+	ns /= 5;
+	ns *= 4;
+
+	bits = bytes * 8; /* Amount of data sent */
+
+#define NS_PER_SEC 1000000000
+
+	ns_factor = ((double) ns) / NS_PER_SEC; /* If < 1, it took under a second. If > 1, it took more than a second. */
+	bps = (int) ((1.0 * (double) bits) / ns_factor); /* To get bps, just multiply bits by the same scale factor */
+	bbs_debug(2, "Calculated speed is %ld bps\n", bps); /* Pre-rounding */
+
+	bps = estimate_bps(bps); /* Take our estimate and round it to the nearest actual modem speed */
+	node->calcbps = bps;
+	if (bps < 10000) {
+		bbs_verb(4, "Node %u supports ANSI, downlink ~ %ld bps\n", node->id, bps);
+		if (node->calcbps <= 4800) {
+			/* Consider any terminals running at 300, 1200, 2400, and 4800 baud to be particularly "slow". */
+			node->slow = 1;
+		}
+	} else if (bps <= 64000) {
+		long kbps = bps / 1000;
+		bbs_verb(4, "Node %u supports ANSI, downlink ~ %ld.%ld kbps\n", node->id, kbps, (bps - (1000 * kbps)) / 100); /* Display with 1 decimal point, using integer math */
+	} else {
+		bbs_verb(4, "Node %u supports ANSI, downlink ~ broadband\n", node->id);
+	}
+
+	return 0;
+}
+
+static int ask_yn(struct bbs_node *node, const char *question)
+{
+	int i;
+	char c;
+	/* Since we're not sure if this terminal supports ANSI,
+	 * don't use any ANSI escape sequences, just keep it nice and simple. */
+	bbs_node_writef(node, "\n%s? (y/n) ", question);
+	for (i = 0; i < 3; i++) {
+		c = bbs_node_tread(node, SEC_MS(30));
+		if (c == 'y') {
+			return 1;
+		} else if (c == 'n') {
+			return 0;
+		}
+	}
+	return -1;
+}
+
+static int init_term_properties_manual(struct bbs_node *node)
+{
+	int res;
+
+	res = ask_yn(node, "ANSI support");
+	if (res < 0) {
+		return -1;
+	}
+	SET_BITFIELD(node->ansi, res);
+
+	res = ask_yn(node, "Slow terminal");
+	if (res < 0) {
+		return -1;
+	}
+	SET_BITFIELD(node->slow, res);
+
+	return 0;
+}
+
 static int _bbs_intro(struct bbs_node *node)
 {
-	NEG_RETURN(bbs_node_clear_screen(node));
-	NEG_RETURN(bbs_node_reset_color(node));
-	NEG_RETURN(bbs_node_writef(node, "%s  Version %d.%d.%d\n", BBS_TAGLINE, BBS_MAJOR_VERSION, BBS_MINOR_VERSION, BBS_PATCH_VERSION));
-	NEG_RETURN(bbs_node_writef(node, "%s connection from: %s\n", node->protname, node->ip));
-	return bbs_node_safe_sleep(node, 300) < 0 ? -1 : 0;
+	int res;
+
+	/* To be compatible with all terminals, we need to tolerate connections as slow as 300 bps
+	 * (no slower, since 110 bps is extremely rare, and TTDs don't execute _bbs_intro, as we
+	 *  already know they are slow).
+	 * At 300 baud, it might take a few seconds to print the above banners and then receive the check,
+	 * and finally send back the response. If we haven't gotten a response by then, assume
+	 * that the terminal doesn't support this kind of stuff and proceed anyways. */
+	res = init_term_properties_automatic(node);
+	if (res < 0) {
+		return res;
+	} else if (res) {
+		/* Could not autodetect ANSI support */
+		bbs_verb(4, "Could not autodetect ANSI support for node %u\n" ,node->id);
+		res = init_term_properties_manual(node);
+		if (res < 0) {
+			return res;
+		}
+	}
+
+	bbs_node_buffer(node); /* Reset */
+	bbs_set_fd_tcp_nodelay(node->sfd, 0); /* Undo the disable */
+	return 0;
 }
 
 static int node_intro(struct bbs_node *node)

@@ -67,6 +67,8 @@ Key features and capabilities include:
 
 * Queue agent position system for Asterisk
 
+* Terminal autodetection (ANSI support, link speed)
+
 * Emulated slow baud rate support
 
 * TDD/TTY (telecommunications device for the deaf) support

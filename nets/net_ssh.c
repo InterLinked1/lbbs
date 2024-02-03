@@ -229,6 +229,7 @@ static int save_remote_ip(ssh_session session, struct bbs_node *node, char *buf,
 
 	sock = (struct sockaddr_in *) &tmp;
 	if (node) {
+		node->sfd = sfd; /* Save actual network file descriptor for this node */
 		return bbs_save_remote_ip(sock, node);
 	} else if (buf) {
 		return bbs_get_remote_ip(sock, buf, len);

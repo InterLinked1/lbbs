@@ -44,6 +44,11 @@ static int run(void)
 
 	clientfd = test_make_socket(23);
 	REQUIRE_FD(clientfd);
+
+	/* Spoof ANSI terminal support */
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "\033[6n");
+	SWRITE(clientfd, "RR"); /* Needs to be multiple characters and end with an R. This isn't a valid response, but the BBS doesn't actually parse the result, apart from ending in 'R'. */
+
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "Hit a key");
 	SWRITE(clientfd, " "); /* Hit a key */
 

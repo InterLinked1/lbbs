@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h> /* use sockaddr_in */
+#include <netinet/tcp.h> /* use TCP_NODELAY */
 #include <net/if.h> /* use ifreq */
 #include <sys/un.h>	/* use struct sockaddr_un */
 #include <arpa/inet.h> /* use inet_ntop */
@@ -290,6 +291,18 @@ int bbs_block_fd(int fd)
 	if (fcntl(fd, F_SETFL, flags)) {
 		bbs_error("fcntl failed: %s\n", strerror(errno));
 		return -1;
+	}
+	return 0;
+}
+
+int bbs_set_fd_tcp_nodelay(int fd, int enabled)
+{
+	int i = enabled;
+	if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &i, sizeof(i))) {
+		bbs_error("setsockopt failed: %s\n", strerror(errno));
+		return -1;
+	} else {
+		bbs_debug(3, "%s Nagle's algorithm on socket %d\n", enabled ? "Disabled" : "Enabled", fd);
 	}
 	return 0;
 }

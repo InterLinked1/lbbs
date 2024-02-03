@@ -21,6 +21,7 @@
 
 #include <sys/time.h>
 
+#include "include/time.h" /* use timespecsub */
 #include "include/ratelimit.h"
 
 static inline void reset_rate_limit(struct bbs_rate_limit *r)
@@ -61,19 +62,6 @@ int bbs_rate_limit_init(struct bbs_rate_limit *r, int interval, int max)
 	memcpy(&r->b, &r->a, sizeof(struct timespec));
 	return 0;
 }
-
-/* This is a BSD macro, so probably not available by default on most systems */
-#ifndef timespecsub
-#define timespecsub(tsp, usp, vsp)                          \
-    do {                                                    \
-        (vsp)->tv_sec = (tsp)->tv_sec - (usp)->tv_sec;      \
-        (vsp)->tv_nsec = (tsp)->tv_nsec - (usp)->tv_nsec;   \
-        if ((vsp)->tv_nsec < 0) {                           \
-            (vsp)->tv_sec--;                                \
-            (vsp)->tv_nsec += 1000000000L;                  \
-        }                                                   \
-    } while (0)
-#endif
 
 static inline long ms_since(struct timespec *start, struct timespec *now)
 {
