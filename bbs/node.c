@@ -286,6 +286,11 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 	node->protname = protname;
 	node->ansi = 1; /* Assume nodes support ANSI escape sequences by default. */
 
+	/* Assume 80x24 terminal by default, for interactive nodes,
+	 * to support dumb terminals over modems that won't tell us their size. */
+	node->cols = 80;
+	node->rows = 24;
+
 	/* This prevents this module from being unloaded as long as there are nodes using it.
 	 * For example, since node->protname is constant in this module, if we unload it,
 	 * even though no code is being executed in the module actively, if we list nodes,
@@ -780,7 +785,8 @@ static int cli_nodes(struct bbs_cli_args *a)
 		lwp = bbs_pthread_tid(n->thread);
 
 		if (NODE_INTERACTIVE(n)) {
-			snprintf(termsize, sizeof(termsize), "%dx%d", n->cols, n->rows);
+			/* If the size is speculative, put a '?' afterwards */
+			snprintf(termsize, sizeof(termsize), "%dx%d%s", n->cols, n->rows, n->dimensions ? "" : "?");
 			bbs_node_format_speed(n, speed, sizeof(speed));
 		} else {
 			termsize[0] = speed[0] = '\0';
@@ -914,7 +920,7 @@ static int node_info(int fd, unsigned int nodenum)
 
 #define BBS_FMT_S "%-20s : %s\n"
 #define BBS_FMT_D "%-20s : %d\n"
-#define BBS_FMT_DSD "%-20s : %d%s%d\n"
+#define BBS_FMT_DSDS "%-20s : %d%s%d%s\n"
 
 /* This addresses the desire to be able to do something like this:
  * bbs_dprintf(fd, n->childpid ? BBS_FMT_D : BBS_FMT_S, "CHILD PID", n->childpid ? n->childpid : "None");
@@ -939,7 +945,7 @@ static int node_info(int fd, unsigned int nodenum)
 	if (NODE_INTERACTIVE(n)) {
 		char speed[NODE_SPEED_BUFSIZ_LARGE];
 		bbs_node_format_speed(n, speed, sizeof(speed));
-		bbs_dprintf(fd, BBS_FMT_DSD, "Term Size", n->cols, "x", n->rows);
+		bbs_dprintf(fd, BBS_FMT_DSDS, "Term Size", n->cols, "x", n->rows, n->dimensions ? "" : "?");
 		bbs_dprintf(fd, BBS_FMT_S, "Term ANSI", BBS_YN(n->ansi));
 		bbs_dprintf(fd, BBS_FMT_S, "Term Speed", speed);
 		bbs_dprintf(fd, BBS_FMT_S, "Term Echo", BBS_YN(n->echo));
@@ -1035,6 +1041,7 @@ int bbs_node_update_winsize(struct bbs_node *node, int cols, int rows)
 		 */
 		node->cols = (unsigned int) cols;
 		node->rows = (unsigned int) rows;
+		node->dimensions = 1;
 	}
 
 	/*

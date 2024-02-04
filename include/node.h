@@ -69,6 +69,7 @@ struct bbs_node {
 	unsigned int inmenu:1;		/*!< Whether actively displaying a menu */
 	unsigned int ansi:1;		/*!< Terminal supports ANSI escape sequences */
 	unsigned int slow:1;		/*!< Terminal is using slow connection */
+	unsigned int dimensions:1;	/*!< Aware of actual terminal dimensions */
 	/* TDD stuff */
 	char ioreplace[10][2];		/*!< Character replacement for TDDs and other keyboard input-limited endpoints. 2D list with 10 slots. */
 	unsigned int ioreplaces;	/*!< Number of characters currently being replaced. Purely for speed of access in pty.c */

@@ -524,8 +524,9 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 			RWLIST_UNLOCK(&menus);
 			return -1;
 		}
-		/* Pause momentarily, or the user won't really see the ANSI art */
-		if (bbs_node_wait_key(node, MIN_MS(2)) < 0) {
+		/* Pause momentarily, or the user won't really see the ANSI art.
+		 * ANSI art can take a long time at slow speeds, so be tolerant of that. */
+		if (bbs_node_wait_key(node, MIN_MS(7)) < 0) {
 			RWLIST_UNLOCK(&menus);
 			return -1;
 		}
