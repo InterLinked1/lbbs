@@ -22,7 +22,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h> /* use isalnum */
-#include <math.h> /* use ceil */
 
 #include "include/menu.h"
 #include "include/ansi.h"
@@ -41,36 +40,39 @@
 
 static int case_sensitive = 0;
 
+#define MAX_MENU_NAME_LENGTH 64
+#define MAX_MENUITEM_NAME_LENGTH 64
+
 struct bbs_menu_item {
 	char opt;
-	char *action;
-	char *name;
-	char *group;
+	const char *action;
+	const char *name;
+	const char *group;
 	unsigned int minpriv;
 	/* Next entry */
 	RWLIST_ENTRY(bbs_menu_item) entry;
+	char data[];
 };
 
 RWLIST_HEAD(bbs_menuitems, bbs_menu_item);
 
 struct bbs_menu {
-	char *name;				/*!< Name of menu section e.g. [menu] */
-	char *title;			/*!< Menu title */
-	char *subtitle;			/*!< Menu subtitle */
-	char *display;			/*!< Menu display, if manual rather than automatic */
+	const char *name;			/*!< Name of menu section e.g. [menu] */
+	const char *title;			/*!< Menu title */
+	const char *subtitle;		/*!< Menu subtitle */
+	const char *artfile;		/*!< Menu art file (e.g. ANSI art) */
+	const char *display;		/*!< Menu display, if manual rather than automatic */
 	/* List of menu items */
 	struct bbs_menuitems menuitems;
 	/* Next entry */
 	RWLIST_ENTRY(bbs_menu) entry;
+	char data[];
 };
 
 static RWLIST_HEAD_STATIC(menus, bbs_menu);
 
 static void menuitem_free(struct bbs_menu_item *menuitem)
 {
-	free_if(menuitem->name);
-	free_if(menuitem->action);
-	free_if(menuitem->group);
 	free(menuitem);
 }
 
@@ -78,10 +80,6 @@ static void menu_free(struct bbs_menu *menu)
 {
 	bbs_debug(5, "Destroying menu %s\n", menu->name);
 	RWLIST_REMOVE_ALL(&menu->menuitems, entry, menuitem_free);
-	free_if(menu->title);
-	free_if(menu->subtitle);
-	free_if(menu->display);
-	free(menu->name);
 	free(menu);
 }
 
@@ -103,6 +101,7 @@ static int menu_item_link(struct bbs_menu *menu, struct bbs_menu_item *menuitem)
 		return -1;
 	}
 
+	bbs_verb(5, "Added menu item '%c => %s' to menu '%s'\n", menuitem->opt, menuitem->name, menu->name);
 	RWLIST_INSERT_TAIL(&menu->menuitems, menuitem, entry);
 	return 0;
 }
@@ -170,6 +169,7 @@ static int bbs_dump_menu(int fd, const char *menuname)
 	bbs_dprintf(fd, "=== %s ===\n", menu->name);
 	bbs_dprintf(fd, "Title: %s\n", S_IF(menu->title));
 	bbs_dprintf(fd, "Subtitle: %s\n", S_IF(menu->subtitle));
+	bbs_dprintf(fd, "Art File: %s\n", S_IF(menu->artfile));
 	bbs_dprintf(fd, "Dynamically Generated: %s\n", BBS_YN(menu->display == NULL));
 	bbs_dprintf(fd, "\n");
 
@@ -471,14 +471,14 @@ static int menu_set_title(struct bbs_node *node, const char *name)
 	return bbs_node_set_term_title(node, stripped);
 }
 
-#define SCRATCH_BUF_SIZE 256
-
 /*!
  * \brief Run the BBS on a node
  * \param node node
  * \param menuname Name of menu to run
+ * \param menuitemname
  * \param stack Current stack count
  * \param optreq Option request string
+ * \param scratchbuf Scratch buffer space, of size SCRATCH_BUF_SIZE
  */
 static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char *menuitemname, int stack, const char *optreq, char *restrict scratchbuf)
 {
@@ -488,6 +488,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 	struct bbs_menu_item *menuitem;
 	char options[64]; /* No menu will ever have more than this many options... */
 	char menusequence[BBS_MAX_MENUSTACK + 1]; /* No point in reading more options than we can use */
+	char submenuitemname[MAX_MENUITEM_NAME_LENGTH];
 	int neederror = 0;
 	int forcedrawmenu = 0;
 
@@ -502,11 +503,8 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 	 * Aside from this, there is no other reason. */
 	node->menustack = stack;
 
-	/* Grab a RDLOCK on the menu list. We might hold this for a while...
-	 * it's okay since it's a RDLOCK. The only thing this holds up is
-	 * operations that modify the menulist, which is good since we don't
-	 * want menus changing from underneath us while we're using them...
-	 */
+	/* Grab a RDLOCK on the menu list. However, to allow for menus to be reloaded while nodes,
+	 * are active in the menu system, we unlock menus while waiting for or executing a selection. */
 	RWLIST_RDLOCK(&menus);
 	/* Find the menu */
 	menu = find_menu(menuname);
@@ -518,9 +516,37 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 
 	bbs_assert(!strcasecmp(menuname, menu->name));
 
+	if (menu->artfile && node->ansi) {
+		bbs_debug(4, "Displaying ANSI art: %s\n", menu->artfile);
+		bbs_node_clear_screen(node);
+		/* Menu has an ANSI art file, display it, but only the first time we run this menu. */
+		if (bbs_send_file(menu->artfile, node->slavefd) <= 0) {
+			RWLIST_UNLOCK(&menus);
+			return -1;
+		}
+		/* Pause momentarily, or the user won't really see the ANSI art */
+		if (bbs_node_wait_key(node, MIN_MS(2)) < 0) {
+			RWLIST_UNLOCK(&menus);
+			return -1;
+		}
+	}
+
 	/* Wait for a selection */
+	/* menus must be RDLOCK'd at the beginning of the loop */
 	for (;;) {
-		node->menu = menu->name; /* As long as we're in the menu, it can't be destroyed and this is safe. */
+		if (!menu) {
+			/* During this loop, we unlock menus to minimize the amount of time for which menus is locked.
+			 * When we do this, we set menu to NULL, since that pointer is no longer necessarily valid.
+			 * Thus, when we loop again (now that menus is locked again),
+			 * we may need to find menu again. */
+			menu = find_menu(menuname);
+			if (!menu) {
+				RWLIST_UNLOCK(&menus);
+				bbs_warning("Menu '%s' (executed by node %d) no longer exists!\n", menuname, node->id);
+				return 0;
+			}
+		}
+		node->menu = menuname;
 		node->menuitem = NULL;
 		node->inmenu = 1;
 		if (strlen_zero(optreq)) {
@@ -549,20 +575,27 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 					build_options(node, menu, options, sizeof(options)); /* Since we didn't display the menu, get the option list */
 				}
 			}
+
+			/* Don't hold a lock on the menus while we're just waiting for input. */
+			menu = NULL; /* menu is no longer valid memory necessarily since menus can change when unlocked. */
+			RWLIST_UNLOCK(&menus);
+
 			/* Wait for user to choose an option from the menu */
 			bbs_node_unbuffer(node); /* Unbuffer input and disable echo, so we can read a single-char selection */
 			opt = bbs_node_tread(node, (int) bbs_idle_ms());
 			if (opt <= 0) {
-				RWLIST_UNLOCK(&menus);
 				return opt;
 			} else if (opt == 21) {
 				opt = 0;
+				RWLIST_RDLOCK(&menus);
 				continue; /* Redraw the menu */
 			}
 		} else {
 			bbs_debug(5, "Node %d bypassing menu(%d) '%s' with option '%c' (full string: %s)\n", node->id, stack, menuname, *optreq, optreq);
 			opt = *optreq;
 			build_options(node, menu, options, sizeof(options)); /* Since we didn't display the menu, get the option list */
+			menu = NULL;
+			RWLIST_UNLOCK(&menus);
 		}
 
 		if (!case_sensitive) {
@@ -586,12 +619,14 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 				/* User pressed / and then pressed ENTER. Logically, this should do nothing. */
 				optreq = NULL;
 				opt = 0;
+				RWLIST_RDLOCK(&menus);
 				continue;
 			}
 
 			/* Everything in the sequence must be alphanumeric: either a letter or number */
 			if (!valid_menusequence(menusequence)) {
 				bbs_node_writef(node, "%sInvalid skip menu sequence%s\n", COLOR(COLOR_RED), COLOR_RESET);
+				RWLIST_RDLOCK(&menus);
 				continue;
 			}
 
@@ -607,6 +642,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 			opt = 0;
 			forcedrawmenu = 1;
 			bbs_debug(3, "Requesting force menu draw/redraw\n");
+			RWLIST_RDLOCK(&menus);
 			continue;
 		} else if (!strchr(options, opt)) {
 			bbs_debug(3, "Node %d chose option '%c', but this is not a valid option for menu '%s'\n", node->id, opt, menuname);
@@ -620,12 +656,24 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 				bbs_node_writef(node, "\r%sInvalid option!%s", COLOR(COLOR_RED), COLOR_RESET);
 			}
 			optreq = NULL; /* If were doing skip menu navigation, stop now since we hit a dead end. */
+			RWLIST_RDLOCK(&menus);
 			continue; /* We must continue and not proceed. */
 		}
 
 		/* Got a valid option. */
 		bbs_verb(5, "Node %d selected option '%c' at menu(%d) '%s'\n", node->id, opt, stack, menuname);
-		/* Hey, guess what, we're still holding a RDLOCK on the menu. See what this option is for. */
+		RWLIST_RDLOCK(&menus);
+		/* Look for the menu again since menus can change when unlocked;
+		 * if reloaded, the old menu is definitely no longer a valid pointer. */
+		menu = find_menu(menuname);
+		if (!menu) {
+			RWLIST_UNLOCK(&menus);
+			/* Menu was removed while a node was running it.
+			 * This is the price we pay for allowing menus to be reloaded (at least partially) during menu execution. */
+			bbs_warning("Menu '%s' (executed by node %d) no longer exists!\n", menuname, node->id);
+			return 0; /* Do nothing, "return" immediately to previous (calling) menu */
+		}
+
 		/* We don't need to call MENUITEM_NOT_APPLICABLE here to check if it applies, it wouldn't be in the options buffer if it wasn't */
 		menuitem = find_menuitem(menu, opt);
 		/* It was in the menu and the menu hasn't changed, it better exist. */
@@ -635,9 +683,11 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 			opt = 0;
 			continue; /* Display menu again */
 		}
-		node->menuitem = menuitem->name;
 
 		opt = 0; /* Got a valid option, display the menu again next round */
+
+		safe_strncpy(submenuitemname, menuitem->name, sizeof(submenuitemname));
+		node->menuitem = submenuitemname;
 
 		/* Set the title to the option name */
 		/* XXX Because things like "quit" and "back" are technically options,
@@ -656,11 +706,26 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 		 * we need to be able to recurse efficiently with arguments that other handlers don't (and shouldn't) get. */
 		if (STARTS_WITH(menuitem->action, "menu:")) {
 			/* Execute another menu, recursively */
-			res = bbs_menu_run(node, menuitem->action + 5, menuitem->name, stack, optreq ? optreq + 1 : NULL, scratchbuf);
+
+			/* We need to duplicate the new menu name and item name on each stack frame,
+			 * since we need to be able to use them even after calling another menu and returning from it.
+			 * If it was a common buffer for all stack frames, it could be overwritten by the time we return,
+			 * if that menu also recursed to another menu. */
+			char submenuname[MAX_MENU_NAME_LENGTH];
+			safe_strncpy(submenuname, menuitem->action + 5, sizeof(submenuname));
+			menu = NULL; /* Can't dereference after unlocking */
+			menuitem = NULL;
+			RWLIST_UNLOCK(&menus);
+
+			res = bbs_menu_run(node, submenuname, submenuitemname, stack, optreq ? optreq + 1 : NULL, scratchbuf);
 		} else {
+#define SCRATCH_BUF_SIZE 256
 			char *handler, *args;
 			/* We need a buffer that is sufficiently long enough to avoid truncation, so use the scratch buffer. */
 			safe_strncpy(scratchbuf, menuitem->action, SCRATCH_BUF_SIZE);
+			menu = NULL; /* Can't dereference after unlocking */
+			menuitem = NULL;
+			RWLIST_UNLOCK(&menus);
 			if (strlen(scratchbuf) >= SCRATCH_BUF_SIZE - 1) {
 				bbs_warning("Truncation occurred copying menu item arguments into buffer of size %d\n", SCRATCH_BUF_SIZE);
 			}
@@ -689,6 +754,10 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 			res = 0; /* Either 0 or -3 could make sense */
 		}
 
+		bbs_node_lock(node);
+		node->menu = node->menuitem = NULL;
+		bbs_node_unlock(node);
+
 		/* Intercept -3 and -2 return values from "return" */
 		if (res == -3) { /* Quit */
 			/* Keep returning -3 until we get to the top-level menu (stack == 1). Only then do we return from the menu system completely and exit normally. */
@@ -704,21 +773,23 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 		}
 		optreq = NULL; /* Any argument we had or may have had this round is "used up" now, i.e. don't repeat the option after it returns */
 
-		/* Restore previous terminal title */
-		bbs_node_restore_term_title(node); /* Pop the current title */
-		if (!strlen_zero(menuitemname)) {
-			/* If this is not the top-level menu, then the menu was chosen via an option that had a name for the menu.
-			 * Use that name here since that's the most logical name to display. */
-			menu_set_title(node, menuitemname);
-		} else {
-			/* In case popping the title just resets to the very original title (probably the hostname),
-			 * explicitly set the BBS name as the title, since that's what's set initially and
-			 * displayed the first time a user accesses the root menu (so use that from here on out). */
-			bbs_node_set_term_title(node, bbs_name());
+		if (!NODE_IS_TDD(node)) {
+			/* Restore previous terminal title */
+			bbs_node_restore_term_title(node); /* Pop the current title */
+			if (!strlen_zero(menuitemname)) {
+				/* If this is not the top-level menu, then the menu was chosen via an option that had a name for the menu.
+				 * Use that name here since that's the most logical name to display. */
+				menu_set_title(node, menuitemname);
+			} else {
+				/* In case popping the title just resets to the very original title (probably the hostname),
+				 * explicitly set the BBS name as the title, since that's what's set initially and
+				 * displayed the first time a user accesses the root menu (so use that from here on out). */
+				bbs_node_set_term_title(node, bbs_name());
+			}
 		}
+		RWLIST_RDLOCK(&menus); /* Lock before going round again */
 	}
 
-	RWLIST_UNLOCK(&menus);
 	node->menustack = stack - 1; /* When we return from the last (top level) menu, we'll set menustack back to 0 */
 	if (stack == 1) {
 		node->inmenu = 0; /* If stack > 1, we're going to return to a previous menu. If this is the last one, actually set to 0. */
@@ -736,7 +807,6 @@ int bbs_node_menuexec(struct bbs_node *node)
 
 static int load_config(int reload)
 {
-	struct bbs_menu *menu;
 	struct bbs_config_section *section = NULL;
 	struct bbs_keyval *keyval = NULL;
 	struct bbs_config *cfg = bbs_config_load("menus.conf", 1);
@@ -750,7 +820,7 @@ static int load_config(int reload)
 
 	if (reload) {
 		if (RWLIST_TRYWRLOCK(&menus)) {
-			bbs_warning("Menus currently in use. Kick all nodes and try again.\n");
+			bbs_warning("Menus currently in use. Please try again later.\n");
 			return -1;
 		}
 		/* Destroy all existing menus */
@@ -760,18 +830,13 @@ static int load_config(int reload)
 	}
 
 	while ((section = bbs_config_walk(cfg, section))) {
+		const char *menuname = NULL, *title = NULL, *subtitle = NULL, *artfile = NULL;
+		char *tmpdisplay = NULL;
+		struct bbs_menu *menu = NULL;
 		if (!strcmp(bbs_config_section_name(section), "general")) {
 			continue; /* Not a menu section, skip */
 		}
-		menu = calloc(1, sizeof(*menu));
-		if (ALLOC_FAILURE(menu)) {
-			continue;
-		}
-		menu->name = strdup(bbs_config_section_name(section));
-		if (ALLOC_FAILURE(menu->name)) {
-			free(menu);
-			continue;
-		}
+		menuname = bbs_config_section_name(section);
 #ifdef DEBUG_MENU_PARSING
 		bbs_debug(3, "Parsing menu: %s\n", bbs_config_section_name(section));
 #endif
@@ -781,28 +846,69 @@ static int load_config(int reload)
 			bbs_debug(7, "Parsing menu directive %s=%s\n", key, value);
 #endif
 			if (!strcasecmp(key, "title")) {
-				REPLACE(menu->title, value);
+				title = value;
 			} else if (!strcasecmp(key, "subtitle")) {
-				REPLACE(menu->subtitle, value);
+				subtitle = value;
+			} else if (!strcasecmp(key, "artfile")) {
+				artfile = value;
+				if (!bbs_file_exists(artfile)) {
+					/* Continue, because it may exist later, but warn about this
+					 * so it can be fixed if needed. */
+					bbs_warning("Art file '%s' does not currently exist\n", artfile);
+				}
 			} else if (!strcasecmp(key, "display")) {
-				if (menu->display) {
-					size_t slen = strlen(menu->display);
-					char *s = realloc(menu->display, slen + strlen(value) + 2); /* LF + NUL */
+				if (tmpdisplay) {
+					size_t slen = strlen(tmpdisplay);
+					char *s = realloc(tmpdisplay, slen + strlen(value) + 2); /* LF + NUL */
 					if (ALLOC_FAILURE(s)) {
 						bbs_error("Failed to append menu line '%s' due to realloc error\n", value);
 					} else {
-						menu->display = s;
-						menu->display[slen] = '\n'; /* Next display= line is for the next line */
-						strcpy(menu->display + slen + 1, value); /* Safe */
+						tmpdisplay = s;
+						tmpdisplay[slen] = '\n'; /* Next display= line is for the next line */
+						strcpy(tmpdisplay + slen + 1, value); /* Safe */
 					}
 				} else {
-					menu->display = strdup(value);
+					tmpdisplay = strdup(value);
 				}
 			} else {
 #define menuopt_allowed(c) (isalnum(c) || c == '?')
 				/* Add menu item */
 				char *tmporig, *tmp, *s;
 				struct bbs_menu_item *menuitem;
+				size_t actionlen, namelen, grouplen;
+				char *data;
+				unsigned int minpriv = 0;
+				char opt;
+				const char *action = NULL, *name = NULL, *group = NULL;
+
+				if (!menu) {
+					size_t menunamelen, titlelen, subtitlelen, artfilelen, displaylen;
+
+					menunamelen = STRING_ALLOC_SIZE(menuname);
+					titlelen = STRING_ALLOC_SIZE(title);
+					subtitlelen = STRING_ALLOC_SIZE(subtitle);
+					artfilelen = STRING_ALLOC_SIZE(artfile);
+					displaylen = STRING_ALLOC_SIZE(tmpdisplay);
+
+					if (menunamelen >= MAX_MENU_NAME_LENGTH) {
+						bbs_error("Menu name '%s' is too long (%lu >= %d)\n", menuname, menunamelen, MAX_MENU_NAME_LENGTH);
+						goto nextmenu;
+					}
+
+					/* Allocate menu when we reach the first item */
+					menu = calloc(1, sizeof(*menu) + menunamelen + titlelen + subtitlelen + artfilelen + displaylen);
+					if (ALLOC_FAILURE(menu)) {
+						goto nextmenu; /* Can't just break or continue since we're in the inner loop */
+					}
+
+					data = menu->data;
+					SET_FSM_STRING_VAR(menu, data, name, menuname, menunamelen);
+					SET_FSM_STRING_VAR(menu, data, title, title, titlelen);
+					SET_FSM_STRING_VAR(menu, data, subtitle, subtitle, subtitlelen);
+					SET_FSM_STRING_VAR(menu, data, artfile, artfile, artfilelen);
+					SET_FSM_STRING_VAR(menu, data, display, tmpdisplay, displaylen);
+				}
+
 				if (strlen(key) != 1) {
 					bbs_warning("'%s' cannot be used as a menu option (too long)\n", key);
 					continue;
@@ -810,43 +916,32 @@ static int load_config(int reload)
 					bbs_warning("'%s' cannot be used as a menu option (non-alphanumeric, and not ?)\n", key);
 					continue;
 				}
-				menuitem = calloc(1, sizeof(*menuitem));
-				if (ALLOC_FAILURE(menuitem)) {
-					continue;
+
+				opt = *key; /* It's only a single letter */
+				if (!case_sensitive) {
+					opt = (char) toupper(opt); /* If not case sensitive, store internally as uppercase */
 				}
+
 				tmporig = tmp = strdup(value); /* Avoid strdupa, we're in a loop */
 				if (ALLOC_FAILURE(tmp)) {
-					free(menuitem);
 					continue;
 				}
-				menuitem->opt = *key; /* It's only a single letter */
-				if (!case_sensitive) {
-					menuitem->opt = (char) toupper(menuitem->opt); /* If not case sensitive, store internally as uppercase */
-				}
+
 				/* First one is always the menu item action. */
-				s = strsep(&tmp, "|");
-				if (strlen_zero(s)) {
-					menuitem_free(menuitem);
+				action = strsep(&tmp, "|");
+				if (strlen_zero(action)) { /* Mandatory */
 					free(tmporig);
 					continue;
 				}
 
-				menuitem->action = strdup(s);
 				/* Second one is always the friendly name. */
-				s = strsep(&tmp, "|");
-				if (strlen_zero(s)) {
-					bbs_warning("Missing | (menu item '%s' has no name, ignoring)\n", menuitem->action);
-					menuitem_free(menuitem);
+				name = strsep(&tmp, "|");
+				if (strlen_zero(name)) { /* Mandatory */
+					bbs_warning("Missing | (menu item '%s' has no name, ignoring)\n", action);
 					free(tmporig);
 					continue;
 				}
-				menuitem->name = strdup(s);
-				/* These are mandatory */
-				if (!menuitem->opt || !menuitem->action || ALLOC_FAILURE(menuitem->name)) {
-					menuitem_free(menuitem);
-					free(tmporig);
-					continue;
-				}
+
 				/* Now, process any optional modifiers */
 				while ((s = strsep(&tmp, "|"))) {
 					char *k = strsep(&s, "=");
@@ -856,25 +951,51 @@ static int load_config(int reload)
 						continue;
 					}
 					if (!strcasecmp(k, "minpriv")) {
-						menuitem->minpriv = (unsigned int) atoi(s);
+						minpriv = (unsigned int) atoi(s);
 					} else if (!strcasecmp(k, "requiregroup")) {
-						REPLACE(menuitem->group, s);
+						group = s;
 					} else {
 						bbs_warning("Unrecognized menu item modifier '%s'\n", k);
 					}
 				}
-				free(tmporig);
+
+				actionlen = STRING_ALLOC_SIZE(action);
+				namelen = STRING_ALLOC_SIZE(name);
+				grouplen = STRING_ALLOC_SIZE(group);
+
+				if (namelen >= MAX_MENUITEM_NAME_LENGTH) {
+					bbs_error("Menu item name '%s' is too long (%lu >= %d)\n", name, namelen, MAX_MENUITEM_NAME_LENGTH);
+					free(tmporig);
+					continue;
+				}
+
+				/* Allocate menu when we reach the first item */
+				menuitem = calloc(1, sizeof(*menuitem) + actionlen + namelen + grouplen);
+				if (ALLOC_FAILURE(menuitem)) {
+					free(tmporig);
+					continue;
+				}
+
+				data = menuitem->data;
+				SET_FSM_STRING_VAR(menuitem, data, action, action, actionlen);
+				SET_FSM_STRING_VAR(menuitem, data, name, name, namelen);
+				SET_FSM_STRING_VAR(menuitem, data, group, group, grouplen);
+				menuitem->opt = opt; /* It's only a single letter */
+				menuitem->minpriv = minpriv;
+
 				menu_item_link(menu, menuitem);
+				free(tmporig);
 			}
 		}
 		menu_link(menu);
+nextmenu:
+		free_if(tmpdisplay);
 	}
 
 	/* Some sanity checks are in menu_sanity_check,
 	 * but there are also some things we're able to check now.
 	 * Some other things could also be checked here, but if they require a full traversal,
-	 * wait until menu_sanity_check to do them.
-	 */
+	 * wait until menu_sanity_check to do them. */
 
 	/* Ensure that a 'main' menu exists, the entry point to the BBS */
 	if (!find_menu(DEFAULT_MENU)) {

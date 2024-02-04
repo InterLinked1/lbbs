@@ -21,6 +21,8 @@ Key features and capabilities include:
 
 * Terminal access via Telnet, RLogin, SSH, and UNIX domain socket support *(note that Telnet and RLogin are plain text protocols and thus insecure)*
 
+* ANSI art support
+
 * File transfers via FTP, SFTP, Gopher, and HTTP/HTTPS
 
 * HTTP 1.1 web server, with WebSocket and forward-proxy support
