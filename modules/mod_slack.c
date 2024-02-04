@@ -916,7 +916,7 @@ static int slack_send(struct irc_relay_message *rmsg)
 			if (!strlen_zero(cp->topic)) { /* The first time anybody joins, set the channel topic */
 				cp->used = 1; /* Only need to do this once */
 				/* XXX Note: Since anyone can join the channel, the channel topic may "leak" */
-				irc_relay_set_topic(channel, cp->topic);
+				irc_relay_set_topic(channel, cp->topic, relay->ircuser);
 			}
 		}
 		if (!relay->relaysystem) {

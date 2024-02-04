@@ -124,6 +124,21 @@ static int run(void)
 	SWRITE(client2, "PART #test2\r\n");
 	CLIENT_EXPECT_EVENTUALLY(client1, "PART #test2"); /* Other guy should get the part message */
 
+	/* Private namespace tests */
+	SWRITE(client1, "JOIN +private\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "JOIN +private\r\n");
+	CLIENT_DRAIN(client1);
+	SWRITE(client2, "JOIN +private\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client2, "JOIN +private\r\n"); /* Joins a channel with the same name... but it should NOT be the same channel! */
+	CLIENT_DRAIN(client2);
+	SWRITE(client1, "PRIVMSG +private :Hello!\r\n");
+	SWRITE(client2, "PRIVMSG +private :Hello!\r\n");
+	SWRITE(client1, "PING :hello\r\n"); /* Something arbitrary to solicit a known response */
+	CLIENT_EXPECT(client1, "PONG :hello\r\n"); /* This should be the first thing we read, the message client2 sent should not show up! */
+	SWRITE(client1, "PRIVMSG +private :Hey!\r\n");
+	SWRITE(client2, "PING :hello\r\n");
+	CLIENT_EXPECT(client2, "PONG :hello\r\n"); /* Likewise */
+
 	/* These tests below are not very robust... they basically just ensure that something happens and the server doesn't crash. */
 	SWRITE(client1, "LIST\r\n"); /* Get channel list */
 	CLIENT_EXPECT_EVENTUALLY(client1, "323");

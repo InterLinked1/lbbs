@@ -19,6 +19,19 @@
 #define PRIVATE_CHANNEL_PREFIX "*"
 #define SECRET_CHANNEL_PREFIX "@"
 
+/*! \brief RFC 2811 channel names namespace */
+/*! \note There is no real support for &, +,  and ! channels, as defined in the RFC; these are just defined here for completeness.
+ * Consequently, we hijack + (modeless channels) for private namespace channels (separate namespace per user),
+ * since we don't need modes for these anyways, and there's not much use for modeless channels otherwise.
+ * We can't use some other arbitrary prefix because IRC clients will just prefix # automatically
+ * if the channel name doesn't begin with one of the officially valid prefixes. */
+/* "Standard" channels */
+#define CHANNEL_NAME_PREFIX_NETWORK "#"
+#define CHANNEL_NAME_PREFIX_LOCAL "&"
+#define CHANNEL_NAME_PREFIX_MODELESS "+"
+/* "Safe" channels */
+#define CHANNEL_NAME_PREFIX_TIMESTAMPED "!"
+
 #define PREFIX_FOUNDER "~"
 #define PREFIX_ADMIN "&"
 #define PREFIX_OP "@"
@@ -164,9 +177,10 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
  * \brief Set the channel topic (from a relay)
  * \param channel Channel name
  * \param topic Topic description
+ * \param ircuser Name of owner, for private namespace channels
  * \retval 0 on success, -1 on failure
  */
-int irc_relay_set_topic(const char *channel, const char *topic);
+int irc_relay_set_topic(const char *channel, const char *topic, const char *ircuser);
 
 #define irc_relay_raw_send(channel, msg) _irc_relay_raw_send(channel, msg, BBS_MODULE_SELF)
 

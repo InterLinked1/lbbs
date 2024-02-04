@@ -47,6 +47,8 @@
 
 #define IRC_SERVER_VERSION BBS_NAME "-" BBS_VERSION "-irc"
 
+/*! \todo There is currently no support for multi-server networks (see RFC 2813) */
+
 /*! \brief Clients will be pinged every 2 minutes, and have 2 minutes to respond. */
 #define PING_TIME MIN_MS(2)
 
@@ -77,7 +79,9 @@
 
 /*! \note Currently this is a single-server network, so there is no difference in practice between # and & channels. */
 /*! \todo Make this IRC network daemon multi-server capable somehow? Perhaps linkable with other servers running the same IRC module? Would also allow sharing state... */
-#define IS_CHANNEL_NAME(s) (*s == '#' || *s == '&')
+
+#define VALID_CHANNEL_NAME_PREFIX(c) (c == '#' || c == '&' || c == '+' || c == '!')
+#define IS_CHANNEL_NAME(s) (VALID_CHANNEL_NAME_PREFIX(*s))
 #define VALID_CHANNEL_NAME(s) (!strlen_zero(s) && IS_CHANNEL_NAME(s))
 
 /*! \todo include irc.h from LIRC, so we can use macro names for numerics, at least */
@@ -244,6 +248,7 @@ RWLIST_HEAD(channel_members, irc_member);
 
 struct irc_channel {
 	const char *name;					/* Name of channel */
+	const char *username;				/* Username of owner (for private namespace channels) */
 	unsigned int membercount;			/* Current member count, for constant-time member count access */
 	char *password;						/* Channel password */
 	char *topic;						/* Channel topic */
@@ -262,7 +267,7 @@ struct irc_channel {
 	struct bbs_rate_limit ratelimit;	/* Time that last relayed message was sent */
 	unsigned int relay:1;				/* Enable relaying */
 	pthread_mutex_t lock;				/* Channel lock */
-	char data[];						/* Flexible struct member for channel name */
+	char data[];						/* Flexible struct member for channel name / owner username */
 };
 
 static RWLIST_HEAD_STATIC(channels, irc_channel);	/* Container for all channels */
@@ -596,6 +601,47 @@ static struct irc_member *get_member(struct irc_user *user, struct irc_channel *
 	return member;
 }
 
+static inline int priv_channel_owner(struct irc_channel *c, const char *username)
+{
+	return !strcasecmp(c->username, username);
+}
+
+static inline int user_is_priv_channel_owner(struct irc_channel *c, struct irc_user *u)
+{
+	return !strcasecmp(c->username, bbs_username(u->node->user));
+}
+
+/*!
+ * \brief Find a channel by name
+ * \param channel Channel name
+ * \param username Owner's username, if a private namespace channel
+ * \return Channel or NULL
+ * \note Channels list must be locked when calling
+ */
+static struct irc_channel *find_channel(const char *channel, const char *username)
+{
+	struct irc_channel *c;
+
+	RWLIST_TRAVERSE(&channels, c, entry) {
+		if (!strcmp(c->name, channel)) {
+			if (!strlen_zero(c->username)) {
+				if (!strlen_zero(username) && priv_channel_owner(c, username)) {
+					return c; /* Private namespace channel owned by this user */
+				}
+			} else {
+				/* Non-private (normal) channel */
+				return c;
+			}
+		}
+	}
+	return NULL;
+}
+
+static struct irc_channel *find_channel_by_user(const char *channel, struct irc_user *user)
+{
+	return find_channel(channel, bbs_user_is_registered(user->node->user) ? bbs_username(user->node->user) : NULL);
+}
+
 /*! \note This returns a user with no locks */
 static struct irc_member *get_member_by_channel_name(struct irc_user *user, const char *channame)
 {
@@ -603,11 +649,7 @@ static struct irc_member *get_member_by_channel_name(struct irc_user *user, cons
 	struct irc_member *member;
 
 	RWLIST_RDLOCK(&channels);
-	RWLIST_TRAVERSE(&channels, channel, entry) {
-		if (!strcmp(channel->name, channame)) {
-			break;
-		}
-	}
+	channel = find_channel_by_user(channame, user);
 	if (!channel) {
 		RWLIST_UNLOCK(&channels);
 		bbs_debug(3, "Channel '%s' doesn't exist\n", channame);
@@ -662,6 +704,7 @@ enum channel_user_modes irc_get_channel_member_modes(const char *channel, const 
 }
 
 /*! \note This returns a channel with no locks */
+/*! \warning Do not use this function, generally speaking, as it does not support private namespace awareness. Use find_channel or find_channel_by_user */
 static struct irc_channel *get_channel(const char *channame)
 {
 	struct irc_channel *channel;
@@ -678,7 +721,7 @@ static struct irc_channel *get_channel(const char *channame)
 
 const char *irc_channel_topic(const char *channel)
 {
-	struct irc_channel *c = get_channel(channel);
+	struct irc_channel *c = get_channel(channel); /* The only place this is used, this would not be a private namespace channel anyways */
 	if (!c) {
 		return NULL;
 	}
@@ -689,7 +732,7 @@ static int valid_channame(const char *s)
 {
 	int i = 0;
 	while (*s) {
-		if (!isalnum(*s) && !(!i && (*s == '#' || *s == '&')) && *s != '-') {
+		if (!isalnum(*s) && *s != '-' && !(!i && VALID_CHANNEL_NAME_PREFIX(*s))) {
 			bbs_debug(3, "Character %d is not valid\n", *s);
 			return 0;
 		}
@@ -860,7 +903,7 @@ static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, 
 
 int _irc_relay_raw_send(const char *channel, const char *msg, void *mod)
 {
-	struct irc_channel *c = get_channel(channel);
+	struct irc_channel *c = get_channel(channel); /* mod_irc_relay is the only caller of irc_relay_raw_send, and private namespace awareness isn't supported from other IRC <-> native IRC */
 	if (!c) {
 		/* If there aren't any members in the channel, it doesn't exist,
 		 * so relaying to it will fail.
@@ -900,10 +943,10 @@ static void channel_print_topic(struct irc_user *user, struct irc_channel *chann
 	}
 }
 
-int irc_relay_set_topic(const char *channel, const char *topic)
+int irc_relay_set_topic(const char *channel, const char *topic, const char *ircuser)
 {
 	char buf[128];
-	struct irc_channel *c = get_channel(channel);
+	struct irc_channel *c = find_channel(channel, ircuser);
 
 	if (!c) {
 		bbs_warning("Could not find channel %s?\n", channel);
@@ -1151,11 +1194,7 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 	if (channels_locked != pthread_self()) {
 		RWLIST_RDLOCK(&channels);
 	}
-	RWLIST_TRAVERSE(&channels, c, entry) {
-		if (!strcmp(c->name, channel)) {
-			break;
-		}
-	}
+	c = find_channel(channel, ircuser);
 	if (channels_locked != pthread_self()) {
 		RWLIST_UNLOCK(&channels);
 	}
@@ -1206,6 +1245,12 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 		RWLIST_TRAVERSE_SAFE_BEGIN(&c->members, member, entry) {
 			struct irc_user *kicked = member->user;
 			if (!strcasecmp(kicked->nickname, ircuser)) {
+				/* If using the nickname of the username, must be the user */
+				continue;
+			}
+			if (bbs_user_is_registered(kicked->node->user) && !strcasecmp(bbs_username(kicked->node->user), ircuser)) {
+				/* Nicknames are unique but usernames are not, across all sessions.
+				 * User could be logged in as something else, but if authenticated as same user, also fine */
 				continue;
 			}
 			if (IS_SERVICE(kicked)) {
@@ -1334,13 +1379,8 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, char
 		return 0;
 	}
 
-	/*! \todo simplify using get_channel, get_member? But then we may have more locking issues... */
 	RWLIST_RDLOCK(&channels);
-	RWLIST_TRAVERSE(&channels, channel, entry) {
-		if (!strcmp(channel->name, channame)) {
-			break;
-		}
-	}
+	channel = find_channel_by_user(channame, user);
 	if (!channel) {
 		RWLIST_UNLOCK(&channels);
 		send_numeric2(user, 403, "%s :No such channel\r\n", channame);
@@ -1508,7 +1548,13 @@ static void handle_modes(struct irc_user *user, char *s)
 	 * MODE #channel +o jsmith
 	 */
 	char *modes, *channel_name = strsep(&s, " ");
-	channel = get_channel(channel_name);
+	channel = find_channel_by_user(channel_name, user);
+
+	if (*channel_name == '+') {
+		send_numeric(user, 502, "Channel does not support modes\r\n"); /* Modeless channel */
+		return;
+	}
+
 	modes = strsep(&s, " "); /* If there's anything left, it's the usernames to target for a channel mode */
 	/* Unless there's a : */
 	if (modes && *modes == ':') {
@@ -1745,7 +1791,7 @@ static void handle_topic(struct irc_user *user, char *s)
 		s++;
 	}
 
-	channel = get_channel(channame);
+	channel = find_channel_by_user(channame, user);
 	if (!channel) {
 		send_numeric2(user, 403, "%s :No such channel\r\n", s);
 	} else if (!s) { /* Print current channel topic */
@@ -1784,7 +1830,7 @@ static void handle_invite(struct irc_user *user, char *s)
 		send_numeric(user, 461, "Not enough parameters\r\n");
 		return;
 	}
-	channel = get_channel(channame);
+	channel = find_channel_by_user(channame, user);
 	if (!channel) {
 		send_numeric2(user, 403, "%s :No such channel\r\n", channame);
 		return;
@@ -1836,7 +1882,7 @@ static void handle_knock(struct irc_user *user, char *s)
 	msg = s;
 	SKIP_CHAR(msg, ':');
 
-	channel = get_channel(channame);
+	channel = find_channel_by_user(channame, user);
 	if (!channel) {
 		send_numeric2(user, 403, "%s :No such channel\r\n", channame);
 		return;
@@ -1898,6 +1944,11 @@ static int channels_in_common(struct irc_user *u1, struct irc_user *u2)
 		struct irc_member *m1 = NULL, *m2 = NULL, *m;
 		/* channel->members is already RDLOCK'd */
 		RWLIST_TRAVERSE(&channel->members, m, entry) {
+			if (channel->username) {
+				/* If private channel for one user,
+				 * can't have in common with any other user */
+				continue;
+			}
 			if (m->user == u1) {
 				m1 = m;
 			} else if (m->user == u2) {
@@ -1970,7 +2021,7 @@ static void handle_who(struct irc_user *user, char *s)
 
 	if (IS_CHANNEL_NAME(s)) {
 		struct irc_member *member;
-		struct irc_channel *channel = get_channel(s);
+		struct irc_channel *channel = find_channel_by_user(s, user);
 		if (!channel) {
 			send_numeric2(user, 403, "%s :No such channel\r\n", s);
 			return;
@@ -2101,6 +2152,9 @@ static void handle_whois(struct irc_user *user, char *s)
 			if (channel->modes & CHANNEL_HIDDEN && suppress_channel(user, channel)) {
 				continue;
 			}
+			if (channel->username && !user_is_priv_channel_owner(channel, user)) {
+				continue; /* Private namespace channel */
+			}
 			RWLIST_RDLOCK(&channel->members);
 			RWLIST_TRAVERSE(&channel->members, member, entry) {
 				if (member->user == u) {
@@ -2228,6 +2282,9 @@ static void handle_list(struct irc_user *user, char *s)
 	send_numeric2(user, 321, "Channel :Users Name\r\n");
 	RWLIST_RDLOCK(&channels);
 	RWLIST_TRAVERSE(&channels, channel, entry) {
+		if (channel->username && !user_is_priv_channel_owner(channel, user)) {
+			continue; /* Private namespace channel */
+		}
 		/* Remember, the conditions are NOT inclusive. If they are equal, in other words, that is not a match, skip. */
 		if (minmembers && channel->membercount <= minmembers) {
 			continue;
@@ -2338,6 +2395,9 @@ static void broadcast_nick_change(struct irc_user *user, const char *oldnick)
 
 	RWLIST_RDLOCK(&channels);
 	RWLIST_TRAVERSE(&channels, channel, entry) {
+		if (channel->username && !user_is_priv_channel_owner(channel, user)) {
+			continue; /* Private namespace channel */
+		}
 		RWLIST_RDLOCK(&channel->members);
 		RWLIST_TRAVERSE(&channel->members, member, entry) {
 			if (member->user == user) {
@@ -2577,6 +2637,11 @@ static int join_channel(struct irc_user *user, char *name)
 	size_t chanlen = strlen(name);
 	char *password;
 
+	if (strlen_zero(name)) {
+		send_numeric(user, 479, "Empty channel name\r\n");
+		return 0;
+	}
+
 	password = strchr(name, ' ');
 	if (password) {
 		*password++ = '\0';
@@ -2595,21 +2660,31 @@ static int join_channel(struct irc_user *user, char *name)
 
 	/* We might potentially create a channel, so grab a WRLOCK from the get go */
 	RWLIST_WRLOCK(&channels);
-	RWLIST_TRAVERSE(&channels, channel, entry) {
-		if (!strcmp(channel->name, name)) {
-			break;
-		}
-	}
+	channel = find_channel_by_user(name, user);
 	if (!channel) {
-		bbs_debug(3, "Creating channel '%s' for the first time\n", name);
+		size_t usernamelen;
+		if (*name == '+' && !bbs_user_is_registered(user->node->user)) {
+			send_numeric(user, 479, "Can't join this channel as guest\r\n");
+			return 0;
+		}
+		usernamelen = *name == '+' ? strlen(bbs_username(user->node->user)) + 1 : 0;
+		if (usernamelen) {
+			bbs_debug(3, "Creating channel '%s' in private namespace for user '%s'\n", name, bbs_username(user->node->user));
+		} else {
+			bbs_debug(3, "Creating channel '%s' for the first time\n", name);
+		}
 		newchan = 1;
-		channel = calloc(1, sizeof(*channel) + chanlen + 1);
+		channel = calloc(1, sizeof(*channel) + chanlen + usernamelen + 1);
 		if (ALLOC_FAILURE(channel)) {
 			RWLIST_UNLOCK(&channels);
 			return -1;
 		}
 		strcpy(channel->data, name); /* Safe */
 		channel->name = channel->data;
+		if (usernamelen) {
+			strcpy(channel->data + chanlen + 1, bbs_username(user->node->user));
+			channel->username = channel->data + chanlen + 1;
+		}
 		channel->modes = CHANNEL_MODE_NONE;
 		/* Set some default flags. */
 		channel->modes |= CHANNEL_MODE_NO_EXTERNAL | CHANNEL_MODE_TOPIC_PROTECTED;
@@ -2775,11 +2850,7 @@ static int leave_channel(struct irc_user *user, const char *name)
 
 	/* WRLOCK, since channel might become empty and need to be removed */
 	RWLIST_WRLOCK(&channels);
-	RWLIST_TRAVERSE(&channels, channel, entry) {
-		if (!strcmp(channel->name, name)) {
-			break;
-		}
-	}
+	channel = find_channel_by_user(name, user);
 	if (!channel) { /* Channel doesn't exist */
 		RWLIST_UNLOCK(&channels);
 		send_numeric2(user, 403, "%s :No such channel\r\n", name);
@@ -3296,6 +3367,7 @@ static void handle_client(struct irc_user *user)
 			} else if (!strcasecmp(command, "NOTICE")) { /* List this as high up as possible, since this is the most common command */
 				handle_privmsg(user, s, 1);
 			} else if (!strcasecmp(command, "MODE")) {
+				REQUIRE_PARAMETER(user, s);
 				handle_modes(user, s);
 			} else if (!strcasecmp(command, "TOPIC")) { /* Get or set the topic */
 				handle_topic(user, s);
@@ -3345,7 +3417,7 @@ static void handle_client(struct irc_user *user)
 					send_numeric2(user, 482, "%s: You're not a channel operator\r\n", channame);
 				} else {
 					struct irc_member *kickuser;
-					struct irc_channel *kickchan = get_channel(channame);
+					struct irc_channel *kickchan = find_channel_by_user(channame, user);
 					if (!kickchan) {
 						send_numeric2(user, 403, "%s :No such channel\r\n", channame);
 						continue;
@@ -3382,7 +3454,7 @@ static void handle_client(struct irc_user *user)
 			} else if (!strcasecmp(command, "NAMES")) {
 				struct irc_channel *channel;
 				REQUIRE_PARAMETER(user, s);
-				channel = get_channel(s);
+				channel = find_channel_by_user(s, user);
 				/* Many servers don't allow NAMES unless you're in the channel: we do... */
 				if (!channel) {
 					send_numeric2(user, 403, "%s :No such channel\r\n", s);
@@ -3652,11 +3724,11 @@ static int cli_irc_channels(struct bbs_cli_args *a)
 	char modes[53];
 	struct irc_channel *channel;
 
-	bbs_dprintf(a->fdout, "%-20s %4s %3s %-20s %s\n", "Channel", "Mbrs", "Rly", "Modes", "Topic");
+	bbs_dprintf(a->fdout, "%-20s %15s %4s %3s %-20s %s\n", "Channel", "Priv Owner (+)", "Mbrs", "Rly", "Modes", "Topic");
 	RWLIST_RDLOCK(&channels);
 	RWLIST_TRAVERSE(&channels, channel, entry) {
 		get_channel_modes(modes, sizeof(modes), channel);
-		bbs_dprintf(a->fdout, "%-20s %4d %3s %-20s %s\n", channel->name, channel->membercount, BBS_YN(channel->relay), modes, S_IF(channel->topic));
+		bbs_dprintf(a->fdout, "%-20s %15s %4d %3s %-20s %s\n", channel->name, S_IF(channel->username), channel->membercount, BBS_YN(channel->relay), modes, S_IF(channel->topic));
 		i++;
 	}
 	RWLIST_UNLOCK(&channels);
@@ -3669,7 +3741,7 @@ static int cli_irc_members(struct bbs_cli_args *a)
 	int i = 0;
 	char modes[53];
 	struct irc_member *member;
-	struct irc_channel *channel = get_channel(a->argv[2]);
+	struct irc_channel *channel = get_channel(a->argv[2]); /* get_channel is fine, since private namespace channels would only have 1 user (maybe multiple nicks/nodes) in it */
 
 	if (!channel) {
 		bbs_dprintf(a->fdout, "No such channel: %s\n", a->argv[2]);
