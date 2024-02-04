@@ -471,7 +471,7 @@ static int handle_intercept(struct queue_call_handle *qch)
  * but it can't, since we copy no more than 4 characters + NUL at that point */
 #pragma GCC diagnostic ignored "-Warray-bounds"
 #pragma GCC diagnostic ignored "-Wstringop-overflow"
-/*! \note This function is NOT SAFE to call with a buffer size smaller than 15 */
+/*! \note This function is NOT SAFE to call with a buffer size smaller than NANPA_FORMATTED_NUMBER_BUF_SIZE */
 static void format_nanpa_number(const char *number, char *restrict buf, size_t len)
 {
 	size_t numlen;
@@ -1704,17 +1704,17 @@ static int handle_emergency(struct queue_call_handle *qch)
 			zip = json_object_string_value(json, "zip");
 			phone = (unsigned long) json_object_number_value(json, "phone"); /* XXX Casts double to integer - floating point error? */
 			if (first) { /* If we got something, we probably got everything */
+				bbs_node_writef(qch->node, "CALLER NAME:   %s, %s\n", last, first);
+				bbs_node_writef(qch->node, "ADDRESS:       %s\n", address);
+				bbs_node_writef(qch->node, "LOCATION:      %s, %s, %s %s\n", city, state, country, zip);
 				if (phone) {
 					char phonebuf[21];
 					snprintf(phonebuf, sizeof(phonebuf), "%lu", phone);
 					format_nanpa_number(phonebuf, formatted_number, sizeof(formatted_number));
+					bbs_node_writef(qch->node, "PSTN TEL. NUM: %s\n", formatted_number);
 				} else {
-					strcpy(formatted_number, "RECORD NOT FOUND"); /* Safe */
+					bbs_node_writef(qch->node, "PSTN TEL. NUM: %s\n", "RECORD NOT FOUND"); /* Too large for formatted_number */
 				}
-				bbs_node_writef(qch->node, "CALLER NAME:   %s, %s\n", last, first);
-				bbs_node_writef(qch->node, "ADDRESS:       %s\n", address);
-				bbs_node_writef(qch->node, "LOCATION:      %s, %s, %s %s\n", city, state, country, zip);
-				bbs_node_writef(qch->node, "PSTN TEL. NUM: %s\n", formatted_number);
 			}
 			json_decref(json);
 		}
