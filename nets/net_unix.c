@@ -26,7 +26,6 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>	/* use struct sockaddr_un */
-#include <pthread.h>
 #include <sys/stat.h> /* use chmod */
 
 #include "include/module.h"

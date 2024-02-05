@@ -20,7 +20,6 @@
 #include "include/bbs.h"
 
 #include <stdio.h>
-#include <pthread.h>
 
 #include "include/module.h"
 #include "include/config.h"
@@ -32,7 +31,7 @@
 #include "include/mod_mail.h"
 
 static FILE *fp = NULL;
-static pthread_mutex_t loglock = PTHREAD_MUTEX_INITIALIZER;
+static bbs_mutex_t loglock = BBS_MUTEX_INITIALIZER;
 
 static const char *service_name(struct bbs_node *node)
 {
@@ -207,9 +206,9 @@ static void mbox_event_callback(struct mailbox_event *event)
 {
 	/* Serialize logging for events, so events aren't logged partially interleaved with each other.
 	 * Obviously, this may reduce performance. */
-	pthread_mutex_lock(&loglock);
+	bbs_mutex_lock(&loglock);
 	log_cb(event);
-	pthread_mutex_unlock(&loglock);
+	bbs_mutex_unlock(&loglock);
 	fflush(fp); /* Explicitly flush to disk so it immediately appears in the logfile. */
 }
 

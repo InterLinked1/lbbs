@@ -63,8 +63,8 @@ static RWLIST_HEAD_STATIC(lists, mailing_list);
 
 static void list_free(struct mailing_list *l)
 {
-	stringlist_empty(&l->recipients);
-	stringlist_empty(&l->senders);
+	stringlist_empty_destroy(&l->recipients);
+	stringlist_empty_destroy(&l->senders);
 	free(l);
 }
 
@@ -372,7 +372,7 @@ static int list_post_message(struct mailing_list *l, const char *msgfile, size_t
 	int localcount = 0, manuallocalcount = 0, extcount = 0;
 	char mailfrom[265];
 
-	memset(&local, 0, sizeof(local));
+	stringlist_init(&local);
 
 	/* XXX net_smtp should be able to process recipients without popping and removing them,
 	 * that might allow us to avoid allocating/freeing unnecessarily */
@@ -433,16 +433,14 @@ static int list_post_message(struct mailing_list *l, const char *msgfile, size_t
 			 */
 			struct stringlist external;
 			char replaced[256];
-			memset(&external, 0, sizeof(external));
+			stringlist_init(&external);
 			snprintf(full, sizeof(full), "<%s>", s);
-			if (stringlist_contains(&external, full)) {
-				continue;
-			}
 			stringlist_push(&external, full);
 			safe_strncpy(replaced, s, sizeof(replaced));
 			bbs_strreplace(replaced, '@', '=');
 			snprintf(mailfrom, sizeof(mailfrom), "%s+bounce=%s@%s", l->user, replaced, S_OR(l->domain, bbs_hostname())); /* No <> */
 			smtp_inject(mailfrom, &external, msgfile, msglen); /* Deliver to the external recipient */
+			stringlist_empty_destroy(&external);
 			extcount++;
 		}
 	}
@@ -458,6 +456,7 @@ static int list_post_message(struct mailing_list *l, const char *msgfile, size_t
 	if (localcount + extcount == 0) {
 		bbs_warning("Mailing list %s@%s has no recipients?\n", l->user, S_OR(l->domain, bbs_hostname()));
 	}
+	stringlist_destroy(&local);
 	return 0;
 }
 
@@ -730,6 +729,8 @@ static int load_config(void)
 		SET_BITFIELD(l->archive, archive);
 		l->maxsize = maxsize;
 		l->replyto = replyto;
+		stringlist_init(&l->recipients);
+		stringlist_init(&l->senders);
 		if (!strlen_zero(recipients)) {
 			stringlist_push_list(&l->recipients, recipients);
 		}

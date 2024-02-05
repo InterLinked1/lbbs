@@ -24,7 +24,6 @@
 #include <unistd.h> /* use close */
 #include <string.h> /* use strchr */
 #include <poll.h>
-#include <pthread.h>
 #include <signal.h> /* use pthread_kill */
 #include <math.h> /* use ceil, floor */
 #include <sys/ioctl.h>
@@ -259,8 +258,8 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 		RWLIST_UNLOCK(&nodes);
 		return NULL;
 	}
-	pthread_mutex_init(&node->lock, NULL);
-	pthread_mutex_init(&node->ptylock, NULL);
+	bbs_mutex_init(&node->lock, NULL);
+	bbs_mutex_init(&node->ptylock, NULL);
 	node->id = newnodenumber;
 	node->fd = fd;
 	/* By default, same file descriptor for reading and writing.
@@ -317,31 +316,31 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 int bbs_node_lock(struct bbs_node *node)
 {
 	bbs_assert_exists(node);
-	return pthread_mutex_lock(&node->lock);
+	return bbs_mutex_lock(&node->lock);
 }
 
 int bbs_node_trylock(struct bbs_node *node)
 {
 	bbs_assert_exists(node);
-	return pthread_mutex_trylock(&node->lock);
+	return bbs_mutex_trylock(&node->lock);
 }
 
 int bbs_node_unlock(struct bbs_node *node)
 {
 	bbs_assert_exists(node);
-	return pthread_mutex_unlock(&node->lock);
+	return bbs_mutex_unlock(&node->lock);
 }
 
 int bbs_node_pty_lock(struct bbs_node *node)
 {
 	bbs_assert_exists(node);
-	return pthread_mutex_lock(&node->ptylock);
+	return bbs_mutex_lock(&node->ptylock);
 }
 
 int bbs_node_pty_unlock(struct bbs_node *node)
 {
 	bbs_assert_exists(node);
-	return pthread_mutex_unlock(&node->ptylock);
+	return bbs_mutex_unlock(&node->ptylock);
 }
 
 char bbs_node_input_translate(struct bbs_node *node, char c)
@@ -616,8 +615,8 @@ static void node_free(struct bbs_node *node)
 	bbs_debug(4, "Node %d now freed\n", node->id);
 	bbs_verb(3, "Node %d has exited\n", node->id);
 	bbs_node_unlock(node);
-	pthread_mutex_destroy(&node->lock);
-	pthread_mutex_destroy(&node->ptylock);
+	bbs_mutex_destroy(&node->lock);
+	bbs_mutex_destroy(&node->ptylock);
 	free(node);
 }
 
@@ -934,7 +933,7 @@ static int node_info(int fd, unsigned int nodenum)
 		bbs_dprintf(fd, BBS_FMT_S, title,fallback); \
 	}
 
-	pthread_mutex_lock(&n->lock);
+	bbs_mutex_lock(&n->lock);
 	bbs_dprintf(fd, BBS_FMT_D, "#", n->id);
 	bbs_dprintf(fd, BBS_FMT_D, "Lifetime #", n->lifetimeid);
 	bbs_dprintf(fd, BBS_FMT_S, "Protocol", n->protname);
@@ -974,7 +973,7 @@ static int node_info(int fd, unsigned int nodenum)
 	PRINT_D_OR_S(fd, "Speed (BPS)", n->speed, "Unthrottled");
 	bbs_dprintf(fd, BBS_FMT_S, "Shutting Down", BBS_YN(!n->active));
 	bbs_node_vars_dump(fd, n);
-	pthread_mutex_unlock(&n->lock);
+	bbs_mutex_unlock(&n->lock);
 
 #undef BBS_FMT_S
 #undef BBS_FMT_D
@@ -1022,7 +1021,7 @@ struct bbs_node *bbs_node_get(unsigned int nodenum)
 	RWLIST_UNLOCK(&nodes);
 
 	if (n) {
-		pthread_mutex_lock(&n->lock);
+		bbs_mutex_lock(&n->lock);
 	}
 	return n;
 }

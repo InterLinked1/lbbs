@@ -48,18 +48,18 @@ static inline void *function_pointer_value(struct bbs_singular_callback *scb)
 
 int bbs_singular_callback_destroy(struct bbs_singular_callback *scb)
 {
-	pthread_rwlock_destroy(&scb->lock);
+	bbs_rwlock_destroy(&scb->lock);
 	return 0;
 }
 
 int __bbs_singular_callback_register(struct bbs_singular_callback *scb, void *cbptr, void *mod, const char *file, int line, const char *func)
 {
-	pthread_rwlock_wrlock(&scb->lock);
+	bbs_rwlock_wrlock(&scb->lock);
 
 	if (function_pointer_exists(scb)) {
 		/* Already a callback function registered. */
 		__bbs_log(LOG_ERROR, 0, file, line, func, "Could not register callback function %p (already one registered)\n", cbptr);
-		pthread_rwlock_unlock(&scb->lock);
+		bbs_rwlock_unlock(&scb->lock);
 		return -1;
 	}
 
@@ -69,16 +69,16 @@ int __bbs_singular_callback_register(struct bbs_singular_callback *scb, void *cb
 	set_function_pointer(scb, cbptr);
 	scb->mod = mod;
 
-	pthread_rwlock_unlock(&scb->lock);
+	bbs_rwlock_unlock(&scb->lock);
 	return 0;
 }
 
 int __bbs_singular_callback_unregister(struct bbs_singular_callback *scb, void *cbptr, const char *file, int line, const char *func)
 {
-	pthread_rwlock_wrlock(&scb->lock);
+	bbs_rwlock_wrlock(&scb->lock);
 	if (cbptr != function_pointer_value(scb)) {
 		__bbs_log(LOG_ERROR, 0, file, line, func, "Can't unregister callback function %p (not the one registered)\n", cbptr);
-		pthread_rwlock_unlock(&scb->lock);
+		bbs_rwlock_unlock(&scb->lock);
 		return -1;
 	}
 
@@ -88,7 +88,7 @@ int __bbs_singular_callback_unregister(struct bbs_singular_callback *scb, void *
 	set_function_pointer(scb, NULL);
 	scb->mod = NULL;
 
-	pthread_rwlock_unlock(&scb->lock);
+	bbs_rwlock_unlock(&scb->lock);
 	return 0;
 }
 
@@ -99,9 +99,9 @@ int bbs_singular_callback_registered(struct bbs_singular_callback *scb)
 
 int __bbs_singular_callback_execute_pre(struct bbs_singular_callback *scb, void *refmod, const char *file, int line, const char *func)
 {
-	pthread_rwlock_rdlock(&scb->lock);
+	bbs_rwlock_rdlock(&scb->lock);
 	if (!function_pointer_exists(scb)) {
-		pthread_rwlock_unlock(&scb->lock);
+		bbs_rwlock_unlock(&scb->lock);
 		return -1; /* No callback registered */
 	}
 	if (scb->mod) {
@@ -130,6 +130,6 @@ int __bbs_singular_callback_execute_post(struct bbs_singular_callback *scb, void
 	if (scb->mod) {
 		__bbs_module_unref(scb->mod, 100, refmod, file, line, func);
 	}
-	pthread_rwlock_unlock(&scb->lock);
+	bbs_rwlock_unlock(&scb->lock);
 	return 0;
 }

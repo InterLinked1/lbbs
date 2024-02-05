@@ -54,6 +54,7 @@ static void add_upstream(const char *hostname, const char *domains)
 
 	strcpy(h->data, hostname); /* Safe */
 	h->hostname = h->data;
+	stringlist_init(&h->domains);
 	stringlist_push_list(&h->domains, domains);
 
 	/* Head insert, so later entries override earlier ones, in case multiple match */
@@ -62,7 +63,7 @@ static void add_upstream(const char *hostname, const char *domains)
 
 static void upstream_host_free(struct upstream_host *h)
 {
-	stringlist_empty(&h->domains);
+	stringlist_empty_destroy(&h->domains);
 	free(h);
 }
 

@@ -19,6 +19,15 @@
 struct stringitem;
 RWLIST_HEAD(stringlist, stringitem);
 
+/*! \brief Init a stringlist */
+#define stringlist_init(l) RWLIST_HEAD_INIT(l)
+
+/*! \brief Destroy a stringlist */
+#define stringlist_destroy(l) RWLIST_HEAD_DESTROY(l)
+
+/*! \brief Empty and destroy a stringlist */
+#define stringlist_empty_destroy(l) stringlist_empty(l); stringlist_destroy(l)
+
 /*!
  * \brief Get the number of items in a stringlist
  * \return Number of items

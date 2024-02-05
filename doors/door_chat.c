@@ -89,6 +89,7 @@ static void leave_channel(struct channel *channel, struct participant *participa
 		bbs_debug(3, "Nobody is left in channel %s, destroying\n", channel->name);
 		c = RWLIST_REMOVE(&channels, channel, entry);
 		if (c) {
+			RWLIST_HEAD_DESTROY(&channel->participants);
 			free(c);
 		} else {
 			bbs_error("Faled to remove channel %s?\n", channel->name);
@@ -142,6 +143,9 @@ static struct participant *join_channel(struct bbs_node *node, const char *name)
 		return NULL;
 	}
 	/* Tail insert so participants show up in order */
+	if (newchan) {
+		RWLIST_HEAD_INIT(&channel->participants);
+	}
 	RWLIST_INSERT_TAIL(&channel->participants, p, entry);
 	if (newchan) {
 		RWLIST_INSERT_TAIL(&channels, channel, entry);

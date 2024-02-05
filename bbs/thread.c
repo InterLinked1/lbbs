@@ -25,7 +25,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
 #include <sys/syscall.h>
 #include <signal.h> /* use pthread_kill */
 

@@ -32,7 +32,6 @@
 #include <netinet/in.h> /* use sockaddr_in */
 #include <poll.h>
 #include <sys/socket.h>
-#include <pthread.h>
 #include <signal.h>
 #include <magic.h>
 #include <sys/wait.h>
@@ -105,7 +104,7 @@ struct http_route {
 	size_t prefixlen; /*!< Length of prefix */
 	unsigned int usecount;
 	unsigned int secure:1;
-	pthread_mutex_t lock;
+	bbs_mutex_t lock;
 	RWLIST_ENTRY(http_route) entry;
 	char data[];
 };
@@ -530,7 +529,7 @@ static void session_decref(struct session *sess)
 	RWLIST_UNLOCK(&sessions);
 }
 
-void http_request_cleanup(struct http_request *req)
+static void http_request_cleanup(struct http_request *req)
 {
 	free_if(req->uri);
 	free_if(req->urihost);
@@ -542,7 +541,19 @@ void http_request_cleanup(struct http_request *req)
 		session_decref(req->session);
 	}
 	RWLIST_REMOVE_ALL(&req->postfields, entry, postfield_free);
+	RWLIST_HEAD_DESTROY(&req->postfields);
 	free_if(req->body);
+}
+
+static void http_response_cleanup(struct http_response *res)
+{
+	bbs_vars_destroy(&res->headers);
+}
+
+void http_session_cleanup(struct http_session *http)
+{
+	http_request_cleanup(http->req);
+	http_response_cleanup(http->res);
 }
 
 static int parse_request_line(struct http_session *restrict http, char *s)
@@ -1442,6 +1453,7 @@ static struct session *http_session_set(struct http_session *http, int secure, i
 			RWLIST_UNLOCK(&sessions);
 			return NULL;
 		}
+		RWLIST_HEAD_INIT(&sess->vars);
 	}
 
 	strcpy(sess->sessid, sessid); /* Safe */
@@ -1492,6 +1504,7 @@ int http_session_destroy(struct http_session *http)
 		RWLIST_TRAVERSE_SAFE_BEGIN(&sessions, s, entry) {
 			if (sess == s) {
 				RWLIST_REMOVE_CURRENT(entry);
+				session_free(s);
 				break;
 			}
 		}
@@ -1619,9 +1632,9 @@ static struct http_route *find_route(unsigned short int port, const char *hostna
 	}
 	if (route) {
 		*methodmismatch = 0;
-		pthread_mutex_lock(&route->lock);
+		bbs_mutex_lock(&route->lock);
 		route->usecount++;
-		pthread_mutex_unlock(&route->lock);
+		bbs_mutex_unlock(&route->lock);
 		bbs_module_ref(route->mod, 1);
 	} else {
 		bbs_debug(3, "No matching route for '%s' and no default route!\n", uri);
@@ -1635,9 +1648,9 @@ static struct http_route *find_route(unsigned short int port, const char *hostna
 static void route_unref(struct http_route *route)
 {
 	bbs_module_unref(route->mod, 1);
-	pthread_mutex_lock(&route->lock);
+	bbs_mutex_lock(&route->lock);
 	route->usecount--;
-	pthread_mutex_unlock(&route->lock);
+	bbs_mutex_unlock(&route->lock);
 }
 
 int http_parse_request(struct http_session *http, char *buf)
@@ -1649,6 +1662,13 @@ int http_parse_request(struct http_session *http, char *buf)
 	memset(&http->reqstack, 0, sizeof(http->reqstack));
 	/* XXX This also memset's http->res->chunkbuf, which is unnecessary */
 	memset(&http->resstack, 0, sizeof(http->resstack));
+
+	RWLIST_HEAD_INIT(&http->reqstack.headers);
+	RWLIST_HEAD_INIT(&http->reqstack.cookies);
+	RWLIST_HEAD_INIT(&http->reqstack.queryparams);
+	RWLIST_HEAD_INIT(&http->reqstack.postfields);
+
+	RWLIST_HEAD_INIT(&http->resstack.headers);
 
 	/* Initialize */
 	http->res->chunkedleft = sizeof(http->res->chunkbuf);
@@ -1918,7 +1938,7 @@ static void http_handler(struct bbs_node *node, int secure)
 			 * Exempt favicon.ico since Chromium browsers request this automatically. */
 			bbs_event_dispatch(http.node, EVENT_NODE_BAD_REQUEST);
 		}
-		http_request_cleanup(http.req);
+		http_session_cleanup(&http);
 	} while (res >= 0 && http.req->keepalive);
 
 #ifdef HAVE_OPENSSL
@@ -2786,7 +2806,7 @@ int __http_register_route(const char *hostname, unsigned short int port, unsigne
 	route->methods = methods;
 	route->handler = handler;
 	route->mod = mod;
-	pthread_mutex_init(&route->lock, NULL);
+	bbs_mutex_init(&route->lock, NULL);
 	SET_BITFIELD(route->secure, secure);
 	RWLIST_INSERT_HEAD(&routes, route, entry);
 	RWLIST_UNLOCK(&routes);
@@ -2801,21 +2821,21 @@ int http_unregister_route(enum http_response_code (*handler)(struct http_session
 	RWLIST_WRLOCK(&routes);
 	RWLIST_TRAVERSE_SAFE_BEGIN(&routes, route, entry) {
 		if (route->handler == handler) {
-			pthread_mutex_lock(&route->lock);
+			bbs_mutex_lock(&route->lock);
 			/* Not very elegant, but mainly needed for mod_test_http,
 			 * since the "client" will try to unregister the route as soon as it's done,
 			 * but the server may still be using the route.
 			 * Don't actually remove it until the server is done with it,
 			 * or we'll end up with race conditions, use after free, etc. */
 			while (route->usecount > 0) {
-				pthread_mutex_unlock(&route->lock);
+				bbs_mutex_unlock(&route->lock);
 				usleep(10000);
-				pthread_mutex_lock(&route->lock);
+				bbs_mutex_lock(&route->lock);
 			}
 			unref_listener(route->port);
 			RWLIST_REMOVE_CURRENT(entry);
-			pthread_mutex_unlock(&route->lock);
-			pthread_mutex_destroy(&route->lock);
+			bbs_mutex_unlock(&route->lock);
+			bbs_mutex_destroy(&route->lock);
 			free(route);
 			/* Don't break, because the route could be registered multiple times (e.g. HTTP and HTTPS)
 			 * If we also accepted a port number, that should be unique and we could break. */

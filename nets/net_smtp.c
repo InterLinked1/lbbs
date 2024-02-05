@@ -87,12 +87,12 @@ static int validatespf = 1;
 static int add_received_msa = 0;
 static int archivelists = 1;
 
-struct stringlist trusted_relays;
-struct stringlist starttls_exempt;
+static struct stringlist trusted_relays;
+static struct stringlist starttls_exempt;
 
 static FILE *smtplogfp = NULL;
 static unsigned int smtp_log_level = 5;
-static pthread_mutex_t loglock = PTHREAD_MUTEX_INITIALIZER;
+static bbs_mutex_t loglock = BBS_MUTEX_INITIALIZER;
 
 /*! \brief Max message size, in bytes */
 static unsigned int max_message_size = 300000;
@@ -128,14 +128,14 @@ void bbs_smtp_log(int level, struct smtp_session *smtp, const char *fmt, ...)
 	localtime_r(&lognow, &logdate);
 	strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 
-	pthread_mutex_lock(&loglock);
+	bbs_mutex_lock(&loglock);
 	fprintf(smtplogfp, "[%s.%03d] %p: ", datestr, (int) now.tv_usec / 1000, smtp);
 
 	va_start(ap, fmt);
 	vfprintf(smtplogfp, fmt, ap);
 	va_end(ap);
 
-	pthread_mutex_unlock(&loglock);
+	bbs_mutex_unlock(&loglock);
 	fflush(smtplogfp);
 }
 
@@ -224,7 +224,9 @@ static void smtp_destroy(struct smtp_session *smtp)
 	smtp->ehlo = 0;
 	smtp->gothelo = 0;
 	free_if(smtp->helohost);
-	smtp_reset(smtp);
+	smtp_reset(smtp); /* Must be called before stringlist_empty_destroy */
+	stringlist_empty_destroy(&smtp->recipients);
+	stringlist_empty_destroy(&smtp->sentrecipients);
 }
 
 static struct stringlist blacklist;
@@ -254,6 +256,7 @@ static void add_authorized_relay(const char *source, const char *domains)
 
 	strcpy(h->data, source); /* Safe */
 	h->source = h->data;
+	stringlist_init(&h->domains);
 	stringlist_push_list(&h->domains, domains);
 
 	/* Head insert, so later entries override earlier ones, in case multiple match */
@@ -262,7 +265,7 @@ static void add_authorized_relay(const char *source, const char *domains)
 
 static void relay_free(struct smtp_relay_host *h)
 {
-	stringlist_empty(&h->domains);
+	stringlist_empty_destroy(&h->domains);
 	free(h);
 }
 
@@ -1976,14 +1979,15 @@ int smtp_inject(const char *mailfrom, struct stringlist *recipients, const char 
 
 	smtp.datafile = filename;
 
+	stringlist_init(&smtp.sentrecipients);
 	memcpy(&smtp.recipients, recipients, sizeof(smtp.recipients));
 
 	bbs_debug(5, "Injecting SMTP message MAILFROM <%s>, file: %s, size %lu\n", S_IF(mailfrom), filename, length);
 
 	res = expand_and_deliver(&smtp, filename, length);
 	/* Since these are normally consumed, there is no guarantee to the caller what will be leftover here, so just clean up */
-	stringlist_empty(&smtp.recipients);
-	stringlist_empty(&smtp.sentrecipients);
+	stringlist_empty_destroy(&smtp.recipients);
+	stringlist_empty_destroy(&smtp.sentrecipients);
 
 	return res;
 }
@@ -2000,7 +2004,7 @@ static int nosmtp_deliver(const char *filename, const char *sender, const char *
 	struct stringlist slist;
 
 	/*! \todo The mail interface should probably accept a stringlist globally, since it's reasonable to have multiple recipients */
-	memset(&slist, 0, sizeof(slist));
+	stringlist_init(&slist);
 	stringlist_push(&slist, recipient);
 
 	return smtp_inject(sender, &slist, filename, length);
@@ -2798,6 +2802,9 @@ static void smtp_handler(struct bbs_node *node, int msa, int secure)
 	SET_BITFIELD(smtp.secure, secure);
 	SET_BITFIELD(smtp.msa, msa);
 
+	stringlist_init(&smtp.recipients);
+	stringlist_init(&smtp.sentrecipients);
+
 	handle_client(&smtp, &ssl);
 	mailbox_dispatch_event_basic(EVENT_LOGOUT, node, NULL, NULL);
 
@@ -2912,7 +2919,9 @@ static int load_config(void)
 
 static int load_module(void)
 {
-	memset(&blacklist, 0, sizeof(blacklist));
+	stringlist_init(&trusted_relays);
+	stringlist_init(&starttls_exempt);
+	stringlist_init(&blacklist);
 
 	if (load_config()) {
 		return -1;
@@ -2951,7 +2960,7 @@ static int load_module(void)
 	return 0;
 
 cleanup:
-	stringlist_empty(&blacklist);
+	stringlist_empty_destroy(&blacklist);
 	RWLIST_WRLOCK_REMOVE_ALL(&authorized_relays, entry, relay_free);
 	return -1;
 }
@@ -2970,10 +2979,10 @@ static int unload_module(void)
 	if (msa_enabled) {
 		bbs_stop_tcp_listener(msa_port);
 	}
-	stringlist_empty(&blacklist);
+	stringlist_empty_destroy(&blacklist);
 	RWLIST_WRLOCK_REMOVE_ALL(&authorized_relays, entry, relay_free);
-	stringlist_empty(&trusted_relays);
-	stringlist_empty(&starttls_exempt);
+	stringlist_empty_destroy(&trusted_relays);
+	stringlist_empty_destroy(&starttls_exempt);
 	if (!RWLIST_EMPTY(&filters)) {
 		bbs_error("Filter(s) still registered at unload?\n");
 	}

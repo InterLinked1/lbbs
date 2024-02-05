@@ -371,6 +371,7 @@ static void dump_imap_search_keys(struct imap_search_keys *skeys, struct dyn_str
 		if (!nk->child.keys) { \
 			return -1; \
 		} \
+		RWLIST_HEAD_INIT(nk->child.keys); \
 		listsize++; \
 		if (parse_search_query(imap, nk->child.keys, IMAP_SEARCH_ ## name, s)) { \
 			return -1; \
@@ -1076,12 +1077,13 @@ static int do_search(struct imap_session *imap, char *s, unsigned int **a, int u
 	*max = -1;
 	*maxmodseq = 0;
 
-	memset(&skeys, 0, sizeof(skeys));
+	RWLIST_HEAD_INIT(&skeys);
 	/* If we didn't consume the entire search expression before returning, then this is invalid */
 	if (parse_search_query(imap, &skeys, IMAP_SEARCH_ALL, &s) || !strlen_zero(s)) {
 		imap_search_free(&skeys);
 		imap_reply(imap, "BAD [CLIENTBUG] Invalid search query");
 		bbs_warning("Failed to parse search query\n"); /* Consumed the query in the process, but should be visible in a previous debug message */
+		RWLIST_HEAD_DESTROY(&skeys);
 		return -1;
 	}
 
@@ -1098,6 +1100,7 @@ static int do_search(struct imap_session *imap, char *s, unsigned int **a, int u
 	search_dir(imap, imap->curdir, 0, usinguid, &skeys, a, &lengths, &allocsizes, min, max, maxmodseq);
 	search_dir(imap, imap->newdir, 1, usinguid, &skeys, a, &lengths, &allocsizes, min, max, maxmodseq);
 	imap_search_free(&skeys);
+	RWLIST_HEAD_DESTROY(&skeys);
 	return lengths;
 }
 

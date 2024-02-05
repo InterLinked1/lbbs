@@ -504,7 +504,7 @@ void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned int uid,
 			generate_status(imap, mboxname, status_items, sizeof(status_items), "UNSEEN MESSAGES UIDVALIDITY HIGHESTMODSEQ");
 			didstatus = 1;
 		}
-		pthread_mutex_lock(&s->lock);
+		bbs_mutex_lock(&s->lock);
 		if (res == -1) { /* Not currently selected */
 			char statusmsgfull[256];
 			/* The same STATUS response can be used for all clients, but the mailbox name might be different */
@@ -513,7 +513,7 @@ void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned int uid,
 		} else { /* Currently selected */
 			imap_send_update(s, s->condstore ? condstoremsg : normalmsg, s->condstore ? condlen : normallen);
 		}
-		pthread_mutex_unlock(&s->lock);
+		bbs_mutex_unlock(&s->lock);
 	}
 	RWLIST_UNLOCK(&sessions);
 }
@@ -558,7 +558,7 @@ static void send_untagged_expunge(struct bbs_node *node, struct mailbox *mbox, c
 			generate_status(s, mboxname, status_items, sizeof(status_items), "UIDNEXT MESSAGES HIGHESTMODSEQ");
 			didstatus = 1;
 		}
-		pthread_mutex_lock(&s->lock);
+		bbs_mutex_lock(&s->lock);
 		if (res == -1) {
 			char statusmsgfull[256];
 			size_t statuslenfull = (size_t) snprintf(statusmsgfull, sizeof(statusmsgfull), "* STATUS \"%s\" (%s)\r\n", mboxname, status_items);
@@ -593,7 +593,7 @@ static void send_untagged_expunge(struct bbs_node *node, struct mailbox *mbox, c
 				}
 			}
 		}
-		pthread_mutex_unlock(&s->lock);
+		bbs_mutex_unlock(&s->lock);
 	}
 	RWLIST_UNLOCK(&sessions);
 	free_if(str);
@@ -654,16 +654,16 @@ static void send_untagged_exists(struct bbs_node *node, struct mailbox *mbox, co
 		 * but we'd need to send a FETCH per matching message.
 		 * Again for \Recent messages this is going to be tricky/impossible. */
 
-		pthread_mutex_lock(&s->lock);
+		bbs_mutex_lock(&s->lock);
 		/* RFC 3501 Section 7: unilateral response */
 		if (res == -1) {
 			char statusmsgfull[256];
 			size_t statuslenfull = (size_t) snprintf(statusmsgfull, sizeof(statusmsgfull), "* STATUS \"%s\" (%s)\r\n", mboxname, status_items);
 			imap_send_update(s, statusmsgfull, statuslenfull);
-			pthread_mutex_unlock(&s->lock);
+			bbs_mutex_unlock(&s->lock);
 		} else {
 			imap_send_update(s, buf, len);
-			pthread_mutex_unlock(&s->lock);
+			bbs_mutex_unlock(&s->lock);
 			/* Unlock because send_fetch_response assumes an unlocked session.
 			 * XXX Since sessions, the session technically can't disappear on us,
 			 * but this does leave open the possibility of interleaved writes. */
@@ -726,9 +726,9 @@ static void send_untagged_list(struct bbs_node *node, enum mailbox_event_type ty
 				break;
 		}
 
-		pthread_mutex_lock(&s->lock);
+		bbs_mutex_lock(&s->lock);
 		imap_send_update(s, buf, len);
-		pthread_mutex_unlock(&s->lock);
+		bbs_mutex_unlock(&s->lock);
 	}
 	RWLIST_UNLOCK(&sessions);
 }
@@ -752,9 +752,9 @@ static void send_untagged_uidvalidity(struct mailbox *mbox, const char *maildir,
 		}
 
 		/* If same mailbox selected, send UIDVALIDITY */
-		pthread_mutex_lock(&s->lock);
+		bbs_mutex_lock(&s->lock);
 		imap_send_update(s, buf, len);
-		pthread_mutex_unlock(&s->lock);
+		bbs_mutex_unlock(&s->lock);
 	}
 	RWLIST_UNLOCK(&sessions);
 }
@@ -807,7 +807,8 @@ static void imap_mbox_watcher(struct mailbox_event *event)
 static void imap_destroy(struct imap_session *imap)
 {
 	imap_shutdown_clients(imap);
-	stringlist_empty(&imap->remotemailboxes);
+	RWLIST_HEAD_DESTROY(&imap->clients);
+	stringlist_empty_destroy(&imap->remotemailboxes);
 	if (imap->mbox != imap->mymbox) {
 		if (imap->mbox) {
 			mailbox_unwatch(imap->mbox);
@@ -1911,13 +1912,13 @@ int imap_in_range(struct imap_session *imap, const char *s, int num)
 	if (!strcmp(s, "$")) {
 		int res = 0;
 		/* The caller already accounts for savedsearchuid (don't need to, and can't, do that here) */
-		pthread_mutex_lock(&imap->lock); /* Lock the session to prevent somebody from freeing the savedsearch from under us */
+		bbs_mutex_lock(&imap->lock); /* Lock the session to prevent somebody from freeing the savedsearch from under us */
 		if (!imap->savedsearch) {
 			bbs_warning("No saved search available\n");
 		} else {
 			res = in_range(imap->savedsearch, num);
 		}
-		pthread_mutex_unlock(&imap->lock);
+		bbs_mutex_unlock(&imap->lock);
 		return res;
 	}
 
@@ -1962,10 +1963,10 @@ unsigned int imap_msg_in_range(struct imap_session *imap, int seqno, const char 
 			*error = 1;
 			return 0;
 		}
-		pthread_mutex_lock(&imap->lock); /* Prevent saved search from disappearing underneath us while we're using it */
+		bbs_mutex_lock(&imap->lock); /* Prevent saved search from disappearing underneath us while we're using it */
 		if (strlen_zero(imap->savedsearch)) {
 			/* Empty string means nothing matches */
-			pthread_mutex_unlock(&imap->lock);
+			bbs_mutex_unlock(&imap->lock);
 			return 0;
 		}
 		sequences = imap->savedsearch;
@@ -1975,7 +1976,7 @@ unsigned int imap_msg_in_range(struct imap_session *imap, int seqno, const char 
 	res = msg_in_range(seqno, filename, sequences, usinguid);
 
 	if (use_saved_search) {
-		pthread_mutex_unlock(&imap->lock);
+		bbs_mutex_unlock(&imap->lock);
 	}
 	return res;
 }
@@ -3857,7 +3858,7 @@ static int flush_updates(struct imap_session *imap, const char *command, const c
 		 */
 		if (!STARTS_WITH(command, "FETCH") && !STARTS_WITH(command, "STORE") && !STARTS_WITH(command, "SEARCH") && !STARTS_WITH(command, "SORT") && !STARTS_WITH(command, "THREAD") && (!STARTS_WITH(command, "UID") || (!strlen_zero(s) && !STARTS_WITH(s, "SEARCH")))) {
 			char buf[1024]; /* Hopefully big enough for any single untagged  response. */
-			pthread_mutex_lock(&imap->lock);
+			bbs_mutex_lock(&imap->lock);
 			bbs_readline_init(&rldata2, buf, sizeof(buf));
 			/* Read from the pipe until it's empty again. If there's more than one response waiting, and in particular, more than sizeof(buf), we need to read by line. */
 			for (;;) {
@@ -3868,7 +3869,7 @@ static int flush_updates(struct imap_session *imap, const char *command, const c
 				_imap_reply_nolock(imap, "%s\r\n", buf); /* Already have lock held, and we don't know the length. Also, add CR LF back on, since bbs_readline stripped that. */
 			}
 			imap->pending = 0;
-			pthread_mutex_unlock(&imap->lock);
+			bbs_mutex_unlock(&imap->lock);
 		}
 	}
 	return 0;
@@ -4651,13 +4652,15 @@ static void imap_handler(struct bbs_node *node, int secure)
 	imap.rfd = rfd;
 	imap.wfd = wfd;
 	imap.node = node;
+	RWLIST_HEAD_INIT(&imap.remotemailboxes);
 
 	if (pipe(imap.pfd)) {
 		bbs_error("pipe failed: %s\n", strerror(errno));
 		goto cleanup;
 	}
 
-	pthread_mutex_init(&imap.lock, NULL);
+	bbs_mutex_init(&imap.lock, NULL);
+	RWLIST_HEAD_INIT(&imap.clients);
 
 	/* Add to session list (for IDLE) */
 	RWLIST_WRLOCK(&sessions);
@@ -4686,7 +4689,7 @@ cleanup:
 	}
 #endif
 	imap_destroy(&imap);
-	pthread_mutex_destroy(&imap.lock);
+	bbs_mutex_destroy(&imap.lock);
 }
 
 static void *__imap_handler(void *varg)
@@ -4759,9 +4762,9 @@ static int alertmsg(unsigned int userid, const char *msg)
 		if (!bbs_user_is_registered(s->node->user) || s->node->user->id != userid) { /* Must be the desired user */
 			continue;
 		}
-		pthread_mutex_lock(&s->lock);
+		bbs_mutex_lock(&s->lock);
 		if (!s->idle || s->alerted) { /* Must be idling, or we can't send an untagged response now */
-			pthread_mutex_unlock(&s->lock);
+			bbs_mutex_unlock(&s->lock);
 			continue;
 		}
 
@@ -4824,7 +4827,7 @@ static int alertmsg(unsigned int userid, const char *msg)
 
 		if (!strlen_zero(s->clientid)) {
 			if (strstr(s->clientid, "Outlook")) { /* MS Outlook never seems to display alerts at all */
-				pthread_mutex_unlock(&s->lock);
+				bbs_mutex_unlock(&s->lock);
 				continue;
 			}
 			/* The following (Thunderbird family) clients MAY work: Thunderbird, Interlink, MailNews, Epyrus */
@@ -4844,7 +4847,7 @@ static int alertmsg(unsigned int userid, const char *msg)
 			s->alerted = 1;
 		}
 		res = 0;
-		pthread_mutex_unlock(&s->lock);
+		bbs_mutex_unlock(&s->lock);
 	}
 	RWLIST_UNLOCK(&sessions);
 	return res;

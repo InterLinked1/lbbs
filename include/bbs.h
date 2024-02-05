@@ -26,6 +26,10 @@
 #define _GNU_SOURCE 1
 #endif
 
+#ifndef BBS_TEST_FRAMEWORK
+#include "include/lock.h"
+#endif
+
 /* Universal includes */
 #include <errno.h>
 #include <assert.h>

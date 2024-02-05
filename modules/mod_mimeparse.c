@@ -17,6 +17,9 @@
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
+/* XXX Not sure which this is necessary, but it is... */
+#define BBS_LOCK_WRAPPERS_NOWARN
+
 #include "include/bbs.h"
 
 #include <glib.h>

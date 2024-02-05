@@ -43,7 +43,7 @@ static int remote_list(struct imap_client *client, struct list_command *lcmd, co
 	const char *subprefix;
 	ssize_t res;
 
-	memset(&matchedmailboxes, 0, sizeof(matchedmailboxes));
+	stringlist_init(&matchedmailboxes);
 
 	/* Don't send LIST-STATUS here, even if the remote server supports it,
 	 * because imap_client_status.c is responsible for STATUS and LIST-STATUS
@@ -230,6 +230,7 @@ static int remote_list(struct imap_client *client, struct list_command *lcmd, co
 		free(s);
 	}
 
+	stringlist_destroy(&matchedmailboxes);
 	imap_client_idle_notify(client); /* Don't need the client anymore for now... */
 	return 0;
 }
@@ -311,7 +312,7 @@ static int remote_list_parallel(struct bbs_parallel *p, const char *restrict pre
 }
 
 /*! \brief Mutex to prevent recursion */
-static pthread_mutex_t virt_lock = PTHREAD_MUTEX_INITIALIZER; /* XXX Should most definitely be per mailbox struct, not global */
+static bbs_mutex_t virt_lock = BBS_MUTEX_INITIALIZER; /* XXX Should most definitely be per mailbox struct, not global */
 
 int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 {
@@ -322,13 +323,13 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	struct bbs_parallel p;
 
 	/* Folders from the proxied mailbox will need to be translated back and forth */
-	if (pthread_mutex_trylock(&virt_lock)) {
+	if (bbs_mutex_trylock(&virt_lock)) {
 		bbs_warning("Possible recursion inhibited\n");
 		return -1;
 	}
 
 	if (imap_client_mapping_file(imap, virtfile, sizeof(virtfile))) {
-		pthread_mutex_unlock(&virt_lock);
+		bbs_mutex_unlock(&virt_lock);
 		return -1;
 	}
 	bbs_debug(3, "Checking virtual mailboxes in %s\n", virtfile);
@@ -346,7 +347,7 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	 * and .imapremote.cache could possibly be removed in the future if there's no good use case for it. */
 	fp = fopen(virtfile, "r");
 	if (!fp) {
-		pthread_mutex_unlock(&virt_lock);
+		bbs_mutex_unlock(&virt_lock);
 		return -1;
 	}
 
@@ -372,6 +373,6 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	fclose(fp);
 
 	bbs_parallel_join(&p);
-	pthread_mutex_unlock(&virt_lock);
+	bbs_mutex_unlock(&virt_lock);
 	return 0;
 }

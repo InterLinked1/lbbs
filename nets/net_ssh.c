@@ -26,7 +26,6 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h> /* use sockaddr_in */
-#include <pthread.h>
 #include <signal.h> /* use pthread_kill */
 #include <sys/ioctl.h> /* use winsize */
 

@@ -261,7 +261,7 @@ int getacl(struct imap_session *imap, const char *directory, const char *mailbox
 	return 0;
 }
 
-static pthread_mutex_t acl_lock = PTHREAD_MUTEX_INITIALIZER;
+static bbs_mutex_t acl_lock = BBS_MUTEX_INITIALIZER;
 
 int setacl(struct imap_session *imap, const char *directory, const char *mailbox, const char *user, const char *newacl)
 {
@@ -288,7 +288,7 @@ int setacl(struct imap_session *imap, const char *directory, const char *mailbox
 	}
 
 	snprintf(fullname, sizeof(fullname), "%s/.acl", directory);
-	pthread_mutex_lock(&acl_lock); /* Ordinarily, a global mutex for all SETACLs would be terrible on a large IMAP server, but fine here */
+	bbs_mutex_lock(&acl_lock); /* Ordinarily, a global mutex for all SETACLs would be terrible on a large IMAP server, but fine here */
 	fp = fopen(fullname, "r+"); /* Open with r+ in case we end up appending to the original file */
 	if (!fp) {
 		/* No existing ACLs, this is the easy case. Just write a new file and return.
@@ -296,19 +296,19 @@ int setacl(struct imap_session *imap, const char *directory, const char *mailbox
 		 * but another thread could be trying to access it too. So that's why we have a lock. */
 		if (action == -1) {
 			bbs_debug(3, "No rights to remove - no ACL match for %s\n", user);
-			pthread_mutex_unlock(&acl_lock);
+			bbs_mutex_unlock(&acl_lock);
 			return 0;
 		}
 		fp = fopen(fullname, "w");
 		if (!fp) {
 			bbs_error("Failed to open %s for writing\n", fullname);
-			pthread_mutex_unlock(&acl_lock);
+			bbs_mutex_unlock(&acl_lock);
 			return -1;
 		}
 		/* XXX Should probably validate and verify this first */
 		fprintf(fp, "%s %s\n", user, newacl);
 		fclose(fp);
-		pthread_mutex_unlock(&acl_lock);
+		bbs_mutex_unlock(&acl_lock);
 		return 0;
 	}
 
@@ -317,7 +317,7 @@ int setacl(struct imap_session *imap, const char *directory, const char *mailbox
 	fp2 = fopen(fullname2, "w");
 	if (!fp2) {
 		bbs_error("Failed to open %s for writing\n", fullname2);
-		pthread_mutex_unlock(&acl_lock);
+		bbs_mutex_unlock(&acl_lock);
 		fclose(fp);
 		return -1;
 	}
@@ -373,7 +373,7 @@ int setacl(struct imap_session *imap, const char *directory, const char *mailbox
 		if (rename(fullname2, fullname)) {
 			bbs_error("rename %s -> %s failed: %s\n", fullname2, fullname, strerror(errno));
 			unlink(fullname2);
-			pthread_mutex_unlock(&acl_lock);
+			bbs_mutex_unlock(&acl_lock);
 			return -1;
 		}
 		bbs_debug(5, "Replaced ACL file %s\n", fullname);
@@ -386,6 +386,6 @@ int setacl(struct imap_session *imap, const char *directory, const char *mailbox
 		unlink(fullname2); /* Remove, not needed after all */
 		bbs_debug(5, "Updated ACL file %s\n", fullname);
 	}
-	pthread_mutex_unlock(&acl_lock);
+	bbs_mutex_unlock(&acl_lock);
 	return 0;
 }

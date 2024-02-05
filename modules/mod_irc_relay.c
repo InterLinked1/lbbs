@@ -57,7 +57,7 @@ struct chan_pair {
 	RWLIST_ENTRY(chan_pair) entry;
 	struct stringlist members;
 	pthread_t names_thread;
-	pthread_mutex_t names_query_lock;
+	bbs_mutex_t names_query_lock;
 	char data[0];
 };
 
@@ -65,15 +65,15 @@ static RWLIST_HEAD_STATIC(mappings, chan_pair);
 
 static void chan_pair_cleanup(struct chan_pair *cp)
 {
-	pthread_mutex_lock(&cp->names_query_lock);
+	bbs_mutex_lock(&cp->names_query_lock);
 	if (cp->names_thread) {
 		bbs_pthread_join(cp->names_thread, NULL);
 		cp->names_thread = 0;
 	}
-	pthread_mutex_unlock(&cp->names_query_lock);
+	bbs_mutex_unlock(&cp->names_query_lock);
 
-	stringlist_empty(&cp->members);
-	pthread_mutex_destroy(&cp->names_query_lock);
+	stringlist_empty_destroy(&cp->members);
+	bbs_mutex_destroy(&cp->names_query_lock);
 	free(cp);
 }
 
@@ -161,7 +161,8 @@ static int add_pair(const char *client1, const char *channel1, const char *clien
 	}
 
 	SET_BITFIELD(cp->relaysystem, relaysystem);
-	pthread_mutex_init(&cp->names_query_lock, NULL);
+	bbs_mutex_init(&cp->names_query_lock, NULL);
+	stringlist_init(&cp->members);
 
 	RWLIST_INSERT_HEAD(&mappings, cp, entry);
 	RWLIST_UNLOCK(&mappings);
@@ -247,7 +248,7 @@ static struct chan_pair *find_chanpair_reverse(const char *clientname)
 	return cp;
 }
 
-static pthread_mutex_t nicklock = PTHREAD_MUTEX_INITIALIZER;
+static bbs_mutex_t nicklock = BBS_MUTEX_INITIALIZER;
 static int nickpipe[2] = { -1, -1 };
 static const char *numericclient = NULL;
 
@@ -316,11 +317,11 @@ static int wait_response(struct bbs_node *node, int fd, const char *requsername,
 	/* Only one pipe needed: they write, we read */
 
 	/* To prevent deadlocks, we'll only wait on the pipe for a limited amount of time. */
-	pthread_mutex_lock(&nicklock);
+	bbs_mutex_lock(&nicklock);
 	numericclient = clientname;
 	if (pipe(nickpipe)) {
 		bbs_error("pipe failed: %s\n", strerror(errno));
-		pthread_mutex_unlock(&nicklock);
+		bbs_mutex_unlock(&nicklock);
 		return -1;
 	}
 	switch (numeric) {
@@ -487,7 +488,7 @@ cleanup:
 	close(nickpipe[0]);
 	close(nickpipe[1]);
 	nickpipe[0] = nickpipe[1] = -1;
-	pthread_mutex_unlock(&nicklock);
+	bbs_mutex_unlock(&nicklock);
 	return res;
 }
 
@@ -496,9 +497,9 @@ static int cp_contains_user(struct chan_pair *cp, const char *username)
 	int res;
 
 	/* XXX This is a global mutex (not even a rwlock), so this is not optimal */
-	pthread_mutex_lock(&nicklock);
+	bbs_mutex_lock(&nicklock);
 	res = stringlist_contains(&cp->members, username);
-	pthread_mutex_unlock(&nicklock);
+	bbs_mutex_unlock(&nicklock);
 
 	return res;
 }
@@ -801,7 +802,7 @@ static void ensure_names_aware(struct chan_pair *cp)
 	 * loads, since this could load a split instant after mod_irc_client at startup, and if so,
 	 * it's not a good time to be making NAMES requests yet...
 	 */
-	pthread_mutex_lock(&cp->names_query_lock);
+	bbs_mutex_lock(&cp->names_query_lock);
 	if (cp->gotnames) {
 		if (cp->gotnames == 2 && cp->names_thread) {
 			/* It's done, join the thread */
@@ -812,7 +813,7 @@ static void ensure_names_aware(struct chan_pair *cp)
 		cp->gotnames = 1; /* Don't do it again if one is already in progress, so mark completed when we start, rather than when the job finishes */
 		bbs_pthread_create(&cp->names_thread, NULL, names_query, cp);
 	}
-	pthread_mutex_unlock(&cp->names_query_lock);
+	bbs_mutex_unlock(&cp->names_query_lock);
 }
 
 static void relay_quit(const char *clientname, const char *username, const char *msg)
@@ -952,9 +953,9 @@ static void command_cb(const char *clientname, enum irc_callback_msg_type type, 
 			}
 			/* To keep our users list up to date, even if nobody on the network is issuing a NAMES query */
 			if (!cp_contains_user(cp, prefix)) {
-				pthread_mutex_lock(&nicklock);
+				bbs_mutex_lock(&nicklock);
 				stringlist_push(&cp->members, prefix);
-				pthread_mutex_unlock(&nicklock);
+				bbs_mutex_unlock(&nicklock);
 			}
 			break;
 		case CMD_PART:
@@ -972,9 +973,9 @@ static void command_cb(const char *clientname, enum irc_callback_msg_type type, 
 			}
 			/* To keep our users list up to date, even if nobody on the network is issuing a NAMES query */
 			if (cp_contains_user(cp, prefix)) {
-				pthread_mutex_lock(&nicklock);
+				bbs_mutex_lock(&nicklock);
 				stringlist_remove(&cp->members, prefix);
-				pthread_mutex_unlock(&nicklock);
+				bbs_mutex_unlock(&nicklock);
 			}
 			break;
 		case CMD_QUIT: /* This is academic, as QUIT is handled above */

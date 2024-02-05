@@ -60,6 +60,7 @@ static void add_proxy_client(const char *source, const char *domains)
 
 	strcpy(c->data, source); /* Safe */
 	c->source = c->data;
+	stringlist_init(&c->domains);
 	stringlist_push_list(&c->domains, domains);
 
 	/* Head insert, so later entries override earlier ones, in case multiple match */
@@ -68,7 +69,7 @@ static void add_proxy_client(const char *source, const char *domains)
 
 static void proxy_client_free(struct http_proxy_client *c)
 {
-	stringlist_empty(&c->domains);
+	stringlist_empty_destroy(&c->domains);
 	free(c);
 }
 

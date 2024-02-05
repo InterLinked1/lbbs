@@ -128,6 +128,8 @@ static void free_cp(struct chan_pair *cp)
 {
 	RWLIST_WRLOCK_REMOVE_ALL(&cp->members, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&cp->roles, entry, free);
+	RWLIST_HEAD_DESTROY(&cp->members);
+	RWLIST_HEAD_DESTROY(&cp->roles);
 	free(cp);
 }
 
@@ -185,6 +187,8 @@ static int add_pair(u64snowflake guild_id, const char *discord_channel, const ch
 	SET_BITFIELD(cp->relaysystem, relaysystem);
 	SET_BITFIELD2(cp->multiline, multiline);
 	/* channel_id is not yet known. Once we call fetch_channels, we'll be able to get the channel_id if it matches a name. */
+	RWLIST_HEAD_INIT(&cp->members);
+	RWLIST_HEAD_INIT(&cp->roles);
 	RWLIST_INSERT_HEAD(&mappings, cp, entry);
 	RWLIST_UNLOCK(&mappings);
 	bbs_debug(2, "Adding 1:1 channel mapping for (%lu) %s <=> %s\n", guild_id, discord_channel, irc_channel);

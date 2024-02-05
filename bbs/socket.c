@@ -716,7 +716,7 @@ static void *tcp_multilistener(void *unused)
 	return NULL;
 }
 
-static pthread_mutex_t tcp_start_lock = PTHREAD_MUTEX_INITIALIZER;
+static bbs_mutex_t tcp_start_lock = BBS_MUTEX_INITIALIZER;
 static int tcp_multilistener_started = 0;
 
 static int start_tcp_multilistener(void)
@@ -771,7 +771,7 @@ int __bbs_start_tcp_listener(int port, const char *name, void *(*handler)(void *
 	 * There are two reasons for doing this.
 	 * One is better performance.
 	 * The other is that we probably don't want to accept TCP connections before we're fully started, anyways. */
-	pthread_mutex_lock(&tcp_start_lock);
+	bbs_mutex_lock(&tcp_start_lock);
 	if (!tcp_multilistener_started) {
 		/* The first time that a module requests a TCP listener,
 		 * we'll need to either queue the multilistener thread to be started
@@ -785,7 +785,7 @@ int __bbs_start_tcp_listener(int port, const char *name, void *(*handler)(void *
 		 * listening until startup finishes anyways. */
 		bbs_alertpipe_write(multilistener_alertpipe);
 	}
-	pthread_mutex_unlock(&tcp_start_lock);
+	bbs_mutex_unlock(&tcp_start_lock);
 	return 0;
 }
 

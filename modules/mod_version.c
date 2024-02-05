@@ -20,7 +20,6 @@
 #include "include/bbs.h"
 
 #include <stdlib.h>
-#include <pthread.h>
 
 #include "include/module.h"
 #include "include/utils.h"

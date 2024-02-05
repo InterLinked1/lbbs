@@ -25,7 +25,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#include <pthread.h>
 #include <execinfo.h>
 #include <dlfcn.h>
 
@@ -167,7 +166,7 @@ static void bt_get_symbols(void **addresses, int num_frames, char *retstrings[])
 	bfd *bfdobj;
 	long allocsize;
 	char msg[BT_MSG_BUFF_LEN];
-	static pthread_mutex_t bfd_mutex = PTHREAD_MUTEX_INITIALIZER;
+	static bbs_mutex_t bfd_mutex = BBS_MUTEX_INITIALIZER;
 
 	for (stackfr = 0; stackfr < num_frames; stackfr++) {
 		struct bfd_data data = {
@@ -191,7 +190,7 @@ static void bt_get_symbols(void **addresses, int num_frames, char *retstrings[])
 			data.libname++;
 		}
 
-		pthread_mutex_lock(&bfd_mutex);
+		bbs_mutex_lock(&bfd_mutex);
 		/* Using do while(0) here makes it easier to escape and clean up */
 		do {
 			int symbolcount;
@@ -235,7 +234,7 @@ static void bt_get_symbols(void **addresses, int num_frames, char *retstrings[])
 			free(data.syms);
 			data.syms = NULL;
 		}
-		pthread_mutex_unlock(&bfd_mutex);
+		bbs_mutex_unlock(&bfd_mutex);
 
 		/* Default output, if we cannot find the information within BFD */
 		if (!data.found) {

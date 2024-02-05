@@ -85,7 +85,7 @@ static RWLIST_HEAD_STATIC(sessions, webmail_session);
 
 static unsigned int webmail_log_level = 0;
 static FILE *webmail_log_fp = NULL;
-static pthread_mutex_t loglock = PTHREAD_MUTEX_INITIALIZER;
+static bbs_mutex_t loglock = BBS_MUTEX_INITIALIZER;
 
 static void __attribute__ ((format (gnu_printf, 3, 4))) webmail_log(int level, struct imap_client *client, const char *fmt, ...);
 
@@ -108,14 +108,14 @@ static void webmail_log(int level, struct imap_client *client, const char *fmt, 
 	localtime_r(&lognow, &logdate);
 	strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 
-	pthread_mutex_lock(&loglock);
+	bbs_mutex_lock(&loglock);
 	fprintf(webmail_log_fp, "[%s.%03d] %p: ", datestr, (int) now.tv_usec / 1000, client);
 
 	va_start(ap, fmt);
 	vfprintf(webmail_log_fp, fmt, ap);
 	va_end(ap);
 
-	pthread_mutex_unlock(&loglock);
+	bbs_mutex_unlock(&loglock);
 	fflush(webmail_log_fp);
 }
 

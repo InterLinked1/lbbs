@@ -26,7 +26,6 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h> /* use sockaddr_in */
-#include <pthread.h>
 
 /* Expose the telcmds and telopts string arrays */
 #define TELCMDS

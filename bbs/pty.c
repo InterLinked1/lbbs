@@ -27,7 +27,6 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <termios.h>
-#include <pthread.h>
 #include <sys/ioctl.h> /* use winsize */
 #include <signal.h> /* use kill */
 

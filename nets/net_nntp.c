@@ -65,7 +65,7 @@ static int nnsp_port = DEFAULT_NNSP_PORT;
 
 static int nntp_enabled = 1, nntps_enabled = 1, nnsp_enabled = 1;
 
-static pthread_mutex_t nntp_lock;
+static bbs_mutex_t nntp_lock;
 
 static char newsdir[256] = "";
 static char newsgroups_file[sizeof(newsdir) + STRLEN("/newsgroups")] = "";
@@ -204,11 +204,11 @@ static int scan_newsgroups(void)
 	char fullpath[512];
 
 	/* Overwrite anything currently in the file. */
-	pthread_mutex_lock(&nntp_lock);
+	bbs_mutex_lock(&nntp_lock);
 	fp = fopen(newsgroups_file, "w");
 	if (!fp) {
 		bbs_error("Failed to open %s: %s\n", newsgroups_file, strerror(errno));
-		pthread_mutex_unlock(&nntp_lock);
+		bbs_mutex_unlock(&nntp_lock);
 		return -1;
 	}
 	/* Conduct an ordered traversal of all the directories in the newsdir. */
@@ -216,7 +216,7 @@ static int scan_newsgroups(void)
 	if (subs < 0) {
 		bbs_error("scandir(%s) failed: %s\n", newsdir, strerror(errno));
 		fclose(fp);
-		pthread_mutex_unlock(&nntp_lock);
+		bbs_mutex_unlock(&nntp_lock);
 		return -1;
 	}
 	while (fno < subs && (entry = entries[fno++])) {
@@ -236,7 +236,7 @@ static int scan_newsgroups(void)
 	}
 	free(entries);
 	fclose(fp);
-	pthread_mutex_unlock(&nntp_lock);
+	bbs_mutex_unlock(&nntp_lock);
 	return 0;
 }
 
@@ -650,7 +650,7 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename)
 		}
 
 		/* Atomically assign the new message ID. */
-		pthread_mutex_lock(&nntp_lock); /* Could really just be a per-newsgroup lock, but we don't have such locks at the moment. */
+		bbs_mutex_lock(&nntp_lock); /* Could really just be a per-newsgroup lock, but we don't have such locks at the moment. */
 		scan_newsgroup(group, &min, &max, &total);
 		msgno = max + 1; /* Assign new message number, for this newsgroup. */
 		/* The only way this file would already exist is if the client is posting to the same newsgroup twice.
@@ -663,7 +663,7 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename)
 		}
 		if (!eaccess(filename, R_OK)) {
 			bbs_debug(2, "Ignoring duplicate post attempt\n");
-			pthread_mutex_unlock(&nntp_lock);
+			bbs_mutex_unlock(&nntp_lock);
 			continue;
 		}
 		if (nntp->mode == NNTP_MODE_READER) {
@@ -674,12 +674,12 @@ static int do_post(struct nntp_session *nntp, const char *srcfilename)
 		fd = open(filename, O_CREAT | O_WRONLY, 0600);
 		if (fd < 0) {
 			bbs_warning("open(%s) failed: %s\n", filename, strerror(errno));
-			pthread_mutex_unlock(&nntp_lock);
+			bbs_mutex_unlock(&nntp_lock);
 			continue;
 		}
 		bbs_copy_file(srcfd, fd, 0, (int) nntp->postlen);
 		close(fd);
-		pthread_mutex_unlock(&nntp_lock);
+		bbs_mutex_unlock(&nntp_lock);
 		res = 0;
 		bbs_debug(3, "Posted article %s to newsgroup %s\n", filename, newsgroup);
 	}
@@ -1372,8 +1372,8 @@ static int load_config(void)
 
 static int load_module(void)
 {
-	memset(&inpeers, 0, sizeof(inpeers));
-	memset(&outpeers, 0, sizeof(outpeers));
+	stringlist_init(&inpeers);
+	stringlist_init(&outpeers);
 	if (load_config()) {
 		return -1;
 	}
@@ -1391,7 +1391,7 @@ static int load_module(void)
 		goto cleanup;
 	}
 
-	pthread_mutex_init(&nntp_lock, NULL);
+	bbs_mutex_init(&nntp_lock, NULL);
 
 	if (scan_newsgroups()) {
 		goto cleanup;
@@ -1400,8 +1400,8 @@ static int load_module(void)
 	return bbs_start_tcp_listener3(nntp_enabled ? nntp_port : 0, nntps_enabled ? nntps_port : 0, nnsp_enabled ? nnsp_port : 0, "NNTP", "NNTPS", "NNSP", __nntp_handler);
 
 cleanup:
-	stringlist_empty(&inpeers);
-	stringlist_empty(&outpeers);
+	stringlist_empty_destroy(&inpeers);
+	stringlist_empty_destroy(&outpeers);
 	return -1;
 }
 
@@ -1416,9 +1416,9 @@ static int unload_module(void)
 	if (nnsp_enabled) {
 		bbs_stop_tcp_listener(nnsp_port);
 	}
-	pthread_mutex_destroy(&nntp_lock);
-	stringlist_empty(&inpeers);
-	stringlist_empty(&outpeers);
+	bbs_mutex_destroy(&nntp_lock);
+	stringlist_empty_destroy(&inpeers);
+	stringlist_empty_destroy(&outpeers);
 	return 0;
 }
 

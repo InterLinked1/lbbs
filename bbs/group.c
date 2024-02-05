@@ -40,7 +40,7 @@ static RWLIST_HEAD_STATIC(groups, bbs_group);
 
 static void group_free(struct bbs_group *group)
 {
-	stringlist_empty(&group->users);
+	stringlist_empty_destroy(&group->users);
 	free(group);
 }
 
@@ -126,6 +126,7 @@ static int load_groups(void)
 		}
 		strcpy(g->data, bbs_config_section_name(section)); /* Safe */
 		g->name = g->data;
+		stringlist_init(&g->users);
 		while ((keyval = bbs_config_section_walk(section, keyval))) {
 			const char *key = bbs_keyval_key(keyval);
 

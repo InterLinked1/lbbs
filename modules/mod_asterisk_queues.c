@@ -1118,6 +1118,7 @@ static int load_config(void)
 		SET_FSM_STRING_VAR(queue, data, title, title, titlelen);
 		SET_FSM_STRING_VAR(queue, data, handler, handler, handlerlen);
 		queue->stale = 1; /* Needs to be initialized with queue stats */
+		RWLIST_HEAD_INIT(&queue->members);
 		RWLIST_INSERT_TAIL(&queues, queue, entry);
 		bbs_debug(4, "Added queue '%s'\n", name);
 	}
@@ -1126,13 +1127,19 @@ static int load_config(void)
 	return 0;
 }
 
+static void queue_free(struct queue *queue)
+{
+	RWLIST_HEAD_DESTROY(&queue->members);
+	free(queue);
+}
+
 static int unload_module(void)
 {
 	bbs_cli_unregister_multiple(cli_commands_queues);
 	bbs_ami_callback_unregister(ami_callback);
 	bbs_unregister_door("astqueue");
 	/* Agents and queue members will all be gone if the module is being unloaded, only queues are persistent */
-	RWLIST_REMOVE_ALL(&queues, entry, free);
+	RWLIST_REMOVE_ALL(&queues, entry, queue_free);
 	RWLIST_REMOVE_ALL(&calls, entry, free);
 	return 0;
 }

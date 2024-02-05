@@ -25,7 +25,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include <pthread.h>
 #include <signal.h>
 #include <dirent.h>
 #include <libgen.h> /* use dirname */
@@ -59,8 +58,8 @@ struct mailbox {
 	unsigned int quotausage;			/* Cached quota usage calculation */
 	char maildir[266];					/* User's mailbox directory, on disk. */
 	size_t maildirlen;					/* Length of maildir */
-	pthread_rwlock_t lock;				/* R/W lock for entire mailbox. R/W instead of a mutex, because POP write locks the entire mailbox, IMAP can just read lock. */
-	pthread_mutex_t uidlock;			/* Mutex for UID operations. */
+	bbs_rwlock_t lock;				/* R/W lock for entire mailbox. R/W instead of a mutex, because POP write locks the entire mailbox, IMAP can just read lock. */
+	bbs_mutex_t uidlock;			/* Mutex for UID operations. */
 	RWLIST_ENTRY(mailbox) entry;		/* Next mailbox */
 	unsigned int activity:1;			/* Mailbox has activity */
 	unsigned int quotavalid:1;			/* Whether cached quota calculations may still be used */
@@ -214,16 +213,16 @@ const char *mailbox_event_type_name(enum mailbox_event_type type)
 	__builtin_unreachable();
 }
 
-static pthread_mutex_t eventidlock = PTHREAD_MUTEX_INITIALIZER;
+static bbs_mutex_t eventidlock = BBS_MUTEX_INITIALIZER;
 static unsigned long next_eventid = 0;
 
 void mailbox_dispatch_event(struct mailbox_event *event)
 {
 	struct mailbox_watcher *w;
 
-	pthread_mutex_lock(&eventidlock);
+	bbs_mutex_lock(&eventidlock);
 	event->id = ++next_eventid;
-	pthread_mutex_unlock(&eventidlock);
+	bbs_mutex_unlock(&eventidlock);
 
 	bbs_debug(6, "Dispatching mailbox event '%s'\n", mailbox_event_type_name(event->type));
 
@@ -431,8 +430,8 @@ static RWLIST_HEAD_STATIC(aliases, alias);
 
 static void mailbox_free(struct mailbox *mbox)
 {
-	pthread_rwlock_destroy(&mbox->lock);
-	pthread_mutex_destroy(&mbox->uidlock);
+	bbs_rwlock_destroy(&mbox->lock);
+	bbs_mutex_destroy(&mbox->uidlock);
 	free_if(mbox->name);
 	free(mbox);
 }
@@ -442,7 +441,7 @@ static void mailbox_cleanup(void)
 	/* Clean up mailboxes */
 	RWLIST_WRLOCK_REMOVE_ALL(&mailboxes, entry, mailbox_free);
 	RWLIST_WRLOCK_REMOVE_ALL(&aliases, entry, free);
-	stringlist_empty(&local_domains);
+	stringlist_empty_destroy(&local_domains);
 }
 
 /*!
@@ -565,8 +564,8 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid, const char *n
 			RWLIST_UNLOCK(&mailboxes);
 			return NULL;
 		}
-		pthread_rwlock_init(&mbox->lock, NULL);
-		pthread_mutex_init(&mbox->uidlock, NULL);
+		bbs_rwlock_init(&mbox->lock, NULL);
+		bbs_mutex_init(&mbox->uidlock, NULL);
 		mbox->id = userid;
 		if (name) {
 			mbox->name = strdup(name);
@@ -695,31 +694,31 @@ struct mailbox *mailbox_get_by_userid(unsigned int userid)
 int mailbox_rdlock(struct mailbox *mbox)
 {
 	bbs_assert_exists(mbox);
-	return pthread_rwlock_tryrdlock(&mbox->lock);
+	return bbs_rwlock_tryrdlock(&mbox->lock);
 }
 
 int mailbox_wrlock(struct mailbox *mbox)
 {
 	bbs_assert_exists(mbox);
-	return pthread_rwlock_trywrlock(&mbox->lock);
+	return bbs_rwlock_trywrlock(&mbox->lock);
 }
 
 void mailbox_unlock(struct mailbox *mbox)
 {
 	bbs_assert_exists(mbox);
-	pthread_rwlock_unlock(&mbox->lock);
+	bbs_rwlock_unlock(&mbox->lock);
 }
 
 int mailbox_uid_lock(struct mailbox *mbox)
 {
 	bbs_assert_exists(mbox);
-	return pthread_mutex_lock(&mbox->uidlock);
+	return bbs_mutex_lock(&mbox->uidlock);
 }
 
 void mailbox_uid_unlock(struct mailbox *mbox)
 {
 	bbs_assert_exists(mbox);
-	pthread_mutex_unlock(&mbox->uidlock);
+	bbs_mutex_unlock(&mbox->uidlock);
 }
 
 void mailbox_watch(struct mailbox *mbox)
@@ -2080,6 +2079,7 @@ static int load_config(void)
 				add_alias(key, value);
 			}
 		} else if (!strcmp(bbs_config_section_name(section), "domains")) {
+			stringlist_init(&local_domains);
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				const char *key = bbs_keyval_key(keyval);
 				if (!stringlist_contains(&local_domains, key)) {
@@ -2096,6 +2096,7 @@ static int load_config(void)
 
 static int load_module(void)
 {
+	stringlist_init(&local_domains);
 	if (load_config()) {
 		return -1;
 	}

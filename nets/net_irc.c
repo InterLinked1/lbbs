@@ -147,7 +147,7 @@ struct irc_user {
 	time_t lastactive;				/* Time of last JOIN, PART, PRIVMSG, NOTICE, etc. */
 	time_t lastping;				/* Last ping sent */
 	time_t lastpong;				/* Last pong received */
-	pthread_mutex_t lock;			/* User lock */
+	bbs_mutex_t lock;			/* User lock */
 	char *awaymsg;					/* Away message */
 	unsigned int away:1;			/* User is currently away (default is 0, i.e. user is here) */
 	unsigned int multiprefix:1;		/* Supports multi-prefix */
@@ -216,6 +216,7 @@ static struct irc_user user_chanserv = {
 	.hostname = "services",
 	.modes = USER_MODE_OPERATOR, /* Grant ChanServ permissions to do whatever it wants */
 	.wfd = -1,
+	.lock = BBS_MUTEX_INITIALIZER,
 };
 
 /*! \brief Static user struct for private messaging operations */
@@ -229,6 +230,7 @@ static struct irc_user user_messageserv = {
 	.hostname = "services",
 	.modes = 0,
 	.wfd = -1,
+	.lock = BBS_MUTEX_INITIALIZER,
 };
 #pragma GCC diagnostic pop
 
@@ -240,7 +242,7 @@ static RWLIST_HEAD_STATIC(users, irc_user);	/* Container for all users */
 struct irc_member {
 	struct irc_user *user;			/* Reference to user (must be in the users list) */
 	enum channel_user_modes modes;	/* User's channel flags (flags for this channel) */
-	pthread_mutex_t lock;			/* Member lock */
+	bbs_mutex_t lock;			/* Member lock */
 	RWLIST_ENTRY(irc_member) entry;	/* Next member */
 };
 
@@ -266,7 +268,7 @@ struct irc_channel {
 	RWLIST_ENTRY(irc_channel) entry;	/* Next channel */
 	struct bbs_rate_limit ratelimit;	/* Time that last relayed message was sent */
 	unsigned int relay:1;				/* Enable relaying */
-	pthread_mutex_t lock;				/* Channel lock */
+	bbs_mutex_t lock;				/* Channel lock */
 	char data[];						/* Flexible struct member for channel name / owner username */
 };
 
@@ -456,9 +458,9 @@ static int authorized_atleast(struct irc_member *member, int atleast)
 {
 	int auth = 0;
 
-	pthread_mutex_lock(&member->lock);
+	bbs_mutex_lock(&member->lock);
 	auth = authorized_atleast_bymode(member->modes, atleast);
-	pthread_mutex_unlock(&member->lock);
+	bbs_mutex_unlock(&member->lock);
 
 	return auth;
 }
@@ -469,9 +471,9 @@ static int get_channel_user_modes(char *buf, size_t len, struct irc_member *memb
 {
 	int pos = 0;
 
-	pthread_mutex_lock(&member->lock);
+	bbs_mutex_lock(&member->lock);
 	if (!member->modes) {
-		pthread_mutex_unlock(&member->lock);
+		bbs_mutex_unlock(&member->lock);
 		buf[0] = '\0';
 		return -1;
 	}
@@ -482,7 +484,7 @@ static int get_channel_user_modes(char *buf, size_t len, struct irc_member *memb
 	APPEND_MODE(buf, len, member->modes, CHANNEL_USER_MODE_FOUNDER, 'q');
 	APPEND_MODE(buf, len, member->modes, CHANNEL_USER_MODE_VOICE, 'v');
 	(void) len; /* Suppress cppcheck whining about len being unused for the last APPEND_MODE call */
-	pthread_mutex_unlock(&member->lock);
+	bbs_mutex_unlock(&member->lock);
 	buf[pos] = '\0';
 	return 0;
 }
@@ -521,9 +523,9 @@ static int get_user_modes(char *buf, size_t len, struct irc_user *user)
 {
 	int pos = 0;
 
-	pthread_mutex_lock(&user->lock);
+	bbs_mutex_lock(&user->lock);
 	if (!user->modes) {
-		pthread_mutex_unlock(&user->lock);
+		bbs_mutex_unlock(&user->lock);
 		buf[0] = '\0';
 		return -1;
 	}
@@ -533,7 +535,7 @@ static int get_user_modes(char *buf, size_t len, struct irc_user *user)
 	APPEND_MODE(buf, len, user->modes, USER_MODE_WALLOPS, 'w');
 	APPEND_MODE(buf, len, user->modes, USER_MODE_SECURE, 'Z');
 	(void) len; /* Suppress cppcheck whining about len being unused for the last APPEND_MODE call */
-	pthread_mutex_unlock(&user->lock);
+	bbs_mutex_unlock(&user->lock);
 	buf[pos] = '\0';
 	return 0;
 }
@@ -565,7 +567,7 @@ static void user_free(struct irc_user *user)
 		operators_online--;
 		RWLIST_UNLOCK(&operators);
 	}
-	pthread_mutex_destroy(&user->lock);
+	bbs_mutex_destroy(&user->lock);
 	free_if(user->password);
 	free_if(user->hostname);
 	free_if(user->awaymsg);
@@ -745,8 +747,8 @@ static int valid_channame(const char *s)
 static void channel_free(struct irc_channel *channel)
 {
 	bbs_assert(channel->membercount == 0);
-	stringlist_empty(&channel->invited);
-	pthread_mutex_destroy(&channel->lock);
+	stringlist_empty_destroy(&channel->invited);
+	bbs_mutex_destroy(&channel->lock);
 	if (channel->fp) {
 		fclose(channel->fp);
 		channel->fp = NULL;
@@ -754,7 +756,14 @@ static void channel_free(struct irc_channel *channel)
 	free_if(channel->password);
 	free_if(channel->topicsetby);
 	free_if(channel->topic);
+	RWLIST_HEAD_DESTROY(&channel->members);
 	free(channel);
+}
+
+static void member_free(struct irc_member *member)
+{
+	bbs_mutex_destroy(&member->lock);
+	free(member);
 }
 
 static void destroy_channels(void)
@@ -767,7 +776,7 @@ static void destroy_channels(void)
 		RWLIST_WRLOCK(&channel->members); /* Kick any members still present */
 		while ((member = RWLIST_REMOVE_HEAD(&channel->members, entry))) {
 			channel->membercount -= 1;
-			free(member);
+			member_free(member);
 		}
 		RWLIST_UNLOCK(&channel->members);
 		channel_free(channel);
@@ -856,9 +865,9 @@ static int __channel_broadcast(int lock, struct irc_channel *channel, struct irc
 
 static void user_setactive(struct irc_user *user)
 {
-	pthread_mutex_lock(&user->lock);
+	bbs_mutex_lock(&user->lock);
 	user->lastactive = time(NULL);
-	pthread_mutex_unlock(&user->lock);
+	bbs_mutex_unlock(&user->lock);
 }
 
 /*!
@@ -953,11 +962,13 @@ int irc_relay_set_topic(const char *channel, const char *topic, const char *ircu
 		return -1;
 	}
 
-	pthread_mutex_lock(&c->lock);
+	bbs_mutex_lock(&c->lock);
 	REPLACE(c->topic, topic);
 	snprintf(buf, sizeof(buf),IDENT_PREFIX_FMT, IDENT_PREFIX_ARGS(&user_messageserv));
 	REPLACE(c->topicsetby, buf);
 	c->topicsettime = time(NULL);
+	bbs_mutex_unlock(&c->lock);
+
 	channel_print_topic(NULL, c);
 	chanserv_broadcast("TOPIC", c->name, (&user_messageserv)->nickname, topic);
 	return 0;
@@ -1115,9 +1126,9 @@ int _irc_relay_send_multiline(const char *channel, enum channel_user_modes modes
 }
 
 /* XXX 100% horrible horrible (hopefully temporary) kludge - a total lock hack: In this case, it's to emulate recursive locking for this thread stack:
-Thread #8's call to pthread_rwlock_rdlock failed
+Thread #8's call to bbs_rwlock_rdlock failed
 ==168664==    with error code 35 (EDEADLK: Resource deadlock would occur)
-==168664==    at 0x483E751: pthread_rwlock_rdlock_WRK (hg_intercepts.c:2242)
+==168664==    at 0x483E751: bbs_rwlock_rdlock_WRK (hg_intercepts.c:2242)
 ==168664==    by 0x6746963: _irc_relay_send (net_irc.c:937) <--- try to RDLOCK
 ==168664==    by 0x485C960: netirc_cb (mod_irc_relay.c:575)
 ==168664==    by 0x673C00B: relay_broadcast (net_irc.c:793)
@@ -1175,13 +1186,13 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 		 * in which case user is already locked. Don't lock again, or we'll deadlock.
 		 * If !notice, this isn't the case. */
 		if (!notice) {
-			pthread_mutex_lock(&user2->lock); /* Serialize writes to this user */
+			bbs_mutex_lock(&user2->lock); /* Serialize writes to this user */
 		}
 #endif
 		irc_other_thread_writef(user2->node, user2->wfd, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, notice ? "NOTICE" : "PRIVMSG", user2->nickname, msg);
 #if 0
 		if (!notice) {
-			pthread_mutex_unlock(&user2->lock);
+			bbs_mutex_unlock(&user2->lock);
 		}
 #endif
 		/* Don't care if user is away in this case */
@@ -1259,7 +1270,7 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 			bbs_auth("Dropping unauthorized user %s from relayed channel %s\n", kicked->nickname, c->name);
 			RWLIST_REMOVE_CURRENT(entry);
 			c->membercount -= 1;
-			free(member);
+			member_free(member);
 			/* Already locked, so don't try to recursively lock: */
 			channel_broadcast_nolock(c, NULL, ":" IDENT_PREFIX_FMT " KICK %s %s :%s\r\n", IDENT_PREFIX_ARGS(&user_messageserv), c->name, kicked->nickname, "Not authorized to receive relayed messages");
 		}
@@ -1297,17 +1308,17 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 	 * - Individual relay modules (e.g. mod_discord) should DISCOURAGE and RESTRICT flooding but truncating or dropping messages,
 	 *   so as to proactively prevent flooding before _irc_relay_send has to drop messages as a last resort, and inform senders about the overload.
 	 */
-	pthread_mutex_lock(&c->lock);
+	bbs_mutex_lock(&c->lock);
 	/* Atomically check since this this function can be called from multiple threads. */
 	if (bbs_rate_limit_exceeded(&c->ratelimit)) {
-		pthread_mutex_unlock(&c->lock);
+		bbs_mutex_unlock(&c->lock);
 		bbs_warning("Rate limit exceeded, dropping message...\n");
 		/* Drop message if rate limit exceeded.
 		 * Unlike per-user rate limits,
 		 * we can't notify anyone about this. */
 		return -1;
 	}
-	pthread_mutex_unlock(&c->lock);
+	bbs_mutex_unlock(&c->lock);
 
 	channel_broadcast_selective(c, NULL, minmode, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, "PRIVMSG", c->name, msg);
 	relay_broadcast(c, NULL, sender, msg, mod);
@@ -1651,7 +1662,7 @@ static void handle_modes(struct irc_user *user, char *s)
 							continue;
 						}
 						/* This is written out the long way instead of using the ternary operator so that #mode will print what we want in the macro */
-						pthread_mutex_lock(&targetmember->lock);
+						bbs_mutex_lock(&targetmember->lock);
 						if (mode == 'q') {
 							SET_MODE(targetmember->modes, set, CHANNEL_USER_MODE_FOUNDER);
 						} else if (mode == 'a') {
@@ -1667,7 +1678,7 @@ static void handle_modes(struct irc_user *user, char *s)
 						} else if (mode == 'v') {
 							SET_MODE(targetmember->modes, set, CHANNEL_USER_MODE_VOICE);
 						}
-						pthread_mutex_unlock(&targetmember->lock);
+						bbs_mutex_unlock(&targetmember->lock);
 						if (changed) {
 							channel_broadcast(channel, NULL, ":%s MODE %s %c%c %s\r\n", user->nickname, channel->name, set ? '+' : '-', mode, targetmember->user->nickname);
 						}
@@ -1908,7 +1919,7 @@ static void dump_who(struct irc_user *user, struct irc_user *whouser, struct irc
 	char prefixes[6] = "";
 	char userflags[3 + sizeof(prefixes)];
 
-	pthread_mutex_lock(&whouser->lock);
+	bbs_mutex_lock(&whouser->lock);
 	if (member) {
 		if (user->multiprefix) {
 			snprintf(prefixes, sizeof(prefixes), MULTIPREFIX_FMT, MULTIPREFIX_ARGS(member));
@@ -1917,7 +1928,7 @@ static void dump_who(struct irc_user *user, struct irc_user *whouser, struct irc
 		}
 	}
 	snprintf(userflags, sizeof(userflags), "%c%s%s", whouser->away ? 'G' : 'H', whouser->modes & USER_MODE_OPERATOR ? "*" : "", prefixes);
-	pthread_mutex_unlock(&whouser->lock);
+	bbs_mutex_unlock(&whouser->lock);
 
 	send_numeric2(user, 352, "%s %s %s %s %s %s :%d %s\r\n", chan, whouser->username, whouser->hostname, irc_hostname, whouser->nickname, userflags, hopcount, whouser->realname);
 }
@@ -2238,9 +2249,9 @@ static void handle_userhost(struct irc_user *user, char *s)
 		send_numeric2(user, 401, "%s :No such nick/channel\r\n", s);
 		return;
 	}
-	pthread_mutex_lock(&u->lock);
+	bbs_mutex_lock(&u->lock);
 	snprintf(buf, sizeof(buf), "%s %s = %c %s %s", u->nickname, u->modes & USER_MODE_OPERATOR ? "*" : "", u->away ? '-' : '+', S_IF(u->awaymsg), u->hostname);
-	pthread_mutex_unlock(&u->lock);
+	bbs_mutex_unlock(&u->lock);
 	send_numeric(user, 302, "%s\r\n", buf);
 }
 
@@ -2610,7 +2621,7 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 		int res = 0;
 		struct irc_relay *relay;
 		RWLIST_RDLOCK(&relays);
-		pthread_mutex_lock(&user->lock);
+		bbs_mutex_lock(&user->lock);
 		RWLIST_TRAVERSE(&relays, relay, entry) {
 			if (relay->nicklist) {
 				bbs_module_ref(relay->mod, 9);
@@ -2621,7 +2632,7 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 				break;
 			}
 		}
-		pthread_mutex_unlock(&user->lock);
+		bbs_mutex_unlock(&user->lock);
 		RWLIST_UNLOCK(&relays);
 	}
 	send_numeric2(user, 366, "%s :End of /NAMES list.\r\n", channel->name);
@@ -2693,7 +2704,9 @@ static int join_channel(struct irc_user *user, char *name)
 		}
 		channel->fp = NULL;
 		bbs_rate_limit_init(&channel->ratelimit, 1000, 5); /* No more than 5 messages per second */
-		pthread_mutex_init(&channel->lock, NULL);
+		RWLIST_HEAD_INIT(&channel->members);
+		stringlist_init(&channel->invited);
+		bbs_mutex_init(&channel->lock, NULL);
 		if (log_channels) {
 			char logfile[256];
 			snprintf(logfile, sizeof(logfile), "%s/irc_channel_%s.txt", BBS_LOG_DIR, name);
@@ -2729,22 +2742,22 @@ static int join_channel(struct irc_user *user, char *name)
 		if (channel->modes & CHANNEL_MODE_THROTTLED && channel->throttleusers > 0 && channel->throttleinterval > 0) {
 			time_t now = time(NULL);
 
-			pthread_mutex_lock(&channel->lock);
+			bbs_mutex_lock(&channel->lock);
 			if (channel->throttlebegin < now - channel->throttleinterval) {
 				/* It's been at least the entire interval at this point, so start fresh. */
 				channel->throttlebegin = now;
 				channel->throttlecount = 1; /* Reset, but then add us, so set directly to 1 */
-				pthread_mutex_unlock(&channel->lock);
+				bbs_mutex_unlock(&channel->lock);
 				/* We're allowed to proceed. */
 			} else {
 				if (channel->throttlecount >= channel->throttleusers) {
-					pthread_mutex_unlock(&channel->lock);
+					bbs_mutex_unlock(&channel->lock);
 					RWLIST_UNLOCK(&channels);
 					send_numeric(user, 480, "Cannot join channel (+j) - throttle exceeded, try again later\r\n");
 					return -1;
 				}
 				channel->throttlecount += 1;
-				pthread_mutex_unlock(&channel->lock);
+				bbs_mutex_unlock(&channel->lock);
 			}
 		}
 	}
@@ -2782,6 +2795,7 @@ static int join_channel(struct irc_user *user, char *name)
 		RWLIST_UNLOCK(&channels);
 		return -1; /* Well this is embarassing, we got this far... but we couldn't make it to the finish line */
 	}
+	bbs_mutex_init(&member->lock, NULL);
 	member->user = user;
 	member->modes = CHANNEL_USER_MODE_NONE;
 	if (newchan) {
@@ -2868,7 +2882,7 @@ static int leave_channel(struct irc_user *user, const char *name)
 			RWLIST_REMOVE_CURRENT(entry);
 			channel->membercount -= 1;
 			member->user->channelcount -= 1;
-			free(member);
+			member_free(member);
 			break;
 		}
 	}
@@ -2899,7 +2913,7 @@ static void drop_member_if_present(struct irc_channel *channel, struct irc_user 
 			RWLIST_REMOVE_CURRENT(entry);
 			channel->membercount -= 1;
 			member->user->channelcount -= 1;
-			free(member);
+			member_free(member);
 			/* Already locked, so don't try to recursively lock: */
 			channel_broadcast_nolock(channel, user, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), leavecmd, channel->name, S_IF(message));
 			if (channel->relay && !bbs_is_shutting_down()) { /* If BBS shutting down, don't relay a bunch of quit messages */
@@ -2934,7 +2948,7 @@ static void kick_member(struct irc_channel *channel, struct irc_user *kicker, st
 			bbs_debug(3, "Dropping user %s from channel %s\n", kicked->nickname, channel->name);
 			RWLIST_REMOVE_CURRENT(entry);
 			channel->membercount -= 1;
-			free(member);
+			member_free(member);
 			/* Already locked, so don't try to recursively lock: */
 			channel_broadcast_nolock(channel, NULL, ":" IDENT_PREFIX_FMT " KICK %s %s :%s\r\n", IDENT_PREFIX_ARGS(kicker), channel->name, kicked->nickname, S_IF(message));
 			break;
@@ -2976,7 +2990,7 @@ static int channel_count(void)
 }
 
 static time_t motd_last_read = 0;
-static pthread_mutex_t motd_lock;
+static bbs_mutex_t motd_lock;
 
 /*! \brief Message of the Day */
 static void motd(struct irc_user *user)
@@ -2985,7 +2999,7 @@ static void motd(struct irc_user *user)
 	send_numeric(user, 372, "- This server powered by the Lightweight Bulletin Board System\r\n");
 	send_numeric(user, 372, "- Visit us at %s\r\n", BBS_SOURCE_URL);
 
-	pthread_mutex_lock(&motd_lock);
+	bbs_mutex_lock(&motd_lock);
 	if (!s_strlen_zero(motd_file)) { /* Custom MOTD text */
 		/* Reread the MOTD from disk at most once an hour. */
 		time_t now = time(NULL);
@@ -3001,7 +3015,7 @@ static void motd(struct irc_user *user)
 			char motdlines[2048];
 			char *line, *lines = motdlines;
 			safe_strncpy(motdlines, motdstring, sizeof(motdlines));
-			pthread_mutex_unlock(&motd_lock);
+			bbs_mutex_unlock(&motd_lock);
 			while ((line = strsep(&lines, "\n"))) {
 				if (strlen_zero(line)) {
 					continue;
@@ -3010,11 +3024,11 @@ static void motd(struct irc_user *user)
 				send_numeric(user, 372, "- %s\r\n", line);
 			}
 		} else {
-			pthread_mutex_unlock(&motd_lock);
+			bbs_mutex_unlock(&motd_lock);
 			send_numeric(user, 372, "- Welcome to %s chat\r\n", bbs_name());
 		}
 	} else {
-		pthread_mutex_unlock(&motd_lock);
+		bbs_mutex_unlock(&motd_lock);
 	}
 
 	send_numeric(user, 376, "End of /MOTD command.\r\n");
@@ -3290,9 +3304,9 @@ static void handle_client(struct irc_user *user)
 		} else { /* Post-CAP/SASL */
 			char *current, *command = strsep(&s, " ");
 			if (!strcasecmp(command, "PONG")) {
-				pthread_mutex_lock(&user->lock);
+				bbs_mutex_lock(&user->lock);
 				user->lastpong = time(NULL);
-				pthread_mutex_unlock(&user->lock);
+				bbs_mutex_unlock(&user->lock);
 			} else if (!strcasecmp(command, "PING")) { /* Usually servers ping clients, but clients can ping servers too */
 				send_reply(user, "PONG %s\r\n", S_IF(s)); /* Don't add another : because it's still in s, if present. */
 			} else if (!strcasecmp(command, "PASS")) {
@@ -3395,7 +3409,7 @@ static void handle_client(struct irc_user *user)
 					send_numeric(user, 416, "Input too large\r\n"); /* XXX Not really the appropriate numeric */
 					continue;
 				}
-				pthread_mutex_lock(&user->lock);
+				bbs_mutex_lock(&user->lock);
 				free_if(user->awaymsg);
 				if (!strlen_zero(s)) { /* Away */
 					user->awaymsg = strdup(s);
@@ -3403,7 +3417,7 @@ static void handle_client(struct irc_user *user)
 				} else { /* No longer away */
 					user->away = 0;
 				}
-				pthread_mutex_unlock(&user->lock);
+				bbs_mutex_unlock(&user->lock);
 				send_numeric(user, user->away ? 306 : 305, "You %s marked as being away\r\n", user->away ? "have been" : "are no longer");
 			} else if (!strcasecmp(command, "KICK")) {
 				struct irc_member *member;
@@ -3794,7 +3808,7 @@ static void irc_handler(struct bbs_node *node, int secure)
 	if (ALLOC_FAILURE(user)) {
 		return;
 	}
-	pthread_mutex_init(&user->lock, NULL);
+	bbs_mutex_init(&user->lock, NULL);
 
 	/* Start TLS if we need to */
 	if (secure) {
@@ -3922,7 +3936,7 @@ static int load_module(void)
 		goto decline; /* Nothing is enabled */
 	}
 
-	pthread_mutex_init(&motd_lock, NULL);
+	bbs_mutex_init(&motd_lock, NULL);
 	loadtime = time(NULL);
 
 	if (bbs_alertpipe_create(ping_alertpipe)) {
@@ -3964,7 +3978,7 @@ static int unload_module(void)
 	RWLIST_WRLOCK_REMOVE_ALL(&whowas_users, entry, free);
 	destroy_channels();
 	destroy_operators();
-	pthread_mutex_destroy(&motd_lock);
+	bbs_mutex_destroy(&motd_lock);
 	free_if(motdstring);
 	bbs_alertpipe_close(ping_alertpipe);
 	return 0;

@@ -21,7 +21,6 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 
 #include "include/module.h"
 #include "include/config.h"
@@ -49,7 +48,7 @@ struct oauth_client {
 	time_t tokentime;
 	time_t expires;
 	unsigned int userid;
-	pthread_mutex_t lock;
+	bbs_mutex_t lock;
 	char data[0];
 };
 
@@ -58,7 +57,7 @@ static RWLIST_HEAD_STATIC(clients, oauth_client);
 static void free_client(struct oauth_client *client)
 {
 	free_if(client->accesstoken);
-	pthread_mutex_destroy(&client->lock);
+	bbs_mutex_destroy(&client->lock);
 	free(client);
 }
 
@@ -128,7 +127,7 @@ static int add_oauth_client(const char *name, const char *clientid, const char *
 	client->expires = expires;
 	client->userid = userid;
 
-	pthread_mutex_init(&client->lock, NULL);
+	bbs_mutex_init(&client->lock, NULL);
 
 	RWLIST_INSERT_HEAD(&clients, client, entry);
 	return 0;
@@ -150,7 +149,7 @@ static int fetch_token(struct oauth_client *client, char *buf, size_t len)
 	time_t expiretime;
 	int res = -1;
 
-	pthread_mutex_lock(&client->lock);
+	bbs_mutex_lock(&client->lock);
 
 	/* tokentime is when the token was acquired.
 	 * expires is for how long the token is valid.
@@ -160,7 +159,7 @@ static int fetch_token(struct oauth_client *client, char *buf, size_t len)
 	if (client->tokentime && now < expiretime) {
 		/* We already have a valid token and it hasn't expired yet. */
 		safe_strncpy(buf, client->accesstoken, len);
-		pthread_mutex_unlock(&client->lock);
+		bbs_mutex_unlock(&client->lock);
 		return 0;
 	} else if (client->tokentime) {
 		time_t ago = now - expiretime;
@@ -171,7 +170,7 @@ static int fetch_token(struct oauth_client *client, char *buf, size_t len)
 	snprintf(postdata, sizeof(postdata), "client_id=%s&client_secret=%s&grant_type=refresh_token&refresh_token=%s", client->clientid, client->clientsecret, client->refreshtoken);
 	if (bbs_curl_post(&c) || c.http_code != 200) {
 		bbs_warning("Failed to refresh OAuth token '%s': %s\n", client->name, c.response);
-		pthread_mutex_unlock(&client->lock);
+		bbs_mutex_unlock(&client->lock);
 		bbs_curl_free(&c);
 		return -1;
 	}
@@ -208,7 +207,7 @@ static int fetch_token(struct oauth_client *client, char *buf, size_t len)
 	bbs_verb(4, "Refreshed OAuth token '%s' (good for %ds)\n", client->name, expires);
 
 cleanup:
-	pthread_mutex_unlock(&client->lock);
+	bbs_mutex_unlock(&client->lock);
 	if (json) {
 		json_decref(json);
 	}

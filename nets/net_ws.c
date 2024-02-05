@@ -21,7 +21,6 @@
 
 #include <string.h>
 #include <ctype.h> /* use isdigit */
-#include <pthread.h>
 #include <poll.h>
 
 #include "include/module.h"
@@ -91,7 +90,7 @@ struct ws_session {
 	struct wss_client *client;	/*!< libwss WebSocket client */
 	struct bbs_node *node;		/*!< BBS node */
 	struct http_session *http;	/*!< HTTP session */
-	pthread_mutex_t lock;		/*!< Session lock for serializing writing */
+	bbs_mutex_t lock;		/*!< Session lock for serializing writing */
 	void *data;					/*!< Module specific user data */
 	int pollfd;					/*!< Additional fd to poll */
 	int pollms;					/*!< Poll timeout */
@@ -200,9 +199,9 @@ void websocket_set_custom_poll_fd(struct ws_session *ws, int fd, int pollms)
 int websocket_sendtext(struct ws_session *ws, const char *buf, size_t len)
 {
 	int res;
-	pthread_mutex_lock(&ws->lock);
+	bbs_mutex_lock(&ws->lock);
 	res = wss_write(ws->client, WS_OPCODE_TEXT, buf, len);
-	pthread_mutex_unlock(&ws->lock);
+	bbs_mutex_unlock(&ws->lock);
 	return res;
 }
 
@@ -861,8 +860,9 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 	ws.pollms = (int) max_websocket_timeout_ms;
 	ws.sessionchecked = 0;
 	ws.cookieschecked = 0;
-	memset(&ws.varlist, 0, sizeof(ws.varlist));
-	memset(&ws.cookievals, 0, sizeof(ws.cookievals));
+
+	RWLIST_HEAD_INIT(&ws.varlist);
+	RWLIST_HEAD_INIT(&ws.cookievals);
 	SET_BITFIELD(ws.proxied, proxied);
 
 	bbs_verb(5, "Handling %s WebSocket client on node %d to %s\n", proxied ? "proxied" : "direct", node->id, http->req->uri);
@@ -870,7 +870,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 	route = find_route(http->req->uri);
 	if (!route) {
 		bbs_warning("Rejecting WebSocket connection for '%s' (no such WebSocket route)\n", http->req->uri);
-		return; /* Get lost, dude */
+		goto exit; /* Get lost, dude */
 	}
 
 	if (allowed_origins) {
@@ -879,15 +879,15 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 		const char *origin = http_request_header(http, "Origin");
 		if (strlen_zero(origin)) {
 			bbs_warning("No Origin header supplied\n");
-			return; /* Goodbye */
+			goto exit; /* Goodbye */
 		} else if (strchr(origin, ',')) {
 			bbs_warning("Origin header seems invalid: %s\n", origin);
-			return;
+			goto exit;
 		}
 		snprintf(match_str, sizeof(match_str), ",%s,", origin);
 		if (!strstr(allowed_origins, match_str)) {
 			bbs_warning("Client origin '%s' is not explicitly allowed, rejecting\n", origin);
-			return;
+			goto exit;
 		}
 		bbs_debug(4, "Origin '%s' is explicitly allowed\n", origin);
 	}
@@ -895,14 +895,14 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 	client = wss_client_new(&ws, rfd, wfd);
 	if (!client) {
 		bbs_error("Failed to create WebSocket client\n");
-		return;
+		goto exit;
 	}
 	ws.client = client; /* Needed as part of structure so it can be accessed in websocket_sendtext */
 
-	pthread_mutex_init(&ws.lock, NULL);
+	bbs_mutex_init(&ws.lock, NULL);
 
 	if (route->callbacks->on_open && route->callbacks->on_open(&ws)) {
-		return;
+		goto exit;
 	}
 
 	memset(&pfds, 0, sizeof(pfds));
@@ -1092,11 +1092,14 @@ done:
 			route->callbacks->on_close(&ws, ws.data);
 		}
 		wss_client_destroy(client);
-		pthread_mutex_destroy(&ws.lock);
+		bbs_mutex_destroy(&ws.lock);
 	}
 	bbs_module_unref(route->mod, 1);
 	php_vars_destroy(&ws.varlist);
 	php_vars_destroy(&ws.cookievals);
+exit:
+	RWLIST_HEAD_DESTROY(&ws.varlist);
+	RWLIST_HEAD_DESTROY(&ws.cookievals);
 }
 
 static void ws_direct_handler(struct bbs_node *node, int secure)
@@ -1149,7 +1152,7 @@ static void ws_direct_handler(struct bbs_node *node, int secure)
 
 	/* Handshake succeeded! Okay, we're done with the HTTP stuff now. It's just websockets from here on out. */
 	ws_handler(node, &http, http.rfd, http.wfd, 1); /* Seems backwards, but this is a reverse proxied connection, most likely */
-	http_request_cleanup(http.req);
+	http_session_cleanup(&http);
 
 cleanup:
 	if (ssl) {

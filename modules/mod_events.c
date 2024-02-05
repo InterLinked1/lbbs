@@ -545,10 +545,10 @@ static struct bbs_cli_entry cli_commands_events[] = {
 
 static int load_module(void)
 {
-	memset(&ip_whitelist, 0, sizeof(ip_whitelist));
+	RWLIST_HEAD_INIT(&ip_whitelist);
 
 	if (load_config()) {
-		stringlist_empty(&ip_whitelist);
+		stringlist_empty_destroy(&ip_whitelist);
 		return -1;
 	}
 	bbs_cli_register_multiple(cli_commands_events);
@@ -560,7 +560,7 @@ static int unload_module(void)
 	int res = bbs_unregister_event_consumer(event_cb);
 	bbs_cli_unregister_multiple(cli_commands_events);
 	RWLIST_WRLOCK_REMOVE_ALL(&ipblocks, entry, free);
-	stringlist_empty(&ip_whitelist);
+	stringlist_empty_destroy(&ip_whitelist);
 	return res;
 }
 

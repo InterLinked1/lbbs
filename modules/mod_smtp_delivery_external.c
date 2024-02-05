@@ -63,7 +63,7 @@ static int send_async = 1;
 static int always_queue = 0;
 static int notify_queue = 0;
 static pthread_t queue_thread = 0;
-static pthread_rwlock_t queue_lock;
+static bbs_rwlock_t queue_lock;
 static char queue_dir[256];
 static unsigned int queue_interval = 60;
 static unsigned int max_retries = 10;
@@ -101,13 +101,14 @@ static int add_static_relay(const char *hostname, const char *route)
 	strcpy(s->data, hostname); /* Safe */
 	s->hostname = s->data;
 	stringlist_push_list(&s->routes, route);
+	stringlist_init(&s->routes);
 	RWLIST_INSERT_TAIL(&static_relays, s, entry);
 	return 0;
 }
 
 static void free_static_relay(struct static_relay *s)
 {
-	stringlist_empty(&s->routes);
+	stringlist_empty_destroy(&s->routes);
 	free(s);
 }
 
@@ -211,7 +212,7 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 		return -1;
 	}
 
-	memset(&mxs, 0, sizeof(mxs));
+	RWLIST_HEAD_INIT(&mxs);
 
 	/* Add each record to our sorted list */
 	for (i = 0; i < res; i++) {
@@ -256,6 +257,7 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 			/* The record was just a ., which means
 			 * the domain accepts no mail. */
 			RWLIST_REMOVE_ALL(&mxs, entry, free);
+			RWLIST_HEAD_DESTROY(&mxs);
 			stringlist_empty(results);
 			bbs_warning("Domain %s does not accept mail\n", domain);
 			return -2;
@@ -274,6 +276,7 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 
 	if (!added) {
 		bbs_warning("No MX records available for %s\n", domain);
+		RWLIST_HEAD_DESTROY(&mxs);
 		return -1;
 	}
 
@@ -290,6 +293,7 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 		free(mx);
 	}
 
+	RWLIST_HEAD_DESTROY(&mxs);
 	return 0;
 }
 
@@ -677,7 +681,7 @@ struct mailq_run {
 	int delayed;		/* Total number of queued messages not yet delivered and remaining in queue. */
 	/* Misc */
 	int clifd;				/* CLI file descriptor */
-	pthread_mutex_t lock;
+	bbs_mutex_t lock;
 };
 
 static inline void mailq_run_init(struct mailq_run *qrun, enum mailq_run_type type)
@@ -687,13 +691,13 @@ static inline void mailq_run_init(struct mailq_run *qrun, enum mailq_run_type ty
 	 * it's probably faster to just zero the whole darn thing. */
 	memset(qrun, 0, sizeof(struct mailq_run));
 	qrun->type = type;
-	pthread_mutex_init(&qrun->lock, NULL);
+	bbs_mutex_init(&qrun->lock, NULL);
 	qrun->runstart = time(NULL);
 }
 
 static inline void mailq_run_cleanup(struct mailq_run *qrun)
 {
-	pthread_mutex_destroy(&qrun->lock);
+	bbs_mutex_destroy(&qrun->lock);
 }
 
 #define MAILQ_FILENAME_SIZE 516
@@ -1032,11 +1036,11 @@ static inline int skip_qfile(struct mailq_run *qrun, struct mailq_file *mqf)
  * If not parallel, everything is serial, and there is no need to lock and unlock. */
 #define QUEUE_INCR_STAT(field) \
 	if (qrun->parallel) { \
-		pthread_mutex_lock(&qrun->lock); \
+		bbs_mutex_lock(&qrun->lock); \
 	} \
 	qrun->field++; \
 	if (qrun->parallel) { \
-		pthread_mutex_unlock(&qrun->lock); \
+		bbs_mutex_unlock(&qrun->lock); \
 	}
 
 static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
@@ -1056,7 +1060,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 		res = try_static_delivery(NULL, &tx, static_routes, mqf->realfrom, mqf->realto, fileno(mqf->fp), (off_t) mqf->metalen, mqf->size - mqf->metalen, buf, sizeof(buf));
 	} else {
 		struct stringlist mxservers;
-		memset(&mxservers, 0, sizeof(mxservers));
+		stringlist_init(&mxservers);
 		res = lookup_mx_all(mqf->domain, &mxservers);
 		if (res == -2) {
 			smtp_tx_data_reset(&tx);
@@ -1219,7 +1223,7 @@ static int run_queue(struct mailq_run *qrun, int (*queue_file_cb)(const char *di
 	 *   to be able to do that in a single transaction. Sharing a queue file might make sense in this scenario?
 	 */
 
-	pthread_rwlock_wrlock(&queue_lock);
+	bbs_rwlock_wrlock(&queue_lock);
 	queued_messages = bbs_dir_num_files(queue_dir);
 	bbs_debug(7, "Processing mail queue (%d message%s)\n", queued_messages, ESS(queued_messages));
 	/* If the number of queued messages is relatively small, we can just process them serially.
@@ -1238,7 +1242,7 @@ static int run_queue(struct mailq_run *qrun, int (*queue_file_cb)(const char *di
 		/* Process serially */
 		res = bbs_dir_traverse(queue_dir, queue_file_cb, qrun, -1);
 	}
-	pthread_rwlock_unlock(&queue_lock);
+	bbs_rwlock_unlock(&queue_lock);
 
 	return res;
 }
@@ -1290,7 +1294,7 @@ static int authorized_for_hostname(const char *ip, const char *domain)
 	int res;
 	struct stringlist mxservers, *static_routes;
 
-	memset(&mxservers, 0, sizeof(mxservers));
+	stringlist_init(&mxservers);
 
 	/* Start by trying to deliver it directly, immediately, right now. */
 	static_routes = get_static_routes(domain);
@@ -1321,12 +1325,12 @@ static int authorized_for_hostname(const char *ip, const char *domain)
 		while (res < 0 && (hostname = stringlist_pop(&mxservers))) {
 			if (bbs_ip_match_ipv4(ip, hostname)) {
 				free(hostname);
-				stringlist_empty(&mxservers);
+				stringlist_empty_destroy(&mxservers);
 				return 1;
 			}
 			free(hostname);
 		}
-		stringlist_empty(&mxservers);
+		stringlist_empty_destroy(&mxservers);
 	}
 	return 0;
 }
@@ -1527,7 +1531,7 @@ static void *smtp_async_send(void *varg)
 
 	/* Acquiring this lock is not guaranteed to happen immediately,
 	 * but that's okay since this thread is running asynchronously. */
-	pthread_rwlock_rdlock(&queue_lock);
+	bbs_rwlock_rdlock(&queue_lock);
 	/* We could move it to the tmp dir to prevent a conflict with the periodic queue thread,
 	 * but the nice thing about doing it exactly the same way is that if delivery fails temporarily
 	 * this first round, it'll be automatically handled by the queue retry logic.
@@ -1567,7 +1571,7 @@ static void *smtp_async_send(void *varg)
 		mailq_run_cleanup(&qrun);
 	}
 
-	pthread_rwlock_unlock(&queue_lock);
+	bbs_rwlock_unlock(&queue_lock);
 	free(filename);
 	return NULL;
 }
@@ -1613,7 +1617,7 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 	if (!always_queue && !send_async) {  /* Try to send it synchronously */
 		struct stringlist mxservers, *static_routes;
 
-		memset(&mxservers, 0, sizeof(mxservers));
+		stringlist_init(&mxservers);
 
 		/* Start by trying to deliver it directly, immediately, right now. */
 		static_routes = get_static_routes(domain);
@@ -1639,7 +1643,7 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 				res = try_send(NULL, &tx, hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, srcfd, datalen, size - datalen, buf, sizeof(buf));
 				free(hostname);
 			}
-			stringlist_empty(&mxservers);
+			stringlist_empty_destroy(&mxservers);
 		}
 
 		if (res > 0) { /* Permanent error */
@@ -1872,9 +1876,9 @@ static int load_module(void)
 		bbs_error("mkdir(%s) failed: %s\n", queue_dir, strerror(errno));
 		return -1;
 	}
-	pthread_rwlock_init(&queue_lock, NULL);
+	bbs_rwlock_init(&queue_lock, NULL);
 	if (bbs_pthread_create(&queue_thread, NULL, queue_handler, NULL)) {
-		pthread_rwlock_destroy(&queue_lock);
+		bbs_rwlock_destroy(&queue_lock);
 		return -1;
 	}
 	bbs_cli_register_multiple(cli_commands_mailq);
@@ -1890,7 +1894,7 @@ static int unload_module(void)
 	bbs_cli_unregister_multiple(cli_commands_mailq);
 	bbs_pthread_cancel_kill(queue_thread);
 	bbs_pthread_join(queue_thread, NULL);
-	pthread_rwlock_destroy(&queue_lock);
+	bbs_rwlock_destroy(&queue_lock);
 	RWLIST_WRLOCK_REMOVE_ALL(&static_relays, entry, free_static_relay);
 	return res;
 }

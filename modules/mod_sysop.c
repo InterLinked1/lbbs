@@ -25,7 +25,6 @@
 #include <string.h>
 #include <ctype.h> /* use isprint */
 #include <poll.h>
-#include <pthread.h>
 #include <sys/un.h>	/* use struct sockaddr_un */
 
 #include "include/node.h"

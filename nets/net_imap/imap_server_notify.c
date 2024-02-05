@@ -68,7 +68,7 @@ struct imap_notify {
 
 static void watch_free(struct notify_watch *w)
 {
-	stringlist_empty(&w->mbnames);
+	stringlist_empty_destroy(&w->mbnames);
 	free(w);
 }
 
@@ -83,6 +83,7 @@ void imap_notify_cleanup(struct imap_session *imap)
 {
 	if (imap->notify) {
 		notify_destroy(imap->notify);
+		RWLIST_HEAD_DESTROY(&imap->notify->watchlist);
 		FREE(imap->notify);
 	}
 }
@@ -198,6 +199,9 @@ static struct imap_notify *notify_get(struct imap_session *imap)
 {
 	if (!imap->notify) {
 		imap->notify = calloc(1, sizeof(*imap->notify));
+		if (ALLOC_SUCCESS(imap->notify)) {
+			RWLIST_HEAD_INIT(&imap->notify->watchlist);
+		}
 	}
 	return imap->notify;
 }
@@ -266,7 +270,7 @@ static int add_watch(struct imap_session *imap, struct imap_notify *notify, char
 	struct stringlist mbnames;
 	char *fetchargs = NULL;
 
-	memset(&mbnames, 0, sizeof(mbnames));
+	stringlist_init(&mbnames);
 
 	/* e.g.
 	 * selected MessageNew (uid body.peek[header.fields (from to subject)]) MessageExpunge
@@ -376,7 +380,7 @@ static int add_watch(struct imap_session *imap, struct imap_notify *notify, char
 
 	w = calloc(1, sizeof(*w) + (fetchargs ? strlen(fetchargs) + 1 : 0));
 	if (ALLOC_FAILURE(w)) {
-		stringlist_empty(&mbnames);
+		stringlist_empty_destroy(&mbnames);
 		return 0;
 	}
 

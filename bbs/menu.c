@@ -80,6 +80,7 @@ static void menu_free(struct bbs_menu *menu)
 {
 	bbs_debug(5, "Destroying menu %s\n", menu->name);
 	RWLIST_REMOVE_ALL(&menu->menuitems, entry, menuitem_free);
+	RWLIST_HEAD_DESTROY(&menu->menuitems);
 	free(menu);
 }
 
@@ -902,6 +903,7 @@ static int load_config(int reload)
 						goto nextmenu; /* Can't just break or continue since we're in the inner loop */
 					}
 
+					RWLIST_HEAD_INIT(&menu->menuitems);
 					data = menu->data;
 					SET_FSM_STRING_VAR(menu, data, name, menuname, menunamelen);
 					SET_FSM_STRING_VAR(menu, data, title, title, titlelen);

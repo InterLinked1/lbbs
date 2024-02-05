@@ -19,7 +19,6 @@
 
 #include "include/bbs.h"
 
-#include <pthread.h>
 #include <dirent.h>
 
 #include "include/module.h"

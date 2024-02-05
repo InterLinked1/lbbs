@@ -54,6 +54,7 @@ static inline void bbs_var_destroy(struct bbs_var *var)
 void bbs_vars_destroy(struct bbs_vars *vars)
 {
 	RWLIST_WRLOCK_REMOVE_ALL(vars, entry, bbs_var_destroy);
+	RWLIST_HEAD_DESTROY(vars);
 }
 
 void bbs_vars_remove_first(struct bbs_vars *vars)
@@ -199,6 +200,7 @@ void bbs_vars_cleanup(void)
 
 int bbs_vars_init(void)
 {
+	RWLIST_HEAD_INIT(&global_vars);
 	return load_config() || bbs_register_reload_handler("variables", "Reload global and per-user variables", vars_reload) || bbs_cli_register_multiple(cli_commands_variables);
 }
 
@@ -330,6 +332,7 @@ int bbs_node_var_set(struct bbs_node *node, const char *key, const char *value)
 				return -1;
 			}
 			bbs_debug(5, "Allocated variable list for node %d\n", node->id);
+			RWLIST_HEAD_INIT(vars);
 			node->vars = vars;
 		}
 		bbs_node_unlock(node);

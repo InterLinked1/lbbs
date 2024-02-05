@@ -157,10 +157,10 @@ void http_send_response_status(struct http_session *http, enum http_response_cod
 int http_parse_request(struct http_session *http, char *buf);
 
 /*!
- * \brief Free an HTTP request's contents
- * \note Do not use this function directly unless needed; this is primarily internal and only used externally by net_wss.
+ * \brief Free an HTTP session's request's and response's contents
+ * \note Do not use this function directly unless needed; this is primarily internal and only used externally by net_ws.
  */
-void http_request_cleanup(struct http_request *req);
+void http_session_cleanup(struct http_session *http);
 
 /*!
  * \brief Set an HTTP response header

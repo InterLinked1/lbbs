@@ -96,7 +96,7 @@ struct imap_session {
 	unsigned int condstore:1;	/* Whether a client has issue a CONDSTORE enabling command, and should be sent MODSEQ updates in untagged FETCH responses */
 	unsigned int qresync:1;		/* Whether a client has enabled the QRESYNC capability */
 	struct imap_notify *notify;	/* NOTIFY events */
-	pthread_mutex_t lock;		/* Lock for IMAP session */
+	bbs_mutex_t lock;		/* Lock for IMAP session */
 	RWLIST_ENTRY(imap_session) entry;	/* Next active session */
 };
 

@@ -82,8 +82,12 @@ static void leave_client(struct client_relay *client, struct participant *partic
 	RWLIST_UNLOCK(&client->participants);
 	if (RWLIST_EMPTY(&client->participants)) {
 		client = RWLIST_REMOVE(&door_irc_clients, client, entry);
-		bbs_assert_exists(client);
-		free(client);
+		if (unlikely(!client)) {
+			bbs_error("Couldn't remove client %p\n", client);
+		} else {
+			RWLIST_HEAD_DESTROY(&client->participants);
+			free(client);
+		}
 	}
 	RWLIST_UNLOCK(&door_irc_clients);
 }
@@ -115,6 +119,7 @@ static struct participant *join_client(struct bbs_node *node, const char *name)
 		client->name = client->data;
 		bbs_debug(3, "Dynamically created client '%s'\n", client->name);
 		bbs_assert_exists(client->name);
+		RWLIST_HEAD_INIT(&client->participants);
 		RWLIST_INSERT_HEAD(&door_irc_clients, client, entry);
 	}
 	/* Okay, we have the client. Add the newcomer to it. */

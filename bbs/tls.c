@@ -49,7 +49,7 @@ static int ssl_is_available = 0;
 static int ssl_shutting_down = 0;
 
 #ifdef HAVE_OPENSSL
-static pthread_mutex_t *lock_cs = NULL;
+static bbs_mutex_t *lock_cs = NULL;
 static long *lock_count = NULL;
 
 static void pthreads_locking_callback(int mode, int type, const char *file, int line)
@@ -61,10 +61,10 @@ static void pthreads_locking_callback(int mode, int type, const char *file, int 
 	UNUSED(line);
 #endif
 	if (mode & CRYPTO_LOCK) {
-		pthread_mutex_lock(&(lock_cs[type]));
+		bbs_mutex_lock(&(lock_cs[type]));
 		lock_count[type]++;
 	} else {
-		pthread_mutex_unlock(&(lock_cs[type]));
+		bbs_mutex_unlock(&(lock_cs[type]));
 	}
 }
 
@@ -72,7 +72,7 @@ static int lock_init(void)
 {
 	int i;
 	/* OpenSSL crypto/threads/mttest.c */
-	lock_cs = OPENSSL_malloc(CRYPTO_num_locks() * sizeof(pthread_mutex_t));
+	lock_cs = OPENSSL_malloc(CRYPTO_num_locks() * sizeof(bbs_mutex_t));
 	if (ALLOC_FAILURE(lock_cs)) {
 		return -1;
 	}
@@ -83,7 +83,7 @@ static int lock_init(void)
 	}
 	for (i = 0; i < CRYPTO_num_locks(); i++) {
 		lock_count[i] = 0;
-		pthread_mutex_init(&(lock_cs[i]), NULL);
+		bbs_mutex_init(&(lock_cs[i]), NULL);
 	}
 	CRYPTO_set_locking_callback(pthreads_locking_callback);
 	if (0) {
@@ -100,7 +100,7 @@ static void lock_cleanup(void)
 
 	CRYPTO_set_locking_callback(NULL);
 	for (i = 0; i < CRYPTO_num_locks(); i++) {
-		pthread_mutex_destroy(&(lock_cs[i]));
+		bbs_mutex_destroy(&(lock_cs[i]));
 	}
 	OPENSSL_free(lock_cs);
 	OPENSSL_free(lock_count);
@@ -670,7 +670,7 @@ SSL *ssl_node_new_accept(struct bbs_node *node, int *rfd, int *wfd)
 	return ssl;
 }
 
-static pthread_rwlock_t ssl_cert_lock = PTHREAD_RWLOCK_INITIALIZER;
+static bbs_rwlock_t ssl_cert_lock = BBS_RWLOCK_INITIALIZER;
 
 SSL *ssl_new_accept(struct bbs_node *node, int fd, int *rfd, int *wfd)
 {
@@ -690,10 +690,10 @@ SSL *ssl_new_accept(struct bbs_node *node, int fd, int *rfd, int *wfd)
 
 	/* No need to call SSL_CTX_set_session_cache_mode(ssl_ctx, SSL_SESS_CACHE_SERVER) - this is the default */
 
-	pthread_rwlock_rdlock(&ssl_cert_lock);
+	bbs_rwlock_rdlock(&ssl_cert_lock);
 	ssl = SSL_new(ssl_ctx);
 	if (!ssl) {
-		pthread_rwlock_unlock(&ssl_cert_lock);
+		bbs_rwlock_unlock(&ssl_cert_lock);
 		bbs_error("Failed to create SSL\n");
 		return NULL;
 	}
@@ -707,7 +707,7 @@ accept:
 		int sslerr = SSL_get_error(ssl, res);
 		if (sslerr == SSL_ERROR_WANT_READ) {
 			if (++attempts > 3000) { /* 3 seconds */
-				pthread_rwlock_unlock(&ssl_cert_lock);
+				bbs_rwlock_unlock(&ssl_cert_lock);
 				bbs_warning("SSL_accept timed out\n");
 				SSL_free(ssl);
 				return NULL;
@@ -715,7 +715,7 @@ accept:
 			usleep(1000);
 			goto accept; /* This just works out to be cleaner than using any kind of loop here */
 		}
-		pthread_rwlock_unlock(&ssl_cert_lock);
+		bbs_rwlock_unlock(&ssl_cert_lock);
 		bbs_debug(1, "SSL error %d: %d (%s = %s)\n", res, sslerr, ssl_strerror(sslerr), ERR_error_string(ERR_get_error(), NULL));
 		SSL_free(ssl);
 		/* If TLS setup fails, it's probably garbage traffic and safe to penalize: */
@@ -724,7 +724,7 @@ accept:
 		}
 		return NULL;
 	}
-	pthread_rwlock_unlock(&ssl_cert_lock);
+	bbs_rwlock_unlock(&ssl_cert_lock);
 
 	readfd = SSL_get_rfd(ssl);
 	writefd = SSL_get_wfd(ssl);
@@ -1035,7 +1035,7 @@ static int tlsreload(int fd)
 		return -1;
 	}
 
-	pthread_rwlock_rdlock(&ssl_cert_lock);
+	bbs_rwlock_rdlock(&ssl_cert_lock);
 
 	/* Currently, we only keep one reference for each ctx.
 	 * If we reference counted them using SSL_CTX_up_ref, then we could call SSL_CTX_free for each connection,
@@ -1060,7 +1060,7 @@ static int tlsreload(int fd)
 	if (sfd) { /* At least server session exists */
 		bbs_dprintf(fd, "TLS may not be reloaded while any server sessions are in use. Kick any TLS sessions and try again.\n");
 		RWLIST_UNLOCK(&sslfds);
-		pthread_rwlock_unlock(&ssl_cert_lock);
+		bbs_rwlock_unlock(&ssl_cert_lock);
 		return -1;
 	}
 
@@ -1070,13 +1070,13 @@ static int tlsreload(int fd)
 	tls_cleanup();
 
 	if (ssl_load_config(1)) {
-		pthread_rwlock_unlock(&ssl_cert_lock);
+		bbs_rwlock_unlock(&ssl_cert_lock);
 		bbs_debug(5, "Failed to reload TLS configuration, TLS will now be disabled.\n");
 		return -1;
 	}
 
 	ssl_is_available = 1;
-	pthread_rwlock_unlock(&ssl_cert_lock);
+	bbs_rwlock_unlock(&ssl_cert_lock);
 
 	bbs_dprintf(fd, "Reloaded TLS configuration\n");
 	return 0;

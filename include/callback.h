@@ -13,11 +13,8 @@
  *
  */
 
-/* Needed for pthread_rwlock_t */
-#include <pthread.h>
-
 struct bbs_singular_callback {
-	pthread_rwlock_t lock;	/*!< Read/write lock for callback function */
+	bbs_rwlock_t lock;	/*!< Read/write lock for callback function */
 	void *mod;				/*!< Module that registered the callback */
 	/* It's temping to just use void * as the type for the callback function,
 	 * and store it here - and this works for all usage of this API itself.
@@ -52,7 +49,7 @@ struct bbs_singular_callback {
 	static struct bbs_singular_callback name = { \
 		.func_pointer_ptr = &__ ## name ## _cb_func, \
 		.mod = NULL, \
-		.lock = PTHREAD_RWLOCK_INITIALIZER \
+		.lock = BBS_RWLOCK_INITIALIZER \
 	};
 
 /*!
@@ -70,7 +67,7 @@ struct bbs_singular_callback {
 	static struct bbs_singular_callback name = { \
 		.func_pointer_ptr = &__ ## name ## _cb_struct, \
 		.mod = NULL, \
-		.lock = PTHREAD_RWLOCK_INITIALIZER \
+		.lock = BBS_RWLOCK_INITIALIZER \
 	};
 
 /*!

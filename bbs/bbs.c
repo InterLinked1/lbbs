@@ -108,7 +108,7 @@ static int want_shutdown = 0;
 static int shutting_down = 0;
 static enum shutdown_type shutdown_type = SHUTDOWN_NORMAL;
 
-static pthread_mutex_t sig_lock;
+static bbs_mutex_t sig_lock;
 
 /*! \brief Save original args for restart */
 static void saveopts(int argc, char *argv[])
@@ -559,9 +559,9 @@ static void cleanup(void)
 
 static void bbs_shutdown(void)
 {
-	pthread_mutex_lock(&sig_lock);
+	bbs_mutex_lock(&sig_lock);
 	if (shutting_down) {
-		pthread_mutex_unlock(&sig_lock);
+		bbs_mutex_unlock(&sig_lock);
 		bbs_error("Active shutdown already in progress\n");
 		return;
 	}
@@ -578,9 +578,9 @@ static void bbs_shutdown(void)
 	/* Let go of the lock in case a module
 	 * tries to perform some action that locks sig_lock,
 	 * which would lead to deadlock. */
-	pthread_mutex_unlock(&sig_lock);
+	bbs_mutex_unlock(&sig_lock);
 	unload_modules();
-	pthread_mutex_lock(&sig_lock);
+	bbs_mutex_lock(&sig_lock);
 
 	bbs_history_shutdown(); /* Free history. Must be done in the core, not by mod_sysop, since this may only be called once. */
 	bbs_curl_shutdown(); /* Clean up cURL */
@@ -593,8 +593,8 @@ static void bbs_shutdown(void)
 	bbs_vars_cleanup();
 	bbs_cli_unregister_remaining();
 	bbs_fd_shutdown();
-	pthread_mutex_unlock(&sig_lock); /* Don't release the lock until the very end */
-	pthread_mutex_destroy(&sig_lock);
+	bbs_mutex_unlock(&sig_lock); /* Don't release the lock until the very end */
+	bbs_mutex_destroy(&sig_lock);
 	cleanup();
 }
 
@@ -727,15 +727,15 @@ static void __sigusr1_handler(int num)
 static int bbs_request_shutdown(enum shutdown_type type)
 {
 	bbs_debug(5, "Requesting shutdown\n");
-	pthread_mutex_lock(&sig_lock);
+	bbs_mutex_lock(&sig_lock);
 	shutdown_type = type;
 	want_shutdown = 1;
 	if (bbs_alertpipe_write(sig_alert_pipe)) {
 		bbs_error("write() failed: %s\n", strerror(errno));
-		pthread_mutex_unlock(&sig_lock);
+		bbs_mutex_unlock(&sig_lock);
 		return -1;
 	}
-	pthread_mutex_unlock(&sig_lock);
+	bbs_mutex_unlock(&sig_lock);
 	return 0;
 }
 
@@ -744,7 +744,7 @@ static int task_reload;
 
 void bbs_request_module_unload(const char *name, int reload)
 {
-	pthread_mutex_lock(&sig_lock);
+	bbs_mutex_lock(&sig_lock);
 	task_reload = reload;
 	/* If we're unloading the sysop module, name won't be
 	 * valid memory once we unload it. */
@@ -752,7 +752,7 @@ void bbs_request_module_unload(const char *name, int reload)
 	if (bbs_alertpipe_write(sig_alert_pipe)) {
 		bbs_error("write() failed: %s\n", strerror(errno));
 	}
-	pthread_mutex_unlock(&sig_lock);
+	bbs_mutex_unlock(&sig_lock);
 }
 
 int bbs_safe_sleep(int ms)
@@ -793,21 +793,21 @@ static void *monitor_sig_flags(void *unused)
 		if (bbs_alertpipe_poll(sig_alert_pipe, -1) <= 0) {
 			break;
 		}
-		pthread_mutex_lock(&sig_lock);
+		bbs_mutex_lock(&sig_lock);
 		bbs_alertpipe_read(sig_alert_pipe);
 		if (task_modulename[0]) {
 			bbs_debug(1, "Asynchronously %s module '%s'\n", task_reload ? "reloading" : "unloading", task_modulename);
 			task_reload ? bbs_module_reload(task_modulename, 0) : bbs_module_unload(task_modulename);
 			task_modulename[0] = '\0';
-			pthread_mutex_unlock(&sig_lock);
+			bbs_mutex_unlock(&sig_lock);
 		} else if (want_shutdown) {
-			pthread_mutex_unlock(&sig_lock);
+			bbs_mutex_unlock(&sig_lock);
 			bbs_debug(1, "Shutdown requested\n");
 			bbs_shutdown();
 			break;
 		} else {
 			/* Shouldn't ever happen... */
-			pthread_mutex_unlock(&sig_lock);
+			bbs_mutex_unlock(&sig_lock);
 			bbs_warning("Received unactionable activity on sig alert pipe?\n");
 		}
 	}
@@ -980,7 +980,7 @@ int main(int argc, char *argv[])
 	srandom((unsigned int) time(NULL));
 
 	/* Initialize alert pipe before installing any signal handlers. */
-	pthread_mutex_init(&sig_lock, NULL);
+	bbs_mutex_init(&sig_lock, NULL);
 	if (bbs_alertpipe_create(sig_alert_pipe)) {
 		bbs_shutdown();
 		exit(EXIT_FAILURE);

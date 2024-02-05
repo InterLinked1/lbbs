@@ -26,7 +26,6 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h> /* use sockaddr_in */
-#include <pthread.h>
 
 #include "include/module.h"
 #include "include/node.h"

@@ -22,8 +22,6 @@
 #ifndef _LINKEDLISTS_H
 #define _LINKEDLISTS_H
 
-#include <pthread.h>
-
 /*!
  * \brief Write locks a list.
  * \param head This is a pointer to the list head structure
@@ -33,7 +31,7 @@
  * \retval 0 on success
  * \retval non-zero on failure
  */
-#define RWLIST_WRLOCK(head) pthread_rwlock_wrlock(&(head)->lock)
+#define RWLIST_WRLOCK(head) __bbs_rwlock_wrlock(&(head)->lock, __FILE__, __LINE__, __func__, #head)
 
 /*!
  * \brief Read locks a list.
@@ -44,7 +42,7 @@
  * \retval 0 on success
  * \retval non-zero on failure
  */
-#define RWLIST_RDLOCK(head) pthread_rwlock_rdlock(&(head)->lock)
+#define RWLIST_RDLOCK(head) __bbs_rwlock_rdlock(&(head)->lock, __FILE__, __LINE__, __func__, #head)
 
 /*!
  * \brief Write locks a list, without blocking if the list is locked.
@@ -55,7 +53,7 @@
  * \retval 0 on success
  * \retval non-zero on failure
  */
-#define RWLIST_TRYWRLOCK(head) pthread_rwlock_trywrlock(&(head)->lock)
+#define RWLIST_TRYWRLOCK(head) __bbs_rwlock_trywrlock(&(head)->lock, __FILE__, __LINE__, __func__, #head)
 
 /*!
  * \brief Attempts to unlock a read/write based list.
@@ -65,7 +63,7 @@
  * list head structure pointed to by head. If the list
  * was not locked by this thread, this macro has no effect.
  */
-#define RWLIST_UNLOCK(head) pthread_rwlock_unlock(&(head)->lock)
+#define RWLIST_UNLOCK(head) __bbs_rwlock_unlock(&(head)->lock, __FILE__, __LINE__, __func__, #head)
 
 /*!
  * \brief Defines a structure to be used to hold a read/write list of specified type.
@@ -79,10 +77,10 @@
  * or use the specified \a name to declare instances elsewhere.
  */
 #define RWLIST_HEAD(name, type)                                     \
-struct name {                                                           \
-        struct type *first;                                             \
-        struct type *last;                                              \
-        pthread_rwlock_t lock;                                          \
+struct name {                                                       \
+	struct type *first;                                             \
+	struct type *last;                                              \
+	bbs_rwlock_t lock;                                          \
 }
 
 /*!
@@ -91,7 +89,7 @@ struct name {                                                           \
 #define RWLIST_HEAD_INIT_VALUE      {               \
 	.first = NULL,                                  \
 	.last = NULL,                                   \
-	.lock = PTHREAD_RWLOCK_INITIALIZER,             \
+	.lock = BBS_RWLOCK_INITIALIZER,             \
 }
 
 /*!
@@ -103,8 +101,35 @@ struct name {                                                           \
 struct name {                                                   \
 	struct type *first;                                         \
 	struct type *last;                                          \
-	pthread_rwlock_t lock;                                      \
+	bbs_rwlock_t lock;                                      \
 } name = RWLIST_HEAD_INIT_VALUE
+
+/*!
+ * \brief Initializes an rwlist head structure.
+ * \param head This is a pointer to the list head structure
+ *
+ * This macro initializes a list head structure by setting the head
+ * entry to \a NULL (empty list) and recreating the embedded lock.
+ */
+#define RWLIST_HEAD_INIT(head) {                                    \
+        (head)->first = NULL;                                           \
+        (head)->last = NULL;                                            \
+		__bbs_rwlock_init(&(head)->lock, __FILE__, __LINE__, __func__, #head); \
+}
+
+/*!
+ * \brief Destroys an rwlist head structure.
+ * \param head This is a pointer to the list head structure
+ *
+ * This macro destroys a list head structure by setting the head
+ * entry to \a NULL (empty list) and destroying the embedded lock.
+ * It does not free the structure from memory.
+ */
+#define RWLIST_HEAD_DESTROY(head) {                                 \
+        (head)->first = NULL;                                           \
+        (head)->last = NULL;                                            \
+		__bbs_rwlock_destroy(&(head)->lock, __FILE__, __LINE__, __func__, #head); \
+}
 
 /*!
  * \brief Declare a forward link structure inside a list entry.

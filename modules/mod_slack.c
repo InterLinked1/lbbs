@@ -65,7 +65,7 @@ struct slack_user {
 	struct slack_relay *relay;
 	unsigned int active:1;			/*!< Presence status */
 	unsigned int shared:1;			/*!< Whether we share any channels with this user */
-	pthread_mutex_t lock;
+	bbs_mutex_t lock;
 	char lastmsg[512];
 	char data[];
 };
@@ -84,7 +84,8 @@ struct chan_pair {
 	const char *slack;	/*!< Slack channel ID */
 	struct slack_relay *relay;	/*!< Associated Slack relay, for finding Slack channel from IRC channel name */
 	RWLIST_ENTRY(chan_pair) entry;
-	pthread_mutex_t lock;
+	bbs_mutex_t sendlock;
+	bbs_mutex_t msglock;
 	char *name;			/*!< Actual Slack channel name */
 	char *topic;		/*!< Slack channel topic */
 	struct members members;	/*!< Members of channel (may be incomplete, in large workspaces) */
@@ -101,7 +102,8 @@ struct slack_relay {
 	RWLIST_ENTRY(slack_relay) entry;
 	struct slack_client *slack;
 	unsigned int relaysystem:1;
-	unsigned int error:1;		/*!< Relay in fatal error state */
+	unsigned int started:1;		/*!< Relay started successfully */
+	unsigned int error:1;		/*!< Relay in (fatal or problematic) error state */
 	unsigned int preservethreading:1;	/*!< Try to preserve threading in replies */
 	unsigned int prefixthread:1;	/*!< Whether to prefix messages with the thread ID */
 	const char *name;
@@ -114,7 +116,7 @@ struct slack_relay {
 	struct chan_pairs mappings;
 	struct slack_users users;
 	pthread_t thread;
-	pthread_mutex_t lock;
+	bbs_mutex_t lock;
 	char last_ts[SLACK_TS_LENGTH + 1];
 	char data[];
 };
@@ -124,8 +126,10 @@ static RWLIST_HEAD_STATIC(relays, slack_relay);
 static void cp_free(struct chan_pair *cp)
 {
 	RWLIST_WRLOCK_REMOVE_ALL(&cp->members, entry, free);
+	RWLIST_HEAD_DESTROY(&cp->members);
 	free_if(cp->topic);
-	pthread_mutex_destroy(&cp->lock);
+	bbs_mutex_destroy(&cp->sendlock);
+	bbs_mutex_destroy(&cp->msglock);
 	free(cp);
 }
 
@@ -133,7 +137,7 @@ static void slack_user_free(struct slack_user *u)
 {
 	free_if(u->status);
 	free_if(u->dmchannel);
-	pthread_mutex_destroy(&u->lock);
+	bbs_mutex_destroy(&u->lock);
 	free(u);
 }
 
@@ -148,7 +152,9 @@ static void relay_free(struct slack_relay *relay)
 	}
 	RWLIST_WRLOCK_REMOVE_ALL(&relay->mappings, entry, cp_free);
 	RWLIST_WRLOCK_REMOVE_ALL(&relay->users, entry, slack_user_free);
-	pthread_mutex_destroy(&relay->lock);
+	RWLIST_HEAD_DESTROY(&relay->mappings);
+	RWLIST_HEAD_DESTROY(&relay->users);
+	bbs_mutex_destroy(&relay->lock);
 	free(relay);
 }
 
@@ -296,7 +302,7 @@ static struct slack_user *load_single_user(struct slack_relay *relay, json_t *js
 	snprintf(user->ircusername, sizeof(user->ircusername), "%s/%s", relay->name, baseusername);
 
 	user->relay = relay;
-	pthread_mutex_init(&user->lock, NULL);
+	bbs_mutex_init(&user->lock, NULL);
 	RWLIST_INSERT_HEAD(&relay->users, user, entry);
 	return user;
 }
@@ -404,10 +410,10 @@ static int load_channels(struct slack_relay *relay, int limit)
 			bbs_debug(6, "Ignoring out of scope channel %s (%s)\n", channelid, name);
 			continue; /* This isn't a channel within scope of the relay */
 		}
-		pthread_mutex_lock(&cp->lock);
+		bbs_mutex_lock(&cp->msglock);
 		REPLACE(cp->name, name);
 		REPLACE(cp->topic, topic);
-		pthread_mutex_unlock(&cp->lock);
+		bbs_mutex_unlock(&cp->msglock);
 		/* Load all the members of the channel, so we can later answer the question:
 		 * If user U in channel C? (without having to make any API calls) */
 		load_members(relay, cp, channelid, limit);
@@ -575,9 +581,9 @@ static const char *slack_user_dm_id(struct slack_user *u)
 		return NULL;
 	}
 
-	pthread_mutex_lock(&u->lock);
+	bbs_mutex_lock(&u->lock);
 	REPLACE(u->dmchannel, chan);
-	pthread_mutex_unlock(&u->lock);
+	bbs_mutex_unlock(&u->lock);
 	json_decref(json);
 
 	return u->dmchannel;
@@ -646,6 +652,14 @@ static int substitute_mentions(const char *line, char *buf, size_t len)
 				size_t bytes = (size_t) snprintf(pos, left, "@%s", u->username);
 				pos += bytes;
 				left -= bytes;
+			} else {
+				/* Couldn't resolve this, just keep it as was */
+				size_t bytes = (size_t) (c - start + 1);
+				if (bytes > left) {
+					memcpy(pos, start, bytes);
+					pos += bytes;
+					left -= bytes;
+				}
 			}
 			start = NULL;
 		} else if (!start) {
@@ -693,14 +707,13 @@ static int on_message(struct slack_event *event, const char *channel, const char
 	/* Don't echo something we just posted */
 	if (*channel == 'D') { /* Direct message */
 		if (u) {
-			pthread_mutex_lock(&u->lock);
+			bbs_mutex_lock(&u->lock);
 			if (!strcmp(u->lastmsg, text)) {
-				pthread_mutex_unlock(&cp->lock);
-				pthread_mutex_unlock(&u->lock);
+				bbs_mutex_unlock(&u->lock);
 				bbs_debug(4, "Not echoing our own direct message post...\n");
 				return 0;
 			}
-			pthread_mutex_unlock(&u->lock);
+			bbs_mutex_unlock(&u->lock);
 		}
 		if (relay->ircuser) {
 			/* Relay direct messages directly to a specific user, if this is a personal relay.
@@ -726,13 +739,22 @@ static int on_message(struct slack_event *event, const char *channel, const char
 			text = message;
 		}
 	} else {
-		pthread_mutex_lock(&cp->lock);
+		/* We use a mutex that is separate from that
+		 * used for serializing sent messages,
+		 * since the process of sending a message
+		 * can cause the on_message callback to be invoked.
+		 * If we were to have locked cp->lock before sending
+		 * and lock it again here, that will deadlock
+		 * the sending thread until it gives up, at which
+		 * point it will read the reply confirming the sent message
+		 * only after we give up. */
+		bbs_mutex_lock(&cp->msglock);
 		if (!strcmp(cp->lastmsg, text)) { /* For most messages (except our own posts), this should be near constant time since they'll diverge quickly */
-			pthread_mutex_unlock(&cp->lock);
+			bbs_mutex_unlock(&cp->msglock);
 			bbs_debug(4, "Not echoing our own post...\n");
 			return 0;
 		}
-		pthread_mutex_unlock(&cp->lock);
+		bbs_mutex_unlock(&cp->msglock);
 	}
 
 	bbs_debug(4, "Relaying message from channel %s by %s (%s) to %s: %s\n", channel, user, ircusername, cp->irc, text);
@@ -753,9 +775,9 @@ static int on_message(struct slack_event *event, const char *channel, const char
 			 * on_message can only be called once per relay at a time since there's a single thread dispatching events,
 			 * but multiple threads could try sending messages (using this variable) simultaneously,
 			 * so this needs to be atomic with that. */
-			pthread_mutex_lock(&relay->lock);
+			bbs_mutex_lock(&relay->lock);
 			safe_strncpy(relay->last_ts, eff_ts, sizeof(relay->last_ts));
-			pthread_mutex_unlock(&relay->lock);
+			bbs_mutex_unlock(&relay->lock);
 		}
 	}
 	irc_relay_send_multiline(destination, CHANNEL_USER_MODE_NONE, "Slack", ircusername, user, text, substitute_mentions, relay->ircuser);
@@ -848,14 +870,14 @@ static inline void parse_parent_thread(struct slack_relay *relay, char *restrict
 		}
 		/* If it starts with >,
 		 * that's short hand for "reply in thread in the last active thread" */
-		pthread_mutex_lock(&relay->lock);
+		bbs_mutex_lock(&relay->lock);
 		if (!strlen_zero(relay->last_ts)) {
 			safe_strncpy(ts, relay->last_ts, SLACK_TS_LENGTH + 2);
-			pthread_mutex_unlock(&relay->lock);
+			bbs_mutex_unlock(&relay->lock);
 			*thread_ts = ts;
 			bbs_debug(5, "Replying to last active thread: %s\n", ts);
 		} else {
-			pthread_mutex_unlock(&relay->lock);
+			bbs_mutex_unlock(&relay->lock);
 			bbs_debug(3, "No last ts on file, can't reply in thread\n");
 			/* Just post a top level message */
 		}
@@ -941,13 +963,21 @@ static int slack_send(struct irc_relay_message *rmsg)
 	/* Currently, we don't have a better way of preventing us from echoing our own messages back to ourself
 	 * (we don't know our Slack user ID, and even if we did, this user could have posted a message
 	 * from elsewhere, we don't necessarily know it came from IRC */
-	pthread_mutex_lock(&cp->lock);
-	safe_strncpy(cp->lastmsg, msg, sizeof(cp->lastmsg));
-	pthread_mutex_unlock(&cp->lock);
 
+	bbs_mutex_lock(&cp->msglock);
+	safe_strncpy(cp->lastmsg, msg, sizeof(cp->lastmsg));
+	/* We have to unlock msglock before calling slack_channel_post...
+	 * since that is not safe to hold. We instead use sendlock
+	 * to ensure serialization of sent messages. */
+	bbs_mutex_unlock(&cp->msglock);
+
+	/* slack_channel_post_message is not threadsafe, so we surround it with the channel lock */
+	bbs_mutex_lock(&cp->sendlock);
 	if (slack_channel_post_message(relay->slack, cp->slack, thread_ts, msg)) {
 		bbs_error("Failed to post message to channel %s\n", channel);
+		relay->error = 1;
 	}
+	bbs_mutex_unlock(&cp->sendlock);
 	return 0;
 }
 
@@ -989,13 +1019,18 @@ static int privmsg(const char *recipient, const char *sender, const char *msg)
 
 	bbs_debug(4, "Relaying direct message to Slack channel %s: %s\n", dmchannel, msg);
 
-	pthread_mutex_lock(&u->lock);
+	bbs_mutex_lock(&u->lock);
 	safe_strncpy(u->lastmsg, msg, sizeof(u->lastmsg));
-	pthread_mutex_unlock(&u->lock);
+	bbs_mutex_unlock(&u->lock);
 
+	/* slack_channel_post_message is not threadsafe, so we surround it with the channel lock normally;
+	 * however, we don't have a cp for users, so use the relay lock. */
+	bbs_mutex_lock(&relay->lock);
 	if (slack_channel_post_message(relay->slack, dmchannel, thread_ts, msg)) {
 		bbs_error("Failed to post message to channel %s\n", dmchannel);
+		relay->error = 1;
 	}
+	bbs_mutex_unlock(&relay->lock);
 	return 1;
 }
 
@@ -1262,6 +1297,7 @@ static void *slack_relay_run(void *varg)
 		res = load_presence(relay, SLACK_REQUEST_USER_LIMIT); /* Finally, load presence, for all users that share channels with us */
 	}
 	if (!res) {
+		relay->started = 1;
 		slack_event_loop(slack, &slack_callbacks); /* Run event loop */
 	} else {
 		bbs_error("Failed to set up Slack relay %s\n", relay->name);
@@ -1385,7 +1421,7 @@ static int load_config(void)
 		if (ALLOC_FAILURE(relay)) {
 			continue;
 		}
-		pthread_mutex_init(&relay->lock, NULL);
+		bbs_mutex_init(&relay->lock, NULL);
 		SET_BITFIELD(relay->relaysystem, relaysystem);
 		SET_BITFIELD(relay->prefixthread, prefixthread);
 		SET_BITFIELD(relay->preservethreading, preservethreading);
@@ -1398,6 +1434,9 @@ static int load_config(void)
 		SET_FSM_STRING_VAR(relay, data, enterpriseid, enterpriseid, entlen);
 		SET_FSM_STRING_VAR(relay, data, cookie_ds, cookie_ds, cookie_ds_len);
 		SET_FSM_STRING_VAR(relay, data, ircuser, ircuser, ircuserlen);
+
+		RWLIST_HEAD_INIT(&relay->mappings);
+		RWLIST_HEAD_INIT(&relay->users);
 
 		RWLIST_WRLOCK(&relay->mappings);
 		while ((keyval = bbs_config_section_walk(mapsect, keyval))) {
@@ -1421,7 +1460,9 @@ static int load_config(void)
 			SET_FSM_STRING_VAR(cp, data, slack, slackchanid, slacklen);
 			SET_FSM_STRING_VAR(cp, data, irc, ircchanname, irclen);
 			cp->relay = relay;
-			pthread_mutex_init(&cp->lock, NULL);
+			bbs_mutex_init(&cp->msglock, NULL);
+			bbs_mutex_init(&cp->sendlock, NULL);
+			RWLIST_HEAD_INIT(&cp->members);
 			RWLIST_INSERT_TAIL(&relay->mappings, cp, entry);
 		}
 		RWLIST_UNLOCK(&relay->mappings);

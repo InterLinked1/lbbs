@@ -30,7 +30,6 @@
 #include <unistd.h> /* use write */
 #include <sys/stat.h> /* use mkdir */
 #include <sys/types.h>
-#include <pthread.h>
 #include <poll.h>
 
 #ifdef __linux__

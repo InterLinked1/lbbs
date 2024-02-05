@@ -107,6 +107,12 @@ static int autoload_loaded = 0;
  */
 static struct bbs_module * volatile resource_being_loaded;
 
+static void free_module(struct bbs_module *mod)
+{
+	RWLIST_HEAD_DESTROY(&mod->refs);
+	free(mod);
+}
+
 void bbs_module_register(const struct bbs_module_info *info)
 {
 	struct bbs_module *mod;
@@ -159,7 +165,7 @@ void bbs_module_unregister(const struct bbs_module_info *info)
 
 	if (mod) {
 		bbs_verb(2, "Unregistering module %s\n", info->name);
-		free(mod);
+		free_module(mod);
 	} else {
 		bbs_debug(1, "Unable to unregister module %s\n", info->name);
 	}
@@ -343,6 +349,8 @@ static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ex
 	bbs_assert_exists(mod->name);
 	snprintf(mod->name, bytes, "%s%s", resource_in, so_ext); /* safe */
 
+	RWLIST_HEAD_INIT(&mod->refs);
+
 	resource_being_loaded = mod;
 	mod->lib = dlopen(filename, flags);
 
@@ -363,7 +371,7 @@ static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ex
 			bbs_error("Error loading module '%s': %s\n", resource_in, dlerror_msg);
 		}
 
-		free(mod);
+		free_module(mod);
 		return NULL;
 	}
 
@@ -429,7 +437,7 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 				char *dependency, *dependencies = dependencies_buf;
 				safe_strncpy(dependencies_buf, mod->info->dependencies, sizeof(dependencies_buf));
 				logged_dlclose(resource_in, mod->lib);
-				free(mod);
+				free_module(mod);
 				while ((dependency = strsep(&dependencies, ","))) {
 					if (!find_resource(dependency)) { /* It's not loaded already. */
 						int mres;
@@ -459,7 +467,7 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 	if (mod && mod->info->flags & MODFLAG_GLOBAL_SYMBOLS) {
 		/* Close the module so we can reopen with correct flags. */
 		logged_dlclose(resource_in, mod->lib);
-		free(mod);
+		free_module(mod);
 		bbs_debug(3, "Module '%s' contains global symbols, reopening\n", resource_in);
 		mod = load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_GLOBAL, 0);
 	}
@@ -519,7 +527,7 @@ static void check_dependencies(const char *restrict resource_in, unsigned int su
 	}
 
 	logged_dlclose(resource_in, mod->lib);
-	free(mod);
+	free_module(mod);
 	return;
 }
 
@@ -630,7 +638,7 @@ static int load_resource(const char *restrict resource_name, unsigned int suppre
 		/* If success, log in start_resource, otherwise, log here */
 		bbs_error("Module '%s' could not be loaded.\n", resource_name);
 		unload_dynamic_module(mod);
-		free(mod); /* bbs_module_unregister isn't called if the module declined to load, so free to avoid a leak */
+		free_module(mod); /* bbs_module_unregister isn't called if the module declined to load, so free to avoid a leak */
 		return -1;
 	} else {
 		/* Bump the ref count of any modules upon which we depend. */
@@ -669,7 +677,7 @@ static int unload_dependencies(struct bbs_module *mod, int force, struct stringl
 	struct bbs_module_ref *r;
 
 	/* Make a list of modules to unload upfront */
-	memset(&list, 0, sizeof(list));
+	RWLIST_HEAD_INIT(&list);
 
 	/* I thought about perhaps checking how many dependencies exist,
 	 * and only going ahead with unloading them if the number of dependencies
@@ -718,7 +726,7 @@ static int unload_dependencies(struct bbs_module *mod, int force, struct stringl
 		int usecount;
 		/* The module MAY have already been unloaded, in which case m is no longer valid memory.
 		 * Check to see if it's in the list. */
-		if (removed && stringlist_contains(removed, r->name)) {
+		if (removed && stringlist_contains_locked(removed, r->name)) {
 			free(r);
 			continue;
 		}
@@ -739,6 +747,7 @@ static int unload_dependencies(struct bbs_module *mod, int force, struct stringl
 		unload_dynamic_module(m);
 	}
 
+	RWLIST_HEAD_DESTROY(&list);
 	return res;
 }
 
@@ -1029,6 +1038,11 @@ static int autoload_modules(void)
 	int res = 0;
 	bbs_debug(1, "Autoloading modules\n");
 
+	stringlist_init(&modules_load);
+	stringlist_init(&modules_noload);
+	stringlist_init(&modules_preload);
+	stringlist_init(&modules_required);
+
 	/* Check config for load settings. */
 	load_config();
 
@@ -1097,8 +1111,8 @@ int bbs_module_reload(const char *name, int try_delayed)
 	struct stringlist unloaded;
 	int res;
 
-	memset(&unloaded, 0, sizeof(unloaded));
-	RWLIST_WRLOCK(&unloaded);
+	stringlist_init(&unloaded);
+
 	/* On a reload, also kick any nodes registered by this module, if the reload isn't delayed.
 	 * XXX Maybe this should be a separate sysop command? Could be confusing that reload will
 	 * autokick nodes created by the module, whereas unload won't try to do that and will fail immediately. */
@@ -1131,7 +1145,7 @@ int bbs_module_reload(const char *name, int try_delayed)
 			bbs_verb(4, "Queued reload of module '%s'\n", name);
 		}
 	}
-	RWLIST_UNLOCK(&unloaded);
+	stringlist_empty_destroy(&unloaded);
 	return res;
 }
 
@@ -1640,5 +1654,10 @@ int unload_modules(void)
 	bbs_cli_unregister_multiple(cli_commands_modules);
 
 	RWLIST_WRLOCK_REMOVE_ALL(&reload_handlers, entry, free);
+	/* Some functions use these even after BBS is started, so we don't destroy after autoload, just empty */
+	stringlist_destroy(&modules_load);
+	stringlist_destroy(&modules_noload);
+	stringlist_destroy(&modules_preload);
+	stringlist_destroy(&modules_required);
 	return 0;
 }

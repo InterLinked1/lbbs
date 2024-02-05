@@ -41,6 +41,7 @@
 void bbs_parallel_init(struct bbs_parallel *p, unsigned int min, unsigned int max)
 {
 	memset(p, 0, sizeof(struct bbs_parallel));
+	RWLIST_HEAD_INIT(&p->tasks);
 	p->min_parallel_tasks = min;
 	p->max_parallel_tasks = max;
 #ifdef DEBUG_PARALLEL_TASKS
@@ -313,6 +314,8 @@ int bbs_parallel_join(struct bbs_parallel *p)
 		free(t);
 	}
 	RWLIST_UNLOCK(&p->tasks);
+
+	RWLIST_HEAD_DESTROY(&p->tasks);
 
 	bbs_alertpipe_close(p->alertpipe);
 	bbs_debug(6, "Parallel task set has finished\n");

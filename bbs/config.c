@@ -252,6 +252,7 @@ static void config_section_free(struct bbs_config_section *section)
 {
 	/* No need to bother locking individual config sections */
 	RWLIST_REMOVE_ALL(&section->keyvals, entry, config_keyval_free);
+	RWLIST_HEAD_DESTROY(&section->keyvals);
 	free(section->name);
 	free(section);
 }
@@ -264,6 +265,7 @@ static void config_free(struct bbs_config *cfg)
 	while ((section = RWLIST_REMOVE_HEAD(&cfg->sections, entry))) {
 		config_section_free(section);
 	}
+	RWLIST_HEAD_DESTROY(&cfg->sections);
 	free(cfg->name);
 	free(cfg);
 }
@@ -345,6 +347,7 @@ static struct bbs_config *config_parse(const char *name)
 		fclose(fp);
 		return NULL;
 	}
+	RWLIST_HEAD_INIT(&cfg->sections);
 
 	bbs_debug(3, "Parsing config %s\n", fullname);
 
@@ -393,6 +396,7 @@ static struct bbs_config *config_parse(const char *name)
 				section = NULL;
 				continue;
 			}
+			RWLIST_HEAD_INIT(&section->keyvals);
 			RWLIST_INSERT_TAIL(&cfg->sections, section, entry);
 			bbs_assert(RWLIST_FIRST(&cfg->sections) != NULL);
 			continue;
