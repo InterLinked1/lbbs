@@ -1561,7 +1561,7 @@ static void handle_modes(struct irc_user *user, char *s)
 	char *modes, *channel_name = strsep(&s, " ");
 	channel = find_channel_by_user(channel_name, user);
 
-	if (*channel_name == '+') {
+	if (*channel_name == CHANNEL_NAME_PREFIX_MODELESS_CHAR) {
 		send_numeric(user, 502, "Channel does not support modes\r\n"); /* Modeless channel */
 		return;
 	}
@@ -2674,11 +2674,11 @@ static int join_channel(struct irc_user *user, char *name)
 	channel = find_channel_by_user(name, user);
 	if (!channel) {
 		size_t usernamelen;
-		if (*name == '+' && !bbs_user_is_registered(user->node->user)) {
+		if (*name == PRIVATE_NAMESPACE_PREFIX_CHAR && !bbs_user_is_registered(user->node->user)) {
 			send_numeric(user, 479, "Can't join this channel as guest\r\n");
 			return 0;
 		}
-		usernamelen = *name == '+' ? strlen(bbs_username(user->node->user)) + 1 : 0;
+		usernamelen = *name == PRIVATE_NAMESPACE_PREFIX_CHAR ? strlen(bbs_username(user->node->user)) + 1 : 0;
 		if (usernamelen) {
 			bbs_debug(3, "Creating channel '%s' in private namespace for user '%s'\n", name, bbs_username(user->node->user));
 		} else {

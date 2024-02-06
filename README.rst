@@ -296,7 +296,7 @@ FAQ
 ===
 
 Can I try it out without installing anything?
-~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Sure! The reference installation of LBBS is the PhreakNet BBS, reachable at :code:`bbs.phreaknet.org`. Guest login is allowed.
 
@@ -329,6 +329,14 @@ Can I run SSH and SFTP on the same port?
 
 Yes (and, in fact, you must, if you wish to enable both).
 Originally, SSH and SFTP were provided by 2 independent modules. They are now combined, allowing for same-port usage, which users expect.
+
+When using private namespace IRC channels, channel messages get sent to me as private messages.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+It is likely that your IRC client does not properly support all the standardized channel prefixes (#, &, +, and !).
+Many clients only support the first two, if even that. Because of this limitation, you can override the prefix used
+for the per-user namespace prefix near the top of :code:`include/net_irc.h`, by defining :code:`PRIVATE_NAMESPACE_PREFIX_CHAR` appropriately.
+If your client only supports the # prefix properly, then unfortunately you cannot use this feature, unless you can fix your client.
 
 I have multiple hostnames. Is SNI (Server Name Indication) supported?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

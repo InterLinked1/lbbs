@@ -15,10 +15,6 @@
  *
  */
 
-#define PUBLIC_CHANNEL_PREFIX "="
-#define PRIVATE_CHANNEL_PREFIX "*"
-#define SECRET_CHANNEL_PREFIX "@"
-
 /*! \brief RFC 2811 channel names namespace */
 /*! \note There is no real support for &, +,  and ! channels, as defined in the RFC; these are just defined here for completeness.
  * Consequently, we hijack + (modeless channels) for private namespace channels (separate namespace per user),
@@ -31,6 +27,25 @@
 #define CHANNEL_NAME_PREFIX_MODELESS "+"
 /* "Safe" channels */
 #define CHANNEL_NAME_PREFIX_TIMESTAMPED "!"
+
+#define CHANNEL_NAME_PREFIX_NETWORK_CHAR '#'
+#define CHANNEL_NAME_PREFIX_LOCAL_CHAR '&'
+#define CHANNEL_NAME_PREFIX_MODELESS_CHAR '+'
+#define CHANNEL_NAME_PREFIX_TIMESTAMPED_CHAR '!'
+
+/* This is left as the default private relay namespace char because it is the most semantic.
+ * However, many IRC clients do not support channels with prefixes other than # and &.
+ * e.g. Ambassador: https://github.com/Ascrod/ambassador/blob/master/ambassador/js/lib/irc.js#L1670
+ * If you need to support such clients, you may wish to change this to another prefix
+ * (probably CHANNEL_NAME_PREFIX_LOCAL_CHAR, if you are going to do this)
+ * If even that is not supported, then you will be unable to use this feature. */
+#ifndef PRIVATE_NAMESPACE_PREFIX_CHAR
+#define PRIVATE_NAMESPACE_PREFIX_CHAR CHANNEL_NAME_PREFIX_MODELESS_CHAR
+#endif
+
+#define PUBLIC_CHANNEL_PREFIX "="
+#define PRIVATE_CHANNEL_PREFIX "*"
+#define SECRET_CHANNEL_PREFIX "@"
 
 #define PREFIX_FOUNDER "~"
 #define PREFIX_ADMIN "&"
