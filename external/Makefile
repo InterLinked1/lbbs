@@ -14,9 +14,11 @@ all: $(EXES)
 # XXX: This is not quite right, as it recreates all binaries whenever an object file needs to be recreated.
 # What we really want to do is have each EXE depend on its corresponding OBJ file (with .o extension)
 $(EXES): $(OBJS)
+	@echo "  [LD] $@.o -> $@"
 	$(CC) $(CFLAGS) -o $@ $@.o
 
 %.o : %.c
+	@echo "  [CC] $< -> $@"
 	$(CC) $(CFLAGS) -c $^
 
 install : all

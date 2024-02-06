@@ -7,14 +7,13 @@ DEPENDS := $(patsubst %.c,%.d,$(IMAP_SRC))
 INC = -I../..
 
 all: $(MOD_SO)
-	@echo "== Compiling net_imap components"
 
 -include $(DEPENDS)
 
 $(DEPENDS):
 
 %.o : %.c %.d
-	@echo "== Compiling $@"
+	@echo "  [CC] $< -> $@"
 	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE_SUBFILE -MMD -MP $(INC) -c $<
 
 all: $(IMAP_OBJ)

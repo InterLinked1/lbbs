@@ -9,7 +9,7 @@ INC = -I..
 all: $(EXE)
 
 $(EXE) : $(MAIN_OBJ)
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) $(CFLAGS) -Wl,--export-dynamic -o $(EXE) *.o $(LIBS)
 
 -include $(DEPENDS)
@@ -18,7 +18,7 @@ $(EXE) : $(MAIN_OBJ)
 $(DEPENDS):
 
 %.o : %.c %.d
-	@echo "== Compiling bbs/$@"
+	@echo "  [CC] $< -> $@"
 	$(CC) $(CFLAGS) -DBBS_IN_CORE -MMD -MP $(INC) -c $<
 
 # Don't automatically remove intermediate .o files, to prevent unnecessary recompilations

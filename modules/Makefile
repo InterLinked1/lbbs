@@ -13,79 +13,78 @@ MYSQL_LIBS := $(shell mysql_config --libs)
 ETPANCFLAGS=-I/usr/local/include
 
 all: $(MOD_SO)
-	@echo "== Compiling modules"
 
 -include $(DEPENDS)
 
 $(DEPENDS):
 
 %.o : %.c %.d
-	@echo "== Compiling $@"
+	@echo "  [CC] $< -> $@"
 	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) -c $<
 	touch $@
 
 mod_mimeparse.o : mod_mimeparse.c mod_mimeparse.d
-	@echo "== Compiling $@"
+	@echo "  [CC] $< -> $@"
 	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self $(GMIME_FLAGS) -MMD -MP $(INC) -c $<
 
 %.so : %.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^
 
 mod_asterisk_ami.so : mod_asterisk_ami.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lcami
 
 mod_asterisk_queues.so : mod_asterisk_queues.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lcami
 
 mod_discord.so : mod_discord.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -ldiscord
 
 mod_http.so : mod_http.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lmagic
 
 mod_irc_client.so : mod_irc_client.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lirc
 
 mod_lmdb.so : mod_lmdb.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -llmdb
 
 mod_mimeparse.so : mod_mimeparse.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(GMIME_LIBS)
 
 mod_mysql.so : mod_mysql.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(MYSQL_LIBS)
 
 mod_ncurses.so : mod_ncurses.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lmenu -lncurses
 
 mod_oauth.so : mod_oauth.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -ljansson
 
 mod_operator.so : mod_operator.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -ljansson
 
 mod_sieve.so : mod_sieve.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lsieve
 
 mod_slack.so : mod_slack.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lslackrtm
 
 mod_smtp_delivery_external.so : mod_smtp_delivery_external.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 ifeq ($(UNAME_S),FreeBSD)
 	$(CC) -shared -fPIC -o $(basename $^).so $^
 else
@@ -93,27 +92,27 @@ else
 endif
 
 mod_smtp_filter_arc.so : mod_smtp_filter_arc.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -L/usr/local/lib -Wl,-rpath -Wl,/usr/local/lib -lopenarc
 
 mod_smtp_filter_dkim.so : mod_smtp_filter_dkim.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lopendkim
 
 mod_smtp_filter_dmarc.so : mod_smtp_filter_dmarc.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lopendmarc
 
 mod_smtp_filter_spf.so : mod_smtp_filter_spf.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lspf2
 
 mod_webmail.o : mod_webmail.c mod_webmail.d
-	@echo "== Compiling $@"
+	@echo "  [CC] $< -> $@"
 	$(CC) $(CFLAGS) -funsigned-char -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) $(ETPANCFLAGS) -c $<
 
 mod_webmail.so : mod_webmail.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -ljansson -lssl -lcrypto -ldb-5.3 -lz -L/usr/local/lib -Wl,-rpath=/usr/local/lib/ -letpan
 
 # Don't automatically remove intermediate .o files, to prevent unnecessary recompilations

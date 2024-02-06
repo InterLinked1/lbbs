@@ -14,18 +14,17 @@ ifneq ($(SFTP_SERVER_FREE_EXISTS),0)
 endif
 
 all: $(MOD_SO)
-	@echo "== Compiling nets"
 
 -include $(DEPENDS)
 
 $(DEPENDS):
 
 %.o : %.c %.d
-	@echo "== Compiling $@"
+	@echo "  [CC] $< -> $@"
 	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) -c $<
 
 %.so : %.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^
 
 IMAP_SRC = $(wildcard net_imap/*.c)
@@ -33,20 +32,19 @@ IMAP_OBJ = $(patsubst %.c,%.o,$(IMAP_SRC))
 
 # Subdirectory with components for net_imap
 net_imap:
-	@echo " +--------- make $@ ---------+"
-	$(SUBMAKE) --no-builtin-rules -C $@ all
+	@+$(SUBMAKE) --no-builtin-rules -C $@ all
 
 net_imap.so : net_imap.o net_imap
-	@echo "== Linking $@"
+	@echo "  [LD] $< $(IMAP_OBJ) -> $@"
 	$(CC) -shared -fPIC -o $(basename $<).so $(IMAP_OBJ) $<
 
 # SSHLIB=$(pkg-config --libs libssh)
 net_ssh.so : net_ssh.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lssh
 
 net_ws.so : net_ws.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lwss
 
 # Don't automatically remove intermediate .o files, to prevent unnecessary recompilations

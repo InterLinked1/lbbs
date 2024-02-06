@@ -7,22 +7,21 @@ DEPENDS := $(patsubst %.c,%.d,$(MOD_SRC))
 INC = -I..
 
 all: $(MOD_SO)
-	@echo "== Compiling doors"
 
 -include $(DEPENDS)
 
 $(DEPENDS):
 
 %.o : %.c %.d
-	@echo "== Compiling $@"
+	@echo "  [CC] $< -> $@"
 	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) -c $<
 
 %.so : %.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^
 
 door_irc.so : door_irc.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lirc
 
 # Don't automatically remove intermediate .o files, to prevent unnecessary recompilations

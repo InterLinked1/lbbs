@@ -37,20 +37,29 @@ RM		= rm -f
 LN		= ln
 INSTALL = install
 
+# Uncomment this to see all build commands instead of 'quiet' output
+#NOISY_BUILD=yes
+
 # XXX missing terms since currently no term modules
 MOD_SUBDIR:=doors modules nets
 SUBDIRS:=$(MOD_SUBDIR)
 SUBDIRS_INSTALL:=$(SUBDIRS:%=%-install)
 SUBDIRS_CLEAN:=$(SUBDIRS:%=%-clean)
 
-# SUBMAKE:=$(MAKE) --quiet --no-print-directory
+ifneq ($(PRINT_DIR)$(NOISY_BUILD),)
 SUBMAKE:=$(MAKE)
+else
+SUBMAKE:=$(MAKE) --quiet --no-print-directory
+endif
+
 MOD_SUBDIR_CFLAGS="-I$(BBSTOPDIR)/include"
 
 # MODULE_PREFIX:=mod
 MAIN_SOURCES := $(wildcard *.c) $(cami/wildcard *.c)
 INCLUDE_FILES := $(wildcard include/*.h)
 MAIN_OBJ = $(MAIN_SOURCES:.c=.o)
+
+SILENT_BUILD_PREFIX := @
 
 # ALL_C_MODS+=$(foreach p,$(MOD_SUBDIR)/$(MODULE_PREFIX),$(patsubst %.c,%.so,$(wildcard $(p)_*.c)))
 
@@ -62,23 +71,22 @@ export LIBS
 
 export SUBMAKE
 
+# Run sub targets in parallel, but don't run top-level targets in parallel
+.NOTPARALLEL:
+
 # This is the first target, so it's the default for just "make":
 all : bbs $(MOD_SUBDIR) external
 	@echo " +--------- LBBS has been compiled ---------+"
 	@echo " You may now install it by running make install"
 
 bbs : $(MAIN_OBJ)
-	@echo " +--------- make bbs ---------+"
-	$(SUBMAKE) --no-builtin-rules -C $@ all
+	@+$(SUBMAKE) --no-builtin-rules -C $@ all
 
 $(MOD_SUBDIR):
-	@echo " +--------- make $@ ---------+"
-# $(SUBMAKE) --no-builtin-rules -C $@ SUBDIR=$@ all
-	$(SUBMAKE) --no-builtin-rules -C $@ all
+	@+$(SUBMAKE) --no-builtin-rules -C $@ all
 
 external tests :
-	@echo " +--------- make $@ ---------+"
-	$(SUBMAKE) --no-builtin-rules -C $@ all
+	@+$(SUBMAKE) --no-builtin-rules -C $@ all
 
 modcheck : external
 	@external/modman -t
