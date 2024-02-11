@@ -641,7 +641,7 @@ static struct irc_channel *find_channel(const char *channel, const char *usernam
 
 static struct irc_channel *find_channel_by_user(const char *channel, struct irc_user *user)
 {
-	return find_channel(channel, bbs_user_is_registered(user->node->user) ? bbs_username(user->node->user) : NULL);
+	return find_channel(channel, user->node && bbs_user_is_registered(user->node->user) ? bbs_username(user->node->user) : NULL);
 }
 
 /*! \note This returns a user with no locks */
