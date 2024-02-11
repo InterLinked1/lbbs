@@ -21,7 +21,12 @@
 #define DETECT_DEADLOCKS
 #define STRICT_LOCKING
 #define ALWAYS_INITIALIZE 1
-#define MAX_READERS 5
+
+/* In general, there should not be *that* many readers for a lock.
+ * However, tls.c currently requires a read lock for every TLS
+ * connection, so this should be at least as high as maxnodes in nodes.conf,
+ * for worst case scenario of every node using TLS encryption. */
+#define MAX_READERS 128
 
 /* Start code */
 #define BBS_LOCK_WRAPPER_FILE
