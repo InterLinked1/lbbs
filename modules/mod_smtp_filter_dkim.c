@@ -25,6 +25,7 @@
 #include "include/config.h"
 #include "include/utils.h"
 #include "include/linkedlists.h"
+#include "include/node.h" /* for node->ip */
 
 #include "include/net_smtp.h"
 #include "include/mod_smtp_filter_dkim.h"
@@ -150,6 +151,13 @@ static int dkim_verify_filter_cb(struct smtp_filter_data *f)
 	const char *body;
 
 	if (!smtp_should_validate_dkim(f->smtp)) {
+		const char *domain = smtp_from_domain(f->smtp);
+		if (domain && smtp_node(f->smtp) && smtp_relay_authorized(smtp_node(f->smtp)->ip, domain)) {
+			/* Nothing to verify, but we can mabe sign it, so do that instead.
+			 * If we can't, we'll just return early anyways. */
+			bbs_debug(1, "Message being relayed from authorized host is not DKIM signed, seeing if we can sign it...\n");
+			return dkim_sign_filter_cb(f);
+		}
 		return 0;
 	}
 
@@ -414,17 +422,27 @@ static int load_module(void)
 	if (load_config()) {
 		return -1;
 	}
+	/* If no domains were registered, there's no point in the module remaining loaded. */
+	if (RWLIST_EMPTY(&domains)) {
+		bbs_debug(1, "No domains are registered, module declining to load\n");
+		return -1;
+	}
 	lib = dkim_init(NULL, NULL);
 	if (!lib) {
 		bbs_error("Failed to initialize DKIM library\n");
+		RWLIST_WRLOCK_REMOVE_ALL(&domains, entry, free);
+		return -1;
 	}
-	/* If no domains were registered, there's no point in the module remaining loaded. */
-	if (!RWLIST_EMPTY(&domains)) {
-		/* You might think this should be for OUT, only, but SUBMIT is more appropriate since we only DKIM sign our submissions,
-		 * and they MAY contain external recipients; even if they don't, that's fine.
-		 * Importantly, we want to use the COMBINED scope so we only sign each message once, not once per recipient. */
-		res |= smtp_filter_register(&dkim_sign_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_SUBMIT, 1);
-	}
+
+	/* You might think this should be for OUT, only, but SUBMIT is more appropriate since we only DKIM sign our submissions,
+	 * and they MAY contain external recipients; even if they don't, that's fine.
+	 * Importantly, we want to use the COMBINED scope so we only sign each message once, not once per recipient.
+	 *
+	 * However, since we may accept mail for relay from other hosts (as a smart host), if those messages are not already DKIM-signed,
+	 * and they're from a domain for which we can sign, we should also sign those messages, too. We check that in the verify callback.
+	 */
+	res |= smtp_filter_register(&dkim_sign_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_SUBMIT, 1);
+
 	/* Priority of 2, so that SPF validation will already have been done */
 	res |= smtp_filter_register(&dkim_verify_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 2);
 	if (res) {
