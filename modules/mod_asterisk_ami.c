@@ -206,8 +206,10 @@ static void cleanup_ami(void)
 {
 	struct ami_session *s = ami_session;
 	ami_session = NULL;
-	ami_disconnect(s);
-	ami_destroy(s);
+	if (s) {
+		ami_disconnect(s);
+		ami_destroy(s);
+	}
 	close_if(ami_log_fd);
 }
 
