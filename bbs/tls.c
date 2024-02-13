@@ -495,7 +495,8 @@ static void *ssl_io_thread(void *unused)
 						case SSL_ERROR_ZERO_RETURN:
 						case SSL_ERROR_SSL:
 							if (err == SSL_ERROR_SSL) {
-								ERR_error_string_n(ERR_get_error(), err_msg, sizeof(err_msg));
+								unsigned long err_err = ERR_get_error();
+								ERR_error_string_n(err_err, err_msg, sizeof(err_msg));
 								bbs_debug(1, "TLS error: %s\n", err_msg);
 							}
 							/* This socket is done for, do not retry to read more data,
@@ -835,7 +836,7 @@ connect:
 	}
 	bbs_debug(8, "TLS SN: %s\n", str);
 	OPENSSL_free(str);
-	str = X509_NAME_oneline(X509_get_issuer_name (server_cert), 0, 0);
+	str = X509_NAME_oneline(X509_get_issuer_name(server_cert), 0, 0);
 	if (!str) {
 		bbs_error("Failed to get peer certificate\n");
 		goto sslcleanup;
@@ -904,6 +905,52 @@ int ssl_available(void)
 }
 
 #ifdef HAVE_OPENSSL
+static int validate_cert(SSL_CTX *ctx, const char *cert)
+{
+	const ASN1_TIME *created, *expires;
+	int res;
+	int cdays = 0, csecs = 0, edays = 0, esecs = 0;
+	X509 *x509 = SSL_CTX_get0_certificate(ctx);
+
+	if (!cert) {
+		bbs_error("Failed to load X509 certificate for %s\n", cert);
+		return 0;
+	}
+
+	created = X509_getm_notBefore(x509);
+	expires = X509_getm_notAfter(x509);
+
+	res = ASN1_TIME_diff(&cdays, &csecs, NULL, created);
+	if (!res) {
+		bbs_warning("Failed to determine expiration time of %s\n", cert);
+		return 0;
+	}
+	res = ASN1_TIME_diff(&edays, &esecs, NULL, expires);
+	if (!res) {
+		bbs_warning("Failed to determine expiration time of %s\n", cert);
+		return 0;
+	}
+
+	cdays = -cdays;
+	csecs = -csecs;
+
+	bbs_debug(1, "Certificate created %d day%s, %d second%s ago, expires %d day%s, %d second%s from now\n", cdays, ESS(cdays), csecs, ESS(csecs), edays, ESS(edays), esecs, ESS(esecs));
+
+	if (cdays < 0) {
+		bbs_error("TLS certificate %s is not valid until %d day%s, %d second%s from now\n", cert, -cdays, ESS(cdays), -csecs, ESS(csecs));
+		return 1;
+	}
+
+	if (edays < 0 || (edays == 0 && esecs < 0)) {
+		/* Crikey, SOMEBODY forgot to renew the certificates */
+		bbs_error("TLS certificate %s expired %d day%s, %d second%s ago\n", cert, -edays, ESS(edays), -esecs, ESS(esecs));
+		return 1;
+	} else if (edays < 1) {
+		bbs_warning("TLS certificate %s will expire in %d seconds\n", cert, esecs);
+	}
+	return 0;
+}
+
 static SSL_CTX *tls_ctx_create(const char *cert, const char *key)
 {
 	const SSL_METHOD *method = TLS_server_method();
@@ -926,7 +973,11 @@ static SSL_CTX *tls_ctx_create(const char *cert, const char *key)
 		return NULL;
 	}
 	if (SSL_CTX_check_private_key(ctx) != 1) {
-		bbs_error("Private key does not match public certificate\n");
+		bbs_error("Private key %s does not match public certificate %s\n", key, cert);
+		SSL_CTX_free(ctx);
+		return NULL;
+	}
+	if (validate_cert(ctx, cert)) {
 		SSL_CTX_free(ctx);
 		return NULL;
 	}
