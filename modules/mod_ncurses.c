@@ -25,6 +25,7 @@
 #include <curses.h>
 #include <menu.h>
 #include <unistd.h>
+#include <termios.h>
 #include <sys/wait.h>
 
 #include "include/module.h"
@@ -357,6 +358,7 @@ int bbs_ncurses_menu_getopt(struct bbs_node *node, struct bbs_ncurses_menu *menu
 	int res;
 	ssize_t rres;
 	char c;
+	struct termios term;
 
 	/* Null terminate before running for strchr */
 	menu->keybind[menu->num_options] = '\0';
@@ -386,6 +388,11 @@ int bbs_ncurses_menu_getopt(struct bbs_node *node, struct bbs_ncurses_menu *menu
 
 	bbs_node_unbuffer(node); /* Make sure our PTY is unbuffered for ncurses */
 	bbs_node_flush_input(node);
+
+	/* Save the terminal settings now in case we need to restore them all */
+	if (tcgetattr(node->slavefd, &term)) {
+		bbs_error("tcgetattr(%d) failed: %s\n", node->slavefd, strerror(errno));
+	}
 
 	res = fork();
 	if (res < 0) {
@@ -429,7 +436,17 @@ int bbs_ncurses_menu_getopt(struct bbs_node *node, struct bbs_ncurses_menu *menu
 	rres = read(pfd[0], &c, 1);
 	close(pfd[0]);
 	if (rres != 1) {
-		bbs_error("Failed to read result: %s\n", strerror(errno));
+		if (!bbs_node_interrupted(node)) { /* If interrupted, this is expected and fine */
+			bbs_error("Failed to read result: %s\n", strerror(errno));
+		} else {
+			/* If the ncurses process is killed by a signal,
+			 * then the terminal will be messed up because endwin()
+			 * was not called to restore the terminal.
+			 * Manually try to clean up, akin to what reset_shell_mode() would do. */
+			if (tcsetattr(node->slavefd, TCSANOW, &term)) {
+				bbs_error("Failed to restore terminal settings: %s\n", strerror(errno));
+			}
+		}
 		return -1;
 	}
 	res = c;
