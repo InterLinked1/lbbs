@@ -764,6 +764,7 @@ static int handle_call(struct agent *agent, struct queue_call *call)
 	memset(&qch_info, 0, sizeof(qch_info));
 	qch_info.node = agent->node;
 	qch_info.agentid = agent->id;
+	qch_info.queuetitle = call->queue->title;
 	qch_info.id = call->id;
 	qch_info.channel = call->channel;
 	qch_info.ani = call->ani;

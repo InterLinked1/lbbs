@@ -139,6 +139,115 @@ static int node_read_variable(struct bbs_node *node, const char *key)
 	return res;
 }
 
+/*! \brief Reverse lookup of a number */
+static int reverse_lookup(struct queue_call_handle *qch)
+{
+	char subbuf[256];
+	int res;
+	struct bbs_curl c = {
+		.forcefail = 1,
+	};
+
+	bbs_node_writef(qch->node, "REV LOOKUP: ");
+
+	if (qch->ani) {
+		/* Prepopulate the buffer with the caller's phone number, if available.
+		 * To do so, spoof the input as if received from the node on the master,
+		 * so that it will appear on the slave. */
+		bbs_debug(3, "Call associated, prepopulating '%lu' as default response\n", qch->ani);
+
+		/* Do these before node_read_variable does, or we'll lose it */
+		bbs_node_flush_input(qch->node);
+		bbs_node_buffer(qch->node);
+
+		bbs_dprintf(qch->node->amaster, "%lu", qch->ani);
+	}
+
+	res = node_read_variable(qch->node, "QUEUE_OTHER_NUMBER");
+
+	if (res <= 0) {
+		return res;
+	}
+	bbs_node_substitute_vars(qch->node, url_reverse_lookup, subbuf, sizeof(subbuf));
+	memset(&c, 0, sizeof(c));
+	c.url = subbuf;
+	if (bbs_curl_get(&c)) {
+		bbs_node_writef(qch->node, "Reverse Lookup unavailable\n");
+	} else {
+		json_error_t err;
+		json_t *json = json_loads(c.response, 0, &err);
+		bbs_curl_free(&c);
+		if (json) {
+			bbs_node_writef(qch->node, "*** REVERSE LOOKUP ***\n%-10s %s\n%-10s %s\n", "CNAM", json_object_string_value(json, "cnam"), "NBR OWNER", json_object_string_value(json, "owner"));
+			json_decref(json);
+		}
+	}
+
+	bbs_node_wait_key(qch->node, MIN_MS(2));
+	return 0;
+}
+
+/*! \brief Default handler with general options that apply to most calls */
+static int handle_default(struct queue_call_handle *qch)
+{
+	struct bbs_ncurses_menu menu;
+	char subtitle[96];
+	char opt;
+	struct bbs_curl c = {
+		.forcefail = 1,
+	};
+
+	bbs_node_clear_screen(qch->node);
+	bbs_ncurses_menu_init(&menu);
+	bbs_ncurses_menu_set_title(&menu, "OPERATOR POSITION SYSTEM");
+
+	/* Private network CVS (Caller Verification Status/Score) code */
+	if (!s_strlen_zero(variable_cvs)) {
+		int cvs;
+		char *val;
+		/* It would be more efficient to just get this once, when we request the other channel variables in mod_asterisk_queues,
+		 * but this promotes better modularity since this is a queue-specific (or queue group specific) variable.
+		 * XXX Maybe we can define variables we should request in mod_asterisk_queues? */
+		val = ami_action_getvar(bbs_ami_session(), variable_cvs, qch->channel);
+		cvs = atoi(S_IF(val));
+		free_if(val);
+		snprintf(subtitle, sizeof(subtitle), "%s\tII %02d [CVS %02d] (%s) %lu\n", qch->queuetitle, qch->ani2, cvs, qch->cnam, qch->ani);
+	} else {
+		snprintf(subtitle, sizeof(subtitle), "%s\tII %02d (%s) %lu\n", qch->queuetitle, qch->ani2, qch->cnam, qch->ani);
+	}
+
+	bbs_ncurses_menu_set_subtitle(&menu, subtitle);
+	if (!s_strlen_zero(url_reverse_lookup)) {
+		bbs_ncurses_menu_addopt(&menu, 'v', "Re[v]erse Lookup", NULL);
+	}
+
+	opt = bbs_ncurses_menu_getopt_selection(qch->node, &menu);
+	bbs_ncurses_menu_destroy(&menu);
+	if (opt == 0) {
+		return 0;
+	}
+
+	bbs_node_clear_screen(qch->node);
+	bbs_node_flush_input(qch->node); /* Seems to be necessary to drain unwanted pending input, for multiple options */
+	memset(&c, 0, sizeof(c));
+	/* Do variable replacement via node variable,
+	 * to avoid format string injection.
+	 * In theory, this doesn't need to be (and probably shouldn't be)
+	 * the agent's node; if we used a temporary node, we could clean it up
+	 * immediately afterwards. */
+	bbs_node_var_set_fmt(qch->node, "QUEUE_ANI", "%lu", qch->ani);
+
+	switch (opt) {
+	case 'v':
+		return reverse_lookup(qch);
+	default:
+		bbs_warning("Unhandled menu return %d?\n", opt);
+	}
+
+	bbs_node_wait_key(qch->node, MIN_MS(2));
+	return 0;
+}
+
 static int operator_dial_number(struct queue_call_handle *qch)
 {
 	char othernum[32];
@@ -400,25 +509,7 @@ static int handle_operator(struct queue_call_handle *qch)
 		break;
 	/*! \todo add options for person-to-person, collect calls */
 	case 'v':
-		bbs_node_writef(qch->node, "OTHER NBR: ");
-		res = node_read_variable(qch->node, "QUEUE_OTHER_NUMBER");
-		if (res <= 0) {
-			return res;
-		}
-		bbs_node_substitute_vars(qch->node, url_reverse_lookup, subbuf, sizeof(subbuf));
-		c.url = subbuf;
-		if (bbs_curl_get(&c)) {
-			bbs_node_writef(qch->node, "Reverse Lookup unavailable\n");
-		} else {
-			json_error_t err;
-			json_t *json = json_loads(c.response, 0, &err);
-			bbs_curl_free(&c);
-			if (json) {
-				bbs_node_writef(qch->node, "*** REVERSE LOOKUP ***\n%-10s %s\n%-10s %s\n", "CNAM", json_object_string_value(json, "cnam"), "NBR OWNER", json_object_string_value(json, "owner"));
-				json_decref(json);
-			}
-		}
-		break;
+		return reverse_lookup(qch);
 	default:
 		bbs_warning("Unhandled menu return %d?\n", opt);
 	}
@@ -1820,6 +1911,7 @@ static int unload_module(void)
 {
 	bbs_cli_unregister_multiple(cli_commands_operator);
 	bbs_ami_callback_unregister(ami_callback);
+	bbs_queue_call_handler_unregister("default");
 	bbs_queue_call_handler_unregister("operator");
 	bbs_queue_call_handler_unregister("intercept");
 	bbs_queue_call_handler_unregister("directory");
@@ -1835,6 +1927,7 @@ static int load_module(void)
 	if (load_config()) {
 		return -1;
 	}
+	bbs_queue_call_handler_register("default", handle_default); /* Note: There is nothing special about this being named "default" */
 	bbs_queue_call_handler_register("operator", handle_operator);
 	bbs_queue_call_handler_register("intercept", handle_intercept);
 	bbs_queue_call_handler_register("directory", handle_directory);

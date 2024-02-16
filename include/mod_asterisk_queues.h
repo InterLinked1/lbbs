@@ -23,6 +23,7 @@ struct queue_call_handle {
 	int agentid;			/*!< ID of agent handling call */
 	/* Call info */
 	int id;					/*!< Queue call ID */
+	const char *queuetitle;	/*!< Queue title */
 	const char *channel;	/*!< Channel name */
 	int ani2;				/*!< ANI II */
 	unsigned long ani;		/*!< ANI */
