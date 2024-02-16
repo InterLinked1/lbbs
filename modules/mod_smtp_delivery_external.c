@@ -1380,7 +1380,7 @@ static int queue_processor(struct smtp_session *smtp, const char *cmd, const cha
 		 * if the connected host is asking for somebody else's mail to be relayed.
 		 * But we shouldn't use bbs_ip_match_ipv4, we should use static_routes.
 		 */
-		if (authorized_for_hostname(smtp_node(smtp)->ip, args)) {
+		if (authorized_for_hostname(smtp_sender_ip(smtp), args)) {
 			identity_confirmed = 1;
 		} else {
 			bbs_debug(3, "Requested mail for '%s', but source IP address does not match source route\n", args);
@@ -1592,7 +1592,7 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 	}
 
 	if (smtp_is_exempt_relay(smtp)) {
-		bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp_node(smtp)->ip, smtp_from_domain(smtp));
+		bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp_sender_ip(smtp), smtp_from_domain(smtp));
 	} else if (get_static_routes(domain)) {
 		bbs_debug(2, "%s has static route(s)\n", domain);
 	} else {
@@ -1800,7 +1800,7 @@ static int exists(struct smtp_session *smtp, struct smtp_response *resp, const c
 
 	if (smtp_is_exempt_relay(smtp)) {
 		/* Allow an external host to relay messages for a domain if it's explicitly authorized to. */
-		bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp_node(smtp)->ip, smtp_from_domain(smtp));
+		bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp_sender_ip(smtp), smtp_from_domain(smtp));
 		return 1;
 	}
 

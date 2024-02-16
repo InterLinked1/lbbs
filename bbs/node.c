@@ -825,7 +825,7 @@ int bbs_interrupt_node(unsigned int nodenum)
 void __bbs_node_interrupt_ack(struct bbs_node *node, const char *file, int line, const char *func)
 {
 	bbs_assert(node->thread == pthread_self());
-	bbs_debug(2, "Node %u acknowledged interrupt at %s:%d %s()\n", node->id, file, line, func);
+	__bbs_log(LOG_DEBUG, 2, file, line, func, "Node %u acknowledged interrupt\n", node->id);
 	node->interruptack = 1;
 }
 

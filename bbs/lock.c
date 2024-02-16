@@ -177,7 +177,7 @@ int __bbs_mutex_lock(bbs_mutex_t *t, const char *filename, int lineno, const cha
 	res = pthread_mutex_lock(&t->mutex);
 #endif /* DETECT_DEADLOCKS */
 	if (unlikely(res)) {
-		lock_warning("Failed to obtain mutex %s\n", name);
+		lock_warning("Failed to obtain mutex %s: %s\n", name, strerror(res));
 	} else {
 		t->info.lastlocked = time(NULL);
 		if (unlikely(++t->info.owners != 1)) {
@@ -298,7 +298,7 @@ int __bbs_rwlock_rdlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 
 	res = pthread_rwlock_rdlock(&t->lock);
 	if (unlikely(res)) {
-		lock_warning("Failed to obtain rdlock %s\n", name);
+		lock_warning("Failed to obtain rdlock %s: %s\n", name, strerror(res));
 	} else {
 		pthread_mutex_lock(&t->intlock);
 		t->info.lastlocked = time(NULL);
@@ -324,7 +324,7 @@ int __bbs_rwlock_wrlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 
 	res = pthread_rwlock_wrlock(&t->lock);
 	if (unlikely(res)) {
-		lock_warning("Failed to obtain wrlock %s\n", name);
+		lock_warning("Failed to obtain wrlock %s: %s\n", name, strerror(res));
 	} else {
 		/* If wrlock succeeded, we don't need to lock the internal mutex, since there can't be any readers right now */
 		t->info.lastlocked = time(NULL);

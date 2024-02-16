@@ -40,30 +40,9 @@
 #define SENDMAIL_ARG "-t"
 #define SENDMAIL_CMD "/usr/sbin/sendmail -t"
 
-static int sendmail(MAILER_PARAMS)
+static int sendmail_helper(const char *tmp, FILE *p, int async)
 {
 	int res;
-	FILE *p;
-	char tmp[80] = "/tmp/bbsmail-XXXXXX";
-
-	/* We can't count on sendmail existing. Check first. */
-	if (eaccess(SENDMAIL, R_OK)) {
-		bbs_error("System mailer '%s' does not exist, unable to send email to %s\n", SENDMAIL, to);
-		return -1;
-	}
-
-	bbs_debug(4, "Sending %semail: %s -> %s (replyto %s), subject: %s\n", async ? "async " : "", from, to, S_IF(replyto), subject);
-
-	/* Make a temporary file instead of piping directly to sendmail:
-	 * a) to make debugging easier
-	 * b) in case the mail command hangs
-	 */
-	p = bbs_mkftemp(tmp, MAIL_FILE_MODE);
-	if (!p) {
-		bbs_error("Unable to launch '%s' (can't create temporary file)\n", SENDMAIL_CMD);
-		return -1;
-	}
-	bbs_make_email_file(p, subject, body, to, from, replyto, errorsto, NULL, 0);
 
 	/* XXX We could be calling this function from a node thread.
 	 * If it's async, it's totally fine and there's no problem, but if not, we're really hoping sendmail doesn't block very long or it will block shutdown.
@@ -109,9 +88,57 @@ static int sendmail(MAILER_PARAMS)
 		if (res != 0) {
 			res = -1; /* If nonzero, ignore */
 		} else {
-			bbs_debug(1, "%s sent mail to %s with command '%s'\n", async ? "Asynchronously" : "Synchronously", to, SENDMAIL_CMD);
+			bbs_debug(1, "%s sent mail with command '%s'\n", async ? "Asynchronously" : "Synchronously", SENDMAIL_CMD);
 		}
 	}
+	return res;
+}
+
+static int sendmail_full(FULL_MAILER_PARAMS)
+{
+	FILE *p;
+
+	if (mailfrom) {
+		return -1; /* Can't handle explicit MAIL FROM */
+	} else if (recipients) {
+		return -1; /* Can't handle explicit recipients, since sendmail will extract from the message */
+	}
+
+	p = fopen(tmpfile, "r");
+	if (!p) {
+		fprintf(stderr, "fopen(%s) failed: %s\n", tmpfile, strerror(errno));
+		return -1;
+	}
+
+	return sendmail_helper(tmpfile, p, 0);
+}
+
+static int sendmail_simple(SIMPLE_MAILER_PARAMS)
+{
+	FILE *p;
+	int res;
+	char tmp[80] = "/tmp/bbsmail-XXXXXX";
+
+	/* We can't count on sendmail existing. Check first. */
+	if (eaccess(SENDMAIL, R_OK)) {
+		bbs_error("System mailer '%s' does not exist, unable to send email to %s\n", SENDMAIL, to);
+		return -1;
+	}
+
+	bbs_debug(4, "Sending %semail: %s -> %s (replyto %s), subject: %s\n", async ? "async " : "", from, to, S_IF(replyto), subject);
+
+	/* Make a temporary file instead of piping directly to sendmail:
+	 * a) to make debugging easier
+	 * b) in case the mail command hangs
+	 */
+	p = bbs_mkftemp(tmp, MAIL_FILE_MODE);
+	if (!p) {
+		bbs_error("Unable to launch '%s' (can't create temporary file)\n", SENDMAIL_CMD);
+		return -1;
+	}
+	bbs_make_email_file(p, subject, body, to, from, replyto, errorsto, NULL, 0);
+
+	res = sendmail_helper(tmp, p, async);
 	if (res) {
 		bbs_error("Failed to send email to %s\n", to);
 	}
@@ -120,12 +147,12 @@ static int sendmail(MAILER_PARAMS)
 
 static int load_module(void)
 {
-	return bbs_register_mailer(sendmail, 10);
+	return bbs_register_mailer(sendmail_simple, sendmail_full, 10);
 }
 
 static int unload_module(void)
 {
-	return bbs_unregister_mailer(sendmail);
+	return bbs_unregister_mailer(sendmail_simple, sendmail_full);
 }
 
 BBS_MODULE_INFO_STANDARD("SendMail email transmission");

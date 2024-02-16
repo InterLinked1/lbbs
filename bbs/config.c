@@ -290,7 +290,8 @@ int bbs_config_free(struct bbs_config *c)
 	RWLIST_UNLOCK(&configs);
 
 	if (!cfg) {
-		bbs_error("Couldn't find config %s\n", c->name);
+		bbs_error("Couldn't find config\n"); /* c->name might not be valid here so don't print it? */
+		bbs_log_backtrace(); /* So we can see what module this was for */
 	} else {
 		config_free(cfg);
 	}

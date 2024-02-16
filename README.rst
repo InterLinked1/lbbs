@@ -165,6 +165,10 @@ Config files go in :code:`/etc/lbbs` and are as follows:
 
 * :code:`mod_smtp_fetchmail.conf` - SMTP remote message queue management
 
+* :code:`mod_smtp_filter_dkim.conf` - DKIM signing
+
+* :code:`mod_smtp_filter_dmarc.conf` - DMARC verification and reporting
+
 * :code:`mod_smtp_mailing_lists.conf` - Mailing list configuration
 
 * :code:`modules.conf` - module loading settings (to disable a module, you do it here)

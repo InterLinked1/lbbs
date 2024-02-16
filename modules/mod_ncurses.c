@@ -442,7 +442,7 @@ int bbs_ncurses_menu_getopt(struct bbs_node *node, struct bbs_ncurses_menu *menu
 			/* If the ncurses process is killed by a signal,
 			 * then the terminal will be messed up because endwin()
 			 * was not called to restore the terminal.
-			 * Manually try to clean up, akin to what reset_shell_mode() would do. */
+			 * Manually restore the terminal settings to what they were originally. */
 			if (tcsetattr(node->slavefd, TCSANOW, &term)) {
 				bbs_error("Failed to restore terminal settings: %s\n", strerror(errno));
 			}

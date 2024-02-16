@@ -168,7 +168,7 @@ struct smtp_session {
 	int wfd;
 
 	/* Transaction data */
-	char *from;
+	char *from;					/* MAIL FROM address */
 	struct stringlist recipients;
 	struct stringlist sentrecipients;
 
@@ -176,7 +176,8 @@ struct smtp_session {
 	char *contenttype;			/* Primary Content-Type of message */
 	/* AUTH: Temporary */
 	char *authuser;				/* Authentication username */
-	char *fromheaderaddress;	/* Address in the From: header */
+	char *fromheaderaddress;	/* Address in the From: header, e.g. "John Smith" <jsmith@example.com> */
+	char *fromaddr;		/* Normalized from address, e.g. jsmith@example.com */
 
 	const char *datafile;
 
@@ -196,6 +197,7 @@ struct smtp_session {
 		unsigned int dkimsig:1;		/* Message has a DKIM-Signature header */
 		unsigned int is8bit:1;		/* 8BITMIME */
 		unsigned int relay:1;		/* Message being relayed */
+		unsigned int quarantine:1;	/* Quarantine message */
 	} tflags; /* Transaction flags */
 
 	/* Not affected by RSET */
@@ -211,6 +213,7 @@ static void smtp_reset(struct smtp_session *smtp)
 {
 	free_if(smtp->authuser);
 	free_if(smtp->fromheaderaddress);
+	free_if(smtp->fromaddr);
 	free_if(smtp->from);
 	free_if(smtp->contenttype);
 	stringlist_empty(&smtp->recipients);
@@ -957,6 +960,10 @@ static int handle_mail(struct smtp_session *smtp, char *s)
 		bbs_debug(5, "MAIL FROM is empty\n");
 		smtp->fromlocal = 0;
 		REPLACE(smtp->from, "");
+		if (!smtp->fromheaderaddress) {
+			/* Don't have a From address yet, so this is our most specific sender identity */
+			REPLACE(smtp->fromaddr, smtp->from);
+		}
 		smtp_reply(smtp, 250, 2.0.0, "OK");
 		return 0;
 	}
@@ -985,6 +992,10 @@ static int handle_mail(struct smtp_session *smtp, char *s)
 	}
 
 	REPLACE(smtp->from, from);
+	if (!smtp->fromheaderaddress) {
+		/* Don't have a From address yet, so this is our most specific sender identity */
+		REPLACE(smtp->fromaddr, smtp->from);
+	}
 	smtp_reply(smtp, 250, 2.1.0, "OK");
 	return 0;
 }
@@ -1180,6 +1191,11 @@ struct bbs_node *smtp_node(struct smtp_session *smtp)
 	return smtp->node;
 }
 
+const char *smtp_sender_ip(struct smtp_session *smtp)
+{
+	return smtp->node ? smtp->node->ip : "127.0.0.1";
+}
+
 const char *smtp_protname(struct smtp_session *smtp)
 {
 	/* RFC 2822, RFC 3848, RFC 2033 */
@@ -1201,12 +1217,22 @@ const char *smtp_from(struct smtp_session *smtp)
 	return smtp->from;
 }
 
+const char *smtp_mail_from_domain(struct smtp_session *smtp)
+{
+	return bbs_strcnext(smtp->from, '@');
+}
+
 const char *smtp_from_domain(struct smtp_session *smtp)
 {
 	if (!smtp->from) {
 		return NULL;
 	}
-	return bbs_strcnext(smtp->from, '@');
+	if (smtp->fromaddr) {
+		/* Use From header email address if available */
+		return bbs_strcnext(smtp->fromaddr, '@');
+	}
+	/* Fall back to MAIL FROM address if not */
+	return smtp_mail_from_domain(smtp);
 }
 
 int smtp_is_exempt_relay(struct smtp_session *smtp)
@@ -1780,6 +1806,11 @@ static int duplicate_loop_avoidance(struct smtp_session *smtp, char *recipient)
 	return 0;
 }
 
+int smtp_message_quarantinable(struct smtp_session *smtp)
+{
+	return smtp->tflags.quarantine;
+}
+
 /*! \brief "Stand and deliver" that email! */
 static int expand_and_deliver(struct smtp_session *smtp, const char *filename, size_t datalen)
 {
@@ -1825,6 +1856,27 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 	filterdata.outputfd = -1;
 	smtp_run_filters(&filterdata, smtp->msa ? SMTP_DIRECTION_SUBMIT : SMTP_DIRECTION_IN);
 
+	if (filterdata.reject) {
+		/* A filter has indicated that this message should be rejected.
+		 * XXX Currently, this only happens if a DMARC reject occured, so that is hardcoded here for now. */
+		close(srcfd);
+		smtp_reply(smtp, 550, 5.7.1, "Message rejected due to policy failure");
+		return 0; /* Return 0 to inhibit normal failure message, since we already responded */
+	} else if (filterdata.quarantine) {
+		/* This is kind of a clunky hack.
+		 * We need to be able to move quarantined messages into "Junk"
+		 * in the local delivery handler. However, it only has access to the mproc structure,
+		 * which is stack allocated inside the handler, so we can't access it from net_smtp.
+		 * As a workaround, save off the quarantine flag onto the SMTP structure for permanence,
+		 * and then check that from within the delivery handler.
+		 *
+		 * If we defined a structure that could be passed into all delivery handlers,
+		 * instead of passing all the arguments directly, it would be appropriate to remove
+		 * this bitfield from the SMTP struct and add it to that instead, and remove the API to check.
+		 */
+		smtp->tflags.quarantine = 1;
+	}
+
 	/* Since outputfd was originally -1, if it's not any longer,
 	 * that means the source has been modified and we should use that as the new source */
 	if (filterdata.outputfd != -1) {
@@ -1867,7 +1919,7 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		}
 
 		if (*recipient != '<') {
-			bbs_warning("Malformed recipient: %s\n", recipient);
+			bbs_warning("Malformed recipient (missing <>): %s\n", recipient);
 		}
 
 		dup = strdup(recipient);
@@ -1993,7 +2045,7 @@ int smtp_inject(const char *mailfrom, struct stringlist *recipients, const char 
 }
 
 /*!
- * \brief Inject a message to deliver via SMTP, from outside of the SMTP protocol
+ * \brief Inject a message to deliver via SMTP, to a single recipient, from outside of the SMTP protocol
  * \param filename Entire RFC822 message
  * \param from MAIL FROM. Do not include <>.
  * \param recipient RCPT TO. Must include <>.
@@ -2003,7 +2055,6 @@ static int nosmtp_deliver(const char *filename, const char *sender, const char *
 {
 	struct stringlist slist;
 
-	/*! \todo The mail interface should probably accept a stringlist globally, since it's reasonable to have multiple recipients */
 	stringlist_init(&slist);
 	stringlist_push(&slist, recipient);
 
@@ -2011,7 +2062,7 @@ static int nosmtp_deliver(const char *filename, const char *sender, const char *
 }
 
 /*! \brief Accept messages injected from the BBS to deliver, to local or external recipients */
-static int injectmail(MAILER_PARAMS)
+static int injectmail_simple(SIMPLE_MAILER_PARAMS)
 {
 	int res;
 	FILE *fp;
@@ -2047,7 +2098,6 @@ static int injectmail(MAILER_PARAMS)
 	}
 #pragma GCC diagnostic pop
 #pragma GCC diagnostic pop
-	
 
 	/* This should be enclosed in <>, but there must not be a name.
 	 * That's because the queue file writer expects us to provide <> around TO, but not FROM... it's a bit flimsy. */
@@ -2059,12 +2109,35 @@ static int injectmail(MAILER_PARAMS)
 	}
 
 	res = nosmtp_deliver(tmp, sender, recipient, (size_t) length);
-
 	unlink(tmp);
 	bbs_debug(3, "injectmail res=%d, sender=%s, recipient=%s\n", res, sender, recipient);
 
 	/* This is likely to be used for sending mail to only one user at a time, so we can just return
 	 * 0 if it succeeds, 1 if exists but unable to deliver, and -1 if couldn't deliver. */
+	return res ? -1 : 0;
+}
+
+static int injectmail_full(const char *tmpfile, const char *mailfrom, struct stringlist *recipients)
+{
+	int res;
+	FILE *fp;
+	long int length;
+
+	fp = fopen(tmpfile, "r");
+	if (!fp) {
+		bbs_error("fopen(%s) failed: %s\n", tmpfile, strerror(errno));
+		stringlist_empty_destroy(recipients);
+		return -1;
+	}
+
+	fseek(fp, 0L, SEEK_END); /* Go to EOF */
+	length = ftell(fp);
+	fclose(fp);
+
+	res = smtp_inject(mailfrom, recipients, tmpfile, (size_t) length);
+	unlink(tmpfile);
+	bbs_debug(3, "injectmail res=%d, mailfrom=%s\n", res, mailfrom);
+
 	return res ? -1 : 0;
 }
 
@@ -2344,8 +2417,8 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 			fromaddr = fromhdrdup;
 		}
 		bbs_debug(4, "Updating internal from address from '%s' to '%s'\n", smtp->from, fromaddr);
-		REPLACE(smtp->from, fromaddr);
-		free_if(smtp->fromheaderaddress);
+		REPLACE(smtp->fromaddr, fromaddr);
+		/* Don't free smtp->fromheaderaddress yet, that we can still use it */
 	}
 
 	res = expand_and_deliver(smtp, filename, datalen);
@@ -2490,7 +2563,7 @@ static int handle_burl(struct smtp_session *smtp, char *s)
 			bbs_strterm(buf, '\r');
 			from = buf + STRLEN("From:");
 			ltrim(from);
-			smtp->fromheaderaddress = strdup(from);
+			REPLACE(smtp->fromheaderaddress, from);
 			break;
 		} else if (!strcmp(buf, "\r\n")) {
 			bbs_warning("BURL submission is missing From header\n"); /* Transmission will probably be rejected, but not our concern here. */
@@ -2954,7 +3027,7 @@ static int load_module(void)
 	}
 
 	bbs_register_tests(tests);
-	bbs_register_mailer(injectmail, 1);
+	bbs_register_mailer(injectmail_simple, injectmail_full, 1);
 	bbs_cli_register_multiple(cli_commands_smtp);
 
 	return 0;
@@ -2967,7 +3040,7 @@ cleanup:
 
 static int unload_module(void)
 {
-	bbs_unregister_mailer(injectmail);
+	bbs_unregister_mailer(injectmail_simple, injectmail_full);
 	bbs_unregister_tests(tests);
 	bbs_cli_unregister_multiple(cli_commands_smtp);
 	if (smtp_enabled) {

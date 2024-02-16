@@ -156,7 +156,7 @@ static int load_module(void)
 	smtp_filter_register(&builtin_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_INDIVIDUAL, SMTP_DIRECTION_IN | SMTP_DIRECTION_SUBMIT, 0);
 	smtp_filter_register(&relay_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_OUT, 1); /* For messages that are being relayed */
 	/* Run this only after the SPF, DKIM, and DMARC filters have run: */
-	smtp_filter_register(&auth_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 5);
+	smtp_filter_register(&auth_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 6);
 	return 0;
 }
 

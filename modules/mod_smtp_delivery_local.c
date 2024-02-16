@@ -247,6 +247,16 @@ static int do_local_delivery(struct smtp_session *smtp, struct smtp_response *re
 	mproc.direction = SMTP_MSG_DIRECTION_IN;
 	mproc.mbox = mbox;
 	mproc.userid = 0;
+
+	if (smtp_message_quarantinable(smtp)) {
+		/* We set the override mailbox before running callbacks,
+		 * because users should have the final say in being able
+		 * to override moving messages to particular mailboxes.
+		 * Moving quarantined messages to "Junk" is just the default. */
+		bbs_debug(5, "Message should be quarantined, so initializing destination mailbox to 'Junk'\n");
+		mproc.newdir = strdup("Junk");
+	}
+
 	if (smtp_run_callbacks(&mproc)) {
 		return -1; /* If returned nonzero, it's assumed it responded with an SMTP error code as appropriate. */
 	}

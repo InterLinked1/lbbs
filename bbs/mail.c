@@ -43,9 +43,11 @@
 #include "include/linkedlists.h"
 #include "include/startup.h"
 #include "include/reload.h"
+#include "include/stringlist.h"
 
 struct mailer {
-	int (*mailer)(MAILER_PARAMS);
+	int (*simple_mailer)(SIMPLE_MAILER_PARAMS);
+	int (*full_mailer)(FULL_MAILER_PARAMS);
 	struct bbs_module *module;
 	RWLIST_ENTRY(mailer) entry;
 	unsigned int priority;
@@ -237,13 +239,13 @@ int __attribute__ ((format (gnu_printf, 6, 7))) bbs_mail_fmt(int async, const ch
 	return res;
 }
 
-int __bbs_register_mailer(int (*mailer)(MAILER_PARAMS), void *mod, int priority)
+int __bbs_register_mailer(int (*simple_mailer)(SIMPLE_MAILER_PARAMS), int (*full_mailer)(FULL_MAILER_PARAMS), void *mod, int priority)
 {
 	struct mailer *m;
 
 	RWLIST_WRLOCK(&mailers);
 	RWLIST_TRAVERSE(&mailers, m, entry) {
-		if (m->mailer == mailer) {
+		if (m->simple_mailer == simple_mailer && m->full_mailer == full_mailer) {
 			break;
 		}
 	}
@@ -257,7 +259,8 @@ int __bbs_register_mailer(int (*mailer)(MAILER_PARAMS), void *mod, int priority)
 		RWLIST_UNLOCK(&mailers);
 		return -1;
 	}
-	m->mailer = mailer;
+	m->simple_mailer = simple_mailer;
+	m->full_mailer = full_mailer;
 	m->module = mod;
 	m->priority = (unsigned int) priority;
 	RWLIST_INSERT_SORTED(&mailers, m, entry, priority); /* Insert in order of priority */
@@ -265,11 +268,20 @@ int __bbs_register_mailer(int (*mailer)(MAILER_PARAMS), void *mod, int priority)
 	return 0;
 }
 
-int bbs_unregister_mailer(int (*mailer)(MAILER_PARAMS))
+int bbs_unregister_mailer(int (*simple_mailer)(SIMPLE_MAILER_PARAMS), int (*full_mailer)(FULL_MAILER_PARAMS))
 {
 	struct mailer *m;
 
-	m = RWLIST_WRLOCK_REMOVE_BY_FIELD(&mailers, mailer, mailer, entry);
+	RWLIST_WRLOCK(&mailers);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&mailers, m, entry) {
+		if (m->simple_mailer == simple_mailer && m->full_mailer == full_mailer) {
+			RWLIST_REMOVE_CURRENT(entry);
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(&mailers);
+
 	if (!m) {
 		bbs_error("Failed to unregister mailer: not currently registered\n");
 		return -1;
@@ -307,9 +319,167 @@ int bbs_mail(int async, const char *to, const char *from, const char *replyto, c
 
 	/* Hand off the delivery of the message itself to the appropriate module */
 	RWLIST_TRAVERSE(&mailers, m, entry) {
+		if (!m->simple_mailer) {
+			continue;
+		}
 		bbs_module_ref(m->module, 1);
-		res = m->mailer(async, to, from, replyto, errorsto, subject, body);
+		res = m->simple_mailer(async, to, from, replyto, errorsto, subject, body);
 		bbs_module_unref(m->module, 1);
+		if (res >= 0) {
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&mailers);
+
+	return res;
+}
+
+static void push_recipients(struct stringlist *restrict slist, int *restrict count, char *restrict s)
+{
+	char *recip, *recips = s;
+
+	if (strlen_zero(recips)) {
+		return;
+	}
+
+	bbs_term_line(recips);
+	while ((recip = strsep(&recips, ","))) {
+		char buf[256];
+		if (strlen_zero(recip)) {
+			continue;
+		}
+		trim(recip);
+		if (strlen_zero(recip)) {
+			continue;
+		}
+		snprintf(buf, sizeof(buf), "<%s>", recip); /* Recipients need to be surrounded by <> */
+		bbs_debug(6, "Adding recipient '%s'\n", buf);
+		stringlist_push(slist, buf);
+		(*count)++;
+	}
+}
+
+int bbs_mail_message(const char *tmpfile, const char *mailfrom, struct stringlist *recipients)
+{
+	struct mailer *m;
+	char mailfrombuf[256];
+	char tmpfile2[256];
+	int res = -1;
+	struct stringlist reciplist;
+
+	if (!mailfrom) {
+		mailfrom = ""; /* Empty MAIL FROM address */
+	} else {
+		const char *tmpaddr = strchr(mailfrom, '<');
+		/* This is just for the MAIL FROM, so just the address, no name */
+		if (tmpaddr) {
+			/* Shouldn't have <>, but if it does, transparently remove them */
+			bbs_strncpy_until(mailfrombuf, tmpaddr + 1, sizeof(mailfrombuf), '>');
+			mailfrom = mailfrombuf;
+		}
+	}
+
+	/* Extract recipients from message if needed */
+	if (!recipients) {
+		int rewrite = 0;
+		int in_header = 0;
+		int recipient_count = 0;
+		char line[1002];
+		/* Parse message for recipients to add.
+		 * Check To, Cc, and Bcc headers. */
+		FILE *fp = fopen(tmpfile, "r");
+		if (!fp) {
+			bbs_error("fopen(%s) failed: %s\n", tmpfile, strerror(errno));
+			return -1;
+		}
+		/* Process each line until end of headers */
+		stringlist_init(&reciplist);
+		while ((fgets(line, sizeof(line), fp))) {
+			if (strlen(line) <= 2) {
+				break;
+			}
+			if (STARTS_WITH(line, "To:")) {
+				push_recipients(&reciplist, &recipient_count, line + STRLEN("To:"));
+				in_header = 1;
+			} else if (STARTS_WITH(line, "Cc:")) {
+				push_recipients(&reciplist, &recipient_count, line + STRLEN("Cc:"));
+				in_header = 1;
+			} else if (STARTS_WITH(line, "Bcc:")) {
+				push_recipients(&reciplist, &recipient_count, line + STRLEN("Bcc:"));
+				in_header = 1;
+				rewrite = 1;
+			}
+			if (line[0] == ' ') {
+				/* Continue previous header */
+				if (in_header) { /* In header we care about */
+					push_recipients(&reciplist, &recipient_count, line + 1);
+				}
+			} else {
+				in_header = 0;
+			}
+		}
+		bbs_debug(4, "Parsed %d recipient%s from message\n", recipient_count, ESS(recipient_count));
+		/* If there are any Bcc headers, we need to remove those recipients,
+		 * and regenerate the message. */
+		if (rewrite) {
+			int inheaders = 1;
+			FILE *fp2;
+			strcpy(tmpfile2, "/tmp/smtpbccXXXXXX");
+			fp2 = bbs_mkftemp(tmpfile2, MAIL_FILE_MODE);
+			if (!fp2) {
+				stringlist_empty_destroy(&reciplist);
+				return -1;
+			}
+			rewind(fp);
+			bbs_debug(2, "Rewriting message since it contains a Bcc header\n");
+			while ((fgets(line, sizeof(line), fp))) {
+				if (inheaders) {
+					if (!strncmp(line, "\r\n", 2)) {
+						inheaders = 0;
+					} else if (STARTS_WITH(line, "Bcc:")) {
+						in_header = 1;
+						continue; /* Skip this line */
+					} else if (line[0] == ' ') {
+						if (in_header) {
+							/* Skip if this is a multiline Bcc header */
+							continue;
+						}
+					} else {
+						in_header = 0;
+					}
+				}
+				/* Copy line */
+				fwrite(line, 1, strlen(line), fp2);
+			}
+			fclose(fp2);
+			fclose(fp);
+			/* Swap the files */
+			bbs_delete_file(tmpfile);
+			tmpfile = tmpfile2;
+		} else {
+			fclose(fp);
+		}
+	}
+
+	/* XXX smtp_inject consumes the stringlist and assumes responsibility for destroying it.
+	 * The code here is in theory set up to try another mailer if the first one fails.
+	 * However, it seems possible that the stringlist could have been modified prior to failure,
+	 * meaning a retry using another mailer wouldn't get the full list.
+	 * In practice, this is not currently an issue, since there are only two mailers,
+	 * and only in net_smtp do we accept a stringlist of recipients.
+	 * However, in the future, especially if that changes, it might be worth duplicating
+	 * the stringlist here prior to each attempt, just to be safe.
+	 * If we did that, we'd also want to destroy the stringlist after the list iteration.
+	 */
+
+	RWLIST_RDLOCK(&mailers);
+	RWLIST_TRAVERSE(&mailers, m, entry) {
+		if (!m->full_mailer) {
+			continue;
+		}
+		bbs_module_ref(m->module, 2);
+		res = m->full_mailer(tmpfile, mailfrom, recipients ? recipients : &reciplist);
+		bbs_module_unref(m->module, 2);
 		if (res >= 0) {
 			break;
 		}

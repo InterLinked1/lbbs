@@ -327,7 +327,7 @@ cleanup:
 }
 
 /*! \note Sysop can always manually adjust the database if needed to override */
-#define USERNAME_RESERVED(u) (!strcasecmp(u, "root") || !strcasecmp(u, "sysop") || !strcasecmp(u, "bbs") || !strcasecmp(u, "ChanServ") || !strcasecmp(u, "NickServ") || !strcasecmp(u, "MessageServ") || !strcasecmp(u, "services") || !strcasecmp(u, "postmaster") || !strcasecmp(u, "newsmaster") || !strcasecmp(u, "anonymous"))
+#define USERNAME_RESERVED(u) (!strcasecmp(u, "root") || !strcasecmp(u, "admin") || !strcasecmp(u, "sysop") || !strcasecmp(u, "bbs") || !strcasecmp(u, "ChanServ") || !strcasecmp(u, "NickServ") || !strcasecmp(u, "MessageServ") || !strcasecmp(u, "services") || !strcasecmp(u, "postmaster") || !strcasecmp(u, "newsmaster") || !strcasecmp(u, "anonymous") || !strcasecmp(u, "noreply"))
 
 static int username_reserved(const char *username)
 {

@@ -83,12 +83,15 @@ struct smtp_filter_data {
 	struct bbs_node *node;			/*!< Node */
 	const char *from;				/*!< Envelope from */
 	const char *helohost;			/*!< HELO/EHLO hostname */
-	/* Set by filter callbacks */
+	/* Set by filter callbacks, but accessible only during filter execution */
 	char *spf;						/*!< Allocated SPF header value */
 	char *dkim;						/*!< Allocated DKIM results */
 	char *dmarc;					/*!< Allocated DMARC results */
 	char *arc;						/*!< Allocated ARC results */
 	char *authresults;				/*!< Allocated Authentication-Results header */
+	/* Set by filter callbacks, and accessible after filter execution */
+	unsigned int reject:1;			/*!< Set by filter(s) to TRUE to reject acceptance of message. */
+	unsigned int quarantine:1;		/*!< Set by filter(s) to TRUE to quarantine message. */
 	/* INTERNAL: Do not access these fields directly. Use the publicly exposed functions. */
 	int outputfd;					/*!< File descriptor to write to, to prepend to message */
 	char outputfile[64];			/*!< Temporary output file name */
@@ -123,13 +126,22 @@ int smtp_filter_unregister(struct smtp_filter_provider *provider);
 /*! \brief Get the BBS node of an SMTP session */
 struct bbs_node *smtp_node(struct smtp_session *smtp);
 
+/*! \brief Get the upstream IP address */
+const char *smtp_sender_ip(struct smtp_session *smtp);
+
 /*! \brief Get SMTP protocol used */
 const char *smtp_protname(struct smtp_session *smtp);
 
-/*! \brief Get the SMTP MAIL FROM address */
+/*! \brief Get the MAIL FROM address */
 const char *smtp_from(struct smtp_session *smtp);
 
-/*! \brief Get the SMTP MAIL FROM domain */
+/*! \brief Get the domain of the MAIL FROM address */
+const char *smtp_mail_from_domain(struct smtp_session *smtp);
+
+/*!
+ * \brief Get the MAIL FROM or From address domain
+ * \note This will return the From address domain if a From address is available and the MAIL FROM domain if not
+ */
 const char *smtp_from_domain(struct smtp_session *smtp);
 
 /*! \brief Whether SPF validation should be performed */
@@ -173,6 +185,9 @@ int smtp_filter_add_header(struct smtp_filter_data *f, const char *name, const c
 
 /*! \brief Run a group of SMTP filters */
 void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir);
+
+/*! \brief Whether a message should be quarantined when delivered */
+int smtp_message_quarantinable(struct smtp_session *smtp);
 
 /* == SMTP processor callbacks - these determine what will happen to a message, based on the message, but do not modify it == */
 
