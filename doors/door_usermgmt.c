@@ -262,7 +262,18 @@ static int termmgmt_exec(struct bbs_node *node, const char *args)
 
 	bbs_node_clear_screen(node);
 	bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_PRIMARY), "Terminal Settings", COLOR_RESET);
-	bbs_node_writef(node, "%s%10s%s %s\n", COLOR(COLOR_SECONDARY), "ANSI", COLOR_RESET, node->ansi ? "Yes" : "No");
+	bbs_node_writef(node, "%s%10s %s\n", COLOR(COLOR_SECONDARY), "ANSI", node->ansi ? "Yes" : "No");
+	if (node->ansi) {
+#define DUMP_ANSI_SUPPORT(flag, name) bbs_node_writef(node, "%s       - %-15s%s%3s\n", COLOR(COLOR_WHITE), name, node->ans & flag ? COLOR(COLOR_GREEN) : COLOR(COLOR_RED), node->ans & flag ? "Yes" : "No")
+		DUMP_ANSI_SUPPORT(ANSI_CURSOR_QUERY, "Cursor Query");
+		DUMP_ANSI_SUPPORT(ANSI_CURSOR_SET, "Cursor Set");
+		DUMP_ANSI_SUPPORT(ANSI_COLORS, "Colors");
+		DUMP_ANSI_SUPPORT(ANSI_CLEAR_LINE, "Clear Line");
+		DUMP_ANSI_SUPPORT(ANSI_CLEAR_SCREEN, "Clear Screen");
+		DUMP_ANSI_SUPPORT(ANSI_UP_ONE_LINE, "Up One Line");
+		DUMP_ANSI_SUPPORT(ANSI_TERM_TITLE, "Term Titles");
+#undef DUMP_ANSI_SUPPORT
+	}
 	if (node->bps) {
 		bbs_node_writef(node, "%s%10s%s %d bps\n", COLOR(COLOR_SECONDARY), "Speed", COLOR_RESET, node->bps);
 	} else {
@@ -274,8 +285,8 @@ static int termmgmt_exec(struct bbs_node *node, const char *args)
 		case 'a':
 		case 'A':
 			/* If disabling, reset color, just in case */
-			bbs_node_writef(node, "%s", COLOR_RESET);
-			SET_BITFIELD(node->ansi, !node->ansi);
+			bbs_node_reset_color(node);
+			SET_BITFIELD(node->ansi, !node->ansi); /* XXX Might want to store whether ANSI *really* detected/supported, not just whether currently enabled */
 			bbs_node_safe_sleep(node, 10); /* Pause, to allow the PTY thread to send the reset and then see the ANSI state before reading further */
 			bbs_node_writef(node, "ANSI %s\n", node->ansi ? "enabled" : "disabled");
 			NEG_RETURN(bbs_node_wait_key(node, SEC_MS(75)));

@@ -22,6 +22,14 @@ struct bbs_vars;
 struct readline_data;
 struct pollfd;
 
+#define ANSI_CURSOR_QUERY (1 << 0)
+#define ANSI_CURSOR_SET (1 << 1)
+#define ANSI_COLORS (1 << 2)
+#define ANSI_CLEAR_LINE (1 << 3)
+#define ANSI_CLEAR_SCREEN (1 << 4)
+#define ANSI_UP_ONE_LINE (1 << 5)
+#define ANSI_TERM_TITLE (1 << 6)
+
 struct bbs_node {
 	unsigned int id;			/*!< Node number, 1-indexed for user-friendliness */
 	unsigned int lifetimeid;	/*!< Lifetime node number, 1-indexed */
@@ -65,9 +73,10 @@ struct bbs_node {
 	unsigned int spy:1;			/*!< Target of active node spy */
 	unsigned int skipjoin:1;	/*!< If node_shutdown should not join the node thread */
 	unsigned int inmenu:1;		/*!< Whether actively displaying a menu */
-	unsigned int ansi:1;		/*!< Terminal supports ANSI escape sequences */
 	unsigned int slow:1;		/*!< Terminal is using slow connection */
 	unsigned int dimensions:1;	/*!< Aware of actual terminal dimensions */
+	unsigned int ansi:1;		/*!< Terminal supports ANSI escape sequences */
+	int ans;					/*!< Detailed ANSI support flags */
 	/* TDD stuff */
 	char ioreplace[10][2];		/*!< Character replacement for TDDs and other keyboard input-limited endpoints. 2D list with 10 slots. */
 	unsigned int ioreplaces;	/*!< Number of characters currently being replaced. Purely for speed of access in pty.c */
@@ -681,6 +690,31 @@ int bbs_node_clear_screen(struct bbs_node *node);
  * \retval -1 on failure, 0 on success
  */
 int bbs_node_clear_line(struct bbs_node *node);
+
+/*!
+ * \brief Query the current cursor position of a node's terminal
+ * \param node, which must be unbuffered for this operation
+ * \param[out] row 1-indexed row position
+ * \param[out] col 1-indexed col position
+ * \retval -1 on node disconnect, 0 if failed to get cursor position, positive on success
+ */
+int node_get_cursor_pos(struct bbs_node *node, int *restrict row, int *restrict col);
+
+/*!
+ * \brief Set the cursor position of a node's TTY explicitly
+ * \param node
+ * \param row (1-indexed)
+ * \param col (1-indexed)
+ * \retval -1 on failure, 0 on success
+ */
+int bbs_node_set_pos(struct bbs_node *node, int row, int col);
+
+/*!
+ * \brief Go up one line on the node's connected TTY
+ * \param node
+ * \retval -1 on failure, 0 on success
+ */
+int bbs_node_up_one_line(struct bbs_node *node);
 
 /*!
  * \brief Set the terminal title

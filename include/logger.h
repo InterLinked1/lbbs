@@ -94,6 +94,8 @@ void __attribute__ ((format (gnu_printf, 2, 3))) bbs_dprintf(int fd, const char 
 
 void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level loglevel, int level, const char *file, int lineno, const char *func, const char *fmt, ...);
 
+#define TERM_CLEAR_SCROLLBACK "\033[3J"
+
 /*! \brief Clear screen */
 #define TERM_CLEAR "\e[1;1H\e[2J"
 
@@ -102,9 +104,19 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 /*! \brief Clear and reset cursor to beginning of current line */
 #define TERM_RESET_LINE TERM_ERASE_LINE "\r"
 
+/*! \brief Go up one line */
+#define TERM_UP_ONE_LINE "\033[F"
+
 #define TERM_TITLE_FMT "\033]2;%s\007"
 
 #define TERM_TITLE_RESTORE_FMT "\e]2;\a"
+
+#define TERM_ICON_FMT "\033]1;%s\007"
+
+/*! \brief Query terminal cursor position (1-indexed row, column) */
+#define TERM_CURSOR_POS_QUERY "\033[6n"
+
+#define TERM_CURSOR_POS_SET_FMT "\033[%d;%dH"
 
 /*! \brief Ring the bell on the TTY/terminal */
 #define TERM_BELL "\a"

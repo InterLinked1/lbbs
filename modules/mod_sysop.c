@@ -347,7 +347,7 @@ static void *sysop_handler(void *varg)
 					break;
 				case 'c':
 					bbs_dprintf(sysopfdout, TERM_CLEAR); /* TERM_CLEAR doesn't end in a newline, so normally, flush output, but bbs_printf does this for us. */
-					bbs_dprintf(sysopfdout, "\033[3J"); /* Clear scrollback buffer */
+					bbs_dprintf(sysopfdout, TERM_CLEAR_SCROLLBACK); /* Clear scrollback buffer */
 					break;
 				case 'l':
 					SET_BITFIELD(console->log, !console->log); /* Save the new log setting */

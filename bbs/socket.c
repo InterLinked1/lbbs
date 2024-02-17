@@ -2526,7 +2526,7 @@ ssize_t __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(int fd, const cha
 
 int bbs_node_clear_screen(struct bbs_node *node)
 {
-	if (!node->ansi) {
+	if (!node->ansi || !(node->ans & ANSI_CLEAR_SCREEN)) {
 		return 0;
 	}
 	return bbs_node_write(node, TERM_CLEAR, STRLEN(TERM_CLEAR)) == STRLEN(TERM_CLEAR) ? 0 : -1;
@@ -2534,15 +2534,45 @@ int bbs_node_clear_screen(struct bbs_node *node)
 
 int bbs_node_clear_line(struct bbs_node *node)
 {
-	if (!node->ansi) {
+	if (!node->ansi || !(node->ans & ANSI_CLEAR_LINE)) {
 		return 0;
 	}
 	return bbs_node_write(node, TERM_RESET_LINE, STRLEN(TERM_RESET_LINE)) == STRLEN(TERM_RESET_LINE) ? 0 : -1;
 }
 
-int bbs_node_set_term_title(struct bbs_node *node, const char *s)
+int bbs_node_set_pos(struct bbs_node *node, int row, int col)
+{
+	if (!node->ansi || !(node->ans & ANSI_CURSOR_QUERY)) {
+		return 0;
+	}
+	return bbs_node_writef(node, TERM_CURSOR_POS_SET_FMT, row, col) < 0 ? -1 : 0;
+}
+
+int bbs_node_up_one_line(struct bbs_node *node)
 {
 	if (!node->ansi) {
+		return 0;
+	}
+	if (!(node->ans & ANSI_UP_ONE_LINE) && node->ans) {
+		/* Some terminals, like NetRunner, don't support this.
+		 * However, we can still emulate this by setting the cursor explicitly. */
+		int row, col;
+		if (!(node->ans & ANSI_CURSOR_SET)) {
+			bbs_warning("Unable to move terminal up one line (terminal does not support relevant ANSI escape sequences\n");
+			return 0; /* Don't return -1, or that could be interpreted as a node disconnect */
+		}
+		node_get_cursor_pos(node, &row, &col);
+		if (row > 1) {
+			row--;
+		}
+		return bbs_node_set_pos(node, row, col);
+	}
+	return bbs_node_write(node, TERM_UP_ONE_LINE, STRLEN(TERM_UP_ONE_LINE)) == STRLEN(TERM_UP_ONE_LINE) ? 0 : -1;
+}
+
+int bbs_node_set_term_title(struct bbs_node *node, const char *s)
+{
+	if (!node->ansi || !(node->ans & ANSI_TERM_TITLE)) {
 		return 0;
 	}
 	return bbs_node_writef(node, TERM_TITLE_FMT, s) <= 0 ? -1 : 0; /* for xterm, screen, etc. */
@@ -2550,25 +2580,23 @@ int bbs_node_set_term_title(struct bbs_node *node, const char *s)
 
 int bbs_node_restore_term_title(struct bbs_node *node)
 {
-	if (!node->ansi) {
+	if (!node->ansi || !(node->ans & ANSI_TERM_TITLE)) {
 		return 0;
 	}
 	return bbs_node_write(node, TERM_TITLE_RESTORE_FMT, STRLEN(TERM_TITLE_RESTORE_FMT)) == STRLEN(TERM_RESET_LINE) ? 0 : -1; /* for xterm, screen, etc. */
 }
 
-#define TERM_ICON "\033]1;%s\007"
-
 int bbs_node_set_term_icon(struct bbs_node *node, const char *s)
 {
-	if (!node->ansi) {
+	if (!node->ansi || !(node->ans & ANSI_TERM_TITLE)) {
 		return 0;
 	}
-	return bbs_node_writef(node, TERM_ICON, s) <= 0 ? -1 : 0;
+	return bbs_node_writef(node, TERM_ICON_FMT, s) <= 0 ? -1 : 0;
 }
 
 int bbs_node_reset_color(struct bbs_node *node)
 {
-	if (!node->ansi) {
+	if (!node->ansi || !(node->ans & ANSI_COLORS)) {
 		return 0;
 	}
 	return bbs_node_write(node, COLOR_RESET, STRLEN(COLOR_RESET)) == STRLEN(COLOR_RESET) ? 0 : -1;

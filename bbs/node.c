@@ -1290,10 +1290,49 @@ static inline int record_start_time(struct timespec *restrict start)
 	return 0;
 }
 
-static inline int read_cursor_pos_response_single(struct bbs_node *node, int timeout)
+static int parse_cursor_pos(char *restrict s, int *restrict row, int *restrict col)
+{
+	char *tmp;
+
+	/* If we get something like \e[n;mR, n is the row and m is the column.
+	 * Don't bother trying to dump the entire response, since it contains escape characters, etc. */
+
+	tmp = strchr(s, '[');
+	if (!tmp++) {
+		return -1;
+	}
+	if (strlen_zero(tmp)) {
+		return -1;
+	}
+	*row = atoi(tmp);
+	tmp = strchr(tmp, ';');
+	if (!tmp++) {
+		return -1;
+	}
+	if (strlen_zero(tmp)) {
+		return -1;
+	}
+	*col = atoi(tmp);
+	return 0;
+}
+
+/*!
+ * \brief Read cursor position response from a node. This does not send the cursor position query.
+ * \param node, which should be unbuffered
+ * \param timeout poll timeout for first character. Subsequent characters have a timeout of 5 seconds if a first character is received.
+ * \param[out] row The row position on success (return value > 0). 1-indexed, not 0-indexed.
+ * \param[out] col The col position on success (return value > 0). 1-indexed, not 0-indexed.
+ * \retval -1 on node disconnect
+ * \retval 1 if positive cursor position query response received
+ * \retval 0 Non-ANSI terminal (no positive response)
+ */
+static int node_read_cursor_pos(struct bbs_node *node, int timeout, int *restrict row, int *restrict col)
 {
 	ssize_t res;
+	char buf[84];
 	char c;
+	char *pos = buf;
+	size_t left = sizeof(buf);
 
 	/* It could take a moment to get the first character */
 	res = bbs_node_poll(node, timeout);
@@ -1304,10 +1343,14 @@ static inline int read_cursor_pos_response_single(struct bbs_node *node, int tim
 		return res ? -1 : 0;
 	}
 	/* We read and poll separately because bbs_node_tread triggers the "timed out due to inactivity" log message */
-	res = bbs_node_read(node, &c, 1);
+	res = bbs_node_read(node, pos, 1);
 	if (res <= 0) {
 		return res ? -1 : 0;
 	}
+	pos++;
+	left--;
+	/* Read byte by byte, just in case there's more data,
+	 * so we don't risk reading past the R. */
 	do {
 		res = bbs_node_poll(node, SEC_MS(5));
 		if (res <= 0) {
@@ -1322,13 +1365,184 @@ static inline int read_cursor_pos_response_single(struct bbs_node *node, int tim
 		if (res <= 0) {
 			return res ? -1 : 0;
 		}
-	} while (c != 'R');
+		*pos = c;
+		pos++;
+		left--;
+	} while (c != 'R' && left > 1);
+	*pos = '\0';
+	if (!left) {
+		bbs_warning("Buffer exhausted reading cursor position response: '%s'\n", buf);
+		return 0;
+	}
+	if (parse_cursor_pos(buf, row, col)) {
+		bbs_warning("Received invalid cursor position response\n");
+		return 0;
+	}
+	bbs_debug(3, "Cursor position response: row %d, col %d\n", *row, *col);
 	return 1;
+}
+
+int node_get_cursor_pos(struct bbs_node *node, int *restrict row, int *restrict col)
+{
+	/* Send cursor position query */
+	if (bbs_node_write(node, TERM_CURSOR_POS_QUERY, STRLEN(TERM_CURSOR_POS_QUERY)) < 0) {
+		return -1;
+	}
+	/* Read cursor position query response */
+	return node_read_cursor_pos(node, SEC_MS(1), row, col); /* Since we know this terminal supports this sequence, don't wait very long for a response, since we do expect one */
+}
+
+/*!
+ * \brief Test if several kinds of ANSI escape sequences are supported
+ * \param node, which should be unbuffered, and known to support the cursor position query (at least)
+ * \retval 0 Ran tests
+ * \retval -1 node disconnected
+ */
+static int init_term_query_ansi_escape_support(struct bbs_node *node)
+{
+	int res, row, col;
+	int oldrow, oldcol;
+
+	/* Some terminals support certain escape sequences, others don't.
+	 * Try to detect if there are certain escape sequences this
+	 * terminal does not support. We do this by running tests which
+	 * position the cursor at a certain place if supported and at
+	 * a different place if not supported, allowing us to distinguish
+	 * supporting and unsupporting clients. */
+
+#ifdef DEV_DEBUG
+	res = node_get_cursor_pos(node, &row, &col);
+	if (res <= 0) {
+		return res;
+	}
+#endif
+
+	node->ans |= ANSI_CURSOR_QUERY; /* If node_get_cursor_pos returned positive, then obviously this is supported */
+
+	/* The above test is not necessary, and was only used to verify that
+	 * presently, the terminal should be at row 3, col 1 (we are 1-indexed, not 0-indexed). */
+
+	bbs_node_writef(node, "\n\n\n   "); /* Add 3 rows and 3 columns, so 3,1 -> 6,4 (verified with DEV_DEBUG). */
+
+#ifdef DEV_DEBUG
+	res = node_get_cursor_pos(node, &row, &col);
+	if (res <= 0) {
+		return res;
+	}
+#endif
+
+	/* Tests here have been structured to minimize the number of
+	 * output characters required between tests (e.g. newlines, spaces).
+	 * For instance, clear screen should be tested last, since that
+	 * would reset col and row to 0, and we would need to offset both
+	 * for any subsequent tests.
+	 *
+	 * Also, most terminals support most things, so only print something
+	 * if a terminal does NOT support the tested capability. */
+
+	/* Clear line */
+	bbs_node_write(node, TERM_RESET_LINE, STRLEN(TERM_RESET_LINE));
+	res = node_get_cursor_pos(node, &row, &col);
+	if (res <= 0) {
+		return res;
+	}
+	/* If clear line was supported, col should now be 1. */
+	if (col == 1) {
+		node->ans |= ANSI_CLEAR_LINE;
+	} else {
+		bbs_verb(6, "Terminal does not support clear line\n");
+	}
+
+	/* Go up 1 line */
+	oldrow = row;
+	bbs_node_write(node, TERM_UP_ONE_LINE, STRLEN(TERM_UP_ONE_LINE));
+	res = node_get_cursor_pos(node, &row, &col);
+	if (res <= 0) {
+		return res;
+	}
+	/* If up 1 line is supported, row should have decreased. */
+	if (row == oldrow - 1) {
+		node->ans |= ANSI_UP_ONE_LINE;
+	} else {
+		bbs_verb(6, "Terminal does not support up one line\n");
+	}
+
+	/* Colors */
+	oldcol = col;
+	oldrow = row;
+	bbs_node_writef(node, COLOR(COLOR_GREEN) COLOR_RESET);
+	res = node_get_cursor_pos(node, &row, &col);
+	if (res <= 0) {
+		return res;
+	}
+	/* If colors supported, the color escape sequences should not occupy "space" on the terminal. */
+	if (row == oldrow && col == oldcol) {
+		node->ans |= ANSI_COLORS;
+	} else {
+		bbs_verb(6, "Terminal does not support colors\n");
+	}
+
+	/* Terminal title */
+	oldcol = col;
+	oldrow = row;
+	bbs_node_writef(node, TERM_TITLE_FMT, "LBBS"); /* We'll set a new title in the intro anyways, so okay to do this momentarily */
+	res = node_get_cursor_pos(node, &row, &col);
+	if (res <= 0) {
+		return res;
+	}
+	/* If setting terminal title is supported, it won't occupy "space" on the terminal */
+	if (row == oldrow && col == oldcol) {
+		node->ans |= ANSI_TERM_TITLE;
+	} else {
+		bbs_verb(6, "Terminal does not support titles\n");
+	}
+
+	/* Unfortunately, we can't really test if TERM_TITLE_RESTORE_FMT is supported.
+	 * There is an escape sequence to get the client's current terminal title,
+	 * but many clients (e.g. PuTTY/KiTTY) are programmed to not return that,
+	 * for security reasons, so not really worth bothering with.
+	 *
+	 * Could also test TERM_ICON_FMT, but that doesn't seem to be used, currently,
+	 * so not worth doing right now (we would also need to overwrite subsequently).
+	 */
+
+	/* Set cursor position */
+	oldcol = col;
+	oldrow = row;
+	bbs_node_writef(node, TERM_CURSOR_POS_SET_FMT, 4, 6);
+	res = node_get_cursor_pos(node, &row, &col);
+	if (res <= 0) {
+		return res;
+	}
+	/* If cursor pos explicitly supported, should be what we set it to */
+	if (row == 4 && col == 6) {
+		node->ans |= ANSI_CURSOR_SET;
+	} else {
+		bbs_verb(6, "Terminal does not support cursor position setting\n");
+	}
+
+	/* Clear screen */
+	bbs_node_write(node, TERM_CLEAR, STRLEN(TERM_CLEAR));
+	res = node_get_cursor_pos(node, &row, &col);
+	if (res <= 0) {
+		return res;
+	}
+	/* If clear screen was supported, now both row and col should be 1. */
+	if (row == 1 && col == 1) {
+		node->ans |= ANSI_CLEAR_SCREEN;
+	} else {
+		bbs_verb(6, "Terminal does not support clear screen\n");
+	}
+
+	/* No need to test support TERM_CLEAR_SCROLLBACK, since only mod_sysop uses that,
+	 * for sysop consoles, not for nodes. */
+
+	return 0;
 }
 
 /*!
  * \brief Read cursor position response
- * \param node
+ * \param node, which should be unbuffered
  * \retval -1 on node disconnect
  * \retval 1 if positive cursor position query response received
  * \retval 0 Non-ANSI terminal (no positive response)
@@ -1337,6 +1551,7 @@ static inline int read_cursor_pos_response(struct bbs_node *node, struct timespe
 {
 	int i;
 	int res;
+	int row, col;
 	int retries = 0;
 
 	if (record_start_time(start)) {
@@ -1347,13 +1562,13 @@ static inline int read_cursor_pos_response(struct bbs_node *node, struct timespe
 	}
 	/* Most modern terminals support ANSI and will response immediately,
 	 * so don't wait too long for that. */
-	res = read_cursor_pos_response_single(node, SEC_MS(3));
+	res = node_read_cursor_pos(node, SEC_MS(3), &row, &col);
 	if (res) {
 		return res;
 	}
 
 	/* Modem connections can take (significantly) longer to handshake
-	 * and negotiate, and it's a good to require a character to be
+	 * and negotiate, and it's a good idea to require a character to be
 	 * pressed on the user's side before sending anything for real,
 	 * or stuff will get missed. */
 	for (i = 0; i < 5; i++) {
@@ -1363,6 +1578,7 @@ static inline int read_cursor_pos_response(struct bbs_node *node, struct timespe
 		if (pres < 0) {
 			return -1;
 		} else if (pres) {
+			bbs_debug(4, "Retrying cursor position query due to timeout (attempt %d)\n", i + 2); /* 1-index it, plus we already tried once prior */
 			/* Reset start time, since we're really starting now */
 			if (record_start_time(start)) {
 				return 0;
@@ -1374,10 +1590,10 @@ static inline int read_cursor_pos_response(struct bbs_node *node, struct timespe
 			/* We got input from the terminal, so that means
 			 * this is after the CONNECT, and we're really synchronized.
 			 * Go ahead and do the test again. */
-			res = read_cursor_pos_response_single(node, SEC_MS(5));
+			res = node_read_cursor_pos(node, SEC_MS(5), &row, &col);
 			if (res || retries) {
 				if (retries) {
-					bbs_warning("Failed to read cursor position query response, poor data connection?\n");
+					bbs_verb(5, "Failed to read cursor position query response, bad client or broken connection?\n");
 				}
 				return res;
 			}
@@ -1479,7 +1695,7 @@ static int init_term_properties_automatic(struct bbs_node *node)
 		 * No, we don't need any fancy black magic to do that.
 		 * Just query the terminal with something that should elicit
 		 * a response from most terminals, and time when we get the response. */
-		"\033[6n", /* Ask for cursor position, don't care what it is, just want to get a response. */
+		TERM_CURSOR_POS_QUERY, /* Ask for cursor position, don't care what it is, just want to get a response. */
 		TERM_CLEAR, COLOR_RESET,
 		BBS_TAGLINE, BBS_MAJOR_VERSION, BBS_MINOR_VERSION, BBS_PATCH_VERSION,
 		node->protname, node->ip);
@@ -1614,6 +1830,10 @@ static int _bbs_intro(struct bbs_node *node)
 		if (res < 0) {
 			return res;
 		}
+	} else {
+		/* Since this is an ANSI terminal, see what ANSI escape sequences are supported by this terminal. */
+		bbs_debug(2, "Autodetecting ANSI escape sequence support\n");
+		res = init_term_query_ansi_escape_support(node);
 	}
 
 	bbs_node_buffer(node); /* Reset */

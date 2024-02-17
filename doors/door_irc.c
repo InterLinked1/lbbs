@@ -393,7 +393,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 			}
 			bbs_node_unbuffer(node);
 			if (!slowterm) {
-				bbs_node_writef(node, "\033[F"); /* Go up one line since we already pressed enter */
+				bbs_node_up_one_line(node); /* Go up one line since we already pressed enter */
 				bbs_node_clear_line(node); /* Overwrite typed message with nicely formatted timestamp + message instead */
 			}
 			chat_msg(c, p, slowterm, channel, node, "%s", buf2); /* buf2 already contains a newline from the user pressing ENTER, so don't add another one */
@@ -698,7 +698,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 			}
 
 			if (!slowterm) {
-				bbs_node_writef(node, "\033[F"); /* Go up one line since we already pressed enter */
+				bbs_node_up_one_line(node); /* Go up one line since we already pressed enter */
 				bbs_node_clear_line(node);
 				bbs_node_writef(node, "%s%s%s<%s>%s %s\n", COLOR(COLOR_BLUE), datestr, COLOR(COLOR_RED), irc_client_nickname(ircl), COLOR_RESET, clientbuf); /* Echo the user's own message */
 			}
