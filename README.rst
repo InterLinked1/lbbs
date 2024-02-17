@@ -411,6 +411,35 @@ What format does the BBS use to store email?
 The BBS mail servers use the maildir++ format. This is similar to what software like Dovecot and Courier use by default,
 although certain implementation details may differ.
 
+Does the BBS provide a sendmail binary, for submitting local mail?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+No, it does not. Consequently, you may see messages like this in your cron logs, for example:
+
+:code:`(CRON) info (No MTA installed, discarding output)`
+
+This is because cron did not detect :code:`/usr/bin/sendmail`, which is used by default to submit outgoing mail from outside of the local MTA.
+
+Installing the actual :code:`sendmail` is overkill and not recommended, since it also includes the Sendmail MTA, which will conflict with LBBS.
+However, you can install a lightweight client like :code:`ssmtp` or :code:`msmtp` (a more actively maintained variant) to do this.
+You just need to ensure you install an SMTP client consistent with the Sendmail interface, so that programs expecting sendmail
+will work properly.
+
+If you install msmtp, be sure to `configure it system-wide <https://marlam.de/msmtp/msmtp.html#A-system-wide-configuration-file>`_.
+
+The below is a good default :code:`/etc/msmtprc` for most systems::
+
+   account default
+   host 127.0.0.1
+   port 25
+   from root@example.com
+   tls off
+   logfile /var/log/msmtp.log
+
+Make sure to substitute the default "from" address with something appropriate for your server.
+
+Then, you can symlink msmtp to sendmail, and things should "just work": :code:`ln -s /usr/bin/msmtp /usr/sbin/sendmail`.
+
 Does the BBS provide any kind of webmail access?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 You can use `wssmail <https://github.com/InterLinked1/wssmail>`_, a fast and efficient webmail client designed with the BBS's mail server in mind (but may be used with any mail server).

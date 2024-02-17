@@ -2673,6 +2673,27 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 				}
 			} else if (!smtp->tflags.dkimsig && STARTS_WITH(s, "DKIM-Signature")) {
 				smtp->tflags.dkimsig = 1;
+			} else if (STARTS_WITH(s, "Bcc:")) {
+				/* This is unexpected, and probably not good news for whatever
+				 * is sending this message.
+				 *
+				 * According to RFC 2822 3.6.3, the sending agent is responsible
+				 * for removing the Bcc: line and just providing it using RCPT.
+				 * So, MTAs should not need to be concerned with Bcc at all,
+				 * since it won't (or shouldn't) appear in the DATA, i.e.
+				 * there should never be "Bcc" headers in messages.
+				 *
+				 * mail.c does handle this in bbs_mail_message, but that's because
+				 * this API is used by things that generate messages and include
+				 * the recipients in the message. It's not unlike the sendmail
+				 * client program which also removes Bcc lines but includes them
+				 * in the RCPT: they need to be processed *somewhere*, but that's
+				 * before it hits core MTA logic, and mail.c is here acting as
+				 * the submitter / user agent.
+				 *
+				 * So, if we see this, then somebody's mail user agent is probably
+				 * not RFC-compliant and is leaking BCC's... probably not desired. */
+				bbs_warning("Message contains a 'Bcc' header? (%s)\n", s);
 			} else if (!len) {
 				indataheaders = 0; /* CR LF on its own indicates end of headers */
 			}
