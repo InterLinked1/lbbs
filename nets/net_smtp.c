@@ -352,7 +352,7 @@ static int smtp_tarpit(struct smtp_session *smtp, int code, const char *message)
 	bbs_debug(4, "%p: Current number of SMTP failures: %d\n", smtp, smtp->failures);
 	if (smtp->failures <= 4) {
 		/* Do not do this with <= 4 or we'll slow down the test suite when it's testing bad behavior (and get test failures) */
-		if (smtp->failures <= 2 || !strcmp(smtp->node->ip, "127.0.0.1")) {
+		if (smtp->failures <= 2 || bbs_is_loopback_ipv4(smtp->node->ip)) {
 			return 0;
 		}
 	}
@@ -470,7 +470,7 @@ static int smtp_ip_mismatch(const char *actual, const char *hostname)
 {
 	char buf[256];
 
-	if (!strcmp(actual, "127.0.0.1")) {
+	if (bbs_is_loopback_ipv4(actual)) {
 		return 0; /* Ignore for localhost */
 	}
 

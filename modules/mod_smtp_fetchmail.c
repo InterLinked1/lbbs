@@ -114,13 +114,12 @@ static int fetch_single_host(const char *hostname, struct stringlist *domains)
 	}
 	SMTP_CLIENT_EXPECT_FINAL(&smtpclient, MIN_MS(5), "220"); /* RFC 5321 4.5.3.2.1 (though for final 220, not any of them) */
 
-	if (!(smtpclient.caps & SMTP_CAPABILITY_ETRN)) {
-		bbs_warning("SMTP server %s does not support ETRN, unable to fetch mail\n", hostname);
-		goto cleanup;
-	}
-
 	res = bbs_smtp_client_handshake(&smtpclient, 0);
 	if (res) {
+		goto cleanup;
+	}
+	if (!(smtpclient.caps & SMTP_CAPABILITY_ETRN)) {
+		bbs_warning("SMTP server %s does not support ETRN, unable to fetch mail\n", hostname);
 		goto cleanup;
 	}
 	if (smtpclient.caps & SMTP_CAPABILITY_STARTTLS) {

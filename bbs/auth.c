@@ -433,7 +433,7 @@ static int login_cache(struct bbs_node *node, const char *username, const char *
 	 */
 
 #ifndef TRUST_LOCALHOST
-	if (!strcmp(node->ip, "127.0.0.1")) {
+	if (bbs_is_loopback_ipv4(node->ip)) {
 		return -1; /* Don't allow cached logins from localhost, this combines attack surfaces */
 	}
 #endif
@@ -474,7 +474,7 @@ static int bbs_node_authenticate(struct bbs_node *node, const char *username, co
 		}
 	}
 
-	if (*password == POSSIBLE_AUTH_TOKEN_CHAR && !strcmp(node->ip, "127.0.0.1") && valid_temp_token(username, password)) { /* Check for possible temp auth token first */
+	if (*password == POSSIBLE_AUTH_TOKEN_CHAR && bbs_is_loopback_ipv4(node->ip) && valid_temp_token(username, password)) { /* Check for possible temp auth token first */
 		node->user = bbs_user_info_by_username(username); /* Get the actual user from the DB */
 		if (!node->user) {
 			bbs_warning("Login cached for nonexistent user %s?\n", username);

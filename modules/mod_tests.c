@@ -517,6 +517,34 @@ cleanup:
 	return -1;
 }
 
+static int test_ipv4_categorization(void)
+{
+	/* Loopback */
+	bbs_test_assert_equals(1, bbs_is_loopback_ipv4("127.0.0.1"));
+	bbs_test_assert_equals(1, bbs_is_loopback_ipv4("127.0.0.2"));
+	bbs_test_assert_equals(1, bbs_is_loopback_ipv4("127.1.0.1"));
+	bbs_test_assert_equals(0, bbs_is_loopback_ipv4("128.0.0.1"));
+	/* Class A */
+	bbs_test_assert_equals('A', bbs_ip_is_private_ipv4("10.0.0.1"));
+	bbs_test_assert_equals('A', bbs_ip_is_private_ipv4("10.10.0.1"));
+	bbs_test_assert_equals(0, bbs_ip_is_private_ipv4("11.0.0.1"));
+	/* Class B */
+	bbs_test_assert_equals('B', bbs_ip_is_private_ipv4("172.16.0.0"));
+	bbs_test_assert_equals('B', bbs_ip_is_private_ipv4("172.31.0.0"));
+	bbs_test_assert_equals(0, bbs_ip_is_private_ipv4("172.15.0.0"));
+	/* Class C */
+	bbs_test_assert_equals('C', bbs_ip_is_private_ipv4("192.168.0.1"));
+	bbs_test_assert_equals('C', bbs_ip_is_private_ipv4("192.168.1.254"));
+	bbs_test_assert_equals(0, bbs_ip_is_private_ipv4("192.169.1.1"));
+	/* Misc */
+	bbs_test_assert_equals(1, bbs_ip_is_public_ipv4("1.1.1.1"));
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
 static int test_url_parsing(void)
 {
 	int res = -1;
@@ -666,6 +694,7 @@ static struct bbs_unit_test tests[] =
 	{ "SASL Decoding", test_sasl_decode },
 	{ "IPv4 CIDR Range Matching", test_cidr_ipv4 },
 	{ "IPv4 Address Detection", test_ipv4_detection },
+	{ "IPv4 Address Categorization", test_ipv4_categorization },
 	{ "URL Parsing", test_url_parsing },
 	{ "URL Decoding", test_url_decoding },
 	{ "Quoted Printable Decode", test_quoted_printable_decode },

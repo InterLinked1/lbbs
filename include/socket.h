@@ -234,6 +234,37 @@ int bbs_save_remote_ip(struct sockaddr_in *sinaddr, struct bbs_node *node);
 int bbs_hostname_is_ipv4(const char *hostname);
 
 /*!
+ * \brief Whether an IP address is a loopback address
+ * \param ip String representation of IPv4 address
+ * \retval 0 on error or if not a loopback IP address
+ * \retval nonzero if loopback address
+ */
+int bbs_is_loopback_ipv4(const char *ip);
+
+/*!
+ * \brief Whether an IP address is a private IPv4 address (in an RFC 1918 range) or a loopback address
+ * \param ip String representation of IPv4 address
+ * \retval 0 on error or if not a nonpublic IP address
+ * \retval nonzero if private IPv4 address or loopback address
+ */
+int bbs_ip_is_nonpublic_ipv4(const char *ip);
+
+/*!
+ * \brief Whether an IP address is a public IPv4 address (not a private or loopback IPv4 address)
+ */
+#define bbs_ip_is_public_ipv4(ip) (!bbs_ip_is_nonpublic_ipv4(ip))
+
+/*!
+ * \brief Whether an IP address is a private IPv4 address (in an RFC 1918 range)
+ * \param ip String representation of IPv4 address
+ * \retval 0 on error or if not a private IP address
+ * \return 'A' if a Class A private address
+ * \return 'B' if a Class B private address
+ * \return 'C' if a Class C private address
+ */
+int bbs_ip_is_private_ipv4(const char *ip);
+
+/*!
  * \brief Check if an IP address is within a specified CIDR range
  * \param ip IP address to check, e.g. 192.168.1.1
  * \param cidr CIDR range, e.g. 192.168.1.1/24

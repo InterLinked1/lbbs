@@ -260,6 +260,16 @@ static int status_size_fetch_incremental(struct imap_client *client, const char 
 	} else if (expunged < 0) {
 		bbs_warning("%d messages expunged? (MESSAGES %d -> %d, UIDNEXT %d -> %d)\n", expunged, oldmessages, newmessages, oldnext, newnext);
 		return -1;
+	} else if (!added) {
+		/* Both expunged and added are 0.
+		 * This case happens when the STATUS string has changed but the mailbox contents have not,
+		 * e.g. a message had recent messages but was opened, so the recent count has changed,
+		 * but the actual messages in the mailbox have not.
+		 * The size is obviously exactly the same as the cached value from before.
+		 * Bail now to avoid making an unnecessary query for 0 message sizes. */
+		bbs_debug(7, "Mailbox '%s' has not changed in any appreciable way since cached size was last calculated, reusing (MESSAGES %d -> %d, UIDNEXT %d -> %d)\n",
+			remotename, oldmessages, newmessages, oldnext, newnext);
+		return 0;
 	}
 
 	/* We can do an incremental fetch! */
@@ -399,6 +409,7 @@ static int append_size_item(struct imap_client *client, const char *remotename, 
 		if (force || status_size_fetch_incremental(client, remotename, tag, &mb_size, buf, remote_status_resp)) { /* Add to what we already had */
 			/* If not, resort to FETCH 1:* fallback as last resort */
 			mb_size = 0;
+			bbs_debug(5, "Fetching sizes of all messages in %s\n", remotename);
 			if (status_size_fetch_all(client, tag, &mb_size)) {
 				return -1;
 			}

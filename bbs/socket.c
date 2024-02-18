@@ -1035,7 +1035,7 @@ int bbs_get_local_ip(char *buf, size_t len)
 			case AF_INET:
 				sinaddr = ((struct sockaddr_in *) iface->ifa_addr);
 				bbs_get_remote_ip(sinaddr, buf, len);
-				if (!strcmp(buf, "127.0.0.1")) {
+				if (bbs_is_loopback_ipv4(buf)) {
 					break; /* Skip the loopback interface, we want the (a) real one */
 				}
 				bbs_debug(5, "Local IP: %s\n", buf);
@@ -1114,13 +1114,77 @@ int bbs_hostname_is_ipv4(const char *hostname)
 	return 1;
 }
 
+static int ipv4_is_private_ipv4(uint32_t a)
+{
+	/* RFC 1918 private address ranges: */
+
+	/* Class A: 10.0.0.0/8 */
+	if (a >> 24 == 0xA) {
+		return 'A';
+	}
+
+	/* Class B: 172.16.0.0/12 */
+	if (a >> 20 == 0xAC1) {
+		return 'B';
+	}
+
+	/* Class C: 192.168.0.0/16 */
+	if (a >> 16 == 0xC0A8) {
+		return 'C';
+	}
+	return 0;
+}
+
+int bbs_is_loopback_ipv4(const char *ip)
+{
+	struct in_addr addr;
+	uint32_t a;
+
+	if (!inet_aton(ip, &addr)) {
+		bbs_error("IP address invalid: %s\n", ip);
+		return 0;
+	}
+
+	a = htonl(addr.s_addr & 0xFFFFFFFF);
+	/* Loopback range is 127.0.0.1/8 */
+	return a >> 24 == 0x7F;
+}
+
+int bbs_ip_is_nonpublic_ipv4(const char *ip)
+{
+	struct in_addr addr;
+	uint32_t a;
+
+	if (!inet_aton(ip, &addr)) {
+		bbs_error("IP address invalid: %s\n", ip);
+		return 0;
+	}
+
+	a = htonl(addr.s_addr & 0xFFFFFFFF);
+	return (a >> 24 == 0x7F) || ipv4_is_private_ipv4(a);
+}
+
+int bbs_ip_is_private_ipv4(const char *ip)
+{
+	struct in_addr addr;
+	uint32_t a;
+
+	if (!inet_aton(ip, &addr)) {
+		bbs_error("IP address invalid: %s\n", ip);
+		return 0;
+	}
+
+	a = htonl(addr.s_addr & 0xFFFFFFFF);
+	return ipv4_is_private_ipv4(a);
+}
+
 int bbs_cidr_match_ipv4(const char *ip, const char *cidr)
 {
 	char cidr_dup[64];
 	char *tmp;
 	int netbits;
 	struct in_addr addr, netmask;
-	socklen_t a, b;
+	uint32_t a, b;
 
 	safe_strncpy(cidr_dup, cidr, sizeof(cidr_dup));
 	tmp = strchr(cidr_dup, '/');

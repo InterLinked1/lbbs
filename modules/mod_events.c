@@ -464,12 +464,12 @@ static int event_cb(struct bbs_event *event)
 				bbs_error("Missing IP address\n");
 				return -1;
 			}
-			if (!strcmp(event->ipaddr, "127.0.0.1")) {
+			if (bbs_is_loopback_ipv4(event->ipaddr)) {
 				return 1; /* Ignore localhost */
 			}
 #ifdef IGNORE_LOCAL_NETS
-			if (STARTS_WITH(event->ipaddr, "10.") || STARTS_WITH(event->ipaddr, "192.168")) {
-				return 1; /* Ignore private CIDR ranges (at least Class A and C, since Class B is 172.16-172.31) */
+			if (bbs_ip_is_private_ipv4(event->ipaddr)) {
+				return 1; /* Ignore private CIDR ranges */
 			}
 #endif
 			if (ip_whitelisted(event->ipaddr)) {

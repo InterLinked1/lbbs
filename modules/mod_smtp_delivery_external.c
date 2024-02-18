@@ -453,7 +453,7 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 		snprintf(buf, len, "STARTTLS not supported");
 		res = 1;
 		goto cleanup;
-	} else {
+	} else if (!bbs_hostname_is_ipv4(hostname) || bbs_ip_is_public_ipv4(hostname)) { /* Don't emit this warning for non-public IPs */
 		bbs_warning("SMTP server %s does not support STARTTLS. This message will not be transmitted securely!\n", hostname);
 	}
 
