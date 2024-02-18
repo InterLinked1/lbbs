@@ -150,6 +150,9 @@ int smtp_should_validate_spf(struct smtp_session *smtp);
 /*! \brief Whether DKIM validation should be performed */
 int smtp_should_validate_dkim(struct smtp_session *smtp);
 
+/*! \brief Whether DMARC verification should be performed */
+int smtp_should_verify_dmarc(struct smtp_session *smtp);
+
 /*! \brief Whether this is a message submission */
 int smtp_is_message_submission(struct smtp_session *smtp);
 

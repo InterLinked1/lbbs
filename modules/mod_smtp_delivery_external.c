@@ -100,8 +100,8 @@ static int add_static_relay(const char *hostname, const char *route)
 	}
 	strcpy(s->data, hostname); /* Safe */
 	s->hostname = s->data;
-	stringlist_push_list(&s->routes, route);
 	stringlist_init(&s->routes);
+	stringlist_push_list(&s->routes, route);
 	RWLIST_INSERT_TAIL(&static_relays, s, entry);
 	return 0;
 }
@@ -905,6 +905,7 @@ static int try_static_delivery(struct smtp_session *smtp, struct smtp_tx_data *t
 	const char *route;
 	struct stringitem *i = NULL;
 	int res = -1; /* Make condition true to start */
+
 	/* Static routes override doing an MX lookup for this domain.
 	 * We have one or more hostnames (with an optionally specified port) to try. */
 	while (res < 0 && (route = stringlist_next(static_routes, &i))) {
@@ -1057,7 +1058,15 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 	static_routes = get_static_routes(mqf->domain);
 	bbs_debug(2, "Processing message %s (%s -> %s), via %s for '%s'\n", mqf->fullname, mqf->realfrom, mqf->realto, static_routes ? "static route(s)" : "MX lookup", mqf->domain);
 	if (static_routes) {
-		res = try_static_delivery(NULL, &tx, static_routes, mqf->realfrom, mqf->realto, fileno(mqf->fp), (off_t) mqf->metalen, mqf->size - mqf->metalen, buf, sizeof(buf));
+		if (stringlist_is_empty(static_routes)) {
+			/* In theory, should never happen */
+			bbs_error("No static routes available for delivery to %s?\n", mqf->domain);
+			fclose(mqf->fp);
+			mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
+			return 0;
+		} else {
+			res = try_static_delivery(NULL, &tx, static_routes, mqf->realfrom, mqf->realto, fileno(mqf->fp), (off_t) mqf->metalen, mqf->size - mqf->metalen, buf, sizeof(buf));
+		}
 	} else {
 		struct stringlist mxservers;
 		stringlist_init(&mxservers);
@@ -1431,6 +1440,9 @@ static int on_queue_file_cli_mailq(const char *dir_name, const char *filename, v
 	if (mailq_file_load(&mqf_stack, dir_name, filename)) {
 		return 0;
 	}
+
+	/* Count messages in queue */
+	qrun->total++;
 
 	if (skip_qfile(qrun, mqf)) {
 		fclose(mqf->fp);

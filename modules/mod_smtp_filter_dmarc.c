@@ -157,7 +157,7 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 	char mctx_jobid[48];
 	time_t now;
 
-	if (smtp_is_exempt_relay(f->smtp)) {
+	if (smtp_is_exempt_relay(f->smtp) || !smtp_should_verify_dmarc(f->smtp)) {
 		return 0;
 	}
 

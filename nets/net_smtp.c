@@ -494,13 +494,13 @@ static int smtp_ip_mismatch(const char *actual, const char *hostname)
 	return 0;
 }
 
-static int is_trusted_relay(const char *hostname)
+static int is_trusted_relay(const char *ip)
 {
 	const char *s;
 	struct stringitem *i = NULL;
 
 	while ((s = stringlist_next(&trusted_relays, &i))) {
-		if (bbs_ip_match_ipv4(hostname, s)) {
+		if (bbs_ip_match_ipv4(ip, s)) {
 			return 1;
 		}
 	}
@@ -536,7 +536,7 @@ static inline int is_benign_ip_mismatch(const char *helohost, const char *srcip)
 		return 0;
 	}
 
-	return smtp_relay_authorized(srcip, helohost);
+	return smtp_relay_authorized(srcip, helohost) || is_trusted_relay(srcip);
 }
 
 static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
@@ -1250,6 +1250,11 @@ int smtp_should_validate_dkim(struct smtp_session *smtp)
 	return smtp->tflags.dkimsig && !smtp->tflags.relay && (!smtp->node || !is_trusted_relay(smtp->node->ip));
 }
 
+int smtp_should_verify_dmarc(struct smtp_session *smtp)
+{
+	return !is_trusted_relay(smtp->node->ip);
+}
+
 int smtp_is_message_submission(struct smtp_session *smtp)
 {
 	return smtp->msa;
@@ -1611,7 +1616,7 @@ static int any_failures(struct smtp_delivery_outcome **f, int n)
 {
 	int i;
 	for (i = 0; i < n; i++) {
-		if (f[i]->action != DELIVERY_DELIVERED) {
+		if (f[i]->action == DELIVERY_FAILED) {
 			return 1;
 		}
 	}
@@ -1683,6 +1688,19 @@ int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, in
 			"be delivered to one or more recipients. It's attached below.\r\n\r\n");
 		fprintf(fp, "For further assistance, please send mail to postmaster.\r\n\r\n");
 		fprintf(fp, "If you do so, please include this problem report. You can delete your own text from the attached returned message.\r\n\r\n");
+	} else if (n == 1) {
+		switch (f[0]->action) {
+			case DELIVERY_DELAYED:
+				fprintf(fp, "Your message has been delayed. Delivery may succeed in the future, and we will send a final nondelivery notice if we are unable to deliver the message successfully.\r\n\r\n");
+				break;
+			case DELIVERY_DELIVERED:
+				fprintf(fp, "Your message has been delivered. A copy has been included for your reference.\r\n\r\n");
+				break;
+			case DELIVERY_RELAYED:
+			case DELIVERY_EXPANDED:
+				break;
+			case DELIVERY_FAILED: __builtin_unreachable(); /* any_failures() would be true for this case */
+		}
 	}
 	fprintf(fp, "Please, do not reply to this message.\r\n\r\n\r\n");
 

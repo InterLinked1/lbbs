@@ -3082,6 +3082,14 @@ static int idle_start(struct ws_session *ws, struct imap_client *client)
 		int res;
 		bbs_debug(5, "Starting IDLE...\n");
 		webmail_log(7, client, "=> IDLE START\n");
+		/* I've seen repeated crashes at idle.c:80 in mailimap_idle in libetpan,
+		 * which suggests a NULL dereference, so check that here.
+		 * If the assert fails, libetpan would have crashed anyways. */
+		if (!client->mailbox) {
+			/* The assertion below will likely trigger as well, if this happens */
+			bbs_error("Attempt to IDLE without an active mailbox?\n");
+		}
+		bbs_assert_exists(client->imap->imap_selection_info);
 		res = mailimap_idle(client->imap);
 		if (res != MAILIMAP_NO_ERROR) {
 			bbs_warning("Failed to start IDLE: %s\n", maildriver_strerror(res));
@@ -3238,12 +3246,10 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 			return -1;
 		}
 		bbs_debug(5, "Not currently idling, ignoring...\n");
-		idle_stop(ws, client);
-		return idle_start(ws, client);
+		return idle_stop(ws, client) || idle_start(ws, client);
 	} else if (strlen_zero(client->mailbox)) {
 		bbs_error("Client mailbox not set?\n");
-		idle_stop(ws, client);
-		return idle_start(ws, client);
+		return idle_stop(ws, client) || idle_start(ws, client);
 	}
 
 	/* IDLE activity! */
@@ -3280,6 +3286,7 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	if (res) {
 		if (idle_stop(ws, client)) {
 			bbs_warning("Failed to stop IDLE, terminating webmail session\n");
+			return -1;
 		}
 	}
 

@@ -189,7 +189,7 @@ static int __parse_status_item(const char *full, const char *keyword, size_t key
 	return 0;
 }
 
-static int status_size_fetch_incremental(struct imap_client *client, const char *tag, size_t *mb_size, const char *old, const char *new)
+static int status_size_fetch_incremental(struct imap_client *client, const char *remotename, const char *tag, size_t *mb_size, const char *old, const char *new)
 {
 	ssize_t res;
 	size_t taglen;
@@ -263,7 +263,7 @@ static int status_size_fetch_incremental(struct imap_client *client, const char 
 	}
 
 	/* We can do an incremental fetch! */
-	bbs_debug(7, "No messages expunged since last time, %d added (MESSAGES %d -> %d, UIDNEXT %d -> %d)\n", added, oldmessages, newmessages, oldnext, newnext);
+	bbs_debug(7, "No messages expunged in %s since last time, %d added (MESSAGES %d -> %d, UIDNEXT %d -> %d)\n", remotename, added, oldmessages, newmessages, oldnext, newnext);
 
 	/* imap->tag gets reused multiple times for different commands here...
 	 * something we SHOULD not do but servers are supposed to (MUST) tolerate. */
@@ -279,7 +279,7 @@ static int status_size_fetch_incremental(struct imap_client *client, const char 
 			return -1;
 		}
 		if (!strncmp(buf, tag, taglen)) {
-			bbs_debug(3, "End of FETCH response: %s\n", buf);
+			bbs_debug(3, "End of FETCH response for '%s': %s\n", remotename, buf);
 			break;
 		}
 		/* Should get a response like this: * 48 FETCH (RFC822.SIZE 548) */
@@ -303,7 +303,7 @@ static int status_size_fetch_incremental(struct imap_client *client, const char 
 	}
 
 	if (received != added) {
-		bbs_warning("Expected to get %d message sizes, but got %d? (=> %lu B)\n", added, received, *mb_size);
+		bbs_warning("Expected to get %d message sizes for '%s', but got %d? (=> %lu B)\n", added, remotename, received, *mb_size);
 		return -1;
 	}
 
@@ -396,7 +396,7 @@ static int append_size_item(struct imap_client *client, const char *remotename, 
 		 */
 
 		/* Can we calculate the size incrementally? */
-		if (force || status_size_fetch_incremental(client, tag, &mb_size, buf, remote_status_resp)) { /* Add to what we already had */
+		if (force || status_size_fetch_incremental(client, remotename, tag, &mb_size, buf, remote_status_resp)) { /* Add to what we already had */
 			/* If not, resort to FETCH 1:* fallback as last resort */
 			mb_size = 0;
 			if (status_size_fetch_all(client, tag, &mb_size)) {
