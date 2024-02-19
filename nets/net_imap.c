@@ -2093,6 +2093,7 @@ static int handle_move(struct imap_session *imap, const char *sequences, const c
 	char newboxdir[256];
 	char srcfile[516];
 	int files, fno = 0;
+	unsigned int expunge_seqno = 0;
 	int seqno = 0;
 	unsigned int *olduids = NULL, *newuids = NULL, *expunged = NULL, *expungedseqs = NULL;
 	int lengths = 0, allocsizes = 0;
@@ -2129,7 +2130,9 @@ static int handle_move(struct imap_session *imap, const char *sequences, const c
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			goto cleanup;
 		}
-		msguid = imap_msg_in_range(imap, ++seqno, entry->d_name, sequences, usinguid, &error);
+		++seqno;
+		++expunge_seqno;
+		msguid = imap_msg_in_range(imap, seqno, entry->d_name, sequences, usinguid, &error);
 		if (!msguid) {
 			goto cleanup;
 		}
@@ -2147,8 +2150,22 @@ static int handle_move(struct imap_session *imap, const char *sequences, const c
 		 * RFC 6851 3.3
 		 * We still store UIDs so we can call maildir_indicate_expunged with a batch of all UIDs, for efficiency.
 		 */
-		uintlist_append2(&expunged, &expungedseqs, &exp_lengths, &exp_allocsizes, msguid, (unsigned int) seqno); /* store UID and seqno */
-		
+		uintlist_append2(&expunged, &expungedseqs, &exp_lengths, &exp_allocsizes, msguid, expunge_seqno); /* store UID and seqno */
+
+		/* When a mail user agent (MUA) deletes messages from a folder by issuing a MOVE,
+		 * untagged EXPUNGEs will go out to inform clients of this.
+		 * However, since EXPUNGE decrements the sequence number of all messages in a mailbox,
+		 * we need to decrement the sequence number used for the EXPUNGE reply every time we move a message.
+		 * We do the same thing in handle_expunge.
+		 *
+		 * Failing to do so will manifest itself as UI weirdness where clients will hide certain messages
+		 * that were not expunged after such an operation, only to show them again later when the folder
+		 * is navigated to again.
+		 *
+		 * We use a separate seqno variable for this, since we want to use the original seqno for checking
+		 * if it's in range or not, but include the updated one for the EXPUNGE response. */
+		expunge_seqno--;
+
 cleanup:
 		free(entry);
 	}
