@@ -2854,10 +2854,13 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {
 				/* Timeout occured. */
-				/* XXX This also happens if a noncompliant SMTP client sends us more than 1,000 bytes in a single line
-				 * and exhausts our buffer. In this case, bbs_readline returns -1.
-				 * We should probably send a more appropriate error in this event. */
-				smtp_reply(smtp, 451, 4.4.2, "Timeout - closing connection"); /* XXX Should do only if poll returns 0, not if read returns 0 */
+				smtp_reply(smtp, 451, 4.4.2, "Timeout - closing connection");
+			} else if (res == -2) {
+				/* bbs_readline returns -3 on buffer exhaustion (which we've incremented by 1).
+				 * Since our connection state is messed up at this point, the only sane thing
+				 * we can do is print an error and disconnect. */
+				smtp_reply_nostatus(smtp, 550, "Maximum line length exceeded");
+				smtp->failures += 3; /* Semantically, this is a bad client; however, we're just going to disconnect now anyways */
 			}
 			break;
 		}

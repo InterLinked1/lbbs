@@ -1672,6 +1672,11 @@ ssize_t bbs_node_poll_read(struct bbs_node *node, int ms, char *buf, size_t len)
 		return res;
 	}
 	res = bbs_node_read(node, buf, len);
+	if (res <= 0) {
+		/* If read returns 0, return -1, since the connection is dead anyways,
+		 * to reserve a return value of 0 for poll timeout. */
+		return -1;
+	}
 	return res;
 }
 
@@ -1679,9 +1684,14 @@ ssize_t bbs_poll_read(int fd, int ms, char *buf, size_t len)
 {
 	ssize_t res = bbs_poll(fd, ms);
 	if (res <= 0) {
-		return res;
+		return res - 1;
 	}
 	res = read(fd, buf, len);
+	if (res <= 0) {
+		/* If read returns 0, return -1, since the connection is dead anyways,
+		 * to reserve a return value of 0 for poll timeout. */
+		return -1;
+	}
 	return res;
 }
 

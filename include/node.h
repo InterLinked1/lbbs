@@ -426,7 +426,7 @@ ssize_t bbs_node_read(struct bbs_node *node, char *buf, size_t len);
  * \param ms for poll
  * \param buf Buffer for data
  * \param len Size of buf
- * \retval Same as poll() and read()
+ * \retval Same as poll() and read(), except -1 is returned if read returns 0
  */
 ssize_t bbs_node_poll_read(struct bbs_node *node, int ms, char *buf, size_t len);
 
@@ -436,7 +436,7 @@ ssize_t bbs_node_poll_read(struct bbs_node *node, int ms, char *buf, size_t len)
  * \param ms for poll
  * \param buf Buffer for data
  * \param len Size of buf
- * \retval Same as poll() and read()
+ * \retval Same as poll() and read(), except -1 is returned if read returns 0
  */
 ssize_t bbs_poll_read(int fd, int ms, char *buf, size_t len);
 
