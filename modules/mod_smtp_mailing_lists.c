@@ -104,6 +104,17 @@ static struct mailing_list *find_list(const char *user, const char *domain)
 	return l;
 }
 
+static int list_name_exists(const char *user)
+{
+	int exists;
+
+	RWLIST_RDLOCK(&lists);
+	exists = find_list(user, NULL) ? 1 : 0;
+	RWLIST_UNLOCK(&lists);
+
+	return exists;
+}
+
 /*! \brief Is this a message to a mailing list? */
 static int exists(struct smtp_session *smtp, struct smtp_response *resp, const char *address, const char *user, const char *domain, int fromlocal, int tolocal)
 {
@@ -758,6 +769,7 @@ static int load_module(void)
 	if (load_config()) {
 		return -1;
 	}
+	bbs_username_reserved_callback_register(list_name_exists);
 	bbs_cli_register_multiple(cli_commands_smtp_mailing_lists);
 	return smtp_register_delivery_handler(&exploder, 5); /* Takes priority over individual user mailboxes */
 }
@@ -765,6 +777,7 @@ static int load_module(void)
 static int unload_module(void)
 {
 	int res = smtp_unregister_delivery_agent(&exploder);
+	bbs_username_reserved_callback_unregister(list_name_exists);
 	bbs_cli_unregister_multiple(cli_commands_smtp_mailing_lists);
 	RWLIST_WRLOCK_REMOVE_ALL(&lists, entry, list_free);
 	return res;

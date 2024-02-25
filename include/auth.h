@@ -17,6 +17,30 @@
 struct bbs_node;
 struct bbs_user;
 
+/*!
+ * \brief Register a username reserved callback
+ * \param regprovider Callback function that returns 1 if the given username is reserved and 0 otherwise
+ * \retval 0 on success, -1 on failure
+ */
+#define bbs_username_reserved_callback_register(exists) __bbs_username_reserved_callback_register(exists, BBS_MODULE_SELF)
+
+int __bbs_username_reserved_callback_register(int (*exists)(const char *username), void *mod);
+
+/*!
+ * \brief Unregister a previously registered username reserved callback
+ * \param regprovider Callback function that returns 1 if the given username is reserved and 0 otherwise
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_username_reserved_callback_unregister(int (*exists)(const char *username));
+
+/*!
+ * \brief Whether a username is reserved (unavailable for user registration)
+ * \param username Username to check
+ * \retval 1 username reserved (either explicitly in auth.conf, or by a module)
+ * \retval 0 username not reserved
+ */
+int bbs_username_reserved(const char *username);
+
 #define AUTH_PROVIDER_PARAMS struct bbs_user *user, const char *username, const char *password
 
 /*!
@@ -181,5 +205,7 @@ int bbs_unregister_auth_provider(int (*provider)(AUTH_PROVIDER_PARAMS));
 
 /*! \brief Get number of auth providers currently registered */
 int bbs_num_auth_providers(void);
+
+int bbs_cleanup_auth(void);
 
 int bbs_init_auth(void);

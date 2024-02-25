@@ -43,7 +43,6 @@
 
 static int register_phone = 1, register_address = 1, register_zip = 1, register_dob = 1, register_gender = 1, register_howheard = 1;
 static int verifyregisteremail = 0;
-static char *reserved_usernames = NULL;
 
 /*! \brief Common function to handle user authentication and info retrieval */
 #pragma GCC diagnostic ignored "-Wstack-protector"
@@ -326,21 +325,6 @@ cleanup:
 	return res;
 }
 
-/*! \note Sysop can always manually adjust the database if needed to override */
-#define USERNAME_RESERVED(u) (!strcasecmp(u, "root") || !strcasecmp(u, "admin") || !strcasecmp(u, "sysop") || !strcasecmp(u, "bbs") || !strcasecmp(u, "ChanServ") || !strcasecmp(u, "NickServ") || !strcasecmp(u, "MessageServ") || !strcasecmp(u, "services") || !strcasecmp(u, "postmaster") || !strcasecmp(u, "newsmaster") || !strcasecmp(u, "anonymous") || !strcasecmp(u, "noreply"))
-
-static int username_reserved(const char *username)
-{
-	char teststr[84];
-
-	if (!reserved_usernames) {
-		return 0;
-	}
-
-	snprintf(teststr, sizeof(teststr), ",%s,", username);
-	return strstr(reserved_usernames, teststr) ? 1 : 0;
-}
-
 static int user_register(struct bbs_node *node)
 {
 	/* bcrypt caps password lengths at 72, so that's where that came from */
@@ -395,10 +379,8 @@ static int user_register(struct bbs_node *node)
 				NEG_RETURN(bbs_node_writef(node, "\n%sUsername contains disallowed characters%s\n", COLOR(COLOR_RED), COLOR_RESET));
 			} else if (strlen(username) > 15) {
 				NEG_RETURN(bbs_node_writef(node, "\n%sUsername is too long%s\n", COLOR(COLOR_RED), COLOR_RESET));
-			} else if (USERNAME_RESERVED(username)) {
-				NEG_RETURN(bbs_node_writef(node, "\n%sThat username is not allowed%s\n", COLOR(COLOR_RED), COLOR_RESET));
-			} else if (username_reserved(username)) {
-				NEG_RETURN(bbs_node_writef(node, "\n%sThat username is not allowed%s\n", COLOR(COLOR_RED), COLOR_RESET));
+			} else if (bbs_username_reserved(username)) {
+				NEG_RETURN(bbs_node_writef(node, "\n%sThat username is reserved and not allowed%s\n", COLOR(COLOR_RED), COLOR_RESET));
 			} else {
 				break;
 			}
@@ -534,6 +516,15 @@ confirm:
 		/* Allow registration to continue. */
 	}
 
+	/* Check once more, right before we create it.
+	 * Note we are only checking if the username is reserved, since the user database cannot tell us that.
+	 * If the username already exists, the INSERT user request will fail. */
+	if (bbs_username_reserved(username)) {
+		NEG_RETURN(bbs_node_writef(node, "\n%sSorry, the requested username is reserved and not allowed%s\n", COLOR(COLOR_RED), COLOR_RESET));
+		NEG_RETURN(bbs_node_wait_key(node, SEC_MS(20)));
+		return 1;
+	}
+
 	/* Actually create the user */
 	res = make_user(username, password, fullname, email, NULL_IFEMPTY(phone), NULL_IFEMPTY(address), city, state, NULL_IFEMPTY(zip), NULL_IFEMPTY(dob), gender);
 
@@ -561,7 +552,6 @@ confirm:
 
 static int load_config(void)
 {
-	const char *varval;
 	struct bbs_config *cfg = bbs_config_load("mod_auth_mysql.conf", 0);
 
 	if (!cfg) {
@@ -576,22 +566,6 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "registration", "howheard", &register_howheard);
 	bbs_config_val_set_true(cfg, "registration", "verifyemail", &verifyregisteremail);
 
-	varval = bbs_config_val(cfg, "registration", "reservedusernames");
-	if (!strlen_zero(varval)) {
-		size_t len = strlen(varval); /* Don't use strdup, since we need to surround in ,, for easy (and accurate, not confounded by prefixes) searching */
-		len += 3; /* , before and after + NUL */
-		free_if(reserved_usernames); /* Should always be NULL at this point, but if reloads during runtime were permitted in the future, might not be. */
-		reserved_usernames = malloc(len); /* Don't know in advance how many usernames the sysop wants to reserve, this could be arbitrarily long. */
-		if (ALLOC_FAILURE(reserved_usernames)) {
-			bbs_config_free(cfg);
-			return -1;
-		}
-		*reserved_usernames = ',';
-		strcpy(reserved_usernames + 1, varval); /* Safe */
-		*(reserved_usernames + len - 2) = ','; /* Do after do the NUL from strcpy doesn't clobber this */
-		*(reserved_usernames + len - 1) = '\0';
-	}
-
 	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
 	return 0;
 }
@@ -603,7 +577,6 @@ static int unload_module(void)
 	bbs_unregister_password_reset_handler(change_password);
 	bbs_unregister_user_info_handler(get_user_info);
 	bbs_unregister_user_list_handler(get_users);
-	free_if(reserved_usernames);
 	return 0;
 }
 

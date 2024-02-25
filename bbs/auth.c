@@ -25,6 +25,7 @@
 #include <openssl/sha.h>
 
 #include "include/linkedlists.h"
+#include "include/stringlist.h"
 #include "include/auth.h"
 #include "include/node.h" /* use bbs_node_logged_in */
 #include "include/user.h"
@@ -34,8 +35,10 @@
 #include "include/event.h"
 #include "include/crypt.h"
 #include "include/startup.h"
+#include "include/config.h"
 #include "include/cli.h"
 #include "include/callback.h"
+#include "include/reload.h"
 
 /*! \note Even though multiple auth providers are technically allowed, in general only 1 should be registered.
  * The original thinking behind allowing multiple is to allow alternates for authentication
@@ -66,6 +69,69 @@ BBS_SINGULAR_CALLBACK_DECLARE(userinfohandler, struct bbs_user *, const char *us
 
 /* Only one user list handler */
 BBS_SINGULAR_CALLBACK_DECLARE(userlisthandler, struct bbs_user**, void);
+
+static struct stringlist reserved_usernames;
+
+struct reserved_username_searcher {
+	int (*exists)(const char *username);
+	void *mod;
+	RWLIST_ENTRY(reserved_username_searcher) entry;
+};
+
+static RWLIST_HEAD_STATIC(reserved_username_callbacks, reserved_username_searcher);
+
+int __bbs_username_reserved_callback_register(int (*exists)(const char *username), void *mod)
+{
+	struct reserved_username_searcher *r;
+
+	RWLIST_WRLOCK(&reserved_username_callbacks);
+	r = calloc(1, sizeof(*r));
+	if (ALLOC_FAILURE(r)) {
+		RWLIST_UNLOCK(&reserved_username_callbacks);
+		return -1;
+	}
+	r->exists = exists;
+	r->mod = mod;
+	RWLIST_INSERT_HEAD(&reserved_username_callbacks, r, entry);
+	RWLIST_UNLOCK(&reserved_username_callbacks);
+
+	return 0;
+}
+
+int bbs_username_reserved_callback_unregister(int (*exists)(const char *username))
+{
+	struct reserved_username_searcher *r = RWLIST_WRLOCK_REMOVE_BY_FIELD(&reserved_username_callbacks, exists, exists, entry);
+	if (!r) {
+		return -1;
+	}
+	free(r);
+	return 0;
+}
+
+int bbs_username_reserved(const char *username)
+{
+	struct reserved_username_searcher *r;
+	int exists = 0;
+
+	if (stringlist_case_contains(&reserved_usernames, username)) {
+		/* Explicitly reserved */
+		return 1;
+	}
+
+	RWLIST_WRLOCK(&reserved_username_callbacks);
+	RWLIST_TRAVERSE(&reserved_username_callbacks, r, entry) {
+		bbs_module_ref(r->mod, 2);
+		exists |= r->exists(username);
+		bbs_module_unref(r->mod, 2);
+		if (exists) {
+			/* Some module has reserved it */
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&reserved_username_callbacks);
+
+	return exists;
+}
 
 int __bbs_register_user_registration_provider(int (*regprovider)(struct bbs_node *node), void *mod)
 {
@@ -774,8 +840,57 @@ static int check_authproviders(void)
 	return 0;
 }
 
+static int load_config(void)
+{
+	struct bbs_config_section *section = NULL;
+	struct bbs_keyval *keyval = NULL;
+	struct bbs_config *cfg = bbs_config_load("auth.conf", 1);
+
+	if (!cfg) {
+		bbs_warning("No usernames are reserved, leaving BBS vulnerable to name hijacking\n");
+		return 0;
+	}
+
+	while ((section = bbs_config_walk(cfg, section))) {
+		if (!strcmp(bbs_config_section_name(section), "reserved_usernames")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				const char *key = bbs_keyval_key(keyval);
+				stringlist_push(&reserved_usernames, key);
+			}
+		}
+	}
+	if (stringlist_is_empty(&reserved_usernames)) {
+		bbs_warning("No usernames are reserved, leaving BBS vulnerable to name hijacking\n");
+	}
+	return 0;
+}
+
+static int auth_reload(int fd)
+{
+	RWLIST_WRLOCK(&reserved_usernames);
+	stringlist_empty(&reserved_usernames);
+	load_config();
+	RWLIST_UNLOCK(&reserved_usernames);
+
+	bbs_dprintf(fd, "Reloaded auth settings\n");
+	return 0;
+}
+
+int bbs_cleanup_auth(void)
+{
+	stringlist_empty_destroy(&reserved_usernames);
+	return 0;
+}
+
 int bbs_init_auth(void)
 {
+	stringlist_init(&reserved_usernames);
+
+	RWLIST_WRLOCK(&reserved_usernames);
+	load_config();
+	RWLIST_UNLOCK(&reserved_usernames);
+
+	bbs_register_reload_handler("auth", "Reload authentication settings", auth_reload);
 	bbs_run_when_started(check_authproviders, STARTUP_PRIORITY_DEFAULT);
 	return bbs_cli_register_multiple(cli_commands_auth);
 }

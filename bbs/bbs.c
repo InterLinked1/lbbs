@@ -589,6 +589,7 @@ static void bbs_shutdown(void)
 	username_cache_flush(); /* Clean up any cached username mappings */
 	bbs_free_menus(); /* Clean up menus */
 	bbs_groups_cleanup();
+	bbs_cleanup_auth();
 	bbs_configs_free_all(); /* Clean up any remaining configs that modules didn't. */
 	bbs_vars_cleanup();
 	bbs_cli_unregister_remaining();

@@ -133,6 +133,8 @@ Configuration of LBBS and modules are done entirely through INI config files. Di
 
 Config files go in :code:`/etc/lbbs` and are as follows:
 
+* :code:`auth.conf` - User authentication configuration
+
 * :code:`bbs.conf` - key startup settings
 
 * :code:`mail.conf` - Email configuration

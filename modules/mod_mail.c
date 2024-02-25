@@ -34,6 +34,7 @@
 #include "include/config.h"
 #include "include/node.h" /* use bbs_hostname */
 #include "include/user.h"
+#include "include/auth.h"
 #include "include/utils.h"
 #include "include/oauth.h"
 #include "include/base64.h"
@@ -604,7 +605,7 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid, const char *n
 	return mbox;
 }
 
-static struct mailbox *mailbox_get(unsigned int userid, const char *user, const char *domain)
+static struct mailbox *mailbox_get(unsigned int userid, const char *user, const char *domain, int include_catchall)
 {
 	char mboxpath[256];
 	struct mailbox *mbox = NULL;
@@ -662,7 +663,7 @@ static struct mailbox *mailbox_get(unsigned int userid, const char *user, const 
 		}
 	}
 
-	if (!mbox && !s_strlen_zero(catchall)) {
+	if (!mbox && !s_strlen_zero(catchall) && include_catchall) {
 		static unsigned int catch_all_userid = 0; /* This won't change, so until we having caching of user ID to usernames in the core, don't look this up again after we find a match. */
 		if (!catch_all_userid) {
 			catch_all_userid = bbs_userid_from_username(catchall);
@@ -683,12 +684,18 @@ static struct mailbox *mailbox_get(unsigned int userid, const char *user, const 
 
 struct mailbox *mailbox_get_by_name(const char *user, const char *domain)
 {
-	return mailbox_get(0, user, domain);
+	return mailbox_get(0, user, domain, 1);
+}
+
+static int mailbox_exists_by_username(const char *user)
+{
+	/* Exclude catch-all, so we can see if it really exists or not */
+	return mailbox_get(0, user, NULL, 0) ? 1 : 0;
 }
 
 struct mailbox *mailbox_get_by_userid(unsigned int userid)
 {
-	return mailbox_get(userid, NULL, NULL);
+	return mailbox_get(userid, NULL, NULL, 1);
 }
 
 int mailbox_rdlock(struct mailbox *mbox)
@@ -2100,6 +2107,7 @@ static int load_module(void)
 	if (load_config()) {
 		return -1;
 	}
+	bbs_username_reserved_callback_register(mailbox_exists_by_username);
 	bbs_cli_register_multiple(cli_commands_mailboxes);
 	return 0;
 }
@@ -2107,6 +2115,7 @@ static int load_module(void)
 static int unload_module(void)
 {
 	bbs_cli_unregister_multiple(cli_commands_mailboxes);
+	bbs_username_reserved_callback_unregister(mailbox_exists_by_username);
 	mailbox_cleanup();
 	bbs_singular_callback_destroy(&sieve_validate);
 	return 0;
