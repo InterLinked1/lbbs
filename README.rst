@@ -130,88 +130,34 @@ System Configuration
 ~~~~~~~~~~~~~~~~~~~~
 
 Configuration of LBBS and modules are done entirely through INI config files. Different parts of LBBS have their own config files, as does each module that uses one.
+Config files go in :code:`/etc/lbbs` and sample configuration files exist in the :code:`configs` subdirectory of the source tree.
+Each sample config file documents all available options. Refer to the sample configs for all relevant configuration.
 
-Config files go in :code:`/etc/lbbs` and are as follows:
-
-* :code:`auth.conf` - User authentication configuration
+A few especially important configuration files:
 
 * :code:`bbs.conf` - key startup settings
 
 * :code:`mail.conf` - Email configuration
 
-* :code:`menus.conf` - BBS menus, menu items and options. **This is the heart of LBBS configuration.**
-
-* :code:`mod_asterisk_ami.conf` - Asterisk Manager Interface
-
-* :code:`mod_asterisk_queues.conf` - Asterisk queues integration
+* :code:`menus.conf` - BBS menus, menu items and options.
 
 * :code:`mod_auth_mysql.conf` - MySQL/MariaDB auth provider module config
 
-* :code:`mod_auth_static.conf` - Static user configuration (intended for development and testing)
-
-* :code:`mod_chanserv.conf` - ChanServ IRC service config
-
-* :code:`mod_discord.conf` - Discord/IRC relay configuration
-
-* :code:`mod_events.conf` - Decoupled event handler configuration
-
 * :code:`mod_mail.conf` - General email server configuration
-
-* :code:`mod_oauth.conf` - OAuth2 token configuration
-
-* :code:`mod_irc_client.conf` - IRC client configuration
-
-* :code:`mod_irc_relay.conf` - IRC/IRC relay configuration
-
-* :code:`mod_slack.conf` - Slack/IRC relay configuration
-
-* :code:`mod_smtp_fetchmail.conf` - SMTP remote message queue management
 
 * :code:`mod_smtp_filter_dkim.conf` - DKIM signing
 
-* :code:`mod_smtp_filter_dmarc.conf` - DMARC verification and reporting
-
-* :code:`mod_smtp_mailing_lists.conf` - Mailing list configuration
-
 * :code:`modules.conf` - module loading settings (to disable a module, you do it here)
-
-* :code:`net_finger.conf` - Finger protocol config
-
-* :code:`net_ftp.conf` - FTP (File Transfer Protocol) server config
-
-* :code:`net_gopher.conf` - Gopher server config
-
-* :code:`net_http.conf` - HTTP/HTTPS web server config
-
-* :code:`net_imap.conf` - IMAP4 server config
-
-* :code:`net_irc.conf` - Internet Relay Chat server config
-
-* :code:`net_msp.conf` - Message Send Protocol config
-
-* :code:`net_nntp.conf` - Network News Transfer Protocol (NNTP) server config
-
-* :code:`net_pop3.conf` - POP3 server config
-
-* :code:`net_rlogin.conf` - RLogin server configuration
 
 * :code:`net_smtp.conf` - SMTP server configuration
 
 * :code:`net_ssh.conf` - SSH and SFTP server configuration
-
-* :code:`net_telnet.conf` - Telnet server configuration
-
-* :code:`net_ws.conf` - WebSocket server configuration
 
 * :code:`nodes.conf` - Node-related configuration
 
 * :code:`tls.conf` - SSL/TLS configuration
 
 * :code:`transfers.conf` - File transfer configuration
-
-* :code:`variables.conf` - Global variable configuration
-
-Each sample config file documents all available options. Refer to the sample configs for more info about a file.
 
 Additionally, the MailScript rules engine uses a script file called :code:`.rules` in the root maildir and the user's root maildir for manipulating messages.
 A sample MailScript rules file is in :code:`configs/.rules` (though this is not a config file, but a sample rule script file).
