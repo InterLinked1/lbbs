@@ -72,9 +72,9 @@ static int run(void)
 
 	/* Interleave these writes at the same time to ensure the lock is held when the POP server tries to authenticate */
 	SWRITE(client1, "a2 TESTLOCK" ENDL); /* When the INBOX is selected, that should temporarily grab the lock */
+	CLIENT_EXPECT(client1, "TESTLOCK in progress"); /* Wait for TESTLOCK command to start processing, so we know the lock's held */
 
 	SWRITE(client2, "PASS " TEST_PASS ENDL);
-
 	CLIENT_EXPECT(client2, "-ERR [IN-USE]"); /* Mailbox is busy */
 	close_if(client2); /* POP server will disconnect at this point. We'll need to reconnect. */
 

@@ -1219,7 +1219,7 @@ static void low_quota_alert(struct imap_session *imap)
 {
 	unsigned long quotaleft = mailbox_quota_remaining(imap->mbox);
 	if (quotaleft < LOW_MAILBOX_SPACE_THRESHOLD) { /* Very little quota remaining */
-		imap_send(imap, "OK [ALERT] Mailbox is almost full (%lu KB quota remaining)\n", quotaleft / 1024);
+		imap_send(imap, "OK [ALERT] Mailbox is almost full (%lu KB quota remaining)", quotaleft / 1024);
 	}
 }
 
@@ -4578,6 +4578,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		/* Hold the mailbox lock for a moment. */
 		/*! \note This is only used for the test suite, it is not part of any IMAP standard or intended for clients. */
 		MAILBOX_TRYRDLOCK(imap);
+		imap_send(imap, "TESTLOCK in progress");
 		usleep(4000000); /* 500ms is sufficient normally, but under valgrind, we need more time. Even 2500ms is not enough. */
 		mailbox_unlock(imap->mbox);
 		imap_reply(imap, "OK Lock test succeeded");
