@@ -421,7 +421,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 	len = vsnprintf(logminibuf, sizeof(logminibuf), fmt, ap);
 	va_end(ap);
 
-	if (len >= (int) sizeof(buf)) {
+	if (len >= (int) sizeof(logminibuf)) {
 		/* Too large for stack allocated buffer. Dynamically allocate it. */
 		dynamic = 1;
 		buf = malloc((size_t) len + 1);
