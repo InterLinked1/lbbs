@@ -779,6 +779,12 @@ int handle_fetch_full(struct imap_session *imap, char *s, int usinguid, int tagg
 	sequences = strsep(&s, " "); /* Messages, specified by sequence number or by UID (if usinguid) */
 	REQUIRE_ARGS(s); /* What remains are the items to select */
 
+	/* Could be sequence numbers/UIDs, or '$' for saved search */
+	if (strlen_zero(sequences) || (!atoi(sequences) && strcmp(sequences, "$"))) {
+		imap_reply(imap, "BAD Missing message numbers");
+		return 0;
+	}
+
 	/* Remove the surrounding parentheses for parsing */
 	/* Because of CONDSTORE, multiple parenthesized arguments are supported,
 	 * e.g. s100 UID FETCH 1:* (FLAGS) (CHANGEDSINCE 12345)

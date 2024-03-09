@@ -2450,13 +2450,13 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 								}
 								break;
 							case MAILIMF_FIELD_REPLY_TO:
-								append_recipients(to, f->fld_data.fld_reply_to->rt_addr_list);
+								append_recipients(replyto, f->fld_data.fld_reply_to->rt_addr_list);
 								break;
 							case MAILIMF_FIELD_TO:
 								append_recipients(to, f->fld_data.fld_to->to_addr_list);
 								break;
 							case MAILIMF_FIELD_CC:
-								append_recipients(to, f->fld_data.fld_cc->cc_addr_list);
+								append_recipients(cc, f->fld_data.fld_cc->cc_addr_list);
 								break;
 							case MAILIMF_FIELD_SUBJECT:
 								subject = f->fld_data.fld_subject;
@@ -2934,7 +2934,6 @@ static int handle_store(struct imap_client *client, int sign, json_t *uids, cons
 	res = mailimap_flag_list_add(flag_list, flag);
 	if (res != MAILIMAP_NO_ERROR) {
 		bbs_warning("LIST add failed: %s\n", maildriver_strerror(res));
-		mailimap_flag_free(flag);
 		mailimap_flag_list_free(flag_list);
 		mailimap_set_free(set);
 		free_if(keyword);
@@ -3075,6 +3074,22 @@ static int idle_stop(struct ws_session *ws, struct imap_client *client)
 	return 0;
 }
 
+static int client_flush_pending_output(struct imap_client *client)
+{
+	const char *line;
+
+	do {
+		if ((client->imap->imap_stream && client->imap->imap_stream->read_buffer_len) || bbs_poll(client->imapfd, 50) > 0) {
+			line = mailimap_read_line(client->imap);
+			/* Read and discard */
+			bbs_debug(4, "Flushing output '%s'", line);
+		} else {
+			break;
+		}
+	} while (line);
+	return 0;
+}
+
 static int idle_start(struct ws_session *ws, struct imap_client *client)
 {
 	UNUSED(ws); /* Formerly used to adjust net_ws timeout, not currently used */
@@ -3090,6 +3105,20 @@ static int idle_start(struct ws_session *ws, struct imap_client *client)
 			bbs_error("Attempt to IDLE without an active mailbox?\n");
 		}
 		bbs_assert_exists(client->imap->imap_selection_info);
+
+		/* Flush any pending input before sending the IDLE command,
+		 * or lack of synchronization could be possible which will confuse libetpan.
+		 * For example, if we issue a MOVE command, we'll get an untagged EXPUNGE,
+		 * and if that hasn't been read, then that may still be in the buffer.
+		 *
+		 * XXX This will cause us to lose updates delivered in that small amount of time
+		 * between when we stop idling and start idling again, which is not ideal.
+		 * In the MOVE case, we already reflect the deletion on our end,
+		 * so we also don't want to handle that twice. */
+		if (client_flush_pending_output(client) == -1) {
+			return MAILIMAP_ERROR_STREAM;
+		}
+
 		res = mailimap_idle(client->imap);
 		if (res != MAILIMAP_NO_ERROR) {
 			bbs_warning("Failed to start IDLE: %s\n", maildriver_strerror(res));

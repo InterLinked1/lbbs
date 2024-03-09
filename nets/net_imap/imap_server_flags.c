@@ -39,6 +39,11 @@ void parse_keyword(struct imap_session *imap, const char *s, const char *directo
 	FILE *fp;
 	char index = 0;
 
+	if (strlen_zero(directory)) {
+		bbs_soft_assert(0);
+		return;
+	}
+
 	/* Many keywords start with $, but not all of them do */
 	if (imap->numappendkeywords >= MAX_KEYWORDS) {
 		bbs_warning("Can't store any more keywords\n"); /* XXX A NO [LIMIT] response might make sense if the whole STORE has failed */
