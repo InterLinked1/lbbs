@@ -692,8 +692,11 @@ gotinput:
 							bbs_debug(3, "Received ^%c, cancelling pending output\n", 'A' - 1 + *buf);
 							break;
 						default:
-							/* XXX In the future, could be used by the BBS to do certain things too */
-							bbs_debug(3, "Ignoring ^%c and not forwarding it\n", 'A' - 1 + *buf);
+							/* Pass these through to the BBS or currently executing program */
+							bbs_debug(3, "Received ^%c, forwarding it\n", 'A' - 1 + *buf);
+							/* These actually *do* get forwarded to an executing program,
+							 * not entirely sure from the logic here how that is, but that is
+							 * actually what we want, so it works out... */
 					}
 					continue;
 				}

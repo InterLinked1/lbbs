@@ -197,8 +197,7 @@ unsigned char *base64_decode(const unsigned char *restrict data, int input_lengt
 	unsigned char *decoded_data;
 
 	if (input_length % 4 != 0) {
-		bbs_warning("Input length %d is invalid\n", input_length);
-		return NULL;
+		bbs_debug(4, "Input has length %d (not 4-byte padded)\n", input_length);
 	}
 
 	output_length = input_length / 4 * 3;

@@ -290,7 +290,8 @@ static RWLIST_HEAD_STATIC(cached_logins, cached_login);
 struct pw_auth_token {
 	char *username;
 	time_t added;
-	char token[48];
+	time_t expires;
+	char token[TEMP_PASSWORD_TOKEN_BUFLEN];
 	RWLIST_ENTRY(pw_auth_token) entry;
 };
 
@@ -305,7 +306,9 @@ static void cached_login_destroy(struct cached_login *l)
 
 static void auth_token_destory(struct pw_auth_token *t)
 {
-	free_if(t->username);
+	bbs_debug(3, "Purging temporary login token for %s\n", t->username);
+	bbs_memzero(t->token, sizeof(t->token)); /* This token isn't really sensitive, since it's no longer valid, but scrub it anyways */
+	free(t->username);
 	free(t);
 }
 
@@ -315,10 +318,13 @@ void login_cache_cleanup(void)
 	RWLIST_WRLOCK_REMOVE_ALL(&auth_tokens, entry, auth_token_destory);
 }
 
-#define POSSIBLE_AUTH_TOKEN_CHAR '\\'
-#define MAX_TOKEN_AGE 15
+/* Changed from \\, since libetpan will double the leading \,
+ * butchering the password, making such tokens impossible
+ * to use with applications using that library. */
+#define POSSIBLE_AUTH_TOKEN_CHAR '}'
+#define DEFAULT_MAX_TOKEN_AGE 15
 
-int bbs_user_temp_authorization_token(struct bbs_user *user, char *buf, size_t len)
+static int create_temp_authorization_token(struct bbs_user *user, char *buf, size_t len, time_t expires)
 {
 	struct pw_auth_token *t;
 
@@ -364,43 +370,84 @@ int bbs_user_temp_authorization_token(struct bbs_user *user, char *buf, size_t l
 		return -1;
 	}
 	t->token[0] = POSSIBLE_AUTH_TOKEN_CHAR; /* Use an uncommon character to indicate possible token */
-	if (bbs_rand_alnum(t->token + 1, sizeof(t->token) - 1)) {
+	if (bbs_rand_alnum(t->token + 1, sizeof(t->token) - 2)) {
 		RWLIST_UNLOCK(&auth_tokens);
 		free(t);
 		return -1;
 	}
+	t->token[TEMP_PASSWORD_TOKEN_BUFLEN - 1] = '\0';
 	t->username = strdup(bbs_username(user));
+	if (ALLOC_FAILURE(t->username)) {
+		RWLIST_UNLOCK(&auth_tokens);
+		free(t);
+		return -1;
+	}
 	t->added = time(NULL);
+	t->expires = expires;
 	RWLIST_INSERT_TAIL(&auth_tokens, t, entry);
 	RWLIST_UNLOCK(&auth_tokens);
 	safe_strncpy(buf, t->token, len);
+	bbs_assert(!strcmp(buf, t->token)); /* Provided buffer must be large enough */
+	bbs_verb(5, "Created %s login token for %s\n", expires ? "temporary" : "semi-permanent", bbs_username(user));
 	return 0;
+}
+
+int bbs_user_temp_authorization_token(struct bbs_user *user, char *buf, size_t len)
+{
+	return create_temp_authorization_token(user, buf, len, time(NULL) + DEFAULT_MAX_TOKEN_AGE);
+}
+
+int bbs_user_semiperm_authorization_token(struct bbs_user *user, char *buf, size_t len)
+{
+	return create_temp_authorization_token(user, buf, len, 0);
+}
+
+int bbs_user_semiperm_authorization_token_purge(const char *buf)
+{
+	int res = -1;
+	struct pw_auth_token *t;
+
+	RWLIST_WRLOCK(&auth_tokens);
+	RWLIST_TRAVERSE_SAFE_BEGIN(&auth_tokens, t, entry) {
+		if (!strcmp(t->token, buf)) {
+			RWLIST_REMOVE_CURRENT(entry);
+			auth_token_destory(t);
+			res = 0;
+			break;
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	RWLIST_UNLOCK(&auth_tokens);
+	return res;
 }
 
 /*! \retval 1 if valid match, 0 if not */
 static int valid_temp_token(const char *username, const char *password)
 {
 	struct pw_auth_token *t;
-	time_t now, cutoff;
+	time_t now;
+	int total = 0;
 	int match = 0;
 
 	now = time(NULL);
-	cutoff = now - MAX_TOKEN_AGE;
 
 	/* Purge any stale tokens. */
 	RWLIST_WRLOCK(&auth_tokens);
 	RWLIST_TRAVERSE_SAFE_BEGIN(&auth_tokens, t, entry) {
-		if (t->added < cutoff) {
+		if (t->expires && t->expires < now) { /* If it has an expiration time and it's already past, purge it */
 			RWLIST_REMOVE_CURRENT(entry);
 			auth_token_destory(t);
 		} else {
-			if (!strcmp(username, t->username) && !strcmp(password, t->token)) {
+			if (!strcasecmp(username, t->username) && !strcmp(password, t->token)) {
 				match = 1;
 			}
-			RWLIST_REMOVE_CURRENT(entry);
-			auth_token_destory(t); /* What good is a one-time token if we reuse it? */
+			if (t->expires) {
+				RWLIST_REMOVE_CURRENT(entry);
+				auth_token_destory(t); /* What good is a one-time token if we reuse it? */
+			}
 			/* Don't break, we still want to purge any tokens that may be stale. */
 		}
+		total++;
 	}
 	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&auth_tokens);
@@ -451,7 +498,7 @@ static int login_is_cached(struct bbs_node *node, const char *username, const ch
 			continue;
 		}
 		if (strcmp(l->ip, node->ip)) { /* Cached logins only good from same IP */
-			bbs_debug(3, "Cached login denied (different IP address)\n");
+			bbs_debug(3, "Cached login denied (different IP addresses: %s != %s)\n", l->ip, node->ip);
 			continue;
 		}
 		if (strcmp(l->hash, hash)) {

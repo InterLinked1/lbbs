@@ -139,14 +139,32 @@ struct bbs_user **bbs_user_list(void);
 /*! \brief Clean up any cached logins */
 void login_cache_cleanup(void);
 
+#define TEMP_PASSWORD_TOKEN_BUFLEN 48
+
 /*!
- * \brief Generate a temporary token that can be used to authenticate a user in lieu of a password
+ * \brief Generate a one-time temporary token that can be used to authenticate a user in lieu of a password
  * \param user
- * \param[out] buf
- * \param len Must be at least 48.
+ * \param[out] buf. Temporary one-time token, which will be valid for up to 15 seconds.
+ * \param len Must be at least TEMP_PASSWORD_TOKEN_BUFLEN.
  * \retval 0 on success, -1 on failure
 */
 int bbs_user_temp_authorization_token(struct bbs_user *user, char *buf, size_t len);
+
+/*!
+ * \brief Generate a temporary token that can be used to authenticate a user in lieu of a password
+ * \param user
+ * \param[out] buf. Temporary token, which will be valid as long as the BBS is running, until bbs_user_semiperm_authorization_token_purge is called.
+ * \param len Must be at least TEMP_PASSWORD_TOKEN_BUFLEN.
+ * \retval 0 on success, -1 on failure
+*/
+int bbs_user_semiperm_authorization_token(struct bbs_user *user, char *buf, size_t len);
+
+/*!
+ * \brief Purge a temporary token previously created using bbs_user_semiperm_authorization_token
+ * \param buf Temporary token
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_user_semiperm_authorization_token_purge(const char *buf);
 
 /*!
  * \brief Attempt to authenticate a user
