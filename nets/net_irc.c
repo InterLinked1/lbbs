@@ -1057,13 +1057,22 @@ static int transform_and_send(const char *channel, enum channel_user_modes modes
 	 * and this could be 40-50 bytes, potentially.
 	 * Being conservative on message length here reduces the chance that
 	 * the message will be within bounds within the BBS but exceed 512 when it hits lirc
-	 * to actually generate the final message. */
-	while (linelen > 470) {
-		char c;
+	 * to actually generate the final message.
+	 *
+	 * On top of that, libera seems to be truncating messages at 470 characters,
+	 * which is far under the 512 character limit. Clients as well attempt to split
+	 * messages under the 512 character limit, with Ambassador doing so around 462.
+	 * So, we actually want to aim somewhere around 100 fewer characters than the 512 limit,
+	 * to be conservative and ensure truncation doesn't occur when relaying to IRC.
+	 */
+
+#define MAX_PREFORMATTED_RELAY_MSGLEN 412
+	while (linelen > MAX_PREFORMATTED_RELAY_MSGLEN) {
+		char c1, c2, c3, c4;
 		/* Message is too long to be a single message towards IRC.
 		 * Split it up. */
-		char *end = line + 465; /* Leave room for the relay module to prefix a username later. */
-		const char *midpoint = line + 235;
+		char *end = line + MAX_PREFORMATTED_RELAY_MSGLEN - 10; /* Leave room for the relay module to prefix a username later. */
+		const char *midpoint = line + MAX_PREFORMATTED_RELAY_MSGLEN / 2;
 		/* Look for a graceful position to split the message (a space).
 		 * In the worst case, there are no spaces, and we should split the
 		 * message in the second half no matter what, so we send a maximum
@@ -1076,12 +1085,29 @@ static int transform_and_send(const char *channel, enum channel_user_modes modes
 #pragma GCC diagnostic pop
 		/* We are guaranteed here that *end is not the last character in the message. */
 		end++; /* Move back forward past the space. */
-		c = *end; /* Save character at this position. */
-		*end = '\0'; /* NUL terminate to split message. */
+		c1 = *end; /* Save character at this position. */
+		c2 = *(end + 1);
+		c3 = *(end + 2);
+		c4 = *(end + 3);
+		/* Use ... to indicate payload will be continued in another message.
+		 * It will be prefixed by a space, which is fine since it likely differentiates from user-added '...',
+		 * since user-created messages are likely to end "EOM..." not "EOM ..." */
+		*end = '.';
+		*(end + 1) = '.';
+		*(end + 2) = '.';
+		*(end + 3) = '\0'; /* NUL terminate to split message. */
 		_irc_relay_send(channel, modes, relayname, sender, hostsender, final, ircuser, 0, mod);
-		*end = c; /* Restore character */
+		*end = c1; /* Restore character */
+		*(end + 1) = c2;
+		*(end + 2) = c3;
+		*(end + 3) = c4;
+		end -= 3;
 		final = line = end; /* This is the beginning of the next chunk to send. */
 		linelen = strlen(line);
+		/* Since we subtracted 3 from the end, we can use the first 3 characters to put '...' for message continuation indication */
+		*end = '.';
+		*(end + 1) = '.';
+		*(end + 2) = '.';
 	}
 
 	/* Send entire message, if less than max message length, or the last chunk, if it was larger. */
