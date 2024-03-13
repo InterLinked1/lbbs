@@ -52,7 +52,7 @@ void bbs_readline_flush(struct readline_data *rldata)
 	rldata->leftover = 0;
 }
 
-static char *readline_pre_read(struct readline_data *restrict rldata, const char *delim, ssize_t *resptr)
+static char *readline_pre_read(struct readline_data *restrict rldata, const char *delim, size_t delimlen, ssize_t *resptr)
 {
 	char *firstdelim = NULL;
 
@@ -70,7 +70,7 @@ static char *readline_pre_read(struct readline_data *restrict rldata, const char
 		rldata->left = rldata->len - res;
 		/* If we already have a delimiter, no need to proceed further. */
 		/* Use memmem instead of strstr to accomodate binary data */
-		firstdelim = memmem(rldata->buf, res, delim, strlen(delim)); /* Use buf, not pos, since pos is the beginning of the buffer that remains at this point. */
+		firstdelim = memmem(rldata->buf, res, delim, delimlen); /* Use buf, not pos, since pos is the beginning of the buffer that remains at this point. */
 		res = rldata->leftover = 0;
 		rldata->leftover = 0;
 		*resptr = (ssize_t) res;
@@ -80,7 +80,7 @@ static char *readline_pre_read(struct readline_data *restrict rldata, const char
 			 * but bbs_readline_append can return without calling readline_post_read,
 			 * so we should not reset pos to buf if the next chunk is incomplete. */
 #ifdef EXTRA_DEBUG
-			bbs_debug(8," Resetting buffer\n");
+			bbs_debug(8, "Resetting buffer\n");
 #endif
 			readline_buffer_reset(rldata);
 		}
@@ -126,15 +126,24 @@ ssize_t bbs_readline(int fd, struct readline_data *restrict rldata, const char *
 {
 	ssize_t res;
 	char *firstdelim;
+	size_t delimlen;
 
-	firstdelim = readline_pre_read(rldata, delim, &res);
+	delimlen = strlen(delim);
+	firstdelim = readline_pre_read(rldata, delim, delimlen, &res);
 
 	while (!firstdelim) {
+		char *searchstart;
 #ifdef EXTRA_CHECKS
+#ifdef INTENSIVE_EXTRA_CHECKS
+		char *t = memchr(rldata->buf, '\0', rldata->len);
+		int left = (int) (t - rldata->buf);
+		bbs_assert(!memmem(rldata->buf, (size_t) left, delim, delimlen));
+#endif /* INTENSIVE_EXTRA_CHECKS */
 		bbs_assert(rldata->pos + rldata->left - 1 <= rldata->buf + rldata->len); /* If we're going to corrupt the stack and crash anyways, might as well assert. */
-#endif
+#endif /* EXTRA_CHECKS */
 		if (rldata->left - 1 < 2) {
-			bbs_warning("Buffer (size %lu) has been exhausted\n", rldata->len); /* The using application needs to allocate a larger buffer */
+			bbs_warning("Buffer (size %lu) has been exhausted, %lu byte%s remaining\n", rldata->len, rldata->left, ESS(rldata->left)); /* The using application needs to allocate a larger buffer */
+			bbs_assert(!strstr(rldata->pos, delim));
 			return -3;
 		}
 		res = bbs_poll_read(fd, timeout, rldata->pos, (size_t) rldata->left - 1); /* Subtract 1 for NUL */
@@ -143,10 +152,31 @@ ssize_t bbs_readline(int fd, struct readline_data *restrict rldata, const char *
 			return res - 1; /* see the doxygen notes: we should return 0 only if we read just the delimiter. */
 		}
 		rldata->pos[res] = '\0'; /* Safe. Null terminate so we can use string functions. */
-		firstdelim = strstr(rldata->pos, delim); /* Find the first occurence of the delimiter, if present. */
+
+		/* If the delimiter is longer than 1 character, and we previously
+		 * read part of the delimiter in a previous read, so firstdelim was NULL
+		 * at the top of this loop, but we just read the second half of the delimiter
+		 * in this read, then we can't just start searching from rldata->pos,
+		 * since that would be at the middle of the delimiter.
+		 * Instead, back up D - 1 characters, where D is the length of the delimiter,
+		 * to ensure we don't miss the start of it, as long as we don't go back
+		 * the beginning of rldata->buf itself. */
+		if (delimlen > 1) {
+			searchstart = rldata->pos - (delimlen - 1);
+			if (searchstart < rldata->buf) {
+				searchstart = rldata->buf;
+			}
+		} else {
+			searchstart = rldata->pos;
+		}
+
+		firstdelim = strstr(searchstart, delim); /* Find the first occurence of the delimiter, if present. */
 		/* Update our position */
 		rldata->pos += (size_t) res;
 		rldata->left -= (size_t) res;
+#ifdef EXTRA_DEBUG
+		bbs_debug(10, "Just read %ld bytes from file descriptor %d, %lu bytes remain\n", res, fd, rldata->left);
+#endif
 	}
 
 	return readline_post_read(rldata, delim, firstdelim, res);
@@ -162,7 +192,7 @@ static ssize_t __bbs_readline_getn(int fd, int destfd, struct dyn_str *restrict 
 	 * The actual delimiter we provide to readline_pre_read doesn't matter here, it can be anything,
 	 * since we don't use the result.
 	 * We only check rldata->pos afterwards to determine how much data is already in the buffer. */
-	readline_pre_read(rldata, "\n", &res);
+	readline_pre_read(rldata, "\n", STRLEN("\n"), &res);
 	left_in_buffer = (size_t) (rldata->pos - rldata->buf);
 #ifdef EXTRA_DEBUG
 	bbs_debug(8, "Up to %lu/%lu bytes can be satisfied from existing buffer\n", left_in_buffer, n);
@@ -342,7 +372,7 @@ int bbs_readline_get_until(int fd, struct dyn_str *dynstr, struct readline_data 
 	 * The actual delimiter we provide to readline_pre_read doesn't matter here, it can be anything,
 	 * since we don't use the result.
 	 * We only check rldata->pos afterwards to determine how much data is already in the buffer. */
-	readline_pre_read(rldata, "\n", &res);
+	readline_pre_read(rldata, "\n", STRLEN("\n"), &res);
 
 	left_in_buffer = (size_t) (rldata->pos - rldata->buf);
 	if (left_in_buffer && !readline_get_until_process(dynstr, rldata, left_in_buffer, maxlen)) {
@@ -373,7 +403,7 @@ int bbs_readline_append(struct readline_data *restrict rldata, const char *restr
 	ssize_t unused;
 	int drain = 0;
 
-	firstdelim = readline_pre_read(rldata, delim, &unused);
+	firstdelim = readline_pre_read(rldata, delim, strlen(delim), &unused);
 	if (firstdelim) {
 		*ready = 1;
 		drain = 1;

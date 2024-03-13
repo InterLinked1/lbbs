@@ -307,6 +307,45 @@ cleanup:
 	return res;
 }
 
+/*! \brief As long as a single line fits in the buffer, buffer exhaustion should not happen */
+static int test_readline_buffer_size(void)
+{
+	int mres, res = -1;
+	char buf[12];
+	int pfd[2];
+	struct readline_data rldata;
+
+	if (pipe(pfd)) {
+		bbs_error("pipe failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	bbs_readline_init(&rldata, buf, sizeof(buf));
+
+	SWRITE(pfd[1], "abc.\r\n"
+		"def.\r\n");
+	SWRITE(pfd[1], ".");
+
+#define EXPECT_LINE(l) \
+	mres = (int) bbs_readline(pfd[0], &rldata, "\r\n", 300); \
+	bbs_test_assert_equals((int) STRLEN(l), mres); \
+	bbs_test_assert_str_equals(buf, l);
+
+	EXPECT_LINE("abc.");
+	EXPECT_LINE("def.");
+	/* Don't actually try to read this line, since it wasn't terminated.
+	 * But the above should at least parse properly. */
+	/* EXPECT_LINE("."); */
+
+#undef EXPECT_LINE
+	res = 0;
+
+cleanup:
+	close(pfd[0]);
+	close(pfd[1]);
+	return res;
+}
+
 static int test_readline_append(void)
 {
 	int mres;
@@ -688,6 +727,7 @@ static struct bbs_unit_test tests[] =
 	{ "String Remove Substring", test_str_remove_substring },
 	{ "LF to CR LF Conversion", test_lf_crlf },
 	{ "Readline Helper", test_readline_helper },
+	{ "Readline Buffer Size", test_readline_buffer_size },
 	{ "Readline Append", test_readline_append },
 	{ "Readline getn", test_readline_getn },
 	{ "Readline Boundary", test_readline_boundary },

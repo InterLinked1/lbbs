@@ -175,6 +175,40 @@ static int run(void)
 	SWRITE(clientfd, "." ENDL); /* EOM */
 	CLIENT_EXPECT(clientfd, "554"); /* Mail loop detected */
 
+	/* Test messages that are exactly as long as the readline buffer. */
+	SWRITE(clientfd, "RSET" ENDL);
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "DATA\r\n");
+	CLIENT_EXPECT(clientfd, "354");
+	SWRITE(clientfd, "Subject: Test\r\n"
+		"Content-Type: text/plain; charset=utf-8; format=flowed\r\n"
+		"Content-Transfer-Encoding: 8bit\r\n"
+		"Content-Language: en-US\r\n"
+		"\r\n"
+		"Hello,\r\n"
+		"\r\n"
+		"This is a test message. This is a test message. This is a test message.\r\n"
+		"This is a test message. This is a test message. This is a test message.\r\n"
+		"This is a test message. This is a test message. This is a test message.\r\n"
+		"This is a test message. This is a test message. This is a test message.\r\n"
+		"This is a test message. This is a test message. This is a test message.\r\n"
+		"This is a test message. This is a test message. This is a test message.\r\n"
+		"This is a test message. This is a test message. This is a test message.\r\n"
+		"This is a test message. This is a test message. This is a test message.\r\n"
+		"This is a test message. This is a test message. This is a test message.\r\n"
+		"This is a test message. This is a test message. This is a test message.\r\n"
+		"This is a test message. This is a test message. This is a test message.\r\n"
+		"Should be appx. 1,001 characters when we're done.\r\n"
+		"Bye.\r\n");
+	SWRITE(clientfd, "." ENDL); /* EOM */
+	CLIENT_EXPECT(clientfd, "250");
+
 #define CHAR_31 "abc def ghi jkl mno prs tuv wxy"
 #define CHAR_248 CHAR_31 CHAR_31 CHAR_31 CHAR_31 CHAR_31 CHAR_31 CHAR_31 CHAR_31
 #define CHAR_992 CHAR_248 CHAR_248 CHAR_248 CHAR_248
@@ -190,13 +224,17 @@ static int run(void)
 	CLIENT_EXPECT(clientfd, "250");
 	SWRITE(clientfd, "DATA\r\n");
 	CLIENT_EXPECT(clientfd, "354");
-	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:29 -0700" ENDL);
+	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:30 -0700" ENDL);
 	SWRITE(clientfd, ENDL);
 	SWRITE(clientfd, "Test" ENDL);
 	SWRITE(clientfd, CHAR_992 ENDL); /* This is okay */
 	SWRITE(clientfd, CHAR_992 CHAR_31 ENDL); /* This is not okay */
 	SWRITE(clientfd, "." ENDL); /* EOM */
 	CLIENT_EXPECT(clientfd, "550"); /* Mail loop detected */
+
+	/* The SMTP server disconnects when line length is exceeded,
+	 * since that's the only sane thing that can be done,
+	 * so we need to reconnect now. */
 
 	/* Test pregreeting */
 	close(clientfd);

@@ -921,12 +921,15 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 		pfds[1].fd = ws.pollfd;
 		pfds[0].revents = pfds[1].revents = 0;
 
+#define DEBUG_POLL
+
 		/* We need to ping the client at least every max_websocket_timeout_ms. */
 		this_poll_start = time(NULL);
 		elapsed_sec = this_poll_start - lastping;
 		max_ms = (int) (max_websocket_timeout_ms - SEC_MS(elapsed_sec));
 #ifdef DEBUG_POLL
-		bbs_debug(10, "ws.pollms: %d, %d s / %ld ms have elapsed since last ping, %d ms is max allowed\n", ws.pollms, elapsed_sec, app_ms_elapsed, max_ms);
+		bbs_debug(9, "app poll elapsed: %d/%d, ws timeout: %d, -> max actual poll: %d, %lu s since last ping\n",
+			app_ms_elapsed / 1000, ws.pollms / 1000, max_websocket_timeout_ms / 1000, max_ms / 1000, elapsed_sec);
 #endif
 		if (ws.pollms >= 0) {
 			pollms = ws.pollms - app_ms_elapsed;
@@ -964,8 +967,15 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 		if (pfds[0].revents) {
 			res = wss_read(client, SEC_MS(55), 1); /* Pass in 1 since we already know poll returned activity for this fd */
 			if (res < 0) {
-				bbs_debug(3, "Failed to read WebSocket frame\n");
-				bbs_debug(7, "ws.pollms: %d, %ld s / %d ms have elapsed since last ping, %d ms is max allowed\n", ws.pollms, elapsed_sec, app_ms_elapsed, max_ms);
+				/* Since the poll was ended short, calculate how much time elapsed. */
+				time_t now = time(NULL);
+				time_t elapsed = now - this_poll_start;
+				app_ms_elapsed += (int) SEC_MS(elapsed);
+
+				/* Connection closed abruptly (uncleanly). Probably shouldn't happen under normal conditions. */
+				bbs_warning("Failed to read WebSocket frame, server closed connection?\n");
+				bbs_debug(9, "app poll elapsed: %d/%d, ws timeout: %d, -> max actual poll: %d, %lu s since last ping\n",
+					app_ms_elapsed / 1000, ws.pollms / 1000, max_websocket_timeout_ms / 1000, max_ms / 1000, elapsed_sec);
 				if (wss_error_code(client)) {
 					wss_close(client, wss_error_code(client));
 				} /* else, if client already closed, don't try writing any further */
@@ -1056,7 +1066,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 				 * but I haven't convinced myself that's not just an excuse :)
 				 */
 #ifdef DEBUG_POLL
-				bbs_debug(9, "%d ms have now elapsed into poll (%d ms just now)\n", app_ms_elapsed, pollms);
+				bbs_debug(9, "%d s have now elapsed into poll (%d s just now)\n", app_ms_elapsed / 1000, pollms / 1000);
 #endif
 			}
 
