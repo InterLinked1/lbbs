@@ -492,6 +492,10 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 	char submenuitemname[MAX_MENUITEM_NAME_LENGTH];
 	int neederror = 0;
 	int forcedrawmenu = 0;
+	unsigned int origrows, origcols;
+
+	origrows = node->rows;
+	origcols = node->cols;
 
 	/* Ensure we're within the stack limit */
 	if (++stack > BBS_MAX_MENUSTACK) {
@@ -647,15 +651,26 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 			RWLIST_RDLOCK(&menus);
 			continue;
 		} else if (!strchr(options, opt)) {
-			bbs_debug(3, "Node %d chose option '%c', but this is not a valid option for menu '%s'\n", node->id, opt, menuname);
-			/* Leave opt != 0 so that we don't display the menu again */
-			if (optreq) {
-				/* If we were doing skip menu navigation, DO display the menu again since we didn't see it before. */
-				opt = 0; /* This will clear the screen, so no point in printing an error message here, really... */
-				neederror = 1; /* Display the error message once we redraw the screen */
+			if (node->cols != origcols || node->rows != origrows) {
+				/* Menu needs a redraw, the input we got was spoofed
+				 * on the PTY master to make us wake up and redraw it.
+				 * Don't emit a warning about invalid selection. */
+				origcols = node->cols;
+				origrows = node->rows;
+				opt = 0;
+				forcedrawmenu = 1;
+				bbs_debug(3, "Completely redrawing menu due to change in screen size\n");
 			} else {
-				bbs_node_clear_line(node);
-				bbs_node_writef(node, "\r%sInvalid option!%s", COLOR(COLOR_RED), COLOR_RESET);
+				bbs_debug(3, "Node %d chose option '%c', but this is not a valid option for menu '%s'\n", node->id, opt, menuname);
+				/* Leave opt != 0 so that we don't display the menu again */
+				if (optreq) {
+					/* If we were doing skip menu navigation, DO display the menu again since we didn't see it before. */
+					opt = 0; /* This will clear the screen, so no point in printing an error message here, really... */
+					neederror = 1; /* Display the error message once we redraw the screen */
+				} else {
+					bbs_node_clear_line(node);
+					bbs_node_writef(node, "\r%sInvalid option!%s", COLOR(COLOR_RED), COLOR_RESET);
+				}
 			}
 			optreq = NULL; /* If were doing skip menu navigation, stop now since we hit a dead end. */
 			RWLIST_RDLOCK(&menus);

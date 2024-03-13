@@ -1032,6 +1032,11 @@ int bbs_node_update_winsize(struct bbs_node *node, int cols, int rows)
 	pid_t child;
 	unsigned int oldcols = node->cols, oldrows = node->rows;
 
+	if (bbs_is_shutting_down()) {
+		bbs_debug(3, "Declining to update node dimensions due to active shutdown\n");
+		return -1;
+	}
+
 	if (rows >= 0 && cols >= 0) {
 		bbs_debug(3, "Node %d's terminal now has %d cols and %d rows\n", node->id, cols, rows);
 		/* If this were a program that had forked and had children, then we might send a SIGWINCH.
@@ -1118,7 +1123,11 @@ int bbs_node_update_winsize(struct bbs_node *node, int cols, int rows)
 		 * If it shrunk vertically, the only way we can redraw the menu to show the options
 		 * better would be if there are more columns now.
 		 */
+#ifdef CONSERVATIVE_RESIZE
 		if (node->cols < oldcols || (node->rows < oldrows && node->cols > oldcols)) {
+#else
+		if (node->cols != oldcols) {
+#endif
 			char c = MENU_REFRESH_KEY;
 			bbs_debug(5, "Screen size has changed (%dx%d -> %dx%d) such that a menu redraw is warranted\n", oldcols, oldrows, cols, rows);
 			/* Don't even need an alertpipe - we know that we're in bbs_node_tread in the menu, spoof a special control char as input. */

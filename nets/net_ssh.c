@@ -505,9 +505,8 @@ static int pty_resize(ssh_session session, ssh_channel channel, int cols, int ro
 
 	/* Resist the urge to directly send a SIGWINCH signal here.
 	 * bbs_node_update_winsize will do that if needed. */
-	if (cdata->node) {
+	if (cdata->node && !bbs_node_update_winsize(cdata->node, cols, rows)) {
 		/* Unlike the Telnet module, we can easily update this out of band... nice! */
-		bbs_node_update_winsize(cdata->node, cols, rows);
 		return SSH_OK;
 	}
 	return SSH_ERROR;
