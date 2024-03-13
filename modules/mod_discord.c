@@ -110,7 +110,7 @@ struct user {
 	unsigned int admin:1;	/* Guild admin */
 	int numroles;
 	const char *username;
-	const char *discriminator; /*! \todo Discriminators are deprecated in Discord now, so a unique (not conflicting with regular IRC) name is needed that doesn't use these, e.g. Discord/<name> */
+	const char *discriminator; /* Discriminators are now deprecated in Discord, so IRC-formatted usernames are now Discord/<Discord username> */
 	enum user_status status;
 	RWLIST_ENTRY(user) entry;
 	char data[];
@@ -211,17 +211,37 @@ static struct user *find_user(u64snowflake user_id)
 
 static struct user *find_user_by_username(const char *s)
 {
-	char buf[84];
 	struct user *u;
 
 	RWLIST_RDLOCK(&users);
 	RWLIST_TRAVERSE(&users, u, entry) {
-		/* STARTS_WITH uses STRLEN, not strlen, so just use strncmp */
-		if (!strncmp(u->username, s, strlen(u->username))) { /* If it starts with, it's probably going to be a match, but confirm */
-			snprintf(buf, sizeof(buf), "%s#%s", u->username, u->discriminator);
-			if (!strcmp(s, buf)) {
-				break;
-			}
+		/* Discord usernames are now all lowercase,
+		 * so even though it's technically case-insensitive,
+		 * a case-sensitive comparison is still fine. */
+		if (!strcmp(u->username, s)) {
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&users);
+	return u;
+}
+
+static struct user *find_user_by_ircusername(const char *s)
+{
+	struct user *u;
+
+	if (strncmp(s, "Discord/", STRLEN("Discord/"))) {
+		return NULL;
+	}
+	s += STRLEN("Discord/");
+
+	RWLIST_RDLOCK(&users);
+	RWLIST_TRAVERSE(&users, u, entry) {
+		/* Discord usernames are now all lowercase,
+		 * so even though it's technically case-insensitive,
+		 * a case-sensitive comparison is still fine. */
+		if (!strcmp(u->username, s)) {
+			break;
 		}
 	}
 	RWLIST_UNLOCK(&users);
@@ -268,7 +288,7 @@ static void remove_user(struct discord_user *user)
 	if (u) {
 		free_user(u);
 	} else {
-		bbs_error("Failed to remove user %lu (%s#%s)\n", user->id, user->username, user->discriminator);
+		bbs_error("Failed to remove user %lu (%s)\n", user->id, user->username);
 	}
 }
 
@@ -369,7 +389,7 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 		if (i >= presences->size || !(presence = &presences->array[i]) || !presence->status) {
 #ifdef EXTRA_DISCORD_DEBUG
 			/* We're already going to warn at the end, so don't make too much noise in normal builds */
-			bbs_warning("Missing presence information for user %s#%s\n", user->username, user->discriminator);
+			bbs_warning("Missing presence information for user %s\n", user->username);
 #endif
 			presencefails++;
 		} else {
@@ -378,7 +398,7 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 
 #define ADMINISTRATOR (1 << 3)
 
-		bbs_debug(8, "User %d/%d: %lu => %s#%s [%s] (%s) - %d role(s)\n", i + 1, members->size, user->id, user->username, user->discriminator, S_IF(member->nick), presencestatus, roles ? roles->size : 0);
+		bbs_debug(8, "User %d/%d: %lu => %s (#%s) [%s] (%s) - %d role(s)\n", i + 1, members->size, user->id, user->username, user->discriminator, S_IF(member->nick), presencestatus, roles ? roles->size : 0);
 		u = add_user(user, event->guild_id, presence ? presence->status : "none", member->joined_at);
 #ifdef DEBUG_PERMISSIONS
 		/*! \todo BUGBUG Permissions aren't set for ANY users,
@@ -392,13 +412,13 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 			int j;
 			for (j = 0; j < 64; j++) {
 				if (member->permissions & (1 << j)) {
-					bbs_debug(8, "User %s#%s has permission %d\n", user->username, user->discriminator, j);
+					bbs_debug(8, "User %s has permission %d\n", user->username, j);
 				}
 			}
 		}
 #endif
 		if (u && member->permissions & ADMINISTRATOR) {
-			bbs_debug(6, "Ooh... %s#%s is an administrator of guild %lu\n", user->username, user->discriminator, u->guild_id);
+			bbs_debug(6, "Ooh... %s is an administrator of guild %lu\n", user->username, u->guild_id);
 			u->admin = 1; /* XXX Admin of *THIS GUILD*, but not other guilds... fine for now since we store guild_id as part of the user */
 		}
 		if (u && roles && roles->size > 0) {
@@ -480,7 +500,7 @@ static void on_guild_members_chunk(struct discord *client, const struct discord_
 					break;
 #endif
 #if defined(EXTRA_DISCORD_DEBUG) || defined(BUGGY_PRESENCE_FETCH)
-					bbs_debug(7, "Retrying to get presence for user %lu: %s#%s\n", u->user_id, u->username, u->discriminator);
+					bbs_debug(7, "Retrying to get presence for user %lu: %s\n", u->user_id, u->username);
 #endif
 				}
 			}
@@ -502,7 +522,7 @@ static void on_guild_member_add(struct discord *client, const struct discord_gui
 	struct discord_user *user = event->user;
 
 	UNUSED(client);
-	bbs_debug(2, "User %lu (%s#%s) has joined guild %lu\n", user->id, user->username, user->discriminator, event->guild_id);
+	bbs_debug(2, "User %lu (%s) has joined guild %lu\n", user->id, user->username, event->guild_id);
 	add_user(user, event->guild_id, "online", (u64unix_ms) time(NULL) * 1000);
 }
 
@@ -511,7 +531,7 @@ static void on_guild_member_remove(struct discord *client, const struct discord_
 	struct discord_user *user = event->user;
 
 	UNUSED(client);
-	bbs_debug(2, "User %lu (%s#%s) has left guild %lu\n", user->id, user->username, user->discriminator, event->guild_id);
+	bbs_debug(2, "User %lu (%s) has left guild %lu\n", user->id, user->username, event->guild_id);
 	remove_user(user);
 }
 
@@ -529,11 +549,11 @@ static void on_presence_update(struct discord *client, const struct discord_pres
 		return;
 	}
 
-	/* the discord_user struct here doesn't always have username and discriminator set (such as for non-online presence updates.
+	/* the discord_user struct here doesn't always have username set (such as for non-online presence updates.
 	 * Thus, refer to our local user struct for this info. */
 
-	bbs_debug(9, "Presence update: guild=%lu, user=%lu (%s#%s), status=%s (desktop: %s, mobile: %s, web: %s)\n",
-		event->guild_id, user->id, u->username, u->discriminator, event->status, S_IF(client_status->desktop), S_IF(client_status->mobile), S_IF(client_status->web));
+	bbs_debug(9, "Presence update: guild=%lu, user=%lu (%s), status=%s (desktop: %s, mobile: %s, web: %s)\n",
+		event->guild_id, user->id, u->username, event->status, S_IF(client_status->desktop), S_IF(client_status->mobile), S_IF(client_status->web));
 
 	u->status = status_from_str(event->status);
 }
@@ -558,7 +578,7 @@ static int user_has_role(struct user *u, u64snowflake role_id)
 	}
 	for (i = 0; i < u->numroles; i++) {
 		if (u->roles[i] == role_id) {
-			bbs_debug(9, "User %s#%s has role %lu\n", u->username, u->discriminator, role_id);
+			bbs_debug(9, "User %s has role %lu\n", u->username, role_id);
 			return 1;
 		}
 	}
@@ -605,14 +625,14 @@ static int channel_contains_user(struct chan_pair *cp, struct user *u)
 	}
 	RWLIST_UNLOCK(&cp->members);
 	if (e) {
-		bbs_debug(5, "User %s#%s explicitly belongs to %lu (%s)\n", u->username, u->discriminator, cp->channel_id, cp->discord_channel);
+		bbs_debug(5, "User %s explicitly belongs to %lu (%s)\n", u->username, cp->channel_id, cp->discord_channel);
 		return 1;
 	}
 	/* Check by role */
 	RWLIST_RDLOCK(&cp->roles);
 	RWLIST_TRAVERSE(&cp->roles, e, entry) {
 #ifdef EXTRA_DISCORD_DEBUG
-		bbs_debug(10, "Does user %s#%s have role %lu?\n", u->username, u->discriminator, e->id);
+		bbs_debug(10, "Does user %s have role %lu?\n", u->username, e->id);
 #endif
 		if (user_has_role(u, e->id)) {
 			break;
@@ -620,18 +640,18 @@ static int channel_contains_user(struct chan_pair *cp, struct user *u)
 	}
 	RWLIST_UNLOCK(&cp->roles);
 	if (e) {
-		bbs_debug(5, "User %s#%s implicitly belongs to %lu (%s)\n", u->username, u->discriminator, cp->channel_id, cp->discord_channel);
+		bbs_debug(5, "User %s implicitly belongs to %lu (%s)\n", u->username, cp->channel_id, cp->discord_channel);
 		return 1;
 	}
 	/* Even though it's more efficient to check this immediately, check this last to attempt to match on roles/users explicitly first.
 	 * We need to handle this explicitly at some point though, since it's not covered by other cases. */
 	if (u->admin) {
-		bbs_debug(5, "User %s#%s is an administrator of guild %lu (%s)\n", u->username, u->discriminator, cp->guild_id, cp->discord_channel);
+		bbs_debug(5, "User %s is an administrator of guild %lu (%s)\n", u->username, cp->guild_id, cp->discord_channel);
 		return 1;
 	}
 	/* And this is yet another separate case... */
 	if (u->user_id == cp->guild_owner) {
-		bbs_debug(5, "User %s#%s is the owner of guild %lu (%s)\n", u->username, u->discriminator, cp->guild_id, cp->discord_channel);
+		bbs_debug(5, "User %s is the owner of guild %lu (%s)\n", u->username, cp->guild_id, cp->discord_channel);
 		return 1;
 	}
 	return 0;
@@ -817,6 +837,7 @@ static void on_ready(struct discord *client, const struct discord_ready *event)
 	}
 
 	discord_started = discord_ready = 1;
+	/* Bots seem to retain discriminators for now, so keep it here for now */
 	bbs_debug(1, "Succesfully connected to Discord as %s#%s\n", event->user->username, event->user->discriminator);
 
 	load_channels(client, event->guilds);
@@ -856,13 +877,18 @@ static struct chan_pair *find_mapping_irc(const char *channel)
 	return cp; /* It's okay to return unlocked since at this point, items can't be removed from the list until the module is unloaded anyways. */
 }
 
+/* This relay module currently only supports on guild, so just call it "Discord", rather than something guild-specific.
+ * Even if it supported more than once, since these usernames are now unique on all of Discord,
+ * it really doesn't matter anyway, since it should still be unique regardless. */
+#define RELAY_PREFIX "Discord"
+
 static void dump_user(struct bbs_node *node, int fd, const char *requsername, struct user *u)
 {
 	char userflags[3];
 	char combined[84];
 	char unique[25];
 
-	snprintf(combined, sizeof(combined), "%s#%s", u->username, u->discriminator);
+	snprintf(combined, sizeof(combined), "%s/%s", RELAY_PREFIX, u->username);
 	/* We consider users to be active in a channel as long as they're in it, so offline is the equivalent of "away" in IRC */
 	snprintf(userflags, sizeof(userflags), "%c%s", u->status == STATUS_IDLE || u->status == STATUS_OFFLINE ? 'G' : 'H', "");
 	snprintf(unique, sizeof(unique), "%lu", u->user_id);
@@ -933,14 +959,14 @@ static int nicklist(struct bbs_node *node, int fd, int numeric, const char *requ
 			/* User is in the same guild that the channel is in, just assume match for now */
 #ifndef BUGGY_PRESENCE_FETCH
 			if (u->status == STATUS_NONE) {
-				bbs_debug(9, "Skipping user %s#%s (no status information)\n", u->username, u->discriminator);
+				bbs_debug(9, "Skipping user %s (no status information)\n", u->username);
 				continue;
 			}
 #endif
 			if (numeric == 352) {
 				dump_user(node, fd, requsername, u); /* Include in WHO response */
 			} else if (numeric == 353) {
-				len += snprintf(buf + len, sizeof(buf) - (size_t) len, "%s%s#%s", len ? " " : "", u->username, u->discriminator);
+				len += snprintf(buf + len, sizeof(buf) - (size_t) len, "%s%s/%s", len ? " " : "", RELAY_PREFIX, u->username);
 				if (len >= 400) { /* Stop well short of the 512 character message limit and clear the buffer */
 					len = 0;
 					irc_relay_names_response(node, fd, requsername, cp->irc_channel, buf);
@@ -953,7 +979,7 @@ static int nicklist(struct bbs_node *node, int fd, int numeric, const char *requ
 		}
 		return 0; /* Other modules could contain matches as well */
 	} else if (user && (numeric == 353 || numeric == 318)) { /* Only for WHO and WHOIS, not NAMES */
-		struct user *u = find_user_by_username(user);
+		struct user *u = find_user_by_ircusername(user);
 
 		if (!u) {
 			bbs_debug(7, "No such user: %s\n", user);
@@ -963,13 +989,11 @@ static int nicklist(struct bbs_node *node, int fd, int numeric, const char *requ
 		if (numeric == 353) {
 			dump_user(node, fd, requsername, u);
 		} else if (numeric == 318) {
-			char mask[96];
 			char combined[84];
 			int idle = 0; /* XXX Arbitrary */
 			int signon = (int) u->guild_joined / 1000; /* Probably the most sensical value to use? */
-			snprintf(combined, sizeof(combined), "%s#%s", u->username, u->discriminator);
-			snprintf(mask, sizeof(mask), "%s/%s", "Discord", combined);
-			irc_relay_numeric_response(node, fd, 311, "%s " "%s %s %s * :%lu", requsername, combined, combined, mask, u->user_id);
+			snprintf(combined, sizeof(combined), "%s/%s", RELAY_PREFIX, u->username);
+			irc_relay_numeric_response(node, fd, 311, "%s " "%s %s %s * :%lu", requsername, combined, combined, combined, u->user_id);
 			irc_relay_numeric_response(node, fd, 312, "%s " "%s %s :%s", requsername, combined, "Discord", "Discord Relay");
 			irc_relay_numeric_response(node, fd, 317, "%s " "%s %d %u :seconds idle, signon time\r\n", requsername, combined, idle, signon);
 		}
@@ -981,7 +1005,7 @@ static int nicklist(struct bbs_node *node, int fd, int numeric, const char *requ
 /*! \brief Deliver direct messages from native IRC server to Discord */
 static int privmsg(const char *recipient, const char *sender, const char *msg)
 {
-	struct user *u = find_user_by_username(recipient);
+	struct user *u = find_user_by_ircusername(recipient);
 
 	if (!u) {
 		return 0;
@@ -1157,10 +1181,10 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 	int res;
 
 	author = event->author;
-	snprintf(sendertmp, sizeof(sendertmp), "%s#%s", author->username, author->discriminator);
+	snprintf(sendertmp, sizeof(sendertmp), "%s/%s", RELAY_PREFIX, author->username);
 
 	/* Ditch the spaces, since IRC doesn't allow them.
-	 * Most other places in this module we use user->username, user->discriminator, etc.
+	 * Most other places in this module we use user->username
 	 * and that is fine since we remove spaces once up front when we create the user.
 	 * Here, we're reparsing this info separately, so we need to do it here as well. */
 	if (bbs_strcpy_nospaces(sendertmp, sender, sizeof(sender))) {
@@ -1241,7 +1265,7 @@ static void relay_message(struct discord *client, struct chan_pair *cp, const st
 static int on_dm_receive(struct discord *client, const struct discord_message *event)
 {
 	char dup[512];
-	char sendername[84];
+	char ircusername[96];
 	char *message, *recipient;
 	const char *msg;
 	char *colon;
@@ -1262,9 +1286,10 @@ static int on_dm_receive(struct discord *client, const struct discord_message *e
 		return -1; /* Not a private message */
 	}
 	*colon = '\0'; /* strip : */
-	snprintf(sendername, sizeof(sendername), "%s#%s", event->author->username, event->author->discriminator);
-	bbs_debug(8, "Received private message: %s -> %s: %s\n", sendername, recipient, message);
-	irc_relay_send_multiline(recipient, CHANNEL_USER_MODE_NONE, "Discord", sendername, NULL, message, NULL, NULL);
+
+	bbs_debug(8, "Received private message: %s -> %s: %s\n", event->author->username, recipient, message);
+	snprintf(ircusername, sizeof(ircusername), "%s/%s", RELAY_PREFIX, event->author->username);
+	irc_relay_send_multiline(recipient, CHANNEL_USER_MODE_NONE, "Discord", ircusername, NULL, message, NULL, NULL);
 	return 0;
 }
 
@@ -1361,12 +1386,10 @@ static int cli_discord_users(struct bbs_cli_args *a)
 	int i = 0;
 	struct user *u;
 
-	bbs_dprintf(a->fdout, "%-48s %7s %5s\n", "User", "Status", "Roles");
+	bbs_dprintf(a->fdout, "%-48s %4s %7s %5s\n", "User", "Disc", "Status", "Roles");
 	RWLIST_RDLOCK(&users);
 	RWLIST_TRAVERSE(&users, u, entry) {
-		char buf[48];
-		snprintf(buf, sizeof(buf), "%s#%s", u->username, u->discriminator);
-		bbs_dprintf(a->fdout, "%-48s %7s %5d" "%s\n", buf, status_str(u->status), u->numroles, u->admin ? " [Guild Admin]" : "");
+		bbs_dprintf(a->fdout, "%-48s %4s %7s %5d" "%s\n", u->username, u->discriminator, status_str(u->status), u->numroles, u->admin ? " [Guild Admin]" : "");
 		i++;
 	}
 	RWLIST_UNLOCK(&users);
@@ -1382,13 +1405,14 @@ static int cli_discord_user(struct bbs_cli_args *a)
 		bbs_dprintf(a->fdout, "No such user '%s'\n", a->argv[2]);
 		return 0;
 	}
-	bbs_dprintf(a->fdout, "%-13s: %lu\n", "User ID", u->user_id);
-	bbs_dprintf(a->fdout, "%-13s: %lu\n", "Guild ID", u->guild_id);
-	bbs_dprintf(a->fdout, "%-13s: %lu\n", "Joined Guild", u->guild_joined);
-	bbs_dprintf(a->fdout, "%-13s: %s#%s\n", "Username", u->username, u->discriminator);
-	bbs_dprintf(a->fdout, "%-13s: %s\n", "Admin", u->admin ? "Yes" : "No");
-	bbs_dprintf(a->fdout, "%-13s: %s\n", "Status", status_str(u->status));
-	bbs_dprintf(a->fdout, "%-13s: %d\n", "Roles", u->numroles);
+	bbs_dprintf(a->fdout, "%-28s: %lu\n", "User ID", u->user_id);
+	bbs_dprintf(a->fdout, "%-28s: %lu\n", "Guild ID", u->guild_id);
+	bbs_dprintf(a->fdout, "%-28s: %lu\n", "Joined Guild", u->guild_joined);
+	bbs_dprintf(a->fdout, "%-28s: %s\n", "Username", u->username);
+	bbs_dprintf(a->fdout, "%-28s: %s\n", "Discriminator (deprecated)", u->discriminator);
+	bbs_dprintf(a->fdout, "%-28s: %s\n", "Admin", u->admin ? "Yes" : "No");
+	bbs_dprintf(a->fdout, "%-28s: %s\n", "Status", status_str(u->status));
+	bbs_dprintf(a->fdout, "%-28s: %d\n", "Roles", u->numroles);
 	for (i = 0; i < u->numroles; i++) {
 		bbs_dprintf(a->fdout,"  => %lu\n", u->roles[i]);
 	}
@@ -1416,7 +1440,7 @@ static int cli_discord_channel(struct bbs_cli_args *a)
 		if (!channel_contains_user(cp, u)) {
 			continue; /* User not in this channel */
 		}
-		bbs_dprintf(a->fdout, "User %lu: %s#%s\n", u->user_id, u->username, u->discriminator);
+		bbs_dprintf(a->fdout, "User %lu: %s\n", u->user_id, u->username);
 		num_users++;
 	}
 	RWLIST_UNLOCK(&users);
