@@ -105,6 +105,14 @@ const char *bbs_event_name(enum bbs_event_type type)
 			return "USER_LOGOFF";
 		case EVENT_USER_PASSWORD_CHANGE:
 			return "USER_PASSWORD_CHANGE";
+		case EVENT_FILE_DOWNLOAD_START:
+			return "FILE_DOWNLOAD_START";
+		case EVENT_FILE_DOWNLOAD_COMPLETE:
+			return "FILE_DOWNLOAD_COMPLETE";
+		case EVENT_FILE_UPLOAD_START:
+			return "FILE_UPLOAD_START";
+		case EVENT_FILE_UPLOAD_COMPLETE:
+			return "FILE_UPLOAD_COMPLETE";
 	}
 	bbs_error("Unknown event: %d\n", type);
 	return NULL;
@@ -188,6 +196,21 @@ int bbs_event_dispatch_custom(struct bbs_node *node, enum bbs_event_type type, c
 			/* Allow direct access to node for these callbacks,
 			 * to promote modularity */
 			event.node = node;
+			break;
+		case EVENT_FILE_DOWNLOAD_START:
+		case EVENT_FILE_DOWNLOAD_COMPLETE:
+		case EVENT_FILE_UPLOAD_START:
+		case EVENT_FILE_UPLOAD_COMPLETE:
+			if (!node) {
+				bbs_error("Can't create an event without a node\n");
+				return -1;
+			}
+			event.nodenum = node->id;
+			if (node->user) {
+				event.userid = node->user->id;
+				safe_strncpy(event.username, bbs_username(node->user), sizeof(event.username));
+			}
+			event.cdata = data;
 			break;
 		/* No default, so we'll have to explicitly handle any newly added events. */
 	}

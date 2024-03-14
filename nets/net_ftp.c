@@ -36,6 +36,7 @@
 #include "include/system.h"
 #include "include/transfer.h"
 #include "include/tls.h"
+#include "include/event.h"
 
 static int minport, maxport;
 
@@ -148,17 +149,27 @@ static int ftp_pasv_new(int *sockfd)
 	close_if(fd); /* Close connection when done. This is the EOF that signals the client that the file transfer has completed. */ \
 	ftp->rfd2 = ftp->wfd2 = -1;
 
+#define DATA_DONE_FD(fp, datafd) \
+	close_if(datafd); \
+	if (ssl2) { \
+		ssl_close(ssl2); \
+		ssl2 = NULL; \
+	} \
+	close_if(fd); /* Close connection when done. This is the EOF that signals the client that the file transfer has completed. */ \
+	ftp->rfd2 = ftp->wfd2 = -1;
+
 static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir, const char *file, const char *flags)
 {
 	ssize_t res = 0;
 	char fullfile[386];
 	char userpath[386];
 	char buf[512];
+	struct bbs_file_transfer_event event;
 	FILE *fp;
-	int x = 0, bytes = 0;
+	size_t x = 0, bytes = 0;
 	SSL *ssl2 = NULL;
 	int pasv_fd = *pasvfdptr;
-	int maxuploadsize = bbs_transfer_max_upload_size();
+	size_t maxuploadsize = bbs_transfer_max_upload_size();
 
 	if (!bbs_transfer_canwrite(ftp->node, fulldir)) {
 		return ftp_write(ftp, 450, "File uploads denied for user\n");
@@ -177,15 +188,24 @@ static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *full
 
 	fp = fopen(fullfile, flags);
 	if (!fp) {
+		bbs_warning("Failed to open '%s' for writing: %s\n", fullfile, strerror(errno));
 		return ftp_write(ftp, 451, "File \"%s\" not created\n", file);
 	}
 
 	/* Accept file upload */
+
+	bbs_transfer_get_user_path(ftp->node, fullfile, userpath, sizeof(userpath));
+	event.userpath = userpath;
+	event.diskpath = fullfile;
+	bbs_event_dispatch_custom(ftp->node, EVENT_FILE_UPLOAD_START, &event);
+
 	ftp_write(ftp, 150, "Proceed with data\r\n");
 	if (DATA_INIT()) {
 		fclose(fp);
 		return -1;
 	}
+	/* Currently we manually read/write in userspace so we can enforce size restrictions,
+	 * but could probably do an in-kernel copy with a max limit, too. */
 	for (;;) {
 		res = bbs_poll(ftp->rfd2, SEC_MS(10));
 		if (res < 0) {
@@ -206,9 +226,9 @@ static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *full
 			res = -1;
 			break;
 		}
-		x = fprintf(fp, "%.*s", (int) res, buf);
-		if (x != res) {
-			bbs_warning("Wanted to write %lu bytes but only wrote %d\n", res, x);
+		x = fwrite(buf, 1, (size_t) res, fp);
+		if ((ssize_t) x != res) {
+			bbs_warning("Wanted to write %lu bytes but only wrote %lu\n", res, x);
 			res = -1;
 			break;
 		}
@@ -223,7 +243,9 @@ static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *full
 			res = ftp_write(ftp, 451, "File transfer failed\r\n");
 		}
 	} else {
-		res = ftp_write(ftp, 226, "File transfer successful, put %d bytes\r\n", bytes);
+		res = ftp_write(ftp, 226, "File transfer successful, put %lu bytes\r\n", bytes); /* Send reply before dispatching event */
+		event.size = bytes;
+		bbs_event_dispatch_custom(ftp->node, EVENT_FILE_UPLOAD_COMPLETE, &event);
 	}
 	return res;
 }
@@ -530,20 +552,22 @@ static void *ftp_handler(void *varg)
 				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
 			} else {
 				struct stat filestat;
-				FILE *fp;
+				int fd;
+				struct bbs_file_transfer_event event;
+
 				MIN_FTP_PRIV(TRANSFER_DOWNLOAD, fullfile);
 				REQUIRE_PASV_FD();
-				fp = fopen(fullfile, "rb");
-				if (!fp) {
+				fd = open(fullfile, O_RDONLY);
+				if (fd < 0) {
 					res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
 					IO_ABORT(res);
 					continue;
 				}
-				if (stat(fullfile, &filestat)) {
-					bbs_warning("stat failed: %s\n", strerror(errno));
+				if (fstat(fd, &filestat)) {
+					bbs_warning("fstat failed: %s\n", strerror(errno));
 					res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
 					IO_ABORT(res);
-					fclose(fp);
+					close(fd);
 					continue;
 				}
 				if (type != 'I') { /* Binary transfer */
@@ -552,15 +576,24 @@ static void *ftp_handler(void *varg)
 				}
 				ftp_write(ftp, 150, "Proceeding with data\r\n");
 				if (DATA_INIT()) {
+					close(fd);
 					break;
 				}
-				res = (int) bbs_sendfile(ftp->wfd2, fileno(fp), NULL, (size_t) filestat.st_size); /* More convenient and efficient than manually relaying using read/write */
-				DATA_DONE(fp, pasv_fd);
+
+				bbs_transfer_get_user_path(node, fullfile, userpath, sizeof(userpath));
+				event.userpath = userpath;
+				event.diskpath = fullfile;
+				bbs_event_dispatch_custom(node, EVENT_FILE_DOWNLOAD_START, &event);
+
+				res = (int) bbs_sendfile(ftp->wfd2, fd, NULL, (size_t) filestat.st_size); /* More convenient and efficient than manually relaying using read/write */
+				DATA_DONE_FD(fp, pasv_fd);
 				if (res != filestat.st_size) {
 					bbs_error("File transfer failed: %s\n", strerror(errno));
 					res = ftp_write(ftp, 451, "File transfer failed\r\n");
 				} else {
-					res = ftp_write(ftp, 226, "File transfer successful\r\n");
+					res = ftp_write(ftp, 226, "File transfer successful\r\n"); /* Send reply before dispatching event */
+					event.size = (size_t) filestat.st_size;
+					bbs_event_dispatch_custom(node, EVENT_FILE_DOWNLOAD_COMPLETE, &event);
 				}
 			}
 		} else if (!strcasecmp(command, "LIST")) { /* List files */
@@ -743,7 +776,7 @@ static void *ftp_handler(void *varg)
 				res = ftp_write(ftp, 450, "\"%s\" already exists\n", rest);
 			} else {
 				MIN_FTP_PRIV(TRANSFER_NEWDIR, fullfile);
-				if (mkdir(fullfile, 0600)) {
+				if (mkdir(fullfile, 0700)) { /* Make directory executable, or we won't be able to create files in it */
 					bbs_warning("mkdir failed: %s\n", strerror(errno));
 					res = ftp_write(ftp, 451, "\"%s\" could not be created\n", rest);
 				} else {

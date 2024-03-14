@@ -26,6 +26,10 @@ enum bbs_event_type {
 	EVENT_USER_LOGIN,				/*!< Successful authentication (any protocol) */
 	EVENT_USER_LOGOFF,				/*!< User logout (any protocol) */
 	EVENT_USER_PASSWORD_CHANGE,		/*!< User password change */
+	EVENT_FILE_DOWNLOAD_START,		/*!< File download from BBS started*/
+	EVENT_FILE_DOWNLOAD_COMPLETE,	/*!< File download from BBS completed */
+	EVENT_FILE_UPLOAD_START,		/*!< File upload to BBS started */
+	EVENT_FILE_UPLOAD_COMPLETE,		/*!< File upload to BBS completed */
 };
 
 struct bbs_event {
@@ -33,9 +37,18 @@ struct bbs_event {
 	unsigned int nodenum;
 	unsigned int userid;
 	struct bbs_node *node;			/*!< Only set for EVENT_NODE_INTERACTIVE_START and EVENT_NODE_INTERACTIVE_LOGIN */
+	const void *cdata;				/*!< Custom callback data (only for certain events) */
 	char protname[10];
 	char username[64];
 	char ipaddr[64];
+};
+
+/* Event custom data types for specific event types, accessible via event->cdata */
+/*! \brief Custom callback data for EVENT_FILE_ events */
+struct bbs_file_transfer_event {
+	const char *userpath;
+	const char *diskpath;
+	size_t size; /* Size (COMPLETE events only) */
 };
 
 /* Forward declaration */

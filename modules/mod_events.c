@@ -454,6 +454,7 @@ static int interactive_login(struct bbs_node *node)
 static int event_cb(struct bbs_event *event)
 {
 	struct sockaddr_in sa;
+	const struct bbs_file_transfer_event *tevent;
 
 	switch (event->type) {
 		case EVENT_NODE_LOGIN_FAILED:
@@ -505,6 +506,20 @@ static int event_cb(struct bbs_event *event)
 				return 1;
 			}
 			break;
+		case EVENT_FILE_DOWNLOAD_COMPLETE:
+			/*! \todo In the future, add support here for download/upload quotas,
+			 * where uploading file increases allowance and downloading consumes that.
+			 * We'll need to check before DOWNLOAD_START to ensure we have sufficient balance. */
+			tevent = event->cdata;
+			bbs_verb(5, "User %s downloaded %s (%lu bytes)\n", S_OR(event->username, "<Guest>"), tevent->diskpath, tevent->size);
+			return 1;
+		case EVENT_FILE_UPLOAD_COMPLETE:
+			tevent = event->cdata;
+			bbs_verb(5, "User %s uploaded %s (%lu bytes)\n", S_OR(event->username, "<Guest>"), tevent->diskpath, tevent->size);
+			/*! \brief In addition to updating balance as described above,
+			 * we may want to do something more, like dispatch a "new file notification",
+			 * since uploads are a lot more significant than downloads. */
+			return 1;
 		default:
 			return 0;
 	}

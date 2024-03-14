@@ -71,9 +71,9 @@ int bbs_transfer_timeout(void)
 	return idletimeout;
 }
 
-int bbs_transfer_max_upload_size(void)
+size_t bbs_transfer_max_upload_size(void)
 {
-	return max_upload_size;
+	return (size_t) max_upload_size;
 }
 
 int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const char *diskpath)

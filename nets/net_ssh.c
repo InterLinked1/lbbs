@@ -916,6 +916,7 @@ struct sftp_info {
 	char *realpath;		/*!< Actual server path */
 	DIR *dir;
 	FILE *file;
+	struct bbs_node *node;
 	unsigned int type:1;
 	unsigned int homedir:1;
 };
@@ -983,6 +984,8 @@ static const char *sftp_get_client_message_type_name(uint8_t i)
 			return NULL;
 	}
 }
+
+#define SFTP_IO_WRITE(f) (f & (SSH_FXF_WRITE | SSH_FXF_APPEND | SSH_FXF_TRUNC | SSH_FXF_EXCL | SSH_FXF_CREAT))
 
 static int sftp_io_flags(int sflags)
 {
@@ -1130,8 +1133,14 @@ static int handle_read(sftp_client_message msg)
 	 * Still works but probably not right */
 	if (r <= 0) {
 		if (feof(info->file)) {
+			char userpath[256];
+			struct bbs_file_transfer_event event;
 			bbs_debug(4, "File transfer has completed\n");
 			sftp_reply_status(msg, SSH_FX_EOF, "EOF");
+			bbs_transfer_get_user_path(info->node, info->realpath, userpath, sizeof(userpath));
+			event.userpath = userpath;
+			event.diskpath = info->realpath;
+			bbs_event_dispatch_custom(info->node, EVENT_FILE_DOWNLOAD_COMPLETE, &event);
 		} else {
 			handle_errno(msg);
 		}
@@ -1335,7 +1344,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 					bbs_debug(5, "Path '%s' not found: %s\n", mypath, strerror(errno));
 					handle_errno(msg);
 				} else {
-					bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath));
+					bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath));
 					sftp_reply_name(msg, userpath, NULL); /* Skip root dir */
 				}
 				break;
@@ -1353,7 +1362,8 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 					info->type = TYPE_DIR;
 					info->name = strdup(msg->filename);
 					info->realpath = strdup(mypath);
-					bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath));
+					info->node = node;
+					bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath));
 					info->homedir = !strcmp(userpath, "/home") || !strcmp(userpath, "/home/"); /* Are we listing all the home directories? */
 					handle = sftp_handle_alloc(msg->sftp, info);
 					sftp_reply_handle(msg, handle);
@@ -1372,14 +1382,21 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 						handle_errno(msg);
 						close(fd); /* Do this after so we don't mess up errno */
 					} else {
+						struct bbs_file_transfer_event event;
 						info->type = TYPE_FILE;
 						info->file = fp;
 						info->name = strdup(msg->filename);
 						info->realpath = strdup(mypath);
+						info->node = node;
 						handle = sftp_handle_alloc(msg->sftp, info);
 						sftp_reply_handle(msg, handle);
 						free(handle);
 						handle = NULL;
+
+						bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath));
+						event.userpath = userpath;
+						event.diskpath = mypath;
+						bbs_event_dispatch_custom(node, SFTP_IO_WRITE(msg->flags) ? EVENT_FILE_UPLOAD_START : EVENT_FILE_DOWNLOAD_START, &event);
 					}
 				}
 				break;
@@ -1405,6 +1422,17 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 						closedir(info->dir);
 						dir = NULL;
 					} else {
+						if (SFTP_IO_WRITE(msg->flags)) { /* For downloads, we already dispatched an event */
+							long int pos;
+							struct bbs_file_transfer_event event;
+							bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath));
+							event.userpath = userpath;
+							event.diskpath = mypath;
+							fseek(info->file, 0, SEEK_END); /* Should be at end, already, but just in case */
+							pos = ftell(info->file);
+							event.size = (size_t) pos;
+							bbs_event_dispatch_custom(node, EVENT_FILE_UPLOAD_COMPLETE, &event);
+						}
 						fclose(info->file);
 						fp = NULL;
 					}
@@ -1433,7 +1461,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 			case SFTP_MKDIR:
 				SFTP_MAKE_PATH_NOCHECK();
 				SFTP_ENSURE_TRUE2(bbs_transfer_canmkdir, node, mypath);
-				STDLIB_SYSCALL(mkdir, mypath, 0600);
+				STDLIB_SYSCALL(mkdir, mypath, 0700); /* Make directory executable, or we won't be able to create files int */
 				break;
 			case SFTP_RMDIR:
 				SFTP_MAKE_PATH();
@@ -1479,9 +1507,11 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 
 cleanup:
 	if (fp) {
+		bbs_debug(7, "Closing file still open at SFTP session end\n");
 		fclose(fp);
 	}
 	if (dir) {
+		bbs_debug(7, "Closing directory still open at SFTP session end\n");
 		closedir(dir);
 	}
 	sftp_server_free(sftp);

@@ -65,7 +65,7 @@ const char *bbs_transfer_rootdir(void);
 int bbs_transfer_timeout(void);
 
 /*! \brief Get maximum upload file size, in bytes */
-int bbs_transfer_max_upload_size(void);
+size_t bbs_transfer_max_upload_size(void);
 
 /*!
  * \brief Get the path on disk for a user's home directory (~)
