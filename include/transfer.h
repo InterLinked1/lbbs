@@ -86,6 +86,26 @@ int bbs_transfer_home_dir(unsigned int userid, char *buf, size_t len);
 int bbs_transfer_home_dir_init(struct bbs_node *node);
 
 /*!
+ * \brief Change directories to a user's home directory (~)
+ * \param node
+ * \param[out] buf Path on disk to home directory.
+ * \param len
+ * \retval 0 on success (directory written to buffer)
+ * \retval -1 if failure or not authenticated
+ */
+int bbs_transfer_home_dir_cd(struct bbs_node *node, char *buf, size_t len);
+
+/*!
+ * \brief Set default directory on connection (home directory if authenticated, transfer root otherwise)
+ * \param node
+ * \param[out] buf
+ * \param len
+ * \retval 0 on success (directory written to buffer)
+ * \retval -1 on failure
+ */
+int bbs_transfer_set_default_dir(struct bbs_node *node, char *buf, size_t len);
+
+/*!
  * \brief Get the path on disk for a user's configuration directory (~/.config)
  * \param userid
  * \param[out] buf
@@ -116,8 +136,16 @@ int bbs_transfer_home_config_subdir(unsigned int userid, const char *name, char 
  */
 int bbs_transfer_home_config_file(unsigned int userid, const char *name, char *buf, size_t len);
 
-/*! \brief Get the user-facing transfer path from a full disk path */
-const char *bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpath);
+/*!
+ * \brief Get the user-facing transfer path from a full disk path
+ * \param node
+ * \param diskpath
+ * \param[out] buf
+ * \param len Size of buf
+ * \retval 0 on success
+ * \retval -1 on failure
+ */
+int bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpath, char *buf, size_t len);
 
 /*!
  * \brief Get a directory using an absolute argument
@@ -146,7 +174,7 @@ int __bbs_transfer_set_disk_path_absolute(struct bbs_node *node, const char *use
 /*!
  * \brief Get a directory using an absolute or relative path argument
  * \param node
- * \param current The current full path on disk
+ * \param current The current user path on disk
  * \param userpath The absolute or relative path argument
  * \param[out] buf The new directory
  * \param len Size of buf
@@ -160,7 +188,7 @@ int __bbs_transfer_set_disk_path_absolute(struct bbs_node *node, const char *use
 /*!
  * \brief Get a directory using an absolute or relative path argument
  * \param node
- * \param current The current full path on disk
+ * \param current The current user path on disk
  * \param userpath The absolute or relative path argument
  * \param[out] buf The new directory
  * \param len Size of buf

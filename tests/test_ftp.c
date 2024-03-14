@@ -83,8 +83,16 @@ static int run(void)
 	SWRITE(client1, "PASS " TEST_PASS ENDL);
 	CLIENT_EXPECT(client1, "230");
 
+	/* By default, should be in home directory after authenticating */
 	SWRITE(client1, "PWD" ENDL);
-	CLIENT_EXPECT(client1, "/");
+	CLIENT_EXPECT(client1, "/home/" TEST_USER);
+
+	/* Explicitly set current directory to root */
+	SWRITE(client1, "CWD /" ENDL);
+	CLIENT_EXPECT(client1, "250");
+
+	SWRITE(client1, "PWD" ENDL);
+	CLIENT_EXPECT(client1, "257 \"/\"");
 
 	SWRITE(client1, "MKD test" ENDL);
 	CLIENT_EXPECT(client1, "250");
@@ -171,6 +179,40 @@ static int run(void)
 	CLIENT_EXPECT(client1, "250");
 	SWRITE(client1, "RMD test" ENDL);
 	CLIENT_EXPECT(client1, "250");
+
+	/* User 2 logs in, to create its home directory */
+	client2 = test_make_socket(21);
+	REQUIRE_FD(client2);
+	CLIENT_EXPECT(client2, "220");
+	SWRITE(client2, "USER " TEST_USER2 ENDL);
+	CLIENT_EXPECT(client2, "331");
+	SWRITE(client2, "PASS " TEST_PASS2 ENDL);
+	CLIENT_EXPECT(client2, "230");
+	close(client2);
+
+	/* Ensure we can't access other users' home directories */
+	SWRITE(client1, "CWD /home" ENDL);
+	CLIENT_EXPECT(client1, "250");
+
+	/* Directory listing is fine */
+	client2 = new_pasv(client1);
+	REQUIRE_FD(client2);
+	SWRITE(client1, "LIST" ENDL);
+	CLIENT_EXPECT(client1, "125");
+	/* We should at least see our own home directory,
+	 * and even others, unless HIDE_OTHER_HOME_DIRECTORIES is defined  */
+	CLIENT_EXPECT_EVENTUALLY(client2, TEST_USER);
+	CLIENT_DRAIN(client1);
+	CLIENT_DRAIN(client2);
+	close_if(client2);
+
+	/* Can't access user 2's home dir */
+	SWRITE(client1, "CWD " TEST_USER2 ENDL);
+	CLIENT_EXPECT(client1, "431");
+
+	/* Same if we try by absolute path */
+	SWRITE(client1, "CWD /home/" TEST_USER2 ENDL);
+	CLIENT_EXPECT(client1, "431");
 
 	SWRITE(client1, "REIN" ENDL); /* Log out */
 	CLIENT_EXPECT(client1, "220");

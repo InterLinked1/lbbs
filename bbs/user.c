@@ -310,6 +310,15 @@ int bbs_username_from_userid(unsigned int userid, char *buf, size_t len)
 	return 0;
 }
 
+int bbs_lowercase_username_from_userid(unsigned int userid, char *buf, size_t len)
+{
+	if (bbs_username_from_userid(userid, buf, len)) {
+		return -1;
+	}
+	bbs_str_tolower(buf);
+	return 0;
+}
+
 int bbs_user_priv_from_userid(unsigned int userid)
 {
 	int priv = -1;

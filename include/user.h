@@ -126,6 +126,9 @@ unsigned int bbs_userid_from_username(const char *username);
  */
 int bbs_username_from_userid(unsigned int userid, char *buf, size_t len);
 
+/*! \brief Same as bbs_username_from_userid, but username returned is all lowercase */
+int bbs_lowercase_username_from_userid(unsigned int userid, char *buf, size_t len);
+
 /*!
  * \brief Get a user's privilege level by username
  * \param userid User ID

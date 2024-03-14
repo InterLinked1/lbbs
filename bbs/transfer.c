@@ -28,6 +28,30 @@
 #include "include/utils.h"
 #include "include/system.h"
 
+/*!
+ * \note One thing I did not like about the original transfer implementation
+ * is that the user-facing file paths must be a suffix of a path on disk;
+ * in particular, for home directories, the user saw /home/$USERID,
+ * instead of /home/$USERNAME, which is not very user-friendly,
+ * and also leaks abstraction some, since users should not really
+ * be concerned with their user IDs, which are more of an implementation detail.
+ *
+ * While it would be elegant to make use of namespaces and mounts,
+ * we're running within the main BBS process, so we can't really
+ * do stuff like that. Most FTP servers just chroot themselves,
+ * so they don't really have to worry about converting back and forth
+ * like that.
+ *
+ * So, we settle for just having some logic to convert between
+ * /home/$USERNAME/stuff <-> /home/$USERID/stuff as needed.
+ *
+ * To restore the original behavior, undef FRIENDLY_PATHS
+ * (though not sure why you'd want to do that...)
+ */
+
+/* Display usernames in home directory paths instead of raw user IDs */
+#define FRIENDLY_PATHS
+
 static char rootdir[84];
 static char homedirtemplate[256];
 
@@ -104,7 +128,20 @@ int transfer_make_longname(const char *file, struct stat *st, char *buf, size_t 
 
 	*p++ = ' ';
 
+	/*! \note The uid/gid are not meaningful to users.
+	 * It would be better to use the BBS username, particularly for a user's own files;
+	 * however, there aren't user accounts on the system itself for each user,
+	 * so we don't have a way to store that in the file attributes.
+	 *
+	 * In the meantime, we may want to just output 0 for both uid and gid,
+	 * instead of outputting the actual values...
+	 */
+
+#ifdef OUTPUT_REAL_UIDS_GIDS
 	p += snprintf(p, len - (size_t) (p - buf), "%3d %d %d %d", (int) st->st_nlink, (int) st->st_uid, (int) st->st_gid, (int) st->st_size);
+#else
+	p += snprintf(p, len - (size_t) (p - buf), "%3d %d %d %d", 0, 0, (int) st->st_gid, (int) st->st_size);
+#endif
 	if (ftp) {
 		struct tm tm;
 		/* Times should be in UTC */
@@ -162,14 +199,37 @@ int bbs_transfer_home_dir(unsigned int userid, char *buf, size_t len)
 	return 0;
 }
 
-int bbs_transfer_home_dir_init(struct bbs_node *node)
+int bbs_transfer_home_dir_cd(struct bbs_node *node, char *buf, size_t len)
 {
-	char homedir[256];
 	if (!bbs_user_is_registered(node->user)) {
 		return -1;
 	}
 	/* Initialize if needed */
-	return bbs_transfer_home_dir(node->user->id, homedir, sizeof(homedir));
+	return bbs_transfer_home_dir(node->user->id, buf, len);
+}
+
+int bbs_transfer_home_dir_init(struct bbs_node *node)
+{
+	char homedir[256];
+	/* It might seem funny that the "initialize" logic
+	 * uses the cd logic internally, but this is because
+	 * the only real concept of "current directory"
+	 * is whatever path is stored in the directory buffer
+	 * of the network protocol driver handling the transfers
+	 * (e.g. net_ftp).
+	 *
+	 * To initialize, we simply pass in a buffer that is discarded. */
+	return bbs_transfer_home_dir_cd(node, homedir, sizeof(homedir));
+}
+
+int bbs_transfer_set_default_dir(struct bbs_node *node, char *buf, size_t len)
+{
+	if (bbs_transfer_home_dir_cd(node, buf, len)) {
+		/* Must not be authenticated, just use the transfer root */
+		safe_strncpy(buf, bbs_transfer_rootdir(), len);
+	}
+	bbs_verb(4, "Setting current directory to '%s'\n", buf);
+	return 0;
 }
 
 int bbs_transfer_home_config_dir(unsigned int userid, char *buf, size_t len)
@@ -205,56 +265,105 @@ int bbs_transfer_home_config_file(unsigned int userid, const char *name, char *b
 	return !bbs_file_exists(buf);
 }
 
-/*! \note This implementation assumes the userpath is always a subset of the diskpath */
-const char *bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpath)
+#define PATH_STARTS_WITH(p, s) (!strncmp(p, s, STRLEN(s)))
+
+int bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpath, char *buf, size_t len)
 {
 	const char *userpath = diskpath + rootlen;
+	const char *p;
+	char *origbuf = buf;
 
-	UNUSED(node); /* Might be used in the future, e.g. for home directories? */
+	UNUSED(node);
+
+	*buf = '\0';
 
 	/* This isn't solely just to ensure that nothing funny is going on.
 	 * If diskpath is shorter than rootdir for whatever reason,
 	 * then userpath points to invalid memory, and we must not access it. */
 	if (strncmp(diskpath, rootdir, rootlen)) {
-		bbs_warning("Disk path '%s' is outside of transfer root '%s'\n", diskpath, rootdir);
-		return NULL;
+		bbs_error("Disk path '%s' is outside of transfer root '%s'\n", diskpath, rootdir);
+		return -1;
 	}
 
-	userpath = S_OR(userpath, "/"); /* Corner case: for root, we need to manually add the / back */
-	bbs_debug(5, "Client path is '%s'\n", userpath);
-	return userpath;
-}
-
-/*! \note query and buf are probably aliased from the original parent call */
-static int __transfer_set_path(struct bbs_node *node, const char *function, const char *query, const char *fullpath, char *buf, size_t len, int require_existence)
-{
-	const char *userpath = bbs_transfer_get_user_path(node, fullpath);
-	/* If it's a home directory, dynamically create it if needed, since we can't expect that to exist automatically. */
-	if (bbs_user_is_registered(node->user) && STARTS_WITH(userpath, "/home")) {
-		char myhomedir[256];
-		/* When accessing /home, or the user's home directory directly, if the user's home directory doesn't exist, create it. */
-		snprintf(myhomedir, sizeof(myhomedir), "%s/%d", fullpath, node->user->id);
-		if (!strcmp(userpath, "/home") || STARTS_WITH(fullpath, myhomedir)) {
-			if (eaccess(myhomedir, R_OK)) {
-				if (mkdir(myhomedir, 0600)) {
-					bbs_error("mkdir(%s) failed: %s\n", myhomedir, strerror(errno));
-				} else {
-					bbs_verb(5, "Auto created home directory %s\n", myhomedir);
-				}
+#ifdef FRIENDLY_PATHS
+	if (PATH_STARTS_WITH(userpath, "/home/")) {
+		int bytes;
+		const char *tmp;
+		p = userpath + STRLEN("/home/");
+		bytes = snprintf(buf, len, "/home/");
+		if (bytes >= (int) len) {
+			return -1;
+		}
+		buf += bytes;
+		len -= (size_t) bytes;
+		if (!strlen_zero(p)) {
+			int userid = atoi(p);
+			if (userid < 1) {
+				bbs_error("No user with user ID %d", userid);
+				return -1;
+			}
+			bbs_lowercase_username_from_userid((unsigned int) userid, buf, len);
+			bytes = (int) strlen(buf);
+			buf += bytes;
+			len -= (size_t) bytes;
+			/* Anything after the home directory path */
+			tmp = strchr(p, '/');
+			if (tmp) {
+				safe_strncpy(buf, tmp, len);
 			}
 		}
+	} else
+#endif
+	{
+		/* This assumes userpath is always a subset of the diskpath */
+		p = S_OR(userpath, "/"); /* Corner case: for root, we need to manually add the / back */
+		bbs_debug(5, "Client path is '%s'\n", p);
+		safe_strncpy(buf, p, len);
+	}
+	bbs_debug(2, "Translated disk path '%s' -> user path '%s'\n", diskpath, origbuf);
+	return 0;
+}
+
+/*!
+ * \brief "Change directories" by constructing a new file path
+ * \param node
+ * \param function Name of calling function, for logging purposes
+ * \param query User-facing directory query, for logging purposes
+ * \param fullpath The new full disk path
+ * \param[out] buf
+ * \param len
+ * \param require_existence Return error (ENOENT) if path does not exist already
+ * \retval 0 on success ("directory changed", i.e. copied to buf)
+ * \retval -1 on error, with errno set appropriately
+ * \note query and buf are probably aliased from the original parent call (e.g. for bbs_transfer_set_disk_path_up)
+ */
+static int __transfer_set_path(struct bbs_node *node, const char *function, const char *query, const char *fullpath, char *buf, size_t len, int require_existence)
+{
+	const char *p = fullpath + rootlen; /* Skip root prefix */
+
+	if (strncmp(fullpath, rootdir, rootlen)) {
+		bbs_error("Requested directory is outside of transfer root: %s\n", fullpath);
+		return -1;
 	}
 
-	/* Deny requests to navigate into other people's home directories. */
-	if (STARTS_WITH(userpath, "/home") && strlen(userpath) > STRLEN("/home")) {
-		const char *homedir = strchr(userpath + 1, '/');
-		if (likely(homedir != NULL)) { /* If length is longer than /home, there should be another / */
-			unsigned int user = (unsigned int) atoi(S_IF(homedir + 1));
-			if (user && (!bbs_user_is_registered(node->user) || user != node->user->id)) {
-				/* This is also hit when doing a directory listing, so this doesn't necessarily indicate user malfeasance */
-				bbs_debug(3, "User not authorized for location: %s\n", fullpath);
-				errno = EPERM;
-				return -1;
+	if (PATH_STARTS_WITH(p, "/home")) {
+		char homedir[256] = "";
+		/* Make sure our home directory exists, in case it doesn't already, since we want it to show in the directory listing. */
+		if (bbs_user_is_registered(node->user)) {
+			bbs_transfer_home_dir_cd(node, homedir, sizeof(homedir));
+		}
+
+		/* Only allow accesses to the user's own home directory, not anyone else's. */
+		p += STRLEN("/home");
+		if (!strlen_zero(p)) {
+			p++; /* Skips /home/ */
+			if (!strlen_zero(p)) {
+				if (strncasecmp(fullpath, homedir, strlen(homedir))) {
+					/* This is also hit when doing a directory listing, so this doesn't necessarily indicate user malfeasance */
+					bbs_debug(3, "User not authorized for location(%s): %s (home dir: %s)\n", function, fullpath, homedir);
+					errno = EPERM;
+					return -1;
+				}
 			}
 		}
 	}
@@ -273,18 +382,151 @@ static int __transfer_set_path(struct bbs_node *node, const char *function, cons
 	return 0;
 }
 
+/*!
+ * \brief Append the user part of the path to form a full disk path (this allows taking a user path argument and using it construct a full disk path)
+ * \param userpath User path
+ * \param[out] buf
+ * \param len. Size of buf. Please try to make it larger than any buffers used in userspace modules.
+ * \note This function works, almost surprisingly, but it's rather hard to follow. Possible improvement would be more logically easy to follow code,
+ *       even if that means we do more copying to make it more readable.
+ */
+static int append_userpath_to_diskpath(const char *userpath, const char *olduserpath, char *buf, size_t len)
+{
+	unsigned int userid;
+	int tmplen;
+	char username[256];
+	char *tmporig = buf;
+	const char *p;
+
+	/* In case we don't append anything */
+	*buf = '\0';
+
+	/* If olduserpath is empty, we're concatenating for an absolute path,
+	 * so /home/ would be at the beginning of userpath, if present.
+	 *
+	 * For relative paths, we may have a non-empty olduserpath,
+	 * in which case we need to process that first.
+	 * Remember, we stripped the leading / from it, if there was one. */
+	if (!strlen_zero(olduserpath)) {
+		if (*olduserpath != '/') {
+			/* If no slash to start, add one */
+			bbs_debug(8, "Didn't begin with slash, adding one\n");
+			*buf++ = '/';
+			len--;
+		} else {
+			*buf++ = '/';
+			len--;
+			olduserpath++;
+		}
+		if (PATH_STARTS_WITH(olduserpath, "home/")) {
+			p = olduserpath + STRLEN("home/");
+			if (!strlen_zero(p)) {
+				bbs_strncpy_until(username, p, sizeof(username), '/');
+				userid = bbs_userid_from_username(username);
+				if (userid < 1) {
+					bbs_debug(1, "No such username '%s'\n", username);
+					return -1;
+				}
+				/* else, replace it, we don't care about permissions here */
+				tmplen = snprintf(buf, len, "home/%u", userid);
+				olduserpath += STRLEN("home/");
+				olduserpath = strchr(olduserpath, '/'); /* Skip user and go to remainder, if any */
+				if (tmplen >= (int) len) {
+					bbs_error("Truncation occured\n");
+					return -1;
+				}
+				buf += tmplen;
+				len -= (size_t) tmplen;
+				bbs_debug(8, "Translated username %s to user ID\n", username);
+			}
+		}
+	}
+	if (!strlen_zero(olduserpath)) {
+		tmplen = snprintf(buf, len, "%s", olduserpath);
+		buf += tmplen;
+		len -= (size_t) tmplen;
+	}
+
+	if (len <= 1) {
+		bbs_error("Buffer exhausted\n");
+		return -1;
+	}
+
+	if (buf > tmporig + 1) { /* Did we add anything so far? */
+		/* If it didn't end in a slash, add one before continuing */
+		const char *lastslash = strrchr(tmporig, '/');
+		if (!lastslash || *(lastslash + 1)) {
+			/* What we got doesn't end in a slash, so add one at the end,
+			 * before adding more stuff (which presumably does NOT begin
+			 * with a slash). */
+			bbs_debug(8, "Doesn't end in a slash, adding one\n");
+			*buf++ = '/';
+			len--;
+		}
+		*buf = '\0';
+	}
+
+	*buf = '\0'; /* If the last thing we did was assign to *buf++, it may not be NUL terminated right now */
+
+	/* Second thing to append and translate */
+	if (!strlen_zero(userpath)) {
+		p = userpath;
+		if (!olduserpath && PATH_STARTS_WITH(userpath, "/home/")) {
+			p += STRLEN("/home/");
+			tmplen = snprintf(buf, len, "/home/");
+			buf += tmplen;
+			len -= (size_t) tmplen;
+		}
+		if (!strlen_zero(p) && !strcmp(tmporig, "/home/")) { /* If all we've got so far is /home/, what follows must be the username that needs conversion to a user ID */
+			bbs_strncpy_until(username, p, sizeof(username), '/');
+			userid = bbs_userid_from_username(username);
+			if (userid < 1) {
+				bbs_debug(1, "No such username '%s'\n", username);
+				return -1;
+			}
+			/* else, replace it, we don't care about permissions here */
+			tmplen = snprintf(buf, len, "%u", userid);
+			p = strchr(p, '/'); /* Skip user and go to remainder, if any */
+			if (tmplen >= (int) len) {
+				bbs_error("Truncation occured\n");
+				return -1;
+			}
+			buf += tmplen;
+			len -= (size_t) tmplen;
+			bbs_debug(8, "Translated username %s to user ID %u\n", username, userid);
+		}
+		if (!strlen_zero(p)) {
+			/* Copy anything left */
+			safe_strncpy(buf, p, len);
+			buf += strlen(p);
+			len -= strlen(p);
+		}
+	}
+
+	if (len <= 1) {
+		bbs_error("Buffer exhausted\n");
+		return -1;
+	}
+
+	 /* If the last thing we did was assign to *buf++, it may not be NUL terminated anymore, fix that.
+	  * Keep this in mind if debugging by dumping out intermediate values above! */
+	*buf = '\0';
+	return 0;
+}
+
 int __bbs_transfer_set_disk_path_absolute(struct bbs_node *node, const char *userpath, char *buf, size_t len, int mustexist)
 {
-	/*! \note Once home directory support is added, if trying to access another user's home directory, we should return EPERM (not ENOENT) */
-	UNUSED(node); /* Might be used in the future, e.g. for home directories? */
-
 	if (userpath && (strlen_zero(userpath) || !strcmp(userpath, ".") || !strcmp(userpath, "/"))) {
 		safe_strncpy(buf, rootdir, len); /* The rootdir must exist. Well, if it doesn't, then nothing will work anyways. */
 	} else {
-		char tmp[256];
+		char tmp[512];
 		int pathlen = !strlen_zero(userpath) ? (int) strlen(userpath) : 0;
-		snprintf(tmp, sizeof(tmp), "%s%s", rootdir, S_IF(userpath));
-		if (pathlen > 3) {
+		int tmplen = snprintf(tmp, sizeof(tmp), "%s", rootdir);
+		if (append_userpath_to_diskpath(userpath, NULL, tmp + tmplen, sizeof(tmp) - (size_t) tmplen)) {
+			errno = ENOENT; /* Just pick something */
+			return -1;
+		}
+		if (pathlen > 3) { /* Special case... check for go up one directory */
 			/* e.g. for foobar/.. we want /.. */
 			const char *end = userpath + pathlen - 3;
 			if (!strcmp(end, "/..")) {
@@ -300,26 +542,23 @@ int __bbs_transfer_set_disk_path_absolute(struct bbs_node *node, const char *use
 
 int __bbs_transfer_set_disk_path_relative(struct bbs_node *node, const char *current, const char *userpath, char *buf, size_t len, int mustexist)
 {
-	char tmp[256];
-	const char *lastslash;
-	int addslash = 1;
+	char tmp[512];
+	int tmplen;
 
-	UNUSED(node); /* Might be used in the future, e.g. for home directories? */
+	bbs_debug(3, "Relative path request: current '%s', differential '%s'\n", current, userpath);
 
 	/* If directory does not start with a /, then it's relative to the current directory.
 	 * If it does, then it's absolute. */
 	if (!strlen_zero(userpath) && *userpath == '/') {
 		return __bbs_transfer_set_disk_path_absolute(node, userpath, buf, len, mustexist);
 	}
-	/* userpath will not begin with a / so we'll want to insert one there normally.
-	 * However, if current ends in a slash, then we don't want to insert or we'll have a duplicate //
-	 * Additionally, if current begins with a slash, then we should strip it to avoid a duplicate // there.
-	 */
-	lastslash = strrchr(current, '/');
-	if (lastslash && !*(lastslash + 1)) {
-		addslash = 0;
+
+	tmplen = snprintf(tmp, sizeof(tmp), "%s", rootdir);
+	if (append_userpath_to_diskpath(userpath, current, tmp + tmplen, sizeof(tmp) - (size_t) tmplen)) {
+		errno = ENOENT; /* Just pick something */
+		return -1;
 	}
-	snprintf(tmp, sizeof(tmp), "%s/%s%s%s", rootdir, *current == '/' ? current + 1 : current, addslash ? "/" : "", S_IF(userpath));
+	bbs_debug(3, "Relative path request: current '%s', differential '%s' -> '%s'\n", current, userpath, tmp);
 	return __transfer_set_path(node, "disk_path_relative", userpath, tmp, buf, len, mustexist);
 }
 
@@ -327,8 +566,6 @@ int bbs_transfer_set_disk_path_up(struct bbs_node *node, const char *diskpath, c
 {
 	char tmp[256];
 	char *end;
-
-	UNUSED(node); /* Might be used in the future, e.g. for home directories? */
 
 	/* Note that diskpath and buf might be the same pointer.
 	 * We do not use diskpath at any point after buf is modified,
@@ -340,6 +577,7 @@ int bbs_transfer_set_disk_path_up(struct bbs_node *node, const char *diskpath, c
 	end = strrchr(tmp, '/');
 	if (!end) {
 		bbs_error("Path '%s' contains no slashes?\n", diskpath);
+		errno = ENOENT;
 		return -1;
 	}
 	*end++ = '\0';
@@ -355,6 +593,7 @@ int bbs_transfer_set_disk_path_up(struct bbs_node *node, const char *diskpath, c
 	 * and hopefully nobody is too stupid to do that. */
 	if (!end) {
 		bbs_error("Path '%s' contains no slashes?\n", diskpath);
+		errno = ENOENT;
 		return -1;
 	}
 	*end = '\0';
@@ -364,6 +603,7 @@ int bbs_transfer_set_disk_path_up(struct bbs_node *node, const char *diskpath, c
 	/* We must not allow anyone to escape out of the transfer directory! */
 	if (strlen(tmp) < rootlen) {
 		bbs_warning("Attempt to navigate outside of rootdir: %s\n", tmp);
+		errno = ENOENT;
 		return -1;
 	}
 

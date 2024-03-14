@@ -152,6 +152,7 @@ static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *full
 {
 	ssize_t res = 0;
 	char fullfile[386];
+	char userpath[386];
 	char buf[512];
 	FILE *fp;
 	int x = 0, bytes = 0;
@@ -164,7 +165,8 @@ static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *full
 	}
 
 	bbs_transfer_home_dir_init(ftp->node);
-	if (bbs_transfer_set_disk_path_relative_nocheck(ftp->node, bbs_transfer_get_user_path(ftp->node, fulldir), file, fullfile, sizeof(fullfile))) {
+	bbs_transfer_get_user_path(ftp->node, fulldir, userpath, sizeof(userpath));
+	if (bbs_transfer_set_disk_path_relative_nocheck(ftp->node, userpath, file, fullfile, sizeof(fullfile))) {
 		return ftp_write(ftp, 450, "File \"%s\" not allowed\n", file);
 	}
 
@@ -185,7 +187,7 @@ static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *full
 		return -1;
 	}
 	for (;;) {
-		res = bbs_poll(ftp->rfd2, 2000);
+		res = bbs_poll(ftp->rfd2, SEC_MS(10));
 		if (res < 0) {
 			res = 0;
 			break; /* Client will close connection for EOF */
@@ -231,6 +233,7 @@ static void *ftp_handler(void *varg)
 	char buf[512];
 	char username[64] = "";
 	char fulldir[256];	/* Path on disk */
+	char userpath[256]; /* User-facing path */
 	char *command, *rest, *next;
 	ssize_t res;
 	struct bbs_node *node = varg;
@@ -268,13 +271,13 @@ static void *ftp_handler(void *varg)
 	IO_ABORT(res);
 
 	/* Initialize our directory to the transfer root */
-	safe_strncpy(fulldir, bbs_transfer_rootdir(), sizeof(fulldir));
+	bbs_transfer_set_default_dir(node, fulldir, sizeof(fulldir));
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 
 	for (;;) {
 		next = NULL;
-		res = bbs_readline(ftp->rfd, &rldata, "\r\n", node->user ? bbs_transfer_timeout() : 15000); /* After some number of seconds of inactivity, a client times out */
+		res = bbs_readline(ftp->rfd, &rldata, "\r\n", node->user ? bbs_transfer_timeout() : SEC_MS(15)); /* After some number of seconds of inactivity, a client times out */
 		if (res <= 0) {
 			break;
 		}
@@ -315,6 +318,7 @@ static void *ftp_handler(void *varg)
 				} else {
 					MIN_FTP_PRIV(TRANSFER_ACCESS, NULL);
 					res = ftp_write(ftp, 230, "Login successful\r\n"); /* If ACCT needed, reply 332 instead */
+					bbs_transfer_home_dir_cd(node, fulldir, sizeof(fulldir)); /* Set current dir to home dir */
 				}
 			}
 		} else if (!strcasecmp(command, "ACCT")) {
@@ -368,16 +372,20 @@ static void *ftp_handler(void *varg)
 			bbs_warning("Node %d issued FTP %s without authentication\n", node->id, command);
 			res = ftp_write(ftp, 530, "Not Logged In\r\n");
 		} else if (!strcasecmp(command, "CWD")) { /* Change working directory */
-			if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rest, fulldir, sizeof(fulldir))) {
-				res = ftp_write(ftp, 431, "No such directory %s\r\n", rest);
+			bbs_transfer_get_user_path(node, fulldir, userpath, sizeof(userpath));
+			res = bbs_transfer_set_disk_path_relative(node, userpath, rest, fulldir, sizeof(fulldir));
+			if (res) {
+				res = ftp_write(ftp, 431, "%s \"%s\"\r\n", strerror(errno), rest);
 			} else {
-				res = ftp_write(ftp, 250, "CWD successful. \"%s\" is current directory.\r\n", bbs_transfer_get_user_path(node, fulldir));
+				bbs_transfer_get_user_path(node, fulldir, userpath, sizeof(userpath));
+				res = ftp_write(ftp, 250, "CWD successful. \"%s\" is current directory.\r\n", userpath);
 			}
 		} else if (!strcasecmp(command, "CDUP")) { /* Change to parent directory */
 			if (bbs_transfer_set_disk_path_up(node, fulldir, fulldir, sizeof(fulldir))) {
 				res = ftp_write(ftp, 431, "Can't move up directories\r\n");
 			} else {
-				res = ftp_write(ftp, 250, "CDUP successful. \"%s\" is current directory.\r\n", bbs_transfer_get_user_path(node, fulldir));
+				bbs_transfer_get_user_path(node, fulldir, userpath, sizeof(userpath));
+				res = ftp_write(ftp, 250, "CDUP successful. \"%s\" is current directory.\r\n", userpath);
 			}
 		} else if (!strcasecmp(command, "SMNT")) { /* Structure Mount */
 			res = ftp_write(ftp, 502, "Command Not Implemented\r\n");
@@ -517,7 +525,8 @@ static void *ftp_handler(void *varg)
 		/* Service Commands */
 		} else if (!strcasecmp(command, "RETR")) { /* Download file from server */
 			char fullfile[386];
-			if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
+			bbs_transfer_get_user_path(node, fulldir, userpath, sizeof(userpath));
+			if (bbs_transfer_set_disk_path_relative(node, userpath, rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
 			} else {
 				struct stat filestat;
@@ -561,7 +570,9 @@ static void *ftp_handler(void *varg)
 			char longname[PATH_MAX];
 			DIR *mydir;
 			int len;
-			const char *userpath = bbs_transfer_get_user_path(node, fulldir);
+			int homedir;
+
+			bbs_transfer_get_user_path(node, fulldir, userpath, sizeof(userpath));
 
 			REQUIRE_PASV_FD();
 			res = ftp_write(ftp, 125, "Listing follows for %s\r\n", userpath);
@@ -582,23 +593,36 @@ static void *ftp_handler(void *varg)
 			 * Should be something like:
 			 * -rw-r--r-- 1 owner group           213 Aug 26 16:31 README
 			 */
+			homedir = !strcmp(userpath, "/home") || !strcmp(userpath, "/home/"); /* Are we listing all the home directories? */
 			mydir = opendir(fulldir);
-			while ((dir = readdir(mydir))) { /* XXX This is not thread safe */
+			while ((dir = readdir(mydir))) { /* readdir is thread safe per directory stream in glibc */
+				char usernamebuf[256];
+				const char *user_folder_name;
 				if (!strcmp(dir->d_name, ".") || !strcmp(dir->d_name, "..")) {
 					continue;
 				}
 				/* Could do bbs_transfer_set_disk_path_relative(node, info->name, dir->d_name, file, sizeof(file)); but it's not really necessary here */
-				snprintf(file, sizeof(file), "%s/%s/%s", bbs_transfer_rootdir(), userpath, dir->d_name);
-				if (bbs_transfer_set_disk_path_relative(node, userpath, dir->d_name, file, sizeof(file))) { /* Will fail for other people's home directories, which is fine, hide in listing */
+				snprintf(file, sizeof(file), "%s/%s", fulldir, dir->d_name);
+				if (homedir) {
+					bbs_lowercase_username_from_userid((unsigned int) atoi(dir->d_name), usernamebuf, sizeof(usernamebuf));
+				}
+				user_folder_name = homedir ? usernamebuf : dir->d_name;
+				/* Users can already get a list of users on the BBS,
+				 * so hiding their home directories is really just security by obscurity.
+				 * Regardless of if they're displayed, users should not be able to access them. */
+#ifdef HIDE_OTHER_HOME_DIRECTORIES
+				if (bbs_transfer_set_disk_path_relative(node, userpath, user_folder_name, file, sizeof(file))) { /* Will fail for other people's home directories, which is fine, hide in listing */
 					continue;
 				}
+#endif
 				if (lstat(file, &st)) {
 					bbs_error("lstat failed: %s\n", strerror(errno));
 					continue;
 				}
-				len = transfer_make_longname(dir->d_name, &st, longname, sizeof(longname), 1);
-				ftp_write_raw2(ftp, "%s\r\n", longname);
+				/* If it's a home directory, print username instead of user ID */
+				len = transfer_make_longname(user_folder_name, &st, longname, sizeof(longname), 1);
 				if (len) {
+					ftp_write_raw2(ftp, "%s\r\n", longname);
 				}
 			}
 			closedir(mydir);
@@ -610,17 +634,19 @@ static void *ftp_handler(void *varg)
 			char fullfile[512];
 			struct stat st;
 			if (strlen_zero(next)) {
-				break;
-			}
-			snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
-			if (stat(fullfile, &st)) {
-				res = ftp_write(ftp, 550, "No such file\r\n");
+				/* FileZilla seems to use MDTM without any arguments */
+				res = ftp_write(ftp, 550, "Missing argument\r\n");
 			} else {
-				struct tm modtime;
-				char timebuf[35];
-				localtime_r(&st.st_mtim.tv_sec, &modtime);
-				strftime(timebuf, sizeof(timebuf), "%Y%m%d%H%M%S", &modtime);
-				res = ftp_write(ftp, 213, "%s\r\n", timebuf);
+				snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
+				if (stat(fullfile, &st)) {
+					res = ftp_write(ftp, 550, "No such file\r\n");
+				} else {
+					struct tm modtime;
+					char timebuf[35];
+					localtime_r(&st.st_mtim.tv_sec, &modtime);
+					strftime(timebuf, sizeof(timebuf), "%Y%m%d%H%M%S", &modtime);
+					res = ftp_write(ftp, 213, "%s\r\n", timebuf);
+				}
 			}
 		} else if (!strcasecmp(command, "STOR")) { /* Upload file to server */
 			REQUIRE_PASV_FD();
@@ -637,7 +663,8 @@ static void *ftp_handler(void *varg)
 			res = ftp_write(ftp, 202, "Command Not Relevant\r\n"); /* Ignore, don't need */
 		} else if (!strcasecmp(command, "DELE")) { /* Delete */
 			char fullfile[386];
-			if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
+			bbs_transfer_get_user_path(node, fulldir, userpath, sizeof(userpath));
+			if (bbs_transfer_set_disk_path_relative(node, userpath, rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
 			} else {
 				MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE, fullfile);
@@ -654,7 +681,8 @@ static void *ftp_handler(void *varg)
 			char fullfile[386];
 			rename_from[0] = '\0'; /* In case we issue a successful RNFR, then issue a failed one (nonexistent target), then try to rename, that should fail, so always reset */
 			/* The rename from target has to exist, so using set_disk_path is okay (since that verifies the path exists) */
-			if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
+			bbs_transfer_get_user_path(node, fulldir, userpath, sizeof(userpath));
+			if (bbs_transfer_set_disk_path_relative(node, userpath, rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
 			} else {
 				MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE, fullfile);
@@ -664,12 +692,13 @@ static void *ftp_handler(void *varg)
 		} else if (!strcasecmp(command, "RNTO")) { /* Rename To */
 			char fullfile[596];
 			char newfullfile[596];
+			bbs_transfer_get_user_path(node, fulldir, userpath, sizeof(userpath));
 			if (s_strlen_zero(rename_from)) {
 				res = ftp_write(ftp, 503, "Bad sequence of commands\r\n");
-			} else if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rename_from, fullfile, sizeof(fullfile))) {
+			} else if (bbs_transfer_set_disk_path_relative(node, userpath, rename_from, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rename_from);
 			/* Use bbs_transfer_set_disk_file_relative since we don't want to require that the target file exists (in fact, it must not) */
-			} else if (bbs_transfer_set_disk_path_relative_nocheck(node, bbs_transfer_get_user_path(node, fulldir), rest, newfullfile, sizeof(newfullfile))) {
+			} else if (bbs_transfer_set_disk_path_relative_nocheck(node, userpath, rest, newfullfile, sizeof(newfullfile))) {
 				res = ftp_write(ftp, 450, "File \"%s\" cannot be the new target\n", rest);
 			} else if (bbs_file_exists(newfullfile)) {
 				res = ftp_write(ftp, 450, "File \"%s\" already exists\n", rest);
@@ -692,7 +721,8 @@ static void *ftp_handler(void *varg)
 			res = ftp_write(ftp, 226, "Closed data connection\r\n");
 		} else if (!strcasecmp(command, "RMD")) { /* Remove Directory */
 			char fullfile[386];
-			if (bbs_transfer_set_disk_path_relative(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
+			bbs_transfer_get_user_path(node, fulldir, userpath, sizeof(userpath));
+			if (bbs_transfer_set_disk_path_relative(node, userpath, rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "\"%s\" does not exist\n", rest);
 			} else {
 				MIN_FTP_PRIV(TRANSFER_DESTRUCTIVE, fullfile);
@@ -700,12 +730,14 @@ static void *ftp_handler(void *varg)
 					bbs_warning("rmdir failed: %s\n", strerror(errno));
 					res = ftp_write(ftp, 451, "\"%s\" could not be deleted\n", rest);
 				} else {
-					res = ftp_write(ftp, 250, "\"%s/%s\" directory deleted.\r\n", bbs_transfer_get_user_path(node, fullfile), rest);
+					bbs_transfer_get_user_path(node, fullfile, userpath, sizeof(userpath));
+					res = ftp_write(ftp, 250, "\"%s/%s\" directory deleted.\r\n", userpath, rest);
 				}
 			}
 		} else if (!strcasecmp(command, "MKD")) { /* Make Directory */
 			char fullfile[386];
-			if (bbs_transfer_set_disk_path_relative_nocheck(node, bbs_transfer_get_user_path(node, fulldir), rest, fullfile, sizeof(fullfile))) {
+			bbs_transfer_get_user_path(node, fulldir, userpath, sizeof(userpath));
+			if (bbs_transfer_set_disk_path_relative_nocheck(node, userpath, rest, fullfile, sizeof(fullfile))) {
 				res = ftp_write(ftp, 450, "\"%s\" already exists\n", rest);
 			} else if (bbs_file_exists(fullfile)) {
 				res = ftp_write(ftp, 450, "\"%s\" already exists\n", rest);
@@ -715,11 +747,13 @@ static void *ftp_handler(void *varg)
 					bbs_warning("mkdir failed: %s\n", strerror(errno));
 					res = ftp_write(ftp, 451, "\"%s\" could not be created\n", rest);
 				} else {
-					res = ftp_write(ftp, 250, "\"%s/%s\" directory created.\r\n", bbs_transfer_get_user_path(node, fullfile), rest);
+					bbs_transfer_get_user_path(node, fullfile, userpath, sizeof(userpath));
+					res = ftp_write(ftp, 250, "\"%s/%s\" directory created.\r\n", userpath, rest);
 				}
 			}
 		} else if (!strcasecmp(command, "PWD")) { /* Print Working Directory */
-			res = ftp_write(ftp, 257, "\"%s\" is current directory.\r\n", bbs_transfer_get_user_path(node, fulldir));
+			bbs_transfer_get_user_path(node, fulldir, userpath, sizeof(userpath));
+			res = ftp_write(ftp, 257, "\"%s\" is current directory.\r\n", userpath);
 		} else if (!strcasecmp(command, "NLST")) { /* Name list */
 			res = ftp_write(ftp, 502, "Command Not Implemented\r\n");
 		} else if (!strcasecmp(command, "SYST")) { /* System */
@@ -742,6 +776,7 @@ static void *ftp_handler(void *varg)
 			res = ftp_write(ftp, 502, "Command Not Implemented\r\n");
 		}
 		if (res <= 0) {
+			bbs_debug(3, "Ending FTP session (res %ld)\n", res);
 			break;
 		}
 	}

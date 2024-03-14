@@ -917,6 +917,7 @@ struct sftp_info {
 	DIR *dir;
 	FILE *file;
 	unsigned int type:1;
+	unsigned int homedir:1;
 };
 
 static struct sftp_info *alloc_sftp_info(void)
@@ -1029,6 +1030,7 @@ static const char *fopen_flags(int flags)
 	return "r"; /* Default */
 }
 
+/*! \brief Single iteration of readdir callback */
 static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 {
 	sftp_attributes attr;
@@ -1045,7 +1047,9 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 	}
 
 	while (!eof) {
-		struct dirent *dir = readdir(info->dir); /* XXX This is not thread safe */
+		char usernamebuf[256];
+		const char *user_folder_name;
+		struct dirent *dir = readdir(info->dir); /* readdir is thread safe per directory stream in glibc */
 		if (!dir) {
 			eof = 1;
 			break;
@@ -1056,8 +1060,12 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 		/* Avoid double slash // at beginning when in the root directory */
 		bbs_debug(4, "Have %s/%s\n", !strcmp(info->name, "/") ? "" : info->name, dir->d_name);
 		/* Could do bbs_transfer_set_disk_path_relative(node, info->name, dir->d_name, file, sizeof(file)); but it's not really necessary here */
-		snprintf(file, sizeof(file), "%s/%s/%s", bbs_transfer_rootdir(), info->name, dir->d_name);
-		if (bbs_transfer_set_disk_path_relative(node, info->name, dir->d_name, file, sizeof(file))) { /* Will fail for other people's home directories, which is fine, hide in listing */
+		snprintf(file, sizeof(file), "%s/%s", info->name, dir->d_name);
+		if (info->homedir) {
+			bbs_lowercase_username_from_userid((unsigned int) atoi(dir->d_name), usernamebuf, sizeof(usernamebuf));
+		}
+		user_folder_name = info->homedir ? usernamebuf : dir->d_name;
+		if (bbs_transfer_set_disk_path_relative(node, info->name, user_folder_name, file, sizeof(file))) { /* Will fail for other people's home directories, which is fine, hide in listing */
 			continue;
 		}
 		if (lstat(file, &st)) {
@@ -1069,7 +1077,7 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 			continue;
 		}
 		i++;
-		transfer_make_longname(dir->d_name, &st, longname, sizeof(longname), 0);
+		transfer_make_longname(user_folder_name, &st, longname, sizeof(longname), 0);
 		sftp_reply_names_add(msg, dir->d_name, longname, attr);
 		sftp_attributes_free(attr);
 	}
@@ -1301,8 +1309,9 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 		goto cleanup;
 	}
 
-	bbs_transfer_home_dir_init(node);
+	bbs_transfer_set_default_dir(node, mypath, sizeof(mypath));
 	for (;;) {
+		char userpath[256];
 		sftp_client_message msg;
 #if 0
 		/*! \todo BUGBUG FIXME For some reason, this doesn't work (probably can't poll directly on the fd, see if there's a libssh API to do this) */
@@ -1326,7 +1335,8 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 					bbs_debug(5, "Path '%s' not found: %s\n", mypath, strerror(errno));
 					handle_errno(msg);
 				} else {
-					sftp_reply_name(msg, bbs_transfer_get_user_path(node, buf), NULL); /* Skip root dir */
+					bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath));
+					sftp_reply_name(msg, userpath, NULL); /* Skip root dir */
 				}
 				break;
 			case SFTP_OPENDIR:
@@ -1343,6 +1353,8 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 					info->type = TYPE_DIR;
 					info->name = strdup(msg->filename);
 					info->realpath = strdup(mypath);
+					bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath));
+					info->homedir = !strcmp(userpath, "/home") || !strcmp(userpath, "/home/"); /* Are we listing all the home directories? */
 					handle = sftp_handle_alloc(msg->sftp, info);
 					sftp_reply_handle(msg, handle);
 					free(handle);
