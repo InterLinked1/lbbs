@@ -1296,17 +1296,31 @@ static void sftp_server_free(sftp_session sftp)
 }
 #endif
 
+#define CANONICALIZE_PATHS() \
+	/* Clients are supposed to call REALPATH so that the server can canonicalize the actual path on disk.
+	 * We just assume that's been done afterwards... */ \
+	if (!realpath(mypath, buf)) { /* returns NULL on failure */ \
+		bbs_debug(5, "Path '%s' not found: %s\n", mypath, strerror(errno)); \
+		handle_errno(msg); \
+		break; \
+	} \
+	bbs_debug(3, "realpath(%s) -> %s\n", mypath, buf); \
+	safe_strncpy(mypath, buf, sizeof(mypath)); /* Replace mypath so we can use either */ \
+	bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath)); \
+
 #define SFTP_MAKE_PATH() \
 	if (bbs_transfer_set_disk_path_absolute(node, msg->filename, mypath, sizeof(mypath))) { \
 		handle_errno(msg); \
 		break; \
-	}
+	} \
+	CANONICALIZE_PATHS();
 
 #define SFTP_MAKE_PATH_NOCHECK() \
 	if (bbs_transfer_set_disk_path_absolute_nocheck(node, msg->filename, mypath, sizeof(mypath))) { \
 		handle_errno(msg); \
 		break; \
-	}
+	} \
+	CANONICALIZE_PATHS();
 
 static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel channel)
 {
@@ -1357,16 +1371,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 		switch (msg->type) {
 			case SFTP_REALPATH:
 				SFTP_MAKE_PATH();
-				/* Clients are supposed to call REALPATH so that the server can canonicalize the actual path on disk.
-				 * We just assume that's been done afterwards... */
-				if (!realpath(mypath, buf)) { /* returns NULL on failure */
-					bbs_debug(5, "Path '%s' not found: %s\n", mypath, strerror(errno));
-					handle_errno(msg);
-				} else {
-					bbs_debug(3, "realpath(%s) -> %s\n", mypath, buf);
-					bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath));
-					sftp_reply_name(msg, userpath, NULL); /* Skip root dir */
-				}
+				sftp_reply_name(msg, userpath, NULL); /* Skip root dir */
 				break;
 			case SFTP_OPENDIR:
 				SFTP_MAKE_PATH();

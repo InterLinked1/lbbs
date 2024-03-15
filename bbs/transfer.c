@@ -76,6 +76,8 @@ size_t bbs_transfer_max_upload_size(void)
 	return (size_t) max_upload_size;
 }
 
+#define PATH_STARTS_WITH(p, s) (!strncmp(p, s, STRLEN(s)))
+
 int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const char *diskpath)
 {
 	int required_priv;
@@ -92,6 +94,18 @@ int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const c
 		if (!strncmp(diskpath, homedir, (size_t) len)) {
 			bbs_debug(6, "Operation implicitly authorized since it's in the user's home directory\n");
 			return 1;
+		}
+		len = snprintf(homedir, sizeof(homedir), "%s/home", bbs_transfer_rootdir());
+		if ((operation == TRANSFER_UPLOAD || operation == TRANSFER_NEWDIR || operation == TRANSFER_DESTRUCTIVE) && !strncmp(diskpath, homedir, (size_t) len)) {
+			/* If not inside the user's home directory, reject the request.
+			 * Logic elsewhere prevents accesing other users' home directories,
+			 * but this is needed here to ensure that:
+			 * - Users cannot delete other home directories
+			 * - Users cannot delete the root /home/ directory (and everyone's home directories!)
+			 * - Users cannot create directories inside the root /home/ directory
+			 */
+			bbs_debug(2, "Operation rejected for '%s', since it modifies /home (root home directory)\n", diskpath);
+			return 0;
 		}
 	}
 
@@ -169,7 +183,9 @@ static int recursive_copy(const char *srcfiles, const char *dest)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 #pragma GCC diagnostic ignored "-Wcast-qual"
-	char *const argv[] = { "cp", "-r", (char*) srcfiles, (char*) dest, NULL };
+	/* no clobber, just in case it already existed (which it shouldn't, but just supposing),
+	 * we don't want to overwrite all the user's existing files. */
+	char *const argv[] = { "cp", "-r", "-n", (char*) srcfiles, (char*) dest, NULL };
 #pragma GCC diagnostic pop
 	return bbs_execvp(NULL, argv[0], argv);
 }
@@ -181,7 +197,7 @@ int bbs_transfer_home_dir(unsigned int userid, char *buf, size_t len)
 		return -1;
 	}
 	snprintf(buf, len, "%s/home/%d", rootdir, userid);
-	if (eaccess(buf, X_OK)) {
+	if (eaccess(buf, R_OK | X_OK)) {
 		char srcfiles[258];
 		if (bbs_ensure_directory_exists(buf)) { /* Autocreate directory structure */
 			return -1;
@@ -264,8 +280,6 @@ int bbs_transfer_home_config_file(unsigned int userid, const char *name, char *b
 	snprintf(buf, len, "%s/home/%d/.config/%s", rootdir, userid, name);
 	return !bbs_file_exists(buf);
 }
-
-#define PATH_STARTS_WITH(p, s) (!strncmp(p, s, STRLEN(s)))
 
 int bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpath, char *buf, size_t len)
 {

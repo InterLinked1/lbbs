@@ -16,6 +16,7 @@
 /* Forward declarations */
 struct bbs_node;
 
+/* These cannot be bits, since they are used as array indices */
 #define TRANSFER_ACCESS 0
 #define TRANSFER_DOWNLOAD 1
 #define TRANSFER_UPLOAD 2
