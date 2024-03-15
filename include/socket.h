@@ -187,12 +187,13 @@ void bbs_tcp_listener2(int socket, int socket2, const char *name, const char *na
 void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, const char *name2, const char *name3, void *(*handler)(void *varg), void *module);
 
 /*!
- * \brief Get local IP address
- * \param buf
+ * \brief Get local IP address of the BBS itself, i.e. the IP address to which a connection was established
+ * \param node Node to fetch the IP address associated with the interface being used by this node, NULL to get the default one.
+ * \param[out] buf
  * \param len
  * \retval 0 on success, -1 on failure
  */
-int bbs_get_local_ip(char *buf, size_t len);
+int bbs_get_local_ip(struct bbs_node *node, char *buf, size_t len);
 
 /*!
  * \brief Get the hostname of an IP address

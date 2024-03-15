@@ -1014,18 +1014,22 @@ void bbs_tcp_listener(int socket, const char *name, void *(*handler)(void *varg)
 	return __bbs_tcp_listener(socket, name, NULL, handler, module);
 }
 
-int bbs_get_local_ip(char *buf, size_t len)
+int bbs_get_local_ip(struct bbs_node *node, char *buf, size_t len)
 {
 	int res = -1;
 	struct sockaddr_in *sinaddr;
 	struct ifaddrs *iflist, *iface;
+	int loops = 0;
 	if (getifaddrs(&iflist)) {
 		bbs_error("getifaddrs failed: %s\n", strerror(errno));
 		return -1;
 	}
 
-	for (iface = iflist; res && iface; iface = iface->ifa_next) {
+loop:
+	for (iface = iflist; iface; iface = iface->ifa_next) {
 		int af;
+		char netmaskbuf[32];
+		struct sockaddr_in *netmask;
 		if (!iface->ifa_addr) {
 			/* This can be NULL for interfaces without an IP address assigned. */
 			continue;
@@ -1033,20 +1037,60 @@ int bbs_get_local_ip(char *buf, size_t len)
 		af = iface->ifa_addr->sa_family;
 		switch (af) {
 			case AF_INET:
-				sinaddr = ((struct sockaddr_in *) iface->ifa_addr);
+				sinaddr = (struct sockaddr_in *) iface->ifa_addr;
+				netmask = (struct sockaddr_in *) iface->ifa_netmask;
 				bbs_get_remote_ip(sinaddr, buf, len);
 				if (bbs_is_loopback_ipv4(buf)) {
 					break; /* Skip the loopback interface, we want the (a) real one */
 				}
-				bbs_debug(5, "Local IP: %s\n", buf);
-				res = 0; /* for loop condition will now be false */
-				break;
+				/* Yeah, not very efficient, but since we store the node's IP as
+				 * a string, rather than binary, we have to convert the netmask, too,
+				 * for comparison (but we're also printing it, so, whatever). */
+				inet_ntop(af, &netmask->sin_addr, netmaskbuf, sizeof(netmaskbuf));
+				bbs_debug(5, "%s: %s/%s\n", iface->ifa_name, buf, netmaskbuf);
+				res = 0;
+				if (node && !loops) {
+					struct in_addr addr;
+					uint32_t netmask_mask;
+					int netmasklen = 0;
+					char cidr_range[96];
+
+					/* Convert subnet mask to prefix length */
+					inet_pton(af, netmaskbuf, &addr);
+					netmask_mask = ntohl(addr.s_addr);
+					while (netmask_mask & 0x80000000) {
+						netmask_mask <<= 1;
+						netmasklen++;
+					}
+
+					snprintf(cidr_range, sizeof(cidr_range), "%s/%d", buf, netmasklen);
+					/* If we have a node, that means we have an IP address against which to compare,
+					 * and we want the interface on which this connection arrived.
+					 * For example, if this interface has a public IP but the node has a private one,
+					 * we should look for an interface with a private address.
+					 *
+					 * Of course, it's impossible to reliably determine the IP address
+					 * that a client behind certain kinds of NAT used to get to us,
+					 * e.g. a NAT'ed VPN tunnel. */
+					if (bbs_cidr_match_ipv4(node->ip, cidr_range)) {
+						/* IP matches netmask */
+						bbs_debug(5, "%s matches CIDR range %s\n", node->ip, cidr_range);
+						goto done;
+					} /* else, check next interface and see if it matches */
+				} else {
+					goto done; /* Break out of for loop */
+				}
 			case AF_INET6:
 			default:
 				break;
 		}
 	}
 
+	bbs_debug(4, "Unable to determine matching interface, using default\n");
+	loops++;
+	goto loop;
+
+done:
 	if (res) {
 		bbs_error("Failed to determine local IP address\n");
 	}
@@ -1185,6 +1229,7 @@ int bbs_cidr_match_ipv4(const char *ip, const char *cidr)
 	int netbits;
 	struct in_addr addr, netmask;
 	uint32_t a, b;
+	int match;
 
 	safe_strncpy(cidr_dup, cidr, sizeof(cidr_dup));
 	tmp = strchr(cidr_dup, '/');
@@ -1224,8 +1269,9 @@ int bbs_cidr_match_ipv4(const char *ip, const char *cidr)
 	a = a >> (32 - netbits);
 	b = b >> (32 - netbits);
 
-	bbs_debug(7, "IP comparison (%d): %08x/%08x\n", netbits, a, b);
-	return a == b;
+	match = a == b;
+	bbs_debug(7, "IP comparison (%d): %08x/%08x => match: %s\n", netbits, a, b, match ? "yes" : "no");
+	return match;
 }
 
 int bbs_ip_match_ipv4(const char *ip, const char *s)
@@ -1235,7 +1281,7 @@ int bbs_ip_match_ipv4(const char *ip, const char *s)
 	if (strchr(s, '/')) {
 		/* It's a CIDR range. Do a direct comparison. */
 		if (bbs_cidr_match_ipv4(ip, s)) {
-			bbs_debug(5, "CIDR match: %s\n", s);
+			bbs_debug(5, "%s matches CIDR range %s\n", ip, s);
 			return 1;
 		}
 		return 0;

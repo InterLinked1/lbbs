@@ -662,7 +662,7 @@ int bbs_transfer_config_load(void)
 	upload_priv = 1;
 	delete_priv = 2;
 	newdir_priv = 2;
-	
+
 	bbs_config_val_set_int(cfg, "privs", "access", &privs[TRANSFER_ACCESS]);
 	bbs_config_val_set_int(cfg, "privs", "download", &privs[TRANSFER_DOWNLOAD]);
 	bbs_config_val_set_int(cfg, "privs", "upload", &privs[TRANSFER_UPLOAD]);

@@ -3902,7 +3902,7 @@ static int load_config(void)
 	if (s_strlen_zero(irc_hostname)) {
 		safe_strncpy(irc_hostname, bbs_hostname(), sizeof(irc_hostname)); /* Default to BBS hostname */
 		if (s_strlen_zero(irc_hostname)) {
-			if (bbs_get_local_ip(irc_hostname, sizeof(irc_hostname))) {
+			if (bbs_get_local_ip(NULL, irc_hostname, sizeof(irc_hostname))) {
 				bbs_error("No IRC or BBS hostname specified, and unable to determine local IP address. Aborting.\n");
 				return -1;
 			}

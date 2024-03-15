@@ -47,6 +47,8 @@ static int minport, maxport;
 
 static int ftp_port = DEFAULT_FTP_PORT;
 static int ftps_port = DEFAULT_FTPS_PORT;
+static char pasv_address_public[64] = "";
+static char pasv_address_private[64] = "";
 
 static int ftps_enabled = 0;
 
@@ -250,6 +252,27 @@ static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *full
 	return res;
 }
 
+static int get_local_ip(struct bbs_node *node, char *buf, size_t len)
+{
+	if (bbs_ip_is_private_ipv4(node->ip)) {
+		if (!s_strlen_zero(pasv_address_private)) {
+			safe_strncpy(buf, pasv_address_private, len);
+			return 0;
+		}
+	} else {
+		if (!s_strlen_zero(pasv_address_public)) {
+			safe_strncpy(buf, pasv_address_public, len);
+			return 0;
+		}
+	}
+	/* As default, try to determine the address based on the interface
+	 * through which the client connected to us. */
+	if (!bbs_get_local_ip(node, buf, len)) { /* Determine it just once, now */
+		return 0;
+	}
+	return -1;
+}
+
 static void *ftp_handler(void *varg)
 {
 	char buf[512];
@@ -270,7 +293,7 @@ static void *ftp_handler(void *varg)
 
 	bbs_node_net_begin(node);
 
-	if (bbs_get_local_ip(our_ip, sizeof(our_ip))) { /* Determine it just once, now */
+	if (get_local_ip(node, our_ip, sizeof(our_ip))) { /* Determine it just once, now */
 		goto cleanup;
 	}
 
@@ -869,6 +892,8 @@ static int load_config(void)
 	maxport = 20000;
 	bbs_config_val_set_port(cfg, "pasv", "minport", &minport);
 	bbs_config_val_set_port(cfg, "pasv", "maxport", &maxport);
+	bbs_config_val_set_str(cfg, "pasv", "public_ip", pasv_address_public, sizeof(pasv_address_public));
+	bbs_config_val_set_str(cfg, "pasv", "private_ip", pasv_address_private, sizeof(pasv_address_private));
 
 	if (ftps_enabled && !ssl_available()) {
 		bbs_error("TLS is not available, FTPS may not be used\n");
