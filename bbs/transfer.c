@@ -358,8 +358,9 @@ static int __transfer_set_path(struct bbs_node *node, const char *function, cons
 		if (!strlen_zero(p)) {
 			p++; /* Skips /home/ */
 			if (!strlen_zero(p)) {
-				if (strncasecmp(fullpath, homedir, strlen(homedir))) {
-					/* This is also hit when doing a directory listing, so this doesn't necessarily indicate user malfeasance */
+				if (!bbs_user_is_registered(node->user) || strncasecmp(fullpath, homedir, strlen(homedir))) {
+					/* This is also hit when doing a directory listing, so this doesn't necessarily indicate user malfeasance.
+					 * This will also have the effect of hiding directories a user is not authorized to access. */
 					bbs_debug(3, "User not authorized for location(%s): %s (home dir: %s)\n", function, fullpath, homedir);
 					errno = EPERM;
 					return -1;
@@ -477,7 +478,8 @@ static int append_userpath_to_diskpath(const char *userpath, const char *olduser
 			buf += tmplen;
 			len -= (size_t) tmplen;
 		}
-		if (!strlen_zero(p) && !strcmp(tmporig, "/home/")) { /* If all we've got so far is /home/, what follows must be the username that needs conversion to a user ID */
+		/* In this case, also ignore if ends in "/.", we'll remove that below. This only applies to SFTP. */
+		if (!strlen_zero(p) && !strcmp(tmporig, "/home/") && strcmp(p, ".")) { /* If all we've got so far is /home/, what follows must be the username that needs conversion to a user ID */
 			bbs_strncpy_until(username, p, sizeof(username), '/');
 			userid = bbs_userid_from_username(username);
 			if (userid < 1) {
@@ -506,6 +508,14 @@ static int append_userpath_to_diskpath(const char *userpath, const char *olduser
 	if (len <= 1) {
 		bbs_error("Buffer exhausted\n");
 		return -1;
+	}
+
+	if (buf > tmporig + 1 && *(buf - 1) == '.' && *(buf - 2) == '/') {
+		/* If there's a trailing /. (from SFTP), remove that,
+		 * since that will cause issues and is the same path without that bit. */
+		bbs_debug(8, "Removing trailing '/.' from path\n");
+		buf -= 2;
+		len += 2;
 	}
 
 	 /* If the last thing we did was assign to *buf++, it may not be NUL terminated anymore, fix that.

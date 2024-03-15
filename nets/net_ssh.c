@@ -14,6 +14,9 @@
  *
  * \brief SSH (Secure Shell) and SFTP (Secure File Transfer Protocol) server
  *
+ * \note Supports RFC 4252 authentication
+ * \note Supports RFC 4253 protocol
+ *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
@@ -60,13 +63,6 @@ static pthread_t ssh_listener_thread;
 #define DEFAULT_SSH_PORT 22
 
 #define KEYS_FOLDER "/etc/ssh/"
-
-/* This mainly exists so that I can test public key authentication with PuTTY/KiTTY.
- * If anonymous authentication is possible, then they will force you to use that instead.
- * So, if you're a developer using PuTTY/KiTTY to test public key auth, comment this out.
- * Otherwise, make sure this is defined to have all authentication options be available.
- */
-#define ALLOW_ANON_AUTH
 
 /*
  * There is no RFC officially for SFTP.
@@ -160,6 +156,7 @@ struct channel_data_struct {
 	unsigned int closed:1;
 	unsigned int userattached:1;
 	unsigned int addedfdwatch:1;
+	unsigned int sftp:1;	/*!< SFTP connection */
 };
 
 /* A userdata struct for session. */
@@ -294,15 +291,23 @@ static void request_fail(const char *ip, enum bbs_event_type type)
 	bbs_event_broadcast(&event);
 }
 
-#ifdef ALLOW_ANON_AUTH
 static int auth_none(ssh_session session, const char *user, void *userdata)
 {
 	struct session_data_struct *sdata = (struct session_data_struct *) userdata;
 
 	bbs_debug(3, "Anonymous authentication for user '%s'\n", user);
 
-	UNUSED(user);
-	UNUSED(session);
+	/* SSH clients first attempt to use "none" method to probe supports methods,
+	 * so the most compatible thing to do is respond with success only if the
+	 * requested username does not exist, and to otherwise remove 'none'
+	 * from the list of supported auth methods.
+	 * This is probably why RFC 4252 5.2 says servers MUST NOT list 'none' as a supported method.
+	 */
+	if (!strlen_zero(user) && bbs_user_exists(user)) {
+		bbs_debug(2, "Requested user exists, disabling anonymous login\n");
+		ssh_set_auth_methods(session, SSH_AUTH_METHOD_PASSWORD | SSH_AUTH_METHOD_PUBLICKEY);
+		return SSH_AUTH_DENIED;
+	}
 
 	/* We're not calling bbs_authenticate or bbs_user_authenticatehere,
 	 * the user still has to authenticate for real (but will do so interactively)
@@ -311,7 +316,6 @@ static int auth_none(ssh_session session, const char *user, void *userdata)
 	sdata->authenticated = 1;
 	return SSH_AUTH_SUCCESS;
 }
-#endif
 
 static int auth_password(ssh_session session, const char *user, const char *pass, void *userdata)
 {
@@ -586,6 +590,7 @@ static int subsystem_request(ssh_session session, ssh_channel channel, const cha
 		}
 		save_remote_ip(session, cdata->node, NULL, 0);
 		bbs_debug(3, "Starting SFTP session on node %d\n", cdata->node->id);
+		cdata->sftp = 1;
         return SSH_OK;
     }
 
@@ -686,9 +691,7 @@ static void handle_session(ssh_event event, ssh_session session)
 
 	struct ssh_server_callbacks_struct server_cb = {
 		.userdata = &sdata,
-#ifdef ALLOW_ANON_AUTH
 		.auth_none_function = auth_none,
-#endif
 		.auth_password_function = auth_password,
 		.auth_pubkey_function = auth_pubkey,
 		.channel_open_request_session_function = channel_open,
@@ -702,28 +705,25 @@ static void handle_session(ssh_event event, ssh_session session)
 	/*
 	 * Unlike Telnet and RLogin, the closest you can get with SSH to disabling protocol-level authentication
 	 * is to allow any username, with no password. This is what SSH_AUTH_METHOD_NONE is.
-	 * Clients will need to provide a username, but they'll be able to connect without getting a password prompt.
-	 * Even if they specify a password, it will be ignored and anonymous authentication will be used,
-	 * (at least, this is how PuTTY/KiTTY + libssh seems to work).
+	 * Clients will need to provide a username, but they'll be able to connect without getting a password prompt,
+	 * as long as the provided username doesn't exist. This is necessary since many clients (PuTTY, FileZilla, etc.)
+	 * will first use 'none' to determine what auth methods are supported. If the requested user exists,
+	 * we then need to remove SSH_AUTH_METHOD_NONE as a supported method and return failure to
+	 * make the client authenticate with one of the other methods. For SSH terminal access,
+	 * this is not necessary; we could just connect anonymously at first and have the user log in during the session,
+	 * but this is necessary for SFTP since the login has to happen up front.
+	 *
 	 * SyncTERM, bizarrely, doesn't seem to support anonymous authentication, but it will work with password authentication.
 	 * So it's okay to support both, it's just that if a client supports anonymous auth, it will always use that it seems,
 	 * with no way to use password auth (at least, without using a client like SyncTERM that doesn't support anonymous auth).
 	 * This could be because Synchronet BBS will login you immediately when connecting via SSH (as opposed to providing a login page),
 	 * so maybe SBBS just decided to force this kind of login style for SSH.
 	 *
-	 * This is just how it seems to be. I would think it would make sense for PuTTY/KiTTY to disable anonymous auth
-	 * if a password is specified IN ADVANCE (in the connection settings, not interactively), so that you could use both modes
-	 * with a single client. Neither the behavior of PuTTY/KITTY nor SyncTERM makes much sense to me in this regard.
-	 *
 	 * TL;DR:
 	 * SyncTERM doesn't support SSH_AUTH_METHOD_NONE (PuTTY/KiTTY do, and will force this method if available)
 	 * PuTTY/KiTTY don't support SSH_AUTH_METHOD_INTERACTIVE (SyncTERM does)
 	 */
-#ifdef ALLOW_ANON_AUTH
 	ssh_set_auth_methods(session, SSH_AUTH_METHOD_NONE | SSH_AUTH_METHOD_PASSWORD | SSH_AUTH_METHOD_PUBLICKEY | SSH_AUTH_METHOD_INTERACTIVE);
-#else
-	ssh_set_auth_methods(session, SSH_AUTH_METHOD_PASSWORD | SSH_AUTH_METHOD_PUBLICKEY);
-#endif
 
 	ssh_callbacks_init(&server_cb);
 	ssh_callbacks_init(&channel_cb);
@@ -805,7 +805,7 @@ static void handle_session(ssh_event event, ssh_session session)
 				/* When we close the PTY master, that'll signal the node to die */
 				break;
 			}
-			if (node_started) {
+			if (node_started && !cdata.sftp) {
 				if (!cdata.nodethread) {
 					/* Happens in the case that we get (and reject) an anonymous SFTP connection */
 					bbs_warning("No node thread, disconnecting\n");
@@ -827,9 +827,18 @@ static void handle_session(ssh_event event, ssh_session session)
 		cdata.event = event;
 		node_started = 1;
 
-		if (!strcmp(cdata.node->protname, "SFTP")) {
+		if (cdata.sftp) {
 			is_sftp = 1;
-			if (cdata.node && bbs_user_is_registered(cdata.node->user)) {
+			if (cdata.node) {
+				if (!bbs_user_is_registered(cdata.node->user)) {
+					/* Anonymous SFTP access is technically allowed,
+					 * as is anonymous FTP access. */
+					bbs_debug(3, "SFTP user is not yet authenticated\n");
+					if (!bbs_transfer_operation_allowed(cdata.node, TRANSFER_ACCESS, NULL)) {
+						bbs_debug(3, "Anonymous access not allowed, rejecting\n");
+						break;
+					}
+				}
 				do_sftp(cdata.node, session, sdata.channel);
 			} else {
 				bbs_warning("Rejecting anonymous SFTP access\n");
@@ -1081,7 +1090,7 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 		}
 		i++;
 		transfer_make_longname(user_folder_name, &st, longname, sizeof(longname), 0);
-		sftp_reply_names_add(msg, dir->d_name, longname, attr);
+		sftp_reply_names_add(msg, user_folder_name, longname, attr);
 		sftp_attributes_free(attr);
 	}
 
@@ -1156,6 +1165,7 @@ static int handle_read(sftp_client_message msg)
 static int handle_write(sftp_client_message msg)
 {
 	size_t len;
+	size_t maxuploadsize;
 	struct sftp_info *info = sftp_handle(msg->sftp, msg->handle);
 
 	/*! \todo Add support for limiting max file size upload according to bbs_transfer_max_upload_size */
@@ -1170,8 +1180,15 @@ static int handle_write(sftp_client_message msg)
 		sftp_reply_status(msg, SSH_FX_BAD_MESSAGE, "Offset failed");
 		return -1;
 	}
+	maxuploadsize = bbs_transfer_max_upload_size();
 	do {
-		size_t r = fwrite(string_data(msg->data), 1, len, info->file);
+		size_t r;
+		if ((size_t) ftell(info->file) + len >= maxuploadsize) {
+			bbs_warning("File upload aborted (too large)\n");
+			sftp_reply_status(msg, SSH_FX_BAD_MESSAGE, "File too large");
+			return -1;
+		}
+		r = fwrite(string_data(msg->data), 1, len, info->file);
 		if (r <= 0 && len > 0) {
 			handle_errno(msg);
 			return -1;
@@ -1340,11 +1357,14 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 		switch (msg->type) {
 			case SFTP_REALPATH:
 				SFTP_MAKE_PATH();
+				/* Clients are supposed to call REALPATH so that the server can canonicalize the actual path on disk.
+				 * We just assume that's been done afterwards... */
 				if (!realpath(mypath, buf)) { /* returns NULL on failure */
 					bbs_debug(5, "Path '%s' not found: %s\n", mypath, strerror(errno));
 					handle_errno(msg);
 				} else {
-					bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath));
+					bbs_debug(3, "realpath(%s) -> %s\n", mypath, buf);
+					bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath));
 					sftp_reply_name(msg, userpath, NULL); /* Skip root dir */
 				}
 				break;
@@ -1361,10 +1381,11 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 					info->dir = dir;
 					info->type = TYPE_DIR;
 					info->name = strdup(msg->filename);
-					info->realpath = strdup(mypath);
+					info->realpath = strdup(buf);
 					info->node = node;
-					bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath));
+					bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath));
 					info->homedir = !strcmp(userpath, "/home") || !strcmp(userpath, "/home/"); /* Are we listing all the home directories? */
+					bbs_debug(4, "Opened user directory '%s' (home dir: %d)\n", userpath, info->homedir);
 					handle = sftp_handle_alloc(msg->sftp, info);
 					sftp_reply_handle(msg, handle);
 					free(handle);
@@ -1386,16 +1407,16 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 						info->type = TYPE_FILE;
 						info->file = fp;
 						info->name = strdup(msg->filename);
-						info->realpath = strdup(mypath);
+						info->realpath = strdup(buf);
 						info->node = node;
 						handle = sftp_handle_alloc(msg->sftp, info);
 						sftp_reply_handle(msg, handle);
 						free(handle);
 						handle = NULL;
 
-						bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath));
+						bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath));
 						event.userpath = userpath;
-						event.diskpath = mypath;
+						event.diskpath = buf;
 						bbs_event_dispatch_custom(node, SFTP_IO_WRITE(msg->flags) ? EVENT_FILE_UPLOAD_START : EVENT_FILE_DOWNLOAD_START, &event);
 					}
 				}
@@ -1425,9 +1446,9 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 						if (SFTP_IO_WRITE(msg->flags)) { /* For downloads, we already dispatched an event */
 							long int pos;
 							struct bbs_file_transfer_event event;
-							bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath));
+							bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath));
 							event.userpath = userpath;
-							event.diskpath = mypath;
+							event.diskpath = buf;
 							fseek(info->file, 0, SEEK_END); /* Should be at end, already, but just in case */
 							pos = ftell(info->file);
 							event.size = (size_t) pos;

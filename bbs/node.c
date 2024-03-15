@@ -588,9 +588,11 @@ static void node_shutdown(struct bbs_node *node, int unique)
 		/* node is now no longer a valid reference, since bbs_node_handler calls node_free (in another thread) before it quits. */
 		if (skipjoin) {
 			bbs_debug(3, "Skipping join of node %d thread %lu\n", nodeid, (unsigned long) node_thread);
-		} else { /* Either bbs_node_handler thread is detached, or somebody else is joining it */
+		} else if (node_thread) { /* Either bbs_node_handler thread is detached, or somebody else is joining it */
 			bbs_debug(3, "Waiting for node %d to exit\n", nodeid);
 			bbs_pthread_join(node_thread, NULL); /* Wait for the bbs_node_handler thread to exit, and then clean it up. */
+		} else {
+			bbs_debug(3, "Node %d has no associated thread\n", nodeid);
 		}
 	} else {
 		/* node_thread is what called this, so don't join ourself.

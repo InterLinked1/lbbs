@@ -320,7 +320,22 @@ static void *ftp_handler(void *varg)
 			res = ftp_write(ftp, 331, "User name okay, need password\r\n");
 		} else if (!strcasecmp(command, "PASS")) {
 			next = rest;
-			if (s_strlen_zero(username)) { /* Never got a username first */
+			if (!strcasecmp(username, "anonymous")) {
+				if (bbs_transfer_operation_allowed(node, TRANSFER_ACCESS, NULL)) {
+					/* Accept anonymous access */
+					/* Password is usually email address for anonymous auth (anonymous@example.com is typical), hope nobody sends their password here cause we're loggin' it */
+					if (next) {
+						bbs_auth("Anonymous FTP access for '%s' on node %u\n", next, node->id);
+					} else {
+						bbs_auth("Anonymous FTP access on node %u\n", node->id);
+					}
+					res = ftp_write(ftp, 230, "Anonymous access granted\r\n");
+				} else {
+					/* Technically, session will continue,
+					 * but we'll check for privileges before processing other commands. */
+					res = ftp_write(ftp, 430, "Anonymous access is disabled\r\n");
+				}
+			} else if (s_strlen_zero(username)) { /* Never got a username first */
 				res = ftp_write(ftp, 503, "Bad sequence of commands\r\n");
 			} else if (strlen_zero(next)) { /* No password */
 				res = ftp_write(ftp, 501, "Invalid command syntax\r\n");
@@ -389,10 +404,10 @@ static void *ftp_handler(void *varg)
 			} else {
 				res = ftp_write(ftp, 533, "Connection is not encrypted\r\n");
 			}
-		} else if (!node->user) {
+		} else if (!node->user && !bbs_transfer_operation_allowed(node, TRANSFER_ACCESS, NULL)) {
 			/* All subsequent commands require authentication */
 			bbs_warning("Node %d issued FTP %s without authentication\n", node->id, command);
-			res = ftp_write(ftp, 530, "Not Logged In\r\n");
+			res = ftp_write(ftp, 530, "Authentication Required\r\n");
 		} else if (!strcasecmp(command, "CWD")) { /* Change working directory */
 			bbs_transfer_get_user_path(node, fulldir, userpath, sizeof(userpath));
 			res = bbs_transfer_set_disk_path_relative(node, userpath, rest, fulldir, sizeof(fulldir));

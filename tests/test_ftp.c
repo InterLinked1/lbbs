@@ -220,6 +220,20 @@ static int run(void)
 	SWRITE(client1, "QUIT" ENDL);
 	CLIENT_EXPECT(client1, "231");
 
+	/* Same if we try as anonymous user */
+	client2 = test_make_socket(21);
+	REQUIRE_FD(client2);
+	CLIENT_EXPECT(client2, "220");
+	SWRITE(client2, "USER anonymous" ENDL);
+	CLIENT_EXPECT(client2, "331");
+	SWRITE(client2, "PASS anonymous@example.com" ENDL);
+	CLIENT_EXPECT(client2, "230");
+	SWRITE(client2, "CWD /home" ENDL);
+	CLIENT_EXPECT(client2, "250");
+	SWRITE(client2, "CWD " TEST_USER2 ENDL);
+	CLIENT_EXPECT(client2, "431");
+	close(client2);
+
 	res = 0;
 
 cleanup:

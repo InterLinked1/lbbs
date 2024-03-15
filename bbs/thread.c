@@ -278,6 +278,8 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 	int lwp;
 	int waiting_join;
 
+	bbs_soft_assert(thread != 0); /* Somebody tried to join the thread 0? (often used as NIL thread) */
+
 	RWLIST_RDLOCK(&thread_list);
 	RWLIST_TRAVERSE(&thread_list, x, list) {
 		if (thread == x->id) {

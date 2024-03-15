@@ -26,8 +26,8 @@ enum bbs_event_type {
 	EVENT_USER_LOGIN,				/*!< Successful authentication (any protocol) */
 	EVENT_USER_LOGOFF,				/*!< User logout (any protocol) */
 	EVENT_USER_PASSWORD_CHANGE,		/*!< User password change */
-	EVENT_FILE_DOWNLOAD_START,		/*!< File download from BBS started*/
-	EVENT_FILE_DOWNLOAD_COMPLETE,	/*!< File download from BBS completed */
+	EVENT_FILE_DOWNLOAD_START,		/*!< File download from BBS started */
+	EVENT_FILE_DOWNLOAD_COMPLETE,	/*!< File download from BBS completed. Does not apply to HTTP downloads (e.g. from a user's home directory) */
 	EVENT_FILE_UPLOAD_START,		/*!< File upload to BBS started */
 	EVENT_FILE_UPLOAD_COMPLETE,		/*!< File upload to BBS completed */
 };
