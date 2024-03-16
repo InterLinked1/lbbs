@@ -14,6 +14,13 @@
  *
  * \brief Telnet and TTY/TDD network driver
  *
+ * \note Supports RFC 857 Echo
+ * \note Supports RFC 858 Suppress Go Ahead
+ * \note Supports RFC 1073 Window Size
+ * \note Supports RFC 1079 Terminal Speed
+ * \note Supports RFC 1091 Terminal Type
+ * \note Supports RFC 1116 Line Mode (disabling only)
+ *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
@@ -57,7 +64,7 @@ static int tty_port = 0, ttys_port = 0; /* Disabled by default */
 static int telnet_send_command(int fd, unsigned char cmd, unsigned char opt)
 {
 	unsigned char ctl[] = {IAC, cmd, opt};
-	ssize_t res = write(fd, ctl, 3);
+	ssize_t res = write(fd, ctl, ARRAY_LEN(ctl));
 	if (res <= 0) {
 		if (errno != EPIPE) { /* Ignore if client just closed connection immediately */
 			bbs_error("Failed to set telnet echo: %s\n", strerror(errno));
@@ -65,113 +72,271 @@ static int telnet_send_command(int fd, unsigned char cmd, unsigned char opt)
 	} else {
 		/* telcmds[0] is EOF (236), so normalize the index to 236 */
 		/* telopts[0] is simply 0, so no modification needed */
-		bbs_debug(5, "Sent Telnet command: %s %s %s\n", telcmds[IAC - 236], telcmds[cmd - 236], telopts[opt]);
+		bbs_debug(5, "Sent Telnet command: %s %s %s\n", telcmds[IAC - xEOF], telcmds[cmd - xEOF], telopts[opt]);
 	}
 	return res <= 0 ? -1 : 0;
 }
 
-/*!
- * \brief Disable or enable Telnet's local echo
- * \retval Same as write
- */
-static int telnet_echo(int fd, int echo)
+static int telnet_send_command6(int fd, unsigned char cmd, unsigned char opt, unsigned char opt2, unsigned char opt3, unsigned char opt4)
 {
-	/* http://www.verycomputer.com/174_d636f401932e1db5_1.htm */
-	/* If using telnet as a TCP client, this will properly disable echo.
-	 * This is necessary, in addition to actually setting the termios as normal.
-	 * If you are using netcat, make sure to disable canonical mode and echo when launching
-	 * netcat, i.e.: stty -icanon -echo && nc 127.0.0.1 23
-	 */
+	unsigned char ctl[] = {IAC, cmd, opt, opt2, opt3, opt4};
+	ssize_t res = write(fd, ctl, ARRAY_LEN(ctl));
+	if (res <= 0) {
+		if (errno != EPIPE) { /* Ignore if client just closed connection immediately */
+			bbs_error("Failed to set telnet echo: %s\n", strerror(errno));
+		}
+	} else {
+		/* telcmds[0] is EOF (236), so normalize the index to 236 */
+		/* telopts[0] is simply 0, so no modification needed */
+		bbs_debug(5, "Sent Telnet command: %s %s %s %s %s %s\n", telcmds[IAC - xEOF], telcmds[cmd - xEOF], telopts[opt], telopts[opt2], telcmds[opt3 - xEOF], telcmds[opt4 - xEOF]);
+	}
+	return res <= 0 ? -1 : 0;
+}
 
-	/* Might seem backwards to do WILL echo to turn local echo off, but think of it as
-	 * us saying that WE'LL do the echoing so local echo, please stop. */
-	return telnet_send_command(fd, echo ? WONT : WILL, TELOPT_ECHO);
+struct telnet_settings {
+	unsigned int rcv_noecho:1;
+	unsigned int sent_winsize:1;
+};
+
+static int telnet_read_command(int fd, unsigned char *buf, size_t len)
+{
+	ssize_t res = bbs_poll(fd, 150);
+	if (res <= 0) {
+		bbs_debug(4, "poll returned %ld: %s\n", res, strerror(errno));
+		return (int) res;
+	}
+	res = read(fd, buf, len - 1);
+	/* Process the command */
+	if (res <= 0) {
+		bbs_debug(4, "read returned %ld: %s\n", res, strerror(errno));
+		return (int) res;
+	} else if (res >= 3) {
+		int a, b, c;
+		buf[res] = '\0'; /* Don't read uninitialized memory later */
+		if (buf[0] != IAC) {
+			/* Got something that wasn't the beginning of a telnet command */
+			bbs_debug(3, "Read %d %d %d, aborting handshake\n", buf[0], buf[1], buf[2])
+			return 0;
+		}
+		/* Don't let the client make us index out of bounds */
+		if (!IN_BOUNDS(buf[0], xEOF, IAC) || !IN_BOUNDS(buf[1], xEOF, IAC) || !IN_BOUNDS(buf[2], TELOPT_BINARY, TELOPT_EXOPL)) {
+			bbs_warning("Got out of bounds command: %d %d %d\n", buf[0], buf[1], buf[2]);
+			return 0;
+		}
+		a = buf[0] - xEOF; /* We know this is IAC */
+		b = buf[1] - xEOF;
+		c = buf[2];
+		bbs_debug(3, "Received Telnet command %s %s %s\n", telcmds[a], telcmds[b], telopts[c]);
+		return (int) res;
+	} else {
+		bbs_warning("Read %ld bytes, not enough to do anything with, discarding\n", res);
+		return 0;
+	}
+}
+
+#define telnet_process_command(node, settings, buf, len, res) __telnet_process_command(node, settings, buf, len, res, depth + 1)
+
+static int __telnet_process_command(struct bbs_node *node, struct telnet_settings *settings, unsigned char *buf, size_t len, int res, int depth)
+{
+	if (depth > 3) {
+		/* Prevent infinite recursion if the client replies with the same thing that triggered another command */
+		bbs_warning("Exceeded command stack depth %d\n", depth);
+		return 0;
+	}
+
+	if (buf[1] == DO && buf[2] == TELOPT_ECHO) {
+		settings->rcv_noecho = 1;
+		bbs_debug(3, "Client acknowledged local echo disable\n");
+	} else if (buf[1] == WILL && buf[2] == TELOPT_NAWS) {
+		if (!settings->sent_winsize) {
+			if (telnet_send_command(node->wfd, DO, TELOPT_NAWS)) {
+				return -1;
+			}
+			settings->sent_winsize = 1;
+		}
+		/* Read terminal type, coming up next */
+		res = telnet_read_command(node->rfd, buf, len);
+		if (res > 0) {
+			res = telnet_process_command(node, settings, buf, len, res);
+		}
+	} else if (buf[1] == WONT && buf[2] == TELOPT_NAWS) {
+		/* Client disabled NAWS, at our request, good. */
+		res = 1;
+	} else if (buf[1] == SB && buf[2] == TELOPT_NAWS) {
+		/* Get the window size
+		 * IAC SB NAWS WIDTH[1] WIDTH[0] HEIGHT[1] HEIGHT[0] IAC SE
+		 * According to RFC 1073, there are 2 bytes for the width and the height each,
+		 * to support clients with a window height/width of up to 65536 rows/cols.
+		 * I'm sorry, there's no way there are any clients with screens that large.
+		 * Here's what these bytes would look for a standard 80x24 terminal:
+		 * 0 80 0 24 255 240
+		 * So we can simply ignore WIDTH[1] and HEIGHT[1] altogether.
+		 */
+		if (res >= 9) {
+			bbs_debug(7, "Got %d %d %d %d %d %d\n", buf[3], buf[4], buf[5], buf[6], buf[7], buf[8]);
+			bbs_node_update_winsize(node, buf[4], buf[6]);
+		} else {
+			bbs_warning("Received window subnegotiation, but only got %d bytes?\n", res);
+		}
+
+		/* XXX Now, tell the client not to send window updates
+		 * Because we're going to step out of the way and all socket I/O is going to
+		 * go right into the PTY master, we won't be able to intercept future Telnet
+		 * commands, so if a window update is sent, we won't be able to process it.
+		 * It would probably be better to add an intermediate layer here to handle that
+		 * (similar to what the SSH module does).
+		 * Or, the PTY thread could handle telnet commands (beginning with IAC),
+		 * if node->protname == "Telnet", but that would break the abstraction
+		 * that the BBS has from the communications protocol.
+		 *
+		 * Either way, for now, we don't support window updates.
+		 */
+		if (telnet_send_command(node->wfd, DONT, TELOPT_NAWS)) {
+			return -1;
+		}
+		res = telnet_read_command(node->rfd, buf, len);
+		if (res > 0) {
+			res = telnet_process_command(node, settings, buf, len, res);
+		}
+	} else if (buf[1] == WILL && buf[2] == TELOPT_TTYPE) {
+		/* Client supports sending terminal type */
+		if (telnet_send_command6(node->wfd, SB, TELOPT_TTYPE, TELQUAL_SEND, IAC, SE)) {
+			return -1;
+		}
+		res = telnet_read_command(node->rfd, buf, len);
+		if (res < 0) {
+			return res;
+		} else if (res > 0) {
+			if (buf[1] == SB && buf[2] == TELOPT_TTYPE && buf[3] == TELQUAL_IS && res >= 6) {
+				bbs_debug(3, "Terminal type is %.*s\n", (int) res - 6, buf + 4); /* First 4 bytes are command, and last two are IAC SE */
+				if (res - 6 < (int) len - 1) {
+					memcpy(buf, buf + 4, (size_t) res - 6);
+					buf[res - 6] = '\0';
+					REPLACE(node->term, (char*) buf);
+				}
+			} else {
+				bbs_warning("Foreign %d-byte response received in response to terminal type\n", res);
+			}
+		}
+	} else if (buf[1] == WILL && buf[2] == TELOPT_TSPEED) {
+		/* Client supports sending terminal speed */
+		if (telnet_send_command6(node->wfd, SB, TELOPT_TSPEED, TELQUAL_SEND, IAC, SE)) {
+			return -1;
+		}
+		res = telnet_read_command(node->rfd, buf, len);
+		if (res < 0) {
+			return res;
+		} else if (res > 0) {
+			if (buf[1] == SB && buf[2] == TELOPT_TSPEED && buf[3] == TELQUAL_IS && res >= 3) {
+				bbs_debug(3, "Terminal speed is %.*s\n", (int) res - 6, buf + 4); /* First 4 bytes are command, and last two are IAC SE */
+				if (res - 6 < (int) len - 1) {
+					memcpy(buf, buf + 4, (size_t) res - 6);
+					buf[res - 6] = '\0';
+					node->reportedbps = (unsigned int) atoi((char*) buf);
+				}
+			} else {
+				bbs_warning("Foreign %d-byte response received in response to terminal type\n", res);
+			}
+		}
+	} else {
+		bbs_debug(3, "Ignoring unhandled response %d %d %d\n", buf[0], buf[1], buf[2]);
+	}
+	return 1;
+}
+
+static int read_and_process_command(struct bbs_node *node, struct telnet_settings *settings, unsigned char *buf, size_t len)
+{
+	int depth = 0;
+	int res = telnet_read_command(node->rfd, buf, len);
+	if (res > 0) {
+		res = telnet_process_command(node, settings, buf, len, res);
+	}
+	return res;
 }
 
 static int telnet_handshake(struct bbs_node *node)
 {
+	int res;
+	struct telnet_settings settings;
 	unsigned char buf[32];
 
-	/* Disable Telnet echo or we'll get double echo when slave echo is on and single echo when it's off. */
-	/* XXX Only for Telnet, not raw TCP */
-	if (telnet_echo(node->wfd, 0)) {
+	memset(&settings, 0, sizeof(settings));
+
+	/* RFC 857 Disable Telnet echo or we'll get double echo when slave echo is on and single echo when it's off. */
+
+	/* http://www.verycomputer.com/174_d636f401932e1db5_1.htm
+	 * If using telnet as a TCP client, this will properly disable echo.
+	 * This is necessary, in addition to actually setting the termios as normal.
+	 * If you are using netcat, make sure to disable canonical mode and echo when launching
+	 * netcat, i.e.: stty -icanon -echo && nc 127.0.0.1 23
+	 *
+	 * Might seem backwards to do WILL echo to turn local echo off, but think of it as
+	 * us saying that WE'LL do the echoing so local echo, please stop. */
+	if (telnet_send_command(node->wfd, WILL, TELOPT_ECHO)) {
+		return -1;
+	}
+
+	/* Send the following to disable line buffering and make the terminal "uncooked" from a Telnet perspective.
+	 * In particular, this is needed to get PuTTY to work properly, since it will assume cooked by default. */
+	if (telnet_send_command(node->wfd, WILL, TELOPT_SGA)) { /* Suppress Go Ahead */
+		return -1;
+	} else if (telnet_send_command(node->wfd, WONT, TELOPT_LINEMODE)) { /* Disable line mode */
+		return -1;
+	}
+
+	/* Read anything the client sends upon connect, if anything.
+	 * For example, some clients, like SyncTERM, will acknowledge everything with a response,
+	 * while others, like PuTTY, will not. */
+	do {
+		res = read_and_process_command(node, &settings, buf, sizeof(buf));
+	} while (res > 0);
+	if (res < 0) {
 		return -1;
 	}
 
 	/* RFC 1073 Request window size */
-	if (telnet_send_command(node->wfd, DO, TELOPT_NAWS)) {
-		return -1;
+	if (!settings.sent_winsize) {
+		settings.sent_winsize = 1;
+		if (telnet_send_command(node->wfd, DO, TELOPT_NAWS)) {
+			return -1;
+		}
+		res = read_and_process_command(node, &settings, buf, sizeof(buf));
+		if (res < 0) {
+			return res;
+		}
 	}
 
-	/* For telnet connections, we MAY get a connection string
-	 * Don't get one with SyncTERM or PuTTY/KiTTY, but Windows Telnet client does send one.
-	 * We should actually process this,
-	 * until we do that, flush the input so that there's no input pending and we can use poll properly once the BBS starts. */
+	/* RFC 1091 Terminal Type */
+	if (telnet_send_command(node->wfd, DO, TELOPT_TTYPE)) {
+		return -1;
+	}
+	res = read_and_process_command(node, &settings, buf, sizeof(buf));
+	if (res < 0) {
+		return res;
+	}
 
-	usleep(100000); /* Wait a moment, in case the connection string is delayed arriving, or we'll skip it. */
+	/* RFC 1079 Terminal Speed */
+	if (telnet_send_command(node->wfd, DO, TELOPT_TSPEED)) {
+		return -1;
+	}
+	res = read_and_process_command(node, &settings, buf, sizeof(buf));
+	if (res < 0) {
+		return res;
+	}
 
-	/* Process any Telnet commands received. Wait 100ms after sending our commands. */
-	for (;;) {
-		int res = bbs_poll(node->rfd, 100);
-		if (res <= 0) {
-			return res;
+	if (!settings.rcv_noecho) {
+		bbs_debug(3, "Request to enable ECHO not yet acknowledged, retrying\n");
+		if (telnet_send_command(node->wfd, WONT, TELOPT_ECHO) || telnet_send_command(node->wfd, WILL, TELOPT_ECHO)) {
+			return -1;
 		}
-		res = (int) read(node->rfd, buf, sizeof(buf));
-		/* Process the command */
-		if (res <= 0) {
-			return res;
-		} else if (res >= 3) {
-			int a, b, c;
-			if (buf[0] != IAC) {
-				/* Got something that wasn't the beginning of a telnet command */
-				bbs_debug(3, "Read %d %d %d, aborting handshake\n", buf[0], buf[1], buf[2])
-				break;
-			}
-			/* Don't let the client make us index out of bounds */
-			if (!IN_BOUNDS(buf[0], xEOF, IAC) || !IN_BOUNDS(buf[1], xEOF, IAC) || !IN_BOUNDS(buf[2], TELOPT_BINARY, TELOPT_EXOPL)) {
-				bbs_warning("Got out of bounds command: %d %d %d\n", buf[0], buf[1], buf[2]);
-				break;
-			}
-			a = buf[0] - xEOF; /* We know this is IAC */
-			b = buf[1] - xEOF;
-			c = buf[2];
-			bbs_debug(3, "Received Telnet command: %s %s %s\n", telcmds[a], telcmds[b], telopts[c]);
-			if (buf[1] == SB && buf[2] == TELOPT_NAWS) {
-				/* Get the window size
-				 * IAC SB NAWS WIDTH[1] WIDTH[0] HEIGHT[1] HEIGHT[0] IAC SE
-				 * According to RFC 1073, there are 2 bytes for the width and the height each,
-				 * to support clients with a window height/width of up to 65536 rows/cols.
-				 * I'm sorry, there's no way there are any clients with screens that large.
-				 * Here's what these bytes would look for a standard 80x24 terminal:
-				 * 0 80 0 24 255 240
-				 * So we can simply ignore WIDTH[1] and HEIGHT[1] altogether.
-				 */
-				if (res >= 9) {
-					bbs_debug(7, "Got %d %d %d %d %d %d\n", buf[3], buf[4], buf[5], buf[6], buf[7], buf[8]);
-					bbs_node_update_winsize(node, buf[4], buf[6]);
-				} else {
-					bbs_warning("Received window subnegotiation, but only got %d bytes?\n", res);
-				}
+	}
 
-				/* XXX Now, tell the client not to send window updates
-				 * Because we're going to step out of the way and all socket I/O is going to
-				 * go right into the PTY master, we won't be able to intercept future Telnet
-				 * commands, so if a window update is sent, we won't be able to process it.
-				 * It would probably be better to add an intermediate layer here to handle that
-				 * (similar to what the SSH module does).
-				 * Or, the PTY thread could handle telnet commands (beginning with IAC),
-				 * if node->protname == "Telnet", but that would break the abstraction
-				 * that the BBS has from the communications protocol.
-				 *
-				 * Either way, for now, we don't support window updates.
-				 */
-				if (telnet_send_command(node->wfd, DONT, TELOPT_NAWS)) {
-					return -1;
-				}
-			}
-		} else {
-			bbs_warning("Read %d bytes, not enough to do anything with, discarding\n", res);
-		}
+	/* Read anything leftover, if anything */
+	do {
+		res = read_and_process_command(node, &settings, buf, sizeof(buf));
+	} while (res > 0);
+	if (res < 0) {
+		return -1;
 	}
 
 	return 0;
@@ -276,7 +441,7 @@ static void *tty_listener(void *unused)
 
 static int load_config(void)
 {
-	struct bbs_config *cfg = bbs_config_load("net_telnet.conf", 0);
+	struct bbs_config *cfg = bbs_config_load("net_telnet.conf", 1);
 
 	if (!cfg) {
 		/* Assume defaults if we failed to load the config (e.g. file doesn't exist). */

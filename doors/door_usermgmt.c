@@ -262,9 +262,29 @@ static int termmgmt_exec(struct bbs_node *node, const char *args)
 
 	bbs_node_clear_screen(node);
 	bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_PRIMARY), "Terminal Settings", COLOR_RESET);
+	bbs_node_writef(node, "%s%10s%s\n", COLOR(COLOR_SECONDARY), "Speed", COLOR_RESET);
+
+	if (node->calcbps) {
+		bbs_node_writef(node, "%s%16s%s %ld bps\n", COLOR(COLOR_WHITE), "Measured", COLOR_RESET, node->calcbps);
+	} else {
+		bbs_node_writef(node, "%s%16s%s %s\n", COLOR(COLOR_WHITE), "Measured", COLOR_RESET, "Broadband");
+	}
+	if (node->bps) {
+		bbs_node_writef(node, "%s%16s%s %u bps\n", COLOR(COLOR_WHITE), "Throttle", COLOR_RESET, node->bps);
+	} else {
+		bbs_node_writef(node, "%s%16s%s %s\n", COLOR(COLOR_WHITE), "Throttle", COLOR_RESET, "Unthrottled");
+	}
+	if (node->reportedbps) {
+		bbs_node_writef(node, "%s%16s%s %u\n", COLOR(COLOR_WHITE), "Reported", COLOR_RESET, node->reportedbps);
+	} else {
+		bbs_node_writef(node, "%s%16s%s %s\n", COLOR(COLOR_WHITE), "Reported", COLOR_RESET, "Unreported");
+	}
+
+	bbs_node_writef(node, "%s%10s %s\n", COLOR(COLOR_SECONDARY), "Protocol", node->protname);
+	bbs_node_writef(node, "%s%10s %s\n", COLOR(COLOR_SECONDARY), "Term Type", S_OR(node->term, "(Unreported)"));
 	bbs_node_writef(node, "%s%10s %s\n", COLOR(COLOR_SECONDARY), "ANSI", node->ansi ? "Yes" : "No");
 	if (node->ansi) {
-#define DUMP_ANSI_SUPPORT(flag, name) bbs_node_writef(node, "%s       - %-15s%s%3s\n", COLOR(COLOR_WHITE), name, node->ans & flag ? COLOR(COLOR_GREEN) : COLOR(COLOR_RED), node->ans & flag ? "Yes" : "No")
+#define DUMP_ANSI_SUPPORT(flag, name) bbs_node_writef(node, "%s       - %-18s%s%3s\n", COLOR(COLOR_WHITE), name, node->ans & flag ? COLOR(COLOR_GREEN) : COLOR(COLOR_RED), node->ans & flag ? "Yes" : "No")
 		DUMP_ANSI_SUPPORT(ANSI_CURSOR_QUERY, "Cursor Query");
 		DUMP_ANSI_SUPPORT(ANSI_CURSOR_SET, "Cursor Set");
 		DUMP_ANSI_SUPPORT(ANSI_COLORS, "Colors");
@@ -274,13 +294,8 @@ static int termmgmt_exec(struct bbs_node *node, const char *args)
 		DUMP_ANSI_SUPPORT(ANSI_TERM_TITLE, "Term Titles");
 #undef DUMP_ANSI_SUPPORT
 	}
-	if (node->bps) {
-		bbs_node_writef(node, "%s%10s%s %d bps\n", COLOR(COLOR_SECONDARY), "Speed", COLOR_RESET, node->bps);
-	} else {
-		bbs_node_writef(node, "%s%10s%s %s\n", COLOR(COLOR_SECONDARY), "Speed", COLOR_RESET, "Unthrottled");
-	}
 	bbs_node_writef(node, "%s<A>%s Toggle ANSI %s<*>%s Exit\n", COLOR(COLOR_SECONDARY), COLOR_RESET, COLOR(COLOR_SECONDARY), COLOR_RESET);
-	c = bbs_node_tread(node, MIN_MS(2));
+	c = bbs_node_tread(node, MIN_MS(5));
 	switch (c) {
 		case 'a':
 		case 'A':

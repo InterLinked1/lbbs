@@ -54,6 +54,7 @@ struct bbs_node {
 	const char *menu;			/*!< Current menu */
 	const char *menuitem;		/*!< Currently executed menu item */
 	int menustack;				/*!< Current menu stack level */
+	char *term;					/*!< Terminal type (TERM) */
 	char *ip;					/*!< Remote IP Address */
 	unsigned short int rport;	/*!< Remote port number */
 	unsigned short int port;	/*!< Local port number */
@@ -62,6 +63,7 @@ struct bbs_node {
 	time_t created;				/*!< Creation time */
 	pid_t childpid;				/*!< Child PID of process node is currently exec'ing (0 if none) */
 	long int calcbps;			/*!< Calculated terminal speed (from measurements) */
+	unsigned int reportedbps;	/*!< Reported terminal speed (by client) */
 	unsigned int bps;			/*!< Emulated terminal speed */
 	unsigned int speed;			/*!< Pause time for emulated terminal speed, in us */
 	/* Node flags */

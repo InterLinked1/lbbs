@@ -26,6 +26,14 @@ adduser -c "BBS" bbs --disabled-password --shell /usr/sbin/nologin --gecos ""
 apt-get -y install mariadb-server
 mysql_secure_installation
 
+# Install a terminfo file for syncterm, which is not present by default
+if [ -d /etc/terminfo ] && [ ! -f /etc/terminfo/s/syncterm ]; then
+	cd /tmp
+	wget https://gitlab.synchro.net/main/sbbs/-/raw/master/install/termcap -O /tmp/syncterm_terminfo
+	sed -i 's/ansi-bbs/syncterm/' /tmp/syncterm_terminfo
+	tic -s syncterm_terminfo
+fi
+
 # Change these passwords! (create admin account for sysop use, and a BBS account for LBBS to use)
 
 # mariadb

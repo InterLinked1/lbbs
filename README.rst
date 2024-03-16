@@ -282,6 +282,27 @@ Can I run SSH and SFTP on the same port?
 Yes (and, in fact, you must, if you wish to enable both).
 Originally, SSH and SFTP were provided by 2 independent modules. They are now combined, allowing for same-port usage, which users expect.
 
+What terminal emulators are supported?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Most common terminal emulators should work fine. The emulator's terminal type is used, if sent, and some terminal autodetection is also performed.
+
+Some emulators are particularly good. Of all the well-known ones, these three terminal emulators are particularly recommended for BBSing on Windows:
+
+* **SyncTERM** - Works well, looks nice. You **must** use the `newer 1.2 version <https://github.com/bbs-io/syncterm-windows/releases/tag/dev>`_. The more commonly downloaded 1.1 version has major bugs.
+* **qodem** - Initial configuration slightly unintuitive, but otherwise works very well, with excellent support for non-standard display sizes.
+* **PuTTY** (and forks, like KiTTY) - Works well, no known issues. Not "retro" at all, but does the job fine.
+
+Most other terminal emulators tested tend to have various setup, compatibility, or runtime issues. In particular:
+
+* **NetRunner** - Not recommended. Poorer support for ANSI escape sequences and Telnet options. Does not send a terminal type! Poor support for ncurses applications.
+
+I see warnings about a terminal type not being in the terminfo database.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This typically happens for terminal emulators that report non-standard terminal types that are not installed by default on the system.
+This can be resolved by installing the appropriate terminfo file. See :code:`scripts/server_setup.sh` for an example of adding :code:`syncterm` support in this manner.
+
 When using private namespace IRC channels, channel messages get sent to me as private messages.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

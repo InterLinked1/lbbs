@@ -177,6 +177,48 @@ static int set_controlling_term(int fd)
 	return pres;
 }
 
+static int term_type_exists(const char *term)
+{
+	/* Check if a term type exists in the system.
+	 * libtermcap doesn't seem to offer an easy way to query
+	 * without actual messing with terminal stuff.
+	 *
+	 * Most systems do not include "syncterm" by default,
+	 * and if an unrecognized terminal type is used,
+	 * programs that depend on termcap will fail
+	 * and exit with Operation not permitted.
+	 *
+	 * We thus want to check to see if that was because the
+	 * TERM doesn't exist, in which case the sysop
+	 * may need to add that to the termcap database.
+	 */
+	pid_t pid;
+	int status;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+#pragma GCC diagnostic ignored "-Wcast-qual"
+	char *const argv[] = { (char*) "infocmp", term, NULL };
+
+	pid = fork();
+	if (pid < 0) {
+		bbs_error("fork failed: %s\n", strerror(errno));
+		return -1;
+	} else if (!pid) {
+		execvp("infocmp", argv);
+		_exit(errno);
+	}
+#pragma GCC diagnostic pop
+	waitpid(pid, &status, WUNTRACED | WCONTINUED);
+	if (WIFEXITED(status)) {
+		status = WEXITSTATUS(status);
+		if (status) {
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
 static void waitpidexit(pid_t pid, const char *filename, int *res)
 {
 	pid_t w;
@@ -724,8 +766,8 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		fdin = fdout = fd;
 		bbs_assert(isatty(fd));
 		/* Don't call tcgetsid here, it will fail */
-		bbs_debug(6, "sid: %d, tcpgrp: %d\n", getsid(getpid()), tcgetpgrp(fd));
-		safe_strncpy(fullterm, "TERM=xterm", sizeof(fullterm)); /* Many interactive programs will whine if $TERM is not set */
+		bbs_debug(6, "sid: %d, tcpgrp: %d, term: %s\n", getsid(getpid()), tcgetpgrp(fd), S_IF(node->term));
+		snprintf(fullterm, sizeof(fullterm), "TERM=%s", S_OR(node->term, "xterm")); /* Many interactive programs will whine if $TERM is not set */
 	}
 	if (fdout == -1) {
 		/* If no node and no output fd, create file descriptors using a temporary pipe */
@@ -1009,6 +1051,12 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 
 	bbs_debug(5, "Waiting for process %d to exit\n", pid);
 	waitpidexit(pid, filename, &res);
+	if (res == 1) {
+		/* Check if this failed because the $TERM used is not in the termcap database. */
+		if (node && !strlen_zero(node->term) && !term_type_exists(node->term)) {
+			bbs_warning("Terminal type '%s' is not in the terminfo database\n", node->term);
+		}
+	}
 	if (node) {
 		/* If we're being shut down right now, it's likely the child process
 		 * was actually killed in node_shutdown, in which case we're not going

@@ -14,8 +14,10 @@
  *
  * \brief SSH (Secure Shell) and SFTP (Secure File Transfer Protocol) server
  *
+ * \note Supports RFC 4251 architecture
  * \note Supports RFC 4252 authentication
  * \note Supports RFC 4253 protocol
+ * \note Supports RFC 4254 protocol
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -443,9 +445,7 @@ static int pty_request(ssh_session session, ssh_channel channel, const char *ter
 {
 	struct channel_data_struct *cdata = (struct channel_data_struct *) userdata;
 
-	UNUSED(session);
 	UNUSED(channel);
-	UNUSED(term);
 
 	cdata->winsize->ws_row = (short unsigned int) rows;
 	cdata->winsize->ws_col = (short unsigned int) cols;
@@ -483,6 +483,7 @@ static int pty_request(ssh_session session, ssh_channel channel, const char *ter
 	if (!cdata->node) {
 		return SSH_ERROR;
 	}
+	REPLACE(cdata->node->term, term);
 	/* Attach the user that we set earlier.
 	 * If we didn't set one, it's still NULL, so fine either way. */
 	if (!bbs_node_attach_user(cdata->node, *cdata->user)) {
@@ -1353,14 +1354,11 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 	for (;;) {
 		char userpath[256];
 		sftp_client_message msg;
-#if 0
-		/*! \todo BUGBUG FIXME For some reason, this doesn't work (probably can't poll directly on the fd, see if there's a libssh API to do this) */
-		int pres = bbs_poll(node->fd, bbs_transfer_timeout());
+		int pres = ssh_channel_poll_timeout(channel, bbs_transfer_timeout(), 0);
 		if (pres <= 0) {
-			bbs_debug(3, "poll returned %d, terminating SFTP session\n", pres);
+			bbs_debug(3, "ssh_channel_poll_timeout returned %d, terminating SFTP session\n", pres);
 			break;
 		}
-#endif
 		msg = sftp_get_client_message(sftp); /* This will block, so if we want a timeout, we need to do it beforehand */
 		if (!msg) {
 			break;

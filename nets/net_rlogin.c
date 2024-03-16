@@ -93,6 +93,17 @@ static int rlogin_handshake(struct bbs_node *node)
 	s3 = s2 + strlen(s2) + 1;
 	s4 = s3 + strlen(s3) + 1;
 	bbs_debug(3, "Got %ld-byte connection string (%s/%s/%s/%s)\n", res, s1, s2, s3, s4);
+	if (!strlen_zero(s4)) {
+		char *tmp;
+		tmp = strchr(s4, '/');
+		if (tmp) {
+			*tmp++ = '\0';
+			if (!strlen_zero(tmp)) {
+				node->reportedbps = (unsigned int) atoi(tmp);
+			}
+		}
+		REPLACE(node->term, s4);
+	}
 	if (SWRITE(node->fd, "\0") != STRLEN("\0")) { /* Send 0-byte to ACK and change to data transfer mode */
 		return -1;
 	}

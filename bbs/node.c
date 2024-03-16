@@ -614,6 +614,7 @@ static void node_free(struct bbs_node *node)
 		FREE(node->vars); /* Free the list itself */
 	}
 	free_if(node->ip);
+	free_if(node->term);
 	bbs_debug(4, "Node %d now freed\n", node->id);
 	bbs_verb(3, "Node %d has exited\n", node->id);
 	bbs_node_unlock(node);
@@ -765,7 +766,17 @@ static int cli_nodes(struct bbs_cli_args *a)
 	int c = 0;
 	time_t now = time(NULL);
 
-	bbs_dprintf(a->fdout, "%3s %9s %9s %7s %4s %5s %4s %-15s %-25s %15s %5s %1s %1s %1s %7s %3s %3s %3s %3s %3s %3s %3s %s\n", "#", "PROTOCOL", "ELAPSED", "TRM SZE", "ANSI", "SPEED", "SLOW", "USER", "MENU/PAGE/LOCATION", "IP ADDRESS", "RPORT", "E", "B", "!", "TID", "SFD", "FD", "RFD", "WFD", "MST", "SLV", "SPY", "SLV NAME");
+	bbs_dprintf(a->fdout, "%3s %9s %9s %-15s %-25s"
+		" %15s %5s %7s %3s %3s %3s %3s"
+		" %3s %3s %3s"
+		" %1s %1s %1s"
+		" %7s %8s %4s %5s %6s %4s"
+		"\n",
+		"#", "PROTOCOL", "ELAPSED", "USER", "MENU/PAGE/LOCATION",
+		"IP ADDRESS", "RPORT", "TID", "SFD", "FD", "RFD", "WFD",
+		"MST", "SLV", "SPY",
+		"E", "B", "!",
+		"TRM SZE", "TYPE", "ANSI", "SPEED", "BPS", "SLOW");
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
@@ -785,22 +796,25 @@ static int cli_nodes(struct bbs_cli_args *a)
 		snprintf(menufull, sizeof(menufull), "%s%s%s%s", S_IF(n->menu), n->menuitem ? " (" : "", S_IF(n->menuitem), n->menuitem ? ")" : "");
 		lwp = bbs_pthread_tid(n->thread);
 
+		bbs_dprintf(a->fdout, "%3d %9s %9s %-15s %-25s"
+			" %15s %5u %7d %3d %3d %3d %3d",
+			n->id, n->protname, elapsed, bbs_username(n->user), menufull,
+			n->ip, n->rport, lwp, n->sfd, n->fd, n->rfd, n->wfd);
 		if (NODE_INTERACTIVE(n)) {
 			/* If the size is speculative, put a '?' afterwards */
 			snprintf(termsize, sizeof(termsize), "%dx%d%s", n->cols, n->rows, n->dimensions ? "" : "?");
 			bbs_node_format_speed(n, speed, sizeof(speed));
+			bbs_dprintf(a->fdout,
+				" %3d %3d %3d"
+				" %1s %1s %1s"
+				" %7s %8s %4s %5s %6u %4s"
+				"\n",
+				n->amaster, n->slavefd, n->spyfd,
+				BBS_YN(n->echo), BBS_YN(n->buffered), bbs_node_interrupted(n) ? "*" : "",
+				termsize, S_IF(n->term), BBS_YESNO(n->ansi), speed, n->reportedbps, BBS_YN(n->slow));
 		} else {
-			termsize[0] = speed[0] = '\0';
+			bbs_dprintf(a->fdout, "\n");
 		}
-
-		bbs_dprintf(a->fdout, "%3d %9s %9s %7s %4s %5s %4s %-15s %-25s %15s %5u %1s %1s %1s %7d %3d %3d %3d %3d",
-			n->id, n->protname, elapsed, termsize, NODE_INTERACTIVE(n) ? BBS_YESNO(n->ansi) : "", speed, NODE_INTERACTIVE(n) ? BBS_YN(n->slow) : " ", bbs_username(n->user), menufull, n->ip, n->rport, NODE_INTERACTIVE(n) ? BBS_YN(n->echo) : "", NODE_INTERACTIVE(n) ? BBS_YN(n->buffered) : "",
-			bbs_node_interrupted(n) ? "*" : "",
-			lwp, n->sfd, n->fd, n->rfd, n->wfd);
-		if (NODE_INTERACTIVE(n)) {
-			bbs_dprintf(a->fdout, " %3d %3d %3d %s", n->amaster, n->slavefd, n->spyfd, n->slavename);
-		}
-		bbs_dprintf(a->fdout, "\n");
 		c++;
 	}
 	RWLIST_UNLOCK(&nodes);
@@ -947,8 +961,10 @@ static int node_info(int fd, unsigned int nodenum)
 		char speed[NODE_SPEED_BUFSIZ_LARGE];
 		bbs_node_format_speed(n, speed, sizeof(speed));
 		bbs_dprintf(fd, BBS_FMT_DSDS, "Term Size", n->cols, "x", n->rows, n->dimensions ? "" : "?");
+		bbs_dprintf(fd, BBS_FMT_S, "Term Type", S_IF(n->term));
 		bbs_dprintf(fd, BBS_FMT_S, "Term ANSI", BBS_YN(n->ansi));
-		bbs_dprintf(fd, BBS_FMT_S, "Term Speed", speed);
+		bbs_dprintf(fd, BBS_FMT_S, "Term Speed (Measured)", speed);
+		bbs_dprintf(fd, BBS_FMT_D, "Term Speed (Reported)", n->reportedbps);
 		bbs_dprintf(fd, BBS_FMT_S, "Term Echo", BBS_YN(n->echo));
 		bbs_dprintf(fd, BBS_FMT_S, "Term Buffered", BBS_YN(n->buffered));
 	}
