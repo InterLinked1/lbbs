@@ -528,6 +528,10 @@ static const char *keywords_start(const char *restrict filename)
 	if (!flagstr++) {
 		return NULL;
 	}
+	/* Skip 2, before flags */
+	while (*flagstr == '2' || *flagstr == ',') {
+		flagstr++;
+	}
 	while (isupper(*flagstr)) {
 		flagstr++;
 	}

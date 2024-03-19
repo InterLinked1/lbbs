@@ -36,7 +36,7 @@
 /* maildir flags, that appear in a single string and must appear in ASCII order: https://cr.yp.to/proto/maildir.html */
 #define FLAG_DRAFT 'D'
 #define FLAG_FLAGGED 'F'
-#define FLAG_PASSED 'P'
+#define FLAG_PASSED 'P' /* Not currently used anywhere */
 #define FLAG_REPLIED 'R'
 #define FLAG_SEEN 'S'
 #define FLAG_TRASHED 'T'

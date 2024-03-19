@@ -231,13 +231,15 @@ int parse_flags_letters(const char *restrict f, const char **keywords)
 			case FLAG_TRASHED:
 				flags |= FLAG_BIT_DELETED;
 				break;
+			case FLAG_REPLIED:
+				flags |= FLAG_BIT_ANSWERED;
+				break;
 			case 'a' ... 'z':
 				if (keywords) {
 					*keywords = f;
 				}
 				return flags; /* If we encounter keywords (custom flags), we know we're done parsing builtin flags */
 			case FLAG_PASSED:
-			case FLAG_REPLIED:
 			default:
 				bbs_warning("Unhandled flag: %c\n", *f);
 		}
@@ -272,6 +274,7 @@ void gen_flag_letters(int flags, char *buf, size_t len)
 
 	SET_LETTER_IF_FLAG(FLAG_BIT_DRAFT, FLAG_DRAFT); /* D */
 	SET_LETTER_IF_FLAG(FLAG_BIT_FLAGGED, FLAG_FLAGGED); /* F */
+	SET_LETTER_IF_FLAG(FLAG_BIT_ANSWERED, FLAG_REPLIED); /* D */
 	SET_LETTER_IF_FLAG(FLAG_BIT_SEEN, FLAG_SEEN); /* S */
 	SET_LETTER_IF_FLAG(FLAG_BIT_DELETED, FLAG_TRASHED); /* T */
 	*buf = '\0';
@@ -284,6 +287,7 @@ void gen_flag_names(const char *flagstr, char *fullbuf, size_t len)
 	*buf = '\0';
 	SAFE_FAST_COND_APPEND(fullbuf, len, buf, left, strchr(flagstr, FLAG_DRAFT), FLAG_NAME_DRAFT);
 	SAFE_FAST_COND_APPEND(fullbuf, len, buf, left, strchr(flagstr, FLAG_FLAGGED), FLAG_NAME_FLAGGED);
+	SAFE_FAST_COND_APPEND(fullbuf, len, buf, left, strchr(flagstr, FLAG_REPLIED), FLAG_NAME_ANSWERED);
 	SAFE_FAST_COND_APPEND(fullbuf, len, buf, left, strchr(flagstr, FLAG_SEEN), FLAG_NAME_SEEN);
 	SAFE_FAST_COND_APPEND(fullbuf, len, buf, left, strchr(flagstr, FLAG_TRASHED), FLAG_NAME_DELETED);
 	SAFE_FAST_COND_APPEND(fullbuf, len, buf, left, strchr(flagstr, FLAG_RECENT), FLAG_NAME_RECENT);
@@ -432,6 +436,13 @@ int maildir_msg_setflags_modseq(struct imap_session *imap, int seqno, const char
 	} else {
 		bbs_error("Invalid filename: %s\n", origname);
 		return -1;
+	}
+
+	if (strchr(newflagletters, ',')) {
+		/* This should just contain upper and lower case letters.
+		 * If there's a comma, something got concatenated wrong somewhere,
+		 * and we'll create an invalid maildir filename. */
+		bbs_warning("Invalid flag letters: '%s'\n", newflagletters);
 	}
 
 	/* First, check if the filename itself would actually change, without updating MODSEQ.
