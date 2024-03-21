@@ -421,6 +421,9 @@ int bbs_node_safe_sleep(struct bbs_node *node, int ms)
 	int res;
 
 	bbs_soft_assert(ms > 0);
+	if (ms < 0) {
+		ms = 0;
+	}
 
 	bbs_debug(6, "Sleeping on node %d for %d ms\n", node->id, ms);
 	/* We're polling the raw socket fd since that's closed if node is kicked (or at shutdown),
@@ -770,13 +773,13 @@ static int cli_nodes(struct bbs_cli_args *a)
 		" %15s %5s %7s %3s %3s %3s %3s"
 		" %3s %3s %3s"
 		" %1s %1s %1s"
-		" %7s %8s %4s %5s %6s %4s"
+		" %7s %8s %4s %5s %6s %6s %4s"
 		"\n",
 		"#", "PROTOCOL", "ELAPSED", "USER", "MENU/PAGE/LOCATION",
 		"IP ADDRESS", "RPORT", "TID", "SFD", "FD", "RFD", "WFD",
 		"MST", "SLV", "SPY",
 		"E", "B", "!",
-		"TRM SZE", "TYPE", "ANSI", "SPEED", "BPS", "SLOW");
+		"TRM SZE", "TYPE", "ANSI", "SPEED", "BPS", "(RPT)", "SLOW");
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
@@ -807,11 +810,11 @@ static int cli_nodes(struct bbs_cli_args *a)
 			bbs_dprintf(a->fdout,
 				" %3d %3d %3d"
 				" %1s %1s %1s"
-				" %7s %8s %4s %5s %6u %4s"
+				" %7s %8s %4s %5s %6u %6u %4s"
 				"\n",
 				n->amaster, n->slavefd, n->spyfd,
 				BBS_YN(n->echo), BBS_YN(n->buffered), bbs_node_interrupted(n) ? "*" : "",
-				termsize, S_IF(n->term), BBS_YESNO(n->ansi), speed, n->reportedbps, BBS_YN(n->slow));
+				termsize, S_IF(n->term), BBS_YESNO(n->ansi), speed, n->bps, n->reportedbps, BBS_YN(n->slow));
 		} else {
 			bbs_dprintf(a->fdout, "\n");
 		}
@@ -1036,11 +1039,10 @@ struct bbs_node *bbs_node_get(unsigned int nodenum)
 			break;
 		}
 	}
-	RWLIST_UNLOCK(&nodes);
-
 	if (n) {
 		bbs_mutex_lock(&n->lock);
 	}
+	RWLIST_UNLOCK(&nodes);
 	return n;
 }
 
@@ -1164,6 +1166,31 @@ int bbs_node_update_winsize(struct bbs_node *node, int cols, int rows)
 	return 0;
 }
 
+unsigned int bbs_node_speed(struct bbs_node *node)
+{
+	/* If we are explicitly throttling the node,
+	 * then that is the speed. */
+	if (node->bps) {
+		return node->bps;
+	}
+
+	/* If we measured the connection speed earlier and believe
+	 * it to be reasonably slow, use that.
+	 * These measurements are not the most accurate,
+	 * but should be roughly in the right neighborhood, much of the time. */
+	if (node->calcbps > 1 && node->calcbps <= 64000) {
+		return (unsigned int) node->calcbps;
+	}
+
+	/* If the client told us its terminal speed, use that as the last resort.
+	 * This is likely to be a pretty high number anyways (e.g. 115200). */
+	if (node->reportedbps) {
+		return node->reportedbps;
+	}
+
+	return 0;
+}
+
 int bbs_node_set_speed(struct bbs_node *node, unsigned int bps)
 {
 	unsigned int cps;
@@ -1187,18 +1214,68 @@ int bbs_node_set_speed(struct bbs_node *node, unsigned int bps)
 	 * That means print a character about once every 26.666 ms.
 	 */
 
+#define MAX_REALTIME_BPS 9600
+
+	if (bps > MAX_REALTIME_BPS) {
+		bbs_warning("Emulated node speed %u is too high\n", bps);
+		return -1;
+	}
+
 	if (bps == 0) {
 		/* "Reset" to full speed with no artificial slowdowns */
+		if (node->nonagle) {
+			/* Disable Nagle's algorithm, we don't need it anymore. */
+			bbs_set_fd_tcp_nodelay(node->sfd, 0);
+			node->nonagle = 0;
+		} else if (node->bps) {
+			if (bbs_set_fd_tcp_pacing_rate(node->sfd, 0)) {
+				return -1;
+			}
+		}
 		node->bps = 0;
 		node->speed = 0;
 		return 0;
 	}
 
-	cps = (bps + (8 - 1)) / 8; /* Round characters per second up */
-	pauseus = 1000000 / cps; /* Round pause time between chars down */
-	node->bps = bps;
-	node->speed = pauseus;
-	bbs_debug(3, "Set node %d speed to emulated %ubps (%d us/char)\n", node->id, bps, pauseus);
+	/* Don't use bbs_set_fd_tcp_pacing_rate here,
+	 * it doesn't actually work as desired, unfortunately.
+	 * So for now, this condition is always true here. */
+	if (bps <= MAX_REALTIME_BPS) {
+		cps = (bps + (8 - 1)) / 8; /* Round characters per second up */
+		pauseus = 1000000 / cps; /* Round pause time between chars down */
+		node->bps = bps;
+		node->speed = pauseus;
+
+		/* For slow speeds, disable Nagle's algorithm to ensure characters go out one at a time if possible
+		 * to ensure that characters are sent as real time as possible, making it seem more authentic.
+		 *
+		 * For higher speeds, this really isn't that feasible, since
+		 * it would involve a huge velocity of packets, and the data would be sent so fast
+		 * that chunking data together in packets won't be as perceptible.
+		 * So in those cases, we handle things differently (by setting the pacing rate).
+		 *
+		 * Nagle's algorithm applies to the raw TCP socket, so we operate on that,
+		 * not the PTY slave or any TLS pipes, since those don't matter. */
+		if (!node->nonagle) {
+			bbs_set_fd_tcp_nodelay(node->sfd, 1);
+			node->nonagle = 1;
+		}
+		bbs_debug(3, "Set node %d speed to emulated %ubps (%d us/char)\n", node->id, bps, pauseus);
+	} else {
+		/* At higher speeds, calling write() thousands of time per second is intractable,
+		 * and unlikely to accomplish must anyways.
+		 * Since the data is getting sent so fast already,
+		 * let the kernel do the pacing.
+		 * Downside is this won't apply to sysop spy sessions, but since this is for faster speeds,
+		 * the buffer won't take as long to drain, which should prevent getting too far out of sync. */
+		node->bps = bps;
+		node->speed = 0;
+		if (bbs_set_fd_tcp_pacing_rate(node->sfd, (int) bps / 8)) {
+			return -1;
+		}
+		bbs_debug(3, "Set node %d speed to emulated %ubps\n", node->id, bps);
+	}
+
 	return 0;
 }
 
@@ -2043,6 +2120,33 @@ static int cli_spy(struct bbs_cli_args *a)
 	return res;
 }
 
+static int cli_node_set_speed(struct bbs_cli_args *a)
+{
+	int res;
+	struct bbs_node *node;
+	int bps, nodenum = atoi(a->argv[1]);
+
+	bbs_cli_set_stdout_logging(a->fdout, 0);
+	if (nodenum <= 0) {
+		bbs_dprintf(a->fdout, "Invalid node %s\n", a->argv[1]);
+		return -1;
+	}
+	bps = atoi(a->argv[2]);
+	if (bps < 0) {
+		bbs_dprintf(a->fdout, "Invalid speed: %s\n", a->argv[2]);
+		return -1;
+	}
+
+	node = bbs_node_get((unsigned int) nodenum);
+	if (!node) {
+		bbs_dprintf(a->fdout, "Node %d does not exist\n", nodenum);
+		return -1;
+	}
+	res = bbs_node_set_speed(node, (unsigned int) bps);
+	bbs_node_unlock(node);
+	return res;
+}
+
 static int cli_user(struct bbs_cli_args *a)
 {
 	const char *username = a->argv[1];
@@ -2089,6 +2193,7 @@ static struct bbs_cli_entry cli_commands_nodes[] = {
 	BBS_CLI_COMMAND(cli_kick, "kick", 2, "Kick specified node", "kick <nodenum>"),
 	BBS_CLI_COMMAND(cli_kickall, "kickall", 1, "Kick all nodes", NULL),
 	BBS_CLI_COMMAND(cli_spy, "spy", 2, "Spy on specified node (^C to stop)", "spy <nodenum>"),
+	BBS_CLI_COMMAND(cli_node_set_speed, "speed", 3, "Set emulated speed of specified node (0 = unthrottled)", "speed <nodenum> <bps>"),
 	/* User commands */
 	BBS_CLI_COMMAND(cli_user, "user", 2, "View information about specified user", "user <username>"),
 	BBS_CLI_COMMAND(cli_users, "users", 1, "List all users", NULL),

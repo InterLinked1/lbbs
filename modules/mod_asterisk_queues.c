@@ -33,6 +33,7 @@
 #include "include/door.h"
 #include "include/variables.h"
 #include "include/cli.h"
+#include "include/socket.h" /* use bbs_tcp_wait_max_unacked, don't need full utils.h */
 
 #include "include/mod_asterisk_ami.h"
 #include "include/mod_asterisk_queues.h"
@@ -981,10 +982,20 @@ static int agent_exec(struct bbs_node *node, const char *args)
 
 	/* Agent loop */
 	for (;;) {
+		unsigned int speed;
 start:
 		bbs_node_clear_screen(node);
 		bbs_node_writef(node, "*** %s%-42s %s%d%s ***\n", COLOR(COLOR_MAGENTA), system_title, COLOR(COLOR_GREEN), agent->id, COLOR_RESET);
 		queues_status(agent); /* Display current status of all relevant queues */
+
+		/* On slow connections, it can take several seconds to print the entire queue list,
+		 * and so we should wait to start printing the time until most of the data has been sent,
+		 * or we'll end up quickly printing and erasing the time a bunch of times at the end. */
+		speed = bbs_node_speed(node);
+		if (speed && speed <= 1200 && bbs_node_wait_until_output_sent(node) < 0) {
+			goto cleanup;
+		}
+
 		print_full_time(agent);
 		bbs_node_unbuffer(node); /* Uncook the terminal. */
 
@@ -993,7 +1004,7 @@ start:
 			ssize_t res;
 			char c;
 			agent->idle = 1;
-			res = bbs_node_poll(node, 1000);
+			res = bbs_node_poll(node, SEC_MS(1));
 			agent->idle = 0;
 			if (res < 0) {
 				goto cleanup;

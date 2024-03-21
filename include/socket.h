@@ -64,6 +64,22 @@ int bbs_block_fd(int fd);
 int bbs_set_fd_tcp_nodelay(int fd, int enabled);
 
 /*!
+ * \brief Set the TCP pacing rate
+ * \param fd
+ * \param rate Rate, in bytes per second
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_set_fd_tcp_pacing_rate(int fd, int rate);
+
+/*!
+ * \brief Suspend I/O until pending output data for a node has been sent
+ * \param node Node
+ * \retval 0 on success
+ * \retval -1 on failure
+ */
+int bbs_node_wait_until_output_sent(struct bbs_node *node);
+
+/*!
  * \brief Check whether a given hostname has an A record for a particular IP address
  * \param hostname Hostname to check
  * \param ip IP address for which to check

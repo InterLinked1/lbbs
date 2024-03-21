@@ -477,16 +477,15 @@ static void trigger_node_disconnect(struct bbs_node *node)
 void *pty_master(void *varg)
 {
 	struct bbs_node *node = varg;
-	int pres;
+	int pres = 0; /* gcc thinks it can be used uninitialized? */
 	struct pollfd fds[3];
 	char readbuf[PTY_BUFFER_SIZE];
 	char writebuf[PTY_BUFFER_SIZE];
 	char strippedbuf[PTY_BUFFER_SIZE];
 	ssize_t bytes_read, bytes_wrote;
-	nfds_t numfds;
+	nfds_t numfds = 0; /* gcc thinks it can be used uninitialized? */
 	int emulated_crlf = 0, just_did_emulated_crlf = 0;
 	/* Expanded scope for slow_write */
-	size_t slow_bytes_left = 0;
 	ssize_t last_bytes_read = 0;
 	ssize_t lastbyteswrote = 0;
 	char *relaybuf = NULL;
@@ -494,7 +493,8 @@ void *pty_master(void *varg)
 
 	/* Save relevant fields. */
 	unsigned int nodeid;
-	int amaster, rfd, wfd, ansi;
+	int amaster, rfd, wfd;
+	int ansi = 0; /* gcc thinks it can be used uninitialized? */
 
 	/* Not that these are expected to change, but it makes helgrind happy */
 	bbs_node_lock(node);
@@ -522,7 +522,7 @@ void *pty_master(void *varg)
 	for (;;) {
 		int spy = 0, spyfdin, spyfdout = -1;
 
-		if (slow_bytes_left) {
+		if (node->slow_bytes_left) {
 			goto finishoutput;
 		}
 
@@ -686,7 +686,7 @@ gotinput:
 					switch (*buf) {
 						case 3: /* ^C */
 						case 26: /* ^Z. The PAUSE/BREAK key typically maps to this, so that's why this is included. */
-							slow_bytes_left = 0;
+							node->slow_bytes_left = 0;
 							/* Cancel any pending terminal output. This allows users to abort
 							 * a large amount of output, particularly with emulated baud rate. */
 							bbs_debug(3, "Received ^%c, cancelling pending output\n", 'A' - 1 + *buf);
@@ -704,7 +704,7 @@ gotinput:
 		} else if (fds[1].revents & POLLIN) { /* Got input from pty -> socket */
 			relaybuf = writebuf;
 
-			if (slow_bytes_left) {
+			if (node->slow_bytes_left) {
 				goto finishoutput;
 			}
 
@@ -742,7 +742,7 @@ gotinput:
 				/* Slow write to both real socket and spying fd simultaneously */
 				int input;
 				last_bytes_read = bytes_read;
-				slow_bytes_left = (size_t) bytes_read;
+				node->slow_bytes_left = (size_t) bytes_read;
 
 				lastbyteswrote = 0;
 finishoutput:
@@ -750,7 +750,7 @@ finishoutput:
 				/* This might seem redundant (we just did the reverse), but is necessary if we just jump here,
 				 * otherwise, bytes_read won't have the right value below */
 				bytes_read = last_bytes_read;
-				bytes_wrote = slow_write(fds, wfd, spyfdout, lastbyteswrote, &relaybuf, &slow_bytes_left, speed, &input);
+				bytes_wrote = slow_write(fds, wfd, spyfdout, lastbyteswrote, &relaybuf, &node->slow_bytes_left, speed, &input);
 				if (input && bytes_wrote >= 0) {
 					/* goto is usually used judiciously in the BBS.
 					 * This is an exception, this function is a mess, and we should clean this up.
@@ -759,7 +759,7 @@ finishoutput:
 					lastbyteswrote = bytes_wrote;
 					goto gotinput;
 				}
-				slow_bytes_left = 0;
+				node->slow_bytes_left = 0;
 			} else {
 				bytes_wrote = bbs_write(wfd, relaybuf, (size_t) bytes_read);
 				if (spy && bytes_wrote == bytes_read) {

@@ -62,6 +62,7 @@ struct bbs_node {
 	bbs_mutex_t ptylock;	/*!< Node PTY lock */
 	time_t created;				/*!< Creation time */
 	pid_t childpid;				/*!< Child PID of process node is currently exec'ing (0 if none) */
+	size_t slow_bytes_left;		/*!< Number of bytes left */
 	long int calcbps;			/*!< Calculated terminal speed (from measurements) */
 	unsigned int reportedbps;	/*!< Reported terminal speed (by client) */
 	unsigned int bps;			/*!< Emulated terminal speed */
@@ -76,6 +77,7 @@ struct bbs_node {
 	unsigned int skipjoin:1;	/*!< If node_shutdown should not join the node thread */
 	unsigned int inmenu:1;		/*!< Whether actively displaying a menu */
 	unsigned int slow:1;		/*!< Terminal is using slow connection */
+	unsigned int nonagle:1;		/*!< Nagle's algorithm disabled */
 	unsigned int dimensions:1;	/*!< Aware of actual terminal dimensions */
 	unsigned int ansi:1;		/*!< Terminal supports ANSI escape sequences */
 	int ans;					/*!< Detailed ANSI support flags */
@@ -345,6 +347,14 @@ struct bbs_node *bbs_node_get(unsigned int nodenum);
  * \retval 0 on success, -1 on failure.
  */
 int bbs_node_update_winsize(struct bbs_node *node, int cols, int rows);
+
+/*!
+ * \brief Get the effective speed of a node, useful for synchronization or pacing
+ * \param node
+ * \retval 0 if high-speed
+ * \return nonzero if bounded by some measure
+ */
+unsigned int bbs_node_speed(struct bbs_node *node);
 
 /*!
  * \brief Set emulated output speed for BBS node

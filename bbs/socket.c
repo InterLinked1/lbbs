@@ -26,13 +26,20 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h> /* use sockaddr_in */
-#include <netinet/tcp.h> /* use TCP_NODELAY */
 #include <net/if.h> /* use ifreq */
 #include <sys/un.h>	/* use struct sockaddr_un */
 #include <arpa/inet.h> /* use inet_ntop */
 #include <netdb.h> /* use getnameinfo */
 #include <ifaddrs.h>
 #include <poll.h>
+
+#ifdef __linux__
+#define SOL_TCP  6 /* TCP level */
+/* <linux/tcp.h> includes some of the same stuff as <netinet/tcp.h>, so don't include both, just one or the other */
+#include <linux/tcp.h>
+#else
+#include <netinet/tcp.h> /* use TCP_NODELAY */
+#endif
 
 #ifdef __linux__
 #include <sys/sendfile.h>
@@ -304,6 +311,75 @@ int bbs_set_fd_tcp_nodelay(int fd, int enabled)
 	} else {
 		bbs_debug(3, "%s Nagle's algorithm on socket %d\n", enabled ? "Disabled" : "Enabled", fd);
 	}
+	return 0;
+}
+
+int bbs_set_fd_tcp_pacing_rate(int fd, int rate)
+{
+	int i = rate;
+	if (setsockopt(fd, SOL_SOCKET, SO_MAX_PACING_RATE, &i, sizeof(i))) {
+		bbs_error("setsockopt failed: %s\n", strerror(errno));
+		return -1;
+	} else {
+		if (rate) {
+			bbs_debug(3, "Set TCP pacing rate to %d bytes/sec\n", rate);
+		} else {
+			bbs_debug(3, "Disabled TCP pacing rate\n");
+		}
+	}
+	return 0;
+}
+
+int bbs_node_wait_until_output_sent(struct bbs_node *node)
+{
+#ifdef __linux__
+	struct tcp_info info;
+	socklen_t len = sizeof(info);
+#endif
+
+	/* If emulated speed, and data is in the slow_write queue,
+	 * we're still writing.
+	 * This check is needed since we don't write the data
+	 * until the artificial delay has passed, so the
+	 * number of packets unacked is usually always 0. */
+	if (node->speed) {
+		do {
+			while (node->slow_bytes_left > 0) {
+				unsigned int sleepms = 10; /* 10 ms by default */
+				if (node->speed) {
+					unsigned int sleepus;
+					/* If we have a certain number of bytes left
+					 * and we know we're writing at node->speed us per byte,
+					 * then we can sleep until that's about up. */
+					sleepus = node->speed * (unsigned int) node->slow_bytes_left;
+					sleepms = sleepus / 1000;
+				}
+				if (bbs_node_safe_sleep(node, (int) sleepms)) {
+					return -1;
+				}
+			}
+			/* Wait to make sure we're not going to start writing more data. */
+			bbs_node_safe_sleep(node, 2);
+		} while (node->slow_bytes_left > 0);
+	}
+
+#ifdef __linux__
+	/* If it's the network link that's actually slow,
+	 * then the acks will take some time to come back. */
+	for (;;) {
+		if (getsockopt(node->sfd, SOL_TCP, TCP_INFO, &info, &len)) {
+			bbs_error("getsockopt failed: %s\n", strerror(errno));
+			return -1;
+		}
+		bbs_debug(9, "File descriptor %d has %d packet%s unacked\n", node->sfd, info.tcpi_unacked, ESS(info.tcpi_unacked));
+		if (info.tcpi_unacked <= 1) {
+			break;
+		}
+		if (bbs_node_safe_sleep(node, 100)) {
+			return -1;
+		}
+	}
+#endif
 	return 0;
 }
 
