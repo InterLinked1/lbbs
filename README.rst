@@ -204,29 +204,7 @@ None of the network comm drivers are mutually exclusive - you can enable as many
 
 Generally speaking, for the reasons listed above, SSH is the recommended protocol. Apart from being the only protocol secure to use over the Internet, it also fully handles terminal resizing.
 
-The BBS also comes with some network services that aren't intended for terminal usage, e.g.:
-
-* :code:`net_finger` - Finger server
-
-* :code:`net_ftp` - File Transfer Protocol server
-
-* :code:`net_gopher` - Gopher server
-
-* :code:`net_http` - HTTP/HTTPS web server
-
-* :code:`net_imap` - IMAP server
-
-* :code:`net_irc` - Internet Relay Chat server
-
-* :code:`net_msp` - Message Send Protocol server
-
-* :code:`net_nntp` - Network News Transfer Protocol (NNTP) server
-
-* :code:`net_pop3` - POP3 server
-
-* :code:`net_smtp` - Simple Mail Transfer Protocol (SMTP) server
-
-* :code:`net_ws` - WebSocket server
+The BBS also comes with some network services that aren't intended for terminal usage, e.g. FTP, HTTP, IMAP, etc. See the :code:`nets` directory for a full listing.
 
 Using mod_auth_mysql
 ~~~~~~~~~~~~~~~~~~~~
@@ -408,6 +386,12 @@ The below is a good default :code:`/etc/msmtprc` for most systems::
 Make sure to substitute the default "from" address with something appropriate for your server.
 
 Then, you can symlink msmtp to sendmail, and things should "just work": :code:`ln -s /usr/bin/msmtp /usr/sbin/sendmail`.
+
+Can I check email using the terminal instead of using IMAP/POP3?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Yes, `evergreen <https://github.com/InterLinked1/evergreen>`_ is the officially recommended terminal mail client for LBBS.
+The :code:`door_evergreen` module automatically wraps execution of the mail client as appropriate for usage within the BBS.
 
 Does the BBS provide any kind of webmail access?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

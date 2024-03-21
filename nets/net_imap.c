@@ -4854,7 +4854,7 @@ static int alertmsg(unsigned int userid, const char *msg)
 
 		/* Do not send a random untagged EXISTS, e.g. * EXISTS 999999, or that will cause ~Thunderbird to ignore the ALERT */
 		__imap_parallel_reply(s, "%s NO [ALERT] %s\r\n", s->savedtag, msg); /* Use tag from IDLE request. This must be a NO, not an OK. */
-		if (!strlen_zero(s->clientid) && strstr(s->clientid, "wssmail")) {
+		if (!strlen_zero(s->clientid) && (strstr(s->clientid, "wssmail") || strstr(s->clientid, "evergreen"))) {
 			/* libetpan doesn't seem to care about IDLE replies that aren't a response to a command it sent.
 			 * So we can ignore this and continue on idling. */
 			/* s->idle remains 1, s->alerted remains 0 */

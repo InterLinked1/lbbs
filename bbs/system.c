@@ -36,6 +36,7 @@
 #include <sys/resource.h>
 #include <sched.h> /* use clone */
 #include <dirent.h>
+#include <termios.h>
 
 #include <sys/mount.h>
 
@@ -715,7 +716,7 @@ static ssize_t full_read(int fd, char *restrict buf, size_t len)
 static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[], char *const envp[], int isolated)
 {
 	pid_t pid;
-
+	struct termios term;
 	int fd = fdout;
 	int res = -1;
 	int pfd[2], procpipe[2];
@@ -768,6 +769,12 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		/* Don't call tcgetsid here, it will fail */
 		bbs_debug(6, "sid: %d, tcpgrp: %d, term: %s\n", getsid(getpid()), tcgetpgrp(fd), S_IF(node->term));
 		snprintf(fullterm, sizeof(fullterm), "TERM=%s", S_OR(node->term, "xterm")); /* Many interactive programs will whine if $TERM is not set */
+		/* Save terminal settings to restore after execution */
+		memset(&term, 0, sizeof(term));
+		if (tcgetattr(node->slavefd, &term)) {
+			bbs_error("tcgetattr failed: %s\n", strerror(errno));
+			return -1;
+		}
 	}
 	if (fdout == -1) {
 		/* If no node and no output fd, create file descriptors using a temporary pipe */
@@ -1067,6 +1074,16 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		 * Just blindly set it to 0.
 		 */
 		node->childpid = 0;
+		if (usenode) {
+			/* Restore original terminal settings.
+			 * This way, if whatever program was executed exited
+			 * without leaving the terminal in a good/usable state,
+			 * we change things back to how they were and
+			 * the user is none the wiser. */
+			if (tcsetattr(node->slavefd, TCSANOW, &term)) {
+				bbs_error("tcsetattr failed: %s\n", strerror(errno));
+			}
+		}
 	}
 
 #ifdef ISOEXEC_SUPPORTED

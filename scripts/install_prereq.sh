@@ -124,6 +124,9 @@ scripts/libdiscord.sh
 # libwss (net_ws)
 scripts/libwss.sh
 
+# evergreen (door_evergreen)
+scripts/evergreen.sh
+
 # mod_slack (also depends on libwss)
 scripts/libslackrtm.sh
 
