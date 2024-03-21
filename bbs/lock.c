@@ -289,6 +289,12 @@ int __bbs_rwlock_destroy(bbs_rwlock_t *t, const char *filename, int lineno, cons
 int __bbs_rwlock_rdlock(bbs_rwlock_t *t, const char *filename, int lineno, const char *func, const char *name)
 {
 	int res;
+#ifdef DETECT_DEADLOCKS
+	int c = 0;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized" /* now cannot be used uninitialized since c % 1000 is 0 the first loop */
+	time_t now, elapsed, start = 0;
+#endif
 
 	if (unlikely(!t->info.initialized)) {
 		lock_warning("Attempt to rdlock uninitialized lock %s\n", name);
@@ -296,7 +302,43 @@ int __bbs_rwlock_rdlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 		lock_error("Attempt to rdlock lock %s previously destroyed at %s:%d\n", name, t->info.filename, t->info.lineno);
 	}
 
+#ifdef DETECT_DEADLOCKS
+	/* Similar lock as in bbs_mutex_lock for DETECT_DEADLOCKS */
+	res = pthread_rwlock_tryrdlock(&t->lock);
+	while (res == EBUSY) {
+		time_t diff;
+		if (c++ % 1000 == 0) {
+			now = time(NULL);
+			if (!start) {
+				start = now;
+			}
+			elapsed = now - start;
+			diff = now - t->info.lastlocked;
+#pragma GCC diagnostic pop
+			if (diff < elapsed) {
+				lock_debug("Spent %ld seconds so far waiting to rdlock %s (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+				start = now;
+			} else if (elapsed == 30) { /* Use a higher threshold for rwlocks than mutexes, since there could be multiple readers */
+				/* Preliminary warning if we think we've encountered a deadlock. */
+				lock_notice("Spent %ld seconds so far waiting to rdlock %s, possible deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+#ifndef STRICT_LOCKING
+				bbs_log_backtrace();
+#endif
+			} else if (elapsed == 300) {
+				/* Okay, this is ridiculous. It should never take 5 minutes to acquire a lock.
+				 * In theory, it could, but there shouldn't be anything that actually does in the BBS. */
+				lock_error("Spent %ld seconds so far waiting to rdlock %s, probable deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+			}
+		}
+		usleep(1000);
+		res = pthread_rwlock_tryrdlock(&t->lock);
+	}
+#else
 	res = pthread_rwlock_rdlock(&t->lock);
+#endif /* DETECT_DEADLOCKS */
 	if (unlikely(res)) {
 		lock_warning("Failed to obtain rdlock %s: %s\n", name, strerror(res));
 	} else {
@@ -315,6 +357,12 @@ int __bbs_rwlock_rdlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 int __bbs_rwlock_wrlock(bbs_rwlock_t *t, const char *filename, int lineno, const char *func, const char *name)
 {
 	int res;
+#ifdef DETECT_DEADLOCKS
+	int c = 0;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized" /* now cannot be used uninitialized since c % 1000 is 0 the first loop */
+	time_t now, elapsed, start = 0;
+#endif
 
 	if (unlikely(!t->info.initialized)) {
 		lock_warning("Attempt to wrlock uninitialized lock %s\n", name);
@@ -322,14 +370,50 @@ int __bbs_rwlock_wrlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 		lock_error("Attempt to wrlock lock %s previously destroyed at %s:%d\n", name, t->info.filename, t->info.lineno);
 	}
 
+#ifdef DETECT_DEADLOCKS
+	/* Similar lock as in bbs_mutex_lock for DETECT_DEADLOCKS */
+	res = pthread_rwlock_trywrlock(&t->lock);
+	while (res == EBUSY) {
+		time_t diff;
+		if (c++ % 1000 == 0) {
+			now = time(NULL);
+			if (!start) {
+				start = now;
+			}
+			elapsed = now - start;
+			diff = now - t->info.lastlocked;
+#pragma GCC diagnostic pop
+			if (diff < elapsed) {
+				lock_debug("Spent %ld seconds so far waiting to wrlock %s (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+				start = now;
+			} else if (elapsed == 30) { /* Use a higher threshold for rwlocks than mutexes, since there could be multiple readers */
+				/* Preliminary warning if we think we've encountered a deadlock. */
+				lock_notice("Spent %ld seconds so far waiting to wrlock %s, possible deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+#ifndef STRICT_LOCKING
+				bbs_log_backtrace();
+#endif
+			} else if (elapsed == 300) {
+				/* Okay, this is ridiculous. It should never take 5 minutes to acquire a lock.
+				 * In theory, it could, but there shouldn't be anything that actually does in the BBS. */
+				lock_error("Spent %ld seconds so far waiting to wrlock %s, probable deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+			}
+		}
+		usleep(1000);
+		res = pthread_rwlock_trywrlock(&t->lock);
+	}
+#else
 	res = pthread_rwlock_wrlock(&t->lock);
+#endif /* DETECT_DEADLOCKS */
 	if (unlikely(res)) {
 		lock_warning("Failed to obtain wrlock %s: %s\n", name, strerror(res));
 	} else {
 		/* If wrlock succeeded, we don't need to lock the internal mutex, since there can't be any readers right now */
 		t->info.lastlocked = time(NULL);
 		if (++t->info.owners != 1) {
-			lock_error("Mutex %s locked more than once?\n", name);
+			lock_error("Lock %s locked more than once?\n", name);
 		}
 		STORE_CALLER_INFO();
 	}
