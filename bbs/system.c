@@ -436,6 +436,11 @@ int bbs_execvp_isolated(struct bbs_node *node, const char *filename, char *const
 	return __bbs_execvpe_fd(node, 1, -1, -1, filename, argv, NULL, 1);
 }
 
+int bbs_execvp_isolated_networked(struct bbs_node *node, const char *filename, char *const argv[])
+{
+	return __bbs_execvpe_fd(node, 1, -1, -1, filename, argv, NULL, 2);
+}
+
 int bbs_execvp_headless(struct bbs_node *node, const char *filename, char *const argv[])
 {
 	if (!node) {
@@ -720,6 +725,19 @@ static ssize_t full_read(int fd, char *restrict buf, size_t len)
 }
 #endif /* ISOEXEC_SUPPORTED */
 
+/*!
+ * \brief Execute an external program. Most calls to exec() should funnel through this function...
+ * \param node
+ * \param usenode
+ * \param fdin
+ * \param fdout
+ * \param filename Program name to execute
+ * \param argv Arguments
+ * \param envp Environment (optional)
+ * \param isolated Isolation level. 0 = no isolation. 1 = isolated in separate namespace, no network. 2 = isolated in separate namespace, sharing host network
+ * \retval -1 on failure
+ * \return Result of program execution
+ */
 static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[], char *const envp[], int isolated)
 {
 	pid_t pid;
@@ -798,7 +816,10 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		int flags = 0;
 		/* We need to do more than fork() allows */
 		flags |= SIGCHLD | CLONE_NEWIPC | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWUSER; /* fork() sets SIGCHLD implicitly. */
-
+		if (isolated == 2) {
+			/* Keep network connectivity */
+			flags &= ~CLONE_NEWNET;
+		}
 #if 0
 		flags |= CLONE_CLEAR_SIGHAND; /* Don't inherit any signals from parent. */
 #else
@@ -1002,6 +1023,13 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 			 * Interestingly, rmdir(oldroot) fails here,
 			 * an inside the container, rm -rf .old errors with "Device or resource busy". */
 			rmdir(oldroot); /* There is an empty /.old left behind, get rid of it as it's not needed anymore */
+
+			/* Shells will automatically default to our home directory,
+			 * but other programs may not. Move to that directory now, if defined. */
+			if (myenvp[3]) {
+				const char *startdir = myenvp[3] + STRLEN("HOME=");
+				SYSCALL_OR_DIE(chdir, startdir);
+			}
 
 			if (node && envp == myenvp && display_motd) {
 				FILE *fp;

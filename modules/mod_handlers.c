@@ -96,10 +96,20 @@ static int __exec_handler(struct bbs_node *node, char *args, int isolated)
 
 	bbs_node_clear_screen(node);
 	bbs_node_buffer(node); /* Assume that exec'd processes will want the terminal to be buffered: in canonical mode with echo on. */
-	if (isolated) {
-		res = bbs_execvp_isolated(node, argv[0], argv); /* Prog name is simply argv[0]. */
-	} else {
-		res = bbs_execvp(node, argv[0], argv); /* Prog name is simply argv[0]. */
+	/* Prog name is simply argv[0]. */
+	switch (isolated) {
+	case 2:
+		res = bbs_execvp_isolated_networked(node, argv[0], argv);
+		break;
+	case 1:
+		res = bbs_execvp_isolated(node, argv[0], argv);
+		break;
+	default:
+		bbs_warning("Invalid value %d\n", isolated);
+		/* Fall through */
+	case 0:
+		res = bbs_execvp(node, argv[0], argv);
+		break;
 	}
 	if (res < 0) {
 		return res;
@@ -125,8 +135,12 @@ static int __exec_handler(struct bbs_node *node, char *args, int isolated)
 		 */
 		return -1;
 	}
-	/* Who knows what this external program did. Prompt the user for confirmation before returning to menu. */
-	/* bbs_node_wait_key's unbuffer ill always succeed, regardless of actual current state, because as far as the BBS is concerned, we're buffered */
+	/* Who knows what this external program did. Prompt the user for confirmation before returning to menu, if the program exited nonzero. */
+	/* bbs_node_wait_key's unbuffer will always succeed, regardless of actual current state, because as far as the BBS is concerned, we're buffered */
+	bbs_node_unbuffer(node);
+	if (!res) {
+		return 0;
+	}
 	return bbs_node_wait_key(node, MIN_MS(2));
 }
 
@@ -140,6 +154,12 @@ static int exec_handler(struct bbs_node *node, char *args)
 static int iso_exec_handler(struct bbs_node *node, char *args)
 {
 	return __exec_handler(node, args, 1);
+}
+
+/*! \brief Execute a system command / program in an isolated environment, but sharing host networking */
+static int isonet_exec_handler(struct bbs_node *node, char *args)
+{
+	return __exec_handler(node, args, 2);
 }
 
 static int file_handler(struct bbs_node *node, char *args)
@@ -159,6 +179,7 @@ static struct menu_handlers {
 	{ "door", door_handler, 1 },
 	{ "exec", exec_handler, 1 },
 	{ "isoexec", iso_exec_handler, 1 },
+	{ "isonetexec", isonet_exec_handler, 1 },
 	{ "file", file_handler, 1 },
 };
 

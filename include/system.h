@@ -46,6 +46,9 @@ int bbs_execvp(struct bbs_node *node, const char *filename, char *const argv[]);
  */
 int bbs_execvp_isolated(struct bbs_node *node, const char *filename, char *const argv[]);
 
+/*! \brief Same as bbs_execvp_isolated, but retains network connectivity through the host, inside the container */
+int bbs_execvp_isolated_networked(struct bbs_node *node, const char *filename, char *const argv[]);
+
 /*! \brief Same as bbs_execvp, but node will not be used for I/O. */
 int bbs_execvp_headless(struct bbs_node *node, const char *filename, char *const argv[]);
 

@@ -190,6 +190,33 @@ static int setup_namespace(pid_t pid)
 	close(map_pipe[0]);
 	return 0;
 }
+
+static int option_keep_network = 0;
+
+static int parse_options(int argc, char *argv[])
+{
+	static const char *getopt_settings = "hn?";
+	int c;
+
+	while ((c = getopt(argc, argv, getopt_settings)) != -1) {
+		switch (c) {
+		case 'h':
+		case '?':
+			fprintf(stderr, "Usage: isoroot [-options] [rootfs parent dir]\n");
+			fprintf(stderr, "   -h        Show this help\n");
+			fprintf(stderr, "   -n        Keep network connectivity inside the container\n");
+			return -1;
+		case 'n':
+			option_keep_network = 1;
+			break;
+		default:
+			fprintf(stderr, "Unknown option: %c\n", c);
+			return -1;
+		}
+	}
+
+	return 0;
+}
 #endif
 
 int main(int argc, char *argv[])
@@ -200,28 +227,32 @@ int main(int argc, char *argv[])
 	fprintf(stderr, "This program only works on Linux\n");
 	return -1;
 #else
+	int flags = SIGCHLD | CLONE_NEWIPC | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWUSER;
 	pid_t child;
+
+	if (parse_options(argc, argv)) {
+		return -1;
+	}
+	if (optind < argc) {
+		/* Set working directory */
+		fprintf(stderr, "Using container root '%s/rootfs'\n", argv[optind]);
+		if (chdir(argv[optind])) {
+			fprintf(stderr, "Failed to change directories to %s: %s\n", argv[optind], strerror(errno));
+			_exit(errno);
+		}
+	}
+
+	if (option_keep_network) {
+		fprintf(stderr, "Retaining network connectivity...\n");
+		flags &= ~CLONE_NEWNET;
+	}
 
 	if (pipe(map_pipe)) {
 		fprintf(stderr, "pipe failed: %s\n", strerror(errno));
 		return -1;
 	}
 
-	if (argc > 1) {
-		if (!strncmp(argv[1], "-h", 1) || !strncmp(argv[1], "-?", 1) || !strncmp(argv[1], "--help", 6)) {
-			fprintf(stderr, "Usage: isoroot [rootfs parent dir] [runuser]\n");
-			return -1;
-		}
-		/* Set working directory */
-		fprintf(stderr, "Using container root '%s/rootfs'\n", argv[1]);
-		if (chdir(argv[1])) {
-			fprintf(stderr, "Failed to change directories to %s: %s\n", argv[1], strerror(errno));
-			_exit(errno);
-		}
-	}
-
-	child = clone(child_exec, child_stack + STACK_SIZE,
-		SIGCHLD | CLONE_NEWIPC | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWUSER, NULL);
+	child = clone(child_exec, child_stack + STACK_SIZE, flags, NULL);
 	if (child < 0) {
 		fprintf(stderr, "clone failed: %s\n", strerror(errno));
 		exit(errno);
