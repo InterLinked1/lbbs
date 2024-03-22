@@ -2,7 +2,7 @@
 
 set -e
 cd /usr/local/src
-if [ ! -d cami ]; then
+if [ ! -d evergreen ]; then
 	git clone https://github.com/InterLinked1/evergreen.git
 	cd evergreen
 else

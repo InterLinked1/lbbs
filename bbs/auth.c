@@ -914,10 +914,9 @@ static int load_config(void)
 
 static int auth_reload(int fd)
 {
-	RWLIST_WRLOCK(&reserved_usernames);
+	/* stringlist_empty acquires a WRLOCK already */
 	stringlist_empty(&reserved_usernames);
 	load_config();
-	RWLIST_UNLOCK(&reserved_usernames);
 
 	bbs_dprintf(fd, "Reloaded auth settings\n");
 	return 0;
