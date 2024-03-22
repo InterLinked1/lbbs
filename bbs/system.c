@@ -70,6 +70,7 @@ static char rundir[256] = "/tmp/lbbs/rootfs";
 static const char *oldrootname = "/.old";
 #endif /* ISOEXEC_SUPPORTED */
 
+static int display_motd = 0;
 static int maxmemory = 0;
 static int maxcpu = 0;
 static int minnice = 0;
@@ -89,6 +90,7 @@ static int load_config(void)
 		bbs_debug(1, "Ensuring directory exists: %s\n", rundir);
 		bbs_ensure_directory_exists_recursive(rundir);
 	}
+	bbs_config_val_set_true(cfg, "container", "displaymotd", &display_motd);
 	bbs_config_val_set_int(cfg, "container", "maxmemory", &maxmemory);
 	bbs_config_val_set_int(cfg, "container", "maxcpu", &maxcpu);
 	if (!bbs_config_val_set_int(cfg, "container", "minnice", &minnice)) {
@@ -568,7 +570,12 @@ static int clone_container(char *rootdir, size_t rootlen, int pid)
 	while ((entry = readdir(dir)) != NULL) { /* Don't just bail out if errno becomes set, modules could set errno when we load them. */
 		char fulldir[PATH_MAX];
 		char symlinkdir[PATH_MAX];
-		if (entry->d_type != DT_DIR || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+		/* There are usually a few symlinks in the root:
+		 * /bin -> /usr/bin
+		 * /lib -> /usr/lib
+		 * /sbin -> /usr/sbin
+		 */
+		if ((entry->d_type != DT_DIR && entry->d_type != DT_LNK) || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
 			continue;
 		}
 		/* A Debian container should have these top-level directories:
@@ -723,6 +730,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 	char fullpath[256] = "", fullterm[32] = "";
 #ifdef ISOEXEC_SUPPORTED
 	/* Only needed if isoexec is supported */
+	int public_home_dir_readable = 0, public_home_dir_writable = 0; /* Should not need to be initialized, but gcc complains if it isn't */
 	char fulluser[48] = "", homeenv[433] = "HOME=";
 #endif /* ISOEXEC_SUPPORTED */
 	char *parentpath;
@@ -804,6 +812,11 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 			bbs_error("pipe failed: %s\n", strerror(errno));
 			return -1;
 		}
+
+		/* Check now, since once we close file descriptors in the child,
+		 * we cannot call this function, since it logs. */
+		public_home_dir_readable = bbs_transfer_operation_allowed(node, TRANSFER_ACCESS, NULL) && bbs_transfer_operation_allowed(node, TRANSFER_DOWNLOAD, NULL);
+		public_home_dir_writable = bbs_transfer_operation_allowed(node, TRANSFER_UPLOAD, NULL);
 
 		/* We use the clone syscall directly, rather than the clone(2) glibc function.
 		 * The reason for this is clone launches a function for the child,
@@ -902,9 +915,8 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 			}
 
 			/* Instead of showing root@bbs if we're launching a shell, which is just confusing, show the BBS username */
-			if (node && envp == myenvp) {
+			if (node && envp == myenvp && bbs_transfer_available()) {
 				char *tmp;
-				char masterhomedir[256];
 
 				const char *username = bbs_user_is_registered(node->user) ? bbs_username(node->user) : "guest";
 				/* Used if /root/.bashrc in rootfs contains this prompt override:
@@ -920,6 +932,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 				}
 
 				if (bbs_user_is_registered(node->user)) {
+					char masterhomedir[256];
 					/* Make the user's home directory accessible within the container, at /home/${BBS_USERNAME} in the container */
 					if (bbs_transfer_home_dir(node->user->id, masterhomedir, sizeof(masterhomedir))) {
 						_exit(errno);
@@ -934,6 +947,33 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 					/* However, now that we changed $HOME, bash for example will look for /home/${BBS_USERNAME}/.bashrc, not /root/.bashrc
 					 * So if the files in /root do not exist in the user's home directory, copy them there. */
 				}
+
+				/* Also symlink the transfer root, as read only depending on transfer permissions. */
+				if (public_home_dir_readable) {
+					/* At least grant read only access. */
+					char publicroot[401];
+					char publichome[401];
+					snprintf(publicroot, sizeof(publicroot), "%s/home/public", newroot);
+					SYSCALL_OR_DIE(mkdir, publicroot, 0700);
+					if (bbs_transfer_home_dir(0, publichome, sizeof(publichome))) {
+						_exit(errno);
+					}
+					if (public_home_dir_writable) {
+						SYSCALL_OR_DIE(mount, publichome, publicroot, "bind", MS_BIND | MS_REC, NULL);
+					} else {
+						/* See other code in this file that uses MS_RDONLY for why it's like this */
+						SYSCALL_OR_DIE(mount, publichome, publicroot, "bind", MS_BIND | MS_REC | MS_RDONLY, NULL);
+						SYSCALL_OR_DIE(mount, publichome, publicroot, "bind", MS_REMOUNT | MS_BIND | MS_REC | MS_RDONLY, NULL);
+					}
+					if (!bbs_user_is_registered(node->user)) {
+						/* If it's guest access, the user doesn't have a home directory,
+						 * so just make it the /home/public directory, which is better than nothing.
+						 * We make it /home/public instead of /home, so that all of the "relevant"
+						 * files that are of interest are in /home. */
+						snprintf(homeenv + STRLEN("HOME="), sizeof(homeenv) - STRLEN("HOME="), "/home/public");
+						myenvp[3] = homeenv;
+					}
+				}
 			}
 
 			snprintf(oldroot, sizeof(oldroot), "%s%s", newroot, oldrootname);
@@ -944,14 +984,26 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 			/* Set mount points */
 			SYSCALL_OR_DIE(mount, newroot, newroot, "bind", MS_BIND | MS_REC, "");
 			if (eaccess(oldroot, R_OK)) {
-				SYSCALL_OR_DIE(mkdir, oldroot, 0700); /* If ./rootfs/.old doesn't yet exist, create it in the rootfs */
+				if (mkdir(oldroot, 0777)) { /* If ./rootfs/.old doesn't yet exist, create it in the rootfs */
+					if (errno != EEXIST) {
+						SYSCALL_OR_DIE(mkdir, oldroot, 0777); /* Repeat, for error message */
+					} else {
+						fprintf(stderr, "Can't access %s (already exists)\n", oldroot);
+						SYSCALL_OR_DIE(chmod, oldroot, 0777);
+						_exit(errno);
+					}
+				}
 			}
 			SYSCALL_OR_DIE(pivot_root, newroot, oldroot);
 			SYSCALL_OR_DIE(mount, "proc", "/proc", "proc", 0, NULL);
 			SYSCALL_OR_DIE(chdir, "/");
 			SYSCALL_OR_DIE(umount2, oldrootname, MNT_DETACH);
+			/* XXX For some reason, .old seems to persist when we launch the container.
+			 * Interestingly, rmdir(oldroot) fails here,
+			 * an inside the container, rm -rf .old errors with "Device or resource busy". */
+			rmdir(oldroot); /* There is an empty /.old left behind, get rid of it as it's not needed anymore */
 
-			if (node && envp == myenvp) {
+			if (node && envp == myenvp && display_motd) {
 				FILE *fp;
 				/* cd to the home directory; this way, if this is launching a shell session,
 				 * it's a better user experience. Only makes sense to do this after we've changed the root. */
@@ -1020,6 +1072,24 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		 * But the parent will know that we failed since we return errno, and parent can log it. */
 		/* Also, use _exit, not exit, since exit will execute the parent's atexit function, etc.
 		 * That matters because exec failed, so atexit is still registered. */
+		if (isolated) {
+			int saved_errno = errno;
+			fprintf(stderr, "%s: %s\n", filename, strerror(errno));
+#ifdef DEBUG_NEW_FS
+			if (1) {
+				struct dirent *entry;
+				DIR *dir = opendir(".");
+				if (dir) {
+					while ((entry = readdir(dir))) {
+						fprintf(stderr, "%s\n", entry->d_name);
+					}
+				} else {
+					fprintf(stderr, "opendir: %s\n", strerror(errno));
+				}
+			}
+#endif
+			errno = saved_errno;
+		}
 		_exit(errno);
 	} /* else, parent */
 

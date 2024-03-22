@@ -71,6 +71,7 @@ cleanup:
 static int run(void)
 {
 	int client1 = -1, client2 = -1;
+	int pasv = -1;
 	int res = -1;
 
 	/* Open control connection */
@@ -194,7 +195,7 @@ static int run(void)
 	SWRITE(client1, "CWD /home" ENDL);
 	CLIENT_EXPECT(client1, "250");
 
-	/* Directory listing is fine */
+	/* Directory listing is fine, since show_all_home_dirs=yes */
 	client2 = new_pasv(client1);
 	REQUIRE_FD(client2);
 	SWRITE(client1, "LIST" ENDL);
@@ -232,13 +233,30 @@ static int run(void)
 	CLIENT_EXPECT(client2, "250");
 	SWRITE(client2, "CWD " TEST_USER2 ENDL);
 	CLIENT_EXPECT(client2, "431");
-	close(client2);
+
+	/* Try modifying stuff in public files */
+	SWRITE(client2, "CWD /home/public" ENDL);
+	CLIENT_EXPECT(client2, "250");
+	SWRITE(client2, "MKD test" ENDL);
+	CLIENT_EXPECT(client2, "250");
+
+	/* We should see "public" in the directory listing of /home */
+	SWRITE(client2, "CWD /home" ENDL);
+	CLIENT_EXPECT(client2, "250");
+	pasv = new_pasv(client2);
+	REQUIRE_FD(pasv);
+	SWRITE(client2, "LIST" ENDL);
+	CLIENT_EXPECT(client2, "125");
+	/* We should at least see our own home directory,
+	 * and even others, unless HIDE_OTHER_HOME_DIRECTORIES is defined  */
+	CLIENT_EXPECT_EVENTUALLY(pasv, "public");
 
 	res = 0;
 
 cleanup:
 	close_if(client1);
 	close_if(client2);
+	close_if(pasv);
 	return res;
 }
 

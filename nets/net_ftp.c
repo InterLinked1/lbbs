@@ -668,6 +668,7 @@ static void *ftp_handler(void *varg)
 			mydir = opendir(fulldir);
 			while ((dir = readdir(mydir))) { /* readdir is thread safe per directory stream in glibc */
 				char usernamebuf[256];
+				int userid;
 				const char *user_folder_name;
 				if (!strcmp(dir->d_name, ".") || !strcmp(dir->d_name, "..")) {
 					continue;
@@ -675,17 +676,25 @@ static void *ftp_handler(void *varg)
 				/* Could do bbs_transfer_set_disk_path_relative(node, info->name, dir->d_name, file, sizeof(file)); but it's not really necessary here */
 				snprintf(file, sizeof(file), "%s/%s", fulldir, dir->d_name);
 				if (homedir) {
-					bbs_lowercase_username_from_userid((unsigned int) atoi(dir->d_name), usernamebuf, sizeof(usernamebuf));
+					userid = atoi(dir->d_name);
+					if (userid == 0) {
+						strcpy(usernamebuf, "public"); /* Safe */
+					} else {
+						if (bbs_lowercase_username_from_userid((unsigned int) userid, usernamebuf, sizeof(usernamebuf))) {
+							strcpy(usernamebuf, "");
+						}
+					}
 				}
 				user_folder_name = homedir ? usernamebuf : dir->d_name;
 				/* Users can already get a list of users on the BBS,
 				 * so hiding their home directories is really just security by obscurity.
 				 * Regardless of if they're displayed, users should not be able to access them. */
-#ifdef HIDE_OTHER_HOME_DIRECTORIES
-				if (bbs_transfer_set_disk_path_relative(node, userpath, user_folder_name, file, sizeof(file))) { /* Will fail for other people's home directories, which is fine, hide in listing */
-					continue;
+				if (homedir && userid > 0 && !bbs_transfer_show_all_home_dirs()) {
+					char resolvbuf[256];
+					if (bbs_transfer_set_disk_path_relative(node, userpath, user_folder_name, resolvbuf, sizeof(resolvbuf))) { /* Will fail for other people's home directories, which is fine, hide in listing */
+						continue;
+					}
 				}
-#endif
 				if (lstat(file, &st)) {
 					bbs_error("lstat failed: %s\n", strerror(errno));
 					continue;

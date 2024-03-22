@@ -46,16 +46,25 @@
  * /home/$USERNAME/stuff <-> /home/$USERID/stuff as needed.
  *
  * To restore the original behavior, undef FRIENDLY_PATHS
- * (though not sure why you'd want to do that...)
+ * (though not sure why you'd want to do that, and that may break stuff!)
+ *
+ * Because it is necessary to have the public files not be in a prefix
+ * of the home directory, those files are located at
+ * /home/public <-> /home/0
  */
 
 /* Display usernames in home directory paths instead of raw user IDs */
 #define FRIENDLY_PATHS
 
 static char rootdir[84];
+static char publichomedir[92];
 static char homedirtemplate[256];
 
 static size_t rootlen;
+static size_t publichomedirlen;
+
+static int show_all_home_dirs = 0;
+
 static int privs[5];
 static int access_priv, download_priv, upload_priv, delete_priv, newdir_priv;
 static int idletimeout;
@@ -78,6 +87,11 @@ size_t bbs_transfer_max_upload_size(void)
 
 #define PATH_STARTS_WITH(p, s) (!strncmp(p, s, STRLEN(s)))
 
+int bbs_transfer_show_all_home_dirs(void)
+{
+	return show_all_home_dirs;
+}
+
 int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const char *diskpath)
 {
 	int required_priv;
@@ -95,21 +109,27 @@ int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const c
 			bbs_debug(6, "Operation implicitly authorized since it's in the user's home directory\n");
 			return 1;
 		}
-		len = snprintf(homedir, sizeof(homedir), "%s/home", bbs_transfer_rootdir());
-		if ((operation == TRANSFER_UPLOAD || operation == TRANSFER_NEWDIR || operation == TRANSFER_DESTRUCTIVE) && !strncmp(diskpath, homedir, (size_t) len)) {
-			/* If not inside the user's home directory, reject the request.
-			 * Logic elsewhere prevents accesing other users' home directories,
-			 * but this is needed here to ensure that:
-			 * - Users cannot delete other home directories
-			 * - Users cannot delete the root /home/ directory (and everyone's home directories!)
-			 * - Users cannot create directories inside the root /home/ directory
-			 */
-			bbs_debug(2, "Operation rejected for '%s', since it modifies /home (root home directory)\n", diskpath);
-			return 0;
+		/* If it's not in the public home directory, then access denied! */
+		if (strncmp(diskpath, publichomedir, publichomedirlen)) {
+			len = snprintf(homedir, sizeof(homedir), "%s/home", bbs_transfer_rootdir());
+			if (!strncmp(diskpath, homedir, (size_t) len)) {
+				if (!bbs_transfer_show_all_home_dirs() || (operation == TRANSFER_UPLOAD || operation == TRANSFER_NEWDIR || operation == TRANSFER_DESTRUCTIVE)) {
+					/* If not inside the user's home directory, reject the request.
+					 * Logic elsewhere prevents accesing other users' home directories,
+					 * but this is needed here to ensure that:
+					 * - Users cannot delete other home directories
+					 * - Users cannot delete the root /home/ directory (and everyone's home directories!)
+					 * - Users cannot create directories inside the root /home/ directory
+					 */
+					bbs_debug(2, "Operation %d rejected for '%s', since it modifies or displays /home (root home directory)\n", operation, diskpath);
+					return 0;
+				}
+			}
 		}
 	}
 
 	required_priv = privs[operation];
+	bbs_debug(9, "Operation %d allowed for '%s'\n", operation, diskpath);
 	return bbs_user_priv(node->user) >= required_priv;
 }
 
@@ -204,7 +224,7 @@ int bbs_transfer_home_dir(unsigned int userid, char *buf, size_t len)
 		}
 		/* We just created the user's home directory.
 		 * Copy the template files in. */
-		if (!s_strlen_zero(homedirtemplate)) {
+		if (userid > 0 && !s_strlen_zero(homedirtemplate)) {
 			bbs_verb(5, "Initializing home directory %s from template directory %s\n", buf, homedirtemplate);
 			/* It's kind of weird, to copy the contents OF a directory,
 			 * when the destination already exists, you have to use ., not * */
@@ -312,12 +332,16 @@ int bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpath, char
 		len -= (size_t) bytes;
 		if (!strlen_zero(p)) {
 			int userid = atoi(p);
-			if (userid < 1) {
+			if (userid < 0) {
 				bbs_error("No user with user ID %d", userid);
 				return -1;
 			}
-			bbs_lowercase_username_from_userid((unsigned int) userid, buf, len);
-			bytes = (int) strlen(buf);
+			if (userid == 0) {
+				bytes = snprintf(buf, len, "public");
+			} else {
+				bbs_lowercase_username_from_userid((unsigned int) userid, buf, len);
+				bytes = (int) strlen(buf);
+			}
 			buf += bytes;
 			len -= (size_t) bytes;
 			/* Anything after the home directory path */
@@ -367,17 +391,33 @@ static int __transfer_set_path(struct bbs_node *node, const char *function, cons
 			bbs_transfer_home_dir_cd(node, homedir, sizeof(homedir));
 		}
 
-		/* Only allow accesses to the user's own home directory, not anyone else's. */
+		/* Only allow accesses to the user's own home directory, or the public home directory, not anyone else's. */
 		p += STRLEN("/home");
 		if (!strlen_zero(p)) {
 			p++; /* Skips /home/ */
 			if (!strlen_zero(p)) {
-				if (!bbs_user_is_registered(node->user) || strncasecmp(fullpath, homedir, strlen(homedir))) {
+				if (strncasecmp(fullpath, publichomedir, publichomedirlen)) {
 					/* This is also hit when doing a directory listing, so this doesn't necessarily indicate user malfeasance.
 					 * This will also have the effect of hiding directories a user is not authorized to access. */
-					bbs_debug(3, "User not authorized for location(%s): %s (home dir: %s)\n", function, fullpath, homedir);
-					errno = EPERM;
-					return -1;
+					if (!bbs_user_is_registered(node->user)) {
+						bbs_debug(3, "User not authorized for location(%s): %s (home dir: %s)\n", function, fullpath, homedir);
+						errno = EPERM;
+						return -1;
+					}
+					if (strncasecmp(fullpath, homedir, strlen(homedir))) {
+						bbs_debug(3, "User not authorized for location(%s): %s (home dir: %s)\n", function, fullpath, homedir);
+						errno = EPERM;
+						return -1;
+					}
+					p = fullpath + strlen(homedir);
+					if (*p && *p != '/') {
+						/* Say we have /home/11... our home dir is /home/1,
+						 * but that shouldn't count as a prefix of /home/11.
+						 * It needs to be either just /home/11, or home/11/ followed by more stuff. */
+						bbs_debug(3, "User not authorized for location(%s): %s (home dir: %s)\n", function, fullpath, homedir);
+						errno = EPERM;
+						return -1;
+					}
 				}
 			}
 		}
@@ -437,10 +477,14 @@ static int append_userpath_to_diskpath(const char *userpath, const char *olduser
 			p = olduserpath + STRLEN("home/");
 			if (!strlen_zero(p)) {
 				bbs_strncpy_until(username, p, sizeof(username), '/');
-				userid = bbs_userid_from_username(username);
-				if (userid < 1) {
-					bbs_debug(1, "No such username '%s'\n", username);
-					return -1;
+				if (!strcmp(username, "public")) {
+					userid = 0;
+				} else {
+					userid = bbs_userid_from_username(username);
+					if (userid < 1) {
+						bbs_debug(1, "No such username '%s'\n", username);
+						return -1;
+					}
 				}
 				/* else, replace it, we don't care about permissions here */
 				tmplen = snprintf(buf, len, "home/%u", userid);
@@ -452,7 +496,7 @@ static int append_userpath_to_diskpath(const char *userpath, const char *olduser
 				}
 				buf += tmplen;
 				len -= (size_t) tmplen;
-				bbs_debug(8, "Translated username %s to user ID\n", username);
+				bbs_debug(8, "Translated username %s to user ID %u\n", username, userid);
 			}
 		}
 	}
@@ -495,10 +539,14 @@ static int append_userpath_to_diskpath(const char *userpath, const char *olduser
 		/* In this case, also ignore if ends in "/.", we'll remove that below. This only applies to SFTP. */
 		if (!strlen_zero(p) && !strcmp(tmporig, "/home/") && strcmp(p, ".")) { /* If all we've got so far is /home/, what follows must be the username that needs conversion to a user ID */
 			bbs_strncpy_until(username, p, sizeof(username), '/');
-			userid = bbs_userid_from_username(username);
-			if (userid < 1) {
-				bbs_debug(1, "No such username '%s'\n", username);
-				return -1;
+			if (!strcmp(username, "public")) {
+				userid = 0;
+			} else {
+				userid = bbs_userid_from_username(username);
+				if (userid < 1) {
+					bbs_debug(1, "No such username '%s'\n", username);
+					return -1;
+				}
 			}
 			/* else, replace it, we don't care about permissions here */
 			tmplen = snprintf(buf, len, "%u", userid);
@@ -668,8 +716,13 @@ int bbs_transfer_config_load(void)
 		homedirtemplate[0] = '\0';
 	}
 
+	bbs_config_val_set_true(cfg, "transfers", "show_all_home_dirs", &show_all_home_dirs);
 	bbs_config_val_set_int(cfg, "transfers", "maxuploadsize", &max_upload_size);
 	rootlen = strlen(rootdir);
+
+	bbs_transfer_home_dir(0, publichomedir, sizeof(publichomedir));
+	publichomedirlen = strlen(publichomedir);
+	bbs_assert(publichomedirlen > rootlen);
 
 	access_priv = 0;
 	download_priv = 0;

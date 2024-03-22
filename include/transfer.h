@@ -39,6 +39,12 @@ struct bbs_node;
 #define bbs_transfer_candelete(node, mypath) bbs_transfer_operation_allowed(node, TRANSFER_DESTRUCTIVE, mypath)
 
 /*!
+ * \brief Whether or not to display all home directories in directory listings of /home
+ * \retval 1 if yes, 0 if no
+ */
+int bbs_transfer_show_all_home_dirs(void);
+
+/*!
  * \brief Whether a certain kind of transfer operation is allowed
  * \note Generally the macros above should be used, rather than this function directly
  * \retval 1 if allowed, 0 if not allowed

@@ -1061,6 +1061,7 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 
 	while (!eof) {
 		char usernamebuf[256];
+		int userid;
 		const char *user_folder_name;
 		struct dirent *dir = readdir(info->dir); /* readdir is thread safe per directory stream in glibc */
 		if (!dir) {
@@ -1073,16 +1074,26 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 		/* Avoid double slash // at beginning when in the root directory */
 		bbs_debug(4, "Have %s/%s\n", !strcmp(info->name, "/") ? "" : info->name, dir->d_name);
 		/* Could do bbs_transfer_set_disk_path_relative(node, info->name, dir->d_name, file, sizeof(file)); but it's not really necessary here */
-		snprintf(file, sizeof(file), "%s/%s", info->name, dir->d_name);
+		snprintf(file, sizeof(file), "%s/%s", info->realpath, dir->d_name);
 		if (info->homedir) {
-			bbs_lowercase_username_from_userid((unsigned int) atoi(dir->d_name), usernamebuf, sizeof(usernamebuf));
+			userid = atoi(dir->d_name);
+			if (userid == 0) {
+				strcpy(usernamebuf, "public"); /* Safe */
+			} else {
+				if (bbs_lowercase_username_from_userid((unsigned int) userid, usernamebuf, sizeof(usernamebuf))) {
+					strcpy(usernamebuf, "");
+				}
+			}
 		}
 		user_folder_name = info->homedir ? usernamebuf : dir->d_name;
-		if (bbs_transfer_set_disk_path_relative(node, info->name, user_folder_name, file, sizeof(file))) { /* Will fail for other people's home directories, which is fine, hide in listing */
-			continue;
+		if (info->homedir && userid > 0 && !bbs_transfer_show_all_home_dirs()) {
+			char resolvbuf[256];
+			if (bbs_transfer_set_disk_path_relative(node, info->name, user_folder_name, resolvbuf, sizeof(resolvbuf))) { /* Will fail for other people's home directories, which is fine, hide in listing */
+				continue;
+			}
 		}
 		if (lstat(file, &st)) {
-			bbs_error("lstat failed: %s\n", strerror(errno));
+			bbs_error("lstat(%s) failed: %s\n", file, strerror(errno));
 			continue;
 		}
 		attr = attr_from_stat(&st);
@@ -1310,18 +1321,33 @@ static void sftp_server_free(sftp_session sftp)
 	bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath)); \
 
 #define SFTP_MAKE_PATH() \
-	if (bbs_transfer_set_disk_path_absolute(node, msg->filename, mypath, sizeof(mypath))) { \
+	bbs_debug(3, "MAKE PATH(%s) '%s'\n", mypath, msg->filename); \
+	bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath)); \
+	if (bbs_transfer_set_disk_path_relative(node, userpath, msg->filename, mypath, sizeof(mypath))) { \
 		handle_errno(msg); \
 		break; \
 	} \
 	CANONICALIZE_PATHS();
 
 #define SFTP_MAKE_PATH_NOCHECK() \
-	if (bbs_transfer_set_disk_path_absolute_nocheck(node, msg->filename, mypath, sizeof(mypath))) { \
+	bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath)); \
+	if (bbs_transfer_set_disk_path_relative_nocheck(node, userpath, msg->filename, mypath, sizeof(mypath))) { \
 		handle_errno(msg); \
 		break; \
 	} \
 	CANONICALIZE_PATHS();
+
+static void sftp_free_info(struct sftp_info *info)
+{
+	if (info->type == TYPE_DIR) {
+		closedir(info->dir);
+	} else {
+		fclose(info->file);
+	}
+	free_if(info->name);
+	free_if(info->realpath);
+	free(info);
+}
 
 static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel channel)
 {
@@ -1332,7 +1358,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 	FILE *fp = NULL;
 	int fd;
 	DIR *dir = NULL;
-	struct sftp_info *info;
+	struct sftp_info *info = NULL;
 	ssh_string handle;
 	struct stat st;
 	sftp_attributes attr;
@@ -1441,11 +1467,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 				if (!info) {
 					sftp_reply_status(msg, SSH_FX_INVALID_HANDLE, "Invalid handle");
 				} else {
-					sftp_handle_remove(msg->sftp, info);
-					if (info->type == TYPE_DIR) {
-						closedir(info->dir);
-						dir = NULL;
-					} else {
+					if (info->type != TYPE_DIR) {
 						if (SFTP_IO_WRITE(msg->flags)) { /* For downloads, we already dispatched an event */
 							long int pos;
 							struct bbs_file_transfer_event event;
@@ -1457,12 +1479,14 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 							event.size = (size_t) pos;
 							bbs_event_dispatch_custom(node, EVENT_FILE_UPLOAD_COMPLETE, &event);
 						}
-						fclose(info->file);
-						fp = NULL;
 					}
-					free_if(info->name);
-					free_if(info->realpath);
-					free(info);
+					sftp_handle_remove(msg->sftp, info);
+					sftp_free_info(info);
+					/* These are all pointers of different types,
+					 * so we can't assign them all to NULL on the same line: */
+					dir = NULL;
+					fp = NULL;
+					info = NULL;
 					sftp_reply_status(msg, SSH_FX_OK, NULL);
 				}
 				break;
@@ -1530,6 +1554,13 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 	}
 
 cleanup:
+	/* Good clients should clean up normally themselves,
+	 * but malicious ones shouldn't force us to leak resources. */
+	if (info) {
+		bbs_debug(7, "Closing info still open at SFTP session end\n");
+		sftp_free_info(info);
+		info = NULL;
+	}
 	if (fp) {
 		bbs_debug(7, "Closing file still open at SFTP session end\n");
 		fclose(fp);

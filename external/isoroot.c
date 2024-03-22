@@ -104,7 +104,7 @@ static int child_exec(void *varg)
 	char c;
 	int res;
 	struct utsname uts;
-	char *argv[] = { "/bin/bash", NULL };
+	char *argv[] = { "/bin/bash", NULL }; /* Program to run in the container */
 
 	(void) varg;
 
@@ -136,7 +136,7 @@ static int child_exec(void *varg)
 	}
 
 	/* If ./rootfs/.old doesn't yet exist, create it in the rootfs */
-	if (eaccess("./rootfs/.old", R_OK) && mkdir("./rootfs/.old", 0700)) {
+	if (eaccess("./rootfs/.old", R_OK) && mkdir("./rootfs/.old", 0777)) {
 		fprintf(stderr, "mkdir failed: %s\n", strerror(errno));
 		exit(errno);
 	}
@@ -202,17 +202,26 @@ int main(int argc, char *argv[])
 #else
 	pid_t child;
 
-	(void) argc;
-	(void) argv;
-
 	if (pipe(map_pipe)) {
 		fprintf(stderr, "pipe failed: %s\n", strerror(errno));
 		return -1;
 	}
 
+	if (argc > 1) {
+		if (!strncmp(argv[1], "-h", 1) || !strncmp(argv[1], "-?", 1) || !strncmp(argv[1], "--help", 6)) {
+			fprintf(stderr, "Usage: isoroot [rootfs parent dir] [runuser]\n");
+			return -1;
+		}
+		/* Set working directory */
+		fprintf(stderr, "Using container root '%s/rootfs'\n", argv[1]);
+		if (chdir(argv[1])) {
+			fprintf(stderr, "Failed to change directories to %s: %s\n", argv[1], strerror(errno));
+			_exit(errno);
+		}
+	}
+
 	child = clone(child_exec, child_stack + STACK_SIZE,
-		SIGCHLD | CLONE_NEWIPC | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWUSER,
-		argv);
+		SIGCHLD | CLONE_NEWIPC | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWUSER, NULL);
 	if (child < 0) {
 		fprintf(stderr, "clone failed: %s\n", strerror(errno));
 		exit(errno);
