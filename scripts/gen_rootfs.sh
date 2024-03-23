@@ -9,7 +9,11 @@ curl -sSL https://get.docker.com/ | sh
 
 # Install a Debian 12 container (modify according to your desired guest/host OS)
 # Execute commands to install any programs you want available in the container
-docker run -it debian:12 apt-get update -y && apt-get install -y less ed vi nano top
+# libncurses6 is needed for running external/filemgr (copied at the bottom of this script)
+#
+# You can also install software later as needed in the container template.
+# Use the -n option to keep network connectivity inside the container (needed for apt-get)
+docker run -it debian:12 apt-get update -y && apt-get install -y less ed vi nano top libncurses6 lrzsz
 
 # List containers
 docker ps -a
@@ -35,3 +39,13 @@ rm ./rootfs/.dockerenv
 # We use \u as a backup for the sysop manually using isoroot
 # to administer the container, since $BBS_USER is only defined within the BBS.
 sed -i 's/\\u/${BBS_USER:-\\u}/' ./rootfs/etc/bash.bashrc
+
+# Disable the apt sandbox so we can run apt-get update using isoroot -n:
+# Adapted from 2nd answer here: https://stackoverflow.com/a/71096036/
+sed -i 's/_apt/root/' ./rootfs/etc/apt/apt.conf.d/sandbox-disable
+
+# Copy added terminfo definitions from /etc/terminfo
+cp -r /etc/terminfo/* ./rootfs/etc/terminfo
+
+# Add binaries that are useful inside the BBS
+cp /var/lib/lbbs/external/filemgr ./rootfs/bin

@@ -40,7 +40,6 @@ INSTALL = install
 # Uncomment this to see all build commands instead of 'quiet' output
 #NOISY_BUILD=yes
 
-# XXX missing terms since currently no term modules
 MOD_SUBDIR:=doors modules nets
 SUBDIRS:=$(MOD_SUBDIR)
 SUBDIRS_INSTALL:=$(SUBDIRS:%=%-install)
@@ -88,10 +87,14 @@ $(MOD_SUBDIR):
 external tests :
 	@+$(SUBMAKE) --no-builtin-rules -C $@ all
 
-modcheck : external
+# Make only modcheck, but not any of the other external programs
+modcheckrule :
+	@+$(SUBMAKE) --no-builtin-rules -C external modman
+
+modcheck : modcheckrule
 	@external/modman -t
 
-modconfig : external
+modconfig : modcheckrule
 	@external/modman -d
 
 clean :
@@ -141,6 +144,7 @@ extinstall:
 		mkdir /var/lib/lbbs/external;\
 	fi
 	$(SUBMAKE) --no-builtin-rules -C external install
+	@find /var/lib/lbbs/external -size 0 -delete; \
 	ln -s -f /var/lib/lbbs/external/rsysop /usr/local/sbin/rsysop
 
 scripts :
@@ -194,6 +198,9 @@ helgrind :
 .PHONY: bbs
 .PHONY: $(MOD_SUBDIR)
 .PHONY: external
+.PHONY: modcheckrule
+.PHONY: modcheck
+.PHONE: modconfig
 .PHONY: tests
 .PHONY: scripts
 .PHONY: clean
