@@ -102,6 +102,13 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libsieve2-dev"
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN autoconf"
 PACKAGES_FREEBSD="$PACKAGES_FREEBSD autoconf"
 
+# Soft dependencies
+# used for bc (executed by 'calc' in door_utils)
+PACKAGES_DEBIAN="$PACKAGES_DEBIAN bc"
+
+# used for cal (included in menus.conf sample)
+PACKAGES_DEBIAN="$PACKAGES_DEBIAN ncal"
+
 # Actually install required packages
 OS=$(( uname -s ))
 if [ -f /etc/debian_version ]; then

@@ -23,7 +23,7 @@ Key features and capabilities include:
 
 * ANSI art support
 
-* File transfers via FTP, SFTP, Gopher, and HTTP/HTTPS
+* File transfers via FTP, SFTP, Gopher, HTTP/HTTPS, and ZMODEM
 
 * HTTP 1.1 web server, with WebSocket and forward-proxy support
 
@@ -281,6 +281,13 @@ I see warnings about a terminal type not being in the terminfo database.
 This typically happens for terminal emulators that report non-standard terminal types that are not installed by default on the system.
 This can be resolved by installing the appropriate terminfo file. See :code:`scripts/server_setup.sh` for an example of adding :code:`syncterm` support in this manner.
 
+What is the difference between :code:`door_chat` and :code:`door_irc`?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:code:`door_chat` is a fully self-contained, isolated chat module that can only be used from within the BBS.
+:code:`door_irc` is an IRC client that can be used to connect to the local IRC server (provided by :code:`net_irc`) or to another IRC server.
+In most cases, :code:`door_irc` is likely what you want; however, :code:`door_chat` can still be used on its own, if it meets your needs.
+
 When using private namespace IRC channels, channel messages get sent to me as private messages.
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -288,6 +295,11 @@ It is likely that your IRC client does not properly support all the standardized
 Many clients only support the first two, if even that. Because of this limitation, you can override the prefix used
 for the per-user namespace prefix near the top of :code:`include/net_irc.h`, by defining :code:`PRIVATE_NAMESPACE_PREFIX_CHAR` appropriately.
 If your client only supports the # prefix properly, then unfortunately you cannot use this feature, unless you can fix your client.
+
+The Discord relay seems to exit immediately after being started.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The bot you created likely doesn't have all the necessary permissions. Make sure "Privileged Gateway Intents" are enabled as appropriate.
 
 I have multiple hostnames. Is SNI (Server Name Indication) supported?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

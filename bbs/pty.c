@@ -91,6 +91,9 @@ int bbs_openpty(int *amaster, int *aslave, char *name, const struct termios *ter
 	int slave, res;
 
 	res = posix_openpty(amaster, slavename, sizeof(slavename));
+	if (res < 0) {
+		return -1;
+	}
 	if (!res && name) {
 		/* XXX Note this is not actually safe. We have no idea how big the name buffer is. Just hope for the best.
 		 * The one module that calls this function currently (the SSH network driver) passes NULL

@@ -84,6 +84,7 @@ static int door_handler(struct bbs_node *node, char *args)
 static int __exec_handler(struct bbs_node *node, char *args, int isolated)
 {
 	int res;
+	time_t execstart, execend;
 	char *argv[32]; /* 32 arguments ought to be enough for anybody. */
 
 	bbs_assert_exists(args); /* We registered with needargs, so args should never be NULL */
@@ -96,6 +97,7 @@ static int __exec_handler(struct bbs_node *node, char *args, int isolated)
 
 	bbs_node_clear_screen(node);
 	bbs_node_buffer(node); /* Assume that exec'd processes will want the terminal to be buffered: in canonical mode with echo on. */
+	execstart = time(NULL);
 	/* Prog name is simply argv[0]. */
 	switch (isolated) {
 	case 2:
@@ -111,9 +113,12 @@ static int __exec_handler(struct bbs_node *node, char *args, int isolated)
 		res = bbs_execvp(node, argv[0], argv);
 		break;
 	}
+	execend = time(NULL);
+	bbs_debug(6, "res: %d, exec time: %lu\n", res, execend - execstart);
 	if (res < 0) {
 		return res;
 	}
+
 	/* This "hack" could maybe be in menu.c, but so far I think we only absolutely need it here. */
 	if (!node->active) {
 		/* Hack because we return 0 from bbs_execvp if the child process was killed.
@@ -135,10 +140,15 @@ static int __exec_handler(struct bbs_node *node, char *args, int isolated)
 		 */
 		return -1;
 	}
-	/* Who knows what this external program did. Prompt the user for confirmation before returning to menu, if the program exited nonzero. */
+	/* Who knows what this external program did. Prompt the user for confirmation before returning to menu, if the program exited nonzero,
+	 * or if returned almost immediately (since some executions will just print something to STDOUT),
+	 * and since the screen will be cleared after returning, this would erase that output otherwise).
+	 * This accomodates both "quick executing" programs that produce output,
+	 * and long-lived interactive programs that do not produce output for us. */
 	/* bbs_node_wait_key's unbuffer will always succeed, regardless of actual current state, because as far as the BBS is concerned, we're buffered */
 	bbs_node_unbuffer(node);
-	if (!res) {
+
+	if (!res && execend > execstart + 2) {
 		return 0;
 	}
 	return bbs_node_wait_key(node, MIN_MS(2));

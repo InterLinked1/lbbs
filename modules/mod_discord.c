@@ -1465,8 +1465,15 @@ static struct bbs_cli_entry cli_commands_discord[] = {
 
 static void *discord_relay(void *varg)
 {
+	CCORDcode code;
 	struct discord *client = varg;
-	discord_run(client);
+	code = discord_run(client);
+	if (!bbs_module_is_shutting_down() && code != CCORD_OK) {
+		/* This will happen if the module is unloaded, too,
+		 * so ignore in that case. It's only concerning if
+		 * the relay returns nonzero while the module is running. */
+		bbs_warning("Discord relay exited unexpectedly: %s\n", discord_strerror(code, client));
+	}
 	bbs_debug(3, "Discord relay thread now exiting\n");
 	return NULL;
 }
