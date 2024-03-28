@@ -137,6 +137,10 @@ scripts/libdiscord.sh
 # libwss (net_ws)
 scripts/libwss.sh
 
+# libetpan (mod_webmail): the package no longer suffices, since we patch the source.
+#PACKAGES_DEBIAN="$PACKAGES_DEBIAN libetpan-dev"
+scripts/libetpan.sh
+
 # evergreen (door_evergreen)
 scripts/evergreen.sh
 
@@ -145,10 +149,6 @@ scripts/libslackrtm.sh
 
 # mod_smtp_filter_arc
 scripts/libopenarc.sh
-
-# libetpan (mod_webmail): the package no longer suffices, since we patch the source.
-#PACKAGES_DEBIAN="$PACKAGES_DEBIAN libetpan-dev"
-scripts/libetpan.sh
 
 # doxygen only:
 #PACKAGES_DEBIAN="$PACKAGES_DEBIAN doxygen graphviz"
