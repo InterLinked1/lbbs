@@ -18,6 +18,7 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libssl-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA openssl-devel"
 
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libncurses-dev" # ncurses
+PACKAGES_DEBIAN="$PACKAGES_DEBIAN ncurses-base ncurses-term" # full/extended terminal definitions
 
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libcrypt-dev" # crypt_r
 

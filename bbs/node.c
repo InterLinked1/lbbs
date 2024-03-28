@@ -23,6 +23,7 @@
 #include <stdio.h> /* use vasprintf */
 #include <unistd.h> /* use close */
 #include <string.h> /* use strchr */
+#include <ctype.h> /* use tolower */
 #include <poll.h>
 #include <signal.h> /* use pthread_kill */
 #include <math.h> /* use ceil, floor */
@@ -1442,7 +1443,7 @@ static int node_read_cursor_pos(struct bbs_node *node, int timeout, int *restric
 	res = bbs_node_poll(node, timeout);
 	if (res <= 0) {
 		if (!res) {
-			bbs_debug(3, "No response to cursor position query after 3 seconds...\n");
+			bbs_debug(3, "No response to cursor position query after %d seconds...\n", timeout / 1000);
 		}
 		return res ? -1 : 0;
 	}
@@ -1664,7 +1665,7 @@ static inline int read_cursor_pos_response(struct bbs_node *node, struct timespe
 	if (bbs_node_write(node, buf, (size_t) len) < (ssize_t) len) {
 		return -1;
 	}
-	/* Most modern terminals support ANSI and will response immediately,
+	/* Most modern terminals support ANSI and will respond immediately,
 	 * so don't wait too long for that. */
 	res = node_read_cursor_pos(node, SEC_MS(3), &row, &col);
 	if (res) {
@@ -1883,12 +1884,12 @@ static int ask_yn(struct bbs_node *node, const char *question)
 	char c;
 	/* Since we're not sure if this terminal supports ANSI,
 	 * don't use any ANSI escape sequences, just keep it nice and simple. */
-	bbs_node_writef(node, "\n%s? (y/n) ", question);
 	for (i = 0; i < 3; i++) {
+		bbs_node_writef(node, "\n%s? (y/n) ", question);
 		c = bbs_node_tread(node, SEC_MS(30));
-		if (c == 'y') {
+		if (tolower(c) == 'y') {
 			return 1;
-		} else if (c == 'n') {
+		} else if (tolower(c) == 'n') {
 			return 0;
 		}
 	}
@@ -1911,6 +1912,7 @@ static int init_term_properties_manual(struct bbs_node *node)
 	}
 	SET_BITFIELD(node->slow, res);
 
+	bbs_node_writef(node, "\n"); /* ask_yn doesn't end with LF */
 	return 0;
 }
 
