@@ -31,10 +31,10 @@ IMAP_SRC = $(wildcard net_imap/*.c)
 IMAP_OBJ = $(patsubst %.c,%.o,$(IMAP_SRC))
 
 # Subdirectory with components for net_imap
-net_imap:
-	@+$(SUBMAKE) --no-builtin-rules -C $@ all
+net_imap/%.o: $(IMAP_SRC)
+	@+$(SUBMAKE) --no-builtin-rules -C net_imap all
 
-net_imap.so : net_imap.o net_imap
+net_imap.so : net_imap.o $(IMAP_OBJ)
 	@echo "  [LD] $< $(IMAP_OBJ) -> $@"
 	$(CC) -shared -fPIC -o $(basename $<).so $(IMAP_OBJ) $<
 
