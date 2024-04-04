@@ -119,13 +119,20 @@ static int telnet_read_command(int fd, unsigned char *buf, size_t len)
 			return 0;
 		}
 		/* Don't let the client make us index out of bounds */
-		if (!IN_BOUNDS(buf[0], xEOF, IAC) || !IN_BOUNDS(buf[1], xEOF, IAC) || !IN_BOUNDS(buf[2], TELOPT_BINARY, TELOPT_EXOPL)) {
+		if (!TELCMD_OK(buf[0]) || !TELCMD_OK(buf[1])) {
 			bbs_warning("Got out of bounds command: %d %d %d\n", buf[0], buf[1], buf[2]);
+			return 0;
+		}
+		if (!TELOPT_OK(buf[2])) {
+			bbs_warning("Got out of bounds option: %d %d %d\n", buf[0], buf[1], buf[2]);
 			return 0;
 		}
 		a = buf[0] - xEOF; /* We know this is IAC */
 		b = buf[1] - xEOF;
 		c = buf[2];
+		bbs_assert(telcmds[a] != NULL);
+		bbs_assert(telcmds[b] != NULL);
+		bbs_assert(telopts[c] != NULL);
 		bbs_debug(3, "Received Telnet command %s %s %s\n", telcmds[a], telcmds[b], telopts[c]);
 		return (int) res;
 	} else {
