@@ -24,8 +24,6 @@
 #include <unistd.h>
 #include <dirent.h>
 
-#include "include/tls.h"
-
 #include "include/module.h"
 #include "include/config.h"
 #include "include/utils.h"
@@ -52,7 +50,6 @@ struct sieve_session {
 	long unsigned int quotaleft;
 	unsigned int uploadsofar;
 	unsigned int uploadexpected;
-	unsigned int secure:1;
 	unsigned int dostarttls:1;
 };
 
@@ -79,7 +76,7 @@ static int handle_capability(struct sieve_session *sieve)
 	sieve_send(sieve, "\"SIEVE\" \"%s\"", caps);
 	free(caps);
 	sieve_send(sieve, "\"VERSION\" \"1.0\"");
-	if (!sieve->secure) {
+	if (!sieve->node->secure) {
 		sieve_send(sieve, "\"STARTTLS\"");
 	}
 	sieve_send(sieve, "\"SASL\" \"PLAIN\"");
@@ -434,7 +431,7 @@ doneupload:
 	return 0;
 }
 
-static void handle_client(struct sieve_session *sieve, SSL **sslptr)
+static void handle_client(struct sieve_session *sieve)
 {
 	char buf[1001]; /* Maximum length, including CR LF, is 1000 */
 	struct readline_data rldata;
@@ -475,12 +472,10 @@ static void handle_client(struct sieve_session *sieve, SSL **sslptr)
 		if (sieve->dostarttls) { /* RFC3207 STARTTLS */
 			bbs_debug(3, "Starting TLS\n");
 			sieve->dostarttls = 0;
-			*sslptr = ssl_node_new_accept(sieve->node, &sieve->rfd, &sieve->wfd);
-			if (!*sslptr) {
+			if (bbs_node_starttls(sieve->node)) {
 				break; /* Just abort */
 			}
 			bbs_readline_flush(&rldata); /* Prevent STARTTLS command injection by resetting the buffer after TLS upgrade */
-			sieve->secure = 1;
 			if (handle_capability(sieve)) { /* Must reissue after STARTTLS */
 				return;
 			}
@@ -491,9 +486,6 @@ static void handle_client(struct sieve_session *sieve, SSL **sslptr)
 static void *__sieve_handler(void *varg)
 {
 	struct bbs_node *node = varg;
-#ifdef HAVE_OPENSSL
-	SSL *ssl = NULL;
-#endif
 	struct sieve_session sieve;
 
 	bbs_node_net_begin(node);
@@ -501,17 +493,9 @@ static void *__sieve_handler(void *varg)
 	memset(&sieve, 0, sizeof(sieve));
 	sieve.rfd = sieve.wfd = node->fd;
 	sieve.node = node;
-	sieve.secure = 0;
 
-	handle_client(&sieve, &ssl);
+	handle_client(&sieve);
 
-#ifdef HAVE_OPENSSL
-	/* Note that due to STARTTLS, sieve.secure might not always equal secure at this point (session could start off insecure and end up secure) */
-	if (sieve.secure) { /* implies ssl */
-		ssl_close(ssl);
-		ssl = NULL;
-	}
-#endif
 	sieve_cleanup(&sieve);
 
 	bbs_node_exit(node);

@@ -23,7 +23,8 @@ export UNAME_S
 
 LIBS	= -lrt -lm -ldl
 
-LIBS += -lbfd -lcrypt -lssl -lcrypto -lcurl -lreadline -luuid -rdynamic
+# -lcrypto needed for SHA1_Init in hash.c
+LIBS += -lbfd -lcrypt -lcrypto -lcurl -lreadline -luuid -rdynamic
 
 ifeq ($(UNAME_S),Linux)
 LIBS += -lbsd -lcap
@@ -40,7 +41,7 @@ INSTALL = install
 # Uncomment this to see all build commands instead of 'quiet' output
 #NOISY_BUILD=yes
 
-MOD_SUBDIR:=doors modules nets
+MOD_SUBDIR:=doors io modules nets
 SUBDIRS:=$(MOD_SUBDIR)
 SUBDIRS_INSTALL:=$(SUBDIRS:%=%-install)
 SUBDIRS_CLEAN:=$(SUBDIRS:%=%-clean)

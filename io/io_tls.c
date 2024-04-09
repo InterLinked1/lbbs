@@ -1,7 +1,7 @@
 /*
  * LBBS -- The Lightweight Bulletin Board System
  *
- * Copyright (C) 2023, Naveen Albert
+ * Copyright (C) 2023-2024, Naveen Albert
  *
  * Naveen Albert <bbs@phreaknet.org>
  *
@@ -22,12 +22,13 @@
 #include <string.h>
 #include <poll.h>
 
-#include "include/tls.h"
-
-#ifdef HAVE_OPENSSL
 #include <openssl/opensslv.h>
-#endif
 
+#include <openssl/bio.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
+#include "include/module.h"
 #include "include/node.h"
 #include "include/linkedlists.h"
 #include "include/config.h"
@@ -37,18 +38,15 @@
 #include "include/cli.h"
 #include "include/reload.h"
 
-#ifdef HAVE_OPENSSL
 static char root_certs[84] = "/etc/ssl/certs/ca-certificates.crt";
 static char ssl_cert[256] = "";
 static char ssl_key[256] = "";
 
-SSL_CTX *ssl_ctx = NULL;
-#endif
+static SSL_CTX *ssl_ctx = NULL;
 
 static int ssl_is_available = 0;
 static int ssl_shutting_down = 0;
 
-#ifdef HAVE_OPENSSL
 static bbs_mutex_t *lock_cs = NULL;
 static long *lock_count = NULL;
 
@@ -137,12 +135,10 @@ static void sni_free(struct sni *sni)
 	SSL_CTX_free(sni->ctx);
 	free(sni);
 }
-#endif /* HAVE_OPENSSL */
 
 /*! \todo is there an OpenSSL function for this? */
-const char *ssl_strerror(int err)
+static const char *ssl_strerror(int err)
 {
-#ifdef HAVE_OPENSSL
 	switch (err) {
 	case SSL_ERROR_NONE:
 		return "SSL_ERROR_NONE";
@@ -165,13 +161,9 @@ const char *ssl_strerror(int err)
 	default:
 		break;
 	}
-#else
-	UNUSED(err);
-#endif /* HAVE_OPENSSL */
 	return "Undefined";
 }
 
-#ifdef HAVE_OPENSSL
 struct ssl_fd {
 	SSL *ssl;
 	int fd;
@@ -657,26 +649,11 @@ static int ssl_servername_cb(SSL *s, int *ad, void *arg)
 	}
 	return SSL_TLSEXT_ERR_OK;
 }
-#endif /* HAVE_OPENSSL */
-
-SSL *ssl_node_new_accept(struct bbs_node *node, int *rfd, int *wfd)
-{
-	int my_rfd = -1, my_wfd = -1;
-	SSL *ssl = ssl_new_accept(node, node->fd, &my_rfd, &my_wfd);
-	if (my_rfd >= 0) {
-		*rfd = my_rfd;
-	}
-	if (my_wfd >= 0) {
-		*wfd = my_wfd;
-	}
-	return ssl;
-}
 
 static bbs_rwlock_t ssl_cert_lock = BBS_RWLOCK_INITIALIZER;
 
-SSL *ssl_new_accept(struct bbs_node *node, int fd, int *rfd, int *wfd)
+static SSL *ssl_new_accept(int fd, int *rfd, int *wfd)
 {
-#ifdef HAVE_OPENSSL
 	int res;
 	int readfd, writefd;
 	int attempts = 0;
@@ -720,10 +697,6 @@ accept:
 		bbs_rwlock_unlock(&ssl_cert_lock);
 		bbs_debug(1, "SSL error %d: %d (%s = %s)\n", res, sslerr, ssl_strerror(sslerr), ERR_error_string(ERR_get_error(), NULL));
 		SSL_free(ssl);
-		/* If TLS setup fails, it's probably garbage traffic and safe to penalize: */
-		if (node) {
-			bbs_event_dispatch(node, EVENT_NODE_ENCRYPTION_FAILED);
-		}
 		return NULL;
 	}
 	bbs_rwlock_unlock(&ssl_cert_lock);
@@ -745,19 +718,12 @@ accept:
 		bbs_debug(5, "SSL session was reused for this connection\n");
 	}
 
-	bbs_debug(3, "TLS handshake completed (%s)\n", SSL_get_version(ssl));
+	bbs_debug(3, "TLS handshake completed %p (%s)\n", ssl, SSL_get_version(ssl));
 	return ssl;
-#else
-	UNUSED(fd);
-	UNUSED(rfd);
-	UNUSED(wfd);
-	return NULL;
-#endif /* HAVE_OPENSSL */
 }
 
-SSL *ssl_client_new(int fd, int *rfd, int *wfd, const char *snihostname)
+static SSL *ssl_client_new(int fd, int *rfd, int *wfd, const char *snihostname)
 {
-#ifdef HAVE_OPENSSL
 	SSL *ssl;
 	SSL_CTX *ctx;
 	X509 *server_cert;
@@ -850,7 +816,7 @@ connect:
 		bbs_warning("SSL verify failed: %ld (%s)\n", verify_result, X509_verify_cert_error_string(verify_result));
 		goto sslcleanup;
 	} else {
-		bbs_debug(4, "TLS verification successful\n");
+		bbs_debug(4, "TLS verification successful %p\n", ssl);
 	}
 
 	SSL_CTX_free(ctx);
@@ -867,23 +833,16 @@ sslcleanup:
 	SSL_free(ssl);
 	ctx = NULL;
 	ssl = NULL;
-#else
-	UNUSED(fd);
-	UNUSED(rfd);
-	UNUSED(wfd);
-	UNUSED(snihostname);
-#endif /* HAVE_OPENSSL */
 	return NULL;
 }
 
-int ssl_close(SSL *ssl)
+static int ssl_close(SSL *ssl)
 {
-#ifdef HAVE_OPENSSL
 	int sres, res = ssl_unregister_fd(ssl);
 	sres = SSL_shutdown(ssl);
 	if (sres < 0) {
 		int err = SSL_get_error(ssl, sres);
-		bbs_debug(1, "SSL shutdown failed: %s\n", ssl_strerror(err));
+		bbs_debug(1, "SSL shutdown failed %p: %s\n", ssl, ssl_strerror(err));
 	} else if (!sres) {
 		/* We sent a close notify, but haven't received one from the peer.
 		 * To be properly conformant, a client should send us a close notify,
@@ -894,18 +853,8 @@ int ssl_close(SSL *ssl)
 	} /* else, if sres == 1, shutdown completed successfully. */
 	SSL_free(ssl);
 	return res;
-#else
-	UNUSED(ssl);
-	return -1;
-#endif /* HAVE_OPENSSL */
 }
 
-int ssl_available(void)
-{
-	return ssl_is_available;
-}
-
-#ifdef HAVE_OPENSSL
 static int validate_cert(SSL_CTX *ctx, const char *cert)
 {
 	const ASN1_TIME *created, *expires;
@@ -1064,13 +1013,11 @@ static int ssl_load_config(int reload)
 
 static int tls_cleanup(void)
 {
-#ifdef HAVE_OPENSSL
 	if (ssl_ctx) {
 		SSL_CTX_free(ssl_ctx);
 		ssl_ctx = NULL;
 	}
 	RWLIST_WRLOCK_REMOVE_ALL(&sni_certs, entry, sni_free);
-#endif /* HAVE_OPENSSL */
 	return 0;
 }
 
@@ -1134,8 +1081,14 @@ static int tlsreload(int fd)
 	return 0;
 }
 
+static int cli_tlsreload(struct bbs_cli_args *a)
+{
+	return tlsreload(a->fdout);
+}
+
 static struct bbs_cli_entry cli_commands_tls[] = {
 	BBS_CLI_COMMAND(cli_tls, "tls", 1, "List all TLS sessions", NULL),
+	BBS_CLI_COMMAND(cli_tlsreload, "tlsreload", 1, "Reload TLS certificates and configuration", NULL),
 };
 
 static int setup_ssl_io(void)
@@ -1149,14 +1102,13 @@ static int setup_ssl_io(void)
 	thread_launched = 1;
 	return 0;
 }
-#endif /* HAVE_OPENSSL */
 
-int ssl_server_init(void)
+static int ssl_server_init(void)
 {
-	bbs_register_reload_handler("tls", "Reload TLS certificates and configuration", tlsreload);
 	bbs_cli_register_multiple(cli_commands_tls);
-#ifdef HAVE_OPENSSL
-	setup_ssl_io(); /* Even if we can't be a TLS server, we can still be a TLS client. */
+	if (setup_ssl_io()) { /* Even if we can't be a TLS server, we can still be a TLS client. */
+		return -1;
+	}
 
 	if (ssl_load_config(0)) {
 		bbs_debug(5, "TLS will not be available\n");
@@ -1170,21 +1122,17 @@ int ssl_server_init(void)
 	locks_initialized = 1;
 	ssl_is_available = 1;
 	return 0;
-#else
-	bbs_error("BBS compiled without OpenSSL support?\n");
-	return -1; /* Won't happen */
-#endif
 }
 
-void ssl_server_shutdown(void)
+static void ssl_server_shutdown(void)
 {
 	ssl_is_available = 0;
 	ssl_shutting_down = 1;
 
-#ifdef HAVE_OPENSSL
 	tls_cleanup();
 
 	bbs_cli_unregister_multiple(cli_commands_tls);
+
 	/* Do not use pthread_cancel, let the thread clean up */
 	if (thread_launched) {
 		bbs_alertpipe_write(ssl_alert_pipe); /* Tell thread to exit */
@@ -1195,5 +1143,95 @@ void ssl_server_shutdown(void)
 	if (locks_initialized) {
 		lock_cleanup();
 	}
-#endif
 }
+
+/* I/O transformation callback functions */
+
+static int setup(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restrict data, const void *arg)
+{
+	SSL *ssl = NULL;
+	int fd = *rfd;
+
+	/* For TLS, these must match since OpenSSL takes a file descriptor for setup (which is expected to be a socket, or something like that, same fd for read/write) */
+	if (*rfd != *wfd) {
+		bbs_error("rfd != wfd (%d != %d)\n", *rfd, *wfd);
+		return -1;
+	}
+
+	if (!ssl_is_available) {
+		bbs_warning("Declining TLS setup\n");
+		return -1;
+	}
+
+	if (dir & TRANSFORM_SERVER) {
+		ssl = ssl_new_accept(fd, rfd, wfd);
+	} else if (dir & TRANSFORM_CLIENT) {
+		const char *snihostname = arg;
+		ssl = ssl_client_new(fd, rfd, wfd, snihostname);
+	}
+
+	if (!ssl) {
+		return -1;
+	}
+
+	*data = ssl; /* Store as transform callback data */
+	return 0;
+}
+
+static void cleanup(struct bbs_io_transformation *tran)
+{
+	SSL *ssl = tran->data;
+	bbs_assert_exists(ssl);
+	ssl_close(ssl);
+}
+
+static int query(struct bbs_io_transformation *tran, int query, void *data)
+{
+	SSL *ssl = tran->data;
+	int *result = data;
+
+	switch (query) {
+	case TRANSFORM_QUERY_TLS_REUSE:
+		*result = SSL_session_reused(ssl);
+		break;
+	default:
+		bbs_warning("Unknown query type: %d\n", query);
+		return -1;
+	}
+	return 0;
+}
+
+static int load_module(void)
+{
+	if (ssl_server_init()) {
+		ssl_server_shutdown();
+		return -1;
+	}
+	if (bbs_io_transformer_register("TLS", setup, query, cleanup, TRANSFORM_TLS_ENCRYPTION, TRANSFORM_SERVER_CLIENT_TX_RX)) {
+		ssl_server_shutdown();
+		return -1;
+	}
+	return 0;
+}
+
+static int unload_module(void)
+{
+	bbs_io_transformer_unregister("TLS");
+
+	/* This module should be reffed for each I/O transformation using it,
+	 * but also double check to be sure. */
+	RWLIST_WRLOCK(&sslfds);
+	if (!RWLIST_EMPTY(&sslfds)) {
+		RWLIST_UNLOCK(&sslfds);
+		bbs_warning("TLS connections are still active, declining to unload\n");
+		return -1;
+	}
+	RWLIST_UNLOCK(&sslfds);
+
+	ssl_server_shutdown();
+	return 0;
+}
+
+/* Since most network modules will use ssl_available() to check for TLS availability
+ * when they load, we should be loaded before any of them are: */
+BBS_MODULE_INFO_FLAGS("TLS (Transport Layer Security)", MODFLAG_ALWAYS_PRELOAD);

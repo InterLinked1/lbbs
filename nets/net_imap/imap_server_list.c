@@ -475,6 +475,8 @@ int list_scandir(struct imap_session *imap, struct list_command *lcmd, int level
 
 		if (level == 0 && lcmd->ns == NAMESPACE_OTHER && isdigit(*entry->d_name)) {
 			unsigned int userid = (unsigned int) atoi(entry->d_name);
+			bbs_assert_exists(imap->node);
+			bbs_assert_exists(imap->node->user);
 			if (userid == imap->node->user->id) {
 				goto cleanup; /* Skip ourself */
 			}

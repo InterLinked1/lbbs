@@ -520,6 +520,8 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	time_t now;
 	int wasloggedin = 0;
 
+	bbs_io_teardown_all_transformers(&node->trans);
+
 	/* Prevent node from being freed until we release the lock. */
 	bbs_node_lock(node);
 	if (!node->active) {
@@ -2077,6 +2079,31 @@ void bbs_node_net_begin(struct bbs_node *node)
 {
 	node->thread = pthread_self();
 	bbs_node_begin(node);
+}
+
+int bbs_node_starttls(struct bbs_node *node)
+{
+	int res;
+
+	if (unlikely(node->secure)) {
+		bbs_error("Can't start TLS, connection already encrypted\n");
+		return 1;
+	}
+
+	if (!bbs_io_transformer_available(TRANSFORM_TLS_ENCRYPTION)) {
+		return 1;
+	}
+
+	res = bbs_io_transform_setup(&node->trans,  TRANSFORM_TLS_ENCRYPTION, TRANSFORM_SERVER, &node->rfd, &node->wfd, NULL);
+	if (res) {
+		/* If TLS setup fails, it's probably garbage traffic and safe to penalize: */
+		if (node) {
+			bbs_event_dispatch(node, EVENT_NODE_ENCRYPTION_FAILED);
+		}
+	} else {
+		node->secure = 1;
+	}
+	return res;
 }
 
 void bbs_node_exit(struct bbs_node *node)

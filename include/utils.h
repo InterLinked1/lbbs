@@ -24,13 +24,6 @@ struct sockaddr_in;
 #include "include/string.h"
 #include "include/thread.h"
 
-#define HAVE_OPENSSL
-
-/* Forward declaration of SSL* needed */
-#ifdef HAVE_OPENSSL
-#include <openssl/bio.h>
-#endif
-
 /* Note: Most actual I/O functions are in socket.c but declared in node.h */
 #include "include/socket.h"
 #include "include/tcp.h"

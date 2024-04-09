@@ -743,6 +743,7 @@ static int check_unmet_dependencies(int autodisable)
 	res |= check_module_subdir("bbs", 0); /* Check the core, too, but never autodisable, the build should fail if we the core dependencies aren't met */
 #endif
 	res |= check_module_subdir("doors", autodisable);
+	res |= check_module_subdir("io", autodisable);
 	res |= check_module_subdir("modules", autodisable);
 	res |= check_module_subdir("nets", autodisable);
 

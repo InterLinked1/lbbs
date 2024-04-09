@@ -29,8 +29,6 @@
 #include <unistd.h>
 #include <dirent.h>
 
-#include "include/tls.h"
-
 #include "include/module.h"
 #include "include/config.h"
 #include "include/utils.h"
@@ -744,17 +742,11 @@ static void handle_client(struct pop3_session *pop3)
 /*! \brief Thread to handle a single POP3/POP3S client */
 static void pop3_handler(struct bbs_node *node, int secure)
 {
-#ifdef HAVE_OPENSSL
-	SSL *ssl = NULL;
-#endif
 	struct pop3_session pop3;
 
 	/* Start TLS if we need to */
-	if (secure) {
-		ssl = ssl_node_new_accept(node, &node->rfd, &node->wfd);
-		if (!ssl) {
-			return;
-		}
+	if (secure && bbs_node_starttls(node)) {
+		return;
 	}
 
 	memset(&pop3, 0, sizeof(pop3));
@@ -763,12 +755,6 @@ static void pop3_handler(struct bbs_node *node, int secure)
 	handle_client(&pop3);
 	mailbox_dispatch_event_basic(EVENT_LOGOUT, node, NULL, NULL);
 
-#ifdef HAVE_OPENSSL
-	if (secure) { /* implies ssl */
-		ssl_close(ssl);
-		ssl = NULL;
-	}
-#endif
 	pop3_destroy(&pop3);
 }
 

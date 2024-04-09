@@ -19,17 +19,24 @@
 
 #include "include/bbs.h"
 
+#include <stdarg.h>
+
 #include "include/utils.h"
-#include "include/tls.h"
 #include "include/node.h"
 
 void bbs_tcp_client_cleanup(struct bbs_tcp_client *client)
 {
-	if (client->ssl) {
-		ssl_close(client->ssl);
-		client->ssl = NULL;
-	}
+	bbs_io_teardown_all_transformers(&client->trans);
 	close_if(client->fd);
+}
+
+static int starttls(struct bbs_tcp_client *client, const char *snihostname)
+{
+	if (!bbs_io_transformer_available(TRANSFORM_TLS_ENCRYPTION)) {
+		return 1;
+	}
+
+	return bbs_io_transform_setup(&client->trans, TRANSFORM_TLS_ENCRYPTION, TRANSFORM_CLIENT, &client->rfd, &client->wfd, snihostname);
 }
 
 int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, int secure, char *buf, size_t len)
@@ -43,8 +50,7 @@ int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, i
 	client->buf = buf;
 	client->len = len;
 	if (client->secure) {
-		client->ssl = ssl_client_new(client->fd, &client->rfd, &client->wfd, url->host);
-		if (!client->ssl) {
+		if (starttls(client, url->host)) {
 			bbs_debug(3, "Failed to set up TLS\n");
 			close_if(client->fd);
 			return -1;
@@ -58,12 +64,11 @@ int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, i
 int bbs_tcp_client_starttls(struct bbs_tcp_client *client, const char *hostname)
 {
 	bbs_assert(!client->secure);
-	client->ssl = ssl_client_new(client->fd, &client->rfd, &client->wfd, hostname);
-	if (!client->ssl) {
+
+	if (starttls(client, hostname)) {
 		bbs_warning("Failed to do STARTTLS\n");
 		return -1;
 	}
-	client->secure = 1;
 	bbs_readline_flush(&client->rldata); /* Prevent STARTTLS response injection by resetting the buffer after TLS upgrade */
 	return 0;
 }

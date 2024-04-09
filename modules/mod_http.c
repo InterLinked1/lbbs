@@ -26,6 +26,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
 #include <unistd.h>
@@ -36,7 +37,10 @@
 #include <magic.h>
 #include <sys/wait.h>
 
-#include "include/tls.h"
+#ifdef __linux__
+#include <linux/limits.h> /* use PATH_MAX */
+#endif
+
 #include "include/module.h"
 #include "include/node.h"
 #include "include/auth.h"
@@ -1871,9 +1875,6 @@ abort:
 /*! \brief Thread to handle a single HTTP/HTTPS client */
 static void http_handler(struct bbs_node *node, int secure)
 {
-#ifdef HAVE_OPENSSL
-	SSL *ssl = NULL;
-#endif
 	int res;
 	char buf[MAX_HTTP_REQUEST_SIZE];
 	struct readline_data rldata;
@@ -1887,11 +1888,8 @@ static void http_handler(struct bbs_node *node, int secure)
 	SET_BITFIELD(http.secure, secure);
 
 	/* Start TLS if we need to */
-	if (secure) {
-		ssl = ssl_node_new_accept(node, &http.node->rfd, &http.node->wfd);
-		if (!ssl) {
-			return; /* Disconnect. */
-		}
+	if (secure && bbs_node_starttls(node)) {
+		return; /* Disconnect. */
 	}
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
@@ -1938,13 +1936,6 @@ static void http_handler(struct bbs_node *node, int secure)
 		}
 		http_session_cleanup(&http);
 	} while (res >= 0 && http.req->keepalive);
-
-#ifdef HAVE_OPENSSL
-	if (ssl) {
-		ssl_close(ssl);
-		ssl = NULL;
-	}
-#endif
 }
 
 /*! \brief 80 columns of spaces */

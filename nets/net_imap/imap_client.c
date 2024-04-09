@@ -19,6 +19,7 @@
 
 #include "include/bbs.h"
 
+#include <stdarg.h>
 #include <poll.h>
 
 #include "include/node.h"

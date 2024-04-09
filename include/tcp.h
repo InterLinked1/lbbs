@@ -14,6 +14,8 @@
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
+#include "include/io.h"
+
 struct bbs_url;
 
 struct bbs_tcp_client {
@@ -23,7 +25,7 @@ struct bbs_tcp_client {
 	int fd;
 	int rfd;
 	int wfd;
-	SSL *ssl;
+	struct bbs_io_transformations trans; /*!< I/O transformations */
 	unsigned int secure:1;
 };
 

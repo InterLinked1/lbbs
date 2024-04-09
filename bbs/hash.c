@@ -22,10 +22,12 @@
 #include "include/hash.h"
 
 /* For hashing: */
-#ifdef HAVE_OPENSSL
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
-#endif
+
+#include <openssl/bio.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
 
 #undef sprintf
 
@@ -34,7 +36,6 @@
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations" /* SHA256_Init, SHA256_Update, SHA256_Final deprecated in OpenSSL 3.0 */
 int hash_sha256(const char *s, char buf[SHA256_BUFSIZE])
 {
-#ifdef HAVE_OPENSSL
 	int i;
 	unsigned char hash[SHA256_DIGEST_LENGTH];
 
@@ -49,17 +50,10 @@ int hash_sha256(const char *s, char buf[SHA256_BUFSIZE])
 	}
 	buf[SHA256_BUFSIZE - 1] = '\0';
 	return 0;
-#else
-	UNUSED(s);
-	UNUSED(buf);
-	UNUSED(len);
-	return -1;
-#endif
 }
 
 int hash_sha1(const char *s, char buf[SHA1_BUFSIZE])
 {
-#ifdef HAVE_OPENSSL
 	int i;
 	unsigned char hash[SHA_DIGEST_LENGTH];
 
@@ -74,17 +68,10 @@ int hash_sha1(const char *s, char buf[SHA1_BUFSIZE])
 	}
 	buf[SHA1_BUFSIZE - 1] = '\0';
 	return 0;
-#else
-	UNUSED(s);
-	UNUSED(buf);
-	UNUSED(len);
-	return -1;
-#endif
 }
 
 int hash_sha1_bytes(const char *s, char buf[SHA1_LEN])
 {
-#ifdef HAVE_OPENSSL
 	unsigned char hash[SHA_DIGEST_LENGTH];
 
 	/* We already use OpenSSL, just use that */
@@ -95,11 +82,5 @@ int hash_sha1_bytes(const char *s, char buf[SHA1_LEN])
 
 	memcpy(buf, hash, SHA1_LEN);
 	return 0;
-#else
-	UNUSED(s);
-	UNUSED(buf);
-	UNUSED(len);
-	return -1;
-#endif
 }
 #pragma GCC diagnostic pop /* -Wdeprecated-declarations */

@@ -15,6 +15,7 @@
 
 #include "linkedlists.h" /* for RWLIST_ENTRY */
 #include "keys.h" /* key definitions */
+#include "io.h" /* for I/O transformations */
 
 struct bbs_module;
 struct bbs_user;
@@ -42,6 +43,7 @@ struct bbs_node {
 	char slavename[84];			/*!< PTY slave name */
 	int spyfd;					/*!< Sysop's STDOUT file descriptor */
 	int spyfdin;				/*!< Sysop's STDIN file descriptor */
+	struct bbs_io_transformations trans; /*!< I/O transformations */
 	unsigned int rows;			/*!< Screen size: number of rows */
 	unsigned int cols;			/*!< Screen size: number of columns */
 	pthread_t thread;			/*!< Thread handling socket I/O */
@@ -80,6 +82,7 @@ struct bbs_node {
 	unsigned int nonagle:1;		/*!< Nagle's algorithm disabled */
 	unsigned int dimensions:1;	/*!< Aware of actual terminal dimensions */
 	unsigned int ansi:1;		/*!< Terminal supports ANSI escape sequences */
+	unsigned int secure:1;		/*!< Connection encrypted using TLS */
 	int ans;					/*!< Detailed ANSI support flags */
 	/* TDD stuff */
 	char ioreplace[10][2];		/*!< Character replacement for TDDs and other keyboard input-limited endpoints. 2D list with 10 slots. */
@@ -790,6 +793,13 @@ void bbs_node_begin(struct bbs_node *node);
  * \note Only intended for network protocols that don't use psuedoterminals
  */
 void bbs_node_net_begin(struct bbs_node *node);
+
+/*!
+ * \brief Start TLS on a node, splitting node->fd into node->rfd and node->wfd for TLS I/O
+ * \param node
+ * \retval 0 on success, -1 on failure, 1 if TLS not available
+ */
+int bbs_node_starttls(struct bbs_node *node);
 
 /*! \brief Stop handling a node
  * \note Not needed if you use bbs_node_handler

@@ -35,7 +35,6 @@
 #include "include/auth.h"
 #include "include/system.h"
 #include "include/transfer.h"
-#include "include/tls.h"
 #include "include/event.h"
 
 static int minport, maxport;
@@ -81,6 +80,7 @@ struct ftp_session {
 	int wfd2;
 	int protbufsize;
 	struct bbs_node *node;
+	struct bbs_io_transformations data_transformers; /* For data channel encryption */
 	unsigned int securedata:1;
 	unsigned int gotpbsz:1;
 };
@@ -122,14 +122,13 @@ static int ftp_pasv_new(int *sockfd)
 	int __data_res = 0; \
 	ftp->rfd2 = ftp->wfd2 = pasv_fd; \
 	if (ftp->securedata) { \
+		int reused; \
 		bbs_debug(3, "Setting up TLS on data channel\n"); \
-		ssl2 = ssl_new_accept(ftp->node, pasv_fd, &ftp->rfd2, &ftp->wfd2); \
-		if (!ssl2) { \
+		if (bbs_io_transform_setup(&ftp->data_transformers, TRANSFORM_TLS_ENCRYPTION, TRANSFORM_SERVER, &ftp->rfd2, &ftp->wfd2, NULL)) { \
 			__data_res = -1; \
-		} else if (require_reuse && !SSL_session_reused(ssl2)) { \
+		} else if (require_reuse && (bbs_io_transform_query(&ftp->data_transformers, TRANSFORM_TLS_ENCRYPTION, TRANSFORM_QUERY_TLS_REUSE, &reused) || !reused)) { \
 			bbs_warning("TLS session was not reused\n"); \
-			ssl_close(ssl2); \
-			ssl2 = NULL; \
+			bbs_io_teardown_all_transformers(&ftp->data_transformers); \
 			ftp->rfd2 = ftp->wfd2 = -1; \
 			__data_res = -1; \
 		} \
@@ -141,19 +140,13 @@ static int ftp_pasv_new(int *sockfd)
 	if (fp) { \
 		fclose(fp); \
 	} \
-	if (ssl2) { \
-		ssl_close(ssl2); \
-		ssl2 = NULL; \
-	} \
+	bbs_io_teardown_all_transformers(&ftp->data_transformers); \
 	close_if(fd); /* Close connection when done. This is the EOF that signals the client that the file transfer has completed. */ \
 	ftp->rfd2 = ftp->wfd2 = -1;
 
 #define DATA_DONE_FD(fp, datafd) \
 	close_if(datafd); \
-	if (ssl2) { \
-		ssl_close(ssl2); \
-		ssl2 = NULL; \
-	} \
+	bbs_io_teardown_all_transformers(&ftp->data_transformers); \
 	close_if(fd); /* Close connection when done. This is the EOF that signals the client that the file transfer has completed. */ \
 	ftp->rfd2 = ftp->wfd2 = -1;
 
@@ -166,7 +159,6 @@ static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *full
 	struct bbs_file_transfer_event event;
 	FILE *fp;
 	size_t x = 0, bytes = 0;
-	SSL *ssl2 = NULL;
 	int pasv_fd = *pasvfdptr;
 	size_t maxuploadsize = bbs_transfer_max_upload_size();
 
@@ -286,7 +278,6 @@ static void *ftp_handler(void *varg)
 	char type = 'A'; /* Default is ASCII */
 	struct readline_data rldata;
 	struct ftp_session ftpstack, *ftp;
-	SSL *ssl = NULL, *ssl2 = NULL;
 
 	bbs_node_net_begin(node);
 
@@ -299,11 +290,8 @@ static void *ftp_handler(void *varg)
 	ftp->node = node;
 
 	/* Start TLS if we need to */
-	if (!strcmp(node->protname, "FTPS")) {
-		ssl = ssl_node_new_accept(node, &ftp->node->rfd, &ftp->node->wfd);
-		if (!ssl) {
-			goto cleanup;
-		}
+	if (!strcmp(node->protname, "FTPS") && bbs_node_starttls(node)) {
+		goto cleanup;
 	}
 
 	/* FTP uses CR LF line endings (but that's what you expected, right?) */
@@ -379,7 +367,7 @@ static void *ftp_handler(void *varg)
 		} else if (!strcasecmp(command, "ACCT")) {
 			res = ftp_write(ftp, 202, "Command Not Implemented, Superflous\r\n"); /* Not needed */
 		} else if (!strcasecmp(command, "REIN")) { /* Reinitialize */
-			if (ssl) {
+			if (node->secure) {
 				break; /* Can't go back to unencrypted, just disconnect. */
 			}
 			if (node->user) {
@@ -402,10 +390,9 @@ static void *ftp_handler(void *varg)
 			res = ftp_write(ftp, 211, "END\r\n");
 		} else if (!strcasecmp(command, "AUTH") && !strlen_zero(rest) && !strcasecmp(rest, "TLS")) {
 			/* AUTH TLS / AUTH SSL = RFC2228 opportunistic encryption */
-			if (!ssl && ssl_available()) {
+			if (ssl_available()) {
 				res = ftp_write(ftp, 234, "Begin TLS negotiation\r\n");
-				ssl = ssl_node_new_accept(node, &ftp->node->rfd, &ftp->node->wfd);
-				if (!ssl) {
+				if (bbs_node_starttls(node)) {
 					break; /* Just abort */
 				}
 				/* Must reauthorize */
@@ -416,7 +403,7 @@ static void *ftp_handler(void *varg)
 				res = ftp_write(ftp, 502, "Command Not Implemented\r\n");
 			}
 		} else if (!strcasecmp(command, "CCC")) { /* Clear Control Channel */
-			if (ssl) {
+			if (node->secure) {
 				/* We don't support reverting back from encrypted to unencrypted */
 				res = ftp_write(ftp, 534, "Connection may not be downgraded\r\n");
 			} else {
@@ -456,7 +443,7 @@ static void *ftp_handler(void *varg)
 				res = ftp_write(ftp, 501, "Argument not valid\r\n");
 				continue;
 			}
-			if (!ssl) {
+			if (!node->secure) {
 				res = ftp_write(ftp, 503, "Security data exchange not completed\r\n");
 				continue;
 			}
@@ -478,6 +465,10 @@ static void *ftp_handler(void *varg)
 					res = ftp_write(ftp, 200, "Data will not be encrypted\r\n");
 					break;
 				case 'P': /* Private */
+					if (!ssl_available()) {
+						res = ftp_write(ftp, 503, "Secure data channel unavailable\r\n");
+						break;
+					}
 					ftp->securedata = 1;
 					res = ftp_write(ftp, 200, "Data will be encrypted\r\n");
 					break;
@@ -496,10 +487,7 @@ static void *ftp_handler(void *varg)
 		} else if (!strcasecmp(command, "PASV") || !strcasecmp(command, "EPSV")) { /* Passive Mode */
 			int tmpfd;
 			close_if(pasv_fd); /* In case there was an existing data channel open (but there shouldn't be...) */
-			if (ssl2) {
-				ssl_close(ssl2);
-				ssl2 = NULL;
-			}
+			bbs_io_teardown_all_transformers(&ftp->data_transformers);
 			pasv_port = ftp_pasv_new(&pasv_fd);
 			if (pasv_port < 0) {
 				res = ftp_write(ftp, 425, "Failed to enter passive mode, closing control connection\r\n");
@@ -858,14 +846,7 @@ static void *ftp_handler(void *varg)
 
 cleanup:
 	close_if(pasv_fd);
-	if (ssl2) {
-		ssl_close(ssl2);
-		ssl2 = NULL;
-	}
-	if (ssl) {
-		ssl_close(ssl);
-		ssl = NULL;
-	}
+	bbs_io_teardown_all_transformers(&ftp->data_transformers);
 	bbs_node_exit(node);
 	return NULL;
 }

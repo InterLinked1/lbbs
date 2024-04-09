@@ -66,7 +66,6 @@
 #include "include/group.h"
 #include "include/variables.h"
 #include "include/startup.h"
-#include "include/tls.h"
 #include "include/event.h"
 #include "include/test.h"
 #include "include/transfer.h"
@@ -584,7 +583,6 @@ static void bbs_shutdown(void)
 
 	bbs_history_shutdown(); /* Free history. Must be done in the core, not by mod_sysop, since this may only be called once. */
 	bbs_curl_shutdown(); /* Clean up cURL */
-	ssl_server_shutdown(); /* Shut down SSL/TLS */
 	login_cache_cleanup(); /* Clean up any remaining cached logins */
 	username_cache_flush(); /* Clean up any cached username mappings */
 	bbs_free_menus(); /* Clean up menus */
@@ -1014,8 +1012,6 @@ int main(int argc, char *argv[])
 	CHECK_INIT(bbs_init_nets());
 	CHECK_INIT(bbs_init_doors());
 	CHECK_INIT(bbs_init_tests());
-
-	ssl_server_init(); /* If this fails for some reason, that's okay. Other failures will ensue, but this is not fatal. */
 
 	CHECK_INIT(bbs_curl_init());
 	CHECK_INIT(bbs_history_init());

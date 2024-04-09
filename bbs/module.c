@@ -500,7 +500,18 @@ static void check_dependencies(const char *restrict resource_in, unsigned int su
 		return;
 	}
 
-	if (!strlen_zero(mod->info->dependencies)) {
+	if (autoload_setting && mod->info->flags & MODFLAG_ALWAYS_PRELOAD) {
+		/* The module wants to be loaded as early as possible during startup,
+		 * so add it to the preload list.
+		 * Do this first, since then we can avoid checking if it has any dependents.
+		 * XXX This is not foolproof; ideally, we would have store a "load priority"
+		 * for all modules, and ensure that the priority of this module
+		 * is before anything that might try to use it (or behave differently if not loaded). */
+		if (!stringlist_contains(&modules_preload, resource_in)) {
+			bbs_debug(2, "Module %s requested to be preloaded\n", resource_in);
+			stringlist_push(&modules_preload, resource_in);
+		}
+	} else if (!strlen_zero(mod->info->dependencies)) {
 		char dependencies_buf[256];
 		char *dependencies, *dependency;
 		safe_strncpy(dependencies_buf, mod->info->dependencies, sizeof(dependencies_buf));

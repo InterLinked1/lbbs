@@ -270,6 +270,27 @@ int bbs_pthread_cancel_kill(pthread_t thread)
 	return res;
 }
 
+static struct thread_list_t *find_thread(pthread_t thread, int *restrict lwp, int *restrict waiting_join, const char *file, const char *func, int line)
+{
+	struct thread_list_t *x;
+
+	RWLIST_RDLOCK(&thread_list);
+	RWLIST_TRAVERSE(&thread_list, x, list) {
+		if (thread == x->id) {
+			*lwp = x->lwp;
+			if (x->detached) {
+				bbs_error("Can't join detached LWP %d at %s:%d %s()\n", *lwp, file, line, func);
+				*lwp = 0;
+			}
+			*waiting_join = x->waitingjoin;
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&thread_list);
+
+	return x;
+}
+
 int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const char *func, int line)
 {
 	void *tmp;
@@ -280,20 +301,17 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 
 	bbs_soft_assert(thread != 0); /* Somebody tried to join the thread 0? (often used as NIL thread) */
 
-	RWLIST_RDLOCK(&thread_list);
-	RWLIST_TRAVERSE(&thread_list, x, list) {
-		if (thread == x->id) {
-			lwp = x->lwp;
-			if (x->detached) {
-				bbs_error("Can't join detached LWP %d at %s:%d %s()\n", lwp, file, line, func);
-				lwp = 0;
-			}
-			waiting_join = x->waitingjoin;
-			break;
-		}
-	}
-	RWLIST_UNLOCK(&thread_list);
+	x = find_thread(thread, &lwp, &waiting_join, file, func, line);
 
+	if (!x) {
+		/* If we try joining a thread right after we created it, it's possible it hasn't actually begun running (and registered itself) yet.
+		 * Wait a moment, then try again, since this shouldn't generally happen anyways.
+		 * If we don't do this, this can cause a segfault for some reason,
+		 * so it's good to be a bit generous with the timing here. */
+		bbs_debug(3, "Thread %lu not registered, checking again momentarily\n", (unsigned long) thread);
+		usleep(10000);
+		x = find_thread(thread, &lwp, &waiting_join, file, func, line);
+	}
 	if (!x) {
 		bbs_error("Thread %lu not registered\n", (unsigned long) thread);
 		return -1;

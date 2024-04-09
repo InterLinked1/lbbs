@@ -21,11 +21,14 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include <ctype.h>
 #include <signal.h>
 #include <unistd.h>
 
-#include "include/tls.h"
+#ifdef __linux__
+#include <linux/limits.h> /* use PATH_MAX */
+#endif
 
 #include "include/module.h"
 #include "include/config.h"
@@ -3811,9 +3814,6 @@ static struct bbs_cli_entry cli_commands_irc[] = {
 /*! \brief Thread to handle a single IRC/IRCS client */
 static void irc_handler(struct bbs_node *node, int secure)
 {
-#ifdef HAVE_OPENSSL
-	SSL *ssl;
-#endif
 	struct irc_user *user;
 
 	if (need_restart) {
@@ -3832,12 +3832,9 @@ static void irc_handler(struct bbs_node *node, int secure)
 	bbs_mutex_init(&user->lock, NULL);
 
 	/* Start TLS if we need to */
-	if (secure) {
-		ssl = ssl_node_new_accept(node, &node->rfd, &node->wfd);
-		if (!ssl) {
-			free(user);
-			return;
-		}
+	if (secure && bbs_node_starttls(node)) {
+		free(user);
+		return;
 	}
 
 	user->node = node;
@@ -3850,13 +3847,6 @@ static void irc_handler(struct bbs_node *node, int secure)
 	}
 
 	handle_client(user);
-
-#ifdef HAVE_OPENSSL
-	if (secure) { /* implies ssl */
-		ssl_close(ssl);
-		ssl = NULL;
-	}
-#endif
 	user_free(user);
 }
 

@@ -127,8 +127,6 @@
 #include <poll.h>
 #include <utime.h>
 
-#include "include/tls.h"
-
 #include "include/module.h"
 #include "include/config.h"
 #include "include/node.h"
@@ -4650,17 +4648,11 @@ static void handle_client(struct imap_session *imap)
 /*! \brief Thread to handle a single IMAP/IMAPS client */
 static void imap_handler(struct bbs_node *node, int secure)
 {
-#ifdef HAVE_OPENSSL
-	SSL *ssl;
-#endif
 	struct imap_session imap, *s;
 
 	/* Start TLS if we need to */
-	if (secure) {
-		ssl = ssl_node_new_accept(node, &node->rfd, &node->wfd);
-		if (!ssl) {
-			return;
-		}
+	if (secure && bbs_node_starttls(node)) {
+		return;
 	}
 
 	memset(&imap, 0, sizeof(imap));
@@ -4695,12 +4687,6 @@ static void imap_handler(struct bbs_node *node, int secure)
 	/* imap is stack allocated, don't free it */
 
 cleanup:
-#ifdef HAVE_OPENSSL
-	if (secure) { /* implies ssl */
-		ssl_close(ssl);
-		ssl = NULL;
-	}
-#endif
 	imap_destroy(&imap);
 	bbs_mutex_destroy(&imap.lock);
 }

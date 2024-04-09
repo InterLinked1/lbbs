@@ -28,8 +28,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <dirent.h>
-
-#include "include/tls.h"
+#include <limits.h>
 
 #include "include/stringlist.h"
 #include "include/module.h"
@@ -107,7 +106,6 @@ struct nntp_session {
 	unsigned int inpost:1;
 	unsigned int inpostheaders:1;
 	unsigned int postfail:1;
-	unsigned int secure:1;
 	unsigned int dostarttls:1;
 };
 
@@ -837,7 +835,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 		nntp_send(nntp, 101, "Capability list:");
 		_nntp_send(nntp, "VERSION 2\r\n"); /* Must be first */
 		/* Don't advertise MODE-READER, just READER */
-		if (!nntp->secure) {
+		if (!nntp->node->secure) {
 			_nntp_send(nntp, "STARTTLS\r\n");
 		}
 		if (nntp->mode == NNTP_MODE_READER) {
@@ -849,7 +847,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 			_nntp_send(nntp, "MODE-READER\r\n");
 		}
 		_nntp_send(nntp, "XSECRET\r\n");
-		if ((nntp->secure || !require_secure_login) && !bbs_user_is_registered(nntp->node->user)) {
+		if ((nntp->node->secure || !require_secure_login) && !bbs_user_is_registered(nntp->node->user)) {
 			_nntp_send(nntp, "AUTHINFO USER\r\n");
 			_nntp_send(nntp, "SASL PLAIN\r\n");
 		}
@@ -858,7 +856,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 	} else if (!strcasecmp(command, "STARTTLS")) {
 		if (!ssl_available()) {
 			nntp_send(nntp, 580, "STARTTLS may not be used");
-		} else if (!nntp->secure) {
+		} else if (!nntp->node->secure) {
 			nntp_send(nntp, 382, "Ready to start TLS");
 			nntp->dostarttls = 1;
 		} else {
@@ -928,7 +926,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 			return 0;
 		}
 		nntp_send(nntp, 290, "Password for %s accepted", user); /*! \todo Is this really the right response code? */
-	} else if ((nntp->secure || !require_secure_login) && !strcasecmp(command, "AUTHINFO")) {
+	} else if ((nntp->node->secure || !require_secure_login) && !strcasecmp(command, "AUTHINFO")) {
 		/* RFC 4643 AUTHINFO */
 		/* If this command is not implemented and we send a 480,
 		 * Thunderbirds will just go into a loop sending AUTH INFO commands, forever,
@@ -1166,7 +1164,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 		}
 	} else if (nntp->mode == NNTP_MODE_TRANSIT && !strcasecmp(command, "IHAVE")) {
 		/* Check if client is authorized to relay us articles. */
-		if (requirerelaytls && !nntp->secure) {
+		if (requirerelaytls && !nntp->node->secure) {
 			nntp_send(nntp, 483, "Secure connection required");
 			return 0;
 		}
@@ -1214,7 +1212,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 	return 0;
 }
 
-static void handle_client(struct nntp_session *nntp, SSL **sslptr)
+static void handle_client(struct nntp_session *nntp)
 {
 	char buf[1001];
 	struct readline_data rldata;
@@ -1246,11 +1244,9 @@ static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 			/* RFC 4642 */
 			bbs_debug(3, "Starting TLS\n");
 			nntp->dostarttls = 0;
-			*sslptr = ssl_node_new_accept(nntp->node, &nntp->node->rfd, &nntp->node->wfd);
-			if (!*sslptr) {
+			if (bbs_node_starttls(nntp->node)) {
 				break; /* Just abort */
 			}
-			nntp->secure = 1;
 			free_if(nntp->currentgroup);
 			nntp->currentarticle = 0;
 			bbs_readline_flush(&rldata); /* Prevent STARTTLS command injection by resetting the buffer after TLS upgrade */
@@ -1261,32 +1257,19 @@ static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 /*! \brief Thread to handle a single NNTP/NNTPS client */
 static void nntp_handler(struct bbs_node *node, int secure, int reader)
 {
-#ifdef HAVE_OPENSSL
-	SSL *ssl = NULL;
-#endif
 	struct nntp_session nntp;
 
 	/* Start TLS if we need to */
-	if (secure) {
-		ssl = ssl_node_new_accept(node, &node->rfd, &node->wfd);
-		if (!ssl) {
-			return;
-		}
+	if (secure && bbs_node_starttls(node)) {
+		return;
 	}
 
 	memset(&nntp, 0, sizeof(nntp));
 	nntp.node = node;
-	SET_BITFIELD(nntp.secure, secure);
 	SET_BITFIELD(nntp.mode, reader);
 
-	handle_client(&nntp, &ssl);
+	handle_client(&nntp);
 
-#ifdef HAVE_OPENSSL
-	if (nntp.secure) { /* implies ssl */
-		ssl_close(ssl);
-		ssl = NULL;
-	}
-#endif
 	nntp_destroy(&nntp);
 }
 

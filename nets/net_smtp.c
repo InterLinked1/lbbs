@@ -40,6 +40,7 @@
 #include "include/bbs.h"
 
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <ctype.h>
 #include <signal.h>
@@ -47,8 +48,6 @@
 #include <sys/ioctl.h>
 
 #include <dirent.h> /* for msg_to_filename */
-
-#include "include/tls.h"
 
 #include "include/module.h"
 #include "include/config.h"
@@ -204,7 +203,6 @@ struct smtp_session {
 	unsigned int ehlo:1;		/* Client supports ESMTP (EHLO) */
 	unsigned int fromlocal:1;	/* Sender is local */
 	unsigned int msa:1;			/* Whether connection was to the Message Submission Agent port (as opposed to the Mail Transfer Agent port) */
-	unsigned int secure:1;		/* Whether session is secure (TLS, STARTTLS) */
 };
 
 static void smtp_reset(struct smtp_session *smtp)
@@ -595,7 +593,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		smtp_reply0_nostatus(smtp, 250, "%s at your service [%s]", bbs_hostname(), smtp->node->ip);
 		/* The RFC says that login should only be allowed on secure connections,
 		 * but if we don't allow login on plaintext connections, then they're functionally useless. */
-		if (smtp->secure || !require_starttls || exempt_from_starttls(smtp)) {
+		if (smtp->node->secure || !require_starttls || exempt_from_starttls(smtp)) {
 			smtp_reply0_nostatus(smtp, 250, "AUTH LOGIN PLAIN"); /* RFC-complaint way */
 			smtp_reply0_nostatus(smtp, 250, "AUTH=LOGIN PLAIN"); /* For non-compliant user agents, e.g. Outlook 2003 and older */
 		}
@@ -603,7 +601,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		smtp_reply0_nostatus(smtp, 250, "SIZE %u", max_message_size); /* RFC 1870 */
 		smtp_reply0_nostatus(smtp, 250, "8BITMIME"); /* RFC 6152 */
 		smtp_reply0_nostatus(smtp, 250, "ETRN"); /* RFC 1985 */
-		if (!smtp->secure && ssl_available()) {
+		if (!smtp->node->secure && ssl_available()) {
 			smtp_reply0_nostatus(smtp, 250, "STARTTLS");
 		}
 		if (bbs_user_is_registered(smtp->node->user)) {
@@ -1198,7 +1196,7 @@ const char *smtp_protname(struct smtp_session *smtp)
 {
 	/* RFC 2822, RFC 3848, RFC 2033 */
 	if (smtp->ehlo) {
-		if (smtp->secure) {
+		if (smtp->node->secure) {
 			if (bbs_user_is_registered(smtp->node->user)) {
 				return "ESMTPSA";
 			} else {
@@ -2765,14 +2763,14 @@ static int smtp_process(struct smtp_session *smtp, char *s, struct readline_data
 	} else if (!strcasecmp(command, "EHLO")) {
 		return handle_helo(smtp, s, 1);
 	} else if (!strcasecmp(command, "STARTTLS")) {
-		if (!smtp->secure) {
+		if (!smtp->node->secure) {
 			smtp_reply_nostatus(smtp, 220, "Ready to start TLS");
 			smtp->tflags.dostarttls = 1;
 			smtp->gothelo = 0; /* Client will need to start over. */
 		} else {
 			smtp_reply(smtp, 454, 5.5.1, "STARTTLS may not be repeated");
 		}
-	} else if (smtp->msa && !smtp->secure && require_starttls && !exempt_from_starttls(smtp)) {
+	} else if (smtp->msa && !smtp->node->secure && require_starttls && !exempt_from_starttls(smtp)) {
 		smtp_reply(smtp, 504, 5.5.4, "Must issue a STARTTLS command first");
 	} else if (!strcasecmp(command, "AUTH")) {
 		/* https://www.samlogic.net/articles/smtp-commands-reference-auth.htm */
@@ -2780,7 +2778,7 @@ static int smtp_process(struct smtp_session *smtp, char *s, struct readline_data
 			smtp_reply(smtp, 503, 5.5.1, "Bad sequence of commands.");
 		} else if (bbs_user_is_registered(smtp->node->user)) { /* Already authed */
 			smtp_reply(smtp, 503, 5.7.0, "Already authenticated, no identity changes permitted");
-		} else if (!smtp->secure && require_starttls && !exempt_from_starttls(smtp)) {
+		} else if (!smtp->node->secure && require_starttls && !exempt_from_starttls(smtp)) {
 			/* Must not offer PLAIN or LOGIN on insecure connections. */
 			smtp_reply(smtp, 504, 5.5.4, "Must issue a STARTTLS command first");
 		} else {
@@ -2835,7 +2833,7 @@ static int smtp_process(struct smtp_session *smtp, char *s, struct readline_data
 	return 0;
 }
 
-static void handle_client(struct smtp_session *smtp, SSL **sslptr)
+static void handle_client(struct smtp_session *smtp)
 {
 	char buf[1001]; /* Maximum length, including CR LF, is 1000 */
 	struct readline_data rldata;
@@ -2875,11 +2873,10 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 			/* You might think this would be more complicated, but nope, this is literally all there is to it. */
 			bbs_debug(3, "Starting TLS\n");
 			smtp->tflags.dostarttls = 0;
-			*sslptr = ssl_node_new_accept(smtp->node, &smtp->node->rfd, &smtp->node->wfd);
-			if (!*sslptr) {
+			if (bbs_node_starttls(smtp->node)) {
 				break; /* Just abort */
 			}
-			smtp->secure = 1;
+			smtp->node->secure = 1;
 			/* Prevent STARTTLS command injection by resetting the buffer after TLS upgrade:
 			 * http://www.postfix.org/CVE-2011-0411.html
 			 * https://blog.apnic.net/2021/11/18/vulnerabilities-show-why-starttls-should-be-avoided-if-possible/
@@ -2892,37 +2889,23 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 /*! \brief Thread to handle a single SMTP/SMTPS client */
 static void smtp_handler(struct bbs_node *node, int msa, int secure)
 {
-#ifdef HAVE_OPENSSL
-	SSL *ssl = NULL;
-#endif
 	struct smtp_session smtp;
 
 	/* Start TLS if we need to */
-	if (secure) {
-		ssl = ssl_node_new_accept(node, &node->rfd, &node->wfd);
-		if (!ssl) {
-			return;
-		}
+	if (secure && bbs_node_starttls(node)) {
+		return;
 	}
 
 	memset(&smtp, 0, sizeof(smtp));
 	smtp.node = node;
-	SET_BITFIELD(smtp.secure, secure);
 	SET_BITFIELD(smtp.msa, msa);
 
 	stringlist_init(&smtp.recipients);
 	stringlist_init(&smtp.sentrecipients);
 
-	handle_client(&smtp, &ssl);
+	handle_client(&smtp);
 	mailbox_dispatch_event_basic(EVENT_LOGOUT, node, NULL, NULL);
 
-#ifdef HAVE_OPENSSL
-	/* Note that due to STARTTLS, smtp.secure might not always equal secure at this point (session could start off insecure and end up secure) */
-	if (smtp.secure) { /* implies ssl */
-		ssl_close(ssl);
-		ssl = NULL;
-	}
-#endif
 	smtp_destroy(&smtp);
 }
 

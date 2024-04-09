@@ -45,7 +45,6 @@
 #include "include/utils.h"
 #include "include/config.h"
 #include "include/net.h"
-#include "include/tls.h"
 
 static int telnet_socket = -1, telnets_socket = -1, tty_socket = -1, ttys_socket = -1; /*!< TCP Socket for allowing incoming network connections */
 static pthread_t telnet_thread, telnets_thread, tty_thread;
@@ -381,7 +380,6 @@ static void *telnet_listener(void *unused)
 static void *telnets_handler(void *varg)
 {
 	struct bbs_node *node = varg;
-	SSL *ssl = NULL;
 
 	/* Yikes... a TELNETS client needs 3 threads:
 	 * the network thread, the PTY thread,
@@ -390,8 +388,7 @@ static void *telnets_handler(void *varg)
 	 * as another intermediary layer that looks for 255 bytes,
 	 * and add yet a fourth thread! */
 	/* Set up TLS, then do the handshake, then proceed as normal. */
-	ssl = ssl_node_new_accept(node, &node->rfd, &node->wfd);
-	if (!ssl) {
+	if (bbs_node_starttls(node)) {
 		bbs_node_exit(node); /* Since we're not calling bbs_node_handler, we're responsible for manually cleaning the node up */
 		return NULL;
 	}
@@ -402,21 +399,18 @@ static void *telnets_handler(void *varg)
 		bbs_node_exit(node); /* Manual cleanup */
 	}
 
-	ssl_close(ssl);
 	return NULL;
 }
 
 static void *tty_handler(void *varg)
 {
 	struct bbs_node *node = varg;
-	SSL *ssl = NULL;
 
 	if (!strcmp(node->protname, "TDDS")) {
 		/* Use TDD for both secure and plaintext TDD. Used in NODE_IS_TDD macro. */
 		node->protname = "TDD";
 		bbs_debug(5, "Connection accepted on secure TTY port\n");
-		ssl = ssl_node_new_accept(node, &node->rfd, &node->wfd);
-		if (!ssl) {
+		if (bbs_node_starttls(node)) {
 			bbs_node_exit(node);
 			return NULL;
 		}
@@ -425,9 +419,6 @@ static void *tty_handler(void *varg)
 	tty_handshake(node);
 	bbs_node_handler(node); /* Run the normal node handler */
 
-	if (ssl) {
-		ssl_close(ssl);
-	}
 	return NULL;
 }
 

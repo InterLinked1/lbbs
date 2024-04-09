@@ -13,15 +13,6 @@
  *
  */
 
-/* I know we link with -lssl statically in the main binary, this is just for semantics, mainly */
-#define HAVE_OPENSSL
-
-#ifdef HAVE_OPENSSL
-#include <openssl/bio.h>
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-#endif
-
 #define SHA256_BUFSIZE 65
 #define SHA1_LEN 20
 #define SHA1_BUFSIZE 41 /* 160 bits = 20 bytes = 40 hex digits + NUL */

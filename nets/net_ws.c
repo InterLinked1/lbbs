@@ -23,12 +23,15 @@
 #include <ctype.h> /* use isdigit */
 #include <poll.h>
 
+#ifdef __linux__
+#include <linux/limits.h> /* use PATH_MAX */
+#endif
+
 #include "include/module.h"
 #include "include/config.h"
 #include "include/node.h"
 #include "include/user.h"
 #include "include/utils.h"
-#include "include/tls.h"
 #include "include/test.h"
 #include "include/cli.h"
 
@@ -1120,7 +1123,6 @@ exit:
 
 static void ws_direct_handler(struct bbs_node *node, int secure)
 {
-	SSL *ssl = NULL;
 	int res;
 
 	/* needed for HTTP structure */
@@ -1136,11 +1138,8 @@ static void ws_direct_handler(struct bbs_node *node, int secure)
 	SET_BITFIELD(http.secure, secure);
 
 	/* Start TLS if we need to */
-	if (secure) {
-		ssl = ssl_node_new_accept(node, &http.node->rfd, &http.node->wfd);
-		if (!ssl) {
-			return; /* Disconnect. */
-		}
+	if (secure && bbs_node_starttls(node)) {
+		return; /* Disconnect. */
 	}
 
 	/* If this is a direct connection, either the client connected directly to us,
@@ -1153,26 +1152,20 @@ static void ws_direct_handler(struct bbs_node *node, int secure)
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 	res = http_parse_request(&http, buf); /* This will, among other things, load any cookies in the request, so we can identify the client. */
 	if (res) {
-		goto cleanup; /* Just disconnect, don't even bother sending a response */
+		return; /* Just disconnect, don't even bother sending a response */
 	}
 
 	bbs_debug(4, "Ready to begin WebSocket handshake\n");
 	if (!http_websocket_upgrade_requested(&http)) {
 		bbs_debug(3, "Not a WebSocket client?\n"); /* Probably just rando TCP traffic hitting this port. Drop it. */
-		goto cleanup;
+		return;
 	} else if (http_websocket_handshake(&http)) {
-		goto cleanup; /* WebSocket handshake failed */
+		return; /* WebSocket handshake failed */
 	}
 
 	/* Handshake succeeded! Okay, we're done with the HTTP stuff now. It's just websockets from here on out. */
 	ws_handler(node, &http, 1); /* Seems backwards, but this is a reverse proxied connection, most likely */
 	http_session_cleanup(&http);
-
-cleanup:
-	if (ssl) {
-		ssl_close(ssl);
-		ssl = NULL;
-	}
 }
 
 static enum http_response_code ws_proxy_handler(struct http_session *http)

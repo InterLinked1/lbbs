@@ -21,6 +21,7 @@
 
 #include <ctype.h>
 #include <search.h>
+#include <limits.h>
 
 #include "include/node.h"
 #include "include/test.h"

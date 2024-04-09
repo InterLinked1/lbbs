@@ -16,6 +16,7 @@
 enum bbs_module_flags {
 	MODFLAG_DEFAULT = 0,
 	MODFLAG_GLOBAL_SYMBOLS = (1 << 0), /* Module exports global symbols */
+	MODFLAG_ALWAYS_PRELOAD = (1 << 1), /* Module should be loaded as early as possible */
 };
 
 struct bbs_module_info {

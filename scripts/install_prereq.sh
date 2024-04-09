@@ -13,10 +13,6 @@ PACKAGES_FREEBSD="git gcc gmake"
 # used by libopenarc, libetpan
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN make automake pkg-config libtool m4"
 
-# OpenSSL
-PACKAGES_DEBIAN="$PACKAGES_DEBIAN libssl-dev"
-PACKAGES_FEDORA="$PACKAGES_FEDORA openssl-devel"
-
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libncurses-dev" # ncurses
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN ncurses-base ncurses-term" # full/extended terminal definitions
 
@@ -47,6 +43,10 @@ PACKAGES_FEDORA="$PACKAGES_FEDORA lrzsz"
 # <histedit.h>, <readline/history.h>
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libedit-dev libreadline-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA libedit-devel readline-devel"
+
+# hash.c, io_tls: OpenSSL
+PACKAGES_DEBIAN="$PACKAGES_DEBIAN libssl-dev"
+PACKAGES_FEDORA="$PACKAGES_FEDORA openssl-devel"
 
 # libssh (net_ssh)
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libssh-dev"

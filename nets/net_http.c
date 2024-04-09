@@ -24,12 +24,15 @@
 
 #include "include/bbs.h"
 
+#ifdef __linux__
+#include <linux/limits.h> /* use PATH_MAX */
+#endif
+
 #include "include/module.h"
 #include "include/config.h"
 #include "include/node.h"
 #include "include/user.h"
 #include "include/utils.h"
-#include "include/tls.h"
 #include "include/transfer.h"
 
 /* Needed for mod_http.h */
