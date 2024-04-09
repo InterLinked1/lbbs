@@ -366,7 +366,7 @@ static void __imap_send_update_log(struct imap_session *imap, const char *s, siz
 		}
 	} else {
 		imap_debug(4, "%d: %p <= %s", line, imap, s); /* Already ends in CR LF */
-		bbs_node_any_fd_write(imap->node, imap->wfd, s, (unsigned int) len);
+		bbs_node_any_fd_write(imap->node, imap->node->wfd, s, (unsigned int) len);
 	}
 }
 
@@ -2405,7 +2405,7 @@ static int handle_append(struct imap_session *imap, char *s)
 			 * If it's a MULTIAPPEND, we read another line.
 			 * If we read an empty line (just CR LF), then that's the end of the APPEND operation. */
 			bbs_debug(7, "%d message%s appended so far, will there be more?\n", appends, ESS(appends));
-			res = bbs_readline(imap->rfd, imap->rldata, "\r\n", 5000);
+			res = bbs_readline(imap->node->rfd, imap->rldata, "\r\n", 5000);
 			if (res == 0 || res == -1) { /* either CR LF read or socket closed */
 				bbs_debug(3, "%d message%s appended successfully\n", appends, ESS(appends));
 				break;
@@ -2478,7 +2478,7 @@ static int handle_append(struct imap_session *imap, char *s)
 				 * This is to avoid leaving the message in the buffer and trying to parse it all as IMAP commands,
 				 * which would result in spamming the logs, and also present a security risk if any of the lines in the message
 				 * is a potentially valid IMAP command. */
-				bbs_readline_discard_n(imap->rfd, imap->rldata, SEC_MS(10), (size_t) (appendsize + 2)); /* Read the bytes + trailing CR LF and throw them away */
+				bbs_readline_discard_n(imap->node->rfd, imap->rldata, SEC_MS(10), (size_t) (appendsize + 2)); /* Read the bytes + trailing CR LF and throw them away */
 				bbs_debug(5, "Discarded %d bytes\n", appendsize);
 				/* This is obviously wasteful of bandwidth. Client should've supported the APPENDLIMIT extension, though,
 				 * so I'm not sympathetic. Get with the program already, know your limits! */
@@ -2493,7 +2493,7 @@ static int handle_append(struct imap_session *imap, char *s)
 			}
 		} else if ((unsigned long) appendsize >= quotaleft) {
 			if (!synchronizing) {
-				bbs_readline_discard_n(imap->rfd, imap->rldata, SEC_MS(10), (size_t) (appendsize + 2));
+				bbs_readline_discard_n(imap->node->rfd, imap->rldata, SEC_MS(10), (size_t) (appendsize + 2));
 				bbs_debug(5, "Discarded %d bytes\n", appendsize + 2);
 				imap_reply(imap, "NO [OVERQUOTA] Insufficient quota remaining");
 				continue;
@@ -2511,7 +2511,7 @@ static int handle_append(struct imap_session *imap, char *s)
 		if (synchronizing) {
 			_imap_reply(imap, "+ Ready for literal data\r\n"); /* Synchronizing literal response */
 		}
-		res = bbs_readline_getn(imap->rfd, appendfile, imap->rldata, 5000, (size_t) appendsize);
+		res = bbs_readline_getn(imap->node->rfd, appendfile, imap->rldata, 5000, (size_t) appendsize);
 		if (res != appendsize) {
 			bbs_warning("Client wanted to append %d bytes, but sent %lu?\n", appendsize, res);
 			close(appendfile);
@@ -4626,7 +4626,7 @@ static void handle_client(struct imap_session *imap)
 	for (;;) {
 		const char *word2;
 		/* Autologout timer should not be less than 30 minutes, according to the RFC. We'll uphold that, for clients that are logged in. */
-		ssize_t res = bbs_readline(imap->rfd, &rldata, "\r\n", bbs_user_is_registered(imap->node->user) ? MIN_MS(30) : MIN_MS(1));
+		ssize_t res = bbs_readline(imap->node->rfd, &rldata, "\r\n", bbs_user_is_registered(imap->node->user) ? MIN_MS(30) : MIN_MS(1));
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {
@@ -4653,22 +4653,17 @@ static void imap_handler(struct bbs_node *node, int secure)
 #ifdef HAVE_OPENSSL
 	SSL *ssl;
 #endif
-	int rfd, wfd;
 	struct imap_session imap, *s;
 
 	/* Start TLS if we need to */
 	if (secure) {
-		ssl = ssl_node_new_accept(node, &rfd, &wfd);
+		ssl = ssl_node_new_accept(node, &node->rfd, &node->wfd);
 		if (!ssl) {
 			return;
 		}
-	} else {
-		rfd = wfd = node->fd;
 	}
 
 	memset(&imap, 0, sizeof(imap));
-	imap.rfd = rfd;
-	imap.wfd = wfd;
 	imap.node = node;
 	RWLIST_HEAD_INIT(&imap.remotemailboxes);
 

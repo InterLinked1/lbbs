@@ -213,7 +213,7 @@ static int msp_response(struct msp *restrict msp, const char *s, size_t len)
 {
 	bbs_debug(3, "MSP response <= %.*s\n", (int) len, s);
 	if (msp->node) {
-		bbs_node_fd_write(msp->node, msp->node->fd, s, len);
+		bbs_node_fd_write(msp->node, msp->node->wfd, s, len);
 	} else {
 		ssize_t res = sendto(udp_socket, s, len, 0, msp->in, msp->slen);
 		if (res <= 0) {
@@ -321,7 +321,7 @@ static void *msp_tcp_handler(void *varg)
 
 		/* Read the message first without parsing it,
 		 * so we can have a common parser for both TCP and UDP. */
-		res = read_msg(&msp, buf, sizeof(buf), node->fd);
+		res = read_msg(&msp, buf, sizeof(buf), node->rfd);
 		if (res < 0) {
 			break;
 		}

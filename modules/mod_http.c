@@ -137,7 +137,7 @@ static unsigned short int proxy_port = 0;
 static enum http_method proxy_methods = HTTP_METHOD_UNDEF;
 
 #define http_send_header(http, fmt, ...) \
-	bbs_node_fd_writef(http->node, http->wfd, fmt, ## __VA_ARGS__); \
+	bbs_node_fd_writef(http->node, http->node->wfd, fmt, ## __VA_ARGS__); \
 	http_debug(5, "<= " fmt, ## __VA_ARGS__);
 
 static const char *http_response_code_name(enum http_response_code code)
@@ -241,7 +241,7 @@ static void http_send_headers(struct http_session *http)
 		http_send_header(http, "%s: %s\r\n", key, value);
 		bbs_vars_remove_first(&http->res->headers);
 	}
-	NODE_SWRITE(http->node, http->wfd, "\r\n"); /* CR LF to indicate end of headers */
+	NODE_SWRITE(http->node, http->node->wfd, "\r\n"); /* CR LF to indicate end of headers */
 }
 
 int http_set_header(struct http_session *http, const char *header, const char *value)
@@ -301,7 +301,7 @@ static void __http_write(struct http_session *http, const char *buf, size_t len)
 		http_send_headers(http);
 	}
 
-	bbs_write(http->wfd, buf, len);
+	bbs_write(http->node->wfd, buf, len);
 	http->res->sentbytes += len;
 }
 
@@ -314,7 +314,7 @@ static void send_chunk(struct http_session *http, const char *buf, size_t len)
 
 	http_send_header(http, "%x\r\n", (unsigned int) len); /* Doesn't count towards body length, so don't use __http_write */
 	__http_write(http, buf, len);
-	bbs_node_fd_writef(http->node, http->wfd, "\r\n"); /* Doesn't count towards length */
+	bbs_node_fd_writef(http->node, http->node->wfd, "\r\n"); /* Doesn't count towards length */
 }
 
 static void flush_buffer(struct http_session *http, int final)
@@ -355,9 +355,9 @@ static void flush_buffer(struct http_session *http, int final)
 	http->res->chunkedleft = sizeof(http->res->chunkbuf);
 	http->res->chunkedbytes = 0;
 	if (final) {
-		bbs_node_fd_writef(http->node, http->wfd, "0\r\n"); /* This is the beginning of the end. Optional footers may follow. */
+		bbs_node_fd_writef(http->node, http->node->wfd, "0\r\n"); /* This is the beginning of the end. Optional footers may follow. */
 		/* If we wanted to send optional footers, we could do so here. But we don't. */
-		bbs_node_fd_writef(http->node, http->wfd, "\r\n"); /* Very end of chunked transfer */
+		bbs_node_fd_writef(http->node, http->node->wfd, "\r\n"); /* Very end of chunked transfer */
 	}
 }
 
@@ -946,7 +946,7 @@ static int read_body(struct http_session *http, char *buf, int discard)
 		for (;;) {
 			/* Determine how large the next chunk is */
 			unsigned int chunksize;
-			ssize_t res = bbs_readline(http->rfd, http->rldata, "\r\n", SEC_MS(10));
+			ssize_t res = bbs_readline(http->node->rfd, http->rldata, "\r\n", SEC_MS(10));
 			if (res <= 0) {
 				free_if(dynstr.buf);
 				bbs_warning("Failed to read all or part of chunked upload?\n");
@@ -958,9 +958,9 @@ static int read_body(struct http_session *http, char *buf, int discard)
 				break;
 			}
 			if (discard) {
-				bbs_readline_discard_n(http->rfd, http->rldata, SEC_MS(10), chunksize + 2); /* Read the bytes + trailing CR LF and throw them away */
+				bbs_readline_discard_n(http->node->rfd, http->rldata, SEC_MS(10), chunksize + 2); /* Read the bytes + trailing CR LF and throw them away */
 			} else {
-				bbs_readline_getn_dynstr(http->rfd, &dynstr, http->rldata, SEC_MS(10), chunksize);
+				bbs_readline_getn_dynstr(http->node->rfd, &dynstr, http->rldata, SEC_MS(10), chunksize);
 				bytes += (size_t) chunksize;
 				if (bytes >= MAX_HTTP_UPLOAD_SIZE) {
 					bbs_warning("Partial content length %lu is too large\n", http->req->contentlength);
@@ -968,7 +968,7 @@ static int read_body(struct http_session *http, char *buf, int discard)
 					return 1;
 				}
 				/* Read and skip the trailing CR and LF after the chunk */
-				if (bbs_readline_getn_dynstr(http->rfd, &dynstr, http->rldata, SEC_MS(1), 2) != 2) {
+				if (bbs_readline_getn_dynstr(http->node->rfd, &dynstr, http->rldata, SEC_MS(1), 2) != 2) {
 					free_if(dynstr.buf);
 					return -1;
 				}
@@ -985,7 +985,7 @@ static int read_body(struct http_session *http, char *buf, int discard)
 
 		/* Read and discard any trailer entity-header lines, indicated by a blank line. */
 		for (;;) {
-			ssize_t res = bbs_readline(http->rfd, http->rldata, "\r\n", SEC_MS(5));
+			ssize_t res = bbs_readline(http->node->rfd, http->rldata, "\r\n", SEC_MS(5));
 			if (res < 0) {
 				return -1; /* At this point, http->req->body is cleaned up on exit so we don't need to free it here */
 			} else if (res == 0) {
@@ -1001,9 +1001,9 @@ static int read_body(struct http_session *http, char *buf, int discard)
 		if (discard) {
 			/* Read the data but don't bother saving it.
 			 * We only do this so we can keep the connection alive. Otherwise we'd have to close it if we don't read the entire request. */
-			bbs_readline_discard_n(http->rfd, http->rldata, SEC_MS(10), http->req->contentlength); /* Read the bytes and throw them away */
+			bbs_readline_discard_n(http->node->rfd, http->rldata, SEC_MS(10), http->req->contentlength); /* Read the bytes and throw them away */
 		} else {
-			http->req->body = (unsigned char*) bbs_readline_getn_str(http->rfd, http->rldata, SEC_MS(10), http->req->contentlength);
+			http->req->body = (unsigned char*) bbs_readline_getn_str(http->node->rfd, http->rldata, SEC_MS(10), http->req->contentlength);
 			if (!http->req->body) {
 				return -1;
 			}
@@ -1676,7 +1676,7 @@ int http_parse_request(struct http_session *http, char *buf)
 	/* Particular consideration has been made of items discussed here: https://www.jmarshall.com/easy/http/ */
 
 	/* Read and parse the request line */
-	res = bbs_readline(http->rfd, http->rldata, "\r\n", SEC_MS(15));
+	res = bbs_readline(http->node->rfd, http->rldata, "\r\n", SEC_MS(15));
 	if (res <= 0) {
 		http->req->keepalive = 0;
 		http->res->code = HTTP_REQUEST_TIMEOUT;
@@ -1696,7 +1696,7 @@ int http_parse_request(struct http_session *http, char *buf)
 	/* Read and store headers */
 	for (;;) {
 		char *tmp;
-		res = bbs_readline(http->rfd, http->rldata, "\r\n", MIN_MS(1));
+		res = bbs_readline(http->node->rfd, http->rldata, "\r\n", MIN_MS(1));
 		if (res < 0) {
 			return -1;
 		} else if (res == 0) { /* CR LF = end of headers */
@@ -1821,7 +1821,7 @@ static int http_handle_request(struct http_session *http, char *buf)
 		/* Send a 100 Continue intermediate response if we're good so far. */
 		http->res->sent100 = 1;
 		http_send_header(http, "HTTP/1.1 100 Continue\r\n");
-		bbs_node_fd_writef(http->node, http->wfd, "\r\n");
+		bbs_node_fd_writef(http->node, http->node->wfd, "\r\n");
 		/* XXX If libcurl gets a 100 followed by a 404, it will be very unhappy (it will hang forever). */
 	}
 
@@ -1888,12 +1888,10 @@ static void http_handler(struct bbs_node *node, int secure)
 
 	/* Start TLS if we need to */
 	if (secure) {
-		ssl = ssl_node_new_accept(node, &http.rfd, &http.wfd);
+		ssl = ssl_node_new_accept(node, &http.node->rfd, &http.node->wfd);
 		if (!ssl) {
 			return; /* Disconnect. */
 		}
-	} else {
-		http.rfd = http.wfd = node->fd;
 	}
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
@@ -2289,7 +2287,7 @@ enum http_response_code http_static(struct http_session *http, const char *filen
 	if (ranges) {
 		if (rangeparts == 1) {
 			offset = a;
-			written = bbs_sendfile(http->wfd, fd, &offset, rangebytes);
+			written = bbs_sendfile(http->node->wfd, fd, &offset, rangebytes);
 			close(fd);
 			if (written != (ssize_t) rangebytes) {
 				http->req->keepalive = 0;
@@ -2306,7 +2304,7 @@ enum http_response_code http_static(struct http_session *http, const char *filen
 				http_writef(http, "\r\n");
 				offset = a;
 				bbs_debug(5, "Sending %ld-byte range beginning at offset %lu\n", thisrangebytes, offset);
-				written = bbs_sendfile(http->wfd, fd, &offset, (size_t) thisrangebytes);
+				written = bbs_sendfile(http->node->wfd, fd, &offset, (size_t) thisrangebytes);
 				if (written != (ssize_t) thisrangebytes) {
 					close(fd);
 					http->req->keepalive = 0;
@@ -2319,7 +2317,7 @@ enum http_response_code http_static(struct http_session *http, const char *filen
 			http_writef(http, "--%s--", RANGE_SEPARATOR); /* Final multipart boundary */
 		}
 	} else {
-		written = bbs_sendfile(http->wfd, fd, &offset, (size_t) st->st_size);
+		written = bbs_sendfile(http->node->wfd, fd, &offset, (size_t) st->st_size);
 		close(fd);
 		if (written != (ssize_t) st->st_size) {
 			http->req->keepalive = 0;

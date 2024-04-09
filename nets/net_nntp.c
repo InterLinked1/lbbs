@@ -90,8 +90,6 @@ static struct stringlist inpeers;
 static struct stringlist outpeers;
 
 struct nntp_session {
-	int rfd;
-	int wfd;
 	struct bbs_node *node;
 	char *currentgroup;
 	int currentarticle;
@@ -136,7 +134,7 @@ static void nntp_destroy(struct nntp_session *nntp)
 	UNUSED(nntp);
 }
 
-#define _nntp_send(nntp, fmt, ...) bbs_debug(4, "%p <= " fmt, nntp, ## __VA_ARGS__); bbs_node_fd_writef(nntp->node, nntp->wfd, fmt, ## __VA_ARGS__);
+#define _nntp_send(nntp, fmt, ...) bbs_debug(4, "%p <= " fmt, nntp, ## __VA_ARGS__); bbs_node_fd_writef(nntp->node, nntp->node->wfd, fmt, ## __VA_ARGS__);
 #define nntp_send(nntp, code, fmt, ...) _nntp_send(nntp, "%d " fmt "\r\n", code, ## __VA_ARGS__)
 
 #define REQUIRE_ARGS(s) \
@@ -463,10 +461,10 @@ static int on_article(const char *dir_name, const char *filename, struct nntp_se
 
 	snprintf(fullpath, sizeof(fullpath), "%s/%s", dir_name, filename);
 	nntp_send(nntp, 220, "%d <%s> Article follows", number, msgid);
-	if (bbs_send_file(fullpath, nntp->wfd) < 0) {
+	if (bbs_send_file(fullpath, nntp->node->wfd) < 0) {
 		return -1; /* Just disconnect */
 	}
-	bbs_node_fd_writef(nntp->node, nntp->wfd, ".\r\n"); /* Termination character. */
+	bbs_node_fd_writef(nntp->node, nntp->node->wfd, ".\r\n"); /* Termination character. */
 	return 1; /* Stop traversal */
 }
 
@@ -511,11 +509,11 @@ static int on_body(const char *dir_name, const char *filename, struct nntp_sessi
 	nntp_send(nntp, 220, "%d <%s>", number, msgid);
 	/* XXX Easy, but not as efficient as calculating offset and then using sendfile... */
 	while ((fgets(linebuf, sizeof(linebuf), fp))) {
-		bbs_node_fd_writef(nntp->node, nntp->wfd, "%s", linebuf);
+		bbs_node_fd_writef(nntp->node, nntp->node->wfd, "%s", linebuf);
 	}
 	fclose(fp);
 
-	bbs_node_fd_writef(nntp->node, nntp->wfd, ".\r\n"); /* Termination character. */
+	bbs_node_fd_writef(nntp->node, nntp->node->wfd, ".\r\n"); /* Termination character. */
 	return 1; /* Stop traversal */
 }
 
@@ -1020,7 +1018,7 @@ static int nntp_process(struct nntp_session *nntp, char *s, size_t len)
 			/* List all groups available, in current state. */
 			nntp_send(nntp, 215, "Newsgroup listing follows");
 			/* name, high water mark, low water mark, current status (posting permitted: y/n/m (moderated) */
-			if (bbs_send_file(newsgroups_file, nntp->wfd) < 0) {
+			if (bbs_send_file(newsgroups_file, nntp->node->wfd) < 0) {
 				return -1; /* Just disconnect */
 			}
 			_nntp_send(nntp, ".\r\n");
@@ -1226,7 +1224,7 @@ static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 	nntp_send(nntp, 200, "%s Newsgroup Service Ready, posting permitted", bbs_hostname());
 
 	for (;;) {
-		ssize_t res = bbs_readline(nntp->rfd, &rldata, "\r\n", MIN_MS(5));
+		ssize_t res = bbs_readline(nntp->node->rfd, &rldata, "\r\n", MIN_MS(5));
 		if (res < 0) {
 			/* We should NOT send any response to the client when terminating a connection due to timeout. */
 			break;
@@ -1248,7 +1246,7 @@ static void handle_client(struct nntp_session *nntp, SSL **sslptr)
 			/* RFC 4642 */
 			bbs_debug(3, "Starting TLS\n");
 			nntp->dostarttls = 0;
-			*sslptr = ssl_node_new_accept(nntp->node, &nntp->rfd, &nntp->wfd);
+			*sslptr = ssl_node_new_accept(nntp->node, &nntp->node->rfd, &nntp->node->wfd);
 			if (!*sslptr) {
 				break; /* Just abort */
 			}
@@ -1266,22 +1264,17 @@ static void nntp_handler(struct bbs_node *node, int secure, int reader)
 #ifdef HAVE_OPENSSL
 	SSL *ssl = NULL;
 #endif
-	int rfd, wfd;
 	struct nntp_session nntp;
 
 	/* Start TLS if we need to */
 	if (secure) {
-		ssl = ssl_node_new_accept(node, &rfd, &wfd);
+		ssl = ssl_node_new_accept(node, &node->rfd, &node->wfd);
 		if (!ssl) {
 			return;
 		}
-	} else {
-		rfd = wfd = node->fd;
 	}
 
 	memset(&nntp, 0, sizeof(nntp));
-	nntp.rfd = rfd;
-	nntp.wfd = wfd;
 	nntp.node = node;
 	SET_BITFIELD(nntp.secure, secure);
 	SET_BITFIELD(nntp.mode, reader);

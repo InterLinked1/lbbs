@@ -837,7 +837,7 @@ static unsigned int max_websocket_timeout_ms = MAX_WEBSOCKET_PING_MS;
 /*! \note The details of the underlying WebSocket library are intentionally abstracted away here.
  * WebSocket applications just deal with the net_ws module, the net_ws module deals with
  * the WebSocket library that actually speaks the WebSocket protocol on the wire. */
-static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd, int wfd, int proxied)
+static void ws_handler(struct bbs_node *node, struct http_session *http, int proxied)
 {
 	struct ws_session ws;
 	struct ws_route *route;
@@ -892,7 +892,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 		bbs_debug(4, "Origin '%s' is explicitly allowed\n", origin);
 	}
 
-	client = wss_client_new(&ws, rfd, wfd);
+	client = wss_client_new(&ws, node->rfd, node->wfd);
 	if (!client) {
 		bbs_error("Failed to create WebSocket client\n");
 		goto exit;
@@ -906,7 +906,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 	}
 
 	memset(&pfds, 0, sizeof(pfds));
-	pfds[0].fd = rfd;
+	pfds[0].fd = node->rfd;
 	pfds[0].events = POLLIN;
 
 	/* In case there's something else to poll. */
@@ -945,7 +945,12 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 		 * So ping at least as frequently as just under every 5 minutes.
 		 * If the application's poll interval is longer than the permitted poll interval for WebSocket ping,
 		 * (or infinite, i.e. -1), use the shorter interval. */
-		if (pollms >= max_ms || pollms < 0) {
+		if (pollms <= 0 || max_ms <= 0) {
+#ifdef DEBUG_POLL
+			bbs_debug(8, "Poll time is %d ms, max is %d ms, skipping this poll\n", pollms, max_ms);
+#endif
+			pollms = 0;
+		} else if (pollms >= max_ms) {
 #ifdef DEBUG_POLL
 			bbs_debug(8, "Actually polling for %d ms instead of %d ms\n", max_ms, pollms);
 #endif
@@ -971,9 +976,10 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int rfd
 				time_t now = time(NULL);
 				time_t elapsed = now - this_poll_start;
 				app_ms_elapsed += (int) SEC_MS(elapsed);
+				elapsed_sec += elapsed;
 
 				/* Connection closed abruptly (uncleanly). Probably shouldn't happen under normal conditions. */
-				bbs_warning("Failed to read WebSocket frame, server closed connection?\n");
+				bbs_warning("Failed to read WebSocket frame, client closed connection?\n");
 				bbs_debug(9, "app poll elapsed: %d/%d, ws timeout: %d, -> max actual poll: %d, %lu s since last ping\n",
 					app_ms_elapsed / 1000, ws.pollms / 1000, max_websocket_timeout_ms / 1000, max_ms / 1000, elapsed_sec);
 				if (wss_error_code(client)) {
@@ -1131,12 +1137,10 @@ static void ws_direct_handler(struct bbs_node *node, int secure)
 
 	/* Start TLS if we need to */
 	if (secure) {
-		ssl = ssl_node_new_accept(node, &http.rfd, &http.wfd);
+		ssl = ssl_node_new_accept(node, &http.node->rfd, &http.node->wfd);
 		if (!ssl) {
 			return; /* Disconnect. */
 		}
-	} else {
-		http.rfd = http.wfd = node->fd;
 	}
 
 	/* If this is a direct connection, either the client connected directly to us,
@@ -1161,7 +1165,7 @@ static void ws_direct_handler(struct bbs_node *node, int secure)
 	}
 
 	/* Handshake succeeded! Okay, we're done with the HTTP stuff now. It's just websockets from here on out. */
-	ws_handler(node, &http, http.rfd, http.wfd, 1); /* Seems backwards, but this is a reverse proxied connection, most likely */
+	ws_handler(node, &http, 1); /* Seems backwards, but this is a reverse proxied connection, most likely */
 	http_session_cleanup(&http);
 
 cleanup:
@@ -1179,7 +1183,7 @@ static enum http_response_code ws_proxy_handler(struct http_session *http)
 		return HTTP_BAD_REQUEST;
 	}
 	/* This is now a websocket connection, speaking the websocket protocol. */
-	ws_handler(http->node, http, http->rfd, http->wfd, 0);
+	ws_handler(http->node, http, 0);
 	/* Return back to the web server, which will simply terminate the connection */
 	return http->res->code;
 }

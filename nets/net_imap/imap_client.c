@@ -94,7 +94,7 @@ int imap_poll(struct imap_session *imap, int ms, struct imap_client **clientout)
 	if (numfds == 1) {
 		/* No remote clients, just the main client */
 		RWLIST_UNLOCK(&imap->clients);
-		return bbs_poll(imap->rfd, ms);
+		return bbs_poll(imap->node->rfd, ms);
 	}
 
 	pfds = calloc((size_t) numfds, sizeof(*pfds));
@@ -106,7 +106,7 @@ int imap_poll(struct imap_session *imap, int ms, struct imap_client **clientout)
 		int pres, i = 0;
 		pfds[i].events = POLLIN;
 		pfds[i].revents = 0;
-		pfds[i].fd = imap->rfd;
+		pfds[i].fd = imap->node->rfd;
 		RWLIST_TRAVERSE(&imap->clients, client, entry) {
 			i++;
 			pfds[i].events = POLLIN;
@@ -396,9 +396,9 @@ static ssize_t client_command_passthru(struct imap_client *client, int fd, const
 		if (echo) {
 			/* Go ahead and relay it */
 			if (res > 0) { /* If it was just an empty line, don't bother calling write() with 0 bytes */
-				bbs_write(imap->wfd, buf, (unsigned int) res);
+				bbs_write(imap->node->wfd, buf, (unsigned int) res);
 			}
-			if (SWRITE(imap->wfd, "\r\n") < 0) {
+			if (SWRITE(imap->node->wfd, "\r\n") < 0) {
 				res = -1;
 				break;
 			}

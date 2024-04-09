@@ -119,7 +119,7 @@ static void *finger_handler(void *varg)
 	 * The /W modifier increases verbosity. */
 
 	/* This is not buffered since there's no pseudoterminal. */
-	res = bbs_poll_read(node->fd, 1000, buf, sizeof(buf) - 1);
+	res = bbs_poll_read(node->rfd, 1000, buf, sizeof(buf) - 1);
 	if (res <= 0) {
 		goto cleanup;
 	}
@@ -158,7 +158,7 @@ static void *finger_handler(void *varg)
 	}
 
 	if (!strlen_zero(username)) {
-		if (bbs_user_dump(node->fd, username, 4)) {
+		if (bbs_user_dump(node->wfd, username, 4)) {
 			bbs_debug(1, "No such user: %s\n", username);
 		} else {
 			char pfile[256];
@@ -166,28 +166,28 @@ static void *finger_handler(void *varg)
 			/* If user exists, also display project and plan, if available */
 			userid = bbs_userid_from_username(username);
 			if (!bbs_transfer_home_config_file(userid, ".project", pfile, sizeof(pfile))) {
-				bbs_node_fd_writef(node, node->fd, "Project: ");
-				if (print_file(node->fd, pfile, "\r\n", 1, 128)) {
+				bbs_node_fd_writef(node, node->wfd, "Project: ");
+				if (print_file(node->wfd, pfile, "\r\n", 1, 128)) {
 					/* If it failed, add a new line ourselves. */
-					bbs_node_fd_writef(node, node->fd, "\r\n");
+					bbs_node_fd_writef(node, node->wfd, "\r\n");
 				}
 			}
 			if (!bbs_transfer_home_config_file(userid, ".plan", pfile, sizeof(pfile))) {
 				/* If the user wants the plan to begin on its own line,
 				 * then the first line of the plan can simply be a line break. */
-				bbs_node_fd_writef(node, node->fd, "Plan: ");
-				print_file(node->fd, pfile, "\r\n", 10, 512);
+				bbs_node_fd_writef(node, node->wfd, "Plan: ");
+				print_file(node->wfd, pfile, "\r\n", 10, 512);
 				/* Don't really care if there's a line break here or not */
 			} else {
-				bbs_node_fd_writef(node, node->fd, "No Plan.\r\n");
+				bbs_node_fd_writef(node, node->wfd, "No Plan.\r\n");
 			}
 		}
 	} else {
 		/* All users */
 		if (!allusersallowed) {
-			bbs_node_fd_writef(node, node->fd, "Finger online user list denied\r\n"); /* Other finger servers don't seem to do this, but the RFC says to... */
+			bbs_node_fd_writef(node, node->wfd, "Finger online user list denied\r\n"); /* Other finger servers don't seem to do this, but the RFC says to... */
 		} else {
-			bbs_users_dump(node->fd, 4);
+			bbs_users_dump(node->wfd, 4);
 		}
 	}
 

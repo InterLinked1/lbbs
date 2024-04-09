@@ -141,8 +141,6 @@ struct http_session {
 	struct bbs_node *node;
 	struct readline_data *rldata;
 	char *buf; /*!< Stack-allocated readline data buffer */
-	int rfd;
-	int wfd;
 	unsigned int secure:1;
 };
 

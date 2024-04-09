@@ -49,8 +49,6 @@ RWLIST_HEAD(imap_client_list, imap_client);
 struct imap_notify;
 
 struct imap_session {
-	int rfd;
-	int wfd;
 	char *tag;
 	struct bbs_node *node;
 	struct mailbox *mbox;		/* Current mailbox (mailbox as in entire mailbox, not just a mailbox folder) */
@@ -166,9 +164,9 @@ extern int imap_debug_level;
 		__imap_parallel_reply(imap, fmt, ## __VA_ARGS__); \
 	}
 
-#define __imap_parallel_reply(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); bbs_node_any_fd_writef(imap->node, imap->wfd, fmt, ## __VA_ARGS__);
+#define __imap_parallel_reply(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); bbs_node_any_fd_writef(imap->node, imap->node->wfd, fmt, ## __VA_ARGS__);
 
-#define _imap_reply_nolock(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); bbs_node_fd_writef(imap->node, imap->wfd, fmt, ## __VA_ARGS__);
+#define _imap_reply_nolock(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); bbs_node_fd_writef(imap->node, imap->node->wfd, fmt, ## __VA_ARGS__);
 #define _imap_reply(imap, fmt, ...) _imap_reply_nolock(imap, fmt, ## __VA_ARGS__)
 #define imap_send(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
 #define imap_reply(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", imap->tag, ## __VA_ARGS__)

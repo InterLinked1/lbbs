@@ -51,8 +51,6 @@ static int pop3s_port = DEFAULT_POP3S_PORT;
 static int pop3_enabled = 0, pop3s_enabled = 1;
 
 struct pop3_session {
-	int rfd;
-	int wfd;
 	struct bbs_node *node;
 	struct mailbox *mbox;
 	char *username;
@@ -85,7 +83,7 @@ static void pop3_destroy(struct pop3_session *pop3)
 	free_if(pop3->folder);
 }
 
-#define pop3_send(pop3, fmt, ...) bbs_debug(4, "%p <= " fmt, pop3, ## __VA_ARGS__); bbs_node_fd_writef(pop3->node, pop3->wfd, fmt, ## __VA_ARGS__);
+#define pop3_send(pop3, fmt, ...) bbs_debug(4, "%p <= " fmt, pop3, ## __VA_ARGS__); bbs_node_fd_writef(pop3->node, pop3->node->wfd, fmt, ## __VA_ARGS__);
 #define pop3_ok(pop3, fmt, ...) pop3_send(pop3, "+OK " fmt "\r\n", ## __VA_ARGS__)
 #define pop3_err(pop3, fmt, ...) pop3_send(pop3, "-ERR " fmt "\r\n", ## __VA_ARGS__)
 
@@ -495,9 +493,9 @@ static int on_retr(const char *dir_name, const char *filename, struct pop3_sessi
 
 	pop3_ok(pop3, "%u octets", realsize);
 	offset = 0;
-	res = (unsigned int) bbs_sendfile(pop3->wfd, fileno(fp), &offset, realsize);
+	res = (unsigned int) bbs_sendfile(pop3->node->wfd, fileno(fp), &offset, realsize);
 	bbs_debug(6, "Sent %d bytes\n", res);
-	bbs_node_fd_writef(pop3->node, pop3->wfd, ".\r\n");
+	bbs_node_fd_writef(pop3->node, pop3->node->wfd, ".\r\n");
 	fclose(fp);
 	return 0;
 }
@@ -532,7 +530,7 @@ static int on_top(const char *dir_name, const char *filename, struct pop3_sessio
 				break;
 			}
 		}
-		bbs_node_fd_writef(pop3->node, pop3->wfd, "%s", msgbuf); /* msgbuf already includes CR LF */
+		bbs_node_fd_writef(pop3->node, pop3->node->wfd, "%s", msgbuf); /* msgbuf already includes CR LF */
 		if (headersdone && lineno >= pop3->toplines) {
 			break; /* That was the last line we wanted to read. */
 		}
@@ -541,7 +539,7 @@ static int on_top(const char *dir_name, const char *filename, struct pop3_sessio
 		}
 	}
 	fclose(fp);
-	bbs_node_fd_writef(pop3->node, pop3->wfd, ".\r\n"); /* Termination character. */
+	bbs_node_fd_writef(pop3->node, pop3->node->wfd, ".\r\n"); /* Termination character. */
 	return 0;
 }
 
@@ -723,7 +721,7 @@ static void handle_client(struct pop3_session *pop3)
 	pop3_ok(pop3, "POP3 Server Ready");
 
 	for (;;) {
-		ssize_t res = bbs_readline(pop3->rfd, &rldata, "\r\n", MIN_MS(3));
+		ssize_t res = bbs_readline(pop3->node->rfd, &rldata, "\r\n", MIN_MS(3));
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {
@@ -749,22 +747,17 @@ static void pop3_handler(struct bbs_node *node, int secure)
 #ifdef HAVE_OPENSSL
 	SSL *ssl = NULL;
 #endif
-	int rfd, wfd;
 	struct pop3_session pop3;
 
 	/* Start TLS if we need to */
 	if (secure) {
-		ssl = ssl_node_new_accept(node, &rfd, &wfd);
+		ssl = ssl_node_new_accept(node, &node->rfd, &node->wfd);
 		if (!ssl) {
 			return;
 		}
-	} else {
-		rfd = wfd = node->fd;
 	}
 
 	memset(&pop3, 0, sizeof(pop3));
-	pop3.rfd = rfd;
-	pop3.wfd = wfd;
 	pop3.node = node;
 
 	handle_client(&pop3);

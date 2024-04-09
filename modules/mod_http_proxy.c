@@ -259,7 +259,7 @@ static enum http_response_code proxy_handler(struct http_session *http)
 		/* For CONNECT, this is it, we can just send 200 OK now and then relay everything hereafter. */
 		http->res->code = HTTP_OK; /* Hasn't been set using the higher-level functions, so set manually */
 		http_send_response_status(http, HTTP_OK);
-		NODE_SWRITE(http->node, http->wfd, "\r\n"); /* CR LF to indicate end of headers */
+		NODE_SWRITE(http->node, http->node->wfd, "\r\n"); /* CR LF to indicate end of headers */
 	} else {
 		if (proxy_forward_headers(http, &client)) {
 			bbs_warning("Failed to forward headers to proxy destination %s:%u\n", host, port);

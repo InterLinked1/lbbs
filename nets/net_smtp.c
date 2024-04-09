@@ -99,7 +99,7 @@ static unsigned int max_message_size = 300000;
 
 #define _smtp_reply(smtp, fmt, ...) \
 	bbs_debug(6, "%p <= " fmt, smtp, ## __VA_ARGS__); \
-	bbs_auto_fd_writef(smtp->node, smtp->wfd, fmt, ## __VA_ARGS__); \
+	bbs_auto_fd_writef(smtp->node, smtp->node ? smtp->node->wfd : -1, fmt, ## __VA_ARGS__); \
 
 /*! \brief Final SMTP response with this code */
 #define smtp_resp_reply(smtp, code, subcode, reply) _smtp_reply(smtp, "%d %s %s\r\n", code, subcode, reply)
@@ -164,8 +164,6 @@ const char *smtp_hostname(void)
 
 struct smtp_session {
 	struct bbs_node *node;
-	int rfd;
-	int wfd;
 
 	/* Transaction data */
 	char *from;					/* MAIL FROM address */
@@ -448,10 +446,10 @@ static int handle_connect(struct smtp_session *smtp)
 		/* This works even with TLS, because of the TLS I/O thread, it's either socket or pipe activity.
 		 * Then again, that doesn't matter because for MTAs, TLS isn't yet set up at this point in the connection,
 		 * so the SMTP file descriptor refers to the actual node socket, not a pipe. */
-		if (bbs_poll(smtp->rfd, 100)) { /* Guarantees up to a minimum 100ms sleep */
+		if (bbs_poll(smtp->node->rfd, 100)) { /* Guarantees up to a minimum 100ms sleep */
 			/* We don't know what was received (or even how many bytes) since we haven't called read() yet, but we could peek: */
 			size_t bytes = 0;
-			if (ioctl(smtp->rfd, FIONREAD, &bytes)) {
+			if (ioctl(smtp->node->rfd, FIONREAD, &bytes)) {
 				bbs_error("ioctl failed: %s\n", strerror(errno));
 				return -1;
 			}
@@ -1460,9 +1458,9 @@ static int cli_filters(struct bbs_cli_args *a)
 void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_process *mproc)
 {
 	memset(mproc, 0, sizeof(struct smtp_msg_process));
-	mproc->fd = smtp->wfd;
 	mproc->datafile = smtp->datafile;
 	mproc->node = smtp->node;
+	mproc->fd = mproc->node ? smtp->node->wfd : -1;
 	mproc->from = smtp->from;
 	mproc->forward = &smtp->recipients; /* Tack on forwarding targets to the recipients list */
 }
@@ -2620,7 +2618,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 
 	for (;;) {
 		size_t len;
-		ssize_t res = bbs_readline(smtp->rfd, rldata, "\r\n", MIN_MS(3)); /* RFC 5321 4.5.3.2.5 */
+		ssize_t res = bbs_readline(smtp->node->rfd, rldata, "\r\n", MIN_MS(3)); /* RFC 5321 4.5.3.2.5 */
 		if (res < 0) {
 			bbs_delete_file(template);
 			fclose(fp);
@@ -2849,7 +2847,7 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 	}
 
 	for (;;) {
-		ssize_t res = bbs_readline(smtp->rfd, &rldata, "\r\n", MIN_MS(5)); /* RFC 5321 4.5.3.2.7 */
+		ssize_t res = bbs_readline(smtp->node->rfd, &rldata, "\r\n", MIN_MS(5)); /* RFC 5321 4.5.3.2.7 */
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {
@@ -2877,7 +2875,7 @@ static void handle_client(struct smtp_session *smtp, SSL **sslptr)
 			/* You might think this would be more complicated, but nope, this is literally all there is to it. */
 			bbs_debug(3, "Starting TLS\n");
 			smtp->tflags.dostarttls = 0;
-			*sslptr = ssl_node_new_accept(smtp->node, &smtp->rfd, &smtp->wfd);
+			*sslptr = ssl_node_new_accept(smtp->node, &smtp->node->rfd, &smtp->node->wfd);
 			if (!*sslptr) {
 				break; /* Just abort */
 			}
@@ -2897,22 +2895,17 @@ static void smtp_handler(struct bbs_node *node, int msa, int secure)
 #ifdef HAVE_OPENSSL
 	SSL *ssl = NULL;
 #endif
-	int rfd, wfd;
 	struct smtp_session smtp;
 
 	/* Start TLS if we need to */
 	if (secure) {
-		ssl = ssl_node_new_accept(node, &rfd, &wfd);
+		ssl = ssl_node_new_accept(node, &node->rfd, &node->wfd);
 		if (!ssl) {
 			return;
 		}
-	} else {
-		rfd = wfd = node->fd;
 	}
 
 	memset(&smtp, 0, sizeof(smtp));
-	smtp.rfd = rfd;
-	smtp.wfd = wfd;
 	smtp.node = node;
 	SET_BITFIELD(smtp.secure, secure);
 	SET_BITFIELD(smtp.msa, msa);

@@ -55,9 +55,9 @@ static int ftps_enabled = 0;
 static int require_reuse = 0;
 
 /*! \note Uses a statement expression so that we can also log all FTP responses */
-#define ftp_write(ftp, code, fmt, ...) ({ bbs_debug(5, "FTP <= %d " fmt, code, ## __VA_ARGS__); bbs_writef(ftp->wfd, "%d " fmt, code, ## __VA_ARGS__); })
-#define ftp_write0(ftp, code, fmt, ...) ({ bbs_debug(5, "FTP <= %d-" fmt, code, ## __VA_ARGS__); bbs_writef(ftp->wfd, "%d-" fmt, code, ## __VA_ARGS__); })
-#define ftp_write_raw(ftp, fmt, ...) ({ bbs_debug(5, "FTP <= " fmt, ## __VA_ARGS__); bbs_writef(ftp->wfd, fmt, ## __VA_ARGS__); })
+#define ftp_write(ftp, code, fmt, ...) ({ bbs_debug(5, "FTP <= %d " fmt, code, ## __VA_ARGS__); bbs_writef(ftp->node->wfd, "%d " fmt, code, ## __VA_ARGS__); })
+#define ftp_write0(ftp, code, fmt, ...) ({ bbs_debug(5, "FTP <= %d-" fmt, code, ## __VA_ARGS__); bbs_writef(ftp->node->wfd, "%d-" fmt, code, ## __VA_ARGS__); })
+#define ftp_write_raw(ftp, fmt, ...) ({ bbs_debug(5, "FTP <= " fmt, ## __VA_ARGS__); bbs_writef(ftp->node->wfd, fmt, ## __VA_ARGS__); })
 #define ftp_write_raw2(ftp, fmt, ...) ({ bbs_debug(5, "FTP <= " fmt, ## __VA_ARGS__); bbs_writef(ftp->wfd2, fmt, ## __VA_ARGS__); })
 #define IO_ABORT(res) if (res <= 0) { goto cleanup; }
 
@@ -76,9 +76,6 @@ static int require_reuse = 0;
 	}
 
 struct ftp_session {
-	/* Control */
-	int rfd;
-	int wfd;
 	/* Data */
 	int rfd2;
 	int wfd2;
@@ -303,12 +300,10 @@ static void *ftp_handler(void *varg)
 
 	/* Start TLS if we need to */
 	if (!strcmp(node->protname, "FTPS")) {
-		ssl = ssl_node_new_accept(node, &ftp->rfd, &ftp->wfd);
+		ssl = ssl_node_new_accept(node, &ftp->node->rfd, &ftp->node->wfd);
 		if (!ssl) {
 			goto cleanup;
 		}
-	} else {
-		ftp->rfd = ftp->wfd = node->fd;
 	}
 
 	/* FTP uses CR LF line endings (but that's what you expected, right?) */
@@ -322,7 +317,7 @@ static void *ftp_handler(void *varg)
 
 	for (;;) {
 		next = NULL;
-		res = bbs_readline(ftp->rfd, &rldata, "\r\n", node->user ? bbs_transfer_timeout() : SEC_MS(15)); /* After some number of seconds of inactivity, a client times out */
+		res = bbs_readline(ftp->node->rfd, &rldata, "\r\n", node->user ? bbs_transfer_timeout() : SEC_MS(15)); /* After some number of seconds of inactivity, a client times out */
 		if (res <= 0) {
 			break;
 		}
@@ -409,7 +404,7 @@ static void *ftp_handler(void *varg)
 			/* AUTH TLS / AUTH SSL = RFC2228 opportunistic encryption */
 			if (!ssl && ssl_available()) {
 				res = ftp_write(ftp, 234, "Begin TLS negotiation\r\n");
-				ssl = ssl_node_new_accept(node, &ftp->rfd, &ftp->wfd);
+				ssl = ssl_node_new_accept(node, &ftp->node->rfd, &ftp->node->wfd);
 				if (!ssl) {
 					break; /* Just abort */
 				}

@@ -661,12 +661,13 @@ static int ssl_servername_cb(SSL *s, int *ad, void *arg)
 
 SSL *ssl_node_new_accept(struct bbs_node *node, int *rfd, int *wfd)
 {
-	SSL *ssl = ssl_new_accept(node, node->fd, rfd, wfd);
-	if (rfd) {
-		node->rfd = *rfd;
+	int my_rfd = -1, my_wfd = -1;
+	SSL *ssl = ssl_new_accept(node, node->fd, &my_rfd, &my_wfd);
+	if (my_rfd >= 0) {
+		*rfd = my_rfd;
 	}
-	if (wfd) {
-		node->wfd = *wfd;
+	if (my_wfd >= 0) {
+		*wfd = my_wfd;
 	}
 	return ssl;
 }
