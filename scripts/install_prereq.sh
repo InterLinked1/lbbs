@@ -48,6 +48,9 @@ PACKAGES_FEDORA="$PACKAGES_FEDORA libedit-devel readline-devel"
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libssl-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA openssl-devel"
 
+# io_compress: zlib
+PACKAGES_DEBIAN="$PACKAGES_DEBIAN zlib1g-dev"
+
 # libssh (net_ssh)
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libssh-dev"
 # net_ssh, which requires objdump to test for symbol existence... thanks a lot, libssh

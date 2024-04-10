@@ -20,6 +20,10 @@ $(DEPENDS):
 	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^
 
+io_compress.so : io_compress.o
+	@echo "  [LD] $^ -> $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lz
+
 io_tls.so : io_tls.o
 	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lssl -lcrypto

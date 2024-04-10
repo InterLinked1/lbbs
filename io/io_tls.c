@@ -741,7 +741,7 @@ static SSL *ssl_client_new(int fd, int *rfd, int *wfd, const char *snihostname)
 		bbs_error("Failed to setup new SSL context\n");
 		return NULL;
 	}
-	SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3); /* Only use TLS */
+	SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION); /* Only use TLS, disable compression */
 	ssl = SSL_new(ctx);
 	if (!ssl) {
 		bbs_error("Failed to create new SSL\n");
@@ -910,6 +910,12 @@ static SSL_CTX *tls_ctx_create(const char *cert, const char *key)
 		return NULL;
 	}
 
+	/* Disabling compression is a best practice to avoid attacks such as CRIME.
+	 * However, another reason we explicitly do so is to avoid conflicting with explicit compression,
+	 * such as DEFLATE. This cannot be enabled at the same time that compression is already enabled
+	 * at the TLS layer, so disabling it here ensures that attempts to enable explicit compression
+	 * don't need to worry about TLS compression already being enabled. */
+	SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION); /* Only use TLS, disable compression */
 	SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL); /* Server is not verifying the client, the client will verify the server */
 
 	if (SSL_CTX_use_certificate_chain_file(ctx, cert) <= 0) {

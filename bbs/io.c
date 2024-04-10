@@ -176,11 +176,49 @@ static int io_transform_store(struct bbs_io_transformations *trans, struct bbs_i
 	return -1;
 }
 
+static int __bbs_io_transform_possible(struct bbs_io_transformations *trans, enum bbs_io_transform_type type, int warn)
+{
+	if (bbs_io_transform_active(trans, type)) {
+		if (warn) {
+			bbs_error("Transformation %d already active, declining to set up duplicate transformation\n", type);
+		}
+		return 0;
+	}
+
+	/* TLS compression is disabled, so we don't need to worry about rejecting TRANSFORM_DEFLATE_COMPRESSION
+	 * if that were already to be active (as normally, that would conflict). */
+
+	/* XXX Ideally, ordering constraints would be specified in the modules themselves,
+	 * but since this involves both of them, just put it here for now: */
+	if (type == TRANSFORM_TLS_ENCRYPTION) {
+		if (bbs_io_transform_active(trans, TRANSFORM_DEFLATE_COMPRESSION)) {
+			/* Since I/O transformations are pushed onto a stack of file descriptors, effectively,
+			 * but TLS must happen after compression, it is too late to begin encryption.
+			 * The current I/O transformation architecture doesn't really us to add transformations
+			 * underneath existing ones. */
+			if (warn) {
+				bbs_warning("Can't enable encryption after compression has already been enabled, enable encryption prior to compression instead\n");
+			}
+			return 0;
+		}
+	}
+	return 1;
+}
+
+int bbs_io_transform_possible(struct bbs_io_transformations *trans, enum bbs_io_transform_type type)
+{
+	return __bbs_io_transform_possible(trans, type, 0);
+}
+
 int bbs_io_transform_setup(struct bbs_io_transformations *trans, enum bbs_io_transform_type type, enum bbs_io_transform_dir direction, int *rfd, int *wfd, const void *arg)
 {
 	int res;
 	void *data = NULL;
 	struct bbs_io_transformer *t;
+
+	if (!__bbs_io_transform_possible(trans, type, 1)) {
+		return -1;
+	}
 
 	RWLIST_RDLOCK(&transformers);
 	if (!io_transform_slots_free(trans)) {
@@ -223,6 +261,25 @@ int bbs_io_transform_setup(struct bbs_io_transformations *trans, enum bbs_io_tra
 	RWLIST_UNLOCK(&transformers);
 
 	return res;
+}
+
+int bbs_io_transform_active(struct bbs_io_transformations *trans, enum bbs_io_transform_type type)
+{
+	int i, active = 0;
+
+	RWLIST_RDLOCK(&transformers);
+	for (i = 0; i < MAX_IO_TRANSFORMS; i++) {
+		if (trans->transformations[i].data) {
+			struct bbs_io_transformer *t = trans->transformations[i].transformer;
+			if (t->type == type) {
+				active = 1;
+				break;
+			}
+		}
+	}
+	RWLIST_UNLOCK(&transformers);
+
+	return active;
 }
 
 int bbs_io_transform_query(struct bbs_io_transformations *trans, enum bbs_io_transform_type type, int query, void *data)

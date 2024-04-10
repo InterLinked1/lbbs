@@ -361,7 +361,7 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 		l++;
 		server = line;
 		prefix = strsep(&server, "|"); /* Use pipe in case mailbox name contains spaces */
-		if (!strncmp(prefix, "# ", 2)) {
+		if (!strncmp(prefix, "#", 1)) {
 			continue; /* Skip commented lines */
 		}
 

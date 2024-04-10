@@ -2094,7 +2094,7 @@ int bbs_node_starttls(struct bbs_node *node)
 		return 1;
 	}
 
-	res = bbs_io_transform_setup(&node->trans,  TRANSFORM_TLS_ENCRYPTION, TRANSFORM_SERVER, &node->rfd, &node->wfd, NULL);
+	res = bbs_io_transform_setup(&node->trans, TRANSFORM_TLS_ENCRYPTION, TRANSFORM_SERVER, &node->rfd, &node->wfd, NULL);
 	if (res) {
 		/* If TLS setup fails, it's probably garbage traffic and safe to penalize: */
 		if (node) {

@@ -26,6 +26,7 @@
  * \note Supports RFC 4466, 4731 SEARCH extensions
  * \note Supports RFC 4467 URLAUTH (partially) for RFC 4468 BURL
  * \note Supports RFC 4959 SASL-IR
+ * \note Supports RFC 4978 COMPRESS=DEFLATE
  * \note Supports RFC 5032 WITHIN (OLDER, YOUNGER)
  * \note Supports RFC 5161 ENABLE
  * \note Supports RFC 5182 SEARCHRES
@@ -56,7 +57,6 @@
  * - RFC 3516, 4466 BINARY, RFC 5524 URLAUTH=BINARY
  * - RFC 4469 CATENATE
  * - RFC 4959 SASL-IR
- * - RFC 4978 COMPRESS=DEFLATE
  * - RFC 5255 LANGUAGE
  * - RFC 5257 ANNOTATE, RFC 5464 ANNOTATE (METADATA)
  * - RFC 5258 LIST extensions (obsoletes 3348)
@@ -88,6 +88,9 @@
 /* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
 /* XXX URLAUTH is advertised so that SMTP BURL will function in Trojita, even though we don't need URLAUTH since we have a direct trust */
 #define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT UNAUTHENTICATE SPECIAL-USE LIST-EXTENDED LIST-STATUS XLIST CHILDREN IDLE NOTIFY NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS LITERAL+ MULTIAPPEND APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC STATUS=SIZE"
+
+#define CAPABILITY_FMT "%s%s"
+#define CAPABILITY_ARGS IMAP_CAPABILITIES, deflate_compression_available() ? " COMPRESS=DEFLATE" : ""
 
 /* Capabilities advertised by popular mail providers, for reference/comparison, both pre and post authentication:
  * - Office 365
@@ -3666,10 +3669,10 @@ static int finish_auth(struct imap_session *imap, int auth)
 	 * As an optimization, we could save an RTT by sending them unsolicited */
 
 	if (auth) {
-		_imap_reply(imap, "%s OK [CAPABILITY %s] Success\r\n", imap->savedtag ? imap->savedtag : imap->tag, IMAP_CAPABILITIES); /* Use tag from AUTHENTICATE request */
+		_imap_reply(imap, "%s OK [CAPABILITY " CAPABILITY_FMT "] Success\r\n", imap->savedtag ? imap->savedtag : imap->tag, CAPABILITY_ARGS); /* Use tag from AUTHENTICATE request */
 		free_if(imap->savedtag);
 	} else {
-		imap_reply(imap, "OK [CAPABILITY %s] Login completed", IMAP_CAPABILITIES);
+		imap_reply(imap, "OK [CAPABILITY " CAPABILITY_FMT "] Login completed", CAPABILITY_ARGS);
 	}
 	return 0;
 }
@@ -4165,7 +4168,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		 * However, in practice, the capabilities exposed by many servers
 		 * after authentication differ.
 		 */
-		imap_send(imap, "CAPABILITY " IMAP_CAPABILITIES);
+		imap_send(imap, "CAPABILITY " CAPABILITY_FMT, CAPABILITY_ARGS);
 		imap_reply(imap, "OK CAPABILITY completed");
 	} else if (!strcasecmp(command, "STARTTLS")) {
 		imap_reply(imap, "NO Explicit TLS not supported; use implicit TLS instead");
@@ -4572,6 +4575,38 @@ static int imap_process(struct imap_session *imap, char *s)
 			}
 		}
 		imap_reply(imap, "OK ENABLE completed."); /* Always reply OK, even if nonexistent capability. */
+	} else if (!strcasecmp(command, "COMPRESS")) {
+		REQUIRE_ARGS(s);
+		if (!strcasecmp(s, "DEFLATE")) {
+			if (!deflate_compression_available()) {
+				imap_reply(imap, "NO Compression unavailable");
+			} else if (bbs_io_transform_active(&imap->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
+				imap_reply(imap, "NO [COMPRESSIONACTIVE] DEFLATE already enabled");
+			} else if (!bbs_io_transform_possible(&imap->node->trans, TRANSFORM_DEFLATE_COMPRESSION)) {
+				imap_reply(imap, "NO Can't enable compression");
+			} else {
+				/* Go ahead and enable it */
+				int orig_wfd = imap->node->wfd;
+				int err = bbs_io_transform_setup(&imap->node->trans, TRANSFORM_DEFLATE_COMPRESSION, TRANSFORM_SERVER, &imap->node->rfd, &imap->node->wfd, NULL);
+				if (err) {
+					imap_reply(imap, "NO Failed to enable compression");
+				} else {
+					/* We still need to reply with an OK before compression is active.
+					 * Since node->wfd has already been updated, manually write to the original file descriptor (which now sits post-compression).
+					 * Normally, this would be a bad idea, since we'd intersperse uncompressed data with compressed data managed by zlib,
+					 * but this should be before we've sent anything compressed. */
+					_imap_reply_nolock_fd(imap, orig_wfd, "%s OK DEFLATE active\r\n", imap->tag);
+					/*! \todo A possible optimization we could implement for compression sessions is mentioned in RFC 4978 at the end of Section 4,
+					 * namely flushing dictionary (using TRANSFORM_QUERY_COMPRESSION_FLUSH) before a literal,
+					 * then using TRANSFORM_QUERY_SET_COMPRESSION_LEVEL to set the compression level to 0 if we detect it's already DEFLATE-compressed
+					 * and restoring compression afterwards.
+					 * However, this would entail parsing email messages to determine exactly where attachments start while we're sending them,
+					 * in order to be able to do this, so it's a lot of work for possibly a marginal improvement... not high on my priority list right now. */
+				}
+			}
+		} else {
+			imap_reply(imap, "BAD Unknown compression method");
+		}
 	} else if (!strcasecmp(command, "TESTLOCK")) {
 		/* Hold the mailbox lock for a moment. */
 		/*! \note This is only used for the test suite, it is not part of any IMAP standard or intended for clients. */
@@ -4616,9 +4651,9 @@ static void handle_client(struct imap_session *imap)
 	}
 
 	if (bbs_user_is_registered(imap->node->user)) {
-		imap_send(imap, "PREAUTH [CAPABILITY %s] %s server logged in as %s", IMAP_CAPABILITIES, IMAP_REV, bbs_username(imap->node->user));
+		imap_send(imap, "PREAUTH [CAPABILITY " CAPABILITY_FMT "] %s server logged in as %s", CAPABILITY_ARGS, IMAP_REV, bbs_username(imap->node->user));
 	} else {
-		imap_send(imap, "OK [CAPABILITY %s] %s Service Ready", IMAP_CAPABILITIES, IMAP_REV);
+		imap_send(imap, "OK [CAPABILITY " CAPABILITY_FMT "] %s Service Ready", CAPABILITY_ARGS, IMAP_REV);
 	}
 
 	for (;;) {
