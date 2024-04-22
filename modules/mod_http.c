@@ -140,8 +140,58 @@ BBS_SINGULAR_CALLBACK_DECLARE(proxy_handler, enum http_response_code, struct htt
 static unsigned short int proxy_port = 0;
 static enum http_method proxy_methods = HTTP_METHOD_UNDEF;
 
+/* == HTTP output I/O wrappers == */
+
+/*! \brief Actually write data to the HTTP client (potentially abstracted by TLS) */
+static inline ssize_t __http_direct_write(struct http_session *http, const char *buf, size_t len)
+{
+	return bbs_node_fd_write(http->node, http->node->wfd, buf, len);
+}
+
+/*! \brief sendfile wrapper for HTTP clients */
+static inline ssize_t http_sendfile(struct http_session *http, int in_fd, off_t *offset, size_t count)
+{
+	return bbs_sendfile(http->node->wfd, in_fd, offset, count);
+}
+
+static ssize_t __attribute__ ((format (gnu_printf, 2, 3))) __http_direct_writef(struct http_session *http, const char *fmt, ...)
+{
+	char sbuf[2048];
+	char *buf = NULL;
+	int dynamic = 0;
+	int len;
+	ssize_t res;
+	va_list ap;
+
+	/* Try using a stack allocated buffer first, since most of the time, it will fit */
+	va_start(ap, fmt);
+	len = vsnprintf(sbuf, sizeof(sbuf), fmt, ap);
+	va_end(ap);
+
+	if ((size_t) len >= sizeof(sbuf) - 1) {
+		/* Truncation occured */
+		va_start(ap, fmt);
+		len = vasprintf(&buf, fmt, ap);
+		va_end(ap);
+		if (len < 0) {
+			return -1;
+		}
+		dynamic = 1;
+	} else {
+		buf = sbuf;
+	}
+
+	res = __http_direct_write(http, buf, (size_t) len);
+	if (dynamic) {
+		free(buf);
+	}
+	return res;
+}
+
+/* == End output I/O wrappers == */
+
 #define http_send_header(http, fmt, ...) \
-	bbs_node_fd_writef(http->node, http->node->wfd, fmt, ## __VA_ARGS__); \
+	__http_direct_writef(http, fmt, ## __VA_ARGS__); \
 	http_debug(5, "<= " fmt, ## __VA_ARGS__);
 
 static const char *http_response_code_name(enum http_response_code code)
@@ -305,7 +355,7 @@ static void __http_write(struct http_session *http, const char *buf, size_t len)
 		http_send_headers(http);
 	}
 
-	bbs_write(http->node->wfd, buf, len);
+	__http_direct_write(http, buf, len);
 	http->res->sentbytes += len;
 }
 
@@ -318,7 +368,7 @@ static void send_chunk(struct http_session *http, const char *buf, size_t len)
 
 	http_send_header(http, "%x\r\n", (unsigned int) len); /* Doesn't count towards body length, so don't use __http_write */
 	__http_write(http, buf, len);
-	bbs_node_fd_writef(http->node, http->node->wfd, "\r\n"); /* Doesn't count towards length */
+	__http_direct_write(http, "\r\n", STRLEN("\r\n")); /* Doesn't count towards length */
 }
 
 static void flush_buffer(struct http_session *http, int final)
@@ -359,9 +409,9 @@ static void flush_buffer(struct http_session *http, int final)
 	http->res->chunkedleft = sizeof(http->res->chunkbuf);
 	http->res->chunkedbytes = 0;
 	if (final) {
-		bbs_node_fd_writef(http->node, http->node->wfd, "0\r\n"); /* This is the beginning of the end. Optional footers may follow. */
+		__http_direct_write(http, "0\r\n", STRLEN("0\r\n")); /* This is the beginning of the end. Optional footers may follow. */
 		/* If we wanted to send optional footers, we could do so here. But we don't. */
-		bbs_node_fd_writef(http->node, http->node->wfd, "\r\n"); /* Very end of chunked transfer */
+		__http_direct_write(http, "\r\n", STRLEN("\r\n")); /* Very end of chunked transfer */
 	}
 }
 
@@ -1825,7 +1875,7 @@ static int http_handle_request(struct http_session *http, char *buf)
 		/* Send a 100 Continue intermediate response if we're good so far. */
 		http->res->sent100 = 1;
 		http_send_header(http, "HTTP/1.1 100 Continue\r\n");
-		bbs_node_fd_writef(http->node, http->node->wfd, "\r\n");
+		__http_direct_write(http, "\r\n", STRLEN("\r\n"));
 		/* XXX If libcurl gets a 100 followed by a 404, it will be very unhappy (it will hang forever). */
 	}
 
@@ -2068,8 +2118,15 @@ static int mime_type(const char *filename, char *buf, size_t len)
 	if (!ext || !(++ext)) {
 		return 0; /* No further way to intuit */
 	}
-	if (!strcmp(buf, "text/plain") && !strcmp(ext, "html")) {
-		safe_strncpy(buf, "text/html", len);
+	if (!strcmp(buf, "text/plain")) {
+		/* libmagic is not going to figure out most text-based files
+		 * correctly, it's more intended for binary files.
+		 * Apache also uses its own database prior to falling back to libmagic. */
+		if (!strcmp(ext, "html")) {
+			safe_strncpy(buf, "text/html", len);
+		} else if (!strcmp(ext, "css")) {
+			safe_strncpy(buf, "text/css", len);
+		}
 	} else if (!mime) {
 		safe_strncpy(buf, DEFAULT_MIME_TYPE, len);
 	}
@@ -2278,7 +2335,7 @@ enum http_response_code http_static(struct http_session *http, const char *filen
 	if (ranges) {
 		if (rangeparts == 1) {
 			offset = a;
-			written = bbs_sendfile(http->node->wfd, fd, &offset, rangebytes);
+			written = http_sendfile(http, fd, &offset, rangebytes);
 			close(fd);
 			if (written != (ssize_t) rangebytes) {
 				http->req->keepalive = 0;
@@ -2295,7 +2352,7 @@ enum http_response_code http_static(struct http_session *http, const char *filen
 				http_writef(http, "\r\n");
 				offset = a;
 				bbs_debug(5, "Sending %ld-byte range beginning at offset %lu\n", thisrangebytes, offset);
-				written = bbs_sendfile(http->node->wfd, fd, &offset, (size_t) thisrangebytes);
+				written = http_sendfile(http, fd, &offset, (size_t) thisrangebytes);
 				if (written != (ssize_t) thisrangebytes) {
 					close(fd);
 					http->req->keepalive = 0;
@@ -2308,7 +2365,7 @@ enum http_response_code http_static(struct http_session *http, const char *filen
 			http_writef(http, "--%s--", RANGE_SEPARATOR); /* Final multipart boundary */
 		}
 	} else {
-		written = bbs_sendfile(http->node->wfd, fd, &offset, (size_t) st->st_size);
+		written = http_sendfile(http, fd, &offset, (size_t) st->st_size);
 		close(fd);
 		if (written != (ssize_t) st->st_size) {
 			http->req->keepalive = 0;

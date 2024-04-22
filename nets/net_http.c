@@ -54,6 +54,7 @@ static int allow_cgi = 0;
 static int authonly = 0;
 static int forcehttps;
 static unsigned int hsts_max_age = 0;
+static int forcesessions = 0;
 
 /*! \brief Serve static files in users' home directories' public_html directories */
 static enum http_response_code home_dir_handler(struct http_session *http)
@@ -69,6 +70,9 @@ static enum http_response_code home_dir_handler(struct http_session *http)
 	}
 	if (http->secure && hsts_max_age) {
 		http_enable_hsts(http, hsts_max_age);
+	}
+	if (forcesessions && http_session_start(http, 0)) {
+		return HTTP_INTERNAL_SERVER_ERROR;
 	}
 
 	username = http->req->uri + STRLEN("/~"); /* Guaranteed to be at least length 2 */
@@ -111,6 +115,10 @@ static enum http_response_code default_handler(struct http_session *http)
 	if (http->secure && hsts_max_age) {
 		http_enable_hsts(http, hsts_max_age);
 	}
+	if (forcesessions && http_session_start(http, 0)) {
+		return HTTP_INTERNAL_SERVER_ERROR;
+	}
+
 	if (authonly && !bbs_user_is_registered(http->node->user)) {
 		return HTTP_UNAUTHORIZED;
 	}
@@ -137,6 +145,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "general", "authonly", &authonly);
 	bbs_config_val_set_true(cfg, "general", "forcehttps", &forcehttps);
 	bbs_config_val_set_uint(cfg, "general", "hsts", &hsts_max_age);
+	bbs_config_val_set_true(cfg, "general", "forcesessions", &forcesessions);
 
 	/* HTTP */
 	bbs_config_val_set_true(cfg, "http", "enabled", &http_enabled);
@@ -145,6 +154,10 @@ static int load_config(void)
 	/* HTTPS */
 	bbs_config_val_set_true(cfg, "https", "enabled", &https_enabled);
 	bbs_config_val_set_port(cfg, "https", "port", &https_port);
+
+	if (!https_enabled) {
+		forcehttps = 0;
+	}
 
 	if (!http_enabled && !https_enabled) {
 		bbs_warning("Neither HTTP nor HTTPS is enabled, web server will be disabled\n");
