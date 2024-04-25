@@ -63,3 +63,25 @@ mariadb < scripts/dbcreate.sql
 #
 # Import the dump onto the new system
 # mariadb < bbsdb.sql
+
+# Create all the default directories that are used in the sample configs
+# These directories are not created automatically by the makefile
+
+# files root (transfers.conf)
+mkdir -p /home/bbs/files
+chown -R bbs:bbs /home/bbs/files
+
+# maildir (mod_mail.comf)
+mkdir -p /home/bbs/maildir
+chown -R bbs:bbs /home/bbs/maildir
+
+# docroot (net_http.conf), also used as gopher root by default in net_gopher.conf
+mkdir -p /home/bbs/www
+chown -R bbs:bbs /home/bbs/www
+
+# newsdir (net_nntp.conf)
+mkdir -p /home/bbs/newsgroups
+chown -R bbs:bbs /home/bbs/newsgroups
+
+# Set up the rootfs for containers
+cd /var/lib/lbbs && /usr/local/src/lbbs/scripts/gen_rootfs.sh && chown -R root:root /var/lib/lbbs/rootfs/
