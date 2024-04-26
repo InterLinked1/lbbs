@@ -2379,12 +2379,14 @@ static int handle_append(struct imap_session *imap, char *s)
 
 	SHIFT_OPTIONALLY_QUOTED_ARG(mailbox, s);
 	STRIP_QUOTES(mailbox);
-	if (imap_translate_dir(imap, mailbox, appenddir, sizeof(appenddir), &destacl)) { /* Destination directory doesn't exist. */
-		imap_reply(imap, "NO [TRYCREATE] No such mailbox");
-		return 0;
-	}
 
-	IMAP_REQUIRE_ACL(destacl, IMAP_ACL_INSERT);
+	if (!imap->client) {
+		if (imap_translate_dir(imap, mailbox, appenddir, sizeof(appenddir), &destacl)) { /* Destination directory doesn't exist. */
+			imap_reply(imap, "NO [TRYCREATE] No such mailbox");
+			return 0;
+		}
+		IMAP_REQUIRE_ACL(destacl, IMAP_ACL_INSERT);
+	}
 
 	/* APPEND will clobber the readline buffer, so save off the tag */
 	safe_strncpy(tag, imap->tag, sizeof(tag));
@@ -2394,7 +2396,7 @@ static int handle_append(struct imap_session *imap, char *s)
 		unsigned long quotaleft;
 		int appendsize, appendfile, appendflags = 0;
 		ssize_t res;
-		char *flags, *sizestr;
+		char *flags = NULL, *sizestr;
 		char *appenddate = NULL;
 		int synchronizing;
 		char appendtmp[260];		/* APPEND tmp name */
@@ -2415,6 +2417,10 @@ static int handle_append(struct imap_session *imap, char *s)
 				return -1;
 			}
 			s = imap->rldata->buf;
+			if (imap->client && !(imap->client->virtcapabilities & IMAP_CAPABILITY_MULTIAPPEND)) {
+				bbs_warning("Client attempting to use MULTIAPPEND but remote server doesn't support it!\n");
+				break;
+			}
 		}
 
 		sizestr = strchr(s, '{');
@@ -2424,6 +2430,7 @@ static int handle_append(struct imap_session *imap, char *s)
 		}
 		*sizestr++ = '\0';
 		synchronizing = strchr(sizestr, '+') ? 0 : 1;
+		appendsize = atoi(sizestr); /* Read this many bytes */
 
 		/* To properly handle the case without flags or date,
 		 * e.g. APPEND "INBOX" {1290}
@@ -2468,61 +2475,108 @@ static int handle_append(struct imap_session *imap, char *s)
 			}
 		}
 
-		quotaleft = mailbox_quota_remaining(imap->mbox); /* Calculate current quota remaining to determine acceptance. */
-		appendsize = atoi(sizestr); /* Read this many bytes */
-		if (appendsize <= 0) {
-			imap_reply(imap, "NO [CLIENTBUG] Invalid message literal size");
-			goto cleanup2;
-		} else if ((unsigned int) appendsize >= max_append_size) {
-			if (!synchronizing) {
-				/* Read and ignore this many bytes, so we don't interpret all those bytes as potential commands afterwards.
-				 * This is to avoid leaving the message in the buffer and trying to parse it all as IMAP commands,
-				 * which would result in spamming the logs, and also present a security risk if any of the lines in the message
-				 * is a potentially valid IMAP command. */
-				bbs_readline_discard_n(imap->node->rfd, imap->rldata, SEC_MS(10), (size_t) (appendsize + 2)); /* Read the bytes + trailing CR LF and throw them away */
-				bbs_debug(5, "Discarded %d bytes\n", appendsize);
-				/* This is obviously wasteful of bandwidth. Client should've supported the APPENDLIMIT extension, though,
-				 * so I'm not sympathetic. Get with the program already, know your limits! */
-				/* The reason for not sending the NO until afterwards is to guarantee the client won't stop sending
-				 * the message before we receive all of it. Even though that would save bandwidth, that would
-				 * confuse our ability to parse the message properly and be certain of the client's state. */
-				imap_reply(imap, "NO [LIMIT] Message too large"); /* [TOOBIG] could also be appropriate */
-				continue; /* Don't disconnect the client, otherwise Thunderbird won't display the [NO] message. For MULTIAPPEND, repeat for all. */
-			} else {
-				imap_reply(imap, "NO [LIMIT] Message too large");
-				goto cleanup;
-			}
-		} else if ((unsigned long) appendsize >= quotaleft) {
-			if (!synchronizing) {
-				bbs_readline_discard_n(imap->node->rfd, imap->rldata, SEC_MS(10), (size_t) (appendsize + 2));
-				bbs_debug(5, "Discarded %d bytes\n", appendsize + 2);
-				imap_reply(imap, "NO [OVERQUOTA] Insufficient quota remaining");
-				continue;
-			} else {
-				imap_reply(imap, "NO [OVERQUOTA] Insufficient quota remaining");
-				goto cleanup;
-			}
-		}
+		if (imap->client) {
+			char remote_cmd[256];
+			int remote_cmd_len;
 
-		appendfile = maildir_mktemp(appenddir, appendtmp, sizeof(appendtmp), appendnew);
-		if (appendfile < 0) {
-			goto cleanup2;
-		}
+			/* APPEND to remote IMAP server */
 
-		if (synchronizing) {
-			_imap_reply(imap, "+ Ready for literal data\r\n"); /* Synchronizing literal response */
-		}
-		res = bbs_readline_getn(imap->node->rfd, appendfile, imap->rldata, 5000, (size_t) appendsize);
-		if (res != appendsize) {
-			bbs_warning("Client wanted to append %d bytes, but sent %lu?\n", appendsize, res);
+			int replacecount = imap_substitute_remote_command(imap->client, mailbox);
+			if (replacecount != 1) {
+				/* Shouldn't happen */
+				imap_reply(imap, "NO Can't append to remote server");
+				return 0;
+			}
+
+			/* Send APPEND to remote server and get response to synchronizing literal, if needed */
+			remote_cmd_len = snprintf(remote_cmd, sizeof(remote_cmd), "%s APPEND \"%s\" %s%s%s%s%s {%d%s}\r\n",
+				tag, mailbox,
+				flags ? "(" : "", S_IF(flags), flags ? ")" : "",
+				!strlen_zero(appenddate) ? " " : "", S_IF(appenddate),
+				appendsize,
+				synchronizing || !(imap->client->virtcapabilities & IMAP_CAPABILITY_LITERAL_PLUS) ? "" : "+");
+			imap_debug(6, "==> %s", remote_cmd); /* Already includes CR LF */
+			if (bbs_write(imap->client->client.wfd, remote_cmd, (size_t) remote_cmd_len) < 0) {
+				return -1;
+			}
+			if (synchronizing || !(imap->client->virtcapabilities & IMAP_CAPABILITY_LITERAL_PLUS)) {
+				res = bbs_readline(imap->client->client.rfd, &imap->client->client.rldata, "\r\n", SEC_MS(1));
+				if (res < 0) {
+					/* No need to clean up, since for remote server,
+					 * we're not appending seqnos/UIDs to a uintlist */
+					return -1;
+				}
+				if (strncmp(imap->client->client.buf, "+", 1)) {
+					bbs_warning("Unexpected response to APPEND: %s\n", imap->client->client.buf);
+					return -1;
+				}
+				if (synchronizing) {
+					_imap_reply(imap, "+ Ready for literal data\r\n"); /* Synchronizing literal response */
+				}
+			}
+
+			/* Ready to receive message from client and proxy it to the remote server */
+			res = bbs_readline_getn(imap->node->rfd, imap->client->client.wfd, imap->rldata, 5000, (size_t) appendsize);
+			if (res != appendsize) {
+				bbs_warning("Client wanted to append %d bytes, but sent %lu?\n", appendsize, res);
+				return -1; /* Disconnect if we failed to receive the upload properly, since we're probably all screwed up now */
+			}
+		} else {
+			quotaleft = mailbox_quota_remaining(imap->mbox); /* Calculate current quota remaining to determine acceptance. */
+			if (appendsize <= 0) {
+				imap_reply(imap, "NO [CLIENTBUG] Invalid message literal size");
+				goto cleanup2;
+			} else if ((unsigned int) appendsize >= max_append_size) {
+				if (!synchronizing) {
+					/* Read and ignore this many bytes, so we don't interpret all those bytes as potential commands afterwards.
+					 * This is to avoid leaving the message in the buffer and trying to parse it all as IMAP commands,
+					 * which would result in spamming the logs, and also present a security risk if any of the lines in the message
+					 * is a potentially valid IMAP command. */
+					bbs_readline_discard_n(imap->node->rfd, imap->rldata, SEC_MS(10), (size_t) (appendsize + 2)); /* Read the bytes + trailing CR LF and throw them away */
+					bbs_debug(5, "Discarded %d bytes\n", appendsize);
+					/* This is obviously wasteful of bandwidth. Client should've supported the APPENDLIMIT extension, though,
+					 * so I'm not sympathetic. Get with the program already, know your limits! */
+					/* The reason for not sending the NO until afterwards is to guarantee the client won't stop sending
+					 * the message before we receive all of it. Even though that would save bandwidth, that would
+					 * confuse our ability to parse the message properly and be certain of the client's state. */
+					imap_reply(imap, "NO [LIMIT] Message too large"); /* [TOOBIG] could also be appropriate */
+					continue; /* Don't disconnect the client, otherwise Thunderbird won't display the [NO] message. For MULTIAPPEND, repeat for all. */
+				} else {
+					imap_reply(imap, "NO [LIMIT] Message too large");
+					goto cleanup;
+				}
+			} else if ((unsigned long) appendsize >= quotaleft) {
+				if (!synchronizing) {
+					bbs_readline_discard_n(imap->node->rfd, imap->rldata, SEC_MS(10), (size_t) (appendsize + 2));
+					bbs_debug(5, "Discarded %d bytes\n", appendsize + 2);
+					imap_reply(imap, "NO [OVERQUOTA] Insufficient quota remaining");
+					continue;
+				} else {
+					imap_reply(imap, "NO [OVERQUOTA] Insufficient quota remaining");
+					goto cleanup;
+				}
+			}
+
+			appendfile = maildir_mktemp(appenddir, appendtmp, sizeof(appendtmp), appendnew);
+			if (appendfile < 0) {
+				goto cleanup2;
+			}
+
+			if (synchronizing) {
+				_imap_reply(imap, "+ Ready for literal data\r\n"); /* Synchronizing literal response */
+			}
+			res = bbs_readline_getn(imap->node->rfd, appendfile, imap->rldata, 5000, (size_t) appendsize);
+			if (res != appendsize) {
+				bbs_warning("Client wanted to append %d bytes, but sent %lu?\n", appendsize, res);
+				close(appendfile);
+				unlink(appendnew);
+				goto cleanup2; /* Disconnect if we failed to receive the upload properly, since we're probably all screwed up now */
+			}
 			close(appendfile);
-			unlink(appendnew);
-			goto cleanup2; /* Disconnect if we failed to receive the upload properly, since we're probably all screwed up now */
-		}
-		close(appendfile);
-		if (process_append(imap, appenddir, appendtmp, appendnew, appenddate, appendflags, &uidvalidity, &uidnext, &a, &lengths, &allocsizes)) {
-			imap_reply(imap, "NO [SERVERBUG] Append failed");
-			goto cleanup;
+			if (process_append(imap, appenddir, appendtmp, appendnew, appenddate, appendflags, &uidvalidity, &uidnext, &a, &lengths, &allocsizes)) {
+				imap_reply(imap, "NO [SERVERBUG] Append failed");
+				goto cleanup;
+			}
 		}
 
 		/* XXX RFC 3502 says MULTIAPPEND should be atomic, but this is not.
@@ -2531,6 +2585,24 @@ static int handle_append(struct imap_session *imap, char *s)
 		 * Of course, we've already dispatched notifications for those, so we'd also
 		 * need to send expunge events for those at that point... and I feel like
 		 * that isn't the spirit of an "atomic" operation... */
+	}
+
+	if (imap->client) {
+		/* Send empty line to denote end of APPEND/MULTIAPPEND */
+		ssize_t res = bbs_write(imap->client->client.wfd, "\r\n", 2);
+		if (res < 0) {
+			return -1;
+		}
+		/* Relay response from remote, and no need to clean up */
+		res = bbs_readline(imap->client->client.rfd, &imap->client->client.rldata, "\r\n", SEC_MS(5));
+		if (res < 0) {
+			/* No need to clean up, since for remote server,
+			 * we're not appending seqnos/UIDs to a uintlist */
+			bbs_warning("APPEND tagged response not received from remote server?\n");
+			return -1;
+		}
+		_imap_reply(imap, "%s\r\n", imap->client->client.buf);
+		return 0;
 	}
 
 	append_response(imap, imap->acl, a, appends, uidvalidity, uidnext);
@@ -4409,7 +4481,7 @@ static int imap_process(struct imap_session *imap, char *s)
 		}
 	} else if (!strcasecmp(command, "APPEND")) {
 		REQUIRE_ARGS(s);
-		res = handle_append(imap, s);
+		res = handle_append(imap, s); /* Both local and remote */
 	} else if (allow_idle && !strcasecmp(command, "IDLE")) {
 		return handle_idle(imap); /* No need to check for updates right after an IDLE */
 	} else if (!strcasecmp(command, "NOTIFY")) {
