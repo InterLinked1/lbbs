@@ -275,6 +275,10 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host)
 	start = strchr(addr, '<');
 	if (start++ && !strlen_zero(start)) {
 		char *end;
+		if (*start == '<') {
+			/* Two in a row ('<<') is not valid. */
+			return -1;
+		}
 		end = strchr(start, '>');
 		if (!end) {
 			return -1; /* Email address must be enclosed in <> */
@@ -294,7 +298,7 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host)
 	}
 
 	if (name) {
-		if (addr != start) {
+		if (start != addr && start != addr + 1) {
 			*name = addr;
 		} else {
 			*name = NULL;

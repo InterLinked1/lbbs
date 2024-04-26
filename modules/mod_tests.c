@@ -584,6 +584,42 @@ cleanup:
 	return -1;
 }
 
+static int test_email_parsing(void)
+{
+	int res = -1;
+	char buf[84];
+	char *name, *user, *host;
+
+	snprintf(buf, sizeof(buf), "jsmith@example.com");
+	bbs_test_assert_equals(0, bbs_parse_email_address(buf, &name, &user, &host));
+	bbs_test_assert(name == NULL);
+	bbs_test_assert_str_exists_equals(user, "jsmith");
+	bbs_test_assert_str_exists_equals(host, "example.com");
+
+	snprintf(buf, sizeof(buf), "<jsmith@example.com>");
+	bbs_test_assert_equals(0, bbs_parse_email_address(buf, &name, &user, &host));
+	bbs_test_assert(name == NULL);
+	bbs_test_assert_str_exists_equals(user, "jsmith");
+	bbs_test_assert_str_exists_equals(host, "example.com");
+
+	snprintf(buf, sizeof(buf), "John Smith <jsmith@example.com>");
+	bbs_test_assert_equals(0, bbs_parse_email_address(buf, &name, &user, &host));
+	bbs_test_assert_str_exists_equals(name, "John Smith");
+	bbs_test_assert_str_exists_equals(user, "jsmith");
+	bbs_test_assert_str_exists_equals(host, "example.com");
+
+	snprintf(buf, sizeof(buf), "<<jsmith@example.com>>");
+	bbs_test_assert_equals(-1, bbs_parse_email_address(buf, &name, &user, &host));
+
+	snprintf(buf, sizeof(buf), "John Smith <<jsmith@example.com>>");
+	bbs_test_assert_equals(-1, bbs_parse_email_address(buf, &name, &user, &host));
+
+	res = 0;
+
+cleanup:
+	return res;
+}
+
 static int test_url_parsing(void)
 {
 	int res = -1;
@@ -735,6 +771,7 @@ static struct bbs_unit_test tests[] =
 	{ "IPv4 CIDR Range Matching", test_cidr_ipv4 },
 	{ "IPv4 Address Detection", test_ipv4_detection },
 	{ "IPv4 Address Categorization", test_ipv4_categorization },
+	{ "Email Address Parsing", test_email_parsing },
 	{ "URL Parsing", test_url_parsing },
 	{ "URL Decoding", test_url_decoding },
 	{ "Quoted Printable Decode", test_quoted_printable_decode },
