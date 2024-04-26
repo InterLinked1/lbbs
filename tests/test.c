@@ -829,6 +829,7 @@ static int run_test(const char *filename, int multiple)
 			modulefp = fopen(TEST_CONFIG_DIR "/nodes.conf", "w");
 			if (modulefp) {
 				fprintf(modulefp, "[bbs]\r\nhostname=%s\r\n", TEST_HOSTNAME);
+				fprintf(modulefp, "[nodes]\r\naskdimensions=no\r\n"); /* Only needed for test_menus */
 				fclose(modulefp);
 			}
 			modulefp = fopen(TEST_CONFIG_DIR "/mod_auth_static.conf", "w");

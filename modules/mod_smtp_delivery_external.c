@@ -444,17 +444,19 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 
 	tx->prot = "smtp";
 
-	if (smtpclient.caps & SMTP_CAPABILITY_STARTTLS) {
-		if (!secure && bbs_smtp_client_starttls(&smtpclient)) {
-			goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
+	if (!secure) {
+		if (smtpclient.caps & SMTP_CAPABILITY_STARTTLS) {
+			if (bbs_smtp_client_starttls(&smtpclient)) {
+				goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
+			}
+		} else if (require_starttls_out) {
+			bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
+			snprintf(buf, len, "STARTTLS not supported");
+			res = 1;
+			goto cleanup;
+		} else if (!bbs_hostname_is_ipv4(hostname) || bbs_ip_is_public_ipv4(hostname)) { /* Don't emit this warning for non-public IPs */
+			bbs_warning("SMTP server %s does not support STARTTLS. This message will not be transmitted securely!\n", hostname);
 		}
-	} else if (require_starttls_out) {
-		bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
-		snprintf(buf, len, "STARTTLS not supported");
-		res = 1;
-		goto cleanup;
-	} else if (!bbs_hostname_is_ipv4(hostname) || bbs_ip_is_public_ipv4(hostname)) { /* Don't emit this warning for non-public IPs */
-		bbs_warning("SMTP server %s does not support STARTTLS. This message will not be transmitted securely!\n", hostname);
 	}
 
 	if (smtpclient.maxsendsize && (int) (prependlen + writelen) > smtpclient.maxsendsize) {

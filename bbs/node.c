@@ -35,6 +35,7 @@
 #include "include/user.h"
 #include "include/variables.h"
 #include "include/term.h"
+#include "include/ansi.h"
 #include "include/pty.h"
 #include "include/menu.h"
 #include "include/auth.h"
@@ -61,9 +62,13 @@ static RWLIST_HEAD_STATIC(nodes, bbs_node);
 static unsigned int maxnodes;
 static unsigned int minuptimedisplayed = 0;
 static int allow_guest = DEFAULT_ALLOW_GUEST;
-static int guest_ask_info = DEFAULT_GUEST_ASK_INFO;
+static int guest_ask_info = DEFAULT_GUEST_ASK_INFO; /* 0 = don't ask, 1 = ask if not using TDD, 2 = always ask */
 static unsigned int defaultbps = 0;
 static unsigned int idlemins = 0;
+
+static unsigned int default_cols = 80;
+static unsigned int default_rows = 24;
+static int ask_dimensions = 1;
 
 static char bbs_name_buf[32] = "BBS"; /* A simple default so this is never empty. */
 static char bbs_tagline_buf[84] = "";
@@ -73,6 +78,7 @@ static char bbs_exitmsg[484] = "";
 
 static int load_config(void)
 {
+	char tmp[16];
 	struct bbs_config *cfg = bbs_config_load("nodes.conf", 1); /* Use cached version if possible and not stale */
 
 	/* Set some basic defaults, whether there's a config or not */
@@ -103,9 +109,15 @@ static int load_config(void)
 	bbs_config_val_set_str(cfg, "bbs", "exitmsg", bbs_exitmsg, sizeof(bbs_exitmsg));
 	bbs_config_val_set_uint(cfg, "nodes", "maxnodes", &maxnodes);
 	bbs_config_val_set_uint(cfg, "nodes", "defaultbps", &defaultbps);
+	bbs_config_val_set_uint(cfg, "nodes", "defaultrows", &default_rows);
+	bbs_config_val_set_uint(cfg, "nodes", "defaultcols", &default_cols);
+	bbs_config_val_set_true(cfg, "nodes", "askdimensions", &ask_dimensions);
 	bbs_config_val_set_uint(cfg, "nodes", "idlemins", &idlemins);
 	bbs_config_val_set_true(cfg, "guests", "allow", &allow_guest);
 	bbs_config_val_set_true(cfg, "guests", "askinfo", &guest_ask_info);
+	if (!bbs_config_val_set_str(cfg, "guests", "askinfo", tmp, sizeof(tmp)) && !strcasecmp(tmp, "always")) {
+		guest_ask_info = 2;
+	}
 
 	if (!idlemins) {
 		idlemins = INT_MAX; /* If 0, disable */
@@ -288,8 +300,8 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 
 	/* Assume 80x24 terminal by default, for interactive nodes,
 	 * to support dumb terminals over modems that won't tell us their size. */
-	node->cols = 80;
-	node->rows = 24;
+	node->cols = default_cols;
+	node->rows = default_rows;
 
 	/* This prevents this module from being unloaded as long as there are nodes using it.
 	 * For example, since node->protname is constant in this module, if we unload it,
@@ -1328,7 +1340,7 @@ static int authenticate(struct bbs_node *node)
 		} else if (!strcasecmp(username, "Guest")) {
 			if (allow_guest) {
 				bbs_debug(3, "User continuing as guest\n");
-				if (guest_ask_info) {
+				if ((guest_ask_info && !NODE_IS_TDD(node)) || (guest_ask_info == 2)) {
 					int tries = 4;
 					char guestname[64], guestemail[64], guestlocation[64];
 					/* No newlines necessary inbetween reads, since echo is on
@@ -1898,6 +1910,42 @@ static int ask_yn(struct bbs_node *node, const char *question)
 	return -1;
 }
 
+static int ask_dimension(struct bbs_node *node, const char *question)
+{
+	int i;
+	ssize_t res;
+	char buf[16];
+
+	for (i = 0; i < 3; i++) {
+		bbs_node_writef(node, "\n%s? ", question);
+		res = bbs_node_readline(node, SEC_MS(30), buf, sizeof(buf) - 1);
+		if (res < 0) {
+			return -1;
+		} else if (res) {
+			int num;
+			buf[res] = '\0';
+			num = atoi(buf);
+			if (!num) {
+				char buf2[16];
+				int newlen;
+				/* Sometimes we read other characters here */
+				bbs_dump_mem((unsigned char*) buf, (size_t) res);
+				/* XXX For some reason, the flush prior to calling ask_dimension
+				 * doesn't do what's desired, and we end up reading an escape sequence here.
+				 * So, manually strip that. */
+				bbs_ansi_strip(buf, (size_t) res, buf2, sizeof(buf2), &newlen);
+				num = atoi(buf2);
+			}
+			if (num <= 0 || num > 1024) {
+				bbs_debug(3, "Ignoring non-numeric, negative, or invalid response '%s' (%d)\n", buf, num);
+				continue;
+			}
+			return num;
+		}
+	}
+	return -1;
+}
+
 static int init_term_properties_manual(struct bbs_node *node)
 {
 	int res;
@@ -1942,6 +1990,33 @@ static int _bbs_intro(struct bbs_node *node)
 		/* Since this is an ANSI terminal, see what ANSI escape sequences are supported by this terminal. */
 		bbs_debug(2, "Autodetecting ANSI escape sequence support\n");
 		res = init_term_query_ansi_escape_support(node);
+	}
+
+	if (!node->dimensions && ask_dimensions) {
+		/* If the client didn't send us its dimensions automatically,
+		 * prompt the client for dimensions. */
+		int rows, cols;
+
+		/* Eat any responses to previous terminal queries, if they elicited some response */
+		bbs_node_buffer(node);
+		bbs_write(node->amaster, "\n", 1); /* Spoof newline to force buffered read to process */
+		bbs_node_flush_input(node);
+
+		cols = ask_dimension(node, "Terminal number of cols");
+		if (cols <= 0) {
+			return -1;
+		} else if (cols < 16) {
+			/* Unlikely to be a display this small */
+			bbs_node_writef(node, "Terminal too small, goodbye\n");
+			return -1;
+		}
+		rows = ask_dimension(node, "Terminal number of rows");
+		if (rows <= 0) {
+			return -1;
+		}
+		node->rows = (unsigned int) rows;
+		node->cols = (unsigned int) cols;
+		node->dimensions = 1;
 	}
 
 	bbs_node_buffer(node); /* Reset */

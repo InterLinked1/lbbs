@@ -441,7 +441,7 @@ static struct bbs_config *config_parse(const char *name)
 			continue;
 		}
 #ifdef DEBUG_CONFIG_PARSING
-		bbs_debug(8, "New key-value pair in %s: %s=%s\n", section->name, keyval->key, keyval->value);
+		bbs_debug(8, "New key-value pair in %s: %s => %s=%s\n", name, section->name, keyval->key, keyval->value);
 #endif
 		RWLIST_INSERT_TAIL(&section->keyvals, keyval, entry);
 		bbs_assert(RWLIST_FIRST(&section->keyvals) != NULL);

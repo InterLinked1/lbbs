@@ -33,6 +33,7 @@ static int pre(void)
 
 	/* no net_telnet.conf needed, defaults are sufficient */
 	TEST_ADD_CONFIG("menus.conf");
+	TEST_ADD_CONFIG("nodes.conf");
 
 	return 0;
 }
