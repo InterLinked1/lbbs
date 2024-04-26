@@ -2719,7 +2719,13 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 	if (imap->client) { /* Source is remote, destination is either local or another remote */
 		/* RFC 4549 4.2.2.2: Moving a message from a remote mailbox to a local one */
 		struct bbs_tcp_client *tcpclient = &imap->client->client;
-		res = imap_client_send_log(imap->client, "%s %sFETCH %s (INTERNALDATE FLAGS BODY.PEEK[])\r\n", imap->tag, usinguid ? "UID " : "", sequences);
+		/* We don't actually need the UID and don't care what it is;
+		 * however, requesting it makes the parsing logic easier
+		 * since some servers will send the UID to us even if the client doesn't ask for it.
+		 * Therefore, this ensures that we always process the UID as part of the current message,
+		 * to avoid the scenario where the server sends an unsolicited UID after sending everything
+		 * we anticipated, and then needing to have logic to ignore that. */
+		res = imap_client_send_log(imap->client, "%s %sFETCH %s (UID INTERNALDATE FLAGS BODY.PEEK[])\r\n", imap->tag, usinguid ? "UID " : "", sequences);
 		if (res < 0) {
 			goto cleanup;
 		}
@@ -2768,13 +2774,16 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 				goto cleanup;
 			}
 			s++;
-			while (!strlen_zero(s) && items_received < 3) {
+			while (!strlen_zero(s) && items_received < 4) {
 				tmp = strsep(&s, " ");
 				if (!strcasecmp(tmp, "FLAGS")) {
 					char *flagstr = parensep(&s);
 					if (!strlen_zero(flagstr)) {
 						REPLACE(flags, flagstr);
 					}
+					items_received++;
+				} else if (!strcasecmp(tmp, "UID")) {
+					/* Don't care, ignore and discard */
 					items_received++;
 				} else if (!strcasecmp(tmp, "INTERNALDATE")) {
 					char *datestr = quotesep(&s);
@@ -2839,7 +2848,7 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 							break;
 						}
 					}
-					/* Actual copy the message from source to dest */
+					/* Actually copy the message from source to dest */
 					res = bbs_readline_getn(tcpclient->rfd, destfd, &tcpclient->rldata, SEC_MS(10), (size_t) size);
 					if (res != size) {
 						bbs_warning("Wanted to copy message of size %lu, but only got %lu bytes?\n", size, res);
