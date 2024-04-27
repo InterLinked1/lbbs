@@ -189,6 +189,10 @@ static void *zlib_thread(void *varg)
 			}
 			pfds[1].revents = 0;
 		}
+		if (pfds[0].revents || pfds[1].revents) {
+			bbs_debug(3, "poll returned %s\n", poll_revent_name(pfds[0].revents ? pfds[0].revents : pfds[1].revents));
+			break;
+		}
 	}
 	bbs_debug(4, "zlib thread exiting\n");
 	PIPE_CLOSE(z->wpfd);
@@ -298,7 +302,7 @@ static void cleanup(struct bbs_io_transformation *tran)
 	deflateEnd(z->compressor);
 	inflateEnd(z->decompressor);
 	z->done = 1;
-	pthread_kill(z->thread, SIGUSR1); /* Signal zlib_thread (shutdown(z->wpfd[1], SHUT_RDWR) does not work*/
+	pthread_kill(z->thread, SIGUSR1); /* Signal zlib_thread (shutdown(z->wpfd[1], SHUT_RDWR) does not work */
 	PIPE_CLOSE(z->rpfd);
 	PIPE_CLOSE(z->wpfd);
 	bbs_pthread_join(z->thread, NULL);

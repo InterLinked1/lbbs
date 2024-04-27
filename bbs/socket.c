@@ -1805,7 +1805,7 @@ ssize_t bbs_poll_read(int fd, int ms, char *buf, size_t len)
 {
 	ssize_t res = bbs_poll(fd, ms);
 	if (res <= 0) {
-		return res - 1;
+		return res;
 	}
 	res = read(fd, buf, len);
 	if (res <= 0) {

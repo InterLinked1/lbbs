@@ -447,6 +447,7 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 	if (!secure) {
 		if (smtpclient.caps & SMTP_CAPABILITY_STARTTLS) {
 			if (bbs_smtp_client_starttls(&smtpclient)) {
+				res = -1;
 				goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
 			}
 		} else if (require_starttls_out) {

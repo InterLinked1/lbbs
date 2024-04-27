@@ -601,7 +601,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		smtp_reply0_nostatus(smtp, 250, "SIZE %u", max_message_size); /* RFC 1870 */
 		smtp_reply0_nostatus(smtp, 250, "8BITMIME"); /* RFC 6152 */
 		smtp_reply0_nostatus(smtp, 250, "ETRN"); /* RFC 1985 */
-		if (!smtp->node->secure && ssl_available()) {
+		if (!smtp->node->secure && ssl_available() && !exempt_from_starttls(smtp)) {
 			smtp_reply0_nostatus(smtp, 250, "STARTTLS");
 		}
 		if (bbs_user_is_registered(smtp->node->user)) {

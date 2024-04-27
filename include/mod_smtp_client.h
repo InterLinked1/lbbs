@@ -20,7 +20,7 @@
 
 #define SMTP_EXPECT(smtpclient, ms, str) \
 	res = bbs_tcp_client_expect(&(smtpclient)->client, "\r\n", 1, ms, str); \
-	if (res) { bbs_warning("Expected '%s', got: %s\n", str, (smtpclient)->client.rldata.buf); goto cleanup; } else { bbs_debug(9, "Found '%s': %s\n", str, (smtpclient)->client.rldata.buf); }
+	if (res) { bbs_warning("Expected '%s', returned %d, got: %s\n", str, res, (smtpclient)->client.rldata.buf); goto cleanup; } else { bbs_debug(9, "Found '%s': %s\n", str, (smtpclient)->client.rldata.buf); }
 
 #define bbs_smtp_client_send(smtpclient, fmt, ...) bbs_tcp_client_send(&(smtpclient)->client, fmt, ## __VA_ARGS__); bbs_debug(3, " => " fmt, ## __VA_ARGS__);
 

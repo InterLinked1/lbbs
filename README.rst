@@ -268,7 +268,7 @@ Most common terminal emulators should work fine. The emulator's terminal type is
 Some emulators are particularly good. Of all the well-known ones, these three terminal emulators are particularly recommended for BBSing on Windows:
 
 * **SyncTERM** - Works well, looks nice. You **must** use the `newer 1.2 version <https://github.com/bbs-io/syncterm-windows/releases/tag/dev>`_. The more commonly downloaded 1.1 version has major bugs.
-* **qodem** - Initial configuration slightly unintuitive, but otherwise works very well, with excellent support for non-standard display sizes.
+* **qodem** - Initial configuration slightly unintuitive, but otherwise works very well, with excellent support for non-standard display sizes. Set :code:`doorway_mode_on_connect = mixed` in :code:`%userprofile%\Documents\qodem\prefs\qodemrc.txt`.
 * **PuTTY** (and forks, like KiTTY) - Works well, no known issues. Not "retro" at all, but does the job fine.
 
 Most other terminal emulators tested tend to have various setup, compatibility, or runtime issues. In particular:
