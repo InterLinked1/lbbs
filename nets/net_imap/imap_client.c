@@ -886,7 +886,7 @@ static struct imap_client *__load_virtual_mailbox(struct imap_session *imap, con
 			 * Mind you, this is a shiny, brand new socket that we just created and successfully read from and wrote to!
 			 * This is pretty obvious code smell, but valgrind doesn't pick anything up,
 			 * and in theory we can do an fclose immediately too, so this works fine,
-			 * I'm not just not satisfied that I can't explain why we need to do this here.
+			 * I'm just not satisfied that I can't explain why we need to do this here.
 			 */
 			fclose(fp);
 
