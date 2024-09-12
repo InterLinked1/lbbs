@@ -12,7 +12,7 @@ INC = -I..
 all: $(TEST_EXE) $(MOD_SO)
 
 %.o : %.c
-	@echo "== Compiling $@"
+	@echo "  [CC] $< -> $@"
 	$(CC) $(CFLAGS) -Wno-unused-result -fPIC -DTEST_MODULE=\"$(basename $^)\" -DTEST_MODULE_SELF_SYM=__internal_$(basename $^)_self $(INC) -c $^
 
 readline.o : ../bbs/readline.c
@@ -20,14 +20,14 @@ readline.o : ../bbs/readline.c
 	$(CC) $(CFLAGS) -fPIC -DTEST_MODULE=\"$(basename $^)\" -DTEST_MODULE_SELF_SYM=__internal_$(basename $^)_self $(INC) -c $^
 
 test.o : test.c
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) $(CFLAGS) -Wno-unused-result -DTEST_IN_CORE -DTEST_DIR=$(CURDIR) $(INC) -c $^
 
 $(TEST_EXE) : test.o readline.o
 	$(CC) $(CFLAGS) -Wl,--export-dynamic -o $(TEST_EXE) *.o -ldl -lpthread
 
 %.so : %.o
-	@echo "== Linking $@"
+	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^
 
 .PHONY: all

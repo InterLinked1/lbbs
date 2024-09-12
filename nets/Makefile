@@ -30,6 +30,9 @@ $(DEPENDS):
 IMAP_SRC = $(wildcard net_imap/*.c)
 IMAP_OBJ = $(patsubst %.c,%.o,$(IMAP_SRC))
 
+# XXX if nets/net_imap/imap.h is modified, only net_imap.c is automatically recompiled,
+# not any nets/net_imap/*.c source files that include it
+
 # Subdirectory with components for net_imap
 net_imap/%.o: $(IMAP_SRC)
 	@+$(SUBMAKE) --no-builtin-rules -C net_imap all

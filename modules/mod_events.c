@@ -176,7 +176,7 @@ static void process_bad_ip(struct in_addr *addr, const char *straddr, const char
 				ip->quickhits++;
 			}
 		}
-		bbs_debug(2, "IP address %s blacklist score: %d/%d/%d/%d (last offense: %" TIME_T_FMT "s/%luus ago\n", straddr, ip->authfails, ip->authhits, ip->quickfails, ip->quickhits, now - ip->epoch, diff);
+		bbs_debug(2, "IP address %s blacklist score: %d/%d/%d/%d (last offense: %" TIME_T_FMT "s/%luus ago)\n", straddr, ip->authfails, ip->authhits, ip->quickfails, ip->quickhits, now - ip->epoch, diff);
 	} else {
 		bbs_debug(2, "IP address %s blacklist score: %d/%d/%d/%d (first offense)\n", straddr, ip->authfails, ip->authhits, ip->quickfails, ip->quickhits);
 	}
