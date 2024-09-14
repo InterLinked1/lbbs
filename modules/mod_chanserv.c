@@ -323,6 +323,7 @@ static int channel_get_entrymsg(MYSQL_STMT *stmt, const char *channel, char *buf
 	if (!stmt) {
 		connlocal = 1;
 		mysql = sql_connect_db(buf_dbhostname, buf_dbusername, buf_dbpassword, buf_dbname);
+		NULL_RETURN(mysql);
 		stmt = mysql_stmt_init(mysql);
 		if (!stmt) {
 			goto cleanup;
