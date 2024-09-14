@@ -152,6 +152,27 @@ static int header_match(struct smtp_msg_process *mproc, const char *header, cons
 	return found;
 }
 
+static void str_match(const char *matchtype, const char *a, const char *expr, int *restrict match)
+{
+	if (!strcasecmp(matchtype, "EQUALS")) {
+		*match = !strcmp(a, expr);
+	} else if (!strcasecmp(matchtype, "LIKE")) {
+		regex_t regexbuf;
+		int errcode;
+		if ((errcode = regcomp(&regexbuf, expr, REG_EXTENDED | REG_NOSUB))) {
+			char errbuf[256];
+			regerror(errcode, &regexbuf, errbuf, sizeof(errbuf));
+			bbs_warning("Malformed expression %s: %s\n", expr, errbuf);
+		} else {
+			bbs_debug(6, "Evaluating regex: '%s' %s\n", expr, a);
+			*match = regexec(&regexbuf, a, 0, NULL, 0) ? 0 : 1;
+			regfree(&regexbuf);
+		}
+	} else {
+		bbs_warning("Invalid command match type: %s\n", matchtype);
+	}
+}
+
 static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastretval, const char *usermaildir, char *s)
 {
 	char *next;
@@ -185,23 +206,13 @@ static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastre
 		matchtype = strsep(&s, " ");
 		expr = s;
 		REQUIRE_ARG(expr);
-		if (!strcasecmp(matchtype, "EQUALS")) {
-			match = !strcmp(mproc->from, expr);
-		} else if (!strcasecmp(matchtype, "LIKE")) {
-			regex_t regexbuf;
-			int errcode;
-			if ((errcode = regcomp(&regexbuf, expr, REG_EXTENDED | REG_NOSUB))) {
-				char errbuf[256];
-				regerror(errcode, &regexbuf, errbuf, sizeof(errbuf));
-				bbs_warning("Malformed expression %s: %s\n", expr, errbuf);
-			} else {
-				bbs_debug(6, "Evaluating regex: '%s' %s\n", expr, mproc->from);
-				match = regexec(&regexbuf, mproc->from, 0, NULL, 0) ? 0 : 1;
-				regfree(&regexbuf);
-			}
-		} else {
-			bbs_warning("Invalid MAILFROM command match type: %s\n", matchtype);
-		}
+		str_match(matchtype, mproc->from, expr, &match);
+	} else if (!strcasecmp(next, "RECIPIENT")) {
+		const char *expr, *matchtype;
+		matchtype = strsep(&s, " ");
+		expr = s;
+		REQUIRE_ARG(expr);
+		str_match(matchtype, mproc->recipient, expr, &match);
 	} else if (!strcasecmp(next, "HEADER")) {
 		int found;
 		const char *expr, *matchtype, *header;

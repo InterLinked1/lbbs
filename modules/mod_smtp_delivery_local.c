@@ -212,6 +212,7 @@ static int do_local_delivery(struct smtp_session *smtp, struct smtp_response *re
 	struct mailbox *mbox;
 	struct smtp_msg_process mproc;
 	struct smtp_response tmpresp;
+	char recip_buf[256];
 
 	UNUSED(from);
 	UNUSED(fromlocal);
@@ -240,10 +241,17 @@ static int do_local_delivery(struct smtp_session *smtp, struct smtp_response *re
 		return -1;
 	}
 
+	/* recipient includes <>,
+	 * but the mail filtering engines don't want that,
+	 * and just want to consume the address itself.
+	 * XXX Can be revisited if the use of variables with and without <> is ever made consistent! */
+	safe_strncpy(recip_buf, recipient, sizeof(recip_buf));
+	bbs_strterm(recip_buf, '>');
+
 	/* SMTP callbacks for incoming messages */
 	smtp_mproc_init(smtp, &mproc);
 	mproc.size = (int) datalen;
-	mproc.recipient = recipient;
+	mproc.recipient = recip_buf + 1; /* Without <> */
 	mproc.direction = SMTP_MSG_DIRECTION_IN;
 	mproc.mbox = mbox;
 	mproc.userid = 0;

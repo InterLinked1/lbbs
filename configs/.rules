@@ -38,7 +38,8 @@
 # Note: Some conditions (e.g. RETVAL, SIZE) accept logical operators (>,>=,==,<,<=). The != operator is NOT supported; instead, use NOT before the condition in combination with ==.
 
 # DIRECTION <IN|OUT> - direction of message. IN=incoming message for a local recipient, OUT=message sent by a local user for delivery (either locally or externally)
-# MAILFROM <EQUALS|LIKE> <arg> - envelope MAIL FROM
+# MAILFROM <EQUALS|LIKE> <arg> - envelope MAIL FROM (envelope sender)
+# RECIPIENT <EQUALS|LIKE> <arg> - envelope RCPT TO (envelope recipient)
 # HEADER <header name> <EQUALS|LIKE|EXISTS> <arg> - header in the message. Since certain headers may be duplicated (To:, Cc:, etc.), this is a match on ANY of these headers.
 # FILE <file> <EXISTS> - whether a named file exists in the user's maildir. May be used for both incoming and outgoing messages.
 # RETVAL (>,>=,==,<,<=) <value> - check return value of last command
