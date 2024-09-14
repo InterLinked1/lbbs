@@ -104,6 +104,8 @@ Running :code:`make modconfig` is what actually makes changes to the build envir
 
 If you are setting up a Linux server from scratch, you may also want to refer to :code:`scripts/server_setup.sh` for a more complete script to set up your BBS server.
 
+Afterwards, you may optionally choose to use :code:`scripts/setup_wizard.sh`, a simple utility to do some basic configuration initialization for you. However, this tool is not comprehensive.
+
 To start the BBS with the sysop console in the foreground, you can then run :code:`lbbs -c`. To daemonize it, just run :code:`lbbs`.
 
 At the console, press :code:`?` or :code:`h` for a list of available commands. You can also run :code:`lbbs -?` or :code:`lbbs -h` for a list of startup options.
