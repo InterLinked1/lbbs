@@ -100,9 +100,12 @@ struct telnet_settings {
 static int telnet_read_command(int fd, unsigned char *buf, size_t len)
 {
 	ssize_t res = bbs_poll(fd, 150);
-	if (res <= 0) {
+	if (res < 0) {
 		bbs_debug(4, "poll returned %ld: %s\n", res, strerror(errno));
 		return (int) res;
+	} else if (!res) {
+		bbs_debug(4, "poll returned 0\n");
+		return 0;
 	}
 	res = read(fd, buf, len - 1);
 	/* Process the command */
