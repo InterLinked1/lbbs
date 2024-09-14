@@ -268,7 +268,13 @@ static void relay_free(struct smtp_relay_host *h)
 	free(h);
 }
 
-int smtp_relay_authorized(const char *srcip, const char *hostname)
+/*!
+ * \brief Whether this client is an authorized relay
+ * \param srcip Source IP of connection
+ * \param hostname Hostname for authorization check, or NULL for any hostname(s)
+ * \retval 1 if authorized for any/specified hostname, 0 if not
+ */
+static int __smtp_relay_authorized(const char *srcip, const char *hostname)
 {
 	struct smtp_relay_host *h;
 
@@ -276,7 +282,7 @@ int smtp_relay_authorized(const char *srcip, const char *hostname)
 	RWLIST_TRAVERSE(&authorized_relays, h, entry) {
 		if (bbs_ip_match_ipv4(srcip, h->source)) {
 			/* Just needs to be allowed by one matching entry */
-			if (stringlist_contains(&h->domains, hostname)) {
+			if (!hostname || stringlist_contains(&h->domains, hostname)) {
 				RWLIST_UNLOCK(&authorized_relays);
 				return 1;
 			}
@@ -284,6 +290,17 @@ int smtp_relay_authorized(const char *srcip, const char *hostname)
 	}
 	RWLIST_UNLOCK(&authorized_relays);
 	return 0;
+}
+
+static int smtp_relay_authorized_any(const char *srcip)
+{
+	return __smtp_relay_authorized(srcip, NULL);
+}
+
+int smtp_relay_authorized(const char *srcip, const char *hostname)
+{
+	bbs_assert_exists(hostname);
+	return __smtp_relay_authorized(srcip, hostname);
 }
 
 /*
@@ -350,6 +367,17 @@ static int smtp_tarpit(struct smtp_session *smtp, int code, const char *message)
 		/* Do not do this with <= 4 or we'll slow down the test suite when it's testing bad behavior (and get test failures) */
 		if (smtp->failures <= 2 || bbs_is_loopback_ipv4(smtp->node->ip)) {
 			return 0;
+		}
+		/* Exempt authorized relays, since there is a lot of broken and non-compliant SMTP code out there,
+		 * and tarpitting will almost certainly break them. */
+		if (smtp->gothelo) {
+			if (smtp_relay_authorized(smtp->node->ip, smtp->helohost)) {
+				return 0;
+			}
+		} else {
+			if (smtp_relay_authorized_any(smtp->node->ip)) {
+				return 0;
+			}
 		}
 	}
 
@@ -423,8 +451,15 @@ static int handle_connect(struct smtp_session *smtp)
 		 * Clients MUST wait until the server banner finishes before sending anything.
 		 * Additionally, the multiline response may possibly confuse spammers, but shouldn't
 		 * confuse any compliant SMTP client.
+		 *
+		 * Unfortunately, there is a lot of broken SMTP client code out there,
+		 * and this can break some "trusted" enterprise software with garbage SMTP implementations
+		 * (e.g. HP Management Agents - Event Notifier), so exempt any clients that are authorized
+		 * to relay outgoing messages for any domains from getting thrown this curveball for compatibility.
 		 */
-		smtp_reply0_nostatus(smtp, 220, "%s ESMTP Service Ready", bbs_hostname());
+		if (!smtp_relay_authorized_any(smtp->node->ip)) {
+			smtp_reply0_nostatus(smtp, 220, "%s ESMTP Service Ready", bbs_hostname());
+		}
 
 		/*! \todo This would be a good place to check blacklist IPs (currently we only allow blacklisting hostnames).
 		 * This would allow us to avoid a DNS request for known bad sender IPs. */
