@@ -395,6 +395,7 @@ static void *ftp_handler(void *varg)
 				if (bbs_node_starttls(node)) {
 					break; /* Just abort */
 				}
+				ftp->node->protname = "FTPES"; /* FTPES is often used to denote FTP with explicit TLS */
 				/* Must reauthorize */
 				if (node->user) {
 					bbs_node_logout(node);
