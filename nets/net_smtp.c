@@ -970,7 +970,7 @@ static int handle_mail(struct smtp_session *smtp, char *s)
 	if (smtp_relay_authorized(smtp->node->ip, tmp)) {
 		bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp->node->ip, tmp);
 		smtp->tflags.relay = 1;
-	} else {
+	} else if (!smtp->msa) {
 		/* Don't require authentication simply because the sending domain is local.
 		 * There may be other servers that are authorized to send mail from such domains.
 		 * If it's not legitimate, the SPF checks should reveal that. */

@@ -1611,7 +1611,9 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 	} else if (get_static_routes(domain)) {
 		bbs_debug(2, "%s has static route(s)\n", domain);
 	} else {
-		bbs_assert(fromlocal); /* Shouldn't have slipped through to this point otherwise */
+		/* fromlocal is usually, but not necessarily always, true here.
+		 * For example, if the local user has a rule to forward certain messages elsewhere,
+		 * then that authorizes an external message to be relayed externally. */
 		if (!accept_relay_out) {
 			smtp_abort(resp, 550, 5.7.0, "Mail relay denied.");
 			return -1;
