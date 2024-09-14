@@ -169,12 +169,12 @@ static int sender_authorized(struct mailing_list *l, struct smtp_session *smtp, 
 		if (stringlist_contains(s, "*")) {
 			bbs_debug(6, "Message authorized via local user membership\n");
 			return 1;
-		} else if (stringlist_contains(s, bbs_username(smtp_node(smtp)->user))) {
+		} else if (stringlist_case_contains(s, bbs_username(smtp_node(smtp)->user))) { /* Usernames are not case-sensitive */
 			bbs_debug(6, "Message authorized via explicit local mapping\n");
 			return 1;
 		}
 	}
-	if (stringlist_contains(s, from)) {
+	if (stringlist_case_contains(s, from)) { /* Not case-sensitive */
 		bbs_debug(6, "Message authorized via explicit generic mapping\n");
 		return 1;
 	}
