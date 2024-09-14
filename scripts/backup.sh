@@ -29,7 +29,11 @@ BBS_LOG_DIR=/var/log/lbbs # not backed up by default, due to large size, but cou
 # $1 = file, $2 = section (currently ignored), $3 = key
 get_config_value() {
 	if [ -f "$BBS_CONFIG_DIR/$1" ]; then
-		val=$( grep -e "$3=" -e "$3 =" $BBS_CONFIG_DIR/$1 | cut -d' ' -f1 | cut -d'=' -f2 | cut -d';' -f1 | tr -d '\n' )
+		# We filter semicolon (comment begin) early in this process,
+		# because we need to handle semicolon at the beginning of the line (in which case we should ignore the line entirely)
+		# as well as commenting out a description for an active setting (in which case we just strip the comment).
+		# This has to be done before the = filter, since if we take what's on the right of that, we could miss the leading semicolon.
+		val=$( grep -e "$3=" -e "$3 =" $BBS_CONFIG_DIR/$1 | cut -d';' -f1 | cut -d'=' -f2 | xargs | tr -d '\n' )
 		printf "%s" "$val"
 	fi
 }
@@ -62,7 +66,7 @@ BBS_NNTP_DIR=$( get_config_value "net_nntp.conf" "general" "newsdir" )
 
 DIRS="$BBS_CONFIG_DIR $BBS_FILES_ROOT $BBS_HOMEDIR_TEMPLATE $BBS_CONTAINER_TEMPLATE $LMDB_DIR $BBS_MAILDIR $BBS_HTTP_ROOT $BBS_GOPHER_ROOT $BBS_NNTP_DIR"
 
-DIRS=$( printf "%s" "$DIRS" | tr -s " " ) # squash multiple whitespace to avoid turning it into multiple newlines below
+DIRS=$( printf "%s" "$DIRS" | tr -s " " | xargs ) # squash multiple whitespace to avoid turning it into multiple newlines below
 DIRS="$DIRS " # end with whitespace for last directory
 
 # Get the "minimum spanning set" of these directories
@@ -115,6 +119,9 @@ eliminate_subdirectories_check() {
 DIRS=$( eliminate_subdirectories_check )
 printf " * Top-level Directories: %s\n" "$DIRS"
 
+# Eliminate trailing space
+DIRS=$( printf "%s" "$DIRS" | xargs )
+
 FILES=""
 
 # Backup databases
@@ -148,13 +155,18 @@ if [ "$ALL_DBS" != "" ]; then
 		# Not all databases may exist on all systems, so detect if a database is present and only then add it to the list
 		printf " ! %s\n" "mysqldump -h localhost --databases $BACKUP_DBS > /tmp/bbsdb.sql" # Print executed command
 		mysqldump -h localhost --databases $BACKUP_DBS > /tmp/bbsdb.sql
-		FILES="$FILES /tmp/bbsdb.sql"
+		if [ "$FILES" != "" ]; then
+			FILES="$FILES /tmp/bbsdb.sql"
+		else
+			FILES="/tmp/bbsdb.sql"
+		fi
 	fi
 fi
 
 # Now, go ahead and actually tarball everything up
 TAR_NAME="lbbs_$(date +"%Y%m%d_%H%M%S").tar.gz"
 printf " ! %s\n" "tar cvzf $TAR_NAME $DIRS $FILES" # Print executed command
-tar cvzf $TAR_NAME $DIRS $FILES > /dev/null # This will contain a lot of files, don't list them all
+# This will contain a lot of files, don't list them all
+tar cvzf $TAR_NAME $DIRS $FILES >/dev/null 2>&1 # suppress "tar: Removing leading `/' from member names"
 printf "Backed up to tarball %s in current directory\n" "$TAR_NAME"
 ls -lh "$TAR_NAME"
