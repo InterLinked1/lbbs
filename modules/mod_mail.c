@@ -1687,7 +1687,7 @@ int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid)
 	return 0;
 }
 
-static int imap_client_capability(struct bbs_tcp_client *client, int *capsptr)
+static int imap_client_parse_capabilities(struct bbs_tcp_client *client, int *capsptr)
 {
 	char *cur, *capstring;
 	int caps = 0;
@@ -1812,7 +1812,7 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 		}
 		if (STARTS_WITH(client->buf, "* CAPABILITY")) {
 			ok_had_caps = 1; /* Don't need to parse again until authenticated */
-			if (imap_client_capability(client, capsptr)) { /* Parse unauthenticated capabilities */
+			if (imap_client_parse_capabilities(client, capsptr)) { /* Parse unauthenticated capabilities */
 				return -1;
 			}
 		}
@@ -1831,7 +1831,7 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 			IMAP_CLIENT_SEND(client, "a0 CAPABILITY");
 			IMAP_CLIENT_EXPECT(client, "* CAPABILITY ");
 		}
-		if (imap_client_capability(client, capsptr)) { /* Parse unauthenticated capabilities */
+		if (imap_client_parse_capabilities(client, capsptr)) { /* Parse unauthenticated capabilities */
 			return -1;
 		}
 		if (!ok_had_caps) {
@@ -1890,7 +1890,7 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 		return -1;
 	}
 	if (STARTS_WITH(client->buf, "* CAPABILITY")) {
-		if (imap_client_capability(client, capsptr)) {
+		if (imap_client_parse_capabilities(client, capsptr)) {
 			return -1;
 		}
 		IMAP_CLIENT_EXPECT(client, "a1 OK");
@@ -1900,7 +1900,8 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 				/* It failed, send an empty response to get the error message */
 				IMAP_CLIENT_SEND(client, "");
 			}
-			IMAP_CLIENT_EXPECT(client, "a1 OK"); /* Won't get it, but at least see what the server had to say */
+			/* Won't get it, but at least see what the server had to say */
+			bbs_tcp_client_expect(client, "\r\n", 1, 2000, "a1 OK"); /* Don't use IMAP_CLIENT_EXPECT, or we'll bypass the warning below when it fails */
 			bbs_warning("Login failed, got '%s'\n", client->buf);
 			return -1;
 		}
@@ -1910,7 +1911,7 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 			IMAP_CLIENT_SEND(client, "a2 CAPABILITY");
 			IMAP_CLIENT_EXPECT(client, "* CAPABILITY ");
 		}
-		if (imap_client_capability(client, capsptr)) { /* Parse authenticated capabilities */
+		if (imap_client_parse_capabilities(client, capsptr)) { /* Parse authenticated capabilities */
 			return -1;
 		}
 		if (!ok_had_caps) {
