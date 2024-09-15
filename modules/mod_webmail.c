@@ -325,12 +325,38 @@ static void parse_status(struct imap_client *client, json_t *folder, char *restr
 	}
 }
 
+/* 45 seconds ought to be enough for even the highest latency response commands,
+ * should certainly be plenty of time for a FETCH 1:* */
+#define COMMAND_READ_LARGE_TIMEOUT 45
+
+/*!
+ * \brief Set the mailstream_low timeout, used to determine how long to wait for another line of the response.
+ * \note By default, this timeout appears to be about 15 seconds, but for some commands (e.g. SIZE/LIST), this can be too short.
+ * \param client
+ * \param timeout Timeout, in seconds
+ * \param[out] If provided, old timeout will be stored here.
+ */
+static void set_command_read_timeout(struct imap_client *client, time_t timeout, time_t *restrict old_timeout)
+{
+	if (old_timeout) {
+		*old_timeout = mailstream_low_get_timeout(mailstream_get_low(client->imap->imap_stream));
+	}
+	/* Use a large timeout for the STATUS command and LIST command (which on the server, may entail a STATUS behind the scenes).
+	 * This is needed in case the remote IMAP server has to deal with a remote mailbox that had messages expunged,
+	 * on a server which doesn't support STATUS=SIZE. In this case, it has to do FETCH 1:* to calculate the size
+	 * of the mailbox, and this could take quite a while.
+	 * In libetpan, this involves setting the mailstream_low timeout, not the mailimap timeout.
+	 * By default, this appears to be about 15 seconds, which can be too small in some cases. */
+	return mailstream_low_set_timeout(mailstream_get_low(client->imap->imap_stream), timeout);
+}
+
 static int client_status_command(struct imap_client *client, struct mailimap *imap, const char *mbox, json_t *folder, uint32_t *messages, char *listresp)
 {
 	int res = 0;
 	struct mailimap_status_att_list *att_list;
 	struct mailimap_mailbox_data_status *status;
 	clistiter *cur;
+	time_t old_timeout;
 
 	if (listresp) {
 		char *tmp;
@@ -371,7 +397,10 @@ static int client_status_command(struct imap_client *client, struct mailimap *im
 		goto cleanup;
 	}
 	client_set_status(client->ws, "Querying status of %s", mbox);
+
+	set_command_read_timeout(client, COMMAND_READ_LARGE_TIMEOUT, &old_timeout);
 	res = mailimap_status(imap, mbox, att_list, &status);
+	set_command_read_timeout(client, old_timeout, NULL);
 
 	if (res != MAILIMAP_NO_ERROR) {
 		bbs_warning("STATUS failed: %s\n", maildriver_strerror(res));
@@ -786,6 +815,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 	int needunselect = 0;
 	char *listresp = NULL;
 	int numother = 0;
+	time_t old_timeout;
 
 	/* There are a few different scenarios here, depending on supported extensions:
 	 * LIST-STATUS     STATUS=SIZE        # commands Approach
@@ -807,6 +837,8 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 	/* XXX First, we should do a LIST "" "" to get the namespace names, e.g. Other Users and Shared Folders,
 	 * rather than just assuming that's what they're called. */
 
+	set_command_read_timeout(client, COMMAND_READ_LARGE_TIMEOUT, &old_timeout);
+
 	if (details && client->has_list_status && client->has_status_size) {
 		struct list_status_cb cb;
 		struct dyn_str dynstr;
@@ -826,13 +858,17 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 	} else {
 		res = mailimap_list(imap, "", "*", &imap_list);
 	}
+	set_command_read_timeout(client, old_timeout, NULL); /* Restore */
+
 	if (res != MAILIMAP_NO_ERROR) {
-		bbs_warning("%s\n", maildriver_strerror(res));
+		/* This can happen if the server hasn't finished sending the entire LIST response by now,
+		 * for example if the server has to do FETCH 1:* on a remote to calculate the mailbox size. */
+		bbs_warning("LIST failed: %s\n", maildriver_strerror(res));
 		free_if(listresp);
 		return -1;
 	}
 	if (!clist_begin(imap_list)) {
-		bbs_warning("List is empty?\n");
+		bbs_warning("LIST response is empty?\n");
 		free_if(listresp);
 		return -1;
 	}
@@ -1040,7 +1076,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 	return 0;
 }
 
-static void list_response(struct ws_session *ws, struct imap_client *client, struct mailimap *imap)
+static int list_response(struct ws_session *ws, struct imap_client *client, struct mailimap *imap)
 {
 	char delim[2];
 	json_t *root, *arr;
@@ -1060,14 +1096,14 @@ static void list_response(struct ws_session *ws, struct imap_client *client, str
 		root = json_object();
 		if (!root) {
 			bbs_error("Failed to create JSON root\n");
-			return;
+			return -1;
 		}
 		arr = json_array();
 		json_object_set_new(root, "response", json_string("LIST"));
 		json_object_set_new(root, "data", arr);
 
 		if (client_list_command(client, imap, arr, delim, 0)) {
-			goto cleanup;
+			return -1;
 		}
 
 		json_object_set_new(root, "delimiter", json_string(delim));
@@ -1081,7 +1117,7 @@ static void list_response(struct ws_session *ws, struct imap_client *client, str
 	root = json_object();
 	if (!root) {
 		bbs_error("Failed to create JSON root\n");
-		return;
+		return -1;
 	}
 	arr = json_array();
 	json_object_set_new(root, "response", json_string("LIST"));
@@ -1092,10 +1128,11 @@ static void list_response(struct ws_session *ws, struct imap_client *client, str
 	}
 	json_object_set_new(root, "delimiter", json_string(delim));
 	json_send(ws, root);
-	return;
+	return 0;
 
 cleanup:
 	json_decref(root);
+	return -1;
 }
 
 static int client_imap_select(struct ws_session *ws, struct imap_client *client, struct mailimap *imap, const char *name)
@@ -3076,17 +3113,21 @@ static int idle_stop(struct ws_session *ws, struct imap_client *client)
 
 static int client_flush_pending_output(struct imap_client *client)
 {
-	const char *line;
-
-	do {
+	for (;;) {
+		const char *line;
 		if ((client->imap->imap_stream && client->imap->imap_stream->read_buffer_len) || bbs_poll(client->imapfd, 50) > 0) {
 			line = mailimap_read_line(client->imap);
 			/* Read and discard */
-			bbs_debug(4, "Flushing output '%s'", line);
+			if (strlen_zero(line)) {
+				bbs_warning("Flushing empty output\n");
+				break;
+			}
+			/* line here will include a newline, so don't quote it */
+			bbs_debug(4, "Flushing output: %s", line);
 		} else {
 			break;
 		}
-	} while (line);
+	}
 	return 0;
 }
 
@@ -3274,8 +3315,13 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 			bbs_debug(3, "Remote IMAP server appears to have disconnected\n");
 			return -1;
 		}
-		bbs_debug(5, "Not currently idling, ignoring...\n");
-		return idle_stop(ws, client) || idle_start(ws, client);
+		bbs_warning("Not currently idling, ignoring unsolicited response and disconnecting\n");
+		/* Do NOT start idling, it's wrong because we weren't idling,
+		 * so no mailbox is selected (and therefore we can't idle),
+		 * and if we try to do so, it will trigger an assertion.
+		 * Just disconnect, either something bad happened or we've lost synchronization
+		 * with the server. */
+		return -1;
 	} else if (strlen_zero(client->mailbox)) {
 		bbs_error("Client mailbox not set?\n");
 		return idle_stop(ws, client) || idle_start(ws, client);
@@ -3448,7 +3494,7 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 				json_send(ws, root2);
 
 				/* Send unsolicited LIST response once authenticated */
-				list_response(ws, client, client->imap);
+				res = list_response(ws, client, client->imap);
 			}
 		} else {
 			bbs_warning("Command unknown: %s\n", command);
@@ -3457,7 +3503,7 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 	}
 
 	if (!strcmp(command, "LIST")) {
-		list_response(ws, client, client->imap); /* Not currently used by the frontend, but sure, allow it to ask for an updated LIST later. */
+		res = list_response(ws, client, client->imap); /* Not currently used by the frontend, but sure, allow it to ask for an updated LIST later. */
 	} else if (!strcmp(command, "SELECT")) {
 		if (client_imap_select(ws, client, client->imap, json_object_string_value(root, "folder"))) {
 			goto cleanup;
