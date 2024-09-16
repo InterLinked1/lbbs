@@ -823,13 +823,16 @@ static struct imap_client *__load_virtual_mailbox(struct imap_session *imap, con
 	size_t pathlen;
 
 	if (imap->client) {
+		const char *virtprefix = imap->client->virtprefix;
 		/* Reuse the same connection if it's the same account. */
-		if (!strncmp(imap->client->virtprefix, path, imap->client->virtprefixlen)) {
+		bbs_assert_exists(path);
+		bbs_assert_exists(virtprefix);
+		if (!strncmp(virtprefix, path, imap->client->virtprefixlen)) {
 			bbs_debug(5, "Reusing existing active connection for %s\n", path);
 			*exists = 1;
 			return imap->client;
 		}
-		/* An optimization here is if the remote server supports the UNAUTHENTICATE capability,
+		/* A potential optimization here is if the remote server supports the UNAUTHENTICATE capability,
 		 * we can reuse the connection instead of establishing a new one
 		 * (if it's the same server (hostname), but different user/account)
 		 * Unfortunately, no major providers support the UNAUTHENTICATE extension,
