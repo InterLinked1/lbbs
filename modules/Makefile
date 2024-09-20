@@ -6,6 +6,7 @@ DEPENDS := $(patsubst %.c,%.d,$(MOD_SRC))
 # the include directory is in the parent
 INC = -I..
 
+NCURSES_FLAGS=$(shell pkg-config --cflags ncurses)
 GMIME_FLAGS=$(shell pkg-config --cflags glib-2.0 gmime-3.0)
 GMIME_LIBS=$(shell pkg-config --libs glib-2.0 gmime-3.0)
 MYSQL_LIBS := $(shell mysql_config --libs)
@@ -26,6 +27,10 @@ $(DEPENDS):
 mod_mimeparse.o : mod_mimeparse.c mod_mimeparse.d
 	@echo "  [CC] $< -> $@"
 	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self $(GMIME_FLAGS) -MMD -MP $(INC) -c $<
+
+mod_ncurses.o : mod_ncurses.c mod_ncurses.d
+	@echo "  [CC] $< -> $@"
+	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self $(NCURSES_FLAGS) -MMD -MP $(INC) -c $<
 
 %.so : %.o
 	@echo "  [LD] $^ -> $@"

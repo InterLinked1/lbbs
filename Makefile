@@ -12,19 +12,41 @@ BBSTOPDIR:=$(subst $(space),\$(space),$(CURDIR))
 
 export BBSTOPDIR		# Top level dir, used in subdirs' Makefiles
 
+GCCVERSION = $(shell gcc --version | grep ^gcc | sed 's/^.* //g')
+GCCVERSIONGTEQ8 := $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 8)
+
 CC		= gcc
-CFLAGS = -Wall -Werror -Wunused -Wextra -Wparentheses -Wconversion -Wdangling-else -Waggregate-return -Wchar-subscripts -Wdouble-promotion -Wmissing-include-dirs -Wuninitialized -Wunknown-pragmas -Wstrict-overflow -Wstringop-truncation -Wmissing-format-attribute -Wnull-dereference -Warray-bounds=1 -Wduplicated-branches -Wduplicated-cond -Wtrampolines -Wfloat-equal -Wdeclaration-after-statement -Wshadow -Wundef -Wunused-macros -Wcast-qual -Wcast-align -Wwrite-strings -Wunused-result -Wjump-misses-init -Wlogical-op -Wstrict-prototypes -Wmissing-prototypes -Wmissing-declarations -Wredundant-decls -Wpacked -Wnested-externs -Winline -Wdisabled-optimization -Wstack-protector -std=gnu99 -pthread -O3 -g -fno-omit-frame-pointer -fstrict-aliasing -fdelete-null-pointer-checks -fwrapv -D_FORTIFY_SOURCE=2
+CFLAGS = -Wall -Werror -Wunused -Wextra -Wparentheses -Wconversion -Wdangling-else -Waggregate-return -Wchar-subscripts -Wdouble-promotion -Wmissing-include-dirs -Wuninitialized -Wunknown-pragmas -Wstrict-overflow -Wmissing-format-attribute -Wnull-dereference -Warray-bounds=1 -Wduplicated-branches -Wduplicated-cond -Wtrampolines -Wfloat-equal -Wdeclaration-after-statement -Wshadow -Wundef -Wunused-macros -Wcast-qual -Wcast-align -Wwrite-strings -Wunused-result -Wjump-misses-init -Wlogical-op -Wstrict-prototypes -Wmissing-prototypes -Wmissing-declarations -Wredundant-decls -Wpacked -Wnested-externs -Winline -Wdisabled-optimization -Wstack-protector -std=gnu99 -pthread -O3 -g -fno-omit-frame-pointer -fstrict-aliasing -fdelete-null-pointer-checks -fwrapv -D_FORTIFY_SOURCE=2
+
+# -Wstringop-truncation only in gcc 8.0 and later
+ifeq "$(GCCVERSIONGTEQ4)" "1"
+	CFLAGS += -Wstringop-truncation
+endif
+
 EXE		= lbbs
 PREFIX	= /usr/local
 BINDIR	= $(PREFIX)/bin
-UNAME_S := $(shell uname -s)
+RM		= rm -f
+LN		= ln
+INSTALL = install
 
 export UNAME_S
 
 LIBS	= -lrt -lm -ldl
 
 # -lcrypto needed for SHA1_Init in hash.c
-LIBS += -lbfd -lcrypt -lcrypto -lcurl -lreadline -luuid -rdynamic
+LIBS += -lcrypt -lcrypto -lcurl -lreadline -luuid -rdynamic
+
+# -lbfd and friends
+# On SUSE, the remaining libraries are needed to link successfully
+# However, on other platforms they are generally not, and -liberty is likely to cause issues
+LIBS += -lbfd
+LIBERTY_CHECK = $(shell gcc -liberty 2>&1 | grep "cannot find" | wc -l )
+ifneq ($(LIBERTY_CHECK),1)
+LIBS += -liberty -lz -lsframe -lopcodes
+endif
+
+UNAME_S := $(shell uname -s)
 
 ifeq ($(UNAME_S),Linux)
 LIBS += -lbsd -lcap
@@ -33,10 +55,6 @@ endif
 ifeq ($(UNAME_S),FreeBSD)
 LIBS += -lexecinfo -lintl
 endif
-
-RM		= rm -f
-LN		= ln
-INSTALL = install
 
 # Uncomment this to see all build commands instead of 'quiet' output
 #NOISY_BUILD=yes
@@ -144,7 +162,7 @@ extinstall:
 	@if [ ! -d /var/lib/lbbs/external ]; then\
 		mkdir /var/lib/lbbs/external;\
 	fi
-	$(SUBMAKE) --no-builtin-rules -C external install
+	@+$(SUBMAKE) --no-builtin-rules -C external install
 	@find /var/lib/lbbs/external -size 0 -delete; \
 	ln -s -f /var/lib/lbbs/external/rsysop /usr/local/sbin/rsysop
 

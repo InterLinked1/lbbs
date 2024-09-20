@@ -7,13 +7,15 @@ set -e
 
 cd /usr/local/src
 if [ ! -d libetpan ]; then
-	git clone https://github.com/dinhvh/libetpan.git
+	git clone --depth 1 --recursive --shallow-submodule https://github.com/dinhvh/libetpan.git
 	cd libetpan
 else
 	cd libetpan
 	git stash
 	git pull
-	make clean
+	# make clean isn't valid if the directory already exists,
+	# but the Makefile hasn't yet been generated
+	make clean || git reset --hard origin/master
 fi
 wget "https://github.com/dinhvh/libetpan/commit/5ea630e6482422ffa2e26b9afe5fb47a9eb673a2.diff"
 wget "https://github.com/dinhvh/libetpan/commit/4226610e3dc19f58345ae7c5146fa8cf249ca97b.patch"

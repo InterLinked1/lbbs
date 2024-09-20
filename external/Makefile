@@ -10,6 +10,7 @@ CC		= gcc
 CFLAGS = -Wall -Werror -Wunused -Wextra -Wmaybe-uninitialized -Wstrict-prototypes -Wmissing-prototypes -Wdeclaration-after-statement -Wmissing-declarations -Wmissing-format-attribute -Wnull-dereference -Wformat=2 -Wshadow -Wsizeof-pointer-memaccess -std=gnu99 -pthread -O3 -g -Wstack-protector -Wno-unused-result -fno-omit-frame-pointer -fwrapv -D_FORTIFY_SOURCE=2
 RM		= rm -f
 INSTALL = install
+NCURSES_FLAGS=$(shell pkg-config --cflags ncurses)
 
 all: $(EXES)
 
@@ -24,6 +25,10 @@ filemgr: filemgr.o
 %.o : %.c
 	@echo "  [CC] $< -> $@"
 	$(CC) $(CFLAGS) -c $^
+
+filemgr.o : filemgr.c
+	@echo "  [CC] $< -> $@"
+	$(CC) $(CFLAGS) $(NCURSES_FLAGS) -c $^
 
 install : all
 	@for i in $(EXES); do \

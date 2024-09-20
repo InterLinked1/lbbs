@@ -279,13 +279,14 @@ static int load_header_file_locations(void)
 {
 	FILE *pfp;
 	char buf[512];
+	int paths_detected = 0;
 	char *pos = sys_include_paths;
 	size_t len = sizeof(sys_include_paths);
 
 	/* This is the same every time we call this function,
 	 * so it's wasteful to do it for EVERY header file, but,
 	 * performance is not of the essence in this program. */
-	pfp = popen("gcc -v -E a.c 2>&1", "r"); /* All output is on stderr by default */
+	pfp = popen("echo | `gcc -print-prog-name=cc1` -v 2>&1", "r"); /* All output is on stderr by default */
 	if (!pfp) {
 		modman_error("popen(%s) failed: %s\n", "gcc -v -E a.c", strerror(errno));
 		return -1;
@@ -298,12 +299,17 @@ static int load_header_file_locations(void)
 		if (strchr(buf + 1, ' ')) {
 			continue;
 		}
+		paths_detected++;
 		modman_log(7, "  System include path: %s", buf + 1); /* Already ends in LF */
 		bytes = snprintf(pos, len, "%s", buf + 1);
 		pos += bytes;
 		len -= bytes;
 	}
 	pclose(pfp);
+	if (!paths_detected) {
+		modman_error("Failed to determine what the system include paths are\n");
+		return -1;
+	}
 	return 0;
 }
 
