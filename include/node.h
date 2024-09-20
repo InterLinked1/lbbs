@@ -138,6 +138,13 @@ unsigned int bbs_node_count(void);
 unsigned int bbs_node_mod_count(void *mod);
 
 /*!
+ * \brief Get number of allocated nodes connected from a certain IP address
+ * \param sinaddr
+ * \retval Number of current nodes connected from specified IP address
+ */
+unsigned int bbs_node_ip_count(struct sockaddr_in *sinaddr);
+
+/*!
  * \brief Get the highest-numbered node's number
  * \retval 0 if no nodes, positive node number otherwise
  */
@@ -159,6 +166,12 @@ unsigned int bbs_idle_ms(void);
  * \retval non-negative max nodes allowed
  */
 unsigned int bbs_maxnodes(void);
+
+/*!
+ * \brief Get the maximum number of nodes allowed to connect per IP address
+ * \retval non-negative max nodes allowed
+ */
+unsigned int bbs_maxnodes_per_ip(void);
 
 /*! \brief Get configured BBS hostname */
 const char *bbs_hostname(void);

@@ -60,6 +60,7 @@ static RWLIST_HEAD_STATIC(nodes, bbs_node);
 #define DEFAULT_GUEST_ASK_INFO 1
 
 static unsigned int maxnodes;
+static unsigned int maxnodes_perip;
 static unsigned int minuptimedisplayed = 0;
 static int allow_guest = DEFAULT_ALLOW_GUEST;
 static int guest_ask_info = DEFAULT_GUEST_ASK_INFO; /* 0 = don't ask, 1 = ask if not using TDD, 2 = always ask */
@@ -83,6 +84,7 @@ static int load_config(void)
 
 	/* Set some basic defaults, whether there's a config or not */
 	maxnodes = DEFAULT_MAX_NODES;
+	maxnodes_perip = DEFAULT_MAX_NODES / 2;
 	allow_guest = DEFAULT_ALLOW_GUEST;
 	guest_ask_info = DEFAULT_GUEST_ASK_INFO;
 	defaultbps = 0;
@@ -108,6 +110,7 @@ static int load_config(void)
 	bbs_config_val_set_uint(cfg, "bbs", "minuptimedisplayed", &minuptimedisplayed);
 	bbs_config_val_set_str(cfg, "bbs", "exitmsg", bbs_exitmsg, sizeof(bbs_exitmsg));
 	bbs_config_val_set_uint(cfg, "nodes", "maxnodes", &maxnodes);
+	bbs_config_val_set_uint(cfg, "nodes", "maxnodesperip", &maxnodes_perip);
 	bbs_config_val_set_uint(cfg, "nodes", "defaultbps", &defaultbps);
 	bbs_config_val_set_uint(cfg, "nodes", "defaultrows", &default_rows);
 	bbs_config_val_set_uint(cfg, "nodes", "defaultcols", &default_cols);
@@ -171,6 +174,31 @@ unsigned int bbs_node_mod_count(void *mod)
 	return count;
 }
 
+unsigned int bbs_node_ip_count(struct sockaddr_in *sinaddr)
+{
+	struct bbs_node *node;
+	unsigned int count = 0;
+
+	/* XXX This function is implemented this way so that if/when we store
+	 * the sockaddr_in for IP addresses rather than char*,
+	 * we don't have to make any API changes. For the moment,
+	 * yes, this is less efficient since we do more conversions. */
+	char addrstr[64];
+	if (bbs_get_remote_ip(sinaddr, addrstr, sizeof(addrstr))) {
+		return 0;
+	}
+
+	RWLIST_RDLOCK(&nodes);
+	RWLIST_TRAVERSE(&nodes, node, entry) {
+		if (!strcmp(addrstr, node->ip)) {
+			count++;
+		}
+	}
+	RWLIST_UNLOCK(&nodes);
+
+	return count;
+}
+
 unsigned int bbs_max_nodenum(void)
 {
 	struct bbs_node *node;
@@ -198,6 +226,11 @@ unsigned int bbs_idle_ms(void)
 unsigned int bbs_maxnodes(void)
 {
 	return maxnodes;
+}
+
+unsigned int bbs_maxnodes_per_ip(void)
+{
+	return maxnodes_perip;
 }
 
 const char *bbs_hostname(void)
@@ -585,9 +618,11 @@ static void node_shutdown(struct bbs_node *node, int unique)
 			node->spy = 0;
 			bbs_node_pty_unlock(node);
 		}
+	} else {
+		bbs_debug(8, "Node %u has no PTY thread to clean up\n", node->id);
 	}
 
-	if (node->fd) {
+	if (node->fd != -1) {
 		bbs_socket_close(&node->fd);
 	}
 

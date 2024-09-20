@@ -765,6 +765,14 @@ static void *tcp_multilistener(void *unused)
 			}
 
 			bbs_soft_assert(l->name != NULL);
+
+			/* Throttle connections from this IP address if needed */
+			if (bbs_node_ip_count(&sinaddr) >= bbs_maxnodes_per_ip()) {
+				bbs_notice("Rejecting new %s connection from %s (exceeds maximum connections from this IP address)\n", l->name, new_ip);
+				close(sfd);
+				continue;
+			}
+
 			bbs_debug(1, "Accepting new %s connection from %s\n", l->name, new_ip);
 
 			/* Note that l->name is const memory allocated as part of l.
