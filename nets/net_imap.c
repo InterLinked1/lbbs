@@ -2806,6 +2806,23 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 		for (;;) {
 			char appendtmp[260], appendnew[260];
 			int items_received = 0;
+			int num_items_received = 0;
+#define REMOTE_FETCH_FLAGS (1 << 0)
+#define REMOTE_FETCH_UID (1 << 1)
+#define REMOTE_FETCH_INTERNALDATE (1 << 2)
+#define REMOTE_FETCH_BODY (1 << 3)
+#define REMOTE_FETCH_ALL_REQUIRED (REMOTE_FETCH_FLAGS | REMOTE_FETCH_UID | REMOTE_FETCH_INTERNALDATE | REMOTE_FETCH_BODY)
+#define PROCESS_REMOTE_FETCH_PART(flag, name) \
+	if (items_received & flag) { \
+		bbs_warning("Already received %s in remote FETCH response?\n", name); \
+	} \
+	items_received |= flag; \
+	num_items_received++;
+#define CHECK_RECEIVED_REMOTE_FETCH_PART(flag, name) \
+	if (!items_received & REMOTE_FETCH_FLAGS) { \
+		bbs_warning("Haven't yet received %s in remote FETCH response\n", name); \
+	}
+
 			int destfd = -1;
 			char *tmp, *s, *buf = tcpclient->rldata.buf;
 			res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", SEC_MS(5));
@@ -2846,17 +2863,17 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 				goto cleanup;
 			}
 			s++;
-			while (!strlen_zero(s) && items_received < 4) {
+			while (!strlen_zero(s) && num_items_received < 4) {
 				tmp = strsep(&s, " ");
 				if (!strcasecmp(tmp, "FLAGS")) {
 					char *flagstr = parensep(&s);
 					if (!strlen_zero(flagstr)) {
 						REPLACE(flags, flagstr);
 					}
-					items_received++;
+					PROCESS_REMOTE_FETCH_PART(REMOTE_FETCH_FLAGS, "FLAGS");
 				} else if (!strcasecmp(tmp, "UID")) {
 					/* Don't care, ignore and discard */
-					items_received++;
+					PROCESS_REMOTE_FETCH_PART(REMOTE_FETCH_UID, "UID");
 				} else if (!strcasecmp(tmp, "INTERNALDATE")) {
 					char *datestr = quotesep(&s);
 					if (!strlen_zero(datestr)) {
@@ -2867,7 +2884,7 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 						}
 						REPLACE(idate, datestr);
 					}
-					items_received++;
+					PROCESS_REMOTE_FETCH_PART(REMOTE_FETCH_INTERNALDATE, "INTERNALDATE");
 				} else if (STARTS_WITH(tmp, "BODY")) {
 					long size;
 					char *literalstr = strsep(&s, " ");
@@ -2885,15 +2902,19 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 						bbs_warning("Invalid size: %ld\n", size);
 						break;
 					}
-					items_received++;
+					PROCESS_REMOTE_FETCH_PART(REMOTE_FETCH_BODY, "BODY");
 					/* Once we get to this point, we need to be ready to copy the source message to the destination,
 					 * even if we haven't gotten all of the other items yet (but hopefully we have!) */
 					if (destclient) {
 						destfd = destclient->client.wfd;
 						/* Preamble for APPEND */
-						/* XXX Hopefully we have received all 3 items in this case, since we need it before the append date */
-						if (items_received != 3) {
-							bbs_warning("Not all metadata will be copied: only received %d/3 FETCH items so far\n", items_received);
+						/* Hopefully we have received all 4 items in this case, since we need it before the append date */
+						if (num_items_received != 4 || !(items_received & REMOTE_FETCH_ALL_REQUIRED)) {
+							bbs_warning("Not all metadata will be copied: only received %d/4 FETCH items so far\n", items_received);
+							CHECK_RECEIVED_REMOTE_FETCH_PART(REMOTE_FETCH_FLAGS, "FLAGS");
+							CHECK_RECEIVED_REMOTE_FETCH_PART(REMOTE_FETCH_UID, "UID");
+							CHECK_RECEIVED_REMOTE_FETCH_PART(REMOTE_FETCH_INTERNALDATE, "INTERNALDATE");
+							CHECK_RECEIVED_REMOTE_FETCH_PART(REMOTE_FETCH_BODY, "BODY"); /* We're currently processing this one */
 						}
 						if (multiappend && appended) {
 							if (idate) {
@@ -2928,8 +2949,12 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 					}
 				}
 			}
-			if (items_received < 3) {
-				bbs_warning("Incomplete download, only got %d/3 items\n", items_received);
+			if (num_items_received < 4) {
+				bbs_warning("Incomplete download, only got %d/4 FETCH items\n", num_items_received);
+				CHECK_RECEIVED_REMOTE_FETCH_PART(REMOTE_FETCH_FLAGS, "FLAGS");
+				CHECK_RECEIVED_REMOTE_FETCH_PART(REMOTE_FETCH_UID, "UID");
+				CHECK_RECEIVED_REMOTE_FETCH_PART(REMOTE_FETCH_INTERNALDATE, "INTERNALDATE");
+				CHECK_RECEIVED_REMOTE_FETCH_PART(REMOTE_FETCH_BODY, "BODY");
 				close_if(destfd);
 				goto cleanup;
 			}

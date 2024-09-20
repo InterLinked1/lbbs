@@ -443,6 +443,11 @@ ssize_t __imap_client_send_log(struct imap_client *client, int log, const char *
 		return -1;
 	}
 
+	if (client->idling) {
+		bbs_warning("Client is currently idling while attempting to write '%.*s'", len, buf);
+		bbs_soft_assert(0); /* Could stop idle now if this were to happen, but that would just mask a bug */
+	}
+
 	if (log) {
 		bbs_debug(3, "%p => %.*s", client, len, buf);
 	}
@@ -486,6 +491,12 @@ int __imap_client_send_wait_response(struct imap_client *client, int fd, int ms,
 #else
 	UNUSED(lineno);
 #endif
+
+	if (client->idling) {
+		bbs_warning("Client is currently idling while attempting to write '%s%s'", tagbuf, buf);
+		bbs_soft_assert(0); /* Could stop idle now if this were to happen, but that would just mask a bug */
+	}
+
 	if (bbs_write(client->client.wfd, tagbuf, (unsigned int) taglen) < 0) {
 		goto cleanup;
 	} else if (bbs_write(client->client.wfd, buf, (unsigned int) len) < 0) {
