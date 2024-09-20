@@ -70,10 +70,10 @@
 #define IDENT_PREFIX_ARGS(user) (user)->nickname, (user)->username, (user)->hostname
 
 /*! \note Since not all users have a node (e.g. builtin services) */
-#define irc_other_thread_writef(node, fmt, ...) bbs_auto_any_fd_writef(node, node->wfd, fmt, ## __VA_ARGS__);
+#define irc_other_thread_writef(node, fmt, ...) bbs_auto_any_fd_writef(node, node ? node->wfd : -1, fmt, ## __VA_ARGS__);
 
 /* There isn't a bbs_auto_any_fd_write */
-#define irc_other_thread_write(node, buf, len) bbs_auto_any_fd_writef(node, node->wfd, "%.*s", (int) len, buf);
+#define irc_other_thread_write(node, buf, len) bbs_auto_any_fd_writef(node, node ? node->wfd : -1, "%.*s", (int) len, buf);
 
 #define send_reply(user, fmt, ...) bbs_debug(3, "%p <= " fmt, user, ## __VA_ARGS__); irc_other_thread_writef(user->node, fmt, ## __VA_ARGS__);
 #define send_numeric(user, numeric, fmt, ...) send_reply(user, "%03d %s :" fmt, numeric, user->nickname, ## __VA_ARGS__)
@@ -836,6 +836,7 @@ static int __channel_broadcast(int lock, struct irc_channel *channel, struct irc
 			skipped++;
 			continue; /* Skip those who don't have at least a certain privilege (e.g. for moderating messages only to ops) */
 		}
+		bbs_assert_exists(member->user);
 		/* Careful here... we want member->user, not user */
 		irc_other_thread_write(member->user->node, buf, (size_t) len);
 		sent++;
@@ -2081,7 +2082,7 @@ static void handle_who(struct irc_user *user, char *s)
 					 * so we should not break early if nicklist callback returns 1;
 					 * we need to check all the relays for matches.
 					 * As long as at least one relay had members, we'll report success. */
-					res += relay->nicklist(user->node, user->node->wfd, 352, user->username, s, NULL);
+					res += relay->nicklist(user->node, user->node ? user->node->wfd : -1, 352, user->username, s, NULL);
 					bbs_module_unref(relay->mod, 6);
 				}
 			}
@@ -2099,7 +2100,7 @@ static void handle_who(struct irc_user *user, char *s)
 					bbs_module_ref(relay->mod, 7);
 					/* Unlike the above case, a specific user can only exist in one relay,
 					 * so as soon as we find a match, we can break. */
-					res = relay->nicklist(user->node, user->node->wfd, 352, user->username, NULL, s);
+					res = relay->nicklist(user->node, user->node ? user->node->wfd : -1, 352, user->username, NULL, s);
 					bbs_module_unref(relay->mod, 7);
 				}
 				if (res) {
@@ -2146,7 +2147,7 @@ static void handle_whois(struct irc_user *user, char *s)
 		RWLIST_TRAVERSE(&relays, relay, entry) {
 			if (relay->nicklist) {
 				bbs_module_ref(relay->mod, 8);
-				res = relay->nicklist(user->node, user->node->wfd, 318, user->username, NULL, s);
+				res = relay->nicklist(user->node, user->node ? user->node->wfd : -1, 318, user->username, NULL, s);
 				bbs_module_unref(relay->mod, 8);
 			}
 			if (res) {
@@ -2650,7 +2651,7 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 		RWLIST_TRAVERSE(&relays, relay, entry) {
 			if (relay->nicklist) {
 				bbs_module_ref(relay->mod, 9);
-				res = relay->nicklist(user->node, user->node->wfd, 353, user->username, channel->name, NULL);
+				res = relay->nicklist(user->node, user->node ? user->node->wfd : -1, 353, user->username, channel->name, NULL);
 				bbs_module_unref(relay->mod, 9);
 			}
 			if (res) {
