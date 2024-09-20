@@ -38,7 +38,7 @@ int bbs_line_editor(struct bbs_node *node, const char *restrict instr, char *res
 	bbs_node_clear_screen(node);
 	bbs_node_writef(node, "%s%s LINE EDITOR - %sENTER 2x to process/abort%s\n", COLOR(COLOR_PRIMARY), BBS_SHORTNAME, COLOR(COLOR_SECONDARY), COLOR_RESET);
 	if (instr) {
-		bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_WHITE), instr, COLOR_RESET);
+		bbs_node_writef(node, "%s%s%s\n", COLOR(TERM_COLOR_WHITE), instr, COLOR_RESET);
 	}
 
 	for (;;) {
@@ -61,7 +61,7 @@ int bbs_line_editor(struct bbs_node *node, const char *restrict instr, char *res
 			len -= res;
 			if (len <= 2) { /* Room for LF and NUL */
 				/* Truncation */
-				bbs_node_writef(node, "%sBuffer is full, aborting%s\n", COLOR(COLOR_RED), COLOR_RESET);
+				bbs_node_writef(node, "%sBuffer is full, aborting%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET);
 				NEG_RETURN(bbs_node_wait_key(node, MIN_MS(2)));
 				return 0;
 			}
@@ -87,7 +87,7 @@ int bbs_line_editor(struct bbs_node *node, const char *restrict instr, char *res
 			len++;
 		} while (nlflag--);
 		bbs_debug(3, "Line editing finished: %s\n", buf);
-		bbs_node_writef(node, "%sProcess? [YNC]%s\n", COLOR(COLOR_RED), COLOR_RESET);
+		bbs_node_writef(node, "%sProcess? [YNC]%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET);
 		bbs_node_unbuffer(node);
 		c = bbs_node_tread(node, MIN_MS(1));
 		if (c <= 0) {
@@ -95,7 +95,7 @@ int bbs_line_editor(struct bbs_node *node, const char *restrict instr, char *res
 		} else if (tolower(c) == 'y') {
 			break;
 		} else if (tolower(c) != 'c') {
-			bbs_node_writef(node, "%sAborted%s\n", COLOR(COLOR_RED), COLOR_RESET);
+			bbs_node_writef(node, "%sAborted%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET);
 			return 1;
 		}
 		ptr = strchr(buf, '\0'); /* Since we called rtrim, find the end of the buffer so far as we're concerned. */

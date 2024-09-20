@@ -54,8 +54,8 @@
 
 static int debug_level = 0;
 
-#define COLOR_GREEN "\x1b[32m"
-#define COLOR_RED "\x1b[31m"
+#define COLOR_SUCCESS "\x1b[32m"
+#define COLOR_FAILURE "\x1b[31m"
 #define COLOR_RESET "\x1b[0m"
 
 #define modman_log(level, fmt, ...) \
@@ -63,8 +63,8 @@ static int debug_level = 0;
 		fprintf(stderr, fmt, ## __VA_ARGS__); \
 	}
 
-#define modman_warning(fmt, ...) fprintf(stderr, " ********** " COLOR_RED "WARNING: " COLOR_RESET fmt, ## __VA_ARGS__)
-#define modman_error(fmt, ...) fprintf(stderr, " ********** " COLOR_RED "ERROR: " COLOR_RESET fmt, ## __VA_ARGS__)
+#define modman_warning(fmt, ...) fprintf(stderr, " ********** " COLOR_FAILURE "WARNING: " COLOR_RESET fmt, ## __VA_ARGS__)
+#define modman_error(fmt, ...) fprintf(stderr, " ********** " COLOR_FAILURE "ERROR: " COLOR_RESET fmt, ## __VA_ARGS__)
 
 #define TERMINATE_AT(buf, c) { \
 	char *__term_at = strchr(buf, c); \
@@ -205,7 +205,7 @@ static int check_lib(const char *modname, const char *libname)
 		return 0;
 	}
 
-	colorfmt = res ? COLOR_RED : COLOR_GREEN;
+	colorfmt = res ? COLOR_FAILURE : COLOR_SUCCESS;
 	modman_log(0, "   == Module '%s' is dependent on library 'lib%s' ==> %s%s%s\n", modname, libname, colorfmt, res == 256 ? "MISSING" : "FOUND", COLOR_RESET);
 	if (res) {
 		return 1; /* Missing dep */
@@ -249,7 +249,7 @@ static int check_libs(const char *dirname, const char *modname, char *restrict b
 					 * instead of pkg-config.
 					 * In this case, we know the lib is not installed, so also count as failure. */
 					if (!*libs) {
-						modman_log(0, "   == Module '%s' is dependent on a library that cannot be resolved ==> %s%s%s\n", modname, COLOR_RED, "UNRESOLVED", COLOR_RESET);
+						modman_log(0, "   == Module '%s' is dependent on a library that cannot be resolved ==> %s%s%s\n", modname, COLOR_FAILURE, "UNRESOLVED", COLOR_RESET);
 						missing_deps++;
 					} else {
 						while ((lib = strsep(&libs, " "))) {
@@ -449,9 +449,9 @@ static int check_header_file(const char *dirname, const char *modname, const cha
 		if (debug_level >= loglevel) {
 			(*metdeps)++;
 		}
-		modman_log(loglevel, "   == Module '%s' includes system header file '%s' => %s%s%s\n", modname, incfile, COLOR_GREEN, "FOUND", COLOR_RESET);
+		modman_log(loglevel, "   == Module '%s' includes system header file '%s' => %s%s%s\n", modname, incfile, COLOR_SUCCESS, "FOUND", COLOR_RESET);
 	} else {
-		modman_log(0, "   == Module '%s' includes system header file '%s' => %s%s%s\n", modname, incfile, COLOR_RED, "MISSING", COLOR_RESET);
+		modman_log(0, "   == Module '%s' includes system header file '%s' => %s%s%s\n", modname, incfile, COLOR_FAILURE, "MISSING", COLOR_RESET);
 	}
 	return exists;
 }
@@ -608,7 +608,7 @@ static int check_module(const char *dirname, const char *modname, FILE *mfp, int
 		}
 		if (!has_deps) {
 			/* Only show this message if we haven't already displayed a log message for this module to the user */
-			modman_log(0, "   == Module '%s' has no unmet dependencies => %s%s%s\n", modname, COLOR_GREEN, "OKAY", COLOR_RESET);
+			modman_log(0, "   == Module '%s' has no unmet dependencies => %s%s%s\n", modname, COLOR_SUCCESS, "OKAY", COLOR_RESET);
 		}
 		return 0;
 	}

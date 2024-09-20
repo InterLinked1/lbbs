@@ -889,7 +889,7 @@ static void print_full_time(struct agent *agent)
 	char str_date[256];
 	time_t now = time(NULL);
 	strftime(str_date, sizeof(str_date), "%Y/%m/%d %I:%M:%S %p", localtime(&now));
-	bbs_node_writef(agent->node, "%s%s", COLOR(COLOR_MAGENTA), str_date);
+	bbs_node_writef(agent->node, "%s%s", COLOR(TERM_COLOR_MAGENTA), str_date);
 }
 
 #define BACKSPACE_BUF "\b\b\b\b\b\b\b\b\b\b\b\b\b\b\b"
@@ -985,7 +985,7 @@ static int agent_exec(struct bbs_node *node, const char *args)
 		unsigned int speed;
 start:
 		bbs_node_clear_screen(node);
-		bbs_node_writef(node, "*** %s%-42s %s%d%s ***\n", COLOR(COLOR_MAGENTA), system_title, COLOR(COLOR_GREEN), agent->id, COLOR_RESET);
+		bbs_node_writef(node, "*** %s%-42s %s%d%s ***\n", COLOR(TERM_COLOR_MAGENTA), system_title, COLOR(TERM_COLOR_GREEN), agent->id, COLOR_RESET);
 		queues_status(agent); /* Display current status of all relevant queues */
 
 		/* On slow connections, it can take several seconds to print the entire queue list,
@@ -1013,7 +1013,7 @@ start:
 				/* Nothing happened. Update the time and repeat. */
 				if (agent->gotwritten) {
 					/* Color was reset, so set it back */
-					bbs_node_writef(node, "%s", COLOR(COLOR_MAGENTA));
+					bbs_node_writef(node, "%s", COLOR(TERM_COLOR_MAGENTA));
 				}
 				print_full_time_update(agent, agent->gotwritten); /* Update the current time */
 				agent->gotwritten = 0; /* If we were, we handled it, and are no more */
@@ -1045,7 +1045,7 @@ start:
 				case 'q':
 					goto cleanup;
 				default: /* Ignore */
-					bbs_node_writef(node, "%s", COLOR(COLOR_MAGENTA));
+					bbs_node_writef(node, "%s", COLOR(TERM_COLOR_MAGENTA));
 			}
 		}
 	}

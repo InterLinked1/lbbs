@@ -1344,14 +1344,14 @@ static int authenticate(struct bbs_node *node)
 	for (attempts = 0; attempts < MAX_AUTH_ATTEMPTS; attempts++) {
 		NEG_RETURN(bbs_node_buffer(node));
 		if (!NODE_IS_TDD(node)) {
-			NEG_RETURN(bbs_node_writef(node, "%s%s %s%s %s%s %s%s", COLOR(COLOR_PRIMARY), "Enter", COLOR(COLOR_WHITE), "Username", COLOR(COLOR_PRIMARY), "or", COLOR(COLOR_WHITE), "New"));
+			NEG_RETURN(bbs_node_writef(node, "%s%s %s%s %s%s %s%s", COLOR(COLOR_PRIMARY), "Enter", COLOR(TERM_COLOR_WHITE), "Username", COLOR(COLOR_PRIMARY), "or", COLOR(TERM_COLOR_WHITE), "New"));
 			if (allow_guest) {
-				NEG_RETURN(bbs_node_writef(node, " %s%s %s%s\n", COLOR(COLOR_PRIMARY), "or", COLOR(COLOR_WHITE), "Guest"));
+				NEG_RETURN(bbs_node_writef(node, " %s%s %s%s\n", COLOR(COLOR_PRIMARY), "or", COLOR(TERM_COLOR_WHITE), "Guest"));
 			}
 			NEG_RETURN(bbs_node_writef(node, "\n"));
 		}
 
-		NEG_RETURN(bbs_node_writef(node, "%s%-10s%s", COLOR(COLOR_PRIMARY), "Login: ", COLOR(COLOR_WHITE)));
+		NEG_RETURN(bbs_node_writef(node, "%s%-10s%s", COLOR(COLOR_PRIMARY), "Login: ", COLOR(TERM_COLOR_WHITE)));
 		NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), username, sizeof(username)));
 		if (!strcasecmp(username, "Quit") || !strcasecmp(username, "Exit")) {
 			bbs_debug(3, "User entered '%s', exiting\n", username);
@@ -1397,14 +1397,14 @@ static int authenticate(struct bbs_node *node)
 				}
 				break;
 			} else {
-				bbs_node_writef(node, "\n\n%s%s\n\n", COLOR(COLOR_RED), "Sorry, guest login is not permitted");
+				bbs_node_writef(node, "\n\n%s%s\n\n", COLOR(COLOR_FAILURE), "Sorry, guest login is not permitted");
 			}
 		} else {
 			/* Not a special keyword, so a normal username */
 			int res;
 			/* Don't echo the password, duh... */
 			NEG_RETURN(bbs_node_echo_off(node));
-			NEG_RETURN(bbs_node_writef(node, "%s%-10s%s", COLOR(COLOR_PRIMARY), "Password: ", COLOR(COLOR_WHITE)));
+			NEG_RETURN(bbs_node_writef(node, "%s%-10s%s", COLOR(COLOR_PRIMARY), "Password: ", COLOR(TERM_COLOR_WHITE)));
 			NONPOS_RETURN(bbs_node_readline(node, 20000, password, sizeof(password)));
 			res = bbs_authenticate(node, username, password);
 			bbs_memzero(password, sizeof(password)); /* Overwrite (zero out) the plain text password before we return */
@@ -1413,7 +1413,7 @@ static int authenticate(struct bbs_node *node)
 				break; /* Correct username and password */
 			}
 			/* Sorry, wrong password. Let the user try again, if his/her 3 chances aren't up yet. */
-			bbs_node_writef(node, "\n\n%s%s\n\n", COLOR(COLOR_RED), "Login Failed");
+			bbs_node_writef(node, "\n\n%s%s\n\n", COLOR(COLOR_FAILURE), "Login Failed");
 		}
 	}
 
@@ -1624,7 +1624,7 @@ static int init_term_query_ansi_escape_support(struct bbs_node *node)
 	/* Colors */
 	oldcol = col;
 	oldrow = row;
-	bbs_node_writef(node, COLOR(COLOR_GREEN) COLOR_RESET);
+	bbs_node_writef(node, COLOR(TERM_COLOR_GREEN) COLOR_RESET);
 	res = node_get_cursor_pos(node, &row, &col);
 	if (res <= 0) {
 		return res;
@@ -2089,7 +2089,7 @@ int bbs_node_statuses(struct bbs_node *node, const char *username)
 {
 	struct bbs_node *n;
 
-	NEG_RETURN(bbs_node_writef(node, "%s%s\n\n", COLOR(COLOR_WHITE), "Node Status"));
+	NEG_RETURN(bbs_node_writef(node, "%s%s\n\n", COLOR(TERM_COLOR_WHITE), "Node Status"));
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
 		if (username && (!bbs_user_is_registered(node->user) || strcmp(bbs_username(node->user), username))) {
@@ -2099,14 +2099,14 @@ int bbs_node_statuses(struct bbs_node *node, const char *username)
 			if (username && !strlen_zero(n->menuitem)) {
 				/* Show more details if for a specific user */
 				bbs_node_writef(node, "%s%3d  %s%s%s at %s menu (%s) via %s\n",
-					COLOR(COLOR_WHITE), n->id, COLOR(COLOR_PRIMARY), bbs_username(n->user), COLOR(COLOR_SECONDARY), S_IF(n->menu), n->menuitem, n->protname);
+					COLOR(TERM_COLOR_WHITE), n->id, COLOR(COLOR_PRIMARY), bbs_username(n->user), COLOR(COLOR_SECONDARY), S_IF(n->menu), n->menuitem, n->protname);
 			} else {
 				bbs_node_writef(node, "%s%3d  %s%s%s at %s menu via %s\n",
-					COLOR(COLOR_WHITE), n->id, COLOR(COLOR_PRIMARY), bbs_username(n->user), COLOR(COLOR_SECONDARY), S_IF(n->menu), n->protname);
+					COLOR(TERM_COLOR_WHITE), n->id, COLOR(COLOR_PRIMARY), bbs_username(n->user), COLOR(COLOR_SECONDARY), S_IF(n->menu), n->protname);
 			}
 		} else {
 			bbs_node_writef(node, "%s%3d  %s%s%s connected via %s\n",
-				COLOR(COLOR_WHITE), n->id, COLOR(COLOR_PRIMARY), bbs_username(n->user), COLOR(COLOR_SECONDARY), n->protname);
+				COLOR(TERM_COLOR_WHITE), n->id, COLOR(COLOR_PRIMARY), bbs_username(n->user), COLOR(COLOR_SECONDARY), n->protname);
 		}
 	}
 	RWLIST_UNLOCK(&nodes);

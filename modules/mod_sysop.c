@@ -370,7 +370,7 @@ static void *sysop_handler(void *varg)
 					{
 						int do_quit = 0;
 						my_set_stdout_logging(sysopfdout, 0); /* Disable logging so other stuff isn't trying to write to STDOUT at the same time. */
-						bbs_dprintf(sysopfdout, "\n%sReally shut down the BBS? [YN] %s", COLOR(COLOR_RED), COLOR_RESET);
+						bbs_dprintf(sysopfdout, "\n%sReally shut down the BBS? [YN] %s", COLOR(TERM_COLOR_RED), COLOR_RESET);
 						res = poll(pfds, console->remote ? 1 : 2, 10000);
 						if (res < 0) {
 							if (errno != EINTR) {

@@ -336,7 +336,7 @@ static int user_register(struct bbs_node *node)
 #define MAX_REG_ATTEMPTS 6
 	int tries = MAX_REG_ATTEMPTS;
 
-#define REG_FMT COLOR(COLOR_WHITE)
+#define REG_FMT COLOR(TERM_COLOR_WHITE)
 #define REG_QLEN 43
 #define get_response(node, qlen, fmt, q, pollms, buf, len, tries, minlen, reqchars) bbs_get_response(node, qlen, fmt q, pollms, buf, len, tries, minlen, reqchars)
 
@@ -345,7 +345,7 @@ static int user_register(struct bbs_node *node)
 
 		/* Registration notice */
 		NEG_RETURN(bbs_node_clear_screen(node));
-		NONPOS_RETURN(bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_PRIMARY), "New User Registration", COLOR(COLOR_WHITE))); /* Use white for the questions to stand out */
+		NONPOS_RETURN(bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_PRIMARY), "New User Registration", COLOR(TERM_COLOR_WHITE))); /* Use white for the questions to stand out */
 
 		bbs_node_buffer(node); /* Buffer input so we can read line by line */
 
@@ -361,7 +361,7 @@ static int user_register(struct bbs_node *node)
 			NONZERO_RETURN(res);
 
 			if (!bbs_str_isprint(fullname)) {
-				NEG_RETURN(bbs_node_writef(node, "\n%sUsername contains disallowed characters%s\n", COLOR(COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sUsername contains disallowed characters%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET));
 			} else {
 				break;
 			}
@@ -374,13 +374,13 @@ static int user_register(struct bbs_node *node)
 			res = get_response(node, REG_QLEN, REG_FMT, "Desired username: ", MIN_MS(1), username, sizeof(username), &tries, 2, NULL);
 			NONZERO_RETURN(res);
 			if (strchr(username, ' ')) {
-				NEG_RETURN(bbs_node_writef(node, "\n%sUsername cannot contain spaces%s\n", COLOR(COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sUsername cannot contain spaces%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET));
 			} else if (!bbs_str_isprint(username)) {
-				NEG_RETURN(bbs_node_writef(node, "\n%sUsername contains disallowed characters%s\n", COLOR(COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sUsername contains disallowed characters%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET));
 			} else if (strlen(username) > 15) {
-				NEG_RETURN(bbs_node_writef(node, "\n%sUsername is too long%s\n", COLOR(COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sUsername is too long%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET));
 			} else if (bbs_username_reserved(username)) {
-				NEG_RETURN(bbs_node_writef(node, "\n%sThat username is reserved and not allowed%s\n", COLOR(COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sThat username is reserved and not allowed%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET));
 			} else {
 				break;
 			}
@@ -394,7 +394,7 @@ static int user_register(struct bbs_node *node)
 		 * We can't just do a case-insensitive comparison since we never store the password anywhere, only the hash.
 		 * Therefore, we must obtain the exact password for authentication,
 		 * and the user must explicitly set a compatible password if TTY/TDD compatibility is desired. */
-		bbs_node_writef(node, COLOR(COLOR_RED) "If you want to be able to log in from a TTY/TDD, your password should not contain lowercase letters.\n" COLOR_RESET);
+		bbs_node_writef(node, COLOR(TERM_COLOR_RED) "If you want to be able to log in from a TTY/TDD, your password should not contain lowercase letters.\n" COLOR_RESET);
 
 		bbs_node_echo_off(node); /* Don't display password */
 		for (; tries > 0; tries--) { /* Retries here count less than retries of the main loop */
@@ -403,9 +403,9 @@ static int user_register(struct bbs_node *node)
 			NEG_RETURN(bbs_node_writef(node, "%-*s", REG_QLEN, REG_FMT "\nConfirm Password: ")); /* Begin with new line since wasn't echoed */
 			NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), password2, sizeof(password2)));
 			if (s_strlen_zero(password) || strcmp(password, password2)) {
-				NEG_RETURN(bbs_node_writef(node, "\n%sPasswords do not match%s\n", COLOR(COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sPasswords do not match%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET));
 			} else if (strlen(password) < 8) {
-				NEG_RETURN(bbs_node_writef(node, "\n%sPassword is too short%s\n", COLOR(COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sPassword is too short%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET));
 			} else {
 				break;
 			}
@@ -506,7 +506,7 @@ confirm:
 
 		bbs_node_buffer(node);
 
-		bbs_get_response(node, 20, COLOR(COLOR_WHITE) "\nVerification Code: ", MIN_MS(3), usercode, sizeof(usercode), &tries, 1, NULL);
+		bbs_get_response(node, 20, COLOR(TERM_COLOR_WHITE) "\nVerification Code: ", MIN_MS(3), usercode, sizeof(usercode), &tries, 1, NULL);
 		if (strcmp(usercode, randcode)) {
 			NEG_RETURN(bbs_node_writef(node, "\n%sSorry, the verification code you provided was incorrect.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
 			NEG_RETURN(bbs_node_writef(node, "\nPlease try again later...\n"));
@@ -520,7 +520,7 @@ confirm:
 	 * Note we are only checking if the username is reserved, since the user database cannot tell us that.
 	 * If the username already exists, the INSERT user request will fail. */
 	if (bbs_username_reserved(username)) {
-		NEG_RETURN(bbs_node_writef(node, "\n%sSorry, the requested username is reserved and not allowed%s\n", COLOR(COLOR_RED), COLOR_RESET));
+		NEG_RETURN(bbs_node_writef(node, "\n%sSorry, the requested username is reserved and not allowed%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET));
 		NEG_RETURN(bbs_node_wait_key(node, SEC_MS(20)));
 		return 1;
 	}

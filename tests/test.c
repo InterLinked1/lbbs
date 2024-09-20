@@ -63,11 +63,11 @@ static const char *loglevel2str(enum bbs_log_level level)
 {
 	switch (level) {
 		case LOG_ERROR:
-			return COLOR(COLOR_RED) "  ERROR" COLOR_RESET;
+			return COLOR(TERM_COLOR_RED) "  ERROR" COLOR_RESET;
 		case LOG_WARNING:
-			return COLOR(COLOR_RED) "WARNING" COLOR_RESET;
+			return COLOR(TERM_COLOR_RED) "WARNING" COLOR_RESET;
 		case LOG_DEBUG:
-			return COLOR(COLOR_GREEN) "  DEBUG" COLOR_RESET;
+			return COLOR(TERM_COLOR_GREEN) "  DEBUG" COLOR_RESET;
 		default:
 			break;
 	}
@@ -921,9 +921,9 @@ static int run_test(const char *filename, int multiple)
 			bbs_debug(1, "%d simulated allocation failure%s\n", rand_alloc_fails - 1, ESS(rand_alloc_fails - 1));
 		}
 		if (res) {
-			fprintf(stderr, "== Test %sFAILED%s: %5lums %-20s %s\n", COLOR(COLOR_RED), COLOR_RESET, tot_dif, testmod->name, testmod->description);
+			fprintf(stderr, "== Test %sFAILED%s: %5lums %-20s %s\n", COLOR(COLOR_FAILURE), COLOR_RESET, tot_dif, testmod->name, testmod->description);
 		} else {
-			fprintf(stderr, "== Test %sPASSED%s: %5lums %-20s %s\n", COLOR(COLOR_GREEN), COLOR_RESET, tot_dif, testmod->name, testmod->description);
+			fprintf(stderr, "== Test %sPASSED%s: %5lums %-20s %s\n", COLOR(COLOR_SUCCESS), COLOR_RESET, tot_dif, testmod->name, testmod->description);
 			total_pass++;
 			total_fail--; /* We didn't actually fail so undo that bit */
 		}
@@ -1046,7 +1046,7 @@ int main(int argc, char *argv[])
 	sigint_handler(SIGINT); /* Restore terminal on exit */
 	bbs_debug(1, "Test Framework exiting (%d)\n", res);
 	if (res) {
-		fprintf(stderr, "%d test%s %sFAILED%s\n", total_fail, ESS(total_fail), COLOR(COLOR_RED), COLOR_RESET);
+		fprintf(stderr, "%d test%s %sFAILED%s\n", total_fail, ESS(total_fail), COLOR(TERM_COLOR_RED), COLOR_RESET);
 	}
 	total = total_pass + total_fail;
 	fprintf(stderr, "%d/%d test%s passed\n", total_pass, total, ESS(total));

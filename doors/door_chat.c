@@ -333,7 +333,7 @@ static int chat_run(struct bbs_node *node, struct participant *p)
 			}
 			res = 0;
 			if (buf[0] == '\n') { /* User just pressed ENTER. Um, okay. */
-				bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_RED), "Empty messages not allowed. Type /help for help.", COLOR_RESET);
+				bbs_node_writef(node, "%s%s%s\n", COLOR(TERM_COLOR_RED), "Empty messages not allowed. Type /help for help.", COLOR_RESET);
 				continue;
 			}
 			bbs_node_writef(node, "%c", buf[0]);
@@ -369,10 +369,10 @@ static int chat_run(struct bbs_node *node, struct participant *p)
 			 * It's not great for security if any user can send arbitrary ASCII characters to anyone else's terminal. */
 			if (!bbs_str_anyprint(buf2)) {
 				/* For example, reject messages that contain only spaces. */
-				bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_RED), "Sorry, message is empty.", COLOR_RESET);
+				bbs_node_writef(node, "%s%s%s\n", COLOR(TERM_COLOR_RED), "Sorry, message is empty.", COLOR_RESET);
 				continue;
 			} else if (!bbs_str_isprint(buf2)) {
-				bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_RED), "Sorry, message contains invalid characters.", COLOR_RESET);
+				bbs_node_writef(node, "%s%s%s\n", COLOR(TERM_COLOR_RED), "Sorry, message contains invalid characters.", COLOR_RESET);
 				continue;
 			}
 

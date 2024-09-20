@@ -260,17 +260,17 @@ static const char *loglevel2str(enum bbs_log_level level, int term)
 	/* WARNING/VERBOSE are the longest names, so make them all that long by left-padding with spaces, for visual alignment. */
 	switch (level) {
 		case LOG_ERROR:
-			return COLOR_LOG_OR("  ERROR", COLOR_RED, term);
+			return COLOR_LOG_OR("  ERROR", TERM_COLOR_RED, term);
 		case LOG_WARNING:
-			return COLOR_LOG_OR("WARNING", COLOR_RED, term);
+			return COLOR_LOG_OR("WARNING", TERM_COLOR_RED, term);
 		case LOG_NOTICE:
-			return COLOR_LOG_OR(" NOTICE", COLOR_MAGENTA, term);
+			return COLOR_LOG_OR(" NOTICE", TERM_COLOR_MAGENTA, term);
 		case LOG_AUTH:
-			return COLOR_LOG_OR("   AUTH", COLOR_BROWN, term);
+			return COLOR_LOG_OR("   AUTH", TERM_COLOR_BROWN, term);
 		case LOG_VERBOSE:
-			return COLOR_LOG_OR("VERBOSE", COLOR_CYAN, term);
+			return COLOR_LOG_OR("VERBOSE", TERM_COLOR_CYAN, term);
 		case LOG_DEBUG:
-			return COLOR_LOG_OR("  DEBUG", COLOR_GREEN, term);
+			return COLOR_LOG_OR("  DEBUG", TERM_COLOR_GREEN, term);
 	}
 	__builtin_unreachable();
 }
@@ -469,7 +469,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 				sprintf(fullbuf, "[%s.%03d] %s%s%s", datestr, (int) now.tv_usec / 1000, verbprefix, buf, need_reset ? COLOR_RESET : "");
 			}
 		} else {
-			bytes = snprintf(logfullbuf, sizeof(logfullbuf), "[%s.%03d] %s[%d]: %s%s:%d %s%s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 1), thread_id, COLOR_START COLOR_WHITE COLOR_BEGIN, file, lineno, func, COLOR_RESET, buf, need_reset ? COLOR_RESET : "");
+			bytes = snprintf(logfullbuf, sizeof(logfullbuf), "[%s.%03d] %s[%d]: %s%s:%d %s%s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 1), thread_id, COLOR_START TERM_COLOR_WHITE COLOR_BEGIN, file, lineno, func, COLOR_RESET, buf, need_reset ? COLOR_RESET : "");
 			if (bytes >= (int) sizeof(logfullbuf)) {
 				fullbuf = malloc((size_t) bytes + 1);
 				if (ALLOC_FAILURE(fullbuf)) {
@@ -479,7 +479,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 				}
 				fulldynamic = 1;
 				/* Safe */
-				bytes = sprintf(fullbuf, "[%s.%03d] %s[%d]: %s%s:%d %s%s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 1), thread_id, COLOR_START COLOR_WHITE COLOR_BEGIN, file, lineno, func, COLOR_RESET, buf, need_reset ? COLOR_RESET : "");
+				bytes = sprintf(fullbuf, "[%s.%03d] %s[%d]: %s%s:%d %s%s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 1), thread_id, COLOR_START TERM_COLOR_WHITE COLOR_BEGIN, file, lineno, func, COLOR_RESET, buf, need_reset ? COLOR_RESET : "");
 			}
 		}
 

@@ -1940,7 +1940,9 @@ static void dump_thread_msgids(struct thread_messageid *msgids, unsigned int max
 }
 #endif /* DEBUG_THREADING */
 
-static void thread_link_parent_child(struct thread_messageid *parent, struct thread_messageid *child)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnull-dereference" /* Silence bogus null pointer dereference warnings in old versions of gcc */
+static void __attribute__ ((nonnull (1, 2))) thread_link_parent_child(struct thread_messageid *parent, struct thread_messageid *child)
 {
 	struct thread_messageid *tmp;
 
@@ -1953,6 +1955,7 @@ static void thread_link_parent_child(struct thread_messageid *parent, struct thr
 #endif
 		return;
 	}
+#pragma GCC diagnostic pop
 
 	/* Don't create a link if that would introduce a loop. */
 

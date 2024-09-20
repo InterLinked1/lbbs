@@ -132,8 +132,8 @@ cleanup:
 static int test_printable_strlen(void)
 {
 	int res = -1;
-	const char *s = COLOR(COLOR_GREEN) "abc";
-	const char *s2 = COLOR(COLOR_RED) "test" COLOR_RESET;
+	const char *s = COLOR(TERM_COLOR_GREEN) "abc";
+	const char *s2 = COLOR(TERM_COLOR_RED) "test" COLOR_RESET;
 
 	bbs_test_assert_equals(bbs_printable_strlen(s), 3);
 	bbs_test_assert_equals(bbs_printable_strlen(s2), 4);
@@ -147,8 +147,8 @@ static int test_ansi_strip(void)
 {
 	int res = -1;
 	int outlen;
-	const char *s = COLOR(COLOR_GREEN) " abc";
-	const char *s2 = COLOR_RESET COLOR(COLOR_GREEN) "abc 123 " COLOR(COLOR_RED) "456" COLOR_RESET;
+	const char *s = COLOR(TERM_COLOR_GREEN) " abc";
+	const char *s2 = COLOR_RESET COLOR(TERM_COLOR_GREEN) "abc 123 " COLOR(TERM_COLOR_RED) "456" COLOR_RESET;
 	const char *s3 = TERM_CLEAR;
 	char outbuf[32];
 

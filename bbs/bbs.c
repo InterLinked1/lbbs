@@ -654,9 +654,9 @@ static void __sigint_handler(int num)
 		 * Try to prevent this from happening by asking if that's what the sysop really wants. */
 		last_shutdown_attempt = now;
 		if (!strlen_zero(bbs_hostname())) {
-			printf("\n%sReally shut down the BBS on %s? Press ^C again within 10s to confirm.%s\n", COLOR(COLOR_RED), bbs_hostname(), COLOR_RESET); /* XXX technically not safe to use in signal handler */
+			printf("\n%sReally shut down the BBS on %s? Press ^C again within 10s to confirm.%s\n", COLOR(TERM_COLOR_RED), bbs_hostname(), COLOR_RESET); /* XXX technically not safe to use in signal handler */
 		} else {
-			printf("\n%sReally shut down the BBS? Press ^C again within 10s to confirm.%s\n", COLOR(COLOR_RED), COLOR_RESET); /* XXX technically not safe to use in signal handler */
+			printf("\n%sReally shut down the BBS? Press ^C again within 10s to confirm.%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET); /* XXX technically not safe to use in signal handler */
 		}
 		return;
 	}

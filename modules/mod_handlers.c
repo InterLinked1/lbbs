@@ -45,7 +45,7 @@ static int quit_handler(struct bbs_node *node, char *args)
 	UNUSED(node);
 	UNUSED(args);
 
-	bbs_node_writef(node, "%s\rAre you sure you want to quit? [YN]%s", COLOR(COLOR_RED), COLOR_RESET);
+	bbs_node_writef(node, "%s\rAre you sure you want to quit? [YN]%s", COLOR(TERM_COLOR_RED), COLOR_RESET);
 	opt = bbs_node_tread(node, SEC_MS(30));
 	if (opt <= 0) {
 		return opt;

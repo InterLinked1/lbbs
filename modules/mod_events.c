@@ -269,7 +269,7 @@ static int interactive_start(struct bbs_node *node)
 		}
 		bbs_time_friendly_now(timebuf, sizeof(timebuf));
 
-		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "CLIENT", COLOR(COLOR_SECONDARY), "CONN", COLOR(COLOR_PRIMARY), node->protname));
+		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", COLOR(TERM_COLOR_WHITE), "CLIENT", COLOR(COLOR_SECONDARY), "CONN", COLOR(COLOR_PRIMARY), node->protname));
 		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "ADDR", COLOR(COLOR_PRIMARY), node->ip));
 		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%dx%d %s\n", "", "", COLOR(COLOR_SECONDARY), "TERM", COLOR(COLOR_PRIMARY), node->cols, node->rows, node->ansi ? "ANSI" : ""));
 
@@ -277,7 +277,7 @@ static int interactive_start(struct bbs_node *node)
 		/* We use "LINK" instead of "SPEED" since it's 4 characters */
 		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "LINK", COLOR(COLOR_PRIMARY), speed));
 
-		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", COLOR(COLOR_WHITE), "SERVER", COLOR(COLOR_SECONDARY), "NAME", COLOR(COLOR_WHITE), bbs_name()));
+		NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", COLOR(TERM_COLOR_WHITE), "SERVER", COLOR(COLOR_SECONDARY), "NAME", COLOR(TERM_COLOR_WHITE), bbs_name()));
 		if (!s_strlen_zero(bbs_hostname())) {
 			NEG_RETURN(bbs_node_writef(node, "%s%6s %s%s: %s%s\n", "", "", COLOR(COLOR_SECONDARY), "ADDR", COLOR(COLOR_PRIMARY), bbs_hostname()));
 		}
@@ -313,46 +313,46 @@ static inline ssize_t print_birthday_banner(struct bbs_node *node)
 		"%s%c%s%c%s%c"
 		"%s%c%s%c%s%c\n"
 		,
-		COLOR(COLOR_RED), 'H',
-		COLOR(COLOR_BLUE), 'a',
-		COLOR(COLOR_GREEN), 'p',
-		COLOR(COLOR_WHITE), 'p',
-		COLOR(COLOR_CYAN), 'y',
-		COLOR(COLOR_RED), 'B',
-		COLOR(COLOR_WHITE), 'i',
-		COLOR(COLOR_RED), 'r',
-		COLOR(COLOR_GREEN), 't',
-		COLOR(COLOR_BLUE), 'h',
-		COLOR(COLOR_CYAN), 'd',
-		COLOR(COLOR_RED), 'a',
-		COLOR(COLOR_WHITE), 'y',
-		COLOR(COLOR_BLUE), 't',
-		COLOR(COLOR_RED), 'o',
-		COLOR(COLOR_GREEN), 'y',
-		COLOR(COLOR_BLUE), 'o',
-		COLOR(COLOR_CYAN), 'u',
+		COLOR(TERM_COLOR_RED), 'H',
+		COLOR(TERM_COLOR_BLUE), 'a',
+		COLOR(TERM_COLOR_GREEN), 'p',
+		COLOR(TERM_COLOR_WHITE), 'p',
+		COLOR(TERM_COLOR_CYAN), 'y',
+		COLOR(TERM_COLOR_RED), 'B',
+		COLOR(TERM_COLOR_WHITE), 'i',
+		COLOR(TERM_COLOR_RED), 'r',
+		COLOR(TERM_COLOR_GREEN), 't',
+		COLOR(TERM_COLOR_BLUE), 'h',
+		COLOR(TERM_COLOR_CYAN), 'd',
+		COLOR(TERM_COLOR_RED), 'a',
+		COLOR(TERM_COLOR_WHITE), 'y',
+		COLOR(TERM_COLOR_BLUE), 't',
+		COLOR(TERM_COLOR_RED), 'o',
+		COLOR(TERM_COLOR_GREEN), 'y',
+		COLOR(TERM_COLOR_BLUE), 'o',
+		COLOR(TERM_COLOR_CYAN), 'u',
 		/* Second line, different colors */
-		COLOR(COLOR_RED), 'H',
-		COLOR(COLOR_WHITE), 'a',
-		COLOR(COLOR_BLUE), 'p',
-		COLOR(COLOR_RED), 'p',
-		COLOR(COLOR_GREEN), 'y',
-		COLOR(COLOR_BLUE), 'B',
-		COLOR(COLOR_GREEN), 'i',
-		COLOR(COLOR_RED), 'r',
-		COLOR(COLOR_WHITE), 't',
-		COLOR(COLOR_GREEN), 'h',
-		COLOR(COLOR_RED), 'd',
-		COLOR(COLOR_CYAN), 'a',
-		COLOR(COLOR_BLUE), 'y',
-		COLOR(COLOR_GREEN), 't',
-		COLOR(COLOR_RED), 'o',
-		COLOR(COLOR_WHITE), 'y',
-		COLOR(COLOR_CYAN), 'o',
-		COLOR(COLOR_RED), 'u',
-		COLOR(COLOR_GREEN), '.',
-		COLOR(COLOR_BLUE), '.',
-		COLOR(COLOR_CYAN), '.'
+		COLOR(TERM_COLOR_RED), 'H',
+		COLOR(TERM_COLOR_WHITE), 'a',
+		COLOR(TERM_COLOR_BLUE), 'p',
+		COLOR(TERM_COLOR_RED), 'p',
+		COLOR(TERM_COLOR_GREEN), 'y',
+		COLOR(TERM_COLOR_BLUE), 'B',
+		COLOR(TERM_COLOR_GREEN), 'i',
+		COLOR(TERM_COLOR_RED), 'r',
+		COLOR(TERM_COLOR_WHITE), 't',
+		COLOR(TERM_COLOR_GREEN), 'h',
+		COLOR(TERM_COLOR_RED), 'd',
+		COLOR(TERM_COLOR_CYAN), 'a',
+		COLOR(TERM_COLOR_BLUE), 'y',
+		COLOR(TERM_COLOR_GREEN), 't',
+		COLOR(TERM_COLOR_RED), 'o',
+		COLOR(TERM_COLOR_WHITE), 'y',
+		COLOR(TERM_COLOR_CYAN), 'o',
+		COLOR(TERM_COLOR_RED), 'u',
+		COLOR(TERM_COLOR_GREEN), '.',
+		COLOR(TERM_COLOR_BLUE), '.',
+		COLOR(TERM_COLOR_CYAN), '.'
 		);
 }
 

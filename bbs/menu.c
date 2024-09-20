@@ -464,7 +464,7 @@ static int menu_set_title(struct bbs_node *node, const char *name)
 	char stripped[64];
 	int strippedlen;
 
-	/* We could have something like ${COLOR_RED}Option Name${COLOR_RESET}
+	/* We could have something like ${TERM_COLOR_RED}Option Name${COLOR_RESET}
 	 * We need to substitute variables and then strip any ANSI sequences,
 	 * before using that for the terminal title. */
 	bbs_node_substitute_vars(node, name, sub_name, sizeof(sub_name));
@@ -565,7 +565,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 					if (neederror) {
 						/* We chose an invalid option before the menu was displayed (for skip menu nav) */
 						neederror = 0;
-						bbs_node_writef(node, "\r%sInvalid option!%s", COLOR(COLOR_RED), COLOR_RESET);
+						bbs_node_writef(node, "\r%sInvalid option!%s", COLOR(TERM_COLOR_RED), COLOR_RESET);
 					}
 				} else {
 					/* For TDDs, don't draw the menu initially,
@@ -631,7 +631,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 
 			/* Everything in the sequence must be alphanumeric: either a letter or number */
 			if (!valid_menusequence(menusequence)) {
-				bbs_node_writef(node, "%sInvalid skip menu sequence%s\n", COLOR(COLOR_RED), COLOR_RESET);
+				bbs_node_writef(node, "%sInvalid skip menu sequence%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET);
 				RWLIST_RDLOCK(&menus);
 				continue;
 			}
@@ -669,7 +669,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 					neederror = 1; /* Display the error message once we redraw the screen */
 				} else {
 					bbs_node_clear_line(node);
-					bbs_node_writef(node, "\r%sInvalid option!%s", COLOR(COLOR_RED), COLOR_RESET);
+					bbs_node_writef(node, "\r%sInvalid option!%s", COLOR(TERM_COLOR_RED), COLOR_RESET);
 				}
 			}
 			optreq = NULL; /* If were doing skip menu navigation, stop now since we hit a dead end. */

@@ -101,13 +101,13 @@ static int load_config(void)
 	struct bbs_config *cfg = bbs_config_load("variables.conf", 1);
 
 	/* Predefine colors for user convenience in menus.conf, since they contain escape sequences */
-	bbs_var_set_user("COLOR_BLACK", COLOR(COLOR_BLACK));
-	bbs_var_set_user("COLOR_RED", COLOR(COLOR_RED));
-	bbs_var_set_user("COLOR_GREEN", COLOR(COLOR_GREEN));
-	bbs_var_set_user("COLOR_BLUE", COLOR(COLOR_BLUE));
-	bbs_var_set_user("COLOR_MAGENTA", COLOR(COLOR_MAGENTA));
-	bbs_var_set_user("COLOR_CYAN", COLOR(COLOR_CYAN));
-	bbs_var_set_user("COLOR_WHITE", COLOR(COLOR_WHITE));
+	bbs_var_set_user("TERM_COLOR_BLACK", COLOR(TERM_COLOR_BLACK));
+	bbs_var_set_user("TERM_COLOR_RED", COLOR(TERM_COLOR_RED));
+	bbs_var_set_user("TERM_COLOR_GREEN", COLOR(TERM_COLOR_GREEN));
+	bbs_var_set_user("TERM_COLOR_BLUE", COLOR(TERM_COLOR_BLUE));
+	bbs_var_set_user("TERM_COLOR_MAGENTA", COLOR(TERM_COLOR_MAGENTA));
+	bbs_var_set_user("TERM_COLOR_CYAN", COLOR(TERM_COLOR_CYAN));
+	bbs_var_set_user("TERM_COLOR_WHITE", COLOR(TERM_COLOR_WHITE));
 	bbs_var_set_user("COLOR_NONE", COLOR_RESET);
 
 	bbs_var_set_user("COLOR_PRIMARY", COLOR(COLOR_PRIMARY));

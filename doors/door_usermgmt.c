@@ -50,7 +50,7 @@ static int confirm_current_pw(struct bbs_node *node)
 	NEG_RETURN(bbs_node_buffer(node));
 	bbs_node_echo_off(node); /* Don't display password */
 	NEG_RETURN(bbs_node_writef(node, "=== Confirm Current Password ===\n"));
-	NEG_RETURN(bbs_node_writef(node, "%-*s", 24, COLOR(COLOR_WHITE) "Old Password: "));
+	NEG_RETURN(bbs_node_writef(node, "%-*s", 24, COLOR(TERM_COLOR_WHITE) "Old Password: "));
 	NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), password, sizeof(password)));
 	res = bbs_user_authenticate(user, bbs_username(node->user), password);
 	bbs_memzero(password, sizeof(password));
@@ -74,19 +74,19 @@ static int do_reset(struct bbs_node *node, const char *username)
 	NEG_RETURN(bbs_node_writef(node, "=== Change Password ===\n"));
 
 	if (MIN_PW_LENGTH > 1) {
-		NEG_RETURN(bbs_node_writef(node, "Remember, your new password must be at least %s%d%s characters long.\n", COLOR(COLOR_WHITE), MIN_PW_LENGTH, COLOR_RESET));
+		NEG_RETURN(bbs_node_writef(node, "Remember, your new password must be at least %s%d%s characters long.\n", COLOR(TERM_COLOR_WHITE), MIN_PW_LENGTH, COLOR_RESET));
 	}
 
 	bbs_node_echo_off(node); /* Don't display password */
 	for (; tries > 0; tries--) {
-		NEG_RETURN(bbs_node_writef(node, "%-*s", 24, COLOR(COLOR_WHITE) "New Password: "));
+		NEG_RETURN(bbs_node_writef(node, "%-*s", 24, COLOR(TERM_COLOR_WHITE) "New Password: "));
 		NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), password, sizeof(password)));
-		NEG_RETURN(bbs_node_writef(node, "%-*s", 24, COLOR(COLOR_WHITE) "\nConfirm New Password: ")); /* Begin with new line since wasn't echoed */
+		NEG_RETURN(bbs_node_writef(node, "%-*s", 24, COLOR(TERM_COLOR_WHITE) "\nConfirm New Password: ")); /* Begin with new line since wasn't echoed */
 		NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), password2, sizeof(password2)));
 		if (s_strlen_zero(password) || strcmp(password, password2)) {
-			NEG_RETURN(bbs_node_writef(node, "\n%sPasswords do not match%s\n", COLOR(COLOR_RED), COLOR_RESET));
+			NEG_RETURN(bbs_node_writef(node, "\n%sPasswords do not match%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET));
 			} else if (strlen(password) < MIN_PW_LENGTH) {
-			NEG_RETURN(bbs_node_writef(node, "\n%sPassword is too short%s\n", COLOR(COLOR_RED), COLOR_RESET));
+			NEG_RETURN(bbs_node_writef(node, "\n%sPassword is too short%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET));
 		} else {
 			break;
 		}
@@ -146,19 +146,19 @@ static int pwreset_exec(struct bbs_node *node, const char *args)
 	NEG_RETURN(bbs_node_writef(node, "You'll need access to the email address you used to register.\n"));
 
 	/* Ask a few questions. */
-	res = bbs_get_response(node, MY_WIDTH, COLOR(COLOR_WHITE) "Username: ", MIN_MS(1), username, sizeof(username), &tries, 2, NULL);
+	res = bbs_get_response(node, MY_WIDTH, COLOR(TERM_COLOR_WHITE) "Username: ", MIN_MS(1), username, sizeof(username), &tries, 2, NULL);
 	NONZERO_RETURN(res);
 
-	res = bbs_get_response(node, MY_WIDTH, COLOR(COLOR_WHITE) "Please enter your full real name: ", MIN_MS(1), fullname, sizeof(fullname), &tries, 4, " "); /* If there's no space, we don't have at least 2 names */
+	res = bbs_get_response(node, MY_WIDTH, COLOR(TERM_COLOR_WHITE) "Please enter your full real name: ", MIN_MS(1), fullname, sizeof(fullname), &tries, 4, " "); /* If there's no space, we don't have at least 2 names */
 	NONZERO_RETURN(res);
 
-	res = bbs_get_response(node, MY_WIDTH, COLOR(COLOR_WHITE) "Network mail address (user@domain): ", MIN_MS(1), email, sizeof(email), &tries, 5, "@.");
+	res = bbs_get_response(node, MY_WIDTH, COLOR(TERM_COLOR_WHITE) "Network mail address (user@domain): ", MIN_MS(1), email, sizeof(email), &tries, 5, "@.");
 	NONZERO_RETURN(res);
 
-	res = bbs_get_response(node, MY_WIDTH, COLOR(COLOR_WHITE) "Birthday (MM/DD/YYYY): ", MIN_MS(1), dob, sizeof(dob), &tries, 10, "/");
+	res = bbs_get_response(node, MY_WIDTH, COLOR(TERM_COLOR_WHITE) "Birthday (MM/DD/YYYY): ", MIN_MS(1), dob, sizeof(dob), &tries, 10, "/");
 	NONZERO_RETURN(res);
 
-	res = bbs_get_response(node, MY_WIDTH, COLOR(COLOR_WHITE) "ZIP/Postal Code: ", MIN_MS(1), zip, sizeof(zip), &tries, 3, NULL); /* US = 5, other countries??? */
+	res = bbs_get_response(node, MY_WIDTH, COLOR(TERM_COLOR_WHITE) "ZIP/Postal Code: ", MIN_MS(1), zip, sizeof(zip), &tries, 3, NULL); /* US = 5, other countries??? */
 	NONZERO_RETURN(res);
 
 	/* Do some basic checks */
@@ -197,7 +197,7 @@ static int pwreset_exec(struct bbs_node *node, const char *args)
 	NEG_RETURN(bbs_node_writef(node, "\n%sWe just emailed you a password reset code. Continue once you've received it.%s\n", COLOR(COLOR_SUCCESS), COLOR_RESET));
 	NEG_RETURN(bbs_node_wait_key(node, SEC_MS(600))); /* Wait a bit longer, up to 10 minutes in case email is delayed */
 
-	bbs_get_response(node, 20, COLOR(COLOR_WHITE) "\nReset Code: ", MIN_MS(3), usercode, sizeof(usercode), &tries, 1, NULL);
+	bbs_get_response(node, 20, COLOR(TERM_COLOR_WHITE) "\nReset Code: ", MIN_MS(3), usercode, sizeof(usercode), &tries, 1, NULL);
 	if (strcmp(usercode, randcode)) {
 		bbs_user_destroy(user);
 		NEG_RETURN(bbs_node_writef(node, "\n%sSorry, the reset code you provided was incorrect.%s\n", COLOR(COLOR_FAILURE), COLOR_RESET));
@@ -265,26 +265,26 @@ static int termmgmt_exec(struct bbs_node *node, const char *args)
 	bbs_node_writef(node, "%s%10s%s\n", COLOR(COLOR_SECONDARY), "Speed", COLOR_RESET);
 
 	if (node->calcbps) {
-		bbs_node_writef(node, "%s%16s%s %ld bps\n", COLOR(COLOR_WHITE), "Measured", COLOR_RESET, node->calcbps);
+		bbs_node_writef(node, "%s%16s%s %ld bps\n", COLOR(TERM_COLOR_WHITE), "Measured", COLOR_RESET, node->calcbps);
 	} else {
-		bbs_node_writef(node, "%s%16s%s %s\n", COLOR(COLOR_WHITE), "Measured", COLOR_RESET, "Broadband");
+		bbs_node_writef(node, "%s%16s%s %s\n", COLOR(TERM_COLOR_WHITE), "Measured", COLOR_RESET, "Broadband");
 	}
 	if (node->bps) {
-		bbs_node_writef(node, "%s%16s%s %u bps\n", COLOR(COLOR_WHITE), "Throttle", COLOR_RESET, node->bps);
+		bbs_node_writef(node, "%s%16s%s %u bps\n", COLOR(TERM_COLOR_WHITE), "Throttle", COLOR_RESET, node->bps);
 	} else {
-		bbs_node_writef(node, "%s%16s%s %s\n", COLOR(COLOR_WHITE), "Throttle", COLOR_RESET, "Unthrottled");
+		bbs_node_writef(node, "%s%16s%s %s\n", COLOR(TERM_COLOR_WHITE), "Throttle", COLOR_RESET, "Unthrottled");
 	}
 	if (node->reportedbps) {
-		bbs_node_writef(node, "%s%16s%s %u\n", COLOR(COLOR_WHITE), "Reported", COLOR_RESET, node->reportedbps);
+		bbs_node_writef(node, "%s%16s%s %u\n", COLOR(TERM_COLOR_WHITE), "Reported", COLOR_RESET, node->reportedbps);
 	} else {
-		bbs_node_writef(node, "%s%16s%s %s\n", COLOR(COLOR_WHITE), "Reported", COLOR_RESET, "Unreported");
+		bbs_node_writef(node, "%s%16s%s %s\n", COLOR(TERM_COLOR_WHITE), "Reported", COLOR_RESET, "Unreported");
 	}
 
 	bbs_node_writef(node, "%s%10s %s\n", COLOR(COLOR_SECONDARY), "Protocol", node->protname);
 	bbs_node_writef(node, "%s%10s %s\n", COLOR(COLOR_SECONDARY), "Term Type", S_OR(node->term, "(Unreported)"));
 	bbs_node_writef(node, "%s%10s %s\n", COLOR(COLOR_SECONDARY), "ANSI", node->ansi ? "Yes" : "No");
 	if (node->ansi) {
-#define DUMP_ANSI_SUPPORT(flag, name) bbs_node_writef(node, "%s       - %-18s%s%3s\n", COLOR(COLOR_WHITE), name, node->ans & flag ? COLOR(COLOR_GREEN) : COLOR(COLOR_RED), node->ans & flag ? "Yes" : "No")
+#define DUMP_ANSI_SUPPORT(flag, name) bbs_node_writef(node, "%s       - %-18s%s%3s\n", COLOR(TERM_COLOR_WHITE), name, node->ans & flag ? COLOR(TERM_COLOR_GREEN) : COLOR(TERM_COLOR_RED), node->ans & flag ? "Yes" : "No")
 		DUMP_ANSI_SUPPORT(ANSI_CURSOR_QUERY, "Cursor Query");
 		DUMP_ANSI_SUPPORT(ANSI_CURSOR_SET, "Cursor Set");
 		DUMP_ANSI_SUPPORT(ANSI_COLORS, "Colors");

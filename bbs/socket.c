@@ -1707,7 +1707,7 @@ int bbs_node_tpoll(struct bbs_node *node, int ms)
 					NEG_RETURN(bbs_node_writef(node, "\n"));
 				}
 				if (!NODE_IS_TDD(node)) {
-					NEG_RETURN(bbs_node_writef(node, "%sAre you still there? []%s", COLOR(COLOR_RED), COLOR_RESET));
+					NEG_RETURN(bbs_node_writef(node, "%sAre you still there? []%s", COLOR(TERM_COLOR_RED), COLOR_RESET));
 					/* Ring the bell to get the user's attention. */
 					NEG_RETURN(bbs_node_ring_bell(node));
 				} else {
@@ -2135,20 +2135,20 @@ int bbs_get_response(struct bbs_node *node, int qlen, const char *q, int pollms,
 			 * as we already printed out "You've been inactive too long" at this point. */
 			return -1; /* -1, not 0, we're already due for disconnect. */
 		} else if (strlen_zero(buf)) {
-			NONPOS_RETURN(bbs_node_writef(node, "%sPlease try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+			NONPOS_RETURN(bbs_node_writef(node, "%sPlease try again.%s\n", COLOR(TERM_COLOR_RED), COLOR(TERM_COLOR_WHITE)));
 			continue; /* Empty responses not allowed. Try again, eventually we'll hit max attempts */
 		} if (res - 1 < minlen) {
 			if (NODE_IS_TDD(node)) {
 				NONPOS_RETURN(bbs_node_writef(node, "Inadequate, try again.\n"));
 			} else {
-				NONPOS_RETURN(bbs_node_writef(node, "%sInadequate response, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+				NONPOS_RETURN(bbs_node_writef(node, "%sInadequate response, please try again.%s\n", COLOR(TERM_COLOR_RED), COLOR(TERM_COLOR_WHITE)));
 			}
 			continue; /* Too short */
 		} else if (res - 1 >= len) {
 			if (NODE_IS_TDD(node)) {
 				NONPOS_RETURN(bbs_node_writef(node, "Too long, try again.\n"));
 			} else {
-				NONPOS_RETURN(bbs_node_writef(node, "%sResponse is too long, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+				NONPOS_RETURN(bbs_node_writef(node, "%sResponse is too long, please try again.%s\n", COLOR(TERM_COLOR_RED), COLOR(TERM_COLOR_WHITE)));
 			}
 			continue;
 		} else if (!bbs_str_isprint(buf)) {
@@ -2156,7 +2156,7 @@ int bbs_get_response(struct bbs_node *node, int qlen, const char *q, int pollms,
 			if (NODE_IS_TDD(node)) {
 				NONPOS_RETURN(bbs_node_writef(node, "Invalid, try again.\n"));
 			} else {
-				NONPOS_RETURN(bbs_node_writef(node, "%sResponse contains invalid characters, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+				NONPOS_RETURN(bbs_node_writef(node, "%sResponse contains invalid characters, please try again.%s\n", COLOR(TERM_COLOR_RED), COLOR(TERM_COLOR_WHITE)));
 			}
 			continue;
 		}
@@ -2166,7 +2166,7 @@ int bbs_get_response(struct bbs_node *node, int qlen, const char *q, int pollms,
 					if (NODE_IS_TDD(node)) {
 						NONPOS_RETURN(bbs_node_writef(node, "Inadequate, try again.\n"));
 					} else {
-						NONPOS_RETURN(bbs_node_writef(node, "%sInadequate response, please try again.%s\n", COLOR(COLOR_RED), COLOR(COLOR_WHITE)));
+						NONPOS_RETURN(bbs_node_writef(node, "%sInadequate response, please try again.%s\n", COLOR(TERM_COLOR_RED), COLOR(TERM_COLOR_WHITE)));
 					}
 					/* We're in a double loop, we want to continue the outer loop */
 					goto continueloop; /* Missing required chars */
@@ -2844,7 +2844,7 @@ int bbs_node_wait_key(struct bbs_node *node, int ms)
 	NEG_RETURN(bbs_node_unbuffer(node));
 	NEG_RETURN(bbs_node_flush_input(node)); /* Discard anything that may be pending so bbs_node_tpoll doesn't return immediately. */
 	if (!NODE_IS_TDD(node)) {
-		NEG_RETURN(bbs_node_writef(node, "\r\n%s%s%s", COLOR(COLOR_RED), "[" HIT_KEY_PROMPT_LONG "]", COLOR_RESET));
+		NEG_RETURN(bbs_node_writef(node, "\r\n%s%s%s", COLOR(TERM_COLOR_RED), "[" HIT_KEY_PROMPT_LONG "]", COLOR_RESET));
 	} else {
 		NEG_RETURN(bbs_node_writef(node, "\r\n%s", "[" HIT_KEY_PROMPT_SHORT "]"));
 	}

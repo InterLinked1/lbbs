@@ -163,7 +163,7 @@ static int __attribute__ ((nonnull (1, 6))) __chat_send(struct client_relay *cli
 {
 	time_t now;
 	struct tm sendtime;
-	char datestr[18 + STRLEN(COLOR(COLOR_BLUE)) + STRLEN(COLOR_RESET) + 1]; /* Add 1 for space at end */
+	char datestr[18 + STRLEN(COLOR(TERM_COLOR_BLUE)) + STRLEN(COLOR_RESET) + 1]; /* Add 1 for space at end */
 	size_t timelen, skiplen;
 	struct participant *p;
 
@@ -171,7 +171,7 @@ static int __attribute__ ((nonnull (1, 6))) __chat_send(struct client_relay *cli
 	now = time(NULL);
 	localtime_r(&now, &sendtime);
 	/* So, %P is lowercase and %p is uppercase. Just consult your local strftime(3) man page if you don't believe me. Good grief! */
-	skiplen = timelen = (size_t) sprintf(datestr, "%s", COLOR(COLOR_BLUE)); /* Safe */
+	skiplen = timelen = (size_t) sprintf(datestr, "%s", COLOR(TERM_COLOR_BLUE)); /* Safe */
 	timelen += strftime(datestr + timelen, sizeof(datestr) - timelen, TIME_FMT, &sendtime); /* mm-dd hh:mm:ssPP + space at end (before message) = 17 chars */
 
 	/* If sender is set, it's safe to use even with no locks, because the sender is a calling function of this one */
@@ -274,7 +274,7 @@ static int __attribute__ ((nonnull (1, 2, 5))) __attribute__ ((format (gnu_print
 		return -1;
 	}
 
-	fmtbuflen = snprintf(fmtbuf, sizeof(fmtbuf), "%s%s@%d%s ", COLOR(COLOR_RED), bbs_username(node->user), node->id, COLOR_RESET);
+	fmtbuflen = snprintf(fmtbuf, sizeof(fmtbuf), "%s%s@%d%s ", COLOR(TERM_COLOR_RED), bbs_username(node->user), node->id, COLOR_RESET);
 	va_start(ap, fmt);
 	fmtbuflen += vsnprintf(fmtbuf + (size_t) fmtbuflen, sizeof(fmtbuf) - (size_t) len, fmt, ap);
 	va_end(ap);
@@ -298,12 +298,12 @@ static int __attribute__ ((nonnull (1, 2))) chat_cmd(struct client_relay *c, str
 		case IRC_CMD_JOIN:
 			snprintf(buf, sizeof(buf), "%s@%d has joined %s\n", bbs_username(node->user), node->id, channel);
 			fmtlen = snprintf(fmtbuf, sizeof(fmtbuf), "- %s%s@%d %shas joined %s%s%s\n",
-				COLOR(COLOR_RED), bbs_username(node->user), node->id, COLOR_RESET, COLOR(COLOR_CYAN), channel, COLOR_RESET);
+				COLOR(TERM_COLOR_RED), bbs_username(node->user), node->id, COLOR_RESET, COLOR(TERM_COLOR_CYAN), channel, COLOR_RESET);
 			return __chat_send(c, NULL, 0, channel, buf, fmtbuf, fmtlen);
 		case IRC_CMD_PART:
 			snprintf(buf, sizeof(buf), "%s@%d has left %s\n", bbs_username(node->user), node->id, channel);
 			fmtlen = snprintf(fmtbuf, sizeof(fmtbuf), "- %s%s@%d %shas left %s%s%s\n",
-				COLOR(COLOR_RED), bbs_username(node->user), node->id, COLOR_RESET, COLOR(COLOR_CYAN), channel, COLOR_RESET);
+				COLOR(TERM_COLOR_RED), bbs_username(node->user), node->id, COLOR_RESET, COLOR(TERM_COLOR_CYAN), channel, COLOR_RESET);
 			return __chat_send(c, NULL, 0, channel, buf, fmtbuf, fmtlen);
 		default:
 			bbs_warning("Unhandled command: %d\n", type);
@@ -314,8 +314,8 @@ static int __attribute__ ((nonnull (1, 2))) chat_cmd(struct client_relay *c, str
 
 static int print_help(struct bbs_node *node, int full)
 {
-	bbs_node_writef(node, "%s== Embedded LBBS Chat Client ==\n", COLOR(COLOR_RED));
-#define HELP_ITEM(cmd, help) bbs_node_writef(node, "%s%-10s%s - %s\n", COLOR(COLOR_CYAN), cmd, COLOR_RESET, help)
+	bbs_node_writef(node, "%s== Embedded LBBS Chat Client ==\n", COLOR(TERM_COLOR_RED));
+#define HELP_ITEM(cmd, help) bbs_node_writef(node, "%s%-10s%s - %s\n", COLOR(TERM_COLOR_CYAN), cmd, COLOR_RESET, help)
 	HELP_ITEM("/help", "Print help");
 	HELP_ITEM("/quit", "Quit channel");
 	if (full) {
@@ -368,7 +368,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 				bbs_debug(3, "bbs_node_poll_read returned %ld\n", res);
 				if (res == 0) {
 					/* User started a message, but didn't finish before timeout */
-					bbs_node_writef(node, "\n*** %sTIMEOUT%s ***\n", COLOR(COLOR_RED), COLOR_RESET);
+					bbs_node_writef(node, "\n*** %sTIMEOUT%s ***\n", COLOR(TERM_COLOR_RED), COLOR_RESET);
 					bbs_node_flush_input(node); /* Discard any pending input */
 					continue;
 				}
@@ -386,7 +386,7 @@ static int participant_relay(struct bbs_node *node, struct participant *p, const
 				} else if (STARTS_WITH(buf2, "/help")) {
 					print_help(node, 0);
 				} else {
-					bbs_node_writef(node, "%sInvalid command%s (type %s/help%s for usage)\n", COLOR(COLOR_RED), COLOR_RESET, COLOR(COLOR_WHITE), COLOR_RESET);
+					bbs_node_writef(node, "%sInvalid command%s (type %s/help%s for usage)\n", COLOR(TERM_COLOR_RED), COLOR_RESET, COLOR(TERM_COLOR_WHITE), COLOR_RESET);
 				}
 				bbs_node_unbuffer(node);
 				continue; /* Don't actually send this input as a message */
@@ -469,16 +469,16 @@ static void command_cb(const char *clientname, enum irc_callback_msg_type type, 
 			}
 			break;
 		case CMD_JOIN:
-			relay_to_local(client, channel, "%s has %sjoined%s\n", prefix, COLOR(COLOR_GREEN), COLOR_RESET);
+			relay_to_local(client, channel, "%s has %sjoined%s\n", prefix, COLOR(TERM_COLOR_GREEN), COLOR_RESET);
 			break;
 		case CMD_PART:
-			relay_to_local(client, channel, "%s has %sleft%s\n", prefix, COLOR(COLOR_RED), COLOR_RESET);
+			relay_to_local(client, channel, "%s has %sleft%s\n", prefix, COLOR(TERM_COLOR_RED), COLOR_RESET);
 			break;
 		case CMD_KICK:
-			relay_to_local(client, channel, "%s has been %skicked%s\n", prefix, COLOR(COLOR_RED), COLOR_RESET);
+			relay_to_local(client, channel, "%s has been %skicked%s\n", prefix, COLOR(TERM_COLOR_RED), COLOR_RESET);
 			break;
 		case CMD_TOPIC:
-			relay_to_local(client, channel, "%s has %schanged the topic%s of %s\n", prefix, COLOR_GREEN, COLOR_RESET, msg);
+			relay_to_local(client, channel, "%s has %schanged the topic%s of %s\n", prefix, TERM_COLOR_GREEN, COLOR_RESET, msg);
 			break;
 		case CMD_MODE:
 			break; /* Ignore */
@@ -487,13 +487,13 @@ static void command_cb(const char *clientname, enum irc_callback_msg_type type, 
 			/* We should relay this message to all channels that contain this user,
 			 * but we don't currently have a mechanism to do that, so just ignore it... */
 #if 0
-			relay_to_local(client, NULL, "%s has %squit%s\n", prefix, COLOR(COLOR_RED), COLOR_RESET);
+			relay_to_local(client, NULL, "%s has %squit%s\n", prefix, COLOR(TERM_COLOR_RED), COLOR_RESET);
 #endif
 			break;
 		case CMD_NICK:
 			/* Same comment as QUIT */
 #if 0
-			relay_to_local(client, NULL, "%s is %snow known as%s %s\n", prefix, COLOR(COLOR_CYAN), COLOR_RESET, msg);
+			relay_to_local(client, NULL, "%s is %snow known as%s %s\n", prefix, COLOR(TERM_COLOR_CYAN), COLOR_RESET, msg);
 #endif
 			break;
 		case CMD_PING:
@@ -684,7 +684,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 					chanstate.wantnames = 1;
 					irc_send(ircl, "NAMES %s", channel);
 				} else {
-					bbs_node_writef(node, "%sInvalid command%s (type %s/help%s for usage)\n", COLOR(COLOR_RED), COLOR_RESET, COLOR(COLOR_WHITE), COLOR_RESET);
+					bbs_node_writef(node, "%sInvalid command%s (type %s/help%s for usage)\n", COLOR(TERM_COLOR_RED), COLOR_RESET, COLOR(TERM_COLOR_WHITE), COLOR_RESET);
 				}
 				continue; /* Don't actually send this input as a message */
 			}
@@ -700,7 +700,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 			if (!slowterm) {
 				bbs_node_up_one_line(node); /* Go up one line since we already pressed enter */
 				bbs_node_clear_line(node);
-				bbs_node_writef(node, "%s%s%s<%s>%s %s\n", COLOR(COLOR_BLUE), datestr, COLOR(COLOR_RED), irc_client_nickname(ircl), COLOR_RESET, clientbuf); /* Echo the user's own message */
+				bbs_node_writef(node, "%s%s%s<%s>%s %s\n", COLOR(TERM_COLOR_BLUE), datestr, COLOR(TERM_COLOR_RED), irc_client_nickname(ircl), COLOR_RESET, clientbuf); /* Echo the user's own message */
 			}
 		} else { /* Must've been the server. */
 			char tmpbuf[2048];
@@ -749,7 +749,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 										tmp++;
 										if (chanstate.wantnames && !strlen_zero(tmp)) {
 											/* Print names to term */
-											bbs_node_writef(node, "%s* %s%s%s\n", COLOR(COLOR_BLUE), COLOR(COLOR_GREEN), tmp, COLOR_RESET);
+											bbs_node_writef(node, "%s* %s%s%s\n", COLOR(TERM_COLOR_BLUE), COLOR(TERM_COLOR_GREEN), tmp, COLOR_RESET);
 										}
 									}
 									break;
@@ -757,10 +757,10 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 									/* End of names, print total */
 									if (!chanstate.gotnames) {
 										bbs_node_writef(node, "%s*%s Welcome to %s%s%s, channel now occupied by %s%d%s user%s%s\n",
-										COLOR(COLOR_WHITE), COLOR(COLOR_CYAN), COLOR(COLOR_WHITE), channel, COLOR(COLOR_CYAN), COLOR(COLOR_WHITE), chanstate.namescount, COLOR(COLOR_CYAN), ESS(chanstate.namescount), COLOR_RESET);
+										COLOR(TERM_COLOR_WHITE), COLOR(TERM_COLOR_CYAN), COLOR(TERM_COLOR_WHITE), channel, COLOR(TERM_COLOR_CYAN), COLOR(TERM_COLOR_WHITE), chanstate.namescount, COLOR(TERM_COLOR_CYAN), ESS(chanstate.namescount), COLOR_RESET);
 									} else if (chanstate.wantnames) {
 										bbs_node_writef(node, "%s*%s Channel %s%s%s currently occupied by %s%d%s user%s%s\n",
-										COLOR(COLOR_WHITE), COLOR(COLOR_CYAN), COLOR(COLOR_WHITE), channel, COLOR(COLOR_CYAN), COLOR(COLOR_WHITE), chanstate.namescount, COLOR(COLOR_CYAN), ESS(chanstate.namescount), COLOR_RESET);
+										COLOR(TERM_COLOR_WHITE), COLOR(TERM_COLOR_CYAN), COLOR(TERM_COLOR_WHITE), channel, COLOR(TERM_COLOR_CYAN), COLOR(TERM_COLOR_WHITE), chanstate.namescount, COLOR(TERM_COLOR_CYAN), ESS(chanstate.namescount), COLOR_RESET);
 									}
 									chanstate.namescount = 0; /* Reset */
 									chanstate.gotnames = 1;
@@ -830,7 +830,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 									localtime_r(&now, &sendtime);
 									strftime(datestr, sizeof(datestr), TIME_FMT " ", &sendtime);
 								}
-								bbs_node_writef(node, "%s%s%s<%s>%s %s\n", COLOR(COLOR_BLUE), datestr, COLOR(COLOR_RED), msg->prefix, COLOR_RESET, irc_msg_body(msg));
+								bbs_node_writef(node, "%s%s%s<%s>%s %s\n", COLOR(TERM_COLOR_BLUE), datestr, COLOR(TERM_COLOR_RED), msg->prefix, COLOR_RESET, irc_msg_body(msg));
 							}
 							break;
 						case IRC_CMD_PING:
@@ -838,28 +838,28 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 							irc_client_pong(ircl, msg);
 							break;
 						case IRC_CMD_JOIN:
-							bbs_node_writef(node, "- %s%s%s has %sjoined%s\n", COLOR(COLOR_RED), msg->prefix, COLOR_RESET, COLOR(COLOR_GREEN), COLOR_RESET);
+							bbs_node_writef(node, "- %s%s%s has %sjoined%s\n", COLOR(TERM_COLOR_RED), msg->prefix, COLOR_RESET, COLOR(TERM_COLOR_GREEN), COLOR_RESET);
 							break;
 						case IRC_CMD_PART:
-							bbs_node_writef(node, "- %s%s%s has %sleft%s\n", COLOR(COLOR_RED), msg->prefix, COLOR_RESET, COLOR(COLOR_RED), COLOR_RESET);
+							bbs_node_writef(node, "- %s%s%s has %sleft%s\n", COLOR(TERM_COLOR_RED), msg->prefix, COLOR_RESET, COLOR(TERM_COLOR_RED), COLOR_RESET);
 							break;
 						case IRC_CMD_QUIT:
 							/* Since this client is for a single end user, and the server sent us the quit,
 							 * we know it must be relevant to us */
-							bbs_node_writef(node, "- %s%s%s has %squit%s\n", COLOR(COLOR_RED), msg->prefix, COLOR_RESET, COLOR(COLOR_RED), COLOR_RESET);
+							bbs_node_writef(node, "- %s%s%s has %squit%s\n", COLOR(TERM_COLOR_RED), msg->prefix, COLOR_RESET, COLOR(TERM_COLOR_RED), COLOR_RESET);
 							break;
 						case IRC_CMD_KICK:
-							bbs_node_writef(node, "- %s%s%s has been %skicked%s\n", COLOR(COLOR_RED), msg->prefix, COLOR_RESET, COLOR(COLOR_RED), COLOR_RESET);
+							bbs_node_writef(node, "- %s%s%s has been %skicked%s\n", COLOR(TERM_COLOR_RED), msg->prefix, COLOR_RESET, COLOR(TERM_COLOR_RED), COLOR_RESET);
 							break;
 						case IRC_CMD_NICK:
 							if (!strcmp(msg->prefix, irc_client_nickname(ircl))) {
 								/* Our nickname changed. Update the client's internal state. */
 								irc_client_set_nick(ircl, newnick);
 							}
-							bbs_node_writef(node, "- %s%s%s is %snow known as %s%s%s\n", COLOR(COLOR_RED), msg->prefix, COLOR_RESET, COLOR(COLOR_CYAN), COLOR(COLOR_RED), irc_msg_body(msg), COLOR_RESET);
+							bbs_node_writef(node, "- %s%s%s is %snow known as %s%s%s\n", COLOR(TERM_COLOR_RED), msg->prefix, COLOR_RESET, COLOR(TERM_COLOR_CYAN), COLOR(TERM_COLOR_RED), irc_msg_body(msg), COLOR_RESET);
 							break;
 						case IRC_CMD_TOPIC:
-							bbs_node_writef(node, "- %s%s%s has %schanged the topic%s of %s\n", COLOR(COLOR_RED), irc_msg_prefix(msg), COLOR_RESET, COLOR_GREEN, COLOR_RESET, irc_msg_body(msg));
+							bbs_node_writef(node, "- %s%s%s has %schanged the topic%s of %s\n", COLOR(TERM_COLOR_RED), irc_msg_prefix(msg), COLOR_RESET, TERM_COLOR_GREEN, COLOR_RESET, irc_msg_body(msg));
 							break;
 						case IRC_CMD_ERROR:
 						case IRC_CMD_OTHER:

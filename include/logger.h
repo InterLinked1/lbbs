@@ -132,19 +132,19 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
  *
  * @{
  */
-#define COLOR_BLACK     "30"
-#define COLOR_RED       "31"
-#define COLOR_GREEN     "32"
-#define COLOR_BROWN     "33"
-#define COLOR_BLUE      "34"
-#define COLOR_MAGENTA   "35"
-#define COLOR_CYAN      "36"
-#define COLOR_WHITE     "37"
+#define TERM_COLOR_BLACK     "30"
+#define TERM_COLOR_RED       "31"
+#define TERM_COLOR_GREEN     "32"
+#define TERM_COLOR_BROWN     "33"
+#define TERM_COLOR_BLUE      "34"
+#define TERM_COLOR_MAGENTA   "35"
+#define TERM_COLOR_CYAN      "36"
+#define TERM_COLOR_WHITE     "37"
 
 /*! @} */
 
 /* User definitions */
-#define COLOR_SUCCESS COLOR_GREEN
-#define COLOR_FAILURE COLOR_RED
-#define COLOR_PRIMARY COLOR_GREEN
-#define COLOR_SECONDARY COLOR_MAGENTA
+#define COLOR_SUCCESS TERM_COLOR_GREEN
+#define COLOR_FAILURE TERM_COLOR_RED
+#define COLOR_PRIMARY TERM_COLOR_GREEN
+#define COLOR_SECONDARY TERM_COLOR_MAGENTA

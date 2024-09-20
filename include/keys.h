@@ -18,7 +18,7 @@
 /*
  * These are taken directly from ncurses.h.
  * We don't include <ncurses.h>, even for these key definitions,
- * because some of the macros we use (e.g. COLOR_RED) conflict
+ * because some of the macros we use (e.g. TERM_COLOR_RED) conflict
  * with macros ncurses uses, in different ways than we use them. */
 #define KEY_DOWN    0402        /* down-arrow key */
 #define KEY_UP      0403        /* up-arrow key */
