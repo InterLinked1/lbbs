@@ -40,10 +40,15 @@ LIBS += -lcrypt -lcrypto -lcurl -lreadline -luuid -rdynamic
 # -lbfd and friends
 # On SUSE, the remaining libraries are needed to link successfully
 # However, on other platforms they are generally not, and -liberty is likely to cause issues
+# Furthermore, some of the other libraries are also needed, if present, or possibly even missing
 LIBS += -lbfd
 LIBERTY_CHECK = $(shell gcc -liberty 2>&1 | grep "cannot find" | wc -l )
+LSFRAME_CHECK = $(shell gcc -lsframe 2>&1 | grep "cannot find" | wc -l )
 ifneq ($(LIBERTY_CHECK),1)
-LIBS += -liberty -lz -lsframe -lopcodes
+LIBS += -liberty -lz -lopcodes
+endif
+ifneq ($(LSFRAME_CHECK),1)
+LIBS += -lsframe
 endif
 
 UNAME_S := $(shell uname -s)
