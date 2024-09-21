@@ -233,7 +233,7 @@ int __bbs_spawn_pty_master(int fd, int *amaster)
 
 int bbs_spawn_pty_master(int fd)
 {
-	int amaster;
+	int amaster = -1; /* Not needed, but initialize to make old versions of gcc happy */
 	return __bbs_spawn_pty_master(fd, &amaster);
 }
 
@@ -249,6 +249,7 @@ int bbs_pty_allocate(struct bbs_node *node)
 	if (bbs_pthread_create(&node->ptythread, NULL, pty_master, node)) {
 		return -1;
 	}
+	bbs_debug(8, "PTY thread %lu allocated for node %u\n", node->ptythread, node->id);
 
 	/* We are the PTY slave */
 	node->slavefd = open(node->slavename, O_RDWR);
@@ -523,7 +524,8 @@ void *pty_master(void *varg)
 
 	/* Relay data between terminal (socket side) and pty master */
 	for (;;) {
-		int spy = 0, spyfdin, spyfdout = -1;
+		int spy = 0, spyfdout = -1;
+		int spyfdin = -1; /* Doesn't need to be initialized here since it's only used if spy == 1, but gcc isn't smart enough to realize that */
 
 		if (node->slow_bytes_left) {
 			goto finishoutput;
