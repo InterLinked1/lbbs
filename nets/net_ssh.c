@@ -1370,11 +1370,15 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 		bbs_error("Failed to create SFTP session\n");
 		return SSH_ERROR;
 	}
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 	res = sftp_server_init(sftp); /* Initialize SFTP server */
 	if (res) {
 		bbs_error("sftp_server_init failed: %d\n", sftp_get_error(sftp));
 		goto cleanup;
 	}
+#pragma GCC diagnostic pop
 
 	bbs_transfer_set_default_dir(node, mypath, sizeof(mypath));
 	for (;;) {
