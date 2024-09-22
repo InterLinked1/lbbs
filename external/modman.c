@@ -662,17 +662,7 @@ static int check_module(const char *dirname, const char *modname, FILE *mfp, int
 
 		modman_log(0, "    ---> Autodisabling module '%s'\n", modname);
 
-		if (create_file(filename)) {
-			return 0;
-		}
-
-		/* It's not necessary to create dummy .o files, since the .so are the main target.
-		 * As long as that is satisfied, then we're good. */
-
-		/* Now, do the same for the .d file (in addition to the .so file).
-		 * Rather than making another snprintf call, we can just modify the last part of the filename.
-		 * We confirm at the beginning of the outer loop that .so is present in the module name, so this CANNOT fail,
-		 * unless snprintf truncation occured for some reason. */
+		/* First, create the .d filename. */
 		tmp = strchr(filename, '.');
 		if (!tmp) {
 			modman_error("Object filename '%s' does not have file extension?\n", filename);
@@ -684,10 +674,18 @@ static int check_module(const char *dirname, const char *modname, FILE *mfp, int
 			return -1;
 		}
 		/* This is the s in .so. Change it to o and terminate, for .d */
-		*tmp++ = 'd';
-		*tmp = '\0';
+		strcpy(tmp, "d"); /* Safe, since it was big enough for .so, it's bit enough for .d */
 		if (create_file(filename)) {
 			return -1;
+		}
+
+		/* It's not necessary to create dummy .o files, since the .so are the main target.
+		 * As long as that is satisfied, then we're good.
+		 *
+		 * Create the .so file last, so it has the newest timestamp (as the outermost make target). */
+		strcpy(tmp, "so"); /* Safe, since this is what the string was originally */
+		if (create_file(filename)) {
+			return 0;
 		}
 	}
 	return 0;
