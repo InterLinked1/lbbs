@@ -129,7 +129,7 @@ PACKAGES_FREEBSD="$PACKAGES_FREEBSD jansson"
 
 # mod_mimeparse
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libglib2.0-dev libgmime-3.0-dev"
-PACKAGES_FEDORA="$PACKAGES_FEDORA glib2-devel"
+PACKAGES_FEDORA="$PACKAGES_FEDORA glib2-devel gmime30-devel"
 PACKAGES_RHEL="$PACKAGES_RHEL glib2-devel"
 PACKAGES_SUSE="$PACKAGES_SUSE glib2-devel gmime-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH glib2 gmime3"
@@ -164,6 +164,14 @@ OS_DIST_INFO="(lsb_release -ds || cat /etc/*release || uname -om ) 2>/dev/null |
 OS_DIST_INFO=$(eval "$OS_DIST_INFO" | tr -d '"')
 
 printf "OS type: %s\n" "$OS_DIST_INFO"
+
+if [ -f /etc/fedora-release ] || [ -f /etc/redhat-release ]; then
+	# If environment variables not set, use sane defaults
+	if [ "$INSTALL_LIBETPAN" = "" ]; then
+		printf "libetpan does not build successfully on Fedora-based distros... auto-disabling... pass INSTALL_LIBETPAN=1 to override\n"
+		INSTALL_LIBETPAN=0
+	fi
+fi
 
 if [ -f /etc/debian_version ]; then
 	DEBIAN_VERSION=$( lsb_release -a | grep "Release:" | xargs | cut -d' ' -f2 )
@@ -235,7 +243,7 @@ scripts/libwss.sh
 
 # libetpan fails to build successfully on Fedora-based distros,
 # so need to be able to skip that for now using an env var.
-if [ "$SKIP_LIBETPAN" != "1" ]; then
+if [ "$INSTALL_LIBETPAN" != "0" ]; then
 	# libetpan (mod_webmail): the package no longer suffices, since we patch the source.
 	#PACKAGES_DEBIAN="$PACKAGES_DEBIAN libetpan-dev"
 	scripts/libetpan.sh
@@ -245,12 +253,11 @@ if [ "$SKIP_LIBETPAN" != "1" ]; then
 fi
 
 # mod_slack (also depends on libwss)
-ls -la /usr/include
 scripts/libslackrtm.sh
 
 # mod_smtp_filter_arc
 # milter pre-req can be hard to satisfy, so can be disabled using an env var
-if [ "$SKIP_LIBOPENARC" != "1" ]; then
+if [ "$INSTALL_LIBOPENARC" != "0" ]; then
 	scripts/libopenarc.sh
 fi
 

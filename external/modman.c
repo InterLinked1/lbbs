@@ -205,8 +205,23 @@ static int check_lib(const char *modname, const char *libname)
 		return 0;
 	}
 
+	if (res == 256) {
+		/* Sometimes, ldconfig fails to find a library, but gcc is able to find it: */
+		snprintf(cmd, sizeof(cmd), "gcc -l%s 2>&1 | grep 'cannot find' >/dev/null", libname);
+		res = system(cmd);
+		/* In this case, if the shell command returns 0, that means the library could not be found. */
+		if (WIFEXITED(res)) { /* Child terminated normally */
+			res = !WEXITSTATUS(res); /* If it's nonzero, this is success, and if it's zero, couldn't find it */
+			if (!res) {
+				modman_log(7, "Library 'lib%s.so' not found via ldconfig but detected via gcc\n", libname);
+			}
+		} else if (!res) {
+			res = 1;
+		}
+	}
+
 	colorfmt = res ? COLOR_FAILURE : COLOR_SUCCESS;
-	modman_log(0, "   == Module '%s' is dependent on library 'lib%s' ==> %s%s%s\n", modname, libname, colorfmt, res == 256 ? "MISSING" : "FOUND", COLOR_RESET);
+	modman_log(0, "   == Module '%s' is dependent on library 'lib%s' ==> %s%s%s\n", modname, libname, colorfmt, res ? "MISSING" : "FOUND", COLOR_RESET);
 	if (res) {
 		return 1; /* Missing dep */
 	}

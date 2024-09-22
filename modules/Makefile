@@ -7,7 +7,9 @@ DEPENDS := $(patsubst %.c,%.d,$(MOD_SRC))
 INC = -I..
 
 NCURSES_FLAGS=$(shell pkg-config --cflags ncurses)
-GMIME_FLAGS=$(shell pkg-config --cflags glib-2.0 gmime-3.0)
+GMIME_FLAGS := $(shell pkg-config --cflags glib-2.0 gmime-3.0)
+# On Fedora, pkg-config returns  -I/usr/include/libassuan2, which may not even exist and isn't needed
+GMIME_FLAGS := $(filter-out -I/usr/include/libassuan2%,$(GMIME_FLAGS))
 GMIME_LIBS=$(shell pkg-config --libs glib-2.0 gmime-3.0)
 MYSQL_LIBS := $(shell mysql_config --libs)
 
