@@ -127,7 +127,8 @@ static int sieve_script_name_to_path(struct sieve_session *sieve, const char *s,
 
 static int putscript_helper(struct sieve_session *sieve, char *s, int put)
 {
-	char *name, *literal;
+	char *name = NULL; /* Can't be used uninitialized, but make gcc happy */
+	char *literal;
 	unsigned int bytes;
 	char putpath[256];
 	REQUIRE_AUTH();
