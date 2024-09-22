@@ -6,6 +6,39 @@ DEPENDS := $(patsubst %.c,%.d,$(MAIN_SRC))
 # the include directory is in the parent
 INC = -I..
 
+LIBS	= -lrt -lm -ldl
+
+# -lcrypto needed for SHA1_Init in hash.c
+LIBS += -lcrypt -lcrypto -lcurl -lreadline -luuid -rdynamic
+
+# -lbfd and friends
+# On SUSE, the remaining libraries are needed to link successfully
+# However, on other platforms they are generally not, and -liberty is likely to cause issues
+# Furthermore, some of the other libraries are also needed, if present, but must not be specified if not
+LIBS += -lbfd
+LIBERTY_CHECK = $(shell gcc -liberty 2>&1 | grep "cannot find" | wc -l )
+LZSTD_CHECK = $(shell gcc -lzstd 2>&1 | grep "cannot find" | wc -l )
+LSFRAME_CHECK = $(shell gcc -lsframe 2>&1 | grep "cannot find" | wc -l )
+ifneq ($(LIBERTY_CHECK),1)
+LIBS += -liberty -lz -lopcodes
+endif
+ifneq ($(LZSTD_CHECK),1)
+LIBS += -lzstd
+endif
+ifneq ($(LSFRAME_CHECK),1)
+LIBS += -lsframe
+endif
+
+UNAME_S := $(shell uname -s)
+
+ifeq ($(UNAME_S),Linux)
+LIBS += -lbsd -lcap
+endif
+
+ifeq ($(UNAME_S),FreeBSD)
+LIBS += -lexecinfo -lintl
+endif
+
 all: $(EXE)
 
 $(EXE) : $(MAIN_OBJ)
