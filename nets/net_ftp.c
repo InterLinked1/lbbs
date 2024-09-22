@@ -434,13 +434,13 @@ static void *ftp_handler(void *varg)
 			res = ftp_write(ftp, 502, "Command Not Implemented\r\n");
 		/* Transfer Parameters */
 		} else if (!strcasecmp(command, "PBSZ")) { /* Protection Buffer Size */
-			int tmp;
+			long tmp;
 			if (strlen_zero(rest)) {
 				bbs_warning("Missing PBSZ argument\n");
 				break;
 			}
-			tmp = atoi(rest);
-			if (tmp < 0 || tmp > (2^32)) { /* 0 is allowed by RFC 4217 */
+			tmp = atol(rest);
+			if (tmp < 0 || tmp > (1LL << 32)) { /* 0 is allowed by RFC 4217 */
 				res = ftp_write(ftp, 501, "Argument not valid\r\n");
 				continue;
 			}
@@ -448,7 +448,7 @@ static void *ftp_handler(void *varg)
 				res = ftp_write(ftp, 503, "Security data exchange not completed\r\n");
 				continue;
 			}
-			ftp->protbufsize = MIN(tmp, 0); /* XXX Right value from OpenSSL? Most clients will use "0" anyways, so... */
+			ftp->protbufsize = 0; /* XXX MIN(tmp, 0) = 0. Right value from OpenSSL? Most clients will use "0" anyways, so... */
 			ftp->gotpbsz = 1;
 			res = ftp_write(ftp, 200, "PBSZ=%d\r\n", ftp->protbufsize);
 		} else if (!strcasecmp(command, "PROT")) { /* Set Encryption for Data Connection */
