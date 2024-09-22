@@ -28,19 +28,22 @@
 #include <execinfo.h>
 #include <dlfcn.h>
 
-/* Hack for compiling on FreeBSD */
-#if !defined(PACKAGE) && defined(__FreeBSD__)
-#define PACKAGE
-#ifndef PACKAGE_VERSION
-#define PACKAGE_VERSION
+/* This is a simple hack to work around bfd.h wanting config.h to be included first, since it expects autotools to be used.
+ * Since we don't use autotools, make some stuff up.
+ * Since <bfd.h> may or may not actually use them depending on the version of the package providing it,
+ * disabling unused macros for these as well. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-macros"
+#if !defined(PACKAGE) && !defined(PACKAGE_VERSION)
+#define PACKAGE BBS_SHORTNAME
+#define PACKAGE_VERSION BBS_VERSION
 #include <bfd.h>
-#else
-#include <bfd.h>
-#endif /* PACKAGE_VERSION */
 #undef PACKAGE
+#undef PACKAGE_VERSION
 #else
 #include <bfd.h>
-#endif /* PACKAGE */
+#endif
+#pragma GCC diagnostic pop
 
 #define BT_MAX_STACK_FRAMES 20
 #define BT_MSG_BUFF_LEN 1024
