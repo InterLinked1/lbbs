@@ -34,6 +34,10 @@ mod_ncurses.o : mod_ncurses.c mod_ncurses.d
 	@echo "  [CC] $< -> $@"
 	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self $(NCURSES_FLAGS) -MMD -MP $(INC) -c $<
 
+mod_webmail.o : mod_webmail.c mod_webmail.d
+	@echo "  [CC] $< -> $@"
+	$(CC) $(CFLAGS) -funsigned-char -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) $(ETPANCFLAGS) -c $<
+
 %.so : %.o
 	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^
@@ -113,10 +117,6 @@ mod_smtp_filter_dmarc.so : mod_smtp_filter_dmarc.o
 mod_smtp_filter_spf.so : mod_smtp_filter_spf.o
 	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lspf2
-
-mod_webmail.o : mod_webmail.c mod_webmail.d
-	@echo "  [CC] $< -> $@"
-	$(CC) $(CFLAGS) -funsigned-char -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) $(ETPANCFLAGS) -c $<
 
 mod_webmail.so : mod_webmail.o
 	@echo "  [LD] $^ -> $@"
