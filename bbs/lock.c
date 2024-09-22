@@ -126,7 +126,7 @@ int __bbs_mutex_lock(bbs_mutex_t *t, const char *filename, int lineno, const cha
 	if (unlikely(!t->info.initialized)) {
 		lock_warning("Attempt to lock uninitialized mutex %s\n", name);
 	} else if (unlikely(t->info.destroyed)) {
-		lock_error("Attempt to lock mutex %s previously destroyed  at %s:%d\n", name, t->info.filename, t->info.lineno);
+		lock_error("Attempt to lock mutex %s previously destroyed at %s:%d\n", name, t->info.filename, t->info.lineno);
 	}
 
 #ifdef DETECT_DEADLOCKS
@@ -217,7 +217,7 @@ int __bbs_mutex_unlock(bbs_mutex_t *t, const char *filename, int lineno, const c
 
 	if (unlikely(!t->info.initialized)) {
 		lock_warning("Attempt to unlock uninitialized mutex %s\n", name);
-	}  else if (unlikely(t->info.destroyed)) {
+	} else if (unlikely(t->info.destroyed)) {
 		lock_error("Attempt to unlock mutex %s previously destroyed at %s:%d\n", name, t->info.filename, t->info.lineno);
 	} else if (unlikely(t->info.owners < 1)) {
 		lock_error("Attempt to unlock unheld mutex %s\n", name);
@@ -472,7 +472,7 @@ int __bbs_rwlock_unlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 
 	if (unlikely(!t->info.initialized)) {
 		lock_warning("Attempt to unlock uninitialized lock %s\n", name);
-	}  else if (unlikely(t->info.destroyed)) {
+	} else if (unlikely(t->info.destroyed)) {
 		lock_error("Attempt to unlock lock %s previously destroyed at %s:%d\n", name, t->info.filename, t->info.lineno);
 	} else if (unlikely(t->info.owners < 1)) {
 		lock_error("Attempt to unlock unheld lock %s\n", name);

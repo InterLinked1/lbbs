@@ -130,7 +130,7 @@ static int set_cwd(void)
 	char dir[PATH_MAX];
 
 	if (!getcwd(dir, sizeof(dir)) || eaccess(dir, R_OK | X_OK | F_OK)) {
-		fprintf(stderr, "Unable to access the running directory (%s).  Changing to '/' for compatibility.\n", strerror(errno));
+		fprintf(stderr, "Unable to access the running directory (%s). Changing to '/' for compatibility.\n", strerror(errno));
 		/* If we cannot access the CWD, then we couldn't dump core anyway,
 		 * so chdir("/") won't break anything. */
 		if (chdir("/")) {
