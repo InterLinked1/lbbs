@@ -152,6 +152,10 @@ static int mark_deleted(struct pop3_session *pop3, int message)
 	return 0;
 }
 
+/* gcc 14 thinks a null dereference can occur at pop3->deletions[element].
+ * We already have an assertion so this warning is pointless. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnull-dereference"
 static int is_deleted(struct pop3_session *pop3, unsigned int message)
 {
 	unsigned int element, bit;
@@ -170,7 +174,8 @@ static int is_deleted(struct pop3_session *pop3, unsigned int message)
 #endif
 	return (pop3->deletions[element] & (1 << bit)) ? 1 : 0;
 }
-#pragma GCC diagnostic pop
+#pragma GCC diagnostic pop /* -Wnull-dereference */
+#pragma GCC diagnostic pop /* -Wconversion */
 
 static void clear_deleted(struct pop3_session *pop3)
 {
