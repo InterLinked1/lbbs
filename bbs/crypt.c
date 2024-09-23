@@ -198,8 +198,13 @@ char *bbs_password_hash(const char *password, const char *salt)
 #ifdef CRYPT_DEBUG
 	bbs_debug(9, "Using alternate crypt_r\n");
 #endif /* CRYPT_DEBUG */
-	data.current_salt[0] = '$';
+#if 0
+	/* XXX Modern documentation doesn't really discuss the purpose of this field or when you would want
+	 * to seed the first two bytes like this, and I don't really remember why this was done now.
+	 * Also, on some platforms these fields aren't available, so just disable this for now. */
+	data.current_salt[0] = '$'; /* See encrypt(3) */
 	data.current_salt[1] = '2';
+#endif
 	hash = __crypt_r(password, salt, &data); /* Use our custom implementation of crypt_r */
 #endif /* NEED_CRYPTO_IMPL */
 
