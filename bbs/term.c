@@ -198,21 +198,10 @@ int tty_set_line_discipline(int fd)
 		return -1;
 	}
 
-	/* Keep ICRNL on or we get ^M in the terminal
-	 * Enabling IGNCR allows us to prevent double new lines on ENTER (empty lines, with SyncTERM and Windows Telnet client)
-	 * By itself, this majorly screws PuTTY/KiTTY up as, apart from not fixing the ^@ issue, it results in no line breaks at all.
-	 * However, this was fixed in pty.c by translating CR NUL to CR LF there, and now all is well.
-	 *
-	 * ISIG: Disable signals. Since most of the time the slave end of the PTY is being controlled by this main server process
-	 * (the exception is when the node is executing a child process), there's no point in passing signals through.
-	 * VINT: SIGINT support (when ISIG is set)
-	 * XXX For some reason, neither disabling nor enabling ISIG/VINT here seem to have any effect on making ^C -> SIGINT
-	 * to child processes. So for now this is handled manually in a rather hacky way in the PTY master thread,
-	 * since the master side *does* see the ^C as decimal 3 (ETX) so it can do something with that, at least.
-	 * Provided, of course, any previous PTY is in raw mode so all that stuff gets sent.
-	 */
-	t.c_iflag |= (ICRNL | IGNCR);
-	t.c_iflag &= ~(INLCR);
+	/* Set ICRNL, which is needed for clients that just send CR (e.g. PuTTY/KiTTY), since we need to see a newline in canonical mode.
+	 * Do NOT set IGNCR, as that causes ICRNL to be ignored. */
+	t.c_iflag |= ICRNL;
+	t.c_iflag &= ~(INLCR | IGNCR);
 	if (tcsetattr(fd, TCSANOW, &t) == -1) {
 		bbs_error("tcsetattr: %s\n", strerror(errno));
 		return -1;

@@ -19,7 +19,27 @@
 
 #include "include/bbs.h"
 
+/* Uncomment this to generate a log message for every chunk of data received
+ * by the client, logging the number of bytes. Mainly useful for debugging
+ * PTY-layer stuff, shouldn't be used in production. */
 /* #define DEBUG_PTY */
+
+/* Uncomment this to dump all input received for a log, so we can see exactly
+ * what was sent by client at the application layer (so minus encryption and all that).
+ * The files created are temporary and may not be named uniquely.
+ * This is not intended to ever be used in production, it is primarily for manually capturing
+ * the sequences of data sent by certain terminal clients so we can encode them in tests.
+ * This is different from tcpdump, which could capture, say, raw SSH encryption data,
+ * which is not useful for this - we just want the unencrypted protocol-layer data, such
+ * as escape sequences, line endings, etc. */
+/* #define DUMP_PTY_INPUT */
+
+#ifdef DUMP_PTY_INPUT
+/* Define the directory in which the log file will be created.
+ * Must include a trailing slash and should begin with a leading slash for absolute path.
+ * Leave empty to create log file in current directory in which the BBS is running. */
+#define DUMP_DIRECTORY ""
+#endif
 
 #include <stdlib.h>
 #include <string.h>
@@ -488,12 +508,22 @@ void *pty_master(void *varg)
 	char strippedbuf[PTY_BUFFER_SIZE];
 	ssize_t bytes_read, bytes_wrote;
 	nfds_t numfds = 0; /* gcc thinks it can be used uninitialized? */
-	int emulated_crlf = 0, just_did_emulated_crlf = 0;
 	/* Expanded scope for slow_write */
 	ssize_t last_bytes_read = 0;
 	ssize_t lastbyteswrote = 0;
 	char *relaybuf = NULL;
 	unsigned int speed = 0;
+	int is_telnet, is_tdd;
+	enum {
+		TDD_OTHER,
+		TDD_CR,
+		TDD_CRLF,
+		TDD_CRLFCR,
+	} tdd_receive_state = TDD_OTHER;
+#ifdef DUMP_PTY_INPUT
+	char filename[256];
+	FILE *fp;
+#endif
 
 	/* Save relevant fields. */
 	unsigned int nodeid;
@@ -521,6 +551,18 @@ void *pty_master(void *varg)
 	 * need to close amaster in this thread if we exit due to our own volition,
 	 * and since we never do that, we don't need to.
 	 */
+
+	is_telnet = STARTS_WITH(node->protname, "TELNET"); /* TELNET or TELNETS */
+	is_tdd = NODE_IS_TDD(node);
+
+#ifdef DUMP_PTY_INPUT
+	snprintf(filename, sizeof(filename), "%s%s_pty_input_%d", DUMP_DIRECTORY, BBS_SHORTNAME, node->lifetimeid);
+	fp = fopen(filename, "wb");
+	if (!fp) {
+		bbs_error("Failed to open PTY input file for writing: %s\n", strerror(errno));
+		return NULL;
+	}
+#endif
 
 	/* Relay data between terminal (socket side) and pty master */
 	for (;;) {
@@ -587,124 +629,143 @@ gotinput:
 				bbs_debug(10, "Node %d: master->slave(%ld): (%d %d)\n", nodeid, bytes_read, *buf, bytes_read > 1 ? *(buf + 1) : -1);
 			}
 #endif
-			if (bytes_read == 2 && *buf == '\r' && *(buf + 1) == '\0') { /* Probably faster than strncmp, and performance really matters here */
-				/* This is needed for PuTTY/KiTTY. SyncTERM/Windows Telnet don't need this, since they do CR LF,
-				 * but according to RFC 854, CR NUL is also valid for Telnet and so we handle that here.
-				 * An important reason for that is if the slave fd is in canonical mode, then the buffer won't
-				 * get flushed until there's a LF, so we must do this here to flush output to the slave immediately.
-				 */
-				bbs_debug(9, "Got CR NUL, translating to CR LF for slave\n");
-				*(buf + 1) = '\n';
-				emulated_crlf = 0;
-				just_did_emulated_crlf = 0;
-			} else if (bytes_read == 1 && *buf == '\r') {
-				/* RLogin clients (at least SyncTERM) seem to do this.
-				 * This can also happen with Telnet, so always convert,
-				 * and if we happen to get a LF next, ignore it. */
-				/* XXX Technically, very small chance we might've read LF on the next poll/read,
-				 * but they most likely would arrive together, if there was one,
-				 * since they'd be transmitted at the same time. */
-				if (just_did_emulated_crlf) {
-					/* TDDs seem to send CR LF CR when you hit RETURN, rather than CR LF as specified in V.18.
-					 * At least, mine does.
-					 * Since Bauduot code will be sent to us byte by byte, that means on 3 separate
-					 * reads from the PTY master, we'll read CR, then LF, then CR.
-					 * First, we'll end up emulating CR LF when we see the CR.
-					 * Next, we'll end up ignoring the LF due to the emulated CR LF.
-					 * Finally, we need to ignore the trailing CR completely.
-					 */
-					bbs_debug(7, "Ignoring spurious CR, since we just emulated CR LF\n");
-					emulated_crlf = 0;
-					just_did_emulated_crlf = 0;
-				} else {
-					bbs_debug(9, "Got CR, translating to CR LF for slave\n");
-					*(buf + 1) = '\n'; /* We must have a LF for input to work in canonical mode! */
-					bytes_read = 2;
-					emulated_crlf = 1;
-					just_did_emulated_crlf = 0;
-				}
-			} else if (bytes_read == 1 && *buf == '\n' && emulated_crlf) {
-				/* The last thing we read was just a CR, and that was it. We treated it as a CR LF, so ignore the LF now. */
-				emulated_crlf = 0;
-				just_did_emulated_crlf = 1;
-				bbs_debug(7, "Ignoring LF due to previous emulated CR LF\n");
-				continue;
-			} else {
-				if (bytes_read == 1 && NODE_IS_TDD(node)) {
-					*buf = bbs_node_input_translate(node, *buf); /* Translate characters if needed for a TDD */
-				}
-				emulated_crlf = just_did_emulated_crlf = 0;
+#ifdef DUMP_PTY_INPUT
+			/* This can include binary data, so use fwrite: */
+			fwrite(buf, 1, (size_t) bytes_read, fp);
+#endif
+			if (is_telnet && bytes_read == 2 && *buf == '\r' && *(buf + 1) == '\0') { /* Probably faster than strncmp, and performance really matters here */
+				/* The sequence CR NUL is used in telnet to indicate a CR not followed by LF (see RFC 854).
+				 * Technically it is supposed to be used both ways, but we don't do that for output.
+				 * However, we do need to handle it properly for input.
+				 *
+				 * XXX This is Telnet protocol specific logic, so ideally it would be in net_telnet
+				 * and not in the BBS core at all. However, that would require processing all
+				 * receive data in net_telnet before getting here. Eventually, we SHOULD do that,
+				 * as part of also being able to handle window resizing and such during a session,
+				 * but until then, that logic is most naturally handled here.
+				 * If/when this logic is moved to net_telnet, it should also be more robust,
+				 * i.e. every byte should be analyzed no matter where the CR NUL sequence may fall
+				 * across received data (and same for any Telnet escape sequences). */
+				bbs_debug(9, "Got CR NUL, translating to CR for slave\n");
+				bytes_read = 1; /* Just ignore the NUL. It's not part of the application data so shouldn't be passed down the pseudoterminal. */
 			}
+			if (is_tdd && bytes_read == 1) { /* With TDD, each character is sent one at a time due to the slow speed of 45/50 baud */
+				/* XXX As above, this is TDD-specific logic which ideally would be in net_telnet */
+				switch (*buf) {
+					case '\r':
+						if (tdd_receive_state == TDD_CRLF) {
+							/* TDDs seem to send CR LF CR when you hit RETURN, rather than CR LF as specified in V.18.
+							 * At least, my Superprint 4425 does.
+							 * Since Bauduot code will be sent to us byte by byte, that means on 3 separate
+							 * reads from the PTY master, we'll read CR, then LF, then CR.
+							 * First, we'll end up emulating CR LF when we see the CR.
+							 * Next, we'll end up ignoring the LF due to the emulated CR LF.
+							 * Finally, we need to ignore the trailing CR completely.
+							 */
+							tdd_receive_state = TDD_CRLFCR;
+						} else if (tdd_receive_state == TDD_OTHER) {
+							tdd_receive_state = TDD_CR;
+						} else {
+							tdd_receive_state = TDD_OTHER;
+						}
+						break;
+					case '\n':
+						tdd_receive_state = tdd_receive_state == TDD_CR ? TDD_CRLF : TDD_OTHER;
+						break;
+					default:
+						*buf = bbs_node_input_translate(node, *buf); /* Translate characters if needed for a TDD */
+						tdd_receive_state = TDD_OTHER;
+				}
+				if (tdd_receive_state != TDD_OTHER) {
+					if (tdd_receive_state != TDD_CRLFCR) {
+						/* If we're in the middle of reading a CR LF CR sequence, don't do anything yet */
+						continue;
+					}
+					/* Got a complete CR LF CR line sequence.
+					 * Just treat it as a single CR (like most terminals send),
+					 * so we process it as a single "ENTER" */
+					bbs_debug(9, "Treating CR LF CR as a single CR for TDD compatibility\n");
+					bytes_read = 1;
+				}
+			}
+
+			if (bytes_read == 1 && *buf >= 1 && *buf <= 26) {
+				char sigchar = (char) ('A' - 1 + *buf);
+				/* Received byte corresponds to CTRL + [A through Z],
+				 * commonly interpreted to send a signal to the foreground process group.
+				 * XXX Technically, there's no guarantee that such a byte would arrive by itself (bytes_read == 1),
+				 * but in practice that's generally how it is, if a user did it. */
+				if (node->childpid) {
+					/*
+					 * Initially, we had code here to inspect the ASCII character received (e.g. ETX in ASCII, or 3)
+					 * and manually generate the corresponding signal ourselves (e.g. SIGINT).
+					 * This is completely redundant and totally unnecessary, and this code has been removed.
+					 *
+					 * The TTY line discipline is normally responsible for interpreting bytes as signals (e.g. 3 for ^C),
+					 * and sending the corresponding signal (e.g. SIGINT) to the foreground process group of the terminal.
+					 * Pseudoterminals will, by default, allow the kernel to inspect these and automatically send
+					 * the appropriate signal to the foreground process group. There is a call to tcsetpgrp in system.c,
+					 * after a child process has forked (but prior to exec) to set the terminal foreground process group.
+					 *
+					 * The ISIG flag for tcgetattr's c_lflag controls whether or not the kernel will "interpret"
+					 * these signals for the PTY, as is done by default typically. Simply leaving this enabled
+					 * is sufficient to ensure that the child process gets a SIGINT when a ^C is received. There
+					 * is certainly no need to inspect the byte here and manually generate a signal ourselves.
+					 *
+					 * However, when executing an external program like ssh, for example, it may not be desirable
+					 * to allow signals to be handled by the kernel for the PTY. If you're running a program in
+					 * a remote SSH session, for example, a ^C should pass through to the remote host, without having
+					 * any effect on this system, to allow the remote host to interpret the ^C and send a SIGINT to
+					 * its running program. In this case, we want ISIG to be unset.
+					 *
+					 * In practice, calling tty_disable_signal_handling after set_controlling_term
+					 * doesn't seem to make much difference... behavior is as desired whether or not we do that.
+					 * It makes sense that ssh would probably disable signal handling on its own,
+					 * but programs also exit on their own when receiving input. Calling that function
+					 * would probably allowing FORCING programs to exit in certain cases, like
+					 * if it's running in raw mode and not exiting gracefully, but terminals don't
+					 * account for that sort of thing and neither should we.
+					 */
+					bbs_debug(3, "Received ^%c, forwarding it to child process\n", sigchar);
+				} else {
+					/* Now, if we're not executing a child process, things are very different.
+					 * In this case, it actually makes sense to do some processing of these signals ourselves, too,
+					 * since we'll need to implement custom logic to handle these.
+					 * For example, ^C and ^Z here currently cancel any pending output... the kernel
+					 * can't help us with that since all this logic is in userspace, in the BBS. */
+					switch (*buf) {
+						case 3: /* ^C */
+						case 26: /* ^Z. The PAUSE/BREAK key typically maps to this, so that's why this is included. */
+							node->slow_bytes_left = 0;
+							/* Cancel any pending terminal output. This allows users to abort
+							 * a large amount of output, particularly with emulated baud rate.
+							 * This is a very simple implementation since this is easily done
+							 * in the PTY master thread; a more elaborate implementation could
+							 * involve setting a flag here to break out of whatever the BBS is
+							 * currently in the middle of doing (though most applications should
+							 * provide their own mechanism of doing this). But it could be handy
+							 * to allow ^C to break out of the door module that might be executing,
+							 * in case its input handling is buggy in some way.
+							 */
+							bbs_debug(3, "Received ^%c, cancelling pending output\n", sigchar);
+							break;
+						default:
+							bbs_debug(3, "Received ^%c, forwarding it\n", sigchar);
+					}
+					/* If there's no child process, then there's not much reason to relay
+					 * this byte through the pseudoterminal, but it doesn't do any harm, either.
+					 * For example, if we had some binary terminal logic implemented within the BBS
+					 * (not as an external program), we might actually want to receive all the bytes.
+					 * So, just relay everything through no matter what. */
+				}
+			}
+
 			/* We only slow output, not input, so don't use slow_write here, regardless of the speed */
 			bytes_wrote = bbs_write(amaster, buf, (size_t) bytes_read);
 			/* Don't relay user input to sysop for spying here. If we're supposed to, it'll get echoed back in the output. */
 			if (bytes_wrote != bytes_read) {
 				bbs_error("Expected to write %ld bytes, only wrote %ld\n", bytes_read, bytes_wrote);
 				break;
-			}
-			if (bytes_read == 1 && *buf >= 1 && *buf <= 26) {
-				/* In general, we should not intercept messages between 1 and 26 (^A through ^Z).
-				 * They'll pass through fine to children on their own, i.e. ^D, etc. do what you'd expect.
-				 * Handle ^C explicitly here though in case in the future we want to things when we *don't* have a child,
-				 * and because we need to actually generate SIGINT, not write ^C as input (which happens otherwise).
-				 * All other CTRL keys can just pass through directly.
-				 */
-				/* 3 = ETX (^C / SIGINT) */
-				if (node->childpid && *buf == 3) {
-					/* If executing a child process, also pass SIGINT on, in addition to writing it to the PTY slave */
-#if 0
-					/* Never mind, this doesn't work (even when run as root)
-					 * Possibly because it's been disabled due to being a "security risk",
-					 * e.g. https://undeadly.org/cgi?action=article;sid=20170701132619
-					 * But that only happened on BSD, not Linux, so dunno...
-					 */
-					char c = 1; /* termios.c_cc[VINTR] */
-					if (ioctl(amaster, TIOCSTI, &c)) {
-						bbs_error("TIOCSTI failed: %s\n", strerror(errno));
-					}
-#endif
-					/* This does work. It sends a SIGINT to the child process,
-					 * just as if you hit ^C in a shell session.
-					 * How it handles it is up to the child process.
-					 * It may not necessarily exit. That's okay.
-					 *
-					 * That said, I feel like this is not some of my best work here...
-					 * it just feels hacky to manually detect ETX (decimal 3 ASCI)
-					 * and intercept it like this to send the signal.
-					 * We should make this work in a more elegant manner, this is
-					 * just the first thing I tried that seems to work properly.
-					 *
-					 * On the flip side, maybe this is a good way to handle it.
-					 * The PTY doesn't know if there's a child PID or not.
-					 * However, we do (by checking node->childpid).
-					 * This way, we can also use ^C within the BBS itself,
-					 * depending on certain things, i.e. we can make it
-					 * cause a module or door to abort, by writing to the node pipe or something
-					 * and returning -1.
-					 */
-					bbs_debug(3, "Sending SIGINT to process %d\n", node->childpid);
-					bbs_assert(node->childpid != getpid());
-					if (kill(node->childpid, SIGINT)) {
-						bbs_error("SIGINT failed: %s\n", strerror(errno));
-					}
-				} else {
-					switch (*buf) {
-						case 3: /* ^C */
-						case 26: /* ^Z. The PAUSE/BREAK key typically maps to this, so that's why this is included. */
-							node->slow_bytes_left = 0;
-							/* Cancel any pending terminal output. This allows users to abort
-							 * a large amount of output, particularly with emulated baud rate. */
-							bbs_debug(3, "Received ^%c, cancelling pending output\n", 'A' - 1 + *buf);
-							break;
-						default:
-							/* Pass these through to the BBS or currently executing program */
-							bbs_debug(3, "Received ^%c, forwarding it\n", 'A' - 1 + *buf);
-							/* These actually *do* get forwarded to an executing program,
-							 * not entirely sure from the logic here how that is, but that is
-							 * actually what we want, so it works out... */
-					}
-					continue;
-				}
 			}
 		} else if (fds[1].revents & POLLIN) { /* Got input from pty -> socket */
 			relaybuf = writebuf;
@@ -822,6 +883,11 @@ finishoutput:
 			bbs_error("poll returned %d (revent %s), but no POLLIN?\n", pres, poll_revent_name(fds[x].revents));
 		}
 	}
+
+#ifdef DUMP_PTY_INPUT
+	fflush(fp);
+	fclose(fp);
+#endif
 
 	bbs_debug(9, "PTY master exiting for node %d\n", nodeid);
 	return NULL;
