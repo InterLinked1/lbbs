@@ -29,6 +29,7 @@
 
 #include "include/module.h"
 #include "include/node.h"
+#include "include/auth.h"
 #include "include/utils.h"
 #include "include/config.h"
 #include "include/net.h"
@@ -64,7 +65,7 @@ static int send_urgent(int fd)
 
 static int rlogin_handshake(struct bbs_node *node)
 {
-	int i;
+	int i, attempts = 0;
 	ssize_t res;
 	char buf[128];
 	unsigned char buf2[128];
@@ -84,15 +85,41 @@ static int rlogin_handshake(struct bbs_node *node)
 	}
 	buf[res] = '\0'; /* Safe - just in case we didn't read a NUL */
 	i = bbs_strncount(buf, (size_t) res, '\0');
-	if (i != 4) {
+	while (i < 4) {
+		/* PuTTY/KiTTY may not send all the data at once. */
+		ssize_t mres;
 		bbs_debug(3, "Got %ld-byte connection string with %d NULs?\n", res, i);
+		mres = bbs_poll_read(node->fd, SEC_MS(30), buf + res, sizeof(buf) - (size_t) res - 1);
+		if (mres <= 0) {
+			bbs_warning("Didn't receive rest of connection string\n");
+			return -1;
+		}
+		res += mres;
+		buf[mres] = '\0'; /* Safe - just in case we didn't read a NUL */
+		if (++attempts > 3) {
+			bbs_warning("Too many attempts to receive connection string, disconnecting\n");
+			return -1;
+		}
+		i = bbs_strncount(buf, (size_t) res, '\0');
+	}
+	if (i != 4) {
+		bbs_warning("Got %ld-byte connection string with %d NULs?\n", res, i);
 		return -1;
 	}
+
+	/* PuTTY/KiTTY sends: '//username/xterm/38400'
+	 * SyncTERM sends: '/password/username/syncterm/115200', i.e. it sends the password as the "client user name" parameter.
+	 * The RFC does not actually document that client user name can be used for this, or even what it's for,
+	 * but I will assume this is some kind of standard and therefore:
+	 * - if the client user name is not empty, assume it's the password and do NOT log it in any log messages
+	 * - if both client user name and server user name are non-empty, attempt to automatically authenticate the user
+	 */
+
 	s1 = buf;
 	s2 = s1 + strlen(s1) + 1;
 	s3 = s2 + strlen(s2) + 1;
 	s4 = s3 + strlen(s3) + 1;
-	bbs_debug(3, "Got %ld-byte connection string (%s/%s/%s/%s)\n", res, s1, s2, s3, s4);
+	bbs_debug(3, "Got %ld-byte connection string (%s/%s/%s/%s)\n", res, s1, !strlen_zero(s2) ? "<nonempty>" : "<empty>", s3, s4);
 	if (!strlen_zero(s4)) {
 		char *tmp;
 		tmp = strchr(s4, '/');
@@ -104,6 +131,14 @@ static int rlogin_handshake(struct bbs_node *node)
 		}
 		REPLACE(node->term, s4);
 	}
+
+	if (!strlen_zero(s2) && !strlen_zero(s3)) {
+		/* Proceed whether authentication succeeds or not.
+		 * If it fails, the user will just need to authenticate manually. */
+		bbs_authenticate(node, s3, s2);
+	}
+	bbs_memzero(buf, sizeof(buf)); /* Scrub the password, if present */
+
 	if (SWRITE(node->fd, "\0") != STRLEN("\0")) { /* Send 0-byte to ACK and change to data transfer mode */
 		return -1;
 	}
@@ -129,7 +164,7 @@ static int rlogin_handshake(struct bbs_node *node)
 	 * so this currently always fails.
 	 * Probably we're not sending the TCP urgent data properly. Dunno. */
 
-	res = bbs_poll_read(node->fd, SEC_MS(2), (char*) buf2, sizeof(buf2) - 1);
+	res = bbs_poll_read(node->fd, SEC_MS(1), (char*) buf2, sizeof(buf2) - 1);
 	if (res <= 0) {
 		bbs_warning("Failed to receive window change control sequence\n");
 		/* Just continue */
