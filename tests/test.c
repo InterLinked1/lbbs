@@ -837,6 +837,7 @@ static int run_test(const char *filename, int multiple)
 				fprintf(modulefp, "[users]\r\n%s=%s\r\n", TEST_USER, TEST_HASH);
 				fprintf(modulefp, "%s=%s\r\n", TEST_USER2, TEST_HASH2);
 				fprintf(modulefp, "%s=%s\r\n", TEST_USER3, TEST_HASH3);
+				fprintf(modulefp, "%s=%s\r\n", TEST_USER4, TEST_HASH4);
 				fclose(modulefp);
 			}
 			if (option_autoload_all) {

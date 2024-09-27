@@ -85,6 +85,10 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #define TEST_HASH3 "$2y$10$0hcFFDyIUBkNcqMPw9G0t.vR.c8oBArJJOE1tK1atcPWkk9XBhvzK"
 #define TEST_SASL3 "dGVzdHVzZXIyAHRlc3R1c2VyMgBQQHNzdzByRA=="
 
+#define TEST_USER4 "termtest"
+#define TEST_PASS4 "TERMPASS"
+#define TEST_HASH4 "$2y$10$aa80TI0jN6Dqq3G5ctBKruBFwL6iYCCPNJ6vV7TjZ.xN1enqPrODq"
+
 #define ENDL "\r\n"
 
 int test_dir_file_count(const char *directory);
