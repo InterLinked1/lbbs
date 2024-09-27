@@ -795,6 +795,15 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		/* Don't call tcgetsid here, it will fail */
 		bbs_debug(6, "sid: %d, tcpgrp: %d, term: %s\n", getsid(getpid()), tcgetpgrp(fd), S_IF(node->term));
 		snprintf(fullterm, sizeof(fullterm), "TERM=%s", S_OR(node->term, "xterm")); /* Many interactive programs will whine if $TERM is not set */
+		if (node->term && !strcmp(node->term, "ANSI")) {
+			/* Windows Command Prompt (cmd.exe) advertises its term type as ANSI for telnet.
+			 * Well, ANSI doesn't exist in the terminfo database, but ansi does, so use that instead.
+			 * Note that Microsoft Telnet still works horribly, and most termcap/ncurses
+			 * dependent programs are going to be horribly broken.
+			 * However, this IS the correct terminal definition to use. */
+			bbs_debug(1, "Setting TERM to 'ansi' instead of 'ANSI' for compatibility\n");
+			strcpy(fullterm + STRLEN("TERM="), "ansi"); /* Safe */
+		}
 		/* Save terminal settings to restore after execution */
 		memset(&term, 0, sizeof(term));
 		if (tcgetattr(node->slavefd, &term)) {

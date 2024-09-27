@@ -145,28 +145,72 @@ static int telnet_read_command(int fd, unsigned char *buf, size_t len)
 
 #define telnet_process_command(node, settings, buf, len, res) __telnet_process_command(node, settings, buf, len, res, depth + 1)
 
+/* IAC SE frequently indicates the end of a client's response for a command */
+static const unsigned char RESPONSE_FINALE[] = { IAC, SE };
+#define RESPONSE_FINALE_LEN 2
+
+/* Forward declaration */
+static int __telnet_process_command(struct bbs_node *node, struct telnet_settings *settings, unsigned char *buf, size_t len, int res, int depth);
+
+static int telnet_process_command_additional(struct bbs_node *node, struct telnet_settings *settings, unsigned char *buf, size_t len, int res, int depth)
+{
+	if (!TELCMD_OK(buf[0]) || !TELCMD_OK(buf[1])) {
+		bbs_warning("Got out of bounds command: %d %d %d\n", buf[0], buf[1], buf[2]);
+		return 0;
+	}
+	if (!TELOPT_OK(buf[2])) {
+		bbs_warning("Got out of bounds option: %d %d %d\n", buf[0], buf[1], buf[2]);
+		return 0;
+	}
+	bbs_debug(3, "Processing additional Telnet command %s %s %s\n", telcmds[*buf - xEOF], telcmds[*(buf + 1) - xEOF], telopts[*(buf + 2)]);
+	return telnet_process_command(node, settings, buf, len, res);
+}
+
 static int __telnet_process_command(struct bbs_node *node, struct telnet_settings *settings, unsigned char *buf, size_t len, int res, int depth)
 {
-	if (depth > 3) {
+	if (depth > 4) {
 		/* Prevent infinite recursion if the client replies with the same thing that triggered another command */
 		bbs_warning("Exceeded command stack depth %d\n", depth);
 		return 0;
 	}
 
+	bbs_assert(res >= 3);
+
 	if (buf[1] == DO && buf[2] == TELOPT_ECHO) {
 		settings->rcv_noecho = 1;
 		bbs_debug(3, "Client acknowledged local echo disable\n");
 	} else if (buf[1] == WILL && buf[2] == TELOPT_NAWS) {
+		if (node->dimensions) {
+			/* If we already got the dimensions, we don't want them again.
+			 * If logic is added to process commands during a session and receive window size updates,
+			 * this condition would need to be refined, but it would still be the case that we don't
+			 * care to receive this more than once during initial negotiation. */
+			bbs_debug(3, "Ignoring offer to send window dimensions since we already have them\n");
+			if (telnet_send_command(node->wfd, DONT, TELOPT_NAWS)) {
+				return -1;
+			}
+		}
 		if (!settings->sent_winsize) {
 			if (telnet_send_command(node->wfd, DO, TELOPT_NAWS)) {
 				return -1;
 			}
 			settings->sent_winsize = 1;
 		}
-		/* Read terminal type, coming up next */
+		/* Read terminal dimensions, coming up next */
 		res = telnet_read_command(node->rfd, buf, len);
 		if (res > 0) {
 			res = telnet_process_command(node, settings, buf, len, res);
+		} else {
+			/* Even after we send IAC DO NAWS and we receive IAC WILL NAWS from the client,
+			 * SyncTERM doesn't seem to do IAC SB NAWS unless we repeat our IAC DO NAWS once more. */
+			bbs_debug(3, "Failed to receive terminal dimensions, even though client offered to send it?\n");
+			if (telnet_send_command(node->wfd, DO, TELOPT_NAWS)) {
+				return -1;
+			}
+			res = telnet_read_command(node->rfd, buf, len);
+			if (res > 0) {
+				res = telnet_process_command(node, settings, buf, len, res);
+			}
 		}
 	} else if (buf[1] == WONT && buf[2] == TELOPT_NAWS) {
 		/* Client disabled NAWS, at our request, good. */
@@ -217,11 +261,40 @@ static int __telnet_process_command(struct bbs_node *node, struct telnet_setting
 			return res;
 		} else if (res > 0) {
 			if (buf[1] == SB && buf[2] == TELOPT_TTYPE && buf[3] == TELQUAL_IS && res >= 6) {
-				bbs_debug(3, "Terminal type is %.*s\n", (int) res - 6, buf + 4); /* First 4 bytes are command, and last two are IAC SE */
-				if (res - 6 < (int) len - 1) {
-					memcpy(buf, buf + 4, (size_t) res - 6);
-					buf[res - 6] = '\0';
-					REPLACE(node->term, (char*) buf);
+				/* With SyncTERM, if we resend IAC DO NAWS (as we now do above, since for some reason it needs to be prompted to),
+				 * SyncTERM will send the term type, followed by IAC SE IAC WILL TELOPT_NAWS.
+				 * The IAC SE is the trailer to the response, but the IAC WILL TELOPT_NAWS (offering to send window dimensions)
+				 * throws the accounting below off. It's also a bit odd, given we already received the dimensions
+				 * and then send IAC DONT NAWS (and received IAC WONT NAWS) in response.
+				 * That said, while odd, it is certainly legitimate to receive multiple commands in a single call to read()
+				 * like this, and we need to parse appropriately. Specifically,
+				 * rather than assuming IAC SE is at the end of whatever we just read, we need to actually look for IAC SE and stop there.
+				 *
+				 * Note that this doesn't actually happen anymore, since in telnet_handshake,
+				 * we move asking for terminal type to BEFORE asking for dimensions,
+				 * to avoid the extra exchange in the first place. */
+				size_t length, cmdlen, nextlen;
+				unsigned char *termtype;
+				unsigned char *end;
+				termtype = buf + 4; /* First 4 bytes are command, and last two are IAC SE (IAC SB TERMINAL TYPE <term type> IAC SE) */
+				end = memmem(termtype, (size_t) res, RESPONSE_FINALE, RESPONSE_FINALE_LEN);
+				if (!end) {
+					bbs_warning("Received command response does not send in IAC SE\n");
+					bbs_dump_mem(buf, (size_t) res);
+					return -1;
+				}
+				/* IAC SB TTYPE IS syncterm IAC SE   IAC WILL NAWS */
+				cmdlen = (size_t) (end - buf) + RESPONSE_FINALE_LEN;
+				length = cmdlen - 6; /* Subtract 4 for command (IAC SB TERMINAL TYPE IS) and 2 for trailer (IAC SE) */
+				bbs_debug(3, "Terminal type is %.*s\n", (int) length, termtype);
+				*end = '\0'; /* Replace IAC with NUL for strdup since we don't need it anymore */
+				REPLACE(node->term, (char*) termtype);
+				/* If there is anything leftover, thanks to recursion, we can easily process a second command received */
+				nextlen = (size_t) res - cmdlen;
+				if (nextlen > 0) {
+					buf += cmdlen;
+					len -= cmdlen;
+					res = telnet_process_command_additional(node, settings, buf, len, (int) nextlen, depth);
 				}
 			} else {
 				bbs_warning("Foreign %d-byte response received in response to terminal type\n", res);
@@ -239,7 +312,7 @@ static int __telnet_process_command(struct bbs_node *node, struct telnet_setting
 			if (buf[1] == SB && buf[2] == TELOPT_TSPEED && buf[3] == TELQUAL_IS && res >= 3) {
 				bbs_debug(3, "Terminal speed is %.*s\n", (int) res - 6, buf + 4); /* First 4 bytes are command, and last two are IAC SE */
 				if (res - 6 < (int) len - 1) {
-					memcpy(buf, buf + 4, (size_t) res - 6);
+					memmove(buf, buf + 4, (size_t) res - 6);
 					buf[res - 6] = '\0';
 					node->reportedbps = (unsigned int) atoi((char*) buf);
 				}
@@ -303,6 +376,17 @@ static int telnet_handshake(struct bbs_node *node)
 		return -1;
 	}
 
+	bbs_debug(8, "Finished processing commands received at connection time\n");
+
+	/* RFC 1091 Terminal Type */
+	if (telnet_send_command(node->wfd, DO, TELOPT_TTYPE)) {
+		return -1;
+	}
+	res = read_and_process_command(node, &settings, buf, sizeof(buf));
+	if (res < 0) {
+		return res;
+	}
+
 	/* RFC 1073 Request window size */
 	if (!settings.sent_winsize) {
 		settings.sent_winsize = 1;
@@ -313,15 +397,6 @@ static int telnet_handshake(struct bbs_node *node)
 		if (res < 0) {
 			return res;
 		}
-	}
-
-	/* RFC 1091 Terminal Type */
-	if (telnet_send_command(node->wfd, DO, TELOPT_TTYPE)) {
-		return -1;
-	}
-	res = read_and_process_command(node, &settings, buf, sizeof(buf));
-	if (res < 0) {
-		return res;
 	}
 
 	/* RFC 1079 Terminal Speed */
