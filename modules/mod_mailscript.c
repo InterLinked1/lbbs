@@ -152,7 +152,7 @@ static int header_match(struct smtp_msg_process *mproc, const char *header, cons
 	return found;
 }
 
-static void str_match(const char *matchtype, const char *a, const char *expr, int *restrict match)
+static void __attribute__ ((nonnull (2, 3, 4))) str_match(const char *matchtype, const char *a, const char *expr, int *restrict match)
 {
 	if (!strcasecmp(matchtype, "EQUALS")) {
 		*match = !strcmp(a, expr);
@@ -206,12 +206,14 @@ static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastre
 		matchtype = strsep(&s, " ");
 		expr = s;
 		REQUIRE_ARG(expr);
+		REQUIRE_ARG(mproc->from);
 		str_match(matchtype, mproc->from, expr, &match);
 	} else if (!strcasecmp(next, "RECIPIENT")) {
 		const char *expr, *matchtype;
 		matchtype = strsep(&s, " ");
 		expr = s;
 		REQUIRE_ARG(expr);
+		REQUIRE_ARG(mproc->recipient);
 		str_match(matchtype, mproc->recipient, expr, &match);
 	} else if (!strcasecmp(next, "HEADER")) {
 		int found;

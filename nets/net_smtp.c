@@ -2284,6 +2284,12 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 		mproc.mbox = NULL;
 		mproc.userid = (int) smtp->node->user->id;
 		mproc.user = smtp->node->user;
+		/* Note that mproc.to here is NULL, since we don't process recipients until expand_and_deliver,
+		 * i.e. we run the callbacks here per-message, not per-recipient, so we don't have access
+		 * to a specific recipient for this outgoing rules. This is "pre transaction"
+		 * so there's not really an "envelope" recipient per se we can use.
+		 * XXX We do have access to &smtp->recipients at this point, so we could make those available
+		 * to rules if needed. */
 		if (smtp_run_callbacks(&mproc)) {
 			return 0; /* If returned nonzero, it's assumed it responded with an SMTP error code as appropriate. */
 		}
