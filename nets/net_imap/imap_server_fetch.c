@@ -402,6 +402,35 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 		} else if (!strcmp(bodyargs, "")) { /* Empty (e.g. BODY.PEEK[] or BODY[], or TEXT */
 			multiline = 1;
 			sendbody = 1;
+		} else if (isdigit(*bodyargs)) {
+			int part_number = atoi(bodyargs);
+			if (part_number == 0) {
+				/* BODY[0] (or BODY.PEEK[0]) = ([RFC-822] header of the message) MULTIPART/MIXED
+				 * Thunderbird-based clients may fall back to this if they are unsatisfied with
+				 * the response to a request for BODY.PEEK[HEADER]
+				 * This usage was obsoleted in IMAP4rev1, RFC 2060 Appendix B.10:
+				 * "Body part number 0 has been obsoleted."
+				 * We have to go back to RFC 1730 6.4.5, IMAP4, to get the definition of this.
+				 *
+				 * In practice, when I've seen this fallback happen, it usually means
+				 * the client didn't like our original response to BODY.PEEK[HEADER],
+				 * and since we just do the same thing here, it's unlikely to like that either.
+				 * This phenomenon is thus probably symptomatic of a bug somewhere...
+				 * for that reason, log a warning here for now.
+				 */
+
+				/* RFC822 header */
+				bbs_warning("Requesting headers using part number 0 was obsoleted in IMAP4rev1\n");
+				unoriginal = 1;
+				SAFE_FAST_COND_APPEND(response, responselen, *buf, *len, 1, "%s", peek ? "BODY.PEEK[0]" : "BODY[0]");
+				fetchreq->rfc822header = 1;
+				fetchreq->bodyargs = fetchreq->bodypeek = NULL; /* Don't execute the if statement below, so that we can execute the else if */
+			} else {
+				/*! \todo BUGBUG Needs to be supported!!! */
+				/* Also note that part numbers are not necessarily integers,
+				 * they could be X.Y.Z (e.g. 1.2.3) */
+				bbs_warning("Part numbers not currently supported\n");
+			}
 		} else {
 			bbs_warning("Invalid BODY argument: %s\n", bodyargs);
 		}
