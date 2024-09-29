@@ -634,6 +634,7 @@ static void handle_session(ssh_event event, ssh_session session)
 	int node_started = 0;
 	int stdoutfd;
 	int is_sftp = 0;
+	int res;
 	long int timeout; /* in seconds */
 	/* We set the user when we have access to the session userdata,
 	 * but we need to attach it the node when we have access to the
@@ -893,9 +894,45 @@ static void handle_session(ssh_event event, ssh_session session)
 		bbs_node_exit(cdata.node);
 	}
 
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations" /* ssh_channel_get_exit_status, string_len, string_data */
 	/* Goodbye */
-	ssh_channel_send_eof(sdata.channel);
-	ssh_channel_close(sdata.channel);
+	ssh_channel_set_blocking(sdata.channel, 0); /* Set nonblocking, to avoid ssh_channel_close hanging */
+	/* Try to cleanly end the connection */
+	res = ssh_channel_send_eof(sdata.channel);
+	if (res == SSH_ERROR) {
+		int code = ssh_channel_get_exit_status(sdata.channel);
+		bbs_error("SSH session ended uncleanly with code %d\n", code);
+	}
+	if (ssh_channel_is_open(sdata.channel) && !ssh_channel_is_eof(sdata.channel)) {
+		/* Try to end the connection cleanly, if we can, but don't wait forever for that.
+		 * Sometimes SSH sessions can also be stale, in which case we won't get an EOF
+		 * (or anythiing else) from that client when we force disconnect it.
+		 * Setting SO_KEEPALIVE could help slightly but doesn't eliminate this possibility. */
+		char buf[512];
+		int eof_waitcount = 0;
+		bbs_debug(3, "Channel not EOF yet\n");
+		do {
+			res = ssh_channel_read(sdata.channel, buf, sizeof(buf), 0);
+			if (res == SSH_ERROR) {
+				int code = ssh_channel_get_exit_status(sdata.channel);
+				bbs_error("SSH session ended uncleanly with code %d\n", code);
+			} else if (res == SSH_EOF) {
+				bbs_debug(3, "Received EOF\n");
+				break;
+			} else if (res) {
+				bbs_debug(3, "Received %d byte%s\n", res, ESS(res));
+			} else {
+				bbs_debug(5, "Channel still not EOF yet\n");
+			}
+			if (++eof_waitcount > 200) {
+				bbs_warning("SSH client still hasn't disconnected cleanly, forcibly disconnecting...\n");
+				break;
+			}
+			usleep(250000); /* Avoid tight loop */
+		} while (ssh_channel_is_open(sdata.channel) && !ssh_channel_is_eof(sdata.channel));
+	}
+	ssh_channel_close(sdata.channel); /* In some cases, this may be the 2nd time calling this, but shouldn't hurt */
+	ssh_channel_free(sdata.channel);
 }
 
 /* === SFTP functions === */
@@ -1173,7 +1210,6 @@ static int handle_read(sftp_client_message msg)
 	return 0;
 }
 
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations" /* string_len and string_data */
 static int handle_write(sftp_client_message msg)
 {
 	size_t len;
