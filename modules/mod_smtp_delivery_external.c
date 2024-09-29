@@ -676,12 +676,13 @@ struct mailq_run {
 	const char *host_match;	/* Domain restriction for queue processing */
 	const char *host_ends_with;	/* Domain or suffix of domain, e.g. com, example.com, sub.example.com, etc. Queued processing will be restricted to matches. */
 	/* Queue run statistics */
-	/* processed is a subset of total, delivered + failed + delayed should = processed */
+	/* processed is a subset of total, delivered + failed + delayed + skipped should = processed */
 	int total;			/* Total number of queued messages considered */
 	int processed;		/* Total number of queued messages processed. */
 	int delivered;		/* Total number of queued messages actually delivered and removed from queue. */
 	int failed;			/* Total number of queued messages failed permanently and removed from queue. */
 	int delayed;		/* Total number of queued messages not yet delivered and remaining in queue. */
+	int skipped;		/* Total number of queued messages skipped since it's too soon to retry delivery. */
 	/* Misc */
 	int clifd;				/* CLI file descriptor */
 	bbs_mutex_t lock;
@@ -1196,6 +1197,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	}
 
 	if (skip_qfile(qrun, mqf)) {
+		qrun->skipped++; /* No need to use the QUEUE_INCR_STAT wrapper for locking since this is pre-parallel portion */
 		fclose(mqf->fp); /* Not necessary to set mqf->fp to NULL, since we're not calling mailq_file_destroy */
 		/* Not sure when the access times are changed: when the file is opened, or closed, or both,
 		 * but just to be completely safe, we only reset the timestamps after closing. */
@@ -1218,7 +1220,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 }
 
 /* Don't parallelize unless there's at least 2 messages in the queue,
- * and only delivery 5 messages concurrently */
+ * and only deliver 5 messages concurrently */
 #define QUEUE_PARALLELIZATION_THRESHOLD 2
 #define MAX_QUEUE_PARALLELIZATION 5
 
@@ -1279,7 +1281,7 @@ static void *queue_handler(void *unused)
 		run_queue(&qrun, on_queue_file);
 		if (qrun.total) {
 			/* Only log a message if something happened. If the queue was empty, don't bother. */
-			bbs_debug(1, "%d/%d message%s processed: %d delivered, %d failed, %d delayed\n", qrun.processed, qrun.total, ESS(qrun.total), qrun.delivered, qrun.failed, qrun.delayed);
+			bbs_debug(1, "%d/%d message%s processed: %d delivered, %d failed, %d delayed, %d skipped\n", qrun.processed, qrun.total, ESS(qrun.total), qrun.delivered, qrun.failed, qrun.delayed, qrun.skipped);
 		}
 		mailq_run_cleanup(&qrun);
 		bbs_pthread_enable_cancel();

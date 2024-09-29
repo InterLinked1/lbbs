@@ -1509,7 +1509,7 @@ static int node_read_cursor_pos(struct bbs_node *node, int timeout, int *restric
 		res = bbs_node_poll(node, SEC_MS(5));
 		if (res <= 0) {
 			if (!res) {
-				/* We started getting something but didn't get a fully response to the cursor position query.
+				/* We started getting something but didn't get a full response to the cursor position query.
 				 * Could be other random data or maybe corruption? */
 				bbs_debug(1, "Incomplete response to cursor position query...\n");
 			}
@@ -1862,7 +1862,7 @@ static int init_term_properties_automatic(struct bbs_node *node)
 		return 1;
 	}
 
-	/* Most modern terminals support ANSI and will response immediately,
+	/* Most modern terminals support ANSI and will respond immediately,
 	 * so don't wait too long for that. */
 	res = read_cursor_pos_response(node, &start, buf, bytes);
 	if (res <= 0) {

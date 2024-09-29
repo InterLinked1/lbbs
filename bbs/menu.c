@@ -306,7 +306,7 @@ static int display_menu(struct bbs_node *node, struct bbs_menu *menu, char *rest
 	}
 
 #ifdef DEBUG_MENU_DRAW
-	bbs_debug(7, "Longest substituted item available in menu '%s' has length %d\n", menu->name, longest);
+	bbs_debug(8, "Longest substituted item available in menu '%s' has length %d\n", menu->name, longest);
 #endif
 
 	/* Too wide? */

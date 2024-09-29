@@ -542,7 +542,7 @@ static int substitute_vars(struct bbs_node *node, struct bbs_vars *vars, const c
 		 * Truncation shouldn't occur because we already checked for that.
 		 */
 		safe_strncpy(varname, s, (size_t) MIN((int) sizeof(varname), end - s + 1));
-		bbs_debug(5, "Substituting variable '%s' (using %s)\n", varname, node ? "node" : "varlist");
+		bbs_debug(9, "Substituting variable '%s' (using %s)\n", varname, node ? "node" : "varlist");
 		if (vars) {
 			const char *val = bbs_var_find(vars, varname);
 			if (val) {
@@ -567,7 +567,7 @@ static int substitute_vars(struct bbs_node *node, struct bbs_vars *vars, const c
 		s = end + 1;
 	}
 	*buf = '\0'; /* Null terminate */
-	bbs_debug(3, "Substituted '%s' to '%s'\n", sub, bufstart);
+	bbs_debug(8, "Substituted '%s' to '%s'\n", sub, bufstart);
 	return 0;
 }
 
