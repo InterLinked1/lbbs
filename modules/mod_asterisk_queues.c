@@ -439,7 +439,7 @@ static int cli_asterisk_calls(struct bbs_cli_args *a)
 }
 
 /*! \note 4 and 6 should also be nonnull, but SET_FSM_STRING_VAR does a strlen_zero check, so we can't include them in the attribute */
-static __nonnull ((1, 5)) struct queue_call *new_call(struct queue *queue, int queueid, int ani2, const char *channel, const char *ani, const char *cnam, const char *dnis)
+static __attribute__((nonnull (1, 5))) struct queue_call *new_call(struct queue *queue, int queueid, int ani2, const char *channel, const char *ani, const char *cnam, const char *dnis)
 {
 	struct queue_call *call;
 	char *data;

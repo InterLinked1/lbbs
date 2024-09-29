@@ -114,7 +114,12 @@ static int __thread_unregister(pthread_t id, const char *file, int line, const c
 
 	RWLIST_WRLOCK(&thread_list);
 	RWLIST_TRAVERSE_SAFE_BEGIN(&thread_list, x, list) {
-		if (x->id == id) {
+#ifdef __FreeBSD__
+		/* Need both checks and it works */
+		if ((unsigned long) x->id == (unsigned long) id || (unsigned long) x->lwp == (unsigned long) id) {
+#else
+		if (x->id == id) { /* pthread_t isn't numeric on FreeBSD, so this check only works on Linux. */
+#endif
 			if (x->detached || x->waitingjoin) {
 				RWLIST_REMOVE_CURRENT(list);
 				remove = 1;

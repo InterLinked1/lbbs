@@ -26,6 +26,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <dirent.h>
+#include <sys/wait.h> /* use WIFEXITED, WEXITSTATUS */
 
 #include <sys/stat.h>
 
@@ -196,7 +197,13 @@ static int check_lib(const char *modname, const char *libname)
 		/* If we didn't reach the end, we hit an invalid character */
 		return 0;
 	}
+
+	/* ldconfig -p isn't valid on FreeBSD, so only try this on Linux: */
+#ifdef __FreeBSD__
+	snprintf(cmd, sizeof(cmd), "ldconfig -r | grep 'lib%s.so' 2>/dev/null 1>&2", libname);
+#else
 	snprintf(cmd, sizeof(cmd), "ldconfig -p | grep 'lib%s.so' 2>/dev/null 1>&2", libname);
+#endif
 	res = system(cmd);
 	/* ldconfig | grep returned nonzero, which means
 	 * we couldn't find any libraries by that name. */
@@ -413,7 +420,7 @@ static int check_header_file(const char *dirname, const char *modname, const cha
 		rewind(mfp);
 		snprintf(objname, sizeof(objname), "%s", modname);
 		TERMINATE_AT(objname, '.');
-		strncat(objname, ".o", sizeof(objname));
+		strncat(objname, ".o", sizeof(objname) - 1);
 		objnamelen = strlen(objname);
 		while (fgets(buf, sizeof(buf), mfp)) {
 			char *token, *tokens;
@@ -481,7 +488,7 @@ static int check_headers(const char *dirname, const char *modname, FILE *mfp, in
 
 	snprintf(filename, sizeof(filename), "%s/%s", dirname, modname);
 	TERMINATE_AT(filename, '.');
-	strncat(filename, ".c", sizeof(filename));
+	strncat(filename, ".c", sizeof(filename) - 1);
 
 	fp = fopen(filename, "r");
 	if (!fp) {
@@ -500,6 +507,15 @@ static int check_headers(const char *dirname, const char *modname, FILE *mfp, in
 			continue;
 		}
 		TERMINATE_AT(incfile, '>');
+#ifdef __FreeBSD__
+		/* XXX Hardcoded exception: <bsd/string.h> is only included on __linux__,
+		 * but since we don't process conditional includes (#ifdef),
+		 * we'll erroneously think this is missing on FreeBSD (for mod_irc_relay)
+		 * when it's not needed. */
+		if (!strcmp(incfile, "bsd/string.h")) {
+			continue;
+		}
+#endif
 		if (!check_header_file(dirname, modname, incfile, mfp, met_deps)) {
 			unmet_headers++;
 		}
@@ -798,7 +814,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	optind = 0;
+	optind = 1;
 	while ((c = getopt(argc, argv, getopt_settings)) != -1) {
 		switch (c) {
 		case '?':
@@ -817,5 +833,6 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	return 0;
+	fprintf(stderr, "No arguments provided to modman, taking no action\n");
+	return -1;
 }

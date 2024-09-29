@@ -33,6 +33,7 @@
 #include <netinet/in.h> /* use sockaddr_in */
 #include <signal.h> /* use pthread_kill */
 #include <sys/ioctl.h> /* use winsize */
+#include <limits.h> /* use PATH_MAX */
 
 /*
  * The SSH driver has dependencies on libssh and libcrypto.

@@ -84,17 +84,24 @@ static int print_fds(int fd)
 {
 	DIR *dir;
 	struct dirent *entry;
-	char path[512];
 	char symlink[256];
+	const char *fd_dir;
 	ssize_t bytes;
 
-	if (!(dir = opendir("/proc/self/fd"))) {
-		bbs_error("Error opening directory - %s: %s\n", path, strerror(errno));
+#ifdef __linux__
+	fd_dir = "/proc/self/fd";
+#else
+	fd_dir = "/dev/fd";
+#endif
+
+	if (!(dir = opendir(fd_dir))) {
+		bbs_error("Error opening directory - %s: %s\n", fd_dir, strerror(errno));
 		return -1;
 	}
 
 	while ((entry = readdir(dir)) != NULL) {
 		if (entry->d_type == DT_LNK) {
+			char path[512];
 			int fdnum = atoi(entry->d_name);
 			/* Only care about ones we don't know about */
 			if (ARRAY_IN_BOUNDS(fdnum, fdleaks) && fdleaks[fdnum].isopen) {

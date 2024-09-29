@@ -23,6 +23,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <limits.h> /* use PATH_MAX */
 
 #include "include/module.h"
 #include "include/config.h"

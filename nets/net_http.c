@@ -24,9 +24,7 @@
 
 #include "include/bbs.h"
 
-#ifdef __linux__
-#include <linux/limits.h> /* use PATH_MAX */
-#endif
+#include <limits.h> /* use PATH_MAX */
 
 #include "include/module.h"
 #include "include/config.h"

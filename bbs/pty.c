@@ -269,7 +269,9 @@ int bbs_pty_allocate(struct bbs_node *node)
 	if (bbs_pthread_create(&node->ptythread, NULL, pty_master, node)) {
 		return -1;
 	}
+#ifdef __linux__
 	bbs_debug(8, "PTY thread %lu allocated for node %u\n", node->ptythread, node->id);
+#endif
 
 	/* We are the PTY slave */
 	node->slavefd = open(node->slavename, O_RDWR);
