@@ -30,6 +30,7 @@
 #include <time.h> /* use time */
 #include <sys/time.h> /* use gettimeofday */
 #include <libgen.h> /* use dirname, basename (FreeBSD) */
+#include <limits.h> /* use PATH_MAX */
 
 #ifdef __linux__
 #include <uuid/uuid.h> /* use uuid_generate, uuid_unparse */

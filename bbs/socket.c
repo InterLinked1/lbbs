@@ -172,8 +172,16 @@ static int __bbs_socket_bind(int *sock, int rebind, int type, int port, const ch
 		struct ifreq ifr;
 		memset(&ifr, 0, sizeof(ifr));
 		safe_strncpy(ifr.ifr_name, interface, sizeof(ifr.ifr_name));
+#ifdef __linux__
 		if (setsockopt(*sock, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr)) < 0) {
 			bbs_error("Failed to set SO_BINDTODEVICE(%s): %s\n", interface, strerror(errno));
+#elif defined(__FreeBSD__) && defined(IP_SENDIF)
+		if (setsockopt(*sock, SOL_SOCKET, IP_SENDIF, &ifr, sizeof(ifr)) < 0) {
+			bbs_error("Failed to set IP_SENDIF(%s): %s\n", interface, strerror(errno));
+#else
+		if (1) {
+			bbs_error("Restricting binding to a specific interface is not supported on this platform\n");
+#endif
 			close(*sock);
 			return -1;
 		}

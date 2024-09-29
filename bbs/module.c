@@ -25,10 +25,7 @@
 #include <dlfcn.h>
 #include <unistd.h> /* use usleep */
 #include <poll.h>
-
-#ifdef __linux__
-#include <linux/limits.h> /* use PATH_MAX */
-#endif
+#include <limits.h> /* use PATH_MAX */
 
 #include "include/linkedlists.h"
 #include "include/stringlist.h"

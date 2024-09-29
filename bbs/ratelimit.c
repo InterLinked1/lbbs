@@ -21,6 +21,11 @@
 
 #include <sys/time.h>
 
+/* For FreeBSD */
+#ifndef CLOCK_MONOTONIC_RAW
+#define CLOCK_MONOTONIC_RAW CLOCK_MONOTONIC
+#endif
+
 #include "include/time.h" /* use timespecsub */
 #include "include/ratelimit.h"
 

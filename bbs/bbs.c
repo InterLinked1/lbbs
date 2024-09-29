@@ -38,9 +38,9 @@
 #include <signal.h>
 #include <poll.h>
 #include <fcntl.h> /* use O_NONBLOCK */
+#include <limits.h> /* use PATH_MAX */
 
 #ifdef __linux__
-#include <linux/limits.h> /* use PATH_MAX */
 #include <sys/prctl.h> /* use prctl */
 #include <sys/capability.h>
 #include <linux/capability.h>

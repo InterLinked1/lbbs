@@ -215,7 +215,7 @@ static int msp_response(struct msp *restrict msp, const char *s, size_t len)
 	if (msp->node) {
 		bbs_node_fd_write(msp->node, msp->node->wfd, s, len);
 	} else {
-		ssize_t res = sendto(udp_socket, s, len, 0, msp->in, msp->slen);
+		ssize_t res = sendto(udp_socket, s, len, 0, (const struct sockaddr*) msp->in, msp->slen);
 		if (res <= 0) {
 			bbs_error("sendto failed: %s\n", strerror(errno));
 		}

@@ -209,6 +209,7 @@ jobs:
       - name: Run basic tests
         run: |
           tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+# Binary fails to link due to uuid library missing in CI, but it will make all specified targets, so enumerate those
   freebsd-14:
     runs-on: ubuntu-24.04
     name: FreeBSD
@@ -222,6 +223,11 @@ jobs:
             ./scripts/install_prereq.sh
             gmake modcheck
             gmake modconfig
+            gmake main
+            gmake doors
+            gmake io
+            gmake modules
+            gmake nets
             gmake
             gmake install
             gmake samples

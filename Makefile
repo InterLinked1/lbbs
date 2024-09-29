@@ -29,6 +29,7 @@ BINDIR	= $(PREFIX)/bin
 RM		= rm -f
 LN		= ln
 INSTALL = install
+UNAME_S := $(shell uname -s)
 
 # Uncomment this to see all build commands instead of 'quiet' output
 #NOISY_BUILD=yes
@@ -57,9 +58,9 @@ SILENT_BUILD_PREFIX := @
 
 export CC
 export CFLAGS
-
 export EXE
 
+export UNAME_S
 export SUBMAKE
 
 # Run sub targets in parallel, but don't run top-level targets in parallel

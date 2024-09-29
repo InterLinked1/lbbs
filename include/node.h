@@ -22,6 +22,7 @@ struct bbs_user;
 struct bbs_vars;
 struct readline_data;
 struct pollfd;
+struct sockaddr_in;
 
 #define ANSI_CURSOR_QUERY (1 << 0)
 #define ANSI_CURSOR_SET (1 << 1)

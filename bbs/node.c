@@ -30,6 +30,11 @@
 #include <sys/ioctl.h>
 #include <limits.h>
 
+/* For FreeBSD */
+#ifndef CLOCK_MONOTONIC_RAW
+#define CLOCK_MONOTONIC_RAW CLOCK_MONOTONIC
+#endif
+
 #include "include/time.h" /* use timespecsub */
 #include "include/node.h"
 #include "include/user.h"

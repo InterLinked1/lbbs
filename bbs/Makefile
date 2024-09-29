@@ -15,10 +15,11 @@ LIBS += -lcrypt -lcrypto -lcurl -lreadline -luuid -rdynamic
 # On SUSE, the remaining libraries are needed to link successfully
 # However, on other platforms they are generally not, and -liberty is likely to cause issues
 # Furthermore, some of the other libraries are also needed, if present, but must not be specified if not
+# On FreeBSD, there is leading whitespace, so also trim for good measure
 LIBS += -lbfd
-LIBERTY_CHECK = $(shell gcc -liberty 2>&1 | grep "cannot find" | wc -l )
-LZSTD_CHECK = $(shell gcc -lzstd 2>&1 | grep "cannot find" | wc -l )
-LSFRAME_CHECK = $(shell gcc -lsframe 2>&1 | grep "cannot find" | wc -l )
+LIBERTY_CHECK = $(shell gcc -liberty 2>&1 | grep "cannot find" | wc -l | tr -d ' ' )
+LZSTD_CHECK = $(shell gcc -lzstd 2>&1 | grep "cannot find" | wc -l | tr -d ' ' )
+LSFRAME_CHECK = $(shell gcc -lsframe 2>&1 | grep "cannot find" | wc -l | tr -d ' ' )
 ifneq ($(LIBERTY_CHECK),1)
 LIBS += -liberty -lz -lopcodes
 endif
@@ -28,8 +29,6 @@ endif
 ifneq ($(LSFRAME_CHECK),1)
 LIBS += -lsframe
 endif
-
-UNAME_S := $(shell uname -s)
 
 ifeq ($(UNAME_S),Linux)
 LIBS += -lbsd -lcap

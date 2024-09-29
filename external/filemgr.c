@@ -26,7 +26,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <time.h>
-#include <wait.h>
+#include <sys/wait.h>
 
 #include <sys/stat.h>
 

@@ -34,6 +34,7 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libcurl4-openssl-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA libcurl-devel"
 PACKAGES_SUSE="$PACKAGES_SUSE libcurl-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH curl"
+PACKAGES_FREEBSD="$PACKAGES_FREEBSD curl"
 
 # <bfd.h>
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN binutils-dev"
@@ -235,11 +236,14 @@ scripts/libcami.sh
 # lirc (mod_irc_client)
 scripts/lirc.sh
 
-# libdiscord (mod_discord)
-scripts/libdiscord.sh
-
 # libwss (net_ws)
 scripts/libwss.sh
+
+# mod_slack (also depends on libwss)
+scripts/libslackrtm.sh
+
+# libdiscord (mod_discord)
+scripts/libdiscord.sh
 
 # libetpan fails to build successfully on Fedora-based distros,
 # so need to be able to skip that for now using an env var.
@@ -251,9 +255,6 @@ if [ "$INSTALL_LIBETPAN" != "0" ]; then
 	# evergreen (door_evergreen)
 	scripts/evergreen.sh
 fi
-
-# mod_slack (also depends on libwss)
-scripts/libslackrtm.sh
 
 # mod_smtp_filter_arc
 # milter pre-req can be hard to satisfy, so can be disabled using an env var

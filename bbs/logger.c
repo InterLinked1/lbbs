@@ -31,10 +31,7 @@
 #include <sys/stat.h> /* use mkdir */
 #include <sys/types.h>
 #include <poll.h>
-
-#ifdef __linux__
-#include <linux/limits.h> /* use PATH_MAX */
-#endif
+#include <limits.h> /* use PATH_MAX */
 
 #include "include/utils.h" /* use bbs_gettid, bbs_tvnow */
 #include "include/linkedlists.h"
