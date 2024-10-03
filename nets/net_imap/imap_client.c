@@ -192,7 +192,7 @@ int imap_clients_next_idle_expiration(struct imap_session *imap)
 	RWLIST_RDLOCK(&imap->clients);
 	RWLIST_TRAVERSE(&imap->clients, client, entry) {
 		time_t maxage;
-		if (!client->idling) {
+		if (!client->idling || client->dead) {
 			continue;
 		}
 		/* This is when the connection may be terminated.
@@ -223,7 +223,7 @@ void imap_clients_renew_idle(struct imap_session *imap)
 	RWLIST_WRLOCK(&imap->clients);
 	RWLIST_TRAVERSE_SAFE_BEGIN(&imap->clients, client, entry) {
 		time_t maxage;
-		if (!client->idling) {
+		if (!client->idling || client->dead) {
 			continue;
 		}
 		/* This is when the connection may be terminated.
@@ -831,7 +831,7 @@ static struct imap_client *__load_virtual_mailbox(struct imap_session *imap, con
 	FILE *fp;
 	char virtcachefile[256];
 	char buf[256];
-	size_t pathlen;
+	size_t pathlen = 0; /* Initialize to avoid gcc maybe-uninitialized false positive warning */
 
 	if (imap->client) {
 		const char *virtprefix = imap->client->virtprefix;
@@ -878,6 +878,14 @@ static struct imap_client *__load_virtual_mailbox(struct imap_session *imap, con
 
 		if (strlen_zero(urlstr)) {
 			continue; /* Illegitimate */
+		}
+
+		/* If line is commented (begins with '#'), ignore it.
+		 * Shouldn't happen normally, since such a mailbox wouldn't have been sent
+		 * in the LIST response, but nothing stops a client from making such requests. */
+		if (!strncmp(urlstr, "#", 1)) {
+			bbs_debug(3, "Ignoring request for commented out mailbox '%s'\n", mpath);
+			continue;
 		}
 
 		/* Instead of doing prefixlen = strlen(mpath), we can just subtract the pointers */
