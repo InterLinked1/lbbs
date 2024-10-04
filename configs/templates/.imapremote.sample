@@ -1,5 +1,11 @@
-# .imapremote - Personal virtual mappings for remote IMAP mailboxes
-# Any mailboxes defined here will be available to you when logged in to the IMAP server, as if they were local.
-# The sysop may have configured a maximum number of remote connections that may be defined here
+### .imapremote - Personal virtual mappings for remote IMAP mailboxes
+
+### Any mailboxes defined here will be available to you when logged in to the IMAP server, as if they were local.
+### The sysop may have configured a maximum number of remote connections that may be defined here
+
+### Plain LOGIN auth syntax: Other Users.<Account prefix name>|imaps://<username>:<password>@<hostname>:<port>
+### OAuth2 auth syntax: Other Users.<Account prefix name>|imaps://<username>:oauth:<oauth profile name>@<hostname>:<port>
+###    OAuth authentication also requires an OAuth profile to be configured in your .oauth.conf or the BBS's global OAuth config.
 
 # Other Users.foobar|imaps://bob@example.com:password@example.com:993
+# Other Users.foobar2|imaps://bob@example.net:oauth:bobexamplenet@example.net:993

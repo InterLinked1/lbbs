@@ -471,8 +471,8 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 
 	if (username && password) {
 		if (STARTS_WITH(password, "oauth:")) { /* OAuth authentication */
-			char token[512];
-			char decoded[568];
+			char token[4096];
+			char decoded[4096];
 			int decodedlen, encodedlen;
 			char *encoded;
 			const char *oauthprofile = password + STRLEN("oauth:");

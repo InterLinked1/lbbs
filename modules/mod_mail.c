@@ -1841,8 +1841,8 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 
 	caps = *capsptr;
 	if (STARTS_WITH(url->pass, "oauth:")) { /* OAuth authentication */
-		char token[512];
-		char decoded[568];
+		char token[4096];
+		char decoded[4096];
 		int decodedlen, encodedlen;
 		const char *oauthprofile = url->pass + STRLEN("oauth:");
 

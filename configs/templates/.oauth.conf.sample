@@ -1,18 +1,24 @@
 ; .oauth.conf - Personal OAuth authentication provider
 
-; OAuth clients defined here are only accessible to you.
+; OAuth clients defined here are only accessible to you, not to any other users.
 
-; This is an example OAuth client for Gmail.
-;[myoauth] ; The name of the OAuth client, which may be referenced in .imapremote for authentication
-;
 ; You MAY specify an access token but SHOULD NOT because these are short lived (only good for an hour).
 ; This may be useful for testing if you know if you have a valid access token and want to use that for something,
 ; but the refresh token is needed to renew to get new access tokens regularly.
 ; Generally, do not specify an accesstoken since the refreshtoken can be used to get one automatically.
-;
-;clientid=490664354550-sog8fs987gfdufdjf89fDdsifugffdf9.apps.googleusercontent.com
-;clientsecret=sdgyugUGuOSfduoOUGF-Pgfd
+
+; This is an example OAuth client for Gmail.
+;[gmail] ; The name of the OAuth client, which may be referenced in .imapremote for authentication
+;clientid=406964657835-aq8lmia8j95dhl1a2bvharmfk3t1hgqj.apps.googleusercontent.com
+;clientsecret=kSmqreRr0qwBWJgbf5Y-PjSU
 ;accesstoken=
 ;refreshtoken=1//01357485r_o8rwySUOIGFSD8dfgd-L8eyfdufOf8uysfodshfiewyar8382roeyhfdsfisdfo_Asdas980d90asdud-OASDyddfo
 ;expires=3600 ; How long access tokens are valid for. Default is 1 hour. The refresh token will be used to obtain a new access token if the old one has expired.
 ;posturl=https://oauth2.googleapis.com/token ; Endpoint to get new access tokens using the refresh token
+
+;[microsoft]
+;clientid=9e5f94bc-e8a4-4e73-b8be-63364c29d753 ; This is Thunderbird's client ID. (Re)use at your own risk.
+;clientsecret=
+;accesstoken=
+;refreshtoken=M.C503_SN1.0.U.-ASIfsudfywoeufwuofwoeyf0e8yfsdifhpsidfyowse8yf8iweyf8iedyhf08wefy0ow4yr8iwyh8idfvyiaeyhdplIWhfujeoghvowseuf ; it's a lot longer than this...
+;posturl=https://login.microsoftonline.com/common/oauth2/v2.0/token

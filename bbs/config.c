@@ -459,6 +459,47 @@ static struct bbs_config *config_parse(const char *name)
 	return cfg;
 }
 
+static int __bbs_cached_config_outdated(struct bbs_config *cfg, const char *name)
+{
+	/* Check if the config has changed since we parsed it. */
+	char fullname[PATH_MAX];
+	const char *filename;
+	struct stat st;
+
+	/* If not an absolute path, prefix BBS config dir */
+	if (*name == '/') {
+		filename = name;
+	} else {
+		snprintf(fullname, sizeof(fullname), "%s/%s", bbs_config_dir(), name);
+		filename = fullname;
+	}
+
+	if (stat(filename, &st)) {
+		bbs_warning("stat(%s) failed: %s\n", filename, strerror(errno));
+	} else {
+		time_t modified = st.st_mtime;
+		if (modified < cfg->parsetime) {
+			/* File hasn't been modified since we last parsed it. */
+			/* We're not refcounting or returning cfg locked in any way.
+			 * Our assumption is that bbs_config_free will only be called
+			 * when nobody is using cfg anymore.
+			 * Reasonable assumption if each config is only used by one module or file,
+			 * and that module can ensure this invariant is obeyed. */
+			return 0;
+		}
+	}
+	return 1;
+}
+
+int bbs_cached_config_outdated(const char *name)
+{
+	struct bbs_config *cfg = config_get(name);
+	if (!cfg) {
+		return -1;
+	}
+	return __bbs_cached_config_outdated(cfg, name);
+}
+
 struct bbs_config *bbs_config_load(const char *name, int usecache)
 {
 	struct bbs_config *cfg;
@@ -466,26 +507,9 @@ struct bbs_config *bbs_config_load(const char *name, int usecache)
 	cfg = config_get(name);
 	if (cfg) {
 		if (usecache) {
-			/* Check if the config has changed since we parsed it. */
-			char fullname[PATH_MAX];
-			struct stat st;
-
-			snprintf(fullname, sizeof(fullname), "%s/%s", bbs_config_dir(), name);
-
-			if (stat(fullname, &st)) {
-				bbs_error("stat failed: %s\n", strerror(errno));
-			} else {
-				time_t modified = st.st_mtime;
-				if (modified < cfg->parsetime) {
-					/* File hasn't been modified since we last parsed it. */
-					/* We're not refcounting or returning cfg locked in any way.
-					 * Our assumption is that bbs_config_free will only be called
-					 * when nobody is using cfg anymore.
-					 * Reasonable assumption if each config is only used by one module or file,
-					 * and that module can ensure this invariant is obeyed. */
-					bbs_debug(5, "Config %s has not been modified since it was last parsed. Returning cached version.\n", name);
-					return cfg;
-				}
+			if (!__bbs_cached_config_outdated(cfg, name)) {
+				bbs_debug(5, "Config %s has not been modified since it was last parsed. Returning cached version.\n", name);
+				return cfg;
 			}
 			bbs_debug(5, "Reparsing config %s again since it has changed\n", name);
 		} else {

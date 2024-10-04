@@ -153,6 +153,15 @@ int bbs_config_free(struct bbs_config *cfg);
 void bbs_configs_free_all(void);
 
 /*!
+ * \brief Check whether a config file has been updated since it was last parsed
+ * \param name Config filename
+ * \retval -1 if config file is not cached at all
+ * \retval 0 if not modified since last parse
+ * \retval 1 if modified since last parse
+ */
+int bbs_cached_config_outdated(const char *name);
+
+/*!
  * \brief Return a BBS config object, parsing the config if necessary
  * \param name Config file name
  * \param usecache If config object exists, use cached version.
