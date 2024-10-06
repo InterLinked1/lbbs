@@ -112,10 +112,13 @@ static int cli_maxdebug(struct bbs_cli_args *a)
 	return 0;
 }
 
+static int cli_localdebug(struct bbs_cli_args *a);
+
 static struct bbs_cli_entry cli_commands_logger[] = {
 	BBS_CLI_COMMAND(cli_verbose, "verbose", 2, "Set verbose log level", "verbose <newlevel>"),
 	BBS_CLI_COMMAND(cli_debug, "debug", 2, "Set debug log level", "debug <newlevel>"),
 	BBS_CLI_COMMAND(cli_maxdebug, "maxdebug", 2, "Set max file debug log level", "maxdebug <newlevel>"),
+	BBS_CLI_COMMAND(cli_localdebug, "localdebug", 2, "Set max debug log level for current console session", "localdebug <newlevel>"),
 };
 
 int bbs_log_init(int nofork)
@@ -168,7 +171,8 @@ int bbs_set_stdout_logging(int enabled)
 
 /*! \note int lists, anyone? */
 struct remote_log_fd {
-	int fd;
+	int fd;			/* File descriptor for this console */
+	int maxdebug;	/* Max debug level for this console */
 	RWLIST_ENTRY(remote_log_fd) entry; /* Next entry */
 };
 
@@ -186,6 +190,38 @@ int bbs_set_fd_logging(int fd, int enabled)
 	RWLIST_RDLOCK(&remote_log_fds); /* We're not modifying the list itself. */
 	fd_logging[fd] = enabled;
 	RWLIST_UNLOCK(&remote_log_fds);
+	return 0;
+}
+
+static int set_fd_logging_max_debug(int fd, int maxdebug)
+{
+	int oldmax;
+	struct remote_log_fd *rfd;
+	RWLIST_WRLOCK(&remote_log_fds);
+	RWLIST_TRAVERSE(&remote_log_fds, rfd, entry) {
+		if (rfd->fd == fd) {
+			oldmax = rfd->maxdebug;
+			rfd->maxdebug = maxdebug;
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&remote_log_fds);
+	return rfd ? oldmax : -1;
+}
+
+static int cli_localdebug(struct bbs_cli_args *a)
+{
+	int oldmax, newmax;
+
+	newmax = atoi(a->argv[1]);
+	if (newmax < 0 || newmax > MAX_DEBUG) {
+		return -1;
+	}
+	oldmax = set_fd_logging_max_debug(a->fdout, newmax);
+	if (oldmax == -1) {
+		return -1;
+	}
+	bbs_debug(1, "Max local debug level for fd %d changed from %d to %d\n", a->fdout, oldmax, newmax);
 	return 0;
 }
 
@@ -215,6 +251,7 @@ int bbs_add_logging_fd(int fd)
 		return -1;
 	}
 	rfd->fd = fd;
+	rfd->maxdebug = MAX_DEBUG; /* By default, there is no local restriction on the max debug level */
 	RWLIST_INSERT_HEAD(&remote_log_fds, rfd, entry);
 	fd_logging[fd] = 1; /* Initialize to enabled */
 	RWLIST_UNLOCK(&remote_log_fds);
@@ -483,6 +520,10 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 		term_puts(fullbuf);
 		RWLIST_RDLOCK(&remote_log_fds);
 		RWLIST_TRAVERSE(&remote_log_fds, rfd, entry) {
+			if (loglevel == LOG_DEBUG && level > rfd->maxdebug) {
+				/* Skip consoles that don't want debug messages of this debug level */
+				continue;
+			}
 			/* Prevent libc_write from blocking if there's a ton of logging going on. */
 			bbs_unblock_fd(rfd->fd);
 			if (fd_logging[rfd->fd]) {
@@ -490,7 +531,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 				if (wres != (ssize_t) bytes) {
 					/* Well, we can't log a message if we failed to log a message.
 					 * That would probably not work out well. */
-					fprintf(stderr, "Failed to log %d-byte message\n", bytes);
+					fprintf(stderr, "Failed to log %d-byte message (wrote %ld): %s\n", bytes, wres, strerror(errno));
 				}
 			}
 			bbs_block_fd(rfd->fd);
