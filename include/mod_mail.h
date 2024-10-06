@@ -344,6 +344,7 @@ int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf);
  * \note This operation is used by both the IMAP and POP3 servers, although UIDs are only relevant for IMAP.
  *       POP3 calls this function to ensure consistency for IMAP operations.
  * \note This operation internally maintains the .uidvalidity of a maildir directory.
+ * \note This function pretty much assumes as given that the specified maildir exists. Checks should be done prior to calling this function.
  * \todo This function should really be renamed maildir_get_next_uid, it's a maildir function, not a mailbox function. Currently, it's a misnomer.
  */
 unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, const char *directory, int allocate, unsigned int *newuidvalidity, unsigned int *newuidnext) __attribute__((nonnull (1, 3, 5, 6)));

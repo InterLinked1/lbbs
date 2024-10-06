@@ -226,7 +226,9 @@ static int remote_list(struct imap_client *client, struct list_command *lcmd, co
 		}
 
 		/* Always use remote_status, never direct passthrough, to avoid sending a tagged OK response each time */
-		remote_status(client, s, items, want_size);
+		if (remote_status(client, s, items, want_size)) {
+			bbs_error("Remote STATUS failed for %s on client %s\n", s, client->name);
+		}
 		free(s);
 	}
 

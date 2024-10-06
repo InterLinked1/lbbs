@@ -790,6 +790,7 @@ static void imap_mbox_watcher(struct mailbox_event *event)
 			/* We should basically do send_untagged_list,
 			 * however we can ignore currently since all mailboxes are implicitly subscribed
 			 * so no change occurs here. */
+			break;
 		/*! \todo If METADATA extension added, updates need to be sent here */
 		/*! \todo ACL changes should also be taken into account.
 		 * Fortunately, ACLs can be changed through the IMAP protocol which means we could get events for them.
@@ -3666,6 +3667,7 @@ static int sub_rename(const char *path, const char *prefix, const char *newprefi
 					res = -1;
 					break;
 				}
+				bbs_debug(3, "Renamed %s -> %s\n", oldpath, newpath);
 			}
 		}
 	}
@@ -3725,6 +3727,7 @@ static int handle_rename(struct imap_session *imap, char *s)
 			imap_reply(imap, "NO [SERVERBUG] System error");
 		} else {
 			struct mailbox_event e;
+			bbs_debug(3, "Renamed %s -> %s\n", oldpath, newpath);
 			imap_reply(imap, "OK RENAME completed");
 			mailbox_initialize_event(&e, EVENT_MAILBOX_RENAME, imap->node, imap->mbox, newpath);
 			e.oldmaildir = oldpath;
@@ -4549,18 +4552,33 @@ static int imap_process(struct imap_session *imap, char *s)
 		/* Since we don't check for mailbox existence (and everything is always subscribed anyways), no real need to check ACLs here */
 		bbs_debug(1, "Ignoring subscription attempt for %s for mailbox %d\n", S_IF(s), mailbox_id(imap->mbox));
 		imap_reply(imap, "OK SUBSCRIBE completed"); /* Everything available is already subscribed anyways, so can't hurt */
-		imap_translate_dir(imap, s, fullmaildir, sizeof(fullmaildir), &myacl);
-		mailbox_dispatch_event_basic(EVENT_MAILBOX_SUBSCRIBE, imap->node, imap->mbox, fullmaildir);
+		if (!imap_translate_dir(imap, s, fullmaildir, sizeof(fullmaildir), &myacl)) {
+			/* Don't trigger event for nonexistent mailbox if the SUBSCRIBE failed */
+			mailbox_dispatch_event_basic(EVENT_MAILBOX_SUBSCRIBE, imap->node, imap->mbox, fullmaildir);
+		}
 	} else if (!strcasecmp(command, "UNSUBSCRIBE")) {
 		char fullmaildir[256];
 		int myacl;
 		REQUIRE_ARGS(s);
 		STRIP_QUOTES(s);
 		IMAP_NO_READONLY(imap);
-		bbs_warning("Unsubscription attempt for %s for mailbox %d\n", S_IF(s), mailbox_id(imap->mbox));
-		imap_reply(imap, "NO [NOPERM] Permission denied");
-		imap_translate_dir(imap, s, fullmaildir, sizeof(fullmaildir), &myacl);
-		mailbox_dispatch_event_basic(EVENT_MAILBOX_UNSUBSCRIBE, imap->node, imap->mbox, s);
+		if (imap_translate_dir(imap, s, fullmaildir, sizeof(fullmaildir), &myacl)) {
+			/* Mailbox doesn't exist (some clients so RENAME, then UNSUBSCRIBE to the old mailbox,
+			 * but since it doesn't exist, there's nothing really to unsubscribe from anyways,
+			 * so just say OK. Otherwise, Thunderbird-based clients try to repeat the UNSUBSCRIBE
+			 * request again, so just placate them.
+			 *
+			 * This is technically not correct from a protocol perspective, since we should
+			 * store subscriptions independent of whether the mailbox exists or not,
+			 * but since we don't, this is the sanest thing to do for now. */
+			imap_reply(imap, "OK UNSUBSCRIBE ignored as mailbox does not exist");
+			mailbox_dispatch_event_basic(EVENT_MAILBOX_UNSUBSCRIBE, imap->node, imap->mbox, fullmaildir);
+		} else {
+			/* XXX We don't store subscriptions, so this isn't really the right error,
+			 * but return an error to indicate we are not complying with the client's request. */
+			bbs_debug(1, "Ignoring unsubscription attempt for %s for mailbox %d\n", S_IF(s), mailbox_id(imap->mbox));
+			imap_reply(imap, "NO [NOPERM] Permission denied");
+		}
 	} else if (!strcasecmp(command, "GENURLAUTH")) {
 		char *resource, *mechanism;
 		REQUIRE_ARGS(s);

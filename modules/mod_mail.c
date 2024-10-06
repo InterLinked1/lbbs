@@ -1049,6 +1049,7 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, c
 		fp = fopen(uidfile, "a");
 		if (unlikely(!fp)) {
 			bbs_error("fopen(%s) failed: %s\n", uidfile, strerror(errno));
+			bbs_soft_assert(0);
 		} else {
 			fclose(fp);
 			/* Now, the file should exist. Reopen it (it'll be empty) */

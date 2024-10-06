@@ -489,11 +489,11 @@ static int remote_status_cached(struct imap_client *client, const char *mb, char
 	snprintf(findstr, sizeof(findstr), "* STATUS \"%s\"", mb);
 	tmp = strstr(client->virtlist, findstr);
 	if (!tmp && !strchr(mb, ' ')) { /* Retry, without quotes, if the mailbox name has no spaces */
-		snprintf(findstr, sizeof(findstr), "* STATUS \"%s\"", mb);
+		snprintf(findstr, sizeof(findstr), "* STATUS %s", mb);
 		tmp = strstr(client->virtlist, findstr);
 	}
 	if (!tmp) {
-		bbs_warning("Cached LIST-STATUS response missing response for '%s'\n", mb);
+		bbs_warning("Cached LIST-STATUS response missing response for '%s' on client %s (response was '%s')\n", mb, client->name, client->virtlist);
 		return -1;
 	}
 	end = strchr(tmp, '\n');
@@ -582,12 +582,14 @@ ssize_t remote_status(struct imap_client *client, const char *remotename, const 
 		for (;;) {
 			res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 5000);
 			if (res <= 0) {
+				bbs_warning("Failed to receive response to STATUS command\n");
 				return -1;
 			}
 			/* Tolerate unrelated untagged responses interleaved */
 			if (STARTS_WITH(buf, "* STATUS ")) {
 				break;
 			} else if (!STARTS_WITH(buf, "* ")) {
+				bbs_warning("Unexpected response: %s\n", buf);
 				return -1;
 			}
 		}
@@ -595,9 +597,11 @@ ssize_t remote_status(struct imap_client *client, const char *remotename, const 
 		for (;;) {
 			res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 5000);
 			if (res <= 0) {
+				bbs_warning("Failed to receive response to STATUS command\n");
 				return -1;
 			}
 			if (STARTS_WITH(buf, "* ")) { /* Tolerate unrelated untagged responses interleaved */
+				bbs_warning("Unexpected response: %s\n", buf);
 				continue;
 			}
 			if (strncasecmp(buf, rtag, taglen)) {
