@@ -1182,6 +1182,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		 */
 		node->childpid = 0;
 		if (usenode) {
+			int buffered = node->buffered;
 			/* Restore original terminal settings.
 			 * This way, if whatever program was executed exited
 			 * without leaving the terminal in a good/usable state,
@@ -1189,6 +1190,16 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 			 * the user is none the wiser. */
 			if (tcsetattr(node->slavefd, TCSANOW, &term)) {
 				bbs_error("tcsetattr failed: %s\n", strerror(errno));
+			}
+
+			/* Flush any input that may still be pending when the program exited.
+			 * If there was still input waiting for the program, discard it all,
+			 * or it could erroneously be sent to the BBS when we return,
+			 * wreaking havoc. */
+			bbs_node_unbuffer(node);
+			bbs_node_flush_input(node);
+			if (buffered) {
+				bbs_node_buffer(node); /* Not sure if it's really necessary to restore... but doesn't hurt */
 			}
 		}
 	}
