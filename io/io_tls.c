@@ -221,6 +221,8 @@ static int ssl_register_fd(SSL *ssl, int fd, int *rfd, int *wfd, int client)
 	*rfd = sfd->readpipe[0];
 	*wfd = sfd->writepipe[1];
 
+	bbs_unblock_fd(sfd->readpipe[1]); /* Make sure write(readpipe, ...) doesn't block */
+
 	SET_BITFIELD(sfd->client, client);
 
 	RWLIST_INSERT_HEAD(&sslfds, sfd, entry);
@@ -521,7 +523,8 @@ static void *ssl_io_thread(void *unused)
 					needcreate = 1;
 					continue;
 				}
-				wres = write(readpipe, buf, (size_t) ores);
+				/* This will not block, but we need to retry partial writes, as above with partial reads, hence bbs_write instead of write. */
+				wres = bbs_write(readpipe, buf, (size_t) ores);
 				if (wres != ores) {
 					bbs_error("Wanted to write %d bytes but wrote %ld?\n", ores, wres);
 				}
