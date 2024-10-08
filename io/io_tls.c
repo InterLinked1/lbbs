@@ -238,11 +238,20 @@ static void ssl_fd_free(struct ssl_fd *sfd)
 	free(sfd);
 }
 
+static int needcreate = 1; /* Whether the list of TLS sessions is stale and needs to be rebuilt */
+
 static int ssl_unregister_fd(SSL *ssl)
 {
 	struct ssl_fd *sfd;
 
-	sfd = RWLIST_WRLOCK_REMOVE_BY_FIELD(&sslfds, ssl, ssl, entry);
+	RWLIST_WRLOCK(&sslfds);
+	sfd = RWLIST_REMOVE_BY_FIELD(&sslfds, ssl, ssl, entry);
+	if (sfd) {
+		/* Any list of SSL sessions is now stale, since it
+		 * could potentially include the session we just removed. */
+		needcreate = 1;
+	}
+	RWLIST_UNLOCK(&sslfds);
 	if (sfd) {
 		ssl_fd_free(sfd);
 		bbs_alertpipe_write(ssl_alert_pipe); /* Notify I/O thread that we removed a fd, although it'll probably detect this anyways. */
@@ -261,6 +270,7 @@ static void ssl_cleanup_fds(void)
 		ssl_fd_free(sfd);
 		c++;
 	}
+	needcreate = 1;
 	RWLIST_UNLOCK(&sslfds);
 	if (c) {
 		bbs_warning("Forcibly removed %d SSL file descriptor%s\n", c, ESS(c));
@@ -322,7 +332,6 @@ static void *ssl_io_thread(void *unused)
 	 * since we print these out, and nfds_t is signed on some platforms (e.g. Linux)
 	 * and unsigned on others (e.g. FreeBSD), so we can't portably print them. */
 	int i, prevfds = 0, oldnumfds = 0, numfds = 0, numssl = 0;
-	int needcreate = 1;
 	char buf[8192];
 	int pending;
 	int inovertime = 0, overtime = 0;
@@ -425,6 +434,14 @@ static void *ssl_io_thread(void *unused)
 			inovertime = 1;
 		}
 		RWLIST_RDLOCK(&sslfds);
+		/* Now that we've acquired the lock, check if any sessions are stale.
+		 * If so, we need to rebuild the list before iterating again,
+		 * to avoid using sessions that were removed and may now be freed. */
+		if (needcreate) {
+			RWLIST_UNLOCK(&sslfds);
+			bbs_debug(4, "TLS session list has become stale since loop iteration began, rebuilding again...\n");
+			continue;
+		}
 		for (i = 0; res > 0 && i < numfds; i++) {
 			int ores;
 			ssize_t wres;

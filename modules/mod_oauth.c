@@ -211,6 +211,8 @@ static int refresh_token(struct oauth_client *client)
 	}
 
 	bbs_verb(4, "Refreshed OAuth token '%s' (good for %ds)\n", client->name, expires);
+	json_decref(json);
+	bbs_curl_free(&c);
 	return 0;
 
 cleanup:

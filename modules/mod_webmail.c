@@ -3499,7 +3499,7 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 		} else {
 			bbs_warning("Command unknown: %s\n", command);
 		}
-		return res;
+		goto cleanup;
 	}
 
 	if (!strcmp(command, "LIST")) {
