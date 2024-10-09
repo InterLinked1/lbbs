@@ -147,7 +147,9 @@ scripts :
 	@if [ ! -d /var/lib/lbbs/scripts ]; then\
 		mkdir /var/lib/lbbs/scripts;\
 	fi
-	cp -n scripts/* /var/lib/lbbs/scripts
+	cp scripts/*.sh /var/lib/lbbs/scripts
+	cp scripts/*.sql /var/lib/lbbs/scripts
+	cp -n scripts/*.php /var/lib/lbbs/scripts
 	chmod +x /var/lib/lbbs/scripts/*
 
 templates :
