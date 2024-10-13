@@ -474,8 +474,17 @@ int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid) __a
  */
 int uidsort(const struct dirent **da, const struct dirent **db);
 
-/*! \brief Perform an ordered traversal of a maildir cur directory */
+/*!
+ * \brief Perform an ordered traversal (by UID) of a maildir cur directory
+ * \note This function MUST ONLY be used in the cur dir, NOT the new dir (use maildir_sequence_traverse for that)
+ */
 int maildir_ordered_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), void *obj);
+
+/*!
+ * \brief Perform an ordered traversal (by filename) of a maildir new directory
+ * \note This function MUST ONLY be used in the new dir, NOT the cur dir (use maildir_ordered_traverse for that)
+ */
+int maildir_uidless_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), void *obj);
 
 /* IMAP client */
 #define IMAP_CLIENT_EXPECT(client, s) if (bbs_tcp_client_expect(client, "\r\n", 1, 2000, s)) { bbs_debug(3, "Didn't receive expected '%s'\n", s); goto cleanup; }

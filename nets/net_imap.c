@@ -313,10 +313,10 @@ static inline void reset_saved_search(struct imap_session *imap)
 	traversal->innew = 0; \
 	traversal->uidvalidity = 0; \
 	traversal->uidnext = 0; \
-	imap_traverse(traversal->curdir, callback, traversal); \
+	imap_traverse_cur(traversal->curdir, callback, traversal); \
 	traversal->innew = 1; \
 	traversal->minrecent = traversal->totalcur + 1; \
-	imap_traverse(traversal->newdir, callback, traversal); \
+	imap_traverse_new(traversal->newdir, callback, traversal); \
 	traversal->maxrecent = traversal->totalcur + traversal->totalnew; \
 	if (!traversal->uidvalidity || !traversal->uidnext) { \
 		mailbox_get_next_uid(traversal->mbox, traversal->imap->node, traversal->dir, 0, &traversal->uidvalidity, &traversal->uidnext); \
@@ -1073,9 +1073,14 @@ next:
 	return 0;
 }
 
-static int imap_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), struct imap_traversal *traversal)
+static int imap_traverse_cur(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), struct imap_traversal *traversal)
 {
 	return maildir_ordered_traverse(path, on_file, traversal);
+}
+
+static int imap_traverse_new(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), struct imap_traversal *traversal)
+{
+	return maildir_uidless_traverse(path, on_file, traversal);
 }
 
 static void do_qresync(struct imap_session *imap, unsigned long lastmodseq, const char *uidrange, char *seqrange)

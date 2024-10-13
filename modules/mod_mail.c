@@ -1989,7 +1989,7 @@ int uidsort(const struct dirent **da, const struct dirent **db)
 	return auid < buid ? -1 : 1;
 }
 
-int maildir_ordered_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), void *obj)
+static int maildir_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), void *obj, int (*sortfunc)(const struct dirent **da, const struct dirent **db))
 {
 	struct dirent *entry, **entries;
 	int files, fno = 0;
@@ -1997,7 +1997,7 @@ int maildir_ordered_traverse(const char *path, int (*on_file)(const char *dir_na
 	int seqno = 0;
 
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
-	files = scandir(path, &entries, NULL, uidsort);
+	files = scandir(path, &entries, NULL, sortfunc);
 	if (files < 0) {
 		bbs_error("scandir(%s) failed: %s\n", path, strerror(errno));
 		return -1;
@@ -2014,6 +2014,20 @@ int maildir_ordered_traverse(const char *path, int (*on_file)(const char *dir_na
 	bbs_free_scandir_entries(entries, files); /* Free all at once at the end, in case we break from the loop early */
 	free(entries);
 	return res;
+}
+
+int maildir_ordered_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), void *obj)
+{
+	return maildir_traverse(path, on_file, obj, uidsort);
+}
+
+int maildir_uidless_traverse(const char *path, int (*on_file)(const char *dir_name, const char *filename, int seqno, void *obj), void *obj)
+{
+	/* When traversing the new dir, UIDs have not yet been assigned,
+	 * so using uidsort is wrong and will result in random ordering.
+	 * However, there is still an ordering that must be preserved,
+	 * and it's simply the normal ordering by entire filename. */
+	return maildir_traverse(path, on_file, obj, alphasort);
 }
 
 static int cli_mailboxes(struct bbs_cli_args *a)
