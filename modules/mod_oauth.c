@@ -38,12 +38,14 @@ struct oauth_client {
 	const char *clientid;
 	const char *clientsecret;
 	const char *posturl;
+	const char *filename;
 	char *accesstoken;
 	char *refreshtoken;
 	RWLIST_ENTRY(oauth_client) entry;
 	time_t tokentime;
 	time_t expires;
 	unsigned int userid;
+	unsigned int accesstokeninitiallyempty:1;
 	bbs_mutex_t lock;
 	char data[0];
 };
@@ -66,10 +68,10 @@ static void free_client(struct oauth_client *client)
 
 /*! \note clients must be WRLOCK'd when calling */
 static int add_oauth_client(const char *name, const char *clientid, const char *clientsecret, const char *refreshtoken, const char *accesstoken,
-	const char *posturl, int expires, unsigned int userid)
+	const char *posturl, int expires, unsigned int userid, const char *filename)
 {
 	struct oauth_client *client;
-	size_t namelen, idlen, secretlen, urllen;
+	size_t namelen, idlen, secretlen, urllen, filenamelen;
 	char *pos;
 
 	REQUIRE_SETTING(clientid);
@@ -96,7 +98,8 @@ static int add_oauth_client(const char *name, const char *clientid, const char *
 	idlen = strlen(clientid);
 	secretlen = !strlen_zero(clientsecret) ? strlen(clientsecret) : 0;
 	urllen = strlen(posturl);
-	client = calloc(1, sizeof(*client) + namelen + idlen + secretlen + urllen + 4); /* NULs for each of them */
+	filenamelen = strlen(filename);
+	client = calloc(1, sizeof(*client) + namelen + idlen + secretlen + urllen + filenamelen + 5); /* NULs for each of them */
 	if (ALLOC_FAILURE(client)) {
 		return -1;
 	}
@@ -121,6 +124,10 @@ static int add_oauth_client(const char *name, const char *clientid, const char *
 	strcpy(pos, posturl);
 	client->posturl = pos;
 
+	pos += urllen + 1;
+	strcpy(pos, filename);
+	client->filename = pos;
+
 	client->refreshtoken = strdup(refreshtoken);
 	if (ALLOC_FAILURE(client->refreshtoken)) {
 		free(client);
@@ -136,6 +143,8 @@ static int add_oauth_client(const char *name, const char *clientid, const char *
 			return -1;
 		}
 		client->tokentime = time(NULL); /* Assumed to be valid as of now. */
+	} else {
+		client->accesstokeninitiallyempty = 1;
 	}
 
 	client->expires = expires;
@@ -197,7 +206,6 @@ static int refresh_token(struct oauth_client *client)
 	}
 
 	client->tokentime = now;
-	REPLACE(client->accesstoken, newaccesstoken);
 	if (!strlen_zero(newrefreshtoken) && strcmp(newrefreshtoken, client->refreshtoken)) {
 		/* The authorization server MAY issue a new refresh token, in which case the client
 		 * MUST discard the old refresh token and replace it with the new refresh token.
@@ -206,8 +214,23 @@ static int refresh_token(struct oauth_client *client)
 		REPLACE(client->refreshtoken, newrefreshtoken);
 		/* This is good as long as the BBS is running continously, but we also need to update the static configuration file,
 		 * or we'll lose the new refresh token the next time the BBS starts (or mod_oauth is reloaded). */
-		/*! \todo XXX Persist the new token to the config file */
-		bbs_warning("OAuth refresh token has changed, but is not persisted to configuration\n");
+		if (bbs_config_set_keyval(client->filename, client->name, "refreshtoken", client->refreshtoken)) {
+			bbs_warning("OAuth refresh token has changed, but is not persisted to configuration\n");
+		}
+	}
+	if (!strlen_zero(newaccesstoken) && !client->accesstokeninitiallyempty && (strlen_zero(client->accesstoken) || strcmp(newaccesstoken, client->accesstoken))) {
+		REPLACE(client->accesstoken, newaccesstoken);
+		/* Also update the config with the new access token, so we don't try to use
+		 * an old access token in the future.
+		 * This way, if there's an access token specified in the config file,
+		 * when we write new refresh tokens to the file, we don't leave a stale access token there
+		 * and load that back in when it's no longer valid. */
+		if (bbs_config_set_keyval(client->filename, client->name, "accesstoken", client->accesstoken)) {
+			bbs_warning("OAuth access token has changed, but is not persisted to configuration\n");
+		}
+	} else {
+		/* Just update in memory, we won't pull an old access token from the config in the future since it's not specified there to start with. */
+		REPLACE(client->accesstoken, newaccesstoken);
 	}
 
 	bbs_verb(4, "Refreshed OAuth token '%s' (good for %ds)\n", client->name, expires);
@@ -321,7 +344,7 @@ static int load_config_file(const char *filename, unsigned int forceuserid, cons
 		if (match && !strcmp(bbs_config_section_name(section), match)) {
 			namematch = 1;
 		}
-		add_oauth_client(bbs_config_section_name(section), clientid, clientsecret, refreshtoken, accesstoken, posturl, expires, userid);
+		add_oauth_client(bbs_config_section_name(section), clientid, clientsecret, refreshtoken, accesstoken, posturl, expires, userid, filename);
 		if (forceuserid && added++ > MAX_USER_OAUTH_TOKENS) {
 			/* Prevent a user from loading an unbounded amount of token mappings into memory. */
 			bbs_warning("Maximum user OAuth token mappings exceeded, ignoring remaining mappings\n");

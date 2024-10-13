@@ -298,13 +298,17 @@ int bbs_config_free(struct bbs_config *c)
 
 #define BEGINS_SECTION(s) (*s == '[')
 
-static struct bbs_config *config_parse(const char *name)
+/*! \brief Parse a config file, and optionally write a setting to it */
+static struct bbs_config *config_parse_or_write(const char *name, FILE **restrict write_fp_ptr, const char *write_section, const char *write_key, const char *write_value)
 {
 	struct bbs_config *cfg;
 	struct bbs_config_section *section = NULL;
 	struct bbs_keyval *keyval;
 	FILE *fp;
 	char *line = NULL;
+	char *dupline = NULL;
+	const char *endl = NULL;
+	int has_line_ending = 0;
 	size_t len = 0;
     ssize_t bytes_read;
 	char *key, *value;
@@ -349,12 +353,32 @@ static struct bbs_config *config_parse(const char *name)
 
 	bbs_debug(3, "Parsing config %s\n", fullname);
 
+#define COPY_EXISTING_LINE() fprintf(*write_fp_ptr, "%s", dupline);
+
 	while ((bytes_read = getline(&line, &len, fp)) != -1) {
 		lineno++;
-		rtrim(line);
 		if (strlen_zero(line)) {
-			continue; /* Skip blank/empty lines */
+			continue;
 		}
+		if (write_fp_ptr) {
+			has_line_ending = strchr(line, '\n') ? 1 : 0; /* Whether CR or LF, it has an LF */
+			if (!endl) {
+				/* Preserve whichever line endings this file uses. */
+				endl = strchr(line, '\r') ? "\r\n" : "\n";
+			}
+			/* Handle previous line */
+			if (dupline) {
+				COPY_EXISTING_LINE();
+				free(dupline);
+			}
+			dupline = strdup(line);
+			if (ALLOC_FAILURE(dupline)) {
+				/* Exit cleanly, but fail. */
+				fclose(*write_fp_ptr);
+				*write_fp_ptr = NULL;
+			}
+		}
+		rtrim(line);
 		if (*line == '\r' || *line == '\n') {
 			continue; /* Skip blank/empty lines */
 		}
@@ -384,6 +408,25 @@ static struct bbs_config *config_parse(const char *name)
 #ifdef DEBUG_CONFIG_PARSING
 			bbs_debug(7, "New section: %s\n", section_name);
 #endif
+
+			if (write_fp_ptr && write_section && section && !strcmp(section->name, write_section)) {
+				/* Append keyval to previous section since it was not already present.
+				 * The only downside of this logic is in a file formatted like this:
+				 * [section]
+				 * keyA=valA
+				 * keyB=valB
+				 *
+				 * [section2]
+				 * ...
+				 * If we append, it will be on the line immediately before [section2],
+				 * which is correct, but it will be AFTER the blank line.
+				 * This issue doesn't come up when the value is being replaced, rather than added.
+				 * There's nothing incorrect about this, it just looks weird,
+				 * but it's not worth the added overhead to work around that to me... */
+				fprintf(*write_fp_ptr, "%s = %s%s", write_key, write_value, endl);
+				bbs_verb(5, "Adding setting '%s' in existing config\n", write_key);
+			}
+
 			section = calloc(1, sizeof(*section));
 			if (ALLOC_FAILURE(section)) {
 				continue;
@@ -416,10 +459,29 @@ static struct bbs_config *config_parse(const char *name)
 		*value++ = '\0';
 		trim(key);
 		trim(value);
-		
+
 		if (!section) {
 			bbs_warning("Failed to process %s=%s, not in a section (%s:%d)\n", key, value, name, lineno);
 			continue;
+		}
+
+		if (write_fp_ptr && write_section) {
+			/* At this point, we know if this key should be updated.
+			 * Furthermore, keys cannot have empty values, so we are replacing some value. */
+			if (!strcmp(key, write_key) && !strcmp(section->name, write_section)) {
+				char *tmp = strchr(dupline, '=');
+				bbs_assert_exists(tmp); /* We duplicated a string which contains '=', so it must exist */
+				tmp++; /* There must be a value, so tmp must be nonempty at this point */
+				tmp = strstr(dupline, value);
+				bbs_assert_exists(value);
+				tmp += strlen(value);
+				/* Copy remainder of line from tmp onwards,
+				 * then free dupline since we already handled this line. */
+				fprintf(*write_fp_ptr, "%s = %s%s", key, write_value, S_IF(tmp)); /* tmp also includes the line ending */
+				bbs_verb(5, "Updating setting '%s' in existing config\n", write_key);
+				FREE(dupline); /* free and set to NULL */
+				write_section = NULL; /* Do not do any further replacements/additions */
+			}
 		}
 
 		keyval = calloc(1, sizeof(*keyval));
@@ -447,16 +509,112 @@ static struct bbs_config *config_parse(const char *name)
 	if (line) {
 		free(line); /* Free only once at the end */
 	}
+	if (write_fp_ptr && dupline) {
+		COPY_EXISTING_LINE();
+		FREE(dupline);
+	}
+	if (write_fp_ptr && write_section && section && !strcmp(section->name, write_section)) {
+		/* If the last line did not originally end with a newline, don't add one at the end now */
+		fprintf(*write_fp_ptr, "%s = %s%s", write_key, write_value, has_line_ending ? endl : "");
+		bbs_verb(5, "Adding setting '%s' in existing config\n", write_key);
+	}
 	fclose(fp);
 
 	/* Only at the end should we insert the config into the list. */
-	RWLIST_WRLOCK(&configs);
-	RWLIST_INSERT_TAIL(&configs, cfg, entry);
-	RWLIST_UNLOCK(&configs);
+	if (!write_key) {
+		RWLIST_WRLOCK(&configs);
+		RWLIST_INSERT_TAIL(&configs, cfg, entry);
+		RWLIST_UNLOCK(&configs);
+	}
 
 	bbs_verb(5, "Parsed config %s\n", fullname);
 
 	return cfg;
+}
+
+static struct bbs_config *config_parse(const char *name)
+{
+	return config_parse_or_write(name, NULL, NULL, NULL, NULL);
+}
+
+int bbs_config_set_keyval(const char *filename, const char *section, const char *key, const char *value)
+{
+	FILE *oldfp, *newfp;
+	struct bbs_config *cfg;
+	size_t fsize;
+	struct stat st;
+	char tmpfile[256] = "/tmp/bbs_config_XXXXXX";
+
+	/* Unlike Asterisk, we do not parse the entire config into memory,
+	 * modify config objects, and then serialize it back to disk.
+	 * Instead, we just work with the INI config file directly.
+	 * This avoids having to worry about preserving comments and formatting verbatim,
+	 * resulting in "dumber" (less semantic/powerful) but ultimately much simpler code.
+	 * This would be very inefficient for updating multiple key-value pairs,
+	 * but for updating a single setting in a file, it is fairly efficient. */
+
+	/* The GNU and BSD versions of sed use different syntax,
+	 * and we may want to either set or replace the config value
+	 * (and may not know or care what the old value is).
+	 * So, do a brute force copy and update/add/replace. */
+
+	oldfp = fopen(filename, "r");
+	if (!oldfp) {
+		bbs_warning("Existing config file '%s' does not exist\n", filename);
+		/* If config file doesn't exist, we could create it,
+		 * but more than likely something is wrong and we should just abort. */
+		return -1;
+	}
+	newfp = bbs_mkftemp(tmpfile, 0660);
+	if (!newfp) {
+		fclose(oldfp);
+		return -1;
+	}
+
+	cfg = config_parse_or_write(filename, &newfp, section, key, value);
+
+	/* Finalize and cleanup */
+	fclose(oldfp);
+	if (!newfp) {
+		/* Failure occured, and newfp has already been closed. */
+		if (cfg) {
+			config_free(cfg);
+			bbs_delete_file(tmpfile);
+		}
+		return -1;
+	}
+	fflush(newfp);
+	fsize = (size_t) ftell(newfp);
+	fclose(newfp);
+
+	/* We parsed the config, but don't want to keep it.
+	 * For one, it's now outdated, and it may be duplicating the stale version already in the linked list. */
+	if (!cfg) {
+		bbs_delete_file(tmpfile);
+		return -1;
+	}
+	config_free(cfg); /* Wasn't inserted into list, so don't use bbs_config_free */
+
+	/* Edge case, but check if the disk was full and we weren't actually able to write the file to disk. */
+	if (stat(tmpfile, &st)) {
+		bbs_error("Failed to stat %s: %s\n", tmpfile, strerror(errno));
+		bbs_delete_file(tmpfile);
+		return -1;
+	}
+	if ((size_t) st.st_size != fsize) {
+		bbs_error("File size mismatch: %lu != %lu\n", st.st_size, fsize);
+		bbs_delete_file(tmpfile);
+		return -1;
+	}
+
+	/* Okay, now do the atomic rename, since we are confident file truncation did not occur. */
+	if (rename(tmpfile, filename)) {
+		bbs_error("Failed to rename %s -> %s: %s\n", tmpfile, filename, strerror(errno));
+		bbs_delete_file(tmpfile);
+		return -1;
+	}
+
+	return 0;
 }
 
 static int __bbs_cached_config_outdated(struct bbs_config *cfg, const char *name)

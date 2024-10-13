@@ -153,6 +153,16 @@ int bbs_config_free(struct bbs_config *cfg);
 void bbs_configs_free_all(void);
 
 /*!
+ * \brief Write a single particular key-value setting to a config file, adding if not present and overwriting existing value if already present
+ * \param filename Config fil name
+ * \param section Config section name in which to add or update setting
+ * \param key Key name of setting to add or update
+ * \param value Setting value to add or update
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_config_set_keyval(const char *filename, const char *section, const char *key, const char *value) __attribute__((nonnull (1, 2, 3, 4)));
+
+/*!
  * \brief Check whether a config file has been updated since it was last parsed
  * \param name Config filename
  * \retval -1 if config file is not cached at all
