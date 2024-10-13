@@ -519,14 +519,9 @@ ssize_t remote_status(struct imap_client *client, const char *remotename, const 
 	const char *add1, *add2, *add3;
 	int issue_status = 1;
 
-	if (!client->imap) {
-		/* Originally added as an assertion in response to a segfault observed on the following line.
-		 * Not yet sure how this can happen, but if it does, don't crash. */
-		bbs_error("Remote IMAP client does not have an associated IMAP session???\n");
-		bbs_soft_assert(0);
-		return -1;
-	}
+	bbs_assert_exists(client->imap);
 	tag = client->imap->tag;
+	bbs_assert_exists(tag);
 
 	/* In order for caching of SIZE to be reliable, we must invalidate it whenever anything
 	 * in the original STATUS response changes, including UIDNEXT/UIDVALIDITY. These are needed to

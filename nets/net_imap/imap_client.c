@@ -33,16 +33,68 @@
 
 extern unsigned int maxuserproxies;
 
+/* Check client pointers for integrity before/after various operations.
+ * If the pointers are invalid, some kind of memory corruption has likely occured.
+ * This code is only for debugging suspected memory issues caused by invalid pointers,
+ * and is not needed on a production system. */
+/* #define CHECK_CLIENT_POINTER_INTEGRITY */
+
+/*! \brief Basic checks to ensure that a client's IMAP session is the current one */
+static void client_integrity_check(struct imap_session *imap, struct imap_client *client)
+{
+#ifdef CHECK_CLIENT_POINTER_INTEGRITY
+	if (imap) {
+		/* These are invariants.
+		 * If any of these checks fails, then a segfault is imminent anyways. */
+		if (client) {
+			if (likely(client->imap != NULL)) {
+				/* imap->client is not necessarily client */
+				if (unlikely(client->imap != imap)) {
+					bbs_error("Client pointer mismatch: %p != %p\n", client->imap, imap);
+					bbs_assert(client->imap == imap);
+				}
+				bbs_assert(!strlen_zero(client->imap->tag));
+			} else {
+				bbs_soft_assert(client->imap != NULL);
+			}
+		}
+		if (imap->client) {
+			if (unlikely(imap->client->imap != imap)) {
+				bbs_error("Client pointer mismatch: %p != %p\n", imap->client->imap, imap);
+			} else {
+				bbs_assert(imap->client->imap == imap);
+			}
+		}
+	}
+#else
+	UNUSED(imap);
+	UNUSED(client);
+#endif
+}
+
+void imap_client_integrity_check(struct imap_session *imap, struct imap_client *client)
+{
+	return client_integrity_check(imap, client);
+}
+
 /*! \note Must be called locked */
 static void client_link(struct imap_session *imap, struct imap_client *client)
 {
 	client->imap = imap;
 	RWLIST_INSERT_TAIL(&imap->clients, client, entry);
+	client_integrity_check(imap, client);
 }
 
 static void client_destroy(struct imap_client *client)
 {
 	bbs_debug(5, "Destroying IMAP client %s\n", client->name);
+	if (client->imap->client == client) {
+		/* Ideally this would not happen, but if it does, set the active client to NULL,
+		 * or we'll continue using it after it's freed as there is code that
+		 * simply pulls from this variable, rather than pulling from the clients list fresh. */
+		bbs_debug(2, "Client %s still the foreground client at destroy time?\n", client->name);
+		client->imap->client = NULL;
+	}
 	if (!client->dead) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-result"
@@ -58,6 +110,8 @@ static void client_destroy(struct imap_client *client)
 void imap_client_unlink(struct imap_session *imap, struct imap_client *client)
 {
 	struct imap_client *c;
+
+	client_integrity_check(imap, client);
 
 	RWLIST_WRLOCK(&imap->clients);
 	c = RWLIST_REMOVE(&imap->clients, client, entry);
@@ -167,7 +221,7 @@ int imap_client_idle_start(struct imap_client *client)
 int imap_client_idle_stop(struct imap_client *client)
 {
 	if (SWRITE(client->client.wfd, "DONE\r\n") < 0) {
-		bbs_error("Failed to write to idling client, must be dead\n");
+		bbs_error("Failed to write to idling client '%s', must be dead\n", client->name);
 		return -1;
 	}
 	/* There could be some untagged updates sent that we're just seeing now, be tolerant of receiving a few of those */
@@ -466,8 +520,10 @@ int __imap_client_send_wait_response(struct imap_client *client, int fd, int ms,
 
 	if (!client->imap) {
 		bbs_warning("No active IMAP client?\n"); /* Shouldn't happen... */
+		bbs_soft_assert(0);
 	} else if (strlen_zero(client->imap->tag)) {
 		bbs_warning("No active IMAP tag, using generic one\n");
+		bbs_soft_assert(0);
 	} else {
 		tag = client->imap->tag;
 	}
@@ -540,7 +596,7 @@ static int connection_stale(struct imap_client *client)
 		if (imap_client_idle_stop(client)) {
 			return -1;
 		}
-		bbs_debug(5, "Successfully stopped background IDLE on client, reusing\n");
+		bbs_debug(5, "Successfully stopped background IDLE on client %s, reusing\n", client->name);
 		return 0;
 	}
 
@@ -608,6 +664,8 @@ static struct imap_client *imap_client_get(struct imap_session *imap, const char
 				client->dead = 1;
 				client_destroy(client);
 				client = NULL;
+			} else {
+				client_integrity_check(imap, client);
 			}
 			break;
 		}
@@ -617,24 +675,24 @@ static struct imap_client *imap_client_get(struct imap_session *imap, const char
 		while (current >= maxuserproxies) {
 			int retries = 50;
 			/* We'll need to disconnect a connection in order to make room for this one. */
-			bbs_debug(3, "Need to free up a client connection to make room for a new one\n");
 			client = find_inactive_client(imap); /* We must not try to remove a client that is currently in use (perhaps by an ongoing parallel job) */
 			if (!client && parallel) {
-				bbs_warning("Not currently any room for additional IMAP clients, waiting up to 10 seconds...\n");
-				while (!client && retries--) {
+				bbs_warning("Not currently any room for additional IMAP clients (already have %d), waiting up to 5 seconds...\n", current);
+				do {
 					/* If this is a parallel job, wait for a client to become available, up to a certain amount of time */
-					if (bbs_node_safe_sleep(imap->node, 250)) { /* XXX Instead of polling, get notified when a client is no longer active? */
+					if (bbs_node_safe_sleep(imap->node, 125)) { /* XXX Instead of polling, get notified when a client is no longer active? */
 						break;
 					}
 					client = find_inactive_client(imap);
-				}
+				} while (!client && --retries);
 			}
 			if (!client) {
 				/* If all current clients are in use, then we may need to wait */
-				bbs_warning("Unable to make room for new IMAP client\n");
+				bbs_warning("Unable to make room for new IMAP client (already have %d)\n", current);
 				RWLIST_UNLOCK(&imap->clients);
 				return NULL;
 			}
+			bbs_debug(3, "Discarding client '%s' to make room for a new one (already have %d)\n", client->name, current);
 			client_destroy(client); /* This client has already been removed from the list */
 			current--;
 		}
@@ -680,7 +738,9 @@ struct imap_client *__imap_client_get_by_url(struct imap_session *imap, const ch
 	client = imap_client_get(imap, name, &new, parallel);
 	if (!client) {
 		return NULL;
-	} else if (!new) {
+	}
+	client_integrity_check(imap, client);
+	if (!new) {
 		return client;
 	}
 
@@ -838,6 +898,7 @@ static struct imap_client *__load_virtual_mailbox(struct imap_session *imap, con
 		/* Reuse the same connection if it's the same account. */
 		bbs_assert_exists(path);
 		bbs_assert_exists(virtprefix);
+		client_integrity_check(imap, imap->client);
 		if (!strncmp(virtprefix, path, imap->client->virtprefixlen)) {
 			bbs_debug(5, "Reusing existing active connection for %s\n", path);
 			*exists = 1;

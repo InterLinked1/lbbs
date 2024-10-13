@@ -16,6 +16,9 @@
 /*! \brief Disconnect all proxied client connections */
 void imap_shutdown_clients(struct imap_session *imap);
 
+/*! \brief Check basic invariants to ensure corruption has not occured */
+void imap_client_integrity_check(struct imap_session *imap, struct imap_client *client);
+
 /*!
  * \brief Unlink and destroy a client
  * \param imap

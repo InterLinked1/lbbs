@@ -4081,6 +4081,7 @@ static int handle_idle(struct imap_session *imap)
 
 			if (!client) {
 				if (imap->client) {
+					imap_client_integrity_check(imap, imap->client);
 					/* Stop idling on the selected mailbox (remote) */
 					imap_client_idle_stop(imap->client);
 				}
