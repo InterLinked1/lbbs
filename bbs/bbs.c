@@ -670,6 +670,13 @@ static void __sigint_handler(int num)
 	}
 }
 
+static void __sighup_handler(int num)
+{
+	UNUSED(num);
+
+	bbs_debug(2, "Got SIGHUP, ignoring\n"); /* XXX technically not safe to use in signal handler */
+}
+
 /*! \brief Log any SIGWINCHes received */
 static void __sigwinch_handler(int num)
 {
@@ -711,6 +718,7 @@ static void __sigwinch_handler(int num)
 static void __sigusr1_handler(int num)
 {
 	UNUSED(num);
+
 	/* By default, if we use pthread_kill to try to send SIGUSR1 to a thread,
 	 * it will terminate the entire BBS.
 	 * Installing this dummy signal handler that does nothing prevents that,
@@ -986,6 +994,14 @@ int main(int argc, char *argv[])
 	}
 	signal(SIGINT, __sigint_handler);
 	signal(SIGTERM, __sigint_handler);
+	if (!option_nofork) {
+		/* If daemonized, we get a SIGHUP whenever a remote sysop console disconnects... ignore it,
+		 * or the BBS will get killed by the signal.
+		 * Frequently used by daemonized processes to reread their configuration,
+		 * for now we just ignore it.
+		 * If running in the foreground, then allow SIGHUP to terminate as usual. */
+		signal(SIGHUP, __sighup_handler);
+	}
 	signal(SIGWINCH, __sigwinch_handler);
 	signal(SIGUSR1, __sigusr1_handler);
 	sigaction(SIGPIPE, &ignore_sig_handler, NULL);

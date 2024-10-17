@@ -180,6 +180,7 @@ static RWLIST_HEAD_STATIC(remote_log_fds, remote_log_fd);
 
 /*! \note Assumes all remote consoles are going to use a fd within the first 1024 */
 static int fd_logging[1024]; /* Array for constant time access instead of a linked list. Even though we traverse the list for writing, to set logging on/off, we don't need to. */
+static int active_remote_consoles = 0;
 
 int bbs_set_fd_logging(int fd, int enabled)
 {
@@ -254,6 +255,7 @@ int bbs_add_logging_fd(int fd)
 	rfd->maxdebug = MAX_DEBUG; /* By default, there is no local restriction on the max debug level */
 	RWLIST_INSERT_HEAD(&remote_log_fds, rfd, entry);
 	fd_logging[fd] = 1; /* Initialize to enabled */
+	active_remote_consoles++;
 	RWLIST_UNLOCK(&remote_log_fds);
 	bbs_debug(5, "Registered file descriptor %d for logging\n", fd);
 	return 0;
@@ -263,7 +265,10 @@ int bbs_remove_logging_fd(int fd)
 {
 	struct remote_log_fd *rfd;
 
-	rfd = RWLIST_WRLOCK_REMOVE_BY_FIELD(&remote_log_fds, fd, fd, entry);
+	RWLIST_WRLOCK(&remote_log_fds);
+	rfd = RWLIST_REMOVE_BY_FIELD(&remote_log_fds, fd, fd, entry);
+	active_remote_consoles--;
+	RWLIST_UNLOCK(&remote_log_fds);
 	if (unlikely(!rfd)) {
 		bbs_error("File descriptor %d did not have logging\n", fd);
 	} else {
@@ -389,7 +394,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 	int thread_id;
 	int dynamic = 0, fulldynamic = 0;
 	int bytes;
-	int log_stdout;
+	int log_stdout, log_remote;
 	int need_reset = 0;
 	int skip_logfile = 0;
 
@@ -484,8 +489,10 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 
 	/* Race condition here is fine, but helgrind won't like it: */
 	log_stdout = logstdout;
+	log_remote = active_remote_consoles > 0; /* Small chance a brand new console could register between this check and traversing the remote consoles... but not a big deal. */
 
-	if (log_stdout) {
+	/* If the foreground or any remote consoles are active, prepare a log message for any connected consoles. */
+	if (log_stdout || log_remote) {
 		struct remote_log_fd *rfd;
 		if (loglevel == LOG_VERBOSE && verbose_special_formatting) {
 			const char *verbprefix = verbose_prefix(level);
@@ -517,7 +524,12 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 			}
 		}
 
-		term_puts(fullbuf);
+		/* Log to foreground console, if there is one */
+		if (log_stdout) {
+			term_puts(fullbuf);
+		}
+
+		/* Log to remote consoles */
 		RWLIST_RDLOCK(&remote_log_fds);
 		RWLIST_TRAVERSE(&remote_log_fds, rfd, entry) {
 			if (loglevel == LOG_DEBUG && level > rfd->maxdebug) {
