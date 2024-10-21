@@ -2331,12 +2331,12 @@ static ssize_t full_write(struct pollfd *pfd, int fd, const char *restrict buf, 
 	 * the remote side isn't responsive and
 	 * we should just disconnect. */
 	ssize_t bytes = timed_write(pfd, fd, buf, len, SEC_MS(60));
-	if (!bytes) {
+	if (bytes <= 0) {
 		/* Applications should be checking this return value regularly
 		 * to terminate node execution if needed.
 		 * In this particular case, a return value of 0 is logically
 		 * interpreted as a total failure and should result in disconnect. */
-		bbs_error("Failed to fully write %lu bytes to fd %d\n", len, fd);
+		bbs_error("Failed to fully write %lu bytes to fd %d: %s\n", len, fd, strerror(errno));
 		return -1;
 	}
 	return bytes;
@@ -2753,7 +2753,7 @@ int bbs_node_clear_line(struct bbs_node *node)
 
 int bbs_node_set_pos(struct bbs_node *node, int row, int col)
 {
-	if (!node->ansi || !(node->ans & ANSI_CURSOR_QUERY)) {
+	if (!node->ansi || !(node->ans & ANSI_CURSOR_SET)) {
 		return 0;
 	}
 	return bbs_node_writef(node, TERM_CURSOR_POS_SET_FMT, row, col) < 0 ? -1 : 0;
@@ -2764,21 +2764,21 @@ int bbs_node_up_one_line(struct bbs_node *node)
 	if (!node->ansi) {
 		return 0;
 	}
-	if (!(node->ans & ANSI_UP_ONE_LINE) && node->ans) {
-		/* Some terminals, like NetRunner, don't support this.
-		 * However, we can still emulate this by setting the cursor explicitly. */
+	if (node->ans & ANSI_UP_ONE_LINE) {
+		return bbs_node_write(node, TERM_UP_ONE_LINE, STRLEN(TERM_UP_ONE_LINE)) == STRLEN(TERM_UP_ONE_LINE) ? 0 : -1;
+	}
+	/* Some terminals, like NetRunner, don't support this.
+	 * However, we can still emulate this by setting the cursor explicitly. */
+	if ((node->ans & ANSI_CURSOR_SET) && (node->ans & ANSI_CURSOR_QUERY)) {
 		int row, col;
-		if (!(node->ans & ANSI_CURSOR_SET)) {
-			bbs_warning("Unable to move terminal up one line (terminal does not support relevant ANSI escape sequences\n");
-			return 0; /* Don't return -1, or that could be interpreted as a node disconnect */
-		}
 		node_get_cursor_pos(node, &row, &col);
 		if (row > 1) {
 			row--;
 		}
 		return bbs_node_set_pos(node, row, col);
 	}
-	return bbs_node_write(node, TERM_UP_ONE_LINE, STRLEN(TERM_UP_ONE_LINE)) == STRLEN(TERM_UP_ONE_LINE) ? 0 : -1;
+	bbs_warning("Unable to move terminal up one line (terminal does not support relevant ANSI escape sequences)\n");
+	return 0; /* Don't return -1, or that could be interpreted as a node disconnect */
 }
 
 int bbs_node_set_term_title(struct bbs_node *node, const char *s)
