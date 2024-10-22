@@ -393,6 +393,7 @@ static int generate_mailbox_name(struct imap_session *imap, const char *restrict
 
 	if (fulllen <= rootlen) {
 		bbs_error("Maildir length %lu <= root maildir length %lu?\n", fulllen, rootlen);
+		bbs_soft_assert(0);
 		return -1;
 	}
 

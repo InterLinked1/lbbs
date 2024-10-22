@@ -47,6 +47,7 @@ struct imap_client {
 	int imapfd;			/* File descriptor, important for polling an idle connection */
 	time_t idlestart;	/* Time that IDLE started, to avoid timing out */
 	int idlerefresh;	/* Reasons for refreshing page listing during IDLE */
+	char delimiter;		/* Hierarchy delimiter */
 	/* Cache */
 	int page;
 	int pagesize;
@@ -882,6 +883,8 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 		struct mailimap_mbx_list_flags *flags = mb_list->mb_flag;
 		delimiter = mb_list->mb_delimiter;
 		name = mb_list->mb_name;
+
+		client->delimiter = delimiter;
 
 		/* Append to JSON array */
 		folder = json_object();
@@ -1891,6 +1894,18 @@ static void fetchlist_single(struct mailimap_msg_att *msg_att, json_t *arr)
 	}
 }
 
+static inline int fetchlist_result_contains_seqno(clist *fetch_result, uint32_t seqno)
+{
+	clistiter *cur;
+	for (cur = clist_begin(fetch_result); cur; cur = clist_next(cur)) {
+		struct mailimap_msg_att *msg_att = clist_content(cur);
+		if (msg_att->att_number == seqno) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
 static int fetchlist(struct ws_session *ws, struct imap_client *client, const char *reason, int start, int end, int page, int pagesize, int numpages, const char *sort, const char *filter)
 {
 	int expected, res, c = 0;
@@ -1905,6 +1920,7 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 	struct mailimap_section *section;
 	json_t *root = NULL, *arr;
 	int added = 0;
+	int fetch_attempts = 0;
 
 	/* start to end is inclusive */
 	expected = end - start + 1;
@@ -2042,11 +2058,12 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 
 		/* Fetch! By sequence number, not UID. */
 		res = mailimap_fetch(client->imap, set, fetch_type, &fetch_result);
-		mailimap_fetch_type_free(fetch_type);
+
 		/* Don't go to cleanup past this point, so no need to set fetch_type/set to NULL */
 		if (MAILIMAP_ERROR(res)) {
 			bbs_warning("FETCH failed: %s\n", maildriver_strerror(res));
 			/* fetch_result and everything that went into it is already freed */
+			mailimap_fetch_type_free(fetch_type);
 			mailimap_set_free(set);
 			return -1;
 		}
@@ -2057,6 +2074,7 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 		if (fetch_result) {
 			mailimap_fetch_list_free(fetch_result);
 		}
+		mailimap_fetch_type_free(fetch_type);
 		mailimap_set_free(set);
 		return -1;
 	}
@@ -2078,65 +2096,171 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 
 	if (!added) {
 		/* If we filtered, there might not be any results */
+		mailimap_fetch_type_free(fetch_type);
 		goto finalize;
 	}
 
-	if (sort) {
-		/* We need to add the messages in the order of the SORT response.
-		 * This is O(n^2), unfortunately (although the # of messages for FETCHLIST
-		 * should be relatively small, certainly not N).
-		 * We can't use qsort directly to sort the messages first and then do a linear scan,
-		 * because it's in the custom clist (linked list).
-		 * XXX We could however create an array of pointers and sort the pointers... */
-		clist *set_list = set->set_list;
-		for (cur2 = clist_begin(set_list); cur2; cur2 = clist_next(cur2)) {
-			struct mailimap_set_item *item = clist_content(cur2);
-			/* This is the nice thing about using a single set item for every message
-			 * when we sort, even if we could use a range. It makes this step easier,
-			 * since item->set_first == item->set_last */
-			uint32_t seqno = item->set_first;
-			bbs_assert(item->set_first == item->set_last);
-			/* Look for this message in the linked list of FETCH responses,
-			 * since they could be in any order.
-			 * Worst case we have to do a linear scan for every message. */
+	for (;;) {
+		if (sort) {
+			/* We need to add the messages in the order of the SORT response.
+			 * This is O(n^2), unfortunately (although the # of messages for FETCHLIST
+			 * should be relatively small, certainly not N).
+			 * We can't use qsort directly to sort the messages first and then do a linear scan,
+			 * because it's in the custom clist (linked list).
+			 * XXX We could however create an array of pointers and sort the pointers... */
+			clist *set_list = set->set_list;
+			for (cur2 = clist_begin(set_list); cur2; cur2 = clist_next(cur2)) {
+				struct mailimap_set_item *item = clist_content(cur2);
+				/* This is the nice thing about using a single set item for every message
+				 * when we sort, even if we could use a range. It makes this step easier,
+				 * since item->set_first == item->set_last */
+				uint32_t seqno = item->set_first;
+				bbs_assert(item->set_first == item->set_last);
+				/* Look for this message in the linked list of FETCH responses,
+				 * since they could be in any order.
+				 * Worst case we have to do a linear scan for every message. */
+				for (cur = clist_begin(fetch_result); cur; cur = clist_next(cur)) {
+					struct mailimap_msg_att *msg_att = clist_content(cur);
+					if (msg_att->att_number != seqno) {
+						continue;
+					}
+					fetchlist_single(msg_att, arr);
+					seqno = 0;
+					c++;
+					break;
+				}
+				if (seqno) {
+					/* This shouldn't happen. The message was in the SORT response,
+					 * and barring some awesome race condition, if we FETCH it,
+					 * then it should be in the response as well.
+					 * Regardless, we're still adding messages in the proper order.
+					 */
+					bbs_warning("No FETCH response for seqno %u?\n", seqno);
+				}
+			}
+		} else {
+			/* Not sorted. Order doesn't matter. */
 			for (cur = clist_begin(fetch_result); cur; cur = clist_next(cur)) {
 				struct mailimap_msg_att *msg_att = clist_content(cur);
-				if (msg_att->att_number != seqno) {
-					continue;
-				}
 				fetchlist_single(msg_att, arr);
-				seqno = 0;
 				c++;
+			}
+		}
+
+		/* The messages are in ascending order here.
+		 * They are displayed newest first in the the webmail client,
+		 * but we let frontend JavaScript reverse this JSON array,
+		 * since jansson doesn't have a function to reverse arrays? */
+
+		if (c != expected && !filter) { /* If we filtered, there might be fewer results than expected? */
+			uint32_t seqno;
+			char otherfolder[1024];
+			char *tmp;
+			bbs_warning("Expected to fetch %d (%d:%d) messages but only fetched %d? Buggy mail server?\n", expected, start, end, c);
+			/* This sometimes happens with Microsoft Office 365 / outlook.com email,
+			 * where right after we delete messages from the mailbox and fetch
+			 * a sequence range, the FETCH response doesn't contain everything we asked for,
+			 * (at least as far as libetpan is concerned, in the data it provides up to us),
+			 * and the more messages we deleted, the worse the issue is.
+			 * No other mail providers tested seem to exhibit this bug, and it seems like a pretty obvious IMAP violation.
+			 * To work around this, we could manually detect which messages are missing and follow up on those.
+			 * Unfortunately, this is an O(n^2), and it would require us to insert these messages at the
+			 * appropriate place in the array by sequence number, which is more complicated than it sounds
+			 * given that it's a JSON array, not a linked list... so to insert in the middle, we would
+			 * need to shift everything.
+			 * Since this shouldn't happen anyways, rather than try to optimize it, just ask for everything all over again if needed. */
+			/* Check if original response contained this message or not */
+			for (seqno = (uint32_t) start; seqno <= (uint32_t) end; seqno++) {
+				if (!fetchlist_result_contains_seqno(fetch_result, seqno)) {
+					/* Log which messages were missing for informational purposes, but this isn't strictly necessary */
+					bbs_debug(1, "Server excluded msg %d in its reply (attempt %d)\n", seqno, fetch_attempts + 1);
+				}
+			}
+			/* Reissue FETCH headers, by continuing loop and making another request. */
+			/* Temporarily selecting another mailbox and then re-selecting this mailbox seems to make it work...
+			 * it's as if that fixes some broken caching-related thing on the server...
+			 * Normally, it would be bad practice to work around specific bugs in specific servers,
+			 * but due to the way mod_webmail is written, mostly as a communication layer,
+			 * if the server is broken, the client also becomes horribly broken, so this is a necessary evil
+			 * to preserve the client's sanity... */
+			/* XXX We should select a folder we know exists... however, since this code is written specifically
+			 * to target Microsoft email servers, use a SPECIAL-USE folder we know exists on Microsoft servers.
+			 * However, we don't store the list of folders on this server, so this isn't guaranteed to work... */
+			safe_strncpy(otherfolder, client->mailbox, sizeof(otherfolder) - 20); /* Enough room for Sent/Deleted */
+			for (;;) {
+				tmp = strrchr(otherfolder, client->delimiter);
+				if (tmp) {
+					tmp++;
+					/* Because we could be proxied through via the BBS to the remote Microsoft mail server,
+					 * we need to actually select another folder on the server that corresponds to this folder.
+					 * Since the server knows that but we don't, we just have to use some heuristics here...
+					 * However, we don't really know what the top-level folder is, the only way to be sure
+					 * is to perform a LIST again, and even then, we can only infer what folders are really on that server,
+					 * and the best we can do is pick a sibling folder or its direct parent. This should always work
+					 * since these special folders will be at the top-level of that hierarchy, so we can just keep
+					 * walking up the tree if that fails.
+					 *
+					 * Technically, we could perform a LIST here and then pick the mailbox we want to use from that,
+					 * and that might be faster, but the code to do a basic LIST would be more involved
+					 * and not worth it for this off-nominal case? This code is written to be the simplest
+					 * way possible of selecting another folder. */
+					strcpy(tmp, strstr(client->mailbox, "Deleted") ? "Sent" : "Deleted"); /* Safe */
+				} else {
+					strcpy(otherfolder, strstr(client->mailbox, "Deleted") ? "Sent" : "Deleted"); /* Safe */
+					/* condition will be false next time we tset */
+				}
+				bbs_debug(3, "Attempting to select '%s'\n", otherfolder);
+				res = mailimap_select(client->imap, otherfolder);
+				if (res == MAILIMAP_NO_ERROR) {
+					break; /* Stop as soon as we select another folder that exists */
+				}
+				/* Go up one level */
+				tmp = strrchr(otherfolder, client->delimiter); /* Check condition... */
+				if (!tmp) {
+					/* Eventually, if we keep going up the hierarchy, this condition must become false */
+					break;
+				}
+				*tmp = '\0';
+				/* Repeat */
+			}
+			/* It's possible the SELECT failed if we went all the way to the top of the hierarchy without finding a match.
+			 * In that case, we're probably screwed anyways, but continue. */
+			if (res != MAILIMAP_NO_ERROR) {
+				bbs_warning("Failed to calculate closest existing (but different) SPECIAL-USE folder...\n");
+				/* Don't break... continue, though since it won't be a brand new SELECT,
+				 * it probably won't have the desired effect. */
+			}
+			/* Now, re-SELECT the original mailbox... */
+			res = mailimap_select(client->imap, client->mailbox);
+			if (res != MAILIMAP_NO_ERROR) {
+				bbs_warning("SELECT '%s' failed: %s\n", client->mailbox, maildriver_strerror(res));
 				break;
 			}
-			if (seqno) {
-				/* This shouldn't happened. The message was in the SORT response,
-				 * and barring some awesome race condition, if we FETCH it,
-				 * then it should be in the response as well.
-				 * Regardless, we're still adding messages in the proper order.
-				 */
-				bbs_warning("No FETCH response for seqno %u?\n", seqno);
+			if (++fetch_attempts >= 3) {
+				bbs_warning("Max FETCH attempts exceeded (made %d attempt%s to fetch headers %d:%d)\n", fetch_attempts, ESS(fetch_attempts), start, end);
+				break;
 			}
-		}
-	} else {
-		/* Not sorted. Order doesn't matter. */
-		for (cur = clist_begin(fetch_result); cur; cur = clist_next(cur)) {
-			struct mailimap_msg_att *msg_att = clist_content(cur);
-			fetchlist_single(msg_att, arr);
-			c++;
+			mailimap_fetch_list_free(fetch_result);
+			fetch_result = NULL;
+			res = mailimap_fetch(client->imap, set, fetch_type, &fetch_result);
+			if (MAILIMAP_ERROR(res)) {
+				bbs_warning("FETCH failed: %s\n", maildriver_strerror(res));
+				break; /* At least return what we already have, assuming we got something */
+			}
+			json_array_clear(arr); /* Remove all existing items from array since we have a new set to process */
+			c = 0;
+		} else {
+			if (fetch_attempts > 0) {
+				bbs_debug(1, "Made %d attempt%s to fetch headers %d:%d in order to work around buggy mail server\n", fetch_attempts, ESS(fetch_attempts), start, end);
+			}
+			break;
 		}
 	}
 
-	/* The messages are in ascending order here.
-	 * They are displayed newest first in the the webmail client,
-	 * but we let frontend JavaScript reverse this JSON array,
-	 * since jansson doesn't have a function to reverse arrays? */
-
-	if (c != expected && !filter) { /* If we filtered, there might be fewer results than expected? */
-		bbs_warning("Expected to fetch %d (%d:%d) messages but only fetched %d?\n", expected, start, end, c);
+	if (fetch_result) {
+		mailimap_fetch_list_free(fetch_result);
 	}
-
-	mailimap_fetch_list_free(fetch_result);
+	mailimap_fetch_type_free(fetch_type);
 
 finalize:
 	mailimap_set_free(set);
@@ -2236,6 +2360,13 @@ static int handle_fetchlist(struct ws_session *ws, struct imap_client *client, c
 		start = 1;
 	}
 	end = start + (pagesize - 1);
+	if (page > 1 && end == pagesize) {
+		/* If this is the last page, then we are currently considering sequence numbers
+		 * 1 through pagesize. However, we don't necessarily want to show all these messages,
+		 * some of them could have shown up on the previous page. */
+		int pages_prior = page - 1;
+		end = (int) (total - (uint32_t) (pages_prior * pagesize));
+	}
 	if (end < 1) {
 		end = 0; /* But we must not pass 1:0 to libetpan, or that will turn into 1:* */
 		return -1;

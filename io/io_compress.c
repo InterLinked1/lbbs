@@ -299,13 +299,14 @@ static void cleanup(struct bbs_io_transformation *tran)
 	RWLIST_REMOVE(&compressors, z, entry);
 	RWLIST_UNLOCK(&compressors);
 
-	deflateEnd(z->compressor);
-	inflateEnd(z->decompressor);
 	z->done = 1;
-	pthread_kill(z->thread, SIGUSR1); /* Signal zlib_thread (shutdown(z->wpfd[1], SHUT_RDWR) does not work */
+	pthread_kill(z->thread, SIGUSR1); /* Signal zlib_thread (shutdown(z->wpfd[1], SHUT_RDWR) does not work) */
 	PIPE_CLOSE(z->rpfd);
 	PIPE_CLOSE(z->wpfd);
 	bbs_pthread_join(z->thread, NULL);
+
+	deflateEnd(z->compressor);
+	inflateEnd(z->decompressor);
 	free(z);
 }
 

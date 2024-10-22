@@ -523,10 +523,13 @@ static void *ssl_io_thread(void *unused)
 					needcreate = 1;
 					continue;
 				}
-				/* This will not block, but we need to retry partial writes, as above with partial reads, hence bbs_write instead of write. */
-				wres = bbs_write(readpipe, buf, (size_t) ores);
+				/* This will not block, but we need to retry partial writes, as above with partial reads, hence bbs_write APIs instead of write. */
+				wres = bbs_timed_write(readpipe, buf, (size_t) ores, SEC_MS(15));
 				if (wres != ores) {
 					bbs_error("Wanted to write %d bytes but wrote %ld?\n", ores, wres);
+					MARK_DEAD(ssl);
+					needcreate = 1;
+					continue;
 				}
 				/* We're polling the raw socket file descriptor,
 				 * but reading from ssl. Therefore, it's possible
