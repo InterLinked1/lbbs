@@ -269,13 +269,20 @@ unsigned long mailbox_quota_remaining(struct mailbox *mbox);
 
 /*!
  * \brief Get the maildir of a mailbox
- * \param mbox Mailbox. If NULL, the top-level maildir path will be returned.
+ * \param mbox Mailbox. If NULL, the top-level (root) maildir path will be returned.
  * \return Full path to home maildir of mailbox.
  */
 const char *mailbox_maildir(struct mailbox *mbox) __attribute__((returns_nonnull));
 
 /*! \brief Get the string length of a mailbox's maildir */
 size_t mailbox_maildir_len(struct mailbox *mbox);
+
+/*!
+ * \brief Validate that a maildir path is valid
+ * \param maildir Full directory path, which will be validated to ensure it is strictly a subdirectory of mailbox_maildir(NULL)
+ * \retval -1 if invalid, 0 if valid
+ */
+int mailbox_maildir_validate(const char *maildir);
 
 /*!
  * \brief Get the mailbox ID of a mailbox for personal mailboxes (same as the user ID of the user that owns this mailbox)

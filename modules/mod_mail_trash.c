@@ -28,6 +28,9 @@
 
 #include "include/mod_mail.h"
 
+/* Purely for testing/debugging. Always delete one message in the Trash when the trash reaper runs. */
+/* #define FORCE_DELETE_ONE_IMMEDIATELY */
+
 static unsigned int trashdays = 7;
 
 static pthread_t trash_thread = 0;
@@ -63,7 +66,11 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, int seqn
 	tstamp = st.st_ctime;
 	elapsed = now - tstamp;
 	bbs_debug(7, "Encountered in trash: %s (%" TIME_T_FMT " s ago)\n", fullname, elapsed);
+#ifdef FORCE_DELETE_ONE_IMMEDIATELY
+	if (1 || elapsed > trashsec) {
+#else
 	if (elapsed > trashsec) {
+#endif
 		if (unlink(fullname)) {
 			bbs_error("unlink(%s) failed: %s\n", fullname, strerror(errno));
 		} else {
@@ -72,6 +79,9 @@ static int on_mailbox_trash(const char *dir_name, const char *filename, int seqn
 		}
 		maildir_parse_uid_from_filename(filename, &msguid);
 		uintlist_append2(&traversal->a, &traversal->sa, &traversal->lengths, &traversal->allocsizes, msguid, (unsigned int) seqno);
+#ifdef FORCE_DELETE_ONE_IMMEDIATELY
+		return 1;
+#endif
 	}
 	return 0;
 }
@@ -80,6 +90,7 @@ static void scan_mailboxes(void)
 {
 	DIR *dir;
 	struct dirent *entry;
+	char fulldir[512];
 	char trashdir[515];
 
 	/* Traverse each mailbox top-level maildir. The order of maildir traversal does not matter. */
@@ -109,7 +120,8 @@ static void scan_mailboxes(void)
 		traversal.mbox = mbox;
 		maildir_ordered_traverse(trashdir, on_mailbox_trash, &traversal); /* Traverse files in the Trash folder */
 		if (traversal.lengths) {
-			maildir_indicate_expunged(EVENT_MESSAGE_EXPIRE, NULL, mbox, entry->d_name, traversal.a, traversal.sa, traversal.lengths, 0);
+			snprintf(fulldir, sizeof(fulldir), "%s/%s/cur", mailbox_maildir(NULL), entry->d_name); /* Construct the full curdir path for this maildir */
+			maildir_indicate_expunged(EVENT_MESSAGE_EXPIRE, NULL, mbox, fulldir, traversal.a, traversal.sa, traversal.lengths, 0);
 			free_if(traversal.a);
 			free_if(traversal.sa);
 		}

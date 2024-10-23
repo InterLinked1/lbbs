@@ -376,11 +376,10 @@ static int generate_status(struct imap_session *imap, const char *folder, char *
 
 static int generate_mailbox_name(struct imap_session *imap, const char *restrict maildir, char *restrict buf, size_t len)
 {
-	size_t rootlen, fulllen;
+	size_t rootlen;
 	unsigned int userid;
 	unsigned int muserid;
 	const char *fulldir = maildir;
-	const char *rootdir = mailbox_maildir(NULL);
 	int acl = 0;
 
 	if (!bbs_user_is_registered(imap->node->user)) {
@@ -388,12 +387,9 @@ static int generate_mailbox_name(struct imap_session *imap, const char *restrict
 	}
 
 	userid = imap->node->user->id;
-	rootlen = strlen(rootdir);
-	fulllen = strlen(fulldir);
+	rootlen = strlen(mailbox_maildir(NULL));
 
-	if (fulllen <= rootlen) {
-		bbs_error("Maildir length %lu <= root maildir length %lu?\n", fulllen, rootlen);
-		bbs_soft_assert(0);
+	if (mailbox_maildir_validate(fulldir)) {
 		return -1;
 	}
 
@@ -403,7 +399,8 @@ static int generate_mailbox_name(struct imap_session *imap, const char *restrict
 	}
 
 	if (strlen_zero(fulldir)) {
-		bbs_error("Invalid maildir\n");
+		bbs_error("Empty maildir?\n");
+		bbs_soft_assert(0);
 		return -1;
 	}
 

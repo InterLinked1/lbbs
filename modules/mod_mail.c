@@ -225,11 +225,14 @@ void mailbox_dispatch_event(struct mailbox_event *event)
 	event->id = ++next_eventid;
 	bbs_mutex_unlock(&eventidlock);
 
-	bbs_debug(6, "Dispatching mailbox event '%s'\n", mailbox_event_type_name(event->type));
-
 	/* Sanity checks */
 	bbs_assert(!event->uids || event->numuids > 0); /* If we provided UIDs, then we must specify how many */
 	bbs_assert(!event->maildir || event->maildir[0] == '/'); /* This is supposed to be a full path, not relative */
+
+	bbs_debug(6, "Dispatching mailbox event '%s' (maildir: %s)\n", mailbox_event_type_name(event->type), S_IF(event->maildir));
+	if (!strlen_zero(event->maildir)) {
+		mailbox_maildir_validate(event->maildir);
+	}
 
 	/* At this point in time, we have an event,
 	 * with all the information that was "free" for the caller to provide.
@@ -890,9 +893,33 @@ const char *mailbox_maildir(struct mailbox *mbox)
 	return mbox->maildir;
 }
 
+#define CHECK_MAILDIR_LEN_INTEGRITY
+
 size_t mailbox_maildir_len(struct mailbox *mbox)
 {
+#ifdef CHECK_MAILDIR_LEN_INTEGRITY
+	if (strlen(mbox->maildir) != mbox->maildirlen) {
+		bbs_warning("maildir length mismatch: %lu != %lu\n", strlen(mbox->maildir), mbox->maildirlen);
+		bbs_soft_assert(0);
+	}
+#endif
 	return mbox->maildirlen;
+}
+
+int mailbox_maildir_validate(const char *maildir)
+{
+	size_t dirlen = maildir ? strlen(maildir) : 0;
+	size_t rootmaildirlen = strlen(mailbox_maildir(NULL));
+
+	if (!dirlen) {
+		return 0;
+	}
+	if (dirlen <= rootmaildirlen) {
+		bbs_warning("maildir (%s) len (%lu) <= maildir root (%s) len (%lu)?\n", maildir, dirlen, mailbox_maildir(NULL), rootmaildirlen);
+		bbs_soft_assert(0);
+		return -1;
+	}
+	return 0;
 }
 
 int mailbox_id(struct mailbox *mbox)
@@ -1014,6 +1041,10 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, c
 			bbs_error("chmod(%s) failed: %s\n", directory, strerror(errno));
 		}
 	}
+
+	/* This should be a subdirectory of the root maildir,
+	 * as there shouldn't be a UID file in that directory. */
+	mailbox_maildir_validate(directory);
 
 	/* A single file that stores the UIDVALIDITY and UIDNEXT for this folder.
 	 * We can't use a single file since the UIDNEXT for each directory has to be unique.
@@ -1164,6 +1195,8 @@ static unsigned long __maildir_modseq(struct mailbox *mbox, const char *director
 
 	UNUSED(mbox); /* Not currently used, but could be useful for future caching strategies? */
 
+	bbs_soft_assert(strchr(directory, '/') != NULL);
+
 	/* Use a separate file from .uidvalidity for simplicity and ease of parsing, since this file is going to get used a lot more than the uidvalidity file
 	 * Also, since this file may be very large, since it needs to permanently store the MODSEQ of every single expunged message, forever.
 	 * For this reason, and for ease and speed of modifying the file in place, this is also a binary file, NOT a text file. */
@@ -1176,7 +1209,7 @@ static unsigned long __maildir_modseq(struct mailbox *mbox, const char *director
 		const char *modseq;
 		/* Order of traversal does not matter, so use opendir instead of scandir for efficiency. */
 		if (!(dir = opendir(directory))) {
-			bbs_error("Error opening directory - %s: %s\n", directory, strerror(errno));
+			bbs_error("Error opening directory '%s': %s\n", directory, strerror(errno));
 			return 0;
 		}
 
@@ -1346,6 +1379,7 @@ unsigned long maildir_indicate_expunged(enum mailbox_event_type type, struct bbs
 	mailbox_uid_lock(mbox);
 	maxmodseq = __maildir_modseq(mbox, directory, 1); /* Must be atomic */
 
+	bbs_soft_assert(strstr(directory, "/cur") != NULL); /* directory should be the curdir for this maildir, not the maildir itself */
 	snprintf(modseqfile, sizeof(modseqfile), "%s/../.modseqs", directory);
 	fp = fopen(modseqfile, "ab");
 	if (!fp) {

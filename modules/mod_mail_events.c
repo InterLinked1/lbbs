@@ -55,8 +55,10 @@ static int generate_imap_uri(struct mailbox *mbox, const char *maildir, char *re
 	const char *mboxname = "";
 	size_t dirlen = maildir ? strlen(maildir) : 0;
 
+	mailbox_maildir_validate(maildir);
+	/* This check is on mbox (mailbox_maildir_validate just takes a path): */
 	if (dirlen && dirlen < mailbox_maildir_len(mbox)) {
-		bbs_warning("maildir len (%lu) is less than maildir root len (%lu)?\n", dirlen, mailbox_maildir_len(mbox));
+		bbs_warning("maildir (%s) len (%lu) is less than maildir root (%s) len (%lu)?\n", maildir, dirlen, mailbox_maildir(NULL), mailbox_maildir_len(mbox));
 		return -1;
 	}
 
