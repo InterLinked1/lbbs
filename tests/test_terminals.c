@@ -28,8 +28,8 @@
 
 static int pre(void)
 {
-	test_load_module("mod_events.so"); /* To consume EVENT_NODE_INTERACTIVE_START, prompt for ENTER */
-	test_load_module("mod_handlers.so");
+	test_load_module("mod_node_callbacks.so"); /* To consume EVENT_NODE_INTERACTIVE_START, prompt for ENTER */
+	test_load_module("mod_menu_handlers.so");
 	test_load_module("net_rlogin.so");
 	test_load_module("net_telnet.so");
 
