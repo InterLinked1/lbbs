@@ -351,6 +351,7 @@ static void *ssl_io_thread(void *unused)
 				bbs_debug(4, "SSL I/O thread has been instructed to exit\n");
 				break; /* We're shutting down. */
 			}
+			bbs_debug(8, "Rebuilding TLS session list\n");
 			needcreate = 0;
 			free_if(pfds);
 			free_if(ssl_list);
@@ -412,6 +413,8 @@ static void *ssl_io_thread(void *unused)
 					snprintf(tmpbuf, sizeof(tmpbuf), ", %d dead", numdead);
 				}
 				bbs_debug(7, "SSL I/O thread now polling %d -> %d fd%s (%d connection%s%s)\n", oldnumfds, numfds, ESS(numfds), numssl, ESS(numssl), tmpbuf);
+			} else {
+				bbs_debug(7, "SSL I/O thread still polling %d fd%s\n", numfds, ESS(numfds));
 			}
 			prevfds = numfds;
 		}

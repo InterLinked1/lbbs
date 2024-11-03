@@ -394,6 +394,7 @@ static struct imap_client *client_new(const char *name)
 	}
 
 	strcpy(client->data, name); /* Safe */
+	client->created = time(NULL);
 	client->virtprefix = client->name = client->data;
 	client->virtprefixlen = len;
 	client->client.fd = -1;
@@ -548,7 +549,10 @@ int __imap_client_send_wait_response(struct imap_client *client, int fd, int ms,
 	UNUSED(lineno);
 #endif
 
-	if (client->idling) {
+	/* Only include this check if it's not the active client,
+	 * since a lot of pass through command code uses imap_client_send,
+	 * in which case this would be a false positive otherwise. */
+	if (client != client->imap->client && client->idling) {
 		bbs_warning("Client is currently idling while attempting to write '%s%s'", tagbuf, buf);
 		bbs_soft_assert(0); /* Could stop idle now if this were to happen, but that would just mask a bug */
 	}
@@ -803,7 +807,12 @@ struct imap_client *__imap_client_get_by_url(struct imap_session *imap, const ch
 	 * so it's good to keep alive if possible...
 	 */
 	if (!strcmp(url.host, "imap.yandex.com")) {
-		client->maxidlesec = 120; /* 2 minutes */
+		/* Even 2 minutes doesn't seem to suffice, 1 minute seems to work a lot better.
+		 * Even as short as 75 seconds, clients start dropping like flies pretty quickly.
+		 * At 60 seconds, it's much more consistent. Why Yandex wants increased network
+		 * traffic for no reason at all, I don't know... but we have to do what we have to do
+		 * to keep these connections alive... */
+		client->maxidlesec = 65; /* ~1 minute */
 	} else {
 		client->maxidlesec = 1800; /* 30 minutes */
 	}

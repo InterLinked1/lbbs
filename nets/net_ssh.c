@@ -917,6 +917,7 @@ static void handle_session(ssh_event event, ssh_session session)
 			if (res == SSH_ERROR) {
 				int code = ssh_channel_get_exit_status(sdata.channel);
 				bbs_error("SSH session ended uncleanly with code %d\n", code);
+				break;
 			} else if (res == SSH_EOF) {
 				bbs_debug(3, "Received EOF\n");
 				break;

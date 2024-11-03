@@ -245,6 +245,12 @@ static int __bbs_make_ip_socket(int *sock, int port, int type, const char *ip, c
 			break;
 		}
 
+		/* The reason we pass option_rebind again instead of just 1 to always force rebind
+		 * at this point is if we don't request reuse initially, it doesn't work if we
+		 * ask for it now. And, per the comment above, it's not always ideal to
+		 * ask for it initially either.
+		 * Thus the only elegant way to ensure we always rebind successfully is if the
+		 * BBS is started with the -b option. */
 		res = __bbs_socket_bind(sock, option_rebind, type, port, ip, interface, file, line, func);
 		if (!option_rebind) {
 			/* If we don't require reuse, try once and then give up */

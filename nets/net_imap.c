@@ -270,15 +270,17 @@ static int cli_imap_clients(struct bbs_cli_args *a)
 	struct imap_session *imap;
 	time_t now = time(NULL);
 
-	bbs_dprintf(a->fdout, "%4s %-25s %6s %4s %9s\n", "Node", "Name", "Active", "Dead", "Idle");
+	bbs_dprintf(a->fdout, "%4s %-25s %6s %4s %9s %s\n", "Node", "Name", "Active", "Dead", "Idle", "Age");
 	RWLIST_RDLOCK(&sessions);
 	RWLIST_TRAVERSE(&sessions, imap, entry) {
 		struct imap_client *client;
 		RWLIST_RDLOCK(&imap->clients);
 		RWLIST_TRAVERSE(&imap->clients, client, entry) {
+			char elapsed[24];
 			time_t idle_elapsed = now - client->idlestarted;
-			bbs_dprintf(a->fdout, "%4u %-25s %6s %4s %4lu/%4d\n",
-				imap->node->id, client->name, BBS_YN(client->active), BBS_YN(client->dead), client->idling ? idle_elapsed : 0, client->maxidlesec);
+			print_time_elapsed(client->created, now, elapsed, sizeof(elapsed));
+			bbs_dprintf(a->fdout, "%4u %-25s %6s %4s %4lu/%4d %s\n",
+				imap->node->id, client->name, BBS_YN(client->active), BBS_YN(client->dead), client->idling ? idle_elapsed : 0, client->maxidlesec, elapsed);
 		}
 		RWLIST_UNLOCK(&imap->clients);
 	}
@@ -2785,7 +2787,12 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 	/* No setup needed for source, since that mailbox is already selected.
 	 * No setup needed for dest, either, since the APPEND mailbox doesn't need to be selected. */
 
-	if (!destclient) {
+	if (destclient) {
+		/* If we're idling on this client currently, stop */
+		if (destclient->idling) {
+			imap_client_idle_stop(destclient);
+		}
+	} else {
 		/* Ensure we have sufficient ACLs for the destination folder */
 		IMAP_REQUIRE_ACL(traversalstack.acl, IMAP_ACL_INSERT);
 	}
