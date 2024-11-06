@@ -354,9 +354,11 @@ static int __debug_data(int srcfd, off_t offset, size_t writelen, int lineno)
 /*!
  * \brief Attempt to send an external message to another mail transfer agent or message submission agent
  * \param smtp SMTP session. Generally, this will be NULL except for relayed messages, which are typically the only time this is needed.
+ * \param tx
  * \param hostname Hostname of mail server
  * \param port Port of mail server
- * \param secure Whether to use Implicit TLS (typically for MSAs on port 465). If 0, STARTTLS will be attempted (but not required unless require_starttls_out = yes)
+ * \param use_implicit_tls Whether to use Implicit TLS (typically for MSAs on port 465). If 0, STARTTLS will be attempted (but not required unless require_starttls_out = yes)
+ * \param allow_starttls Whether to attempt Explicit TLS, if STARTTLS is available. Only applies if use_implicit_tls is 0.
  * \param username SMTP MSA username
  * \param password SMTP MSA password
  * \param sender The MAIL FROM for the message
@@ -369,9 +371,10 @@ static int __debug_data(int srcfd, off_t offset, size_t writelen, int lineno)
  * \param writelen Number of bytes to send
  * \param[out] buf Buffer in which to temporarily store SMTP responses
  * \param len Size of buf.
- * \retval -1 on temporary error, 1 on permanent error, 0 on success
+ * \retval 0 on success, 1 on permanent error, -1 on temporary error, -2 if STARTTLS was attempted and failed (temporary error)
  */
-static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const char *hostname, int port, int secure, const char *username, const char *password, const char *sender, const char *recipient, struct stringlist *recipients,
+static int __attribute__ ((nonnull (2, 3, 9, 17))) try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const char *hostname, int port, int use_implicit_tls, int allow_starttls,
+	const char *username, const char *password, const char *sender, const char *recipient, struct stringlist *recipients,
 	const char *prepend, size_t prependlen, int datafd, off_t offset, size_t writelen, char *buf, size_t len)
 {
 	int res = -1;
@@ -419,7 +422,7 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 #endif
 
 	tx->prot = "x-tcp";
-	if (bbs_smtp_client_connect(&smtpclient, smtp_hostname(), hostname, port, secure, buf, len)) {
+	if (bbs_smtp_client_connect(&smtpclient, smtp_hostname(), hostname, port, use_implicit_tls, buf, len)) {
 		/* Unfortunately, we can't try an alternate port as there is no provision
 		 * for letting other SMTP MTAs know that they should try some port besides 25.
 		 * So if your ISP blocks incoming traffic on port 25 or you can't use port 25
@@ -444,19 +447,27 @@ static int try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const ch
 
 	tx->prot = "smtp";
 
-	if (!secure) {
-		if (smtpclient.caps & SMTP_CAPABILITY_STARTTLS) {
-			if (bbs_smtp_client_starttls(&smtpclient)) {
-				res = -1;
-				goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
+	if (!use_implicit_tls) {
+		if (allow_starttls) {
+			if (smtpclient.caps & SMTP_CAPABILITY_STARTTLS) {
+				if (bbs_smtp_client_starttls(&smtpclient)) {
+					res = -2;
+					goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
+				}
+			} else if (require_starttls_out) {
+				bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
+				snprintf(buf, len, "STARTTLS not supported");
+				res = 1;
+				goto cleanup;
+			} else if (!bbs_hostname_is_ipv4(hostname) || bbs_ip_is_public_ipv4(hostname)) { /* Don't emit this warning for non-public IPs */
+				bbs_warning("SMTP server %s does not support STARTTLS. This message will not be transmitted securely!\n", hostname);
 			}
-		} else if (require_starttls_out) {
-			bbs_warning("SMTP server %s does not support STARTTLS, but encryption is mandatory. Delivery failed.\n", hostname);
-			snprintf(buf, len, "STARTTLS not supported");
-			res = 1;
-			goto cleanup;
-		} else if (!bbs_hostname_is_ipv4(hostname) || bbs_ip_is_public_ipv4(hostname)) { /* Don't emit this warning for non-public IPs */
-			bbs_warning("SMTP server %s does not support STARTTLS. This message will not be transmitted securely!\n", hostname);
+		} else {
+			/* If STARTTLS isn't allowed, this is the case where we already made a pass and tried STARTTLS and
+			 * delivery failed across all servers, and at least one of the failures was due to STARTTLS failing.
+			 * It's possible delivery will succeed if we try plain text delivery.
+			 * However, we won't do a retry if require_starttls_out is true, so that should never be true here. */
+			bbs_assert(!require_starttls_out);
 		}
 	}
 
@@ -904,7 +915,7 @@ static int mailq_file_punt(struct mailq_file *mqf)
 }
 
 /*! \brief Attempt to send a message via SMTP using static routes instead of doing an MX lookup */
-static int try_static_delivery(struct smtp_session *smtp, struct smtp_tx_data *tx, struct stringlist *static_routes, const char *sender, const char *recipient, int datafd, off_t offset, size_t writelen, char *buf, size_t len)
+static int __attribute__ ((nonnull (2, 3, 4, 5, 9))) try_static_delivery(struct smtp_session *smtp, struct smtp_tx_data *tx, struct stringlist *static_routes, const char *sender, const char *recipient, int datafd, off_t offset, size_t writelen, char *buf, size_t len)
 {
 	const char *route;
 	struct stringitem *i = NULL;
@@ -936,8 +947,65 @@ static int try_static_delivery(struct smtp_session *smtp, struct smtp_tx_data *t
 			}
 		}
 
-		res = try_send(smtp, tx, hostname, port, 0, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, offset, writelen, buf, len);
+		res = try_send(smtp, tx, hostname, port, 0, 1, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, offset, writelen, buf, len);
 	}
+	return res;
+}
+
+/*!
+ * \brief Attempt to send a message using MX records
+ * \param smtp SMTP session. Generally, this will be NULL except for relayed messages, which are typically the only time this is needed.
+ * \param tx
+ * \param mqf
+ * \param mxservers
+ * \param sender The MAIL FROM for the message
+ * \param recipient A single recipient for RCPT TO
+ * \param recipients A list of recipients for RCPT TO. Either recipient or recipients must be specified.
+ * \param datafd A file descriptor containing the message data (used instead of data/datalen)
+ * \param offset sendfile offset for message (sent data will begin here)
+ * \param writelen Number of bytes to send
+ * \param[out] buf Buffer in which to temporarily store SMTP responses
+ * \param len Size of buf.
+ * \retval 0 on success, 1 on permanent error, -1 on temporary error
+ * \note This function leaves the items in mxservers intact so they can be used again if needed
+ */
+static int __attribute__ ((nonnull (2, 4, 5, 6, 10))) try_mx_delivery(struct smtp_session *smtp, struct smtp_tx_data *tx, struct mailq_file *mqf, struct stringlist *mxservers, const char *sender, const char *recipient, int datafd, off_t offset, size_t writelen, char *buf, size_t len)
+{
+	const char *hostname;
+	struct stringitem *i = NULL;
+	int start_tls_failures = 0;
+	int res = -1; /* Make condition true to start */
+
+	/* Try all the MX servers in order, if necessary */
+	while (res < 0 && (hostname = stringlist_next(mxservers, &i))) {
+		res = try_send(smtp, tx, hostname, DEFAULT_SMTP_PORT, 0, 1, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, offset, writelen, buf, len);
+		if (res == -2) {
+			start_tls_failures++;
+			res = -1;
+		}
+	}
+
+	if (res < 0 && start_tls_failures) {
+		/* Delivery failed, but at least one failure was because STARTTLS failed. */
+		if (!require_starttls_out && mqf) {
+			bbs_warning("Reattempting delivery to %s insecurely since STARTTLS failed\n", recipient);
+			mqf->newretries = mqf->retries + 1;
+			/* Retry without using STARTTLS.
+			 * First, send a delay notification so the sender is away the message was not delivered securely.
+			 * The sender could then choose to notify the recipient's postmaster of the issue, but it's not really our problem. */
+			smtp_trigger_dsn(DELIVERY_DELAYED, tx, &mqf->created, sender, recipient, buf, datafd, (size_t) offset, writelen);
+			/* Do another pass, but don't attempt STARTTLS.
+			 * It's possible delivery will succeed without encryption.
+			 * Obviously, this isn't ideal, but most mail servers generally retry delivery without TLS if it fails.
+			 * To prevent falling back to plain text, require_starttls_out should be configured to true. */
+			i = NULL;
+			while (res < 0 && (hostname = stringlist_next(mxservers, &i))) {
+				res = try_send(smtp, tx, hostname, DEFAULT_SMTP_PORT, 0, 0, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, offset, writelen, buf, len);
+				bbs_assert(res != -2); /* Since we don't attempt STARTTLS, res should never be -2 */
+			}
+		}
+	}
+
 	return res;
 }
 
@@ -1080,7 +1148,6 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 			/* Do not set tx.hostname, since this message is from us, not the remote server */
 			snprintf(buf, sizeof(buf), "Domain does not accept mail");
 		} else {
-			char *hostname;
 			if (res) {
 				char a_ip[256];
 				/* Fall back to trying the A record */
@@ -1104,13 +1171,8 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 				stringlist_push(&mxservers, a_ip);
 			}
 
-			/* Try all the MX servers in order, if necessary */
-			res = -1; /* Make condition true to start */
-			while (res < 0 && (hostname = stringlist_pop(&mxservers))) {
-				res = try_send(NULL, &tx, hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, mqf->realfrom, mqf->realto, NULL, NULL, 0, fileno(mqf->fp), (off_t) mqf->metalen, mqf->size - mqf->metalen, buf, sizeof(buf));
-				free(hostname);
-			}
-			stringlist_empty(&mxservers);
+			res = try_mx_delivery(NULL, &tx, mqf, &mxservers, mqf->realfrom, mqf->realto, fileno(mqf->fp), (off_t) mqf->metalen, mqf->size - mqf->metalen, buf, sizeof(buf));
+			stringlist_empty_destroy(&mxservers);
 		}
 	}
 
@@ -1635,6 +1697,9 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 
 	if (!always_queue && !send_async) {  /* Try to send it synchronously */
 		struct stringlist mxservers, *static_routes;
+		struct smtp_tx_data tx;
+
+		memset(&tx, 0, sizeof(tx));
 
 		stringlist_init(&mxservers);
 
@@ -1654,20 +1719,17 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 			return -1;
 		}
 #ifndef BUGGY_SEND_IMMEDIATE
+		/* We don't have a queue file yet, so metalen is 0 */
 		if (static_routes) {
-			res = try_static_delivery(NULL, &tx, static_routes, mqf->realfrom, mqf->realto, fileno(mqf->fp), (off_t) mqf->metalen, mqf->size - mqf->metalen, buf, sizeof(buf));
+			res = try_static_delivery(NULL, &tx, static_routes, from, recipient, srcfd, 0, datalen, buf, sizeof(buf));
 		} else {
-			/* Try all the MX servers in order, if necessary */
-			while (res < 0 && (hostname = stringlist_pop(&mxservers))) {
-				res = try_send(NULL, &tx, hostname, DEFAULT_SMTP_PORT, 0, NULL, NULL, realfrom, realto, NULL, NULL, 0, srcfd, datalen, size - datalen, buf, sizeof(buf));
-				free(hostname);
-			}
+			res = try_mx_delivery(NULL, &tx, NULL, &mxservers, from, recipient, srcfd, 0, datalen, buf, sizeof(buf));
 			stringlist_empty_destroy(&mxservers);
 		}
 
 		if (res > 0) { /* Permanent error */
 			/* We've still got the sender on the socket, just relay the error. */
-			_smtp_reply(smtp, "%s\r\n", buf);
+			smtp_abort(resp, 554, 5.7.1, buf); /* XXX Best default SMTP code for this? (Same comment in net_smtp.c) */
 			return -1;
 		} else if (res) { /* Temporary error */
 			/* This can happen legitimately, if a mail server is unavailable, but it's generally unusual and could mean there are issues. */
@@ -1800,7 +1862,7 @@ static int relay(struct smtp_session *smtp, struct smtp_msg_process *mproc, int 
 		/* XXX smtp->recipients is "used up" by try_send, so this relies on the message being DROP'ed as there will be no recipients remaining afterwards
 		 * Instead, we could duplicate the recipients list to avoid this restriction. */
 		/* XXX A cool optimization would be if the IMAP server supported BURL IMAP and we did a MOVETO, use BURL with the SMTP server */
-		res = try_send(smtp, &tx, url.host, url.port, STARTS_WITH(url.prot, "smtps"), url.user, url.pass, url.user, NULL, recipients, prepend, (size_t) prependlen, srcfd, 0, datalen, buf, sizeof(buf));
+		res = try_send(smtp, &tx, url.host, url.port, STARTS_WITH(url.prot, "smtps"), 1, url.user, url.pass, url.user, NULL, recipients, prepend, (size_t) prependlen, srcfd, 0, datalen, buf, sizeof(buf));
 	}
 	if (url.pass) {
 		bbs_memzero(url.pass, strlen(url.pass)); /* Destroy the password */
