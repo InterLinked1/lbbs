@@ -1819,6 +1819,36 @@ static int http_handle_request(struct http_session *http, char *buf)
 		return res;
 	}
 
+	/* RFC 9110 7.6.2
+	 * For OPTIONS and TRACE requests, if a Max-Forwards header is provided,
+	 * we MUST NOT forward the request if its value is 0,
+	 * and MUST decrement it otherwise (or set it to the local max supported Max-Forwards)
+	 * We MAY ignore Max-Forwards for other methods, but don't have to, either...
+	 * Currently, we don't forward requests (outside of the CONNECT proxy support),
+	 * but we handle this anyways. */
+	if (http->req->method & (HTTP_METHOD_OPTIONS | HTTP_METHOD_TRACE)) {
+		const char *maxforwards = http_request_header(http, "Max-Forwards");
+		if (!strlen_zero(maxforwards)) {
+			int maxfwds = atoi(maxforwards);
+			if (maxfwds) {
+				char newmaxforwards[16];
+				snprintf(newmaxforwards, sizeof(newmaxforwards), "%d", --maxfwds);
+				/* BUGBUG This will only work if the case matches (e.g. request received
+				 * was case-sensitively 'Max-Forwards'. If not, we will end up creating
+				 * a new header with the canonical casing, and leave the old one intact... ouch.
+				 * Leaving this unfixed for now, but it forwarding is ever added and this matters,
+				 * we will need to be able to update headers case-insensitively, to be compatible
+				 * with modifying existing headers as received. */
+				http_set_header(http, "Max-Forwards", newmaxforwards);
+			} else {
+				/* Currently, there is nothing that checks this,
+				 * but if OPTIONS and TRACE were to be implemented and in a way that supported forwarding,
+				 * they would need to obey this. */
+				http->req->noforward = 1;
+			}
+		}
+	}
+
 	/* Proxy requests really need to be handled before doing anything else, since they're fairly low level.
 	 * We don't want to read or process the body.
 	 * We don't care what the request is for,

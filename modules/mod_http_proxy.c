@@ -48,7 +48,7 @@ static void add_proxy_client(const char *source, const char *domains)
 {
 	struct http_proxy_client *c;
 
-	if (STARTS_WITH(source, "0.0.0.0")) {
+	if (STARTS_WITH(source, "0.0.0.0") || strstr(source, "/0")) {
 		/* If someone wants to shoot him/herself in the foot, at least provide a warning */
 		bbs_notice("This server is configured as an open proxy and may be abused!\n");
 	}

@@ -1180,7 +1180,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 	if (!res) {
 		/* Successful delivery. */
 		bbs_debug(6, "Delivery successful after %d attempt%s, discarding queue file\n", mqf->newretries, ESS(mqf->newretries));
-		bbs_smtp_log(4, NULL, "Delivery succeeded after queuing: %s -> %s\n", mqf->realfrom, mqf->realto);
+		bbs_smtp_log(4, NULL, "Delivery succeeded after queuing: %s -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
 		smtp_trigger_dsn(DELIVERY_DELIVERED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen);
 		fclose(mqf->fp);
 		mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
@@ -1193,7 +1193,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 	if (res == -2 || res > 0 || mqf->newretries >= (int) max_retries) {
 		/* Send a delivery failure response, then delete the file. */
 		bbs_warning("Delivery of message %s from %s to %s has failed permanently after %d retries\n", mqf->fullname, mqf->realfrom, mqf->realto, mqf->newretries);
-		bbs_smtp_log(1, NULL, "Delivery failed permanently after queuing: %s -> %s\n", mqf->realfrom, mqf->realto);
+		bbs_smtp_log(1, NULL, "Delivery failed permanently after queuing: %s -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
 		/* To the dead letter office we go */
 		/* XXX buf will only contain the last line of the SMTP transaction, since it was using the readline buffer
 		 * Thus, if we got a multiline error, only the last line is currently included in the non-delivery report */
@@ -1204,7 +1204,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 		QUEUE_INCR_STAT(failed);
 		return 0;
 	} else {
-		bbs_smtp_log(3, NULL, "Delivery delayed after queuing: %s -> %s\n", mqf->realfrom, mqf->realto);
+		bbs_smtp_log(3, NULL, "Delivery delayed after queuing: %s -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
 		mailq_file_punt(mqf); /* Try again later */
 		smtp_trigger_dsn(DELIVERY_DELAYED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen);
 		QUEUE_INCR_STAT(delayed);
@@ -1517,8 +1517,8 @@ static int on_queue_file_cli_mailq(const char *dir_name, const char *filename, v
 		return 0;
 	}
 
-	strftime(arrival_date, sizeof(arrival_date), "%a, %d %b %Y %H:%M:%S", &mqf->created);
-	strftime(retry_date, sizeof(retry_date), "%a, %d %b %Y %H:%M:%S", &mqf->retried);
+	strftime(arrival_date, sizeof(arrival_date), "%a, %d %b %H:%M:%S", &mqf->created);
+	strftime(retry_date, sizeof(retry_date), "%a, %d %b %H:%M:%S", &mqf->retried);
 
 	/* For user convenience, try to calculate when message delivery will be attempted next. */
 	next_retry_time = mqf->retriedtime + queue_retry_threshold(mqf->retries); /* Minimum time that it would get processed */
@@ -1546,11 +1546,11 @@ static int on_queue_file_cli_mailq(const char *dir_name, const char *filename, v
 	}
 
 	localtime_r(&next_retry_time, &est_retry);
-	strftime(next_retry_date, sizeof(next_retry_date), "%a, %d %b %Y %H:%M:%S", &est_retry);
+	strftime(next_retry_date, sizeof(next_retry_date), "%a, %d %b %H:%M:%S", &est_retry);
 
 	/* Ensure the format is synchronized with the heading in cli_mailq */
 	/* Printing mqf->retries this way is already 1-indexed as well. */
-	bbs_dprintf(qrun->clifd, "%7d %-25s %-25s %-25s %-20s %5ld %-35s %s\n",
+	bbs_dprintf(qrun->clifd, "%7d %-21s %-21s %-21s %-20s %5ld %-35s %s\n",
 		mqf->retries, arrival_date, retry_date, next_retry_date, filename,
 		(mqf->size + 1023) / 1024, /* Display size in KB, rounded up to the nearest KB */
 		mqf->realfrom, mqf->realto);
@@ -1569,7 +1569,7 @@ static int cli_mailq(struct bbs_cli_args *a)
 		qrun.host_ends_with = a->argv[1];
 	}
 
-	bbs_dprintf(a->fdout, "%7s %-25s %-25s %-25s %-20s %5s %-35s %s\n", "Retries", "Orig Date", "Last Retry", "Est. Next Retry", "Filename", "Size", "Sender", "Recipient");
+	bbs_dprintf(a->fdout, "%7s %-21s %-21s %-21s %-20s %5s %-35s %s\n", "Retries", "Orig Date", "Last Retry", "Est. Next Retry", "Filename", "Size", "Sender", "Recipient");
 	run_queue(&qrun, on_queue_file_cli_mailq);
 	bbs_dprintf(a->fdout, "%d message%s currently in mail queue\n", qrun.total, ESS(qrun.total));
 	mailq_run_cleanup(&qrun);

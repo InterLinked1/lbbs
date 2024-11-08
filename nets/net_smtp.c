@@ -858,6 +858,7 @@ static int parse_mail_parameters(struct smtp_session *smtp, char *s)
 			 * In my experience, most mail that requires 8BITMIME is spam.
 			 * But it's probably not our place to reject such mail. */
 			if (!strcasecmp(d, "8BITMIME")) {
+				bbs_debug(3, "Sender indicated this is an 8-bit message... increasing spam score\n");
 				smtp->tflags.is8bit = 1;
 				smtp->failures++; /* Penalize 8-bit messages. These are probably spam. */
 			} else if (!strcasecmp(d, "7BIT")) {

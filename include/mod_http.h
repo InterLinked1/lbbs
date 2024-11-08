@@ -117,6 +117,7 @@ struct http_request {
 	unsigned int expect100:1;	/*!< Expecting 100-continue */
 	unsigned int parsedbody:1;
 	unsigned int absolute:1;	/*!< Absolute host used in request */
+	unsigned int noforward:1;	/*!< Don't forward request further (i.e. Max-Forwards: 0) */
 };
 
 struct http_response {
