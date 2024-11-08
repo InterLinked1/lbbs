@@ -20,6 +20,7 @@
  * \note Supports RFC 1079 Terminal Speed
  * \note Supports RFC 1091 Terminal Type
  * \note Supports RFC 1116 Line Mode (disabling only)
+ * \note Supports RFC 1143 Q Method of Option Negotiation
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -66,7 +67,7 @@ static int telnet_send_command(int fd, unsigned char cmd, unsigned char opt)
 	ssize_t res = write(fd, ctl, ARRAY_LEN(ctl));
 	if (res <= 0) {
 		if (errno != EPIPE) { /* Ignore if client just closed connection immediately */
-			bbs_error("Failed to set telnet echo: %s\n", strerror(errno));
+			bbs_error("Failed to write to Telnet connection: %s\n", strerror(errno));
 		}
 	} else {
 		/* telcmds[0] is EOF (236), so normalize the index to 236 */
@@ -82,7 +83,7 @@ static int telnet_send_command6(int fd, unsigned char cmd, unsigned char opt, un
 	ssize_t res = write(fd, ctl, ARRAY_LEN(ctl));
 	if (res <= 0) {
 		if (errno != EPIPE) { /* Ignore if client just closed connection immediately */
-			bbs_error("Failed to set telnet echo: %s\n", strerror(errno));
+			bbs_error("Failed to write to Telnet connection: %s\n", strerror(errno));
 		}
 	} else {
 		/* telcmds[0] is EOF (236), so normalize the index to 236 */
@@ -92,14 +93,9 @@ static int telnet_send_command6(int fd, unsigned char cmd, unsigned char opt, un
 	return res <= 0 ? -1 : 0;
 }
 
-struct telnet_settings {
-	unsigned int rcv_noecho:1;
-	unsigned int sent_winsize:1;
-};
-
 static int telnet_read_command(int fd, unsigned char *buf, size_t len)
 {
-	ssize_t res = bbs_poll(fd, 150);
+	ssize_t res = bbs_poll(fd, 300); /* qodem needs a bit more time to respond to certain requests */
 	if (res < 0) {
 		bbs_debug(4, "poll returned %ld: %s\n", res, strerror(errno));
 		return (int) res;
@@ -143,6 +139,57 @@ static int telnet_read_command(int fd, unsigned char *buf, size_t len)
 	}
 }
 
+/* RFC 1143 Q Method for Option Negotiation (Section 7) */
+/* All options are disabled by default, so it is intentional that NO has value 0 for initialization purposes */
+enum option_state {
+	NO = 0,
+	WANTNO,
+	WANTYES,
+	YES,
+};
+
+/* Queue bit if option state is WANTNO or WANTYES */
+enum queue_state {
+	EMPTY = 0, /* Also NONE in RFC 1143 */
+	OPPOSITE,
+};
+
+static const char *option_state_name(enum option_state s)
+{
+	switch (s) {
+		case NO:
+			return "NO";
+		case WANTNO:
+			return "WANTNO";
+		case WANTYES:
+			return "WANTYES";
+		case YES:
+			return "YES";
+	}
+	__builtin_unreachable();
+}
+
+static const char *queue_state_name(enum queue_state s)
+{
+	switch (s) {
+		case EMPTY:
+			return "EMPTY";
+		case OPPOSITE:
+			return "OPPOSITE";
+	}
+	__builtin_unreachable();
+}
+
+struct telnet_settings {
+	struct {
+		enum option_state us:2;
+		enum queue_state usq:1;
+		enum option_state him:2;
+		enum queue_state himq:1;
+	} options[NTELOPTS + 1];
+	unsigned int rcv_noecho:1;
+};
+
 #define telnet_process_command(node, settings, buf, len, res) __telnet_process_command(node, settings, buf, len, res, depth + 1)
 
 /* IAC SE frequently indicates the end of a client's response for a command */
@@ -166,45 +213,236 @@ static int telnet_process_command_additional(struct bbs_node *node, struct telne
 	return telnet_process_command(node, settings, buf, len, res);
 }
 
-static int __telnet_process_command(struct bbs_node *node, struct telnet_settings *settings, unsigned char *buf, size_t len, int res, int depth)
+static int telnet_option_send(struct bbs_node *node, struct telnet_settings *settings, unsigned char cmd, unsigned char opt)
 {
-	if (depth > 4) {
-		/* Prevent infinite recursion if the client replies with the same thing that triggered another command */
-		bbs_warning("Exceeded command stack depth %d\n", depth);
-		return 0;
+	int res;
+
+	if (cmd == WILL || cmd == WONT || cmd == DO || cmd == DONT) {
+		bbs_debug(6, "him: %s, himq: %s, us: %s, usq: %s\n",
+			option_state_name(settings->options[opt].him), queue_state_name(settings->options[opt].himq),
+			option_state_name(settings->options[opt].us), queue_state_name(settings->options[opt].usq));
 	}
 
-	bbs_assert(res >= 3);
+	switch (cmd) {
+	case DO:
+		/* Ask client to enable */
+		switch (settings->options[opt].him) {
+		case NO:
+			/* him=WANTYES, send DO. */
+			settings->options[opt].him = WANTYES;
+			res = telnet_send_command(node->wfd, DO, opt);
+			if (res) {
+				return -1;
+			}
+			break;
+		case YES:
+			/* Error: Already enabled. */
+			bbs_warning("Trying to send %s %s %s, but option already enabled?\n", telcmds[IAC - xEOF], telcmds[cmd - xEOF], telopts[opt]);
+			break;
+		case WANTNO:
+			switch (settings->options[opt].himq) {
+			case EMPTY:
+				/* Error: Cannot initiate new request in the middle of negotiation (no queuing of requests). */
+				bbs_warning("Can't initiate new request in middle of option negotiation\n");
+				break;
+			case OPPOSITE:
+				/* Error: Already queued an enable request. */
+				bbs_warning("Already queued an enable request\n");
+				break;
+			}
+			break;
+		case WANTYES:
+			switch (settings->options[opt].himq) {
+			case EMPTY:
+				/* Error: Already negotiating for enable. */
+				bbs_debug(1, "Already neogitiating for enable\n");
+				break;
+			case OPPOSITE:
+				/* himq=EMPTY */
+				settings->options[opt].himq = EMPTY;
+				break;
+			}
+			break;
+		}
+		break;
+	case DONT:
+		/* Ask client to disable */
+		switch (settings->options[opt].him) {
+		case NO:
+			/* Error: Already disabled. */
+			bbs_warning("Trying to send DONT, but option already disabled?\n");
+			break;
+		case YES:
+			/* him=WANTNO, send DONT */
+			settings->options[opt].him = WANTNO;
+			res = telnet_send_command(node->wfd, DONT, opt);
+			if (res) {
+				return -1;
+			}
+			break;
+		case WANTNO:
+			switch (settings->options[opt].himq) {
+			case EMPTY:
+				/* Error: Already negotiating for disable. */
+				bbs_debug(1, "Already negotiating for disable\n");
+				break;
+			case OPPOSITE:
+				/* himq=EMPTY */
+				settings->options[opt].himq = EMPTY;
+				break;
+			}
+			break;
+		case WANTYES:
+			switch (settings->options[opt].himq) {
+			case EMPTY:
+				/* Error: Cannot initiate new request in the middle of negotiation. */
+				bbs_warning("Can't initiate new request in the middle of option negotiation\n");
+				break;
+			case OPPOSITE:
+				/* Error: Already queued a disable request. */
+				bbs_warning("Already queued a disable request\n");
+				break;
+			}
+			break;
+		}
+		break;
+	/* The next two cases are symmetrical:
+	 * We handle the option on our side by the same procedures, with DO-WILL, DONT-WONT, him-us, himq-usq swapped. */
+	case WILL:
+		/* Confirm we will enable */
+		switch (settings->options[opt].us) {
+		case NO:
+			settings->options[opt].us = WANTYES;
+			res = telnet_send_command(node->wfd, WILL, opt);
+			if (res) {
+				return -1;
+			}
+			break;
+		case YES:
+			bbs_warning("Trying to send WILL, but option already enabled?\n");
+			break;
+		case WANTNO:
+			switch (settings->options[opt].usq) {
+			case EMPTY:
+				bbs_warning("Can't initiate new request %s %s %s in the middle of option negotiation\n", telcmds[IAC - xEOF], telcmds[cmd - xEOF], telopts[opt]);
+				break;
+			case OPPOSITE:
+				bbs_warning("Already queued an enable request\n");
+				break;
+			}
+			break;
+		case WANTYES:
+			switch (settings->options[opt].usq) {
+			case EMPTY:
+				bbs_debug(1, "Already neogitiating for enable\n");
+				break;
+			case OPPOSITE:
+				settings->options[opt].usq = EMPTY;
+				break;
+			}
+			break;
+		}
+		break;
+	case WONT:
+		/* Negative acknowledgment, we will not enable this option */
+		switch (settings->options[opt].us) {
+		case NO:
+			bbs_warning("Trying to send %s %s %s, but option already disabled?\n", telcmds[IAC - xEOF], telcmds[cmd - xEOF], telopts[opt]);
+			break;
+		case YES:
+			settings->options[opt].us = WANTNO;
+			res = telnet_send_command(node->wfd, WONT, opt);
+			if (res) {
+				return -1;
+			}
+			break;
+		case WANTNO:
+			switch (settings->options[opt].usq) {
+			case EMPTY:
+				bbs_debug(1, "Already negotiating for disable\n");
+				break;
+			case OPPOSITE:
+				settings->options[opt].usq = EMPTY;
+				break;
+			}
+			break;
+		case WANTYES:
+			switch (settings->options[opt].usq) {
+			case EMPTY:
+				bbs_warning("Can't initiate new request %s %s %s in the middle of option negotiation\n", telcmds[IAC - xEOF], telcmds[cmd - xEOF], telopts[opt]);
+				break;
+			case OPPOSITE:
+				bbs_warning("Already queued a disable request\n");
+				break;
+			}
+			break;
+		}
+		break;
+	default:
+		__builtin_unreachable();
+	}
+	return 0;
+}
 
-	if (buf[1] == DO && buf[2] == TELOPT_ECHO) {
-		settings->rcv_noecho = 1;
-		bbs_debug(3, "Client acknowledged local echo disable\n");
-	} else if (buf[1] == WILL && buf[2] == TELOPT_NAWS) {
+#define handle_option_will(node, settings, cmd, opt) __handle_option_will(node, settings, cmd, opt, buf, len, depth)
+
+/*!
+ * \brief Whether we mutually agree to enable an option
+ * \retval 1 if option is supported, 0 if option not supported
+ */
+static int option_supported(struct bbs_node *node, unsigned char cmd, unsigned char opt)
+{
+	bbs_assert(cmd == WILL);
+
+	switch (opt) {
+	case TELOPT_NAWS:
 		if (node->dimensions) {
 			/* If we already got the dimensions, we don't want them again.
 			 * If logic is added to process commands during a session and receive window size updates,
 			 * this condition would need to be refined, but it would still be the case that we don't
 			 * care to receive this more than once during initial negotiation. */
 			bbs_debug(3, "Ignoring offer to send window dimensions since we already have them\n");
-			if (telnet_send_command(node->wfd, DONT, TELOPT_NAWS)) {
-				return -1;
-			}
+			return 0; /* Reject, and we will send DONT */
 		}
-		if (!settings->sent_winsize) {
-			if (telnet_send_command(node->wfd, DO, TELOPT_NAWS)) {
-				return -1;
-			}
-			settings->sent_winsize = 1;
-		}
+		/* Fall through */
+	case TELOPT_ECHO:
+	case TELOPT_TSPEED:
+	case TELOPT_TTYPE:
+		/* Yes, please enable */
+		return 1;
+	default:
+		bbs_debug(3, "Option %s is not supported\n", telopts[opt]);
+		break;
+	}
+	return 0;
+}
+
+/*! \brief Handler for when an option has been enabled */
+static int __handle_option_will(struct bbs_node *node, struct telnet_settings *settings, unsigned char cmd, unsigned char opt, unsigned char *buf, size_t len, int depth)
+{
+	int res;
+
+	bbs_assert(cmd == WILL);
+
+	switch (opt) {
+	case TELOPT_ECHO:
+		settings->rcv_noecho = 1;
+		bbs_debug(3, "Client acknowledged local echo disable\n");
+		return 0;
+	case TELOPT_NAWS:
 		/* Read terminal dimensions, coming up next */
 		res = telnet_read_command(node->rfd, buf, len);
 		if (res > 0) {
 			res = telnet_process_command(node, settings, buf, len, res);
+		} else if (res < 0) {
+			return res;
 		} else {
 			/* Even after we send IAC DO NAWS and we receive IAC WILL NAWS from the client,
 			 * SyncTERM doesn't seem to do IAC SB NAWS unless we repeat our IAC DO NAWS once more. */
 			bbs_debug(3, "Failed to receive terminal dimensions, even though client offered to send it?\n");
-			if (telnet_send_command(node->wfd, DO, TELOPT_NAWS)) {
+			/* Temporarily violate RFC 1143, manually fiddle the state bits so we can resend the request */
+			settings->options[opt].him = NO;
+			if (telnet_option_send(node, settings, DO, opt)) {
 				return -1;
 			}
 			res = telnet_read_command(node->rfd, buf, len);
@@ -212,55 +450,284 @@ static int __telnet_process_command(struct bbs_node *node, struct telnet_setting
 				res = telnet_process_command(node, settings, buf, len, res);
 			}
 		}
-	} else if (buf[1] == WONT && buf[2] == TELOPT_NAWS) {
-		/* Client disabled NAWS, at our request, good. */
-		res = 1;
-	} else if (buf[1] == SB && buf[2] == TELOPT_NAWS) {
-		/* Get the window size
-		 * IAC SB NAWS WIDTH[1] WIDTH[0] HEIGHT[1] HEIGHT[0] IAC SE
-		 * According to RFC 1073, there are 2 bytes for the width and the height each,
-		 * to support clients with a window height/width of up to 65536 rows/cols.
-		 * I'm sorry, there's no way there are any clients with screens that large.
-		 * Here's what these bytes would look for a standard 80x24 terminal:
-		 * 0 80 0 24 255 240
-		 * So we can simply ignore WIDTH[1] and HEIGHT[1] altogether.
-		 */
-		if (res >= 9) {
-			bbs_debug(7, "Got %d %d %d %d %d %d\n", buf[3], buf[4], buf[5], buf[6], buf[7], buf[8]);
-			bbs_node_update_winsize(node, buf[4], buf[6]);
-		} else {
-			bbs_warning("Received window subnegotiation, but only got %d bytes?\n", res);
-		}
-
-		/* XXX Now, tell the client not to send window updates
-		 * Because we're going to step out of the way and all socket I/O is going to
-		 * go right into the PTY master, we won't be able to intercept future Telnet
-		 * commands, so if a window update is sent, we won't be able to process it.
-		 * It would probably be better to add an intermediate layer here to handle that
-		 * (similar to what the SSH module does).
-		 * Or, the PTY thread could handle telnet commands (beginning with IAC),
-		 * if node->protname == "Telnet", but that would break the abstraction
-		 * that the BBS has from the communications protocol.
-		 *
-		 * Either way, for now, we don't support window updates.
-		 */
-		if (telnet_send_command(node->wfd, DONT, TELOPT_NAWS)) {
+		return 0;
+	case TELOPT_TSPEED:
+		/* Client supports sending terminal speed */
+		if (telnet_send_command6(node->wfd, SB, TELOPT_TSPEED, TELQUAL_SEND, IAC, SE)) {
 			return -1;
 		}
-		res = telnet_read_command(node->rfd, buf, len);
-		if (res > 0) {
-			res = telnet_process_command(node, settings, buf, len, res);
-		}
-	} else if (buf[1] == WILL && buf[2] == TELOPT_TTYPE) {
+		return 0;
+	case TELOPT_TTYPE:
 		/* Client supports sending terminal type */
 		if (telnet_send_command6(node->wfd, SB, TELOPT_TTYPE, TELQUAL_SEND, IAC, SE)) {
 			return -1;
 		}
-		res = telnet_read_command(node->rfd, buf, len);
-		if (res < 0) {
-			return res;
-		} else if (res > 0) {
-			if (buf[1] == SB && buf[2] == TELOPT_TTYPE && buf[3] == TELQUAL_IS && res >= 6) {
+		return 0;
+	default:
+		bbs_debug(3, "No handler for option %s\n", telopts[opt]);
+		break;
+	}
+	return 1;
+}
+
+static int __telnet_process_command(struct bbs_node *node, struct telnet_settings *settings, unsigned char *buf, size_t len, int res, int depth)
+{
+	unsigned char cmd = buf[1], opt = buf[2];
+
+	if (depth > 4) {
+		/* Prevent infinite recursion if the client replies with the same thing that triggered another command */
+		bbs_warning("Exceeded command stack depth %d\n", depth);
+		return 0;
+	}
+
+	bbs_assert(res >= 3);
+	if (cmd == WILL || cmd == WONT || cmd == DO || cmd == DONT) {
+		bbs_debug(6, "him: %s, himq: %s, us: %s, usq: %s\n",
+			option_state_name(settings->options[opt].him), queue_state_name(settings->options[opt].himq),
+			option_state_name(settings->options[opt].us), queue_state_name(settings->options[opt].usq));
+	}
+
+	/* Implemented as per RFC 1143. */
+	switch (cmd) {
+	case WILL:
+		/* Client offered to enable an option. */
+		switch (settings->options[opt].him) {
+		case NO:
+			/* If we agree that he should enable, him=YES, send DO; otherwise, send DONT. */
+			if (!option_supported(node, cmd, opt)) {
+				res = telnet_send_command(node->wfd, DONT, opt);
+			} else {
+				settings->options[opt].him = YES;
+				res = telnet_send_command(node->wfd, DO, opt);
+				handle_option_will(node, settings, cmd, opt); /* Post-processing for when option is enabled */
+			}
+			if (res) {
+				return -1;
+			}
+			break;
+		case YES:
+			/* Ignore */
+			bbs_debug(6, "Ignoring WILL since option already enabled\n");
+			break;
+		case WANTNO:
+			switch (settings->options[opt].himq) {
+			case EMPTY:
+				/* Error. DONT answered by WILL. him=NO */
+				bbs_warning("DONT answered by WILL?\n");
+				settings->options[opt].him = NO;
+				break;
+			case OPPOSITE:
+				/* Error. DONT answered by WILL. him=YES, himq=EMPTY */
+				bbs_warning("DONT answered by WILL?\n");
+				settings->options[opt].him = YES;
+				settings->options[opt].himq = EMPTY;
+				break;
+			}
+			break;
+		case WANTYES:
+			switch (settings->options[opt].himq) {
+			case EMPTY:
+				/* him=YES */
+				settings->options[opt].him = YES;
+				handle_option_will(node, settings, cmd, opt); /* Post-processing for when option is enabled */
+				break;
+			case OPPOSITE:
+				/* him=WANTNO, himq=EMPTY, send DONT */
+				settings->options[opt].him = WANTNO;
+				settings->options[opt].himq = EMPTY;
+				res = telnet_send_command(node->wfd, DONT, opt);
+				if (res) {
+					return -1;
+				}
+				break;
+			}
+			break;
+		}
+		break;
+	case WONT:
+		/* Client informed us it will not enable an option. */
+		switch (settings->options[opt].him) {
+		case NO:
+			/* Ignore. */
+			bbs_debug(6, "Ignoring WONT since option already disabled\n");
+			break;
+		case YES:
+			/* him=NO, send DONT */
+			settings->options[opt].him = NO;
+			res = telnet_send_command(node->wfd, DONT, opt);
+			if (res) {
+				return -1;
+			}
+			break;
+		case WANTNO:
+			switch (settings->options[opt].himq) {
+			case EMPTY:
+				/* him=NO */
+				settings->options[opt].him = NO;
+				break;
+			case OPPOSITE:
+				/* him=WANTYES, himq=NONE, send DO */
+				settings->options[opt].him = WANTYES;
+				settings->options[opt].himq = EMPTY;
+				res = telnet_send_command(node->wfd, DO, opt);
+				if (res) {
+					return -1;
+				}
+				break;
+			}
+			break;
+		case WANTYES:
+			switch (settings->options[opt].himq) {
+			case EMPTY:
+				/* him=NO */
+				settings->options[opt].him = NO;
+				break;
+			case OPPOSITE:
+				/* him=NO, himq=NONE */
+				/* Here we don't have to generate another request because we've been "refused into" the correct state anyway. */
+				settings->options[opt].him = NO;
+				settings->options[opt].himq = EMPTY;
+				break;
+			}
+			break;
+		}
+		break;
+	/* The next two cases are symmetrical:
+	 * We handle the option on our side by the same procedures, with DO-WILL, DONT-WONT, him-us, himq-usq swapped. */
+	case DO:
+		/* Client told us to enable an option. */
+		switch (settings->options[opt].us) {
+		case NO:
+			/* There are no options that we support enabling on the SERVER side...
+			 * they are all on the client (we are, after all, a server).
+			 * So always use the failure case here, symmetrically from above. */
+			if (1) {
+				res = telnet_send_command(node->wfd, WONT, opt);
+			} else {
+				settings->options[opt].us = YES;
+				res = telnet_send_command(node->wfd, WILL, opt);
+			}
+			if (res) {
+				return -1;
+			}
+			break;
+		case YES:
+			/* Ignore */
+			bbs_debug(6, "Ignoring DO since option already enabled\n");
+			break;
+		case WANTNO:
+			switch (settings->options[opt].usq) {
+			case EMPTY:
+				bbs_warning("WONT answered by DO?\n");
+				settings->options[opt].us = NO;
+				break;
+			case OPPOSITE:
+				bbs_warning("WONT answered by DO?\n");
+				settings->options[opt].us = YES;
+				settings->options[opt].usq = EMPTY;
+				break;
+			}
+			break;
+		case WANTYES:
+			switch (settings->options[opt].usq) {
+			case EMPTY:
+				settings->options[opt].us = YES;
+				break;
+			case OPPOSITE:
+				settings->options[opt].us = WANTNO;
+				settings->options[opt].usq = EMPTY;
+				res = telnet_send_command(node->wfd, WONT, opt);
+				if (res) {
+					return -1;
+				}
+				break;
+			}
+			break;
+		}
+		break;
+	case DONT:
+		/* Client told us to not enable an option. */
+		switch (settings->options[opt].us) {
+		case NO:
+			bbs_debug(6, "Ignoring DONT since option already disabled\n");
+			break;
+		case YES:
+			/* him=NO, send DONT */
+			settings->options[opt].us = NO;
+			res = telnet_send_command(node->wfd, WONT, opt);
+			if (res) {
+				return -1;
+			}
+			break;
+		case WANTNO:
+			switch (settings->options[opt].usq) {
+			case EMPTY:
+				settings->options[opt].us = NO;
+				break;
+			case OPPOSITE:
+				settings->options[opt].us = WANTYES;
+				settings->options[opt].usq = EMPTY;
+				res = telnet_send_command(node->wfd, WILL, opt);
+				if (res) {
+					return -1;
+				}
+				break;
+			}
+			break;
+		case WANTYES:
+			switch (settings->options[opt].usq) {
+			case EMPTY:
+				settings->options[opt].us = NO;
+				break;
+			case OPPOSITE:
+				settings->options[opt].us = NO;
+				settings->options[opt].usq = EMPTY;
+				break;
+			}
+			break;
+		}
+		break;
+	case SB:
+		switch (opt) {
+		case TELOPT_NAWS:
+			/* Get the window size
+			 * IAC SB NAWS WIDTH[1] WIDTH[0] HEIGHT[1] HEIGHT[0] IAC SE
+			 * According to RFC 1073, there are 2 bytes for the width and the height each,
+			 * to support clients with a window height/width of up to 65536 rows/cols.
+			 * I'm sorry, there's no way there are any clients with screens that large.
+			 * Here's what these bytes would look for a standard 80x24 terminal:
+			 * 0 80 0 24 255 240
+			 * So we can simply ignore WIDTH[1] and HEIGHT[1] altogether.
+			 */
+			if (res >= 9) {
+				bbs_debug(7, "Got %d %d %d %d %d %d\n", buf[3], buf[4], buf[5], buf[6], buf[7], buf[8]);
+				bbs_node_update_winsize(node, buf[4], buf[6]);
+			} else {
+				bbs_warning("Received window subnegotiation, but only got %d bytes?\n", res);
+			}
+
+			/* XXX Now, tell the client not to send window updates
+			 * Because we're going to step out of the way and all socket I/O is going to
+			 * go right into the PTY master, we won't be able to intercept future Telnet
+			 * commands, so if a window update is sent, we won't be able to process it.
+			 * It would probably be better to add an intermediate layer here to handle that
+			 * (similar to what the SSH module does).
+			 * Or, the PTY thread could handle telnet commands (beginning with IAC),
+			 * if node->protname == "Telnet", but that would break the abstraction
+			 * that the BBS has from the communications protocol.
+			 *
+			 * Either way, for now, we don't support window updates.
+			 */
+			if (telnet_send_command(node->wfd, DONT, TELOPT_NAWS)) {
+				return -1;
+			}
+			res = telnet_read_command(node->rfd, buf, len);
+			if (res > 0) {
+				res = telnet_process_command(node, settings, buf, len, res);
+			}
+			return 1;
+		case TELOPT_TTYPE:
+			if (buf[3] == TELQUAL_IS && res >= 6) {
 				/* With SyncTERM, if we resend IAC DO NAWS (as we now do above, since for some reason it needs to be prompted to),
 				 * SyncTERM will send the term type, followed by IAC SE IAC WILL TELOPT_NAWS.
 				 * The IAC SE is the trailer to the response, but the IAC WILL TELOPT_NAWS (offering to send window dimensions)
@@ -297,19 +764,11 @@ static int __telnet_process_command(struct bbs_node *node, struct telnet_setting
 					res = telnet_process_command_additional(node, settings, buf, len, (int) nextlen, depth);
 				}
 			} else {
-				bbs_warning("Foreign %d-byte response received in response to terminal type\n", res);
+				bbs_debug(3, "Ignoring unhandled response %d %d %d\n", buf[0], buf[1], buf[2]);
 			}
-		}
-	} else if (buf[1] == WILL && buf[2] == TELOPT_TSPEED) {
-		/* Client supports sending terminal speed */
-		if (telnet_send_command6(node->wfd, SB, TELOPT_TSPEED, TELQUAL_SEND, IAC, SE)) {
-			return -1;
-		}
-		res = telnet_read_command(node->rfd, buf, len);
-		if (res < 0) {
-			return res;
-		} else if (res > 0) {
-			if (buf[1] == SB && buf[2] == TELOPT_TSPEED && buf[3] == TELQUAL_IS && res >= 3) {
+			break;
+		case TELOPT_TSPEED:
+			if (buf[3] == TELQUAL_IS && res >= 3) {
 				bbs_debug(3, "Terminal speed is %.*s\n", (int) res - 6, buf + 4); /* First 4 bytes are command, and last two are IAC SE */
 				if (res - 6 < (int) len - 1) {
 					memmove(buf, buf + 4, (size_t) res - 6);
@@ -317,12 +776,17 @@ static int __telnet_process_command(struct bbs_node *node, struct telnet_setting
 					node->reportedbps = (unsigned int) atoi((char*) buf);
 				}
 			} else {
-				bbs_warning("Foreign %d-byte response received in response to terminal type\n", res);
+				bbs_debug(3, "Ignoring unhandled response %d %d %d\n", buf[0], buf[1], buf[2]);
 			}
+			break;
+		default:
+			bbs_debug(3, "Ignoring unhandled response %d %d %d\n", buf[0], buf[1], buf[2]);
 		}
-	} else {
+		break;
+	default:
 		bbs_debug(3, "Ignoring unhandled response %d %d %d\n", buf[0], buf[1], buf[2]);
 	}
+
 	return 1;
 }
 
@@ -354,17 +818,21 @@ static int telnet_handshake(struct bbs_node *node)
 	 *
 	 * Might seem backwards to do WILL echo to turn local echo off, but think of it as
 	 * us saying that WE'LL do the echoing so local echo, please stop. */
-	if (telnet_send_command(node->wfd, WILL, TELOPT_ECHO)) {
+	if (telnet_option_send(node, &settings, WILL, TELOPT_ECHO)) {
 		return -1;
 	}
 
 	/* Send the following to disable line buffering and make the terminal "uncooked" from a Telnet perspective.
 	 * In particular, this is needed to get PuTTY to work properly, since it will assume cooked by default. */
-	if (telnet_send_command(node->wfd, WILL, TELOPT_SGA)) { /* Suppress Go Ahead */
-		return -1;
-	} else if (telnet_send_command(node->wfd, WONT, TELOPT_LINEMODE)) { /* Disable line mode */
+	if (telnet_option_send(node, &settings, WILL, TELOPT_SGA)) { /* Suppress Go Ahead */
 		return -1;
 	}
+#if 0
+	/* All Telnet options are disabled by default, so there is no need to explicitly send WONT LINEMODE */
+	if (telnet_option_send(node, &settings, WONT, TELOPT_LINEMODE)) { /* Disable line mode */
+		return -1;
+	}
+#endif
 
 	/* Read anything the client sends upon connect, if anything.
 	 * For example, some clients, like SyncTERM, will acknowledge everything with a response,
@@ -379,7 +847,7 @@ static int telnet_handshake(struct bbs_node *node)
 	bbs_debug(8, "Finished processing commands received at connection time\n");
 
 	/* RFC 1091 Terminal Type */
-	if (telnet_send_command(node->wfd, DO, TELOPT_TTYPE)) {
+	if (telnet_option_send(node, &settings, DO, TELOPT_TTYPE)) {
 		return -1;
 	}
 	res = read_and_process_command(node, &settings, buf, sizeof(buf));
@@ -388,9 +856,8 @@ static int telnet_handshake(struct bbs_node *node)
 	}
 
 	/* RFC 1073 Request window size */
-	if (!settings.sent_winsize) {
-		settings.sent_winsize = 1;
-		if (telnet_send_command(node->wfd, DO, TELOPT_NAWS)) {
+	if (!node->dimensions) {
+		if (telnet_option_send(node, &settings, DO, TELOPT_NAWS)) {
 			return -1;
 		}
 		res = read_and_process_command(node, &settings, buf, sizeof(buf));
@@ -400,7 +867,7 @@ static int telnet_handshake(struct bbs_node *node)
 	}
 
 	/* RFC 1079 Terminal Speed */
-	if (telnet_send_command(node->wfd, DO, TELOPT_TSPEED)) {
+	if (telnet_option_send(node, &settings, DO, TELOPT_TSPEED)) {
 		return -1;
 	}
 	res = read_and_process_command(node, &settings, buf, sizeof(buf));
@@ -410,7 +877,13 @@ static int telnet_handshake(struct bbs_node *node)
 
 	if (!settings.rcv_noecho) {
 		bbs_debug(3, "Request to enable ECHO not yet acknowledged, retrying\n");
-		if (telnet_send_command(node->wfd, WONT, TELOPT_ECHO) || telnet_send_command(node->wfd, WILL, TELOPT_ECHO)) {
+		/* Temporarily break with RFC 1143, and manually fiddle some bits to force the request to send */
+		settings.options[TELOPT_ECHO].us = YES;
+		if (telnet_option_send(node, &settings, WONT, TELOPT_ECHO)) {
+			return -1;
+		}
+		settings.options[TELOPT_ECHO].us = NO;
+		if (telnet_option_send(node, &settings, WILL, TELOPT_ECHO)) {
 			return -1;
 		}
 	}

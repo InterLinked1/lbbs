@@ -101,6 +101,10 @@ cleanup:
 	return -1;
 }
 
+/* Used to be WONT TELOPT_LINEMODE, but now net_telnet doesn't send that */
+#define LAST_UNSOLICITED_CMD_RECEIVED WILL
+#define LAST_UNSOLICITED_OPT_RECEIVED TELOPT_SGA
+
 static int run(void)
 {
 	int clientfd = -1;
@@ -126,7 +130,7 @@ static int run(void)
 
 	/* KiTTY, Telnet */
 	SETUP_TEST(23);
-	FMT_EXPECT("%c%c%c", IAC, WONT, TELOPT_LINEMODE);
+	FMT_EXPECT("%c%c%c", IAC, LAST_UNSOLICITED_CMD_RECEIVED, LAST_UNSOLICITED_OPT_RECEIVED);
 	FMT_SEND("%c%c%c", IAC, WILL, TELOPT_NAWS); /* Offer to send dimensions, before responding to anything */
 	FMT_EXPECT("%c%c%c", IAC, DO, TELOPT_NAWS);
 	/* KiTTY doesn't respond with dimensions at this point */
@@ -166,7 +170,7 @@ static int run(void)
 
 	/* SyncTERM, Telnet */
 	SETUP_TEST(23);
-	FMT_EXPECT("%c%c%c", IAC, WONT, TELOPT_LINEMODE);
+	FMT_EXPECT("%c%c%c", IAC, LAST_UNSOLICITED_CMD_RECEIVED, LAST_UNSOLICITED_OPT_RECEIVED);
 	FMT_SEND("%c%c%c", IAC, DO, TELOPT_ECHO); /* Acknowledge local echo disable */
 	FMT_SEND("%c%c%c", IAC, DO, TELOPT_SGA); /* Acknowledge suppress go ahead */
 	FMT_EXPECT("%c%c%c", IAC, DO, TELOPT_TTYPE);
@@ -204,7 +208,7 @@ static int run(void)
 
 	/* qodem, Telnet */
 	SETUP_TEST(23);
-	FMT_EXPECT("%c%c%c", IAC, WONT, TELOPT_LINEMODE);
+	FMT_EXPECT("%c%c%c", IAC, LAST_UNSOLICITED_CMD_RECEIVED, LAST_UNSOLICITED_OPT_RECEIVED);
 	FMT_SEND("%c%c%c", IAC, DO, TELOPT_BINARY); /* qodem offers binary with both DO and WILL, strange... */
 	FMT_SEND("%c%c%c", IAC, WILL, TELOPT_BINARY);
 	/* Server ignores binary option */
