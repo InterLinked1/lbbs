@@ -529,7 +529,7 @@ static void cleanup(void)
 
 	/* Shutdown logging last. */
 	if (shutdown_type == SHUTDOWN_RESTART) {
-		bbs_verb(2, "BBS is now restarting\n");
+		bbs_verb(2, "BBS is now restarting on PID %d\n", bbs_pid);
 	} else {
 		bbs_verb(2, "Finalizing shutdown\n");
 	}
@@ -546,13 +546,20 @@ static void cleanup(void)
 	}
 	shutdown_finished = 1;
 	if (shutdown_type == SHUTDOWN_RESTART) {
-		int i;
+		int i, saved_errno;
 		/* Mark all file descriptors for closing on exec */
 		for (i = 3; i < 32768; i++) {
 			fcntl(i, F_SETFD, FD_CLOEXEC);
 		}
-		/* Note that exec preserves PIDs: the restarted BBS will have the same PID as the old one. */
+		/* Note that exec preserves PIDs: the restarted BBS will have the same PID as the old one,
+		 * although if daemonized, the PID will immediately change. */
 		execvp(_argv[0], _argv);
+		/* If we get here, that means we failed to restart... */
+		saved_errno = errno;
+		bbs_log_init(option_nofork); /* Reopen logging channel so we can record this */
+		bbs_error("Failed to restart: %s\n", strerror(saved_errno));
+		bbs_log_close();
+		/* Go ahead and just exit, since we failed to restart */
 	}
 }
 
@@ -596,10 +603,6 @@ static void bbs_shutdown(void)
 	bbs_mutex_destroy(&sig_lock);
 	cleanup();
 }
-
-static struct sigaction ignore_sig_handler = {
-	.sa_handler = SIG_IGN,
-};
 
 static int *sigint_alert_pipe = NULL;
 
@@ -670,12 +673,9 @@ static void __sigint_handler(int num)
 	}
 }
 
-static void __sighup_handler(int num)
-{
-	UNUSED(num);
-
-	bbs_debug(2, "Got SIGHUP, ignoring\n"); /* XXX technically not safe to use in signal handler */
-}
+static struct sigaction sigint_handler = {
+	.sa_handler = __sigint_handler,
+};
 
 /*! \brief Log any SIGWINCHes received */
 static void __sigwinch_handler(int num)
@@ -715,6 +715,10 @@ static void __sigwinch_handler(int num)
 	}
 }
 
+static struct sigaction sigwinch_handler = {
+	.sa_handler = __sigwinch_handler,
+};
+
 static void __sigusr1_handler(int num)
 {
 	UNUSED(num);
@@ -725,6 +729,10 @@ static void __sigusr1_handler(int num)
 	 * but still allows system calls to be interrupted, as desired. */
 	bbs_debug(3, "Received SIGUSR1\n");
 }
+
+static struct sigaction sigusr1_handler = {
+	.sa_handler = __sigusr1_handler,
+};
 
 /*!
  * \brief Request BBS shutdown
@@ -925,6 +933,39 @@ static int load_config(void)
 	return 0;
 }
 
+static struct sigaction ignore_sig_handler = {
+	.sa_handler = SIG_IGN,
+};
+
+static void set_signals(void)
+{
+	/* Use sigaction instead of signal, since it's the more modern and well-behaving API: */
+	sigaction(SIGINT, &sigint_handler, NULL);
+	sigaction(SIGTERM, &sigint_handler, NULL);
+	if (!option_nofork) {
+		/* If daemonized, we get a SIGHUP whenever a remote sysop console disconnects... ignore it,
+		 * or the BBS will get killed by the signal.
+		 * Frequently used by daemonized processes to reread their configuration,
+		 * for now we just ignore it.
+		 * If running in the foreground, then allow SIGHUP to terminate as usual.
+		 *
+		 * Also, note that installing SIG_IGN (via &ignore_sig_handler)
+		 * is critically important here. Per sigaction(2), on execve,
+		 * handled signals are reset to the default, while ignored
+		 * signals are left unchanged.
+		 *
+		 * Using SIG_IGN for SIGHUP avoids an issue with BBS restarts where
+		 * as soon as we execvp to restart, the BBS is killed with a SIGHUP signal.
+		 * Previously, this would occur sporadically (and only when the BBS is daemonized).
+		 * (stracing the BBS prior to the restart would make this happen consistently.)
+		 * With SIG_IGN, the signal is reliably ignored, including across restarts. */
+		sigaction(SIGHUP, &ignore_sig_handler, NULL);
+	}
+	sigaction(SIGWINCH, &sigwinch_handler, NULL);
+	sigaction(SIGUSR1, &sigusr1_handler, NULL);
+	sigaction(SIGPIPE, &ignore_sig_handler, NULL);
+}
+
 /*!
  * \brief Called for fatal startup errors.
  * If starting daemon, bbs_log messages wouldn't go to STDOUT/STDERR, do so explicitly so something is output.
@@ -956,6 +997,7 @@ int main(int argc, char *argv[])
 	 * daemon causes a fork to occur, which has all sorts of unintended
 	 * consequences for things that interact with threads. This call *must*
 	 * occur before anything spawns or manipulates thread related primitives. */
+	bbs_debug(1, "Starting BBS on PID %d\n", bbs_pid);
 	if (!option_nofork && daemon(1, 0) < 0) {
 		startup_error("daemon() failed: %s\n", strerror(errno));
 		cleanup();
@@ -972,7 +1014,7 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	bbs_debug(1, "Starting BBS on PID %d, running as user '%s' and group '%s', using '%s'\n", bbs_pid, S_IF(runuser), S_IF(rungroup), bbs_config_dir());
+	bbs_debug(1, "Initializing BBS on PID %d, running as user '%s' and group '%s', using '%s'\n", bbs_pid, S_IF(runuser), S_IF(rungroup), bbs_config_dir());
 	bbs_start_time = time(NULL);
 
 	if (argc > 0 && !strstr(argv[0], BBS_NAME)) {
@@ -992,19 +1034,7 @@ int main(int argc, char *argv[])
 		bbs_shutdown();
 		exit(EXIT_FAILURE);
 	}
-	signal(SIGINT, __sigint_handler);
-	signal(SIGTERM, __sigint_handler);
-	if (!option_nofork) {
-		/* If daemonized, we get a SIGHUP whenever a remote sysop console disconnects... ignore it,
-		 * or the BBS will get killed by the signal.
-		 * Frequently used by daemonized processes to reread their configuration,
-		 * for now we just ignore it.
-		 * If running in the foreground, then allow SIGHUP to terminate as usual. */
-		signal(SIGHUP, __sighup_handler);
-	}
-	signal(SIGWINCH, __sigwinch_handler);
-	signal(SIGUSR1, __sigusr1_handler);
-	sigaction(SIGPIPE, &ignore_sig_handler, NULL);
+	set_signals();
 
 #define CHECK_INIT(x) if ((x)) { bbs_shutdown(); exit(EXIT_FAILURE); }
 
