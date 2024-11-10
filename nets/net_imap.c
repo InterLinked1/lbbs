@@ -278,8 +278,9 @@ static int cli_imap_clients(struct bbs_cli_args *a)
 		RWLIST_TRAVERSE(&imap->clients, client, entry) {
 			char elapsed[24];
 			time_t idle_elapsed = now - client->idlestarted;
+			bbs_soft_assert(now >= client->idlestarted);
 			print_time_elapsed(client->created, now, elapsed, sizeof(elapsed));
-			bbs_dprintf(a->fdout, "%4u %-25s %6s %4s %4lu/%4d %s\n",
+			bbs_dprintf(a->fdout, "%4u %-25s %6s %4s %" TIME_T_FMT "/%4d %s\n",
 				imap->node->id, client->name, BBS_YN(client->active), BBS_YN(client->dead), client->idling ? idle_elapsed : 0, client->maxidlesec, elapsed);
 		}
 		RWLIST_UNLOCK(&imap->clients);
