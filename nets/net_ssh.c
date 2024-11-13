@@ -103,18 +103,23 @@ static int start_ssh(void)
 		return -1;
 		}
 
-	/* Set default keys */
+	/* Set default keys
+	 * Note that all these SSH_BIND_OPTIONS enum values are aliases to SSH_BIND_OPTIONS_HOSTKEY */
 	if (load_key_rsa) {
+		bbs_debug(2, "Binding RSA key\n");
 		keys += bind_key(SSH_BIND_OPTIONS_RSAKEY, KEYS_FOLDER "ssh_host_rsa_key");
 	}
 	if (load_key_dsa) {
+		bbs_debug(2, "Binding DSA key\n");
 		keys += bind_key(SSH_BIND_OPTIONS_DSAKEY, KEYS_FOLDER "ssh_host_dsa_key");
 	}
 	if (load_key_ecdsa) {
+		bbs_debug(2, "Binding ECDSA key\n");
 		keys += bind_key(SSH_BIND_OPTIONS_ECDSAKEY, KEYS_FOLDER "ssh_host_ecdsa_key");
 	}
 	if (load_key_ed25519) {
-		keys += ssh_bind_options_set(sshbind, SSH_BIND_OPTIONS_HOSTKEY, KEYS_FOLDER "ssh_host_ed25519_key");
+		bbs_debug(2, "Binding ED25519 key\n");
+		keys += bind_key(SSH_BIND_OPTIONS_HOSTKEY, KEYS_FOLDER "ssh_host_ed25519_key");
 	}
 
 	if (!keys) {
@@ -130,6 +135,7 @@ static int start_ssh(void)
 		sshbind = NULL;
 		return -1;
 	}
+	bbs_verb(7, "SSH listener started using %d key%s\n", keys, ESS(keys));
 	return 0;
 }
 
