@@ -855,6 +855,26 @@ static int telnet_handshake(struct bbs_node *node)
 		return res;
 	}
 
+	/* This is not an issue for real Telnet clients, but test_terminals is not a real Telnet client,
+	 * it is preprogrammed to look for output in a consistent order. Because we move on to sending NAWS
+	 * immediately after sending IAC SB TERMINAL TYPE, we will have to be able to process the end of the TERMINAL TYPE
+	 * negotiation in the NAWS block (or TSPEED, technically, if node->dimensions is already set here, but it
+	 * won't be in the test, and since this doesn't matter for actual clients, that is not relevant here).
+	 * So the only needed workaround is to call read_and_process_command again if we haven't yet gotten the dimensions.
+	 *
+	 * There are two scenarios:
+	 * 1. In the read_and_process_command after TELOPT_NAWS, we read both IAC SB TERMINAL TYPE and the NAWS response.
+	 *    Both are processed and we're still synchronized with no additional effort.
+	 *
+	 * XXX Note that not all command handlers are written to elegantly
+	 * handle receiving multiple responses at once (though the TERMINAL TYPE handler is).
+	 * This should be generic so that we could successfully handle multiple commands
+	 * at any stage. An easy way would be using bbs_readline with IAC SE as the delimiter when needed.
+	 *
+	 * 2. In the read_and_process_command after TELOPT_NAWS, we happen to read the IAC SB TERMINAL TYPE.
+	 *    Now, node->dimensions is still 0, and we will call read_and_process_command again to read the NAWS response.
+	 */
+
 	/* RFC 1073 Request window size */
 	if (!node->dimensions) {
 		if (telnet_option_send(node, &settings, DO, TELOPT_NAWS)) {
@@ -863,6 +883,27 @@ static int telnet_handshake(struct bbs_node *node)
 		res = read_and_process_command(node, &settings, buf, sizeof(buf));
 		if (res < 0) {
 			return res;
+		}
+		/* This is the solution to the issue described in the long comment above.
+		 * This should only be needed for test_terminals (specifically the qodem, Telnet case),
+		 * but this is not "incorrect" to do when interacting with real clients, either.
+		 * Here, if we have not yet received a response (still WANTYES), that means in
+		 * the read_and_process_command block above, we only processed the IAC SB TERMINAL TYPE
+		 * response from the block above, rather than the NAWS response we intended to.
+		 * So actually go ahead and process it here.
+		 *
+		 * Sometimes, this does result in a delay, usually for clients with certain "quirks",
+		 * but much of the time we try this, we do actually catch a response that was simply delayed,
+		 * or arrived in a subsequent packet. Only downsides of doing this are the additional delay
+		 * when the client chooses not to respond for some reason, and not pipelining the TSPEED option,
+		 * which would otherwise be a reasonable thing to do when dealing only with actual clients.
+		 * This is purely to keep the test suite synchronized. */
+		if (!node->dimensions && settings.options[TELOPT_NAWS].him == WANTYES) {
+			bbs_debug(3, "Haven't yet received response to NAWS option inquiry, waiting for it...\n");
+			res = read_and_process_command(node, &settings, buf, sizeof(buf));
+			if (res < 0) {
+				return res;
+			}
 		}
 	}
 
