@@ -204,6 +204,7 @@ elif [ -f /etc/redhat-release ]; then
 	dnf install -y $PACKAGES_RHEL
 elif [ "$OS_DIST_INFO" = "SLES" ] || [ "$OS_DIST_INFO" = "openSUSE Tumbleweed" ]; then
 	zypper update -y
+	zypper dup -y
 	zypper install --no-confirm $PACKAGES_SUSE
 elif [ -r /etc/arch-release ]; then
 	pacman -Syu --noconfirm
