@@ -337,6 +337,7 @@ int bbs_set_fd_tcp_nodelay(int fd, int enabled)
 	int i = enabled;
 	if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &i, sizeof(i))) {
 		bbs_error("setsockopt failed: %s\n", strerror(errno));
+		bbs_log_backtrace();
 		return -1;
 	} else {
 		bbs_debug(3, "%s Nagle's algorithm on socket %d\n", enabled ? "Disabled" : "Enabled", fd);
@@ -809,11 +810,9 @@ static void *tcp_multilistener(void *unused)
 			/* Note that l->name is const memory allocated as part of l.
 			 * That means the listener must not go away while any nodes are using it
 			 * (which shouldn't happen anyways) */
-			node = __bbs_node_request(sfd, l->name, l->module);
+			node = __bbs_node_request(sfd, l->name, &sinaddr, -1, l->module);
 			if (!node) {
 				close(sfd);
-			} else if (bbs_save_remote_ip(&sinaddr, node)) {
-				bbs_node_unlink(node);
 			} else {
 				node->port = (short unsigned int) l->port;
 				node->skipjoin = 1;
@@ -1041,11 +1040,9 @@ void bbs_tcp_listener3(int socket, int socket2, int socket3, const char *name, c
 		bbs_get_remote_ip(&sinaddr, new_ip, sizeof(new_ip));
 		bbs_debug(1, "Accepting new %s connection from %s\n", pfds[sockidx].fd == socket ? name : pfds[sockidx].fd == socket2 ? name2 : name3, new_ip);
 
-		node = __bbs_node_request(sfd, sockidx == 0 ? name : sockidx == 1 ? name2 : name3, module);
+		node = __bbs_node_request(sfd, sockidx == 0 ? name : sockidx == 1 ? name2 : name3, &sinaddr, -1, module);
 		if (!node) {
 			close(sfd);
-		} else if (bbs_save_remote_ip(&sinaddr, node)) {
-			bbs_node_unlink(node);
 		} else {
 			node->skipjoin = 1;
 			if (bbs_pthread_create_detached(&node->thread, NULL, handler, node)) { /* Run the BBS on this node */
@@ -1105,11 +1102,9 @@ static void __bbs_tcp_listener(int socket, const char *name, int (*handshake)(st
 		bbs_debug(1, "Accepting new %s connection from %s\n", name, new_ip);
 		bbs_debug(7, "accepted fd = %d\n", sfd);
 
-		node = __bbs_node_request(sfd, name, module);
+		node = __bbs_node_request(sfd, name, &sinaddr, -1, module);
 		if (!node) {
 			close(sfd);
-		} else if (bbs_save_remote_ip(&sinaddr, node)) {
-			bbs_node_unlink(node);
 		} else if (handshake && handshake(node)) {
 			bbs_node_unlink(node);
 		} else if (bbs_pthread_create_detached(&node->thread, NULL, handler, node)) { /* Run the BBS on this node */

@@ -260,7 +260,7 @@ const char *bbs_sysop(void)
 
 static unsigned int lifetime_nodes = 0;
 
-struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
+struct bbs_node *__bbs_node_request(int fd, const char *protname, struct sockaddr_in *restrict sinaddr, int sfd, void *mod)
 {
 	struct bbs_node *node = NULL, *prev = NULL;
 	unsigned int count = 0;
@@ -309,6 +309,22 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 		RWLIST_UNLOCK(&nodes);
 		return NULL;
 	}
+
+	if (sinaddr) {
+		if (bbs_save_remote_ip(sinaddr, node)) {
+			free(node);
+			RWLIST_UNLOCK(&nodes);
+			return NULL;
+		}
+	} else {
+		node->ip = strdup("127.0.0.1"); /* Connection is from localhost */
+		if (ALLOC_FAILURE(node->ip)) {
+			free(node);
+			RWLIST_UNLOCK(&nodes);
+			return NULL;
+		}
+	}
+
 	bbs_mutex_init(&node->lock, NULL);
 	bbs_mutex_init(&node->ptylock, NULL);
 	node->id = newnodenumber;
@@ -320,7 +336,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod)
 
 	/* By default, the socket file descriptor is the same as the regular file descriptor.
 	 * Only net_ssh overrides this. */
-	node->sfd = fd;
+	node->sfd = sfd != -1 ? sfd : fd;
 
 	/* Not all nodes will get a pseudoterminal, so initialize to -1 so if not, we don't try to close STDIN erroneously on shutdown */
 	node->amaster = -1;

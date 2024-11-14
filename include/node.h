@@ -190,18 +190,22 @@ const char *bbs_sysop(void);
  * \brief Used by network comm drivers to request a BBS node
  * \param fd Socket file descriptor
  * \param protname Protocol name
+ * \param[in] sinaddr Internet address structure for TCP/UDP connections, NULL for UNIX (non-IP) connections
+ * \param sfd Override for socket file descriptor (currently only used by net_ssh). -1 for no override.
  * \param mod Module reference
  * \retval Node on success, NULL on failure
  */
-struct bbs_node *__bbs_node_request(int fd, const char *protname, void *mod);
+struct bbs_node *__bbs_node_request(int fd, const char *protname, struct sockaddr_in *restrict sinaddr, int sfd, void *mod) __attribute__ ((nonnull (2, 5)));
 
 /*!
  * \brief Used by network comm drivers to request a BBS node
  * \param fd Socket file descriptor
  * \param protname Protocol name
+ * \param[in] sinaddr Internet address structure for TCP/UDP connections, NULL for UNIX (non-IP) connections
+ * \param sfd Override for socket file descriptor (currently only used by net_ssh). -1 for no override.
  * \retval Node on success, NULL on failure
  */
-#define bbs_node_request(fd, protname) __bbs_node_request(fd, protname, BBS_MODULE_SELF)
+#define bbs_node_request(fd, protname, sinaddr, sfd) __bbs_node_request(fd, protname, sinaddr, sfd, BBS_MODULE_SELF)
 
 /*! Lock a BBS node */
 int bbs_node_lock(struct bbs_node *node);

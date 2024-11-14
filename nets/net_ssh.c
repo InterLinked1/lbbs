@@ -448,9 +448,30 @@ static int auth_pubkey(ssh_session session, const char *user, struct ssh_key_str
 	return SSH_AUTH_SUCCESS;
 }
 
+static int get_session_sockaddr(ssh_session session, struct sockaddr *restrict saddr, struct sockaddr_in **restrict sinaddr, int *restrict sfd)
+{
+	socklen_t socklen = sizeof(struct sockaddr);
+
+	*sfd = ssh_get_fd(session); /* Get fd of the connection */
+	if (*sfd < 0) {
+		bbs_error("No file descriptor available for SSH session\n");
+		return -1;
+	}
+	if (getpeername(*sfd, saddr, &socklen)) {
+		bbs_error("getpeername(%d): %s\n", *sfd, strerror(errno));
+		return -1;
+	}
+
+	*sinaddr = (struct sockaddr_in *) saddr;
+	return 0;
+}
+
 static int pty_request(ssh_session session, ssh_channel channel, const char *term, int cols, int rows, int py, int px, void *userdata)
 {
 	struct channel_data_struct *cdata = (struct channel_data_struct *) userdata;
+	struct sockaddr saddr;
+	struct sockaddr_in *sinaddr;
+	int sfd;
 
 	UNUSED(channel);
 
@@ -485,8 +506,12 @@ static int pty_request(ssh_session session, ssh_channel channel, const char *ter
 	/* Make the master side raw, to pass everything unaltered to the "real" PTY, which is the node PTY */
 	bbs_term_makeraw(cdata->pty_master);
 
+	if (get_session_sockaddr(session, &saddr, &sinaddr, &sfd)) {
+		return -1;
+	}
+
 	/* node->fd will be the slave from the above PTY */
-	cdata->node = bbs_node_request(cdata->pty_slave, "SSH");
+	cdata->node = bbs_node_request(cdata->pty_slave, "SSH", sinaddr, sfd);
 	if (!cdata->node) {
 		return SSH_ERROR;
 	}
@@ -496,7 +521,6 @@ static int pty_request(ssh_session session, ssh_channel channel, const char *ter
 	if (!bbs_node_attach_user(cdata->node, *cdata->user)) {
 		cdata->userattached = 1;
 	}
-	save_remote_ip(session, cdata->node, NULL, 0);
 	bbs_node_update_winsize(cdata->node, cols, rows);
 	return SSH_OK;
 }
@@ -568,6 +592,9 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 static int subsystem_request(ssh_session session, ssh_channel channel, const char *subsystem, void *userdata)
 {
 	struct channel_data_struct *cdata = (struct channel_data_struct *) userdata;
+	struct sockaddr saddr;
+	struct sockaddr_in *sinaddr;
+	int sfd;
 
 	UNUSED(channel);
 
@@ -587,7 +614,11 @@ static int subsystem_request(ssh_session session, ssh_channel channel, const cha
 			return SSH_ERROR;
 		}
 
-		cdata->node = bbs_node_request(ssh_get_fd(session), "SFTP");
+		if (get_session_sockaddr(session, &saddr, &sinaddr, &sfd)) {
+			return -1;
+		}
+
+		cdata->node = bbs_node_request(ssh_get_fd(session), "SFTP", sinaddr, sfd);
 		if (!cdata->node) {
 			return SSH_ERROR;
 		}
@@ -596,7 +627,6 @@ static int subsystem_request(ssh_session session, ssh_channel channel, const cha
 		if (!bbs_node_attach_user(cdata->node, *cdata->user)) {
 			cdata->userattached = 1;
 		}
-		save_remote_ip(session, cdata->node, NULL, 0);
 		bbs_debug(3, "Starting SFTP session on node %d\n", cdata->node->id);
 		cdata->sftp = 1;
         return SSH_OK;

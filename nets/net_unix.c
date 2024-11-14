@@ -120,13 +120,11 @@ static void *uds_listener(void *unused)
 			continue;
 		}
 		bbs_debug(1, "Accepting new UDS connection\n");
-		node = bbs_node_request(sfd, "UNIX");
+		node = bbs_node_request(sfd, "UNIX", NULL, -1);
 		if (!node) {
 			close(sfd);
 			continue;
 		}
-
-		node->ip = strdup("127.0.0.1"); /* Connection is from localhost */
 
 		/* Run the BBS on this node */
 		node->skipjoin = 1;
