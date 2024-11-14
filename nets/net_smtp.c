@@ -486,6 +486,11 @@ static int handle_connect(struct smtp_session *smtp)
 				bbs_error("ioctl failed: %s\n", strerror(errno));
 				return -1;
 			}
+			if (!bytes) {
+				/* Client disconnected, same as read returning 0. */
+				bbs_debug(3, "Client appears to have disconnected\n");
+				return -1;
+			}
 			bbs_warning("Pregreet: %lu bytes received before banner finished\n", bytes);
 			smtp->failures += 3;
 			if (smtp_tarpit(smtp, 220, "Waiting for service to initialize...")) {
