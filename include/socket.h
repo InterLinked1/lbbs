@@ -56,6 +56,16 @@ int bbs_unblock_fd(int fd);
 int bbs_block_fd(int fd);
 
 /*!
+ * \brief Cork or uncork a node's TCP session
+ * \param node
+ * \param enabled 1 to buffer data in the kernel until full packets are available to send, 0 to disable
+ * \note If enabled, this MUST be disabled at some point to ensure pending data is fully written!
+ * \note You should not use this function unless no better alternative is available, use with caution!
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_node_cork(struct bbs_node *node, int enabled);
+
+/*!
  * \brief Enable or disable Nagle's algorithm
  * \param fd
  * \param enabled 1 to disable Nagle's algorithm, 0 to enable

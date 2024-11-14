@@ -52,7 +52,7 @@ static int send_message(int client1, size_t extrabytes)
 	char subject[32];
 
 	if (!send_count++) {
-		CLIENT_EXPECT(client1, "220");
+		CLIENT_EXPECT_EVENTUALLY(client1, "220 ");
 		SWRITE(client1, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
 		CLIENT_EXPECT_EVENTUALLY(client1, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
 	} else {
@@ -605,7 +605,7 @@ static int run(void)
 	if (smtpfd < 0) {
 		goto cleanup;
 	}
-	CLIENT_EXPECT(smtpfd, "220");
+	CLIENT_EXPECT_EVENTUALLY(smtpfd, "220 ");
 	SWRITE(smtpfd, "EHLO myclient" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(smtpfd, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
 	SWRITE(smtpfd, "AUTH PLAIN\r\n");

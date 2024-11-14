@@ -71,7 +71,7 @@ static int handshake(int clientfd, int reset)
 		SWRITE(clientfd, "RSET" ENDL);
 		CLIENT_EXPECT(clientfd, "250");
 	} else {
-		CLIENT_EXPECT(clientfd, "220");
+		CLIENT_EXPECT_EVENTUALLY(clientfd, "220 ");
 		SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
 		CLIENT_EXPECT_EVENTUALLY(clientfd, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
 	}

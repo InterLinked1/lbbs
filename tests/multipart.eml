@@ -1,0 +1,54 @@
+Return-Path: <>
+Date: Sat, 9 Nov 2024 19:47:01 +0000 (UTC)
+From: postmaster@example.com
+To: postmaster@exmaple.com
+Message-ID: <227366741.17305.1731181621979@example.com>
+Subject: Test
+MIME-Version: 1.0
+Content-Type: multipart/report; 
+	boundary="----=_Part_17304_1769721302.1731181621976"; 
+	report-type=delivery-status
+Auto-Submitted: auto-replied
+X-Auto-Response-Suppress: All
+
+------=_Part_17304_1769721302.1731181621976
+Content-Type: text/plain; charset=us-ascii
+Content-Transfer-Encoding: 7bit
+
+We could not deliver the attached mail for the following recipients. (550)
+
+------=_Part_17304_1769721302.1731181621976
+Content-Type: message/delivery-status; name=status.dat
+Content-Transfer-Encoding: 7bit
+Content-Description: Delivery Status Notification
+Content-Disposition: attachment; filename=status.dat
+
+Reporting-MTA: dns;example.com
+Arrival-Date: Sat, 09 Nov 2024 19:47:01 +0000
+
+Final-Recipient: postmaster@example.com
+Action: failed
+Status: 550
+Diagnostic-Code: error; 550 No such person at this address.
+
+Remote-MTA: dns; example.com. (192.0.2.25)
+Last-Attempt-Date: Sat, 09 Nov 2024 19:47:01 +0000
+
+------=_Part_17304_1769721302.1731181621976
+Content-Type: text/rfc822-headers
+Content-Transfer-Encoding: 7bit
+
+Received: by example.com (SMTP) with ESMTPSA id 1234
+          for <postmaster@example.com>
+          (version=TLSv1.3 cipher=TLS_AES_256_GCM_SHA384);
+          Sat, 09 Nov 2024 19:46:57 +0000 (UTC)
+To: postmaster@example.com
+From: Postmaster <postmaster@example.com>
+Subject: Test
+Message-ID: <854bff2f-0f60-fead-c9c5-5d22cd7b6dd6@example.com>
+Date: Sat, 9 Nov 2024 14:46:55 -0500
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8; format=flowed
+Content-Transfer-Encoding: 7bit
+Content-Language: en-US
+------=_Part_17304_1769721302.1731181621976--

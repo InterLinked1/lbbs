@@ -72,7 +72,7 @@ static int run(void)
 		return -1;
 	}
 
-	CLIENT_EXPECT(clientfd, "220");
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "220 ");
 
 	/* Test each of the rules in test/.rules, one by one */
 

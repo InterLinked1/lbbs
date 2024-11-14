@@ -17,7 +17,7 @@
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
-/* XXX Not sure which this is necessary, but it is... */
+/* XXX Not sure why this is necessary, but it is... */
 #define BBS_LOCK_WRAPPERS_NOWARN
 
 #include "include/bbs.h"
@@ -343,20 +343,13 @@ static void write_part_bodystructure(GMimeObject *part, GString *gs, int level)
 	g_string_append_c(gs, ')');
 }
 
-char *mime_make_bodystructure(const char *itemname, const char *file)
+static GMimeMessage *mk_mime(const char *file)
 {
 	GMimeFormat format = GMIME_FORMAT_MESSAGE;
 	GMimeMessage *message;
 	GMimeParser *parser;
 	GMimeStream *stream;
-	GString *str;
-	gchar *result;
 	int fd;
-#ifdef CHECK_VALIDITY
-	int p = 0;
-	int in_quoted = 0;
-	char *s;
-#endif
 
 	fd = open(file, O_RDONLY, 0);
 	if (fd < 0) {
@@ -376,12 +369,45 @@ char *mime_make_bodystructure(const char *itemname, const char *file)
 	close(fd);
 
 	if (!message) {
-		bbs_error("Failed to parse message as MIME\n");
-		return NULL;
+		bbs_error("Failed to parse message %s as MIME\n", file);
 	}
 
+	return message;
+}
+
+/* Opaque structure for MIME message, so other modules can reuse this for multiple operations */
+struct bbs_mime_message {
+	GMimeMessage *message;
+};
+
+struct bbs_mime_message *bbs_mime_message_parse(const char *filename)
+{
+	struct bbs_mime_message *mime = malloc(sizeof(*mime));
+	if (ALLOC_FAILURE(mime)) {
+		return NULL;
+	}
+	mime->message = mk_mime(filename);
+	return mime;
+}
+
+void bbs_mime_message_destroy(struct bbs_mime_message *mime)
+{
+	g_object_unref(mime->message);
+	free(mime);
+}
+
+char *bbs_mime_make_bodystructure(struct bbs_mime_message *mime)
+{
+	GMimeMessage *message = mime->message;
+	GString *str;
+	gchar *result;
+#ifdef CHECK_VALIDITY
+	int p = 0;
+	int in_quoted = 0;
+	char *s;
+#endif
+
 	str = g_string_new("");
-	g_string_append_printf(str, "%s ", itemname);
 	write_part_bodystructure(message->mime_part, str, 0);
 
 #ifdef CHECK_VALIDITY
@@ -420,8 +446,152 @@ char *mime_make_bodystructure(const char *itemname, const char *file)
 #endif
 
 	result = g_string_free(str, FALSE); /* Free the g_string but not the buffer */
-	g_object_unref(message);
 	return result; /* gchar is just a typedef for char, so this returns a char */
+}
+
+#if SEMVER_VERSION(GMIME_MAJOR_VERSION, GMIME_MINOR_VERSION, GMIME_MICRO_VERSION) < SEMVER_VERSION(3, 2, 8)
+/* This function was only added in gmime commit 3efc24a6cdc88198e11e43f23e03e32f12b13bd8,
+ * so older packages of the library don't have it. Define it manually for those cases. */
+static ssize_t g_mime_object_write_content_to_stream(GMimeObject *object, GMimeFormatOptions *options, GMimeStream *stream)
+{
+	g_return_val_if_fail (GMIME_IS_OBJECT (object), -1);
+	g_return_val_if_fail (GMIME_IS_STREAM (stream), -1);
+
+	return GMIME_OBJECT_GET_CLASS(object)->write_to_stream(object, options, TRUE, stream);
+}
+#endif
+
+static void write_part(GMimeObject *part, GMimeStream *stream, enum mime_part_filter filter)
+{
+	char *buf;
+	GMimeMessage *message;
+	GMimeContentType *content_type;
+	const char *subtype;
+	GMimeFormatOptions *format = g_mime_format_options_get_default();
+
+#define IS_RFC822(part) (!strcasecmp(g_mime_content_type_get_media_type(content_type), "message") && subtype && !strcasecmp(subtype, "rfc822"))
+
+	content_type = g_mime_object_get_content_type(part);
+	subtype = g_mime_content_type_get_media_subtype(content_type);
+
+	switch (filter) {
+	case MIME_PART_FILTER_TEXT:
+		/* If the type is message/rfc822, proceed. If not, illegal (just return empty). */
+		if (!IS_RFC822(part)) {
+			bbs_debug(1, "Ignoring request for TEXT, since its type is %s/%s\n", g_mime_content_type_get_media_type(content_type), S_IF(subtype));
+			return;
+		}
+		/* Might be a more elegant way to do this with gmime, but not sure what it is at the moment.
+		 * For now, return the whole thing, and later strip out the headers. */
+		/* Fall through */
+	case MIME_PART_FILTER_ALL:
+		if (g_mime_object_write_content_to_stream((GMimeObject *) part, format, stream) == -1) {
+			bbs_warning("Failed to write part to stream\n");
+		}
+		break;
+	case MIME_PART_FILTER_MIME:
+		/* XXX In theory, since we get a string, we could return this directly,
+		 * rather than adding to a stream and then allocating another string.
+		 * However, the stream allows us to be a little more abstract here. */
+		buf = g_mime_object_get_headers(part, format);
+		if (!strlen_zero(buf)) {
+			g_mime_stream_printf(stream, "%s\r\n", buf); /* Need to include end of headers */
+		}
+		g_free(buf);
+		break;
+	case MIME_PART_FILTER_HEADERS:
+		/* If the type is message/rfc822, proceed. If not, illegal (just return empty). */
+		if (!IS_RFC822(part)) {
+			bbs_debug(1, "Ignoring request for HEADERS, since its type is %s/%s\n", g_mime_content_type_get_media_type(content_type), S_IF(subtype));
+			return;
+		}
+		/* XXX Same thing here about returning a string directly */
+		message = g_mime_message_part_get_message((GMimeMessagePart *) part);
+		buf = g_mime_object_get_headers((GMimeObject *) message, format);
+		if (!strlen_zero(buf)) {
+			g_mime_stream_printf(stream, "%s\r\n", buf); /* Need to include end of headers */
+		}
+		g_free(buf);
+		break;
+	}
+}
+
+/*! * \brief Get the contents of a MIME part by part number */
+static int get_part(GMimeMessage *message, GMimeStream *mem, const char *spec, enum mime_part_filter filter)
+{
+	GMimePartIter *iter;
+	GMimeObject *part;
+
+	iter = g_mime_part_iter_new((GMimeObject *) message);
+	if (!g_mime_part_iter_is_valid(iter)) {
+		bbs_warning("Part iteration is invalid\n");
+		g_mime_part_iter_free(iter);
+		return -1;
+	}
+	if (!g_mime_part_iter_jump_to(iter, spec)) {
+		bbs_warning("Failed to fetch part number %s\n", spec);
+		g_mime_part_iter_free(iter);
+		return -1;
+	}
+
+	part = g_mime_part_iter_get_current(iter);
+	write_part(part, mem, filter);
+	g_mime_part_iter_free(iter);
+	return 0;
+}
+
+char *bbs_mime_get_part(struct bbs_mime_message *mime, const char *spec, size_t *restrict outlen, enum mime_part_filter filter)
+{
+	GMimeMessage *message = mime->message;
+	GMimeStream *mem;
+	GByteArray *buffer;
+	char *buf;
+	unsigned char *bufdata;
+	size_t buflen;
+
+	mem = g_mime_stream_mem_new();
+	if (!mem) {
+		bbs_error("Failed to allocate stream buffer\n");
+		return NULL;
+	}
+
+	if (get_part(message, mem, spec, filter)) {
+		g_object_unref(mem);
+		return NULL;
+	}
+
+	buffer = g_mime_stream_mem_get_byte_array((GMimeStreamMem *) mem);
+
+	if (filter == MIME_PART_FILTER_TEXT) {
+		char *eoh;
+		size_t diff;
+		/* Now we have to pay the piper... skip past the headers. */
+		eoh = memmem(buffer->data, buffer->len, "\r\n\r\n", STRLEN("\r\n\r\n"));
+		if (!eoh) {
+			bbs_debug(3, "Message has no body, just headers, if that...\n");
+			g_object_unref(mem);
+			return NULL;
+		}
+		diff = (size_t) (eoh - (char*) buffer->data);
+		diff += STRLEN("\r\n\r\n");
+		bufdata = buffer->data + diff;
+		buflen = buffer->len - diff;
+	} else {
+		bufdata = buffer->data;
+		buflen = buffer->len;
+	}
+
+	buf = malloc(buflen + 1);
+	if (ALLOC_FAILURE(buf)) {
+		g_object_unref(mem);
+		return NULL;
+	}
+	memcpy(buf, bufdata, buflen);
+	buf[buflen] = '\0';
+	*outlen = buflen;
+	g_object_unref(mem);
+
+	return buf; /* gchar is just a typedef for char, so this returns a char */
 }
 
 static int load_module(void)
@@ -434,7 +604,7 @@ static int load_module(void)
 
 static int unload_module(void)
 {
-	/* This doesn't free everything (possibly lost leaks in valgrind . See:
+	/* This doesn't free everything (possibly lost leaks in valgrind). See:
 	 * Q: https://mail.gnome.org/archives/gmime-devel-list/2012-November/msg00000.html
 	 * A: https://mail.gnome.org/archives/gmime-devel-list/2012-November/msg00001.html
 	 */

@@ -13,11 +13,18 @@
  *
  */
 
+/* There can be multiple of these in a request */
+struct fetch_body_request {
+	const char *bodyarg;	/*!< BODY arguments */
+	int substart;			/*!< For BODY and BODY.PEEK partial fetch, the beginning octet */
+	long sublength;			/*!< For BODY and BODY.PEEK partial fetch, number of bytes to fetch */
+	unsigned int peek:1;	/*!< Whether this is a BODY.PEEK */
+	RWLIST_ENTRY(fetch_body_request) entry;
+};
+
+RWLIST_HEAD(body_fetches, fetch_body_request);
+
 struct fetch_request {
-	const char *bodyargs;			/*!< BODY arguments */
-	const char *bodypeek;			/*!< BODY.PEEK arguments */
-	int substart;					/*!< For BODY and BODY.PEEK partial fetch, the beginning octet */
-	long sublength;					/*!< For BODY and BODY.PEEK partial fetch, number of bytes to fetch */
 	const char *flags;
 	unsigned long changedsince;
 	unsigned int envelope:1;
@@ -31,6 +38,8 @@ struct fetch_request {
 	unsigned int uid:1;
 	unsigned int modseq:1;
 	unsigned int vanished:1;
+	unsigned int nopeek:1;	/*!< An operation was requested that will implicitly mark seen */
+	struct body_fetches bodyfetches;
 };
 
 /*! \brief strsep-like FETCH items tokenizer */

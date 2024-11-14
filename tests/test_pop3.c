@@ -49,7 +49,7 @@ static int send_message(int client1)
 	char subject[32];
 
 	if (!send_count++) {
-		CLIENT_EXPECT(client1, "220");
+		CLIENT_EXPECT_EVENTUALLY(client1, "220 ");
 		SWRITE(client1, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
 		CLIENT_EXPECT_EVENTUALLY(client1, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
 	} else {

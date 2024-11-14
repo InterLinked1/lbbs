@@ -1,0 +1,55 @@
+Return-Path: user@example.com
+Received: from [HIDDEN] (Authenticated sender: user@example.com)
+	by example.com with ESMTP
+	for <user@example.com>; Sun, Nov 10 2024 19:58:16 -0500
+To: user@example.com
+From: User <user@example.com>
+Subject: Alternative test
+Message-ID: <5e539fce-2d97-a7fc-ec3d-c13b63325dc7@example.com>
+Date: Sun, 10 Nov 2024 19:58:17 -0500
+MIME-Version: 1.0
+Content-Type: multipart/mixed;
+ boundary="------------B56ACAA1D42503EF82F52166"
+Content-Language: en-US
+
+This is a multi-part message in MIME format.
+--------------B56ACAA1D42503EF82F52166
+Content-Type: multipart/alternative;
+ boundary="------------4E58F4DE7C0534A99765CD4D"
+
+
+--------------4E58F4DE7C0534A99765CD4D
+Content-Type: text/plain; charset=utf-8; format=flowed
+Content-Transfer-Encoding: 7bit
+
+This is a short message, whose /purpose/ is to have both a plain text, 
+and an *HTML* component.
+
+
+--------------4E58F4DE7C0534A99765CD4D
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+<html>
+  <head>
+
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+  </head>
+  <body text="#000000" bgcolor="#FFFFFF">
+    <p>This is a <strike>short</strike> message, whose <i>purpose</i>
+      is to have both a plain text, and an <b>HTML</b> component.<br>
+    </p>
+  </body>
+</html>
+
+--------------4E58F4DE7C0534A99765CD4D--
+
+--------------B56ACAA1D42503EF82F52166
+Content-Type: text/plain; charset=UTF-8;
+ name="attachment.txt"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment;
+ filename="attachment.txt"
+
+VGVzdCB0ZXh0IGZpbGUgYXR0YWNobWVudA==
+--------------B56ACAA1D42503EF82F52166--

@@ -34,7 +34,6 @@
 #include <poll.h>
 
 #ifdef __linux__
-#define SOL_TCP  6 /* TCP level */
 /* <linux/tcp.h> includes some of the same stuff as <netinet/tcp.h>, so don't include both, just one or the other */
 #include <linux/tcp.h>
 #else
@@ -315,6 +314,24 @@ int bbs_block_fd(int fd)
 	return 0;
 }
 
+int bbs_node_cork(struct bbs_node *node, int enabled)
+{
+	int i = enabled;
+	/* This is TCP-specific, so it has to operate on the actual socket file descriptor,
+	 * not any of the other node file descriptors. */
+#ifdef __FreeBSD__
+	if (setsockopt(node->sfd, IPPROTO_TCP, TCP_NOPUSH, &i, sizeof(i))) { /* FreeBSD */
+#else
+	if (setsockopt(node->sfd, IPPROTO_TCP, TCP_CORK, &i, sizeof(i))) { /* Linux */
+#endif
+		bbs_error("setsockopt failed: %s\n", strerror(errno));
+		return -1;
+	} else {
+		bbs_debug(3, "%s corking on node %d\n", enabled ? "Enabled" : "Disabled", node->id);
+	}
+	return 0;
+}
+
 int bbs_set_fd_tcp_nodelay(int fd, int enabled)
 {
 	int i = enabled;
@@ -380,7 +397,7 @@ int bbs_node_wait_until_output_sent(struct bbs_node *node)
 	/* If it's the network link that's actually slow,
 	 * then the acks will take some time to come back. */
 	for (;;) {
-		if (getsockopt(node->sfd, SOL_TCP, TCP_INFO, &info, &len)) {
+		if (getsockopt(node->sfd, IPPROTO_TCP, TCP_INFO, &info, &len)) {
 			bbs_error("getsockopt failed: %s\n", strerror(errno));
 			return -1;
 		}

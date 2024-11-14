@@ -1,0 +1,67 @@
+Return-Path: <>
+Received: from localhost (localhost [127.0.0.1])
+Date: Fri, 08 Nov 2024 14:34:06 +0000
+From: "Mail Delivery Subsystem" <mailer-daemon@example.com>
+Subject: Delivery Status Notification (Failure)
+To: <postmaster@example.com>
+Auto-Submitted: auto-replied
+Message-ID: <LBBS-NDR-1507538407-774801@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/report; report-type=delivery-status;
+	boundary="----attachment_774801610416369"
+
+This is a multi-part message in MIME format.
+
+------attachment_774801610416369
+Content-Description: Notification
+Content-Type: text/plain; charset=utf-8
+
+This is the mail system at host example.com.
+
+I'm sorry to have to inform you that your message could not
+be delivered to one or more recipients. It's attached below.
+
+For further assistance, please send mail to postmaster.
+
+If you do so, please include this problem report. You can delete your own text from the attached returned message.
+
+Please, do not reply to this message.
+
+
+<user@example.net>:
+	host example.com[192.0.2.25] said:
+	550 No such user
+
+------attachment_774801610416369
+Content-Description: Delivery report
+Content-Type: message/delivery-status
+
+Reporting-MTA: dns; example.com
+Arrival-Date: Fri, 08 Nov 2024 14:34:06 +0000
+
+Final-Recipient: rfc822; <user@example.net>
+Action: failed
+Remote-MTA: dns; example.net
+Diagnostic-Code: x-unknown; 550 [S10] Blocked
+
+------attachment_774801610416369
+Content-Description: Undelivered message
+Content-Type: message/rfc822
+
+Received: from [10.1.1.1]
+	by example.com with ESMTPSA
+	for <user@example.net>; Fri, Nov  8 2024 14:34:06 +0000
+To: user@example.net
+From: <postmaster@example.com>
+Subject: Test
+Message-ID: <ee6aa424-a952-bbd3-7e49-a497e73e3c59@example.com>
+Date: Fri, 8 Nov 2024 09:34:05 -0500
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8; format=flowed
+Content-Transfer-Encoding: 7bit
+Content-Language: en-US
+
+Test
+
+
+------attachment_774801610416369--
