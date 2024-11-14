@@ -1331,7 +1331,7 @@ const char *smtp_message_body(struct smtp_filter_data *f)
 	return f->body;
 }
 
-int smtp_filter_write(struct smtp_filter_data *f, const char *fmt, ...)
+int __smtp_filter_write(struct smtp_filter_data *f, const char *file, int line, const char *func, const char *fmt, ...)
 {
 	va_list ap;
 	char *buf;
@@ -1355,7 +1355,7 @@ int smtp_filter_write(struct smtp_filter_data *f, const char *fmt, ...)
 		return -1;
 	}
 
-	bbs_debug(6, "Prepending: %s\n", buf);
+	__bbs_log(LOG_DEBUG, 6, file, line, func, "Prepending: %s\n", buf);
 	if (bbs_str_contains_bare_lf(buf)) {
 		bbs_warning("Appended data that contains bare LFs! Message is not RFC-compliant!\n");
 	}

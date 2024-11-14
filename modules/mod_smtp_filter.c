@@ -65,6 +65,17 @@ static int relay_filter_cb(struct smtp_filter_data *f)
 	char timestamp[40];
 	char hostname[256];
 
+	/* XXX This is not the most elegant workaround, but is extremely critical!
+	 * This handles the case where a local user submits a message that is sent to an external party.
+	 * This is a submission that is leaving the system,NOT a message that is being "relayed" in the sense we care about here.
+	 * In this case, we should NOT run everything in the builtin_filter_cb (such as adding Return-Path),
+	 * but we SHOULD be adding the Received header based on smtp_should_preserve_privacy, since it's a user submission.
+	 * (Not respecting WILL result in the user's IP address being inadvertently leaked!)
+	 * Since the logic we want is exactly that in prepend_received, just call that instead here. */
+	if (smtp_is_message_submission(f->smtp)) {
+		return prepend_received(f);
+	}
+
 	prot = smtp_protname(f->smtp);
 	smtp_timestamp(smtp_received_time(f->smtp), timestamp, sizeof(timestamp));
 

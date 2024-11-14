@@ -181,7 +181,8 @@ time_t smtp_received_time(struct smtp_session *smtp);
 const char *smtp_message_body(struct smtp_filter_data *f);
 
 /*! \brief Prepend arbitrary data to a message */
-int __attribute__ ((format (gnu_printf, 2, 3))) smtp_filter_write(struct smtp_filter_data *f, const char *fmt, ...);
+#define smtp_filter_write(f, fmt, ...) __smtp_filter_write(f, __FILE__, __LINE__, __FUNCTION__, fmt, ## __VA_ARGS__)
+int __attribute__ ((format (gnu_printf, 5, 6))) __smtp_filter_write(struct smtp_filter_data *f, const char *file, int line, const char *func, const char *fmt, ...);
 
 /*! \brief Prepend a header to a message */
 int smtp_filter_add_header(struct smtp_filter_data *f, const char *name, const char *value);
