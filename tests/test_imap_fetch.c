@@ -116,25 +116,6 @@ static int send_message(int client1, const char *filename)
 		goto cleanup;
 	}
 
-/*
-0700: 2d2d 3d5f 5061 7274 5f31 3733 3034 5f31 3736 3937 3231 3330 322e 3137 3331 3138  --=_Part_17304_1769721302.173118
-0720: 3136 3231 3937 362d 2d                                                           1621976--
-
-0000: 2e0d 0a ...
-
-0000: 5253 4554 0d0a  RSET..
-
-0000: 5253 4554 0d0a  RSET..
-
-0700: 2d2d 3d5f 5061 7274 5f31 3733 3034 5f31 3736 3937 3231 3330 322e 3137 3331 3138  --=_Part_17304_1769721302.173118
-0720: 3136 3231 3937 362d 2d                                                           1621976--
-
-0000: 0d0a 2e0d 0a .....
-
-0000: 3235 3020 322e 362e 3020 4d65 7373 6167 6520 6163 6365 7074 6564 2066 6f72 2064  250 2.6.0 Message accepted for d
-0020: 656c 6976 6572 790d 0a                                                           elivery..
-*/
-
 	/* Messages end in CR LF, so only send . CR LF here */
 	SWRITE(client1, "." ENDL); /* EOM */
 	CLIENT_EXPECT(client1, "250");

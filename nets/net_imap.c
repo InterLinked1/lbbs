@@ -77,20 +77,20 @@
  * - RFC 8514 SAVEDATE
  * - RFC 8970 PREVIEW
  * - RFC 9394 PARTIAL
+ * - RFC 9586 UIDONLY
  * - CLIENTID: https://datatracker.ietf.org/doc/html/draft-yu-imap-client-id-10
  *             https://datatracker.ietf.org/doc/html/draft-storey-smtp-client-id-15
- * - UIDONLY: https://www.rfc-editor.org/rfc/internet-drafts/draft-ietf-extra-imap-uidonly-01.html
+ * - MESSAGELIMIT: https://datatracker.ietf.org/doc/draft-ietf-extra-imap-messagelimit/
  * Other capabilities: AUTH=PLAIN-CLIENTTOKEN AUTH=OAUTHBEARER AUTH=XOAUTH AUTH=XOAUTH2
  */
 
 #define IMAP_REV "IMAP4rev1"
 /* List of capabilities: https://www.iana.org/assignments/imap-capabilities/imap-capabilities.xml */
-/* XXX IDLE is advertised here even if disabled (although if disabled, it won't work if a client tries to use it) */
 /* XXX URLAUTH is advertised so that SMTP BURL will function in Trojita, even though we don't need URLAUTH since we have a direct trust */
 #define IMAP_CAPABILITIES IMAP_REV " AUTH=PLAIN UNSELECT UNAUTHENTICATE SPECIAL-USE LIST-EXTENDED LIST-STATUS XLIST CHILDREN IDLE NOTIFY NAMESPACE QUOTA QUOTA=RES-STORAGE ID SASL-IR ACL SORT THREAD=ORDEREDSUBJECT THREAD=REFERENCES URLAUTH ESEARCH ESORT SEARCHRES UIDPLUS LITERAL+ MULTIAPPEND APPENDLIMIT MOVE WITHIN ENABLE CONDSTORE QRESYNC STATUS=SIZE"
 
-#define CAPABILITY_FMT "%s%s"
-#define CAPABILITY_ARGS IMAP_CAPABILITIES, deflate_compression_available() ? " COMPRESS=DEFLATE" : ""
+#define CAPABILITY_FMT "%s%s%s"
+#define CAPABILITY_ARGS IMAP_CAPABILITIES, allow_idle ? " IDLE" : "", deflate_compression_available() ? " COMPRESS=DEFLATE" : ""
 
 /* Capabilities advertised by popular mail providers, for reference/comparison, both pre and post authentication:
  * - Office 365
@@ -349,11 +349,11 @@ static void save_traversal(struct imap_session *imap, struct imap_traversal *tra
 #undef TRAVERSAL_PERSIST
 }
 
-#define imap_send_update(imap, s, len) __imap_send_update(imap, s, len, 0, 0)
-#define __imap_send_update(imap, s, len, forcenow, invalidate) __imap_send_update_log(imap, s, len, forcenow, invalidate, __LINE__)
+#define imap_send_update(imap, s, len) __imap_send_update(imap, s, len, 0, 0, 0)
+#define __imap_send_update(imap, s, len, forcenow, is_expunge, invalidate) __imap_send_update_log(imap, s, len, forcenow, invalidate, is_expunge, __LINE__)
 
 /*! \note Must be called with imap locked */
-static void __imap_send_update_log(struct imap_session *imap, const char *s, size_t len, int forcenow, int invalidate, int line)
+static void __imap_send_update_log(struct imap_session *imap, const char *s, size_t len, int forcenow, int invalidate, int is_expunge, int line)
 {
 	int delay = 0;
 
@@ -365,6 +365,9 @@ static void __imap_send_update_log(struct imap_session *imap, const char *s, siz
 		imap_debug(4, "%d: %p <= %s", line, imap, s); /* Already ends in CR LF */
 		bbs_node_any_fd_write(imap->node, imap->pfd[1], s, len);
 		imap->pending = 1;
+		if (is_expunge) {
+			imap->expungepending = 1;
+		}
 		if (invalidate) {
 			reset_saved_search(imap); /* Since messages were expunged, invalidate any saved search */
 		}
@@ -564,7 +567,7 @@ static void send_untagged_expunge(struct bbs_node *node, struct mailbox *mbox, c
 		if (res == -1) {
 			char statusmsgfull[256];
 			size_t statuslenfull = (size_t) snprintf(statusmsgfull, sizeof(statusmsgfull), "* STATUS \"%s\" (%s)\r\n", mboxname, status_items);
-			__imap_send_update(s, statusmsgfull, statuslenfull, forcenow, 1);
+			__imap_send_update(s, statusmsgfull, statuslenfull, forcenow, 1, 0);
 		} else {
 			if (s->qresync) { /* VANISHED */
 				if (!str) {
@@ -585,13 +588,13 @@ static void send_untagged_expunge(struct bbs_node *node, struct mailbox *mbox, c
 						slen = slen2;
 					}
 				}
-				__imap_send_update(s, str, slen, forcenow, 1);
+				__imap_send_update(s, str, slen, forcenow, 1, 0);
 			} else { /* EXPUNGE */
 				int i;
 				for (i = 0; i < length; i++) {
 					char normalmsg[64];
 					size_t normallen = (size_t) snprintf(normalmsg, sizeof(normalmsg), "* %u EXPUNGE\r\n", seqno[i]);
-					__imap_send_update(s, normalmsg, normallen, forcenow, 1);
+					__imap_send_update(s, normalmsg, normallen, forcenow, 1, 1);
 				}
 			}
 		}
@@ -3958,6 +3961,39 @@ static int idle_stop(struct imap_session *imap)
 	return 0;
 }
 
+static int scrutinize_command(const char *command, const char *subcommand)
+{
+	if (!strcasecmp(command, "FETCH") || !strcasecmp(command, "STORE") || !strcasecmp(command, "SEARCH")) {
+		return 1; /* Base IMAP RFC */
+	} else if (!strcasecmp(command, "SORT") || !strcasecmp(command, "THREAD")) {
+		/* RFC 5256 3:
+		 * Untagged EXPUNGE responses are not permitted while the server is
+		 * responding to a SORT command, but are permitted during a UID SORT command. */
+		return 1;
+	}
+
+	/* The UID versions of the above commands do not have this limitation.
+	 * However, due to the UID SEARCH limitation specified in the RFC (which requires a mapping to be in place),
+	 * this command will cause synchronization to be lost if any EXPUNGE messages are pending.
+	 *
+	 * RFC 9051 5.5:
+	 * EXPUNGE responses are permitted while UID FETCH, UID STORE, and UID SEARCH are in progress...
+	 * Any message sequence numbers in an argument to UID SEARCH are associated with messages
+	 * prior to the effect of any untagged EXPUNGE responses returned by the UID SEARCH */
+	else if (!strcasecmp(command, "UID") && !strlen_zero(subcommand) && !strcasecmp(command, "SEARCH")) {
+		return 1;
+	}
+
+	return 0;
+}
+
+/*!
+ * \brief Flush any pending untagged updates
+ * \param imap
+ * \param command
+ * \param s
+ * \retval 0 on success, -1 on failure (disconnect), 1 on failure (don't disconnect)
+ */
 static int flush_updates(struct imap_session *imap, const char *command, const char *s)
 {
 	ssize_t res;
@@ -3973,7 +4009,7 @@ static int flush_updates(struct imap_session *imap, const char *command, const c
 	 * It would be tricky to support the other case since each command sends its own end of command reply,
 	 * and this would need to be interleaved before that as appropriate. So if it's fine to do it here, then that is much simpler.
 	 *
-	 * From RFC 7162 3.2.10.2, this seems to suggest that this approach is fine:
+	 * From RFC 7162 3.2.10.2, this seems to suggest that this approach *could* be fine...:
 	 * A VANISHED response MUST NOT be sent when no command is in progress, nor while responding to a FETCH, STORE, or SEARCH command.
 	 * This rule is necessary to prevent a loss of synchronization of message sequence numbers between the client and server.
 	 * A command is not "in progress" until the complete command has been received; in particular, a command is not "in progress" during the negotiation of command continuation.
@@ -3981,6 +4017,7 @@ static int flush_updates(struct imap_session *imap, const char *command, const c
 
 	if (imap->pending && !imap->client) { /* Not necessary to lock just to read the flag. Only if we're actually going to read data. */
 		struct readline_data rldata2;
+		int scrutinize;
 
 		/* If it's a command during which we're not allowed to send an EXPUNGE, then don't send it now. */
 
@@ -3994,9 +4031,33 @@ static int flush_updates(struct imap_session *imap, const char *command, const c
 		 *
 		 * XXX I think this should be right after the command completes, not before? (This is simpler, but technically incorrect)
 		 */
-		if (!STARTS_WITH(command, "FETCH") && !STARTS_WITH(command, "STORE") && !STARTS_WITH(command, "SEARCH") && !STARTS_WITH(command, "SORT") && !STARTS_WITH(command, "THREAD") && (!STARTS_WITH(command, "UID") || (!strlen_zero(s) && !STARTS_WITH(s, "SEARCH")))) {
-			char buf[1024]; /* Hopefully big enough for any single untagged  response. */
-			bbs_mutex_lock(&imap->lock);
+		scrutinize = scrutinize_command(command, s);
+		bbs_mutex_lock(&imap->lock);
+		/* Technically, what we should do is send all the non-EXPUNGE updates if !scrutinize
+		 * However, we don't currently have a mechanism to do that, we just send all the updates in the loop below.
+		 * Therefore, we only execute the loop if !scrutinize.
+		 * If this is a command for which EXPUNGE MUST NOT be sent, but there aren't any EXPUNGEs pending, it's okay to flush. */
+		if (scrutinize) {
+			if (imap->expungepending) {
+				/* Uh oh.
+				 * A correct, compliant IMAP server should be able to handle this...
+				 * by using its per-client mapping of sequence numbers to UIDs
+				 * to determine what messages this really refers to from the client's point of view.
+				 * Since we don't have that currently, we must reject the command to avoid doing
+				 * something the client didn't intend.
+				 * In practice, this should be relatively rare if a client uses IDLE when not doing other stuff,
+				 * which should keep it in sync. Furthermore, using of raw FETCH or STORE is much less common
+				 * compared to UID FETCH, UID STORE, etc. */
+				bbs_mutex_unlock(&imap->lock);
+				bbs_warning("Client has a stale view of sequence numbers, rejecting unsynchronized command\n");
+				imap_reply(imap, "NO Out of synchronization, run NOOP and retry request");
+				return 1;
+			}
+			/* Since there aren't any EXPUNGEs in the pipe, we can safely send these untagged updates. */
+			scrutinize = 0;
+		}
+		if (!scrutinize) {
+			char buf[1024]; /* Hopefully big enough for any single untagged response. */
 			bbs_readline_init(&rldata2, buf, sizeof(buf));
 			/* Read from the pipe until it's empty again. If there's more than one response waiting, and in particular, more than sizeof(buf), we need to read by line. */
 			for (;;) {
@@ -4007,8 +4068,10 @@ static int flush_updates(struct imap_session *imap, const char *command, const c
 				_imap_reply_nolock(imap, "%s\r\n", buf); /* Already have lock held, and we don't know the length. Also, add CR LF back on, since bbs_readline stripped that. */
 			}
 			imap->pending = 0;
-			bbs_mutex_unlock(&imap->lock);
+			/* We just flushed ALL updates. If this was true, it's not anymore. */
+			imap->expungepending = 0;
 		}
+		bbs_mutex_unlock(&imap->lock);
 	}
 	return 0;
 }
@@ -4273,7 +4336,10 @@ static int imap_process(struct imap_session *imap, char *s)
 		goto done;
 	}
 
-	flush_updates(imap, command, s);
+	res = flush_updates(imap, command, s);
+	if (res) {
+		return res < 0 ? -1 : 0;
+	}
 
 	if (!strcasecmp(command, "NOOP")) {
 		FORWARD_VIRT_MBOX();
@@ -4760,7 +4826,8 @@ done:
 	if (res) {
 		bbs_debug(4, "%s command returned %d\n", command, res);
 	} else if (!strlen_zero(command)) {
-		flush_updates(imap, command, NULL);
+		res = flush_updates(imap, command, NULL);
+		res = res < 0 ? -1 : 0;
 	}
 	return res;
 }

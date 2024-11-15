@@ -969,7 +969,8 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		/* At this point, the message is a match. Fetch everything we're supposed to for it. */
 		snprintf(fullname, sizeof(fullname), "%s/%s", imap->curdir, entry->d_name);
 
-		/* Must include UID in response, whether requested or not (so fetchreq->uid ignored) */
+		/* Must include UID in response for UID FETCH, whether requested or not (so fetchreq->uid ignored)
+		 * Not required for regular FETCH, but doesn't hurt to send it regardless. */
 		SAFE_FAST_COND_APPEND(response, sizeof(response), buf, len, 1, "UID %u", msguid);
 
 		/* We need to include the updated flags in the reply, if we're marking as seen, so check this first.

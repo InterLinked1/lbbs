@@ -91,6 +91,7 @@ struct imap_session {
 	unsigned int idle:1;		/* Whether IDLE is active */
 	unsigned int dnd:1;			/* Do Not Disturb: Whether client is executing a FETCH, STORE, or SEARCH command (EXPUNGE responses are not allowed) */
 	unsigned int pending:1;		/* Delayed output is pending in pfd pipe */
+	unsigned int expungepending:1;	/* EXPUNGE updates pending in pipe */
 	unsigned int alerted:2;		/* An alert has been delivered to this client */
 	unsigned int condstore:1;	/* Whether a client has issue a CONDSTORE enabling command, and should be sent MODSEQ updates in untagged FETCH responses */
 	unsigned int qresync:1;		/* Whether a client has enabled the QRESYNC capability */

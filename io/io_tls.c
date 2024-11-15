@@ -38,6 +38,8 @@
 #include "include/cli.h"
 #include "include/reload.h"
 
+/* This path is configurable, since it varies by distro.
+ * e.g. See: https://go.dev/src/crypto/x509/root_linux.go */
 static char root_certs[84] = "/etc/ssl/certs/ca-certificates.crt";
 static char ssl_cert[256] = "";
 static char ssl_key[256] = "";
