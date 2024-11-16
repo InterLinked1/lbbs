@@ -1055,6 +1055,7 @@ int main(int argc, char *argv[])
 	CHECK_INIT(bbs_init_menu_handlers());
 	CHECK_INIT(bbs_load_nodes());
 	/* Most of these here are purely registering sysop CLI commands */
+	CHECK_INIT(bbs_io_init());
 	CHECK_INIT(bbs_init_nets());
 	CHECK_INIT(bbs_init_doors());
 	CHECK_INIT(bbs_init_tests());

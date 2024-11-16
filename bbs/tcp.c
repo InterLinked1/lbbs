@@ -27,6 +27,7 @@
 void bbs_tcp_client_cleanup(struct bbs_tcp_client *client)
 {
 	bbs_io_teardown_all_transformers(&client->trans);
+	bbs_io_session_unregister(&client->trans);
 	close_if(client->fd);
 }
 
@@ -58,6 +59,7 @@ int bbs_tcp_client_connect(struct bbs_tcp_client *client, struct bbs_url *url, i
 		bbs_debug(5, "Implicit TLS completed\n");
 	}
 	bbs_readline_init(&client->rldata, client->buf, client->len);
+	bbs_io_session_register(&client->trans, TRANSFORM_SESSION_TCPCLIENT, client);
 	return 0;
 }
 
@@ -102,6 +104,8 @@ int bbs_tcp_client_expect(struct bbs_tcp_client *client, const char *delim, int 
 	while (attempts-- > 0) {
 		ssize_t res = bbs_readline(client->rfd, &client->rldata, delim, ms);
 		if (res < 0) {
+			bbs_debug(3, "bbs_readline returned %ld\n", res);
+			bbs_readline_print_reset(&client->rldata);
 			return -1;
 		}
 		bbs_debug(7, "<= %s\n", client->buf);

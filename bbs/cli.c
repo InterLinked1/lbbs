@@ -193,6 +193,7 @@ int bbs_cli_exec(int fdin, int fdout, const char *s)
 		return -1;
 	}
 
+	errno = 0;
 	if (c->mod) { /* If it's not part of the core, bump the ref count */
 		bbs_module_ref(c->mod, 1);
 	}

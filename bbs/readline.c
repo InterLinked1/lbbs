@@ -52,6 +52,20 @@ void bbs_readline_flush(struct readline_data *rldata)
 	rldata->leftover = 0;
 }
 
+void bbs_readline_print_reset(struct readline_data *rldata)
+{
+	if (rldata->pos == rldata->buf) {
+		/* If we don't end up successfully reading anything,
+		 * attempting to read buf will give us the last line
+		 * we previously successfully read. Since we may not
+		 * want to see that anymore, NULL terminate for
+		 * printing convenience to avoid confusion. */
+		rldata->buf[0] = '\0';
+	} else {
+		bbs_debug(3, "Can't print reset, rldata pos is %ld bytes ahead of buf\n", rldata->pos - rldata->buf);
+	}
+}
+
 static char *readline_pre_read(struct readline_data *restrict rldata, const char *delim, size_t delimlen, ssize_t *resptr)
 {
 	char *firstdelim = NULL;

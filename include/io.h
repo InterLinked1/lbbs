@@ -19,10 +19,16 @@
 enum bbs_io_transform_type {
 	TRANSFORM_TLS_ENCRYPTION = 0,	/*!< TLS encryption/decryption */
 	TRANSFORM_DEFLATE_COMPRESSION = 1,	/*!< zlib compression/decompression */
+	TRANSFORM_SESSION_LOGGING = 2,	/*!< Log I/O session for debugging */
 };
 
 /* Number of transform types in above enum + a few more if we allow other kinds */
-#define MAX_IO_TRANSFORMS 2
+#define MAX_IO_TRANSFORMS 3
+
+enum bbs_io_session_type {
+	TRANSFORM_SESSION_NODE = 0,
+	TRANSFORM_SESSION_TCPCLIENT,
+};
 
 enum bbs_io_transform_dir {
 	TRANSFORM_SERVER_TX = (1 << 0),
@@ -76,6 +82,18 @@ int bbs_io_named_transformer_available(const char *name);
 int bbs_io_transformer_available(enum bbs_io_transform_type transform_type);
 
 /*!
+ * \brief Register an I/O session
+ * \param s
+ * \param type Session type
+ * \param owner Data structure for associated session type's owner
+ * \note Must call int bbs_io_session_unregister when done with session
+ */
+int bbs_io_session_register(struct bbs_io_transformations *s, enum bbs_io_session_type type, void *owner);
+
+/*! \brief Unregister an I/O session */
+int bbs_io_session_unregister(struct bbs_io_transformations *s);
+
+/*!
  * \brief Check whether a transformation is possible, given what transformations are already running
  * \param trans
  * \param type
@@ -126,5 +144,7 @@ void bbs_io_teardown_all_transformers(struct bbs_io_transformations *trans);
 
 #define ssl_available() (bbs_io_transformer_available(TRANSFORM_TLS_ENCRYPTION))
 #define deflate_compression_available() (bbs_io_transformer_available(TRANSFORM_DEFLATE_COMPRESSION))
+
+int bbs_io_init(void);
 
 #endif /* _BBS_IO_TRANSFORM */

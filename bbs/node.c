@@ -374,6 +374,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, struct sockadd
 		RWLIST_INSERT_HEAD(&nodes, node, entry); /* This is the first node. */
 	}
 	node->lifetimeid = ++lifetime_nodes; /* Starts at 0 so increment first before assigning */
+	bbs_io_session_register(&node->trans, TRANSFORM_SESSION_NODE, node);
 	RWLIST_UNLOCK(&nodes);
 
 	bbs_debug(1, "Allocated new node with ID %u (lifetime ID %d)\n", node->id, node->lifetimeid);
@@ -587,6 +588,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	int wasloggedin = 0;
 
 	bbs_io_teardown_all_transformers(&node->trans);
+	bbs_io_session_unregister(&node->trans);
 
 	/* Prevent node from being freed until we release the lock. */
 	bbs_node_lock(node);

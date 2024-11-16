@@ -1526,6 +1526,8 @@ static struct bbs_cli_entry cli_commands_modules[] = {
 	BBS_CLI_COMMAND(cli_reloadqueue, "reloadqueue", 2, "Unload and load dynamic module, queuing if necessary", "reloadqueue <module>"),
 };
 
+static int loaded_modules = 0;
+
 int load_modules(void)
 {
 	int res, c = 0; /* XXX If this is not uninitialized, gcc does not throw a warning, why not??? */
@@ -1536,6 +1538,7 @@ int load_modules(void)
 	bbs_assert(RWLIST_EMPTY(&modules));
 	RWLIST_UNLOCK(&modules);
 
+	loaded_modules = 1;
 	res = autoload_modules();
 
 	RWLIST_WRLOCK(&modules);
@@ -1663,9 +1666,11 @@ int unload_modules(void)
 
 	RWLIST_WRLOCK_REMOVE_ALL(&reload_handlers, entry, free);
 	/* Some functions use these even after BBS is started, so we don't destroy after autoload, just empty */
-	stringlist_destroy(&modules_load);
-	stringlist_destroy(&modules_noload);
-	stringlist_destroy(&modules_preload);
-	stringlist_destroy(&modules_required);
+	if (loaded_modules) {
+		stringlist_destroy(&modules_load);
+		stringlist_destroy(&modules_noload);
+		stringlist_destroy(&modules_preload);
+		stringlist_destroy(&modules_required);
+	}
 	return 0;
 }

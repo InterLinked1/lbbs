@@ -44,7 +44,7 @@ struct compress_data {
 	int rpfd[2];
 	int wpfd[2];
 	int level; /* Current compression level */
-	int orig_rfd; /* Not used */
+	int orig_rfd;
 	int orig_wfd;
 	size_t sentbytes;
 	size_t sentbytes_comp;

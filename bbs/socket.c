@@ -327,7 +327,7 @@ int bbs_node_cork(struct bbs_node *node, int enabled)
 		bbs_error("setsockopt failed: %s\n", strerror(errno));
 		return -1;
 	} else {
-		bbs_debug(3, "%s corking on node %d\n", enabled ? "Enabled" : "Disabled", node->id);
+		bbs_debug(5, "%s corking on node %d\n", enabled ? "Enabled" : "Disabled", node->id);
 	}
 	return 0;
 }
@@ -340,7 +340,7 @@ int bbs_set_fd_tcp_nodelay(int fd, int enabled)
 		bbs_log_backtrace();
 		return -1;
 	} else {
-		bbs_debug(3, "%s Nagle's algorithm on socket %d\n", enabled ? "Disabled" : "Enabled", fd);
+		bbs_debug(5, "%s Nagle's algorithm on socket %d\n", enabled ? "Disabled" : "Enabled", fd);
 	}
 	return 0;
 }
@@ -2492,7 +2492,9 @@ ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)
 
 	res = timed_write(&pfd, fd, buf, len, ms);
 	if (res <= 0) {
-		bbs_error("write(%d) failed (%ld): %s\n", fd, res, strerror(errno));
+		if (res == -1) {
+			bbs_error("write(%d) failed (%ld): %s\n", fd, res, strerror(errno));
+		}
 	} else if (res != (ssize_t) len) {
 		bbs_warning("Wanted to write %lu bytes to fd %d, only wrote %ld\n", len, fd, res);
 	}
