@@ -285,9 +285,9 @@ static pthread_t ssl_thread;
 
 /*! \note It's possible it might not be in the list, because the owner thread has already called ssl_unregister_fd,
  * in which case there's no need to do anything. */
-#define MARK_DEAD(ssl) \
+#define MARK_DEAD(s) \
 	RWLIST_TRAVERSE(&sslfds, sfd, entry) { \
-		if (sfd->ssl == ssl) { \
+		if (sfd->ssl == s) { \
 			sfd->dead = 1; \
 			bbs_debug(5, "SSL connection %p now marked as dead\n", sfd->ssl); \
 			break; \
@@ -319,6 +319,17 @@ static int cli_tls(struct bbs_cli_args *a)
 	return 0;
 }
 
+struct deferred_write {
+	const char *buf;
+	size_t len;
+	SSL *ssl;
+	int wfd;
+	RWLIST_ENTRY(deferred_write) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(deferred_writes, deferred_write);
+
 /* Note:
  * Many frequent TLS-level warnings or errors have been made debug messages here,
  * because they happen frequently due to client issues.
@@ -338,7 +349,7 @@ static void *ssl_io_thread(void *unused)
 	int i, prevfds = 0, oldnumfds = 0, numfds = 0, numssl = 0;
 	char buf[8192];
 	int pending;
-	int inovertime = 0, overtime = 0;
+	int inovertime = 0, overtime = 0, num_deferred_writes = 0;
 	char err_msg[1024];
 
 	UNUSED(unused);
@@ -423,6 +434,7 @@ static void *ssl_io_thread(void *unused)
 		for (i = 0; i < numfds; i++) {
 			pfds[i].revents = 0;
 		}
+		res = 0;
 		if (!overtime) {
 			res = poll(pfds, (nfds_t) numfds, -1);
 			if (res <= 0) {
@@ -448,6 +460,60 @@ static void *ssl_io_thread(void *unused)
 			RWLIST_UNLOCK(&sslfds);
 			bbs_debug(4, "TLS session list has become stale since loop iteration began, rebuilding again...\n");
 			continue;
+		}
+		if (num_deferred_writes) {
+			struct deferred_write *d;
+			/* First, establish that any pending deferred writes belong to an SSL session that still exists.
+			 * If it got destroyed, than we should just discard it. */
+			if (RWLIST_EMPTY(&deferred_writes)) {
+				bbs_error("No deferred writes, but thought we had %d?\n", num_deferred_writes);
+				num_deferred_writes = 0;
+			}
+			RWLIST_TRAVERSE_SAFE_BEGIN(&deferred_writes, d, entry) {
+				int match = 0;
+				ssize_t wres;
+				for (i = 0; i < numssl; i++) {
+					if (d->ssl == ssl_list[i]) {
+						match = 1;
+						break;
+					}
+				}
+				if (!match) {
+					bbs_warning("Discarding deferred write of %lu bytes, associated TLS session %p no longer exists\n", d->len, d->ssl);
+					RWLIST_REMOVE_CURRENT(entry);
+					free(d);
+					num_deferred_writes--;
+					continue;
+				}
+				/* Attempt the deferred write again.
+				 * Since it already got deferred once, don't wait very long, just 100 ms per attempt. */
+				wres = bbs_timed_write(d->wfd, d->buf, d->len, 100);
+				if (wres < 0) {
+					MARK_DEAD(d->ssl);
+					needcreate = 1;
+					RWLIST_REMOVE_CURRENT(entry);
+					free(d);
+					num_deferred_writes--;
+					continue;
+				} else if (!wres) {
+					bbs_debug(3, "Deferred write of %lu bytes couldn't yet be serviced\n", d->len);
+					continue;
+				}
+				/* If we encounter another partial write, just adjust the offsets, no need to reallocate */
+				d->buf += wres;
+				d->len -= (size_t) wres;
+				if (!d->len) {
+					bbs_debug(3, "Successfully wrote deferred write of %ld bytes\n", wres);
+					RWLIST_REMOVE_CURRENT(entry);
+					free(d);
+					num_deferred_writes--;
+				} else {
+					bbs_debug(3, "Deferred write reduced to %lu bytes\n", d->len);
+				}
+			}
+			RWLIST_TRAVERSE_SAFE_END;
+			/* If we have another reason to go through the loop below, then we can,
+			 * but most likely res == 0 here, and we'll just skip the traversal. */
 		}
 		for (i = 0; res > 0 && i < numfds; i++) {
 			int ores;
@@ -477,6 +543,20 @@ static void *ssl_io_thread(void *unused)
 				/* Read from socket using SSL_read and write to readpipe */
 				SSL *ssl = ssl_list[i / 2];
 				int readpipe = readpipes[i / 2];
+				if (num_deferred_writes) {
+					/* Make sure we don't read any new data from this connection as long as there is data
+					 * we already read that still needs to be written to the other side. */
+					struct deferred_write *d;
+					RWLIST_TRAVERSE(&deferred_writes, d, entry) {
+						if (d->ssl == ssl) {
+							break;
+						}
+					}
+					if (d) {
+						bbs_debug(3, "Skipping active SSL connection at index %d / %d, deferred write still pending on it\n", i, i/2);
+						continue;
+					}
+				}
 				if (readpipe == -2) {
 					/* Don't bother trying to call SSL_read again, we'll just get the error we got last time (SYSCALL or ZERO_RETURN)
 					 * However, this shouldn't even happen anymore, because when we rebuild the poll structure,
@@ -528,12 +608,42 @@ static void *ssl_io_thread(void *unused)
 					needcreate = 1;
 					continue;
 				}
-				/* This will not block, but we need to retry partial writes, as above with partial reads, hence bbs_write APIs instead of write. */
-				wres = bbs_timed_write(readpipe, buf, (size_t) ores, SEC_MS(15));
-				if (wres != ores) {
-					bbs_error("Wanted to write %d bytes but wrote %ld?\n", ores, wres);
+				/* This could block, and we also need to retry partial writes, as above with partial reads, hence bbs_write APIs instead of write. */
+				wres = bbs_timed_write(readpipe, buf, (size_t) ores, 750);
+				if (wres == -1) {
 					MARK_DEAD(ssl);
 					needcreate = 1;
+					continue;
+				} else if (wres != ores) {
+					struct deferred_write *d;
+					char *bytes_start;
+					size_t bytes_left;
+					/* If we can't make regular progress fairly quickly,
+					 * then we should move on and come back to this later.
+					 * Otherwise, we can encounter a form of deadlock,
+					 * where one TLS session is blocked and attempts to
+					 * wait for it to be writable block other sessions. */
+					bbs_debug(3, "Wanted to write %d bytes but wrote %ld\n", ores, wres);
+					/* Don't abuse the overtime counter, this is a different scenario */
+					bytes_start = buf + wres;
+					bytes_left = (size_t) (ores - wres);
+					/* Save it for later... */
+					d = malloc(sizeof(*d) + bytes_left);
+					if (ALLOC_FAILURE(d)) {
+						/* Well, this is bad. Not much we can do besides give up... */
+						MARK_DEAD(ssl);
+						needcreate = 1;
+						continue;
+					}
+					memcpy(d->data, bytes_start, bytes_left);
+					d->buf = d->data;
+					d->len = bytes_left;
+					d->ssl = ssl;
+					d->wfd = readpipe;
+					/* No need to lock/unlock deferred_writes list, nobody uses it but this thread */
+					num_deferred_writes++;
+					RWLIST_INSERT_TAIL(&deferred_writes, d, entry);
+					bbs_debug(3, "Deferred write of %lu bytes from session %p\n", bytes_left, ssl);
 					continue;
 				}
 				/* We're polling the raw socket file descriptor,
