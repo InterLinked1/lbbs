@@ -1354,7 +1354,7 @@ int bbs_node_set_speed(struct bbs_node *node, unsigned int bps)
 
 static int authenticate(struct bbs_node *node)
 {
-	int attempts;
+	int attempts, additional_attempts = 0;
 	char username[64];
 	char password[64];
 
@@ -1364,7 +1364,7 @@ static int authenticate(struct bbs_node *node)
 
 #define MAX_AUTH_ATTEMPTS 3
 
-	for (attempts = 0; attempts < MAX_AUTH_ATTEMPTS; attempts++) {
+	for (attempts = 0; attempts < (MAX_AUTH_ATTEMPTS + additional_attempts); attempts++) {
 		NEG_RETURN(bbs_node_buffer(node));
 		if (!NODE_IS_TDD(node)) {
 			NEG_RETURN(bbs_node_writef(node, "%s%s %s%s %s%s %s%s", COLOR(COLOR_PRIMARY), "Enter", COLOR(TERM_COLOR_WHITE), "Username", COLOR(COLOR_PRIMARY), "or", COLOR(TERM_COLOR_WHITE), "New"));
@@ -1424,19 +1424,32 @@ static int authenticate(struct bbs_node *node)
 			}
 		} else {
 			/* Not a special keyword, so a normal username */
-			int res;
+			int res, all_printable;
 			/* Don't echo the password, duh... */
 			NEG_RETURN(bbs_node_echo_off(node));
 			NEG_RETURN(bbs_node_writef(node, "%s%-10s%s", COLOR(COLOR_PRIMARY), "Password: ", COLOR(TERM_COLOR_WHITE)));
 			NONPOS_RETURN(bbs_node_readline(node, 20000, password, sizeof(password)));
 			res = bbs_authenticate(node, username, password);
+			if (res) {
+				/* If it contains non-printable characters, it's probably not part of the actual password anyways. */
+				all_printable = bbs_str_isprint(password);
+			}
 			bbs_memzero(password, sizeof(password)); /* Overwrite (zero out) the plain text password before we return */
 			NEG_RETURN(bbs_node_echo_on(node)); /* Turn echo back on */
 			if (!res) {
 				break; /* Correct username and password */
 			}
-			/* Sorry, wrong password. Let the user try again, if his/her 3 chances aren't up yet. */
+			/* Sorry, wrong password. Let the user try again, if his/her chances aren't up yet. */
 			bbs_node_writef(node, "\n\n%s%s\n\n", COLOR(COLOR_FAILURE), "Login Failed");
+			/* Logins from a TDD (or other dial-up connection), especially on a poor quality phone line, often introduced distortion and garbling
+			 * of the received text. Since we need an exact match for the username and password, tolerate
+			 * this by giving the user a few more tries before finally disconnect, which can be really frustrating
+			 * to legitimate user. Don't increase the limit indefinitely though, for obvious reasons...
+			 * and if we see 6 consecutive login failures, it's probably futile anyways. */
+			if (!all_printable && additional_attempts < 3) {
+				bbs_debug(5, "Granting an additional login attempt, since password contained non-printable characters\n");
+				additional_attempts++;
+			}
 		}
 	}
 
