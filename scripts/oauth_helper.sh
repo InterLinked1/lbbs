@@ -94,7 +94,8 @@ calculate_xoauth2() {
 
 server_connect() {
 	printf "Connecting to %s:%d\n" $IMAP_SERVER 993
-	sh -c "echo \"a1 AUTHENTICATE XOAUTH2 $XOAUTH2_ENCODED\"; while read x; do echo \"$x\"; done" | openssl s_client -quiet -connect $IMAP_SERVER:993 -crlf
+	# Since we are piping to openssl s_client, it will handle the LF to CR LF conversions for us
+	sh -c "echo \"a1 AUTHENTICATE XOAUTH2 $XOAUTH2_ENCODED\" && cat" | openssl s_client -quiet -connect $IMAP_SERVER:993 -crlf
 }
 
 read -r opt

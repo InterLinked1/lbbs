@@ -734,7 +734,9 @@ struct imap_client *__imap_client_get_by_url(struct imap_session *imap, const ch
 		return NULL;
 	} else if (!strcmp(url.prot, "imaps")) {
 		secure = 1;
-	} else if (strcmp(url.prot, "imap")) {
+	} else if (!strcmp(url.prot, "imap")) {
+		secure = 0;
+	} else {
 		bbs_warning("Unsupported protocol: %s\n", url.prot);
 		return NULL;
 	}

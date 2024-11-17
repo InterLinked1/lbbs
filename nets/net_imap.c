@@ -76,6 +76,7 @@
  * - RFC 8508 REPLACE
  * - RFC 8514 SAVEDATE
  * - RFC 8970 PREVIEW
+ * - RFC 9208 QUOTA (partially)
  * - RFC 9394 PARTIAL
  * - RFC 9586 UIDONLY
  * - CLIENTID: https://datatracker.ietf.org/doc/html/draft-yu-imap-client-id-10
@@ -270,7 +271,7 @@ static int cli_imap_clients(struct bbs_cli_args *a)
 	struct imap_session *imap;
 	time_t now = time(NULL);
 
-	bbs_dprintf(a->fdout, "%4s %-25s %6s %4s %9s %s\n", "Node", "Name", "Active", "Dead", "Idle", "Age");
+	bbs_dprintf(a->fdout, "%4s %-25s %6s %4s %8s %10s %s\n", "Node", "Name", "Active", "Dead", "Idle", "Age", "TCP Client");
 	RWLIST_RDLOCK(&sessions);
 	RWLIST_TRAVERSE(&sessions, imap, entry) {
 		struct imap_client *client;
@@ -280,8 +281,8 @@ static int cli_imap_clients(struct bbs_cli_args *a)
 			time_t idle_elapsed = now - client->idlestarted;
 			bbs_soft_assert(now >= client->idlestarted);
 			print_time_elapsed(client->created, now, elapsed, sizeof(elapsed));
-			bbs_dprintf(a->fdout, "%4u %-25s %6s %4s %" TIME_T_FMT "/%4d %s\n",
-				imap->node->id, client->name, BBS_YN(client->active), BBS_YN(client->dead), client->idling ? idle_elapsed : 0, client->maxidlesec, elapsed);
+			bbs_dprintf(a->fdout, "%4u %-25s %6s %4s %3" TIME_T_FMT "/%4d %10s %p\n",
+				imap->node->id, client->name, BBS_YN(client->active), BBS_YN(client->dead), client->idling ? idle_elapsed : 0, client->maxidlesec, elapsed, &client->client);
 		}
 		RWLIST_UNLOCK(&imap->clients);
 	}
@@ -395,9 +396,14 @@ static int generate_mailbox_name(struct imap_session *imap, const char *restrict
 	userid = imap->node->user->id;
 	rootlen = strlen(mailbox_maildir(NULL));
 
-	if (mailbox_maildir_validate(fulldir)) {
+	if (mailbox_maildir_validate(maildir)) {
 		return -1;
 	}
+
+	/* This check is not redundant by mailbox_maildir_validate, since that
+	 * will return 0 if the argument is completely empty. */
+	bbs_assert(!strlen_zero(maildir));
+	bbs_assert(strlen(maildir) >= rootlen);
 
 	fulldir += rootlen;
 	if (*fulldir == '/') {
@@ -405,7 +411,7 @@ static int generate_mailbox_name(struct imap_session *imap, const char *restrict
 	}
 
 	if (strlen_zero(fulldir)) {
-		bbs_error("Empty maildir?\n");
+		bbs_error("Empty maildir? (%s)\n", maildir);
 		bbs_soft_assert(0);
 		return -1;
 	}
@@ -469,7 +475,7 @@ static int generate_mailbox_name(struct imap_session *imap, const char *restrict
 	return 0;
 }
 
-void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned int uid, unsigned long modseq, const char *newflags)
+void send_untagged_fetch(struct imap_session *imap, const char *maildir, int seqno, unsigned int uid, unsigned long modseq, const char *newflags)
 {
 	struct imap_session *s;
 	char normalmsg[256];
@@ -498,7 +504,7 @@ void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned int uid,
 		 * This also applies anywhere else generate_status is called.
 		 */
 		/*! \todo Ideally this would be a static mail store based callback, and then instead of imap->dir we could use e->maildir */
-		if (generate_mailbox_name(s, imap->dir, mboxname, sizeof(mboxname))) {
+		if (generate_mailbox_name(s, maildir, mboxname, sizeof(mboxname))) {
 			continue;
 		}
 		res = imap_notify_applicable(s, NULL, mboxname, imap->dir, IMAP_EVENT_FLAG_CHANGE);
@@ -2938,6 +2944,8 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 								res = imap_client_send(destclient, "(%s) {%ld%s}\r\n", S_IF(flags), size, synchronizing ? "" : "+");
 							}
 						} else {
+							/* If we're moving/copying multiple messages, we do end up using the same tag
+							 * for each message, which is not ideal, but okay, since we're not pipelining. */
 							if (idate) {
 								res = imap_client_send_log(destclient, "%s APPEND \"%s\" (%s) \"%s\" {%ld%s}\r\n",
 									imap->tag, remotename, S_IF(flags), idate, size, synchronizing ? "" : "+");
@@ -3001,8 +3009,13 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 			if (SWRITE(destclient->client.wfd, "\r\n") != STRLEN("\r\n")) {
 				goto cleanup;
 			}
-			/* Well, hopefully that all worked! */
-			IMAP_CLIENT_EXPECT(&destclient->client, " OK"); /* tagged OK */
+			/* Well, hopefully that all worked!
+			 * Use IMAP_CLIENT_EXPECT_EVENTUALLY since we may also get untagged EXISTS's for the copied messages. */
+
+			/*! \todo BUGBUG For any IMAP_CLIENT_EXPECT_EVENTUALLY, all the untagged responses that we "ignore
+			 * should actually pass through to the client directly, since an offline client will need those
+			 * in order to be synchronized. */
+			IMAP_CLIENT_EXPECT_EVENTUALLY(&destclient->client, appended + 1, " OK"); /* tagged OK */
 		}
 		if (move) {
 			/* Now that we copied everything to the destination mailbox, delete the source */
@@ -4178,8 +4191,17 @@ static int handle_idle(struct imap_session *imap)
 				bbs_warning("Got activity on a client that wasn't idling? (%s)\n", client->virtprefix);
 				continue;
 			} else if (imap->client == client) {
+				ssize_t bres;
 				/* This is the actual mailbox that is selected. Just relay anything we receive. */
-				_imap_reply(imap, "%s\r\n", tcpclient->rldata.buf);
+				do {
+					_imap_reply(imap, "%s\r\n", tcpclient->rldata.buf);
+					/* Okay, now because bbs_readline might have read MULTIPLE lines from the server,
+					 * call it again to make sure there isn't any further input.
+					 * (For example, this would happen if multiple EXPUNGEs occur simultaneously.)
+					 * We use a timeout of 0, because if there isn't another message ready already,
+					 * then we should just go back to the outer poll. */
+					bres = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", 0);
+				} while (bres > 0);
 			} else {
 				do {
 					int seqno;

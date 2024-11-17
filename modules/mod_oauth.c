@@ -266,9 +266,9 @@ static int fetch_token(struct oauth_client *client, char *buf, size_t len)
 		return 0;
 	} else if (client->tokentime) {
 		time_t ago = now - expiretime;
-		bbs_debug(5, "Token refresh required (expired %" TIME_T_FMT " seconds ago)\n", ago);
+		bbs_debug(3, "Token refresh required (expired %" TIME_T_FMT " seconds ago)\n", ago);
 	} else {
-		bbs_debug(5, "Token refresh required (no access token pre-seeded)\n");
+		bbs_debug(3, "Token refresh required (no access token pre-seeded)\n");
 	}
 
 	res = refresh_token(client);
@@ -434,7 +434,7 @@ static int cli_get_token(struct bbs_cli_args *a)
 				time_t diff;
 				match++;
 				bbs_mutex_lock(&client->lock);
-				diff = client->tokentime - now;
+				diff = client->tokentime + client->expires - now;
 				bbs_dprintf(a->fdout, "-- %s --\n", client->name);
 				if (client->userid) {
 					bbs_dprintf(a->fdout, "%-15s %u\n", "User ID:", client->userid);

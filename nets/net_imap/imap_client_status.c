@@ -523,6 +523,10 @@ ssize_t remote_status(struct imap_client *client, const char *remotename, const 
 	tag = client->imap->tag;
 	bbs_assert_exists(tag);
 
+	if (client->idling) {
+		imap_client_idle_stop(client);
+	}
+
 	/* In order for caching of SIZE to be reliable, we must invalidate it whenever anything
 	 * in the original STATUS response changes, including UIDNEXT/UIDVALIDITY. These are needed to
 	 * reliably detect changes to the mailbox (e.g. if a message is added and delete,

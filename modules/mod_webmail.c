@@ -3499,10 +3499,12 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	client->idlerefresh &= ~IDLE_REFRESH_STATUS; /* This doesn't count for needing a page refresh */
 	if (client->idlerefresh) { /* If there were multiple lines in the IDLE update, batch any updates up and send a single refresh */
 		int r = client->idlerefresh;
-		const char *reason = r & IDLE_REFRESH_EXISTS ? "EXISTS" : r & IDLE_REFRESH_FETCH ? "FETCH" : r & IDLE_REFRESH_EXPUNGE ? "EXPUNGE" : "";
+		/* EXPUNGE takes priority, since it involves a mailbox shrinking */
+		const char *reason = r & IDLE_REFRESH_EXPUNGE ? "EXPUNGE" : r & IDLE_REFRESH_EXISTS ? "EXISTS" : r & IDLE_REFRESH_FETCH ? "FETCH" : "";
 		/* In our case, since we're webmail, we can cheat a little and just refresh the current listing.
 		 * The nice thing is this handles both EXISTS and EXPUNGE responses just fine. */
 		idle_stop(ws, client);
+
 		REFRESH_LISTING(reason);
 		if (r & IDLE_REFRESH_EXISTS) {
 			/* Send the metadata for message with this sequence number as an unsolicited EXISTS.

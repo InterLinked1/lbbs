@@ -500,7 +500,7 @@ int maildir_msg_setflags_modseq(struct imap_session *imap, int seqno, const char
 	if (seqno) { /* Skip for merely translating flag mappings between maildirs */
 		unsigned int uid;
 		maildir_parse_uid_from_filename(filename, &uid);
-		send_untagged_fetch(imap, seqno, uid, modseq, newflags);
+		send_untagged_fetch(imap, dirpath, seqno, uid, modseq, newflags);
 	}
 	return 0;
 }

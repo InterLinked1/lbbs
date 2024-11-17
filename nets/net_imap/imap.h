@@ -184,7 +184,16 @@ extern int imap_debug_level;
 		return 0; \
 	}
 
-void send_untagged_fetch(struct imap_session *imap, int seqno, unsigned int uid, unsigned long modseq, const char *newflags);
+/*!
+ * \brief Generate untagged FETCH messages for clients that have selected the current mailbox
+ * \param imap
+ * \param maildir Full path to maildir of the affected message
+ * \param seqno
+ * \param uid
+ * \param modseq
+ * \param newflags
+ */
+void send_untagged_fetch(struct imap_session *imap, const char *maildir, int seqno, unsigned int uid, unsigned long modseq, const char *newflags);
 
 int imap_in_range(struct imap_session *imap, const char *s, int num);
 
