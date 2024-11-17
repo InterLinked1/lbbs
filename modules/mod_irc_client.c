@@ -446,6 +446,7 @@ static void __bot_handler(struct bbs_irc_client *client, enum relay_flags flags,
 #pragma GCC diagnostic pop
 	int res;
 	int stdout[2];
+	struct bbs_exec_params x;
 
 	if (strlen_zero(client->msgscript)) {
 		return;
@@ -469,7 +470,8 @@ static void __bot_handler(struct bbs_irc_client *client, enum relay_flags flags,
 	 */
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
-	res = bbs_execvp_fd(NULL, -1, stdout[1], client->msgscript, argv); /* No STDIN, only STDOUT */
+	EXEC_PARAMS_INIT_FD(x, -1, stdout[1]);
+	res = bbs_execvp(NULL, &x, client->msgscript, argv); /* No STDIN, only STDOUT */
 	bbs_debug(5, "Script '%s' returned %d\n", client->msgscript, res);
 	if (res) {
 		goto cleanup; /* Ignore non-zero return values */

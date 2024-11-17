@@ -53,6 +53,7 @@ static int ibbs_exec(struct bbs_node *node, const char *args)
 
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 	if (access(listfile, R_OK)) {
+		struct bbs_exec_params x;
 		char *const argv[] = { "unzip", tmpzip, "-d", "/tmp", NULL };
 		if (access(tmpzip, R_OK)) {
 			char url[54];
@@ -72,7 +73,8 @@ static int ibbs_exec(struct bbs_node *node, const char *args)
 		 * Even though we have a handle to the node, pass NULL for node since we don't need to link STDIN/STDOUT to the unzip command.
 		 * We just need it to execute, and this is more efficient (and safer!) than using system()
 		 */
-		if (bbs_execvp_headless(node, "unzip", argv)) {
+		EXEC_PARAMS_INIT_HEADLESS(x);
+		if (bbs_execvp(node, &x, "unzip", argv)) {
 			return 0; /* Don't return -1 or the node will abort */
 		}
 	} /* else, file already exists */

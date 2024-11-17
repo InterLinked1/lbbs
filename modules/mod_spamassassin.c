@@ -39,6 +39,7 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 	int input[2], output[2];
 	char buf[1024];
 	struct readline_data rldata;
+	struct bbs_exec_params x;
 
 	/* The only thing that this module really does is
 	 * execute the SpamAssassin binary, passing it the email message on STDIN,
@@ -80,7 +81,8 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 	}
 
 	CLOSE(input[1]); /* Close write end of STDIN */
-	res = bbs_execvp_fd_headless(f->node, input[0], output[1], argv[0], argv);
+	EXEC_PARAMS_INIT_FD(x, input[0], output[1]);
+	res = bbs_execvp(f->node, &x, argv[0], argv);
 	if (res) {
 		res = -1;
 		goto cleanup;

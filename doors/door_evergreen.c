@@ -30,6 +30,7 @@
 
 static int evergreen_exec(struct bbs_node *node, const char *args)
 {
+	struct bbs_exec_params x;
 	char username[64];
 	char fromname[64];
 	char fromaddr[64];
@@ -61,7 +62,8 @@ static int evergreen_exec(struct bbs_node *node, const char *args)
 		return 0;
 	}
 
-	bbs_execvp(node, "evergreen", argv);
+	EXEC_PARAMS_INIT(x);
+	bbs_execvp(node, &x, "evergreen", argv);
 	bbs_user_semiperm_authorization_token_purge(passwordbuf);
 	return 0; /* Don't return -1 or the node will abort */
 }

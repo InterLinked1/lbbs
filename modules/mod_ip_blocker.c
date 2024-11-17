@@ -65,19 +65,21 @@ static RWLIST_HEAD_STATIC(ipblocks, ip_block);
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 static void ban_ip(const char *addr)
 {
+	struct bbs_exec_params x;
 	int res;
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-qual"
 	char *ipaddr = (char*) addr;
 
+	EXEC_PARAMS_INIT_FD(x, -1, -1);
 	if (is_root()) {
 		char *argv[] = { "/usr/sbin/iptables", "-A", "INPUT", "-s", ipaddr, "-j", "DROP", NULL };
-		res = bbs_execvp_fd(NULL, -1, -1, "/usr/sbin/iptables", argv);
+		res = bbs_execvp(NULL, &x, "/usr/sbin/iptables", argv);
 	} else {
 		/* There's no guarantee that the BBS user is in the sudoers file for this command, or even that sudo is installed,
 		 * but this is the only way it could even work, so give it a try. */
 		char *argv[] = { "/usr/bin/sudo", "-n", "/usr/sbin/iptables", "-A", "INPUT", "-s", ipaddr, "-j", "DROP", NULL };
-		res = bbs_execvp_fd(NULL, -1, -1, "/usr/bin/sudo", argv);
+		res = bbs_execvp(NULL, &x, "/usr/bin/sudo", argv);
 	}
 	if (res) {
 		bbs_warning("Failed to block %s using iptables: %s\n", ipaddr, strerror(res));

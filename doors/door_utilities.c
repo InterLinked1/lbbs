@@ -46,12 +46,6 @@ static int calc_exec(struct bbs_node *node, const char *args)
 		return 0;
 	}
 
-#if 0
-	/* Just use the bc shell */
-	char *argv[3] = { "bc", "-q", NULL }; /* -q = quiet: disable initial banner */
-	return bbs_execvp(node, "bc", argv);
-#endif
-
 	/* Create a pipe for passing input and output to/from bc */
 	if (pipe(stdin)) {
 		bbs_error("pipe failed: %s\n", strerror(errno));
@@ -67,6 +61,7 @@ static int calc_exec(struct bbs_node *node, const char *args)
 	bbs_node_buffer(node);
 	bbs_node_writef(node, "\r");
 	for (;;) {
+		struct bbs_exec_params x;
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 		char *argv[3] = { "bc", "-q", NULL }; /* -q = quiet: disable initial banner */
 		bbs_node_writef(node, "EQ> ");
@@ -100,7 +95,8 @@ static int calc_exec(struct bbs_node *node, const char *args)
 			bbs_error("write failed: %s\n", strerror(errno));
 			continue;
 		}
-		res = bbs_execvp_fd_headless(node, stdin[0], stdout[1], "bc", argv);
+		EXEC_PARAMS_INIT_FD(x, stdin[0], stdout[1]);
+		res = bbs_execvp(node, &x, "bc", argv);
 #pragma GCC diagnostic pop
 		if (res) {
 			bbs_node_writef(node, "Execution Error\n");

@@ -85,9 +85,11 @@ static int __exec_handler(struct bbs_node *node, char *args, int isolated)
 {
 	int res;
 	time_t execstart, execend;
+	struct bbs_exec_params x;
 	char *argv[32]; /* 32 arguments ought to be enough for anybody. */
 
 	bbs_assert_exists(args); /* We registered with needargs, so args should never be NULL */
+	EXEC_PARAMS_INIT(x);
 
 	/* Parse a string (delimiting on spaces) into arguments for argv */
 	res = bbs_argv_from_str(argv, ARRAY_LEN(argv), args);
@@ -101,17 +103,16 @@ static int __exec_handler(struct bbs_node *node, char *args, int isolated)
 	/* Prog name is simply argv[0]. */
 	switch (isolated) {
 	case 2:
-		res = bbs_execvp_isolated_networked(node, argv[0], argv);
-		break;
+		x.net = 1;
+		/* Fall through */
 	case 1:
-		res = bbs_execvp_isolated(node, argv[0], argv);
+		x.isolated = 1;
+		/* Fall through */
+	case 0:
+		res = bbs_execvp(node, &x, argv[0], argv);
 		break;
 	default:
 		bbs_warning("Invalid value %d\n", isolated);
-		/* Fall through */
-	case 0:
-		res = bbs_execvp(node, argv[0], argv);
-		break;
 	}
 	execend = time(NULL);
 	bbs_debug(6, "res: %d, exec time: %lu\n", res, execend - execstart);

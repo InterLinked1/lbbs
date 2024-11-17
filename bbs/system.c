@@ -423,53 +423,6 @@ int bbs_argv_from_str(char **argv, int argc, char *s)
 	return c;
 }
 
-/* Forward declaration */
-static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[], char *const envp[], int isolated);
-
-int bbs_execvp(struct bbs_node *node, const char *filename, char *const argv[])
-{
-	return __bbs_execvpe_fd(node, 1, -1, -1, filename, argv, NULL, 0);
-}
-
-int bbs_execvp_isolated(struct bbs_node *node, const char *filename, char *const argv[])
-{
-	return __bbs_execvpe_fd(node, 1, -1, -1, filename, argv, NULL, 1);
-}
-
-int bbs_execvp_isolated_networked(struct bbs_node *node, const char *filename, char *const argv[])
-{
-	return __bbs_execvpe_fd(node, 1, -1, -1, filename, argv, NULL, 2);
-}
-
-int bbs_execvp_headless(struct bbs_node *node, const char *filename, char *const argv[])
-{
-	if (!node) {
-		bbs_warning("It is not necessary to use %s if node is NULL\n", __func__);
-	}
-	return __bbs_execvpe_fd(node, 0, -1, -1, filename, argv, NULL, 0);
-}
-
-int bbs_execvp_fd(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[])
-{
-	return __bbs_execvpe_fd(node, 1, fdin, fdout, filename, argv, NULL, 0);
-}
-
-int bbs_execvp_fd_headless(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[])
-{
-	if (!node) {
-		bbs_warning("It is not necessary to use %s if node is NULL\n", __func__);
-	}
-	return __bbs_execvpe_fd(node, 0, fdin, fdout, filename, argv, NULL, 0);
-}
-
-int bbs_execvpe_fd_headless(struct bbs_node *node, int fdin, int fdout, const char *filename, char *const argv[], char *const envp[])
-{
-	if (!node) {
-		bbs_warning("It is not necessary to use %s if node is NULL\n", __func__);
-	}
-	return __bbs_execvpe_fd(node, 0, fdin, fdout, filename, argv, envp, 0);
-}
-
 #ifdef ISOEXEC_SUPPORTED
 static int update_map(const char *mapping, const char *map_file, int map_len)
 {
@@ -728,9 +681,7 @@ static ssize_t full_read(int fd, char *restrict buf, size_t len)
 /*!
  * \brief Execute an external program. Most calls to exec() should funnel through this function...
  * \param node
- * \param usenode
- * \param fdin
- * \param fdout
+ * \param e
  * \param filename Program name to execute
  * \param argv Arguments
  * \param envp Environment (optional)
@@ -738,10 +689,12 @@ static ssize_t full_read(int fd, char *restrict buf, size_t len)
  * \retval -1 on failure
  * \return Result of program execution
  */
-static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fdout, const char *filename, char *const argv[], char *const envp[], int isolated)
+int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *filename, char *const argv[], char *const envp[], const char *file, int lineno, const char *func)
 {
 	pid_t pid;
 	struct termios term;
+	int usenode = e->usenode;
+	int fdin = e->fdin, fdout = e->fdout;
 	int fd = fdout;
 	int res = -1;
 	int pfd[2], procpipe[2];
@@ -755,8 +708,12 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 #define MYENVP_SIZE 5 /* End with 3 NULLs so we can add up to 2 env vars if needed */
 	char *myenvp[MYENVP_SIZE] = { fullpath, fullterm, NULL, NULL, NULL }; /* Last NULL is always the sentinel */
 
+	if (e->usenode) {
+		bbs_soft_assert(node != NULL);
+	}
+
 #ifdef __FreeBSD__
-	if (isolated) {
+	if (e->isolated) {
 		/* The mount() API is not implemented in clone_container for FreeBSD.
 		 * Additionally, CLONE_NEW... is not available for FreeBSD.
 		 * As such, these preclude isoexec from being used on that platform. */
@@ -774,7 +731,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		snprintf(fullpath, sizeof(fullpath), "PATH=%s", parentpath);
 	}
 
-	bbs_debug(6, "node: %p, usenode: %d, fdin: %d, fdout: %d, filename: %s, isolated: %s\n", node, usenode, fdin, fdout, filename, isolated ? "yes" : "no");
+	bbs_debug(6, "%s:%d (%s) node: %p, usenode: %d, fdin: %d, fdout: %d, filename: %s, isolated: %s\n", file, lineno, func, node, usenode, fdin, fdout, filename, e->isolated ? "yes" : "no");
 	if (node && usenode && (fdin != -1 || fdout != -1)) {
 		bbs_warning("fdin/fdout should not be provided if usenode == 1 (node is preferred, fdin/fdout will be ignored)\n");
 	}
@@ -821,11 +778,11 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 
 #ifdef ISOEXEC_SUPPORTED
 	/* If we have flags, we need to use clone(2). Otherwise, just use fork(2) */
-	if (isolated) {
+	if (e->isolated) {
 		int flags = 0;
 		/* We need to do more than fork() allows */
 		flags |= SIGCHLD | CLONE_NEWIPC | CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNET | CLONE_NEWUSER; /* fork() sets SIGCHLD implicitly. */
-		if (isolated == 2) {
+		if (e->net) {
 			/* Keep network connectivity */
 			flags &= ~CLONE_NEWNET;
 		}
@@ -864,14 +821,14 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 	}
 
 	if (pid == -1) {
-		bbs_error("%s failed (%s): %s\n", isolated ? "clone" : "fork", filename, strerror(errno));
-		if (isolated) {
+		bbs_error("%s failed (%s): %s\n", e->isolated ? "clone" : "fork", filename, strerror(errno));
+		if (e->isolated) {
 			close(procpipe[0]);
 			close(procpipe[1]);
 		}
 		return -1;
 	} else if (pid == 0) { /* Child */
-		if (!isolated) {
+		if (!e->isolated) {
 			/* Immediately install a dummy signal handler for SIGWINCH.
 			 * Until we call exec, the child retains the parent's signal handlers.
 			 * However, if we have a node, we immediately call bbs_node_update_winsize
@@ -904,7 +861,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 			fd = pfd[1]; /* Use write end of pipe */
 			fdout = fd;
 		}
-		exec_pre(fdin, fdout, isolated ? procpipe[0] : -1); /* If we still need procpipe, don't close that */
+		exec_pre(fdin, fdout, e->isolated ? procpipe[0] : -1); /* If we still need procpipe, don't close that */
 		if (node && usenode) {
 			/* Set controlling terminal, or otherwise shells don't fully work properly. */
 			if (set_controlling_term(STDIN_FILENO)) { /* we dup2'd this to the slavefd. This is NOT the parent's STDIN. */
@@ -921,7 +878,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 #ifndef pivot_root
 #define pivot_root(new, old) syscall(SYS_pivot_root, new, old)
 #endif
-		if (isolated) {
+		if (e->isolated) {
 			struct utsname uts;
 			char pidbuf[15];
 			char oldroot[384 + STRLEN("/.old")], newroot[384];
@@ -1109,7 +1066,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 		 * But the parent will know that we failed since we return errno, and parent can log it. */
 		/* Also, use _exit, not exit, since exit will execute the parent's atexit function, etc.
 		 * That matters because exec failed, so atexit is still registered. */
-		if (isolated) {
+		if (e->isolated) {
 			int saved_errno = errno;
 			fprintf(stderr, "%s: %s\n", filename, strerror(errno));
 #ifdef DEBUG_NEW_FS
@@ -1131,7 +1088,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 	} /* else, parent */
 
 #ifdef ISOEXEC_SUPPORTED
-	if (isolated) {
+	if (e->isolated) {
 		close(procpipe[0]);
 		res = setup_namespace(pid);
 		if (!res) {
@@ -1205,7 +1162,7 @@ static int __bbs_execvpe_fd(struct bbs_node *node, int usenode, int fdin, int fd
 	}
 
 #ifdef ISOEXEC_SUPPORTED
-	if (isolated) {
+	if (e->isolated) {
 		char rootdir[268];
 		/* Clean up the temporary container, if one was created */
 		temp_container_root(rootdir, sizeof(rootdir), pid);

@@ -199,6 +199,7 @@ int transfer_make_longname(const char *file, struct stat *st, char *buf, size_t 
 
 static int recursive_copy(const char *srcfiles, const char *dest)
 {
+	struct bbs_exec_params x;
 	/* It can probably do a better job than we can */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
@@ -207,7 +208,8 @@ static int recursive_copy(const char *srcfiles, const char *dest)
 	 * we don't want to overwrite all the user's existing files. */
 	char *const argv[] = { "cp", "-r", "-n", (char*) srcfiles, (char*) dest, NULL };
 #pragma GCC diagnostic pop
-	return bbs_execvp(NULL, argv[0], argv);
+	EXEC_PARAMS_INIT_HEADLESS(x);
+	return bbs_execvp(NULL, &x, argv[0], argv);
 }
 
 int bbs_transfer_home_dir(unsigned int userid, char *buf, size_t len)

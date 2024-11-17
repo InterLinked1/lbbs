@@ -298,6 +298,7 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 		char subbuf[1024];
 		char *argv[32];
 		int argc;
+		struct bbs_exec_params x;
 		REQUIRE_ARG(s);
 		if (strstr(s, "${MAILFILE}")) { /* This rule wants the message as a file */
 			bbs_node_var_set(mproc->node, "MAILFILE", mproc->datafile);
@@ -309,7 +310,8 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 			bbs_warning("Invalid EXEC action\n");
 			return -1; /* Rules may rely on a return code of 0 for success, so don't return 0 if we didn't do anything */
 		}
-		res = bbs_execvp_headless(mproc->node, argv[0], argv); /* Directly return the exit code */
+		EXEC_PARAMS_INIT_HEADLESS(x);
+		res = bbs_execvp(mproc->node, &x, argv[0], argv); /* Directly return the exit code */
 		return res;
 	} else if (!strcasecmp(next, "FORWARD")) {
 		REQUIRE_ARG(s);

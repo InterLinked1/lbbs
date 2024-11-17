@@ -42,6 +42,7 @@
 
 static int sendmail_helper(const char *tmp, FILE *p, int async)
 {
+	struct bbs_exec_params x;
 	int res;
 
 	/* XXX We could be calling this function from a node thread.
@@ -60,13 +61,15 @@ static int sendmail_helper(const char *tmp, FILE *p, int async)
 		/* Run it in the background using a shell */
 		fclose(p);
 		snprintf(tmp2, sizeof(tmp2), "( %s < %s ; rm -f %s ) &", SENDMAIL_CMD, tmp, tmp);
-		res = bbs_execvp(NULL, "/bin/sh", argv);
+		EXEC_PARAMS_INIT_HEADLESS(x);
+		res = bbs_execvp(NULL, &x, "/bin/sh", argv);
 	} else {
 		/* Call sendmail synchronously. */
 		char *argv[3] = { SENDMAIL, SENDMAIL_ARG, NULL };
 		/* Have sendmail read STDIN from the file itself */
 		rewind(p);
-		res = bbs_execvp_fd(NULL, fileno(p), -1, SENDMAIL, argv);
+		EXEC_PARAMS_INIT_FD(x, fileno(p), -1);
+		res = bbs_execvp(NULL, &x, SENDMAIL, argv);
 		fclose(p);
 		if (remove(tmp)) {
 			bbs_error("Failed to delete temporary email file '%s'\n", tmp);

@@ -2416,7 +2416,7 @@ static int cgi_run(struct http_session *http, const char *filename, char *const 
 #pragma GCC diagnostic pop /* -Wdiscarded-qualifiers */
 
 	/* Because we need to run our own logic while the child is running,
-	 * fork and wait on the child directly here, rather than using bbs_execvpe_fd_headless.
+	 * fork and wait on the child directly here, rather than using BBS exec APIs.
 	 * It's just easier in this case. */
 
 	/* Create pipes for the CGI's STDIN and STDOUT */
