@@ -623,10 +623,10 @@ static void *ssl_io_thread(void *unused)
 					 * Otherwise, we can encounter a form of deadlock,
 					 * where one TLS session is blocked and attempts to
 					 * wait for it to be writable block other sessions. */
-					bbs_debug(3, "Wanted to write %d bytes but wrote %ld\n", ores, wres);
-					/* Don't abuse the overtime counter, this is a different scenario */
 					bytes_start = buf + wres;
 					bytes_left = (size_t) (ores - wres);
+					/* Don't abuse the overtime counter, this is a different scenario */
+					bbs_debug(3, "Wanted to write %d bytes but wrote %ld (%lu remaining)\n", ores, wres, bytes_left);
 					/* Save it for later... */
 					d = malloc(sizeof(*d) + bytes_left);
 					if (ALLOC_FAILURE(d)) {
@@ -640,10 +640,11 @@ static void *ssl_io_thread(void *unused)
 					d->len = bytes_left;
 					d->ssl = ssl;
 					d->wfd = readpipe;
+					RWLIST_NEXT(d, entry) = NULL;
 					/* No need to lock/unlock deferred_writes list, nobody uses it but this thread */
 					num_deferred_writes++;
 					RWLIST_INSERT_TAIL(&deferred_writes, d, entry);
-					bbs_debug(3, "Deferred write of %lu bytes from session %p\n", bytes_left, ssl);
+					bbs_debug(3, "Deferred write of %lu bytes from session %p (now %d total deferred write%s)\n", bytes_left, ssl, num_deferred_writes, ESS(num_deferred_writes));
 					continue;
 				}
 				/* We're polling the raw socket file descriptor,
