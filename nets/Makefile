@@ -32,10 +32,11 @@ IMAP_OBJ = $(patsubst %.c,%.o,$(IMAP_SRC))
 
 # XXX if nets/net_imap/imap.h is modified, only net_imap.c is automatically recompiled,
 # not any nets/net_imap/*.c source files that include it
+# XXX If using -j[>1], some files in net_imap/ are recompiled multiple times (parallel build bug)
 
 # Subdirectory with components for net_imap
 net_imap/%.o: $(IMAP_SRC)
-	@+$(SUBMAKE) --no-builtin-rules -C net_imap all
+	@+$(SUBMAKE) --no-builtin-rules -C net_imap $(basename $(notdir $@)).o
 
 net_imap.so : net_imap.o $(IMAP_OBJ)
 	@echo "  [LD] $< $(IMAP_OBJ) -> $@"

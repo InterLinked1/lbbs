@@ -6,8 +6,6 @@ DEPENDS := $(patsubst %.c,%.d,$(IMAP_SRC))
 # the include directory is in the parent's parent
 INC = -I../..
 
-all: $(MOD_SO)
-
 -include $(DEPENDS)
 
 $(DEPENDS):
