@@ -208,19 +208,25 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, struct sockadd
 #define bbs_node_request(fd, protname, sinaddr, sfd) __bbs_node_request(fd, protname, sinaddr, sfd, BBS_MODULE_SELF)
 
 /*! Lock a BBS node */
-int bbs_node_lock(struct bbs_node *node);
+#define bbs_node_lock(node) __bbs_node_lock(node, __FILE__, __LINE__, __func__, #node)
+
+int __bbs_node_lock(struct bbs_node *node, const char *file, int lineno, const char *func, const char *lockname);
 
 /*!
  * \brief Try locking a BBS node
  * \retval 0 if successful, -1 if failed to acquire lock
  */
-int __attribute__ ((warn_unused_result)) bbs_node_trylock(struct bbs_node *node);
+#define bbs_node_trylock(node) __bbs_node_trylock(node, __FILE__, __LINE__, __func__, #node)
+
+int __attribute__ ((warn_unused_result)) __bbs_node_trylock(struct bbs_node *node, const char *file, int lineno, const char *func, const char *lockname);
 
 /*! Unlock a BBS node */
 int bbs_node_unlock(struct bbs_node *node);
 
 /*! Lock a BBS node for PTY operations */
-int bbs_node_pty_lock(struct bbs_node *node);
+#define bbs_node_pty_lock(node) __bbs_node_pty_lock(node, __FILE__, __LINE__, __func__, #node)
+
+int __bbs_node_pty_lock(struct bbs_node *node, const char *file, int lineno, const char *func, const char *lockname);
 
 /*! Unlock a BBS node for PTY operations */
 int bbs_node_pty_unlock(struct bbs_node *node);

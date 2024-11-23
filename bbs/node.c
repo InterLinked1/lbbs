@@ -381,16 +381,16 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, struct sockadd
 	return node;
 }
 
-int bbs_node_lock(struct bbs_node *node)
+int __bbs_node_lock(struct bbs_node *node, const char *file, int lineno, const char *func, const char *lockname)
 {
 	bbs_assert_exists(node);
-	return bbs_mutex_lock(&node->lock);
+	return __bbs_mutex_lock(&node->lock, file, lineno, func, lockname);
 }
 
-int bbs_node_trylock(struct bbs_node *node)
+int __bbs_node_trylock(struct bbs_node *node, const char *file, int lineno, const char *func, const char *lockname)
 {
 	bbs_assert_exists(node);
-	return bbs_mutex_trylock(&node->lock);
+	return __bbs_mutex_trylock(&node->lock, file, lineno, func, lockname);
 }
 
 int bbs_node_unlock(struct bbs_node *node)
@@ -399,10 +399,10 @@ int bbs_node_unlock(struct bbs_node *node)
 	return bbs_mutex_unlock(&node->lock);
 }
 
-int bbs_node_pty_lock(struct bbs_node *node)
+int __bbs_node_pty_lock(struct bbs_node *node, const char *file, int lineno, const char *func, const char *lockname)
 {
 	bbs_assert_exists(node);
-	return bbs_mutex_lock(&node->ptylock);
+	return __bbs_mutex_lock(&node->ptylock, file, lineno, func, lockname);
 }
 
 int bbs_node_pty_unlock(struct bbs_node *node)
