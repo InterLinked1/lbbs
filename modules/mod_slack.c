@@ -1247,8 +1247,8 @@ static struct bbs_cli_entry cli_commands_slack[] = {
 	BBS_CLI_COMMAND(cli_slack_relays, "slack relays", 2, "List all Slack relays", NULL),
 	BBS_CLI_COMMAND(cli_slack_channels, "slack chans", 2, "List Slack channels", "slack chans [<relay>]"),
 	BBS_CLI_COMMAND(cli_slack_users, "slack users", 2, "List Slack users", "slack users [<relay>]"),
-	BBS_CLI_COMMAND(cli_slack_members, "slack members", 2, "List a Slack channel's members", "slack members <channel>"),
-	BBS_CLI_COMMAND(cli_slack_debug, "slack debug", 3, "Set Slack library debug level", "slack debug <level>"),
+	BBS_CLI_COMMAND(cli_slack_members, "slack members", 3, "List a Slack channel's members", "slack members <channel>"),
+	BBS_CLI_COMMAND(cli_slack_debug, "slack debug", 3, "Set Slack library debug level", "slack debug <level> [0=none,1=fatal,2=error,3=warning,4=notice,5+=debug]"),
 };
 
 struct slack_callbacks slack_callbacks = {
@@ -1290,11 +1290,20 @@ static void *slack_relay_run(void *varg)
 
 	slack_client_set_autoreconnect(slack, 1); /* Enable autoreconnect since this is supposed to be a long lived relay */
 	res = load_users(relay, SLACK_REQUEST_USER_LIMIT); /* Load all users (or at least as many as we can) in advance */
-	if (!res) {
+	if (res) {
+		bbs_error("Failed to load users\n");
+	}
+	if (!res && strlen_zero(relay->enterpriseid)) { /* This API fails for enterprise workspaces, so skip it for those */
 		res = load_channels(relay, SLACK_REQUEST_USER_LIMIT); /* Load channels next, which will also load members (which is why we do load_users first) */
+		if (res) {
+			bbs_error("Failed to load channels\n");
+		}
 	}
 	if (!res) {
 		res = load_presence(relay, SLACK_REQUEST_USER_LIMIT); /* Finally, load presence, for all users that share channels with us */
+		if (res) {
+			bbs_error("Failed to load presences\n");
+		}
 	}
 	if (!res) {
 		relay->started = 1;
@@ -1499,6 +1508,7 @@ static int load_config(void)
 static int load_module(void)
 {
 	/* Initialize the library */
+	slack_set_log_level(SLACK_LOG_WARNING); /* Show up to warnings by default */
 	slack_set_logger(slack_log);
 
 	/* Don't enable debug logging by default, but CLI command can be used to enable, if desired */
