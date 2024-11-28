@@ -89,7 +89,7 @@ static int write_file_to_socket(int client, const char *filename)
 	return 0;
 }
 
-static int send_count = 0;
+static int send_count;
 
 static int send_message(int client1, const char *filename)
 {
@@ -125,11 +125,48 @@ cleanup:
 	return -1;
 }
 
+static int send_short_message(int client1)
+{
+	if (!send_count++) {
+		CLIENT_EXPECT_EVENTUALLY(client1, "220 ");
+		SWRITE(client1, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+		CLIENT_EXPECT_EVENTUALLY(client1, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
+	} else {
+		SWRITE(client1, "RSET" ENDL);
+		CLIENT_EXPECT(client1, "250");
+	}
+
+	SWRITE(client1, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
+	CLIENT_EXPECT(client1, "250");
+	SWRITE(client1, "RCPT TO:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(client1, "250");
+	SWRITE(client1, "DATA\r\n");
+	CLIENT_EXPECT(client1, "354");
+
+	/* Lengths include CR LF */
+	SWRITE(client1, "Content-Type: text/plain" ENDL); /* 26 bytes */
+	SWRITE(client1, "To: user@example.com" ENDL); /* 22 bytes */
+	SWRITE(client1, "From: user@example.com" ENDL); /* 24 bytes */
+	SWRITE(client1, "Subject: Test message" ENDL); /* 23 bytes */
+	SWRITE(client1, "Sun, 10 Nov 2024 19:58:17 -0500" ENDL); /* 33 bytes */
+	SWRITE(client1, ENDL); /* 2 bytes */
+	SWRITE(client1, "Test" ENDL); /* 6 bytes */
+
+	/* Messages end in CR LF, so only send . CR LF here */
+	SWRITE(client1, "." ENDL); /* EOM */
+	CLIENT_EXPECT(client1, "250");
+	return 0;
+
+cleanup:
+	return -1;
+}
+
 static int make_messages(void)
 {
 	int clientfd;
 	int res = 0;
 
+	send_count = 0;
 	clientfd = test_make_socket(25);
 	if (clientfd < 0) {
 		return -1;
@@ -138,6 +175,7 @@ static int make_messages(void)
 	res |= send_message(clientfd, "multipart.eml");
 	res |= send_message(clientfd, "multipart2.eml");
 	res |= send_message(clientfd, "alternative.eml");
+	res |= send_short_message(clientfd);
 
 	close(clientfd); /* Close SMTP connection */
 	return res;
@@ -343,6 +381,18 @@ static int run(void)
 	/* Use message 2, since it has a message/rfc822 attachment */
 	SWRITE(client1, "g13 FETCH 2 (BODY.PEEK[3.HEADER.FIELDS (Content-Type)]<1.12>)" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "ontent-Type:");
+
+	/* Request RFC822.HEADER ([LBBS-85] bug fix) */
+	CLIENT_DRAIN(client1);
+	SWRITE(client1, "h1 FETCH 4 (UID RFC822.HEADER)" ENDL);
+	CLIENT_EXPECT(client1, "* 4 FETCH (UID 4 RFC822.HEADER {130}");
+
+	/* Ideally, we would be able to confirm that 130 bytes are actually received here...
+	 * Since we can't, repeat, and ensure it's the headers, not the body. */
+
+	CLIENT_DRAIN(client1);
+	SWRITE(client1, "h2 FETCH 4 (UID RFC822.HEADER)" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "Content-Type");
 
 	SWRITE(client1, "z999 LOGOUT" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "* BYE");

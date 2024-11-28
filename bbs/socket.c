@@ -2487,6 +2487,7 @@ ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)
 		return -1;
 	}
 
+	memset(&pfd, 0, sizeof(pfd));
 	pfd.fd = fd;
 	pfd.events = POLLOUT;
 
@@ -2503,17 +2504,42 @@ ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)
 	return res;
 }
 
+/* \note Assumes fd is a file descriptor corresponding to a file */
+static inline off_t fd_get_filesize(int fd)
+{
+	off_t max_offset, cur_offset;
+
+	cur_offset = lseek(fd, 0, SEEK_CUR);
+	if (cur_offset == -1) {
+		bbs_error("Failed to get current file position: %s\n", strerror(errno));
+		return -1;
+	}
+	max_offset = lseek(fd, 0, SEEK_END);
+	if (max_offset == -1) {
+		bbs_error("Failed to seek to end of file: %s\n", strerror(errno));
+		return -1;
+	}
+	lseek(fd, cur_offset, SEEK_SET); /* Restore original offset */
+	return max_offset;
+}
+
 ssize_t bbs_sendfile(int out_fd, int in_fd, off_t *offset, size_t count)
 {
 	/* sendfile (like write) can return before writing all the requested bytes.
 	 * This wrapper function will retry as appropriate to fully write the message as best we can. */
 	ssize_t written = 0;
+	off_t localoffset = 0;
+	struct pollfd pfd;
+
+	memset(&pfd, 0, sizeof(pfd));
+	pfd.fd = out_fd;
+	pfd.events = POLLOUT;
 
 	for (;;) {
 #ifdef __linux__
-		ssize_t res = sendfile(out_fd, in_fd, offset, count);
+		ssize_t res = sendfile(out_fd, in_fd, offset ? offset : &localoffset, count);
 #elif defined(__FreeBSD__)
-		ssize_t res = sendfile(out_fd, in_fd, *offset, count, NULL, NULL, 0);
+		ssize_t res = sendfile(out_fd, in_fd, offset ? *offset : localoffset, count, NULL, NULL, 0);
 #else
 #error "Missing sendfile"
 #endif
@@ -2527,8 +2553,48 @@ ssize_t bbs_sendfile(int out_fd, int in_fd, off_t *offset, size_t count)
 		}
 		/* It's typical for sendfile to only send 8,192 bytes at a time,
 		 * so for sending much more than that, this can be a very spammy message. */
-		bbs_debug(10, "Wanted to write %lu bytes but was only able to write %ld this round\n", count, res); /* Keep trying */
+		bbs_debug(10, "Wanted to write %lu bytes at offset %ld, but was only able to write %ld this round\n", count, offset ? *offset : localoffset, res); /* Keep trying */
 		count -= (size_t) res;
+		/* if offset is not NULL, then on Linux, sendfile automatically increments it
+		 * by the number of sent bytes. */
+#ifdef __FreeBSD__
+		/* Also adjust the offset for sendfile */
+		if (offset) {
+			*offset += res;
+		} else {
+			localoffset += res;
+		}
+#endif
+		if (!res) {
+			int pres;
+			/* Wasn't able to write any bytes this round.
+			 * This means that either the file descriptor isn't writable right now,
+			 * or the specified offset/byte count is not valid. */
+			off_t eff_offset = offset ? *offset : localoffset;
+			off_t size = fd_get_filesize(in_fd);
+			if (size > 0 && eff_offset >= size) {
+				/* Offset is at the end of the file or past it.
+				 * This will never work. */
+				bbs_error("Specified file offset (%ld) exceeds file size (%ld)\n", eff_offset, size);
+				return -1;
+			}
+			bbs_debug(8, "Waiting for file descriptor %d to become writable\n", out_fd);
+			pfd.revents = 0;
+			pres = poll(&pfd, 1, SEC_MS(30));
+			if (pres < 0) {
+				if (errno != EINTR) {
+					bbs_error("poll failed: %s\n", strerror(errno));
+					return -1;
+				}
+			} else if (!pres) {
+				/* Can't wait forever... */
+				bbs_warning("File descriptor %d did not become writable after 30 seconds\n", out_fd);
+				return -1;
+			} else if (!(pfd.revents & POLLOUT)) {
+				bbs_warning("Exceptional activity on file descriptor %d while waiting for it to become writable\n", out_fd);
+				return -1;
+			}
+		}
 	}
 
 	return written;

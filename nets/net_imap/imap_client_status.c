@@ -576,6 +576,10 @@ ssize_t remote_status(struct imap_client *client, const char *remotename, const 
 	}
 
 	if (issue_status) {
+		/* Necessary even though we do it above? */
+		if (client->idling) {
+			imap_client_idle_stop(client);
+		}
 		/* XXX Same tag is reused here, so we expect the same prefix (rtag) */
 		imap_client_send(client, "A.%s.1 STATUS \"%s\" (%s%s%s%s)\r\n", tag, remotename, items, add1, add2, add3);
 		for (;;) {

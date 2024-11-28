@@ -576,8 +576,7 @@ static ssize_t send_message(struct imap_session *imap, struct fetch_body_request
 		offset = compute_body_offset(*fp);
 		sendsize = *size - (size_t) offset;
 	} else if (sendmask == HEADERS_ONLY) {
-		offset = compute_body_offset(*fp);
-		sendsize = (size_t) offset;
+		sendsize = (size_t) compute_body_offset(*fp);
 	} else {
 		sendsize = *size;
 	}
@@ -762,9 +761,6 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 	bbs_node_cork(imap->node, 1); /* Cork the TCP session */
 
 	/* Do as much as possible before we even start the reply, to minimize number of writes */
-	if (fetchreq->rfc822header) {
-		send_headers(imap, NULL, "RFC822.HEADER", &fp, fullname);
-	}
 	if (fetchreq->body || fetchreq->bodystructure) {
 		char *bodystructure;
 		/* BODY is BODYSTRUCTURE without extensions (which we don't send anyways, in either case) */
@@ -790,7 +786,12 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 		send_message(imap, NULL, "RFC822", &fp, &size, fullname, BOTH);
 	}
 	if (fetchreq->rfc822header) {
+		/* XXX In theory, these should behave identically, not sure which one to use? */
+#if 1
 		send_message(imap, NULL, "RFC822.HEADER", &fp, &size, fullname, HEADERS_ONLY);
+#else
+		send_headers(imap, NULL, "RFC822.HEADER", &fp, fullname);
+#endif
 	}
 	if (fetchreq->rfc822text) { /* Same as BODY[TEXT] */
 		send_message(imap, NULL, "RFC822.TEXT", &fp, &size, fullname, BODY_ONLY);

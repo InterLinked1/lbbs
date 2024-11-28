@@ -271,7 +271,7 @@ static int cli_imap_clients(struct bbs_cli_args *a)
 	struct imap_session *imap;
 	time_t now = time(NULL);
 
-	bbs_dprintf(a->fdout, "%4s %-25s %6s %4s %8s %10s %s\n", "Node", "Name", "Active", "Dead", "Idle", "Age", "TCP Client");
+	bbs_dprintf(a->fdout, "%4s %-25s %6s %4s %9s %10s %s\n", "Node", "Name", "Active", "Dead", "Idle", "Age", "TCP Client");
 	RWLIST_RDLOCK(&sessions);
 	RWLIST_TRAVERSE(&sessions, imap, entry) {
 		struct imap_client *client;
@@ -281,7 +281,7 @@ static int cli_imap_clients(struct bbs_cli_args *a)
 			time_t idle_elapsed = now - client->idlestarted;
 			bbs_soft_assert(now >= client->idlestarted);
 			print_time_elapsed(client->created, now, elapsed, sizeof(elapsed));
-			bbs_dprintf(a->fdout, "%4u %-25s %6s %4s %3" TIME_T_FMT "/%4d %10s %p\n",
+			bbs_dprintf(a->fdout, "%4u %-25s %6s %4s %4" TIME_T_FMT "/%4d %10s %p\n",
 				imap->node->id, client->name, BBS_YN(client->active), BBS_YN(client->dead), client->idling ? idle_elapsed : 0, client->maxidlesec, elapsed, &client->client);
 		}
 		RWLIST_UNLOCK(&imap->clients);

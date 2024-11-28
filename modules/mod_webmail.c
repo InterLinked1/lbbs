@@ -1827,6 +1827,15 @@ static void fetchlist_single(struct mailimap_msg_att *msg_att, json_t *arr)
 					append_internaldate(msgitem, item->att_data.att_static->att_data.att_internal_date);
 					break;
 				case MAILIMAP_MSG_ATT_RFC822_SIZE:
+					/* The number of octets in the message.
+					 * Note: Microsoft IMAP server has (yet another) major bug where it returns an RFC822.SIZE
+					 * that is 4-5 times the actual size of the message.
+					 * I have reported this, but who knows if it will actually get fixed, or if anyone there even cares.
+					 * Offline clients show the correct size, since they download the whole message,
+					 * but there is no hope for webmail clients, we have to take the server's response
+					 * to be correct (as with most things), and it would be inefficient to download
+					 * every single message in a FETCHLIST just to compute the size.
+					 * TL;DR, if your server is stupid, this information may also be wrong. */
 					json_object_set_new(msgitem, "size", json_integer(item->att_data.att_static->att_data.att_rfc822_size));
 					break;
 				case MAILIMAP_MSG_ATT_BODY_SECTION:
