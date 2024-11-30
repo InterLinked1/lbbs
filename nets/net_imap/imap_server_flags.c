@@ -498,8 +498,17 @@ int maildir_msg_setflags_modseq(struct imap_session *imap, int seqno, const char
 	/* Send unilateral untagged FETCH responses to everyone except this session, to notify of the new flags */
 	generate_flag_names_full(imap, newflagletters, newflags, sizeof(newflags), &newbuf, &newlen);
 	if (seqno) { /* Skip for merely translating flag mappings between maildirs */
+		char *end;
 		unsigned int uid;
 		maildir_parse_uid_from_filename(filename, &uid);
+		/* Right now, dir ends in '/cur', since it's the physical maildir cur dir path,
+		 * here, we want just the base maildir path (without '/cur' at the end). */
+		end = strrchr(dirpath, '/');
+		if (end) {
+			*end = '\0';
+		} else {
+			bbs_soft_assert(0);
+		}
 		send_untagged_fetch(imap, dirpath, seqno, uid, modseq, newflags);
 	}
 	return 0;

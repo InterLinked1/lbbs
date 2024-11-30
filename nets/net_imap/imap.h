@@ -123,6 +123,9 @@ struct imap_traversal {
 	char curdir[260];
 };
 
+/* Note: Although these are used frequently,
+ * the hierarchy delimiter has become hardcoded in several places
+ * that should be updated to use this macro. */
 #define HIERARCHY_DELIMITER "."
 #define HIERARCHY_DELIMITER_CHAR '.'
 

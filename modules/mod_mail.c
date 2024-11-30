@@ -987,7 +987,7 @@ static int parse_uidfile(FILE *fp, const char *uidfile, unsigned int *uidvalidit
 	char *uidvaliditystr, *tmp;
 
 	if (fread(uidvalidity, sizeof(unsigned int), 1, fp) != 1) {
-		bbs_debug(4, "Failed to read UIDVALIDITY from %s (empty file?)\n", uidfile); /* If we just created the file, it's empty, so this could happen */
+		bbs_debug(2, "Failed to read UIDVALIDITY from %s: %s (empty file?)\n", uidfile, strerror(errno)); /* If we just created the file, it's empty, so this could happen */
 		return 1;
 	} else if (fread(uidnext, sizeof(unsigned int), 1, fp) != 1) {
 		bbs_error("Failed to read UID from %s\n", uidfile);
@@ -1030,7 +1030,7 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, c
 {
 	FILE *fp = NULL;
 	char uidfile[256];
-	int uidvchange = 0;
+	int uidvchange = 0, uidfile_existed = 1;
 	unsigned int uidvalidity = 0, uidnext = 0;
 	int ascii = 0;
 
@@ -1077,6 +1077,7 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, c
 	fp = fopen(uidfile, "r+"); /* Open for reading and writing, don't truncate it, and create if it doesn't exist */
 	if (!fp) {
 		/* Assume the file doesn't yet exist. */
+		uidfile_existed = bbs_file_exists(uidfile);
 		fp = fopen(uidfile, "a");
 		if (unlikely(!fp)) {
 			bbs_error("fopen(%s) failed: %s\n", uidfile, strerror(errno));
@@ -1104,7 +1105,22 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, c
 		parse_uidfile(fp, uidfile, &uidvalidity, &uidnext, &ascii);
 	}
 
-	if (!uidvalidity || !uidnext || !fp) {
+	if (!uidvalidity || !fp) { /* uidnext can be 0 here */
+		struct stat st;
+		/* If there's no uidvalidity currently, not a big deal, that's expected and we'll create one now.
+		 * If there is one and we failed, then this is really, really bad. */
+		if (uidfile_existed) {
+			bbs_error("Couldn't read already existing uidvalidity file (%s)\n", uidfile);
+		}
+		if (!stat(uidfile, &st)) {
+			if (st.st_size > 0) {
+				bbs_error("Failed to read current UID file %s\n", uidfile);
+			} else if (uidfile_existed) {
+				bbs_debug(3, "File %s is currently empty\n", uidfile);
+			}
+		} else {
+			bbs_debug(3, "Failed to stat(%s): %s\n", uidfile, strerror(errno));
+		}
 		/* UIDVALIDITY must be strictly increasing, so time is a good thing to use. */
 		uidvalidity = (unsigned int) time(NULL); /* If this isn't the first access to this folder, this will invalidate the client's cache of this entire folder. */
 		/* Since we're starting over, we must broadcast the new UIDVALIDITY value (we always do for SELECTs). */
@@ -1177,9 +1193,10 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, c
 	*newuidnext = uidnext;
 	mailbox_uid_unlock(mbox);
 
-	if (uidvchange) {
+	if (uidvchange && uidfile_existed) {
 		/* Don't do this while mailbox UID lock is held, or we could cause a deadlock
 		 * if an event callback is triggered that tries to grab that lock. */
+		bbs_debug(2, "UIDVALIDITY has changed (UIDVALIDITY=%d,UIDNEXT=%d)\n", uidvalidity, uidnext);
 		mailbox_dispatch_event_basic(EVENT_MAILBOX_UIDVALIDITY_CHANGE, node, mbox, directory);
 	}
 
@@ -1626,6 +1643,28 @@ static int gen_newname(struct mailbox *mbox, struct bbs_node *node, const char *
 	return (int) uid;
 }
 
+static int copy_move_untagged_exists(struct bbs_node *node, struct mailbox *mbox, const char *newpath, size_t size)
+{
+	char maildir[256];
+	char *tmp;
+
+	safe_strncpy(maildir, newpath, sizeof(maildir));
+
+	tmp = strrchr(maildir, '/'); /* newpath can be mutiliated at this point */
+	if (!tmp) {
+		return -1;
+	}
+	*tmp = '\0'; /* Truncating once gets rid of the filename, need to do it again to get the maildir without /new or /cur at the end */
+	/* Since we're already near the end of the string, it's more efficient to back up from here than start from the beginning a second time */
+	while (tmp > maildir && *tmp != '/') {
+		tmp--;
+	}
+	*tmp = '\0';
+
+	mailbox_notify_new_message(node, mbox, maildir, newpath, size);
+	return 0;
+}
+
 int maildir_move_msg(struct mailbox *mbox, struct bbs_node *node, const char *curfile, const char *curfilename, const char *destmaildir, unsigned int *uidvalidity, unsigned int *uidnext)
 {
 	return maildir_move_msg_filename(mbox, node, curfile, curfilename, destmaildir, uidvalidity, uidnext, NULL, 0);
@@ -1645,6 +1684,7 @@ int maildir_move_msg_filename(struct mailbox *mbox, struct bbs_node *node, const
 		return -1;
 	}
 	bbs_debug(6, "Renamed %s -> %s\n", curfile, newpath);
+	copy_move_untagged_exists(node, mbox, newpath, len);
 	if (newfile) {
 		safe_strncpy(newfile, newpath, len);
 	}
@@ -1699,6 +1739,7 @@ int maildir_copy_msg_filename(struct mailbox *mbox, struct bbs_node *node, const
 	}
 	/* Rather than invalidating quota usage for no reason, just update it so it stays in sync */
 	mailbox_quota_adjust_usage(mbox, copied);
+	copy_move_untagged_exists(node, mbox, newpath, len);
 	return (int) uid;
 }
 

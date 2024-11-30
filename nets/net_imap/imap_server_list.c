@@ -370,6 +370,7 @@ int list_iterate(struct imap_session *imap, struct list_command *lcmd, int level
 		char fulldir[257];
 		char mailboxbuf[256];
 		char relativepath[512];
+		char *relpath = relativepath;
 		const char *mailboxname = entry->d_name;
 
 		/* Only care about directories, not files. */
@@ -416,8 +417,11 @@ int list_iterate(struct imap_session *imap, struct list_command *lcmd, int level
 		if (*mailboxname == HIERARCHY_DELIMITER_CHAR) {
 			mailboxname++;
 		}
+		if (*relpath == HIERARCHY_DELIMITER_CHAR) {
+			relpath++;
+		}
 
-		if (cb(imap, lcmd, relativepath, data)) {
+		if (cb(imap, lcmd, relpath, data)) {
 			goto cleanup;
 		}
 

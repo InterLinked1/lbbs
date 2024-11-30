@@ -174,7 +174,7 @@ static int make_messages2(void)
 
 static int run(void)
 {
-	int client1 = -1, client2 = -1;
+	int client1 = -1, client2 = -1, client3 = -1;
 	int res = -1;
 
 	if (make_messages(TARGET_MESSAGES)) {
@@ -190,6 +190,11 @@ static int run(void)
 
 	client2 = test_make_socket(143);
 	if (client2 < 0) {
+		return -1;
+	}
+
+	client3 = test_make_socket(143);
+	if (client3 < 0) {
 		return -1;
 	}
 
@@ -356,21 +361,69 @@ static int run(void)
 	CLIENT_EXPECT(client1, "* STATUS"); /* Not selected */
 	CLIENT_EXPECT(client2, "* 2 EXISTS"); /* Selected */
 
-	/* LOGOUT */
 	SWRITE(client1, "DONE" ENDL);
 	CLIENT_EXPECT(client1, "e4 OK");
 	SWRITE(client2, "DONE" ENDL);
 	CLIENT_EXPECT(client2, "e6 OK");
 
+	/* If one client marks a message as seen or unseen, the other client should also see it. */
+	CLIENT_EXPECT(client3, "OK");
+	SWRITE(client3, "f1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
+	CLIENT_EXPECT(client3, "f1 OK");
+
+	SWRITE(client3, "f2 SELECT INBOX" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client3, "f2 OK");
+
+	/* FlagChange is included in SELECTED-DELAYED, but not in personal.
+	 * Among other things, this test ensures that we use SELECTED-DELAYED for the selected mailbox, not personal (which is a less specific match). */
+	SWRITE(client3, "f3 NOTIFY SET (SELECTED-DELAYED (MessageNew MessageExpunge FlagChange)) (personal (MessageNew MessageExpunge)) (subtree \"Other Users\" (MessageNew (FLAGS) MessageExpunge MailboxName FlagChange))" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client3, "f3 OK");
+
+	SWRITE(client3, "f4 IDLE" ENDL);
+	CLIENT_EXPECT(client3, "+ idling");
+
+	SWRITE(client1, "g1 SELECT INBOX" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "g1 OK");
+
+	SWRITE(client1, "g2 STORE 1 -FLAGS (\\Seen)" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "* 1 FETCH");
+	CLIENT_EXPECT_EVENTUALLY(client3, "* 1 FETCH"); /* Client 3 should receive FLAG changes for currently selected mailbox */
+
+	/* Repeat with slightly different NOTIFY watch. Previously, this would trigger soft assertions caused by invalid path construction, due to client2 being active, shouldn't anymore though. */
+	SWRITE(client3, "DONE" ENDL);
+	CLIENT_EXPECT(client3, "f4 OK");
+	SWRITE(client3, "f5 NOTIFY SET STATUS (SELECTED-DELAYED (MessageNew (FLAGS) MessageExpunge FlagChange)) (personal (MessageNew (FLAGS) MessageExpunge MailboxName FlagChange)) (subtree \"Other Users\" (MessageNew (FLAGS) MessageExpunge MailboxName FlagChange))" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client3, "f5 OK");
+
+	SWRITE(client3, "f6 IDLE" ENDL);
+	CLIENT_EXPECT(client3, "+ idling");
+
+	SWRITE(client1, "g3 SELECT INBOX" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "g3 OK");
+
+	SWRITE(client1, "g4 STORE 1 +FLAGS (\\Seen)" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "* 1 FETCH");
+	CLIENT_EXPECT_EVENTUALLY(client3, "* 1 FETCH"); /* Client 3 should receive FLAG changes for currently selected mailbox */
+
+	/* Done... */
+	SWRITE(client3, "DONE" ENDL);
+	CLIENT_EXPECT(client3, "f6 OK");
+
+	/* LOGOUT */
+	SWRITE(client3, "z997 LOGOUT" ENDL);
+	CLIENT_EXPECT(client3, "* BYE");
+
 	SWRITE(client2, "z998 LOGOUT" ENDL);
 	CLIENT_EXPECT(client2, "* BYE");
+
 	SWRITE(client1, "z999 LOGOUT" ENDL);
-	CLIENT_EXPECT(client1, "* BYE");
+	CLIENT_EXPECT_EVENTUALLY(client1, "* BYE");
 	res = 0;
 
 cleanup:
 	close_if(client1);
 	close_if(client2);
+	close_if(client3);
 	return res;
 }
 

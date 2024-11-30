@@ -2913,11 +2913,26 @@ static int handle_fetch(struct ws_session *ws, struct imap_client *client, uint3
 	fetch_att = mailimap_fetch_att_new_internaldate();
 	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
 	section = mailimap_section_new(NULL);
+	if (raw) {
+		/* The client requests the raw message in two circumstances:
+		 * 1. The user actually wants to view the raw message source.
+		 * 2. The user downloads the message.
+		 * For #2, we should NOT necessarily mark the message seen,
+		 * because the user may not have really "viewed" the messages,
+		 * i.e. user should be able to download without marking seen.
+		 * For #1, the user has likely already clicked on the message
+		 * to view it BEFORE toggling to raw. Not necessarily, but
+		 * pretty likely.
+		 * So, if requesting raw body, don't automark seen,
+		 * even if we would normally. */
+		fetch_att = mailimap_fetch_att_new_body_peek_section(section);
+	} else {
 #ifdef AUTO_MARK_SEEN
-	fetch_att = mailimap_fetch_att_new_body_section(section);
+		fetch_att = mailimap_fetch_att_new_body_section(section);
 #else
-	fetch_att = mailimap_fetch_att_new_body_peek_section(section);
+		fetch_att = mailimap_fetch_att_new_body_peek_section(section);
 #endif
+	}
 	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
 
 	/* Fetch by UID */
@@ -3409,6 +3424,10 @@ static int process_idle(struct imap_client *client, char *s)
 		} else if (STARTS_WITH(tmp, "RECENT")) {
 			/* RECENT is basically always accompanied by EXISTS, so this is almost academic,
 			 * since we don't currently use this flag for anything, but for sake of completeness: */
+			/*! \todo We should use this, because not all EXISTS are accompanied by EXISTS.
+			 * For example, if a seen message is copied to this folder.
+			 * We should provide explicit information to the client about whether this
+			 * message is seen or not, using this information. */
 			client->idlerefresh |= IDLE_REFRESH_RECENT;
 		} else if (STARTS_WITH(tmp, "EXPUNGE")) {
 			if (client->messages) {
@@ -3430,6 +3449,21 @@ static int process_idle(struct imap_client *client, char *s)
 			} else {
 				bbs_debug(6, "Ignoring FETCH update since not visible on current page\n");
 			}
+			/*! \todo XXX
+			 * If the message was previously \Seen but now isn't, or wasn't, but now is,
+			 * then we should also adjust the number of unseen messages in the folder.
+			 * However, we don't actually keep track of the original flags for this message,
+			 * so we can't do that. Even the frontend only knows the flags for the messages
+			 * that are on the current page, but not other messages.
+			 * As such, the correct count will "drift" currently. Workarounds would be:
+			 * - Store a bit for each message, seen/unseen, and compare before/after (lots of inefficient accounting)
+			 * - Issue a STATUS to get the current number of unseen messages. Slow/clunky from an IMAP perspective,
+			 *   but more efficient from a bookkeeping one for us.
+			 *
+			 * We have a similar problem for EXISTS and EXPUNGE, actually.
+			 * For EXPUNGE, we correctly decrement client->messages, but we don't know what the new mailbox size is.
+			 * For EXISTS, we correctly increment client->messages, but we don't know what the new mailbox size is.
+			 */
 		} else {
 			bbs_debug(3, "Ignoring IDLE data: %s", s); /* Already ends in LF */
 		}

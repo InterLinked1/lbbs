@@ -57,6 +57,11 @@ static const char *testfilter = NULL;
 
 int startup_run_unit_tests;
 
+/* Log file for BBS STDOUT output (empty after execution???)
+ * Note: Normal BBS file logging is still done to the normal BBS log files. */
+#define TEST_LOGFILE "/tmp/test_lbbs.log"
+
+/* Log file for valgrind output */
 #define VALGRIND_LOGFILE "/tmp/test_lbbs/valgrind.log"
 
 static const char *loglevel2str(enum bbs_log_level level)
@@ -383,7 +388,7 @@ static void *io_relay(void *varg)
 	int found;
 	char c = '\n';
 
-	logfd = open("/tmp/test_lbbs.log", O_CREAT | O_TRUNC, 0600);
+	logfd = open(TEST_LOGFILE, O_CREAT | O_TRUNC, 0600);
 	if (logfd < 0) {
 		bbs_error("open failed: %s\n", strerror(errno));
 		return NULL;
@@ -394,6 +399,7 @@ static void *io_relay(void *varg)
 		res = read(pipefd[0], buf, sizeof(buf) - 1);
 		if (res <= 0) {
 			bbs_debug(4, "read returned %ld\n", res);
+			close(logfd);
 			return NULL;
 		}
 		write(logfd, buf, (size_t) res);

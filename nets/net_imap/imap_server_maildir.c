@@ -58,6 +58,16 @@ static void set_current_mailbox(struct imap_session *imap, struct mailbox *mbox)
 	}
 }
 
+/*!
+ * \brief Translate an IMAP directory path to the full path of the IMAP mailbox on disk
+ * \param imap
+ * \param directory IMAP directory path (mailbox name)
+ * \param buf
+ * \param len
+ * \param[out] acl
+ * \param[out] mboxptr
+ * \retval 0 on success, -1 on failure
+ */
 static int __imap_translate_dir(struct imap_session *imap, const char *directory, char *buf, size_t len, int *acl, struct mailbox **mboxptr)
 {
 	enum mailbox_namespace ns;
@@ -74,7 +84,7 @@ static int __imap_translate_dir(struct imap_session *imap, const char *directory
 		safe_strncpy(buf, mailbox_maildir(mbox), len);
 		ns = NAMESPACE_PRIVATE;
 	} else if (strstr(directory, "..")) {
-		bbs_warning("Invalid IMAP directory: %s\n", directory);
+		bbs_warning("Invalid IMAP mailbox name: %s\n", directory);
 		return -1;
 	} else {
 		/* Determine what namespace this mailbox is in */

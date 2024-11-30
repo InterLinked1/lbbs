@@ -437,10 +437,14 @@ static int generate_mailbox_name(struct imap_session *imap, const char *restrict
 			if (atoi(bname)) {
 				/* INBOX */
 				safe_strncpy(buf, "INBOX", len);
-			} else {
+			} else if (*bname == '.') {
 				/* Skip leading . for maildir++ */
 				bname++; /* Skip leading . */
 				safe_strncpy(buf, bname, len);
+			} else {
+				strcpy(buf, "."); /* Copy something that will never match a real maildir name */
+				bbs_warning("Unexpected base name: %s\n", bname);
+				bbs_soft_assert(0);
 			}
 			/* No need to check our own ACL, we should have full permission */
 		} else {
@@ -495,7 +499,7 @@ void send_untagged_fetch(struct imap_session *imap, const char *maildir, int seq
 	RWLIST_TRAVERSE(&sessions, s, entry) {
 		int res;
 		char mboxname[256];
-		if (s == imap) { /* Skip if the update was caused by the client */
+		if (s == imap) { /* Skip if the update was caused by the client. The STORE handler already sent a response to this client if needed. */
 			continue;
 		}
 		/* imap->folder is maybe not the same name for s.
@@ -750,7 +754,7 @@ static void send_untagged_uidvalidity(struct mailbox *mbox, const char *maildir,
 	size_t len;
 	struct imap_session *s;
 
-	/* This should never happen, but if the UIDVALIDITY of a mailbox changes,
+	/* This should never happen, except for the first message, but if the UIDVALIDITY of a mailbox changes,
 	 * we MUST notify any clients currently using it.
 	 * Use same format as UIDVALIDITY response to SELECT/EXAMINE (RFC 2683 3.4.3) */
 	len = (size_t) snprintf(buf, sizeof(buf), "* OK [UIDVALIDITY %u] New UIDVALIDITY value!\r\n", uidvalidity);
@@ -789,6 +793,11 @@ static void imap_mbox_watcher(struct mailbox_event *event)
 		case EVENT_MESSAGE_EXPUNGE:
 		case EVENT_MESSAGE_EXPIRE:
 			send_untagged_expunge(event->node, event->mbox, event->maildir, event->expungesilent, event->uids, event->seqnos, event->numuids);
+			break;
+		case EVENT_FLAGS_SET:
+		case EVENT_FLAGS_CLEAR:
+			/* Do nothing here.
+			 * send_untagged_fetch is already called in maildir_msg_setflags_modseq() */
 			break;
 		case EVENT_MAILBOX_CREATE:
 		case EVENT_MAILBOX_DELETE:
@@ -1323,7 +1332,7 @@ static int select_examine_response(struct imap_session *imap, enum select_type r
 
 	if (was_selected) {
 		/* Best practice to always include some response text after [] */
-		imap_send(imap, "OK [CLOSED] Closed"); /* RFC 7162 3.2.11, example in 3.2.5.1 */
+		imap_send(imap, "OK [CLOSED] Previous mailbox closed"); /* RFC 7162 3.2.11, example in 3.2.5.1 */
 	}
 
 	imap_send(imap, "FLAGS (%s%s)", IMAP_FLAGS, numkeywords ? keywords : "");
@@ -2092,6 +2101,8 @@ static int handle_copy(struct imap_session *imap, const char *sequences, const c
 	} else if (!numcopies && quotaleft <= 0) {
 		imap_reply(imap, "NO [OVERQUOTA] Insufficient quota remaining");
 	} else {
+		/* maildir_copy_msg_filename sends the untagged EXISTS for the new message in the destination mailbox.
+		 * No untagged EXISTS should be sent to the client running the command. */
 		if (IMAP_HAS_ACL(imap->acl, IMAP_ACL_READ)) {
 			imap_reply(imap, "OK [COPYUID %u %s %s] COPY completed", uidvalidity, S_IF(olduidstr), S_IF(newuidstr));
 		} else {
@@ -2205,6 +2216,8 @@ cleanup:
 	if (expunged) {
 		imap->highestmodseq = maildir_indicate_expunged(EVENT_MESSAGE_EXPUNGE, imap->node, imap->mbox, imap->curdir, expunged, expungedseqs, exp_lengths, 0);
 		free(expunged);
+		/* maildir_move_msg_filename sends the untagged EXISTS for the new message in the destination mailbox.
+		 * No untagged EXISTS should be sent to the client running the command. */
 	}
 
 	mailbox_unlock(imap->mbox);
@@ -2632,6 +2645,13 @@ cleanup2:
 	return -1;
 }
 
+struct uintlist_metadata {
+	unsigned int *uids;
+	unsigned int *seqs;
+	int lengths;
+	int allocsizes;
+};
+
 struct copy_append {
 	struct imap_session *imap;
 	struct imap_client *appendclient;
@@ -2642,11 +2662,14 @@ struct copy_append {
 	unsigned int synchronizing:1;
 	unsigned int multiappend:1;
 	int appended;
+	struct uintlist_metadata *meta;
 };
 
+/*! \brief Part 2: Delete the source messages after a MOVE operation from local mailbox to a remote IMAP server */
 static int copy_append_move_cb(const char *dir_name, const char *filename, int seqno, void *obj)
 {
 	struct copy_append *ca = obj;
+	struct uintlist_metadata *meta = ca->meta;
 	unsigned int msguid;
 	char fullname[256];
 	int error = 0;
@@ -2662,10 +2685,13 @@ static int copy_append_move_cb(const char *dir_name, const char *filename, int s
 	snprintf(fullname, sizeof(fullname), "%s/%s", dir_name, filename);
 	if (unlink(fullname)) {
 		bbs_error("unlink(%s) failed: %s\n", fullname, strerror(errno));
+	} else {
+		uintlist_append2(&meta->uids, &meta->seqs, &meta->lengths, &meta->allocsizes, msguid, (unsigned int) seqno); /* store UID and seqno */
 	}
 	return 0;
 }
 
+/*! \brief Part 1: MOVE a message from a local mailbox to a remote IMAP server by APPEND'ing it */
 static int copy_append_cb(const char *dir_name, const char *filename, int seqno, void *obj)
 {
 	struct copy_append *ca = obj;
@@ -3058,8 +3084,17 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 				IMAP_CLIENT_EXPECT(&destclient->client, " OK"); /* tagged OK */
 			}
 			if (move) {
+				struct uintlist_metadata meta;
+				memset(&meta, 0, sizeof(meta));
+				ca.meta = &meta;
 				/* Now, delete all the source messages if this was a move operation */
 				maildir_ordered_traverse(imap->curdir, copy_append_move_cb, &ca); /* Delete */
+				if (meta.uids) {
+					/* We need to send an untagged EXPUNGE for all messages that no longer exist locally. */
+					imap->highestmodseq = maildir_indicate_expunged(EVENT_MESSAGE_EXPUNGE, imap->node, imap->mbox, imap->curdir, meta.uids, meta.seqs, meta.lengths, 0);
+					free(meta.uids);
+				}
+				free_if(meta.seqs);
 			}
 			imap_reply(imap, "OK %s completed", move ? "MOVE" : "COPY");
 		} else {
@@ -4847,10 +4882,21 @@ static int imap_process(struct imap_session *imap, char *s)
 done:
 	if (res) {
 		bbs_debug(4, "%s command returned %d\n", command, res);
-	} else if (!strlen_zero(command)) {
+	}
+#if 0
+	/* Can't call flush_updates here, the command has already completed
+	 * (this is when we are "supposed" to send updates to the client, but that is
+	 * BEFORE the tagged response, not AFTER.
+	 *
+	 * \todo XXX What we SHOULD be doing is calling flush_updates
+	 * right before every command sends an untagged response;
+	 * unfortunately, there is no easy way to do that besides
+	 * copying that to every command's function. */
+	else if (!strlen_zero(command)) {
 		res = flush_updates(imap, command, NULL);
 		res = res < 0 ? -1 : 0;
 	}
+#endif
 	return res;
 }
 

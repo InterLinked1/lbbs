@@ -33,6 +33,8 @@
 #include "nets/net_imap/imap_server_notify.h"
 #include "nets/net_imap/imap_client.h"
 
+/* #define DEBUG_NOTIFY */
+
 enum notify_mailbox_specifier {
 	/* Selected mailbox (overrides everything else) */
 	/* Only one of either SELECTED or SELECTED_DELAYED may exist for the entire NOTIFY command */
@@ -43,7 +45,7 @@ enum notify_mailbox_specifier {
 	NOTIFY_INBOXES,				/*!< Any selectable mailbox in the personal namespace to which an MDA may deliver messages, i.e. just INBOX for us */
 	NOTIFY_SUBSCRIBED,			/*!< All mailboxes subscribed to by the user */
 	NOTIFY_SUBTREE,				/*!< Specified mailbox(es) and all selected mailboxes subordinate to it */
-	NOTIFY_MAILBOXES,			/*!< Specified ailbox(es). No wildcard expansion. */
+	NOTIFY_MAILBOXES,			/*!< Specified mailbox(es). No wildcard expansion. */
 };
 
 /*! \brief A single watch */
@@ -105,6 +107,9 @@ static struct notify_watch *notify_get_match(struct imap_session *imap, const ch
 
 	/* Currently selected folder is treated specially */
 	selected = imap->folder && !strcmp(name, imap->folder);
+#ifdef DEBUG_NOTIFY
+	bbs_debug(3, "Currently selected mailbox selected match: %d (%s|%s)\n", selected, name, imap->folder);
+#endif
 
 	RWLIST_TRAVERSE(&notify->watchlist, w, entry) {
 		/* Only SELECTED and NOTIFY_SELECTED_DELAYED match the currently selected mailbox */
@@ -155,6 +160,36 @@ int imap_notify_applicable(struct imap_session *imap, struct mailbox *mbox, cons
 	return imap_notify_applicable_fetchargs(imap, mbox, folder, maildir, e, NULL);
 }
 
+#ifdef DEBUG_NOTIFY
+static void dump_events_str(enum mailbox_event_type events)
+{
+#define DUMP_EVENT(e) if (events & e) { bbs_debug(3, "Event present: %s\n", #e); }
+	DUMP_EVENT(EVENT_MESSAGE_APPEND);
+	DUMP_EVENT(EVENT_MESSAGE_EXPIRE);
+	DUMP_EVENT(EVENT_MESSAGE_EXPUNGE);
+	DUMP_EVENT(EVENT_MESSAGE_NEW);
+	DUMP_EVENT(EVENT_QUOTA_EXCEED);
+	DUMP_EVENT(EVENT_QUOTA_WITHIN);
+	DUMP_EVENT(EVENT_QUOTA_CHANGE);
+	DUMP_EVENT(EVENT_MESSAGE_READ);
+	DUMP_EVENT(EVENT_MESSAGE_TRASH);
+	DUMP_EVENT(EVENT_FLAGS_SET);
+	DUMP_EVENT(EVENT_FLAGS_CLEAR);
+	DUMP_EVENT(EVENT_LOGIN);
+	DUMP_EVENT(EVENT_LOGOUT);
+	DUMP_EVENT(EVENT_MAILBOX_CREATE);
+	DUMP_EVENT(EVENT_MAILBOX_DELETE);
+	DUMP_EVENT(EVENT_MAILBOX_RENAME);
+	DUMP_EVENT(EVENT_MAILBOX_SUBSCRIBE);
+	DUMP_EVENT(EVENT_MAILBOX_UNSUBSCRIBE);
+	DUMP_EVENT(EVENT_METADATA_CHANGE);
+	DUMP_EVENT(EVENT_SERVER_METADATA_CHANGE);
+	DUMP_EVENT(EVENT_ANNOTATION_CHANGE);
+	DUMP_EVENT(EVENT_MAILBOX_UIDVALIDITY_CHANGE);
+#undef DUMP_EVENT
+}
+#endif
+
 int imap_notify_applicable_fetchargs(struct imap_session *imap, struct mailbox *mbox, const char *folder, const char *maildir, enum mailbox_event_type e, const char **fetchargs)
 {
 	if (!imap->notify) {
@@ -186,7 +221,10 @@ int imap_notify_applicable_fetchargs(struct imap_session *imap, struct mailbox *
 			/* By default, no events for non-selected mailboxes */
 			events = selected ? DEFAULT_EVENTS : 0;
 		}
-
+#ifdef DEBUG_NOTIFY
+		bbs_debug(3, "'%s'|'%s', '%s'|'%s', mailbox selected: %d, spec: %d, event match: %d\n", folder, imap->folder, maildir, imap->dir, selected, w->spec, events & e ? 1 : 0);
+		dump_events_str(events);
+#endif
 		RWLIST_UNLOCK(&notify->watchlist);
 		if (events & e) {
 			return selected ? 1 : -1;
@@ -351,7 +389,7 @@ static int add_watch(struct imap_session *imap, struct imap_notify *notify, char
 				events |= IMAP_EVENT_MAILBOX_NAME;
 			} else if (!strcasecmp(e, "SubscriptionChange")) {
 				events |= IMAP_EVENT_SUBSCRIPTION_CHANGE;
-#if 0 /* Remove once these IMAP extensions are supported */
+#if 0 /*! \todo Remove once these IMAP extensions are supported */
 			} else if (!strcasecmp(e, "AnnotationChange")) {
 				events |= IMAP_EVENT_ANNOTATION_CHANGE;
 			} else if (!strcasecmp(e, "MailboxMetadataChange")) {
@@ -389,6 +427,10 @@ static int add_watch(struct imap_session *imap, struct imap_notify *notify, char
 	}
 	w->spec = spec;
 	w->events = events;
+#ifdef DEBUG_NOTIFY
+	bbs_debug(3, "Adding NOTIFY watch for spec %d, events:\n", spec);
+	dump_events_str(w->events);
+#endif
 	SET_BITFIELD(w->none, none);
 	if (fetchargs) {
 		strcpy(w->data, fetchargs); /* Safe */
@@ -413,11 +455,16 @@ static int notify_list_cb(struct imap_session *imap, struct list_command *lcmd, 
 		return 0; /* No STATUS for currently selected mailbox */
 	}
 
-	if (lcmd->ns == NAMESPACE_OTHER) {
-		snprintf(fullname, sizeof(fullname), OTHER_NAMESPACE_PREFIX HIERARCHY_DELIMITER "%s", name);
-		name = fullname;
-	} else if (lcmd->ns == NAMESPACE_SHARED) {
-		snprintf(fullname, sizeof(fullname), SHARED_NAMESPACE_PREFIX HIERARCHY_DELIMITER "%s", name);
+	if (lcmd->ns == NAMESPACE_OTHER || lcmd->ns == NAMESPACE_SHARED) {
+		if (lcmd->ns == NAMESPACE_OTHER) {
+			snprintf(fullname, sizeof(fullname), OTHER_NAMESPACE_PREFIX HIERARCHY_DELIMITER "%s", name);
+		} else if (lcmd->ns == NAMESPACE_SHARED) {
+			snprintf(fullname, sizeof(fullname), SHARED_NAMESPACE_PREFIX HIERARCHY_DELIMITER "%s", name);
+		}
+		if (strstr(fullname, "..")) {
+			bbs_warning("Unexpected folder: '%s' (maildir path '%s' is invalid)\n", name, fullname);
+			bbs_soft_assert(!strstr(fullname, "..")); /* If this happens, something got malformed */
+		}
 		name = fullname;
 	}
 
@@ -538,7 +585,6 @@ int handle_notify(struct imap_session *imap, char *s)
 		struct list_command lcmd;
 
 		memset(&lcmd, 0, sizeof(lcmd));
-
 		lcmd.ns = NAMESPACE_PRIVATE;
 		list_iterate(imap, &lcmd, 0, "", mailbox_maildir(imap->mbox), notify_list_cb, notify);
 		if (notify->nonpersonal) {
