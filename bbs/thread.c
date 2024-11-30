@@ -253,6 +253,14 @@ int bbs_pthread_cancel_kill(pthread_t thread)
 {
 	int res;
 
+	/* Log a message before calling pthread_cancel, since this is dangerous.
+	 * In the unlikely event that a thread is cancelled while in a critical section,
+	 * deadlock could ensue. I've suspected this might have been responsible for
+	 * some issues in the past but few clues have been available to such activity,
+	 * so this log message is an important clue if that happens (see [LBBS-86]). */
+	bbs_debug(1, "Attempting to cancel thread %lu\n", (unsigned long) thread);
+
+#undef pthread_cancel
 	res = pthread_cancel(thread);
 	if (res) {
 		if (res == ESRCH) {

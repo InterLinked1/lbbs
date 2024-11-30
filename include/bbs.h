@@ -89,6 +89,8 @@
 #define ctime(a) Do_not_use_ctime__use_ctime_r
 #define ptsname(fd) Do_not_use_ptsname__use_ptsname_r
 #define strncpy(dest, src, size) Do_not_use_strncpy__use_safe_strncpy
+/* Prohibit direct usage of dangerous functions */
+#define pthread_cancel(t) Do_not_use_pthread_cancel__use_bbs_pthread_cancel_kill
 
 #ifndef BBS_MAIN_FILE
 /* Allow printf only in bbs.c */
