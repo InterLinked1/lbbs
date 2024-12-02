@@ -86,11 +86,27 @@ ssize_t __attribute__ ((format (gnu_printf, 3, 4))) __imap_client_send_log(struc
 #define imap_client_send(client, fmt, ...) __imap_client_send_log(client, 0, fmt, ## __VA_ARGS__)
 #define imap_client_send_log(client, fmt, ...) __imap_client_send_log(client, 1, fmt, ## __VA_ARGS__)
 
+#define imap_client_wait_response(client, fd, ms) __imap_client_wait_response(client, fd, ms, 1, __LINE__, NULL, NULL)
+
 #define imap_client_send_wait_response(client, fd, ms, fmt, ...) __imap_client_send_wait_response(client, fd, ms, 1, __LINE__, NULL, NULL, fmt, ## __VA_ARGS__)
 #define imap_client_send_wait_response_cb(client, fd, ms, cb, cbdata, fmt, ...) __imap_client_send_wait_response(client, fd, ms, 1, __LINE__, cb, cbdata, fmt, ## __VA_ARGS__)
 #define imap_client_send_wait_response_noecho(client, fd, ms, fmt, ...) __imap_client_send_wait_response(client, fd, ms, 0, __LINE__, NULL, NULL, fmt, ## __VA_ARGS__)
 #define imap_client_send_wait_response_cb_noecho(client, fd, ms, cb, cbdata, fmt, ...) __imap_client_send_wait_response(client, fd, ms, 0, __LINE__, cb, cbdata, fmt, ## __VA_ARGS__)
 
+/*! \brief Same as __imap_client_send_wait_response, but don't send a command initially, just wait for the tagged response */
+int __imap_client_wait_response(struct imap_client *client, int fd, int ms, int echo, int lineno, int (*cb)(struct imap_client *client, const char *buf, size_t len, void *cbdata), void *cbdata);
+
+/*!
+ * \brief Send a command to remote IMAP server and wait for a response, passing through any receive untagged responses inbetween directly back to the client
+ * \param client
+ * \param fd Additional file descriptor on which to poll(used only for IDLE, -1 otherwise)
+ * \param ms Max time to wait for poll / bbs_readline
+ * \param echo Whether to relay output from remote server to our local client
+ * \param lineno
+ * \param cb Custom callback to run for each line received from remote server. Returning -1 from callback will terminate wait loop
+ * \param cbdata Callback data for callback function
+ * \param fmt printf-style fmt string
+ */
 int __attribute__ ((format (gnu_printf, 8, 9))) __imap_client_send_wait_response(struct imap_client *client, int fd, int ms, int echo, int lineno, int (*cb)(struct imap_client *client, const char *buf, size_t len, void *cbdata), void *cbdata, const char *fmt, ...);
 
 /*! \retval Number of replacements made */

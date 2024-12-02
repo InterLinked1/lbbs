@@ -440,6 +440,7 @@ static ssize_t client_command_passthru(struct imap_client *client, int fd, const
 		}
 		res = bbs_readline(tcpclient->rfd, &tcpclient->rldata, "\r\n", ms);
 		if (res < 0) { /* Could include remote server disconnect */
+			bbs_warning("Failed to receive expected response from remote server\n");
 			return res;
 		}
 		if (cb) {
@@ -469,9 +470,13 @@ static ssize_t client_command_passthru(struct imap_client *client, int fd, const
 #endif
 		if (!strncmp(buf, tag, (size_t) taglen)) {
 			imap_debug(10, "<= %.*s\n", (int) res, buf);
-			if (STARTS_WITH(buf + taglen, "BAD")) {
+			if (!STARTS_WITH(buf + taglen, "OK")) { /* BAD or NO */
 				/* We did something we shouldn't have, oops */
-				bbs_warning("Command '%.*s%.*s' failed: %s\n", taglen, tag, cmdlen > 2 ? cmdlen - 2 : cmdlen, cmd, buf); /* Don't include trailing CR LF */
+				if (cmd) {
+					bbs_warning("Command '%.*s%.*s' failed: %s\n", taglen, tag, cmdlen > 2 ? cmdlen - 2 : cmdlen, cmd, buf); /* Don't include trailing CR LF */
+				} else {
+					bbs_warning("Received negatory response: %s\n", buf);
+				}
 			}
 			client->lastactive = time(NULL); /* Successfully just got data from remote server */
 			break; /* That's all, folks! */
@@ -508,6 +513,30 @@ ssize_t __imap_client_send_log(struct imap_client *client, int log, const char *
 	}
 
 	return bbs_write(client->client.wfd, buf, (size_t) len);
+}
+
+int __imap_client_wait_response(struct imap_client *client, int fd, int ms, int echo, int lineno, int (*cb)(struct imap_client *client, const char *buf, size_t len, void *cbdata), void *cbdata)
+{
+	char tagbuf[15];
+	int taglen;
+	const char *tag = "tag";
+
+	if (!client->imap) {
+		bbs_warning("No active IMAP client?\n"); /* Shouldn't happen... */
+		bbs_soft_assert(0);
+	} else if (strlen_zero(client->imap->tag)) {
+		bbs_warning("No active IMAP tag, using generic one\n");
+		bbs_soft_assert(0);
+	} else {
+		tag = client->imap->tag;
+	}
+
+	taglen = snprintf(tagbuf, sizeof(tagbuf), "%s ", tag); /* Reuse the tag the client sent us, so we can just passthrough the response */
+
+	UNUSED(lineno);
+
+	/* Read until we get the tagged respones */
+	return client_command_passthru(client, fd, tagbuf, taglen, NULL, 0, ms, echo, cb, cbdata) <= 0;
 }
 
 int __imap_client_send_wait_response(struct imap_client *client, int fd, int ms, int echo, int lineno, int (*cb)(struct imap_client *client, const char *buf, size_t len, void *cbdata), void *cbdata, const char *fmt, ...)

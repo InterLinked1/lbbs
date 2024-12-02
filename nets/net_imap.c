@@ -2622,15 +2622,12 @@ static int handle_append(struct imap_session *imap, char *s)
 		if (res < 0) {
 			return -1;
 		}
-		/* Relay response from remote, and no need to clean up */
-		res = bbs_readline(imap->client->client.rfd, &imap->client->client.rldata, "\r\n", SEC_MS(5));
-		if (res < 0) {
-			/* No need to clean up, since for remote server,
-			 * we're not appending seqnos/UIDs to a uintlist */
-			bbs_warning("APPEND tagged response not received from remote server?\n");
+		/* Relay response from remote, and no need to clean up.
+		 * We may (should) receive an untagged EXISTS for the uploaded message,
+		 * so use imap_client_wait_response to wait for the actual tagged response. */
+		if (imap_client_wait_response(imap->client, -1, SEC_MS(5))) {
 			return -1;
 		}
-		_imap_reply(imap, "%s\r\n", imap->client->client.buf);
 		return 0;
 	}
 
@@ -3035,13 +3032,16 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 			if (SWRITE(destclient->client.wfd, "\r\n") != STRLEN("\r\n")) {
 				goto cleanup;
 			}
-			/* Well, hopefully that all worked!
-			 * Use IMAP_CLIENT_EXPECT_EVENTUALLY since we may also get untagged EXISTS's for the copied messages. */
-
-			/*! \todo BUGBUG For any IMAP_CLIENT_EXPECT_EVENTUALLY, all the untagged responses that we "ignore
-			 * should actually pass through to the client directly, since an offline client will need those
-			 * in order to be synchronized. */
-			IMAP_CLIENT_EXPECT_EVENTUALLY(&destclient->client, appended + 1, " OK"); /* tagged OK */
+			/* Well, hopefully that all worked! Now, wait for confirmation of a successful upload.
+			 *
+			 * Here, we use imap_client_wait_response instead of IMAP_CLIENT_EXPECT_EVENTUALLY to wait for the tagged OK,
+			 * because any untagged data we receive prior to that should pass through directly to the client
+			 * (rather than being silently ignored/discarded as IMAP_CLIENT_EXPECT_EVENTUALLY does).
+			 * This way, the client can stay synchronized with the remote server, which is important
+			 * since APPEND can trigger untagged EXISTS's, etc. */
+			if (imap_client_wait_response(destclient, -1, SEC_MS(5))) {
+				goto cleanup;
+			}
 		}
 		if (move) {
 			/* Now that we copied everything to the destination mailbox, delete the source */
