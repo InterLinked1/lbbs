@@ -2269,7 +2269,9 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 	if (fetch_result) {
 		mailimap_fetch_list_free(fetch_result);
 	}
-	mailimap_fetch_type_free(fetch_type);
+	if (fetch_type) { /* This can be NULL here... */
+		mailimap_fetch_type_free(fetch_type);
+	}
 
 finalize:
 	mailimap_set_free(set);
