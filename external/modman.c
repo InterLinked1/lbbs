@@ -301,6 +301,7 @@ static int load_header_file_locations(void)
 {
 	FILE *pfp;
 	char buf[512];
+	int bytes;
 	int paths_detected = 0;
 	char *pos = sys_include_paths;
 	size_t len = sizeof(sys_include_paths);
@@ -314,7 +315,6 @@ static int load_header_file_locations(void)
 		return -1;
 	}
 	while (len > 0 && fgets(buf, sizeof(buf), pfp)) {
-		int bytes;
 		if (strncmp(buf, " /", 2)) {
 			continue;
 		}
@@ -324,10 +324,25 @@ static int load_header_file_locations(void)
 		paths_detected++;
 		modman_log(7, "  System include path: %s", buf + 1); /* Already ends in LF */
 		bytes = snprintf(pos, len, "%s", buf + 1);
+		pos[bytes - 1] = '\0'; /* Temporarily null terminate */
+		if (access(pos, R_OK)) {
+			modman_warning("Can't access directory '%s'\n", pos);
+		}
+		pos[bytes - 1] = '\n'; /* Restore LF */
 		pos += bytes;
 		len -= bytes;
 	}
 	pclose(pfp);
+#define SYS_INCLUDE_DIR "/usr/include/x86_64-linux-gnu"
+	if (!strstr(buf, SYS_INCLUDE_DIR) && !access(SYS_INCLUDE_DIR, R_OK)) {
+		/* This directory is not explicitly returned by the gcc output, but all the <sys/...> header files live here: */
+		modman_log(7, "  System include path: %s\n", SYS_INCLUDE_DIR);
+		bytes = snprintf(pos, len, SYS_INCLUDE_DIR "\n");
+#undef SYS_INCLUDE_DIR
+		pos += bytes;
+		len -= bytes;
+		paths_detected++;
+	}
 	if (!paths_detected) {
 		modman_error("Failed to determine what the system include paths are\n");
 		return -1;
@@ -395,6 +410,10 @@ static int check_header_file(const char *dirname, const char *modname, const cha
 	paths = incpaths;
 	while ((path = strsep(&paths, "\n"))) {
 		char *includedir;
+
+		if (!*path) {
+			continue;
+		}
 
 		includedir = strchr(path, '/'); /* Skip leading whitespace, and strchr cannot return NULL. */
 		TERMINATE_AT(path, '\n');

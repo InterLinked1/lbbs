@@ -126,7 +126,11 @@ FILES=""
 
 # Backup databases
 BACKUP_DBS=""
-ALL_DBS=$( mysql -N -e "show databases like '%';" )
+
+# Only backup the database if it's on the same server. If it's not local, skip it.
+if which "mysql" > /dev/null; then
+	ALL_DBS=$( mysql -N -e "show databases like '%';" )
+fi
 
 # $1 = database to check
 database_exists() {

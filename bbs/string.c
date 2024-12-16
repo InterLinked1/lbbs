@@ -620,10 +620,10 @@ int bbs_quoted_printable_decode(char *restrict s, size_t *restrict len, int prin
 				if (!printonly || isprint((char) hex)) { /* XXX isprint check only works for single-byte UTF-8 characters */
 					*d++ = (char) hex;
 					*len += 1;
-					bbs_debug(5, "Decoded quoted printable[%lu] %s -> %d (%c)\n", index, hexcode, hex, hex);
+					bbs_debug(10, "Decoded quoted printable[%lu] %s -> %d (%c)\n", index, hexcode, hex, isprint(hex) ? hex : '.');
 				} else {
 					/* Don't add invalid UTF-8 characters in the first place */
-					bbs_warning("Invalid quoted printable[%lu] %s -> %d (%c)\n", index, hexcode, hex, hex);
+					bbs_warning("Invalid quoted printable[%lu] %s -> %d (%c)\n", index, hexcode, hex, isprint(hex) ? hex : '.');
 				}
 			}
 			s++;

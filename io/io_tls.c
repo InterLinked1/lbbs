@@ -1175,7 +1175,7 @@ static int tlsreload(int fd)
 	struct ssl_fd *sfd;
 
 	if (!locks_initialized) {
-		bbs_dprintf(fd, "TLS may only be reloaded if it initialized during startup. Restart the BBS to load new configuration.\n");
+		bbs_dprintf(fd, "TLS may only be reloaded if it initialized during startup. Completely unload and load (/reload) the TLS module to load new configuration.\n");
 		return -1;
 	}
 
@@ -1215,7 +1215,7 @@ static int tlsreload(int fd)
 
 	if (ssl_load_config(1)) {
 		bbs_rwlock_unlock(&ssl_cert_lock);
-		bbs_debug(5, "Failed to reload TLS configuration, TLS will now be disabled.\n");
+		bbs_debug(5, "Failed to reload TLS configuration, TLS server will now be disabled.\n");
 		return -1;
 	}
 
@@ -1256,8 +1256,9 @@ static int ssl_server_init(void)
 	}
 
 	if (ssl_load_config(0)) {
-		bbs_debug(5, "TLS will not be available\n");
-		return -1;
+		bbs_debug(5, "TLS server will not be available\n");
+	} else {
+		ssl_is_available = 1;
 	}
 	if (lock_init()) {
 		bbs_error("lock_init failed, TLS disabled\n");
@@ -1265,7 +1266,6 @@ static int ssl_server_init(void)
 	}
 
 	locks_initialized = 1;
-	ssl_is_available = 1;
 	return 0;
 }
 
@@ -1303,12 +1303,11 @@ static int setup(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restr
 		return -1;
 	}
 
-	if (!ssl_is_available) {
-		bbs_warning("Declining TLS setup\n");
-		return -1;
-	}
-
 	if (dir & TRANSFORM_SERVER) {
+		if (!ssl_is_available) {
+			bbs_error("Declining TLS setup\n"); /* Shouldn't happen since we didn't register the SERVER I/O callback... */
+			return -1;
+		}
 		ssl = ssl_new_accept(fd, rfd, wfd);
 	} else if (dir & TRANSFORM_CLIENT) {
 		const char *snihostname = arg;
@@ -1349,10 +1348,12 @@ static int query(struct bbs_io_transformation *tran, int query, void *data)
 static int load_module(void)
 {
 	if (ssl_server_init()) {
+		bbs_error("Failed to initialize TLS\n");
 		ssl_server_shutdown();
 		return -1;
 	}
-	if (bbs_io_transformer_register("TLS", setup, query, cleanup, TRANSFORM_TLS_ENCRYPTION, TRANSFORM_SERVER_CLIENT_TX_RX)) {
+	/* If we loaded server configuration, allow TLS as both server/client. Otherwise, just client. */
+	if (bbs_io_transformer_register("TLS", setup, query, cleanup, TRANSFORM_TLS_ENCRYPTION, ssl_is_available ? TRANSFORM_SERVER_CLIENT_TX_RX : (TRANSFORM_CLIENT_TX | TRANSFORM_CLIENT_RX))) {
 		ssl_server_shutdown();
 		return -1;
 	}

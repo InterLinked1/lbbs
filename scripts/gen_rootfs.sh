@@ -4,6 +4,12 @@
 # must be run as root (or sudo)
 # Helpful resources: https://github.com/sharadg/containers_basics ; https://stackoverflow.com/questions/30379381/docker-command-not-found-even-though-installed-with-apt-get
 
+# WARNING: This script installs Docker temporarily to create the filesystem, which can be detrimental to your system.
+# Although the script attempts to remove Docker after running and clean up the system, artifacts from the Docker installation may linger.
+# It is recommended to run this script on a development or throwaway system, to avoid causing issues to a production system.
+
+apt-get install -y curl
+
 # Install Docker
 curl -sSL https://get.docker.com/ | sh
 
@@ -40,12 +46,36 @@ rm ./rootfs/.dockerenv
 # to administer the container, since $BBS_USER is only defined within the BBS.
 sed -i 's/\\u/${BBS_USER:-\\u}/' ./rootfs/etc/bash.bashrc
 
-# Disable the apt sandbox so we can run apt-get update using isoroot -n:
+# Disable the apt sandbox so we can run apt-get update using external/isoroot -n:
 # Adapted from 2nd answer here: https://stackoverflow.com/a/71096036/
-sed -i 's/_apt/root/' ./rootfs/etc/apt/apt.conf.d/sandbox-disable
+if [ -f /rootfs/etc/apt/apt.conf.d/sandbox-disable ]; then
+	sed -i 's/_apt/root/' ./rootfs/etc/apt/apt.conf.d/sandbox-disable
+else
+	printf "Couldn't find file in container filesystem: %s\n" "/etc/apt/apt.conf.d/sandbox-disable"
+	printf "apt-get update will not work inside the container!\n"
+fi
 
 # Copy added terminfo definitions from /etc/terminfo
 cp -r /etc/terminfo/* ./rootfs/etc/terminfo
 
 # Add binaries that are useful inside the BBS
 cp /var/lib/lbbs/external/filemgr ./rootfs/bin
+
+# Stop Docker and clean up. We only needed it to conveniently create the container file system for us, the BBS itself doesn't use it while running.
+service docker stop
+systemctl disable docker.service
+systemctl disable docker.socket
+
+apt-get purge -y docker-engine docker docker.io docker-ce docker-ce-cli docker-compose-plugin docker-buildx-plugin docker-ce-rootless-extras # Remove all the docker junk
+dpkg -l | grep -i docker # Hopefully it's all gone?
+
+# Docker installs a bunch of iptable rules that will break the system. For exmaple, it changes FORWARD to DROP by default rather than ALLOW.
+# Even after uninstalling, this rules persist (ugh, why?), which can cause problems with other programs.
+# Assuming this is a new system, it should be safe to clear out all the rules to start fresh.
+iptables -P INPUT ACCEPT
+iptables -P FORWARD ACCEPT
+iptables -P OUTPUT ACCEPT
+iptables -t nat -F
+iptables -t mangle -F
+iptables -F
+iptables -X

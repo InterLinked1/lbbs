@@ -2497,7 +2497,7 @@ ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)
 			bbs_error("write(%d) failed (%ld): %s\n", fd, res, strerror(errno));
 		}
 	} else if (res != (ssize_t) len) {
-		bbs_warning("Wanted to write %lu bytes to fd %d, only wrote %ld\n", len, fd, res);
+		bbs_debug(1, "Wanted to write %lu bytes to fd %d, only wrote %ld\n", len, fd, res);
 	}
 
 	bbs_block_fd(fd); /* Restore */
