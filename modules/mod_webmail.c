@@ -2016,6 +2016,7 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 	/* In the case of a filter, there might not be anything */
 	if (added) {
 		fetch_type = mailimap_fetch_type_new_fetch_att_list_empty();
+		bbs_assert_exists(fetch_type);
 
 		/* UID */
 		fetch_att = mailimap_fetch_att_new_uid();
@@ -2072,18 +2073,22 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 		if (MAILIMAP_ERROR(res)) {
 			bbs_warning("FETCH failed: %s\n", maildriver_strerror(res));
 			/* fetch_result and everything that went into it is already freed */
-			mailimap_fetch_type_free(fetch_type);
+			if (fetch_type) {
+				mailimap_fetch_type_free(fetch_type);
+			}
 			mailimap_set_free(set);
 			return -1;
 		}
-	}
+	} /* else, fetch_type can be NULL here, since we didn't add anything. This can happen with a filter that doesn't match anything. Paths below thus check for it being NULL. */
 
 	root = json_object();
 	if (!root) {
 		if (fetch_result) {
 			mailimap_fetch_list_free(fetch_result);
 		}
-		mailimap_fetch_type_free(fetch_type);
+		if (fetch_type) { /* This can be NULL here... */
+			mailimap_fetch_type_free(fetch_type);
+		}
 		mailimap_set_free(set);
 		return -1;
 	}
@@ -2105,7 +2110,9 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 
 	if (!added) {
 		/* If we filtered, there might not be any results */
-		mailimap_fetch_type_free(fetch_type);
+		if (fetch_type) { /* This can be NULL here... */
+			mailimap_fetch_type_free(fetch_type);
+		}
 		goto finalize;
 	}
 
