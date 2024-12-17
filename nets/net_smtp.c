@@ -70,8 +70,10 @@
 #define MAX_LOCAL_RECIPIENTS 100
 #define MAX_EXTERNAL_RECIPIENTS 10
 
-/* RFC 5321 6.3 */
-#define MAX_HOPS 100
+/* Loop avoidance */
+#define MAX_HOPS 100 /* RFC 5321 6.3 */
+#define HOP_COUNT_MAX_NORMAL_LEVEL 5 /* If more than 5 loops, tarpit message processing to slow down possible loops */
+#define HOP_COUNT_WARN_LEVEL 15 /* Very unlikely non-malformed/routed/looped emails would see more than a dozen hops */
 
 static int smtp_port = DEFAULT_SMTP_PORT;
 static int smtps_port = DEFAULT_SMTPS_PORT;
@@ -95,6 +97,9 @@ static bbs_mutex_t loglock = BBS_MUTEX_INITIALIZER;
 
 /*! \brief Max message size, in bytes */
 static unsigned int max_message_size = 300000;
+
+/*! \brief Maximum number of hops, per local policy */
+static unsigned int max_hops = MAX_HOPS;
 
 #define _smtp_reply(smtp, fmt, ...) \
 	bbs_debug(6, "%p <= " fmt, smtp, ## __VA_ARGS__); \
@@ -1360,7 +1365,7 @@ int __smtp_filter_write(struct smtp_filter_data *f, const char *file, int line, 
 		return -1;
 	}
 
-	__bbs_log(LOG_DEBUG, 6, file, line, func, "Prepending: %s\n", buf);
+	__bbs_log(LOG_DEBUG, 6, file, line, func, "Prepending(%d): %s", len, buf); /* Already ends in CR LF */
 	if (bbs_str_contains_bare_lf(buf)) {
 		bbs_warning("Appended data that contains bare LFs! Message is not RFC-compliant!\n");
 	}
@@ -2696,9 +2701,23 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 					smtp_reply(smtp, 451, 4.3.0, "Message not received successfully, try again");
 				}
 				break;
-			} else if (smtp->tflags.hopcount >= MAX_HOPS) {
-				smtp_reply(smtp, 554, 5.6.0, "Message exceeded %d hops, this may indicate a mail loop", MAX_HOPS);
-				break;
+			} else if (smtp->tflags.hopcount > 1) {
+				if (smtp->tflags.hopcount >= HOP_COUNT_WARN_LEVEL) {
+					bbs_warning("Current SMTP hop count is %d\n", smtp->tflags.hopcount);
+				} else {
+					bbs_debug(3, "Current SMTP hop count is %d\n", smtp->tflags.hopcount);
+				}
+				if (smtp->tflags.hopcount >= HOP_COUNT_MAX_NORMAL_LEVEL && smtp->node && strcmp(smtp->node->ip, "127.0.0.1")) {
+					/* The greater the hop count, the more we slow the message down.
+					 * We only do this for non-localhost, mainly to avoid holding up the test suite. */
+					if (bbs_node_safe_sleep(smtp->node, 200 * smtp->tflags.hopcount)) {
+						return -1;
+					}
+				}
+				if (smtp->tflags.hopcount >= (int) max_hops) {
+					smtp_reply(smtp, 554, 5.6.0, "Message exceeded %u hops, this may indicate a mail loop", max_hops);
+					break;
+				}
 			}
 
 			bbs_debug(5, "Handling receipt of %lu-byte message\n", smtp->tflags.datalen);
@@ -2951,7 +2970,11 @@ static void smtp_handler(struct bbs_node *node, int msa, int secure)
 	stringlist_init(&smtp.sentrecipients);
 
 	handle_client(&smtp);
-	mailbox_dispatch_event_basic(EVENT_LOGOUT, node, NULL, NULL);
+
+	/* If this was not an authenticated SMTP session, don't generate a logout event. */
+	if (bbs_user_is_registered(node->user)) {
+		mailbox_dispatch_event_basic(EVENT_LOGOUT, node, NULL, NULL);
+	}
 
 	smtp_destroy(&smtp);
 }
@@ -2986,6 +3009,15 @@ static int load_config(void)
 
 	bbs_config_val_set_true(cfg, "general", "relayin", &accept_relay_in);
 	bbs_config_val_set_uint(cfg, "general", "maxsize", &max_message_size);
+	if (!bbs_config_val_set_uint(cfg, "general", "maxhops", &max_hops)) {
+		if (max_hops > MAX_HOPS) {
+			bbs_warning("Maximum possible value for setting 'maxhops' is %d\n", MAX_HOPS);
+			max_hops = MAX_HOPS;
+		} else if (max_hops < 1) {
+			bbs_warning("Minimum possible value for setting 'maxhops' is %d\n", 1);
+			max_hops = 1;
+		}
+	}
 	bbs_config_val_set_true(cfg, "general", "requirefromhelomatch", &requirefromhelomatch);
 	bbs_config_val_set_true(cfg, "general", "validatespf", &validatespf);
 	bbs_config_val_set_true(cfg, "general", "addreceivedmsa", &add_received_msa);

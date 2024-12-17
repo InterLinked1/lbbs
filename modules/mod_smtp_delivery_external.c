@@ -1823,11 +1823,11 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 				if (bbs_pthread_create_detached(&sendthread, NULL, smtp_async_send, filenamedup)) {
 					free(filenamedup);
 				} else {
-					bbs_debug(4, "Successfully queued message for immediate delivery: <%s> -> %s\n", from, recipient);
+					bbs_debug(4, "Successfully queued %lu-byte message for immediate delivery: <%s> -> %s\n", datalen, from, recipient);
 				}
 			}
 		} else {
-			bbs_debug(4, "Successfully queued message for delayed delivery: <%s> -> %s\n", from, recipient);
+			bbs_debug(4, "Successfully queued %lu-byte message for delayed delivery: <%s> -> %s\n", datalen, from, recipient);
 		}
 	}
 	return 1;
