@@ -450,7 +450,12 @@ static int __attribute__ ((nonnull (2, 3, 9, 17))) try_send(struct smtp_session 
 	if (!use_implicit_tls) {
 		if (allow_starttls) {
 			if (smtpclient.caps & SMTP_CAPABILITY_STARTTLS) {
-				if (bbs_smtp_client_starttls(&smtpclient)) {
+				if (!ssl_available() && require_starttls_out) {
+					bbs_warning("Encryption is mandatory, but TLS module is not loaded. Delivery failed.\n");
+					snprintf(buf, len, "TLS subsystem is unavailable");
+					res = -2;
+					goto cleanup;
+				} else if (bbs_smtp_client_starttls(&smtpclient)) {
 					res = -2;
 					goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
 				}

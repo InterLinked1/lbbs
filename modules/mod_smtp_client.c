@@ -162,6 +162,10 @@ int bbs_smtp_client_starttls(struct bbs_smtp_client *restrict smtpclient)
 		bbs_error("Can't do STARTTLS, connection is already secure\n");
 		return -1;
 	}
+	if (!ssl_available()) {
+		bbs_error("Can't do STARTTLS, TLS module is not loaded\n");
+		return -1;
+	}
 	if (smtpclient->caps & SMTP_CAPABILITY_STARTTLS) {
 		bbs_smtp_client_send(smtpclient, "STARTTLS\r\n");
 		SMTP_CLIENT_EXPECT_FINAL(smtpclient, 2500, "220");

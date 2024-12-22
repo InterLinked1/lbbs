@@ -728,7 +728,7 @@ gotinput:
 					 * if it's running in raw mode and not exiting gracefully, but terminals don't
 					 * account for that sort of thing and neither should we.
 					 */
-					bbs_debug(3, "Received ^%c, forwarding it to child process\n", sigchar);
+					bbs_debug(10, "Received ^%c, forwarding it to child process\n", sigchar);
 				} else {
 					/* Now, if we're not executing a child process, things are very different.
 					 * In this case, it actually makes sense to do some processing of these signals ourselves, too,

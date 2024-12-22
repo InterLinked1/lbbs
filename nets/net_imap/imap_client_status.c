@@ -203,7 +203,9 @@ static int status_size_fetch_incremental(struct imap_client *client, const char 
 	/* Compare MESSAGES and UIDNEXT from the old and new responses */
 	if (parse_status_item(old, "UIDVALIDITY", &oldv) || parse_status_item(new, "UIDVALIDITY", &newv)) {
 		if (strlen_zero(old)) {
-			bbs_warning("Empty UIDVALIDITY in comparison, cannot rely on cache (%s / %s)\n", old, new);
+			/* This will happen the first time a particular remote IMAP folder is accessed...
+			 * we obviously won't have any UIDVALIDITY cached for it. */
+			bbs_debug(5, "Empty UIDVALIDITY in comparison, cannot rely on cache (%s / %s)\n", old, new);
 		} else {
 			bbs_warning("UIDVALIDITY parsing error, cannot rely on cache (%s / %s)\n", old, new);
 		}

@@ -3012,7 +3012,9 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 						goto cleanup;
 					}
 					/* Could get an untagged EXISTS at this point */
-					IMAP_CLIENT_EXPECT_EVENTUALLY(&destclient->client, 5, tagged_resp); /* tagged OK */
+					if (imap_client_wait_response(destclient, -1, SEC_MS(5))) { /* tagged OK */
+						goto cleanup;
+					}
 				}
 			} else {
 				if (destfd != -1) {

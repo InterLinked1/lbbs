@@ -122,7 +122,7 @@ static int fetch_single_host(const char *hostname, struct stringlist *domains)
 		bbs_warning("SMTP server %s does not support ETRN, unable to fetch mail\n", hostname);
 		goto cleanup;
 	}
-	if (smtpclient.caps & SMTP_CAPABILITY_STARTTLS) {
+	if (smtpclient.caps & SMTP_CAPABILITY_STARTTLS && ssl_available()) {
 		if (bbs_smtp_client_starttls(&smtpclient)) {
 			goto cleanup; /* Abort if we were told STARTTLS was available but failed to negotiate. */
 		}

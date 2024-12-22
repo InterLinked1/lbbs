@@ -1565,10 +1565,10 @@ int bbs_multi_poll(struct pollfd pfds[], int numfds, int ms)
 	return __bbs_multi_poll(NULL, pfds, numfds, ms);
 }
 
-/* This is not an assertion, since it can legitimately happen sometimes and that would be overkill. */
+/* This is not an assertion, or even a warning, since it can legitimately happen right after a node disconnects and that would be overkill. */
 #define REQUIRE_SLAVE_FD(node) \
 	if (node->slavefd == -1) { \
-		bbs_warning("Node %d has no active slave fd\n", node->id); \
+		bbs_debug(1, "Node %d has no active slave fd\n", node->id); \
 		return -1; \
 	}
 
