@@ -449,6 +449,9 @@ static void *sysop_handler(void *varg)
 					bbs_dprintf(sysopfdout, "/");
 awaitcmd:
 					my_set_stdout_logging(sysopfdout, 0); /* Disable logging so other stuff isn't trying to write to STDOUT at the same time. */
+					/* One downside of this approach is if the user hits UP to retrieve a command from history,
+					 * we're not yet in "edit move", so the user can't start typing to append to it.
+					 * However, BACKSPACE will enter edit mode, after which characters can be appended. */
 					bbs_buffer_input(sysopfdin, 1);
 					res = poll(pfds, console->remote ? 1 : 2, 300000);
 					if (res < 0) {

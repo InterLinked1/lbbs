@@ -194,16 +194,20 @@ static int log_module_ref(struct bbs_module *mod, int pair, void *refmod, const 
 		size_t fflen = filelen + strlen(func) + 2;
 
 		r = calloc(1, sizeof(*r) + fflen);
-		if (ALLOC_SUCCESS(r)) {
-			strcpy(r->data, file); /* Safe */
-			r->file = r->data;
-			strcpy(r->data + filelen + 1, func); /* Safe */
-			r->func = r->data + filelen + 1;
-			r->line = line;
-			r->refmod = refmod;
-			r->pair = pair;
-			RWLIST_INSERT_HEAD(&mod->refs, r, entry); /* Head insert absolutely makes perfect sense */
+		if (ALLOC_FAILURE(r)) {
+			/* Allocation of the module reference structure failed.
+			 * It's still being used regardless, so we won't decrement usecount in response. */
+			RWLIST_UNLOCK(&mod->refs);
+			return -1;
 		}
+		strcpy(r->data, file); /* Safe */
+		r->file = r->data;
+		strcpy(r->data + filelen + 1, func); /* Safe */
+		r->func = r->data + filelen + 1;
+		r->line = line;
+		r->refmod = refmod;
+		r->pair = pair;
+		RWLIST_INSERT_HEAD(&mod->refs, r, entry); /* Head insert absolutely makes perfect sense */
 	} else { /* Unref */
 		RWLIST_TRAVERSE_SAFE_BEGIN(&mod->refs, r, entry) {
 			if (r->pair == pair && !strcmp(r->file, file)) { /* Pair IDs are only unique within a source file */
@@ -1351,11 +1355,22 @@ static int list_modulerefs(int fd, const char *name)
 {
 	struct bbs_module *mod;
 	int i = 0;
+	size_t compchars = 0;
 
 	bbs_dprintf(fd, "%-30s %3s %2s %-30s %s\n", "Module", "#", "PR", "Reffing Module", "Ref Location");
 
+	/* Allow comparison without the .so suffix. */
+	if (!strlen_zero(name)) {
+		char *period = strchr(name, '.');
+		if (period) {
+			compchars = (size_t) (period - name);
+		} else {
+			compchars = strlen(name);
+		}
+	}
+
 	RWLIST_TRAVERSE(&modules, mod, entry) {
-		if (!name || !strcasecmp(name, mod->name)) {
+		if (!name || !strncasecmp(name, mod->name, compchars)) {
 			int c = 0;
 			struct bbs_module_reference *r;
 			/* Dump refs */
@@ -1376,7 +1391,7 @@ static int list_modulerefs(int fd, const char *name)
 		}
 	}
 	if (name && !mod) {
-		bbs_dprintf(fd, "Module '%s' not found\n", name);
+		bbs_dprintf(fd, "No module references found for '%s'\n", name);
 		return -1;
 	} else if (!name) {
 		bbs_dprintf(fd, "%d total reference%s\n", i, ESS(i));
