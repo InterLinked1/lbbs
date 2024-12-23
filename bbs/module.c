@@ -28,6 +28,7 @@
 #include <limits.h> /* use PATH_MAX */
 
 #include "include/linkedlists.h"
+#include "include/dlinkedlists.h"
 #include "include/stringlist.h"
 #include "include/module.h"
 #include "include/reload.h"
@@ -71,10 +72,28 @@ struct bbs_module {
 	/* Next entry */
 	RWLIST_ENTRY(bbs_module) entry;
 	/*! The name of the module. */
-	char name[0];
+	char name[];
 };
 
 static RWLIST_HEAD_STATIC(modules, bbs_module);
+
+struct autoload_module {
+	RWDLLIST_ENTRY(autoload_module) entry;
+	/* Plan for autoloading */
+	unsigned int preload:1; /* Whether to preload module */
+	unsigned int required:1; /* Required, normal load (unless preloaded also). Load failure will cause startup to abort. */
+	unsigned int load:1; /* Load module? */
+	unsigned int noload:1; /* Don't load? */
+	/* Results */
+	unsigned int attempted:1; /* Attempted to load? */
+	unsigned int failed:1; /* Failed to load? */
+	unsigned int loaded:1; /* Loaded successfully */
+	char name[]; /* Module name */
+};
+
+static RWDLLIST_HEAD_STATIC(autoload_modules, autoload_module);
+
+static int total_modules = 0; /* Total number of modules in module dir */
 
 /*! \brief Autoload all modules by default */
 #define DEFAULT_AUTOLOAD_SETTING 1
@@ -82,11 +101,6 @@ static RWLIST_HEAD_STATIC(modules, bbs_module);
 static int autoload_setting = DEFAULT_AUTOLOAD_SETTING;
 
 static int really_register = 0;
-
-struct stringlist modules_preload;	/* Preload */
-struct stringlist modules_required;	/* Required, normal load (unless preloaded also) */
-struct stringlist modules_load;		/* Normal load */
-struct stringlist modules_noload;	/* Don't load */
 
 /*! \brief Number of modules we plan to autoload */
 static int autoload_planned = 0;
@@ -269,12 +283,13 @@ static struct bbs_module *find_resource(const char *resource)
 
 struct bbs_module *__bbs_require_module(const char *module, void *refmod)
 {
+	struct bbs_module *reffing_mod = refmod;
 	struct bbs_module *mod = find_resource(module);
 	if (mod) {
-		bbs_debug(5, "Module dependency '%s' is satisfied\n", module);
+		bbs_debug(5, "Module dependency '%s' is satisfied (required by %s)\n", module, reffing_mod->name);
 		__bbs_module_ref(mod, 1, refmod, __FILE__, __LINE__, __func__);
 	} else {
-		bbs_warning("Module %s dependency is not satisfied\n", module);
+		bbs_warning("Module %s dependency is not satisfied (required by %s)\n", module, reffing_mod->name);
 	}
 	return mod;
 }
@@ -354,9 +369,7 @@ static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ex
 	if (resource_being_loaded) {
 		const char *dlerror_msg = S_IF(dlerror());
 
-		if (!suppress_logging) {
-			bbs_warning("Module %s didn't register itself during load?\n", resource_in);
-		}
+		/* Module didn't register itself during load, failure! */
 
 		resource_being_loaded = NULL;
 		if (mod->lib) {
@@ -375,10 +388,22 @@ static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ex
 	return mod;
 }
 
-/* Forward declaration */
-static int load_resource(const char *restrict resource_name, unsigned int suppress_logging);
+static struct autoload_module *find_autoload_module(const char *module)
+{
+	struct autoload_module *a;
+	RWDLLIST_TRAVERSE(&autoload_modules, a, entry) {
+		if (!strcmp(a->name, module)) {
+			return a;
+		}
+	}
+	return NULL;
+}
 
-static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned int suppress_logging)
+/* Forward declaration */
+static int load_resource(struct autoload_module *a, const char *restrict resource_name, unsigned int suppress_logging);
+
+/*! \note a can be NULL */
+static struct bbs_module *load_dynamic_module(struct autoload_module *a, const char *resource_in, unsigned int suppress_logging)
 {
 	char fn[PATH_MAX];
 	size_t resource_in_len = strlen(resource_in);
@@ -395,37 +420,29 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 	/* If we're going to try loading dependencies and then call load_dlopen again,
 	 * any warnings can be ignored the first time, since they were probably due
 	 * to missing symbols (and if not, we'll try again anyways, and log that time). */
-	retry = stringlist_contains(&modules_preload, resource_in);
+	retry = a && a->preload;
+	retry = 1; /* Actually we need to always retry... not sure why we wouldn't? */
 
 	mod = load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_LOCAL, suppress_logging || retry);
 	if (!mod) {
 		/* XXX. Here, we consider the case of modules that are both depended on by other modules
 		 * and themselves depend on yet other modules.
-		 * In other words, they both export symbols globally,
-		 * and they also require the symbols of other modules.
+		 * In other words, they both export symbols globally, and they also require the symbols of other modules.
 		 * This means that among the modules to preload, order will matter,
 		 * because if C depends on B and B depends on A, then B and A will both be marked for preload,
 		 * but A *MUST* be loaded before B, or B will fail to load (cascading to C, etc.)
 		 *
-		 * When scanning the list of modules, at some point, we will discover that B requires A and C requires B.
-		 * It could be in either order.
-		 * And besides that, we use directory order, not stringlist order, for the purposes of autoloading.
-		 * That could be changed for preload, but we would need to store more state to detect these deeper dependencies
-		 * than we do now.
+		 * In the case of autoload, we already ordered the modules with dependencies taken into account,
+		 * so the branch below to preload on the fly should never be taken in that case,
+		 * only for modules loaded after the BBS is fully started.
 		 *
-		 * In the meantime, if we're autoloading modules, and a load fails, it's probably because symbols
+		 * In the meantime, if we're NOT autoloading modules, and a load fails, it's probably because symbols
 		 * failed to resolve, and probably due to unresolved dependencies. Try to resolve those on the fly, for now.
 		 *
-		 * XXX This is really not elegant, it would be better to make a properly ordered list of all modules from the get go.
-		 * Also, this is no longer safe from accidental infinte recursion. We will crash (stack overflow) if there is a dependency loop here.
+		 * XXX This is no longer safe from accidental infinte recursion. We will crash (stack overflow) if there is a dependency loop here.
 		 * If we have a better way of handling this in the future, this hack can be removed:
 		 */
 		if (retry) {
-			/* Only bother checking if it's a preload module.
-			 * Otherwise, checking dependencies now isn't going to do anything for us.
-			 * Also only do this during autoload (the preload list will be emptied once autoload finishes).
-			 */
-
 			/* At this point, we'll have to do a lazy open again. If that fails, then really give up. */
 			mod = load_dlopen(resource_in, so_ext, fn, RTLD_LAZY | RTLD_LOCAL, suppress_logging);
 			if (mod && mod->info->dependencies) {
@@ -438,12 +455,29 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 				while ((dependency = strsep(&dependencies, ","))) {
 					if (!find_resource(dependency)) { /* It's not loaded already. */
 						int mres;
+						struct autoload_module *d = NULL;
+						if (a) {
+							/* If we're autoloading, need to pass the dependency's autoload object,
+							 * not that of the module dependent on it. */
+							d = find_autoload_module(dependency);
+							/* If !d, load_resource will fail, but we'll let it handle it there */
+							if (d && d->failed) {
+								/* We already tried loading the dependency earlier in the autoload sequence, and it failed.
+								 * No point in trying to load it again now. */
+								bbs_error("Module %s is dependent on %s, which failed to load\n", a->name, d->name);
+								res = -1;
+								break;
+							}
+						}
 						bbs_debug(1, "Preloading %s on the fly since it's required by %s\n", dependency, resource_in);
-						mres = load_resource(dependency, suppress_logging);
+						/* Since we automatically reorder modules with dependencies for autoload,
+						 * the only time this logic should be hit is while the BBS is already running.
+						 * We shouldn't need to have to preload something on the fly during autoload,
+						 * breaking from the presorted module ordering. */
+						bbs_soft_assert(a == NULL);
+						mres = load_resource(d, dependency, suppress_logging);
+						/* Since dependency will have loaded bit set now, we won't try to load it another time in the future. */
 						if (!mres) {
-							/* Prevent it from being loaded again in the future */
-							stringlist_push(&modules_noload, dependency);
-							stringlist_remove(&modules_preload, dependency);
 							autoload_loaded++;
 						}
 						res |= mres;
@@ -457,84 +491,159 @@ static struct bbs_module *load_dynamic_module(const char *resource_in, unsigned 
 					mod = NULL;
 				}
 			}
-		} else {
-			bbs_debug(3, "Failure appears to be genuine: %s cannot be loaded\n", resource_in);
 		}
 	}
 	if (mod && mod->info->flags & MODFLAG_GLOBAL_SYMBOLS) {
 		/* Close the module so we can reopen with correct flags. */
+		bbs_debug(3, "Module '%s' contains global symbols, reopening\n", resource_in);
+		really_register = 0;
 		logged_dlclose(resource_in, mod->lib);
 		free_module(mod);
-		bbs_debug(3, "Module '%s' contains global symbols, reopening\n", resource_in);
+		/* At this point, we've already loaded any dependencies needed, so we're only going to load a single module,
+		 * hence we can safely defer re-enabling really_register until after load_dlopen.
+		 * This suppresses log messages for dlclose and registering module when we reopen it. */
 		mod = load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_GLOBAL, 0);
+		really_register = 1;
 	}
-
 	return mod;
 }
 
-static void check_dependencies(const char *restrict resource_in, unsigned int suppress_logging)
+static struct autoload_module *find_first_autoload_in_list(struct autoload_module *a, struct autoload_module *b)
+{
+	struct autoload_module *first = a;
+
+	/* We assume a != b. Even if it is, it doesn't matter which one we return anyways. */
+	while ((first = RWDLLIST_NEXT(first, entry))) {
+		if (first == b) {
+			/* By following next pointers from a, we got to b, so a is first */
+			return a;
+		}
+	}
+
+	return b;
+}
+
+#define SHOULD_LOAD_MODULE(m) (!m->noload && (autoload_setting || m->load || m->preload || m->required))
+
+static void check_dependencies(struct autoload_module *a)
 {
 	char fn[PATH_MAX];
-	size_t resource_in_len = strlen(resource_in);
+	size_t resource_in_len = strlen(a->name);
 	const char *so_ext = "";
 	struct bbs_module *mod;
 
-	/* Module isn't going to load anyways, so who cares? */
-	if (stringlist_contains(&modules_noload, resource_in)) {
-		return;
-	}
-
-	if (resource_in_len < 4 || strcasecmp(resource_in + resource_in_len - 3, ".so")) {
+	if (resource_in_len < 4 || strcasecmp(a->name + resource_in_len - 3, ".so")) {
 		so_ext = ".so";
 	}
 
-	snprintf(fn, sizeof(fn), "%s/%s%s", BBS_MODULE_DIR, resource_in, so_ext);
+	snprintf(fn, sizeof(fn), "%s/%s%s", BBS_MODULE_DIR, a->name, so_ext);
 
 	/* Lazy load won't perform symbol resolution, so we can successfully load a module that is missing dependencies */
-	mod = load_dlopen(resource_in, so_ext, fn, RTLD_LAZY | RTLD_LOCAL, suppress_logging);
+	mod = load_dlopen(a->name, so_ext, fn, RTLD_LAZY | RTLD_LOCAL, 0);
 	if (!mod) {
-		bbs_error("Failed to check dependencies for %s\n", resource_in);
+		bbs_error("Failed to check dependencies for %s\n", a->name);
 		return;
 	}
 
 	if (autoload_setting && mod->info->flags & MODFLAG_ALWAYS_PRELOAD) {
 		/* The module wants to be loaded as early as possible during startup,
-		 * so add it to the preload list.
+		 * so load it first.
 		 * Do this first, since then we can avoid checking if it has any dependents.
+		 *
+		 * To be clear, here we are not concerned with dependency chains,
+		 * that is handled without MODFLAG_ALWAYS_PRELOAD. The purpose of this flag
+		 * is to explicitly move a module to the very front of the load order.
+		 * An example of this is io_tls. No module has a direct dependency on this module,
+		 * but ssl_available() will return 1 only after io_tls has loaded.
+		 * Therefore, it should load before other modules, even though it is not "strictly"
+		 * a dependency (it's not *required* for anything to load),
+		 * it still needs to be loaded early for the desired behavior.
+		 *
 		 * XXX This is not foolproof; ideally, we would have store a "load priority"
 		 * for all modules, and ensure that the priority of this module
 		 * is before anything that might try to use it (or behave differently if not loaded). */
-		if (!stringlist_contains(&modules_preload, resource_in)) {
-			bbs_debug(2, "Module %s requested to be preloaded\n", resource_in);
-			stringlist_push(&modules_preload, resource_in);
-		}
+		bbs_debug(4, "Module %s requested to be preloaded\n", a->name);
+		a->preload = 1;
+		/* Move to beginning of list */
+		RWDLLIST_REMOVE(&autoload_modules, a, entry);
+		RWDLLIST_INSERT_HEAD(&autoload_modules, a, entry);
 	} else if (!strlen_zero(mod->info->dependencies)) {
 		char dependencies_buf[256];
 		char *dependencies, *dependency;
 		safe_strncpy(dependencies_buf, mod->info->dependencies, sizeof(dependencies_buf));
 		dependencies = dependencies_buf;
 		while ((dependency = strsep(&dependencies, ","))) {
-			if (stringlist_contains(&modules_noload, dependency)) {
+			struct autoload_module *first, *d = find_autoload_module(dependency);
+			if (!d) {
+				bbs_warning("Module %s has a dependency on unknown module %s\n", a->name, dependency);
+				a->noload = 1;
+			} else if (d->noload) {
 				/* The module might try to load later (if autoload or explicitly loaded),
-				 * but if it does, it WILL fail anyways, so just noload it now. */
-				if (!stringlist_contains(&modules_noload, resource_in)) {
-					bbs_error("Module %s depends on noloaded module %s\n", resource_in, dependency);
-					stringlist_push(&modules_noload, resource_in);
-				}
-				continue;
-			}
-			if (autoload_setting) {
-				if (!stringlist_contains(&modules_preload, dependency)) {
-					bbs_debug(2, "Marking %s for preload since %s depends on it\n", dependency, resource_in);
-					stringlist_push(&modules_preload, dependency);
-				} else {
-					bbs_debug(4, "Module %s is already marked for preload\n", dependency);
+				 * but if it's dependent on a module that's noloaded, it WILL fail anyways, so just also noload it now. */
+				bbs_error("Module %s depends on noloaded module %s\n", a->name, dependency);
+				a->noload = 1;
+			} else if (SHOULD_LOAD_MODULE(a)) {
+				bbs_debug(4, "Marking %s for loading since %s depends on it\n", dependency, a->name);
+				/* Just mark for regular load, not preload. Preload should be reserved for exceptional cases
+				 * where a module really needs to load first (or close to it).
+				 * In this case, we just want to move it up earlier in the load sequence,
+				 * i.e. move d before a. Setting preload or load doesn't do that, it's the
+				 * remove/insert before operation below that does that. */
+				d->load = 1;
+				/* Also adjust the ordering such that the dependency precedes the thing that depends on it */
+				first = find_first_autoload_in_list(a, d);
+				/* If d is first, that's what we want, since it needs to load first.
+				 * If a is first, we need to swap the two to correct the ordering.
+				 * Since we only do this when we encounter a dependency, it's
+				 * sort of like an efficient subset of bubble sort. */
+				if (a == first) {
+					/* Since d comes later in the list, we want to remove it from wherever it is now,
+					 * and reinsert it just before a. But that requires a doubly linked list.
+					 * An alternative is to instead remove a and insert it after d,
+					 * which changes the ordering respective to these 2 elements (only) properly.
+					 * However, it doesn't preserve other desired invariants. Consider this scenario:
+					 *
+					 *
+					 * Initial relative ordering: C ... B ... A1 ... A2 (other elements are inbetween)
+					 * C depends on B, B depends on both A1 and A2
+					 *
+					 * If we make a pass and swap elements such that the
+					 * one that is too early is moved after its dependency,
+					 * e.g. move C after B, B after A1, B after A2, we end up:
+					 *
+					 * C ... B ... A1 ... A2
+					 * B ... C ... A1 ... A2
+					 * C ... A1 ... B ... A2
+					 * C ... A1 ... A2 ... B
+					 *
+					 * B is ordered after everything it depends on, so B's ordering is okay.
+					 * However, C should be ordered after B, and now it's not.
+					 *
+					 * If we do the related operation of moving something that is a dependency
+					 * before its dependents, that solves this issue:
+					 *
+					 * C ... B ... A1 ... A2
+					 * B ... C ... A1 ... A2
+					 * A1 ... B ... C ... A2
+					 * A2 ... A1 ... B ... C
+					 *
+					 *
+					 * So, we have to use a doubly linked list, since we need to access
+					 * the element BEFORE a, so we can insert d before it.
+					 *
+					 * TL;DR Inserting a after d is not correct.
+					 * We need to insert d before a instead. */
+#ifdef DEBUG_LOAD_ORDER
+					bbs_debug(7, "  -- Moved %s after %s in load order\n", a->name, d->name);
+#endif
+					RWDLLIST_REMOVE(&autoload_modules, d, entry);
+					RWDLLIST_INSERT_BEFORE(&autoload_modules, a, d, entry);
 				}
 			}
 		}
 	}
 
-	logged_dlclose(resource_in, mod->lib);
+	logged_dlclose(a->name, mod->lib);
 	free_module(mod);
 	return;
 }
@@ -623,8 +732,11 @@ static int start_resource(struct bbs_module *mod)
 	return 0;
 }
 
-/*! \brief loads a resource based upon resource_name. */
-static int load_resource(const char *restrict resource_name, unsigned int suppress_logging)
+/*!
+ * \brief loads a resource based upon resource_name.
+ * \note a can be NULL
+ */
+static int load_resource(struct autoload_module *a, const char *restrict resource_name, unsigned int suppress_logging)
 {
 	int res;
 	struct bbs_module *mod;
@@ -634,9 +746,15 @@ static int load_resource(const char *restrict resource_name, unsigned int suppre
 		return -1;
 	}
 
-	mod = load_dynamic_module(resource_name, suppress_logging);
+	if (a) {
+		a->attempted = 1;
+	}
+	mod = load_dynamic_module(a, resource_name, suppress_logging);
 	if (!mod) {
-		bbs_warning("Could not load dynamic module %s\n", resource_name);
+		if (a) {
+			a->failed = 1;
+		}
+		bbs_error("Failed to load module %s\n", resource_name);
 		return -1;
 	}
 
@@ -645,18 +763,30 @@ static int load_resource(const char *restrict resource_name, unsigned int suppre
 	if (res) {
 		/* If success, log in start_resource, otherwise, log here */
 		bbs_error("Module '%s' could not be loaded.\n", resource_name);
+		if (a) {
+			a->failed = 1;
+		}
+		/* If start_resource returned failure, that means
+		 * the module was not inserted into the modules list.
+		 * Therefore, we set really_register false temporarily,
+		 * to ensure bbs_module_unregister doesn't try to remove it from the list,
+		 * since it's not there. */
+		really_register = 0;
 		unload_dynamic_module(mod);
+		really_register = 1;
 		free_module(mod); /* bbs_module_unregister isn't called if the module declined to load, so free to avoid a leak */
 		return -1;
 	} else {
 		/* Bump the ref count of any modules upon which we depend. */
+		if (a) {
+			a->loaded = 1;
+		}
 		if (!strlen_zero(mod->info->dependencies)) {
 			char dependencies_buf[256];
 			char *dependencies, *dependency;
 			safe_strncpy(dependencies_buf, mod->info->dependencies, sizeof(dependencies_buf));
 			dependencies = dependencies_buf;
 			while ((dependency = strsep(&dependencies, ","))) {
-				bbs_debug(9, "%s requires module %s\n", mod->name, dependency);
 				__bbs_require_module(dependency, mod);
 			}
 		}
@@ -890,100 +1020,72 @@ static int unload_resource(const char *resource_name, int force, struct stringli
 	return 0;
 }
 
-static int on_file_plan(const char *dir_name, const char *filename, void *obj)
+static int on_module(const char *dir_name, const char *filename, void *obj)
 {
+	struct autoload_module *a;
+
 	UNUSED(dir_name);
 	UNUSED(obj);
 
-	autoload_planned++;
 	bbs_debug(7, "Detected dynamic module %s\n", filename);
-	check_dependencies(filename, 0); /* Check if we need to load any dependencies for this module. */
+	a = calloc(1, sizeof(*a) + strlen(filename) + 1);
+	if (ALLOC_FAILURE(a)) {
+		return -1;
+	}
+
+	strcpy(a->name, filename); /* Safe */
+	RWDLLIST_INSERT_HEAD(&autoload_modules, a, entry);
+	total_modules++;
 	return 0;
 }
 
-static int on_file_preload(const char *dir_name, const char *filename, void *obj)
+static int do_autoload_module(struct autoload_module *a)
 {
-	struct bbs_module *mod = find_resource(filename);
+	struct bbs_module *mod;
+	const char *filename = a->name;
 
-	UNUSED(dir_name);
-	UNUSED(obj);
-
-	if (mod) {
-		/* Could happen due to the auto-preloading that can happen if trying to resolve dependencies. */
-		bbs_debug(1, "Module %s is already loaded\n", filename);
-		return 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
-	}
-
-	/* noload trumps preload if both are present */
-	if (stringlist_contains(&modules_noload, filename)) {
-		bbs_warning("Conflicting directives 'noload' and 'preload' for %s, not preloading\n", filename);
+	if (a->loaded) {
+		/* Module already loaded, don't load it again. */
+		bbs_debug(5, "Module %s already loaded\n", a->name);
 		return 0;
 	}
-
-	/* Only load if it's a preload module */
-	if (!stringlist_contains(&modules_preload, filename)) {
+	if (a->failed) {
+		bbs_debug(5, "Failed to load %s earlier, skipping\n", a->name);
 		return 0;
 	}
-
-	bbs_debug(5, "Preloading dynamic module %s (autoload=yes or dependency)\n", filename);
-
-	if (load_resource(filename, 0)) {
-		bbs_error("Failed to autoload %s\n", filename);
-		if (stringlist_contains(&modules_required, filename)) {
-			bbs_error("Aborting startup due to failing to load required module %s\n", filename);
-			return 1;
+	if (a->noload) {
+		if (a->preload) {
+			bbs_warning("Conflicting directives 'noload' and 'preload' for %s, not preloading\n", filename);
 		}
-	} else {
-		autoload_loaded++;
-	}
-
-	return bbs_abort_startup() ? 1 : 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
-}
-
-static int on_file_autoload(const char *dir_name, const char *filename, void *obj)
-{
-	int required;
-	struct bbs_module *mod = find_resource(filename);
-
-	UNUSED(dir_name);
-	UNUSED(obj);
-
-	if (mod) {
-		if (!stringlist_contains(&modules_preload, filename)) { /* If it was preloaded, then it's legitimate */
-			bbs_debug(1, "Module %s is already loaded\n", filename);
-		}
-		return 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
-	}
-
-	/* If explicit noload, bail now */
-	if (stringlist_contains(&modules_noload, filename)) {
-		bbs_debug(5, "Not loading dynamic module %s, since it's explicitly noloaded\n", filename);
 		autoload_planned--;
 		return 0;
 	}
 
-	required = stringlist_contains(&modules_required, filename);
+	mod = find_resource(a->name);
+	if (mod) {
+		bbs_warning("Module %s is already loaded?\n", a->name);
+		return 0;
+	}
+
 	if (!autoload_setting) {
-		if (!required && !stringlist_contains(&modules_load, filename)) {
+		if (!(a->required || a->preload || a->load)) {
 			bbs_debug(5, "Not loading dynamic module %s, not explicitly loaded and autoload=no\n", filename);
 			autoload_planned--;
 			return 0;
 		}
-		bbs_debug(5, "Autoloading dynamic module %s, since explicitly %s\n", filename, required ? "required" : "loaded");
+		bbs_debug(5, "Autoloading dynamic module %s, since explicitly %s\n", filename, a->required ? "required" : "loaded");
 	} else {
-		/* If autoload=yes and not in the noload list, then don't even bother checking the load list. Just load it. */
 		bbs_debug(5, "Autoloading dynamic module %s (autoload=yes)\n", filename);
 	}
 
-	if (load_resource(filename, 0)) {
-		bbs_error("Failed to autoload %s\n", filename);
-		if (required) {
+	if (load_resource(a, filename, 0)) {
+		/* load_resource already logs an error on failure, no need to logic individual module load failure here */
+		if (a->required) {
 			bbs_error("Aborting startup due to failing to load required module %s\n", filename);
 			return 1;
 		}
 	} else {
 		autoload_loaded++;
-		stringlist_remove(&modules_required, filename);
 	}
 
 	return bbs_abort_startup() ? 1 : 0; /* Always return 0 or otherwise we'd abort the entire autoloading process */
@@ -1002,10 +1104,6 @@ static int load_config(void)
 
 	bbs_config_val_set_true(cfg, "general", "autoload", &autoload_setting);
 
-	RWLIST_WRLOCK(&modules_load);
-	RWLIST_WRLOCK(&modules_noload);
-	RWLIST_WRLOCK(&modules_preload);
-	RWLIST_WRLOCK(&modules_required);
 	while ((section = bbs_config_walk(cfg, section))) {
 		if (!strcmp(bbs_config_section_name(section), "general")) {
 			continue; /* Skip general, already handled */
@@ -1015,56 +1113,107 @@ static int load_config(void)
 		}
 		/* [modules] section */
 		while ((keyval = bbs_config_section_walk(section, keyval))) {
+			struct autoload_module *a;
 			const char *key = bbs_keyval_key(keyval), *value = bbs_keyval_val(keyval);
+			a = find_autoload_module(value);
+			if (!a) {
+				/* Couldn't find the module... */
+				bbs_warning("Unknown module name '%s' with directive '%s'\n", value, key);
+				continue;
+			}
 			if (!strcmp(key, "load")) {
 				bbs_debug(7, "Explicitly planning to load '%s'\n", value);
-				stringlist_push(&modules_load, value);
+				a->load = 1;
 			} else if (!strcmp(key, "noload")) {
 				bbs_debug(7, "Explicitly planning to not load '%s'\n", value);
-				stringlist_push(&modules_noload, value);
+				a->noload = 1;
 			} else if (!strcmp(key, "preload")) {
 				bbs_debug(7, "Explicitly planning to preload '%s'\n", value);
-				stringlist_push(&modules_preload, value);
+				a->preload = 1;
+				/* For now, just move to the beginning of the list.
+				 * This way, all preloads are before all the non-preloads. */
+				RWDLLIST_REMOVE(&autoload_modules, a, entry);
+				RWDLLIST_INSERT_HEAD(&autoload_modules, a, entry);
 			} else if (!strcmp(key, "require")) {
 				bbs_debug(7, "Explicitly planning to require '%s'\n", value);
-				stringlist_push(&modules_required, value);
+				a->required = 1;
 			} else {
 				bbs_warning("Invalid directive %s=%s, ignoring\n", key, value);
 			}
 		}
 	}
-	RWLIST_UNLOCK(&modules_load);
-	RWLIST_UNLOCK(&modules_noload);
-	RWLIST_UNLOCK(&modules_preload);
-	RWLIST_UNLOCK(&modules_required);
 	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
 	return 0;
 }
 
-static int autoload_modules(void)
+static int try_autoload_modules(void)
 {
-	int res = 0;
+	struct autoload_module *a, **alist;
+	int c = 0;
+	int abort = 0;
+	int res = -1;
+
 	bbs_debug(1, "Autoloading modules\n");
 
-	stringlist_init(&modules_load);
-	stringlist_init(&modules_noload);
-	stringlist_init(&modules_preload);
-	stringlist_init(&modules_required);
+	RWDLLIST_WRLOCK(&autoload_modules);
+	bbs_dir_traverse(BBS_MODULE_DIR, on_module, NULL, -1); /* Initialize autoload_modules with an object for each module in the modules directory */
 
-	/* Check config for load settings. */
-	load_config();
+	/* Now, check config for settings */
+	if (load_config()) {
+		goto cleanup;
+	}
 
-	RWLIST_WRLOCK(&modules);
-	/* Check what modules exist in the first place. Additionally, check for dependencies. */
-	bbs_dir_traverse(BBS_MODULE_DIR, on_file_plan, NULL, -1);
+	/* Now, initialize the objects themselves by lazy loading each module. This will also partially sort the list.
+	 * Since we need to be able to swap elements in the list during traversal, but the actual order of the traversal doesn't matter,
+	 * allocate a temporary array for traversing all the elements. Even RWLIST_TRAVERSE_SAFE_BEGIN doesn't help here. */
+	alist = malloc((size_t) total_modules * sizeof(*a));
+	if (ALLOC_FAILURE(alist)) {
+		goto cleanup;
+	}
+	RWDLLIST_TRAVERSE(&autoload_modules, a, entry) {
+		alist[c++] = a;
+	}
+	for (c = 0; c < total_modules; c++) {
+		if (SHOULD_LOAD_MODULE(alist[c])) {
+			check_dependencies(alist[c]); /* Check if we need to load any dependencies for this module. */
+		}
+	}
+	free(alist);
 
+	/* Okay, we made a plan for what we're going to do, now execute it. */
+	autoload_planned = total_modules;
 	bbs_debug(1, "Detected %d dynamic module%s\n", autoload_planned, ESS(autoload_planned));
 	really_register = 1;
 
 	/* Now, actually try to load them. */
-	if (bbs_dir_traverse(BBS_MODULE_DIR, on_file_preload, NULL, -1) || bbs_dir_traverse(BBS_MODULE_DIR, on_file_autoload, NULL, -1)) {
-		res = -1;
-		goto cleanup;
+#ifdef DEBUG_LOAD_ORDER
+	c = 0;
+	RWDLLIST_TRAVERSE(&autoload_modules, a, entry) {
+		if (autoload_setting) {
+			bbs_debug(3, "Load order %d/%d: %s\n", ++c, total_modules, a->name);
+		} else {
+			bbs_debug(3, "Load order %d/%d: %s%s\n", ++c, total_modules, a->name, a->noload ? "" : a->preload ? "\t\t(PRELOAD)" : a->required ? "\t\t(REQUIRE)" : a->load ? "\t\t(LOAD)" : "");
+		}
+	}
+#endif
+	RWDLLIST_TRAVERSE(&autoload_modules, a, entry) {
+		/* If a required module fails to load, we will stop loading modules thenceforth.
+		 * However, when autoload=no, in order to ensure that autoload_planned is correct,
+		 * we want to finish the traversal and continue decrementing based on module properties. */
+		if (abort) {
+			/* abort is only true if !autoload_modules (autoload=no), so it wouldn't be loaded
+			 * unless it's explicitly going to be loaded. */
+			if (!SHOULD_LOAD_MODULE(a)) {
+				autoload_planned--;
+			}
+		} else if (do_autoload_module(a)) {
+			if (!autoload_setting) {
+				abort = 1;
+			} else {
+				/* We still abort, but we do it immediately by breaking, so no need to set the flag */
+				break;
+			}
+		}
 	}
 
 	if (autoload_planned != autoload_loaded) {
@@ -1074,26 +1223,27 @@ static int autoload_modules(void)
 		bbs_debug(1, "Successfully autoloaded %d module%s\n", autoload_planned, ESS(autoload_planned));
 	}
 
-	if (!RWLIST_EMPTY(&modules_required)) {
-		struct stringitem *i = NULL;
-		const char *s;
-		/* We remove a required module from the list when it loads.
-		 * If we didn't already abort, that means we tried to require
-		 * a module that doesn't even exist (hence the traversal didn't encounter it)
-		 * Enumerate which modules and then abort. */
-		res = -1;
-		while ((s = stringlist_next(&modules_required, &i))) {
-			bbs_error("Required module '%s' failed to load\n", s);
+	res = 0;
+	/* Do a final pass to see if we're good to go. */
+	RWDLLIST_TRAVERSE(&autoload_modules, a, entry) {
+		if (!a->loaded) {
+			/* Enumerate any modules which failed to load before we abort, so it's all in one place. */
+			if (a->required) {
+				bbs_error("Required module '%s' failed to load\n", a->name);
+				res = -1;
+			} else if (!a->noload && !a->loaded && a->attempted && (a->load || autoload_setting)) {
+				/* For all other modules that failed to load:
+				 * - Ignore if noload
+				 * - Ignore if we never attempted to load it because we aborted due to a required module failing to load
+				 * - Ignore if autoload=no, and don't have a load=yes */
+				bbs_warning("Module '%s' failed to load\n", a->name);
+			}
 		}
 	}
 
 cleanup:
-	stringlist_empty(&modules_load);
-	stringlist_empty(&modules_noload);
-	stringlist_empty(&modules_preload);
-	stringlist_empty(&modules_required);
-
-	RWLIST_UNLOCK(&modules);
+	RWDLLIST_REMOVE_ALL(&autoload_modules, entry, free);
+	RWDLLIST_UNLOCK(&autoload_modules);
 	return res;
 }
 
@@ -1101,7 +1251,7 @@ int bbs_module_load(const char *name)
 {
 	int res;
 	RWLIST_WRLOCK(&modules);
-	res = load_resource(name, 0);
+	res = load_resource(NULL, name, 0);
 	RWLIST_UNLOCK(&modules);
 	return res;
 }
@@ -1140,7 +1290,7 @@ int bbs_module_reload(const char *name, int try_delayed)
 			 * can load properly when we try to load them afterwards.
 			 */
 			while ((module = stringlist_pop(&unloaded))) {
-				lres |= load_resource(module, 0);
+				lres |= load_resource(NULL, module, 0);
 				free(module);
 			}
 			if (lres) {
@@ -1527,6 +1677,7 @@ static struct bbs_cli_entry cli_commands_modules[] = {
 };
 
 static int loaded_modules = 0;
+static int really_loaded_modules = 0;
 
 int load_modules(void)
 {
@@ -1535,19 +1686,18 @@ int load_modules(void)
 
 	/* No modules should be registered on startup. */
 	RWLIST_WRLOCK(&modules);
+
 	bbs_assert(RWLIST_EMPTY(&modules));
-	RWLIST_UNLOCK(&modules);
-
 	loaded_modules = 1;
-	res = autoload_modules();
-
-	RWLIST_WRLOCK(&modules);
+	res = try_autoload_modules();
 	c = RWLIST_SIZE(&modules, mod, entry);
+
 	RWLIST_UNLOCK(&modules);
 
 	bbs_assert(c == autoload_loaded);
 	if (!res) {
 		bbs_cli_register_multiple(cli_commands_modules);
+		really_loaded_modules = 1;
 	}
 	return res;
 }
@@ -1662,15 +1812,12 @@ int unload_modules(void)
 	}
 	RWLIST_UNLOCK(&modules);
 
-	bbs_cli_unregister_multiple(cli_commands_modules);
+	/* If startup aborts due to a required module failing to load,
+	 * the CLI commands were never registered, so don't attempt to unregister them. */
+	if (really_loaded_modules) {
+		bbs_cli_unregister_multiple(cli_commands_modules);
+	}
 
 	RWLIST_WRLOCK_REMOVE_ALL(&reload_handlers, entry, free);
-	/* Some functions use these even after BBS is started, so we don't destroy after autoload, just empty */
-	if (loaded_modules) {
-		stringlist_destroy(&modules_load);
-		stringlist_destroy(&modules_noload);
-		stringlist_destroy(&modules_preload);
-		stringlist_destroy(&modules_required);
-	}
 	return 0;
 }

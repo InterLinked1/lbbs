@@ -646,7 +646,12 @@ static int load_config(void)
 	}
 
 	/* Don't destroy the config, mod_auth_mysql will read it again to parse some settings that apply only to it.
-	 * XXX These things should really be in separate config files? Need a mod_mysql.conf */
+	 * XXX These things should really be in separate config files? Need a mod_mysql.conf
+	 *
+	 * UPDATE: mod_auth_mysql loads the config file with caching disabled, so it will get reparsed anyways.
+	 * This is probably a good thing since it reduces the number of places the DB password is in memory...
+	 * As such, there's no downside to destroying the config here. */
+	bbs_config_free(cfg);
 	return 0;
 }
 

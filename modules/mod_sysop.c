@@ -301,7 +301,11 @@ static void *sysop_handler(void *varg)
 	pfds[1].fd = console_alertpipe[0];
 	pfds[1].events = POLLIN;
 
-	show_copyright(sysopfdout, 1);
+	if (console->remote || bbs_is_fully_started()) {
+		/* For foreground console, if BBS is still starting,
+		 * we already registered a startup callback to show copyright later. */
+		show_copyright(sysopfdout, 1);
+	}
 
 	histentry = NULL; /* initiailization must be after pthread_cleanup_push to avoid "variable might be clobbered" warning */
 	for (;;) {

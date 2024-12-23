@@ -1077,7 +1077,7 @@ static int check_menus(void)
 		RWLIST_UNLOCK(&menu->menuitems);
 		if (!egress_possible) {
 			/* This will strand any users that access this menu */
-			bbs_warning("Menu %s contains no way to exit or return from it\n", menu->name);
+			bbs_warning("Menu '%s' contains no way to exit or return from it\n", menu->name);
 		}
 	}
 	RWLIST_UNLOCK(&menus);
