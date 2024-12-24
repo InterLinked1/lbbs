@@ -339,8 +339,13 @@ static void parse_status(struct imap_client *client, json_t *folder, char *restr
  */
 static void set_command_read_timeout(struct imap_client *client, time_t timeout, time_t *restrict old_timeout)
 {
+	time_t current_timeout = mailstream_low_get_timeout(mailstream_get_low(client->imap->imap_stream));
 	if (old_timeout) {
-		*old_timeout = mailstream_low_get_timeout(mailstream_get_low(client->imap->imap_stream));
+		*old_timeout = current_timeout;
+	}
+	if (current_timeout == timeout) {
+		/* Timeout has not changed */
+		return;
 	}
 	/* Use a large timeout for the STATUS command and LIST command (which on the server, may entail a STATUS behind the scenes).
 	 * This is needed in case the remote IMAP server has to deal with a remote mailbox that had messages expunged,
@@ -348,6 +353,7 @@ static void set_command_read_timeout(struct imap_client *client, time_t timeout,
 	 * of the mailbox, and this could take quite a while.
 	 * In libetpan, this involves setting the mailstream_low timeout, not the mailimap timeout.
 	 * By default, this appears to be about 15 seconds, which can be too small in some cases. */
+	bbs_debug(4, "Setting libetpan timeout to %ld s\n", timeout);
 	return mailstream_low_set_timeout(mailstream_get_low(client->imap->imap_stream), timeout);
 }
 
@@ -2449,13 +2455,13 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 
 	switch (mime->mm_type) {
 		case MAILMIME_SINGLE:
-			bbs_debug(3, "Single part\n");
+			bbs_debug(5, "Single part\n");
 			break;
 		case MAILMIME_MULTIPLE:
-			bbs_debug(3, "Multipart\n");
+			bbs_debug(5, "Multipart\n");
 			break;
 		case MAILMIME_MESSAGE:
-			bbs_debug(3, "Message\n");
+			bbs_debug(5, "Message\n");
 			break;
 	}
 
@@ -3068,6 +3074,16 @@ static struct mailimap_set *uidset(json_t *uids)
 	return set;
 }
 
+/*! \brief Get the number of messages encompassed by a UID set selection (or 1:*) */
+static size_t uidset_count(struct imap_client *client, json_t *uids)
+{
+	if (json_is_string(uids) && json_string_value(uids) && !strcmp(json_string_value(uids), "1:*")) {
+		/* All messages in mailbox */
+		return client->messages;
+	}
+	return json_array_size(uids);
+}
+
 static int __handle_store(struct imap_client *client, int sign, struct mailimap_set *set, struct mailimap_flag_list *flag_list)
 {
 	int res;
@@ -3156,10 +3172,38 @@ static int handle_store(struct imap_client *client, int sign, json_t *uids, cons
 
 #define handle_store_flagged(client, sign, uids) handle_store(client, sign, uids, "\\Flagged")
 
+static time_t move_copy_timeout(struct imap_client *client, json_t *uids)
+{
+	time_t timeout;
+	size_t setsize = uidset_count(client, uids);
+
+	/* The actual time it will likely take to copy messages, in the worst case,
+	 * is mostly proportional to message size(s), not message count.
+	 * But we don't know the message sizes, so just use count as a rough proxy.
+	 *
+	 * Additionally, the average size of an email is small. As the number of messages increases,
+	 * the average size of a message in the set should converge.
+	 *
+	 * The reason we don't just set the max timeout regardless of message count,
+	 * is that might not be appropriate for, say, 6 messages.
+	 *
+	 * No matter how large the selection is, never wait more than 5 minutes. */
+#define MAX_TIMEOUT 300
+	timeout = (time_t) setsize * 5; /* Some servers are slower than others, so be conservative and set this higher rather than lower. */
+	if (timeout > MAX_TIMEOUT) {
+		timeout = MAX_TIMEOUT;
+	} else if (timeout < 10) {
+		/* The standard timeout is 10 seconds. Never do anything less than that. */
+		timeout = 10;
+	}
+	return timeout;
+}
+
 static int handle_move(struct imap_client *client, json_t *uids, const char *newmbox)
 {
 	int res;
 	struct mailimap_set *set;
+	time_t old_timeout, timeout;
 
 	webmail_log(1, client, "=> MOVE %s\n", newmbox);
 
@@ -3168,14 +3212,24 @@ static int handle_move(struct imap_client *client, json_t *uids, const char *new
 		return -1;
 	}
 
+	/* Increase the timeout for MOVE/COPY commands.
+	 * If we trigger a cross-server COPY due to a transparent move between servers,
+	 * it could take a while for for the server to APPEND all the messages to the other servers.
+	 * Nothing wrong with this, we just need to tolerate it. */
+	timeout = move_copy_timeout(client, uids);
+
 	if (client->has_move) {
+		set_command_read_timeout(client, timeout, &old_timeout);
 		res = mailimap_uid_move(client->imap, set, newmbox);
+		set_command_read_timeout(client, old_timeout, NULL);
 		if (res != MAILIMAP_NO_ERROR) {
 			bbs_warning("UID MOVE failed: %s\n", maildriver_strerror(res));
 		}
 	} else {
 		/* You're kidding me... right? */
+		set_command_read_timeout(client, timeout, &old_timeout);
 		res = mailimap_uid_copy(client->imap, set, newmbox);
+		set_command_read_timeout(client, old_timeout, NULL);
 		if (res != MAILIMAP_NO_ERROR) {
 			bbs_warning("UID COPY failed: %s\n", maildriver_strerror(res));
 		} else {
@@ -3208,6 +3262,7 @@ static int handle_copy(struct imap_client *client, json_t *uids, const char *new
 {
 	int res;
 	struct mailimap_set *set;
+	time_t old_timeout, timeout;
 
 	webmail_log(1, client, "=> COPY %s\n", newmbox);
 
@@ -3216,7 +3271,11 @@ static int handle_copy(struct imap_client *client, json_t *uids, const char *new
 		return -1;
 	}
 
+	timeout = move_copy_timeout(client, uids); /* See comment in handle_move */
+
+	set_command_read_timeout(client, timeout, &old_timeout);
 	res = mailimap_uid_copy(client->imap, set, newmbox);
+	set_command_read_timeout(client, old_timeout, NULL);
 	if (res != MAILIMAP_NO_ERROR) {
 		bbs_warning("UID COPY failed: %s\n", maildriver_strerror(res));
 		return -1;

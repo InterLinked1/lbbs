@@ -992,7 +992,7 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int pro
 				struct wss_frame *frame;
 
 				frame = wss_client_frame(client);
-				bbs_debug(1, "WebSocket '%s' frame received\n", wss_frame_name(frame));
+				bbs_debug(6, "WebSocket '%s' frame received\n", wss_frame_name(frame));
 				switch (wss_frame_opcode(frame)) {
 					case WS_OPCODE_TEXT:
 						cres = route->callbacks->on_text_message && route->callbacks->on_text_message(&ws, ws.data, wss_frame_payload(frame), wss_frame_payload_length(frame));

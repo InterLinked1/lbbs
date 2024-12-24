@@ -988,7 +988,7 @@ static int ssl_close(SSL *ssl)
 		 * but not every client will, and we don't really care if we get one or not,
 		 * so we just continue, rather than calling SSL_read to wait for proper shutdown
 		 * to finish. */
-		bbs_debug(3, "Exiting without receiving close notify from peer\n");
+		bbs_debug(5, "Exiting without receiving close notify from peer\n");
 	} /* else, if sres == 1, shutdown completed successfully. */
 	SSL_free(ssl);
 	return res;
