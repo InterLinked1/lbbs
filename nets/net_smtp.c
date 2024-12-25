@@ -496,7 +496,7 @@ static int handle_connect(struct smtp_session *smtp)
 				bbs_debug(3, "Client appears to have disconnected\n");
 				return -1;
 			}
-			bbs_warning("Pregreet: %lu bytes received before banner finished\n", bytes);
+			bbs_warning("Pregreet: %lu byte%s received before banner finished\n", bytes, ESS(bytes));
 			smtp->failures += 3;
 			if (smtp_tarpit(smtp, 220, "Waiting for service to initialize...")) {
 				return -1;

@@ -606,6 +606,11 @@ ssize_t remote_status(struct imap_client *client, const char *remotename, const 
 				return -1;
 			}
 			if (STARTS_WITH(buf, "* ")) { /* Tolerate unrelated untagged responses interleaved */
+				/* While it's technically legal to receive untagged responses here,
+				 * this really shouldn't happen if we are doing everything right.
+				 * This is because we should be idling on all remote server connections
+				 * when they're not in use, and if we're idling, we should be processing
+				 * these untagged responses as they come in. */
 				bbs_warning("Unexpected response: %s\n", buf);
 				continue;
 			}

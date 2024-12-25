@@ -840,7 +840,7 @@ static unsigned int max_websocket_timeout_ms = MAX_WEBSOCKET_PING_MS;
 static void ws_handler(struct bbs_node *node, struct http_session *http, int proxied)
 {
 	struct ws_session ws;
-	struct ws_route *route;
+	struct ws_route *route = NULL;
 	struct wss_client *client;
 	int res;
 	int want_ping = 0;
@@ -873,21 +873,24 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int pro
 		goto exit; /* Get lost, dude */
 	}
 
+	/* Past this point, we must not goto exit,
+	 * since find_route called bbs_module_ref, we need to unref to clean up properly. */
+
 	if (allowed_origins) {
 		/* Check that the client's origin is allowed. */
 		char match_str[256];
 		const char *origin = http_request_header(http, "Origin");
 		if (strlen_zero(origin)) {
 			bbs_warning("No Origin header supplied\n");
-			goto exit; /* Goodbye */
+			goto done2; /* Goodbye */
 		} else if (strchr(origin, ',')) {
 			bbs_warning("Origin header seems invalid: %s\n", origin);
-			goto exit;
+			goto done2;
 		}
 		snprintf(match_str, sizeof(match_str), ",%s,", origin);
 		if (!strstr(allowed_origins, match_str)) {
 			bbs_warning("Client origin '%s' is not explicitly allowed, rejecting\n", origin);
-			goto exit;
+			goto done2;
 		}
 		bbs_debug(4, "Origin '%s' is explicitly allowed\n", origin);
 	}
@@ -895,14 +898,14 @@ static void ws_handler(struct bbs_node *node, struct http_session *http, int pro
 	client = wss_client_new(&ws, node->rfd, node->wfd);
 	if (!client) {
 		bbs_error("Failed to create WebSocket client\n");
-		goto exit;
+		goto done2;
 	}
 	ws.client = client; /* Needed as part of structure so it can be accessed in websocket_sendtext */
 
 	bbs_mutex_init(&ws.lock, NULL);
 
 	if (route->callbacks->on_open && route->callbacks->on_open(&ws)) {
-		goto exit;
+		goto done2;
 	}
 
 	memset(&pfds, 0, sizeof(pfds));
@@ -1110,9 +1113,10 @@ done:
 		wss_client_destroy(client);
 		bbs_mutex_destroy(&ws.lock);
 	}
-	bbs_module_unref(route->mod, 1);
 	php_vars_destroy(&ws.varlist);
 	php_vars_destroy(&ws.cookievals);
+done2:
+	bbs_module_unref(route->mod, 1);
 exit:
 	RWLIST_HEAD_DESTROY(&ws.varlist);
 	RWLIST_HEAD_DESTROY(&ws.cookievals);
