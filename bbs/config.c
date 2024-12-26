@@ -539,7 +539,7 @@ static struct bbs_config *config_parse(const char *name)
 
 int bbs_config_set_keyval(const char *filename, const char *section, const char *key, const char *value)
 {
-	FILE *oldfp, *newfp;
+	FILE *newfp;
 	struct bbs_config *cfg;
 	size_t fsize;
 	struct stat st;
@@ -558,23 +558,15 @@ int bbs_config_set_keyval(const char *filename, const char *section, const char 
 	 * (and may not know or care what the old value is).
 	 * So, do a brute force copy and update/add/replace. */
 
-	oldfp = fopen(filename, "r");
-	if (!oldfp) {
-		bbs_warning("Existing config file '%s' does not exist\n", filename);
-		/* If config file doesn't exist, we could create it,
-		 * but more than likely something is wrong and we should just abort. */
-		return -1;
-	}
 	newfp = bbs_mkftemp(tmpfile, 0660);
 	if (!newfp) {
-		fclose(oldfp);
 		return -1;
 	}
 
 	cfg = config_parse_or_write(filename, &newfp, section, key, value);
 
 	/* Finalize and cleanup */
-	fclose(oldfp);
+
 	if (!newfp) {
 		/* Failure occured, and newfp has already been closed. */
 		if (cfg) {
