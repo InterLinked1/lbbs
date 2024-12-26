@@ -252,6 +252,7 @@ static int do_local_delivery(struct smtp_session *smtp, struct smtp_response *re
 	smtp_mproc_init(smtp, &mproc);
 	mproc.size = (int) datalen;
 	mproc.recipient = recip_buf + 1; /* Without <> */
+	mproc.dir = SMTP_DIRECTION_IN;
 	mproc.direction = SMTP_MSG_DIRECTION_IN;
 	mproc.mbox = mbox;
 	mproc.userid = 0;

@@ -58,6 +58,7 @@ Key features and capabilities include:
 
     * Sieve filtering scripts and ManageSieve service
     * `MailScript filtering engine <configs/.rules>`_ for flexible, custom, dynamic mail filtering rules (Sieve alternative)
+	* Intelligent sender/recipient analysis - prevent yourself from ever sending an email to the wrong people by mistake!
 
   * Webmail client backend
 

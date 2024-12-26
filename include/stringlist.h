@@ -82,7 +82,7 @@ void stringlist_empty(struct stringlist *list);
  * \returns Next string, or NULL if end of list reached.
  * \note The returned string must not be modified, since it remains in the list.
  */
-const char *stringlist_next(struct stringlist *list, struct stringitem **i);
+const char *stringlist_next(const struct stringlist *list, struct stringitem **i);
 
 /*!
  * \brief Pop the most recently added item to a string list
@@ -100,6 +100,15 @@ char *stringlist_pop(struct stringlist *list);
  * \retval 0 on success, -1 on failure
  */
 int stringlist_push(struct stringlist *list, const char *s);
+
+/*!
+ * \brief Add an item to a stringlist, such that the stringlist remains sorted alphabetically
+ * \param list
+ * \param s String to add
+ * \note Assumes list is WRLOCKed
+ * \retval 0 on success, -1 on failure
+ */
+int stringlist_push_sorted(struct stringlist *list, const char *s);
 
 /*!
  * \brief Add an item to the end of a stringlist

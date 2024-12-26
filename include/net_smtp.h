@@ -22,6 +22,18 @@
 /* Mainly for message submission agents, not encrypted by default, but may use STARTTLS */
 #define DEFAULT_SMTP_MSA_PORT 587
 
+#define _smtp_reply(smtp, fmt, ...) \
+	bbs_debug(6, "%p <= " fmt, smtp, ## __VA_ARGS__); \
+	bbs_auto_fd_writef(smtp_node(smtp), smtp_node(smtp) ? smtp_node(smtp)->wfd : -1, fmt, ## __VA_ARGS__); \
+
+/*! \brief Final SMTP response with this code */
+#define smtp_resp_reply(smtp, code, subcode, reply) _smtp_reply(smtp, "%d %s %s\r\n", code, subcode, reply)
+#define smtp_reply(smtp, code, status, fmt, ...) _smtp_reply(smtp, "%d %s " fmt "\r\n", code, #status, ## __VA_ARGS__)
+#define smtp_reply_nostatus(smtp, code, fmt, ...) _smtp_reply(smtp, "%d " fmt "\r\n", code, ## __VA_ARGS__)
+
+/*! \brief Non-final SMTP response (subsequent responses with the same code follow) */
+#define smtp_reply0_nostatus(smtp, code, fmt, ...) _smtp_reply(smtp, "%d-" fmt "\r\n", code, ## __VA_ARGS__)
+
 struct smtp_session;
 
 void __attribute__ ((format (gnu_printf, 3, 4))) bbs_smtp_log(int level, struct smtp_session *smtp, const char *fmt, ...);
@@ -72,13 +84,33 @@ enum smtp_direction {
 	SMTP_DIRECTION_OUT = (1 << 2),		/*!< Outgoing mail to another MTA */
 };
 
+/*!
+ * \note There are two different "filtering" APIs available,
+ * based on the smtp_filter_data (filters) and smtp_msg_process (message processors) structures.
+ * They are very similar and they probably could theoretically be combined.
+ * That said, there are a few major differences between them as they exist now,
+ * that should be considered when deciding which one to use.
+ *
+ * - The filtering API can modify/rewrite messages. The message processors do not.
+ *   Thus, filtering here is probably also more akin to "milters" in standard POSIX MTAs.
+ *   This is probably the most important difference. Message processors don't (and can't)
+ *   rewrite messages, so they are probably more efficient to run if you don't need to modify the input.
+ * - Both can reject messages; message processors have more control over how they are rejected, though filters can quarantine the message.
+ * - Both can operation on incoming and outgoing messages to varying degrees.
+ * - In practice, message processors are used for "filtering engines" (ironically) - Sieve and MailScript.
+ *   "Filters" are used for more traditional milter applications, such as SPF, DKIM, etc. - things that prepend headers to the message.
+ * - Other differences exist. Compare the structs and APIs to see what information is available.
+ */
+
+/* == SMTP filter callbacks - these receive a message and potentially modify it == */
+
 struct smtp_filter_data {
 	struct smtp_session *smtp;		/*!< SMTP session */
 	int inputfd;					/*!< File descriptor from which message can be read */
 	const char *recipient;			/*!< Recipient (RCPT TO). Only available for SMTP_DIRECTION_IN and SMTP_DIRECTION_SUBMIT, and if the scope is SMTP_SCOPE_INDIVIDUAL */
 	size_t size;					/*!< Message length */
 	enum smtp_direction dir;		/*!< Direction */
-	int received;					/*!< Time that message was received */
+	time_t received;				/*!< Time that message was received */
 	/* Duplicated fields: these are simply duplicated from smtp: */
 	struct bbs_node *node;			/*!< Node */
 	const char *from;				/*!< Envelope from */
@@ -200,6 +232,7 @@ int smtp_message_quarantinable(struct smtp_session *smtp);
 
 struct smtp_msg_process {
 	/* Inputs */
+	struct smtp_session *smtp;	/*!< SMTP session. Not originally included, so try to avoid using this! */
 	int fd;						/*!< File descriptor of SMTP session */
 	struct mailbox *mbox;		/*!< Mailbox (incoming only) */
 	struct bbs_user *user;		/*!< BBS user (outgoing only) */
@@ -207,9 +240,11 @@ struct smtp_msg_process {
 	const char *datafile;		/*!< Name of email data file */
 	FILE *fp;					/*!< Email data file (used internally only) */
 	const char *from;			/*!< Envelope from */
+	const struct stringlist *recipients; /*!< All envelope recipients (RCPT TO). Only available for SMTP_SCOPE_COMBINED/SMTP_DIRECTION_SUBMIT, not SMTP_DIRECTION_IN or SMTP_DIRECTION_OUT */
 	const char *recipient;		/*!< Envelope to - only for INCOMING messages */
 	int size;					/*!< Size of email */
-	int userid;					/*!< User ID (outgoing only) */
+	unsigned int userid;		/*!< User ID (outgoing only) */
+	enum smtp_direction dir;	/*!< Full direction (IN, OUT, or SUBMIT) */
 	unsigned int direction:1;	/*!< 0 = incoming, 1 = outgoing */
 	/* Outputs */
 	unsigned int bounce:1;		/*!< Whether to send a bounce */

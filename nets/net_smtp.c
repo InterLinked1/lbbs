@@ -101,18 +101,6 @@ static unsigned int max_message_size = 300000;
 /*! \brief Maximum number of hops, per local policy */
 static unsigned int max_hops = MAX_HOPS;
 
-#define _smtp_reply(smtp, fmt, ...) \
-	bbs_debug(6, "%p <= " fmt, smtp, ## __VA_ARGS__); \
-	bbs_auto_fd_writef(smtp->node, smtp->node ? smtp->node->wfd : -1, fmt, ## __VA_ARGS__); \
-
-/*! \brief Final SMTP response with this code */
-#define smtp_resp_reply(smtp, code, subcode, reply) _smtp_reply(smtp, "%d %s %s\r\n", code, subcode, reply)
-#define smtp_reply(smtp, code, status, fmt, ...) _smtp_reply(smtp, "%d %s " fmt "\r\n", code, #status, ## __VA_ARGS__)
-#define smtp_reply_nostatus(smtp, code, fmt, ...) _smtp_reply(smtp, "%d " fmt "\r\n", code, ## __VA_ARGS__)
-
-/*! \brief Non-final SMTP response (subsequent responses with the same code follow) */
-#define smtp_reply0_nostatus(smtp, code, fmt, ...) _smtp_reply(smtp, "%d-" fmt "\r\n", code, ## __VA_ARGS__)
-
 void bbs_smtp_log(int level, struct smtp_session *smtp, const char *fmt, ...)
 {
 	va_list ap;
@@ -715,6 +703,7 @@ static int handle_auth(struct smtp_session *smtp, char *s)
 			smtp_reply(smtp, 502, 5.5.2, "Decoding failure");
 			return 0;
 		}
+		bbs_strterm((char*) user, '@'); /* Strip domain */
 		res = bbs_authenticate(smtp->node, (char*) user, (char*) pass);
 		free(user);
 		free(pass);
@@ -1502,6 +1491,7 @@ static int cli_filters(struct bbs_cli_args *a)
 void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_process *mproc)
 {
 	memset(mproc, 0, sizeof(struct smtp_msg_process));
+	mproc->smtp = smtp;
 	mproc->datafile = smtp->datafile;
 	mproc->node = smtp->node;
 	mproc->fd = mproc->node ? smtp->node->wfd : -1;
@@ -2291,10 +2281,18 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 		int srcfd = -1;
 		smtp_mproc_init(smtp, &mproc);
 		mproc.size = (int) datalen;
+		mproc.dir = smtp->msa ? SMTP_DIRECTION_SUBMIT : SMTP_DIRECTION_OUT;
 		mproc.direction = SMTP_MSG_DIRECTION_OUT;
 		mproc.mbox = NULL;
-		mproc.userid = (int) smtp->node->user->id;
+		mproc.userid = smtp->node->user->id;
 		mproc.user = smtp->node->user;
+		if (smtp->msa) {
+			/* All envelope recipients of the message, only added for message submissions.
+			 * We don't do this for SMTP_DIRECTION_IN, because allowing one recipient to view
+			 * who the other recipients were (for example, if they were Bcc'd) would leak information.
+			 * If the user is the one sending it, then this information is already known and not secret. */
+			mproc.recipients = &smtp->recipients;
+		}
 		/* Note that mproc.to here is NULL, since we don't process recipients until expand_and_deliver,
 		 * i.e. we run the callbacks here per-message, not per-recipient, so we don't have access
 		 * to a specific recipient for this outgoing rules. This is "pre transaction"

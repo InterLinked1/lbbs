@@ -107,7 +107,7 @@ void stringlist_empty(struct stringlist *list)
 	RWLIST_UNLOCK(list);
 }
 
-const char *stringlist_next(struct stringlist *list, struct stringitem **i)
+const char *stringlist_next(const struct stringlist *list, struct stringitem **i)
 {
 	struct stringitem *inext;
 	if (!*i) {
@@ -152,6 +152,25 @@ int stringlist_push(struct stringlist *list, const char *s)
 	}
 	i->s = sdup;
 	RWLIST_INSERT_HEAD(list, i, entry);
+	return 0;
+}
+
+int stringlist_push_sorted(struct stringlist *list, const char *s)
+{
+	struct stringitem *i;
+	char *sdup = strdup(s);
+
+	if (ALLOC_FAILURE(sdup)) {
+		return -1;
+	}
+
+	i = calloc(1, sizeof(*i));
+	if (ALLOC_FAILURE(i)) {
+		free(sdup);
+		return -1;
+	}
+	i->s = sdup;
+	RWLIST_INSERT_SORTALPHA(list, i, entry, s);
 	return 0;
 }
 
