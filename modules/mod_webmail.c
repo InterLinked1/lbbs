@@ -281,49 +281,31 @@ static void parse_status(struct imap_client *client, json_t *folder, char *restr
 		return;
 	}
 
-	str = strstr(tmp, "MESSAGES ");
-	if (str) {
-		str += STRLEN("MESSAGES ");
-		if (!strlen_zero(str)) {
-			num = (uint32_t) atol(str);
-			*messages = num;
-			json_object_set_new(folder, "messages", json_integer(num));
-		}
-	} else if (expect) {
-		bbs_warning("Failed to parse MESSAGES\n");
+/* Note: if var, *var = num doesn't work, because that would could be if NULL, *NULL = num.
+ * Since only messages requires the var argument, that case is just hardcoded to compile.
+ * The other checks should boil down to if (NULL) and be optimized out by the compiler. */
+#define PARSE_STATUS_ITEM(item, respitem, var) \
+	str = strstr(tmp, item " "); \
+	if (str) { \
+		str += STRLEN(item " "); \
+		if (!strlen_zero(str)) { \
+			num = (uint32_t) atol(str); \
+			if (var) { \
+				*messages = num; \
+			} \
+			json_object_set_new(folder, respitem, json_integer(num)); \
+		} \
+	} else if (expect) { \
+		bbs_warning("Failed to parse " item "\n"); \
 	}
-	str = strstr(tmp, "RECENT ");
-	if (str) {
-		str += STRLEN("RECENT ");
-		if (!strlen_zero(str)) {
-			num = (uint32_t) atol(str);
-			json_object_set_new(folder, "recent", json_integer(num));
-		}
-	} else if (expect) {
-		bbs_warning("Failed to parse RECENT\n");
-	}
-	str = strstr(tmp, "UNSEEN ");
-	if (str) {
-		str += STRLEN("UNSEEN ");
-		if (!strlen_zero(str)) {
-			num = (uint32_t) atol(str);
-			json_object_set_new(folder, "unseen", json_integer(num));
-		}
-	} else if (expect) {
-		bbs_warning("Failed to parse UNSEEN\n");
-	}
+
+	PARSE_STATUS_ITEM("MESSAGES", "messages", messages);
+	PARSE_STATUS_ITEM("RECENT", "recent", NULL);
+	PARSE_STATUS_ITEM("UNSEEN", "unseen", NULL);
 	if (client->has_status_size) {
-		str = strstr(tmp, "SIZE ");
-		if (str) {
-			str += STRLEN("SIZE ");
-			if (!strlen_zero(str)) {
-				num = (uint32_t) atol(str);
-				json_object_set_new(folder, "size", json_integer(num));
-			}
-		} else if (expect) {
-			bbs_warning("Failed to parse SIZE\n");
-		}
+		PARSE_STATUS_ITEM("SIZE", "size", NULL);
 	}
+#undef PARSE_STATUS_ITEM
 }
 
 /* 45 seconds ought to be enough for even the highest latency response commands,
