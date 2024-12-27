@@ -327,7 +327,8 @@ int bbs_node_cork(struct bbs_node *node, int enabled)
 		bbs_error("setsockopt failed: %s\n", strerror(errno));
 		return -1;
 	} else {
-		bbs_debug(5, "%s corking on node %d\n", enabled ? "Enabled" : "Disabled", node->id);
+		/* net_imap fiddles corking around a lot, so high debug level to reduce noisiness */
+		bbs_debug(10, "%s corking on node %d\n", enabled ? "Enabled" : "Disabled", node->id);
 	}
 	return 0;
 }

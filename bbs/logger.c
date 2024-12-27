@@ -37,6 +37,9 @@
 #include "include/linkedlists.h"
 #include "include/cli.h"
 
+/* Log messages to STDERR when we fail to write log messages to remote consoles */
+#define DEBUG_LOGGING_FAILURES
+
 /* bbs.c */
 extern int option_debug;
 extern int option_verbose;
@@ -173,25 +176,31 @@ int bbs_set_stdout_logging(int enabled)
 struct remote_log_fd {
 	int fd;			/* File descriptor for this console */
 	int maxdebug;	/* Max debug level for this console */
+	unsigned int skipped:1;
+	unsigned int enabled:1;
+	bbs_mutex_t lock;
 	RWLIST_ENTRY(remote_log_fd) entry; /* Next entry */
 };
 
 static RWLIST_HEAD_STATIC(remote_log_fds, remote_log_fd);
 
-/*! \note Assumes all remote consoles are going to use a fd within the first 1024 */
-static int fd_logging[1024]; /* Array for constant time access instead of a linked list. Even though we traverse the list for writing, to set logging on/off, we don't need to. */
+/* Local debug setting for foreground console, since it doesn't have a struct remote_log_fd */
+static int fg_maxdebug = MAX_DEBUG;
+
 static int active_remote_consoles = 0;
 
 int bbs_set_fd_logging(int fd, int enabled)
 {
-	if (!ARRAY_IN_BOUNDS(fd, fd_logging)) {
-		bbs_error("Cannot set logging for fd %d: out of bounds\n", fd);
-		return -1;
-	}
+	struct remote_log_fd *rfd;
 	RWLIST_RDLOCK(&remote_log_fds); /* We're not modifying the list itself. */
-	fd_logging[fd] = enabled;
+	RWLIST_TRAVERSE(&remote_log_fds, rfd, entry) {
+		if (rfd->fd == fd) {
+			SET_BITFIELD(rfd->enabled, enabled);
+			break;
+		}
+	}
 	RWLIST_UNLOCK(&remote_log_fds);
-	return 0;
+	return rfd ? 0 : -1;
 }
 
 static int set_fd_logging_max_debug(int fd, int maxdebug)
@@ -218,9 +227,15 @@ static int cli_localdebug(struct bbs_cli_args *a)
 	if (newmax < 0 || newmax > MAX_DEBUG) {
 		return -1;
 	}
-	oldmax = set_fd_logging_max_debug(a->fdout, newmax);
-	if (oldmax == -1) {
-		return -1;
+
+	if (a->fdout == STDOUT_FILENO) {
+		oldmax = fg_maxdebug;
+		fg_maxdebug = newmax;
+	} else {
+		oldmax = set_fd_logging_max_debug(a->fdout, newmax);
+		if (oldmax == -1) {
+			return -1;
+		}
 	}
 	bbs_debug(1, "Max local debug level for fd %d changed from %d to %d\n", a->fdout, oldmax, newmax);
 	return 0;
@@ -229,11 +244,6 @@ static int cli_localdebug(struct bbs_cli_args *a)
 int bbs_add_logging_fd(int fd)
 {
 	struct remote_log_fd *rfd;
-
-	if (fd >= (int) ARRAY_LEN(fd_logging)) {
-		bbs_error("Cannot register file descriptors greater than %lu\n", ARRAY_LEN(fd_logging));
-		return -1;
-	}
 
 	RWLIST_WRLOCK(&remote_log_fds);
 	RWLIST_TRAVERSE(&remote_log_fds, rfd, entry) {
@@ -252,9 +262,10 @@ int bbs_add_logging_fd(int fd)
 		return -1;
 	}
 	rfd->fd = fd;
+	rfd->enabled = 1; /* Initialize to enabled */
 	rfd->maxdebug = MAX_DEBUG; /* By default, there is no local restriction on the max debug level */
+	bbs_mutex_init(&rfd->lock, NULL);
 	RWLIST_INSERT_HEAD(&remote_log_fds, rfd, entry);
-	fd_logging[fd] = 1; /* Initialize to enabled */
 	active_remote_consoles++;
 	RWLIST_UNLOCK(&remote_log_fds);
 	bbs_debug(5, "Registered file descriptor %d for logging\n", fd);
@@ -272,6 +283,7 @@ int bbs_remove_logging_fd(int fd)
 	if (unlikely(!rfd)) {
 		bbs_error("File descriptor %d did not have logging\n", fd);
 	} else {
+		bbs_mutex_destroy(&rfd->lock);
 		free(rfd);
 		bbs_debug(5, "Unregistered file descriptor %d from logging\n", fd);
 	}
@@ -379,6 +391,8 @@ void __attribute__ ((format (gnu_printf, 2, 3))) bbs_dprintf(int fd, const char 
 /* from bbs.c */
 extern int shutdown_finished;
 
+static unsigned short int logid_counter; /* Can roll over, only used for local diagnostics */
+
 void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level loglevel, int level, const char *file, int lineno, const char *func, const char *fmt, ...)
 {
 	int len;
@@ -397,6 +411,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 	int log_stdout, log_remote;
 	int need_reset = 0;
 	int skip_logfile = 0;
+	short unsigned int logid;
 
 	switch (loglevel) {
 		case LOG_DEBUG:
@@ -455,6 +470,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 	strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 
 	thread_id = bbs_gettid();
+	logid = bbs_atomic_fetchadd_int(&logid_counter, +1);
 
 	va_start(ap, fmt);
 	len = vsnprintf(logminibuf, sizeof(logminibuf), fmt, ap);
@@ -493,6 +509,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 
 	/* If the foreground or any remote consoles are active, prepare a log message for any connected consoles. */
 	if (log_stdout || log_remote) {
+		int delays = 0;
 		struct remote_log_fd *rfd;
 		if (loglevel == LOG_VERBOSE && verbose_special_formatting) {
 			const char *verbprefix = verbose_prefix(level);
@@ -525,28 +542,92 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 		}
 
 		/* Log to foreground console, if there is one */
-		if (log_stdout) {
+		if (log_stdout && (loglevel != LOG_DEBUG || level <= fg_maxdebug)) {
 			term_puts(fullbuf);
 		}
 
 		/* Log to remote consoles */
-		RWLIST_RDLOCK(&remote_log_fds);
+		RWLIST_RDLOCK(&remote_log_fds); /* Each console has its own lock, so a read lock is perfectly fine and allows more logging throughput */
 		RWLIST_TRAVERSE(&remote_log_fds, rfd, entry) {
+			char *bufstart = fullbuf;
+			size_t bytesleft = (size_t) bytes;
+			ssize_t wres;
+
 			if (loglevel == LOG_DEBUG && level > rfd->maxdebug) {
 				/* Skip consoles that don't want debug messages of this debug level */
 				continue;
+			} else if (!rfd->enabled) {
+				continue; /* Logging disabled for this console */
 			}
+
+			/* Although acquiring a lock for every log message to every remote console is not ideal,
+			 * it is necessary because otherwise, concurrent writes could result
+			 * in messages being split up when logged, and we need to ensure messages are logged atomically. */
+			bbs_mutex_lock(&rfd->lock);
+
 			/* Prevent libc_write from blocking if there's a ton of logging going on. */
 			bbs_unblock_fd(rfd->fd);
-			if (fd_logging[rfd->fd]) {
-				ssize_t wres = write(rfd->fd, fullbuf, (size_t) bytes);
-				if (wres != (ssize_t) bytes) {
-					/* Well, we can't log a message if we failed to log a message.
-					 * That would probably not work out well. */
-					fprintf(stderr, "Failed to log %d-byte message (wrote %ld): %s\n", bytes, wres, strerror(errno));
+
+			/* Can't use bbs_timed_write, since that can log additional messages. */
+			wres = write(rfd->fd, bufstart, bytesleft);
+			/* Failed or partial write. Retry if we have time.
+			 * Introduce no more than a 10 ms delay max, even that might be too much. The 10 ms is for all consoles, not just this one.
+			 * In practice, since we have a mutex for each remote console, this is rarely needed. */
+			while (((wres == -1 && errno == EAGAIN) || (wres > 0 && (size_t) wres < bytesleft)) && delays < 10) {
+				/* Since we don't have a log queue, it is possible that multiple threads
+				 * could try logging to the same terminals concurrently,
+				 * after all, this traversal only uses a RDLOCK.
+				 * If this happens, try again after a small instant. That will usually succeed. */
+				struct pollfd pfd;
+				memset(&pfd, 0, sizeof(pfd));
+				pfd.fd = rfd->fd;
+				pfd.events = POLLOUT;
+				/* Do not wait more than 1 millisecond. Even that is already a lot,
+				 * since this could add a delay of up to 1 ms per remote console,
+				 * and this log operation is blocking a thread that is doing actual work!
+				 * select() would give us more granularity, but it's unsafe. */
+				delays++;
+				if (wres > 0) {
+					bufstart += wres;
+					bytesleft -= (size_t) wres;
+#ifdef DEBUG_LOGGING_FAILURES
+					fprintf(stderr, "%5u [%d <%d>] Retrying partial write\n", logid, thread_id, rfd->fd);
+				} else {
+					fprintf(stderr, "%5u [%d <%d>] Retrying failed write\n", logid, thread_id, rfd->fd);
+#endif
 				}
+				/* If we can make progress now, try again. Otherwise, give up immediately.
+				 * (And if poll returns 1, we probably can make progress, since we are still holding the console lock,
+				 *  nobody else can write to it in the meantime.) */
+				if (poll(&pfd, 1, 1) > 0) {
+					wres = write(rfd->fd, bufstart, bytesleft);
+				} else {
+					/* Release console lock ASAP */
+					bbs_block_fd(rfd->fd);
+					bbs_mutex_unlock(&rfd->lock);
+					fprintf(stderr, "%5u [%d <%d>] Failed to log %lu bytes: Resource temporarily unavailable\n", logid, thread_id, rfd->fd, bytesleft);
+					goto nextiteration; /* Can't continue since we're in a double loop. We want to continue the outer loop. */
+				}
+#ifdef DEBUG_LOGGING_FAILURES
+				if (wres == (ssize_t) bytesleft) {
+					fprintf(stderr, "%5u [%d <%d>] Succeeded after retry\n", logid, thread_id, rfd->fd);
+				}
+#endif
 			}
-			bbs_block_fd(rfd->fd);
+			if (wres != (ssize_t) bytesleft) {
+				int saved_errno = errno;
+				/* Release console lock ASAP */
+				bbs_block_fd(rfd->fd);
+				bbs_mutex_unlock(&rfd->lock);
+				/* Well, we can't log a message if we failed to log a message.
+				 * That would probably not work out well. */
+				fprintf(stderr, "%5u [%d <%d>] Failed to log %lu bytes (wrote %ld): %s\n", logid, thread_id, rfd->fd, bytesleft, wres, strerror(saved_errno));
+			} else {
+				bbs_block_fd(rfd->fd);
+				bbs_mutex_unlock(&rfd->lock);
+			}
+nextiteration:
+			;
 		}
 		RWLIST_UNLOCK(&remote_log_fds);
 		if (fulldynamic) {

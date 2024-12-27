@@ -329,6 +329,7 @@ static void *sysop_handler(void *varg)
 		} else if (pfds[0].revents & POLLIN) {
 			ssize_t bytes_read = read(sysopfdin, buf, sizeof(buf));
 			if (bytes_read <= 0) {
+				my_set_stdout_logging(sysopfdout, 0); /* The console has disconnected, so don't attempt to log to it anymore, it will fail. */
 				bbs_debug(5, "read returned %ld\n", bytes_read);
 				break;
 			}
