@@ -2382,16 +2382,22 @@ static int handle_fetchlist(struct ws_session *ws, struct imap_client *client, c
 	return fetchlist(ws, client, reason, start, end, page, pagesize, numpages, client->sort, client->filter);
 }
 
+#ifdef DEBUG_MIME
+#define MIME_DEBUG(level, fmt, ...) bbs_debug(level, fmt, ## __VA_ARGS__)
+#else
+#define MIME_DEBUG(level, fmt, ...)
+#endif
+
 static void fetch_mime_recurse_single(const char **body, size_t *len, struct mailmime_data *data)
 {
 	switch (data->dt_type) {
 		case MAILMIME_DATA_TEXT:
-			bbs_debug(7, "data : %lu bytes\n", data->dt_data.dt_text.dt_length);
+			MIME_DEBUG(7, "data : %lu bytes\n", data->dt_data.dt_text.dt_length);
 			*body = data->dt_data.dt_text.dt_data;
 			*len = data->dt_data.dt_text.dt_length;
 			break;
 		case MAILMIME_DATA_FILE:
-			bbs_debug(7, "data (file) : %s\n", data->dt_data.dt_filename);
+			MIME_DEBUG(7, "data (file) : %s\n", data->dt_data.dt_filename);
 			break;
 	}
 }
@@ -2408,7 +2414,7 @@ static void append_recipients(json_t *recipients, struct mailimf_address_list *a
 		struct mailimf_address *addr = clist_content(cur);
 		switch (addr->ad_type) {
 			case MAILIMF_ADDRESS_GROUP:
-				bbs_debug(5, "Group address?\n");
+				MIME_DEBUG(5, "Group address?\n");
 				break;
 			case MAILIMF_ADDRESS_MAILBOX:
 				mb = addr->ad_data.ad_mailbox;
@@ -2426,9 +2432,7 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 {
 	struct mailmime_fields *fields;
 	struct mailmime_content *content_type;
-	int text_plain = 0, text_html = 0;
-	int pt_flowed = 0;
-	int is_attachment = 0;
+	int is_attachment = 0, is_multipart = 0, is_text = 0, text_plain = 0, pt_flowed = 0, text_html = 0;
 	int encoding;
 	clistiter *cur;
 	clist *parameters;
@@ -2437,13 +2441,13 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 
 	switch (mime->mm_type) {
 		case MAILMIME_SINGLE:
-			bbs_debug(5, "Single part\n");
+			MIME_DEBUG(5, "Single part\n");
 			break;
 		case MAILMIME_MULTIPLE:
-			bbs_debug(5, "Multipart\n");
+			MIME_DEBUG(5, "Multipart\n");
 			break;
 		case MAILMIME_MESSAGE:
-			bbs_debug(5, "Message\n");
+			MIME_DEBUG(5, "Message\n");
 			break;
 	}
 
@@ -2465,7 +2469,8 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 		case MAILMIME_TYPE_DISCRETE_TYPE:
 			switch (content_type->ct_type->tp_data.tp_discrete_type->dt_type) {
 				case MAILMIME_DISCRETE_TYPE_TEXT:
-					bbs_debug(7, "[%d] text/%s\n", level, content_type->ct_subtype);
+					MIME_DEBUG(7, "[%d] text/%s\n", level, content_type->ct_subtype);
+					is_text = 1;
 					if (!strcasecmp(content_type->ct_subtype, "plain")) {
 						text_plain = 1;
 					} else if (!strcasecmp(content_type->ct_subtype, "html")) {
@@ -2473,65 +2478,181 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 					}
 					break;
 				case MAILMIME_DISCRETE_TYPE_IMAGE:
-					bbs_debug(7, "[%d] image/%s\n", level, content_type->ct_subtype);
+					MIME_DEBUG(7, "[%d] image/%s\n", level, content_type->ct_subtype);
 					break;
 				case MAILMIME_DISCRETE_TYPE_AUDIO:
-					bbs_debug(7, "[%d] audio/%s\n", level, content_type->ct_subtype);
+					MIME_DEBUG(7, "[%d] audio/%s\n", level, content_type->ct_subtype);
 					break;
 				case MAILMIME_DISCRETE_TYPE_VIDEO:
-					bbs_debug(7, "[%d] video/%s\n", level, content_type->ct_subtype);
+					MIME_DEBUG(7, "[%d] video/%s\n", level, content_type->ct_subtype);
 					break;
 				case MAILMIME_DISCRETE_TYPE_APPLICATION:
-					bbs_debug(7, "[%d] application/%s\n", level, content_type->ct_subtype);
-					if (!strcmp(content_type->ct_subtype, "octet-stream")) {
-						is_attachment = 1;
-					}
+					MIME_DEBUG(7, "[%d] application/%s\n", level, content_type->ct_subtype);
+					/* If content_type->ct_subtype is "octet-stream", it's definitely an attachment, but so are most things! */
 					break;
 				case MAILMIME_DISCRETE_TYPE_EXTENSION:
-					bbs_debug(7, "[%d] %s/%s\n", level, content_type->ct_type->tp_data.tp_discrete_type->dt_extension, content_type->ct_subtype);
+					MIME_DEBUG(7, "[%d] %s/%s\n", level, content_type->ct_type->tp_data.tp_discrete_type->dt_extension, content_type->ct_subtype);
 					break;
 			}
 			break;
 		case MAILMIME_TYPE_COMPOSITE_TYPE:
 			switch (content_type->ct_type->tp_data.tp_composite_type->ct_type) {
 				case MAILMIME_COMPOSITE_TYPE_MESSAGE:
-					bbs_debug(7, "[%d] message/%s\n", level, content_type->ct_subtype);
+					MIME_DEBUG(7, "[%d] message/%s\n", level, content_type->ct_subtype);
 					break;
 				case MAILMIME_COMPOSITE_TYPE_MULTIPART:
-					bbs_debug(7, "[%d] multipart/%s\n", level, content_type->ct_subtype);
+					MIME_DEBUG(7, "[%d] multipart/%s\n", level, content_type->ct_subtype);
+					is_multipart = 1;
 					if (!strcasecmp(content_type->ct_subtype, "alternative")) {
 						text_html = 1;
 					}
 					break;
 				case MAILMIME_COMPOSITE_TYPE_EXTENSION:
-					bbs_debug(7, "[%d] %s/%s\n", level, content_type->ct_type->tp_data.tp_composite_type->ct_token, content_type->ct_subtype);
+					MIME_DEBUG(7, "[%d] %s/%s\n", level, content_type->ct_type->tp_data.tp_composite_type->ct_token, content_type->ct_subtype);
 					break;
 			}
 	}
 
+	/* Iterate parameters of Content-Type header */
 	for (cur = clist_begin(parameters); cur; cur = clist_next(cur)) {
 		struct mailmime_parameter *param = clist_content(cur);
-		bbs_debug(7, ";%s=%s\n", param->pa_name, param->pa_value);
-		if (text_plain && !strcmp(param->pa_name, "format")) {
-			if (!strcmp(param->pa_value, "flowed")) {
-				pt_flowed = 1;
+		MIME_DEBUG(7, ";%s=%s\n", param->pa_name, param->pa_value);
+		if (text_plain && !strcmp(param->pa_name, "format") && !strcmp(param->pa_value, "flowed")) {
+			pt_flowed = 1;
+		}
+	}
+
+	/* Include info about any attachments. Commented from earlier in file repeated here for relevance:
+	 *
+	 * If its content-type is multipart, it's not an attachment.
+	 * If its content-type is text, then you have to look at its content-disposition, which may be either inline or attachment.
+	 * If it has another content-type, then it is an attachment." */
+	if (!is_multipart) { /* Multipart can't be an attachment */
+		for (cur = clist_begin(fields->fld_list); cur; cur = clist_next(cur)) {
+			clistiter *cur2;
+			const char *name = NULL;
+			size_t size = 0;
+			struct mailmime_disposition *disposition;
+			struct mailmime_disposition_type *dsp_type;
+			struct mailmime_field *field = clist_content(cur);
+			if (field->fld_type != MAILMIME_FIELD_DISPOSITION) {
+				continue; /* Only care about Content-Disposition header */
 			}
-		} else if (!strcmp(param->pa_name, "name")) {
-			json_t *attach = json_object();
+			disposition = field->fld_data.fld_disposition;
+			dsp_type = disposition->dsp_type;
+			if (dsp_type->dsp_type != MAILMIME_DISPOSITION_TYPE_ATTACHMENT && is_text) {
+				/* Mozilla clients change the attachment to inline when deleted (but not when detached!)
+				 * But it's really an attachment, so treat it as such. */
+				if (strcmp(content_type->ct_subtype, "x-moz-deleted")) {
+					continue; /* If Content-Type is text and disposition is not attachment, it's inline (not an attachment) */
+				}
+			}
 			is_attachment = 1;
+			/* Extract info about the attachment, e.g. filename, size, etc. */
+			for (cur2 = clist_begin(disposition->dsp_parms); cur2; cur2 = clist_next(cur2)) {
+				struct mailmime_disposition_parm *param = clist_content(cur2);
+				if (param->pa_type == MAILMIME_DISPOSITION_PARM_FILENAME) {
+					name = param->pa_data.pa_filename;
+				} else if (param->pa_type == MAILMIME_DISPOSITION_PARM_SIZE) {
+					size = param->pa_data.pa_size;
+				}
+			}
 			/* If it's an attachment, add the name (and size) to the list */
-			if (attach) {
-				const char *body2;
-				size_t len2 = 0;
-				json_array_append_new(attachments, attach);
-				json_object_set_new(attach, "name", json_string(param->pa_value));
-				/* Get the size of the attachment by reusing fetch_mime_recurse_single for that purpose. */
-				if (mime->mm_type == MAILMIME_SINGLE) {
-					fetch_mime_recurse_single(&body2, &len2, mime->mm_data.mm_single);
-					if (len2) {
-						json_object_set_new(attach, "size", json_integer((json_int_t) len2));
+			if (name) {
+				int detached = 0;
+				json_t *attach = json_object();
+				if (!size && mime->mm_type == MAILMIME_SINGLE) {
+					const char *bodytmp; /* Don't care */
+					/* Get the size of the attachment by reusing fetch_mime_recurse_single for that purpose. */
+					fetch_mime_recurse_single(&bodytmp, &size, mime->mm_data.mm_single);
+				}
+				json_object_set_new(attach, "name", json_string(name));
+				json_object_set_new(attach, "size", json_integer((json_int_t) size));
+				if (size && size < 1000) { /* Attachment is small enough it may have been detached... */
+					/* It is possible that the user has detached or deleted the attachment using a Mozilla client,
+					 * and this attachment is now a stub/placeholder for what used to exist.
+					 * When this happens, these headers will be siblings to Content-Disposition:
+					 *
+					 * X-Mozilla-Altered: [AttachmentDetached|AttachmentDeleted]; date=<detach/delete-date>
+					 * X-Mozilla-External-Attachment-URL: <detach-location> (detached messages only) */
+					const char *ext_attach_url, *altered, *eoh;
+					size_t searchlen;
+#define EOH "\r\n\r\n"
+#define DETACH_ALTERED_HDR "X-Mozilla-Altered:"
+#define DETACH_NEWLOC_HDR "X-Mozilla-External-Attachment-URL:"
+					/* This is a bit of a hack.
+					 * I'm not sure how to programatically access custom header fields for a MIME part using libetpan.
+					 * So we fall back here to just manually parsing the headers as a string.
+					 *
+					 * The alternate is parsing the beginning of the body (see fetch_mime_recurse_single for how
+					 * we can get that) as a string (which should start with the phrase
+					 * "You deleted an attachment from this message. The original MIME headers for the attachment were:",
+					 * but that isn't really any better or more reliable.
+					 *
+					 * The part could be very large, so we want to be sure we only parse the header, not the body!
+					 * Hence, first locate end of headers. */
+					eoh = memmem(mime->mm_mime_start, mime->mm_length, EOH, STRLEN(EOH));
+					if (eoh) {
+						searchlen = (size_t) (eoh - mime->mm_mime_start);
+					} else {
+						searchlen = mime->mm_length;
+						eoh = mime->mm_mime_start + searchlen;
+					}
+					altered = memmem(mime->mm_mime_start, searchlen, DETACH_ALTERED_HDR, STRLEN(DETACH_ALTERED_HDR));
+					/* We don't duplicate the headers here; however, that means we need to always check if we're in bounds. */
+					if (altered && (altered + STRLEN("X-Mozilla-Altered: AttachmentDetached; date=\"") < eoh) && STARTS_WITH(altered, "X-Mozilla-Altered: Attachment")) {
+						int deleted = 0;
+						detached = 1;
+						altered += STRLEN("X-Mozilla-Altered: Attachment");
+						if (STARTS_WITH(altered, "Detached")) {
+							json_object_set_new(attach, "altered", json_string("detached")); /* Add this before adding any other detachment info */
+							altered += STRLEN("Detached");
+						} else if (STARTS_WITH(altered, "Deleted")) {
+							json_object_set_new(attach, "altered", json_string("deleted")); /* Add this before adding any other detachment info */
+							altered += STRLEN("Deleted");
+							deleted = 1;
+						} else {
+							/* It's safe to print at least the number of characters we previously expected. */
+							bbs_warning("Unexpected value for X-Mozilla-Altered: Attachment%.*s...\n", (int) STRLEN("Detached"), altered);
+						}
+						if (STARTS_WITH(altered, "; date=\"")) {
+							altered += STRLEN("; date=\"");
+							/* We don't want to include the opening (nor the closing) quotes.
+							 * Fortunately, the length of the date should always be 24 characters.
+							 * Just make sure that it actually is first, since we need to ensure it's in bounds. */
+							if (altered + 24 > eoh) {
+								bbs_warning("X-Mozilla-Altered date is too short\n");
+							} else if (*(altered + 24) != '"') {
+								bbs_warning("X-Mozilla-Altered date of unexpected length\n");
+							} else {
+								json_object_set_new(attach, "altered_time", json_stringn(altered, 24));
+							}
+						}
+						if (!deleted) { /* Was detached, rather than deleted */
+							ext_attach_url = memmem(mime->mm_mime_start, searchlen, DETACH_NEWLOC_HDR, STRLEN(DETACH_NEWLOC_HDR));
+							if (ext_attach_url) {
+								ext_attach_url += STRLEN(DETACH_NEWLOC_HDR);
+								if (ext_attach_url < eoh - 1 && *ext_attach_url == ' ') {
+									ext_attach_url++;
+								}
+								if (!strlen_zero(ext_attach_url)) {
+									size_t headersleft = (size_t) (eoh - ext_attach_url);
+									char *eol = memmem(ext_attach_url, headersleft, "\r\n", STRLEN("\r\n"));
+									if (eol) {
+										size_t value_len = (size_t) (eol - ext_attach_url);
+										json_object_set_new(attach, "detached_location", json_stringn(ext_attach_url, value_len));
+									} else {
+										bbs_warning("Missing line ending for X-Mozilla-External-Attachment-URL header? (headersleft: %lu)\n", headersleft);
+									}
+								}
+							}
+						}
 					}
 				}
+				if (!detached) {
+					json_object_set_new(attach, "altered", json_boolean(0));
+				}
+				json_array_append_new(attachments, attach);
 			}
 		}
 	}
@@ -2552,14 +2673,14 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 				if (html && text_html) {
 					fetch_mime_recurse_single(body, len, mime->mm_data.mm_single);
 					if (body && len) {
-						bbs_debug(7, "Using text/html part\n");
+						MIME_DEBUG(7, "Using text/html part\n");
 						json_object_set_new(root, "contenttype", json_string("text/html"));
 					}
 					*bodyencoding = encoding;
 				} else if (!*bodyencoding && text_plain) {
 					fetch_mime_recurse_single(body, len, mime->mm_data.mm_single);
 					if (body && len) {
-						bbs_debug(7, "Using text/plain part\n");
+						MIME_DEBUG(7, "Using text/plain part\n");
 						json_object_set_new(root, "contenttype", json_string(pt_flowed ? "text/plain; format=flowed" : "text/plain"));
 					}
 					*bodyencoding = encoding;
@@ -2618,7 +2739,7 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 									decoded = mb->mb_display_name ? mime_header_decode(mb->mb_display_name) : NULL;
 									name = decoded ? decoded : mb->mb_display_name;
 									snprintf(frombuf, sizeof(frombuf), "%s%s<%s>", S_IF(name), !strlen_zero(name) ? " " : "", mb->mb_addr_spec);
-									bbs_debug(6, "From: %s\n", frombuf);
+									MIME_DEBUG(6, "From: %s\n", frombuf);
 									json_set_header(root, "from", json_string(frombuf));
 									free_if(decoded);
 								}
@@ -2636,12 +2757,12 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 								subject = f->fld_data.fld_subject;
 								decoded = subject ? mime_header_decode(subject->sbj_value) : NULL;
 								name = decoded ? decoded : subject ? subject->sbj_value : NULL;
-								bbs_debug(5, "Subject: %s\n", name);
+								MIME_DEBUG(5, "Subject: %s\n", name);
 								json_set_header(root, "subject", json_string(name));
 								free_if(decoded);
 								break;
 							case MAILIMF_FIELD_MESSAGE_ID:
-								bbs_debug(5, "Message-ID: %s\n", f->fld_data.fld_message_id->mid_value);
+								MIME_DEBUG(5, "Message-ID: %s\n", f->fld_data.fld_message_id->mid_value);
 								json_set_header(root, "messageid", json_string(f->fld_data.fld_message_id->mid_value));
 								break;
 							/* Skip Reply-To and References here, we just want the raw versions for FETCH,
@@ -2692,19 +2813,19 @@ static int fetch_mime(json_t *root, int html, const char *msg_body, size_t msg_s
 		/* Decode the body if needed. */
 		switch (encoding) {
 			case MAILMIME_MECHANISM_BASE64:
-				bbs_debug(7, "Base64 encoded\n");
+				MIME_DEBUG(7, "Base64 encoded\n");
 				break;
 			case MAILMIME_MECHANISM_QUOTED_PRINTABLE:
-				bbs_debug(7, "Quoted printable encoded\n");
+				MIME_DEBUG(7, "Quoted printable encoded\n");
 				break;
 			case MAILMIME_MECHANISM_7BIT:
-				bbs_debug(7, "7-bit encoded\n");
+				MIME_DEBUG(7, "7-bit encoded\n");
 				break;
 			case MAILMIME_MECHANISM_8BIT:
-				bbs_debug(7, "8-bit encoded\n");
+				MIME_DEBUG(7, "8-bit encoded\n");
 				break;
 			case MAILMIME_MECHANISM_BINARY:
-				bbs_debug(7, "Binary encoded\n");
+				MIME_DEBUG(7, "Binary encoded\n");
 				break;
 		}
 		res = mailmime_part_parse(body, len, &idx, encoding, &result, &resultlen);
@@ -2732,7 +2853,7 @@ static int fetch_mime(json_t *root, int html, const char *msg_body, size_t msg_s
 				 * so all invalid character removal is done in the second pass. */
 				if (ALLOC_SUCCESS(decoded) && !bbs_quoted_printable_decode(decoded, &qlen, 0)) { /* Need to operate on original body, mailmime_part_parse removes quoted printable stuff */
 #endif
-					bbs_debug(3, "Translated quoted-printable body of length %lu to body of length %lu\n", resultlen, qlen);
+					MIME_DEBUG(7, "Translated quoted-printable body of length %lu to body of length %lu\n", resultlen, qlen);
 					jsonbody = json_stringn(decoded, qlen);
 #ifdef EXTRA_CHECKS
 					if (!jsonbody) {
@@ -2888,7 +3009,7 @@ static int handle_fetch(struct ws_session *ws, struct imap_client *client, uint3
 	clistiter *cur;
 	struct mailimap_section *section;
 	struct mailimap_msg_att *msg_att;
-	json_t *root = NULL, *attachments;
+	json_t *root = NULL;
 
 	webmail_log(1, client, "=> FETCH %u (%s)\n", uid, raw ? "raw" : html ? "html" : "plaintext");
 
@@ -2940,8 +3061,6 @@ static int handle_fetch(struct ws_session *ws, struct imap_client *client, uint3
 	}
 
 	json_object_set_new(root, "response", json_string("FETCH"));
-	attachments = json_array();
-	json_object_set_new(root, "attachments", attachments);
 
 	/* There's only one message, no need to have a for loop: */
 	cur = clist_begin(fetch_result);
@@ -2975,6 +3094,8 @@ static int handle_fetch(struct ws_session *ws, struct imap_client *client, uint3
 						}
 					}
 					if (raw) {
+						json_t *attachments = json_array();
+						json_object_set_new(root, "attachments", attachments); /* Add empty array so it's not undefined (fetch_mime does it for non-raw) */
 						json_object_set_new(root, "body", json_stringn(msg_body, msg_size)); /* We know how large it is, so just use the size */
 					} else {
 						fetch_mime(root, html, msg_body, msg_size, 1);
