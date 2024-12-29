@@ -38,9 +38,14 @@
 #include "include/utils.h" /* use safe_strncpy, bbs_gettid */
 
 /* Logging would recurse indefinitely, so skip logger.c. strcmp isn't the most efficient, but
- * it's fine here since this is an off-nominal path anyways. */
-#ifdef STRICT_LOCKING
+ * it's fine here since this is an off-nominal path anyways.
+ *
+ * Also, do not enable REALLY_STRICT_LOCKING on a production system, it can cause assertions even when nothing is wrong with the BBS. */
+#ifdef REALLY_STRICT_LOCKING
 #define lock_warning(fmt, ...) if (strcmp(filename, "logger.c")) { __bbs_log(LOG_WARNING, 0, filename, lineno, func, fmt, ## __VA_ARGS__); bbs_assert(0); } else { fprintf(stderr, fmt, ## __VA_ARGS__); }
+#define lock_error(fmt, ...) if (strcmp(filename, "logger.c")) { __bbs_log(LOG_ERROR, 0, filename, lineno, func, fmt, ## __VA_ARGS__); bbs_assert(0); } else { fprintf(stderr, fmt, ## __VA_ARGS__); }
+#elif defined(STRICT_LOCKING)
+#define lock_warning(fmt, ...) if (strcmp(filename, "logger.c")) { __bbs_log(LOG_WARNING, 0, filename, lineno, func, fmt, ## __VA_ARGS__); } else { fprintf(stderr, fmt, ## __VA_ARGS__); }
 #define lock_error(fmt, ...) if (strcmp(filename, "logger.c")) { __bbs_log(LOG_ERROR, 0, filename, lineno, func, fmt, ## __VA_ARGS__); bbs_assert(0); } else { fprintf(stderr, fmt, ## __VA_ARGS__); }
 #else
 #define lock_warning(fmt, ...) if (strcmp(filename, "logger.c")) { __bbs_log(LOG_WARNING, 0, filename, lineno, func, fmt, ## __VA_ARGS__); } else { fprintf(stderr, fmt, ## __VA_ARGS__); }
@@ -166,7 +171,7 @@ int __bbs_mutex_lock(bbs_mutex_t *t, const char *filename, int lineno, const cha
 			} else if (elapsed == 300) {
 				/* Okay, this is ridiculous. It should never take 5 minutes to acquire a lock.
 				 * In theory, it could, but there shouldn't be anything that actually does in the BBS. */
-				lock_error("Spent %ld seconds so far waiting for mutex %s, probable deadlock? (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
+				lock_warning("Spent %ld seconds so far waiting for mutex %s, probable deadlock? (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
 					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 			}
 		}
@@ -329,7 +334,7 @@ int __bbs_rwlock_rdlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 			} else if (elapsed == 300) {
 				/* Okay, this is ridiculous. It should never take 5 minutes to acquire a lock.
 				 * In theory, it could, but there shouldn't be anything that actually does in the BBS. */
-				lock_error("Spent %ld seconds so far waiting to rdlock %s, probable deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+				lock_warning("Spent %ld seconds so far waiting to rdlock %s, probable deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
 					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 			}
 		}
@@ -397,7 +402,7 @@ int __bbs_rwlock_wrlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 			} else if (elapsed == 300) {
 				/* Okay, this is ridiculous. It should never take 5 minutes to acquire a lock.
 				 * In theory, it could, but there shouldn't be anything that actually does in the BBS. */
-				lock_error("Spent %ld seconds so far waiting to wrlock %s, probable deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+				lock_warning("Spent %ld seconds so far waiting to wrlock %s, probable deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
 					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 			}
 		}
