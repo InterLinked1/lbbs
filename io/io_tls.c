@@ -288,6 +288,9 @@ static pthread_t ssl_thread;
 #define MARK_DEAD(s) \
 	RWLIST_TRAVERSE(&sslfds, sfd, entry) { \
 		if (sfd->ssl == s) { \
+			if (sfd->dead) { /* Shouldn't happen since we rebuild traversal list after MARK_DEAD */ \
+				bbs_warning("SSL connection %p already marked as dead?\n", sfd->ssl); \
+			} \
 			sfd->dead = 1; \
 			bbs_debug(5, "SSL connection %p now marked as dead\n", sfd->ssl); \
 			break; \
@@ -525,7 +528,7 @@ static void *ssl_io_thread(void *unused)
 				res--; /* Processed one event. Break the loop as soon as there are no more, to avoid traversing all like with select(). */
 			}
 			if (!inovertime && pfds[i].revents != POLLIN) { /* Something exceptional happened, probably something going away */
-				if (pfds[i].revents & POLLNVAL) {
+				if (pfds[i].revents & (POLLNVAL | POLLHUP)) {
 					SSL *ssl = ssl_list[i / 2];
 					bbs_debug(5, "Skipping SSL at index %d / %d = %s\n", i, i/2, poll_revent_name(pfds[i].revents));
 					MARK_DEAD(ssl);
@@ -669,7 +672,7 @@ static void *ssl_io_thread(void *unused)
 				SSL *ssl = ssl_list[(i - 1) / 2];
 				ores = (int) read(pfds[i].fd, buf, sizeof(buf));
 				if (ores <= 0) {
-					bbs_debug(3, "read returned %d\n", ores);
+					bbs_debug(3, "read returned %d on fd %d: %s\n", ores, pfds[i].fd, strerror(errno));
 					/* Application closed the connection,
 					 * but it will close the node fd (socket) so we don't need to close here. */
 					MARK_DEAD(ssl); /* What we can do now though is mark it as dead */
