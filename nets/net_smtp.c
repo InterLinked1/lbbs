@@ -232,6 +232,15 @@ struct smtp_relay_host {
 
 static RWLIST_HEAD_STATIC(authorized_relays, smtp_relay_host);
 
+struct smtp_authorized_identity {
+	const char *username;
+	struct stringlist identities;
+	RWLIST_ENTRY(smtp_authorized_identity) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(authorized_identities, smtp_authorized_identity);
+
 static void add_authorized_relay(const char *source, const char *domains)
 {
 	struct smtp_relay_host *h;
@@ -259,6 +268,28 @@ static void relay_free(struct smtp_relay_host *h)
 {
 	stringlist_empty_destroy(&h->domains);
 	free(h);
+}
+
+static void add_authorized_identity(const char *username, const char *identities)
+{
+	struct smtp_authorized_identity *i;
+
+	if (STARTS_WITH(identities, "*")) {
+		bbs_notice("This server is configured as an open mail relay for user '%s' and may be abused!\n", username);
+	}
+
+	i = calloc(1, sizeof(*i) + strlen(username) + 1);
+	if (ALLOC_FAILURE(i)) {
+		return;
+	}
+
+	strcpy(i->data, username); /* Safe */
+	i->username = i->data;
+	stringlist_init(&i->identities);
+	stringlist_push_list(&i->identities, identities);
+
+	/* Head insert, so later entries override earlier ones, in case multiple match */
+	RWLIST_INSERT_HEAD(&authorized_identities, i, entry);
 }
 
 /*!
@@ -294,6 +325,50 @@ int smtp_relay_authorized(const char *srcip, const char *hostname)
 {
 	bbs_assert_exists(hostname);
 	return __smtp_relay_authorized(srcip, hostname);
+}
+
+/*!
+ * \brief Whether this user is authorized to send email as a particular identity
+ * \param username User's username
+ * \param identity Email address using which the user is attempting to submit mail
+ * \retval 1 if authorized, 0 if not
+ */
+static int smtp_user_authorized_for_identity(const char *username, const char *identity)
+{
+	const char *domain;
+	struct smtp_authorized_identity *i;
+
+	RWLIST_RDLOCK(&authorized_identities);
+	RWLIST_TRAVERSE(&authorized_identities, i, entry) {
+		if (strcasecmp(username, i->username)) {
+			continue;
+		}
+		/* XXX In theory, we could do just a single traversal of &i->identities,
+		 * and just do each of the 3 checks for each item.
+		 * In the meantime, these checks are ordered from common case to least likely. */
+		/* First, check for explicit match. */
+		if (stringlist_case_contains(&i->identities, identity)) {
+			RWLIST_UNLOCK(&authorized_identities);
+			return 1;
+		}
+		/* Next, check for domain match. */
+		domain = strchr(identity, '@');
+		if (domain++ && *domain) {
+			char searchstr[256];
+			snprintf(searchstr, sizeof(searchstr), "*@%s", domain);
+			if (stringlist_case_contains(&i->identities, searchstr)) {
+				RWLIST_UNLOCK(&authorized_identities);
+				return 1;
+			}
+		}
+		/* Last check, is the user blank authorized to relay mail for any address? */
+		if (stringlist_contains(&i->identities, "*")) {
+			RWLIST_UNLOCK(&authorized_identities);
+			return 1;
+		}
+	}
+	RWLIST_UNLOCK(&authorized_identities);
+	return 0;
 }
 
 /*
@@ -2198,16 +2273,32 @@ static int check_identity(struct smtp_session *smtp, char *s)
 	char sendersfile[256];
 	char buf[32];
 	FILE *fp;
+	int domain_is_local;
 
 	/* Must use bbs_parse_email_address for sure, since From header could contain a name, not just the address that's in the <> */
 	if (bbs_parse_email_address(s, NULL, &user, &domain)) {
 		smtp_reply(smtp, 550, 5.7.1, "Malformed From header");
 		return -1;
 	}
-	if (!domain || !mail_domain_is_local(domain)) { /* Wrong domain, or missing domain altogether, yikes */
+
+	domain_is_local = domain ? mail_domain_is_local(domain) : 1;
+	if (!domain) { /* Missing domain altogether, yikes */
 		smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
 		return -1;
 	}
+	if (!domain_is_local) { /* Wrong domain? */
+		/* For non-local domains, if the user is explicitly authorized to send mail as this identity,
+		 * Then allow it. */
+		char addr[256];
+		snprintf(addr, sizeof(addr), "%s@%s", user, domain); /* Reconstruct instead of using s, to ensure no <> */
+		if (bbs_user_is_registered(smtp->node->user) && smtp_user_authorized_for_identity(bbs_username(smtp->node->user), addr)) {
+			bbs_debug(3, "User '%s' explicitly authorized to submit mail as %s\n", bbs_username(smtp->node->user), addr);
+			return 0; /* No further checks apply in this case */
+		}
+		smtp_reply(smtp, 550, 5.7.1, "You are not authorized to send email using this identity");
+		return -1;
+	}
+
 	/* Check what mailbox the sending username resolves to.
 	 * One corner case is the catch all address. This user is allowed to send email as any address,
 	 * which makes sense since the catch all is going to be the sysop, if it exists. */
@@ -3060,6 +3151,12 @@ static int load_config(void)
 				if (!stringlist_contains(&trusted_relays, key)) {
 					stringlist_push(&trusted_relays, key);
 				}
+			}
+		} else if (!strcmp(bbs_config_section_name(section), "authorized_senders")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				key = bbs_keyval_key(keyval);
+				val = bbs_keyval_val(keyval);
+				add_authorized_identity(key, val);
 			}
 		} else if (!strcmp(bbs_config_section_name(section), "starttls_exempt")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
