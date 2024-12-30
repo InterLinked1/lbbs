@@ -2527,7 +2527,7 @@ static int fetch_mime_recurse(json_t *root, json_t *attachments, struct mailmime
 	 * If its content-type is multipart, it's not an attachment.
 	 * If its content-type is text, then you have to look at its content-disposition, which may be either inline or attachment.
 	 * If it has another content-type, then it is an attachment." */
-	if (!is_multipart) { /* Multipart can't be an attachment */
+	if (!is_multipart && fields) { /* Multipart can't be an attachment */
 		for (cur = clist_begin(fields->fld_list); cur; cur = clist_next(cur)) {
 			clistiter *cur2;
 			const char *name = NULL;
