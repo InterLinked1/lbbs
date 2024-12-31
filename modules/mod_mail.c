@@ -459,14 +459,24 @@ static const char *resolve_alias(const char *user, const char *domain)
 
 	RWLIST_RDLOCK(&aliases);
 	RWLIST_TRAVERSE(&aliases, alias, entry) {
-		/* RFC 5321 4.5.1: postmaster match must be case-insensitive.
-		 * We allow all other matches to be made case-sensitively. */
-		if (!strcmp(alias->aliasuser, user) || (!strcmp(alias->aliasuser, "postmaster") && !strcasecmp(user, "postmaster"))) {
-			/* Unqualified match, or domain must match */
-			if (!alias->aliasdomain || (domain && !strcmp(alias->aliasdomain, domain))) {
-				retval = alias->target; /* Safe to return in practice since aliases cannot be unloaded while the module is running */
-				break;
-			}
+		int user_match;
+		if (!strcmp(alias->aliasuser, "*")) {
+			user_match = 1; /* Match like '*@example.com' */
+		} else if (!strcasecmp(alias->aliasuser, "postmaster")) {
+			/* RFC 5321 4.5.1: postmaster match must be case-insensitive.
+			 * All other matches could be case-sensitive,
+			 * but we also make them case-insensitively for compatibility. */
+			user_match = !strcasecmp(user, "postmaster");
+		} else {
+			user_match = !strcasecmp(alias->aliasuser, user); /* Explicit user match */
+		}
+		if (!user_match) {
+			continue;
+		}
+		/* Unqualified match, or domain must match */
+		if (!alias->aliasdomain || (domain && !strcasecmp(alias->aliasdomain, domain))) {
+			retval = alias->target; /* Safe to return in practice since aliases cannot be unloaded while the module is running */
+			break;
 		}
 	}
 	RWLIST_UNLOCK(&aliases);

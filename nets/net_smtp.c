@@ -274,7 +274,7 @@ static void add_authorized_identity(const char *username, const char *identities
 {
 	struct smtp_authorized_identity *i;
 
-	if (STARTS_WITH(identities, "*")) {
+	if (!strcmp(identities, "*")) {
 		bbs_notice("This server is configured as an open mail relay for user '%s' and may be abused!\n", username);
 	}
 
