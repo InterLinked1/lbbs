@@ -4207,7 +4207,30 @@ static int handle_idle(struct imap_session *imap)
 				if (imap->client) {
 					imap_client_integrity_check(imap, imap->client);
 					/* Stop idling on the selected mailbox (remote) */
-					imap_client_idle_stop(imap->client);
+					if (imap_client_idle_stop(imap->client)) {
+						/* If we failed to terminate IDLE, then the session is already dead,
+						 * and would be cleaned up in imap_clients_renew_idle as we prune dead sessions,
+						 * unless it's the foreground client, in which case it's not pruned
+						 * and we're left with a dead client, so handle a dead foreground client here.
+						 *
+						 * This is unfortunately a somewhat common occurence, because
+						 * a lot of IMAP servers don't seem to send us untagged data
+						 * while idling until later we try to do something with them.
+						 *
+						 * This is especially true for servers that enforce OAuth2 authentication,
+						 * such as Microsoft's, which will disconnect clients after 1 hour,
+						 * no matter what, with this untagged message:
+						 *
+						 *    * BYE Session invalidated - AccessTokenExpired
+						 *
+						 * There's no real good way to deal with this, since being disconnected is inevitable,
+						 * other than immediately recreating the session when this happens.
+						 *
+						 * This here is the case where our local user did something,
+						 * the case of getting activity on a particular client,
+						 * and handling its disconnect in realtime, is handled below. */
+						imap_recreate_client(imap, imap->client);
+					}
 				}
 				imap_clients_renew_idle(imap); /* In case some of them are close to expiring, renew them now before returning */
 				break; /* Client terminated the idle. Stop idling and return to read the next command. */
@@ -4220,7 +4243,7 @@ static int handle_idle(struct imap_session *imap)
 				/* The remote peer probably closed the connection, and this client is now dead.
 				 * We need to remove this now or poll will keep triggering for this client. */
 				client->dead = 1;
-				imap_client_unlink(imap, client);
+				imap_recreate_client(imap, client);
 				continue;
 			}
 			if (!client->idling) {

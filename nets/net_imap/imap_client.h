@@ -59,6 +59,12 @@ int imap_client_idle_stop(struct imap_client *client);
  */
 int imap_clients_next_idle_expiration(struct imap_session *imap);
 
+/*!
+ * \brief Recreate a client if it is dead
+ * \note The clients list must NOT be locked when calling this
+ */
+int imap_recreate_client(struct imap_session *imap, struct imap_client *client);
+
 /*! \brief Renew IDLE on all idling clients that are close to expiring */
 void imap_clients_renew_idle(struct imap_session *imap);
 

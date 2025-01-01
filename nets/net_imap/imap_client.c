@@ -266,14 +266,67 @@ int imap_clients_next_idle_expiration(struct imap_session *imap)
 	return (int) min_maxage; /* This is number of seconds until, it will fit in an int */
 }
 
+/*!
+ * \brief Create a client after it has just been purged
+ * \note The clients list must NOT be locked when calling this
+ */
+static struct imap_client *create_client_after_purge(struct imap_session *imap, const char *name, int foreground, int idling)
+{
+	struct imap_client *client;
+	int exists;
+
+	client = load_virtual_mailbox(imap, name, &exists);
+	if (!client) { /* Will lock the list to insert it */
+		/* Generally, it should exist, because we're creating a client that USED to exist!
+		 * However, it is possible that .imapremote has been modified since the
+		 * last time we parsed it (when the client was originally created),
+		 * in which case, this will fail. In that case, just let it go. */
+		if (exists) {
+			bbs_warning("Failed to recreate %s client %s\n", foreground ? "foreground" : "background", name);
+		}
+		return NULL;
+	}
+	bbs_verb(4, "Recreated %s IMAP client '%s'\n", foreground ? "foreground" : "background", name);
+	if (idling) {
+		imap_client_idle_start(client); /* Resume idling, if that's what it was doing before */
+	}
+	return client;
+}
+
+int imap_recreate_client(struct imap_session *imap, struct imap_client *client)
+{
+	struct imap_client *newclient;
+	int was_idling = client->idling;
+	int foreground = imap->client == client;
+	char name[256];
+
+	safe_strncpy(name, client->name, sizeof(name)); /* Store name before destroying the client */
+
+	/* Destroy old client before creating it again. */
+	if (foreground) {
+		imap->client = NULL;
+	}
+	imap_client_unlink(imap, client); /* returns void, so can't check success */
+
+	/* Now, create it again. */
+	newclient = create_client_after_purge(imap, name, foreground, was_idling);
+	if (newclient && foreground) {
+		imap->client = newclient; /* At this point, the new client has been swapped in, and the rest of the module is none the wiser. */
+	}
+	return newclient ? 0 : -1;
+}
+
 void imap_clients_renew_idle(struct imap_session *imap)
 {
+	struct stringlist deadclients;
+	char *clientname;
 	struct imap_client *client;
 	time_t now = time(NULL);
 
+	stringlist_init(&deadclients);
+
 	/* Renew all the IDLEs on remote servers, periodically,
 	 * to keep the IMAP connection alive. */
-
 	RWLIST_WRLOCK(&imap->clients);
 	RWLIST_TRAVERSE_SAFE_BEGIN(&imap->clients, client, entry) {
 		time_t maxage;
@@ -286,11 +339,17 @@ void imap_clients_renew_idle(struct imap_session *imap)
 		/* If we're not going to call this function to check for renewals before it's due to expire, renew it now */
 		if (maxage < now + 15) { /* Add a little bit of wiggle room */
 			time_t age = now - client->idlestarted;
-			bbs_debug(4, "Client '%s' needs to renew IDLE (%" TIME_T_FMT "/%d s elapsed)...\n", client->virtprefix, age, client->maxidlesec);
+			bbs_debug(4, "%s client '%s' needs to renew IDLE (%" TIME_T_FMT "/%d s elapsed)...\n",
+				imap->client == client ? "Foreground" : "Background", client->virtprefix, age, client->maxidlesec);
 			if (imap_client_idle_stop(client) || imap_client_idle_start(client)) {
 				client->dead = 1;
 				if (imap->client != client) {
 					RWLIST_REMOVE_CURRENT(entry);
+					/* The list is locked at the moment,
+					 * and creating a client entails acquiring that lock,
+					 * so for now, just keep track of what clients we removed,
+					 * and recreate them afterwards. */
+					stringlist_push_tail(&deadclients, client->name);
 					client_destroy(client);
 				}
 				continue;
@@ -299,6 +358,14 @@ void imap_clients_renew_idle(struct imap_session *imap)
 	}
 	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&imap->clients);
+
+	/* Now that we've pruned the client list of all dead clients,
+	 * attempt to recreate those we just purged. */
+	while ((clientname = stringlist_pop(&deadclients))) {
+		create_client_after_purge(imap, clientname, 0, 1);
+		free(clientname);
+	}
+	stringlist_destroy(&deadclients);
 }
 
 void imap_client_idle_notify(struct imap_client *client)
