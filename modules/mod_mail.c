@@ -94,7 +94,8 @@ int smtp_domain_matches(const char *domain, const char *addr)
 		addr++;
 		return strlen_zero(addr); /* Should be the end of that now */
 	} else {
-		return !strcmp(domain, addr);
+		/* Domains are case-insensitive */
+		return !strcasecmp(domain, addr);
 	}
 }
 
@@ -106,7 +107,7 @@ int mail_domain_is_local(const char *domain)
 	if (smtp_domain_matches(bbs_hostname(), domain)) {
 		return 1;
 	}
-	if (stringlist_contains(&local_domains, domain)) {
+	if (stringlist_case_contains(&local_domains, domain)) { /* Domains are case-insensitive */
 		return 1;
 	}
 	bbs_debug(5, "Domain '%s' is not local\n", domain);
