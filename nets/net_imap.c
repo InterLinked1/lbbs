@@ -3012,7 +3012,7 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 						goto cleanup;
 					}
 					/* Could get an untagged EXISTS at this point */
-					if (imap_client_wait_response(destclient, -1, SEC_MS(5))) { /* tagged OK */
+					if (imap_client_wait_response_noechotag(destclient, -1, SEC_MS(5))) { /* wait for tagged OK, don't echo that, but echo everything else */
 						goto cleanup;
 					}
 				}
@@ -3040,8 +3040,10 @@ static int handle_remote_move(struct imap_session *imap, char *dest, const char 
 			 * because any untagged data we receive prior to that should pass through directly to the client
 			 * (rather than being silently ignored/discarded as IMAP_CLIENT_EXPECT_EVENTUALLY does).
 			 * This way, the client can stay synchronized with the remote server, which is important
-			 * since APPEND can trigger untagged EXISTS's, etc. */
-			if (imap_client_wait_response(destclient, -1, SEC_MS(5))) {
+			 * since APPEND can trigger untagged EXISTS's, etc.
+			 *
+			 * At the same time, we don't want to relay the tagged response! */
+			if (imap_client_wait_response_noechotag(destclient, -1, SEC_MS(5))) {
 				goto cleanup;
 			}
 		}
@@ -4391,6 +4393,8 @@ static int imap_process(struct imap_session *imap, char *s)
 	int replacecount;
 	char *command = NULL; /* XXX Should not need to be initialized, but gcc 12 complains if it's not */
 	int res = 0;
+
+	imap->finalized_response = 0; /* New command, reset */
 
 	if (imap->idle || (imap->alerted == 1 && !strcasecmp(s, "DONE"))) {
 		/* Thunderbird clients will still send "DONE" if we send a tagged reply during the IDLE,

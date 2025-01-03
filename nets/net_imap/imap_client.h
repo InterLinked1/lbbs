@@ -93,6 +93,8 @@ ssize_t __attribute__ ((format (gnu_printf, 3, 4))) __imap_client_send_log(struc
 #define imap_client_send_log(client, fmt, ...) __imap_client_send_log(client, 1, fmt, ## __VA_ARGS__)
 
 #define imap_client_wait_response(client, fd, ms) __imap_client_wait_response(client, fd, ms, 1, __LINE__, NULL, NULL)
+#define imap_client_wait_response_noecho(client, fd, ms) __imap_client_wait_response(client, fd, ms, 0, __LINE__, NULL, NULL)
+#define imap_client_wait_response_noechotag(client, fd, ms) __imap_client_wait_response(client, fd, ms, 2, __LINE__, NULL, NULL)
 
 #define imap_client_send_wait_response(client, fd, ms, fmt, ...) __imap_client_send_wait_response(client, fd, ms, 1, __LINE__, NULL, NULL, fmt, ## __VA_ARGS__)
 #define imap_client_send_wait_response_cb(client, fd, ms, cb, cbdata, fmt, ...) __imap_client_send_wait_response(client, fd, ms, 1, __LINE__, cb, cbdata, fmt, ## __VA_ARGS__)
@@ -107,7 +109,7 @@ int __imap_client_wait_response(struct imap_client *client, int fd, int ms, int 
  * \param client
  * \param fd Additional file descriptor on which to poll(used only for IDLE, -1 otherwise)
  * \param ms Max time to wait for poll / bbs_readline
- * \param echo Whether to relay output from remote server to our local client
+ * \param echo 1 to relay output from remote server to our local client, 2 to relay output except tagged repsonse, 0 to not relay any output
  * \param lineno
  * \param cb Custom callback to run for each line received from remote server. Returning -1 from callback will terminate wait loop
  * \param cbdata Callback data for callback function

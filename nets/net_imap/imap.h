@@ -89,12 +89,13 @@ struct imap_session {
 	unsigned int readonly:1;	/* SELECT vs EXAMINE */
 	unsigned int inauth:1;
 	unsigned int idle:1;		/* Whether IDLE is active */
-	unsigned int dnd:1;			/* Do Not Disturb: Whether client is executing a FETCH, STORE, or SEARCH command (EXPUNGE responses are not allowed) */
+	unsigned int dnd:1;			/* Do Not Disturb: Whether client is executing a FETCH, STORE, or SEARCH command (EXPUNGE responses are not allowed). XXX Unused? */
 	unsigned int pending:1;		/* Delayed output is pending in pfd pipe */
 	unsigned int expungepending:1;	/* EXPUNGE updates pending in pipe */
 	unsigned int alerted:2;		/* An alert has been delivered to this client */
 	unsigned int condstore:1;	/* Whether a client has issue a CONDSTORE enabling command, and should be sent MODSEQ updates in untagged FETCH responses */
 	unsigned int qresync:1;		/* Whether a client has enabled the QRESYNC capability */
+	unsigned int finalized_response:1;	/* Whether tagged response to this command has been sent already */
 	struct imap_notify *notify;	/* NOTIFY events */
 	bbs_mutex_t lock;		/* Lock for IMAP session */
 	RWLIST_ENTRY(imap_session) entry;	/* Next active session */
@@ -177,7 +178,11 @@ extern int imap_debug_level;
 #define _imap_reply(imap, fmt, ...) _imap_reply_nolock(imap, fmt, ## __VA_ARGS__)
 #define imap_send_nocrlf(imap, fmt, ...) _imap_reply_nolock_fd_lognewline(imap, imap->node->wfd, fmt, ## __VA_ARGS__);
 #define imap_send(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
-#define imap_reply(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", imap->tag, ## __VA_ARGS__)
+#define imap_reply(imap, fmt, ...) do { \
+	bbs_assert(!imap->finalized_response); \
+	imap->finalized_response = 1; \
+	_imap_reply(imap, "%s " fmt "\r\n", imap->tag, ## __VA_ARGS__); \
+} while (0);
 
 #define imap_parallel_send(imap, fmt, ...) _imap_parallel_reply(imap, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
 

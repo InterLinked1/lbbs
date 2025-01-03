@@ -482,6 +482,7 @@ static ssize_t client_command_passthru(struct imap_client *client, int fd, const
 
 	for (;;) {
 		int cbres = 0;
+		int is_tagged_response, do_echo;
 		char *buf = client->buf;
 		if (fd != -1) {
 			res = bbs_multi_poll(pfds, 2, ms); /* If returns 1, client->rfd had activity, if 2, it was fd */
@@ -517,7 +518,12 @@ static ssize_t client_command_passthru(struct imap_client *client, int fd, const
 				break;
 			}
 		}
-		if (echo) {
+		/* If echo is 0, don't echo (relay back to local client)
+		 * If 1, unconditionally echo.
+		 * If 2, echo as long as it is not the tagged response. */
+		is_tagged_response = !strncmp(buf, tag, (size_t) taglen);
+		do_echo = echo == 1 || (echo == 2 && !is_tagged_response);
+		if (do_echo) {
 			/* Go ahead and relay it */
 			if (res > 0) { /* If it was just an empty line, don't bother calling write() with 0 bytes */
 				bbs_write(imap->node->wfd, buf, (unsigned int) res);
@@ -527,16 +533,22 @@ static ssize_t client_command_passthru(struct imap_client *client, int fd, const
 				break;
 			}
 		}
+		/* Allow easily differentiating replies that we silently discard and those passed through
+		 * <= if passed through, <- if not */
 #ifdef DEBUG_REMOTE_RESPONSES
 		/* NEVER enable this in production because this will be a huge volume of data */
-		imap_debug(10, "<= %.*s\n", (int) res, buf);
+		imap_debug(10, "<%c %.*s\n", do_echo ? '=' : '-', (int) res, buf);
 #else
 		if (c++ < 15 && res > 2 && !strncmp(buf, "* ", STRLEN("* "))) {
-			imap_debug(7, "<= %.*s\n", (int) res, buf);
+			imap_debug(7, "<%c %.*s\n", do_echo ? '=' : '-', (int) res, buf);
 		}
 #endif
-		if (!strncmp(buf, tag, (size_t) taglen)) {
-			imap_debug(10, "<= %.*s\n", (int) res, buf);
+		if (is_tagged_response) {
+			if (do_echo) {
+				/* We just relayed the tagged response from the remote server to local client */
+				imap->finalized_response = 1;
+			}
+			imap_debug(10, "<%c %.*s\n", do_echo ? '=' : '-', (int) res, buf);
 			if (!STARTS_WITH(buf + taglen, "OK")) { /* BAD or NO */
 				/* We did something we shouldn't have, oops */
 				if (cmd) {
