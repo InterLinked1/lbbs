@@ -424,7 +424,7 @@ static struct bbs_config *config_parse_or_write(const char *name, FILE **restric
 				 * There's nothing incorrect about this, it just looks weird,
 				 * but it's not worth the added overhead to work around that to me... */
 				fprintf(*write_fp_ptr, "%s = %s%s", write_key, write_value, endl);
-				bbs_verb(5, "Adding setting '%s' in existing config\n", write_key);
+				bbs_debug(1, "Adding setting '%s' in existing config\n", write_key);
 			}
 
 			section = calloc(1, sizeof(*section));
@@ -478,7 +478,7 @@ static struct bbs_config *config_parse_or_write(const char *name, FILE **restric
 				/* Copy remainder of line from tmp onwards,
 				 * then free dupline since we already handled this line. */
 				fprintf(*write_fp_ptr, "%s = %s%s", key, write_value, S_IF(tmp)); /* tmp also includes the line ending */
-				bbs_verb(5, "Updating setting '%s' in existing config\n", write_key);
+				bbs_debug(1, "Updating setting '%s' in existing config\n", write_key);
 				FREE(dupline); /* free and set to NULL */
 				write_section = NULL; /* Do not do any further replacements/additions */
 			}
@@ -527,8 +527,7 @@ static struct bbs_config *config_parse_or_write(const char *name, FILE **restric
 		RWLIST_UNLOCK(&configs);
 	}
 
-	bbs_verb(5, "Parsed config %s\n", fullname);
-
+	bbs_debug(1, "Parsed config %s\n", fullname);
 	return cfg;
 }
 

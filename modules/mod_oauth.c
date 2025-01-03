@@ -210,7 +210,7 @@ static int refresh_token(struct oauth_client *client)
 		/* The authorization server MAY issue a new refresh token, in which case the client
 		 * MUST discard the old refresh token and replace it with the new refresh token.
 		 * The authorization server MAY revoke the old refresh token after issuing a new refresh token to the client. */
-		bbs_verb(5, "OAuth refresh token has changed\n");
+		bbs_debug(2, "OAuth refresh token has changed\n");
 		REPLACE(client->refreshtoken, newrefreshtoken);
 		/* This is good as long as the BBS is running continously, but we also need to update the static configuration file,
 		 * or we'll lose the new refresh token the next time the BBS starts (or mod_oauth is reloaded). */

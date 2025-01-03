@@ -120,6 +120,91 @@ static void webmail_log(int level, struct imap_client *client, const char *fmt, 
 	fflush(webmail_log_fp);
 }
 
+#if 0
+/* imap_error_to_mail_error exists in libetpan, but is not exported, so we have to enumerate... ugh! */
+#define mailimap_strerror(c) (maildriver_strerror(imap_error_to_mail_error(c)))
+#else
+/* maildriver_strerror is like strerror for maildriver, but the codes are completely different for mailimap, so it isn't helpful */
+static const char *mailimap_strerror(int code)
+{
+	switch (code) {
+#define MAILIMAP_STRERROR_ITEM(c) case c: return #c
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_NO_ERROR);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_NO_ERROR_AUTHENTICATED);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_NO_ERROR_NON_AUTHENTICATED);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_BAD_STATE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_STREAM);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_PARSE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_CONNECTION_REFUSED);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_MEMORY);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_FATAL);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_PROTOCOL);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_DONT_ACCEPT_CONNECTION);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_APPEND);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_NOOP);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_LOGOUT);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_CAPABILITY);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_CHECK);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_CLOSE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_EXPUNGE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_COPY);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_UID_COPY);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_MOVE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_UID_MOVE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_CREATE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_DELETE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_EXAMINE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_FETCH);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_UID_FETCH);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_LIST);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_LOGIN);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_LSUB);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_RENAME);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_SEARCH);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_UID_SEARCH);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_SELECT);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_STATUS);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_STORE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_UID_STORE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_SUBSCRIBE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_UNSUBSCRIBE);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_STARTTLS);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_INVAL);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_EXTENSION);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_SASL);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_SSL);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_NEEDS_MORE_DATA);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_CUSTOM_COMMAND);
+	MAILIMAP_STRERROR_ITEM(MAILIMAP_ERROR_CLIENTID);
+#undef MAILIMAP_STRERROR_ITEM
+	default: return "UNKNOWN";
+	}
+};
+#endif
+
+#define log_mailimap_error(client, code, fmt, ...) log_mailimap(__FILE__, __LINE__, __func__, 1, client, code, fmt, ## __VA_ARGS__)
+#define log_mailimap_warning(client, code, fmt, ...) log_mailimap(__FILE__, __LINE__, __func__, 0, client, code, fmt, ## __VA_ARGS__)
+
+static void __attribute__ ((format (gnu_printf, 7, 8))) log_mailimap(const char *file, int lineno, const char *func, int error, struct mailimap *client, int code, const char *fmt, ...)
+{
+	char buf[1024];
+	va_list ap;
+	int last_sent_tag = client->imap_tag;
+	struct mailimap_response_info *r = client->imap_response_info;
+
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+
+	if (r) {
+		/* Usually all the fields of r we print here are NULL, but we should have some tag and response info for debugging */
+		__bbs_log(error ? LOG_ERROR : LOG_WARNING, 0, file, lineno, func, "%s [%d: %s]: %d, %s/%s/%s/%s/%s\n",
+			buf, code, mailimap_strerror(code), last_sent_tag, S_IF(client->imap_response), S_IF(r->rsp_alert), S_IF(r->rsp_parse), S_IF(r->rsp_atom), S_IF(r->rsp_value));
+	} else {
+		__bbs_log(error ? LOG_ERROR : LOG_WARNING, 0, file, lineno, func, "%s [%d: %s]\n", buf, code, mailimap_strerror(code));
+	}
+}
+
 static void libetpan_log(mailimap *session, int log_type, const char *str, size_t size, void *context)
 {
 	UNUSED(session);
@@ -236,13 +321,13 @@ static int client_status_basic(mailimap *imap, const char *mbox, uint32_t *unsee
 	}
 
 	if (res) {
-		bbs_warning("Failed to add message: %s\n", maildriver_strerror(res));
+		log_mailimap_warning(imap, res, "Failed to add message");
 		goto cleanup;
 	}
 	res = mailimap_status(imap, mbox, att_list, &status);
 
 	if (res != MAILIMAP_NO_ERROR) {
-		bbs_warning("STATUS failed: %s\n", maildriver_strerror(res));
+		log_mailimap_warning(imap, res, "STATUS failed");
 		goto cleanup;
 	}
 	res = 0;
@@ -382,7 +467,7 @@ static int client_status_command(struct imap_client *client, struct mailimap *im
 	}
 
 	if (res) {
-		bbs_warning("Failed to add message: %s\n", maildriver_strerror(res));
+		log_mailimap_warning(client->imap, res, "Failed to add message");
 		goto cleanup;
 	}
 	client_set_status(client->ws, "Querying status of %s", mbox);
@@ -392,7 +477,7 @@ static int client_status_command(struct imap_client *client, struct mailimap *im
 	set_command_read_timeout(client, old_timeout, NULL);
 
 	if (res != MAILIMAP_NO_ERROR) {
-		bbs_warning("STATUS failed: %s\n", maildriver_strerror(res));
+		log_mailimap_warning(client->imap, res, "STATUS failed");
 		goto cleanup;
 	}
 	res = 0;
@@ -644,7 +729,7 @@ static int client_imap_init(struct ws_session *ws, struct imap_client *client)
 		res = mailimap_socket_connect(imap, hostname, port);
 	}
 	if (MAILIMAP_ERROR(res)) {
-		bbs_warning("Failed to establish IMAP session to %s:%d (%s)\n", hostname, port, maildriver_strerror(res));
+		log_mailimap_warning(client->imap, res, "Failed to establish IMAP session to %s:%d", hostname, port);
 		client_set_error(ws, "IMAP server connection failed");
 		goto cleanup;
 	}
@@ -714,12 +799,11 @@ static void list_status_logger(mailstream *imap_stream, int log_type, const char
 	}
 
 #ifdef DEBUG_LIST_STATUS
-	bbs_debug(3, "Log callback %d: %.*s\n", log_type, (int) size, str);
+	bbs_debug(6, "Log callback of %lu bytes for LIST-STATUS: %.*s\n", size, log_type, (int) size, str);
+#elif 0
+	bbs_debug(10, "Log callback %d: %.*s\n", log_type, (int) size, str);
 #endif
 
-	/* Can be broken up across multiple log callback calls, so append to a dynstr */
-	bbs_debug(6, "Log callback of %lu bytes for LIST-STATUS\n", size);
-	/* Since this can take quite a bit of time, send an update here */
 	if (size > STRLEN("* STATUS ") && STARTS_WITH(str, "* STATUS ")) {
 		const char *mb = str + STRLEN("* STATUS ");
 		size_t maxlen = size - STRLEN("* STATUS ");
@@ -730,9 +814,11 @@ static void list_status_logger(mailstream *imap_stream, int log_type, const char
 				mb++;
 				mblen--;
 			}
+			/* Since this can take quite a bit of time, send an update here */
 			client_set_status(client->ws, "Queried status of %.*s", (int) mblen, mb);
 		}
 	}
+	/* Can be broken up across multiple log callback calls, so append to a dynstr */
 	dyn_str_append(dynstr, str, size);
 }
 
@@ -852,7 +938,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 	if (res != MAILIMAP_NO_ERROR) {
 		/* This can happen if the server hasn't finished sending the entire LIST response by now,
 		 * for example if the server has to do FETCH 1:* on a remote to calculate the mailbox size. */
-		bbs_warning("LIST failed: %s\n", maildriver_strerror(res));
+		log_mailimap_warning(client->imap, res, "LIST failed");
 		free_if(listresp);
 		return -1;
 	}
@@ -948,7 +1034,7 @@ static int client_list_command(struct imap_client *client, struct mailimap *imap
 						mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
 						res = mailimap_fetch(imap, set, fetch_type, &fetch_result);
 						if (res != MAILIMAP_NO_ERROR) {
-							bbs_error("Failed to calculate size of mailbox %s: %s\n", name, maildriver_strerror(res));
+							log_mailimap_error(imap, res, "Failed to calculate size of mailbox %s", name);
 						} else {
 							clistiter *cur2;
 							/* Iterate over each message size */
@@ -1152,7 +1238,7 @@ static int client_imap_select(struct ws_session *ws, struct imap_client *client,
 	webmail_log(2, client, "=> SELECT %s\n", name);
 	res = mailimap_select(imap, name);
 	if (res != MAILIMAP_NO_ERROR) {
-		bbs_warning("SELECT '%s' failed: %s\n", name, maildriver_strerror(res));
+		log_mailimap_warning(client->imap, res, "SELECT '%s' failed", name);
 		return -1;
 	}
 
@@ -1351,6 +1437,12 @@ static char *mime_header_decode(const char *s)
 	return decoded;
 }
 
+#ifdef DEBUG_MIME
+#define MIME_DEBUG(level, fmt, ...) bbs_debug(level, fmt, ## __VA_ARGS__)
+#else
+#define MIME_DEBUG(level, fmt, ...)
+#endif
+
 static void append_header_single(json_t *restrict json, int *importance, int fetchlist, json_t *to, json_t *cc, const char *hdrname, char *restrict hdrval)
 {
 	/* This is one of the headers we wanted.
@@ -1381,7 +1473,7 @@ static void append_header_single(json_t *restrict json, int *importance, int fet
 		if (fetchlist) {
 			char *decoded = mime_header_decode(hdrval);
 			if (decoded) {
-				bbs_debug(5, "Decoded %s: %s => %s\n", hdrname, hdrval, decoded);
+				MIME_DEBUG(5, "Decoded %s: %s => %s\n", hdrname, hdrval, decoded);
 				hdrval = decoded;
 			}
 			if (!strcasecmp(hdrname, "From")) {
@@ -1698,7 +1790,7 @@ static clist *sortall(struct imap_client *client, const char *sort, const char *
 	}
 
 	if (res != MAILIMAP_NO_ERROR) {
-		bbs_warning("%s failed: %s\n", *sorted ? "SORT" : "SEARCH", maildriver_strerror(res));
+		log_mailimap_warning(client->imap, res, "%s failed\n", *sorted ? "SORT" : "SEARCH");
 		/* Wish there was an easy way to get the actual tagged NO response, so we could pass that on.
 		 * If SORT failed, it's probably beacuse it's not supported for this mailbox.
 		 * SEARCH is part of the base specification so it's always supported.
@@ -2059,7 +2151,7 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 
 		/* Don't go to cleanup past this point, so no need to set fetch_type/set to NULL */
 		if (MAILIMAP_ERROR(res)) {
-			bbs_warning("FETCH failed: %s\n", maildriver_strerror(res));
+			log_mailimap_warning(client->imap, res, "FETCH failed");
 			/* fetch_result and everything that went into it is already freed */
 			if (fetch_type) {
 				mailimap_fetch_type_free(fetch_type);
@@ -2237,7 +2329,7 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 			/* Now, re-SELECT the original mailbox... */
 			res = mailimap_select(client->imap, client->mailbox);
 			if (res != MAILIMAP_NO_ERROR) {
-				bbs_warning("SELECT '%s' failed: %s\n", client->mailbox, maildriver_strerror(res));
+				log_mailimap_warning(client->imap, res, "SELECT '%s' failed\n", client->mailbox);
 				break;
 			}
 			if (++fetch_attempts >= 3) {
@@ -2248,7 +2340,7 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 			fetch_result = NULL;
 			res = mailimap_fetch(client->imap, set, fetch_type, &fetch_result);
 			if (MAILIMAP_ERROR(res)) {
-				bbs_warning("FETCH failed: %s\n", maildriver_strerror(res));
+				log_mailimap_warning(client->imap, res, "FETCH failed");
 				break; /* At least return what we already have, assuming we got something */
 			}
 			json_array_clear(arr); /* Remove all existing items from array since we have a new set to process */
@@ -2381,12 +2473,6 @@ static int handle_fetchlist(struct ws_session *ws, struct imap_client *client, c
 	}
 	return fetchlist(ws, client, reason, start, end, page, pagesize, numpages, client->sort, client->filter);
 }
-
-#ifdef DEBUG_MIME
-#define MIME_DEBUG(level, fmt, ...) bbs_debug(level, fmt, ## __VA_ARGS__)
-#else
-#define MIME_DEBUG(level, fmt, ...)
-#endif
 
 static void fetch_mime_recurse_single(const char **body, size_t *len, struct mailmime_data *data)
 {
@@ -2936,7 +3022,7 @@ static void send_preview(struct ws_session *ws, struct imap_client *client, uint
 	/* Fetch by sequence number */
 	res = mailimap_fetch(client->imap, set, fetch_type, &fetch_result);
 	if (MAILIMAP_ERROR(res)) {
-		bbs_warning("FETCH failed: %s\n", maildriver_strerror(res));
+		log_mailimap_warning(client->imap, res, "FETCH failed");
 		fetch_result = NULL;
 		goto cleanup;
 	}
@@ -3056,7 +3142,7 @@ static int handle_fetch(struct ws_session *ws, struct imap_client *client, uint3
 	/* Fetch by UID */
 	res = mailimap_uid_fetch(client->imap, set, fetch_type, &fetch_result);
 	if (MAILIMAP_ERROR(res)) {
-		bbs_warning("FETCH failed: %s\n", maildriver_strerror(res));
+		log_mailimap_warning(client->imap, res, "FETCH failed");
 		goto cleanup;
 	}
 
@@ -3203,7 +3289,7 @@ static int __handle_store(struct imap_client *client, int sign, struct mailimap_
 
 	res = mailimap_uid_store(client->imap, set, att_flags);
 	if (res != MAILIMAP_NO_ERROR) {
-		bbs_warning("UID STORE failed: %s\n", maildriver_strerror(res));
+		log_mailimap_warning(client->imap, res, "UID STORE failed");
 	}
 	/* Regardless of whether it failed or not, we're done */
 	mailimap_store_att_flags_free(att_flags);
@@ -3253,7 +3339,7 @@ static int handle_store(struct imap_client *client, int sign, json_t *uids, cons
 	}
 	res = mailimap_flag_list_add(flag_list, flag);
 	if (res != MAILIMAP_NO_ERROR) {
-		bbs_warning("LIST add failed: %s\n", maildriver_strerror(res));
+		log_mailimap_warning(client->imap, res, "LIST add failed");
 		mailimap_flag_list_free(flag_list);
 		mailimap_set_free(set);
 		free_if(keyword);
@@ -3326,7 +3412,7 @@ static int handle_move(struct imap_client *client, json_t *uids, const char *new
 		res = mailimap_uid_move(client->imap, set, newmbox);
 		set_command_read_timeout(client, old_timeout, NULL);
 		if (res != MAILIMAP_NO_ERROR) {
-			bbs_warning("UID MOVE failed: %s\n", maildriver_strerror(res));
+			log_mailimap_warning(client->imap, res, "UID MOVE failed");
 		}
 	} else {
 		/* You're kidding me... right? */
@@ -3334,7 +3420,7 @@ static int handle_move(struct imap_client *client, json_t *uids, const char *new
 		res = mailimap_uid_copy(client->imap, set, newmbox);
 		set_command_read_timeout(client, old_timeout, NULL);
 		if (res != MAILIMAP_NO_ERROR) {
-			bbs_warning("UID COPY failed: %s\n", maildriver_strerror(res));
+			log_mailimap_warning(client->imap, res, "UID COPY failed");
 		} else {
 			handle_store_deleted(client, uids);
 			/* XXX Should we do an EXPUNGE automatically? It could be dangerous! */
@@ -3351,7 +3437,7 @@ static int handle_move(struct imap_client *client, json_t *uids, const char *new
 			 * seemingly due to the parser not being in the right state. This gets things back in sync. */
 			res = mailimap_noop(client->imap);
 			if (res != MAILIMAP_NO_ERROR) {
-				bbs_warning("IMAP NOOP failed: %s\n", maildriver_strerror(res));
+				log_mailimap_warning(client->imap, res, "NOOP failed");
 			}
 		}
 		bbs_debug(5, "Updated folder count from %u to %u\n", client->messages, newcount);
@@ -3380,7 +3466,7 @@ static int handle_copy(struct imap_client *client, json_t *uids, const char *new
 	res = mailimap_uid_copy(client->imap, set, newmbox);
 	set_command_read_timeout(client, old_timeout, NULL);
 	if (res != MAILIMAP_NO_ERROR) {
-		bbs_warning("UID COPY failed: %s\n", maildriver_strerror(res));
+		log_mailimap_warning(client->imap, res, "UID COPY failed");
 		return -1;
 	}
 	mailimap_set_free(set);
@@ -3410,7 +3496,7 @@ static int handle_append(struct imap_client *client, const char *message, size_t
 	}
 	res = mailimap_append_simple(client->imap, client->mailbox, message, size);
 	if (res != MAILIMAP_NO_ERROR) {
-		bbs_warning("APPEND failed: %s\n", maildriver_strerror(res));
+		log_mailimap_warning(client->imap, res, "APPEND failed");
 		return -1;
 	} else {
 		client->messages++; /* Manually update count */
@@ -3429,7 +3515,7 @@ static int idle_stop(struct ws_session *ws, struct imap_client *client)
 		webmail_log(7, client, "=> IDLE STOP\n");
 		res = mailimap_idle_done(client->imap);
 		if (res != MAILIMAP_NO_ERROR) {
-			bbs_warning("Failed to stop IDLE: %s\n", maildriver_strerror(res));
+			log_mailimap_warning(client->imap, res, "Failed to stop IDLE");
 			return -1;
 		}
 		client->idling = 0;
@@ -3488,7 +3574,7 @@ static int idle_start(struct ws_session *ws, struct imap_client *client)
 
 		res = mailimap_idle(client->imap);
 		if (res != MAILIMAP_NO_ERROR) {
-			bbs_warning("Failed to start IDLE: %s\n", maildriver_strerror(res));
+			log_mailimap_warning(client->imap, res, "Failed to start IDLE");
 			return -1;
 		} else {
 			client->idlestart = time(NULL);
@@ -3750,7 +3836,7 @@ static int on_poll_timeout(struct ws_session *ws, void *data)
 		/* Prevent IMAP connection timeout by sending a NOOP to the server, since we're not idling. */
 		int res = mailimap_noop(client->imap);
 		if (res != MAILIMAP_NO_ERROR) {
-			bbs_warning("IMAP NOOP failed: %s\n", maildriver_strerror(res));
+			log_mailimap_warning(client->imap, res, "NOOP failed");
 		}
 	}
 
@@ -3856,8 +3942,10 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 			goto cleanup;
 		}
 		client_set_status(ws, "%s", ""); /* Clear any previous status message */
-		/* Send an unsolicited list of messages (implicitly fetch the first page). */
-		res = handle_fetchlist(ws, client, command, 1, json_object_int_value(root, "pagesize"), json_object_string_value(root, "sort"), json_object_string_value(root, "filter"));
+		/* Send an unsolicited list of messages (implicitly fetch the first page).
+		 * However, it's not always going to be the first page... if a mailbox is SELECTED during operation, it would be,
+		 * but if the user reloads the page and thus the current mailbox is selected, we also want to reopen the specified page. */
+		res = handle_fetchlist(ws, client, command, json_object_int_value(root, "page"), json_object_int_value(root, "pagesize"), json_object_string_value(root, "sort"), json_object_string_value(root, "filter"));
 	} else if (!strcmp(command, "FETCHLIST")) {
 		res = handle_fetchlist(ws, client, command, json_object_int_value(root, "page"), json_object_int_value(root, "pagesize"), json_object_string_value(root, "sort"), json_object_string_value(root, "filter"));
 	} else if (client->mailbox) {

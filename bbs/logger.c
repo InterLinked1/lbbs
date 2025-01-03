@@ -400,6 +400,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 	time_t lognow;
 	struct tm logdate;
 	struct timeval now;
+	int timeus;
 	char datestr[20];
 	char logminibuf[512];
 	char logfullbuf[768];
@@ -467,6 +468,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 #pragma GCC diagnostic pop
 	lognow = time(NULL);
 	localtime_r(&lognow, &logdate);
+	timeus = (int) now.tv_usec / 1000;
 	strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 
 	thread_id = bbs_gettid();
@@ -513,7 +515,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 		struct remote_log_fd *rfd;
 		if (loglevel == LOG_VERBOSE && verbose_special_formatting) {
 			const char *verbprefix = verbose_prefix(level);
-			bytes = snprintf(logfullbuf, sizeof(logfullbuf), "[%s.%03d] %s%s%s", datestr, (int) now.tv_usec / 1000, verbprefix, buf, need_reset ? COLOR_RESET : "");
+			bytes = snprintf(logfullbuf, sizeof(logfullbuf), "[%s.%03d] %s%s%s", datestr, timeus, verbprefix, buf, need_reset ? COLOR_RESET : "");
 			if (bytes >= (int) sizeof(logfullbuf)) {
 				fulldynamic = 1;
 				fullbuf = malloc((size_t) bytes + 1);
@@ -527,7 +529,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 				sprintf(fullbuf, "[%s.%03d] %s%s%s", datestr, (int) now.tv_usec / 1000, verbprefix, buf, need_reset ? COLOR_RESET : "");
 			}
 		} else {
-			bytes = snprintf(logfullbuf, sizeof(logfullbuf), "[%s.%03d] %s[%d]: %s%s:%d %s%s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 1), thread_id, COLOR_START TERM_COLOR_WHITE COLOR_BEGIN, file, lineno, func, COLOR_RESET, buf, need_reset ? COLOR_RESET : "");
+			bytes = snprintf(logfullbuf, sizeof(logfullbuf), "[%s.%03d] %s[%d]: %s%s:%d %s%s: %s%s", datestr, timeus, loglevel2str(loglevel, 1), thread_id, COLOR_START TERM_COLOR_WHITE COLOR_BEGIN, file, lineno, func, COLOR_RESET, buf, need_reset ? COLOR_RESET : "");
 			if (bytes >= (int) sizeof(logfullbuf)) {
 				fullbuf = malloc((size_t) bytes + 1);
 				if (ALLOC_FAILURE(fullbuf)) {
@@ -537,7 +539,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 				}
 				fulldynamic = 1;
 				/* Safe */
-				bytes = sprintf(fullbuf, "[%s.%03d] %s[%d]: %s%s:%d %s%s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 1), thread_id, COLOR_START TERM_COLOR_WHITE COLOR_BEGIN, file, lineno, func, COLOR_RESET, buf, need_reset ? COLOR_RESET : "");
+				bytes = sprintf(fullbuf, "[%s.%03d] %s[%d]: %s%s:%d %s%s: %s%s", datestr, timeus, loglevel2str(loglevel, 1), thread_id, COLOR_START TERM_COLOR_WHITE COLOR_BEGIN, file, lineno, func, COLOR_RESET, buf, need_reset ? COLOR_RESET : "");
 			}
 		}
 
@@ -591,9 +593,9 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 					bufstart += wres;
 					bytesleft -= (size_t) wres;
 #ifdef DEBUG_LOGGING_FAILURES
-					fprintf(stderr, "%5u [%d <%d>] Retrying partial write\n", logid, thread_id, rfd->fd);
+					fprintf(stderr, "[%s.%03d] %5u [%d <%d>] Retrying partial write\n", datestr, timeus, logid, thread_id, rfd->fd);
 				} else {
-					fprintf(stderr, "%5u [%d <%d>] Retrying failed write\n", logid, thread_id, rfd->fd);
+					fprintf(stderr, "[%s.%03d] %5u [%d <%d>] Retrying failed write\n", datestr, timeus, logid, thread_id, rfd->fd);
 #endif
 				}
 				/* If we can make progress now, try again. Otherwise, give up immediately.
@@ -605,12 +607,12 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 					/* Release console lock ASAP */
 					bbs_block_fd(rfd->fd);
 					bbs_mutex_unlock(&rfd->lock);
-					fprintf(stderr, "%5u [%d <%d>] Failed to log %lu bytes: Resource temporarily unavailable\n", logid, thread_id, rfd->fd, bytesleft);
+					fprintf(stderr, "[%s.%03d] %5u [%d <%d>] Failed to log %lu bytes: Resource temporarily unavailable\n", datestr, timeus, logid, thread_id, rfd->fd, bytesleft);
 					goto nextiteration; /* Can't continue since we're in a double loop. We want to continue the outer loop. */
 				}
 #ifdef DEBUG_LOGGING_FAILURES
 				if (wres == (ssize_t) bytesleft) {
-					fprintf(stderr, "%5u [%d <%d>] Succeeded after retry\n", logid, thread_id, rfd->fd);
+					fprintf(stderr, "[%s.%03d] %5u [%d <%d>] Succeeded after retry\n", datestr, timeus, logid, thread_id, rfd->fd);
 				}
 #endif
 			}
@@ -621,7 +623,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 				bbs_mutex_unlock(&rfd->lock);
 				/* Well, we can't log a message if we failed to log a message.
 				 * That would probably not work out well. */
-				fprintf(stderr, "%5u [%d <%d>] Failed to log %lu bytes (wrote %ld): %s\n", logid, thread_id, rfd->fd, bytesleft, wres, strerror(saved_errno));
+				fprintf(stderr, "[%s.%03d] %5u [%d <%d>] Failed to log %lu bytes (wrote %ld): %s\n", datestr, timeus, logid, thread_id, rfd->fd, bytesleft, wres, strerror(saved_errno));
 			} else {
 				bbs_block_fd(rfd->fd);
 				bbs_mutex_unlock(&rfd->lock);
@@ -641,7 +643,7 @@ stdoutdone:
 
 	if (!skip_logfile) {
 		/* Log message to file should not include color formatting */
-		bytes = snprintf(logfullbuf, sizeof(logfullbuf), "[%s.%03d] %s[%d]: %s:%d %s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 0), thread_id, file, lineno, func, buf, need_reset ? COLOR_RESET : "");
+		bytes = snprintf(logfullbuf, sizeof(logfullbuf), "[%s.%03d] %s[%d]: %s:%d %s: %s%s", datestr, timeus, loglevel2str(loglevel, 0), thread_id, file, lineno, func, buf, need_reset ? COLOR_RESET : "");
 		if (bytes >= (int) sizeof(logfullbuf)) {
 			fullbuf = malloc((size_t) bytes + 1);
 			if (ALLOC_FAILURE(fullbuf)) {
@@ -651,7 +653,7 @@ stdoutdone:
 			}
 			fulldynamic = 1;
 			/* Safe */
-			sprintf(fullbuf, "[%s.%03d] %s[%d]: %s:%d %s: %s%s", datestr, (int) now.tv_usec / 1000, loglevel2str(loglevel, 0), thread_id, file, lineno, func, buf, need_reset ? COLOR_RESET : "");
+			sprintf(fullbuf, "[%s.%03d] %s[%d]: %s:%d %s: %s%s", datestr, timeus, loglevel2str(loglevel, 0), thread_id, file, lineno, func, buf, need_reset ? COLOR_RESET : "");
 		}
 
 		fwrite(fullbuf, 1, (size_t) bytes, logfp);
