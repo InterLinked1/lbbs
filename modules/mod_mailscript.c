@@ -30,6 +30,8 @@
 #include "include/stringlist.h"
 #include "include/variables.h"
 #include "include/utils.h"
+#include "include/transfer.h"
+#include "include/user.h"
 
 #include "include/mod_mail.h"
 #include "include/net_smtp.h"
@@ -169,12 +171,12 @@ static int header_match(struct smtp_msg_process *mproc, const char *header, cons
 			double threshold, actual, diff;
 			/* We don't use numcmp, since we need to support floating point numbers */
 			if (sscanf(find, "%4lf", &threshold) != 1) {
-				bbs_warning("Invalid numeric value: %s\n", find);
+				bbs_warning("Invalid numeric value: %s\n", start);
 			} else {
 				int count;
 				actual = 0;
-				count = sscanf(find, "%4lf", &actual);
-				bbs_debug(5, "Found: %d, Threshold: %f, Actual: %f (%s)\n", found, threshold, actual, find);
+				count = sscanf(start, "%4lf", &actual);
+				bbs_debug(5, "Found: %d, Threshold: %f, Actual: %f (%s)\n", found, threshold, actual, start);
 				switch (matchtype) {
 					case MATCH_GTE:
 						found = count == 1 && actual >= (threshold - DBL_EPSILON);
@@ -341,6 +343,95 @@ static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastre
 	return negate ? !match : match;
 }
 
+static int exec_cmd(struct smtp_msg_process *mproc, char *s)
+{
+	int res;
+	char subbuf[1024];
+	char *argv[32];
+	int argc;
+	int wants_copy;
+	char tmpfile[256];
+	struct bbs_exec_params x;
+
+	wants_copy = strstr(s, "${MAILFILE}") ? 1 : 0;
+
+	if (wants_copy) { /* This rule wants the message as a file */
+		if (mproc->iteration == FILTER_MAILBOX) {
+			/* Since the container does not have access to any maildir, including the mailbox's,
+			 * we need to copy the data file to a temp file inside the container for access.
+			 * However, each container gets its own temporary environment, and thus its own /tmp.
+			 * So, we create the temp copy in the user's home directory.
+			 * Because of that limitation, EXEC can only be used for personal mailboxes,
+			 * not shared mailboxes (mailboxes not associated with a user). However,
+			 * global rules could be used to target those. */
+			if (!mproc->userid) {
+				bbs_warning("EXEC must be used from either a global rule or be associated with a personal mailbox\n");
+				return 1;
+			}
+
+			/* First, ensure the .config directory exists. Thi function creates the .config subdirectory if needed. */
+			if (bbs_transfer_home_config_dir(mproc->userid, tmpfile, sizeof(tmpfile))) { /* Ignore result, just reuse buffer */
+				return 1;
+			}
+
+			/* Calculate the path of the temp file we are going to create */
+			res = bbs_transfer_home_config_file(mproc->userid, basename(mproc->datafile), tmpfile, sizeof(tmpfile));
+			if (res == -1) {
+				return 1; /* Couldn't calculate path */
+			} else if (res == 0) {
+				/* The .config subdirectory of the user's home directory is intended to only
+				 * hold config files that start with '.', and since mproc->datafile doesn't,
+				 * it should be safe to create it in here. */
+				bbs_warning("File %s already exists, skipping EXEC to avoid clobbering\n", tmpfile);
+				return 1; /* File already exists */
+			} /* else, res == 1, file does not exist (which is what we want) */
+
+			if (bbs_copy_files(mproc->datafile, tmpfile, 0)) {
+				return 1;
+			}
+
+			bbs_node_var_set_fmt(mproc->node, "MAILFILE", "~/.config/%s", basename(mproc->datafile));
+		} else { /* FILTER_BEFORE_MAILBOX or FILTER_AFTER_MAILBOX */
+			
+			bbs_node_var_set(mproc->node, "MAILFILE", mproc->datafile);
+		}
+	}
+
+	bbs_node_substitute_vars(mproc->node, s, subbuf, sizeof(subbuf));
+	s = subbuf;
+	argc = bbs_argv_from_str(argv, ARRAY_LEN(argv), s); /* Parse string into argv */
+	if (argc < 1 || argc > (int) ARRAY_LEN(argv)) {
+		bbs_warning("Invalid EXEC action\n");
+		res = 1; /* Rules may rely on a return code of 0 for success, so don't return 0 if we didn't do anything */
+		goto cleanup;
+	}
+
+	EXEC_PARAMS_INIT_HEADLESS(x);
+	if (mproc->iteration == FILTER_MAILBOX) {
+		/* While we allow users to use the EXEC command,
+		 * the execution must be isolated (run in the container). */
+		x.isolated = 1;
+		/* We need to execute in the context of the user's environment,
+		 * so override the execution user to the user. */
+		if (mproc->userid) {
+			x.user = bbs_user_from_userid(mproc->userid);
+		}
+	} /* else, global rule, since sysadmin has control over these, it's safe to allow execution of programs on host system */
+
+	res = bbs_execvp(mproc->node, &x, argv[0], argv); /* Directly return the exit code */
+
+	if (x.user) {
+		bbs_user_destroy(x.user); /* Destroy the temporary user we created for execution */
+	}
+
+cleanup:
+	if (wants_copy && mproc->iteration == FILTER_MAILBOX) {
+		/* Delete the temp file we created */
+		bbs_delete_file(tmpfile);
+	}
+	return res;
+}
+
 #undef REQUIRE_ARG
 #define REQUIRE_ARG(s) \
 	if (strlen_zero(s)) { \
@@ -389,25 +480,8 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 	} else if (!strcasecmp(next, "DISCARD")) {
 		mproc->drop = 1;
 	} else if (!strcasecmp(next, "EXEC")) {
-		int res;
-		char subbuf[1024];
-		char *argv[32];
-		int argc;
-		struct bbs_exec_params x;
 		REQUIRE_ARG(s);
-		if (strstr(s, "${MAILFILE}")) { /* This rule wants the message as a file */
-			bbs_node_var_set(mproc->node, "MAILFILE", mproc->datafile);
-		}
-		bbs_node_substitute_vars(mproc->node, s, subbuf, sizeof(subbuf));
-		s = subbuf;
-		argc = bbs_argv_from_str(argv, ARRAY_LEN(argv), s); /* Parse string into argv */
-		if (argc < 1 || argc > (int) ARRAY_LEN(argv)) {
-			bbs_warning("Invalid EXEC action\n");
-			return 1; /* Rules may rely on a return code of 0 for success, so don't return 0 if we didn't do anything */
-		}
-		EXEC_PARAMS_INIT_HEADLESS(x);
-		res = bbs_execvp(mproc->node, &x, argv[0], argv); /* Directly return the exit code */
-		return res;
+		return exec_cmd(mproc, s);
 	} else if (!strcasecmp(next, "REDIRECT")) {
 		REQUIRE_ARG(s);
 		/* Don't allow forwarding to self, or that will create a loop (one that can't even be detected, since message is not modified) */
@@ -595,12 +669,26 @@ static int mailscript(struct smtp_msg_process *mproc)
 	} else if (mproc->iteration == FILTER_AFTER_MAILBOX) {
 		return run_rules(mproc, after_rules, mboxmaildir);
 	} else { /* FILTER_MAILBOX */
+		int res;
 		char script[263];
 		if (!mboxmaildir) {
 			return 0; /* Can't execute per-mailbox callback if there is no mailbox */
 		}
+		/* We execute up to 2 different script files, if they exist.
+		 * First, the version in the maildir, which is always allowed to exist,
+		 * but can only be modified by the sysop. This is most useful for public mailboxes.
+		 * Second, the version in the user's home directory, which only exists
+		 * for user mailboxes, but can be modified directly by them. */
 		snprintf(script, sizeof(script), "%s/.rules", mboxmaildir);
-		return run_rules(mproc, script, mboxmaildir);
+		res = run_rules(mproc, script, mboxmaildir);
+		if (res) {
+			return res;
+		}
+		/* If this is a user's mailbox, also execute any rules in the user's home directory. */
+		if (mproc->userid && !bbs_transfer_home_config_file(mproc->userid, ".rules", script, sizeof(script))) {
+			res = run_rules(mproc, script, mboxmaildir);
+		}
+		return res;
 	}
 }
 

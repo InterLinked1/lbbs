@@ -162,7 +162,7 @@ A few especially important configuration files:
 
 * :code:`transfers.conf` - File transfer configuration
 
-Additionally, the MailScript rules engine uses a script file called :code:`.rules` in the user's root maildir (and :code:`before.rules` and :code:`after.rules` in the root maildir for global filtering) for manipulating messages.
+Additionally, the MailScript rules engine uses a script file called :code:`.rules` in the user's root maildir or user's :code:`~/.config` (and :code:`before.rules` and :code:`after.rules` in the root maildir for global filtering) for manipulating messages.
 A sample MailScript rules file is in :code:`configs/.rules` (though this is not a config file, but a sample rule script file).
 
 User Configuration
@@ -468,14 +468,51 @@ Currently, some capabilities, such as executing system commands or processing ou
 Although there are Sieve extensions to do this, the Sieve implementation in the BBS does not yet support this
 (or rather, the underlying library does not). Eventually the goal is to have full feature parity.
 
-Sieve rules can be edited by users directly using the ManageSieve protocol (net_sieve).
-In contrast, MailScript rules can only be modified by the sysop directly on the server. Additionally,
-MailScript allows for potentially dangerous operations out of the box, and should not normally be exposed to users.
-
 It is recommended that Sieve be used for filtering if possible, since this is a standardized and well supported protocol.
-MailScript is a nonstandard syntax that was invented purely for this software, so it is not portable anywhere else.
+MailScript is a nonstandard syntax that was invented purely for this software, so it is not portable to other mail servers.
 However, if the current Sieve implementation does not meet certain needs but MailScript does, feel free to use that as well.
-Both filtering engines can be used in conjunction with each other.
+Both filtering engines can be used in conjunction with each other, and they each have their advantages depending on
+the use case.
+
+Where do Sieve and MailScript filter scripts reside?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Sieve rules reside in one of two locations. For personal mailboxes, they rise in :code:`~/config/*.sieve` and can
+also be edited by users directly using the ManageSieve protocol (net_sieve). For non-user mailboxes,
+they reside in the maildir.
+
+MailScript rules may reside in either a mailbox's maildir or in a user's :code:`~/.config/.rules` file. Originally,
+only the maildir version existed, and this version can only be edited by the sysop since users do not have access
+to their maildirs. Users can directly modify the version in their home directories, and both scripts are evaluated.
+The maildir version still exists because in non-user associated mailboxes (e.g. shared mailboxes), this is the only
+version that exists, as there is no corresponding home directory for the mailbox. If a maildir script exists,
+it is executed before the rules in the user's home directory.
+
+There are three passes of filtering performed:
+
+1. Pre-mailbox pass. Useful for setting default actions.
+2. Mailbox pass (only for messages that correspond to a mailbox, for example, messages accepted to relay to another server do not)
+3. Post-mailbox pass. Useful for enforcing required actions.
+
+The following are all the locations that can contain filter scripts:
+
+* Global rules (can only be modified by the sysop)
+
+  * :code:`$ROOT_MAILDIR/before.rules` - MailScript rules to run in pre-mailbox pass. Always executed.
+  * :code:`$ROOT_MAILDIR/after.rules` - MailScript rules to run in post-mailbox pass. Always executed.
+  * :code:`$ROOT_MAILDIR/before.sieve` - Sieve rules to run in pre-mailbox pass. Always executed.
+  * :code:`$ROOT_MAILDIR/after.sieve` - Sieve rules to run in post-mailbox pass. Always executed.
+
+* Mailbox rules, only for messages corresponding to a mailbox
+
+  * :code:`$MAILDIR/.rules` - MailScript rules to run for mailbox. Always executed. Not user-editable.
+  * :code:`~/.config/.rules` - MailScript rules to run for mailbox. Only exists for personal mailboxes. User-editable.
+  * :code:`$MAILDIR/.sieve` - Active Sieve script (or symlink) for mailbox. Not user-editable, but for personal mailboxes, can be changed using the ManageSieve protocol.
+  * :code:`~/.config/*.sieve` - All Sieve scripts for mailbox. Only exists for personal mailboxes. User-editable, including via ManageSieve protocol.
+
+Note that :code:`$ROOT_MAILDIR` is not a real variable defined by the BBS, but here refers to the root maildir, the directory that contains all the individual mailbox maildirs.
+Likewise for :code:`$MAILDIR` referring to the mailbox's maildir. :code:`~` refers to the user's home directory.
+Finally, note that "always executed" should be interpreted as "always executed if the script exists, and unless a previous global rule terminated rules processing altogether".
 
 How do I enable spam filtering?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

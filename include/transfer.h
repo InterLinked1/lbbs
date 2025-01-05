@@ -139,7 +139,7 @@ int bbs_transfer_home_config_subdir(unsigned int userid, const char *name, char 
  * \param name Name of configuration file in the configuration directory. By convention, SHOULD begin with a period (.)
  * \param[out] buf
  * \param len Size of buf
- * \retval 0 if configuration file exists, -1 on failure or if file does not exist
+ * \retval 0 if configuration file exists, -1 on failure, 1 if file does not exist
  */
 int bbs_transfer_home_config_file(unsigned int userid, const char *name, char *buf, size_t len);
 

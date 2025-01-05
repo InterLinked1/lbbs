@@ -31,6 +31,7 @@
 #include "include/node.h"
 #include "include/user.h"
 #include "include/auth.h"
+#include "include/transfer.h"
 #include "include/mail.h"
 
 #include "include/mod_mail.h"
@@ -46,6 +47,8 @@ struct sieve_session {
 	struct bbs_node *node;
 	struct mailbox *mbox;
 	FILE *fp;
+	const char *sievedir; /* Directory containing the mailbox's Sieve scripts (~/.config for personal mailboxes) */
+	const char *symlinkdir; /* Directory containing the .sieve symlink to the active Sieve script (always the mailbox's maildir) */
 	char *scriptname;
 	char template[32];
 	long unsigned int quotaleft;
@@ -110,7 +113,7 @@ static int sieve_script_name_to_path_noexist(struct sieve_session *sieve, const 
 	if (strstr(s, "..")) {
 		return -1;
 	}
-	snprintf(buf, len, "%s/%s.sieve", mailbox_maildir(sieve->mbox), s);
+	snprintf(buf, len, "%s/%s.sieve", sieve->sievedir, s);
 	return 0;
 }
 
@@ -119,7 +122,7 @@ static int sieve_script_name_to_path(struct sieve_session *sieve, const char *s,
 	if (strstr(s, "..")) {
 		return -1;
 	}
-	snprintf(buf, len, "%s/%s.sieve", mailbox_maildir(sieve->mbox), s);
+	snprintf(buf, len, "%s/%s.sieve", sieve->sievedir, s);
 	if (!bbs_file_exists(buf)) {
 		return 1;
 	}
@@ -172,7 +175,7 @@ static int putscript_helper(struct sieve_session *sieve, char *s, int put)
 	return 0;
 }
 
-static int sieve_process(struct sieve_session *sieve, char *s)
+static int sieve_process(struct sieve_session *sieve, char *s, char *buf2, size_t buf2len)
 {
 	char *command;
 
@@ -237,6 +240,28 @@ doneupload:
 				sieve_send(sieve, "NO Authentication failed");
 			} else {
 				sieve->mbox = mailbox_get_by_userid(sieve->node->user->id);
+				/* In practice, this branch is always true for now,
+				 * since this ManageSieve implementation only allows editing personal Sieve rules,
+				 * not those for other mailboxes.
+				 * But if that were possible, then the other branch would be useful. */
+				if (sieve->node->user->id) {
+					bbs_transfer_home_config_dir(sieve->node->user->id, buf2, buf2len);
+					sieve->sievedir = buf2;
+				} else {
+					sieve->sievedir = mailbox_maildir(sieve->mbox);
+				}
+				/* We always store the symlink in the maildir.
+				 * This is because symlinks don't actually point to the inode of the target file,
+				 * they store the target file as a string.
+				 * Thus, in the container, the original host path of the symlink target is visible
+				 * using ls -la, which is highly undesirable.
+				 *
+				 * As such, we store the symlink in the maildir, which is not accessible to users.
+				 *
+				 * Yes, this does mean the user cannot directly modify the symlink him/herself,
+				 * but must do so using the ManageSieve protocol. That's not completely bad,
+				 * since a casual user is likely to be confused by the symlink anyways. */
+				sieve->symlinkdir = mailbox_maildir(sieve->mbox);
 				sieve_send(sieve, "OK");
 			}
 		} else {
@@ -279,12 +304,12 @@ doneupload:
 		ssize_t res;
 
 		REQUIRE_AUTH();
-		if (!(dir = opendir(mailbox_maildir(sieve->mbox)))) {
-			bbs_error("Error opening directory - %s: %s\n", mailbox_maildir(sieve->mbox), strerror(errno));
+		if (!(dir = opendir(sieve->sievedir))) {
+			bbs_error("Error opening directory - %s: %s\n", sieve->sievedir, strerror(errno));
 			return -1;
 		}
 
-		snprintf(activescript, sizeof(activescript), "%s/.sieve", mailbox_maildir(sieve->mbox));
+		snprintf(activescript, sizeof(activescript), "%s/.sieve", sieve->symlinkdir);
 		res = readlink(activescript, activescriptpath, sizeof(activescriptpath) - 1);
 		if (res > 0 && res < (ssize_t) sizeof(activescriptpath) - 1) { /* There is an active script (symlink exists) */
 			activescriptpath[res] = '\0'; /* readlink does not NULL terminate */
@@ -321,7 +346,7 @@ doneupload:
 		REQUIRE_AUTH();
 		REQUIRE_ARGS(s);
 		STRIP_QUOTES(s);
-		snprintf(activescript, sizeof(activescript), "%s/.sieve", mailbox_maildir(sieve->mbox));
+		snprintf(activescript, sizeof(activescript), "%s/.sieve", sieve->symlinkdir);
 		unlink(activescript); /* Remove existing active script if needed. */
 		if (!strlen_zero(s)) {
 			if (sieve_script_name_to_path(sieve, s, activescriptpath, sizeof(activescriptpath))) {
@@ -350,7 +375,7 @@ doneupload:
 		} else {
 			ssize_t res;
 			/* Cannot delete an active script */
-			snprintf(activescript, sizeof(activescript), "%s/.sieve", mailbox_maildir(sieve->mbox));
+			snprintf(activescript, sizeof(activescript), "%s/.sieve", sieve->symlinkdir);
 			res = readlink(activescript, activescriptpath, sizeof(activescriptpath) - 1);
 			if (res > 0 && res < (ssize_t) sizeof(activescriptpath) - 1) {
 				activescriptpath[res] = '\0';
@@ -379,7 +404,7 @@ doneupload:
 		} else {
 			/* If this is the active script, we need to also recreate the symlink,
 			 * since the symlink references the name, not the inode. */
-			snprintf(activescript, sizeof(activescript), "%s/.sieve", mailbox_maildir(sieve->mbox));
+			snprintf(activescript, sizeof(activescript), "%s/.sieve", sieve->symlinkdir);
 			if (rename(oldscript, newscript)) {
 				bbs_error("rename %s -> %s failed: %s\n", oldscript, newscript, strerror(errno));
 				sieve_send(sieve, "NO \"Server error\"");
@@ -436,6 +461,7 @@ doneupload:
 static void handle_client(struct sieve_session *sieve)
 {
 	char buf[1001]; /* Maximum length, including CR LF, is 1000 */
+	char buf2[256];
 	struct readline_data rldata;
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
@@ -468,7 +494,7 @@ static void handle_client(struct sieve_session *sieve)
 		} else {
 			bbs_debug(6, "%p => %s\n", sieve, buf);
 		}
-		if (sieve_process(sieve, buf)) {
+		if (sieve_process(sieve, buf, buf2, sizeof(buf2))) {
 			break;
 		}
 		if (sieve->dostarttls) { /* RFC3207 STARTTLS */

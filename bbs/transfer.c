@@ -26,7 +26,6 @@
 #include "include/node.h" /* for node->user */
 #include "include/user.h"
 #include "include/utils.h"
-#include "include/system.h"
 
 /*!
  * \note One thing I did not like about the original transfer implementation
@@ -129,7 +128,11 @@ int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const c
 	}
 
 	required_priv = privs[operation];
-	bbs_debug(9, "Operation %d allowed for '%s'\n", operation, diskpath);
+	if (diskpath) {
+		bbs_debug(9, "Operation %d allowed for '%s'\n", operation, diskpath);
+	} else {
+		bbs_debug(9, "Operation %d allowed\n", operation);
+	}
 	return bbs_user_priv(node->user) >= required_priv;
 }
 
@@ -197,20 +200,9 @@ int transfer_make_longname(const char *file, struct stat *st, char *buf, size_t 
 	return snprintf(p, len - (size_t) (p - buf), " %s %s", modtime, file);
 }
 
-static int recursive_copy(const char *srcfiles, const char *dest)
-{
-	struct bbs_exec_params x;
-	/* It can probably do a better job than we can */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
-#pragma GCC diagnostic ignored "-Wcast-qual"
-	/* no clobber, just in case it already existed (which it shouldn't, but just supposing),
-	 * we don't want to overwrite all the user's existing files. */
-	char *const argv[] = { "cp", "-r", "-n", (char*) srcfiles, (char*) dest, NULL };
-#pragma GCC diagnostic pop
-	EXEC_PARAMS_INIT_HEADLESS(x);
-	return bbs_execvp(NULL, &x, argv[0], argv);
-}
+/* no clobber, just in case it already existed (which it shouldn't, but just supposing),
+ * we don't want to overwrite all the user's existing files. */
+#define recursive_copy(srcfiles, dest) bbs_copy_files(srcfiles, dest, COPY_RECURSIVE)
 
 int bbs_transfer_home_dir(unsigned int userid, char *buf, size_t len)
 {

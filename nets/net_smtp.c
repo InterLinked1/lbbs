@@ -1670,6 +1670,7 @@ done:
 
 int smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_process *mproc, struct mailbox *mbox, struct smtp_response **restrict resp_ptr, enum smtp_direction dir, const char *recipient, size_t datalen, void **freedata)
 {
+	unsigned int mailboxid;
 	char recip_buf[256];
 	struct smtp_response *resp = *resp_ptr;
 
@@ -1702,7 +1703,12 @@ int smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_proce
 	/* We only want to run global/system-wide rules, not per-user rules,
 	 * there may not even be an associated local mailbox. */
 	mproc->mbox = mbox;
-	mproc->userid = 0;
+	/* Determine the user ID associated with the mailbox.
+	 * We want the user ID of the mailbox, not the user ID of the authenticated user, if the connection is even authenticated at all.
+	 * The rules being run are those that belong to the mailbox to which we are attempting delivery.
+	 * Therefore, using smtp->node->user->id as a fallback is wrong. */
+	mailboxid = mbox ? (unsigned int) mailbox_id(mbox) : 0;
+	mproc->userid = mailboxid ? mailboxid : 0;
 
 	if (dir == SMTP_DIRECTION_IN && smtp_message_quarantinable(smtp)) { /* e.g. DMARC failure */
 		/* We set the override mailbox before running callbacks,
@@ -2237,7 +2243,8 @@ next:
 		bbs_smtp_log(2, smtp, "Message from <%s> rejected in full by custom policy: %d %s %s\n", smtp->from, resp.code, resp.subcode, resp.reply);
 		smtp_resp_reply(smtp, resp.code, resp.subcode, resp.reply);
 	} else {
-		bbs_soft_assert(0); /* Shouldn't be reachable... */
+		/* This is reachable if all deliveries fail and no custom failure code was set */
+		bbs_smtp_log(2, smtp, "Message from <%s> failed delivery to %d/%d recipient%s\n", smtp->from, succeeded, total, ESS(total));
 	}
 
 	RWLIST_UNLOCK(&handlers); /* Can't unlock while resp might still be used, and it's a RDLOCK, so okay */

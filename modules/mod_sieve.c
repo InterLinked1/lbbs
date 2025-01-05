@@ -42,6 +42,7 @@
 #include "include/module.h"
 #include "include/utils.h"
 #include "include/mail.h"
+#include "include/transfer.h"
 #include "include/stringlist.h"
 #include "include/linkedlists.h"
 
@@ -606,6 +607,15 @@ static int sieve(struct smtp_msg_process *mproc)
 		if (!mboxmaildir) {
 			return 0; /* Can't execute per-mailbox callback if there is no mailbox */
 		}
+		/* Unlike MailScript, which checks both locations, for Sieve, we only use one.
+		 * For user mailboxes, we use the home directory, else we use the maildir.
+		 * This is primarily to avoid ambiguity within the ManageSieve protocol.
+		 * It supports multiple Sieve scripts, but not the notion of different "directories",
+		 * and there is no real benefit to allowing it to exists in both places for any
+		 * given mailbox.
+		 *
+		 * In practice, since the active script symlink is always in the maildir,
+		 * we always use that regardless. */
 		snprintf(script, sizeof(script), "%s/.sieve", mboxmaildir);
 		return script_exec(mproc, script);
 	}

@@ -267,6 +267,20 @@ FILE *bbs_mkftemp(char *template, mode_t mode);
  */
 int bbs_copy_file(int srcfd, int destfd, int start, int bytes); /* gcc has fd_arg attributes, but not widely supported yet */
 
+enum bbs_copy_flags {
+	COPY_RECURSIVE = (1 << 0), /* Whether to copy recursively (e.g. cp -r) */
+	COPY_CLOBBER = (1 << 1), /* Whether to allow clobbering of existing files (inverse of cp -n) */
+};
+
+/*!
+ * \brief Copy file(s) to another location, by filename (equivalent of cp command)
+ * \param source Full path to source file
+ * \param dest Full path where destination file should be created
+ * \param flags Any flags for copy operation
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_copy_files(const char *source, const char *dest, enum bbs_copy_flags flags);
+
 /*!
  * \brief Efficiently copy data between two file descriptors.
  * \param fd_in Input fd. Must NOT be a pipe.

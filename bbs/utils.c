@@ -41,6 +41,7 @@
 #include "include/node.h" /* use bbs_poll_read */
 #include "include/user.h"
 #include "include/base64.h"
+#include "include/system.h"
 
 char *bbs_uuid(void)
 {
@@ -916,6 +917,31 @@ int bbs_copy_file(int srcfd, int destfd, int start, int bytes)
 	return copied;
 }
 
+int bbs_copy_files(const char *source, const char *dest, enum bbs_copy_flags flags)
+{
+	struct bbs_exec_params x;
+	char *argv[6];
+	int a = 0;
+	/* It can probably do a better job than we can */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
+	/* no clobber, just in case it already existed (which it shouldn't, but just supposing),
+	 * we don't want to overwrite all the user's existing files. */
+	argv[a++] = (char*) "cp";
+	if (flags & COPY_RECURSIVE) {
+		argv[a++] = (char*) "-r";
+	}
+	if (!(flags & COPY_CLOBBER)) {
+		argv[a++] = (char*) "-n";
+	}
+	argv[a++] = (char*) source;
+	argv[a++] = (char*) dest;
+	argv[a] = NULL;
+#pragma GCC diagnostic pop
+	EXEC_PARAMS_INIT_HEADLESS(x);
+	return bbs_execvp(NULL, &x, argv[0], argv) ? -1 : 0;
+}
+
 ssize_t bbs_splice(int fd_in, int fd_out, size_t len)
 {
 	/* Use splice(2) if available, otherwise fall back to sendfile(2) */
@@ -924,6 +950,7 @@ ssize_t bbs_splice(int fd_in, int fd_out, size_t len)
 	/* off_in must be NULL if fd_in is a pipe */
 	ssize_t res, written = 0;
 	while (len > 0) {
+		/* off_out (arg 4) is NULL since fd_out is assumed to be a pipe */
 		res = splice(fd_in, &off_in, fd_out, NULL, len, 0);
 		if (res < 0) {
 			bbs_error("splice failed: %s\n", strerror(errno));
@@ -931,6 +958,7 @@ ssize_t bbs_splice(int fd_in, int fd_out, size_t len)
 		}
 		len -= (size_t) res;
 		off_in += (off64_t) res;
+		written += res;
 	}
 	return written;
 #else

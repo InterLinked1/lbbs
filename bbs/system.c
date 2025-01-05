@@ -731,7 +731,9 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 		snprintf(fullpath, sizeof(fullpath), "PATH=%s", parentpath);
 	}
 
-	bbs_debug(6, "%s:%d (%s) node: %p, usenode: %d, fdin: %d, fdout: %d, filename: %s, isolated: %s\n", file, lineno, func, node, usenode, fdin, fdout, filename, e->isolated ? "yes" : "no");
+	bbs_debug(6, "%s:%d (%s) node: %p, usenode: %d, fdin: %d, fdout: %d, filename: %s, env: %s, isolated: %s, user: %s\n",
+		file, lineno, func, node, usenode, fdin, fdout, filename, envp == myenvp ? "default" : "custom", e->isolated ? "yes" : "no",
+		e->user ? bbs_username(e->user) : node && node->user ? bbs_username(node->user) : "(none)");
 	if (node && usenode && (fdin != -1 || fdout != -1)) {
 		bbs_warning("fdin/fdout should not be provided if usenode == 1 (node is preferred, fdin/fdout will be ignored)\n");
 	}
@@ -883,6 +885,7 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 			char pidbuf[15];
 			char oldroot[384 + STRLEN("/.old")], newroot[384];
 			char homedir[438];
+			struct bbs_user *user = e->user ? e->user : node->user; /* If user is overriden, use the override, otherwise, use the node's user */
 
 			if (set_limits()) {
 				_exit(errno);
@@ -905,7 +908,7 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 			if (node && envp == myenvp && bbs_transfer_available()) {
 				char *tmp;
 
-				const char *username = bbs_user_is_registered(node->user) ? bbs_username(node->user) : "guest";
+				const char *username = bbs_user_is_registered(user) ? bbs_username(user) : "guest";
 				/* Used if /root/.bashrc in rootfs contains this prompt override:
 				 * PS1='${debian_chroot:+($debian_chroot)}$BBS_USER@\h:\w\$ '
 				 */
@@ -918,10 +921,10 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 					tmp++;
 				}
 
-				if (bbs_user_is_registered(node->user)) {
+				if (bbs_user_is_registered(user)) {
 					char masterhomedir[256];
 					/* Make the user's home directory accessible within the container, at /home/${BBS_USERNAME} in the container */
-					if (bbs_transfer_home_dir(node->user->id, masterhomedir, sizeof(masterhomedir))) {
+					if (bbs_transfer_home_dir(user->id, masterhomedir, sizeof(masterhomedir))) {
 						_exit(errno);
 					}
 					snprintf(homeenv + STRLEN("HOME="), sizeof(homeenv) - STRLEN("HOME="), "/home/%s", username);
@@ -952,7 +955,7 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 						SYSCALL_OR_DIE(mount, publichome, publicroot, "bind", MS_BIND | MS_REC | MS_RDONLY, NULL);
 						SYSCALL_OR_DIE(mount, publichome, publicroot, "bind", MS_REMOUNT | MS_BIND | MS_REC | MS_RDONLY, NULL);
 					}
-					if (!bbs_user_is_registered(node->user)) {
+					if (!bbs_user_is_registered(user)) {
 						/* If it's guest access, the user doesn't have a home directory,
 						 * so just make it the /home/public directory, which is better than nothing.
 						 * We make it /home/public instead of /home, so that all of the "relevant"
@@ -990,7 +993,9 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 			 * an inside the container, rm -rf .old errors with "Device or resource busy". */
 			rmdir(oldroot); /* There is an empty /.old left behind, get rid of it as it's not needed anymore */
 
-			/* Shells will automatically default to our home directory,
+			/* cd to the home directory; this way, if this is launching a shell session,
+			 * it's a better user experience. Only makes sense to do this after we've changed the root.
+			 * Shells will automatically default to our home directory,
 			 * but other programs may not. Move to that directory now, if defined. */
 			if (myenvp[3]) {
 				const char *startdir = myenvp[3] + STRLEN("HOME=");
@@ -999,9 +1004,6 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 
 			if (node && envp == myenvp && display_motd) {
 				FILE *fp;
-				/* cd to the home directory; this way, if this is launching a shell session,
-				 * it's a better user experience. Only makes sense to do this after we've changed the root. */
-				SYSCALL_OR_DIE(chdir, homeenv + STRLEN("HOME="));
 				/* We also have to handle the motd (Message of the Day).
 				 * The shell does not display the MOTD, the login program does after login before spawning the shell.
 				 * So, if there's an /etc/motd in the container, display its contents before we actually call exec.
@@ -1118,6 +1120,17 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 		 * Thus, the PTY is not even aware what the window dimensions are presently. We need this or the child will initially have 0x0,
 		 * until it gets another SIGWINCH due to a future resize. By doing this, it has its current dimensions from the get go. */
 		bbs_node_update_winsize(node, -1, -1); /* Call with -1 as args to simply send a SIGWINCH using existing dimensions. */
+	}
+
+	if (e->priority) {
+		/* Set (reduce, typically) the priority of the child process.
+		 * This way, even if users are able to manipulate it directly,
+		 * they can't take over all system resources.
+		 *
+		 * For control, we do this in the parent rather than the child. */
+		if (setpriority(PRIO_PGRP, (id_t) pid, e->priority)) {
+			bbs_error("Failed to set priority of process group %d to %d: %s\n", pid, e->priority, strerror(errno));
+		}
 	}
 
 	bbs_debug(5, "Waiting for process %d to exit\n", pid);

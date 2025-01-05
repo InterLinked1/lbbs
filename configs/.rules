@@ -10,12 +10,6 @@
 # followed by the global after rules file (e.g. /home/bbs/maildir/after.rules).
 # Rule processing occurs once the entire message has been received and before delivery is attempted.
 
-# WARNING: DO NOT ALLOW USERS to directly create or modify these rules.
-# This can be dangerous due to the ability of certain actions (e.g. EXEC) to execute any arbitrary program.
-# e.g. ACTION EXEC rm -rf /home/bbs/maildir will probably succeed (bbs user needs r/w/x permissions) and this would delete everyone's mail.
-# If you create an abstraction layer to allow users to generate MailScript rules (e.g. for forwarding, junk purposes), please be sure to vet them carefully!
-# In the meantime, this is mainly intended for power users.
-
 # The basic structure of a rule is:
 # RULE
 # [0 or more MATCH conditions]. Note that it is legitimate to have a rule with 0 MATCH statements, but this is almost certainly NOT what you want, since it would match every message.
@@ -78,7 +72,11 @@
 #                       Currently, RELAY implicitly results in a DISCARD, normal message processing will not continue afterwards and no copy of the message is retained.
 # REPLY - Reply to the sent message, to the original sender
 # MOVETO - Move the message to a specified folder in the maildir, e.g. to Junk, Trash, Folder.subfolder, etc. Can be used to implement filtering. If this action is executed multiple times, the last one wins. For outgoing messages, an IMAP URI may also be used, e.g. to APPEND the sent message to a remote IMAP mailbox.
-# EXEC - Execute a system program.
+# EXEC - Execute a system program. For global rules, the program will be executed on the host system.
+#        For mailbox rules, the program will be executed in the mailbox owner's isolated container environment (same as isoexec) and thus not have access to most of the host filesystem.
+#        Public mailboxes thus currently do not support the EXEC action, except as part of global (non-mailbox) rules.
+#        WARNING: Avoid environment variables or shell shorthand, e.g. $HOME or ~, as part of the EXEC arguments. These are not evaluated by any shell prior to the program being executed.
+#        As with a cron job, assume nothing and use full paths to be explicit. BBS varibales are evaluated as normal prior to program execution.
 # NOOP - Does nothing and always returns 0. Possibly useful for debugging rule execution with debug enabled.
 
 # Variables available for use in rules:

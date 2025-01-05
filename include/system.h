@@ -25,6 +25,7 @@ struct bbs_exec_params {
 	int fdin;					/* Custom file descriptor for STDIN to created process, node->fdin or -1 otherwise */
 	int fdout;					/* Custom file descriptor for STDOUT from created process, node->fdout or -1 otherwise */
 	int priority;				/* CPU priority */
+	struct bbs_user *user;		/* Override for user. If not specified, default is the node's user. */
 	unsigned int usenode:1;		/* Whether to use the node for I/O. If FALSE, node will not be used for I/O */
 	unsigned int isolated:1;	/* Whether to create the process in an isolated container */
 	/* Container parameters */
