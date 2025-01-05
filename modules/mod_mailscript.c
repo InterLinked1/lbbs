@@ -23,6 +23,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <regex.h>
+#include <float.h>
 
 #include "include/module.h"
 #include "include/system.h"
@@ -69,8 +70,19 @@ static int numcmp(char *s, int num)
 	return match;
 }
 
+enum match_type {
+	MATCH_STRICT = 0,
+	MATCH_SUBSTR,
+	MATCH_REGEX,
+	MATCH_GTE,
+	MATCH_GT,
+	MATCH_LTE,
+	MATCH_LT,
+	MATCH_EQ,
+};
+
 /*! \brief retval -1 if no such header, 0 if not found, 1 if found */
-static int header_match(struct smtp_msg_process *mproc, const char *header, const char *find, int strict)
+static int header_match(struct smtp_msg_process *mproc, const char *header, const char *find, enum match_type matchtype)
 {
 	int found = -1;
 	size_t findlen = 0;
@@ -111,7 +123,9 @@ static int header_match(struct smtp_msg_process *mproc, const char *header, cons
 		start++;
 		ltrim(start);
 		bbs_strterm(start, '\r');
-		if (strict) {
+		/*! \todo BUGBUG FIXME Technically, header values could cross line boundaries for multi-line headers,
+		 * but the logic here wouldn't match if a string is split by CR LF. */
+		if (matchtype == MATCH_STRICT) {
 			/* Exact match, easy */
 			if (!findlen) {
 				findlen = strlen(find);
@@ -128,7 +142,14 @@ static int header_match(struct smtp_msg_process *mproc, const char *header, cons
 			} else {
 				break;
 			}
-		} else { /* Things like "CONTAINS" can be done with LIKE... technically even EQUALS could be, too... */
+		} else if (matchtype == MATCH_SUBSTR) {
+			/* Things like "CONTAINS" can be done with LIKE... (it's just a subset of it), technically even EQUALS could be, too...
+			 * However, this is obviously more efficient. */
+			found = strstr(start, find) ? 1 : 0;
+			if (found) {
+				break;
+			}
+		} else if (matchtype == MATCH_REGEX) {
 			/* Use a regular expression for LIKE */
 			if (!regcompiled) {
 				int errcode;
@@ -144,6 +165,40 @@ static int header_match(struct smtp_msg_process *mproc, const char *header, cons
 			if (found) {
 				break;
 			}
+		} else { /* numeric comparisons */
+			double threshold, actual, diff;
+			/* We don't use numcmp, since we need to support floating point numbers */
+			if (sscanf(find, "%4lf", &threshold) != 1) {
+				bbs_warning("Invalid numeric value: %s\n", find);
+			} else {
+				int count;
+				actual = 0;
+				count = sscanf(find, "%4lf", &actual);
+				bbs_debug(5, "Found: %d, Threshold: %f, Actual: %f (%s)\n", found, threshold, actual, find);
+				switch (matchtype) {
+					case MATCH_GTE:
+						found = count == 1 && actual >= (threshold - DBL_EPSILON);
+						break;
+					case MATCH_GT:
+						found = count == 1 && actual > (threshold - DBL_EPSILON);
+						break;
+					case MATCH_LTE:
+						found = count == 1 && actual <= (threshold + DBL_EPSILON);
+						break;
+					case MATCH_LT:
+						found = count == 1 && actual < (threshold + DBL_EPSILON);
+						break;
+					case MATCH_EQ:
+						diff = actual - threshold;
+						if (diff < 0) {
+							diff = -diff;
+						}
+						found = count == 1 && diff < DBL_EPSILON; /* Floating point equality comparison */
+						break;
+					default:
+						bbs_soft_assert(0); /* Shouldn't be reached */
+				}
+			}
 		}
 	}
 	if (regcompiled) {
@@ -156,6 +211,8 @@ static void __attribute__ ((nonnull (2, 3, 4))) str_match(const char *matchtype,
 {
 	if (!strcasecmp(matchtype, "EQUALS")) {
 		*match = !strcmp(a, expr);
+	} else if (!strcasecmp(matchtype, "CONTAINS")) {
+		*match = strstr(a, expr) ? 1 : 0;
 	} else if (!strcasecmp(matchtype, "LIKE")) {
 		regex_t regexbuf;
 		int errcode;
@@ -222,15 +279,39 @@ static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastre
 		matchtype = strsep(&s, " ");
 		expr = s;
 		if (!strcasecmp(matchtype, "EXISTS")) {
-			found = header_match(mproc, header, NULL, 1);
+			found = header_match(mproc, header, NULL, MATCH_STRICT);
 			match = found >= 0;
 		} else if (!strcasecmp(matchtype, "EQUALS")) {
 			REQUIRE_ARG(expr);
-			found = header_match(mproc, header, expr, 1);
+			found = header_match(mproc, header, expr, MATCH_STRICT);
+			match = found == 1;
+		} else if (!strcasecmp(matchtype, "CONTAINS")) {
+			REQUIRE_ARG(expr);
+			found = header_match(mproc, header, expr, MATCH_SUBSTR);
 			match = found == 1;
 		} else if (!strcasecmp(matchtype, "LIKE")) {
 			REQUIRE_ARG(expr);
-			found = header_match(mproc, header, expr, 0);
+			found = header_match(mproc, header, expr, MATCH_REGEX);
+			match = found == 1;
+		} else if (!strcmp(matchtype, ">=")) {
+			REQUIRE_ARG(expr);
+			found = header_match(mproc, header, expr, MATCH_GTE);
+			match = found == 1;
+		} else if (!strcmp(matchtype, ">")) {
+			REQUIRE_ARG(expr);
+			found = header_match(mproc, header, expr, MATCH_GT);
+			match = found == 1;
+		} else if (!strcmp(matchtype, "<=")) {
+			REQUIRE_ARG(expr);
+			found = header_match(mproc, header, expr, MATCH_LTE);
+			match = found == 1;
+		} else if (!strcmp(matchtype, "<")) {
+			REQUIRE_ARG(expr);
+			found = header_match(mproc, header, expr, MATCH_LT);
+			match = found == 1;
+		} else if (!strcmp(matchtype, "==")) {
+			REQUIRE_ARG(expr);
+			found = header_match(mproc, header, expr, MATCH_EQ);
 			match = found == 1;
 		} else {
 			bbs_warning("Invalid HEADER command match type: %s\n", matchtype);
@@ -240,7 +321,14 @@ static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastre
 		char *file = fullfile;
 		REQUIRE_ARG(s);
 		if (*s != '/') {
-			snprintf(fullfile, sizeof(fullfile), "%s/%s", usermaildir, s);
+			if (usermaildir) {
+				snprintf(fullfile, sizeof(fullfile), "%s/%s", usermaildir, s);
+			} else {
+				/* This is a system rule not associated with a particular mailbox,
+				 * so we can't process this rule. */
+				bbs_warning("Path '%s' is invalid in this context. Relative paths can only be used for mailbox-associated MailScript rules!\n", s);
+				return 0; /* Not a match */
+			}
 		} else {
 			file = s;
 		}
@@ -273,7 +361,7 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 		char newdir[512];
 		REQUIRE_ARG(s);
 		if (!STARTS_WITH(s, "imap:") && !STARTS_WITH(s, "imaps:")) {
-			/* Doesn't support INBOX */
+			/* Doesn't support INBOX (and doesn't need to, that's the default) */
 			if (mproc->userid) {
 				snprintf(newdir, sizeof(newdir), "%s/%d/.%s", mailbox_maildir(NULL), mproc->userid, s);
 			} else {
@@ -285,13 +373,20 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 			}
 		}
 		REPLACE(mproc->newdir, s);
-	} else if (!strcasecmp(next, "BOUNCE")) {
+	} else if (!strcasecmp(next, "BOUNCE") || !strcasecmp(next, "REJECT")) {
 		mproc->bounce = 1;
+		if (!strcasecmp(next, "REJECT")) {
+			mproc->drop = 1;
+		} /* for BOUNCE, reject at protocol level, but don't implicitly drop it */
 		free_if(mproc->bouncemsg);
+		if (s && *s == '"') {
+			s++; /* Strip quotes */
+		}
 		if (!strlen_zero(s)) {
 			mproc->bouncemsg = strdup(s);
+			bbs_strterm(mproc->bouncemsg, '"'); /* Strip any trailing quotes */
 		}
-	} else if (!strcasecmp(next, "DROP")) {
+	} else if (!strcasecmp(next, "DISCARD")) {
 		mproc->drop = 1;
 	} else if (!strcasecmp(next, "EXEC")) {
 		int res;
@@ -308,12 +403,12 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 		argc = bbs_argv_from_str(argv, ARRAY_LEN(argv), s); /* Parse string into argv */
 		if (argc < 1 || argc > (int) ARRAY_LEN(argv)) {
 			bbs_warning("Invalid EXEC action\n");
-			return -1; /* Rules may rely on a return code of 0 for success, so don't return 0 if we didn't do anything */
+			return 1; /* Rules may rely on a return code of 0 for success, so don't return 0 if we didn't do anything */
 		}
 		EXEC_PARAMS_INIT_HEADLESS(x);
 		res = bbs_execvp(mproc->node, &x, argv[0], argv); /* Directly return the exit code */
 		return res;
-	} else if (!strcasecmp(next, "FORWARD")) {
+	} else if (!strcasecmp(next, "REDIRECT")) {
 		REQUIRE_ARG(s);
 		/* Don't allow forwarding to self, or that will create a loop (one that can't even be detected, since message is not modified) */
 		if (!stringlist_contains(mproc->forward, s)) {
@@ -329,6 +424,13 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 	return 0;
 }
 
+/*!
+ * \brief Run rules using a given MailScript rules file
+ * \param mproc
+ * \param rulesfile Full path to MailScript to execute
+ * \param usermaildir ull path to maildir of corresponding mailbox, if exists (could be NULL)
+ * \retval 0 to continue, -1 to exit rule processing
+ */
 static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, const char *usermaildir)
 {
 	int res = 0;
@@ -344,7 +446,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 	int if_count = 0;
 
 	if (!bbs_file_exists(rulesfile)) {
-		bbs_debug(7, "File %s doesn't exist, no rules to evaluate\n", rulesfile);
+		bbs_debug(7, "MailScript %s doesn't exist\n", rulesfile);
 		return 0;
 	}
 
@@ -427,11 +529,19 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 			} else if (STARTS_WITH(s, "RETURN")) {
 				break;
 			} else if (STARTS_WITH(s, "EXIT")) {
-				res = -1;
+				if (mproc->iteration == FILTER_MAILBOX) {
+					bbs_warning("EXIT not allowed for user mailbox rules, doing RETURN instead\n");
+				} else {
+					/* We only allow EXIT to abort global rules processing
+					 * if this is a systemwide rule. Otherwise, that would
+					 * allow a user to skip after.sieve and after.rules
+					 * from being run, where some actions may be enforced system-wide. */
+					res = 1; /* Return 1, not -1, since we don't want to abort the SMTP transaction, just rules processing */
+				}
 				break;
 			} else {
 				retval = do_action(mproc, lineno, s);
-				}
+			}
 		} else if (STARTS_WITH(s, "IF ")) {
 			int cond, negate = 0;
 			s += STRLEN("IF ");
@@ -462,33 +572,42 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 	return res;
 }
 
+static char before_rules[256];
+static char after_rules[256];
+
 static int mailscript(struct smtp_msg_process *mproc)
 {
-	int res;
-	char fullfile[265];
-	char fullfile2[256];
-	const char *usermaildir;
+	char filepath[256];
+	const char *mboxmaildir;
 
-	snprintf(fullfile, sizeof(fullfile), "%s/.rules", mailbox_maildir(NULL));
+	/* Calculate maildir path, if we have a mailbox */
 	if (mproc->userid) {
-		snprintf(fullfile2, sizeof(fullfile2), "%s/%d", mailbox_maildir(NULL), mproc->userid);
-		usermaildir = fullfile2;
+		snprintf(filepath, sizeof(filepath), "%s/%d", mailbox_maildir(NULL), mproc->userid);
+		mboxmaildir = filepath;
+	} else if (mproc->mbox) {
+		mboxmaildir = mailbox_maildir(mproc->mbox);
 	} else {
-		usermaildir = mailbox_maildir(mproc->mbox);
+		mboxmaildir = NULL;
 	}
-	res = run_rules(mproc, fullfile, usermaildir);
-	if (!res) {
-		snprintf(fullfile, sizeof(fullfile), "%s/.rules", usermaildir);
-		run_rules(mproc, fullfile, usermaildir);
+
+	if (mproc->iteration == FILTER_BEFORE_MAILBOX) {
+		return run_rules(mproc, before_rules, mboxmaildir);
+	} else if (mproc->iteration == FILTER_AFTER_MAILBOX) {
+		return run_rules(mproc, after_rules, mboxmaildir);
+	} else { /* FILTER_MAILBOX */
+		char script[263];
+		if (!mboxmaildir) {
+			return 0; /* Can't execute per-mailbox callback if there is no mailbox */
+		}
+		snprintf(script, sizeof(script), "%s/.rules", mboxmaildir);
+		return run_rules(mproc, script, mboxmaildir);
 	}
-	if (mproc->fp) {
-		fclose(mproc->fp);
-	}
-	return 0;
 }
 
 static int load_module(void)
 {
+	snprintf(before_rules, sizeof(before_rules), "%s/before.rules", mailbox_maildir(NULL));
+	snprintf(after_rules, sizeof(after_rules), "%s/after.rules", mailbox_maildir(NULL));
 	return smtp_register_processor(mailscript);
 }
 

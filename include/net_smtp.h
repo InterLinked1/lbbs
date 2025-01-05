@@ -230,6 +230,12 @@ int smtp_message_quarantinable(struct smtp_session *smtp);
 #define SMTP_MSG_DIRECTION_IN 0
 #define SMTP_MSG_DIRECTION_OUT 1
 
+enum msg_process_iteration {
+	FILTER_BEFORE_MAILBOX = 0,	/*!< Execute before the mailbox filters */
+	FILTER_MAILBOX,				/*!< Mailbox filter execution */
+	FILTER_AFTER_MAILBOX,		/*!< Execute after the mailbox filters */
+};
+
 struct smtp_msg_process {
 	/* Inputs */
 	struct smtp_session *smtp;	/*!< SMTP session. Not originally included, so try to avoid using this! */
@@ -246,8 +252,9 @@ struct smtp_msg_process {
 	unsigned int userid;		/*!< User ID (outgoing only) */
 	enum smtp_direction dir;	/*!< Full direction (IN, OUT, or SUBMIT) */
 	unsigned int direction:1;	/*!< 0 = incoming, 1 = outgoing */
+	enum msg_process_iteration iteration; /*!< Which processing pass this is */
 	/* Outputs */
-	unsigned int bounce:1;		/*!< Whether to send a bounce */
+	unsigned int bounce:1;		/*!< Whether to send a bounce. This on its own does not also implicitly drop the message, that bit must be explicitly set. */
 	unsigned int drop:1;		/*!< Whether message should be dropped */
 	int res;					/*!< General return code */
 	char *newdir;				/*!< New message location (incoming only) */
@@ -260,7 +267,7 @@ struct smtp_msg_process {
 void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_process *mproc);
 
 /*!
- * \brief Register an SMTP processor callback to run on each message received or sent
+ * \brief Register an SMTP processor callback to run on each message received or sent. Callback will be called 3x, once for each msg_process_order.
  * \param cb Callback that should return nonzero to stop processing further callbacks
  */
 #define smtp_register_processor(cb) __smtp_register_processor(cb, BBS_MODULE_SELF)
@@ -272,6 +279,8 @@ int smtp_unregister_processor(int (*cb)(struct smtp_msg_process *mproc));
 
 /*!
  * \brief Run SMTP callbacks for a message (only called by net_smtp)
+ * \param mproc
+ * \retval 0 to continue, -1 to abort transaction immediately
  */
 int smtp_run_callbacks(struct smtp_msg_process *mproc);
 
@@ -281,6 +290,20 @@ struct smtp_response {
 	const char *subcode;
 	const char *reply;
 };
+
+/*!
+ * \brief Wrapper around smtp_run_callbacks, for use by delivery handlers
+ * \param smtp
+ * \param mproc Does not need to be (and should not be) initialized
+ * \param mbox Mailbox or NULL
+ * \param resp
+ * \param dir
+ * \param recipient Recipient, with <>
+ * \param datalen Message size
+ * \param freedata
+ * \retval 0 to continue, nonzero to return the return value
+ */
+int smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_process *mproc, struct mailbox *mbox, struct smtp_response **restrict resp, enum smtp_direction dir, const char *recipient, size_t datalen, void **freedata);
 
 #define smtp_abort(r, c, sub, msg) \
 	r->code = c; \

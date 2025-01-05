@@ -164,7 +164,7 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 	is_ipv6 = !bbs_hostname_is_ipv4(f->node->ip); /* If it's not IPv4, must be IPv6? */
 	domain = smtp_mail_from_domain(f->smtp);
 	if (!domain) {
-		bbs_warning("Missing domain for received email?\n");
+		/* Will be empty if MAIL FROM is empty */
 		return 0;
 	}
 

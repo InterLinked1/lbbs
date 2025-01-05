@@ -77,7 +77,7 @@ static int run(void)
 
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "220 ");
 
-	/* Test each of the rules in test/.sieve, one by one */
+	/* Test each of the rules in .sieve, one by one */
 
 	/* Note: Everything below here is mostly the same as in test_mailscript
 	 * (at least at the time of this coding).

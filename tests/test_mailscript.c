@@ -39,7 +39,7 @@ static int pre(void)
 
 	system("rm -rf /tmp/test_lbbs/maildir"); /* Purge the contents of the directory, if it existed. */
 	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
-	system("cp .rules " TEST_MAIL_DIR);
+	system("cp before.rules " TEST_MAIL_DIR); /* Global before MailScript */
 	return 0;
 }
 
@@ -74,7 +74,7 @@ static int run(void)
 
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "220 ");
 
-	/* Test each of the rules in test/.rules, one by one */
+	/* Test each of the rules in test/before.rules, one by one */
 
 	/* Should be moved to .Junk */
 	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);

@@ -525,15 +525,31 @@ static int archive_list_msg(const char *listname, int srcfd, size_t msglen)
 
 static int blast_exploder(struct smtp_session *smtp, struct smtp_response *resp, const char *from, const char *recipient, const char *user, const char *domain, int fromlocal, int tolocal, int srcfd, size_t datalen, void **freedata)
 {
+	struct smtp_msg_process mproc;
+	struct smtp_response tmpresp; /* Dummy that gets thrown away, if needed */
 	char name[256];
 	char *addr, *subaddr;
 	struct mailing_list *l;
+	int res;
 
 	UNUSED(recipient);
 	UNUSED(freedata);
 
 	if (!tolocal) {
 		return 0;
+	}
+
+	/* Even though it's not really an "outgoing" message,
+	 * it makes more sense to run callbacks as such here.
+	 * There is no mailbox corresponding to this filter execution,
+	 * so this is purely for global before/after rules
+	 * that may want to target non-mailbox mail. */
+	res = smtp_run_delivery_callbacks(smtp, &mproc, NULL, &resp, SMTP_DIRECTION_OUT, recipient, datalen, freedata);
+	if (res) {
+		return res;
+	}
+	if (!resp) {
+		resp = &tmpresp; /* We already set the error, don't allow appendmsg to override it if we're not going to drop immediately */
 	}
 
 	safe_strncpy(name, user, sizeof(name));
@@ -568,7 +584,6 @@ static int blast_exploder(struct smtp_session *smtp, struct smtp_response *resp,
 
 	if (strlen_zero(subaddr)) { /* It's the reflector address */
 		char tmpattach[256] = "/tmp/lbbsmailXXXXXX";
-		int res;
 		size_t msglen;
 		FILE *fp = bbs_mkftemp(tmpattach, 0600);
 		if (!fp) {

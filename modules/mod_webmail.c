@@ -198,8 +198,13 @@ static void __attribute__ ((format (gnu_printf, 7, 8))) log_mailimap(const char 
 
 	if (r) {
 		/* Usually all the fields of r we print here are NULL, but we should have some tag and response info for debugging */
-		__bbs_log(error ? LOG_ERROR : LOG_WARNING, 0, file, lineno, func, "%s [%d: %s]: %d, %s/%s/%s/%s/%s\n",
-			buf, code, mailimap_strerror(code), last_sent_tag, S_IF(client->imap_response), S_IF(r->rsp_alert), S_IF(r->rsp_parse), S_IF(r->rsp_atom), S_IF(r->rsp_value));
+		if (r->rsp_alert || r->rsp_parse || r->rsp_atom || r->rsp_value) {
+			__bbs_log(error ? LOG_ERROR : LOG_WARNING, 0, file, lineno, func, "%s [%d: %s]: %d, %s/%s/%s/%s/%s\n",
+				buf, code, mailimap_strerror(code), last_sent_tag, S_IF(client->imap_response), S_IF(r->rsp_alert), S_IF(r->rsp_parse), S_IF(r->rsp_atom), S_IF(r->rsp_value));
+		} else {
+			__bbs_log(error ? LOG_ERROR : LOG_WARNING, 0, file, lineno, func, "%s [%d: %s]: %d, %s\n",
+				buf, code, mailimap_strerror(code), last_sent_tag, S_IF(client->imap_response));
+		}
 	} else {
 		__bbs_log(error ? LOG_ERROR : LOG_WARNING, 0, file, lineno, func, "%s [%d: %s]\n", buf, code, mailimap_strerror(code));
 	}

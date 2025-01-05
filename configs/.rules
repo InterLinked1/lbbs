@@ -5,8 +5,9 @@
 # By default, rules apply to ALL messages, and you need to use MATCH directives to explicitly
 # filter to the rules you want.
 # Rules are evaluated in a single ordered pass from top to bottom.
-# The global rules file (e.g. /home/bbs/maildir/.rules) is executed first, followed by
-# any .rules file in each user's individual maildir (e.g. /home/bbs/maildir/1/.rules)
+# The global before rules file (e.g. /home/bbs/maildir/before.rules ) is executed first, followed by
+# any .rules file in each user's individual maildir (e.g. /home/bbs/maildir/1/.rules),
+# followed by the global after rules file (e.g. /home/bbs/maildir/after.rules).
 # Rule processing occurs once the entire message has been received and before delivery is attempted.
 
 # WARNING: DO NOT ALLOW USERS to directly create or modify these rules.
@@ -40,15 +41,23 @@
 # DIRECTION <IN|OUT> - direction of message. IN=incoming message for a local recipient, OUT=message sent by a local user for delivery (either locally or externally)
 # MAILFROM <EQUALS|LIKE> <arg> - envelope MAIL FROM (envelope sender)
 # RECIPIENT <EQUALS|LIKE> <arg> - envelope RCPT TO (envelope recipient)
-# HEADER <header name> <EQUALS|LIKE|EXISTS> <arg> - header in the message. Since certain headers may be duplicated (To:, Cc:, etc.), this is a match on ANY of these headers.
+# HEADER <header name> <EXISTS|EQUALS|CONTAINS|LIKE|>=|>|<|<=|==> <arg> - header in the message. Since certain headers may be duplicated (To:, Cc:, etc.), this is a match on ANY of these headers.
 # FILE <file> <EXISTS> - whether a named file exists in the user's maildir. May be used for both incoming and outgoing messages.
 # RETVAL (>,>=,==,<,<=) <value> - check return value of last command
 # SIZE (>,>=,==,<,<=) <size> - size of message, in bytes
 
 # Condition Keywords:
-# EQUALS - exact string match
-# LIKE - regular expression match
 # EXISTS - specified value exists
+# EQUALS - exact string match
+# CONTAINS - contains substring
+# LIKE - regular expression match
+# >= - greater than or equal to
+# > - greater than
+# <= - less than or equal to
+# < less than
+# == equal to
+
+# Note that floating point comparisons are supported for HEADER conditions, but not for RETVAL or SIZE.
 
 # Other Keywords:
 # RETVAL - return code of previous TEST or ACTION statement, useful for conditional execution of certain MATCH or ACTION statements.
@@ -57,15 +66,18 @@
 # List of actions
 # BREAK - Stop executing the current rule
 # RETURN - Stop executing all rules in the current rules file
-# EXIT - Stop executing all rules in all rules files
-# BOUNCE - Reject SMTP acceptance of the message and return an SMTP error code to the sending server/client. Optionally, a custom bounce message may be specified as an argument.
-# DROP - Drop the message (prevent delivery). Typically used in conjunction with BOUNCE. If you wish to delete the message but retain it temporarily in the Trash folder, you should use MOVETO .Trash instead.
-# FORWARD - Forward the message to another address. Can be used to implement conditional or unconditional forwarding.
+# EXIT - Stop executing all rules in all rules files. May not be used in mailbox rules, can only be used in the global rules. Use with caution, you probably should use BREAK or RETURN instead!
+# BOUNCE - Return an SMTP error code to the sending server/client. Optionally, a custom bounce message may be specified as an argument. This rule does not reject acceptance on its own. Use with caution, you probably want to use REJECT instead unless you are trying to be clever.
+# REJECT - Same as Sieve 'reject' action. Reject SMTP acceptance of the message and return an SMTP error code to the sending server/client. Optionally, a custom bounce message may be specified as an argument.
+# DISCARD - Same as Sieve 'discard' action. Drop and discard the message (prevent delivery). This rule does not trigger a reject message on its own. If you wish to delete the message but retain it temporarily in the Trash folder, you should use MOVETO Trash instead. This rule is typically not implicit, only the REJECT action will automatically discard a message as well.
+# REDIRECT - Similar to the Sieve 'redirect' action. Forward the message to another address. Can be used to implement conditional or unconditional forwarding.
+#            Unlike the Sieve 'redirect' action, "keep copy" is implicit. Additionally, it can be used multiple times to forward copies to multiple destinations.
+#            To drop the message after forwarding it, also use the DISCARD action afterwards.
 # RELAY - Outgoing messages only. Relay the message via another SMTP server. Useful for SMTP proxying. Format is smtp:// or smtps://user:password@host:port
 #                       Note that STARTTLS is always attempted for smtp://, while smtps:// will force Implicit TLS to be used, and smtp:// will use Explicit TLS if possible.
-#                       Currently, RELAY implicitly results in a DROP, normal message processing will not continue afterwards.
+#                       Currently, RELAY implicitly results in a DISCARD, normal message processing will not continue afterwards and no copy of the message is retained.
 # REPLY - Reply to the sent message, to the original sender
-# MOVETO - Move the message to a specified folder in the maildir, e.g. to .Junk, .Trash, etc. Can be used to implement filtering. If this action is executed multiple times, the last one wins. For outgoing messages, an IMAP URI may also be used, e.g. to APPEND the sent message to a remote IMAP mailbox.
+# MOVETO - Move the message to a specified folder in the maildir, e.g. to Junk, Trash, Folder.subfolder, etc. Can be used to implement filtering. If this action is executed multiple times, the last one wins. For outgoing messages, an IMAP URI may also be used, e.g. to APPEND the sent message to a remote IMAP mailbox.
 # EXEC - Execute a system program.
 # NOOP - Does nothing and always returns 0. Possibly useful for debugging rule execution with debug enabled.
 
@@ -77,11 +89,11 @@ COMMENT
 
 # Reject all messages, incoming and outgoing
 RULE
-# You can use BOUNCE or DROP in isolation but typically these are used together
-# BOUNCE used by itself would send a bounce but actually deliver the message
-# DROP used by itself would drop the message but not send a bounce
-ACTION BOUNCE This message is not allowed # Send a custom bounce message
-ACTION DROP # Drop the message
+# You can use REJECT or DISCARD in isolation but typically these are used together
+# REJECT used by itself would send a bounce and not deliver the message
+# DISCARD used by itself would silently drop the message and not send a bounce
+ACTION REJECT This message is not allowed # Send a custom bounce message
+ACTION DISCARD # Drop and discard the message
 ENDRULE
 
 RULE
@@ -90,8 +102,8 @@ MATCH SIZE >= 700 # greater than 700 bytes
 MATCH NOT HEADER Precedence EQUALS Bulk # if Precedence header is not bulk
 MATCH HEADER Precedence EXISTS # ... and it's present (not missing)
 # if all these rules match:
-ACTION FORWARD <sysop@example.com> # forward the message to sysop@example.com
-ACTION MOVETO .Trash # delete the message after forwarding it
+ACTION REDIRECT <sysop@example.com> # forward the message to sysop@example.com
+ACTION MOVETO Trash # delete the message after forwarding it
 ACTION BREAK # stop processing the CURRENT rules. In this example, this isn't meaningful, but if there were further actions it would be.
 ENDRULE
 
@@ -108,19 +120,38 @@ ENDIF
 IF RETVAL == 0
 	ACTION BREAK
 ENDIF
-# This rule will bounce and drop the message if it came from <1|2|3>@example.com
-ACTION BOUNCE
-ACTION DROP
+# This rule will reject the message if it came from <1|2|3>@example.com
+ACTION REJECT
+ENDRULE
+
+# Forward any messages to forwarder@example.com smaller than 1 KB to secret@example.net
+RULE
+MATCH RECIPIENT EQUALS forwarder@example.com
+IF SIZE > 1024
+	ACTION REJECT "Message is too large"
+	ACTION BREAK # This is necessary! If the explicit BREAK is missing, we will end up forwarding a copy nonetheless! REJECT is implicit drop, it does NOT implicitly stop processing rules!
+ENDIF
+ACTION REDIRECT <secret@example.net>
 ENDRULE
 
 # A simple spam filter
+RULE
+MATCH DIRECTION IN # all incoming email (you don't want to spam filter the mail you send, right?)
+MATCH HEADER X-Spam-Level CONTAINS *****
+IF NOT RETVAL 0
+	ACTION MOVETO Junk
+	ACTION RETURN # stop processing ALL rules immediately (why bother if it's spam?)
+ENDIF
+ENDRULE
+
+# Alternate simple spam filter
 RULE
 MATCH DIRECTION IN # all incoming email (you don't want to spam filter the mail you send, right?)
 MATCH NOT FILE .nospamfilter MISSING # if .nospamfilter file is present in a user's root maildir folder, don't do any spam filtering
 MATCH NOT HEADER From LIKE ^[A-Za-z0-9._%+-]+@safe\.example\.com$ # safe/allowed sender
 ACTION EXEC spamassasin -e ${MAILFILE} # run spamassasin on this file, which will return nonzero if it's spam
 IF NOT RETVAL 0
-	ACTION MOVETO .Junk
+	ACTION MOVETO Junk
 	ACTION RETURN # stop processing ALL rules immediately (why bother if it's spam?)
 ENDIF
 ENDRULE
@@ -150,12 +181,12 @@ ENDRULE
 
 # Prevent accidentally sending emails to the wrong people. e.g. the same message should never contain a@example.com and b@example.org.
 # You can see how you could use this to prevent accidentally replying all to email lists you never intend to post to, etc. which could be quite handy!
+# mod_smtp_recipient_monitor does more in-depth sender/recipient message analysis
 RULE
 MATCH DIRECTION OUT
 MATCH HEADER To EQUALS a@example.com
 MATCH HEADER To EQUALS b@example.org
-ACTION BOUNCE # send bounce message
-ACTION DROP # drop the message, prevent it from being sent.
+ACTION REJECT # reject message, prevent it from being sent
 ENDRULE
 
 ENDCOMMENT

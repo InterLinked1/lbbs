@@ -149,7 +149,9 @@ static int arc_filter_verify_cb(struct smtp_filter_data *f)
 	}
 
 	/* All right, we've now verified the message. */
+#ifdef DEBUG_ARC
 	bbs_debug(3, "ARC chain: %s\n", arc_chain_status_str(msg));
+#endif
 	REPLACE(f->arc, arc_chain_status_str(msg));
 
 cleanup:

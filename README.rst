@@ -162,7 +162,7 @@ A few especially important configuration files:
 
 * :code:`transfers.conf` - File transfer configuration
 
-Additionally, the MailScript rules engine uses a script file called :code:`.rules` in the root maildir and the user's root maildir for manipulating messages.
+Additionally, the MailScript rules engine uses a script file called :code:`.rules` in the user's root maildir (and :code:`before.rules` and :code:`after.rules` in the root maildir for global filtering) for manipulating messages.
 A sample MailScript rules file is in :code:`configs/.rules` (though this is not a config file, but a sample rule script file).
 
 User Configuration
@@ -464,7 +464,7 @@ slightly more complicated syntax, such as Sieve. MailScript also allows for basi
 independent of the filtering language used, which can be useful for testing. MailScript was added before Sieve support
 was added due to the easier implementation.
 
-Currently, some capabilities, such as executing system commands or processing outgoing emails, that are only possible with MailScript, not with Sieve.
+Currently, some capabilities, such as executing system commands or processing outgoing emails, are only possible with MailScript, not with Sieve.
 Although there are Sieve extensions to do this, the Sieve implementation in the BBS does not yet support this
 (or rather, the underlying library does not). Eventually the goal is to have full feature parity.
 
@@ -485,52 +485,139 @@ There is a builtin module for SpamAssassin integration. SpamAssassin installatio
 Installation
 ------------
 
-* Install SpamAssassin: :code:`apt-get install -y spamassassin`. You do not need :code:`spamass-milter` since milters are not currently supported.
+Install SpamAssassin: :code:`apt-get install -y spamassassin`. You do not need :code:`spamass-milter` since milters are not currently supported.
 
-* Create your preference file, e.g. :code:`/etc/spamassassin/config.cf`::
+TIP: If you have multiple mail servers in an internal hierarchy, we recommend installing SpamAssassin on the "outermost" SMTP server, i.e. the one that receives mail directly from other MTAs on the Internet. This way, you have the ability to refuse acceptance of certain spam emails during the SMTP transaction itself (which is "cheap"), rather than accepting it, relaying it to a downstream server, determining the email should be rejected, and then having to generate a "bounce" messages, since the original connection has already been closed (which is "expensive", and not as reliable). The first server can run SpamAssassin, and downstream servers with user mailboxes can then actually do filtering based on the headers added previously by SpamAssassin.
 
-   # Required score to be considered spam (5 is the default, and should generally be left alone)
+Note that if the incoming mail server running SpamAssassin is hosted on DigitalOcean, you will need to `sign up for a DQS key and follow the instructions in order to make Spamhaus's DNSBLs functional <https://www.spamhaus.org/resource-hub/email-security/if-you-query-the-legacy-dnsbls-via-digitalocean-move-to-spamhaus-technologys-free-data-query-service/>`_.
+
+Deployment Considerations
+-------------------------
+SpamAssassin is best used before-queue, since this prevents backscatter by ensuring spam results are available for filtering rules to use (allowing recipients to outright reject highly suspected spam, for instance). :code:`mod_spamassassin` invokes SpamAssassin during the SMTP delivery process to allow this.
+
+When invoked directly (e.g. as :code:`/usr/bin/spamassassin`), SpamAssassin will read the message from the BBS on STDIN and output the modified message on STDOUT. Because the BBS only needs SpamAssassin to prepend headers at the top, it will *not* use the entire returned body from SpamAssassin. Instead, it will prepend all of the SpamAssassin headers and ignore everything else, since that would just involve copying the remainder of the message back again for no reason. This contrasts with with more conventional facilities that mail transfer agents provide for modifying message bodies on delivery.
+
+Configuration
+-------------
+
+* Load the language plugin by adding :code:`loadplugin Mail::SpamAssassin::Plugin::TextCat` to :code:`/etc/spamassassin/local.pre`
+
+* Create your custom preference file, e.g. :code:`/etc/spamassassin/config.cf`::
+
+   # Required score to be considered spam (5 is the default, and should generally be left alone, fine tune your Junk threshold using mail filtering rules instead)
    required_score      5
 
-   # Heavily penalize HTML only emails
-   score MIME_HTML_ONLY 2.10
+   # English is the only language that won't trigger the UNWANTED_LANGUAGE_BODY rule
+   ok_languages en
+
+   # SPF hard fail, always reject
+   score SPF_FAIL 10.0
+
+   # SPF soft fail, always send to Junk
+   score SPF_SOFTFAIL 5.0
+
+   # Heavily penalize mail from domains with no SPF record
+   score SPF_NONE 3.0
+
+   # Email is not in English
+   score UNWANTED_LANGUAGE_BODY 3.5
+
+   # Penalize HTML only emails
+   score MIME_HTML_ONLY 1.8
+
+   # Penalized heavily abused freemail
+   score FREEMAIL_FROM 0.5
 
    # Don't modify original message (apart from adding headers)
    report_safe 0
 
+   # Add X-Spam-Report to all emails, including ham, not just spam
+   add_header all Report _REPORT_
+
+   # Add X-Spam-Score to all emails, including ham, not just spam
+   add_header all Score _SCORE_
+
    # Bayes DB (specify a path and sa-learn will create the DB for you)
    bayes_path /var/lib/spamassassin/bayesdb/bayes
 
-* Go ahead and run `sa-compile` to compile your rule set into a more efficient form for runtime.
+* Go ahead and run :code:`sa-compile` to compile your rule set into a more efficient form for runtime (if you modify :code:`config.cf` in the future, rerun this command).
+
+To regularly update SpamAssassin with the latest rules, enable the cron job by adding :code:`CRON=1` to :code:`/etc/default/spamd`.
+
+Filtering Spam
+--------------
+
+SpamAssassin will tag spam appropriately, but not do anything to it. That's where filtering rules can help filter spam to the right place (or even reject it during the SMTP session). There are a few headers that SpamAssassin will add, e.g. :code:`X-Spam-Level`. Users can customize what they want to do with spam and their threshold for spam filtering using a filter. The most common rule is to move suspected spam to the user's Junk folder.
+
+Our recommendation is to ignore the :code:`X-Spam-Flag` header entirely. Instead, you can use the :code:`X-Spam-Level` header in mail filtering rules to handle spam, by either moving them to Junk (at a lower threshold) and outright rejecting them (at a higher threshold). This gives you much more fine-grained control, and allows different users to customize their filtering.
+
+The :code:`X-Spam-Level` header contains one asterisk for each whole positive spam score level (i.e. it is the value of the spam score (also available directly in the :code:`X-Spam-Score` header), rounded down, and empty if less than 1.0, including negative. For instance, :code:`****` denotes the message has a spam score of between 4.0 and 4.9. Since spammier messages have more :code:`*`s, you can easily use a simple substring match on this header value, for example::
+
+   # This MailScript rule will outright reject any messages with a spam score of 10.0 or greater (and set a custom refusal message)
+   RULE
+   MATCH DIRECTION IN
+   MATCH HEADER X-Spam-Level CONTAINS **********
+   ACTION REJECT Message refused, appears to be spam
+   ENDRULE
+
+   # This MailScript rule will move any messages with a spam score of 5.0 or greater (and implicitly 9.9 or less, if the above rule is present) to the user's Junk folder
+   RULE
+   MATCH DIRECTION IN
+   MATCH HEADER X-Spam-Level CONTAINS *****
+   ACTION MOVETO Junk
+   ENDRULE
+
+You could also use a standard Sieve rule instead of a MailScript rule::
+
+   require "fileinto";
+   if header :contains "X-Spam-Level" "*****" {
+      fileinto "Junk";
+   }
+
+Note that :code:`X-Spam-Level` only gives you the ability to filter by intervals of 1. If you want more granular control than that, you should use the :code:`X-Spam-Score` header instead::
+
+   # This MailScript rule will reject any messages with a spam score of 7.7 or greater
+   RULE
+   MATCH DIRECTION IN
+   MATCH HEADER X-Spam-Score >= 7.7
+   ACTION REJECT
+   ENDRULE
+
+Both Sieve and MailScript rules can also be configured globally (system-wide), in addition to per-mailbox. This is useful if you as the postmaster want to reject all mail above a certain spam level. There are two global Sieve scripts that can be configured and one global MailScript script. All of these files must be named as follows and placed in the root maildir:
+
+* :code:`before.sieve`: Sieve rules that will be executed before any per-mailbox rules are executed. This is usually better for default settings that users may override, such as moving spam to Junk.
+* :code:`after.sieve`: Sieve rules that will be executed after any per-mailbox rules are executed. This is usually better for settings that you do not want users to override.
+* :code:`before.rules`: MailScript rules that will be executed before any per-mailbox rules. This is usually better for default settings that users may override, such as moving spam to Junk.
+* :code:`after.rules`: MailScript rules that will be executed after any per-mailbox rules. This is usually better for settings that you do not want users to override.
+
+The order with which Sieve and MailScript rules run with respect to each other is consistent between rule engines, e.g. both global Sieve and MailScript "before" rules will run before any per-mailbox rules, which will run before any global "after" rules. The order with which Sieve and MailScript rules are evaluated within a single pass (e.g. the before rules) is not defined and should not be relied upon.
+
+One special case that can only be handled in MailScript is filtering outbound mail. The Sieve implementation does not currently support this. A special case of outbound filtering that may be useful is refusing acceptance of spam in a multi-server mail network. If your primary incoming mail server runs SpamAssassin (as recommended), but user mailboxes reside on another server downstream, then normal user mail filtering to outright refuse definite spam messages normally wouldn't be performed until the message is delivered to the local mail server, by which time the incoming server has already accepted the message, only for it later to be rejected, requiring a bounce to be generated. To work around this, you can configure a global MailScript rule to refuse acceptance of confirmed spam. The downside to this approach is users no longer have the ability to override this, since the rule is being run on a different server. Therefore, use caution and only refuse messages with a very high probability of being spam (e.g. spam score of 10 or greater). This could be done as follows::
+
+   # This MailScript rule will reject any messages with a spam score of 10 or greater
+   RULE
+   MATCH DIRECTION OUT
+   MATCH HEADER X-Spam-Score >= 10
+   ACTION REJECT
+   ENDRULE
+
+Note this is similar to an above rule, except the direction is :code:`OUT`. For incoming mail, this rule will only be executed for mail that is accepted and sent onwards to another server. (It could also apply for local submissions that are sent to external parties, though such mail shouldn't have an :code:`X-Spam-Score` header at this point, so this is unlikely to cause an issue.) Note, however, that not all filter actions apply to all mail; for example, in the case of mail accepted by an edge server and then relayed to another server housing the actual mailbox, no mailbox exists locally on the edge server for the message while it is being processed. Mailbox rules thus cannot be run on these messages, but global rules (before/after Sieve and MailScript rules) can still be run. Certain actions, like REJECT, can be used without issue, while some actions, such as :code:`fileinto` (Sieve) or :code:`MOVETO` (MailScript) cannot be used since there is no corresponding mailbox within which to move messages (if such rules are, they will be ignored and trigger a warning). Currently, in Sieve, it is not actually possible to target such mail; in MailScript, the condition :code:`MATCH DIRECTION IN` should currently suffice to ensure the rule is skipped for non-mailbox mail.
+
+The :code:`mod_smtp_recipient_monitor` plugin module also performs outbound filtering. If the :code:`.config/.recipientmap` file exists in a user's home directory, this module will automatically screen outbound mail and warn the user if sending mail to a brand-new from/recipient combination. This can help prevent mail from accidentally being sent to the wrong users, or from the wrong email address.
 
 Training
 --------
 
-SpamAssassin needs to be trained for optimal filtering results. It is best trained on real spam (and ham, or non-spam) messages. You can tell SpamAssassin about actual spam (:code:`sa-learn --spam /path/to/spam/folder`) or ham (:code:`sa-learn --ham /path/to/ham/folder`).
+SpamAssassin can work reasonably well out of the box, but will get better with training. It is best trained on real spam (and ham, or non-spam) messages. You can tell SpamAssassin about actual spam (:code:`sa-learn --spam /path/to/spam/folder`) or ham (:code:`sa-learn --ham /path/to/ham/folder`).
 
-SpamAssassin can work reasonably well out of the box, but will get better with training. If you receive spam, don't delete them - put them in a special folder (e.g. Junk) and rerun :code:`sa-learn` periodically.
+If you receive spam, don't delete them - put them in a special folder (e.g. Junk) and rerun :code:`sa-learn` periodically.
 
-You can also run on multiple folders - careful though, if users have a Sieve rule to move suspected spam to Junk, this could train on false positives if this is run before they react and correct that. Therefore, if your mail server is small, you may just want to do this manually periodically after receiving Spam::
+You can also run on multiple folders - careful though, if users have a filter to move suspected spam to Junk, this could train on false positives if this is run before they react and correct that. Therefore, if your mail server is small, you may just want to do this manually periodically after receiving Spam::
 
    sa-learn --spam /home/bbs/maildir/*/Junk/{cur,new}
    sa-learn --ham /home/bbs/maildir/*/cur
 
 Once you've trained the Bayes model, you can delete the spam messages if you wish. Rerunning the model on existing messages is fine too - the model will skip messages it's already seen, so there's no harm in not deleting them immediately, if you have the disk space.
-
-Adding Spam Headers
--------------------
-
-SpamAssassin can be called by the SMTP server on incoming emails delivered from external recipients. This should be done automatically provided that :code:`mod_spamassassin` is loaded and SpamAssassin is installed and configured properly.
-SpamAssassin will add some headers to each message, which can then be used in a Sieve script or MailScript rule to filter suspected spam into the Junk folder (but SpamAssassin on its own will not filter mail, just identify messages it thinks are spam).
-
-SpamAssassin is best used before-queue, since this prevents backscatter by ensuring spam results are available for filtering rules to use (allowing recipients to outright reject highly suspected spam, for instance). :code:`mod_spamassassin` invokes SpamAssassin during the SMTP delivery process to allow this.
-
-When invoked directly (e.g. as :code:`/usr/bin/spamassassin`), SpamAssassin will read the message from the BBS on STDIN and output the modified message on STDOUT. Because the BBS only needs SpamAssassin to prepend headers at the top, it will *not* use the entire returned body from SpamAssassin. Instead, it will prepend all of the SpamAssassin headers and ignore everything else, since that would just involve copying the remainder of the message back again for no reason. This contrasts with with more conventional facilities that mail transfer agents provide for modifying message bodies on delivery.
-
-Filtering Spam
---------------
-
-SpamAssassin will tag spam appropriately, but not do anything to it. That's where Sieve rules can help filter spam to the right place (or even reject it during the SMTP session). There are a few headers that SpamAssassin will add, e.g. :code:`X-Spam-Status`. Users can customize what they want to do with spam and their threshold for spam filtering using a Sieve rule. The most common rule is to move suspected spam to the user's Junk folder.
 
 Email sent from the BBS keeps going to people's spam!
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -558,7 +645,7 @@ You *could* use RFC 4468 BURL, but this is not supported by virtually any mail c
 
 The recommended setting is to use MailScript rules to "filter" your outgoing emails.
 You can define a rule for each account to save a copy in your IMAP server's Sent folder.
-For your local BBS email account, you can use :code:`MOVETO .Sent`; for remote IMAP servers,
+For your local BBS email account, you can use :code:`MOVETO Sent`; for remote IMAP servers,
 you can specify an IMAP URL like :code:`MOVETO imaps://username@domain.com:password@imap.example.com:993/Sent`.
 The BBS's SMTP server will then save a copy of the message in the designated location before relaying or sending it.
 

@@ -219,26 +219,32 @@ static int dkim_verify_filter_cb(struct smtp_filter_data *f)
 	bh = dkim_sig_getbh(sig); /* Body hash */
 	sigerror = dkim_sig_geterror(sig);
 
+#ifdef DEBUG_DKIM
+#define DKIM_DEBUG(level, fmt, ...) bbs_debug(level, fmt, ## __VA_ARGS__)
+#else
+#define DKIM_DEBUG(level, fmt, ...)
+#endif
+
 	if (sigflags & DKIM_SIGFLAG_IGNORE) {
 		bbs_warning("DKIM_SIGFLAG_IGNORE\n"); /* Shouldn't happen */
 	}
 	if (sigflags & DKIM_SIGFLAG_PROCESSED) {
-		bbs_debug(5, "DKIM_SIGFLAG_PROCESSED\n");
+		DKIM_DEBUG(5, "DKIM_SIGFLAG_PROCESSED\n");
 	}
 	if (sigflags & DKIM_SIGFLAG_PASSED) {
-		bbs_debug(5, "DKIM_SIGFLAG_PASSED\n");
+		DKIM_DEBUG(5, "DKIM_SIGFLAG_PASSED\n");
 	}
 	if (sigflags & DKIM_SIGFLAG_TESTKEY) {
-		bbs_debug(5, "DKIM_SIGFLAG_TESTKEY\n");
+		DKIM_DEBUG(5, "DKIM_SIGFLAG_TESTKEY\n");
 	}
 	if (sigflags & DKIM_SIGFLAG_NOSUBDOMAIN) {
-		bbs_debug(5, "DKIM_SIGFLAG_NOSUBDOMAIN\n");
+		DKIM_DEBUG(5, "DKIM_SIGFLAG_NOSUBDOMAIN\n");
 	}
 
 	if (bh == DKIM_SIGBH_MATCH) {
-		bbs_debug(5, "DKIM_SIGBH_MATCH\n");
+		DKIM_DEBUG(5, "DKIM_SIGBH_MATCH\n");
 	} else if (bh == DKIM_SIGBH_MISMATCH) {
-		bbs_debug(5, "DKIM_SIGBH_MISMATCH\n");
+		DKIM_DEBUG(5, "DKIM_SIGBH_MISMATCH\n");
 	} else {
 		bbs_warning("DKIM_SIGBH_UNTESTED\n"); /* Shouldn't happen */
 	}
@@ -302,7 +308,7 @@ static int dkim_verify_filter_cb(struct smtp_filter_data *f)
 		statp == DKIM_STAT_OK ? "\"" : ""
     );
 
-	bbs_debug(5, "DKIM result: %s\n", dkimresult);
+	DKIM_DEBUG(5, "DKIM result: %s\n", dkimresult);
 	REPLACE(f->dkim, dkimresult);
 
 cleanup:

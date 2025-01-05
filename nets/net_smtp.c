@@ -121,7 +121,11 @@ void bbs_smtp_log(int level, struct smtp_session *smtp, const char *fmt, ...)
 	strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 
 	bbs_mutex_lock(&loglock);
-	fprintf(smtplogfp, "[%s.%03d] %p: ", datestr, (int) now.tv_usec / 1000, smtp);
+	if (smtp) {
+		fprintf(smtplogfp, "[%s.%03d] %p: ", datestr, (int) now.tv_usec / 1000, smtp);
+	} else {
+		fprintf(smtplogfp, "[%s.%03d] ", datestr, (int) now.tv_usec / 1000);
+	}
 
 	va_start(ap, fmt);
 	vfprintf(smtplogfp, fmt, ap);
@@ -1520,7 +1524,25 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 				continue;
 			}
 		}
-		/* Filter applicable to scope */
+
+		/* Filter applicable to scope, execute it */
+
+		/*! \note SMTP filters will receive the message by reading it from f->inputfd,
+		 * and then use smtp_filter_add_header or smtp_filter_write
+		 * in order to prepend to the message headers (which is f->outputfile)
+		 *
+		 * The complication is that if we reuse the same output file for all filter callbacks,
+		 * then headers added earlier on are not available to successive filters.
+		 * For example, SpamAssassin needs SPF, DMARC, etc. headers,
+		 * and the priorities of these filters ensure they run before SpamAssassin does.
+		 * But if the headers they add are only in the output file, then SpamAssassin
+		 * won't read them, just by reading from f->inputfd.
+		 *
+		 * While we could close the file and create a new combined file after each iteration,
+		 * that would be somewhat inefficient, given that currently the only filter that requires
+		 * this sort of thing is the SpamAssassin one. Therefore, that module has logic
+		 * to also process what's been appended to the output file as well as the original input file. */
+
 		bbs_debug(4, "Executing %s SMTP filter %s %p...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
 		bbs_module_ref(f->mod, 2);
 		if (f->type == SMTP_FILTER_PREPEND) {
@@ -1618,17 +1640,103 @@ int smtp_run_callbacks(struct smtp_msg_process *mproc)
 	int res = 0;
 	struct smtp_processor *proc;
 
+#define EXECUTE_FILTERS(iter)\
+	mproc->iteration = iter; \
+	RWLIST_TRAVERSE(&processors, proc, entry) { \
+		bbs_module_ref(proc->mod, 3); \
+		res |= proc->cb(mproc); \
+		bbs_module_unref(proc->mod, 3); \
+		if (res) { \
+			bbs_debug(4, "Message processor returned %d\n", res); \
+			goto done; /* Stop processing immediately if a processor returns nonzero */ \
+		} \
+	} \
+
+	/* We make 3 passes, so that the postmaster can enforce a hierarchy of filters,
+	 * with some always executing before or after a mailbox's rules. */
 	RWLIST_RDLOCK(&processors);
-	RWLIST_TRAVERSE(&processors, proc, entry) {
-		bbs_module_ref(proc->mod, 3);
-		res |= proc->cb(mproc);
-		bbs_module_unref(proc->mod, 3);
-		if (res) {
-			break; /* Stop processing immediately if a processor returns nonzero */
-		}
-	}
+	EXECUTE_FILTERS(FILTER_BEFORE_MAILBOX);
+	EXECUTE_FILTERS(FILTER_MAILBOX);
+	EXECUTE_FILTERS(FILTER_AFTER_MAILBOX);
+#undef EXECUTE_FILTERS
+done:
 	RWLIST_UNLOCK(&processors);
-	return res;
+	if (mproc->fp) {
+		fclose(mproc->fp);
+		mproc->fp = NULL;
+	}
+	return res == -1 ? -1 : 0; /* If we aborted callbacks, 1 was returned, but we should return 0 since most callers just check for nonzero return */
+}
+
+int smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_process *mproc, struct mailbox *mbox, struct smtp_response **restrict resp_ptr, enum smtp_direction dir, const char *recipient, size_t datalen, void **freedata)
+{
+	char recip_buf[256];
+	struct smtp_response *resp = *resp_ptr;
+
+	/* recipient includes <>,
+	 * but the mail filtering engines don't want that,
+	 * and just want to consume the address itself.
+	 * XXX Can be revisited if the use of variables with and without <> is ever made consistent! */
+	safe_strncpy(recip_buf, recipient, sizeof(recip_buf));
+	bbs_strterm(recip_buf, '>');
+
+	/* The local delivery agent (mod_smtp_delivery_local) also runs message processing
+	 * so that individual users' filter rules (Sieve or MailScript) will run.
+	 * For external delivery, the destination mailbox is not local, so it does not make
+	 * sense to run any individual user rules in that case... there is no user!
+	 * However, in both cases, the postmaster may configure system-wide MailScript rules that
+	 * apply to all messages, e.g. refuse acceptance of any messages
+	 * with an X-Spam-Score of 10 or greater, etc. We should run those rules here. */
+	smtp_mproc_init(smtp, mproc);
+	mproc->size = (int) datalen;
+	bbs_strterm(recip_buf, '>');
+	mproc->recipient = recip_buf + 1; /* Without <> */
+	/* This is a little bit ambiguous, honestly...
+	 * the message was either incoming or a submission, initially,
+	 * but for non-local delivery, it is really an outgoing at this point.
+	 * This also allows differentiating from local delivery in the global
+	 * MailScript rules: if direction is IN, then it will only apply to local mailboxes.
+	 * If direction is OUT, then it will only apply to messages for non-local mailboxes. */
+	mproc->dir = dir;
+	mproc->direction = dir == SMTP_DIRECTION_OUT ? SMTP_MSG_DIRECTION_OUT : SMTP_MSG_DIRECTION_IN;
+	/* We only want to run global/system-wide rules, not per-user rules,
+	 * there may not even be an associated local mailbox. */
+	mproc->mbox = mbox;
+	mproc->userid = 0;
+
+	if (dir == SMTP_DIRECTION_IN && smtp_message_quarantinable(smtp)) { /* e.g. DMARC failure */
+		/* We set the override mailbox before running callbacks,
+		 * because users should have the final say in being able
+		 * to override moving messages to particular mailboxes.
+		 * Moving quarantined messages to "Junk" is just the default. */
+		bbs_debug(5, "Message should be quarantined, so initializing destination mailbox to 'Junk'\n");
+		mproc->newdir = strdup("Junk");
+	}
+
+	if (smtp_run_callbacks(mproc)) {
+		return -1; /* If returned nonzero, it's assumed it responded with an SMTP error code as appropriate. */
+	}
+
+	/* mod_sieve and mod_mailscript don't check for this and won't prevent it, but this won't work if it happens: */
+	if (!mbox && mproc->newdir) {
+		/* This is a global before/after rule that does not correspond to any mailbox,
+		 * for example a message we accepted that needs to be delivered to another server.
+		 * Since this is something the administrator configured, it isn't inappropriate to warn here,
+		 * since this is an actionable warning. */
+		bbs_warning("Messages cannot be moved for non-mailbox destinations\n"); /* fileinto (Sieve) or MOVETO (MailScript), will get ignored */
+	}
+
+	if (mproc->bounce) {
+		const char *msg = S_OR(mproc->bouncemsg, "This message has been rejected by the recipient"); /* Use custom response if provided, default otherwise */
+		/*! \todo We should allow the filtering engine to set the response code too (not just the message) */
+		smtp_abort(resp, 554, 5.7.1, msg); /* XXX Best default SMTP code for this? */
+		*freedata = mproc->bouncemsg; /* This is a bit awkward. We still need to use this after we return. Make it net_smtp's problem now. */
+		*resp_ptr = NULL; /* We already set the error, don't let anything else set it afterwards */
+	}
+	if (mproc->drop) {
+		return mproc->bounce ? -1 : 1; /* Silently drop message */
+	}
+	return 0;
 }
 
 struct smtp_delivery_outcome {
@@ -1897,7 +2005,7 @@ static int duplicate_loop_avoidance(struct smtp_session *smtp, char *recipient)
 {
 	char *tmp = NULL;
 	const char *normalized_recipient;
-	/* The MailScript FORWARD rule will result in recipients being added to
+	/* The MailScript REDIRECT rule will result in recipients being added to
 	 * the recipients list while we're in this loop.
 	 * However the same message is sent to the new target, since we forward the raw message, which means
 	 * we can't rely on counting Received headers to detect mail loops (for local users).
@@ -1933,6 +2041,8 @@ static int duplicate_loop_avoidance(struct smtp_session *smtp, char *recipient)
 
 int smtp_message_quarantinable(struct smtp_session *smtp)
 {
+	/* In theory, a filter rule could exist to quarantine mail on DMARC failure,
+	 * but this is builtin for ease of use. */
 	return smtp->tflags.quarantine;
 }
 
@@ -1940,7 +2050,6 @@ int smtp_message_quarantinable(struct smtp_session *smtp)
 static int expand_and_deliver(struct smtp_session *smtp, const char *filename, size_t datalen)
 {
 	char *recipient;
-	int res = 0;
 	int srcfd;
 	int total, succeeded = 0;
 	struct smtp_filter_data filterdata;
@@ -1985,6 +2094,7 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		/* A filter has indicated that this message should be rejected.
 		 * XXX Currently, this only happens if a DMARC reject occured, so that is hardcoded here for now. */
 		close(srcfd);
+		bbs_smtp_log(2, smtp, "Message from <%s> rejected due to policy failure\n", smtp->from);
 		smtp_reply(smtp, 550, 5.7.1, "Message rejected due to policy failure");
 		return 0; /* Return 0 to inhibit normal failure message, since we already responded */
 	} else if (filterdata.quarantine) {
@@ -2068,17 +2178,20 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		}
 		if (mres == 1) {
 			/* Delivery or queuing to this recipient succeeded */
-			bbs_smtp_log(4, smtp, "Delivery succeeded or queued: %s -> %s\n", smtp->from, recipient);
+			bbs_smtp_log(4, smtp, "Delivery succeeded or queued: <%s> -> %s\n", smtp->from, recipient);
 			succeeded++;
-		} else if (res < 0) { /* Includes if the message has no handler */
+		} else if (mres < 0) { /* Includes if the message has no handler */
+			char bouncemsg[512];
 			/* Process any error message before unlocking the list.
 			 * If there are multiple recipients, we cannot send an SMTP reply
 			 * just for one of the recipients (otherwise we might send multiple SMTP responses).
 			 * Instead, we have to send a bounce message.
 			 * If this is the only recipient, we can bounce at the SMTP level. */
-			bbs_smtp_log(2, smtp, "Delivery failed: %s -> %s\n", smtp->from, recipient);
+			const char *replymsg = S_OR(resp.reply, "Message delivery failed");
+			snprintf(bouncemsg, sizeof(bouncemsg), "%d%s%s %s",
+				resp.code ? resp.code : 451, resp.subcode ? " " : "", S_OR(resp.subcode, ""), replymsg);
+			bbs_smtp_log(2, smtp, "Delivery failed: <%s> -> %s: %s\n", smtp->from, recipient, bouncemsg);
 			if (total > 1) {
-				char bouncemsg[512];
 				struct smtp_delivery_outcome *f;
 				/* Since there's more than one recipient, we need to send a bounce
 				 * to the sender. This ensures there is only one SMTP reply at the
@@ -2090,9 +2203,6 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 				/* Ideally, this path is avoided as much as possible. Invalid recipients are rejected at RCPT TO stage,
 				 * and ideally we should catch all other recipient errors (e.g. out of quota) there, rather than here,
 				 * so that the upstream MTA can handle errors for each recipient directly. */
-				snprintf(bouncemsg, sizeof(bouncemsg), "%d%s%s %s",
-					resp.code ? resp.code : 451, resp.subcode ? " " : "", S_OR(resp.subcode, ""),
-					S_OR(resp.reply, "Message delivery failed"));
 				f = smtp_delivery_outcome_new(recipient, NULL, NULL, resp.subcode, bouncemsg, "x-unix", "end of DATA", DELIVERY_FAILED, NULL);
 				if (ALLOC_SUCCESS(f)) {
 					bounces[numbounces++] = f;
@@ -2120,10 +2230,14 @@ next:
 	smtp_delivery_outcome_free(bounces, numbounces);
 
 	if (succeeded) { /* If anything succeeded, reply with a 250 OK. We already send individual bounces for the failed recipients. */
+		bbs_smtp_log(2, smtp, "Message from <%s> accepted for delivery to %d/%d recipient%s\n", smtp->from, succeeded, total, ESS(total));
 		smtp_reply(smtp, 250, 2.6.0, "Message accepted for delivery");
 	} else if (resp.code && !strlen_zero(resp.subcode) && !strlen_zero(resp.reply)) { /* All deliveries failed */
 		/* We could also send a bounce in this case, but even easier, just do it in the SMTP transaction */
+		bbs_smtp_log(2, smtp, "Message from <%s> rejected in full by custom policy: %d %s %s\n", smtp->from, resp.code, resp.subcode, resp.reply);
 		smtp_resp_reply(smtp, resp.code, resp.subcode, resp.reply);
+	} else {
+		bbs_soft_assert(0); /* Shouldn't be reachable... */
 	}
 
 	RWLIST_UNLOCK(&handlers); /* Can't unlock while resp might still be used, and it's a RDLOCK, so okay */
@@ -2394,13 +2508,13 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 			return 0; /* If returned nonzero, it's assumed it responded with an SMTP error code as appropriate. */
 		}
 		/*
-		 * For incoming messages, we process MOVETO after DROP, since if we drop, we're probably discarding,
+		 * For incoming messages, we process MOVETO after DISCARD, since if we drop, we're probably discarding,
 		 * but here we process it first.
 		 * By default, outgoing SMTP submissions aren't saved at all (persistently).
 		 * This accounts for the case where we want to save a local copy,
 		 * i.e. emulating IMAP's APPEND, but having the SMTP server do it
 		 * to the client doesn't have to upload the message twice.
-		 * If we're relaying, we might RELAY and then DROP, so we should save the copy before we abort.
+		 * If we're relaying, we might RELAY and then DISCARD, so we should save the copy before we abort.
 		 *
 		 * This is the same idea behind BURL IMAP by the way, but BURL IMAP requires both client and server supports,
 		 * and BURL support is virtually nonexistent amongst clients - only Trojita supports it.
@@ -2524,13 +2638,17 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 		}
 		close_if(srcfd);
 		if (mproc.bounce) {
-			const char *msg = "This message has been rejected by the sender";
-			msg = S_OR(mproc.bouncemsg, msg);
-			smtp_reply(smtp, 554, 5.7.1, "%s", msg); /* XXX Best default SMTP code for this? */
+			smtp_reply(smtp, 554, 5.7.1, "%s", S_OR(mproc.bouncemsg, "This message has been rejected by the sender")); /* XXX Best default SMTP code for this? */
 			free_if(mproc.bouncemsg);
+			/* We don't return here, because technically, we allow a bounce message to be sent,
+			 * without actually dropping the message at this point.
+			 * In Sieve filtering, there is no distinction, REJECT will set bounce and drop to 1,
+			 * as will the REJECT action in MailScript. However, the BOUNCE action on its own
+			 * in MailScript can be used to reject the message, outwardly, but continue processing it,
+			 * and even accept it. This flexibility is intended for advanced filter usage. */
 		}
 		if (mproc.drop) {
-			/*! \todo BUGBUG For DIRECTION OUT, if we FORWARD, then DROP, we'll just drop here and forward won't happen (same for BOUNCE) */
+			/*! \todo BUGBUG For DIRECTION OUT, if we REDIRECT, then DISCARD, we'll just drop here and forward won't happen (same for REJECT) */
 			bbs_debug(5, "Discarding message and ceasing all further processing\n");
 			return 0; /* Silently drop message. We MUST do this for RELAYed messages, since we must not allow those to be sent again afterwards. */
 		}
@@ -2810,6 +2928,9 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 			}
 
 			bbs_debug(5, "Handling receipt of %lu-byte message\n", smtp->tflags.datalen);
+			bbs_smtp_log(5, smtp, "Received message: SIZE=%lu,IP=%s,MAILFROM=<%s>,recipients=%d,hopcount=%d,failcount=%d,8bit=%s,quarantine=%s\n",
+				smtp->tflags.datalen, smtp->node->ip, smtp->from, smtp->tflags.numrecipients, smtp->tflags.hopcount, smtp->failures,
+				BBS_YN(smtp->tflags.is8bit), BBS_YN(smtp->tflags.quarantine));
 
 			smtp->datafile = template;
 			dres = do_deliver(smtp, template, smtp->tflags.datalen);

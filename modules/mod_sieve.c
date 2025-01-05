@@ -189,6 +189,7 @@ static int my_reject(sieve2_context_t *s, void *varg)
 	bbs_debug(3, "Action: REJECT, message: %s\n", msg);
 	sieve->actiontaken = 1;
 	sieve->mproc->bounce = 1;
+	sieve->mproc->drop = 1;
 	REPLACE(sieve->mproc->bouncemsg, msg);
 	return SIEVE2_OK;
 }
@@ -510,28 +511,25 @@ sieve2_callback_t sieve_callbacks[] = {
 	{ 0 }, /* NULL doesn't work here */
 };
 
-static int sieve(struct smtp_msg_process *mproc)
+/*!
+ * \brief Execute a single Sieve script
+ * \param mproc
+ * \param scriptfile Full path to Sieve script to execute
+ * \retval 0 to continue, -1 to abort rules processing
+ */
+static int script_exec(struct smtp_msg_process *mproc, const char *scriptfile)
 {
 	int res;
-	char fullfile2[256];
-	const char *usermaildir;
 	struct sieve_exec sieve;
 	sieve2_context_t *sieve2_context = NULL;
 
+	if (!bbs_file_exists(scriptfile)) {
+		bbs_debug(7, "Sieve script %s doesn't exist\n", scriptfile);
+		return 0; /* Script doesn't exist */
+	}
+
 	memset(&sieve, 0, sizeof(sieve));
-
-	if (mproc->userid) {
-		snprintf(fullfile2, sizeof(fullfile2), "%s/%d", mailbox_maildir(NULL), mproc->userid);
-		usermaildir = fullfile2;
-	} else {
-		usermaildir = mailbox_maildir(mproc->mbox);
-	}
-
-	snprintf(sieve.scriptpath, sizeof(sieve.scriptpath), "%s/.sieve", usermaildir);
-	if (!bbs_file_exists(sieve.scriptpath)) {
-		bbs_debug(5, "No Sieve script %s\n", sieve.scriptpath);
-		return 0;
-	}
+	safe_strncpy(sieve.scriptpath, scriptfile, sizeof(sieve.scriptpath));
 
 	/* libsieve setup */
 	sieve.mproc = mproc;
@@ -556,7 +554,6 @@ static int sieve(struct smtp_msg_process *mproc)
 		bbs_error("sieve2_execute %d: %s\n", res, sieve2_errstr(res));
 		goto cleanup;
 	}
-
 	bbs_debug(4, "Action %s\n", sieve.actiontaken ? "taken" : "not taken");
 
 cleanup:
@@ -573,6 +570,45 @@ cleanup:
 	free_if(sieve.errormsg);
 	free_header_list(&sieve);
 	return 0;
+}
+
+static char before_rules[256];
+static char after_rules[256];
+
+static int sieve(struct smtp_msg_process *mproc)
+{
+	char filepath[256];
+	const char *mboxmaildir;
+
+	if (mproc->direction != SMTP_MSG_DIRECTION_IN) {
+		return 0; /* Currently, Sieve can only be used for filtering inbound mail. If support for Sieve extension for outbound mail is added, this could change. */
+	}
+
+	/* Calculate maildir path, if we have a mailbox */
+	if (mproc->userid) {
+		snprintf(filepath, sizeof(filepath), "%s/%d", mailbox_maildir(NULL), mproc->userid);
+		mboxmaildir = filepath;
+	} else if (mproc->mbox) {
+		mboxmaildir = mailbox_maildir(mproc->mbox);
+	} else {
+		mboxmaildir = NULL;
+	}
+
+	/* Unlike MailScript, we don't use mboxmaildir at all currently,
+	 * apart from computing the mailbox's Sieve script (below) if non-NULL. */
+
+	if (mproc->iteration == FILTER_BEFORE_MAILBOX) {
+		return script_exec(mproc, before_rules);
+	} else if (mproc->iteration == FILTER_AFTER_MAILBOX) {
+		return script_exec(mproc, after_rules);
+	} else { /* FILTER_MAILBOX */
+		char script[263];
+		if (!mboxmaildir) {
+			return 0; /* Can't execute per-mailbox callback if there is no mailbox */
+		}
+		snprintf(script, sizeof(script), "%s/.sieve", mboxmaildir);
+		return script_exec(mproc, script);
+	}
 }
 
 static char *get_capabilities(void)
@@ -663,6 +699,8 @@ static int load_module(void)
 		/* See libsieve's src/sv_include/sieve2.h */
 		bbs_warning("Expected SIEVE2_VALUE_LAST to be 27, but was %d?\n", SIEVE2_VALUE_LAST);
 	}
+	snprintf(before_rules, sizeof(before_rules), "%s/before.sieve", mailbox_maildir(NULL));
+	snprintf(after_rules, sizeof(after_rules), "%s/after.sieve", mailbox_maildir(NULL));
 	if (sieve_register_provider(script_validate, get_capabilities())) {
 		return -1;
 	}

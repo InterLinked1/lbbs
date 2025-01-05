@@ -40,6 +40,7 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 	char buf[1024];
 	struct readline_data rldata;
 	struct bbs_exec_params x;
+	int headers_written = 0;
 
 	/* The only thing that this module really does is
 	 * execute the SpamAssassin binary, passing it the email message on STDIN,
@@ -70,6 +71,27 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 		PIPE_CLOSE(input);
 		return -1;
 	}
+
+	/* See comment from smtp_run_filters, in net_smtp.c.
+	 * TL;DR f->inputfd only gives us the original message, not headers
+	 * appended by other filters that just ran, like SPF, DMARC, etc.
+	 * Unlike most other filters, SpamAssassin needs those headers
+	 * in order to do its job accurately, so we also explicitly
+	 * read whatever is in the output file BEFORE the rest of the message.
+	 * Conveniently, this actually ends up matching the order that the
+	 * headers will be in when the final message is actually written to disk,
+	 * so this faithfully reproduces the message up to this point in time,
+	 * up to the last filter that executed just before this one. */
+	if (f->outputfd != -1) {
+		long int outputbytes = lseek(f->outputfd, 0, SEEK_CUR); /* Get current position to figure out how many bytes have been written thus far */
+		spliced = bbs_splice(f->outputfd, input[1], (size_t) outputbytes); /* bbs_splice leaves the file offset intact */
+		if (spliced != (ssize_t) outputbytes) {
+			bbs_error("splice %d -> %d failed (%lu != %ld): %s\n", f->outputfd, input[1], spliced, f->size, strerror(errno));
+			res = -1;
+			goto cleanup;
+		}
+	}
+
 	/* We cannot use bbs_copy_file because that will attempt to use copy_file_range,
 	 * which only works for regular files.
 	 * In this case, since the destination is a pipe, we can use splice(2) */
@@ -115,9 +137,17 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 		}
 		/* Don't use isspace because we don't want to count newlines */
 		if (buf[0] != ' ' && buf[0] != '\t' && !STARTS_WITH(buf, "X-Spam-")) {
-			break;
+			if (headers_written) {
+				break;
+			}
+			continue;
 		}
 		smtp_filter_write(f, "%s\r\n", buf);
+		headers_written++;
+	}
+
+	if (!headers_written) {
+		bbs_warning("No X-Spam headers prepended?\n");
 	}
 
 cleanup:

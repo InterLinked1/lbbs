@@ -1133,7 +1133,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 	QUEUE_INCR_STAT(processed);
 
 	static_routes = get_static_routes(mqf->domain);
-	bbs_debug(2, "Processing message %s (%s -> %s), via %s for '%s'\n", mqf->fullname, mqf->realfrom, mqf->realto, static_routes ? "static route(s)" : "MX lookup", mqf->domain);
+	bbs_debug(2, "Processing message %s (<%s> -> %s), via %s for '%s'\n", mqf->fullname, mqf->realfrom, mqf->realto, static_routes ? "static route(s)" : "MX lookup", mqf->domain);
 	if (static_routes) {
 		if (stringlist_is_empty(static_routes)) {
 			/* In theory, should never happen */
@@ -1160,7 +1160,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 					bbs_warning("Recipient domain %s does not have any MX or A records\n", mqf->domain);
 					/* Just treat as undeliverable at this point and return to sender (if no MX records now, probably won't be any the next time we try) */
 					/* Send a delivery failure response, then delete the file. */
-					bbs_warning("Delivery of message %s from %s to %s has failed permanently (no MX records)\n", mqf->fullname, mqf->realfrom, mqf->realto);
+					bbs_warning("Delivery of message %s from <%s> to %s has failed permanently (no MX records)\n", mqf->fullname, mqf->realfrom, mqf->realto);
 					/* There isn't any SMTP level error at this point yet, we have to make our own error message for the bounce message */
 					snprintf(buf, sizeof(buf), "No MX record(s) located for hostname %s", mqf->domain); /* No status code */
 					smtp_tx_data_reset(&tx);
@@ -1185,7 +1185,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 	if (!res) {
 		/* Successful delivery. */
 		bbs_debug(6, "Delivery successful after %d attempt%s, discarding queue file\n", mqf->newretries, ESS(mqf->newretries));
-		bbs_smtp_log(4, NULL, "Delivery succeeded after queuing: %s -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
+		bbs_smtp_log(4, NULL, "Delivery succeeded after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
 		smtp_trigger_dsn(DELIVERY_DELIVERED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen);
 		fclose(mqf->fp);
 		mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
@@ -1198,7 +1198,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 	if (res == -2 || res > 0 || mqf->newretries >= (int) max_retries) {
 		/* Send a delivery failure response, then delete the file. */
 		bbs_warning("Delivery of message %s from %s to %s has failed permanently after %d retries\n", mqf->fullname, mqf->realfrom, mqf->realto, mqf->newretries);
-		bbs_smtp_log(1, NULL, "Delivery failed permanently after queuing: %s -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
+		bbs_smtp_log(1, NULL, "Delivery failed permanently after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
 		/* To the dead letter office we go */
 		/* XXX buf will only contain the last line of the SMTP transaction, since it was using the readline buffer
 		 * Thus, if we got a multiline error, only the last line is currently included in the non-delivery report */
@@ -1209,7 +1209,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 		QUEUE_INCR_STAT(failed);
 		return 0;
 	} else {
-		bbs_smtp_log(3, NULL, "Delivery delayed after queuing: %s -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
+		bbs_smtp_log(3, NULL, "Delivery delayed after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
 		mailq_file_punt(mqf); /* Try again later */
 		smtp_trigger_dsn(DELIVERY_DELAYED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen);
 		QUEUE_INCR_STAT(delayed);
@@ -1663,17 +1663,33 @@ static void *smtp_async_send(void *varg)
 /*! \brief Accept delivery of a message to an external recipient, sending it now if possible and queuing it otherwise */
 static int external_delivery(struct smtp_session *smtp, struct smtp_response *resp, const char *from, const char *recipient, const char *user, const char *domain, int fromlocal, int tolocal, int srcfd, size_t datalen, void **freedata)
 {
+	struct smtp_msg_process mproc;
+	struct smtp_response tmpresp; /* Dummy that gets thrown away, if needed */
 #ifndef BUGGY_SEND_IMMEDIATE
 	char buf[256] = "";
 #endif
-	int res = -1;
+	int res;
 
 	UNUSED(user);
 	UNUSED(freedata);
 
 	if (tolocal) {
-		return 0;
+		return 0; /* Not for us */
 	}
+
+	/* Even though it's not really an "outgoing" message,
+	 * it makes more sense to run callbacks as such here.
+	 * There is no mailbox corresponding to this filter execution,
+	 * so this is purely for global before/after rules
+	 * that may want to target non-mailbox mail. */
+	res = smtp_run_delivery_callbacks(smtp, &mproc, NULL, &resp, SMTP_DIRECTION_OUT, recipient, datalen, freedata);
+	if (res) {
+		return res;
+	}
+	if (!resp) {
+		resp = &tmpresp; /* We already set the error, don't allow appendmsg to override it if we're not going to drop immediately */
+	}
+	res = -1; /* Reset to -1 before continuing */
 
 	if (smtp_is_exempt_relay(smtp)) {
 		bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp_sender_ip(smtp), smtp_from_domain(smtp));
@@ -1864,7 +1880,7 @@ static int relay(struct smtp_session *smtp, struct smtp_msg_process *mproc, int 
 			bbs_hostname(), smtp_protname(smtp), timestamp);
 
 		bbs_debug(5, "Relaying message via %s:%d (user: %s)\n", url.host, url.port, S_IF(url.user));
-		/* XXX smtp->recipients is "used up" by try_send, so this relies on the message being DROP'ed as there will be no recipients remaining afterwards
+		/* XXX smtp->recipients is "used up" by try_send, so this relies on the message being discarded as there will be no recipients remaining afterwards
 		 * Instead, we could duplicate the recipients list to avoid this restriction. */
 		/* XXX A cool optimization would be if the IMAP server supported BURL IMAP and we did a MOVETO, use BURL with the SMTP server */
 		res = try_send(smtp, &tx, url.host, url.port, STARTS_WITH(url.prot, "smtps"), 1, url.user, url.pass, url.user, NULL, recipients, prepend, (size_t) prependlen, srcfd, 0, datalen, buf, sizeof(buf));

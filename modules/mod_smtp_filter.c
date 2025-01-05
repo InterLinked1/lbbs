@@ -130,6 +130,11 @@ static int auth_filter_cb(struct smtp_filter_data *f)
 		return 0;
 	}
 
+	/* If we didn't do any checks, don't add the header at all. */
+	if (!f->spf && !f->dkim && !f->arc && !f->dmarc) {
+		return 0;
+	}
+
 	/* Add Authentication-Results header with the results of various tests */
 	len = asprintf(&buf, "%s" "%s%s%s%s" "%s%s" "%s%s" "%s%s",
 		bbs_hostname(),

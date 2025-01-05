@@ -121,6 +121,7 @@ cleanup:
 /*!
  * \brief Save a message to a maildir folder
  * \param smtp SMTP session
+ * \param[out] resp Custom failure response to send
  * \param mbox Mailbox to which message is being appended
  * \param mproc
  * \param recipient Recipient address (incoming), NULL for saving copies of sent messages (outgoing)
@@ -211,14 +212,14 @@ static int do_local_delivery(struct smtp_session *smtp, struct smtp_response *re
 {
 	struct mailbox *mbox;
 	struct smtp_msg_process mproc;
-	struct smtp_response tmpresp;
-	char recip_buf[256];
+	struct smtp_response tmpresp; /* Dummy that gets thrown away, if needed */
+	int res;
 
 	UNUSED(from);
 	UNUSED(fromlocal);
 
 	if (!tolocal) {
-		return 0;
+		return 0; /* Not for us */
 	}
 
 	mbox = mailbox_get_by_name(user, domain);
@@ -241,44 +242,12 @@ static int do_local_delivery(struct smtp_session *smtp, struct smtp_response *re
 		return -1;
 	}
 
-	/* recipient includes <>,
-	 * but the mail filtering engines don't want that,
-	 * and just want to consume the address itself.
-	 * XXX Can be revisited if the use of variables with and without <> is ever made consistent! */
-	safe_strncpy(recip_buf, recipient, sizeof(recip_buf));
-	bbs_strterm(recip_buf, '>');
-
-	/* SMTP callbacks for incoming messages */
-	smtp_mproc_init(smtp, &mproc);
-	mproc.size = (int) datalen;
-	mproc.recipient = recip_buf + 1; /* Without <> */
-	mproc.dir = SMTP_DIRECTION_IN;
-	mproc.direction = SMTP_MSG_DIRECTION_IN;
-	mproc.mbox = mbox;
-	mproc.userid = 0;
-
-	if (smtp_message_quarantinable(smtp)) {
-		/* We set the override mailbox before running callbacks,
-		 * because users should have the final say in being able
-		 * to override moving messages to particular mailboxes.
-		 * Moving quarantined messages to "Junk" is just the default. */
-		bbs_debug(5, "Message should be quarantined, so initializing destination mailbox to 'Junk'\n");
-		mproc.newdir = strdup("Junk");
+	res = smtp_run_delivery_callbacks(smtp, &mproc, mbox, &resp, SMTP_DIRECTION_IN, recipient, datalen, freedata);
+	if (res) {
+		return res;
 	}
-
-	if (smtp_run_callbacks(&mproc)) {
-		return -1; /* If returned nonzero, it's assumed it responded with an SMTP error code as appropriate. */
-	}
-
-	if (mproc.bounce) {
-		const char *msg = S_OR(mproc.bouncemsg, "This message has been rejected by the recipient");
-		/*! \todo We should allow the filtering engine to set the response code too */
-		smtp_abort(resp, 554, 5.7.1, msg); /* XXX Best default SMTP code for this? */
-		*freedata = mproc.bouncemsg; /* This is a bit awkward. We still need to use this after we return. Make it net_smtp's problem now. */
+	if (!resp) {
 		resp = &tmpresp; /* We already set the error, don't allow appendmsg to override it if we're not going to drop immediately */
-	}
-	if (mproc.drop) {
-		return mproc.bounce ? -1 : 1; /* Silently drop message */
 	}
 
 	return appendmsg(smtp, resp, mbox, &mproc, recipient, srcfd, datalen, NULL, 0) ? -1 : 1;

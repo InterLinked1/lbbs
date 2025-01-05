@@ -78,6 +78,9 @@ static int processor(struct smtp_msg_process *mproc)
 	if (mproc->dir != SMTP_DIRECTION_SUBMIT) {
 		return 0; /* Only applies to user submissions */
 	}
+	if (mproc->iteration != FILTER_MAILBOX) {
+		return 0; /* Only execute for mailboxes, and not before/after as well */
+	}
 	if (!mproc->userid) {
 		return 0; /* Only for user-level filters, not global */
 	}
