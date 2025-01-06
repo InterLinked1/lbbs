@@ -474,6 +474,13 @@ int maildir_copy_msg_filename(struct mailbox *mbox, struct bbs_node *node, const
 int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid) __attribute__((nonnull (1, 2)));
 
 /*!
+ * \brief Parse out the path to a message's maildir from the message filepath
+ * \param filename Full path to the message file. This should be in a subdirectory of new, cur, or tmp
+ * \note s is modified in-place, and it is assumed that filename is legitimate
+ */
+void maildir_extract_from_filename(char *restrict filename);
+
+/*!
  * \brief Sort callback for scandir (for maildirs)
  * \note This function may not be specified as a callback parameter inside modules (outside of mod_mail) directly,
  *       because RTLD_LAZY does not ignore unresolved data arguments, only unresolved functions.

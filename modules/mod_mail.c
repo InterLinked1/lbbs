@@ -1654,24 +1654,28 @@ static int gen_newname(struct mailbox *mbox, struct bbs_node *node, const char *
 	return (int) uid;
 }
 
-static int copy_move_untagged_exists(struct bbs_node *node, struct mailbox *mbox, const char *newpath, size_t size)
+void maildir_extract_from_filename(char *restrict filename)
 {
-	char maildir[256];
 	char *tmp;
 
-	safe_strncpy(maildir, newpath, sizeof(maildir));
-
-	tmp = strrchr(maildir, '/'); /* newpath can be mutiliated at this point */
-	if (!tmp) {
-		return -1;
+	tmp = strrchr(filename, '/'); /* filename can be mutiliated at this point */
+	if (unlikely(!tmp)) {
+		return;
 	}
 	*tmp = '\0'; /* Truncating once gets rid of the filename, need to do it again to get the maildir without /new or /cur at the end */
 	/* Since we're already near the end of the string, it's more efficient to back up from here than start from the beginning a second time */
-	while (tmp > maildir && *tmp != '/') {
+	while (tmp > filename && *tmp != '/') {
 		tmp--;
 	}
 	*tmp = '\0';
+}
 
+static int copy_move_untagged_exists(struct bbs_node *node, struct mailbox *mbox, const char *newpath, size_t size)
+{
+	char maildir[256];
+
+	safe_strncpy(maildir, newpath, sizeof(maildir));
+	maildir_extract_from_filename(maildir);
 	mailbox_notify_new_message(node, mbox, maildir, newpath, size);
 	return 0;
 }

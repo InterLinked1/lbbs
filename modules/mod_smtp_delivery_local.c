@@ -193,6 +193,7 @@ static int appendmsg(struct smtp_session *smtp, struct smtp_response *resp, stru
 		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
 		return -1;
 	} else {
+		char maildir[256];
 		/* Because the notification is delivered before we actually return success to the sending client,
 		 * this can result in the somewhat strange experience of receiving an email sent to yourself
 		 * before it seems that the email has been fully sent.
@@ -203,7 +204,9 @@ static int appendmsg(struct smtp_session *smtp, struct smtp_response *resp, stru
 		if (newfilebuf) {
 			safe_strncpy(newfilebuf, newfile, len);
 		}
-		mailbox_notify_new_message(smtp_node(smtp), mbox, mailbox_maildir(mbox), newfile, datalen);
+		safe_strncpy(maildir, newfile, sizeof(maildir));
+		maildir_extract_from_filename(maildir); /* Strip everything beneath the maildir */
+		mailbox_notify_new_message(smtp_node(smtp), mbox, maildir, newfile, datalen);
 	}
 	return 0;
 }
