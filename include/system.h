@@ -32,6 +32,14 @@ struct bbs_exec_params {
 	unsigned int net:1;			/* Retain network connectivity through the host, inside the container. Only applicable if isolated is TRUE. */
 };
 
+/*!
+ * \brief Clear signal handlers, close all file descriptors except fdin and fdout, dup2 fdin and fdout to STDIN and STDOUT/STDERR
+ * \param fdin File descriptor to make STDIN in child
+ * \param fdout File descriptor to make STDOUT/STDERR in child
+ * \note This is a helper function intended to call in a child process immediately after directly calling fork(), if not using bbs_execvp
+ */
+void bbs_child_exec_prep(int fdin, int fdout);
+
 /* _HEADLESS suffix = Don't use node for I/O
  * _FD suffix = Use custom file descriptors for I/O */
 

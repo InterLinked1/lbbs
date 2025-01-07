@@ -19,11 +19,43 @@
 
 #include "include/bbs.h"
 
+#include <wait.h>
+
 #include "include/module.h"
 #include "include/utils.h"
 #include "include/system.h"
+#include "include/node.h" /* for childpid */
 
 #include "include/net_smtp.h"
+
+/*! \todo
+ * Make CONFIG_FILE and SPAM_CMD configurable,
+ * would need to add a config file for this module. */
+
+#define CONFIG_FILE "/etc/spamassassin/local.cf"
+
+/* There are two ways to use SpamAssassin:
+ * One is the standalone spamassassin binary.
+ * The other is using the spamc client in conjunction with the spamd daemon.
+ *
+ * spamc is intended for scripts and loads much faster than spamassassin.
+ * The --headers available in spamc (but not spamassassin) also allows spamd to return only the headers back to spamc.
+ * spamc will still return the full message back to us, unfortunately there's no option to not to do that,
+ * we just ignore everything after the headers. */
+#if 0
+/* This seems slightly more optimal in theory,
+ * but this command doesn't actually work,
+ * the config file /etc/spamassassin/local.cf is ignored,
+ * so use the standalone binary for now for the right output.
+ *
+ * Additionally, and potentially more problematically,
+ * spamc seems to hang when receiving messages more than around ~500 KB.
+ * While those probably shouldn't be filtered anyways, that's not good.
+ * spamassassin doesn't seem to suffer from this issue. */
+#define SPAM_CMD "spamc --headers -F " CONFIG_FILE
+#else
+#define SPAM_CMD "spamassassin"
+#endif
 
 /* There are a few ways SpamAssassin can be used by an MTA.
  * Some approaches rely on a spamd daemon, e.g. milter, spamc.
@@ -39,8 +71,8 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 	int input[2], output[2];
 	char buf[1024];
 	struct readline_data rldata;
-	struct bbs_exec_params x;
 	int headers_written = 0;
+	pid_t pid;
 
 	/* The only thing that this module really does is
 	 * execute the SpamAssassin binary, passing it the email message on STDIN,
@@ -56,10 +88,10 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 	 */
 
 	/* This isn't necessary for now since it's hardcoded, but in the future, we may
-	 * want to allow the user to provide the spamassassin (or other arbitrary) command to execute,
+	 * want to allow the user to provide the spamassassin / spamc (or other arbitrary) command to execute,
 	 * so in anticipation of that: */
 
-	strcpy(args, "spamassassin");
+	strcpy(args, SPAM_CMD);
 	res = bbs_argv_from_str(argv, ARRAY_LEN(argv), args);
 	if (res < 1 || res >= (int) ARRAY_LEN(argv)) { /* Failure or truncation */
 		return -1;
@@ -71,6 +103,23 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 		PIPE_CLOSE(input);
 		return -1;
 	}
+
+	/* We can't use bbs_execvp, because we need to fork BEFORE we start writing data into the pipes.
+	 * Otherwise, if the pipes fill up, we'll just block here. So SpamAssassin needs to be running
+	 * while we feed it the input. */
+	pid = fork();
+	if (pid == -1) {
+		bbs_error("fork failed: %s\n", strerror(errno));
+		goto cleanup;
+	} else if (!pid) {
+		bbs_child_exec_prep(input[0], output[1]);
+		res = execvp(argv[0], argv);
+		_exit(errno);
+	}
+
+	smtp_node(f->smtp)->childpid = pid; /* Since we're not using bbs_execvp, we need to manually store the child while it's running */
+	CLOSE(input[0]); /* Close read end of STDIN */
+	CLOSE(output[1]); /* Close write end of STDOUT */
 
 	/* See comment from smtp_run_filters, in net_smtp.c.
 	 * TL;DR f->inputfd only gives us the original message, not headers
@@ -86,8 +135,12 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 		long int outputbytes = lseek(f->outputfd, 0, SEEK_CUR); /* Get current position to figure out how many bytes have been written thus far */
 		spliced = bbs_splice(f->outputfd, input[1], (size_t) outputbytes); /* bbs_splice leaves the file offset intact */
 		if (spliced != (ssize_t) outputbytes) {
-			bbs_error("splice %d -> %d failed (%lu != %ld): %s\n", f->outputfd, input[1], spliced, f->size, strerror(errno));
+			bbs_error("splice %d -> %d failed (%ld != %lu): %s\n", f->outputfd, input[1], spliced, f->size, strerror(errno));
 			res = -1;
+			CLOSE(input[1]);
+			CLOSE(output[0]);
+			waitpid(pid, NULL, 0);
+			smtp_node(f->smtp)->childpid = 0;
 			goto cleanup;
 		}
 	}
@@ -97,18 +150,21 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 	 * In this case, since the destination is a pipe, we can use splice(2) */
 	spliced = bbs_splice(f->inputfd, input[1], f->size);
 	if (spliced != (ssize_t) f->size) {
-		bbs_error("splice %d -> %d failed (%lu != %ld): %s\n", f->inputfd, input[1], spliced, f->size, strerror(errno));
+		bbs_error("splice %d -> %d failed (%ld != %lu): %s\n", f->inputfd, input[1], spliced, f->size, strerror(errno));
 		res = -1;
+		CLOSE(input[1]);
+		CLOSE(output[0]);
+		waitpid(pid, NULL, 0);
+		smtp_node(f->smtp)->childpid = 0;
 		goto cleanup;
 	}
 
-	CLOSE(input[1]); /* Close write end of STDIN */
-	EXEC_PARAMS_INIT_FD(x, input[0], output[1]);
-	res = bbs_execvp(f->node, &x, argv[0], argv);
-	if (res) {
-		res = -1;
-		goto cleanup;
-	}
+	CLOSE(input[1]); /* Done writing input, close write end of STDIN to child */
+
+	/* Lucky for us, SpamAssassin will wait for output to finish before it starts writing any output.
+	 * That means we can send all the input (above) and then read all the output (below).
+	 * If we started receiving output in the middle, and that had the potential to block the input writing,
+	 * then that would complicate things significantly, but we don't need to worry about that! */
 
 	/* We want just the first few lines, so we need to reliably read line by line */
 	bbs_readline_init(&rldata, buf, sizeof(buf));
@@ -129,10 +185,7 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 			res = -1;
 			break;
 		} else if (rres == 0) {
-			/* This would be end of headers (CR LF).
-			 * It's unlikely that there would be ONLY SpamAssassin headers and nothing else,
-			 * but it could happen... */
-			bbs_debug(7, "Got end of headers\n");
+			/* End of headers (CR LF). */
 			break;
 		}
 		/* Don't use isspace because we don't want to count newlines */
@@ -146,9 +199,15 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 		headers_written++;
 	}
 
+	close(output[0]); /* Close read end to force child process to exit */
+	waitpid(pid, NULL, 0); /* Reap the child before exiting */
+	smtp_node(f->smtp)->childpid = 0;
+
 	if (!headers_written) {
 		bbs_warning("No X-Spam headers prepended?\n");
 	}
+
+	res = 0;
 
 cleanup:
 	PIPE_CLOSE(input);
@@ -167,8 +226,8 @@ static int load_module(void)
 	 * The spamassassin binary could potentially be in a few different directories.
 	 * But if it exists, /etc/spamassassin is bound to exist, so use that as a proxy.
 	 * Don't bother loading if SpamAssassin isn't even on the system. */
-	if (!bbs_file_exists("/etc/spamassassin/local.cf")) {
-		bbs_error("/etc/spamassassin/local.cf doesn't exist, declining to load\n");
+	if (!bbs_file_exists(CONFIG_FILE)) {
+		bbs_error("%s doesn't exist, declining to load\n", CONFIG_FILE);
 		return -1;
 	}
 	smtp_filter_register(&spam_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 10);

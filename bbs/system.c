@@ -678,6 +678,16 @@ static ssize_t full_read(int fd, char *restrict buf, size_t len)
 }
 #endif /* ISOEXEC_SUPPORTED */
 
+void bbs_child_exec_prep(int fdin, int fdout)
+{
+	/* Do a subset of important things that we do in __bbs_execvpe */
+	signal(SIGWINCH, SIG_DFL);
+	signal(SIGTERM, SIG_DFL);
+	signal(SIGINT, SIG_DFL);
+	signal(SIGPIPE, SIG_DFL);
+	exec_pre(fdin, fdout, -1);
+}
+
 /*!
  * \brief Execute an external program. Most calls to exec() should funnel through this function...
  * \param node

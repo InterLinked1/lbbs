@@ -949,7 +949,7 @@ ssize_t bbs_splice(int fd_in, int fd_out, size_t len)
 	off64_t off_in = 0;
 	/* off_in must be NULL if fd_in is a pipe */
 	ssize_t res, written = 0;
-	while (len > 0) {
+	for (;;) {
 		/* off_out (arg 4) is NULL since fd_out is assumed to be a pipe */
 		res = splice(fd_in, &off_in, fd_out, NULL, len, 0);
 		if (res < 0) {
@@ -957,13 +957,19 @@ ssize_t bbs_splice(int fd_in, int fd_out, size_t len)
 			return -1;
 		}
 		len -= (size_t) res;
-		off_in += (off64_t) res;
+		/* Don't need to do this: off_in += (off64_t) res;
+		 * The offset is advanced automatically.
+		 * This is NOT mentioned anywhere in the man page for splice(2),
+		 * but can confirmed by looking at a backtrace of this stack frame. */
 		written += res;
+		if (!len) {
+			break;
+		}
 	}
 	return written;
 #else
 	off_t offset = 0;
-	return bbs_sendfile(fd_out, fd_in, &offset, len);
+	return bbs_sendfile(fd_out, fd_in, &offset, lenq);
 #endif
 }
 
