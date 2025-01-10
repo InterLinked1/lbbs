@@ -323,14 +323,28 @@ void mailbox_notify_quota_exceeded(struct bbs_node *node, struct mailbox *mbox)
 	mailbox_dispatch_event(&e);
 }
 
+static int use_mailbox_for_event(struct mailbox_event *e)
+{
+	if (!e->mbox || !e->maildir) {
+		bbs_error("No mailbox and/or maildir\n");
+		return 0;
+	} else if (e->type == EVENT_MAILBOX_DELETE) {
+		bbs_debug(3, "Mailbox has been deleted\n");
+		return 0;
+	}
+	/* Certain types of mailbox events don't require that the mailbox actually needs to exist.
+	 * In particular, SUBSCRIBE and UNSUBSCRIBE could be for arbitrary mailboxes,
+	 * and those mailboxes may or may not exist. */
+	if (e->type == EVENT_MAILBOX_SUBSCRIBE || e->type == EVENT_MAILBOX_UNSUBSCRIBE) {
+		return 0;
+	}
+	return 1;
+}
+
 unsigned int mailbox_event_uidvalidity(struct mailbox_event *e)
 {
 	if (!e->uidvalidity) {
-		if (!e->mbox || !e->maildir) {
-			bbs_error("No mailbox and/or maildir\n");
-			return 0;
-		} else if (e->type == EVENT_MAILBOX_DELETE) {
-			bbs_debug(3, "Mailbox has been deleted\n");
+		if (!use_mailbox_for_event(e)) {
 			return 0;
 		}
 		mailbox_get_next_uid(e->mbox, e->node, e->maildir, 0, &e->uidvalidity, &e->uidnext);
@@ -341,11 +355,7 @@ unsigned int mailbox_event_uidvalidity(struct mailbox_event *e)
 unsigned int mailbox_event_uidnext(struct mailbox_event *e)
 {
 	if (!e->uidnext) {
-		if (!e->mbox || !e->maildir) {
-			bbs_error("No mailbox and/or maildir\n");
-			return 0;
-		} else if (e->type == EVENT_MAILBOX_DELETE) {
-			bbs_debug(3, "Mailbox has been deleted\n");
+		if (!use_mailbox_for_event(e)) {
 			return 0;
 		}
 		mailbox_get_next_uid(e->mbox, e->node, e->maildir, 0, &e->uidvalidity, &e->uidnext);

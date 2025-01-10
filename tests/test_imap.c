@@ -232,6 +232,10 @@ static int run(void)
 	SWRITE(client1, "a9 SUBSCRIBE foobar" ENDL); /* Doesn't matter whether or not it exists */
 	CLIENT_EXPECT(client1, "a9 OK SUBSCRIBE");
 
+	/* UNSUBSCRIBE from nonexistent */
+	SWRITE(client1, "a9b UNSUBSCRIBE foobar" ENDL);
+	CLIENT_EXPECT(client1, "a9b OK UNSUBSCRIBE");
+
 	/* NAMESPACE */
 	SWRITE(client1, "a10 NAMESPACE" ENDL);
 	CLIENT_EXPECT(client1, "* NAMESPACE");
