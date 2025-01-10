@@ -3090,7 +3090,7 @@ cleanup:
 	json_decref(root);
 }
 
-static int handle_fetch(struct ws_session *ws, struct imap_client *client, uint32_t uid, int html, int raw)
+static int handle_fetch(struct ws_session *ws, struct imap_client *client, uint32_t uid, int html, int raw, int markseen)
 {
 	int res;
 	struct mailimap_set *set;
@@ -3122,26 +3122,26 @@ static int handle_fetch(struct ws_session *ws, struct imap_client *client, uint3
 	fetch_att = mailimap_fetch_att_new_internaldate();
 	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
 	section = mailimap_section_new(NULL);
-	if (raw) {
+#ifdef AUTO_MARK_SEEN
+	if (markseen) {
+		fetch_att = mailimap_fetch_att_new_body_section(section);
+	} else
+#endif
+	{
 		/* The client requests the raw message in two circumstances:
 		 * 1. The user actually wants to view the raw message source.
 		 * 2. The user downloads the message.
 		 * For #2, we should NOT necessarily mark the message seen,
 		 * because the user may not have really "viewed" the messages,
 		 * i.e. user should be able to download without marking seen.
-		 * For #1, the user has likely already clicked on the message
-		 * to view it BEFORE toggling to raw. Not necessarily, but
-		 * pretty likely.
-		 * So, if requesting raw body, don't automark seen,
-		 * even if we would normally. */
+		 * Even with automark seen, user might mark as unread and then
+		 * click download, and we should not mark it seen again.
+		 *
+		 * For case #2, the frontend will explicitly tell us to not auto mark it seen,
+		 * since there's no way to distinguish the two cases otherwise. */
 		fetch_att = mailimap_fetch_att_new_body_peek_section(section);
-	} else {
-#ifdef AUTO_MARK_SEEN
-		fetch_att = mailimap_fetch_att_new_body_section(section);
-#else
-		fetch_att = mailimap_fetch_att_new_body_peek_section(section);
-#endif
 	}
+
 	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
 
 	/* Fetch by UID */
@@ -3956,7 +3956,7 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 	} else if (client->mailbox) {
 		/* SELECTed state only */
 		if (!strcmp(command, "FETCH")) {
-			res = handle_fetch(ws, client, (uint32_t) json_object_int_value(root, "uid"), json_object_bool_value(root, "html"), json_object_bool_value(root, "raw"));
+			res = handle_fetch(ws, client, (uint32_t) json_object_int_value(root, "uid"), json_object_bool_value(root, "html"), json_object_bool_value(root, "raw"), json_object_bool_value(root, "markseen"));
 		} else if (!strcmp(command, "UNSEEN")) {
 			res = handle_store_seen(client, -1, json_object_get(root, "uids"));
 			SEND_STATUS_IF_NEEDED(1);
