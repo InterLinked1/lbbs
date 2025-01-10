@@ -581,6 +581,10 @@ static int sieve(struct smtp_msg_process *mproc)
 	char filepath[256];
 	const char *mboxmaildir;
 
+	if (mproc->scope != SMTP_SCOPE_INDIVIDUAL) {
+		return 0; /* Filters are only run for individual delivery */
+	}
+
 	if (mproc->direction != SMTP_MSG_DIRECTION_IN) {
 		return 0; /* Currently, Sieve can only be used for filtering inbound mail. If support for Sieve extension for outbound mail is added, this could change. */
 	}

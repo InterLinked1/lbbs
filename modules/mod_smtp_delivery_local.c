@@ -245,7 +245,7 @@ static int do_local_delivery(struct smtp_session *smtp, struct smtp_response *re
 		return -1;
 	}
 
-	res = smtp_run_delivery_callbacks(smtp, &mproc, mbox, &resp, SMTP_DIRECTION_IN, recipient, datalen, freedata);
+	res = smtp_run_delivery_callbacks(smtp, &mproc, mbox, &resp, SMTP_DIRECTION_IN, SMTP_SCOPE_INDIVIDUAL, recipient, datalen, freedata);
 	if (res) {
 		return res;
 	}

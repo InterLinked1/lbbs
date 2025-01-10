@@ -1682,12 +1682,12 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 	 * There is no mailbox corresponding to this filter execution,
 	 * so this is purely for global before/after rules
 	 * that may want to target non-mailbox mail. */
-	res = smtp_run_delivery_callbacks(smtp, &mproc, NULL, &resp, SMTP_DIRECTION_OUT, recipient, datalen, freedata);
+	res = smtp_run_delivery_callbacks(smtp, &mproc, NULL, &resp, SMTP_DIRECTION_OUT, SMTP_SCOPE_INDIVIDUAL, recipient, datalen, freedata);
 	if (res) {
 		return res;
 	}
 	if (!resp) {
-		resp = &tmpresp; /* We already set the error, don't allow appendmsg to override it if we're not going to drop immediately */
+		resp = &tmpresp;
 	}
 	res = -1; /* Reset to -1 before continuing */
 
@@ -1996,6 +1996,7 @@ static int unload_module(void)
 	bbs_cli_unregister_multiple(cli_commands_mailq);
 	bbs_pthread_cancel_kill(queue_thread);
 	bbs_pthread_join(queue_thread, NULL);
+	/*! \todo BUGBUG Possible for queue_lock to get destroyed while still being used, need to properly wait */
 	bbs_rwlock_destroy(&queue_lock);
 	RWLIST_WRLOCK_REMOVE_ALL(&static_relays, entry, free_static_relay);
 	return res;

@@ -164,6 +164,12 @@ const char *smtp_sender_ip(struct smtp_session *smtp);
 /*! \brief Get SMTP protocol used */
 const char *smtp_protname(struct smtp_session *smtp);
 
+/*!
+ * \brief Get SMTP recipient list from RCPT TO
+ * \note Do not use this from user mail filters (e.g. Sieve/MailScript)
+ */
+struct stringlist *smtp_recipients(struct smtp_session *smtp);
+
 /*! \brief Get the MAIL FROM address */
 const char *smtp_from(struct smtp_session *smtp);
 
@@ -206,8 +212,19 @@ size_t smtp_message_estimated_size(struct smtp_session *smtp);
  */
 const char *smtp_message_content_type(struct smtp_session *smtp);
 
+/*!
+ * \brief Get the Message-ID of a message, if available
+ * \param smtp
+ * \return Message-ID value
+ * \return NULL if unavailable
+ */
+const char *smtp_messageid(struct smtp_session *smtp);
+
 /*! \brief Time that message was received */
 time_t smtp_received_time(struct smtp_session *smtp);
+
+/*! \brief Score of protocol violation or spaminess severity */
+unsigned int smtp_failure_count(struct smtp_session *smtp);
 
 /*! \brief Get RFC822 message as string */
 const char *smtp_message_body(struct smtp_filter_data *f);
@@ -252,6 +269,7 @@ struct smtp_msg_process {
 	unsigned int userid;		/*!< User ID (outgoing only) */
 	enum smtp_direction dir;	/*!< Full direction (IN, OUT, or SUBMIT) */
 	unsigned int direction:1;	/*!< 0 = incoming, 1 = outgoing */
+	enum smtp_filter_scope scope; /*!< COMBINED (for outside a delivery handler) or INDIVIDUAL (for within a delivery handler) */
 	enum msg_process_iteration iteration; /*!< Which processing pass this is */
 	/* Outputs */
 	unsigned int bounce:1;		/*!< Whether to send a bounce. This on its own does not also implicitly drop the message, that bit must be explicitly set. */
@@ -268,7 +286,7 @@ void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_process *mproc);
 
 /*!
  * \brief Register an SMTP processor callback to run on each message received or sent. Callback will be called 3x, once for each msg_process_order.
- * \param cb Callback that should return nonzero to stop processing further callbacks
+ * \param cb Callback that should return 1 to stop processing further callbacks and -1 to additionally terminate the SMTP transaction (after having already responded)
  */
 #define smtp_register_processor(cb) __smtp_register_processor(cb, BBS_MODULE_SELF)
 
@@ -280,9 +298,9 @@ int smtp_unregister_processor(int (*cb)(struct smtp_msg_process *mproc));
 /*!
  * \brief Run SMTP callbacks for a message (only called by net_smtp)
  * \param mproc
- * \retval 0 to continue, -1 to abort transaction immediately
+ * \retval 0 to continue (some or all callbacks were executed and none returned -1), -1 to abort transaction immediately (because a callback returned -1)
  */
-int smtp_run_callbacks(struct smtp_msg_process *mproc);
+int smtp_run_callbacks(struct smtp_msg_process *mproc, enum smtp_filter_scope scope);
 
 struct smtp_response {
 	/* Response */
@@ -298,12 +316,14 @@ struct smtp_response {
  * \param mbox Mailbox or NULL
  * \param resp
  * \param dir
+ * \param scope
  * \param recipient Recipient, with <>
  * \param datalen Message size
  * \param freedata
- * \retval 0 to continue, nonzero to return the return value
+ * \retval 0 to continue, -1 if message should be aborted and a failure response generated, 1 if message is being silently dropped
  */
-int smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_process *mproc, struct mailbox *mbox, struct smtp_response **restrict resp, enum smtp_direction dir, const char *recipient, size_t datalen, void **freedata);
+int smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_process *mproc, struct mailbox *mbox, struct smtp_response **restrict resp,
+	enum smtp_direction dir, enum smtp_filter_scope scope, const char *recipient, size_t datalen, void **freedata);
 
 #define smtp_abort(r, c, sub, msg) \
 	r->code = c; \

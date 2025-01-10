@@ -654,6 +654,15 @@ static int mailscript(struct smtp_msg_process *mproc)
 	char filepath[256];
 	const char *mboxmaildir;
 
+	if (mproc->scope != SMTP_SCOPE_INDIVIDUAL) {
+		/* Filters are only run for individual delivery.
+		 * Even global rules should use SMTP_SCOPE_INDIVIDUAL,
+		 * since they could manipulate the mailbox in some way,
+		 * and we don't have a single mailbox if processing
+		 * a message that will get delivered to multiple recipients. */
+		return 0;
+	}
+
 	/* Calculate maildir path, if we have a mailbox */
 	if (mproc->userid) {
 		snprintf(filepath, sizeof(filepath), "%s/%d", mailbox_maildir(NULL), mproc->userid);

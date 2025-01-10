@@ -458,6 +458,14 @@ static const char *resolve_alias(const char *user, const char *domain)
 	const char *retval = NULL;
 	struct alias *alias;
 
+	/* Note that we do not look for the most explicit match,
+	 * just for a match. For this reason, *@example.com
+	 * should always be defined in the config BEFORE
+	 * anything else at the domain (and * should be first, if present),
+	 * since we add using head insert, so the first things will be
+	 * last and thus if a more specific match exists, we would have
+	 * encountered it first. */
+
 	RWLIST_RDLOCK(&aliases);
 	RWLIST_TRAVERSE(&aliases, alias, entry) {
 		int user_match;

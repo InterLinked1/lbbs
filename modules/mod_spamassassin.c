@@ -30,7 +30,12 @@
 
 /*! \todo
  * Make CONFIG_FILE and SPAM_CMD configurable,
- * would need to add a config file for this module. */
+ * would need to add a config file for this module.
+ * Configurable options should be:
+ * - config file
+ * - command to run
+ * - max message size that spam filtering should run on
+ */
 
 #define CONFIG_FILE "/etc/spamassassin/local.cf"
 
@@ -57,6 +62,8 @@
 #define SPAM_CMD "spamassassin"
 #endif
 
+#define MAX_SPAM_SIZE SIZE_KB(768) /* About 3/4 MB */
+
 /* There are a few ways SpamAssassin can be used by an MTA.
  * Some approaches rely on a spamd daemon, e.g. milter, spamc.
  * This approach doesn't rely on a daemon, but it won't perform
@@ -73,6 +80,29 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 	struct readline_data rldata;
 	int headers_written = 0;
 	pid_t pid;
+
+	/* We only want to analyze incoming mail FROM the Internet, not outgoing mail TO the Internet.
+	 * Of course, from our vantage point, there is no way to explicitly tell that, but we can
+	 * figure it out by looking at the source IP address.
+	 * Even though this filter only runs for SMTP_DIRECTION_IN, relayed mail still passes through as IN before OUT.
+	 * If that IP is allowed to relay mail through us, then it's outbound (to the Internet) mail, and we skip the check.
+	 * If that IP is allowed to deliver mail to us, then it's inbound (from the Internet) mail, and we do the check!
+	 * In other words, authorized relays (which egress mail) should be exempt from this.
+	 * Trusted relays (which deliver mail to us) (along with any other server) are not. */
+	if (smtp_is_exempt_relay(f->smtp)) {
+		return 0; /* This mail originating on a trusted server and is currently outbound, skip */
+	}
+
+	/* At this point, technically eligible for spam filtering. However, large messages typically don't get filtered.
+	 * Most spam doesn't exceed this threshold so it's unlikely that such mail would be spam.
+	 * Per https://spamassassin.apache.org/full/3.2.x/doc/spamassassin-run.html:
+	 *
+	 * Please note that SpamAssassin is not designed to scan large messages.
+	 * Don't feed messages larger than about 500 KB to SpamAssassin, as this will consume a huge amount of memory. */
+	if (f->size > MAX_SPAM_SIZE) {
+		bbs_debug(5, "Message is too big to analyze\n");
+		return 0;
+	}
 
 	/* The only thing that this module really does is
 	 * execute the SpamAssassin binary, passing it the email message on STDIN,

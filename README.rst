@@ -556,6 +556,15 @@ Configuration
    # Heavily penalize mail from domains with no SPF record
    score SPF_NONE 3.0
 
+   # No valid author signature and from-domain does not exist
+   score DKIM_ADSP_NXDOMAIN 5.0
+
+   # No valid author signature, domain signs all mail and suggests discarding the rest (DISCARD)
+   score DKIM_ADSP_DISCARD 5.0
+
+   # No valid author signature, domain signs all mail (ALL)
+   score DKIM_ADSP_ALL 5.0
+
    # Email is not in English
    score UNWANTED_LANGUAGE_BODY 3.5
 

@@ -141,6 +141,7 @@ static int __exec_handler(struct bbs_node *node, char *args, int isolated)
 		 */
 		return -1;
 	}
+
 	/* Who knows what this external program did. Prompt the user for confirmation before returning to menu, if the program exited nonzero,
 	 * or if returned almost immediately (since some executions will just print something to STDOUT),
 	 * and since the screen will be cleared after returning, this would erase that output otherwise).

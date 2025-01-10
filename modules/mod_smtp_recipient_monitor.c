@@ -75,6 +75,9 @@ static int processor(struct smtp_msg_process *mproc)
 	time_t now;
 	struct deferred_attempt *attempt;
 
+	if (mproc->scope != SMTP_SCOPE_INDIVIDUAL) {
+		return 0;
+	}
 	if (mproc->dir != SMTP_DIRECTION_SUBMIT) {
 		return 0; /* Only applies to user submissions */
 	}
@@ -219,11 +222,12 @@ static int processor(struct smtp_msg_process *mproc)
 
 	bbs_debug(4, "From/Recipient set not seen before, deferring\n");
 	bbs_smtp_log(4, mproc->smtp, "Submission deferred: From/Recipient set not seen before: %s\n", line);
-	/* The effectiveness of this depends heavily on the user's mail user agent presenting
+	/* Instead of setting mproc->bounce and mproc->drop to 1, we reply directly and return -1.
+	 * The effectiveness of this depends heavily on the user's mail user agent presenting
 	 * the entire SMTP failure code/message directly to the user.
 	 * But if that doesn't happen, then that's a problem with the user's client. */
 	smtp_reply_nostatus(mproc->smtp, 421, "From/Recipient set not seen before, resubmit if intentional");
-	return 1;
+	return -1;
 }
 
 static int load_module(void)

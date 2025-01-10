@@ -131,6 +131,13 @@ int bbs_module_unload(const char *name);
  */
 int bbs_module_reload(const char *name, int try_delayed);
 
+/*!
+ * \brief Whether a specified module is running
+ * \param name Module name. File extension (.so suffix) is optional.
+ * \retval 1 if running, 0 if not running
+ */
+int bbs_module_running(const char *name);
+
 /*! \brief Autoload all modules */
 int load_modules(void);
 

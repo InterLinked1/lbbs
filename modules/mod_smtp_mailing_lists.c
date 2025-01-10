@@ -543,13 +543,17 @@ static int blast_exploder(struct smtp_session *smtp, struct smtp_response *resp,
 	 * it makes more sense to run callbacks as such here.
 	 * There is no mailbox corresponding to this filter execution,
 	 * so this is purely for global before/after rules
-	 * that may want to target non-mailbox mail. */
-	res = smtp_run_delivery_callbacks(smtp, &mproc, NULL, &resp, SMTP_DIRECTION_OUT, recipient, datalen, freedata);
+	 * that may want to target non-mailbox mail.
+	 *
+	 * We use SMTP_SCOPE_INDIVIDUAL here for two reasons:
+	 * First, smtp_run_delivery_callbacks has already been called for SMTP_SCOPE_COMBINED, so it would make no sense to do that again.
+	 * Second, the mailing list itself is a single "recipient", even though we may explode that recipient into multiple. */
+	res = smtp_run_delivery_callbacks(smtp, &mproc, NULL, &resp, SMTP_DIRECTION_OUT, SMTP_SCOPE_INDIVIDUAL, recipient, datalen, freedata);
 	if (res) {
 		return res;
 	}
 	if (!resp) {
-		resp = &tmpresp; /* We already set the error, don't allow appendmsg to override it if we're not going to drop immediately */
+		resp = &tmpresp;
 	}
 
 	safe_strncpy(name, user, sizeof(name));

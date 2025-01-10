@@ -168,6 +168,7 @@ struct smtp_session {
 
 	char *helohost;				/* Hostname for HELO/EHLO */
 	char *contenttype;			/* Primary Content-Type of message */
+	char *messageid;			/* Message-ID header value */
 	/* AUTH: Temporary */
 	char *authuser;				/* Authentication username */
 	char *fromheaderaddress;	/* Address in the From: header, e.g. "John Smith" <jsmith@example.com> */
@@ -209,6 +210,7 @@ static void smtp_reset(struct smtp_session *smtp)
 	free_if(smtp->fromaddr);
 	free_if(smtp->from);
 	free_if(smtp->contenttype);
+	free_if(smtp->messageid);
 	stringlist_empty(&smtp->recipients);
 	stringlist_empty(&smtp->sentrecipients);
 	memset(&smtp->tflags, 0, sizeof(smtp->tflags)); /* Zero all the numbers */
@@ -1322,6 +1324,11 @@ const char *smtp_protname(struct smtp_session *smtp)
 	return "SMTP";
 }
 
+struct stringlist *smtp_recipients(struct smtp_session *smtp)
+{
+	return &smtp->recipients;
+}
+
 const char *smtp_from(struct smtp_session *smtp)
 {
 	return smtp->from;
@@ -1385,9 +1392,19 @@ const char *smtp_message_content_type(struct smtp_session *smtp)
 	return smtp->contenttype;
 }
 
+const char *smtp_messageid(struct smtp_session *smtp)
+{
+	return smtp->messageid;
+}
+
 time_t smtp_received_time(struct smtp_session *smtp)
 {
 	return smtp->tflags.received;
+}
+
+unsigned int smtp_failure_count(struct smtp_session *smtp)
+{
+	return smtp->failures;
 }
 
 const char *smtp_message_body(struct smtp_filter_data *f)
@@ -1635,10 +1652,12 @@ int smtp_unregister_processor(int (*cb)(struct smtp_msg_process *mproc))
 	return 0;
 }
 
-int smtp_run_callbacks(struct smtp_msg_process *mproc)
+int smtp_run_callbacks(struct smtp_msg_process *mproc, enum smtp_filter_scope scope)
 {
 	int res = 0;
 	struct smtp_processor *proc;
+
+	mproc->scope = scope; /* This could be set earlier, but is made an argument to this function to ensure callers explicitly set it */
 
 #define EXECUTE_FILTERS(iter)\
 	mproc->iteration = iter; \
@@ -1656,30 +1675,33 @@ int smtp_run_callbacks(struct smtp_msg_process *mproc)
 	 * with some always executing before or after a mailbox's rules. */
 	RWLIST_RDLOCK(&processors);
 	EXECUTE_FILTERS(FILTER_BEFORE_MAILBOX);
-	EXECUTE_FILTERS(FILTER_MAILBOX);
+	if (scope == SMTP_SCOPE_INDIVIDUAL) {
+		EXECUTE_FILTERS(FILTER_MAILBOX);
+	}
 	EXECUTE_FILTERS(FILTER_AFTER_MAILBOX);
 #undef EXECUTE_FILTERS
 done:
 	RWLIST_UNLOCK(&processors);
 	if (mproc->fp) {
+		/* Although in most cases, we do the COMBINED pass and then the INDIVIDUAL pass,
+		 * in some cases we might just do the COMBINED pass and then abort,
+		 * so close here, just to be safe. */
 		fclose(mproc->fp);
 		mproc->fp = NULL;
 	}
 	return res == -1 ? -1 : 0; /* If we aborted callbacks, 1 was returned, but we should return 0 since most callers just check for nonzero return */
 }
 
-int smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_process *mproc, struct mailbox *mbox, struct smtp_response **restrict resp_ptr, enum smtp_direction dir, const char *recipient, size_t datalen, void **freedata)
+/* Note: In the case of SMTP_SCOPE_COMBINED, this is kind of a misnomer, since it's not being called from a delivery handler, but the wrapper is still useful */
+int smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_process *mproc, struct mailbox *mbox, struct smtp_response **restrict resp_ptr,
+	enum smtp_direction dir, enum smtp_filter_scope scope, const char *recipient, size_t datalen, void **freedata)
 {
 	unsigned int mailboxid;
 	char recip_buf[256];
 	struct smtp_response *resp = *resp_ptr;
 
-	/* recipient includes <>,
-	 * but the mail filtering engines don't want that,
-	 * and just want to consume the address itself.
-	 * XXX Can be revisited if the use of variables with and without <> is ever made consistent! */
-	safe_strncpy(recip_buf, recipient, sizeof(recip_buf));
-	bbs_strterm(recip_buf, '>');
+	bbs_debug(3, "Running SMTP callbacks for scope %s, direction %s\n",
+		scope == SMTP_SCOPE_INDIVIDUAL ? "INDIVIDUAL" : "COMBINED", dir == SMTP_DIRECTION_IN ? "IN" : dir == SMTP_DIRECTION_SUBMIT ? "SUBMIT" : "OUT");
 
 	/* The local delivery agent (mod_smtp_delivery_local) also runs message processing
 	 * so that individual users' filter rules (Sieve or MailScript) will run.
@@ -1690,8 +1712,21 @@ int smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_proce
 	 * with an X-Spam-Score of 10 or greater, etc. We should run those rules here. */
 	smtp_mproc_init(smtp, mproc);
 	mproc->size = (int) datalen;
-	bbs_strterm(recip_buf, '>');
-	mproc->recipient = recip_buf + 1; /* Without <> */
+
+	/* mbox and recipient are always NULL if scope is SMTP_SCOPE_COMBINED
+	 * (mbox can also be NULL for SMTP_SCOPE_INDIVIDUAL, but recipient can't be) */
+	if (scope == SMTP_SCOPE_INDIVIDUAL) {
+		/* recipient includes <>,
+		 * but the mail filtering engines don't want that,
+		 * and just want to consume the address itself.
+		 * XXX Can be revisited if the use of variables with and without <> is ever made consistent! */
+		safe_strncpy(recip_buf, recipient, sizeof(recip_buf));
+		bbs_strterm(recip_buf, '>');
+
+		bbs_strterm(recip_buf, '>');
+		mproc->recipient = recip_buf + 1; /* Without <> */
+	}
+
 	/* This is a little bit ambiguous, honestly...
 	 * the message was either incoming or a submission, initially,
 	 * but for non-local delivery, it is really an outgoing at this point.
@@ -1719,7 +1754,7 @@ int smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_proce
 		mproc->newdir = strdup("Junk");
 	}
 
-	if (smtp_run_callbacks(mproc)) {
+	if (smtp_run_callbacks(mproc, scope)) {
 		return -1; /* If returned nonzero, it's assumed it responded with an SMTP error code as appropriate. */
 	}
 
@@ -2059,10 +2094,12 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 	int srcfd;
 	int total, succeeded = 0;
 	struct smtp_filter_data filterdata;
+	struct smtp_msg_process mproc;
 	struct smtp_delivery_outcome *bounces[MAX_RECIPIENTS];
 	int numbounces = 0;
-	struct smtp_response resp;
+	struct smtp_response resp, *resp_ptr;
 	void *freedata = NULL;
+	int res;
 
 	/* Preserve the actual received time for the Received header, in case filters take a moment to run */
 	smtp->tflags.received = time(NULL);
@@ -2137,6 +2174,13 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 			bbs_error("open(%s) failed: %s\n", filterdata.outputfile, strerror(errno));
 			return -1;
 		}
+		/* smtp->datafile originally pointed to the original message received,
+		 * but if it has been modified by filter callbacks, update it to
+		 * point to the amended file.
+		 * This way, even though filters don't have access to headers added
+		 * by other filters, at this point, we can ensure that message processors
+		 * have access to any headers added by the filter stage. */
+		smtp->datafile = filterdata.outputfile;
 	}
 
 	total = stringlist_size(&smtp->recipients);
@@ -2146,8 +2190,43 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		return -1;
 	}
 
-	memset(&resp, 0, sizeof(resp)); /* Just in case there are no recipients? */
-	RWLIST_RDLOCK(&handlers);
+	memset(&resp, 0, sizeof(resp)); /* Just in case there are no recipients? Or the first call to smtp_run_delivery_callbacks here returns nonzero. */
+
+	/* Also allow message processors to be run once, for all recipients */
+	resp_ptr = &resp;
+	res = smtp_run_delivery_callbacks(smtp, &mproc, NULL, &resp_ptr, SMTP_DIRECTION_IN, SMTP_SCOPE_COMBINED, NULL, datalen, freedata);
+	RWLIST_RDLOCK(&handlers); /* This is correct. When we goto finalize, the list should be locked, so we want to lock either way. */
+	if (res) {
+		if (res == 1) {
+			/* We haven't actually delivered the message, if this happens.
+			 * The only time this happens is if we decide to drop a message,
+			 * but NOT send a bounce, which in practice cannot happen
+			 * with current message processors that do SMTP_SCOPE_COMBINED.
+			 *
+			 * Even though we didn't actually save the message, as with a delivery agent,
+			 * this still counts as success. */
+			bbs_debug(4, "Message dropped pre-delivery, returning success\n");
+			succeeded++;
+		} else {
+			/* This is probably a bounce + drop.
+			 * If we are just bouncing but not dropping (opposite of res == 1 case),
+			 * then 0 would have been returned. We don't actually handle that
+			 * case here as would be conformant... since bounce already may have set a response
+			 * if resp_ptr is now NULL, in theory, that should be used,
+			 * but delivery agents could override that.
+			 * But again, just like the res == 1 case, being in this branch AND having !resp_ptr
+			 * is not something that actually happens with current message processors,
+			 * so that edge case is ignored here. */
+			bbs_debug(4, "Message dropped pre-delivery, returning failure\n");
+			/* The actual value here doesn't matter as long as it's not 0.
+			 * At the end of this function, this makes us return 1 instead of -1,
+			 * to ensure the default 451 Delivery failed message is not sent out,
+			 * since a message processor already responded with its own failure message. */
+			resp.code = 421;
+		}
+		goto finalize;
+	}
+
 	while ((recipient = stringlist_pop(&smtp->recipients))) {
 		char *user, *domain;
 		char *dup;
@@ -2175,6 +2254,9 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		RWLIST_TRAVERSE(&handlers, h, entry) {
 			memset(&resp, 0, sizeof(resp));
 			bbs_module_ref(h->mod, 4);
+			/* Delivery handlers return 0 if recipient can't be handled by that delivery agent,
+			 * 1 if the message was delivered using the delivery agent,
+			 * and -1 if not delivered and no other handler may handle it either. */
 			mres = h->agent->deliver(smtp, &resp, smtp->from, recipient, user, domain, smtp->fromlocal, local, srcfd, datalen, &freedata);
 			bbs_module_unref(h->mod, 4);
 			if (mres) {
@@ -2235,6 +2317,7 @@ next:
 
 	smtp_delivery_outcome_free(bounces, numbounces);
 
+finalize:
 	if (succeeded) { /* If anything succeeded, reply with a 250 OK. We already send individual bounces for the failed recipients. */
 		bbs_smtp_log(2, smtp, "Message from <%s> accepted for delivery to %d/%d recipient%s\n", smtp->from, succeeded, total, ESS(total));
 		smtp_reply(smtp, 250, 2.6.0, "Message accepted for delivery");
@@ -2511,7 +2594,7 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 		 * so there's not really an "envelope" recipient per se we can use.
 		 * XXX We do have access to &smtp->recipients at this point, so we could make those available
 		 * to rules if needed. */
-		if (smtp_run_callbacks(&mproc)) {
+		if (smtp_run_callbacks(&mproc, SMTP_SCOPE_COMBINED)) {
 			return 0; /* If returned nonzero, it's assumed it responded with an SMTP error code as appropriate. */
 		}
 		/*
@@ -2935,8 +3018,8 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 			}
 
 			bbs_debug(5, "Handling receipt of %lu-byte message\n", smtp->tflags.datalen);
-			bbs_smtp_log(5, smtp, "Received message: SIZE=%lu,IP=%s,MAILFROM=<%s>,recipients=%d,hopcount=%d,failcount=%d,8bit=%s,quarantine=%s\n",
-				smtp->tflags.datalen, smtp->node->ip, smtp->from, smtp->tflags.numrecipients, smtp->tflags.hopcount, smtp->failures,
+			bbs_smtp_log(5, smtp, "Received message: IP=%s,MAILFROM=<%s>,SIZE=%lu,recipients=%d,hopcount=%d,failcount=%d,8bit=%s,quarantine=%s\n",
+				smtp->node->ip, smtp->from, smtp->tflags.datalen, smtp->tflags.numrecipients, smtp->tflags.hopcount, smtp->failures,
 				BBS_YN(smtp->tflags.is8bit), BBS_YN(smtp->tflags.quarantine));
 
 			smtp->datafile = template;
@@ -2967,6 +3050,14 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 				}
 				if (!strlen_zero(tmp)) {
 					REPLACE(smtp->contenttype, tmp);
+				}
+			} else if (!smtp->messageid && STARTS_WITH(s, "Message-ID:")) {
+				const char *tmp = s + STRLEN("Message-ID:");
+				if (!strlen_zero(tmp)) {
+					ltrim(tmp);
+				}
+				if (!strlen_zero(tmp)) {
+					REPLACE(smtp->messageid, tmp);
 				}
 			} else if (!smtp->tflags.dkimsig && STARTS_WITH(s, "DKIM-Signature")) {
 				smtp->tflags.dkimsig = 1;

@@ -1326,10 +1326,12 @@ static int bbs_module_exists(const char *name)
 	return bbs_file_exists(fn);
 }
 
-/*! \brief Whether a module is currently running or not */
-static int bbs_module_running(const char *name)
+int bbs_module_running(const char *name)
 {
-	struct bbs_module *mod = find_resource(name);
+	struct bbs_module *mod;
+	RWLIST_RDLOCK(&modules);
+	mod = find_resource(name);
+	RWLIST_UNLOCK(&modules);
 	return mod ? 1 : 0;
 }
 
