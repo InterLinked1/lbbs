@@ -1106,8 +1106,9 @@ static int ssl_load_config(int reload)
 	res |= bbs_config_val_set_str(cfg, "tls", "cert", ssl_cert, sizeof(ssl_cert));
 	res |= bbs_config_val_set_str(cfg, "tls", "key", ssl_key, sizeof(ssl_key));
 
-	if (!res && (s_strlen_zero(ssl_cert) || s_strlen_zero(ssl_key))) {
-		bbs_error("An SSL certificate and private key must be provided to use TLS\n");
+	if (res || s_strlen_zero(ssl_cert) || s_strlen_zero(ssl_key)) {
+		bbs_warning("An SSL certificate and private key must be provided to enable TLS server functionality\n");
+		/* We can still be a client, but not a server */
 		return -1;
 	}
 
