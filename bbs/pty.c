@@ -217,6 +217,10 @@ static void *pty_master_fd(void *varg)
 				}
 			}
 		} else {
+			/* Something else happened that should effect a disconnect. */
+			bbs_debug(10, "Exceptional activity returned from poll: %s/%s\n", poll_revent_name(fds[0].revents), poll_revent_name(fds[1].revents));
+			close(fds[1].fd);
+			close(fds[0].fd);
 			break;
 		}
 	}
