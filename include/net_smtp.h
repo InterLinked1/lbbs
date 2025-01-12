@@ -74,8 +74,8 @@ enum smtp_filter_type {
 };
 
 enum smtp_filter_scope {
-	SMTP_SCOPE_INDIVIDUAL = 0, 	/* Run individually for each recipient of a message */
-	SMTP_SCOPE_COMBINED, 		/* Run once for all recipients of a message */
+	SMTP_SCOPE_INDIVIDUAL = (1 << 0),	/* Run individually for each recipient of a message */
+	SMTP_SCOPE_COMBINED = (1 << 1),		/* Run once for all recipients of a message */
 };
 
 enum smtp_direction {
@@ -83,6 +83,8 @@ enum smtp_direction {
 	SMTP_DIRECTION_IN = (1 << 1),		/*!< Incoming mail from another MTA */
 	SMTP_DIRECTION_OUT = (1 << 2),		/*!< Outgoing mail to another MTA */
 };
+
+#define SMTP_DIRECTION_ALL (SMTP_DIRECTION_SUBMIT | SMTP_DIRECTION_IN | SMTP_DIRECTION_OUT)
 
 /*!
  * \note There are two different "filtering" APIs available,
@@ -251,10 +253,12 @@ int smtp_message_quarantinable(struct smtp_session *smtp);
 #define SMTP_MSG_DIRECTION_OUT 1
 
 enum msg_process_iteration {
-	FILTER_BEFORE_MAILBOX = 0,	/*!< Execute before the mailbox filters */
-	FILTER_MAILBOX,				/*!< Mailbox filter execution */
-	FILTER_AFTER_MAILBOX,		/*!< Execute after the mailbox filters */
+	FILTER_BEFORE_MAILBOX = (1 << 0),	/*!< Execute before the mailbox filters */
+	FILTER_MAILBOX = (1 << 1),			/*!< Mailbox filter execution */
+	FILTER_AFTER_MAILBOX = (1 << 2), 	/*!< Execute after the mailbox filters */
 };
+
+#define FILTER_ALL_PASSES (FILTER_BEFORE_MAILBOX | FILTER_MAILBOX | FILTER_AFTER_MAILBOX)
 
 struct smtp_msg_process {
 	/* Inputs */
@@ -284,6 +288,13 @@ struct smtp_msg_process {
 	char *relayroute;			/*!< Relay route */
 };
 
+struct smtp_message_processor {
+	int (*callback)(struct smtp_msg_process *mproc); /*!< Callback function to execute to process the message */
+	enum smtp_direction dir; /*!< Direction(s) for which to execute callback */
+	enum smtp_filter_scope scope; /*!< Scope(s) for which to execute callback */
+	enum msg_process_iteration iteration; /*!< Pass(es) for which to execute callback (3 passes are done for each processor) */
+};
+
 /*! \brief Initialize an smtp_msg_process structure for use */
 void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_process *mproc);
 
@@ -293,17 +304,19 @@ void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_process *mproc);
  */
 #define smtp_register_processor(cb) __smtp_register_processor(cb, BBS_MODULE_SELF)
 
-int __smtp_register_processor(int (*cb)(struct smtp_msg_process *mproc), void *mod);
+int __smtp_register_processor(struct smtp_message_processor *proc, void *mod);
 
 /*! \brief Unregister an SMTP processor previously registered with smtp_register_processor */
-int smtp_unregister_processor(int (*cb)(struct smtp_msg_process *mproc));
+int smtp_unregister_processor(struct smtp_message_processor *proc);
 
 /*!
  * \brief Run SMTP callbacks for a message (only called by net_smtp)
  * \param mproc
  * \retval 0 to continue (some or all callbacks were executed and none returned -1), -1 to abort transaction immediately (because a callback returned -1)
  */
-int smtp_run_callbacks(struct smtp_msg_process *mproc, enum smtp_filter_scope scope);
+#define smtp_run_callbacks(mproc, scope) __smtp_run_callbacks(mproc, scope, __FILE__, __LINE__, __func__)
+
+int __smtp_run_callbacks(struct smtp_msg_process *mproc, enum smtp_filter_scope scope, const char *file, int line, const char *func);
 
 struct smtp_response {
 	/* Response */
@@ -325,8 +338,10 @@ struct smtp_response {
  * \param freedata
  * \retval 0 to continue, -1 if message should be aborted and a failure response generated, 1 if message is being silently dropped
  */
-int smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_process *mproc, struct mailbox *mbox, struct smtp_response **restrict resp,
-	enum smtp_direction dir, enum smtp_filter_scope scope, const char *recipient, size_t datalen, void **freedata);
+#define smtp_run_delivery_callbacks(smtp, mproc, mbox, resp, dir, scope, recipient, datalen, freedata) __smtp_run_delivery_callbacks(smtp, mproc, mbox, resp, dir, scope, recipient, datalen, freedata, __FILE__, __LINE__, __func__)
+
+int __smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_process *mproc, struct mailbox *mbox, struct smtp_response **restrict resp,
+	enum smtp_direction dir, enum smtp_filter_scope scope, const char *recipient, size_t datalen, void **freedata, const char *file, int line, const char *func);
 
 #define smtp_abort(r, c, sub, msg) \
 	r->code = c; \

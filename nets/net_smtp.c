@@ -1515,7 +1515,9 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 		int res = 0;
 		total++;
 		if (!(f->direction & fdata->dir)) {
+#ifdef DEBUG_FILTERS
 			bbs_debug(5, "Ignoring %s SMTP filter %s %p (wrong direction)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+#endif
 			continue;
 		}
 
@@ -1528,12 +1530,16 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 		/* Filter applicable to this direction */
 		if (f->scope == SMTP_SCOPE_INDIVIDUAL) {
 			if (!fdata->recipient) {
+#ifdef DEBUG_FILTERS
 				bbs_debug(5, "Ignoring %s SMTP filter %s %p (wrong scope)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+#endif
 				continue;
 			}
 		} else {
 			if (fdata->recipient) {
+#ifdef DEBUG_FILTERS
 				bbs_debug(5, "Ignoring %s SMTP filter %s %p (wrong scope)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+#endif
 				continue;
 			}
 		}
@@ -1542,7 +1548,9 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 			 * Unless, it's simply adding the Received header, in which case, still do it,
 			 * for things like mailing lists which involve using smtp_inject. */
 			if (f->priority != 0) {
+#ifdef DEBUG_FILTERS
 				bbs_debug(5, "Ignoring %s SMTP filter %s %p (no node)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+#endif
 				continue;
 			}
 		}
@@ -1619,14 +1627,14 @@ void smtp_mproc_init(struct smtp_session *smtp, struct smtp_msg_process *mproc)
 }
 
 struct smtp_processor {
-	int (*cb)(struct smtp_msg_process *proc);
+	const struct smtp_message_processor *processor;
 	void *mod;
 	RWLIST_ENTRY(smtp_processor) entry;
 };
 
 static RWLIST_HEAD_STATIC(processors, smtp_processor);
 
-int __smtp_register_processor(int (*cb)(struct smtp_msg_process *mproc), void *mod)
+int __smtp_register_processor(struct smtp_message_processor *processor, void *mod)
 {
 	struct smtp_processor *proc;
 
@@ -1635,7 +1643,7 @@ int __smtp_register_processor(int (*cb)(struct smtp_msg_process *mproc), void *m
 		return -1;
 	}
 
-	proc->cb = cb;
+	proc->processor = processor;
 	proc->mod = mod;
 
 	RWLIST_WRLOCK(&processors);
@@ -1644,53 +1652,74 @@ int __smtp_register_processor(int (*cb)(struct smtp_msg_process *mproc), void *m
 	return 0;
 }
 
-int smtp_unregister_processor(int (*cb)(struct smtp_msg_process *mproc))
+int smtp_unregister_processor(struct smtp_message_processor *processor)
 {
 	struct smtp_processor *proc;
 
-	proc = RWLIST_WRLOCK_REMOVE_BY_FIELD(&processors, cb, cb, entry);
+	proc = RWLIST_WRLOCK_REMOVE_BY_FIELD(&processors, processor, processor, entry);
 	if (!proc) {
-		bbs_error("Couldn't remove processor %p\n", cb);
+		bbs_error("Couldn't remove processor %p\n", processor);
 		return -1;
 	}
 	free(proc);
 	return 0;
 }
 
-int smtp_run_callbacks(struct smtp_msg_process *mproc, enum smtp_filter_scope scope)
+/*! \brief Single pass of callbacks */
+static inline int __run_callbacks(struct smtp_msg_process *mproc, enum msg_process_iteration iteration, const char *file, int line, const char *func)
 {
-	int res = 0;
+	int res;
 	struct smtp_processor *proc;
 
-	mproc->scope = scope; /* This could be set earlier, but is made an argument to this function to ensure callers explicitly set it */
+	mproc->iteration = iteration;
 
-#define EXECUTE_FILTERS(iter)\
-	mproc->iteration = iter; \
-	bbs_debug(3, "Running SMTP callbacks for %s scope, %s direction, %s pass\n", \
-		mproc->scope == SMTP_SCOPE_INDIVIDUAL ? "INDIVIDUAL" : "COMBINED", \
-		mproc->dir == SMTP_DIRECTION_IN ? "IN" : mproc->dir == SMTP_DIRECTION_SUBMIT ? "SUBMIT" : "OUT", \
-		mproc->iteration == FILTER_BEFORE_MAILBOX ? "pre-mailbox" : mproc->iteration == FILTER_AFTER_MAILBOX ? "post-mailbox" : "mailbox"); \
-	RWLIST_TRAVERSE(&processors, proc, entry) { \
-		bbs_module_ref(proc->mod, 3); \
-		res |= proc->cb(mproc); \
-		bbs_module_unref(proc->mod, 3); \
-		if (res) { \
-			bbs_debug(4, "Message processor returned %d\n", res); \
-			goto done; /* Stop processing immediately if a processor returns nonzero */ \
-		} \
-	} \
+	__bbs_log(LOG_DEBUG, 3, file, line, func, "Running SMTP callbacks for %s scope, %s direction, %s pass\n",
+		mproc->scope == SMTP_SCOPE_INDIVIDUAL ? "INDIVIDUAL" : "COMBINED",
+		mproc->dir == SMTP_DIRECTION_IN ? "IN" : mproc->dir == SMTP_DIRECTION_SUBMIT ? "SUBMIT" : "OUT",
+		mproc->iteration == FILTER_BEFORE_MAILBOX ? "pre-mailbox" : mproc->iteration == FILTER_AFTER_MAILBOX ? "post-mailbox" : "mailbox");
+
+	RWLIST_TRAVERSE(&processors, proc, entry) {
+		const struct smtp_message_processor *processor = proc->processor;
+		/* If it doesn't match what the processor wants, skip it */
+		if (!(processor->dir & mproc->dir)) {
+			continue;
+		} else if (!(processor->scope & mproc->scope)) {
+			continue;
+		} else if (!(processor->iteration & mproc->iteration)) {
+			continue;
+		}
+		/* No need to ref the module unless we are actually going to execute.
+		 * The module can't unregister the processor without WRLOCK'ing the list,
+		 * and we have it locked for this traversal. */
+		bbs_module_ref(proc->mod, 3);
+		res = processor->callback(mproc);
+		bbs_module_unref(proc->mod, 3);
+		if (res) {
+			__bbs_log(LOG_DEBUG, 4, file, line, func, "Message processor returned %d\n", res);
+			return res; /* Stop processing immediately if a processor returns nonzero */
+		}
+	}
+	return 0;
+}
+
+int __smtp_run_callbacks(struct smtp_msg_process *mproc, enum smtp_filter_scope scope, const char *file, int line, const char *func)
+{
+	int res = 0;
+
+	mproc->scope = scope; /* This could be set earlier, but is made an argument to this function to ensure callers explicitly set it */
 
 	/* We make 3 passes, so that the postmaster can enforce a hierarchy of filters,
 	 * with some always executing before or after a mailbox's rules. */
 	RWLIST_RDLOCK(&processors);
-	EXECUTE_FILTERS(FILTER_BEFORE_MAILBOX);
-	if (scope == SMTP_SCOPE_INDIVIDUAL) {
-		EXECUTE_FILTERS(FILTER_MAILBOX);
+	res |= __run_callbacks(mproc, FILTER_BEFORE_MAILBOX, file, line, func);
+	if (!res && scope == SMTP_SCOPE_INDIVIDUAL) {
+		res |= __run_callbacks(mproc, FILTER_MAILBOX, file, line, func);
 	}
-	EXECUTE_FILTERS(FILTER_AFTER_MAILBOX);
-#undef EXECUTE_FILTERS
-done:
+	if (!res) {
+		res |= __run_callbacks(mproc, FILTER_AFTER_MAILBOX, file, line, func);
+	}
 	RWLIST_UNLOCK(&processors);
+
 	if (mproc->fp) {
 		/* Although in most cases, we do the COMBINED pass and then the INDIVIDUAL pass,
 		 * in some cases we might just do the COMBINED pass and then abort,
@@ -1698,12 +1727,14 @@ done:
 		fclose(mproc->fp);
 		mproc->fp = NULL;
 	}
+
 	return res == -1 ? -1 : 0; /* If we aborted callbacks, 1 was returned, but we should return 0 since most callers just check for nonzero return */
 }
 
 /* Note: In the case of SMTP_SCOPE_COMBINED, this is kind of a misnomer, since it's not being called from a delivery handler, but the wrapper is still useful */
-int smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_process *mproc, struct mailbox *mbox, struct smtp_response **restrict resp_ptr,
-	enum smtp_direction dir, enum smtp_filter_scope scope, const char *recipient, size_t datalen, void **freedata)
+int __smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_process *mproc, struct mailbox *mbox, struct smtp_response **restrict resp_ptr,
+	enum smtp_direction dir, enum smtp_filter_scope scope, const char *recipient, size_t datalen, void **freedata,
+	const char *file, int line, const char *func)
 {
 	unsigned int mailboxid;
 	char recip_buf[256];
@@ -1763,7 +1794,7 @@ int smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_proce
 		mproc->newdir = strdup("Junk");
 	}
 
-	if (smtp_run_callbacks(mproc, scope)) {
+	if (__smtp_run_callbacks(mproc, scope, file, line, func)) {
 		return -1; /* If returned nonzero, it's assumed it responded with an SMTP error code as appropriate. */
 	}
 

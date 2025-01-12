@@ -581,14 +581,6 @@ static int sieve(struct smtp_msg_process *mproc)
 	char filepath[256];
 	const char *mboxmaildir;
 
-	if (mproc->scope != SMTP_SCOPE_INDIVIDUAL) {
-		return 0; /* Filters are only run for individual delivery */
-	}
-
-	if (mproc->direction != SMTP_MSG_DIRECTION_IN) {
-		return 0; /* Currently, Sieve can only be used for filtering inbound mail. If support for Sieve extension for outbound mail is added, this could change. */
-	}
-
 	/* Calculate maildir path, if we have a mailbox */
 	if (mproc->userid) {
 		snprintf(filepath, sizeof(filepath), "%s/%d", mailbox_maildir(NULL), mproc->userid);
@@ -707,6 +699,13 @@ static int script_validate(const char *filename, struct mailbox *mbox, char **er
 }
 #pragma GCC diagnostic pop /* -Wdiscarded-qualifiers */
 
+struct smtp_message_processor proc = {
+	.callback = sieve,
+	.dir = SMTP_DIRECTION_IN, /* Currently, Sieve can only be used for filtering inbound mail. If support for Sieve extension for outbound mail is added, this could change. */
+	.scope = SMTP_SCOPE_INDIVIDUAL, /* Filters are only run for individual delivery */
+	.iteration = FILTER_ALL_PASSES, /* We handle all passes, with more granular logic in the callback */
+};
+
 static int load_module(void)
 {
 	if (SIEVE2_VALUE_LAST != 27) {
@@ -718,13 +717,13 @@ static int load_module(void)
 	if (sieve_register_provider(script_validate, get_capabilities())) {
 		return -1;
 	}
-	return smtp_register_processor(sieve);
+	return smtp_register_processor(&proc);
 }
 
 static int unload_module(void)
 {
 	sieve_unregister_provider(script_validate);
-	return smtp_unregister_processor(sieve);
+	return smtp_unregister_processor(&proc);
 }
 
 BBS_MODULE_INFO_DEPENDENT("RFC5228 Sieve Filtering", "net_smtp.so");

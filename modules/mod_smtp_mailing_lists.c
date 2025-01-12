@@ -539,6 +539,15 @@ static int blast_exploder(struct smtp_session *smtp, struct smtp_response *resp,
 		return 0;
 	}
 
+	safe_strncpy(name, user, sizeof(name));
+	subaddr = name;
+	addr = strsep(&subaddr, "+");
+
+	l = find_list(addr, domain);
+	if (!l) {
+		return 0;
+	}
+
 	/* Even though it's not really an "outgoing" message,
 	 * it makes more sense to run callbacks as such here.
 	 * There is no mailbox corresponding to this filter execution,
@@ -554,15 +563,6 @@ static int blast_exploder(struct smtp_session *smtp, struct smtp_response *resp,
 	}
 	if (!resp) {
 		resp = &tmpresp;
-	}
-
-	safe_strncpy(name, user, sizeof(name));
-	subaddr = name;
-	addr = strsep(&subaddr, "+");
-
-	l = find_list(addr, domain);
-	if (!l) {
-		return 0;
 	}
 
 	/* First, validate what permissions the sending user has for this list */

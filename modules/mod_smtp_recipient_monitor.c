@@ -77,17 +77,8 @@ static int processor(struct smtp_msg_process *mproc)
 	struct deferred_attempt *attempt;
 	const char *fromheader;
 
-	if (mproc->dir != SMTP_DIRECTION_SUBMIT) {
-		return 0; /* Only applies to user submissions */
-	}
-	if (mproc->scope != SMTP_SCOPE_COMBINED) {
-		return 0; /* We don't need to do this per-recipient, once for all is good, hence combined */
-	}
 	if (!mproc->userid) {
 		return 0; /* Only for user-level filters, not global */
-	}
-	if (mproc->iteration != FILTER_BEFORE_MAILBOX) {
-		return 0; /* Do on pre-mailbox pass, to nip it in the bud as early as possible. */
 	}
 	if (!mproc->recipients) {
 		bbs_warning("Recipient list not available?\n");
@@ -248,14 +239,21 @@ static int processor(struct smtp_msg_process *mproc)
 	return -1;
 }
 
+struct smtp_message_processor proc = {
+	.callback = processor,
+	.dir = SMTP_DIRECTION_SUBMIT, /* Only applies to user submissions */
+	.scope = SMTP_SCOPE_COMBINED, /* This is for the message as a whole, not instances of its delivery */
+	.iteration = FILTER_BEFORE_MAILBOX, /* Do on pre-mailbox pass, to nip it in the bud as early as possible. */
+};
+
 static int load_module(void)
 {
-	return smtp_register_processor(processor);
+	return smtp_register_processor(&proc);
 }
 
 static int unload_module(void)
 {
-	int res = smtp_unregister_processor(processor);
+	int res = smtp_unregister_processor(&proc);
 	RWLIST_WRLOCK_REMOVE_ALL(&deferred_attempts, entry, free);
 	return res;
 }

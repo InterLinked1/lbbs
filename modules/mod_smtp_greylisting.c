@@ -314,21 +314,12 @@ static int processor(struct smtp_msg_process *mproc)
 	time_t now;
 	int spamscore;
 
-	if (mproc->scope != SMTP_SCOPE_COMBINED) {
-		return 0;
-	} else if (mproc->dir != SMTP_DIRECTION_IN) {
-		return 0; /* Only applies to incoming mail */
-	} else if (smtp_is_exempt_relay(mproc->smtp)) {
+	if (smtp_is_exempt_relay(mproc->smtp)) {
 		/* We don't greylist outbound mail, only inbound mail from the Internet.
 		 * Technically, this check is a subset of bbs_ip_is_private_ipv4 below,
 		 * which ignores all private IPs. However, this is a flag check,
 		 * as opposed to parsing the IP address, so in a potentially common case,
 		 * this is much quicker to check now. */
-		return 0;
-	} else if (mproc->iteration != FILTER_BEFORE_MAILBOX) {
-		/* We want to do this on the first pass, before a user's mailbox rules even run.
-		 * Greylist typically takes precedence over most other handling.
-		 * This is still after DATA and after SpamAssassin has run, so we're good. */
 		return 0;
 	} else if (!mproc->smtp || !smtp_node(mproc->smtp)) {
 		bbs_warning("Not an interactive session?\n");
@@ -473,12 +464,22 @@ static int load_config(void)
 	return 0;
 }
 
+struct smtp_message_processor proc = {
+	.callback = processor,
+	.dir = SMTP_DIRECTION_IN, /* Only applies to incoming mail */
+	.scope = SMTP_SCOPE_COMBINED, /* This is for the message as a whole, not instances of its delivery */
+	/* We want to do this on the first pass, before a user's mailbox rules even run.
+	 * Greylist typically takes precedence over most other handling.
+	 * This is still after DATA and after SpamAssassin has run, so we're good. */
+	.iteration = FILTER_BEFORE_MAILBOX,
+};
+
 static int load_module(void)
 {
 	if (load_config()) {
 		return -1;
 	}
-	if (smtp_register_processor(processor)) {
+	if (smtp_register_processor(&proc)) {
 		return -1;
 	}
 	bbs_cli_register_multiple(cli_commands_greylisting);
@@ -489,7 +490,7 @@ static int unload_module(void)
 {
 	int res;
 	bbs_cli_unregister_multiple(cli_commands_greylisting);
-	res = smtp_unregister_processor(processor);
+	res = smtp_unregister_processor(&proc);
 	RWLIST_WRLOCK_REMOVE_ALL(&greylisted_messages, entry, free);
 	RWLIST_WRLOCK_REMOVE_ALL(&safe_senders, entry, free);
 	return res;

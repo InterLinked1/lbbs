@@ -240,7 +240,10 @@ static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastre
 
 	REQUIRE_ARG(s);/* Empty match implicitly matches anything anyways */
 
+#ifdef EXTRA_DEBUG
 	bbs_debug(7, "Evaluating condition: %s\n", s);
+#endif
+
 	next = strsep(&s, " ");
 	REQUIRE_ARG(s);
 	if (!strcasecmp(next, "NOT")) {
@@ -636,9 +639,12 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 		} else {
 			bbs_warning("Invalid command: %s\n", s);
 		}
+
 		if (!was_skip && skip_rule) { /* Rule statement just evaluated as false */
+#ifdef EXTRA_DEBUG
 			/* We butchered the rule statement with strsep so can't print it out again */
 			bbs_debug(5, "Skipping rule, condition false\n");
+#endif
 		}
 	}
 
@@ -653,15 +659,6 @@ static int mailscript(struct smtp_msg_process *mproc)
 {
 	char filepath[256];
 	const char *mboxmaildir;
-
-	if (mproc->scope != SMTP_SCOPE_INDIVIDUAL) {
-		/* Filters are only run for individual delivery.
-		 * Even global rules should use SMTP_SCOPE_INDIVIDUAL,
-		 * since they could manipulate the mailbox in some way,
-		 * and we don't have a single mailbox if processing
-		 * a message that will get delivered to multiple recipients. */
-		return 0;
-	}
 
 	/* Calculate maildir path, if we have a mailbox */
 	if (mproc->userid) {
@@ -701,16 +698,28 @@ static int mailscript(struct smtp_msg_process *mproc)
 	}
 }
 
+struct smtp_message_processor proc = {
+	.callback = mailscript,
+	.dir = SMTP_DIRECTION_ALL,
+	/* Filters are only run for individual delivery.
+	 * Even global rules should use SMTP_SCOPE_INDIVIDUAL,
+	 * since they could manipulate the mailbox in some way,
+	 * and we don't have a single mailbox if processing
+	 * a message that will get delivered to multiple recipients. */
+	.scope = SMTP_SCOPE_INDIVIDUAL,
+	.iteration = FILTER_ALL_PASSES, /* We handle all passes, with more granular logic in the callback */
+};
+
 static int load_module(void)
 {
 	snprintf(before_rules, sizeof(before_rules), "%s/before.rules", mailbox_maildir(NULL));
 	snprintf(after_rules, sizeof(after_rules), "%s/after.rules", mailbox_maildir(NULL));
-	return smtp_register_processor(mailscript);
+	return smtp_register_processor(&proc);
 }
 
 static int unload_module(void)
 {
-	return smtp_unregister_processor(mailscript);
+	return smtp_unregister_processor(&proc);
 }
 
 BBS_MODULE_INFO_DEPENDENT("SMTP MailScript Engine", "net_smtp.so");
