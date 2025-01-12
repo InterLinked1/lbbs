@@ -141,7 +141,7 @@ static void list_cleanup(void)
 	RWLIST_WRLOCK_REMOVE_ALL(&users, entry, free_user);
 }
 
-static int add_pair(u64snowflake guild_id, const char *discord_channel, const char *irc_channel, unsigned int relaysystem, unsigned int multiline)
+static int add_mapping(u64snowflake guild_id, const char *discord_channel, const char *irc_channel, unsigned int relaysystem, unsigned int multiline)
 {
 	struct chan_pair *cp;
 	size_t dlen, ilen;
@@ -795,23 +795,14 @@ static void fetch_channels(struct discord *client, u64snowflake guild_id, u64sno
 			link_permissions(cp, overwrites);
 		}
 	}
-	/* Make sure all channels have a channel ID */
-	RWLIST_TRAVERSE_SAFE_BEGIN(&mappings, cp, entry) {
-		if (!cp->channel_id) {
-			bbs_error("Channel mapping %s <=> %s lacks a channel ID and will be ignored (does %s exist in guild %lu?)\n", cp->discord_channel, cp->irc_channel, cp->discord_channel, cp->guild_id);
-			/* May as well remove it, it serves no purpose anyways */
-			RWLIST_REMOVE_CURRENT(entry);
-			free_cp(cp);
-		}
-	}
-	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&mappings);
 	discord_channels_cleanup(&channels);
 }
 
 static void load_channels(struct discord *client, struct discord_guilds *guilds)
 {
-	int i, numguilds = guilds->size;
+	struct chan_pair *cp;
+	int i, empty, numguilds = guilds->size;
 	struct discord_guild *gs = guilds->array;
 
 	for (i = 0; i < numguilds; i++) {
@@ -823,6 +814,28 @@ static void load_channels(struct discord *client, struct discord_guilds *guilds)
 			bbs_error("Owner ID is %lu?\n", g->owner_id);
 		}
 		fetch_channels(client, g->id, g->owner_id);
+	}
+
+	/* Do any channel pairs exist? If not, we have nothing to do */
+	RWLIST_WRLOCK(&mappings);
+	/* After processing all guilds, make sure all channels have a channel ID. */
+	RWLIST_TRAVERSE_SAFE_BEGIN(&mappings, cp, entry) {
+		if (!cp->channel_id) {
+			bbs_error("Channel mapping %s <=> %s lacks a channel ID and will be ignored (does %s exist in guild %lu?)\n", cp->discord_channel, cp->irc_channel, cp->discord_channel, cp->guild_id);
+			/* May as well remove it, it serves no purpose anyways */
+			RWLIST_REMOVE_CURRENT(entry);
+			free_cp(cp);
+		}
+	}
+	RWLIST_TRAVERSE_SAFE_END;
+	empty = RWLIST_EMPTY(&mappings);
+	RWLIST_UNLOCK(&mappings);
+
+	if (empty) {
+		bbs_error("No channel mappings are registered, unloading module\n");
+		/* Since we're not running the thread that called load_module,
+		 * request we be unloaded at the main thread's convenience: */
+		bbs_request_module_unload("mod_discord", 0); /* Unload and don't load again */
 	}
 }
 
@@ -1042,9 +1055,11 @@ static int discord_send(struct irc_relay_message *rmsg)
 	int handled = 0;
 
 	if (!discord_is_ready()) {
+		bbs_debug(3, "Discord connection not yet ready, dropping message\n");
 		return 0;
 	} else if (!(cp = find_mapping_irc(channel))) {
 		/* No relay exists for this channel */
+		bbs_debug(10, "No relay exists for channel %s\n", channel);
 		return 0;
 	} else if (!cp->relaysystem  && !sender) {
 		bbs_debug(3, "Dropping system-generated message since relaysystem=no\n");
@@ -1061,9 +1076,8 @@ static int discord_send(struct irc_relay_message *rmsg)
 			.components = NULL,
 		};
 
-		/* Manually parse system messages for join/part/etc. */
-		/* XXX This code may actually not be used? Join/quit/part/etc. messages already come in formatted,
-		 * so this code path doesn't actually get hit. Could be dead code but needs investigation. */
+		/* Manually parse system messages for join/part/etc.
+		 * This code path is used for non-native IRC network relayed to Discord, but not for native IRC network relay to Discord */
 		if (!sender && *msg == ':') {
 			char tmpbuf[128];
 			char *username, *action, *channame;
@@ -1087,29 +1101,23 @@ static int discord_send(struct irc_relay_message *rmsg)
 			}
 		}
 		/* Manually format CTCP ACTIONs */
-		if (strstr(msg, ":\001ACTION")) {
+		if (!strncmp(msg, "\001ACTION ", STRLEN("\001ACTION "))) {
 			char newmsg[512];
-			/* Turn PRIVMSG #channel :<1>ACTION <sender> does something<1> into <sender> *does something* */
-			msg = strchr(msg, ' '); /* Skip to 2nd word (channel) */
-			if (msg) {
-				msg = strchr(msg + 1, ' '); /* Skip to 3rd word */
-			}
-			if (msg) {
-				msg = strchr(msg + 1, ' '); /* Skip to 4th word */
-			}
+			char *action;
+			bbs_debug(5, "Message contains a CTCP action\n");
+			bbs_dump_string(msg);
+			/* Turn PRIVMSG #channel <1>ACTION does something<1> into <sender> *does something* */
+			msg += STRLEN("\001ACTION ");
+			msg = S_OR(msg, "");
 
-			if (msg) {
-				char *realsender, *action;
-				msg += 1; /* Skip space */
-				safe_strncpy(newmsg, msg, sizeof(newmsg));
-				action = newmsg;
-				realsender = strsep(&action, " ");
-				bbs_strterm(action, 0x01); /* Skip the trailing 0x01 */
-				/* Turn 0x01ACTION action0x01 into  <sender> *action* */
-				snprintf(mbuf, sizeof(mbuf), "%s *%s*", realsender, action); /* realsender already contains <> */
-				bbs_dump_string(mbuf);
-				handled = 1;
-			}
+			safe_strncpy(newmsg, msg, sizeof(newmsg));
+			action = newmsg;
+			ltrim(action);
+			bbs_strterm(action, 0x01); /* Skip the trailing 0x01 */
+			/* Turn 0x01ACTION action0x01 into  <sender> *action* */
+			snprintf(mbuf, sizeof(mbuf), "**<%s**> *%s*", S_IF(sender), action); /* sender lacks the <>, so add those */
+			bbs_dump_string(mbuf);
+			handled = 1;
 		} else {
 			bbs_dump_string(msg);
 		}
@@ -1386,10 +1394,11 @@ static int cli_discord_users(struct bbs_cli_args *a)
 	int i = 0;
 	struct user *u;
 
-	bbs_dprintf(a->fdout, "%-48s %4s %7s %5s\n", "User", "Disc", "Status", "Roles");
+	/* Note that if a user exists in multiple guilds, only the first one will be associated with the user here: */
+	bbs_dprintf(a->fdout, "%-20s %-48s %4s %7s %5s\n", "Guild ID", "User", "Disc", "Status", "Roles");
 	RWLIST_RDLOCK(&users);
 	RWLIST_TRAVERSE(&users, u, entry) {
-		bbs_dprintf(a->fdout, "%-48s %4s %7s %5d" "%s\n", u->username, u->discriminator, status_str(u->status), u->numroles, u->admin ? " [Guild Admin]" : "");
+		bbs_dprintf(a->fdout, "%-20lu %-48s %4s %7s %5d" "%s\n", u->guild_id, u->username, u->discriminator, status_str(u->status), u->numroles, u->admin ? " [Guild Admin]" : "");
 		i++;
 	}
 	RWLIST_UNLOCK(&users);
@@ -1550,7 +1559,7 @@ static int load_config(void)
 			bbs_warning("Section %s is incomplete, ignoring\n", bbs_config_section_name(section));
 			continue;
 		}
-		add_pair((unsigned long) atol(guild), discord, irc, relaysystem, multiline);
+		add_mapping((unsigned long) atol(guild), discord, irc, relaysystem, multiline);
 	}
 
 	return 0;
