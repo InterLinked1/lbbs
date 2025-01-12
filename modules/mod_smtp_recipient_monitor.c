@@ -38,6 +38,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "include/module.h"
 #include "include/stringlist.h"
@@ -74,18 +75,19 @@ static int processor(struct smtp_msg_process *mproc)
 	FILE *fp;
 	time_t now;
 	struct deferred_attempt *attempt;
+	const char *fromheader;
 
-	if (mproc->scope != SMTP_SCOPE_INDIVIDUAL) {
-		return 0;
-	}
 	if (mproc->dir != SMTP_DIRECTION_SUBMIT) {
 		return 0; /* Only applies to user submissions */
 	}
-	if (mproc->iteration != FILTER_MAILBOX) {
-		return 0; /* Only execute for mailboxes, and not before/after as well */
+	if (mproc->scope != SMTP_SCOPE_COMBINED) {
+		return 0; /* We don't need to do this per-recipient, once for all is good, hence combined */
 	}
 	if (!mproc->userid) {
 		return 0; /* Only for user-level filters, not global */
+	}
+	if (mproc->iteration != FILTER_BEFORE_MAILBOX) {
+		return 0; /* Do on pre-mailbox pass, to nip it in the bud as early as possible. */
 	}
 	if (!mproc->recipients) {
 		bbs_warning("Recipient list not available?\n");
@@ -95,11 +97,19 @@ static int processor(struct smtp_msg_process *mproc)
 		bbs_warning("Not an interactive session?\n");
 		return 0;
 	}
+	if (!mproc->from) {
+		/* Since this is user-specific logic, and users don't have the authority
+		 * to generate system mail as postmaster, this should never happen anyways.
+		 * Same thing with smtp_from_header() returning NULL, too... */
+		bbs_warning("No MAIL FROM address?\n");
+		return 0;
+	}
 
 	/* Users need to manually create the file to enable its functionality.
 	 * Otherwise, its lack of existence is treated as "feature disabled". */
 	if (bbs_transfer_home_config_file(mproc->userid, ".recipientmap", fullfile, sizeof(fullfile))) {
 		/* File doesn't exist, so we don't need to do anything. Not an error. */
+		bbs_debug(9, "User doesn't have a .recipientmap file, skipping checks\n");
 		return 0;
 	}
 	fp = fopen(fullfile, "r+");
@@ -110,12 +120,13 @@ static int processor(struct smtp_msg_process *mproc)
 	}
 
 	/* This file is assumed to have a format as follows:
-	 * <from 1>,<recipients 1> LF
-	 * <from 2>,<recipients 2> LF
+	 * <mailfrom 1>,<from hdr 1>,<recipients 1> LF
+	 * <mailfrom 2>,<from hdr 2>,<recipients 2> LF
 	 * ...
-	 * <from N>,<recipients N> LF
+	 * <mailfrom N>,<from hdr 3>,<recipients N> LF
 	 *
-	 * Each line contains one list. Each list is the From address followed by a comma-separated list of email addresses sorted alphabetically.
+	 * Each line contains one list. Each list is the MAIL FROM address followed by the From header, followed by
+	 * a comma-separated list of email addresses sorted alphabetically.
 	 * (Email addresses only, no names, so just what you would get from RCPT TO)
 	 * Because of this invariant, we can sort the email addresses for this message the same way,
 	 * and then just do string comparisons of each line in 1 pass over the file.
@@ -123,11 +134,18 @@ static int processor(struct smtp_msg_process *mproc)
 	 * and though the file could be very large, it's not being sorted, we are just making a linear pass over it,
 	 * so this should be a fairly efficient operation.
 	 *
+	 * We include the From header only for the name, if present in the header. Even if the MAIL FROM is the same,
+	 * a sender might change the display name when sending mail to certain recipients, so we should also check that
+	 * for robustness. Note that we can get away with really dumb (basically no) parsing here.
+	 * It doesn't matter if the From header contains commas, we just look for an exact string match when we compare at the end.
+	 *
 	 * Note that each set of recipients is sorted, but the From addresses at the beginning of each line are not sorted with respect to each other,
 	 * since we simply append to the end of the file when adding a new entry. This doesn't really affect the performance in any way either. */
 
 	/* First, go ahead and construct the "equivalent line" for this message, which we must find an exact match for. */
-	SAFE_FAST_APPEND_NOSPACE(line, sizeof(line), linebuf, lineleft, "%s", mproc->from);
+	fromheader = S_IF(smtp_from_header(mproc->smtp));
+	ltrim(fromheader);
+	SAFE_FAST_APPEND_NOSPACE(line, sizeof(line), linebuf, lineleft, "%s,%s", mproc->from, fromheader);
 	/* We can't just append directly to the string, first we need to sort the recipients.
 	 * Since we have to construct a new list anyways, sort the list as we add to it,
 	 * rather than doing it afterwards. */

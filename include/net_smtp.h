@@ -173,6 +173,9 @@ struct stringlist *smtp_recipients(struct smtp_session *smtp);
 /*! \brief Get the MAIL FROM address */
 const char *smtp_from(struct smtp_session *smtp);
 
+/*! \brief Get the full From header (including name, if present) */
+const char *smtp_from_header(struct smtp_session *smtp);
+
 /*! \brief Get the domain of the MAIL FROM address */
 const char *smtp_mail_from_domain(struct smtp_session *smtp);
 
@@ -315,7 +318,7 @@ struct smtp_response {
  * \param mproc Does not need to be (and should not be) initialized
  * \param mbox Mailbox or NULL
  * \param resp
- * \param dir
+ * \param dir SMTP_DIRECTION_IN or SMTP_DIRECTION_OUT. If this is a submission, SMTP_DIRECTION_IN will be autoconverted to SMTP_DIRECTION_SUBMIT
  * \param scope
  * \param recipient Recipient, with <>
  * \param datalen Message size

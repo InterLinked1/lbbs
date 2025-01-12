@@ -1334,6 +1334,11 @@ const char *smtp_from(struct smtp_session *smtp)
 	return smtp->from;
 }
 
+const char *smtp_from_header(struct smtp_session *smtp)
+{
+	return smtp->fromheaderaddress;
+}
+
 const char *smtp_mail_from_domain(struct smtp_session *smtp)
 {
 	return bbs_strcnext(smtp->from, '@');
@@ -1661,6 +1666,10 @@ int smtp_run_callbacks(struct smtp_msg_process *mproc, enum smtp_filter_scope sc
 
 #define EXECUTE_FILTERS(iter)\
 	mproc->iteration = iter; \
+	bbs_debug(3, "Running SMTP callbacks for %s scope, %s direction, %s pass\n", \
+		mproc->scope == SMTP_SCOPE_INDIVIDUAL ? "INDIVIDUAL" : "COMBINED", \
+		mproc->dir == SMTP_DIRECTION_IN ? "IN" : mproc->dir == SMTP_DIRECTION_SUBMIT ? "SUBMIT" : "OUT", \
+		mproc->iteration == FILTER_BEFORE_MAILBOX ? "pre-mailbox" : mproc->iteration == FILTER_AFTER_MAILBOX ? "post-mailbox" : "mailbox"); \
 	RWLIST_TRAVERSE(&processors, proc, entry) { \
 		bbs_module_ref(proc->mod, 3); \
 		res |= proc->cb(mproc); \
@@ -1700,8 +1709,8 @@ int smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_proce
 	char recip_buf[256];
 	struct smtp_response *resp = *resp_ptr;
 
-	bbs_debug(3, "Running SMTP callbacks for scope %s, direction %s\n",
-		scope == SMTP_SCOPE_INDIVIDUAL ? "INDIVIDUAL" : "COMBINED", dir == SMTP_DIRECTION_IN ? "IN" : dir == SMTP_DIRECTION_SUBMIT ? "SUBMIT" : "OUT");
+	/* Caller may use IN for either "IN" or "SUBMIT", use the more specific one */
+	dir = smtp->msa && dir == SMTP_DIRECTION_IN ? SMTP_DIRECTION_SUBMIT : dir;
 
 	/* The local delivery agent (mod_smtp_delivery_local) also runs message processing
 	 * so that individual users' filter rules (Sieve or MailScript) will run.
