@@ -38,7 +38,7 @@
 
 #define REQUIRE_ARG(s) \
 	if (strlen_zero(s)) { \
-		bbs_warning("Incomplete condition on line %d\n", lineno); \
+		bbs_warning("Incomplete condition on line %d (%s must be nonempty)\n", lineno, #s); \
 		return 0; \
 	}
 
@@ -660,6 +660,11 @@ static int mailscript(struct smtp_msg_process *mproc)
 	char filepath[256];
 	const char *mboxmaildir;
 
+	/* COMBINED scope is only for outbound mail submissions */
+	if (mproc->scope != SMTP_SCOPE_INDIVIDUAL && mproc->dir != SMTP_DIRECTION_SUBMIT) {
+		return 0;
+	}
+
 	/* Calculate maildir path, if we have a mailbox */
 	if (mproc->userid) {
 		snprintf(filepath, sizeof(filepath), "%s/%d", mailbox_maildir(NULL), mproc->userid);
@@ -701,12 +706,14 @@ static int mailscript(struct smtp_msg_process *mproc)
 struct smtp_message_processor proc = {
 	.callback = mailscript,
 	.dir = SMTP_DIRECTION_ALL,
-	/* Filters are only run for individual delivery.
+	/* Filters are typically only run for individual delivery.
 	 * Even global rules should use SMTP_SCOPE_INDIVIDUAL,
 	 * since they could manipulate the mailbox in some way,
 	 * and we don't have a single mailbox if processing
-	 * a message that will get delivered to multiple recipients. */
-	.scope = SMTP_SCOPE_INDIVIDUAL,
+	 * a message that will get delivered to multiple recipients.
+	 * However, mail submissions do use COMBINED scope, as they are not run per-recipient,
+	 * since in that case the mailbox belongs to the sender, not the recipient. */
+	.scope = SMTP_SCOPE_INDIVIDUAL | SMTP_SCOPE_COMBINED,
 	.iteration = FILTER_ALL_PASSES, /* We handle all passes, with more granular logic in the callback */
 };
 

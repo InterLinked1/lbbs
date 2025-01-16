@@ -382,7 +382,7 @@ static int __attribute__ ((nonnull (2, 3, 9, 17))) try_send(struct smtp_session 
 	struct bbs_smtp_client smtpclient;
 	off_t send_offset;
 	char sendercopy[64];
-	char *user, *domain, *saslstr = NULL;
+	char *user, *domain, *saslstr = NULL; /* saslstr is scoped here for cleanup */
 
 #define SMTP_EOM "\r\n.\r\n"
 
@@ -537,7 +537,7 @@ static int __attribute__ ((nonnull (2, 3, 9, 17))) try_send(struct smtp_session 
 					goto cleanup;
 				}
 			}
-		} else if (smtpclient.caps & SMTP_CAPABILITY_AUTH_LOGIN) {
+		} else if (smtpclient.caps & SMTP_CAPABILITY_AUTH_PLAIN) {
 			saslstr = bbs_sasl_encode(username, username, password);
 			if (!saslstr) {
 				res = -1;
@@ -546,6 +546,38 @@ static int __attribute__ ((nonnull (2, 3, 9, 17))) try_send(struct smtp_session 
 			bbs_smtp_client_send(&smtpclient, "AUTH PLAIN\r\n"); /* AUTH PLAIN is preferred to the deprecated AUTH LOGIN */
 			SMTP_EXPECT(&smtpclient, SEC_MS(10), "334");
 			bbs_smtp_client_send(&smtpclient, "%s\r\n", saslstr);
+			SMTP_EXPECT(&smtpclient, SEC_MS(10), "235");
+		} else if (smtpclient.caps & SMTP_CAPABILITY_AUTH_LOGIN) {
+			char *encoded;
+			int encodedlen;
+			/* AUTO LOGIN is obsoleted in favor of AUTH PLAIN, so only use as last resort */
+			bbs_smtp_client_send(&smtpclient, "AUTH LOGIN\r\n");
+
+			/* In both cases, we free before SMTP_EXPECT to avoid memory leaks on failure. */
+
+			/* Send username */
+			SMTP_EXPECT(&smtpclient, SEC_MS(10), "334");
+			encoded = base64_encode(username, (int) strlen(username), &encodedlen);
+			if (!encoded) {
+				bbs_error("Base64 encoding failed\n");
+				res = -1;
+				goto cleanup;
+			}
+			bbs_smtp_client_send(&smtpclient, "%s\r\n", encoded);
+			free(encoded);
+
+			/* Send password */
+			SMTP_EXPECT(&smtpclient, SEC_MS(10), "334");
+			encoded = base64_encode(password, (int) strlen(password), &encodedlen);
+			if (!encoded) {
+				bbs_error("Base64 encoding failed\n");
+				res = -1;
+				goto cleanup;
+			}
+			bbs_smtp_client_send(&smtpclient, "%s\r\n", encoded);
+			bbs_memzero(encoded, strlen(encoded)); /* Destroy encoded password */
+			free(encoded);
+
 			SMTP_EXPECT(&smtpclient, SEC_MS(10), "235");
 		} else {
 			bbs_warning("No mutual login methods available\n");
@@ -610,7 +642,11 @@ static int __attribute__ ((nonnull (2, 3, 9, 17))) try_send(struct smtp_session 
 	/* RFC 5321 4.5.3.2.6 */
 	SMTP_CLIENT_EXPECT_FINAL(&smtpclient, MIN_MS(10), "250"); /* Okay, this email is somebody else's problem now. */
 
-	bbs_debug(3, "Message successfully delivered to %s\n", recipient);
+	if (recipient) {
+		bbs_debug(3, "Message successfully delivered to %s\n", recipient);
+	} else { /* recipients (which are already freed now) */
+		bbs_debug(3, "Message successfully delivered\n");
+	}
 	res = 0;
 
 cleanup:
@@ -1868,7 +1904,7 @@ static int relay(struct smtp_session *smtp, struct smtp_msg_process *mproc, int 
 		res = -1;
 	} else {
 		struct smtp_tx_data tx; /* Capture but ignore */
-		char buf[132];
+		char buf[512];
 		char prepend[256] = "";
 		int prependlen = 0;
 		char timestamp[40];

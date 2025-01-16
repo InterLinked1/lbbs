@@ -786,6 +786,7 @@ static int handle_auth(struct smtp_session *smtp, char *s)
 		}
 		bbs_strterm((char*) user, '@'); /* Strip domain */
 		res = bbs_authenticate(smtp->node, (char*) user, (char*) pass);
+		bbs_memzero((unsigned char*) pass, strlen((char*) pass)); /* Destroy the password from memory before we free it */
 		free(user);
 		free(pass);
 		goto logindone;
@@ -1638,6 +1639,11 @@ int __smtp_register_processor(struct smtp_message_processor *processor, void *mo
 {
 	struct smtp_processor *proc;
 
+	if (!processor->callback) {
+		bbs_error("Processor has no callback?\n");
+		return -1;
+	}
+
 	proc = calloc(1, sizeof(*proc));
 	if (ALLOC_FAILURE(proc)) {
 		return -1;
@@ -1673,8 +1679,9 @@ static inline int __run_callbacks(struct smtp_msg_process *mproc, enum msg_proce
 
 	mproc->iteration = iteration;
 
-	__bbs_log(LOG_DEBUG, 3, file, line, func, "Running SMTP callbacks for %s scope, %s direction, %s pass\n",
+	__bbs_log(LOG_DEBUG, 3, file, line, func, "Running SMTP callbacks for %s scope, %s (%s) direction, %s pass\n",
 		mproc->scope == SMTP_SCOPE_INDIVIDUAL ? "INDIVIDUAL" : "COMBINED",
+		mproc->direction == SMTP_MSG_DIRECTION_IN ? "IN" : "OUT",
 		mproc->dir == SMTP_DIRECTION_IN ? "IN" : mproc->dir == SMTP_DIRECTION_SUBMIT ? "SUBMIT" : "OUT",
 		mproc->iteration == FILTER_BEFORE_MAILBOX ? "pre-mailbox" : mproc->iteration == FILTER_AFTER_MAILBOX ? "post-mailbox" : "mailbox");
 
@@ -1692,7 +1699,7 @@ static inline int __run_callbacks(struct smtp_msg_process *mproc, enum msg_proce
 		 * The module can't unregister the processor without WRLOCK'ing the list,
 		 * and we have it locked for this traversal. */
 		bbs_module_ref(proc->mod, 3);
-		res = processor->callback(mproc);
+		res = processor->callback(mproc); /* callback is guaranteed to be non-NULL here */
 		bbs_module_unref(proc->mod, 3);
 		if (res) {
 			__bbs_log(LOG_DEBUG, 4, file, line, func, "Message processor returned %d\n", res);
@@ -1712,7 +1719,10 @@ int __smtp_run_callbacks(struct smtp_msg_process *mproc, enum smtp_filter_scope 
 	 * with some always executing before or after a mailbox's rules. */
 	RWLIST_RDLOCK(&processors);
 	res |= __run_callbacks(mproc, FILTER_BEFORE_MAILBOX, file, line, func);
-	if (!res && scope == SMTP_SCOPE_INDIVIDUAL) {
+	if (!res && mproc->userid) {
+		/* The mailbox pass can happen for both INDIVIDUAL and COMBINED scope.
+		 * mproc->mbox is also NULL for submissions.
+		 * mproc->userid is the best thing to use. */
 		res |= __run_callbacks(mproc, FILTER_MAILBOX, file, line, func);
 	}
 	if (!res) {
@@ -2616,8 +2626,8 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 		int srcfd = -1;
 		smtp_mproc_init(smtp, &mproc);
 		mproc.size = (int) datalen;
-		mproc.dir = smtp->msa ? SMTP_DIRECTION_SUBMIT : SMTP_DIRECTION_OUT;
-		mproc.direction = SMTP_MSG_DIRECTION_OUT;
+		mproc.dir = SMTP_DIRECTION_SUBMIT;
+		mproc.direction = SMTP_MSG_DIRECTION_OUT; /* It's an outbound message from the user */
 		mproc.mbox = NULL;
 		mproc.userid = smtp->node->user->id;
 		mproc.user = smtp->node->user;
@@ -2731,7 +2741,7 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 						continue;
 					}
 					bbs_module_ref(h->mod, 6);
-					/* provided by mod_smtp_delivery_local */
+					/* provided by mod_smtp_delivery_external */
 					res = h->agent->relay(smtp, &mproc, srcfd, datalen, &smtp->recipients);
 					bbs_module_unref(h->mod, 6);
 					if (!res) {

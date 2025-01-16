@@ -100,7 +100,12 @@ static void process_capabilities(int *restrict caps, int *restrict maxsendsize, 
 	} else if (!strcmp(capname, "OK")) {
 		/* This is not a real capability, just ignore it. Yahoo seems to do this. */
 	} else {
-		/* Capabilities should be all uppercase and a single word */
+		/* Capabilities should be all uppercase, and could be one or multiple words
+		 * The first line is often the hostname of the server followed by some friendly greeting, ignore.
+		 * This callback doesn't know if it's the first line, but the hostname should have at least one period */
+		if (strchr(capname, '.')) {
+			return; /* Ignore, probably the hostname banner, not a real capability */
+		}
 		if (!strchr(capname, ' ')) {
 			bbs_warning("Unknown capability advertised: %s\n", capname);
 		}
