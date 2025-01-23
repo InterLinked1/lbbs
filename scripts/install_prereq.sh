@@ -175,8 +175,17 @@ if [ -f /etc/fedora-release ] || [ -f /etc/redhat-release ]; then
 fi
 
 if [ -f /etc/debian_version ]; then
-	DEBIAN_VERSION=$( lsb_release -a | grep "Release:" | xargs | cut -d' ' -f2 )
-	if [ $DEBIAN_VERSION -ge 11 ]; then
+	# Don't use lsb_release, as it's not installed by default on Debian
+	DISTRO_TYPE=$( cat /etc/*-release | grep "^ID=" | cut -d'=' -f2 )
+	OLD_DEBIAN_DISTRO=0
+	if [ "$DISTRO_TYPE" = "debian" ]; then
+		DEBIAN_VERSION=$( cat /etc/*-release | grep "VERSION_ID=" | cut -d'=' -f2 | tr -d '"' | tr -d '\n' )
+		if [ $DEBIAN_VERSION -le 10 ]; then
+			# Some packages aren't available with Debian 10
+			OLD_DEBIAN_DISTRO=1
+		fi
+	fi
+	if [ $OLD_DEBIAN_DISTRO -ne 1 ]; then
 		# Not available in Debian 10
 		PACKAGES_DEBIAN="$PACKAGES_DEBIAN libcrypt-dev" # crypt_r
 		# used for cal (included in menus.conf sample)
