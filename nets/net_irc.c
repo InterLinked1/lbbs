@@ -604,7 +604,7 @@ static inline int priv_channel_owner(struct irc_channel *c, const char *username
 	return !strcasecmp(c->username, username);
 }
 
-static inline int user_is_priv_channel_owner(struct irc_channel *c, struct irc_user *u)
+static int user_is_priv_channel_owner(struct irc_channel *c, struct irc_user *u)
 {
 	return !strcasecmp(c->username, bbs_username(u->node->user));
 }

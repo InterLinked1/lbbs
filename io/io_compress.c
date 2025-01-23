@@ -83,7 +83,7 @@ static ssize_t compress_and_send(struct compress_data *z, char *buf, size_t len)
 			return -1;
 		}
 		comp_len = sizeof(output) - z->compressor->avail_out;
-		bbs_debug(9, "Deflated to %lu bytes\n", comp_len);
+		bbs_debug(10, "Deflated to %lu bytes\n", comp_len);
 		wres = bbs_write(z->orig_wfd, output, comp_len);
 		if (wres <= 0) {
 			return -1;

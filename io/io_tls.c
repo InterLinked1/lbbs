@@ -411,12 +411,16 @@ static void *ssl_io_thread(void *unused)
 					 * rather than waiting until ssl_fd_free. */
 					pfds[i].events = 0;
 					pfds[i].fd = -1; /* This does not trigger a POLLNVAL, negative fds are ignored by poll (see poll(2)) */
-					bbs_debug(7, "Skipping dead SSL read connection %p at index %d / %d\n", sfd->ssl, i, i / 2);
+					bbs_debug(7, "Skipping dead SSL read connection %p at index %d / %d (fd: %d/%d)\n", sfd->ssl, i, i / 2, sfd->fd, sfd->writepipe[0]);
 				} else {
 					pfds[i].fd = sfd->fd;
 					pfds[i].events = POLLIN | POLLPRI | POLLERR | POLLNVAL;
 				}
 				i++;
+				/*! \todo In some cases, we are still seeing an infinite loop of poll constantly returning activity on a dead connection.
+				 * I think this happens because even though we use -1 above, we still use the actual writepipe read fd here.
+				 * While we can't set this to -1 because of the comment below, in certain cases it may make sense to close this and use -1.
+				 * For now, more logging of the actual file descriptor number has been added so this theory can be confirmed. */
 				pfds[i].fd = sfd->writepipe[0];
 				/* If it's dead, we still need to read from the writepipe and discard,
 				 * or otherwise it might block a writing thread */
@@ -530,12 +534,12 @@ static void *ssl_io_thread(void *unused)
 			if (!inovertime && pfds[i].revents != POLLIN) { /* Something exceptional happened, probably something going away */
 				if (pfds[i].revents & (POLLNVAL | POLLHUP)) {
 					SSL *ssl = ssl_list[i / 2];
-					bbs_debug(5, "Skipping SSL at index %d / %d = %s\n", i, i/2, poll_revent_name(pfds[i].revents));
+					bbs_debug(5, "Skipping SSL %p at index %d / %d = %s (fd %d)\n", ssl, i, i/2, poll_revent_name(pfds[i].revents), pfds[i].fd);
 					MARK_DEAD(ssl);
 					needcreate = 1;
 					continue; /* Don't try to read(), that would fail */
 				} else {
-					bbs_debug(5, "SSL at index %d / %d = %s\n", i, i/2, poll_revent_name(pfds[i].revents));
+					bbs_debug(5, "SSL %p at index %d / %d = %s\n", ssl_list[i / 2], i, i/2, poll_revent_name(pfds[i].revents));
 				}
 			}
 			if (!inovertime && i == 0) {

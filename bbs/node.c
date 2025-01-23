@@ -1464,14 +1464,14 @@ static int authenticate(struct bbs_node *node)
 	return 0;
 }
 
-static inline long ns_since(struct timespec *start, struct timespec *now)
+static long ns_since(struct timespec *start, struct timespec *now)
 {
 	struct timespec diff;
 	timespecsub(now, start, &diff);
 	return (1000000000 * diff.tv_sec) + (diff.tv_nsec);
 }
 
-static inline int record_start_time(struct timespec *restrict start)
+static int record_start_time(struct timespec *restrict start)
 {
 	if (clock_gettime(CLOCK_MONOTONIC_RAW, start)) {
 		bbs_error("clock_gettime failed: %s\n", strerror(errno));
@@ -1737,7 +1737,7 @@ static int init_term_query_ansi_escape_support(struct bbs_node *node)
  * \retval 1 if positive cursor position query response received
  * \retval 0 Non-ANSI terminal (no positive response)
  */
-static inline int read_cursor_pos_response(struct bbs_node *node, struct timespec *restrict start, const char *restrict buf, int len)
+static int read_cursor_pos_response(struct bbs_node *node, struct timespec *restrict start, const char *restrict buf, int len)
 {
 	int i;
 	int res;
@@ -1800,7 +1800,7 @@ static inline int read_cursor_pos_response(struct bbs_node *node, struct timespe
 }
 
 /*! \brief Round to the nearest modem speed */
-static inline long int estimate_bps(long int bps)
+static long int estimate_bps(long int bps)
 {
 	if (bps < 75) {
 		return 45;

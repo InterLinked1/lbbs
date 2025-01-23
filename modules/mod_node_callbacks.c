@@ -89,7 +89,7 @@ static int interactive_start(struct bbs_node *node)
 	return 0;
 }
 
-static inline ssize_t print_birthday_banner(struct bbs_node *node)
+static ssize_t print_birthday_banner(struct bbs_node *node)
 {
 	return bbs_node_writef(node,
 		"\n"

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, dev ]
   pull_request:
     branches: [ master ]
 
@@ -50,6 +50,22 @@ jobs:
           sudo tests/test -ddddddddd -DDDDDDDDDD -x
           sudo apt-get install -y valgrind
           sudo tests/test -ddddddddd -DDDDDDDDDD -ex
+  without-optimization:
+    runs-on: ubuntu-22.04
+    name: Ubuntu 22.04, without optimization
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build LBBS
+        run: |
+          sudo sed -i 's/azure\.//' /etc/apt/sources.list
+          sudo sed -i 's/-O3/-O0/' Makefile
+          sudo ./scripts/install_prereq.sh
+          sudo make modcheck
+          sudo make
+          sudo make install
+          sudo make samples
+          sudo make tests
   debian-12:
     runs-on: ubuntu-24.04
     name: Debian 12

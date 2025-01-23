@@ -674,7 +674,11 @@ static void *ftp_handler(void *varg)
 				/* Users can already get a list of users on the BBS,
 				 * so hiding their home directories is really just security by obscurity.
 				 * Regardless of if they're displayed, users should not be able to access them. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+				/* gcc complains userid could be used uninitialized with -Og */
 				if (homedir && userid > 0 && !bbs_transfer_show_all_home_dirs()) {
+#pragma GCC diagnostic pop
 					char resolvbuf[256];
 					if (bbs_transfer_set_disk_path_relative(node, userpath, user_folder_name, resolvbuf, sizeof(resolvbuf))) { /* Will fail for other people's home directories, which is fine, hide in listing */
 						continue;

@@ -927,9 +927,8 @@ const char *mailbox_maildir(struct mailbox *mbox)
 size_t mailbox_maildir_len(struct mailbox *mbox)
 {
 #ifdef CHECK_MAILDIR_LEN_INTEGRITY
-	if (strlen(mbox->maildir) != mbox->maildirlen) {
+	if (bbs_assertion_failed(strlen(mbox->maildir) == mbox->maildirlen)) {
 		bbs_warning("maildir length mismatch: %lu != %lu\n", strlen(mbox->maildir), mbox->maildirlen);
-		bbs_soft_assert(0);
 	}
 #endif
 	return mbox->maildirlen;
@@ -943,9 +942,8 @@ int mailbox_maildir_validate(const char *maildir)
 	if (!dirlen) {
 		return 0;
 	}
-	if (dirlen <= rootmaildirlen) {
+	if (bbs_assertion_failed(dirlen > rootmaildirlen)) {
 		bbs_warning("maildir (%s) len (%lu) <= maildir root (%s) len (%lu)?\n", maildir, dirlen, mailbox_maildir(NULL), rootmaildirlen);
-		bbs_soft_assert(0);
 		return -1;
 	}
 	return 0;
@@ -1108,7 +1106,7 @@ unsigned int mailbox_get_next_uid(struct mailbox *mbox, struct bbs_node *node, c
 		/* Assume the file doesn't yet exist. */
 		uidfile_existed = bbs_file_exists(uidfile);
 		fp = fopen(uidfile, "a");
-		if (unlikely(!fp)) {
+		if (unlikely(!fp)) { /* Don't use bbs_assertion_failed, because we want to preserve errno */
 			bbs_error("fopen(%s) failed: %s\n", uidfile, strerror(errno));
 			bbs_soft_assert(0);
 		} else {

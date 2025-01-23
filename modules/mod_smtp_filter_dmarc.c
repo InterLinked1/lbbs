@@ -57,7 +57,7 @@ static bbs_mutex_t loglock;
 #define	DMARC_ARC_POLICY_RESULT_PASS	0
 #define	DMARC_ARC_POLICY_RESULT_FAIL	2
 
-static inline int dmarcf_spf_res(const char *result)
+static int dmarcf_spf_res(const char *result)
 {
 	if (!strcasecmp(result, "pass")) {
 		return ARES_RESULT_PASS;
@@ -76,7 +76,9 @@ static inline int dmarcf_spf_res(const char *result)
 	}
 }
 
-static inline int spf_to_dmarc_res(int res)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+static int spf_to_dmarc_res(int res)
 {
 	switch (res) {
 		case DMARC_POLICY_SPF_OUTCOME_PASS: return ARES_RESULT_PASS;
@@ -87,8 +89,9 @@ static inline int spf_to_dmarc_res(int res)
 	}
 	__builtin_unreachable();
 }
+#pragma GCC diagnostic pop
 
-static inline int arc_res(const char *result)
+static int arc_res(const char *result)
 {
 	if (!strcasecmp(result, "pass")) {
 		return ARES_RESULT_PASS;
@@ -102,7 +105,7 @@ static inline int arc_res(const char *result)
 	}
 }
 
-static inline void check_log_file(void)
+static void check_log_file(void)
 {
 	/* Check if the log file has changed from underneath us.
 	 * This would happen if opendmarc-importstats has been run since the last logging.
@@ -493,7 +496,10 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 		 * it should be easy to find where this logic came from to debug.
 		 * Not all the variable names provided for printf arguments are named the same,
 		 * but the format string and everything prior to that should be identical. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
 #define dmarcf_dstring_printf(hb, fmt, ...) fprintf(logfp, fmt, ## __VA_ARGS__)
+#pragma GCC diagnostic pop
 
 		/* General */
 		dmarcf_dstring_printf(dfc->mctx_histbuf, "job %s\n", mctx_jobid);

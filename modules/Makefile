@@ -28,7 +28,7 @@ $(DEPENDS):
 
 mod_mimeparse.o : mod_mimeparse.c mod_mimeparse.d
 	@echo "  [CC] $< -> $@"
-	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self $(GMIME_FLAGS) -MMD -MP $(INC) -c $<
+	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self $(GMIME_FLAGS) -Wno-inline -MMD -MP $(INC) -c $<
 
 mod_ncurses.o : mod_ncurses.c mod_ncurses.d
 	@echo "  [CC] $< -> $@"

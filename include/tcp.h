@@ -69,4 +69,6 @@ ssize_t bbs_tcp_client_send(struct bbs_tcp_client *client, const char *fmt, ...)
  * \param str Substring to expect
  * \retval 0 on success (substring contained in response), -1 on failure, 1 if max attempts reached
  */
-int bbs_tcp_client_expect(struct bbs_tcp_client *client, const char *delim, int attempts, int ms, const char *str);
+#define bbs_tcp_client_expect(client, delim, attempts, ms, str) __bbs_tcp_client_expect(client, delim, attempts, ms, str, __FILE__, __LINE__, __func__)
+
+int __bbs_tcp_client_expect(struct bbs_tcp_client *client, const char *delim, int attempts, int ms, const char *str, const char *file, int line, const char *func) __attribute__((nonnull (1,2, 5)));

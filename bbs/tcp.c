@@ -99,20 +99,20 @@ ssize_t __attribute__ ((format (gnu_printf, 2, 3))) bbs_tcp_client_send(struct b
 	return res;
 }
 
-int bbs_tcp_client_expect(struct bbs_tcp_client *client, const char *delim, int attempts, int ms, const char *str)
+int __bbs_tcp_client_expect(struct bbs_tcp_client *client, const char *delim, int attempts, int ms, const char *str, const char *file, int line, const char *func)
 {
 	while (attempts-- > 0) {
 		ssize_t res = bbs_readline(client->rfd, &client->rldata, delim, ms);
 		if (res < 0) {
-			bbs_debug(3, "bbs_readline returned %ld\n", res);
+			__bbs_log(LOG_DEBUG, 3, file, line, func, "bbs_readline returned %ld\n", res);
 			bbs_readline_print_reset(&client->rldata);
 			return -1;
 		}
-		bbs_debug(7, "<= %s\n", client->buf);
+		__bbs_log(LOG_DEBUG, 7, file, line, func, "%p <= %s\n", client, client->buf);
 		if (strstr(client->buf, str)) {
 			return 0;
 		}
 	}
-	bbs_warning("Missing expected response (%s), got: %s\n", str, client->buf);
+	__bbs_log(LOG_WARNING, 0, file, line, func, "Missing expected response (%s), got: %s\n", str, client->buf);
 	return 1;
 }

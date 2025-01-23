@@ -2506,7 +2506,7 @@ ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)
 }
 
 /* \note Assumes fd is a file descriptor corresponding to a file */
-static inline off_t fd_get_filesize(int fd)
+static off_t fd_get_filesize(int fd)
 {
 	off_t max_offset, cur_offset;
 

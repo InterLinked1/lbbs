@@ -637,7 +637,7 @@ static int subsystem_request(ssh_session session, ssh_channel channel, const cha
 }
 
 /*! \note Works only for threads that are NOT detached */
-static inline int thread_has_exited(pthread_t thread)
+static int thread_has_exited(pthread_t thread)
 {
 	int res = pthread_kill(thread, 0);
 	/* res is the error number, errno is not set */
@@ -1161,7 +1161,11 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 			}
 		}
 		user_folder_name = info->homedir ? usernamebuf : dir->d_name;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+		/* gcc complains userid could be used uninitialized with -Og */
 		if (info->homedir && userid > 0 && !bbs_transfer_show_all_home_dirs()) {
+#pragma GCC diagnostic pop
 			char resolvbuf[256];
 			if (bbs_transfer_set_disk_path_relative(node, info->name, user_folder_name, resolvbuf, sizeof(resolvbuf))) { /* Will fail for other people's home directories, which is fine, hide in listing */
 				continue;

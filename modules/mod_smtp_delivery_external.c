@@ -680,9 +680,7 @@ static void smtp_trigger_dsn(enum smtp_delivery_action action, struct smtp_tx_da
 		return;
 	}
 
-	if (action != DELIVERY_FAILED && !notify_queue) {
-		return;
-	} else if (action == DELIVERY_DELIVERED) {
+	if (action == DELIVERY_DELIVERED) {
 		time_t sent;
 		if (!created) {
 			bbs_warning("Message has no sent time?\n");
@@ -693,6 +691,8 @@ static void smtp_trigger_dsn(enum smtp_delivery_action action, struct smtp_tx_da
 			return; /* Don't send reports on success UNLESS a message was previously delayed */
 		}
 		/* Do send a delivery report, it was likely previous queued and succeeded only on a retry */
+	} else if (action != DELIVERY_FAILED && !notify_queue) {
+		return;
 	}
 
 	tmp = strchr(error, ' ');
@@ -740,7 +740,7 @@ struct mailq_run {
 	bbs_mutex_t lock;
 };
 
-static inline void mailq_run_init(struct mailq_run *qrun, enum mailq_run_type type)
+static void mailq_run_init(struct mailq_run *qrun, enum mailq_run_type type)
 {
 	/* We could individually initialize each element in the struct,
 	 * but as the struct probably has no padding,
@@ -751,7 +751,7 @@ static inline void mailq_run_init(struct mailq_run *qrun, enum mailq_run_type ty
 	qrun->runstart = time(NULL);
 }
 
-static inline void mailq_run_cleanup(struct mailq_run *qrun)
+static void mailq_run_cleanup(struct mailq_run *qrun)
 {
 	bbs_mutex_destroy(&qrun->lock);
 }
@@ -1055,7 +1055,7 @@ static int __attribute__ ((nonnull (2, 4, 5, 6, 10))) try_mx_delivery(struct smt
  * \param retrycount Count of many times delivery has been attempted so far
  * \return Number of seconds that should pass from the last retry before we attempt delivery again
  */
-static inline time_t queue_retry_threshold(int retrycount)
+static time_t queue_retry_threshold(int retrycount)
 {
 	/* We use ~exponential backoff for queue retry timing,
 	 * as is generally recommended. */
@@ -1089,7 +1089,7 @@ static inline time_t queue_retry_threshold(int retrycount)
 	__builtin_unreachable();
 }
 
-static inline int skip_qfile(struct mailq_run *qrun, struct mailq_file *mqf)
+static int skip_qfile(struct mailq_run *qrun, struct mailq_file *mqf)
 {
 	/* This queue run may have filters applied to it */
 
@@ -1342,6 +1342,10 @@ static int run_queue(struct mailq_run *qrun, int (*queue_file_cb)(const char *di
 
 	bbs_rwlock_wrlock(&queue_lock);
 	queued_messages = bbs_dir_num_files(queue_dir);
+	if (!queued_messages) {
+		bbs_rwlock_unlock(&queue_lock);
+		return 0; /* If nothing in directory, nothing at all to process, return early */
+	}
 	bbs_debug(7, "Processing mail queue (%d message%s)\n", queued_messages, ESS(queued_messages));
 	/* If the number of queued messages is relatively small, we can just process them serially.
 	 * It's not worth the overhead of parallelization.

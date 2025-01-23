@@ -240,7 +240,7 @@ static struct queue *find_queue(const char *name)
 static int update_queue_stats(void)
 {
 	int i;
-	struct queue *q, *lastq;
+	struct queue *q, *lastq = NULL; /* lastq can't be NULL, but gcc will complain maybe uninitialized with -Og */
 	int stale_queues = 0;
 	struct ami_response *resp;
 

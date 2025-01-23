@@ -39,8 +39,7 @@ void parse_keyword(struct imap_session *imap, const char *s, const char *directo
 	FILE *fp;
 	char index = 0;
 
-	if (strlen_zero(directory)) {
-		bbs_soft_assert(0);
+	if (bbs_assertion_failed(!strlen_zero(directory))) {
 		return;
 	}
 
@@ -504,10 +503,8 @@ int maildir_msg_setflags_modseq(struct imap_session *imap, int seqno, const char
 		/* Right now, dir ends in '/cur', since it's the physical maildir cur dir path,
 		 * here, we want just the base maildir path (without '/cur' at the end). */
 		end = strrchr(dirpath, '/');
-		if (end) {
+		if (!bbs_assertion_failed(end != NULL)) {
 			*end = '\0';
-		} else {
-			bbs_soft_assert(0);
 		}
 		send_untagged_fetch(imap, dirpath, seqno, uid, modseq, newflags);
 	}

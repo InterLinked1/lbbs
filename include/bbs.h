@@ -432,6 +432,11 @@ extern int option_dumpcore;
 #endif
 #define bbs_assert(x) __bbs_assert(x, #x, __FILE__, __LINE__, __func__)
 #define bbs_soft_assert(x) __bbs_soft_assert(x, #x, __FILE__, __LINE__, __func__)
+
+/*! \brief Same as bbs_soft_assert, but useful as part of an if condition to execute additional logic if the soft assertion fails.
+ * This avoids the need to do something like if (badcondition) { bbs_soft_assert(0); dosomething; } */
+#define bbs_assertion_failed(x) __bbs_soft_assertion_failed(x, #x, __FILE__, __LINE__, __func__)
+
 void __bbs_assert_nonfatal(const char *condition_str, const char *file, int line, const char *function);
 void __attribute__((noreturn)) __bbs_assert_fatal(const char *condition_str, const char *file, int line, const char *function);
 
@@ -448,6 +453,15 @@ static inline void __attribute__((always_inline)) __bbs_soft_assert(int conditio
 	if (__builtin_expect(!condition, 1)) {
 		__bbs_assert_nonfatal(condition_str, file, line, function);
 	}
+}
+
+static inline int __attribute__((always_inline)) __bbs_soft_assertion_failed(int condition, const char *condition_str, const char *file, int line, const char *function)
+{
+	if (__builtin_expect(!condition, 1)) {
+		__bbs_assert_nonfatal(condition_str, file, line, function);
+		return 1;
+	}
+	return 0;
 }
 
 #else

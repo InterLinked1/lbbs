@@ -853,7 +853,7 @@ static void notify_unauthorized(const char *sender, const char *channel, const c
 	irc_relay_send_notice(sender, CHANNEL_USER_MODE_NONE, "Slack", sender, NULL, notice, NULL);
 }
 
-static inline void parse_parent_thread(struct slack_relay *relay, char *restrict ts, const char **restrict thread_ts, char const **restrict msg)
+static void parse_parent_thread(struct slack_relay *relay, char *restrict ts, const char **restrict thread_ts, char const **restrict msg)
 {
 	const char *word2;
 	long word1len, tsl;

@@ -45,7 +45,7 @@ struct bbs_var {
 /* static RWLIST_HEAD_STATIC(global_vars, bbs_var); */
 static struct bbs_vars global_vars;
 
-static inline void bbs_var_destroy(struct bbs_var *var)
+static void bbs_var_destroy(struct bbs_var *var)
 {
 	free(var->value); /* Free variable */
 	free(var); /* Free key and the struct itself */

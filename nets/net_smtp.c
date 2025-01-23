@@ -630,7 +630,7 @@ static int exempt_from_starttls(struct smtp_session *smtp)
 	return 0;
 }
 
-static inline int is_benign_ip_mismatch(const char *helohost, const char *srcip)
+static int is_benign_ip_mismatch(const char *helohost, const char *srcip)
 {
 	/* Not all mismatches are malicious.
 	 * This covers the case of a private IP tunnel between two SMTP servers.
@@ -1672,7 +1672,7 @@ int smtp_unregister_processor(struct smtp_message_processor *processor)
 }
 
 /*! \brief Single pass of callbacks */
-static inline int __run_callbacks(struct smtp_msg_process *mproc, enum msg_process_iteration iteration, const char *file, int line, const char *func)
+static int __run_callbacks(struct smtp_msg_process *mproc, enum msg_process_iteration iteration, const char *file, int line, const char *func)
 {
 	int res;
 	struct smtp_processor *proc;

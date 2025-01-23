@@ -68,7 +68,7 @@ int bbs_rate_limit_init(struct bbs_rate_limit *r, int interval, int max)
 	return 0;
 }
 
-static inline long ms_since(struct timespec *start, struct timespec *now)
+static long ms_since(struct timespec *start, struct timespec *now)
 {
 	struct timespec diff;
 	timespecsub(now, start, &diff);

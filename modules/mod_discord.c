@@ -908,7 +908,7 @@ static void dump_user(struct bbs_node *node, int fd, const char *requsername, st
 	irc_relay_who_response(node, fd, "Discord", requsername, combined, unique, !(u->status == STATUS_IDLE || u->status == STATUS_OFFLINE));
 }
 
-static inline int discord_is_ready(void)
+static int discord_is_ready(void)
 {
 	time_t now, diff;
 

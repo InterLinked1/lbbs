@@ -140,7 +140,7 @@ static enum http_method proxy_methods = HTTP_METHOD_UNDEF;
 /* == HTTP output I/O wrappers == */
 
 /*! \brief Actually write data to the HTTP client (potentially abstracted by TLS) */
-static inline ssize_t __http_direct_write(struct http_session *http, const char *buf, size_t len)
+static ssize_t __http_direct_write(struct http_session *http, const char *buf, size_t len)
 {
 	return bbs_node_fd_write(http->node, http->node->wfd, buf, len);
 }

@@ -217,13 +217,13 @@ static void print_time(int fdout)
 	bbs_dprintf(fdout, "%s\n", timebuf);
 }
 
-static inline void load_hist_command(struct sysop_console *console, const char **s)
+static void load_hist_command(struct sysop_console *console, const char **s)
 {
 	my_set_stdout_logging(console->fdout, 0); /* Disable logging so other stuff isn't trying to write to STDOUT at the same time. */
 	bbs_dprintf(console->fdout, TERM_RESET_LINE "\r/%s", *s);
 }
 
-static inline void edit_hist_command(struct sysop_console *console, const char **s)
+static void edit_hist_command(struct sysop_console *console, const char **s)
 {
 	/* This addresses the desire to be able to modify commands in history to run a new command.
 	 * This is complicated by the fact that commands are read in buffered mode,

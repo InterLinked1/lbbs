@@ -295,7 +295,7 @@ static struct bbs_cli_entry cli_commands_imap[] = {
 	BBS_CLI_COMMAND(cli_imap_clients, "imap clients", 2, "List outbound IMAP client proxies", NULL),
 };
 
-static inline void reset_saved_search(struct imap_session *imap)
+static void reset_saved_search(struct imap_session *imap)
 {
 	free_if(imap->savedsearch); /* See comments about EXPUNGE in imap_expunge */
 	imap->savedsearch = 0;
