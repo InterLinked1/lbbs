@@ -20,6 +20,7 @@
 /* Tunable settings */
 #define DETECT_DEADLOCKS
 #define STRICT_LOCKING
+#define USE_ROBUST_MUTEXES
 #define ALWAYS_INITIALIZE 1
 
 /* In general, there should not be *that* many readers for a lock.
@@ -73,6 +74,9 @@ int __bbs_mutex_init(bbs_mutex_t *t, const char *filename, int lineno, const cha
 {
 	int res;
 	int staticinit;
+#ifdef USE_ROBUST_MUTEXES
+	pthread_mutexattr_t attr;
+#endif
 
 	/* If the lock is not static, we explicitly have to zero it out first,
 	 * since there's currently garbage here, so we can't check if it
@@ -89,7 +93,25 @@ int __bbs_mutex_init(bbs_mutex_t *t, const char *filename, int lineno, const cha
 		lock_error("Attempt to initialize mutex %s previously destroyed at %s:%d\n", name, t->info.filename, t->info.lineno);
 	}
 
+#ifdef USE_ROBUST_MUTEXES
+	memset(&attr, 0, sizeof(attr));
+	/* This is a temporary (but probably somewhat longterm) workaround
+	 * to deal with the small but nonzero possibility of threads being
+	 * cancelled while holding a mutex. Normally, this would probably
+	 * just lead to a deadlock, and since the thread no longer exists,
+	 * it's very difficult to discern that this is what happened.
+	 * This allows us to confirm that thread cancellation caused the issue.
+	 * Unfortunately, there is no equvialent for rwlock, only for mutex.
+	 * Also, statically initialized mutexes (using BBS_MUTEX_INITIALIZER) are not made robust,
+	 * since they use PTHREAD_MUTEX_INITIALIZER. Fortunately, there are not too many of these. */
+	if (pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST)) {
+		lock_warning("Failed to make mutex %s robust: %s\n", name, strerror(errno));
+	}
+	res = pthread_mutex_init(&t->mutex, &attr);
+#else
 	res = pthread_mutex_init(&t->mutex, NULL);
+#endif /* USE_ROBUST_MUTEXES */
+
 	if (!res) {
 		t->info.initialized = 1;
 		STORE_CALLER_INFO();
@@ -181,6 +203,38 @@ int __bbs_mutex_lock(bbs_mutex_t *t, const char *filename, int lineno, const cha
 #else
 	res = pthread_mutex_lock(&t->mutex);
 #endif /* DETECT_DEADLOCKS */
+#ifdef USE_ROBUST_MUTEXES
+	if (unlikely(res == EOWNERDEAD)) { /* Don't use bbs_assertion_failed here since we may not be normal-log safe at the moment */
+		lock_warning("Owner of mutex %s is dead! (Acquired at %s:%d by LWP %d)\n", name, t->info.filename, t->info.lineno, t->info.lwp);
+		/* There is really no sane thing to do at this point.
+		 * Threads should not be cancelled while holding a mutex, so it is a bug if we are here.
+		 * Ideally, such threads would not be cancelled at all, or at least while holding a lock.
+		 * Without robust mutexes, the lock is basically fudged and the containing module,
+		 * or possibly the entire BBS process, is probably screwed, depending on the scope of the lock.
+		 * If we unlock without calling pthread_mutex_consistent, it is basically the same case,
+		 * as the lock is rendered useless afterwards, instead of just being impossible to obtain.
+		 *
+		 * However, since the mutex is robust, we have practically no choice besides
+		 * making it consistent if this happens. This is because if we unlock without
+		 * making it consistent, future attempts to lock the mutex will return ENOTRECOVERABLE.
+		 * Most attempts to lock mutexes in the BBS do not check the return value, and assume
+		 * if the function returned, the lock has been obtained. For that matter, if EOWNERDEAD
+		 * was returned, we are already proceeding and would return anyways.
+		 *
+		 * Accordingly, though we make it consistent here, this should not be taken to mean
+		 * "carry on as if all is well". All is NOT well, and the bug that got us here should be fixed!
+		 * This is mainly to improve the visibility of this type of error, with the incidental
+		 * side benefit that we may be able to continue running for some time, rather than deadlocking,
+		 * but there is no guarantee that things are in a good state anymore. */
+		res = pthread_mutex_consistent(&t->mutex);
+		if (res) {
+			lock_warning("Could not make mutex %s consistent: %s\n", name, strerror(res));
+			res = EOWNERDEAD; /* Restore original errno */
+		} else {
+			res = 0;
+		}
+	}
+#endif /* USE_ROBUST_MUTEXES */
 	if (unlikely(res)) {
 		lock_warning("Failed to obtain mutex %s: %s\n", name, strerror(res));
 	} else {
@@ -205,6 +259,18 @@ int __bbs_mutex_trylock(bbs_mutex_t *t, const char *filename, int lineno, const 
 	}
 
 	res = pthread_mutex_trylock(&t->mutex);
+#ifdef USE_ROBUST_MUTEXES
+	if (unlikely(res == EOWNERDEAD)) { /* Don't use bbs_assertion_failed here since we may not be normal-log safe at the moment */
+		lock_warning("Owner of mutex %s is dead! (Acquired at %s:%d by LWP %d)\n", name, t->info.filename, t->info.lineno, t->info.lwp);
+		res = pthread_mutex_consistent(&t->mutex);
+		if (res) {
+			lock_warning("Could not make mutex %s consistent: %s\n", name, strerror(res));
+			res = EOWNERDEAD; /* Restore original errno */
+		} else {
+			res = 0;
+		}
+	}
+#endif /* USE_ROBUST_MUTEXES */
 	if (!res) {
 		t->info.lastlocked = time(NULL);
 		if (unlikely(++t->info.owners != 1)) {
