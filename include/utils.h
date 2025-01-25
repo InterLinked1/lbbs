@@ -75,6 +75,12 @@ int __attribute__ ((format (gnu_printf, 2, 3))) dyn_str_append_fmt(struct dyn_st
  */
 #define dyn_str_len(dynstr) (dynstr->used)
 
+/*! \brief Whether s is a "truthy" value */
+int bbs_truthy_value(const char *s);
+
+/*! \brief Whether s is a "falsy" value */
+int bbs_falsy_value(const char *s);
+
 struct bbs_url {
 	const char *prot;
 	const char *user;

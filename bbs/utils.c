@@ -128,6 +128,24 @@ int __attribute__ ((format (gnu_printf, 2, 3))) dyn_str_append_fmt(struct dyn_st
 	return len;
 }
 
+int bbs_truthy_value(const char *s)
+{
+	if (strlen_zero(s)) {
+		return 0;
+	}
+
+	return !strcasecmp(s, "1") || !strcasecmp(s, "yes") || !strcasecmp(s, "y") || !strcasecmp(s, "true") || !strcasecmp(s, "t") || !strcasecmp(s, "on") || !strcasecmp(s, "enabled");
+}
+
+int bbs_falsy_value(const char *s)
+{
+	if (strlen_zero(s)) {
+		return 0;
+	}
+
+	return !strcasecmp(s, "0") || !strcasecmp(s, "no") || !strcasecmp(s, "n") || !strcasecmp(s, "false") || !strcasecmp(s, "f") || !strcasecmp(s, "off") || !strcasecmp(s, "disabled");
+}
+
 int bbs_parse_url(struct bbs_url *url, char *restrict s)
 {
 	char *tmp;

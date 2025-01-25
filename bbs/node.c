@@ -55,6 +55,7 @@
 #define DEFAULT_MAX_NODES 64
 
 static int shutting_down = 0;
+static int new_node_connects = 1; /* Whether new node connections are allowed */
 
 static RWLIST_HEAD_STATIC(nodes, bbs_node);
 
@@ -275,6 +276,9 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, struct sockadd
 		/* On the small chance we get a connection between when bbs_node_shutdown_all is called
 		 * but before I/O modules are unloaded, bail now. */
 		bbs_warning("Declining node allocation due to active shutdown\n");
+		return NULL;
+	} else if (!new_node_connects) {
+		bbs_notice("Declining node allocation since new connections are currently disabled\n");
 		return NULL;
 	}
 
@@ -984,6 +988,14 @@ static int cli_kickall(struct bbs_cli_args *a)
 {
 	UNUSED(a);
 	return bbs_node_shutdown_all(0);
+}
+
+static int cli_nodeconnects(struct bbs_cli_args *a)
+{
+	int enabled = !bbs_falsy_value(a->argv[1]); /* Default to true if input is unrecognized */
+	bbs_dprintf(a->fdout, "New node connections were previously %s and are now %s\n", new_node_connects ? "enabled" : "disabled", enabled ? "enabled" : "disabled");
+	new_node_connects = enabled;
+	return 0;
 }
 
 static int node_info(int fd, unsigned int nodenum)
@@ -2368,6 +2380,7 @@ static struct bbs_cli_entry cli_commands_nodes[] = {
 	BBS_CLI_COMMAND(cli_interrupt, "interrupt", 2, "Interrupt specified node", "interrupt <nodenum>"),
 	BBS_CLI_COMMAND(cli_kick, "kick", 2, "Kick specified node", "kick <nodenum>"),
 	BBS_CLI_COMMAND(cli_kickall, "kickall", 1, "Kick all nodes", NULL),
+	BBS_CLI_COMMAND(cli_nodeconnects, "nodeconnects", 2, "Enable or disable node connects", "nodeconnects <enabled|disabled>"),
 	BBS_CLI_COMMAND(cli_spy, "spy", 2, "Spy on specified node (^C to stop)", "spy <nodenum>"),
 	BBS_CLI_COMMAND(cli_node_set_speed, "speed", 3, "Set emulated speed of specified node (0 = unthrottled)", "speed <nodenum> <bps>"),
 	/* User commands */
