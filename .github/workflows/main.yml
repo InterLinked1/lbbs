@@ -21,7 +21,7 @@ jobs:
           sudo sed -i 's/azure\.//' /etc/apt/sources.list
           sudo ./scripts/install_prereq.sh
           sudo make modcheck
-          sudo make
+          sudo make -j$(nproc)
           sudo make install
           sudo make samples
           sudo make tests
@@ -41,7 +41,7 @@ jobs:
           sudo sed -i 's/azure\.//' /etc/apt/sources.list
           sudo ./scripts/install_prereq.sh
           sudo make modcheck
-          sudo make
+          sudo make -j$(nproc)
           sudo make install
           sudo make samples
           sudo make tests
@@ -62,7 +62,7 @@ jobs:
           sudo sed -i 's/-O3/-O0/' Makefile
           sudo ./scripts/install_prereq.sh
           sudo make modcheck
-          sudo make
+          sudo make -j$(nproc)
           sudo make install
           sudo make samples
           sudo make tests
@@ -76,7 +76,7 @@ jobs:
         run: |
           ./scripts/install_prereq.sh
           make modcheck
-          make
+          make -j$(nproc)
           make install
           make samples
           make tests
@@ -93,7 +93,7 @@ jobs:
         run: |
           ./scripts/install_prereq.sh
           make modcheck
-          make
+          make -j$(nproc)
           make install
           make samples
           make tests
@@ -110,7 +110,7 @@ jobs:
         run: |
           ./scripts/install_prereq.sh
           make modcheck
-          make
+          make -j$(nproc)
           make install
           make samples
           make tests
@@ -128,7 +128,7 @@ jobs:
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
           make modcheck
           make modconfig
-          make
+          make -j$(nproc)
           make install
           make samples
           make tests
@@ -146,7 +146,7 @@ jobs:
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
           make modcheck
           make modconfig
-          make
+          make -j$(nproc)
           make install
           make samples
           make tests
@@ -164,7 +164,7 @@ jobs:
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
           make modcheck
           make modconfig
-          make
+          make -j$(nproc)
           make install
           make samples
           make tests
@@ -182,7 +182,7 @@ jobs:
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
           make modcheck
           make modconfig
-          make
+          make -j$(nproc)
           make install
           make samples
           make tests
@@ -200,7 +200,7 @@ jobs:
           INSTALL_LIBETPAN=0 ./scripts/install_prereq.sh
           make modcheck
           make modconfig
-          make
+          make -j$(nproc)
           make install
           make samples
           make tests
@@ -218,7 +218,7 @@ jobs:
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
           make modcheck
           make modconfig
-          make
+          make -j$(nproc)
           make install
           make samples
           make tests
@@ -244,7 +244,7 @@ jobs:
             gmake io
             gmake modules
             gmake nets
-            gmake
+            gmake -j$(nproc)
             gmake install
             gmake samples
             gmake tests
