@@ -128,7 +128,7 @@ int bbs_io_session_unregister(struct bbs_io_transformations *s)
 	RWLIST_UNLOCK(&sessions);
 	if (!i) {
 		/* We traversed the entire list, so this count is accurate */
-		bbs_warning("Transformation %p does not have an active session (%d total)\n", s, total);
+		bbs_warning("Transformation %p does not have an active session (%d total active)\n", s, total);
 	}
 	return i ? 0 : -1;
 }

@@ -587,9 +587,6 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	time_t now;
 	int wasloggedin = 0;
 
-	bbs_io_teardown_all_transformers(&node->trans);
-	bbs_io_session_unregister(&node->trans);
-
 	/* Prevent node from being freed until we release the lock. */
 	bbs_node_lock(node);
 	if (!node->active) {
@@ -601,6 +598,9 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	bbs_debug(2, "Terminating node %d\n", node->id);
 
 	now = time(NULL);
+
+	bbs_io_teardown_all_transformers(&node->trans);
+	bbs_io_session_unregister(&node->trans);
 
 	bbs_node_kill_child(node);
 
@@ -711,9 +711,10 @@ int bbs_node_unlink(struct bbs_node *node)
 		/* If bbs_node_shutdown_all was used, nodes are removed from the list
 		 * but not freed there. */
 		bbs_debug(1, "Node %d was already unlinked, freeing directly\n", node->id);
+	} else {
+		node_shutdown(node, 1);
 	}
 
-	node_shutdown(node, 1);
 	/* If unlinking a single node, also free here */
 	node_free(node);
 	return 0;
