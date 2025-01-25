@@ -50,15 +50,18 @@ static int exists(struct smtp_session *smtp, struct smtp_response *resp, const c
 	if (!mbox) {
 		return 0;
 	}
+
 	/* Mailbox exists, great! */
+
 	if (!fromlocal && minpriv_relay_in) {
+		/* Check if user is authorized to receive mail from external senders */
 		int userpriv = bbs_user_priv_from_userid((unsigned int) mailbox_id(mbox));
 		if (userpriv < minpriv_relay_in) {
 			smtp_abort(resp, 550, 5.1.1, "User unauthorized to receive external mail");
 			return -1;
 		}
 	}
-	/* It's a submission of outgoing mail, do no further validation here. */
+	/* If a a submission of outgoing mail, do no further validation here. */
 	return 1;
 }
 

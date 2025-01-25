@@ -1940,6 +1940,10 @@ static int exists(struct smtp_session *smtp, struct smtp_response *resp, const c
 	UNUSED(user);
 	UNUSED(domain);
 
+	if (tolocal) {
+		return 0; /* We are not the right handler for local mail */
+	}
+
 	if (smtp_is_exempt_relay(smtp)) {
 		/* Allow an external host to relay messages for a domain if it's explicitly authorized to. */
 		bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp_sender_ip(smtp), smtp_from_domain(smtp));
