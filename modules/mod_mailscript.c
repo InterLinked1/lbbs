@@ -135,7 +135,7 @@ static int header_match(struct smtp_msg_process *mproc, const char *header, cons
 			/* This is relatively efficient since we don't do any copying to make comparisons. */
 			found = !strncmp(start, find, findlen); /* Values are case-sensitive */
 #ifdef EXTRA_DEBUG
-			bbs_debug(7, "Comparison(%d) = %.*s with %s\n", found, findlen, start, find);
+			bbs_debug(7, "Comparison(%d) = %.*s with %s\n", found, (int) findlen, start, find);
 #endif
 			start += findlen;
 			if (found && (!strlen_zero(start) && *start != '\r')) {
@@ -343,7 +343,12 @@ static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastre
 	} else {
 		bbs_warning("Invalid condition: %s %s\n", next, S_IF(s));
 	}
-	return negate ? !match : match;
+	match = negate ? !match : match;
+#ifdef EXTRA_DEBUG
+	/* Can't print condition since we mangled it with strsep */
+	bbs_debug(7, "Evaluated condition => %s\n", match ? "1 (TRUE)" : "0 (FALSE)");
+#endif
+	return match;
 }
 
 static int exec_cmd(struct smtp_msg_process *mproc, char *s)
@@ -517,10 +522,10 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 	int multilinecomment = 0;
 	int in_rule = 0;
 	int skip_rule = 0;
-	int want_endif = 0;
+	int if_count = 0; /* Level of nested IF */
+	int want_endif = 0; /* How many ENDIF's we need to encounter before we can start processing lines (we're skipping false blocks) */
 	int retval = 0;
 	int lineno = 0;
-	int if_count = 0;
 
 	if (!bbs_file_exists(rulesfile)) {
 		bbs_debug(7, "MailScript %s doesn't exist\n", rulesfile);
@@ -577,14 +582,24 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 #ifdef EXTRA_DEBUG
 				bbs_debug(6, "if_count=%d, want_endif=%d\n", if_count, want_endif);
 #endif
-				if (want_endif == if_count) {
-					want_endif = 0;
+				if (want_endif) {
+					--want_endif;
 				}
 				if_count--;
 			} else {
 				bbs_warning("No IF block scope at line %d\n", lineno);
 			}
 		} else if (want_endif) {
+			if (STARTS_WITH(s, "IF ")) {
+				/* Don't care what condition is, or whether it's true or false,
+				 * we just need to adjust if_count/want_endif,
+				 * so that we properly handle nested IF blocks. */
+				if_count++;
+				want_endif++;
+			}
+#ifdef EXTRA_DEBUG
+			bbs_debug(10, "Skipping rest of if condition...\n");
+#endif
 			continue;
 		} else if (STARTS_WITH(s, "TEST ")) {
 			s += STRLEN("TEST ");
@@ -633,8 +648,8 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 				cond = !negate;
 			}
 			if (!cond) {
-				want_endif = if_count;
-				bbs_debug(5, "Skipping IF conditional\n");
+				want_endif++;
+				bbs_debug(5, "Skipping IF conditional, condition at line %d is false\n", lineno);
 			}
 		} else {
 			bbs_warning("Invalid command: %s\n", s);
@@ -643,7 +658,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 		if (!was_skip && skip_rule) { /* Rule statement just evaluated as false */
 #ifdef EXTRA_DEBUG
 			/* We butchered the rule statement with strsep so can't print it out again */
-			bbs_debug(5, "Skipping rule, condition false\n");
+			bbs_debug(5, "Skipping rule, condition at line %d false\n", lineno);
 #endif
 		}
 	}

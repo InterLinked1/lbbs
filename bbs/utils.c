@@ -285,7 +285,11 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host)
 		if (!end) {
 			return -1; /* Email address must be enclosed in <> */
 		}
-		*end = '\0'; /* Now start refers to just the portion in the <> */
+		*end++ = '\0'; /* Now start refers to just the portion in the <> */
+		if (*end) {
+			/* There shouldn't be anything after the trailing '>' */
+			return -1;
+		}
 	} else {
 		start = addr; /* Not enclosed in <> */
 	}

@@ -135,6 +135,22 @@ static int run(void)
 	/* Verify that the email message does NOT exist on disk. */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", -1); /* Folder not created yet */
 
+	/* Malformed From: header (extraneous trailing '>') */
+	if (handshake(clientfd, 1)) {
+		goto cleanup;
+	}
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	if (send_body(clientfd, "<" TEST_EMAIL ">>")) {
+		goto cleanup;
+	}
+	CLIENT_EXPECT(clientfd, "550");
+
+	/* Verify that the email message does NOT exist on disk. */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", -1); /* Folder not created yet */
+
 	/* All right, let's get it right this time. */
 	if (handshake(clientfd, 1)) {
 		goto cleanup;

@@ -31,6 +31,7 @@ static int pre(void)
 	test_preload_module("mod_mail.so");
 	test_preload_module("net_smtp.so");
 	test_load_module("mod_smtp_delivery_local.so");
+	test_load_module("mod_smtp_delivery_external.so"); /* In order for RELAY to work */
 	test_load_module("mod_mailscript.so");
 
 	TEST_ADD_CONFIG("mod_auth_static.conf");
@@ -40,21 +41,26 @@ static int pre(void)
 	system("rm -rf /tmp/test_lbbs/maildir"); /* Purge the contents of the directory, if it existed. */
 	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
 	system("cp before.rules " TEST_MAIL_DIR); /* Global before MailScript */
+	mkdir(TEST_MAIL_DIR "/1", 0700);
+	system("cp .rules " TEST_MAIL_DIR "/1"); /* Individual user MailScript */
 	return 0;
 }
 
-#define STANDARD_ENVELOPE_BEGIN() \
+#define ENVELOPE_BEGIN(ehlo, mailfrom) \
 	SWRITE(clientfd, "RSET" ENDL); \
 	CLIENT_EXPECT(clientfd, "250"); \
-	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL); \
+	SWRITE(clientfd, "EHLO " ehlo ENDL); \
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 "); \
-	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n"); \
+	SWRITE(clientfd, "MAIL FROM:<" mailfrom ">\r\n"); \
 	CLIENT_EXPECT(clientfd, "250"); \
 	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL ">\r\n"); \
 	CLIENT_EXPECT(clientfd, "250"); \
 	SWRITE(clientfd, "DATA\r\n"); \
 	CLIENT_EXPECT(clientfd, "354"); \
 	SWRITE(clientfd, "Date: Sun, 1 Jan 2023 05:33:29 -0700" ENDL);
+
+#define STANDARD_ENVELOPE_BEGIN() ENVELOPE_BEGIN(TEST_EXTERNAL_DOMAIN, TEST_EMAIL_EXTERNAL)
+#define CLIENT_ENVELOPE_BEGIN() ENVELOPE_BEGIN("127.0.0.1", TEST_EMAIL2)
 
 #define STANDARD_DATA() \
 	SWRITE(clientfd, ENDL); \
@@ -220,6 +226,45 @@ static int run(void)
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3); /* Message dropped silently */
+
+	SWRITE(clientfd, "QUIT");
+	close(clientfd);
+
+	/* Relay a message as user 2 */
+	clientfd = test_make_socket(587);
+	if (clientfd < 0) {
+		return -1;
+	}
+
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "220 ");
+
+	/* Test each of the rules in test/before.rules, one by one */
+
+	/* Should be moved to .Junk */
+	SWRITE(clientfd, "EHLO " TEST_USER2 ENDL);
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
+
+	/* Log in */
+	SWRITE(clientfd, "AUTH PLAIN\r\n");
+	CLIENT_EXPECT(clientfd, "334");
+	SWRITE(clientfd, TEST_SASL "\r\n");
+	CLIENT_EXPECT(clientfd, "235");
+
+	CLIENT_ENVELOPE_BEGIN();
+	SWRITE(clientfd, "From: " TEST_EMAIL ENDL);
+	SWRITE(clientfd, "Subject: Relayed Message" ENDL);
+	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
+	STANDARD_DATA();
+	CLIENT_EXPECT(clientfd, "550"); /* Since this message should get relayed, it would actually be submitted as user 2, which is not authorized to send as user 1 */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3); /* Message shouldn't have been accepted */
+
+	CLIENT_ENVELOPE_BEGIN();
+	SWRITE(clientfd, "From: " TEST_EMAIL2 ENDL); /* Correct From (for relaying) this time */
+	SWRITE(clientfd, "Subject: Relayed Message" ENDL);
+	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
+	STANDARD_DATA();
+	CLIENT_EXPECT(clientfd, "250");
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 4); /* Message should have been accepted this time */
 
 	SWRITE(clientfd, "QUIT");
 	res = 0;

@@ -2774,6 +2774,7 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 			}
 			bbs_debug(5, "Discarding message and ceasing all further processing\n");
 			free_if(mproc.bouncemsg);
+			close_if(srcfd);
 			return 0;
 		}
 		close_if(srcfd);

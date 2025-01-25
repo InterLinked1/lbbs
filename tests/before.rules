@@ -55,7 +55,7 @@ COMMENT
 	ACTION DISCARD
 ENDCOMMENT
 ACTION NOOP This should be visible
-ACTION EXIT
+ACTION RETURN # Stop processing this rules file
 ENDRULE
 
 RULE

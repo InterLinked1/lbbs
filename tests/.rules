@@ -1,0 +1,7 @@
+RULE
+MATCH DIRECTION OUT
+MATCH HEADER Subject EQUALS Relayed Message
+ACTION RELAY smtp://testuser2@bbs.example.com:P@ssw0rD@127.0.0.1:587
+ACTION DISCARD
+ACTION EXIT # Stop processing all rules
+ENDRULE
