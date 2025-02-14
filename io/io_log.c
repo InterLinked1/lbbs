@@ -37,6 +37,9 @@
 #include "include/alertpipe.h"
 #include "include/utils.h"
 
+/* Extra correctness checks */
+#define VERIFY_INTEGRITY
+
 struct log_data {
 	int rpfd[2];
 	int wpfd[2];
@@ -73,12 +76,17 @@ static void flowlog(FILE *fp, char *restrict buf, size_t len, char dirchr)
 
 	fprintf(fp, "%c %s.%06d\n", dirchr, datestr, (int) now.tv_usec);
 
+#define LINE_LENGTH 32
+
 	/* The output here is designed to be formatted similar to tcpflow's output with the -C and -D options. */
-	for (i = 0; len > 0; i += 32) {
+	for (i = 0; len > 0; i += LINE_LENGTH) {
 		char hexbuf[81]; /* 80 cols, so 81 with NUL */
-		char asciibuf[33]; /* 32 cols, so 33 with NUL */
+		char asciibuf[LINE_LENGTH + 1]; /* 32 cols, so 33 with NUL */
 		char *hexpos = hexbuf, *asciipos = asciibuf;
-		size_t bytes_this_line = MIN((size_t) 32, len);
+		size_t bytes_this_line = MIN((size_t) LINE_LENGTH, len);
+#ifdef VERIFY_INTEGRITY
+		bbs_assert(bytes_this_line <= LINE_LENGTH); /* If this fails, some hanky panky has gone on with the types */
+#endif
 		/* For all characters available for this line: */
 		for (j = 0; j < bytes_this_line; j++, s++) {
 #undef sprintf
@@ -89,8 +97,8 @@ static void flowlog(FILE *fp, char *restrict buf, size_t len, char dirchr)
 		*asciipos = '\0';
 		/* Line of output in log file */
 		fprintf(fp, "%c %04x: %-80s %-32s\n", dirchr, (int) i, hexbuf, asciibuf);
-		if (len >= 32) {
-			len -= 32;
+		if (len >= LINE_LENGTH) {
+			len -= LINE_LENGTH;
 		} else {
 			len = 0;
 		}

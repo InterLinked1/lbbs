@@ -2355,7 +2355,9 @@ static ssize_t full_write(struct pollfd *pfd, int fd, const char *restrict buf, 
 		 * to terminate node execution if needed.
 		 * In this particular case, a return value of 0 is logically
 		 * interpreted as a total failure and should result in disconnect. */
-		bbs_error("Failed to fully write %lu bytes to fd %d: %s\n", len, fd, strerror(errno));
+		if (errno) { /* Not all nonpos returns are errors. Don't log spurious error for non-error branches (e.g. Exceptional activity, not writable) */
+			bbs_error("Failed to fully write %lu bytes to fd %d: %s\n", len, fd, strerror(errno));
+		}
 		return -1;
 	}
 	return bytes;
