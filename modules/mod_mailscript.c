@@ -212,9 +212,9 @@ static int header_match(struct smtp_msg_process *mproc, const char *header, cons
 static void __attribute__ ((nonnull (2, 3, 4))) str_match(const char *matchtype, const char *a, const char *expr, int *restrict match)
 {
 	if (!strcasecmp(matchtype, "EQUALS")) {
-		*match = !strcmp(a, expr);
+		*match = !strcasecmp(a, expr);
 	} else if (!strcasecmp(matchtype, "CONTAINS")) {
-		*match = strstr(a, expr) ? 1 : 0;
+		*match = strcasestr(a, expr) ? 1 : 0;
 	} else if (!strcasecmp(matchtype, "LIKE")) {
 		regex_t regexbuf;
 		int errcode;
