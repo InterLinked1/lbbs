@@ -239,9 +239,9 @@ static struct greylisted_msg *get_greylisted_msg(struct smtp_msg_process *mproc,
 		int matches = 0;
 		/* Instead of AND'ing all the requirements, we now look for 3 out of 4. */
 		matches += !strcmp(g->srcip, smtp_node(mproc->smtp)->ip) ? 1 : 0;
-		matches += g->mailfrom ? (!strcmp(g->mailfrom, mailfrom) ? 1 : 0) : strlen_zero(mailfrom);
+		matches += g->mailfrom ? (!strlen_zero(mailfrom) && !strcmp(g->mailfrom, mailfrom) ? 1 : 0) : strlen_zero(mailfrom);
 		matches += !strcmp(g->firstrecipient, firstrecip) ? 1 : 0;
-		matches += g->messageid ? (!strcmp(g->messageid, messageid) ? 1 : 0) : strlen_zero(messageid);
+		matches += g->messageid ? (!strlen_zero(messageid) && !strcmp(g->messageid, messageid) ? 1 : 0) : strlen_zero(messageid);
 		if (matches >= 3) {
 			/* Okay, good enough. If it turns out this was actually for a different message,
 			 * that means there's another match in the list that could match for the other message,
