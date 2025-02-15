@@ -1886,6 +1886,49 @@ static int contains_attachments(struct mailimap_body *imap_body)
 	return 0;
 }
 
+static void json_append_flags(struct json_t *msgitem, struct mailimap_msg_att_item *item)
+{
+	struct mailimap_msg_att_dynamic *dynamic = item->att_data.att_dyn;
+	clistiter *dcur;
+	json_t *flagsarr = json_array();
+	json_object_set_new(msgitem, "flags", flagsarr);
+	if (dynamic && dynamic->att_list) {
+		for (dcur = clist_begin(dynamic->att_list); dcur; dcur = clist_next(dcur)) {
+			struct mailimap_flag_fetch *flag = clist_content(dcur);
+			switch (flag->fl_type) {
+				case MAILIMAP_FLAG_FETCH_RECENT:
+					json_array_append_new(flagsarr, json_string("\\Recent"));
+					break;
+				case MAILIMAP_FLAG_FETCH_OTHER:
+					switch (flag->fl_flag->fl_type) {
+						case MAILIMAP_FLAG_ANSWERED:
+							json_array_append_new(flagsarr, json_string("\\Answered"));
+							break;
+						case MAILIMAP_FLAG_FLAGGED:
+							json_array_append_new(flagsarr, json_string("\\Flagged"));
+							break;
+						case MAILIMAP_FLAG_DELETED:
+							json_array_append_new(flagsarr, json_string("\\Deleted"));
+							break;
+						case MAILIMAP_FLAG_SEEN:
+							json_array_append_new(flagsarr, json_string("\\Seen"));
+							break;
+						case MAILIMAP_FLAG_DRAFT:
+							json_array_append_new(flagsarr, json_string("\\Draft"));
+							break;
+						case MAILIMAP_FLAG_KEYWORD:
+							json_array_append_new(flagsarr, json_string(flag->fl_flag->fl_data.fl_keyword));
+							break;
+						case MAILIMAP_FLAG_EXTENSION:
+							json_array_append_new(flagsarr, json_string(flag->fl_flag->fl_data.fl_extension));
+							break;
+					}
+					break;
+			}
+		}
+	}
+}
+
 static void fetchlist_single(struct mailimap_msg_att *msg_att, json_t *arr)
 {
 	json_t *msgitem;
@@ -1945,45 +1988,7 @@ static void fetchlist_single(struct mailimap_msg_att *msg_att, json_t *arr)
 					break;
 			}
 		} else {
-			struct mailimap_msg_att_dynamic *dynamic = item->att_data.att_dyn;
-			clistiter *dcur;
-			json_t *flagsarr = json_array();
-			json_object_set_new(msgitem, "flags", flagsarr);
-			if (dynamic && dynamic->att_list) {
-				for (dcur = clist_begin(dynamic->att_list); dcur; dcur = clist_next(dcur)) {
-					struct mailimap_flag_fetch *flag = clist_content(dcur);
-					switch (flag->fl_type) {
-						case MAILIMAP_FLAG_FETCH_RECENT:
-							json_array_append_new(flagsarr, json_string("\\Recent"));
-							break;
-						case MAILIMAP_FLAG_FETCH_OTHER:
-							switch (flag->fl_flag->fl_type) {
-								case MAILIMAP_FLAG_ANSWERED:
-									json_array_append_new(flagsarr, json_string("\\Answered"));
-									break;
-								case MAILIMAP_FLAG_FLAGGED:
-									json_array_append_new(flagsarr, json_string("\\Flagged"));
-									break;
-								case MAILIMAP_FLAG_DELETED:
-									json_array_append_new(flagsarr, json_string("\\Deleted"));
-									break;
-								case MAILIMAP_FLAG_SEEN:
-									json_array_append_new(flagsarr, json_string("\\Seen"));
-									break;
-								case MAILIMAP_FLAG_DRAFT:
-									json_array_append_new(flagsarr, json_string("\\Draft"));
-									break;
-								case MAILIMAP_FLAG_KEYWORD:
-									json_array_append_new(flagsarr, json_string(flag->fl_flag->fl_data.fl_keyword));
-									break;
-								case MAILIMAP_FLAG_EXTENSION:
-									json_array_append_new(flagsarr, json_string(flag->fl_flag->fl_data.fl_extension));
-									break;
-							}
-							break;
-					}
-				}
-			}
+			json_append_flags(msgitem, item);
 		}
 	}
 }
@@ -3018,6 +3023,8 @@ static void send_preview(struct ws_session *ws, struct imap_client *client, uint
 	fetch_att = mailimap_fetch_att_new_uid();
 	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
 
+	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, mailimap_fetch_att_new_flags()); /* Flags, so we know if this RECENT message is \Seen or not */
+
 	/* Do NOT automark as seen */
 	fetch_att = mailimap_fetch_att_new_rfc822_header();
 	mailimap_fetch_type_new_fetch_att_list_add(fetch_type, fetch_att);
@@ -3032,7 +3039,7 @@ static void send_preview(struct ws_session *ws, struct imap_client *client, uint
 		goto cleanup;
 	}
 
-	json_object_set_new(root, "response", json_string("EXISTS"));
+	json_object_set_new(root, "response", json_string("RECENT"));
 
 	cur = clist_begin(fetch_result);
 	msg_att = clist_content(cur);
@@ -3067,6 +3074,11 @@ static void send_preview(struct ws_session *ws, struct imap_client *client, uint
 				default:
 					bbs_warning("Unhandled type\n");
 			}
+		} else {
+			/* Include flags in preview. The important one is \Seen, so the frontend
+			 * knows whether to increment the unread count or not.
+			 * Of course, this math is only accurate if one message is processed at a time... */
+			json_append_flags(root, item);
 		}
 	}
 
@@ -3681,15 +3693,42 @@ static int process_idle(struct imap_client *client, char *s)
 		/* What we do next depends on what the untagged response is */
 		if (STARTS_WITH(tmp, "EXISTS")) {
 			uint32_t previewseqno = (uint32_t) seqno;
+			if (previewseqno <= client->messages) {
+				/* Microsoft sends an untagged EXISTS after an untagged EXPUNGE when we move a message to a different folder.
+				 * There aren't actually any new messages in this case. */
+				bbs_debug(1, "I thought we had %u messages in this mailbox, and server said we have %u?\n", client->messages, previewseqno);
+			}
 			client->messages = previewseqno; /* Update number of messages in this mailbox */
 			client->idlerefresh |= IDLE_REFRESH_EXISTS;
+			/*! \todo We should fetch the flags of all the messages for which we get an untagged EXISTS.
+			 * This way, we know which ones are \Seen or not, and we can tell the frontend
+			 * how many new UNSEEN messages there are, not just how many new.
+			 * When we send a preview for the one most RECENT message, we indicate \Seen or not for that,
+			 * but for multiple messages, our heuristics may not be accurate. In particular,
+			 * the case of moving multiple messages into this folder, where at least one of the set outside of the most recent,
+			 * has the \Seen flag.
+			 *
+			 * The downside is this slows things down a bit since we'd now need to issue a new FETCH every time we get untagged EXISTS.
+			 * Then again, we already do that for refreshing the page (listing of messages). */
 		} else if (STARTS_WITH(tmp, "RECENT")) {
-			/* RECENT is basically always accompanied by EXISTS, so this is almost academic,
-			 * since we don't currently use this flag for anything, but for sake of completeness: */
-			/*! \todo We should use this, because not all EXISTS are accompanied by EXISTS.
-			 * For example, if a seen message is copied to this folder.
-			 * We should provide explicit information to the client about whether this
-			 * message is seen or not, using this information. */
+			/* RECENT indicates a brand new message in the mailbox.
+			 * We should only alert about new messages if it's RECENT.
+			 * This helps ensure we avoid false positives, e.g:
+			 * - Microsoft servers will send an untagged EXISTS along with EXPUNGE
+			 *   when a message gets moved out to another folder. There are no new
+			 *   messages, to the EXISTS should be ignored (not trigger a notification).
+			 *   There is no RECENT in this case, so never sending notifications
+			 *   for EXISTS unaccompanied by RECENT ensures we don't do this.
+			 * - A seen message is copied to this mailbox. This will trigger an EXISTS,
+			 *   and also a RECENT, even though the message has the \Seen flag.
+			 * - If a message is marked as unread in the same mailbox, it should trigger
+			 *   an untagged FETCH only. This should never trigger a notification.
+			 *
+			 * The main false positive that could still occur is when a message is moved
+			 * to this folder from another mailbox. However, standard mail clients
+			 * will also do this, so this is not a huge issue. We could try to suppress
+			 * notifications for messages we think were already in the account by looking
+			 * at the INTERNALDATE, but this isn't foolproof either. */
 			client->idlerefresh |= IDLE_REFRESH_RECENT;
 		} else if (STARTS_WITH(tmp, "EXPUNGE")) {
 			if (client->messages) {
@@ -3805,17 +3844,28 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 	if (client->idlerefresh) { /* If there were multiple lines in the IDLE update, batch any updates up and send a single refresh */
 		int r = client->idlerefresh;
 		/* EXPUNGE takes priority, since it involves a mailbox shrinking */
-		const char *reason = r & IDLE_REFRESH_EXPUNGE ? "EXPUNGE" : r & IDLE_REFRESH_EXISTS ? "EXISTS" : r & IDLE_REFRESH_FETCH ? "FETCH" : "";
+		const char *reason = r & IDLE_REFRESH_EXPUNGE ? "EXPUNGE" : r & IDLE_REFRESH_RECENT ? "RECENT" : r & IDLE_REFRESH_EXISTS ? "EXISTS" : r & IDLE_REFRESH_FETCH ? "FETCH" : "";
 		/* In our case, since we're webmail, we can cheat a little and just refresh the current listing.
 		 * The nice thing is this handles both EXISTS and EXPUNGE responses just fine. */
 		idle_stop(ws, client);
 
+		if (r & IDLE_REFRESH_EXPUNGE) {
+			/* The frontend relies on us to tell it how many message, unseen and total, exist following any EXPUNGE in the mailbox. */
+			uint32_t num_total = 0, num_unseen = 0;
+			res = client_status_basic(client->imap, client->mailbox, &num_unseen, &num_total);
+			client->messages = num_total;
+			client->unseen = num_unseen;
+		}
+
 		REFRESH_LISTING(reason);
-		if (r & IDLE_REFRESH_EXISTS) {
+		/* Only counts as a new message if it was RECENT.
+		 * However, we can only infer the sequence number from the untagged EXISTS. */
+		if ((r & IDLE_REFRESH_RECENT) && (r & IDLE_REFRESH_EXISTS)) {
 			/* Send the metadata for message with this sequence number as an unsolicited EXISTS.
 			 * It's probably this message, assuming there's only 1 more message.
 			 * (In the unlikely case there's more than one, we wouldn't want to show multiple notifications anyways, just one suffices.)
 			 * Do NOT automark as seen. This is not a FETCH. */
+			bbs_debug(5, "Sending preview of %s, seqno %u\n", client->mailbox, client->messages);
 			send_preview(ws, client, client->messages);
 		}
 		client->idlerefresh = 0;
