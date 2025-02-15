@@ -212,7 +212,7 @@ static int status_size_fetch_incremental(struct imap_client *client, const char 
 		return -1;
 	}
 	if (oldv != newv) {
-		bbs_verb(4, "Remote UIDVALIDITY changed from %d to %d\n", oldv, newv);
+		bbs_verb(4, "Remote UIDVALIDITY (%s on %s) changed from %d to %d\n", remotename, client->name, oldv, newv);
 		return -1;
 	}
 	if (parse_status_item(old, "MESSAGES", &oldmessages) || parse_status_item(new, "MESSAGES", &newmessages)) {

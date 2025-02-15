@@ -410,9 +410,8 @@ static int generate_mailbox_name(struct imap_session *imap, const char *restrict
 		fulldir++;
 	}
 
-	if (strlen_zero(fulldir)) {
+	if (bbs_assertion_failed(!strlen_zero(fulldir))) {
 		bbs_error("Empty maildir? (%s)\n", maildir);
-		bbs_soft_assert(0);
 		return -1;
 	}
 
@@ -1434,7 +1433,7 @@ static int handle_select(struct imap_session *imap, char *s, enum select_type re
 	}
 	if (imap->client) {
 		int modseq = 0;
-		char *remotename = remote_mailbox_name(imap->client, mailbox);
+		const char *remotename = remote_mailbox_name(imap->client, mailbox);
 		REPLACE(imap->folder, mailbox);
 		/* Reconstruct the SELECT, fortunately this is not too bad */
 		return imap_client_send_wait_response_cb(imap->client, -1, 5000, remote_select_cb, &modseq, "%s \"%s\"\r\n", readonly == CMD_SELECT ? "SELECT" : "EXAMINE", remotename);
@@ -1530,7 +1529,7 @@ static int handle_status(struct imap_session *imap, char *s)
 		return 0;
 	}
 	if (traversal.client) {
-		char *remotename = remote_mailbox_name(traversal.client, mailbox);
+		const char *remotename = remote_mailbox_name(traversal.client, mailbox);
 		int wantsize = strstr(s, "SIZE") ? 1 : 0;
 		/* If the client wants SIZE but the remote server doesn't support it, we'll have to fake it by translating */
 		if (wantsize && !(traversal.client->virtcapabilities & IMAP_CAPABILITY_STATUS_SIZE)) {
@@ -4007,7 +4006,15 @@ cleanup:
 static int idle_stop(struct imap_session *imap)
 {
 	imap->idle = 0;
-	/* IDLE for virtual mailboxes (proxied) is handled in the IDLE command itself */
+	/* IDLE for virtual mailboxes (proxied) is handled in the IDLE command itself,
+	 * so it shouldn't be idling at this point. */
+	if (bbs_assertion_failed(!imap->client || !imap->client->idling)) {
+		/* We're not supposed to be idling, but if we are somehow, stop,
+		 * or successive commands will fail. */
+		if (imap_client_idle_stop(imap->client)) {
+			return -1;
+		}
+	}
 	_imap_reply(imap, "%s OK IDLE terminated\r\n", imap->savedtag); /* Use tag from IDLE request */
 	free_if(imap->savedtag);
 	return 0;
@@ -4207,6 +4214,9 @@ static int handle_idle(struct imap_session *imap)
 
 			if (!client) {
 				if (imap->client) {
+					/* The client wants to do something with the foreground remote client connection.
+					 * We probably just received a "DONE" from the client,
+					 * so go ahead and terminate idling before we return. */
 					imap_client_integrity_check(imap, imap->client);
 					/* Stop idling on the selected mailbox (remote) */
 					if (imap_client_idle_stop(imap->client)) {
@@ -4231,10 +4241,15 @@ static int handle_idle(struct imap_session *imap)
 						 * This here is the case where our local user did something,
 						 * the case of getting activity on a particular client,
 						 * and handling its disconnect in realtime, is handled below. */
+
+						/* Because we were trying to stop IDLE, ensure the client isn't recreated to idling state, since we want to use it.
+						 * imap_recreate_client will enable IDLE if it was previously set, so manually unset it first. */
+						imap->client->idling = 0;
 						imap_recreate_client(imap, imap->client);
+						imap_clients_renew_idle(imap, imap->client); /* No need to renew IDLE on the foreground client, we just recreated it */
 					}
 				}
-				imap_clients_renew_idle(imap); /* In case some of them are close to expiring, renew them now before returning */
+				imap_clients_renew_idle(imap, NULL); /* In case some of them are close to expiring, renew them now before returning */
 				break; /* Client terminated the idle. Stop idling and return to read the next command. */
 			}
 			/* For remote NOTIFY: Some remote IMAP server sent us something.
@@ -4322,7 +4337,7 @@ static int handle_idle(struct imap_session *imap)
 					}
 				}
 			}
-			imap_clients_renew_idle(imap);
+			imap_clients_renew_idle(imap, NULL);
 		} else {
 			/* Nothing yet. Send an "IDLE ping" to check in... */
 			idleleft -= pollms;
@@ -4343,7 +4358,7 @@ static int handle_idle(struct imap_session *imap)
 					imap_send(imap, "OK Still here");
 					lastactivity = now;
 				}
-				imap_clients_renew_idle(imap);
+				imap_clients_renew_idle(imap, NULL);
 			}
 		}
 	}
@@ -4397,8 +4412,9 @@ static int imap_process(struct imap_session *imap, char *s)
 	imap->finalized_response = 0; /* New command, reset */
 
 	if (imap->idle || (imap->alerted == 1 && !strcasecmp(s, "DONE"))) {
-		/* Thunderbird clients will still send "DONE" if we send a tagged reply during the IDLE,
-		 * but Microsoft Outlook will not, so handle both cases, i.e. tolerate the redundant DONE. */
+		/* Mozilla clients will still send "DONE" if we send a tagged reply during the IDLE,
+		 * but Microsoft Outlook will not, so handle both cases, i.e. tolerate the redundant DONE (2nd condition). */
+		bbs_debug(5, "Received %sIDLE termination\n", imap->idle ? "" : "redundant ");
 		return idle_stop(imap);
 	} else if (imap->alerted == 1) {
 		imap->alerted = 2;

@@ -31,6 +31,9 @@
 #include "nets/net_imap/imap.h"
 #include "nets/net_imap/imap_client.h"
 
+/* Per the RFC, don't idle for more than 30 minutes at a time */
+#define MAX_IDLE_SECS 1800
+
 extern unsigned int maxuserproxies;
 
 /* Check client pointers for integrity before/after various operations.
@@ -204,6 +207,11 @@ cleanup:
 
 int imap_client_idle_start(struct imap_client *client)
 {
+	bbs_debug(5, "Starting IDLE for client %s\n", client->name);
+	if (bbs_assertion_failed(!client->idling)) {
+		bbs_warning("Client %s already idling\n", client->name);
+		return -1;
+	}
 	/* Now, IDLE on it so we get updates for that mailbox */
 	if (SWRITE(client->client.wfd, "idle IDLE\r\n") < 0) {
 		return -1;
@@ -220,6 +228,11 @@ int imap_client_idle_start(struct imap_client *client)
 
 int imap_client_idle_stop(struct imap_client *client)
 {
+	bbs_debug(5, "Stopping IDLE for client %s\n", client->name);
+	if (bbs_assertion_failed(client->idling)) {
+		bbs_warning("Client %s not currently idling\n", client->name);
+		return -1;
+	}
 	if (SWRITE(client->client.wfd, "DONE\r\n") < 0) {
 		bbs_error("Failed to write to idling client '%s', must be dead\n", client->name);
 		return -1;
@@ -283,6 +296,8 @@ static struct imap_client *create_client_after_purge(struct imap_session *imap, 
 		 * in which case, this will fail. In that case, just let it go. */
 		if (exists) {
 			bbs_warning("Failed to recreate %s client %s\n", foreground ? "foreground" : "background", name);
+		} else {
+			bbs_debug(3, "Client '%s' does not exist any more in configuration\n", name);
 		}
 		return NULL;
 	}
@@ -299,24 +314,47 @@ int imap_recreate_client(struct imap_session *imap, struct imap_client *client)
 	int was_idling = client->idling;
 	int foreground = imap->client == client;
 	char name[256];
+	char mb_name[256];
 
 	safe_strncpy(name, client->name, sizeof(name)); /* Store name before destroying the client */
+
+	/* If a particular mailbox is selected currently, we need to re-SELECT it after recreation */
+	if (foreground) {
+		const char *remotename = remote_mailbox_name(imap->client, imap->folder);
+		safe_strncpy(mb_name, remotename, sizeof(remotename));
+	}
 
 	/* Destroy old client before creating it again. */
 	if (foreground) {
 		imap->client = NULL;
 	}
 	imap_client_unlink(imap, client); /* returns void, so can't check success */
+	client = NULL;
 
 	/* Now, create it again. */
-	newclient = create_client_after_purge(imap, name, foreground, was_idling);
-	if (newclient && foreground) {
+	newclient = create_client_after_purge(imap, name, foreground, 0); /* Don't resume idling just yet, if we need to SELECT. Do so at the end. */
+	if (!newclient) {
+		bbs_warning("Failed to recreate client %s\n", name);
+		return -1;
+	}
+	if (foreground) {
+		/* Reselect the mailbox that was created.
+		 * Since the client is being recreated transparently, the actual local client may go ahead
+		 * and perform a mailbox operation (e.g. FETCH), so we need to make sure the server is in the
+		 * same state after the recreation as it was before. */
+		bbs_debug(5, "Reselecting previously selected mailbox '%s'\n", mb_name);
+		/* Do not pass anything through from the remote server, since this is supposed to completely transparent.
+		 * None of the untagged SELECT responses should pass through, prior to the tagged IDLE response. */
+		imap_client_send_wait_response_noecho(newclient, -1, 5000, "%s \"%s\"\r\n", "SELECT", mb_name);
 		imap->client = newclient; /* At this point, the new client has been swapped in, and the rest of the module is none the wiser. */
 	}
-	return newclient ? 0 : -1;
+	if (was_idling) {
+		imap_client_idle_start(newclient); /* Resume idling, if that's what it was doing before */
+	}
+	return 0;
 }
 
-void imap_clients_renew_idle(struct imap_session *imap)
+void imap_clients_renew_idle(struct imap_session *imap, struct imap_client *except)
 {
 	struct stringlist deadclients;
 	char *clientname;
@@ -330,7 +368,7 @@ void imap_clients_renew_idle(struct imap_session *imap)
 	RWLIST_WRLOCK(&imap->clients);
 	RWLIST_TRAVERSE_SAFE_BEGIN(&imap->clients, client, entry) {
 		time_t maxage;
-		if (!client->idling || client->dead) {
+		if (!client->idling || client->dead || client == except) {
 			continue;
 		}
 		/* This is when the connection may be terminated.
@@ -348,7 +386,10 @@ void imap_clients_renew_idle(struct imap_session *imap)
 					/* The list is locked at the moment,
 					 * and creating a client entails acquiring that lock,
 					 * so for now, just keep track of what clients we removed,
-					 * and recreate them afterwards. */
+					 * and recreate them afterwards.
+					 *
+					 * The selected mailbox only matters for the foreground client,
+					 * so we don't need to care about it for these. */
 					stringlist_push_tail(&deadclients, client->name);
 					client_destroy(client);
 				}
@@ -582,9 +623,8 @@ ssize_t __imap_client_send_log(struct imap_client *client, int log, const char *
 		return -1;
 	}
 
-	if (client->idling) {
+	if (bbs_assertion_failed(!client->idling)) { /* Could stop idle now if this were to happen, but that would just mask a bug */
 		bbs_warning("Client is currently idling while attempting to write '%.*s'", len, buf);
-		bbs_soft_assert(0); /* Could stop idle now if this were to happen, but that would just mask a bug */
 	}
 
 	if (log) {
@@ -600,12 +640,10 @@ int __imap_client_wait_response(struct imap_client *client, int fd, int ms, int 
 	int taglen;
 	const char *tag = "tag";
 
-	if (!client->imap) {
+	if (bbs_assertion_failed(client->imap != NULL)) {
 		bbs_warning("No active IMAP client?\n"); /* Shouldn't happen... */
-		bbs_soft_assert(0);
-	} else if (strlen_zero(client->imap->tag)) {
+	} else if (bbs_assertion_failed(!strlen_zero(client->imap->tag))) {
 		bbs_warning("No active IMAP tag, using generic one\n");
-		bbs_soft_assert(0);
 	} else {
 		tag = client->imap->tag;
 	}
@@ -627,12 +665,10 @@ int __imap_client_send_wait_response(struct imap_client *client, int fd, int ms,
 	va_list ap;
 	const char *tag = "tag";
 
-	if (!client->imap) {
+	if (bbs_assertion_failed(client->imap != NULL)) {
 		bbs_warning("No active IMAP client?\n"); /* Shouldn't happen... */
-		bbs_soft_assert(0);
-	} else if (strlen_zero(client->imap->tag)) {
+	} else if (bbs_assertion_failed(!strlen_zero(client->imap->tag))) {
 		bbs_warning("No active IMAP tag, using generic one\n");
-		bbs_soft_assert(0);
 	} else {
 		tag = client->imap->tag;
 	}
@@ -652,17 +688,26 @@ int __imap_client_send_wait_response(struct imap_client *client, int fd, int ms,
 
 #if 0
 	/* Somewhat redundant since there's another debug right after */
-	bbs_debug(6, "Passing through command %s (line %d) to remotely mapped '%s'\n", tag, lineno, client->virtprefix);
+	bbs_debug(8, "Passing through command %s (line %d) to remotely mapped '%s'\n", tag, lineno, client->virtprefix);
 #else
 	UNUSED(lineno);
 #endif
 
-	/* Only include this check if it's not the active client,
-	 * since a lot of pass through command code uses imap_client_send,
-	 * in which case this would be a false positive otherwise. */
-	if (client != client->imap->client && client->idling) {
-		bbs_warning("Client is currently idling while attempting to write '%s%s'", tagbuf, buf);
-		bbs_soft_assert(0); /* Could stop idle now if this were to happen, but that would just mask a bug */
+	if (bbs_assertion_failed(!client->idling)) {
+		/* We shouldn't be idling. If we are, it means we're trying to send a command while IDLE,
+		 * which will fail since the only valid input to the server is "DONE".
+		 * For background clients, it's very clear it shouldn't, as it means we failed to call imap_client_idle_stop somewhere.
+		 * Even for foreground clients, it shouldn't happen. Although we do passthrough using imap_client_send to some extent,
+		 * imap_client_idle_start and imap_client_idle_stop are still called on paths where it's the foreground client,
+		 * instead of directly proxying it. The only time this should be true is after imap_poll returns. */
+		bbs_warning("%s client %s was idling while attempting to write '%s%s'",
+			client == client->imap->client ? "Foreground" : "Background", client->virtprefix, tagbuf, buf);
+		/* Could simply stop idle now if this were to happen, but that would just mask a bug,
+		 * hence the assertion, but afterwards, try to rectify and fix so we can proceed. */
+		if (imap_client_idle_stop(client)) {
+			return -1;
+		}
+		/* Okay, now the client is no longer idling for sure */
 	}
 
 	if (bbs_write(client->client.wfd, tagbuf, (unsigned int) taglen) < 0) {
@@ -924,7 +969,7 @@ struct imap_client *__imap_client_get_by_url(struct imap_session *imap, const ch
 		 * to keep these connections alive... */
 		client->maxidlesec = 65; /* ~1 minute */
 	} else {
-		client->maxidlesec = 1800; /* 30 minutes */
+		client->maxidlesec = MAX_IDLE_SECS; /* 30 minutes */
 	}
 
 	client->lastactive = time(NULL); /* Mark as active since we just successfully did I/O with it */
@@ -1118,7 +1163,7 @@ int mailbox_remotely_mapped(struct imap_session *imap, const char *path)
 	return exists;
 }
 
-char *remote_mailbox_name(struct imap_client *client, char *restrict mailbox)
+const char *remote_mailbox_name(struct imap_client *client, char *restrict mailbox)
 {
 	char *tmp, *remotename = mailbox + client->virtprefixlen + 1;
 	/* This is some other server's problem to handle.

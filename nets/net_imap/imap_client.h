@@ -65,8 +65,12 @@ int imap_clients_next_idle_expiration(struct imap_session *imap);
  */
 int imap_recreate_client(struct imap_session *imap, struct imap_client *client);
 
-/*! \brief Renew IDLE on all idling clients that are close to expiring */
-void imap_clients_renew_idle(struct imap_session *imap);
+/*!
+ * \brief Renew IDLE on all idling clients that are close to expiring
+ * \param imap
+ * \param except Renew IDLE on all clients except this one, if non-NULL
+ */
+void imap_clients_renew_idle(struct imap_session *imap, struct imap_client *except);
 
 void imap_client_idle_notify(struct imap_client *client);
 
@@ -148,4 +152,4 @@ struct imap_client *load_virtual_mailbox(struct imap_session *imap, const char *
 int mailbox_remotely_mapped(struct imap_session *imap, const char *path);
 
 /*! \brief Convert a local mailbox name to its name on a remote server */
-char *remote_mailbox_name(struct imap_client *client, char *restrict mailbox);
+const char *remote_mailbox_name(struct imap_client *client, char *restrict mailbox);
