@@ -57,6 +57,7 @@ struct imap_client {
 	char *mailbox;		/* Current mailbox name */
 	uint32_t messages;	/* Cached number of messages in selected mailbox */
 	uint32_t unseen;	/* Cached number of unseen messages in selected mailbox */
+	uint32_t size;		/* Cached mailbox size, used only to provide updated size following EXPUNGE */
 	uint32_t uid;		/* Current message UID */
 	/* Flags */
 	unsigned int authenticated:1;	/* Logged in yet? */
@@ -307,11 +308,12 @@ static char *find_mailbox_response_line(char *restrict s, const char *cmd, const
 	return tmp;
 }
 
-static int client_status_basic(mailimap *imap, const char *mbox, uint32_t *unseen, uint32_t *total)
+static int client_status_basic(struct imap_client *client, const char *mbox, uint32_t *unseen, uint32_t *total, uint32_t *size)
 {
 	int res = 0;
 	struct mailimap_status_att_list *att_list;
 	struct mailimap_mailbox_data_status *status;
+	mailimap *imap = client->imap;
 	clistiter *cur;
 
 	att_list = mailimap_status_att_list_new_empty();
@@ -323,6 +325,9 @@ static int client_status_basic(mailimap *imap, const char *mbox, uint32_t *unsee
 	}
 	if (total) {
 		res = mailimap_status_att_list_add(att_list, MAILIMAP_STATUS_ATT_MESSAGES);
+	}
+	if (size && client->has_status_size) {
+		res = mailimap_status_att_list_add(att_list, MAILIMAP_STATUS_ATT_SIZE);
 	}
 
 	if (res) {
@@ -348,6 +353,11 @@ static int client_status_basic(mailimap *imap, const char *mbox, uint32_t *unsee
 			case MAILIMAP_STATUS_ATT_MESSAGES:
 				if (total) {
 					*total = status_info->st_value;
+				}
+				break;
+			case MAILIMAP_STATUS_ATT_SIZE:
+				if (size) {
+					*size = status_info->st_value;
 				}
 				break;
 			default:
@@ -1235,7 +1245,7 @@ static int client_imap_select(struct ws_session *ws, struct imap_client *client,
 	 * servers that may adhere to such a dumb limitation, but that won't help if this mailbox
 	 * was already selected anyways, and we're merely reselecting it.
 	 */
-	res = client_status_basic(imap, name, &num_unseen, NULL);
+	res = client_status_basic(client, name, &num_unseen, NULL, NULL);
 	if (res != MAILIMAP_NO_ERROR) {
 		return -1;
 	}
@@ -2189,6 +2199,8 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 	json_object_set_new(root, "page", json_integer(page));
 	json_object_set_new(root, "numpages", json_integer(numpages));
 
+	/* This branch isn't used when all the messages in a folder are expunged,
+	 * in that case we short-circuit in handle_fetchlist. */
 	if (!strcmp(reason, "EXPUNGE")) {
 		json_object_set_new(root, "messages", json_integer(client->messages));
 		/* This is only accurate when we have just asked for it, e.g. when an EXPUNGE occurs */
@@ -2455,6 +2467,12 @@ static int handle_fetchlist(struct ws_session *ws, struct imap_client *client, c
 			json_object_set_new(root, "page", json_integer(page));
 			json_object_set_new(root, "numpages", json_integer(1));
 			json_object_set_new(root, "data", json_array());
+			/* If this is due to an EXPUNGE, the frontend is expecting
+			 * an updated number of total and unseen messages.
+			 * Trivial for us to oblige here. */
+			json_object_set_new(root, "messages", json_integer(0));
+			json_object_set_new(root, "unseen", json_integer(0));
+			json_object_set_new(root, "size", json_integer(0));
 			json_send(ws, root);
 		}
 		return 0;
@@ -3851,10 +3869,7 @@ static int on_poll_activity(struct ws_session *ws, void *data)
 
 		if (r & IDLE_REFRESH_EXPUNGE) {
 			/* The frontend relies on us to tell it how many message, unseen and total, exist following any EXPUNGE in the mailbox. */
-			uint32_t num_total = 0, num_unseen = 0;
-			res = client_status_basic(client->imap, client->mailbox, &num_unseen, &num_total);
-			client->messages = num_total;
-			client->unseen = num_unseen;
+			res = client_status_basic(client, client->mailbox, &client->unseen, &client->messages, &client->size);
 		}
 
 		REFRESH_LISTING(reason);
@@ -4045,10 +4060,7 @@ static int on_text_message(struct ws_session *ws, void *data, const char *buf, s
 				 * receive all the IDLE data.
 				 * Thus, explicitly ask for the # of messages in the currently selected mailboxes.
 				 * Again, this is something clients SHOULD NOT do, but we kind of have to... */
-				uint32_t num_total = 0, num_unseen = 0;
-				res = client_status_basic(client->imap, client->mailbox, &num_unseen, &num_total);
-				client->messages = num_total;
-				client->unseen = num_unseen;
+				res = client_status_basic(client, client->mailbox, &client->unseen, &client->messages, &client->size);
 				REFRESH_LISTING("EXPUNGE");
 			}
 		} else if (!strcmp(command, "MOVE")) {
