@@ -82,7 +82,9 @@
 #define sprintf(fmt, ...) Do_not_use_sprintf__use_snprintf
 #define vsprintf(s, fmt, arg) Do_not_use_vsprintf__use_vsnprintf
 /* Force usage of poll instead of the deprecated and unsafe select */
+#ifdef __GLIBC__
 #define select(nfds, readfds, writefds, exceptfds, timeout) Do_not_use_select__use_poll
+#endif
 /* Force usage of thread-safe functions */
 #define localtime(a) Do_not_use_localtime__use_localtime_r
 #define gmtime(a) Do_not_use_gmtime__use_gmtime_r

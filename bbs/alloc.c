@@ -182,7 +182,7 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 
 size_t bbs_malloc_trim(void)
 {
-#ifdef __linux__
+#if defined(__linux__) && defined(__GLIBC__)
 	int res;
 	size_t diff;
 	void *before, *after;

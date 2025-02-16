@@ -28,6 +28,7 @@
 #include <signal.h>
 #include <dirent.h>
 #include <libgen.h> /* use dirname */
+#include <sys/time.h> /* struct timeval for musl */
 
 #include "include/linkedlists.h"
 #include "include/module.h"

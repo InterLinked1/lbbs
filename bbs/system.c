@@ -618,7 +618,7 @@ static int set_limit(int resource, int value)
 		return 0;
 	}
 
-	limit = (unsigned long) value;
+	limit = (rlim_t) value;
 	memset(&r, 0, sizeof(r));
 
 	if (getrlimit(resource, &r)) {

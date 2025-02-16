@@ -15,6 +15,7 @@ PACKAGES_DEBIAN="git gcc make wget build-essential"
 PACKAGES_FEDORA="git gcc make wget"
 PACKAGES_SUSE="git-core gcc make wget gawk"
 PACKAGES_ARCH="git gcc make wget"
+PACKAGES_ALPINE="git gcc make wget build-base musl-dev"
 PACKAGES_FREEBSD="git gcc gmake wget"
 
 # autotools, used by libopenarc, libetpan
@@ -22,18 +23,21 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN autoconf automake pkg-config libtool m4"
 PACKAGES_FEDORA="$PACKAGES_FEDORA autoconf automake pkg-config libtool m4"
 PACKAGES_SUSE="$PACKAGES_SUSE autoconf automake pkg-config libtool m4"
 PACKAGES_ARCH="$PACKAGES_ARCH autoconf automake pkg-config libtool m4"
+PACKAGES_ALPINE="$PACKAGES_ALPINE autoconf automake pkgconf libtool m4"
 
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libncurses-dev" # ncurses
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN ncurses-base ncurses-term" # full/extended terminal definitions
 PACKAGES_FEDORA="$PACKAGES_FEDORA ncurses-devel"
 PACKAGES_SUSE="$PACKAGES_SUSE ncurses-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH ncurses"
+PACKAGES_ALPINE="$PACKAGES_ALPINE ncurses-dev"
 
 # <curl/curl.h> - cURL, OpenSSL variant
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libcurl4-openssl-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA libcurl-devel"
 PACKAGES_SUSE="$PACKAGES_SUSE libcurl-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH curl"
+PACKAGES_ALPINE="$PACKAGES_ALPINE curl-dev"
 PACKAGES_FREEBSD="$PACKAGES_FREEBSD curl"
 
 # <bfd.h>
@@ -41,18 +45,21 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN binutils-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA binutils-devel"
 PACKAGES_SUSE="$PACKAGES_SUSE binutils-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH binutils"
+PACKAGES_ALPINE="$PACKAGES_ALPINE binutils-dev"
 
 # <sys/capability.h>
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libcap-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA libcap-devel"
 PACKAGES_SUSE="$PACKAGES_SUSE libcap-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH libcap"
+PACKAGES_ALPINE="$PACKAGES_ALPINE libcap-dev"
 
 # <uuid/uuid.h>
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libuuid1 uuid-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA libuuid-devel"
 PACKAGES_SUSE="$PACKAGES_SUSE libuuid-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH util-linux-libs"
+PACKAGES_ALPINE="$PACKAGES_ALPINE util-linux-dev"
 
 # sz, rz programs for ZMODEM transfers
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN lrzsz"
@@ -65,6 +72,7 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libssl-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA openssl-devel"
 PACKAGES_SUSE="$PACKAGES_SUSE libopenssl-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH openssl"
+PACKAGES_ALPINE="$PACKAGES_ALPINE openssl-dev"
 
 # Red Hat identical to Fedora so far
 PACKAGES_RHEL="$PACKAGES_FEDORA"
@@ -74,12 +82,14 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libedit-dev libreadline-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA libedit-devel readline-devel"
 PACKAGES_SUSE="$PACKAGES_SUSE libedit-devel readline-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH libedit readline"
+PACKAGES_ALPINE="$PACKAGES_ALPINE readline-dev"
 
 # <bsd/string.h>
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libbsd-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA libbsd-devel"
 PACKAGES_SUSE="$PACKAGES_SUSE libbsd-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH libbsd"
+PACKAGES_ALPINE="$PACKAGES_ALPINE libbsd-dev"
 
 # io_compress: zlib
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN zlib1g-dev"
@@ -102,6 +112,7 @@ PACKAGES_FEDORA="$PACKAGES_FEDORA mariadb-devel"
 # MISSING: mysql-devel for RHEL?
 PACKAGES_SUSE="$PACKAGES_SUSE libmariadb-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH mariadb-libs"
+PACKAGES_ALPINE="$PACKAGES_ALPINE mariadb-dev"
 PACKAGES_FREEBSD="$PACKAGES_FREEBSD mariadb106-client"
 
 # LMDB (mod_lmdb)
@@ -109,6 +120,7 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN liblmdb-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA lmdb-devel"
 # MISSING: SUSE package
 PACKAGES_ARCH="$PACKAGES_ARCH lmdb"
+PACKAGES_ALPINE="$PACKAGES_ALPINE lmdb-dev"
 PACKAGES_FREEBSD="$PACKAGES_FREEBSD lmdb"
 
 # <magic.h> (mod_http)
@@ -116,6 +128,7 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libmagic-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA file-devel"
 PACKAGES_SUSE="$PACKAGES_SUSE file-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH file"
+PACKAGES_ALPINE="$PACKAGES_ALPINE file-dev"
 
 # OpenDKIM (mod_smtp_filter_dkim)
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libopendkim-dev"
@@ -126,6 +139,7 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libjansson-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA jansson-devel"
 PACKAGES_SUSE="$PACKAGES_SUSE libjansson-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH jansson"
+PACKAGES_ALPINE="$PACKAGES_ALPINE jansson-dev"
 PACKAGES_FREEBSD="$PACKAGES_FREEBSD jansson"
 
 # mod_mimeparse
@@ -134,15 +148,18 @@ PACKAGES_FEDORA="$PACKAGES_FEDORA glib2-devel gmime30-devel"
 PACKAGES_RHEL="$PACKAGES_RHEL glib2-devel"
 PACKAGES_SUSE="$PACKAGES_SUSE glib2-devel gmime-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH glib2 gmime3"
+PACKAGES_ALPINE="$PACKAGES_ALPINE glib-dev"
 
 # mod_smtp_filter_arc
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libmilter-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA sendmail-milter-devel"
+PACKAGES_ALPINE="$PACKAGES_ALPINE libmilter-dev"
 
 # mod_smtp_filter_spf
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libspf2-dev"
 # MISSING: RPM package
 PACKAGES_ARCH="$PACKAGES_ARCH libspf2"
+PACKAGES_ALPINE="$PACKAGES_ALPINE libspf2-dev"
 
 # mod_smtp_filter_dmarc
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libopendmarc-dev"
@@ -218,6 +235,13 @@ elif [ "$OS_DIST_INFO" = "SLES" ] || [ "$OS_DIST_INFO" = "openSUSE Tumbleweed" ]
 elif [ -r /etc/arch-release ]; then
 	pacman -Syu --noconfirm
 	pacman -Sy --noconfirm $PACKAGES_ARCH
+elif [ -r /etc/alpine-release ]; then
+	if [ ! -d /usr/local/src ]; then
+		mkdir /usr/local/src
+	fi
+	apk update
+	apk add $PACKAGES_ALPINE
+	apk add --no-cache --update --repository=https://dl-cdn.alpinelinux.org/alpine/v3.16/main/ libexecinfo-dev # for <execinfo.h> in backtrace.c
 elif [ "$OS" = "FreeBSD" ]; then
 	if [ ! -d /usr/local/src ]; then
 		mkdir /usr/local/src
@@ -264,12 +288,16 @@ if [ "$INSTALL_LIBETPAN" != "0" ]; then
 
 	# evergreen (door_evergreen)
 	scripts/evergreen.sh
+else
+	printf "Skipping libetpan install (INSTALL_LIBETPAN=%s)" "$INSTALL_LIBETPAN"
 fi
 
 # mod_smtp_filter_arc
 # milter pre-req can be hard to satisfy, so can be disabled using an env var
 if [ "$INSTALL_LIBOPENARC" != "0" ]; then
 	scripts/libopenarc.sh
+else
+	printf "Skipping libopenarc install (INSTALL_LIBOPENARC=%s)" "$INSTALL_LIBOPENARC"
 fi
 
 # doxygen only: env var required to enable

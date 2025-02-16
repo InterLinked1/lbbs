@@ -46,6 +46,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <sys/time.h> /* struct timeval for musl */
 
 #include <dirent.h> /* for msg_to_filename */
 

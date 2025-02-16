@@ -3,6 +3,8 @@ MAIN_SRC := $(wildcard *.c)
 MAIN_OBJ = $(MAIN_SRC:.c=.o)
 DEPENDS := $(patsubst %.c,%.d,$(MAIN_SRC))
 
+ALPINE_LINUX := $(shell ls /etc/alpine-release | wc -l)
+
 # the include directory is in the parent
 INC = -I..
 
@@ -30,12 +32,16 @@ ifneq ($(LSFRAME_CHECK),1)
 LIBS += -lsframe
 endif
 
-ifeq ($(UNAME_S),Linux)
+ifeq ($(ALPINE_LINUX),1)
+LIBS += -lcap
+else ifeq ($(UNAME_S),Linux)
 LIBS += -lbsd -lcap
 endif
 
 ifeq ($(UNAME_S),FreeBSD)
 LIBS += -lexecinfo -lintl
+else ifeq ($(ALPINE_LINUX),1)
+LIBS += -lexecinfo
 endif
 
 all: $(EXE)

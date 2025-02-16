@@ -19,4 +19,8 @@ git checkout dev
 printf "Compiling libdiscord\n"
 CFLAGS="-fPIC" make shared
 make install
-ldconfig
+if [ -f /etc/alpine-release ]; then
+	ldconfig /etc/ld.so.conf.d
+else
+	ldconfig
+fi

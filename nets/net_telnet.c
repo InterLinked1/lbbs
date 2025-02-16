@@ -36,7 +36,9 @@
 #include <netinet/in.h> /* use sockaddr_in */
 
 /* Expose the telcmds and telopts string arrays */
+#if !defined(linux) || defined(__GLIBC__)
 #define TELCMDS
+#endif
 #define TELOPTS
 #include "arpa/telnet.h"
 

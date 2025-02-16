@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <ftw.h>
+#include <sys/time.h> /* struct timeval for musl */
 #include <time.h> /* use time */
 #include <sys/time.h> /* use gettimeofday */
 #include <libgen.h> /* use dirname, basename (FreeBSD) */
@@ -968,7 +969,11 @@ ssize_t bbs_splice(int fd_in, int fd_out, size_t len)
 {
 	/* Use splice(2) if available, otherwise fall back to sendfile(2) */
 #ifdef __linux__
+#ifdef __GLIBC__
 	off64_t off_in = 0;
+#else
+	off_t off_in = 0;
+#endif /* __GLIBC__ */
 	/* off_in must be NULL if fd_in is a pipe */
 	ssize_t res, written = 0;
 	for (;;) {

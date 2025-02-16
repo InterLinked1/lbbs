@@ -117,6 +117,21 @@ jobs:
       - name: Run basic tests
         run: |
           tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+  alpine-linux:
+    runs-on: ubuntu-24.04
+    name: Alpine Linux
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build LBBS
+        run: |
+          ./scripts/install_prereq.sh
+          make modcheck
+          make modconfig
+          make -j$(nproc)
+          make install
+          make samples
+          make tests
   fedora-42:
     runs-on: ubuntu-24.04
     name: Fedora 42

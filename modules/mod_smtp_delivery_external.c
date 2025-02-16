@@ -167,17 +167,20 @@ static struct stringlist *get_static_routes(const char *domain)
  */
 static int lookup_mx_all(const char *domain, struct stringlist *results)
 {
-	char *hostname, *tmp;
 	unsigned char answer[PACKETSZ] = "";
-	char dispbuf[PACKETSZ] = "";
 	char domainbuf[256];
-	int res, i;
-	ns_msg msg;
-	ns_rr rr;
 	struct mx_records mxs; /* No need to bother locking this list, nobody else knows about it */
-	int priority;
+	int res;
 	struct mx_record *mx;
 	int added = 0;
+	ns_msg msg;
+#if !defined(linux) || defined(__GLIBC__)
+	char dispbuf[PACKETSZ] = "";
+	char *hostname, *tmp;
+	int i;
+	ns_rr rr;
+	int priority;
+#endif
 
 	if (strlen_zero(domain)) {
 		bbs_error("Missing domain\n");
@@ -214,6 +217,11 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 
 	RWLIST_HEAD_INIT(&mxs);
 
+#if defined(linux) && !defined(__GLIBC__)
+	/* ns_sprintrr isn't available with musl */
+	bbs_error("MX record lookups unavailable on this platform, use static mail routing on this system instead\n");
+	return -1;
+#else
 	/* Add each record to our sorted list */
 	for (i = 0; i < res; i++) {
 		ns_parserr(&msg, ns_s_an, i, &rr);
@@ -273,6 +281,7 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 		RWLIST_INSERT_SORTED(&mxs, mx, entry, priority);
 		added++;
 	}
+#endif /* defined(linux) && !defined(__GLIBC__) */
 
 	if (!added) {
 		bbs_warning("No MX records available for %s\n", domain);

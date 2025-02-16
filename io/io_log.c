@@ -30,6 +30,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <ctype.h>
+#include <sys/time.h> /* struct timeval for musl */
 
 #include "include/module.h"
 #include "include/node.h"

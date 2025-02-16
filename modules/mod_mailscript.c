@@ -25,6 +25,10 @@
 #include <regex.h>
 #include <float.h>
 
+#if defined(linux) && !defined(__GLIBC__)
+#include <libgen.h> /* use non-GNU basename */
+#endif
+
 #include "include/module.h"
 #include "include/system.h"
 #include "include/stringlist.h"
@@ -383,6 +387,11 @@ static int exec_cmd(struct smtp_msg_process *mproc, char *s)
 			}
 
 			/* Calculate the path of the temp file we are going to create */
+#if defined(linux) && !defined(__GLIBC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+#pragma GCC diagnostic ignored "-Wcast-qual"
+#endif
 			res = bbs_transfer_home_config_file(mproc->userid, basename(mproc->datafile), tmpfile, sizeof(tmpfile));
 			if (res == -1) {
 				return 1; /* Couldn't calculate path */

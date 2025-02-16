@@ -351,7 +351,7 @@ static int cli_compression(struct bbs_cli_args *a)
 		char send_pct[13], recv_pct[13];
 		snprintf(send_pct, sizeof(send_pct), "%d%%", (int) (100.0 * (double) z->sentbytes_comp / (double) z->sentbytes));
 		snprintf(recv_pct, sizeof(recv_pct), "%d%%", (int) (100.0 * (double) z->recvbytes_comp / (double) z->recvbytes));
-#ifdef __linux__
+#if defined(__linux__) && defined(__GLIBC__)
 		bbs_dprintf(a->fdout, "%3d %3d %8d %8d %5d %11lu %11lu %11lu %11lu %6s %6s %lu\n",
 			z->rpfd[0], z->wpfd[1], z->orig_rfd, z->orig_wfd, z->level, z->sentbytes, z->sentbytes_comp, z->recvbytes, z->recvbytes_comp, send_pct, recv_pct, z->thread);
 #else

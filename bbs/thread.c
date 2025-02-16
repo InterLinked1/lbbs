@@ -364,7 +364,9 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 			/* Now, proceed as normal and do a ~blocking pthread_join */
 			/* Seems that after using pthread_timedjoin_np, you can't do a blocking pthread_join anymore? So loop */
 			while (res && res == ETIMEDOUT) {
+#if defined(__linux__) && defined(__GLIBC__)
 				bbs_debug(9, "Thread %lu not yet joined after %lus\n", thread, ts.tv_sec);
+#endif
 				bbs_safe_sleep(250);
 				ts.tv_sec = 1; /* XXX Even this doesn't seem to make it work right */
 				res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts);

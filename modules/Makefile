@@ -13,6 +13,13 @@ GMIME_FLAGS := $(filter-out -I/usr/include/libassuan2%,$(GMIME_FLAGS))
 GMIME_LIBS=$(shell pkg-config --libs glib-2.0 gmime-3.0)
 MYSQL_LIBS := $(shell mysql_config --libs)
 
+ALPINE_LINUX := $(shell ls /etc/alpine-release | wc -l)
+MOD_WEBMAIL_LIBS := -ljansson -lssl -lcrypto
+ifneq ($(ALPINE_LINUX),1)
+MOD_WEBMAIL_LIBS += -ldb-5.3
+endif
+MOD_WEBMAIL_LIBS += -lz
+
 ETPANCFLAGS=-I/usr/local/include
 
 all: $(MOD_SO)
@@ -120,7 +127,7 @@ mod_smtp_filter_spf.so : mod_smtp_filter_spf.o
 
 mod_webmail.so : mod_webmail.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -ljansson -lssl -lcrypto -ldb-5.3 -lz -L/usr/local/lib -Wl,-rpath=/usr/local/lib/ -letpan
+	$(CC) -shared -fPIC -o $(basename $^).so $^ $(MOD_WEBMAIL_LIBS) -L/usr/local/lib -Wl,-rpath=/usr/local/lib/ -letpan
 
 # Don't automatically remove intermediate .o files, to prevent unnecessary recompilations
 .SECONDARY: $(patsubst %.c,%.o,$(MOD_SRC))

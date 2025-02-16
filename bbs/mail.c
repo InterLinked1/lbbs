@@ -31,6 +31,10 @@
 #include <unistd.h> /* use close */
 #include <sys/time.h> /* use gettimeofday */
 
+#if defined(linux) && !defined(__GLIBC__)
+#include <libgen.h> /* use non-GNU basename */
+#endif
+
 #ifdef __FreeBSD__
 #include <libgen.h> /* use basename */
 #endif

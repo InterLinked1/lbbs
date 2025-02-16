@@ -25,6 +25,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/time.h> /* struct timeval for musl */
 #include <netinet/in.h> /* use sockaddr_in */
 #include <net/if.h> /* use ifreq */
 #include <sys/un.h>	/* use struct sockaddr_un */

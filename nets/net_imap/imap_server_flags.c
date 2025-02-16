@@ -22,7 +22,7 @@
 #include <string.h>
 #include <ctype.h>
 
-#ifdef __linux__
+#if defined(linux) && defined(__GLIBC__)
 #include <bsd/string.h>
 #endif
 

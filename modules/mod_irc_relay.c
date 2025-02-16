@@ -25,7 +25,7 @@
 #include <signal.h>
 #include <unistd.h>
 
-#ifdef __linux__
+#if defined(__linux__) && defined(__GLIBC__)
 #include <bsd/string.h>
 #endif
 

@@ -19,7 +19,7 @@
 
 #include "include/bbs.h"
 
-#include <wait.h>
+#include <sys/wait.h>
 
 #include "include/module.h"
 #include "include/utils.h"
