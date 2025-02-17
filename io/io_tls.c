@@ -243,6 +243,21 @@ static void ssl_fd_free(struct ssl_fd *sfd)
 }
 
 static int needcreate = 1; /* Whether the list of TLS sessions is stale and needs to be rebuilt */
+static int defer_rebuild = 0; /* Whether to defer the next rebuild of the session list */
+
+/*! \note It's possible it might not be in the list, because the owner thread has already called ssl_unregister_fd,
+ * in which case there's no need to do anything. */
+#define MARK_DEAD(s) \
+	RWLIST_TRAVERSE(&sslfds, sfd, entry) { \
+		if (sfd->ssl == s) { \
+			if (sfd->dead) { /* Shouldn't happen since we rebuild traversal list after MARK_DEAD */ \
+				bbs_warning("SSL connection %p already marked as dead?\n", sfd->ssl); \
+			} \
+			sfd->dead = 1; \
+			bbs_debug(5, "SSL connection %p now marked as dead\n", sfd->ssl); \
+			break; \
+		} \
+	} \
 
 static int ssl_unregister_fd(SSL *ssl)
 {
@@ -253,7 +268,9 @@ static int ssl_unregister_fd(SSL *ssl)
 	if (sfd) {
 		/* Any list of SSL sessions is now stale, since it
 		 * could potentially include the session we just removed. */
+		MARK_DEAD(ssl);
 		needcreate = 1;
+		defer_rebuild = 1;
 	}
 	RWLIST_UNLOCK(&sslfds);
 	if (sfd) {
@@ -282,20 +299,6 @@ static void ssl_cleanup_fds(void)
 }
 
 static pthread_t ssl_thread;
-
-/*! \note It's possible it might not be in the list, because the owner thread has already called ssl_unregister_fd,
- * in which case there's no need to do anything. */
-#define MARK_DEAD(s) \
-	RWLIST_TRAVERSE(&sslfds, sfd, entry) { \
-		if (sfd->ssl == s) { \
-			if (sfd->dead) { /* Shouldn't happen since we rebuild traversal list after MARK_DEAD */ \
-				bbs_warning("SSL connection %p already marked as dead?\n", sfd->ssl); \
-			} \
-			sfd->dead = 1; \
-			bbs_debug(5, "SSL connection %p now marked as dead\n", sfd->ssl); \
-			break; \
-		} \
-	} \
 
 /*! \brief Dump TLS sessions */
 static int cli_tls(struct bbs_cli_args *a)
@@ -353,6 +356,8 @@ static void *ssl_io_thread(void *unused)
 	char buf[8192];
 	int pending;
 	int inovertime = 0, overtime = 0, num_deferred_writes = 0;
+#define MAX_DEFERRED_REBUILDS 12
+	int max_deferred_rebuilds = MAX_DEFERRED_REBUILDS; /* Maximum number of rebuilds that can be deferred before we rebuild no matter what */
 	char err_msg[1024];
 
 	UNUSED(unused);
@@ -362,10 +367,32 @@ static void *ssl_io_thread(void *unused)
 	/* Only recreate pfds when we read from the alertpipe, otherwise, it's the same file descriptors the next round */
 	for (;;) {
 		if (needcreate) {
+			/* Because some types of connections involve many TLS sessions (e.g. a mail session with client proxies to many other servers),
+			 * when the parent connection gets torn down, we could have many TLS connections all being torn down at once.
+			 * Naively, we might rebuild the TLS session list as each one is torn down, all within ms of each other,
+			 * but this is clearly inefficient.
+			 * As an optimization, before rebuilding the list, wait a few ms for something else to happen. */
 			int numdead = 0;
 			if (ssl_shutting_down) {
 				bbs_debug(4, "SSL I/O thread has been instructed to exit\n");
 				break; /* We're shutting down. */
+			}
+			while (defer_rebuild) {
+				defer_rebuild = 0; /* Not protected by lock, but that's okay */
+				if (!max_deferred_rebuilds--) {
+					max_deferred_rebuilds = MAX_DEFERRED_REBUILDS;
+					bbs_debug(8, "Maximum deferred rebuilds reached, rebuilding immediately\n");
+					break;
+				}
+				bbs_debug(8, "Temporarily deferring rebuild of TLS session list\n");
+				/* If another session needs servicing, ideally we should stop waiting and handle it immediately.
+				 * However, polling with the existing pfds here won't be accurate,
+				 * since the session that ended originally still has activity on it.
+				 * We could update the poll list so it's accurate, but that is precisely the work we are trying to avoid here.
+				 * So just sleep for a very short period of time that is unlikely to disrupt any active sessions. */
+				if (bbs_safe_sleep(2)) { /* Wait 2 ms */
+					break;
+				}
 			}
 			bbs_debug(8, "Rebuilding TLS session list\n");
 			needcreate = 0;
