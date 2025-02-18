@@ -36,6 +36,7 @@
 #include "include/utils.h" /* use bbs_dir_traverse */
 #include "include/node.h"
 #include "include/cli.h"
+#include "include/event.h"
 
 #define BBS_MODULE_DIR DIRCAT("/usr/lib", DIRCAT(BBS_NAME, "modules"))
 
@@ -1578,11 +1579,20 @@ static int cli_reloadhandlers(struct bbs_cli_args *a)
 	return 0;
 }
 
-static int reload_core(const char *name, int fd)
+int bbs_reload(const char *name, int fd)
 {
 	int res = 0;
 	int reloaded = 0;
 	struct reload_handler *r;
+
+	/* If the reload was triggered by the main thread,
+	 * (as opposed to a reload initiated by a console),
+	 * then there isn't anywhere the output needs to (or should) go.
+	 * We can send it to STDOUT, even if we are daemonized,
+	 * that will just get safely discarded. */
+	if (fd == -1) {
+		fd = STDOUT_FILENO;
+	}
 
 	if (bbs_is_shutting_down()) {
 		/* Can't reload if shutting down, particularly as
@@ -1607,10 +1617,17 @@ static int reload_core(const char *name, int fd)
 		}
 	}
 	RWLIST_UNLOCK(&reload_handlers);
+	bbs_event_dispatch(NULL, EVENT_RELOAD);
 	if (!res && reloaded) {
 		/* We reloaded at least one thing, and everything reloaded successfully */
 		return 0;
 	}
+	return 1;
+}
+
+static int reload_core(const char *name, int fd)
+{
+	int res = bbs_reload(name, fd);
 	if (res) {
 		/* Handler(s) failed to reload */
 		bbs_dprintf(fd, "%s\n", name ? "Reload failed" : "Full or partial reload failure");

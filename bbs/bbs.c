@@ -52,6 +52,7 @@
 #include <sys/ioctl.h>
 
 #include "include/module.h" /* use load_modules */
+#include "include/reload.h"
 #include "include/alertpipe.h"
 #include "include/os.h"
 #include "include/system.h"
@@ -298,8 +299,10 @@ static int run_init(int argc, char *argv[])
 			return -1;
 		}
 		if (chown(BBS_RUN_DIR, pw->pw_uid, -1)) {
-			fprintf(stderr, "Unable to chown run directory to %d (%s)\n", (int) pw->pw_uid, runuser);
-			return -1;
+			if (eaccess(BBS_RUN_DIR, X_OK)) { /* If we don't already have the right permissions, then that's an issue */
+				fprintf(stderr, "Unable to chown run directory to %d (%s)\n", (int) pw->pw_uid, runuser);
+				return -1;
+			}
 		}
 		if (eaccess(BBS_LOG_DIR, R_OK)) {
 			if (mkdir(BBS_LOG_DIR, 0744)) { /* Directory must be executable to be able to create files in it */
@@ -617,8 +620,6 @@ static void __sigint_handler(int num)
 {
 	time_t now;
 
-	UNUSED(num);
-
 	if (getpid() != bbs_pid) {
 		/* __sigint_handler triggered from child process before it was removed in system.c (race condition). Just abort.
 		 * Remember, must NEVER call bbs_log within a child, it will deadlock waiting for the log lock. */
@@ -649,21 +650,27 @@ static void __sigint_handler(int num)
 		 return;
 	}
 	now = time(NULL);
-	if (!last_shutdown_attempt || last_shutdown_attempt < now - 10) {
-		/* ^C in a remote console just exits the console, while
-		 * ^C in the foreground console terminates the BBS.
-		 * It is easy to forget which console you are in and
-		 * accidentally kill the entire BBS when you just meant to exit the console.
-		 * Try to prevent this from happening by asking if that's what the sysop really wants. */
-		last_shutdown_attempt = now;
-		if (!strlen_zero(bbs_hostname())) {
-			printf("\n%sReally shut down the BBS on %s? Press ^C again within 10s to confirm.%s\n", COLOR(TERM_COLOR_RED), bbs_hostname(), COLOR_RESET); /* XXX technically not safe to use in signal handler */
-		} else {
-			printf("\n%sReally shut down the BBS? Press ^C again within 10s to confirm.%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET); /* XXX technically not safe to use in signal handler */
+
+	/* Prompt for confirmation with SIGINT.
+	 * No confirmation for SIGTERM. */
+	if (num == SIGINT) {
+		if (!last_shutdown_attempt || last_shutdown_attempt < now - 10) {
+			/* ^C in a remote console just exits the console, while
+			 * ^C in the foreground console terminates the BBS.
+			 * It is easy to forget which console you are in and
+			 * accidentally kill the entire BBS when you just meant to exit the console.
+			 * Try to prevent this from happening by asking if that's what the sysop really wants. */
+			last_shutdown_attempt = now;
+			if (!strlen_zero(bbs_hostname())) {
+				printf("\n%sReally shut down the BBS on %s? Press ^C again within 10s to confirm.%s\n", COLOR(TERM_COLOR_RED), bbs_hostname(), COLOR_RESET); /* XXX technically not safe to use in signal handler */
+			} else {
+				printf("\n%sReally shut down the BBS? Press ^C again within 10s to confirm.%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET); /* XXX technically not safe to use in signal handler */
+			}
+			return;
 		}
-		return;
+		bbs_debug(2, "Got SIGINT, requesting shutdown\n"); /* XXX technically not safe to use in signal handler */
 	}
-	bbs_debug(2, "Got SIGINT, requesting shutdown\n"); /* XXX technically not safe to use in signal handler */
+
 	want_shutdown = 1;
 	if (bbs_alertpipe_write(sig_alert_pipe) < 0) {
 		/* Don't use BBS log functions within a signal handler */
@@ -732,6 +739,19 @@ static void __sigusr1_handler(int num)
 
 static struct sigaction sigusr1_handler = {
 	.sa_handler = __sigusr1_handler,
+};
+
+static void __sigusr2_handler(int num)
+{
+	UNUSED(num);
+
+	/* Execute reload handlers */
+#define ALL_RELOAD_HANDLER_INDICATOR "*"
+	bbs_request_module_unload(ALL_RELOAD_HANDLER_INDICATOR, 1); /* The 2nd argument doesn't matter in this case */
+}
+
+static struct sigaction sigusr2_handler = {
+	.sa_handler = __sigusr2_handler,
 };
 
 /*!
@@ -811,8 +831,18 @@ static void *monitor_sig_flags(void *unused)
 		bbs_mutex_lock(&sig_lock);
 		bbs_alertpipe_read(sig_alert_pipe);
 		if (task_modulename[0]) {
-			bbs_debug(1, "Asynchronously %s module '%s'\n", task_reload ? "reloading" : "unloading", task_modulename);
-			task_reload ? bbs_module_reload(task_modulename, 0) : bbs_module_unload(task_modulename);
+			if (!strcmp(task_modulename, ALL_RELOAD_HANDLER_INDICATOR)) {
+				/* Reload configuration
+				 * Note: This does NOT reload all modules,
+				 * it only executes all registered reload handlers
+				 * to reload the configuration in those modules. */
+				bbs_debug(1, "Asynchronously executing all reload handlers\n");
+				bbs_reload(NULL, -1);
+			} else {
+				/* Reload a specific module */
+				bbs_debug(1, "Asynchronously %s module '%s'\n", task_reload ? "reloading" : "unloading", task_modulename);
+				task_reload ? bbs_module_reload(task_modulename, 0) : bbs_module_unload(task_modulename);
+			}
 			task_modulename[0] = '\0';
 			bbs_mutex_unlock(&sig_lock);
 		} else if (want_shutdown) {
@@ -941,7 +971,7 @@ static void set_signals(void)
 {
 	/* Use sigaction instead of signal, since it's the more modern and well-behaving API: */
 	sigaction(SIGINT, &sigint_handler, NULL);
-	sigaction(SIGTERM, &sigint_handler, NULL);
+	sigaction(SIGTERM, &sigint_handler, NULL); /* Almost identical handling, but without a confirmation */
 	if (!option_nofork) {
 		/* If daemonized, we get a SIGHUP whenever a remote sysop console disconnects... ignore it,
 		 * or the BBS will get killed by the signal.
@@ -963,6 +993,7 @@ static void set_signals(void)
 	}
 	sigaction(SIGWINCH, &sigwinch_handler, NULL);
 	sigaction(SIGUSR1, &sigusr1_handler, NULL);
+	sigaction(SIGUSR2, &sigusr2_handler, NULL); /* Used for reload, since SIGHUP is ignored */
 	sigaction(SIGPIPE, &ignore_sig_handler, NULL);
 }
 

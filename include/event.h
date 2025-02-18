@@ -14,8 +14,9 @@
  */
 
 enum bbs_event_type {
-	EVENT_STARTUP = 0,
-	EVENT_SHUTDOWN,
+	EVENT_STARTUP = 0,				/*!< BBS is fully started */
+	EVENT_SHUTDOWN,					/*!< BBS is going to shut down */
+	EVENT_RELOAD,					/*!< BBS reloaded configuration */
 	EVENT_NODE_SHORT_SESSION,		/*!< Extremely short node session (where abnormal) */
 	EVENT_NODE_ENCRYPTION_FAILED,	/*!< TLS setup failed */
 	EVENT_NODE_LOGIN_FAILED,		/*!< Authentication failed */

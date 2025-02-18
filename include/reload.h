@@ -23,3 +23,11 @@
  *       Reload handlers are automatically unregistered only at shutdown.
  */
 int bbs_register_reload_handler(const char *name, const char *description, int (*reloader)(int fd));
+
+/*!
+ * \brief Execute reload handler(s)
+ * \param name Handler to execute. If NULL, all handlers will be executed.
+ * \param fd File descriptor for output messages from handlers, -1 to discard
+ * \retval 0 on success, -1 if no handlers could be executed, 1 if any handlers returned nonzero
+ */
+int bbs_reload(const char *name, int fd);

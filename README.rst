@@ -99,6 +99,7 @@ To install LBBS, you will need to compile it from source. Fortunately, we've mad
      make
      make install
      make samples
+     make service
 
 (Running :code:`make modcheck` is optional. It will tell you all the modules that are available and which will be disabled for the current build.
 Running :code:`make modconfig` is what actually makes changes to the build environment, disabling any modules with unmet dependencies.)
@@ -256,6 +257,11 @@ Note that this method is not as secure as the first method, but is likely to wor
 Finally, note that many systems already have daemons running on the standard ports, e.g.
 sshd, telnetd, Apache web server, etc. If these are present, you will need to resolve the conflict, as only one
 program can bind to a port at any given time.
+
+How do I run the BBS as a service under systemd?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Run :code:`make service`, and this will install the service file for systemd to use.
 
 Can I run SSH and SFTP on the same port?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

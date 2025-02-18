@@ -172,6 +172,14 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libsieve2-dev"
 # MISSING: RPM package
 # MISSING: Arch package
 
+# mod_systemd
+PACKAGES_DEBIAN="$PACKAGES_DEBIAN libsystemd-dev"
+PACKAGES_FEDORA="$PACKAGES_FEDORA systemd-devel"
+PACKAGES_RHEL="$PACKAGES_RHEL systemd-devel"
+PACKAGES_ARCH="$PACKAGES_ARCH systemd-libs"
+# Alpine Linux doesn't use systemd, so no need for that here!
+# No systemd on FreeBSD, or other Unices
+
 # Soft dependencies
 # used for bc (executed by 'calc' in door_utils)
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN bc"

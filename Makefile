@@ -173,6 +173,13 @@ samples : templates
 	fi
 	cp -n configs/*.conf /etc/lbbs
 
+# Don't allow the service to be installed if the module couldn't be built
+service : modules/mod_systemd.so
+	$(INSTALL) -m 644 configs/lbbs.service "/etc/systemd/system/lbbs.service"
+	systemctl enable lbbs.service
+	# Even if the BBS is already running, this will return 0
+	systemctl start lbbs
+
 doxygen :
 # apt-get install -y doxygen graphviz
 	doxygen Doxyfile.in

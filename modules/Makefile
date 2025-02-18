@@ -13,7 +13,7 @@ GMIME_FLAGS := $(filter-out -I/usr/include/libassuan2%,$(GMIME_FLAGS))
 GMIME_LIBS=$(shell pkg-config --libs glib-2.0 gmime-3.0)
 MYSQL_LIBS := $(shell mysql_config --libs)
 
-ALPINE_LINUX := $(shell ls /etc/alpine-release | wc -l)
+ALPINE_LINUX := $(shell ls /etc/alpine-release 2>/dev/null | wc -l)
 MOD_WEBMAIL_LIBS := -ljansson -lssl -lcrypto
 ifneq ($(ALPINE_LINUX),1)
 MOD_WEBMAIL_LIBS += -ldb-5.3
@@ -124,6 +124,10 @@ mod_smtp_filter_dmarc.so : mod_smtp_filter_dmarc.o
 mod_smtp_filter_spf.so : mod_smtp_filter_spf.o
 	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lspf2
+
+mod_systemd.so : mod_systemd.o
+	@echo "  [LD] $^ -> $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lsystemd
 
 mod_webmail.so : mod_webmail.o
 	@echo "  [LD] $^ -> $@"

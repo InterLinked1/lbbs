@@ -85,6 +85,8 @@ const char *bbs_event_name(enum bbs_event_type type)
 			return "STARTUP";
 		case EVENT_SHUTDOWN:
 			return "SHUTDOWN";
+		case EVENT_RELOAD:
+			return "RELOAD";
 		case EVENT_NODE_SHORT_SESSION:
 			return "NODE_SHORT_SESSION";
 		case EVENT_NODE_ENCRYPTION_FAILED:
@@ -156,6 +158,7 @@ int bbs_event_dispatch_custom(struct bbs_node *node, enum bbs_event_type type, c
 	switch (type) {
 		case EVENT_STARTUP:
 		case EVENT_SHUTDOWN:
+		case EVENT_RELOAD:
 			break;
 		case EVENT_USER_REGISTRATION:
 		case EVENT_USER_LOGIN:
