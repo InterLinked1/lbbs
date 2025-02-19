@@ -144,18 +144,48 @@ int bbs_log_init(int nofork)
 		return -1;
 	}
 
+	/* Open the log file */
 	snprintf(logfile, sizeof(logfile), "%s/%s", BBS_LOG_DIR, "bbs.log");
-	logstdout = nofork;
-	stdoutavailable = nofork;
-
 	if (!(logfp = fopen(logfile, "a"))) {
 		fprintf(stderr, "Unable to open log file: %s (%s)\n", logfile, strerror(errno));
 		return -1;
 	}
 	fprintf(logfp, "=== BBS logger initialization (pid %d) ===\n", bbs_gettid());
-	if (logstdout) {
+
+	stdoutavailable = nofork;
+	if (stdoutavailable) {
 		fflush(stdout);
 	}
+
+	/* Refine our determination of whether we can actually log to STDOUT or not. */
+	if (stdoutavailable && !isatty(STDOUT_FILENO)) {
+		/* Even if we didn't daemonize, that doesn't mean we can actually write logs to STDOUT.
+		 * We could check if isatty(STDOUT), but that isn't necessarily what we want.
+		 * For example, under systemd, if StandardOutput isn't null, we may want to allow systemd to collect
+		 * logs sent to STDOUT.
+		 * However, if StandardOutput=null, then STDOUT and friends are redirected to /dev/null,
+		 * and then there is literally no point in logging anything there.
+		 * It won't cause an error, but it's extra work for nothing.
+		 * So, at startup, check if STDOUT is actually connected to something "useful" (whether it's a TTY or not),
+		 * or if it's /dev/null. If the latter, then disable the ability to log to STDOUT. */
+		struct stat stdout, devnull;
+		if (fstat(STDOUT_FILENO, &stdout) || !S_ISCHR(stdout.st_mode)) {
+			bbs_warning("fstat failed: %s\n", strerror(errno));
+		} else if (stat("/dev/null", &devnull)) {
+			bbs_warning("stat failed: %s\n", strerror(errno));
+		} else {
+			/* If STDOUT and /dev/null are both devices with the same inode,
+			 * then the former was redirected to the latter. */
+			if (stdout.st_dev == devnull.st_dev && stdout.st_ino == devnull.st_ino) {
+				bbs_debug(1, "Disabling logging to STDOUT, since it's redirected to /dev/null\n");
+				/* Okay, fine. Now we can save a little work for every log message. */
+				stdoutavailable = 0;
+			}
+		}
+	}
+
+	logstdout = stdoutavailable; /* Default */
+
 	if (bbs_cli_register_multiple(cli_commands_logger)) {
 		return -1;
 	}
@@ -165,7 +195,7 @@ int bbs_log_init(int nofork)
 int bbs_set_stdout_logging(int enabled)
 {
 	if (enabled && !stdoutavailable) {
-		bbs_debug(1, "Can't enable logging to stdout when daemonized\n");
+		bbs_debug(1, "Can't enable logging to stdout when daemonized or when STDOUT is redirected to /dev/null\n");
 		return -1;
 	}
 	logstdout = enabled;
