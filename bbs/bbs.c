@@ -972,23 +972,34 @@ static void set_signals(void)
 	/* Use sigaction instead of signal, since it's the more modern and well-behaving API: */
 	sigaction(SIGINT, &sigint_handler, NULL);
 	sigaction(SIGTERM, &sigint_handler, NULL); /* Almost identical handling, but without a confirmation */
-	if (!option_nofork) {
-		/* If daemonized, we get a SIGHUP whenever a remote sysop console disconnects... ignore it,
-		 * or the BBS will get killed by the signal.
-		 * Frequently used by daemonized processes to reread their configuration,
-		 * for now we just ignore it.
-		 * If running in the foreground, then allow SIGHUP to terminate as usual.
+	if (!option_nofork || !isatty(STDOUT_FILENO)) {
+		/* SIGHUP is conventionally used by daemon processes to reload their configuration,
+		 * since they don't typically need to deal with TTYs closing.
 		 *
-		 * Also, note that installing SIG_IGN (via &ignore_sig_handler)
-		 * is critically important here. Per sigaction(2), on execve,
-		 * handled signals are reset to the default, while ignored
-		 * signals are left unchanged.
+		 * If the BBS is run with a foreground console though, then it may make sense to
+		 * allow SIGHUP to be processed per its prescribed meaning and terminate the BBS.
+		 *
+		 * However, not all instances of the BBS running in the foreground mean that
+		 * we should process SIGHUP. For example, under systemd, the BBS is run in the
+		 * foreground (not daemonized), but we won't have a TTY available,
+		 * so it doesn't make sense to process SIGHUP in this case, either.
+		 *
+		 * For both of these scenarios, we explicitly ignore SIGHUP using SIG_IGN.
+		 * Note that installing SIG_IGN (via &ignore_sig_handler) is critically important here.
+		 * Per sigaction(2), on execve, handled signals are reset to the default,
+		 * while ignored signals are left unchanged.
 		 *
 		 * Using SIG_IGN for SIGHUP avoids an issue with BBS restarts where
 		 * as soon as we execvp to restart, the BBS is killed with a SIGHUP signal.
 		 * Previously, this would occur sporadically (and only when the BBS is daemonized).
 		 * (stracing the BBS prior to the restart would make this happen consistently.)
-		 * With SIG_IGN, the signal is reliably ignored, including across restarts. */
+		 * With SIG_IGN, the signal is reliably ignored, including across restarts.
+		 *
+		 * Because we ignore SIGHUP, in some cases even while running as a service,
+		 * we can't use SIGHUP for its alternate conventional use of triggering a reload.
+		 * Instead, we use SIGUSR2 for that. This allows us to safely ignore SIGHUP
+		 * when we don't need to receive it from a foreground console disconnect.
+		 */
 		sigaction(SIGHUP, &ignore_sig_handler, NULL);
 	}
 	sigaction(SIGWINCH, &sigwinch_handler, NULL);

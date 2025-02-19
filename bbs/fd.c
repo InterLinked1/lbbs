@@ -211,6 +211,28 @@ int __bbs_open(const char *file, int line, const char *func, const char *path, i
 	va_list ap;
 	int mode;
 
+/* Proactively ensure we don't inadvertently acquire controlling terminal.
+ * Okay to enable in production. */
+#define CHECK_FOR_CONTROLLING_TERMINAL
+
+/* Always add the O_NOCTTY flag blindly to every open().
+ * While this is correct and harmless, this should not normally be used since it masks bugs,
+ * the bugs being not using O_NOCTTY at the appropriate calling site.
+ * Only use for debugging when things have already gone wrong. */
+/* #define PREVENT_ACCIDENTAL_CONTROLLING_TERMINAL */
+
+#ifdef PREVENT_ACCIDENTAL_CONTROLLING_TERMINAL
+#if O_NOCTTY != 0
+	/* Since there is really never a scenario in which we want to acquire controlling terminal
+	 * by opening something, it is always safe to do this.
+	 * In fact, on many non-Linux systems, O_NOCTTY is 0 (which honestly makes more sense).
+	 * However, to be semantic, the open call itself should have O_NOCTTY if needed.
+	 * Therefore, rather than always blindly adding this flag,
+	 * this should only be done for debugging (since doing this will make it work properly). */
+	flags |= O_NOCTTY;
+#endif
+#endif /* PREVENT_ACCIDENTAL_CONTROLLING_TERMINAL */
+
 	if (flags & O_CREAT) {
 		char sflags[80];
 		va_start(ap, flags);
@@ -240,6 +262,28 @@ int __bbs_open(const char *file, int line, const char *func, const char *path, i
 		res = open(path, flags);
 		STORE_COMMON_HELPER(res, "open", "\"%s\",%d", path, flags);
 	}
+
+#ifdef CHECK_FOR_CONTROLLING_TERMINAL
+	/* We do not want to ever have any controlling terminal.
+	 * Otherwise, when it exits, the BBS receives a SIGHUP.
+	 * In the worst case, this could cause the BBS to exit if the signal isn't ignored.
+	 * At best, it's wasting a signal that can be used for other purposes. */
+	if (res != -1 && isatty(res) && !(flags & O_NOCTTY)) {
+		/* We only need to bother checking if the returned file descriptor is a TTY to begin with,
+		 * and if the original flags did NOT include O_NOCTTY, since if they did, it wouldn't be. */
+		int ctty = open("/dev/tty", 0); /* If it's not -1, that means we're a controlling terminal (BAD!) */
+		/* If we got here, this assertion is almost certainly going to fail... but confirm, to be sure */
+		if (bbs_assertion_failed(ctty == -1)) {
+			/* Technically, just because we happen to have a controlling terminal now,
+			 * doesn't mean this open is what actually caused that.
+			 * Something else may have happened just prior to the open() call, or just after it.
+			 * But there's a good chance this is the offender. */
+			__bbs_log(LOG_WARNING, 0, file, line, func, "Yikes, we just acquired a controlling terminal!\n");
+			close(ctty);
+		}
+	}
+#endif
+
 	return res;
 }
 

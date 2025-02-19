@@ -124,8 +124,12 @@ int bbs_openpty(int *amaster, int *aslave, char *name, const struct termios *ter
 	}
 
 	/* Open the slave here and just return the file descriptor of the slave,
-	 * rather than returning its name and making the caller open the slave. */
-	slave = open(slavename, O_RDWR);
+	 * rather than returning its name and making the caller open the slave.
+	 *
+	 * O_NOCTTY is necessary here, specifically, to prevent inadverent acquisition of controlling terminal,
+	 * e.g. by remote sysop consoles. Without this, when the BBS is run under systemd,
+	 * when a remote console closes, a SIGHUP is sent to the BBS, killing it. */
+	slave = open(slavename, O_RDWR | O_NOCTTY);
 	if (slave == -1) {
 		return -1;
 	}
