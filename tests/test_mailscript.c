@@ -34,7 +34,6 @@ static int pre(void)
 	test_load_module("mod_smtp_delivery_external.so"); /* In order for RELAY to work */
 	test_load_module("mod_mailscript.so");
 
-	TEST_ADD_CONFIG("mod_auth_static.conf");
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_smtp.conf");
 

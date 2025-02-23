@@ -3,6 +3,10 @@
 # bbs_dumper
 # (C) Copyright 2023 Naveen Albert
 
+# $1 = REQUIRED Sub-command to run: pid|threads|term|quit|postdump|livedump|gdb
+# $2 = OPTIONAL For postdump command, custom path to core file. Default is 'core' in current directory.
+# For backtraces, the full backtrace is saved to full.txt in the current directory
+
 ps -aux | grep "lbbs" | grep -v "grep"
 
 bbspid=`cat /var/run/lbbs/bbs.pid`
@@ -29,7 +33,12 @@ elif [ "$1" = "quit" ]; then
 	kill -3 $bbspid
 elif [ "$1" = "postdump" ]; then
 	ensure_gdb_installed
-	gdb /usr/sbin/lbbs core -ex "thread apply all bt full" -ex "quit" > full.txt
+	if [ "$2" != "" ]; then
+		CORE_FILE=$2
+	else
+		CORE_FILE=core
+	fi
+	gdb /usr/sbin/lbbs "$CORE_FILE" -ex "thread apply all bt full" -ex "quit" > full.txt
 	printf "Backtrace saved to full.txt\n"
 elif [ "$1" = "livedump" ]; then
 	ensure_gdb_installed

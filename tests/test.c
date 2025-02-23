@@ -922,7 +922,7 @@ static int run_test(const char *filename, int multiple)
 			}
 		}
 		/* We called chdir before we spawned the BBS, so the core dump should be in the current directory if there is one. */
-		if (!core_before && !eaccess("core", R_OK)) {
+		if (!core_before && !eaccess(XSTR(TEST_DIR) "/core", R_OK)) {
 			bbs_error("BBS dumped a core during test %s...\n", testmod->name);
 			res = -1; /* Segfaults are never good... automatic test fail. */
 		}
