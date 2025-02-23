@@ -46,13 +46,6 @@ PACKAGES_SUSE="$PACKAGES_SUSE libcap-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH libcap"
 PACKAGES_ALPINE="$PACKAGES_ALPINE libcap-dev"
 
-# <uuid/uuid.h>
-PACKAGES_DEBIAN="$PACKAGES_DEBIAN libuuid1 uuid-dev"
-PACKAGES_FEDORA="$PACKAGES_FEDORA libuuid-devel"
-PACKAGES_SUSE="$PACKAGES_SUSE libuuid-devel"
-PACKAGES_ARCH="$PACKAGES_ARCH util-linux-libs"
-PACKAGES_ALPINE="$PACKAGES_ALPINE util-linux-dev"
-
 # sz, rz programs for ZMODEM transfers
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN lrzsz"
 PACKAGES_FEDORA="$PACKAGES_FEDORA lrzsz"
@@ -87,6 +80,13 @@ PACKAGES_FEDORA="$PACKAGES_FEDORA systemd-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH systemd-libs"
 # Alpine Linux doesn't use systemd, so no need for that here!
 # No systemd on FreeBSD, or other Unices
+
+# <uuid/uuid.h> (mod_uuid)
+PACKAGES_DEBIAN="$PACKAGES_DEBIAN libuuid1 uuid-dev"
+PACKAGES_FEDORA="$PACKAGES_FEDORA libuuid-devel"
+PACKAGES_SUSE="$PACKAGES_SUSE libuuid-devel"
+PACKAGES_ARCH="$PACKAGES_ARCH util-linux-libs"
+PACKAGES_ALPINE="$PACKAGES_ALPINE util-linux-dev"
 
 # libssh (net_ssh)
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libssh-dev"

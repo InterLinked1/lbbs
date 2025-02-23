@@ -137,6 +137,10 @@ mod_systemd.so : mod_systemd.o
 	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lsystemd
 
+mod_uuid.so : mod_uuid.o
+	@echo "  [LD] $^ -> $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -luuid
+
 mod_webmail.so : mod_webmail.o
 	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ $(MOD_WEBMAIL_LIBS) -L/usr/local/lib -Wl,-rpath=/usr/local/lib/ -letpan

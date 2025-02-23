@@ -39,6 +39,7 @@
 #include "include/user.h"
 
 #include "include/mod_mail.h"
+#include "include/mod_uuid.h"
 
 /* NNTP ports */
 /* Reading server */
@@ -1398,4 +1399,4 @@ static int unload_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_STANDARD("RFC3977 NNTP/NNSP");
+BBS_MODULE_INFO_DEPENDENT("RFC3977 NNTP/NNSP", "mod_uuid.so");

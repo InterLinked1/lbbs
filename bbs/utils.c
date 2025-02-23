@@ -34,7 +34,6 @@
 #include <limits.h> /* use PATH_MAX */
 
 #ifdef __linux__
-#include <uuid/uuid.h> /* use uuid_generate, uuid_unparse */
 #include <syscall.h>
 #endif
 
@@ -43,25 +42,6 @@
 #include "include/user.h"
 #include "include/base64.h"
 #include "include/system.h"
-
-char *bbs_uuid(void)
-{
-#ifdef UUID_STR_LEN
-	char *uuid;
-	uuid_t binary_uuid;
-
-	uuid_generate_random(binary_uuid);
-	uuid = malloc(UUID_STR_LEN + 1);
-	if (ALLOC_FAILURE(uuid)) {
-		return NULL;
-	}
-	uuid_unparse_lower(binary_uuid, uuid);
-	return uuid;
-#else
-	bbs_error("uuid not supported on this platform\n");
-	return NULL;
-#endif
-}
 
 void dyn_str_reset(struct dyn_str *dynstr)
 {
