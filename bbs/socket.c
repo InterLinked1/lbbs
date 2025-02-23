@@ -1333,6 +1333,16 @@ int bbs_ip_is_private_ipv4(const char *ip)
 	return ipv4_is_private_ipv4(a);
 }
 
+int bbs_address_nonpublic(const char *hostname)
+{
+	char resolved_ip[256];
+	/* Resolve the hostname (if it is one) to an IP, then do a direct comparison. */
+	if (bbs_resolve_hostname(hostname, resolved_ip, sizeof(resolved_ip))) {
+		return 0;
+	}
+	return bbs_ip_is_nonpublic_ipv4(resolved_ip);
+}
+
 int bbs_cidr_match_ipv4(const char *ip, const char *cidr)
 {
 	char cidr_dup[64];

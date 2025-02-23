@@ -273,6 +273,7 @@ int bbs_is_loopback_ipv4(const char *ip);
  * \param ip String representation of IPv4 address
  * \retval 0 on error or if not a nonpublic IP address
  * \retval nonzero if private IPv4 address or loopback address
+ * \note This is similar to bbs_ip_is_private_ipv4, except it is broader because it includes the loopback address
  */
 int bbs_ip_is_nonpublic_ipv4(const char *ip);
 
@@ -290,6 +291,16 @@ int bbs_ip_is_nonpublic_ipv4(const char *ip);
  * \return 'C' if a Class C private address
  */
 int bbs_ip_is_private_ipv4(const char *ip);
+
+/*!
+ * \brief Whether an IP address or hostname is a private or loopback IP address (in an RFC 1918 range)
+ * \param hostname IP address or hostname to check
+ * \retval 0 on error or if not in private range or loopback address
+ * \return 1 if private or loopback address
+ * \note This function is similar to bbs_ip_is_nonpublic_ipv4, except it allows for hostnames or IP addresses as input, instead of just IPs
+ * \note This function does not currently support IPv6, but could be extended to later
+ */
+int bbs_address_nonpublic(const char *hostname);
 
 /*!
  * \brief Check if an IP address is within a specified CIDR range
