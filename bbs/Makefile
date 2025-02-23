@@ -8,10 +8,12 @@ ALPINE_LINUX := $(shell ls /etc/alpine-release 2>/dev/null | wc -l)
 # the include directory is in the parent
 INC = -I..
 
-LIBS	= -lrt -lm -ldl
+LIBS	= -lrt -lm -ldl -lcrypt -rdynamic
 
 # -lcrypto needed for SHA1_Init in hash.c
-LIBS += -lcrypt -lcrypto -rdynamic
+# XXX Would be nice to move hash.c out into a module (mod_hash)
+# The only users of hash.h are mod_http and auth.c, one call each.
+LIBS += -lcrypto
 
 # -lbfd and friends
 # On SUSE, the remaining libraries are needed to link successfully

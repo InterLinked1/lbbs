@@ -16,10 +16,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Build LBBS
+      - name: Install prereqs
         run: |
           sudo sed -i 's/azure\.//' /etc/apt/sources.list
           sudo ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
           sudo make modcheck
           sudo make -j$(nproc)
           sudo make install
@@ -40,10 +42,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Build LBBS
+      - name: Install prereqs
         run: |
           sudo sed -i 's/azure\.//' /etc/apt/sources.list
           sudo ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
           sudo make modcheck
           sudo make -j$(nproc)
           sudo make install
@@ -64,11 +68,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Build LBBS
+      - name: Install prereqs
         run: |
           sudo sed -i 's/azure\.//' /etc/apt/sources.list
-          sudo sed -i 's/-O3/-O0/' Makefile
           sudo ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
+          sudo sed -i 's/-O3/-O0/' Makefile
           sudo make modcheck
           sudo make -j$(nproc)
           sudo make install
@@ -84,9 +90,11 @@ jobs:
     container: debian:12
     steps:
       - uses: actions/checkout@v4
-      - name: Build LBBS
+      - name: Install prereqs
         run: |
           ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
           make modcheck
           make -j$(nproc)
           make install
@@ -101,9 +109,11 @@ jobs:
     container: debian:11
     steps:
       - uses: actions/checkout@v4
-      - name: Build LBBS
+      - name: Install prereqs
         run: |
           ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
           make modcheck
           make -j$(nproc)
           make install
@@ -118,9 +128,11 @@ jobs:
     container: debian:10
     steps:
       - uses: actions/checkout@v4
-      - name: Build LBBS
+      - name: Install prereqs
         run: |
           ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
           make modcheck
           make -j$(nproc)
           make install
@@ -135,9 +147,11 @@ jobs:
     container: alpine:latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build LBBS
+      - name: Install prereqs
         run: |
           ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
           make modcheck
           make modconfig
           make -j$(nproc)
@@ -150,9 +164,11 @@ jobs:
     container: fedora:42
     steps:
       - uses: actions/checkout@v4
-      - name: Build LBBS
+      - name: Install prereqs
         run: |
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
           make modcheck
           make modconfig
           make -j$(nproc)
@@ -168,9 +184,11 @@ jobs:
     container: fedora:40
     steps:
       - uses: actions/checkout@v4
-      - name: Build LBBS
+      - name: Install prereqs
         run: |
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
           make modcheck
           make modconfig
           make -j$(nproc)
@@ -186,9 +204,11 @@ jobs:
     container: rockylinux:9.3
     steps:
       - uses: actions/checkout@v4
-      - name: Build LBBS
+      - name: Install prereqs
         run: |
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
           make modcheck
           make modconfig
           make -j$(nproc)
@@ -204,9 +224,11 @@ jobs:
     container: rockylinux:8.9
     steps:
       - uses: actions/checkout@v4
-      - name: Build LBBS
+      - name: Install prereqs
         run: |
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
           make modcheck
           make modconfig
           make -j$(nproc)
@@ -222,9 +244,11 @@ jobs:
     container: opensuse/tumbleweed
     steps:
       - uses: actions/checkout@v4
-      - name: Build LBBS
+      - name: Install prereqs
         run: |
           INSTALL_LIBETPAN=0 ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
           make modcheck
           make modconfig
           make -j$(nproc)
@@ -240,9 +264,11 @@ jobs:
     container: archlinux:latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build LBBS
+      - name: Install prereqs
         run: |
           INSTALL_LIBOPENARC=0 ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
           make modcheck
           make modconfig
           make -j$(nproc)
@@ -257,20 +283,22 @@ jobs:
     name: FreeBSD
     steps:
       - uses: actions/checkout@v4
-      - name: Build LBBS
+      - name: Install prereqs and build LBBS
         uses: vmactions/freebsd-vm@v1
         with:
           usesh: true
+          copyback: false
           run: |
-            ./scripts/install_prereq.sh
+            INSTALL_LIBDISCORD=0 ./scripts/install_prereq.sh
             gmake modcheck
             gmake modconfig
-            gmake bbs
-            gmake doors
-            gmake io
-            gmake modules
-            gmake nets
+            gmake -j$(nproc) bbs
+            gmake -j$(nproc) doors
+            gmake -j$(nproc) io
+            gmake -j$(nproc) modules
+            gmake -j$(nproc) nets
             gmake -j$(nproc)
             gmake install
             gmake samples
             gmake tests
+            gmake install

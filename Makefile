@@ -149,7 +149,8 @@ scripts :
 	fi
 	cp scripts/*.sh /var/lib/lbbs/scripts
 	cp scripts/*.sql /var/lib/lbbs/scripts
-	cp -n scripts/*.php /var/lib/lbbs/scripts
+# On FreeBSD, cp -n returns 1 if it already exists, ignore that
+	cp -n scripts/*.php /var/lib/lbbs/scripts || :
 	chmod +x /var/lib/lbbs/scripts/*
 
 templates :

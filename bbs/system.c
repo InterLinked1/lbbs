@@ -707,7 +707,7 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 	int fdin = e->fdin, fdout = e->fdout;
 	int fd = fdout;
 	int res = -1;
-	int pfd[2], procpipe[2];
+	int pfd[2] = { -1, -1 }, procpipe[2] = { -1, -1 }; /* Compiler complains could be used uninitialized on FreeBSD */
 	char fullpath[256] = "", fullterm[32] = "";
 #ifdef ISOEXEC_SUPPORTED
 	/* Only needed if isoexec is supported */

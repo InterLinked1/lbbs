@@ -976,7 +976,7 @@ ssize_t bbs_splice(int fd_in, int fd_out, size_t len)
 	return written;
 #else
 	off_t offset = 0;
-	return bbs_sendfile(fd_out, fd_in, &offset, lenq);
+	return bbs_sendfile(fd_out, fd_in, &offset, len);
 #endif
 }
 

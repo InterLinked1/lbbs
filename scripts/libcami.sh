@@ -10,5 +10,5 @@ else
 	git stash
 	git pull
 fi
-make
+make library
 make install

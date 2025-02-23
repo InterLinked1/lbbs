@@ -27,6 +27,8 @@
 
 #if defined(linux) && !defined(__GLIBC__)
 #include <libgen.h> /* use non-GNU basename */
+#elif defined(__FreeBSD__)
+#include <libgen.h> /* use basename */
 #endif
 
 #include "include/module.h"
@@ -387,7 +389,7 @@ static int exec_cmd(struct smtp_msg_process *mproc, char *s)
 			}
 
 			/* Calculate the path of the temp file we are going to create */
-#if defined(linux) && !defined(__GLIBC__)
+#if !defined(linux) || !defined(__GLIBC__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 #pragma GCC diagnostic ignored "-Wcast-qual"

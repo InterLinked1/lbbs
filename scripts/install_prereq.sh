@@ -24,6 +24,7 @@ PACKAGES_FEDORA="$PACKAGES_FEDORA autoconf automake pkg-config libtool m4"
 PACKAGES_SUSE="$PACKAGES_SUSE autoconf automake pkg-config libtool m4"
 PACKAGES_ARCH="$PACKAGES_ARCH autoconf automake pkg-config libtool m4"
 PACKAGES_ALPINE="$PACKAGES_ALPINE autoconf automake pkgconf libtool m4"
+PACKAGES_FREEBSD="$PACKAGES_FREEBSD autoconf automake pkgconf libtool m4"
 
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libncurses-dev" # ncurses
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN ncurses-base ncurses-term" # full/extended terminal definitions
@@ -285,7 +286,10 @@ scripts/libwss.sh
 scripts/libslackrtm.sh
 
 # libdiscord (mod_discord)
-scripts/libdiscord.sh
+if [ "$INSTALL_LIBDISCORD" != "0" ]; then
+	# Makefile doesn't add the proper LDFLAGS on BSD and doesn't seem to obey LDFLAGS when passed in...
+	scripts/libdiscord.sh
+fi
 
 # libetpan fails to build successfully on Fedora-based distros,
 # so need to be able to skip that for now using an env var.
