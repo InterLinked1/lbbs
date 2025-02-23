@@ -3,7 +3,7 @@ MAIN_SRC := $(wildcard *.c)
 MAIN_OBJ = $(MAIN_SRC:.c=.o)
 DEPENDS := $(patsubst %.c,%.d,$(MAIN_SRC))
 
-ALPINE_LINUX := $(shell ls /etc/alpine-release | wc -l)
+ALPINE_LINUX := $(shell ls /etc/alpine-release 2>/dev/null | wc -l)
 
 # the include directory is in the parent
 INC = -I..
@@ -11,7 +11,7 @@ INC = -I..
 LIBS	= -lrt -lm -ldl
 
 # -lcrypto needed for SHA1_Init in hash.c
-LIBS += -lcrypt -lcrypto -lcurl -lreadline -luuid -rdynamic
+LIBS += -lcrypt -lcrypto -lcurl -luuid -rdynamic
 
 # -lbfd and friends
 # On SUSE, the remaining libraries are needed to link successfully

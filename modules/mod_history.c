@@ -24,8 +24,10 @@
 #include <histedit.h>
 #include <readline/history.h>
 
-#include "include/history.h"
+#include "include/module.h"
 #include "include/utils.h"
+
+#include "include/mod_history.h"
 
 #define MAX_HISTORY_ENTRIES 25
 
@@ -112,7 +114,7 @@ int bbs_history_add(const char *s)
 	return 0;
 }
 
-int bbs_history_shutdown(void)
+static int unload_module(void)
 {
 	/* Free all the history.
 	 * Currently we don't save it to disk. I'm not sure persisting it between sessions would really be that useful. */
@@ -131,9 +133,11 @@ int bbs_history_shutdown(void)
 	return 0;
 }
 
-int bbs_history_init(void)
+static int load_module(void)
 {
 	using_history(); /* This is safe to call multiple times (i.e. module is reloaded) */
 	stifle_history(MAX_HISTORY_ENTRIES); /* Prevent history list from running away to oblivion */
 	return 0;
 }
+
+BBS_MODULE_INFO_FLAGS("Command History", MODFLAG_GLOBAL_SYMBOLS);

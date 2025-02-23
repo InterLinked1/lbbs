@@ -1459,13 +1459,82 @@ static int cli_loadwait(struct bbs_cli_args *a)
 	return 0;
 }
 
+static int has_dependency_on(struct bbs_module *requestor, struct bbs_module *dependent, struct bbs_module *target)
+{
+	if (dependent == target) {
+		return 1;
+	}
+	if (!strlen_zero(dependent->info->dependencies)) {
+		char dependencies_buf[256];
+		char *dependencies, *dependency;
+		safe_strncpy(dependencies_buf, dependent->info->dependencies, sizeof(dependencies_buf));
+		dependencies = dependencies_buf;
+		while ((dependency = strsep(&dependencies, ","))) {
+			struct bbs_module *m = find_resource(dependency);
+			if (m) {
+				if (has_dependency_on(requestor, m, target)) {
+					bbs_debug(1, "%s has recursive dependency on %s (via %s)\n", bbs_module_name(requestor), bbs_module_name(target), bbs_module_name(m));
+					return 1;
+				}
+			} else {
+				bbs_warning("Dependency %s not currently loaded?\n", dependency);
+			}
+		}
+	}
+	return 0;
+}
+
+static int module_has_dependency_on(const char *dependent, const char *dependency)
+{
+	int res;
+	struct bbs_module *requestor, *target;
+
+	/* The unload process already has to process dependencies,
+	 * so it'd be slightly more efficient to just do that upfront,
+	 * and switch on the fly to an async unload if we found we need to.
+	 * But that would add a lot more complexity, so we check beforehand for now. */
+	RWLIST_RDLOCK(&modules);
+	requestor = find_resource(dependent);
+	target = find_resource(dependency);
+	if (!requestor) {
+		bbs_error("Could not find requesting module %s?\n", dependent);
+		res = -1; /* Fail safe (do async reload), return nonzero */
+	} else if (!dependency) {
+		bbs_error("Could not find target module %s?\n", dependency);
+		res = -1; /* Fail safe (do async reload), return nonzero */
+	} else {
+		res = has_dependency_on(requestor, requestor, target);
+	}
+	RWLIST_UNLOCK(&modules);
+
+	return res;
+}
+
+static int need_async_unload(const char *s)
+{
+	/* Example: The sysop can't unload the sysop module directly in the same thread.
+	 * We need to have another thread do it for us, asynchronously.
+	 * The same is true for any module for which mod_sysop is a dependency, e.g. mod_history.
+	 *
+	 * If a module were to request itself also be unloaded, the same thing also applies.
+	 *
+	 * So, first, we need to check to see if the calling module is the same as
+	 * the module to be unloaded, or if the calling module has a dependency (recursively)
+	 * on the module to be unloaded. */
+
+	/*! \note Since CLI commands can only be triggered by mod_sysop, this is hardcoded for now.
+	 * Otherwise, we would need to know the module that called this function,
+	 * or really, for that matter, any modules above us in the call stack. */
 #define SYSOP_CLI_MOD_NAME "mod_sysop"
+	if (module_has_dependency_on(SYSOP_CLI_MOD_NAME, s)) {
+		return 1;
+	}
+	return 0;
+}
 
 static int threadsafe_unload(const char *s)
 {
-	if (!strncasecmp(s, SYSOP_CLI_MOD_NAME, strlen(SYSOP_CLI_MOD_NAME))) {
-		/* The sysop can't unload the sysop module directly in the same thread.
-		 * We need to have another thread do it for us, asynchronously. */
+	if (need_async_unload(s)) {
 		bbs_request_module_unload(s, 0);
 		return 0;
 	}
@@ -1474,7 +1543,7 @@ static int threadsafe_unload(const char *s)
 
 static int threadsafe_reload(const char *s, int queued)
 {
-	if (!strncasecmp(s, SYSOP_CLI_MOD_NAME, strlen(SYSOP_CLI_MOD_NAME))) {
+	if (need_async_unload(s)) {
 		bbs_request_module_unload(s, 1);
 		return 0;
 	}

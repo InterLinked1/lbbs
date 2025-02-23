@@ -64,19 +64,28 @@
 
 static int was_statically_initialized(struct bbs_lock_info *info)
 {
+#ifdef ALWAYS_INITIALIZE
+	/* ALWAYS_INITIALIZE avoids valgrind warning about uninitialized memory.
+	 * If that's true, we shouldn't bother checking anything,
+	 * or we'll trigger the warning. The caller will short-circuit on that condition anyways,
+	 * so this function should get optimized away. */
+	UNUSED(info);
+	return 1;
+#else
 	/* This could have false positives but can't have false negatives.
 	 * There's no way to be 100% sure this isn't a false postive, but
 	 * check various fields that should tell us if this was statically initialized or not. */
 	return info->initialized && info->staticinit && !info->destroyed && !info->owners && info->filename[0] == '\0' && info->lineno == 0;
+#endif /* ALWAYS_INITIALIZE */
 }
 
 int __bbs_mutex_init(bbs_mutex_t *t, const char *filename, int lineno, const char *func, const char *name)
 {
 	int res;
-	int staticinit;
 #ifdef USE_ROBUST_MUTEXES
 	pthread_mutexattr_t attr;
 #endif
+	int staticinit;
 
 	/* If the lock is not static, we explicitly have to zero it out first,
 	 * since there's currently garbage here, so we can't check if it

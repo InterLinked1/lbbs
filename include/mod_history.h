@@ -36,17 +36,3 @@ const char *bbs_history_newer(void);
  * \retval 0 on success, -1 on failure
  */
 int bbs_history_add(const char *s);
-
-/*!
- * \brief Shut down history
- * \retval 0
- */
-int bbs_history_shutdown(void);
-
-/*!
- * \brief Initialize history
- * \retval 0
- * \note If bbs_history_shutdown is called, this is safe to call again.
- * \warning This history interface is global, so only one module should really be using it.
- */
-int bbs_history_init(void);

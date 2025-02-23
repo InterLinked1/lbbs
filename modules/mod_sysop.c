@@ -32,11 +32,12 @@
 #include "include/module.h"
 #include "include/term.h"
 #include "include/mail.h"
-#include "include/history.h"
 #include "include/utils.h" /* use bbs_dump_threads */
 #include "include/startup.h"
 #include "include/alertpipe.h"
 #include "include/cli.h"
+
+#include "include/mod_history.h"
 
 extern int option_nofork;
 
@@ -657,7 +658,7 @@ static int unload_module(void)
 	/* Close all the consoles. */
 	RWLIST_RDLOCK(&consoles);
 	RWLIST_TRAVERSE_SAFE_BEGIN(&consoles, console, entry) {
-		bbs_debug(3, "Instructing %s sysop console %d/%d to exit\n", console->remote ? "remote" : "foreground", console->fdin, console->fdout);
+		bbs_debug(3, "Instructing %s sysop console %p (%d/%d) to exit\n", console->remote ? "remote" : "foreground", console, console->fdin, console->fdout);
 		console->dead = 1;
 		if (console->remote) {
 			bbs_remove_logging_fd(console->fdout); /* Must do before bbs_socket_close since that sets fd to -1 */
@@ -686,9 +687,10 @@ static int unload_module(void)
 		RWLIST_TRAVERSE(&consoles, console, entry) {
 			if (console->fdin == -1 && console->fdout == -1) {
 				/* This means the remote console has been shut down, but its thread has not yet exited. */
-				bbs_warning("Stale %s console still registered?\n", console->remote ? "remote" : "foreground");
+				bbs_warning("Stale %s console %p still registered?\n", console->remote ? "remote" : "foreground", console);
+			} else {
+				bbs_debug(3, "%s console %p (%d/%d) is still registered\n", console->remote ? "Remote" : "Foreground", console, console->fdin, console->fdout);
 			}
-			bbs_debug(3, "%s console %d/%d is still registered\n", console->remote ? "Remote" : "Foreground", console->fdin, console->fdout);
 			remaining++;
 		}
 		RWLIST_UNLOCK(&consoles);
@@ -736,4 +738,4 @@ static int load_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_STANDARD("Sysop Console");
+BBS_MODULE_INFO_DEPENDENT("Sysop Console", "mod_history.so");

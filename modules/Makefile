@@ -33,6 +33,10 @@ $(DEPENDS):
 	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) -c $<
 	touch $@
 
+mod_history.so : mod_history.o
+	@echo "  [LD] $^ -> $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lreadline
+
 mod_mimeparse.o : mod_mimeparse.c mod_mimeparse.d
 	@echo "  [CC] $< -> $@"
 	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self $(GMIME_FLAGS) -Wno-inline -MMD -MP $(INC) -c $<

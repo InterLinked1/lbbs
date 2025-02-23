@@ -71,7 +71,6 @@
 #include "include/test.h"
 #include "include/transfer.h"
 #include "include/cli.h"
-#include "include/history.h"
 #include "include/handler.h"
 #include "include/net.h"
 #include "include/door.h"
@@ -591,7 +590,6 @@ static void bbs_shutdown(void)
 	unload_modules();
 	bbs_mutex_lock(&sig_lock);
 
-	bbs_history_shutdown(); /* Free history. Must be done in the core, not by mod_sysop, since this may only be called once. */
 	bbs_curl_shutdown(); /* Clean up cURL */
 	login_cache_cleanup(); /* Clean up any remaining cached logins */
 	username_cache_flush(); /* Clean up any cached username mappings */
@@ -1103,7 +1101,6 @@ int main(int argc, char *argv[])
 	CHECK_INIT(bbs_init_tests());
 
 	CHECK_INIT(bbs_curl_init());
-	CHECK_INIT(bbs_history_init());
 
 	if (!is_root()) {
 		check_cap(0); /* Check before modules load, which may try to bind to privileged ports. */
