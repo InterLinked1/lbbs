@@ -41,9 +41,3 @@ int bbs_curl_get_file(struct bbs_curl *c, const char *filename);
 
 /*! \brief HTTP POST request */
 int bbs_curl_post(struct bbs_curl *c);
-
-/*! \brief Shut down cURL */
-int bbs_curl_shutdown(void);
-
-/*! \brief Initialize cURL */
-int bbs_curl_init(void);

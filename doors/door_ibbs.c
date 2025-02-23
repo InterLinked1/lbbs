@@ -26,9 +26,10 @@
 #include "include/node.h"
 #include "include/door.h"
 #include "include/term.h"
-#include "include/curl.h"
 #include "include/system.h"
 #include "include/editor.h"
+
+#include "include/mod_curl.h"
 
 static int ibbs_exec(struct bbs_node *node, const char *args)
 {
@@ -93,4 +94,4 @@ static int unload_module(void)
 	return bbs_unregister_door("telnetbbsguide");
 }
 
-BBS_MODULE_INFO_STANDARD("Telnet BBS Guide");
+BBS_MODULE_INFO_DEPENDENT("Telnet BBS Guide", "mod_curl.so");

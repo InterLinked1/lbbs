@@ -39,10 +39,11 @@
 #include "include/node.h"
 #include "include/term.h"
 #include "include/variables.h"
-#include "include/curl.h"
 #include "include/json.h"
 #include "include/string.h"
 #include "include/cli.h"
+
+#include "include/mod_curl.h"
 
 #include "include/mod_asterisk_ami.h" /* use bbs_ami_session */
 #include "include/mod_asterisk_queues.h"
@@ -1940,4 +1941,4 @@ static int load_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_DEPENDENT("Operator Position System", "mod_asterisk_queues.so,mod_ncurses.so");
+BBS_MODULE_INFO_DEPENDENT("Operator Position System", "mod_asterisk_queues.so,mod_ncurses.so,mod_curl.so");

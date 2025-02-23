@@ -33,6 +33,10 @@ $(DEPENDS):
 	$(CC) $(CFLAGS) -fPIC -DBBS_MODULE=\"$(basename $<)\" -DBBS_MODULE_SELF_SYM=__internal_$(basename $<)_self -MMD -MP $(INC) -c $<
 	touch $@
 
+mod_curl.so : mod_curl.o
+	@echo "  [LD] $^ -> $@"
+	$(CC) -shared -fPIC -o $(basename $^).so $^ -lcurl
+
 mod_history.so : mod_history.o
 	@echo "  [LD] $^ -> $@"
 	$(CC) -shared -fPIC -o $(basename $^).so $^ -lreadline

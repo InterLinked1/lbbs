@@ -24,7 +24,6 @@
 
 #include "include/module.h"
 #include "include/config.h"
-#include "include/curl.h"
 #include "include/linkedlists.h"
 #include "include/utils.h"
 #include "include/user.h"
@@ -32,6 +31,8 @@
 #include "include/json.h"
 #include "include/transfer.h"
 #include "include/cli.h"
+
+#include "include/mod_curl.h"
 
 struct oauth_client {
 	const char *name;
@@ -527,4 +528,4 @@ static int unload_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_STANDARD("OAuth 2.0 Client Authentication");
+BBS_MODULE_INFO_DEPENDENT("OAuth 2.0 Client Authentication", "mod_curl.so");

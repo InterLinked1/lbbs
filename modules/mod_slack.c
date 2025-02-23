@@ -31,9 +31,9 @@
 #include "include/utils.h"
 #include "include/node.h" /* use bbs_hostname */
 #include "include/startup.h"
-#include "include/curl.h"
 #include "include/cli.h"
 
+#include "include/mod_curl.h"
 #include "include/json.h"
 
 /* Needed for presence query/subscribe commands. Requires jansson support, so must come after json.h include. */
@@ -1530,4 +1530,4 @@ static int unload_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_DEPENDENT("Slack/IRC Relay", "net_irc.so");
+BBS_MODULE_INFO_DEPENDENT("Slack/IRC Relay", "net_irc.so,mod_curl.so");

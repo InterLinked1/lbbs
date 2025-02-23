@@ -25,9 +25,9 @@
 #include "include/module.h"
 #include "include/test.h"
 #include "include/utils.h"
-#include "include/curl.h"
-
 #include "include/node.h" /* use bbs_write */
+
+#include "include/mod_curl.h"
 
 /* Needed for mod_http.h */
 #include "include/linkedlists.h"
@@ -790,4 +790,4 @@ static int load_module(void)
 	REQUIRE_FULL_LOAD(res);
 }
 
-BBS_MODULE_INFO_DEPENDENT("HTTP Unit Tests", "mod_http.so");
+BBS_MODULE_INFO_DEPENDENT("HTTP Unit Tests", "mod_http.so,mod_curl.so");

@@ -27,7 +27,6 @@
 #include "include/variables.h"
 #include "include/ansi.h"
 #include "include/utils.h"
-#include "include/curl.h"
 
 static int test_parensep(void)
 {
@@ -727,28 +726,6 @@ cleanup:
 	return -1;
 }
 
-#ifdef EXTRA_TESTS
-static int test_curl_failure(void)
-{
-	int res;
-	struct bbs_curl c = {
-		.url = "https://httpstat.us/400", /* Faster than https://httpbin.org/status/400 */
-		.forcefail = 1,
-	};
-
-	/* This test implicitly passes if it does not cause a segfault */
-	res = bbs_curl_get(&c);
-	bbs_test_assert_equals(-1, res);
-
-	bbs_curl_free(&c);
-	return 0;
-
-cleanup:
-	bbs_curl_free(&c);
-	return -1;
-}
-#endif
-
 static struct bbs_unit_test tests[] =
 {
 	{ "parensep", test_parensep },
@@ -776,9 +753,6 @@ static struct bbs_unit_test tests[] =
 	{ "URL Decoding", test_url_decoding },
 	{ "Quoted Printable Decode", test_quoted_printable_decode },
 	{ "UTF8 Remove Invalid", test_utf8_remove_invalid },
-#ifdef EXTRA_TESTS
-	{ "cURL Failure", test_curl_failure },
-#endif
 };
 
 static int unload_module(void)

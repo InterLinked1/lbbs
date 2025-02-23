@@ -32,14 +32,6 @@ PACKAGES_SUSE="$PACKAGES_SUSE ncurses-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH ncurses"
 PACKAGES_ALPINE="$PACKAGES_ALPINE ncurses-dev"
 
-# <curl/curl.h> - cURL, OpenSSL variant
-PACKAGES_DEBIAN="$PACKAGES_DEBIAN libcurl4-openssl-dev"
-PACKAGES_FEDORA="$PACKAGES_FEDORA libcurl-devel"
-PACKAGES_SUSE="$PACKAGES_SUSE libcurl-devel"
-PACKAGES_ARCH="$PACKAGES_ARCH curl"
-PACKAGES_ALPINE="$PACKAGES_ALPINE curl-dev"
-PACKAGES_FREEBSD="$PACKAGES_FREEBSD curl"
-
 # <bfd.h>
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN binutils-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA binutils-devel"
@@ -74,15 +66,41 @@ PACKAGES_SUSE="$PACKAGES_SUSE libopenssl-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH openssl"
 PACKAGES_ALPINE="$PACKAGES_ALPINE openssl-dev"
 
-# Red Hat identical to Fedora so far
-PACKAGES_RHEL="$PACKAGES_FEDORA"
+# <curl/curl.h> - cURL, OpenSSL variant (mod_curl)
+PACKAGES_DEBIAN="$PACKAGES_DEBIAN libcurl4-openssl-dev"
+PACKAGES_FEDORA="$PACKAGES_FEDORA libcurl-devel"
+PACKAGES_SUSE="$PACKAGES_SUSE libcurl-devel"
+PACKAGES_ARCH="$PACKAGES_ARCH curl"
+PACKAGES_ALPINE="$PACKAGES_ALPINE curl-dev"
+PACKAGES_FREEBSD="$PACKAGES_FREEBSD curl"
 
-# <histedit.h>, <readline/history.h>
+# <histedit.h>, <readline/history.h> (mod_history)
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libedit-dev libreadline-dev"
 PACKAGES_FEDORA="$PACKAGES_FEDORA libedit-devel readline-devel"
 PACKAGES_SUSE="$PACKAGES_SUSE libedit-devel readline-devel"
 PACKAGES_ARCH="$PACKAGES_ARCH libedit readline"
 PACKAGES_ALPINE="$PACKAGES_ALPINE readline-dev"
+
+# mod_systemd
+PACKAGES_DEBIAN="$PACKAGES_DEBIAN libsystemd-dev"
+PACKAGES_FEDORA="$PACKAGES_FEDORA systemd-devel"
+PACKAGES_ARCH="$PACKAGES_ARCH systemd-libs"
+# Alpine Linux doesn't use systemd, so no need for that here!
+# No systemd on FreeBSD, or other Unices
+
+# libssh (net_ssh)
+PACKAGES_DEBIAN="$PACKAGES_DEBIAN libssh-dev"
+# net_ssh, which requires objdump to test for symbol existence... thanks a lot, libssh
+PACKAGES_DEBIAN="$PACKAGES_DEBIAN binutils" # objdump
+PACKAGES_FEDORA="$PACKAGES_FEDORA libssh-devel"
+PACKAGES_SUSE="$PACKAGES_SUSE libssh-devel"
+PACKAGES_ARCH="$PACKAGES_ARCH libssh"
+PACKAGES_FREEBSD="$PACKAGES_FREEBSD libssh"
+
+
+# Red Hat identical to Fedora so far
+PACKAGES_RHEL="$PACKAGES_FEDORA"
+
 
 # <bsd/string.h>
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libbsd-dev"
@@ -93,16 +111,6 @@ PACKAGES_ALPINE="$PACKAGES_ALPINE libbsd-dev"
 
 # io_compress: zlib
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN zlib1g-dev"
-
-# libssh (net_ssh)
-PACKAGES_DEBIAN="$PACKAGES_DEBIAN libssh-dev"
-# net_ssh, which requires objdump to test for symbol existence... thanks a lot, libssh
-PACKAGES_DEBIAN="$PACKAGES_DEBIAN binutils" # objdump
-PACKAGES_FEDORA="$PACKAGES_FEDORA libssh-devel"
-PACKAGES_RHEL="$PACKAGES_RHEL libssh-devel"
-PACKAGES_SUSE="$PACKAGES_SUSE libssh-devel"
-PACKAGES_ARCH="$PACKAGES_ARCH libssh"
-PACKAGES_FREEBSD="$PACKAGES_FREEBSD libssh"
 
 # MariaDB (MySQL) dev headers (mod_mysql, mod_mysql_auth)
 # mariadb-server is also required to run a local DBMS, but this is not
@@ -171,14 +179,6 @@ PACKAGES_SUSE="$PACKAGES_SUSE sendmail-devel"
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN libsieve2-dev"
 # MISSING: RPM package
 # MISSING: Arch package
-
-# mod_systemd
-PACKAGES_DEBIAN="$PACKAGES_DEBIAN libsystemd-dev"
-PACKAGES_FEDORA="$PACKAGES_FEDORA systemd-devel"
-PACKAGES_RHEL="$PACKAGES_RHEL systemd-devel"
-PACKAGES_ARCH="$PACKAGES_ARCH systemd-libs"
-# Alpine Linux doesn't use systemd, so no need for that here!
-# No systemd on FreeBSD, or other Unices
 
 # Soft dependencies
 # used for bc (executed by 'calc' in door_utils)

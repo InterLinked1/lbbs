@@ -28,8 +28,9 @@
 #include "include/user.h"
 #include "include/door.h"
 #include "include/system.h"
-#include "include/curl.h"
 #include "include/editor.h"
+
+#include "include/mod_curl.h"
 
 /*! \brief Calculator utility */
 static int calc_exec(struct bbs_node *node, const char *args)
@@ -226,4 +227,4 @@ static int load_module(void)
 	REQUIRE_FULL_LOAD(res);
 }
 
-BBS_MODULE_INFO_STANDARD("Utilities");
+BBS_MODULE_INFO_DEPENDENT("Utilities", "mod_curl.so");

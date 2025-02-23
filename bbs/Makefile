@@ -11,7 +11,7 @@ INC = -I..
 LIBS	= -lrt -lm -ldl
 
 # -lcrypto needed for SHA1_Init in hash.c
-LIBS += -lcrypt -lcrypto -lcurl -luuid -rdynamic
+LIBS += -lcrypt -lcrypto -luuid -rdynamic
 
 # -lbfd and friends
 # On SUSE, the remaining libraries are needed to link successfully

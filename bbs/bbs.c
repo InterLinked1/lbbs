@@ -59,7 +59,6 @@
 #include "include/config.h"
 #include "include/menu.h"
 #include "include/mail.h"
-#include "include/curl.h"
 #include "include/auth.h" /* use bbs_num_auth_providers */
 #include "include/utils.h" /* use print_time_elapsed, print_days_elapsed */
 #include "include/node.h"
@@ -590,7 +589,6 @@ static void bbs_shutdown(void)
 	unload_modules();
 	bbs_mutex_lock(&sig_lock);
 
-	bbs_curl_shutdown(); /* Clean up cURL */
 	login_cache_cleanup(); /* Clean up any remaining cached logins */
 	username_cache_flush(); /* Clean up any cached username mappings */
 	bbs_free_menus(); /* Clean up menus */
@@ -1099,8 +1097,6 @@ int main(int argc, char *argv[])
 	CHECK_INIT(bbs_init_nets());
 	CHECK_INIT(bbs_init_doors());
 	CHECK_INIT(bbs_init_tests());
-
-	CHECK_INIT(bbs_curl_init());
 
 	if (!is_root()) {
 		check_cap(0); /* Check before modules load, which may try to bind to privileged ports. */

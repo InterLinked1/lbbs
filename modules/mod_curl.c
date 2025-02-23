@@ -26,23 +26,11 @@
 
 #include <curl/curl.h>
 
-#include "include/curl.h"
+#include "include/module.h"
+
+#include "include/mod_curl.h"
 
 #define BBS_CURL_USER_AGENT STRCAT(STRCAT(BBS_NAME, " "), BBS_VERSION)
-
-int bbs_curl_shutdown(void)
-{
-	/* XXX Memory leak: https://curl-library.cool.haxx.narkive.com/e2XublwY/memory-leak-detected-by-valgrind
-	 * This is suppressed in valgrind.supp. */
-	curl_global_cleanup();
-	return 0;
-}
-
-int bbs_curl_init(void)
-{
-	curl_global_init(CURL_GLOBAL_ALL);
-	return 0;
-}
 
 void bbs_curl_free(struct bbs_curl *c)
 {
@@ -338,3 +326,46 @@ int bbs_curl_post(struct bbs_curl *c)
 	bbs_debug(5, "cURL POST: %s\n", c->url);
 	return curl_common_run(curl, c, NULL);
 }
+
+#ifdef EXTRA_TESTS
+static int test_curl_failure(void)
+{
+	int res;
+	struct bbs_curl c = {
+		.url = "https://httpstat.us/400", /* Faster than https://httpbin.org/status/400 */
+		.forcefail = 1,
+	};
+
+	/* This test implicitly passes if it does not cause a segfault */
+	res = bbs_curl_get(&c);
+	bbs_test_assert_equals(-1, res);
+
+	bbs_curl_free(&c);
+	return 0;
+
+cleanup:
+	bbs_curl_free(&c);
+	return -1;
+}
+
+static struct bbs_unit_test tests[] =
+{
+	{ "cURL Failure", test_curl_failure },
+};
+#endif
+
+static int unload_module(void)
+{
+	/* XXX Memory leak: https://curl-library.cool.haxx.narkive.com/e2XublwY/memory-leak-detected-by-valgrind
+	 * This is suppressed in valgrind.supp. */
+	curl_global_cleanup();
+	return 0;
+}
+
+static int load_module(void)
+{
+	curl_global_init(CURL_GLOBAL_ALL);
+	return 0;
+}
+
+BBS_MODULE_INFO_FLAGS("cURL Support", MODFLAG_GLOBAL_SYMBOLS);

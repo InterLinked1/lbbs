@@ -23,7 +23,8 @@
 
 #include "include/module.h"
 #include "include/utils.h"
-#include "include/curl.h"
+
+#include "include/mod_curl.h"
 
 #define BBS_VERSION_SOURCE_FILE "https://raw.githubusercontent.com/InterLinked1/lbbs/master/include/version.h"
 
@@ -115,4 +116,4 @@ static int load_module(void)
 	return bbs_pthread_create(&periodic_thread, NULL, periodic_tasks, NULL);
 }
 
-BBS_MODULE_INFO_STANDARD("Version Update Notifications");
+BBS_MODULE_INFO_DEPENDENT("Version Update Notifications", "mod_curl.so");
