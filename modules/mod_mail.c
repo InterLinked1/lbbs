@@ -1997,7 +1997,7 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 
 	/* Gimap (Gmail) sends the capabilities again when you log in,
 	 * so tolerate CAPABILITY then OK as well as just OK (possibly also with CAPABILITY). */
-	res = bbs_readline(client->rfd, &client->rldata, "\r\n", 2500);
+	res = bbs_readline(client->rfd, &client->rldata, "\r\n", SEC_MS(10));
 	if (res <= 0) {
 		bbs_warning("No response from IMAP server %s:%d?\n", url->host, url->port);
 		return -1;
