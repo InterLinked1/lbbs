@@ -141,7 +141,6 @@ static int load_groups(void)
 	return 0;
 }
 
-/*! \todo Should use a generic system-wide reload mechanism */
 static int reload_groups(int fd)
 {
 	RWLIST_WRLOCK(&groups);
@@ -157,7 +156,6 @@ static struct bbs_cli_entry cli_commands_groups[] = {
 	BBS_CLI_COMMAND(cli_group, "group", 2, "List members of a user group", "group <name>"),
 };
 
-/*! \todo Currently groups cannot be reloaded, but it might make sense here (and in several other places) to allow this, using some builtin functionality */
 static int load_config(void)
 {
 	RWLIST_WRLOCK(&groups);
