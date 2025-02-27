@@ -214,8 +214,7 @@ static int ssl_register_fd(SSL *ssl, int fd, int *rfd, int *wfd, int client)
 		return -1;
 	} else if (pipe(sfd->writepipe)) {
 		bbs_error("pipe failed: %s\n", strerror(errno));
-		close(sfd->readpipe[0]);
-		close(sfd->readpipe[1]);
+		PIPE_CLOSE(sfd->readpipe);
 		free(sfd);
 		RWLIST_UNLOCK(&sslfds);
 		return -1;
@@ -235,10 +234,8 @@ static int ssl_register_fd(SSL *ssl, int fd, int *rfd, int *wfd, int client)
 
 static void ssl_fd_free(struct ssl_fd *sfd)
 {
-	close(sfd->readpipe[1]);
-	close(sfd->readpipe[0]);
-	close(sfd->writepipe[1]);
-	close(sfd->writepipe[0]);
+	PIPE_CLOSE(sfd->readpipe);
+	PIPE_CLOSE(sfd->writepipe);
 	free(sfd);
 }
 
@@ -247,17 +244,19 @@ static int defer_rebuild = 0; /* Whether to defer the next rebuild of the sessio
 
 /*! \note It's possible it might not be in the list, because the owner thread has already called ssl_unregister_fd,
  * in which case there's no need to do anything. */
-#define MARK_DEAD(s) \
-	RWLIST_TRAVERSE(&sslfds, sfd, entry) { \
-		if (sfd->ssl == s) { \
-			if (sfd->dead) { /* Shouldn't happen since we rebuild traversal list after MARK_DEAD */ \
-				bbs_warning("SSL connection %p already marked as dead?\n", sfd->ssl); \
+#define MARK_DEAD(s) { \
+	struct ssl_fd *sfd_traverse = sfd; /* Don't modify sfd in place or it would be NULL after traversal */ \
+	RWLIST_TRAVERSE(&sslfds, sfd_traverse, entry) { \
+		if (sfd_traverse->ssl == s) { \
+			if (sfd_traverse->dead) { /* Shouldn't happen since we rebuild traversal list after MARK_DEAD */ \
+				bbs_warning("SSL connection %p already marked as dead?\n", sfd_traverse->ssl); \
 			} \
-			sfd->dead = 1; \
-			bbs_debug(5, "SSL connection %p now marked as dead\n", sfd->ssl); \
+			sfd_traverse->dead = 1; \
+			bbs_debug(5, "SSL connection %p now marked as dead\n", sfd_traverse->ssl); \
 			break; \
 		} \
 	} \
+}
 
 static int ssl_unregister_fd(SSL *ssl)
 {
@@ -278,6 +277,7 @@ static int ssl_unregister_fd(SSL *ssl)
 		bbs_alertpipe_write(ssl_alert_pipe); /* Notify I/O thread that we removed a fd, although it'll probably detect this anyways. */
 		return 0;
 	}
+	bbs_warning("Couldn't unregister SSL session for %p?\n", ssl);
 	return -1;
 }
 
@@ -1244,7 +1244,7 @@ static int tlsreload(int fd)
 	}
 
 	ssl_is_available = 0; /* Ensure any new connections are rejected until we're done reloading. */
-	RWLIST_UNLOCK(&sslfds); /* tls_cleanup will lock the list again, so unlock it for now. */
+	RWLIST_UNLOCK(&sslfds); /* tls_cleanup will lock the list again, so unlock it for now. XXX It's a different lock though, so could unlock after? */
 
 	tls_cleanup();
 
