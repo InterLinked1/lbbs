@@ -571,6 +571,9 @@ Configuration
    # No valid author signature, domain signs all mail (ALL)
    score DKIM_ADSP_ALL 5.0
 
+   # Penalize missing DMARC policy
+   score DMARC_MISSING 2.0
+
    # Email is not in English
    score UNWANTED_LANGUAGE_BODY 3.5
 
@@ -591,6 +594,14 @@ Configuration
 
    # Bayes DB (specify a path and sa-learn will create the DB for you)
    bayes_path /var/lib/spamassassin/bayesdb/bayes
+
+If you choose not to sign up for a DQS key as described above, SpamHaus may reject your RBL/URIBL requests, in which case you can disable RBL/URIBL checks by adding::
+
+   # Skip RBL checks
+   skip_rbl_checks 1
+
+   # Skip URIBL checks
+   skip_uribl_checks 1
 
 * Go ahead and run :code:`sa-compile` to compile your rule set into a more efficient form for runtime (if you modify :code:`config.cf` in the future, rerun this command).
 
