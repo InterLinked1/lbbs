@@ -282,7 +282,7 @@ int bbs_pty_allocate(struct bbs_node *node)
 #endif
 
 	/* We are the PTY slave */
-	node->slavefd = open(node->slavename, O_RDWR);
+	node->slavefd = open(node->slavename, O_RDWR | O_NOCTTY); /* O_NOCTTY is necessary here */
 	if (node->slavefd == -1) {
 		return -1;
 	}
