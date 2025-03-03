@@ -101,24 +101,12 @@ static void process_section(bfd *bfdobj, asection *section, void *obj)
 		return;
 	}
 
-	/*! \todo BUGBUG
-	 * Memory leak in bfd_find_nearest_line.
-	 * Not sure whose fault it is (but there have been known leaks in this function before).
-	 * This needs to be fixed (somehow) because we irrecoverably leak memory with every backtrace.
-	 * If __bbs_assert_fatal was called (we're dumping a core), so it really doesn't matter,
-	 * but if we're not aborting on assertions the leaks will accumulate.
-	 *
-	 * ==98132== 777 bytes in 31 blocks are definitely lost in loss record 4 of 4
-	 * ==98132==    at 0x483877F: malloc (vg_replace_malloc.c:307)
-	 * ==98132==    by 0x4C91F3A: strdup (strdup.c:42)
-	 * ==98132==    by 0x4A58C78: ??? (in /usr/lib/x86_64-linux-gnu/libbfd-2.35.2-system.so)
-	 * ==98132==    by 0x4A58FA4: ??? (in /usr/lib/x86_64-linux-gnu/libbfd-2.35.2-system.so)
-	 * ==98132==    by 0x4A5C22A: ??? (in /usr/lib/x86_64-linux-gnu/libbfd-2.35.2-system.so)
-	 * ==98132==    by 0x4A27C70: _bfd_elf_find_nearest_line (in /usr/lib/x86_64-linux-gnu/libbfd-2.35.2-system.so)
-	 * ==98132==    by 0x10E991: process_section (backtrace.c:74)
-	 *
-	 */
-
+	/*
+	 * WARNING WARNING WARNING
+	 * Certain platforms have a buggy version of libbfd which leaks memory each time this function is called.
+	 * If __bbs_assert_fatal was called (we're dumping a core), it doesn't really doesn't matter, but leaks
+	 * can build up if a lot of soft assertions are triggered over time.
+	 * There is an exception in valgrind.supp for this, and these platforms' tests are run with IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1. */
 	line_found = bfd_find_nearest_line(bfdobj, section, data->syms, offset - vma, &file, &func, &line);
 	if (!line_found) {
 		return;

@@ -6,6 +6,8 @@ set -e
 # Debian: apt-get
 # Fedora: yum/dnf (RPM)
 # openSUSE/SLES: zypper
+# Arch: pacman
+# Alpine: apk
 # FreeBSD: pkg
 
 # -- Core --

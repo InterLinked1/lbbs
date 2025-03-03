@@ -384,8 +384,17 @@ int __bbs_close(int fd, const char *file, int line, const char *func)
 		bbs_log_backtrace(); /* Get a backtrace to see what made the invalid close, in case immediate caller isn't enough detail. */
 	}
 	res = close(fd);
-	if (!res && ARRAY_IN_BOUNDS(fd, fdleaks)) {
+	if (res) {
+		if (errno == EBADF && ARRAY_IN_BOUNDS(fd, fdleaks)) {
+			__bbs_log(LOG_WARNING, 0, file, line, func, "Failed to close file descriptor %d: %s (previously closed at %s:%d)\n", fd, strerror(errno), fdleaks[fd].file, fdleaks[fd].line);
+		} else {
+			__bbs_log(LOG_WARNING, 0, file, line, func, "Failed to close file descriptor %d: %s\n", fd, strerror(errno));
+		}
+	} else if (ARRAY_IN_BOUNDS(fd, fdleaks)) { /* && !res (implicit) */
 		fdleaks[fd].isopen = 0;
+		/* Update to where it was closed so we can debug attempts to close previously closed fds */
+		COPY(fdleaks[fd].file, file);
+		fdleaks[fd].line = line;
 	}
 	return res;
 }

@@ -516,7 +516,9 @@ static int test_bbs_spawn(const char *directory)
 		 * as well as under valgrind, and both executions should pass.
 		 */
 		"valgrind",
+#ifdef HAVE_VALGRIND_SHOW_ERROR_LIST
 		"--show-error-list=yes",
+#endif
 		"--keep-debuginfo=yes",
 		option_helgrind ? "--tool=helgrind" : "--leak-check=full",
 		"--track-fds=yes",
@@ -719,6 +721,10 @@ static int analyze_valgrind(void)
 	if (num_errors) {
 		bbs_error("%d error%s during execution\n", num_errors, ESS(num_errors));
 	}
+
+#ifndef HAVE_VALGRIND_SHOW_ERROR_LIST
+	bbs_debug(1, "--show-error-list / -s support was not detected in the build system\n");
+#endif
 
 	res |= got_segv || num_errors || num_bytes_lost || fds_open > FDS_OPEN_EXPECTED;
 	return res;

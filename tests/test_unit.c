@@ -35,7 +35,9 @@ static int pre(void)
 
 static int run(void)
 {
-	int res = test_bbs_expect(COLOR(COLOR_SUCCESS) "100%" COLOR_RESET, SEC_MS(20)); /* Unit tests are fast, so shouldn't take very long to execute them all */
+	/* Unit tests are typically fast, so shouldn't take very long to execute them all.
+	 * mod_test_backtrace can take a moment under valgrind though, so add some time for that one. */
+	int res = test_bbs_expect(COLOR(COLOR_SUCCESS) "100%" COLOR_RESET, SEC_MS(30));
 	if (res) {
 		bbs_error("Failed to receive expected output\n");
 	}
