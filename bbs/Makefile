@@ -3,8 +3,6 @@ MAIN_SRC := $(wildcard *.c)
 MAIN_OBJ = $(MAIN_SRC:.c=.o)
 DEPENDS := $(patsubst %.c,%.d,$(MAIN_SRC))
 
-ALPINE_LINUX := $(shell ls /etc/alpine-release 2>/dev/null | wc -l)
-
 # the include directory is in the parent
 INC = -I..
 
@@ -46,11 +44,17 @@ else ifeq ($(ALPINE_LINUX),1)
 LIBS += -lexecinfo
 endif
 
+# musl doesn't support dlclose (it's just a noop), so we can only dlopen modules once
+# See: https://wiki.musl-libc.org/functional-differences-from-glibc.html#Unloading_libraries
+ifeq ($(ALPINE_LINUX),1)
+CFLAGS += -DDLOPEN_ONLY_ONCE
+endif
+
 all: $(EXE)
 
 $(EXE) : $(MAIN_OBJ)
 	@echo "  [LD] $^ -> $@"
-	$(CC) $(CFLAGS) -Wl,--export-dynamic -o $(EXE) *.o $(LIBS)
+	$(CC) -pthread -Wl,--export-dynamic -o $(EXE) *.o $(LIBS)
 
 -include $(DEPENDS)
 

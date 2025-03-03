@@ -18,15 +18,15 @@ $(DEPENDS):
 
 %.so : %.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^
 
 io_compress.so : io_compress.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lz
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lz
 
 io_tls.so : io_tls.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lssl -lcrypto
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lssl -lcrypto
 
 # Don't automatically remove intermediate .o files, to prevent unnecessary recompilations
 .SECONDARY: $(patsubst %.c,%.o,$(MOD_SRC))

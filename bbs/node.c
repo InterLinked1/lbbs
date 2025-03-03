@@ -381,7 +381,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, struct sockadd
 	bbs_io_session_register(&node->trans, TRANSFORM_SESSION_NODE, node);
 	RWLIST_UNLOCK(&nodes);
 
-	bbs_debug(1, "Allocated new node with ID %u (lifetime ID %d)\n", node->id, node->lifetimeid);
+	bbs_debug(1, "Allocated new node with ID %u (lifetime ID %d, fd %d)\n", node->id, node->lifetimeid, fd);
 	return node;
 }
 

@@ -6,6 +6,8 @@ set -e
 # Debian: apt-get
 # Fedora: yum/dnf (RPM)
 # openSUSE/SLES: zypper
+# Arch: pacman
+# Alpine: apk
 # FreeBSD: pkg
 
 # -- Core --
@@ -301,7 +303,7 @@ if [ "$INSTALL_LIBETPAN" != "0" ]; then
 	# evergreen (door_evergreen)
 	scripts/evergreen.sh
 else
-	printf "Skipping libetpan install (INSTALL_LIBETPAN=%s)" "$INSTALL_LIBETPAN"
+	printf "Skipping libetpan install (INSTALL_LIBETPAN=%s)\n" "$INSTALL_LIBETPAN"
 fi
 
 # mod_smtp_filter_arc
@@ -309,7 +311,7 @@ fi
 if [ "$INSTALL_LIBOPENARC" != "0" ]; then
 	scripts/libopenarc.sh
 else
-	printf "Skipping libopenarc install (INSTALL_LIBOPENARC=%s)" "$INSTALL_LIBOPENARC"
+	printf "Skipping libopenarc install (INSTALL_LIBOPENARC=%s)\n" "$INSTALL_LIBOPENARC"
 fi
 
 # doxygen only: env var required to enable

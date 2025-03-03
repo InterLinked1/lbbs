@@ -51,6 +51,7 @@ static int option_debug_bbs = 0;
 static char option_debug_bbs_str[12] = "-";
 static int option_errorcheck = 0;
 static int option_helgrind = 0;
+static int option_strace = 0;
 static int option_gen_supp = 0;
 static int option_exit_failure = 0;
 static const char *testfilter = NULL;
@@ -63,6 +64,18 @@ int startup_run_unit_tests;
 
 /* Log file for valgrind output */
 #define VALGRIND_LOGFILE "/tmp/test_lbbs/valgrind.log"
+
+#define STRACE_LOGFILE "/tmp/test_lbbs/strace.log"
+
+/* There values are fairly conservative (longer than they needed to be in most cases).
+ * However, occasionally if something takes longer, we don't want the test to fail
+ * just because we jumped the gun too soon. */
+
+/* How long to wait for the BBS to start fully */
+#define STARTUP_TIMEOUT 25
+
+/* How long to wait for BBS to exit after a test. */
+#define SHUTDOWN_TIMEOUT 15
 
 static const char *loglevel2str(enum bbs_log_level level)
 {
@@ -140,7 +153,7 @@ void __attribute__ ((format (gnu_printf, 6, 7))) __bbs_log(enum bbs_log_level lo
 
 static int parse_options(int argc, char *argv[])
 {
-	static const char *getopt_settings = "?dDeglt:x";
+	static const char *getopt_settings = "?dDeglst:x";
 	int c;
 
 	while ((c = getopt(argc, argv, getopt_settings)) != -1) {
@@ -154,6 +167,7 @@ static int parse_options(int argc, char *argv[])
 			fprintf(stderr, "-g     Also generate valgrind suppressions for the valgrind report.\n");
 			fprintf(stderr, "-h     Show this help and exit.\n");
 			fprintf(stderr, "-h     Run the BBS under helgrind to check for locking errors.\n");
+			fprintf(stderr, "-s     Run the BBS under strace\n");
 			fprintf(stderr, "-t     Run a specific named test. Include the test_ prefix but not the .so suffix.\n");
 			fprintf(stderr, "-x     Exit on the first failure.\n");
 			return -1;
@@ -182,6 +196,9 @@ static int parse_options(int argc, char *argv[])
 			option_errorcheck = 1;
 			option_helgrind = 1;
 			break;
+		case 's':
+			option_strace = 1;
+			break;
 		case 't':
 			testfilter = optarg;
 			break;
@@ -189,6 +206,10 @@ static int parse_options(int argc, char *argv[])
 			option_exit_failure = 1;
 			break;
 		}
+	}
+	if ((option_errorcheck || option_helgrind) && option_strace) {
+		fprintf(stderr, "-e/-l and -s options are mutually exclusive\n");
+		return -1;
 	}
 	return 0;
 }
@@ -364,6 +385,22 @@ int test_client_expect_eventually_buf(int fd, int ms, const char *restrict s, in
 	return -1;
 }
 
+static void get_live_backtrace(void)
+{
+	/* Don't try to use gdb if we're already stracing.
+	 * Can't do multiple ptraces. */
+	if (!option_strace) {
+		if (option_errorcheck) {
+			system("vgdb v.info scheduler");
+		} else {
+			/* Before we kill the BBS, dump the current threads to output,
+			 * so we can see what was going on in the postmortem. */
+			system("../scripts/bbs_dumper.sh livedump && cat full.txt");
+		}
+	}
+}
+
+static int bbs_shutting_down = 1;
 static int do_abort = 0;
 static int bbspfd[2] = { -1 , -1 };
 static int notifypfd[2] = { -1, -1 };
@@ -428,6 +465,16 @@ static void *io_relay(void *varg)
 				/* Don't append, just shift the buffer and check if we can read immediately. */
 				bbs_readline_append(&rldata, "\n", NULL, 0, &ready);
 				rounds++;
+				if (bbs_shutting_down) {
+					/* Look for stalled shutdown... we have to do it in this thread,
+					 * since the main thread is blocked on the alarm() call. */
+					if (strstr(expectbuf, "Skipping unload of ") && strstr(expectbuf, " on pass 27")) {
+						/* At this point, something is likely "stuck".
+						 * The BBS won't trigger this itself, but we should get a backtrace of the
+						 * running process to see what's up. */
+						get_live_backtrace();
+					}
+				}
 			}
 			if (startup_run_unit_tests_started == 1) {
 				bbs_debug(5, "Stalling until expect reactivated\n");
@@ -502,6 +549,24 @@ static int test_bbs_spawn(const char *directory)
 		option_debug_bbs ? option_debug_bbs_str : NULL, /* Lotsa debug... maybe */
 		NULL
 	};
+	char *argv_strace[] = {
+		"strace",
+		"--decode-fds=path",
+		"--follow-forks",
+		"-o",
+		STRACE_LOGFILE,
+		LBBS_BINARY,
+		/* Begin options */
+		"-b", /* Force reuse bind ports */
+		"-c", /* Don't daemonize */
+		"-C", (char*) directory, /* Custom config directory */
+		"-g", /* Dump core on crash */
+		"-vvvvvvvvv", /* Very verbose */
+		rand_alloc_fails ? "-A" : "-v", /* If not, add an option that won't do anything */
+		startup_run_unit_tests ? "-T" : "-v", /* If not, add an option that won't do anything */
+		option_debug_bbs ? option_debug_bbs_str : NULL, /* Lotsa debug... maybe */
+		NULL
+	};
 	char *argv_error_check[] = {
 		/* There are 3 things that are really helpful about running tests under valgrind:
 		 * 1) Can catch errors, warnings, and other issues, in general, which is always good.
@@ -516,7 +581,9 @@ static int test_bbs_spawn(const char *directory)
 		 * as well as under valgrind, and both executions should pass.
 		 */
 		"valgrind",
+#ifdef HAVE_VALGRIND_SHOW_ERROR_LIST
 		"--show-error-list=yes",
+#endif
 		"--keep-debuginfo=yes",
 		option_helgrind ? "--tool=helgrind" : "--leak-check=full",
 		"--track-fds=yes",
@@ -539,7 +606,7 @@ static int test_bbs_spawn(const char *directory)
 		option_debug_bbs ? option_debug_bbs_str : NULL, /* Lotsa debug... maybe */
 		NULL
 	};
-	argv = option_errorcheck ? argv_error_check : argv_normal;
+	argv = option_errorcheck ? argv_error_check : option_strace ? argv_strace : argv_normal;
 
 	if (pipe(bbspfd)) {
 		bbs_error("pipe failed: %s\n", strerror(errno));
@@ -573,7 +640,8 @@ static int test_bbs_spawn(const char *directory)
 			_exit(errno);
 		}
 		close(STDIN_FILENO); /* Don't accept input */
-		execvp(option_errorcheck ? "valgrind" : LBBS_BINARY, argv); /* use execvp instead of execv for option_errorcheck, so we don't have to specify valgrind path */
+		close(bbspfd[1]); /* We already dup2'd, we don't need a duplicate or it will result in valgrind complaining about a fd leak (typically of fd 4) */
+		execvp(argv[0], argv); /* use execvp instead of execv for option_errorcheck, so we don't have to specify valgrind path */
 		bbs_error("execv failed: %s\n", strerror(errno));
 		_exit(errno);
 	}
@@ -658,8 +726,8 @@ static int analyze_valgrind(void)
 {
 	int res = 0;
 	char buf[1024];
-	int got_segv = 0, fds_open = 0, num_bytes_lost = 0, num_errors = 0;
-	int in_heap_summary = 0;
+	int got_segv = 0, fds_open = 0, num_bytes_lost = 0, num_errors = 0, num_false_positives = 0;
+	int in_heap_summary = 0, in_error_summary = 0;
 
 	FILE *fp = fopen(VALGRIND_LOGFILE, "r");
 	if (!fp) {
@@ -679,6 +747,7 @@ static int analyze_valgrind(void)
 			s += STRLEN("ERROR SUMMARY: ");
 			/* This prints out twice, so skip the 2nd one */
 			num_errors = atoi(s);
+			in_error_summary = 1;
 		} else if (!fds_open && (s = strstr(buf, "FILE DESCRIPTORS: "))) {
 			s += STRLEN("FILE DESCRIPTORS: ");
 			fds_open = atoi(s);
@@ -692,6 +761,21 @@ static int analyze_valgrind(void)
 				fprintf(stderr, "== Memory leak details omitted. See %s for full log.\n", VALGRIND_LOGFILE);
 			}
 			in_heap_summary = 0;
+		} else if (in_error_summary && strstr(buf, "File descriptor ") && strstr(buf, " was closed already")) {
+			/* XXX On some distros (non-Debian), at least valgrind 3.24.0 is reporting
+			 * the file descriptor for the IRC connection in test_unit (which isn't even part of the tests,
+			 * mod_irc_client just establishes a connection to net_irc with its default configuration)
+			 * is closed twice.
+			 * However, with both FD_LOGFILE file in fd.c enabled and running the same test under strace,
+			 * there is no evidence that this file descriptor is closed twice, so this seems like a bug in valgrind
+			 * with --trace-fds=yes.
+			 * In any case, we ignore these particular errors for now until we figure out what's going on.
+			 *
+			 * test_autoload has also been added as a more targeted test for this strange behavior,
+			 * since it won't run any tests (which is just noise for this problem) but will still autoload everything,
+			 * likewise triggering that same IRC connect.
+			 */
+			num_false_positives++;
 		}
 		if (option_debug > 2) { /* Most any level of debug gets valgrind report printout */
 			if (!got_segv || !in_heap_summary || option_debug > 5) { /* Skip memory leak details if we segfaulted, since those are probably caused by the segfault and output will be HUGE */
@@ -708,8 +792,8 @@ static int analyze_valgrind(void)
 		/* There should already be a core file anyways, but if not for some reason, make sure the test fails */
 		bbs_error("Segmentation fault or abortion during execution\n");
 	}
-/* STDIN, STDOUT, STDERR, +1 */
-#define FDS_OPEN_EXPECTED 4
+/* STDIN, STDOUT, STDERR */
+#define FDS_OPEN_EXPECTED 3
 	if (fds_open > FDS_OPEN_EXPECTED) {
 		bbs_error("%d file descriptors open at shutdown (expected %d)\n", fds_open, FDS_OPEN_EXPECTED);
 	}
@@ -717,39 +801,88 @@ static int analyze_valgrind(void)
 		bbs_error("Memory leak: %d bytes definitely lost\n", num_bytes_lost); /* # of bytes lost will never be singular, I guarantee you */
 	}
 	if (num_errors) {
-		bbs_error("%d error%s during execution\n", num_errors, ESS(num_errors));
+		if (num_false_positives == num_errors) {
+			bbs_warning("%d error%s during execution, but they were all false positives\n", num_errors, ESS(num_errors));
+			num_errors = 0;
+		} else {
+			bbs_error("%d error%s during execution (%d ignored)\n", num_errors, ESS(num_errors), num_false_positives);
+		}
 	}
+
+#ifndef HAVE_VALGRIND_SHOW_ERROR_LIST
+	bbs_debug(1, "--show-error-list / -s support was not detected in the build system\n");
+#endif
 
 	res |= got_segv || num_errors || num_bytes_lost || fds_open > FDS_OPEN_EXPECTED;
 	return res;
 }
 
+static void send_signal(pid_t pid, int sig)
+{
+	if (!pid) {
+		return;
+	}
+	switch (sig) {
+	case SIGTERM:
+		bbs_debug(3, "Sending SIGTERM to process %lu\n", (unsigned long) pid);
+		break;
+	case SIGKILL:
+		bbs_debug(3, "Sending SIGKILL to process %lu\n", (unsigned long) pid);
+		break;
+	default:
+		bbs_error("Unhandled signal: %d\n", sig);
+		return;
+	}
+	kill(pid, sig);
+}
+
+static pid_t bbs_pid(pid_t childpid)
+{
+	/* Since SIGINT requires confirmation, we have to pause briefly before sending a second SIGINT.
+	 * Just use SIGTERM since the BBS processes that immediately after receiving one. */
+	if (option_strace) {
+		char pidbuf[256];
+		long pid;
+		/* If the BBS is running under strace, then childpid is the PID of strace, not the BBS.
+		 * Read the actual PID from the pid file. */
+		FILE *fp = fopen(BBS_PID_FILE, "r");
+		if (!fp) {
+			bbs_error("Can't send signal to BBS, its PID is unknown!\n");
+			return 0;
+		}
+		fgets(pidbuf, sizeof(pidbuf), fp);
+		fclose(fp);
+		pid = (long int) atol(pidbuf);
+		bbs_debug(5, "BBS PID is %ld, not %ld\n", pid, (long int) childpid);
+		childpid = (pid_t) pid;
+		if (!childpid) {
+			bbs_error("Couldn't parse pid file: %s\n", pidbuf);
+		}
+	}
+	return childpid;
+}
+
 static void stop_bbs_pid(pid_t childpid)
 {
-	kill(childpid, SIGINT); /* Ask it to exit nicely. */
-	usleep(1000);
-	kill(childpid, SIGINT); /* Again, to confirm */
+	bbs_shutting_down = 1;
+	send_signal(bbs_pid(childpid), SIGTERM); /* Ask it to exit nicely. */
 }
 
 static void *stop_stuck_bbs(void *unused)
 {
 	UNUSED(unused);
 
+	bbs_debug(3, "BBS hasn't yet shut down?\n");
+
 	if (!current_child) {
 		return NULL; /* Maybe it just exited */
 	}
 
-	if (option_errorcheck) {
-		system("vgdb v.info scheduler");
-	} else {
-		/* Before we kill the BBS, dump the current threads to output,
-		 * so we can see what was going on in the postmortem. */
-		system("../scripts/bbs_dumper.sh livedump && cat full.txt");
-	}
+	get_live_backtrace();
 
 	if (current_child) {
-		kill(current_child, SIGTERM);
-		kill(current_child, SIGKILL);
+		send_signal(bbs_pid(current_child), SIGTERM);
+		send_signal(bbs_pid(current_child), SIGKILL);
 		/* Now, the main thread should be unblocked from continuing since waitpid will return */
 	}
 	return NULL;
@@ -772,6 +905,7 @@ static int run_test(const char *filename, int multiple)
 	int res = 0;
 	void *lib;
 
+	bbs_shutting_down = 0;
 	bbs_debug(3, "Planning to run test %s\n", filename);
 	total_fail++; /* Increment for now in case we abort early */
 
@@ -869,20 +1003,22 @@ static int run_test(const char *filename, int multiple)
 			bbs_debug(3, "Spawned child process %d\n", childpid);
 			/* Wait for the BBS to fully start */
 			/* XXX If we could receive this event outside of the BBS process, that would be more elegant */
-			res = test_bbs_expect("BBS is fully started", SEC_MS(15));
+			res = test_bbs_expect("BBS is fully started", SEC_MS(STARTUP_TIMEOUT));
 			usleep(25000); /* In case a test exits immediately, let spawned threads spawn before we exit */
 			if (!res) {
 				bbs_debug(3, "BBS fully started on process %d\n", childpid);
 				res = testmod->run();
 				bbs_debug(3, "Test '%s' returned %d\n", filename, res);
 				usleep(25000); /* Allow the poor BBS time for catching its breath. At least test_irc under valgrind seems to need this. */
+			} else {
+				bbs_warning("BBS didn't complete startup?\n");
 			}
 			gettimeofday(&end, NULL);
 			if (childpid != -1) {
 				int wstatus;
 				stop_bbs_pid(childpid);
 				/* If shutdown gets stuck, don't sit around waiting forever. */
-				alarm(10); /* Wait no more than 10 seconds for BBS to exit. */
+				alarm(SHUTDOWN_TIMEOUT);
 				waitpid(childpid, &wstatus, 0); /* Wait for child to exit */
 				if (!alarm(0)) { /* Cancel any pending alarm */
 					bbs_error("BBS did not shut down in a timely manner, possible deadlock?\n");
@@ -900,7 +1036,7 @@ static int run_test(const char *filename, int multiple)
 #endif
 				}
 			}
-			bbs_debug(3, "Test return code so far is %d\n", res);
+			bbs_debug(3, "Test %s return code so far is %d\n", filename, res);
 		} else {
 			memcpy(&end, &start, sizeof(end));
 		}

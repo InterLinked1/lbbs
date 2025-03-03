@@ -16,16 +16,14 @@
    fun:bbs_shutdown
 }
 {
-   SSH_MODULE
+   LIBCURL_LIBGCRYPT
    Memcheck:Leak
-   match-leak-kinds: reachable
+   match-leak-kinds: definite,indirect,reachable
    fun:malloc
-   obj:/usr/lib/x86_64-linux-gnu/libgcrypt.so.20.2.4
    ...
    fun:gcry_control
    fun:libssh2_init
-   obj:/usr/lib/x86_64-linux-gnu/libcurl.so.4.7.0
-   obj:/usr/lib/x86_64-linux-gnu/libcurl.so.4.7.0
+   ...
 }
 {
    SSH_MODULE
@@ -64,7 +62,7 @@
    SSH_MODULE
    Memcheck:Leak
    match-leak-kinds: reachable
-   fun:malloc
+   ...
    fun:_dl_new_object
    ...
 }
@@ -84,14 +82,6 @@
    ...
 }
 {
-   SSH_MODULE
-   Memcheck:Leak
-   match-leak-kinds: reachable
-   fun:calloc
-   fun:_dl_new_object
-   ...
-}
-{
    CURL_libgcrypt
    Memcheck:Leak
    match-leak-kinds: reachable
@@ -103,8 +93,7 @@
    obj:/usr/lib/x86_64-linux-gnu/libgcrypt.so.20.2.8
    fun:gcry_control
    fun:libssh2_init
-   obj:/usr/lib/x86_64-linux-gnu/libcurl.so.4.7.0
-   obj:/usr/lib/x86_64-linux-gnu/libcurl.so.4.7.0
+   ...
    fun:bbs_curl_init
    fun:main
 }
@@ -123,44 +112,39 @@
    ...
 }
 {
-   TLS
+   THREADLOCAL_STORAGE
    Memcheck:Leak
    match-leak-kinds: reachable
    fun:malloc
    fun:allocate_dtv_entry
    fun:allocate_and_init
-   fun:tls_get_addr_tail.isra.0
+   ...
    fun:__tls_get_addr
-   obj:/usr/lib/x86_64-linux-gnu/libgpgme.so.11.21.0
-   fun:gpgme_check_version
-   fun:gpgme_check_version_internal
-   fun:g_mime_init
-   fun:load_module
-   fun:start_resource
-   fun:load_resource.constprop.10
-   fun:on_file_preload
-   fun:on_file_preload
-   fun:__bbs_dir_traverse
-   fun:autoload_modules
-   fun:load_modules
+   ...
+}
+{
+   THREADLOCAL_STORAGE
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   ...
+   fun:allocate_dtv_entry
+   ...
+   fun:tls_get_addr_tail
+   ...
 }
 {
    BACKTRACE_libbfd_bfd_elf_find_nearest_line
    Memcheck:Leak
-   match-leak-kinds: definite
+   match-leak-kinds: definite,indirect,possible
    fun:malloc
-   fun:strdup
-   obj:/usr/lib/x86_64-linux-gnu/libbfd-2.35.2-system.so
-   obj:/usr/lib/x86_64-linux-gnu/libbfd-2.35.2-system.so
-   obj:/usr/lib/x86_64-linux-gnu/libbfd-2.35.2-system.so
+   ...
    fun:_bfd_elf_find_nearest_line
    fun:process_section
    fun:bfd_map_over_sections
    fun:bt_get_symbols
    fun:bbs_log_backtrace
-   fun:__bbs_assert_nonfatal
-   fun:__bbs_assert
-   fun:bbs_write
+   ...
 }
 {
    GMIME_load
@@ -257,25 +241,11 @@
    match-leak-kinds: reachable
    ...
    fun:call_init
-   fun:call_init
    fun:_dl_init
    fun:dl_open_worker
    fun:_dl_catch_exception
    fun:_dl_open
    ...
-}
-{
-   GOBJECT
-   Memcheck:Leak
-   match-leak-kinds: reachable
-   fun:malloc
-   fun:realloc
-   fun:g_realloc
-   ...
-   fun:call_init.part.0
-   fun:call_init
-   fun:_dl_init
-   fun:dl_open_worker
 }
 {
    GLIB

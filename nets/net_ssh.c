@@ -101,7 +101,7 @@ static int start_ssh(void)
 	if (!sshbind) {
 		bbs_error("ssh_bind_new failed\n");
 		return -1;
-		}
+	}
 
 	/* Set default keys
 	 * Note that all these SSH_BIND_OPTIONS enum values are aliases to SSH_BIND_OPTIONS_HOSTKEY */
@@ -125,6 +125,8 @@ static int start_ssh(void)
 	if (!keys) {
 		bbs_error("Failed to configure listener, unable to bind any SSH keys\n");
 		/* May need to do e.g. chown <BBS run username> /etc/ssh/ssh_host_rsa_key */
+		ssh_bind_free(sshbind);
+		sshbind = NULL;
 		return -1;
 	}
 

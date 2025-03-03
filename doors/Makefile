@@ -18,11 +18,11 @@ $(DEPENDS):
 
 %.so : %.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^
 
 door_irc.so : door_irc.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lirc
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lirc
 
 # Don't automatically remove intermediate .o files, to prevent unnecessary recompilations
 .SECONDARY: $(patsubst %.c,%.o,$(MOD_SRC))

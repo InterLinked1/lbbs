@@ -25,7 +25,7 @@ $(DEPENDS):
 
 %.so : %.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^
 
 IMAP_SRC = $(wildcard net_imap/*.c)
 IMAP_OBJ = $(patsubst %.c,%.o,$(IMAP_SRC))
@@ -40,16 +40,16 @@ net_imap/%.o: $(IMAP_SRC)
 
 net_imap.so : net_imap.o $(IMAP_OBJ)
 	@echo "  [LD] $< $(IMAP_OBJ) -> $@"
-	$(CC) -shared -fPIC -o $(basename $<).so $(IMAP_OBJ) $<
+	$(CC) $(MOD_LDFLAGS) -o $(basename $<).so $(IMAP_OBJ) $<
 
 # SSHLIB=$(pkg-config --libs libssh)
 net_ssh.so : net_ssh.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lssh
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lssh
 
 net_ws.so : net_ws.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lwss
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lwss
 
 # Don't automatically remove intermediate .o files, to prevent unnecessary recompilations
 .SECONDARY: $(patsubst %.c,%.o,$(MOD_SRC))

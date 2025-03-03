@@ -9,6 +9,14 @@ INCLUDE_FILES := $(wildcard ../include/*.h)
 # the include directory is in the parent
 INC = -I..
 
+# Older versions of valgrind do not have the --show-error-list option
+VALGRIND_VERSION_MM := $(shell valgrind --version 2> /dev/null | cut -d'-' -f2 | cut -d'.' -f1-2)
+ifdef VALGRIND_VERSION_MM
+ifeq ($(shell expr $(VALGRIND_VERSION_MM) \>= 3.15), 1)
+EXTRA_FLAGS := -DHAVE_VALGRIND_SHOW_ERROR_LIST
+endif
+endif
+
 all: $(TEST_EXE) $(MOD_SO)
 
 %.o : %.c
@@ -21,7 +29,7 @@ readline.o : ../bbs/readline.c
 
 test.o : test.c
 	@echo "  [LD] $^ -> $@"
-	$(CC) $(CFLAGS) -Wno-unused-result -DTEST_IN_CORE -DTEST_DIR=$(CURDIR) $(INC) -c $^
+	$(CC) $(CFLAGS) -Wno-unused-result -DTEST_IN_CORE -DTEST_DIR=$(CURDIR) $(EXTRA_FLAGS) $(INC) -c $^
 
 $(TEST_EXE) : test.o readline.o
 	$(CC) $(CFLAGS) -Wl,--export-dynamic -o $(TEST_EXE) *.o -ldl -lpthread

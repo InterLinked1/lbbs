@@ -61,6 +61,24 @@ static struct fdleaks {
 	time_t now;
 } fdleaks[FDLEAKS_NUM_FDS];
 
+/* #define FD_LOGFILE "/var/log/lbbs/fd.log" */
+
+#ifdef FD_LOGFILE
+static bbs_mutex_t fd_loglock = BBS_MUTEX_INITIALIZER;
+static FILE *fd_logfile = NULL;
+#endif
+
+#ifdef FD_LOGFILE
+#define FD_LOGF(...) \
+	bbs_mutex_lock(&fd_loglock); \
+	if (fd_logfile) { \
+		fprintf(fd_logfile, ## __VA_ARGS__); \
+	} \
+	bbs_mutex_unlock(&fd_loglock);
+#else
+#define FD_LOGF(...)
+#endif
+
 /*! \brief Get number of file descriptors open by current process */
 static int num_open_fds(void)
 {
@@ -188,6 +206,7 @@ static int bbs_fd_dump(int fd)
 	tmp->callname = name;       \
 	snprintf(tmp->callargs, sizeof(tmp->callargs), __VA_ARGS__); \
 	tmp->isopen = 1;            \
+	FD_LOGF("%lu: %s:%d (%s) %d = %s(%s)\n", tmp->now, tmp->file, tmp->line, tmp->function, offset, tmp->callname, tmp->callargs); \
 }
 
 #define LOG_FAILURE() \
@@ -384,11 +403,21 @@ int __bbs_close(int fd, const char *file, int line, const char *func)
 		bbs_log_backtrace(); /* Get a backtrace to see what made the invalid close, in case immediate caller isn't enough detail. */
 	}
 	res = close(fd);
-	if (!res && ARRAY_IN_BOUNDS(fd, fdleaks)) {
+	if (res) {
+		if (errno == EBADF && ARRAY_IN_BOUNDS(fd, fdleaks)) {
+			__bbs_log(LOG_WARNING, 0, file, line, func, "Failed to close file descriptor %d: %s (previously closed at %s:%d)\n", fd, strerror(errno), fdleaks[fd].file, fdleaks[fd].line);
+		} else {
+			__bbs_log(LOG_WARNING, 0, file, line, func, "Failed to close file descriptor %d: %s\n", fd, strerror(errno));
+		}
+	} else if (ARRAY_IN_BOUNDS(fd, fdleaks)) { /* && !res (implicit) */
 		fdleaks[fd].isopen = 0;
+		/* Update to where it was closed so we can debug attempts to close previously closed fds */
+		COPY(fdleaks[fd].file, file);
+		fdleaks[fd].line = line;
 	}
+	FD_LOGF("%lu: %s:%d (%s) close(%d)\n", time(NULL), file, line, func, fd);
 	return res;
-}
+}	
 
 FILE *__bbs_fopen(const char *path, const char *mode, const char *file, int line, const char *func)
 {
@@ -443,10 +472,30 @@ BBS_CLI_COMMAND_SINGLE(cli_fds, "fds", 1, "View list of open file descriptors", 
 
 void bbs_fd_shutdown(void)
 {
+#ifdef FD_LOGFILE
+	bbs_mutex_lock(&fd_loglock);
+	if (fd_logfile) {
+		bbs_debug(5, "Closing fd logfile\n");
+		fclose(fd_logfile);
+		fd_logfile = NULL;
+		/*! \note It is technically possible during shutdown that some other threads
+		 * still have file descriptors to close and thus, at this point,
+		 * those won't get logged. */
+	}
+	bbs_mutex_unlock(&fd_loglock);
+#endif
 	bbs_fd_dump(STDOUT_FILENO);
 }
 
 int bbs_fd_init(void)
 {
+#ifdef FD_LOGFILE
+	bbs_mutex_lock(&fd_loglock);
+	fd_logfile = fopen(FD_LOGFILE, "w"); /* Start fresh each run */
+	if (!fd_logfile) {
+		bbs_error("Failed to open %s for writing: %s\n", FD_LOGFILE, strerror(errno));
+	}
+	bbs_mutex_unlock(&fd_loglock);
+#endif
 	return bbs_cli_register(&cli_command); /* Automatically unregistered at shutdown */
 }

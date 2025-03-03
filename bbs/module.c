@@ -61,8 +61,15 @@ struct bbs_module {
 	struct {
 		/*! This module is awaiting a reload. */
 		unsigned int reloadpending:1;
+#if 0
+		/* This wasn't being used, if we need it, we can bring it back */
 		/*! Actively being unloaded. */
 		unsigned int unloading:1;
+#endif
+#ifdef DLOPEN_ONLY_ONCE
+		/*! Module has been unloaded. Useful if DLOPEN_ONLY_ONCE, since the module destructor doesn't run, we need to know we unloaded it */
+		unsigned int unloaded:1;
+#endif
 	} flags;
 	/*! Load order */
 	int loadorder;
@@ -179,7 +186,16 @@ void bbs_module_unregister(const struct bbs_module_info *info)
 		bbs_verb(2, "Unregistering module %s\n", info->name);
 		free_module(mod);
 	} else {
+#ifndef DLOPEN_ONLY_ONCE
+		/* This happens with DLOPEN_ONLY_ONCE if we tried to load a module
+		 * and the load_module callback returned nonzero.
+		 * In that case, we unloaded the module and freed the module structure.
+		 * However, since on these platforms, the module is still in memory,
+		 * its destructor will run when the BBS exits, and it will call
+		 * bbs_module_unregister. However, at this point, we don't have
+		 * any record of this module ourself, so this warning isn't appropriate. */
 		bbs_debug(1, "Unable to unregister module %s\n", info->name);
+#endif
 	}
 }
 
@@ -320,10 +336,11 @@ static int queue_reload(const char *resource)
 }
 
 /*! \brief dlclose(), with failure logging. */
-static void logged_dlclose(const char *name, void *lib)
+static int logged_dlclose(const char *name, void *lib)
 {
 	if (!lib) {
-		return;
+		bbs_debug(5, "No lib passed, skipping dlclose for %s\n", name);
+		return -1;
 	}
 	dlerror(); /* Clear any existing error */
 	if (really_register) {
@@ -332,7 +349,9 @@ static void logged_dlclose(const char *name, void *lib)
 	if (dlclose(lib)) {
 		char *error = dlerror();
 		bbs_error("Failure in dlclose for module '%s': %s\n", name ? name : "unknown", error ? error : "Unknown error");
+		return -1;
 	}
+	return 0;
 }
 
 /*!
@@ -383,7 +402,7 @@ static struct bbs_module *load_dlopen(const char *resource_in, const char *so_ex
 			}
 			logged_dlclose(resource_in, mod->lib);
 		} else if (!suppress_logging) {
-			bbs_error("Error loading module '%s': %s\n", resource_in, dlerror_msg);
+			bbs_error("Error %sloading module '%s': %s\n", flags & RTLD_LAZY ? "lazy " : "", resource_in, dlerror_msg);
 		}
 
 		free_module(mod);
@@ -428,6 +447,14 @@ static struct bbs_module *load_dynamic_module(struct autoload_module *a, const c
 	retry = a && a->preload;
 	retry = 1; /* Actually we need to always retry... not sure why we wouldn't? */
 
+#ifdef DLOPEN_ONLY_ONCE
+	/* If we only have one shot, we have no choice but to make everything global... yuck */
+	mod = load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_GLOBAL, suppress_logging || retry);
+	if (!mod) {
+		/* Can't resolve dependencies automatically, since that would involve another load_dlopen with RTLD_LAZY, and then yet another one with RTLD_NOW again */
+		bbs_error("Module %s has dependencies that cannot be autoloaded on this platform. Mark it for preload in modules.conf and try again.\n", resource_in);
+	}
+#else
 	mod = load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_LOCAL, suppress_logging || retry);
 	if (!mod) {
 		/* XXX. Here, we consider the case of modules that are both depended on by other modules
@@ -510,9 +537,13 @@ static struct bbs_module *load_dynamic_module(struct autoload_module *a, const c
 		mod = load_dlopen(resource_in, so_ext, fn, RTLD_NOW | RTLD_GLOBAL, 0);
 		really_register = 1;
 	}
+#endif /* DLOPEN_ONLY_ONCE */
 	return mod;
 }
 
+#define SHOULD_LOAD_MODULE(m) (!m->noload && (autoload_setting || m->load || m->preload || m->required))
+
+#ifndef DLOPEN_ONLY_ONCE
 static struct autoload_module *find_first_autoload_in_list(struct autoload_module *a, struct autoload_module *b)
 {
 	struct autoload_module *first = a;
@@ -527,8 +558,6 @@ static struct autoload_module *find_first_autoload_in_list(struct autoload_modul
 
 	return b;
 }
-
-#define SHOULD_LOAD_MODULE(m) (!m->noload && (autoload_setting || m->load || m->preload || m->required))
 
 static void check_dependencies(struct autoload_module *a)
 {
@@ -652,6 +681,7 @@ static void check_dependencies(struct autoload_module *a)
 	free_module(mod);
 	return;
 }
+#endif /* DLOPEN_ONLY_ONCE */
 
 const char *bbs_module_name(const struct bbs_module *mod)
 {
@@ -693,9 +723,16 @@ static void unload_dynamic_module(struct bbs_module *mod)
 	safe_strncpy(name, bbs_module_name(mod), sizeof(name)); /* Save a copy of the module name */
 
 	/* WARNING: the structure pointed to by mod is going to
-	   disappear when this operation succeeds, so we can't
-	   dereference it */
-	logged_dlclose(bbs_module_name(mod), lib);
+	 * disappear when this operation succeeds, so we can't
+	 * dereference it */
+	if (logged_dlclose(bbs_module_name(mod), lib)) {
+		if (is_module_loaded(name)) {
+			bbs_error("Module '%s' failed to unload\n", name);
+		} else {
+			bbs_error("Module '%s' failed to unload, but it's not currently loaded?\n", name);
+		}
+		return;
+	}
 
 	/* There are several situations where the module might still be resident
 	 * in memory.
@@ -711,6 +748,14 @@ static void unload_dynamic_module(struct bbs_module *mod)
 	if (is_module_loaded(name)) {
 		bbs_error("Module '%s' could not be completely unloaded\n", name);
 	}
+#ifndef DLOPEN_ONLY_ONCE
+	/* If it's actually unloaded from memory but somehow still registered,
+	 * then something is wrong as that means dlclose didn't trigger
+	 * the module's destructor to run. */
+	if (find_resource(name)) {
+		bbs_error("Module '%s' unloaded but still registered?\n", name);
+	}
+#endif
 }
 
 static int loadindex = 0;
@@ -1178,11 +1223,15 @@ static int try_autoload_modules(void)
 	RWDLLIST_TRAVERSE(&autoload_modules, a, entry) {
 		alist[c++] = a;
 	}
+#ifdef DLOPEN_ONLY_ONCE
+	bbs_debug(1, "Skipping module dependency checks\n");
+#else
 	for (c = 0; c < total_modules; c++) {
 		if (SHOULD_LOAD_MODULE(alist[c])) {
 			check_dependencies(alist[c]); /* Check if we need to load any dependencies for this module. */
 		}
 	}
+#endif
 	free(alist);
 
 	/* Okay, we made a plan for what we're going to do, now execute it. */
@@ -1265,6 +1314,13 @@ int bbs_module_unload(const char *name)
 {
 	int res;
 
+#ifdef DLOPEN_ONLY_ONCE
+	if (!bbs_is_shutting_down()) {
+		bbs_error("This platform does not support hot-swapping modules during runtime. Modules can only be unloaded at shutdown.\n");
+		return -1;
+	}
+#endif
+
 	res = unload_resource(name, 0, NULL);
 	return res ? -1 : 0;
 }
@@ -1273,6 +1329,11 @@ int bbs_module_reload(const char *name, int try_delayed)
 {
 	struct stringlist unloaded;
 	int res;
+
+#ifdef DLOPEN_ONLY_ONCE
+	bbs_error("This platform does not support hot-swapping modules during runtime. BBS must be restarted for new module to take effect.\n");
+	return -1;
+#endif
 
 	stringlist_init(&unloaded);
 
@@ -1822,6 +1883,11 @@ static void unload_modules_helper(void)
 		unsigned int nodecount = bbs_node_count();
 		struct bbs_module *mod, *lastmod = NULL; /* If passes > 0, do this so we don't try dlclosing a module twice */
 		RWLIST_TRAVERSE(&modules, mod, entry) {
+#ifdef DLOPEN_ONLY_ONCE
+			if (mod->flags.unloaded) {
+				continue;
+			}
+#endif
 			if (lastmod) {
 				/* Because we're using a singly linked list, instead of a doubly linked list,
 				 * we must advance to the next item in the list before actually calling
@@ -1862,6 +1928,9 @@ static void unload_modules_helper(void)
 				}
 				continue; /* Don't actually dlclose a module that refused to unload. */
 			}
+#ifdef DLOPEN_ONLY_ONCE
+			mod->flags.unloaded = 1;
+#endif
 			lastmod = mod; /* Actually go ahead and dlclose the module. */
 			if (passes > 0) {
 				/* We previously skipped the module because it had a positive use count, but now we're good. */
@@ -1904,16 +1973,20 @@ static void unload_modules_helper(void)
 
 int unload_modules(void)
 {
+#ifndef DLOPEN_ONLY_ONCE
 	struct bbs_module *mod;
+#endif
 
 	unload_modules_helper();
 
+#ifndef DLOPEN_ONLY_ONCE
 	/* Check for any modules still registered. */
 	RWLIST_WRLOCK(&modules);
 	RWLIST_TRAVERSE(&modules, mod, entry) {
 		bbs_warning("Module %s still registered during BBS shutdown\n", mod->name);
 	}
 	RWLIST_UNLOCK(&modules);
+#endif
 
 	/* If startup aborts due to a required module failing to load,
 	 * the CLI commands were never registered, so don't attempt to unregister them. */

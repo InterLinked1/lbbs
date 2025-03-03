@@ -23,7 +23,7 @@ jobs:
       - name: Build LBBS
         run: |
           sudo make modcheck
-          sudo make -j$(nproc)
+          sudo make -j$(nproc) || sudo make NOISY_BUILD=1
           sudo make install
           sudo make samples
           sudo make tests
@@ -49,13 +49,13 @@ jobs:
       - name: Build LBBS
         run: |
           sudo make modcheck
-          sudo make -j$(nproc)
+          sudo make -j$(nproc) || sudo make NOISY_BUILD=1
           sudo make install
           sudo make samples
           sudo make tests
       - name: Run tests
         run: |
-          sudo scripts/run_tests.sh
+          sudo IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh
       - name: Install service
         run: |
           sudo adduser -c "BBS" bbs --disabled-password --shell /usr/sbin/nologin --gecos ""
@@ -76,13 +76,18 @@ jobs:
         run: |
           sudo sed -i 's/-O3/-O0/' Makefile
           sudo make modcheck
-          sudo make -j$(nproc)
+          sudo make -j$(nproc) || sudo make NOISY_BUILD=1
           sudo make install
           sudo make samples
           sudo make tests
+      - name: Run unit tests
+        run: |
+          sudo IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
       - name: Install service
         run: |
           sudo adduser -c "BBS" bbs --disabled-password --shell /usr/sbin/nologin --gecos ""
+          # Remove the bbs.log from test suite executions since that is owned by root
+          sudo rm /var/log/lbbs/bbs.log
           sudo make service
   debian-12:
     runs-on: ubuntu-24.04
@@ -96,13 +101,16 @@ jobs:
       - name: Build LBBS
         run: |
           make modcheck
-          make -j$(nproc)
+          make -j$(nproc) || make NOISY_BUILD=1
           make install
           make samples
           make tests
       - name: Run basic tests
         run: |
           tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+      - name: Run unit tests
+        run: |
+          IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
   debian-11:
     runs-on: ubuntu-24.04
     name: Debian 11
@@ -115,13 +123,16 @@ jobs:
       - name: Build LBBS
         run: |
           make modcheck
-          make -j$(nproc)
+          make -j$(nproc) || make NOISY_BUILD=1
           make install
           make samples
           make tests
       - name: Run basic tests
         run: |
           tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+      - name: Run unit tests
+        run: |
+          IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
   debian-10:
     runs-on: ubuntu-24.04
     name: Debian 10
@@ -134,13 +145,16 @@ jobs:
       - name: Build LBBS
         run: |
           make modcheck
-          make -j$(nproc)
+          make -j$(nproc) || make NOISY_BUILD=1
           make install
           make samples
           make tests
       - name: Run basic tests
         run: |
           tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+      - name: Run unit tests
+        run: |
+          scripts/run_tests.sh test_unit
   alpine-linux:
     runs-on: ubuntu-24.04
     name: Alpine Linux
@@ -154,10 +168,14 @@ jobs:
         run: |
           make modcheck
           make modconfig
-          make -j$(nproc)
+          rm modules/mod_test_backtrace.c # Causes invalid read of size 8 in getframeaddr (in /usr/lib/libexecinfo.so.1)
+          make -j$(nproc) || make NOISY_BUILD=1
           make install
           make samples
           make tests
+      - name: Run unit tests
+        run: |
+          scripts/run_tests.sh test_unit
   fedora-42:
     runs-on: ubuntu-24.04
     name: Fedora 42
@@ -171,13 +189,16 @@ jobs:
         run: |
           make modcheck
           make modconfig
-          make -j$(nproc)
+          make -j$(nproc) || make NOISY_BUILD=1
           make install
           make samples
           make tests
       - name: Run basic tests
         run: |
           tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+      - name: Run unit tests
+        run: |
+          scripts/run_tests.sh test_unit
   fedora-40:
     runs-on: ubuntu-24.04
     name: Fedora 40
@@ -191,13 +212,16 @@ jobs:
         run: |
           make modcheck
           make modconfig
-          make -j$(nproc)
+          make -j$(nproc) || make NOISY_BUILD=1
           make install
           make samples
           make tests
       - name: Run basic tests
         run: |
           tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+      - name: Run unit tests
+        run: |
+          IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
   rocky-9:
     runs-on: ubuntu-24.04
     name: Rocky Linux 9.3
@@ -211,13 +235,16 @@ jobs:
         run: |
           make modcheck
           make modconfig
-          make -j$(nproc)
+          make -j$(nproc) || make NOISY_BUILD=1
           make install
           make samples
           make tests
       - name: Run basic tests
         run: |
           tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+      - name: Run unit tests
+        run: |
+          IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
   rocky-8:
     runs-on: ubuntu-24.04
     name: Rocky Linux 8.9
@@ -231,13 +258,16 @@ jobs:
         run: |
           make modcheck
           make modconfig
-          make -j$(nproc)
+          make -j$(nproc) || make NOISY_BUILD=1
           make install
           make samples
           make tests
       - name: Run basic tests
         run: |
           tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+      - name: Run unit tests
+        run: |
+          scripts/run_tests.sh test_unit
   opensuse:
     runs-on: ubuntu-24.04
     name: openSUSE Tumbleweed
@@ -251,13 +281,16 @@ jobs:
         run: |
           make modcheck
           make modconfig
-          make -j$(nproc)
+          make -j$(nproc) || make NOISY_BUILD=1
           make install
           make samples
           make tests
       - name: Run basic tests
         run: |
           tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+      - name: Run unit tests
+        run: |
+          scripts/run_tests.sh test_unit
   archlinux:
     runs-on: ubuntu-24.04
     name: Arch Linux
@@ -271,13 +304,16 @@ jobs:
         run: |
           make modcheck
           make modconfig
-          make -j$(nproc)
+          make -j$(nproc) || make NOISY_BUILD=1
           make install
           make samples
           make tests
       - name: Run basic tests
         run: |
           tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+      - name: Run unit tests
+        run: |
+          scripts/run_tests.sh test_unit
   freebsd-14:
     runs-on: ubuntu-24.04
     name: FreeBSD
@@ -301,4 +337,4 @@ jobs:
             gmake install
             gmake samples
             gmake tests
-            gmake install
+            gmake install || gmake install NOISY_BUILD=1

@@ -198,9 +198,11 @@ static int check_lib(const char *modname, const char *libname)
 		return 0;
 	}
 
-	/* ldconfig -p isn't valid on FreeBSD, so only try this on Linux: */
-#ifdef __FreeBSD__
+	/* ldconfig -p isn't valid on FreeBSD or Alpine Linux, so only try this on Linux with glibc: */
+#if defined(__FreeBSD__)
 	snprintf(cmd, sizeof(cmd), "ldconfig -r | grep 'lib%s.so' 2>/dev/null 1>&2", libname);
+#elif !defined(__GLIBC__)
+	snprintf(cmd, sizeof(cmd), "ldconfig | grep 'lib%s.so' 2>/dev/null 1>&2", libname);
 #else
 	snprintf(cmd, sizeof(cmd), "ldconfig -p | grep 'lib%s.so' 2>/dev/null 1>&2", libname);
 #endif

@@ -14,9 +14,18 @@ export BBSTOPDIR		# Top level dir, used in subdirs' Makefiles
 
 GCCVERSION = $(shell gcc --version | grep ^gcc | sed 's/^.* //g')
 GCCVERSIONGTEQ8 := $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 8)
+ALPINE_LINUX := $(shell ls /etc/alpine-release 2>/dev/null | wc -l)
 
 CC		= gcc
-CFLAGS = -Wall -Werror -Wunused -Wextra -Wparentheses -Wconversion -Wdangling-else -Waggregate-return -Wchar-subscripts -Wdouble-promotion -Wmissing-include-dirs -Wuninitialized -Wunknown-pragmas -Wstrict-overflow -Wmissing-format-attribute -Wnull-dereference -Warray-bounds=1 -Wduplicated-branches -Wduplicated-cond -Wtrampolines -Wfloat-equal -Wdeclaration-after-statement -Wshadow -Wundef -Wunused-macros -Wcast-qual -Wcast-align -Wwrite-strings -Wunused-result -Wjump-misses-init -Wlogical-op -Wstrict-prototypes -Wmissing-prototypes -Wmissing-declarations -Wredundant-decls -Wpacked -Wnested-externs -Winline -Wdisabled-optimization -Wstack-protector -std=gnu99 -pthread -O3 -g -fno-omit-frame-pointer -fstrict-aliasing -fdelete-null-pointer-checks -fwrapv -D_FORTIFY_SOURCE=2
+
+CFLAGS += -Wall -Werror -Wunused -Wextra -Wparentheses -Wconversion -Wdangling-else -Waggregate-return -Wchar-subscripts -Wdouble-promotion -Wmissing-include-dirs -Wuninitialized -Wunknown-pragmas -Wstrict-overflow -Wmissing-format-attribute -Wnull-dereference -Warray-bounds=1 -Wduplicated-branches -Wduplicated-cond -Wtrampolines -Wfloat-equal -Wdeclaration-after-statement -Wshadow -Wundef -Wunused-macros -Wcast-qual -Wcast-align -Wwrite-strings -Wunused-result -Wjump-misses-init -Wlogical-op -Wstrict-prototypes -Wmissing-prototypes -Wmissing-declarations -Wredundant-decls -Wpacked -Wnested-externs -Winline -Wdisabled-optimization -Wstack-protector -std=gnu99 -pthread -O3 -g -fno-omit-frame-pointer -fstrict-aliasing -fdelete-null-pointer-checks -fwrapv -D_FORTIFY_SOURCE=2
+
+MOD_LDFLAGS = -shared -fPIC
+
+# -z lazy is needed for Alpine Linux: https://www.openwall.com/lists/musl/2019/12/11/16
+ifeq ($(ALPINE_LINUX),1)
+MOD_LDFLAGS += -Wl,-z lazy
+endif
 
 # -Wstringop-truncation only in gcc 8.0 and later
 ifeq "$(GCCVERSIONGTEQ4)" "1"
@@ -58,7 +67,10 @@ SILENT_BUILD_PREFIX := @
 
 export CC
 export CFLAGS
+export MOD_LDFLAGS
 export EXE
+
+export ALPINE_LINUX
 
 export UNAME_S
 export SUBMAKE
@@ -103,10 +115,12 @@ clean :
 	$(RM) -r doc/html
 	$(RM) -r doc/latex
 
-uninstall :
+moduninstall:
+	$(RM) /usr/lib/lbbs/modules/*.so
+
+uninstall : moduninstall
 	$(RM) /var/lib/lbbs/external/*
 	$(RM) /usr/local/sbin/rsysop
-	$(RM) /usr/lib/lbbs/modules/*.so
 	$(RM) /usr/sbin/$(EXE)
 
 bininstall: bbs

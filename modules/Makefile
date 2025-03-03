@@ -13,12 +13,7 @@ GMIME_FLAGS := $(filter-out -I/usr/include/libassuan2%,$(GMIME_FLAGS))
 GMIME_LIBS=$(shell pkg-config --libs glib-2.0 gmime-3.0)
 MYSQL_LIBS := $(shell mysql_config --libs)
 
-ALPINE_LINUX := $(shell ls /etc/alpine-release 2>/dev/null | wc -l)
-MOD_WEBMAIL_LIBS := -ljansson -lssl -lcrypto
-ifneq ($(ALPINE_LINUX),1)
-MOD_WEBMAIL_LIBS += -ldb-5.3
-endif
-MOD_WEBMAIL_LIBS += -lz
+MOD_WEBMAIL_LIBS := -ljansson -lssl -lcrypto -lz
 
 ETPANCFLAGS=-I/usr/local/include
 
@@ -35,11 +30,11 @@ $(DEPENDS):
 
 mod_curl.so : mod_curl.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lcurl
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lcurl
 
 mod_history.so : mod_history.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lreadline
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lreadline
 
 mod_mimeparse.o : mod_mimeparse.c mod_mimeparse.d
 	@echo "  [CC] $< -> $@"
@@ -55,95 +50,95 @@ mod_webmail.o : mod_webmail.c mod_webmail.d
 
 %.so : %.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^
 
 mod_asterisk_ami.so : mod_asterisk_ami.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lcami
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lcami
 
 mod_asterisk_queues.so : mod_asterisk_queues.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lcami
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lcami
 
 mod_discord.so : mod_discord.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -ldiscord
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -ldiscord
 
 mod_http.so : mod_http.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lmagic
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lmagic
 
 mod_irc_client.so : mod_irc_client.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lirc
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lirc
 
 mod_lmdb.so : mod_lmdb.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -llmdb
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -llmdb
 
 mod_mimeparse.so : mod_mimeparse.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ $(GMIME_LIBS)
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ $(GMIME_LIBS)
 
 mod_mysql.so : mod_mysql.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ $(MYSQL_LIBS)
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ $(MYSQL_LIBS)
 
 mod_ncurses.so : mod_ncurses.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lmenu -lncurses
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lmenu -lncurses
 
 mod_oauth.so : mod_oauth.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -ljansson
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -ljansson
 
 mod_operator.so : mod_operator.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -ljansson
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -ljansson
 
 mod_sieve.so : mod_sieve.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lsieve
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lsieve
 
 mod_slack.so : mod_slack.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lslackrtm
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lslackrtm
 
 mod_smtp_delivery_external.so : mod_smtp_delivery_external.o
 	@echo "  [LD] $^ -> $@"
 ifeq ($(UNAME_S),FreeBSD)
-	$(CC) -shared -fPIC -o $(basename $^).so $^
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^
 else
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lresolv
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lresolv
 endif
 
 mod_smtp_filter_arc.so : mod_smtp_filter_arc.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -L/usr/local/lib -Wl,-rpath -Wl,/usr/local/lib -lopenarc
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -L/usr/local/lib -Wl,-rpath -Wl,/usr/local/lib -lopenarc
 
 mod_smtp_filter_dkim.so : mod_smtp_filter_dkim.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lopendkim
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lopendkim
 
 mod_smtp_filter_dmarc.so : mod_smtp_filter_dmarc.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lopendmarc
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lopendmarc
 
 mod_smtp_filter_spf.so : mod_smtp_filter_spf.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lspf2
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lspf2
 
 mod_systemd.so : mod_systemd.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -lsystemd
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -lsystemd
 
 mod_uuid.so : mod_uuid.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ -luuid
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ -luuid
 
 mod_webmail.so : mod_webmail.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^ $(MOD_WEBMAIL_LIBS) -L/usr/local/lib -Wl,-rpath=/usr/local/lib/ -letpan
+	$(CC) $(MOD_LDFLAGS) -o $(basename $^).so $^ $(MOD_WEBMAIL_LIBS) -L/usr/local/lib -Wl,-rpath=/usr/local/lib/ -letpan
 
 # Don't automatically remove intermediate .o files, to prevent unnecessary recompilations
 .SECONDARY: $(patsubst %.c,%.o,$(MOD_SRC))
