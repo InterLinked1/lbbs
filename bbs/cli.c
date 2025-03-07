@@ -179,8 +179,7 @@ int bbs_cli_exec(int fdin, int fdout, const char *s)
 	int res, argc = 0;
 
 	if (strlen_zero(s)) {
-		errno = EINVAL;
-		return -1;
+		return EINVAL;
 	}
 
 	/* Before we split it up, find the command to use */
@@ -189,11 +188,9 @@ int bbs_cli_exec(int fdin, int fdout, const char *s)
 	if (!c) {
 		RWLIST_UNLOCK(&cmds);
 		bbs_debug(1, "No matching CLI command for '%s'\n", s); /* Not a warning, user could fat finger a typo */
-		errno = ENOENT;
-		return -1;
+		return ENOENT;
 	}
 
-	errno = 0;
 	if (c->mod) { /* If it's not part of the core, bump the ref count */
 		bbs_module_ref(c->mod, 1);
 	}

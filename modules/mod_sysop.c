@@ -183,7 +183,7 @@ static int sysop_command(struct sysop_console *console, const char *s)
 	res = bbs_cli_exec(console->fdin, console->fdout, s);
 	my_set_stdout_logging(console->fdout, console->log); /* Reset, in case a CLI command changed it */
 
-	if (res && errno == ENOENT) {
+	if (res == ENOENT) {
 		bbs_dprintf(console->fdout, "ERROR: Invalid command: '%s'. Press '?' for help.\n", s);
 	}
 

@@ -92,7 +92,10 @@ int bbs_cli_unregister_remaining(void);
  * \brief Execute a CLI command
  * \param fdin Input file descriptor of sysop console.
  * \param fdout Output file descriptor of sysop console.
- * \param s Command to execute. Will be mutated for parsing.
- * \retval 0 on success, -1 on failure.
+ * \param s Command to execute.
+ * \retval 0 if CLI command returns 0 (success)
+ * \retval -1 if CLI command returns -1 (failure)
+ * \retval EINVAL if s is empty
+ * \retval ENOENT if no such CLI command exists
  */
 int bbs_cli_exec(int fdin, int fdout, const char *s);
