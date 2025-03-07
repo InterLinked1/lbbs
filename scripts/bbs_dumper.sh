@@ -63,7 +63,8 @@ elif [ "$1" = "postdump" ]; then
 		CORE_FILE=core
 	fi
 	gdb /usr/sbin/lbbs "$CORE_FILE" -ex "thread apply all bt full" -ex "quit" > full.txt
-	if [ $? -ne 0 ]; then
+	# gdb can return nonzero even if it succeeded, so don't check the return code
+	if [ -f full.txt ]; then
 		printf "Backtrace saved to full.txt\n"
 	else
 		printf "Failed to obtain backtrace\n"
@@ -71,7 +72,7 @@ elif [ "$1" = "postdump" ]; then
 elif [ "$1" = "livedump" ]; then
 	ensure_gdb_installed
 	gdb /usr/sbin/lbbs --batch -q -p $bbspid -ex 'thread apply all bt full' -ex 'quit' > full.txt
-	if [ $? -ne 0 ]; then
+	if [ -f full.txt ]; then
 		printf "Backtrace saved to full.txt\n"
 	else
 		printf "Failed to obtain backtrace\n"
