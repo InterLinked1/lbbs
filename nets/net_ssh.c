@@ -34,6 +34,7 @@
 #include <signal.h> /* use pthread_kill */
 #include <sys/ioctl.h> /* use winsize */
 #include <limits.h> /* use PATH_MAX */
+#include <libgen.h> /* use dirname */
 
 /*
  * The SSH driver has dependencies on libssh and libcrypto.
@@ -59,6 +60,8 @@
 #include "include/net.h"
 #include "include/transfer.h"
 #include "include/event.h"
+#include "include/test.h"
+#include "include/system.h"
 
 static pthread_t ssh_listener_thread;
 
@@ -975,13 +978,16 @@ static void handle_session(ssh_event event, ssh_session session)
 	ssh_channel_free(sdata.channel);
 }
 
+#define handle_errno(msg) __handle_errno(__FILE__, __LINE__, __func__, msg)
+
 /* === SFTP functions === */
-static int handle_errno(sftp_client_message msg)
+static int __handle_errno(const char *file, int line, const char *func, sftp_client_message msg)
 {
-	bbs_debug(3, "errno: %s\n", strerror(errno));
+	__bbs_log(LOG_DEBUG, 3, file, line, func, "errno: %s\n", strerror(errno));
 	switch (errno) {
 		case EPERM:
 		case EACCES:
+			bbs_log_backtrace();
 			return sftp_reply_status(msg, SSH_FX_PERMISSION_DENIED, "Permission denied");
 		case ENOENT:
 			return sftp_reply_status(msg, SSH_FX_NO_SUCH_FILE, "No such file or directory"); /* Also SSH_FX_NO_SUCH_PATH */
@@ -1242,6 +1248,7 @@ static int handle_read(sftp_client_message msg)
 			bbs_transfer_get_user_path(info->node, info->realpath, userpath, sizeof(userpath));
 			event.userpath = userpath;
 			event.diskpath = info->realpath;
+			event.size = (size_t) ftell(info->file);
 			bbs_event_dispatch_custom(info->node, EVENT_FILE_DOWNLOAD_COMPLETE, &event);
 		} else {
 			handle_errno(msg);
@@ -1388,15 +1395,246 @@ static void sftp_server_free(sftp_session sftp)
 }
 #endif
 
-#define CANONICALIZE_PATHS() \
+static int realpath_canonicalize_missing(const char *mypath, char *buf)
+{
+	int stdout[2];
+	int res;
+	struct bbs_exec_params x;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+	char *argv[4] = { "realpath", "--canonicalize-missing", mypath, NULL };
+
+	/* Create a pipe for receiving output */
+	if (pipe(stdout)) {
+		bbs_error("pipe failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	EXEC_PARAMS_INIT_FD(x, -1, stdout[1]);
+	res = bbs_execvp(NULL, &x, "realpath", argv);
+#pragma GCC diagnostic pop
+	close(stdout[1]);
+	if (res) {
+		/* On systems without GNU realpath, the command may run,
+		 * and the unrecognized option is ignored, but because
+		 * the path doesn't exist, the command will fail and return nonzero. */
+		close(stdout[0]);
+		return -1;
+	}
+	/* Read into the buffer */
+	res = (int) read(stdout[0], buf, PATH_MAX - 1);
+	close(stdout[0]);
+	if (res <= 0) {
+		return -1;
+	}
+	/* Trim the trailing newline */
+	if (res > 1 && buf[res - 1] == '\n') {
+		buf[res - 1] = '\0';
+	} else {
+		buf[res] = '\0';
+	}
+	/* Sanity check */
+	return 0;
+}
+
+static int canonicalize_nonexistent_path(const char *mypath, char *buf)
+{
+	const char *src = mypath;
+	char *dst = buf;
+
+	/* We need to canonicalize this path, which involves several transformations:
+	 * /./ -> /
+	 * /../ -> (parent dir)
+	 * /// -> /
+	 * No / as last character.
+	 *
+	 * Canonicalization normally also involves resolving symlinks,
+	 * but we don't need to worry about that. We're only here because
+	 * this path doesn't exist, and therefore it can't be a symlink. */
+
+	if (strlen(mypath) >= PATH_MAX) {
+		/* Shouldn't happen, but cover our you know what */
+		bbs_error("Can't canonicalize path '%s' (too long)\n", mypath);
+		return -1;
+	}
+
+#define LAST_CHAR_WAS_SLASH() (dst > buf && *(dst - 1) == '/')
+
+	/* We don't need any bounds checks after this because the
+	 * destination string will be at most as large as the original one.
+	 * Every step of canonicalization involves reducing the length
+	 * (except for symlink resolution, which we don't need to do). */
+	while (*src) {
+		
+		*dst = '\0';
+		bbs_debug(3, "dst '%s' src '%s'\n", buf, src);
+		
+		/* Consecutive slashes. Only keep one. */
+		if (!strncmp(src, "//", 2)) {
+			if (!LAST_CHAR_WAS_SLASH()) {
+				*dst++ = *src++;
+			} else {
+				src++;
+			}
+			while (*src == '/') {
+				src++; /* Skip any remaining redundant slashes */
+			}
+		/* Same directory. */
+		} else if (LAST_CHAR_WAS_SLASH() && !strcmp(src, ".")) {
+			/* Ends in '/.'. The dot can be ignored */
+			src++;
+		} else if (LAST_CHAR_WAS_SLASH() && !strncmp(src, "./", 2)) {
+			src++;
+		} else if (!strncmp(src, "/./", 3)) {
+			if (!LAST_CHAR_WAS_SLASH()) {
+				*dst++ = *src++;
+			} else {
+				src++;
+			}
+			src += 2;
+		} else if (!strcmp(src, "/.")) {
+			if (!LAST_CHAR_WAS_SLASH()) {
+				*dst++ = *src++;
+			} else {
+				src++;
+			}
+			src++; /* Skip '.' */
+		/* Go up one directory. */
+		} else if (LAST_CHAR_WAS_SLASH() && !strncmp(src, "../", 3)) {
+			/* Go up one directory.
+			 * In this case, we keep one slash,
+			 * but we need to back the train up now.
+			 *
+			 * For example, if so far the destination is '/tmp/foo'
+			 * and we are here, now we need to revert back to '/tmp'. */
+			while (*dst != '/' && dst > buf) {
+				dst--; /* Back it up until we get to a '/', but don't go past the beginning, obviously. */
+			}
+			/* There are 3 possibilities now:
+			 * #1 dst > buf,  *dst == '/'
+			 * #2 dst == buf, *dst == '/'
+			 * #3 dst == buf, *dst != '/'
+			 *
+			 * For #1, since we'll start looking at src again at the ending '/' in this segment, we don't want to keep this slash either,
+			 * and we don't want to advance past the second '/'.
+			 * For #2 and #3, we don't want to add any slashes, so we don't back up and we skip the rest of the segment.
+			 */
+			if (dst > buf) {
+				src += STRLEN(".."); /* Don't advance past the second '/'. */
+			} else { /* dst == buf */
+				src += STRLEN("../"); /* Can't back up dst any further. To avoid adding a duplicate /, skip the whole string */
+			}
+		} else if (!strncmp(src, "/../", 4)) {
+			while (*dst != '/' && dst > buf) {
+				dst--; /* Back it up until we get to a '/', but don't go past the beginning, obviously. */
+			}
+			if (dst > buf) {
+				src += STRLEN("/.."); /* Don't advance past the second '/'. */
+			} else { /* dst == buf */
+				(void) src; /* Dummy statement to avoid gcc thinking these are identical branches (they are, in practice, but not in semantics) */
+				src += STRLEN("../"); /* Can't back up dst any further. To avoid adding a duplicate /, skip the whole string */
+			}
+		} else if (!strcmp(src, "/..")) {
+			while (*dst != '/' && dst > buf) {
+				dst--; /* Back it up until we get to a '/', but don't go past the beginning, obviously. */
+			}
+			src += STRLEN("/..");
+		} else {
+			*dst++ = *src++;
+		}
+	}
+	if (LAST_CHAR_WAS_SLASH()) {
+		/* Nix any trailing slash, unless it's the root */
+		*(dst - 1) = '\0';
+	} else {
+		*dst = '\0';
+	}
+#undef LAST_CHAR_WAS_SLASH
+	return 0;
+}
+
+/*!
+ * \brief Canonicalize a system file path
+ * \note This is essentially realpath, but optionally tolerant of nonexistent paths
+ * \param mypath Path to canonicalize. Must be of size PATH_MAX.
+ * \param[out] buf
+ * \param nocheck If paths that don't exist are allowed or not
+ * \return Canonicalized path or NULL on failure
+ */
+static char *canonicalize_path(const char *mypath, char *buf, int nocheck)
+{
+	char *res;
+
+	bbs_debug(3, "Canonicalizing '%s' (nocheck: %d)\n", mypath, nocheck);
+
+	/* This is the easy case. If this path happens to exist, we can just use realpath. */
+	res = realpath(mypath, buf);
+	if (!nocheck || res) {
+		return res; /* Success (or !nocheck) */
+	}
+
+	/* The path doesn't exist. realpath(3) can't handle this.
+	 *
+	 * If it doesn't need to exist, we can still emulate realpath if were to handle nonexisting paths,
+	 * in order to build an absolute path to a resource that might not exist.
+	 * (For example, FileZilla does this before uploading a file to a directory.) */
+
+	/* If the GNU version of realpath(1) is available, try that first.
+	 * The --canonicalizing-missing option gives us the behavior that we want.
+	 * It's less likely to have bugs that any custom path parsing logic would. */
+	if (!realpath_canonicalize_missing(mypath, buf)) { /* GNU realpath with --canonicalize-missing */
+		return buf;
+	}
+	/* If the GNU version of realpath(1) isn't available (e.g. FreeBSD, musl systems like Alpine Linux)
+	 * then use our own minimal custom canonicalizer. */
+	if (!canonicalize_nonexistent_path(mypath, buf)) { /* Use custom implementation */
+		return buf;
+	}
+	bbs_error("Could not canonicalize path '%s'\n", mypath);
+	return NULL;
+}
+
+static int test_canonicalize(void)
+{
+	char buf[PATH_MAX];
+
+/* Macro wrapper, to avoid canonicalize_path being called multiple times per test */
+#define CANONICALIZE_TEST(x, y) { \
+	const char *cp = x; \
+	bbs_test_assert_str_exists_equals(cp, y); \
+}
+
+	/* Depending on the platform, this will either test GNU realpath
+	 * or the custom implementation. */
+	CANONICALIZE_TEST(canonicalize_path("/", buf, 1), "/");
+	CANONICALIZE_TEST(canonicalize_path("/tmp/../.", buf, 1), "/");
+	CANONICALIZE_TEST(canonicalize_path("/tmp/.././folder/", buf, 1), "/folder");
+	CANONICALIZE_TEST(canonicalize_path("/tmp/.././tmp", buf, 1), "/tmp");
+	CANONICALIZE_TEST(canonicalize_path("/tmp/foo/.", buf, 1), "/tmp/foo");
+	CANONICALIZE_TEST(canonicalize_path("/tmp///foo/./.", buf, 1), "/tmp/foo");
+	CANONICALIZE_TEST(canonicalize_path("/tmp/./foo/.//.", buf, 1), "/tmp/foo");
+	CANONICALIZE_TEST(canonicalize_path("/tmp/../tmp/foo/.", buf, 1), "/tmp/foo");
+	CANONICALIZE_TEST(canonicalize_path("/tmp/foo", buf, 1), "/tmp/foo");
+	CANONICALIZE_TEST(canonicalize_path("/tmp/foo/", buf, 1), "/tmp/foo");
+	CANONICALIZE_TEST(canonicalize_path("/tmp/foo/.", buf, 1), "/tmp/foo");
+	CANONICALIZE_TEST(canonicalize_path("/tmp/foo/..", buf, 1), "/tmp");
+	CANONICALIZE_TEST(canonicalize_path("/tmp/foo/../file.txt", buf, 1), "/tmp/file.txt");
+	CANONICALIZE_TEST(canonicalize_path("/tmp/../../..", buf, 1), "/"); /* Trying to go up past root shouldn't crash */
+	return 0;
+
+cleanup:
+	return -1;
+}
+
+#define CANONICALIZE_PATHS(nocheck) \
 	/* Clients are supposed to call REALPATH so that the server can canonicalize the actual path on disk.
 	 * We just assume that's been done afterwards... */ \
-	if (!realpath(mypath, buf)) { /* returns NULL on failure */ \
+	if (!canonicalize_path(mypath, buf, nocheck)) { /* returns NULL on failure */ \
 		bbs_debug(5, "Path '%s' not found: %s\n", mypath, strerror(errno)); \
 		handle_errno(msg); \
 		break; \
 	} \
-	bbs_debug(3, "realpath(%s) -> %s\n", mypath, buf); \
+	bbs_debug(3, "canonicalize_path(%s) -> %s\n", mypath, buf); \
 	safe_strncpy(mypath, buf, sizeof(mypath)); /* Replace mypath so we can use either */ \
 	bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath)); \
 
@@ -1407,7 +1645,7 @@ static void sftp_server_free(sftp_session sftp)
 		handle_errno(msg); \
 		break; \
 	} \
-	CANONICALIZE_PATHS();
+	CANONICALIZE_PATHS(0);
 
 #define SFTP_MAKE_PATH_NOCHECK() \
 	bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath)); \
@@ -1415,7 +1653,7 @@ static void sftp_server_free(sftp_session sftp)
 		handle_errno(msg); \
 		break; \
 	} \
-	CANONICALIZE_PATHS();
+	CANONICALIZE_PATHS(1);
 
 static void sftp_free_info(struct sftp_info *info)
 {
@@ -1478,7 +1716,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 		bbs_debug(5, "Got SFTP client message %2d (%8s), client path: %s\n", msg->type, sftp_get_client_message_type_name(msg->type), msg->filename);
 		switch (msg->type) {
 			case SFTP_REALPATH:
-				SFTP_MAKE_PATH();
+				SFTP_MAKE_PATH_NOCHECK();
 				sftp_reply_name(msg, userpath, NULL); /* Skip root dir */
 				break;
 			case SFTP_OPENDIR:
@@ -1747,6 +1985,11 @@ static int load_config(void)
 	return 0;
 }
 
+static struct bbs_unit_test tests[] =
+{
+	{ "SSH Canonicalize", test_canonicalize },
+};
+
 static int load_module(void)
 {
 	if (load_config()) {
@@ -1765,6 +2008,7 @@ static int load_module(void)
 		goto cleanup;
 	}
 	bbs_register_network_protocol("SSH", (unsigned int) ssh_port);
+	bbs_register_tests(tests);
 	return 0;
 
 cleanup:
@@ -1774,6 +2018,7 @@ cleanup:
 
 static int unload_module(void)
 {
+	bbs_unregister_tests(tests);
 	if (!sshbind) {
 		bbs_error("SSH socket already closed at unload?\n");
 		return 0;
