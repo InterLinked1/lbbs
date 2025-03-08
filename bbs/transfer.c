@@ -20,6 +20,7 @@
 #include "include/bbs.h"
 
 #include <string.h>
+#include <ctype.h>
 
 #include "include/config.h"
 #include "include/transfer.h"
@@ -136,7 +137,72 @@ int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const c
 	return bbs_user_priv(node->user) >= required_priv;
 }
 
-int transfer_make_longname(const char *file, struct stat *st, char *buf, size_t len, int ftp)
+int transfer_get_username(const char *path, char *buf, size_t len)
+{
+	int userid;
+
+	if (strlen_zero(path)) {
+		bbs_warning("Provided path is empty\n");
+		return -1;
+	}
+	userid = atoi(path);
+	if (userid == 0) {
+		if (!isdigit(*path)) {
+			bbs_warning("Provided path substring does not begin with a digit: %s\n", path);
+			return -1;
+		}
+		safe_strncpy(buf, "public", len);
+	} else {
+		if (bbs_lowercase_username_from_userid((unsigned int) userid, buf, len)) {
+			/* There is a folder in the home directory that is numeric,
+			 * but it doesn't correspond to an actual user. */
+			strcpy(buf, "root");
+		}
+	}
+	return 0;
+}
+
+int transfer_get_owner_username(const char *path, char *buf, size_t len)
+{
+	/* The files are probably a subset of /home/<USERID> in this case */
+	if (!strncmp(path, "/home/", STRLEN("/home/"))) {
+#ifndef FRIENDLY_PATHS
+		char username[256];
+		int userid;
+#endif
+		const char *homedir = path + STRLEN("/home/");
+		if (strlen_zero(homedir)) {
+			safe_strncpy(buf, "root", len);
+			return 0;
+		}
+#ifdef FRIENDLY_PATHS
+		bbs_strncpy_until(buf, homedir, len, '/'); /* Since this is the user-facing path, we can just take the username from that */
+		if (!strcmp(buf, "public") || STARTS_WITH(buf, "public")) {
+			return 0;
+		}
+		if (!bbs_userid_from_username(buf)) {
+			/* There's no such user, so it's something else */
+			safe_strncpy(buf, "root", len);
+		}
+#else
+		userid = atoi(homedir);
+		if (!userid && (!strcmp(homedir, "0") || !strcmp(homedir, "0/", 2))) {
+			safe_strncpy(buf, "public", len);
+			return 0;
+		}
+		if (bbs_username_from_userid(atoi(homedir), username, sizeof(username))) {
+			/* There's no such user, so it's something else */
+			safe_strncpy(buf, "root", len);
+			return 0;
+		}
+#endif
+	} else {
+		safe_strncpy(buf, "root", len); /* It's probably one of the top level directories, which aren't mutable anyways */
+	}
+	return 0;
+}
+
+int transfer_make_longname(const char *file, const char *username, struct stat *st, char *buf, size_t len, int ftp)
 {
 	char ctimebuf[26]; /* 26 bytes is enough per ctime(3) */
 	char *modtime;
@@ -169,15 +235,18 @@ int transfer_make_longname(const char *file, struct stat *st, char *buf, size_t 
 	 * It would be better to use the BBS username, particularly for a user's own files;
 	 * however, there aren't user accounts on the system itself for each user,
 	 * so we don't have a way to store that in the file attributes.
-	 *
-	 * In the meantime, we may want to just output 0 for both uid and gid,
-	 * instead of outputting the actual values...
 	 */
 
 #ifdef OUTPUT_REAL_UIDS_GIDS
 	p += snprintf(p, len - (size_t) (p - buf), "%3d %d %d %d", (int) st->st_nlink, (int) st->st_uid, (int) st->st_gid, (int) st->st_size);
 #else
-	p += snprintf(p, len - (size_t) (p - buf), "%3d %d %d %d", 0, 0, (int) st->st_gid, (int) st->st_size);
+	/* Don't just use dummy UIDs/GIDs of 0.
+	 * It isn't true, and it can also confuse FileZilla into displaying 1000 for the file size (for some files, but not all?)
+	 * rather than whatever it actually is.
+	 * Since the owner of a BBS file isn't stored anywhere (everything is just owned by the actual BBS user on the host, typically),
+	 * that is computed for the file/directory in question and passed into this function by the caller. */
+	bbs_assert(!strlen_zero(username));
+	p += snprintf(p, len - (size_t) (p - buf), "%3d %s %s %d", (int) st->st_nlink, username, username, (int) st->st_size);
 #endif
 	if (ftp) {
 		struct tm tm;
@@ -349,7 +418,6 @@ int bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpath, char
 	{
 		/* This assumes userpath is always a subset of the diskpath */
 		p = S_OR(userpath, "/"); /* Corner case: for root, we need to manually add the / back */
-		bbs_debug(5, "Client path is '%s'\n", p);
 		safe_strncpy(buf, p, len);
 	}
 	bbs_debug(2, "Translated disk path '%s' -> user path '%s'\n", diskpath, origbuf);

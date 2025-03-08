@@ -52,15 +52,34 @@ int bbs_transfer_show_all_home_dirs(void);
 int bbs_transfer_operation_allowed(struct bbs_node *node, int operation, const char *fullpath);
 
 /*!
+ * \brief Helper function for FTP/SFTP to compute username from a path substring
+ * \parma path. This should be the substring of the system path for the home directory starting at the user ID as would be passed to atoi()
+ * \param[out] buf Username of computed owner
+ * \param len Size of buf
+ * \retval 0 on success, -1 on failure
+ */
+int transfer_get_username(const char *path, char *buf, size_t len);
+
+/*!
+ * \brief Helper function for FTP/SFTP to compute username from an absolute path
+ * \parma path. This should be the full user-facing (not system) path
+ * \param[out] buf Username of computed owner
+ * \param len Size of buf
+ * \retval 0 on success, -1 on failure
+ */
+int transfer_get_owner_username(const char *path, char *buf, size_t len);
+
+/*!
  * \brief Make a ls-format directory listing for a file
  * \param file Filename
+ * \param username Username of the user or entity that owns the file (e.g. registered user, "public", "sysop")
  * \param st
  * \param[out] buf
  * \param len Size of buf
  * \param ftp Whether listing is for the FTP protocol
  * \retval Number of bytes written to buf
  */
-int transfer_make_longname(const char *file, struct stat *st, char *buf, size_t len, int ftp);
+int transfer_make_longname(const char *file, const char *username, struct stat *st, char *buf, size_t len, int ftp);
 
 /*!
  * \brief Get file transfer root directory

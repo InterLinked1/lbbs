@@ -70,6 +70,9 @@ static pthread_t ssh_listener_thread;
 
 #define KEYS_FOLDER "/etc/ssh/"
 
+/* These permissions match with net_ftp (which uses fopen). This is typically 0644 (depending on umask). */
+#define DEFAULT_NEW_FILE_PERMISSIONS (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH)
+
 /*
  * There is no RFC officially for SFTP.
  * Version 3, working draft 2 is what we want: https://www.sftp.net/spec/draft-ietf-secsh-filexfer-02.txt
@@ -1133,6 +1136,8 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 	struct stat st;
 	int eof = 0;
 	char file[1024];
+	char usernamebuf[256];
+	int userid;
 	char longname[PATH_MAX];
 	int i = 0;
 	struct sftp_info *info = sftp_handle(msg->sftp, msg->handle);
@@ -1142,9 +1147,11 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 		return -1;
 	}
 
+	if (!info->homedir) {
+		transfer_get_owner_username(info->name, usernamebuf, sizeof(usernamebuf));
+	}
+
 	while (!eof) {
-		char usernamebuf[256];
-		int userid;
 		const char *user_folder_name;
 		struct dirent *dir = readdir(info->dir); /* readdir is thread safe per directory stream in glibc */
 		if (!dir) {
@@ -1160,13 +1167,7 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 		snprintf(file, sizeof(file), "%s/%s", info->realpath, dir->d_name);
 		if (info->homedir) {
 			userid = atoi(dir->d_name);
-			if (userid == 0) {
-				strcpy(usernamebuf, "public"); /* Safe */
-			} else {
-				if (bbs_lowercase_username_from_userid((unsigned int) userid, usernamebuf, sizeof(usernamebuf))) {
-					strcpy(usernamebuf, "");
-				}
-			}
+			transfer_get_username(dir->d_name, usernamebuf, sizeof(usernamebuf));
 		}
 		user_folder_name = info->homedir ? usernamebuf : dir->d_name;
 #pragma GCC diagnostic push
@@ -1188,7 +1189,7 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 			continue;
 		}
 		i++;
-		transfer_make_longname(user_folder_name, &st, longname, sizeof(longname), 0);
+		transfer_make_longname(user_folder_name, usernamebuf, &st, longname, sizeof(longname), 0);
 		sftp_reply_names_add(msg, user_folder_name, longname, attr);
 		sftp_attributes_free(attr);
 	}
@@ -1306,8 +1307,8 @@ static int handle_write(sftp_client_message msg)
 		sftp_reply_status(msg, SSH_FX_OK, NULL); \
 	}
 
-#define SFTP_ENSURE_TRUE2(func, node, mypath) \
-	if (!func(node, mypath)) { \
+#define SFTP_ENSURE_TRUE2(func, ...) \
+	if (!func(__VA_ARGS__)) { \
 		errno = EACCES; \
 		handle_errno(msg); \
 		break; \
@@ -1655,6 +1656,17 @@ cleanup:
 	} \
 	CANONICALIZE_PATHS(1);
 
+#define SFTP_MAKE_PATH_NOCHECK_CUST_ERRNO(cust_errno) \
+	bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath)); \
+	if (bbs_transfer_set_disk_path_relative_nocheck(node, userpath, msg->filename, mypath, sizeof(mypath))) { \
+		if (errno == ENOENT) { \
+			errno = cust_errno; \
+		} \
+		handle_errno(msg); \
+		break; \
+	} \
+	CANONICALIZE_PATHS(1);
+
 static void sftp_free_info(struct sftp_info *info)
 {
 	if (info->type == TYPE_DIR) {
@@ -1701,6 +1713,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 	bbs_transfer_set_default_dir(node, mypath, sizeof(mypath));
 	for (;;) {
 		char userpath[256];
+		uint32_t permissions;
 		sftp_client_message msg;
 		int pres = ssh_channel_poll_timeout(channel, bbs_transfer_timeout(), 0);
 		if (pres <= 0) {
@@ -1721,6 +1734,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 				break;
 			case SFTP_OPENDIR:
 				SFTP_MAKE_PATH();
+				SFTP_ENSURE_TRUE2(bbs_transfer_canaccess, node);
 				dir = opendir(mypath);
 				if (!dir) {
 					handle_errno(msg);
@@ -1744,8 +1758,11 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 				}
 				break;
 			case SFTP_OPEN:
-				SFTP_MAKE_PATH_NOCHECK(); /* Might be opening a file that doesn't currently exist */
-				fd = open(mypath, sftp_io_flags((int) msg->flags), msg->attr->permissions);
+				/* If we fail to build a path to create a file, then we probably don't have permission to create it there */
+				SFTP_MAKE_PATH_NOCHECK_CUST_ERRNO(EPERM); /* Might be opening a file that doesn't currently exist */
+				SFTP_ENSURE_TRUE2(bbs_transfer_canwrite, node, mypath);
+				permissions = msg->attr->permissions ? msg->attr->permissions : DEFAULT_NEW_FILE_PERMISSIONS;
+				fd = open(mypath, sftp_io_flags((int) msg->flags), permissions);
 				if (fd < 0) {
 					handle_errno(msg);
 				} else {
@@ -1776,6 +1793,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 				/* Fall through */
 			case SFTP_LSTAT:
 				SFTP_MAKE_PATH();
+				SFTP_ENSURE_TRUE2(bbs_transfer_canaccess, node);
 				if ((msg->type == SFTP_STAT && stat(mypath, &st)) || (msg->type == SFTP_LSTAT && lstat(mypath, &st))) {
 					handle_errno(msg);
 				} else {
@@ -1813,6 +1831,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 				}
 				break;
 			case SFTP_READDIR:
+				SFTP_ENSURE_TRUE2(bbs_transfer_canaccess, node);
 				handle_readdir(node, msg);
 				break;
 			case SFTP_READ:

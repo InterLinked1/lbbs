@@ -623,6 +623,8 @@ static void *ftp_handler(void *varg)
 			struct dirent *dir;
 			struct stat st;
 			char file[1024];
+			char usernamebuf[256];
+			int userid;
 			char longname[PATH_MAX];
 			DIR *mydir;
 			int len;
@@ -650,10 +652,11 @@ static void *ftp_handler(void *varg)
 			 * -rw-r--r-- 1 owner group           213 Aug 26 16:31 README
 			 */
 			homedir = !strcmp(userpath, "/home") || !strcmp(userpath, "/home/"); /* Are we listing all the home directories? */
+			if (!homedir) {
+				transfer_get_owner_username(userpath, usernamebuf, sizeof(usernamebuf));
+			}
 			mydir = opendir(fulldir);
 			while ((dir = readdir(mydir))) { /* readdir is thread safe per directory stream in glibc */
-				char usernamebuf[256];
-				int userid;
 				const char *user_folder_name;
 				if (!strcmp(dir->d_name, ".") || !strcmp(dir->d_name, "..")) {
 					continue;
@@ -662,13 +665,7 @@ static void *ftp_handler(void *varg)
 				snprintf(file, sizeof(file), "%s/%s", fulldir, dir->d_name);
 				if (homedir) {
 					userid = atoi(dir->d_name);
-					if (userid == 0) {
-						strcpy(usernamebuf, "public"); /* Safe */
-					} else {
-						if (bbs_lowercase_username_from_userid((unsigned int) userid, usernamebuf, sizeof(usernamebuf))) {
-							strcpy(usernamebuf, "");
-						}
-					}
+					transfer_get_username(dir->d_name, usernamebuf, sizeof(usernamebuf));
 				}
 				user_folder_name = homedir ? usernamebuf : dir->d_name;
 				/* Users can already get a list of users on the BBS,
@@ -689,7 +686,7 @@ static void *ftp_handler(void *varg)
 					continue;
 				}
 				/* If it's a home directory, print username instead of user ID */
-				len = transfer_make_longname(user_folder_name, &st, longname, sizeof(longname), 1);
+				len = transfer_make_longname(user_folder_name, usernamebuf, &st, longname, sizeof(longname), 1);
 				if (len) {
 					ftp_write_raw2(ftp, "%s\r\n", longname);
 				}
