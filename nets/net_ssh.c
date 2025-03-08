@@ -1967,6 +1967,8 @@ static void *ssh_listener(void *unused)
 		if (ssh_bind_accept(sshbind, session) == SSH_ERROR) {
 			bbs_pthread_disable_cancel();
 			bbs_error("%s\n", ssh_get_error(sshbind));
+			ssh_disconnect(session);
+			ssh_free(session);
 			bbs_pthread_enable_cancel();
 			continue;
 		}
@@ -1975,6 +1977,7 @@ static void *ssh_listener(void *unused)
 		if (bbs_pthread_create_detached(&ssh_thread, NULL, ssh_connection, session)) {
 			ssh_disconnect(session);
 			ssh_free(session);
+			bbs_pthread_enable_cancel();
 			continue;
 		}
 		bbs_pthread_enable_cancel();
