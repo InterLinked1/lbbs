@@ -37,11 +37,10 @@ static int pre(void)
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_smtp.conf");
 
-	system("rm -rf /tmp/test_lbbs/maildir"); /* Purge the contents of the directory, if it existed. */
-	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
-	system("cp before.rules " TEST_MAIL_DIR); /* Global before MailScript */
-	mkdir(TEST_MAIL_DIR "/1", 0700);
-	system("cp .rules " TEST_MAIL_DIR "/1"); /* Individual user MailScript */
+	TEST_RESET_MKDIR(TEST_MAIL_DIR);
+	TEST_ADD_CONFIG_INTO_DIR("before.rules", TEST_MAIL_DIR); /* Global before MailScript */
+	TEST_MKDIR(TEST_MAIL_DIR "/1");
+	TEST_ADD_CONFIG_INTO_DIR(".rules", TEST_MAIL_DIR "/1"); /* Individual user MailScript */
 	return 0;
 }
 
@@ -216,7 +215,7 @@ static int run(void)
 	/* Test that FILE action works */
 
 	/* .uidvalidity is only created on message retrieval, so create a fake file */
-	system("touch /tmp/test_lbbs/maildir/1/.fake");
+	system("touch " TEST_ROOT_DIR "/maildir/1/.fake");
 
 	STANDARD_ENVELOPE_BEGIN();
 	SWRITE(clientfd, "From: " TEST_EMAIL_EXTERNAL ENDL);

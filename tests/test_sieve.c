@@ -36,14 +36,13 @@ static int pre(void)
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_smtp.conf");
 
-	system("rm -rf /tmp/test_lbbs/maildir"); /* Purge the contents of the directory, if it existed. */
-	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
-	mkdir(TEST_MAIL_DIR "/1", 0700);
+	TEST_RESET_MKDIR(TEST_MAIL_DIR);
+	TEST_MKDIR(TEST_MAIL_DIR "/1");
 	/* Sieve scripts go in the home directory, but the symlink itself to the active script goes in the maildir.
 	 * We're just putting an actual file instead of a symlink there, but that's fine. */
-	system("cp .sieve " TEST_MAIL_DIR "/1");
-	mkdir(TEST_MAIL_DIR "/2", 0700);
-	system("cp .sieve " TEST_MAIL_DIR "/2");
+	TEST_ADD_CONFIG_INTO_DIR(".sieve", TEST_MAIL_DIR "/1");
+	TEST_MKDIR(TEST_MAIL_DIR "/2");
+	TEST_ADD_CONFIG_INTO_DIR(".sieve", TEST_MAIL_DIR "/2");
 	return 0;
 }
 

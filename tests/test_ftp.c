@@ -25,8 +25,6 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#define TEST_TRANSFERS_DIR "/tmp/test_lbbs/ftp"
-
 static int pre(void)
 {
 	test_load_module("net_ftp.so");
@@ -34,8 +32,7 @@ static int pre(void)
 	TEST_ADD_CONFIG("transfers.conf");
 	TEST_ADD_CONFIG("net_ftp.conf");
 
-	system("rm -rf " TEST_TRANSFERS_DIR); /* Purge the contents of the directory, if it existed. */
-	mkdir(TEST_TRANSFERS_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
+	TEST_RESET_MKDIR(TEST_TRANSFER_DIR);
 	return 0;
 }
 
@@ -171,10 +168,10 @@ static int run(void)
 	CLIENT_EXPECT(client1, "226");
 
 	/* Delete the file */
-	DIRECTORY_EXPECT_FILE_COUNT(TEST_TRANSFERS_DIR "/test", 1);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_TRANSFER_DIR "/test", 1);
 	SWRITE(client1, "DELE foobar2.txt" ENDL);
 	CLIENT_EXPECT(client1, "226");
-	DIRECTORY_EXPECT_FILE_COUNT(TEST_TRANSFERS_DIR "/test", 0);
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_TRANSFER_DIR "/test", 0);
 
 	SWRITE(client1, "CWD /" ENDL);
 	CLIENT_EXPECT(client1, "250");

@@ -30,10 +30,10 @@ static int pre(void)
 	test_load_module("net_nntp.so");
 
 	TEST_ADD_CONFIG("net_nntp.conf");
-	system("rm -rf /tmp/test_lbbs/newsdir"); /* Yuck */
-	mkdir(TEST_NEWS_DIR, 0700); /* Make directory if it doesn't exist already */
-	mkdir(TEST_NEWS_DIR "/misc.test", 0700);
-	mkdir(TEST_NEWS_DIR "/misc.empty", 0700);
+
+	TEST_RESET_MKDIR(TEST_NEWS_DIR);
+	TEST_MKDIR(TEST_NEWS_DIR "/misc.test");
+	TEST_MKDIR(TEST_NEWS_DIR "/misc.empty");
 	return 0;
 }
 

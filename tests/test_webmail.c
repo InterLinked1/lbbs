@@ -48,9 +48,8 @@ static int pre(void)
 	TEST_ADD_CONFIG("net_ws.conf");
 	TEST_ADD_CONFIG("mod_mail_events.conf");
 
-	system("rm -rf " TEST_MAIL_DIR); /* Purge the contents of the directory, if it existed. */
-	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
-	mkdir(TEST_WWW_DIR, 0700); /* Make directory if it doesn't exist already. We just need it to exist for net_http to load. */
+	TEST_RESET_MKDIR(TEST_MAIL_DIR);
+	TEST_MKDIR(TEST_WWW_DIR); /* Make directory if it doesn't exist already. We just need it to exist for net_http to load. */
 	return 0;
 }
 

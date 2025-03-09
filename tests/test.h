@@ -52,11 +52,23 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #define TEST_MAIL_DIR DIRCAT(TEST_ROOT_DIR, "maildir")
 #define TEST_NEWS_DIR DIRCAT(TEST_ROOT_DIR, "newsdir")
 #define TEST_TRANSFER_DIR DIRCAT(TEST_ROOT_DIR, "ftp")
+#define TEST_GOPHER_DIR DIRCAT(TEST_ROOT_DIR, "gopherdir")
 #define TEST_HOME_DIR_ROOT DIRCAT(TEST_TRANSFER_DIR, "home")
 #define TEST_WWW_DIR DIRCAT(TEST_ROOT_DIR, "www")
 
+/*! \brief Create directory if it doesn't already exist */
+#define TEST_MKDIR(dir) mkdir(dir, 0700)
+
+/*! \brief Delete any existing directory and recreate it */
+#define TEST_RESET_MKDIR(dir) system("rm -rf " dir); TEST_MKDIR(dir);
+
+#define TEST_CONFIGS_SRC_DIR "configs"
+
 /* Yuck, but why reinvent the wheel */
-#define TEST_ADD_CONFIG(filename) system("cp " filename " " TEST_CONFIG_DIR)
+#define TEST_ADD_CONFIG_NAME(srcfilename, dstfilename) system("cp " TEST_CONFIGS_SRC_DIR "/" srcfilename " " TEST_CONFIG_DIR "/" dstfilename)
+#define TEST_ADD_CONFIG_INTO_DIR(filename, dir) system("cp " TEST_CONFIGS_SRC_DIR "/" filename " " dir)
+#define TEST_ADD_CONFIG(filename) TEST_ADD_CONFIG_NAME(filename, filename)
+#define TEST_ADD_SUBCONFIG(subdir, filename) TEST_ADD_CONFIG_NAME(subdir "/" filename, filename)
 
 #define TEST_HOSTNAME "bbs.example.com"
 

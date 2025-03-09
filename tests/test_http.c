@@ -32,9 +32,9 @@ static int pre(void)
 
 	TEST_ADD_CONFIG("net_http.conf");
 
-	system("rm -rf " TEST_WWW_DIR); /* Purge the contents of the directory, if it existed. */
-	mkdir(TEST_WWW_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
-	mkdir(TEST_WWW_DIR "/testdir", 0700);
+	TEST_RESET_MKDIR(TEST_WWW_DIR);
+	TEST_MKDIR(TEST_WWW_DIR "/testdir");
+
 	/* Not efficient, but I feel lazy right now */
 	system("echo 'This is a test page' > " TEST_WWW_DIR "/file1.txt");
 	system("echo 'This is another test page' > " TEST_WWW_DIR "/file2.txt");

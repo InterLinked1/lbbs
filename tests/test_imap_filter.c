@@ -38,9 +38,8 @@ static int pre(void)
 	TEST_ADD_CONFIG("net_smtp.conf");
 	TEST_ADD_CONFIG("net_imap.conf");
 
-	system("rm -rf /tmp/test_lbbs/maildir"); /* Purge the contents of the directory, if it existed. */
-	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
-	system("cp before.rules " TEST_MAIL_DIR); /* Global before MailScript */
+	TEST_RESET_MKDIR(TEST_MAIL_DIR);
+	TEST_ADD_CONFIG_INTO_DIR("before.rules", TEST_MAIL_DIR); /* Global before MailScript */
 	return 0;
 }
 

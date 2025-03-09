@@ -54,8 +54,7 @@ static int pre(void)
 	TEST_ADD_CONFIG("net_imap.conf");
 	TEST_ADD_CONFIG("mod_mail_events.conf");
 
-	system("rm -rf " TEST_MAIL_DIR); /* Purge the contents of the directory, if it existed. */
-	mkdir(TEST_MAIL_DIR, 0700); /* Make directory if it doesn't exist already (of course it won't due to the previous step) */
+	TEST_RESET_MKDIR(TEST_MAIL_DIR);
 	return 0;
 }
 
@@ -172,9 +171,9 @@ static int make_messages(void)
 		return -1;
 	}
 
-	res |= send_message(clientfd, "multipart.eml");
-	res |= send_message(clientfd, "multipart2.eml");
-	res |= send_message(clientfd, "alternative.eml");
+	res |= send_message(clientfd, "messages/multipart.eml");
+	res |= send_message(clientfd, "messages/multipart2.eml");
+	res |= send_message(clientfd, "messages/alternative.eml");
 	res |= send_short_message(clientfd);
 
 	close(clientfd); /* Close SMTP connection */

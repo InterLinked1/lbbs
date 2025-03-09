@@ -34,7 +34,6 @@ static int pre(void)
 	test_load_module("net_telnet.so");
 
 	TEST_ADD_CONFIG("menus.conf");
-	TEST_ADD_CONFIG("nodes.conf");
 	TEST_ADD_CONFIG("net_telnet.conf");
 
 	return 0;

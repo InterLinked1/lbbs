@@ -63,9 +63,9 @@ int startup_run_unit_tests;
 #define TEST_LOGFILE "/tmp/test_lbbs.log"
 
 /* Log file for valgrind output */
-#define VALGRIND_LOGFILE "/tmp/test_lbbs/valgrind.log"
+#define VALGRIND_LOGFILE TEST_ROOT_DIR "/valgrind.log"
 
-#define STRACE_LOGFILE "/tmp/test_lbbs/strace.log"
+#define STRACE_LOGFILE TEST_ROOT_DIR "/strace.log"
 
 /* There values are fairly conservative (longer than they needed to be in most cases).
  * However, occasionally if something takes longer, we don't want the test to fail
@@ -981,7 +981,7 @@ static int run_test(const char *filename, int multiple)
 				fclose(modulefp);
 			}
 			if (option_autoload_all) {
-				if (system("cp *.conf " TEST_CONFIG_DIR)) {
+				if (system("cp " TEST_CONFIGS_SRC_DIR "/*.conf " TEST_CONFIG_DIR)) {
 					bbs_error("Failed to copy files: %s\n", strerror(errno));
 				}
 			}
