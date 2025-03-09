@@ -53,6 +53,7 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #define TEST_NEWS_DIR DIRCAT(TEST_ROOT_DIR, "newsdir")
 #define TEST_TRANSFER_DIR DIRCAT(TEST_ROOT_DIR, "ftp")
 #define TEST_HOME_DIR_ROOT DIRCAT(TEST_TRANSFER_DIR, "home")
+#define TEST_WWW_DIR DIRCAT(TEST_ROOT_DIR, "www")
 
 /* Yuck, but why reinvent the wheel */
 #define TEST_ADD_CONFIG(filename) system("cp " filename " " TEST_CONFIG_DIR)
@@ -68,6 +69,7 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 
 #define TEST_USER "testuser"
 #define TEST_PASS "P@ssw0rd"
+#define TEST_PASS_BASE64 "UEBzc3cwcmQ="
 #define TEST_HASH "$2y$10$1vtttulZgw5Sz.Ks8PePFumnPCztHfp0YzgHLnuIQ1vAb0mSQpv2q"
 #define TEST_SASL "dGVzdHVzZXIAdGVzdHVzZXIAUEBzc3cwcmQ="
 #define TEST_EMAIL TEST_USER "@" TEST_HOSTNAME

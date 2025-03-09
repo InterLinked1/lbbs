@@ -882,7 +882,7 @@ int http_websocket_upgrade_requested(struct http_session *http)
 {
 	const char *value;
 	value = http_request_header(http, "Connection");
-	if (!strlen_zero(value) && !strcmp(value, "Upgrade")) {
+	if (!strlen_zero(value) && !strcasecmp(value, "Upgrade")) { /* Connection header value is case-insensitive (RFC 7230 6.1) */
 		value = http_request_header(http, "Upgrade");
 		if (!strlen_zero(value) && !strcasecmp(value, "WebSocket")) {
 			return 1;

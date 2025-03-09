@@ -310,7 +310,7 @@ struct bbs_module *__bbs_require_module(const char *module, void *refmod)
 		bbs_debug(5, "Module dependency '%s' is satisfied (required by %s)\n", module, reffing_mod->name);
 		__bbs_module_ref(mod, 1, refmod, __FILE__, __LINE__, __func__);
 	} else {
-		bbs_warning("Module %s dependency is not satisfied (required by %s)\n", module, reffing_mod->name);
+		bbs_error("Module %s dependency is not satisfied (required by %s)\n", module, reffing_mod->name);
 	}
 	return mod;
 }
@@ -953,7 +953,7 @@ static void dec_refcounts(struct bbs_module *mod)
 			if (m) {
 				__bbs_unrequire_module(m, mod);
 			} else {
-				bbs_warning("Dependency %s not currently loaded?\n", dependency);
+				bbs_error("Dependency %s not currently loaded?\n", dependency);
 			}
 		}
 	}
@@ -1077,7 +1077,9 @@ static int on_module(const char *dir_name, const char *filename, void *obj)
 	UNUSED(dir_name);
 	UNUSED(obj);
 
+#ifdef EXTRA_DEBUG
 	bbs_debug(7, "Detected dynamic module %s\n", filename);
+#endif
 	a = calloc(1, sizeof(*a) + strlen(filename) + 1);
 	if (ALLOC_FAILURE(a)) {
 		return -1;

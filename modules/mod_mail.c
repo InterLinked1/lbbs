@@ -2014,7 +2014,7 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 				IMAP_CLIENT_SEND(client, "");
 			}
 			/* Won't get it, but at least see what the server had to say */
-			bbs_tcp_client_expect(client, "\r\n", 1, 2000, "a1 OK"); /* Don't use IMAP_CLIENT_EXPECT, or we'll bypass the warning below when it fails */
+			bbs_tcp_client_expect(client, "\r\n", 1, SEC_MS(7), "a1 OK"); /* Don't use IMAP_CLIENT_EXPECT, or we'll bypass the warning below when it fails */
 			bbs_warning("Login failed, got '%s'\n", client->buf);
 			return -1;
 		}

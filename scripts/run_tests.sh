@@ -75,10 +75,10 @@ install_valgrind() {
 
 if [ "$TEST" = "" ]; then # run all tests
 	# First, do one pass without -e, in case there's a failure, it'll be caught much more quickly
-	tests/test -ddddddddd -DDDDDDDDDD -x || handle_failure
+	tests/test -dddddddddd -DDDDDDDDDD -x || handle_failure
 	# If all good so far, repeat but under valgrind
 	install_valgrind
-	tests/test -ddddddddd -DDDDDDDDDD -ex || handle_failure
+	tests/test -dddddddddd -DDDDDDDDDD -ex || handle_failure
 else
 	# If we are only running a specific test, don't bother with the first pass, just run directly with the -e option (valgrind)
 	install_valgrind

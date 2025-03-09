@@ -49,7 +49,6 @@ static char phpsessprefix[84] = "";
 
 static void ws_log(int level, int len, const char *file, const char *function, int line, const char *buf)
 {
-	/*! \todo should be a version of __bbs_log that doesn't call asprintf, for efficiency (accepts # bytes) */
 	switch (level) {
 		case WS_LOG_ERROR:
 			__bbs_log(LOG_ERROR, 0, file, line, function, "%.*s", len, buf);
@@ -1307,4 +1306,4 @@ static int load_module(void)
 	return 0;
 }
 
-BBS_MODULE_INFO_FLAGS_DEPENDENT("WebSocket Server", MODFLAG_GLOBAL_SYMBOLS, "mod_http.so,net_http.so");
+BBS_MODULE_INFO_FLAGS_DEPENDENT("WebSocket Server", MODFLAG_GLOBAL_SYMBOLS, "mod_http.so");

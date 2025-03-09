@@ -374,7 +374,7 @@ int test_client_expect_eventually_buf(int fd, int ms, const char *restrict s, in
 			}
 			buf[bytes] = '\0'; /* Safe */
 			/* Probably ends in LF, so skip one here */
-			bbs_debug(10, "Analyzing output: %s", buf); /* Particularly under valgrind, we'll end up reading individual lines more than chunks, so using CLIENT_DRAIN is especially important */
+			bbs_debug(10, "Analyzing output(%d): %s", line, buf); /* Particularly under valgrind, we'll end up reading individual lines more than chunks, so using CLIENT_DRAIN is especially important */
 			/* XXX Should use bbs_readline_append for reliability */
 			if (strstr(buf, s)) {
 				return 0;
@@ -1000,7 +1000,7 @@ static int run_test(const char *filename, int multiple)
 				res = -1;
 				goto cleanup;
 			}
-			bbs_debug(3, "Spawned child process %d\n", childpid);
+			bbs_debug(3, "Spawned child process %d (%s)\n", childpid, option_errorcheck ? "valgrind" : option_strace ? "strace" : "lbbs");
 			/* Wait for the BBS to fully start */
 			/* XXX If we could receive this event outside of the BBS process, that would be more elegant */
 			res = test_bbs_expect("BBS is fully started", SEC_MS(STARTUP_TIMEOUT));

@@ -9,6 +9,8 @@ INCLUDE_FILES := $(wildcard ../include/*.h)
 # the include directory is in the parent
 INC = -I..
 
+TEST_LDFLAGS = -shared -fPIC
+
 # Older versions of valgrind do not have the --show-error-list option
 VALGRIND_VERSION_MM := $(shell valgrind --version 2> /dev/null | cut -d'-' -f2 | cut -d'.' -f1-2)
 ifdef VALGRIND_VERSION_MM
@@ -32,10 +34,14 @@ test.o : test.c
 	$(CC) $(CFLAGS) -Wno-unused-result -DTEST_IN_CORE -DTEST_DIR=$(CURDIR) $(EXTRA_FLAGS) $(INC) -c $^
 
 $(TEST_EXE) : test.o readline.o
-	$(CC) $(CFLAGS) -Wl,--export-dynamic -o $(TEST_EXE) *.o -ldl -lpthread
+	$(CC) $(CFLAGS) -Wl,--export-dynamic -o $(TEST_EXE) $^ -ldl -lpthread
 
 %.so : %.o
 	@echo "  [LD] $^ -> $@"
-	$(CC) -shared -fPIC -o $(basename $^).so $^
+	$(CC) $(TEST_LDFLAGS) -o $(basename $^).so $^
+
+test_webmail.so : test_webmail.o
+	@echo "  [LD] $^ -> $@"
+	$(CC) $(TEST_LDFLAGS) -o $(basename $^).so $^ -lwss
 
 .PHONY: all

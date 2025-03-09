@@ -604,13 +604,31 @@
    fun:g_type_class_ref
    fun:g_object_new_with_properties
    fun:g_object_new
-   fun:g_mime_header_list_new
-   obj:/usr/lib/x86_64-linux-gnu/libgmime-3.0.so.0.206.1
-   fun:g_type_create_instance
-   obj:/usr/lib/x86_64-linux-gnu/libgobject-2.0.so.0.6600.8
-   fun:g_object_new_with_properties
-   fun:g_object_new
-   fun:g_mime_message_new
+   ...
+}
+{
+   GMIME
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_signal_new
+   ...
+}
+{
+   GMIME
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_hash_table_new_full
+   ...
+}
+{
+   GMIME
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:g_hash_table_insert
+   ...
 }
 {
    GMIME_INIT

@@ -1639,7 +1639,7 @@ static int mailimap_search_sort_fuller(mailimap *session, const char *sortkey, c
 	for (cur = clist_begin(session->imap_response_info->rsp_extension_list); cur; cur = clist_next(cur)) {
 		struct mailimap_extension_data *ext_data = clist_content(cur);
 		if (ext_data->ext_extension->ext_id == MAILIMAP_EXTENSION_SORT) {
-			if (sortkey && !sort_result) {
+			if (sortkey && !sort_result) { /* Sort */
 				sort_result = ext_data->ext_data;
 				ext_data->ext_data = NULL;
 				ext_data->ext_type = -1;
@@ -1650,7 +1650,7 @@ static int mailimap_search_sort_fuller(mailimap *session, const char *sortkey, c
 	clist_free(session->imap_response_info->rsp_extension_list);
 	session->imap_response_info->rsp_extension_list = NULL;
 
-	if (!sort_result) {
+	if (!sort_result) { /* Search only */
 		sort_result = session->imap_response_info->rsp_search_result;
 		session->imap_response_info->rsp_search_result = NULL;
 	}
@@ -1672,11 +1672,11 @@ static int mailimap_search_sort_fuller(mailimap *session, const char *sortkey, c
 
 static struct mailimap_search_key *mailimap_search_key_new_type(int sk_type)
 {
-  return mailimap_search_key_new(sk_type, NULL, NULL, NULL, NULL, NULL,
-	NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL);
+	return mailimap_search_key_new(sk_type, NULL, NULL, NULL, NULL, NULL,
+		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, NULL, NULL);
 }
 
-static clist *sortall(struct imap_client *client, const char *sort, const char *search, int *searched, int *sorted)
+static clist *sortall(struct imap_client *client, const char *sort, const char *search, int *restrict searched, int *restrict sorted)
 {
 	int res = -1;
 	clist *list = NULL;
@@ -1721,7 +1721,7 @@ static clist *sortall(struct imap_client *client, const char *sort, const char *
 				bbs_warning("Unsupported search criteria: '%s'\n", search);
 			}
 		}
-		*sorted = *searched = 0;
+		*sorted = *searched = 0; /* Yes, this is correct, neither should be set when we return as list is not exactly the same */
 		res = mailimap_search_sort_fuller(client->imap, sort, search, &list);
 	} else {
 		struct mailimap_sort_key *sortkey = NULL;
@@ -2030,6 +2030,7 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 	json_t *root = NULL, *arr;
 	int added = 0;
 	int fetch_attempts = 0;
+	clist *sorted = NULL;
 
 	/* start to end is inclusive */
 	expected = end - start + 1;
@@ -2043,22 +2044,39 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 		client_set_status(ws, "Your IMAP server does not support SORT");
 		sort = NULL; /* If server doesn't support sort, we can't sort */
 	}
+
+/* The else case is to handle frees when LIBETPAN_SEARCH_KEYS_BROKEN_ABI is true (which it currently is).
+ * In this case, neither searchlist or sortlist will be set to 1, because mailimap_sort_result_free
+ * and mailimap_search_result_free are not the correct functions to use.
+ * In that case, we can just manually free the list and everything in it. */
+#define FREE_SORT_SEARCH_LISTS() \
+	if (sortlist) { \
+		mailimap_sort_result_free(sorted); \
+		sorted = NULL; \
+	} else if (searchlist) { \
+		mailimap_search_result_free(sorted); \
+		sorted = NULL; \
+	} else { \
+		for (cur = clist_begin(sorted); cur; cur = clist_next(cur)) { \
+			uint32_t *s = clist_content(cur); \
+			free(s); \
+		} \
+		clist_free(sorted); \
+		sorted = NULL; \
+	}
+
 	/* Thankfully, SEARCH is not an extension, it should be supported by all IMAP servers */
 	if (sort || filter) {
 		int index = 1;
 		int searchlist, sortlist;
 		/*! \todo Cache this between FETCHLIST calls */
-		clist *sorted = sortall(client, sort, filter, &searchlist, &sortlist); /* This could be somewhat slow, since we have sort the ENTIRE mailbox every time */
+		sorted = sortall(client, sort, filter, &searchlist, &sortlist); /* This could be somewhat slow, since we have sort the ENTIRE mailbox every time */
 		if (!sorted) {
 			return -1;
 		}
 		set = mailimap_set_new_empty();
 		if (!set) {
-			if (sortlist) {
-				mailimap_sort_result_free(sorted);
-			} else if (searchlist) {
-				mailimap_search_result_free(sorted);
-			}
+			FREE_SORT_SEARCH_LISTS();
 			return -1;
 		}
 		if (filter) {
@@ -2088,11 +2106,7 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 			added++;
 			if (res != MAILIMAP_NO_ERROR) {
 				bbs_error("Failed to add sorted seqno to list: %u\n", *seqno);
-				if (sortlist) {
-					mailimap_sort_result_free(sorted);
-				} else if (searchlist) {
-					mailimap_search_result_free(sorted);
-				}
+				FREE_SORT_SEARCH_LISTS();
 				return -1;
 			}
 			if (index >= end) {
@@ -2100,15 +2114,13 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 			}
 		}
 		bbs_debug(6, "SEARCH/SORT matched %d result%s\n", added, ESS(added));
-		if (sortlist) {
-			mailimap_sort_result_free(sorted);
-		} else if (searchlist) {
-			mailimap_search_result_free(sorted);
-		}
+		FREE_SORT_SEARCH_LISTS();
 	} else {
 		set = mailimap_set_new_interval((uint32_t) start, (uint32_t) end);
 		added = (end - start + 1);
 	}
+
+	bbs_assert(sorted == NULL); /* Should've been freed by now */
 
 	client->start = start;
 	client->end = end;
