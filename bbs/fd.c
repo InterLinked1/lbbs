@@ -398,16 +398,17 @@ int __bbs_close(int fd, const char *file, int line, const char *func)
 
 	/* Detect attempts to close file descriptors we shouldn't be closing
 	 * (e.g. can happen if a file descriptor variable is initialized to 0 instead of -1) */
-	if (fd <= 2 && (fd < 0 || strcmp(file, "system.c"))) { /* It's legitimate to close file descriptors 0, 1, and 2 when calling exec */
+	if (unlikely(fd <= 2) && (fd < 0 || strcmp(file, "system.c"))) { /* It's legitimate to close file descriptors 0, 1, and 2 when calling exec */
 		bbs_warning("Attempting to close file descriptor %d at %s:%d (%s)\n", fd, file, line, func);
 		bbs_log_backtrace(); /* Get a backtrace to see what made the invalid close, in case immediate caller isn't enough detail. */
 	}
 	res = close(fd);
 	if (res) {
 		if (errno == EBADF && ARRAY_IN_BOUNDS(fd, fdleaks)) {
-			__bbs_log(LOG_WARNING, 0, file, line, func, "Failed to close file descriptor %d: %s (previously closed at %s:%d)\n", fd, strerror(errno), fdleaks[fd].file, fdleaks[fd].line);
+			__bbs_log(LOG_WARNING, 0, file, line, func, "Failed to close fd %d: %s (previously %s at %s:%d)\n",
+				fd, strerror(errno), fdleaks[fd].isopen ? "opened" : "closed", fdleaks[fd].file, fdleaks[fd].line);
 		} else {
-			__bbs_log(LOG_WARNING, 0, file, line, func, "Failed to close file descriptor %d: %s\n", fd, strerror(errno));
+			__bbs_log(LOG_WARNING, 0, file, line, func, "Failed to close fd %d: %s\n", fd, strerror(errno));
 		}
 	} else if (ARRAY_IN_BOUNDS(fd, fdleaks)) { /* && !res (implicit) */
 		fdleaks[fd].isopen = 0;
@@ -417,7 +418,27 @@ int __bbs_close(int fd, const char *file, int line, const char *func)
 	}
 	FD_LOGF("%lu: %s:%d (%s) close(%d)\n", time(NULL), file, line, func, fd);
 	return res;
-}	
+}
+
+/* gcc thinks func is unused in this function? */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+int __bbs_mark_closed(int fd, const char *file, int line, const char *func)
+{
+	/* Don't attempt to close the file descriptor, if it's already closed.
+	 * Something else may reuse it in the meantime and we could close something else.
+	 * Of course, if that's the case, we'll mess up our state array below,
+	 * but that's lower stakes than actually messing up program behavior. */
+	if (ARRAY_IN_BOUNDS(fd, fdleaks)) {
+		fdleaks[fd].isopen = 0;
+		/* Update to where it was closed so we can debug attempts to close previously closed fds */
+		COPY(fdleaks[fd].file, file);
+		fdleaks[fd].line = line;
+	}
+	FD_LOGF("%lu: %s:%d (%s) mark_closed(%d)\n", time(NULL), file, line, func, fd);
+	return 0;
+}
+#pragma GCC diagnostic pop
 
 FILE *__bbs_fopen(const char *path, const char *mode, const char *file, int line, const char *func)
 {

@@ -132,6 +132,12 @@
 #define dup(a)		__bbs_dup(a, __FILE__,__LINE__,__func__)
 #define eventfd(a,b)	__bbs_eventfd(a, b, __FILE__,__LINE__,__func__)
 
+/*! \brief Mark a file descriptor as closed. This is useful if
+ * a file descriptor was opened by the BBS and closed by another library,
+ * so we can keep the internal state table of file descriptors synchronized.
+ * This function takes you at your word, so be sure it really is closed! */
+#define bbs_mark_closed(f) __bbs_mark_closed(f, __FILE__,__LINE__,__func__)
+
 int __bbs_open(const char *file, int line, const char *func, const char *path, int flags, ...);
 int __bbs_pipe(int *fds, const char *file, int line, const char *func);
 int __bbs_socketpair(int domain, int type, int protocol, int sv[2], const char *file, int line, const char *func);
@@ -139,6 +145,7 @@ int __bbs_socket(int domain, int type, int protocol, const char *file, int line,
 int __bbs_accept(int socket, struct sockaddr *address, socklen_t *address_len, const char *file, int line, const char *func);
 int __bbs_eventfd(unsigned int initval, int flags, const char *file, int line, const char *func);
 int __bbs_close(int fd, const char *file, int line, const char *func);
+int __bbs_mark_closed(int fd, const char *file, int line, const char *func);
 FILE *__bbs_fopen(const char *path, const char *mode, const char *file, int line, const char *func);
 int __bbs_fclose(FILE *ptr);
 int __bbs_dup2(int oldfd, int newfd, const char *file, int line, const char *func);

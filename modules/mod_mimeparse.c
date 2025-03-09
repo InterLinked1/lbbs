@@ -366,7 +366,7 @@ static GMimeMessage *mk_mime(const char *file)
 	message = g_mime_parser_construct_message(parser, NULL);
 
 	g_object_unref(parser);
-	close(fd);
+	bbs_mark_closed(fd); /* g_object_unref closed our file descriptor for us */
 
 	if (!message) {
 		bbs_error("Failed to parse message %s as MIME\n", file);
