@@ -50,6 +50,10 @@ struct bbs_io_transformer;
 struct bbs_io_transformation {
 	struct bbs_io_transformer *transformer; /* Transformer */
 	void *data; /* Transformer's private data */
+	int inner_rfd;	/* The read file descriptor used by this transformation */
+	int inner_wfd;	/* The write file descriptor used by this transformation */
+	int outer_rfd;	/* The original read file descriptor prior to this transformation being added */
+	int outer_wfd;	/* The original write file descriptor prior to this transformation being added */
 };
 
 struct bbs_io_transformations {
@@ -134,6 +138,14 @@ int bbs_io_transform_active(struct bbs_io_transformations *trans, enum bbs_io_tr
  * \retval -1 on failure or no such type
  */
 int bbs_io_transform_query(struct bbs_io_transformations *trans, enum bbs_io_transform_type type, int query, void *data);
+
+/*!
+ * \brief Wait synchronously for all I/O to finish
+ * \param trans
+ * \retavl 0 on success, -1 on failure
+ * \note There is currently nothing using this API
+ */
+int bbs_io_drain(struct bbs_io_transformations *trans);
 
 /*!
  * \brief Terminate all transformations, typically immediately before closing the surrounding file descriptors

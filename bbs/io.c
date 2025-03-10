@@ -19,6 +19,8 @@
 
 #include "include/bbs.h"
 
+#include <sys/ioctl.h> /* use FIONREAD, TIOCOUTQ */
+
 #include "include/linkedlists.h"
 #include "include/module.h"
 #include "include/io.h"
@@ -251,7 +253,7 @@ static int io_transform_slots_free(struct bbs_io_transformations *trans)
 	return 0;
 }
 
-static int io_transform_store(struct bbs_io_transformations *trans, struct bbs_io_transformer *t, void *data)
+static struct bbs_io_transformation *io_transform_store(struct bbs_io_transformations *trans, struct bbs_io_transformer *t, void *data)
 {
 	int i;
 
@@ -260,12 +262,12 @@ static int io_transform_store(struct bbs_io_transformations *trans, struct bbs_i
 			trans->transformations[i].data = data;
 			trans->transformations[i].transformer = t;
 			bbs_debug(7, "Set up node I/O transformer at index %d\n", i);
-			return 0;
+			return &trans->transformations[i];
 		}
 	}
 	/* Shouldn't happen since only one thread is really handling a node's I/O at a time */
 	bbs_error("Failed to store transformation\n");
-	return -1;
+	return NULL;
 }
 
 static int __bbs_io_transform_possible(struct bbs_io_transformations *trans, enum bbs_io_transform_type type, int warn)
@@ -306,6 +308,7 @@ int bbs_io_transform_setup(struct bbs_io_transformations *trans, enum bbs_io_tra
 {
 	int res;
 	void *data = NULL;
+	int orig_rfd, orig_wfd;
 	struct bbs_io_transformer *t;
 
 	if (!__bbs_io_transform_possible(trans, type, 1)) {
@@ -336,17 +339,27 @@ int bbs_io_transform_setup(struct bbs_io_transformations *trans, enum bbs_io_tra
 		return -1;
 	}
 
+	orig_rfd = *rfd;
+	orig_wfd = *wfd;
 	res = t->setup(rfd, wfd, direction, &data, arg);
 
 	/* Store transform private data on node */
 	if (!res) {
-		if (io_transform_store(trans, t, data)) {
-			struct bbs_io_transformation tran;
-			tran.transformer = t;
-			tran.data = data;
-			t->cleanup(&tran);
+		struct bbs_io_transformation *tran = io_transform_store(trans, t, data);
+		if (!tran) {
+			/* Failure! */
+			struct bbs_io_transformation dummy_tran;
+			dummy_tran.transformer = t;
+			dummy_tran.data = data;
+			t->cleanup(&dummy_tran);
 			res = 1;
 		} else {
+			/* These are used by bbs_io_drain: */
+			tran->outer_rfd = orig_rfd;
+			tran->outer_wfd = orig_wfd;
+			tran->inner_rfd = *rfd;
+			tran->inner_wfd = *wfd;
+
 			bbs_module_ref(t->module, 1);
 		}
 	}
@@ -396,6 +409,97 @@ int bbs_io_transform_query(struct bbs_io_transformations *trans, enum bbs_io_tra
 	RWLIST_UNLOCK(&transformers);
 
 	return res;
+}
+
+static int num_bytes_waiting_read(int fd)
+{
+	int res, bytes;
+	res = ioctl(fd, FIONREAD, &bytes);
+	if (res) {
+		bbs_error("FIONREAD(%d) failed: %s\n", fd, strerror(errno));
+		return -1;
+	}
+	return bytes;
+}
+
+static int num_bytes_waiting_write(int fd)
+{
+	int res, bytes;
+	res = ioctl(fd, TIOCOUTQ, &bytes);
+	if (res) {
+		bbs_error("TIOCOUTQ(%d) failed: %s\n", fd, strerror(errno));
+		return -1;
+	}
+	return bytes;
+}
+
+static int __do_drain(struct bbs_io_transformations *trans)
+{
+	int i, drained = 0;
+
+	/* We want to start at the end of the list and work our way to the front,
+	 * since transformations are added starting at the beginning.
+	 * i.e. the outermost one would be at the beginning,
+	 * and the last active transformation in the array is the one
+	 * closest to the application layer. */
+	RWLIST_RDLOCK(&transformers);
+	for (i = MAX_IO_TRANSFORMS - 1; i >= 0; i--) {
+		if (trans->transformations[i].data) {
+			struct bbs_io_transformation *tran = &trans->transformations[i];
+			int bytes;
+			/*
+			 *             1          2               3
+			 * APPLICATION <-- read --< transformer A <-- read --< transformer B <-- ...
+			 * APPLICATION >-- write -> transformer A >-- write -> transformer B --> ...
+			 *             4          5               6
+			 * Assuming tran is transformer A:
+			 * 2 = tran->inner_wfd
+			 * 3 = tran->outer_rfd
+			 * 5 = tran->inner_rfd
+			 * 6 = tran->outer_wfd
+			*
+			* Starting from the left and going right (transformer A, B, etc.)
+			* we want to ensure that:
+			* 1. There is no more data pending to read on 5
+			* 2. All data has been written to 6.
+			*/
+			bytes = num_bytes_waiting_read(tran->inner_rfd);
+			if (bytes > 0) {
+				bbs_debug(3, "Still %d bytes that need to be read on fd %d\n", bytes, tran->inner_rfd);
+			}
+			if ((bytes = num_bytes_waiting_write(tran->outer_wfd))) {
+				bbs_debug(3, "Still %d bytes that need to be written on fd %d\n", bytes, tran->outer_wfd);
+				drained = 1;
+				bbs_safe_sleep(30);
+				while ((bytes = num_bytes_waiting_write(tran->outer_wfd)) > 0) {
+					/* We can't use tcdrain, since that's only for terminal devices, and we're dealing with pipes. */
+					if (bbs_safe_sleep(10)) {
+						break;
+					}
+				}
+			}
+		}
+	}
+	RWLIST_UNLOCK(&transformers);
+	return drained;
+}
+
+int bbs_io_drain(struct bbs_io_transformations *trans)
+{
+	int drained;
+
+	/* Make sure all output has been flushed.
+	 * This allows a sender to wait for all output to actually
+	 * be sent out before closing its file descriptor,
+	 * which can percolate through and close everything while data
+	 * is still being processed in one of the transformers. */
+	do {
+		/* If we end up draining during an iteration,
+		 * keep iterating until we have a full pass
+		 * with no drains. */
+		drained = __do_drain(trans);
+	} while (drained > 0);
+	return drained == -1 ? -1 : 0;
 }
 
 static void teardown_transformation(struct bbs_io_transformation *tran)
