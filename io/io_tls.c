@@ -21,6 +21,7 @@
 
 #include <string.h>
 #include <poll.h>
+#include <fcntl.h> /* use fcntl */
 
 #include <openssl/opensslv.h>
 
@@ -558,7 +559,9 @@ static void *ssl_io_thread(void *unused)
 				}
 				res--; /* Processed one event. Break the loop as soon as there are no more, to avoid traversing all like with select(). */
 			}
-			if (!inovertime && pfds[i].revents != POLLIN) { /* Something exceptional happened, probably something going away */
+			/* Even if POLLIN is not the only event, if it's among the events, process as if we got a POLLIN without the other events.
+			 * This can happen if the client closes the connection before we've read all the data from it. */
+			if (!inovertime && !(pfds[i].revents & POLLIN)) { /* Something exceptional happened, probably something going away */
 				if (pfds[i].revents & (POLLNVAL | POLLHUP)) {
 					SSL *ssl = ssl_list[i / 2];
 					bbs_debug(5, "Skipping SSL %p at index %d / %d = %s (fd %d)\n", ssl, i, i/2, poll_revent_name(pfds[i].revents), pfds[i].fd);
@@ -1011,7 +1014,14 @@ sslcleanup:
 
 static int ssl_close(SSL *ssl)
 {
-	int sres, res = ssl_unregister_fd(ssl);
+	int sres, fd, res = ssl_unregister_fd(ssl);
+
+	/* Sanity check.
+	 * Verify that the file descriptor for this session has not been closed yet.
+	 * If it has, then something went wrong, and this is likely the cause of other TLS issues. */
+	fd = SSL_get_fd(ssl);
+	bbs_soft_assert(fcntl(fd, F_GETFD) != -1);
+
 	sres = SSL_shutdown(ssl);
 	if (sres < 0) {
 		int err = SSL_get_error(ssl, sres);
