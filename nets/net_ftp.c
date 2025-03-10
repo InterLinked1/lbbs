@@ -146,9 +146,9 @@ static int ftp_pasv_new(int *sockfd)
 	ftp->rfd2 = ftp->wfd2 = -1;
 
 #define DATA_DONE_FD(fp, datafd) \
-	close_if(datafd); \
 	bbs_io_teardown_all_transformers(&ftp->data_transformers); \
-	close_if(fd); /* Close connection when done. This is the EOF that signals the client that the file transfer has completed. */ \
+	close_if(datafd); /* Close data connection when done. This is the EOF that signals the client that the file transfer has completed. */ \
+	close_if(fd); /* Close the data file */ \
 	ftp->rfd2 = ftp->wfd2 = -1;
 
 static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir, const char *file, const char *flags)
@@ -199,13 +199,13 @@ static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *full
 	/* Currently we manually read/write in userspace so we can enforce size restrictions,
 	 * but could probably do an in-kernel copy with a max limit, too. */
 	for (;;) {
-		res = bbs_poll(ftp->rfd2, SEC_MS(10));
+		res = bbs_poll(ftp->rfd2, SEC_MS(4));
 		if (res < 0) {
 			res = 0;
 			break; /* Client will close connection for EOF */
 		} else if (res <= 0) {
 			res = -1;
-			bbs_warning("File transfer stalled, aborting\n");
+			bbs_warning("File transfer stalled after %lu bytes received, aborting\n", bytes);
 			break;
 		}
 		res = read(ftp->rfd2, buf, sizeof(buf));
@@ -214,7 +214,7 @@ static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *full
 			break;
 		}
 		if (bytes + x > maxuploadsize) {
-			bbs_warning("File upload aborted (too large)\n");
+			bbs_warning("File upload aborted after %lu bytes received (too large)\n", bytes);
 			res = -1;
 			break;
 		}
@@ -582,7 +582,14 @@ static void *ftp_handler(void *varg)
 				REQUIRE_PASV_FD();
 				fd = open(fullfile, O_RDONLY);
 				if (fd < 0) {
-					res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
+					bbs_debug(5, "Couldn't open %s (%s)\n", fullfile, strerror(errno));
+					if (errno == EACCES) {
+						res = ftp_write(ftp, 450, "Permission denied for \"%s\"\n", rest);
+					} else if (errno == ENOENT) {
+						res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
+					} else {
+						res = ftp_write(ftp, 450, "Couldn't open \"%s\"\n", rest);
+					}
 					IO_ABORT(res);
 					continue;
 				}
@@ -595,7 +602,7 @@ static void *ftp_handler(void *varg)
 				}
 				if (type != 'I') { /* Binary transfer */
 					/* ASCII transfers are usually just a mess anyways, always do a binary transfer */
-					bbs_warning("Transfer type is '%c', but doing binary transfer anyways\n", type);
+					bbs_debug(1, "Transfer type is '%c', but doing binary transfer anyways\n", type);
 				}
 				ftp_write(ftp, 150, "Proceeding with data\r\n");
 				if (DATA_INIT()) {
