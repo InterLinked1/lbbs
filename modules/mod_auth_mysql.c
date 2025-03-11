@@ -105,7 +105,7 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 			}
 		}
 
-		while (MYSQL_NEXT_ROW(stmt)) {
+		while (MYSQL_NEXT_ROW_DYNAMIC(stmt)) {
 			int id, priv;
 			char *real_username, *pw_hash, *email, *fullname, *phone, *address, *city, *state, *zip, *gender;
 			struct tm dob, registered, lastlogin;

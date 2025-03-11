@@ -286,7 +286,7 @@ static int get_channel_colval(MYSQL_STMT *stmt, const char *channel, const char 
 			goto stmtcleanup;
 		}
 
-		while (MYSQL_NEXT_ROW(stmt)) {
+		while (MYSQL_NEXT_ROW_DYNAMIC(stmt)) {
 			char *colval;
 
 			/* Must allocate string results before attempting to use them */
@@ -1108,7 +1108,7 @@ static int chanserv_init(void)
 			goto stmtcleanup;
 		}
 
-		while (MYSQL_NEXT_ROW(stmt)) {
+		while (MYSQL_NEXT_ROW_DYNAMIC(stmt)) {
 			int guard, keeptopic;
 			char *channame, *topic, *mlock;
 

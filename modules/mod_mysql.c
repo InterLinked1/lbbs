@@ -306,7 +306,7 @@ int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[],
 }
 
 #pragma GCC diagnostic ignored "-Wstack-protector"
-int sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *fmt, ...)
+int __sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *file, int line, const char *func, const char *fmt, ...)
 {
 	size_t i, num_args = strlen(fmt);
 	va_list ap;
@@ -320,6 +320,8 @@ int sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *fmt, ...
 	MYSQL_TIME bind_dates[num_args];
 	const char *cur = fmt;
 #pragma GCC diagnostic pop
+
+	__bbs_log(LOG_DEBUG, 5, file, line, func, "Preparing query '%s'\n", query);
 
 	if (sql_prepare(stmt, fmt, query)) {
 		return -1;
@@ -351,7 +353,7 @@ int sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *fmt, ...
 	return 0;
 }
 
-int sql_stmt_fetch(MYSQL_STMT *stmt)
+int __sql_stmt_fetch(MYSQL_STMT *stmt, int dynamic)
 {
 	const char *errstr;
 	int res = mysql_stmt_fetch(stmt);
@@ -375,7 +377,9 @@ int sql_stmt_fetch(MYSQL_STMT *stmt)
 		bbs_debug(3, "SQL STMT fetch returned no more data\n");
 		break;
 	case MYSQL_DATA_TRUNCATED:
-		bbs_debug(3, "SQL STMT fetch data truncated\n"); /* Caller needs to allocate bigger buffer(s), *OR* this is okay, if we're using sql_alloc_bind_strings */
+		if (!dynamic) {
+			bbs_debug(3, "SQL STMT fetch data truncated\n"); /* Caller needs to allocate bigger buffer(s) */
+		} /* else, if dynamic, we're using sql_alloc_bind_strings and allocating the space we need afterwards, in which case, truncation here is expected and okay */
 		break;
 	default:
 		bbs_error("Unexpected SQL STMT fetch return code: %d\n", res);
@@ -568,25 +572,28 @@ int sql_fetch_columns(int bind_ints[], long long bind_longs[], char *bind_string
 		char **tmpstr;
 		struct tm *tmptm;
 		char format_char = (char) tolower(*cur);
+		/* If bind_null[i] is true, that means this column value was NULL.
+		 * At the time this was written, it seemed that only the 't' case
+		 * had to be explicitly handled. NULL values for other columns
+		 * were set in the relevant arrays. But for good measure, we explicitly
+		 * check with the other types anyways. */
 		switch (format_char) {
 		case 'i': /* Integer */
 		case 'd': /* Double */
 			tmpint = va_arg(ap, int *);
-			*tmpint = bind_ints[i];
+			*tmpint = bind_null[i] ? 0 : bind_ints[i];
 			break;
 		case 'l': /* Long int */
 			tmplong = va_arg(ap, long long *);
-			*tmplong = bind_longs[i];
+			*tmplong = bind_null[i] ? 0 : bind_longs[i];
 			break;
 		case 's': /* String */
 			tmpstr = va_arg(ap, char **);
-			*tmpstr = bind_strings[i];
+			*tmpstr = bind_null[i] ? NULL : bind_strings[i];
 			break;
 		case 't': /* Date */
 			tmptm = va_arg(ap, struct tm *); /* If we don't call va_arg for each argument, that will throw subsequent ones off */
-			if (bind_null[i]) { /* It's all good that we memset tmptm, but if we don't check for NULL, we'll set the clean memory to uninitialized bytes */
-				bbs_debug(3, "Index %lu is NULL\n", i);
-			} else {
+			if (!bind_null[i]) { /* It's all good that we memset tmptm, but if we don't check for NULL, we'll set the clean memory to uninitialized bytes */
 				time_t tmptime;
 				struct tm tmptm2;
 				datetime = bind_dates[i];
@@ -606,6 +613,9 @@ int sql_fetch_columns(int bind_ints[], long long bind_longs[], char *bind_string
 				 * Keep the original tm, just in case there are other differences. */
 				tmptm->tm_wday = tmptm2.tm_wday;
 				tmptm->tm_yday = tmptm2.tm_yday;
+			} else {
+				/* datetime column value was NULL */
+				tmptm = NULL;
 			}
 			break;
 		case 'b': /* Blob */
