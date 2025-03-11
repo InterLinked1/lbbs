@@ -115,12 +115,25 @@ SSL *__tls_client_new(int fd, SSL *ssl_master, int line)
 
 void __tls_free(SSL *ssl, int line)
 {
-	int fd, sres;
+	int fd, sres, status;
 	fd = SSL_get_fd(ssl);
+
+#define SHUTDOWN_STATUS(s) (s & SSL_RECEIVED_SHUTDOWN ? s & SSL_SENT_SHUTDOWN ? "sent/received" : "received" : "none")
+	status = SSL_get_shutdown(ssl);
+	bbs_debug(6, "Shutdown status is %s\n", SHUTDOWN_STATUS(status));
+
 	sres = SSL_shutdown(ssl);
-	if (sres < 0) {
+	if (sres == 0) {
+		status = SSL_get_shutdown(ssl);
+		bbs_debug(6, "Shutdown status is %s\n", SHUTDOWN_STATUS(status));
+		/* Bidirectional shutdown (required for TLS 1.3) */
+		sres = SSL_shutdown(ssl);
+		status = SSL_get_shutdown(ssl);
+		bbs_debug(6, "Shutdown status is %s\n", SHUTDOWN_STATUS(status));
+	}
+	if (sres != 1) {
 		int err = SSL_get_error(ssl, sres);
-		bbs_debug(1, "SSL shutdown failed %p: %s\n", ssl, ssl_strerror(err));
+		bbs_debug(1, "SSL shutdown failed %p (%d): %s\n", ssl, sres, ssl_strerror(err));
 	}
 	SSL_free(ssl);
 	bbs_debug(3, "Destroyed TLS client at line %d (fd %d)\n", line, fd);
