@@ -170,7 +170,7 @@ ssize_t tls_read(SSL *ssl, int line, char *buf, size_t len)
 int test_tls_client_expect(SSL *ssl, int ms, const char *restrict s, int line)
 {
 	char buf[4096];
-	return test_tls_client_expect_eventually_buf(ssl, ms, s, line, buf, sizeof(buf));
+	return test_tls_client_expect_buf(ssl, ms, s, line, buf, sizeof(buf));
 }
 
 int test_tls_client_expect_buf(SSL *ssl, int ms, const char *s, int line, char *buf, size_t len)
