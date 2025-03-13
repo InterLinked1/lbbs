@@ -12,12 +12,13 @@
 
 /*! \file
  *
- * \brief IMAP AUTH PLAIN Tests
+ * \brief IMAP COMPRESS Tests
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
 #include "test.h"
+#include "compress.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -27,6 +28,7 @@
 
 static int pre(void)
 {
+	test_preload_module("io_compress.so");
 	test_preload_module("mod_mail.so");
 	test_preload_module("mod_mimeparse.so");
 	test_load_module("net_imap.so");
@@ -40,6 +42,7 @@ static int pre(void)
 
 static int run(void)
 {
+	struct z_data *z = NULL;
 	int clientfd = -1;
 	int res = -1;
 
@@ -49,28 +52,31 @@ static int run(void)
 	}
 
 	/* Connect and log in */
-	CLIENT_EXPECT(clientfd, "* OK [CAPABILITY");
+	CLIENT_EXPECT(clientfd, "OK");
+	SWRITE(clientfd, "1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);
+	CLIENT_EXPECT(clientfd, "1 OK");
 
-	SWRITE(clientfd, "1 authenticate PLAIN" ENDL);
-	CLIENT_EXPECT(clientfd, "+");
+	SWRITE(clientfd, "2 COMPRESS DEFLATE" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "2 OK"); /* The tagged response is without compress. After this, we use compression for the remainder of the session. */
 
-	SWRITE(clientfd, TEST_SASL ENDL);
-	CLIENT_EXPECT(clientfd, "1 OK [CAPABILITY");
+	z = z_client_new(clientfd);
+	REQUIRE_ZLIB_CLIENT(z);
 
-	SWRITE(clientfd, "2 ID (\"name\" \"MailNews\" \"version\" \"52.9.8629a1\")" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "2 OK");
+	ZLIB_SWRITE(z, "3 ID (\"name\" \"LBBS Tester\" \"version\" \"123\")" ENDL);
+	ZLIB_CLIENT_EXPECT_EVENTUALLY(z, "3 OK");
 
-	SWRITE(clientfd, "3 select \"INBOX\"" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "3 OK");
+	ZLIB_SWRITE(z, "4 select \"INBOX\"" ENDL);
+	ZLIB_CLIENT_EXPECT_EVENTUALLY(z, "4 OK");
 
 	/* LOGOUT */
-	SWRITE(clientfd, "4 LOGOUT" ENDL);
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "* BYE");
+	ZLIB_SWRITE(z, "5 LOGOUT" ENDL);
+	ZLIB_CLIENT_EXPECT_EVENTUALLY(z, "* BYE");
 	res = 0;
 
 cleanup:
+	ZLIB_CLIENT_SHUTDOWN(z);
 	close_if(clientfd);
 	return res;
 }
 
-TEST_MODULE_INFO_STANDARD("IMAP AUTHENTICATE PLAIN Tests");
+TEST_MODULE_INFO_STANDARD("IMAP COMPRESS Tests");

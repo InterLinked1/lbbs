@@ -37,10 +37,10 @@
 #define DEFAULT_COMPRESSION_LEVEL 6
 
 struct compress_data {
-	z_stream compressor_s;
-	z_stream decompressor_s;
-	z_streamp compressor;
-	z_streamp decompressor;
+	z_stream compressor_s; /* Stack allocated */
+	z_stream decompressor_s; /* Stack allocated */
+	z_streamp compressor; /* Pointer to the stack allocated variable */
+	z_streamp decompressor; /* Pointer to the stack allocated variable */
 	int rpfd[2];
 	int wpfd[2];
 	int level; /* Current compression level */
@@ -51,7 +51,6 @@ struct compress_data {
 	size_t recvbytes;
 	size_t recvbytes_comp;
 	pthread_t thread;
-	unsigned int done:1;
 	RWLIST_ENTRY(compress_data) entry;
 };
 
@@ -158,7 +157,7 @@ static void *zlib_thread(void *varg)
 		ssize_t res = poll(pfds, 2, -1);
 		if (res < 0) {
 			bbs_debug(3, "poll returned %ld: %s\n", res, strerror(errno));
-			if (errno == EINTR && !z->done) {
+			if (errno == EINTR) {
 				continue;
 			}
 			break;
@@ -299,11 +298,8 @@ static void cleanup(struct bbs_io_transformation *tran)
 	RWLIST_REMOVE(&compressors, z, entry);
 	RWLIST_UNLOCK(&compressors);
 
-	z->done = 1;
-	pthread_kill(z->thread, SIGUSR1); /* Signal zlib_thread (shutdown(z->wpfd[1], SHUT_RDWR) does not work) */
-	PIPE_CLOSE(z->rpfd);
-	PIPE_CLOSE(z->wpfd);
-	bbs_pthread_join(z->thread, NULL);
+	close_if(z->wpfd[1]); /* Close write end since we're done writing, but don't close other file descriptors since we may need to finish flushing pending data */
+	bbs_pthread_join(z->thread, NULL); /* Wait for I/O to finish */
 
 	deflateEnd(z->compressor);
 	inflateEnd(z->decompressor);
