@@ -120,16 +120,16 @@ void __tls_free(SSL *ssl, int line)
 
 #define SHUTDOWN_STATUS(s) (s & SSL_RECEIVED_SHUTDOWN ? s & SSL_SENT_SHUTDOWN ? "sent/received" : "received" : "none")
 	status = SSL_get_shutdown(ssl);
-	bbs_debug(6, "Shutdown status is %s\n", SHUTDOWN_STATUS(status));
+	bbs_debug(6, "Shutdown status is %s (fd %d)\n", SHUTDOWN_STATUS(status), fd);
 
 	sres = SSL_shutdown(ssl);
 	if (sres == 0) {
 		status = SSL_get_shutdown(ssl);
-		bbs_debug(6, "Shutdown status is %s\n", SHUTDOWN_STATUS(status));
+		bbs_debug(6, "Shutdown status is %s (fd %d)\n", SHUTDOWN_STATUS(status), fd);
 		/* Bidirectional shutdown (required for TLS 1.3) */
 		sres = SSL_shutdown(ssl);
 		status = SSL_get_shutdown(ssl);
-		bbs_debug(6, "Shutdown status is %s\n", SHUTDOWN_STATUS(status));
+		bbs_debug(6, "Shutdown status is %s (fd %d)\n", SHUTDOWN_STATUS(status), fd);
 	}
 	if (sres != 1) {
 		int err = SSL_get_error(ssl, sres);

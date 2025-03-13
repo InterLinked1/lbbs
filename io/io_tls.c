@@ -186,8 +186,8 @@ static void *tls_thread(void *varg)
 	struct tls_client *t = varg;
 	struct pollfd pfds[2];
 
-	pfds[0].fd = t->fd; /* Network socket */
-	pfds[1].fd = t->writepipe[0]; /* Read end of write pipe (i.e. read unencrypted data from BBS application) */
+	pfds[0].fd = t->fd; /* BBS application read: Network socket */
+	pfds[1].fd = t->writepipe[0]; /* BBS application write: Read end of write pipe (i.e. read unencrypted data from BBS application) */
 	pfds[0].events = pfds[1].events = POLLIN | POLLPRI | POLLERR | POLLNVAL;
 	pfds[0].revents = pfds[1].revents = 0;
 
@@ -214,6 +214,8 @@ static void *tls_thread(void *varg)
 sslread:
 			rres = SSL_read(t->ssl, input, sizeof(input));
 			if (rres <= 0) {
+				int sslerr = SSL_get_error(t->ssl, (int) rres);
+				bbs_debug(4, "SSL_read returned %ld: %s\n", rres, ssl_strerror(sslerr));
 				/* Network socket closed */
 				break;
 			}
@@ -228,6 +230,7 @@ sslread:
 			char input[BUFSIZ];
 			rres = read(t->writepipe[0], input, sizeof(input));
 			if (rres <= 0) {
+				bbs_debug(4, "read returned %ld\n", rres);
 				/* BBS is shutting this transformation down (in cleanup() callback).
 				 * The cleanup() callback closes t->writepipe[1], and once we've
 				 * read everything left to be written, read will return 0 here. */
@@ -242,13 +245,18 @@ sslread:
 			pfds[1].revents = 0;
 		}
 		if (pfds[0].revents || pfds[1].revents) {
-			bbs_debug(3, "poll returned %s\n", poll_revent_name(pfds[0].revents ? pfds[0].revents : pfds[1].revents));
+			bbs_debug(3, "poll(pfds[%d]) returned %s (fd %d)\n",
+				pfds[0].revents ? 0 : 1, poll_revent_name(pfds[0].revents ? pfds[0].revents : pfds[1].revents),
+				pfds[0].revents ? pfds[0].fd : pfds[1].fd);
 			break;
 		}
 	}
 	bbs_debug(4, "TLS I/O thread exiting for %p\n", t->ssl);
-	PIPE_CLOSE(t->writepipe);
-	PIPE_CLOSE(t->readpipe);
+	/* Don't close both sides of the pipe, because the consumers may still be using the other end of the pipes.
+	 * They don't belong to us anymore and are somebody else's responsibility to close. */
+	close_if(t->readpipe[1]); /* Nothing more to write towards the application, close the write end of BBS application read */
+	close_if(t->writepipe[0]); /* Nothing more to write towards the network, close read end of BBS application write */
+	/* Write end towards network (t->writepipe[1]) was already closed in cleanup(), that's what signaled this thread to exit */
 	return NULL; /* Return and wait to be joined in ssl_close */
 }
 
@@ -505,16 +513,23 @@ static int ssl_close(struct tls_client *t)
 
 #define SHUTDOWN_STATUS(s) (s & SSL_RECEIVED_SHUTDOWN ? s & SSL_SENT_SHUTDOWN ? "sent/received" : "received" : "none")
 	status = SSL_get_shutdown(ssl);
-	bbs_debug(6, "Shutdown status is %s\n", SHUTDOWN_STATUS(status));
+	bbs_debug(6, "Shutdown status is %s (fd %d)\n", SHUTDOWN_STATUS(status), fd);
 
 	sres = SSL_shutdown(ssl);
 	if (sres == 1) {
 		status = SSL_get_shutdown(ssl);
 		bbs_debug(5, "Bidirectional SSL shutdown completed (%s)\n", SHUTDOWN_STATUS(status));
 	} else if (sres == 0) {
+		int retried = 0;
 		status = SSL_get_shutdown(ssl);
-		bbs_debug(6, "Shutdown status is %s\n", SHUTDOWN_STATUS(status));
+		bbs_debug(6, "Shutdown status is %s (fd %d)\n", SHUTDOWN_STATUS(status), fd);
 
+		/* The second call to SSL_shutdown or other OpenSSL functions at this point
+		 * can sometimes hang (blocked on read internally).
+		 * To avoid this, make the file descriptor nonblocking beforehand. */
+		bbs_unblock_fd(fd);
+
+shutdown2:
 		/* Unidirectional shutdown has completed. Historically, it would be okay to clean up now,
 		 * although we could try for a bidirectional shutdown as well by calling SSL_shutdown again
 		 * (and with nonblocking SSL's, potentially multiple times if SSL_ERROR_WANT_READ).
@@ -529,7 +544,11 @@ static int ssl_close(struct tls_client *t)
 			bbs_debug(5, "Bidirectional SSL shutdown completed (%s)\n", SHUTDOWN_STATUS(status));
 		} else {
 			err = SSL_get_error(ssl, sres);
-			bbs_warning("Bidirectional SSL shutdown failed %p: %s\n", ssl, ssl_strerror(err));
+			if (err == SSL_ERROR_WANT_READ && bbs_poll(fd, SEC_MS(2)) > 0 && !retried++) {
+				goto shutdown2; /* Retry once */
+			}
+			/* Not necessarily our fault. The other side may not have sent the close notify. */
+			bbs_debug(1, "Bidirectional SSL shutdown failed %p: %s\n", ssl, ssl_strerror(err));
 		}
 	} else {
 		err = SSL_get_error(ssl, sres);

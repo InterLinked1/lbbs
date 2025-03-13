@@ -137,19 +137,27 @@ static int ftp_pasv_new(int *sockfd)
 	__data_res; \
 })
 
+/* For TLS-encrypted connections, rfd and wfd may not be the same as the original socket fd.
+ * We need to close the socket fd (lastly), but beforehand, we may need to close the other
+ * file descriptors as well. */
+#define DATA_CLOSE_FD(fd) \
+	bbs_io_teardown_all_transformers(&ftp->data_transformers); \
+	if (ftp->rfd2 != ftp->wfd2) { \
+		close_if(ftp->rfd2); \
+		close_if(ftp->wfd2); \
+	} \
+	close_if(fd); /* Close data connection when done. This is the EOF that signals the client that the file transfer has completed. */ \
+	ftp->rfd2 = ftp->wfd2 = -1;
+
 #define DATA_DONE(fp, fd) \
 	if (fp) { \
 		fclose(fp); \
 	} \
-	bbs_io_teardown_all_transformers(&ftp->data_transformers); \
-	close_if(fd); /* Close connection when done. This is the EOF that signals the client that the file transfer has completed. */ \
-	ftp->rfd2 = ftp->wfd2 = -1;
+	DATA_CLOSE_FD(fd);
 
-#define DATA_DONE_FD(fp, datafd) \
-	bbs_io_teardown_all_transformers(&ftp->data_transformers); \
-	close_if(datafd); /* Close data connection when done. This is the EOF that signals the client that the file transfer has completed. */ \
-	close_if(fd); /* Close the data file */ \
-	ftp->rfd2 = ftp->wfd2 = -1;
+#define DATA_DONE_FD(datafd, fd) \
+	close_if(datafd); /* Close the data file */ \
+	DATA_CLOSE_FD(fd);
 
 static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *fulldir, const char *file, const char *flags)
 {
@@ -210,6 +218,9 @@ static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *full
 		}
 		res = read(ftp->rfd2, buf, sizeof(buf));
 		if (res <= 0) {
+			if (res == -1) {
+				bbs_warning("read(%d) failed: %s\n", ftp->rfd2, strerror(errno));
+			}
 			res = 0; /* End of transfer */
 			break;
 		}
@@ -226,7 +237,8 @@ static ssize_t ftp_put(struct ftp_session *ftp, int *pasvfdptr, const char *full
 		}
 		bytes += x;
 	}
-	DATA_DONE(fp, *pasvfdptr);
+	DATA_DONE(fp, pasv_fd); /* Don't pass pasvfdptr directly into macro */
+	*pasvfdptr = pasv_fd;
 	if (res == -1) {
 		/* Can't use ternary operator here */
 		if (bytes + x > maxuploadsize) {
@@ -615,8 +627,8 @@ static void *ftp_handler(void *varg)
 				event.diskpath = fullfile;
 				bbs_event_dispatch_custom(node, EVENT_FILE_DOWNLOAD_START, &event);
 
-				res = (int) bbs_sendfile(ftp->wfd2, fd, NULL, (size_t) filestat.st_size); /* More convenient and efficient than manually relaying using read/write */
-				DATA_DONE_FD(fp, pasv_fd);
+				res = bbs_sendfile(ftp->wfd2, fd, NULL, (size_t) filestat.st_size); /* More convenient and efficient than manually relaying using read/write */
+				DATA_DONE_FD(fd, pasv_fd);
 				if (res != filestat.st_size) {
 					bbs_error("File transfer failed: %s\n", strerror(errno));
 					res = ftp_write(ftp, 451, "File transfer failed\r\n");

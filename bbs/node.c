@@ -649,6 +649,13 @@ static void node_shutdown(struct bbs_node *node, int unique)
 		bbs_debug(8, "Node %u has no PTY thread to clean up\n", node->id);
 	}
 
+	/* If the node was using TLS or any other I/O transformers,
+	 * then we need to close those, too. */
+	if (node->rfd != node->wfd) {
+		close_if(node->rfd);
+		close_if(node->wfd);
+	}
+
 	if (node->fd != -1) {
 		bbs_socket_close(&node->fd);
 	}

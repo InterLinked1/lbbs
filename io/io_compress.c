@@ -147,8 +147,8 @@ static void *zlib_thread(void *varg)
 	struct compress_data *z = varg;
 	struct pollfd pfds[2];
 
-	pfds[0].fd = z->wpfd[0]; /* Data that we need to compress and send along */
-	pfds[1].fd = z->orig_rfd; /* Data that we received that needs to be decompressed */
+	pfds[0].fd = z->orig_rfd; /* BBS application read: Data that we received that needs to be decompressed */
+	pfds[1].fd = z->wpfd[0]; /* BBS application write: Data that we need to compress and send along */
 	pfds[0].events = pfds[1].events = POLLIN | POLLPRI | POLLERR | POLLNVAL;
 	pfds[0].revents = pfds[1].revents = 0;
 
@@ -164,19 +164,6 @@ static void *zlib_thread(void *varg)
 		}
 		if (pfds[0].revents & POLLIN) {
 			char input[BUFSIZ];
-			rres = read(z->wpfd[0], input, sizeof(input));
-			if (rres <= 0) {
-				break;
-			}
-			/* Compress it */
-			res = compress_and_send(z, input, (size_t) rres);
-			if (rres <= 0) {
-				break;
-			}
-			pfds[0].revents = 0;
-		}
-		if (pfds[1].revents & POLLIN) {
-			char input[BUFSIZ];
 			rres = read(z->orig_rfd, input, sizeof(input));
 			if (rres <= 0) {
 				break;
@@ -186,16 +173,32 @@ static void *zlib_thread(void *varg)
 			if (rres <= 0) {
 				break;
 			}
+			pfds[0].revents = 0;
+		}
+		if (pfds[1].revents & POLLIN) {
+			char input[BUFSIZ];
+			rres = read(z->wpfd[0], input, sizeof(input));
+			if (rres <= 0) {
+				break;
+			}
+			/* Compress it */
+			res = compress_and_send(z, input, (size_t) rres);
+			if (rres <= 0) {
+				break;
+			}
 			pfds[1].revents = 0;
 		}
 		if (pfds[0].revents || pfds[1].revents) {
-			bbs_debug(3, "poll returned %s\n", poll_revent_name(pfds[0].revents ? pfds[0].revents : pfds[1].revents));
+			bbs_debug(3, "poll(pfds[%d]) returned %s (fd %d)\n",
+				pfds[0].revents ? 0 : 1, poll_revent_name(pfds[0].revents ? pfds[0].revents : pfds[1].revents),
+				pfds[0].revents ? pfds[0].fd : pfds[1].fd);
 			break;
 		}
 	}
 	bbs_debug(4, "zlib thread exiting\n");
-	PIPE_CLOSE(z->wpfd);
-	PIPE_CLOSE(z->rpfd);
+	close_if(z->rpfd[1]); /* Nothing more to write towards the application, close the write end of BBS application read */
+	close_if(z->wpfd[0]); /* Nothing more to write towards the network, close read end of BBS application write */
+	/* Write end towards network (z->wpfd[1]) was already closed in cleanup(), that's what signaled this thread to exit */
 	return NULL;
 }
 

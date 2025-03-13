@@ -353,7 +353,7 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 			 * If this is the case, then manually sleep and check again first. */
 			/* Wait a few hundred ms. Okay to make a blocking call since pthread_join is expected to possibly block anyways.
 			 * Still split up into multiple waits to avoid sleeping longer than is really needed... */
-			bbs_safe_sleep(25);
+			usleep(25000); /* Don't use bbs_safe_sleep, since that would busy wait during shutdown */
 			res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts);
 		}
 		if (res == ETIMEDOUT) {
@@ -367,7 +367,7 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 #if defined(__linux__) && defined(__GLIBC__)
 				bbs_debug(9, "Thread %lu not yet joined after %lus\n", thread, ts.tv_sec);
 #endif
-				bbs_safe_sleep(250);
+				usleep(25000); /* Don't use bbs_safe_sleep, since that would busy wait during shutdown */
 				ts.tv_sec = 1; /* XXX Even this doesn't seem to make it work right */
 				res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts);
 			}

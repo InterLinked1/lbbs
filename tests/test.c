@@ -74,6 +74,9 @@ int startup_run_unit_tests;
 /* How long to wait for the BBS to start fully */
 #define STARTUP_TIMEOUT 25
 
+/* Maximum amount of time for any single test duration */
+#define TEST_TIMEOUT 180
+
 /* How long to wait for BBS to exit after a test. */
 #define SHUTDOWN_TIMEOUT 15
 
@@ -1007,7 +1010,9 @@ static int run_test(const char *filename, int multiple)
 			usleep(25000); /* In case a test exits immediately, let spawned threads spawn before we exit */
 			if (!res) {
 				bbs_debug(3, "BBS fully started on process %d\n", childpid);
+				alarm(TEST_TIMEOUT); /* If test hangs, don't wait forever */
 				res = testmod->run();
+				alarm(0); /* Cancel any pending alarm */
 				bbs_debug(3, "Test '%s' returned %d\n", filename, res);
 				usleep(25000); /* Allow the poor BBS time for catching its breath. At least test_irc under valgrind seems to need this. */
 			} else {
