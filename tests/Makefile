@@ -21,7 +21,8 @@ endif
 
 all: $(TEST_EXE) $(MOD_SO)
 
-# This is only for test.c and tls.c
+# This is for all files in the binary, except readline.c
+# A more specific rule matches all of the module files.
 %.o : %.c
 	@echo "  [LD] $^ -> $@"
 	$(CC) $(CFLAGS) -Wno-unused-result -DTEST_IN_CORE -DTEST_DIR=$(CURDIR) $(EXTRA_FLAGS) $(INC) -c $^
@@ -30,8 +31,8 @@ readline.o : ../bbs/readline.c
 	cp ../bbs/readline.c .
 	$(CC) $(CFLAGS) -fPIC -DTEST_MODULE=\"$(basename $^)\" -DTEST_MODULE_SELF_SYM=__internal_$(basename $^)_self $(INC) -c $^
 
-$(TEST_EXE) : test.o readline.o tls.o
-	$(CC) $(CFLAGS) -Wl,--export-dynamic -o $(TEST_EXE) $^ -ldl -lpthread -lssl -lcrypto
+$(TEST_EXE) : test.o readline.o tls.o compress.o
+	$(CC) $(CFLAGS) -Wl,--export-dynamic -o $(TEST_EXE) $^ -ldl -lpthread -lssl -lcrypto -lz
 
 test_%.o : test_%.c
 	@echo "  [CC] $< -> $@"
