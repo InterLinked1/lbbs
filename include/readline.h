@@ -14,8 +14,9 @@
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
-/* Forward declaration */
+/* Forward declarations */
 struct dyn_str;
+struct bbs_node;
 
 /*! \note This really should be opaque, but it's declared here so that callers can stack allocate it */
 struct readline_data {
@@ -79,6 +80,11 @@ int readline_bytes_available(struct readline_data *restrict rldata, int process)
  * \note The actual number of bytes read may be greater than the number of bytes returned. These bytes will be returned in subsequent calls to this function.
  */
 ssize_t bbs_readline(int fd, struct readline_data *restrict rldata, const char *restrict delim, int timeout);
+
+/*!
+ * \brief Same as bbs_readline, but take a node instead of a file descriptor directly
+ */
+ssize_t bbs_node_readline(struct bbs_node *node, struct readline_data *restrict rldata, const char *restrict delim, int timeout);
 
 /*!
  * \brief Read exactly n bytes from a file descriptor and write them to another file descriptor

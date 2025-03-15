@@ -66,7 +66,7 @@ static int calc_exec(struct bbs_node *node, const char *args)
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 		char *argv[3] = { "bc", "-q", NULL }; /* -q = quiet: disable initial banner */
 		bbs_node_writef(node, "EQ> ");
-		res = bbs_node_readline(node, MIN_MS(5), buf, sizeof(buf) - 2);
+		res = bbs_node_read_line(node, MIN_MS(5), buf, sizeof(buf) - 2);
 		if (res <= 0) {
 			res = -1;
 			break;
@@ -151,7 +151,7 @@ static int dict_exec(struct bbs_node *node, const char *args)
 
 		bbs_node_buffer(node); /* The pager will disable buffering (including echo), so do this each loop */
 		bbs_node_writef(node, "DICT> ");
-		res = bbs_node_readline(node, MIN_MS(5), buf, sizeof(buf) - 2);
+		res = bbs_node_read_line(node, MIN_MS(5), buf, sizeof(buf) - 2);
 		if (res <= 0) {
 			res = -1;
 			break;

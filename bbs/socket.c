@@ -289,12 +289,13 @@ int bbs_unblock_fd(int fd)
 {
 	int flags = fcntl(fd, F_GETFL, 0);
 	if (flags < 0) {
-		bbs_error("fcntl failed: %s\n", strerror(errno));
+		bbs_error("fcntl(%d) failed: %s\n", fd, strerror(errno));
+		bbs_log_backtrace();
 		return -1;
 	}
 	flags |= O_NONBLOCK;
 	if (fcntl(fd, F_SETFL, flags)) {
-		bbs_error("fcntl failed: %s\n", strerror(errno));
+		bbs_error("fcntl(%d) failed: %s\n", fd, strerror(errno));
 		return -1;
 	}
 	return 0;
@@ -304,12 +305,12 @@ int bbs_block_fd(int fd)
 {
 	int flags = fcntl(fd, F_GETFL, 0);
 	if (flags < 0) {
-		bbs_error("fcntl failed: %s\n", strerror(errno));
+		bbs_error("fcntl(%d) failed: %s\n", fd, strerror(errno));
 		return -1;
 	}
 	flags &= ~O_NONBLOCK;
 	if (fcntl(fd, F_SETFL, flags)) {
-		bbs_error("fcntl failed: %s\n", strerror(errno));
+		bbs_error("fcntl(%d) failed: %s\n", fd, strerror(errno));
 		return -1;
 	}
 	return 0;
@@ -325,7 +326,7 @@ int bbs_node_cork(struct bbs_node *node, int enabled)
 #else
 	if (setsockopt(node->sfd, IPPROTO_TCP, TCP_CORK, &i, sizeof(i))) { /* Linux */
 #endif
-		bbs_error("setsockopt failed: %s\n", strerror(errno));
+		bbs_error("setsockopt(%d) failed: %s\n", node->sfd, strerror(errno));
 		return -1;
 	} else {
 		/* net_imap fiddles corking around a lot, so high debug level to reduce noisiness */
@@ -338,7 +339,7 @@ int bbs_set_fd_tcp_nodelay(int fd, int enabled)
 {
 	int i = enabled;
 	if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &i, sizeof(i))) {
-		bbs_error("setsockopt failed: %s\n", strerror(errno));
+		bbs_error("setsockopt(%d) failed: %s\n", fd, strerror(errno));
 		bbs_log_backtrace();
 		return -1;
 	} else {
@@ -351,7 +352,7 @@ int bbs_set_fd_tcp_pacing_rate(int fd, int rate)
 {
 	int i = rate;
 	if (setsockopt(fd, SOL_SOCKET, SO_MAX_PACING_RATE, &i, sizeof(i))) {
-		bbs_error("setsockopt failed: %s\n", strerror(errno));
+		bbs_error("setsockopt(%d) failed: %s\n", fd, strerror(errno));
 		return -1;
 	} else {
 		if (rate) {
@@ -401,7 +402,7 @@ int bbs_node_wait_until_output_sent(struct bbs_node *node)
 	 * then the acks will take some time to come back. */
 	for (;;) {
 		if (getsockopt(node->sfd, IPPROTO_TCP, TCP_INFO, &info, &len)) {
-			bbs_error("getsockopt failed: %s\n", strerror(errno));
+			bbs_error("getsockopt(%d) failed: %s\n", node->sfd, strerror(errno));
 			return -1;
 		}
 		bbs_debug(9, "File descriptor %d has %d packet%s unacked\n", node->sfd, info.tcpi_unacked, ESS(info.tcpi_unacked));
@@ -2041,7 +2042,7 @@ int bbs_node_read_escseq(struct bbs_node *node)
 	return res;
 }
 
-int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len)
+int bbs_node_read_line(struct bbs_node *node, int ms, char *buf, size_t len)
 {
 #ifdef DEBUG_TEXT_IO
 	int i;
@@ -2161,15 +2162,15 @@ int bbs_get_response(struct bbs_node *node, int qlen, const char *q, int pollms,
 		} else {
 			NONPOS_RETURN(bbs_node_writef(node, "%s", q));
 		}
-		res = bbs_node_readline(node, pollms, buf, (size_t) len);
-		/* bbs_node_readline returns the number of bytes read.
+		res = bbs_node_read_line(node, pollms, buf, (size_t) len);
+		/* bbs_node_read_line returns the number of bytes read.
 		 * However, in most cases, we'll want to subtract 1, because we null terminated the new line read as input.
 		 * Therefore, we can approximate the strlen with res - 1 (so long as res > 0)
 		 */
 		if (res < 0) {
 			return res;
 		} else if (res == 0) {
-			/* bbs_node_readline uses bbs_node_tpoll, so if the tpoll times out (returns 0), then we must return,
+			/* bbs_node_read_line uses bbs_node_tpoll, so if the tpoll times out (returns 0), then we must return,
 			 * as we already printed out "You've been inactive too long" at this point. */
 			return -1; /* -1, not 0, we're already due for disconnect. */
 		} else if (strlen_zero(buf)) {
@@ -2723,6 +2724,11 @@ ssize_t bbs_node_any_fd_write(struct bbs_node *node, int fd, const char *buf, si
 	/* In case the node thread is blocked on I/O,
 	 * we do NOT try to lock the node in this function normally.
 	 * Instead, we use trylock to avoid possible deadlocks. */
+
+	if (bbs_node_dead(node)) {
+		bbs_warning("Node %d is dead, skipping write\n", node->id);
+		return -1;
+	}
 
 	if (node->thread == pthread_self()) {
 		/* The caller could have used bbs_node_fd_write directly, but maybe it was iterating over a list of clients,

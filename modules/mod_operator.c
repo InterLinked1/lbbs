@@ -126,7 +126,7 @@ static int node_read_variable(struct bbs_node *node, const char *key)
 	bbs_node_flush_input(node);
 
 	bbs_node_buffer(node);
-	res = bbs_node_readline(node, MIN_MS(5), buf, sizeof(buf));
+	res = bbs_node_read_line(node, MIN_MS(5), buf, sizeof(buf));
 	bbs_node_unbuffer(node);
 
 	if (res <= 0) {
@@ -257,7 +257,7 @@ static int operator_dial_number(struct queue_call_handle *qch)
 
 	/* Node is already buffered here */
 	bbs_node_writef(qch->node, "\nSTATION-TO-STATION NBR TO DIAL: ");
-	if (bbs_node_readline(qch->node, MIN_MS(5), othernum, sizeof(othernum)) <= 0) {
+	if (bbs_node_read_line(qch->node, MIN_MS(5), othernum, sizeof(othernum)) <= 0) {
 		return 0; /* If no number entered or other issue, just bail out */
 	}
 
@@ -635,7 +635,7 @@ static int get_directory_location(struct queue_call_handle *qch)
 	bbs_node_flush_input(qch->node);
 	bbs_node_buffer(qch->node);
 	bbs_node_writef(qch->node, "CTY.ST: ");
-	res = bbs_node_readline(qch->node, MIN_MS(5), citystate, sizeof(citystate));
+	res = bbs_node_read_line(qch->node, MIN_MS(5), citystate, sizeof(citystate));
 	if (res <= 0) {
 		return res;
 	}
@@ -878,7 +878,7 @@ static int handle_directory(struct queue_call_handle *qch)
 		} else {
 			bbs_node_writef(qch->node, "LSTN: ");
 		}
-		res = bbs_node_readline(qch->node, MIN_MS(2), listing, sizeof(listing));
+		res = bbs_node_read_line(qch->node, MIN_MS(2), listing, sizeof(listing));
 		if (res <= 0) {
 			return res;
 		}
@@ -1484,7 +1484,7 @@ static int tty_agent_dial_number(struct queue_call_handle *qch, int inverted)
 
 	bbs_node_writef(qch->node, inverted ? "\nTTY NBR TO DIAL: " : "\nVOICE NBR TO DIAL: ");
 	bbs_node_buffer(qch->node);
-	res = bbs_node_readline(qch->node, MIN_MS(5), othernum, sizeof(othernum));
+	res = bbs_node_read_line(qch->node, MIN_MS(5), othernum, sizeof(othernum));
 	bbs_node_unbuffer(qch->node);
 	if (res <= 0) {
 		return 1; /* If no number entered or other issue, just bail out */

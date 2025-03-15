@@ -3192,7 +3192,7 @@ static void handle_client(struct irc_user *user)
 		 * the RFCs are very clear that CR LF is the delimiter.
 		 * So even though this feels wrong, accept just LF for compatibility, and strip trailing CR if present.
 		*/
-		res = bbs_readline(user->node->rfd, &rldata, "\n", 2 * PING_TIME); /* Wait up to the ping interval time for something, anything, otherwise disconnect. */
+		res = bbs_node_readline(user->node, &rldata, "\n", 2 * PING_TIME); /* Wait up to the ping interval time for something, anything, otherwise disconnect. */
 		if (res <= 0) {
 			/* Don't set graceful_close to 0 here, since after a QUIT, the client may close the connection first.
 			 * The QUIT message should be whatever the client sent, since it was graceful, not connection closed by remote host. */

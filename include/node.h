@@ -279,6 +279,13 @@ int bbs_node_kill_child(struct bbs_node *node);
 int bbs_node_logout(struct bbs_node *node);
 
 /*!
+ * \brief Check if a node is dead
+ * \param node
+ * \retval 0 if alive, -1 if dead
+ */
+int bbs_node_dead(struct bbs_node *node);
+
+/*!
  * \brief Remove and free a BBS node
  * \param node Node to unlink
  * \note This should only be called by the node handling thread itself
@@ -534,7 +541,7 @@ int bbs_node_read_escseq(struct bbs_node *node);
  *       This means this function may return a value larger than the length of the string in the buffer,
  *       and the return value MUST NOT BE USED to deduce the length of the string in the buffer.
  */
-int bbs_node_readline(struct bbs_node *node, int ms, char *buf, size_t len);
+int bbs_node_read_line(struct bbs_node *node, int ms, char *buf, size_t len);
 
 /*!
  * \brief Solicit a response to a question, retrying if necessary

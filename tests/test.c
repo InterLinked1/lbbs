@@ -403,7 +403,7 @@ static void get_live_backtrace(void)
 	}
 }
 
-static int bbs_shutting_down = 1;
+static int bbs_shutting_down = 0;
 static int do_abort = 0;
 static int bbspfd[2] = { -1 , -1 };
 static int notifypfd[2] = { -1, -1 };
@@ -468,16 +468,6 @@ static void *io_relay(void *varg)
 				/* Don't append, just shift the buffer and check if we can read immediately. */
 				bbs_readline_append(&rldata, "\n", NULL, 0, &ready);
 				rounds++;
-				if (bbs_shutting_down) {
-					/* Look for stalled shutdown... we have to do it in this thread,
-					 * since the main thread is blocked on the alarm() call. */
-					if (strstr(expectbuf, "Skipping unload of ") && strstr(expectbuf, " on pass 27")) {
-						/* At this point, something is likely "stuck".
-						 * The BBS won't trigger this itself, but we should get a backtrace of the
-						 * running process to see what's up. */
-						get_live_backtrace();
-					}
-				}
 			}
 			if (startup_run_unit_tests_started == 1) {
 				bbs_debug(5, "Stalling until expect reactivated\n");
@@ -485,6 +475,16 @@ static void *io_relay(void *varg)
 					usleep(500);
 				}
 				bbs_debug(5, "Ending stall due to expect reactivation\n");
+			}
+		} else if (bbs_shutting_down) {
+			/* Look for stalled shutdown... we have to do it in this thread,
+			 * since the main thread is blocked on the alarm() call. */
+			buf[res] = '\0';
+			if (strstr(buf, "Skipping unload of ") && strstr(buf, " on pass 27")) {
+				/* At this point, something is likely "stuck".
+				 * The BBS won't trigger this itself, but we should get a backtrace of the
+				 * running process to see what's up. */
+				get_live_backtrace();
 			}
 		}
 		if (rand_alloc_fails && strstr(expectbuf, "Simulated allocation failure")) {

@@ -1440,14 +1440,14 @@ static int list_modulerefs(int fd, const char *name)
 			int c = 0;
 			struct bbs_module_reference *r;
 			/* Dump refs */
-			
 			RWLIST_RDLOCK(&mod->refs);
 			RWLIST_TRAVERSE(&mod->refs, r, entry) {
 				struct bbs_module *refmod = r->refmod;
 				c++;
 				i++;
-				/* Safe to dereference r->refmod (if not NULL), since it can be removed while modules list is locked */
-				bbs_dprintf(fd, "%-30s %3d %2d %-30s %s:%d %s\n", mod->name, c, r->pair, refmod ? refmod->name : "", r->file, r->line, r->func);
+				/* Safe to dereference r->refmod (if not NULL), since it can't be removed while modules list is locked */
+				bbs_dprintf(fd, "%-30s %3d %2d %-30s %s:%d %s\n", mod->name, c,
+					r->pair, refmod ? refmod->name : "", r->file, r->line, r->func);
 			}
 			RWLIST_UNLOCK(&mod->refs);
 			if (name) {

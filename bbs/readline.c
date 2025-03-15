@@ -135,6 +135,14 @@ static int readline_post_read(struct readline_data *restrict rldata, const char 
 }
 
 #ifdef BBS_IN_CORE
+ssize_t bbs_node_readline(struct bbs_node *node, struct readline_data *restrict rldata, const char *restrict delim, int timeout)
+{
+	if (bbs_node_dead(node)) {
+		return -1;
+	}
+	return bbs_readline(node->rfd, rldata, delim, timeout);
+}
+
 /*! \brief Helper function to read a single line from a file descriptor, with a timeout (for any single read) */
 ssize_t bbs_readline(int fd, struct readline_data *restrict rldata, const char *restrict delim, int timeout)
 {

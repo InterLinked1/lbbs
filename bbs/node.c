@@ -583,6 +583,14 @@ int bbs_node_logout(struct bbs_node *node)
 	return 0;
 }
 
+int bbs_node_dead(struct bbs_node *node)
+{
+	if (!node->active) {
+		return -1;
+	}
+	return 0;
+}
+
 static void node_shutdown(struct bbs_node *node, int unique)
 {
 	pthread_t node_thread;
@@ -688,6 +696,8 @@ static void node_free(struct bbs_node *node)
 	if (node->module) {
 		bbs_module_unref(node->module, 1);
 		node->module = NULL;
+	} else {
+		bbs_debug(3, "Node had no module reference?\n");
 	}
 	if (node->vars) {
 		bbs_vars_destroy(node->vars);
@@ -1388,7 +1398,7 @@ static int authenticate(struct bbs_node *node)
 		}
 
 		NEG_RETURN(bbs_node_writef(node, "%s%-10s%s", COLOR(COLOR_PRIMARY), "Login: ", COLOR(TERM_COLOR_WHITE)));
-		NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), username, sizeof(username)));
+		NONPOS_RETURN(bbs_node_read_line(node, MIN_MS(1), username, sizeof(username)));
 		if (!strcasecmp(username, "Quit") || !strcasecmp(username, "Exit")) {
 			bbs_debug(3, "User entered '%s', exiting\n", username);
 			return -1;
@@ -1441,7 +1451,7 @@ static int authenticate(struct bbs_node *node)
 			/* Don't echo the password, duh... */
 			NEG_RETURN(bbs_node_echo_off(node));
 			NEG_RETURN(bbs_node_writef(node, "%s%-10s%s", COLOR(COLOR_PRIMARY), "Password: ", COLOR(TERM_COLOR_WHITE)));
-			NONPOS_RETURN(bbs_node_readline(node, 20000, password, sizeof(password)));
+			NONPOS_RETURN(bbs_node_read_line(node, 20000, password, sizeof(password)));
 			res = bbs_authenticate(node, username, password);
 			if (res) {
 				/* If it contains non-printable characters, it's probably not part of the actual password anyways. */
@@ -2002,7 +2012,7 @@ static int ask_dimension(struct bbs_node *node, const char *question)
 
 	for (i = 0; i < 3; i++) {
 		bbs_node_writef(node, "\n%s? ", question);
-		res = bbs_node_readline(node, SEC_MS(30), buf, sizeof(buf) - 1);
+		res = bbs_node_read_line(node, SEC_MS(30), buf, sizeof(buf) - 1);
 		if (res < 0) {
 			return -1;
 		} else if (res) {

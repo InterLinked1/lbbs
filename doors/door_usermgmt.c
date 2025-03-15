@@ -51,7 +51,7 @@ static int confirm_current_pw(struct bbs_node *node)
 	bbs_node_echo_off(node); /* Don't display password */
 	NEG_RETURN(bbs_node_writef(node, "=== Confirm Current Password ===\n"));
 	NEG_RETURN(bbs_node_writef(node, "%-*s", 24, COLOR(TERM_COLOR_WHITE) "Old Password: "));
-	NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), password, sizeof(password)));
+	NONPOS_RETURN(bbs_node_read_line(node, MIN_MS(1), password, sizeof(password)));
 	res = bbs_user_authenticate(user, bbs_username(node->user), password);
 	bbs_memzero(password, sizeof(password));
 	bbs_user_destroy(user);
@@ -80,9 +80,9 @@ static int do_reset(struct bbs_node *node, const char *username)
 	bbs_node_echo_off(node); /* Don't display password */
 	for (; tries > 0; tries--) {
 		NEG_RETURN(bbs_node_writef(node, "%-*s", 24, COLOR(TERM_COLOR_WHITE) "New Password: "));
-		NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), password, sizeof(password)));
+		NONPOS_RETURN(bbs_node_read_line(node, MIN_MS(1), password, sizeof(password)));
 		NEG_RETURN(bbs_node_writef(node, "%-*s", 24, COLOR(TERM_COLOR_WHITE) "\nConfirm New Password: ")); /* Begin with new line since wasn't echoed */
-		NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), password2, sizeof(password2)));
+		NONPOS_RETURN(bbs_node_read_line(node, MIN_MS(1), password2, sizeof(password2)));
 		if (s_strlen_zero(password) || strcmp(password, password2)) {
 			NEG_RETURN(bbs_node_writef(node, "\n%sPasswords do not match%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET));
 			} else if (strlen(password) < MIN_PW_LENGTH) {

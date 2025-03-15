@@ -557,7 +557,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 	/* We get our own client, all to ourself! */
 	if (strlen_zero(username)) {
 		bbs_node_writef(node, "Enter username: ");
-		NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), usernamebuf, sizeof(usernamebuf))); /* Returning -1 anyways, no need to re-enable echo */
+		NONPOS_RETURN(bbs_node_read_line(node, MIN_MS(1), usernamebuf, sizeof(usernamebuf))); /* Returning -1 anyways, no need to re-enable echo */
 		username = usernamebuf;
 		if (strlen_zero(username)) {
 			bbs_node_writef(node, "No username received. Connection aborted.\n");
@@ -586,7 +586,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 		 */
 		bbs_node_echo_off(node); /* Don't display password */
 		bbs_node_writef(node, "Enter password for %s: ", username);
-		NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), passwordbuf, sizeof(passwordbuf))); /* Returning -1 anyways, no need to re-enable echo */
+		NONPOS_RETURN(bbs_node_read_line(node, MIN_MS(1), passwordbuf, sizeof(passwordbuf))); /* Returning -1 anyways, no need to re-enable echo */
 		/* Hopefully the password is right... only get one shot!
 		 * In theory, if we knew the connection was to our own IRC server,
 		 * we could actually call bbs_user_authentication here with a dummy user
@@ -639,7 +639,7 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 	 * This does complicate things just a little bit, as can be seen below.
 	 * There are several inefficiencies in the loop that could be optimized.
 	 */
-	bbs_readline_init(&rldata, buf, sizeof(buf)); /* XXX Should probably use a bbs_node_readline in client_relay as well, to simplify message parsing */
+	bbs_readline_init(&rldata, buf, sizeof(buf)); /* XXX Should probably use a bbs_node_read_line in client_relay as well, to simplify message parsing */
 	bbs_node_clear_screen(node);
 	bbs_node_buffer(node);
 	for (;;) {
@@ -664,8 +664,8 @@ static int irc_single_client(struct bbs_node *node, char *constring, const char 
 		if (res == 2) {
 			char clientbuf[512]; /* Use a separate buf so that bbs_readline gets its own buf for the server reads */
 
-			/* No need to use a fancy bbs_node_readline struct, since we can reasonably expect to get 1 full line at a time, nothing more, nothing less */
-			res = bbs_node_readline(node, 0, clientbuf, sizeof(clientbuf) - 1);
+			/* No need to use a fancy bbs_readline struct, since we can reasonably expect to get 1 full line at a time, nothing more, nothing less */
+			res = bbs_node_read_line(node, 0, clientbuf, sizeof(clientbuf) - 1);
 			if (res <= 0) {
 				bbs_warning("bbs_readline returned %d\n", res);
 				break;

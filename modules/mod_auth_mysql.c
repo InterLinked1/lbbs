@@ -399,9 +399,9 @@ static int user_register(struct bbs_node *node)
 		bbs_node_echo_off(node); /* Don't display password */
 		for (; tries > 0; tries--) { /* Retries here count less than retries of the main loop */
 			NEG_RETURN(bbs_node_writef(node, "%-*s", REG_QLEN, REG_FMT "Password: "));
-			NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), password, sizeof(password)));
+			NONPOS_RETURN(bbs_node_read_line(node, MIN_MS(1), password, sizeof(password)));
 			NEG_RETURN(bbs_node_writef(node, "%-*s", REG_QLEN, REG_FMT "\nConfirm Password: ")); /* Begin with new line since wasn't echoed */
-			NONPOS_RETURN(bbs_node_readline(node, MIN_MS(1), password2, sizeof(password2)));
+			NONPOS_RETURN(bbs_node_read_line(node, MIN_MS(1), password2, sizeof(password2)));
 			if (s_strlen_zero(password) || strcmp(password, password2)) {
 				NEG_RETURN(bbs_node_writef(node, "\n%sPasswords do not match%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET));
 			} else if (strlen(password) < 8) {
