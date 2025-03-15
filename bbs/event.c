@@ -87,8 +87,10 @@ const char *bbs_event_name(enum bbs_event_type type)
 			return "SHUTDOWN";
 		case EVENT_RELOAD:
 			return "RELOAD";
-		case EVENT_NODE_SHORT_SESSION:
-			return "NODE_SHORT_SESSION";
+		case EVENT_NODE_START:
+			return "NODE_START";
+		case EVENT_NODE_SHUTDOWN:
+			return "NODE_SHUTDOWN";
 		case EVENT_NODE_ENCRYPTION_FAILED:
 			return "NODE_ENCRYPTION_FAILED";
 		case EVENT_NODE_LOGIN_FAILED:
@@ -168,7 +170,8 @@ int bbs_event_dispatch_custom(struct bbs_node *node, enum bbs_event_type type, c
 				safe_strncpy(event.username, bbs_username(node->user), sizeof(event.username));
 			}
 			/* Fall through */
-		case EVENT_NODE_SHORT_SESSION:
+		case EVENT_NODE_START:
+		case EVENT_NODE_SHUTDOWN:
 		case EVENT_NODE_LOGIN_FAILED:
 		case EVENT_NODE_BAD_REQUEST:
 		case EVENT_NODE_ENCRYPTION_FAILED:
@@ -188,6 +191,9 @@ int bbs_event_dispatch_custom(struct bbs_node *node, enum bbs_event_type type, c
 			safe_strncpy(event.protname, node->protname, sizeof(event.protname));
 			if (node->ip) {
 				safe_strncpy(event.ipaddr, node->ip, sizeof(event.ipaddr));
+			}
+			if (type == EVENT_NODE_SHUTDOWN) {
+				event.node = node;
 			}
 			break;
 		case EVENT_NODE_INTERACTIVE_START:

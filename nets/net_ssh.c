@@ -666,7 +666,7 @@ static void bad_ssh_conn(const char *ipaddr)
 
 	/* These connections are not likely to be legitimate, so log them. We don't have a node, so manually dispatch an event */
 	memset(&event, 0, sizeof(event));
-	event.type = EVENT_NODE_SHORT_SESSION; /* Always consider it short, if it never set up a PTY */
+	event.type = EVENT_NODE_BAD_REQUEST; /* Always consider it bad, if it never set up a PTY */
 	safe_strncpy(event.protname, "SSH", sizeof(event.protname));
 	safe_strncpy(event.ipaddr, ipaddr, sizeof(event.ipaddr));
 	bbs_event_broadcast(&event);

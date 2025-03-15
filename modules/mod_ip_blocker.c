@@ -241,11 +241,27 @@ static int ip_whitelisted(const char *ip)
 
 static int event_cb(struct bbs_event *event)
 {
+	struct bbs_node *node;
 	struct sockaddr_in sa;
+	time_t now;
 
 	switch (event->type) {
+		case EVENT_NODE_SHUTDOWN:
+			/* Whenever a node disconnects, determine if this was an illegitimate connection */
+			node = event->node;
+			if (event->userid || bbs_is_shutting_down()) {
+				break; /* If a user logged in successfully, or we're shutting down, not a bad request */
+			}
+			now = time(NULL);
+			if (!bbs_assertion_failed(node != NULL) && now >= node->created + 5) {
+				break; /* Node was created more than 5 seconds ago, not a short session */
+			}
+			if (!strcmp(event->protname, "HTTP") || !strcmp(event->protname, "HTTPS") || !strcmp(event->protname, "Gopher")) {
+				/* These protocols typically involve short sessions by their nature. Don't penalize them. */
+				break;
+			}
+			/* Fall through */
 		case EVENT_NODE_LOGIN_FAILED:
-		case EVENT_NODE_SHORT_SESSION:
 		case EVENT_NODE_BAD_REQUEST:
 		case EVENT_NODE_ENCRYPTION_FAILED:
 			if (strlen_zero(event->ipaddr)) {

@@ -17,7 +17,8 @@ enum bbs_event_type {
 	EVENT_STARTUP = 0,				/*!< BBS is fully started */
 	EVENT_SHUTDOWN,					/*!< BBS is going to shut down */
 	EVENT_RELOAD,					/*!< BBS reloaded configuration */
-	EVENT_NODE_SHORT_SESSION,		/*!< Extremely short node session (where abnormal) */
+	EVENT_NODE_START,				/*!< Node started */
+	EVENT_NODE_SHUTDOWN,			/*!< Node stopped */
 	EVENT_NODE_ENCRYPTION_FAILED,	/*!< TLS setup failed */
 	EVENT_NODE_LOGIN_FAILED,		/*!< Authentication failed */
 	EVENT_NODE_BAD_REQUEST,			/*!< Bad request received */
@@ -37,7 +38,7 @@ struct bbs_event {
 	enum bbs_event_type type;
 	unsigned int nodenum;
 	unsigned int userid;
-	struct bbs_node *node;			/*!< Only set for EVENT_NODE_INTERACTIVE_START and EVENT_NODE_INTERACTIVE_LOGIN */
+	struct bbs_node *node;			/*!< Only set for EVENT_NODE_SHUTDOWN, EVENT_NODE_INTERACTIVE_START, EVENT_NODE_INTERACTIVE_LOGIN */
 	const void *cdata;				/*!< Custom callback data (only for certain events) */
 	char protname[10];
 	char username[64];

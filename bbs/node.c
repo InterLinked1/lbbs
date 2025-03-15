@@ -382,6 +382,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, struct sockadd
 	RWLIST_UNLOCK(&nodes);
 
 	bbs_debug(1, "Allocated new node with ID %u (lifetime ID %d, fd %d)\n", node->id, node->lifetimeid, fd);
+	bbs_event_dispatch(node, EVENT_NODE_START);
 	return node;
 }
 
@@ -578,6 +579,7 @@ int bbs_node_kill_child(struct bbs_node *node)
 
 int bbs_node_logout(struct bbs_node *node)
 {
+	bbs_event_dispatch(node, EVENT_USER_LOGOFF);
 	bbs_user_destroy(node->user);
 	node->user = NULL;
 	return 0;
@@ -596,8 +598,6 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	pthread_t node_thread;
 	unsigned int nodeid;
 	int skipjoin;
-	time_t now;
-	int wasloggedin = 0;
 
 	/* Prevent node from being freed until we release the lock. */
 	bbs_node_lock(node);
@@ -609,13 +609,13 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	node->active = 0;
 	bbs_debug(2, "Terminating node %d\n", node->id);
 
-	now = time(NULL);
+	/* Dispatch the event first, while the node is still intact. */
+	bbs_event_dispatch(node, EVENT_NODE_SHUTDOWN);
 
 	bbs_node_kill_child(node);
 
 	/* Destroy the user */
 	if (node->user) {
-		wasloggedin = 1;
 		bbs_node_logout(node);
 	}
 
@@ -664,10 +664,6 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	node_thread = node->thread;
 	nodeid = node->id;
 	skipjoin = node->skipjoin;
-
-	if (!wasloggedin && !shutting_down && now < node->created + 5) {
-		bbs_event_dispatch(node, EVENT_NODE_SHORT_SESSION);
-	}
 
 	/* After we release the lock, node could be freed, so don't keep any references to it. */
 	bbs_node_unlock(node);
