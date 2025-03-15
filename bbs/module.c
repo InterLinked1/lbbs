@@ -1749,10 +1749,14 @@ int bbs_reload(const char *name, int fd)
 		}
 	}
 	RWLIST_UNLOCK(&reload_handlers);
-	bbs_event_dispatch(NULL, EVENT_RELOAD);
-	if (!res && reloaded) {
-		/* We reloaded at least one thing, and everything reloaded successfully */
-		return 0;
+	if (reloaded) {
+		/* Emit a reload event as long as we reloaded something successfully,
+		 * even if there were also some failures. */
+		bbs_event_dispatch(NULL, EVENT_RELOAD);
+		if (!res) {
+			/* We reloaded at least one thing, and everything reloaded successfully */
+			return 0;
+		}
 	}
 	return 1;
 }
