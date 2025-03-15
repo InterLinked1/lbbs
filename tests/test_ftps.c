@@ -106,10 +106,17 @@ static int run(void)
 	ssl2 = tls_client_new_reuse_session(client2, ssl);
 	REQUIRE_SSL(ssl2);
 
-	TLS_SWRITE(ssl2, "Hello world\r\nGoodbye world\r\n");
+#define TEST_FILE_STRING "Hello world\r\nGoodbye world\r\n"
+#define TEST_FILE_LENGTH XSTR(28) /* Would be nice to not hardcode this, but XSTR(STRLEN(...)) doesn't seem to work */
+
+	TLS_SWRITE(ssl2, TEST_FILE_STRING);
 	SSL_SHUTDOWN(ssl2);
 	close_if(client2);
 	TLS_CLIENT_EXPECT(ssl, "226");
+
+	/* Even before downloading, verify the file we put has the right size. */
+	TLS_SWRITE(ssl, "SIZE foobar.txt" ENDL);
+	TLS_CLIENT_EXPECT(ssl, "213 " TEST_FILE_LENGTH);
 
 	/* ...Read back the file we put. */
 	client2 = new_pasv(ssl);
@@ -120,7 +127,7 @@ static int run(void)
 	ssl2 = tls_client_new_reuse_session(client2, ssl);
 	REQUIRE_SSL(ssl2);
 
-	TLS_CLIENT_EXPECT(ssl2, "Hello world\r\nGoodbye world\r\n");
+	TLS_CLIENT_EXPECT(ssl2, TEST_FILE_STRING);
 	SSL_SHUTDOWN(ssl2);
 	close_if(client2);
 	TLS_CLIENT_EXPECT(ssl, "226");

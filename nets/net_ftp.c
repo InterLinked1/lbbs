@@ -15,6 +15,7 @@
  * \brief FTP (File Transfer Protocol) server
  *
  * \note Supports RFC 4217 FTPS
+ * \note Partially supports RFC 3659 (MDTM, SIZE)
  *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
@@ -400,6 +401,7 @@ static void *ftp_handler(void *varg)
 			res = ftp_write_raw(ftp, " PBSZ\r\n");
 			res = ftp_write_raw(ftp, " PROT\r\n");
 			res = ftp_write_raw(ftp, " MDTM\r\n");
+			res = ftp_write_raw(ftp, " SIZE\r\n");
 			res = ftp_write(ftp, 211, "END\r\n");
 		} else if (!strcasecmp(command, "AUTH") && !strlen_zero(rest) && !strcasecmp(rest, "TLS")) {
 			/* AUTH TLS / AUTH SSL = RFC2228 opportunistic encryption */
@@ -718,12 +720,16 @@ static void *ftp_handler(void *varg)
 			 * but that should be MFMT, not MDTM. */
 			char fullfile[512];
 			struct stat st;
-			if (strlen_zero(next)) {
+			if (strlen_zero(rest)) {
 				/* FileZilla seems to use MDTM without any arguments */
 				res = ftp_write(ftp, 550, "Missing argument\r\n");
 			} else {
+				char userpath2[256]; /* Separate buf, since we don't not want to permanently change the user path */
 				snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
-				if (stat(fullfile, &st)) {
+				bbs_transfer_get_user_path(ftp->node, fulldir, userpath2, sizeof(userpath2));
+				if (bbs_transfer_set_disk_path_relative(ftp->node, userpath2, rest, fullfile, sizeof(fullfile))) {
+					res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
+				} else if (stat(fullfile, &st)) {
 					res = ftp_write(ftp, 550, "No such file\r\n");
 				} else {
 					struct tm modtime;
@@ -731,6 +737,23 @@ static void *ftp_handler(void *varg)
 					localtime_r(&st.st_mtim.tv_sec, &modtime);
 					strftime(timebuf, sizeof(timebuf), "%Y%m%d%H%M%S", &modtime);
 					res = ftp_write(ftp, 213, "%s\r\n", timebuf);
+				}
+			}
+		} else if (!strcasecmp(command, "SIZE")) { /* SIZE - RFC 3659 */
+			char fullfile[512];
+			struct stat st;
+			if (strlen_zero(rest)) {
+				res = ftp_write(ftp, 550, "Missing argument\r\n");
+			} else {
+				char userpath2[256]; /* Separate buf, since we don't not want to permanently change the user path */
+				snprintf(fullfile, sizeof(fullfile), "%s/%s", fulldir, rest);
+				bbs_transfer_get_user_path(ftp->node, fulldir, userpath2, sizeof(userpath2));
+				if (bbs_transfer_set_disk_path_relative(ftp->node, userpath2, rest, fullfile, sizeof(fullfile))) {
+					res = ftp_write(ftp, 450, "File \"%s\" does not exist\n", rest);
+				} else if (stat(fullfile, &st)) {
+					res = ftp_write(ftp, 550, "No such file\r\n");
+				} else {
+					res = ftp_write(ftp, 213, "%lu\r\n", st.st_size);
 				}
 			}
 		} else if (!strcasecmp(command, "STOR")) { /* Upload file to server */
