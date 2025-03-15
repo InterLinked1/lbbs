@@ -50,6 +50,7 @@ struct bbs_io_transformer;
 struct bbs_io_transformation {
 	struct bbs_io_transformer *transformer; /* Transformer */
 	void *data; /* Transformer's private data */
+	pthread_t thread; /* Managed transformer thread */
 	int inner_rfd;	/* The read file descriptor used by this transformation */
 	int inner_wfd;	/* The write file descriptor used by this transformation */
 	int outer_rfd;	/* The original read file descriptor prior to this transformation being added */
@@ -65,6 +66,18 @@ struct bbs_io_transformer_functions {
 	int (*setup)(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restrict data, const void *arg);
 	/*! \brief Query callback. Optional. */
 	int (*query)(struct bbs_io_transformation *tran, int query, void *data);
+	/*! \brief Poll initialization for managed I/O thread. Optional, but if specified, io_read, io_write, and io_finalize must be non-NULL.
+	 * \param fd0 The I/O file descriptor that will have activity when there is data available for the BBS to read
+	 * \param fd1 The I/O file descriptor that will have activity when the BBS is writing data */
+	void (*poll_init)(void *varg, int *restrict fd0, int *restrict fd1);
+	/*! \brief Whether a read is pending even if polling fd0 would not return activity. Optional, even if poll_init, io_read, io_write, and io_finalize are provided. */
+	int (*io_read_pending)(void *varg);
+	/*! \brief Callback when there is data for the BBS to read */
+	ssize_t (*io_read)(void *varg);
+	/*! \brief Callback for when the BBS is writing data */
+	ssize_t (*io_write)(void *varg);
+	/*! \brief Close internal file descriptors */
+	void (*io_finalize)(void *varg);
 	/*! \brief Cleanup callback. */
 	void (*cleanup)(struct bbs_io_transformation *tran);
 };

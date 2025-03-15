@@ -142,67 +142,43 @@ static ssize_t decompress_and_deliver(struct compress_data *z, char *buf, size_t
 	return (ssize_t) bytes;
 }
 
-static void *zlib_thread(void *varg)
+static void poll_init(void *varg, int *restrict fd0, int *restrict fd1)
 {
 	struct compress_data *z = varg;
-	struct pollfd pfds[2];
-
-	pfds[0].fd = z->orig_rfd; /* BBS application read: Data that we received that needs to be decompressed */
-	pfds[1].fd = z->wpfd[0]; /* BBS application write: Data that we need to compress and send along */
-	pfds[0].events = pfds[1].events = POLLIN | POLLPRI | POLLERR | POLLNVAL;
-	pfds[0].revents = pfds[1].revents = 0;
-
-	for (;;) {
-		ssize_t rres;
-		ssize_t res = poll(pfds, 2, -1);
-		if (res < 0) {
-			bbs_debug(3, "poll returned %ld: %s\n", res, strerror(errno));
-			if (errno == EINTR) {
-				continue;
-			}
-			break;
-		}
-		if (pfds[0].revents & POLLIN) {
-			char input[BUFSIZ];
-			rres = read(z->orig_rfd, input, sizeof(input));
-			if (rres <= 0) {
-				break;
-			}
-			/* Decompress it */
-			res = decompress_and_deliver(z, input, (size_t) rres);
-			if (rres <= 0) {
-				break;
-			}
-			pfds[0].revents = 0;
-		}
-		if (pfds[1].revents & POLLIN) {
-			char input[BUFSIZ];
-			rres = read(z->wpfd[0], input, sizeof(input));
-			if (rres <= 0) {
-				break;
-			}
-			/* Compress it */
-			res = compress_and_send(z, input, (size_t) rres);
-			if (rres <= 0) {
-				break;
-			}
-			pfds[1].revents = 0;
-		}
-		if (pfds[0].revents || pfds[1].revents) {
-			bbs_debug(3, "poll(pfds[%d]) returned %s (fd %d)\n",
-				pfds[0].revents ? 0 : 1, poll_revent_name(pfds[0].revents ? pfds[0].revents : pfds[1].revents),
-				pfds[0].revents ? pfds[0].fd : pfds[1].fd);
-			break;
-		}
-	}
-	bbs_debug(4, "zlib thread exiting\n");
-	close_if(z->rpfd[1]); /* Nothing more to write towards the application, close the write end of BBS application read */
-	close_if(z->wpfd[0]); /* Nothing more to write towards the network, close read end of BBS application write */
-	/* Write end towards network (z->wpfd[1]) was already closed in cleanup(), that's what signaled this thread to exit */
-	return NULL;
+	*fd0 = z->orig_rfd; /* BBS application read: Data that we received that needs to be decompressed */
+	*fd1 = z->wpfd[0]; /* BBS application write: Data that we need to compress and send along */
 }
 
-/* I/O transformation callback functions */
+/*! \brief Read data, decompress it, and provide it to the application */
+static ssize_t io_read(void *varg)
+{
+	char input[BUFSIZ];
+	struct compress_data *z = varg;
+	ssize_t res = read(z->orig_rfd, input, sizeof(input));
+	if (res <= 0) {
+		return res;
+	}
+	return decompress_and_deliver(z, input, (size_t) res); /* Decompress it */
+}
+
+/*! \brief Read data from the application to encrypt for the network */
+static ssize_t io_write(void *varg)
+{
+	char input[BUFSIZ];
+	struct compress_data *z = varg;
+	ssize_t res = read(z->wpfd[0], input, sizeof(input));
+	if (res <= 0) {
+		return res;
+	}
+	return compress_and_send(z, input, (size_t) res); /* Compress it */
+}
+
+static void io_finalize(void *varg)
+{
+	struct compress_data *z = varg;
+	close_if(z->rpfd[1]); /* Nothing more to write towards the application, close the write end of BBS application read */
+	close_if(z->wpfd[0]); /* Nothing more to write towards the network, close read end of BBS application write */
+}
 
 static int setup(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restrict data, const void *arg)
 {
@@ -265,11 +241,6 @@ static int setup(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restr
 		goto fail;
 	}
 
-	/* Spawn a separate thread to handle the new intermediate layer and the compression/decompression */
-	if (bbs_pthread_create(&z->thread, NULL, zlib_thread, z)) {
-		goto fail;
-	}
-
 	/* Fiddle the file descriptors around */
 	z->orig_rfd = *rfd;
 	z->orig_wfd = *wfd;
@@ -300,9 +271,6 @@ static void cleanup(struct bbs_io_transformation *tran)
 	RWLIST_WRLOCK(&compressors);
 	RWLIST_REMOVE(&compressors, z, entry);
 	RWLIST_UNLOCK(&compressors);
-
-	close_if(z->wpfd[1]); /* Close write end since we're done writing, but don't close other file descriptors since we may need to finish flushing pending data */
-	bbs_pthread_join(z->thread, NULL); /* Wait for I/O to finish */
 
 	deflateEnd(z->compressor);
 	inflateEnd(z->decompressor);
@@ -369,6 +337,11 @@ static struct bbs_cli_entry cli_commands_compress[] = {
 static struct bbs_io_transformer_functions funcs = {
 	.setup = setup,
 	.query = query,
+	.poll_init = poll_init,
+	.io_read_pending = NULL,
+	.io_read = io_read,
+	.io_write = io_write,
+	.io_finalize = io_finalize,
 	.cleanup = cleanup,
 };
 

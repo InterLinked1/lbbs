@@ -117,79 +117,55 @@ static ssize_t deliver(struct log_data *l, char *restrict buf, size_t len, int d
 	/* Also duplicate to log file. */
 	flowlog(l->fp, buf, len, is_write ? '<' : '>'); /* Use < for write, > for read */
 	/* Resist the urge to flush every time... otherwise, the performance benefit of using a FILE* vaporizes */
+	if (is_write) {
+		l->sentbytes += len;
+	} else {
+		l->recvbytes += len;
+	}
 	return res;
 }
 
-static void *log_thread(void *varg)
+static void poll_init(void *varg, int *restrict fd0, int *restrict fd1)
 {
 	struct log_data *l = varg;
-	struct pollfd pfds[2];
-
-	pfds[0].fd = l->orig_rfd; /* BBS application read */
-	pfds[1].fd = l->wpfd[0]; /* BBS application write */
-	pfds[0].events = pfds[1].events = POLLIN | POLLPRI | POLLERR | POLLNVAL;
-	pfds[0].revents = pfds[1].revents = 0;
-
-	for (;;) {
-		ssize_t rres;
-		ssize_t res = poll(pfds, 2, -1);
-		if (res < 0) {
-			bbs_debug(3, "poll returned %ld: %s\n", res, strerror(errno));
-			if (errno == EINTR) {
-				continue;
-			}
-			break;
-		}
-
-		/* Since we want to "tee" the data, by
-		 * reading some data and then writing it to two separate places,
-		 * we can't use any kernel-level copy techniques for this,
-		 * we have to read into userspace and copy it back.
-		 * Since we're already doing that, it also makes sense to use
-		 * buffer writes (using FILE*), rather than writing directly. */
-		if (pfds[0].revents & POLLIN) {
-			/* Got data from socket for node */
-			char input[BUFSIZ];
-			rres = read(l->orig_rfd, input, sizeof(input));
-			if (rres <= 0) {
-				break;
-			}
-			res = deliver(l, input, (size_t) rres, l->rpfd[1], 0);
-			if (rres <= 0) {
-				break;
-			}
-			l->recvbytes += (size_t) res;
-			pfds[0].revents = 0;
-		}
-		if (pfds[1].revents & POLLIN) {
-			/* Node writing towards socket */
-			char input[BUFSIZ];
-			rres = read(l->wpfd[0], input, sizeof(input));
-			if (rres <= 0) {
-				break;
-			}
-			res = deliver(l, input, (size_t) rres, l->orig_wfd, 1);
-			if (rres <= 0) {
-				break;
-			}
-			l->sentbytes += (size_t) res;
-			pfds[1].revents = 0;
-		}
-		if (pfds[0].revents || pfds[1].revents) {
-			bbs_debug(3, "poll(pfds[%d]) returned %s (fd %d)\n",
-				pfds[0].revents ? 0 : 1, poll_revent_name(pfds[0].revents ? pfds[0].revents : pfds[1].revents),
-				pfds[0].revents ? pfds[0].fd : pfds[1].fd);
-			break;
-		}
-	}
-	bbs_debug(4, "Log thread exiting\n");
-	close_if(l->rpfd[1]); /* Nothing more to write towards the application, close the write end of BBS application read */
-	close_if(l->wpfd[0]); /* Nothing more to write towards the network, close read end of BBS application write */
-	/* Write end towards network (l->wpfd[1]) was already closed in cleanup(), that's what signaled this thread to exit */
-	return NULL;
+	*fd0 = l->orig_rfd; /* BBS application read */
+	*fd1 = l->wpfd[0]; /* BBS application write */
 }
 
-/* I/O transformation callback functions */
+/* Since we want to "tee" the data, by
+ * reading some data and then writing it to two separate places,
+ * we can't use any kernel-level copy techniques for this,
+ * we have to read into userspace and copy it back.
+ * Since we're already doing that, it also makes sense to use
+ * buffered writes (using FILE*), rather than writing directly. */
+static ssize_t io_read(void *varg)
+{
+	char input[BUFSIZ];
+	struct log_data *l = varg;
+	ssize_t res = read(l->orig_rfd, input, sizeof(input));
+	if (res <= 0) {
+		return res;
+	}
+	return deliver(l, input, (size_t) res, l->rpfd[1], 0);
+}
+
+static ssize_t io_write(void *varg)
+{
+	char input[BUFSIZ];
+	struct log_data *l = varg;
+	ssize_t res = read(l->wpfd[0], input, sizeof(input));
+	if (res <= 0) {
+		return res;
+	}
+	return deliver(l, input, (size_t) res, l->orig_wfd, 1);
+}
+
+static void io_finalize(void *varg)
+{
+	struct log_data *l = varg;
+	close_if(l->rpfd[1]); /* Nothing more to write towards the application, close the write end of BBS application read */
+	close_if(l->wpfd[0]); /* Nothing more to write towards the network, close read end of BBS application write */
+}
 
 static int setup(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restrict data, const void *arg)
 {
@@ -220,11 +196,6 @@ static int setup(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restr
 		goto fail;
 	} else if (pipe(l->wpfd)) {
 		bbs_error("pipe failed: %s\n", strerror(errno));
-		goto fail;
-	}
-
-	/* Spawn a separate thread to handle the new intermediate layer and the compression/decompression */
-	if (bbs_pthread_create(&l->thread, NULL, log_thread, l)) {
 		goto fail;
 	}
 
@@ -283,6 +254,11 @@ static void cleanup(struct bbs_io_transformation *tran)
 static struct bbs_io_transformer_functions funcs = {
 	.setup = setup,
 	.query = NULL,
+	.poll_init = poll_init,
+	.io_read_pending = NULL,
+	.io_read = io_read,
+	.io_write = io_write,
+	.io_finalize = io_finalize,
 	.cleanup = cleanup,
 };
 

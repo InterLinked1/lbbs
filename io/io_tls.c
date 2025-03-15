@@ -20,7 +20,6 @@
 #include "include/bbs.h"
 
 #include <string.h>
-#include <poll.h>
 #include <fcntl.h> /* use fcntl */
 
 #include <openssl/opensslv.h>
@@ -181,83 +180,66 @@ struct tls_client {
 
 static RWLIST_HEAD_STATIC(tls_clients, tls_client);
 
-static void *tls_thread(void *varg)
+static void poll_init(void *varg, int *restrict fd0, int *restrict fd1)
 {
 	struct tls_client *t = varg;
-	struct pollfd pfds[2];
+	*fd0 = t->fd; /* BBS application read: Network socket */
+	*fd1 = t->writepipe[0]; /* BBS application write: Read end of write pipe (i.e. read unencrypted data from BBS application) */
+}
 
-	pfds[0].fd = t->fd; /* BBS application read: Network socket */
-	pfds[1].fd = t->writepipe[0]; /* BBS application write: Read end of write pipe (i.e. read unencrypted data from BBS application) */
-	pfds[0].events = pfds[1].events = POLLIN | POLLPRI | POLLERR | POLLNVAL;
-	pfds[0].revents = pfds[1].revents = 0;
-
-	for (;;) {
-		ssize_t res, rres;
-		/* A previous SSL operation may have read in some data that is buffered,
-		 * and polling the file descriptor won't detect that, since there
-		 * isn't actually any new data available on the network socket itself. */
-		if (SSL_has_pending(t->ssl)) {
-			bbs_debug(5, "SSL %p has %d pending bytes, servicing immediately\n", t->ssl, SSL_pending(t->ssl));
-			goto sslread;
-		}
-		res = poll(pfds, 2, -1);
-		if (res < 0) {
-			bbs_debug(3, "poll returned %ld: %s\n", res, strerror(errno));
-			if (errno == EINTR) {
-				continue;
-			}
-			break;
-		}
-		if (pfds[0].revents & POLLIN) {
-			/* Read decrypted data from the network for the application */
-			char input[BUFSIZ];
-sslread:
-			rres = SSL_read(t->ssl, input, sizeof(input));
-			if (rres <= 0) {
-				int sslerr = SSL_get_error(t->ssl, (int) rres);
-				bbs_debug(4, "SSL_read returned %ld: %s\n", rres, ssl_strerror(sslerr));
-				/* Network socket closed */
-				break;
-			}
-			res = bbs_write(t->readpipe[1], input, (size_t) rres); /* Write end of read pipe (i.e. write unencrypted data to BBS application) */
-			if (rres <= 0) {
-				break;
-			}
-			pfds[0].revents = 0;
-		}
-		if (pfds[1].revents & POLLIN) {
-			/* Read data from the application to encrypt for the network */
-			char input[BUFSIZ];
-			rres = read(t->writepipe[0], input, sizeof(input));
-			if (rres <= 0) {
-				bbs_debug(4, "read returned %ld\n", rres);
-				/* BBS is shutting this transformation down (in cleanup() callback).
-				 * The cleanup() callback closes t->writepipe[1], and once we've
-				 * read everything left to be written, read will return 0 here. */
-				break;
-			}
-			/* Encrypt it */
-			/* OpenSSL doesn't do partial writes, so we don't worry about those here. */
-			res = SSL_write(t->ssl, input, (int) rres);
-			if (rres <= 0) {
-				break;
-			}
-			pfds[1].revents = 0;
-		}
-		if (pfds[0].revents || pfds[1].revents) {
-			bbs_debug(3, "poll(pfds[%d]) returned %s (fd %d)\n",
-				pfds[0].revents ? 0 : 1, poll_revent_name(pfds[0].revents ? pfds[0].revents : pfds[1].revents),
-				pfds[0].revents ? pfds[0].fd : pfds[1].fd);
-			break;
-		}
+static int io_read_pending(void *varg)
+{
+	struct tls_client *t = varg;
+	/* A previous SSL operation may have read in some data that is buffered,
+	 * and polling the file descriptor won't detect that, since there
+	 * isn't actually any new data available on the network socket itself. */
+	if (SSL_has_pending(t->ssl)) {
+		int pending = SSL_pending(t->ssl);
+		bbs_debug(5, "SSL %p has %d pending bytes, servicing immediately\n", t->ssl, pending);
+		return pending;
 	}
-	bbs_debug(4, "TLS I/O thread exiting for %p\n", t->ssl);
+	return 0;
+}
+
+/*! \brief Read data from the network, decrypt it, and provide it to the application */
+static ssize_t io_read(void *varg)
+{
+	char input[BUFSIZ];
+	struct tls_client *t = varg;
+	ssize_t res = SSL_read(t->ssl, input, sizeof(input));
+	if (res <= 0) {
+		int sslerr = SSL_get_error(t->ssl, (int) res);
+		bbs_debug(4, "SSL_read returned %ld: %s\n", res, ssl_strerror(sslerr));
+		return 0; /* Network socket closed */
+	}
+	return bbs_write(t->readpipe[1], input, (size_t) res); /* Write end of read pipe (i.e. write unencrypted data to BBS application) */
+}
+
+/*! \brief Read data from the application to encrypt for the network */
+static ssize_t io_write(void *varg)
+{
+	char input[BUFSIZ];
+	struct tls_client *t = varg;
+	ssize_t res = read(t->writepipe[0], input, sizeof(input));
+	if (res <= 0) {
+		bbs_debug(4, "read returned %ld\n", res);
+		/* BBS is shutting this transformation down (in cleanup() callback).
+		 * The cleanup() callback closes t->writepipe[1], and once we've
+		 * read everything left to be written, read will return 0 here. */
+		return res;
+	}
+	/* Encrypt it */
+	/* OpenSSL doesn't do partial writes, so we don't worry about those here. */
+	return SSL_write(t->ssl, input, (int) res);
+}
+
+static void io_finalize(void *varg)
+{
+	struct tls_client *t = varg;
 	/* Don't close both sides of the pipe, because the consumers may still be using the other end of the pipes.
 	 * They don't belong to us anymore and are somebody else's responsibility to close. */
 	close_if(t->readpipe[1]); /* Nothing more to write towards the application, close the write end of BBS application read */
 	close_if(t->writepipe[0]); /* Nothing more to write towards the network, close read end of BBS application write */
-	/* Write end towards network (t->writepipe[1]) was already closed in cleanup(), that's what signaled this thread to exit */
-	return NULL; /* Return and wait to be joined in ssl_close */
 }
 
 static struct tls_client *ssl_launch(SSL *ssl, int fd, int *rfd, int *wfd, int client)
@@ -286,13 +268,6 @@ static struct tls_client *ssl_launch(SSL *ssl, int fd, int *rfd, int *wfd, int c
 	RWLIST_WRLOCK(&tls_clients);
 	RWLIST_INSERT_HEAD(&tls_clients, t, entry);
 	RWLIST_UNLOCK(&tls_clients);
-
-	if (bbs_pthread_create(&t->thread, NULL, tls_thread, t)) {
-		PIPE_CLOSE(t->readpipe);
-		PIPE_CLOSE(t->writepipe);
-		free(t);
-		return NULL;
-	}
 
 	*rfd = t->readpipe[0];
 	*wfd = t->writepipe[1];
@@ -508,8 +483,8 @@ static int ssl_close(struct tls_client *t)
 	RWLIST_REMOVE(&tls_clients, t, entry);
 	RWLIST_UNLOCK(&tls_clients);
 
-	close_if(t->writepipe[1]); /* Close the writepipe write end, since the BBS is done writing data in this direction. This will signal tls_thread to exit. */
-	bbs_pthread_join(t->thread, NULL);
+	/* At this point, the only file descriptor remaining that hasn't been cleaned up yet is t->readpipe[0].
+	 * That is left to the application to close, since it may still be currently reading data out of its end of the pipe. */
 
 #define SHUTDOWN_STATUS(s) (s & SSL_RECEIVED_SHUTDOWN ? s & SSL_SENT_SHUTDOWN ? "sent/received" : "received" : "none")
 	status = SSL_get_shutdown(ssl);
@@ -853,8 +828,6 @@ static void ssl_server_shutdown(void)
 	}
 }
 
-/* I/O transformation callback functions */
-
 static int setup(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restrict data, const void *arg)
 {
 	struct tls_client *t;
@@ -915,6 +888,11 @@ static int query(struct bbs_io_transformation *tran, int query, void *data)
 static struct bbs_io_transformer_functions funcs = {
 	.setup = setup,
 	.query = query,
+	.poll_init = poll_init,
+	.io_read_pending = io_read_pending,
+	.io_read = io_read,
+	.io_write = io_write,
+	.io_finalize = io_finalize,
 	.cleanup = cleanup,
 };
 

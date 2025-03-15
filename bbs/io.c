@@ -19,13 +19,14 @@
 
 #include "include/bbs.h"
 
+#include <poll.h>
 #include <sys/ioctl.h> /* use FIONREAD, TIOCOUTQ */
 
 #include "include/linkedlists.h"
 #include "include/module.h"
+#include "include/utils.h" /* use print_time_elapsed, bbs_pthread_join */
 #include "include/io.h"
 #include "include/cli.h"
-#include "include/utils.h" /* use print_time_elapsed */
 
 #include "include/node.h" /* for setting node->rfd and node->wfd */
 
@@ -139,6 +140,9 @@ int __bbs_io_transformer_register(const char *name, struct bbs_io_transformer_fu
 
 	if (!funcs->setup || !funcs->cleanup) {
 		bbs_error("Transformer missing mandatory function callbacks\n");
+		return -1;
+	} else if (funcs->poll_init && (!funcs->io_read || !funcs->io_write)) {
+		bbs_error("Transformer requested managed I/O thread but missing required function callbacks\n");
 		return -1;
 	}
 
@@ -303,6 +307,69 @@ int bbs_io_transform_possible(struct bbs_io_transformations *trans, enum bbs_io_
 	return __bbs_io_transform_possible(trans, type, 0);
 }
 
+static void *io_thread(void *varg)
+{
+	struct bbs_io_transformation *tran = varg;
+	struct bbs_io_transformer *t = tran->transformer;
+	struct pollfd pfds[2];
+
+	t->funcs->poll_init(tran->data, &pfds[0].fd, &pfds[1].fd); /* BBS application read and write, respectively */
+	pfds[0].events = pfds[1].events = POLLIN | POLLPRI | POLLERR | POLLNVAL;
+	pfds[0].revents = pfds[1].revents = 0;
+
+	for (;;) {
+		ssize_t res;
+
+		/* This only applies to TLS, which could have pending data to read even if
+		 * polling the socket file descriptor returns no activity. */
+		if (t->funcs->io_read_pending && t->funcs->io_read_pending(tran->data)) {
+			goto readnow;
+		}
+
+		res = poll(pfds, 2, -1);
+		if (res < 0) {
+			bbs_debug(3, "poll returned %ld: %s\n", res, strerror(errno));
+			if (errno == EINTR) {
+				continue;
+			}
+			break;
+		}
+		if (pfds[0].revents & POLLIN) {
+			/* Read data from the network for the application */
+readnow:
+			res = t->funcs->io_read(tran->data);
+			if (res <= 0) {
+				break; /* Network socket closed */
+			}
+			pfds[0].revents = 0;
+		}
+		if (pfds[1].revents & POLLIN) {
+			/* Read data from the application to process and send to the network */
+			res = t->funcs->io_write(tran->data);
+			if (res <= 0) {
+				/* BBS is shutting this transformation down (in cleanup() callback).
+				 * The cleanup() callback closes writepipe[1], and once we've
+				 * read everything left to be written, read will return 0 here. */
+				break;
+			}
+			pfds[1].revents = 0;
+		}
+		if (pfds[0].revents || pfds[1].revents) {
+			bbs_debug(3, "poll(pfds[%d]) returned %s (fd %d)\n",
+				pfds[0].revents ? 0 : 1, poll_revent_name(pfds[0].revents ? pfds[0].revents : pfds[1].revents),
+				pfds[0].revents ? pfds[0].fd : pfds[1].fd);
+			break;
+		}
+	}
+
+	/* Close the write end of the BBS application read, to signal all data has been received, and
+	 * close the read end of BBS application write, since nothing more to write towards network.
+	 * We need to do this before we exit, since this thread isn't joined immediately. */
+	bbs_debug(4, "%s I/O thread exiting\n", t->name);
+	t->funcs->io_finalize(tran->data);
+	return NULL;
+}
+
 int bbs_io_transform_setup(struct bbs_io_transformations *trans, enum bbs_io_transform_type type, enum bbs_io_transform_dir direction, int *rfd, int *wfd, const void *arg)
 {
 	int res;
@@ -346,11 +413,14 @@ int bbs_io_transform_setup(struct bbs_io_transformations *trans, enum bbs_io_tra
 	if (!res) {
 		struct bbs_io_transformation *tran = io_transform_store(trans, t, data);
 		if (!tran) {
-			/* Failure! */
-			struct bbs_io_transformation dummy_tran;
+			struct bbs_io_transformation dummy_tran; /* Dummy transformation to pass if we need to clean up on failure */
 			dummy_tran.transformer = t;
 			dummy_tran.data = data;
 			t->funcs->cleanup(&dummy_tran);
+			/* By this point, the I/O transformer no longer cleans up
+			 * the other side's read file descriptor, so we also clean
+			 * up here since we're going to return failure. */
+			close_if(*rfd);
 			res = 1;
 		} else {
 			/* These are used by bbs_io_drain: */
@@ -359,11 +429,20 @@ int bbs_io_transform_setup(struct bbs_io_transformations *trans, enum bbs_io_tra
 			tran->inner_rfd = *rfd;
 			tran->inner_wfd = *wfd;
 
+			/* If the transformer wants us to create a thread for it and poll on its behalf, do that now. */
+			if (t->funcs->poll_init) {
+				if (bbs_pthread_create(&tran->thread, NULL, io_thread, tran)) {
+					t->funcs->cleanup(tran);
+					close_if(*rfd);
+					res = 1;
+				}
+			}
+
 			bbs_module_ref(t->module, 1);
 		}
 	}
-	RWLIST_UNLOCK(&transformers);
 
+	RWLIST_UNLOCK(&transformers);
 	return res;
 }
 
@@ -504,6 +583,15 @@ int bbs_io_drain(struct bbs_io_transformations *trans)
 static void teardown_transformation(struct bbs_io_transformation *tran)
 {
 	struct bbs_io_transformer *t = tran->transformer;
+
+	/* Close the writepipe write end, since the BBS is done writing data in this direction. This will signal the I/O thread to exit. */
+	CLOSE(tran->inner_wfd);
+
+	/* If we were managing the I/O, wait for its thread to exit before proceeding. */
+	if (t->funcs->poll_init) {
+		bbs_pthread_join(tran->thread, NULL);
+	}
+
 	t->funcs->cleanup(tran);
 	tran->data = NULL;
 	tran->transformer = NULL;
