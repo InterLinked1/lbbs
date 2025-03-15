@@ -159,6 +159,14 @@ int bbs_io_drain(struct bbs_io_transformations *trans);
  */
 void bbs_io_teardown_all_transformers(struct bbs_io_transformations *trans);
 
+/*!
+ * \brief Shutdown I/O transformations (wrapper around bbs_io_teardown_all_transformers)
+ * \param trans
+ * \param rfd Read file descriptor. Will be closed and set to -1 as needed.
+ * \param wfd Write file descriptor. Will be closed and set to -1 as needed.
+ */
+void bbs_io_shutdown(struct bbs_io_transformations *trans, int *rfd, int *wfd);
+
 #define ssl_available() (bbs_io_transformer_available(TRANSFORM_TLS_ENCRYPTION))
 #define deflate_compression_available() (bbs_io_transformer_available(TRANSFORM_DEFLATE_COMPRESSION))
 

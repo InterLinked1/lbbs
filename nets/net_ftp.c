@@ -140,15 +140,10 @@ static int ftp_pasv_new(int *sockfd)
 
 /* For TLS-encrypted connections, rfd and wfd may not be the same as the original socket fd.
  * We need to close the socket fd (lastly), but beforehand, we may need to close the other
- * file descriptors as well. */
+ * file descriptors as well. This is handled by bbs_io_shutdown() */
 #define DATA_CLOSE_FD(fd) \
-	bbs_io_teardown_all_transformers(&ftp->data_transformers); \
-	if (ftp->rfd2 != ftp->wfd2) { \
-		close_if(ftp->rfd2); \
-		close_if(ftp->wfd2); \
-	} \
-	close_if(fd); /* Close data connection when done. This is the EOF that signals the client that the file transfer has completed. */ \
-	ftp->rfd2 = ftp->wfd2 = -1;
+	bbs_io_shutdown(&ftp->data_transformers, &ftp->rfd2, &ftp->wfd2); \
+	close_if(fd); /* Close data connection when done. This is the EOF that signals the client that the file transfer has completed. */
 
 #define DATA_DONE(fp, fd) \
 	if (fp) { \

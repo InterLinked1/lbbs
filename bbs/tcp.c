@@ -26,12 +26,8 @@
 
 void bbs_tcp_client_cleanup(struct bbs_tcp_client *client)
 {
-	bbs_io_teardown_all_transformers(&client->trans);
+	bbs_io_shutdown(&client->trans, &client->rfd, &client->wfd);
 	bbs_io_session_unregister(&client->trans);
-	if (client->rfd != client->wfd) {
-		close_if(client->rfd);
-		close_if(client->wfd);
-	}
 	close_if(client->fd);
 }
 

@@ -603,9 +603,6 @@ static void node_shutdown(struct bbs_node *node, int unique)
 
 	now = time(NULL);
 
-	bbs_io_teardown_all_transformers(&node->trans);
-	bbs_io_session_unregister(&node->trans);
-
 	bbs_node_kill_child(node);
 
 	/* Destroy the user */
@@ -629,6 +626,9 @@ static void node_shutdown(struct bbs_node *node, int unique)
 #pragma GCC diagnostic pop
 	}
 
+	bbs_io_shutdown(&node->trans, &node->rfd, &node->wfd);
+	bbs_io_session_unregister(&node->trans);
+
 	if (node->ptythread) {
 		if (node->amaster != -1) {
 			bbs_socket_close(&node->amaster);
@@ -647,13 +647,6 @@ static void node_shutdown(struct bbs_node *node, int unique)
 		}
 	} else {
 		bbs_debug(8, "Node %u has no PTY thread to clean up\n", node->id);
-	}
-
-	/* If the node was using TLS or any other I/O transformers,
-	 * then we need to close those, too. */
-	if (node->rfd != node->wfd) {
-		close_if(node->rfd);
-		close_if(node->wfd);
 	}
 
 	if (node->fd != -1) {

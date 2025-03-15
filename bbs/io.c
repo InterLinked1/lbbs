@@ -524,6 +524,26 @@ void bbs_io_teardown_all_transformers(struct bbs_io_transformations *trans)
 	RWLIST_UNLOCK(&transformers);
 }
 
+void bbs_io_shutdown(struct bbs_io_transformations *trans, int *rfd, int *wfd)
+{
+	bbs_io_teardown_all_transformers(trans);
+	if (*rfd != *wfd) {
+		/* If the file descriptors are different,
+		 * that means we have separate read and write file descriptors,
+		 * i.e. neither of them is the socket file descriptor.
+		 *
+		 * When an individual transformation is shut down, as part of cleanup,
+		 * wfd is closed, therefore, we don't try closing it again here. */
+		close_if(*rfd);
+		/* wfd should already be closed here, although the pointer value is not -1.
+		 * In any case, wfd is no longer valid at this point. */
+		*wfd = -1;
+	} else {
+		*rfd = -1;
+	}
+	/* The caller is left to deal with the base file descriptor afterwards */
+}
+
 static int cli_io_transformers(struct bbs_cli_args *a)
 {
 	struct bbs_io_transformer *t;
