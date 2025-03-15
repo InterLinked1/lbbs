@@ -912,6 +912,12 @@ static int query(struct bbs_io_transformation *tran, int query, void *data)
 	return 0;
 }
 
+static struct bbs_io_transformer_functions funcs = {
+	.setup = setup,
+	.query = query,
+	.cleanup = cleanup,
+};
+
 static int load_module(void)
 {
 	if (ssl_server_init()) {
@@ -920,7 +926,7 @@ static int load_module(void)
 		return -1;
 	}
 	/* If we loaded server configuration, allow TLS as both server/client. Otherwise, just client. */
-	if (bbs_io_transformer_register("TLS", setup, query, cleanup, TRANSFORM_TLS_ENCRYPTION, ssl_is_available ? TRANSFORM_SERVER_CLIENT_TX_RX : (TRANSFORM_CLIENT_TX | TRANSFORM_CLIENT_RX))) {
+	if (bbs_io_transformer_register("TLS", &funcs, TRANSFORM_TLS_ENCRYPTION, ssl_is_available ? TRANSFORM_SERVER_CLIENT_TX_RX : (TRANSFORM_CLIENT_TX | TRANSFORM_CLIENT_RX))) {
 		ssl_server_shutdown();
 		return -1;
 	}

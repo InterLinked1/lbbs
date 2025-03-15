@@ -53,9 +53,7 @@ struct bbs_io_transformer {
 	const char *name;
 	enum bbs_io_transform_type type;
 	enum bbs_io_transform_dir dir;
-	int (*setup)(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restrict data, const void *arg);
-	int (*query)(struct bbs_io_transformation *tran, int query, void *data);
-	void (*cleanup)(struct bbs_io_transformation *tran);
+	struct bbs_io_transformer_functions *funcs;
 	void *module;
 	RWLIST_ENTRY(bbs_io_transformer) entry;
 	char data[];
@@ -135,11 +133,14 @@ int bbs_io_session_unregister(struct bbs_io_transformations *s)
 	return i ? 0 : -1;
 }
 
-int __bbs_io_transformer_register(const char *name, int (*setup)(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restrict data, const void *arg),
-	int (*query)(struct bbs_io_transformation *tran, int query, void *data),
-	void (*cleanup)(struct bbs_io_transformation *tran), enum bbs_io_transform_type type, enum bbs_io_transform_dir dir, void *module)
+int __bbs_io_transformer_register(const char *name, struct bbs_io_transformer_functions *funcs, enum bbs_io_transform_type type, enum bbs_io_transform_dir dir, void *module)
 {
 	struct bbs_io_transformer *t;
+
+	if (!funcs->setup || !funcs->cleanup) {
+		bbs_error("Transformer missing mandatory function callbacks\n");
+		return -1;
+	}
 
 	RWLIST_WRLOCK(&transformers);
 	RWLIST_TRAVERSE(&transformers, t, entry) {
@@ -157,9 +158,7 @@ int __bbs_io_transformer_register(const char *name, int (*setup)(int *rfd, int *
 	strcpy(t->data, name); /* Safe */
 	t->name = t->data;
 	t->module = module;
-	t->setup = setup;
-	t->query = query;
-	t->cleanup = cleanup;
+	t->funcs = funcs;
 	t->type = type;
 	t->dir = dir;
 	RWLIST_INSERT_TAIL(&transformers, t, entry);
@@ -341,7 +340,7 @@ int bbs_io_transform_setup(struct bbs_io_transformations *trans, enum bbs_io_tra
 
 	orig_rfd = *rfd;
 	orig_wfd = *wfd;
-	res = t->setup(rfd, wfd, direction, &data, arg);
+	res = t->funcs->setup(rfd, wfd, direction, &data, arg);
 
 	/* Store transform private data on node */
 	if (!res) {
@@ -351,7 +350,7 @@ int bbs_io_transform_setup(struct bbs_io_transformations *trans, enum bbs_io_tra
 			struct bbs_io_transformation dummy_tran;
 			dummy_tran.transformer = t;
 			dummy_tran.data = data;
-			t->cleanup(&dummy_tran);
+			t->funcs->cleanup(&dummy_tran);
 			res = 1;
 		} else {
 			/* These are used by bbs_io_drain: */
@@ -397,8 +396,8 @@ int bbs_io_transform_query(struct bbs_io_transformations *trans, enum bbs_io_tra
 		if (trans->transformations[i].data) {
 			struct bbs_io_transformer *t = trans->transformations[i].transformer;
 			if (t->type == type) {
-				if (t->query) {
-					res = t->query(&trans->transformations[i], query, data);
+				if (t->funcs->query) {
+					res = t->funcs->query(&trans->transformations[i], query, data);
 				} else {
 					res = 1;
 				}
@@ -505,7 +504,7 @@ int bbs_io_drain(struct bbs_io_transformations *trans)
 static void teardown_transformation(struct bbs_io_transformation *tran)
 {
 	struct bbs_io_transformer *t = tran->transformer;
-	t->cleanup(tran);
+	t->funcs->cleanup(tran);
 	tran->data = NULL;
 	tran->transformer = NULL;
 	bbs_module_unref(t->module, 1);

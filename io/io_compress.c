@@ -366,9 +366,15 @@ static struct bbs_cli_entry cli_commands_compress[] = {
 	BBS_CLI_COMMAND(cli_compression, "compressions", 1, "List all compression sessions", NULL),
 };
 
+static struct bbs_io_transformer_functions funcs = {
+	.setup = setup,
+	.query = query,
+	.cleanup = cleanup,
+};
+
 static int load_module(void)
 {
-	int res = bbs_io_transformer_register("DEFLATE", setup, query, cleanup, TRANSFORM_DEFLATE_COMPRESSION, TRANSFORM_SERVER_CLIENT_TX_RX);
+	int res = bbs_io_transformer_register("DEFLATE", &funcs, TRANSFORM_DEFLATE_COMPRESSION, TRANSFORM_SERVER_CLIENT_TX_RX);
 	if (res) {
 		return res;
 	}

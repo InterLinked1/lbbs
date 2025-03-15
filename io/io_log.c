@@ -280,9 +280,15 @@ static void cleanup(struct bbs_io_transformation *tran)
 	free(l);
 }
 
+static struct bbs_io_transformer_functions funcs = {
+	.setup = setup,
+	.query = NULL,
+	.cleanup = cleanup,
+};
+
 static int load_module(void)
 {
-	return bbs_io_transformer_register("X-LOG", setup, NULL, cleanup, TRANSFORM_SESSION_LOGGING, TRANSFORM_SERVER_CLIENT_TX_RX);
+	return bbs_io_transformer_register("X-LOG", &funcs, TRANSFORM_SESSION_LOGGING, TRANSFORM_SERVER_CLIENT_TX_RX);
 }
 
 static int unload_module(void)

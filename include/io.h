@@ -60,21 +60,26 @@ struct bbs_io_transformations {
 	struct bbs_io_transformation transformations[MAX_IO_TRANSFORMS];
 };
 
-int __bbs_io_transformer_register(const char *name, int (*setup)(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restrict data, const void *arg),
-	int (*query)(struct bbs_io_transformation *tran, int query, void *data),
-	void (*cleanup)(struct bbs_io_transformation *tran), enum bbs_io_transform_type type, enum bbs_io_transform_dir dir, void *module);
+struct bbs_io_transformer_functions {
+	/*! \brief Setup callback */
+	int (*setup)(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restrict data, const void *arg);
+	/*! \brief Query callback. Optional. */
+	int (*query)(struct bbs_io_transformation *tran, int query, void *data);
+	/*! \brief Cleanup callback. */
+	void (*cleanup)(struct bbs_io_transformation *tran);
+};
+
+int __bbs_io_transformer_register(const char *name, struct bbs_io_transformer_functions *funcs, enum bbs_io_transform_type type, enum bbs_io_transform_dir dir, void *module) __attribute__ ((nonnull (1, 2, 5)));
 
 /*!
  * \brief Register I/O transformer callbacks.
  * \param name
- * \param setup
- * \param query Optional
- * \param cleanup
+ * \param funcs
  * \param type
  * \param dir
  * \retval 0 on success, -1 on failure
  */
-#define bbs_io_transformer_register(name, setup, query, cleanup, type, dir) __bbs_io_transformer_register(name, setup, query, cleanup, type, dir, BBS_MODULE_SELF)
+#define bbs_io_transformer_register(name, funcs, type, dir) __bbs_io_transformer_register(name, funcs, type, dir, BBS_MODULE_SELF)
 
 /*! \brief Unergister I/O transformer callback */
 int bbs_io_transformer_unregister(const char *name);
