@@ -32,6 +32,7 @@
  */
 
 #include "test.h"
+#include "email.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -58,47 +59,6 @@ static int pre(void)
 	return 0;
 }
 
-static int send_count = 0;
-
-static int send_message(int c1)
-{
-	char subject[32];
-
-	if (!send_count++) {
-		CLIENT_EXPECT_EVENTUALLY(c1, "220 ");
-		SWRITE(c1, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
-		CLIENT_EXPECT_EVENTUALLY(c1, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
-	} else {
-		SWRITE(c1, "RSET" ENDL);
-		CLIENT_EXPECT(c1, "250");
-	}
-
-	SWRITE(c1, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
-	CLIENT_EXPECT(c1, "250");
-	SWRITE(c1, "RCPT TO:<" TEST_EMAIL ">\r\n");
-	CLIENT_EXPECT(c1, "250");
-	SWRITE(c1, "DATA\r\n");
-	CLIENT_EXPECT(c1, "354");
-
-	snprintf(subject, sizeof(subject), "Subject: Message %d" ENDL, send_count);
-
-	SWRITE(c1, "Date: Sun, 1 Jan 2023 05:33:29 -0700" ENDL);
-	SWRITE(c1, "From: " TEST_EMAIL_EXTERNAL ENDL);
-	write(c1, subject, strlen(subject));
-	SWRITE(c1, "To: " TEST_EMAIL ENDL);
-	SWRITE(c1, "Content-Type: text/plain" ENDL);
-	SWRITE(c1, ENDL);
-	SWRITE(c1, "This is a test email message." ENDL);
-	SWRITE(c1, "....Let's hope it gets delivered properly." ENDL); /* Test byte stuffing */
-	SWRITE(c1, "." ENDL); /* EOM */
-	CLIENT_EXPECT(c1, "250");
-	return 0;
-
-cleanup:
-	return -1;
-}
-
-/* Do not change this value, as the value is used hardcoded in several places that would need to be updated as well */
 #define TARGET_MESSAGES 10
 
 static int run(void)
@@ -108,13 +68,11 @@ static int run(void)
 	int res = -1;
 
 	smtpfd = test_make_socket(25);
-	if (smtpfd < 0) {
-		return -1;
-	}
+	REQUIRE_FD(smtpfd);
 
 	/* First, dump some messages into the mailbox for us to retrieve */
 	while (send_count < TARGET_MESSAGES) {
-		send_message(smtpfd);
+		test_send_message(smtpfd, TEST_EMAIL);
 	}
 
 	/* Verify that the email messages were all sent properly. */
@@ -165,7 +123,7 @@ static int run(void)
 	CLIENT_EXPECT(c1, "+");
 
 	/* Client 1 is now idling. Client 2 is not. */
-	send_message(smtpfd);
+	test_send_message(smtpfd, TEST_EMAIL);
 
 	/* Client 1 will get informed in realtime, client 2 will need to poll */
 	CLIENT_EXPECT(c1, "* 11 EXISTS");

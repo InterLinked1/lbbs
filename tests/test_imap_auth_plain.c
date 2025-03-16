@@ -44,9 +44,7 @@ static int run(void)
 	int res = -1;
 
 	clientfd = test_make_socket(143);
-	if (clientfd < 0) {
-		return -1;
-	}
+	REQUIRE_FD(clientfd);
 
 	/* Connect and log in */
 	CLIENT_EXPECT(clientfd, "* OK [CAPABILITY");

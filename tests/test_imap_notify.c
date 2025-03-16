@@ -18,6 +18,7 @@
  */
 
 #include "test.h"
+#include "email.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -44,131 +45,6 @@ static int pre(void)
 	return 0;
 }
 
-static int send_count = 0;
-
-static int send_message(int client1, size_t extrabytes)
-{
-	char subject[32];
-
-	if (!send_count++) {
-		CLIENT_EXPECT_EVENTUALLY(client1, "220 ");
-		SWRITE(client1, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
-		CLIENT_EXPECT_EVENTUALLY(client1, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
-	} else {
-		SWRITE(client1, "RSET" ENDL);
-		CLIENT_EXPECT(client1, "250");
-	}
-
-	SWRITE(client1, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
-	CLIENT_EXPECT(client1, "250");
-	SWRITE(client1, "RCPT TO:<" TEST_EMAIL ">\r\n");
-	CLIENT_EXPECT(client1, "250");
-	SWRITE(client1, "DATA\r\n");
-	CLIENT_EXPECT(client1, "354");
-
-	snprintf(subject, sizeof(subject), "Subject: Message %d" ENDL, send_count);
-
-	SWRITE(client1, "Date: Sun, 1 Jan 2023 05:33:29 -0700" ENDL);
-	SWRITE(client1, "From: " TEST_EMAIL_EXTERNAL ENDL);
-	write(client1, subject, strlen(subject));
-	SWRITE(client1, "To: " TEST_EMAIL ENDL);
-	SWRITE(client1, "Content-Type: text/plain" ENDL);
-	SWRITE(client1, ENDL);
-	SWRITE(client1, "This is a test email message." ENDL);
-	SWRITE(client1, "....Let's hope it gets delivered properly." ENDL); /* Test byte stuffing */
-	if (extrabytes) {
-		extrabytes = MIN(sizeof(subject), extrabytes);
-		memset(subject, 'a', extrabytes);
-		write(client1, subject, extrabytes);
-		SWRITE(client1, ENDL);
-	}
-	SWRITE(client1, "." ENDL); /* EOM */
-	CLIENT_EXPECT(client1, "250");
-	return 0;
-
-cleanup:
-	return -1;
-}
-
-static int send_message2(int client1, size_t extrabytes)
-{
-	char subject[32];
-
-	if (!send_count++) {
-		CLIENT_EXPECT_EVENTUALLY(client1, "220 ");
-		SWRITE(client1, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
-		CLIENT_EXPECT_EVENTUALLY(client1, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
-	} else {
-		SWRITE(client1, "RSET" ENDL);
-		CLIENT_EXPECT(client1, "250");
-	}
-
-	SWRITE(client1, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
-	CLIENT_EXPECT(client1, "250");
-	SWRITE(client1, "RCPT TO:<" TEST_EMAIL2 ">\r\n");
-	CLIENT_EXPECT(client1, "250");
-	SWRITE(client1, "DATA\r\n");
-	CLIENT_EXPECT(client1, "354");
-
-	snprintf(subject, sizeof(subject), "Subject: Message %d" ENDL, send_count);
-
-	SWRITE(client1, "Date: Sun, 1 Jan 2023 05:33:29 -0700" ENDL);
-	SWRITE(client1, "From: " TEST_EMAIL_EXTERNAL ENDL);
-	write(client1, subject, strlen(subject));
-	SWRITE(client1, "To: " TEST_EMAIL2 ENDL);
-	SWRITE(client1, "Content-Type: text/plain" ENDL);
-	SWRITE(client1, ENDL);
-	SWRITE(client1, "This is a test email message." ENDL);
-	SWRITE(client1, "....Let's hope it gets delivered properly." ENDL); /* Test byte stuffing */
-	if (extrabytes) {
-		extrabytes = MIN(sizeof(subject), extrabytes);
-		memset(subject, 'a', extrabytes);
-		write(client1, subject, extrabytes);
-		SWRITE(client1, ENDL);
-	}
-	SWRITE(client1, "." ENDL); /* EOM */
-	CLIENT_EXPECT(client1, "250");
-	return 0;
-
-cleanup:
-	return -1;
-}
-
-static int make_messages(int nummsg)
-{
-	int clientfd;
-
-	clientfd = test_make_socket(25);
-	if (clientfd < 0) {
-		return -1;
-	}
-
-	/* First, dump some messages into the mailbox for us to retrieve */
-	while (send_count < nummsg) {
-		send_message(clientfd, 0);
-	}
-	close(clientfd); /* Close SMTP connection */
-
-	return 0;
-}
-
-static int make_messages2(void)
-{
-	int clientfd;
-
-	clientfd = test_make_socket(25);
-	if (clientfd < 0) {
-		return -1;
-	}
-
-	send_count = 0;
-	send_message2(clientfd, 0);
-	close(clientfd); /* Close SMTP connection */
-
-	return 0;
-}
-
-/* Do not change this value, as the value is used hardcoded in several places that would need to be updated as well */
 #define TARGET_MESSAGES 10
 
 static int run(void)
@@ -176,26 +52,20 @@ static int run(void)
 	int client1 = -1, client2 = -1, client3 = -1;
 	int res = -1;
 
-	if (make_messages(TARGET_MESSAGES)) {
+	if (test_make_messages(TEST_EMAIL, TARGET_MESSAGES)) {
 		return -1;
 	}
 	/* Verify that the email messages were all sent properly. */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", send_count);
 
 	client1 = test_make_socket(143);
-	if (client1 < 0) {
-		return -1;
-	}
+	REQUIRE_FD(client1);
 
 	client2 = test_make_socket(143);
-	if (client2 < 0) {
-		return -1;
-	}
+	REQUIRE_FD(client2);
 
 	client3 = test_make_socket(143);
-	if (client3 < 0) {
-		return -1;
-	}
+	REQUIRE_FD(client3);
 
 	/* Connect and log in */
 	CLIENT_EXPECT(client2, "OK");
@@ -317,9 +187,7 @@ static int run(void)
 
 	/* Should never get events for other users, even though we're subscribed, because we're not authorized */
 	client2 = test_make_socket(143);
-	if (client2 < 0) {
-		return -1;
-	}
+	REQUIRE_FD(client2);
 
 	/* Connect and log in */
 	CLIENT_EXPECT(client2, "OK");
@@ -331,7 +199,7 @@ static int run(void)
 	SWRITE(client2, "e3 IDLE" ENDL);
 	CLIENT_EXPECT(client2, "+ idling");
 
-	if (make_messages2()) {
+	if (test_make_messages(TEST_EMAIL2, 1)) {
 		goto cleanup;
 	}
 
@@ -352,7 +220,7 @@ static int run(void)
 	SWRITE(client2, "e6 IDLE" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client2, "+ idling");
 
-	if (make_messages2()) {
+	if (test_make_messages(TEST_EMAIL2, 1)) {
 		goto cleanup;
 	}
 

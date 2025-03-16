@@ -167,9 +167,7 @@ static int make_messages(void)
 
 	send_count = 0;
 	clientfd = test_make_socket(25);
-	if (clientfd < 0) {
-		return -1;
-	}
+	REQUIRE_FD(clientfd);
 
 	res |= send_message(clientfd, "messages/multipart.eml");
 	res |= send_message(clientfd, "messages/multipart2.eml");
@@ -192,9 +190,7 @@ static int run(void)
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", send_count);
 
 	client1 = test_make_socket(143);
-	if (client1 < 0) {
-		return -1;
-	}
+	REQUIRE_FD(client1);
 
 	/* Connect and log in */
 	CLIENT_EXPECT(client1, "OK");

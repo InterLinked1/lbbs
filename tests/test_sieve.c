@@ -71,9 +71,7 @@ static int run(void)
 	int res = -1;
 
 	clientfd = test_make_socket(25);
-	if (clientfd < 0) {
-		return -1;
-	}
+	REQUIRE_FD(clientfd);
 
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "220 ");
 

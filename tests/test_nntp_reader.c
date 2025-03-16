@@ -44,9 +44,7 @@ static int run(void)
 	int res = -1;
 
 	clientfd = test_make_socket(119);
-	if (clientfd < 0) {
-		return -1;
-	}
+	REQUIRE_FD(clientfd);
 
 	/* Initial connection */
 	CLIENT_EXPECT(clientfd, "200 " TEST_HOSTNAME);

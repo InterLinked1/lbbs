@@ -40,9 +40,7 @@ static int run(void)
 	int res = -1;
 
 	client1 = test_make_socket(6667);
-	if (client1 < 0) {
-		return -1;
-	}
+	REQUIRE_FD(client1);
 
 	/* SASL negotiation */
 	SWRITE(client1, "CAP LS 302\r\n");
@@ -65,9 +63,7 @@ static int run(void)
 
 	/* All right, now for some real fun... multi-user */
 	client2 = test_make_socket(6667);
-	if (client2 < 0) {
-		goto cleanup;
-	}
+	REQUIRE_FD(client2);
 
 	/* SASL negotiation */
 	SWRITE(client2, "CAP LS 302\r\n");

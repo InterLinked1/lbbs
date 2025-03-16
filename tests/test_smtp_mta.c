@@ -68,9 +68,7 @@ static int run(void)
 	int i, res = -1;
 
 	clientfd = test_make_socket(25);
-	if (clientfd < 0) {
-		return -1;
-	}
+	REQUIRE_FD(clientfd);
 
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "220 ");
 
@@ -238,9 +236,7 @@ static int run(void)
 	/* Test pregreeting */
 	close(clientfd);
 	clientfd = test_make_socket(25);
-	if (clientfd < 0) {
-		return -1;
-	}
+	REQUIRE_FD(clientfd);
 
 	/* Commit a protocol violation before sending data before receiving the full banner */
 	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);

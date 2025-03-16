@@ -18,6 +18,7 @@
  */
 
 #include "test.h"
+#include "email.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -915,6 +916,7 @@ static int run_test(const char *filename, int multiple)
 
 	bbs_shutting_down = 0;
 	soft_assertions_failed = 0;
+	send_count = 0; /* Reset email send count between tests */
 	bbs_debug(3, "Planning to run test %s\n", filename);
 	total_fail++; /* Increment for now in case we abort early */
 

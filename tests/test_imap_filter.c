@@ -69,14 +69,10 @@ static int run(void)
 	int res = -1;
 
 	smtpfd = test_make_socket(25);
-	if (smtpfd < 0) {
-		return -1;
-	}
+	REQUIRE_FD(smtpfd);
 
 	imapfd = test_make_socket(143);
-	if (smtpfd < 0) {
-		goto cleanup;
-	}
+	REQUIRE_FD(imapfd);
 
 	CLIENT_EXPECT_EVENTUALLY(smtpfd, "220 ");
 

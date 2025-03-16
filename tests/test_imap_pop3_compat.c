@@ -46,9 +46,7 @@ static int run(void)
 	int res = -1;
 
 	client1 = test_make_socket(143);
-	if (client1 < 0) {
-		return -1;
-	}
+	REQUIRE_FD(client1);
 
 	/* Connect and log in */
 	CLIENT_EXPECT(client1, "OK");
@@ -62,9 +60,8 @@ static int run(void)
 	 * Thus, we use the TESTLOCK command, explicitly added for this purpose.
 	 */
 	client2 = test_make_socket(110);
-	if (client2 < 0) {
-		goto cleanup;
-	}
+	REQUIRE_FD(client2);
+
 	CLIENT_EXPECT(client2, "+OK"); /* Server Ready greeting */
 	SWRITE(client2, "USER " TEST_USER ENDL);
 	CLIENT_EXPECT(client2, "+OK");
@@ -82,9 +79,8 @@ static int run(void)
 
 	/* This POP3 login should succeed. */
 	client2 = test_make_socket(110);
-	if (client2 < 0) {
-		return -1;
-	}
+	REQUIRE_FD(client2);
+
 	CLIENT_EXPECT(client2, "+OK"); /* Server ready */
 	SWRITE(client2, "USER " TEST_USER ENDL);
 	CLIENT_EXPECT(client2, "+OK");

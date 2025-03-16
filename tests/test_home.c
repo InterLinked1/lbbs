@@ -47,9 +47,7 @@ static int run(void)
 	int res = -1;
 
 	client1 = test_make_socket(143);
-	if (client1 < 0) {
-		return -1;
-	}
+	REQUIRE_FD(client1);
 
 	CLIENT_EXPECT(client1, "OK");
 	SWRITE(client1, "a1 LOGIN \"" TEST_USER "\" \"" TEST_PASS "\"" ENDL);

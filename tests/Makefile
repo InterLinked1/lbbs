@@ -31,7 +31,7 @@ readline.o : ../bbs/readline.c
 	cp ../bbs/readline.c .
 	$(CC) $(CFLAGS) -fPIC -DTEST_MODULE=\"$(basename $^)\" -DTEST_MODULE_SELF_SYM=__internal_$(basename $^)_self $(INC) -c $^
 
-$(TEST_EXE) : test.o readline.o tls.o compress.o
+$(TEST_EXE) : test.o email.o readline.o tls.o compress.o
 	$(CC) $(CFLAGS) -Wl,--export-dynamic -o $(TEST_EXE) $^ -ldl -lpthread -lssl -lcrypto -lz
 
 test_%.o : test_%.c

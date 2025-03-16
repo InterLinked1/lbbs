@@ -89,9 +89,7 @@ static int run(void)
 	int res = -1;
 
 	clientfd = test_make_socket(587);
-	if (clientfd < 0) {
-		return -1;
-	}
+	REQUIRE_FD(clientfd);
 
 	if (handshake(clientfd, 0)) {
 		goto cleanup;
@@ -118,9 +116,7 @@ static int run(void)
 	/* Check that Subject contains tag.
 	 * Ironically, it's easier to do this using the IMAP protocol than it is trying to manually find and parse the file on disk ourselves. */
 	client1 = test_make_socket(143);
-	if (client1 < 0) {
-		return -1;
-	}
+	REQUIRE_FD(client1);
 
 	/* Connect and log in */
 	CLIENT_EXPECT(client1, "OK");

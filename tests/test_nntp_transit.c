@@ -51,9 +51,7 @@ static int run(void)
 		"." ENDL;
 
 	clientfd = test_make_socket(433);
-	if (clientfd < 0) {
-		return -1;
-	}
+	REQUIRE_FD(clientfd);
 
 #define TEST_MESSAGE_ID "test.message@" TEST_HOSTNAME
 
