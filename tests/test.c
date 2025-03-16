@@ -414,6 +414,8 @@ static const char *bbs_expect_str = NULL;
 int test_autorun = 1;
 int rand_alloc_fails = 0;
 
+static int soft_assertions_failed = 0;
+
 static char expectbuf[4096];
 static struct readline_data rldata;
 
@@ -445,6 +447,10 @@ static void *io_relay(void *varg)
 		write(logfd, buf, (size_t) res);
 		if (option_debug) {
 			write(STDERR_FILENO, buf, (size_t) res);
+		}
+		buf[res] = '\0';
+		if (strstr(buf, "Failed soft assertion")) {
+			soft_assertions_failed++;
 		}
 		if (bbs_expect_str) {
 			int rounds = 0;
@@ -479,7 +485,6 @@ static void *io_relay(void *varg)
 		} else if (bbs_shutting_down) {
 			/* Look for stalled shutdown... we have to do it in this thread,
 			 * since the main thread is blocked on the alarm() call. */
-			buf[res] = '\0';
 			if (strstr(buf, "Skipping unload of ") && strstr(buf, " on pass 27")) {
 				/* At this point, something is likely "stuck".
 				 * The BBS won't trigger this itself, but we should get a backtrace of the
@@ -909,6 +914,7 @@ static int run_test(const char *filename, int multiple)
 	void *lib;
 
 	bbs_shutting_down = 0;
+	soft_assertions_failed = 0;
 	bbs_debug(3, "Planning to run test %s\n", filename);
 	total_fail++; /* Increment for now in case we abort early */
 
@@ -1069,6 +1075,11 @@ static int run_test(const char *filename, int multiple)
 		}
 		if (rand_alloc_fails) {
 			bbs_debug(1, "%d simulated allocation failure%s\n", rand_alloc_fails - 1, ESS(rand_alloc_fails - 1));
+		}
+		if (soft_assertions_failed) {
+			/* These don't cause a crash, so we wouldn't implicitly fail due to one, but these should still cause test failure. */
+			bbs_debug(1, "%d soft assertion%s failed\n", soft_assertions_failed, ESS(soft_assertions_failed));
+			res = -1;
 		}
 		if (res) {
 			fprintf(stderr, "== Test %sFAILED%s: %5lums %-20s %s\n", COLOR(COLOR_FAILURE), COLOR_RESET, tot_dif, testmod->name, testmod->description);

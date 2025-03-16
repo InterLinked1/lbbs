@@ -404,11 +404,11 @@ int __bbs_close(int fd, const char *file, int line, const char *func)
 	}
 	res = close(fd);
 	if (res) {
-		if (errno == EBADF && ARRAY_IN_BOUNDS(fd, fdleaks)) {
-			__bbs_log(LOG_WARNING, 0, file, line, func, "Failed to close fd %d: %s (previously %s at %s:%d)\n",
+		if (bbs_assertion_failed(errno != EBADF) && ARRAY_IN_BOUNDS(fd, fdleaks)) {
+			__bbs_log(LOG_ERROR, 0, file, line, func, "Failed to close fd %d: %s (previously %s at %s:%d)\n",
 				fd, strerror(errno), fdleaks[fd].isopen ? "opened" : "closed", fdleaks[fd].file, fdleaks[fd].line);
 		} else {
-			__bbs_log(LOG_WARNING, 0, file, line, func, "Failed to close fd %d: %s\n", fd, strerror(errno));
+			__bbs_log(LOG_ERROR, 0, file, line, func, "Failed to close fd %d: %s\n", fd, strerror(errno));
 		}
 	} else if (ARRAY_IN_BOUNDS(fd, fdleaks)) { /* && !res (implicit) */
 		fdleaks[fd].isopen = 0;
