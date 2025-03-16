@@ -135,7 +135,10 @@ static int imap_dir_contains_files(const char *path)
 
 	/* Order doesn't matter here */
 	if (!(dir = opendir(path))) {
-		bbs_debug(3, "Error opening directory - %s: %s\n", path, strerror(errno));
+		/* The directory may not exist, if it's never been accessed/used (e.g. new user), it may not exist yet */
+		if (errno != ENOENT) {
+			bbs_debug(3, "Error opening directory - %s: %s\n", path, strerror(errno));
+		}
 		return -1;
 	}
 

@@ -313,9 +313,6 @@ static int remote_list_parallel(struct bbs_parallel *p, const char *restrict pre
 	return bbs_parallel_schedule_task(p, prefix, &rinfo, remote_list_cb, remote_list_dup, remote_list_destroy);
 }
 
-/*! \brief Mutex to prevent recursion */
-static bbs_mutex_t virt_lock = BBS_MUTEX_INITIALIZER; /* XXX Should most definitely be per mailbox struct, not global */
-
 int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 {
 	FILE *fp;
@@ -323,15 +320,21 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	char line[256];
 	int l = 0;
 	struct bbs_parallel p;
+	struct mailbox *mbox = imap->mbox;
 
-	/* Folders from the proxied mailbox will need to be translated back and forth */
-	if (bbs_mutex_trylock(&virt_lock)) {
+	/* We only use trylock, rather than lock, for operations that could recurse.
+	 * (e.g. mailbox 1 includes mailbox2, which includes mailbox1... which includes mailbox2, etc. forever)
+	 * If we used lock instead of trylock, deadlock is not only possible, but guaranteed,
+	 * if the configs are set up in such a manner that we can recurse back to the original mailbox.
+	 * Since we don't want to allow that, we use mailbox-scoped locks to prevent such loops. */
+	if (mailbox_proxy_trylock(mbox)) {
 		bbs_warning("Possible recursion inhibited\n");
 		return -1;
 	}
 
+	/* Folders from the proxied mailbox will need to be translated back and forth */
 	if (imap_client_mapping_file(imap, virtfile, sizeof(virtfile))) {
-		bbs_mutex_unlock(&virt_lock);
+		mailbox_proxy_unlock(mbox);
 		return -1;
 	}
 	bbs_debug(3, "Checking virtual mailboxes in %s\n", virtfile);
@@ -349,7 +352,7 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	 * and .imapremote.cache could possibly be removed in the future if there's no good use case for it. */
 	fp = fopen(virtfile, "r");
 	if (!fp) {
-		bbs_mutex_unlock(&virt_lock);
+		mailbox_proxy_unlock(mbox);
 		return -1;
 	}
 
@@ -375,6 +378,6 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	fclose(fp);
 
 	bbs_parallel_join(&p);
-	bbs_mutex_unlock(&virt_lock);
+	mailbox_proxy_unlock(mbox);
 	return 0;
 }

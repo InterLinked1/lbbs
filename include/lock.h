@@ -93,15 +93,15 @@ typedef struct bbs_rwlock bbs_rwlock_t;
 int __bbs_mutex_init(bbs_mutex_t *t, const char *filename, int lineno, const char *func, const char *name);
 int __bbs_mutex_destroy(bbs_mutex_t *t, const char *filename, int lineno, const char *func, const char *name);
 int __bbs_mutex_lock(bbs_mutex_t *t, const char *filename, int lineno, const char *func, const char *name);
-int __bbs_mutex_trylock(bbs_mutex_t *t, const char *filename, int lineno, const char *func, const char *name);
+int __bbs_mutex_trylock(bbs_mutex_t *t, const char *filename, int lineno, const char *func, const char *name) __attribute__((warn_unused_result));
 int __bbs_mutex_unlock(bbs_mutex_t *t, const char *filename, int lineno, const char *func, const char *name);
 
 int __bbs_rwlock_init(bbs_rwlock_t *t, const char *filename, int lineno, const char *func, const char *name);
 int __bbs_rwlock_destroy(bbs_rwlock_t *t, const char *filename, int lineno, const char *func, const char *name);
 int __bbs_rwlock_rdlock(bbs_rwlock_t *t, const char *filename, int lineno, const char *func, const char *name);
 int __bbs_rwlock_wrlock(bbs_rwlock_t *t, const char *filename, int lineno, const char *func, const char *name);
-int __bbs_rwlock_tryrdlock(bbs_rwlock_t *t, const char *filename, int lineno, const char *func, const char *name);
-int __bbs_rwlock_trywrlock(bbs_rwlock_t *t, const char *filename, int lineno, const char *func, const char *name);
+int __bbs_rwlock_tryrdlock(bbs_rwlock_t *t, const char *filename, int lineno, const char *func, const char *name) __attribute__((warn_unused_result));
+int __bbs_rwlock_trywrlock(bbs_rwlock_t *t, const char *filename, int lineno, const char *func, const char *name) __attribute__((warn_unused_result));
 int __bbs_rwlock_unlock(bbs_rwlock_t *t, const char *filename, int lineno, const char *func, const char *name);
 
 #ifndef BBS_LOCK_WRAPPER_FILE

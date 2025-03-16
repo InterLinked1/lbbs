@@ -4777,6 +4777,8 @@ static int imap_process(struct imap_session *imap, char *s)
 		 * So just reflect back what it passed us; the SMTP server will know what to do with that.
 		 * It's not actually going to issue any IMAP commands with it.
 		 */
+		/*! \todo This should be the actual real IMAP URI, since in general clients could use different IMAP/SMTP servers, and no reason this can't be correct.
+		 * The SMTP server should also parse it out properly, ignoring non local hosts if not desired. */
 		 imap_send(imap, "GENURLAUTH \"%s:internal\"", resource);
 		 imap_reply(imap, "OK GENURLAUTH completed");
 		 /* RESETKEY and URLFETCH commands are not implemented */

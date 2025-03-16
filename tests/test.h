@@ -57,7 +57,7 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #define TEST_WWW_DIR DIRCAT(TEST_ROOT_DIR, "www")
 
 /*! \brief Create directory if it doesn't already exist */
-#define TEST_MKDIR(dir) mkdir(dir, 0700)
+#define TEST_MKDIR(dir) if (mkdir(dir, 0700) && errno != EEXIST) { bbs_error("mkdir(%s) failed: %s\n", dir, strerror(errno)); return -1; }
 
 /*! \brief Delete any existing directory and recreate it */
 #define TEST_RESET_MKDIR(dir) system("rm -rf " dir); TEST_MKDIR(dir);
@@ -65,8 +65,9 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #define TEST_CONFIGS_SRC_DIR "configs"
 
 /* Yuck, but why reinvent the wheel */
-#define TEST_ADD_CONFIG_NAME(srcfilename, dstfilename) system("cp " TEST_CONFIGS_SRC_DIR "/" srcfilename " " TEST_CONFIG_DIR "/" dstfilename)
-#define TEST_ADD_CONFIG_INTO_DIR(filename, dir) system("cp " TEST_CONFIGS_SRC_DIR "/" filename " " dir)
+#define TEST_COPY_CONFIG(src, dst) if (system("cp " src " " dst)) { bbs_error("system(cp %s %s) failed: %s\n", src, dst, strerror(errno)); return -1; }
+#define TEST_ADD_CONFIG_NAME(srcfilename, dstfilename) TEST_COPY_CONFIG(TEST_CONFIGS_SRC_DIR "/" srcfilename, TEST_CONFIG_DIR "/" dstfilename)
+#define TEST_ADD_CONFIG_INTO_DIR(filename, dir) TEST_COPY_CONFIG(TEST_CONFIGS_SRC_DIR "/" filename, dir)
 #define TEST_ADD_CONFIG(filename) TEST_ADD_CONFIG_NAME(filename, filename)
 #define TEST_ADD_SUBCONFIG(subdir, filename) TEST_ADD_CONFIG_NAME(subdir "/" filename, filename)
 

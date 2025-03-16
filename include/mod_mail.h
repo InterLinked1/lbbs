@@ -239,8 +239,14 @@ void mailbox_unlock(struct mailbox *mbox);
 /*! \brief Grab an exclusive lock on UID operations for this mailbox */
 int mailbox_uid_lock(struct mailbox *mbox);
 
-/*! \brief Unlock a previously acquired UID lock on this mailbox */
+/*! \brief Release a previously acquired UID lock on this mailbox */
 void mailbox_uid_unlock(struct mailbox *mbox);
+
+/*! \brief Try to grab an exclusive lock on proxy operations for this mailbox */
+int mailbox_proxy_trylock(struct mailbox *mbox) __attribute__((warn_unused_result));
+
+/*! \brief Release a previously acquired proxy lock on this mailbox */
+void mailbox_proxy_unlock(struct mailbox *mbox);
 
 /*! \brief Start watching a mailbox for new messages */
 void mailbox_watch(struct mailbox *mbox);

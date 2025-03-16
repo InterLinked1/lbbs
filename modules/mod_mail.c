@@ -60,8 +60,9 @@ struct mailbox {
 	unsigned int quotausage;			/* Cached quota usage calculation */
 	char maildir[266];					/* User's mailbox directory, on disk. */
 	size_t maildirlen;					/* Length of maildir */
-	bbs_rwlock_t lock;				/* R/W lock for entire mailbox. R/W instead of a mutex, because POP write locks the entire mailbox, IMAP can just read lock. */
-	bbs_mutex_t uidlock;			/* Mutex for UID operations. */
+	bbs_rwlock_t lock;					/* R/W lock for entire mailbox. R/W instead of a mutex, because POP write locks the entire mailbox, IMAP can just read lock. */
+	bbs_mutex_t uidlock;				/* Mutex for UID operations. */
+	bbs_mutex_t proxylock;				/* Mutex for proxy client access */
 	RWLIST_ENTRY(mailbox) entry;		/* Next mailbox */
 	unsigned int activity:1;			/* Mailbox has activity */
 	unsigned int quotavalid:1;			/* Whether cached quota calculations may still be used */
@@ -448,6 +449,7 @@ static void mailbox_free(struct mailbox *mbox)
 {
 	bbs_rwlock_destroy(&mbox->lock);
 	bbs_mutex_destroy(&mbox->uidlock);
+	bbs_mutex_destroy(&mbox->proxylock);
 	free_if(mbox->name);
 	free(mbox);
 }
@@ -600,6 +602,7 @@ static struct mailbox *mailbox_find_or_create(unsigned int userid, const char *n
 		}
 		bbs_rwlock_init(&mbox->lock, NULL);
 		bbs_mutex_init(&mbox->uidlock, NULL);
+		bbs_mutex_init(&mbox->proxylock, NULL);
 		mbox->id = userid;
 		if (name) {
 			mbox->name = strdup(name);
@@ -759,6 +762,18 @@ void mailbox_uid_unlock(struct mailbox *mbox)
 {
 	bbs_assert_exists(mbox);
 	bbs_mutex_unlock(&mbox->uidlock);
+}
+
+int mailbox_proxy_trylock(struct mailbox *mbox)
+{
+	bbs_assert_exists(mbox);
+	return bbs_mutex_trylock(&mbox->proxylock);
+}
+
+void mailbox_proxy_unlock(struct mailbox *mbox)
+{
+	bbs_assert_exists(mbox);
+	bbs_mutex_unlock(&mbox->proxylock);
 }
 
 void mailbox_watch(struct mailbox *mbox)
@@ -1254,7 +1269,9 @@ static unsigned long __maildir_modseq(struct mailbox *mbox, const char *director
 		const char *modseq;
 		/* Order of traversal does not matter, so use opendir instead of scandir for efficiency. */
 		if (!(dir = opendir(directory))) {
-			bbs_error("Error opening directory '%s': %s\n", directory, strerror(errno));
+			if (errno != ENOENT) { /* If the directory hasn't been created yet, then there is no modseqs modification file, simple as that */
+				bbs_error("Error opening directory '%s': %s\n", directory, strerror(errno));
+			}
 			return 0;
 		}
 
