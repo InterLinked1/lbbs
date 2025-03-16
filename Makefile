@@ -18,9 +18,24 @@ ALPINE_LINUX := $(shell ls /etc/alpine-release 2>/dev/null | wc -l)
 
 CC		= gcc
 
-CFLAGS += -Wall -Werror -Wunused -Wextra -Wparentheses -Wconversion -Wdangling-else -Waggregate-return -Wchar-subscripts -Wdouble-promotion -Wmissing-include-dirs -Wuninitialized -Wunknown-pragmas -Wstrict-overflow -Wmissing-format-attribute -Wnull-dereference -Warray-bounds=1 -Wduplicated-branches -Wduplicated-cond -Wtrampolines -Wfloat-equal -Wdeclaration-after-statement -Wshadow -Wundef -Wunused-macros -Wcast-qual -Wcast-align -Wwrite-strings -Wunused-result -Wjump-misses-init -Wlogical-op -Wstrict-prototypes -Wmissing-prototypes -Wmissing-declarations -Wredundant-decls -Wpacked -Wnested-externs -Winline -Wdisabled-optimization -Wstack-protector -std=gnu99 -pthread -O3 -g -fno-omit-frame-pointer -fstrict-aliasing -fdelete-null-pointer-checks -fwrapv -D_FORTIFY_SOURCE=2
+CFLAGS += -Wall -Werror -Wunused -Wextra -Wparentheses -Wconversion -Wdangling-else -Waggregate-return -Wchar-subscripts -Wdouble-promotion -Wmissing-include-dirs -Wuninitialized -Wunknown-pragmas -Wstrict-overflow -Wmissing-format-attribute -Wnull-dereference -Warray-bounds=1 -Wduplicated-branches -Wduplicated-cond -Wtrampolines -Wfloat-equal -Wdeclaration-after-statement -Wshadow -Wundef -Wunused-macros -Wcast-qual -Wcast-align -Wwrite-strings -Wunused-result -Wjump-misses-init -Wlogical-op -Wstrict-prototypes -Wmissing-prototypes -Wmissing-declarations -Wredundant-decls -Wpacked -Wnested-externs -Winline -Wdisabled-optimization -Wstack-protector -std=gnu99 -pthread -g -fno-omit-frame-pointer -fstrict-aliasing -fdelete-null-pointer-checks -fwrapv
 
+ifeq "$(NO_OPTIMIZE)" "1"
+CFLAGS += -O0
+else
+CFLAGS += -O3
+endif
+
+CORE_LDFLAGS = -pthread -Wl,--export-dynamic
 MOD_LDFLAGS = -shared -fPIC
+
+ifeq "$(ADDRESS_SANITIZER)" "1"
+CFLAGS += -fsanitize=address
+CORE_LDFLAGS += -fsanitize=address
+MOD_LDFLAGS += -fsanitize=address
+else
+CFLAGS += -D_FORTIFY_SOURCE=2
+endif
 
 # -z lazy is needed for Alpine Linux: https://www.openwall.com/lists/musl/2019/12/11/16
 ifeq ($(ALPINE_LINUX),1)
@@ -67,6 +82,7 @@ SILENT_BUILD_PREFIX := @
 
 export CC
 export CFLAGS
+export CORE_LDFLAGS
 export MOD_LDFLAGS
 export EXE
 

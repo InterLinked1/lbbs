@@ -42,8 +42,6 @@
 static int sieve_port = DEFAULT_SIEVE_PORT;
 
 struct sieve_session {
-	int rfd;
-	int wfd;
 	struct bbs_node *node;
 	struct mailbox *mbox;
 	FILE *fp;
@@ -67,7 +65,7 @@ static void sieve_cleanup(struct sieve_session *sieve)
 	}
 }
 
-#define sieve_send(sieve, fmt, ...) bbs_node_fd_writef(sieve->node, sieve->wfd, fmt "\r\n", ## __VA_ARGS__); bbs_debug(5, "%p <= " fmt "\n", sieve, ## __VA_ARGS__);
+#define sieve_send(sieve, fmt, ...) bbs_node_fd_writef(sieve->node, sieve->node->wfd, fmt "\r\n", ## __VA_ARGS__); bbs_debug(5, "%p <= " fmt "\n", sieve, ## __VA_ARGS__);
 
 static int handle_capability(struct sieve_session *sieve)
 {
@@ -441,7 +439,7 @@ doneupload:
 		size = 0;
 		while ((fgets(buf, sizeof(buf), fp))) {
 			size_t len = strlen(buf);
-			size += bbs_write(sieve->wfd, buf, (unsigned int) len);
+			size += bbs_node_write(sieve->node, buf, (unsigned int) len);
 		}
 		fclose(fp);
 		bbs_debug(5, "Sent %ld-byte script\n", size);
@@ -470,7 +468,7 @@ static void handle_client(struct sieve_session *sieve)
 	}
 
 	for (;;) {
-		ssize_t res = bbs_readline(sieve->rfd, &rldata, "\r\n", 300000); /* Must be at least 30 minutes per RFC 5804, though that seems excessive */
+		ssize_t res = bbs_node_readline(sieve->node, &rldata, "\r\n", 300000); /* Must be at least 30 minutes per RFC 5804, though that seems excessive */
 		if (res < 0) {
 			break;
 		}
@@ -519,7 +517,6 @@ static void *__sieve_handler(void *varg)
 	bbs_node_net_begin(node);
 
 	memset(&sieve, 0, sizeof(sieve));
-	sieve.rfd = sieve.wfd = node->fd;
 	sieve.node = node;
 
 	handle_client(&sieve);

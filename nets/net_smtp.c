@@ -3017,7 +3017,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 
 	for (;;) {
 		size_t len;
-		ssize_t res = bbs_readline(smtp->node->rfd, rldata, "\r\n", MIN_MS(3)); /* RFC 5321 4.5.3.2.5 */
+		ssize_t res = bbs_node_readline(smtp->node, rldata, "\r\n", MIN_MS(3)); /* RFC 5321 4.5.3.2.5 */
 		if (res < 0) {
 			bbs_delete_file(template);
 			fclose(fp);
@@ -3271,7 +3271,7 @@ static void handle_client(struct smtp_session *smtp)
 	}
 
 	for (;;) {
-		ssize_t res = bbs_readline(smtp->node->rfd, &rldata, "\r\n", MIN_MS(5)); /* RFC 5321 4.5.3.2.7 */
+		ssize_t res = bbs_node_readline(smtp->node, &rldata, "\r\n", MIN_MS(5)); /* RFC 5321 4.5.3.2.7 */
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {

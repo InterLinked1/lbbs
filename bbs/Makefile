@@ -54,7 +54,7 @@ all: $(EXE)
 
 $(EXE) : $(MAIN_OBJ)
 	@echo "  [LD] $^ -> $@"
-	$(CC) -pthread -Wl,--export-dynamic -o $(EXE) *.o $(LIBS)
+	$(CC) $(CORE_LDFLAGS) -o $(EXE) *.o $(LIBS)
 
 -include $(DEPENDS)
 

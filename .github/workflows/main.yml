@@ -63,8 +63,8 @@ jobs:
           sudo rm /var/log/lbbs/bbs.log
           sudo make service
   without-optimization:
-    runs-on: ubuntu-22.04
-    name: Ubuntu 22.04, without optimization
+    runs-on: ubuntu-24.04
+    name: Ubuntu 24.04, without optimization
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -82,13 +82,33 @@ jobs:
           sudo make tests
       - name: Run unit tests
         run: |
-          sudo IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
+          sudo scripts/run_tests.sh test_unit
       - name: Install service
         run: |
           sudo adduser -c "BBS" bbs --disabled-password --shell /usr/sbin/nologin --gecos ""
           # Remove the bbs.log from test suite executions since that is owned by root
           sudo rm /var/log/lbbs/bbs.log
           sudo make service
+  with-sanitizer:
+    runs-on: ubuntu-24.04
+    name: Ubuntu 24.04, under Address Sanitizer
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install prereqs
+        run: |
+          sudo sed -i 's/azure\.//' /etc/apt/sources.list
+          sudo ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
+          sudo make modcheck
+          sudo make -j$(nproc) NO_OPTIMIZE=1 ADDRESS_SANITIZER=1 || sudo make NO_OPTIMIZE=1 ADDRESS_SANITIZER=1 NOISY_BUILD=1
+          sudo make install
+          sudo make samples
+          sudo make tests
+      - name: Run tests
+        run: |
+          sudo ASAN_RUN=1 scripts/run_tests.sh
   debian-12:
     runs-on: ubuntu-24.04
     name: Debian 12

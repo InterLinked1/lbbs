@@ -1387,7 +1387,9 @@ static void *queue_handler(void *unused)
 		return NULL; /* Not needed, queuing disabled */
 	}
 
-	bbs_safe_sleep(SEC_MS(10)); /* Wait 10 seconds after the module loads, then try to flush anything in the queue. */
+	if (bbs_safe_sleep(SEC_MS(10))) { /* Wait 10 seconds after the module loads, then try to flush anything in the queue. */
+		return NULL;
+	}
 
 	for (;;) {
 		struct mailq_run qrun;

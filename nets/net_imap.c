@@ -1524,7 +1524,7 @@ static int handle_status(struct imap_session *imap, char *s)
 
 	/* This modifies the current maildir even for STATUS, but the STATUS command will restore the old one afterwards. */
 	memset(&traversal, 0, sizeof(traversal));
-	set_traversal(imap, &traversal);
+	set_traversal(imap, &traversal); /* XXX Should this call be after set_maildir_readonly? */
 	if (set_maildir_readonly(imap, &traversal, mailbox)) { /* Note that set_maildir handles mailbox being "INBOX". It may also change the active (account) mailbox. */
 		return 0;
 	}
@@ -2436,7 +2436,7 @@ static int handle_append(struct imap_session *imap, char *s)
 			 * If it's a MULTIAPPEND, we read another line.
 			 * If we read an empty line (just CR LF), then that's the end of the APPEND operation. */
 			bbs_debug(7, "%d message%s appended so far, will there be more?\n", appends, ESS(appends));
-			res = bbs_readline(imap->node->rfd, imap->rldata, "\r\n", 5000);
+			res = bbs_node_readline(imap->node, imap->rldata, "\r\n", 5000);
 			if (res == 0 || res == -1) { /* either CR LF read or socket closed */
 				bbs_debug(3, "%d message%s appended successfully\n", appends, ESS(appends));
 				break;
@@ -4975,7 +4975,7 @@ static void handle_client(struct imap_session *imap)
 	for (;;) {
 		const char *word2;
 		/* Autologout timer should not be less than 30 minutes, according to the RFC. We'll uphold that, for clients that are logged in. */
-		ssize_t res = bbs_readline(imap->node->rfd, &rldata, "\r\n", bbs_user_is_registered(imap->node->user) ? MIN_MS(30) : MIN_MS(1));
+		ssize_t res = bbs_node_readline(imap->node, &rldata, "\r\n", bbs_user_is_registered(imap->node->user) ? MIN_MS(30) : MIN_MS(1));
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {

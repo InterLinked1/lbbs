@@ -1223,7 +1223,7 @@ static void handle_client(struct nntp_session *nntp)
 	nntp_send(nntp, 200, "%s Newsgroup Service Ready, posting permitted", bbs_hostname());
 
 	for (;;) {
-		ssize_t res = bbs_readline(nntp->node->rfd, &rldata, "\r\n", MIN_MS(5));
+		ssize_t res = bbs_node_readline(nntp->node, &rldata, "\r\n", MIN_MS(5));
 		if (res < 0) {
 			/* We should NOT send any response to the client when terminating a connection due to timeout. */
 			break;

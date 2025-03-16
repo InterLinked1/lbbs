@@ -724,7 +724,7 @@ static void handle_client(struct pop3_session *pop3)
 	pop3_ok(pop3, "POP3 Server Ready");
 
 	for (;;) {
-		ssize_t res = bbs_readline(pop3->node->rfd, &rldata, "\r\n", MIN_MS(3));
+		ssize_t res = bbs_node_readline(pop3->node, &rldata, "\r\n", MIN_MS(3));
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {

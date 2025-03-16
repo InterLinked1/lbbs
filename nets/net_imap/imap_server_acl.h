@@ -81,14 +81,15 @@
 	}
 
 #define IMAP_HAS_ACL(acl, flag) (acl & (flag))
-#define IMAP_REQUIRE_ACL(acl, flag) \
+#define IMAP_REQUIRE_ACL_RETURN(acl, flag, ret) \
 	if (!IMAP_HAS_ACL(acl, (flag))) { \
 		char _aclbuf[15]; \
 		generate_acl_string(acl, _aclbuf, sizeof(_aclbuf)); \
 		bbs_debug(4, "User missing ACL %s (have %s)\n", #flag, _aclbuf); \
 		imap_reply(imap, "NO [NOPERM] Permission denied"); \
-		return 0; \
+		return ret; \
 	}
+#define IMAP_REQUIRE_ACL(acl, flag) IMAP_REQUIRE_ACL_RETURN(acl, flag, 0)
 
 /*! \brief Parse IMAP ACL from string */
 int parse_acl(const char *aclstring);

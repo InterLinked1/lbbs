@@ -2108,6 +2108,8 @@ static int maildir_traverse(const char *path, int (*on_file)(const char *dir_nam
 	int res = 0;
 	int seqno = 0;
 
+	bbs_soft_assert(!strlen_zero(path));
+
 	/* use scandir instead of opendir/readdir since we need ordering, even for message sequence numbers */
 	files = scandir(path, &entries, NULL, sortfunc);
 	if (files < 0) {

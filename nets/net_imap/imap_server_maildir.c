@@ -235,7 +235,7 @@ fail:
 		imap_close_remote_mailbox(imap);
 	}
 
-	IMAP_REQUIRE_ACL(acl, IMAP_ACL_READ);
+	IMAP_REQUIRE_ACL_RETURN(acl, IMAP_ACL_READ, -1); /* Since we already in a function, return -1 if ACL fails */
 
 	/* Actually copy over ACL once we are sure it will apply. */
 	imap->acl = acl;

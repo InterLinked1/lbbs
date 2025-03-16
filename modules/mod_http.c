@@ -997,7 +997,7 @@ static int read_body(struct http_session *http, char *buf, int discard)
 		for (;;) {
 			/* Determine how large the next chunk is */
 			unsigned int chunksize;
-			ssize_t res = bbs_readline(http->node->rfd, http->rldata, "\r\n", SEC_MS(10));
+			ssize_t res = bbs_node_readline(http->node, http->rldata, "\r\n", SEC_MS(10));
 			if (res <= 0) {
 				free_if(dynstr.buf);
 				bbs_warning("Failed to read all or part of chunked upload?\n");
@@ -1036,7 +1036,7 @@ static int read_body(struct http_session *http, char *buf, int discard)
 
 		/* Read and discard any trailer entity-header lines, indicated by a blank line. */
 		for (;;) {
-			ssize_t res = bbs_readline(http->node->rfd, http->rldata, "\r\n", SEC_MS(5));
+			ssize_t res = bbs_node_readline(http->node, http->rldata, "\r\n", SEC_MS(5));
 			if (res < 0) {
 				return -1; /* At this point, http->req->body is cleaned up on exit so we don't need to free it here */
 			} else if (res == 0) {
@@ -1727,7 +1727,7 @@ int http_parse_request(struct http_session *http, char *buf)
 	/* Particular consideration has been made of items discussed here: https://www.jmarshall.com/easy/http/ */
 
 	/* Read and parse the request line */
-	res = bbs_readline(http->node->rfd, http->rldata, "\r\n", SEC_MS(15));
+	res = bbs_node_readline(http->node, http->rldata, "\r\n", SEC_MS(15));
 	if (res <= 0) {
 		http->req->keepalive = 0;
 		http->res->code = HTTP_REQUEST_TIMEOUT;
@@ -1747,7 +1747,7 @@ int http_parse_request(struct http_session *http, char *buf)
 	/* Read and store headers */
 	for (;;) {
 		char *tmp;
-		res = bbs_readline(http->node->rfd, http->rldata, "\r\n", MIN_MS(1));
+		res = bbs_node_readline(http->node, http->rldata, "\r\n", MIN_MS(1));
 		if (res < 0) {
 			return -1;
 		} else if (res == 0) { /* CR LF = end of headers */

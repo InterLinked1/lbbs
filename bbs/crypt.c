@@ -66,13 +66,13 @@ int bbs_rand_alnum(char *buf, size_t len)
 {
 	unsigned int i;
 
-	if (getrandom(buf, len, GRND_NONBLOCK) == -1) {
+	if (getrandom(buf, len - 1, GRND_NONBLOCK) == -1) {
 		bbs_error("getrandom failed: %s\n", strerror(errno));
 		return -1;
 	}
 
 	/* getrandom returns... random bytes, not random ASCII characters. Fix that. */
-	for (i = 0; i < len; i++) {
+	for (i = 0; i < len - 1; i++) {
 		if (!isalnum(buf[i])) {
 #pragma GCC diagnostic ignored "-Wconversion"
 			buf[i] = 'A' + abs(buf[i] % 25); /* buf[i] could contain a negative value, and % won't make it positive */
@@ -83,7 +83,7 @@ int bbs_rand_alnum(char *buf, size_t len)
 			}
 		}
 	}
-	buf[len] = '\0';
+	buf[len - 1] = '\0';
 	return 0;
 }
 

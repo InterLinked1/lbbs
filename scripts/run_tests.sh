@@ -3,6 +3,7 @@
 set -e
 
 # $1 = optional, specific test to run
+# ENV[ASAN_RUN] = 1, to run tests for a build compiled with Address Sanitizer
 TEST=$1
 
 # Execute all of the tests, and if a core is dumped,
@@ -76,13 +77,21 @@ install_valgrind() {
 if [ "$TEST" = "" ]; then # run all tests
 	# First, do one pass without -e, in case there's a failure, it'll be caught much more quickly
 	tests/test -dddddddddd -DDDDDDDDDD -x || handle_failure
-	# If all good so far, repeat but under valgrind
-	install_valgrind
-	tests/test -dddddddddd -DDDDDDDDDD -ex || handle_failure
+	if [ "$ASAN_RUN" != "1" ]; then
+		# If all good so far, repeat but under valgrind
+		install_valgrind
+		tests/test -dddddddddd -DDDDDDDDDD -ex || handle_failure
+	fi
+elif [ "$ASAN_RUN" = "1" ]; then
+	tests/test -t$TEST -ddddddddd -DDDDDDDDDD -x || handle_failure
 else
 	# If we are only running a specific test, don't bother with the first pass, just run directly with the -e option (valgrind)
 	install_valgrind
 	tests/test -t$TEST -ddddddddd -DDDDDDDDDD -ex || handle_failure
+fi
+
+if [ "$ASAN_RUN" = "1" ]; then
+	exit 0 # Remainder of script not applicable to Address Sanitizer runs
 fi
 
 valgrind --version
