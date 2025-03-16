@@ -87,26 +87,27 @@ static void checkver(void)
 static void *periodic_tasks(void *unused)
 {
 	UNUSED(unused);
-	/*! \todo BUGBUG FIXME Shorter than a few seconds will cause test failure due to curl being active when cancelled?
-	 * Would be better to have a function like bbs_waitfor_ms_or_shutdown()
-	 * that can just return after some amount of time, or if the BBS is shutting down,
-	 * and then we can wouldn't need to cancel it.
-	 */
-	usleep(5000000);
+
+	if (bbs_safe_sleep_interrupt(SEC_MS(5))) {
+		return NULL;
+	}
 	for (;;) {
+		int i;
 		/* Check if a newer version of the BBS is available */
-		/* Only check once a day. */
-		bbs_pthread_disable_cancel();
 		checkver();
-		bbs_pthread_enable_cancel();
-		sleep(60 * 60 * 24); /* use sleep instead of usleep since the argument to usleep would overflow an int */
+		/* Only check once a day. */
+		for (i = 0; i < 24 * 60; i++) {
+			if (bbs_safe_sleep_interrupt(SEC_MS(60))) {
+				return NULL;
+			}
+		}
 	}
 	return NULL;
 }
 
 static int unload_module(void)
 {
-	bbs_pthread_cancel_kill(periodic_thread);
+	bbs_pthread_interrupt(periodic_thread);
 	bbs_pthread_join(periodic_thread, NULL);
 	return 0;
 }

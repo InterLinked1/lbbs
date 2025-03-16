@@ -722,19 +722,13 @@ static struct sigaction sigwinch_handler = {
 	.sa_handler = __sigwinch_handler,
 };
 
-static void __sigusr1_handler(int num)
+static void __sig_catch_and_release_handler(int num)
 {
-	UNUSED(num);
-
-	/* By default, if we use pthread_kill to try to send SIGUSR1 to a thread,
-	 * it will terminate the entire BBS.
-	 * Installing this dummy signal handler that does nothing prevents that,
-	 * but still allows system calls to be interrupted, as desired. */
-	bbs_debug(3, "Received SIGUSR1\n");
+	bbs_debug(3, "Received signal %d (%s)\n", num, bbs_signal_name(num));
 }
 
-static struct sigaction sigusr1_handler = {
-	.sa_handler = __sigusr1_handler,
+static struct sigaction sig_catch_and_release_handler = {
+	.sa_handler = __sig_catch_and_release_handler,
 };
 
 static void __sigusr2_handler(int num)
@@ -789,7 +783,27 @@ void bbs_request_module_unload(const char *name, int reload)
 int bbs_safe_sleep(int ms)
 {
 	bbs_soft_assert(ms > 0);
+	if (bbs_is_shutting_down()) {
+		/* If we are already shutting down,
+		 * immediately return activity,
+		 * as the alertpipe would have already triggered. */
+		bbs_debug(3, "Shutdown already in progress\n");
+		return 1;
+	}
 	return bbs_poll(sig_alert_pipe[0], ms);
+}
+
+int bbs_safe_sleep_interrupt(int ms)
+{
+	bbs_soft_assert(ms > 0);
+	if (bbs_is_shutting_down()) {
+		/* If we are already shutting down,
+		 * immediately return activity,
+		 * as the alertpipe would have already triggered. */
+		bbs_debug(3, "Shutdown already in progress\n");
+		return 1;
+	}
+	return bbs_poll_interrupt(sig_alert_pipe[0], ms);
 }
 
 static int cli_halt(struct bbs_cli_args *a)
@@ -999,7 +1013,14 @@ static void set_signals(void)
 		sigaction(SIGHUP, &ignore_sig_handler, NULL);
 	}
 	sigaction(SIGWINCH, &sigwinch_handler, NULL);
-	sigaction(SIGUSR1, &sigusr1_handler, NULL);
+	sigaction(SIGURG, &sig_catch_and_release_handler, NULL);
+
+	/* By default, if we use pthread_kill to try to send SIGUSR1 to a thread,
+	 * it will terminate the entire BBS.
+	 * Installing this dummy signal handler that does nothing prevents that,
+	 * but still allows system calls to be interrupted, as desired. */
+	sigaction(SIGUSR1, &sig_catch_and_release_handler, NULL);
+
 	sigaction(SIGUSR2, &sigusr2_handler, NULL); /* Used for reload, since SIGHUP is ignored */
 	sigaction(SIGPIPE, &ignore_sig_handler, NULL);
 }

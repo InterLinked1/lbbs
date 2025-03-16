@@ -1038,13 +1038,7 @@ static int run_test(const char *filename, int multiple)
 				current_child = 0;
 				bbs_debug(3, "Child process %d has exited\n", childpid);
 				if (WIFSIGNALED(wstatus)) { /* Child terminated by signal (probably SIGSEGV?) */
-#if defined(__GLIBC__) && __GLIBC__ >= 2 && __GLIBC_MINOR__ >= 32
-					bbs_error("Process %d (%s) killed, signal %s\n", childpid, filename, sigdescr_np(WTERMSIG(wstatus)));
-#elif defined(__GLIBC__)
-					bbs_error("Process %d (%s) killed, signal %s\n", childpid, filename, sys_siglist[WTERMSIG(wstatus)]);
-#else
-					bbs_error("Process %d (%s) killed, signal %s\n", childpid, filename, strsignal(WTERMSIG(wstatus)));
-#endif
+					bbs_error("Process %d (%s) killed, signal %s\n", childpid, filename, bbs_signal_name(WTERMSIG(wstatus)));
 				}
 			}
 			bbs_debug(3, "Test %s return code so far is %d\n", filename, res);

@@ -32,8 +32,15 @@ void bbs_pthread_enable_cancel(void);
  * \brief Cancel and kill a thread
  * \deprecated
  * \warning Avoid this function if possible, as threads may not clean up properly if cancelled/killed in the wrong place
+ * \retval 0 on success, errno on failure
  */
 int bbs_pthread_cancel_kill(pthread_t thread);
+
+/*!
+ * \brief Signal a thread to interrupt a blocking system call it may be blocked on
+ * \retval 0 on success, errno on failure
+ */
+int bbs_pthread_interrupt(pthread_t thread);
 
 int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const char *func, int line);
 

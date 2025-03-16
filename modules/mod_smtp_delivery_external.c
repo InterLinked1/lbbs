@@ -1387,7 +1387,8 @@ static void *queue_handler(void *unused)
 		return NULL; /* Not needed, queuing disabled */
 	}
 
-	if (bbs_safe_sleep(SEC_MS(10))) { /* Wait 10 seconds after the module loads, then try to flush anything in the queue. */
+	if (bbs_safe_sleep_interrupt(SEC_MS(10))) { /* Wait 10 seconds after the module loads, then try to flush anything in the queue. */
+		bbs_debug(5, "BBS shutdown occured before queue could run\n");
 		return NULL;
 	}
 
@@ -1395,14 +1396,12 @@ static void *queue_handler(void *unused)
 		struct mailq_run qrun;
 
 		mailq_run_init(&qrun, QUEUE_RUN_PERIODIC);
-		bbs_pthread_disable_cancel();
 		run_queue(&qrun, on_queue_file);
 		if (qrun.total) {
 			/* Only log a message if something happened. If the queue was empty, don't bother. */
 			bbs_debug(1, "%d/%d message%s processed: %d delivered, %d failed, %d delayed, %d skipped\n", qrun.processed, qrun.total, ESS(qrun.total), qrun.delivered, qrun.failed, qrun.delayed, qrun.skipped);
 		}
 		mailq_run_cleanup(&qrun);
-		bbs_pthread_enable_cancel();
 
 		/* We set this at the end, rather than the beginning, because
 		 * the queue will be processed again based on when we end,
@@ -1410,7 +1409,11 @@ static void *queue_handler(void *unused)
 		 * we want this time. */
 		last_periodic_queue_run = time(NULL);
 
-		usleep(1000000 * queue_interval);
+		/* Don't use usleep, as the SIGURG signal doesn't succeed in interrupting it */
+		if (bbs_safe_sleep_interrupt(SEC_MS((int) queue_interval))) {
+			bbs_debug(5, "Safe sleep returned: %s\n", strerror(errno));
+			break;
+		}
 	}
 	return NULL;
 }
@@ -2049,7 +2052,7 @@ static int unload_module(void)
 	res = smtp_unregister_delivery_agent(&extdeliver);
 	smtp_unregister_queue_processor(queue_processor);
 	bbs_cli_unregister_multiple(cli_commands_mailq);
-	bbs_pthread_cancel_kill(queue_thread);
+	bbs_pthread_interrupt(queue_thread);
 	bbs_pthread_join(queue_thread, NULL);
 	/*! \todo BUGBUG Possible for queue_lock to get destroyed while still being used, need to properly wait */
 	bbs_rwlock_destroy(&queue_lock);

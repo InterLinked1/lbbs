@@ -283,6 +283,21 @@ int bbs_pthread_cancel_kill(pthread_t thread)
 	return res;
 }
 
+int bbs_pthread_interrupt(pthread_t thread)
+{
+	int res;
+	bbs_debug(3, "Signaling thread %lu with SIGURG\n", (unsigned long) thread);
+	res = pthread_kill(thread, SIGURG);
+	if (res) {
+		if (res == ESRCH) {
+			bbs_debug(3, "Thread %lu no longer exists\n", (unsigned long) thread);
+		} else {
+			bbs_warning("Could not signal thread %lu: %s\n", (unsigned long) thread, strerror(res));
+		}
+	}
+	return res;
+}
+
 static struct thread_list_t *find_thread(pthread_t thread, int *restrict lwp, int *restrict waiting_join, const char *file, const char *func, int line)
 {
 	struct thread_list_t *x;

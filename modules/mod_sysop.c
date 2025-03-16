@@ -198,7 +198,9 @@ static void console_cleanup(struct sysop_console *console)
 	/* If unloading, these have already been closed */
 	if (!console->dead) {
 		bbs_remove_logging_fd(console->fdout);
-		bbs_socket_close(&console->fdin);
+		if (console->fdin != console->fdout) {
+			bbs_socket_close(&console->fdin);
+		}
 		bbs_socket_close(&console->fdout);
 		bbs_socket_close(&console->sfd);
 	}

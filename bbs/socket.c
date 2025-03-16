@@ -1440,8 +1440,10 @@ const char *poll_revent_name(int revents)
 	}
 }
 
+
+
 /* XXX This duplicates code, we should combine core logic of bbs_poll and bbs_node_poll */
-int bbs_poll(int fd, int ms)
+static int __bbs_poll_interrupt(int fd, int ms, int abort_on_eintr)
 {
 	struct pollfd pfd;
 	int res;
@@ -1457,6 +1459,9 @@ int bbs_poll(int fd, int ms)
 				break;
 			}
 			bbs_debug(7, "poll interrupted\n");
+			if (abort_on_eintr) {
+				break;
+			}
 			continue;
 		}
 		if (res > 0) {
@@ -1482,6 +1487,16 @@ int bbs_poll(int fd, int ms)
 	}
 #endif
 	return res;
+}
+
+int bbs_poll(int fd, int ms)
+{
+	return __bbs_poll_interrupt(fd, ms, 0);
+}
+
+int bbs_poll_interrupt(int fd, int ms)
+{
+	return __bbs_poll_interrupt(fd, ms, 1);
 }
 
 /* XXX For INTERNAL_POLL_THRESHOLD stuff, if ms == -1, instead of asserting, just set ms to INT_MAX or loop forever, internally */

@@ -420,12 +420,20 @@ int bbs_node_format_speed(struct bbs_node *node, char *restrict buf, size_t len)
 int bbs_node_statuses(struct bbs_node *node, const char *username);
 
 /*!
- * \brief wrapper around poll()
+ * \brief wrapper around poll() that automatically ignores EINTR
  * \param fd
  * \param ms -1 to wait forever, 0 for nonblocking, positive number of ms for timed poll
  * \retval Same as poll()
  */
 int bbs_poll(int fd, int ms);
+
+/*!
+ * \brief wrapper around poll() that aborts if thread is interrupted (EINTR)
+ * \param fd
+ * \param ms -1 to wait forever, 0 for nonblocking, positive number of ms for timed poll
+ * \retval Same as poll()
+ */
+int bbs_poll_interrupt(int fd, int ms);
 
 /*!
  * \brief wrapper around poll() for multiple file descriptors

@@ -438,7 +438,7 @@ int __attribute__ ((format (gnu_printf, 5, 6))) __bbs_asprintf(const char *file,
 extern int option_dumpcore; /* Actually, this functions as a forward declaration for the real declaration in bbs.c */
 #else
 extern int option_dumpcore;
-#endif
+#endif /* BBS_MAIN_FILE */
 #define bbs_assert(x) __bbs_assert(x, #x, __FILE__, __LINE__, __func__)
 #define bbs_soft_assert(x) __bbs_soft_assert(x, #x, __FILE__, __LINE__, __func__)
 
@@ -476,6 +476,15 @@ static inline int __attribute__((always_inline)) __bbs_soft_assertion_failed(int
 #else
 /* Use builtin assert */
 #define bbs_assert(x) assert(x)
+#endif /* BBS_ASSERT */
+
+/*! \brief Get the name of a signal as a string */
+#if defined(__GLIBC__) && __GLIBC__ >= 2 && __GLIBC_MINOR__ >= 32
+#define bbs_signal_name(sig) sigdescr_np(sig)
+#elif defined(__GLIBC__)
+#define bbs_signal_name(sig) sys_siglist[sig]
+#else
+#define bbs_signal_name(sig) strsignal(sig)
 #endif
 
 /*! \brief Dump a backtrace of the current thread to the logs */
@@ -562,13 +571,20 @@ int bbs_view_settings(int fd);
 void bbs_request_module_unload(const char *name, int reload);
 
 /*!
- * \brief Suspend execution of a BBS thread
+ * \brief Suspend execution of a BBS thread for a given amount of time or until BBS shutdown occurs
  * \param ms Number of milliseconds
  * \retval 0 if sleep returned uneventfully
  * \retval -1 if error occured
  * \retval 1 if activity occured (e.g. BBS shutdown)
+ * \note If unloading a module outside of shutdown, you may want to use bbs_safe_sleep_interrupt instead
  */
 int bbs_safe_sleep(int ms);
+
+/*!
+ * \brief Same as bbs_safe_sleep, but also return immediately if interrupted by a signal
+ * \note You will also need to signal the thread, e.g. using bbs_pthread_interrupt, in order to interrupt this function
+ */
+int bbs_safe_sleep_interrupt(int ms);
 
 /*!
  * \brief Subscribe SIGINT alertpipe
