@@ -47,6 +47,16 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 /*! \brief Join a non-detached thread */
 #define bbs_pthread_join(thread, retval) __bbs_pthread_join(thread, retval, __FILE__, __func__, __LINE__)
 
+int __bbs_pthread_timedjoin(pthread_t thread, void **retval, const char *file, const char *func, int line, int waitms);
+
+/*!
+ * \brief Join a non-detached thread, with timeout
+ * \param thread
+ * \param[out] retval
+ * \param waitms Number of ms to wait, maximum
+ */
+#define bbs_pthread_timedjoin(thread, retval, waitms) __bbs_pthread_timedjoin(thread, retval, __FILE__, __func__, __LINE__, waitms)
+
 int __bbs_pthread_create_detached(pthread_t *thread, pthread_attr_t *attr, void *(*start_routine)(void *), void *data, const char *file, const char *func, int line, const char *start_fn);
 
 /*!

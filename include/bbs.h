@@ -72,6 +72,9 @@
 #define BBS_PID_FILE DIRCAT(BBS_RUN_DIR, "bbs.pid")
 #endif
 
+/* Used by mod_sysop and test_sysop */
+#define BBS_SYSOP_SOCKET DIRCAT(DIRCAT("/var/run", BBS_NAME), "sysop.sock")
+
 /* Global undeclarations */
 /* Forbid usage of unsafe functions */
 #if defined(BBS_IN_CORE)

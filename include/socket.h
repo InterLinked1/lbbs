@@ -49,6 +49,14 @@ int __bbs_make_tcp_socket(int *sock, int port, const char *file, int line, const
 
 int __bbs_make_udp_socket(int *sock, int port, const char *ip, const char *interface, const char *file, int line, const char *func);
 
+/*!
+ * \brief Whether a file descriptor is valid
+ * \param fd
+ * \retval 1 if valid, 0 if invalid
+ * \note Do not use this function, generally speaking. File descriptors should always be valid in correct code. This is more for enforcement logic.
+ */
+int bbs_fd_valid(int fd);
+
 /*! \brief Put a socket in nonblocking mode */
 int bbs_unblock_fd(int fd);
 

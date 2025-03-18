@@ -20,7 +20,6 @@
 #include "include/bbs.h"
 
 #include <string.h>
-#include <fcntl.h> /* use fcntl */
 
 #include <openssl/opensslv.h>
 
@@ -477,7 +476,7 @@ static int ssl_close(struct tls_client *t)
 	 * Verify that the file descriptor for this session has not been closed yet.
 	 * If it has, then something went wrong, and this is likely the cause of other TLS issues. */
 	fd = SSL_get_fd(ssl);
-	bbs_soft_assert(fcntl(fd, F_GETFD) != -1);
+	bbs_soft_assert(bbs_fd_valid(fd));
 
 	RWLIST_WRLOCK(&tls_clients);
 	RWLIST_REMOVE(&tls_clients, t, entry);

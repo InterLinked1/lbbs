@@ -1965,7 +1965,10 @@ static void unload_modules_helper(void)
 				if (numnodes) {
 					bbs_warning("%u node%s still registered\n", numnodes, ESS(numnodes));
 				} else {
-					bbs_debug(2, "All nodes have exited\n");
+					/* Nodes are removed from the node list prior to node_shutdown being called.
+					 * However, they don't actually exit (and unref the module) until node_free is called.
+					 * Thus, there can still be a delay in that case. */
+					bbs_debug(2, "All nodes have been unregistered (but haven't necessarily exited)\n");
 				}
 			}
 			usleep(200000); /* Wait 200 ms and try again */

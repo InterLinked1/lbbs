@@ -352,7 +352,6 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 	if (!waiting_join) {
 #ifdef __linux__
 		struct timespec ts;
-		int waits = 0;
 		/* This is suspicious... we may end up hanging if the thread doesn't exit imminently */
 		/* Don't immediately emit a warning, because the thread may be just about to exit
 		 * and thus wasn't waitingjoin when we checked. This prevents superflous warnings,
@@ -360,17 +359,8 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 		if (clock_gettime(CLOCK_REALTIME, &ts) == -1) {
 			bbs_error("clock_gettime failed: %s\n", strerror(errno));
 		}
-		ts.tv_sec = 1; /* Wait up to a second */
+		ts.tv_sec += 1; /* Wait up to a second */
 		res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts); /* This is not POSIX portable */
-		while (res == ETIMEDOUT && ++waits < 200) {
-			/* It seems pthread_timedjoin_np doesn't always wait and sometimes returns immediately,
-			 * in which case it's possible that no time has actually passed.
-			 * If this is the case, then manually sleep and check again first. */
-			/* Wait a few hundred ms. Okay to make a blocking call since pthread_join is expected to possibly block anyways.
-			 * Still split up into multiple waits to avoid sleeping longer than is really needed... */
-			usleep(25000); /* Don't use bbs_safe_sleep, since that would busy wait during shutdown */
-			res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts);
-		}
 		if (res == ETIMEDOUT) {
 			/* The thread hasn't exited yet. At this point, it's more likely that something is actually wrong.
 			 * This isn't always the case, for threads that might take a long time to clean up and exit,
@@ -379,11 +369,11 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 			/* Now, proceed as normal and do a ~blocking pthread_join */
 			/* Seems that after using pthread_timedjoin_np, you can't do a blocking pthread_join anymore? So loop */
 			while (res && res == ETIMEDOUT) {
-#if defined(__linux__) && defined(__GLIBC__)
+#if defined(__GLIBC__)
 				bbs_debug(9, "Thread %lu not yet joined after %lus\n", thread, ts.tv_sec);
-#endif
-				usleep(25000); /* Don't use bbs_safe_sleep, since that would busy wait during shutdown */
-				ts.tv_sec = 1; /* XXX Even this doesn't seem to make it work right */
+#endif /* __GLIBC__ */
+				clock_gettime(CLOCK_REALTIME, &ts); /* Get time again, in case a lot of delayed has occured since the last pthread_timedjoin_np */
+				ts.tv_sec += 1;
 				res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts);
 			}
 		}
@@ -391,13 +381,78 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 		bbs_warning("Thread %d is not currently waiting to be joined\n", lwp);
 		/* This is bad, as we could block indefinitely */
 		res = pthread_join(thread, retval ? retval : &tmp);
-#endif
+#endif /* __linux__ */
 	} else {
 		res = pthread_join(thread, retval ? retval : &tmp);
 	}
 
 	if (res) {
 		bbs_error("pthread_join(%lu) at %s:%d %s(): %s\n", (unsigned long) thread, file, line, func, strerror(res));
+		return res;
+	}
+	res = __thread_unregister(thread, file, line, func);
+	if (res == -1) {
+		bbs_error("Thread %d attempted to join nonjoinable thread %lu at %s:%d %s()\n", bbs_gettid(), (unsigned long) thread, file, line, func);
+		return -1; /* pthread_join may have returned 0, but if the thread was detached (though it can't be here!), we probably can't trust its return value */
+	}
+	return 0;
+}
+
+int __bbs_pthread_timedjoin(pthread_t thread, void **retval, const char *file, const char *func, int line, int waitms)
+{
+	int res;
+	struct thread_list_t *x;
+	int lwp;
+	int waiting_join;
+#ifdef __linux__
+	void *tmp;
+	int nsec;
+	struct timespec ts;
+#else
+	/* Just pretend the timer expired, to avoid hanging */
+	UNUSED(retval);
+	UNUSED(waitms);
+	bbs_debug(1, "pthread_timedjoin_np is not supported on this platform\n");
+	return -1;
+#endif
+
+	bbs_soft_assert(thread != 0); /* Somebody tried to join the thread 0? (often used as NIL thread) */
+
+	x = find_thread(thread, &lwp, &waiting_join, file, func, line);
+
+	if (!x) {
+		/* If we try joining a thread right after we created it, it's possible it hasn't actually begun running (and registered itself) yet.
+		 * Wait a moment, then try again, since this shouldn't generally happen anyways.
+		 * If we don't do this, this can cause a segfault for some reason,
+		 * so it's good to be a bit generous with the timing here. */
+		bbs_debug(3, "Thread %lu not registered, checking again momentarily\n", (unsigned long) thread);
+		usleep(10000);
+		x = find_thread(thread, &lwp, &waiting_join, file, func, line);
+	}
+	if (!x) {
+		bbs_error("Thread %lu not registered\n", (unsigned long) thread);
+		return -1;
+	} else if (!lwp) {
+		return -1;
+	}
+
+	bbs_debug(6, "Attempting to join thread %lu (LWP %d) with timeout %d at %s:%d %s()\n", (unsigned long) thread, lwp, waitms, file, line, func);
+
+#ifdef __linux__
+	if (clock_gettime(CLOCK_REALTIME, &ts) == -1) {
+		bbs_error("clock_gettime failed: %s\n", strerror(errno));
+	}
+	nsec = 1000000 * (waitms % 1000);
+	ts.tv_nsec += nsec;
+	if (ts.tv_nsec < nsec) {
+		ts.tv_sec++;
+	}
+	ts.tv_sec += waitms / 1000;
+	res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts);
+#endif
+
+	if (res) {
+		bbs_error("pthread_timedjoin_np(%lu) at %s:%d %s(): %s\n", (unsigned long) thread, file, line, func, strerror(res));
 		return res;
 	}
 	res = __thread_unregister(thread, file, line, func);

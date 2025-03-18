@@ -25,6 +25,7 @@
 
 #include "include/node.h"
 #include "include/term.h"
+#include "include/socket.h" /* use bbs_fd_valid, don't need full utils.h */
 
 #pragma GCC diagnostic ignored "-Wsign-conversion"
 static int bbs_input_set(int fd, int canonical, int echo)
@@ -34,7 +35,7 @@ static int bbs_input_set(int fd, int canonical, int echo)
 	memset(&term, 0, sizeof(term)); /* Prevent valgrind: Syscall param ioctl(TCSET{S,SW,SF}) points to uninitialised byte(s) */
 
 	if (tcgetattr(fd, &term)) {
-		bbs_error("tcgetattr failed: %s\n", strerror(errno));
+		bbs_error("tcgetattr(%d) failed: %s\n", fd, strerror(errno));
 		return -1;
 	}
 	if (canonical) {
@@ -48,7 +49,7 @@ static int bbs_input_set(int fd, int canonical, int echo)
 		term.c_lflag &= ~ECHO;
 	}
 	if (tcsetattr(fd, TCSANOW, &term)) {
-		bbs_error("tcsetattr failed: %s\n", strerror(errno));
+		bbs_error("tcsetattr(%d) failed: %s\n", fd, strerror(errno));
 		return -1;
 	}
 	return 0;
@@ -61,7 +62,7 @@ int bbs_echo(int fd, int echo)
 	memset(&term, 0, sizeof(term)); /* Prevent valgrind: Syscall param ioctl(TCSET{S,SW,SF}) points to uninitialised byte(s) */
 
 	if (tcgetattr(fd, &term)) {
-		bbs_error("tcgetattr failed: %s\n", strerror(errno));
+		bbs_error("tcgetattr(%d) failed: %s\n", fd, strerror(errno));
 		return -1;
 	}
 	if (echo) {
@@ -70,7 +71,7 @@ int bbs_echo(int fd, int echo)
 		term.c_lflag &= ~ECHO;
 	}
 	if (tcsetattr(fd, TCSANOW, &term)) {
-		bbs_error("tcsetattr failed: %s\n", strerror(errno));
+		bbs_error("tcsetattr(%d) failed: %s\n", fd, strerror(errno));
 		return -1;
 	}
 	return 0;
@@ -168,7 +169,7 @@ int bbs_term_makeraw(int fd)
 		bbs_error("File descriptor %d is not a TTY\n", fd);
 		return -1;
 	} else if (tcgetattr(fd, &t) == -1) {
-		bbs_error("tcgetattr: %s\n", strerror(errno));
+		bbs_error("tcgetattr(%d): %s\n", fd, strerror(errno));
 		return -1;
 	}
 
@@ -180,7 +181,7 @@ int bbs_term_makeraw(int fd)
 	t.c_cc[VTIME] = 0; /* with blocking */
 
 	if (tcsetattr(fd, TCSANOW, &t) == -1) {
-		bbs_error("tcsetattr: %s\n", strerror(errno));
+		bbs_error("tcsetattr(%d): %s\n", fd, strerror(errno));
 		return -1;
 	}
 	return 0;
@@ -194,7 +195,7 @@ int tty_set_line_discipline(int fd)
 		bbs_error("File descriptor %d is not a TTY\n", fd);
 		return -1;
 	} else if (tcgetattr(fd, &t) == -1) {
-		bbs_error("tcgetattr: %s\n", strerror(errno));
+		bbs_error("tcgetattr(%d): %s\n", fd, strerror(errno));
 		return -1;
 	}
 
@@ -203,7 +204,7 @@ int tty_set_line_discipline(int fd)
 	t.c_iflag |= ICRNL;
 	t.c_iflag &= ~(INLCR | IGNCR);
 	if (tcsetattr(fd, TCSANOW, &t) == -1) {
-		bbs_error("tcsetattr: %s\n", strerror(errno));
+		bbs_error("tcsetattr(%d): %s\n", fd, strerror(errno));
 		return -1;
 	}
 	return 0;

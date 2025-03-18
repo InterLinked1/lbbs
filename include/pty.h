@@ -32,18 +32,20 @@ int bbs_openpty(int *amaster, int *aslave, char *name, const struct termios *ter
  * \brief Create and spawn a generic PTY master relay for arbitrary file descriptors
  * \param fd Socket file descriptor
  * \param[out] fd The PTY master file descriptor
- * \note This thread will continue until either file descriptor closes. It should be created detached.
+ * \param[out] thread On success, the thread to use for bbs_pthread_join
+ * \note This thread will continue until either file descriptor closes. It should NOT be created detached.
  * \retval -1 on failure, slave file descriptor on success
  */
-int __bbs_spawn_pty_master(int fd, int *amaster);
+int __bbs_spawn_pty_master(int fd, int *amaster, pthread_t *thread);
 
 /*!
  * \brief Create and spawn a generic PTY master relay for arbitrary file descriptors
  * \param fd Socket file descriptor
- * \note This thread will continue until either file descriptor closes. It should be created detached.
+ * \param[out] thread On success, the thread to use for bbs_pthread_join
+ * \note This thread will continue until either file descriptor closes. It should NOT be created detached.
  * \retval -1 on failure, slave file descriptor on success
  */
-int bbs_spawn_pty_master(int fd);
+int bbs_spawn_pty_master(int fd, pthread_t *thread);
 
 /*! \brief Allocate and set up a pseudoterminal for a BBS node */
 int bbs_pty_allocate(struct bbs_node *node);

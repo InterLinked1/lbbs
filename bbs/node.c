@@ -593,6 +593,9 @@ int bbs_node_dead(struct bbs_node *node)
 	return 0;
 }
 
+/* Forward declaration */
+static int interrupt_node(struct bbs_node *node);
+
 static void node_shutdown(struct bbs_node *node, int unique)
 {
 	pthread_t node_thread;
@@ -613,6 +616,11 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	bbs_event_dispatch(node, EVENT_NODE_SHUTDOWN);
 
 	bbs_node_kill_child(node);
+
+	/* If shutting down from another thread, interrupt any blocking system calls, to force poll to return EINTR and terminate */
+	if (node->thread != pthread_self()) {
+		interrupt_node(node);
+	}
 
 	/* Destroy the user */
 	if (node->user) {
@@ -673,7 +681,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 		if (skipjoin) {
 			bbs_debug(3, "Skipping join of node %d thread %lu\n", nodeid, (unsigned long) node_thread);
 		} else if (node_thread) { /* Either bbs_node_handler thread is detached, or somebody else is joining it */
-			bbs_debug(3, "Waiting for node %d to exit\n", nodeid);
+			bbs_debug(3, "Waiting for node %d to exit (thread %lu)\n", nodeid, (unsigned long) node_thread);
 			bbs_pthread_join(node_thread, NULL); /* Wait for the bbs_node_handler thread to exit, and then clean it up. */
 		} else {
 			bbs_debug(3, "Node %d has no associated thread\n", nodeid);
@@ -747,6 +755,7 @@ int bbs_node_shutdown_node(unsigned int nodenum)
 	return n ? 0 : -1;
 }
 
+/*! \note Must be called locked */
 static int interrupt_node(struct bbs_node *node)
 {
 	int res = -1;

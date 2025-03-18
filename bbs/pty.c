@@ -49,6 +49,7 @@
 #include <termios.h>
 #include <sys/ioctl.h> /* use winsize */
 #include <signal.h> /* use kill */
+#include <pthread.h> /* use pthread_t */
 
 #ifdef DEBUG_PTY
 #include <ctype.h>
@@ -174,7 +175,10 @@ static void *pty_master_fd(void *varg)
 
 	/* We don't need to call tty_set_raw on any file descriptor. */
 
-	/* Relay data between master and slave */
+	/* Relay data between master and slave
+	 *
+	 * Note: We don't close any file descriptors in this function before exiting.
+	 * That is the responsibility of the caller to manage. */
 	for (;;) {
 		int pres;
 		fds[0].revents = fds[1].revents = 0;
@@ -183,23 +187,23 @@ static void *pty_master_fd(void *varg)
 		if (pres < 0) {
 			if (errno != EINTR) {
 				bbs_error("poll returned %d: %s\n", pres, strerror(errno));
-				break;
+			} else {
+				bbs_debug(6, "poll returned %d: %s\n", pres, strerror(errno));
 			}
-			continue;
+			break; /* Break even on EINTR, so that bbs_pthread_interrupt can force us to exit */
 		}
 		if (fds[0].revents & POLLIN) { /* Got input on socket -> pty */
+			/*! \todo We are just copying bytes from one fd to another here.
+			 * Use copy_file_range or something that can do an in-kernel copy? */
 			bytes_read = read(fds[0].fd, buf, sizeof(buf));
 			if (bytes_read <= 0) {
-				close(fds[1].fd); /* Close the other side */
-				close(fds[0].fd); /* Close our side, since nobody else will */
+				bbs_debug(7, "read returned %ld\n", bytes_read);
 				break; /* We'll read 0 bytes upon disconnect */
 			}
 			bytes_wrote = write(fds[1].fd, buf, (size_t) bytes_read);
 			if (bytes_wrote != bytes_read) {
 				bbs_error("Expected to write %ld bytes, only wrote %ld (%s)\n", bytes_read, bytes_wrote, strerror(errno));
 				if (bytes_wrote == -1) {
-					close(fds[1].fd);
-					close(fds[0].fd);
 					break;
 				}
 			}
@@ -207,24 +211,18 @@ static void *pty_master_fd(void *varg)
 			bytes_read = read(fds[1].fd, buf, sizeof(buf) - 1);
 			if (bytes_read <= 0) {
 				bbs_debug(10, "pty master read returned %ld (%s)\n", bytes_read, strerror(errno));
-				close(fds[0].fd); /* Close the other side */
-				close(fds[1].fd); /* Close our side, since nobody else will */
 				break; /* We'll read 0 bytes upon disconnect */
 			}
 			bytes_wrote = write(fds[0].fd, buf, (size_t) bytes_read);
 			if (bytes_wrote != bytes_read) {
 				bbs_error("Expected to write %ld bytes, only wrote %ld (%s)\n", bytes_read, bytes_wrote, strerror(errno));
 				if (bytes_wrote == -1) {
-					close(fds[1].fd);
-					close(fds[0].fd);
 					break;
 				}
 			}
 		} else {
 			/* Something else happened that should effect a disconnect. */
 			bbs_debug(10, "Exceptional activity returned from poll: %s/%s\n", poll_revent_name(fds[0].revents), poll_revent_name(fds[1].revents));
-			close(fds[1].fd);
-			close(fds[0].fd);
 			break;
 		}
 	}
@@ -233,9 +231,8 @@ static void *pty_master_fd(void *varg)
 	return NULL;
 }
 
-int __bbs_spawn_pty_master(int fd, int *amaster)
+int __bbs_spawn_pty_master(int fd, int *amaster, pthread_t *threadptr)
 {
-	pthread_t masterthread;
 	struct pty_fds *ptyfds;
 	int aslave;
 
@@ -252,17 +249,19 @@ int __bbs_spawn_pty_master(int fd, int *amaster)
 	}
 	ptyfds->amaster = *amaster;
 	ptyfds->fd = fd;
-	if (bbs_pthread_create_detached(&masterthread, NULL, pty_master_fd, ptyfds)) {
+	/* Don't create the thread detached, because if nobody waits to join it,
+	 * the BBS could finish shutting down before we return. */
+	if (bbs_pthread_create(threadptr, NULL, pty_master_fd, ptyfds)) {
 		free(ptyfds);
 		return -1;
 	}
 	return aslave;
 }
 
-int bbs_spawn_pty_master(int fd)
+int bbs_spawn_pty_master(int fd, pthread_t *thread)
 {
 	int amaster = -1; /* Not needed, but initialize to make old versions of gcc happy */
-	return __bbs_spawn_pty_master(fd, &amaster);
+	return __bbs_spawn_pty_master(fd, &amaster, thread);
 }
 
 int bbs_pty_allocate(struct bbs_node *node)

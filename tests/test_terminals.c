@@ -18,6 +18,7 @@
  */
 
 #include "test.h"
+#include "ansi.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -46,18 +47,6 @@ static int pre(void)
 #define FINALIZE_TEST() \
 	close_if(clientfd);
 
-#define FMT_EXPECT(fmt, ...) \
-	sprintf(tmpbuf, fmt, ## __VA_ARGS__); \
-	CLIENT_EXPECT_EVENTUALLY(clientfd, tmpbuf);
-
-#define FMT_SEND(fmt, ...) \
-	bytes = sprintf(tmpbuf, fmt, ## __VA_ARGS__); \
-	write(clientfd, tmpbuf, (size_t) bytes);
-
-#define SEND_CURSOR_POS(n, m) \
-	bytes = sprintf(tmpbuf, "\e[%d;%dR", n, m); \
-	write(clientfd, tmpbuf, (size_t) bytes);
-
 #define TELNET_EOL "\r\0" /* CR NUL */
 #define CRLF "\r\n"
 #define EOL "\r"
@@ -76,29 +65,6 @@ static int bytes;
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-contains-nul"
-
-static int ansi_handshake(int clientfd)
-{
-	FMT_EXPECT(TERM_CURSOR_POS_QUERY);
-	SEND_CURSOR_POS(3, 1);
-	FMT_EXPECT(TERM_CURSOR_POS_QUERY); /* After TERM_RESET_LINE */
-	SEND_CURSOR_POS(6, 1);
-	FMT_EXPECT(TERM_CURSOR_POS_QUERY); /* After TERM_UP_ONE_LINE */
-	SEND_CURSOR_POS(5, 1);
-	FMT_EXPECT(TERM_CURSOR_POS_QUERY); /* After TERM_COLOR_GREEN */
-	SEND_CURSOR_POS(5, 1);
-	FMT_EXPECT(TERM_CURSOR_POS_QUERY); /* After TERM_TITLE_FMT */
-	SEND_CURSOR_POS(5, 1);
-	FMT_EXPECT(TERM_CURSOR_POS_QUERY); /* After TERM_CURSOR_POS_SET_FMT */
-	SEND_CURSOR_POS(4, 6);
-	FMT_EXPECT(TERM_CURSOR_POS_QUERY); /* After TERM_CLEAR */
-	SEND_CURSOR_POS(1, 1);
-
-	return 0;
-
-cleanup:
-	return -1;
-}
 
 /* Used to be WONT TELOPT_LINEMODE, but now net_telnet doesn't send that */
 #define LAST_UNSOLICITED_CMD_RECEIVED WILL
@@ -146,7 +112,7 @@ static int run(void)
 	FMT_SEND("%c%c%c", IAC, DONT, TELOPT_ECHO);
 	FMT_SEND("%c%c%c", IAC, DO, TELOPT_ECHO);
 
-	if (ansi_handshake(clientfd)) {
+	if (test_ansi_handshake(clientfd)) {
 		goto cleanup;
 	}
 
@@ -184,7 +150,7 @@ static int run(void)
 	FMT_EXPECT("%c%c%c", IAC, DO, TELOPT_TSPEED);
 	FMT_SEND("%c%c%c", IAC, WONT, TELOPT_TSPEED);
 
-	if (ansi_handshake(clientfd)) {
+	if (test_ansi_handshake(clientfd)) {
 		goto cleanup;
 	}
 
@@ -224,7 +190,7 @@ static int run(void)
 	FMT_EXPECT("%c%c%c%c%c%c", IAC, SB, TELOPT_TSPEED, TELQUAL_SEND, IAC, SE);
 	FMT_SEND("%c%c%c%c%s%c%c", IAC, SB, TELOPT_TSPEED, TELQUAL_IS, "38400,38400", IAC, SE);
 
-	if (ansi_handshake(clientfd)) {
+	if (test_ansi_handshake(clientfd)) {
 		goto cleanup;
 	}
 
@@ -248,7 +214,7 @@ static int run(void)
 	RLOGIN_HANDSHAKE("", TEST_USER4, "xterm/38400");
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "\0");
 
-	if (ansi_handshake(clientfd)) {
+	if (test_ansi_handshake(clientfd)) {
 		goto cleanup;
 	}
 
@@ -272,7 +238,7 @@ static int run(void)
 	RLOGIN_HANDSHAKE("", TEST_USER4, "syncterm/115200");
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "\0");
 
-	if (ansi_handshake(clientfd)) {
+	if (test_ansi_handshake(clientfd)) {
 		goto cleanup;
 	}
 
@@ -296,7 +262,7 @@ static int run(void)
 	RLOGIN_HANDSHAKE(TEST_PASS4, TEST_USER4, "syncterm/115200");
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "\0");
 
-	if (ansi_handshake(clientfd)) {
+	if (test_ansi_handshake(clientfd)) {
 		goto cleanup;
 	}
 

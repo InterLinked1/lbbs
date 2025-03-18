@@ -1,6 +1,9 @@
 
 MOD_SRC := $(wildcard test_*.c)
 MOD_SO := $(MOD_SRC:.c=.so)
+ALL_SRC := $(wildcard *.c)
+MAIN_SRC := $(filter-out $(MOD_SRC),$(ALL_SRC))
+MAIN_OBJ = $(MAIN_SRC:.c=.o)
 
 TEST_EXE := test
 
@@ -31,7 +34,7 @@ readline.o : ../bbs/readline.c
 	cp ../bbs/readline.c .
 	$(CC) $(CFLAGS) -fPIC -DTEST_MODULE=\"$(basename $^)\" -DTEST_MODULE_SELF_SYM=__internal_$(basename $^)_self $(INC) -c $^
 
-$(TEST_EXE) : test.o email.o readline.o tls.o compress.o
+$(TEST_EXE) : $(MAIN_OBJ) readline.o
 	$(CC) $(CFLAGS) -Wl,--export-dynamic -o $(TEST_EXE) $^ -ldl -lpthread -lssl -lcrypto -lz
 
 test_%.o : test_%.c

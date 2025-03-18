@@ -310,7 +310,7 @@ int bbs_remove_logging_fd(int fd)
 	rfd = RWLIST_REMOVE_BY_FIELD(&remote_log_fds, fd, fd, entry);
 	active_remote_consoles--;
 	RWLIST_UNLOCK(&remote_log_fds);
-	if (unlikely(!rfd)) {
+	if (bbs_assertion_failed(rfd != NULL)) {
 		bbs_error("File descriptor %d did not have logging\n", fd);
 	} else {
 		bbs_mutex_destroy(&rfd->lock);

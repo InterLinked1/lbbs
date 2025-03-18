@@ -285,6 +285,11 @@ int __bbs_make_udp_socket(int *sock, int port, const char *ip, const char *inter
 	return __bbs_make_ip_socket(sock, port, SOCK_DGRAM, ip, interface, file, line, func);
 }
 
+int bbs_fd_valid(int fd)
+{
+	return fcntl(fd, F_GETFD) != -1;
+}
+
 int bbs_unblock_fd(int fd)
 {
 	int flags = fcntl(fd, F_GETFL, 0);
@@ -1110,8 +1115,11 @@ static void __bbs_tcp_listener(int socket, const char *name, int (*handshake)(st
 			close(sfd);
 		} else if (handshake && handshake(node)) {
 			bbs_node_unlink(node);
-		} else if (bbs_pthread_create_detached(&node->thread, NULL, handler, node)) { /* Run the BBS on this node */
-			bbs_node_unlink(node);
+		} else {
+			node->skipjoin = 1;
+			if (bbs_pthread_create_detached(&node->thread, NULL, handler, node)) { /* Run the BBS on this node */
+				bbs_node_unlink(node);
+			}
 		}
 	}
 }
@@ -1683,6 +1691,12 @@ int bbs_node_poll(struct bbs_node *node, int ms)
 			}
 		} else {
 			res = poll(&pfd, 1, ms);
+		}
+		if (!node->active) {
+			/* If poll was interrupted because we're dead now, then exit */
+			bbs_debug(6, "Node %u no longer active, aborting poll\n", node->id);
+			res = -1;
+			break;
 		}
 		if (res < 0) {
 			if (errno != EINTR) {
