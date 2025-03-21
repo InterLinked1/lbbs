@@ -56,6 +56,9 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #define TEST_HOME_DIR_ROOT DIRCAT(TEST_TRANSFER_DIR, "home")
 #define TEST_WWW_DIR DIRCAT(TEST_ROOT_DIR, "www")
 
+/* Separate top-level directory used, to make it easier to give the mysql user permissions for it */
+#define TEST_MYSQL_DIR TEST_ROOT_DIR "_mysql"
+
 /*! \brief Create directory if it doesn't already exist */
 #define TEST_MKDIR(dir) if (mkdir(dir, 0700) && errno != EEXIST) { bbs_error("mkdir(%s) failed: %s\n", dir, strerror(errno)); return -1; }
 
@@ -113,6 +116,7 @@ int test_bbs_expect(const char *s, int ms);
 int test_preload_module(const char *module);
 int test_load_module(const char *module);
 void test_autoload_all(void);
+void test_use_mysql(void);
 
 int test_make_socket(int port);
 

@@ -19,7 +19,7 @@ jobs:
       - name: Install prereqs
         run: |
           sudo sed -i 's/azure\.//' /etc/apt/sources.list
-          sudo ./scripts/install_prereq.sh
+          sudo ./scripts/install_prereq.sh 1
       - name: Build LBBS
         run: |
           sudo make modcheck
@@ -45,7 +45,7 @@ jobs:
       - name: Install prereqs
         run: |
           sudo sed -i 's/azure\.//' /etc/apt/sources.list
-          sudo ./scripts/install_prereq.sh
+          sudo ./scripts/install_prereq.sh 1
       - name: Build LBBS
         run: |
           sudo make modcheck
@@ -98,7 +98,7 @@ jobs:
       - name: Install prereqs
         run: |
           sudo sed -i 's/azure\.//' /etc/apt/sources.list
-          sudo ./scripts/install_prereq.sh
+          sudo ./scripts/install_prereq.sh 1
       - name: Build LBBS
         run: |
           sudo make modcheck

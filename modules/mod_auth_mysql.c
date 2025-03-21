@@ -41,6 +41,18 @@
 #include "include/utils.h" /* use bbs_str_isprint */
 #include "include/mail.h"
 
+static char buf_dbhostname[32];
+static char buf_dbusername[32];
+static char buf_dbpassword[32];
+static char buf_dbname[32] = "";
+/* strlen_zero doesn't like being called directly on char buffers, need pointers */
+static char *dbhostname = buf_dbhostname;
+static char *dbusername = buf_dbusername;
+static char *dbpassword = buf_dbpassword;
+static char *dbname = buf_dbname;
+
+#define DB_NAME_ARGS dbhostname, !strlen_zero(dbhostname) ? "." : ""
+
 static int register_phone = 1, register_address = 1, register_zip = 1, register_dob = 1, register_gender = 1, register_howheard = 1;
 static int verifyregisteremail = 0;
 
@@ -48,7 +60,7 @@ static int verifyregisteremail = 0;
 #pragma GCC diagnostic ignored "-Wstack-protector"
 static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username, const char *password, struct bbs_user ***userlistptr)
 {
-	char sql[184];
+	char sql[195]; /* Min required to avoid truncation warning */
 	MYSQL *mysql = NULL;
 	MYSQL_STMT *stmt;
 	int mysqlres;
@@ -58,11 +70,10 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 	const char *fmt = "dssdssssssssttt";
 	const size_t num_fields = strlen(fmt);
 
-	mysql = sql_connect();
+	mysql = sql_connect_db(dbhostname, dbusername, dbpassword, dbname);
 	if (!mysql) {
 		return NULL;
 	}
-
 	stmt = mysql_stmt_init(mysql);
 	if (!stmt) {
 		goto cleanup;
@@ -244,7 +255,7 @@ static int change_password(const char *username, const char *password)
 	 * Columns like date_registered and priv should be set automatically on INSERT. */
 	snprintf(sql, sizeof(sql), "UPDATE %s%susers SET password = ? WHERE username = ?", DB_NAME_ARGS);
 
-	mysql = sql_connect();
+	mysql = sql_connect_db(dbhostname, dbusername, dbpassword, dbname);
 	NULL_RETURN(mysql);
 	stmt = mysql_stmt_init(mysql);
 	if (!stmt || sql_prep_bind_exec(stmt, sql, types, pw_hash, username)) { /* Bind parameters and execute */
@@ -303,7 +314,7 @@ static int make_user(const char *username, const char *password, const char *ful
 	 * Columns like date_registered and priv should be set automatically on INSERT. */
 	snprintf(sql, sizeof(sql), "INSERT INTO %s%susers (username, password, name, email, phone, address, city, state, zip, dob, gender) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", DB_NAME_ARGS);
 
-	mysql = sql_connect();
+	mysql = sql_connect_db(dbhostname, dbusername, dbpassword, dbname);
 	NULL_RETURN(mysql);
 	stmt = mysql_stmt_init(mysql);
 	if (!stmt) {
@@ -552,10 +563,12 @@ confirm:
 
 static int load_config(void)
 {
+	int res = 0;
 	struct bbs_config *cfg = bbs_config_load("mod_auth_mysql.conf", 0);
 
 	if (!cfg) {
-		return 0;
+		bbs_error("mod_auth_mysql.conf is missing, module will decline to load\n");
+		return -1;
 	}
 
 	bbs_config_val_set_true(cfg, "registration", "phone", &register_phone);
@@ -566,7 +579,24 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "registration", "howheard", &register_howheard);
 	bbs_config_val_set_true(cfg, "registration", "verifyemail", &verifyregisteremail);
 
-	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
+	res |= bbs_config_val_set_str(cfg, "db", "hostname", buf_dbhostname, sizeof(buf_dbhostname));
+	res |= bbs_config_val_set_str(cfg, "db", "username", buf_dbusername, sizeof(buf_dbusername));
+	res |= bbs_config_val_set_str(cfg, "db", "password", buf_dbpassword, sizeof(buf_dbpassword));
+	if (res) {
+		bbs_error("Missing either hostname, username, or password\n");
+		bbs_config_free(cfg);
+		return -1;
+	}
+	if (bbs_config_val_set_str(cfg, "db", "database", buf_dbname, sizeof(buf_dbname))) { /* This is optional but highly recommended. */
+		bbs_warning("No database name specified in mod_auth_mysql.conf\n");
+	}
+
+	/* Don't destroy the config, mod_auth_mysql will read it again to parse some settings that apply only to it.
+	 *
+	 * UPDATE: mod_auth_mysql loads the config file with caching disabled, so it will get reparsed anyways.
+	 * This is probably a good thing since it reduces the number of places the DB password is in memory...
+	 * As such, there's no downside to destroying the config here. */
+	bbs_config_free(cfg);
 	return 0;
 }
 

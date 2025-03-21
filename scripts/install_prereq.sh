@@ -1,5 +1,7 @@
 #/bin/sh
 
+# $1 = install prerequisites needed for test suite
+
 set -e
 
 # == Packages
@@ -186,6 +188,11 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libsieve2-dev"
 # Soft dependencies
 # used for bc (executed by 'calc' in door_utils)
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN bc"
+
+# Required only for tests
+if [ "$1" = "1" ]; then
+	PACKAGES_DEBIAN="$PACKAGES_DEBIAN mariadb-server"
+fi
 
 # Actually install required packages
 OS=$( uname -s )

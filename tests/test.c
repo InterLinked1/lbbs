@@ -43,6 +43,7 @@
 #include <netinet/in.h> /* use sockaddr_in */
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <pwd.h> /* use getpwnam */
 #include <limits.h> /* use PATH_MAX */
 
 #include "include/readline.h"
@@ -538,10 +539,124 @@ int test_bbs_expect(const char *s, int ms)
 }
 
 static pid_t current_child = 0;
+static pid_t mysql_child = 0; /* We never wait on the child since we let it run for remaining tests if/once started, but it will exit with SIGCHLD once we do */
+
+#define MYSQL_DATA_DIR DIRCAT(TEST_MYSQL_DIR, "data")
+#define MYSQL_PID_FILE DIRCAT(TEST_MYSQL_DIR, "mysqld.pid")
+#define MYSQL_LOG_FILE DIRCAT(TEST_MYSQL_DIR, "mysql.log")
+#define MYSQL_ERROR_LOG DIRCAT(TEST_MYSQL_DIR, "error.log")
+#define MYSQL_SOCKET DIRCAT(TEST_MYSQL_DIR, "mysqld.sock")
+#define MYSQL_PORT 3307
+#define MYSQL_PASSWORD "P@ssw0rdUShouldChAngE!"
+
+static int reset_database(void)
+{
+	/* Seed the database:
+	 * Use the right path depending on current directory. */
+	if (!eaccess("scripts/dbcreate.sql", R_OK)) {
+		/* running from source root */
+		if (system("mysql --socket=" MYSQL_SOCKET " < scripts/dbcreate.sql")) {
+			bbs_error("Failed to seed database: %s\n", strerror(errno));
+			return -1;
+		}
+	} else if (!eaccess("../scripts/dbcreate.sql", R_OK)) {
+		/* running from tests subdir? */
+		if (system("mysql --socket=" MYSQL_SOCKET " < ../scripts/dbcreate.sql")) {
+			bbs_error("Failed to seed database: %s\n", strerror(errno));
+			return -1;
+		}
+	} else {
+		bbs_error("Can't find path to scripts/dbcreate.sql\n");
+		return -1;
+	}
+
+	return 0;
+}
 
 #pragma GCC diagnostic ignored "-Wcast-qual"
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+static int mysql_spawn(void)
+{
+	int attempts = 25;
+	struct passwd *pwd;
+	/* The MySQL daemon is launched in such a manner that,
+	 * even if there are already MySQL databases on this machine,
+	 * we isolate the data and daemon from the typical running configuration,
+	 * so we can easily manipulate it and avoid touching any real databases. */
+	char *argv[] = {
+		"mysqld",
+		"--datadir=" MYSQL_DATA_DIR,
+		"--pid-file=" MYSQL_PID_FILE,
+		"--general_log_file=" MYSQL_LOG_FILE,
+		"--log-error=" MYSQL_ERROR_LOG,
+		"--socket=" MYSQL_SOCKET,
+		"--port=" XSTR(MYSQL_PORT),
+		"--user=mysql",
+		NULL
+	};
+
+	/* We require a database, and it isn't running yet, start it */
+	bbs_debug(2, "Starting MySQL database daemon\n");
+
+	/* Since we are just starting, initialize fresh */
+	TEST_RESET_MKDIR(TEST_MYSQL_DIR);
+	TEST_MKDIR(MYSQL_DATA_DIR);
+
+	/* The mysql user exist from installing MySQL as a service */
+	pwd = getpwnam("mysql"); /* Not thread-safe, but we don't need that */
+	if (!pwd) {
+		bbs_error("getpwnam failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	if (chown(TEST_MYSQL_DIR, pwd->pw_uid, -1)) {
+		bbs_error("chown(%s) failed: %s\n", TEST_MYSQL_DIR, strerror(errno));
+		return -1;
+	}
+	if (chown(MYSQL_DATA_DIR, pwd->pw_uid, -1)) {
+		bbs_error("chown(%s) failed: %s\n", TEST_MYSQL_DIR, strerror(errno));
+		return -1;
+	}
+
+	/* First, initialize the temporary DB: */
+	if (system("mysql_install_db --skip-test-db --user=mysql --ldata=" MYSQL_DATA_DIR " > /dev/null")) { /* Yuck... but why reinvent the wheel? */
+		bbs_error("Failed to initialize database\n");
+		return -1;
+	}
+
+	mysql_child = fork();
+	if (mysql_child < 0) {
+		bbs_error("fork failed: %s\n", strerror(errno));
+		return -1;
+	} else if (!mysql_child) {
+		execvp(argv[0], argv); /* Try again now, and it better work this time */
+		_exit(errno);
+	}
+
+	/* Wait a moment for the database to start. MYSQL_SOCKET and MYSQL_PID_FILE will both exist while it's running. */
+	bbs_debug(2, "MySQL database has started on PID %d\n", mysql_child);
+	do {
+		if (!eaccess(MYSQL_PID_FILE, R_OK) && !eaccess(MYSQL_SOCKET, R_OK)) {
+			bbs_debug(2, "MySQL database has initialized on PID %d\n", mysql_child);
+			if (system("mysql --socket=" MYSQL_SOCKET " -e \"CREATE USER 'bbs'@'localhost' IDENTIFIED BY '" MYSQL_PASSWORD "'\"")) {
+				bbs_error("Failed to create user: %s\n", strerror(errno));
+				return -1;
+			}
+			if (reset_database()) {
+				return -1;
+			}
+			return 0;
+		}
+		usleep(100000);
+	} while (attempts--);
+
+	bbs_error("Failed to start mysqld\n");
+	system("cat " MYSQL_ERROR_LOG);
+	return -1;
+}
+
 static int test_bbs_spawn(const char *directory)
 {
 	pid_t child;
@@ -709,10 +824,16 @@ int test_load_module(const char *module)
 }
 
 static int option_autoload_all;
+static int option_use_mysql;
 
 void test_autoload_all(void)
 {
 	option_autoload_all = 1;
+}
+
+void test_use_mysql(void)
+{
+	option_use_mysql = 1;
 }
 
 static int reset_test_configs(void)
@@ -948,7 +1069,7 @@ static int run_test(const char *filename, int multiple)
 			res = -1;
 			goto cleanup;
 		}
-		option_autoload_all = rand_alloc_fails = 0;
+		option_autoload_all = option_use_mysql = rand_alloc_fails = 0;
 		test_autorun = 1;
 		startup_run_unit_tests = 0;
 		if (testmod->pre) {
@@ -963,6 +1084,9 @@ static int run_test(const char *filename, int multiple)
 			fprintf(modulefp, "[general]\r\nautoload=no\r\n\r\n[modules]\r\n");
 			test_load_module("mod_auth_static.so"); /* Always load this module */
 			res = testmod->pre();
+			if (res) {
+				goto cleanup;
+			}
 			if (option_autoload_all) {
 				/* Truncate file and start again. Most tests don't use this.
 				 * There's not really a great way to truncate a file that's already open, so just close it and start again. */
@@ -1001,6 +1125,10 @@ static int run_test(const char *filename, int multiple)
 		if (multiple && !test_autorun) {
 			bbs_debug(2, "Skipping test %s\n", testmod->name);
 			total_fail--;
+			goto cleanup;
+		}
+		if (option_use_mysql && !mysql_child && mysql_spawn()) {
+			res = -1;
 			goto cleanup;
 		}
 		gettimeofday(&start, NULL);
@@ -1198,6 +1326,14 @@ int main(int argc, char *argv[])
 			}
 		}
 		closedir(dir);
+	}
+
+	if (mysql_child) {
+		if (kill(mysql_child, SIGTERM)) {
+			bbs_error("Failed to stop MySQL: %s\n", strerror(errno));
+		} else {
+			bbs_debug(5, "Sent SIGTERM to MySQL process %d\n", mysql_child);
+		}
 	}
 
 	sigint_handler(SIGINT); /* Restore terminal on exit */

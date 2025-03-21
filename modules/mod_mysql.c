@@ -34,32 +34,14 @@
 #include "include/module.h"
 #include "include/config.h"
 
-static char buf_dbhostname[32];
-static char buf_dbusername[32];
-static char buf_dbpassword[32];
-static char buf_dbname[32] = "";
-/* strlen_zero doesn't like being called directly on char buffers, need pointers */
-static char *dbhostname = buf_dbhostname;
-static char *dbusername = buf_dbusername;
-static char *dbpassword = buf_dbpassword;
-static char *dbname = buf_dbname;
+char socket_path[512];
 
 #define log_mysqli_error(mysql) bbs_error("mysql error %d [%s]: %s\n", mysql_errno(mysql), mysql_sqlstate(mysql), mysql_error(mysql))
-
-const char *sql_dbname(void)
-{
-	return buf_dbname;
-}
 
 MYSQL *sql_connect_db(const char *hostname, const char *username, const char *password, const char *database)
 {
 	static char charset[] = "utf8";
 	MYSQL *mysql;
-
-	hostname = S_OR(hostname, dbhostname);
-	username = S_OR(username, dbusername);
-	password = S_OR(password, dbpassword);
-	database = S_OR(database, dbname);
 
 	if (strlen_zero(hostname) || strlen_zero(username) || strlen_zero(password)) {
 		bbs_error("One or more necessary DB config options is missing\n"); /* ^ DB name is optional.... */
@@ -71,6 +53,11 @@ MYSQL *sql_connect_db(const char *hostname, const char *username, const char *pa
 	}
 	if (mysql_optionsv(mysql, MYSQL_SET_CHARSET_NAME, charset)) {
 		goto fail;
+	}
+	if (!s_strlen_zero(socket_path)) {
+		if (mysql_optionsv(mysql, MARIADB_OPT_UNIXSOCKET, socket_path)) {
+			goto fail;
+		}
 	}
 	if (!mysql_real_connect(mysql, hostname, username, password, database, 0, NULL, 0)) {
 		goto fail;
@@ -84,11 +71,6 @@ fail:
 	log_mysqli_error(mysql);
 	mysql_close(mysql);
 	return NULL;
-}
-
-MYSQL *sql_connect(void)
-{
-	return sql_connect_db(NULL, NULL, NULL, NULL);
 }
 
 int sql_prepare(MYSQL_STMT *stmt, const char *fmt, const char *query)
@@ -635,42 +617,16 @@ int sql_fetch_columns(int bind_ints[], long long bind_longs[], char *bind_string
 
 static int load_config(void)
 {
-	int res = 0;
-	struct bbs_config *cfg = bbs_config_load("mod_auth_mysql.conf", 0);
-
-	if (!cfg) {
-		bbs_error("mod_auth_mysql.conf is missing, module will decline to load\n");
-		return -1;
+	struct bbs_config *cfg = bbs_config_load("mod_mysql.conf", 1);
+	if (cfg) {
+		bbs_config_val_set_str(cfg, "mysql", "socket", socket_path, sizeof(socket_path));
 	}
-
-	res |= bbs_config_val_set_str(cfg, "db", "hostname", buf_dbhostname, sizeof(buf_dbhostname));
-	res |= bbs_config_val_set_str(cfg, "db", "username", buf_dbusername, sizeof(buf_dbusername));
-	res |= bbs_config_val_set_str(cfg, "db", "password", buf_dbpassword, sizeof(buf_dbpassword));
-	if (res) {
-		bbs_error("Missing either hostname, username, or password\n");
-		bbs_config_free(cfg);
-		return -1;
-	}
-	if (bbs_config_val_set_str(cfg, "db", "database", buf_dbname, sizeof(buf_dbname))) { /* This is optional but highly recommended. */
-		bbs_warning("No database name specified in mod_auth_mysql.conf\n");
-	}
-
-	/* Don't destroy the config, mod_auth_mysql will read it again to parse some settings that apply only to it.
-	 * XXX These things should really be in separate config files? Need a mod_mysql.conf
-	 *
-	 * UPDATE: mod_auth_mysql loads the config file with caching disabled, so it will get reparsed anyways.
-	 * This is probably a good thing since it reduces the number of places the DB password is in memory...
-	 * As such, there's no downside to destroying the config here. */
-	bbs_config_free(cfg);
 	return 0;
 }
 
 static int load_module(void)
 {
-	if (load_config()) {
-		return -1;
-	}
-	return 0;
+	return load_config();
 }
 
 static int unload_module(void)

@@ -1121,7 +1121,9 @@ static int do_autoload_module(struct autoload_module *a)
 
 	if (!autoload_setting) {
 		if (!(a->required || a->preload || a->load)) {
+#ifdef EXTRA_DEBUG
 			bbs_debug(5, "Not loading dynamic module %s, not explicitly loaded and autoload=no\n", filename);
+#endif
 			autoload_planned--;
 			return 0;
 		}
