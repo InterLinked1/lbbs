@@ -23,7 +23,6 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
-#include <sys/stat.h>
 
 static int pre(void)
 {
