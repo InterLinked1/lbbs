@@ -154,6 +154,9 @@ void bbs_socket_thread_shutdown(int *socket, pthread_t thread);
  */
 int bbs_socket_pending_shutdown(int fd);
 
+/*! \brief Cleanup TCP listener thread during shutdown */
+void tcp_listener_cleanup(void);
+
 /*!
  * \brief Listen on a TCP socket
  * \param port TCP port number

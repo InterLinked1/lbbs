@@ -846,10 +846,18 @@ static int start_tcp_multilistener(void)
 	/* Thread doesn't exist yet. Start it up. */
 	if (bbs_alertpipe_create(multilistener_alertpipe)) { /* Create an alertpipe for future signaling. */
 		res = -1; /* Not much we can do if this fails... */
-	} else if (bbs_pthread_create_detached(&multilistener_thread, NULL, tcp_multilistener, NULL)) {
+	} else if (bbs_pthread_create(&multilistener_thread, NULL, tcp_multilistener, NULL)) {
 		res = -1;
 	}
 	return res;
+}
+
+void tcp_listener_cleanup(void)
+{
+	/* Synchronously wait for TCP multilistener thread to exit, to avoid warning about this thread still being registered at shutdown */
+	if (multilistener_thread) {
+		bbs_pthread_join(multilistener_thread, NULL);
+	}
 }
 
 int __bbs_start_tcp_listener(int port, const char *name, void *(*handler)(void *varg), void *module)

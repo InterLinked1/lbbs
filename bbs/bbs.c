@@ -597,6 +597,7 @@ static void bbs_shutdown(void)
 	bbs_configs_free_all(); /* Clean up any remaining configs that modules didn't. */
 	bbs_vars_cleanup();
 	bbs_cli_unregister_remaining();
+	tcp_listener_cleanup();
 	bbs_fd_shutdown();
 	bbs_mutex_unlock(&sig_lock); /* Don't release the lock until the very end */
 	bbs_mutex_destroy(&sig_lock);
