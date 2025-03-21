@@ -14,6 +14,8 @@
  *
  * \brief Electronic Mailing Lists
  *
+ * \note Supports RFC 2369
+ *
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
@@ -211,7 +213,7 @@ static int add_list_headers(struct mailing_list *l, FILE *fp, const char *from)
 
 	/* Many RFC 2369 headers */
 	fprintf(fp, "List-Id: <%s@%s>\r\n", l->user, rdomain); /* RFC 2919; "" for groups.io and Yahoo Groups; mailman does "list name" <reflector> */
-	fprintf(fp, "List-Subscribe: <%s+%s@%s>\r\n", l->user, "subscribe", rdomain); /* groups.io uses +subscribe, mailman uses -request ...?subject=subscribe */
+	fprintf(fp, "List-Subscribe: <mailto:%s+%s@%s>\r\n", l->user, "subscribe", rdomain); /* groups.io uses +subscribe, mailman uses -request ...?subject=subscribe */
 	fprintf(fp, "List-Unsubscribe: <mailto:%s+%s@%s>\r\n", l->user, "unsubscribe", rdomain);
 	/* Skip List-Archive header, this isn't accessible to users */
 	fprintf(fp, "List-Post: <mailto:%s@%s>\r\n", l->user, rdomain); /* mailman includes this */
@@ -630,7 +632,10 @@ static int blast_exploder(struct smtp_session *smtp, struct smtp_response *resp,
 		}
 		bbs_delete_file(tmpattach);
 		return 1;
-	} else if (!strcmp(subaddr, "subscribe") || !strcmp(subaddr, "unsubscribe") || !strcmp(subaddr, "owner") || !strcmp(subaddr, "help")) {
+	} else if (!strcmp(subaddr, "subscribe") || !strcmp(subaddr, "unsubscribe")) {
+		return -1; /*! \todo Future expansion to support these */
+	} else if (!strcmp(subaddr, "owner") || !strcmp(subaddr, "help")) {
+		/*! \todo Need to add an "owner" option for lists, and redirect such mail to that address */
 		return -1; /*! \todo Future expansion to support these */
 	} else if (STARTS_WITH(subaddr, "bounce")) {
 		/* Somebody's copy bounced. If VERP was used, we might even know whose! */
