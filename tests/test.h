@@ -67,6 +67,8 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 
 #define TEST_CONFIGS_SRC_DIR "configs"
 
+#define TEST_EXEC(cmd) if (system(cmd)) { bbs_error("system(%s) failed: %s\n", cmd, strerror(errno)); goto cleanup; }
+
 /* Yuck, but why reinvent the wheel */
 #define TEST_COPY_CONFIG(src, dst) if (system("cp " src " " dst)) { bbs_error("system(cp %s %s) failed: %s\n", src, dst, strerror(errno)); return -1; }
 #define TEST_ADD_CONFIG_NAME(srcfilename, dstfilename) TEST_COPY_CONFIG(TEST_CONFIGS_SRC_DIR "/" srcfilename, TEST_CONFIG_DIR "/" dstfilename)
@@ -110,6 +112,8 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #define ENDL "\r\n"
 
 int test_dir_file_count(const char *directory);
+
+#define TEST_BBS_EXPECT(s, ms) if (test_bbs_expect(s, ms)) { goto cleanup; }
 
 int test_bbs_expect(const char *s, int ms);
 

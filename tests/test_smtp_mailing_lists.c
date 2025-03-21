@@ -156,6 +156,49 @@ static int run(void)
 	}
 	CLIENT_EXPECT(clientfd, "550");
 
+	/* Ensure only authorized senders can post */
+	SWRITE(clientfd, "RSET\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "RCPT TO:<limitedsender>\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "DATA\r\n");
+	CLIENT_EXPECT(clientfd, "354");
+	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:30 -0700" ENDL);
+	SWRITE(clientfd, "From: " TEST_EMAIL ENDL);
+	SWRITE(clientfd, ENDL);
+	SWRITE(clientfd, "Test" ENDL);
+	SWRITE(clientfd, "." ENDL); /* EOM */
+	CLIENT_EXPECT(clientfd, "550"); /* Not authorized! */
+
+	/* Send email to multiple mailboxes via a mailing list, one of which fails at delivery time.
+	 * In this case, the failure is due to insufficient quota. */
+	TEST_MKDIR(TEST_MAIL_DIR "/2");
+	TEST_EXEC("echo '32' > " TEST_MAIL_DIR "/2/.quota"); /* Quota of 32 bytes, insufficient for delivery to mailbox 4 */
+
+	SWRITE(clientfd, "RSET\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "RCPT TO:<oneandtwo>\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "DATA\r\n");
+	CLIENT_EXPECT(clientfd, "354");
+	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:30 -0700" ENDL);
+	SWRITE(clientfd, "From: " TEST_EMAIL ENDL);
+	SWRITE(clientfd, ENDL);
+	SWRITE(clientfd, "Test" ENDL);
+	SWRITE(clientfd, "." ENDL); /* EOM */
+
+	/* Delivery to mailbox 1 will succeed, but delivery to mailbox 2 should fail due to insufficient quota.
+	 * However, that is handled by a bounce and we still get a 250 at the protocol level. */
+	CLIENT_EXPECT(clientfd, "250");
+
 	res = 0;
 
 cleanup:

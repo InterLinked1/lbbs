@@ -161,6 +161,12 @@ static int sender_authorized(struct mailing_list *l, struct smtp_session *smtp, 
 {
 	struct stringlist *s;
 
+	if (strlen_zero(from)) {
+		/* Don't accept bounces to this list */
+		bbs_debug(1, "Rejecting empty sender from posting to %s%s%s\n", l->user, l->domain ? "@" : "", S_IF(l->domain));
+		return 0;
+	}
+
 	bbs_debug(4, "Checking if %s has permission to post to %s%s%s\n", from, l->user, l->domain ? "@" : "", S_IF(l->domain));
 
 	s = l->samesenders ? &l->recipients : &l->senders;
@@ -565,31 +571,34 @@ static int blast_exploder(struct smtp_session *smtp, struct smtp_response *resp,
 		resp = &tmpresp;
 	}
 
-	/* First, validate what permissions the sending user has for this list */
-	if (!sender_authorized(l, smtp, from)) {
-		bbs_auth("Unauthorized attempt to post to list %s by %s (%s) (fromlocal: %d)\n",
-			user, from, fromlocal ? bbs_username(smtp_node(smtp)->user) : "", fromlocal);
-		smtp_abort(resp, 550, 5.7.2, "You are not authorized to post to this list");
-		return -1;
-	}
-
-	if (l->maxsize && datalen > l->maxsize) {
-		char *errmsg; /* Can't stack allocate this, since we need it after we return */
-		asprintf(&errmsg, "Message too large (maximum size permitted is %lu bytes)", l->maxsize);
-		*freedata = errmsg;
-		smtp_abort(resp, 552, 5.3.4, errmsg);
-		return -1;
-	}
-
-	if (l->ptonly && smtp_message_content_type(smtp) && !STARTS_WITH(smtp_message_content_type(smtp), "text/plain")) {
-		smtp_abort(resp, 550, 5.6.3, "Only plain text emails permitted to this mailing list");
-		return -1;
-	}
-
 	if (strlen_zero(subaddr)) { /* It's the reflector address */
 		char tmpattach[256] = "/tmp/lbbsmailXXXXXX";
 		size_t msglen;
-		FILE *fp = bbs_mkftemp(tmpattach, 0600);
+		FILE *fp;
+
+		/* First, validate what permissions the sending user has for this list */
+		bbs_assert_exists(smtp_node(smtp)); /* Node required for posts, but not necessarily to handle bounces, etc. */
+		if (!sender_authorized(l, smtp, from)) {
+			bbs_auth("Unauthorized attempt to post to list %s by %s (%s) (fromlocal: %d)\n",
+				user, from, fromlocal ? bbs_username(smtp_node(smtp)->user) : "", fromlocal);
+			smtp_abort(resp, 550, 5.7.2, "You are not authorized to post to this list");
+			return -1;
+		}
+
+		if (l->maxsize && datalen > l->maxsize) {
+			char *errmsg; /* Can't stack allocate this, since we need it after we return */
+			asprintf(&errmsg, "Message too large (maximum size permitted is %lu bytes)", l->maxsize);
+			*freedata = errmsg;
+			smtp_abort(resp, 552, 5.3.4, errmsg);
+			return -1;
+		}
+
+		if (l->ptonly && smtp_message_content_type(smtp) && !STARTS_WITH(smtp_message_content_type(smtp), "text/plain")) {
+			smtp_abort(resp, 550, 5.6.3, "Only plain text emails permitted to this mailing list");
+			return -1;
+		}
+
+		fp = bbs_mkftemp(tmpattach, 0600);
 		if (!fp) {
 			/* Local error in processing */
 			return -1;

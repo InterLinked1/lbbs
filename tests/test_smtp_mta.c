@@ -240,10 +240,7 @@ static int run(void)
 
 	/* Commit a protocol violation before sending data before receiving the full banner */
 	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
-	res = test_bbs_expect("Pregreet", SEC_MS(2)); /* Check that we successfully detected pregreet via console warning */
-	if (res) {
-		goto cleanup;
-	}
+	TEST_BBS_EXPECT("Pregreet", SEC_MS(2)); /* Check that we successfully detected pregreet via console warning */
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
 
 	res = 0;
