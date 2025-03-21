@@ -125,6 +125,7 @@ clean :
 	@for i in $(MOD_SUBDIR) tests; do \
 		$(RM) $${i}/*.d $${i}/*.i $${i}/*.o $${i}/*.so; \
 	done
+	$(RM) nets/net_imap/*.d nets/net_imap/*.i nets/net_imap/*.o nets/net_imap/*.so
 	$(RM) tests/test
 	$(RM) -r doors/lirc
 	$(RM) doxygen.log
