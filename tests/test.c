@@ -415,6 +415,7 @@ static const char *bbs_expect_str = NULL;
 /* used extern */
 int test_autorun = 1;
 int rand_alloc_fails = 0;
+int use_static_auth = 1;
 
 static int soft_assertions_failed = 0;
 
@@ -1070,6 +1071,7 @@ static int run_test(const char *filename, int multiple)
 			goto cleanup;
 		}
 		option_autoload_all = option_use_mysql = rand_alloc_fails = 0;
+		use_static_auth = 1;
 		test_autorun = 1;
 		startup_run_unit_tests = 0;
 		if (testmod->pre) {
@@ -1082,7 +1084,9 @@ static int run_test(const char *filename, int multiple)
 				goto cleanup;
 			}
 			fprintf(modulefp, "[general]\r\nautoload=no\r\n\r\n[modules]\r\n");
-			test_load_module("mod_auth_static.so"); /* Always load this module */
+			if (use_static_auth) {
+				test_load_module("mod_auth_static.so"); /* Always load this module, unless told not to */
+			}
 			res = testmod->pre();
 			if (res) {
 				goto cleanup;
@@ -1107,13 +1111,15 @@ static int run_test(const char *filename, int multiple)
 				fprintf(modulefp, "[nodes]\r\naskdimensions=no\r\n"); /* Only needed for test_menus */
 				fclose(modulefp);
 			}
-			modulefp = fopen(TEST_CONFIG_DIR "/mod_auth_static.conf", "w");
-			if (modulefp) {
-				fprintf(modulefp, "[users]\r\n%s=%s\r\n", TEST_USER, TEST_HASH);
-				fprintf(modulefp, "%s=%s\r\n", TEST_USER2, TEST_HASH2);
-				fprintf(modulefp, "%s=%s\r\n", TEST_USER3, TEST_HASH3);
-				fprintf(modulefp, "%s=%s\r\n", TEST_USER4, TEST_HASH4);
-				fclose(modulefp);
+			if (use_static_auth) {
+				modulefp = fopen(TEST_CONFIG_DIR "/mod_auth_static.conf", "w");
+				if (modulefp) {
+					fprintf(modulefp, "[users]\r\n%s=%s\r\n", TEST_USER, TEST_HASH);
+					fprintf(modulefp, "%s=%s\r\n", TEST_USER2, TEST_HASH2);
+					fprintf(modulefp, "%s=%s\r\n", TEST_USER3, TEST_HASH3);
+					fprintf(modulefp, "%s=%s\r\n", TEST_USER4, TEST_HASH4);
+					fclose(modulefp);
+				}
 			}
 			if (option_autoload_all) {
 				if (system("cp " TEST_CONFIGS_SRC_DIR "/*.conf " TEST_CONFIG_DIR)) {

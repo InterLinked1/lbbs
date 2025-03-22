@@ -51,7 +51,8 @@ static char *dbusername = buf_dbusername;
 static char *dbpassword = buf_dbpassword;
 static char *dbname = buf_dbname;
 
-#define DB_NAME_ARGS dbhostname, !strlen_zero(dbhostname) ? "." : ""
+/* database.table if database defined, just table otherwise */
+#define DB_NAME_ARGS dbname, !strlen_zero(dbname) ? "." : ""
 
 static int register_phone = 1, register_address = 1, register_zip = 1, register_dob = 1, register_gender = 1, register_howheard = 1;
 static int verifyregisteremail = 0;
@@ -372,7 +373,7 @@ static int user_register(struct bbs_node *node)
 			NONZERO_RETURN(res);
 
 			if (!bbs_str_isprint(fullname)) {
-				NEG_RETURN(bbs_node_writef(node, "\n%sUsername contains disallowed characters%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET));
+				NEG_RETURN(bbs_node_writef(node, "\n%sName contains disallowed characters%s\n", COLOR(TERM_COLOR_RED), COLOR_RESET));
 			} else {
 				break;
 			}
