@@ -229,7 +229,7 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 		headers_written++;
 	}
 
-	close(output[0]); /* Close read end to force child process to exit */
+	CLOSE(output[0]); /* Close read end to force child process to exit */
 	waitpid(pid, NULL, 0); /* Reap the child before exiting */
 	smtp_node(f->smtp)->childpid = 0;
 
