@@ -48,22 +48,18 @@ ifeq "$(GCCVERSIONGTEQ4)" "1"
 endif
 
 EXE		= lbbs
-PREFIX	= /usr/local
-BINDIR	= $(PREFIX)/bin
 RM		= rm -f
 LN		= ln
 INSTALL = install
 UNAME_S := $(shell uname -s)
-
-# Uncomment this to see all build commands instead of 'quiet' output
-#NOISY_BUILD=yes
 
 MOD_SUBDIR:=doors io modules nets
 SUBDIRS:=$(MOD_SUBDIR)
 SUBDIRS_INSTALL:=$(SUBDIRS:%=%-install)
 SUBDIRS_CLEAN:=$(SUBDIRS:%=%-clean)
 
-ifneq ($(PRINT_DIR)$(NOISY_BUILD),)
+# NOISY_BUILD = see all build commands instead of 'quiet' output
+ifeq "$(NOISY_BUILD)" "1"
 SUBMAKE:=$(MAKE)
 else
 SUBMAKE:=$(MAKE) --quiet --no-print-directory
@@ -71,14 +67,11 @@ endif
 
 MOD_SUBDIR_CFLAGS="-I$(BBSTOPDIR)/include"
 
-# MODULE_PREFIX:=mod
 MAIN_SOURCES := $(wildcard *.c) $(cami/wildcard *.c)
 INCLUDE_FILES := $(wildcard include/*.h)
 MAIN_OBJ = $(MAIN_SOURCES:.c=.o)
 
 SILENT_BUILD_PREFIX := @
-
-# ALL_C_MODS+=$(foreach p,$(MOD_SUBDIR)/$(MODULE_PREFIX),$(patsubst %.c,%.so,$(wildcard $(p)_*.c)))
 
 export CC
 export CFLAGS
