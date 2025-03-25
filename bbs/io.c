@@ -264,7 +264,7 @@ static struct bbs_io_transformation *io_transform_store(struct bbs_io_transforma
 		if (!trans->transformations[i].transformer) {
 			trans->transformations[i].data = data;
 			trans->transformations[i].transformer = t;
-			bbs_debug(7, "Set up node I/O transformer at index %d\n", i);
+			bbs_debug(7, "Set up I/O transformer at index %d\n", i);
 			return &trans->transformations[i];
 		}
 	}

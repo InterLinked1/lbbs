@@ -209,27 +209,59 @@ static ssize_t io_read(void *varg)
 	if (res <= 0) {
 		int sslerr = SSL_get_error(t->ssl, (int) res);
 		bbs_debug(4, "SSL_read returned %ld: %s\n", res, ssl_strerror(sslerr));
+		if (sslerr == SSL_ERROR_WANT_READ || sslerr == SSL_ERROR_WANT_WRITE) {
+			return 1; /* Pretend like we did something, so io.c won't terminate the session, even though nothing happened, since we want to poll again */
+		}
 		return 0; /* Network socket closed */
 	}
 	return bbs_write(t->readpipe[1], input, (size_t) res); /* Write end of read pipe (i.e. write unencrypted data to BBS application) */
+}
+
+#define LOG_SSL_ERROR(sslerr, descr) { \
+	if (sslerr == SSL_ERROR_SSL) { \
+		char errbuf[512]; \
+		unsigned long err = ERR_get_error(); \
+		bbs_warning("%s: %s - %s\n", descr, ssl_strerror(sslerr), ERR_error_string(err, errbuf)); \
+	} else { \
+		bbs_warning("%s: %s\n", descr, ssl_strerror(sslerr)); \
+	} \
 }
 
 /*! \brief Read data from the application to encrypt for the network */
 static ssize_t io_write(void *varg)
 {
 	char input[BUFSIZ];
+	int attempts = 0;
 	struct tls_client *t = varg;
-	ssize_t res = read(t->writepipe[0], input, sizeof(input));
-	if (res <= 0) {
-		bbs_debug(4, "read returned %ld\n", res);
+	ssize_t res, bytes = read(t->writepipe[0], input, sizeof(input));
+	if (bytes <= 0) {
+		bbs_debug(4, "read returned %ld\n", bytes);
 		/* BBS is shutting this transformation down (in cleanup() callback).
 		 * The cleanup() callback closes t->writepipe[1], and once we've
 		 * read everything left to be written, read will return 0 here. */
-		return res;
+		return bytes;
 	}
+
 	/* Encrypt it */
 	/* OpenSSL doesn't do partial writes, so we don't worry about those here. */
-	return SSL_write(t->ssl, input, (int) res);
+sslwrite:
+	res = SSL_write(t->ssl, input, (int) bytes);
+	if (res <= 0) {
+		int sslerr = SSL_get_error(t->ssl, (int) res);
+		bbs_debug(4, "SSL_write returned %ld: %s\n", res, ssl_strerror(sslerr));
+		if (sslerr == SSL_ERROR_WANT_READ || sslerr == SSL_ERROR_WANT_WRITE) {
+			if (attempts++ < 250) { /* Retry up to 5 sec */
+				usleep(20000); /* If a write fails, wait a little bit before retrying, there are probably buffers that need to be flushed out */
+				goto sslwrite; /* Retry exactly the same write again */
+			}
+			bbs_warning("SSL_write timed out after 5 seconds\n");
+			return -1; /* Since we failed to write, abort the connection */
+		} else {
+			LOG_SSL_ERROR(sslerr, "SSL_write failed");
+		}
+		return res;
+	}
+	return res;
 }
 
 static void io_finalize(void *varg)
@@ -306,11 +338,26 @@ static int ssl_servername_cb(SSL *s, int *ad, void *arg)
 	return SSL_TLSEXT_ERR_OK;
 }
 
+static void ssl_init(SSL *ssl)
+{
+	/* SSL_read() in libssl can block if the file descriptor is blocking (stuck on libc_read)
+	 * Even though each TLS session has its own thread, this can still cause issues as
+	 * the thread will never get cleaned up, and other if any locks are held by the thread
+	 * during this I/O, those will never be released.
+	 *
+	 * For this reason, we put the file descriptor in nonblocking mode,
+	 * even though that makes our life slightly harder.
+	 *
+	 * We need to do this from the beginning, since even SSL_accept can block. */
+	bbs_unblock_fd(SSL_get_fd(ssl));
+}
+
 static struct tls_client *ssl_new_accept(int fd, int *rfd, int *wfd)
 {
 	struct tls_client *t;
 	int res;
 	SSL *ssl;
+	int tries = 0;
 
 	if (!ssl_is_available) {
 		return NULL;
@@ -324,14 +371,24 @@ static struct tls_client *ssl_new_accept(int fd, int *rfd, int *wfd)
 		return NULL;
 	}
 	SSL_set_fd(ssl, fd);
+	ssl_init(ssl);
 	SSL_CTX_set_tlsext_servername_callback(ssl_ctx, ssl_servername_cb);
 
+sslaccept:
 	res = SSL_accept(ssl);
 	if (res != 1) {
 		int sslerr = SSL_get_error(ssl, res);
-		bbs_rwlock_unlock(&ssl_cert_lock);
-		bbs_debug(1, "SSL error %d: %d (%s = %s)\n", res, sslerr, ssl_strerror(sslerr), ERR_error_string(ERR_get_error(), NULL));
+		if (sslerr == SSL_ERROR_WANT_READ) {
+			if (tries++ < 3000) { /* Retry up to 3 seconds */
+				usleep(1000);
+				goto sslaccept;
+			}
+			bbs_debug(1, "SSL_accept timed out: (%s = %s)\n", ssl_strerror(sslerr), ERR_error_string(ERR_get_error(), NULL));
+		} else {
+			bbs_debug(1, "SSL error %d: %d (%s = %s)\n", res, sslerr, ssl_strerror(sslerr), ERR_error_string(ERR_get_error(), NULL));
+		}
 		SSL_free(ssl);
+		bbs_rwlock_unlock(&ssl_cert_lock);
 		return NULL;
 	}
 
@@ -370,6 +427,7 @@ static struct tls_client *ssl_client_new(int fd, int *rfd, int *wfd, const char 
 	X509 *server_cert;
 	long verify_result;
 	char *str;
+	int attempts = 0;
 
 	OpenSSL_add_ssl_algorithms();
 	ctx = SSL_CTX_new(TLS_client_method());
@@ -389,6 +447,8 @@ static struct tls_client *ssl_client_new(int fd, int *rfd, int *wfd, const char 
 		bbs_error("Failed to connect SSL: %s\n", ERR_error_string(ERR_get_error(), NULL));
 		goto sslcleanup;
 	}
+
+	ssl_init(ssl);
 
 	/* Attempt to verify the server's TLS certificate.
 	 * If we don't do this, verify_result won't be set properly later on. */
@@ -411,8 +471,13 @@ static struct tls_client *ssl_client_new(int fd, int *rfd, int *wfd, const char 
 		bbs_warning("No SNI provided, server may be unable to provide us its certificate!\n");
 	}
 
+sslconnect:
 	if (SSL_connect(ssl) == -1) {
 		int sslerr = SSL_get_error(ssl, -1);
+		if (sslerr == SSL_ERROR_WANT_READ && attempts++ < 3000) { /* Retry up to 3 seconds */
+			usleep(1000);
+			goto sslconnect;
+		}
 		bbs_debug(4, "SSL error: %s\n", ssl_strerror(sslerr));
 		bbs_error("Failed to connect SSL: %s\n", ERR_error_string(ERR_get_error(), NULL));
 		goto sslcleanup;
@@ -493,15 +558,14 @@ static int ssl_close(struct tls_client *t)
 	if (sres == 1) {
 		status = SSL_get_shutdown(ssl);
 		bbs_debug(5, "Bidirectional SSL shutdown completed (%s)\n", SHUTDOWN_STATUS(status));
-	} else if (sres == 0) {
+	} else if (sres == 0 || SSL_get_error(ssl, sres) == SSL_ERROR_WANT_READ) {
 		int retried = 0;
 		status = SSL_get_shutdown(ssl);
 		bbs_debug(6, "Shutdown status is %s (fd %d)\n", SHUTDOWN_STATUS(status), fd);
 
 		/* The second call to SSL_shutdown or other OpenSSL functions at this point
-		 * can sometimes hang (blocked on read internally).
-		 * To avoid this, make the file descriptor nonblocking beforehand. */
-		bbs_unblock_fd(fd);
+		 * can sometimes hang (blocked on read internally) if file descriptor is blocking,
+		 * but we are nonblocking the entire session so don't need to unblock again. */
 
 shutdown2:
 		/* Unidirectional shutdown has completed. Historically, it would be okay to clean up now,
@@ -526,7 +590,7 @@ shutdown2:
 		}
 	} else {
 		err = SSL_get_error(ssl, sres);
-		bbs_warning("SSL shutdown failed %p: %s\n", ssl, ssl_strerror(err));
+		bbs_debug(1, "SSL shutdown failed %p: %s\n", ssl, ssl_strerror(err));
 		bbs_assert(sres == -1);
 	}
 
@@ -870,12 +934,12 @@ static void cleanup(struct bbs_io_transformation *tran)
 
 static int query(struct bbs_io_transformation *tran, int query, void *data)
 {
-	SSL *ssl = tran->data;
+	struct tls_client *t = tran->data;
 	int *result = data;
 
 	switch (query) {
 	case TRANSFORM_QUERY_TLS_REUSE:
-		*result = SSL_session_reused(ssl);
+		*result = SSL_session_reused(t->ssl);
 		break;
 	default:
 		bbs_warning("Unknown query type: %d\n", query);
