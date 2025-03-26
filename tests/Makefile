@@ -45,8 +45,20 @@ test_%.so : test_%.o
 	@echo "  [LD] $^ -> $@"
 	$(CC) $(TEST_LDFLAGS) -o $(basename $^).so $^
 
+test_sftp.so : test_sftp.o
+	@echo "  [LD] $^ -> $@"
+	$(CC) $(TEST_LDFLAGS) -o $(basename $^).so $^ -lssh
+
+test_ssh.so : test_ssh.o
+	@echo "  [LD] $^ -> $@"
+	$(CC) $(TEST_LDFLAGS) -o $(basename $^).so $^ -lssh
+
 test_webmail.so : test_webmail.o
 	@echo "  [LD] $^ -> $@"
 	$(CC) $(TEST_LDFLAGS) -o $(basename $^).so $^ -lwss
+
+# Don't automatically remove intermediate .o files, to prevent unnecessary recompilations
+# For tests, mainly needed to ensure the .so target isn't rebuilt when a dummy target created by modman is encountered.
+.SECONDARY: $(patsubst %.c,%.o,$(MOD_SRC))
 
 .PHONY: all

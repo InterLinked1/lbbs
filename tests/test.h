@@ -158,6 +158,7 @@ struct test_module_info {
 	struct test_module *self;
 	int (*pre)(void);
 	int (*run)(void);
+	int (*post)(void);
 	const char *name;
 	const char *description;
 	unsigned int flags;
@@ -203,4 +204,12 @@ static const __attribute__((unused)) struct test_module_info *test_module_info;
 	TEST_MODULE_INFO(0, desc,   			\
 		.pre = pre,			\
 		.run = run,			\
+	)
+
+/* When additional cleanup is required after BBS has exited */
+#define TEST_MODULE_INFO_POST(desc)	 \
+	TEST_MODULE_INFO(0, desc,   			\
+		.pre = pre,			\
+		.run = run,			\
+		.post = post,	\
 	)

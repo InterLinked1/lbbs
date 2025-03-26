@@ -1181,6 +1181,9 @@ static int run_test(const char *filename, int multiple)
 		} else {
 			memcpy(&end, &start, sizeof(end));
 		}
+		if (testmod->post) {
+			res |= testmod->post();
+		}
 		close_pipes(); /* This needs to be done before we join bbs_io_thread or it won't exit */
 		if (bbs_io_thread) {
 			pthread_join(bbs_io_thread, NULL);

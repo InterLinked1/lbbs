@@ -508,6 +508,9 @@ static int pty_request(ssh_session session, ssh_channel channel, const char *ter
 		return SSH_ERROR;
 	}
 
+	/* Set these immediately when PTY master is created since the main thread may need them before a shell is created. */
+	cdata->child_stdout = cdata->child_stdin = cdata->pty_master;
+
 	/* Disable canonical mode and echo on this PTY slave, since these are set on the node's PTY. */
 	bbs_unbuffer_input(cdata->pty_slave, 0);
 
@@ -572,13 +575,13 @@ static int shell_request(ssh_session session, ssh_channel channel, void *userdat
 
 	if (cdata->pty_master == -1 || cdata->pty_slave == -1) {
 		/* Client requested a shell without a pty */
-		bbs_error("Client requested SSH shell without a PTY?\n");
+		bbs_error("Client requested SSH shell without a PTY? (master: %d, slave: %d)\n", cdata->pty_master, cdata->pty_slave);
 		return SSH_ERROR;
 	} else if (!node) {
 		bbs_warning("No node exists for SSH connection, declining shell\n");
 		return SSH_ERROR;
 	}
-	cdata->child_stdout = cdata->child_stdin = cdata->pty_master;
+
 	/* Run the BBS on this node */
 	/* Unlike other network drivers, the SSH module creates the
 	 * node thread normally (not detached), so that handle_session
@@ -680,6 +683,7 @@ static void handle_session(ssh_event event, ssh_session session)
 	int stdoutfd;
 	int is_sftp = 0;
 	int res;
+	int sshfd;
 	long int timeout; /* in seconds */
 	/* We set the user when we have access to the session userdata,
 	 * but we need to attach it the node when we have access to the
@@ -744,6 +748,8 @@ static void handle_session(ssh_event event, ssh_session session)
 		.channel_open_request_session_function = channel_open,
 	};
 
+	sshfd = ssh_get_fd(session);
+
 	/* Get the IP of the connecting user now, in case authentication never succeeds
 	 * and we never store the IP. */
 	save_remote_ip(session, NULL, ipaddr, sizeof(ipaddr));
@@ -798,8 +804,11 @@ static void handle_session(ssh_event event, ssh_session session)
 	n = 0;
 	while (sdata.authenticated == 0 || sdata.channel == NULL) {
 		/* If the user has used up all attempts, or if he hasn't been able to
-		 * authenticate in 10 seconds (n * 100ms), disconnect. */
-		if (sdata.auth_attempts >= 3 || n++ >= 100) {
+		 * authenticate within 30 seconds (n * 100ms), disconnect.
+		 * We don't want to use a timeout that is too short here, because
+		 * the user may be providing credentials interactively, which will
+		 * use up time here. */
+		if (sdata.auth_attempts >= 3 || n++ >= 300) {
 			return;
 		}
 
@@ -822,7 +831,7 @@ static void handle_session(ssh_event event, ssh_session session)
 
 	/* Session is now running. Wait for it to finish. */
 	do {
-		int pollres = ssh_event_dopoll(event, cdata.node ? -1 : MIN_MS(60));
+		int pollres = ssh_event_dopoll(event, cdata.node ? -1 : MIN_MS(cdata.sftp ? 5 : 30)); /* Use shorter timeouts for SFTP sessions */
 		if (pollres == SSH_ERROR) {
 			bbs_debug(1, "ssh_event_dopoll returned error, closing SSH channel\n");
 			ssh_channel_close(sdata.channel);
@@ -854,9 +863,12 @@ static void handle_session(ssh_event event, ssh_session session)
 			}
 			if (node_started && !cdata.sftp) {
 				if (!cdata.nodethread) {
-					/* Happens in the case that we get (and reject) an anonymous SFTP connection */
-					bbs_warning("No node thread, disconnecting\n");
-					break;
+					/* Happens in the case that we get (and reject) an anonymous SFTP connection,
+					 * or a bad SSH session (can't set up PTY) */
+					if (0) { /* nodethread may not immediately be set here, so don't abort if it's still NULL here on first check */
+						bbs_warning("No node thread, disconnecting\n");
+						break;
+					}
 				} else if (thread_has_exited(cdata.nodethread)) {
 					/* The node started but disappeared, i.e. server disconnected the node.
 					 * Time for us to die. */
@@ -887,6 +899,7 @@ static void handle_session(ssh_event event, ssh_session session)
 					}
 				}
 				do_sftp(cdata.node, session, sdata.channel);
+				break; /* After we've handled an SFTP session, disconnect, there is nothing more */
 			} else {
 				bbs_warning("Rejecting anonymous SFTP access\n");
 			}
@@ -901,10 +914,25 @@ static void handle_session(ssh_event event, ssh_session session)
 					cdata.addedfdwatch = 1;
 				}
 			} else {
-				bbs_error("No stdout available?\n");
+				bbs_error("No stdout available? (stdout = %d)\n", cdata.child_stdout);
 			}
 		}
 	} while (ssh_channel_is_open(sdata.channel));
+
+	if (ssh_channel_is_closed(sdata.channel)) {
+		/* For SFTP, it seems that when ssh_channel_poll_timeout returns <= 0, bbs_fd_valid(node->fd) returns false,
+		 * so apparently ssh_channel_poll_timeout closes the socket file descriptor, even though that isn't documented.
+		 * To compensate for that, mark the socket file descriptor as closed and NIL out the node's file descriptor. */
+		if (!cdata.closed) { /* Confusingly, if the close callback is triggered, the file descriptor is still valid, it's only on "unclean" closes that it seems not to be */
+			bbs_debug(5, "Session file descriptor %d assumed to be closed already\n", ssh_get_fd(session));
+			if (!bbs_assertion_failed(bbs_mark_closed(cdata.node->sfd) == 0)) {
+				/* NIL out all the node's file descriptors to avoid a double close when the node is destroyed */
+				cdata.node->sfd = cdata.node->fd = -1;
+				cdata.node->rfd = cdata.node->wfd = -1;
+				sshfd = -1; /* Don't try closing the file descriptor at the end of the session */
+			}
+		}
+	}
 
 	bbs_debug(3, "Terminating SSH session\n");
 	if (user && !cdata.userattached) {
@@ -921,10 +949,10 @@ static void handle_session(ssh_event event, ssh_session session)
 		bad_ssh_conn(ipaddr);
 	}
 
-	close_if(cdata.pty_master);
-	close_if(cdata.child_stdin);
+	/* child_stdin and child_stdout are just the pty_master, so only close that one */
 	stdoutfd = cdata.child_stdout;
-	close_if(cdata.child_stdout);
+	close_if(cdata.pty_master);
+	cdata.child_stdin = cdata.child_stdout = -1;
 
 	if (cdata.nodethread) {
 		bbs_pthread_join(cdata.nodethread, NULL);
@@ -978,6 +1006,9 @@ static void handle_session(ssh_event event, ssh_session session)
 		} while (ssh_channel_is_open(sdata.channel) && !ssh_channel_is_eof(sdata.channel));
 	}
 	ssh_channel_close(sdata.channel); /* In some cases, this may be the 2nd time calling this, but shouldn't hurt */
+	if (!is_sftp && sshfd != -1 && ssh_get_fd(session) == -1) {
+		bbs_mark_closed(sshfd); /* Indicate file descriptor has been closed */
+	}
 	ssh_channel_free(sdata.channel);
 }
 
@@ -988,9 +1019,10 @@ static int __handle_errno(const char *file, int line, const char *func, sftp_cli
 {
 	__bbs_log(LOG_DEBUG, 3, file, line, func, "errno: %s\n", strerror(errno));
 	switch (errno) {
-		case EPERM:
 		case EACCES:
-			bbs_log_backtrace();
+			bbs_soft_assert(0);
+			/* Fall through */
+		case EPERM:
 			return sftp_reply_status(msg, SSH_FX_PERMISSION_DENIED, "Permission denied");
 		case ENOENT:
 			return sftp_reply_status(msg, SSH_FX_NO_SUCH_FILE, "No such file or directory"); /* Also SSH_FX_NO_SUCH_PATH */
@@ -1109,22 +1141,17 @@ static int sftp_io_flags(int sflags)
 
 static const char *fopen_flags(int flags)
 {
-	switch (flags & (O_RDONLY | O_WRONLY | O_APPEND | O_TRUNC)) {
-		case O_RDONLY:
-			return "r";
-		case O_WRONLY | O_RDONLY:
-			return "r+";
-		case O_WRONLY | O_TRUNC:
-			return "w";
-		case O_WRONLY | O_RDONLY | O_APPEND:
-			return "a+";
-		default:
-			switch (flags & (O_RDONLY | O_WRONLY)) {
-				case O_RDONLY:
-					return "r";
-				case O_WRONLY:
-					return "w";
-			}
+	flags = flags & (O_RDONLY | O_WRONLY | O_APPEND | O_TRUNC);
+
+	/* switch doesn't work here */
+	if (flags & O_WRONLY) {
+		if (flags & O_TRUNC) {
+			return flags & O_RDONLY ? "w+" : "w";
+		} else if (flags & O_APPEND) {
+			return flags & O_RDONLY ? "a+" : "a";
+		} else {
+			return flags & O_RDONLY ? "r+" : "w";
+		}
 	}
 	return "r"; /* Default */
 }
@@ -1162,7 +1189,6 @@ static int handle_readdir(struct bbs_node *node, sftp_client_message msg)
 			continue;
 		}
 		/* Avoid double slash // at beginning when in the root directory */
-		bbs_debug(4, "Have %s/%s\n", !strcmp(info->name, "/") ? "" : info->name, dir->d_name);
 		/* Could do bbs_transfer_set_disk_path_relative(node, info->name, dir->d_name, file, sizeof(file)); but it's not really necessary here */
 		snprintf(file, sizeof(file), "%s/%s", info->realpath, dir->d_name);
 		if (info->homedir) {
@@ -1557,16 +1583,14 @@ static int canonicalize_nonexistent_path(const char *mypath, char *buf)
 /*!
  * \brief Canonicalize a system file path
  * \note This is essentially realpath, but optionally tolerant of nonexistent paths
- * \param mypath Path to canonicalize. Must be of size PATH_MAX.
- * \param[out] buf
+ * \param mypath Path to canonicalize.
+ * \param[out] buf. Must be of size PATH_MAX.
  * \param nocheck If paths that don't exist are allowed or not
  * \return Canonicalized path or NULL on failure
  */
 static char *canonicalize_path(const char *mypath, char *buf, int nocheck)
 {
 	char *res;
-
-	bbs_debug(3, "Canonicalizing '%s' (nocheck: %d)\n", mypath, nocheck);
 
 	/* This is the easy case. If this path happens to exist, we can just use realpath. */
 	res = realpath(mypath, buf);
@@ -1627,45 +1651,86 @@ cleanup:
 	return -1;
 }
 
-#define CANONICALIZE_PATHS(nocheck) \
-	/* Clients are supposed to call REALPATH so that the server can canonicalize the actual path on disk.
-	 * We just assume that's been done afterwards... */ \
-	if (!canonicalize_path(mypath, buf, nocheck)) { /* returns NULL on failure */ \
-		bbs_debug(5, "Path '%s' not found: %s\n", mypath, strerror(errno)); \
-		handle_errno(msg); \
-		break; \
-	} \
-	bbs_debug(3, "canonicalize_path(%s) -> %s\n", mypath, buf); \
-	safe_strncpy(mypath, buf, sizeof(mypath)); /* Replace mypath so we can use either */ \
-	bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath)); \
+/*!
+ * \brief Create canonicalized user and system paths for the current operation
+ * \param node
+ * \param defaultdir Default (home) directory. Relative paths are relative to this directory.
+ * \param msg SFTP message
+ * \param nocheck If it is okay for the created path to not exist (e.g. for create operations)
+ * \param[out] userpath Canonicalized user-facing path
+ * \param[out] mypath Canonicalized system path
+ * \retval 0 on success, -1 on failure (errno will be set appropriately for handle_errno)
+ */
+static int __create_path(struct bbs_node *node, const char *defaultdir, sftp_client_message msg, int nocheck, char *restrict userpath, char *restrict mypath, int line, const char *func)
+{
+	char abspathbuf[PATH_MAX];
+	char *abspath;
+
+	/* msg->filename is the provided path. If it's relative, it's relative to the home directory. Otherwise, it's absolute.
+	 * First, create an absolute user path and canonicalize it. */
+	if (!msg->filename) {
+		bbs_error("Missing filename?\n");
+		errno = EINVAL;
+		return -1;
+	}
+
+	if (msg->filename[0] == '/') {
+		/* It's an absolute path, can use as is */
+		abspath = msg->filename;
+	} else {
+		/* SFTP does not have a protocol-level "change directory".
+		 * All relative paths are relative to the home directory, so reset this on each operation
+		 * to avoid a previous operation leaking into future ones.
+		 * See SFTP spec, section 6.2. */
+		snprintf(abspathbuf, sizeof(abspathbuf), "%s/%s", defaultdir, msg->filename);
+		abspath = abspathbuf;
+	}
+
+	/* We now have an absolute user path, though it's not canonicalized yet.
+	 * Canonicalize it, to get the canonicalized user path.
+	 * Since we are canonicalizing a user path, it would never actually exist, so always pass 1 for nocheck arg */
+	if (!canonicalize_path(abspath, userpath, 1)) { /* returns NULL on failure */
+		return -1;
+	}
+
+	/* We have a canonicalized user path. Now, we can convert it into a canonicalized system path. */
+	if (__bbs_transfer_set_disk_path_absolute(node, userpath, mypath, PATH_MAX, !nocheck)) { /* nocheck arg needs to be inverted for mustexist */
+		int saved_errno = errno;
+		errno = saved_errno;
+		return -1;
+	}
+
+	__bbs_log(LOG_DEBUG, 5, __FILE__, line, func, "canonicalize_path(%s) -> %s (%s)\n", abspath, userpath, mypath);
+
+	/* If we require the file exists, return EEXIST if it doesn't */
+	if (!nocheck && !bbs_file_exists(mypath)) {
+		errno = EEXIST;
+		return -1;
+	}
+
+	return 0;
+}
 
 #define SFTP_MAKE_PATH() \
-	bbs_debug(3, "MAKE PATH(%s) '%s'\n", mypath, msg->filename); \
-	bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath)); \
-	if (bbs_transfer_set_disk_path_relative(node, userpath, msg->filename, mypath, sizeof(mypath))) { \
+	if (__create_path(node, defaultdir, msg, 0, userpath, mypath, __LINE__, __func__)) { \
 		handle_errno(msg); \
 		break; \
-	} \
-	CANONICALIZE_PATHS(0);
+	}
 
 #define SFTP_MAKE_PATH_NOCHECK() \
-	bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath)); \
-	if (bbs_transfer_set_disk_path_relative_nocheck(node, userpath, msg->filename, mypath, sizeof(mypath))) { \
+	if (__create_path(node, defaultdir, msg, 1, userpath, mypath, __LINE__, __func__)) { \
 		handle_errno(msg); \
 		break; \
-	} \
-	CANONICALIZE_PATHS(1);
+	}
 
 #define SFTP_MAKE_PATH_NOCHECK_CUST_ERRNO(cust_errno) \
-	bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath)); \
-	if (bbs_transfer_set_disk_path_relative_nocheck(node, userpath, msg->filename, mypath, sizeof(mypath))) { \
+	if (__create_path(node, defaultdir, msg, 1, userpath, mypath, __LINE__, __func__)) { \
 		if (errno == ENOENT) { \
 			errno = cust_errno; \
 		} \
 		handle_errno(msg); \
 		break; \
-	} \
-	CANONICALIZE_PATHS(1);
+	}
 
 static void sftp_free_info(struct sftp_info *info)
 {
@@ -1682,7 +1747,7 @@ static void sftp_free_info(struct sftp_info *info)
 static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel channel)
 {
 	char mypath[PATH_MAX] = ""; /* Real disk path */
-	char buf[PATH_MAX]; /* for realpath */
+	char defaultdir[PATH_MAX];
 	sftp_session sftp;
 	int res;
 	FILE *fp = NULL;
@@ -1710,23 +1775,26 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 	}
 #pragma GCC diagnostic pop
 
-	bbs_transfer_set_default_dir(node, mypath, sizeof(mypath));
+	snprintf(defaultdir, sizeof(defaultdir), "/home/%s", bbs_username(node->user));
+	bbs_str_tolower(defaultdir + STRLEN("/home/")); /* Username part is all lowercase */
 	for (;;) {
-		char userpath[256];
+		char userpath[PATH_MAX];
 		uint32_t permissions;
 		sftp_client_message msg;
-		int pres = ssh_channel_poll_timeout(channel, bbs_transfer_timeout(), 0);
+		int pres;
+		pres = ssh_channel_poll_timeout(channel, bbs_transfer_timeout(), 0);
 		if (pres <= 0) {
-			bbs_debug(3, "ssh_channel_poll_timeout returned %d, terminating SFTP session\n", pres);
+			bbs_debug(3, "ssh_channel_poll_timeout returned %d (%s), terminating SFTP session\n", pres, ssh_get_error(session));
 			break;
 		}
 		msg = sftp_get_client_message(sftp); /* This will block, so if we want a timeout, we need to do it beforehand */
 		if (!msg) {
 			break;
 		}
+
 		/* Since some operations can be for paths that may not exist currently, always use the _nocheck variant.
 		 * For operations that require the path to exist, they will fail anyways on the system call. */
-		bbs_debug(5, "Got SFTP client message %2d (%8s), client path: %s\n", msg->type, sftp_get_client_message_type_name(msg->type), msg->filename);
+		bbs_debug(5, "Got SFTP client message %2d (%8s)%s%s\n", msg->type, sftp_get_client_message_type_name(msg->type), S_COR(msg->filename, ", client path: ", ""), S_IF(msg->filename));
 		switch (msg->type) {
 			case SFTP_REALPATH:
 				SFTP_MAKE_PATH_NOCHECK();
@@ -1746,9 +1814,8 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 					info->dir = dir;
 					info->type = TYPE_DIR;
 					info->name = strdup(msg->filename);
-					info->realpath = strdup(buf);
+					info->realpath = strdup(mypath);
 					info->node = node;
-					bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath));
 					info->homedir = !strcmp(userpath, "/home") || !strcmp(userpath, "/home/"); /* Are we listing all the home directories? */
 					bbs_debug(4, "Opened user directory '%s' (home dir: %d)\n", userpath, info->homedir);
 					handle = sftp_handle_alloc(msg->sftp, info);
@@ -1758,8 +1825,12 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 				}
 				break;
 			case SFTP_OPEN:
-				/* If we fail to build a path to create a file, then we probably don't have permission to create it there */
-				SFTP_MAKE_PATH_NOCHECK_CUST_ERRNO(EPERM); /* Might be opening a file that doesn't currently exist */
+				if (msg->flags & O_CREAT) {
+					/* If we fail to build a path to create a file, then we probably don't have permission to create it there */
+					SFTP_MAKE_PATH_NOCHECK_CUST_ERRNO(EPERM); /* Might be opening a file that doesn't currently exist */
+				} else {
+					SFTP_MAKE_PATH_NOCHECK();
+				}
 				SFTP_ENSURE_TRUE2(bbs_transfer_canwrite, node, mypath);
 				permissions = msg->attr->permissions ? msg->attr->permissions : DEFAULT_NEW_FILE_PERMISSIONS;
 				fd = open(mypath, sftp_io_flags((int) msg->flags), permissions);
@@ -1767,7 +1838,9 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 					handle_errno(msg);
 				} else {
 					fp = fdopen(fd, fopen_flags(sftp_io_flags((int) msg->flags)));
-					if (!(info = alloc_sftp_info())) {
+					if (!fp) {
+						handle_errno(msg);
+					} else if (!(info = alloc_sftp_info())) {
 						handle_errno(msg);
 						close(fd); /* Do this after so we don't mess up errno */
 					} else {
@@ -1775,16 +1848,15 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 						info->type = TYPE_FILE;
 						info->file = fp;
 						info->name = strdup(msg->filename);
-						info->realpath = strdup(buf);
+						info->realpath = strdup(mypath);
 						info->node = node;
 						handle = sftp_handle_alloc(msg->sftp, info);
 						sftp_reply_handle(msg, handle);
 						free(handle);
 						handle = NULL;
 
-						bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath));
 						event.userpath = userpath;
-						event.diskpath = buf;
+						event.diskpath = mypath;
 						bbs_event_dispatch_custom(node, SFTP_IO_WRITE(msg->flags) ? EVENT_FILE_UPLOAD_START : EVENT_FILE_DOWNLOAD_START, &event);
 					}
 				}
@@ -1811,9 +1883,9 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 						if (SFTP_IO_WRITE(msg->flags)) { /* For downloads, we already dispatched an event */
 							long int pos;
 							struct bbs_file_transfer_event event;
-							bbs_transfer_get_user_path(node, buf, userpath, sizeof(userpath));
+							bbs_transfer_get_user_path(node, mypath, userpath, sizeof(userpath));
 							event.userpath = userpath;
-							event.diskpath = buf;
+							event.diskpath = mypath;
 							fseek(info->file, 0, SEEK_END); /* Should be at end, already, but just in case */
 							pos = ftell(info->file);
 							event.size = (size_t) pos;
@@ -1974,6 +2046,7 @@ static void *ssh_listener(void *unused)
 		}
 		bbs_pthread_disable_cancel();
 		/* Spawn a thread to handle this SSH connection. */
+		bbs_mark_opened(ssh_get_fd(session)); /* Since the file descriptor was opened using ssh_bind_accept, fd.c doesn't know about it yet */
 		if (bbs_pthread_create_detached(&ssh_thread, NULL, ssh_connection, session)) {
 			ssh_disconnect(session);
 			ssh_free(session);

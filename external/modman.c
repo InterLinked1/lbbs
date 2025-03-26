@@ -570,7 +570,7 @@ static int check_module(const char *dirname, const char *modname, FILE *mfp, int
 		}
 
 		/* The line we're looking for in the Makefile has this */
-		if (!strstr(buf, "-shared")) {
+		if (!strstr(buf, "LDFLAGS")) {
 			continue;
 		}
 
@@ -770,6 +770,14 @@ static int check_module_subdir(const char *subdir, int autodisable)
 			free(entry);
 			continue;
 		}
+		if (!strchr(entry->d_name, '_')) {
+			/* All actual modules are named category_name, e.g. net_ssh.
+			 * In most module subdirs we can, any .c files are implicitly modules,
+			 * but the tests subdirectory mixes modules with the test binary objects,
+			 * so filter those out here. */
+			free(entry);
+			continue;
+		}
 		/* Found a module source file. Check it */
 		snprintf(modname, sizeof(modname), "%s", entry->d_name);
 		TERMINATE_AT(modname, '.');
@@ -795,13 +803,11 @@ static int check_unmet_dependencies(int autodisable)
 		return -1;
 	}
 
-#if 0
-	res |= check_module_subdir("bbs", 0); /* Check the core, too, but never autodisable, the build should fail if we the core dependencies aren't met */
-#endif
 	res |= check_module_subdir("doors", autodisable);
 	res |= check_module_subdir("io", autodisable);
 	res |= check_module_subdir("modules", autodisable);
 	res |= check_module_subdir("nets", autodisable);
+	res |= check_module_subdir("tests", autodisable); /* Some of the tests also depend on libraries that may not be available on every platform, so disable those that can't build */
 
 	return res;
 }

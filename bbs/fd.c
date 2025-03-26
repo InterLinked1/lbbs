@@ -15,8 +15,6 @@
  * \brief File descriptor leak wrapper
  *
  * \author Naveen Albert <bbs@phreaknet.org>
- *
- * \note Mostly borrowed from astfd.c from Asterisk (GPLv2)
  */
 
 #include "include/bbs.h"
@@ -26,7 +24,6 @@
 #include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <time.h>
 #include <netdb.h> /* use getprotobynumber */
 #include <sys/resource.h> /* use getrlimit */
@@ -51,7 +48,7 @@
 #undef dup2
 #undef dup
 
-static struct fdleaks {
+static struct fdinfo {
 	const char *callname;
 	int line;
 	unsigned int isopen:1;
@@ -59,7 +56,7 @@ static struct fdleaks {
 	char function[25];
 	char callargs[100];
 	time_t now;
-} fdleaks[FDLEAKS_NUM_FDS];
+} fdinfo[FDLEAKS_NUM_FDS];
 
 /* #define FD_LOGFILE "/var/log/lbbs/fd.log" */
 
@@ -122,7 +119,7 @@ static int print_fds(int fd)
 			char path[512];
 			int fdnum = atoi(entry->d_name);
 			/* Only care about ones we don't know about */
-			if (ARRAY_IN_BOUNDS(fdnum, fdleaks) && fdleaks[fdnum].isopen) {
+			if (ARRAY_IN_BOUNDS(fdnum, fdinfo) && fdinfo[fdnum].isopen) {
 				continue; /* We know about it */
 			}
 			snprintf(path, sizeof(path), "/proc/self/fd/%s", entry->d_name);
@@ -156,13 +153,13 @@ static int bbs_fd_dump(int fd)
 
 	getrlimit(RLIMIT_NOFILE, &rl);
 
-	for (i = 0; i < ARRAY_LEN(fdleaks); i++) {
-		/* Some of the assigned fds are >= ARRAY_LEN(fdleaks), so not all will show up here */
-		if (fdleaks[i].isopen) {
+	for (i = 0; i < ARRAY_LEN(fdinfo); i++) {
+		/* Some of the assigned fds are >= ARRAY_LEN(fdinfo), so not all will show up here */
+		if (fdinfo[i].isopen) {
 			struct tm opendate;
-			localtime_r(&fdleaks[i].now, &opendate);
+			localtime_r(&fdinfo[i].now, &opendate);
 			strftime(datestring, sizeof(datestring), "%F %T", &opendate);
-			fd_log(fd, "%5u [%s] %18s:%-5d %-25s %s(%s)\n", i, datestring, fdleaks[i].file, fdleaks[i].line, fdleaks[i].function, fdleaks[i].callname, fdleaks[i].callargs);
+			fd_log(fd, "%5u [%s] %18s:%-5d %-25s %s(%s)\n", i, datestring, fdinfo[i].file, fdinfo[i].line, fdinfo[i].function, fdinfo[i].callname, fdinfo[i].callargs);
 			opened++;
 		}
 	}
@@ -198,7 +195,7 @@ static int bbs_fd_dump(int fd)
 }
 
 #define STORE_COMMON(offset, name, ...) { \
-	struct fdleaks *tmp = &fdleaks[offset]; \
+	struct fdinfo *tmp = &fdinfo[offset]; \
 	tmp->now = time(NULL); \
 	COPY(tmp->file, file);      \
 	tmp->line = line;           \
@@ -217,12 +214,23 @@ static int bbs_fd_dump(int fd)
 
 #define STORE_COMMON_HELPER(fd, name, fmt, ...) \
 	if (fd > -1) { \
-		if (fd < (int) ARRAY_LEN(fdleaks)) { \
+		if (fd < (int) ARRAY_LEN(fdinfo)) { \
 			STORE_COMMON(fd, name, fmt, ## __VA_ARGS__); \
 		} \
 	} else { \
 		LOG_FAILURE(); \
 	}
+
+#define MARK_OPEN(fd) \
+	fdinfo[fd].isopen = 1; \
+	COPY(fdinfo[fd].file, file); \
+	fdinfo[fd].line = line;
+
+#define MARK_CLOSED(fd) \
+	fdinfo[fd].isopen = 0; \
+	/* Update to where it was closed so we can debug attempts to close previously closed fds */ \
+	COPY(fdinfo[fd].file, file); \
+	fdinfo[fd].line = line;
 
 int __bbs_open(const char *file, int line, const char *func, const char *path, int flags, ...)
 {
@@ -354,7 +362,7 @@ int __bbs_socket(int domain, int type, int protocol, const char *file, int line,
 	int res = socket(domain, type, protocol);
 	if (res < 0) {
 		LOG_FAILURE();
-	} else if (res >= (int) ARRAY_LEN(fdleaks)) {
+	} else if (res >= (int) ARRAY_LEN(fdinfo)) {
 		bbs_warning("File descriptor %d out of logging range\n", res);
 	}
 
@@ -404,41 +412,64 @@ int __bbs_close(int fd, const char *file, int line, const char *func)
 	}
 	res = close(fd);
 	if (res) {
-		if (bbs_assertion_failed(errno != EBADF) && ARRAY_IN_BOUNDS(fd, fdleaks)) {
+		int close_errno = errno;
+		if (bbs_assertion_failed(close_errno != EBADF) && ARRAY_IN_BOUNDS(fd, fdinfo)) {
 			__bbs_log(LOG_ERROR, 0, file, line, func, "Failed to close fd %d: %s (previously %s at %s:%d)\n",
-				fd, strerror(errno), fdleaks[fd].isopen ? "opened" : "closed", fdleaks[fd].file, fdleaks[fd].line);
+				fd, strerror(close_errno), fdinfo[fd].isopen ? "opened" : "closed", fdinfo[fd].file, fdinfo[fd].line);
 		} else {
-			__bbs_log(LOG_ERROR, 0, file, line, func, "Failed to close fd %d: %s\n", fd, strerror(errno));
+			__bbs_log(LOG_ERROR, 0, file, line, func, "Failed to close fd %d: %s\n", fd, strerror(close_errno));
 		}
-	} else if (ARRAY_IN_BOUNDS(fd, fdleaks)) { /* && !res (implicit) */
-		fdleaks[fd].isopen = 0;
-		/* Update to where it was closed so we can debug attempts to close previously closed fds */
-		COPY(fdleaks[fd].file, file);
-		fdleaks[fd].line = line;
+	} else if (ARRAY_IN_BOUNDS(fd, fdinfo)) { /* && !res (implicit) */
+		MARK_CLOSED(fd);
 	}
 	FD_LOGF("%lu: %s:%d (%s) close(%d)\n", time(NULL), file, line, func, fd);
 	return res;
 }
 
-/* gcc thinks func is unused in this function? */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wunused-parameter"
+int __bbs_mark_opened(int fd, const char *file, int line, const char *func)
+{
+	int res = 0;
+	if (!bbs_fd_valid(fd)) {
+		__bbs_log(LOG_WARNING, 0, file, line, func, "File descriptor %d is not valid\n", fd);
+		res = 1;
+	}
+	if (ARRAY_IN_BOUNDS(fd, fdinfo)) {
+		if (bbs_assertion_failed(!fdinfo[fd].isopen)) {
+			__bbs_log(LOG_WARNING, 0, file, line, func, "File descriptor marked open, but was already opened at %s:%d?\n", fdinfo[fd].file, fdinfo[fd].line);
+		}
+		MARK_OPEN(fd);
+		/* Since we don't have a function or call args, blank them out so a previous one doesn't linger */
+		strcpy(fdinfo[fd].function, "");
+		fdinfo[fd].callname = "";
+		strcpy(fdinfo[fd].callargs, "");
+	}
+	FD_LOGF("%lu: %s:%d (%s) mark_opened(%d)\n", time(NULL), file, line, func, fd);
+	return res;
+}
+
 int __bbs_mark_closed(int fd, const char *file, int line, const char *func)
 {
+	int res = 0;
 	/* Don't attempt to close the file descriptor, if it's already closed.
 	 * Something else may reuse it in the meantime and we could close something else.
 	 * Of course, if that's the case, we'll mess up our state array below,
 	 * but that's lower stakes than actually messing up program behavior. */
-	if (ARRAY_IN_BOUNDS(fd, fdleaks)) {
-		fdleaks[fd].isopen = 0;
-		/* Update to where it was closed so we can debug attempts to close previously closed fds */
-		COPY(fdleaks[fd].file, file);
-		fdleaks[fd].line = line;
+	if (bbs_fd_valid(fd)) {
+		/* Only a warning, not an error, because race conditions are possible with file descriptors.
+		 * It's possible it really was closed, but got opened by the time we got here.
+		 * That said, it is unlikely, so log a warning just in case something really is wrong. */
+		__bbs_log(LOG_WARNING, 0, file, line, func, "File descriptor %d is still valid\n", fd);
+		res = 1;
+	}
+	if (ARRAY_IN_BOUNDS(fd, fdinfo)) {
+		if (bbs_assertion_failed(fdinfo[fd].isopen)) {
+			__bbs_log(LOG_WARNING, 0, file, line, func, "File descriptor marked closed, but was already closed at %s:%d?\n", fdinfo[fd].file, fdinfo[fd].line);
+		}
+		MARK_CLOSED(fd);
 	}
 	FD_LOGF("%lu: %s:%d (%s) mark_closed(%d)\n", time(NULL), file, line, func, fd);
-	return 0;
+	return res;
 }
-#pragma GCC diagnostic pop
 
 FILE *__bbs_fopen(const char *path, const char *mode, const char *file, int line, const char *func)
 {
@@ -452,16 +483,21 @@ FILE *__bbs_fopen(const char *path, const char *mode, const char *file, int line
 	return res;
 }
 
-int __bbs_fclose(FILE *ptr)
+int __bbs_fclose(FILE *ptr, const char *file, int line, const char *func)
 {
 	int fd, res;
 
+#ifndef FD_LOGFILE
+	UNUSED(func);
+#endif
+
 	bbs_assert_exists(ptr);
 	fd = fileno(ptr);
-	if ((res = fclose(ptr) || !ARRAY_IN_BOUNDS(0, fdleaks))) {
+	if ((res = fclose(ptr) || !ARRAY_IN_BOUNDS(fd, fdinfo))) {
 		return res;
 	}
-	fdleaks[fd].isopen = 0;
+	MARK_CLOSED(fd);
+	FD_LOGF("%lu: %s:%d (%s) fclose(%d)\n", time(NULL), file, line, func, fd);
 	return res;
 }
 

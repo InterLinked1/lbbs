@@ -95,10 +95,13 @@ all : bbs $(MOD_SUBDIR) external
 bbs : $(MAIN_OBJ)
 	@+$(SUBMAKE) --no-builtin-rules -C $@ all
 
-$(MOD_SUBDIR):
+$(MOD_SUBDIR) external:
 	@+$(SUBMAKE) --no-builtin-rules -C $@ all
 
-external tests :
+# Unlike modules, we do not remove 0 size dummy targets,
+# as that would require 'make modconfig' to be run every time
+# prior to running 'make tests'.
+tests :
 	@+$(SUBMAKE) --no-builtin-rules -C $@ all
 
 # Make only modcheck, but not any of the other external programs

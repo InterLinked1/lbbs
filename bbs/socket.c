@@ -641,13 +641,13 @@ int bbs_timed_accept(int socket, int ms, const char *ip)
 	return -1;
 }
 
-void bbs_socket_close(int *socket)
+void __bbs_socket_close(int *socket, const char *file, int line, const char *func)
 {
 	/* Calling shutdown on the socket first
 	 * avoids needing to call bbs_pthread_cancel_kill,
 	 * which is a lot cleaner and helps avoid deadlocks. */
 	shutdown(*socket, SHUT_RDWR);
-	close(*socket);
+	__bbs_close(*socket, file, line, func);
 	*socket = -1;
 }
 
@@ -2353,7 +2353,12 @@ static ssize_t timed_write(struct pollfd *pfd, int fd, const char *restrict buf,
 	size_t left = len;
 	ssize_t written = 0;
 
-	bbs_soft_assert(fd >= 0); /* != -1 */
+	if (bbs_assertion_failed(fd >= 0)) {
+		/* Can possibly happen if a node's file descriptors are set to -1 while the node is still running.
+		 * Any further write attempts would then be invalid.
+		 * However, node writes should be guarded with REQUIRE_SLAVE_FD so we shouldn't be getting here... */
+		return -1;
+	}
 
 	do {
 		ssize_t res;

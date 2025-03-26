@@ -138,7 +138,9 @@ int bbs_timed_accept(int socket, int ms, const char *ip);
  * \brief Cleanly shutdown and close a socket
  * \param socket Pointer to socket fd
  */
-void bbs_socket_close(int *socket);
+#define bbs_socket_close(fd) __bbs_socket_close(fd, __FILE__, __LINE__, __func__)
+
+void __bbs_socket_close(int *socket, const char *file, int line, const char *func);
 
 /*!
  * \brief Cleanly shutdown and close a socket and an associated listening thread
