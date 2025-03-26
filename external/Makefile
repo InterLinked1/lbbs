@@ -12,6 +12,9 @@ RM		= rm -f
 INSTALL = install
 NCURSES_FLAGS=$(shell pkg-config --cflags ncurses)
 
+ARCH = $(shell uname -m)
+CFLAGS += -DBBS_LINUX_ARCH=$(ARCH)
+
 all: $(EXES)
 
 $(EXES_NOFLEMGR): %: %.o

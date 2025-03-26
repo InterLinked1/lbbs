@@ -248,7 +248,7 @@ static int pwchange_exec(struct bbs_node *node, const char *args)
 
 static int termmgmt_exec(struct bbs_node *node, const char *args)
 {
-	char c;
+	int c;
 
 	UNUSED(args);
 

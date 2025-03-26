@@ -1937,9 +1937,9 @@ int bbs_expect_line(int fd, int ms, struct readline_data *rldata, const char *st
 	return 0;
 }
 
-static char bbs_tread(int fd, int ms)
+static int bbs_tread(int fd, int ms)
 {
-	signed char res;
+	int res;
 
 	if (fd < 0) {
 		bbs_error("Invalid file descriptor: %d\n", fd);
@@ -1948,11 +1948,11 @@ static char bbs_tread(int fd, int ms)
 	}
 
 	bbs_assert(ms > 0); /* There would be no reason to use bbs_node_tpoll over bbs_node_poll unless ms > 0. */
-	res = (char) bbs_poll(fd, ms);
+	res = (int) bbs_poll(fd, ms);
 
 	if (res > 0) {
 		char buf[1];
-		res = (char) read(fd, buf, sizeof(buf));
+		res = (int) read(fd, buf, sizeof(buf));
 		if (res <= 0) {
 			return res;
 		}
@@ -1961,16 +1961,16 @@ static char bbs_tread(int fd, int ms)
 	return res;
 }
 
-char bbs_node_tread(struct bbs_node *node, int ms)
+int bbs_node_tread(struct bbs_node *node, int ms)
 {
-	signed char res;
+	int res;
 
 	bbs_assert(ms > 0); /* There would be no reason to use bbs_node_tpoll over bbs_node_poll unless ms > 0. */
-	res = (char) bbs_node_tpoll(node, ms);
+	res = bbs_node_tpoll(node, ms);
 
 	if (res > 0) {
 		char buf[1];
-		res = (signed char) bbs_node_read(node, buf, sizeof(buf));
+		res = (int) bbs_node_read(node, buf, sizeof(buf));
 		if (res <= 0) {
 			return res;
 		}
@@ -1989,7 +1989,7 @@ static int __bbs_node_read_escseq(struct bbs_node *node, int fd)
 	/* We can't just declare a variable pointing to the right function to use, since their arguments are of different types (node vs int). Use a macro instead. */
 #define bbs_proper_tread(node, fd, ms) node ? bbs_node_tread(node, ms) : bbs_tread(fd, ms)
 
-	char c1, c2, c3;
+	int c1, c2, c3;
 	/* We already read ESC (27). Try to read further characters. */
 	c1 = bbs_proper_tread(node, fd, 10); /* 10ms ought to be more than enough. We should really get everything at once. */
 	if (c1 <= 0) {

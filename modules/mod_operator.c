@@ -1047,7 +1047,7 @@ static int handle_coinzone(struct queue_call_handle *qch)
 	int cents;
 	char additional = 0;
 	int remaining, last;
-	signed char input;
+	int input;
 
 	if (s_strlen_zero(variable_amount_required)) {
 		return 0;
@@ -1231,7 +1231,7 @@ static int handle_oni(struct queue_call_handle *qch)
 	for (;;) {
 		char digitbuf[2];
 		const char *exten = digitbuf;
-		char c = bbs_node_tread(qch->node, MIN_MS(2));
+		int c = bbs_node_tread(qch->node, MIN_MS(2));
 		switch (c) {
 			case 'q': /* Quit */
 			case 'Q':
@@ -1254,7 +1254,7 @@ static int handle_oni(struct queue_call_handle *qch)
 		}
 
 		/* Not necessary for # but for * and digits */
-		digitbuf[0] = c;
+		digitbuf[0] = (char) c;
 		digitbuf[1] = '\0';
 
 		res = ami_action_redirect(bbs_ami_session(), supervisor_chan, context_oni_digits, exten, "1");
@@ -1269,7 +1269,7 @@ static int handle_oni(struct queue_call_handle *qch)
 			pos = oni;
 			bbs_node_writef(qch->node, "\r KP");
 		} else if (isdigit(c)) {
-			*pos++ = c;
+			*pos++ = (char) c;
 			*pos = '\0';
 			if (pos >= oni + sizeof(oni)) {
 				goto error; /* Buffer exhaustion */
@@ -1346,11 +1346,11 @@ static int ami_callback(struct ami_event *e, const char *eventname)
 	if (strlen_zero(message)) {
 		bbs_debug(9, "No TTY message from %s?\n", channel);
 		return -1;
-	} else if (*message == -1) {
+	} else if ((signed char) *message == -1) {
 		/* Could happen prior to app_tdd commit dec1d4a5d332b3f11d022372695d8569c2e07a7f
 		 * This is technically 0xff, but because we're using char instead of unsigned char,
 		 * it's implicitly signed char, and so it'll manifest itself as -1 instead of 0xff,
-		 * which gcc will complain can't git into a char type. */
+		 * which gcc will complain can't fit into a char type. */
 		return -1;
 	} else if (!isprint(*message)) {
 #ifdef TTY_EXTRA_DEBUG
@@ -1652,10 +1652,10 @@ static int handle_trs(struct queue_call_handle *qch)
 	}
 
 	for (;;) {
-		signed char input = bbs_node_tread(qch->node, MIN_MS(5));
+		int input = bbs_node_tread(qch->node, MIN_MS(5));
 		if (input <= 0) {
 			tty_unsubscribe(t);
-			return (int) input;
+			return input;
 		}
 		if (!modifier && input == 27) { /* ESCAPE */
 			/* Escape from conversation */
@@ -1740,7 +1740,7 @@ static int handle_trs(struct queue_call_handle *qch)
 			if (isspace(input)) {
 				input = '_'; /* AMI squashes pure whitespace, so send _ instead (same result) */
 			}
-			tbuf[0] = input;
+			tbuf[0] = (char) input;
 			tbuf[1] = '\0';
 			if (ami_action_response_result(bbs_ami_session(), ami_action(bbs_ami_session(), "TddTx", "Channel:%s\r\nMessage:%s", qch->channel, tbuf))) {
 				bbs_node_writef(qch->node, "\nERR DISCONNECTED RLS\n");

@@ -343,7 +343,7 @@ static int user_register(struct bbs_node *node)
 	char fullname[64], username[64], password[72], password2[72];
 	char email[64], phone[16] = "", address[64] = "", city[64], state[32], zip[10] = "", dob[11] = "";
 	char how_heard[256] = "";
-	char gender = 0;
+	int gender = 0;
 	int res;
 #define MAX_REG_ATTEMPTS 6
 	int tries = MAX_REG_ATTEMPTS;
@@ -538,7 +538,7 @@ confirm:
 	}
 
 	/* Actually create the user */
-	res = make_user(username, password, fullname, email, NULL_IFEMPTY(phone), NULL_IFEMPTY(address), city, state, NULL_IFEMPTY(zip), NULL_IFEMPTY(dob), gender);
+	res = make_user(username, password, fullname, email, NULL_IFEMPTY(phone), NULL_IFEMPTY(address), city, state, NULL_IFEMPTY(zip), NULL_IFEMPTY(dob), (char) gender);
 
 	if (res) {
 		NEG_RETURN(bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_FAILURE), "Your registration was rejected.", COLOR_RESET));

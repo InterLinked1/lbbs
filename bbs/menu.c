@@ -484,7 +484,7 @@ static int menu_set_title(struct bbs_node *node, const char *name)
 static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char *menuitemname, int stack, const char *optreq, char *restrict scratchbuf)
 {
 	int res;
-	char opt = 0;
+	int opt = 0;
 	struct bbs_menu *menu;
 	struct bbs_menu_item *menuitem;
 	char options[64]; /* No menu will ever have more than this many options... */
@@ -692,7 +692,7 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 		}
 
 		/* We don't need to call MENUITEM_NOT_APPLICABLE here to check if it applies, it wouldn't be in the options buffer if it wasn't */
-		menuitem = find_menuitem(menu, opt);
+		menuitem = find_menuitem(menu, (char) opt);
 		/* It was in the menu and the menu hasn't changed, it better exist. */
 		if (!menuitem) {
 			bbs_warning("Could not find option '%c' in menu '%s'\n", opt, menu->name);

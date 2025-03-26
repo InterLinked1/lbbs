@@ -335,7 +335,9 @@ static int load_header_file_locations(void)
 		len -= bytes;
 	}
 	pclose(pfp);
-#define SYS_INCLUDE_DIR "/usr/include/x86_64-linux-gnu"
+#define STR(s) #s
+#define XSTR(s) STR(s)
+#define SYS_INCLUDE_DIR "/usr/include/" XSTR(BBS_LINUX_ARCH) "-linux-gnu"
 	if (!strstr(buf, SYS_INCLUDE_DIR) && !access(SYS_INCLUDE_DIR, R_OK)) {
 		/* This directory is not explicitly returned by the gcc output, but all the <sys/...> header files live here: */
 		modman_log(7, "  System include path: %s\n", SYS_INCLUDE_DIR);
@@ -824,7 +826,7 @@ static void show_help(void)
 
 int main(int argc, char *argv[])
 {
-	char c;
+	int c;
 	static const char *getopt_settings = "?dhtv";
 
 	while ((c = getopt(argc, argv, getopt_settings)) != -1) {

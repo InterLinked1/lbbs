@@ -523,7 +523,7 @@ int bbs_expect_line(int fd, int ms, struct readline_data *rldata, const char *st
  * \note This is useful for reading a single character (in non-canonical mode) with no delay
  * \retval 0 if fd closed, -1 on failure, non-negative character read otherwise
  */
-char bbs_node_tread(struct bbs_node *node, int ms);
+int bbs_node_tread(struct bbs_node *node, int ms);
 
 /*! * \brief Same as bbs_node_read_escseq, but directly on a file descriptor, rather than a node */
 int bbs_read_escseq(int fd);

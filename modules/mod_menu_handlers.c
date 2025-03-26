@@ -40,7 +40,7 @@ static int fastquit_handler(struct bbs_node *node, char *args)
 
 static int quit_handler(struct bbs_node *node, char *args)
 {
-	char opt;
+	int opt;
 
 	UNUSED(node);
 	UNUSED(args);

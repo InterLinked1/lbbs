@@ -1993,8 +1993,7 @@ static int init_term_properties_automatic(struct bbs_node *node)
 
 static int ask_yn(struct bbs_node *node, const char *question)
 {
-	int i;
-	char c;
+	int i, c;
 	/* Since we're not sure if this terminal supports ANSI,
 	 * don't use any ANSI escape sequences, just keep it nice and simple. */
 	for (i = 0; i < 3; i++) {

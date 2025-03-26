@@ -42,7 +42,7 @@ int bbs_line_editor(struct bbs_node *node, const char *restrict instr, char *res
 	}
 
 	for (;;) {
-		char c;
+		int c;
 		bbs_node_buffer(node);
 		/* Read until we get 2 newlines */
 		for (;;) {

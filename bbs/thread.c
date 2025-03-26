@@ -112,6 +112,16 @@ static int __thread_unregister(pthread_t id, const char *file, int line, const c
 	int remove = 0;
 	int lwp = -1;
 
+#if defined(__linux__) && defined(__GLIBC__)
+	/* For some reason, when detached threads exit on ARM (as opposed to x86),
+	 * the thread id is 1, rather than an actual thread.
+	 * However, since it's being run in the context of the exiting thread,
+	 * we can use pthread_self() to get the actual thread and then everything else works as expected. */
+	if (id == 1) {
+		id = pthread_self();
+	}
+#endif
+
 	RWLIST_WRLOCK(&thread_list);
 	RWLIST_TRAVERSE_SAFE_BEGIN(&thread_list, x, list) {
 #ifdef __FreeBSD__
@@ -205,7 +215,11 @@ void bbs_thread_cleanup(void)
 		 * especially if it's a thread that has been in the waitjoin state for some time (more than a couple seconds).
 		 * Be nice and free the memory anyways. */
 		print_time_elapsed(x->waitingjoin ? x->end : x->start, now, elapsed, sizeof(elapsed));
+#ifdef __linux__
+		bbs_warning("Thread still registered at shutdown: %d [%lu] (%s %s) %s\n", x->lwp, (unsigned long) x->id, thread_state_name(x), elapsed, x->name);
+#else
 		bbs_warning("Thread still registered at shutdown: %d (%s %s) %s\n", x->lwp, thread_state_name(x), elapsed, x->name);
+#endif
 		free_if(x->name);
 		free(x);
 	}

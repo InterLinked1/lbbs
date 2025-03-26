@@ -12,7 +12,7 @@ BBSTOPDIR:=$(subst $(space),\$(space),$(CURDIR))
 
 export BBSTOPDIR		# Top level dir, used in subdirs' Makefiles
 
-GCCVERSION = $(shell gcc --version | grep ^gcc | sed 's/^.* //g')
+GCCVERSION := $(shell gcc --version | grep ^gcc | sed 's/^.* //g')
 GCCVERSIONGTEQ8 := $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 8)
 ALPINE_LINUX := $(shell ls /etc/alpine-release 2>/dev/null | wc -l)
 
