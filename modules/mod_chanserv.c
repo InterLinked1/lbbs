@@ -1152,6 +1152,7 @@ cleanup:
 
 static int load_config(void)
 {
+	int res = 0;
 	struct bbs_config *cfg = bbs_config_load("mod_chanserv.conf", 0);
 
 	if (!cfg) {
@@ -1159,11 +1160,12 @@ static int load_config(void)
 		return -1;
 	}
 
-	bbs_config_val_set_str(cfg, "db", "hostname", buf_dbhostname, sizeof(buf_dbhostname));
-	bbs_config_val_set_str(cfg, "db", "username", buf_dbusername, sizeof(buf_dbusername));
-	bbs_config_val_set_str(cfg, "db", "password", buf_dbpassword, sizeof(buf_dbpassword));
-	if (bbs_config_val_set_str(cfg, "db", "database", buf_dbname, sizeof(buf_dbname))) { /* This is optional but highly recommended. */
-		bbs_error("No database name specified in mod_chanserv.conf\n");
+	res |= bbs_config_val_set_str(cfg, "db", "hostname", buf_dbhostname, sizeof(buf_dbhostname));
+	res |= bbs_config_val_set_str(cfg, "db", "username", buf_dbusername, sizeof(buf_dbusername));
+	res |= bbs_config_val_set_str(cfg, "db", "password", buf_dbpassword, sizeof(buf_dbpassword));
+	res |= bbs_config_val_set_str(cfg, "db", "database", buf_dbname, sizeof(buf_dbname));
+	if (res) { /* This is optional but highly recommended. */
+		bbs_error("Missing one or more database settings in mod_chanserv.conf\n");
 		return -1;
 	}
 
