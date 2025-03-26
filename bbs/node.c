@@ -862,23 +862,20 @@ static int cli_nodes(struct bbs_cli_args *a)
 	int c = 0;
 	time_t now = time(NULL);
 
-	bbs_dprintf(a->fdout, "%3s %9s %9s %-15s %-25s"
+	bbs_dprintf(a->fdout, "%3s %9s %9s %-15s"
 		" %15s %5s %7s %3s %3s %3s %3s"
 		" %3s %3s %3s"
 		" %1s %1s %1s"
-		" %7s %8s %4s %5s %6s %6s %4s"
+		" %7s %8s %4s %5s %6s %6s %4s %s"
 		"\n",
-		"#", "PROTOCOL", "ELAPSED", "USER", "MENU/PAGE/LOCATION",
+		"#", "PROTOCOL", "ELAPSED", "USER",
 		"IP ADDRESS", "RPORT", "TID", "SFD", "FD", "RFD", "WFD",
 		"MST", "SLV", "SPY",
 		"E", "B", "!",
-		"TRM SZE", "TYPE", "ANSI", "SPEED", "BPS", "(RPT)", "SLOW");
+		"TRM SZE", "TYPE", "ANSI", "SPEED", "BPS", "(RPT)", "SLOW", "MENU/PG/LOC.");
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
-		char menufull[26];
-		char termsize[8];
-		char speed[NODE_SPEED_BUFSIZ_SMALL];
 		int lwp;
 		/* Do not lock the node here.
 		 * Even though we are accessing some properties of the node which could change,
@@ -889,25 +886,28 @@ static int cli_nodes(struct bbs_cli_args *a)
 		 * besides the node thread tries to write to it, that could cause that thread to
 		 * block waiting on the lock, causing a cascading deadlock. */
 		print_time_elapsed(n->created, now, elapsed, sizeof(elapsed));
-		snprintf(menufull, sizeof(menufull), "%s%s%s%s", S_IF(n->menu), n->menuitem ? " (" : "", S_IF(n->menuitem), n->menuitem ? ")" : "");
 		lwp = bbs_pthread_tid(n->thread);
 
-		bbs_dprintf(a->fdout, "%3d %9s %9s %-15s %-25s"
+		bbs_dprintf(a->fdout, "%3d %9s %9s %-15s"
 			" %15s %5u %7d %3d %3d %3d %3d",
-			n->id, n->protname, elapsed, bbs_username(n->user), menufull,
+			n->id, n->protname, elapsed, bbs_username(n->user),
 			n->ip, n->rport, lwp, n->sfd, n->fd, n->rfd, n->wfd);
 		if (NODE_INTERACTIVE(n)) {
+			char menufull[26];
+			char termsize[8];
+			char speed[NODE_SPEED_BUFSIZ_SMALL];
 			/* If the size is speculative, put a '?' afterwards */
 			snprintf(termsize, sizeof(termsize), "%dx%d%s", n->cols, n->rows, n->dimensions ? "" : "?");
+			snprintf(menufull, sizeof(menufull), "%s%s%s%s", S_IF(n->menu), n->menuitem ? " (" : "", S_IF(n->menuitem), n->menuitem ? ")" : "");
 			bbs_node_format_speed(n, speed, sizeof(speed));
 			bbs_dprintf(a->fdout,
 				" %3d %3d %3d"
 				" %1s %1s %1s"
-				" %7s %8s %4s %5s %6u %6u %4s"
+				" %7s %8s %4s %5s %6u %6u %4s %s"
 				"\n",
 				n->amaster, n->slavefd, n->spyfd,
 				BBS_YN(n->echo), BBS_YN(n->buffered), bbs_node_interrupted(n) ? "*" : "",
-				termsize, S_IF(n->term), BBS_YESNO(n->ansi), speed, n->bps, n->reportedbps, BBS_YN(n->slow));
+				termsize, S_IF(n->term), BBS_YESNO(n->ansi), speed, n->bps, n->reportedbps, BBS_YN(n->slow), menufull);
 		} else {
 			bbs_dprintf(a->fdout, "\n");
 		}
