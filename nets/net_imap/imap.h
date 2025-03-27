@@ -170,13 +170,14 @@ extern int imap_debug_level;
 		__imap_parallel_reply(imap, fmt, ## __VA_ARGS__); \
 	}
 
-#define __imap_parallel_reply(imap, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); bbs_node_any_fd_writef(imap->node, imap->node->wfd, fmt, ## __VA_ARGS__);
+/* Use statement expressions so caller can check the return value of write */
+#define __imap_parallel_reply(imap, fmt, ...) ({ imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); bbs_node_any_fd_writef(imap->node, imap->node->wfd, fmt, ## __VA_ARGS__); })
+#define _imap_reply_nolock_fd(imap, fd, fmt, ...) ({ imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); bbs_node_fd_writef(imap->node, fd, fmt, ## __VA_ARGS__); })
+#define _imap_reply_nolock_fd_lognewline(imap, fd, fmt, ...) ({ imap_debug(4, "%p <= " fmt "\r\n", imap, ## __VA_ARGS__); bbs_node_fd_writef(imap->node, fd, fmt, ## __VA_ARGS__); })
 
-#define _imap_reply_nolock_fd(imap, fd, fmt, ...) imap_debug(4, "%p <= " fmt, imap, ## __VA_ARGS__); bbs_node_fd_writef(imap->node, fd, fmt, ## __VA_ARGS__);
-#define _imap_reply_nolock_fd_lognewline(imap, fd, fmt, ...) imap_debug(4, "%p <= " fmt "\r\n", imap, ## __VA_ARGS__); bbs_node_fd_writef(imap->node, fd, fmt, ## __VA_ARGS__);
-#define _imap_reply_nolock(imap, fmt, ...) _imap_reply_nolock_fd(imap, imap->node->wfd, fmt, ## __VA_ARGS__);
+#define _imap_reply_nolock(imap, fmt, ...) _imap_reply_nolock_fd(imap, imap->node->wfd, fmt, ## __VA_ARGS__)
 #define _imap_reply(imap, fmt, ...) _imap_reply_nolock(imap, fmt, ## __VA_ARGS__)
-#define imap_send_nocrlf(imap, fmt, ...) _imap_reply_nolock_fd_lognewline(imap, imap->node->wfd, fmt, ## __VA_ARGS__);
+#define imap_send_nocrlf(imap, fmt, ...) _imap_reply_nolock_fd_lognewline(imap, imap->node->wfd, fmt, ## __VA_ARGS__)
 #define imap_send(imap, fmt, ...) _imap_reply(imap, "%s " fmt "\r\n", "*", ## __VA_ARGS__)
 #define imap_reply(imap, fmt, ...) do { \
 	bbs_assert(!imap->finalized_response); \

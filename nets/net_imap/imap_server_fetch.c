@@ -776,9 +776,12 @@ static int process_fetch_finalize(struct imap_session *imap, struct fetch_reques
 		}
 	}
 
-	imap_send_nocrlf(imap, /* Start the IMAP response, and ensure no CR LF is automatically added. */
+	if (imap_send_nocrlf(imap, /* Start the IMAP response, and ensure no CR LF is automatically added. */
 		"* %d " /* Number after FETCH is always a message sequence number, not UID, even if usinguid */
-		"FETCH (%s", seqno, response); /* No closing paren, we do that at the very end */
+		"FETCH (%s", seqno, response) < 0) { /* No closing paren, we do that at the very end */
+		res = -1;
+		goto cleanup;
+	}
 
 	/* Now, send anything that could be a large, variable amount of data.
 	 * All of these will use a format literal / multiline response */
@@ -950,21 +953,21 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		int markseen, recent;
 
 		if (entry->d_type != DT_REG || !strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
-			goto cleanup;
+			goto next;
 		}
 		msguid = imap_msg_in_range(imap, ++seqno, entry->d_name, sequences, usinguid, &error);
 		if (!msguid) {
-			goto cleanup;
+			goto next;
 		}
 		if (fetchreq->changedsince) {
 			if (parse_modseq_from_filename(entry->d_name, &modseq)) {
-				goto cleanup;
+				goto next;
 			}
 			if (modseq <= fetchreq->changedsince) {
 #ifdef EXTRA_DEBUG
 				bbs_debug(5, "modseq %lu older than CHANGEDSINCE %lu\n", modseq, fetchreq->changedsince);
 #endif
-				goto cleanup; /* Older than specified CHANGEDSINCE */
+				goto next; /* Older than specified CHANGEDSINCE */
 			}
 		}
 		/* At this point, the message is a match. Fetch everything we're supposed to for it. */
@@ -997,19 +1000,19 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 		 */
 		recent = (unsigned int) seqno >= imap->minrecent && (unsigned int) seqno <= imap->maxrecent;
 		if (fetchreq->flags && process_fetch_flags(imap, entry->d_name, markseen, recent, response, sizeof(response), &buf, &len)) {
-			goto cleanup;
+			goto next;
 		}
 		if (fetchreq->rfc822size && process_fetch_size(entry->d_name, response, sizeof(response), &buf, &len)) {
-			goto cleanup;
+			goto next;
 		}
 		if (fetchreq->modseq && process_fetch_modseq(entry->d_name, response, sizeof(response), &buf, &len, &modseq)) {
-			goto cleanup;
+			goto next;
 		}
 		if (fetchreq->internaldate && process_fetch_internaldate(fullname, response, sizeof(response), &buf, &len)) {
-			goto cleanup;
+			goto next;
 		}
 		if (fetchreq->envelope && process_fetch_envelope(fullname, response, sizeof(response), &buf, &len)) {
-			goto cleanup;
+			goto next;
 		}
 
 		/* Handle the header/body stuff and actually send the response. */
@@ -1020,10 +1023,16 @@ static int process_fetch(struct imap_session *imap, int usinguid, struct fetch_r
 			mark_seen(imap, seqno, fullname, entry->d_name); /* No need to goto cleanup if we fail, we do anyways */
 		}
 
+next:
 		fetched++;
+		free(entry);
+		continue;
 
 cleanup:
+		/* For example, if there was an I/O error during the FETCH response, abort immediately.
+		 * This is not uncommon - a client could exit in the middle of a FETCH 1:* */
 		free(entry);
+		break;
 	}
 	free(entries);
 	if (!fetched) {
