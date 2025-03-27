@@ -32,6 +32,10 @@ static int pre(void)
 	test_preload_module("mod_mimeparse.so");
 	test_load_module("net_imap.so");
 
+	/* If 'make templates' (run by 'make samples') has never been run on this system,
+	 * the templates won't exist at runtime to copy. */
+	TEST_REQUIRE_FILE("/var/lib/lbbs/templates/.config/.imapremote.sample");
+
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_imap.conf");
 	TEST_ADD_CONFIG("transfers.conf");
@@ -61,7 +65,7 @@ static int run(void)
 	CLIENT_EXPECT_EVENTUALLY(client1, "a2 OK");
 
 	if (eaccess(TEST_HOME_DIR_ROOT "/1/.config/.imapremote.sample", R_OK)) {
-		bbs_error("eaccess failed: %s\n", strerror(errno));
+		bbs_error("eaccess(%s) failed: %s\n", TEST_HOME_DIR_ROOT "/1/.config/.imapremote.sample", strerror(errno));
 		goto cleanup;
 	}
 

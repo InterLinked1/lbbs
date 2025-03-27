@@ -75,6 +75,7 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #define TEST_ADD_CONFIG_INTO_DIR(filename, dir) TEST_COPY_CONFIG(TEST_CONFIGS_SRC_DIR "/" filename, dir)
 #define TEST_ADD_CONFIG(filename) TEST_ADD_CONFIG_NAME(filename, filename)
 #define TEST_ADD_SUBCONFIG(subdir, filename) TEST_ADD_CONFIG_NAME(subdir "/" filename, filename)
+#define TEST_REQUIRE_FILE(file) if (eaccess(file, R_OK)) { bbs_error("Aborting test, can't access required file '%s': %s\n", file, strerror(errno)); return -1; }
 
 #define TEST_HOSTNAME "bbs.example.com"
 

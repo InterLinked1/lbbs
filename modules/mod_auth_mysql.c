@@ -291,14 +291,13 @@ static int invalid_birthday(struct tm *tm)
 }
 
 static int make_user(const char *username, const char *password, const char *fullname, const char *email, const char *phone,
-	const char *address, const char *city, const char *state, const char *zip, const char *dob, char gender)
+	const char *address, const char *city, const char *state, const char *zip, const char *dob, const char *gender)
 {
-	char pw_hash[61];
+	char pw_hash[BCRYPT_FULL_HASH_LEN + 1];
 	MYSQL *mysql = NULL;
 	MYSQL_STMT *stmt;
 	int res = -1;
 	char sql[184];
-	char genderbuf[2] = { gender, '\0' }; /* We can't pass a char directly into sql_prep_bind_exec, we must pass a char* */
 	struct tm birthday;
 	char types[16] = "sssssssssts";
 
@@ -323,8 +322,8 @@ static int make_user(const char *username, const char *password, const char *ful
 	}
 
 	/* Bind parameters and execute */
-	sql_fmt_autonull(types, username, pw_hash, fullname, email, phone, address, city, state, zip, dob ? &birthday : NULL, genderbuf);
-	if (sql_prep_bind_exec(stmt, sql, types, username, pw_hash, fullname, email, phone, address, city, state, zip, dob ? &birthday : NULL, genderbuf)) {
+	sql_fmt_autonull(types, username, pw_hash, fullname, email, phone, address, city, state, zip, dob ? &birthday : NULL, gender);
+	if (sql_prep_bind_exec(stmt, sql, types, username, pw_hash, fullname, email, phone, address, city, state, zip, dob ? &birthday : NULL, gender)) {
 		goto cleanup;
 	}
 	res = 0;
@@ -341,9 +340,8 @@ static int user_register(struct bbs_node *node)
 {
 	/* bcrypt caps password lengths at 72, so that's where that came from */
 	char fullname[64], username[64], password[72], password2[72];
-	char email[64], phone[16] = "", address[64] = "", city[64], state[32], zip[10] = "", dob[11] = "";
+	char email[64], phone[16] = "", address[64] = "", city[64], state[32], zip[10] = "", dob[11] = "", gender[2] = "";
 	char how_heard[256] = "";
-	int gender = 0;
 	int res;
 #define MAX_REG_ATTEMPTS 6
 	int tries = MAX_REG_ATTEMPTS;
@@ -458,12 +456,13 @@ static int user_register(struct bbs_node *node)
 		bbs_node_unbuffer(node); /* We need to be unbuffered for tread */
 		if (register_gender) {
 			for (; tries > 0; tries--) { /* Retries here count less than retries of the main loop */
+				int c;
 				NEG_RETURN(bbs_node_writef(node, "%-*s", REG_QLEN, REG_FMT "\rGender (MFX): ")); /* Erase existing line in case we're retrying */
-				gender = bbs_node_tread(node, MIN_MS(1));
-				NONPOS_RETURN(gender);
-				gender = (char) tolower(gender);
-				if (gender == 'm' || gender == 'f' || gender == 'x') {
-					NEG_RETURN(bbs_node_writef(node, "%c\n", gender)); /* Print response + newline */
+				c = bbs_node_tread(node, MIN_MS(1));
+				NONPOS_RETURN(c);
+				gender[0] = (char) tolower(c);
+				if (gender[0] == 'm' || gender[0] == 'f' || gender[0] == 'x') {
+					NEG_RETURN(bbs_node_writef(node, "%s\n", gender)); /* Print response + newline */
 					break; /* Got a valid response */
 				}
 				/* Invalid, try again */
@@ -497,8 +496,9 @@ confirm:
 	bbs_auth("New registration attempt for user %s from IP %s\n", username, node->ip);
 
 	/* How heard is logged but not passed to make_user */
-	bbs_debug(1, "New registration attempt: name = %s, username = %s, email = %s, phone = %s, address = %s, city = %s, state = %s, zip = %s, dob = %s, gender = %c, how heard = %s\n",
-		fullname, username, email, S_IF(phone), S_IF(address), city, state, S_IF(zip), S_IF(dob), gender ? gender : ' ', S_IF(how_heard));
+	bbs_debug(1, "New registration attempt: "
+		"name = '%s', username = '%s', email = '%s', phone = '%s', address = '%s', city = '%s', state = '%s', zip = '%s', dob = '%s', gender = '%s', how heard = '%s'\n",
+		fullname, username, email, S_IF(phone), S_IF(address), city, state, S_IF(zip), S_IF(dob), S_IF(gender), S_IF(how_heard));
 
 #define NULL_IFEMPTY(s) (!*s ? NULL : s)
 
@@ -538,7 +538,7 @@ confirm:
 	}
 
 	/* Actually create the user */
-	res = make_user(username, password, fullname, email, NULL_IFEMPTY(phone), NULL_IFEMPTY(address), city, state, NULL_IFEMPTY(zip), NULL_IFEMPTY(dob), (char) gender);
+	res = make_user(username, password, fullname, email, NULL_IFEMPTY(phone), NULL_IFEMPTY(address), city, state, NULL_IFEMPTY(zip), NULL_IFEMPTY(dob), NULL_IFEMPTY(gender));
 
 	if (res) {
 		NEG_RETURN(bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_FAILURE), "Your registration was rejected.", COLOR_RESET));
@@ -547,6 +547,7 @@ confirm:
 	}
 	/* If user registration actually succeeded, then this function call will succeed. If not, it won't. */
 	res = bbs_authenticate(node, username, password);
+	bbs_memzero(password, sizeof(password)); /* No longer need the password */
 	if (res) {
 		/* Something went wrong */
 		NEG_RETURN(bbs_node_writef(node, "%s%s%s\n", COLOR(COLOR_FAILURE), "An error occured in processing your registration.\n", COLOR_RESET));

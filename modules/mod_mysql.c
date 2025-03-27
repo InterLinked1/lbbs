@@ -208,7 +208,7 @@ int sql_fmt_autonull(char *fmt, ...)
 	return 0;
 }
 
-int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[], unsigned long int lengths[], int bind_ints[], long long bind_longs[], char *bind_strings[], MYSQL_TIME bind_dates[], my_bool bind_null[])
+static int sql_bind_param_single(va_list *ap_ptr, int i, const char *cur, MYSQL_BIND bind[], unsigned long int lengths[], int bind_ints[], long long bind_longs[], char *bind_strings[], MYSQL_TIME bind_dates[], my_bool bind_null[])
 {
 	struct tm *tm;
 	char format_char = (char) tolower(*cur);
@@ -219,15 +219,11 @@ int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[],
 		bbs_assert(0); /* We'd crash anyways below. */
 	}
 
-#if 0
-	bbs_debug(10, "Executing fmt char: %c\n", format_char);
-#endif
-
 	/* Ref: https://dev.mysql.com/doc/c-api/5.7/en/c-api-prepared-statement-data-structures.html */
 	/* See for C <-> MySQL/MariaDB types: https://dev.mysql.com/doc/c-api/5.7/en/c-api-prepared-statement-type-codes.html */
 	switch (format_char) {
 	case 'i': /* Integer */
-		bind_ints[i] = va_arg(ap, int);
+		bind_ints[i] = va_arg(*ap_ptr, int);
 		/* This is a number type, so there is no need to specify buffer_length */
 		bind[i].buffer_type = MYSQL_TYPE_LONG; /* Yes, this is correct */
 		bind[i].buffer = (char *) &bind_ints[i];
@@ -235,7 +231,7 @@ int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[],
 		bind[i].length = 0;
 		break;
 	case 'l': /* Long int */
-		bind_longs[i] = va_arg(ap, long long);
+		bind_longs[i] = va_arg(*ap_ptr, long long);
 		/* This is a number type, so there is no need to specify buffer_length */
 		bind[i].buffer_type = MYSQL_TYPE_LONGLONG;
 		bind[i].buffer = (char *) &bind_longs[i];
@@ -243,7 +239,7 @@ int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[],
 		bind[i].length = 0;
 		break;
 	case 'd': /* Double */
-		bind_ints[i] = va_arg(ap, int);
+		bind_ints[i] = va_arg(*ap_ptr, int);
 		/* This is a number type, so there is no need to specify buffer_length */
 		bind[i].buffer_type = MYSQL_TYPE_LONG;
 		bind[i].buffer = (char *) &bind_ints[i];
@@ -251,7 +247,7 @@ int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[],
 		bind[i].length = 0;
 		break;
 	case 's': /* String */
-		bind_strings[i] = va_arg(ap, char *);
+		bind_strings[i] = va_arg(*ap_ptr, char *);
 		lengths[i] = strlen(S_IF(bind_strings[i]));
 		if (!bind_strings[i] && !bind_null[i]) {
 			bbs_warning("String at index %d is NULL, but not specified? (Format char: %c)\n", i, *cur);
@@ -263,7 +259,7 @@ int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[],
 		bind[i].length = &lengths[i]; /* For strings, we actually do need the length. We'll be able to find it in the array. */
 		break;
 	case 't': /* Date */
-		tm = va_arg(ap, struct tm *);
+		tm = va_arg(*ap_ptr, struct tm *);
 		if (!bind_null[i]) {
 			bind_dates[i].year = (unsigned int) TM_YEAR(tm->tm_year);
 			bind_dates[i].month = (unsigned int) TM_MONTH(tm->tm_mon);
@@ -313,7 +309,10 @@ int __sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *file, 
 
 	va_start(ap, fmt);
 	for (i = 0; i < num_args; i++, cur++) { /* Bind the parameters themselves for this round */
-		if (sql_bind_param_single(ap, (int) i, cur, bind, lengths, bind_ints, bind_longs, bind_strings, bind_dates, bind_null)) {
+		/* On some platforms, we can technically pass ap by value,
+		 * but its value upon returning is technically indeterminate (we're supposed to call va_end after that).
+		 * Since we want to iterate through, we need to explicitly pass the pointer instead. */
+		if (sql_bind_param_single(&ap, (int) i, cur, bind, lengths, bind_ints, bind_longs, bind_strings, bind_dates, bind_null)) {
 			va_end(ap);
 			return -1;
 		}

@@ -591,6 +591,7 @@ static int mysql_spawn(void)
 		"--datadir=" MYSQL_DATA_DIR,
 		"--pid-file=" MYSQL_PID_FILE,
 		"--general_log_file=" MYSQL_LOG_FILE,
+		"--expire-logs-days=0", /* Prevents warning about needing --log-bin to make --expire-log-days or --bin-log-expire-log-seconds work */
 		"--log-error=" MYSQL_ERROR_LOG,
 		"--socket=" MYSQL_SOCKET,
 		"--port=" XSTR(MYSQL_PORT),
@@ -606,8 +607,14 @@ static int mysql_spawn(void)
 	TEST_MKDIR(MYSQL_DATA_DIR);
 
 	/* The mysql user exist from installing MySQL as a service */
+	errno = 0;
 	pwd = getpwnam("mysql"); /* Not thread-safe, but we don't need that */
 	if (!pwd) {
+		if (errno == 0) {
+			/* errno can be 0 for certain errors, this happens when the username was not found */
+			bbs_error("User '%s' does not exist, can't run MySQL-dependent test\n", "mysql");
+			return -1;
+		}
 		bbs_error("getpwnam failed: %s\n", strerror(errno));
 		return -1;
 	}
@@ -622,7 +629,7 @@ static int mysql_spawn(void)
 	}
 
 	/* First, initialize the temporary DB: */
-	if (system("mysql_install_db --skip-test-db --user=mysql --ldata=" MYSQL_DATA_DIR " > /dev/null")) { /* Yuck... but why reinvent the wheel? */
+	if (system("mysql_install_db --expire-logs-days=0 --skip-test-db --user=mysql --ldata=" MYSQL_DATA_DIR " > /dev/null")) { /* Yuck... but why reinvent the wheel? */
 		bbs_error("Failed to initialize database\n");
 		return -1;
 	}
@@ -1058,7 +1065,7 @@ static int run_test(const char *filename, int multiple)
 		res = -1;
 	} else {
 		struct timeval start, end;
-		int64_t sec_dif, usec_dif, tot_dif;
+		int64_t sec_dif, usec_dif, tot_dif = 0;
 		int core_before = 0;
 		pid_t childpid = -1;
 		if (eaccess(TEST_ROOT_DIR, R_OK) && mkdir(TEST_ROOT_DIR, 0700)) {
@@ -1131,7 +1138,7 @@ static int run_test(const char *filename, int multiple)
 		if (multiple && !test_autorun) {
 			bbs_debug(2, "Skipping test %s\n", testmod->name);
 			total_fail--;
-			goto cleanup;
+			goto done;
 		}
 		if (option_use_mysql && !mysql_child && mysql_spawn()) {
 			res = -1;
@@ -1214,16 +1221,17 @@ static int run_test(const char *filename, int multiple)
 			bbs_debug(1, "%d soft assertion%s failed\n", soft_assertions_failed, ESS(soft_assertions_failed));
 			res = -1;
 		}
+cleanup:
 		if (res) {
-			fprintf(stderr, "== Test %sFAILED%s: %5lums %-20s %s\n", COLOR(COLOR_FAILURE), COLOR_RESET, tot_dif, testmod->name, testmod->description);
+			fprintf(stderr, "== Test %sFAILED%s: %5lums %-25s %s\n", COLOR(COLOR_FAILURE), COLOR_RESET, tot_dif, testmod->name, testmod->description);
 		} else {
-			fprintf(stderr, "== Test %sPASSED%s: %5lums %-20s %s\n", COLOR(COLOR_SUCCESS), COLOR_RESET, tot_dif, testmod->name, testmod->description);
+			fprintf(stderr, "== Test %sPASSED%s: %5lums %-25s %s\n", COLOR(COLOR_SUCCESS), COLOR_RESET, tot_dif, testmod->name, testmod->description);
 			total_pass++;
 			total_fail--; /* We didn't actually fail so undo that bit */
 		}
 	}
 
-cleanup:
+done:
 	dlclose(lib);
 	if (testmod) {
 		bbs_warning("Test module still registered?\n");

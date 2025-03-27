@@ -13,6 +13,8 @@
  *
  */
 
+#define BCRYPT_FULL_HASH_LEN 60
+
 /*!
  * \brief Generate a cryptographically secure random string containing only alphanumeric characters
  * \param[out] buf

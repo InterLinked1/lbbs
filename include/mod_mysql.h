@@ -38,8 +38,6 @@ int sql_prepare(MYSQL_STMT *stmt, const char *fmt, const char *query);
 /*! \brief Automatically adjust the format string based on whether any arguments are NULL */
 int sql_fmt_autonull(char *fmt, ...);
 
-int sql_bind_param_single(va_list ap, int i, const char *cur, MYSQL_BIND bind[], unsigned long int lengths[], int bind_ints[], long long bind_longs[], char *bind_strings[], MYSQL_TIME bind_dates[], my_bool bind_null[]);
-
 #define sql_prep_bind_exec(stmt, query, fmt, ...) __sql_prep_bind_exec(stmt, query, __FILE__, __LINE__, __func__, fmt, ## __VA_ARGS__)
 
 int __sql_prep_bind_exec(MYSQL_STMT *stmt, const char *query, const char *file, int line, const char *func, const char *fmt, ...);

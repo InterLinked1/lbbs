@@ -43,6 +43,8 @@ static int pre(void)
 	test_load_module("net_imap.so");
 	test_load_module("mod_mail_events.so");
 
+	TEST_REQUIRE_FILE("/etc/ssl/private/ssl-cert-snakeoil.key"); /* Not all platforms have it and we don't create it */
+
 	TEST_ADD_CONFIG("tls.conf");
 	TEST_ADD_CONFIG("transfers.conf"); /* So we can use home directory configs */
 	TEST_ADD_CONFIG("mod_mail.conf");

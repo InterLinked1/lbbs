@@ -690,7 +690,7 @@ static int ssl_load_config(int reload)
 
 	if (!cfg) {
 		if (!reload) {
-			bbs_warning("SSL/TLS will be unavailable since tls.conf is missing\n");
+			bbs_warning("SSL/TLS server will be unavailable since tls.conf is missing\n");
 		}
 		return -1; /* Impossible to do TLS server stuff if we don't know what the server key/cert are */
 	}

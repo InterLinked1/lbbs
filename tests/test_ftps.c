@@ -31,8 +31,12 @@ static int pre(void)
 	test_preload_module("io_tls.so");
 	test_load_module("net_ftp.so");
 
-	TEST_ADD_CONFIG("transfers.conf");
+	/* Not all platforms have it and we don't create it.
+	 * On Debian, can run 'apt-get install ssl-cert' if this cert pair is missing. */
+	TEST_REQUIRE_FILE("/etc/ssl/private/ssl-cert-snakeoil.key");
+
 	TEST_ADD_CONFIG("tls.conf");
+	TEST_ADD_CONFIG("transfers.conf");
 	TEST_ADD_SUBCONFIG("tls", "net_ftp.conf");
 
 	TEST_RESET_MKDIR(TEST_TRANSFER_DIR);

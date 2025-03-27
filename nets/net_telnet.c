@@ -770,7 +770,7 @@ static int __telnet_process_command(struct bbs_node *node, struct telnet_setting
 			}
 			break;
 		case TELOPT_TSPEED:
-			if (buf[3] == TELQUAL_IS && res >= 3) {
+			if (buf[3] == TELQUAL_IS && res >= 6) {
 				bbs_debug(3, "Terminal speed is %.*s\n", (int) res - 6, buf + 4); /* First 4 bytes are command, and last two are IAC SE */
 				if (res - 6 < (int) len - 1) {
 					memmove(buf, buf + 4, (size_t) res - 6);

@@ -284,7 +284,6 @@ int bbs_password_verify(const char *password, const char *salt, const char *hash
 	return res;
 }
 
-#define BCRYPT_FULL_HASH_LEN 60
 int bbs_password_verify_bcrypt(const char *password, const char *combined)
 {
 	int res;
