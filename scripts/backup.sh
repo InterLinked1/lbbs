@@ -20,6 +20,9 @@
 # This script is written for POSIX sh, so some things would
 # be easier if bashisms were allowed, bear with me :)
 
+# Adjustable options:
+# Specify environment variable GPG_PUBKEY to specify the path to a GPG public key to be used for encryption of the backup
+
 # Get all the relevant paths from the LBBS config files
 BBS_CONFIG_DIR=/etc/lbbs
 BBS_LOG_DIR=/var/log/lbbs # not backed up by default, due to large size, but could be added to the backup list if you want it
@@ -168,9 +171,17 @@ if [ "$ALL_DBS" != "" ]; then
 fi
 
 # Now, go ahead and actually tarball everything up
-TAR_NAME="lbbs_$(date +"%Y%m%d_%H%M%S").tar.gz"
-printf " ! %s\n" "tar cvzf $TAR_NAME $DIRS $FILES" # Print executed command
-# This will contain a lot of files, don't list them all
-tar cvzf $TAR_NAME $DIRS $FILES >/dev/null 2>&1 # suppress "tar: Removing leading `/' from member names"
-printf "Backed up to tarball %s in current directory\n" "$TAR_NAME"
-ls -lh "$TAR_NAME"
+TAR_BASE="lbbs_$(date +"%Y%m%d_%H%M%S").tar"
+if [ "$GPG_PUBKEY" != "" ]; then
+	printf " ! %s\n" "tar -c $DIRS $FILES" # Print executed command
+	tar -c $DIRS $FILES 2>/dev/null | gpg --encrypt --recipient-file ${GPG_PUBKEY} --compress-algo zlib --output ${TAR_BASE}.gpg
+	printf "Backed up to encrypted tarball %s in current directory\n" "$TAR_BASE.gpg"
+	ls -la "$TAR_BASE.gpg"
+else
+	TAR_GZ_NAME="${TAR_BASE}.gz"
+	# This will contain a lot of files, don't list them all
+	printf " ! %s\n" "tar cvzf $TAR_GZ_NAME $DIRS $FILES" # Print executed command
+	tar cvzf $TAR_GZ_NAME $DIRS $FILES >/dev/null 2>&1 # suppress "tar: Removing leading `/' from member names"
+	printf "Backed up to tarball %s in current directory\n" "$TAR_GZ_NAME"
+	ls -lh "$TAR_GZ_NAME"
+fi
