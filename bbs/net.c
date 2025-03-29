@@ -42,6 +42,7 @@ int bbs_register_network_protocol(const char *name, unsigned int port)
 	RWLIST_TRAVERSE(&prots, prot, entry) {
 		if (prot->port == port) {
 			bbs_error("Port %u is already in use by network protocol %s\n", port, prot->name);
+			RWLIST_UNLOCK(&prots);
 			return -1;
 		}
 	}
