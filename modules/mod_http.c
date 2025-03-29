@@ -1741,6 +1741,7 @@ int http_parse_request(struct http_session *http, char *buf)
 		 * Send an HTTP error and close the connection. */
 		http->res->code = res;
 		builtin_response(http);
+		bbs_event_dispatch(http->node, EVENT_NODE_BAD_REQUEST);
 		return -1;
 	}
 

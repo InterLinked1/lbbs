@@ -33,6 +33,8 @@
 #include "include/node.h"
 #include "include/user.h"
 #include "include/notify.h"
+#include "include/event.h"
+
 #include "include/net_irc.h"
 
 #define DEFAULT_MSP_PORT 18
@@ -327,6 +329,7 @@ static void *msp_tcp_handler(void *varg)
 		}
 		if (parse_msp(&msp, buf, (size_t) res)) {
 			bbs_debug(4, "Failed to parse MSP payload\n");
+			bbs_event_dispatch(node, EVENT_NODE_BAD_REQUEST);
 			break;
 		}
 		/* We got a valid message */
@@ -380,7 +383,15 @@ static void *msp_udp_listener(void *varg)
 		/* Single thread for all incoming UDP connections,
 		 * since it won't take very long to service requests. */
 		if (parse_msp(&msp, buf, (size_t) res)) {
+			struct bbs_event event;
 			bbs_debug(4, "Failed to parse MSP payload\n");
+
+			/* Can't use bbs_event_dispatch for this event, since we don't have a node */
+			memset(&event, 0, sizeof(event));
+			event.type = EVENT_NODE_BAD_REQUEST; /* Always consider it bad, if it never set up a PTY */
+			safe_strncpy(event.protname, "MSP", sizeof(event.protname));
+			safe_strncpy(event.ipaddr, ipaddr, sizeof(event.ipaddr));
+			bbs_event_broadcast(&event);
 		} else if (handle_msp(&msp, ipaddr)) {
 			bbs_debug(4, "Failed to handle MSP message\n");
 		}

@@ -2082,6 +2082,12 @@ static int _bbs_intro(struct bbs_node *node)
 		bbs_verb(4, "Could not autodetect ANSI support for node %u\n" ,node->id);
 		res = init_term_properties_manual(node);
 		if (res < 0) {
+			/* There may be some legitimate connections where ANSI autodetect fails,
+			 * particularly for non-ANSI terminals, such as dumb terminals.
+			 * But if manual init via prompting user also fails, then consider it
+			 * a bad connection, to capture much of the spam traffic connecting to Telnet ports.
+			 * Note that this doesn't affect TDD connections, since they skip _bbs_intro. */
+			bbs_event_dispatch(node, EVENT_NODE_BAD_REQUEST);
 			return res;
 		}
 	} else {
