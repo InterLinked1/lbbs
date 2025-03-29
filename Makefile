@@ -165,6 +165,7 @@ extinstall:
 	fi
 	@+$(SUBMAKE) --no-builtin-rules -C external install
 	@find /var/lib/lbbs/external -size 0 -delete; \
+	ls -la /var/lib/lbbs/external/; \
 	ln -s -f /var/lib/lbbs/external/rsysop /usr/local/sbin/rsysop
 
 scripts :
