@@ -42,12 +42,6 @@
 #include "include/mod_mail.h"
 #include "include/net_smtp.h"
 
-#define REQUIRE_ARG(s) \
-	if (strlen_zero(s)) { \
-		bbs_warning("Incomplete condition on line %d (%s must be nonempty)\n", lineno, #s); \
-		return 0; \
-	}
-
 static int numcmp(char *s, int num)
 {
 	int match = 0;
@@ -238,7 +232,13 @@ static void __attribute__ ((nonnull (2, 3, 4))) str_match(const char *matchtype,
 	}
 }
 
-static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastretval, const char *usermaildir, char *s)
+#define REQUIRE_ARG(s) \
+	if (strlen_zero(s)) { \
+		bbs_warning("Incomplete condition at %s:%d (%s must be nonempty)\n", filename, lineno, #s); \
+		return 0; \
+	}
+
+static int test_condition(struct smtp_msg_process *mproc, const char *filename, int lineno, int lastretval, const char *usermaildir, char *s)
 {
 	char *next;
 	int match = 0;
@@ -247,7 +247,7 @@ static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastre
 	REQUIRE_ARG(s);/* Empty match implicitly matches anything anyways */
 
 #ifdef EXTRA_DEBUG
-	bbs_debug(7, "Evaluating condition: %s\n", s);
+	bbs_debug(7, "Evaluating condition at %s:%d: %s\n", filename, lineno, s);
 #endif
 
 	next = strsep(&s, " ");
@@ -263,7 +263,7 @@ static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastre
 		} else if (!strcasecmp(s, "OUT")) {
 			match = mproc->direction == SMTP_MSG_DIRECTION_OUT;
 		} else {
-			bbs_warning("Invalid direction: %s\n", s);
+			bbs_warning("Invalid direction at %s:%d: %s\n", filename, lineno, s);
 		}
 	} else if (!strcasecmp(next, "RETVAL")) {
 		match = numcmp(s, lastretval);
@@ -325,7 +325,7 @@ static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastre
 			found = header_match(mproc, header, expr, MATCH_EQ);
 			match = found == 1;
 		} else {
-			bbs_warning("Invalid HEADER command match type: %s\n", matchtype);
+			bbs_warning("Invalid HEADER command match type at %s:%d: %s\n", filename, lineno, matchtype);
 		}
 	} else if (!strcasecmp(next, "FILE")) {
 		char fullfile[1024];
@@ -347,12 +347,12 @@ static int test_condition(struct smtp_msg_process *mproc, int lineno, int lastre
 			match = 1;
 		}
 	} else {
-		bbs_warning("Invalid condition: %s %s\n", next, S_IF(s));
+		bbs_warning("Invalid condition at %s:%d: %s %s\n", filename, lineno, next, S_IF(s));
 	}
 	match = negate ? !match : match;
 #ifdef EXTRA_DEBUG
 	/* Can't print condition since we mangled it with strsep */
-	bbs_debug(7, "Evaluated condition => %s\n", match ? "1 (TRUE)" : "0 (FALSE)");
+	bbs_debug(7, "Evaluated condition at %s:%d => %s\n", filename, lineno, match ? "1 (TRUE)" : "0 (FALSE)");
 #endif
 	return match;
 }
@@ -454,11 +454,11 @@ cleanup:
 #undef REQUIRE_ARG
 #define REQUIRE_ARG(s) \
 	if (strlen_zero(s)) { \
-		bbs_warning("Incomplete action on line %d\n", lineno); \
+		bbs_warning("Incomplete action at %s:%d\n", filename, lineno); \
 		return 0; \
 	}
 
-static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
+static int do_action(struct smtp_msg_process *mproc, const char *filename, int lineno, char *s)
 {
 	char *next;
 
@@ -478,7 +478,7 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 				snprintf(newdir, sizeof(newdir), "%s/.%s", mailbox_maildir(mproc->mbox), s);
 			}
 			if (eaccess(newdir, R_OK)) {
-				bbs_warning("MOVETO failed: %s\n", strerror(errno));
+				bbs_warning("MOVETO failed at %s:%d: %s\n", filename, lineno, strerror(errno));
 				return 0;
 			}
 		}
@@ -512,7 +512,7 @@ static int do_action(struct smtp_msg_process *mproc, int lineno, char *s)
 		/* Submit the message via a message submission agent (relay it through some other mail server) */
 		REPLACE(mproc->relayroute, s);
 	} else {
-		bbs_warning("Invalid action: %s %s\n", next, S_IF(s));
+		bbs_warning("Invalid action at %s:%d: %s %s\n", filename, lineno, next, S_IF(s));
 	}
 	return 0;
 }
@@ -567,7 +567,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 			if (multilinecomment > 0) {
 				multilinecomment--;
 			} else {
-				bbs_warning("No multiline comment active at line %d\n", lineno);
+				bbs_warning("No multiline comment active at %s:%d\n", rulesfile, lineno);
 			}
 			continue;
 		} else if (!strcasecmp(s, "COMMENT")) {
@@ -598,7 +598,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 				}
 				if_count--;
 			} else {
-				bbs_warning("No IF block scope at line %d\n", lineno);
+				bbs_warning("No IF block scope at %s:%d\n", rulesfile, lineno);
 			}
 		} else if (want_endif) {
 			if (STARTS_WITH(s, "IF ")) {
@@ -614,10 +614,10 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 			continue;
 		} else if (STARTS_WITH(s, "TEST ")) {
 			s += STRLEN("TEST ");
-			retval = test_condition(mproc, lineno, retval, usermaildir, s);
+			retval = test_condition(mproc, rulesfile, lineno, retval, usermaildir, s);
 		} else if (STARTS_WITH(s, "MATCH ")) {
 			s += STRLEN("MATCH ");
-			retval = test_condition(mproc, lineno, retval, usermaildir, s);
+			retval = test_condition(mproc, rulesfile, lineno, retval, usermaildir, s);
 			if (!retval) {
 				skip_rule = 1; /* Didn't match, skip this rule */
 			}
@@ -643,7 +643,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 				}
 				break;
 			} else {
-				retval = do_action(mproc, lineno, s);
+				retval = do_action(mproc, rulesfile, lineno, s);
 			}
 		} else if (STARTS_WITH(s, "IF ")) {
 			int cond, negate = 0;
@@ -654,13 +654,13 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 				negate = 1;
 				s += STRLEN("NOT ");
 			}
-			cond = test_condition(mproc, lineno, retval, usermaildir, s);
+			cond = test_condition(mproc, rulesfile, lineno, retval, usermaildir, s);
 			if (negate) {
 				cond = !negate;
 			}
 			if (!cond) {
 				want_endif++;
-				bbs_debug(5, "Skipping IF conditional, condition at line %d is false\n", lineno);
+				bbs_debug(5, "Skipping IF conditional, condition at %s:%d is false\n", rulesfile, lineno);
 			}
 		} else {
 			bbs_warning("Invalid command: %s\n", s);
@@ -669,7 +669,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 		if (!was_skip && skip_rule) { /* Rule statement just evaluated as false */
 #ifdef EXTRA_DEBUG
 			/* We butchered the rule statement with strsep so can't print it out again */
-			bbs_debug(5, "Skipping rule, condition at line %d false\n", lineno);
+			bbs_debug(5, "Skipping rule, condition at %s:%d false\n", rulesfile, lineno);
 #endif
 		}
 	}

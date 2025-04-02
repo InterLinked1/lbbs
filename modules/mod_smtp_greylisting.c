@@ -322,7 +322,8 @@ static int processor(struct smtp_msg_process *mproc)
 		 * this is much quicker to check now. */
 		return 0;
 	} else if (!mproc->smtp || !smtp_node(mproc->smtp)) {
-		bbs_warning("Not an interactive session?\n");
+		/* Things like DSNs will hit this path.
+		 * Regardless, greylisting only makes sender when we have a live sender on the wire. */
 		return 0;
 	} else if (bbs_user_is_registered(smtp_node(mproc->smtp)->user)) {
 		bbs_warning("Authenticated session?\n");
