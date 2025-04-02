@@ -66,14 +66,19 @@ static FILE *fd_logfile = NULL;
 #endif
 
 #ifdef FD_LOGFILE
-#define FD_LOGF(...) \
+#define FD_LOGF(nowarg, file, line, func, fmt, ...) \
 	bbs_mutex_lock(&fd_loglock); \
 	if (fd_logfile) { \
-		fprintf(fd_logfile, ## __VA_ARGS__); \
+		time_t now = nowarg; \
+		char datestring[24]; \
+		struct tm opendate; \
+		localtime_r(&now, &opendate); \
+		strftime(datestring, sizeof(datestring), "%F %T", &opendate); \
+		fprintf(fd_logfile, "%s: %s:%d (%s) " fmt, datestring, file, line, func, ## __VA_ARGS__); \
 	} \
 	bbs_mutex_unlock(&fd_loglock);
 #else
-#define FD_LOGF(...)
+#define FD_LOGF(now, file, line, func, fmt, ...)
 #endif
 
 /*! \brief Get number of file descriptors open by current process */
@@ -149,13 +154,13 @@ static int bbs_fd_dump(int fd)
 #if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
 	unsigned int i, opened = 0;
 	struct rlimit rl;
-	char datestring[256];
 
 	getrlimit(RLIMIT_NOFILE, &rl);
 
 	for (i = 0; i < ARRAY_LEN(fdinfo); i++) {
 		/* Some of the assigned fds are >= ARRAY_LEN(fdinfo), so not all will show up here */
 		if (fdinfo[i].isopen) {
+			char datestring[24];
 			struct tm opendate;
 			localtime_r(&fdinfo[i].now, &opendate);
 			strftime(datestring, sizeof(datestring), "%F %T", &opendate);
@@ -203,7 +208,7 @@ static int bbs_fd_dump(int fd)
 	tmp->callname = name;       \
 	snprintf(tmp->callargs, sizeof(tmp->callargs), __VA_ARGS__); \
 	tmp->isopen = 1;            \
-	FD_LOGF("%lu: %s:%d (%s) %d = %s(%s)\n", tmp->now, tmp->file, tmp->line, tmp->function, offset, tmp->callname, tmp->callargs); \
+	FD_LOGF(tmp->now, tmp->file, tmp->line, tmp->function, "%d = %s(%s)\n", offset, tmp->callname, tmp->callargs); \
 }
 
 #define LOG_FAILURE() \
@@ -224,13 +229,15 @@ static int bbs_fd_dump(int fd)
 #define MARK_OPEN(fd) \
 	fdinfo[fd].isopen = 1; \
 	COPY(fdinfo[fd].file, file); \
-	fdinfo[fd].line = line;
+	fdinfo[fd].line = line; \
+	fdinfo[fd].now = time(NULL);
 
 #define MARK_CLOSED(fd) \
 	fdinfo[fd].isopen = 0; \
 	/* Update to where it was closed so we can debug attempts to close previously closed fds */ \
 	COPY(fdinfo[fd].file, file); \
-	fdinfo[fd].line = line;
+	fdinfo[fd].line = line; \
+	fdinfo[fd].now = time(NULL);
 
 int __bbs_open(const char *file, int line, const char *func, const char *path, int flags, ...)
 {
@@ -422,20 +429,24 @@ int __bbs_close(int fd, const char *file, int line, const char *func)
 	} else if (ARRAY_IN_BOUNDS(fd, fdinfo)) { /* && !res (implicit) */
 		MARK_CLOSED(fd);
 	}
-	FD_LOGF("%lu: %s:%d (%s) close(%d)\n", time(NULL), file, line, func, fd);
+	FD_LOGF(time(NULL), file, line, func, "close(%d)\n", fd);
 	return res;
 }
 
 int __bbs_mark_opened(int fd, const char *file, int line, const char *func)
 {
-	int res = 0;
 	if (!bbs_fd_valid(fd)) {
 		__bbs_log(LOG_WARNING, 0, file, line, func, "File descriptor %d is not valid\n", fd);
-		res = 1;
+		return 1;
 	}
+	bbs_debug(5, "Marking file descriptor %d as open\n", fd);
 	if (ARRAY_IN_BOUNDS(fd, fdinfo)) {
 		if (bbs_assertion_failed(!fdinfo[fd].isopen)) {
-			__bbs_log(LOG_WARNING, 0, file, line, func, "File descriptor marked open, but was already opened at %s:%d?\n", fdinfo[fd].file, fdinfo[fd].line);
+			char datestring[24];
+			struct tm opendate;
+			localtime_r(&fdinfo[fd].now, &opendate);
+			strftime(datestring, sizeof(datestring), "%F %T", &opendate);
+			__bbs_log(LOG_WARNING, 0, file, line, func, "File descriptor %d marked open, but was already opened at %s:%d at %s?\n", fd, fdinfo[fd].file, fdinfo[fd].line, datestring);
 		}
 		MARK_OPEN(fd);
 		/* Since we don't have a function or call args, blank them out so a previous one doesn't linger */
@@ -443,13 +454,12 @@ int __bbs_mark_opened(int fd, const char *file, int line, const char *func)
 		fdinfo[fd].callname = "";
 		strcpy(fdinfo[fd].callargs, "");
 	}
-	FD_LOGF("%lu: %s:%d (%s) mark_opened(%d)\n", time(NULL), file, line, func, fd);
-	return res;
+	FD_LOGF(time(NULL), file, line, func, "mark_opened(%d)\n", fd);
+	return 0;
 }
 
 int __bbs_mark_closed(int fd, const char *file, int line, const char *func)
 {
-	int res = 0;
 	/* Don't attempt to close the file descriptor, if it's already closed.
 	 * Something else may reuse it in the meantime and we could close something else.
 	 * Of course, if that's the case, we'll mess up our state array below,
@@ -459,16 +469,21 @@ int __bbs_mark_closed(int fd, const char *file, int line, const char *func)
 		 * It's possible it really was closed, but got opened by the time we got here.
 		 * That said, it is unlikely, so log a warning just in case something really is wrong. */
 		__bbs_log(LOG_WARNING, 0, file, line, func, "File descriptor %d is still valid\n", fd);
-		res = 1;
+		return 1;
 	}
+	bbs_debug(5, "Marking file descriptor %d as closed\n", fd);
 	if (ARRAY_IN_BOUNDS(fd, fdinfo)) {
 		if (bbs_assertion_failed(fdinfo[fd].isopen)) {
-			__bbs_log(LOG_WARNING, 0, file, line, func, "File descriptor marked closed, but was already closed at %s:%d?\n", fdinfo[fd].file, fdinfo[fd].line);
+			char datestring[24];
+			struct tm opendate;
+			localtime_r(&fdinfo[fd].now, &opendate);
+			strftime(datestring, sizeof(datestring), "%F %T", &opendate);
+			__bbs_log(LOG_WARNING, 0, file, line, func, "File descriptor %d marked closed, but was already closed at %s:%d at %s?\n", fd, fdinfo[fd].file, fdinfo[fd].line, datestring);
 		}
 		MARK_CLOSED(fd);
 	}
-	FD_LOGF("%lu: %s:%d (%s) mark_closed(%d)\n", time(NULL), file, line, func, fd);
-	return res;
+	FD_LOGF(time(NULL), file, line, func, "mark_closed(%d)\n", fd);
+	return 0;
 }
 
 FILE *__bbs_fopen(const char *path, const char *mode, const char *file, int line, const char *func)
@@ -497,7 +512,7 @@ int __bbs_fclose(FILE *ptr, const char *file, int line, const char *func)
 		return res;
 	}
 	MARK_CLOSED(fd);
-	FD_LOGF("%lu: %s:%d (%s) fclose(%d)\n", time(NULL), file, line, func, fd);
+	FD_LOGF(time(NULL), file, line, func, "fclose(%d)\n", fd);
 	return res;
 }
 

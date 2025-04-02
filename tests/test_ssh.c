@@ -28,8 +28,11 @@
 
 #include <libssh/libssh.h>
 
+#define TEST_SSH_PORT 2222
+
 static int pre(void)
 {
+	test_load_module("mod_ip_blocker.so");
 	test_load_module("net_ssh.so");
 
 	TEST_ADD_CONFIG("net_ssh.conf");
@@ -48,12 +51,12 @@ static int post(void)
 	return 0;
 }
 
-static ssh_session start_ssh(void)
+static ssh_session start_ssh(int badconnect)
 {
 	ssh_session session = NULL;
 	unsigned int methods;
 	char *banner;
-	static int port = 2222;
+	static int port = TEST_SSH_PORT;
 
 	session = ssh_new();
 	if (!session) {
@@ -72,7 +75,7 @@ static ssh_session start_ssh(void)
 		goto cleanup;
 	}
 	if (ssh_connect(session)) {
-		bbs_error("Connection failed: %s\n",ssh_get_error(session));
+		bbs_error("Connection failed: %s\n", ssh_get_error(session));
 	}
 
 	/* Authenticate */
@@ -85,9 +88,22 @@ static ssh_session start_ssh(void)
 		bbs_error("Password auth unavailable\n");
 		goto cleanup;
 	}
-	if (ssh_userauth_password(session, NULL, TEST_PASS) != SSH_AUTH_SUCCESS) {
-		bbs_error("Authentication failed: %s\n", ssh_get_error(session));
+	if (badconnect) {
+		/* Use the wrong password for this user */
+		int i;
+		for (i = 0; i < 4; i++) { /* Only 3 auth attempts are allowed */
+			if (ssh_userauth_password(session, NULL, "wrongpassword") == SSH_AUTH_SUCCESS) {
+				bbs_error("Authentication succeeded\n");
+				goto cleanup;
+			}
+			usleep(25000);
+		}
 		goto cleanup;
+	} else {
+		if (ssh_userauth_password(session, NULL, TEST_PASS) != SSH_AUTH_SUCCESS) {
+			bbs_error("Authentication failed: %s\n", ssh_get_error(session));
+			goto cleanup;
+		}
 	}
 
 	banner = ssh_get_issue_banner(session);
@@ -139,11 +155,12 @@ cleanup:
 
 static int run(void)
 {
+	int clientfd = -1;
 	ssh_session session = NULL;
 	int res = -1;
 
-	/* First session, disconnect cleanly at the end */
-	session = start_ssh();
+	/* Normal session, disconnect cleanly at the end */
+	session = start_ssh(0);
 	if (!session) {
 		goto cleanup;
 	}
@@ -153,8 +170,26 @@ static int run(void)
 	ssh_disconnect(session);
 	ssh_free(session);
 
-	/* Second session, don't disconnect cleanly at the end */
-	session = start_ssh();
+	/* Force failure to test that cleanup path */
+	clientfd = test_make_socket(TEST_SSH_PORT);
+	REQUIRE_FD(clientfd);
+	SWRITE(clientfd, "gobbledygook\r\n"); /* Emulate a non-SSH client to force key exchange failure */
+	usleep(10000); /* Allow time for server to handle it has a key exchange failure */
+	CLOSE(clientfd);
+
+	/* Test by closing immediately */
+	clientfd = test_make_socket(TEST_SSH_PORT);
+	REQUIRE_FD(clientfd);
+	CLOSE(clientfd);
+
+	/* Use the wrong password */
+	session = start_ssh(1);
+	if (session) {
+		goto cleanup; /* This one should not return a session */
+	}
+
+	/* Normal session, don't disconnect cleanly at the end */
+	session = start_ssh(0);
 	if (!session) {
 		goto cleanup;
 	}
@@ -162,6 +197,7 @@ static int run(void)
 		goto cleanup;
 	}
 	close(ssh_get_fd(session)); /* Rudely close the socket instead of doing a proper application-layer shutdown first */
+
 	res = 0;
 
 cleanup:

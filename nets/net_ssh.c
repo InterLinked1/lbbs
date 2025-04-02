@@ -137,13 +137,8 @@ static int start_ssh(void)
 	}
 
 	ssh_bind_options_set(sshbind, SSH_BIND_OPTIONS_BINDPORT, &ssh_port); /* Set the SSH bind port */
-	if (ssh_bind_listen(sshbind) < 0) {
-		bbs_error("%s\n", ssh_get_error(sshbind));
-		ssh_bind_free(sshbind);
-		sshbind = NULL;
-		return -1;
-	}
-	bbs_verb(7, "SSH listener started using %d key%s\n", keys, ESS(keys));
+	/* Instead of using ssh_bind_listen, we set up our own listener */
+	bbs_debug(1, "SSH listener started using %d key%s\n", keys, ESS(keys));
 	return 0;
 }
 
@@ -582,11 +577,10 @@ static int shell_request(ssh_session session, ssh_channel channel, void *userdat
 		return SSH_ERROR;
 	}
 
-	/* Run the BBS on this node */
-	/* Unlike other network drivers, the SSH module creates the
+	/* Run the BBS on this node.
+	 * Unlike other network drivers, the SSH module creates the
 	 * node thread normally (not detached), so that handle_session
-	 * can join the thread (and know if it has exited)
-	 */
+	 * can join the thread (and know if it has exited) */
 	node->skipjoin = 1; /* handle_session will join the node thread, bbs_node_shutdown should not */
 	if (bbs_pthread_create(&node->thread, NULL, bbs_node_handler, node)) {
 		bbs_node_unlink(node);
@@ -654,8 +648,7 @@ static int thread_has_exited(pthread_t thread)
 	/* res is the error number, errno is not set */
 	if (!res) {
 		return 0;
-	}
-	if (res == ESRCH) {
+	} else if (res == ESRCH) {
 		return 1;
 	}
 	/* Unexpected return value */
@@ -680,7 +673,6 @@ static void handle_session(ssh_event event, ssh_session session)
 	char ipaddr[64];
 	int n;
 	int node_started = 0;
-	int stdoutfd;
 	int is_sftp = 0;
 	int res;
 	int sshfd;
@@ -748,7 +740,29 @@ static void handle_session(ssh_event event, ssh_session session)
 		.channel_open_request_session_function = channel_open,
 	};
 
+	/*! \note BUGBUG libssh makes it hard to do accurate accounting of file descriptors,
+	 * since regardless of whether libssh opens the socket or we do (and we do)
+	 * it will close the socket whenever the connection ends, which could happen
+	 * in multiple places for us.
+	 * Thus, we need to detect that the socket has been closed and update
+	 * our record of it as quickly as possible.
+	 * Therefore, it is possible that occasionally, soft assertions during
+	 * calls to bbs_mark_closed may occur if somebody else reused the file descriptor
+	 * before we could mark it as closed for the previous use. This is why
+	 * we call this macro as soon as the socket was possibly closed, rather than just once.
+	 * In particular, anytime we call request_fail(), we need to call this prior,
+	 * as that could trigger reuse of the just closed file descriptor via execvp(). */
+#define MARK_SSH_FD_CLOSED_IF_CLOSED() \
+	if (!is_sftp && sshfd != -1 && ssh_get_fd(session) == -1) { \
+		bbs_mark_closed(sshfd); /* Indicate file descriptor has been closed */ \
+		bbs_debug(5, "Marked fd %d as closed\n", sshfd); \
+		sshfd = -1; \
+	}
 	sshfd = ssh_get_fd(session);
+	if (sshfd == -1) {
+		bbs_warning("SSH session ended before it began\n");
+		goto cleanup;
+	}
 
 	/* Get the IP of the connecting user now, in case authentication never succeeds
 	 * and we never store the IP. */
@@ -785,20 +799,37 @@ static void handle_session(ssh_event event, ssh_session session)
 	timeout = 60; /* Max 60 seconds until logged in */
 	ssh_options_set(session, SSH_OPTIONS_TIMEOUT, &timeout);
 
-	/* If a client connects and just does nothing, it might just block here forever.
-	 * The timeout above is to address that. */
-
 	if (ssh_handle_key_exchange(session) != SSH_OK) {
 		/* This isn't our fault, it's the clients, and since this is typical of
 		 * spammy connections, log it as a debug message. */
 		bbs_debug(1, "Fatal key exchange error: %s\n", ssh_get_error(session));
+		MARK_SSH_FD_CLOSED_IF_CLOSED();
+		if (1) { /* Note: This branch is only needed when the BBS is run by the test suite */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+			/* Execute a command that does nothing.
+			 * This has no functional purpose in the server itself,
+			 * it is only to allow the test suite to trigger execution of a program here,
+			 * which in the past was observed to trigger soft assertions due to a race condition
+			 * of a program reusing the session's file descriptor after libssh had closed it,
+			 * but before we had marked it as closed.
+			 * This allows the tests to force execution of a program to test that behavior,
+			 * since in the tests, request_fail will not cause iptables to be invoked. */
+			struct bbs_exec_params x;
+			char *argv[2] = { "true", NULL };
+			EXEC_PARAMS_INIT_FD(x, -1, -1);
+			bbs_execvp(NULL, &x, "true", argv);
+#pragma GCC diagnostic pop
+		}
 		request_fail(ipaddr, EVENT_NODE_ENCRYPTION_FAILED);
-		return;
-	}
-	if (ssh_event_add_session(event, session) != SSH_OK) {
+		goto cleanup;
+	} else if (ssh_event_add_session(event, session) != SSH_OK) {
 		bbs_error("Couldn't add session to event\n");
-		return;
+		goto cleanup;
 	}
+
+	bbs_debug(5, "Client banner: %s\n", ssh_get_clientbanner(session));
 
 	/* Wait for authentication to happen. */
 	n = 0;
@@ -809,15 +840,15 @@ static void handle_session(ssh_event event, ssh_session session)
 		 * the user may be providing credentials interactively, which will
 		 * use up time here. */
 		if (sdata.auth_attempts >= 3 || n++ >= 300) {
-			return;
-		}
-
-		if (ssh_event_dopoll(event, 100) == SSH_ERROR) {
+			bbs_debug(2, "Max auth attempts exceeded, disconnecting\n");
+			goto cleanup;
+		} else if (ssh_event_dopoll(event, 100) == SSH_ERROR) {
 			/* If client disconnects during login stage, this could happen.
 			 * Hence, it's not an error, as it's not our fault. */
 			bbs_debug(1, "%s\n", ssh_get_error(session));
+			MARK_SSH_FD_CLOSED_IF_CLOSED();
 			request_fail(ipaddr, EVENT_NODE_BAD_REQUEST);
-			return;
+			goto cleanup;
 		}
 	}
 
@@ -844,8 +875,7 @@ static void handle_session(ssh_event event, ssh_session session)
 		if (sdata.dead) {
 			bbs_debug(3, "Server has closed PTY, exiting\n");
 			break;
-		}
-		if (cdata.event != NULL) {
+		} else if (cdata.event != NULL) {
 #ifdef EXTRA_DEBUG
 			bbs_debug(8, "No SSH event (pollres: %d)\n", pollres);
 #endif
@@ -865,10 +895,10 @@ static void handle_session(ssh_event event, ssh_session session)
 				if (!cdata.nodethread) {
 					/* Happens in the case that we get (and reject) an anonymous SFTP connection,
 					 * or a bad SSH session (can't set up PTY) */
-					if (0) { /* nodethread may not immediately be set here, so don't abort if it's still NULL here on first check */
-						bbs_warning("No node thread, disconnecting\n");
-						break;
-					}
+#if 0 /* nodethread may not immediately be set here, so don't abort if it's still NULL here on first check */
+					bbs_warning("No node thread, disconnecting\n");
+					break;
+#endif
 				} else if (thread_has_exited(cdata.nodethread)) {
 					/* The node started but disappeared, i.e. server disconnected the node.
 					 * Time for us to die. */
@@ -923,14 +953,11 @@ static void handle_session(ssh_event event, ssh_session session)
 		/* For SFTP, it seems that when ssh_channel_poll_timeout returns <= 0, bbs_fd_valid(node->fd) returns false,
 		 * so apparently ssh_channel_poll_timeout closes the socket file descriptor, even though that isn't documented.
 		 * To compensate for that, mark the socket file descriptor as closed and NIL out the node's file descriptor. */
-		if (!cdata.closed) { /* Confusingly, if the close callback is triggered, the file descriptor is still valid, it's only on "unclean" closes that it seems not to be */
-			bbs_debug(5, "Session file descriptor %d assumed to be closed already\n", ssh_get_fd(session));
-			if (!bbs_assertion_failed(bbs_mark_closed(cdata.node->sfd) == 0)) {
-				/* NIL out all the node's file descriptors to avoid a double close when the node is destroyed */
-				cdata.node->sfd = cdata.node->fd = -1;
-				cdata.node->rfd = cdata.node->wfd = -1;
-				sshfd = -1; /* Don't try closing the file descriptor at the end of the session */
-			}
+		MARK_SSH_FD_CLOSED_IF_CLOSED();
+		if (sshfd == -1 && cdata.node) {
+			/* NIL out all the node's file descriptors to avoid a double close when the node is destroyed */
+			cdata.node->sfd = cdata.node->fd = -1;
+			cdata.node->rfd = cdata.node->wfd = -1;
 		}
 	}
 
@@ -950,21 +977,20 @@ static void handle_session(ssh_event event, ssh_session session)
 	}
 
 	/* child_stdin and child_stdout are just the pty_master, so only close that one */
-	stdoutfd = cdata.child_stdout;
 	close_if(cdata.pty_master);
+
+	/* Remove the descriptors from the polling context, since they are now closed, they will always trigger during the poll calls */
+	if (cdata.child_stdout != -1 && ssh_event_remove_fd(event, cdata.child_stdout) != SSH_OK) {
+		bbs_error("Failed to free SSH event fd\n");
+	}
 	cdata.child_stdin = cdata.child_stdout = -1;
 
 	if (cdata.nodethread) {
 		bbs_pthread_join(cdata.nodethread, NULL);
 	}
-
-	/* Remove the descriptors from the polling context, since they are now closed, they will always trigger during the poll calls */
-	if (stdoutfd != -1 && ssh_event_remove_fd(event, stdoutfd) != SSH_OK) {
-		bbs_error("Failed to free SSH event fd\n");
-	}
-
 	if (cdata.node && is_sftp) {
 		bbs_node_exit(cdata.node);
+		sdata.user = NULL; /* User has been cleaned up by bbs_node_exit */
 	}
 
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations" /* ssh_channel_get_exit_status, string_len, string_data */
@@ -988,7 +1014,7 @@ static void handle_session(ssh_event event, ssh_session session)
 			res = ssh_channel_read(sdata.channel, buf, sizeof(buf), 0);
 			if (res == SSH_ERROR) {
 				int code = ssh_channel_get_exit_status(sdata.channel);
-				bbs_error("SSH session ended uncleanly with code %d\n", code);
+				bbs_warning("SSH session ended uncleanly with code %d\n", code);
 				break;
 			} else if (res == SSH_EOF) {
 				bbs_debug(3, "Received EOF\n");
@@ -1005,9 +1031,19 @@ static void handle_session(ssh_event event, ssh_session session)
 			usleep(250000); /* Avoid tight loop */
 		} while (ssh_channel_is_open(sdata.channel) && !ssh_channel_is_eof(sdata.channel));
 	}
+
+cleanup:
+	MARK_SSH_FD_CLOSED_IF_CLOSED();
+	if (user && !cdata.userattached) {
+		/* We do this above, but this path is needed for when we never started the session in the first place. */
+		bbs_debug(5, "Destroying user that was never attached to a node\n");
+		bbs_user_destroy(user);
+		user = NULL;
+	}
 	ssh_channel_close(sdata.channel); /* In some cases, this may be the 2nd time calling this, but shouldn't hurt */
-	if (!is_sftp && sshfd != -1 && ssh_get_fd(session) == -1) {
-		bbs_mark_closed(sshfd); /* Indicate file descriptor has been closed */
+	MARK_SSH_FD_CLOSED_IF_CLOSED();
+	if (sshfd != -1) {
+		bbs_debug(4, "SSH file descriptor %d not marked as closed for this session...\n", sshfd);
 	}
 	ssh_channel_free(sdata.channel);
 }
@@ -2019,41 +2055,55 @@ static void *ssh_connection(void *varg)
 	return NULL;
 }
 
-static ssh_session pending_session = NULL;
+static int listenerfd = -1;
 
 static void *ssh_listener(void *unused)
 {
-	ssh_session session; /* This is actually a pointer, even though it doesn't look like one. */
+	struct pollfd pfd;
 
 	UNUSED(unused);
 
+	memset(&pfd, 0, sizeof(pfd));
+	pfd.fd = listenerfd;
+	pfd.events = POLLIN;
+
+	/* Instead of using ssh_bind_accept, we use this custom listener, which allows us to easily
+	 * interrupt this thread at unload, cleaner than using a blocking libssh function
+	 * which returned the next session. */
 	for (;;) {
-		static pthread_t ssh_thread;
-		pending_session = session = ssh_new();
+		int sfd, res;
+		pthread_t ssh_thread; /* Discarded */
+		ssh_session session; /* This is actually a pointer, even though it doesn't look like one. */
+		struct sockaddr_in sinaddr;
+		socklen_t len = sizeof(sinaddr);
+
+		pfd.revents = 0;
+		res = poll(&pfd, 1, -1);
+		if (res <= 0) {
+			bbs_debug(3, "poll returned %d: %s\n", res, strerror(errno));
+			break;
+		} else if (!(pfd.revents & POLLIN)) {
+			bbs_debug(3, "poll returned %s\n", poll_revent_name(pfd.revents));
+			break;
+		}
+
+		sfd = accept(listenerfd, (struct sockaddr *) &sinaddr, &len);
+		if (sfd < 0) {
+			bbs_debug(3, "accept(%d) returned %d: %s\n", listenerfd, sfd, strerror(errno));
+			break;
+		}
+
+		session = ssh_new();
 		if (ALLOC_FAILURE(session)) {
 			bbs_error("Failed to allocate SSH session\n");
 			continue;
-		}
-
-		/* Blocks until there is a new incoming connection. */
-		if (ssh_bind_accept(sshbind, session) == SSH_ERROR) {
-			bbs_pthread_disable_cancel();
+		} else if (ssh_bind_accept_fd(sshbind, session, sfd) == SSH_ERROR) {
 			bbs_error("%s\n", ssh_get_error(sshbind));
-			ssh_disconnect(session);
-			ssh_free(session);
-			bbs_pthread_enable_cancel();
-			continue;
+		} else if (!bbs_pthread_create_detached(&ssh_thread, NULL, ssh_connection, session)) { /* Spawn a thread to handle this SSH connection. */
+			continue; /* Success, don't clean up, ssh_thread will do that */
 		}
-		bbs_pthread_disable_cancel();
-		/* Spawn a thread to handle this SSH connection. */
-		bbs_mark_opened(ssh_get_fd(session)); /* Since the file descriptor was opened using ssh_bind_accept, fd.c doesn't know about it yet */
-		if (bbs_pthread_create_detached(&ssh_thread, NULL, ssh_connection, session)) {
-			ssh_disconnect(session);
-			ssh_free(session);
-			bbs_pthread_enable_cancel();
-			continue;
-		}
-		bbs_pthread_enable_cancel();
+		ssh_disconnect(session);
+		ssh_free(session);
 	}
 	return NULL;
 }
@@ -2098,6 +2148,9 @@ static int load_module(void)
 	if (start_ssh()) {
 		goto cleanup;
 	}
+	if (bbs_make_tcp_socket(&listenerfd, ssh_port)) {
+		goto cleanup;
+	}
 	if (bbs_pthread_create(&ssh_listener_thread, NULL, ssh_listener, NULL)) {
 		bbs_error("Unable to create SSH listener thread.\n");
 		goto cleanup;
@@ -2107,27 +2160,25 @@ static int load_module(void)
 	return 0;
 
 cleanup:
+	close_if(listenerfd);
+	if (sshbind) {
+		ssh_bind_free(sshbind);
+	}
 	ssh_finalize(); /* Clean up SSH library */
 	return -1;
 }
 
 static int unload_module(void)
 {
+	close_if(listenerfd);
+	bbs_pthread_interrupt(ssh_listener_thread); /* Will cause ssh_listener to abort */
+
 	bbs_unregister_tests(tests);
-	if (!sshbind) {
-		bbs_error("SSH socket already closed at unload?\n");
+	bbs_unregister_network_protocol((unsigned int) ssh_port);
+	if (bbs_assertion_failed(sshbind != NULL)) {
 		return 0;
 	}
-	bbs_unregister_network_protocol((unsigned int) ssh_port);
-	bbs_debug(3, "Cleaning up libssh\n");
-	bbs_pthread_cancel_kill(ssh_listener_thread);
 	bbs_pthread_join(ssh_listener_thread, NULL);
-	/* Since the ssh_listener thread was cancelled, most likely in ssh_bind_accept,
-	 * but it already called ssh_new, we need to free the session that never got assigned. */
-	if (pending_session) {
-		ssh_free(pending_session);
-		pending_session = NULL;
-	}
 	ssh_bind_free(sshbind);
 	ssh_finalize(); /* Clean up SSH library */
 	return 0;

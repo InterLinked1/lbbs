@@ -376,13 +376,13 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 		if (clock_gettime(CLOCK_REALTIME, &ts) == -1) {
 			bbs_error("clock_gettime failed: %s\n", strerror(errno));
 		}
-		ts.tv_sec += 1; /* Wait up to a second */
+		ts.tv_sec += 2; /* Wait up to 2 seconds to start */
 		res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts); /* This is not POSIX portable */
 		if (res == ETIMEDOUT) {
 			/* The thread hasn't exited yet. At this point, it's more likely that something is actually wrong.
 			 * This isn't always the case, for threads that might take a long time to clean up and exit,
 			 * but most of the time, it shouldn't take more than a second. */
-			bbs_warning("Thread %d is not currently waiting to be joined\n", lwp);
+			__bbs_log(LOG_WARNING, 0, file, line, func, "Thread %d is not currently waiting to be joined\n", lwp);
 			/* Now, proceed as normal and do a ~blocking pthread_join */
 			/* Seems that after using pthread_timedjoin_np, you can't do a blocking pthread_join anymore? So loop */
 			while (res && res == ETIMEDOUT) {
@@ -390,12 +390,12 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 				bbs_debug(9, "Thread %lu not yet joined after %lus\n", thread, ts.tv_sec - start);
 #endif /* __GLIBC__ */
 				clock_gettime(CLOCK_REALTIME, &ts); /* Get time again, in case a lot of delayed has occured since the last pthread_timedjoin_np */
-				ts.tv_sec += 1;
+				ts.tv_sec += 5;
 				res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts);
 			}
 		}
 #else
-		bbs_warning("Thread %d is not currently waiting to be joined\n", lwp);
+		__bbs_log(LOG_DEBUG, 1, file, line, func, "Thread %d is not currently waiting to be joined\n", lwp);
 		/* This is bad, as we could block indefinitely */
 		res = pthread_join(thread, retval ? retval : &tmp);
 #endif /* __linux__ */
