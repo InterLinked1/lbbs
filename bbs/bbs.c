@@ -39,6 +39,7 @@
 #include <poll.h>
 #include <fcntl.h> /* use O_NONBLOCK */
 #include <limits.h> /* use PATH_MAX */
+#include <libgen.h> /* use dirname */
 
 #ifdef __linux__
 #include <sys/prctl.h> /* use prctl */
@@ -144,7 +145,48 @@ static int set_cwd(void)
 			return -1;
 		}
 	}
+
 	return 0;
+}
+
+static int get_core_file_pattern(char *buf, size_t len)
+{
+	FILE *fp = fopen("/proc/sys/kernel/core_pattern", "r");
+	if (!fp) {
+		bbs_warning("Failed to open %s: %s\n", "/proc/sys/kernel/core_pattern", strerror(errno));
+		return -1;
+	}
+	if (!fgets(buf, (int) len, fp)) {
+		fclose(fp);
+		return -1;
+	}
+	fclose(fp);
+	bbs_strterm(buf, '\n');
+	return 0;
+}
+
+static void startup_checks(void)
+{
+	char corefile[PATH_MAX];
+
+	/* Wherever we end up, if we can't write to the current directory, we may not be able to dump a core. */
+	if (!get_core_file_pattern(corefile, sizeof(corefile))) {
+		/* Get parent */
+		const char *corefiledir = dirname(corefile);
+		if (corefiledir && !strcmp(corefiledir, ".")) {
+			/* If the core would get dumped in the current running directory, get its absolute path */
+			if (!getcwd(corefile, sizeof(corefile))) {
+				return;
+			}
+			corefiledir = corefile;
+		}
+		if (corefiledir && eaccess(corefiledir, R_OK | W_OK | X_OK | F_OK)) {
+			/* Common fixes if a core isn't getting dumped:
+			 * - Run 'ulimit -c unlimited'
+			 * - Ensure the BBS run user has write permissions to the running directory of the BBS. */
+			bbs_warning("Core file directory '%s' is not writable by BBS user %s - change the rundir or its permissions or adjust the core pattern!\n", corefiledir, S_IF(runuser));
+		}
+	}
 }
 
 static void check_cap(int isroot)
@@ -368,11 +410,18 @@ int bbs_view_settings(int fd)
 {
 	char timebuf[24];
 	char daysbuf[36];
+	char corefile[PATH_MAX] = "";
+	char curdir[PATH_MAX];
 	time_t now;
 
 	now = time(NULL);
 	print_time_elapsed(bbs_start_time, now, timebuf, sizeof(timebuf));
 	print_days_elapsed(bbs_start_time, now, daysbuf, sizeof(daysbuf));
+
+	get_core_file_pattern(corefile, sizeof(corefile));
+	if (!getcwd(curdir, sizeof(curdir))) {
+		curdir[0] = '\0';
+	}
 
 #define VIEW_FMT_D  "%-12s: %d\n"
 #define VIEW_FMT_U  "%-12s: %u\n"
@@ -386,6 +435,8 @@ int bbs_view_settings(int fd)
 	bbs_dprintf(fd, VIEW_FMT_S, "Run User", S_IF(runuser));
 	bbs_dprintf(fd, VIEW_FMT_S, "Run Group", S_IF(rungroup));
 	bbs_dprintf(fd, VIEW_FMT_S, "Dump Core", BBS_YN(option_dumpcore));
+	bbs_dprintf(fd, VIEW_FMT_S, "Core File", corefile);
+	bbs_dprintf(fd, VIEW_FMT_S, "Current Dir", curdir);
 	bbs_dprintf(fd, VIEW_FMT_S, "Daemonized", BBS_YN(!option_nofork));
 	bbs_dprintf(fd, VIEW_FMT_SS, "BBS Uptime", timebuf, daysbuf);
 	bbs_dprintf(fd, VIEW_FMT_U, "Active Nodes", bbs_node_count());
@@ -1140,6 +1191,7 @@ int main(int argc, char *argv[])
 	fully_started = 1;
 	bbs_verb(1, "%s\n", COLOR(COLOR_SUCCESS) "BBS is fully started" COLOR_RESET);
 	bbs_event_dispatch(NULL, EVENT_STARTUP);
+	startup_checks(); /* Static stuff in this file, doesn't use a startup callback */
 
 	/* Run any callbacks registered during startup, now that we're fully started. */
 	bbs_run_startup_callbacks();

@@ -24,6 +24,7 @@
 
 #include "include/module.h"
 #include "include/test.h"
+#include "include/cli.h"
 
 static int test_backtrace(void)
 {
@@ -38,14 +39,31 @@ static struct bbs_unit_test tests[] =
 	{ "Backtrace Test", test_backtrace },
 };
 
+static int cli_abort(struct bbs_cli_args *a)
+{
+	/* Test CLI command to manually abort to test if we can dump core successfully
+	 * This can be used to confirm a core would be dumped if the BBS were to crash for another reason. */
+	UNUSED(a);
+	abort();
+	return -1; /* Never reached */
+}
+
+static struct bbs_cli_entry cli_commands_backtrace[] = {
+	BBS_CLI_COMMAND(cli_abort, "abort", 1, "Abort BBS and dump core", NULL),
+};
+
 static int unload_module(void)
 {
+	bbs_cli_unregister_multiple(cli_commands_backtrace);
 	return bbs_unregister_tests(tests);
 }
 
 static int load_module(void)
 {
 	int res = bbs_register_tests(tests);
+	if (!res) {
+		bbs_cli_register_multiple(cli_commands_backtrace);
+	}
 	REQUIRE_FULL_LOAD(res);
 }
 
