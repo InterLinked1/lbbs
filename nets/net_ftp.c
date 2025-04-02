@@ -400,18 +400,21 @@ static void *ftp_handler(void *varg)
 			res = ftp_write(ftp, 211, "END\r\n");
 		} else if (!strcasecmp(command, "AUTH") && !strlen_zero(rest) && !strcasecmp(rest, "TLS")) {
 			/* AUTH TLS / AUTH SSL = RFC2228 opportunistic encryption */
-			if (ssl_available()) {
+			if (ftp->node->secure) {
+				res = ftp_write(ftp, 421, "Already using TLS\r\n");
+			} else if (!ssl_available()) {
+				res = ftp_write(ftp, 502, "Command Not Implemented\r\n");
+			} else {
 				res = ftp_write(ftp, 234, "Begin TLS negotiation\r\n");
 				if (bbs_node_starttls(node)) {
 					break; /* Just abort */
 				}
+				bbs_readline_flush(&rldata);
 				ftp->node->protname = "FTPES"; /* FTPES is often used to denote FTP with explicit TLS */
 				/* Must reauthorize */
 				if (node->user) {
 					bbs_node_logout(node);
 				}
-			} else {
-				res = ftp_write(ftp, 502, "Command Not Implemented\r\n");
 			}
 		} else if (!strcasecmp(command, "CCC")) { /* Clear Control Channel */
 			if (node->secure) {

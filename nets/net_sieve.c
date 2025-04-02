@@ -266,8 +266,14 @@ doneupload:
 			sieve_send(sieve, "NO Unsupported auth method");
 		}
 	} else if (!strcasecmp(command, "STARTTLS")) {
-		sieve_send(sieve, "OK");
-		sieve->dostarttls = 1;
+		if (sieve->node->secure) {
+			sieve_send(sieve, "NO Already using TLS");
+		} else if (!ssl_available()) {
+			sieve_send(sieve, "NO TLS is unavailable");
+		} else {
+			sieve_send(sieve, "OK");
+			sieve->dostarttls = 1;
+		}
 	} else if (!strcasecmp(command, "NOOP")) {
 		sieve_send(sieve, "OK \"NOOP completed\"");
 	} else if (!strcasecmp(command, "UNAUTHENTICATE")) {

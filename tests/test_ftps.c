@@ -136,6 +136,10 @@ static int run(void)
 	close_if(client2);
 	TLS_CLIENT_EXPECT(ssl, "226");
 
+	/* Ensure AUTH TLS fails if we're already using it */
+	TLS_SWRITE(ssl, "AUTH TLS" ENDL);
+	TLS_CLIENT_EXPECT(ssl, "421");
+
 	res = 0;
 
 cleanup:

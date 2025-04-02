@@ -586,7 +586,7 @@ static int smtp_ip_mismatch(const char *actual, const char *hostname)
 	}
 
 	/* This should be either a domain name or address literal (enclosed in []).
-	 * If it's just a raw IP address, that is not valid.
+	 * If it's just a raw IP address, that is not valid (RFC 2821 4.1.3).
 	 * IPv6 literals as described in RFC 5321 4.1.3 are not supported. */
 	if (bbs_hostname_is_ipv4(hostname)) {
 		if (!strcmp(actual, hostname)) {
@@ -3189,12 +3189,14 @@ static int smtp_process(struct smtp_session *smtp, char *s, struct readline_data
 	} else if (!strcasecmp(command, "EHLO")) {
 		return handle_helo(smtp, s, 1);
 	} else if (!strcasecmp(command, "STARTTLS")) {
-		if (!smtp->node->secure) {
+		if (smtp->node->secure) {
+			smtp_reply(smtp, 454, 5.5.1, "STARTTLS may not be repeated");
+		} else if (!ssl_available()) {
+			smtp_reply(smtp, 454, 5.5.1, "STARTTLS not available");
+		} else {
 			smtp_reply_nostatus(smtp, 220, "Ready to start TLS");
 			smtp->tflags.dostarttls = 1;
 			smtp->gothelo = 0; /* Client will need to start over. */
-		} else {
-			smtp_reply(smtp, 454, 5.5.1, "STARTTLS may not be repeated");
 		}
 	} else if (smtp->msa && !smtp->node->secure && require_starttls && !exempt_from_starttls(smtp)) {
 		smtp_reply(smtp, 504, 5.5.4, "Must issue a STARTTLS command first");
