@@ -77,9 +77,14 @@ static ssize_t compress_and_send(struct compress_data *z, char *buf, size_t len)
 
 		res = deflate(z->compressor, Z_PARTIAL_FLUSH);
 		if (res < 0) {
-			bbs_error("deflate failed: %s\n", zError(res));
-			bbs_soft_assert(res != Z_STREAM_ERROR);
-			return -1;
+			if (res == Z_BUF_ERROR) {
+				/* Just means we need to keep looping and processing, typically happens when we've used entire buffer thus far */
+				bbs_debug(3, "deflate failed: %s\n", zError(res));
+			} else {
+				bbs_error("deflate failed: %s\n", zError(res));
+				bbs_soft_assert(res != Z_STREAM_ERROR);
+				return -1;
+			}
 		}
 		comp_len = sizeof(output) - z->compressor->avail_out;
 		bbs_debug(10, "Deflated to %lu bytes\n", comp_len);
@@ -118,9 +123,14 @@ static ssize_t decompress_and_deliver(struct compress_data *z, char *buf, size_t
 
 		zres = inflate(z->decompressor, Z_NO_FLUSH);
 		if (zres < 0) {
-			bbs_error("inflate failed: %s\n", zError(zres));
-			bbs_soft_assert(zres != Z_STREAM_ERROR);
-			return -1;
+			if (zres == Z_BUF_ERROR) {
+				/* Just means we need to keep looping and processing, typically happens when we've used entire buffer thus far */
+				bbs_debug(3, "inflate failed: %s\n", zError(zres));
+			} else {
+				bbs_error("inflate failed: %s\n", zError(zres));
+				bbs_soft_assert(zres != Z_STREAM_ERROR);
+				return -1;
+			}
 		}
 		decomp_len = sizeof(output) - z->decompressor->avail_out;
 		bbs_debug(9, "Inflated to %lu bytes\n", decomp_len);
