@@ -364,12 +364,20 @@ int __smtp_register_queue_processor(int (*queue_processor)(struct smtp_session *
  */
 int smtp_unregister_queue_processor(int (*queue_processor)(struct smtp_session *smtp, const char *cmd, const char *args));
 
+enum smtp_delivery_agent_type {
+	SMTP_DELIVERY_AGENT_LOCAL = (1 << 0),
+	SMTP_DELIVERY_AGENT_EXTERNAL = (1 << 1),
+	SMTP_DELIVERY_AGENT_MAILING_LIST = (1 << 2),
+};
+
 struct smtp_delivery_agent {
+	/*! \brief Type of delivery agent */
+	enum smtp_delivery_agent_type type;
 	/*! \brief RCPT TO handler: can we deliver to this address? */
 	/*! \retval 0 if this recipient cannot be handled by this delivery agent, 1 if yes, -1 if no and no other handler may handle it */
 	int (*exists)(struct smtp_session *smtp, struct smtp_response *resp, const char *address, const char *user, const char *domain, int fromlocal, int tolocal);
 	/*! \brief Deliver message (final delivery) */
-	int (*deliver)(struct smtp_session *smtp, struct smtp_response *resp, const char *from, const char *recipient, const char *user, const char *domain, int fromlocal, int tolocal, int srcfd, size_t datalen, void **freedata);
+	int (*deliver)(struct smtp_session *smtp, struct smtp_response *resp, const char *from, const char *recipient, const char *user, const char *domain, int fromlocal, int srcfd, size_t datalen, void **freedata);
 
 	/* Supplementary (and very optional) callbacks, only need to be provided by one module */
 	/*! \brief Save a copy of a sent message */

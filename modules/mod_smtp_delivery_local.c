@@ -214,7 +214,7 @@ static int appendmsg(struct smtp_session *smtp, struct smtp_response *resp, stru
 	return 0;
 }
 
-static int do_local_delivery(struct smtp_session *smtp, struct smtp_response *resp, const char *from, const char *recipient, const char *user, const char *domain, int fromlocal, int tolocal, int srcfd, size_t datalen, void **freedata)
+static int do_local_delivery(struct smtp_session *smtp, struct smtp_response *resp, const char *from, const char *recipient, const char *user, const char *domain, int fromlocal, int srcfd, size_t datalen, void **freedata)
 {
 	struct mailbox *mbox;
 	struct smtp_msg_process mproc;
@@ -223,10 +223,6 @@ static int do_local_delivery(struct smtp_session *smtp, struct smtp_response *re
 
 	UNUSED(from);
 	UNUSED(fromlocal);
-
-	if (!tolocal) {
-		return 0; /* Not for us */
-	}
 
 	mbox = mailbox_get_by_name(user, domain);
 	if (!mbox) {
@@ -324,6 +320,7 @@ static int save_copy(struct smtp_session *smtp, struct smtp_msg_process *mproc, 
 }
 
 struct smtp_delivery_agent lda = {
+	.type = SMTP_DELIVERY_AGENT_LOCAL, /* Local delivery agent */
 	.exists = exists,
 	.deliver = do_local_delivery,
 	.save_copy = save_copy,

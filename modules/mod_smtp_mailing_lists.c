@@ -531,7 +531,7 @@ static int archive_list_msg(const char *listname, int srcfd, size_t msglen)
 	return 0;
 }
 
-static int blast_exploder(struct smtp_session *smtp, struct smtp_response *resp, const char *from, const char *recipient, const char *user, const char *domain, int fromlocal, int tolocal, int srcfd, size_t datalen, void **freedata)
+static int blast_exploder(struct smtp_session *smtp, struct smtp_response *resp, const char *from, const char *recipient, const char *user, const char *domain, int fromlocal, int srcfd, size_t datalen, void **freedata)
 {
 	struct smtp_msg_process mproc;
 	struct smtp_response tmpresp; /* Dummy that gets thrown away, if needed */
@@ -542,10 +542,6 @@ static int blast_exploder(struct smtp_session *smtp, struct smtp_response *resp,
 
 	UNUSED(recipient);
 	UNUSED(freedata);
-
-	if (!tolocal) {
-		return 0;
-	}
 
 	safe_strncpy(name, user, sizeof(name));
 	subaddr = name;
@@ -645,6 +641,7 @@ static int blast_exploder(struct smtp_session *smtp, struct smtp_response *resp,
 }
 
 struct smtp_delivery_agent exploder = {
+	.type = SMTP_DELIVERY_AGENT_MAILING_LIST,
 	.exists = exists,
 	.deliver = blast_exploder,
 };

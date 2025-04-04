@@ -1715,7 +1715,7 @@ static void *smtp_async_send(void *varg)
 }
 
 /*! \brief Accept delivery of a message to an external recipient, sending it now if possible and queuing it otherwise */
-static int external_delivery(struct smtp_session *smtp, struct smtp_response *resp, const char *from, const char *recipient, const char *user, const char *domain, int fromlocal, int tolocal, int srcfd, size_t datalen, void **freedata)
+static int external_delivery(struct smtp_session *smtp, struct smtp_response *resp, const char *from, const char *recipient, const char *user, const char *domain, int fromlocal, int srcfd, size_t datalen, void **freedata)
 {
 	struct smtp_msg_process mproc;
 	struct smtp_response tmpresp; /* Dummy that gets thrown away, if needed */
@@ -1726,10 +1726,6 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 
 	UNUSED(user);
 	UNUSED(freedata);
-
-	if (tolocal) {
-		return 0; /* Not for us */
-	}
 
 	/* Even though it's not really an "outgoing" message,
 	 * it makes more sense to run callbacks as such here.
@@ -1981,6 +1977,7 @@ static int exists(struct smtp_session *smtp, struct smtp_response *resp, const c
 }
 
 struct smtp_delivery_agent extdeliver = {
+	.type = SMTP_DELIVERY_AGENT_EXTERNAL,
 	.exists = exists,
 	.deliver = external_delivery,
 	.relay = relay,

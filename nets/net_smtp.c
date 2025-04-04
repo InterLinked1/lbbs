@@ -96,7 +96,10 @@ static FILE *smtplogfp = NULL;
 static unsigned int smtp_log_level = 5;
 static bbs_mutex_t loglock = BBS_MUTEX_INITIALIZER;
 
-/*! \brief Max message size, in bytes */
+/*! \brief Max allowed message size for any messages processed by this system, in bytes */
+static unsigned int absolute_max_message_size = SIZE_MB(50);
+
+/*! \brief Max allowed message size for messages delivered to local mailboxes, in bytes */
 static unsigned int max_message_size = 300000;
 
 /*! \brief Maximum number of hops, per local policy */
@@ -202,6 +205,8 @@ struct smtp_session {
 	unsigned int ehlo:1;		/* Client supports ESMTP (EHLO) */
 	unsigned int fromlocal:1;	/* Sender is local */
 	unsigned int msa:1;			/* Whether connection was to the Message Submission Agent port (as opposed to the Mail Transfer Agent port) */
+	unsigned int authorizedrelayany:1; /* Whether smtp_relay_authorized_any() is true */
+	unsigned int authorizedrelayanycached:1; /* Whether authorizedrelayany bit has been set */
 };
 
 static void smtp_reset(struct smtp_session *smtp)
@@ -323,9 +328,14 @@ static int __smtp_relay_authorized(const char *srcip, const char *hostname)
 	return 0;
 }
 
-static int smtp_relay_authorized_any(const char *srcip)
+static int smtp_relay_authorized_any(struct smtp_session *smtp)
 {
-	return __smtp_relay_authorized(srcip, NULL);
+	/* Don't compute this more than once, since it is used often in some paths */
+	if (!smtp->authorizedrelayanycached) {
+		smtp->authorizedrelayanycached = 1;
+		SET_BITFIELD(smtp->authorizedrelayany, __smtp_relay_authorized(smtp->node->ip, NULL));
+	}
+	return smtp->authorizedrelayany;
 }
 
 int smtp_relay_authorized(const char *srcip, const char *hostname)
@@ -450,7 +460,7 @@ static int smtp_tarpit(struct smtp_session *smtp, int code, const char *message)
 				return 0;
 			}
 		} else {
-			if (smtp_relay_authorized_any(smtp->node->ip)) {
+			if (smtp_relay_authorized_any(smtp)) {
 				return 0;
 			}
 		}
@@ -532,7 +542,7 @@ static int handle_connect(struct smtp_session *smtp)
 		 * (e.g. HP Management Agents - Event Notifier), so exempt any clients that are authorized
 		 * to relay outgoing messages for any domains from getting thrown this curveball for compatibility.
 		 */
-		if (!smtp_relay_authorized_any(smtp->node->ip)) {
+		if (!smtp_relay_authorized_any(smtp)) {
 			smtp_reply0_nostatus(smtp, 220, "%s ESMTP Service Ready", bbs_hostname());
 		}
 
@@ -650,6 +660,28 @@ static int is_benign_ip_mismatch(const char *helohost, const char *srcip)
 	return smtp_relay_authorized(srcip, helohost) || is_trusted_relay(srcip);
 }
 
+/*! \brief Get the maximum allowed message size for this delivery */
+static unsigned int smtp_max_session_message_size(struct smtp_session *smtp)
+{
+	if (smtp->msa) {
+		/* For outgoing submissions, size restrictions are enforced by the recipient,
+		 * so accept anything that isn't absurdly large. */
+		return absolute_max_message_size;
+	} else {
+		/* MTA - either delivering mail to us or we're relaying mail to recipient.
+		 * However, if we are relaying mail outbound (to the Internet), then we should
+		 * not enforce size restrictions in those cases. */
+		if (smtp_relay_authorized_any(smtp)) {
+			/* This connection is from a server authorized to relay outbound mail.
+			 * Even though some or all recipients could be local, be conservative
+			 * and apply the larger size limitation, since recipients could be non-local. */
+			return absolute_max_message_size;
+		}
+		/* It's an MTA delivering mail purely towards local recipients. Normal size restrictions apply. */
+		return max_message_size;
+	}
+}
+
 static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 {
 	if (strlen_zero(s)) {
@@ -713,7 +745,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 			smtp_reply0_nostatus(smtp, 250, "AUTH=LOGIN PLAIN"); /* For non-compliant user agents, e.g. Outlook 2003 and older */
 		}
 		smtp_reply0_nostatus(smtp, 250, "PIPELINING");
-		smtp_reply0_nostatus(smtp, 250, "SIZE %u", max_message_size); /* RFC 1870 */
+		smtp_reply0_nostatus(smtp, 250, "SIZE %u", smtp_max_session_message_size(smtp)); /* RFC 1870 */
 		smtp_reply0_nostatus(smtp, 250, "8BITMIME"); /* RFC 6152 */
 		smtp_reply0_nostatus(smtp, 250, "ETRN"); /* RFC 1985 */
 		if (!smtp->node->secure && ssl_available() && !exempt_from_starttls(smtp)) {
@@ -914,7 +946,7 @@ static int parse_mail_parameters(struct smtp_session *smtp, char *s)
 				continue;
 			}
 			sizebytes = (unsigned int) atoi(d);
-			if (sizebytes >= max_message_size) {
+			if (sizebytes >= smtp_max_session_message_size(smtp)) {
 				smtp_reply(smtp, 552, 5.3.4, "Message too large");
 				return -1;
 			}
@@ -2303,12 +2335,28 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		}
 		local = mail_domain_is_local(domain);
 		RWLIST_TRAVERSE(&handlers, h, entry) {
-			memset(&resp, 0, sizeof(resp));
+			/* Before invoking delivery handlers, do some basic checks to filter out obviously irrelevant ones */
+			if (local) { /* Recipient is local to this system */
+				if (!(h->agent->type & (SMTP_DELIVERY_AGENT_LOCAL | SMTP_DELIVERY_AGENT_MAILING_LIST))) {
+					continue;
+				}
+				/* Enforce local message size restrictions here, in case we had to be more permissive earlier
+				 * (such as accepting mail from an authorized relay, mail between local users, etc.). */
+				if (datalen > max_message_size) {
+					smtp_abort((&resp), 552, 5.3.4, "Message too large");
+					res = -1;
+					break;
+				}
+			} else {
+				if (!(h->agent->type & SMTP_DELIVERY_AGENT_EXTERNAL)) {
+					continue;
+				}
+			}
 			bbs_module_ref(h->mod, 4);
 			/* Delivery handlers return 0 if recipient can't be handled by that delivery agent,
 			 * 1 if the message was delivered using the delivery agent,
 			 * and -1 if not delivered and no other handler may handle it either. */
-			mres = h->agent->deliver(smtp, &resp, smtp->from, recipient, user, domain, smtp->fromlocal, local, srcfd, datalen, &freedata);
+			mres = h->agent->deliver(smtp, &resp, smtp->from, recipient, user, domain, smtp->fromlocal, srcfd, datalen, &freedata);
 			bbs_module_unref(h->mod, 4);
 			if (mres) {
 				bbs_debug(6, "SMTP delivery agent returned %d\n", mres);
@@ -2615,8 +2663,7 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 
 	bbs_debug(7, "Processing message from %s for delivery: local=%d, size=%lu, from=%s\n", smtp->msa ? "MSA" : "MTA", smtp->fromlocal, datalen, smtp->from);
 
-	if (smtp->tflags.datalen >= max_message_size) {
-		/* XXX Should this only apply for local deliveries? */
+	if (smtp->tflags.datalen >= smtp_max_session_message_size(smtp)) {
 		smtp_reply(smtp, 552, 5.3.4, "Message too large");
 		return 0;
 	}
@@ -3042,7 +3089,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 			int dres;
 			fclose(fp); /* Have to close and reopen in read mode anyways */
 			if (datafail) {
-				if (smtp->tflags.datalen >= max_message_size) {
+				if (smtp->tflags.datalen >= smtp_max_session_message_size(smtp)) {
 					/* Message too large. */
 					smtp_reply(smtp, 552, 5.2.3, "Your message exceeded our message size limits");
 				} else {
@@ -3139,9 +3186,9 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 			}
 		}
 
-		if (smtp->tflags.datalen + len >= max_message_size) {
+		if (smtp->tflags.datalen + len >= smtp_max_session_message_size(smtp)) {
 			datafail = 1;
-			smtp->tflags.datalen = max_message_size; /* This isn't really true, this is so we can detect that the message was too large. */
+			smtp->tflags.datalen = smtp_max_session_message_size(smtp); /* This isn't really true, this is so we can detect that the message was too large. */
 		}
 
 		res = bbs_append_stuffed_line_message(fp, s, len); /* Should return len + 2, unless it was byte stuffed, in which case it'll be len + 1 */

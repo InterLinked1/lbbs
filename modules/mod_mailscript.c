@@ -162,7 +162,9 @@ static int header_match(struct smtp_msg_process *mproc, const char *header, cons
 				}
 				regcompiled = 1;
 			}
+#ifdef EXTRA_DEBUG
 			bbs_debug(6, "Evaluating regex: '%s' %s\n", find, start);
+#endif
 			found = regexec(&regexbuf, start, 0, NULL, 0) ? 0 : 1;
 			if (found) {
 				break;
@@ -223,7 +225,9 @@ static void __attribute__ ((nonnull (2, 3, 4))) str_match(const char *matchtype,
 			regerror(errcode, &regexbuf, errbuf, sizeof(errbuf));
 			bbs_warning("Malformed expression %s: %s\n", expr, errbuf);
 		} else {
+#ifdef EXTRA_DEBUG
 			bbs_debug(6, "Evaluating regex: '%s' %s\n", expr, a);
+#endif
 			*match = regexec(&regexbuf, a, 0, NULL, 0) ? 0 : 1;
 			regfree(&regexbuf);
 		}
