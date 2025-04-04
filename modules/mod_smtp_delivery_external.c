@@ -676,7 +676,7 @@ cleanup:
 	return res;
 }
 
-static void smtp_trigger_dsn(enum smtp_delivery_action action, struct smtp_tx_data *restrict tx, struct tm *created, const char *from, const char *to, char *error, int fd, size_t offset, size_t datalen)
+static void smtp_trigger_dsn(enum smtp_delivery_action action, struct smtp_tx_data *restrict tx, struct tm *created, const char *from, const char *to, char *error, int fd, size_t offset, size_t datalen, int attempt_number)
 {
 	char *tmp;
 	char status[15] = ""; /* Status code should be the 2nd word? */
@@ -690,16 +690,10 @@ static void smtp_trigger_dsn(enum smtp_delivery_action action, struct smtp_tx_da
 	}
 
 	if (action == DELIVERY_DELIVERED) {
-		time_t sent;
-		if (!created) {
-			bbs_warning("Message has no sent time?\n");
+		/* Don't send reports on success UNLESS a message was previously delayed */
+		if (!attempt_number) {
 			return;
 		}
-		sent = mktime(created);
-		if (sent > time(NULL) - 30) {
-			return; /* Don't send reports on success UNLESS a message was previously delayed */
-		}
-		/* Do send a delivery report, it was likely previous queued and succeeded only on a retry */
 	} else if (action != DELIVERY_FAILED && !notify_queue) {
 		return;
 	}
@@ -1006,7 +1000,7 @@ static int __attribute__ ((nonnull (2, 3, 4, 5, 9))) try_static_delivery(struct 
  * \brief Attempt to send a message using MX records
  * \param smtp SMTP session. Generally, this will be NULL except for relayed messages, which are typically the only time this is needed.
  * \param tx
- * \param mqf
+ * \param mqf. Is non-NULL only when BUGGY_SEND_IMMEDIATE is defined.
  * \param mxservers
  * \param sender The MAIL FROM for the message
  * \param recipient A single recipient for RCPT TO
@@ -1039,11 +1033,11 @@ static int __attribute__ ((nonnull (2, 4, 5, 6, 10))) try_mx_delivery(struct smt
 		/* Delivery failed, but at least one failure was because STARTTLS failed. */
 		if (!require_starttls_out && mqf) {
 			bbs_warning("Reattempting delivery to %s insecurely since STARTTLS failed\n", recipient);
-			mqf->newretries = mqf->retries + 1;
 			/* Retry without using STARTTLS.
-			 * First, send a delay notification so the sender is away the message was not delivered securely.
+			 * First, send a delay notification so the sender is aware the message was not delivered securely.
 			 * The sender could then choose to notify the recipient's postmaster of the issue, but it's not really our problem. */
-			smtp_trigger_dsn(DELIVERY_DELAYED, tx, &mqf->created, sender, recipient, buf, datafd, (size_t) offset, writelen);
+			smtp_trigger_dsn(DELIVERY_DELAYED, tx, &mqf->created, sender, recipient, buf, datafd, (size_t) offset, writelen, mqf->retries);
+			mqf->newretries = mqf->retries + 1;
 			/* Do another pass, but don't attempt STARTTLS.
 			 * It's possible delivery will succeed without encryption.
 			 * Obviously, this isn't ideal, but most mail servers generally retry delivery without TLS if it fails.
@@ -1052,6 +1046,11 @@ static int __attribute__ ((nonnull (2, 4, 5, 6, 10))) try_mx_delivery(struct smt
 			while (res < 0 && (hostname = stringlist_next(mxservers, &i))) {
 				res = try_send(smtp, tx, hostname, DEFAULT_SMTP_PORT, 0, 0, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, offset, writelen, buf, len);
 				bbs_assert(res != -2); /* Since we don't attempt STARTTLS, res should never be -2 */
+			}
+			if (res == 0) {
+				/* Since we send a delayed DSN, if we succeeded, we now need to also send one for success,
+				 * or the user will think the message hasn't been able to be delivered. */
+				smtp_trigger_dsn(DELIVERY_DELIVERED, tx, &mqf->created, sender, recipient, buf, datafd, (size_t) offset, writelen, mqf->retries);
 			}
 		}
 	}
@@ -1210,7 +1209,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 					snprintf(buf, sizeof(buf), "No MX record(s) located for hostname %s", mqf->domain); /* No status code */
 					smtp_tx_data_reset(&tx);
 					/* Do not set tx.hostname, since this message is from us, not the remote server */
-					smtp_trigger_dsn(DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen);
+					smtp_trigger_dsn(DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen, mqf->retries);
 					fclose(mqf->fp);
 					mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
 					bbs_delete_file(mqf->fullname);
@@ -1231,7 +1230,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 		/* Successful delivery. */
 		bbs_debug(6, "Delivery successful after %d attempt%s, discarding queue file\n", mqf->newretries, ESS(mqf->newretries));
 		bbs_smtp_log(4, NULL, "Delivery succeeded after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
-		smtp_trigger_dsn(DELIVERY_DELIVERED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen);
+		smtp_trigger_dsn(DELIVERY_DELIVERED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen, mqf->retries);
 		fclose(mqf->fp);
 		mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
 		bbs_delete_file(mqf->fullname);
@@ -1247,7 +1246,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 		/* To the dead letter office we go */
 		/* XXX buf will only contain the last line of the SMTP transaction, since it was using the readline buffer
 		 * Thus, if we got a multiline error, only the last line is currently included in the non-delivery report */
-		smtp_trigger_dsn(DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen);
+		smtp_trigger_dsn(DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen, mqf->retries);
 		fclose(mqf->fp);
 		mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
 		bbs_delete_file(mqf->fullname);
@@ -1256,7 +1255,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 	} else {
 		bbs_smtp_log(3, NULL, "Delivery delayed after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
 		mailq_file_punt(mqf); /* Try again later */
-		smtp_trigger_dsn(DELIVERY_DELAYED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen);
+		smtp_trigger_dsn(DELIVERY_DELAYED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen, mqf->retries);
 		QUEUE_INCR_STAT(delayed);
 	}
 
@@ -1792,9 +1791,9 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 #ifndef BUGGY_SEND_IMMEDIATE
 		/* We don't have a queue file yet, so metalen is 0 */
 		if (static_routes) {
-			res = try_static_delivery(NULL, &tx, static_routes, from, recipient, srcfd, 0, datalen, buf, sizeof(buf));
+			res = try_static_delivery(smtp, &tx, static_routes, from, recipient, srcfd, 0, datalen, buf, sizeof(buf));
 		} else {
-			res = try_mx_delivery(NULL, &tx, NULL, &mxservers, from, recipient, srcfd, 0, datalen, buf, sizeof(buf));
+			res = try_mx_delivery(smtp, &tx, NULL, &mxservers, from, recipient, srcfd, 0, datalen, buf, sizeof(buf));
 			stringlist_empty_destroy(&mxservers);
 		}
 
