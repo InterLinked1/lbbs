@@ -58,9 +58,6 @@ static int minpriv_relay_out = 0;
 
 static int require_starttls_out = 0;
 
-static int queue_outgoing = 1;
-static int send_async = 1;
-static int always_queue = 0;
 static int notify_queue = 0;
 static pthread_t queue_thread = 0;
 static bbs_rwlock_t queue_lock;
@@ -1000,7 +997,7 @@ static int __attribute__ ((nonnull (2, 3, 4, 5, 9))) try_static_delivery(struct 
  * \brief Attempt to send a message using MX records
  * \param smtp SMTP session. Generally, this will be NULL except for relayed messages, which are typically the only time this is needed.
  * \param tx
- * \param mqf. Is non-NULL only when BUGGY_SEND_IMMEDIATE is defined.
+ * \param mqf
  * \param mxservers
  * \param sender The MAIL FROM for the message
  * \param recipient A single recipient for RCPT TO
@@ -1013,7 +1010,7 @@ static int __attribute__ ((nonnull (2, 3, 4, 5, 9))) try_static_delivery(struct 
  * \retval 0 on success, 1 on permanent error, -1 on temporary error
  * \note This function leaves the items in mxservers intact so they can be used again if needed
  */
-static int __attribute__ ((nonnull (2, 4, 5, 6, 10))) try_mx_delivery(struct smtp_session *smtp, struct smtp_tx_data *tx, struct mailq_file *mqf, struct stringlist *mxservers, const char *sender, const char *recipient, int datafd, off_t offset, size_t writelen, char *buf, size_t len)
+static int __attribute__ ((nonnull (2, 3, 4, 5, 6, 10))) try_mx_delivery(struct smtp_session *smtp, struct smtp_tx_data *tx, struct mailq_file *mqf, struct stringlist *mxservers, const char *sender, const char *recipient, int datafd, off_t offset, size_t writelen, char *buf, size_t len)
 {
 	const char *hostname;
 	struct stringitem *i = NULL;
@@ -1031,7 +1028,7 @@ static int __attribute__ ((nonnull (2, 4, 5, 6, 10))) try_mx_delivery(struct smt
 
 	if (res < 0 && start_tls_failures) {
 		/* Delivery failed, but at least one failure was because STARTTLS failed. */
-		if (!require_starttls_out && mqf) {
+		if (!require_starttls_out) {
 			bbs_warning("Reattempting delivery to %s insecurely since STARTTLS failed\n", recipient);
 			/* Retry without using STARTTLS.
 			 * First, send a delay notification so the sender is aware the message was not delivered securely.
@@ -1381,11 +1378,6 @@ static void *queue_handler(void *unused)
 {
 	UNUSED(unused);
 
-	if (!queue_outgoing) {
-		bbs_debug(4, "Outgoing queue is disabled, queue handler exiting\n");
-		return NULL; /* Not needed, queuing disabled */
-	}
-
 	if (bbs_safe_sleep_interrupt(SEC_MS(10))) { /* Wait 10 seconds after the module loads, then try to flush anything in the queue. */
 		bbs_debug(5, "BBS shutdown occured before queue could run\n");
 		return NULL;
@@ -1655,9 +1647,6 @@ static struct bbs_cli_entry cli_commands_mailq[] = {
 	BBS_CLI_COMMAND(cli_runq, "runq", 1, "Retry delivery of messages in the mail queue (optionally restricted to messages directed at certain hosts)", "runq <hostsuffix>"),
 };
 
-/*! \note Enable a workaround for socket connects to mail servers failing if we try to send them synchronously. This effectively always enables sendasync=yes. */
-#define BUGGY_SEND_IMMEDIATE
-
 static void *smtp_async_send(void *varg)
 {
 	char mailnewdir[260];
@@ -1718,10 +1707,14 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 {
 	struct smtp_msg_process mproc;
 	struct smtp_response tmpresp; /* Dummy that gets thrown away, if needed */
-#ifndef BUGGY_SEND_IMMEDIATE
-	char buf[256] = "";
-#endif
 	int res;
+	int fd;
+	char qdir[256];
+	char tmpfile[256], newfile[256];
+	struct smtp_filter_data filterdata;
+	pthread_t sendthread;
+	const char *filename;
+	char *filenamedup;
 
 	UNUSED(user);
 	UNUSED(freedata);
@@ -1765,139 +1758,65 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 		return -1;
 	}
 
-	if (!always_queue && !send_async) {  /* Try to send it synchronously */
-		struct stringlist mxservers, *static_routes;
-		struct smtp_tx_data tx;
-
-		memset(&tx, 0, sizeof(tx));
-
-		stringlist_init(&mxservers);
-
-		/* Start by trying to deliver it directly, immediately, right now. */
-		static_routes = get_static_routes(domain);
-		if (static_routes) {
-			res = 0; /* If a route exists, we're good so far */
-		} else {
-			res = lookup_mx_all(domain, &mxservers);
-		}
-		if (res == -2) {
-			smtp_abort(resp, 553, 5.1.2, "Recipient domain does not accept mail.");
-			return -1;
-		}
-		if (res) {
-			smtp_abort(resp, 553, 5.1.2, "Recipient domain not found.");
-			return -1;
-		}
-#ifndef BUGGY_SEND_IMMEDIATE
-		/* We don't have a queue file yet, so metalen is 0 */
-		if (static_routes) {
-			res = try_static_delivery(smtp, &tx, static_routes, from, recipient, srcfd, 0, datalen, buf, sizeof(buf));
-		} else {
-			res = try_mx_delivery(smtp, &tx, NULL, &mxservers, from, recipient, srcfd, 0, datalen, buf, sizeof(buf));
-			stringlist_empty_destroy(&mxservers);
-		}
-
-		if (res > 0) { /* Permanent error */
-			/* We've still got the sender on the socket, just relay the error. */
-			smtp_abort(resp, 554, 5.7.1, buf); /* XXX Best default SMTP code for this? (Same comment in net_smtp.c) */
-			return -1;
-		} else if (res) { /* Temporary error */
-			/* This can happen legitimately, if a mail server is unavailable, but it's generally unusual and could mean there are issues. */
-			bbs_warning("Initial synchronous delivery of message to %s failed\n", domain);
-		}
-#endif
+	/* Queue delivery for later */
+	snprintf(qdir, sizeof(qdir), "%s/%s", mailbox_maildir(NULL), "mailq");
+	if (mailbox_maildir_init(qdir)) {
+		return -1; /* Can't queue */
 	}
-
-#ifndef BUGGY_SEND_IMMEDIATE
-	if (res && !queue_outgoing) {
-		bbs_debug(3, "Delivery failed and can't queue message, rejecting\n");
-		return -1; /* Can't queue failed message, so reject it now. */
-	} else if (res) {
-		int doasync;
-#else
-	if (1) {
-#endif
-		int fd;
-		char qdir[256];
-		char tmpfile[256], newfile[256];
-		struct smtp_filter_data filterdata;
-
-		if (!queue_outgoing) {
-			return -1;
-		}
-		/* Queue delivery for later */
-		snprintf(qdir, sizeof(qdir), "%s/%s", mailbox_maildir(NULL), "mailq");
-		if (mailbox_maildir_init(qdir)) {
-			return -1; /* Can't queue */
-		}
-		fd = maildir_mktemp(qdir, tmpfile, sizeof(tmpfile) - 3, newfile);
+	fd = maildir_mktemp(qdir, tmpfile, sizeof(tmpfile) - 3, newfile);
 
 #undef strcat
-		strcat(newfile, ".0"); /* Safe */
-		if (fd < 0) {
-			return -1;
-		}
-		/* Prepend some metadata to the message. postfix has some file format that it uses for this,
-		 * (the output of postcat is formatted)
-		 * (https://www.reddit.com/r/postfix/comments/42ku9j/format_of_the_files_in_the_deferred_mailq/)
-		 * (https://serverfault.com/questions/391995/how-can-i-see-the-contents-of-the-mail-whose-id-i-get-from-mailq-command)
-		 * but a) I can't find any good documentation on it
-		 * and b) It's probably overkill for what we need here.
-		 * The queue files are mostly just RFC 822 messages.
-		 *
-		 * The metadata is LF terminated (not CR LF) to make it easier to parse back using fread (we won't have a stray CR present).
-		 * Note that this means this file contains mixed line endings (both LF and CR LF), so if manually edited in a text editor,
-		 * it will probably get screwed up. Don't do it!
-		 */
+	strcat(newfile, ".0"); /* Safe */
+	if (fd < 0) {
+		return -1;
+	}
+	/* Prepend some metadata to the message. postfix has some file format that it uses for this,
+	 * (the output of postcat is formatted)
+	 * (https://www.reddit.com/r/postfix/comments/42ku9j/format_of_the_files_in_the_deferred_mailq/)
+	 * (https://serverfault.com/questions/391995/how-can-i-see-the-contents-of-the-mail-whose-id-i-get-from-mailq-command)
+	 * but a) I can't find any good documentation on it
+	 * and b) It's probably overkill for what we need here.
+	 * The queue files are mostly just RFC 822 messages.
+	 *
+	 * The metadata is LF terminated (not CR LF) to make it easier to parse back using fread (we won't have a stray CR present).
+	 * Note that this means this file contains mixed line endings (both LF and CR LF), so if manually edited in a text editor,
+	 * it will probably get screwed up. Don't do it!
+	 */
 
-		dprintf(fd, "MAIL FROM:<%s>\nRCPT TO:%s\n", from, recipient); /* First 2 lines contain metadata, and recipient is already enclosed in <> */
+	dprintf(fd, "MAIL FROM:<%s>\nRCPT TO:%s\n", from, recipient); /* First 2 lines contain metadata, and recipient is already enclosed in <> */
 
-		memset(&filterdata, 0, sizeof(filterdata));
-		filterdata.smtp = smtp;
-		filterdata.recipient = recipient;
-		filterdata.inputfd = srcfd;
-		filterdata.size = datalen;
-		filterdata.outputfd = fd;
-		smtp_run_filters(&filterdata, SMTP_DIRECTION_OUT);
+	memset(&filterdata, 0, sizeof(filterdata));
+	filterdata.smtp = smtp;
+	filterdata.recipient = recipient;
+	filterdata.inputfd = srcfd;
+	filterdata.size = datalen;
+	filterdata.outputfd = fd;
+	smtp_run_filters(&filterdata, SMTP_DIRECTION_OUT);
 
-		/* Write the entire body of the message. */
-		res = bbs_copy_file(srcfd, fd, 0, (int) datalen);
-		if (res != (int) datalen) {
-			bbs_error("Failed to write %lu bytes to %s, only wrote %d\n", datalen, tmpfile, res);
-			close(fd);
-			return -1;
-		}
-		if (rename(tmpfile, newfile)) {
-			bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
-			close(fd);
-			return -1;
-		}
+	/* Write the entire body of the message. */
+	res = bbs_copy_file(srcfd, fd, 0, (int) datalen);
+	if (res != (int) datalen) {
+		bbs_error("Failed to write %lu bytes to %s, only wrote %d\n", datalen, tmpfile, res);
 		close(fd);
+		return -1;
+	}
+	if (rename(tmpfile, newfile)) {
+		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
+		close(fd);
+		return -1;
+	}
+	close(fd);
 
-#ifndef BUGGY_SEND_IMMEDIATE
-		doasync = send_async;
-		if (doasync) {
-#else
-		if (1) {
-#endif
-			pthread_t sendthread;
-			const char *filename;
-			char *filenamedup;
-			/* For some reason, this works, even though calling try_send on the smtp structure directly above did not. */
-			filename = strrchr(newfile, '/');
-			filenamedup = strdup(filename + 1); /* Need to duplicate since filename is on the stack and we're returning now */
-			if (ALLOC_SUCCESS(filenamedup)) {
-				/* Yes, I know spawning a thread for every email is not very efficient.
-				 * If this were a high traffic mail server, this might be architected differently.
-				 * Do note that this is mainly a WORKAROUND for BUGGY_SEND_IMMEDIATE. */
-				if (bbs_pthread_create_detached(&sendthread, NULL, smtp_async_send, filenamedup)) {
-					free(filenamedup);
-				} else {
-					bbs_debug(4, "Successfully queued %lu-byte message for immediate delivery: <%s> -> %s\n", datalen, from, recipient);
-				}
-			}
+	/* For some reason, this works, even though calling try_send on the smtp structure directly above did not. */
+	filename = strrchr(newfile, '/');
+	filenamedup = strdup(filename + 1); /* Need to duplicate since filename is on the stack and we're returning now */
+	if (ALLOC_SUCCESS(filenamedup)) {
+		/* Yes, I know spawning a thread for every email is not very efficient.
+		 * If this were a high traffic mail server, this might be architected differently. */
+		if (bbs_pthread_create_detached(&sendthread, NULL, smtp_async_send, filenamedup)) {
+			free(filenamedup);
 		} else {
-			bbs_debug(4, "Successfully queued %lu-byte message for delayed delivery: <%s> -> %s\n", datalen, from, recipient);
+			bbs_debug(4, "Successfully queued %lu-byte message for immediate delivery: <%s> -> %s\n", datalen, from, recipient);
 		}
 	}
 	return 1;
@@ -1995,9 +1914,6 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "general", "relayout", &accept_relay_out);
 	bbs_config_val_set_uint(cfg, "general", "maxretries", &max_retries);
 	bbs_config_val_set_uint(cfg, "general", "maxage", &max_age);
-	bbs_config_val_set_true(cfg, "general", "mailqueue", &queue_outgoing);
-	bbs_config_val_set_true(cfg, "general", "sendasync", &send_async);
-	bbs_config_val_set_true(cfg, "general", "alwaysqueue", &always_queue);
 	bbs_config_val_set_uint(cfg, "general", "queueinterval", &queue_interval);
 	bbs_config_val_set_true(cfg, "general", "notifyqueue", &notify_queue);
 
