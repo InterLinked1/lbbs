@@ -66,6 +66,7 @@ static unsigned int queue_interval = 60;
 static unsigned int max_retries = 10;
 static unsigned int max_age = 86400;
 
+static int unloading = 0;
 static time_t last_periodic_queue_run = 0;
 
 struct mx_record {
@@ -198,7 +199,7 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 
 	res = res_query(domain, C_IN, T_MX, answer, sizeof(answer));
 	if (res == -1) {
-		bbs_error("res_query failed for '%s': %s\n", domain, strerror(errno));
+		bbs_warning("res_query failed for '%s'\n", domain); /* res_query does not set errno */
 		return -1;
 	}
 	res = ns_initparse(answer, res, &msg);
@@ -319,8 +320,8 @@ static void smtp_tx_data_reset(struct smtp_tx_data *tx)
 }
 
 #ifdef DEBUG_MAIL_DATA
-#define debug_data(srcfd, offset, writelen) __debug_data(srcfd, offset, writelen, __LINE__)
-static int __debug_data(int srcfd, off_t offset, size_t writelen, int lineno)
+#define debug_data(srcfd, writelen) __debug_data(srcfd, writelen, __LINE__)
+static int __debug_data(int srcfd, size_t writelen, int lineno)
 {
 	/* Some built in dumping is included,
 	 * since most connections probably use STARTTLS,
@@ -329,7 +330,7 @@ static int __debug_data(int srcfd, off_t offset, size_t writelen, int lineno)
 	 * Only compile with it when actively debugging a delivery issue. */
 	char *debugbuf;
 
-	if (lseek(srcfd, offset, SEEK_SET) == -1) {
+	if (lseek(srcfd, 0, SEEK_SET) == -1) {
 		bbs_error("lseek failed: %s\n", strerror(errno));
 		return -1;
 	}
@@ -373,15 +374,14 @@ static int __debug_data(int srcfd, off_t offset, size_t writelen, int lineno)
  * \param prepend Data to prepend
  * \param prependlen Length of prepend
  * \param datafd A file descriptor containing the message data (used instead of data/datalen)
- * \param offset sendfile offset for message (sent data will begin here)
  * \param writelen Number of bytes to send
  * \param[out] buf Buffer in which to temporarily store SMTP responses
  * \param len Size of buf.
  * \retval 0 on success, 1 on permanent error, -1 on temporary error, -2 if STARTTLS was attempted and failed (temporary error)
  */
-static int __attribute__ ((nonnull (2, 3, 9, 17))) try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const char *hostname, int port, int use_implicit_tls, int allow_starttls,
+static int __attribute__ ((nonnull (2, 3, 9, 16))) try_send(struct smtp_session *smtp, struct smtp_tx_data *tx, const char *hostname, int port, int use_implicit_tls, int allow_starttls,
 	const char *username, const char *password, const char *sender, const char *recipient, struct stringlist *recipients,
-	const char *prepend, size_t prependlen, int datafd, off_t offset, size_t writelen, char *buf, size_t len)
+	const char *prepend, size_t prependlen, int datafd, size_t writelen, char *buf, size_t len)
 {
 	int res = -1;
 	ssize_t wrote = 0;
@@ -415,7 +415,7 @@ static int __attribute__ ((nonnull (2, 3, 9, 17))) try_send(struct smtp_session 
 	if (prepend && prependlen) {
 		bbs_dump_mem((const unsigned char*) prepend, prependlen);
 	}
-	if (debug_data(datafd, offset, writelen)) {
+	if (debug_data(datafd, 0, writelen)) {
 		/* Proactively reject the message ourselves,
 		 * before even establishing a connection to another MTA,
 		 * which would make us look bad. */
@@ -633,7 +633,7 @@ static int __attribute__ ((nonnull (2, 3, 9, 17))) try_send(struct smtp_session 
 	}
 
 	/* sendfile will be much more efficient than reading the file ourself, as email body could be quite large, and we don't need to involve userspace. */
-	send_offset = offset;
+	send_offset = 0;
 	res = (int) bbs_sendfile(smtpclient.client.wfd, datafd, &send_offset, writelen);
 
 	/* XXX If email doesn't end in CR LF, we need to tack that on. But ONLY if it doesn't already end in CR LF. */
@@ -673,7 +673,7 @@ cleanup:
 	return res;
 }
 
-static void smtp_trigger_dsn(enum smtp_delivery_action action, struct smtp_tx_data *restrict tx, struct tm *created, const char *from, const char *to, char *error, int fd, size_t offset, size_t datalen, int attempt_number)
+static void smtp_trigger_dsn(enum smtp_delivery_action action, struct smtp_tx_data *restrict tx, struct tm *created, const char *from, const char *to, char *error, int fd, size_t datalen, int attempt_number)
 {
 	char *tmp;
 	char status[15] = ""; /* Status code should be the 2nd word? */
@@ -708,7 +708,7 @@ static void smtp_trigger_dsn(enum smtp_delivery_action action, struct smtp_tx_da
 		/*! \todo parameter 1 is the sendinghost: we should store this in the queue file so this information is available to us
 		 * Even better, rather than trying to stuff it into the same file and using an offset, using some kind of out of band
 		 * control file where we can record all the relevant information we'll want to keep. */
-		smtp_dsn(NULL, created, from, fd, (int) offset, datalen, &f, 1);
+		smtp_dsn(NULL, created, from, fd, datalen, &f, 1);
 		smtp_delivery_outcome_free(&f, 1);
 	}
 }
@@ -760,19 +760,22 @@ static void mailq_run_cleanup(struct mailq_run *qrun)
 
 /*! \brief A single message in the mail queue */
 struct mailq_file {
-	FILE *fp;
+	FILE *fp;	/*!< File handle for data file */
+	FILE *cfp;	/*!< File handle for control file */
 	unsigned long size;
-	size_t metalen;
 	char *realfrom, *realto;
 	char *user, *domain;
 	int retries;		/*!< Number of times retried so far */
-	int newretries;		/*!< retrycount + 1 */
 	struct tm created;	/*!< Time message was added to the queue */
 	struct tm retried;	/*!< Time message delivery was last attempted */
 	time_t createdtime;	/*!< time_t of created */
 	time_t retriedtime;	/*!< time_t of retried */
-	char fullname[MAILQ_FILENAME_SIZE];
-	char from[1000], recipient[1000], todup[256];
+	char controlfile[MAILQ_FILENAME_SIZE];
+	char datafile[MAILQ_FILENAME_SIZE];
+	char sourceip[55];
+	char from[MAX_EMAIL_ADDRESS_LENGTH + 1];
+	char recipient[MAX_EMAIL_ADDRESS_LENGTH + 1];
+	char todup[MAX_EMAIL_ADDRESS_LENGTH + 1];
 	struct mailq_run *qrun;	/*!< mailq_run to which this mailq_file belongs */
 };
 
@@ -793,7 +796,24 @@ static void mailq_file_destroy(void *varg)
 	if (mqf->fp) {
 		fclose(mqf->fp);
 	}
+	if (mqf->cfp) {
+		fclose(mqf->cfp);
+	}
 	free(mqf);
+}
+
+static void mqf_file_cleanup(struct mailq_file *mqf)
+{
+	fclose(mqf->cfp);
+	fclose(mqf->fp);
+	mqf->cfp = mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
+}
+
+/*! \brief Delete a message's control file and data file (after successful delivery, permanent failure, or retries exceeded) */
+static void mqf_file_purge(struct mailq_file *mqf)
+{
+	bbs_delete_file(mqf->controlfile);
+	bbs_delete_file(mqf->datafile);
 }
 
 static void reset_accessed_time(struct mailq_file *restrict mqf)
@@ -810,28 +830,88 @@ static void reset_accessed_time(struct mailq_file *restrict mqf)
 	utb.modtime = mqf->createdtime;
 	utb.actime = mqf->retriedtime;
 
-	if (utime(mqf->fullname, &utb)) {
-		bbs_error("Failed to set file timestamps for %s: %s\n", mqf->fullname, strerror(errno));
+	if (utime(mqf->datafile, &utb)) {
+		bbs_error("Failed to set file timestamps for %s: %s\n", mqf->datafile, strerror(errno));
 	}
 }
 
-static int mailq_file_load(struct mailq_file *restrict mqf, const char *dir_name, const char *filename)
+/*! \brief Increment Delivery-Attempts directive in control file */
+static int mailq_file_punt(struct mailq_file *mqf)
 {
-	struct stat st;
-	const char *retries;
+	/* Seek to the end of the control file */
+	if (fseek(mqf->cfp, 0, SEEK_END)) {
+		bbs_error("fseek failed: %s\n", strerror(errno));
+		return -1;
+	}
+	/* Back up until we get to the start of the value.
+	 * Usually this will only be once back, but if max_retries is more than 9,
+	 * it could be a variable number of digits. */
+	for (;;) {
+		int c;
+		if (fseek(mqf->cfp, -1L, SEEK_CUR)) {
+			bbs_error("fseek failed: %s\n", strerror(errno));
+			return -1;
+		}
+		c = fgetc(mqf->cfp);
+		if (c == ':') {
+			break;
+		}
+		ungetc(c, mqf->cfp);
+	}
+	fprintf(mqf->cfp, "%d", mqf->retries + 1);
+	return 0;
+}
 
-	snprintf(mqf->fullname, sizeof(mqf->fullname), "%s/%s", dir_name, filename);
+static int mailq_file_load(struct mailq_file *restrict mqf, const char *dir_name, const char *controlfile)
+{
+	char buf[256];
+	struct stat st;
+	char *val;
+
+	/* First, parse everything out of the control file */
+	snprintf(mqf->controlfile, sizeof(mqf->controlfile), "%s/%s", dir_name, controlfile);
+	mqf->cfp = fopen(mqf->controlfile, "r+"); /* when updating Delivery-Attempts on a temporary failure, we'll need to edit */
+	if (!mqf->cfp) {
+		bbs_error("Failed to open %s: %s\n", mqf->controlfile, strerror(errno));
+		return -1;
+	}
+	while ((val = fgets(buf, sizeof(buf), mqf->cfp))) {
+		char *key;
+		bbs_term_line(val); /* Terminate line since fgets leaves newlines intact */
+		key = strsep(&val, ":");
+		if (!strlen_zero(val)) {
+			ltrim(val);
+		}
+		if (strlen_zero(key) || strlen_zero(val)) {
+			bbs_warning("Invalid data in control file: '%s' = '%s'\n", S_IF(key), S_IF(val)); /* Warn but ignore */
+		} else if (!strcmp(key, "Source-IP")) {
+			safe_strncpy(mqf->sourceip, val, sizeof(mqf->sourceip));
+		} else if (!strcmp(key, "Envelope-Sender")) {
+			safe_strncpy(mqf->from, val, sizeof(mqf->from));
+		} else if (!strcmp(key, "Envelope-Recipient")) {
+			safe_strncpy(mqf->recipient, val, sizeof(mqf->recipient));
+		} else if (!strcmp(key, "Data-File")) {
+			safe_strncpy(mqf->datafile, val, sizeof(mqf->datafile));
+		} else if (!strcmp(key, "Delivery-Attempts")) {
+			mqf->retries = atoi(val);
+		} else {
+			bbs_warning("Ignoring invalid control directive '%s' in %s\n", key, controlfile);
+		}
+	}
+	/* Leave mqf->cfp open as mailq_file_punt may use it */
 
 	/* Do the stat call before opening the file,
 	 * since opening it will change the file timestamps. */
-	if (stat(mqf->fullname, &st)) {
-		bbs_error("stat(%s) failed: %s\n", mqf->fullname, strerror(errno));
+	if (stat(mqf->datafile, &st)) {
+		bbs_error("stat(%s) failed: %s\n", mqf->datafile, strerror(errno));
+		fclose(mqf->cfp);
 		return -1;
 	}
 
-	mqf->fp = fopen(mqf->fullname, "rb");
+	mqf->fp = fopen(mqf->datafile, "rb");
 	if (!mqf->fp) {
-		bbs_error("Failed to open %s: %s\n", mqf->fullname, strerror(errno));
+		bbs_error("Failed to open %s: %s\n", mqf->datafile, strerror(errno));
+		fclose(mqf->cfp);
 		return -1;
 	}
 
@@ -839,48 +919,18 @@ static int mailq_file_load(struct mailq_file *restrict mqf, const char *dir_name
 	mqf->size = (long unsigned) ftell(mqf->fp);
 	rewind(mqf->fp); /* Be kind, rewind */
 
-	if (!fgets(mqf->from, sizeof(mqf->from), mqf->fp) || !fgets(mqf->recipient, sizeof(mqf->recipient), mqf->fp)) {
-		bbs_error("Failed to read metadata from %s\n", mqf->fullname);
-		goto cleanup;
-	}
-
-	mqf->metalen = strlen(mqf->from) + strlen(mqf->recipient); /* This already includes the newlines */
-
-	retries = strchr(mqf->fullname, '.');
-	if (!retries++ || strlen_zero(retries)) { /* Shouldn't happen for mail queue files legitimately generated by this module, but somebody else might have dumped stuff in. */
-		bbs_error("File name '%s' is non-compliant with our filename format\n", mqf->fullname);
-		goto cleanup;
-	}
-	mqf->retries = atoi(retries);
-
-	/* If you manually edit the queue files, the line endings will get converted,
-	 * and since the queue files use a combination of LF and CR LF,
-	 * that can mess things up.
-	 * In particular, something like nano will convert everything to LF,
-	 * so bbs_readline will return the entire body as one big blob,
-	 * since the file has no CR LF delimiters at all.
-	 * And because rely on CR LF . CR LF for end of email detection,
-	 * we'll only see LF . CR LF at the end, and delivery will thus fail.
-	 * Do not modify the mail queue files manually for debugging, unless you really know what you are doing,
-	 * and in particular are preserving the mixed line endings. */
-	bbs_term_line(mqf->from);
-	bbs_term_line(mqf->recipient);
-
-	mqf->realfrom = strchr(mqf->from, '<');
-	mqf->realto = strchr(mqf->recipient, '<');
-
 	/* The actual MAIL FROM can be empty if this is a nondelivery report, so we do not validate that it is non-empty (it may be the empty string). */
-	if (!mqf->realfrom) {
-		bbs_error("Mail queue file MAIL FROM missing <>: %s\n", mqf->fullname);
+	if (!(mqf->realfrom = strchr(mqf->from, '<'))) {
+		bbs_error("Mail queue file MAIL FROM missing <>: %s\n", mqf->datafile);
 		goto cleanup;
-	} else if (!mqf->realto) {
-		bbs_error("Mail queue file RCPT TO missing <>: %s\n", mqf->fullname);
+	} else if (!(mqf->realto = strchr(mqf->recipient, '<'))) {
+		bbs_error("Mail queue file RCPT TO missing <>: %s\n", mqf->datafile);
 		goto cleanup;
 	}
 
 	mqf->realfrom++; /* Skip < */
 	if (strlen_zero(mqf->realfrom)) {
-		bbs_error("Malformed MAIL FROM: %s\n", mqf->fullname);
+		bbs_error("Malformed MAIL FROM: %s\n", mqf->datafile);
 		goto cleanup;
 	}
 	bbs_strterm(mqf->realfrom, '>'); /* try_send will add <> for us, so strip it here to match */
@@ -934,29 +984,15 @@ static int mailq_file_load(struct mailq_file *restrict mqf, const char *dir_name
 	return 0;
 
 cleanup:
+	fclose(mqf->cfp);
 	fclose(mqf->fp);
 	mqf->fp = NULL;
 	/* Okay if file timestamps are updated, since an error happened, anyways */
 	return -1;
 }
 
-static int mailq_file_punt(struct mailq_file *mqf)
-{
-	char newname[MAILQ_FILENAME_SIZE + 11];
-	char tmpbuf[256];
-
-	bbs_strncpy_until(tmpbuf, mqf->fullname, sizeof(tmpbuf), '.');
-	/* Store retry information in the filename itself, so we don't have to modify the file, we can just rename it. Inspired by IMAP. */
-	snprintf(newname, sizeof(newname), "%s.%d", tmpbuf, mqf->newretries);
-	if (rename(mqf->fullname, newname)) {
-		bbs_error("Failed to rename %s to %s\n", mqf->fullname, newname);
-		return -1;
-	}
-	return 0;
-}
-
 /*! \brief Attempt to send a message via SMTP using static routes instead of doing an MX lookup */
-static int __attribute__ ((nonnull (2, 3, 4, 5, 9))) try_static_delivery(struct smtp_session *smtp, struct smtp_tx_data *tx, struct stringlist *static_routes, const char *sender, const char *recipient, int datafd, off_t offset, size_t writelen, char *buf, size_t len)
+static int __attribute__ ((nonnull (2, 3, 4, 5, 8))) try_static_delivery(struct smtp_session *smtp, struct smtp_tx_data *tx, struct stringlist *static_routes, const char *sender, const char *recipient, int datafd, size_t writelen, char *buf, size_t len)
 {
 	const char *route;
 	struct stringitem *i = NULL;
@@ -988,7 +1024,7 @@ static int __attribute__ ((nonnull (2, 3, 4, 5, 9))) try_static_delivery(struct 
 			}
 		}
 
-		res = try_send(smtp, tx, hostname, port, 0, 1, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, offset, writelen, buf, len);
+		res = try_send(smtp, tx, hostname, port, 0, 1, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, writelen, buf, len);
 	}
 	return res;
 }
@@ -1003,14 +1039,13 @@ static int __attribute__ ((nonnull (2, 3, 4, 5, 9))) try_static_delivery(struct 
  * \param recipient A single recipient for RCPT TO
  * \param recipients A list of recipients for RCPT TO. Either recipient or recipients must be specified.
  * \param datafd A file descriptor containing the message data (used instead of data/datalen)
- * \param offset sendfile offset for message (sent data will begin here)
  * \param writelen Number of bytes to send
  * \param[out] buf Buffer in which to temporarily store SMTP responses
  * \param len Size of buf.
  * \retval 0 on success, 1 on permanent error, -1 on temporary error
  * \note This function leaves the items in mxservers intact so they can be used again if needed
  */
-static int __attribute__ ((nonnull (2, 3, 4, 5, 6, 10))) try_mx_delivery(struct smtp_session *smtp, struct smtp_tx_data *tx, struct mailq_file *mqf, struct stringlist *mxservers, const char *sender, const char *recipient, int datafd, off_t offset, size_t writelen, char *buf, size_t len)
+static int __attribute__ ((nonnull (2, 3, 4, 5, 6, 9))) try_mx_delivery(struct smtp_session *smtp, struct smtp_tx_data *tx, struct mailq_file *mqf, struct stringlist *mxservers, const char *sender, const char *recipient, int datafd, size_t writelen, char *buf, size_t len)
 {
 	const char *hostname;
 	struct stringitem *i = NULL;
@@ -1019,7 +1054,7 @@ static int __attribute__ ((nonnull (2, 3, 4, 5, 6, 10))) try_mx_delivery(struct 
 
 	/* Try all the MX servers in order, if necessary */
 	while (res < 0 && (hostname = stringlist_next(mxservers, &i))) {
-		res = try_send(smtp, tx, hostname, DEFAULT_SMTP_PORT, 0, 1, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, offset, writelen, buf, len);
+		res = try_send(smtp, tx, hostname, DEFAULT_SMTP_PORT, 0, 1, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, writelen, buf, len);
 		if (res == -2) {
 			start_tls_failures++;
 			res = -1;
@@ -1033,21 +1068,20 @@ static int __attribute__ ((nonnull (2, 3, 4, 5, 6, 10))) try_mx_delivery(struct 
 			/* Retry without using STARTTLS.
 			 * First, send a delay notification so the sender is aware the message was not delivered securely.
 			 * The sender could then choose to notify the recipient's postmaster of the issue, but it's not really our problem. */
-			smtp_trigger_dsn(DELIVERY_DELAYED, tx, &mqf->created, sender, recipient, buf, datafd, (size_t) offset, writelen, mqf->retries);
-			mqf->newretries = mqf->retries + 1;
+			smtp_trigger_dsn(DELIVERY_DELAYED, tx, &mqf->created, sender, recipient, buf, datafd, writelen, mqf->retries);
 			/* Do another pass, but don't attempt STARTTLS.
 			 * It's possible delivery will succeed without encryption.
 			 * Obviously, this isn't ideal, but most mail servers generally retry delivery without TLS if it fails.
 			 * To prevent falling back to plain text, require_starttls_out should be configured to true. */
 			i = NULL;
 			while (res < 0 && (hostname = stringlist_next(mxservers, &i))) {
-				res = try_send(smtp, tx, hostname, DEFAULT_SMTP_PORT, 0, 0, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, offset, writelen, buf, len);
+				res = try_send(smtp, tx, hostname, DEFAULT_SMTP_PORT, 0, 0, NULL, NULL, sender, recipient, NULL, NULL, 0, datafd, writelen, buf, len);
 				bbs_assert(res != -2); /* Since we don't attempt STARTTLS, res should never be -2 */
 			}
 			if (res == 0) {
 				/* Since we send a delayed DSN, if we succeeded, we now need to also send one for success,
 				 * or the user will think the message hasn't been able to be delivered. */
-				smtp_trigger_dsn(DELIVERY_DELIVERED, tx, &mqf->created, sender, recipient, buf, datafd, (size_t) offset, writelen, mqf->retries);
+				smtp_trigger_dsn(DELIVERY_DELIVERED, tx, &mqf->created, sender, recipient, buf, datafd, writelen, mqf->retries);
 			}
 		}
 	}
@@ -1168,22 +1202,22 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 	char buf[256] = "";
 	struct stringlist *static_routes;
 	struct smtp_tx_data tx;
+	int attempts;
 
 	memset(&tx, 0, sizeof(tx));
 
 	QUEUE_INCR_STAT(processed);
 
 	static_routes = get_static_routes(mqf->domain);
-	bbs_debug(2, "Processing message %s (<%s> -> %s), via %s for '%s'\n", mqf->fullname, mqf->realfrom, mqf->realto, static_routes ? "static route(s)" : "MX lookup", mqf->domain);
+	bbs_debug(2, "Processing message %s (<%s> -> %s), via %s for '%s'\n", mqf->datafile, mqf->realfrom, mqf->realto, static_routes ? "static route(s)" : "MX lookup", mqf->domain);
 	if (static_routes) {
 		if (stringlist_is_empty(static_routes)) {
 			/* In theory, should never happen */
 			bbs_error("No static routes available for delivery to %s?\n", mqf->domain);
-			fclose(mqf->fp);
-			mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
+			mqf_file_cleanup(mqf); /* For parallel task framework, since cleanup is always called */
 			return 0;
 		} else {
-			res = try_static_delivery(NULL, &tx, static_routes, mqf->realfrom, mqf->realto, fileno(mqf->fp), (off_t) mqf->metalen, mqf->size - mqf->metalen, buf, sizeof(buf));
+			res = try_static_delivery(NULL, &tx, static_routes, mqf->realfrom, mqf->realto, fileno(mqf->fp), mqf->size, buf, sizeof(buf));
 		}
 	} else {
 		struct stringlist mxservers;
@@ -1201,15 +1235,14 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 					bbs_warning("Recipient domain %s does not have any MX or A records\n", mqf->domain);
 					/* Just treat as undeliverable at this point and return to sender (if no MX records now, probably won't be any the next time we try) */
 					/* Send a delivery failure response, then delete the file. */
-					bbs_warning("Delivery of message %s from <%s> to %s has failed permanently (no MX records)\n", mqf->fullname, mqf->realfrom, mqf->realto);
+					bbs_warning("Delivery of message %s from <%s> to %s has failed permanently (no MX records)\n", mqf->datafile, mqf->realfrom, mqf->realto);
 					/* There isn't any SMTP level error at this point yet, we have to make our own error message for the bounce message */
 					snprintf(buf, sizeof(buf), "No MX record(s) located for hostname %s", mqf->domain); /* No status code */
 					smtp_tx_data_reset(&tx);
 					/* Do not set tx.hostname, since this message is from us, not the remote server */
-					smtp_trigger_dsn(DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen, mqf->retries);
-					fclose(mqf->fp);
-					mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
-					bbs_delete_file(mqf->fullname);
+					smtp_trigger_dsn(DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->size, mqf->retries);
+					mqf_file_cleanup(mqf);
+					mqf_file_purge(mqf);
 					QUEUE_INCR_STAT(failed);
 					return 0;
 				}
@@ -1217,47 +1250,38 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 				stringlist_push(&mxservers, a_ip);
 			}
 
-			res = try_mx_delivery(NULL, &tx, mqf, &mxservers, mqf->realfrom, mqf->realto, fileno(mqf->fp), (off_t) mqf->metalen, mqf->size - mqf->metalen, buf, sizeof(buf));
+			res = try_mx_delivery(NULL, &tx, mqf, &mxservers, mqf->realfrom, mqf->realto, fileno(mqf->fp), mqf->size, buf, sizeof(buf));
 			stringlist_empty_destroy(&mxservers);
 		}
 	}
 
-	mqf->newretries = mqf->retries + 1;
-	if (!res) {
-		/* Successful delivery. */
-		bbs_debug(6, "Delivery successful after %d attempt%s, discarding queue file\n", mqf->newretries, ESS(mqf->newretries));
+	attempts = mqf->retries + 1;
+	if (!res) { /* Successful delivery. */
+		bbs_debug(6, "Delivery successful after %d attempt%s, discarding queue file\n", attempts, ESS(attempts));
 		bbs_smtp_log(4, NULL, "Delivery succeeded after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
-		smtp_trigger_dsn(DELIVERY_DELIVERED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen, mqf->retries);
-		fclose(mqf->fp);
-		mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
-		bbs_delete_file(mqf->fullname);
+		smtp_trigger_dsn(DELIVERY_DELIVERED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->size, mqf->retries);
+		mqf_file_cleanup(mqf);
+		mqf_file_purge(mqf);
 		QUEUE_INCR_STAT(delivered);
-		return 0;
-	}
-
-	bbs_debug(3, "Delivery of %s to %s has been attempted %d/%d times\n", mqf->fullname, mqf->realto, mqf->newretries, max_retries);
-	if (res == -2 || res > 0 || mqf->newretries >= (int) max_retries) {
+	} else if (res == -2 || res > 0 || (mqf->retries + 1) >= (int) max_retries) { /* Permanent failure or retries exceeded */
 		/* Send a delivery failure response, then delete the file. */
-		bbs_warning("Delivery of message %s from %s to %s has failed permanently after %d retries\n", mqf->fullname, mqf->realfrom, mqf->realto, mqf->newretries);
+		bbs_warning("Delivery of message <%s> from %s to %s has failed permanently after %d attempt%s\n", mqf->datafile, mqf->realfrom, mqf->realto, attempts, ESS(attempts));
 		bbs_smtp_log(1, NULL, "Delivery failed permanently after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
 		/* To the dead letter office we go */
 		/* XXX buf will only contain the last line of the SMTP transaction, since it was using the readline buffer
 		 * Thus, if we got a multiline error, only the last line is currently included in the non-delivery report */
-		smtp_trigger_dsn(DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen, mqf->retries);
-		fclose(mqf->fp);
-		mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
-		bbs_delete_file(mqf->fullname);
+		smtp_trigger_dsn(DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->size, mqf->retries);
+		mqf_file_cleanup(mqf);
+		mqf_file_purge(mqf);
 		QUEUE_INCR_STAT(failed);
-		return 0;
-	} else {
+	} else { /* Delivery deferred due to temporary failure */
+		bbs_debug(3, "Delivery of %s to %s has been attempted %d/%d times\n", mqf->datafile, mqf->realto, attempts, max_retries);
 		bbs_smtp_log(3, NULL, "Delivery delayed after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
 		mailq_file_punt(mqf); /* Try again later */
-		smtp_trigger_dsn(DELIVERY_DELAYED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->metalen, mqf->size - mqf->metalen, mqf->retries);
+		smtp_trigger_dsn(DELIVERY_DELAYED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->size, mqf->retries);
 		QUEUE_INCR_STAT(delayed);
+		mqf_file_cleanup(mqf);
 	}
-
-	fclose(mqf->fp);
-	mqf->fp = NULL; /* For parallel task framework, since cleanup is always called */
 	return 0;
 }
 
@@ -1268,7 +1292,7 @@ static int parallel_process_queue_file_cb(void *data)
 }
 
 /*! \brief Primary callback to process each queue file */
-static int on_queue_file(const char *dir_name, const char *filename, void *obj)
+static int on_queue_file(const char *dir_name, const char *controlfile, void *obj)
 {
 	struct mailq_run *qrun = obj;
 	struct mailq_file mqf_stack, *mqf = &mqf_stack;
@@ -1297,7 +1321,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	bbs_assert_exists(qrun);
 	qrun->total++;
 
-	if (mailq_file_load(mqf, dir_name, filename)) {
+	if (mailq_file_load(mqf, dir_name, controlfile)) {
 		/* If a queue is malformed, this will continue indefinitely,
 		 * since we never increment its retry count.
 		 * The sysop will need to manually remove the broken queued message. */
@@ -1306,7 +1330,7 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 
 	if (skip_qfile(qrun, mqf)) {
 		qrun->skipped++; /* No need to use the QUEUE_INCR_STAT wrapper for locking since this is pre-parallel portion */
-		fclose(mqf->fp); /* Not necessary to set mqf->fp to NULL, since we're not calling mailq_file_destroy */
+		mqf_file_cleanup(mqf); /* Not necessary to set mqf->fp to NULL, since we're not calling mailq_file_destroy */
 		/* Not sure when the access times are changed: when the file is opened, or closed, or both,
 		 * but just to be completely safe, we only reset the timestamps after closing. */
 		reset_accessed_time(mqf);
@@ -1314,12 +1338,12 @@ static int on_queue_file(const char *dir_name, const char *filename, void *obj)
 	}
 
 	if (qrun->parallel) {
-		/* Schedule the task now but return immediately */
-		/* filename: Every queue file is allowed to be processed in parallel, so use a unique prefix for each queue file, e.g. the filename works great. */
-		/* mqf: Only a single callback argument can be provided, but mqf has a reference to qrun */
-		/* duplicate: NULL, since we already heap allocated. */
-		/* cleanup: We do need to clean up the heap allocated structure, even though we didn't duplicate it */
-		bbs_parallel_schedule_task(qrun->parallel, filename, mqf, parallel_process_queue_file_cb, NULL, mailq_file_destroy);
+		/* Schedule the task now but return immediately:
+		 * controlfile: Every queue file is allowed to be processed in parallel, so use a unique prefix for each queue file, e.g. the controlfile works great.
+		 * mqf: Only a single callback argument can be provided, but mqf has a reference to qrun
+		 * duplicate: NULL, since we already heap allocated.
+		 * cleanup: We do need to clean up the heap allocated structure, even though we didn't duplicate it */
+		bbs_parallel_schedule_task(qrun->parallel, controlfile, mqf, parallel_process_queue_file_cb, NULL, mailq_file_destroy);
 	} else {
 		/* Process the queued message now, synchronously */
 		process_queue_file(qrun, mqf);
@@ -1338,12 +1362,9 @@ static int run_queue(struct mailq_run *qrun, int (*queue_file_cb)(const char *di
 	int res;
 	int queued_messages;
 
-	/*! \todo Implement smarter queuing:
-	 * - Store envelope message separately from the file so we don't need to hackily start sending from a file into the offset,
-	 *   and so we can easily store other information out of band for queuing purposes.
-	 * - If delivering the same message to multiple recipients on a single server, it would be nice
-	 *   to be able to do that in a single transaction. Sharing a queue file might make sense in this scenario?
-	 */
+	if (unloading) {
+		return -1;
+	}
 
 	bbs_rwlock_wrlock(&queue_lock);
 	queued_messages = bbs_dir_num_files(queue_dir);
@@ -1562,7 +1583,7 @@ static int on_queue_file_cli_mailq(const char *dir_name, const char *filename, v
 	qrun->total++;
 
 	if (skip_qfile(qrun, mqf)) {
-		fclose(mqf->fp);
+		mqf_file_cleanup(mqf);
 		reset_accessed_time(mqf);
 		return 0;
 	}
@@ -1604,7 +1625,7 @@ static int on_queue_file_cli_mailq(const char *dir_name, const char *filename, v
 		mqf->retries, arrival_date, retry_date, next_retry_date, filename,
 		(mqf->size + 1023) / 1024, /* Display size in KB, rounded up to the nearest KB */
 		mqf->realfrom, mqf->realto);
-	fclose(mqf->fp);
+	mqf_file_cleanup(mqf);
 	reset_accessed_time(mqf); /* This was just for stats, we didn't actually do anything, so reset */
 	return 0;
 }
@@ -1647,13 +1668,19 @@ static struct bbs_cli_entry cli_commands_mailq[] = {
 	BBS_CLI_COMMAND(cli_runq, "runq", 1, "Retry delivery of messages in the mail queue (optionally restricted to messages directed at certain hosts)", "runq <hostsuffix>"),
 };
 
+/*! \brief Send a specific message asynchronously */
 static void *smtp_async_send(void *varg)
 {
-	char mailnewdir[260];
+	char mailtmpdir[260];
 	char fullname[512];
-	char *filename = varg;
+	char *controlfile = varg;
 
-	snprintf(mailnewdir, sizeof(mailnewdir), "%s/mailq/new", mailbox_maildir(NULL));
+	snprintf(mailtmpdir, sizeof(mailtmpdir), "%s/mailq/tmp", mailbox_maildir(NULL)); /* control files live in tmp, data files in new */
+
+	if (unloading) {
+		free(controlfile);
+		return NULL;
+	}
 
 	/* Acquiring this lock is not guaranteed to happen immediately,
 	 * but that's okay since this thread is running asynchronously. */
@@ -1666,7 +1693,7 @@ static void *smtp_async_send(void *varg)
 	 * The downside, of course, is that locking is needed to ensure
 	 * we don't try to send the same message twice. */
 
-	snprintf(fullname, sizeof(fullname), "%s/%s", mailnewdir, filename);
+	snprintf(fullname, sizeof(fullname), "%s/%s", mailtmpdir, controlfile);
 	if (!bbs_file_exists(fullname)) {
 		/* If we couldn't acquire the lock immediately,
 		 * that means the queue thread was already running.
@@ -1693,13 +1720,101 @@ static void *smtp_async_send(void *varg)
 
 		struct mailq_run qrun;
 		mailq_run_init(&qrun, QUEUE_RUN_FORCED); /* We're forcing the queue to run for a specific message, technically */
-		on_queue_file(mailnewdir, filename, &qrun);
+		on_queue_file(mailtmpdir, controlfile, &qrun);
 		mailq_run_cleanup(&qrun);
 	}
 
 	bbs_rwlock_unlock(&queue_lock);
-	free(filename);
+	free(controlfile);
 	return NULL;
+}
+
+/*! \brief Schedule delivery of a message asynchronously in another thread */
+static int launch_delivery_task(const char *controlfile)
+{
+	pthread_t sendthread;
+	const char *filename;
+	char *filenamedup;
+
+	filename = strrchr(controlfile, '/'); /* No need to duplicate the directory portion, just the basename */
+	bbs_assert_exists(filename);
+	filenamedup = strdup(filename + 1); /* Need to duplicate since filename is on the stack and we're returning now */
+	if (ALLOC_FAILURE(filenamedup)) {
+		return -1;
+	}
+
+	/* Yes, spawning a thread for every email is not very efficient.
+	 * If this were a high traffic mail server, this might be architected differently. */
+	if (bbs_pthread_create_detached(&sendthread, NULL, smtp_async_send, filenamedup)) {
+		free(filenamedup);
+		return -1;
+	}
+	bbs_debug(4, "Successfully queued message %s for immediate delivery\n", filename);
+	return 0;
+}
+
+/*!
+ * \brief Queue a message for delivery in the future
+ * \param smtp
+ * \param from Sender without <>
+ * \param recipient Recipient with <>
+ * \param datafile Queued message ID
+ * \param datalen Length of message
+ * \retval 1 if message was queued successfully
+ * \retval -1 if message could not be queued
+ */
+static int queue_message(struct smtp_session *smtp, const char *from, const char *recipient, const char *datafile)
+{
+	char controlfile[512];
+	FILE *fp;
+	char *c;
+
+	/* Write queue control file */
+	safe_strncpy(controlfile, datafile, sizeof(controlfile));
+	/* The data file name format is something like:  /home/bbs/maildir/mailq/new/aBcDeFgHxyz.d
+	 * Use a similar format for queue control file:  /home/bbs/maildir/mailq/tmp/aBcDeFgHxyz.q
+	 * Since the data file was created to be unique, the control file should be too.
+	 * The d and q suffixes are based on sendmail queue file naming conventions: http://osr507doc.xinuos.com/en/MailMsgG/sndmlT18.html
+	 */
+	c = strrchr(controlfile, '.');
+	if (!c) {
+		return -1;
+	}
+	strcpy(c, ".q"); /* Safe */
+
+	/* Change the directory, so that we can store the data files in new (will be moved to cur)
+	 * and we can store the control files separately in tmp. */
+	while (*c != '/') {
+		c--;
+	}
+	c -= 3; /* Back up past new */
+	memcpy(c, "tmp", STRLEN("tmp")); /* Use memcpy since we do NOT want a NUL terminator added after */
+
+	bbs_debug(4, "Creating queue control file '%s'\n", controlfile);
+	if (bbs_file_exists(controlfile)) {
+		bbs_error("Queue file '%s' already exists?\n", controlfile);
+		return -1;
+	}
+	fp = fopen(controlfile, "w");
+	if (!fp) {
+		bbs_error("Failed to create control file %s: %s\n", controlfile, strerror(errno));
+		return -1;
+	}
+
+	/* We can use LF endings for the control file */
+	fprintf(fp, "Source-IP: %s\n", smtp_node(smtp)->ip);
+	fprintf(fp, "Envelope-Sender: <%s>\n", from);
+	/*! \todo Implement smarter queuing:
+	 * If delivering the same message to multiple recipients on a single server, it would be nice
+	 * to be able to do that in a single transaction. Sharing a queue file might make sense in this scenario? */
+	fprintf(fp, "Envelope-Recipient: %s\n", recipient); /* Includes <> already */
+	fprintf(fp, "Data-File: %s\n", datafile); /* Full path to data file containing message */
+	/*! \todo In the future, include any DSN preferences here */
+	fprintf(fp, "Delivery-Attempts: %d\n", 0); /* Include this last, since this is the only thing we'll be changing between attempts */
+	fclose(fp);
+
+	launch_delivery_task(controlfile);
+	return 1; /* Even if queuing fails for some reason, it's in the queue, so the message will be delivered eventually */
 }
 
 /*! \brief Accept delivery of a message to an external recipient, sending it now if possible and queuing it otherwise */
@@ -1712,17 +1827,11 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 	char qdir[256];
 	char tmpfile[256], newfile[256];
 	struct smtp_filter_data filterdata;
-	pthread_t sendthread;
-	const char *filename;
-	char *filenamedup;
 
 	UNUSED(user);
-	UNUSED(freedata);
 
-	/* Even though it's not really an "outgoing" message,
-	 * it makes more sense to run callbacks as such here.
-	 * There is no mailbox corresponding to this filter execution,
-	 * so this is purely for global before/after rules
+	/* Even though it's not really an "outgoing" message, it makes more sense to run callbacks as such here.
+	 * There is no mailbox corresponding to this filter execution, so this is purely for global before/after rules
 	 * that may want to target non-mailbox mail. */
 	res = smtp_run_delivery_callbacks(smtp, &mproc, NULL, &resp, SMTP_DIRECTION_OUT, SMTP_SCOPE_INDIVIDUAL, recipient, datalen, freedata);
 	if (res) {
@@ -1731,7 +1840,6 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 	if (!resp) {
 		resp = &tmpresp;
 	}
-	res = -1; /* Reset to -1 before continuing */
 
 	if (smtp_is_exempt_relay(smtp)) {
 		bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp_sender_ip(smtp), smtp_from_domain(smtp));
@@ -1758,32 +1866,18 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 		return -1;
 	}
 
-	/* Queue delivery for later */
+	/* Write the full message into the queue */
 	snprintf(qdir, sizeof(qdir), "%s/%s", mailbox_maildir(NULL), "mailq");
 	if (mailbox_maildir_init(qdir)) {
 		return -1; /* Can't queue */
 	}
-	fd = maildir_mktemp(qdir, tmpfile, sizeof(tmpfile) - 3, newfile);
+	fd = maildir_mktemp(qdir, tmpfile, sizeof(tmpfile) - 3, newfile); /* Subtract 3 for .d */
 
 #undef strcat
-	strcat(newfile, ".0"); /* Safe */
+	strcat(newfile, ".d"); /* Safe */
 	if (fd < 0) {
 		return -1;
 	}
-	/* Prepend some metadata to the message. postfix has some file format that it uses for this,
-	 * (the output of postcat is formatted)
-	 * (https://www.reddit.com/r/postfix/comments/42ku9j/format_of_the_files_in_the_deferred_mailq/)
-	 * (https://serverfault.com/questions/391995/how-can-i-see-the-contents-of-the-mail-whose-id-i-get-from-mailq-command)
-	 * but a) I can't find any good documentation on it
-	 * and b) It's probably overkill for what we need here.
-	 * The queue files are mostly just RFC 822 messages.
-	 *
-	 * The metadata is LF terminated (not CR LF) to make it easier to parse back using fread (we won't have a stray CR present).
-	 * Note that this means this file contains mixed line endings (both LF and CR LF), so if manually edited in a text editor,
-	 * it will probably get screwed up. Don't do it!
-	 */
-
-	dprintf(fd, "MAIL FROM:<%s>\nRCPT TO:%s\n", from, recipient); /* First 2 lines contain metadata, and recipient is already enclosed in <> */
 
 	memset(&filterdata, 0, sizeof(filterdata));
 	filterdata.smtp = smtp;
@@ -1799,27 +1893,14 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 		bbs_error("Failed to write %lu bytes to %s, only wrote %d\n", datalen, tmpfile, res);
 		close(fd);
 		return -1;
-	}
-	if (rename(tmpfile, newfile)) {
+	} else if (rename(tmpfile, newfile)) {
 		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
 		close(fd);
 		return -1;
 	}
 	close(fd);
 
-	/* For some reason, this works, even though calling try_send on the smtp structure directly above did not. */
-	filename = strrchr(newfile, '/');
-	filenamedup = strdup(filename + 1); /* Need to duplicate since filename is on the stack and we're returning now */
-	if (ALLOC_SUCCESS(filenamedup)) {
-		/* Yes, I know spawning a thread for every email is not very efficient.
-		 * If this were a high traffic mail server, this might be architected differently. */
-		if (bbs_pthread_create_detached(&sendthread, NULL, smtp_async_send, filenamedup)) {
-			free(filenamedup);
-		} else {
-			bbs_debug(4, "Successfully queued %lu-byte message for immediate delivery: <%s> -> %s\n", datalen, from, recipient);
-		}
-	}
-	return 1;
+	return queue_message(smtp, from, recipient, newfile);
 }
 
 static int relay(struct smtp_session *smtp, struct smtp_msg_process *mproc, int srcfd, size_t datalen, struct stringlist *recipients)
@@ -1851,7 +1932,7 @@ static int relay(struct smtp_session *smtp, struct smtp_msg_process *mproc, int 
 		/* XXX smtp->recipients is "used up" by try_send, so this relies on the message being discarded as there will be no recipients remaining afterwards
 		 * Instead, we could duplicate the recipients list to avoid this restriction. */
 		/* XXX A cool optimization would be if the IMAP server supported BURL IMAP and we did a MOVETO, use BURL with the SMTP server */
-		res = try_send(smtp, &tx, url.host, url.port, STARTS_WITH(url.prot, "smtps"), 1, url.user, url.pass, url.user, NULL, recipients, prepend, (size_t) prependlen, srcfd, 0, datalen, buf, sizeof(buf));
+		res = try_send(smtp, &tx, url.host, url.port, STARTS_WITH(url.prot, "smtps"), 1, url.user, url.pass, url.user, NULL, recipients, prepend, (size_t) prependlen, srcfd, datalen, buf, sizeof(buf));
 	}
 	if (url.pass) {
 		bbs_memzero(url.pass, strlen(url.pass)); /* Destroy the password */
@@ -1943,7 +2024,7 @@ static int load_module(void)
 	load_config();
 	snprintf(queue_dir, sizeof(queue_dir), "%s/mailq", mailbox_maildir(NULL));
 	mailbox_maildir_init(queue_dir); /* The queue dir is also like a maildir, it has a new, tmp, and cur */
-	snprintf(queue_dir, sizeof(queue_dir), "%s/mailq/new", mailbox_maildir(NULL));
+	snprintf(queue_dir, sizeof(queue_dir), "%s/mailq/tmp", mailbox_maildir(NULL)); /* The control files are in tmp, while the data files are in new */
 	if (eaccess(queue_dir, R_OK) && mkdir(queue_dir, 0700)) {
 		bbs_error("mkdir(%s) failed: %s\n", queue_dir, strerror(errno));
 		return -1;
@@ -1961,12 +2042,18 @@ static int load_module(void)
 static int unload_module(void)
 {
 	int res;
+	unloading = 1;
 	res = smtp_unregister_delivery_agent(&extdeliver);
 	smtp_unregister_queue_processor(queue_processor);
 	bbs_cli_unregister_multiple(cli_commands_mailq);
 	bbs_pthread_interrupt(queue_thread);
 	bbs_pthread_join(queue_thread, NULL);
-	/*! \todo BUGBUG Possible for queue_lock to get destroyed while still being used, need to properly wait */
+	/* It's possible messages may be in the middle of being sent still,
+	 * which could result in an attempt to destroy queue_lock while still being used.
+	 * Wait until we can get a write lock, since there won't be any new users after
+	 * unloading flag is set true. */
+	bbs_rwlock_wrlock(&queue_lock);
+	bbs_rwlock_unlock(&queue_lock);
 	bbs_rwlock_destroy(&queue_lock);
 	RWLIST_WRLOCK_REMOVE_ALL(&static_relays, entry, free_static_relay);
 	return res;

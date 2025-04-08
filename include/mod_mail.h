@@ -20,6 +20,9 @@ struct bbs_url;
 struct bbs_tcp_client;
 struct dirent;
 
+/* RFC 3696 Section 3 */
+#define MAX_EMAIL_ADDRESS_LENGTH 320
+
 /*! \brief RFC 5423 Section 4 message store events */
 enum mailbox_event_type {
 	/* Message Addition and Deletion */

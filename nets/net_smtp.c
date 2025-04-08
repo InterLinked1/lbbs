@@ -1962,7 +1962,7 @@ static int any_failures(struct smtp_delivery_outcome **f, int n)
 	return 0;
 }
 
-int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, int srcfd, int offset, size_t msglen, struct smtp_delivery_outcome **f, int n)
+int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, int srcfd, size_t msglen, struct smtp_delivery_outcome **f, int n)
 {
 	int i, res;
 	char full_sender[256];
@@ -2108,8 +2108,7 @@ int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, in
 		fprintf(fp, "\r\n");
 		fflush(fp);
 
-		/* Skip first metalen characters, and send msgsize - metalen, to copy over just the message itself. */
-		bbs_copy_file(srcfd, fileno(fp), offset, (int) msglen);
+		bbs_copy_file(srcfd, fileno(fp), 0, (int) msglen);
 
 		fseek(fp, 0, SEEK_END);
 	}
@@ -2407,7 +2406,7 @@ next:
 		struct tm tm;
 		lseek(srcfd, 0, SEEK_SET);
 		localtime_r(&smtp->tflags.received, &tm);
-		smtp_dsn(smtp->helohost, &tm, smtp->from, srcfd, 0, datalen, bounces, numbounces);
+		smtp_dsn(smtp->helohost, &tm, smtp->from, srcfd, datalen, bounces, numbounces);
 	} else {
 		/* If delivery to all recipients failed, then we can just reply with an SMTP error code.
 		 * We'll just use the error code for the last recipient attempted, even though that

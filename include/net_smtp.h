@@ -444,14 +444,13 @@ void smtp_delivery_outcome_free(struct smtp_delivery_outcome **f, int n);
  * \param arrival Time that message was originally delivered by sender for delivery
  * \param sender Email address that will receive the non-delivery report
  * \param srcfd File descriptor from which original message may be read.
- * \param offset Offset, in bytes, into srcfd from which to begin copying
- * \param msglen Number of bytes to read from srcfd.
+ * \param msglen Number of bytes to read from srcfd, starting at offset 0
  * \param f Delivery failure
  * \param n Number of delivery failures (must be contiguous)
  * \retval 0 if bounce was delivered or queued, -1 on failure
  * \note You should ignore the return code, because there is nothing that can be done if the bounce fails to be delivered.
  */
-int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, int srcfd, int offset, size_t msglen, struct smtp_delivery_outcome **f, int n);
+int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, int srcfd, size_t msglen, struct smtp_delivery_outcome **f, int n);
 
 /*!
  * \brief Inject a message to deliver via SMTP, from outside of the SMTP protocol
