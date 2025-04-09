@@ -488,7 +488,7 @@ static void *io_relay(void *varg)
 		} else if (bbs_shutting_down) {
 			/* Look for stalled shutdown... we have to do it in this thread,
 			 * since the main thread is blocked on the alarm() call. */
-			if (strstr(buf, "Skipping unload of ") && strstr(buf, " on pass 27")) {
+			if (strstr(buf, "Skipping unload of ") && strstr(buf, " on pass 10")) {
 				/* At this point, something is likely "stuck".
 				 * The BBS won't trigger this itself, but we should get a backtrace of the
 				 * running process to see what's up. */
