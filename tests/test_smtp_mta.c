@@ -18,6 +18,7 @@
  */
 
 #include "test.h"
+#include "email.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -38,29 +39,7 @@ static int pre(void)
 	return 0;
 }
 
-static int send_body(int clientfd)
-{
-	SWRITE(clientfd, "DATA\r\n");
-	CLIENT_EXPECT(clientfd, "354");
-	/* From RFC 5321. The actual content is completely unimportant. No, it doesn't matter at all that the From address doesn't match the envelope.
-	 * Note that messages from localhost are always passed by SPF, so although we don't disable the SPF addon, it's not very meaningful either way for this test. */
-	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:29 -0700" ENDL);
-	SWRITE(clientfd, "From: John Q. Public <JQP@bar.com>" ENDL);
-	SWRITE(clientfd, "Subject: The Next Meeting of the Board" ENDL);
-	SWRITE(clientfd, "To: Jones@xyz.com" ENDL);
-	SWRITE(clientfd, ENDL);
-	SWRITE(clientfd, "Bill:" ENDL);
-	SWRITE(clientfd, "The next meeting of the board of directors will be" ENDL);
-	SWRITE(clientfd, "on Tuesday." ENDL);
-	SWRITE(clientfd, "....See you there!" ENDL); /* Test byte stuffing. This should not end message receipt! */
-	SWRITE(clientfd, "John." ENDL);
-	SWRITE(clientfd, "." ENDL); /* EOM */
-	CLIENT_EXPECT(clientfd, "250");
-	return 0;
-
-cleanup:
-	return -1;
-}
+#define send_body(clientfd) test_send_sample_body(clientfd, "John Q. Public <JQP@bar.com>")
 
 static int run(void)
 {
@@ -113,6 +92,7 @@ static int run(void)
 	if (send_body(clientfd)) {
 		goto cleanup;
 	}
+	CLIENT_EXPECT(clientfd, "250");
 
 	/* Verify that the email message actually exists on disk. */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1);
@@ -128,6 +108,7 @@ static int run(void)
 	if (send_body(clientfd)) {
 		goto cleanup;
 	}
+	CLIENT_EXPECT(clientfd, "250");
 
 	/* Verify that the email message actually exists on disk. */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 2);
@@ -140,6 +121,7 @@ static int run(void)
 	if (send_body(clientfd)) {
 		goto cleanup;
 	}
+	CLIENT_EXPECT(clientfd, "250");
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3);
 
 	/* Repeat, with a host portion */
@@ -150,6 +132,7 @@ static int run(void)
 	if (send_body(clientfd)) {
 		goto cleanup;
 	}
+	CLIENT_EXPECT(clientfd, "250");
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 4);
 
 	/* Ensure mail loops are prevented */

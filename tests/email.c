@@ -25,6 +25,31 @@
 
 int send_count = 0;
 
+int test_send_sample_body(int clientfd, const char *from)
+{
+	SWRITE(clientfd, "DATA\r\n");
+	CLIENT_EXPECT(clientfd, "354");
+	/* From RFC 5321. The actual content is completely unimportant. No, it doesn't matter at all that the From address doesn't match the envelope.
+	 * Note that messages from localhost are always passed by SPF, so although we don't disable the SPF addon, it's not very meaningful either way for this test. */
+	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:29 -0700" ENDL);
+	SWRITE(clientfd, "From: ");
+	write(clientfd, from, strlen(from));
+	SWRITE(clientfd, ENDL);
+	SWRITE(clientfd, "Subject: The Next Meeting of the Board" ENDL);
+	SWRITE(clientfd, "To: Jones@xyz.com" ENDL);
+	SWRITE(clientfd, ENDL);
+	SWRITE(clientfd, "Bill:" ENDL);
+	SWRITE(clientfd, "The next meeting of the board of directors will be" ENDL);
+	SWRITE(clientfd, "on Tuesday." ENDL);
+	SWRITE(clientfd, "....See you there!" ENDL); /* Test byte stuffing. This should not end message receipt! */
+	SWRITE(clientfd, "John." ENDL);
+	SWRITE(clientfd, "." ENDL); /* EOM */
+	return 0;
+
+cleanup:
+	return -1;
+}
+
 int test_send_message_with_extra_bytes(int clientfd, const char *recipient, size_t extrabytes)
 {
 	char linebuf[64];

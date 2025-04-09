@@ -43,6 +43,7 @@ static int pre(void)
 	return 0;
 }
 
+/*! \note This differs from test_send_sample_body in a few ways */
 static int send_body(int clientfd, const char *from, int html)
 {
 	SWRITE(clientfd, "DATA\r\n");

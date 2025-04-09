@@ -15,6 +15,14 @@
 
 extern int send_count;
 
+/*!
+ * \brief Send a sample payload for the DATA command
+ * \param clientfd
+ * \param from
+ * \retval 0 on success, -1 on failure
+ */
+int test_send_sample_body(int clientfd, const char *from);
+
 #define test_send_message(clientfd, recipient) test_send_message_with_extra_bytes(clientfd, recipient, 0)
 
 /*!

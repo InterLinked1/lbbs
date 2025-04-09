@@ -18,6 +18,7 @@
  */
 
 #include "test.h"
+#include "email.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -40,31 +41,6 @@ static int pre(void)
 	TEST_RESET_MKDIR(TEST_MAIL_DIR);
 	ADD_TO_HOSTS_FILE(TEST_EMAIL_EXTERNAL_OUTGOING_BOUNCE_DOMAIN, "127.0.0.1");
 	return 0;
-}
-
-static int send_body(int clientfd, const char *from)
-{
-	SWRITE(clientfd, "DATA\r\n");
-	CLIENT_EXPECT(clientfd, "354");
-	/* From RFC 5321. The actual content is completely unimportant. No, it doesn't matter at all that the From address doesn't match the envelope.
-	 * Note that messages from localhost are always passed by SPF, so although we don't disable the SPF addon, it's not very meaningful either way for this test. */
-	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:29 -0700" ENDL);
-	SWRITE(clientfd, "From: ");
-	write(clientfd, from, strlen(from));
-	SWRITE(clientfd, ENDL);
-	SWRITE(clientfd, "Subject: The Next Meeting of the Board" ENDL);
-	SWRITE(clientfd, "To: Jones@xyz.com" ENDL);
-	SWRITE(clientfd, ENDL);
-	SWRITE(clientfd, "Bill:" ENDL);
-	SWRITE(clientfd, "The next meeting of the board of directors will be" ENDL);
-	SWRITE(clientfd, "on Tuesday." ENDL);
-	SWRITE(clientfd, "....See you there!" ENDL); /* Test byte stuffing. This should not end message receipt! */
-	SWRITE(clientfd, "John." ENDL);
-	SWRITE(clientfd, "." ENDL); /* EOM */
-	return 0;
-
-cleanup:
-	return -1;
 }
 
 static int handshake(int clientfd, int reset)
@@ -113,7 +89,7 @@ static int run(void)
 	CLIENT_EXPECT(clientfd, "250");
 	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL_EXTERNAL_OUTGOING_BOUNCE ">\r\n");
 	CLIENT_EXPECT(clientfd, "250");
-	if (send_body(clientfd, TEST_EMAIL)) {
+	if (test_send_sample_body(clientfd, TEST_EMAIL)) {
 		goto cleanup;
 	}
 	CLIENT_EXPECT(clientfd, "250"); /* Outgoing messages are queued so we'll get a 250 response, even though delivery will eventually fail */
