@@ -1342,6 +1342,11 @@ const char *smtp_sender_ip(struct smtp_session *smtp)
 	return smtp->node ? smtp->node->ip : "127.0.0.1";
 }
 
+const char *smtp_sender_hostname(struct smtp_session *smtp)
+{
+	return smtp->helohost;
+}
+
 const char *smtp_protname(struct smtp_session *smtp)
 {
 	/* RFC 2822, RFC 3848, RFC 2033 */
@@ -1962,7 +1967,7 @@ static int any_failures(struct smtp_delivery_outcome **f, int n)
 	return 0;
 }
 
-int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, int srcfd, size_t msglen, struct smtp_delivery_outcome **f, int n)
+int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *sender, int srcfd, size_t msglen, struct smtp_delivery_outcome **f, int n)
 {
 	int i, res;
 	char full_sender[256];
@@ -1973,6 +1978,18 @@ int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, in
 	struct tm tm;
 	size_t length;
 	time_t t = time(NULL);
+
+	if (!any_failures(f, n) && !sinfo->msa) {
+		/* If this is a failure, we should always dispatch a DSN.
+		 * However, for other types of notifications, such as delays,
+		 * we should only dispatch notifications for submissions;
+		 * we should not notify external parties of a delay,
+		 * unless they have specifically requested it using the DSN extension. */
+		/*! \todo Once DSN support is fully added, also factor that into this check.
+		 * \todo For forwarded messages, we should not dispatch DSNs for ANY reason. */
+		bbs_debug(2, "Skipping DSN for this transaction\n");
+		return 0;
+	}
 
 	/* The MAIL FROM in non-delivery reports is always empty to prevent looping.
 	 * e.g. if we're bouncing a bounce, just abort. */
@@ -2067,8 +2084,8 @@ int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, in
 	fprintf(fp, "\r\n");
 
 	fprintf(fp, "Reporting-MTA: %s; %s\r\n", !bbs_hostname_is_ipv4(bbs_hostname()) ? "dns" : "x-local-hostname", bbs_hostname()); /* 2.2.2 */
-	if (sendinghost) {
-		fprintf(fp, "Received-From-MTA: %s\r\n", sendinghost); /* 2.2.4 */
+	if (!strlen_zero(sinfo->helohost)) {
+		fprintf(fp, "Received-From-MTA: %s\r\n", sinfo->helohost); /* 2.2.4 */
 	}
 	if (arrival) {
 		strftime(date2, sizeof(date2), "%a, %d %b %Y %H:%M:%S %z", arrival);
@@ -2100,8 +2117,7 @@ int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, in
 	fprintf(fp, "\r\n");
 
 	/* Actual message, if provided */
-	/* XXX Even if available, we may not want to include this for all actions. Failure, definitely. Delayed? Maybe not... */
-	if (srcfd != -1 && msglen) {
+	if (srcfd != -1 && msglen && any_failures(f, n)) { /* Only include the full message for final failure notices */
 		fprintf(fp, "--%s\r\n", bound);
 		fprintf(fp, "Content-Description: Undelivered message\r\n");
 		fprintf(fp, "Content-Type: message/rfc822\r\n");
@@ -2404,9 +2420,14 @@ next:
 		/* Delivery to some (but not all) recipients failed. We need to send a bounce.
 		 * We use the MAIL FROM here, and our MAIL FROM is empty (postmaster). */
 		struct tm tm;
+		struct smtp_session_info sinfo;
+		memset(&sinfo, 0, sizeof(sinfo));
+		if (!strlen_zero(smtp->helohost)) {
+			safe_strncpy(sinfo.helohost, smtp->helohost, sizeof(sinfo.helohost));
+		}
 		lseek(srcfd, 0, SEEK_SET);
 		localtime_r(&smtp->tflags.received, &tm);
-		smtp_dsn(smtp->helohost, &tm, smtp->from, srcfd, datalen, bounces, numbounces);
+		smtp_dsn(&sinfo, &tm, smtp->from, srcfd, datalen, bounces, numbounces);
 	} else {
 		/* If delivery to all recipients failed, then we can just reply with an SMTP error code.
 		 * We'll just use the error code for the last recipient attempted, even though that

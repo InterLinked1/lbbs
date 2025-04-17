@@ -673,7 +673,7 @@ cleanup:
 	return res;
 }
 
-static void smtp_trigger_dsn(enum smtp_delivery_action action, struct smtp_tx_data *restrict tx, struct tm *created, const char *from, const char *to, char *error, int fd, size_t datalen, int attempt_number)
+static void smtp_trigger_dsn(struct smtp_session_info *sinfo, enum smtp_delivery_action action, struct smtp_tx_data *restrict tx, struct tm *created, const char *from, const char *to, char *error, int fd, size_t datalen, int attempt_number)
 {
 	char *tmp;
 	char status[15] = ""; /* Status code should be the 2nd word? */
@@ -705,10 +705,7 @@ static void smtp_trigger_dsn(enum smtp_delivery_action action, struct smtp_tx_da
 
 	f = smtp_delivery_outcome_new(to, tx->hostname, tx->ipaddr, status, error, tx->prot, tx->stage, action, NULL);
 	if (ALLOC_SUCCESS(f)) {
-		/*! \todo parameter 1 is the sendinghost: we should store this in the queue file so this information is available to us
-		 * Even better, rather than trying to stuff it into the same file and using an offset, using some kind of out of band
-		 * control file where we can record all the relevant information we'll want to keep. */
-		smtp_dsn(NULL, created, from, fd, datalen, &f, 1);
+		smtp_dsn(sinfo, created, from, fd, datalen, &f, 1);
 		smtp_delivery_outcome_free(&f, 1);
 	}
 }
@@ -777,6 +774,7 @@ struct mailq_file {
 	char recipient[MAX_EMAIL_ADDRESS_LENGTH + 1];
 	char todup[MAX_EMAIL_ADDRESS_LENGTH + 1];
 	struct mailq_run *qrun;	/*!< mailq_run to which this mailq_file belongs */
+	struct smtp_session_info sinfo;
 };
 
 static inline void mailq_file_init(struct mailq_file *mqf, struct mailq_run *qrun)
@@ -886,6 +884,12 @@ static int mailq_file_load(struct mailq_file *restrict mqf, const char *dir_name
 			bbs_warning("Invalid data in control file: '%s' = '%s'\n", S_IF(key), S_IF(val)); /* Warn but ignore */
 		} else if (!strcmp(key, "Source-IP")) {
 			safe_strncpy(mqf->sourceip, val, sizeof(mqf->sourceip));
+		} else if (!strcmp(key, "SMTP-Hostname")) {
+			safe_strncpy(mqf->sinfo.helohost, val, sizeof(mqf->sinfo.helohost));
+		} else if (!strcmp(key, "Source-Local")) {
+			SET_BITFIELD(mqf->sinfo.fromlocal, atoi(val));
+		} else if (!strcmp(key, "SMTP-Submission")) {
+			SET_BITFIELD(mqf->sinfo.msa, atoi(val));
 		} else if (!strcmp(key, "Envelope-Sender")) {
 			safe_strncpy(mqf->from, val, sizeof(mqf->from));
 		} else if (!strcmp(key, "Envelope-Recipient")) {
@@ -1068,7 +1072,7 @@ static int __attribute__ ((nonnull (2, 3, 4, 5, 6, 9))) try_mx_delivery(struct s
 			/* Retry without using STARTTLS.
 			 * First, send a delay notification so the sender is aware the message was not delivered securely.
 			 * The sender could then choose to notify the recipient's postmaster of the issue, but it's not really our problem. */
-			smtp_trigger_dsn(DELIVERY_DELAYED, tx, &mqf->created, sender, recipient, buf, datafd, writelen, mqf->retries);
+			smtp_trigger_dsn(&mqf->sinfo, DELIVERY_DELAYED, tx, &mqf->created, sender, recipient, buf, datafd, writelen, mqf->retries);
 			/* Do another pass, but don't attempt STARTTLS.
 			 * It's possible delivery will succeed without encryption.
 			 * Obviously, this isn't ideal, but most mail servers generally retry delivery without TLS if it fails.
@@ -1081,7 +1085,7 @@ static int __attribute__ ((nonnull (2, 3, 4, 5, 6, 9))) try_mx_delivery(struct s
 			if (res == 0) {
 				/* Since we send a delayed DSN, if we succeeded, we now need to also send one for success,
 				 * or the user will think the message hasn't been able to be delivered. */
-				smtp_trigger_dsn(DELIVERY_DELIVERED, tx, &mqf->created, sender, recipient, buf, datafd, writelen, mqf->retries);
+				smtp_trigger_dsn(&mqf->sinfo, DELIVERY_DELIVERED, tx, &mqf->created, sender, recipient, buf, datafd, writelen, mqf->retries);
 			}
 		}
 	}
@@ -1240,7 +1244,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 					snprintf(buf, sizeof(buf), "No MX record(s) located for hostname %s", mqf->domain); /* No status code */
 					smtp_tx_data_reset(&tx);
 					/* Do not set tx.hostname, since this message is from us, not the remote server */
-					smtp_trigger_dsn(DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->size, mqf->retries);
+					smtp_trigger_dsn(&mqf->sinfo, DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->size, mqf->retries);
 					mqf_file_cleanup(mqf);
 					mqf_file_purge(mqf);
 					QUEUE_INCR_STAT(failed);
@@ -1259,7 +1263,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 	if (!res) { /* Successful delivery. */
 		bbs_debug(6, "Delivery successful after %d attempt%s, discarding queue file\n", attempts, ESS(attempts));
 		bbs_smtp_log(4, NULL, "Delivery succeeded after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
-		smtp_trigger_dsn(DELIVERY_DELIVERED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->size, mqf->retries);
+		smtp_trigger_dsn(&mqf->sinfo, DELIVERY_DELIVERED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->size, mqf->retries);
 		mqf_file_cleanup(mqf);
 		mqf_file_purge(mqf);
 		QUEUE_INCR_STAT(delivered);
@@ -1270,7 +1274,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 		/* To the dead letter office we go */
 		/* XXX buf will only contain the last line of the SMTP transaction, since it was using the readline buffer
 		 * Thus, if we got a multiline error, only the last line is currently included in the non-delivery report */
-		smtp_trigger_dsn(DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->size, mqf->retries);
+		smtp_trigger_dsn(&mqf->sinfo, DELIVERY_FAILED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->size, mqf->retries);
 		mqf_file_cleanup(mqf);
 		mqf_file_purge(mqf);
 		QUEUE_INCR_STAT(failed);
@@ -1278,7 +1282,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 		bbs_debug(3, "Delivery of %s to %s has been attempted %d/%d times\n", mqf->datafile, mqf->realto, attempts, max_retries);
 		bbs_smtp_log(3, NULL, "Delivery delayed after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
 		mailq_file_punt(mqf); /* Try again later */
-		smtp_trigger_dsn(DELIVERY_DELAYED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->size, mqf->retries);
+		smtp_trigger_dsn(&mqf->sinfo, DELIVERY_DELAYED, &tx, &mqf->created, mqf->realfrom, mqf->realto, buf, fileno(mqf->fp), mqf->size, mqf->retries);
 		QUEUE_INCR_STAT(delayed);
 		mqf_file_cleanup(mqf);
 	}
@@ -1299,7 +1303,7 @@ static int on_queue_file(const char *dir_name, const char *controlfile, void *ob
 
 	if (qrun->parallel) {
 		/* Heap allocate since we'll need this after we return */
-		mqf = malloc(sizeof(struct mailq_file)); /* malloc instead of calloc since mailq_file_init will memset regardless */
+		mqf = calloc(1, sizeof(struct mailq_file)); /* malloc instead of calloc since mailq_file_init will memset regardless */
 		if (ALLOC_FAILURE(mqf)) {
 			return 0;
 		}
@@ -1759,7 +1763,6 @@ static int launch_delivery_task(const char *controlfile)
  * \param from Sender without <>
  * \param recipient Recipient with <>
  * \param datafile Queued message ID
- * \param datalen Length of message
  * \retval 1 if message was queued successfully
  * \retval -1 if message could not be queued
  */
@@ -1802,7 +1805,9 @@ static int queue_message(struct smtp_session *smtp, const char *from, const char
 	}
 
 	/* We can use LF endings for the control file */
-	fprintf(fp, "Source-IP: %s\n", smtp_node(smtp)->ip);
+	fprintf(fp, "Source-IP: %s\n", smtp_sender_ip(smtp));
+	fprintf(fp, "SMTP-Hostname: %s\n", smtp_sender_hostname(smtp));
+	fprintf(fp, "SMTP-Submission: %d\n", smtp_is_message_submission(smtp));
 	fprintf(fp, "Envelope-Sender: <%s>\n", from);
 	/*! \todo Implement smarter queuing:
 	 * If delivering the same message to multiple recipients on a single server, it would be nice

@@ -163,6 +163,9 @@ struct bbs_node *smtp_node(struct smtp_session *smtp);
 /*! \brief Get the upstream IP address */
 const char *smtp_sender_ip(struct smtp_session *smtp);
 
+/*! \brief Get HELO/EHLO hostname for session */
+const char *smtp_sender_hostname(struct smtp_session *smtp);
+
 /*! \brief Get SMTP protocol used */
 const char *smtp_protname(struct smtp_session *smtp);
 
@@ -373,10 +376,16 @@ enum smtp_delivery_agent_type {
 struct smtp_delivery_agent {
 	/*! \brief Type of delivery agent */
 	enum smtp_delivery_agent_type type;
-	/*! \brief RCPT TO handler: can we deliver to this address? */
-	/*! \retval 0 if this recipient cannot be handled by this delivery agent, 1 if yes, -1 if no and no other handler may handle it */
+	/*!
+	 * \brief RCPT TO handler: can we deliver to this address?
+	 * \param fromlocal Message is either a submission or originates locally (e.g. bounce message)
+	 * \retval 0 if this recipient cannot be handled by this delivery agent, 1 if yes, -1 if no and no other handler may handle it
+	 */
 	int (*exists)(struct smtp_session *smtp, struct smtp_response *resp, const char *address, const char *user, const char *domain, int fromlocal, int tolocal);
-	/*! \brief Deliver message (final delivery) */
+	/*!
+	 * \brief Deliver message (final delivery)
+	 * \param fromlocal Message is either a submission or originates locally (e.g. bounce message)
+	 */
 	int (*deliver)(struct smtp_session *smtp, struct smtp_response *resp, const char *from, const char *recipient, const char *user, const char *domain, int fromlocal, int srcfd, size_t datalen, void **freedata);
 
 	/* Supplementary (and very optional) callbacks, only need to be provided by one module */
@@ -403,6 +412,13 @@ int __smtp_register_delivery_handler(struct smtp_delivery_agent *agent, int prio
  * \retval 0 on success, -1 on failure
  */
 int smtp_unregister_delivery_agent(struct smtp_delivery_agent *agent);
+
+/*! \brief Copy of flags from original SMTP session, used for queue files and DSNs */
+struct smtp_session_info {
+	unsigned int fromlocal:1;
+	unsigned int msa:1;
+	char helohost[256]; /* HELO/EHLO hostname */
+};
 
 /*! \brief RFC 3464 2.3.3 Action field values */
 enum smtp_delivery_action {
@@ -440,7 +456,7 @@ void smtp_delivery_outcome_free(struct smtp_delivery_outcome **f, int n);
 
 /*!
  * \brief Deliver an SMTP non-delivery report (bounce), originating from the postmaster
- * \param sendinghost HELO/EHLO hostname of MTA that sent us this message. NULL if not available.
+ * \param sinfo SMTP session information
  * \param arrival Time that message was originally delivered by sender for delivery
  * \param sender Email address that will receive the non-delivery report
  * \param srcfd File descriptor from which original message may be read.
@@ -450,7 +466,7 @@ void smtp_delivery_outcome_free(struct smtp_delivery_outcome **f, int n);
  * \retval 0 if bounce was delivered or queued, -1 on failure
  * \note You should ignore the return code, because there is nothing that can be done if the bounce fails to be delivered.
  */
-int smtp_dsn(const char *sendinghost, struct tm *arrival, const char *sender, int srcfd, size_t msglen, struct smtp_delivery_outcome **f, int n);
+int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *sender, int srcfd, size_t msglen, struct smtp_delivery_outcome **f, int n);
 
 /*!
  * \brief Inject a message to deliver via SMTP, from outside of the SMTP protocol
