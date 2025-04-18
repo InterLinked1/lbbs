@@ -745,7 +745,7 @@ static void handle_session(ssh_event event, ssh_session session)
 	 * it will close the socket whenever the connection ends, which could happen
 	 * in multiple places for us.
 	 * Thus, we need to detect that the socket has been closed and update
-	 * our record of it as quickly as possible.
+	 * our record of it as quickly as possible (before even logging a log message).
 	 * Therefore, it is possible that occasionally, soft assertions during
 	 * calls to bbs_mark_closed may occur if somebody else reused the file descriptor
 	 * before we could mark it as closed for the previous use. This is why
@@ -802,8 +802,8 @@ static void handle_session(ssh_event event, ssh_session session)
 	if (ssh_handle_key_exchange(session) != SSH_OK) {
 		/* This isn't our fault, it's the clients, and since this is typical of
 		 * spammy connections, log it as a debug message. */
-		bbs_debug(1, "Fatal key exchange error: %s\n", ssh_get_error(session));
 		MARK_SSH_FD_CLOSED_IF_CLOSED();
+		bbs_debug(1, "Fatal key exchange error: %s\n", ssh_get_error(session));
 		if (1) { /* Note: This branch is only needed when the BBS is run by the test suite */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wcast-qual"
@@ -845,8 +845,8 @@ static void handle_session(ssh_event event, ssh_session session)
 		} else if (ssh_event_dopoll(event, 100) == SSH_ERROR) {
 			/* If client disconnects during login stage, this could happen.
 			 * Hence, it's not an error, as it's not our fault. */
-			bbs_debug(1, "%s\n", ssh_get_error(session));
 			MARK_SSH_FD_CLOSED_IF_CLOSED();
+			bbs_debug(1, "%s\n", ssh_get_error(session));
 			request_fail(ipaddr, EVENT_NODE_BAD_REQUEST);
 			goto cleanup;
 		}
