@@ -191,7 +191,12 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN bc"
 
 # Required only for tests
 if [ "$1" = "1" ]; then
-	PACKAGES_DEBIAN="$PACKAGES_DEBIAN mariadb-server"
+	# mariadb-server is required for some of the test modules (test_auth_mysql, test_irc_chanserv)
+	# gdb is required if we want to get a core dump -> backtrace of a hung BBS during test execution.
+	# It takes too long to install it dynamically so make sure it's installed beforehand.
+	PACKAGES_DEBIAN="$PACKAGES_DEBIAN mariadb-server gdb"
+
+	# NOTE: The full tests are only run under Debian-based distros at the moment, but ideally we would also support other distros here.
 fi
 
 # Actually install required packages
