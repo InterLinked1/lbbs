@@ -543,7 +543,7 @@ static int handle_connect(struct smtp_session *smtp)
 		 * to relay outgoing messages for any domains from getting thrown this curveball for compatibility.
 		 */
 		if (!smtp_relay_authorized_any(smtp)) {
-			smtp_reply0_nostatus(smtp, 220, "%s ESMTP Service Ready", bbs_hostname());
+			smtp_reply0_nostatus(smtp, 220, "%s ESMTP Service Ready", smtp_hostname());
 		}
 
 		/*! \todo This would be a good place to check blacklist IPs (currently we only allow blacklisting hostnames).
@@ -583,7 +583,7 @@ static int handle_connect(struct smtp_session *smtp)
 			}
 		}
 	}
-	smtp_reply_nostatus(smtp, 220, "%s ESMTP Service Ready", bbs_hostname());
+	smtp_reply_nostatus(smtp, 220, "%s ESMTP Service Ready", smtp_hostname());
 	return 0;
 }
 
@@ -737,7 +737,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		 * any SMTP session in this function will have a node. This can be safely ignored. */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wnull-dereference"
-		smtp_reply0_nostatus(smtp, 250, "%s at your service [%s]", bbs_hostname(), smtp->node->ip);
+		smtp_reply0_nostatus(smtp, 250, "%s at your service [%s]", smtp_hostname(), smtp->node->ip);
 		/* The RFC says that login should only be allowed on secure connections,
 		 * but if we don't allow login on plaintext connections, then they're functionally useless. */
 		if (smtp->node->secure || !require_starttls || exempt_from_starttls(smtp)) {
@@ -758,11 +758,11 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 			 * RFC 4468 3.3 conveniently allows us to not support URLAUTH at all if we don't list just "imap".
 			 * Here we indicate that BURL is only supported for our IMAP server, and URLAUTH is not necessary (and indeed, is not supported).
 			 */
-			smtp_reply0_nostatus(smtp, 250, "BURL imap://%s", bbs_hostname()); /* RFC 4468 BURL */
+			smtp_reply0_nostatus(smtp, 250, "BURL imap://%s", smtp_hostname()); /* RFC 4468 BURL */
 		}
 		smtp_reply_nostatus(smtp, 250, "ENHANCEDSTATUSCODES");
 	} else {
-		smtp_reply_nostatus(smtp, 250, "%s at your service [%s]", bbs_hostname(), smtp->node->ip);
+		smtp_reply_nostatus(smtp, 250, "%s at your service [%s]", smtp_hostname(), smtp->node->ip);
 #pragma GCC diagnostic pop
 	}
 	return 0;
@@ -1270,6 +1270,8 @@ void smtp_timestamp(time_t received, char *buf, size_t len)
 }
 
 struct smtp_filter {
+	const char *name;
+	enum smtp_filter_kind kind;
 	enum smtp_filter_type type;
 	enum smtp_filter_scope scope;
 	enum smtp_direction direction;
@@ -1290,7 +1292,7 @@ static const char *smtp_filter_type_name(enum smtp_filter_type type)
 	__builtin_unreachable();
 }
 
-int __smtp_filter_register(struct smtp_filter_provider *provider, enum smtp_filter_type type, enum smtp_filter_scope scope, enum smtp_direction dir, int priority, void *mod)
+int __smtp_filter_register(struct smtp_filter_provider *provider, const char *name, enum smtp_filter_kind kind, enum smtp_filter_type type, enum smtp_filter_scope scope, enum smtp_direction dir, int priority, void *mod)
 {
 	struct smtp_filter *f;
 
@@ -1305,6 +1307,8 @@ int __smtp_filter_register(struct smtp_filter_provider *provider, enum smtp_filt
 		return -1;
 	}
 	f->provider = provider;
+	f->name = name;
+	f->kind = kind;
 	f->type = type;
 	f->scope = scope;
 	f->direction = dir;
@@ -1385,14 +1389,14 @@ const char *smtp_mail_from_domain(struct smtp_session *smtp)
 
 const char *smtp_from_domain(struct smtp_session *smtp)
 {
-	if (!smtp->from) {
-		return NULL;
-	}
 	if (smtp->fromaddr) {
 		/* Use From header email address if available */
 		return bbs_strcnext(smtp->fromaddr, '@');
 	}
 	/* Fall back to MAIL FROM address if not */
+	if (!smtp->from) {
+		return NULL;
+	}
 	return smtp_mail_from_domain(smtp);
 }
 
@@ -1555,7 +1559,7 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 		total++;
 		if (!(f->direction & fdata->dir)) {
 #ifdef DEBUG_FILTERS
-			bbs_debug(5, "Ignoring %s SMTP filter %s %p (wrong direction)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+			bbs_debug(5, "Ignoring %s SMTP filter %s %s (wrong direction)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f->name);
 #endif
 			continue;
 		}
@@ -1563,21 +1567,21 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 		/*! \todo SMTP_SCOPE_COMBINED is not currently supported for SMTP_DIRECTION_OUT.
 		 * That is treated as SMTP_SCOPE_INDIVIDUAL for now, for the sake of transparency. */
 		if (fdata->dir == SMTP_DIRECTION_OUT && f->scope == SMTP_SCOPE_COMBINED) {
-			bbs_debug(3, "Treating COMBINED filter as individual due to current lack of native COMBINED/OUT support\n");
+			bbs_debug(3, "Treating COMBINED filter %s as individual due to current lack of native COMBINED/OUT support\n", f->name);
 		} else
 
 		/* Filter applicable to this direction */
 		if (f->scope == SMTP_SCOPE_INDIVIDUAL) {
 			if (!fdata->recipient) {
 #ifdef DEBUG_FILTERS
-				bbs_debug(5, "Ignoring %s SMTP filter %s %p (wrong scope)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+				bbs_debug(5, "Ignoring %s SMTP filter %s %s (wrong scope)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f->name);
 #endif
 				continue;
 			}
 		} else {
 			if (fdata->recipient) {
 #ifdef DEBUG_FILTERS
-				bbs_debug(5, "Ignoring %s SMTP filter %s %p (wrong scope)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+				bbs_debug(5, "Ignoring %s SMTP filter %s %s (wrong scope)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f->name);
 #endif
 				continue;
 			}
@@ -1588,7 +1592,7 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 			 * for things like mailing lists which involve using smtp_inject. */
 			if (f->priority != 0) {
 #ifdef DEBUG_FILTERS
-				bbs_debug(5, "Ignoring %s SMTP filter %s %p (no node)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+				bbs_debug(5, "Ignoring %s SMTP filter %s %s (no node)...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f->name);
 #endif
 				continue;
 			}
@@ -1612,22 +1616,22 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 		 * this sort of thing is the SpamAssassin one. Therefore, that module has logic
 		 * to also process what's been appended to the output file as well as the original input file. */
 
-		bbs_debug(4, "Executing %s SMTP filter %s %p...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+		bbs_debug(4, "Executing %s SMTP filter %s %s...\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f->name);
 		bbs_module_ref(f->mod, 2);
 		if (f->type == SMTP_FILTER_PREPEND) {
 			bbs_assert_exists(f->provider);
 			res = f->provider->on_body(fdata);
 			run++;
 		} else {
-			bbs_error("Filter type %d not supported\n", f->type);
+			bbs_error("Filter %s (type %d) not supported\n", f->name, f->type);
 		}
 		bbs_module_unref(f->mod, 2);
 		lseek(fdata->inputfd, 0, SEEK_SET); /* Rewind to beginning of file */
 		if (res == 1) {
-			bbs_debug(5, "Aborting filter execution\n");
+			bbs_debug(5, "Aborting execution of filter %s\n", f->name);
 			break;
 		} else if (res < 0) {
-			bbs_warning("%s SMTP filter %s %p failed to execute\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f);
+			bbs_warning("%s SMTP filter %s %s failed to execute\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f->name);
 		}
 	}
 	RWLIST_UNLOCK(&filters);
@@ -1645,10 +1649,11 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 static int cli_filters(struct bbs_cli_args *a)
 {
 	struct smtp_filter *f;
-	bbs_dprintf(a->fdout, "%-14s %-20s %-8s %s\n", "ID", "Direction", "Type", "Module");
+	/* Max length for direction is IN|OUT|SUBMIT = 13 */
+	bbs_dprintf(a->fdout, "%-14s %3s %-13s %-8s %s\n", "Name", "Pri", "Direction", "Type", "Module");
 	RWLIST_RDLOCK(&filters);
 	RWLIST_TRAVERSE(&filters, f, entry) {
-		bbs_dprintf(a->fdout, "%-14p %-20s %-8s %s\n", f, smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), bbs_module_name(f->mod));
+		bbs_dprintf(a->fdout, "%-14s %3d %-13s %-8s %s\n", f->name, f->priority, smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), bbs_module_name(f->mod));
 	}
 	RWLIST_UNLOCK(&filters);
 	return 0;
@@ -2019,18 +2024,19 @@ int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *se
 		date[0] = '\0';
 	}
 	fprintf(fp, "Date: %s\r\n", date);
-	fprintf(fp, "From: \"Mail Delivery Subsystem\" <mailer-daemon@%s>\r\n", bbs_hostname());
+	fprintf(fp, "From: \"Mail Delivery Subsystem\" <mailer-daemon@%s>\r\n", smtp_hostname());
 	fprintf(fp, "Subject: %s\r\n", delivery_subject_name(f, n));
 	fprintf(fp, "To: %s\r\n", full_sender);
 	fprintf(fp, "Auto-Submitted: auto-replied\r\n");
-	fprintf(fp, "Message-ID: <%s-%u-%d@%s>\r\n", "LBBS-NDR", (unsigned int) random(), (int) getpid(), bbs_hostname());
+	fprintf(fp, "Message-ID: <%s-%u-%d@%s>\r\n", "LBBS-NDR", (unsigned int) random(), (int) getpid(), smtp_hostname());
 	fprintf(fp, "MIME-Version: 1.0\r\n");
 	snprintf(bound, sizeof(bound), "----attachment_%d%u", (int) getpid(), (unsigned int) random());
 	fprintf(fp, "Content-Type: multipart/report; report-type=delivery-status;\r\n"
 		"\tboundary=\"%s\"\r\n", bound);
-	fprintf(fp, "\r\n" "This is a multi-part message in MIME format.\r\n\r\n");
+	fprintf(fp, "\r\n"); /* End of headers */
 
 	/* Generate body */
+	fprintf(fp, "This is a multi-part message in MIME format.\r\n\r\n");
 
 	/* Notification */
 	fprintf(fp, "--%s\r\n", bound);
@@ -2038,7 +2044,7 @@ int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *se
 	fprintf(fp, "Content-Type: text/plain; charset=utf-8\r\n");
 	fprintf(fp, "\r\n");
 
-	fprintf(fp, "This is the mail system at host %s.\r\n\r\n", bbs_hostname());
+	fprintf(fp, "This is the mail system at host %s.\r\n\r\n", smtp_hostname());
 	if (any_failures(f, n)) {
 		fprintf(fp, "I'm sorry to have to inform you that your message could not\r\n"
 			"be delivered to one or more recipients. It's attached below.\r\n\r\n");
@@ -2062,7 +2068,7 @@ int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *se
 
 	/* One for each recipient in the report */
 	for (i = 0; i < n; i++) {
-		const char *hostname = S_OR(f[i]->hostname, bbs_hostname());
+		const char *hostname = S_OR(f[i]->hostname, smtp_hostname());
 		fprintf(fp, "%s:\r\n\thost %s", f[i]->recipient, hostname);
 		if (f[i]->ipaddr) { /* Maybe not be one if we could not connect */
 			fprintf(fp, "[%s]", f[i]->ipaddr);
@@ -2083,7 +2089,7 @@ int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *se
 	fprintf(fp, "Content-Type: message/delivery-status\r\n");
 	fprintf(fp, "\r\n");
 
-	fprintf(fp, "Reporting-MTA: %s; %s\r\n", !bbs_hostname_is_ipv4(bbs_hostname()) ? "dns" : "x-local-hostname", bbs_hostname()); /* 2.2.2 */
+	fprintf(fp, "Reporting-MTA: %s; %s\r\n", !bbs_hostname_is_ipv4(smtp_hostname()) ? "dns" : "x-local-hostname", smtp_hostname()); /* 2.2.2 */
 	if (!strlen_zero(sinfo->helohost)) {
 		fprintf(fp, "Received-From-MTA: %s\r\n", sinfo->helohost); /* 2.2.4 */
 	}
@@ -2229,7 +2235,8 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 	filterdata.inputfd = srcfd;
 	filterdata.size = datalen;
 	filterdata.outputfd = -1;
-	smtp_run_filters(&filterdata, smtp->msa ? SMTP_DIRECTION_SUBMIT : SMTP_DIRECTION_IN);
+	/* We treat fromlocal as submissions so that DSNs and other injected messages can be DKIM signed. */
+	smtp_run_filters(&filterdata, smtp->fromlocal || smtp->msa ? SMTP_DIRECTION_SUBMIT : SMTP_DIRECTION_IN);
 
 	if (filterdata.reject) {
 		/* A filter has indicated that this message should be rejected.
@@ -2462,6 +2469,50 @@ finalize:
 	return succeeded ? 0 : resp.code ? 1 : -1; /* -1: Trigger the default failure reply */
 }
 
+static void update_fromaddr(struct smtp_session *smtp, char *fromheaderaddress)
+{
+	/* We're good: the From header is either the actual username, or an alias that maps to it. */
+	/* If the From header differs from the MAIL FROM address, we should use the From header,
+	 * since for DKIM signing, etc. this is the relevant domain. */
+	char *fromaddr = strchr(fromheaderaddress, '<');
+	if (fromaddr) {
+		fromaddr++;
+		if (!strlen_zero(fromaddr)) {
+			bbs_strterm(fromaddr, '>');
+		}
+	} else {
+		fromaddr = fromheaderaddress;
+	}
+	REPLACE(smtp->fromaddr, fromaddr);
+	/* Don't free smtp->fromheaderaddress yet, that we can still use */
+}
+
+/*! \brief Parse out the From header address */
+static int parse_from_header_from_file(struct smtp_session *smtp, const char *filename)
+{
+	char buf[1001];
+	FILE *fp = fopen(filename, "r");
+	if (!fp) {
+		bbs_error("Failed to open file %s: %s\n", filename, strerror(errno));
+		return -1;
+	}
+	while ((fgets(buf, sizeof(buf), fp))) {
+		if (!strcmp(buf, "\r\n")) {
+			break; /* End of headers */
+		}
+		if (STARTS_WITH(buf, "From:")) {
+			const char *f = buf + STRLEN("From:");
+			ltrim(f);
+			REPLACE(smtp->fromheaderaddress, f);
+			fclose(fp);
+			update_fromaddr(smtp, smtp->fromheaderaddress); /* Typically done in do_deliver before calling expand_and_deliver, so need to do manually for injections to set up from vars */
+			return 0;
+		}
+	}
+	fclose(fp);
+	return 1;
+}
+
 int smtp_inject(const char *mailfrom, struct stringlist *recipients, const char *filename, size_t length)
 {
 	int res;
@@ -2471,11 +2522,9 @@ int smtp_inject(const char *mailfrom, struct stringlist *recipients, const char 
 	memset(&smtp, 0, sizeof(smtp));
 
 	smtp.fromlocal = 1;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-qual"
 	/*! \todo Also kind of annoying that MAIL FROM should not have <> but RCPT TO needs to. Should be consistent (ideally without?) */
-	smtp.from = (char*) mailfrom;
-#pragma GCC diagnostic pop
+	REPLACE(smtp.from, mailfrom);
+	parse_from_header_from_file(&smtp, filename); /* Since the From header is usually parsed during an interactive session, we need to do it manually here */
 
 	smtp.datafile = filename;
 
@@ -2485,10 +2534,7 @@ int smtp_inject(const char *mailfrom, struct stringlist *recipients, const char 
 	bbs_debug(5, "Injecting SMTP message MAILFROM <%s>, file: %s, size %lu\n", S_IF(mailfrom), filename, length);
 
 	res = expand_and_deliver(&smtp, filename, length);
-	/* Since these are normally consumed, there is no guarantee to the caller what will be leftover here, so just clean up */
-	stringlist_empty_destroy(&smtp.recipients);
-	stringlist_empty_destroy(&smtp.sentrecipients);
-
+	smtp_destroy(&smtp);
 	return res;
 }
 
@@ -2867,7 +2913,6 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 		/* Verify the address used is one the sender is authorized to use. */
 		char fromdup[256];
 		char fromhdrdup[256];
-		char *fromaddr;
 
 		bbs_assert(smtp->node->user->id > 0); /* Must be logged in for MSA. */
 
@@ -2881,26 +2926,13 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 			smtp_reply(smtp, 550, 5.7.1, "Missing From header");
 			return 0;
 		}
-		safe_strncpy(fromhdrdup, smtp->fromheaderaddress, sizeof(fromhdrdup));
+		safe_strncpy(fromhdrdup, smtp->fromheaderaddress, sizeof(fromhdrdup)); /* check_identity butchers the input */
 		/* If the two addresses are exactly the same, no need to do the same check twice. */
 		if (strcmp(smtp->from, smtp->fromheaderaddress) && check_identity(smtp, smtp->fromheaderaddress)) {
 			return 0;
 		}
-		/* We're good: the From header is either the actual username, or an alias that maps to it. */
-		/* If the From header differs from the MAIL FROM address, we should use the From header,
-		 * since for DKIM signing, etc. this is the relevant domain. */
-		fromaddr = strchr(fromhdrdup, '<');
-		if (fromaddr) {
-			fromaddr++;
-			if (!strlen_zero(fromaddr)) {
-				bbs_strterm(fromaddr, '>');
-			}
-		} else {
-			fromaddr = fromhdrdup;
-		}
-		bbs_debug(4, "Updating internal from address from '%s' to '%s'\n", smtp->from, fromaddr);
-		REPLACE(smtp->fromaddr, fromaddr);
-		/* Don't free smtp->fromheaderaddress yet, that we can still use it */
+		update_fromaddr(smtp, fromhdrdup);
+		bbs_debug(4, "Updating internal from address from '%s' to '%s'\n", smtp->from, smtp->fromaddr);
 	}
 
 	res = expand_and_deliver(smtp, filename, datalen);
@@ -2989,7 +3021,7 @@ static int handle_burl(struct smtp_session *smtp, char *s)
 	user = host;
 	host = tmp;
 
-	if (strcasecmp(host, bbs_hostname())) { /* Hostname is for a different IMAP server */
+	if (strcasecmp(host, smtp_hostname())) { /* Hostname is for a different IMAP server */
 		smtp_reply(smtp, 554, 5.7.8, "URL resolution requires trust relationship");
 		return 0;
 	}

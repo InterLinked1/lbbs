@@ -1931,7 +1931,7 @@ static int relay(struct smtp_session *smtp, struct smtp_msg_process *mproc, int 
 		/* Still prepend a Received header, but less descriptive than normal (don't include Authenticated sender) since we're relaying */
 		smtp_timestamp(now, timestamp, sizeof(timestamp));
 		prependlen = snprintf(prepend, sizeof(prepend), "Received: from [HIDDEN]\r\n\tby %s with %s\r\n\t%s\r\n",
-			bbs_hostname(), smtp_protname(smtp), timestamp);
+			smtp_hostname(), smtp_protname(smtp), timestamp);
 
 		bbs_debug(5, "Relaying message via %s:%d (user: %s)\n", url.host, url.port, S_IF(url.user));
 		/* XXX smtp->recipients is "used up" by try_send, so this relies on the message being discarded as there will be no recipients remaining afterwards

@@ -371,7 +371,7 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 						fprintf(fp, "Version: 1\r\n");
 						fprintf(fp, "User-Agent: LBBS %s %s\r\n", BBS_VERSION, "DMARC Failure Reporter");
 						fprintf(fp, "Auth-Failure: dmarc\r\n");
-						fprintf(fp, "Authentication-Results: %s; dmarc=fail header.from=%s\r\n", bbs_hostname(), dmarc_domain);
+						fprintf(fp, "Authentication-Results: %s; dmarc=fail header.from=%s\r\n", smtp_hostname(), dmarc_domain);
 						fprintf(fp, "Original-Envelope-Id: %s\r\n", mctx_jobid);
 						fprintf(fp, "Original-Mail-From: %s\r\n", smtp_from(f->smtp));
 						fprintf(fp, "Source-IP: %s\r\n", smtp_sender_ip(f->smtp));
@@ -618,7 +618,7 @@ static int load_module(void)
 
 	/* Wait until SPF and DKIM/ARC have completed (priorities 1 and 2 respectively) before making any DMARC assessment.
 	 * However, we need to run before auth_filter in mod_smtp_filter. */
-	smtp_filter_register(&dmarc_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 5);
+	smtp_filter_register(&dmarc_filter, "DMARC", SMTP_FILTER_DMARC, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 5);
 	return 0;
 }
 

@@ -447,10 +447,10 @@ static int load_module(void)
 	 * However, since we may accept mail for relay from other hosts (as a smart host), if those messages are not already DKIM-signed,
 	 * and they're from a domain for which we can sign, we should also sign those messages, too. We check that in the verify callback.
 	 */
-	res |= smtp_filter_register(&dkim_sign_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_SUBMIT, 1);
+	res |= smtp_filter_register(&dkim_sign_filter, "DKIM Sign", SMTP_FILTER_DKIM | SMTP_FILTER_SIGN, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_SUBMIT, 1);
 
 	/* Priority of 2, so that SPF validation will already have been done */
-	res |= smtp_filter_register(&dkim_verify_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 2);
+	res |= smtp_filter_register(&dkim_verify_filter, "DKIM Verify", SMTP_FILTER_DKIM | SMTP_FILTER_VERIFY, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 2);
 	if (res) {
 		unload_module();
 		return -1;

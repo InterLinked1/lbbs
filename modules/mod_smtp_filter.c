@@ -39,7 +39,7 @@ static int prepend_received(struct smtp_filter_data *f)
 	if (smtp_should_preserve_privacy(f->smtp)) {
 		/* For messages received by message submission agents, mask the sender's real IP address */
 		smtp_filter_write(f, "Received: from [HIDDEN] (Authenticated sender: %s)\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
-			f->from, bbs_hostname(), prot, f->recipient, timestamp);
+			f->from, smtp_hostname(), prot, f->recipient, timestamp);
 	} else {
 		char hostname[256];
 		/* We allow for running this filter even without a node (e.g. for injected mail, such as mailing list posts). */
@@ -53,7 +53,7 @@ static int prepend_received(struct smtp_filter_data *f)
 			/* Do not use S_COR for the below two: f->node is not a string */
 			f->node ? hostname : "localhost",
 			f->node ? f->node->ip : "127.0.0.1",
-			bbs_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
+			smtp_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
 	}
 	return 0;
 }
@@ -99,7 +99,7 @@ static int relay_filter_cb(struct smtp_filter_data *f)
 		/* Do not use S_COR for the below two: f->node is not a string */
 		f->node ? hostname : "localhost",
 		f->node ? f->node->ip : "127.0.0.1",
-		bbs_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
+		smtp_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
 
 	return 0;
 }
@@ -137,7 +137,7 @@ static int auth_filter_cb(struct smtp_filter_data *f)
 
 	/* Add Authentication-Results header with the results of various tests */
 	len = asprintf(&buf, "%s" "%s%s%s%s" "%s%s" "%s%s" "%s%s",
-		bbs_hostname(),
+		smtp_hostname(),
 		f->spf ? ";\r\n" HEADER_CONTINUE "spf=" : "", f->spf ? f->spf : "", f->spf ? " smtp.mailfrom=" : "", f->spf ? f->from : "",
 		f->dkim ? ";\r\n" HEADER_CONTINUE "dkim=" : "", S_IF(f->dkim),
 		f->arc ? ";\r\n" HEADER_CONTINUE "arc=" : "", S_IF(f->arc),
@@ -172,10 +172,10 @@ struct smtp_filter_provider auth_filter = {
 
 static int load_module(void)
 {
-	smtp_filter_register(&builtin_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_INDIVIDUAL, SMTP_DIRECTION_IN | SMTP_DIRECTION_SUBMIT, 0);
-	smtp_filter_register(&relay_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_OUT, 1); /* For messages that are being relayed */
+	smtp_filter_register(&builtin_filter, "Builtin", SMTP_FILTER_OTHER, SMTP_FILTER_PREPEND, SMTP_SCOPE_INDIVIDUAL, SMTP_DIRECTION_IN | SMTP_DIRECTION_SUBMIT, 0);
+	smtp_filter_register(&relay_filter, "Relay", SMTP_FILTER_OTHER, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_OUT, 1); /* For messages that are being relayed */
 	/* Run this only after the SPF, DKIM, and DMARC filters have run: */
-	smtp_filter_register(&auth_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 6);
+	smtp_filter_register(&auth_filter, "Auth", SMTP_FILTER_OTHER, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 6);
 	return 0;
 }
 

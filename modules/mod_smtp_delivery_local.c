@@ -115,7 +115,7 @@ static void notify_firstmsg(struct mailbox *mbox)
 			"== Connection Details: ==\r\n"
 			"%s"
 			"%s"
-			,bbs_username(user), bbs_hostname(), imapstr, popstr);
+			,bbs_username(user), smtp_hostname(), imapstr, popstr);
 cleanup:
 		bbs_user_destroy(user);
 	}

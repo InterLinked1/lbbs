@@ -260,7 +260,7 @@ static int load_module(void)
 		bbs_error("%s doesn't exist, declining to load\n", CONFIG_FILE);
 		return -1;
 	}
-	smtp_filter_register(&spam_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 10);
+	smtp_filter_register(&spam_filter, "SpamAssassin", SMTP_FILTER_SPAM_FILTER, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 10);
 	return 0;
 }
 

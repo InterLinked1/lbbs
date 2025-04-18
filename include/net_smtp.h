@@ -73,6 +73,19 @@ enum smtp_filter_type {
 	/* Allow for future expansion, e.g. milters (though this would require hooks at multiple stages, not just after body received) */
 };
 
+enum smtp_filter_kind {
+	/* Sign/verify */
+	SMTP_FILTER_SIGN = (1 << 0),
+	SMTP_FILTER_VERIFY = (1 << 1),
+	/* Header operations */
+	SMTP_FILTER_SPF = (1 << 2),
+	SMTP_FILTER_DKIM = (1 << 3),
+	SMTP_FILTER_DMARC = (1 << 4),
+	SMTP_FILTER_ARC = (1 << 5),
+	SMTP_FILTER_SPAM_FILTER = (1 << 6),
+	SMTP_FILTER_OTHER = (1 << 7), /* Any other filter */
+};
+
 enum smtp_filter_scope {
 	SMTP_SCOPE_INDIVIDUAL = (1 << 0),	/* Run individually for each recipient of a message */
 	SMTP_SCOPE_COMBINED = (1 << 1),		/* Run once for all recipients of a message */
@@ -139,6 +152,8 @@ struct smtp_filter_provider {
 /*!
  * \brief Register an SMTP filter
  * \param cb Callback function
+ * \param name The name of the filter
+ * \param kind The kind of filter
  * \param type The type of filter
  * \param scope Scope for which this filter applies
  * \param dir Bitmask of directions for which this filter applies
@@ -146,9 +161,9 @@ struct smtp_filter_provider {
  * \param mod
  * \retval 0 on success, -1 on failure
  */
-int __smtp_filter_register(struct smtp_filter_provider *provider, enum smtp_filter_type type, enum smtp_filter_scope scope, enum smtp_direction dir, int priority, void *mod);
+int __smtp_filter_register(struct smtp_filter_provider *provider, const char *name, enum smtp_filter_kind kind, enum smtp_filter_type type, enum smtp_filter_scope scope, enum smtp_direction dir, int priority, void *mod);
 
-#define smtp_filter_register(cb, type, scope, dir, priority) __smtp_filter_register(cb, type, scope, dir, priority, BBS_MODULE_SELF)
+#define smtp_filter_register(cb, name, kind, type, scope, dir, priority) __smtp_filter_register(cb, name, kind, type, scope, dir, priority, BBS_MODULE_SELF)
 
 /*!
  * \brief Unregister an SMTP filter

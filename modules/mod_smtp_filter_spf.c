@@ -100,7 +100,7 @@ static int load_module(void)
 		bbs_error("Failed to create SPF server\n");
 		return -1;
 	}
-	smtp_filter_register(&spf_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 1);
+	smtp_filter_register(&spf_filter, "SPF", SMTP_FILTER_SPF, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 1);
 	return 0;
 }
 

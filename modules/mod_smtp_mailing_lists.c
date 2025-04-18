@@ -98,7 +98,7 @@ static struct mailing_list *find_list(const char *user, const char *domain)
 				break;
 			} else if (domain && !strcmp(l->domain, domain)) { /* l->domain must match domain */
 				break;
-			} else if (!domain && !strcmp(l->domain, bbs_hostname())) { /* Empty domain matches the primary hostname */
+			} else if (!domain && !strcmp(l->domain, smtp_hostname())) { /* Empty domain matches the primary hostname */
 				break;
 			}
 		}
@@ -199,7 +199,7 @@ static int sender_authorized(struct mailing_list *l, struct smtp_session *smtp, 
 static int add_list_headers(struct mailing_list *l, FILE *fp, const char *from)
 {
 	int nreply = 0;
-	const char *rdomain = S_OR(l->domain, bbs_hostname()); /* Reflector domain */
+	const char *rdomain = S_OR(l->domain, smtp_hostname()); /* Reflector domain */
 
 	/* Add list headers */
 
@@ -259,7 +259,7 @@ static int listify(struct mailing_list *l, struct smtp_response *resp, FILE *fp,
 	char from_hdr[256] = "";
 	int skipping = 0;
 
-	snprintf(delivered_hdr, sizeof(delivered_hdr), "Delivered-To: mailing list %s@%s", l->user, S_OR(l->domain, bbs_hostname()));
+	snprintf(delivered_hdr, sizeof(delivered_hdr), "Delivered-To: mailing list %s@%s", l->user, S_OR(l->domain, smtp_hostname()));
 
 	bbs_readline_init(&rldata, buf, sizeof(buf));
 	for (;;) { /* Need to read headers line by line */
@@ -457,7 +457,7 @@ static int list_post_message(struct mailing_list *l, const char *msgfile, size_t
 			stringlist_push(&external, full);
 			safe_strncpy(replaced, s, sizeof(replaced));
 			bbs_strreplace(replaced, '@', '=');
-			snprintf(mailfrom, sizeof(mailfrom), "%s+bounce=%s@%s", l->user, replaced, S_OR(l->domain, bbs_hostname())); /* No <> */
+			snprintf(mailfrom, sizeof(mailfrom), "%s+bounce=%s@%s", l->user, replaced, S_OR(l->domain, smtp_hostname())); /* No <> */
 			smtp_inject(mailfrom, &external, msgfile, msglen); /* Deliver to the external recipient */
 			stringlist_empty_destroy(&external);
 			extcount++;
@@ -466,14 +466,14 @@ static int list_post_message(struct mailing_list *l, const char *msgfile, size_t
 
 	/* If there are any local recipients, deliver to them all at once */
 	if (localcount) {
-		snprintf(mailfrom, sizeof(mailfrom), "%s+bounce@%s", l->user, S_OR(l->domain, bbs_hostname())); /* No <> */
+		snprintf(mailfrom, sizeof(mailfrom), "%s+bounce@%s", l->user, S_OR(l->domain, smtp_hostname())); /* No <> */
 		smtp_inject(mailfrom, &local, msgfile, msglen);
 	}
 
 	bbs_debug(2, "Delivered post to %d local user%s (%d explicitly) and %d external user%s\n",
 		localcount, ESS(localcount), manuallocalcount, extcount, ESS(extcount));
 	if (localcount + extcount == 0) {
-		bbs_warning("Mailing list %s@%s has no recipients?\n", l->user, S_OR(l->domain, bbs_hostname()));
+		bbs_warning("Mailing list %s@%s has no recipients?\n", l->user, S_OR(l->domain, smtp_hostname()));
 	}
 	stringlist_destroy(&local);
 	return 0;

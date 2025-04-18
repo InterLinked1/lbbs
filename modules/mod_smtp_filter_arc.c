@@ -308,9 +308,9 @@ static int load_module(void)
 	 * RFC 8617 5.1: Sealing must be done AFTER DKIM-Signature field added, i.e ARC priority number is higher (later) than DKIM-Signature. */
 
 	/* Wait until SPF, DKIM, and Authentication-Results have been handled before doing ARC: */
-	res |= smtp_filter_register(&arc_verify_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 3);
+	res |= smtp_filter_register(&arc_verify_filter, "ARC Verify", SMTP_FILTER_ARC | SMTP_FILTER_VERIFY, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_IN, 3);
 	/* We need to verify prior to generating Authentication-Results, but sign afterwards, since that gets included */
-	res |= smtp_filter_register(&arc_sign_filter, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_OUT, 6);
+	res |= smtp_filter_register(&arc_sign_filter, "ARC Sign", SMTP_FILTER_ARC | SMTP_FILTER_SIGN, SMTP_FILTER_PREPEND, SMTP_SCOPE_COMBINED, SMTP_DIRECTION_OUT, 6);
 	if (res) {
 		unload_module();
 		return -1;
