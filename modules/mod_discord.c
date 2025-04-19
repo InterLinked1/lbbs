@@ -81,11 +81,13 @@ struct chan_pair {
 	u64snowflake guild_id;
 	u64snowflake guild_owner;		/* Not normalized, but we don't keep track of guilds separately */
 	u64snowflake channel_id;
+	u64snowflake webhook_id;		/* Discord webhook ID, if provided */
 	unsigned int relaysystem:1;		/* Whether to relay non PRIVMSGs */
 	unsigned int defaultdeny:1;		/* Default denied */
 	unsigned int multiline:2;		/* Multiline: 0 = allowed, 1 = warn, 2 = block/drop */
 	const char *discord_channel;	/* Should not include leading # */
 	const char *irc_channel;		/* Should including leading # (or other prefix) */
+	const char *webhook_token;		/* Discord webhook token, if provided */
 	struct u64snowflake_list members;	/* Members with permission to view channel */
 	struct u64snowflake_list roles;		/* Roles with permission to view channel */
 	RWLIST_ENTRY(chan_pair) entry;
@@ -141,10 +143,11 @@ static void list_cleanup(void)
 	RWLIST_WRLOCK_REMOVE_ALL(&users, entry, free_user);
 }
 
-static int add_mapping(u64snowflake guild_id, const char *discord_channel, const char *irc_channel, unsigned int relaysystem, unsigned int multiline)
+static int add_mapping(u64snowflake guild_id, const char *discord_channel, const char *irc_channel, unsigned int relaysystem, unsigned int multiline,
+	const char *webhook_id, const char *webhook_token)
 {
 	struct chan_pair *cp;
-	size_t dlen, ilen;
+	size_t dlen, ilen, tokenlen;
 
 	RWLIST_WRLOCK(&mappings);
 	RWLIST_TRAVERSE(&mappings, cp, entry) {
@@ -173,7 +176,8 @@ static int add_mapping(u64snowflake guild_id, const char *discord_channel, const
 	}
 	dlen = strlen(discord_channel);
 	ilen = strlen(irc_channel);
-	cp = calloc(1, sizeof(*cp) + dlen + ilen + 2); /* 2 NULs */
+	tokenlen = webhook_token ? strlen(webhook_token) + 1 : 0;
+	cp = calloc(1, sizeof(*cp) + dlen + ilen + tokenlen + 2); /* 2 NULs (maybe 3, but that would be included in tokenlen) */
 	if (ALLOC_FAILURE(cp)) {
 		RWLIST_UNLOCK(&mappings);
 		return -1;
@@ -187,6 +191,15 @@ static int add_mapping(u64snowflake guild_id, const char *discord_channel, const
 	SET_BITFIELD(cp->relaysystem, relaysystem);
 	SET_BITFIELD2(cp->multiline, multiline);
 	/* channel_id is not yet known. Once we call fetch_channels, we'll be able to get the channel_id if it matches a name. */
+	if (!strlen_zero(webhook_id)) {
+		if (strlen_zero(webhook_token)) {
+			bbs_error("Webhook token must be specified if providing a webhook ID\n");
+		} else {
+			cp->webhook_id = (u64snowflake) atol(webhook_id);
+			strcpy(cp->data + dlen + 1 + ilen + 1, webhook_token);
+			cp->webhook_token = cp->data + dlen + 1 + ilen + 1;
+		}
+	}
 	RWLIST_HEAD_INIT(&cp->members);
 	RWLIST_HEAD_INIT(&cp->roles);
 	RWLIST_INSERT_HEAD(&mappings, cp, entry);
@@ -1064,17 +1077,9 @@ static int discord_send(struct irc_relay_message *rmsg)
 	} else if (!cp->relaysystem  && !sender) {
 		bbs_debug(3, "Dropping system-generated message since relaysystem=no\n");
 	} else {
-		char mbuf[564]; /* Max allowed is 2000, but IRC message can only be 512. Add some for the sender name */
-		struct discord_create_message params = {
-			.content = mbuf,
-			.message_reference = &(struct discord_message_reference) {
-				.message_id = 0, /* Irrelevant, we're not replying to a channel thread (IRC doesn't have the concept of threads anyways) */
-				.channel_id = cp->channel_id,
-				.guild_id = cp->guild_id,
-				.fail_if_not_exists = false, /* Send as a normal message, not an in-thread reply */
-			},
-			.components = NULL,
-		};
+		int code;
+		char usernameprefix[32] = "";
+		char mbuf[532]; /* Max allowed is 2000, but IRC message can only be 512. Add some for the sender name */
 
 		/* Manually parse system messages for join/part/etc.
 		 * This code path is used for non-native IRC network relayed to Discord, but not for native IRC network relay to Discord */
@@ -1115,28 +1120,70 @@ static int discord_send(struct irc_relay_message *rmsg)
 			ltrim(action);
 			bbs_strterm(action, 0x01); /* Skip the trailing 0x01 */
 			/* Turn 0x01ACTION action0x01 into  <sender> *action* */
-			snprintf(mbuf, sizeof(mbuf), "**<%s**> *%s*", S_IF(sender), action); /* sender lacks the <>, so add those */
+			snprintf(usernameprefix, sizeof(usernameprefix), "**<%s>** ", S_IF(sender));
+			snprintf(mbuf, sizeof(mbuf), "*%s*", action); /* sender lacks the <>, so add those */
 			bbs_dump_string(mbuf);
 			handled = 1;
-		} else {
-			bbs_dump_string(msg);
 		}
 		if (!handled) {
-			/* Use ** (markdown) to bold the username, just like many IRC clients do. For system messages, italicize them. */
-			snprintf(mbuf, sizeof(mbuf), sender ? "**<%s>** %s" : "*%s%s*", S_IF(sender), msg);
+			if (sender) {
+				/* Use ** (markdown) to bold the username, just like many IRC clients do. */
+				snprintf(usernameprefix, sizeof(usernameprefix), "**<%s>** ", sender);
+				safe_strncpy(mbuf, msg, sizeof(mbuf));
+			} else {
+				/* For system messages, italicize them. */
+				snprintf(mbuf, sizeof(mbuf), "*%s*", msg);
+			}
 		}
-		if (!sender) { /* If a system-generated message */
-			/* Added to the library later: */
+
+		if (sender && cp->webhook_id) {
+			/* If this channel has a webhook we can use, prefer that, so we can customize the username as which we post,
+			 * rather than having messages posted as a bot user and having to stuff the username into the message.
+			 * If there is no sender (such as system messages), we still use the bot user, as there is no username
+			 * we can use to override in the webhook post so whatever its default/configured username would be used,
+			 * which wouldn't make sense. */
+			char senderbuf[64];
+			struct discord_execute_webhook params = {
+				.content = mbuf,
+				.username = senderbuf,
+			};
+			/* Can use sender directly, since posts via webhook are still notated with "APP", so distinguishable from same username on Discord.
+			 * For good measure, also include <>. */
+			snprintf(senderbuf, sizeof(senderbuf), "<%s>", sender);
+			code = discord_execute_webhook(discord_client, cp->webhook_id, cp->webhook_token, &params, NULL);
+			if (code != CCORD_OK && code != CCORD_PENDING) {
+				bbs_warning("Failed to post Discord message using webhook: %s\n", discord_strerror(code, discord_client));
+			}
+		} else {
+			char content[sizeof(usernameprefix) + sizeof(mbuf)];
+			/* Post a message as the bot, stuffing the username into the message if needed */
+			struct discord_create_message params = {
+				.content = content,
+				.message_reference = &(struct discord_message_reference) {
+					.message_id = 0, /* Irrelevant, we're not replying to a channel thread (IRC doesn't have the concept of threads anyways) */
+					.channel_id = cp->channel_id,
+					.guild_id = cp->guild_id,
+					.fail_if_not_exists = false, /* Send as a normal message, not an in-thread reply */
+				},
+				.components = NULL,
+			};
+			snprintf(content, sizeof(content), "%s%s", usernameprefix, mbuf); /* Space between is included in usernameprefix if needed */
+			if (!sender) { /* If a system-generated message */
+				/* Added to the library later: */
 #ifdef DISCORD_MESSAGE_SUPPRESS_NOTIFICATIONS
-			/* Discord allows notifications to be suppressed using @silent.
-			 * We can do that from a bot by setting the below flag.
-			 * This makes sense for join, leave, part, etc. notifications,
-			 * since those are not real messages, and we don't want to bother
-			 * people with them. */
-			params.flags = DISCORD_MESSAGE_SUPPRESS_NOTIFICATIONS;
+				/* Discord allows notifications to be suppressed using @silent.
+				 * We can do that from a bot by setting the below flag.
+				 * This makes sense for join, leave, part, etc. notifications,
+				 * since those are not real messages, and we don't want to bother
+				 * people with them. */
+				params.flags = DISCORD_MESSAGE_SUPPRESS_NOTIFICATIONS;
 #endif
+			}
+			code = discord_create_message(discord_client, cp->channel_id, &params, NULL);
+			if (code != CCORD_OK && code != CCORD_PENDING) {
+				bbs_warning("Failed to create Discord message: %s\n", discord_strerror(code, discord_client));
+			}
 		}
-		discord_create_message(discord_client, cp->channel_id, &params, NULL);
 	}
 	return 0;
 }
@@ -1378,10 +1425,14 @@ static int cli_discord_mappings(struct bbs_cli_args *a)
 	int i = 0;
 	struct chan_pair *cp;
 
-	bbs_dprintf(a->fdout, "%-20s %-20s %-20s %-20s\n", "Guild ID", "Channel ID", "Discord", "IRC");
+	bbs_dprintf(a->fdout, "%-20s %-20s %-20s %-30s %s\n", "Guild ID", "Channel ID", "Webhook ID", "Discord", "IRC");
 	RWLIST_RDLOCK(&mappings);
 	RWLIST_TRAVERSE(&mappings, cp, entry) {
-		bbs_dprintf(a->fdout, "%-20lu %-20lu %-20s %-20s\n", cp->guild_id, cp->channel_id, cp->discord_channel, cp->irc_channel);
+		char webhookid[22] = ""; /* IDs are 19 chars */
+		if (cp->webhook_id) {
+			snprintf(webhookid, sizeof(webhookid), "%lu", cp->webhook_id);
+		}
+		bbs_dprintf(a->fdout, "%-20lu %-20lu %-20s %-30s %s\n", cp->guild_id, cp->channel_id, webhookid, cp->discord_channel, cp->irc_channel);
 		i++;
 	}
 	RWLIST_UNLOCK(&mappings);
@@ -1521,7 +1572,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "discord", "exposemembers", &expose_members);
 
 	while ((section = bbs_config_walk(cfg, section))) {
-		const char *irc = NULL, *discord = NULL, *guild = NULL;
+		const char *irc = NULL, *discord = NULL, *guild = NULL, *webhook_id = NULL, *webhook_token = NULL;
 		unsigned int relaysystem = 1;
 		unsigned int multiline = 0;
 		if (!strcmp(bbs_config_section_name(section), "discord")) {
@@ -1534,10 +1585,14 @@ static int load_config(void)
 			const char *key = bbs_keyval_key(keyval), *value = bbs_keyval_val(keyval);
 			if (!strcasecmp(key, "irc_channel")) {
 				irc = value;
-			} else if (!strcasecmp(key, "discord_channel")) {
-				discord = value;
 			} else if (!strcasecmp(key, "discord_guild")) {
 				guild = value;
+			} else if (!strcasecmp(key, "discord_channel")) {
+				discord = value;
+			} else if (!strcasecmp(key, "webhook_id")) {
+				webhook_id = value;
+			} else if (!strcasecmp(key, "webhook_token")) {
+				webhook_token = value;
 			} else if (!strcasecmp(key, "relaysystem")) {
 				relaysystem = S_TRUE(value);
 			} else if (!strcasecmp(key, "multiline")) {
@@ -1559,7 +1614,7 @@ static int load_config(void)
 			bbs_warning("Section %s is incomplete, ignoring\n", bbs_config_section_name(section));
 			continue;
 		}
-		add_mapping((unsigned long) atol(guild), discord, irc, relaysystem, multiline);
+		add_mapping((unsigned long) atol(guild), discord, irc, relaysystem, multiline, webhook_id, webhook_token);
 	}
 
 	return 0;
