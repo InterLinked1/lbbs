@@ -2015,6 +2015,69 @@ static inline int fetchlist_result_contains_seqno(clist *fetch_result, uint32_t 
 	return 0;
 }
 
+static int select_another_mailbox_on_remote_server(struct imap_client *client)
+{
+	int res;
+	char otherfolder[1024];
+	char *tmp;
+
+	/* Temporarily selecting another mailbox and then re-selecting this mailbox seems to make it work...
+	 * it's as if that fixes some broken caching-related thing on the server...
+	 * Normally, it would be bad practice to work around specific bugs in specific servers,
+	 * but due to the way mod_webmail is written, mostly as a communication layer,
+	 * if the server is broken, the client also becomes horribly broken, so this is a necessary evil
+	 * to preserve the client's sanity... */
+	/* XXX We should select a folder we know exists... however, since this code is written specifically
+	 * to target Microsoft email servers, use a SPECIAL-USE folder we know exists on Microsoft servers.
+	 * However, we don't store the list of folders on this server, so this isn't guaranteed to work... */
+	safe_strncpy(otherfolder, client->mailbox, sizeof(otherfolder) - 20); /* Enough room for Sent/Deleted */
+	for (;;) {
+		tmp = strrchr(otherfolder, client->delimiter);
+		if (tmp) {
+			tmp++;
+			/* Because we could be proxied through via the BBS to the remote Microsoft mail server,
+			 * we need to actually select another folder on the server that corresponds to this folder.
+			 * Since the server knows that but we don't, we just have to use some heuristics here...
+			 * However, we don't really know what the top-level folder is, the only way to be sure
+			 * is to perform a LIST again, and even then, we can only infer what folders are really on that server,
+			 * and the best we can do is pick a sibling folder or its direct parent. This should always work
+			 * since these special folders will be at the top-level of that hierarchy, so we can just keep
+			 * walking up the tree if that fails.
+			 *
+			 * Technically, we could perform a LIST here and then pick the mailbox we want to use from that,
+			 * and that might be faster, but the code to do a basic LIST would be more involved
+			 * and not worth it for this off-nominal case? This code is written to be the simplest
+			 * way possible of selecting another folder. */
+			strcpy(tmp, strstr(client->mailbox, "Deleted") ? "Sent" : "Deleted"); /* Safe */
+		} else {
+			strcpy(otherfolder, strstr(client->mailbox, "Deleted") ? "Sent" : "Deleted"); /* Safe */
+			/* condition will be false next time we tset */
+		}
+		bbs_debug(3, "Attempting to select '%s'\n", otherfolder);
+		res = mailimap_select(client->imap, otherfolder);
+		if (res == MAILIMAP_NO_ERROR) {
+			break; /* Stop as soon as we select another folder that exists */
+		}
+		/* Go up one level */
+		tmp = strrchr(otherfolder, client->delimiter); /* Check condition... */
+		if (!tmp) {
+			/* Eventually, if we keep going up the hierarchy, this condition must become false */
+			break;
+		}
+		*tmp = '\0';
+		/* Repeat */
+	}
+	/* It's possible the SELECT failed if we went all the way to the top of the hierarchy without finding a match.
+	 * In that case, we're probably screwed anyways, but continue. */
+	if (res != MAILIMAP_NO_ERROR) {
+		bbs_warning("Failed to calculate closest existing (but different) SPECIAL-USE folder...");
+		/* Don't break... continue, though since it won't be a brand new SELECT,
+		 * it probably won't have the desired effect. */
+		return -1;
+	}
+	return 0;
+}
+
 static int fetchlist(struct ws_session *ws, struct imap_client *client, const char *reason, int start, int end, int page, int pagesize, int numpages, const char *sort, const char *filter)
 {
 	int expected, res, c = 0;
@@ -2284,8 +2347,6 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 
 		if (c != expected && !filter) { /* If we filtered, there might be fewer results than expected? */
 			uint32_t seqno;
-			char otherfolder[1024];
-			char *tmp;
 			bbs_warning("Expected to fetch %d (%d:%d) messages but only fetched %d? Buggy mail server?\n", expected, start, end, c);
 			/* This sometimes happens with Microsoft Office 365 / outlook.com email,
 			 * where right after we delete messages from the mailbox and fetch
@@ -2306,60 +2367,12 @@ static int fetchlist(struct ws_session *ws, struct imap_client *client, const ch
 					bbs_debug(1, "Server excluded msg %d in its reply (attempt %d)\n", seqno, fetch_attempts + 1);
 				}
 			}
+
 			/* Reissue FETCH headers, by continuing loop and making another request. */
-			/* Temporarily selecting another mailbox and then re-selecting this mailbox seems to make it work...
-			 * it's as if that fixes some broken caching-related thing on the server...
-			 * Normally, it would be bad practice to work around specific bugs in specific servers,
-			 * but due to the way mod_webmail is written, mostly as a communication layer,
-			 * if the server is broken, the client also becomes horribly broken, so this is a necessary evil
-			 * to preserve the client's sanity... */
-			/* XXX We should select a folder we know exists... however, since this code is written specifically
-			 * to target Microsoft email servers, use a SPECIAL-USE folder we know exists on Microsoft servers.
-			 * However, we don't store the list of folders on this server, so this isn't guaranteed to work... */
-			safe_strncpy(otherfolder, client->mailbox, sizeof(otherfolder) - 20); /* Enough room for Sent/Deleted */
-			for (;;) {
-				tmp = strrchr(otherfolder, client->delimiter);
-				if (tmp) {
-					tmp++;
-					/* Because we could be proxied through via the BBS to the remote Microsoft mail server,
-					 * we need to actually select another folder on the server that corresponds to this folder.
-					 * Since the server knows that but we don't, we just have to use some heuristics here...
-					 * However, we don't really know what the top-level folder is, the only way to be sure
-					 * is to perform a LIST again, and even then, we can only infer what folders are really on that server,
-					 * and the best we can do is pick a sibling folder or its direct parent. This should always work
-					 * since these special folders will be at the top-level of that hierarchy, so we can just keep
-					 * walking up the tree if that fails.
-					 *
-					 * Technically, we could perform a LIST here and then pick the mailbox we want to use from that,
-					 * and that might be faster, but the code to do a basic LIST would be more involved
-					 * and not worth it for this off-nominal case? This code is written to be the simplest
-					 * way possible of selecting another folder. */
-					strcpy(tmp, strstr(client->mailbox, "Deleted") ? "Sent" : "Deleted"); /* Safe */
-				} else {
-					strcpy(otherfolder, strstr(client->mailbox, "Deleted") ? "Sent" : "Deleted"); /* Safe */
-					/* condition will be false next time we tset */
-				}
-				bbs_debug(3, "Attempting to select '%s'\n", otherfolder);
-				res = mailimap_select(client->imap, otherfolder);
-				if (res == MAILIMAP_NO_ERROR) {
-					break; /* Stop as soon as we select another folder that exists */
-				}
-				/* Go up one level */
-				tmp = strrchr(otherfolder, client->delimiter); /* Check condition... */
-				if (!tmp) {
-					/* Eventually, if we keep going up the hierarchy, this condition must become false */
-					break;
-				}
-				*tmp = '\0';
-				/* Repeat */
-			}
-			/* It's possible the SELECT failed if we went all the way to the top of the hierarchy without finding a match.
-			 * In that case, we're probably screwed anyways, but continue. */
-			if (res != MAILIMAP_NO_ERROR) {
-				bbs_warning("Failed to calculate closest existing (but different) SPECIAL-USE folder...\n");
-				/* Don't break... continue, though since it won't be a brand new SELECT,
-				 * it probably won't have the desired effect. */
-			}
+
+			/* Microsoft won't show the new messages unless we select another IMAP folder and then go back to the target folder */
+			select_another_mailbox_on_remote_server(client);
+
 			/* Now, re-SELECT the original mailbox... */
 			res = mailimap_select(client->imap, client->mailbox);
 			if (res != MAILIMAP_NO_ERROR) {
