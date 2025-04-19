@@ -766,7 +766,10 @@ static void handle_session(ssh_event event, ssh_session session)
 
 	/* Get the IP of the connecting user now, in case authentication never succeeds
 	 * and we never store the IP. */
-	save_remote_ip(session, NULL, ipaddr, sizeof(ipaddr));
+	if (save_remote_ip(session, NULL, ipaddr, sizeof(ipaddr))) {
+		/* If this fails, the file descriptor was invalid, just abort. */
+		goto cleanup;
+	}
 	bbs_auth("Accepting new SSH connection from %s\n", ipaddr);
 
 	/*
@@ -796,7 +799,7 @@ static void handle_session(ssh_event event, ssh_session session)
 	ssh_callbacks_init(&channel_cb);
 	ssh_set_server_callbacks(session, &server_cb);
 
-	timeout = 60; /* Max 60 seconds until logged in */
+	timeout = 2; /* Max 2 seconds until key exchange completed, as ssh_handle_key_exchange can block otherwise */
 	ssh_options_set(session, SSH_OPTIONS_TIMEOUT, &timeout);
 
 	if (ssh_handle_key_exchange(session) != SSH_OK) {
@@ -830,6 +833,9 @@ static void handle_session(ssh_event event, ssh_session session)
 	}
 
 	bbs_debug(5, "Client banner: %s\n", ssh_get_clientbanner(session));
+
+	timeout = 60; /* Max 60 seconds until logged in */
+	ssh_options_set(session, SSH_OPTIONS_TIMEOUT, &timeout);
 
 	/* Wait for authentication to happen. */
 	n = 0;
