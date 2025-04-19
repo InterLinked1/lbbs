@@ -22,7 +22,10 @@ struct bbs_node;
 struct bbs_var;
 RWLIST_HEAD(bbs_vars, bbs_var);
 
-/*! \brief Destroy and free a variable list */
+/*! \brief Initialize a variable list */
+#define bbs_varlist_init(vars) (RWLIST_HEAD_INIT(vars))
+
+/*! \brief Destroy a variable list and free all its variables */
 void bbs_vars_destroy(struct bbs_vars *vars);
 
 /*! \brief Remove the first variable in a variable list */

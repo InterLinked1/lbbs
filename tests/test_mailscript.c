@@ -223,6 +223,14 @@ static int run(void)
 	CLIENT_EXPECT(clientfd, "250");
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3); /* Message dropped silently */
 
+	STANDARD_ENVELOPE_BEGIN();
+	SWRITE(clientfd, "From: " TEST_EMAIL_EXTERNAL ENDL);
+	SWRITE(clientfd, "Subject: Test Subject 12" ENDL);
+	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
+	STANDARD_DATA();
+	CLIENT_EXPECT(clientfd, "250");
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3); /* Message dropped silently */
+
 	SWRITE(clientfd, "QUIT");
 	close(clientfd);
 

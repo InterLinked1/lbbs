@@ -83,6 +83,39 @@ enum match_type {
 	MATCH_EQ,
 };
 
+static int floatcmp(const char *s, const char *expr, enum match_type matchtype)
+{
+	double threshold, actual, diff;
+	/* We don't use numcmp, since we need to support floating point numbers */
+	if (sscanf(expr, "%4lf", &threshold) != 1) {
+		bbs_warning("Invalid numeric value: %s\n", s);
+	} else {
+		int count;
+		actual = 0;
+		count = sscanf(s, "%4lf", &actual);
+		bbs_debug(5, "Threshold: %f, Actual: %f (%s)\n", threshold, actual, s);
+		switch (matchtype) {
+			case MATCH_GTE:
+				return count == 1 && actual >= (threshold - DBL_EPSILON);
+			case MATCH_GT:
+				return count == 1 && actual > (threshold - DBL_EPSILON);
+			case MATCH_LTE:
+				return count == 1 && actual <= (threshold + DBL_EPSILON);
+			case MATCH_LT:
+				return count == 1 && actual < (threshold + DBL_EPSILON);
+			case MATCH_EQ:
+				diff = actual - threshold;
+				if (diff < 0) {
+					diff = -diff;
+				}
+				return count == 1 && diff < DBL_EPSILON; /* Floating point equality comparison */
+			default:
+				bbs_soft_assert(0); /* Shouldn't be reached */
+		}
+	}
+	return 0;
+}
+
 /*! \brief retval -1 if no such header, 0 if not found, 1 if found */
 static int header_match(struct smtp_msg_process *mproc, const char *header, const char *find, enum match_type matchtype)
 {
@@ -170,39 +203,7 @@ static int header_match(struct smtp_msg_process *mproc, const char *header, cons
 				break;
 			}
 		} else { /* numeric comparisons */
-			double threshold, actual, diff;
-			/* We don't use numcmp, since we need to support floating point numbers */
-			if (sscanf(find, "%4lf", &threshold) != 1) {
-				bbs_warning("Invalid numeric value: %s\n", start);
-			} else {
-				int count;
-				actual = 0;
-				count = sscanf(start, "%4lf", &actual);
-				bbs_debug(5, "Found: %d, Threshold: %f, Actual: %f (%s)\n", found, threshold, actual, start);
-				switch (matchtype) {
-					case MATCH_GTE:
-						found = count == 1 && actual >= (threshold - DBL_EPSILON);
-						break;
-					case MATCH_GT:
-						found = count == 1 && actual > (threshold - DBL_EPSILON);
-						break;
-					case MATCH_LTE:
-						found = count == 1 && actual <= (threshold + DBL_EPSILON);
-						break;
-					case MATCH_LT:
-						found = count == 1 && actual < (threshold + DBL_EPSILON);
-						break;
-					case MATCH_EQ:
-						diff = actual - threshold;
-						if (diff < 0) {
-							diff = -diff;
-						}
-						found = count == 1 && diff < DBL_EPSILON; /* Floating point equality comparison */
-						break;
-					default:
-						bbs_soft_assert(0); /* Shouldn't be reached */
-				}
-			}
+			found = floatcmp(start, find, matchtype);
 		}
 	}
 	if (regcompiled) {
@@ -242,7 +243,7 @@ static void __attribute__ ((nonnull (2, 3, 4))) str_match(const char *matchtype,
 		return 0; \
 	}
 
-static int test_condition(struct smtp_msg_process *mproc, const char *filename, int lineno, int lastretval, const char *usermaildir, char *s)
+static int test_condition(struct smtp_msg_process *mproc, struct bbs_vars *vars, const char *filename, int lineno, int lastretval, const char *usermaildir, char *s)
 {
 	char *next;
 	int match = 0;
@@ -329,7 +330,7 @@ static int test_condition(struct smtp_msg_process *mproc, const char *filename, 
 			found = header_match(mproc, header, expr, MATCH_EQ);
 			match = found == 1;
 		} else {
-			bbs_warning("Invalid HEADER command match type at %s:%d: %s\n", filename, lineno, matchtype);
+			bbs_warning("Invalid HEADER match type at %s:%d: %s\n", filename, lineno, matchtype);
 		}
 	} else if (!strcasecmp(next, "FILE")) {
 		char fullfile[1024];
@@ -349,6 +350,43 @@ static int test_condition(struct smtp_msg_process *mproc, const char *filename, 
 		}
 		if (bbs_file_exists(file)) {
 			match = 1;
+		}
+	} else if (!strcasecmp(next, "VAR")) {
+		const char *expr, *matchtype, *variable, *val;
+		variable = strsep(&s, " ");
+		matchtype = strsep(&s, " ");
+		expr = s;
+		val = bbs_var_find(vars, variable);
+		if (!strcasecmp(matchtype, "EXISTS")) {
+			match = val ? 1 : 0;
+		} else if (!strcasecmp(matchtype, "EQUALS")) {
+			REQUIRE_ARG(expr);
+			match = !strlen_zero(val) && !strcmp(val, expr);
+		} else if (!strcasecmp(matchtype, "CONTAINS")) {
+			REQUIRE_ARG(expr);
+			match = !strlen_zero(val) && strstr(val, expr);
+		} else if (!strcasecmp(matchtype, "LIKE")) {
+			REQUIRE_ARG(expr);
+			if (!strlen_zero(val)) {
+				str_match(matchtype, val, expr, &match);
+			}
+		} else if (!strcmp(matchtype, ">=")) {
+			REQUIRE_ARG(expr);
+			match = !strlen_zero(val) && floatcmp(val, expr, MATCH_GTE);
+		} else if (!strcmp(matchtype, ">")) {
+			REQUIRE_ARG(expr);
+			match = !strlen_zero(val) && floatcmp(val, expr, MATCH_GT);
+		} else if (!strcmp(matchtype, "<=")) {
+			REQUIRE_ARG(expr);
+			match = !strlen_zero(val) && floatcmp(val, expr, MATCH_LTE);
+		} else if (!strcmp(matchtype, "<")) {
+			REQUIRE_ARG(expr);
+			match = !strlen_zero(val) && floatcmp(val, expr, MATCH_LT);
+		} else if (!strcmp(matchtype, "==")) {
+			REQUIRE_ARG(expr);
+			match = !strlen_zero(val) && floatcmp(val, expr, MATCH_EQ);
+		} else {
+			bbs_warning("Invalid VAR match type at %s:%d: %s\n", filename, lineno, matchtype);
 		}
 	} else {
 		bbs_warning("Invalid condition at %s:%d: %s %s\n", filename, lineno, next, S_IF(s));
@@ -462,7 +500,7 @@ cleanup:
 		return 0; \
 	}
 
-static int do_action(struct smtp_msg_process *mproc, const char *filename, int lineno, char *s)
+static int do_action(struct smtp_msg_process *mproc, struct bbs_vars *vars, const char *filename, int lineno, char *s)
 {
 	char *next;
 
@@ -471,7 +509,7 @@ static int do_action(struct smtp_msg_process *mproc, const char *filename, int l
 	next = strsep(&s, " ");
 	if (!strcasecmp(next, "NOOP")) {
 		return 0;
-	} else if (!strcasecmp(next, "MOVETO")) {
+	} else if (!strcasecmp(next, "MOVETO")) { /* MOVETO corresponds to Sieve action 'fileinto' */
 		char newdir[512];
 		REQUIRE_ARG(s);
 		if (!STARTS_WITH(s, "imap:") && !STARTS_WITH(s, "imaps:")) {
@@ -487,7 +525,7 @@ static int do_action(struct smtp_msg_process *mproc, const char *filename, int l
 			}
 		}
 		REPLACE(mproc->newdir, s);
-	} else if (!strcasecmp(next, "BOUNCE") || !strcasecmp(next, "REJECT")) {
+	} else if (!strcasecmp(next, "BOUNCE") || !strcasecmp(next, "REJECT")) { /* REJECT keyword based off like-named Sieve action */
 		mproc->bounce = 1;
 		if (!strcasecmp(next, "REJECT")) {
 			mproc->drop = 1;
@@ -500,12 +538,12 @@ static int do_action(struct smtp_msg_process *mproc, const char *filename, int l
 			mproc->bouncemsg = strdup(s);
 			bbs_strterm(mproc->bouncemsg, '"'); /* Strip any trailing quotes */
 		}
-	} else if (!strcasecmp(next, "DISCARD")) {
+	} else if (!strcasecmp(next, "DISCARD")) { /* DISCARD keyword based off like-named Sieve action */
 		mproc->drop = 1;
-	} else if (!strcasecmp(next, "EXEC")) {
+	} else if (!strcasecmp(next, "EXEC")) { /* EXEC corresponds to Sieve action 'execution' (defined in an extension) */
 		REQUIRE_ARG(s);
 		return exec_cmd(mproc, s);
-	} else if (!strcasecmp(next, "REDIRECT")) {
+	} else if (!strcasecmp(next, "REDIRECT")) { /* REDIRECT keyword based off like-named Sieve action */
 		REQUIRE_ARG(s);
 		/* Don't allow forwarding to self, or that will create a loop (one that can't even be detected, since message is not modified) */
 		if (!stringlist_contains(mproc->forward, s)) {
@@ -515,6 +553,12 @@ static int do_action(struct smtp_msg_process *mproc, const char *filename, int l
 		REQUIRE_ARG(s);
 		/* Submit the message via a message submission agent (relay it through some other mail server) */
 		REPLACE(mproc->relayroute, s);
+	}  else if (!strcasecmp(next, "SET")) { /* SET keyword based off like-named Sieve action (extension in RFC 5229) */
+		char *key;
+		REQUIRE_ARG(s);
+		key = strsep(&s, " ");
+		REQUIRE_ARG(s);
+		bbs_varlist_append(vars, key, s);
 	} else {
 		bbs_warning("Invalid action at %s:%d: %s %s\n", filename, lineno, next, S_IF(s));
 	}
@@ -541,6 +585,9 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 	int want_endif = 0; /* How many ENDIF's we need to encounter before we can start processing lines (we're skipping false blocks) */
 	int retval = 0;
 	int lineno = 0;
+	struct bbs_vars vars;
+
+	bbs_varlist_init(&vars);
 
 	if (!bbs_file_exists(rulesfile)) {
 		bbs_debug(7, "MailScript %s doesn't exist\n", rulesfile);
@@ -618,17 +665,18 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 			continue;
 		} else if (STARTS_WITH(s, "TEST ")) {
 			s += STRLEN("TEST ");
-			retval = test_condition(mproc, rulesfile, lineno, retval, usermaildir, s);
+			retval = test_condition(mproc, &vars, rulesfile, lineno, retval, usermaildir, s);
 		} else if (STARTS_WITH(s, "MATCH ")) {
 			s += STRLEN("MATCH ");
-			retval = test_condition(mproc, rulesfile, lineno, retval, usermaildir, s);
+			retval = test_condition(mproc, &vars, rulesfile, lineno, retval, usermaildir, s);
 			if (!retval) {
 				skip_rule = 1; /* Didn't match, skip this rule */
 			}
 		} else if (STARTS_WITH(s, "ACTION ")) {
 			s += STRLEN("ACTION ");
 			if (strlen_zero(s)) {
-				return 0;
+				bbs_warning("Empty ACTION\n");
+				continue;
 			}
 			bbs_debug(5, "Executing action: %s\n", s);
 			if (STARTS_WITH(s, "BREAK")) {
@@ -647,7 +695,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 				}
 				break;
 			} else {
-				retval = do_action(mproc, rulesfile, lineno, s);
+				retval = do_action(mproc, &vars, rulesfile, lineno, s);
 			}
 		} else if (STARTS_WITH(s, "IF ")) {
 			int cond, negate = 0;
@@ -658,7 +706,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 				negate = 1;
 				s += STRLEN("NOT ");
 			}
-			cond = test_condition(mproc, rulesfile, lineno, retval, usermaildir, s);
+			cond = test_condition(mproc, &vars, rulesfile, lineno, retval, usermaildir, s);
 			if (negate) {
 				cond = !negate;
 			}
@@ -679,6 +727,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 	}
 
 	fclose(fp);
+	bbs_vars_destroy(&vars);
 	return res;
 }
 

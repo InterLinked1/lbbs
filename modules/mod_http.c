@@ -1504,7 +1504,7 @@ static struct session *http_session_set(struct http_session *http, int secure, i
 			RWLIST_UNLOCK(&sessions);
 			return NULL;
 		}
-		RWLIST_HEAD_INIT(&sess->vars);
+		bbs_varlist_init(&sess->vars);
 	}
 
 	strcpy(sess->sessid, sessid); /* Safe */

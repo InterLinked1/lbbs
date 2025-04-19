@@ -39,6 +39,8 @@
 # FILE <file> <EXISTS> - whether a named file exists in the user's maildir. May be used for both incoming and outgoing messages.
 # RETVAL (>,>=,==,<,<=) <value> - check return value of last command
 # SIZE (>,>=,==,<,<=) <size> - size of message, in bytes
+# VAR <variable name> <EXISTS|EQUALS|CONTAINS|LIKE|>=|>|<|<=|==> [<arg>] - perform given check against named MailScript variable, previously set by SET action.
+#   This can also be used to more easily emulate 'OR' conditions, which are not natively supported by the MailScript rule syntax.
 
 # Condition Keywords:
 # EXISTS - specified value exists
@@ -78,6 +80,8 @@
 #        WARNING: Avoid environment variables or shell shorthand, e.g. $HOME or ~, as part of the EXEC arguments. These are not evaluated by any shell prior to the program being executed.
 #        As with a cron job, assume nothing and use full paths to be explicit. BBS varibales are evaluated as normal prior to program execution.
 # NOOP - Does nothing and always returns 0. Possibly useful for debugging rule execution with debug enabled.
+# SET - Set an internal MailScript variable that can be used in rules processing. Syntax is SET <variable name> <variable value>.
+#       Note that while variables must be set inside of a rule, they persist for all rules in a given rule script.
 
 # Variables available for use in rules:
 # ${MAILFILE} - a file containing the message, useful for the EXEC action if you want to pass the message as an argument
