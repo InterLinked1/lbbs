@@ -73,6 +73,13 @@ static pthread_t ssh_listener_thread;
 /* These permissions match with net_ftp (which uses fopen). This is typically 0644 (depending on umask). */
 #define DEFAULT_NEW_FILE_PERMISSIONS (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH)
 
+/* Uncomment to track file descriptors used by libssh as other file descriptors are, in fd.c.
+ * This is not enabled by default, since libssh will close file descriptors passed to it,
+ * meaning if we keep track that it was opened, we can't reliably keep track when it was closed.
+ * There is some logic to deal with this when this define is enabled, but it is not 100% reliable
+ * and can cause the test_ssh and test_sftp tests to be flaky. */
+/* #define TRACK_SSH_FILE_DESCRIPTORS */
+
 /*
  * There is no RFC officially for SFTP.
  * Version 3, working draft 2 is what we want: https://www.sftp.net/spec/draft-ietf-secsh-filexfer-02.txt
@@ -752,12 +759,16 @@ static void handle_session(ssh_event event, ssh_session session)
 	 * we call this macro as soon as the socket was possibly closed, rather than just once.
 	 * In particular, anytime we call request_fail(), we need to call this prior,
 	 * as that could trigger reuse of the just closed file descriptor via execvp(). */
+#ifdef TRACK_SSH_FILE_DESCRIPTORS
 #define MARK_SSH_FD_CLOSED_IF_CLOSED() \
 	if (!is_sftp && sshfd != -1 && ssh_get_fd(session) == -1) { \
 		bbs_mark_closed(sshfd); /* Indicate file descriptor has been closed */ \
 		bbs_debug(5, "Marked fd %d as closed\n", sshfd); \
 		sshfd = -1; \
 	}
+#else
+#define MARK_SSH_FD_CLOSED_IF_CLOSED()
+#endif
 	sshfd = ssh_get_fd(session);
 	if (sshfd == -1) {
 		bbs_warning("SSH session ended before it began\n");
@@ -1048,9 +1059,11 @@ cleanup:
 	}
 	ssh_channel_close(sdata.channel); /* In some cases, this may be the 2nd time calling this, but shouldn't hurt */
 	MARK_SSH_FD_CLOSED_IF_CLOSED();
+#ifdef TRACK_SSH_FILE_DESCRIPTORS
 	if (sshfd != -1) {
 		bbs_debug(4, "SSH file descriptor %d not marked as closed for this session...\n", sshfd);
 	}
+#endif
 	ssh_channel_free(sdata.channel);
 }
 
@@ -2092,7 +2105,10 @@ static void *ssh_listener(void *unused)
 			bbs_debug(3, "poll returned %s\n", poll_revent_name(pfd.revents));
 			break;
 		}
-
+#ifndef TRACK_SSH_FILE_DESCRIPTORS
+/* If we are not keeping track of SSH file descriptors, we need to use the real accept(), not bbs_accept() */
+#undef accept
+#endif
 		sfd = accept(listenerfd, (struct sockaddr *) &sinaddr, &len);
 		if (sfd < 0) {
 			bbs_debug(3, "accept(%d) returned %d: %s\n", listenerfd, sfd, strerror(errno));
