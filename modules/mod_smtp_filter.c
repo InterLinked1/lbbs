@@ -37,9 +37,17 @@ static int prepend_received(struct smtp_filter_data *f)
 
 	/* We don't include a message ID since we don't generate/use any internally (even though the queue probably should...). */
 	if (smtp_should_preserve_privacy(f->smtp)) {
+		/* When choosing an email address to include for the 'Authenticated sender', it makes sense to
+		 * prefer to use the one in the From header as opposed to the MAIL FROM.
+		 * This is because the MAIL FROM for submissions is almost meaningless, and doesn't get factored
+		 * into any authentication that is done. In contrast, if we allowed a From header to be used,
+		 * the user was authorized to use that identity.
+		 * Additionally, using the MAIL FROM, apart from being wrong, can also leak sensitive information,
+		 * such as the primary email address of the account through which the message is being sent using another identity. */
+		const char *from = S_OR(smtp_from_address(f->smtp), f->from);
 		/* For messages received by message submission agents, mask the sender's real IP address */
 		smtp_filter_write(f, "Received: from [HIDDEN] (Authenticated sender: %s)\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
-			f->from, smtp_hostname(), prot, f->recipient, timestamp);
+			from, smtp_hostname(), prot, f->recipient, timestamp);
 	} else {
 		char hostname[256];
 		/* We allow for running this filter even without a node (e.g. for injected mail, such as mailing list posts). */

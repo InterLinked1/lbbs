@@ -193,6 +193,9 @@ struct stringlist *smtp_recipients(struct smtp_session *smtp);
 /*! \brief Get the MAIL FROM address */
 const char *smtp_from(struct smtp_session *smtp);
 
+/*! \brief Get the From address */
+const char *smtp_from_address(struct smtp_session *smtp);
+
 /*! \brief Get the full From header (including name, if present) */
 const char *smtp_from_header(struct smtp_session *smtp);
 

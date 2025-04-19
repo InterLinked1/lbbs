@@ -1377,6 +1377,11 @@ const char *smtp_from(struct smtp_session *smtp)
 	return smtp->from;
 }
 
+const char *smtp_from_address(struct smtp_session *smtp)
+{
+	return smtp->fromaddr;
+}
+
 const char *smtp_from_header(struct smtp_session *smtp)
 {
 	return smtp->fromheaderaddress;
@@ -2483,6 +2488,7 @@ static void update_fromaddr(struct smtp_session *smtp, char *fromheaderaddress)
 	} else {
 		fromaddr = fromheaderaddress;
 	}
+	ltrim(fromaddr); /* Strip leading space */
 	REPLACE(smtp->fromaddr, fromaddr);
 	/* Don't free smtp->fromheaderaddress yet, that we can still use */
 }
@@ -2501,11 +2507,13 @@ static int parse_from_header_from_file(struct smtp_session *smtp, const char *fi
 			break; /* End of headers */
 		}
 		if (STARTS_WITH(buf, "From:")) {
+			char fromcopy[256];
 			const char *f = buf + STRLEN("From:");
 			ltrim(f);
 			REPLACE(smtp->fromheaderaddress, f);
 			fclose(fp);
-			update_fromaddr(smtp, smtp->fromheaderaddress); /* Typically done in do_deliver before calling expand_and_deliver, so need to do manually for injections to set up from vars */
+			safe_strncpy(fromcopy, smtp->fromheaderaddress, sizeof(fromcopy)); /* update_fromaddr mutates the input */
+			update_fromaddr(smtp, fromcopy); /* Typically done in do_deliver before calling expand_and_deliver, so need to do manually for injections to set up from vars */
 			return 0;
 		}
 	}
@@ -2928,9 +2936,10 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 		}
 		safe_strncpy(fromhdrdup, smtp->fromheaderaddress, sizeof(fromhdrdup)); /* check_identity butchers the input */
 		/* If the two addresses are exactly the same, no need to do the same check twice. */
-		if (strcmp(smtp->from, smtp->fromheaderaddress) && check_identity(smtp, smtp->fromheaderaddress)) {
+		if (strcmp(smtp->from, smtp->fromheaderaddress) && check_identity(smtp, fromhdrdup)) {
 			return 0;
 		}
+		safe_strncpy(fromhdrdup, smtp->fromheaderaddress, sizeof(fromhdrdup)); /* update_fromaddr butchers the input */
 		update_fromaddr(smtp, fromhdrdup);
 		bbs_debug(4, "Updating internal from address from '%s' to '%s'\n", smtp->from, smtp->fromaddr);
 	}
