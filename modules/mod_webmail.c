@@ -669,8 +669,9 @@ static int client_imap_login(struct ws_session *ws, struct imap_client *client, 
 	free(decoded_password);
 
 	if (MAILIMAP_ERROR(res)) {
-		bbs_warning("Failed to login to IMAP server as %s\n", username);
-		client_set_error(ws, "IMAP server login failed");
+		/* We didn't do anything wrong, this is user error */
+		bbs_debug(1, "Failed to login to IMAP server as %s: %s\n", username, S_IF(imap->imap_response));
+		client_set_error(ws, "IMAP server login failed: %s", S_IF(imap->imap_response));
 		return -1;
 	}
 
@@ -1811,7 +1812,7 @@ static clist *sortall(struct imap_client *client, const char *sort, const char *
 		 * SEARCH is part of the base specification so it's always supported.
 		 * (the scenario being the server itself supports it but perhaps a proxied mailbox doesn't) */
 		if (*sorted) {
-			client_set_error(client->ws, "Sort failed or not supported for this mailbox");
+			client_set_status(client->ws, "Sort failed or not supported for this mailbox");
 		}
 	}
 	return list;
