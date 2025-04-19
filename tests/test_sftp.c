@@ -74,9 +74,9 @@ static ssh_session start_ssh(void)
 	} else if (ssh_options_set(session, SSH_OPTIONS_USER, TEST_USER) < 0) {
 		bbs_error("Failed to set option: %s\n", ssh_get_error(session));
 		goto cleanup;
-	}
-	if (ssh_connect(session)) {
+	} else if (ssh_connect(session)) {
 		bbs_error("Connection failed: %s\n",ssh_get_error(session));
+		goto cleanup;
 	}
 
 	/* Authenticate */
@@ -238,6 +238,7 @@ static int run(void)
 	/* First session, disconnect cleanly at the end */
 	session = start_ssh();
 	if (!session) {
+		bbs_error("Failed to start SSH session 1\n");
 		goto cleanup;
 	}
 	if (do_sftp(session)) {
@@ -246,15 +247,24 @@ static int run(void)
 	ssh_disconnect(session);
 	ssh_free(session);
 
+	/*! \todo XXX FIXME Small delay to allow the first session to end completely,
+	 * before starting the second one.
+	 * For some reason, without this, this test occasionally and frequently fails
+	 * as the 2nd connection encounters a connection failure (key exchange failure).
+	 * It almost seems as if somehow something about the first session is "leaking"
+	 * into the second session. */
+	usleep(250000);
+
 	/* Second session, don't disconnect cleanly at the end */
 	session = start_ssh();
 	if (!session) {
+		bbs_error("Failed to start SSH session 2\n");
 		goto cleanup;
 	}
 	if (do_sftp(session)) {
 		goto cleanup;
 	}
-	close(ssh_get_fd(session)); /* Rudely close the socket instead of doing a proper application-layer shutdown first */
+	close(ssh_get_fd(session)); /* Rudely close the socket instead of doing a proper application-layer shutdown first to see how net_ssh reacts */
 	res = 0;
 
 cleanup:

@@ -74,10 +74,15 @@ static pthread_t ssh_listener_thread;
 #define DEFAULT_NEW_FILE_PERMISSIONS (S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH)
 
 /* Uncomment to track file descriptors used by libssh as other file descriptors are, in fd.c.
- * This is not enabled by default, since libssh will close file descriptors passed to it,
+ * This is not enabled by default, since libssh will close file descriptors passed to it[1],
  * meaning if we keep track that it was opened, we can't reliably keep track when it was closed.
  * There is some logic to deal with this when this define is enabled, but it is not 100% reliable
- * and can cause the test_ssh and test_sftp tests to be flaky. */
+ * and can cause the test_ssh and test_sftp tests to be flaky.
+ *
+ * [1] If SSH_OPTIONS_FD is set, ssh_disconnect will not close the file descriptor, but
+ * it is always closed regardless in ssh_free.
+ */
+
 /* #define TRACK_SSH_FILE_DESCRIPTORS */
 
 /*
@@ -207,6 +212,10 @@ static int data_function(ssh_session session, ssh_channel channel, void *data, u
 
 	if (len == 0 || !cdata->node) {
 		return 0;
+	} else if (cdata->sftp) {
+		return 0; /* This callback is triggered for SFTP too, but there's no PTY, and we don't care about the raw commands */
+	} else if (bbs_assertion_failed(cdata->child_stdin != -1)) {
+		return 0; /* This would be -1 for an SFTP session, but we shouldn't be here for SFTP */
 	}
 
 	/* child_stdin = pty_master (relay data from client to PTY master) */
@@ -2109,12 +2118,13 @@ static void *ssh_listener(void *unused)
 /* If we are not keeping track of SSH file descriptors, we need to use the real accept(), not bbs_accept() */
 #undef accept
 #endif
+		bbs_debug(7, "Accepting new SSH connection\n");
 		sfd = accept(listenerfd, (struct sockaddr *) &sinaddr, &len);
 		if (sfd < 0) {
 			bbs_debug(3, "accept(%d) returned %d: %s\n", listenerfd, sfd, strerror(errno));
 			break;
 		}
-
+		bbs_debug(5, "Accepted new SSH connection on fd %d\n", sfd);
 		session = ssh_new();
 		if (ALLOC_FAILURE(session)) {
 			bbs_error("Failed to allocate SSH session\n");

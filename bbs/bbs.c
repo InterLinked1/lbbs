@@ -170,7 +170,7 @@ static void startup_checks(void)
 	char corefile[PATH_MAX];
 
 	/* Wherever we end up, if we can't write to the current directory, we may not be able to dump a core. */
-	if (!get_core_file_pattern(corefile, sizeof(corefile))) {
+	if (runuser && !get_core_file_pattern(corefile, sizeof(corefile))) {
 		/* Get parent */
 		const char *corefiledir = dirname(corefile);
 		if (corefiledir && !strcmp(corefiledir, ".")) {

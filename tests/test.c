@@ -724,7 +724,11 @@ static int test_bbs_spawn(const char *directory)
 		"--suppressions=../valgrind.supp", /* Move up one directory from tests, since that's where this file is */
 		/* =yes is not suitable for non-interactive usage: https://valgrind.org/docs/manual/manual-core.html#manual-core.suppress */
 		option_gen_supp ? "--gen-suppressions=all" : "--gen-suppressions=no",
+#if 1
+		/* If debugging valgrind errors that were emitted during runtime, you can temporarily comment this out
+		 * so the errors are properly interspersed with BBS output. */
 		option_helgrind ? "--tool=helgrind" : "--log-file=" VALGRIND_LOGFILE,
+#endif
 		option_helgrind ? "--tool=helgrind" : "--tool=memcheck",
 		LBBS_BINARY,
 		/* Begin options */
@@ -1310,10 +1314,12 @@ int main(int argc, char *argv[])
 	signal(SIGPIPE, SIG_IGN); /* Ignore SIGPIPE to avoid exiting on failed write to pipe */
 	signal(SIGALRM, sigalrm_handler);
 
-	bbs_debug(1, "Looking for tests in %s\n", XSTR(TEST_DIR));
+	bbs_debug(1, "Running test suite on PID %ld, looking for tests in %s\n", (long) getpid(), XSTR(TEST_DIR));
 	if (chdir(XSTR(TEST_DIR))) {
 		bbs_error("chdir(%s) failed: %s\n", XSTR(TEST_DIR), strerror(errno));
 	}
+
+	unlink(VALGRIND_LOGFILE); /* Remove the old valgrind logfile, in case we don't create a new one, don't want to display an old one */
 
 	if (testfilter) { /* Single test */
 		snprintf(fullpath, sizeof(fullpath), "%s/%s.so", XSTR(TEST_DIR), testfilter);
