@@ -297,11 +297,6 @@ static int run_init(int argc, char *argv[])
 		}
 	}
 
-	if (getrlimit(RLIMIT_NOFILE, &limits)) {
-		fprintf(stderr, "Unable to check file descriptor limit: %s\n", strerror(errno));
-		return -1;
-	}
-
 	/* It's common on some platforms to clear /var/run at boot.  Create the
 	 * socket file directory before we drop privileges. */
 	if (mkdir(BBS_RUN_DIR, 0755)) {
@@ -413,6 +408,7 @@ int bbs_view_settings(int fd)
 	char corefile[PATH_MAX] = "";
 	char curdir[PATH_MAX];
 	time_t now;
+	struct rlimit limits;
 
 	now = time(NULL);
 	print_time_elapsed(bbs_start_time, now, timebuf, sizeof(timebuf));
@@ -422,11 +418,15 @@ int bbs_view_settings(int fd)
 	if (!getcwd(curdir, sizeof(curdir))) {
 		curdir[0] = '\0';
 	}
+	if (getrlimit(RLIMIT_CORE, &limits)) {
+		bbs_error("Unable to check core limit: %s\n", strerror(errno));
+	}
 
-#define VIEW_FMT_D  "%-12s: %d\n"
-#define VIEW_FMT_U  "%-12s: %u\n"
-#define VIEW_FMT_S  "%-12s: %s\n"
-#define VIEW_FMT_SS "%-12s: %s (%s)\n"
+#define VIEW_FMT_D  "%-15s: %d\n"
+#define VIEW_FMT_U  "%-15s: %u\n"
+#define VIEW_FMT_LU  "%-15s: %lu\n"
+#define VIEW_FMT_S  "%-15s: %s\n"
+#define VIEW_FMT_SS "%-15s: %s (%s)\n"
 	bbs_dprintf(fd, VIEW_FMT_S, "Host", bbs_hostname());
 	bbs_dprintf(fd, VIEW_FMT_D, "PID", getpid());
 	bbs_dprintf(fd, VIEW_FMT_D, "Verbose", option_verbose);
@@ -436,12 +436,15 @@ int bbs_view_settings(int fd)
 	bbs_dprintf(fd, VIEW_FMT_S, "Run Group", S_IF(rungroup));
 	bbs_dprintf(fd, VIEW_FMT_S, "Dump Core", BBS_YN(option_dumpcore));
 	bbs_dprintf(fd, VIEW_FMT_S, "Core File", corefile);
+	bbs_dprintf(fd, VIEW_FMT_LU, "Core Soft Limit", (long unsigned) limits.rlim_cur);
+	bbs_dprintf(fd, VIEW_FMT_LU, "Core Hard Limit", (long unsigned) limits.rlim_max);
 	bbs_dprintf(fd, VIEW_FMT_S, "Current Dir", curdir);
 	bbs_dprintf(fd, VIEW_FMT_S, "Daemonized", BBS_YN(!option_nofork));
 	bbs_dprintf(fd, VIEW_FMT_SS, "BBS Uptime", timebuf, daysbuf);
 	bbs_dprintf(fd, VIEW_FMT_U, "Active Nodes", bbs_node_count());
 #undef VIEW_FMT_SS
 #undef VIEW_FMT_S
+#undef VIEW_FMT_LU
 #undef VIEW_FMT_U
 #undef VIEW_FMT_D
 	return 0;
