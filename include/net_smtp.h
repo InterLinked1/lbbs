@@ -385,6 +385,23 @@ int __smtp_register_queue_processor(int (*queue_processor)(struct smtp_session *
  */
 int smtp_unregister_queue_processor(int (*queue_processor)(struct smtp_session *smtp, const char *cmd, const char *args));
 
+enum dns_record_type {
+	DNS_RECORD_A = (1 << 0),
+	DNS_RECORD_CNAME = (1 << 1),
+};
+
+/*!
+ * \brief Register partial DNS lookup callback function, which will only look for either an A record or a CNAME record
+ * \param cb
+ * \retval 0 on success, -1 on failure
+ */
+#define smtp_register_partial_lookup(cb) __smtp_register_partial_lookup(cb, BBS_MODULE_SELF)
+
+int __smtp_register_partial_lookup(int (*callback)(const char *domain, enum dns_record_type rectype, char *buf, size_t len), void *mod);
+
+/*! \brief Unregister partial DNS lookup callback function */
+int smtp_unregister_partial_lookup(int (*callback)(const char *domain, enum dns_record_type rectype, char *buf, size_t len));
+
 enum smtp_delivery_agent_type {
 	SMTP_DELIVERY_AGENT_LOCAL = (1 << 0),
 	SMTP_DELIVERY_AGENT_EXTERNAL = (1 << 1),

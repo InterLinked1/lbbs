@@ -53,6 +53,21 @@
 #include "include/net_smtp.h"
 #include "include/mod_smtp_client.h"
 
+#if !defined(linux) || defined(__GLIBC__)
+#define HAVE_NS_SPRINTRR
+#endif
+
+/* Enable to debug DNS replies, but only if HAVE_NS_SPRINTRR on your platform,
+ * e.g. musl doesn't have it. */
+/* #define DEBUG_DNS_REPLIES */
+
+/* Do not modify this: */
+#ifndef HAVE_NS_SPRINTRR
+#ifdef DEBUG_DNS_REPLIES
+#error "DEBUG_DNS_REPLIES can only be enabled if HAVE_NS_SPRINTRR"
+#endif /* DEBUG_DNS_REPLIES */
+#endif /* !HAVE_NS_SPRINTRR */
+
 static int accept_relay_out = 1;
 static int minpriv_relay_out = 0;
 
@@ -155,6 +170,91 @@ static struct stringlist *get_static_routes(const char *domain)
 	return routes;
 }
 
+/*! \brief Copy the result record data into a string buffer */
+static int copy_ns_result(ns_msg msg, ns_rr rr, char *buf, size_t len)
+{
+	/* The source code for nslookup shows how to print each of the different record types */
+	if (ns_rr_type(rr) == T_A) {
+		inet_ntop(AF_INET, ns_rr_rdata(rr), buf, (socklen_t) len);
+	} else if (ns_rr_type(rr) == T_CNAME) {
+		if (ns_name_uncompress(ns_msg_base(msg), ns_msg_end(msg), ns_rr_rdata(rr), buf, len) < 0) {
+			bbs_warning("ns_name_uncompress failed\n");
+			return -1;
+		}
+	} else if (ns_rr_type(rr) == T_MX) {
+		if (ns_rr_rdlen(rr) < 2) {
+			return -1;
+		}
+		if (ns_name_uncompress(ns_msg_base(msg), ns_msg_end(msg), ns_rr_rdata(rr) + 2, buf, len) < 0) {
+			bbs_warning("ns_name_uncompress failed\n");
+			return -1;
+		}
+	} else {
+		return -1;
+	}
+	return 0;
+}
+
+static int dns_record_lookup(const char *domain, enum dns_record_type rectype, char *buf, size_t len)
+{
+	unsigned char answer[PACKETSZ] = "";
+	int res;
+	ns_msg msg;
+	int i;
+	int records = 0;
+
+	bbs_assert_exists(domain);
+	res = res_query(domain, C_IN, rectype & DNS_RECORD_CNAME ? T_CNAME : T_A, answer, sizeof(answer));
+	if (res == -1) {
+		/* This is expected if no record of this type exists. */
+		bbs_debug(4, "res_query %s failed for '%s': %s\n", rectype & DNS_RECORD_CNAME ? "CNAME" : "A", domain, hstrerror(h_errno)); /* res_query sets h_errno, not errno */
+		return 0;
+	}
+	res = ns_initparse(answer, res, &msg);
+	if (res < 0) {
+		bbs_error("Failed to look up %s record: %s\n", rectype & DNS_RECORD_CNAME ? "CNAME" : "A", strerror(errno));
+		return 0;
+	}
+	res = ns_msg_count(msg, ns_s_an);
+	if (res < 1) {
+		bbs_error("No %s records available for %s\n", rectype & DNS_RECORD_CNAME ? "CNAME" : "A", domain);
+		return 0;
+	}
+
+	/* The RFCs don't explicitly forbid multiple PTR records for an IP,
+	 * but the convention is just 1, and that's what we expect. */
+	/* Add each record to our sorted list */
+	for (i = 0; i < res; i++) {
+#ifdef DEBUG_DNS_REPLIES
+		char dispbuf[PACKETSZ] = "";
+#endif
+		ns_rr rr;
+		if (ns_parserr(&msg, ns_s_an, i, &rr)) {
+			continue;
+		}
+#ifdef DEBUG_DNS_REPLIES
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations" /* ns_sprintrr deprecated */
+		ns_sprintrr(&msg, &rr, NULL, NULL, dispbuf, sizeof(dispbuf));
+		bbs_debug(8, "DNS answer: %s\n", dispbuf);
+#pragma GCC diagnostic pop /* -Wdeprecated-declarations */
+#endif /* DEBUG_DNS_REPLIES */
+		/* For CNAME lookups, any records we get will be CNAME records.
+		 * However, A record lookups may also encounter CNAME records
+		 * in the process of resolution. */
+		if (ns_rr_type(rr) == T_A) {
+			records |= DNS_RECORD_A;
+		} else if (ns_rr_type(rr) == T_CNAME) {
+			records |= DNS_RECORD_CNAME;
+		} else {
+			continue;
+		}
+		/* Copy the result back to the caller so it can analyze it */
+		copy_ns_result(msg, rr, buf, len);
+	}
+	return records;
+}
+
 /*!
  * \brief Fill the results list with the MX results in order of priority
  * \param domain
@@ -172,13 +272,7 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 	struct mx_record *mx;
 	int added = 0;
 	ns_msg msg;
-#if !defined(linux) || defined(__GLIBC__)
-	char dispbuf[PACKETSZ] = "";
-	char *hostname, *tmp;
 	int i;
-	ns_rr rr;
-	int priority;
-#endif
 
 	if (strlen_zero(domain)) {
 		bbs_error("Missing domain\n");
@@ -199,7 +293,7 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 
 	res = res_query(domain, C_IN, T_MX, answer, sizeof(answer));
 	if (res == -1) {
-		bbs_warning("res_query failed for '%s'\n", domain); /* res_query does not set errno */
+		bbs_warning("res_query failed for '%s': %s\n", domain, hstrerror(h_errno)); /* res_query sets h_errno, not errno */
 		return -1;
 	}
 	res = ns_initparse(answer, res, &msg);
@@ -215,53 +309,37 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 
 	RWLIST_HEAD_INIT(&mxs);
 
-#if defined(linux) && !defined(__GLIBC__)
-	/* ns_sprintrr isn't available with musl */
-	bbs_error("MX record lookups unavailable on this platform, use static mail routing on this system instead\n");
-	return -1;
-#else
 	/* Add each record to our sorted list */
 	for (i = 0; i < res; i++) {
-		ns_parserr(&msg, ns_s_an, i, &rr);
+#ifdef DEBUG_DNS_REPLIES
+		char dispbuf[PACKETSZ] = "";
+#endif
+		char hostname[256] = "";
+		ns_rr rr;
+		int priority;
+
+		if (ns_parserr(&msg, ns_s_an, i, &rr)) {
+			continue;
+		}
+#ifdef DEBUG_DNS_REPLIES
+#pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations" /* ns_sprintrr deprecated */
 		ns_sprintrr(&msg, &rr, NULL, NULL, dispbuf, sizeof(dispbuf));
 #pragma GCC diagnostic pop /* -Wdeprecated-declarations */
 		bbs_debug(8, "NS answer: %s\n", dispbuf);
-		/* Parse the result */
-		hostname = dispbuf;
+#endif /* DEBUG_DNS_REPLIES */
 
-		/* Results will be formatted like so:
-		 * gmail.com.         1H IN MX        30 alt3.gmail-smtp-in.l.google.com.
-		 * gmail.com.         1H IN MX        5 gmail-smtp-in.l.google.com.
-		 * gmail.com.         1H IN MX        20 alt2.gmail-smtp-in.l.google.com.
-		 * gmail.com.         1H IN MX        40 alt4.gmail-smtp-in.l.google.com.
-		 * gmail.com.         1H IN MX        10 alt1.gmail-smtp-in.l.google.com.
-		 *
-		 * If there is no MX record, we'll get something like:
-		 * example.com.               1D IN MX        0 .
-		 * This is actually a special case in RFC 7505, which indicates the domain
-		 * receives no mail. In this case, we should NOT fall back to the A or AAAA record.
-		 * We should immediately abort.
-		 */
-
-		tmp = strstr(hostname, "MX");
-		if (!tmp) {
-			bbs_debug(3, "Skipping unexpected MX NS answer: %s\n", dispbuf);
+		if (ns_rr_type(rr) != T_MX) {
+			bbs_debug(3, "Skipping non-MX record\n");
 			continue;
 		}
-		tmp += STRLEN("MX");
-		ltrim(tmp);
-		hostname = tmp;
-		tmp = strsep(&hostname, " ");
-		priority = atoi(tmp); /* Note that 0 is a valid (and the highest) priority */
-		tmp = strrchr(hostname, '.');
-		if (tmp) {
-			*tmp = '\0'; /* Strip trailing . */
+
+		priority = (int) ns_get16(ns_rr_rdata(rr)); /* Note that 0 is a valid (and the highest) priority */
+		if (copy_ns_result(msg, rr, hostname, sizeof(hostname))) {
+			continue;
 		}
 
-		if (strlen_zero(hostname)) { /* No MX record */
-			/* The record was just a ., which means
-			 * the domain accepts no mail. */
+		if (!strcmp(hostname, ".")) { /* The record was just a ., which means the domain accepts no mail. */
 			RWLIST_REMOVE_ALL(&mxs, entry, free);
 			RWLIST_HEAD_DESTROY(&mxs);
 			stringlist_empty(results);
@@ -276,10 +354,10 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 		}
 		strcpy(mx->data, hostname); /* Safe */
 		mx->priority = priority;
+		bbs_debug(6, "MX record: %s = %d\n", hostname, priority);
 		RWLIST_INSERT_SORTED(&mxs, mx, entry, priority);
 		added++;
 	}
-#endif /* defined(linux) && !defined(__GLIBC__) */
 
 	if (!added) {
 		bbs_warning("No MX records available for %s\n", domain);
@@ -301,6 +379,31 @@ static int lookup_mx_all(const char *domain, struct stringlist *results)
 	}
 
 	RWLIST_HEAD_DESTROY(&mxs);
+	return 0;
+}
+
+static int cli_mx_lookup(struct bbs_cli_args *a)
+{
+	struct stringlist mxservers;
+	int i = 0;
+	char *hostname;
+	int res;
+
+	stringlist_init(&mxservers);
+	res = lookup_mx_all(a->argv[1], &mxservers);
+	if (res == -2) {
+		bbs_dprintf(a->fdout, "Domain '%s' does not accept mail\n", a->argv[1]);
+	} else if (res) {
+		bbs_dprintf(a->fdout, "MX lookup for '%s' failed\n", a->argv[1]);
+	} else {
+		while ((hostname = stringlist_pop(&mxservers))) {
+			/* We didn't store the priorities, so we can't print them here, but the order is correct!
+			 * (The priorities will show up in the debug log messages as well from lookup_mx_all.) */
+			bbs_dprintf(a->fdout, "#%d: %s\n", ++i, hostname);
+			free(hostname);
+		}
+	}
+	stringlist_empty_destroy(&mxservers);
 	return 0;
 }
 
@@ -1670,6 +1773,7 @@ static int cli_runq(struct bbs_cli_args *a)
 static struct bbs_cli_entry cli_commands_mailq[] = {
 	BBS_CLI_COMMAND(cli_mailq, "mailq", 1, "Show the current mail queue (optionally restricted to messages ending in a particular host suffix)", "showq <hostsuffix>"),
 	BBS_CLI_COMMAND(cli_runq, "runq", 1, "Retry delivery of messages in the mail queue (optionally restricted to messages directed at certain hosts)", "runq <hostsuffix>"),
+	BBS_CLI_COMMAND(cli_mx_lookup, "mxlookup", 2, "Return ordered MX records for a hostname (ordered by, but without, the priorities)", "mxlookup <domain>"),
 };
 
 /*! \brief Send a specific message asynchronously */
@@ -2041,6 +2145,7 @@ static int load_module(void)
 	}
 	bbs_cli_register_multiple(cli_commands_mailq);
 	smtp_register_queue_processor(queue_processor);
+	smtp_register_partial_lookup(dns_record_lookup);
 	return smtp_register_delivery_handler(&extdeliver, 90); /* Lowest priority */
 }
 
@@ -2049,6 +2154,7 @@ static int unload_module(void)
 	int res;
 	unloading = 1;
 	res = smtp_unregister_delivery_agent(&extdeliver);
+	smtp_unregister_partial_lookup(dns_record_lookup);
 	smtp_unregister_queue_processor(queue_processor);
 	bbs_cli_unregister_multiple(cli_commands_mailq);
 	bbs_pthread_interrupt(queue_thread);

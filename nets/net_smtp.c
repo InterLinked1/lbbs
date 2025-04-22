@@ -494,6 +494,19 @@ static int smtp_tarpit(struct smtp_session *smtp, int code, const char *message)
 	return 0;
 }
 
+/* Callback in mod_smtp_delivery_external, so we don't need to add a dependency on libresolv in this module */
+BBS_SINGULAR_CALLBACK_DECLARE(partial_lookup, int, const char *domain, enum dns_record_type rectype, char *buf, size_t len);
+
+int __smtp_register_partial_lookup(int (*callback)(const char *domain, enum dns_record_type rectype, char *buf, size_t len), void *mod)
+{
+	return bbs_singular_callback_register(&partial_lookup, callback, mod);
+}
+
+int smtp_unregister_partial_lookup(int (*callback)(const char *domain, enum dns_record_type rectype, char *buf, size_t len))
+{
+	return bbs_singular_callback_unregister(&partial_lookup, callback);
+}
+
 /*! \brief Forward-confirmed reverse DNS (FCrDNS) check */
 static int fcrdns_check(struct smtp_session *smtp)
 {
@@ -520,9 +533,35 @@ static int fcrdns_check(struct smtp_session *smtp)
 	if (bbs_get_hostname(smtp->node->ip, hostname, sizeof(hostname))) { /* Get reverse PTR record for client's IP */
 		bbs_warning("Unable to look up reverse DNS record for %s\n", smtp->node->ip);
 		smtp->failures += 4; /* Heavy penalty */
-	} else if (!bbs_hostname_has_ip(hostname, smtp->node->ip)) { /* Ensure that there's a match, with at least one A record */
+	} else if (!bbs_hostname_has_ip(hostname, smtp->node->ip)) { /* Ensure that there's a match, with at least one A record (may be indirect) */
 		bbs_warning("FCrDNS check failed: %s != %s\n", hostname, smtp->node->ip);
 		smtp->failures += 5;
+	} else {
+		/* The hostname returned by the PTR record for this IP SHOULD NOT be a CNAME, it should be a direct A record.
+		 * (And we don't like IPv6 mail servers anyways, so AAAA records don't count, either.)
+		 * Some mail servers are strict about this, so if a CNAME is present, it's an indicator
+		 * of DNS poorly configured for email, which is suspicious.
+		 * (For example, part 3 of the FCrDNS test will fail here: https://multirbl.valli.org/lookup/) */
+		if (!bbs_singular_callback_execute_pre(&partial_lookup)) {
+			char buf[256];
+			int res = 0;
+			res |= BBS_SINGULAR_CALLBACK_EXECUTE(partial_lookup)(hostname, DNS_RECORD_CNAME, buf, sizeof(buf));
+			if (res & DNS_RECORD_CNAME) {
+				/* If we got a CNAME record back, immediately fail the test.
+				 * Additionally, if we got to an A record via a CNAME record, both flags should be set, so we'll take this branch. */
+				bbs_warning("FCrDNS check failed: hostname returned by PTR lookup (%s) has a CNAME record (%s)\n", hostname, buf);
+				smtp->failures += 3;
+			} else {
+				res |= BBS_SINGULAR_CALLBACK_EXECUTE(partial_lookup)(hostname, DNS_RECORD_A, buf, sizeof(buf));
+				if (!(res & DNS_RECORD_A)) {
+					bbs_warning("FCrDNS check failed: hostname returned by PTR lookup (%s) does not have an A record\n", hostname);
+					smtp->failures += 6;
+				} else {
+					bbs_debug(4, "FCrDNS check passed: hostname returned by PTR lookup (%s) resolves via A record to %s\n", hostname, buf);
+				}
+			}
+			bbs_singular_callback_execute_post(&partial_lookup);
+		}
 	}
 	return 0;
 }
@@ -544,21 +583,23 @@ static int handle_connect(struct smtp_session *smtp)
 		 */
 		if (!smtp_relay_authorized_any(smtp)) {
 			smtp_reply0_nostatus(smtp, 220, "%s ESMTP Service Ready", smtp_hostname());
-		}
 
-		/*! \todo This would be a good place to check blacklist IPs (currently we only allow blacklisting hostnames).
-		 * This would allow us to avoid a DNS request for known bad sender IPs. */
+			/*! \todo This would be a good place to check blacklist IPs (currently we only allow blacklisting hostnames).
+			 * This would allow us to avoid a DNS request for known bad sender IPs. */
 
-		if (fcrdns_check(smtp)) {
-			/* This isn't if the FCrDNS check fails, it's if we couldn't do the check at all.
-			 * In this case, things are really broken, and we should just abort the connection. */
-			/* XXX We changed the response code from nonfinal 220 to final 421, not sure that's actually valid... */
-			smtp_reply_nostatus(smtp, 421, "Service unavailable, closing transmission channel");
-			return -1;
-		}
+			/* We skip FCrDNS check for authorized relays. For one, it's not necessary,
+			 * and since all authorized IPs may not have the DNS records in place, it could fail. */
+			if (fcrdns_check(smtp)) {
+				/* This isn't if the FCrDNS check fails, it's if we couldn't do the check at all.
+				 * In this case, things are really broken, and we should just abort the connection. */
+				/* XXX We changed the response code from nonfinal 220 to final 421, not sure that's actually valid... */
+				smtp_reply_nostatus(smtp, 421, "Service unavailable, closing transmission channel");
+				return -1;
+			}
 
-		if (smtp_tarpit(smtp, 220, "Waiting for service to initialize...")) {
-			return -1;
+			if (smtp_tarpit(smtp, 220, "Waiting for service to initialize...")) {
+				return -1;
+			}
 		}
 
 		/* This works even with TLS, because of the TLS I/O thread, it's either socket or pipe activity.
