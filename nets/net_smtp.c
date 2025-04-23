@@ -85,6 +85,7 @@ static int smtp_enabled = 1, smtps_enabled = 1, msa_enabled = 1;
 static int accept_relay_in = 1;
 static int require_starttls = 1;
 static int requirefromhelomatch = 0;
+static int relay_require_mail_match = 0;
 static int validatespf = 1;
 static int add_received_msa = 0;
 static int archivelists = 1;
@@ -682,7 +683,7 @@ static int exempt_from_starttls(struct smtp_session *smtp)
 	return 0;
 }
 
-static int is_benign_ip_mismatch(const char *helohost, const char *srcip)
+static int is_benign_ip_mismatch(struct smtp_session *smtp)
 {
 	/* Not all mismatches are malicious.
 	 * This covers the case of a private IP tunnel between two SMTP servers.
@@ -690,7 +691,7 @@ static int is_benign_ip_mismatch(const char *helohost, const char *srcip)
 	 * However, if this is the case, then there is probably an entry for the domain
 	 * by BOTH IP addresses in [authorized_relays]. */
 
-	if (bbs_hostname_is_ipv4(helohost)) {
+	if (bbs_hostname_is_ipv4(smtp->helohost)) {
 		/* This workaround only works if the HELO hostname is a domain,
 		 * rather than an IP address. If it's a hostname, we can check
 		 * if the source IP is authorized to send mail as that domain.
@@ -698,7 +699,41 @@ static int is_benign_ip_mismatch(const char *helohost, const char *srcip)
 		return 0;
 	}
 
-	return smtp_relay_authorized(srcip, helohost) || is_trusted_relay(srcip);
+	/* No need to check smtp_relay_authorized() here, it would be redundant.
+	 * We already did that prior to calling this function. */
+
+	if (is_trusted_relay(smtp->node->ip)) { /* It's another MTA we trust to deliver mail through us. */
+		return 1;
+	}
+
+	/* This covers a slight edge case here, the case of authorized relays using HELO hostnames
+	 * for which we are not allowed to send outbound mail, rather than a hostname
+	 * from which mail can be sent. For example, it's internal only and no public DNS
+	 * records exist for it.
+	 *
+	 * Suppose internal.example.com is allowed to relay mail for example.com.
+	 * This is used purely internally, and that is also its HELO hostname.
+	 * The host should not be configured as an authorized relay for internal.example.com,
+	 * because mail sent using a domain from this address should never be delivered publicly
+	 * (though it may be used internally, which is technically fine).
+	 * However, because of that, smtp_relay_authorized(srcip, "internal.example.org") will be false.
+	 * However, it is an authorized relay for SOME domain(s), just not that one,
+	 * and we shouldn't penalize it if it's trying to send mail for those domains.
+	 *
+	 * Effectively, as long as the host is authorized to relay mail for SOME hostname(s),
+	 * we don't *really* care what its HELO hostname is (assuming requirefromhelomatch=no)
+	 * Furthermore, we should not do any validation of the From header, because
+	 * that would break forwarding.
+	 */
+	if (smtp_relay_authorized_any(smtp)) {
+		bbs_debug(3, "Host %s authorized to relay mail (but not as %s)\n", smtp->node->ip, smtp->helohost);
+		/* Even though we accept a loose match here, we may still verify the MAIL FROM domain later,
+		 * if relay_require_mail_match is true. That is configurable as doing that could still
+		 * break mail forwarding, if upstream hosts leave the original envelope sender intact
+		 * for forwarded messages. */
+		return 1;
+	}
+	return 0;
 }
 
 /*! \brief Get the maximum allowed message size for this delivery */
@@ -748,8 +783,8 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		if (smtp_relay_authorized(smtp->node->ip, smtp->helohost)) {
 			/* The HELO host isn't used for determining if it's allowed to relay,
 			 * but in case the HELO host is something else, we shouldn't penalize it either. */
-			bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp->node->ip, smtp->helohost);
-		} else if (!smtp->msa && smtp_ip_mismatch(smtp->node->ip, smtp->helohost) && !is_benign_ip_mismatch(smtp->helohost, smtp->node->ip)) {
+			bbs_debug(2, "%s is explicitly authorized to relay mail as %s\n", smtp->node->ip, smtp->helohost);
+		} else if (!smtp->msa && smtp_ip_mismatch(smtp->node->ip, smtp->helohost) && !is_benign_ip_mismatch(smtp)) {
 			/* Message submission is exempt from these checks, the HELO hostname is not useful anyways */
 			bbs_warning("HELO/EHLO hostname '%s' does not resolve to client IP %s\n", smtp->helohost, smtp->node->ip);
 			/* This is suspicious. It is not invalid, but it very well might be.
@@ -1154,12 +1189,22 @@ static int handle_mail(struct smtp_session *smtp, char *s)
 		smtp_reply(smtp, 250, 2.0.0, "OK");
 		return 0;
 	}
+	/* Can't use bbs_strcnext here because that returns a const char* */
 	tmp = strchr(from, '@');
 	REQUIRE_ARGS(tmp); /* Must be user@domain */
 	tmp++; /* Skip @ */
 
 	if (smtp_relay_authorized(smtp->node->ip, tmp)) {
-		bbs_debug(2, "%s is explicitly authorized to relay mail from %s\n", smtp->node->ip, tmp);
+		/* Strict envelope sender match for relayed messages.
+		 * Not tolerant of forwarded messages that don't use SRS (Sender Rewriting Scheme). */
+		bbs_debug(2, "%s is authorized to relay mail from %s\n", smtp->node->ip, tmp);
+		smtp->tflags.relay = 1;
+	} else if (!relay_require_mail_match && smtp_relay_authorized_any(smtp)) {
+		/* No envelope sender match, but host is authorized to relay messages.
+		 * Less likely to cause issues, but may open us up to accepting messages
+		 * for relay from a rogue server that is technically only authorized to relay
+		 * messages for specific domains but sends us messages using other domains. */
+		bbs_debug(2, "%s is authorized to relay mail (but not specifically from %s)\n", smtp->node->ip, tmp);
 		smtp->tflags.relay = 1;
 	} else if (!smtp->msa) {
 		/* Don't require authentication simply because the sending domain is local.
@@ -3530,6 +3575,7 @@ static int load_config(void)
 		}
 	}
 	bbs_config_val_set_true(cfg, "general", "requirefromhelomatch", &requirefromhelomatch);
+	bbs_config_val_set_true(cfg, "general", "relay_require_mail_match", &relay_require_mail_match);
 	bbs_config_val_set_true(cfg, "general", "validatespf", &validatespf);
 	bbs_config_val_set_true(cfg, "general", "addreceivedmsa", &add_received_msa);
 	bbs_config_val_set_true(cfg, "general", "archivelists", &archivelists);
