@@ -255,6 +255,17 @@ unsigned int smtp_failure_count(struct smtp_session *smtp);
 /*! \brief Get RFC822 message as string */
 const char *smtp_message_body(struct smtp_filter_data *f);
 
+/*! \brief Initialize smtp_filter_data struct */
+void smtp_filter_data_init(struct smtp_filter_data *f, struct smtp_session *smtp, const char *recipient, size_t datalen, int srcfd, int outputfd);
+
+/*!
+ * \brief Write currently buffered prepended headers not yet part of the main message file to a file descriptor in the correct order
+ * \param f
+ * \param fd File descriptor to which to write the headers
+ * \retval 0 on success, -1 on failure
+ */
+int smtp_filter_write_prepended_headers(struct smtp_filter_data *f, int fd);
+
 /*! \brief Prepend arbitrary data to a message */
 #define smtp_filter_write(f, fmt, ...) __smtp_filter_write(f, __FILE__, __LINE__, __FUNCTION__, fmt, ## __VA_ARGS__)
 int __attribute__ ((format (gnu_printf, 5, 6))) __smtp_filter_write(struct smtp_filter_data *f, const char *file, int line, const char *func, const char *fmt, ...);

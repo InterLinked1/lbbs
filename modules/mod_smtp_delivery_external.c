@@ -1988,12 +1988,7 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 		return -1;
 	}
 
-	memset(&filterdata, 0, sizeof(filterdata));
-	filterdata.smtp = smtp;
-	filterdata.recipient = recipient;
-	filterdata.inputfd = srcfd;
-	filterdata.size = datalen;
-	filterdata.outputfd = fd;
+	smtp_filter_data_init(&filterdata, smtp, recipient, datalen, srcfd, fd);
 	smtp_run_filters(&filterdata, SMTP_DIRECTION_OUT);
 
 	/* Write the entire body of the message. */

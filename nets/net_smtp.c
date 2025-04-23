@@ -1565,20 +1565,100 @@ const char *smtp_message_body(struct smtp_filter_data *f)
 	return f->body;
 }
 
+void smtp_filter_data_init(struct smtp_filter_data *f, struct smtp_session *smtp, const char *recipient, size_t datalen, int srcfd, int outputfd)
+{
+	memset(f, 0, sizeof(struct smtp_filter_data));
+	f->smtp = smtp;
+	f->recipient = recipient;
+	f->size = datalen;
+	f->inputfd = srcfd;
+	f->outputfd = outputfd;
+}
+
+static int filter_create_temp_file(struct smtp_filter_data *f)
+{
+	if (f->outputfd != -1) {
+		return 0; /* Already created one that we can use */
+	}
+	strcpy(f->outputfile, "/tmp/smtpXXXXXX");
+	f->outputfd = mkstemp(f->outputfile);
+	if (f->outputfd < 0) {
+		bbs_error("mkstemp failed: %s\n", strerror(errno));
+		return -1;
+	}
+	bbs_debug(2, "Creating temporary output file (fd %d)\n", f->outputfd);
+	return 0;
+}
+
+static int filter_merge_files(struct smtp_session *smtp, struct smtp_filter_data *f, size_t *restrict datalen, int *restrict srcfd)
+{
+	int oldsrcfd;
+
+	if (f->outputfd == -1) {
+		return 0; /* Nothing to merge, never created a temp file */
+	}
+
+	/* Since outputfd was originally -1, if it's not any longer,
+	 * that means the source has been modified and we should use that as the new source */
+	oldsrcfd = *srcfd;
+	*srcfd = f->outputfd;
+	bbs_debug(6, "New source file descriptor: %d -> %d\n", oldsrcfd, *srcfd);
+
+	/* Since we had to make a new interim file, copy the original message and append it to the newly created file. */
+	if (bbs_copy_file(oldsrcfd, *srcfd, 0, (int) *datalen) != (int) *datalen) {
+		return -1;
+	}
+	close(oldsrcfd);
+	*datalen = (size_t) lseek(*srcfd, 0, SEEK_CUR); /* Get new size of data */
+	close(*srcfd);
+	*srcfd = open(f->outputfile, O_RDONLY);
+	if (*srcfd < 0) {
+		bbs_error("open(%s) failed: %s\n", f->outputfile, strerror(errno));
+		return -1;
+	}
+	/* smtp->datafile originally pointed to the original message received,
+	 * but if it has been modified by filter callbacks, update it to
+	 * point to the amended file.
+	 * This way, even though filters don't have access to headers added
+	 * by other filters, at this point, we can ensure that message processors
+	 * have access to any headers added by the filter stage. */
+	smtp->datafile = f->outputfile;
+	return 0;
+}
+
+static int filter_append(struct smtp_filter_data *f, char *buf, size_t len)
+{
+	if (bbs_write(f->outputfd, buf, (size_t) len) != (ssize_t) len) {
+		return -1;
+	}
+	free(buf);
+	return 0;
+}
+
+int smtp_filter_write_prepended_headers(struct smtp_filter_data *f, int fd)
+{
+	long int outputbytes;
+	ssize_t spliced;
+	if (f->outputfd == -1) {
+		return 0; /* Nothing to write */
+	}
+	outputbytes = lseek(f->outputfd, 0, SEEK_CUR); /* Get current position to figure out how many bytes have been written thus far */
+	spliced = bbs_splice(f->outputfd, fd, (size_t) outputbytes); /* bbs_splice leaves the file offset intact */
+	if (spliced != (ssize_t) outputbytes) {
+		bbs_error("splice %d -> %d failed (%ld != %lu): %s\n", f->outputfd, fd, spliced, f->size, strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
 int __smtp_filter_write(struct smtp_filter_data *f, const char *file, int line, const char *func, const char *fmt, ...)
 {
 	va_list ap;
 	char *buf;
 	int len;
 
-	if (f->outputfd == -1) {
-		strcpy(f->outputfile, "/tmp/smtpXXXXXX");
-		f->outputfd = mkstemp(f->outputfile);
-		if (f->outputfd < 0) {
-			bbs_error("mkstemp failed: %s\n", strerror(errno));
-			return -1;
-		}
-		bbs_debug(2, "Creating temporary output file (fd %d)\n", f->outputfd);
+	if (filter_create_temp_file(f)) {
+		return -1;
 	}
 
 	va_start(ap, fmt);
@@ -1593,9 +1673,7 @@ int __smtp_filter_write(struct smtp_filter_data *f, const char *file, int line, 
 	if (bbs_str_contains_bare_lf(buf)) {
 		bbs_warning("Appended data that contains bare LFs! Message is not RFC-compliant!\n");
 	}
-	bbs_write(f->outputfd, buf, (size_t) len);
-
-	free(buf);
+	filter_append(f, buf, (size_t) len);
 	return len;
 }
 
@@ -2320,12 +2398,7 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 	 * Note that DKIM signing is done for SUBMIT scope, and MailScript rules for SMTP_MSG_DIRECTION_OUT have already run,
 	 * so if headers were rewritten by rules, that's already done by the time of DKIM signing.
 	 */
-	memset(&filterdata, 0, sizeof(filterdata));
-	filterdata.smtp = smtp;
-	filterdata.recipient = NULL; /* This is for the message as a whole, not each recipient. Just making that explicit. */
-	filterdata.inputfd = srcfd;
-	filterdata.size = datalen;
-	filterdata.outputfd = -1;
+	smtp_filter_data_init(&filterdata, smtp, NULL, datalen, srcfd, -1); /* This is for the message as a whole, not each recipient, so arg 3 is NULL */
 	/* We treat fromlocal as submissions so that DSNs and other injected messages can be DKIM signed. */
 	smtp_run_filters(&filterdata, smtp->fromlocal || smtp->msa ? SMTP_DIRECTION_SUBMIT : SMTP_DIRECTION_IN);
 
@@ -2351,32 +2424,8 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		smtp->tflags.quarantine = 1;
 	}
 
-	/* Since outputfd was originally -1, if it's not any longer,
-	 * that means the source has been modified and we should use that as the new source */
-	if (filterdata.outputfd != -1) {
-		int oldsrcfd = srcfd;
-		srcfd = filterdata.outputfd;
-		bbs_debug(6, "New source file descriptor: %d -> %d\n", oldsrcfd, srcfd);
-
-		/* Since we had to make a new interim file, copy the original message and append it to the newly created file. */
-		if (bbs_copy_file(oldsrcfd, srcfd, 0, (int) datalen) != (int) datalen) {
-			return -1;
-		}
-		close(oldsrcfd);
-		datalen = (size_t) lseek(srcfd, 0, SEEK_CUR); /* Get new size of data */
-		close(srcfd);
-		srcfd = open(filterdata.outputfile, O_RDONLY);
-		if (srcfd < 0) {
-			bbs_error("open(%s) failed: %s\n", filterdata.outputfile, strerror(errno));
-			return -1;
-		}
-		/* smtp->datafile originally pointed to the original message received,
-		 * but if it has been modified by filter callbacks, update it to
-		 * point to the amended file.
-		 * This way, even though filters don't have access to headers added
-		 * by other filters, at this point, we can ensure that message processors
-		 * have access to any headers added by the filter stage. */
-		smtp->datafile = filterdata.outputfile;
+	if (filter_merge_files(smtp, &filterdata, &datalen, &srcfd)) {
+		return -1;
 	}
 
 	total = stringlist_size(&smtp->recipients);

@@ -153,26 +153,22 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 
 	/* See comment from smtp_run_filters, in net_smtp.c.
 	 * TL;DR f->inputfd only gives us the original message, not headers
-	 * appended by other filters that just ran, like SPF, DMARC, etc.
+	 * appended by other filters that just ran, like Received, SPF, DMARC, etc.
 	 * Unlike most other filters, SpamAssassin needs those headers
 	 * in order to do its job accurately, so we also explicitly
 	 * read whatever is in the output file BEFORE the rest of the message.
+	 *
 	 * Conveniently, this actually ends up matching the order that the
 	 * headers will be in when the final message is actually written to disk,
 	 * so this faithfully reproduces the message up to this point in time,
 	 * up to the last filter that executed just before this one. */
-	if (f->outputfd != -1) {
-		long int outputbytes = lseek(f->outputfd, 0, SEEK_CUR); /* Get current position to figure out how many bytes have been written thus far */
-		spliced = bbs_splice(f->outputfd, input[1], (size_t) outputbytes); /* bbs_splice leaves the file offset intact */
-		if (spliced != (ssize_t) outputbytes) {
-			bbs_error("splice %d -> %d failed (%ld != %lu): %s\n", f->outputfd, input[1], spliced, f->size, strerror(errno));
-			res = -1;
-			CLOSE(input[1]);
-			CLOSE(output[0]);
-			waitpid(pid, NULL, 0);
-			smtp_node(f->smtp)->childpid = 0;
-			goto cleanup;
-		}
+	if (smtp_filter_write_prepended_headers(f, input[1])) {
+		res = -1;
+		CLOSE(input[1]);
+		CLOSE(output[0]);
+		waitpid(pid, NULL, 0);
+		smtp_node(f->smtp)->childpid = 0;
+		goto cleanup;
 	}
 
 	/* We cannot use bbs_copy_file because that will attempt to use copy_file_range,

@@ -175,12 +175,7 @@ static int appendmsg(struct smtp_session *smtp, struct smtp_response *resp, stru
 
 	if (recipient) { /* For incoming messages, but not for saving copies of outgoing messages */
 		struct smtp_filter_data filterdata;
-		memset(&filterdata, 0, sizeof(filterdata));
-		filterdata.smtp = smtp;
-		filterdata.recipient = recipient;
-		filterdata.inputfd = srcfd;
-		filterdata.size = datalen;
-		filterdata.outputfd = fd;
+		smtp_filter_data_init(&filterdata, smtp, recipient, datalen, srcfd, fd);
 		smtp_run_filters(&filterdata, smtp_is_message_submission(smtp) ? SMTP_DIRECTION_SUBMIT : SMTP_DIRECTION_IN);
 	}
 
