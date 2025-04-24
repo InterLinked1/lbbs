@@ -1826,6 +1826,11 @@ static void *smtp_async_send(void *varg)
 		 * This ensures that only smtp_async_send, and nothing else, is doing queue stuff concurrently
 		 * (The queue can be processed in parallel, but we lock only once at the top level while processing the queue). */
 
+		/*! \todo Improve the locking to be less restrictive.
+		 * SMTP transactions could technically take minutes,
+		 * and since we are rdlock'ed this entire time,
+		 * we may not be able to wrlock the queue for a while. */
+
 		struct mailq_run qrun;
 		mailq_run_init(&qrun, QUEUE_RUN_FORCED); /* We're forcing the queue to run for a specific message, technically */
 		on_queue_file(mailtmpdir, controlfile, &qrun);

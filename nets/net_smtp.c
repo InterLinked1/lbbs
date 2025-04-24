@@ -2168,7 +2168,7 @@ int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *se
 		 * we should not notify external parties of a delay,
 		 * unless they have specifically requested it using the DSN extension. */
 		/*! \todo Once DSN support is fully added, also factor that into this check.
-		 * \todo For forwarded messages, we should not dispatch DSNs for ANY reason. */
+		 * \todo For forwarded messages, we should not dispatch DSNs for ANY reason. See RFC 3464 4.2 */
 		bbs_debug(2, "Skipping DSN for this transaction\n");
 		return 0;
 	}
@@ -2233,7 +2233,7 @@ int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *se
 				fprintf(fp, "Your message has been delayed. Delivery may succeed in the future, and we will send a final nondelivery notice if we are unable to deliver the message successfully.\r\n\r\n");
 				break;
 			case DELIVERY_DELIVERED:
-				fprintf(fp, "Your message has been delivered. A copy has been included for your reference.\r\n\r\n");
+				fprintf(fp, "Your message has been delivered.\r\n\r\n");
 				break;
 			case DELIVERY_RELAYED:
 			case DELIVERY_EXPANDED:
@@ -2296,6 +2296,7 @@ int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *se
 			strftime(date2, sizeof(date2), "%a, %d %b %Y %H:%M:%S %z", f[i]->retryuntil);
 			fprintf(fp, "Will-Retry-Until: %s\r\n", date2); /* 2.3.9 */
 		}
+		bbs_smtp_log(2, NULL, "Sending DSN to %s: Message to %s %s (%s)\n", full_sender, f[i]->recipient, delivery_action_name(f[i]->action), S_IF(f[i]->error));
 	}
 	fprintf(fp, "\r\n");
 
@@ -2307,8 +2308,12 @@ int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *se
 		fprintf(fp, "\r\n");
 		fflush(fp);
 
-		bbs_copy_file(srcfd, fileno(fp), 0, (int) msglen);
+		/*! \todo We should send at least the headers, even if we are not attaching the full original message.
+		 * (Otherwise, it's hard to identify what message this was).
+		 * The DSN extension also allows this to be controlled, so the full message or just headers should just be a default.
+		 * Also, if we just include headers, message/rfc822 might not be the best Content-Type, figure out what we should use instead... */
 
+		bbs_copy_file(srcfd, fileno(fp), 0, (int) msglen);
 		fseek(fp, 0, SEEK_END);
 	}
 
