@@ -357,7 +357,7 @@ static int send_filtered_headers(struct imap_session *imap, struct fetch_body_re
 		bbs_debug(3, "Orig input(%ld): %s\n", sendsize, sendstart);
 		adjust_send_offset(fbr, &offset, &sendsize);
 		sendstart += offset;
-		_imap_reply(imap, " %s<%ld> {%lu}\r\n%s", itemname, offset, sendsize, sendstart);
+		_imap_reply(imap, " %s<%ld> {%lu}\r\n%.*s", itemname, offset, sendsize, (int) sendsize, sendstart);
 	} else {
 		_imap_reply(imap, " %s {%lu}\r\n%s", itemname, sendsize, sendstart);
 	}

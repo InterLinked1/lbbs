@@ -386,6 +386,10 @@ static int run(void)
 	SWRITE(client1, "a32b UID FETCH 11 (BODY[]<2.7>)" ENDL); /* Bytes 2 through 8 */
 	CLIENT_EXPECT_EVENTUALLY(client1, "te: Mon");
 
+	/* Note: The above two cases fail to capture the case where we do a partial fetch
+	 * but the partial fetch is ignored, since the CLIENT_EXPECT macros just look for a substring.
+	 * This would be wrong, but would still pass. */
+
 	/* SEARCH */
 	SWRITE(client1, "a33 UID SEARCH LARGER 20 SEEN HEADER \"Content-Type\" \"plain\" BODY \"test\" OR OR SMALLER 200000 NOT FROM \"John Smith\" NOT FROM \"Paul Smith\"" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "a33 OK UID SEARCH");
