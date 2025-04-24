@@ -88,6 +88,14 @@ int bbs_strncount(const char *restrict s, size_t len, char c) __attribute__ ((pu
 int bbs_term_line(char *restrict c);
 
 /*!
+ * \brief Whether a string contains a CR or LF character
+ * \param s A NUL-terminated string
+ * \retval '\r' if CR present, '\n' if LF present, 0 if neither present
+ * \note If both are present, only the first one encountered is returned
+ */
+int bbs_str_contains_line_ending(const char *s);
+
+/*!
  * \brief Whether a NUL-terminated string contains bare line feeds (LF characters not immediately preceded by a CR)
  * \param s String to search
  * \retval 0 if no bare LFs

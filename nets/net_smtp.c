@@ -3260,6 +3260,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 	FILE *fp;
 	char template[256];
 	int datafail = 0;
+	int bare_cr_lf = 0;
 	int indataheaders = 1;
 
 	REQUIRE_HELO();
@@ -3279,6 +3280,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 
 	for (;;) {
 		size_t len;
+		int crlfres;
 		ssize_t res = bbs_node_readline(smtp->node, rldata, "\r\n", MIN_MS(3)); /* RFC 5321 4.5.3.2.5 */
 		if (res < 0) {
 			bbs_delete_file(template);
@@ -3291,7 +3293,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 				 * In practice, most messages that violate this seem to be spam anyways,
 				 * so we have no reason to tolerate noncompliant messages.
 				 * However, we need to reject it properly with the right error message before disconnecting. */
-				smtp_reply_nostatus(smtp, 550, "Maximum line length exceeded");
+				smtp_reply_nostatus(smtp, 550, "Maximum line length exceeded (violates RFC 5322 2.3)");
 				smtp->failures += 3; /* Semantically, this is a bad client. However, we're just going to disconnect now anyways, so this doesn't really matter. */
 			}
 			return -1;
@@ -3307,6 +3309,10 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 				if (smtp->tflags.datalen >= smtp_max_session_message_size(smtp)) {
 					/* Message too large. */
 					smtp_reply(smtp, 552, 5.2.3, "Your message exceeded our message size limits");
+				} else if (bare_cr_lf) {
+					smtp_reply(smtp, 554, 5.0.0, "Message rejected, bare %s detected (violates RFC 5322 2.3)", bare_cr_lf == '\r' ? "CR" : "LF");
+					smtp->failures += 2;
+					return 0;
 				} else {
 					/* Message not successfully received in totality, so reject it. */
 					smtp_reply(smtp, 451, 4.3.0, "Message not received successfully, try again");
@@ -3349,6 +3355,23 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 
 		if (datafail) {
 			continue; /* Corruption already happened, just ignore the rest of the message for now. */
+		}
+
+		crlfres = bbs_str_contains_line_ending(rldata->buf);
+		if (crlfres) {
+			/* The normal CR LF line ending will be consumed by bbs_node_readline.
+			 * Therefore, there should NOT be any bare CR or LF on its own.
+			 * Not only is it not RFC-compliant, but it would also open us up
+			 * to SMTP smuggling attacks where we could inadvertently relay
+			 * messages to another server that we did not intend to, which happens
+			 * when the outbound server ignores bare CR or LF and the inbound
+			 * server interprets them, allowing for a separate transaction to
+			 * be "stuffed" on the outbound side (see https://smtpsmuggling.com/).
+			 * By strictly rejecting such messages, we are not vulnerable as either
+			 * the outbound or inbound server. */
+			bare_cr_lf = crlfres;
+			datafail = 1;
+			continue;
 		}
 
 		if (indataheaders) {

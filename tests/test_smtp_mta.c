@@ -138,8 +138,6 @@ static int run(void)
 	/* Ensure mail loops are prevented */
 	SWRITE(clientfd, "RSET" ENDL);
 	CLIENT_EXPECT(clientfd, "250");
-	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
 	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
 	CLIENT_EXPECT(clientfd, "250");
 	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL ">\r\n");
@@ -155,11 +153,33 @@ static int run(void)
 	SWRITE(clientfd, "." ENDL); /* EOM */
 	CLIENT_EXPECT(clientfd, "554"); /* Mail loop detected */
 
-	/* Test messages that are exactly as long as the readline buffer. */
+	/* Test message with a bare line feed. Should be rejected. */
 	SWRITE(clientfd, "RSET" ENDL);
 	CLIENT_EXPECT(clientfd, "250");
 	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL ">\r\n");
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "DATA\r\n");
+	CLIENT_EXPECT(clientfd, "354");
+	SWRITE(clientfd, "Subject: Test\r\n"
+		"\r\n"
+		"Hello there\n, this is a malformed message\r\n"
+		"The end.\r\n");
+	SWRITE(clientfd, "." ENDL); /* EOM */
+	CLIENT_EXPECT(clientfd, "554");
+
+	/* Reconnect since we'd now get tarpitted */
+	close(clientfd);
+	clientfd = test_make_socket(25);
+	REQUIRE_FD(clientfd);
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "220 ");
+	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
+
+	/* Test messages that are exactly as long as the readline buffer. */
 	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
 	CLIENT_EXPECT(clientfd, "250");
 	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL ">\r\n");
@@ -196,8 +216,6 @@ static int run(void)
 	/* Ensure messages with lines over 1,000 characters are rejected */
 	SWRITE(clientfd, "RSET" ENDL);
 	CLIENT_EXPECT(clientfd, "250");
-	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
-	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
 	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
 	CLIENT_EXPECT(clientfd, "250");
 	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL ">\r\n");

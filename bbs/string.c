@@ -263,6 +263,17 @@ int bbs_term_line(char *restrict c)
 	return len;
 }
 
+int bbs_str_contains_line_ending(const char *s)
+{
+	while (*s) {
+		if (*s == '\r' || *s == '\n') {
+			return *s;
+		}
+		s++;
+	}
+	return 0;
+}
+
 int bbs_str_contains_bare_lf(const char *s)
 {
 	int prev_cr = 0;
