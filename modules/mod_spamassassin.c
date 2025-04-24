@@ -158,6 +158,8 @@ static int spam_filter_cb(struct smtp_filter_data *f)
 	 * in order to do its job accurately, so we also explicitly
 	 * read whatever is in the output file BEFORE the rest of the message.
 	 *
+	 * So, we explicitly write headers that were prepended by filters that ran before us.
+	 *
 	 * Conveniently, this actually ends up matching the order that the
 	 * headers will be in when the final message is actually written to disk,
 	 * so this faithfully reproduces the message up to this point in time,

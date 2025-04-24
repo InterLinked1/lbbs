@@ -13,6 +13,10 @@
  *
  */
 
+/* Needed since struct smtp_filter_data declares a stack-allocated stringlist.
+ * We do this to avoid needing to handle allocation failure if we were to allocate it. */
+#include "include/stringlist.h"
+
 /* SMTP relay port (mail transfer agents) */
 #define DEFAULT_SMTP_PORT 25
 
@@ -140,6 +144,7 @@ struct smtp_filter_data {
 	unsigned int reject:1;			/*!< Set by filter(s) to TRUE to reject acceptance of message. */
 	unsigned int quarantine:1;		/*!< Set by filter(s) to TRUE to quarantine message. */
 	/* INTERNAL: Do not access these fields directly. Use the publicly exposed functions. */
+	struct stringlist headers;		/*!< Prepended headers that need to be written to the message */
 	int outputfd;					/*!< File descriptor to write to, to prepend to message */
 	char outputfile[64];			/*!< Temporary output file name */
 	char *body;						/*!< RFC822 message as string */
@@ -256,7 +261,10 @@ unsigned int smtp_failure_count(struct smtp_session *smtp);
 const char *smtp_message_body(struct smtp_filter_data *f);
 
 /*! \brief Initialize smtp_filter_data struct */
-void smtp_filter_data_init(struct smtp_filter_data *f, struct smtp_session *smtp, const char *recipient, size_t datalen, int srcfd, int outputfd);
+void smtp_filter_data_init(struct smtp_filter_data *f, struct smtp_session *smtp, const char *recipient, size_t datalen, int srcfd, int outputfd) __attribute__ ((nonnull (1, 2)));
+
+/*! \brief Cleanup smtp_filter_data struct */
+void smtp_filter_data_cleanup(struct smtp_filter_data *f)  __attribute__ ((nonnull (1)));
 
 /*!
  * \brief Write currently buffered prepended headers not yet part of the main message file to a file descriptor in the correct order

@@ -155,6 +155,19 @@ int stringlist_push(struct stringlist *list, const char *s)
 	return 0;
 }
 
+int stringlist_push_allocated(struct stringlist *list, char *s)
+{
+	struct stringitem *i;
+
+	i = calloc(1, sizeof(*i));
+	if (ALLOC_FAILURE(i)) {
+		return -1;
+	}
+	i->s = s;
+	RWLIST_INSERT_HEAD(list, i, entry);
+	return 0;
+}
+
 int stringlist_push_sorted(struct stringlist *list, const char *s)
 {
 	struct stringitem *i;

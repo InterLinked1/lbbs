@@ -1573,6 +1573,12 @@ void smtp_filter_data_init(struct smtp_filter_data *f, struct smtp_session *smtp
 	f->size = datalen;
 	f->inputfd = srcfd;
 	f->outputfd = outputfd;
+	stringlist_init(&f->headers);
+}
+
+void smtp_filter_data_cleanup(struct smtp_filter_data *f)
+{
+	stringlist_empty_destroy(&f->headers);
 }
 
 static int filter_create_temp_file(struct smtp_filter_data *f)
@@ -1590,13 +1596,42 @@ static int filter_create_temp_file(struct smtp_filter_data *f)
 	return 0;
 }
 
+static int filter_append(struct smtp_filter_data *f, char *buf)
+{
+	/* Instead of immediately writing to f->outputfd, we instead push to the front of the string list.
+	 * This allows us to write the headers to the file newest to oldest at the end. */
+	return stringlist_push_allocated(&f->headers, buf); /* Here, we steal the reference to the buffer */
+}
+
+int smtp_filter_write_prepended_headers(struct smtp_filter_data *f, int fd)
+{
+	/* We can iterate the stringlist front to back, since later headers are inserted at the front. */
+	struct stringitem *i = NULL;
+	const char *header;
+
+	while ((header = stringlist_next(&f->headers, &i))) {
+		size_t len = strlen(header);
+		if (bbs_write(fd, header, len) != (ssize_t) len) {
+			return -1;
+		}
+	}
+	return 0;
+}
+
+/*! \brief Write headers to message newest to oldest, for COMBINED filters */
 static int filter_merge_files(struct smtp_session *smtp, struct smtp_filter_data *f, size_t *restrict datalen, int *restrict srcfd)
 {
 	int oldsrcfd;
 
 	if (f->outputfd == -1) {
 		return 0; /* Nothing to merge, never created a temp file */
+	} else if (stringlist_is_empty(&f->headers)) {
+		CLOSE(f->outputfd);
+		return 0;
 	}
+
+	/* Write the headers in reverse order to the beginning of the new file */
+	smtp_filter_write_prepended_headers(f, f->outputfd);
 
 	/* Since outputfd was originally -1, if it's not any longer,
 	 * that means the source has been modified and we should use that as the new source */
@@ -1606,11 +1641,13 @@ static int filter_merge_files(struct smtp_session *smtp, struct smtp_filter_data
 
 	/* Since we had to make a new interim file, copy the original message and append it to the newly created file. */
 	if (bbs_copy_file(oldsrcfd, *srcfd, 0, (int) *datalen) != (int) *datalen) {
+		CLOSE(f->outputfd);
 		return -1;
 	}
 	close(oldsrcfd);
 	*datalen = (size_t) lseek(*srcfd, 0, SEEK_CUR); /* Get new size of data */
 	close(*srcfd);
+	f->outputfd = -1; /* No longer pointing to a valid file descriptor */
 	*srcfd = open(f->outputfile, O_RDONLY);
 	if (*srcfd < 0) {
 		bbs_error("open(%s) failed: %s\n", f->outputfile, strerror(errno));
@@ -1626,40 +1663,11 @@ static int filter_merge_files(struct smtp_session *smtp, struct smtp_filter_data
 	return 0;
 }
 
-static int filter_append(struct smtp_filter_data *f, char *buf, size_t len)
-{
-	if (bbs_write(f->outputfd, buf, (size_t) len) != (ssize_t) len) {
-		return -1;
-	}
-	free(buf);
-	return 0;
-}
-
-int smtp_filter_write_prepended_headers(struct smtp_filter_data *f, int fd)
-{
-	long int outputbytes;
-	ssize_t spliced;
-	if (f->outputfd == -1) {
-		return 0; /* Nothing to write */
-	}
-	outputbytes = lseek(f->outputfd, 0, SEEK_CUR); /* Get current position to figure out how many bytes have been written thus far */
-	spliced = bbs_splice(f->outputfd, fd, (size_t) outputbytes); /* bbs_splice leaves the file offset intact */
-	if (spliced != (ssize_t) outputbytes) {
-		bbs_error("splice %d -> %d failed (%ld != %lu): %s\n", f->outputfd, fd, spliced, f->size, strerror(errno));
-		return -1;
-	}
-	return 0;
-}
-
 int __smtp_filter_write(struct smtp_filter_data *f, const char *file, int line, const char *func, const char *fmt, ...)
 {
 	va_list ap;
 	char *buf;
 	int len;
-
-	if (filter_create_temp_file(f)) {
-		return -1;
-	}
 
 	va_start(ap, fmt);
 	len = vasprintf(&buf, fmt, ap);
@@ -1673,7 +1681,7 @@ int __smtp_filter_write(struct smtp_filter_data *f, const char *file, int line, 
 	if (bbs_str_contains_bare_lf(buf)) {
 		bbs_warning("Appended data that contains bare LFs! Message is not RFC-compliant!\n");
 	}
-	filter_append(f, buf, (size_t) len);
+	filter_append(f, buf);
 	return len;
 }
 
@@ -2399,6 +2407,9 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 	 * so if headers were rewritten by rules, that's already done by the time of DKIM signing.
 	 */
 	smtp_filter_data_init(&filterdata, smtp, NULL, datalen, srcfd, -1); /* This is for the message as a whole, not each recipient, so arg 3 is NULL */
+	if (filter_create_temp_file(&filterdata)) {
+		return -1;
+	}
 	/* We treat fromlocal as submissions so that DSNs and other injected messages can be DKIM signed. */
 	smtp_run_filters(&filterdata, smtp->fromlocal || smtp->msa ? SMTP_DIRECTION_SUBMIT : SMTP_DIRECTION_IN);
 
@@ -2408,6 +2419,7 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		close(srcfd);
 		bbs_smtp_log(2, smtp, "Message from <%s> rejected due to policy failure\n", smtp->from);
 		smtp_reply(smtp, 550, 5.7.1, "Message rejected due to policy failure");
+		smtp_filter_data_cleanup(&filterdata);
 		return 0; /* Return 0 to inhibit normal failure message, since we already responded */
 	} else if (filterdata.quarantine) {
 		/* This is kind of a clunky hack.
@@ -2425,8 +2437,10 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 	}
 
 	if (filter_merge_files(smtp, &filterdata, &datalen, &srcfd)) {
+		smtp_filter_data_cleanup(&filterdata);
 		return -1;
 	}
+	smtp_filter_data_cleanup(&filterdata);
 
 	total = stringlist_size(&smtp->recipients);
 	if (total < 1) {

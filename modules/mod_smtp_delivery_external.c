@@ -1990,6 +1990,8 @@ static int external_delivery(struct smtp_session *smtp, struct smtp_response *re
 
 	smtp_filter_data_init(&filterdata, smtp, recipient, datalen, srcfd, fd);
 	smtp_run_filters(&filterdata, SMTP_DIRECTION_OUT);
+	smtp_filter_write_prepended_headers(&filterdata, fd);
+	smtp_filter_data_cleanup(&filterdata);
 
 	/* Write the entire body of the message. */
 	res = bbs_copy_file(srcfd, fd, 0, (int) datalen);

@@ -13,6 +13,8 @@
  *
  */
 
+#ifndef _STRINGLIST_H
+#define _STRINGLIST_H
 #include "include/linkedlists.h"
 
 /* Forward declarations */
@@ -101,6 +103,9 @@ char *stringlist_pop(struct stringlist *list);
  */
 int stringlist_push(struct stringlist *list, const char *s);
 
+/*! \brief Same as stringlist_push, but steal the reference to s, an allocated string. Do not use it after calling. */
+int stringlist_push_allocated(struct stringlist *list, char *s);
+
 /*!
  * \brief Add an item to a stringlist, such that the stringlist remains sorted alphabetically
  * \param list
@@ -126,3 +131,5 @@ int stringlist_push_tail(struct stringlist *list, const char *s);
  * \retval 0 on total success, -1 on partial or complete failure
  */
 int stringlist_push_list(struct stringlist *list, const char *s);
+
+#endif /* _STRINGLIST_H */

@@ -177,6 +177,8 @@ static int appendmsg(struct smtp_session *smtp, struct smtp_response *resp, stru
 		struct smtp_filter_data filterdata;
 		smtp_filter_data_init(&filterdata, smtp, recipient, datalen, srcfd, fd);
 		smtp_run_filters(&filterdata, smtp_is_message_submission(smtp) ? SMTP_DIRECTION_SUBMIT : SMTP_DIRECTION_IN);
+		smtp_filter_write_prepended_headers(&filterdata, fd);
+		smtp_filter_data_cleanup(&filterdata);
 	}
 
 	/* Write the entire body of the message. */
