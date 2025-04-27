@@ -590,7 +590,7 @@ static int handle_connect(struct smtp_session *smtp)
 
 			/* We skip FCrDNS check for authorized relays. For one, it's not necessary,
 			 * and since all authorized IPs may not have the DNS records in place, it could fail. */
-			if (fcrdns_check(smtp)) {
+			if (!bbs_ip_is_nonpublic_ipv4(smtp->node->ip) && fcrdns_check(smtp)) {
 				/* This isn't if the FCrDNS check fails, it's if we couldn't do the check at all.
 				 * In this case, things are really broken, and we should just abort the connection. */
 				/* XXX We changed the response code from nonfinal 220 to final 421, not sure that's actually valid... */
