@@ -636,7 +636,7 @@ static void bbs_shutdown(void)
 		exit(EXIT_FAILURE);
 	}
 	bbs_verb(2, "Shutting down BBS\n");
-	bbs_node_shutdown_all(shutting_down);
+	bbs_node_shutdown_all();
 
 	/* Let go of the lock in case a module
 	 * tries to perform some action that locks sig_lock,

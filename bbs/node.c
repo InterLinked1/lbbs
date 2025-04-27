@@ -54,7 +54,6 @@
 
 #define DEFAULT_MAX_NODES 64
 
-static int shutting_down = 0;
 static int new_node_connects = 1; /* Whether new node connections are allowed */
 
 static RWLIST_HEAD_STATIC(nodes, bbs_node);
@@ -272,7 +271,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, struct sockadd
 		return NULL;
 	}
 
-	if (shutting_down) {
+	if (bbs_is_shutting_down()) {
 		/* On the small chance we get a connection between when bbs_node_shutdown_all is called
 		 * but before I/O modules are unloaded, bail now. */
 		bbs_warning("Declining node allocation due to active shutdown\n");
@@ -596,21 +595,23 @@ int bbs_node_dead(struct bbs_node *node)
 /* Forward declaration */
 static int interrupt_node(struct bbs_node *node);
 
+#define node_shutdown_nonunique(n) node_shutdown(n, 0)
+
+/*! \note If calling outside of bbs_node_unlink (since that is called by the node thread), the node list MUST be RDLOCK'd when calling */
 static void node_shutdown(struct bbs_node *node, int unique)
 {
 	pthread_t node_thread;
 	unsigned int nodeid;
 	int skipjoin;
 
-	/* Prevent node from being freed until we release the lock. */
-	bbs_node_lock(node);
+	bbs_node_lock(node); /* Prevent node from being freed until we release the lock. */
 	if (!node->active) {
-		bbs_error("Attempt to shut down already inactive node %d?\n", node->id);
+		bbs_verb(3, "Ignoring attempt to shut down already inactive node %u\n", node->id);
 		bbs_node_unlock(node);
 		return;
 	}
 	node->active = 0;
-	bbs_debug(2, "Terminating node %d\n", node->id);
+	bbs_debug(2, "Beginning shut down of node %d\n", node->id);
 
 	/* Dispatch the event first, while the node is still intact. */
 	bbs_event_dispatch(node, EVENT_NODE_SHUTDOWN);
@@ -677,7 +678,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	bbs_node_unlock(node);
 
 	if (!unique) {
-		/* node is now no longer a valid reference, since bbs_node_handler calls node_free (in another thread) before it quits. */
+		/* If we called this function from non-owning thread, node may now no longer a valid reference, since bbs_node_handler calls node_free (in another thread) before it quits. */
 		if (skipjoin) {
 			bbs_debug(3, "Skipping join of node %d thread %lu\n", nodeid, (unsigned long) node_thread);
 		} else if (node_thread) { /* Either bbs_node_handler thread is detached, or somebody else is joining it */
@@ -695,22 +696,49 @@ static void node_shutdown(struct bbs_node *node, int unique)
 
 static void node_free(struct bbs_node *node)
 {
-	/* Wait for node_shutdown to release lock. */
+	struct bbs_node *n;
+
+	/* WRLOCK the list BEFORE locking the node. If we locked the node first,
+	 * another thread may be trying to shut nodes down and already have a RDLOCK,
+	 * in which case our subsequent WRLOCK would then deadlock when the other
+	 * thread attempts to lock a node. */
+	RWLIST_WRLOCK(&nodes);
+
+	/* If node_shutdown was called by another thread, this will ensure we wait for node_shutdown to release the lock. */
 	bbs_node_lock(node);
-	if (node->module) {
-		bbs_module_unref(node->module, 1);
-		node->module = NULL;
-	} else {
-		bbs_debug(3, "Node had no module reference?\n");
-	}
 	if (node->vars) {
 		bbs_vars_destroy(node->vars);
 		FREE(node->vars); /* Free the list itself */
 	}
 	free_if(node->ip);
 	free_if(node->term);
-	bbs_debug(4, "Node %d now freed\n", node->id);
-	bbs_verb(3, "Node %d has exited\n", node->id);
+
+	if (node->module) {
+		bbs_module_unref(node->module, 1);
+		node->module = NULL;
+	} else {
+		bbs_debug(3, "Node had no module reference?\n");
+	}
+
+	/* Now, remove node from the linked list.
+	 * We do this at the very end so that nodes remain listed in the node list output
+	 * until they are actually destroyed, since cleanup may not be immediate. */
+
+	n = RWLIST_REMOVE(&nodes, node, entry);
+	RWLIST_UNLOCK(&nodes); /* Nobody else knows about this node anymore, so it's safe to unlock now */
+
+	if (bbs_assertion_failed(n != NULL)) {
+		bbs_error("Node %u was not in the node list at destroy time?\n", node->id);
+	}
+
+	if (node->module) {
+		bbs_module_unref(node->module, 1);
+		node->module = NULL;
+	} else {
+		bbs_debug(3, "Node had no module reference?\n");
+	}
+
+	bbs_verb(3, "Node %u has exited\n", node->id);
 	bbs_node_unlock(node);
 	bbs_mutex_destroy(&node->lock);
 	bbs_mutex_destroy(&node->ptylock);
@@ -719,40 +747,27 @@ static void node_free(struct bbs_node *node)
 
 int bbs_node_unlink(struct bbs_node *node)
 {
-	struct bbs_node *n;
-
-	RWLIST_WRLOCK(&nodes);
-	n = RWLIST_REMOVE(&nodes, node, entry);
-	RWLIST_UNLOCK(&nodes);
-
-	if (!n) {
-		/* If bbs_node_shutdown_all was used, nodes are removed from the list
-		 * but not freed there. */
-		bbs_debug(1, "Node %d was already unlinked, freeing directly\n", node->id);
-	} else {
+	if (node->active) {
 		node_shutdown(node, 1);
-	}
-
-	/* If unlinking a single node, also free here */
+	} /* else, node was already shut down */
 	node_free(node);
 	return 0;
 }
 
+/*! \note Currently only called by cli_kick in this file */
 int bbs_node_shutdown_node(unsigned int nodenum)
 {
 	struct bbs_node *n;
 
-	RWLIST_WRLOCK(&nodes);
-	n = RWLIST_REMOVE_BY_FIELD(&nodes, id, nodenum, entry);
-	if (n) {
-		/* Wait for shutdown of node to finish. */
-		node_shutdown(n, 0);
-	} else {
-		bbs_error("Node %d not found in node list?\n", nodenum);
+	RWLIST_RDLOCK(&nodes);
+	RWLIST_TRAVERSE(&nodes, n, entry) {
+		if (n->id == nodenum) {
+			node_shutdown_nonunique(n); /* Wait for shutdown of node to finish */
+			break;
+		}
 	}
 	RWLIST_UNLOCK(&nodes);
-
-	return n ? 0 : -1;
+	return n ? 0 : -1; /* User may have specified a node that doesn't exist */
 }
 
 /*! \note Must be called locked */
@@ -808,19 +823,15 @@ unsigned int bbs_node_shutdown_mod(void *mod)
 	struct bbs_node *n;
 	unsigned int count = 0;
 
-	RWLIST_WRLOCK(&nodes);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&nodes, n, entry) {
+	RWLIST_RDLOCK(&nodes);
+	RWLIST_TRAVERSE(&nodes, n, entry) {
 		if (n->doormod == mod) {
 			int res;
 			/* "Dump" any nodes executing door modules from their current door.
 			 * We don't need to kick these nodes, just interrupt them. */
 			bbs_verb(5, "Interrupting node %u to allow %s to unload\n", n->id, bbs_module_name(mod));
-			/* Can't use bbs_interrupt_node since that will call bbs_node_get,
-			 * which invokes a RDLOCK on the node list.
-			 * Since we already hold a WRLOCK, that would cause a deadlock.
-			 * Instead, use interrupt_node directly. */
 			bbs_node_lock(n);
-			res = interrupt_node(n);
+			res = interrupt_node(n); /* Since we have the node object, call interrupt_node directly, not bbs_interrupt_node, which calls bbs_node_get and RDLOCK's the node list again */
 			bbs_node_unlock(n);
 			/* Wait for this node to exit the door */
 			if (!res && bbs_node_interrupt_wait(n, 250)) { /* Don't wait more than 250 ms for the node to exit the door */
@@ -830,28 +841,26 @@ unsigned int bbs_node_shutdown_mod(void *mod)
 			/* Kill any nodes that might be using a particular network module;
 			 * since they created the node and "own it", we can't unload them
 			 * without killing all their nodes. */
-			RWLIST_REMOVE_CURRENT(entry);
-			/* Wait for shutdown of node to finish. */
 			bbs_verb(5, "Kicking node %u to allow %s to unload\n", n->id, bbs_module_name(mod));
-			node_shutdown(n, 0);
+			node_shutdown_nonunique(n); /* Wait for shutdown of node to finish. */
 			count++;
 		}
 	}
-	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&nodes);
 
 	return count;
 }
 
-#define node_shutdown_nonunique(n) node_shutdown(n, 0)
-
-int bbs_node_shutdown_all(int shutdown)
+int bbs_node_shutdown_all(void)
 {
-	RWLIST_WRLOCK(&nodes);
-	shutting_down = shutdown;
-	RWLIST_REMOVE_ALL(&nodes, entry, node_shutdown_nonunique); /* Wait for shutdown of each node to finish. */
+	struct bbs_node *node;
+
+	RWLIST_RDLOCK(&nodes);
+	RWLIST_TRAVERSE(&nodes, node, entry) {
+		node_shutdown_nonunique(node); /* Wait for shutdown of each node to finish. */
+	}
 	RWLIST_UNLOCK(&nodes);
-	bbs_debug(1, "All nodes have been shut down\n");
+
 	return 0;
 }
 
@@ -1002,7 +1011,7 @@ static int cli_kick(struct bbs_cli_args *a)
 static int cli_kickall(struct bbs_cli_args *a)
 {
 	UNUSED(a);
-	return bbs_node_shutdown_all(0);
+	return bbs_node_shutdown_all();
 }
 
 static int cli_nodeconnects(struct bbs_cli_args *a)
@@ -2196,7 +2205,7 @@ static int bbs_goodbye(struct bbs_node *node)
 
 static int node_handler_term(struct bbs_node *node)
 {
-	if (shutting_down) {
+	if (bbs_is_shutting_down()) {
 		bbs_debug(5, "Exiting\n");
 		return -1;
 	}
@@ -2290,17 +2299,7 @@ void bbs_node_exit(struct bbs_node *node)
 	bbs_soft_assert(node->id > 0);
 	bbs_soft_assert(node->protname != NULL);
 	bbs_debug(3, "Node %d has ended its %s session\n", node->id, node->protname);
-	if (node->active) {
-		/* User quit: unlink and free */
-		bbs_node_unlink(node);
-	} else {
-		/* Server force quit the node.
-		 * For example, bbs_node_shutdown_all was called, which already holds a WRLOCK,
-		 * so we shouldn't call bbs_node_unlink or that will grab another WRLOCK and cause deadlock.
-		 * node_cleanup was already called, all we need to do is free.
-		 */
-		node_free(node);
-	}
+	bbs_node_unlink(node);
 }
 
 void *bbs_node_handler(void *varg)

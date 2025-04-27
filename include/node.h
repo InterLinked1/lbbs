@@ -286,9 +286,9 @@ int bbs_node_logout(struct bbs_node *node);
 int bbs_node_dead(struct bbs_node *node);
 
 /*!
- * \brief Remove and free a BBS node
+ * \brief Synchronously remove and free a BBS node
  * \param node Node to unlink
- * \note This should only be called by the node handling thread itself
+ * \note This must only be called by the node handling thread itself
  * \retval 0 on success, -1 on failure
  */
 int bbs_node_unlink(struct bbs_node *node);
@@ -310,9 +310,8 @@ unsigned int bbs_node_shutdown_mod(void *mod);
 
 /*!
  * \brief Shut down and cleanup any active nodes
- * \param shutdown 1 if BBS is shutting down and new node requests should be denied, 0 to simply kick all currently active nodes
  */
-int bbs_node_shutdown_all(int shutdown);
+int bbs_node_shutdown_all(void);
 
 /*!
  * \brief Asynchronously interrupt a blocking system call on a BBS node
