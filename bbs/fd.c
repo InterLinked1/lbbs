@@ -407,6 +407,11 @@ int __bbs_socket(int domain, int type, int protocol, const char *file, int line,
 	return res;
 }
 
+int bbs_std_close(int fd)
+{
+	return close(fd);
+}
+
 int __bbs_close(int fd, const char *file, int line, const char *func)
 {
 	int res;
@@ -496,6 +501,16 @@ FILE *__bbs_fopen(const char *path, const char *mode, const char *file, int line
 	fd = fileno(res);
 	STORE_COMMON_HELPER(fd, "fopen", "\"%s\",\"%s\"", path, mode);
 	return res;
+}
+
+FILE *bbs_std_fopen(const char *path, const char *mode)
+{
+	return fopen(path, mode);
+}
+
+int bbs_std_fclose(FILE *ptr)
+{
+	return fclose(ptr);
 }
 
 int __bbs_fclose(FILE *ptr, const char *file, int line, const char *func)

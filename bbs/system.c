@@ -895,7 +895,7 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 		} /* else, if CLONE_CLEAR_SIGHAND was provided to clone, then the signal handlers didn't carry over, we're good. */
 
 		if (fdout == -1) {
-			close(pfd[0]); /* Close read end of pipe */
+			bbs_std_close(pfd[0]); /* Close read end of pipe */
 			fd = pfd[1]; /* Use write end of pipe */
 			fdout = fd;
 		}
@@ -933,7 +933,7 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 				fprintf(stderr, "read returned %d for fd %d: %s\n", res, procpipe[0], strerror(errno));
 				_exit(errno);
 			}
-			close(procpipe[0]);
+			bbs_std_close(procpipe[0]);
 
 			/* Prepare temporary container */
 			if (clone_container(newroot, sizeof(newroot), atoi(pidbuf))) {
@@ -1045,7 +1045,7 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 				 * So, if there's an /etc/motd in the container, display its contents before we actually call exec.
 				 * Of course, we should only do this if we are actually launching a shell!
 				 * Fortunately, /etc/shells contains the list of shells, so we don't need to guess or hardcode a list. */
-				fp = fopen("/etc/shells", "r");
+				fp = bbs_std_fopen("/etc/shells", "r");
 				if (fp) {
 					char line[64];
 					int is_shell = 0;
@@ -1056,14 +1056,14 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 							break;
 						}
 					}
-					fclose(fp);
+					bbs_std_fclose(fp);
 					if (is_shell) {
-						fp = fopen("/etc/motd", "r");
+						fp = bbs_std_fopen("/etc/motd", "r");
 						if (fp) {
 							while ((fgets(line, sizeof(line), fp))) {
 								fputs(line, stdout); /* Use fputs instead of puts, since puts adds its own newline */
 							}
-							fclose(fp);
+							bbs_std_fclose(fp);
 						}
 					}
 				}

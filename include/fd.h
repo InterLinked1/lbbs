@@ -32,6 +32,10 @@
 #define dup(a)		__bbs_dup(a, __FILE__,__LINE__,__func__)
 #define eventfd(a,b)	__bbs_eventfd(a, b, __FILE__,__LINE__,__func__)
 
+int bbs_std_close(int fd);
+FILE *bbs_std_fopen(const char *path, const char *mode);
+int bbs_std_fclose(FILE *ptr);
+
 /*! \brief Manually indicate that a file descriptor is open. */
 #define bbs_mark_opened(f) __bbs_mark_opened(f, __FILE__,__LINE__,__func__)
 
