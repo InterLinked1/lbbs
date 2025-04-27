@@ -4329,7 +4329,7 @@ static int handle_idle(struct imap_session *imap)
 						 * It's reasonable to assume UIDVALIDITY will not change (though we'd get an untagged response if it did),
 						 * but UIDNEXT might be less predictable, since it's not guaranteed to increase 1 by 1. */
 						/* Again, bgmailbox is always an INBOX so we just hardcode that for now */
-						imap_client_send_wait_response_cb_noecho(client, -1, SEC_MS(5), notify_status_cb, NULL, "STATUS \"%s\" (%s%s)\r\n", "INBOX", "MESSAGES UNSEEN UIDNEXT UIDVALIDITY", (imap->condstore || imap->qresync) && client->virtcapabilities & IMAP_CAPABILITY_CONDSTORE ? " HIGHESTMODSEQ" : ""); /* Covers all cases: MessageNew, MessageExpunge, FlagChange */
+						imap_client_send_wait_response_cb_noecho(client, -1, SEC_MS(5), notify_status_cb, NULL, "STATUS \"%s\" (%s%s)\r\n", "INBOX", "MESSAGES RECENT UNSEEN UIDNEXT UIDVALIDITY", (imap->condstore || imap->qresync) && client->virtcapabilities & IMAP_CAPABILITY_CONDSTORE ? " HIGHESTMODSEQ" : ""); /* Covers all cases: MessageNew, MessageExpunge, FlagChange */
 						imap_client_idle_start(client); /* Mailbox is still selected, no need to reselect */
 						lastactivity = time(NULL);
 					} else {
