@@ -1530,7 +1530,7 @@ static void *queue_handler(void *unused)
 
 		/* Don't use usleep, as the SIGURG signal doesn't succeed in interrupting it */
 		if (bbs_safe_sleep_interrupt(SEC_MS((int) queue_interval))) {
-			bbs_debug(5, "Safe sleep returned: %s\n", strerror(errno));
+			bbs_debug(5, "Safe sleep returned\n");
 			break;
 		}
 	}

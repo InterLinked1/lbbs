@@ -35,6 +35,7 @@ static int pre(void)
 	test_load_module("mod_smtp_delivery_local.so");
 	test_load_module("net_imap.so");
 	test_load_module("mod_mail_events.so");
+	test_load_module("mod_mail_trash.so"); /* Not actively used, but ensure we can make the trash thread exit immediately and cleanly */
 
 	TEST_ADD_CONFIG("mod_mail.conf");
 	TEST_ADD_CONFIG("net_smtp.conf");

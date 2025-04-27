@@ -134,11 +134,14 @@ static void *trash_monitor(void *unused)
 {
 	UNUSED(unused);
 	for (;;) {
-		bbs_pthread_disable_cancel();
+		int i;
 		scan_mailboxes();
-		bbs_pthread_enable_cancel();
-		/* Not necessary to run more frequently than twice per day. */
-		sleep(60 * 60 * 12); /* use sleep instead of usleep since the argument to usleep would overflow an int */
+		for (i = 0; i < 12; i++) { /* Not necessary to run more frequently than twice per day. */
+			if (bbs_safe_sleep_interrupt(MIN_MS(60))) {
+				bbs_debug(5, "Safe sleep returned\n");
+				return NULL;
+			}
+		}
 	}
 	return NULL;
 }
@@ -172,7 +175,7 @@ static int load_module(void)
 static int unload_module(void)
 {
 	if (trashdays) {
-		bbs_pthread_cancel_kill(trash_thread);
+		bbs_pthread_interrupt(trash_thread);
 		bbs_pthread_join(trash_thread, NULL);
 	}
 	return 0;
