@@ -24,6 +24,7 @@
 #include <ctype.h>
 #include <regex.h>
 #include <float.h>
+#include <sys/time.h> /* use gettimeofday */
 
 #if defined(linux) && !defined(__GLIBC__)
 #include <libgen.h> /* use non-GNU basename */
@@ -41,6 +42,9 @@
 
 #include "include/mod_mail.h"
 #include "include/net_smtp.h"
+
+/* Within a rule, all EXEC actions combined can execute for up to 30 seconds max (which should be plenty!) */
+#define MAX_RULE_CUMULATIVE_EXEC_TIMEOUT SEC_MS(30)
 
 static int numcmp(char *s, int num)
 {
@@ -399,7 +403,7 @@ static int test_condition(struct smtp_msg_process *mproc, struct bbs_vars *vars,
 	return match;
 }
 
-static int exec_cmd(struct smtp_msg_process *mproc, char *s)
+static int exec_cmd(struct smtp_msg_process *mproc, time_t *restrict exec_timeout, char *s)
 {
 	int res;
 	char subbuf[1024];
@@ -408,6 +412,15 @@ static int exec_cmd(struct smtp_msg_process *mproc, char *s)
 	int wants_copy;
 	char tmpfile[256];
 	struct bbs_exec_params x;
+	struct timeval begin, end;
+
+	if (*exec_timeout <= 0) {
+		/* If this has happened, something has probably gone wrong somewhere with
+		 * one of the executions using all the available time.
+		 * But we need to ensure the script returns eventually, so now we abort. */
+		bbs_error("No execution time remaining, skipping EXEC execution\n");
+		return 1;
+	}
 
 	wants_copy = strstr(s, "${MAILFILE}") ? 1 : 0;
 
@@ -468,6 +481,11 @@ static int exec_cmd(struct smtp_msg_process *mproc, char *s)
 	}
 
 	EXEC_PARAMS_INIT_HEADLESS(x);
+
+	/* Limit the execution time */
+	gettimeofday(&begin, NULL);
+	x.exectimeout = *exec_timeout; /* Don't let any program run more than 60 seconds or it will hold the mail system up */
+
 	if (mproc->iteration == FILTER_MAILBOX) {
 		/* While we allow users to use the EXEC command,
 		 * the execution must be isolated (run in the container). */
@@ -480,6 +498,9 @@ static int exec_cmd(struct smtp_msg_process *mproc, char *s)
 	} /* else, global rule, since sysadmin has control over these, it's safe to allow execution of programs on host system */
 
 	res = bbs_execvp(mproc->node, &x, argv[0], argv); /* Directly return the exit code */
+
+	gettimeofday(&end, NULL);
+	*exec_timeout -= bbs_tvdiff_ms(end, begin);
 
 	if (x.user) {
 		bbs_user_destroy(x.user); /* Destroy the temporary user we created for execution */
@@ -500,7 +521,7 @@ cleanup:
 		return 0; \
 	}
 
-static int do_action(struct smtp_msg_process *mproc, struct bbs_vars *vars, const char *filename, int lineno, char *s)
+static int do_action(struct smtp_msg_process *mproc, struct bbs_vars *vars, time_t *restrict exec_timeout, const char *filename, int lineno, char *s)
 {
 	char *next;
 
@@ -542,7 +563,7 @@ static int do_action(struct smtp_msg_process *mproc, struct bbs_vars *vars, cons
 		mproc->drop = 1;
 	} else if (!strcasecmp(next, "EXEC")) { /* EXEC corresponds to Sieve action 'execution' (defined in an extension) */
 		REQUIRE_ARG(s);
-		return exec_cmd(mproc, s);
+		return exec_cmd(mproc, exec_timeout, s);
 	} else if (!strcasecmp(next, "REDIRECT")) { /* REDIRECT keyword based off like-named Sieve action */
 		REQUIRE_ARG(s);
 		/* Don't allow forwarding to self, or that will create a loop (one that can't even be detected, since message is not modified) */
@@ -586,6 +607,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 	int retval = 0;
 	int lineno = 0;
 	struct bbs_vars vars;
+	time_t exectimeout = MAX_RULE_CUMULATIVE_EXEC_TIMEOUT;
 
 	bbs_varlist_init(&vars);
 
@@ -695,7 +717,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 				}
 				break;
 			} else {
-				retval = do_action(mproc, &vars, rulesfile, lineno, s);
+				retval = do_action(mproc, &vars, &exectimeout, rulesfile, lineno, s);
 			}
 		} else if (STARTS_WITH(s, "IF ")) {
 			int cond, negate = 0;

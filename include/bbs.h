@@ -563,3 +563,10 @@ int bbs_safe_sleep_interrupt(int ms);
  * \note This temporarily overrides normal default SIGINT handling (shutdown the BBS) while active
  */
 void bbs_sigint_set_alertpipe(int p[2]);
+
+/*!
+ * \brief Wait for a SIGCHLD, with a timer
+ * \param ms Maximum number of ms for which to wait
+ * \retval Same as bbs_poll
+ */
+int bbs_sigchld_poll(int ms);

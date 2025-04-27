@@ -41,6 +41,7 @@ static int pre(void)
 	TEST_ADD_CONFIG_INTO_DIR("before.rules", TEST_MAIL_DIR); /* Global before MailScript */
 	TEST_MKDIR(TEST_MAIL_DIR "/1");
 	TEST_ADD_CONFIG_INTO_DIR(".rules", TEST_MAIL_DIR "/1"); /* Individual user MailScript */
+	TEST_RESET_MKDIR(TEST_TRANSFER_DIR);
 	return 0;
 }
 

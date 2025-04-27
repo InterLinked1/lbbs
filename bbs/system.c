@@ -34,6 +34,7 @@
 #include <sys/resource.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
+#include <sys/time.h> /* use gettimeofday */
 #include <sched.h> /* use clone */
 #include <dirent.h>
 #include <termios.h>
@@ -222,13 +223,38 @@ static int term_type_exists(const char *term)
 	return 1;
 }
 
-static void waitpidexit(pid_t pid, const char *filename, int *res)
+static void waitpidexit(pid_t pid, const char *filename, int *res, time_t timeout)
 {
 	pid_t w;
 	int status;
+	struct timeval begin, end;
+
+	if (timeout) {
+		gettimeofday(&begin, NULL);
+		bbs_debug(3, "Waiting up to %ld ms for process %d to exit\n", timeout, pid);
+	} else {
+		bbs_debug(5, "Waiting for process %d to exit\n", pid);
+	}
 
 	/* Wait for the child process to exit. */
 	do {
+		if (timeout) {
+			if (!bbs_sigchld_poll((int) timeout)) {
+				/* Timeout expired, forcibly kill it! */
+				bbs_warning("Processs %d has not yet exited\n", pid);
+				kill(pid, SIGKILL);
+			}
+			/* A SIGCHLD or some other event was received. Check if it's our child that exited. */
+			w = waitpid(pid, &status, WUNTRACED | WCONTINUED | WNOHANG | WNOWAIT);
+			if (!w) {
+				time_t diffms;
+				gettimeofday(&end, NULL);
+				diffms = bbs_tvdiff_ms(end, begin);
+				timeout -= diffms;
+				bbs_debug(3, "Process %d has not exited yet, will wait another %ld ms\n", pid, timeout);
+				continue;
+			}
+		}
 		w = waitpid(pid, &status, WUNTRACED | WCONTINUED);
 		if (w == -1) {
 			bbs_error("waitpid (%s): %s\n", filename, strerror(errno));
@@ -1143,8 +1169,7 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 		}
 	}
 
-	bbs_debug(5, "Waiting for process %d to exit\n", pid);
-	waitpidexit(pid, filename, &res);
+	waitpidexit(pid, filename, &res, e->exectimeout);
 	if (res == 1) {
 		/* Check if this failed because the $TERM used is not in the termcap database. */
 		if (node && !strlen_zero(node->term) && !term_type_exists(node->term)) {

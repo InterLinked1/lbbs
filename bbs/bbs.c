@@ -102,6 +102,7 @@ enum shutdown_type {
 };
 
 static int sig_alert_pipe[2] = { -1, -1 };
+static int sigchld_alert_pipe[2] = { -1, -1 };
 static int abort_startup = 0;
 static int want_shutdown = 0;
 static int shutting_down = 0;
@@ -579,8 +580,9 @@ int bbs_is_shutting_down(void)
 
 static void cleanup(void)
 {
-	/* Close alertpipe */
+	/* Close alertpipes */
 	bbs_alertpipe_close(sig_alert_pipe);
+	bbs_alertpipe_close(sigchld_alert_pipe);
 
 	/* Shutdown logging last. */
 	if (shutdown_type == SHUTDOWN_RESTART) {
@@ -776,6 +778,21 @@ static void __sigwinch_handler(int num)
 static struct sigaction sigwinch_handler = {
 	.sa_handler = __sigwinch_handler,
 };
+
+static void __sigchld_handler(int num)
+{
+	UNUSED(num);
+	bbs_alertpipe_write(sigchld_alert_pipe);
+}
+
+static struct sigaction sigchld_handler = {
+	.sa_handler = __sigchld_handler,
+};
+
+int bbs_sigchld_poll(int ms)
+{
+	return bbs_poll(sigchld_alert_pipe[0], ms);
+}
 
 static void __sig_catch_and_release_handler(int num)
 {
@@ -1068,6 +1085,7 @@ static void set_signals(void)
 		sigaction(SIGHUP, &ignore_sig_handler, NULL);
 	}
 	sigaction(SIGWINCH, &sigwinch_handler, NULL);
+	sigaction(SIGCHLD, &sigchld_handler, NULL);
 	sigaction(SIGURG, &sig_catch_and_release_handler, NULL);
 
 	/* By default, if we use pthread_kill to try to send SIGUSR1 to a thread,
@@ -1145,6 +1163,10 @@ int main(int argc, char *argv[])
 	/* Initialize alert pipe before installing any signal handlers. */
 	bbs_mutex_init(&sig_lock, NULL);
 	if (bbs_alertpipe_create(sig_alert_pipe)) {
+		bbs_shutdown();
+		exit(EXIT_FAILURE);
+	}
+	if (bbs_alertpipe_create(sigchld_alert_pipe)) {
 		bbs_shutdown();
 		exit(EXIT_FAILURE);
 	}
