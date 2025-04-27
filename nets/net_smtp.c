@@ -56,6 +56,7 @@
 #include "include/os.h"
 #include "include/base64.h"
 #include "include/node.h"
+#include "include/event.h"
 #include "include/auth.h"
 #include "include/user.h"
 #include "include/stringlist.h"
@@ -86,6 +87,7 @@ static int accept_relay_in = 1;
 static int require_starttls = 1;
 static int requirefromhelomatch = 0;
 static int relay_require_mail_match = 0;
+static int require_messageid = 0;
 static int validatespf = 1;
 static int add_received_msa = 0;
 static int archivelists = 1;
@@ -199,6 +201,8 @@ struct smtp_session {
 		unsigned int relay:1;		/* Message being relayed */
 		unsigned int quarantine:1;	/* Quarantine message */
 	} tflags; /* Transaction flags */
+
+	unsigned int attempted_transactions; /* Number of attempted transactions */
 
 	/* Not affected by RSET */
 	unsigned int failures;		/* Number of protocol violations or failures */
@@ -3260,8 +3264,10 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 	FILE *fp;
 	char template[256];
 	int datafail = 0;
-	int bare_cr_lf = 0;
+	int fatal = 0;
 	int indataheaders = 1;
+	int bare_cr_lf = 0;
+	int fromaddresses = 0;
 
 	REQUIRE_HELO();
 	REQUIRE_MAIL_FROM();
@@ -3283,7 +3289,6 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 		int crlfres;
 		ssize_t res = bbs_node_readline(smtp->node, rldata, "\r\n", MIN_MS(3)); /* RFC 5321 4.5.3.2.5 */
 		if (res < 0) {
-			bbs_delete_file(template);
 			fclose(fp);
 			if (res == -3) {
 				/* Buffer was exhausted.
@@ -3296,7 +3301,8 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 				smtp_reply_nostatus(smtp, 550, "Maximum line length exceeded (violates RFC 5322 2.3)");
 				smtp->failures += 3; /* Semantically, this is a bad client. However, we're just going to disconnect now anyways, so this doesn't really matter. */
 			}
-			return -1;
+			fatal = 1;
+			break;
 		}
 		s = rldata->buf;
 		len = (size_t) res;
@@ -3305,6 +3311,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 		if (!strcmp(s, ".")) { /* Entire message has now been received */
 			int dres;
 			fclose(fp); /* Have to close and reopen in read mode anyways */
+			smtp->attempted_transactions++;
 			if (datafail) {
 				if (smtp->tflags.datalen >= smtp_max_session_message_size(smtp)) {
 					/* Message too large. */
@@ -3312,7 +3319,6 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 				} else if (bare_cr_lf) {
 					smtp_reply(smtp, 554, 5.0.0, "Message rejected, bare %s detected (violates RFC 5322 2.3)", bare_cr_lf == '\r' ? "CR" : "LF");
 					smtp->failures += 2;
-					return 0;
 				} else {
 					/* Message not successfully received in totality, so reject it. */
 					smtp_reply(smtp, 451, 4.3.0, "Message not received successfully, try again");
@@ -3328,13 +3334,28 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 					/* The greater the hop count, the more we slow the message down.
 					 * We only do this for non-localhost, mainly to avoid holding up the test suite. */
 					if (bbs_node_safe_sleep(smtp->node, 200 * smtp->tflags.hopcount)) {
-						return -1;
+						fatal = -1;
+						break;
 					}
 				}
 				if (smtp->tflags.hopcount >= (int) max_hops) {
 					smtp_reply(smtp, 554, 5.6.0, "Message exceeded %u hops, this may indicate a mail loop", max_hops);
 					break;
 				}
+			} else if (require_messageid && !smtp->messageid && bbs_ip_is_nonpublic_ipv4(smtp->node->ip)) {
+				/* The tests frequently use messages without a Message-ID,
+				 * and we aren't as concerned about this for locally delivered messages.
+				 * For public messages from the Internet, however, reject messages without a Message-ID header.
+				 * Many large providers do this now.
+				 * This could probably be done by a spam filter rule as well, but this can save expensive operations
+				 * for obvious bogus messages. */
+				smtp_reply(smtp, 550, 5.7.1, "Messages without a Message-ID header are not accepted");
+				smtp->failures++;
+				break;
+			} else if (fromaddresses > 1) {
+				smtp_reply(smtp, 550, 5.7.1, "Messages with multiple From addresses are not accepted");
+				smtp->failures++;
+				break;
 			}
 
 			bbs_debug(5, "Handling receipt of %lu-byte message\n", smtp->tflags.datalen);
@@ -3346,11 +3367,8 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 			dres = do_deliver(smtp, template, smtp->tflags.datalen);
 			smtp->datafile = NULL;
 
-			bbs_delete_file(template);
-			smtp->tflags.datalen = 0;
-			/* RFC 5321 4.1.1.4: After DATA, must clear buffers */
-			smtp_reset(smtp);
-			return dres;
+			fatal = dres;
+			break;
 		}
 
 		if (datafail) {
@@ -3377,6 +3395,13 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 		if (indataheaders) {
 			if ((smtp->fromlocal || smtp->msa) && STARTS_WITH(s, "From:")) {
 				const char *newfromhdraddr = S_IF(s + 5);
+				if (smtp->fromheaderaddress) {
+					/*! \todo This check is not entirely robust. We need to also see if there are multiple addresses within a header,
+					 * not just if there are multiple headers.
+					 * Additionally, the rudimentary parsing in DATA doesn't handle multiline headers. */
+					bbs_warning("Message has more than one From header?\n");
+				}
+				fromaddresses++;
 				REPLACE(smtp->fromheaderaddress, newfromhdraddr);
 			} else if (STARTS_WITH(s, "Received:")) {
 				smtp->tflags.hopcount++;
@@ -3435,8 +3460,12 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 		}
 		smtp->tflags.datalen += (long unsigned) res;
 	}
+
+	/* In all cases, if we break out of the loop, fp has already been closed.
+	 * We just need to delete the file and reset the transaction. */
 	bbs_delete_file(template);
-	return 0;
+	smtp_reset(smtp); /* RFC 5321 4.1.1.4: After DATA, must clear buffers */
+	return fatal ? -1 : 0;
 }
 
 static int smtp_process(struct smtp_session *smtp, char *s, struct readline_data *rldata)
@@ -3597,6 +3626,11 @@ static void handle_client(struct smtp_session *smtp)
 			bbs_readline_flush(&rldata);
 		}
 	}
+	if (smtp->failures && !smtp->attempted_transactions) {
+		/* Positive failure count and the client never attempted to deliver a message.
+		 * Almost certainly spam traffic / not a legitimate SMTP client. */
+		bbs_event_dispatch(smtp->node, EVENT_NODE_BAD_REQUEST);
+	}
 }
 
 /*! \brief Thread to handle a single SMTP/SMTPS client */
@@ -3667,6 +3701,7 @@ static int load_config(void)
 	}
 	bbs_config_val_set_true(cfg, "general", "requirefromhelomatch", &requirefromhelomatch);
 	bbs_config_val_set_true(cfg, "general", "relay_require_mail_match", &relay_require_mail_match);
+	bbs_config_val_set_true(cfg, "general", "require_messageid", &require_messageid);
 	bbs_config_val_set_true(cfg, "general", "validatespf", &validatespf);
 	bbs_config_val_set_true(cfg, "general", "addreceivedmsa", &add_received_msa);
 	bbs_config_val_set_true(cfg, "general", "archivelists", &archivelists);
