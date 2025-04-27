@@ -174,6 +174,15 @@ int imap_poll(struct imap_session *imap, int ms, struct imap_client **clientout)
 		pres = poll(pfds, (nfds_t) numfds, ms);
 		if (pres < 0) {
 			if (errno == EINTR) {
+				if (!imap->node->active) {
+					/* Since we are using poll() directly, it's possible
+					 * that node_shutdown() was called by another thread on
+					 * this node during the poll(). poll() doesn't return error
+					 * or activity if that happens, even with POLLERR | POLLNVAL. */
+					bbs_debug(4, "Node was shutdown during IDLE poll, aborting\n");
+					res = -1;
+					break;
+				}
 				continue;
 			}
 			bbs_warning("poll failed: %s\n", strerror(errno));
@@ -1047,6 +1056,7 @@ int imap_substitute_remote_command(struct imap_client *client, char *s)
 
 int imap_client_mapping_file(struct imap_session *imap, char *buf, size_t len)
 {
+	bbs_assert_exists(imap->node->user);
 	return bbs_transfer_home_config_file(imap->node->user->id, ".imapremote", buf, len);
 }
 
