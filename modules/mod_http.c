@@ -187,9 +187,17 @@ static ssize_t __attribute__ ((format (gnu_printf, 2, 3))) __http_direct_writef(
 
 /* == End output I/O wrappers == */
 
-#define http_send_header(http, fmt, ...) \
-	__http_direct_writef(http, fmt, ## __VA_ARGS__); \
-	http_debug(5, "<= " fmt, ## __VA_ARGS__);
+/* Statement expression to return nonzero on I/O failure */
+#define http_send_header(http, fmt, ...) ({ \
+	int _x = 0; \
+	http_debug(5, "<= " fmt, ## __VA_ARGS__); \
+	if (__http_direct_writef(http, fmt, ## __VA_ARGS__) < 0) { \
+		_x = -1; \
+	} \
+	_x; \
+})
+
+#define HTTP_SEND_HEADER(http, fmt, ...) if (http_send_header(http, fmt, ## __VA_ARGS__)) { return -1; }
 
 static const char *http_response_code_name(enum http_response_code code)
 {
@@ -236,7 +244,7 @@ void http_send_response_status(struct http_session *http, enum http_response_cod
 	http_send_header(http, "HTTP/1.1 %u %s\r\n", code, http_response_code_name(code));
 }
 
-static void http_send_headers(struct http_session *http)
+static int http_send_headers(struct http_session *http)
 {
 	const char *key;
 	char *value;
@@ -246,7 +254,7 @@ static void http_send_headers(struct http_session *http)
 
 	/* Note: Headers sent here via http_send_header are not intended to be set by applications,
 	 * since they would be duped in the header list, and not override what is sent here. */
-	http_send_header(http, "Server: %s\r\n", SERVER_NAME);
+	HTTP_SEND_HEADER(http, "Server: %s\r\n", SERVER_NAME);
 
 	if (http->req->method & HTTP_VERSION_1_1_OR_NEWER) {
 		struct tm tm;
@@ -255,14 +263,14 @@ static void http_send_headers(struct http_session *http)
 		now = time(NULL);
 		localtime_r(&now, &tm);
 		strftime(datestr, sizeof(datestr), "%a, %d %b %Y %T %Z", &tm);
-		http_send_header(http, "Date: %s\r\n", datestr);
+		HTTP_SEND_HEADER(http, "Date: %s\r\n", datestr);
 	}
 
 	if (http->res->contentlength) {
-		http_send_header(http, "Content-Length: %lu\r\n", http->res->contentlength);
+		HTTP_SEND_HEADER(http, "Content-Length: %lu\r\n", http->res->contentlength);
 		http->res->chunked = 0;
 	} else if (http->res->chunked) {
-		http_send_header(http, "Transfer-Encoding: chunked\r\n");
+		HTTP_SEND_HEADER(http, "Transfer-Encoding: chunked\r\n");
 #if 0
 	/* Not needed, as it's legitimate to have 0-length bodies.
 	 * Applications will disable keepalive if needed. */
@@ -280,19 +288,20 @@ static void http_send_headers(struct http_session *http)
 
 	/* Include Connection header, except for websocket upgrades, which already have one */
 	if ((http->req->method & HTTP_VERSION_1_1_OR_NEWER) && http->res->code != HTTP_SWITCHING_PROTOCOLS) {
-		http_send_header(http, "Connection: %s\r\n", http->req->keepalive ? "keep-alive" : "close");
+		HTTP_SEND_HEADER(http, "Connection: %s\r\n", http->req->keepalive ? "keep-alive" : "close");
 	}
 
 	if (http->req->keepalive) {
-		http_send_header(http, "Keep-Alive: timeout=%d, max=%d\r\n", 1, 1000);
+		HTTP_SEND_HEADER(http, "Keep-Alive: timeout=%d, max=%d\r\n", 1, 1000);
 	}
 
 	/* variables are tail inserted, so iterating from the head is appropriate and preserves order */
 	while ((key = bbs_vars_peek_head(&http->res->headers, &value))) {
-		http_send_header(http, "%s: %s\r\n", key, value);
+		HTTP_SEND_HEADER(http, "%s: %s\r\n", key, value);
 		bbs_vars_remove_first(&http->res->headers);
 	}
 	NODE_SWRITE(http->node, http->node->wfd, "\r\n"); /* CR LF to indicate end of headers */
+	return 0;
 }
 
 int http_set_header(struct http_session *http, const char *header, const char *value)
@@ -345,27 +354,32 @@ int http_redirect(struct http_session *http, enum http_response_code code, const
 	return 0;
 }
 
-static void __http_write(struct http_session *http, const char *buf, size_t len)
+static int __http_write(struct http_session *http, const char *buf, size_t len)
 {
 	/* If headers have not yet been sent yet, send em */
-	if (!http->res->sentheaders) {
-		http_send_headers(http);
+	if (!http->res->sentheaders && http_send_headers(http)) {
+		return -1;
 	}
 
-	__http_direct_write(http, buf, len);
+	if (__http_direct_write(http, buf, len) < 0) {
+		return -1;
+	}
 	http->res->sentbytes += len;
+	return 0;
 }
 
-static void send_chunk(struct http_session *http, const char *buf, size_t len)
+static int send_chunk(struct http_session *http, const char *buf, size_t len)
 {
 	/* If headers have not yet been sent yet, send em */
-	if (!http->res->sentheaders) {
-		http_send_headers(http);
+	if (!http->res->sentheaders && http_send_headers(http)) {
+		return -1;
 	}
 
-	http_send_header(http, "%x\r\n", (unsigned int) len); /* Doesn't count towards body length, so don't use __http_write */
-	__http_write(http, buf, len);
-	__http_direct_write(http, "\r\n", STRLEN("\r\n")); /* Doesn't count towards length */
+	HTTP_SEND_HEADER(http, "%x\r\n", (unsigned int) len); /* Doesn't count towards body length, so don't use __http_write */
+	if (__http_write(http, buf, len)) {
+		return -1;
+	}
+	return __http_direct_write(http, "\r\n", STRLEN("\r\n")) < 0 ? -1 : 0; /* Doesn't count towards length */
 }
 
 static void flush_buffer(struct http_session *http, int final)
@@ -1750,6 +1764,8 @@ int http_parse_request(struct http_session *http, char *buf)
 		char *tmp;
 		res = bbs_node_readline(http->node, http->rldata, "\r\n", MIN_MS(1));
 		if (res < 0) {
+			/* Client disconnected without sending request headers */
+			bbs_event_dispatch(http->node, EVENT_NODE_BAD_REQUEST);
 			return -1;
 		} else if (res == 0) { /* CR LF = end of headers */
 			break;
@@ -1902,7 +1918,7 @@ static int http_handle_request(struct http_session *http, char *buf)
 		}
 		/* Send a 100 Continue intermediate response if we're good so far. */
 		http->res->sent100 = 1;
-		http_send_header(http, "HTTP/1.1 100 Continue\r\n");
+		HTTP_SEND_HEADER(http, "HTTP/1.1 100 Continue\r\n");
 		__http_direct_write(http, "\r\n", STRLEN("\r\n"));
 		/* XXX If libcurl gets a 100 followed by a 404, it will be very unhappy (it will hang forever). */
 	}
@@ -1998,7 +2014,9 @@ static void http_handler(struct bbs_node *node, int secure)
 				http.res->code = HTTP_OK;
 			}
 			http.res->chunked = 0; /* There's no body, definitely no need to use chunked transfer encoding */
-			http_send_headers(&http);
+			if (http_send_headers(&http)) {
+				res = -1;
+			}
 		}
 		if (http.res->contentlength && http.res->sentbytes != http.res->contentlength) {
 			bbs_warning("Meant to send %lu bytes, but actually sent %lu?\n", http.res->contentlength, http.res->sentbytes);

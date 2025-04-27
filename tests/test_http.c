@@ -77,6 +77,13 @@ static int run(void)
 	SWRITE(clientfd, ENDL); /* End of headers */
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "This is another test page");
 
+	/* Close the connection early */
+	SWRITE(clientfd, "GET /file2.txt HTTP/1.1" ENDL);
+	SWRITE(clientfd, "Host: localhost:8080" ENDL);
+	SWRITE(clientfd, "Connection: keep-alive" ENDL);
+	SWRITE(clientfd, ENDL); /* End of headers */
+	CLOSE(clientfd);
+
 	res = 0;
 
 cleanup:
