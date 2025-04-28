@@ -117,6 +117,32 @@ static int run(void)
 	TLS_SWRITE(ssl, "a8 STATUS \"Other Users.testuser2.INBOX\" (UNSEEN)" ENDL);
 	TLS_CLIENT_EXPECT_EVENTUALLY(ssl, "* STATUS \"Other Users.testuser2.INBOX\" (UNSEEN 2)"); /* The returned name should be in the pre-proxy format */
 
+	/* Test a case that previously had a bug.
+	 * If we SELECT the INBOX, then SELECT a proxied folder,
+	 * and a new message is delivered to the local INBOX,
+	 * that would previously be triggered as if the currently selected mailbox had a new message,
+	 * even though at most, it should trigger a STATUS with NOTIFY enabled. */
+	TLS_SWRITE(ssl, "a9 NOTIFY SET (SELECTED-DELAYED (MessageNew MessageExpunge FlagChange)) (personal (MessageNew MessageExpunge)) (subtree \"Other Users\" (MessageNew (FLAGS) MessageExpunge MailboxName FlagChange))" ENDL);
+	TLS_CLIENT_EXPECT_EVENTUALLY(ssl, "a9 OK");
+
+	TLS_SWRITE(ssl, "a10 SELECT INBOX" ENDL);
+	TLS_CLIENT_EXPECT_EVENTUALLY(ssl, "a10 OK");
+
+	TLS_SWRITE(ssl, "a11 SELECT \"Other Users.testuser2.INBOX\"" ENDL);
+	TLS_CLIENT_EXPECT_EVENTUALLY(ssl, "a11 OK");
+
+	TLS_SWRITE(ssl, "a12 IDLE" ENDL);
+	TLS_CLIENT_EXPECT_EVENTUALLY(ssl, "+");
+
+	if (test_make_messages(TEST_EMAIL, 1)) {
+		goto cleanup;
+	}
+
+	/* We should get notified about this, but with a STATUS, not an EXISTS */
+	TLS_CLIENT_EXPECT(ssl, "* STATUS \"INBOX\"");
+
+	TLS_SWRITE(ssl, "DONE" ENDL);
+
 	TLS_SWRITE(ssl, "z999 LOGOUT" ENDL);
 	TLS_CLIENT_EXPECT_EVENTUALLY(ssl, "* BYE");
 	res = 0;

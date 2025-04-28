@@ -247,7 +247,7 @@ static int cli_imap_sessions(struct bbs_cli_args *a)
 {
 	struct imap_session *imap;
 
-	bbs_dprintf(a->fdout, "%4s %-25s %-25s %4s %7s %s\n", "Node", "Current Mailbox", "Current Folder", "Idle", "Proxied", "Client ID");
+	bbs_dprintf(a->fdout, "%4s %-14s %4s %7s %11s %-28s %s\n", "Node", "Session", "Idle", "Proxied", "Mailbox", "Current Folder", "Client ID");
 	RWLIST_RDLOCK(&sessions);
 	RWLIST_TRAVERSE(&sessions, imap, entry) {
 		char mbox_buf[32];
@@ -259,8 +259,8 @@ static int cli_imap_sessions(struct bbs_cli_args *a)
 				mbox_name = mbox_buf;
 			}
 		}
-		bbs_dprintf(a->fdout, "%4u %-25s %-25s %4s %7s %s\n",
-			imap->node->id, S_IF(mbox_name), S_IF(imap->folder), BBS_YN(imap->idle), imap->client ? "Yes" : "No", S_IF(imap->clientid));
+		bbs_dprintf(a->fdout, "%4u %14p %4s %7s %11s %-28s %s\n",
+			imap->node->id, imap, BBS_YN(imap->idle), imap->client ? "Yes" : "No", S_IF(mbox_name), S_IF(imap->folder), S_IF(imap->clientid));
 	}
 	RWLIST_UNLOCK(&sessions);
 	return 0;

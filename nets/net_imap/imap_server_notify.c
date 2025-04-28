@@ -190,17 +190,36 @@ static void dump_events_str(enum mailbox_event_type events)
 }
 #endif
 
+/* This comparison compares the actual mailbox names to see if the folder name here matches.
+ * This covers any personal mailbox folders, as well as remote/proxied mailbox folders. */
+#define FOLDER_NAME_MATCHES(imap, folder) (imap->folder && !strcmp(folder, imap->folder))
+
+/* If the client never used the NOTIFY command, imap->notify is NULL, and in this case it's okay to not have a maildir
+ * Additionally, in handle_idle when checking if a remote mailbox with activity is applicable, maildir will be NULL. */
+#define MAILDIR_PATHS_MATCH(imap, maildir) (maildir && !strcmp(maildir, imap->dir))
+
+/* This comparison compares the maildirs involved by their directory paths on disk.
+ * This covers shared mailboxes or other users' mailboxes, since the name for different users may differ.
+ * However, we need to be careful to explicitly NOT match if we are actively using a remote/proxied folder,
+ * since that isn't using the maildir at the moment (in other words, the maildir path here is stale,
+ * because we didn't update it when we selected the remote folder).
+ * XXX We should probably also clear out imap->dir when selecting remote folders as well. */
+#define MAILDIRS_MATCH(imap, maildir) (!imap->client && MAILDIR_PATHS_MATCH(imap, maildir))
+
 int imap_notify_applicable_fetchargs(struct imap_session *imap, struct mailbox *mbox, const char *folder, const char *maildir, enum mailbox_event_type e, const char **fetchargs)
 {
 	if (!imap->notify) {
 		/* Basically, is it the same mailbox that's selected? */
 		bbs_assert_exists(folder);
-		return (imap->mbox == mbox && imap->folder && !strcmp(folder, imap->folder)) || (maildir && !strcmp(maildir, imap->dir));
+		/* If the client never used the NOTIFY command, imap->notify is NULL, and in this case it's okay to not have a maildir */
+		return (imap->mbox == mbox && FOLDER_NAME_MATCHES(imap, folder)) || MAILDIRS_MATCH(imap, maildir);
 	} else {
 		struct imap_notify *notify = imap->notify;
 		struct notify_watch *w;
 		enum mailbox_event_type events;
-		int selected = (imap->folder && folder && !strcmp(imap->folder, folder)) || (!s_strlen_zero(imap->dir) && maildir && !strcmp(imap->dir, maildir));
+		int selected_a = folder && FOLDER_NAME_MATCHES(imap, folder);
+		int selected_b = !s_strlen_zero(imap->dir) && MAILDIRS_MATCH(imap, maildir);
+		int selected = selected_a || selected_b;
 
 		if (notify->none) {
 			return 0;
@@ -222,7 +241,8 @@ int imap_notify_applicable_fetchargs(struct imap_session *imap, struct mailbox *
 			events = selected ? DEFAULT_EVENTS : 0;
 		}
 #ifdef DEBUG_NOTIFY
-		bbs_debug(3, "'%s'|'%s', '%s'|'%s', mailbox selected: %d, spec: %d, event match: %d\n", folder, imap->folder, maildir, imap->dir, selected, w->spec, events & e ? 1 : 0);
+		bbs_debug(3, "'%s'|'%s', '%s'|'%s' (remote client: %d), mailbox selected: %d [%d/%d], spec: %d, event match: %d\n",
+			folder, imap->folder, maildir, imap->dir, imap->client ? 1 : 0, selected, selected_a, selected_b, w->spec, events & e ? 1 : 0);
 		dump_events_str(events);
 #endif
 		RWLIST_UNLOCK(&notify->watchlist);

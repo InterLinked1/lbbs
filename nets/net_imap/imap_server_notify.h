@@ -67,7 +67,7 @@ int imap_notify_applicable(struct imap_session *imap, struct mailbox *mbox, cons
  * \param e Mask of relevant events
  * \param[out] fetchargs FETCH items requested by client for IMAP MessageNew
  * \retval 1 if update should be sent, mailbox currently selected
- * \retval -1 if update should be sent, mailboxb not currently selected
+ * \retval -1 if update should be sent, mailbox not currently selected
  * \retval 0 if update should not be sent
  */
 int imap_notify_applicable_fetchargs(struct imap_session *imap, struct mailbox *mbox, const char *folder, const char *maildir, enum mailbox_event_type e, const char **fetchargs) __attribute__((nonnull (1)));
