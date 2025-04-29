@@ -67,6 +67,8 @@
 #include "include/linkedlists.h"
 #include "include/startup.h"
 
+#define LISTEN_BACKLOG 64
+
 extern int option_rebind;
 
 int __bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_t uid, gid_t gid, const char *file, int line, const char *func)
@@ -103,7 +105,7 @@ int __bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, ui
 		close(uds_socket);
 		return -1;
 	}
-	res = listen(uds_socket, 5);
+	res = listen(uds_socket, LISTEN_BACKLOG);
 	if (res < 0) {
 		bbs_error("Unable to listen on UNIX domain socket %s: %s\n", sockfile, strerror(errno));
 		close(uds_socket);
@@ -264,7 +266,7 @@ static int __bbs_make_ip_socket(int *sock, int port, int type, const char *ip, c
 	}
 
 	if (type == SOCK_STREAM) {
-		if (listen(*sock, 10) < 0) {
+		if (listen(*sock, LISTEN_BACKLOG) < 0) {
 			bbs_error("Unable to listen on %s socket on port %d: %s\n", type == SOCK_STREAM ? "TCP" : "UDP", port, strerror(errno));
 			close(*sock);
 			*sock = -1;
@@ -1073,6 +1075,24 @@ void bbs_tcp_listener2(int socket, int socket2, const char *name, const char *na
 	return bbs_tcp_listener3(socket, socket2, -1, name, name2, NULL, handler, module);
 }
 
+struct handshake_args {
+	struct bbs_node *node;
+	int (*handshake)(struct bbs_node *node);
+};
+
+static void *node_handler_with_handshake(void *varg)
+{
+	struct handshake_args *a = varg;
+	struct bbs_node *node = a->node;
+	int (*handshake)(struct bbs_node *node) = a->handshake;
+	free(a);
+	if (handshake(node)) {
+		bbs_node_unlink(node);
+		return NULL;
+	}
+	return bbs_node_handler(node);
+}
+
 static void __bbs_tcp_listener(int socket, const char *name, int (*handshake)(struct bbs_node *node), void *(*handler)(void *varg), void *module)
 {
 	struct sockaddr_in sinaddr;
@@ -1121,11 +1141,24 @@ static void __bbs_tcp_listener(int socket, const char *name, int (*handshake)(st
 		node = __bbs_node_request(sfd, name, &sinaddr, -1, module);
 		if (!node) {
 			close(sfd);
-		} else if (handshake && handshake(node)) {
-			bbs_node_unlink(node);
 		} else {
 			node->skipjoin = 1;
-			if (bbs_pthread_create_detached(&node->thread, NULL, handler, node)) { /* Run the BBS on this node */
+			if (handshake) {
+				struct handshake_args *h;
+				/* Don't execute the handshake callback in this thread, or it will
+				 * block the accept from accepting further connections until complete. */
+				h = calloc(1, sizeof(*h));
+				if (ALLOC_FAILURE(h)) {
+					bbs_node_unlink(node);
+					continue;
+				}
+				h->handshake = handshake;
+				h->node = node;
+				if (bbs_pthread_create_detached(&node->thread, NULL, node_handler_with_handshake, h)) {
+					free(h);
+					bbs_node_unlink(node);
+				}
+			} else if (bbs_pthread_create_detached(&node->thread, NULL, handler, node)) { /* Run the BBS on this node */
 				bbs_node_unlink(node);
 			}
 		}
@@ -2425,7 +2458,7 @@ static int bbs_node_ansi_write(struct bbs_node *node, const char *restrict buf, 
 	char *sp;
 
 	pfd.fd = node->slavefd;
-	pfd.events = POLLOUT;
+	pfd.events = POLLOUT | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
 
 	REQUIRE_SLAVE_FD(node);
 	/* So helgrind doesn't complain about data race if node is shut down
@@ -2507,7 +2540,7 @@ ssize_t bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
 	}
 
 	pfd.fd = node->slavefd;
-	pfd.events = POLLOUT;
+	pfd.events = POLLOUT | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
 
 	REQUIRE_SLAVE_FD(node);
 	/* So helgrind doesn't complain about data race if node is shut down
@@ -2527,7 +2560,7 @@ ssize_t bbs_write(int fd, const char *buf, size_t len)
 	ssize_t res;
 
 	pfd.fd = fd;
-	pfd.events = POLLOUT;
+	pfd.events = POLLOUT | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
 
 	res = full_write(&pfd, fd, buf, len);
 	if (res <= 0) {
@@ -2546,7 +2579,7 @@ ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)
 
 	memset(&pfd, 0, sizeof(pfd));
 	pfd.fd = fd;
-	pfd.events = POLLOUT;
+	pfd.events = POLLOUT | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
 
 	res = timed_write(&pfd, fd, buf, len, ms);
 	if (res <= 0) {
@@ -2590,7 +2623,7 @@ ssize_t bbs_sendfile(int out_fd, int in_fd, off_t *offset, size_t count)
 
 	memset(&pfd, 0, sizeof(pfd));
 	pfd.fd = out_fd;
-	pfd.events = POLLOUT;
+	pfd.events = POLLOUT | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
 
 	for (;;) {
 #ifdef __linux__

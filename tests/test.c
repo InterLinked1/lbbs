@@ -1120,6 +1120,7 @@ static int run_test(const char *filename, int multiple)
 			if (modulefp) {
 				fprintf(modulefp, "[bbs]\r\nhostname=%s\r\n", TEST_HOSTNAME);
 				fprintf(modulefp, "[nodes]\r\naskdimensions=no\r\n"); /* Only needed for test_menus */
+				fprintf(modulefp, "maxnodes=1024\r\n"); /* For test_telnet, to increase concurrency and speed up test */
 				fclose(modulefp);
 			}
 			if (use_static_auth) {
