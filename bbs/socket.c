@@ -2430,7 +2430,7 @@ static int bbs_node_ansi_write(struct bbs_node *node, const char *restrict buf, 
 	REQUIRE_SLAVE_FD(node);
 	/* So helgrind doesn't complain about data race if node is shut down
 	 * and slavefd closed during write */
-	bbs_node_lock(node);
+	bbs_node_io_lock(node);
 	while (left > 0) {
 		ssize_t res;
 		size_t bytes;
@@ -2450,7 +2450,7 @@ static int bbs_node_ansi_write(struct bbs_node *node, const char *restrict buf, 
 			res = full_write(&pfd, node->slavefd, buf, bytes);
 			if (res < 0) {
 				bbs_debug(5, "Node %d: write (%lu bytes) returned %ld\n", node->id, bytes, res);
-				bbs_node_unlock(node);
+				bbs_node_io_unlock(node);
 				return (int) res;
 			}
 			buf += res;
@@ -2476,13 +2476,13 @@ static int bbs_node_ansi_write(struct bbs_node *node, const char *restrict buf, 
 			res = full_write(&pfd, node->slavefd, esc_seq, esc_len);
 			if (res < 0) {
 				bbs_debug(5, "Node %d: write returned %ld\n", node->id, res);
-				bbs_node_unlock(node);
+				bbs_node_io_unlock(node);
 				return (int) res;
 			}
 			/* Already incremented to account for these spaces, don't add anything further */
 		}
 	}
-	bbs_node_unlock(node);
+	bbs_node_io_unlock(node);
 	return (int) written;
 }
 
@@ -2512,12 +2512,12 @@ ssize_t bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
 	REQUIRE_SLAVE_FD(node);
 	/* So helgrind doesn't complain about data race if node is shut down
 	 * and slavefd closed during write */
-	bbs_node_lock(node);
+	bbs_node_io_lock(node);
 	res = full_write(&pfd, node->slavefd, buf, len);
 	if (res <= 0 || res != (ssize_t) len) {
 		bbs_debug(5, "Node %d: write returned %ld/%lu\n", node->id, res, len);
 	}
-	bbs_node_unlock(node);
+	bbs_node_io_unlock(node);
 	return res;
 }
 
@@ -2668,9 +2668,9 @@ ssize_t bbs_node_fd_write(struct bbs_node *node, int fd, const char *buf, size_t
 	}
 #endif
 
-	bbs_node_lock(node);
+	bbs_node_io_lock(node);
 	res = bbs_write(fd, buf, len);
-	bbs_node_unlock(node);
+	bbs_node_io_unlock(node);
 
 	return res;
 }
@@ -2775,13 +2775,13 @@ ssize_t bbs_node_any_fd_write(struct bbs_node *node, int fd, const char *buf, si
 	if (node->thread == pthread_self()) {
 		/* The caller could have used bbs_node_fd_write directly, but maybe it was iterating over a list of clients,
 		 * in which case it would be convenient to just use this function for all of them, since it's more general. */
-		bbs_node_lock(node);
+		bbs_node_io_lock(node);
 	} else {
 		int tries = 10;
 		int lockres;
 		/* Wait up to 100 ms to grab the lock */
 		for (;;) {
-			lockres = bbs_node_trylock(node);
+			lockres = bbs_node_io_trylock(node);
 			if (!lockres) { /* Success */
 				break;
 			}
@@ -2797,7 +2797,7 @@ ssize_t bbs_node_any_fd_write(struct bbs_node *node, int fd, const char *buf, si
 
 	/* Try to write the full data, but abort if we can't make progress */
 	res = bbs_timed_write(fd, buf, len, SEC_MS(1));
-	bbs_node_unlock(node);
+	bbs_node_io_unlock(node);
 
 	return res;
 }

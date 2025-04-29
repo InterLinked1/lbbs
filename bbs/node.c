@@ -329,6 +329,7 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, struct sockadd
 	}
 
 	bbs_mutex_init(&node->lock, NULL);
+	bbs_mutex_init(&node->iolock, NULL);
 	bbs_mutex_init(&node->ptylock, NULL);
 	node->id = newnodenumber;
 	node->fd = fd;
@@ -401,6 +402,24 @@ int bbs_node_unlock(struct bbs_node *node)
 {
 	bbs_assert_exists(node);
 	return bbs_mutex_unlock(&node->lock);
+}
+
+int __bbs_node_io_lock(struct bbs_node *node, const char *file, int lineno, const char *func, const char *lockname)
+{
+	bbs_assert_exists(node);
+	return __bbs_mutex_lock(&node->iolock, file, lineno, func, lockname);
+}
+
+int __bbs_node_io_trylock(struct bbs_node *node, const char *file, int lineno, const char *func, const char *lockname)
+{
+	bbs_assert_exists(node);
+	return __bbs_mutex_trylock(&node->iolock, file, lineno, func, lockname);
+}
+
+int bbs_node_io_unlock(struct bbs_node *node)
+{
+	bbs_assert_exists(node);
+	return bbs_mutex_unlock(&node->iolock);
 }
 
 int __bbs_node_pty_lock(struct bbs_node *node, const char *file, int lineno, const char *func, const char *lockname)
@@ -604,12 +623,13 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	unsigned int nodeid;
 	int skipjoin;
 
-	bbs_node_lock(node); /* Prevent node from being freed until we release the lock. */
+	/* Node list is locked, so it's okay to check fields without locking just yet, node can't go away. */
 	if (!node->active) {
 		bbs_verb(3, "Ignoring attempt to shut down already inactive node %u\n", node->id);
-		bbs_node_unlock(node);
 		return;
 	}
+
+	bbs_node_lock(node); /* Prevent node from being freed until we release the lock. */
 	node->active = 0;
 	bbs_debug(2, "Beginning shut down of node %d\n", node->id);
 
@@ -618,7 +638,7 @@ static void node_shutdown(struct bbs_node *node, int unique)
 
 	bbs_node_kill_child(node);
 
-	/* If shutting down from another thread, interrupt any blocking system calls, to force poll to return EINTR and terminate */
+	/* If shutting down from another thread, interrupt any blocking system calls, to force poll to return EINTR and terminate. */
 	if (node->thread != pthread_self()) {
 		interrupt_node(node);
 	}
@@ -627,6 +647,9 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	if (node->user) {
 		bbs_node_logout(node);
 	}
+
+	/* Only grab the I/O lock *after* we've already interrupted the node thread, to kick it out of any blocking I/O operation */
+	bbs_node_io_lock(node);
 
 	/* If the node is still connected, be nice and reset it. If it's gone already, forget about it. */
 	if (node->slavefd != -1) {
@@ -669,6 +692,8 @@ static void node_shutdown(struct bbs_node *node, int unique)
 	if (node->fd != -1) {
 		bbs_socket_close(&node->fd);
 	}
+
+	bbs_node_io_unlock(node);
 
 	node_thread = node->thread;
 	nodeid = node->id;
@@ -741,6 +766,7 @@ static void node_free(struct bbs_node *node)
 	bbs_verb(3, "Node %u has exited\n", node->id);
 	bbs_node_unlock(node);
 	bbs_mutex_destroy(&node->lock);
+	bbs_mutex_destroy(&node->iolock);
 	bbs_mutex_destroy(&node->ptylock);
 	free(node);
 }

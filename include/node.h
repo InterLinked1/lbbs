@@ -61,8 +61,9 @@ struct bbs_node {
 	char *ip;					/*!< Remote IP Address */
 	unsigned short int rport;	/*!< Remote port number */
 	unsigned short int port;	/*!< Local port number */
-	bbs_mutex_t lock;		/*!< Node lock */
-	bbs_mutex_t ptylock;	/*!< Node PTY lock */
+	bbs_mutex_t lock;			/*!< Node lock */
+	bbs_mutex_t iolock;			/*!< Node I/O lock */
+	bbs_mutex_t ptylock;		/*!< Node PTY lock */
 	time_t created;				/*!< Creation time */
 	pid_t childpid;				/*!< Child PID of process node is currently exec'ing (0 if none) */
 	size_t slow_bytes_left;		/*!< Number of bytes left */
@@ -222,6 +223,22 @@ int __attribute__ ((warn_unused_result)) __bbs_node_trylock(struct bbs_node *nod
 
 /*! Unlock a BBS node */
 int bbs_node_unlock(struct bbs_node *node);
+
+/*! Lock a BBS node for I/O operations */
+#define bbs_node_io_lock(node) __bbs_node_io_lock(node, __FILE__, __LINE__, __func__, #node)
+
+int __bbs_node_io_lock(struct bbs_node *node, const char *file, int lineno, const char *func, const char *lockname);
+
+/*!
+ * \brief Try locking a BBS node for I/O operations
+ * \retval 0 if successful, -1 if failed to acquire lock
+ */
+#define bbs_node_io_trylock(node) __bbs_node_io_trylock(node, __FILE__, __LINE__, __func__, #node)
+
+int __attribute__ ((warn_unused_result)) __bbs_node_io_trylock(struct bbs_node *node, const char *file, int lineno, const char *func, const char *lockname);
+
+/*! Unlock a BBS node for I/O operations */
+int bbs_node_io_unlock(struct bbs_node *node);
 
 /*! Lock a BBS node for PTY operations */
 #define bbs_node_pty_lock(node) __bbs_node_pty_lock(node, __FILE__, __LINE__, __func__, #node)
