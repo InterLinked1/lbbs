@@ -279,6 +279,11 @@ struct bbs_node *__bbs_node_request(int fd, const char *protname, struct sockadd
 	} else if (!new_node_connects) {
 		bbs_notice("Declining node allocation since new connections are currently disabled\n");
 		return NULL;
+	} else if (__bbs_module_is_unloading(mod)) {
+		/* If module currently in use but in the process of being unloaded,
+		 * don't allow any more to allow connections to drain. */
+		bbs_warning("Declining node allocation since module is currently being unloaded\n");
+		return NULL;
 	}
 
 	/* We want to allocate a node with the smallest node number available.
