@@ -4,15 +4,16 @@
 
 set -e
 
-# libcurl 7.86.0 or higher is required
+# libcurl 8.6.0 or higher is required
+mincurlver="8.6.0"
 curlv=$( curl-config --version | cut -d' ' -f2 | tr -d '\n' )
 if [ $? -eq 0 ]; then
-	printf "$curlv\n7.86.0" | sort -V | head -n1 | grep -qF 7.86.0 && ret=$? || ret=$? # capture failure since we have set -e
+	printf "$curlv\n$mincurlver" | sort -V | head -n1 | grep -qF $mincurlver && ret=$? || ret=$? # capture failure since we have set -e
 	if [ $ret -ne 0 ]; then
-		printf "libcurl $curlv (< 7.86.0) is currently installed, need to build from source\n"
+		printf "libcurl $curlv (< $mincurlver) is currently installed, need to build from source\n"
 		CURL_SRC_VER="8.13.0"
 	else
-		printf "libcurl $curlv (>= 7.86.0) is currently installed, package okay\n"
+		printf "libcurl $curlv (>= $mincurlver) is currently installed, package okay\n"
 	fi
 else
 	printf "libcurl is not currently installed?\n"
@@ -47,6 +48,11 @@ else
 fi
 # Use the dev branch for latest bug fixes
 git checkout dev
+
+# XXX Temporary workarounds to work around bugs described in https://github.com/Cogmasters/concord/issues/208
+git checkout b3a03abd473e9afd80331608d1348456b599c3c1 # Last known good version of the library. Remove once fixed upstream.
+echo "" > core/oa_hash.c # XXX Hacky workaround to fix duplicate linkage issue. Remove once fixed upstream.
+
 printf "Compiling libdiscord\n"
 CFLAGS="-fPIC" make shared
 make install
