@@ -23,9 +23,9 @@ struct bbs_ncurses_menu {
 	const char *title;
 	const char *subtitle;
 	const char *keybindings;
-	char keybind[MAX_NCURSES_MENU_OPTIONS];
-	char *options[MAX_NCURSES_MENU_OPTIONS];
-	char *optvals[MAX_NCURSES_MENU_OPTIONS];
+	char keybind[MAX_NCURSES_MENU_OPTIONS + 1];
+	char *options[MAX_NCURSES_MENU_OPTIONS + 1];
+	char *optvals[MAX_NCURSES_MENU_OPTIONS + 1];
 	int num_options;
 };
 

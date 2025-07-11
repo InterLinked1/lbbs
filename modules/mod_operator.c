@@ -637,7 +637,7 @@ static int get_directory_location(struct queue_call_handle *qch)
 	bbs_node_writef(qch->node, "CTY.ST: ");
 	res = bbs_node_read_line(qch->node, MIN_MS(5), citystate, sizeof(citystate));
 	if (res <= 0) {
-		return res;
+		return -2;
 	}
 	if (!strcasecmp(citystate, "XXX.")) {
 		city = state = NULL; /* Wildcard location */
