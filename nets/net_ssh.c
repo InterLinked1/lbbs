@@ -1016,6 +1016,7 @@ static void handle_session(ssh_event event, ssh_session session)
 	}
 	if (cdata.node && is_sftp) {
 		bbs_node_exit(cdata.node);
+		cdata.node = NULL; /* Pointer no longer valid */
 		sdata.user = NULL; /* User has been cleaned up by bbs_node_exit */
 	}
 
@@ -1066,6 +1067,7 @@ cleanup:
 		bbs_user_destroy(user);
 		user = NULL;
 	}
+	cdata.node = NULL; /* Pointer no longer valid. ssh_channel_close can trigger pty_resize, which calls node functions, so make sure it's NULL prior */
 	ssh_channel_close(sdata.channel); /* In some cases, this may be the 2nd time calling this, but shouldn't hurt */
 	MARK_SSH_FD_CLOSED_IF_CLOSED();
 #ifdef TRACK_SSH_FILE_DESCRIPTORS
