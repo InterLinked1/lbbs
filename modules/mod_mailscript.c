@@ -403,7 +403,10 @@ static int test_condition(struct smtp_msg_process *mproc, struct bbs_vars *vars,
 	return match;
 }
 
-static int exec_cmd(struct smtp_msg_process *mproc, time_t *restrict exec_timeout, char *s)
+#define SYSTEM_INVOKED 0
+#define USER_INVOKED 1
+
+static int exec_cmd(struct smtp_msg_process *mproc, time_t *restrict exec_timeout, int invoketype, char *s)
 {
 	int res;
 	char subbuf[1024];
@@ -413,6 +416,7 @@ static int exec_cmd(struct smtp_msg_process *mproc, time_t *restrict exec_timeou
 	char tmpfile[256];
 	struct bbs_exec_params x;
 	struct timeval begin, end;
+	int untrusted;
 
 	if (*exec_timeout <= 0) {
 		/* If this has happened, something has probably gone wrong somewhere with
@@ -424,8 +428,15 @@ static int exec_cmd(struct smtp_msg_process *mproc, time_t *restrict exec_timeou
 
 	wants_copy = strstr(s, "${MAILFILE}") ? 1 : 0;
 
+	/* mproc->iteration == FILTER_MAILBOX is a condition but is incomplete by itself.
+	 * The .rules file that exists in the user's maildir is only modifable by the sysop,
+	 * so that should be able to run programs directly on the host.
+	 * The .rules file in the user's home dir is user-mutable (untrusted),
+	 * so that must run inside the container. */
+	untrusted = mproc->iteration == FILTER_MAILBOX && invoketype == USER_INVOKED;
+
 	if (wants_copy) { /* This rule wants the message as a file */
-		if (mproc->iteration == FILTER_MAILBOX) {
+		if (untrusted) {
 			/* Since the container does not have access to any maildir, including the mailbox's,
 			 * we need to copy the data file to a temp file inside the container for access.
 			 * However, each container gets its own temporary environment, and thus its own /tmp.
@@ -466,7 +477,6 @@ static int exec_cmd(struct smtp_msg_process *mproc, time_t *restrict exec_timeou
 
 			bbs_node_var_set_fmt(mproc->node, "MAILFILE", "~/.config/%s", basename(mproc->datafile));
 		} else { /* FILTER_BEFORE_MAILBOX or FILTER_AFTER_MAILBOX */
-			
 			bbs_node_var_set(mproc->node, "MAILFILE", mproc->datafile);
 		}
 	}
@@ -486,7 +496,7 @@ static int exec_cmd(struct smtp_msg_process *mproc, time_t *restrict exec_timeou
 	gettimeofday(&begin, NULL);
 	x.exectimeout = *exec_timeout; /* Don't let any program run more than 60 seconds or it will hold the mail system up */
 
-	if (mproc->iteration == FILTER_MAILBOX) {
+	if (untrusted) {
 		/* While we allow users to use the EXEC command,
 		 * the execution must be isolated (run in the container). */
 		x.isolated = 1;
@@ -521,7 +531,7 @@ cleanup:
 		return 0; \
 	}
 
-static int do_action(struct smtp_msg_process *mproc, struct bbs_vars *vars, time_t *restrict exec_timeout, const char *filename, int lineno, char *s)
+static int do_action(struct smtp_msg_process *mproc, struct bbs_vars *vars, time_t *restrict exec_timeout, int invoketype, const char *filename, int lineno, char *s)
 {
 	char *next;
 
@@ -541,7 +551,7 @@ static int do_action(struct smtp_msg_process *mproc, struct bbs_vars *vars, time
 				snprintf(newdir, sizeof(newdir), "%s/.%s", mailbox_maildir(mproc->mbox), s);
 			}
 			if (eaccess(newdir, R_OK)) {
-				bbs_warning("MOVETO failed at %s:%d: %s\n", filename, lineno, strerror(errno));
+				bbs_warning("MOVETO failed at %s:%d: %s - %s\n", filename, lineno, strerror(errno), newdir);
 				return 0;
 			}
 		}
@@ -563,7 +573,7 @@ static int do_action(struct smtp_msg_process *mproc, struct bbs_vars *vars, time
 		mproc->drop = 1;
 	} else if (!strcasecmp(next, "EXEC")) { /* EXEC corresponds to Sieve action 'execution' (defined in an extension) */
 		REQUIRE_ARG(s);
-		return exec_cmd(mproc, exec_timeout, s);
+		return exec_cmd(mproc, exec_timeout, invoketype, s);
 	} else if (!strcasecmp(next, "REDIRECT")) { /* REDIRECT keyword based off like-named Sieve action */
 		REQUIRE_ARG(s);
 		/* Don't allow forwarding to self, or that will create a loop (one that can't even be detected, since message is not modified) */
@@ -589,11 +599,12 @@ static int do_action(struct smtp_msg_process *mproc, struct bbs_vars *vars, time
 /*!
  * \brief Run rules using a given MailScript rules file
  * \param mproc
+ * \param invoketype Invocation type
  * \param rulesfile Full path to MailScript to execute
  * \param usermaildir ull path to maildir of corresponding mailbox, if exists (could be NULL)
  * \retval 0 to continue, -1 to exit rule processing
  */
-static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, const char *usermaildir)
+static int run_rules(struct smtp_msg_process *mproc, int invoketype, const char *rulesfile, const char *usermaildir)
 {
 	int res = 0;
 	FILE *fp;
@@ -700,7 +711,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 				bbs_warning("Empty ACTION\n");
 				continue;
 			}
-			bbs_debug(5, "Executing action: %s\n", s);
+			bbs_debug(5, "Executing action at %s:%d: %s\n", rulesfile, lineno, s);
 			if (STARTS_WITH(s, "BREAK")) {
 				skip_rule = 1;
 			} else if (STARTS_WITH(s, "RETURN")) {
@@ -717,7 +728,7 @@ static int run_rules(struct smtp_msg_process *mproc, const char *rulesfile, cons
 				}
 				break;
 			} else {
-				retval = do_action(mproc, &vars, &exectimeout, rulesfile, lineno, s);
+				retval = do_action(mproc, &vars, &exectimeout, invoketype, rulesfile, lineno, s);
 			}
 		} else if (STARTS_WITH(s, "IF ")) {
 			int cond, negate = 0;
@@ -777,9 +788,9 @@ static int mailscript(struct smtp_msg_process *mproc)
 	}
 
 	if (mproc->iteration == FILTER_BEFORE_MAILBOX) {
-		return run_rules(mproc, before_rules, mboxmaildir);
+		return run_rules(mproc, SYSTEM_INVOKED, before_rules, mboxmaildir);
 	} else if (mproc->iteration == FILTER_AFTER_MAILBOX) {
-		return run_rules(mproc, after_rules, mboxmaildir);
+		return run_rules(mproc, SYSTEM_INVOKED, after_rules, mboxmaildir);
 	} else { /* FILTER_MAILBOX */
 		int res;
 		char script[263];
@@ -792,13 +803,13 @@ static int mailscript(struct smtp_msg_process *mproc)
 		 * Second, the version in the user's home directory, which only exists
 		 * for user mailboxes, but can be modified directly by them. */
 		snprintf(script, sizeof(script), "%s/.rules", mboxmaildir);
-		res = run_rules(mproc, script, mboxmaildir);
+		res = run_rules(mproc, SYSTEM_INVOKED, script, mboxmaildir);
 		if (res) {
 			return res;
 		}
 		/* If this is a user's mailbox, also execute any rules in the user's home directory. */
 		if (mproc->userid && !bbs_transfer_home_config_file(mproc->userid, ".rules", script, sizeof(script))) {
-			res = run_rules(mproc, script, mboxmaildir);
+			res = run_rules(mproc, USER_INVOKED, script, mboxmaildir);
 		}
 		return res;
 	}

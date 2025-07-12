@@ -2026,6 +2026,7 @@ int imap_client_login(struct bbs_tcp_client *client, struct bbs_url *url, struct
 		IMAP_CLIENT_EXPECT(client, "a1 OK");
 	} else {
 		if (!strstr(client->buf, "a1 OK")) {
+			bbs_warning("Login failed, got '%s'\n", client->buf);
 			if (STARTS_WITH(client->buf, "+ ")) {
 				/* It failed, send an empty response to get the error message */
 				IMAP_CLIENT_SEND(client, "");

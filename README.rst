@@ -580,6 +580,14 @@ Configuration
    # Penalize HTML only emails
    score MIME_HTML_ONLY 1.8
 
+   # Penalize if HTML doesn't match plain text
+   score MPART_ALT_DIFF_BODY 1.7
+
+   # Penalize newly registered domains
+   score FROM_FMBLA_NEWDOM 4.5
+   score FROM_FMBLA_NEWDOM14 3.5
+   score FROM_FMBLA_NEWDOM28 2.5
+
    # Penalized heavily abused freemail
    score FREEMAIL_FROM 0.5
 

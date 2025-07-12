@@ -75,7 +75,7 @@
 # REPLY - Reply to the sent message, to the original sender
 # MOVETO - Move the message to a specified folder in the maildir, e.g. to Junk, Trash, Folder.subfolder, etc. Can be used to implement filtering. If this action is executed multiple times, the last one wins. For outgoing messages, an IMAP URI may also be used, e.g. to APPEND the sent message to a remote IMAP mailbox.
 # EXEC - Execute a system program. For global rules, the program will be executed on the host system.
-#        For mailbox rules, the program will be executed in the mailbox owner's isolated container environment (same as isoexec) and thus not have access to most of the host filesystem.
+#        For rule scripts inside a user's home directory, the program will be executed in the mailbox owner's isolated container environment (same as isoexec) and thus not have access to most of the host filesystem. Mailbox scripts located in a user's maildir as well as system scripts located in the root maildir have access to the full system, since only the sysop can modify these rules.
 #        Public mailboxes thus currently do not support the EXEC action, except as part of global (non-mailbox) rules.
 #        WARNING: Avoid environment variables or shell shorthand, e.g. $HOME or ~, as part of the EXEC arguments. These are not evaluated by any shell prior to the program being executed.
 #        As with a cron job, assume nothing and use full paths to be explicit. BBS varibales are evaluated as normal prior to program execution.

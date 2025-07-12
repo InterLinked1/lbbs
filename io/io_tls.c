@@ -208,10 +208,11 @@ static ssize_t io_read(void *varg)
 	ssize_t res = SSL_read(t->ssl, input, sizeof(input));
 	if (res <= 0) {
 		int sslerr = SSL_get_error(t->ssl, (int) res);
-		bbs_debug(4, "SSL_read returned %ld: %s\n", res, ssl_strerror(sslerr));
 		if (sslerr == SSL_ERROR_WANT_READ || sslerr == SSL_ERROR_WANT_WRITE) {
+			bbs_debug(9, "SSL_read returned %ld: %s\n", res, ssl_strerror(sslerr));
 			return 1; /* Pretend like we did something, so io.c won't terminate the session, even though nothing happened, since we want to poll again */
 		}
+		bbs_debug(4, "SSL_read returned %ld: %s\n", res, ssl_strerror(sslerr));
 		return 0; /* Network socket closed */
 	}
 	return bbs_write(t->readpipe[1], input, (size_t) res); /* Write end of read pipe (i.e. write unencrypted data to BBS application) */
@@ -248,7 +249,7 @@ sslwrite:
 	res = SSL_write(t->ssl, input, (int) bytes);
 	if (res <= 0) {
 		int sslerr = SSL_get_error(t->ssl, (int) res);
-		bbs_debug(4, "SSL_write returned %ld: %s\n", res, ssl_strerror(sslerr));
+		bbs_debug(8, "SSL_write returned %ld: %s\n", res, ssl_strerror(sslerr));
 		if (sslerr == SSL_ERROR_WANT_READ || sslerr == SSL_ERROR_WANT_WRITE) {
 			if (attempts++ < 250) { /* Retry up to 5 sec */
 				usleep(20000); /* If a write fails, wait a little bit before retrying, there are probably buffers that need to be flushed out */
