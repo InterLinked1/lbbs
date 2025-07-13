@@ -181,6 +181,7 @@ struct channel_data_struct {
 	unsigned int userattached:1;
 	unsigned int addedfdwatch:1;
 	unsigned int sftp:1;	/*!< SFTP connection */
+	unsigned int shuttingdown:1;
 };
 
 /* A userdata struct for session. */
@@ -214,7 +215,7 @@ static int data_function(ssh_session session, ssh_channel channel, void *data, u
 		return 0;
 	} else if (cdata->sftp) {
 		return 0; /* This callback is triggered for SFTP too, but there's no PTY, and we don't care about the raw commands */
-	} else if (bbs_assertion_failed(cdata->child_stdin != -1)) {
+	} else if (bbs_assertion_failed(cdata->child_stdin != -1 || cdata->shuttingdown)) { /* If processing data at shutdown, fd's are already closed */
 		return 0; /* This would be -1 for an SFTP session, but we shouldn't be here for SFTP */
 	}
 
@@ -722,6 +723,7 @@ static void handle_session(ssh_event event, ssh_session session)
 		.winsize = &wsize,
 		.closed = 0,
 		.userattached = 0,
+		.shuttingdown = 0,
 	};
 
 	/* Our struct holding information about the session. */
@@ -975,6 +977,7 @@ static void handle_session(ssh_event event, ssh_session session)
 		}
 	} while (ssh_channel_is_open(sdata.channel));
 
+	cdata.shuttingdown = 1;
 	if (ssh_channel_is_closed(sdata.channel)) {
 		/* For SFTP, it seems that when ssh_channel_poll_timeout returns <= 0, bbs_fd_valid(node->fd) returns false,
 		 * so apparently ssh_channel_poll_timeout closes the socket file descriptor, even though that isn't documented.
