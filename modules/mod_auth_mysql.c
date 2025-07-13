@@ -586,6 +586,7 @@ static int load_config(void)
 	res |= bbs_config_val_set_str(cfg, "db", "password", buf_dbpassword, sizeof(buf_dbpassword));
 	if (res) {
 		bbs_error("Missing either hostname, username, or password\n");
+		bbs_config_unlock(cfg);
 		bbs_config_free(cfg);
 		return -1;
 	}
@@ -593,6 +594,7 @@ static int load_config(void)
 		bbs_warning("No database name specified in mod_auth_mysql.conf\n");
 	}
 
+	bbs_config_unlock(cfg);
 	/* Don't destroy the config, mod_auth_mysql will read it again to parse some settings that apply only to it.
 	 *
 	 * UPDATE: mod_auth_mysql loads the config file with caching disabled, so it will get reparsed anyways.

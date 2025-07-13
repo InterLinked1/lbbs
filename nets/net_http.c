@@ -137,6 +137,7 @@ static int load_config(void)
 	/* General */
 	if (bbs_config_val_set_path(cfg, "general", "docroot", http_docroot, sizeof(http_docroot))) {
 		bbs_warning("No document root is specified, web server will be disabled\n");
+		bbs_config_unlock(cfg);
 		return -1;
 	}
 	bbs_config_val_set_true(cfg, "general", "cgi", &allow_cgi); /* Allow Common Gateway Interface? */
@@ -152,6 +153,8 @@ static int load_config(void)
 	/* HTTPS */
 	bbs_config_val_set_true(cfg, "https", "enabled", &https_enabled);
 	bbs_config_val_set_port(cfg, "https", "port", &https_port);
+
+	bbs_config_unlock(cfg);
 
 	if (!https_enabled) {
 		forcehttps = 0;

@@ -1559,12 +1559,14 @@ static int load_config(void)
 
 	if (!res) {
 		bbs_error("Missing token in mod_discord.conf, and no JSON config specified, declining to load\n");
+		bbs_config_unlock(cfg);
 		return -1; /* Things won't work without the token */
 	}
 
 	if (!s_strlen_zero(configfile)) {
 		if (eaccess(configfile, R_OK)) {
 			bbs_error("Config file %s is not readable\n", configfile);
+			bbs_config_unlock(cfg);
 			return -1;
 		}
 	}
@@ -1617,6 +1619,7 @@ static int load_config(void)
 		add_mapping((unsigned long) atol(guild), discord, irc, relaysystem, multiline, webhook_id, webhook_token);
 	}
 
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

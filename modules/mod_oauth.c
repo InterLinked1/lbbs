@@ -353,6 +353,7 @@ static int load_config_file(const char *filename, unsigned int forceuserid, cons
 		}
 	}
 	RWLIST_UNLOCK(&clients);
+	bbs_config_unlock(cfg);
 	return !match || namematch ? 0 : -1;
 }
 

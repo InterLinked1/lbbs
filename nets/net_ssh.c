@@ -2161,6 +2161,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "keys", "ecdsa", &load_key_ecdsa);
 	bbs_config_val_set_true(cfg, "keys", "ed25519", &load_key_ed25519);
 
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

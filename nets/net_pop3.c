@@ -790,6 +790,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "pop3s", "enabled", &pop3s_enabled);
 	bbs_config_val_set_port(cfg, "pop3s", "port", &pop3s_port);
 
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

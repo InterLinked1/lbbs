@@ -765,11 +765,13 @@ int bbs_transfer_config_load(void)
 	}
 	if (bbs_config_val_set_path(cfg, "transfers", "rootdir", rootdir, sizeof(rootdir))) { /* Must explicitly specify */
 		bbs_error("No rootdir specified, transfers will be disabled\n");
+		bbs_config_unlock(cfg);
 		return 0; /* Transfers will be disabled, but don't abort startup. */
 	}
 	/* Auto create the root home dir if it doesn't exist already. */
 	snprintf(homedir, sizeof(homedir), "%s/%s", rootdir, "home");
 	if (bbs_ensure_directory_exists(homedir)) {
+		bbs_config_unlock(cfg);
 		return -1;
 	}
 
@@ -798,5 +800,6 @@ int bbs_transfer_config_load(void)
 	bbs_config_val_set_int(cfg, "privs", "delete", &privs[TRANSFER_NEWDIR]);
 	bbs_config_val_set_int(cfg, "privs", "newdirs", &privs[TRANSFER_DESTRUCTIVE]);
 
+	bbs_config_unlock(cfg);
 	return 0;
 }

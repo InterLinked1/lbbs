@@ -318,6 +318,7 @@ static int load_config(int open_logfile)
 cleanup:
 	/* Fully purge the password from memory */
 	bbs_memzero(password, strlen(password));
+	bbs_config_unlock(cfg);
 	bbs_config_free(cfg);
 	return res;
 }

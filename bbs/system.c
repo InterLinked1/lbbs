@@ -94,13 +94,14 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "container", "displaymotd", &display_motd);
 	bbs_config_val_set_int(cfg, "container", "maxmemory", &maxmemory);
 	bbs_config_val_set_int(cfg, "container", "maxcpu", &maxcpu);
-	if (!bbs_config_val_set_int(cfg, "container", "minnice", &minnice)) {
-		if (minnice < -20 || minnice > 20) {
-			bbs_error("minnice value '%d' is invalid\n", minnice);
-			return -1;
-		}
-	}
+	bbs_config_val_set_int(cfg, "container", "minnice", &minnice);
 
+	bbs_config_unlock(cfg);
+
+	if (minnice < -20 || minnice > 20) {
+		bbs_error("minnice value '%d' is invalid\n", minnice);
+		return -1;
+	}
 	return 0;
 }
 

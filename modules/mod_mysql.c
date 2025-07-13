@@ -619,6 +619,7 @@ static int load_config(void)
 	struct bbs_config *cfg = bbs_config_load("mod_mysql.conf", 1);
 	if (cfg) {
 		bbs_config_val_set_str(cfg, "mysql", "socket", socket_path, sizeof(socket_path));
+		bbs_config_unlock(cfg);
 	}
 	return 0;
 }

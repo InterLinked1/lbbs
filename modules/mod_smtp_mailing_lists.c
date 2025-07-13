@@ -791,6 +791,7 @@ static int load_config(void)
 	RWLIST_UNLOCK(&lists);
 	/* No further locking is needed because the list is not in use while this module is reffed,
 	 * and if it's not, it's safe to unload. */
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

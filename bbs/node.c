@@ -127,6 +127,8 @@ static int load_config(void)
 		guest_ask_info = 2;
 	}
 
+	bbs_config_unlock(cfg);
+
 	if (!idlemins) {
 		idlemins = INT_MAX; /* If 0, disable */
 	} else {

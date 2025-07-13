@@ -1049,13 +1049,14 @@ static int load_config(void)
 
 	if (telnets_enabled && !ssl_available()) {
 		bbs_error("TLS is not available, TELNETS cannot be used\n");
+		bbs_config_unlock(cfg);
 		return -1;
 	}
 
 	tty_port = ttys_port = 0; /* Disabled by default */
 	bbs_config_val_set_port(cfg, "telnet", "ttyport", &tty_port);
 	bbs_config_val_set_port(cfg, "telnets", "ttyport", &ttys_port);
-
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

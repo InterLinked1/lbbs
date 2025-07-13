@@ -602,6 +602,7 @@ static int load_config(void)
 		}
 	}
 
+	bbs_config_unlock(cfg);
 	bbs_config_free(cfg);
 	return 0;
 }

@@ -2123,6 +2123,7 @@ static int load_config(void)
 			RWLIST_UNLOCK(&static_relays);
 		} /* else, ignore. net_smtp will warn about any invalid section names in net_smtp.conf. */
 	}
+	bbs_config_unlock(cfg);
 
 	if (queue_interval < 60) {
 		queue_interval = 60;

@@ -2212,6 +2212,7 @@ static int load_config(void)
 	}
 
 	if (bbs_config_val_set_str(cfg, "general", "maildir", root_maildir, sizeof(root_maildir))) {
+		bbs_config_unlock(cfg);
 		return -1;
 	}
 	bbs_config_val_set_str(cfg, "general", "catchall", catchall, sizeof(catchall));
@@ -2219,6 +2220,7 @@ static int load_config(void)
 
 	if (eaccess(root_maildir, X_OK)) { /* This is a directory, so we better have execute permissions on it */
 		bbs_error("Directory %s does not exist\n", root_maildir);
+		bbs_config_unlock(cfg);
 		return -1;
 	}
 
@@ -2246,6 +2248,7 @@ static int load_config(void)
 			bbs_warning("Unknown section name, ignoring: %s\n", bbs_config_section_name(section));
 		}
 	}
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

@@ -82,6 +82,7 @@ static int load_config(void)
 	bbs_config_val_set_str(cfg, "general", "errorsto", default_errorsto, sizeof(default_errorsto));
 	bbs_config_val_set_str(cfg, "defaults", "to", default_to, sizeof(default_to));
 	bbs_config_val_set_str(cfg, "defaults", "from", default_from, sizeof(default_from));
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

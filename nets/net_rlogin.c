@@ -200,7 +200,7 @@ static int load_config(void)
 
 	rlogin_port = DEFAULT_RLOGIN_PORT;
 	bbs_config_val_set_port(cfg, "rlogin", "port", &rlogin_port);
-
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

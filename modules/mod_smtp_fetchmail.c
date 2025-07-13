@@ -217,6 +217,7 @@ static int load_config(void)
 			bbs_warning("Invalid section name '%s'\n", bbs_config_section_name(section));
 		}
 	}
+	bbs_config_unlock(cfg);
 
 	if (RWLIST_EMPTY(&upstream_hosts)) {
 		bbs_debug(1, "No upstream hosts are configured, declining to load\n");

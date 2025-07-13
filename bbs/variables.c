@@ -132,6 +132,7 @@ static int load_config(void)
 			bbs_var_set_user(key, value);
 		}
 	}
+	bbs_config_unlock(cfg);
 	/* Don't free the config, since we'll reference it whenever users log in. */
 	return 0;
 }
@@ -225,6 +226,7 @@ int bbs_user_init_vars(struct bbs_node *node)
 			bbs_node_var_set(node, key, value);
 		}
 	}
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

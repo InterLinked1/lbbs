@@ -836,8 +836,9 @@ static int load_config(int reload)
 	bbs_config_val_set_true(cfg, "general", "case", &case_sensitive);
 
 	if (reload) {
-		if (RWLIST_TRYWRLOCK(&menus)) {
+		if (RWLIST_TRYWRLOCK(&menus)) { /* This is a holdover from when we used to hold a read lock while menus were running. Shouldn't happen much anymore. */
 			bbs_warning("Menus currently in use. Please try again later.\n");
+			bbs_config_unlock(cfg);
 			return -1;
 		}
 		/* Destroy all existing menus */
@@ -1009,6 +1010,8 @@ static int load_config(int reload)
 nextmenu:
 		free_if(tmpdisplay);
 	}
+
+	bbs_config_unlock(cfg);
 
 	/* Some sanity checks are in menu_sanity_check,
 	 * but there are also some things we're able to check now.

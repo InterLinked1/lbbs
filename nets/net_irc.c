@@ -3883,6 +3883,7 @@ static int load_config(void)
 		if (s_strlen_zero(irc_hostname)) {
 			if (bbs_get_local_ip(NULL, irc_hostname, sizeof(irc_hostname))) {
 				bbs_error("No IRC or BBS hostname specified, and unable to determine local IP address. Aborting.\n");
+				bbs_config_unlock(cfg);
 				return -1;
 			}
 		}
@@ -3899,6 +3900,7 @@ static int load_config(void)
 	/* Do this check before we start dynamically allocating memory */
 	if (ircs_enabled && !ssl_available()) {
 		bbs_error("TLS is not available, IRCS may not be used\n");
+		bbs_config_unlock(cfg);
 		return -1;
 	}
 
@@ -3927,6 +3929,7 @@ static int load_config(void)
 		}
 	}
 
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

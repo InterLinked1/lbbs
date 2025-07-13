@@ -1078,6 +1078,7 @@ static int load_config(void)
 
 	if (res) {
 		bbs_warning("Missing required settings in [general]\n");
+		bbs_config_unlock(cfg);
 		return -1;
 	}
 
@@ -1136,6 +1137,7 @@ static int load_config(void)
 	}
 	RWLIST_UNLOCK(&queues);
 
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

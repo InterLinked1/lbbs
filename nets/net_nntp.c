@@ -1296,6 +1296,7 @@ static int load_config(void)
 	}
 
 	if (bbs_config_val_set_path(cfg, "general", "newsdir", newsdir, sizeof(newsdir))) {
+		bbs_config_unlock(cfg);
 		return -1;
 	}
 	snprintf(newsgroups_file, sizeof(newsgroups_file), "%s/newsgroups", newsdir);
@@ -1344,6 +1345,7 @@ static int load_config(void)
 	RWLIST_UNLOCK(&inpeers);
 	RWLIST_UNLOCK(&outpeers);
 
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

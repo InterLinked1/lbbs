@@ -403,6 +403,7 @@ static const char *ip = NULL, *interface = NULL;
 
 static int load_config(void)
 {
+	int res;
 	struct bbs_config *cfg = bbs_config_load("net_msp.conf", 0);
 
 	if (!cfg) {
@@ -413,7 +414,9 @@ static int load_config(void)
 	ip = bbs_config_val(cfg, "udp", "ip");
 	interface = bbs_config_val(cfg, "udp", "interface");
 
-	return bbs_config_val_set_port(cfg, "ports", "tcp", &msp_tcp_port) && bbs_config_val_set_port(cfg, "ports", "udp", &msp_udp_port);
+	res = bbs_config_val_set_port(cfg, "ports", "tcp", &msp_tcp_port) && bbs_config_val_set_port(cfg, "ports", "udp", &msp_udp_port);
+	bbs_config_unlock(cfg);
+	return res;
 }
 
 static int load_module(void)

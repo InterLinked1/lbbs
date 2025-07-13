@@ -408,6 +408,7 @@ next:
 	}
 
 	RWLIST_UNLOCK(&domains);
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

@@ -1164,13 +1164,14 @@ static int load_config(void)
 	res |= bbs_config_val_set_str(cfg, "db", "username", buf_dbusername, sizeof(buf_dbusername));
 	res |= bbs_config_val_set_str(cfg, "db", "password", buf_dbpassword, sizeof(buf_dbpassword));
 	res |= bbs_config_val_set_str(cfg, "db", "database", buf_dbname, sizeof(buf_dbname));
+
+	bbs_config_unlock(cfg);
+	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
+
 	if (res) { /* This is optional but highly recommended. */
 		bbs_error("Missing one or more database settings in mod_chanserv.conf\n");
-		return -1;
 	}
-
-	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
-	return 0;
+	return res ? -1 : 0;
 }
 
 static int load_module(void)

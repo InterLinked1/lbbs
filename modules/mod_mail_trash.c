@@ -156,6 +156,7 @@ static int load_config(void)
 	}
 
 	bbs_config_val_set_uint(cfg, "general", "trashdays", &trashdays);
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

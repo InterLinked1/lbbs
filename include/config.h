@@ -178,5 +178,11 @@ int bbs_cached_config_outdated(const char *name);
  *                 Configs that have not been parsed yet will always be parsed.
  *                 Specify 0 to always reparse configs.
  * \retval config on success, NULL on failure
+ * \note The config is returned locked and must be unlocked with bbs_config_unlock
  */
 struct bbs_config *bbs_config_load(const char *name, int usecache);
+
+/*!
+ * \brief Unlock a config when done with it
+ */
+int bbs_config_unlock(struct bbs_config *cfg);

@@ -165,6 +165,7 @@ static int load_config(void)
 		}
 	}
 
+	bbs_config_unlock(cfg);
 	bbs_config_free(cfg); /* Destroy the config now, rather than waiting until shutdown, since it will NEVER be used again for anything. */
 	return 0;
 }

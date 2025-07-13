@@ -906,6 +906,7 @@ static int load_config(void)
 			}
 		}
 	}
+	bbs_config_unlock(cfg);
 	if (stringlist_is_empty(&reserved_usernames)) {
 		bbs_warning("No usernames are reserved, leaving BBS vulnerable to name hijacking\n");
 	}

@@ -161,6 +161,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install prereqs
         run: |
+          sed -i 's|deb.debian.org/debian buster main|archive.debian.org/debian buster main|g' /etc/apt/sources.list
+          sed -i 's|deb.debian.org/debian buster-updates main|archive.debian.org/debian buster-updates main|g' /etc/apt/sources.list
+          sed -i 's|deb.debian.org/debian-security buster/updates main|archive.debian.org/debian-security buster/updates main|g' /etc/apt/sources.list
+          cat /etc/apt/sources.list
           ./scripts/install_prereq.sh
       - name: Build LBBS
         run: |

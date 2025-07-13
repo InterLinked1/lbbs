@@ -5090,6 +5090,7 @@ static int load_config(void)
 		}
 	}
 
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

@@ -923,6 +923,8 @@ static int load_config(void)
 	bbs_config_val_set_str(cfg, "pasv", "public_ip", pasv_address_public, sizeof(pasv_address_public));
 	bbs_config_val_set_str(cfg, "pasv", "private_ip", pasv_address_private, sizeof(pasv_address_private));
 
+	bbs_config_unlock(cfg);
+
 	if (ftps_enabled && !ssl_available()) {
 		bbs_error("TLS is not available, FTPS may not be used\n");
 		return -1;

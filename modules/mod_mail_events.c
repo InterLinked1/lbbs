@@ -218,6 +218,7 @@ static int load_config(void)
 {
 	char logfile[256];
 	struct bbs_config *cfg;
+	int res;
 
 	cfg = bbs_config_load("mod_mail_events.conf", 1);
 	if (!cfg) {
@@ -225,7 +226,9 @@ static int load_config(void)
 	}
 
 	/* General */
-	if (bbs_config_val_set_str(cfg, "general", "logfile", logfile, sizeof(logfile))) {
+	res = bbs_config_val_set_str(cfg, "general", "logfile", logfile, sizeof(logfile));
+	bbs_config_unlock(cfg);
+	if (res) {
 		bbs_warning("No logfile specified, declining to load\n");
 		return -1;
 	}

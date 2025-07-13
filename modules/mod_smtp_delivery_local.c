@@ -334,6 +334,7 @@ static int load_config(void)
 
 	bbs_config_val_set_true(cfg, "general", "notifyextfirstmsg", &notify_external_firstmsg);
 	bbs_config_val_set_true(cfg, "privs", "relayin", &minpriv_relay_in);
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

@@ -1042,6 +1042,7 @@ static int load_config(void)
 		fprintf(stderr, "Max log file debug level set to %d\n", max_logfile_debug_level);
 	}
 
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

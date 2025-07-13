@@ -707,11 +707,13 @@ static int ssl_load_config(int reload)
 	if (res || s_strlen_zero(ssl_cert) || s_strlen_zero(ssl_key)) {
 		bbs_warning("An SSL certificate and private key must be provided to enable TLS server functionality\n");
 		/* We can still be a client, but not a server */
+		bbs_config_unlock(cfg);
 		return -1;
 	}
 
 	ssl_ctx = tls_server_ctx_create(ssl_cert, ssl_key);
 	if (!ssl_ctx) {
+		bbs_config_unlock(cfg);
 		return -1;
 	}
 	bbs_verb(5, "Added default TLS certificate\n");
@@ -754,6 +756,7 @@ static int ssl_load_config(int reload)
 	}
 	RWLIST_UNLOCK(&sni_certs);
 
+	bbs_config_unlock(cfg);
 	bbs_config_free(cfg);
 	return res;
 }

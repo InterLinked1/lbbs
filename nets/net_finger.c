@@ -205,7 +205,7 @@ static int load_config(void)
 
 	bbs_config_val_set_port(cfg, "finger", "port", &finger_port);
 	bbs_config_val_set_true(cfg, "finger", "allusersallowed", &allusersallowed);
-
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

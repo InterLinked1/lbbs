@@ -50,6 +50,7 @@ RWLIST_HEAD(bbs_config_sections, bbs_config_section);
 struct bbs_config {
 	char *name;
 	time_t parsetime;
+	bbs_rwlock_t lock;
 	/* List of sections */
 	struct bbs_config_sections sections;
 	/* Next entry */
@@ -221,6 +222,21 @@ const char *bbs_config_section_name(struct bbs_config_section *section)
 	return section->name;
 }
 
+static int bbs_config_rdlock(struct bbs_config *cfg)
+{
+	return bbs_rwlock_rdlock(&cfg->lock);
+}
+
+static int bbs_config_wrlock(struct bbs_config *cfg)
+{
+	return bbs_rwlock_wrlock(&cfg->lock);
+}
+
+int bbs_config_unlock(struct bbs_config *cfg)
+{
+	return bbs_rwlock_unlock(&cfg->lock);
+}
+
 static struct bbs_config *config_get(const char *name)
 {
 	struct bbs_config *cfg;
@@ -261,6 +277,7 @@ static void config_free(struct bbs_config *cfg)
 		config_section_free(section);
 	}
 	RWLIST_HEAD_DESTROY(&cfg->sections);
+	bbs_rwlock_destroy(&cfg->lock);
 	free(cfg->name);
 	free(cfg);
 }
@@ -288,6 +305,11 @@ int bbs_config_free(struct bbs_config *c)
 		bbs_error("Couldn't find config\n"); /* c->name might not be valid here so don't print it? */
 		bbs_log_backtrace(); /* So we can see what module this was for */
 	} else {
+		/* Acquire a write lock before proceeding.
+		 * This ensures there are no other readers of this config right now,
+		 * and there won't be any new readers after we unlock, since it's already been removed from the list. */
+		bbs_config_wrlock(cfg);
+		bbs_config_unlock(cfg);
 		config_free(cfg);
 	}
 
@@ -347,6 +369,7 @@ static struct bbs_config *config_parse_or_write(const char *name, FILE **restric
 		fclose(fp);
 		return NULL;
 	}
+	bbs_rwlock_init(&cfg->lock, NULL);
 	RWLIST_HEAD_INIT(&cfg->sections);
 
 	bbs_debug(3, "Parsing config %s\n", fullname);
@@ -656,6 +679,7 @@ struct bbs_config *bbs_config_load(const char *name, int usecache)
 		if (usecache) {
 			if (!__bbs_cached_config_outdated(cfg, name)) {
 				bbs_debug(5, "Config %s has not been modified since it was last parsed. Returning cached version.\n", name);
+				bbs_config_rdlock(cfg);
 				return cfg;
 			}
 			bbs_debug(5, "Reparsing config %s again since it has changed\n", name);
@@ -668,5 +692,9 @@ struct bbs_config *bbs_config_load(const char *name, int usecache)
 		}
 	}
 
-	return config_parse(name);
+	cfg = config_parse(name);
+	if (cfg) {
+		bbs_config_rdlock(cfg);
+	}
+	return cfg;
 }

@@ -137,6 +137,7 @@ static int load_groups(void)
 		}
 		RWLIST_INSERT_TAIL(&groups, g, entry);
 	}
+	bbs_config_unlock(cfg);
 	bbs_config_free(cfg); /* No longer needed */
 	return 0;
 }

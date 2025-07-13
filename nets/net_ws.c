@@ -1242,6 +1242,8 @@ static int load_config(void)
 			bbs_warning("Unknown section name, ignoring: %s\n", bbs_config_section_name(section));
 		}
 	}
+	bbs_config_unlock(cfg);
+
 	if (!allowed_origins) {
 		bbs_warning("All origins are implicitly allowed: application may be vulnerable to client side attacks\n");
 	}

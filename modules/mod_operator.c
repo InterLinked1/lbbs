@@ -1901,6 +1901,7 @@ static int load_config(void)
 	if (res) {
 		bbs_debug(2, "One or more settings was missing\n");
 	}
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

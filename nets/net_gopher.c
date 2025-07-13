@@ -131,9 +131,11 @@ static int load_config(void)
 
 	bbs_config_val_set_port(cfg, "gopher", "port", &gopher_port);
 	if (bbs_config_val_set_path(cfg, "gopher", "root", gopher_root, sizeof(gopher_root))) {
+		bbs_config_unlock(cfg);
 		return -1;
 	}
 
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

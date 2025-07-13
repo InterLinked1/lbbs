@@ -1078,6 +1078,7 @@ static int load_config(void)
 		add_pair(client1, channel1, client2, channel2, ircuser, relaysystem);
 	}
 
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

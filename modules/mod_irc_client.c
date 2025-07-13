@@ -220,6 +220,7 @@ static int load_config(void)
 		RWLIST_INSERT_TAIL(&irc_clients, client, entry); /* Tail insert so first client is always first */
 	}
 	RWLIST_UNLOCK(&irc_clients);
+	bbs_config_unlock(cfg);
 	return 0;
 }
 

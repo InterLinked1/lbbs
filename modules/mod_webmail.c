@@ -4243,6 +4243,7 @@ static int load_config(void)
 		bbs_config_val_set_uint(cfg, "logging", "loglevel", &webmail_log_level);
 	}
 
+	bbs_config_unlock(cfg);
 	return 0;
 }
 
