@@ -41,7 +41,7 @@
 
 extern int option_nofork;
 
-#define my_set_stdout_logging bbs_cli_set_stdout_logging
+#define my_set_stdout_logging(fd, setting) if (console->interactive) { bbs_cli_set_stdout_logging(fd, setting); }
 
 /* Since we now support remote consoles, bbs_printf is not logical to use in this module */
 #ifdef bbs_printf
@@ -122,6 +122,7 @@ struct sysop_console {
 	unsigned int dead:1;
 	unsigned int log:1;
 	unsigned int tty:1;
+	unsigned int interactive:1;
 	RWLIST_ENTRY(sysop_console) entry;
 };
 
@@ -209,13 +210,15 @@ static int sysop_command(struct sysop_console *console, const char *s)
 	return res;
 }
 
-static void console_close_fds(int *fdin, int *fdout, int *sfd)
+static void console_close_fds(struct sysop_console *console)
 {
-	if (*fdin != *fdout) {
-		bbs_socket_close(fdin);
+	if (console->fdin != console->fdout) { /* will be the same for foreground console */
+		close_if(console->fdin);
 	}
-	bbs_socket_close(fdout);
-	bbs_socket_close(sfd);
+	if (console->fdout != console->sfd) { /* will be the same for a non-interactive session with no PTY */
+		close_if(console->fdout);
+	}
+	close_if(console->sfd);
 }
 
 static void console_cleanup(struct sysop_console *console)
@@ -225,30 +228,37 @@ static void console_cleanup(struct sysop_console *console)
 	RWLIST_REMOVE(&consoles, console, entry);
 	bbs_assert_exists(console);
 
-	/* Must do before bbs_socket_close (in console_close_fds) since that sets fd to -1 */
-	bbs_remove_logging_fd(console->fdout);
-
-	/* Interrupt PTY thread to force poll() to exit */
-	bbs_pthread_interrupt(console->ptythread);
-
-	/* Finally, join the PTY thread.
-	 * We don't do this before console_close_fds, since closed file descriptors
-	 * is the signal that ptythread uses to exit. Otherwise, it'd just hang.
-	 *
-	 * However, interrupt is not guaranteed to actually cause the thread to exit (rare but possible),
-	 * and since we don't set a flag the thread can check to exit, it could still hang indefinitely.
-	 * So, wait politely for a bit, but on the off-chance things go south, close the file descriptors anyways. */
-	if (bbs_pthread_timedjoin(console->ptythread, NULL, SEC_MS(2))) {
-		bbs_warning("Sysop console PTY thread hasn't exited yet, forcibly closing its file descriptors\n");
-		console_close_fds(&console->fdin, &console->fdout, &console->sfd);
-		/* Okay, now the thread should definitely exit of its own volition */
-		bbs_pthread_join(console->ptythread, NULL);
-	} else {
-		console_close_fds(&console->fdin, &console->fdout, &console->sfd);
+	/* Must do before console_close_fds since that sets fd to -1 */
+	if (console->interactive) {
+		bbs_remove_logging_fd(console->fdout);
 	}
 
-	/* Clean up the master side of the PTY. The slave is already closed. */
-	close(console->amaster);
+	/* Interrupt PTY thread to force poll() to exit */
+	if (console->interactive) {
+		if (console->ptythread) {
+			bbs_pthread_interrupt(console->ptythread);
+		}
+		/* Finally, join the PTY thread.
+		 * We don't do this before console_close_fds, since closed file descriptors
+		 * is the signal that ptythread uses to exit. Otherwise, it'd just hang.
+		 *
+		 * However, interrupt is not guaranteed to actually cause the thread to exit (rare but possible),
+		 * and since we don't set a flag the thread can check to exit, it could still hang indefinitely.
+		 * So, wait politely for a bit, but on the off-chance things go south, close the file descriptors anyways. */
+		if (bbs_pthread_timedjoin(console->ptythread, NULL, SEC_MS(2))) {
+			bbs_warning("Sysop console PTY thread hasn't exited yet, forcibly closing its file descriptors\n");
+			console_close_fds(console);
+			/* Okay, now the thread should definitely exit of its own volition */
+			bbs_pthread_join(console->ptythread, NULL);
+		} else {
+			console_close_fds(console);
+		}
+
+		/* Clean up the master side of the PTY. The slave is already closed. */
+		close_if(console->amaster);
+	} else { /* remote command execution won't have a PTY */
+		console_close_fds(console);
+	}
 
 	/* console->thread is detached, so we don't join it */
 	free(console);
@@ -324,13 +334,14 @@ static void *sysop_handler(void *varg)
 	int sysopfdin, sysopfdout;
 	const char *histentry;
 	int modified_hist = 0;
+	int executed_command = 0;
 	struct sysop_console *console = varg;
 
 	sysopfdin = console->fdin;
 	sysopfdout = console->fdout;
 
 	console->log = 1; /* Logging to console enabled by default */
-	if (console->remote) {
+	if (console->remote && console->interactive) {
 		bbs_add_logging_fd(sysopfdout);
 	}
 
@@ -338,7 +349,7 @@ static void *sysop_handler(void *varg)
 	snprintf(titlebuf, sizeof(titlebuf), "%s%s%s", console->remote ? "Sysop" : "LBBS", S_COR(bbs_hostname(), "@", ""), S_IF(bbs_hostname()));
 	bbs_dprintf(sysopfdout, TERM_TITLE_FMT, titlebuf);
 
-	if (!CONSOLE_HAS_TTY(console)) {
+	if (console->interactive && !CONSOLE_HAS_TTY(console)) {
 		/* Generally speaking, the console will be a TTY, if using the rsysop program.
 		 * However, in test_sysop, the connection doesn't use a PTY and so it doesn't appear to us as a TTY.
 		 * That's fine, but we need to take care to skip any calls that are TTY-specific. */
@@ -360,7 +371,7 @@ static void *sysop_handler(void *varg)
 	pfds[1].fd = console_alertpipe[0];
 	pfds[1].events = POLLIN;
 
-	if (console->remote || bbs_is_fully_started()) {
+	if (console->interactive && (console->remote || bbs_is_fully_started())) {
 		/* For foreground console, if BBS is still starting,
 		 * we already registered a startup callback to show copyright later. */
 		show_copyright(sysopfdout, 1);
@@ -368,6 +379,9 @@ static void *sysop_handler(void *varg)
 
 	histentry = NULL; /* initiailization must be after pthread_cleanup_push to avoid "variable might be clobbered" warning */
 	while (!console->dead) {
+		if (!console->interactive && executed_command++) {
+			break; /* Only one loop iteration for single command executions */
+		}
 		pfds[0].revents = pfds[1].revents = 0;
 		res = poll(pfds, 2, -1);
 		if (console->dead) {
@@ -514,7 +528,9 @@ static void *sysop_handler(void *varg)
 					}
 					break;
 				case '/':
-					bbs_dprintf(sysopfdout, "/");
+					if (console->interactive) {
+						bbs_dprintf(sysopfdout, "/");
+					}
 awaitcmd:
 					my_set_stdout_logging(sysopfdout, 0); /* Disable logging so other stuff isn't trying to write to STDOUT at the same time. */
 					/* One downside of this approach is if the user hits UP to retrieve a command from history,
@@ -597,6 +613,102 @@ cleanup:
 	return NULL;
 }
 
+static void *sysop_pty_master(void *varg)
+{
+	struct sysop_console *console = varg;
+	struct pollfd fds[2];
+	char buf[4096]; /* According to termios(3) man page, the canonical mode buffer of the PTY is 4096, so this should always be large enough */
+	ssize_t bytes_read, bytes_wrote;
+
+	fds[0].fd = console->sfd;
+	fds[1].fd = console->amaster;
+	fds[0].events = fds[1].events = POLLIN | POLLPRI | POLLERR | POLLNVAL;
+
+	bbs_debug(10, "Starting generic PTY master for %d <=> %d\n", fds[1].fd, fds[0].fd);
+
+	/* We don't need to call tty_set_raw on any file descriptor. */
+
+	/* Relay data between master and slave */
+	for (;;) {
+		int pres;
+		fds[0].revents = fds[1].revents = 0;
+		pres = poll(fds, 2, -1);
+		pthread_testcancel();
+		if (pres < 0) {
+			if (errno != EINTR) {
+				bbs_error("poll returned %d: %s\n", pres, strerror(errno));
+			} else {
+				bbs_debug(6, "poll returned %d: %s\n", pres, strerror(errno));
+			}
+			break; /* Break even on EINTR, so that bbs_pthread_interrupt can force us to exit */
+		}
+		if (fds[0].revents & POLLIN) { /* Got input on socket -> pty */
+			/*! \todo We are just copying bytes from one fd to another here.
+			 * Use copy_file_range or something that can do an in-kernel copy? */
+			bytes_read = read(fds[0].fd, buf, sizeof(buf));
+			if (bytes_read <= 0) {
+				bbs_debug(7, "read returned %ld\n", bytes_read);
+				break; /* We'll read 0 bytes upon disconnect */
+			}
+			bytes_wrote = write(fds[1].fd, buf, (size_t) bytes_read);
+			if (bytes_wrote != bytes_read) {
+				bbs_error("Expected to write %ld bytes, only wrote %ld (%s)\n", bytes_read, bytes_wrote, strerror(errno));
+				if (bytes_wrote == -1) {
+					break;
+				}
+			}
+		} else if (fds[1].revents & POLLIN) { /* Got input from pty -> socket */
+			bytes_read = read(fds[1].fd, buf, sizeof(buf) - 1);
+			if (bytes_read <= 0) {
+				bbs_debug(10, "pty master read returned %ld (%s)\n", bytes_read, strerror(errno));
+				break; /* We'll read 0 bytes upon disconnect */
+			}
+			bytes_wrote = write(fds[0].fd, buf, (size_t) bytes_read);
+			if (bytes_wrote != bytes_read) {
+				bbs_error("Expected to write %ld bytes, only wrote %ld (%s)\n", bytes_read, bytes_wrote, strerror(errno));
+				if (bytes_wrote == -1) {
+					break;
+				}
+			}
+		} else {
+			/* Something else happened that should effect a disconnect. */
+			bbs_debug(10, "Exceptional activity returned from poll: %s/%s\n", poll_revent_name(fds[0].revents), poll_revent_name(fds[1].revents));
+			break;
+		}
+	}
+
+	bbs_debug(10, "PTY master exiting for %d <=> %d\n", fds[1].fd, fds[0].fd);
+	/* We need to close the file descriptors for closes from the network to be detected by sysop_handler thread. */
+	close_if(console->sfd);
+	close_if(console->amaster);
+	return NULL;
+}
+
+/*!
+ * \brief Create and spawn a generic PTY master relay for the console session
+ * \param console
+ * \note This thread will continue until either file descriptor closes. It should NOT be created detached.
+ * \retval -1 on failure, slave file descriptor on success
+ */
+static int spawn_pty_master(struct sysop_console *console)
+{
+	int aslave;
+
+	if (bbs_openpty(&console->amaster, &aslave, NULL, NULL, NULL) != 0) {
+		bbs_error("Failed to openpty\n");
+		return -1;
+	}
+	bbs_unbuffer_input(aslave, 0); /* Disable canonical mode and echo on this PTY slave */
+	bbs_term_makeraw(console->amaster); /* Make the master side raw */
+
+	/* Don't create the thread detached, because if nobody waits to join it,
+	 * the BBS could finish shutting down before we return. */
+	if (bbs_pthread_create(&console->ptythread, NULL, sysop_pty_master, console)) {
+		return -1;
+	}
+	return aslave;
+}
+
 /*!
  * \brief Launch sysop console
  * \param remote 1 for remote console, 0 for foreground console
@@ -606,6 +718,7 @@ cleanup:
 static int launch_sysop_console(int remote, int sfd)
 {
 	int res = 0;
+	int skip_pty = 0;
 	struct sysop_console *console;
 
 	if (!remote && !isatty(sfd)) {
@@ -624,33 +737,53 @@ static int launch_sysop_console(int remote, int sfd)
 	}
 
 	console->sfd = sfd; /* Socket file descriptor */
+	console->interactive = 1; /* All consoles are interactive except for command executions */
 	SET_BITFIELD(console->remote, remote);
 
 	if (remote) {
-		int aslave;
-		/* Now, we need to create a pseudoterminal for the UNIX socket, the sysop thread needs a PTY.
-		 * aslave and amaster are overridden here with the real values to use. */
-		aslave = __bbs_spawn_pty_master(sfd, &console->amaster, &console->ptythread); /* Only needed for remote consoles. The foreground console doesn't have a separate thread. */
-		if (aslave == -1) {
-			close(sfd);
-			return -1;
+		/* XXX Hack job!
+		 * For command execution via rsysop, we don't want to launch a PTY (we don't need one) or display the usual banner (clutter).
+		 * The only way I can seem to distinguish the two automatically is that command executions will send
+		 * the data immediately, so POLLIN is already triggered here. */
+		if (bbs_poll(sfd, 0) == 1) {
+			skip_pty = 1;
 		}
-		console->fdin = aslave; /* PTY */
-		console->fdout = aslave;
-		SET_BITFIELD(console->tty, isatty(aslave));
-	} else {
+	}
+
+	if (!remote) {
 		console->amaster = -1;
 		console->fdin = STDIN_FILENO;
 		console->fdout = STDOUT_FILENO;
 		console->tty = 1; /* If it weren't, we would have aborted at the top of this function */
+	} else {
+		if (skip_pty) {
+			console->fdin = sfd;
+			console->fdout = sfd;
+			console->interactive = 0;
+			console->tty = 0;
+		} else {
+			int aslave;
+			/* Now, we need to create a pseudoterminal for the UNIX socket, the sysop thread needs a PTY.
+			 * aslave and amaster are overridden here with the real values to use. */
+			aslave = spawn_pty_master(console); /* Only needed for remote consoles. The foreground console doesn't have a separate thread. */
+			if (aslave == -1) {
+				close(sfd);
+				return -1;
+			}
+			console->fdin = aslave; /* PTY */
+			console->fdout = aslave;
+			SET_BITFIELD(console->tty, isatty(aslave));
+		}
 	}
 
 	RWLIST_WRLOCK(&consoles);
 	/* Note there is no SIGINT handler for remote consoles,
 	 * so ^C will just exit the remote console without killing the BBS. */
 	if (remote) {
-		bbs_unbuffer_input(console->fdin, 0); /* Disable canonical mode and echo on this PTY slave */
-		bbs_dprintf(console->fdout, TERM_CLEAR); /* Clear the screen on connect */
+		if (CONSOLE_HAS_TTY(console)) {
+			bbs_unbuffer_input(console->fdin, 0); /* Disable canonical mode and echo on this PTY slave */
+			bbs_dprintf(console->fdout, TERM_CLEAR); /* Clear the screen on connect */
+		}
 		/* We create the thread detached since there isn't anything to join consoles at runtime
 		 * when they disconnect. However, the console itself is removed from the linked list at that point,
 		 * so there are no resource leaks while running. All consoles must be cleaned up
@@ -661,7 +794,7 @@ static int launch_sysop_console(int remote, int sfd)
 	}
 	if (res) {
 		bbs_error("Failed to create %s sysop thread for %d/%d\n", remote ? "remote" : "foreground", console->fdin, console->fdout);
-		console_close_fds(&console->fdin, &console->fdout, &console->sfd);
+		console_close_fds(console);
 		if (console->ptythread) {
 			bbs_pthread_join(console->ptythread, NULL);
 		}
@@ -722,10 +855,10 @@ static int cli_consoles(struct bbs_cli_args *a)
 {
 	struct sysop_console *console;
 
-	bbs_dprintf(a->fdout, "%1s %5s %5s %4s %3s %s\n", "R", "FD IN", "FD OUT", "Dead", "Log", "Thread");
+	bbs_dprintf(a->fdout, "%1s %4s %4s %3s %4s %3s %s\n", "R", "IN", "OUT", "TTY", "Dead", "Log", "Thread");
 	RWLIST_RDLOCK(&consoles);
 	RWLIST_TRAVERSE(&consoles, console, entry) {
-		bbs_dprintf(a->fdout, "%1s %5d %5d %4s %3s %16lu\n", console->remote ? "*" : "", console->fdin, console->fdout, BBS_YN(console->dead), BBS_YN(console->log), (unsigned long) console->thread);
+		bbs_dprintf(a->fdout, "%1s %4d %4d %3s %4s %3s %16lu\n", console->remote ? "*" : "", console->fdin, console->fdout, console->tty ? "*" : "", BBS_YN(console->dead), BBS_YN(console->log), (unsigned long) console->thread);
 	}
 	RWLIST_UNLOCK(&consoles);
 

@@ -73,10 +73,19 @@ int main(int argc, char *argv[])
 	int res;
 	struct pollfd pfds[2];
 	char buf[8192];
+	const char *command;
 	int sockfd;
 
-	(void) argc;
-	(void) argv;
+	/* Hack to print response to a CLI command and then exit */
+	command = argc > 1 ? argv[1] : NULL;
+	if (command && *command == '-') {
+		/* Interpret as options. Just display usage. */
+		fprintf(stderr, "rsysop - LBBS sysop console\n\n");
+		fprintf(stderr, "  rsysop                          - Run interactive sysop console\n");
+		fprintf(stderr, "  rsysop \"command to execute\"     - Single command to execute\n"); /* misaligned to align escaped quotes */
+		fprintf(stderr, "  rsysop -h                       - Display usage\n");
+		return -1;
+	}
 
 	signal(SIGINT, sigint_handler);
 
@@ -99,22 +108,34 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 
-	pfds[0].fd = STDIN_FILENO;
+	pfds[0].fd = sockfd;
 	pfds[0].events = POLLIN;
 	pfds[0].revents = 0;
-	pfds[1].fd = sockfd;
-	pfds[1].events = POLLIN;
-	pfds[1].revents = 0;
+	if (!command) {
+		pfds[1].fd = STDIN_FILENO;
+		pfds[1].events = POLLIN;
+		pfds[1].revents = 0;
+	}
 
 	/* Make the terminal nonblocking */
-	if (term_makeraw(STDIN_FILENO)) {
+	if (!command && term_makeraw(STDIN_FILENO)) {
 		fprintf(stderr, "Unable to set terminal\n");
 		close(sockfd);
 		return -1;
 	}
 
 	/* Relay data between STDIN and the socket */
-	printf("Connecting to BBS...\n");
+	if (command) {
+		if (strlen(command) > 1) {
+			write(sockfd, "/", 1); /* Start command */
+		}
+		write(sockfd, command, strlen(command));
+		if (strlen(command) > 1) {
+			write(sockfd, "\n", 2);
+		}
+	} else {
+		fprintf(stderr, "Connecting to BBS...\n");
+	}
 	for (;;) {
 		res = poll(pfds, 2, -1);
 		if (res <= 0) {
@@ -123,22 +144,25 @@ int main(int argc, char *argv[])
 			}
 			break;
 		}
-		if (pfds[0].revents) {
+		if (pfds[0].revents) { /* BBS -> STDOUT */
+			res = read(sockfd, buf, sizeof(buf));
+			if (res <= 0) {
+				break;
+			}
+			write(STDOUT_FILENO, buf, (size_t) res);
+		} else if (!command && pfds[1].revents) { /* STDIN -> BBS */
 			res = read(STDIN_FILENO, buf, sizeof(buf));
 			if (res <= 0) {
 				break;
 			}
 			write(sockfd, buf, (size_t) res);
-		} else if (pfds[1].revents) {
-			res = read(sockfd, buf, sizeof(buf));
-			if (res <= 0) {
-				break;
-			}
-			write(STDIN_FILENO, buf, (size_t) res);
 		}
 	}
 
-	reset_term(); /* Restore terminal on server disconnect */
-	fprintf(stderr, "BBS server disconnected\n");
-	return -1; /* If we get here, then the socket closed on us. */
+	if (!command) {
+		reset_term(); /* Restore terminal on server disconnect */
+		fprintf(stderr, "BBS server disconnected\n");
+		return -1; /* If we get here, then the socket closed on us. */
+	}
+	return 0;
 }
