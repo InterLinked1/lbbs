@@ -97,8 +97,8 @@ static void process_capabilities(int *restrict caps, int *restrict maxsendsize, 
 		 * https://www.exim.org/exim-html-current/doc/html/spec_html/ch-main_configuration.html */
 	} else if (!strcmp(capname, "AUTH=LOGIN PLAIN")) {
 		/* Ignore: this SMTP server advertises this capability (even though it's malformed) to support some broken clients */
-	} else if (!strcmp(capname, "OK")) {
-		/* This is not a real capability, just ignore it. Yahoo seems to do this. */
+	} else if (!strcasecmp(capname, "OK")) {
+		/* This is not a real capability, just ignore it. Yahoo seems to do this. Some other MTAs too, but not all uppercase (e.g. 'Ok'). */
 	} else {
 		/* Capabilities should be all uppercase, and could be one or multiple words
 		 * The first line is often the hostname of the server followed by some friendly greeting, ignore.

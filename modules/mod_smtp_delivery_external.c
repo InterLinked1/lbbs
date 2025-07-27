@@ -77,9 +77,10 @@ static int notify_queue = 0;
 static pthread_t queue_thread = 0;
 static bbs_rwlock_t queue_lock;
 static char queue_dir[256];
+static int queue_immediate = 1;
 static unsigned int queue_interval = 60;
 static unsigned int max_retries = 10;
-static unsigned int max_age = 86400;
+static unsigned int max_age = 604800; /* 7 days */
 
 static int unloading = 0;
 static time_t last_periodic_queue_run = 0;
@@ -825,6 +826,7 @@ struct mailq_run {
 	time_t runstart;	/* Time that queue run started */
 	struct bbs_parallel *parallel;	/* Parallel task set, if running in parallel. NULL if serial. */
 	/* Queue run filters to control what messages are processed */
+	const char *match_filename; /* Exact filename match */
 	const char *host_match;	/* Domain restriction for queue processing */
 	const char *host_ends_with;	/* Domain or suffix of domain, e.g. com, example.com, sub.example.com, etc. Queued processing will be restricted to matches. */
 	/* Queue run statistics */
@@ -878,6 +880,7 @@ struct mailq_file {
 	char todup[MAX_EMAIL_ADDRESS_LENGTH + 1];
 	struct mailq_run *qrun;	/*!< mailq_run to which this mailq_file belongs */
 	struct smtp_session_info sinfo;
+	unsigned int purge:1; /*!< Purge message */
 };
 
 static inline void mailq_file_init(struct mailq_file *mqf, struct mailq_run *qrun)
@@ -936,38 +939,92 @@ static void reset_accessed_time(struct mailq_file *restrict mqf)
 	}
 }
 
-/*! \brief Increment Delivery-Attempts directive in control file */
-static int mailq_file_punt(struct mailq_file *mqf)
+static int seek_to_beginning_of_line(FILE *fp)
 {
-	/* Seek to the end of the control file */
-	if (fseek(mqf->cfp, 0, SEEK_END)) {
-		bbs_error("fseek failed: %s\n", strerror(errno));
-		return -1;
-	}
-	/* Back up until we get to the start of the value.
-	 * Usually this will only be once back, but if max_retries is more than 9,
-	 * it could be a variable number of digits. */
+	int gotcolon = 0;
 	for (;;) {
 		int c;
-		if (fseek(mqf->cfp, -1L, SEEK_CUR)) {
+		if (fseek(fp, -1L, SEEK_CUR)) {
 			bbs_error("fseek failed: %s\n", strerror(errno));
 			return -1;
 		}
-		c = fgetc(mqf->cfp);
+		c = fgetc(fp);
 		if (c == ':') {
+			gotcolon = 1;
+		}
+		if ((c == '\n' && gotcolon) || ftell(fp) == 0) {
 			break;
 		}
-		ungetc(c, mqf->cfp);
+		ungetc(c, fp);
 	}
-	fprintf(mqf->cfp, "%d", mqf->retries + 1);
 	return 0;
 }
+
+/*! \brief Increment Delivery-Attempts directive in control file */
+static int mailq_file_punt(struct mailq_file *mqf)
+{
+	char buf[64];
+	char datebuf[32];
+	int last_retry = 0;
+
+	/* Seek to the beginning of the control file */
+	if (fseek(mqf->cfp, 0, SEEK_SET)) {
+		bbs_error("fseek failed: %s\n", strerror(errno));
+		return -1;
+	}
+
+	smtp_timestamp(time(NULL), datebuf, sizeof(datebuf));
+
+	/* Currently, there are up to two mutable fields (Delivery-Attempts and Last-Retry-Time).
+	 * First, look for Last-Retry-Time, since if it's not present, we'll need to add this header,
+	 * and the file will expand and subsequent lines (e.g. Delivery-Attempts) will need to be rewritten. */
+	while (fgets(buf, sizeof(buf), mqf->cfp)) {
+		if (STARTS_WITH(buf, "Last-Retry-Time:")) {
+			if (seek_to_beginning_of_line(mqf->cfp)) {
+				return -1;
+			}
+			fprintf(mqf->cfp, "Last-Retry-Time: %s\n", datebuf);
+			last_retry = 1;
+			break;
+		}
+	}
+	if (!last_retry) {
+		/* We need to add the header. Add it before Delivery-Attempts and rewrite that header,
+		 * so that in the future, we only need to rewrite that header.
+		 * Also added for compatibility with control files without a Last-Retry-Time header. */
+		if (seek_to_beginning_of_line(mqf->cfp)) { /* Already at EOF, back up */
+			return -1;
+		}
+		fprintf(mqf->cfp, "Last-Retry-Time: %s\n", datebuf);
+		fprintf(mqf->cfp, "Delivery-Attempts: %d\n", mqf->retries + 1);
+	} else {
+		/* Just update Delivery-Attempts, which should be the last line present. */
+		if (fseek(mqf->cfp, 0, SEEK_END)) {
+			bbs_error("fseek failed: %s\n", strerror(errno));
+			return -1;
+		}
+		if (seek_to_beginning_of_line(mqf->cfp)) {
+			return -1;
+		}
+		fprintf(mqf->cfp, "Delivery-Attempts: %d\n", mqf->retries + 1);
+	}
+
+	return 0;
+}
+
+/* Do not define IMPLICIT_TIMESTAMPS, as timestamps can change for reasons out of our control and may not be reliable.
+ * The queue control file now stores the timestamps explicitly. */
 
 static int mailq_file_load(struct mailq_file *restrict mqf, const char *dir_name, const char *controlfile)
 {
 	char buf[256];
 	struct stat st;
+	struct tm tm;
 	char *val;
+
+#ifndef IMPLICIT_TIMESTAMPS
+	memset(&st, 0, sizeof(st));
+#endif
 
 	/* First, parse everything out of the control file */
 	snprintf(mqf->controlfile, sizeof(mqf->controlfile), "%s/%s", dir_name, controlfile);
@@ -999,6 +1056,24 @@ static int mailq_file_load(struct mailq_file *restrict mqf, const char *dir_name
 			safe_strncpy(mqf->recipient, val, sizeof(mqf->recipient));
 		} else if (!strcmp(key, "Data-File")) {
 			safe_strncpy(mqf->datafile, val, sizeof(mqf->datafile));
+		} else if (!strcmp(key, "Arrival-Time")) {
+			memset(&tm, 0, sizeof(tm));
+			if (!strptime(val, "%a, %b %e %Y %H:%M:%S %z", &tm)) {
+				bbs_error("Failed to parse date: %s\n", val);
+			}
+			st.st_mtim.tv_sec = mktime(&tm);
+			if (st.st_mtim.tv_sec < 0) {
+				bbs_error("mktime failed: %s\n", strerror(errno));
+			}
+		} else if (!strcmp(key, "Last-Retry-Time")) {
+			memset(&tm, 0, sizeof(tm));
+			if (!strptime(val, "%a, %b %e %Y %H:%M:%S %z", &tm)) {
+				bbs_error("Failed to parse date: %s\n", val);
+			}
+			st.st_atim.tv_sec = mktime(&tm);
+			if (st.st_atim.tv_sec < 0) {
+				bbs_error("mktime failed: %s\n", strerror(errno));
+			}
 		} else if (!strcmp(key, "Delivery-Attempts")) {
 			mqf->retries = atoi(val);
 		} else {
@@ -1007,6 +1082,7 @@ static int mailq_file_load(struct mailq_file *restrict mqf, const char *dir_name
 	}
 	/* Leave mqf->cfp open as mailq_file_punt may use it */
 
+#ifdef IMPLICIT_TIMESTAMPS
 	/* Do the stat call before opening the file,
 	 * since opening it will change the file timestamps. */
 	if (stat(mqf->datafile, &st)) {
@@ -1014,6 +1090,7 @@ static int mailq_file_load(struct mailq_file *restrict mqf, const char *dir_name
 		fclose(mqf->cfp);
 		return -1;
 	}
+#endif
 
 	mqf->fp = fopen(mqf->datafile, "rb");
 	if (!mqf->fp) {
@@ -1053,17 +1130,26 @@ static int mailq_file_load(struct mailq_file *restrict mqf, const char *dir_name
 		goto cleanup;
 	}
 
+#ifdef IMPLICIT_TIMESTAMPS
 	/* See stat(3) for how stat presents the time.
 	 * st_atime = st_atim.tv_sec
 	 * st_mtime = st_mtim.tv_sec
 	 *
 	 * st_atim and st_mtim themselves are of type struct timespec.
 	 * st_atime and st_mtime (and the tv_sec components) are time_t.
+	 *
+	 * To debug timestamps, can print created, access, modified, status change:
+	 * stat -c '%w %x %y %z' /home/bbs/maildir/mailq/new/QUEUEID.d
 	 */
+#endif
 
 	/* These are useful for doing time calculations */
 	mqf->createdtime = st.st_mtim.tv_sec;
 	mqf->retriedtime = st.st_atim.tv_sec;
+	if (mqf->createdtime <= 0) {
+		bbs_warning("Message %s missing creation time\n", controlfile);
+	}
+	/* It could be missing the last modification time if there's no Last-Retry-Time header */
 
 	/* These variants are more useful for printing timestamps */
 	memset(&mqf->created, 0, sizeof(mqf->created));
@@ -1235,8 +1321,10 @@ static time_t queue_retry_threshold(int retrycount)
 	__builtin_unreachable();
 }
 
-static int skip_qfile(struct mailq_run *qrun, struct mailq_file *mqf)
+static int skip_qfile(struct mailq_run *qrun, struct mailq_file *mqf, const char *controlfile)
 {
+	qrun->total++; /* Count messages in queue */
+
 	/* This queue run may have filters applied to it */
 
 	/* Yeah, if we have a filter, we're possibly going to open
@@ -1245,16 +1333,18 @@ static int skip_qfile(struct mailq_run *qrun, struct mailq_file *mqf)
 	 * If it were, it would very much be worth using a single queue "control file"
 	 * with metadata about all the queue files, to avoid unnecessary file I/O. */
 
-	if (!strlen_zero(qrun->host_match) && !strlen_zero(mqf->domain) && strcmp(mqf->domain, qrun->host_match)) {
+	if (!strlen_zero(qrun->match_filename) && strcmp(qrun->match_filename, controlfile)) {
+		return 1; /* Exact queue file requested and this isn't it */
+	} else if (!strlen_zero(qrun->host_match) && !strlen_zero(mqf->domain) && strcmp(mqf->domain, qrun->host_match)) {
 		/* Exact match required */
 #ifdef DEBUG_QUEUES
-		bbs_debug(8, "Skipping queue file %s (domain '%s' does not match filter '%s')\n", mqf->fullname, mqf->domain, qrun->host_match);
+		bbs_debug(8, "Skipping queue file %s (domain '%s' does not match filter '%s')\n", controlfile, mqf->domain, qrun->host_match);
 #endif
 		return 1;
 	} else if (!strlen_zero(qrun->host_ends_with) && !strlen_zero(mqf->domain) && !bbs_str_ends_with(mqf->domain, qrun->host_ends_with)) {
 		/* Domain must end in host_ends_with, to match. */
 #ifdef DEBUG_QUEUES
-		bbs_debug(8, "Skipping queue file %s (domain '%s' does not match filter '*%s')\n", mqf->fullname, mqf->domain, qrun->host_ends_with);
+		bbs_debug(8, "Skipping queue file %s (domain '%s' does not match filter '*%s')\n", controlfile, mqf->domain, qrun->host_ends_with);
 #endif
 		return 1;
 	}
@@ -1282,7 +1372,7 @@ static int skip_qfile(struct mailq_run *qrun, struct mailq_file *mqf)
 		if (mqf->retriedtime + retry_sec_wait > now) {
 			/* It's been too soon since the last retry. */
 #ifdef DEBUG_QUEUES
-			bbs_debug(8, "Skipping queue file %s (too soon since last retry, waiting at least %ld s longer)\n", mqf->fullname, mqf->retriedtime + retry_sec_wait - now);
+			bbs_debug(8, "Skipping queue file %s (last retry was %ld s ago, waiting at least %ld s longer)\n", controlfile, now - mqf->retriedtime, mqf->retriedtime + retry_sec_wait - now);
 #endif
 			return 1;
 		}
@@ -1309,11 +1399,19 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 	char buf[256] = "";
 	struct stringlist *static_routes;
 	struct smtp_tx_data tx;
-	int attempts;
+	time_t message_age;
+	int attempts = mqf->retries + 1;
 
 	memset(&tx, 0, sizeof(tx));
 
 	QUEUE_INCR_STAT(processed);
+
+	message_age = time(NULL) - mqf->createdtime;
+	if (mqf->purge) {
+		goto permfail;
+	} else if (mqf->retries >= (int) max_retries) {
+		bbs_warning("Message %s has already been processed %d times\n", mqf->datafile, mqf->retries); /* If it's still in queue, it shouldn't have reached max retries yet */
+	}
 
 	static_routes = get_static_routes(mqf->domain);
 	bbs_debug(2, "Processing message %s (<%s> -> %s), via %s for '%s'\n", mqf->datafile, mqf->realfrom, mqf->realto, static_routes ? "static route(s)" : "MX lookup", mqf->domain);
@@ -1362,7 +1460,6 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 		}
 	}
 
-	attempts = mqf->retries + 1;
 	if (!res) { /* Successful delivery. */
 		bbs_debug(6, "Delivery successful after %d attempt%s, discarding queue file\n", attempts, ESS(attempts));
 		bbs_smtp_log(4, NULL, "Delivery succeeded after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
@@ -1370,7 +1467,8 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 		mqf_file_cleanup(mqf);
 		mqf_file_purge(mqf);
 		QUEUE_INCR_STAT(delivered);
-	} else if (res == -2 || res > 0 || (mqf->retries + 1) >= (int) max_retries) { /* Permanent failure or retries exceeded */
+	} else if (res == -2 || res > 0 || attempts >= (int) max_retries) { /* Permanent failure or retries exceeded */
+permfail:
 		/* Send a delivery failure response, then delete the file. */
 		bbs_warning("Delivery of message <%s> from %s to %s has failed permanently after %d attempt%s\n", mqf->datafile, mqf->realfrom, mqf->realto, attempts, ESS(attempts));
 		bbs_smtp_log(1, NULL, "Delivery failed permanently after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
@@ -1382,6 +1480,10 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 		mqf_file_purge(mqf);
 		QUEUE_INCR_STAT(failed);
 	} else { /* Delivery deferred due to temporary failure */
+		if (message_age > max_age) {
+			bbs_warning("Message expired while in queue (message created at %" TIME_T_FMT ", now %" TIME_T_FMT "/%d s old)\n", mqf->createdtime, message_age, max_age);
+			goto permfail;
+		}
 		bbs_debug(3, "Delivery of %s to %s has been attempted %d/%d times\n", mqf->datafile, mqf->realto, attempts, max_retries);
 		bbs_smtp_log(3, NULL, "Delivery delayed after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
 		mailq_file_punt(mqf); /* Try again later */
@@ -1426,16 +1528,13 @@ static int on_queue_file(const char *dir_name, const char *controlfile, void *ob
 	 * This also allows us to avoid locking for incrementing total here. */
 
 	bbs_assert_exists(qrun);
-	qrun->total++;
 
 	if (mailq_file_load(mqf, dir_name, controlfile)) {
 		/* If a queue is malformed, this will continue indefinitely,
 		 * since we never increment its retry count.
 		 * The sysop will need to manually remove the broken queued message. */
 		return 0;
-	}
-
-	if (skip_qfile(qrun, mqf)) {
+	} else if (skip_qfile(qrun, mqf, controlfile)) {
 		qrun->skipped++; /* No need to use the QUEUE_INCR_STAT wrapper for locking since this is pre-parallel portion */
 		mqf_file_cleanup(mqf); /* Not necessary to set mqf->fp to NULL, since we're not calling mailq_file_destroy */
 		/* Not sure when the access times are changed: when the file is opened, or closed, or both,
@@ -1458,6 +1557,28 @@ static int on_queue_file(const char *dir_name, const char *controlfile, void *ob
 	return 0; /* Return 0 regardless of individual task success, to continue processing the queue */
 }
 
+static int on_queue_file_purge(const char *dir_name, const char *controlfile, void *obj)
+{
+	struct mailq_run *qrun = obj;
+	struct mailq_file mqf_stack, *mqf = &mqf_stack;
+
+	mailq_file_init(mqf, qrun);
+	bbs_assert_exists(qrun);
+
+	if (mailq_file_load(mqf, dir_name, controlfile)) {
+		return 0;
+	} else if (skip_qfile(qrun, mqf, controlfile)) {
+		qrun->skipped++;
+		mqf_file_cleanup(mqf);
+		reset_accessed_time(mqf);
+		return 0;
+	}
+
+	mqf->purge = 1; /* Discard without processing */
+	process_queue_file(qrun, mqf);
+	return 0;
+}
+
 /* Don't parallelize unless there's at least 2 messages in the queue,
  * and only deliver 5 messages concurrently */
 #define QUEUE_PARALLELIZATION_THRESHOLD 2
@@ -1473,6 +1594,10 @@ static int run_queue(struct mailq_run *qrun, int (*queue_file_cb)(const char *di
 		return -1;
 	}
 
+	/*! \todo Rather than a global queue lock, each individual queue file should be locked using flock,
+	 * so that the queue can be processed concurrently, as long as the same message is only handled once.
+	 * This can help in the situation of a message already in the process of being sent when the queue runs,
+	 * which is increasingly likelier on busier systems. */
 	bbs_rwlock_wrlock(&queue_lock);
 	queued_messages = bbs_dir_num_files(queue_dir);
 	if (!queued_messages) {
@@ -1679,62 +1804,80 @@ static int on_queue_file_cli_mailq(const char *dir_name, const char *filename, v
 	char next_retry_date[32];
 	time_t next_queue_run, next_retry_time;
 	struct tm est_retry;
+	char msgsizebuf[32];
+	size_t msgsize;
 
 	mailq_file_init(&mqf_stack, qrun);
 
 	if (mailq_file_load(&mqf_stack, dir_name, filename)) {
 		return 0;
-	}
-
-	/* Count messages in queue */
-	qrun->total++;
-
-	if (skip_qfile(qrun, mqf)) {
+	} else if (skip_qfile(qrun, mqf, filename)) {
 		mqf_file_cleanup(mqf);
 		reset_accessed_time(mqf);
 		return 0;
 	}
 
 	strftime(arrival_date, sizeof(arrival_date), "%a, %d %b %H:%M:%S", &mqf->created);
-	strftime(retry_date, sizeof(retry_date), "%a, %d %b %H:%M:%S", &mqf->retried);
-
-	/* For user convenience, try to calculate when message delivery will be attempted next. */
-	next_retry_time = mqf->retriedtime + queue_retry_threshold(mqf->retries); /* Minimum time that it would get processed */
-
-	/* If the queue hasn't run yet, assume it will run now, and count up from there */
-	next_queue_run = last_periodic_queue_run ? last_periodic_queue_run + queue_interval : qrun->runstart + queue_interval;
-	if (next_queue_run < qrun->runstart) {
-		/* Shouldn't happen. Because we're holding the queue_lock,
-		 * the queue can't be running now, which means it's either finished an iteration some time in the past,
-		 * or it hasn't run at all yet. As soon as next_queue_run hits, the handler should start executing,
-		 * and we wouldn't be able to grab the lock until after it were done, and had updated that again. */
-		bbs_warning("Projected next queue run is %ld seconds ago?\n", qrun->runstart - next_queue_run);
-		next_queue_run = qrun->runstart;
+	if (mqf->retriedtime) {
+		strftime(retry_date, sizeof(retry_date), "%a, %d %b %H:%M:%S", &mqf->retried);
+	} else {
+		strcpy(retry_date, "Never");
 	}
 
-	/* If the next time that the message would be processed is earlier in time
-	 * than the next time the queue is projected to actually run,
-	 * then increment the message retry time by the queue interval time.
-	 * Because the queue run could take a non-trivial amount of time,
-	 * this means that each time the queue runs, even for messages that weren't attempted that round,
-	 * the timestamps will probably change (get pushed out slightly further ahead in time),
-	 * though we'll eventually converge since the closer it gets, the more accurate we'll be. */
-	while (next_retry_time < next_queue_run) {
-		next_retry_time += queue_interval;
-	}
+	if (queue_interval) {
+		/* For user convenience, try to calculate when message delivery will be attempted next. */
+		next_retry_time = mqf->retriedtime + queue_retry_threshold(mqf->retries); /* Minimum time that it would get processed */
 
-	localtime_r(&next_retry_time, &est_retry);
-	strftime(next_retry_date, sizeof(next_retry_date), "%a, %d %b %H:%M:%S", &est_retry);
+		/* If the queue hasn't run yet, assume it will run now, and count up from there */
+		next_queue_run = last_periodic_queue_run ? last_periodic_queue_run + queue_interval : qrun->runstart + queue_interval;
+		if (next_queue_run < qrun->runstart) {
+			/* Shouldn't happen. Because we're holding the queue_lock,
+			 * the queue can't be running now, which means it's either finished an iteration some time in the past,
+			 * or it hasn't run at all yet. As soon as next_queue_run hits, the handler should start executing,
+			 * and we wouldn't be able to grab the lock until after it were done, and had updated that again. */
+			bbs_warning("Projected next queue run is %ld seconds ago?\n", qrun->runstart - next_queue_run);
+			next_queue_run = qrun->runstart;
+		}
+
+		/* If the next time that the message would be processed is earlier in time
+		 * than the next time the queue is projected to actually run,
+		 * then increment the message retry time by the queue interval time.
+		 * Because the queue run could take a non-trivial amount of time,
+		 * this means that each time the queue runs, even for messages that weren't attempted that round,
+		 * the timestamps will probably change (get pushed out slightly further ahead in time),
+		 * though we'll eventually converge since the closer it gets, the more accurate we'll be. */
+		while (next_retry_time < next_queue_run) {
+			next_retry_time += queue_interval;
+		}
+
+		localtime_r(&next_retry_time, &est_retry);
+		strftime(next_retry_date, sizeof(next_retry_date), "%a, %d %b %H:%M:%S", &est_retry);
+	} else {
+		strcpy(next_retry_date, "On Demand Only");
+	}
 
 	/* Ensure the format is synchronized with the heading in cli_mailq */
 	/* Printing mqf->retries this way is already 1-indexed as well. */
-	bbs_dprintf(qrun->clifd, "%7d %-21s %-21s %-21s %-20s %5ld %-35s %s\n",
-		mqf->retries, arrival_date, retry_date, next_retry_date, filename,
-		(mqf->size + 1023) / 1024, /* Display size in KB, rounded up to the nearest KB */
-		mqf->realfrom, mqf->realto);
+	msgsize = (mqf->size + 1023) / 1024; /* Display size in KB, rounded up to the nearest KB */
+	if (msgsize <= 999) {
+		snprintf(msgsizebuf, sizeof(msgsizebuf), "%lu%s", msgsize, "K");
+	} else {
+		msgsize = (msgsize + 1023) / 1024; /* Round up to nearest MB, but only if at least 1,000 KB */
+		snprintf(msgsizebuf, sizeof(msgsizebuf), "%lu%s", msgsize, "M");
+	}
+	/* If delivery has never been attempted, mqf->retries is 0. However, 1-index it in the queue (i.e. the queued file is attempt #1). */
+	bbs_dprintf(qrun->clifd, "%-18s %3d %-20s %-20s %-20s %4s %s -> %s\n",
+		filename, mqf->retries + 1, arrival_date, retry_date, next_retry_date, msgsizebuf,
+		S_OR(mqf->realfrom, "<>"), mqf->realto);
 	mqf_file_cleanup(mqf);
 	reset_accessed_time(mqf); /* This was just for stats, we didn't actually do anything, so reset */
 	return 0;
+}
+
+static int is_queue_filename(const char *s)
+{
+	/* Formatted like 1749798013359795.q */
+	return strlen(s) == 18 && !strcmp(s + 16, ".q") && isdigit(*s);
 }
 
 static int cli_mailq(struct bbs_cli_args *a)
@@ -1744,10 +1887,14 @@ static int cli_mailq(struct bbs_cli_args *a)
 	mailq_run_init(&qrun, QUEUE_RUN_STAT);
 	qrun.clifd = a->fdout;
 	if (a->argc >= 2) {
-		qrun.host_ends_with = a->argv[1];
+		if (is_queue_filename(a->argv[1])) {
+			qrun.match_filename = a->argv[1];
+		} else {
+			qrun.host_ends_with = a->argv[1];
+		}
 	}
 
-	bbs_dprintf(a->fdout, "%7s %-21s %-21s %-21s %-20s %5s %-35s %s\n", "Retries", "Orig Date", "Last Retry", "Est. Next Retry", "Filename", "Size", "Sender", "Recipient");
+	bbs_dprintf(a->fdout, "%-18s %3s %-20s %-20s %-20s %4s %s\n", "ControlFile", "Try", "Orig Date", "Last Retry", "Est. Next Retry", "Size", "Sender -> Recipient");
 	run_queue(&qrun, on_queue_file_cli_mailq);
 	bbs_dprintf(a->fdout, "%d message%s currently in mail queue\n", qrun.total, ESS(qrun.total));
 	mailq_run_cleanup(&qrun);
@@ -1760,7 +1907,11 @@ static int cli_runq(struct bbs_cli_args *a)
 
 	mailq_run_init(&qrun, QUEUE_RUN_FORCED);
 	if (a->argc >= 2) {
-		qrun.host_ends_with = a->argv[1];
+		if (is_queue_filename(a->argv[1])) {
+			qrun.match_filename = a->argv[1];
+		} else {
+			qrun.host_ends_with = a->argv[1];
+		}
 	}
 
 	/* Process the queue, now, synchronously */
@@ -1770,9 +1921,26 @@ static int cli_runq(struct bbs_cli_args *a)
 	return 0;
 }
 
+static int cli_purgeq(struct bbs_cli_args *a)
+{
+	struct mailq_run qrun;
+
+	mailq_run_init(&qrun, QUEUE_RUN_FORCED);
+	qrun.match_filename = a->argv[1];
+
+	run_queue(&qrun, on_queue_file_purge);
+	bbs_dprintf(a->fdout, "%d/%d message%s processed: %d delivered, %d failed, %d delayed\n", qrun.processed, qrun.total, ESS(qrun.total), qrun.delivered, qrun.failed, qrun.delayed);
+	mailq_run_cleanup(&qrun);
+	if (!qrun.processed) {
+		bbs_dprintf(a->fdout, "No such message file: %s\n", a->argv[1]);
+	}
+	return qrun.processed ? 0 : -1;
+}
+
 static struct bbs_cli_entry cli_commands_mailq[] = {
-	BBS_CLI_COMMAND(cli_mailq, "mailq", 1, "Show the current mail queue (optionally restricted to messages ending in a particular host suffix)", "showq <hostsuffix>"),
-	BBS_CLI_COMMAND(cli_runq, "runq", 1, "Retry delivery of messages in the mail queue (optionally restricted to messages directed at certain hosts)", "runq <hostsuffix>"),
+	BBS_CLI_COMMAND(cli_mailq, "mailq", 1, "Show the current mail queue (optionally restricted to specified file or messages ending in a particular host suffix)", "mailq <file/hostsuffix>"),
+	BBS_CLI_COMMAND(cli_runq, "runq", 1, "Retry delivery of messages in the mail queue (optionally restricted to specified file or messages directed at certain hosts)", "runq <file/hostsuffix>"),
+	BBS_CLI_COMMAND(cli_purgeq, "purgeq", 2, "Cancel delivery of a specific message in the mail queue", "purgeq <file>"),
 	BBS_CLI_COMMAND(cli_mx_lookup, "mxlookup", 2, "Return ordered MX records for a hostname (ordered by, but without, the priorities)", "mxlookup <domain>"),
 };
 
@@ -1862,7 +2030,6 @@ static int launch_delivery_task(const char *controlfile)
 		free(filenamedup);
 		return -1;
 	}
-	bbs_debug(4, "Successfully queued message %s for immediate delivery\n", filename);
 	return 0;
 }
 
@@ -1878,6 +2045,7 @@ static int launch_delivery_task(const char *controlfile)
 static int queue_message(struct smtp_session *smtp, const char *from, const char *recipient, const char *datafile)
 {
 	char controlfile[512];
+	char datebuf[32];
 	FILE *fp;
 	char *c;
 
@@ -1924,10 +2092,19 @@ static int queue_message(struct smtp_session *smtp, const char *from, const char
 	fprintf(fp, "Envelope-Recipient: %s\n", recipient); /* Includes <> already */
 	fprintf(fp, "Data-File: %s\n", datafile); /* Full path to data file containing message */
 	/*! \todo In the future, include any DSN preferences here */
+	smtp_timestamp(smtp_received_time(smtp), datebuf, sizeof(datebuf));
+	fprintf(fp, "Arrival-Time: %s\n", datebuf);
+	/* Put fields that may be mutated while in queue last: */
 	fprintf(fp, "Delivery-Attempts: %d\n", 0); /* Include this last, since this is the only thing we'll be changing between attempts */
 	fclose(fp);
 
-	launch_delivery_task(controlfile);
+	if (queue_immediate) {
+		if (!launch_delivery_task(controlfile)) {
+			bbs_debug(4, "Successfully queued message %s for immediate delivery\n", controlfile);
+		}
+	} else {
+		bbs_debug(4, "Successfully queued message %s for delayed delivery\n", controlfile);
+	}
 	return 1; /* Even if queuing fails for some reason, it's in the queue, so the message will be delivered eventually */
 }
 
@@ -2106,6 +2283,7 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "general", "relayout", &accept_relay_out);
 	bbs_config_val_set_uint(cfg, "general", "maxretries", &max_retries);
 	bbs_config_val_set_uint(cfg, "general", "maxage", &max_age);
+	bbs_config_val_set_true(cfg, "general", "queueimmediate", &queue_immediate);
 	bbs_config_val_set_uint(cfg, "general", "queueinterval", &queue_interval);
 	bbs_config_val_set_true(cfg, "general", "notifyqueue", &notify_queue);
 
@@ -2125,7 +2303,7 @@ static int load_config(void)
 	}
 	bbs_config_unlock(cfg);
 
-	if (queue_interval < 60) {
+	if (queue_interval != 0 && queue_interval < 60) {
 		queue_interval = 60;
 	}
 	return 0;
@@ -2142,7 +2320,7 @@ static int load_module(void)
 		return -1;
 	}
 	bbs_rwlock_init(&queue_lock, NULL);
-	if (bbs_pthread_create(&queue_thread, NULL, queue_handler, NULL)) {
+	if (queue_interval && bbs_pthread_create(&queue_thread, NULL, queue_handler, NULL)) {
 		bbs_rwlock_destroy(&queue_lock);
 		return -1;
 	}
@@ -2160,8 +2338,10 @@ static int unload_module(void)
 	smtp_unregister_partial_lookup(dns_record_lookup);
 	smtp_unregister_queue_processor(queue_processor);
 	bbs_cli_unregister_multiple(cli_commands_mailq);
-	bbs_pthread_interrupt(queue_thread);
-	bbs_pthread_join(queue_thread, NULL);
+	if (queue_interval) {
+		bbs_pthread_interrupt(queue_thread);
+		bbs_pthread_join(queue_thread, NULL);
+	}
 	/* It's possible messages may be in the middle of being sent still,
 	 * which could result in an attempt to destroy queue_lock while still being used.
 	 * Wait until we can get a write lock, since there won't be any new users after

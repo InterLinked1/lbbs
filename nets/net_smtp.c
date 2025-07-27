@@ -793,8 +793,12 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 			bbs_warning("HELO/EHLO hostname '%s' does not resolve to client IP %s\n", smtp->helohost, smtp->node->ip);
 			/* This is suspicious. It is not invalid, but it very well might be.
 			 * I'm aware that this doesn't support IPv6. IPv4 is pretty important for email,
-			 * if you're sending email using an IPv6 address, then that'll be penalized as well. */
-			smtp->failures += 2;
+			 * if you're sending email using an IPv6 address, then that'll be penalized as well.
+			 *
+			 * Note that forwarded mails through Microsoft / Office365 may have a mismatched IP within a /24.
+			 * Also, in most transactions (with STARTTLS), HELO/EHLO will be processed twice.
+			 * For those reasons, don't penalize too heavily here. */
+			smtp->failures++;
 		}
 	}
 
@@ -1046,7 +1050,9 @@ static int parse_mail_parameters(struct smtp_session *smtp, char *s)
 			 * The RFC allows such implementations to parse and discard;
 			 * we don't pass empty AUTH=<> on since we don't authenticate to other servers for submissions,
 			 * and we don't trust any other MTAs, so that's fine. */
-			bbs_warning("Ignoring AUTH identity: %s\n", d);
+			if (!strlen_zero(d)) {
+				bbs_warning("Ignoring AUTH identity: %s\n", d);
+			}
 		} else if (!strcasecmp(ext, "BODY")) {
 			/* RFC 6152 8BITMIME
 			 * In my experience, most mail that requires 8BITMIME is spam.
@@ -3306,8 +3312,10 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 		}
 		s = rldata->buf;
 		len = (size_t) res;
+#ifdef DEBUG_SMTP_DATA
 		/* This is a very spammy message for large emails: */
 		bbs_debug(10, "%p => [%lu data bytes]\n", smtp, len); /* This could be a lot of output, don't show it all. */
+#endif
 		if (!strcmp(s, ".")) { /* Entire message has now been received */
 			int dres;
 			fclose(fp); /* Have to close and reopen in read mode anyways */

@@ -568,7 +568,11 @@ int __bbs_tcp_connect(const char *hostname, int port, const char *file, int line
 			continue;
 		}
 		if (connect(sfd, ai->ai_addr, ai->ai_addrlen)) {
-			bbs_error("connect: %s\n", strerror(errno));
+			if (errno == EINPROGRESS) {
+				bbs_warning("Aborting connection to %s:%d (timed out after %d second%s)\n", ip, port, option_connect_timeout, ESS(option_connect_timeout));
+			} else {
+				bbs_error("connect: %s\n", strerror(errno));
+			}
 			close(sfd);
 			sfd = -1;
 			continue;

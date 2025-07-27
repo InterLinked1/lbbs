@@ -26,8 +26,6 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#define ADD_TO_HOSTS_FILE(hostname, ip) TEST_PRE_EXEC("grep " hostname " /etc/hosts || echo " ip " " hostname " >> /etc/hosts")
-
 static int pre(void)
 {
 	test_preload_module("mod_mail.so");
