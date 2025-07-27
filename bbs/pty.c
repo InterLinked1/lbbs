@@ -843,6 +843,7 @@ finishoutput:
 			}
 			if (bytes_wrote != bytes_read) {
 				bbs_error("Expected to write %ld bytes, only wrote %ld\n", bytes_read, bytes_wrote);
+				break;
 			}
 		} else if (numfds == 3 && fds[2].revents & POLLIN) { /* Got input from sysop (node spying) -> pty */
 			char *buf = readbuf;

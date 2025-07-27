@@ -69,6 +69,8 @@
 
 #define LISTEN_BACKLOG 64
 
+/* These are extern in bbs.c */
+extern int option_connect_timeout;
 extern int option_rebind;
 
 int __bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, uid_t uid, gid_t gid, const char *file, int line, const char *func)
@@ -557,7 +559,7 @@ int __bbs_tcp_connect(const char *hostname, int port, const char *file, int line
 		bbs_debug(3, "Attempting connection to %s:%d\n", ip, port);
 		/* Put the socket in nonblocking mode to prevent connect from blocking for a long time.
 		 * Using SO_SNDTIMEO works on Linux and is easier than doing bbs_unblock_fd before and bbs_block_fd after. */
-		timeout.tv_sec = 4; /* Wait up to 4 seconds to connect */
+		timeout.tv_sec = option_connect_timeout;
 		timeout.tv_usec = 0;
 		if (setsockopt(sfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout))) {
 			bbs_error("setsockopt failed: %s\n", strerror(errno));

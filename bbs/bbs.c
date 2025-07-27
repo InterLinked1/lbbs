@@ -80,6 +80,7 @@ static char *_argv[256];
 /* Immutable */
 int option_dumpcore = 0; /* extern in bbs.h for backtrace */
 int option_nofork = 0; /* run in foreground instead of daemonizing */
+int option_connect_timeout = 30; /* used extern in socket.c */
 int option_rebind = 0; /* used extern in socket.c */
 int option_rand_alloc_failures = 0; /* used extern in alloc.c */
 static int option_run_unit_tests = 0; /* run unit tests on startup */
@@ -1027,6 +1028,12 @@ static int load_config(void)
 	bbs_config_val_set_dstr(cfg, "run", "user", &runuser);
 	bbs_config_val_set_dstr(cfg, "run", "group", &rungroup);
 	bbs_config_val_set_true(cfg, "run", "dumpcore", &option_dumpcore);
+
+	/* Socket options */
+	if (!bbs_config_val_set_int(cfg, "sockets", "connect_timeout", &tmp)) {
+		option_connect_timeout = tmp;
+		fprintf(stderr, "Socket timeout set to %d\n", tmp);
+	}
 
 	/* Logger options */
 	if (!bbs_config_val_set_int(cfg, "logger", "verbose", &tmp)) {
