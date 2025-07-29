@@ -413,7 +413,7 @@ static int exec_cmd(struct smtp_msg_process *mproc, time_t *restrict exec_timeou
 	char *argv[32];
 	int argc;
 	int wants_copy;
-	char tmpfile[256];
+	char tmpfile[256] = "";
 	struct bbs_exec_params x;
 	struct timeval begin, end;
 	int untrusted;
@@ -429,7 +429,7 @@ static int exec_cmd(struct smtp_msg_process *mproc, time_t *restrict exec_timeou
 	wants_copy = strstr(s, "${MAILFILE}") ? 1 : 0;
 
 	/* mproc->iteration == FILTER_MAILBOX is a condition but is incomplete by itself.
-	 * The .rules file that exists in the user's maildir is only modifable by the sysop,
+	 * The .rules file that exists in the user's maildir is only modifiable by the sysop,
 	 * so that should be able to run programs directly on the host.
 	 * The .rules file in the user's home dir is user-mutable (untrusted),
 	 * so that must run inside the container. */
@@ -517,7 +517,7 @@ static int exec_cmd(struct smtp_msg_process *mproc, time_t *restrict exec_timeou
 	}
 
 cleanup:
-	if (wants_copy && mproc->iteration == FILTER_MAILBOX) {
+	if (wants_copy && untrusted) {
 		/* Delete the temp file we created */
 		bbs_delete_file(tmpfile);
 	}
@@ -664,7 +664,7 @@ static int run_rules(struct smtp_msg_process *mproc, int invoketype, const char 
 		} else if (!strcasecmp(s, "RULE")) {
 			in_rule = 1;
 		} else if (!in_rule) {
-			bbs_warning("Ignoring directive outside of rule: %s\n", s);
+			bbs_warning("Ignoring directive outside of rule at %s:%d: %s\n", rulesfile, lineno, s);
 		} else if (!strcasecmp(s, "ENDRULE")) {
 			skip_rule = in_rule = 0;
 		} else if (skip_rule) {

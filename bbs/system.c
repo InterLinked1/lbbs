@@ -224,14 +224,48 @@ static int term_type_exists(const char *term)
 	return 1;
 }
 
+/*! \retval -2 if timeout expired and process killed, same as waitpid otherwise */
+static int waitpid_timed(pid_t pid, int *status, int options, time_t timeout)
+{
+	struct timeval begin, end;
+	time_t orig_timeout = timeout;
+
+	gettimeofday(&begin, NULL);
+	for (;;) {
+		pid_t w;
+		time_t diffms;
+
+		if (!bbs_sigchld_poll((int) timeout)) {
+			break; /* No children have yet exited. Will need to kill the child. */
+		}
+		/* A SIGCHLD or some other event was received. Check if it's our child that exited. */
+		w = waitpid(pid, status, options | WNOHANG); /* Do NOT specify WNOWAIT */
+		if (w) {
+			return w;
+		}
+		gettimeofday(&end, NULL);
+		diffms = bbs_tvdiff_ms(end, begin);
+		timeout = orig_timeout - diffms;
+		if (timeout <= 0) {
+			break;
+		}
+		bbs_debug(3, "Process %d has not exited yet, will wait another %ld ms\n", pid, timeout);
+	}
+	/* Timeout expired, forcibly kill it! */
+	bbs_warning("Process %d has not yet exited, killing forcibly\n", pid);
+	if (kill(pid, SIGKILL)) {
+		bbs_error("Failed to kill process %d: %s\n", pid, strerror(errno)); /* This is bad... we might hang */
+	}
+	/* At this point, the child has been killed, and it is safe to call the normal (blocking) waitpid. */
+	return waitpid(pid, status, options); /* Should now return nonzero (either > 0 or -1) */
+}
+
 static void waitpidexit(pid_t pid, const char *filename, int *res, time_t timeout)
 {
 	pid_t w;
 	int status;
-	struct timeval begin, end;
 
 	if (timeout) {
-		gettimeofday(&begin, NULL);
 		bbs_debug(3, "Waiting up to %ld ms for process %d to exit\n", timeout, pid);
 	} else {
 		bbs_debug(5, "Waiting for process %d to exit\n", pid);
@@ -240,23 +274,10 @@ static void waitpidexit(pid_t pid, const char *filename, int *res, time_t timeou
 	/* Wait for the child process to exit. */
 	do {
 		if (timeout) {
-			if (!bbs_sigchld_poll((int) timeout)) {
-				/* Timeout expired, forcibly kill it! */
-				bbs_warning("Processs %d has not yet exited\n", pid);
-				kill(pid, SIGKILL);
-			}
-			/* A SIGCHLD or some other event was received. Check if it's our child that exited. */
-			w = waitpid(pid, &status, WUNTRACED | WCONTINUED | WNOHANG | WNOWAIT);
-			if (!w) {
-				time_t diffms;
-				gettimeofday(&end, NULL);
-				diffms = bbs_tvdiff_ms(end, begin);
-				timeout -= diffms;
-				bbs_debug(3, "Process %d has not exited yet, will wait another %ld ms\n", pid, timeout);
-				continue;
-			}
+			w = waitpid_timed(pid, &status, WUNTRACED | WCONTINUED, timeout);
+		} else {
+			w = waitpid(pid, &status, WUNTRACED | WCONTINUED);
 		}
-		w = waitpid(pid, &status, WUNTRACED | WCONTINUED);
 		if (w == -1) {
 			bbs_error("waitpid (%s): %s\n", filename, strerror(errno));
 			break;

@@ -792,7 +792,13 @@ static struct sigaction sigchld_handler = {
 
 int bbs_sigchld_poll(int ms)
 {
-	return bbs_poll(sigchld_alert_pipe[0], ms);
+	int pres = bbs_poll(sigchld_alert_pipe[0], ms);
+	if (pres > 0) {
+		/* Read from the alertpipe so we can use it again,
+		 * otherwise it will return immediately from now on */
+		bbs_alertpipe_read(sigchld_alert_pipe);
+	}
+	return pres;
 }
 
 static void __sig_catch_and_release_handler(int num)
