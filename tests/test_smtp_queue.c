@@ -196,6 +196,8 @@ static int run(void)
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/mailq/new", 0);
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/mailq/tmp", 0);
 
+	ENSURE_TMP_QUEUE_FILES_CLEANED_UP();
+
 	res = 0;
 
 cleanup:

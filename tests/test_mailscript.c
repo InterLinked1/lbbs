@@ -18,6 +18,7 @@
  */
 
 #include "test.h"
+#include "email.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -270,6 +271,9 @@ static int run(void)
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 4); /* Message should have been accepted this time */
 
 	SWRITE(clientfd, "QUIT");
+
+	ENSURE_TMP_QUEUE_FILES_CLEANED_UP();
+
 	res = 0;
 
 cleanup:

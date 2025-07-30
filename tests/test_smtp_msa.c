@@ -140,6 +140,8 @@ static int run(void)
 	/* Verify that the email message actually exists on disk. */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1);
 
+	ENSURE_TMP_QUEUE_FILES_CLEANED_UP();
+
 	res = 0;
 
 cleanup:

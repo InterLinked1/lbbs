@@ -842,12 +842,13 @@ int bbs_delete_directory(const char *path)
 	return 0;
 }
 
-int bbs_delete_file(const char *path)
+int __bbs_delete_file(const char *path, const char *file, int line, const char *func)
 {
+	bbs_soft_assert(!strlen_zero(path));
 	/* Could use either remove(2) or unlink(2),
 	 * but since we know it's a file, unlink is more appropriate. */
 	if (unlink(path)) {
-		bbs_error("unlink(%s) failed: %s\n", path, strerror(errno));
+		__bbs_log(LOG_ERROR, 0, file, line, func, "unlink(%s) failed: %s\n", path, strerror(errno));
 		return -1;
 	}
 	return 0;

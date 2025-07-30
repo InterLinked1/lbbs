@@ -244,6 +244,8 @@ static int run(void)
 	TEST_BBS_EXPECT("Pregreet", SEC_MS(2)); /* Check that we successfully detected pregreet via console warning */
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 ");
 
+	ENSURE_TMP_QUEUE_FILES_CLEANED_UP();
+
 	res = 0;
 
 cleanup:

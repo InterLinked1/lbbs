@@ -41,3 +41,10 @@ int test_send_message_with_extra_bytes(int clientfd, const char *recipient, size
  * \retval 0 on success, nonzero on total or partial failure
  */
 int test_make_messages(const char *recipient, int nummsg);
+
+/*! \brief Ensure that any temp files were cleaned up */
+#define ENSURE_TMP_QUEUE_FILES_CLEANED_UP() \
+	if (system("! ls /tmp/smtp* 2>/dev/null")) { \
+		bbs_error("Resource leak: files exist matching path '/tmp/smtp*'\n"); \
+		goto cleanup; \
+	}

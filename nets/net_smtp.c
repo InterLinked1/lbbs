@@ -1596,7 +1596,7 @@ static int filter_create_temp_file(struct smtp_filter_data *f)
 	if (f->outputfd != -1) {
 		return 0; /* Already created one that we can use */
 	}
-	strcpy(f->outputfile, "/tmp/smtpXXXXXX");
+	strcpy(f->outputfile, "/tmp/smtpfXXXXXX");
 	f->outputfd = mkstemp(f->outputfile);
 	if (f->outputfd < 0) {
 		bbs_error("mkstemp failed: %s\n", strerror(errno));
@@ -2629,10 +2629,8 @@ finalize:
 
 	free_if(freedata);
 	close(srcfd);
-	if (filterdata.outputfd != -1) {
-		if (unlink(filterdata.outputfile)) {
-			bbs_error("unlink(%s) failed: %s\n", filterdata.outputfile, strerror(errno));
-		}
+	if (!s_strlen_zero(filterdata.outputfile)) {
+		bbs_delete_file(filterdata.outputfile);
 	}
 
 	return succeeded ? 0 : resp.code ? 1 : -1; /* -1: Trigger the default failure reply */
@@ -3472,6 +3470,7 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 	/* In all cases, if we break out of the loop, fp has already been closed.
 	 * We just need to delete the file and reset the transaction. */
 	bbs_delete_file(template);
+	bbs_soft_assert(!bbs_file_exists(template)); /* The file should not exist anymore, or we have a file leak */
 	smtp_reset(smtp); /* RFC 5321 4.1.1.4: After DATA, must clear buffers */
 	return fatal ? -1 : 0;
 }

@@ -96,6 +96,8 @@ static int run(void)
 	SWRITE(imapfd, "a6 FETCH 1 BODY.PEEK[HEADER]<77.10>" ENDL); /* Beginning of previous line */
 	CLIENT_EXPECT_EVENTUALLY(imapfd, "Received: ");
 
+	ENSURE_TMP_QUEUE_FILES_CLEANED_UP();
+
 	res = 0;
 
 cleanup:

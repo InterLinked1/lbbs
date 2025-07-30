@@ -247,7 +247,9 @@ int bbs_delete_directory(const char *path);
  * \param path Full path of file to delete
  * \retval 0 on success, -1 on failure
  */
-int bbs_delete_file(const char *path);
+#define bbs_delete_file(path) __bbs_delete_file(path, __FILE__, __LINE__, __func__)
+
+int __bbs_delete_file(const char *path, const char *file, int line, const char *func);
 
 /*!
  * \brief Create a temporary FILE*
