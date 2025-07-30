@@ -1603,7 +1603,7 @@ static int filter_create_temp_file(struct smtp_filter_data *f)
 		bbs_error("mkstemp failed: %s\n", strerror(errno));
 		return -1;
 	}
-	bbs_debug(2, "Creating temporary output file (fd %d)\n", f->outputfd);
+	bbs_debug(2, "Creating temporary output file %s (fd %d)\n", f->outputfile, f->outputfd);
 	return 0;
 }
 
@@ -2614,6 +2614,13 @@ next:
 	smtp_delivery_outcome_free(bounces, numbounces);
 
 finalize:
+	/* Close and delete the temp file here, rather than after freeing freedata,
+	 * so the test behavior is deterministic (temp file no longer exists by the time we reply). */
+	close(srcfd);
+	if (!s_strlen_zero(filterdata.outputfile)) {
+		bbs_delete_file(filterdata.outputfile);
+	}
+
 	if (succeeded) { /* If anything succeeded, reply with a 250 OK. We already send individual bounces for the failed recipients. */
 		bbs_smtp_log(2, smtp, "Message from <%s> accepted for delivery to %d/%d recipient%s\n", smtp->from, succeeded, total, ESS(total));
 		smtp_reply(smtp, 250, 2.6.0, "Message accepted for delivery");
@@ -2629,11 +2636,6 @@ finalize:
 	RWLIST_UNLOCK(&handlers); /* Can't unlock while resp might still be used, and it's a RDLOCK, so okay */
 
 	free_if(freedata);
-	close(srcfd);
-	if (!s_strlen_zero(filterdata.outputfile)) {
-		bbs_delete_file(filterdata.outputfile);
-	}
-
 	return succeeded ? 0 : resp.code ? 1 : -1; /* -1: Trigger the default failure reply */
 }
 
@@ -3076,6 +3078,9 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 		if (mproc.drop) {
 			/*! \todo BUGBUG For DIRECTION OUT, if we REDIRECT, then DISCARD, we'll just drop here and forward won't happen (same for REJECT) */
 			bbs_debug(5, "Discarding message and ceasing all further processing\n");
+			if (!s_strlen_zero(newfile)) {
+				bbs_delete_file(newfile);
+			}
 			return 0; /* Silently drop message. We MUST do this for RELAYed messages, since we must not allow those to be sent again afterwards. */
 		}
 	}
@@ -3279,12 +3284,13 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 	REQUIRE_RCPT();
 	REQUIRE_EMPTY(s);
 
-	strcpy(template, "/tmp/smtpXXXXXX");
+	strcpy(template, "/tmp/smtpdXXXXXX");
 	fp = bbs_mkftemp(template, 0600);
 	if (!fp) {
 		smtp_reply_nostatus(smtp, 452, "Server error, unable to allocate buffer");
 		return -1;
 	}
+	bbs_debug(3, "Created temporary file %s\n", template);
 
 	/* Begin reading data. */
 	smtp_reply_nostatus(smtp, 354, "Start mail input; end with a period on a line by itself");
