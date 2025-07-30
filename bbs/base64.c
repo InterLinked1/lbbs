@@ -23,6 +23,7 @@
 
 #include <stdlib.h> /* use malloc */
 #include <string.h> /* use memset */
+#include <stdint.h> /* use uint32_t */
 
 #include "include/base64.h"
 

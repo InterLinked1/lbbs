@@ -22,6 +22,7 @@
 #include "include/bbs.h"
 
 #include <ctype.h>
+#include <fcntl.h>
 
 #include "include/module.h"
 #include "include/config.h"

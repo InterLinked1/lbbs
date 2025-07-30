@@ -21,6 +21,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <ctype.h> /* use isprint, isspace */
 
 #undef strlcat

@@ -19,6 +19,9 @@
  * \note Do not include this header file directly anywhere, it is already included in bbs.h
  */
 
+void bbs_fd_shutdown(void);
+int bbs_fd_init(void);
+
 #if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
 #define	open(a,...)	__bbs_open(__FILE__,__LINE__,__func__, a, __VA_ARGS__)
 #define pipe(a)		__bbs_pipe(a, __FILE__,__LINE__,__func__)
@@ -62,7 +65,10 @@ FILE *__bbs_fopen(const char *path, const char *mode, const char *file, int line
 int __bbs_fclose(FILE *ptr, const char *file, int line, const char *func);
 int __bbs_dup2(int oldfd, int newfd, const char *file, int line, const char *func);
 int __bbs_dup(int oldfd, const char *file, int line, const char *func);
-
-void bbs_fd_shutdown(void);
-int bbs_fd_init(void);
+#else
+#define bbs_std_close(fd) close(fd)
+#define bbs_std_fopen(path, mode) fopen(path, mode)
+#define bbs_std_fclose(fp) fclose(fp)
+#define bbs_mark_opened(f)
+#define bbs_mark_closed(f)
 #endif /* DEBUG_FD_LEAKS */

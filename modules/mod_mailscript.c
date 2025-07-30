@@ -494,7 +494,7 @@ static int exec_cmd(struct smtp_msg_process *mproc, time_t *restrict exec_timeou
 
 	/* Limit the execution time */
 	gettimeofday(&begin, NULL);
-	x.exectimeout = *exec_timeout; /* Don't let any program run more than 60 seconds or it will hold the mail system up */
+	x.exectimeout = *exec_timeout; /* Don't let any program run more than 30 seconds or it will hold the mail system up */
 
 	if (untrusted) {
 		/* While we allow users to use the EXEC command,

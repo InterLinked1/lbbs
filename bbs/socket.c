@@ -22,8 +22,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/time.h> /* struct timeval for musl */
 #include <netinet/in.h> /* use sockaddr_in */
@@ -649,13 +651,25 @@ int bbs_timed_accept(int socket, int ms, const char *ip)
 	return -1;
 }
 
+int bbs_socket_shutdown(int fd)
+{
+	return shutdown(fd, SHUT_RDWR);
+}
+
 void __bbs_socket_close(int *socket, const char *file, int line, const char *func)
 {
 	/* Calling shutdown on the socket first
 	 * avoids needing to call bbs_pthread_cancel_kill,
 	 * which is a lot cleaner and helps avoid deadlocks. */
-	shutdown(*socket, SHUT_RDWR);
+	bbs_socket_shutdown(*socket);
+#if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
 	__bbs_close(*socket, file, line, func);
+#else
+	UNUSED(file);
+	UNUSED(line);
+	UNUSED(func);
+	close(*socket);
+#endif
 	*socket = -1;
 }
 

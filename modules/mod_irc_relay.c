@@ -1116,7 +1116,7 @@ static int load_module(void)
 static int unload_module(void)
 {
 	if (nickpipe[0] != -1) {
-		shutdown(nickpipe[0], SHUT_RDWR); /* Make any in-progress NAMES query exit now */
+		bbs_socket_shutdown(nickpipe[0]); /* Make any in-progress NAMES query exit now */
 	}
 	bbs_cli_unregister_multiple(cli_commands_irc);
 	bbs_irc_client_msg_callback_unregister(command_cb);

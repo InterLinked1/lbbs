@@ -35,6 +35,7 @@
 #include <sys/socket.h>
 #include <signal.h>
 #include <magic.h>
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <limits.h> /* use PATH_MAX */
 

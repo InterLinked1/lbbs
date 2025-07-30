@@ -134,6 +134,9 @@ int __bbs_tcp_connect(const char *hostname, int port, const char *file, int line
  */
 int bbs_timed_accept(int socket, int ms, const char *ip);
 
+/*! \brief Wrapper for shutdown(2) using SHUT_RDWR, so <sys/socket.h> doesn't need to be included */
+int bbs_socket_shutdown(int fd);
+
 /*!
  * \brief Cleanly shutdown and close a socket
  * \param socket Pointer to socket fd

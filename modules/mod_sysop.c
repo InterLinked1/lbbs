@@ -26,6 +26,7 @@
 #include <ctype.h> /* use isprint */
 #include <poll.h>
 #include <sys/un.h>	/* use struct sockaddr_un */
+#include <sys/socket.h>
 
 #include "include/node.h"
 #include "include/pty.h"
@@ -188,7 +189,7 @@ static int cli_warranty(struct bbs_cli_args *a)
 static int cli_fdclose(struct bbs_cli_args *a)
 {
 	int fd = atoi(a->argv[1]);
-	if (shutdown(fd, SHUT_RDWR)) {
+	if (bbs_socket_shutdown(fd)) {
 		bbs_dprintf(a->fdout, "Shutdown failed: %s\n", strerror(errno));
 		return -1;
 	}

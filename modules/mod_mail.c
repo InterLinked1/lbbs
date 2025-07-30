@@ -26,6 +26,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <signal.h>
+#include <fcntl.h>
 #include <dirent.h>
 #include <libgen.h> /* use dirname */
 #include <sys/time.h> /* struct timeval for musl */

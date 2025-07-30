@@ -340,7 +340,7 @@ static void my_close_range(int start, int end)
 {
 	int i;
 	for (i = start; i <= end; i++) {
-		close(i);
+		bbs_std_close(i);
 	}
 }
 #endif

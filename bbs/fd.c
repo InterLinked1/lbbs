@@ -32,9 +32,16 @@
 #include "include/utils.h"
 #include "include/cli.h"
 
-#define FDLEAKS_NUM_FDS 1024
+#define fd_log(fd, fmt, ...) \
+	if (fd == -1) { \
+		bbs_warning(fmt, ## __VA_ARGS__); \
+	} else { \
+		bbs_dprintf(fd, fmt, ## __VA_ARGS__); \
+	}
 
 #if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
+#define FDLEAKS_NUM_FDS 1024
+
 /* Undefine the overrides in bbs.h to expose the real functions */
 #undef open
 #undef accept
@@ -142,44 +149,6 @@ static int print_fds(int fd)
 	return 0;
 }
 
-#define fd_log(fd, fmt, ...) \
-	if (fd == -1) { \
-		bbs_warning(fmt, ## __VA_ARGS__); \
-	} else { \
-		bbs_dprintf(fd, fmt, ## __VA_ARGS__); \
-	}
-
-static int bbs_fd_dump(int fd)
-{
-#if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
-	unsigned int i, opened = 0;
-	struct rlimit rl;
-
-	getrlimit(RLIMIT_NOFILE, &rl);
-
-	for (i = 0; i < ARRAY_LEN(fdinfo); i++) {
-		/* Some of the assigned fds are >= ARRAY_LEN(fdinfo), so not all will show up here */
-		if (fdinfo[i].isopen) {
-			char datestring[24];
-			struct tm opendate;
-			localtime_r(&fdinfo[i].now, &opendate);
-			strftime(datestring, sizeof(datestring), "%F %T", &opendate);
-			fd_log(fd, "%5u [%s] %18s:%-5d %-25s %s(%s)\n", i, datestring, fdinfo[i].file, fdinfo[i].line, fdinfo[i].function, fdinfo[i].callname, fdinfo[i].callargs);
-			opened++;
-		}
-	}
-	if (fd != -1) { /* If we're out of file descriptors, we can't do this anyways since it requires one */
-		print_fds(fd); /* Print fds we don't know about */
-	}
-	/* Add 1 because readdir in print_fds will open a FD */
-	fd_log(fd, "Open files: %u (%d) / %d\n", opened, num_open_fds() + 1, (int) rl.rlim_cur); /* XXX RLIM_INFINITY? */
-
-#else
-	fd_log("%s compiled without DEBUG_FD_LEAKS\n", __FILE__);
-#endif
-	return 0;
-}
-
 /* COPY does safe_strncpy(dst, src, sizeof(dst)), except:
  * - if it doesn't fit, it copies the value after the slash
  *   (possibly truncated)
@@ -238,6 +207,9 @@ static int bbs_fd_dump(int fd)
 	COPY(fdinfo[fd].file, file); \
 	fdinfo[fd].line = line; \
 	fdinfo[fd].now = time(NULL);
+
+/* Forward declaration */
+static int bbs_fd_dump(int fd);
 
 int __bbs_open(const char *file, int line, const char *func, const char *path, int flags, ...)
 {
@@ -549,6 +521,37 @@ int __bbs_dup(int oldfd, const char *file, int line, const char *func)
 }
 
 #endif /* DEBUG_FD_LEAKS */
+
+static int bbs_fd_dump(int fd)
+{
+#if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
+	unsigned int i, opened = 0;
+	struct rlimit rl;
+
+	getrlimit(RLIMIT_NOFILE, &rl);
+
+	for (i = 0; i < ARRAY_LEN(fdinfo); i++) {
+		/* Some of the assigned fds are >= ARRAY_LEN(fdinfo), so not all will show up here */
+		if (fdinfo[i].isopen) {
+			char datestring[24];
+			struct tm opendate;
+			localtime_r(&fdinfo[i].now, &opendate);
+			strftime(datestring, sizeof(datestring), "%F %T", &opendate);
+			fd_log(fd, "%5u [%s] %18s:%-5d %-25s %s(%s)\n", i, datestring, fdinfo[i].file, fdinfo[i].line, fdinfo[i].function, fdinfo[i].callname, fdinfo[i].callargs);
+			opened++;
+		}
+	}
+	if (fd != -1) { /* If we're out of file descriptors, we can't do this anyways since it requires one */
+		print_fds(fd); /* Print fds we don't know about */
+	}
+	/* Add 1 because readdir in print_fds will open a FD */
+	fd_log(fd, "Open files: %u (%d) / %d\n", opened, num_open_fds() + 1, (int) rl.rlim_cur); /* XXX RLIM_INFINITY? */
+
+#else
+	fd_log(fd, "%s compiled without DEBUG_FD_LEAKS\n", __FILE__);
+#endif
+	return 0;
+}
 
 static int cli_fds(struct bbs_cli_args *a)
 {

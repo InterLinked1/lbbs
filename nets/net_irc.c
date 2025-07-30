@@ -24,6 +24,7 @@
 #include <stdarg.h>
 #include <ctype.h>
 #include <signal.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <limits.h> /* use PATH_MAX */
 
@@ -3483,7 +3484,7 @@ static void handle_client(struct irc_user *user)
 				leave_all_channels(u, "QUIT", reason); /* Just use QUIT for now, KILL doesn't render properly in Ambassador. */
 				send_reply(u, "KILL %s%s\r\n", !strlen_zero(reason) ? ":" : "", S_IF(reason));
 				bbs_debug(5, "Shutting down client on node %d\n", user->node->id);
-				shutdown(u->node->fd, SHUT_RDWR); /* Make the client handler thread break */
+				bbs_socket_shutdown(u->node->fd); /* Make the client handler thread break */
 			} else if (!strcasecmp(command, "INVITE")) {
 				handle_invite(user, s);
 			} else if (!strcasecmp(command, "KNOCK")) {
@@ -3692,7 +3693,7 @@ static void *ping_thread(void *unused)
 					send_reply(user, "ERROR :Connection timeout\r\n");
 				}
 				bbs_debug(5, "Shutting down client on node %d\n", user->node->id);
-				shutdown(user->node->fd, SHUT_RDWR); /* Make the client handler thread break */
+				bbs_socket_shutdown(user->node->fd); /* Make the client handler thread break */
 			} else {
 				irc_other_thread_writef(user->node, "PING :%" TIME_T_FMT "\r\n", now);
 				user->lastping = now;

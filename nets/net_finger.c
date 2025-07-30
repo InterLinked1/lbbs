@@ -23,6 +23,7 @@
 #include "include/bbs.h"
 
 #include <string.h>
+#include <fcntl.h>
 
 #include "include/module.h"
 #include "include/config.h"

@@ -27,6 +27,7 @@
 #include <ctype.h>
 #include <signal.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <dirent.h>
 #include <limits.h>
 

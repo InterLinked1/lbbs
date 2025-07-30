@@ -37,14 +37,18 @@
 #include <unistd.h>
 #include <time.h> /* time_t cannot be forward declared, since it's a typedef */
 
-#if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h> /* FILE* cannot be forward declared, since it's a typedef */
+
 #include <sys/stat.h>
+
+#if defined(DEBUG_FD_LEAKS) && DEBUG_FD_LEAKS == 1
 #include <sys/socket.h>
 #include <fcntl.h>
 #include <sys/eventfd.h>
+#else
+#include <stdarg.h>
 #endif /* DEBUG_FD_LEAKS */
 
 #include "include/logger.h"

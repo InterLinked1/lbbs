@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <ftw.h>
+#include <fcntl.h>
 #include <sys/time.h> /* struct timeval for musl */
 #include <time.h> /* use time */
 #include <sys/time.h> /* use gettimeofday */

@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <dirent.h>
 #include <limits.h> /* use PATH_MAX */
 
@@ -823,7 +824,7 @@ static void *ftp_handler(void *varg)
 			 * But if this was usable, this is what it would do: */
 			REQUIRE_PASV_FD();
 			/* Close data connection, which should cause the data I/O to abort */
-			shutdown(pasv_fd, SHUT_RDWR); /* Don't close pasv_fd here, the actual control connection will do so. */
+			bbs_socket_shutdown(pasv_fd); /* Don't close pasv_fd here, the actual control connection will do so. */
 			res = ftp_write(ftp, 226, "Closed data connection\r\n");
 		} else if (!strcasecmp(command, "RMD")) { /* Remove Directory */
 			char fullfile[386];
