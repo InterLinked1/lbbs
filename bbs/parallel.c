@@ -299,6 +299,11 @@ int bbs_parallel_join(struct bbs_parallel *p)
 	/* Join all threads (and clean up the tasks) */
 	RWLIST_WRLOCK(&p->tasks);
 	while ((t = RWLIST_REMOVE_HEAD(&p->tasks, entry))) {
+		/* Release the lock before we call pthread_join, and acquire it again before continuing.
+		 * Since we've removed t at this point, there's no need to keep it locked.
+		 * If we do, it is possible for deadlock to occur, if the thread we try to join here
+		 * needs to acquire the list lock before it can finish. */
+		RWLIST_UNLOCK(&p->tasks);
 		if (!t->started) {
 			bbs_error("In join phase, but task %p hasn't been started?\n", t); /* Shouldn't happen */
 		} else if (!t->completed) {
@@ -312,6 +317,7 @@ int bbs_parallel_join(struct bbs_parallel *p)
 			t->cleanup(t->data);
 		}
 		free(t);
+		RWLIST_WRLOCK(&p->tasks);
 	}
 	RWLIST_UNLOCK(&p->tasks);
 
