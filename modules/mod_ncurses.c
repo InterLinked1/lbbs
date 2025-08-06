@@ -410,10 +410,10 @@ int bbs_ncurses_menu_getopt(struct bbs_node *node, struct bbs_ncurses_menu *menu
 		dup2(node->slavefd, STDOUT_FILENO);
 		dup2(node->slavefd, STDERR_FILENO); /* Not really needed, but avoid triggering assertion in forked process (which ends up in logs) */
 
-		/* The environment (in particular, the TERM variable) isn't set properly
-		 * at this point for ncurses (it may be, incidentally, if the BBS is running in the foreground,
-		 * started from a terminal, but in general, it may be running daemonized.)
-		 * We could therefore set the TERM variable here if we have it available on the node. */
+		/* If TERM is set on the node, also set the TERM variable in the child's environment, for ncurses. */
+		if (node->term) {
+			setenv("TERM", node->term, 1);
+		}
 
 		res = ncurses_menu(menu);
 		c = (char) res;
