@@ -27,6 +27,8 @@
 #include "include/config.h"
 #include "include/mail.h"
 
+#include "include/mod_curl.h"
+
 #include "include/net_smtp.h"
 
 static int enforce_rejects = 1;
@@ -158,6 +160,7 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 #pragma GCC diagnostic pop
 	int p = 0, sp = 0;
 	char mctx_jobid[48];
+	char d_domain[256] = "";
 	time_t now;
 
 	if (smtp_is_exempt_relay(f->smtp) || !smtp_should_verify_dmarc(f->smtp)) {
@@ -165,7 +168,7 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 	}
 
 	is_ipv6 = !bbs_hostname_is_ipv4(f->node->ip); /* If it's not IPv4, must be IPv6? */
-	domain = smtp_mail_from_domain(f->smtp);
+	domain = smtp_from_domain(f->smtp); /* This is supposed to be the RFC5322.From (From: header), NOT the envelope sender */
 	if (!domain) {
 		/* Will be empty if MAIL FROM is empty */
 		return 0;
@@ -199,7 +202,6 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 	}
 
 	if (f->dkim) {
-		char d_domain[256] = "";
 		int dkim_result;
 		const char *d = strstr(f->dkim, "header.d=");
 		if (d) {
@@ -232,6 +234,7 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 	/* Enforcement percentage */
 	opendmarc_policy_fetch_pct(pctx, &pct);
 
+	/* If the DKIM domain doesn't have a record, this falls back to the organizational domain as needed. */
 	status = opendmarc_policy_query_dmarc(pctx, (unsigned char*) domain);
 #pragma GCC diagnostic pop
 	switch (status) {
@@ -264,21 +267,30 @@ static int dmarc_filter_cb(struct smtp_filter_data *f)
 	}
 
 	status = opendmarc_policy_fetch_alignment(pctx, &spf_alignment, &dkim_alignment);
+	if (opendmarc_policy_fetch_utilized_domain(pctx, (unsigned char*) dmarc_domain, sizeof(dmarc_domain)) != DMARC_PARSE_OKAY) {
+		bbs_warning("Failed to get DMARC domain\n");
+	}
 	if (status == DMARC_PARSE_OKAY) {
 		bbs_debug(5, "Alignments: SPF=%s, DKIM=%s\n",
 			spf_alignment == DMARC_POLICY_SPF_ALIGNMENT_PASS ? "pass" : "fail",
 			dkim_alignment == DMARC_POLICY_DKIM_ALIGNMENT_PASS ? "pass" : "fail");
-	}
-
-	if (opendmarc_policy_fetch_utilized_domain(pctx, (unsigned char*) dmarc_domain, sizeof(dmarc_domain)) != DMARC_PARSE_OKAY) {
-		bbs_warning("Failed to get DMARC domain\n");
+#ifdef DEBUG_DMARC
+		if (1) { /* DMARC failure due to alignment fail - debug dump for analysis */
+			char buf[1024];
+			opendmarc_policy_to_buf(pctx, buf, sizeof(buf));
+			/* The DMARC domain may be the organizational domain, if the From domain doesn't have a DMARC record */
+			bbs_debug(7, "DMARC debug (RFC5322.FromDomain=%s, DMARC domain=%s):\n%s", domain, dmarc_domain, buf);
+		}
+#endif
+	} else {
+		bbs_warning("Failed to fetch SPF/DKIM alignments\n");
 	}
 
 	apused = opendmarc_get_policy_token_used(pctx);
 	pct = pct ? pct : 100; /* If no %, default to 100% */
 	enforce = random() % 100 < pct; /* Should we enforce the sending domain's policy, according to the enforcement percentage? */
 
-	/* LBBS doesn't have a concept of "job IDs", like most other MTAs, do.
+	/* LBBS doesn't have a concept of "job IDs", like most other MTAs do.
 	 * Just use epoch time + monotonically increasing number. */
 	now = time(NULL);
 	bbs_mutex_lock(&loglock);
@@ -607,10 +619,38 @@ static int load_config(void)
 	return 0;
 }
 
+static char tld_file[PATH_MAX];
+
+#define PUBLIC_SUFFIX_LIST_URL "https://publicsuffix.org/list/public_suffix_list.dat"
+
+static int find_or_download_tld_file(void)
+{
+	snprintf(tld_file, sizeof(tld_file), "%s/%s", "/var/lib/lbbs", "public_suffix_list.dat");
+	if (!bbs_file_exists(tld_file)) { /* File doesn't already exist. Download it. */
+		struct bbs_curl c = {
+			.url = PUBLIC_SUFFIX_LIST_URL,
+			.forcefail = 1,
+		};
+		if (bbs_curl_get_file(&c, tld_file)) {
+			return -1;
+		}
+		bbs_curl_free(&c); /* Technically, since we wrote to a file, there's nothing to free, but for consistency... */
+	}
+	return 0;
+}
+
 static int load_module(void)
 {
+	if (find_or_download_tld_file()) {
+		bbs_error("Could not load TLD file %s\n", tld_file);
+	}
 	if (opendmarc_policy_library_init(&lib) != DMARC_PARSE_OKAY) {
 		bbs_error("Failed to initialize libopendmarc\n");
+		return -1;
+	}
+	/* The TLD file is used to calculate the organizational domain, if needed. */
+	if (opendmarc_tld_read_file(tld_file, NULL, NULL, NULL) != 0) {
+		bbs_error("Failed to read TLD file %s\n", tld_file);
 		return -1;
 	}
 

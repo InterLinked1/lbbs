@@ -553,12 +553,6 @@ Configuration
    # English is the only language that won't trigger the UNWANTED_LANGUAGE_BODY rule
    ok_languages en
 
-   # SPF hard fail, always reject
-   score SPF_FAIL 10.0
-
-   # SPF soft fail, always send to Junk
-   score SPF_SOFTFAIL 5.0
-
    # Heavily penalize mail from domains with no SPF record
    score SPF_NONE 3.0
 
@@ -587,9 +581,6 @@ Configuration
    score FROM_FMBLA_NEWDOM 4.5
    score FROM_FMBLA_NEWDOM14 3.5
    score FROM_FMBLA_NEWDOM28 2.5
-
-   # Penalized heavily abused freemail
-   score FREEMAIL_FROM 0.5
 
    # Don't modify original message (apart from adding headers)
    report_safe 0

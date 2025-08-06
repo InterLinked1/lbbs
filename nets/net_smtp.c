@@ -179,8 +179,8 @@ struct smtp_session {
 	char *messageid;			/* Message-ID header value */
 	/* AUTH: Temporary */
 	char *authuser;				/* Authentication username */
-	char *fromheaderaddress;	/* Address in the From: header, e.g. "John Smith" <jsmith@example.com> */
-	char *fromaddr;		/* Normalized from address, e.g. jsmith@example.com */
+	char *fromheader;			/* Entire From: header, e.g. "John Smith" <jsmith@example.com> */
+	char *fromaddr;				/* Normalized RFC5322.From (header) address, e.g. jsmith@example.com */
 
 	const char *datafile;
 
@@ -218,7 +218,7 @@ struct smtp_session {
 static void smtp_reset(struct smtp_session *smtp)
 {
 	free_if(smtp->authuser);
-	free_if(smtp->fromheaderaddress);
+	free_if(smtp->fromheader);
 	free_if(smtp->fromaddr);
 	free_if(smtp->from);
 	free_if(smtp->contenttype);
@@ -1051,7 +1051,7 @@ static int parse_mail_parameters(struct smtp_session *smtp, char *s)
 			 * The RFC allows such implementations to parse and discard;
 			 * we don't pass empty AUTH=<> on since we don't authenticate to other servers for submissions,
 			 * and we don't trust any other MTAs, so that's fine. */
-			if (!strlen_zero(d)) {
+			if (strcmp(d, "<>")) {
 				bbs_warning("Ignoring AUTH identity: %s\n", d);
 			}
 		} else if (!strcasecmp(ext, "BODY")) {
@@ -1193,10 +1193,6 @@ static int handle_mail(struct smtp_session *smtp, char *s)
 		bbs_debug(5, "MAIL FROM is empty\n");
 		smtp->fromlocal = 0;
 		REPLACE(smtp->from, "");
-		if (!smtp->fromheaderaddress) {
-			/* Don't have a From address yet, so this is our most specific sender identity */
-			REPLACE(smtp->fromaddr, smtp->from);
-		}
 		smtp_reply(smtp, 250, 2.0.0, "OK");
 		return 0;
 	}
@@ -1235,10 +1231,6 @@ static int handle_mail(struct smtp_session *smtp, char *s)
 	}
 
 	REPLACE(smtp->from, from);
-	if (!smtp->fromheaderaddress) {
-		/* Don't have a From address yet, so this is our most specific sender identity */
-		REPLACE(smtp->fromaddr, smtp->from);
-	}
 	smtp_reply(smtp, 250, 2.1.0, "OK");
 	return 0;
 }
@@ -1481,7 +1473,7 @@ const char *smtp_from_address(struct smtp_session *smtp)
 
 const char *smtp_from_header(struct smtp_session *smtp)
 {
-	return smtp->fromheaderaddress;
+	return smtp->fromheader;
 }
 
 const char *smtp_mail_from_domain(struct smtp_session *smtp)
@@ -1496,6 +1488,7 @@ const char *smtp_from_domain(struct smtp_session *smtp)
 		return bbs_strcnext(smtp->fromaddr, '@');
 	}
 	/* Fall back to MAIL FROM address if not */
+	bbs_warning("RFC5322.From header address unavailable\n");
 	if (!smtp->from) {
 		return NULL;
 	}
@@ -2026,10 +2019,9 @@ int __smtp_run_delivery_callbacks(struct smtp_session *smtp, struct smtp_msg_pro
 	mailboxid = mbox ? (unsigned int) mailbox_id(mbox) : 0;
 	mproc->userid = mailboxid ? mailboxid : 0;
 
-	if (dir == SMTP_DIRECTION_IN && smtp_message_quarantinable(smtp)) { /* e.g. DMARC failure */
-		/* We set the override mailbox before running callbacks,
-		 * because users should have the final say in being able
-		 * to override moving messages to particular mailboxes.
+	if (scope == SMTP_SCOPE_INDIVIDUAL && dir == SMTP_DIRECTION_IN && smtp_message_quarantinable(smtp)) { /* e.g. DMARC failure */
+		/* For individual delivery, we set the override mailbox before running callbacks,
+		 * because users should have the final say in being able to override moving messages to particular mailboxes.
 		 * Moving quarantined messages to "Junk" is just the default. */
 		bbs_debug(5, "Message should be quarantined, so initializing destination mailbox to 'Junk'\n");
 		mproc->newdir = strdup("Junk");
@@ -2655,7 +2647,7 @@ static void update_fromaddr(struct smtp_session *smtp, char *fromheaderaddress)
 	}
 	ltrim(fromaddr); /* Strip leading space */
 	REPLACE(smtp->fromaddr, fromaddr);
-	/* Don't free smtp->fromheaderaddress yet, that we can still use */
+	/* Don't free smtp->fromheader yet, that we can still use */
 }
 
 /*! \brief Parse out the From header address */
@@ -2675,9 +2667,9 @@ static int parse_from_header_from_file(struct smtp_session *smtp, const char *fi
 			char fromcopy[256];
 			const char *f = buf + STRLEN("From:");
 			ltrim(f);
-			REPLACE(smtp->fromheaderaddress, f);
+			REPLACE(smtp->fromheader, f);
 			fclose(fp);
-			safe_strncpy(fromcopy, smtp->fromheaderaddress, sizeof(fromcopy)); /* update_fromaddr mutates the input */
+			safe_strncpy(fromcopy, smtp->fromheader, sizeof(fromcopy)); /* update_fromaddr mutates the input */
 			update_fromaddr(smtp, fromcopy); /* Typically done in do_deliver before calling expand_and_deliver, so need to do manually for injections to set up from vars */
 			return 0;
 		}
@@ -3078,6 +3070,7 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 		if (mproc.drop) {
 			/*! \todo BUGBUG For DIRECTION OUT, if we REDIRECT, then DISCARD, we'll just drop here and forward won't happen (same for REJECT) */
 			bbs_debug(5, "Discarding message and ceasing all further processing\n");
+			bbs_smtp_log(4, smtp, "Message silently discarded\n");
 			if (!s_strlen_zero(newfile)) {
 				bbs_delete_file(newfile);
 			}
@@ -3098,16 +3091,16 @@ static int do_deliver(struct smtp_session *smtp, const char *filename, size_t da
 			return 0;
 		}
 		/* Check From: header in email itself */
-		if (!smtp->fromheaderaddress) { /* Didn't get a From address at all. According to RFC 6409, we COULD add a Sender header, but just reject. */
+		if (!smtp->fromheader) { /* Didn't get a From address at all. According to RFC 6409, we COULD add a Sender header, but just reject. */
 			smtp_reply(smtp, 550, 5.7.1, "Missing From header");
 			return 0;
 		}
-		safe_strncpy(fromhdrdup, smtp->fromheaderaddress, sizeof(fromhdrdup)); /* check_identity butchers the input */
+		safe_strncpy(fromhdrdup, smtp->fromheader, sizeof(fromhdrdup)); /* check_identity butchers the input */
 		/* If the two addresses are exactly the same, no need to do the same check twice. */
-		if (strcmp(smtp->from, smtp->fromheaderaddress) && check_identity(smtp, fromhdrdup)) {
+		if (strcmp(smtp->from, smtp->fromheader) && check_identity(smtp, fromhdrdup)) {
 			return 0;
 		}
-		safe_strncpy(fromhdrdup, smtp->fromheaderaddress, sizeof(fromhdrdup)); /* update_fromaddr butchers the input */
+		safe_strncpy(fromhdrdup, smtp->fromheader, sizeof(fromhdrdup)); /* update_fromaddr butchers the input */
 		update_fromaddr(smtp, fromhdrdup);
 		bbs_debug(4, "Updating internal from address from '%s' to '%s'\n", smtp->from, smtp->fromaddr);
 	}
@@ -3254,7 +3247,7 @@ static int handle_burl(struct smtp_session *smtp, char *s)
 			bbs_strterm(buf, '\r');
 			from = buf + STRLEN("From:");
 			ltrim(from);
-			REPLACE(smtp->fromheaderaddress, from);
+			REPLACE(smtp->fromheader, from);
 			break;
 		} else if (!strcmp(buf, "\r\n")) {
 			bbs_warning("BURL submission is missing From header\n"); /* Transmission will probably be rejected, but not our concern here. */
@@ -3406,16 +3399,19 @@ static int handle_data(struct smtp_session *smtp, char *s, struct readline_data 
 		}
 
 		if (indataheaders) {
-			if ((smtp->fromlocal || smtp->msa) && STARTS_WITH(s, "From:")) {
+			if (STARTS_WITH(s, "From:")) {
+				char fromhdrdup[256];
 				const char *newfromhdraddr = S_IF(s + 5);
-				if (smtp->fromheaderaddress) {
+				if (smtp->fromheader) {
 					/*! \todo This check is not entirely robust. We need to also see if there are multiple addresses within a header,
 					 * not just if there are multiple headers.
 					 * Additionally, the rudimentary parsing in DATA doesn't handle multiline headers. */
 					bbs_warning("Message has more than one From header?\n");
 				}
 				fromaddresses++;
-				REPLACE(smtp->fromheaderaddress, newfromhdraddr);
+				REPLACE(smtp->fromheader, newfromhdraddr);
+				safe_strncpy(fromhdrdup, smtp->fromheader, sizeof(fromhdrdup)); /* update_fromaddr butchers the input */
+				update_fromaddr(smtp, fromhdrdup);
 			} else if (STARTS_WITH(s, "Received:")) {
 				smtp->tflags.hopcount++;
 			} else if (!smtp->contenttype && STARTS_WITH(s, "Content-Type:")) {
