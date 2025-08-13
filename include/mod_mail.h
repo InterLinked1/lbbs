@@ -20,7 +20,7 @@ struct bbs_url;
 struct bbs_tcp_client;
 struct dirent;
 
-/* RFC 3696 Section 3 */
+/* RFC 3696 Section 3 (updated by erratum to 256, but doesn't hurt to use the original, longer length) */
 #define MAX_EMAIL_ADDRESS_LENGTH 320
 
 /*! \brief RFC 5423 Section 4 message store events */

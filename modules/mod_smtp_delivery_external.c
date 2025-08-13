@@ -491,7 +491,7 @@ static int __attribute__ ((nonnull (2, 3, 9, 16))) try_send(struct smtp_session 
 	ssize_t wrote = 0;
 	struct bbs_smtp_client smtpclient;
 	off_t send_offset;
-	char sendercopy[64];
+	char sendercopy[MAX_EMAIL_ADDRESS_LENGTH];
 	char *user, *domain, *saslstr = NULL; /* saslstr is scoped here for cleanup */
 
 #define SMTP_EOM "\r\n.\r\n"
