@@ -114,7 +114,7 @@ At the console, press :code:`?` or :code:`h` for a list of available commands. Y
 
 Some configuration of the BBS will be needed before you can use it. Consult the sample configs in :code:`/etc/lbbs` for an overview of settings you may need to configure. At a minimum, you will need to add a menu to the BBS (:code:`menus.conf`).
 
-LBBS is best run on a modern version of Debian Linux (Debian 11 or 12). It should also compile on most other commonly used Linux distros. A recent version of gcc is required (e.g. >= 11).
+LBBS is best run on a modern version of Debian Linux (Debian 12 or 13). It should also compile on most other commonly used Linux distros. A recent version of gcc is required (e.g. >= 11).
 The BBS core should compile and install on FreeBSD, but not all module dependencies may be available and some functionality may be degraded.
 
 **WARNING: Do not run the BBS as root!** Create a non-root user and configure the BBS to run as that instead. See :code:`lbbs -?` or :code:`/etc/lbbs/bbs.conf` to configure the run user and run group.

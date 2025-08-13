@@ -109,6 +109,28 @@ jobs:
       - name: Run tests
         run: |
           sudo ASAN_RUN=1 scripts/run_tests.sh
+  debian-13:
+    runs-on: ubuntu-24.04
+    name: Debian 13
+    container: debian:13
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install prereqs
+        run: |
+          ./scripts/install_prereq.sh
+      - name: Build LBBS
+        run: |
+          make modcheck
+          make -j$(nproc) || make NOISY_BUILD=1
+          make install
+          make samples
+          make tests
+      - name: Run basic tests
+        run: |
+          tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
+      - name: Run unit tests
+        run: |
+          IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
   debian-12:
     runs-on: ubuntu-24.04
     name: Debian 12
