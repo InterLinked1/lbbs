@@ -265,7 +265,11 @@ static int update_queue_stats(void)
 	}
 
 	/* If only one queue needs to be refreshed, then just ask for that one by name. */
-	resp = ami_action(bbs_ami_session(), "QueueStatus", stale_queues == 1 ? lastq->name : "");
+	if (stale_queues == 1) {
+		resp = ami_action(bbs_ami_session(), "QueueStatus", "Queue:%s", lastq->name);
+	} else {
+		resp = ami_action(bbs_ami_session(), "QueueStatus", "");
+	}
 
 	if (!resp || !resp->success) {
 		RWLIST_UNLOCK(&queues);
@@ -785,6 +789,114 @@ static int handle_call(struct agent *agent, struct queue_call *call)
 	return res;
 }
 
+/*!
+ * \brief Show the status of all agents in this queue
+ * \note Must be called with queues locked
+ */
+static int queue_agent_status(struct agent *agent, struct queue *queue)
+{
+	int i;
+	struct ami_response *resp;
+	struct bbs_ncurses_menu menu;
+	char title[64];
+
+	resp = ami_action(bbs_ami_session(), "QueueStatus", "Queue:%s", queue->name);
+	if (!resp || !resp->success) {
+		if (resp) {
+			ami_resp_free(resp);
+		}
+		bbs_error("Failed to get queue stats\n");
+		return -1;
+	}
+
+	bbs_ncurses_menu_init(&menu);
+	snprintf(title, sizeof(title), "AGENT STATUS - %s", queue->title);
+	bbs_ncurses_menu_set_title(&menu, title);
+	bbs_node_clear_screen(agent->node);
+
+	for (i = 1; i < resp->size - 1; i++) {
+		struct ami_event *e = resp->events[i];
+		const char *event = ami_keyvalue(e, "Event");
+		if (!strcmp(event, "QueueMember")) {
+			char status[64];
+			const char *agent_name, *paused_str, *queue_name;
+			const char *calls_taken_str, *incall_str;
+			int paused, numcalls, incall;
+
+			queue_name = ami_keyvalue(e, "Queue");
+			if (!queue_name || strcmp(queue_name, queue->name)) {
+				bbs_warning("Wrong queue: %s\n", queue_name);
+				continue;
+			}
+
+			agent_name = ami_keyvalue(e, "Name");
+			paused_str = ami_keyvalue(e, "Paused");
+			calls_taken_str = ami_keyvalue(e, "CallsTaken");
+			incall_str = ami_keyvalue(e, "InCall");
+			if (!agent_name || !paused_str || !calls_taken_str || !incall_str) {
+				bbs_warning("Missing response fields\n");
+				continue;
+			}
+			/* Add all the agent statuses to a scrollable menu.
+			 * Unfortunately, order is not guaranteed. */
+			paused = atoi(paused_str);
+			numcalls = atoi(calls_taken_str);
+			incall = atoi(incall_str);
+			snprintf(status, sizeof(status), "%-12s %1s %4d %s", agent_name, incall ? "*" : " ", numcalls, paused ? "Inactive" : "Active");
+			bbs_ncurses_menu_addopt(&menu, 0, agent_name, status);
+		}
+	}
+
+	/* Display the menu showing statuses. Don't care about the selection. */
+	bbs_ncurses_menu_getopt(agent->node, &menu);
+	bbs_ncurses_menu_destroy(&menu);
+	return 0;
+}
+
+/*! \brief Prompt agent for a queue for which to dump agent status */
+static int agent_status(struct agent *agent)
+{
+	struct bbs_ncurses_menu menu;
+	struct queue *queue;
+	int res, i;
+
+	bbs_ncurses_menu_init(&menu);
+	bbs_ncurses_menu_set_title(&menu, "AGENT STATUS");
+
+	RWLIST_RDLOCK(&queues);
+	RWLIST_TRAVERSE(&queues, queue, entry) {
+		struct member *member = queue_member(queue, agent);
+		if (!member) {
+			continue;
+		}
+		bbs_ncurses_menu_addopt(&menu, 0, queue->name, queue->title);
+	}
+	RWLIST_UNLOCK(&queues);
+
+	bbs_node_clear_screen(agent->node);
+
+	/* Ask the agent which queue to inspect. */
+	res = bbs_ncurses_menu_getopt(agent->node, &menu);
+	bbs_ncurses_menu_destroy(&menu);
+	if (res < 0) {
+		return 0;
+	}
+
+	i = 0;
+	RWLIST_RDLOCK(&queues);
+	RWLIST_TRAVERSE(&queues, queue, entry) {
+		if (i++ != res) {
+			continue;
+		}
+		/* Found the selected queue */
+		res = queue_agent_status(agent, queue);
+		break;
+	}
+	RWLIST_UNLOCK(&queues);
+	bbs_soft_assert(queue != NULL);
+	return res;
+}
+
 static int select_call(struct agent *agent)
 {
 	struct queue_call *call;
@@ -1031,6 +1143,13 @@ start:
 			bbs_debug(3, "Handling agent input '%c'\n", c);
 			bbs_node_writef(node, "%s", COLOR_RESET);
 			switch (c) {
+				case 'a': /* Query agent status */
+					res = agent_status(agent);
+					if (res < 0) {
+						bbs_debug(4, "Aborting queue system\n");
+						goto cleanup;
+					}
+					goto start;
 				case 'l': /* Load (handle) call(s) */
 					res = select_call(agent);
 					if (res < 0) {

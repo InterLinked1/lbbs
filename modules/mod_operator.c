@@ -85,6 +85,8 @@ static char context_trs_transfer[64] = "";
 static char url_emergency_caller_info[128] = "";
 static char variable_n11translations[64] = "";
 
+static bbs_mutex_t timelock = BBS_MUTEX_INITIALIZER;
+
 /* Based on https://stackoverflow.com/a/15301457/ */
 static void nonlocaltime(const char *tzname, char *buf, size_t len)
 {
@@ -93,7 +95,8 @@ static void nonlocaltime(const char *tzname, char *buf, size_t len)
 
 	now = time(NULL);
 
-	/* Note: this code is not thread safe */
+	bbs_mutex_lock(&timelock);
+
     tz = getenv("TZ");
     if (tz) {
         tz = strdup(tz);
@@ -113,6 +116,8 @@ static void nonlocaltime(const char *tzname, char *buf, size_t len)
         unsetenv("TZ");
 	}
     tzset();
+
+	bbs_mutex_unlock(&timelock);
 }
 
 static int node_read_variable(struct bbs_node *node, const char *key)
