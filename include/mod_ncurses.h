@@ -27,6 +27,7 @@ struct bbs_ncurses_menu {
 	char *options[MAX_NCURSES_MENU_OPTIONS + 1];
 	char *optvals[MAX_NCURSES_MENU_OPTIONS + 1];
 	int num_options;
+	int height;
 };
 
 /*!
@@ -56,6 +57,16 @@ void bbs_ncurses_menu_set_subtitle(struct bbs_ncurses_menu *menu, const char *su
  * \param menu
  */
 void bbs_ncurses_menu_disable_keybindings(struct bbs_ncurses_menu *menu);
+
+#define MENU_PAGE_NUM_OPTIONS_MAX(node) ((int) node->rows - 8)
+
+/*!
+ * \brief Set the maximum number of options to show simultaneously. Default is 10.
+ * \param node
+ * \param menu
+ * \param height Menu options height. Must be >= 1 and shoud
+ */
+int bbs_ncurses_menu_set_height(struct bbs_node *node, struct bbs_ncurses_menu *menu, int height);
 
 /*!
  * \brief Add an option to a menu

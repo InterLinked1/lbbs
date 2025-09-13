@@ -34,12 +34,16 @@
 
 #include "include/mod_ncurses.h"
 
+#define MENU_WIDTH 78
+#define MENU_PAGE_NUM_OPTIONS_DEFAULT 10
+
 void bbs_ncurses_menu_init(struct bbs_ncurses_menu *menu)
 {
 	menu->title = NULL;
 	menu->subtitle = NULL;
 	menu->num_options = 0;
 	menu->keybindings = menu->keybind;
+	menu->height = MENU_PAGE_NUM_OPTIONS_DEFAULT;
 	/* Don't bother initializing the options array */
 }
 
@@ -67,6 +71,16 @@ void bbs_ncurses_menu_set_subtitle(struct bbs_ncurses_menu *menu, const char *su
 void bbs_ncurses_menu_disable_keybindings(struct bbs_ncurses_menu *menu)
 {
 	menu->keybindings = NULL;
+}
+
+int bbs_ncurses_menu_set_height(struct bbs_node *node, struct bbs_ncurses_menu *menu, int height)
+{
+	if (height < 1 || height > MENU_PAGE_NUM_OPTIONS_MAX(node)) {
+		bbs_error("Invalid menu option height: %d\n", height);
+		return -1;
+	}
+	menu->height = height;
+	return 0;
 }
 
 int bbs_ncurses_menu_addopt(struct bbs_ncurses_menu *menu, char key, const char *opt, const char *value)
@@ -136,9 +150,6 @@ char bbs_ncurses_menu_getopt_selection(struct bbs_node *node, struct bbs_ncurses
 	return bbs_ncurses_menu_getopt_key(menu, res);
 }
 
-#define MENU_WIDTH 78
-#define MENU_PAGE_NUM_OPTIONS 10
-
 enum print_pos {
 	PRINT_MIDDLE = 0,
 	PRINT_LEFT,
@@ -182,7 +193,7 @@ static void __print_pos(WINDOW *win, int starty, int startx, int width, const ch
 	refresh();
 }
 
-static int run_menu(const char *title, const char *subtitle, int num_choices, ITEM **options, const char *optkeys)
+static int run_menu(const char *title, const char *subtitle, int num_choices, ITEM **options, const char *optkeys, int height)
 {
 	char *curpos;
 	int c, offset, selected_item;
@@ -196,8 +207,8 @@ static int run_menu(const char *title, const char *subtitle, int num_choices, IT
 
 #define MENU_BEGIN_COL 1
 #define MENU_BEGIN_ROW 1
-#define MENU_LINES MENU_PAGE_NUM_OPTIONS + 5
-#define MENU_NCOLS MENU_WIDTH - 2
+#define MENU_LINES (height + 5)
+#define MENU_NCOLS (MENU_WIDTH - 2)
 
 /* This is how many rows in we begin listing options.
  * The heading of the menu takes up 3 rows, plus 1 more if we're displaying a subtitle. */
@@ -209,8 +220,8 @@ static int run_menu(const char *title, const char *subtitle, int num_choices, IT
 
 	/* Set main window and sub window */
 	set_menu_win(menu, win);
-	set_menu_sub(menu, derwin(win, MENU_PAGE_NUM_OPTIONS, MENU_NCOLS, MENU_SKIP_ROWS, MENU_BEGIN_ROW));
-	set_menu_format(menu, MENU_PAGE_NUM_OPTIONS, 1);
+	set_menu_sub(menu, derwin(win, height, MENU_NCOLS, MENU_SKIP_ROWS, MENU_BEGIN_ROW));
+	set_menu_format(menu, height, 1);
 	set_menu_mark(menu, " * "); /* Set "selected" item string */
 
 	/* Print a border around the main window and print a title */
@@ -343,7 +354,7 @@ static int ncurses_menu(struct bbs_ncurses_menu *menu)
 		options[i] = new_item(o, "");
 	}
 
-	selected_item = run_menu(menu->title, menu->subtitle, menu->num_options, options, menu->keybind);
+	selected_item = run_menu(menu->title, menu->subtitle, menu->num_options, options, menu->keybind, menu->height);
 	for (i = 0; i < menu->num_options; i++) {
 		free_item(options[i]);
 	}
