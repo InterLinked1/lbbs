@@ -4137,7 +4137,10 @@ static int flush_updates(struct imap_session *imap, const char *command, const c
 
 static int notify_status_cb(struct imap_client *client, const char *buf, size_t len, void *cbdata)
 {
-	if (len < STRLEN("* STATUS") || !STARTS_WITH(buf, "* STATUS")) {
+	char foldername[256];
+	char *s;
+
+	if (len < (STRLEN("* STATUS ") + 1) || !STARTS_WITH(buf, "* STATUS ")) {
 		return 0;
 	}
 
@@ -4147,9 +4150,32 @@ static int notify_status_cb(struct imap_client *client, const char *buf, size_t 
 	/* In this case, buf should be NULL terminated */
 
 	bbs_debug(3, "Raw STATUS response: %s\n", buf);
+	/* Source will be nonempty since we already checked the length */
+	safe_strncpy(foldername, buf + STRLEN("* STATUS "), sizeof(foldername));
+	s = strchr(foldername + 1, ' ');
+	if (!s) {
+		bbs_warning("Malformed response: %s\n", buf);
+	} else {
+		*s = '\0';
+	}
 
-	/* XXX Again, because only INBOX is supported for remote NOTIFY proxy */
-	return imap_client_send_converted_status_response(client, "INBOX", buf);
+	/* At the moment, only INBOX is supported for remote NOTIFY proxy
+	 * and originally, that was hardcoded for foldername here.
+	 *
+	 * However, we take care here to ensure that the case of the folder name here matches
+	 * that provided in the LIST response and thus of which the client is aware.
+	 * In IMAP, mailbox names are case-sensitive, except for INBOX (RFC 3501 5.1).
+	 *
+	 * Initially, wssmail and evergreen were case-sensitive on all mailboxes, which
+	 * would cause issues if the remote server's INBOX was not exactly "INBOX", e.g. "Inbox".
+	 *
+	 * wssmail and evergreen have been tolerant of case-mismatches on INBOX, since these commits:
+	 * https://github.com/InterLinked1/wssmail/commit/e4548597fc67e6f322f6fe09afc17b456e3f2169
+	 * https://github.com/InterLinked1/evergreen/commit/9cfbc7e54ed12f9d170f76016f77e4e3d398f164
+	 *
+	 * However, we should avoid confusing clients by using a case that may differ
+	 * from what it actually is. */
+	return imap_client_send_converted_status_response(client, foldername, buf);
 }
 
 static int handle_idle(struct imap_session *imap)
