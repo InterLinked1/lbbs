@@ -50,7 +50,9 @@ RWLIST_HEAD(imap_client_list, imap_client);
 struct imap_notify;
 
 struct imap_session {
-	char *tag;
+	char *tag;					/* Tag of current command */
+	const char *command;		/* Current command. Only used by imap_flush_updates */
+	const char *subcommand;		/* Current subcommand. Only used by imap_flush_updates */
 	struct bbs_node *node;
 	struct mailbox *mbox;		/* Current mailbox (mailbox as in entire mailbox, not just a mailbox folder) */
 	struct mailbox *mymbox;		/* Pointer to user's private/personal mailbox. */
@@ -183,6 +185,13 @@ extern int imap_debug_level;
 #define imap_reply(imap, fmt, ...) do { \
 	bbs_assert(!imap->finalized_response); \
 	imap->finalized_response = 1; \
+	if (imap_flush_updates(imap)) { \
+		return -1; \
+	} \
+	_imap_reply(imap, "%s " fmt "\r\n", imap->tag, ## __VA_ARGS__); \
+} while (0);
+#define imap_reply_no_flush_updates(imap, fmt, ...) do { \
+	imap->finalized_response = 1; \
 	_imap_reply(imap, "%s " fmt "\r\n", imap->tag, ## __VA_ARGS__); \
 } while (0);
 
@@ -193,6 +202,14 @@ extern int imap_debug_level;
 		imap_reply(imap, "BAD [CLIENTBUG] Missing arguments"); \
 		return 0; \
 	}
+
+/*!
+ * \brief Flush any pending untagged updates. This should be called immediately prior to tagged responses being sent.
+ * \param imap
+ * \retval 0 on success, -1 on failure (disconnect), 1 on failure (don't disconnect)
+ * \note This is only called by imap_reply() and handle_idle()
+ */
+int imap_flush_updates(struct imap_session *imap);
 
 /*!
  * \brief Generate untagged FETCH messages for clients that have selected the current mailbox

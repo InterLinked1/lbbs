@@ -753,9 +753,11 @@ int bbs_dir_num_files(const char *path)
 	struct dirent *entry;
 	int num = 0;
 
+	bbs_soft_assert(!strlen_zero(path));
+
 	/* Order doesn't matter here, we just want the total number of messages, so fine (and faster) to use opendir instead of scandir */
 	if (!(dir = opendir(path))) {
-		bbs_error("Error opening directory - %s: %s\n", path, strerror(errno));
+		bbs_error("Error opening directory %s: %s\n", path, strerror(errno));
 		return -1;
 	}
 

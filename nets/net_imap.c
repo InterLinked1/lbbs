@@ -364,7 +364,7 @@ static void __imap_send_update_log(struct imap_session *imap, const char *s, siz
 
 	/* Since we're locked in this function, we CANNOT use imap_send */
 	if (delay && !forcenow) {
-		imap_debug(4, "%d: %p <= %s", line, imap, s); /* Already ends in CR LF */
+		imap_debug(4, "%d: %p (delayed) <= %s", line, imap, s); /* Already ends in CR LF */
 		bbs_node_any_fd_write(imap->node, imap->pfd[1], s, len);
 		imap->pending = 1;
 		if (is_expunge) {
@@ -624,6 +624,11 @@ static void send_untagged_exists(struct bbs_node *node, struct mailbox *mbox, co
 	int numrecent = -1;
 	int numtotal = -1;
 	struct imap_session *s;
+	char newdir[512], curdir[512];
+
+	/* Build the directory names ourselves, since if the client isn't on that mailbox, s->newdir/s->curdir may not be set */
+	snprintf(newdir, sizeof(newdir), "%s/new", maildir);
+	snprintf(curdir, sizeof(curdir), "%s/cur", maildir);
 
 	/* Notify anyone watching this mailbox, specifically the INBOX. */
 	RWLIST_RDLOCK(&sessions);
@@ -643,8 +648,8 @@ static void send_untagged_exists(struct bbs_node *node, struct mailbox *mbox, co
 		if (res == 1) {
 			if (numtotal == -1) { /* Calculate the number of messages "just in time", only if needed. */
 				/* Compute how many messages exist. */
-				numrecent = bbs_dir_num_files(s->newdir);
-				numtotal = numrecent + bbs_dir_num_files(s->curdir);
+				numrecent = bbs_dir_num_files(newdir);
+				numtotal = numrecent + bbs_dir_num_files(curdir);
 				bbs_debug(4, "Calculated %d message%s in INBOX %d currently\n", numtotal, ESS(numtotal), mailbox_id(mbox));
 				if (numrecent) {
 					len = (size_t) snprintf(buf, sizeof(buf), "* %d EXISTS\r\n* %d RECENT\r\n", numtotal, numrecent);
@@ -2372,7 +2377,7 @@ static int process_append(struct imap_session *imap, const char *appenddir, cons
 	return 0;
 }
 
-static void append_response(struct imap_session *imap, int acl, unsigned int *a, int length, unsigned int uidvalidity, unsigned int uidnext)
+static int append_response(struct imap_session *imap, int acl, unsigned int *a, int length, unsigned int uidvalidity, unsigned int uidnext)
 {
 	/* RFC 4315 3: if client doesn't have permission to SELECT/EXAMINE, do not send UIDPLUS response */
 	if (IMAP_HAS_ACL(acl, IMAP_ACL_READ)) {
@@ -2392,6 +2397,7 @@ static void append_response(struct imap_session *imap, int acl, unsigned int *a,
 	} else {
 		imap_reply(imap, "OK APPEND completed");
 	}
+	return 0;
 }
 
 static int handle_append(struct imap_session *imap, char *s)
@@ -2619,6 +2625,7 @@ static int handle_append(struct imap_session *imap, char *s)
 		 * that isn't the spirit of an "atomic" operation... */
 	}
 
+	/* We can return directly here because a isn't used when imap->client != NULL and therefore doesn't need to be freed */
 	if (imap->client) {
 		/* Send empty line to denote end of APPEND/MULTIAPPEND */
 		ssize_t res = bbs_write(imap->client->client.wfd, "\r\n", 2);
@@ -2634,7 +2641,9 @@ static int handle_append(struct imap_session *imap, char *s)
 		return 0;
 	}
 
-	append_response(imap, imap->acl, a, appends, uidvalidity, uidnext);
+	if (append_response(imap, imap->acl, a, appends, uidvalidity, uidnext)) {
+		goto cleanup2;
+	}
 
 cleanup:
 	free_if(a);
@@ -4050,14 +4059,12 @@ static int scrutinize_command(const char *command, const char *subcommand)
 	return 0;
 }
 
-/*!
- * \brief Flush any pending untagged updates
- * \param imap
- * \param command
- * \param s
- * \retval 0 on success, -1 on failure (disconnect), 1 on failure (don't disconnect)
- */
-static int flush_updates(struct imap_session *imap, const char *command, const char *s)
+enum flush_state {
+	PRE_COMMAND_PROCESSING, /* Check if we're running a command where we could be out of synchronization and reject if needed */
+	POST_COMMAND_PRE_TAGGED_RESPONSE, /* Flush any updates possible */
+};
+
+static int __imap_flush_updates(struct imap_session *imap, enum flush_state state)
 {
 	ssize_t res;
 
@@ -4066,16 +4073,17 @@ static int flush_updates(struct imap_session *imap, const char *command, const c
 	 * Typically, clients will issue a NOOP to get this information.
 	 * The pipe allows us to decouple the EXPUNGE action from the responses sent to multi-access clients. */
 
-	/* XXX Technically, the RFC says this should happen right before the END of the command, not at the beginning of it.
-	 * e.g. RFC 5465 Section 1: "as unsolicited responses sent just before the end of a command"
-	 * For simple cases like NOOP, there's no difference at all, but does it matter in other cases?
-	 * It would be tricky to support the other case since each command sends its own end of command reply,
-	 * and this would need to be interleaved before that as appropriate. So if it's fine to do it here, then that is much simpler.
+	/* The correct time to flush updates is right before the end of tagged responses.
 	 *
-	 * From RFC 7162 3.2.10.2, this seems to suggest that this approach *could* be fine...:
+	 * RFC 5465 Section 1: "as unsolicited responses sent just before the end of a command"
+	 * For simple cases like NOOP, there's no difference at all, but does it matter in other cases?
+	 *
+	 * From RFC 7162 3.2.10.2, this seems to suggest that flushing updates right after a command starts *could* be fine...:
 	 * A VANISHED response MUST NOT be sent when no command is in progress, nor while responding to a FETCH, STORE, or SEARCH command.
 	 * This rule is necessary to prevent a loss of synchronization of message sequence numbers between the client and server.
 	 * A command is not "in progress" until the complete command has been received; in particular, a command is not "in progress" during the negotiation of command continuation.
+	 *
+	 * Initially, that was what we did, but we now flush updates before the tagged response, which is the correct time.
 	 */
 
 	if (imap->pending && !imap->client) { /* Not necessary to lock just to read the flag. Only if we're actually going to read data. */
@@ -4088,20 +4096,18 @@ static int flush_updates(struct imap_session *imap, const char *command, const c
 		 * A VANISHED response MAY be sent during a UID command. However, the VANISHED response MUST NOT be sent
 		 * during a UID SEARCH command that contains message numbers in the search criteria.
 		 *
-		 * XXX Regardless of what we to do here, won't the clients sequence numbers be off anyways?
+		 * XXX Regardless of what we to do here, won't the clients' sequence numbers be off anyways?
 		 * We don't maintain a "client's view" of what sequences numbers are known and map to what UIDs.
 		 * So what is the actual effect of "preventing loss of synchronization in this manner"???
-		 *
-		 * XXX I think this should be right after the command completes, not before? (This is simpler, but technically incorrect)
 		 */
-		scrutinize = scrutinize_command(command, s);
+		scrutinize = scrutinize_command(imap->command, imap->subcommand);
 		bbs_mutex_lock(&imap->lock);
 		/* Technically, what we should do is send all the non-EXPUNGE updates if !scrutinize
 		 * However, we don't currently have a mechanism to do that, we just send all the updates in the loop below.
 		 * Therefore, we only execute the loop if !scrutinize.
 		 * If this is a command for which EXPUNGE MUST NOT be sent, but there aren't any EXPUNGEs pending, it's okay to flush. */
 		if (scrutinize) {
-			if (imap->expungepending) {
+			if (imap->expungepending && state == PRE_COMMAND_PROCESSING) {
 				/* Uh oh.
 				 * A correct, compliant IMAP server should be able to handle this...
 				 * by using its per-client mapping of sequence numbers to UIDs
@@ -4112,14 +4118,16 @@ static int flush_updates(struct imap_session *imap, const char *command, const c
 				 * which should keep it in sync. Furthermore, using of raw FETCH or STORE is much less common
 				 * compared to UID FETCH, UID STORE, etc. */
 				bbs_mutex_unlock(&imap->lock);
-				bbs_warning("Client has a stale view of sequence numbers, rejecting unsynchronized command\n");
-				imap_reply(imap, "NO Out of synchronization, run NOOP and retry request");
-				return 1;
+				bbs_warning("Client has a stale view of sequence numbers, rejecting unsynchronized command (%s %s)\n", imap->command, S_IF(imap->subcommand));
+				/* We cannot use imap_reply() here, because it calls imap_flush_updates(), which would recurse. */
+				imap_reply_no_flush_updates(imap, "NO Out of synchronization, run NOOP and retry request");
+				return 1; /* Return 1 to suppress the response that would have been sent. This will end up returning 0 so it's not fatal. */
 			}
 			/* Since there aren't any EXPUNGEs in the pipe, we can safely send these untagged updates. */
 			scrutinize = 0;
 		}
-		if (!scrutinize) {
+		/* If state == PRE_COMMAND_PROCESSING, we don't actually flush anything at this time */
+		if (!scrutinize && state == POST_COMMAND_PRE_TAGGED_RESPONSE) {
 			char buf[1024]; /* Hopefully big enough for any single untagged response. */
 			bbs_readline_init(&rldata2, buf, sizeof(buf));
 			/* Read from the pipe until it's empty again. If there's more than one response waiting, and in particular, more than sizeof(buf), we need to read by line. */
@@ -4137,6 +4145,11 @@ static int flush_updates(struct imap_session *imap, const char *command, const c
 		bbs_mutex_unlock(&imap->lock);
 	}
 	return 0;
+}
+
+int imap_flush_updates(struct imap_session *imap)
+{
+	return __imap_flush_updates(imap, POST_COMMAND_PRE_TAGGED_RESPONSE);
 }
 
 static int notify_status_cb(struct imap_client *client, const char *buf, size_t len, void *cbdata)
@@ -4213,6 +4226,11 @@ static int handle_idle(struct imap_session *imap)
 	 * Thus, in traversing all the IMAP sessions, simply sharing the same mbox isn't enough.
 	 * imap->dir also needs to match (same currently selected folder). */
 	idlestarted = time(NULL);
+
+	/* If we have any untagged responses to flush, we can do so now,
+	 * obviously we don't want to wait until the IDLE command finishes. */
+	imap_flush_updates(imap);
+
 	for (;;) {
 		struct imap_client *client = NULL;
 
@@ -4461,14 +4479,15 @@ static int imap_process(struct imap_session *imap, char *s)
 
 	/* IMAP clients MUST use a different tag each command, but in practice this is treated as a SHOULD. Common IMAP servers do not enforce this. */
 	imap->tag = strsep(&s, " "); /* Tag for client to identify responses to its request */
-	command = strsep(&s, " ");
+	imap->command = command = strsep(&s, " ");
+	imap->subcommand = s;
 
 	if (!imap->tag || strlen_zero(command)) {
 		imap_send(imap, "BAD [CLIENTBUG] Missing arguments.");
 		goto done;
 	}
 
-	res = flush_updates(imap, command, s);
+	res = __imap_flush_updates(imap, PRE_COMMAND_PROCESSING);
 	if (res) {
 		return res < 0 ? -1 : 0;
 	}
@@ -4960,20 +4979,6 @@ done:
 	if (res) {
 		bbs_debug(4, "%s command returned %d\n", command, res);
 	}
-#if 0
-	/* Can't call flush_updates here, the command has already completed
-	 * (this is when we are "supposed" to send updates to the client, but that is
-	 * BEFORE the tagged response, not AFTER.
-	 *
-	 * \todo XXX What we SHOULD be doing is calling flush_updates
-	 * right before every command sends an untagged response;
-	 * unfortunately, there is no easy way to do that besides
-	 * copying that to every command's function. */
-	else if (!strlen_zero(command)) {
-		res = flush_updates(imap, command, NULL);
-		res = res < 0 ? -1 : 0;
-	}
-#endif
 	return res;
 }
 

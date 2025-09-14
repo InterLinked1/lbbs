@@ -658,18 +658,19 @@ static int run(void)
 
 	/* Test COPY and MOVE again, to test that an idling client on the destination mailbox receives untagged EXISTS
 	 * (we already test the untagged EXPUNGE for MOVE earlier in this test sequence). */
-	SWRITE(client1, "f1 COPY 1 INBOX" ENDL); /* Who says we can't copy to the current mailbox? Also, this ensures we don't get the untagged EXISTS for ourself before command completion. */
+	SWRITE(client1, "f1 COPY 1 INBOX" ENDL); /* Who says we can't copy to the current mailbox? */
+	CLIENT_EXPECT(client1, "* 6 EXISTS"); /* Get untagged EXISTS prior to tagged response. */
 	CLIENT_EXPECT(client1, "f1 OK");
 	CLIENT_EXPECT(client2, "* 6 EXISTS"); /* Idling client should see the new message */
 	SWRITE(client1, "f2 NOOP" ENDL); /* Next time we can get updates flushed to us, we should see it as well */
-	CLIENT_EXPECT(client1, "* 6 EXISTS");
+	CLIENT_EXPECT_EVENTUALLY(client1, "f2 OK");
 
 	/* Repeat, with MOVE */
 	SWRITE(client1, "f3 MOVE 1 INBOX" ENDL); /* Again, who says we can't move to ourself? This basically just updates the UID for no reason */
-	CLIENT_EXPECT_EVENTUALLY(client1, "f3 OK");
-	CLIENT_EXPECT_EVENTUALLY(client2, "* 6 EXISTS");
-	SWRITE(client1, "f2 NOOP" ENDL);
 	CLIENT_EXPECT_EVENTUALLY(client1, "* 6 EXISTS");
+	CLIENT_EXPECT(client2, "* 6 EXISTS");
+	SWRITE(client1, "f4 NOOP" ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "f4 OK");
 
 	/* LOGOUT */
 	SWRITE(client1, "z999 LOGOUT" ENDL);
