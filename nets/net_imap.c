@@ -358,8 +358,9 @@ static void __imap_send_update_log(struct imap_session *imap, const char *s, siz
 {
 	int delay = 0;
 
-	/* We are only free to send responses whenever we want if the client is idling, or if NOTIFY SELECTED is active. */
-	delay = !imap_sequence_numbers_prohibited(imap) && !imap->idle;
+	/* We are only free to send responses whenever we want if the client is idling, or if NOTIFY SELECTED is active.
+	 * EXPUNGE is a special case - RFC 3501 5.3 dictates EXPUNGE responses are not allowed if no command is in progress. */
+	delay = (!imap_sequence_numbers_prohibited(imap) && !imap->idle) || (is_expunge && !imap->command_inprogress);
 
 	/* Since we're locked in this function, we CANNOT use imap_send */
 	if (delay && !forcenow) {
@@ -2204,19 +2205,22 @@ cleanup:
 		free_if(olduids);
 		free_if(newuids);
 	}
+
+	/* maildir_move_msg_filename sends the untagged EXISTS for the new message in the destination mailbox.
+	 * No untagged EXISTS should be sent to the client running the command.
+	 *
+	 * The untagged EXPUNGE responses are sent at this point, and since untagged EXPUNGES can't be sent
+	 * while a command is not in progress, we need to flush this out BEFORE finalizing the response with an OK. */
+	if (expunged) {
+		imap->highestmodseq = maildir_indicate_expunged(EVENT_MESSAGE_EXPUNGE, imap->node, imap->mbox, imap->curdir, expunged, expungedseqs, exp_lengths, 0);
+		free(expunged);
+	}
+
 	if (error) {
 		imap_reply(imap, "BAD Invalid saved search");
 	} else {
 		/* Yes, the MOVE response sends COPYUID. See RFC 6851 4.3 */
 		imap_reply(imap, "OK [COPYUID %u %s %s] MOVE completed", uidvalidity, S_IF(olduidstr), S_IF(newuidstr));
-	}
-
-	/* EXPUNGE untagged responses are sent in realtime (already done), just update HIGHESTMODSEQ now */
-	if (expunged) {
-		imap->highestmodseq = maildir_indicate_expunged(EVENT_MESSAGE_EXPUNGE, imap->node, imap->mbox, imap->curdir, expunged, expungedseqs, exp_lengths, 0);
-		free(expunged);
-		/* maildir_move_msg_filename sends the untagged EXISTS for the new message in the destination mailbox.
-		 * No untagged EXISTS should be sent to the client running the command. */
 	}
 
 	mailbox_unlock(imap->mbox);
@@ -5002,8 +5006,11 @@ static void handle_client(struct imap_session *imap)
 
 	for (;;) {
 		const char *word2;
+		ssize_t res;
+		imap->command_inprogress = 0;
 		/* Autologout timer should not be less than 30 minutes, according to the RFC. We'll uphold that, for clients that are logged in. */
-		ssize_t res = bbs_node_readline(imap->node, &rldata, "\r\n", bbs_user_is_registered(imap->node->user) ? MIN_MS(30) : MIN_MS(1));
+		res = bbs_node_readline(imap->node, &rldata, "\r\n", bbs_user_is_registered(imap->node->user) ? MIN_MS(30) : MIN_MS(1));
+		imap->command_inprogress = 1;
 		if (res < 0) {
 			res += 1; /* Convert the res back to a normal one. */
 			if (res == 0) {
