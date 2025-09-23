@@ -1317,6 +1317,7 @@ int bbs_module_load(const char *name)
 
 int bbs_module_unload(const char *name)
 {
+	struct stringlist unloaded;
 	int res;
 
 #ifdef DLOPEN_ONLY_ONCE
@@ -1326,7 +1327,9 @@ int bbs_module_unload(const char *name)
 	}
 #endif
 
-	res = unload_resource(name, 0, NULL);
+	stringlist_init(&unloaded);
+
+	res = unload_resource(name, 0, &unloaded);
 	return res ? -1 : 0;
 }
 
