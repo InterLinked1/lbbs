@@ -288,6 +288,12 @@ static void relay_free(struct smtp_relay_host *h)
 	free(h);
 }
 
+static void authorized_identity_free(struct smtp_authorized_identity *i)
+{
+	stringlist_empty_destroy(&i->identities);
+	free(i);
+}
+
 static void add_authorized_identity(const char *username, const char *identities)
 {
 	struct smtp_authorized_identity *i;
@@ -3851,6 +3857,7 @@ static int unload_module(void)
 	}
 	stringlist_empty_destroy(&blacklist);
 	RWLIST_WRLOCK_REMOVE_ALL(&authorized_relays, entry, relay_free);
+	RWLIST_WRLOCK_REMOVE_ALL(&authorized_identities, entry, authorized_identity_free);
 	stringlist_empty_destroy(&trusted_relays);
 	stringlist_empty_destroy(&starttls_exempt);
 	if (!RWLIST_EMPTY(&filters)) {
