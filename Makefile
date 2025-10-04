@@ -104,7 +104,7 @@ $(MOD_SUBDIR) external:
 tests :
 	@+$(SUBMAKE) --no-builtin-rules -C $@ all
 
-# Make only modcheck, but not any of the other external programs
+# Make only modman, but not any of the other external programs
 modcheckrule :
 	@+$(SUBMAKE) --no-builtin-rules -C external modman
 

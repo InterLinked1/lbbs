@@ -133,12 +133,19 @@ static int resolve_makefile_varcmd(const char *restrict dirname, const char *res
 		tmp = cmd;
 		while (*tmp) {
 			if (!IS_SAFE_CHAR(*tmp)) {
+				if (strcmp(tmp, ">/dev/null\n")) {
+					tmp++;
+					continue;
+				}
 				modman_warning("Shell command '%s' contains disallowed character '%c'\n", cmd, *tmp);
 				fclose(fp);
 				return -1;
 			}
 			tmp++;
 		}
+
+		/* If a package is not found pkg-info while whine to stderr, suppress that */
+		strncat(cmd, " 2>/dev/null", sizeof(cmd) - 1);
 
 		pfp = popen(cmd, "r");
 		if (!pfp) {
@@ -238,14 +245,14 @@ static int check_lib(const char *modname, const char *libname)
 }
 
 /*! \brief Check if all library dependencies are met */
-static int check_libs(const char *dirname, const char *modname, char *restrict buf)
+static int check_libs(const char *dirname, const char *modname, int is_module, char *restrict buf)
 {
 	char *libname, *token;
 	int missing_deps = 0;
 
 	/* We're parsing a module.
 	 * Look for special linking dependencies. */
-	modman_log(7, "Processing module '%s'\n", modname);
+	modman_log(7, "Processing %s '%s'\n", is_module ? "module" : "binary", modname);
 
 	/* We've found a library. In fact, we could have found a multiple.
 	 * We assume that all the library names are provided explicitly
@@ -273,7 +280,7 @@ static int check_libs(const char *dirname, const char *modname, char *restrict b
 					 * instead of pkg-config.
 					 * In this case, we know the lib is not installed, so also count as failure. */
 					if (!*libs) {
-						modman_log(0, "   == Module '%s' is dependent on a library that cannot be resolved ==> %s%s%s\n", modname, COLOR_FAILURE, "UNRESOLVED", COLOR_RESET);
+						modman_log(0, "   == %s '%s' is dependent on a library that cannot be resolved ==> %s%s%s\n", is_module ? "Module" : "Binary", modname, COLOR_FAILURE, "UNRESOLVED", COLOR_RESET);
 						missing_deps++;
 					} else {
 						while ((lib = strsep(&libs, " "))) {
@@ -392,7 +399,7 @@ static inline int is_standard_lib_header(const char *filename)
  * \brief Check if a header file exists in any of the system include paths
  * \retval -1 if error, 0 if doesn't exist, 1 if exists
  */
-static int check_header_file(const char *dirname, const char *modname, const char *incfile, FILE *mfp, int *restrict metdeps)
+static int check_header_file(const char *dirname, const char *modname, int is_module, const char *incfile, FILE *mfp, int *restrict metdeps)
 {
 	char incpaths[sizeof(sys_include_paths)];
 	int exists = 0;
@@ -494,15 +501,15 @@ static int check_header_file(const char *dirname, const char *modname, const cha
 		if (debug_level >= loglevel) {
 			(*metdeps)++;
 		}
-		modman_log(loglevel, "   == Module '%s' includes system header file '%s' => %s%s%s\n", modname, incfile, COLOR_SUCCESS, "FOUND", COLOR_RESET);
+		modman_log(loglevel, "   == %s '%s' includes system header file '%s' => %s%s%s\n", is_module ? "Module" : "Binary", modname, incfile, COLOR_SUCCESS, "FOUND", COLOR_RESET);
 	} else {
-		modman_log(0, "   == Module '%s' includes system header file '%s' => %s%s%s\n", modname, incfile, COLOR_FAILURE, "MISSING", COLOR_RESET);
+		modman_log(0, "   == %s '%s' includes system header file '%s' => %s%s%s\n", is_module ? "Module" : "Binary", modname, incfile, COLOR_FAILURE, "MISSING", COLOR_RESET);
 	}
 	return exists;
 }
 
 /*! \brief Check if all system header files in a source file exist */
-static int check_headers(const char *dirname, const char *modname, FILE *mfp, int *restrict met_deps)
+static int check_headers(const char *dirname, const char *modname, int is_module, FILE *mfp, int *restrict met_deps)
 {
 	FILE *fp;
 	char filename[515];
@@ -523,7 +530,14 @@ static int check_headers(const char *dirname, const char *modname, FILE *mfp, in
 		char *incfile;
 		/* Check for system include files */
 		if (strncmp(buf, "#include <", 10)) {
-			continue;
+			if (!strcmp(buf, "#include \"include/json.h\"\n")) {
+				/* include/json.h includes <jansson.h>,
+				 * but we don't check the BBS include files,
+				 * so this is a hack to process that dependency. */
+				strcpy(buf, "#include <jansson.h>");
+			} else {
+				continue;
+			}
 		}
 		incfile = buf + 10;
 		if (!*incfile) {
@@ -539,7 +553,7 @@ static int check_headers(const char *dirname, const char *modname, FILE *mfp, in
 			continue;
 		}
 #endif
-		if (!check_header_file(dirname, modname, incfile, mfp, met_deps)) {
+		if (!check_header_file(dirname, modname, is_module, incfile, mfp, met_deps)) {
 			unmet_headers++;
 		}
 	}
@@ -548,7 +562,7 @@ static int check_headers(const char *dirname, const char *modname, FILE *mfp, in
 	return unmet_headers;
 }
 
-static int check_module(const char *dirname, const char *modname, FILE *mfp, int autodisable)
+static int check_module(const char *dirname, const char *modname, FILE *mfp, int is_module, int autodisable)
 {
 	char *tmp;
 	char buf[1024];
@@ -578,7 +592,7 @@ static int check_module(const char *dirname, const char *modname, FILE *mfp, int
 
 		/* Check for missing libraries */
 		has_deps = 1;
-		missing_deps += check_libs(dirname, modname, buf);
+		missing_deps += check_libs(dirname, modname, is_module, buf);
 		break;
 	}
 
@@ -591,7 +605,7 @@ static int check_module(const char *dirname, const char *modname, FILE *mfp, int
 	 * Strictly speaking, if missing_deps is already positive at this point, we don't need to do this part,
 	 * since we already know the module is missing dependencies. However, do it for completeness.
 	 */
-	missing_deps += check_headers(dirname, modname, mfp, &metdeps);
+	missing_deps += check_headers(dirname, modname, is_module, mfp, &metdeps);
 	has_deps += missing_deps;
 	has_deps += metdeps;
 
@@ -648,13 +662,13 @@ static int check_module(const char *dirname, const char *modname, FILE *mfp, int
 						}
 						/* Repeat for the .d */
 						TERMINATE_AT(filename, '.');
-						strncat(filename, ".c", sizeof(filename) - 1);
+						strncat(filename, ".d", sizeof(filename) - 1);
 						if (unlink(filename)) {
 							modman_error("Failed to remove dummy zero-size file '%s': %s\n", filename, strerror(errno));
 							errs++;
 						}
 						if (!errs) {
-							modman_log(0, "    ---> Re-enabled module '%s', now that dependencies are met\n", modname);
+							modman_log(0, "    ---> Re-enabled %s '%s', now that dependencies are met\n", is_module ? "module" : "binary", modname);
 						}
 					}
 				}
@@ -662,7 +676,7 @@ static int check_module(const char *dirname, const char *modname, FILE *mfp, int
 		}
 		if (!has_deps) {
 			/* Only show this message if we haven't already displayed a log message for this module to the user */
-			modman_log(0, "   == Module '%s' has no unmet dependencies => %s%s%s\n", modname, COLOR_SUCCESS, "OKAY", COLOR_RESET);
+			modman_log(0, "   == %s '%s' has no unmet dependencies => %s%s%s\n", is_module ? "Module" : "Binary", modname, COLOR_SUCCESS, "OKAY", COLOR_RESET);
 		}
 		return 0;
 	}
@@ -691,15 +705,15 @@ static int check_module(const char *dirname, const char *modname, FILE *mfp, int
 			} else {
 				long size = st.st_size;
 				if (size > 0) {
-					modman_warning("Compiled module '%s' is present, even though required libraries are not installed\n", filename);
+					modman_warning("Compiled %s '%s' is present, even though required libraries are not installed\n", is_module ? "module" : "binary", filename);
 				} else {
-					modman_log(0, "    ---> Module '%s' is already disabled\n", modname);
+					modman_log(0, "    ---> %s '%s' is already disabled\n", is_module ? "Module" : "Binary", modname);
 				}
 			}
 			return 0;
 		}
 
-		modman_log(0, "    ---> Autodisabling module '%s'\n", modname);
+		modman_log(0, "    ---> Autodisabling %s '%s'\n", is_module ? "module" : "binary", modname);
 
 		/* First, create the .d filename. */
 		tmp = strchr(filename, '.');
@@ -712,25 +726,37 @@ static int check_module(const char *dirname, const char *modname, FILE *mfp, int
 			modman_error("Object filename '%s' has empty file extension?\n", filename);
 			return -1;
 		}
-		/* This is the s in .so. Change it to o and terminate, for .d */
-		strcpy(tmp, "d"); /* Safe, since it was big enough for .so, it's bit enough for .d */
-		if (create_file(filename)) {
-			return -1;
-		}
+		if (is_module) {
+			/* This is the s in .so. Change it to o and terminate, for .d */
+			strcpy(tmp, "d"); /* Safe, since it was big enough for .so, it's bit enough for .d */
+			if (create_file(filename)) {
+				return -1;
+			}
 
-		/* It's not necessary to create dummy .o files, since the .so are the main target.
-		 * As long as that is satisfied, then we're good.
-		 *
-		 * Create the .so file last, so it has the newest timestamp (as the outermost make target). */
-		strcpy(tmp, "so"); /* Safe, since this is what the string was originally */
-		if (create_file(filename)) {
-			return 0;
+			/* It's not necessary to create dummy .o files, since the .so are the main target.
+			 * As long as that is satisfied, then we're good.
+			 *
+			 * Create the .so file last, so it has the newest timestamp (as the outermost make target). */
+			strcpy(tmp, "so"); /* Safe, since this is what the string was originally */
+			if (create_file(filename)) {
+				return 0;
+			}
+		} else {
+			strcpy(tmp, "o");
+			if (create_file(filename)) {
+				return -1;
+			}
+			--tmp;
+			*tmp = '\0';
+			if (create_file(filename)) {
+				return -1;
+			}
 		}
 	}
 	return 0;
 }
 
-static int check_module_subdir(const char *subdir, int autodisable)
+static int check_subdir(const char *subdir, int is_module, int autodisable)
 {
 	struct dirent *entry, **entries;
 	int numfiles, fno = 0;
@@ -772,7 +798,7 @@ static int check_module_subdir(const char *subdir, int autodisable)
 			free(entry);
 			continue;
 		}
-		if (!strchr(entry->d_name, '_')) {
+		if (is_module && !strchr(entry->d_name, '_')) {
 			/* All actual modules are named category_name, e.g. net_ssh.
 			 * In most module subdirs we can, any .c files are implicitly modules,
 			 * but the tests subdirectory mixes modules with the test binary objects,
@@ -783,8 +809,8 @@ static int check_module_subdir(const char *subdir, int autodisable)
 		/* Found a module source file. Check it */
 		snprintf(modname, sizeof(modname), "%s", entry->d_name);
 		TERMINATE_AT(modname, '.');
-		strncat(modname, ".so", sizeof(modname) - 1);
-		check_module(subdir, modname, fp, autodisable);
+		strncat(modname, is_module ? ".so" : ".o", sizeof(modname) - 1);
+		check_module(subdir, modname, fp, is_module, autodisable);
 		free(entry);
 	}
 
@@ -792,6 +818,8 @@ static int check_module_subdir(const char *subdir, int autodisable)
 	fclose(fp);
 	return 0;
 }
+
+#define check_module_subdir(subdir, autodisable) check_subdir(subdir, 1, autodisable)
 
 static int check_unmet_dependencies(int autodisable)
 {
@@ -810,6 +838,7 @@ static int check_unmet_dependencies(int autodisable)
 	res |= check_module_subdir("modules", autodisable);
 	res |= check_module_subdir("nets", autodisable);
 	res |= check_module_subdir("tests", autodisable); /* Some of the tests also depend on libraries that may not be available on every platform, so disable those that can't build */
+	res |= check_subdir("external", 0, autodisable);
 
 	return res;
 }
