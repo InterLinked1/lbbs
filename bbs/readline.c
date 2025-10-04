@@ -113,6 +113,16 @@ int readline_bytes_available(struct readline_data *restrict rldata, int process)
 	return (int) (rldata->pos - rldata->buf);
 }
 
+size_t bbs_readline_leftover_bytes(struct readline_data *restrict rldata)
+{
+	return rldata->leftover;
+}
+
+char * bbs_readline_leftover_buf(struct readline_data *restrict rldata)
+{
+	return rldata->pos;
+}
+
 static int readline_post_read(struct readline_data *restrict rldata, const char *delim, char *restrict firstdelim, ssize_t res)
 {
 	int used, delimlen;

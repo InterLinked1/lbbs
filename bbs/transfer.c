@@ -764,7 +764,7 @@ int bbs_transfer_config_load(void)
 		idletimeout *= 1000; /* convert s to ms */
 	}
 	if (bbs_config_val_set_path(cfg, "transfers", "rootdir", rootdir, sizeof(rootdir))) { /* Must explicitly specify */
-		bbs_error("No rootdir specified, transfers will be disabled\n");
+		bbs_warning("No rootdir specified, transfers will be disabled\n");
 		bbs_config_unlock(cfg);
 		return 0; /* Transfers will be disabled, but don't abort startup. */
 	}

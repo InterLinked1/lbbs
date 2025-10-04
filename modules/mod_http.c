@@ -2465,7 +2465,7 @@ static int cgi_run(struct http_session *http, const char *filename, char *const 
 		/* Close all file descriptors except the pipes */
 		for (i = 3; i < 1024; i++) {
 			if (i != stdin[0] && i != stdout[1]) {
-				close(i);
+				bbs_std_close(i);
 			}
 		}
 		/* Set STDIN and STDOUT */
@@ -2544,9 +2544,9 @@ static int cgi_run(struct http_session *http, const char *filename, char *const 
 		}
 		/* Now, send the body.
 		 * Note that some (or all) of it may be sitting in the readline buffer. */
-		bytes = readline_bytes_available(&rldata, 1);
+		bytes = (ssize_t) bbs_readline_leftover_bytes(&rldata);
 		if (bytes > 0) {
-			http_write(http, buf, (size_t) bytes);
+			http_write(http, bbs_readline_leftover_buf(&rldata), (size_t) bytes);
 			total_bytes += (size_t) bytes;
 		}
 		/* Read from the pipe until it closes
@@ -2742,6 +2742,7 @@ enum http_response_code http_serve_static_or_cgi(struct http_session *http, cons
 		}
 		if (translate_dir_to_file(docroot, uri, ends_in_slash, &st, filename, sizeof(filename), "index.html")
 			&& translate_dir_to_file(docroot, uri, ends_in_slash, &st, filename, sizeof(filename), "index.htm")
+			&& translate_dir_to_file(docroot, uri, ends_in_slash, &st, filename, sizeof(filename), "index.cgi")
 			&& (!cgiext || translate_dir_to_file(docroot, uri, ends_in_slash, &st, filename, sizeof(filename), cgiext))) {
 			/* We could not translate to a file, we are stuck with a directory.
 			 * If we are allowed to provide a directory listing, do so. */

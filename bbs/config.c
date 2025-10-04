@@ -113,7 +113,7 @@ int bbs_config_val_set_path(struct bbs_config *cfg, const char *section_name, co
 	}
 	/* Check that the directory exists (it needs to be executable as well) */
 	if (eaccess(buf, X_OK)) {
-		bbs_warning("Cannot read directory %s\n", buf);
+		bbs_error("Cannot read directory %s\n", buf);
 		return -1;
 	}
 	return 0;

@@ -56,13 +56,27 @@ void bbs_readline_flush(struct readline_data *rldata);
 void bbs_readline_print_reset(struct readline_data *rldata);
 
 /*!
- * \brief Get number of bytes of data currently available in buffer
+ * \brief Get number of bytes of data currently available in buffer for the next line
  * \param rldata
  * \param process 1 if readline data needs to be shifted and processed after a previous read
  * \warning Return value will NOT be accurate if the process argument is wrong!
  * \return Number of bytes available
  */
 int readline_bytes_available(struct readline_data *restrict rldata, int process);
+
+/*!
+ * \brief Get number of bytes of data currently available in buffer (total, without regard to delimiters)
+ * \param rldata
+ * \return Number of bytes in the buffer. Must be accessed using bbs_readline_leftover_buf()
+ */
+size_t bbs_readline_leftover_bytes(struct readline_data *restrict rldata);
+
+/*!
+ * \brief Get all the leftover data in the buffer
+ * \param rldata
+ * \return Pointer to beginning of leftover data
+ */
+char *bbs_readline_leftover_buf(struct readline_data *restrict rldata);
 
 /*!
  * \brief Read input from a file descriptor, up to a delimiter. This function handles reading partial inputs, multiple inputs, etc. automatically.
