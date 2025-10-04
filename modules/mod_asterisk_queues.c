@@ -203,7 +203,9 @@ static void del_agent(struct agent *agent)
 
 	/* Finally, remove the agent itself, now that there are no longer any references to it,
 	 * besides ours. */
-	RWLIST_WRLOCK_REMOVE_BY_FIELD(&agents, id, agent->id, entry);
+	if (!RWLIST_WRLOCK_REMOVE_BY_FIELD(&agents, id, agent->id, entry)) {
+		bbs_error("Agent to unregister not in agent list?\n");
+	}
 
 	free(agent);
 }
@@ -356,9 +358,11 @@ static int cli_asterisk_agents(struct bbs_cli_args *a)
 	return 0;
 }
 
-static void __mark_dead(struct queue_call *call)
+#define __mark_dead(call) __mark_call_dead(call, __LINE__, __func__)
+
+static void __mark_call_dead(struct queue_call *call, int line, const char *func)
 {
-	bbs_debug(3, "Marking queue call %d as dead: %s\n", call->id, call->channel);
+	__bbs_log(LOG_DEBUG, 3, __FILE__, line, func, "Marking queue call %d as dead: %s\n", call->id, call->channel);
 	call->dead = 1;
 }
 
@@ -377,6 +381,9 @@ static void mark_dead(const char *channel)
 		}
 	}
 	RWLIST_UNLOCK(&calls);
+	if (!call) {
+		bbs_warning("Couldn't find channel '%s' in call list\n", channel);
+	}
 }
 
 static int call_is_dead(struct queue_call *call)

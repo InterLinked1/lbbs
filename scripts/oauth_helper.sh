@@ -69,6 +69,10 @@ REFRESH_TOKEN=""
 USERNAME=""
 IMAP_SERVER=""
 
+if ! which jq; then
+	printf "WARNING: jq is not installed, and is required for full functionality - please consider installing it!\n"
+fi
+
 printf "%s\n" "--- OAuth2 token helper ---"
 printf "Select an option, then press ENTER:\n"
 printf "g) Get tokens for Google account\n"

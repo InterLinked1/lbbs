@@ -79,3 +79,21 @@ iptables -t nat -F
 iptables -t mangle -F
 iptables -F
 iptables -X
+
+# Do not attempt to copy the rootfs directly between systems
+# To move the rootfs to another system
+# On the source system: tar -cvf rootfs.tar ./rootfs
+# Copy rootfs.tar to the target system
+# On the target system run: tar -xvf rootfs.tar
+# Then run: chown -R root:root /var/lib/lbbs/rootfs/
+# Then run: /var/lib/lbbs/external/isoroot -n /var/lib/lbbs/ (not /var/lib/lbbs/rootfs as you might think!)
+# Inside the container, run: echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/sandbox-disable
+# Inside the container, run: echo -e "nameserver 1.1.1.1" > /etc/resolv.conf
+# Now, you can install any programs that may be needed for users inside their containers
+# e.g.:
+# apt-get install nano
+#   (Note that running nano in the container will error:
+#     Unable to create directory /root/.local/share/nano/: Permission denied
+#     It is required for saving/loading search history or cursor positions.
+#   This is because nano ignores $HOME if the username is root; nano still works for the most part though.
+#   /etc is symlinked to the rootfs template, so we can't just modify the home dir of root in /etc/shadow

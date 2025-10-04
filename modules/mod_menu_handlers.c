@@ -116,9 +116,10 @@ static int __exec_handler(struct bbs_node *node, char *args, int isolated)
 	}
 	execend = time(NULL);
 	bbs_debug(6, "res: %d, exec time: %lu\n", res, execend - execstart);
-	if (res < 0) {
-		return res;
-	}
+
+	/* Even if bbs_execvp returns -1, that doesn't mean the node should exit,
+	 * it generally just means exec failed.
+	 * The "hack" below covers the case where the node really did exit. */
 
 	/* This "hack" could maybe be in menu.c, but so far I think we only absolutely need it here. */
 	if (!node->active) {

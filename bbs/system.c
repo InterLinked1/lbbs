@@ -64,7 +64,7 @@
 #include "include/reload.h"
 
 static char hostname[84] = "bbs";
-static char templatedir[256] = "./rootfs";
+static char templatedir[256] = "/var/lib/lbbs/rootfs";
 static char rundir[256] = "/tmp/lbbs/rootfs";
 
 #ifdef ISOEXEC_SUPPORTED
