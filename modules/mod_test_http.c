@@ -26,6 +26,7 @@
 #include "include/test.h"
 #include "include/utils.h"
 #include "include/node.h" /* use bbs_write */
+#include "include/user.h" /* use bbs_node_logged_in */
 
 #include "include/mod_curl.h"
 
@@ -766,6 +767,79 @@ cleanup:
 	return res;
 }
 
+static enum basic_auth_state {
+	HTTP_BASIC_AUTH_NOT_STARTED,
+	HTTP_BASIC_AUTH_REQUESTED,
+	HTTP_BASIC_AUTH_COMPLETED,
+} basicauth_state;
+
+static enum http_response_code get_basicauth(struct http_session *http)
+{
+	if (basicauth_state == HTTP_BASIC_AUTH_NOT_STARTED) {
+		return HTTP_UNAUTHORIZED;
+	}
+	if (!bbs_node_logged_in(http->node)) {
+		return HTTP_FORBIDDEN;
+	}
+	return HTTP_OK;
+}
+
+static int test_http_basic_auth(void)
+{
+	int mres, res = -1;
+	char buf[256];
+	char urlstr[84];
+	struct bbs_url url;
+	struct bbs_tcp_client client;
+	struct http_route_uri tests[] = {
+		{ NULL, DEFAULT_TEST_HTTP_PORT, "/basicauth", HTTP_METHOD_GET, get_basicauth },
+	};
+
+	memset(&url, 0, sizeof(url));
+	memset(&client, 0, sizeof(client));
+
+	mres = register_uris(tests, ARRAY_LEN(tests));
+	bbs_test_assert_equals(mres, 0);
+
+	snprintf(urlstr, sizeof(urlstr), "http://127.0.0.1:%u", DEFAULT_TEST_HTTP_PORT);
+	mres = bbs_parse_url(&url, urlstr);
+	bbs_test_assert_equals(mres, 0);
+	mres = bbs_tcp_client_connect(&client, &url, 0, buf, sizeof(buf));
+	bbs_test_assert_equals(mres, 0);
+
+	/* Likewise, BBS's libcurl interface doesn't support Basic Authentication currently. */
+
+	basicauth_state = HTTP_BASIC_AUTH_NOT_STARTED;
+	SWRITE(client.wfd,
+		"GET /basicauth HTTP/1.1\r\n"
+		"Host: localhost:58280\r\n"
+		"\r\n");
+
+	mres = bbs_tcp_client_expect(&client, "\r\n", 1, SEC_MS(1), "401");
+	bbs_test_assert_equals(mres, 0);
+
+	mres = bbs_tcp_client_expect(&client, "\r\n", 10, SEC_MS(1), "WWW-Authenticate: Basic");
+	bbs_test_assert_equals(mres, 0);
+	basicauth_state = HTTP_BASIC_AUTH_REQUESTED;
+
+	/* Authenticate with the credentials for TEST_USER */
+	SWRITE(client.wfd,
+		"GET /basicauth HTTP/1.1\r\n"
+		"Host: localhost:58280\r\n"
+		"Authorization: Basic dGVzdHVzZXI6UEBzc3cwcmQ=\r\n"
+		"\r\n");
+
+	mres = bbs_tcp_client_expect(&client, "\r\n", 10, SEC_MS(1), "200 OK");
+	bbs_test_assert_equals(mres, 0);
+
+	res = 0;
+
+cleanup:
+	bbs_tcp_client_cleanup(&client);
+	unregister_uris(tests, ARRAY_LEN(tests));
+	return res;
+}
+
 static struct bbs_unit_test tests[] =
 {
 	{ "HTTP GET Basic", test_http_get_basic },
@@ -777,6 +851,7 @@ static struct bbs_unit_test tests[] =
 	{ "HTTP GET Range Multiple", test_http_range_multiple },
 	{ "HTTP Websocket Upgrade", test_http_websocket_upgrade },
 	{ "HTTP Sessions", test_http_session },
+	{ "HTTP Basic Authentication", test_http_basic_auth },
 };
 
 static int unload_module(void)

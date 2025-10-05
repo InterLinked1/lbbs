@@ -779,6 +779,9 @@ static int test_bbs_spawn(const char *directory)
 		close(bbspfd[1]); /* We already dup2'd, we don't need a duplicate or it will result in valgrind complaining about a fd leak (typically of fd 4) */
 		execvp(argv[0], argv); /* use execvp instead of execv for option_errorcheck, so we don't have to specify valgrind path */
 		bbs_error("execv failed: %s\n", strerror(errno));
+		if (errno == ENOENT && option_errorcheck) {
+			bbs_error("valgrind does not appear to be installed, please install it to use the -e option\n");
+		}
 		_exit(errno);
 	}
 	/* Start a thread to handle the output from the BBS process */
@@ -952,7 +955,7 @@ static int analyze_valgrind(void)
 	}
 
 #ifndef HAVE_VALGRIND_SHOW_ERROR_LIST
-	bbs_debug(1, "--show-error-list / -s support was not detected in the build system\n");
+	bbs_debug(1, "--show-error-list / -s support was not detected in the build system (if valgrind was installed after test.c was compiled, please recompile)\n");
 #endif
 
 	res |= got_segv || num_errors || num_bytes_lost || fds_open > FDS_OPEN_EXPECTED;
@@ -1113,6 +1116,7 @@ static int run_test(const char *filename, int multiple)
 					goto cleanup;
 				}
 				fprintf(modulefp, "[general]\r\nautoload=yes\r\n\r\n[modules]\r\n");
+				fprintf(modulefp, "noload=mod_version.so\r\n");
 			}
 			fclose(modulefp);
 			/* Set up basic configs that most, if not all, tests will need. */

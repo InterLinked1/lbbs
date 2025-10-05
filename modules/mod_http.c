@@ -799,12 +799,17 @@ static int process_headers(struct http_session *http)
 	value = http_request_header(http, "Authorization");
 	if (value) {
 		char tmpbuf[256];
-		char *tmp, *dup = tmpbuf;
+		char *tmp, *dup;
 		int outlen;
+		size_t inlen;
 		safe_strncpy(tmpbuf, value, sizeof(tmpbuf));
+		dup = tmpbuf;
 		tmp = strsep(&dup, " ");
-		if (!strcmp(tmp, "Basic")) {
-			unsigned char *decoded = base64_decode((unsigned char*) tmpbuf, (int) strlen(value), &outlen);
+		inlen = strlen(dup);
+		if (inlen >= sizeof(tmpbuf)) {
+			bbs_warning("Authorization header value truncated\n");
+		} else if (!strcmp(tmp, "Basic")) {
+			unsigned char *decoded = base64_decode((unsigned char*) dup, (int) inlen, &outlen);
 			if (decoded) {
 				char *username, *password = (char*) decoded;
 				username = strsep(&password, ":");
@@ -812,12 +817,14 @@ static int process_headers(struct http_session *http)
 				/* Always set, even if incorrect password, so we know that we attempted Basic Auth */
 				REPLACE(http->req->username, username);
 				if (bbs_authenticate(http->node, username, password)) {
-					bbs_auth("Basic authentication attempt failed for %s\n", username);
+					bbs_auth("Basic Authentication attempt failed for %s\n", username);
 				}
 				/* Destroy the password before freeing it */
 				bbs_memzero(decoded, (size_t) outlen);
 				free(decoded);
 			}
+		} else {
+			bbs_warning("Unsupported Authorization method '%s'\n", tmp);
 		}
 	}
 
