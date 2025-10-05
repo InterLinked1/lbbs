@@ -1820,8 +1820,10 @@ static int reload_core(const char *name, int fd)
 		bbs_dprintf(fd, "%s\n", name ? "Reload failed" : "Full or partial reload failure");
 		return res;
 	}
-	/* Either something failed to reload, or we didn't actually reload anything (typo in target) */
-	bbs_dprintf(fd, "No such component to reload: '%s'\n", name);
+	if (name) {
+		/* Either something failed to reload, or we didn't actually reload anything (typo in target) */
+		bbs_dprintf(fd, "No such component to reload: '%s'\n", name);
+	}
 	return 1;
 }
 
