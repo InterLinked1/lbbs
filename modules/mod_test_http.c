@@ -829,7 +829,7 @@ static int test_http_basic_auth(void)
 		"Authorization: Basic dGVzdHVzZXI6UEBzc3cwcmQ=\r\n"
 		"\r\n");
 
-	mres = bbs_tcp_client_expect(&client, "\r\n", 10, SEC_MS(1), "200 OK");
+	mres = bbs_tcp_client_expect(&client, "\r\n", 10, SEC_MS(5), "200 OK"); /* Give it a few seconds since authentication under valgrind can be slow */
 	bbs_test_assert_equals(mres, 0);
 
 	res = 0;
