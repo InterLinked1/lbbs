@@ -40,6 +40,9 @@
 
 #define BBS_MODULE_DIR DIRCAT("/usr/lib", DIRCAT(BBS_NAME, "modules"))
 
+/* Optional: additional checks on integrity of module reference list */
+#define CHECK_MODULE_REFS
+
 struct bbs_module_reference {
 	int pair;
 	void *refmod;
@@ -227,15 +230,20 @@ static int log_module_ref(struct bbs_module *mod, int pair, void *refmod, const 
 		RWLIST_INSERT_HEAD(&mod->refs, r, entry); /* Head insert absolutely makes perfect sense */
 	} else { /* Unref */
 		RWLIST_TRAVERSE_SAFE_BEGIN(&mod->refs, r, entry) {
-			if (r->pair == pair && !strcmp(r->file, file)) { /* Pair IDs are only unique within a source file */
+			/* Pair IDs are only unique within a source file, but refmod entries' pair IDs
+			 * are not necessarily unique as the same file may add refs with that same pair ID
+			 * if that function is called multiple times, e.g. bbs_module_require().
+			 * Therefore, r->refmod is also needed to distinguish, so we don't remove a
+			 * a ref added by the same function but for a different module. */
+			if (r->pair == pair && r->refmod == refmod && !strcmp(r->file, file)) {
 				RWLIST_REMOVE_CURRENT(entry);
 				free(r);
-				break;
+				break; /* At most, we only remove one ref, though more may be present */
 			}
 		}
 		RWLIST_TRAVERSE_SAFE_END;
 		if (!r) { /* Should only happen legitimately if allocation failed during ref */
-			bbs_error("Failed to find existing reference for %s with pair ID %d\n", mod->name, pair - 1);
+			bbs_error("Failed to find existing reference for %s with pair ID %d (%s:%d)\n", mod->name, pair, file, line);
 			RWLIST_UNLOCK(&mod->refs);
 			return -1;
 		}
@@ -1039,10 +1047,30 @@ static struct bbs_module *unload_resource_nolock(struct bbs_module *mod, int for
 			bbs_warning("** Dangerous **: Unloading resource anyway, at user request\n");
 		}
 	} else {
+#ifdef CHECK_MODULE_REFS
+		struct bbs_module *mod2;
+#endif
+
 		/* Decrement the ref count of any modules upon which we depend. */
 		if (!strlen_zero(mod->info->dependencies)) {
 			dec_refcounts(mod);
 		}
+
+#ifdef CHECK_MODULE_REFS
+		/* Since we've unloaded, we no longer depend on any modules.
+		 * Therefore, no other module should be including us as a dependent on them in their refmod list.
+		 * Scan all the modules and make sure that their refmod list doesn't include us.
+		 * There is a similar accounting check in list_modulerefs as well. */
+		RWLIST_TRAVERSE(&modules, mod2, entry) {
+			struct bbs_module_reference *r;
+			RWLIST_RDLOCK(&mod2->refs);
+			RWLIST_TRAVERSE(&mod2->refs, r, entry) {
+				struct bbs_module *refmod = r->refmod;
+				bbs_assert(refmod != mod);
+			}
+			RWLIST_UNLOCK(&mod2->refs);
+		}
+#endif
 	}
 
 	return mod;
@@ -1422,6 +1450,20 @@ static int list_modules(int fd)
 	return 0;
 }
 
+#ifdef CHECK_MODULE_REFS
+/*! \note Modules list must be locked */
+static int module_exists_by_pointer(struct bbs_module *mod2)
+{
+	struct bbs_module *mod;
+	RWLIST_TRAVERSE(&modules, mod, entry) {
+		if (mod == mod2) {
+			return 1;
+		}
+	}
+	return 0;
+}
+#endif
+
 /*! \note Modules list must be locked */
 static int list_modulerefs(int fd, const char *name)
 {
@@ -1454,6 +1496,9 @@ static int list_modulerefs(int fd, const char *name)
 				/* Safe to dereference r->refmod (if not NULL), since it can't be removed while modules list is locked */
 				bbs_dprintf(fd, "%-30s %3d %2d %-30s %s:%d %s\n", mod->name, c,
 					r->pair, refmod ? refmod->name : "", r->file, r->line, r->func);
+#ifdef CHECK_MODULE_REFS
+				bbs_assert(module_exists_by_pointer(refmod)); /* Sanity check: if this module is still depending on is, then it must be loaded and active */
+#endif
 			}
 			RWLIST_UNLOCK(&mod->refs);
 			if (name) {
