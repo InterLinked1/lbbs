@@ -151,5 +151,14 @@ struct imap_client *load_virtual_mailbox(struct imap_session *imap, const char *
  */
 int mailbox_remotely_mapped(struct imap_session *imap, const char *path);
 
+/*!
+ * \brief Proxy the rest of the session exclusively to a remote IMAP server
+ * \param imap
+ * \param name Name of mailbox from .imapremote
+ * \retval -1 at end of successful session
+ * \retval 1 if name does not refer to a valid remote mailbox
+ */
+int imap_proxy_remote_mailbox_exclusively(struct imap_session *imap, const char *name);
+
 /*! \brief Convert a local mailbox name to its name on a remote server */
 const char *remote_mailbox_name(struct imap_client *client, char *restrict mailbox);

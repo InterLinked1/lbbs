@@ -455,7 +455,7 @@ int list_scandir(struct imap_session *imap, struct list_command *lcmd, int level
 #endif
 	files = scandir(listscandir, &entries, NULL, alphasort);
 	if (files < 0) {
-		bbs_error("scandir(%s) failed: %s\n", mailbox_maildir(imap->mbox), strerror(errno));
+		bbs_error("scandir(%s) failed: %s\n", listscandir, strerror(errno));
 		return -1;
 	}
 	while (fno < files && (entry = entries[fno++])) {

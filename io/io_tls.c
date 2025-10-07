@@ -194,7 +194,7 @@ static int io_read_pending(void *varg)
 	 * isn't actually any new data available on the network socket itself. */
 	if (SSL_has_pending(t->ssl)) {
 		int pending = SSL_pending(t->ssl);
-		bbs_debug(5, "SSL %p has %d pending bytes, servicing immediately\n", t->ssl, pending);
+		bbs_debug(9, "SSL %p has %d pending bytes, servicing immediately\n", t->ssl, pending);
 		return pending;
 	}
 	return 0;

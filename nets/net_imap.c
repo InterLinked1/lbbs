@@ -2405,7 +2405,6 @@ static int handle_append(struct imap_session *imap, char *s)
 	char *mailbox;
 	int destacl;
 	int appends;
-	char tag[48];
 	char appenddir[212];		/* APPEND directory */
 	unsigned int uidvalidity, uidnext;
 	unsigned int *a = NULL;
@@ -2425,10 +2424,6 @@ static int handle_append(struct imap_session *imap, char *s)
 		}
 		IMAP_REQUIRE_ACL(destacl, IMAP_ACL_INSERT);
 	}
-
-	/* APPEND will clobber the readline buffer, so save off the tag */
-	safe_strncpy(tag, imap->tag, sizeof(tag));
-	imap->tag = tag;
 
 	for (appends = 0;; appends++) {
 		unsigned long quotaleft;
@@ -2528,7 +2523,7 @@ static int handle_append(struct imap_session *imap, char *s)
 
 			/* Send APPEND to remote server and get response to synchronizing literal, if needed */
 			remote_cmd_len = snprintf(remote_cmd, sizeof(remote_cmd), "%s APPEND \"%s\" %s%s%s%s%s {%d%s}\r\n",
-				tag, mailbox,
+				imap->tag, mailbox,
 				flags ? "(" : "", S_IF(flags), flags ? ")" : "",
 				!strlen_zero(appenddate) ? " " : "", S_IF(appenddate),
 				appendsize,
@@ -3846,8 +3841,16 @@ static int finalize_auth(struct imap_session *imap)
 	return 0;
 }
 
-static int finish_auth(struct imap_session *imap, int auth)
+static int finish_auth(struct imap_session *imap, int auth, const char *subaddr)
 {
+	if (!strlen_zero(subaddr)) {
+		int res = imap_proxy_remote_mailbox_exclusively(imap, subaddr);
+		if (res > 0) {
+			imap_reply(imap, "NO [NONEXISTENT] No such remotely mapped mailbox '%s'", subaddr);
+		}
+		return -1; /* Since this was only for this account, as soon as the connection exits, we're done */
+	}
+
 	if (finalize_auth(imap)) {
 		return -1;
 	}
@@ -3867,10 +3870,12 @@ static int finish_auth(struct imap_session *imap, int auth)
 static int handle_auth(struct imap_session *imap, char *s)
 {
 	int res;
+	char subaddr_copy[64] = "";
 
 	/* AUTH=PLAIN - got a combined encoded username/password */
 	unsigned char *decoded;
 	char *authorization_id, *authentication_id, *password;
+	char *user, *subaddr;
 
 	imap->inauth = 0;
 	decoded = bbs_sasl_decode(s, &authorization_id, &authentication_id, &password);
@@ -3880,8 +3885,14 @@ static int handle_auth(struct imap_session *imap, char *s)
 
 	/* Can't use bbs_sasl_authenticate directly since we need to strip the domain */
 	bbs_strterm(authentication_id, '@');
-	res = bbs_authenticate(imap->node, authentication_id, password);
+	subaddr = authentication_id;
+	user = strsep(&subaddr, "+");
+	res = bbs_authenticate(imap->node, user, password);
 	bbs_memzero(password, strlen(password)); /* Destroy the password from memory before we free it */
+	if (!strlen_zero(subaddr)) {
+		/* After we free decoded, the original subaddr is no longer valid so make a copy */
+		safe_strncpy(subaddr_copy, subaddr, sizeof(subaddr_copy));
+	}
 	free(decoded);
 
 	/* Have a combined username and password */
@@ -3892,7 +3903,7 @@ static int handle_auth(struct imap_session *imap, char *s)
 			imap_reply(imap, "NO [AUTHENTICATIONFAILED] Invalid username or password");
 		}
 	} else {
-		return finish_auth(imap, 1);
+		return finish_auth(imap, 1, subaddr_copy);
 	}
 	free_if(imap->savedtag);
 	return 0;
@@ -4451,7 +4462,7 @@ static int malformed_store(const char *restrict s)
 	return 0;
 }
 
-static int imap_process(struct imap_session *imap, char *s)
+static int imap_process(struct imap_session *imap, char *s, char *saved_tag, size_t saved_tag_len)
 {
 	int replacecount;
 	char *command = NULL; /* XXX Should not need to be initialized, but gcc 12 complains if it's not */
@@ -4479,6 +4490,17 @@ static int imap_process(struct imap_session *imap, char *s)
 
 	/* IMAP clients MUST use a different tag each command, but in practice this is treated as a SHOULD. Common IMAP servers do not enforce this. */
 	imap->tag = strsep(&s, " "); /* Tag for client to identify responses to its request */
+
+	/* Save tag into a dedicated buffer, since future readline operations will clobber/overwrite the original buffer,
+	 * and there are a few instances where we need to access to the tag after further readline operations
+	 * (e.g. APPEND command, AUTHENTICATE without SASL-IR). */
+	/*! \todo XXX imap->savedtag can probably be removed now, if we're duplicating the tag in all cases,
+	 * rather than doing it selectively/dynamically in certain cases. Doesn't hurt anything but is unnecessary
+	 * and can be cleaned up.
+	 * Why haven't we always just done this from the beginning? */
+	safe_strncpy(saved_tag, imap->tag, saved_tag_len);
+	imap->tag = saved_tag;
+
 	imap->command = command = strsep(&s, " ");
 	imap->subcommand = s;
 
@@ -4530,7 +4552,7 @@ static int imap_process(struct imap_session *imap, char *s)
 			imap_reply(imap, "NO [CANNOT] Auth method not supported");
 		}
 	} else if (!strcasecmp(command, "LOGIN")) {
-		char *user, *pass, *domain;
+		char *user, *pass, *domain, *subaddr;
 		user = strsep(&s, " ");
 		pass = strsep(&s, " ");
 		/* MUAs typically enclose these in quotes: */
@@ -4552,6 +4574,8 @@ static int imap_process(struct imap_session *imap, char *s)
 				goto done;
 			}
 		}
+		subaddr = user;
+		user = strsep(&subaddr, "+");
 		res = bbs_authenticate(imap->node, user, pass);
 		if (pass) {
 			bbs_memzero(pass, strlen(pass)); /* Destroy the password from memory. */
@@ -4564,7 +4588,7 @@ static int imap_process(struct imap_session *imap, char *s)
 			}
 			goto done;
 		}
-		res = finish_auth(imap, 0);
+		res = finish_auth(imap, 0, subaddr);
 	} else if (!strcasecmp(command, "UNAUTHENTICATE")) {
 		if (!bbs_user_is_registered(imap->node->user)) {
 			/* Before authentication check, because we cannot respond with a NO if this fails,
@@ -5010,6 +5034,7 @@ static void handle_client(struct imap_session *imap)
 	}
 
 	for (;;) {
+		char saved_tag[256];
 		const char *word2;
 		ssize_t res;
 		imap->command_inprogress = 0;
@@ -5027,10 +5052,11 @@ static void handle_client(struct imap_session *imap)
 		word2 = strchr(buf, ' ');
 		if (imap->inauth || (word2++ && !strlen_zero(word2) && !strncasecmp(word2, "LOGIN", STRLEN("LOGIN")))) {
 			bbs_debug(6, "%p => <LOGIN REDACTED>\n", imap); /* Mask login to avoid logging passwords */
+			bbs_debug(6, "%p => %s\n", imap, buf); //////////////////
 		} else {
 			bbs_debug(6, "%p => %s\n", imap, buf);
 		}
-		if (imap_process(imap, buf)) {
+		if (imap_process(imap, buf, saved_tag, sizeof(saved_tag))) {
 			break;
 		}
 	}

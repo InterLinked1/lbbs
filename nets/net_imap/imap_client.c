@@ -884,22 +884,19 @@ static int my_imap_client_login(struct imap_client *client, struct bbs_url *url)
 	return imap_client_login(tcpclient, url, client->imap->node->user, &client->virtcapabilities);
 }
 
-struct imap_client *__imap_client_get_by_url(struct imap_session *imap, const char *name, char *restrict urlstr, int parallel)
+static struct imap_client *__imap_client_get_by_url_base(struct imap_session *imap, const char *name, char *restrict urlstr, int parallel, struct bbs_url *url)
 {
 	struct imap_client *client;
-	struct bbs_url url;
 	int secure, new;
-	char *tmp, *buf;
 
-	memset(&url, 0, sizeof(url));
-	if (bbs_parse_url(&url, urlstr)) {
+	if (bbs_parse_url(url, urlstr)) {
 		return NULL;
-	} else if (!strcmp(url.prot, "imaps")) {
+	} else if (!strcmp(url->prot, "imaps")) {
 		secure = 1;
-	} else if (!strcmp(url.prot, "imap")) {
+	} else if (!strcmp(url->prot, "imap")) {
 		secure = 0;
 	} else {
-		bbs_warning("Unsupported protocol: %s\n", url.prot);
+		bbs_warning("Unsupported protocol: %s\n", url->prot);
 		return NULL;
 	}
 
@@ -914,11 +911,30 @@ struct imap_client *__imap_client_get_by_url(struct imap_session *imap, const ch
 
 	/* Expect a URL like imap://user:password@imap.example.com:993/mailbox */
 	memset(&client->client, 0, sizeof(client->client));
-	if (bbs_tcp_client_connect(&client->client, &url, secure, client->buf, sizeof(client->buf))) {
+	if (bbs_tcp_client_connect(&client->client, url, secure, client->buf, sizeof(client->buf))) {
 		goto cleanup;
 	}
-	if (my_imap_client_login(client, &url)) {
+	if (my_imap_client_login(client, url)) {
 		goto cleanup;
+	}
+
+	return client;
+
+cleanup:
+	client_destroy(client);
+	return NULL;
+}
+
+struct imap_client *__imap_client_get_by_url(struct imap_session *imap, const char *name, char *restrict urlstr, int parallel)
+{
+	char *tmp, *buf;
+	struct bbs_url url;
+	struct imap_client *client;
+
+	memset(&url, 0, sizeof(url));
+	client = __imap_client_get_by_url_base(imap, name, urlstr, parallel, &url);
+	if (!client) {
+		return NULL;
 	}
 
 	/* Need to determine the hierarchy delimiter on the remote server,
@@ -985,7 +1001,7 @@ struct imap_client *__imap_client_get_by_url(struct imap_session *imap, const ch
 	return client;
 
 cleanup:
-	imap_client_unlink(imap, client);
+	client_destroy(client);
 	return NULL;
 }
 
@@ -1060,7 +1076,7 @@ int imap_client_mapping_file(struct imap_session *imap, char *buf, size_t len)
 	return bbs_transfer_home_config_file(imap->node->user->id, ".imapremote", buf, len);
 }
 
-static struct imap_client *__load_virtual_mailbox(struct imap_session *imap, const char *path, int *exists, int load, int prefixonly)
+static struct imap_client *__load_virtual_mailbox(struct imap_session *imap, const char *path, int *exists, int load, int prefixonly, int loginonly)
 {
 	FILE *fp;
 	char virtcachefile[256];
@@ -1149,7 +1165,13 @@ static struct imap_client *__load_virtual_mailbox(struct imap_session *imap, con
 
 			*exists = 1;
 			if (load) {
-				client = imap_client_get_by_url(imap, mpath, urlstr);
+				if (loginonly) {
+					struct bbs_url url;
+					memset(&url, 0, sizeof(url));
+					client = __imap_client_get_by_url_base(imap, mpath, urlstr, 0, &url);
+				} else {
+					client = imap_client_get_by_url(imap, mpath, urlstr);
+				}
 			}
 			bbs_memzero(urlstr, urlstrlen); /* Contains password */
 			return client;
@@ -1163,14 +1185,116 @@ static struct imap_client *__load_virtual_mailbox(struct imap_session *imap, con
 
 struct imap_client *load_virtual_mailbox(struct imap_session *imap, const char *path, int *exists)
 {
-	return __load_virtual_mailbox(imap, path, exists, 1, 0);
+	return __load_virtual_mailbox(imap, path, exists, 1, 0, 0);
+}
+
+static struct imap_client *load_virtual_mailbox_standalone(struct imap_session *imap, const char *path, int *exists)
+{
+	return __load_virtual_mailbox(imap, path, exists, 1, 0, 1);
 }
 
 int mailbox_remotely_mapped(struct imap_session *imap, const char *path)
 {
 	int exists = 0;
-	__load_virtual_mailbox(imap, path, &exists, 0, 1);
+	__load_virtual_mailbox(imap, path, &exists, 0, 1, 0);
 	return exists;
+}
+
+int imap_proxy_remote_mailbox_exclusively(struct imap_session *imap, const char *name)
+{
+	struct imap_client *client;
+	char mailbox_name[512];
+	char buf[8192]; /* Keep this large for performance, however this is the largest that gets fully utilized */
+	int exists;
+	struct pollfd pfds[2];
+
+	/* This is a feature that allows users to access a specific proxied IMAP account
+	 * on another server, exclusively, as opposed to in the 'Other Users' namespace.
+	 * For example, this can allow clients without OAuth support to access servers
+	 * that require OAuth authentication.
+	 *
+	 * The nice thing for us about this is we can simply relay the traffic before
+	 * as a dumb intermediary, without complicated logic as with the 'Other Users'
+	 * namespace proxying. */
+
+	/* XXX 'Other Users' is hardcoded here, but .imapremote does not necessarily have to use that namespace. */
+	snprintf(mailbox_name, sizeof(mailbox_name), "Other Users.%s", name);
+	bbs_debug(5, "Attempting to proxy mailbox mapped as '%s'\n", mailbox_name);
+	client = load_virtual_mailbox_standalone(imap, mailbox_name, &exists); /* Only go as far as logging in */
+	if (!client) {
+		bbs_debug(2, "No such remotely mapped mailbox '%s'\n", mailbox_name);
+		return 1;
+	}
+
+	bbs_verb(4, "Beginning exclusively proxied session with remote mailbox '%s'\n", name);
+
+	/* The client expects a CAPABILITY response after authenticating successfully,
+	 * which we ate from the server when we did the login, so ask again,
+	 * using the same tag, so it thinks the untagged CAPABILITY and the tagged response
+	 * are in response to the LOGIN command. */
+	if (bbs_writef(client->client.wfd, "%s CAPABILITY\r\n", imap->tag) < 0) {
+		goto cleanup;
+	}
+
+	/* Relay between the server and the client until one of them quits.
+	 * We should start out with the server's CAPABILITY response, for one. */
+	pfds[0].fd = client->client.rfd; /* The remote server */
+	pfds[1].fd = imap->node->rfd; /* Our client */
+	pfds[0].events = pfds[1].events = POLLIN;
+	for (;;) {
+		int pres;
+		pfds[0].revents = pfds[1].revents = 0;
+		pres = poll(pfds, 2, MIN_MS(31)); /* In practice, clients and servers should have activity at least once every 30 minutes. */
+		if (pres < 0) {
+			bbs_error("poll failed: %s\n", strerror(errno));
+			break;
+		}
+		if (pfds[0].revents & POLLIN) {
+			ssize_t res;
+			res = read(client->client.rfd, buf, sizeof(buf));
+			if (res < 0) {
+				bbs_error("read failed: %s\n", strerror(errno));
+				break;
+			} else if (!res) {
+				bbs_debug(3, "read returned 0\n");
+				break;
+			}
+			bbs_debug(9, "Relaying %ld bytes to client\n", res);
+			res = bbs_write(imap->node->wfd, buf, (size_t) res); /* bbs_write handles the retries for us */
+		}
+		if (pfds[1].revents & POLLIN) {
+			ssize_t res;
+			res = read(imap->node->rfd, buf, sizeof(buf));
+			if (res < 0) {
+				bbs_error("read failed: %s\n", strerror(errno));
+				break;
+			} else if (!res) {
+				bbs_debug(3, "read returned 0\n");
+				break;
+			}
+			bbs_debug(9, "Relaying %ld bytes to remote server\n", res);
+			res = bbs_write(client->client.wfd, buf, (size_t) res); /* bbs_write handles the retries for us */
+			if (res <= 0) {
+				bbs_error("write failed: %s\n", strerror(errno));
+				break;
+			}
+		}
+		/* If there was any exceptional poll activity, abort - e.g. server disconnect isn't poll returning < 0 but one of the other revents */
+		pfds[0].revents &= ~POLLIN;
+		pfds[1].revents &= ~POLLIN;
+		if (pfds[0].revents) {
+			bbs_debug(3, "Remote IMAP server disconnected\n");
+			break;
+		}
+		if (pfds[1].revents) {
+			bbs_debug(3, "IMAP client disconnected\n");
+			break;
+		}
+	}
+
+cleanup:
+	imap_client_unlink(imap, client);
+	return -1;
 }
 
 const char *remote_mailbox_name(struct imap_client *client, char *restrict mailbox)

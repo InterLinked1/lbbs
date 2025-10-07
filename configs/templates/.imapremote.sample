@@ -7,5 +7,9 @@
 ### OAuth2 auth syntax: Other Users.<Account prefix name>|imaps://<username>:oauth:<oauth profile name>@<hostname>:<port>
 ###    OAuth authentication also requires an OAuth profile to be configured in your .oauth.conf or the BBS's global OAuth config.
 
+### In addition these mailboxes being accessible via the Other Users namespace, they can also be accessed directly
+### by logging in with <username>+<Account prefix name> and your normal password. Do not include 'Other Users'
+### in the <Account prefix name> as that is automatically prefixed/assumed.
+
 # Other Users.foobar|imaps://bob@example.com:password@example.com:993
 # Other Users.foobar2|imaps://bob@example.net:oauth:bobexamplenet@example.net:993
