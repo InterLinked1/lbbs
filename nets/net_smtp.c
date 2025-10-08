@@ -160,10 +160,16 @@ void bbs_smtp_log(int level, struct smtp_session *smtp, const char *fmt, ...)
  */
 
 static char smtp_hostname_buf[256];
+static char incoming_smtp_hostname_buf[256];
 
 const char *smtp_hostname(void)
 {
 	return smtp_hostname_buf;
+}
+
+static const char *smtp_incoming_hostname(void)
+{
+	return incoming_smtp_hostname_buf;
 }
 
 struct smtp_session {
@@ -594,7 +600,7 @@ static int handle_connect(struct smtp_session *smtp)
 		 * to relay outgoing messages for any domains from getting thrown this curveball for compatibility.
 		 */
 		if (!smtp_relay_authorized_any(smtp)) {
-			smtp_reply0_nostatus(smtp, 220, "%s ESMTP Service Ready", smtp_hostname());
+			smtp_reply0_nostatus(smtp, 220, "%s ESMTP Service Ready", smtp_incoming_hostname());
 
 			/*! \todo This would be a good place to check blacklist IPs (currently we only allow blacklisting hostnames).
 			 * This would allow us to avoid a DNS request for known bad sender IPs. */
@@ -636,7 +642,7 @@ static int handle_connect(struct smtp_session *smtp)
 			}
 		}
 	}
-	smtp_reply_nostatus(smtp, 220, "%s ESMTP Service Ready", smtp_hostname());
+	smtp_reply_nostatus(smtp, 220, "%s ESMTP Service Ready", smtp_incoming_hostname());
 	return 0;
 }
 
@@ -828,7 +834,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		 * any SMTP session in this function will have a node. This can be safely ignored. */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wnull-dereference"
-		smtp_reply0_nostatus(smtp, 250, "%s at your service [%s]", smtp_hostname(), smtp->node->ip);
+		smtp_reply0_nostatus(smtp, 250, "%s at your service [%s]", smtp_incoming_hostname(), smtp->node->ip);
 		/* The RFC says that login should only be allowed on secure connections,
 		 * but if we don't allow login on plaintext connections, then they're functionally useless. */
 		if (smtp->node->secure || !require_starttls || exempt_from_starttls(smtp)) {
@@ -853,7 +859,7 @@ static int handle_helo(struct smtp_session *smtp, char *s, int ehlo)
 		}
 		smtp_reply_nostatus(smtp, 250, "ENHANCEDSTATUSCODES");
 	} else {
-		smtp_reply_nostatus(smtp, 250, "%s at your service [%s]", smtp_hostname(), smtp->node->ip);
+		smtp_reply_nostatus(smtp, 250, "%s at your service [%s]", smtp_incoming_hostname(), smtp->node->ip);
 #pragma GCC diagnostic pop
 	}
 	return 0;
@@ -3704,6 +3710,8 @@ static int load_config(void)
 		return 0;
 	}
 
+	bbs_config_val_set_str(cfg, "general", "smtp_hostname", smtp_hostname_buf, sizeof(smtp_hostname_buf));
+	bbs_config_val_set_str(cfg, "general", "incoming_hostname", incoming_smtp_hostname_buf, sizeof(incoming_smtp_hostname_buf));
 	bbs_config_val_set_true(cfg, "general", "relayin", &accept_relay_in);
 	bbs_config_val_set_uint(cfg, "general", "maxsize", &max_message_size);
 	if (!bbs_config_val_set_uint(cfg, "general", "maxhops", &max_hops)) {
@@ -3811,16 +3819,21 @@ static int load_module(void)
 		goto cleanup;
 	}
 
-	if (strlen_zero(bbs_hostname())) {
-		bbs_error("A BBS hostname in nodes.conf is required for mail services\n");
-		goto cleanup;
+	if (s_strlen_zero(smtp_hostname_buf)) {
+		if (strlen_zero(bbs_hostname())) {
+			bbs_error("An SMTP hostname in net_smtp.conf or a BBS hostname in nodes.conf is required for SMTP services\n");
+			goto cleanup;
+		}
+		if (bbs_hostname_is_ipv4(bbs_hostname())) {
+			/* Address literals are surrounded in [], per RFC 5321 4.1.3 */
+			snprintf(smtp_hostname_buf, sizeof(smtp_hostname_buf), "[%s]", bbs_hostname());
+		} else {
+			safe_strncpy(smtp_hostname_buf, bbs_hostname(), sizeof(smtp_hostname_buf));
+		}
 	}
-
-	if (bbs_hostname_is_ipv4(bbs_hostname())) {
-		/* Address literals are surrounded in [], per RFC 5321 4.1.3 */
-		snprintf(smtp_hostname_buf, sizeof(smtp_hostname_buf), "[%s]", bbs_hostname());
-	} else {
-		safe_strncpy(smtp_hostname_buf, bbs_hostname(), sizeof(smtp_hostname_buf));
+	if (s_strlen_zero(incoming_smtp_hostname_buf)) {
+		/* Default the incoming hostname to the main SMTP hostname if there is one, and the BBS hostname otherwise */
+		safe_strncpy(incoming_smtp_hostname_buf, smtp_hostname_buf, sizeof(incoming_smtp_hostname_buf));
 	}
 
 	/* If we can't start the TCP listeners, decline to load */
