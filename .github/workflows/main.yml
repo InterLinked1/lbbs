@@ -313,7 +313,7 @@ jobs:
           tests/test -ttest_menus -ddddddddd -DDDDDDDDDD -x
       - name: Run unit tests
         run: |
-          scripts/run_tests.sh test_unit
+          IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
   opensuse:
     runs-on: ubuntu-24.04
     name: openSUSE Tumbleweed

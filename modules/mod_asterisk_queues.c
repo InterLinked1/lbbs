@@ -909,6 +909,10 @@ static int agent_status(struct agent *agent)
 	i = 0;
 	RWLIST_RDLOCK(&queues);
 	RWLIST_TRAVERSE(&queues, queue, entry) {
+		struct member *member = queue_member(queue, agent);
+		if (!member) {
+			continue;
+		}
 		if (i++ != res) {
 			continue;
 		}

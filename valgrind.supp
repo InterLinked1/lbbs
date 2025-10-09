@@ -137,7 +137,6 @@
    BACKTRACE_libbfd_bfd_elf_find_nearest_line
    Memcheck:Leak
    match-leak-kinds: definite,indirect,possible
-   fun:malloc
    ...
    fun:_bfd_elf_find_nearest_line
    fun:process_section
