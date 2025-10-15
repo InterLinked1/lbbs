@@ -91,6 +91,7 @@ static void client_link(struct imap_session *imap, struct imap_client *client)
 static void client_destroy(struct imap_client *client)
 {
 	bbs_debug(5, "Destroying IMAP client %s\n", client->name);
+	bbs_assert_exists(client->imap); /* Every client belongs to an IMAP session */
 	if (client->imap->client == client) {
 		/* Ideally this would not happen, but if it does, set the active client to NULL,
 		 * or we'll continue using it after it's freed as there is code that
@@ -921,7 +922,7 @@ static struct imap_client *__imap_client_get_by_url_base(struct imap_session *im
 	return client;
 
 cleanup:
-	client_destroy(client);
+	imap_client_unlink(imap, client); /* Need to unlink instead of just client_destroy, since imap_client_get already linked into the list */
 	return NULL;
 }
 
@@ -1001,7 +1002,7 @@ struct imap_client *__imap_client_get_by_url(struct imap_session *imap, const ch
 	return client;
 
 cleanup:
-	client_destroy(client);
+	imap_client_unlink(imap, client); /* Need to unlink instead of just client_destroy, since imap_client_get already linked into the list */
 	return NULL;
 }
 
@@ -1219,11 +1220,17 @@ int imap_proxy_remote_mailbox_exclusively(struct imap_session *imap, const char 
 
 	/* XXX 'Other Users' is hardcoded here, but .imapremote does not necessarily have to use that namespace. */
 	snprintf(mailbox_name, sizeof(mailbox_name), "Other Users.%s", name);
-	bbs_debug(5, "Attempting to proxy mailbox mapped as '%s'\n", mailbox_name);
+	bbs_debug(2, "Attempting to proxy mailbox mapped as '%s'\n", mailbox_name);
 	client = load_virtual_mailbox_standalone(imap, mailbox_name, &exists); /* Only go as far as logging in */
 	if (!client) {
-		bbs_debug(2, "No such remotely mapped mailbox '%s'\n", mailbox_name);
-		return 1;
+		if (exists) {
+			/* Since it's exclusive, we may as well disconnect */
+			bbs_warning("Failed to load remotely mapped mailbox '%s'\n", mailbox_name);
+			return -1;
+		} else {
+			bbs_debug(2, "No such remotely mapped mailbox '%s'\n", mailbox_name);
+			return 1;
+		}
 	}
 
 	bbs_verb(4, "Beginning exclusively proxied session with remote mailbox '%s'\n", name);
