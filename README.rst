@@ -574,8 +574,17 @@ Configuration
    # Penalize HTML only emails
    score MIME_HTML_ONLY 1.8
 
+   # Message contains an external image
+   score T_REMOTE_IMAGE 0.5
+
+   # HTML has a low ratio of text to image area
+   score HTML_IMAGE_RATIO_06 0.5
+
    # Penalize if HTML doesn't match plain text
-   score MPART_ALT_DIFF_BODY 1.7
+   score MPART_ALT_DIFF 1.7
+
+   # Random-looking Reply-To address
+   score HK_RANDOM_REPLYTO 1.5
 
    # Penalize newly registered domains
    score FROM_FMBLA_NEWDOM 4.5
@@ -694,7 +703,9 @@ Email deliverability is beyond the scope of this guide, but there are a few thin
 
 * DKIM is configured (see :code:`mod_smtp_filter_dkim.conf`)
 
-Additionally, there are many online tools that can do some deliverability checks for you, which may catch common configuration errors and mistakes:
+You can run :code:`scripts/smtp_check_dnsauth.sh` to perform some proactive DNS-based checks to ensure deliverability of outbound messages.
+
+Additionally, there are many online tools that can do further deliverability checks for you, which may catch common configuration errors and mistakes:
 
 * `Mail Tester <https://www.mail-tester.com>`_
 
