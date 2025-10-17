@@ -170,6 +170,7 @@ static int refresh_token(struct oauth_client *client)
 	json_t *json;
 	json_error_t jansson_error = {};
 	int expires;
+	int outdated_file = 0, updated_file = 0;
 	time_t now = time(NULL);
 
 	/* Get a new token */
@@ -207,6 +208,14 @@ static int refresh_token(struct oauth_client *client)
 	}
 
 	client->tokentime = now;
+
+	/* Before updating the config file on disk, check if the current version in memory
+	 * is up to date with the file on disk, before making changes. If we're up to date at the moment,
+	 * we'll immediately reparse it afterwards, so that we don't think the config in memory
+	 * is "stale" later, simply because we changed one setting (which we synchronize with memory). */
+	outdated_file = bbs_cached_config_outdated(client->filename);
+
+	/* Update the refresh token in the config file */
 	if (!strlen_zero(newrefreshtoken) && strcmp(newrefreshtoken, client->refreshtoken)) {
 		/* The authorization server MAY issue a new refresh token, in which case the client
 		 * MUST discard the old refresh token and replace it with the new refresh token.
@@ -217,8 +226,12 @@ static int refresh_token(struct oauth_client *client)
 		 * or we'll lose the new refresh token the next time the BBS starts (or mod_oauth is reloaded). */
 		if (bbs_config_set_keyval(client->filename, client->name, "refreshtoken", client->refreshtoken)) {
 			bbs_warning("OAuth refresh token has changed, but is not persisted to configuration\n");
+		} else {
+			updated_file = 1;
 		}
 	}
+
+	/* Update the access token in the config file */
 	if (!strlen_zero(newaccesstoken) && !client->accesstokeninitiallyempty && (strlen_zero(client->accesstoken) || strcmp(newaccesstoken, client->accesstoken))) {
 		REPLACE(client->accesstoken, newaccesstoken);
 		/* Also update the config with the new access token, so we don't try to use
@@ -228,10 +241,29 @@ static int refresh_token(struct oauth_client *client)
 		 * and load that back in when it's no longer valid. */
 		if (bbs_config_set_keyval(client->filename, client->name, "accesstoken", client->accesstoken)) {
 			bbs_warning("OAuth access token has changed, but is not persisted to configuration\n");
+		} else {
+			updated_file = 1;
 		}
 	} else {
 		/* Just update in memory, we won't pull an old access token from the config in the future since it's not specified there to start with. */
 		REPLACE(client->accesstoken, newaccesstoken);
+	}
+
+	if (updated_file && !outdated_file) {
+		/* Since we modified the config file, reparse the new config into memory.
+		 * We do this so that cfg->parsetime remains newer than when the file on disk
+		 * was last modified, so that the next time we try to load it, we don't
+		 * end up reparsing it, because if we do, then we end up recreating all
+		 * the OAuth objects in memory and make a new OAuth refresh request, even if
+		 * it hasn't yet been an hour since the last time we requested a token.
+		 *
+		 * Although this could be done in config.c, this is currently the only place
+		 * where we update files, so for now it doesn't matter. */
+		struct bbs_config *newcfg = bbs_config_load(client->filename, 0); /* We know for a fact the cached version is outdated */
+		if (newcfg) {
+			bbs_config_unlock(newcfg);
+			bbs_debug(2, "Reparsed config %s to stay synchronized after update\n", client->filename);
+		}
 	}
 
 	bbs_verb(4, "Refreshed OAuth token '%s' (good for %ds)\n", client->name, expires);

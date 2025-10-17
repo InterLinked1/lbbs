@@ -648,7 +648,14 @@ static int __bbs_cached_config_outdated(struct bbs_config *cfg, const char *name
 		bbs_warning("stat(%s) failed: %s\n", filename, strerror(errno));
 	} else {
 		time_t modified = st.st_mtime;
-		if (modified < cfg->parsetime) {
+		/* Assume that if a file was modified in the same second as it was parsed,
+		 * that we parsed it after the modification, to avoid reparsing
+		 * unnecessarily in this scenario.
+		 * Since we only have second-level granularity, treating parses in the
+		 * same second could be subject to false negatives. However, treating
+		 * all parses in the same second as outdated creates more false positives,
+		 * which is much more problematic. */
+		if (modified <= cfg->parsetime) {
 			/* File hasn't been modified since we last parsed it. */
 			/* We're not refcounting or returning cfg locked in any way.
 			 * Our assumption is that bbs_config_free will only be called

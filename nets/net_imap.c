@@ -5052,7 +5052,6 @@ static void handle_client(struct imap_session *imap)
 		word2 = strchr(buf, ' ');
 		if (imap->inauth || (word2++ && !strlen_zero(word2) && !strncasecmp(word2, "LOGIN", STRLEN("LOGIN")))) {
 			bbs_debug(6, "%p => <LOGIN REDACTED>\n", imap); /* Mask login to avoid logging passwords */
-			bbs_debug(6, "%p => %s\n", imap, buf); //////////////////
 		} else {
 			bbs_debug(6, "%p => %s\n", imap, buf);
 		}
