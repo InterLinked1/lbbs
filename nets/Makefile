@@ -31,12 +31,18 @@ $(DEPENDS):
 IMAP_SRC = $(wildcard net_imap/*.c)
 IMAP_OBJ = $(patsubst %.c,%.o,$(IMAP_SRC))
 
-# XXX if nets/net_imap/imap.h is modified, only net_imap.c is automatically recompiled,
-# not any nets/net_imap/*.c source files that include it
-# XXX If using -j[>1], some files in net_imap/ are recompiled multiple times (parallel build bug)
+# This target ensures that any nets/net_imap/*.c source files including header files in nets/net_imap/
+# also get recompiled if needed. Otherwise, only net_imap.c gets recompiled, which can lead
+# to ABI issues if structs are modified and "make clean" isn't run between builds.
+imap_subtargets:
+	@+$(SUBMAKE) --no-builtin-rules -C net_imap all
 
 # Subdirectory with components for net_imap
-net_imap/%.o: $(IMAP_SRC)
+# Since imap_subtargets ensures that any object files in the subdirectory are recompiled if needed,
+# no recompiling should be done as a result of having $(IMAP_SRC) as a dependency for the this target.
+# Also note that even though imap_subtargets is a dependency for all object files in the subdirectory,
+# it will only get called once.
+net_imap/%.o: imap_subtargets $(IMAP_SRC)
 	@+$(SUBMAKE) --no-builtin-rules -C net_imap $(basename $(notdir $@)).o
 
 net_imap.so : net_imap.o $(IMAP_OBJ)
@@ -57,3 +63,4 @@ net_ws.so : net_ws.o
 
 .PHONY: all
 .PHONY: net_imap
+.PHONY: imap_subtargets
