@@ -1,0 +1,15 @@
+/var/log/lbbs/bbs.log {
+	monthly
+	minsize 5M
+	maxsize 25M
+	missingok
+	rotate 52
+	compress
+	delaycompress
+	notifempty
+	create 640 root root
+	sharedscripts
+	postrotate
+		/var/lib/lbbs/external/rsysop 'logger reload' > /dev/null 2> /dev/null
+	endscript
+}

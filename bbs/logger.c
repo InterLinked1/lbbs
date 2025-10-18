@@ -124,7 +124,7 @@ static struct bbs_cli_entry cli_commands_logger[] = {
 	BBS_CLI_COMMAND(cli_localdebug, "localdebug", 2, "Set max debug log level for current console session", "localdebug <newlevel>"),
 };
 
-int bbs_log_init(int nofork)
+static int open_logfile(void)
 {
 	static char logfile[PATH_MAX];
 	DIR *dir;
@@ -148,6 +148,47 @@ int bbs_log_init(int nofork)
 	snprintf(logfile, sizeof(logfile), "%s/%s", BBS_LOG_DIR, "bbs.log");
 	if (!(logfp = fopen(logfile, "a"))) {
 		fprintf(stderr, "Unable to open log file: %s (%s)\n", logfile, strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+static int logger_reload(void)
+{
+	/* Unregister all the CLI commands, except the logger rotate command */
+	if (bbs_cli_unregister_multiple(cli_commands_logger)) {
+		return -1;
+	}
+
+	bbs_log_close();
+	open_logfile();
+
+	logstdout = stdoutavailable; /* Default */
+
+	/* Re-register the CLI commands */
+	if (bbs_cli_register_multiple(cli_commands_logger)) {
+		return -1;
+	}
+	bbs_notice("BBS log file rotated\n");
+	return 0;
+}
+
+static int cli_reload(struct bbs_cli_args *a)
+{
+	if (logger_reload()) {
+		bbs_dprintf(a->fdout, "Failed to reload logger\n");
+		return -1;
+	}
+	return 0;
+}
+
+static struct bbs_cli_entry cli_commands_logger_rotate[] = {
+	BBS_CLI_COMMAND(cli_reload, "logger reload", 2, "Reload BBS logging", NULL),
+};
+
+int bbs_log_init(int nofork)
+{
+	if (open_logfile()) {
 		return -1;
 	}
 	fprintf(logfp, "=== BBS logger initialization (pid %d) ===\n", bbs_gettid());
@@ -187,6 +228,9 @@ int bbs_log_init(int nofork)
 	logstdout = stdoutavailable; /* Default */
 
 	if (bbs_cli_register_multiple(cli_commands_logger)) {
+		return -1;
+	}
+	if (bbs_cli_register_multiple(cli_commands_logger_rotate)) {
 		return -1;
 	}
 	return 0;

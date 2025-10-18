@@ -193,6 +193,18 @@ templates :
 	fi
 	cp -r -n configs/templates/. /var/lib/lbbs/templates/.config
 
+logrotate :
+	@if ! which "logrotate" > /dev/null; then\
+		printf "logrotate is not currently installed; please install it to activate log rotation\n";\
+	fi
+	@if id -u bbs 2>&1 > /dev/null; then\
+		sed -i 's#root root#bbs bbs#g' configs/misc/lbbs.logrotate;\
+	fi
+	@if [ ! -d "/etc/logrotate.d" ]; then\
+		$(INSTALL) -d "/etc/logrotate.d";\
+	fi
+	$(INSTALL) -m 0644 configs/misc/lbbs.logrotate /etc/logrotate.d/lbbs
+
 install : all bininstall modinstall extinstall scripts
 	@echo " +--- LBBS and associated modules have been installed ---+"
 
@@ -229,12 +241,18 @@ helgrind :
 .PHONY: bbs
 .PHONY: $(MOD_SUBDIR)
 .PHONY: external
+.PHONY: tests
 .PHONY: modcheckrule
 .PHONY: modcheck
 .PHONE: modconfig
-.PHONY: tests
-.PHONY: scripts
 .PHONY: clean
+.PHONY: moduninstall
+.PHONY: bininstall
+.PHONY: modinstall
+.PHONY: extinstall
+.PHONY: scripts
+.PHONY: templates
+.PHONY: logrotate
 .PHONY: install
 .PHONY: samples
 .PHONY: doxygen

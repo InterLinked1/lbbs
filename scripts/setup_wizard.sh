@@ -65,7 +65,7 @@ printf "Applying changes...\n"
 id -u "$BBS_USER"
 if [ $? -ne 0 ]; then
 	# We want a home directory, but not a shell
-	adduser -c "BBS" "$BBS_USER" --disabled-password --shell /usr/sbin/nologin --gecos ""
+	useradd -c "BBS" -s /usr/sbin/nologin -M "$BBS_USER"
 	printf "Created user %s\n" "$BBS_USER"
 else
 	printf "Using existing user %s\n" "$BBS_USER"

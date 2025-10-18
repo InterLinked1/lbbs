@@ -20,7 +20,7 @@ sed -i 's/#Port 22/Port 22222/' /etc/ssh/sshd_config
 service ssh restart
 
 # Create a non-root user for the BBS:
-adduser -c "BBS" bbs --disabled-password --shell /usr/sbin/nologin --gecos ""
+useradd -c "BBS" -s /usr/sbin/nologin -M bbs
 
 # Install MariaDB: https://www.digitalocean.com/community/tutorials/how-to-install-mariadb-on-debian-11
 apt-get -y install mariadb-server
