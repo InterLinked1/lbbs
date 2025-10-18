@@ -43,18 +43,15 @@ if [ ! -d concord ]; then
 else
 	cd concord
 	git stash
+	git checkout dev # need to ensure we're on a branch for git pull to work
 	git pull
 	make clean
 fi
 # Use the dev branch for latest bug fixes
 git checkout dev
 
-# XXX Temporary workarounds to work around bugs described in https://github.com/Cogmasters/concord/issues/208
-git checkout b3a03abd473e9afd80331608d1348456b599c3c1 # Last known good version of the library. Remove once fixed upstream.
-echo "" > core/oa_hash.c # XXX Hacky workaround to fix duplicate linkage issue. Remove once fixed upstream.
-
 printf "Compiling libdiscord\n"
-CFLAGS="-fPIC" make shared
+CFLAGS="-fPIC" make shared -j$(nproc)
 make install
 if [ -f /etc/alpine-release ]; then
 	ldconfig /etc/ld.so.conf.d

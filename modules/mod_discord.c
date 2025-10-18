@@ -1767,7 +1767,7 @@ static int unload_module(void)
 		bbs_pthread_join(monitor_thread, NULL);
 	}
 
-	ccord_shutdown_async();
+	discord_shutdown_all();
 	bbs_debug(3, "Waiting for Discord thread to exit...\n"); /* This may take a moment */
 	bbs_pthread_join(discord_thread, NULL);
 	bbs_debug(3, "Joined Discord thread, cleaning up\n");
