@@ -48,7 +48,6 @@ static int interactive_start(struct bbs_node *node)
 		 * This will allow the sysop to begin spying on the node here and catch the next output.
 		 * Really, mainly to help with testing and debugging. */
 		bbs_node_safe_sleep(node, 2500);
-		NEG_RETURN(bbs_node_writef(node, "%s %d.%d.%d  %s\n\n", BBS_SHORTNAME, BBS_MAJOR_VERSION, BBS_MINOR_VERSION, BBS_PATCH_VERSION, BBS_COPYRIGHT_SHORT));
 	}
 
 	NEG_RETURN(bbs_node_writef(node, "%s\n", bbs_name())); /* Print BBS name */
