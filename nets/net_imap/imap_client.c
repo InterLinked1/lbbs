@@ -1120,6 +1120,13 @@ static struct imap_client *__load_virtual_mailbox(struct imap_session *imap, con
 	while ((fgets(buf, sizeof(buf), fp))) {
 		char *mpath, *urlstr = buf;
 		size_t prefixlen, urlstrlen;
+
+		/* Allow other inline settings to be defined in this file. */
+		if (buf[0] == '@') {
+			/* Currently, there are not any we care about here */
+			continue;
+		}
+
 		mpath = strsep(&urlstr, "|");
 		/* We are not looking for an exact match.
 		 * Essentially, the user defines a "subtree" in the .imapremote file,
@@ -1253,7 +1260,9 @@ int imap_proxy_remote_mailbox_exclusively(struct imap_session *imap, const char 
 		pfds[0].revents = pfds[1].revents = 0;
 		pres = poll(pfds, 2, MIN_MS(31)); /* In practice, clients and servers should have activity at least once every 30 minutes. */
 		if (pres < 0) {
-			bbs_error("poll failed: %s\n", strerror(errno));
+			if (errno != EINTR) {
+				bbs_error("poll failed: %s\n", strerror(errno));
+			}
 			break;
 		}
 		if (pfds[0].revents & POLLIN) {

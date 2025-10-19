@@ -19,6 +19,9 @@
 
 #include "include/bbs.h"
 
+#include <ctype.h> /* for ltrim, rtrim */
+#include <regex.h>
+
 #include "include/node.h"
 #include "include/parallel.h"
 
@@ -186,6 +189,11 @@ static int remote_list(struct imap_client *client, struct list_command *lcmd, co
 			}
 		}
 
+		/* If we've been told to exclude SPECIAL-USE flags from the response, do so */
+		if (lcmd->nospecialuse) {
+			attributes = "";
+		}
+
 		/* Matches prefix, send it (but send our hierarchy delimiter, not remote delimiter) */
 		imap_parallel_send(imap, "%s (%s) \"%c\" \"%s\"", lcmd->cmd, attributes, HIERARCHY_DELIMITER_CHAR, fullmailbox);
 
@@ -320,6 +328,7 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	char line[256];
 	int l = 0;
 	struct bbs_parallel p;
+	int lineno = 0;
 	struct mailbox *mbox = imap->mbox;
 
 	/* We only use trylock, rather than lock, for operations that could recurse.
@@ -362,6 +371,76 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	/* Note that we cache all the directories on all servers at once, since we truncate the file. */
 	while ((fgets(line, sizeof(line), fp))) {
 		char *prefix, *server;
+
+		lineno++;
+
+		/* Process any inline directives that affect the LIST command */
+		if (line[0] == '@') {
+			char *key, *value = line;
+			key = strsep(&value, "=");
+			if (strlen_zero(key) || strlen_zero(value)) {
+				bbs_warning("Invalid inline directive at line %d\n", lineno);
+				continue;
+			}
+			rtrim(key);
+			ltrim(value);
+			bbs_term_line(value);
+			key++; /* Skip '@' */
+			bbs_debug(4, "Processing inline directive %s=%s\n", key, value);
+			/* This prevents SPECIAL-USE flags from proxied mailboxes from being passed back to the client.
+			 * This can help work around bugs in Mozilla clients when "Unified Folders" (or "smart folders") is enabled,
+			 * which causes all the proxied SPECIAL-USE folders for an account to show up identically underneath
+			 * the virtual smart folder.
+			 * Ideally, they would be named differently so the user can differentiate them.
+			 * Additionally, when deleting files from a mailbox, the client may erroneously
+			 * move it to one of the proxied SPECIAL-USE folders.
+			 *
+			 * This setting does not entirely work around the issue as Mozilla clients have their own
+			 * logic to infer SPECIAL-USE flags from the mailbox name, e.g.:
+			 * https://repo.palemoon.org/athenian200/epyrus/src/commit/1a4821c3e7ca3d7ab3ae7539babeca6c16aa12cc/mail/base/content/folderPane.js#L1774
+			 * https://github.com/mozilla/releases-comm-central/blob/835667286553c062db408cb3108fbf2a7eb421ea/mail/components/extensions/ExtensionAccounts.sys.mjs#L321
+			 * https://github.com/mozilla/releases-comm-central/blob/835667286553c062db408cb3108fbf2a7eb421ea/mail/modules/SmartMailboxUtils.sys.mjs#L15
+			 *
+			 * However, if the mailbox names do not have a mapping, this can help with that problem, to some extent.
+			 * Mozilla clients seem to ignore any provided SPECIAL-USE flag if it has a name that matches a hardcoded list,
+			 * so we can't falsify the flags; at most, omitting them for non-hardcoded names allows those to be ignored.
+			 *
+			 * The only comprehensive solutions here are either:
+			 * 1) Rename all proxied SPECIAL-USE folders in our mapping transparently to names that do not match the hardcoded list.
+			 *    e.g. "Trash" becomes "Deleted", etc.
+			 *    Not ideal, because we would then need to implement this translation EVERYWHERE in net_imap,
+			 *    in addition to already adding/removing the prefix and changing the hierarchy delimiter as needed.
+			 *    Technically possible, but would require a fair amount of work (and changing the folder names for certain clients seems sketch).
+			 * 2) Fix the Mozilla clients to address this bug, i.e. the names under smart folder parents need to be unambiguous,
+			 *    and folder operations (e.g. delete) need to be performed against the correct smart folder.
+			 *    TODO This is the ideal solution, obviously, but won't help users that don't have a fixed version.
+			 *
+			 * So in the meantime, this setting is far from perfect, but available if it's helpful.
+			 */
+			if (!strcasecmp(key, "disable_specialuse_by_agent")) {
+				if (!strcmp(value, "*")) {
+					lcmd->nospecialuse = 1;
+					bbs_debug(5, "SPECIAL-USE disabled for proxied LIST response (wildcard match)\n");
+				} else if (!strlen_zero(imap->clientid)) {
+					regex_t regexbuf;
+					int errcode;
+					char errbuf[64];
+					if ((errcode = regcomp(&regexbuf, value, REG_EXTENDED | REG_NOSUB))) {
+						regerror(errcode, &regexbuf, errbuf, sizeof(errbuf));
+						bbs_warning("Malformed expression '%s' at line %d: %s\n", value, lineno, errbuf);
+						continue;
+					}
+					if (!regexec(&regexbuf, imap->clientid, 0, NULL, 0)) {
+						lcmd->nospecialuse = 1;
+						bbs_debug(5, "SPECIAL-USE disabled for proxied LIST response (user agent match)\n");
+					}
+				}
+			} else {
+				/* disable_specialuse_by_agent is the only option for now */
+				bbs_warning("Unknown inline directive '%s' at line %d\n", key, lineno);
+			}
+			continue;
+		}
 
 		l++;
 		server = line;

@@ -76,6 +76,7 @@ struct list_command {
 	unsigned int extended:1;	/*!< EXTENDED list command? */
 	unsigned int anyother:1;	/*!< Any mailboxes in Other Users namespace? */
 	unsigned int anyshared:1;	/*!< Any mailboxes in Shared Folders namespace? */
+	unsigned int nospecialuse:1;	/*!< Do not include SPECIAL-USE flags in returned LIST responses */
 	int xlistflags;				/*!< Whether or not to also return \Inbox */
 	enum mailbox_namespace ns;
 	size_t reflen;

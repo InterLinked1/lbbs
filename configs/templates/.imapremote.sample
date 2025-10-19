@@ -1,5 +1,22 @@
 ### .imapremote - Personal virtual mappings for remote IMAP mailboxes
 
+# Inline settings to control proxying behavior
+
+# This setting allows SPECIAL-USE flags to be disabled for remote IMAP mailboxes.
+# Even if the remote server includes SPECIAL-USE flags in its response, it will not
+# be passed through to the client.
+# This can be used to work around bugs in mail clients that behave abnormally
+# when receiving SPECIAL-USE flags for mailboxes in the "Other Users" hierarchy,
+# e.g. Mozilla clients (Interlink, MailNews, Epyrus, Thunderbird, etc.)
+# '*' can be used to always disabled, or you can provide a regular expression of
+# user agents to match against the client ID sent by the client (if provided).
+# Note that clients may still infer SPECIAL-USE flags from the name, so this may
+# not work reliably (e.g. "Deleted" is no longer treated as SPECIAL-USE by Mozilla
+# clients but "Trash", "Sent", etc. continue to be.)
+# @disable_specialuse_by_agent = Interlink|MailNews|Epyrus|Thunderbird
+
+# Proxied mailbox definitions
+
 ### Any mailboxes defined here will be available to you when logged in to the IMAP server, as if they were local.
 ### The sysop may have configured a maximum number of remote connections that may be defined here
 
