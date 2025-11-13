@@ -1926,7 +1926,7 @@ static int cli_purgeq(struct bbs_cli_args *a)
 	struct mailq_run qrun;
 
 	mailq_run_init(&qrun, QUEUE_RUN_FORCED);
-	qrun.match_filename = a->argv[1];
+	qrun.match_filename = !strcmp(a->argv[1], "ALL") ? NULL : a->argv[1]; /* If exact arg "ALL" is specified, purge all. Require the extra verbosity since this is destructive. */
 
 	run_queue(&qrun, on_queue_file_purge);
 	bbs_dprintf(a->fdout, "%d/%d message%s processed: %d delivered, %d failed, %d delayed\n", qrun.processed, qrun.total, ESS(qrun.total), qrun.delivered, qrun.failed, qrun.delayed);
@@ -1940,7 +1940,7 @@ static int cli_purgeq(struct bbs_cli_args *a)
 static struct bbs_cli_entry cli_commands_mailq[] = {
 	BBS_CLI_COMMAND(cli_mailq, "mailq", 1, "Show the current mail queue (optionally restricted to specified file or messages ending in a particular host suffix)", "mailq <file/hostsuffix>"),
 	BBS_CLI_COMMAND(cli_runq, "runq", 1, "Retry delivery of messages in the mail queue (optionally restricted to specified file or messages directed at certain hosts)", "runq <file/hostsuffix>"),
-	BBS_CLI_COMMAND(cli_purgeq, "purgeq", 2, "Cancel delivery of a specific message in the mail queue", "purgeq <file>"),
+	BBS_CLI_COMMAND(cli_purgeq, "purgeq", 2, "Cancel delivery of a specific message in the mail queue", "purgeq <file|ALL>"),
 	BBS_CLI_COMMAND(cli_mx_lookup, "mxlookup", 2, "Return ordered MX records for a hostname (ordered by, but without, the priorities)", "mxlookup <domain>"),
 };
 
