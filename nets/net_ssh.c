@@ -1854,6 +1854,7 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 		uint32_t permissions;
 		sftp_client_message msg;
 		int pres;
+		int debug_level;
 		pres = ssh_channel_poll_timeout(channel, bbs_transfer_timeout(), 0);
 		if (pres <= 0) {
 			bbs_debug(3, "ssh_channel_poll_timeout returned %d (%s), terminating SFTP session\n", pres, ssh_get_error(session));
@@ -1866,7 +1867,8 @@ static int do_sftp(struct bbs_node *node, ssh_session session, ssh_channel chann
 
 		/* Since some operations can be for paths that may not exist currently, always use the _nocheck variant.
 		 * For operations that require the path to exist, they will fail anyways on the system call. */
-		bbs_debug(5, "Got SFTP client message %2d (%8s)%s%s\n", msg->type, sftp_get_client_message_type_name(msg->type), S_COR(msg->filename, ", client path: ", ""), S_IF(msg->filename));
+		debug_level = msg->type == SFTP_READ || msg->type == SFTP_WRITE ? 8 : 5; /* Downloading or uploading large files will flood the logs, use a higher debug level for those */
+		bbs_debug(debug_level, "Got SFTP client message %2d (%8s)%s%s\n", msg->type, sftp_get_client_message_type_name(msg->type), S_COR(msg->filename, ", client path: ", ""), S_IF(msg->filename));
 		switch (msg->type) {
 			case SFTP_REALPATH:
 				SFTP_MAKE_PATH_NOCHECK();

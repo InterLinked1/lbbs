@@ -9,7 +9,7 @@
 
 /*! \file
  *
- * \brief Top level header file for LBBS
+ * \brief Logging
  *
  */
 

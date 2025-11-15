@@ -1038,21 +1038,29 @@ static int load_config(void)
 	/* Socket options */
 	if (!bbs_config_val_set_int(cfg, "sockets", "connect_timeout", &tmp)) {
 		option_connect_timeout = tmp;
-		fprintf(stderr, "Socket timeout set to %d\n", tmp);
+#ifdef EXTRA_STARTUP_LOGGING
+		fprintf(stdout, "Socket timeout set to %d\n", tmp);
+#endif
 	}
 
 	/* Logger options */
 	if (!bbs_config_val_set_int(cfg, "logger", "verbose", &tmp)) {
 		bbs_set_verbose(tmp);
-		fprintf(stderr, "Verbose level set to %d\n", tmp);
+#ifdef EXTRA_STARTUP_LOGGING
+		fprintf(stdout, "Verbose level set to %d\n", tmp);
+#endif
 	}
 	if (!bbs_config_val_set_int(cfg, "logger", "debug", &tmp)) {
 		bbs_set_debug(tmp);
-		fprintf(stderr, "Debug level set to %d\n", tmp);
+#ifdef EXTRA_STARTUP_LOGGING
+		fprintf(stdout, "Debug level set to %d\n", tmp);
+#endif
 	}
 	if (!bbs_config_val_set_int(cfg, "logger", "logfile_debug", &tmp)) {
 		max_logfile_debug_level = tmp;
-		fprintf(stderr, "Max log file debug level set to %d\n", max_logfile_debug_level);
+#ifdef EXTRA_STARTUP_LOGGING
+		fprintf(stdout, "Max log file debug level set to %d\n", max_logfile_debug_level);
+#endif
 	}
 
 	bbs_config_unlock(cfg);
