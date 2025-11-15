@@ -2401,7 +2401,16 @@ ssize_t bbs_timed_read(int fd, char *restrict buf, size_t len, int ms)
 	__builtin_unreachable();
 }
 
-static ssize_t timed_write(struct pollfd *pfd, int fd, const char *restrict buf, size_t len, int ms)
+/*!
+ * \brief Attempt to fully write a buffer to a file descriptor, up until a timeout is reached
+ * \param node Optional, the node if this write is associated with a particular node
+ * \param pfd
+ * \param fd
+ * \param[in] buf
+ * \param[in] len
+ * \returns Same as write. If a partial write is made, the number of bytes written is returned. During active shutdown, -1 is returned.
+ */
+static ssize_t timed_write(struct bbs_node *node, struct pollfd *pfd, int fd, const char *restrict buf, size_t len, int ms)
 {
 	size_t left = len;
 	ssize_t written = 0;
@@ -2414,11 +2423,35 @@ static ssize_t timed_write(struct pollfd *pfd, int fd, const char *restrict buf,
 	}
 
 	do {
-		ssize_t res;
+		ssize_t res = 0;
 
 		/* Wait until the file descriptor becomes writable (again) */
 		pfd->revents = 0;
-		res = poll(pfd, 1, ms); /* Avoid tight loop */
+
+		/* Don't poll for more than 5 seconds at a time internally.
+		 * (full_write use a 60 second timeout)
+		 * This way, if a node shutdown occurs inside of this function,
+		 * we can abort sooner rather than later. */
+		while (!res && ms > SEC_MS(5)) {
+			res = poll(pfd, 1, SEC_MS(5));
+			if (!res) {
+				/* If a node is being shut down, abort when possible. */
+				if (node && !node->active) {
+					bbs_debug(3, "Aborting write on fd %d due to node shutdown\n", fd);
+					return -1; /* In a double loop, so return directly */
+				}
+				if (bbs_is_shutting_down()) {
+					/* In theory, the previous condition should catch this... */
+					bbs_debug(3, "Aborting write on fd %d due to BBS shutdown\n", fd);
+					return -1;
+				}
+				ms -= SEC_MS(5);
+			}
+		}
+		if (!res && ms > 0) {
+			res = poll(pfd, 1, ms); /* Avoid tight loop */
+		}
+
 		if (!res) {
 			bbs_debug(2, "File descriptor %d did not become writable after %d ms\n", fd, ms);
 			break;
@@ -2428,6 +2461,7 @@ static ssize_t timed_write(struct pollfd *pfd, int fd, const char *restrict buf,
 			bbs_debug(2, "Exceptional activity (%s) while writing on fd %d\n", poll_revent_name(pfd->revents), fd);
 			break;
 		}
+
 		res = write(fd, buf, left);
 		if (res <= 0) {
 			if (res == 0) {
@@ -2446,7 +2480,16 @@ static ssize_t timed_write(struct pollfd *pfd, int fd, const char *restrict buf,
 	return written;
 }
 
-static ssize_t full_write(struct pollfd *pfd, int fd, const char *restrict buf, size_t len)
+/*!
+ * \brief Attempt to fully write a buffer to a file descriptor
+ * \param node Optional, the node if this write is associated with a particular node
+ * \param pfd
+ * \param fd
+ * \param[in] buf
+ * \param[in] len
+ * \returns Same as write
+ */
+static ssize_t full_write(struct bbs_node *node, struct pollfd *pfd, int fd, const char *restrict buf, size_t len)
 {
 	/* We could use a poll time of -1, in theory,
 	 * to block "forever". However, we don't actually
@@ -2456,7 +2499,7 @@ static ssize_t full_write(struct pollfd *pfd, int fd, const char *restrict buf, 
 	 * we're not making any progress at all,
 	 * the remote side isn't responsive and
 	 * we should just disconnect. */
-	ssize_t bytes = timed_write(pfd, fd, buf, len, SEC_MS(60));
+	ssize_t bytes = timed_write(node, pfd, fd, buf, len, SEC_MS(60));
 	if (bytes <= 0) {
 		/* Applications should be checking this return value regularly
 		 * to terminate node execution if needed.
@@ -2500,7 +2543,7 @@ static int bbs_node_ansi_write(struct bbs_node *node, const char *restrict buf, 
 			/* Must be non-NULL (> 0x0) and not starting at the current position */
 			bytes = sp > buf ? ((size_t) (sp - buf)) : left; /* If sp, then it must be within left, so no need for bounds check */
 			bbs_assert(bytes <= node->cols); /* We wouldn't have called this function if this weren't true, so part of the buffer can't be larger */
-			res = full_write(&pfd, node->slavefd, buf, bytes);
+			res = full_write(node, &pfd, node->slavefd, buf, bytes);
 			if (res < 0) {
 				bbs_debug(5, "Node %d: write (%lu bytes) returned %ld\n", node->id, bytes, res);
 				bbs_node_io_unlock(node);
@@ -2526,7 +2569,7 @@ static int bbs_node_ansi_write(struct bbs_node *node, const char *restrict buf, 
 			}
 			/* At least 4, so always send an escape sequence (must be at least 1 for that) */
 			esc_len = (size_t) snprintf(esc_seq, sizeof(esc_seq), "\e[%dC", skipped);
-			res = full_write(&pfd, node->slavefd, esc_seq, esc_len);
+			res = full_write(node, &pfd, node->slavefd, esc_seq, esc_len);
 			if (res < 0) {
 				bbs_debug(5, "Node %d: write returned %ld\n", node->id, res);
 				bbs_node_io_unlock(node);
@@ -2566,7 +2609,7 @@ ssize_t bbs_node_write(struct bbs_node *node, const char *buf, size_t len)
 	/* So helgrind doesn't complain about data race if node is shut down
 	 * and slavefd closed during write */
 	bbs_node_io_lock(node);
-	res = full_write(&pfd, node->slavefd, buf, len);
+	res = full_write(node, &pfd, node->slavefd, buf, len);
 	if (res <= 0 || res != (ssize_t) len) {
 		bbs_debug(5, "Node %d: write returned %ld/%lu\n", node->id, res, len);
 	}
@@ -2582,14 +2625,29 @@ ssize_t bbs_write(int fd, const char *buf, size_t len)
 	pfd.fd = fd;
 	pfd.events = POLLOUT | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
 
-	res = full_write(&pfd, fd, buf, len);
+	res = full_write(NULL, &pfd, fd, buf, len);
 	if (res <= 0) {
 		bbs_debug(5, "fd %d: write returned %ld: %s\n", fd, res, res ? strerror(errno) : "");
 	}
 	return res;
 }
 
-ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)
+static ssize_t __node_write_any(struct bbs_node *node, int fd, const char *buf, size_t len)
+{
+	struct pollfd pfd;
+	ssize_t res;
+
+	pfd.fd = fd;
+	pfd.events = POLLOUT | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
+
+	res = full_write(node, &pfd, fd, buf, len);
+	if (res <= 0) {
+		bbs_debug(5, "fd %d: write returned %ld: %s\n", fd, res, res ? strerror(errno) : "");
+	}
+	return res;
+}
+
+static ssize_t node_timed_write(struct bbs_node *node, int fd, const char *buf, size_t len, int ms)
 {
 	struct pollfd pfd;
 	ssize_t res;
@@ -2601,7 +2659,7 @@ ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)
 	pfd.fd = fd;
 	pfd.events = POLLOUT | POLLPRI | POLLERR | POLLHUP | POLLNVAL;
 
-	res = timed_write(&pfd, fd, buf, len, ms);
+	res = timed_write(node, &pfd, fd, buf, len, ms);
 	if (res <= 0) {
 		if (res == -1) {
 			bbs_error("write(%d) failed (%ld): %s\n", fd, res, strerror(errno));
@@ -2612,6 +2670,11 @@ ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)
 
 	bbs_block_fd(fd); /* Restore */
 	return res;
+}
+
+ssize_t bbs_timed_write(int fd, const char *buf, size_t len, int ms)
+{
+	return node_timed_write(NULL, fd, buf, len, ms);
 }
 
 /* \note Assumes fd is a file descriptor corresponding to a file */
@@ -2722,7 +2785,7 @@ ssize_t bbs_node_fd_write(struct bbs_node *node, int fd, const char *buf, size_t
 #endif
 
 	bbs_node_io_lock(node);
-	res = bbs_write(fd, buf, len);
+	res = __node_write_any(node, fd, buf, len);
 	bbs_node_io_unlock(node);
 
 	return res;
@@ -2849,7 +2912,7 @@ ssize_t bbs_node_any_fd_write(struct bbs_node *node, int fd, const char *buf, si
 	}
 
 	/* Try to write the full data, but abort if we can't make progress */
-	res = bbs_timed_write(fd, buf, len, SEC_MS(1));
+	res = node_timed_write(node, fd, buf, len, SEC_MS(1));
 	bbs_node_io_unlock(node);
 
 	return res;
