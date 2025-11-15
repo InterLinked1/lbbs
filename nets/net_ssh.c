@@ -822,7 +822,7 @@ static void handle_session(ssh_event event, ssh_session session)
 	ssh_callbacks_init(&channel_cb);
 	ssh_set_server_callbacks(session, &server_cb);
 
-	timeout = 2; /* Max 2 seconds until key exchange completed, as ssh_handle_key_exchange can block otherwise */
+	timeout = 10; /* Limit time allowed for key exchange, as ssh_handle_key_exchange can block otherwise */
 	ssh_options_set(session, SSH_OPTIONS_TIMEOUT, &timeout);
 
 	if (ssh_handle_key_exchange(session) != SSH_OK) {
@@ -893,12 +893,14 @@ static void handle_session(ssh_event event, ssh_session session)
 	do {
 		int pollres = ssh_event_dopoll(event, cdata.node ? -1 : MIN_MS(cdata.sftp ? 5 : 30)); /* Use shorter timeouts for SFTP sessions */
 		if (pollres == SSH_ERROR) {
-			bbs_debug(1, "ssh_event_dopoll returned error, closing SSH channel\n");
+			bbs_debug(1, "ssh_event_dopoll returned error (%s), closing SSH channel\n", strerror(errno));
 			ssh_channel_close(sdata.channel);
 			break;
-		} else if (pollres) { /* Don't print out otherwise, there'll be an event for every key */
-			bbs_debug(5, "SSH pollres: %d\n", pollres);
-		}
+		} else if (pollres == SSH_AGAIN) {
+			bbs_debug(5, "ssh_event_dopoll returned SSH_AGAIN\n");
+		} else if (pollres) {
+			bbs_debug(5, "SSH pollres: %d\n", pollres); /* I don't think there are any other events, but to catch them just in case */
+		} /* Don't print out otherwise, there'll be an event for every key */
 		/* If child thread's stdout/stderr has been registered with the event,
 		 * or the child thread hasn't started yet, continue. */
 		if (sdata.dead) {
@@ -1055,11 +1057,11 @@ static void handle_session(ssh_event event, ssh_session session)
 			} else {
 				bbs_debug(5, "Channel still not EOF yet\n");
 			}
-			if (++eof_waitcount > 200) {
+			if (++eof_waitcount > 10) {
 				bbs_warning("SSH client still hasn't disconnected cleanly, forcibly disconnecting...\n");
 				break;
 			}
-			usleep(250000); /* Avoid tight loop */
+			usleep(100000); /* Avoid tight loop */
 		} while (ssh_channel_is_open(sdata.channel) && !ssh_channel_is_eof(sdata.channel));
 	}
 

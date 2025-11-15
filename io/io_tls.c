@@ -243,24 +243,29 @@ static ssize_t io_write(void *varg)
 		return bytes;
 	}
 
+#define MAX_SSL_WRITE_SEC 180
+
 	/* Encrypt it */
 	/* OpenSSL doesn't do partial writes, so we don't worry about those here. */
 sslwrite:
 	res = SSL_write(t->ssl, input, (int) bytes);
 	if (res <= 0) {
 		int sslerr = SSL_get_error(t->ssl, (int) res);
-		bbs_debug(8, "SSL_write returned %ld: %s\n", res, ssl_strerror(sslerr));
+		bbs_debug(9, "SSL_write returned %ld: %s\n", res, ssl_strerror(sslerr));
 		if (sslerr == SSL_ERROR_WANT_READ || sslerr == SSL_ERROR_WANT_WRITE) {
-			if (attempts++ < 250) { /* Retry up to 5 sec */
-				usleep(20000); /* If a write fails, wait a little bit before retrying, there are probably buffers that need to be flushed out */
+			if (attempts++ < MAX_SSL_WRITE_SEC + 7) { /* Retry sufficiently, with not quite exponential backoff, long enough to accomodate dial-up connections */
+				usleep(attempts > 10 ? 1000000 : attempts > 5 ? 500000 : 100000); /* If a write fails, wait a little bit before retrying, there are probably buffers that need to be flushed out */
 				goto sslwrite; /* Retry exactly the same write again */
 			}
-			bbs_warning("SSL_write timed out after 5 seconds\n");
+			bbs_warning("SSL_write timed out after %d seconds\n", MAX_SSL_WRITE_SEC);
 			return -1; /* Since we failed to write, abort the connection */
 		} else {
 			LOG_SSL_ERROR(sslerr, "SSL_write failed");
 		}
 		return res;
+	}
+	if (attempts > 0) {
+		bbs_debug(8, "SSL_write succeeded after %d %s\n", attempts, attempts == 1 ? "retry" : "retries");
 	}
 	return res;
 }

@@ -746,6 +746,7 @@ static int launch_sysop_console(int remote, int sfd)
 		 * For command execution via rsysop, we don't want to launch a PTY (we don't need one) or display the usual banner (clutter).
 		 * The only way I can seem to distinguish the two automatically is that command executions will send
 		 * the data immediately, so POLLIN is already triggered here. */
+		usleep(1000); /* XXX Even more of a hack job, sometimes, it's not immediate so wait a ms for activity */
 		if (bbs_poll(sfd, 0) == 1) {
 			skip_pty = 1;
 		}

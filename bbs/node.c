@@ -1576,17 +1576,20 @@ static int parse_cursor_pos(char *restrict s, int *restrict row, int *restrict c
 	return 0;
 }
 
+#define node_read_cursor_pos(node, timeout, row, col) __node_read_cursor_pos(node, timeout, row, col, __LINE__)
+
 /*!
  * \brief Read cursor position response from a node. This does not send the cursor position query.
  * \param node, which should be unbuffered
  * \param timeout poll timeout for first character. Subsequent characters have a timeout of 5 seconds if a first character is received.
  * \param[out] row The row position on success (return value > 0). 1-indexed, not 0-indexed.
  * \param[out] col The col position on success (return value > 0). 1-indexed, not 0-indexed.
+ * \param lineno Line number
  * \retval -1 on node disconnect
  * \retval 1 if positive cursor position query response received
  * \retval 0 Non-ANSI terminal (no positive response)
  */
-static int node_read_cursor_pos(struct bbs_node *node, int timeout, int *restrict row, int *restrict col)
+static int __node_read_cursor_pos(struct bbs_node *node, int timeout, int *restrict row, int *restrict col, int lineno)
 {
 	ssize_t res;
 	char buf[84];
@@ -1598,7 +1601,7 @@ static int node_read_cursor_pos(struct bbs_node *node, int timeout, int *restric
 	res = bbs_node_poll(node, timeout);
 	if (res <= 0) {
 		if (!res) {
-			bbs_debug(3, "No response to cursor position query after %d seconds...\n", timeout / 1000);
+			bbs_debug(3, "No response to cursor position query after %d ms (line %d)...\n", timeout, lineno);
 		}
 		return res ? -1 : 0;
 	}
@@ -1642,14 +1645,21 @@ static int node_read_cursor_pos(struct bbs_node *node, int timeout, int *restric
 	return 1;
 }
 
-int node_get_cursor_pos(struct bbs_node *node, int *restrict row, int *restrict col)
+#define _node_get_cursor_pos(node, row, col) __node_get_cursor_pos(node, row, col, 2500, __LINE__)
+
+static int __node_get_cursor_pos(struct bbs_node *node, int *restrict row, int *restrict col, int timeout, int lineno)
 {
 	/* Send cursor position query */
 	if (bbs_node_write(node, TERM_CURSOR_POS_QUERY, STRLEN(TERM_CURSOR_POS_QUERY)) < 0) {
 		return -1;
 	}
 	/* Read cursor position query response */
-	return node_read_cursor_pos(node, SEC_MS(1), row, col); /* Since we know this terminal supports this sequence, don't wait very long for a response, since we do expect one */
+	return __node_read_cursor_pos(node, timeout, row, col, lineno); /* Since we know this terminal supports this sequence, don't wait very long for a response, since we do expect one */
+}
+
+int node_get_cursor_pos(struct bbs_node *node, int *restrict row, int *restrict col)
+{
+	return _node_get_cursor_pos(node, row, col);
 }
 
 /*!
@@ -1671,7 +1681,7 @@ static int init_term_query_ansi_escape_support(struct bbs_node *node)
 	 * supporting and unsupporting clients. */
 
 #ifdef DEV_DEBUG
-	res = node_get_cursor_pos(node, &row, &col);
+	res = _node_get_cursor_pos(node, &row, &col);
 	if (res <= 0) {
 		return res;
 	}
@@ -1685,7 +1695,7 @@ static int init_term_query_ansi_escape_support(struct bbs_node *node)
 	bbs_node_writef(node, "\n\n\n   "); /* Add 3 rows and 3 columns, so 3,1 -> 6,4 (verified with DEV_DEBUG). */
 
 #ifdef DEV_DEBUG
-	res = node_get_cursor_pos(node, &row, &col);
+	res = _node_get_cursor_pos(node, &row, &col);
 	if (res <= 0) {
 		return res;
 	}
@@ -1702,7 +1712,7 @@ static int init_term_query_ansi_escape_support(struct bbs_node *node)
 
 	/* Clear line */
 	bbs_node_write(node, TERM_RESET_LINE, STRLEN(TERM_RESET_LINE));
-	res = node_get_cursor_pos(node, &row, &col);
+	res = _node_get_cursor_pos(node, &row, &col);
 	if (res <= 0) {
 		return res;
 	}
@@ -1716,7 +1726,7 @@ static int init_term_query_ansi_escape_support(struct bbs_node *node)
 	/* Go up 1 line */
 	oldrow = row;
 	bbs_node_write(node, TERM_UP_ONE_LINE, STRLEN(TERM_UP_ONE_LINE));
-	res = node_get_cursor_pos(node, &row, &col);
+	res = _node_get_cursor_pos(node, &row, &col);
 	if (res <= 0) {
 		return res;
 	}
@@ -1731,7 +1741,7 @@ static int init_term_query_ansi_escape_support(struct bbs_node *node)
 	oldcol = col;
 	oldrow = row;
 	bbs_node_writef(node, COLOR(TERM_COLOR_GREEN) COLOR_RESET);
-	res = node_get_cursor_pos(node, &row, &col);
+	res = _node_get_cursor_pos(node, &row, &col);
 	if (res <= 0) {
 		return res;
 	}
@@ -1746,7 +1756,7 @@ static int init_term_query_ansi_escape_support(struct bbs_node *node)
 	oldcol = col;
 	oldrow = row;
 	bbs_node_writef(node, TERM_TITLE_FMT, "LBBS"); /* We'll set a new title in the intro anyways, so okay to do this momentarily */
-	res = node_get_cursor_pos(node, &row, &col);
+	res = _node_get_cursor_pos(node, &row, &col);
 	if (res <= 0) {
 		return res;
 	}
@@ -1770,7 +1780,7 @@ static int init_term_query_ansi_escape_support(struct bbs_node *node)
 	oldcol = col;
 	oldrow = row;
 	bbs_node_writef(node, TERM_CURSOR_POS_SET_FMT, 4, 6);
-	res = node_get_cursor_pos(node, &row, &col);
+	res = _node_get_cursor_pos(node, &row, &col);
 	if (res <= 0) {
 		return res;
 	}
@@ -1783,7 +1793,7 @@ static int init_term_query_ansi_escape_support(struct bbs_node *node)
 
 	/* Clear screen */
 	bbs_node_write(node, TERM_CLEAR, STRLEN(TERM_CLEAR));
-	res = node_get_cursor_pos(node, &row, &col);
+	res = _node_get_cursor_pos(node, &row, &col);
 	if (res <= 0) {
 		return res;
 	}
@@ -1820,9 +1830,12 @@ static int read_cursor_pos_response(struct bbs_node *node, struct timespec *rest
 	if (bbs_node_write(node, buf, (size_t) len) < (ssize_t) len) {
 		return -1;
 	}
+
 	/* Most modern terminals support ANSI and will respond immediately,
-	 * so don't wait too long for that. */
-	res = node_read_cursor_pos(node, SEC_MS(3), &row, &col);
+	 * so don't wait too long for that. However, this timeout does
+	 * need to be larger than the other ones since it's the first one,
+	 * and we may need a moment with 300 baud clients. */
+	res = node_read_cursor_pos(node, 4500, &row, &col); /* 3500 is too small, 4500 seems to accomodate 300 bps */
 	if (res) {
 		return res;
 	}
