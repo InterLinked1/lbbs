@@ -246,6 +246,7 @@ static int run_menu(const char *title, const char *subtitle, int num_choices, IT
 
 	for (;;) { /* Loop until we get an ESCAPE */
 		c = wgetch(win);
+		bbs_debug(9, "Menu getch returned %d%s%c%s\n", c, isprint(c) ? " (" : "", isprint(c) ? c : ' ', isprint(c) ? ")" : "");
 		if (c == ERR) {
 			selected_item = -1;
 			goto quit;
@@ -264,10 +265,20 @@ static int run_menu(const char *title, const char *subtitle, int num_choices, IT
 			menu_driver(menu, REQ_UP_ITEM);
 			break;
 		case 'n':
+			/* If 'N' or 'K' are explicit key bindings in the menu,
+			 * prefer the overriding menu option over the default binding here. */
+			if (optkeys && (strchr(optkeys, 'N') || strchr(optkeys, 'n'))) {
+				goto menuopt;
+			}
+			/* Fall through */
 		case KEY_NPAGE:
 			menu_driver(menu, REQ_SCR_DPAGE);
 			break;
 		case 'k':
+			if (optkeys && (strchr(optkeys, 'K') || strchr(optkeys, 'k'))) {
+				goto menuopt;
+			}
+			/* Fall through */
 		case KEY_PPAGE:
 			menu_driver(menu, REQ_SCR_UPAGE);
 			break;
@@ -279,14 +290,15 @@ static int run_menu(const char *title, const char *subtitle, int num_choices, IT
 			break;
 		default:
 			if (optkeys) {
+menuopt:
 				curpos = strchr(optkeys, c);
 				/* Key bindings are case insensitive */
 				if (!curpos) {
 					char otherc;
 					char cbuf[2];
 					snprintf(cbuf, sizeof(cbuf), "%c", c); /* Avoid conversion error from int to char by doing this way */
-					otherc = (char) (islower(cbuf[0]) ? toupper(c) : tolower(c));
-					curpos = strchr(optkeys, otherc);
+					otherc = (char) (islower(cbuf[0]) ? toupper(c) : tolower(c)); /* Invert the case */
+					curpos = strchr(optkeys, otherc); /* See if there's a match with the other case */
 				}
 				if (curpos && c != ' ') { /* Space indicates no key binding */
 					offset = (int) (curpos - optkeys); /* Calculate index in string */

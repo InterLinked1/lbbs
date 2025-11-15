@@ -876,7 +876,7 @@ static int handle_directory(struct queue_call_handle *qch)
 		bbs_node_flush_input(qch->node);
 		bbs_node_buffer(qch->node);
 		if (stype & DIRECTORY_SEARCH_REV) {
-			bbs_node_writef(qch->node, stype & DIRECTORY_SEARCH_PNET ? "LSTN (NBR): " : "LSTN (NBR / ADDRESS)");
+			bbs_node_writef(qch->node, stype & DIRECTORY_SEARCH_PNET ? "LSTN (NBR): " : "LSTN (NBR / ADDRESS): ");
 			if (stype & DIRECTORY_SEARCH_PNET) {
 				
 			}
