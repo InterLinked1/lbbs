@@ -353,7 +353,7 @@ static int __msg_relay(const void *sendingmod, struct bbs_irc_client *client, en
 		return -1;
 	}
 
-	bbs_debug(7, "Broadcasting %s %s client %s, channel %s, prefix %s, CTCP: %d, length %lu: %.*s\n", callback_msg_type_name(cb_type), scope, client->name, channel, prefix, ctcp, len, (int) len, body);
+	bbs_debug(7, "Broadcasting %s %s %s:%s (%s) %s[%lu]%s%.*s\n", callback_msg_type_name(cb_type), scope, client->name, channel, prefix, ctcp ? "CTCP " : "", len, body ? ": " : "", (int) len, body);
 
 	/* Relay the message to everyone */
 	RWLIST_RDLOCK(&irc_clients); /* XXX Really just need to lock *this* client to prevent it from being removed, not all of them */
@@ -654,7 +654,7 @@ static void handle_irc_msg(void *data, struct irc_msg *msg)
 			}
 			break;
 		default:
-			bbs_debug(5, "Got numeric: prefix: %s, num: %d, body: %s\n", irc_msg_prefix(msg), irc_msg_numeric(msg), irc_msg_body(msg));
+			bbs_debug(5, "%d [%s] %s\n", irc_msg_numeric(msg), irc_msg_prefix(msg), irc_msg_body(msg));
 		}
 		return;
 	case IRC_CMD_PRIVMSG:

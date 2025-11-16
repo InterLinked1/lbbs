@@ -309,7 +309,7 @@ static const char *numeric_name(int numeric)
 /*! \todo This info should be cached locally for a while (there could be lots of these requests in a busy channel...) */
 static int wait_response(struct bbs_node *node, int fd, const char *requsername, int numeric, struct chan_pair *cp, const char *clientname, const char *channel, const char *origchan, const char *fullnick, const char *nick)
 {
-	char buf[3092] = "";
+	char buf[8192] = "";
 	int res = -1;
 	char *bufpos, *line;
 	size_t buflen = sizeof(buf) - 1;
@@ -337,12 +337,14 @@ static int wait_response(struct bbs_node *node, int fd, const char *requsername,
 			goto cleanup;
 	}
 	/* Wait for the response to our request. */
-	res = bbs_poll(nickpipe[0], 3000);
+	res = bbs_poll(nickpipe[0], SEC_MS(3));
 	if (res <= 0) {
 		bbs_warning("Didn't receive response to %s (%d) query: returned %d (%s/%s/%s)\n", numeric_name(numeric), numeric, res, clientname, origchan, channel);
 		res = -1;
 		goto cleanup;
 	}
+
+	bbs_debug(6, "Received response to %s (%d) query (%s/%s/%s)\n", numeric_name(numeric), numeric, clientname, origchan, channel);
 
 	/* Read the full response, until there's no more data for 250ms or we get the END OF LIST numeric. Relay each message as soon as we get it. */
 	/*! \todo Rewrite using bbs_readline */
@@ -366,6 +368,8 @@ static int wait_response(struct bbs_node *node, int fd, const char *requsername,
 #else
 #define SEND_RESP(fd, fmt, ...) bbs_auto_fd_writef(node, fd, fmt, ## __VA_ARGS__)
 #endif
+
+	requsername = S_IF(requsername);
 
 	/* Now, parse the response, and send the results back. */
 	bufpos = buf;
