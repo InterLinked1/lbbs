@@ -908,13 +908,13 @@ static int cli_nodes(struct bbs_cli_args *a)
 		" %15s %5s %7s %3s %3s %3s %3s"
 		" %3s %3s %3s"
 		" %1s %1s %1s"
-		" %7s %8s %4s %5s %6s %6s %4s %s"
+		" %7s %4s %5s %6s %6s %4s %8s %s"
 		"\n",
 		"#", "PROTOCOL", "ELAPSED", "USER",
 		"IP ADDRESS", "RPORT", "TID", "SFD", "FD", "RFD", "WFD",
 		"MST", "SLV", "SPY",
 		"E", "B", "!",
-		"TRM SZE", "TYPE", "ANSI", "SPEED", "BPS", "(RPT)", "SLOW", "MENU/PG/LOC.");
+		"TRM SZE", "ANSI", "SPEED", "BPS", "(RPT)", "SLOW", "TRM TYPE", "MENU/PG/LOC.");
 
 	RWLIST_RDLOCK(&nodes);
 	RWLIST_TRAVERSE(&nodes, n, entry) {
@@ -945,11 +945,11 @@ static int cli_nodes(struct bbs_cli_args *a)
 			bbs_dprintf(a->fdout,
 				" %3d %3d %3d"
 				" %1s %1s %1s"
-				" %7s %8s %4s %5s %6u %6u %4s %s"
+				" %7s %4s %5s %6u %6u %4s %8s %s"
 				"\n",
 				n->amaster, n->slavefd, n->spyfd,
 				BBS_YN(n->echo), BBS_YN(n->buffered), bbs_node_interrupted(n) ? "*" : "",
-				termsize, S_IF(n->term), BBS_YESNO(n->ansi), speed, n->bps, n->reportedbps, BBS_YN(n->slow), menufull);
+				termsize, BBS_YESNO(n->ansi), speed, n->bps, n->reportedbps, BBS_YN(n->slow), S_IF(n->term), menufull);
 		} else {
 			bbs_dprintf(a->fdout, "\n");
 		}

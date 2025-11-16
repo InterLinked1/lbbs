@@ -3002,7 +3002,9 @@ ssize_t __attribute__ ((format (gnu_printf, 2, 3))) bbs_writef(int fd, const cha
 int bbs_node_clear_screen(struct bbs_node *node)
 {
 	if (!node->ansi || !(node->ans & ANSI_CLEAR_SCREEN)) {
-		return 0;
+		/* If clear screen is not supported, at least start a new line
+		 * so that some visual separation is present. */
+		return (int) bbs_node_writef(node, "\r\n");
 	}
 	return bbs_node_write(node, TERM_CLEAR, STRLEN(TERM_CLEAR)) == STRLEN(TERM_CLEAR) ? 0 : -1;
 }

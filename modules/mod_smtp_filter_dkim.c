@@ -89,7 +89,7 @@ static int dkim_sign_filter_cb(struct smtp_filter_data *f)
 		&statp);
 
 	if (statp != DKIM_STAT_OK) {
-		bbs_error("Failed to set up DKIM signing: %d (%s)\n", statp, dkim_geterror(dkim));
+		bbs_error("Failed to set up DKIM signing: %s (%s)\n", dkim_getresultstr(statp), S_IF(dkim_geterror(dkim)));
 		if (!dkim) {
 			return 0;
 		}
@@ -100,26 +100,26 @@ static int dkim_sign_filter_cb(struct smtp_filter_data *f)
 	statp = dkim_chunk(dkim, (unsigned char*) body, f->size);
 #pragma GCC diagnostic pop
 	if (statp != DKIM_STAT_OK) {
-		bbs_error("DKIM chunk failed: %d (%s)\n", statp, dkim_geterror(dkim));
+		bbs_error("DKIM chunk failed: %s (%s)\n", dkim_getresultstr(statp), S_IF(dkim_geterror(dkim)));
 		goto cleanup;
 	}
 
 	/* Indicate EOM */
 	statp = dkim_chunk(dkim, NULL, 0);
 	if (statp != DKIM_STAT_OK) {
-		bbs_error("DKIM chunk failed: %d (%s)\n", statp, dkim_geterror(dkim));
+		bbs_error("DKIM chunk failed: %s (%s)\n", dkim_getresultstr(statp), S_IF(dkim_geterror(dkim)));
 		goto cleanup;
 	}
 
 	statp = dkim_eom(dkim, 0);
 	if (statp != DKIM_STAT_OK) {
-		bbs_error("DKIM signing failed: %d (%s)\n", statp, dkim_geterror(dkim));
+		bbs_error("DKIM signing failed: %s (%s)\n", dkim_getresultstr(statp), S_IF(dkim_geterror(dkim)));
 		goto cleanup;
 	}
 
 	statp = dkim_getsighdr_d(dkim, d->strictheaders ? STRLEN(DKIM_SIGNHEADER) + 2 : 0, &sig, &siglen);
 	if (statp != DKIM_STAT_OK) {
-		bbs_error("DKIM signature failed: %d (%s)\n", statp, dkim_geterror(dkim));
+		bbs_error("DKIM signature failed: %s (%s)\n", dkim_getresultstr(statp), S_IF(dkim_geterror(dkim)));
 		goto cleanup;
 	}
 
@@ -174,7 +174,7 @@ static int dkim_verify_filter_cb(struct smtp_filter_data *f)
 	dkim = dkim_verify(lib, (unsigned char*) uniqueid, NULL, &statp);
 
 	if (statp != DKIM_STAT_OK) {
-		bbs_error("Failed to set up DKIM signing: %d (%s)\n", statp, dkim_geterror(dkim));
+		bbs_error("Failed to set up DKIM verification: %s (%s)\n", dkim_getresultstr(statp), S_IF(dkim_geterror(dkim)));
 		if (!dkim) {
 			return 0;
 		}
@@ -185,20 +185,20 @@ static int dkim_verify_filter_cb(struct smtp_filter_data *f)
 	statp = dkim_chunk(dkim, (unsigned char*) body, f->size);
 #pragma GCC diagnostic pop
 	if (statp != DKIM_STAT_OK) {
-		bbs_error("DKIM chunk failed: %d (%s)\n", statp, dkim_geterror(dkim));
+		bbs_error("DKIM chunk failed: %s (%s)\n", dkim_getresultstr(statp), S_IF(dkim_geterror(dkim)));
 		goto cleanup;
 	}
 
 	/* Indicate EOM */
 	statp = dkim_chunk(dkim, NULL, 0);
 	if (statp != DKIM_STAT_OK) {
-		bbs_error("DKIM chunk failed: %d (%s)\n", statp, dkim_geterror(dkim));
+		bbs_error("DKIM chunk failed: %s (%s)\n", dkim_getresultstr(statp), S_IF(dkim_geterror(dkim)));
 		goto cleanup;
 	}
 
 	statp = dkim_eom(dkim, 0);
 	if (statp != DKIM_STAT_OK) {
-		bbs_error("DKIM signing failed: %d (%s)\n", statp, dkim_geterror(dkim));
+		bbs_error("DKIM verification failed: %s (%s)\n", dkim_getresultstr(statp), S_IF(dkim_geterror(dkim)));
 		goto cleanup;
 	}
 
@@ -210,7 +210,7 @@ static int dkim_verify_filter_cb(struct smtp_filter_data *f)
 
 	statp = dkim_sig_process(dkim, sig);
 	if (statp != DKIM_STAT_OK) {
-		bbs_error("DKIM signature verification failed: %d (%s)\n", statp, dkim_geterror(dkim));
+		bbs_error("DKIM signature verification failed: %s (%s)\n", dkim_getresultstr(statp), S_IF(dkim_geterror(dkim)));
 		goto cleanup;
 	}
 

@@ -180,7 +180,7 @@ void bbs_str_remove_substring(char *restrict s, const char *word, size_t wordlen
 void bbs_strreplace(char *restrict s, char find, char repl);
 
 /*!
- * \brief Whether all characters in a string are printable (spaces are included)
+ * \brief Whether all characters in a string are printable (spaces, CR, and LF are included)
  * \param s String to check
  * \retval 1 if yes, 0 if no
  */

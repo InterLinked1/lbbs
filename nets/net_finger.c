@@ -125,6 +125,10 @@ static void *finger_handler(void *varg)
 		goto cleanup;
 	}
 	buf[res] = '\0'; /* Safe */
+	if (!bbs_str_isprint(buf)) {
+		bbs_debug(2, "Ignoring non-printable finger query\n");
+		goto cleanup;
+	}
 	tmp = strstr(buf, "\r\n");
 	if (!tmp) {
 		bbs_debug(1, "Incomplete finger query? (%s)\n", buf);

@@ -250,6 +250,9 @@ static int waitpid_timed(pid_t pid, int *status, int options, time_t timeout)
 			break;
 		}
 		bbs_debug(3, "Process %d has not exited yet, will wait another %ld ms\n", pid, timeout);
+		/* In the case where bbs_sigchld_poll returns but it's not our child that has exited,
+		 * prevent busy waiting by pausing momentarily. */
+		usleep(2000);
 	}
 	/* Timeout expired, forcibly kill it! */
 	bbs_warning("Process %d has not yet exited, killing forcibly\n", pid);
@@ -1216,17 +1219,20 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 			 * we change things back to how they were and
 			 * the user is none the wiser. */
 			if (tcsetattr(node->slavefd, TCSANOW, &term)) {
-				bbs_error("tcsetattr failed: %s\n", strerror(errno));
-			}
-
-			/* Flush any input that may still be pending when the program exited.
-			 * If there was still input waiting for the program, discard it all,
-			 * or it could erroneously be sent to the BBS when we return,
-			 * wreaking havoc. */
-			bbs_node_unbuffer(node);
-			bbs_node_flush_input(node);
-			if (buffered) {
-				bbs_node_buffer(node); /* Not sure if it's really necessary to restore... but doesn't hurt */
+				bbs_warning("tcsetattr failed: %s\n", strerror(errno));
+				/* If this failed, the user probably closed the terminal,
+				 * and thus all terminal operations will now fail
+				 * and the node is going away anyways. */
+			} else {
+				/* Flush any input that may still be pending when the program exited.
+				 * If there was still input waiting for the program, discard it all,
+				 * or it could erroneously be sent to the BBS when we return,
+				 * wreaking havoc. */
+				bbs_node_unbuffer(node);
+				bbs_node_flush_input(node);
+				if (buffered) {
+					bbs_node_buffer(node); /* Not sure if it's really necessary to restore... but doesn't hurt */
+				}
 			}
 		}
 	}
