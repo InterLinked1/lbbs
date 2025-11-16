@@ -329,6 +329,7 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	int l = 0;
 	struct bbs_parallel p;
 	int lineno = 0;
+	int skip_proxied = 0;
 	struct mailbox *mbox = imap->mbox;
 
 	/* We only use trylock, rather than lock, for operations that could recurse.
@@ -435,11 +436,33 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 						bbs_debug(5, "SPECIAL-USE disabled for proxied LIST response (user agent match)\n");
 					}
 				}
+			} if (!strcasecmp(key, "skip_proxied_folders")) {
+				if (!strcmp(value, "*")) {
+					skip_proxied = 1;
+					bbs_debug(5, "Proxied LIST responses disabled (wildcard match)\n");
+				} else if (!strlen_zero(imap->clientid)) {
+					regex_t regexbuf;
+					int errcode;
+					char errbuf[64];
+					if ((errcode = regcomp(&regexbuf, value, REG_EXTENDED | REG_NOSUB))) {
+						regerror(errcode, &regexbuf, errbuf, sizeof(errbuf));
+						bbs_warning("Malformed expression '%s' at line %d: %s\n", value, lineno, errbuf);
+						continue;
+					}
+					if (!regexec(&regexbuf, imap->clientid, 0, NULL, 0)) {
+						skip_proxied = 1;
+						bbs_debug(5, "Proxied LIST responses disabled (user agent match)\n");
+					}
+				}
 			} else {
 				/* disable_specialuse_by_agent is the only option for now */
 				bbs_warning("Unknown inline directive '%s' at line %d\n", key, lineno);
 			}
 			continue;
+		}
+
+		if (skip_proxied) {
+			break; /* If we're excluding all proxied accounts from the LIST response, we can stop now */
 		}
 
 		l++;

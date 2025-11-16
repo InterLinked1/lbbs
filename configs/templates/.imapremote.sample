@@ -5,15 +5,40 @@
 # This setting allows SPECIAL-USE flags to be disabled for remote IMAP mailboxes.
 # Even if the remote server includes SPECIAL-USE flags in its response, it will not
 # be passed through to the client.
+#
 # This can be used to work around bugs in mail clients that behave abnormally
 # when receiving SPECIAL-USE flags for mailboxes in the "Other Users" hierarchy,
-# e.g. Mozilla clients (Interlink, MailNews, Epyrus, Thunderbird, etc.)
-# '*' can be used to always disabled, or you can provide a regular expression of
+# e.g. Mozilla clients (Interlink, MailNews, Epyrus, Thunderbird, etc.),
+# albeit only to a limited extent, as clients may still infer SPECIAL-USE flags
+# from the name, so this may not work reliably (e.g. "Deleted" is no longer treated
+# as SPECIAL-USE by Mozilla clients but "Trash", "Sent", etc. continue to be.).
+# Use @skip_proxied_folders for a more reliable solution.
+#
+# '*' can be used to always disable, or you can provide a regular expression of
 # user agents to match against the client ID sent by the client (if provided).
-# Note that clients may still infer SPECIAL-USE flags from the name, so this may
-# not work reliably (e.g. "Deleted" is no longer treated as SPECIAL-USE by Mozilla
-# clients but "Trash", "Sent", etc. continue to be.)
+#
+# Note that 
 # @disable_specialuse_by_agent = Interlink|MailNews|Epyrus|Thunderbird
+
+
+# This setting allows proxied folders to be hidden from certain clients, by user agent,
+# if they are not needed. This more fully works around the abnormalities exhibited
+# by Mozilla clients with mailboxes in the Other Users namespace.
+#
+# This can be used to work around bugs in mail clients that behave abnormally
+# when receiving SPECIAL-USE flags for mailboxes in the "Other Users" hierarchy,
+# e.g. Mozilla clients (Interlink, MailNews, Epyrus, Thunderbird, etc.).
+# In particular, it is completely effective, unlike @disable_specialuse_by_agent.
+#
+# This does mean these folders won't show up in these clients, but this is a good solution
+# if you don't need them on certain clients (e.g. thick clients) and only access them
+# via webmail. You can also individually access specific proxied accounts by logging into
+# the IMAP server with <username>+<prefix> e.g. jsmith+foobar.
+#
+# '*' can be used to always disable, or you can provide a regular expression of
+# user agents to match against the client ID sent by the client (if provided).
+# @skip_proxied_folders = Interlink|MailNews|Epyrus|Thunderbird
+
 
 # Proxied mailbox definitions
 
