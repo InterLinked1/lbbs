@@ -109,6 +109,8 @@ static void lock_cleanup(void)
 
 struct sni {
 	const char *hostname;		/*!< SNI hostname */
+	const char *certfile;		/*!< Certificate file */
+	const char *keyfile;		/*!< Private key file */
 	SSL_CTX *ctx;
 	RWLIST_ENTRY(sni) entry;
 	char data[];
@@ -117,17 +119,23 @@ struct sni {
 static RWLIST_HEAD_STATIC(sni_certs, sni);
 
 /*! \note Must be called with WRLOCK held */
-static void sni_push(const char *hostname, SSL_CTX *ctx)
+static void sni_push(const char *hostname, SSL_CTX *ctx, const char *filenames)
 {
 	struct sni *sni;
+	char *tmp;
 	size_t hostlen = strlen(hostname);
-	sni = calloc(1, sizeof(*sni) + hostlen + 1);
+	size_t filelen = strlen(filenames);
+	sni = calloc(1, sizeof(*sni) + hostlen + filelen + 2);
 	if (ALLOC_FAILURE(sni)) {
 		return;
 	}
 	sni->ctx = ctx;
 	strcpy(sni->data, hostname); /* Safe */
 	sni->hostname = sni->data;
+	tmp = sni->data + hostlen + 1;
+	strcpy(tmp, filenames);
+	sni->keyfile = tmp;
+	sni->certfile = strsep(&tmp, ":");
 	RWLIST_INSERT_HEAD(&sni_certs, sni, entry);
 	bbs_verb(5, "Added TLS certificate for %s\n", hostname);
 }
@@ -612,7 +620,7 @@ static int validate_cert(SSL_CTX *ctx, const char *cert)
 	int cdays = 0, csecs = 0, edays = 0, esecs = 0;
 	X509 *x509 = SSL_CTX_get0_certificate(ctx);
 
-	if (!cert) {
+	if (!x509) {
 		bbs_error("Failed to load X509 certificate for %s\n", cert);
 		return 0;
 	}
@@ -732,28 +740,29 @@ static int ssl_load_config(int reload)
 				char certbuf[512];
 				char *cert, *key;
 				SSL_CTX *ctx;
-				const char *value = bbs_keyval_val(keyval);
+				const char *hostname = bbs_keyval_key(keyval);
+				const char *filenames = bbs_keyval_val(keyval);
 
-				if (bbs_hostname_is_ipv4(bbs_keyval_val(keyval))) {
-					bbs_error("SNI is only supported for hostnames, not IP addresses (e.g. %s)\n", bbs_keyval_val(keyval));
+				if (bbs_hostname_is_ipv4(hostname)) {
+					bbs_error("SNI is only supported for hostnames, not IP addresses (e.g. %s)\n", hostname);
 					continue;
 				}
-				safe_strncpy(certbuf, value, sizeof(certbuf));
+				safe_strncpy(certbuf, filenames, sizeof(certbuf));
 				key = certbuf;
 				cert = strsep(&key, ":");
 
 				if (strlen_zero(cert)) {
-					bbs_error("TLS certificate for '%s' not specified\n", bbs_keyval_key(keyval));
+					bbs_error("TLS certificate for '%s' not specified\n", hostname);
 					continue;
 				} else if (strlen_zero(key)) {
-					bbs_error("TLS private key for '%s' not specified\n", bbs_keyval_key(keyval));
+					bbs_error("TLS private key for '%s' not specified\n", hostname);
 					continue;
 				}
 				ctx = tls_server_ctx_create(cert, key);
 				if (!ctx) {
 					continue;
 				}
-				sni_push(bbs_keyval_key(keyval), ctx);
+				sni_push(hostname, ctx, filenames);
 			}
 		} else {
 			bbs_error("Invalid section '%s', ignoring\n", bbs_config_section_name(section));
@@ -764,6 +773,67 @@ static int ssl_load_config(int reload)
 	bbs_config_unlock(cfg);
 	bbs_config_free(cfg);
 	return res;
+}
+
+static void print_cert_info(int fd, const char *hostname, SSL_CTX *ctx, const char *certfile, const char *keyfile)
+{
+	const ASN1_TIME *created, *expires;
+	struct tm createdtm, exptm, mtm;
+	char cdate[17], edate[17], mdate[17];
+	struct stat st;
+	int res;
+	X509 *x509 = SSL_CTX_get0_certificate(ctx); /* We know this will succeed or the cert wouldn't be loaded */
+
+	hostname = S_OR(hostname, "(Default)");
+
+	created = X509_getm_notBefore(x509);
+	expires = X509_getm_notAfter(x509);
+
+	memset(&createdtm, 0, sizeof(createdtm));
+	memset(&exptm, 0, sizeof(exptm));
+	memset(&mtm, 0, sizeof(mtm));
+
+	if (stat(certfile, &st)) {
+		bbs_error("stat(%s) failed: %s\n", certfile, strerror(errno));
+	}
+	localtime_r(&st.st_mtim.tv_sec, &mtm);
+
+	res = ASN1_TIME_to_tm(created, &createdtm);
+	if (!res) { /* 0 = error, 1 = success */
+		bbs_warning("Time conversion failed\n");
+	}
+	res = ASN1_TIME_to_tm(expires, &exptm);
+	if (!res) { /* 0 = error, 1 = success */
+		bbs_warning("Time conversion failed\n");
+	}
+
+	strftime(cdate, sizeof(cdate), "%Y-%m-%d %H:%M", &createdtm);
+	strftime(edate, sizeof(edate), "%Y-%m-%d %H:%M", &exptm);
+	strftime(mdate, sizeof(mdate), "%Y-%m-%d %H:%M", &mtm);
+
+	bbs_dprintf(fd, "%-20s %-16s %-16s %-16s %s:%s\n", hostname, mdate, cdate, edate, certfile, keyfile);
+}
+
+static int cli_tlscerts(struct bbs_cli_args *a)
+{
+	struct sni *s;
+
+	if (!ssl_is_available) {
+		bbs_dprintf(a->fdout, "No server certificates are configured\n");
+		return -1;
+	}
+
+	bbs_dprintf(a->fdout, "%-20s %-16s %-16s %-16s %s\n", "Hostname", "Modified", "Issued", "Expires", "Cert:Key Files");
+
+	/* Default cert */
+	print_cert_info(a->fdout, NULL, ssl_ctx, ssl_cert, ssl_key);
+
+	RWLIST_RDLOCK(&sni_certs);
+	RWLIST_TRAVERSE(&sni_certs, s, entry) {
+		print_cert_info(a->fdout, s->hostname, s->ctx, s->certfile, s->keyfile);
+	}
+	RWLIST_UNLOCK(&sni_certs);
+	return 0;
 }
 
 static int tls_cleanup(void)
@@ -866,6 +936,7 @@ static int cli_tlsreload(struct bbs_cli_args *a)
 static struct bbs_cli_entry cli_commands_tls[] = {
 	BBS_CLI_COMMAND(cli_tls, "tls", 1, "List all TLS sessions", NULL),
 	BBS_CLI_COMMAND(cli_tlsreload, "tlsreload", 1, "Reload TLS certificates and configuration", NULL),
+	BBS_CLI_COMMAND(cli_tlscerts, "tlscerts", 1, "List TLS certificate configuration", NULL),
 };
 
 static int ssl_server_init(void)
