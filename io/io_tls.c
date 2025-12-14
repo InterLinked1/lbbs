@@ -175,6 +175,7 @@ static const char *ssl_strerror(int err)
 	return "Undefined";
 }
 
+/* This structure is used for both client and server TLS connections. */
 struct tls_client {
 	SSL *ssl;
 	int fd;
@@ -338,6 +339,15 @@ static int ssl_servername_cb(SSL *s, int *ad, void *arg)
 	RWLIST_RDLOCK(&sni_certs);
 	RWLIST_TRAVERSE(&sni_certs, sni, entry) {
 		if (!strcasecmp(servername, sni->hostname)) { /* Hostnames are not case sensitive */
+			/* Due to SNI, the SSL_CTX in use may have changed.
+			 * We unref the default SSL_CTX and ref the new one.
+			 * Note that while the documentation for SSL_get_SSL_CTX says it returns
+			 * the SSL_CTX from which ssl was created using SSL_new, it SSL_set_SSL_CTX
+			 * is used to change it (as in the SNI callback), this will indeed return
+			 * the updated SSL_CTX, as one would expect. The man page doesn't mention that.
+			 *
+			 * Also, SSL_set_SSL_CTX itself calls SSL_CTX_up_ref and SSL_CTX_free,
+			 * so we don't even need to do it ourselves. */
 			SSL_set_SSL_CTX(s, sni->ctx);
 			break;
 		}
@@ -373,12 +383,27 @@ static struct tls_client *ssl_new_accept(int fd, int *rfd, int *wfd)
 	SSL *ssl;
 	int tries = 0;
 
+	/* If we are in the middle of reloading TLS certificates,
+	 * rather than rejecting the connection, wait for the
+	 * reload to finish, and then we should be able to accept it. */
+
+	bbs_rwlock_rdlock(&ssl_cert_lock);
+
 	if (!ssl_is_available) {
+		bbs_rwlock_unlock(&ssl_cert_lock);
 		return NULL;
 	}
 
-	bbs_rwlock_rdlock(&ssl_cert_lock);
-	ssl = SSL_new(ssl_ctx);
+	/* SSL_CTX's are reference counted. When created, they have a reference count of 1.
+	 * To allow the TLS server certificates to be reloaded while we still have active connections,
+	 * the reference count of an SSL_CTX is incremented whenever it gets used for a connection,
+	 * so that we can swap out the SSL_CTX to use going forward while we're running.
+	 * When a connection cleans up, it calls SSL_CTX_free, which decreases the reference count,
+	 * and when it reaches 0, it'll get cleaned up.
+	 * (It will only reach 0 when a reload or unload occurs, and once any connections still using
+	 *  the SSL_CTX go away, then there will be no references left, and it'll get cleaned up.) */
+
+	ssl = SSL_new(ssl_ctx); /* ossl_ssl_connection_new in OpenSSL (called by SSL_new) calls SSL_CTX_up_ref for us */
 	if (!ssl) {
 		bbs_rwlock_unlock(&ssl_cert_lock);
 		bbs_error("Failed to create SSL\n");
@@ -386,6 +411,9 @@ static struct tls_client *ssl_new_accept(int fd, int *rfd, int *wfd)
 	}
 	SSL_set_fd(ssl, fd);
 	ssl_init(ssl);
+
+	/* Set up the SNI callback.
+	 * The SNI handler ensures that the reference gets swapped to the new SSL_CTX. */
 	SSL_CTX_set_tlsext_servername_callback(ssl_ctx, ssl_servername_cb);
 
 sslaccept:
@@ -401,21 +429,22 @@ sslaccept:
 		} else {
 			bbs_debug(1, "SSL error %d: %d (%s = %s)\n", res, sslerr, ssl_strerror(sslerr), ERR_error_string(ERR_get_error(), NULL));
 		}
-		SSL_free(ssl);
-		bbs_rwlock_unlock(&ssl_cert_lock);
-		return NULL;
+		goto abort;
 	}
 
 	bbs_debug(3, "TLS handshake completed %p (%s%s)\n", ssl, SSL_get_version(ssl), SSL_session_reused(ssl) ? ", session reused" : "");
 
 	t = ssl_launch(ssl, fd, rfd, wfd, 0);
 	if (!t) {
-		SSL_free(ssl);
-		bbs_rwlock_unlock(&ssl_cert_lock);
-		return NULL;
+		goto abort;
 	}
 	bbs_rwlock_unlock(&ssl_cert_lock);
 	return t;
+
+abort:
+	SSL_free(ssl); /* Note that SSL_free calls SSL_CTX_free, so we don't need to do that manually. */
+	bbs_rwlock_unlock(&ssl_cert_lock);
+	return NULL;
 }
 
 /*! \brief Common CTX initialization for servers and clients */
@@ -530,7 +559,14 @@ sslconnect:
 		bbs_debug(4, "TLS verification successful %p\n", ssl);
 	}
 
-	SSL_CTX_free(ctx);
+	/* While SSL_free does call SSL_CTX_free,
+	 * we still need to call it explicitly since we originally created the ctx
+	 * only for this connection, i.e. it had a reference count of 2,
+	 * once from calling SSL_CTX_new and once from calling SSL_new.
+	 * SSL_free will decrement it, and calling SSL_CTX_free separately
+	 * is what will drop it to 0 (the order doesn't matter). */
+
+	SSL_CTX_free(ctx); /* ctx will still have a ref count of 1 after this, to be cleaned up in ssl_close by SSL_free */
 	t = ssl_launch(ssl, fd, rfd, wfd, 1);
 	if (!t) {
 		SSL_free(ssl);
@@ -608,7 +644,14 @@ shutdown2:
 		bbs_assert(sres == -1);
 	}
 
+	/* Now that the connection is freed, we can free the context.
+	 * For server connections, if a reload occured since the connection started,
+	 * and there are no longer any references to this ctx, it will now be freed.
+	 * Note that SSL_free automatically calls SSL_CTX_free, we don't need to do it ourselves here.
+	 * For server connections, SSL_CTX_free is called by sni_free, and for client
+	 * connections, we already called SSL_CTX_free during ssl_client_new to let go of the other reference. */
 	SSL_free(ssl);
+
 	free(t);
 	return 0;
 }
@@ -811,7 +854,7 @@ static void print_cert_info(int fd, const char *hostname, SSL_CTX *ctx, const ch
 	strftime(edate, sizeof(edate), "%Y-%m-%d %H:%M", &exptm);
 	strftime(mdate, sizeof(mdate), "%Y-%m-%d %H:%M", &mtm);
 
-	bbs_dprintf(fd, "%-20s %-16s %-16s %-16s %s:%s\n", hostname, mdate, cdate, edate, certfile, keyfile);
+	bbs_dprintf(fd, "%-20s %-16s %-16s %-16s %-16p %s:%s\n", hostname, mdate, cdate, edate, ctx, certfile, keyfile);
 }
 
 static int cli_tlscerts(struct bbs_cli_args *a)
@@ -823,7 +866,7 @@ static int cli_tlscerts(struct bbs_cli_args *a)
 		return -1;
 	}
 
-	bbs_dprintf(a->fdout, "%-20s %-16s %-16s %-16s %s\n", "Hostname", "Modified", "Issued", "Expires", "Cert:Key Files");
+	bbs_dprintf(a->fdout, "%-20s %-16s %-16s %-16s %-16s %s\n", "Hostname", "Modified", "Issued", "Expires", "CTX", "Cert:Key Files");
 
 	/* Default cert */
 	print_cert_info(a->fdout, NULL, ssl_ctx, ssl_cert, ssl_key);
@@ -851,8 +894,6 @@ static int locks_initialized = 0;
 /*! \brief Limited support for reloading configuration (e.g. new certificates) */
 static int tlsreload(int fd)
 {
-	struct tls_client *t;
-
 	if (!locks_initialized) {
 		bbs_dprintf(fd, "TLS may only be reloaded if it initialized during startup. Completely unload and load (/reload) the TLS module to load new configuration.\n");
 		return -1;
@@ -860,43 +901,24 @@ static int tlsreload(int fd)
 
 	bbs_rwlock_rdlock(&ssl_cert_lock);
 
-	/* Currently, we only keep one reference for each ctx.
-	 * If we reference counted them using SSL_CTX_up_ref, then we could call SSL_CTX_free for each connection,
-	 * and this would allow us to leave an existing ctx associated with a connection and trust it'll get cleaned up properly.
-	 * For now, we require that no connections are using any context, e.g. we cannot have any clients to reload,
-	 * so admittedly this reload functionality is not as powerful as it could be.
-	 *
-	 * Alternately, if we're not going to add reference counting, instead of destroying the ctx's now,
-	 * we could add them to a free list and do it at shutdown. But this will result in a growing leak over time,
-	 * if there are lots of reloads.
-	 */
+	/* Each connection increases the reference count of the SSL_CTX it uses,
+	 * and cleans it up once done, so we can free all of the SSL_CTX's
+	 * and replace them, since they won't really get freed if still being used.
+	 * This allows us to not need to terminate active connections here. */
 
 	RWLIST_WRLOCK(&tls_clients);
-	RWLIST_TRAVERSE(&tls_clients, t, entry) {
-		if (t->client) {
-			continue; /* Clients are fine, they don't use any permanent ctx, they just make their own temporarily during the connection. */
-		}
-		break;
-	}
-	if (t) { /* At least server session exists */
-		bbs_dprintf(fd, "TLS may not be reloaded while any server sessions are in use. Kick any TLS sessions and try again.\n");
-		RWLIST_UNLOCK(&tls_clients);
-		bbs_rwlock_unlock(&ssl_cert_lock);
-		return -1;
-	}
-
 	ssl_is_available = 0; /* Ensure any new connections are rejected until we're done reloading. */
-	RWLIST_UNLOCK(&tls_clients); /* tls_cleanup will lock the list again, so unlock it for now. XXX It's a different lock though, so could unlock after? */
+	tls_cleanup(); /* This locks the sni_certs list, not the tls_clients list */
 
-	tls_cleanup();
-
-	if (ssl_load_config(1)) {
+	if (ssl_load_config(1)) { /* This locks the sni_certs list, not the tls_clients list */
+		RWLIST_UNLOCK(&tls_clients);
 		bbs_rwlock_unlock(&ssl_cert_lock);
 		bbs_debug(5, "Failed to reload TLS configuration, TLS server will now be disabled.\n");
 		return -1;
 	}
 
 	ssl_is_available = 1;
+	RWLIST_UNLOCK(&tls_clients);
 	bbs_rwlock_unlock(&ssl_cert_lock);
 
 	bbs_dprintf(fd, "Reloaded TLS configuration\n");
@@ -919,9 +941,13 @@ static int cli_tls(struct bbs_cli_args *a)
 		i++;
 		writepipe = t->writepipe[0];
 		if (i == 2) { /* First one, print header */
-			bbs_dprintf(a->fdout, "%3s %4s %16s %16s %-10s %-7s\n", "#", "Type", "TLS", "SSL", "Indices", "FDs");
+			bbs_dprintf(a->fdout, "%3s %4s %16s %16s %16s %-10s %-7s\n", "#", "Type", "TLS", "SSL", "CTX", "Indices", "FDs");
 		}
-		bbs_dprintf(a->fdout, "%3d %4s %16p %16p [%3d/%3d] %3d / %3d\n", x, t->client ? "C" : "S", t, t->ssl, i - 1, (i - 1) / 2, readpipe, writepipe);
+		/* We include the SSL_CTX pointer value so that these can be cross-referenced to the SSL_CTX pointers
+		 * in the "tlscerts" command, to see whether we are using a cert that is still loaded and active,
+		 * or whether we're using a cert that was reloaded and might get freed once all existing connections
+		 * using it die off. */
+		bbs_dprintf(a->fdout, "%3d %4s %16p %16p %16p [%3d/%3d] %3d / %3d\n", x, t->client ? "C" : "S", t, t->ssl, SSL_get_SSL_CTX(t->ssl), i - 1, (i - 1) / 2, readpipe, writepipe);
 	}
 	RWLIST_UNLOCK(&tls_clients);
 	bbs_dprintf(a->fdout, "Polling %d file descriptor%s (%d connection%s)\n", i + 1, ESS(i + 1), i / 2, ESS(i / 2));
@@ -983,10 +1009,6 @@ static int setup(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restr
 	}
 
 	if (dir & TRANSFORM_SERVER) {
-		if (!ssl_is_available) {
-			bbs_error("Declining TLS setup\n"); /* Shouldn't happen since we didn't register the SERVER I/O callback... */
-			return -1;
-		}
 		t = ssl_new_accept(fd, rfd, wfd);
 	} else if (dir & TRANSFORM_CLIENT) {
 		const char *snihostname = arg;
