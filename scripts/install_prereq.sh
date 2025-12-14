@@ -189,6 +189,10 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libsieve2-dev"
 # used for bc (executed by 'calc' in door_utils)
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN bc"
 
+# evergreen uses html2text to display HTML messages
+PACKAGES_DEBIAN="$PACKAGES_DEBIAN html2text"
+# INSTALL_LIBETPAN=0 on Fedora-based systems, so don't bother installing html2text on those.
+
 # Required only for tests
 if [ "$1" = "1" ]; then
 	# mariadb-server is required for some of the test modules (test_auth_mysql, test_irc_chanserv)
