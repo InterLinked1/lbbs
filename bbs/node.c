@@ -945,7 +945,7 @@ static int cli_nodes(struct bbs_cli_args *a)
 			bbs_dprintf(a->fdout,
 				" %3d %3d %3d"
 				" %1s %1s %1s"
-				" %7s %4s %5s %6u %6u %4s %8s %s"
+				" %7s %4s %5s %6u %6u %4s %-8s %s"
 				"\n",
 				n->amaster, n->slavefd, n->spyfd,
 				BBS_YN(n->echo), BBS_YN(n->buffered), bbs_node_interrupted(n) ? "*" : "",

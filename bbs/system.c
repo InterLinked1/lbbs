@@ -229,6 +229,7 @@ static int waitpid_timed(pid_t pid, int *status, int options, time_t timeout)
 {
 	struct timeval begin, end;
 	time_t orig_timeout = timeout;
+	int i = 0;
 
 	gettimeofday(&begin, NULL);
 	for (;;) {
@@ -252,7 +253,20 @@ static int waitpid_timed(pid_t pid, int *status, int options, time_t timeout)
 		bbs_debug(3, "Process %d has not exited yet, will wait another %ld ms\n", pid, timeout);
 		/* In the case where bbs_sigchld_poll returns but it's not our child that has exited,
 		 * prevent busy waiting by pausing momentarily. */
-		usleep(2000);
+		switch (i) { /* Basic form of exponential backoff: */
+		case 0 ... 2:
+			usleep(2000);
+			break;
+		case 6 ... 9:
+			usleep(7500);
+			break;
+		case 10 ... 14:
+			usleep(25000);
+			break;
+		default:
+			usleep(250000);
+		}
+		i++;
 	}
 	/* Timeout expired, forcibly kill it! */
 	bbs_warning("Process %d has not yet exited, killing forcibly\n", pid);
