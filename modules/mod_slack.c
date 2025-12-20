@@ -1148,6 +1148,21 @@ static int update_status(struct slack_relay *relay, const char *msg)
 	return 0;
 }
 
+static int set_status(struct slack_relay *relay, const char *msg)
+{
+	/* If desired, separately update the status on Slack with the away message */
+	if (relay->relaystatus) {
+		if (update_status(relay, msg)) {
+			bbs_warning("Failed to set status for Slack relay %s to '%s'\n", relay->name, S_IF(msg));
+			return -1;
+		} else {
+			bbs_debug(4, "Set status for Slack relay %s to '%s'\n", relay->name, S_IF(msg));
+			return 0;
+		}
+	}
+	return 1;
+}
+
 static int away(const char *username, int away, const char *msg)
 {
 	struct slack_relay *relay;
@@ -1171,18 +1186,43 @@ static int away(const char *username, int away, const char *msg)
 		} else {
 			bbs_debug(4, "Set presence for Slack relay %s to %s\n", relay->name, away ? "away" : "auto");
 		}
+		set_status(relay, msg);
+	}
+	RWLIST_UNLOCK(&relays);
 
-		/* If desired, separately update the status on Slack with the away message */
-		if (relay->relaystatus) {
-			if (update_status(relay, msg)) {
-				bbs_warning("Failed to set status for Slack relay %s to '%s'\n", relay->name, S_IF(msg));
-			} else {
-				bbs_debug(4, "Set status for Slack relay %s to '%s'\n", relay->name, S_IF(msg));
+	return 0;
+}
+
+/* Similar to away_cb, but called whenever the module loads (typically at startup)
+ * to automatically mark as AWAY any users that are not currently online.
+ * This way, we don't need to wait for a user to explicitly use the AWAY command
+ * for the remote network to accurately reflect whether user is away or not. */
+static int autoaway(void)
+{
+	struct slack_relay *relay;
+
+	/* We don't update status at this time, just presence */
+	RWLIST_RDLOCK(&relays);
+	RWLIST_TRAVERSE(&relays, relay, entry) {
+		int inactive;
+		if (!relay->relayaway) {
+			continue;
+		}
+		if (strlen_zero(relay->ircuser)) {
+			continue;
+		}
+		inactive = irc_user_inactive(relay->ircuser);
+		if (update_presence(relay, inactive)) {
+			bbs_warning("Failed to set presence for Slack relay %s to away\n", relay->name);
+		} else {
+			bbs_debug(4, "Set presence for Slack relay %s to away (%s not currently active on IRC)\n", relay->name, relay->ircuser);
+			/* If active, also clear status */
+			if (!inactive) {
+				set_status(relay, NULL);
 			}
 		}
 	}
 	RWLIST_UNLOCK(&relays);
-
 	return 0;
 }
 
@@ -1688,6 +1728,7 @@ static int load_module(void)
 
 	irc_relay_register(&relay_callbacks);
 	bbs_cli_register_multiple(cli_commands_slack);
+	bbs_run_when_started(autoaway, STARTUP_PRIORITY_DEPENDENT + 1); /* mod_irc_client uses STARTUP_PRIORITY_DEPENDENT priority */
 	return 0;
 }
 

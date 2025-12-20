@@ -567,9 +567,14 @@ static void user_free(struct irc_user *user)
 	free(user);
 }
 
+/* Forward declaration */
+static void set_away_via_relays(struct irc_user *user, const char *awaymsg);
+
 static void unlink_user(struct irc_user *user)
 {
 	struct irc_user *u;
+
+	set_away_via_relays(user, "Away"); /* If disconnecting, indicate we're away */
 
 	RWLIST_WRLOCK(&users);
 	u = RWLIST_REMOVE(&users, user, entry);
@@ -674,6 +679,26 @@ static struct irc_user *get_user(const char *username)
 	}
 	RWLIST_UNLOCK(&users);
 	return user;
+}
+
+int irc_user_inactive(const char *username)
+{
+	struct irc_user *user;
+
+	if (!strcasecmp(username, "ChanServ") && chanserv_mod) {
+		return 1;
+	}
+
+	RWLIST_RDLOCK(&users);
+	RWLIST_TRAVERSE(&users, user, entry) {
+		if (!strcasecmp(user->username, username)) {
+			int res = user->away ? 1 : 0;
+			RWLIST_UNLOCK(&users);
+			return res;
+		}
+	}
+	RWLIST_UNLOCK(&users);
+	return -1;
 }
 
 static struct irc_member *get_member_by_username(const char *username, const char *channame)
@@ -2413,6 +2438,8 @@ static int add_user(struct irc_user *user)
 	user->registered = 1;
 	RWLIST_INSERT_HEAD(&users, user, entry);
 	RWLIST_UNLOCK(&users);
+
+	set_away_via_relays(user, NULL); /* If we just logged in, we're no longer away */
 	return 0;
 }
 
@@ -2996,20 +3023,14 @@ static void leave_all_channels(struct irc_user *user, const char *leavecmd, cons
 	RWLIST_UNLOCK(&channels);
 }
 
-static void set_away(struct irc_user *user, const char *s)
+/*!
+ * \param Indicate to any relay modules a change in away/here status
+ * \param user
+ * \param Away message if away, NULL if back
+ */
+static void set_away_via_relays(struct irc_user *user, const char *awaymsg)
 {
 	struct irc_relay *relay;
-
-	/* Set user as away or back */
-	bbs_mutex_lock(&user->lock);
-	free_if(user->awaymsg);
-	if (!strlen_zero(s)) { /* Away */
-		user->awaymsg = strdup(s);
-		user->away = 1;
-	} else { /* No longer away */
-		user->away = 0;
-	}
-	bbs_mutex_unlock(&user->lock);
 
 	/* No message goes out to the channel when a user marks himself as away,
 	 * clients will poll for this information periodically using commands like WHO.
@@ -3020,7 +3041,7 @@ static void set_away(struct irc_user *user, const char *s)
 	RWLIST_TRAVERSE(&relays, relay, entry) {
 		if (relay->relay_callbacks->away) {
 			bbs_module_ref(relay->mod, 10);
-			if (relay->relay_callbacks->away(user->nickname, user->away, user->awaymsg)) {
+			if (relay->relay_callbacks->away(user->nickname, awaymsg ? 1 : 0, awaymsg)) {
 				bbs_module_unref(relay->mod, 4);
 				break;
 			}
@@ -3028,7 +3049,24 @@ static void set_away(struct irc_user *user, const char *s)
 		}
 	}
 	RWLIST_UNLOCK(&relays);
+}
 
+static void set_away(struct irc_user *user, const char *s)
+{
+	/* Set user as away or back */
+	bbs_mutex_lock(&user->lock);
+	free_if(user->awaymsg);
+	if (!strlen_zero(s) && !strncmp(s, ": ", 2)) { /* Format is AWAY :optional multi-word message */
+		s += 2;
+	}
+	if (!strlen_zero(s)) { /* Away */
+		user->awaymsg = strdup(s);
+		user->away = 1;
+	} else { /* No longer away */
+		user->away = 0;
+	}
+	bbs_mutex_unlock(&user->lock);
+	set_away_via_relays(user, s);
 	send_numeric(user, user->away ? 306 : 305, "You %s marked as being away\r\n", user->away ? "have been" : "are no longer");
 }
 

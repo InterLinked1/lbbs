@@ -109,11 +109,11 @@ enum user_modes {
 };
 
 /*!
- * \brief Get whether an IRC user currently exists
+ * \brief Whether an IRC user is currently inactive
  * \param username Username/nickname
- * \retval 1 if user is currently online and exists, 0 if not
+ * \retval -1 if the user is not logged into IRC, 1 if the user is marked as away, 0 if the user is logged in and not away
  */
-int irc_user_exists(const char *username);
+int irc_user_inactive(const char *username);
 
 /*!
  * \brief Get the channel user modes for a user
@@ -141,7 +141,7 @@ struct irc_relay_callbacks {
 	int (*nicklist)(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user);
 	/*!< Callback function to relay a private message to a user on another network. NULL if not applicable. */
 	int (*privmsg)(const char *recipient, const char *sender, const char *user);
-	/*!< Callback for status changes. Can be NULL. Provided msg may be NULL. */
+	/*!< Callback for status changes. Can be NULL. (If away == 1, msg will not be NULL; if away == 0, it will be NULL) */
 	int (*away)(const char *username, int away, const char *msg);
 };
 

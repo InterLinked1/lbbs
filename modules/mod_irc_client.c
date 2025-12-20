@@ -51,6 +51,7 @@ struct bbs_irc_client {
 	pthread_t thread;					/* Thread for relay */
 	char *msgscript;					/* Message handler hook script (e.g. for bot actions) */
 	unsigned int log:1;					/* Log to log file */
+	unsigned int away:1;				/* Marked as AWAY */
 	unsigned int callbacks:1;			/* Execute callbacks for messages received by this client */
 	FILE *logfile;						/* Log file */
 	char name[0];						/* Unique client name */
@@ -720,6 +721,53 @@ static void *client_relay(void *varg)
 	return NULL;
 }
 
+static int _client_send(struct bbs_irc_client *client, const char *buf)
+{
+	/* If client socket hasn't yet been created, lirc will assert */
+	if (!irc_client_connected(client->client)) {
+		bbs_warning("IRC client %s isn't yet ready\n", S_IF(client->name));
+		return -1;
+	}
+	/* Directly send raw message to IRC (don't relay locally) */
+	return irc_send(client->client, "%s", buf);
+}
+
+int bbs_irc_client_set_away(const char *clientname, const char *msg)
+{
+	char buf[512];
+	int res;
+	struct bbs_irc_client *client;
+
+	RWLIST_RDLOCK(&irc_clients);
+	RWLIST_TRAVERSE(&irc_clients, client, entry) {
+		if (!clientname) {
+			break; /* Just use the first one (default) */
+		}
+		if (!strcasecmp(client->name, clientname)) {
+			break;
+		}
+	}
+
+	if (!client) {
+		RWLIST_UNLOCK(&irc_clients);
+		bbs_warning("IRC client %s doesn't exist\n", clientname);
+		return -1;
+	}
+
+	/* Craft the AWAY command payload */
+	snprintf(buf, sizeof(buf), "AWAY%s%s", msg ? ": " : "", S_IF(msg));
+
+	/* Directly send raw message to IRC (don't relay locally) */
+	res = _client_send(client, buf);
+
+	if (!res) {
+		client->away = msg ? 1 : 0;
+	}
+
+	RWLIST_UNLOCK(&irc_clients);
+	return res ? -1 : 0;
+}
+
 int __attribute__ ((format (gnu_printf, 2, 3))) bbs_irc_client_send(const char *clientname, const char *fmt, ...)
 {
 	struct bbs_irc_client *client;
@@ -736,9 +784,10 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_irc_client_send(const char *
 			break;
 		}
 	}
+
 	if (!client) {
-		bbs_warning("IRC client %s doesn't exist\n", S_IF(clientname));
 		RWLIST_UNLOCK(&irc_clients);
+		bbs_warning("IRC client %s doesn't exist\n", clientname);
 		return -1;
 	}
 
@@ -753,7 +802,7 @@ int __attribute__ ((format (gnu_printf, 2, 3))) bbs_irc_client_send(const char *
 	}
 
 	/* Directly send raw message to IRC (don't relay locally) */
-	res = irc_send(client->client, "%s", buf);
+	res = _client_send(client, buf);
 
 	RWLIST_UNLOCK(&irc_clients);
 	return res;
@@ -827,9 +876,11 @@ static int cli_irc_irc_clients(struct bbs_cli_args *a)
 	RWLIST_RDLOCK(&irc_clients);
 	RWLIST_TRAVERSE(&irc_clients, c, entry) {
 #if defined(__linux__) && defined(__GLIBC__)
-		bbs_dprintf(a->fdout, "%-20s %7s %3s %9s %15lu %s\n", c->name, irc_client_connected(c->client) ? "Online" : "Offline", BBS_YN(c->log), BBS_YN(c->callbacks), c->thread, S_IF(c->msgscript));
+		bbs_dprintf(a->fdout, "%-20s %7s %3s %9s %15lu %s\n", c->name, irc_client_connected(c->client) ? c->away ? "Away" : "Online" : "Offline",
+			BBS_YN(c->log), BBS_YN(c->callbacks), c->thread, S_IF(c->msgscript));
 #else
-		bbs_dprintf(a->fdout, "%-20s %7s %3s %9s %15s %s\n", c->name, irc_client_connected(c->client) ? "Online" : "Offline", BBS_YN(c->log), BBS_YN(c->callbacks), "", S_IF(c->msgscript));
+		bbs_dprintf(a->fdout, "%-20s %7s %3s %9s %15s %s\n", c->name, irc_client_connected(c->client) ? c->away ? "Away" : "Online" : "Offline",
+			BBS_YN(c->log), BBS_YN(c->callbacks), "", S_IF(c->msgscript));
 #endif
 	}
 	RWLIST_UNLOCK(&irc_clients);

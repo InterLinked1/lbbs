@@ -52,6 +52,14 @@ int bbs_irc_client_msg_callback_unregister(void (*msg_cb)(const char *clientname
 int bbs_irc_client_exists(const char *clientname);
 
 /*!
+ * \brief Set client to away or back
+ * \param clientname
+ * \param Message to indicate AWAY, NULL to clear AWAY
+ * \retval 1 if already set to this status, -1 on failure to update away status, 0 on success
+ */
+int bbs_irc_client_set_away(const char *clientname, const char *msg);
+
+/*!
  * \brief Send a raw IRC message to an IRC channel using a mod_irc_client client (can be used anywhere in the BBS)
  * \param clientname Name of client configured in mod_irc_client.conf. NULL to use default (first one).
  * \param fmt printf-style format string

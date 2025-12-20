@@ -36,6 +36,7 @@
 #include "include/node.h" /* use bbs_hostname */
 #include "include/cli.h"
 #include "include/stringlist.h"
+#include "include/startup.h"
 
 /* Since this is an IRC/IRC relay, we depend on both the server and client modules */
 #include "include/net_irc.h"
@@ -54,7 +55,6 @@ struct chan_pair {
 	const char *ircuser;		/* For private relays, the local IRC user associated with this relay */
 	unsigned int relaysystem:1;	/* Allow relay of system messages, e.g. JOIN, PART, etc. */
 	unsigned int relayaway:1;	/* Allow relaying local AWAY status via a client to remote network */
-	unsigned int amaway:1;		/* Does the IRC server for the client connected to a remote think we are away or not? */
 	unsigned int gotnames:2;	/* Have we queried the NAMES for this channel pair at least once? (Can be 0, 1, or 2) */
 	RWLIST_ENTRY(chan_pair) entry;
 	struct stringlist members;
@@ -723,17 +723,50 @@ static int away_cb(const char *username, int away, const char *msg)
 			continue;
 		}
 
-		/* We'll always use a particular chan_pair to keep track of whether
-		 * the remote IRC server thinks we're away or not (to ensure we're synchronized).
-		 * It doesn't matter which one, as long as it's the same one, which it will
-		 * be since the traversal of the chan_pair list is deterministic. */
-		if (cp->amaway == away) {
-			bbs_debug(5, "Client %s already thinks we're %s, skipping AWAY relay\n", client, away ? "away" : "back");
-		} else {
-			cp->amaway = cp->amaway ? 0 : 1; /* When we first join, we're not away, so the 0 initialization works out for us */
-			bbs_debug(3, "Relaying %s to client %s\n", away ? "away" : "back", client);
-			bbs_irc_client_send(client, "AWAY%s%s", !strlen_zero(msg) ? " " : "", S_IF(msg));
+		bbs_debug(3, "Relaying %s to client %s\n", away ? "away" : "back", client);
+		bbs_irc_client_set_away(client, msg);
+		stringlist_push(&slist, client); /* Keep track of what clients we've already relayed the AWAY to */
+	}
+	RWLIST_UNLOCK(&mappings);
+
+	stringlist_empty_destroy(&slist);
+	return 0;
+}
+
+/* Similar to away_cb, but called whenever the module loads (typically at startup)
+ * to automatically mark as AWAY any users that are not currently online.
+ * This way, we don't need to wait for a user to explicitly use the AWAY command
+ * for the remote network to accurately reflect whether user is away or not. */
+static int autoaway(void)
+{
+	struct chan_pair *cp = NULL;
+	struct stringlist slist;
+
+	stringlist_init(&slist);
+
+	/* Are any private relays configured using this username? */
+	RWLIST_RDLOCK(&mappings);
+	RWLIST_TRAVERSE(&mappings, cp, entry) {
+		const char *client;
+		int inactive;
+		if (!cp->relayaway) {
+			continue;
 		}
+		if (strlen_zero(cp->ircuser)) {
+			continue;
+		}
+
+		client = cp->client1 ? cp->client1 : cp->client2;
+
+		if (stringlist_case_contains(&slist, client)) {
+			bbs_debug(7, "Already sent an AWAY update for %s, skipping duplicate\n", client);
+			continue;
+		}
+
+		/* Even if not inactive, update just to be sure in case client is currently inactive */
+		inactive = irc_user_inactive(cp->ircuser);
+		bbs_debug(3, "Indicating %s is %s (%s on IRC)\n", cp->ircuser, inactive ? "away" : "back", inactive ? "not currently active" : "currently active");
+		bbs_irc_client_set_away(client, "Away"); /* We need some kind of away message to set as away, use something generic */
 		stringlist_push(&slist, client); /* Keep track of what clients we've already relayed the AWAY to */
 	}
 	RWLIST_UNLOCK(&mappings);
@@ -1181,6 +1214,7 @@ static int load_module(void)
 	irc_relay_register(&relay_callbacks);
 	bbs_irc_client_msg_callback_register(command_cb, numeric_cb);
 	bbs_cli_register_multiple(cli_commands_irc);
+	bbs_run_when_started(autoaway, STARTUP_PRIORITY_DEPENDENT + 1); /* mod_irc_client uses STARTUP_PRIORITY_DEPENDENT priority */
 	return 0;
 }
 
