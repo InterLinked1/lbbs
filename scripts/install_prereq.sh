@@ -185,6 +185,9 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN libsieve2-dev"
 # MISSING: RPM package
 # MISSING: Arch package
 
+# For some reason, find is not installed in the OpenSUSE GitHub runner
+PACKAGES_SUSE="$PACKAGES_SUSE find"
+
 # Soft dependencies
 # used for bc (executed by 'calc' in door_utils)
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN bc"
