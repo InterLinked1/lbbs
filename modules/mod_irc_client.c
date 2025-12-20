@@ -823,13 +823,13 @@ static int cli_irc_irc_clients(struct bbs_cli_args *a)
 {
 	struct bbs_irc_client *c;
 
-	bbs_dprintf(a->fdout, "%-20s %6s %3s %9s %-15s %s\n", "Name", "Status", "Log", "Callbacks", "Thread", "BotMsgScript");
+	bbs_dprintf(a->fdout, "%-20s %7s %3s %9s %-15s %s\n", "Name", "Status", "Log", "Callbacks", "Thread", "BotMsgScript");
 	RWLIST_RDLOCK(&irc_clients);
 	RWLIST_TRAVERSE(&irc_clients, c, entry) {
 #if defined(__linux__) && defined(__GLIBC__)
-		bbs_dprintf(a->fdout, "%-20s %6s %3s %9s %15lu %s\n", c->name, irc_client_connected(c->client) ? "Online" : "Offline", BBS_YN(c->log), BBS_YN(c->callbacks), c->thread, S_IF(c->msgscript));
+		bbs_dprintf(a->fdout, "%-20s %7s %3s %9s %15lu %s\n", c->name, irc_client_connected(c->client) ? "Online" : "Offline", BBS_YN(c->log), BBS_YN(c->callbacks), c->thread, S_IF(c->msgscript));
 #else
-		bbs_dprintf(a->fdout, "%-20s %6s %3s %9s %15s %s\n", c->name, irc_client_connected(c->client) ? "Online" : "Offline", BBS_YN(c->log), BBS_YN(c->callbacks), "", S_IF(c->msgscript));
+		bbs_dprintf(a->fdout, "%-20s %7s %3s %9s %15s %s\n", c->name, irc_client_connected(c->client) ? "Online" : "Offline", BBS_YN(c->log), BBS_YN(c->callbacks), "", S_IF(c->msgscript));
 #endif
 	}
 	RWLIST_UNLOCK(&irc_clients);

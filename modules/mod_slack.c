@@ -1506,6 +1506,12 @@ static int load_config(void)
 	return 0;
 }
 
+struct irc_relay_callbacks relay_callbacks = {
+	.relay_send = slack_send,
+	.nicklist = nicklist,
+	.privmsg = privmsg,
+};
+
 static int load_module(void)
 {
 	/* Initialize the library */
@@ -1518,7 +1524,7 @@ static int load_module(void)
 		return -1;
 	}
 
-	irc_relay_register(slack_send, nicklist, privmsg);
+	irc_relay_register(&relay_callbacks);
 	bbs_cli_register_multiple(cli_commands_slack);
 	return 0;
 }
@@ -1526,7 +1532,7 @@ static int load_module(void)
 static int unload_module(void)
 {
 	bbs_cli_unregister_multiple(cli_commands_slack);
-	irc_relay_unregister(slack_send);
+	irc_relay_unregister(&relay_callbacks);
 	RWLIST_WRLOCK_REMOVE_ALL(&relays, entry, relay_free);
 	return 0;
 }

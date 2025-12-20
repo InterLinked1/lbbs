@@ -164,10 +164,15 @@ static struct bbs_user *fetch_user(struct bbs_user *myuser, const char *username
 				user->zip = strdup_if(zip);
 				user->gender = !strlen_zero(gender) ? *gender : 0;
 				MALLOC_MEMCPY(user->dob, bind_null[12], &dob);
+				/*! \todo If the database is in UTC, but the BBS is in a local time zone,
+				 * then this will have UTC time but say "local time" instead.
+				 * We need to be able to detect and convert between timezones if needed. */
 				MALLOC_MEMCPY(user->registered, bind_null[13], &registered);
 				MALLOC_MEMCPY(user->lastlogin, bind_null[14], &lastlogin); /* Retrieve last login before we update it (in the case of a user login) */
 
 				if (password) { /* Update last_login timestamp to NOW, if this was an actual login vs. just user info retrieval */
+					/*! \todo This doesn't get updated when a cached login is used, but probably should be,
+					 * in which case there needs to be an API to update last login that triggers a callback here */
 					bbs_debug(3, "Successful password auth for %s\n", real_username);
 					snprintf(sql, sizeof(sql), "UPDATE %s%susers SET last_login = NOW() WHERE username = ? LIMIT 1", DB_NAME_ARGS);
 					if (!sql_prep_bind_exec(stmt, sql, "s", username)) {

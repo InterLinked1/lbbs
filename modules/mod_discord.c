@@ -1694,6 +1694,12 @@ static void *monitor_relay(void *unused)
 }
 #endif
 
+struct irc_relay_callbacks relay_callbacks = {
+	.relay_send = discord_send,
+	.nicklist = nicklist,
+	.privmsg = privmsg,
+};
+
 static int start_discord_relay(void)
 {
 	discord_add_intents(discord_client, DISCORD_GATEWAY_MESSAGE_CONTENT | DISCORD_GATEWAY_GUILD_MESSAGES | DISCORD_GATEWAY_GUILD_PRESENCES | DISCORD_GATEWAY_GUILDS | DISCORD_GATEWAY_GUILD_MEMBERS | DISCORD_GATEWAY_DIRECT_MESSAGES | DISCORD_GATEWAY_PRESENCE_UPDATE);
@@ -1719,7 +1725,7 @@ static int start_discord_relay(void)
 		return -1;
 	}
 
-	irc_relay_register(discord_send, nicklist, privmsg);
+	irc_relay_register(&relay_callbacks);
 
 #ifdef RELAY_RCV_EVENTUALLY_FAILS
 	if (!s_strlen_zero(echochannel)) {
@@ -1756,7 +1762,7 @@ static int unload_module(void)
 {
 	discord_ready = 0;
 	bbs_cli_unregister_multiple(cli_commands_discord);
-	irc_relay_unregister(discord_send);
+	irc_relay_unregister(&relay_callbacks);
 
 	if (monitor_thread) {
 		if (!force_unloading) {

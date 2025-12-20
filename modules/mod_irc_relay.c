@@ -51,14 +51,16 @@ struct chan_pair {
 	const char *channel1;
 	const char *client2;
 	const char *channel2;
-	const char *ircuser;
-	unsigned int relaysystem:1;
-	unsigned int gotnames:2;	/* Have we queried the NAMES for this channel pair at least once? */
+	const char *ircuser;		/* For private relays, the local IRC user associated with this relay */
+	unsigned int relaysystem:1;	/* Allow relay of system messages, e.g. JOIN, PART, etc. */
+	unsigned int relayaway:1;	/* Allow relaying local AWAY status via a client to remote network */
+	unsigned int amaway:1;		/* Does the IRC server for the client connected to a remote think we are away or not? */
+	unsigned int gotnames:2;	/* Have we queried the NAMES for this channel pair at least once? (Can be 0, 1, or 2) */
 	RWLIST_ENTRY(chan_pair) entry;
 	struct stringlist members;
 	pthread_t names_thread;
 	bbs_mutex_t names_query_lock;
-	char data[0];
+	char data[];
 };
 
 static RWLIST_HEAD_STATIC(mappings, chan_pair);
@@ -83,7 +85,7 @@ static void list_cleanup(void)
 	RWLIST_WRLOCK_REMOVE_ALL(&mappings, entry, chan_pair_cleanup);
 }
 
-static int add_pair(const char *client1, const char *channel1, const char *client2, const char *channel2, const char *ircuser, int relaysystem)
+static int add_pair(const char *client1, const char *channel1, const char *client2, const char *channel2, const char *ircuser, int relaysystem, int relayaway)
 {
 	char *pos;
 	struct chan_pair *cp;
@@ -161,13 +163,15 @@ static int add_pair(const char *client1, const char *channel1, const char *clien
 	}
 
 	SET_BITFIELD(cp->relaysystem, relaysystem);
+	SET_BITFIELD(cp->relayaway, relayaway);
 	bbs_mutex_init(&cp->names_query_lock, NULL);
 	stringlist_init(&cp->members);
 
 	RWLIST_INSERT_HEAD(&mappings, cp, entry);
 	RWLIST_UNLOCK(&mappings);
 
-	bbs_debug(3, "Added mapping for %s/%s <=> %s/%s (relaysystem: %s)\n", S_IF(cp->client1), cp->channel1, S_IF(cp->client2), cp->channel2, cp->relaysystem ? "yes" : "no");
+	bbs_debug(3, "Added mapping for %s/%s <=> %s/%s (relaysystem: %s, relayaway: %s)\n", S_IF(cp->client1), cp->channel1, S_IF(cp->client2), cp->channel2,
+		cp->relaysystem ? "yes" : "no", cp->relayaway ? "yes" : "no");
 	return 0;
 }
 
@@ -685,6 +689,59 @@ static int privmsg_cb(const char *recipient, const char *sender, const char *msg
 	return 1;
 }
 
+static int away_cb(const char *username, int away, const char *msg)
+{
+	struct chan_pair *cp = NULL;
+	struct stringlist slist;
+
+	stringlist_init(&slist);
+
+	/* Are any private relays configured using this username? */
+	RWLIST_RDLOCK(&mappings);
+	RWLIST_TRAVERSE(&mappings, cp, entry) {
+		const char *client;
+		if (!cp->relayaway) {
+			continue;
+		}
+		if (strlen_zero(cp->ircuser) || strcasecmp(cp->ircuser, username)) {
+			continue;
+		}
+
+		/* Found a match, at least for one channel (doesn't matter which, since AWAY is not a per-channel operation),
+		 * this relay is set up as a private relay, and we should relay AWAY status if configured.
+		 * We only care about the client (which corresponds to an IRC client connection to some other network).
+		 *
+		 * There could be multiple different clients (corresponding to multiple other IRC networks), that have
+		 * channels configured as private relays, so although we don't care about the channels within a client,
+		 * we do need to relay to all unique clients that have some channel configured as a private relay for this user. */
+
+		/* For private relay, we want to relay the AWAY status to the other (non-local) client(s), i.e. the non-NULL one */
+		client = cp->client1 ? cp->client1 : cp->client2;
+
+		if (stringlist_case_contains(&slist, client)) {
+			bbs_debug(7, "Already sent AWAY update to %s, skipping duplicate\n", client);
+			continue;
+		}
+
+		/* We'll always use a particular chan_pair to keep track of whether
+		 * the remote IRC server thinks we're away or not (to ensure we're synchronized).
+		 * It doesn't matter which one, as long as it's the same one, which it will
+		 * be since the traversal of the chan_pair list is deterministic. */
+		if (cp->amaway == away) {
+			bbs_debug(5, "Client %s already thinks we're %s, skipping AWAY relay\n", client, away ? "away" : "back");
+		} else {
+			cp->amaway = cp->amaway ? 0 : 1; /* When we first join, we're not away, so the 0 initialization works out for us */
+			bbs_debug(3, "Relaying %s to client %s\n", away ? "away" : "back", client);
+			bbs_irc_client_send(client, "AWAY%s%s", !strlen_zero(msg) ? " " : "", S_IF(msg));
+		}
+		stringlist_push(&slist, client); /* Keep track of what clients we've already relayed the AWAY to */
+	}
+	RWLIST_UNLOCK(&mappings);
+
+	stringlist_empty_destroy(&slist);
+	return 0;
+}
+
 /* XXX Lots of duplicated code follows */
 
 /*! \brief Callback for messages received on native IRC server (from our server to the channel) */
@@ -1050,7 +1107,7 @@ static int load_config(void)
 	while ((section = bbs_config_walk(cfg, section))) {
 		const char *client1 = NULL, *client2 = NULL, *channel1 = NULL, *channel2 = NULL;
 		const char *ircuser = NULL;
-		int relaysystem = 1;
+		int relaysystem = 1, relayaway = 0;
 		if (!strcmp(bbs_config_section_name(section), "general")) {
 			continue; /* Not a channel mapping section, skip */
 		}
@@ -1069,6 +1126,8 @@ static int load_config(void)
 				channel2 = value;
 			} else if (!strcasecmp(key, "relaysystem")) {
 				relaysystem = S_TRUE(value);
+			} else if (!strcasecmp(key, "relayaway")) {
+				relayaway = S_TRUE(value);
 			} else if (!strcasecmp(key, "ircuser")) {
 				ircuser = value;
 			} else {
@@ -1079,7 +1138,7 @@ static int load_config(void)
 			bbs_warning("Section %s is incomplete, ignoring\n", bbs_config_section_name(section));
 			continue;
 		}
-		add_pair(client1, channel1, client2, channel2, ircuser, relaysystem);
+		add_pair(client1, channel1, client2, channel2, ircuser, relaysystem, relayaway);
 	}
 
 	bbs_config_unlock(cfg);
@@ -1090,10 +1149,11 @@ static int cli_irc_relays(struct bbs_cli_args *a)
 {
 	struct chan_pair *cp;
 
-	bbs_dprintf(a->fdout, "%-20s %-20s %-20s %-20s %9s %s\n", "Client 1", "Channel 1", "Client 2", "Channel 2", "RelaySys?", "IRC User");
+	bbs_dprintf(a->fdout, "%-20s %-20s %-20s %-20s %9s %10s %s\n", "Client 1", "Channel 1", "Client 2", "Channel 2", "RelaySys?", "RelayAway?", "IRC User");
 	RWLIST_RDLOCK(&mappings);
 	RWLIST_TRAVERSE(&mappings, cp, entry) {
-		bbs_dprintf(a->fdout, "%-20s %-20s %-20s %-20s %9s %s\n", S_IF(cp->client1), S_IF(cp->channel1), S_IF(cp->client2), S_IF(cp->channel2), BBS_YN(cp->relaysystem), S_IF(cp->ircuser));
+		bbs_dprintf(a->fdout, "%-20s %-20s %-20s %-20s %9s %10s %s\n", S_OR(cp->client1, "(Local)"), S_IF(cp->channel1), S_OR(cp->client2, "(Local)"), S_IF(cp->channel2),
+			BBS_YN(cp->relaysystem), BBS_YN(cp->relayaway), S_IF(cp->ircuser));
 	}
 	RWLIST_UNLOCK(&mappings);
 	return 0;
@@ -1104,6 +1164,13 @@ static struct bbs_cli_entry cli_commands_irc[] = {
 	BBS_CLI_COMMAND(cli_irc_relaymembers, "irc relaymembers", 2, "List all known users in all remote IRC clients", NULL),
 };
 
+struct irc_relay_callbacks relay_callbacks = {
+	.relay_send = netirc_cb,
+	.nicklist = nicklist,
+	.privmsg = privmsg_cb,
+	.away = away_cb,
+};
+
 static int load_module(void)
 {
 	if (load_config()) {
@@ -1111,7 +1178,7 @@ static int load_module(void)
 	}
 
 	modstart = time(NULL);
-	irc_relay_register(netirc_cb, nicklist, privmsg_cb);
+	irc_relay_register(&relay_callbacks);
 	bbs_irc_client_msg_callback_register(command_cb, numeric_cb);
 	bbs_cli_register_multiple(cli_commands_irc);
 	return 0;
@@ -1124,7 +1191,7 @@ static int unload_module(void)
 	}
 	bbs_cli_unregister_multiple(cli_commands_irc);
 	bbs_irc_client_msg_callback_unregister(command_cb);
-	irc_relay_unregister(netirc_cb);
+	irc_relay_unregister(&relay_callbacks);
 	list_cleanup();
 	return 0;
 }

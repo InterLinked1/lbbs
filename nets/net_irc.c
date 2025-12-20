@@ -272,9 +272,7 @@ struct irc_channel {
 static RWLIST_HEAD_STATIC(channels, irc_channel);	/* Container for all channels */
 
 struct irc_relay {
-	int (*relay_send)(struct irc_relay_message *rmsg);
-	int (*nicklist)(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user);
-	int (*privmsg)(const char *recipient, const char *sender, const char *user);
+	struct irc_relay_callbacks *relay_callbacks;
 	void *mod;
 	RWLIST_ENTRY(irc_relay) entry;
 };
@@ -326,21 +324,18 @@ static int add_operator(const char *name, const char *password)
  * in modules.conf to guarantee things will work properly. So, whatever...
  */
 
-int __irc_relay_register(int (*relay_send)(struct irc_relay_message *rmsg),
-	int (*nicklist)(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user),
-	int (*privmsg)(const char *recipient, const char *sender, const char *user),
-	void *mod)
+int __irc_relay_register(struct irc_relay_callbacks *relay_callbacks, void *mod)
 {
 	struct irc_relay *relay;
 
 	RWLIST_WRLOCK(&relays);
 	RWLIST_TRAVERSE(&relays, relay, entry) {
-		if (relay_send == relay->relay_send) {
+		if (relay_callbacks == relay->relay_callbacks) {
 			break;
 		}
 	}
 	if (relay) {
-		bbs_error("Relay %p is already registered\n", relay_send);
+		bbs_error("Relay %p is already registered\n", relay_callbacks);
 		RWLIST_UNLOCK(&relays);
 		return -1;
 	}
@@ -349,9 +344,7 @@ int __irc_relay_register(int (*relay_send)(struct irc_relay_message *rmsg),
 		RWLIST_UNLOCK(&relays);
 		return -1;
 	}
-	relay->relay_send = relay_send;
-	relay->nicklist = nicklist;
-	relay->privmsg = privmsg;
+	relay->relay_callbacks = relay_callbacks;
 	relay->mod = mod;
 	RWLIST_INSERT_HEAD(&relays, relay, entry);
 	bbs_module_ref(BBS_MODULE_SELF, 1); /* Bump our module ref count */
@@ -361,16 +354,16 @@ int __irc_relay_register(int (*relay_send)(struct irc_relay_message *rmsg),
 
 /* No need for a separate cleanup function since this module cannot be unloaded until all relays have unregistered */
 
-int irc_relay_unregister(int (*relay_send)(struct irc_relay_message *rmsg))
+int irc_relay_unregister(struct irc_relay_callbacks *relay_callbacks)
 {
 	struct irc_relay *relay;
 
-	relay = RWLIST_WRLOCK_REMOVE_BY_FIELD(&relays, relay_send, relay_send, entry);
+	relay = RWLIST_WRLOCK_REMOVE_BY_FIELD(&relays, relay_callbacks, relay_callbacks, entry);
 	if (relay) {
 		free(relay);
 		bbs_module_unref(BBS_MODULE_SELF, 1); /* And decrement the module ref count back again */
 	} else {
-		bbs_error("Relay %p was not previously registered\n", relay_send);
+		bbs_error("Relay %p was not previously registered\n", relay_callbacks);
 		return -1;
 	}
 	return 0;
@@ -898,7 +891,7 @@ static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, 
 				continue;
 			}
 			bbs_module_ref(relay->mod, 4);
-			if (relay->relay_send(&rmsg)) {
+			if (relay->relay_callbacks->relay_send(&rmsg)) {
 				bbs_module_unref(relay->mod, 4);
 				break;
 			}
@@ -1390,11 +1383,11 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, char
 			/* Check if the user exists in any callbacks. */
 			RWLIST_RDLOCK(&relays);
 			RWLIST_TRAVERSE(&relays, relay, entry) {
-				if (!relay->privmsg) {
+				if (!relay->relay_callbacks->privmsg) {
 					continue;
 				}
 				bbs_module_ref(relay->mod, 5);
-				if (relay->privmsg(channame, user->nickname, message)) {
+				if (relay->relay_callbacks->privmsg(channame, user->nickname, message)) {
 					bbs_module_unref(relay->mod, 5);
 					break;
 				}
@@ -1621,7 +1614,7 @@ static void handle_modes(struct irc_user *user, char *s)
 			send_numeric(user, 501, "Unknown MODE flag\r\n");
 			return;
 		}
-		bbs_debug(3, "User %p requested %s modes for %s: %s\n", user, set ? "set" : "unset", target, channel_name);
+		bbs_debug(3, "User %p requested %s modes for %s: %s\n", user, set ? "set" : "unset", S_OR(target, "(empty target)"), channel_name);
 		/*
 		 * User modes: /mode jsmith +i => MODE jsmith +i
 		 * Channel modes: /mode #test +S => MODE #test +S
@@ -1650,7 +1643,7 @@ static void handle_modes(struct irc_user *user, char *s)
 		}
 		for (modes++; *modes; modes++) { /* Skip the + or - to start */
 			char mode = *modes;
-			bbs_debug(5, "Requesting %s mode %c for %s (%s)\n", set ? "set" : "unset", mode, target, S_IF(channel_name));
+			bbs_debug(5, "Requesting %s mode %c for %s (%s)\n", set ? "set" : "unset", mode, S_OR(target, "(empty target)"), S_IF(channel_name));
 			if (IS_CHANNEL_NAME(channel_name)) { /* Channel, and it's a channel operator */
 				char *args;
 				int broadcast_if_change = 1;
@@ -2073,14 +2066,14 @@ static void handle_who(struct irc_user *user, char *s)
 			/* Now, pull in any "unreal" members from other protocols */
 			RWLIST_RDLOCK(&relays);
 			RWLIST_TRAVERSE(&relays, relay, entry) {
-				if (relay->nicklist) {
+				if (relay->relay_callbacks->nicklist) {
 					bbs_module_ref(relay->mod, 6);
 					/* Callbacks will return 0 for no match, 1 for match.
 					 * However, multiple relay modules could have members in the channel,
 					 * so we should not break early if nicklist callback returns 1;
 					 * we need to check all the relays for matches.
 					 * As long as at least one relay had members, we'll report success. */
-					res += relay->nicklist(user->node, user->node ? user->node->wfd : -1, 352, user->username, s, NULL);
+					res += relay->relay_callbacks->nicklist(user->node, user->node ? user->node->wfd : -1, 352, user->username, s, NULL);
 					bbs_module_unref(relay->mod, 6);
 				}
 			}
@@ -2094,11 +2087,11 @@ static void handle_who(struct irc_user *user, char *s)
 			/* Check relays, we don't have a channel handle so we don't really know if the user exists in a relay */
 			RWLIST_RDLOCK(&relays);
 			RWLIST_TRAVERSE(&relays, relay, entry) {
-				if (relay->nicklist) {
+				if (relay->relay_callbacks->nicklist) {
 					bbs_module_ref(relay->mod, 7);
 					/* Unlike the above case, a specific user can only exist in one relay,
 					 * so as soon as we find a match, we can break. */
-					res = relay->nicklist(user->node, user->node ? user->node->wfd : -1, 352, user->username, NULL, s);
+					res = relay->relay_callbacks->nicklist(user->node, user->node ? user->node->wfd : -1, 352, user->username, NULL, s);
 					bbs_module_unref(relay->mod, 7);
 				}
 				if (res) {
@@ -2143,9 +2136,9 @@ static void handle_whois(struct irc_user *user, char *s)
 		struct irc_relay *relay;
 		RWLIST_RDLOCK(&relays);
 		RWLIST_TRAVERSE(&relays, relay, entry) {
-			if (relay->nicklist) {
+			if (relay->relay_callbacks->nicklist) {
 				bbs_module_ref(relay->mod, 8);
-				res = relay->nicklist(user->node, user->node ? user->node->wfd : -1, 318, user->username, NULL, s);
+				res = relay->relay_callbacks->nicklist(user->node, user->node ? user->node->wfd : -1, 318, user->username, NULL, s);
 				bbs_module_unref(relay->mod, 8);
 			}
 			if (res) {
@@ -2647,9 +2640,9 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 		RWLIST_RDLOCK(&relays);
 		bbs_mutex_lock(&user->lock);
 		RWLIST_TRAVERSE(&relays, relay, entry) {
-			if (relay->nicklist) {
+			if (relay->relay_callbacks->nicklist) {
 				bbs_module_ref(relay->mod, 9);
-				res = relay->nicklist(user->node, user->node ? user->node->wfd : -1, 353, user->username, channel->name, NULL);
+				res = relay->relay_callbacks->nicklist(user->node, user->node ? user->node->wfd : -1, 353, user->username, channel->name, NULL);
 				bbs_module_unref(relay->mod, 9);
 			}
 			if (res) {
@@ -3001,6 +2994,42 @@ static void leave_all_channels(struct irc_user *user, const char *leavecmd, cons
 	}
 	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&channels);
+}
+
+static void set_away(struct irc_user *user, const char *s)
+{
+	struct irc_relay *relay;
+
+	/* Set user as away or back */
+	bbs_mutex_lock(&user->lock);
+	free_if(user->awaymsg);
+	if (!strlen_zero(s)) { /* Away */
+		user->awaymsg = strdup(s);
+		user->away = 1;
+	} else { /* No longer away */
+		user->away = 0;
+	}
+	bbs_mutex_unlock(&user->lock);
+
+	/* No message goes out to the channel when a user marks himself as away,
+	 * clients will poll for this information periodically using commands like WHO.
+	 * However, if a private relay is configured for this channel,
+	 * then it will want to mirror the client's away/back status to the
+	 * paired channel. Therefore, we need to let relay modules know. */
+	RWLIST_RDLOCK(&relays);
+	RWLIST_TRAVERSE(&relays, relay, entry) {
+		if (relay->relay_callbacks->away) {
+			bbs_module_ref(relay->mod, 10);
+			if (relay->relay_callbacks->away(user->nickname, user->away, user->awaymsg)) {
+				bbs_module_unref(relay->mod, 4);
+				break;
+			}
+			bbs_module_unref(relay->mod, 10);
+		}
+	}
+	RWLIST_UNLOCK(&relays);
+
+	send_numeric(user, user->away ? 306 : 305, "You %s marked as being away\r\n", user->away ? "have been" : "are no longer");
 }
 
 static int channel_count(void)
@@ -3433,16 +3462,7 @@ static void handle_client(struct irc_user *user)
 					send_numeric(user, 416, "Input too large\r\n"); /* XXX Not really the appropriate numeric */
 					continue;
 				}
-				bbs_mutex_lock(&user->lock);
-				free_if(user->awaymsg);
-				if (!strlen_zero(s)) { /* Away */
-					user->awaymsg = strdup(s);
-					user->away = 1;
-				} else { /* No longer away */
-					user->away = 0;
-				}
-				bbs_mutex_unlock(&user->lock);
-				send_numeric(user, user->away ? 306 : 305, "You %s marked as being away\r\n", user->away ? "have been" : "are no longer");
+				set_away(user, s);
 			} else if (!strcasecmp(command, "KICK")) {
 				struct irc_member *member;
 				char *reason, *kickusername, *channame = strsep(&s, " ");
