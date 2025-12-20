@@ -25,6 +25,8 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include <curl/curl.h> /* needed for curl_easy_escape */
+
 #include "include/linkedlists.h"
 #include "include/config.h"
 #include "include/module.h"
@@ -101,7 +103,9 @@ RWLIST_HEAD(chan_pairs, chan_pair);
 struct slack_relay {
 	RWLIST_ENTRY(slack_relay) entry;
 	struct slack_client *slack;
-	unsigned int relaysystem:1;
+	unsigned int relaysystem:1;	/*!< Relay system messages (e.g. JOIN, PART, etc.) */
+	unsigned int relayaway:1;	/*!< Relay AWAY status */
+	unsigned int relaystatus:1;	/*!< Update status when relaying AWAY status */
 	unsigned int started:1;		/*!< Relay started successfully */
 	unsigned int error:1;		/*!< Relay in (fatal or problematic) error state */
 	unsigned int preservethreading:1;	/*!< Try to preserve threading in replies */
@@ -214,6 +218,44 @@ static json_t *slack_curl_get(struct slack_relay *relay, const char *url)
 	}
 
 	if (bbs_curl_get(&c)) {
+		return NULL;
+	}
+
+	json = json_loads(c.response, 0, &jansson_error);
+	if (!json) {
+		bbs_warning("Failed to parse as JSON (line %d): %s\n", jansson_error.line, jansson_error.text);
+		bbs_curl_free(&c);
+		return NULL;
+	}
+	if (!json_object_bool_value(json, "ok")) {
+		bbs_warning("Slack API request failed: %s\n", c.response);
+		json_decref(json);
+		bbs_curl_free(&c);
+		return NULL;
+	}
+	bbs_curl_free(&c);
+	return json;
+}
+
+static json_t *slack_curl_post(struct slack_relay *relay, const char *url, const char *postfields)
+{
+	char cookies[512];
+	json_t *json;
+	json_error_t jansson_error = {};
+	struct bbs_curl c = {
+		.url = url,
+		.postfields = postfields,
+		.forcefail = 1,
+		.cookies = cookies,
+	};
+
+	if (relay->cookie_ds) {
+		snprintf(cookies, sizeof(cookies), "d=%s; d-s=%s", relay->cookie_d, relay->cookie_ds);
+	} else {
+		snprintf(cookies, sizeof(cookies), "d=%s", relay->cookie_d);
+	}
+
+	if (bbs_curl_post(&c)) {
 		return NULL;
 	}
 
@@ -349,6 +391,9 @@ static int load_users(struct slack_relay *relay, int limit)
 	return 0;
 }
 
+/* Forward declaration */
+static struct slack_user *slack_user_by_userid_locked(struct slack_relay *relay, const char *userid, int reorder);
+
 static void load_members(struct slack_relay *relay, struct chan_pair *cp, const char *channelid, int limit)
 {
 	char url[256];
@@ -370,7 +415,7 @@ static void load_members(struct slack_relay *relay, struct chan_pair *cp, const 
 	json_array_foreach(members, index, value) {
 		const char *userid = json_string_value(value);
 		/* Hopefully already loaded, due to calling load_users previously to fetch members en masse */
-		struct slack_user *u = load_user(relay, userid);
+		struct slack_user *u = slack_user_by_userid_locked(relay, userid, 0);
 		if (!u) {
 			bbs_warning("Couldn't load user %s (while loading channel %s)\n", userid, channelid);
 			continue;
@@ -485,7 +530,7 @@ static struct slack_user *slack_user_by_irc_username(const char *ircusername)
 	return NULL;
 }
 
-static struct slack_user *slack_user_by_userid(struct slack_relay *relay, const char *userid, int reorder)
+static struct slack_user *slack_user_by_userid_locked(struct slack_relay *relay, const char *userid, int reorder)
 {
 	struct slack_user *u;
 	int index = 0;
@@ -495,14 +540,12 @@ static struct slack_user *slack_user_by_userid(struct slack_relay *relay, const 
 	 * since they will probably be used again soon (e.g. currently active in a conversation)
 	 * This should make this lookup operation amortized constant time for typical activity.
 	 */
-	RWLIST_WRLOCK(&relay->users);
 	RWLIST_TRAVERSE_SAFE_BEGIN(&relay->users, u, entry) {
 		if (!strcmp(u->userid, userid)) {
 			if (reorder && index > 4) { /* If it's not near the front, move it there. Allow some leeway so we're not constantly reordering. */
 				RWLIST_REMOVE_CURRENT(entry);
 				RWLIST_INSERT_HEAD(&relay->users, u, entry);
 			}
-			RWLIST_UNLOCK(&relay->users);
 			return u;
 		}
 		index++;
@@ -512,12 +555,20 @@ static struct slack_user *slack_user_by_userid(struct slack_relay *relay, const 
 	/* Doesn't exist yet. Ask for this user, specifically.
 	 * For large workspaces, we may never be able to store all users (nor should we try to). */
 	u = load_user(relay, userid);
-	RWLIST_UNLOCK(&relay->users);
 
 	if (!u) {
 		bbs_warning("Couldn't fetch user for user ID %s\n", userid);
 	}
 
+	return u;
+}
+
+static struct slack_user *slack_user_by_userid(struct slack_relay *relay, const char *userid, int reorder)
+{
+	struct slack_user *u;
+	RWLIST_WRLOCK(&relay->users);
+	u = slack_user_by_userid_locked(relay, userid, reorder);
+	RWLIST_UNLOCK(&relay->users);
 	return u;
 }
 
@@ -1034,6 +1085,107 @@ static int privmsg(const char *recipient, const char *sender, const char *msg)
 	return 1;
 }
 
+static int update_presence(struct slack_relay *relay, int away)
+{
+	char postdata[256] = "";
+	json_t *json;
+
+	/* https://docs.slack.dev/reference/methods/users.setPresence/ */
+	snprintf(postdata, sizeof(postdata), "token=%s&presence=%s", relay->token, away ? "away" : "auto");
+
+	json = slack_curl_post(relay, "https://slack.com/api/users.setPresence", postdata);
+	if (!json) {
+		return -1;
+	}
+	json_decref(json);
+	return 0;
+}
+
+/* Not the most efficient approach, but it'll do for its rare usage */
+static char *my_urlencode(const char *s)
+{
+	CURL *curl;
+	char *encoded, *copy = NULL;
+
+	curl = curl_easy_init();
+	if (!curl) {
+		return NULL;
+	}
+	encoded = curl_easy_escape(curl, s, (int) strlen(s));
+	if (encoded) {
+		copy = strdup(encoded);
+		curl_free(encoded);
+	}
+	curl_easy_cleanup(curl);
+	return copy;
+}
+
+static int update_status(struct slack_relay *relay, const char *msg)
+{
+	char postdata[512] = "";
+	json_t *json, *profile;
+	char *decoded, *encoded;
+
+	profile = json_object();
+	if (!profile) {
+		return -1;
+	}
+	json_object_set_new(profile, "status_text", json_string(msg ? msg : ""));
+	json_object_set_new(profile, "status_emoji",json_string("")); /* this is mandatory when clearing status, but not when setting it */
+	json_object_set_new(profile, "status_expiration", json_integer(0));
+	decoded = json_dumps(profile, 0);
+	encoded = my_urlencode(decoded); /* Need to URL encode before including in POST body */
+	json_decref(profile);
+
+	/* https://docs.slack.dev/reference/methods/users.profile.set/ */
+	snprintf(postdata, sizeof(postdata), "token=%s&profile=%s", relay->token, encoded);
+
+	json = slack_curl_post(relay, "https://slack.com/api/users.profile.set", postdata);
+	if (!json) {
+		return -1;
+	}
+	json_decref(json);
+	return 0;
+}
+
+static int away(const char *username, int away, const char *msg)
+{
+	struct slack_relay *relay;
+
+	/* As with mod_irc_relay, there could be multiple Slack workspaces,
+	 * so we need to iterate over relays to find all matches. */
+	RWLIST_RDLOCK(&relays);
+	RWLIST_TRAVERSE(&relays, relay, entry) {
+		if (!relay->relayaway) {
+			continue;
+		}
+		if (strlen_zero(relay->ircuser)) {
+			continue;
+		}
+		if (strcasecmp(relay->ircuser, username)) {
+			continue;
+		}
+
+		if (update_presence(relay, away)) {
+			bbs_warning("Failed to set presence for Slack relay %s to %s\n", relay->name, away ? "away" : "auto");
+		} else {
+			bbs_debug(4, "Set presence for Slack relay %s to %s\n", relay->name, away ? "away" : "auto");
+		}
+
+		/* If desired, separately update the status on Slack with the away message */
+		if (relay->relaystatus) {
+			if (update_status(relay, msg)) {
+				bbs_warning("Failed to set status for Slack relay %s to '%s'\n", relay->name, S_IF(msg));
+			} else {
+				bbs_debug(4, "Set status for Slack relay %s to '%s'\n", relay->name, S_IF(msg));
+			}
+		}
+	}
+	RWLIST_UNLOCK(&relays);
+
+	return 0;
+}
+
 static int channel_contains_user(struct chan_pair *cp, struct slack_user *u)
 {
 	struct member *m;
@@ -1178,7 +1330,7 @@ static int cli_slack_channels(struct bbs_cli_args *a)
 
 static int cli_slack_users(struct bbs_cli_args *a)
 {
-	int i = 0;
+	int i = 0, active = 0;
 	int match = 0;
 	struct slack_relay *r;
 
@@ -1195,12 +1347,15 @@ static int cli_slack_users(struct bbs_cli_args *a)
 				continue;
 			}
 			bbs_dprintf(a->fdout, "%-20s %1s %-30s %-20s\n", u->userid, u->active ? "*" : "", u->username, u->realname);
+			if (u->active) {
+				active++;
+			}
 			match++;
 		}
 		RWLIST_UNLOCK(&r->users);
 	}
 	RWLIST_UNLOCK(&relays);
-	bbs_dprintf(a->fdout, "%d/%d user%s\n", match, i, ESS(i));
+	bbs_dprintf(a->fdout, "%d/%d user%s (%d active)\n", match, i, ESS(i), active);
 	return 0;
 }
 
@@ -1347,7 +1502,7 @@ static int load_config(void)
 		const char *type;
 		const char *token = NULL, *gwserver = NULL, *cookie_d = NULL; /* Required */
 		const char *enterpriseid = NULL, *cookie_ds = NULL; /* Optional (enterprises only) */
-		unsigned int relaysystem = 0;
+		unsigned int relaysystem = 0, relayaway = 0, relaystatus = 0;
 		const char *ircuser = NULL;
 		const char *mapname = NULL;
 		struct slack_client *slack;
@@ -1391,6 +1546,10 @@ static int load_config(void)
 				cookie_ds_len = strlen(value) + 1;
 			} else if (!strcasecmp(key, "relaysystem")) {
 				relaysystem = S_TRUE(value);
+			} else if (!strcasecmp(key, "relayaway")) {
+				relayaway = S_TRUE(value);
+			} else if (!strcasecmp(key, "relaystatus")) {
+				relaystatus = S_TRUE(value);
 			} else if (!strcasecmp(key, "ircuser")) {
 				ircuser = value;
 				ircuserlen = strlen(ircuser) + 1;
@@ -1432,6 +1591,8 @@ static int load_config(void)
 		}
 		bbs_mutex_init(&relay->lock, NULL);
 		SET_BITFIELD(relay->relaysystem, relaysystem);
+		SET_BITFIELD(relay->relayaway, relayaway);
+		SET_BITFIELD(relay->relaystatus, relaystatus);
 		SET_BITFIELD(relay->prefixthread, prefixthread);
 		SET_BITFIELD(relay->preservethreading, preservethreading);
 		data = relay->data;
@@ -1510,6 +1671,7 @@ struct irc_relay_callbacks relay_callbacks = {
 	.relay_send = slack_send,
 	.nicklist = nicklist,
 	.privmsg = privmsg,
+	.away = away,
 };
 
 static int load_module(void)

@@ -109,6 +109,13 @@ enum user_modes {
 };
 
 /*!
+ * \brief Get whether an IRC user currently exists
+ * \param username Username/nickname
+ * \retval 1 if user is currently online and exists, 0 if not
+ */
+int irc_user_exists(const char *username);
+
+/*!
  * \brief Get the channel user modes for a user
  * \param channel Channel name
  * \param username Nickname
