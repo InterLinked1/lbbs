@@ -63,15 +63,15 @@
 /*! \todo not yet supported */
 #define DEF_MAXLIST "b:1"
 
-/* Hostmask stuff */
-#define IDENT_PREFIX_FMT "%s!%s@%s"
-#define IDENT_PREFIX_ARGS(user) (user)->nickname, (user)->username, (user)->hostname
+/* Hostmask / prefix format (nickname!ident@hostname) */
+#define HOSTMASK_FMT "%s!%s@%s"
+#define HOSTMASK_ARGS(user) (user)->nickname, (user)->username, (user)->hostname
 
 /*! \note Since not all users have a node (e.g. builtin services) */
-#define irc_other_thread_writef(node, fmt, ...) bbs_auto_any_fd_writef(node, node ? node->wfd : -1, fmt, ## __VA_ARGS__);
+#define irc_other_thread_writef(node, fmt, ...) bbs_auto_any_fd_writef(node, node ? node->wfd : -1, fmt, ## __VA_ARGS__)
 
 /* There isn't a bbs_auto_any_fd_write */
-#define irc_other_thread_write(node, buf, len) bbs_auto_any_fd_writef(node, node ? node->wfd : -1, "%.*s", (int) len, buf);
+#define irc_other_thread_write(node, buf, len) bbs_auto_any_fd_writef(node, node ? node->wfd : -1, "%.*s", (int) len, buf)
 
 #define send_reply(user, fmt, ...) bbs_debug(3, "%p <= " fmt, user, ## __VA_ARGS__); irc_other_thread_writef(user->node, fmt, ## __VA_ARGS__);
 #define send_numeric(user, numeric, fmt, ...) send_reply(user, "%03d %s :" fmt, numeric, user->nickname, ## __VA_ARGS__)
@@ -146,11 +146,12 @@ struct irc_user {
 	time_t lastactive;				/* Time of last JOIN, PART, PRIVMSG, NOTICE, etc. */
 	time_t lastping;				/* Last ping sent */
 	time_t lastpong;				/* Last pong received */
-	bbs_mutex_t lock;			/* User lock */
+	bbs_mutex_t lock;				/* User lock */
 	char *awaymsg;					/* Away message */
 	unsigned int away:1;			/* User is currently away (default is 0, i.e. user is here) */
 	unsigned int multiprefix:1;		/* Supports multi-prefix */
 	unsigned int registered:1;		/* Fully registered */
+	unsigned int programmatic:1;	/* Programmatic from another module, as opposed to a real client connection (e.g. for mod_irc_bounder) */
 	RWLIST_ENTRY(irc_user) entry;	/* Next user */
 	/* Avoid using a flexible struct member since we'll probably strdup both the username and nickname beforehand anyways */
 };
@@ -204,6 +205,15 @@ static void whowas_update(struct irc_user *user, int keep)
 	RWLIST_UNLOCK(&whowas_users);
 }
 
+/*! \todo
+ * Now that the programmatic user APIs exist,
+ * services (ChanServ, MessageServ) could, in the future,
+ * potentially be refactored out of net_irc.
+ * Unlike mod_irc_bouncer, we would return 0 for
+ * the join_leave_suppress callback, since we
+ * would never want to suppress JOIN/PART, etc.
+ * for services. */
+
 #pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
 /*! \brief Static user struct for ChanServ operations */
 static struct irc_user user_chanserv = {
@@ -214,6 +224,7 @@ static struct irc_user user_chanserv = {
 	.realname = "Channel Services",
 	.hostname = "services",
 	.modes = USER_MODE_OPERATOR, /* Grant ChanServ permissions to do whatever it wants */
+	.programmatic = 1,
 	.lock = BBS_MUTEX_INITIALIZER,
 };
 
@@ -227,11 +238,15 @@ static struct irc_user user_messageserv = {
 	.realname = "Messaging Services",
 	.hostname = "services",
 	.modes = 0,
+	.programmatic = 1,
 	.lock = BBS_MUTEX_INITIALIZER,
 };
 #pragma GCC diagnostic pop
 
 #define IS_SERVICE(user) (user == &user_chanserv || user == &user_messageserv)
+
+/*! \brief Is this a "real" user? (with a node, coming in via a TCP connection, not part of a BBS module) */
+#define IS_REAL_USER(user) (!user->programmatic)
 
 static RWLIST_HEAD_STATIC(users, irc_user);	/* Container for all users */
 
@@ -245,10 +260,137 @@ struct irc_member {
 
 RWLIST_HEAD(channel_members, irc_member);
 
+/* XXX 100% horrible horrible (hopefully temporary) kludge - a total lock hack: In this case, it's to emulate recursive locking for this thread stack:
+ *
+ * Example of call stacks that would otherwise deadlock:
+ *
+ * -- Example A (line numbers pretty outdated by now)
+ * _irc_relay_send (net_irc.c:937) <--- try to RDLOCK
+ * netirc_cb (mod_irc_relay.c:575)
+ * relay_broadcast (net_irc.c:793)
+ * relay_broadcast (net_irc.c:777)
+ * drop_member_if_present (net_irc.c:2522)
+ * leave_all_channels.constprop.0 (net_irc.c:2575) <---- initial WRLOCK
+ * handle_client (net_irc.c:2979)
+ *
+ * -- Example B (line numbers less outdated)
+ * join_channel (net_irc.c:3189) <---- try to WRLOCK again channels (and even channels->members) again
+ * irc_user_exec (net_irc.c:4056)
+ * bouncer_send (mod_irc_bouncer.c:226)
+ * start_bouncer_for_channel (mod_irc_bouncer.c:573)
+ * join_leave (mod_irc_bouncer.c:644)
+ * join_leave_suppress (net_irc.c:2990)
+ * leave_channel (net_irc.c:2990) <---- initial WRLOCK
+ * handle_client (net_irc.c:3872)
+ *
+ * There are more call sites than just these, and all the known ones have ENABLE_RECURSIVE_LOCKING() in an appropriate place.
+ */
+
+enum lock_state {
+	LOCK_STATE_UNLOCKED,
+	LOCK_STATE_RDLOCK,
+	LOCK_STATE_WRLOCK,
+};
+
+struct recursive_lock {
+	pthread_t thread;
+	enum lock_state state;
+	int count;
+	int line;
+	bbs_mutex_t lock;
+};
+
+struct recursive_lock channels_recurse = {
+	.thread = 0,
+	.state = LOCK_STATE_UNLOCKED,
+	.count = 0,
+	.lock = BBS_MUTEX_INITIALIZER,
+};
+
+/* Macros to manage recursive locking for the channels list */
+#define DEBUG_RECURSIVE_LOCKING
+
+#ifdef DEBUG_RECURSIVE_LOCKING
+#define RECURSIVE_LOCK_DUMP_STATE_TO_STACK(r) \
+	pthread_t _recursive_thread = (r)->thread; \
+	int _recursive_count = (r)->count; \
+	enum lock_state _recursive_state = (r)->state; \
+	UNUSED(_recursive_thread); \
+	UNUSED(_recursive_count); \
+	UNUSED(_recursive_state);
+#else
+#define RECURSIVE_LOCK_DUMP_STATE_TO_STACK(r)
+#endif
+
+#define RECURSIVE_LOCKING_ENABLED(r) ((r)->thread == pthread_self())
+
+#define RECURSIVE_LOCK_COUNT_ADJUST(r, c) \
+	(r)->count += c;
+
+/* If we already hold a lock and we're recursing,
+ * and we just want a RDLOCK, it doesn't matter
+ * whether we hold a RDLOCK or WRLOCK, it's fine... */
+#define RWLIST_RDLOCK_RECURSIVE(l, r) \
+	if (RECURSIVE_LOCKING_ENABLED((r)) && (r)->state != LOCK_STATE_UNLOCKED) { \
+		bbs_mutex_lock(&(r)->lock); \
+		RECURSIVE_LOCK_COUNT_ADJUST(r, +1); \
+		bbs_mutex_unlock(&(r)->lock); \
+	} else { \
+		RECURSIVE_LOCK_DUMP_STATE_TO_STACK(r); \
+		RWLIST_RDLOCK(l); \
+		bbs_mutex_lock(&(r)->lock); \
+		(r)->thread = pthread_self(); \
+		(r)->state = LOCK_STATE_RDLOCK; \
+		(r)->line = __LINE__; \
+		RECURSIVE_LOCK_COUNT_ADJUST(r, +1); \
+		bbs_mutex_unlock(&(r)->lock); \
+	}
+
+/* ... However, if we want to get a WRLOCK and we already locked the list,
+ * then we must have initially grabbed a WRLOCK.
+ * That won't work, the code needs to grab a WRLOCK from the get go. */
+#define RWLIST_WRLOCK_RECURSIVE(l, r) \
+	if (RECURSIVE_LOCKING_ENABLED((r)) && (r)->state != LOCK_STATE_UNLOCKED) { \
+		if ((r)->state == LOCK_STATE_WRLOCK) { \
+			bbs_mutex_lock(&(r)->lock); \
+			RECURSIVE_LOCK_COUNT_ADJUST(r, +1); \
+			bbs_mutex_unlock(&(r)->lock); \
+		} else { \
+			bbs_error("List %p was %s at line %d, but now we want a WRLOCK!\n", (r), (r)->state == LOCK_STATE_RDLOCK ? "initially RDLOCK'd" : "unlocked", (r)->line); \
+			bbs_log_backtrace(); \
+			abort(); \
+		} \
+	} else { \
+		RECURSIVE_LOCK_DUMP_STATE_TO_STACK(r); \
+		RWLIST_WRLOCK(l); \
+		bbs_mutex_lock(&(r)->lock); \
+		(r)->thread = pthread_self(); \
+		(r)->state = LOCK_STATE_WRLOCK; \
+		(r)->line = __LINE__; \
+		RECURSIVE_LOCK_COUNT_ADJUST(r, +1); \
+		bbs_mutex_unlock(&(r)->lock); \
+	}
+
+#define RWLIST_UNLOCK_RECURSIVE(l, r) \
+	bbs_mutex_lock(&(r)->lock); \
+	RECURSIVE_LOCK_COUNT_ADJUST(r, -1); \
+	if (!(r)->count) { \
+		(r)->thread = 0; \
+		(r)->state = LOCK_STATE_UNLOCKED; \
+		(r)->line = __LINE__; \
+		RWLIST_UNLOCK(l); \
+	} \
+	bbs_mutex_unlock(&(r)->lock);
+
+/* These do nothing, but are merely markers to indicate known code paths
+ * that require recursive locking. */
+#define ENABLE_RECURSIVE_LOCKING(r)
+#define RESET_RECURSIVE_LOCKING(r)
+
 struct irc_channel {
 	const char *name;					/* Name of channel */
 	const char *username;				/* Username of owner (for private namespace channels) */
-	unsigned int membercount;			/* Current member count, for constant-time member count access */
+	int membercount;					/* Current member count, for constant-time member count access */
 	char *password;						/* Channel password */
 	char *topic;						/* Channel topic */
 	char *topicsetby;					/* Ident of who set the channel topic */
@@ -265,7 +407,8 @@ struct irc_channel {
 	RWLIST_ENTRY(irc_channel) entry;	/* Next channel */
 	struct bbs_rate_limit ratelimit;	/* Time that last relayed message was sent */
 	unsigned int relay:1;				/* Enable relaying */
-	bbs_mutex_t lock;				/* Channel lock */
+	bbs_mutex_t lock;					/* Channel lock */
+	struct recursive_lock recurse;		/* Recursive lock */
 	char data[];						/* Flexible struct member for channel name / owner username */
 };
 
@@ -369,52 +512,155 @@ int irc_relay_unregister(struct irc_relay_callbacks *relay_callbacks)
 	return 0;
 }
 
-/* ChanServ interface */
+/* Programmatic user interface, e.g. ChanServ, bouncer users */
 
-static void (*chanserv_privmsg)(const char *username, char *msg);
-static void (*chanserv_eventcb)(const char *command, const char *channel, const char *username, const char *data);
-static void *chanserv_mod;
+struct programmatic_user {
+	struct irc_user *user;
+	struct irc_event_callbacks *cb;
+	enum irc_command_callback_event events;
+	void *mod;
+	RWLIST_ENTRY(programmatic_user) entry;
+};
 
-#define chanserv_broadcast(cmd, chan, username, data) if (chanserv_eventcb) { chanserv_eventcb(cmd, chan, username, data); }
+static RWLIST_HEAD_STATIC(programmatic_users, programmatic_user);
 
-int irc_chanserv_register(void (*privmsg)(const char *username, char *msg), void (*eventcb)(const char *command, const char *channel, const char *username, const char *data), void *mod)
+int __irc_register_programmatic_user(struct irc_user *user, struct irc_event_callbacks *cb, enum irc_command_callback_event events, void *mod)
 {
-	if (chanserv_mod) {
-		bbs_error("ChanServ is already registered\n");
+	struct programmatic_user *p;
+
+	p = calloc(1, sizeof(*p));
+	if (ALLOC_FAILURE(p)) {
 		return -1;
 	}
-	/* This is the right order for these operations. Use reverse order for unregister. */
-	chanserv_mod = mod;
-	chanserv_privmsg = privmsg;
-	chanserv_eventcb = eventcb;
-	return 0;
-}
+	p->user = user;
+	p->cb = cb;
+	p->events = events;
+	p->mod = mod;
 
-int irc_chanserv_unregister(void (*privmsg)(const char *username, char *msg))
-{
-	if (privmsg != chanserv_privmsg) {
-		bbs_error("ChanServ unregistration mismatch\n");
-		return -1;
-	}
-	chanserv_privmsg = NULL;
-	chanserv_eventcb = NULL;
-	chanserv_mod = NULL;
-	return 0;
-}
-
-static int chanserv_msg(struct irc_user *user, char *s)
-{
-	/* There is no mechanism here for writing output back to user.
-	 * ChanServ will send a PRIVMSG if it needs to.
-	 * It may very well do other things, too. */
-	if (chanserv_privmsg) {
-		bbs_module_ref(chanserv_mod, 3);
-		chanserv_privmsg(user->nickname, s);
-		bbs_module_unref(chanserv_mod, 3);
-		return 0;
+	RWLIST_RDLOCK(&programmatic_users);
+	if (!strcmp(user->username, "ChanServ")) {
+		/* Since ChanServ is frequently used, always insert it at the front of the list.
+		 * This way private messaging ChanServ is still constant time,
+		 * even with a lot of programmatic users registered. */
+		RWLIST_INSERT_HEAD(&programmatic_users, p, entry);
 	} else {
-		return -1;
+		RWLIST_INSERT_TAIL(&programmatic_users, p, entry);
 	}
+	RWLIST_UNLOCK(&programmatic_users);
+
+	return 0;
+}
+
+int irc_unregister_programmatic_user(struct irc_user *user)
+{
+	struct programmatic_user *p = RWLIST_WRLOCK_REMOVE_BY_FIELD(&programmatic_users, user, user, entry);
+	if (p) {
+		free(p);
+	} else {
+		bbs_warning("Couldn't find programmatic user %p\n", user);
+	}
+	return p ? 0 : -1;
+}
+
+static int chanserv_registered = 0;
+
+int __irc_chanserv_register(struct irc_event_callbacks *cb, void *mod)
+{
+	int res = __irc_register_programmatic_user(&user_chanserv, cb, IRCCMD_EVENT_JOIN | IRCCMD_EVENT_TOPIC, mod); /* mod_chanserv only uses these 2 */
+	if (!res) {
+		chanserv_registered = 1;
+	}
+	return res;
+}
+
+int irc_chanserv_unregister(struct irc_event_callbacks *cb)
+{
+	/* We could key registration by both the user and the callback,
+	 * but since the user is unique (a primary key of sorts),
+	 * we don't need to use the callback at all. */
+	UNUSED(cb);
+	chanserv_registered = 0;
+	return irc_unregister_programmatic_user(&user_chanserv);
+}
+
+static void broadcast_channel_event(enum irc_command_callback_event event, const char *channel, const char *hostmask, const char *username, const char *data)
+{
+	struct programmatic_user *p;
+	const char *command = ""; /* Doesn't need to be initialized, but makes gcc happy */
+
+	switch (event) {
+		case IRCCMD_EVENT_NONE: command = "NONE"; break;
+		case IRCCMD_EVENT_PRIVMSG: command = "PRIVMSG"; break;
+		case IRCCMD_EVENT_JOIN: command = "JOIN"; break;
+		case IRCCMD_EVENT_PART: command = "PART"; break;
+		case IRCCMD_EVENT_QUIT: command = "QUIT"; break;
+		case IRCCMD_EVENT_KICK: command = "KICK"; break;
+		case IRCCMD_EVENT_TOPIC: command = "TOPIC"; break;
+		case IRCCMD_EVENT_MODE: command = "MODE"; break;
+		/* No default case, to force us to handle everything */
+	}
+
+	RWLIST_RDLOCK(&programmatic_users);
+	RWLIST_TRAVERSE(&programmatic_users, p, entry) {
+		if (p->events & event) { /* Don't make useless function calls if not subscribed for this event */
+			bbs_module_ref(p->mod, 12);
+			/* We intentionally use the username here, not the nickname */
+			p->cb->command_cb(p->user->username, event, command, channel, hostmask, username, data);
+			bbs_module_unref(p->mod, 12);
+		}
+	}
+	RWLIST_UNLOCK(&programmatic_users);
+}
+
+static void broadcast_channel_event_external(enum irc_command_callback_event event, struct irc_channel *chan, const char *sender, const char *relayname, const char *hostname, const char *data)
+{
+	char hostmask[128];
+	snprintf(hostmask, sizeof(hostmask), HOSTMASK_FMT, sender, relayname, hostname);
+	broadcast_channel_event(event, chan->name, hostmask, sender, data);
+}
+
+static void broadcast_channel_event_internal(enum irc_command_callback_event event, struct irc_channel *chan, struct irc_user *user, const char *data)
+{
+	char hostmask[128];
+	snprintf(hostmask, sizeof(hostmask), HOSTMASK_FMT, HOSTMASK_ARGS(user));
+	broadcast_channel_event(event, chan->name, hostmask, user->username, data);
+}
+
+static int nickserv(struct irc_user *user, char *s);
+
+static int programmatic_privmsg(struct irc_user *user, const char *recipient, char *msg)
+{
+	/* We only execute one callback at max, if we find a matching one */
+	struct programmatic_user *p;
+	char hostmask[128];
+
+	/* Special exception for NickServ, ChanServ is handled in the normal list below */
+	if (!strcasecmp(recipient, "NickServ")) {
+		nickserv(user, msg);
+		return 0;
+	}
+
+	snprintf(hostmask, sizeof(hostmask), HOSTMASK_FMT, HOSTMASK_ARGS(user));
+
+	/* There is no mechanism here for writing output back to user.
+	 * ChanServ and other programmatic users will send a PRIVMSG if needed,
+	 * or very well do other things. */
+	RWLIST_RDLOCK(&programmatic_users);
+	RWLIST_TRAVERSE(&programmatic_users, p, entry) {
+		if (!strcmp(p->user->username, recipient)) {
+			bbs_module_ref(p->mod, 12);
+			p->cb->privmsg_cb(hostmask, user->username, recipient, msg);
+			bbs_module_unref(p->mod, 12);
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&programmatic_users);
+	return p ? 1 : 0;
+}
+
+static int chanserv_msg(struct irc_user *user, char *msg)
+{
+	return programmatic_privmsg(user, "ChanServ", msg);
 }
 
 static int authorized_atleast_bymode(enum channel_user_modes modes, int atleast)
@@ -568,13 +814,11 @@ static void user_free(struct irc_user *user)
 }
 
 /* Forward declaration */
-static void set_away_via_relays(struct irc_user *user, const char *awaymsg);
+static void set_away_via_relays(struct irc_user *user, enum irc_user_status userstatus, const char *awaymsg);
 
 static void unlink_user(struct irc_user *user)
 {
 	struct irc_user *u;
-
-	set_away_via_relays(user, "Away"); /* If disconnecting, indicate we're away */
 
 	RWLIST_WRLOCK(&users);
 	u = RWLIST_REMOVE(&users, user, entry);
@@ -605,7 +849,7 @@ static inline int priv_channel_owner(struct irc_channel *c, const char *username
 
 static int user_is_priv_channel_owner(struct irc_channel *c, struct irc_user *u)
 {
-	return !strcasecmp(c->username, bbs_username(u->node->user));
+	return !strcasecmp(c->username, u->username);
 }
 
 /*!
@@ -663,17 +907,38 @@ static struct irc_member *get_member_by_channel_name(struct irc_user *user, cons
 }
 
 /*! \note This returns a user with no locks */
-static struct irc_user *get_user(const char *username)
+/*! \todo Replace usage of get_user with get_user_locked, and have caller unlock user when we're done with it */
+static struct irc_user *get_user(const char *nickname)
 {
 	struct irc_user *user;
 
-	if (!strcasecmp(username, "ChanServ") && chanserv_mod) {
+	if (!strcasecmp(nickname, "ChanServ") && chanserv_registered) {
 		return &user_chanserv;
 	}
 
 	RWLIST_RDLOCK(&users);
 	RWLIST_TRAVERSE(&users, user, entry) {
-		if (!strcasecmp(user->username, username)) {
+		if (!strcasecmp(user->nickname, nickname)) {
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&users);
+	return user;
+}
+
+/*! \note Returns a non-programmatic user, locked */
+static struct irc_user *get_user_return_locked(const char *nickname)
+{
+	struct irc_user *user;
+
+	if (!strcasecmp(nickname, "ChanServ") && chanserv_registered) {
+		return &user_chanserv;
+	}
+
+	RWLIST_RDLOCK(&users);
+	RWLIST_TRAVERSE(&users, user, entry) {
+		if (!user->programmatic && !strcasecmp(user->nickname, nickname)) {
+			bbs_mutex_lock(&user->lock);
 			break;
 		}
 	}
@@ -685,13 +950,15 @@ int irc_user_inactive(const char *username)
 {
 	struct irc_user *user;
 
-	if (!strcasecmp(username, "ChanServ") && chanserv_mod) {
+	if (!strcasecmp(username, "ChanServ") && chanserv_registered) {
 		return 1;
 	}
 
 	RWLIST_RDLOCK(&users);
 	RWLIST_TRAVERSE(&users, user, entry) {
-		if (!strcasecmp(user->username, username)) {
+		/* Ignore programmatic users (e.g. bouncer clients masquerading as real users),
+		 * as those should not cause us to think a user is active. */
+		if (!user->programmatic && !strcasecmp(user->username, username)) {
 			int res = user->away ? 1 : 0;
 			RWLIST_UNLOCK(&users);
 			return res;
@@ -701,9 +968,43 @@ int irc_user_inactive(const char *username)
 	return -1;
 }
 
-static struct irc_member *get_member_by_username(const char *username, const char *channame)
+int irc_user_send_single(const char *username, const char *data)
 {
-	struct irc_user *user = get_user(username);
+	struct irc_user *u = get_user_return_locked(username);
+	if (!u) {
+		bbs_warning("Can't write data to %s (not online)\n", username);
+		return -1;
+	}
+	irc_other_thread_writef(u->node, "%s", data);
+	bbs_mutex_unlock(&u->lock);
+	return 0;
+}
+
+int irc_user_send_chunk(struct irc_user *user, const char *data)
+{
+	/* user is already locked */
+	return irc_other_thread_writef(user->node, "%s", data) < 0 ? -1 : 0;
+}
+
+int irc_user_send_multiple(const char *username, int (*write_cb)(struct irc_user *user, void *obj), void *obj)
+{
+	int res;
+	struct irc_user *user = get_user_return_locked(username);
+	if (!user) {
+		bbs_warning("Can't write data to %s (not online)\n", username);
+		return -1;
+	}
+	/* Now that we searched for the user once,
+	 * give the callback a handle to it,
+	 * and let it write stuff out. */
+	res = write_cb(user, obj); /* Keep locked so it can't go away while in use */
+	bbs_mutex_unlock(&user->lock);
+	return res;
+}
+
+static struct irc_member *get_member_by_nickname(const char *nickname, const char *channame)
+{
+	struct irc_user *user = get_user(nickname);
 	if (!user) {
 		return NULL;
 	}
@@ -711,9 +1012,9 @@ static struct irc_member *get_member_by_username(const char *username, const cha
 }
 
 /*! \note Mainly exists so that ChanServ can easily get the modes of channel members */
-enum channel_user_modes irc_get_channel_member_modes(const char *channel, const char *username)
+enum channel_user_modes irc_get_channel_member_modes(const char *channel, const char *nickname)
 {
-	struct irc_member *member = get_member_by_username(username, channel);
+	struct irc_member *member = get_member_by_nickname(nickname, channel);
 	if (!member) {
 		return CHANNEL_USER_MODE_NONE;
 	}
@@ -745,9 +1046,12 @@ const char *irc_channel_topic(const char *channel)
 	return c->topic;
 }
 
-static int valid_channame(const char *s)
+int irc_valid_channel_name(const char *s)
 {
 	int i = 0;
+	if (!VALID_CHANNEL_NAME(s) || strlen(s) > MAX_CHANNEL_LENGTH) {
+		return 0;
+	}
 	while (*s) {
 		if (!isalnum(*s) && *s != '-' && !(!i && VALID_CHANNEL_NAME_PREFIX(*s))) {
 			bbs_debug(3, "Character %d is not valid\n", *s);
@@ -764,6 +1068,7 @@ static void channel_free(struct irc_channel *channel)
 	bbs_assert(channel->membercount == 0);
 	stringlist_empty_destroy(&channel->invited);
 	bbs_mutex_destroy(&channel->lock);
+	bbs_mutex_destroy(&channel->recurse.lock);
 	if (channel->fp) {
 		fclose(channel->fp);
 		channel->fp = NULL;
@@ -781,6 +1086,12 @@ static void member_free(struct irc_member *member)
 	free(member);
 }
 
+#define CHANNEL_MEMBER_COUNT_ADJUST(channel, incr) \
+	bbs_mutex_lock(&channel->lock); \
+	channel->membercount += incr; \
+	bbs_assert(channel->membercount >= 0); \
+	bbs_mutex_unlock(&channel->lock);
+
 static void destroy_channels(void)
 {
 	struct irc_channel *channel;
@@ -790,7 +1101,7 @@ static void destroy_channels(void)
 		struct irc_member *member;
 		RWLIST_WRLOCK(&channel->members); /* Kick any members still present */
 		while ((member = RWLIST_REMOVE_HEAD(&channel->members, entry))) {
-			channel->membercount -= 1;
+			CHANNEL_MEMBER_COUNT_ADJUST(channel, -1);
 			member_free(member);
 		}
 		RWLIST_UNLOCK(&channel->members);
@@ -915,12 +1226,14 @@ static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, 
 #endif
 				continue;
 			}
-			bbs_module_ref(relay->mod, 4);
-			if (relay->relay_callbacks->relay_send(&rmsg)) {
+			if (relay->relay_callbacks->relay_send) {
+				bbs_module_ref(relay->mod, 4);
+				if (relay->relay_callbacks->relay_send(&rmsg)) {
+					bbs_module_unref(relay->mod, 4);
+					break;
+				}
 				bbs_module_unref(relay->mod, 4);
-				break;
 			}
-			bbs_module_unref(relay->mod, 4);
 		}
 		RWLIST_UNLOCK(&relays);
 	}
@@ -980,13 +1293,13 @@ int irc_relay_set_topic(const char *channel, const char *topic, const char *ircu
 
 	bbs_mutex_lock(&c->lock);
 	REPLACE(c->topic, topic);
-	snprintf(buf, sizeof(buf),IDENT_PREFIX_FMT, IDENT_PREFIX_ARGS(&user_messageserv));
+	snprintf(buf, sizeof(buf), HOSTMASK_FMT, HOSTMASK_ARGS(&user_messageserv));
 	REPLACE(c->topicsetby, buf);
 	c->topicsettime = time(NULL);
 	bbs_mutex_unlock(&c->lock);
 
 	channel_print_topic(NULL, c);
-	chanserv_broadcast("TOPIC", c->name, (&user_messageserv)->nickname, topic);
+	broadcast_channel_event_internal(IRCCMD_EVENT_TOPIC, c, &user_messageserv, topic);
 	return 0;
 }
 
@@ -1167,26 +1480,6 @@ int _irc_relay_send_multiline(const char *channel, enum channel_user_modes modes
 	return res;
 }
 
-/* XXX 100% horrible horrible (hopefully temporary) kludge - a total lock hack: In this case, it's to emulate recursive locking for this thread stack:
-Thread #8's call to bbs_rwlock_rdlock failed
-==168664==    with error code 35 (EDEADLK: Resource deadlock would occur)
-==168664==    at 0x483E751: bbs_rwlock_rdlock_WRK (hg_intercepts.c:2242)
-==168664==    by 0x6746963: _irc_relay_send (net_irc.c:937) <--- try to RDLOCK
-==168664==    by 0x485C960: netirc_cb (mod_irc_relay.c:575)
-==168664==    by 0x673C00B: relay_broadcast (net_irc.c:793)
-==168664==    by 0x673C00B: relay_broadcast (net_irc.c:777)
-==168664==    by 0x673C00B: drop_member_if_present (net_irc.c:2522)
-==168664==    by 0x673C00B: leave_all_channels.constprop.0 (net_irc.c:2575) <---- initial WRLOCK
-==168664==    by 0x67420D1: handle_client (net_irc.c:2979)
-==168664==    by 0x67461C4: irc_handler (net_irc.c:3320)
-==168664==    by 0x67461C4: __irc_handler (net_irc.c:3338)
-==168664==    by 0x13DBF9: thread_run (thread.c:337)
-==168664==    by 0x483F876: mythread_wrapper (hg_intercepts.c:387)
-==168664==    by 0x4EABEA6: start_thread (pthread_create.c:477)
-==168664==    by 0x4FC1A2E: clone (clone.S:95)
-*/
-static pthread_t channels_locked = 0;
-
 /*! \brief Somewhat condensed version of privmsg, for relay integration */
 int _irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *hostsender, const char *msg, const char *ircuser, int notice, void *mod)
 {
@@ -1231,7 +1524,7 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 			bbs_mutex_lock(&user2->lock); /* Serialize writes to this user */
 		}
 #endif
-		irc_other_thread_writef(user2->node, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, notice ? "NOTICE" : "PRIVMSG", user2->nickname, msg);
+		irc_other_thread_writef(user2->node, ":" HOSTMASK_FMT " %s %s :%s\r\n", sender, relayname, hostname, notice ? "NOTICE" : "PRIVMSG", user2->nickname, msg);
 #if 0
 		if (!notice) {
 			bbs_mutex_unlock(&user2->lock);
@@ -1244,13 +1537,9 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 	/*! \todo simplify using get_channel, get_member? But then we may have more locking issues... */
 	/* Grab a RDLOCK, unless this thread already has it WRLOCK'ed in a higher stack frame,
 	 * which can happen if something is being relayed in response to a callback firing. */
-	if (channels_locked != pthread_self()) {
-		RWLIST_RDLOCK(&channels);
-	}
+	RWLIST_RDLOCK_RECURSIVE(&channels, &channels_recurse);
 	c = find_channel(channel, ircuser);
-	if (channels_locked != pthread_self()) {
-		RWLIST_UNLOCK(&channels);
-	}
+	RWLIST_UNLOCK_RECURSIVE(&channels, &channels_recurse);
 
 	if (!c) {
 		if (ircuser) {
@@ -1267,8 +1556,8 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 			/* We cannot deliver the message to the channel, but since it's a private relay,
 			 * and the user is online, just send a PM with the message.
 			 * Also invite the user to join to receive further messages "normally". */
-			send_reply(u, ":" IDENT_PREFIX_FMT " INVITE %s %s\r\n", IDENT_PREFIX_ARGS(&user_messageserv), u->nickname, channel);
-			irc_other_thread_writef(u->node, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(&user_messageserv), "NOTICE", u->nickname, msg);
+			send_reply(u, ":" HOSTMASK_FMT " INVITE %s %s\r\n", HOSTMASK_ARGS(&user_messageserv), u->nickname, channel);
+			irc_other_thread_writef(u->node, ":" HOSTMASK_FMT " %s %s :%s\r\n", HOSTMASK_ARGS(&user_messageserv), "NOTICE", u->nickname, msg);
 		}
 		return -1;
 	}
@@ -1301,20 +1590,20 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 				/* If using the nickname of the username, must be the user */
 				continue;
 			}
+			if (!IS_REAL_USER(kicked)) {
+				continue; /* Programmatic users (including services) do not have a node. */
+			}
 			if (bbs_user_is_registered(kicked->node->user) && !strcasecmp(bbs_username(kicked->node->user), ircuser)) {
 				/* Nicknames are unique but usernames are not, across all sessions.
 				 * User could be logged in as something else, but if authenticated as same user, also fine */
 				continue;
 			}
-			if (IS_SERVICE(kicked)) {
-				continue;
-			}
 			bbs_auth("Dropping unauthorized user %s from relayed channel %s\n", kicked->nickname, c->name);
 			RWLIST_REMOVE_CURRENT(entry);
-			c->membercount -= 1;
+			CHANNEL_MEMBER_COUNT_ADJUST(c, -1);
 			member_free(member);
 			/* Already locked, so don't try to recursively lock: */
-			channel_broadcast_nolock(c, NULL, ":" IDENT_PREFIX_FMT " KICK %s %s :%s\r\n", IDENT_PREFIX_ARGS(&user_messageserv), c->name, kicked->nickname, "Not authorized to receive relayed messages");
+			channel_broadcast_nolock(c, NULL, ":" HOSTMASK_FMT " KICK %s %s :%s\r\n", HOSTMASK_ARGS(&user_messageserv), c->name, kicked->nickname, "Not authorized to receive relayed messages");
 		}
 		RWLIST_TRAVERSE_SAFE_END;
 		RWLIST_UNLOCK(&c->members);
@@ -1362,12 +1651,11 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 	}
 	bbs_mutex_unlock(&c->lock);
 
-	channel_broadcast_selective(c, NULL, minmode, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", sender, relayname, hostname, "PRIVMSG", c->name, msg);
+	channel_broadcast_selective(c, NULL, minmode, ":" HOSTMASK_FMT " %s %s :%s\r\n", sender, relayname, hostname, "PRIVMSG", c->name, msg);
 	relay_broadcast(c, NULL, sender, msg, mod);
+	broadcast_channel_event_external(IRCCMD_EVENT_PRIVMSG, c, sender, relayname, hostname, msg); /* For messages from relays to go to the bouncer */
 	return 0;
 }
-
-static void nickserv(struct irc_user *user, char *s);
 
 static int privmsg(struct irc_user *user, const char *channame, int notice, char *message)
 {
@@ -1390,16 +1678,12 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, char
 		return -1;
 	}
 
-	/* XXX Could be multiple channels, comma-separated (not currently supported) */
+	/*! \todo FIXME Could be multiple channels, comma-separated (not currently supported) */
 
-	if (!notice && !strcasecmp(channame, "ChanServ")) {
-		if (!chanserv_msg(user, message)) {
-			return 0;
-		} /* else, fall through to IS_CHANNEL_NAME so we can send a 401 response. */
-	} else if (!notice && !strcasecmp(channame, "NickServ")) {
-		nickserv(user, message);
+	if (!notice && programmatic_privmsg(user, channame, message)) {
 		return 0;
-	}
+	} /* else, fall through to IS_CHANNEL_NAME so we can send a 401 response. */
+
 	if (!IS_CHANNEL_NAME(channame)) {
 		struct irc_user *user2 = get_user(channame);
 		/* Private message to another user. This is super simple, there's no other overhead or anything involved. */
@@ -1424,7 +1708,7 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, char
 				return -1;
 			}
 		} else {
-			irc_other_thread_writef(user2->node, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), notice ? "NOTICE" : "PRIVMSG", user2->nickname, message);
+			irc_other_thread_writef(user2->node, ":" HOSTMASK_FMT " %s %s :%s\r\n", HOSTMASK_ARGS(user), notice ? "NOTICE" : "PRIVMSG", user2->nickname, message);
 			if (user2->away) {
 				send_numeric(user, 301, "%s :%s\r\n", user2->nickname, S_IF(user2->awaymsg));
 			}
@@ -1489,10 +1773,11 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, char
 	}
 
 	/*! \todo By default, don't echo messages to ourself, but could if enabled: https://ircv3.net/specs/extensions/echo-message */
-	channel_broadcast_selective(channel, user, minmode, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), notice ? "NOTICE" : "PRIVMSG", channel->name, message);
+	channel_broadcast_selective(channel, user, minmode, ":" HOSTMASK_FMT " %s %s :%s\r\n", HOSTMASK_ARGS(user), notice ? "NOTICE" : "PRIVMSG", channel->name, message);
 	if (channel->relay && !notice) {
 		relay_broadcast(channel, user, NULL, message, NULL);
 	}
+	broadcast_channel_event_internal(IRCCMD_EVENT_PRIVMSG, channel, user, message);
 	return 0;
 }
 
@@ -1664,9 +1949,10 @@ static void handle_modes(struct irc_user *user, char *s)
 			return;
 		}
 		if (target) {
-			targetmember = get_member_by_username(target, channel_name);
+			targetmember = get_member_by_nickname(target, channel_name);
 		}
 		for (modes++; *modes; modes++) { /* Skip the + or - to start */
+			char modebuf[128];
 			char mode = *modes;
 			bbs_debug(5, "Requesting %s mode %c for %s (%s)\n", set ? "set" : "unset", mode, S_OR(target, "(empty target)"), S_IF(channel_name));
 			if (IS_CHANNEL_NAME(channel_name)) { /* Channel, and it's a channel operator */
@@ -1722,7 +2008,9 @@ static void handle_modes(struct irc_user *user, char *s)
 						}
 						bbs_mutex_unlock(&targetmember->lock);
 						if (changed) {
-							channel_broadcast(channel, NULL, ":%s MODE %s %c%c %s\r\n", user->nickname, channel->name, set ? '+' : '-', mode, targetmember->user->nickname);
+							snprintf(modebuf, sizeof(modebuf), "%s %c%c %s", channel->name, set ? '+' : '-', mode, targetmember->user->nickname);
+							channel_broadcast(channel, NULL, ":%s MODE %s\r\n", user->nickname, modebuf);
+							broadcast_channel_event_internal(IRCCMD_EVENT_MODE, channel, user, s);
 						}
 						break;
 					case 'c':
@@ -1760,7 +2048,9 @@ static void handle_modes(struct irc_user *user, char *s)
 						if (set) {
 							channel->password = strdup(target);
 							/* Broadcast the new password to the channel. */
-							channel_broadcast(channel, NULL, ":%s MODE %s %c%c %s\r\n", user->nickname, channel->name, '+', mode, target);
+							snprintf(modebuf, sizeof(modebuf), "%s %c%c %s", channel->name, '+', mode, target);
+							channel_broadcast(channel, NULL, ":%s MODE %s\r\n", user->nickname, modebuf);
+							broadcast_channel_event_internal(IRCCMD_EVENT_MODE, channel, user, s);
 							broadcast_if_change = 0; /* Don't do it again */
 						} else {
 							free_if(channel->password);
@@ -1801,7 +2091,9 @@ static void handle_modes(struct irc_user *user, char *s)
 				}
 				/*! \todo Improvement would be rather than doing one at a time, broadcast all the changes at once (storing changed modes in a tmp buffer) */
 				if (broadcast_if_change && changed) {
-					channel_broadcast(channel, NULL, ":%s MODE %s %c%c\r\n", user->nickname, channel->name, set ? '+' : '-', mode);
+					snprintf(modebuf, sizeof(modebuf), "%s %c%c", channel->name, set ? '+' : '-', mode);
+					channel_broadcast(channel, NULL, ":%s MODE %s\r\n", user->nickname, modebuf);
+					broadcast_channel_event_internal(IRCCMD_EVENT_MODE, channel, user, s);
 				}
 			} else { /* Same user */
 				switch (mode) {
@@ -1855,17 +2147,17 @@ static void handle_topic(struct irc_user *user, char *s)
 			send_numeric(user, 416, "Topic is too long\r\n"); /* XXX Not really the right numeric */
 			return;
 		}
-		m = get_member_by_username(user->nickname, channel->name);
+		m = get_member_by_nickname(user->nickname, channel->name);
 		if (!m || (channel->modes & CHANNEL_MODE_TOPIC_PROTECTED && !authorized_atleast(m, CHANNEL_USER_MODE_HALFOP))) { /* Need at least half op to set the topic, if protected. */
 			send_numeric(user, 482, "You're not a channel operator\r\n");
 		} else {
 			char buf[128];
 			REPLACE(channel->topic, s);
-			snprintf(buf, sizeof(buf),IDENT_PREFIX_FMT, IDENT_PREFIX_ARGS(user));
+			snprintf(buf, sizeof(buf), HOSTMASK_FMT, HOSTMASK_ARGS(user));
 			REPLACE(channel->topicsetby, buf);
 			channel->topicsettime = time(NULL);
 			channel_print_topic(NULL, channel);
-			chanserv_broadcast("TOPIC", channel->name, user->nickname, s);
+			broadcast_channel_event_internal(IRCCMD_EVENT_TOPIC, channel, user, s);
 		}
 	}
 }
@@ -1893,7 +2185,7 @@ static void handle_invite(struct irc_user *user, char *s)
 		send_numeric(user, 442, "You're not on that channel\r\n");
 		return;
 	}
-	member2 = get_member_by_username(nick, channame);
+	member2 = get_member_by_nickname(nick, channame);
 	if (member2) {
 		send_numeric2(user, 443, "%s %s :is already on channel\r\n", nick, channame);
 		return;
@@ -1917,7 +2209,7 @@ static void handle_invite(struct irc_user *user, char *s)
 	}
 	RWLIST_UNLOCK(&channel->invited);
 
-	send_reply(inviteduser, ":" IDENT_PREFIX_FMT " INVITE %s %s\r\n", IDENT_PREFIX_ARGS(user), inviteduser->nickname, channame);
+	send_reply(inviteduser, ":" HOSTMASK_FMT " INVITE %s %s\r\n", HOSTMASK_ARGS(user), inviteduser->nickname, channame);
 	send_numeric2(user, 341, "%s %s\r\n", nick, channame); /* Confirm to inviter */
 }
 
@@ -1950,7 +2242,7 @@ static void handle_knock(struct irc_user *user, char *s)
 		return;
 	}
 	/* Notify ops about the KNOCK */
-	channel_broadcast_selective(channel, NULL, CHANNEL_USER_MODE_OP, ":%s %d %s " IDENT_PREFIX_FMT " :has asked for an invite\r\n", irc_hostname, 710, channel->name, IDENT_PREFIX_ARGS(user)); /* XXX msg is not used, seems there's no place for it in this numeric? */
+	channel_broadcast_selective(channel, NULL, CHANNEL_USER_MODE_OP, ":%s %d %s " HOSTMASK_FMT " :has asked for an invite\r\n", irc_hostname, 710, channel->name, HOSTMASK_ARGS(user)); /* XXX msg is not used, seems there's no place for it in this numeric? */
 	send_numeric(user, 711, "Your KNOCK has been delivered.\r\n");
 }
 
@@ -2048,9 +2340,9 @@ void irc_relay_who_response(struct bbs_node *node, int fd, const char *relayname
 	snprintf(mask, sizeof(mask), "%s/%s", relayname, hostsuffix);
 
 	/* We consider users to be active in a channel as long as they're in it, so offline is the equivalent of "away" in IRC */
-	snprintf(userflags, sizeof(userflags), "%c%s", active ? 'G' : 'H', "");
+	snprintf(userflags, sizeof(userflags), "%c%s", active ? 'H' : 'G', ""); /* H/G = here / gone */
 	/* IRC numeric 352 */
-	irc_relay_numeric_response(node, fd, 352, "%s %s %s %s %s %s %s :%d %s\r\n", ircusername, "*", hostsuffix, mask, bbs_hostname(), hostsuffix, userflags, hopcount, uniqueid);
+	irc_relay_numeric_response(node, fd, 352, "%s %s %s %s %s %s %s :%d %s", ircusername, "*", hostsuffix, mask, bbs_hostname(), hostsuffix, userflags, hopcount, uniqueid);
 }
 
 void irc_relay_names_response(struct bbs_node *node, int fd, const char *ircusername, const char *channel, const char *names)
@@ -2339,9 +2631,9 @@ static void handle_list(struct irc_user *user, char *s)
 			continue; /* Private namespace channel */
 		}
 		/* Remember, the conditions are NOT inclusive. If they are equal, in other words, that is not a match, skip. */
-		if (minmembers && channel->membercount <= minmembers) {
+		if (minmembers && channel->membercount <= (int) minmembers) {
 			continue;
-		} else if (maxmembers && channel->membercount >= maxmembers) {
+		} else if (maxmembers && channel->membercount >= (int) maxmembers) {
 			continue;
 		} else if (mintopicage && channel->topicsettime && channel->topicsettime >= now - maxtopicage) {
 			continue; /* Topic too old */
@@ -2396,51 +2688,13 @@ static void handle_help(struct irc_user *user, char *s)
 	send_numeric(user, 524, "I don't know anything about that\r\n");
 }
 
-static void hostmask(struct irc_user *user)
+static void cloak_user(struct irc_user *user)
 {
-	char mask[32];
-	/* Replace hostname with host mask, since nobody actually wants his or her location publicly shared */
-	snprintf(mask, sizeof(mask), "node/%d", user->node->id);
-	bbs_debug(6, "Changing hostmask for node %d from %s to %s\n", user->node->id, user->hostname, mask);
-	REPLACE(user->hostname, mask);
-}
-
-static int add_user(struct irc_user *user)
-{
-	struct irc_user *u;
-
-	if (user->registered) {
-		bbs_error("Trying to add already registered user?\n");
-		return -1;
-	} else if (strlen_zero(user->username)) {
-		bbs_error("User lacks a username\n");
-		return -1;
-	} else if (strlen_zero(user->nickname)) {
-		bbs_error("User lacks a nickname\n");
-		return -1;
-	}
-
-	if (bbs_user_is_registered(user->node->user)) {
-		hostmask(user); /* Cloak the user before adding to users list, so our IP doesn't leak on WHO/WHOIS */
-	}
-
-	RWLIST_WRLOCK(&users);
-	RWLIST_TRAVERSE(&users, u, entry) {
-		if (!strcasecmp(u->nickname, user->nickname)) {
-			break;
-		}
-	}
-	if (u) {
-		send_numeric(user, 433, "Nickname is already in use\r\n");
-		RWLIST_UNLOCK(&users);
-		return -1;
-	}
-	user->registered = 1;
-	RWLIST_INSERT_HEAD(&users, user, entry);
-	RWLIST_UNLOCK(&users);
-
-	set_away_via_relays(user, NULL); /* If we just logged in, we're no longer away */
-	return 0;
+	char cloak[32];
+	/* Replace hostname with a cloak, since nobody actually wants his or her location publicly shared */
+	snprintf(cloak, sizeof(cloak), "node/%d", user->node->id);
+	bbs_debug(6, "Cloaking node %d's hostname from %s to %s\n", user->node->id, user->hostname, cloak);
+	REPLACE(user->hostname, cloak);
 }
 
 static void broadcast_nick_change(struct irc_user *user, const char *oldnick)
@@ -2465,17 +2719,189 @@ static void broadcast_nick_change(struct irc_user *user, const char *oldnick)
 	RWLIST_UNLOCK(&channels);
 }
 
+/*! \note users must be locked */
+static int nickname_in_use(const char *nickname)
+{
+	struct irc_user *u;
+	RWLIST_TRAVERSE(&users, u, entry) {
+		if (!strcmp(u->nickname, nickname)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/*!
+ * \brief Atomically set or change nickname, if desired nickname is available
+ * \retval 1 Nickname in use
+ * \retval -1 Other failure
+ * \retval 0 Success
+ */
+static int set_nickname(struct irc_user *user, const char *nickname, char *oldnick, size_t oldnicklen)
+{
+	char *newnick;
+
+	/* If we already have the desired nickname, no change needed */
+	if (user->nickname && !strcmp(user->nickname, nickname)) {
+		bbs_debug(5, "Already have desired nickname '%s', no change needed\n", nickname);
+		return 0;
+	}
+
+	RWLIST_WRLOCK(&users); /* Since we're changing the nickname, which is kind of a key in the list, write lock */
+	if (nickname_in_use(nickname)) {
+		RWLIST_UNLOCK(&users);
+		return 1;
+	}
+	if (oldnick) {
+		safe_strncpy(oldnick, S_IF(user->nickname), oldnicklen);
+	}
+	newnick = strdup(nickname);
+	if (ALLOC_FAILURE(newnick)) {
+		RWLIST_UNLOCK(&users);
+		return -1;
+	}
+	if (user->nickname) {
+		bbs_notice("%s (" HOSTMASK_FMT ") changed nickname to %s\n", user->nickname, HOSTMASK_ARGS(user), newnick);
+	}
+	free_if(user->nickname);
+	user->nickname = newnick;
+	RWLIST_UNLOCK(&users);
+	return 0;
+}
+
+/*! \brief Try to set a fallback nickname */
+static int autoset_nickname(struct irc_user *user, const char *base_nickname, char *oldnick, size_t oldnicklen)
+{
+	char buf[MAX_NICKLEN + 1];
+	int len;
+
+	/* Keep appending '_' until it succeeds */
+	len = snprintf(buf, sizeof(buf), "%s", base_nickname);
+	while (len < MAX_NICKLEN) {
+		strcpy(buf + len, "_");
+		if (!set_nickname(user, buf, oldnick, oldnicklen)) {
+			bbs_debug(4, "Autoset nickname to %s\n", buf);
+			return 0;
+		}
+		len++;
+	}
+	bbs_error("Failed to autoset any nickname for %s\n", base_nickname);
+	return -1;
+}
+
+static int try_nick_swap(struct irc_user *user, const char *nickname)
+{
+	struct irc_user *u2;
+
+	/* Have an existing nickname we can use in the swap.
+	 * Give real, interactive users precedence over programmatic users. */
+
+	/* Nickname in use.
+	 * See if we can swap places with a programmatic user masquerading as us. */
+	RWLIST_WRLOCK(&users);
+	RWLIST_TRAVERSE(&users, u2, entry) {
+		if (!user->programmatic && u2->programmatic && !strcmp(u2->nickname, nickname)) {
+			char *nick2;
+			/* Swap the allocated references */
+			bbs_debug(1, "Swapped desired nickname (%s) from a programmatic user (%s)\n", u2->nickname, user->nickname);
+			bbs_notice("%s (" HOSTMASK_FMT ") changed nickname to %s\n", user->nickname, HOSTMASK_ARGS(user), u2->nickname);
+			nick2 = user->nickname;
+			user->nickname = u2->nickname;
+			u2->nickname = nick2;
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&users);
+	return u2 ? 0 : 1;
+}
+
+/*! \brief Automatically try to set the preferred nickname, or try a fallback nickname otherwise */
+static int set_or_default_nickname(struct irc_user *user, const char *nickname, char *oldnick, size_t oldnicklen)
+{
+	int res;
+
+	/* Most of the time, users will get their nick */
+	res = set_nickname(user, nickname, oldnick, oldnicklen);
+	if (res != 1) {
+		return res;
+	}
+
+	/* If we already have a unique name, try a swap first. */
+	if (!strlen_zero(user->nickname) && !try_nick_swap(user, nickname)) {
+		return 0;
+	}
+
+	/* Finally, as a last resort, try appending '_' repeatedly */
+	return autoset_nickname(user, nickname, oldnick, oldnicklen);
+}
+
+static int add_user(struct irc_user *user)
+{
+	if (user->registered) {
+		bbs_error("Trying to add already registered user?\n");
+		return -1;
+	} else if (strlen_zero(user->username)) {
+		bbs_error("User lacks a username\n");
+		return -1;
+	} else if (strlen_zero(user->nickname)) {
+		bbs_error("User lacks a nickname\n");
+		return -1;
+	}
+
+	if (IS_REAL_USER(user)) {
+		cloak_user(user); /* Cloak the user before adding to users list, so our IP doesn't leak on WHO/WHOIS */
+	}
+
+	RWLIST_WRLOCK(&users);
+	/* This user isn't in the users list yet,
+	 * so even though we've assigned the nickname in that field,
+	 * if we found the same nickname in the global list,
+	 * then another user is already using it. */
+	if (nickname_in_use(user->nickname)) {
+		char orignick[MAX_NICKLEN + 1];
+		/* add_user is only called for non-programmatic users,
+		 * so if a programmatic user is using our nickname,
+		 * swap them out transparently.
+		 * First, we need to pick a different nickname for ourself
+		 * that we can use for the swap. */
+		RWLIST_UNLOCK(&users);
+		safe_strncpy(orignick, user->nickname, sizeof(orignick)); /* Need to copy since user->nickname could change inside autoset_nickname */
+		if (autoset_nickname(user, orignick, NULL, 0) || try_nick_swap(user, orignick)) {
+			send_numeric(user, 433, "Nickname is already in use\r\n");
+			return -1;
+		}
+		RWLIST_WRLOCK(&users);
+	}
+	user->registered = 1;
+	RWLIST_INSERT_HEAD(&users, user, entry);
+	RWLIST_UNLOCK(&users);
+	return 0;
+}
+
+/*! \brief Callback run once a registered user has connected and logged into IRC, but before the user has joined any channels or done anything else */
+static void post_login(struct irc_user *user)
+{
+	set_away_via_relays(user, IRC_USER_STATUS_JOIN, NULL); /* If we just logged in, we're no longer away */
+}
+
 static void do_identity_update(struct irc_user *user)
 {
 	if (!user->registered) {
 		add_user(user);
 	} else {
-		hostmask(user);
+		cloak_user(user);
 	}
 }
 
 static void handle_nick(struct irc_user *user, char *s)
 {
+	char oldnick[64] = "";
+
+	if (!IS_REAL_USER(user)) {
+		send_numeric(user, 902, "Only real users can use the NICK command\r\n");
+		return;
+	}
+
 	if (user->node->user && strcasecmp(s, bbs_username(user->node->user))) {
 		const char *suffix;
 		size_t usernamelen = strlen(bbs_username(user->node->user));
@@ -2497,43 +2923,59 @@ static void handle_nick(struct irc_user *user, char *s)
 	}
 
 	if (bbs_user_exists(s)) {
-		send_numeric(user, 433, "%s\r\n", s);
-		send_reply(user, "NOTICE AUTH :*** This nickname is registered. Please choose a different nickname, or identify using NickServ\r\n");
-		/* Client will need to send NS IDENTIFY <password> or PRIVMSG NickServ :IDENTIFY <password> */
-	} else { /* Nickname is not claimed. It's fine. */
-		char oldnick[64] = "";
-		char *newnick = strdup(s);
-
-		if (ALLOC_FAILURE(newnick)) {
+		int inuse;
+		/* If not authenticated, can't set nickname to that of a user */
+		if (!bbs_user_is_registered(user->node->user)) {
+			send_numeric(user, 433, "%s\r\n", s);
+			send_reply(user, "NOTICE AUTH :*** This nickname is registered. Please choose a different nickname, or identify using NickServ\r\n");
+			/* Client will need to send NS IDENTIFY <password> or PRIVMSG NickServ :IDENTIFY <password> */
 			return;
 		}
-		/* Now, the nick change can't fail. */
-		RWLIST_WRLOCK(&users);
-		bbs_debug(5, "Nickname changed from %s to %s\n", user->nickname, s);
-		if (user->nickname) {
-			safe_strncpy(oldnick, user->nickname, sizeof(oldnick));
-			free_if(user->nickname);
-		}
-		user->nickname = newnick;
+		RWLIST_RDLOCK(&users);
+		inuse = nickname_in_use(s);
 		RWLIST_UNLOCK(&users);
-		do_identity_update(user);
-		if (!s_strlen_zero(oldnick)) {
-			send_reply(user, ":%s NICK %s\r\n", oldnick, user->nickname);
-			broadcast_nick_change(user, oldnick);
+		if (inuse) {
+			/* If we are authenticated, and it's ours, we can steal it, maybe */
+			if (autoset_nickname(user, s, oldnick, sizeof(oldnick)) || try_nick_swap(user, s)) {
+				send_numeric(user, 433, "%s\r\n", s);
+				send_reply(user, "NOTICE AUTH :*** This nickname is registered. Please choose a different nickname, or identify using NickServ\r\n");
+				return;
+			}
+			goto success;
 		}
+	}
+
+	/* Nickname is not claimed. It's fine. */
+	if (set_nickname(user, s, oldnick, sizeof(oldnick))) {
+		bbs_notice("%s failed to change nickname to %s\n", user->nickname, s);
+		send_numeric(user, 433, "Nickname is already in use\r\n");
+		return;
+	}
+
+success:
+	bbs_debug(5, "Nickname changed from %s to %s\n", oldnick, s);
+	do_identity_update(user);
+	if (!s_strlen_zero(oldnick)) {
+		send_reply(user, ":%s NICK %s\r\n", oldnick, user->nickname);
+		broadcast_nick_change(user, oldnick);
 	}
 }
 
-static void handle_identify(struct irc_user *user, char *s)
+static int handle_identify(struct irc_user *user, char *s)
 {
 	int res;
 	char *username, *pw;
+
+	if (!IS_REAL_USER(user)) {
+		send_numeric(user, 461, "Only real users can use the IDENTIFY command\r\n");
+		return -1;
+	}
 
 	username = strsep(&s, " ");
 	pw = s;
 	if (!username) {
 		send_numeric(user, 461, "Not enough parameters\r\n");
-		return;
+		return 0;
 	}
 	/* Format is password or username password */
 	if (!pw) {
@@ -2549,21 +2991,29 @@ static void handle_identify(struct irc_user *user, char *s)
 		user->username = strdup(username);
 		/* Just in case it was different here. */
 		if (strlen_zero(user->nickname) || strcasecmp(username, user->nickname)) {
-			REPLACE(user->nickname, username);
+			if (set_or_default_nickname(user, username, NULL, 0)) {
+				return -1; /* If this fails, just abort the client since things will break */
+			}
 		}
 		do_identity_update(user);
-		send_numeric(user, 900, IDENT_PREFIX_FMT " %s You are now logged in as %s\r\n", IDENT_PREFIX_ARGS(user), user->username, user->username);
+		send_numeric(user, 900, HOSTMASK_FMT " %s You are now logged in as %s\r\n", HOSTMASK_ARGS(user), user->username, user->username);
+		post_login(user);
 	}
+	return 0;
 }
 
-static void nickserv(struct irc_user *user, char *s)
+static int nickserv(struct irc_user *user, char *s)
 {
 	char *target = strsep(&s, " ");
+
+	if (!IS_REAL_USER(user)) {
+		return -1;
+	}
 
 	/* This is all we need from NickServ, we don't need "it" to handle registration or anything else */
 	if (!strcasecmp(target, "IDENTIFY")) {
 		if (!user->registered || !bbs_user_is_registered(user->node->user)) {
-			handle_identify(user, s);
+			return handle_identify(user, s);
 		} else {
 			send_reply(user, "NOTICE AUTH :*** Nickname change not supported.\r\n");
 		}
@@ -2572,6 +3022,7 @@ static void nickserv(struct irc_user *user, char *s)
 		bbs_debug(3, "Unsupported NickServ command: %s\n", target);
 		send_reply(user, "NOTICE AUTH :*** NickServ does not support registration on this server. Please register interactively via a terminal session.\r\n");
 	}
+	return 0;
 }
 
 static void handle_oper(struct irc_user *user, char *s)
@@ -2582,6 +3033,11 @@ static void handle_oper(struct irc_user *user, char *s)
 	if (user->modes & USER_MODE_OPERATOR) { /* If already an operator, don't erroneously increment operators_online */
 		/* Already an operator */
 		send_numeric(user, 381, "You are now an IRC operator\r\n"); /* XXX Shouldn't there be an "You are already an operator"? */
+		return;
+	}
+
+	if (!IS_REAL_USER(user)) {
+		send_numeric(user, 491, "Only real users can become an operator\r\n");
 		return;
 	}
 
@@ -2642,7 +3098,7 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 	int len = 0;
 	const char *symbol = PUBLIC_CHANNEL_PREFIX; /* Public channel */
 
-	RWLIST_RDLOCK(&channel->members);
+	RWLIST_RDLOCK_RECURSIVE(&channel->members, &channel->recurse);
 	RWLIST_TRAVERSE(&channel->members, member, entry) {
 		if ((member->user->modes & USER_MODE_INVISIBLE) && !channels_in_common(member->user, user)) {
 			continue; /* Hide from NAMES */
@@ -2657,7 +3113,7 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 			send_numeric2(user, 353, "%s %s :%s\r\n", symbol, channel->name, buf);
 		}
 	}
-	RWLIST_UNLOCK(&channel->members);
+	RWLIST_UNLOCK_RECURSIVE(&channel->members, &channel->recurse);
 	if (len > 0) { /* Last one */
 		send_numeric2(user, 353, "%s %s :%s\r\n", symbol, channel->name, buf);
 	}
@@ -2683,44 +3139,46 @@ static int send_channel_members(struct irc_user *user, struct irc_channel *chann
 	return 0;
 }
 
-static int join_channel(struct irc_user *user, char *name)
+static int join_leave_suppress(struct irc_user *user, struct irc_channel *channel, int join)
 {
-	struct irc_channel *channel;
-	struct irc_member *member, *m;
-	int newchan = 0;
-	char modestr[16];
-	size_t chanlen = strlen(name);
-	char *password;
+	int res = 0;
+	const char *username = user->username;
+	const char *channel_name = channel->name;
+	struct irc_relay *relay;
 
-	if (strlen_zero(name)) {
-		send_numeric(user, 479, "Empty channel name\r\n");
-		return 0;
+	ENABLE_RECURSIVE_LOCKING(&channels_recurse);
+
+	RWLIST_RDLOCK(&relays);
+	RWLIST_TRAVERSE(&relays, relay, entry) {
+		if (relay->relay_callbacks->join_leave) {
+			bbs_module_ref(relay->mod, 10);
+			res |= relay->relay_callbacks->join_leave(username, channel_name, join);
+			bbs_module_unref(relay->mod, 10);
+		}
 	}
+	RWLIST_UNLOCK(&relays);
+
+	RESET_RECURSIVE_LOCKING(&channels_recurse);
+	return res;
+}
+
+static struct irc_channel *find_or_create_channel_locked(struct irc_user *user, char *name)
+{
+	char *password;
+	size_t chanlen = strlen(name);
+	struct irc_channel *channel;
 
 	password = strchr(name, ' ');
 	if (password) {
 		*password++ = '\0';
 	}
 
-	/* Nip junk right in the bud before we even bother locking the list */
-	if (!VALID_CHANNEL_NAME(name) || chanlen > MAX_CHANNEL_LENGTH || !valid_channame(name)) {
-		send_numeric(user, 479, "Illegal channel name\r\n");
-		return 0;
-	}
-
-	if (user->channelcount > MAX_CHANNELS) {
-		send_numeric2(user, 405, "%s :You have joined too many channels\r\n", name);
-		return 0;
-	}
-
-	/* We might potentially create a channel, so grab a WRLOCK from the get go */
-	RWLIST_WRLOCK(&channels);
 	channel = find_channel_by_user(name, user);
 	if (!channel) {
 		size_t usernamelen;
 		if (*name == PRIVATE_NAMESPACE_PREFIX_CHAR && !bbs_user_is_registered(user->node->user)) {
 			send_numeric(user, 479, "Can't join this channel as guest\r\n");
-			return 0;
+			return NULL;
 		}
 		usernamelen = *name == PRIVATE_NAMESPACE_PREFIX_CHAR ? strlen(bbs_username(user->node->user)) + 1 : 0;
 		if (usernamelen) {
@@ -2728,11 +3186,9 @@ static int join_channel(struct irc_user *user, char *name)
 		} else {
 			bbs_debug(3, "Creating channel '%s' for the first time\n", name);
 		}
-		newchan = 1;
 		channel = calloc(1, sizeof(*channel) + chanlen + usernamelen + 1);
 		if (ALLOC_FAILURE(channel)) {
-			RWLIST_UNLOCK(&channels);
-			return -1;
+			return NULL;
 		}
 		strcpy(channel->data, name); /* Safe */
 		channel->name = channel->data;
@@ -2751,6 +3207,7 @@ static int join_channel(struct irc_user *user, char *name)
 		RWLIST_HEAD_INIT(&channel->members);
 		stringlist_init(&channel->invited);
 		bbs_mutex_init(&channel->lock, NULL);
+		bbs_mutex_init(&channel->recurse.lock, NULL);
 		if (log_channels) {
 			char logfile[256];
 			snprintf(logfile, sizeof(logfile), "%s/irc_channel_%s.txt", BBS_LOG_DIR, name);
@@ -2763,25 +3220,21 @@ static int join_channel(struct irc_user *user, char *name)
 		RWLIST_INSERT_HEAD(&channels, channel, entry);
 	} else if (!IS_SERVICE(user)) {
 		if (channel->modes & CHANNEL_MODE_TLS_ONLY && !(user->modes & USER_MODE_SECURE)) {
-			RWLIST_UNLOCK(&channels);
 			/* Channel requires secure connections, but user isn't using one. Reject. */
 			send_numeric(user, 477, "Cannot join channel (+S) - you need to use a secure connection\r\n"); /* XXX This is not the right numeric code, what is? */
-			return -1;
+			return NULL;
 		}
 		if (channel->modes & CHANNEL_MODE_REGISTERED_ONLY && user->node && !bbs_user_is_registered(user->node->user)) {
-			RWLIST_UNLOCK(&channels);
 			send_numeric(user, 477, "Cannot join channel (+r) - you need to be logged into your account\r\n");
-			return -1;
+			return NULL;
 		}
 		if (channel->modes & CHANNEL_MODE_PASSWORD && !strlen_zero(channel->password) && (strlen_zero(password) || strcmp(password, channel->password))) {
-			RWLIST_UNLOCK(&channels);
 			send_numeric(user, 475, "Cannot join channel (+k) - bad key\r\n");
-			return -1;
+			return NULL;
 		}
-		if (channel->modes & CHANNEL_MODE_LIMIT && channel->limit && channel->membercount >= channel->limit) {
-			RWLIST_UNLOCK(&channels);
+		if (channel->modes & CHANNEL_MODE_LIMIT && channel->limit && channel->membercount >= (int) channel->limit) {
 			send_numeric(user, 471, "Cannot join channel (+l) - channel is full, try again later\r\n");
-			return -1;
+			return NULL;
 		}
 		if (channel->modes & CHANNEL_MODE_THROTTLED && channel->throttleusers > 0 && channel->throttleinterval > 0) {
 			time_t now = time(NULL);
@@ -2796,9 +3249,8 @@ static int join_channel(struct irc_user *user, char *name)
 			} else {
 				if (channel->throttlecount >= channel->throttleusers) {
 					bbs_mutex_unlock(&channel->lock);
-					RWLIST_UNLOCK(&channels);
 					send_numeric(user, 480, "Cannot join channel (+j) - throttle exceeded, try again later\r\n");
-					return -1;
+					return NULL;
 				}
 				channel->throttlecount += 1;
 				bbs_mutex_unlock(&channel->lock);
@@ -2806,8 +3258,14 @@ static int join_channel(struct irc_user *user, char *name)
 		}
 	}
 
+	return channel;
+}
+
+static struct irc_member *new_channel_member(struct irc_user *user, struct irc_channel *channel)
+{
+	struct irc_member *member, *m;
+
 	/* Check if we're already in the channel */
-	RWLIST_WRLOCK(&channel->members);
 	RWLIST_TRAVERSE(&channel->members, m, entry) {
 		if (m->user == user) {
 			break;
@@ -2815,34 +3273,29 @@ static int join_channel(struct irc_user *user, char *name)
 	}
 	if (m) {
 		send_numeric(user, 714, "You're already on that channel\r\n");
-		RWLIST_UNLOCK(&channel->members);
-		RWLIST_UNLOCK(&channels);
-		return -1;
+		return NULL;
 	}
 
 	if (channel->modes & CHANNEL_MODE_INVITE_ONLY) {
 		if (!stringlist_contains(&channel->invited, user->nickname)) {
-			RWLIST_UNLOCK(&channel->members);
-			RWLIST_UNLOCK(&channels);
 			send_numeric(user, 473, "Cannot join channel (+i) - you must be invited\r\n");
-			return -1;
+			return NULL;
 		}
 	}
 
 	/* Add ourself to the channel members */
 	member = calloc(1, sizeof(*member));
 	if (ALLOC_FAILURE(member)) {
-		RWLIST_UNLOCK(&channel->members);
-		if (newchan) {
-			channel_free(channel); /* If we just created a new channel but couldn't join it, destroy it, since it has no members. Not yet in the list, so just free directly. */
-		}
-		RWLIST_UNLOCK(&channels);
-		return -1; /* Well this is embarassing, we got this far... but we couldn't make it to the finish line */
+		/* Well this is embarassing, we got this far... but we couldn't make it to the finish line.
+		 * It's a bit awkward since this empty channel will linger around,
+		 * but that does no real harm, and this is SUCH an edge case... */
+		return NULL;
 	}
 	bbs_mutex_init(&member->lock, NULL);
 	member->user = user;
 	member->modes = CHANNEL_USER_MODE_NONE;
-	if (newchan) {
+	if (RWLIST_EMPTY(&channel->members)) {
+		/* It's a new channel, we're the first member! */
 		if (!IS_SERVICE(user)) { /* Don't count ChanServ recreating the channel */
 			member->modes |= CHANNEL_USER_MODE_FOUNDER; /* If you created it, you're the founder. */
 		}
@@ -2855,31 +3308,97 @@ static int join_channel(struct irc_user *user, char *name)
 		member->modes |= CHANNEL_USER_MODE_OP; /* Always op ChanServ */
 	}
 	RWLIST_INSERT_HEAD(&channel->members, member, entry);
-	channel->membercount += 1;
+	CHANNEL_MEMBER_COUNT_ADJUST(channel, +1);
 	user->channelcount += 1;
-	RWLIST_UNLOCK(&channel->members);
-	RWLIST_UNLOCK(&channels);
+	return member;
+}
+
+static int join_channel(struct irc_user *user, char *name)
+{
+	char modestr[16];
+	struct irc_member *member;
+	struct irc_channel *channel;
+
+	if (strlen_zero(name)) {
+		send_numeric(user, 479, "Empty channel name\r\n");
+		return 0;
+	}
+
+	/* Nip junk right in the bud before we even bother locking the list */
+	if (!irc_valid_channel_name(name)) {
+		send_numeric(user, 479, "Illegal channel name\r\n");
+		return 0;
+	}
+
+	if (user->channelcount > MAX_CHANNELS) {
+		send_numeric2(user, 405, "%s :You have joined too many channels\r\n", name);
+		return 0;
+	}
+
+	/* We might potentially create a channel, so grab a WRLOCK from the get go */
+
+	/* XXX This is another instance of the ugly recursive locking hack.
+	 * If leave_all_channels causes a bouncer client to join,
+	 * when it joins the channel (this function), we will inevitably
+	 * need to grab a WRLOCK.
+	 *
+	 * Changing the removal code to make a first pass using RDLOCK doesn't
+	 * solve the problem, since most channel modification operations
+	 * grab a WRLOCK. In other words, it would be cumbersome to avoid
+	 * recursive locking, so we just do it since I know it works correctly.
+	 *
+	 * Only this function has been specially instrumented to avoid this deadlock
+	 * by way of recursive locking; the other functions would deadlock,
+	 * but are not currently called by mod_irc_bouncer. */
+	RWLIST_WRLOCK_RECURSIVE(&channels, &channels_recurse);
+	channel = find_or_create_channel_locked(user, name);
+	if (!channel) {
+		RWLIST_UNLOCK_RECURSIVE(&channels, &channels_recurse);
+		return -1;
+	}
+
+	RWLIST_WRLOCK_RECURSIVE(&channel->members, &channel->recurse);
+	member = new_channel_member(user, channel);
+	RWLIST_UNLOCK_RECURSIVE(&channel->members, &channel->recurse);
+
+	RWLIST_UNLOCK_RECURSIVE(&channels, &channels_recurse);
+
+	if (!member) {
+		return -1;
+	}
 
 	user_setactive(user);
 
-	/* These MUST be in this order: https://modern.ircdocs.horse/#join-message */
-	channel_broadcast(channel, NULL, ":" IDENT_PREFIX_FMT " JOIN %s\r\n", IDENT_PREFIX_ARGS(user), channel->name); /* Send join message to everyone, including us */
-	if (channel->relay) {
-		char joinmsg[92];
-		snprintf(joinmsg, sizeof(joinmsg), IDENT_PREFIX_FMT " has joined %s", IDENT_PREFIX_ARGS(user), channel->name);
-		relay_broadcast(channel, NULL, NULL, joinmsg, NULL);
-	}
-	/* Don't send the mode now, because the client will just send a MODE command on its own anyways regardless */
-	if (channel->topic) {
-		channel_print_topic(user, channel);
-	}
-	send_channel_members(user, channel);
-	if (!get_channel_user_modes(modestr, sizeof(modestr), member)) {
-		channel_broadcast(channel, NULL, ":%s MODE %s %s %s\r\n", IS_SERVICE(user) ? "services" : "ChanServ", channel->name, modestr, user->nickname);
-	}
+/* If it's a real user, we may want to suppress the JOIN, PART, etc.
+ * if a programmatic user will be taking his place as a result. */
+#define BROADCAST_JOIN_LEAVE(user, channel, is_join) (IS_SERVICE(user) || (IS_REAL_USER(user) && !join_leave_suppress(user, channel, is_join)))
 
-	chanserv_broadcast("JOIN", channel->name, user->nickname, NULL);
-
+	if (BROADCAST_JOIN_LEAVE(user, channel, 1)) {
+		/* These MUST be in this order: https://modern.ircdocs.horse/#join-message */
+		channel_broadcast(channel, NULL, ":" HOSTMASK_FMT " JOIN %s\r\n", HOSTMASK_ARGS(user), channel->name); /* Send join message to everyone, including us */
+		if (channel->relay) {
+			char joinmsg[92];
+			snprintf(joinmsg, sizeof(joinmsg), HOSTMASK_FMT " has joined %s", HOSTMASK_ARGS(user), channel->name);
+			relay_broadcast(channel, NULL, NULL, joinmsg, NULL);
+		}
+		/* Don't send the mode now, because the client will just send a MODE command on its own anyways regardless */
+		if (channel->topic) {
+			channel_print_topic(user, channel);
+		}
+		send_channel_members(user, channel);
+		if (!get_channel_user_modes(modestr, sizeof(modestr), member)) {
+			channel_broadcast(channel, NULL, ":%s MODE %s %s %s\r\n", IS_SERVICE(user) ? "services" : "ChanServ", channel->name, modestr, user->nickname);
+		}
+		broadcast_channel_event_internal(IRCCMD_EVENT_JOIN, channel, user, NULL);
+	} else {
+		/* Even though it's supressed for everyone else, the actual user should still get the confirmation! */
+		irc_other_thread_writef(user->node, ":" HOSTMASK_FMT " JOIN %s\r\n", HOSTMASK_ARGS(user), channel->name);
+		/* Don't send the mode now, because the client will just send a MODE command on its own anyways regardless */
+		if (channel->topic) {
+			channel_print_topic(user, channel);
+		}
+		send_channel_members(user, channel);
+	}
 	return 0;
 }
 
@@ -2907,35 +3426,58 @@ static int leave_channel(struct irc_user *user, const char *name)
 	user_setactive(user);
 
 	/* WRLOCK, since channel might become empty and need to be removed */
-	RWLIST_WRLOCK(&channels);
+	RWLIST_WRLOCK_RECURSIVE(&channels, &channels_recurse);
 	channel = find_channel_by_user(name, user);
 	if (!channel) { /* Channel doesn't exist */
-		RWLIST_UNLOCK(&channels);
+		RWLIST_UNLOCK_RECURSIVE(&channels, &channels_recurse);
 		send_numeric2(user, 403, "%s :No such channel\r\n", name);
 		return -1;
 	}
-	RWLIST_WRLOCK(&channel->members);
+	RWLIST_WRLOCK_RECURSIVE(&channel->members, &channel->recurse);
 	RWLIST_TRAVERSE_SAFE_BEGIN(&channel->members, member, entry) {
 		if (member->user == user) {
-			channel_broadcast_nolock(channel, NULL, ":" IDENT_PREFIX_FMT " PART %s\r\n", IDENT_PREFIX_ARGS(user), channel->name); /* Make sure leaver gets his/her own PART message! */
-			if (channel->relay) {
-				char partmsg[92];
-				snprintf(partmsg, sizeof(partmsg), IDENT_PREFIX_FMT " has left %s", IDENT_PREFIX_ARGS(user), channel->name);
-				relay_broadcast(channel, NULL, NULL, partmsg, NULL);
-			}
+			/* It is important that in code blocks where
+			 * a channel member is removed from a list,
+			 * it happens at the BEGINNING of the block.
+			 *
+			 * We need to remove this from the list BEFORE
+			 * broadcast_channel_event_internal runs, since it
+			 * may recursively trigger calls back into net_irc
+			 * that end up modifiying the channel members list,
+			 * i.e. if our leaving causes a bouncer user to join.
+			 * If we didn't remove ourselves first, it would be
+			 * possible for the newly added member to be attached
+			 * to the linked list via the entry that is going to
+			 * be removed, leading to entries leaking out of the
+			 * list, not good! */
 			RWLIST_REMOVE_CURRENT(entry);
-			channel->membercount -= 1;
+			CHANNEL_MEMBER_COUNT_ADJUST(channel, -1);
+
+			if (BROADCAST_JOIN_LEAVE(user, channel, 0)) {
+				channel_broadcast_nolock(channel, NULL, ":" HOSTMASK_FMT " PART %s\r\n", HOSTMASK_ARGS(user), channel->name); /* Make sure leaver gets his/her own PART message! */
+				if (channel->relay) {
+					char partmsg[92];
+					snprintf(partmsg, sizeof(partmsg), HOSTMASK_FMT " has left %s", HOSTMASK_ARGS(user), channel->name);
+					relay_broadcast(channel, NULL, NULL, partmsg, NULL);
+				}
+				ENABLE_RECURSIVE_LOCKING(&channels_recurse); /* Need to allow recursive locking since channel->members is locked */
+				broadcast_channel_event_internal(IRCCMD_EVENT_PART, channel, user, NULL);
+				RESET_RECURSIVE_LOCKING(&channels_recurse);
+			} else {
+				/* Even though it's supressed for everyone else, the actual user should still get the confirmation! */
+				irc_other_thread_writef(user->node, ":" HOSTMASK_FMT " PART %s\r\n", HOSTMASK_ARGS(user), channel->name); /* Make sure leaver gets his/her own PART message! */
+			}
 			member->user->channelcount -= 1;
 			member_free(member);
 			break;
 		}
 	}
 	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&channel->members);
+	RWLIST_UNLOCK_RECURSIVE(&channel->members, &channel->recurse);
 	if (RWLIST_EMPTY(&channel->members) && !(channel->modes & CHANNEL_MODE_PERMANENT)) {
 		remove_channel(channel);
 	}
-	RWLIST_UNLOCK(&channels);
+	RWLIST_UNLOCK_RECURSIVE(&channels, &channels_recurse);
 	/* member is not a valid reference now, we just care that it was a reference */
 	if (!member) { /* User doesn't exist in this channel */
 		send_numeric(user, 442, "You're not on that channel\r\n");
@@ -2949,30 +3491,37 @@ static void drop_member_if_present(struct irc_channel *channel, struct irc_user 
 	struct irc_member *member;
 
 	/* If we're going to remove the user, we need a WRLOCK, so grab it from the get go. */
-	RWLIST_WRLOCK(&channel->members);
+	RWLIST_WRLOCK_RECURSIVE(&channel->members, &channel->recurse);
 	RWLIST_TRAVERSE_SAFE_BEGIN(&channel->members, member, entry) {
 		if (member->user == user) {
 			/* If we're leaving ALL channels, don't relay QUIT messages to ourselves. */
 			bbs_debug(3, "Dropping user %s from channel %s\n", user->nickname, channel->name);
 			RWLIST_REMOVE_CURRENT(entry);
-			channel->membercount -= 1;
+			CHANNEL_MEMBER_COUNT_ADJUST(channel, -1);
 			member->user->channelcount -= 1;
 			member_free(member);
-			/* Already locked, so don't try to recursively lock: */
-			channel_broadcast_nolock(channel, user, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), leavecmd, channel->name, S_IF(message));
-			if (channel->relay && !bbs_is_shutting_down()) { /* If BBS shutting down, don't relay a bunch of quit messages */
-				char quitmsg[92];
-				snprintf(quitmsg, sizeof(quitmsg), IDENT_PREFIX_FMT " has quit %s%s%s%s", IDENT_PREFIX_ARGS(user), channel->name, message ? " (" : "", S_IF(message), message ? ")" : "");
-				relay_broadcast(channel, NULL, NULL, quitmsg, NULL);
+			if (BROADCAST_JOIN_LEAVE(user, channel, 0)) {
+				/* Already locked, so don't try to recursively lock: */
+				channel_broadcast_nolock(channel, user, ":" HOSTMASK_FMT " %s %s :%s\r\n", HOSTMASK_ARGS(user), leavecmd, channel->name, S_IF(message));
+				if (channel->relay && !bbs_is_shutting_down()) { /* If BBS shutting down, don't relay a bunch of quit messages */
+					char quitmsg[92];
+					snprintf(quitmsg, sizeof(quitmsg), HOSTMASK_FMT " has quit %s%s%s%s", HOSTMASK_ARGS(user), channel->name, message ? " (" : "", S_IF(message), message ? ")" : "");
+					relay_broadcast(channel, NULL, NULL, quitmsg, NULL);
+				}
+				/* Need to allow recursive locking since channel->members is locked,
+				 * but we're called by leave_all_channels, which already enables it. */
+				broadcast_channel_event_internal(IRCCMD_EVENT_QUIT, channel, user, message);
+			} else {
+				/* Even though it's supressed for everyone else, the actual user should still get the confirmation! */
+				irc_other_thread_writef(user->node, ":" HOSTMASK_FMT " %s %s :%s\r\n", HOSTMASK_ARGS(user), leavecmd, channel->name, S_IF(message)); /* Make sure leaver gets his/her own PART message! */
 			}
 			break;
 		}
 	}
 	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&channel->members);
-	if (RWLIST_EMPTY(&channel->members) && !(channel->modes & CHANNEL_MODE_PERMANENT)) {
-		remove_channel(channel);
-	}
+	RWLIST_UNLOCK_RECURSIVE(&channel->members, &channel->recurse);
+	/* Rather than freeing channel here, we do it after this function
+	 * returns since we can more efficiently remove it from the list there. */
 }
 
 static void kick_member(struct irc_channel *channel, struct irc_user *kicker, struct irc_user *kicked, const char *message)
@@ -2980,7 +3529,7 @@ static void kick_member(struct irc_channel *channel, struct irc_user *kicker, st
 	struct irc_member *member;
 
 	if (IS_SERVICE(kicked)) {
-		send_numeric(kicker, 484, "%s %s :Cannot kick or deop a network service\r\n", kicked->nickname, channel->name);
+		send_numeric(kicker, 484, "%s %s :Cannot kick or drop a network service\r\n", kicked->nickname, channel->name);
 		return;
 	}
 
@@ -2991,10 +3540,18 @@ static void kick_member(struct irc_channel *channel, struct irc_user *kicker, st
 			/* If we're leaving ALL channels, don't relay QUIT messages to ourselves. */
 			bbs_debug(3, "Dropping user %s from channel %s\n", kicked->nickname, channel->name);
 			RWLIST_REMOVE_CURRENT(entry);
-			channel->membercount -= 1;
+			CHANNEL_MEMBER_COUNT_ADJUST(channel, -1);
 			member_free(member);
-			/* Already locked, so don't try to recursively lock: */
-			channel_broadcast_nolock(channel, NULL, ":" IDENT_PREFIX_FMT " KICK %s %s :%s\r\n", IDENT_PREFIX_ARGS(kicker), channel->name, kicked->nickname, S_IF(message));
+			/* XXX For programmatic users, this is a bit of a weird case.
+			 * If a user has a bouncer configured to watch a channel,
+			 * and he gets kicked, the bouncer would silently rejoin.
+			 * Therefore, for these, we ALWAYS broadcast, instead of using BROADCAST_JOIN_LEAVE,
+			 * otherwise it would not be transparent as to what's going on. */
+			channel_broadcast_nolock(channel, NULL, ":" HOSTMASK_FMT " KICK %s %s :%s\r\n", HOSTMASK_ARGS(kicker), channel->name, kicked->nickname, S_IF(message)); /* Already locked, don't try to recursively lock */
+			/*! \todo Shouldn't we call relay_broadcast for kick as well? */
+			ENABLE_RECURSIVE_LOCKING(&channel->recurse); /* Need to allow recursive locking since channel->members is locked */
+			broadcast_channel_event_internal(IRCCMD_EVENT_KICK, channel, kicked, message);
+			RESET_RECURSIVE_LOCKING(&channel->recurse);
 			break;
 		}
 	}
@@ -3011,24 +3568,34 @@ static void leave_all_channels(struct irc_user *user, const char *leavecmd, cons
 
 	/* Remove from all channels the user is currently in, and broadcast a message to each of them.
 	 * Because we might remove a user if this is the last user in the channel, we need a WRLOCK. */
-	RWLIST_WRLOCK(&channels);
-	channels_locked = pthread_self();
+	ENABLE_RECURSIVE_LOCKING(&channel->recurse);
+	RWLIST_WRLOCK_RECURSIVE(&channels, &channels_recurse);
 	/* We're going to have to traverse channels to find channels anyways,
 	 * so simply traversing them all and seeing if the user is a member of each
 	 * isn't as bad when you think about it that way. */
 	RWLIST_TRAVERSE_SAFE_BEGIN(&channels, channel, entry) { /* We must use a safe traversal, since drop_member_if_present could cause the channel to be removed if it's now empty */
 		drop_member_if_present(channel, user, leavecmd, message);
+		/* drop_member_if_present skips the removal check,
+		 * since we already are iterating the list and easily able to remove channels,
+		 * so we can avoid remove_channel, which does another linear scan of the channel list. */
+		if (RWLIST_EMPTY(&channel->members) && !(channel->modes & CHANNEL_MODE_PERMANENT)) {
+			RWLIST_REMOVE_CURRENT(entry);
+			bbs_debug(3, "Channel %s is now empty, removing\n", channel->name);
+			channel_free(channel);
+		}
 	}
 	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(&channels);
+	RWLIST_UNLOCK_RECURSIVE(&channels, &channels_recurse);
+	RESET_RECURSIVE_LOCKING(&channel->recurse);
 }
 
 /*!
  * \param Indicate to any relay modules a change in away/here status
  * \param user
+ * \param userstatus
  * \param Away message if away, NULL if back
  */
-static void set_away_via_relays(struct irc_user *user, const char *awaymsg)
+static void set_away_via_relays(struct irc_user *user, enum irc_user_status userstatus, const char *awaymsg)
 {
 	struct irc_relay *relay;
 
@@ -3040,24 +3607,26 @@ static void set_away_via_relays(struct irc_user *user, const char *awaymsg)
 	RWLIST_RDLOCK(&relays);
 	RWLIST_TRAVERSE(&relays, relay, entry) {
 		if (relay->relay_callbacks->away) {
-			bbs_module_ref(relay->mod, 10);
-			if (relay->relay_callbacks->away(user->nickname, awaymsg ? 1 : 0, awaymsg)) {
+			bbs_module_ref(relay->mod, 11);
+			if (relay->relay_callbacks->away(user->nickname, userstatus, awaymsg)) {
 				bbs_module_unref(relay->mod, 4);
 				break;
 			}
-			bbs_module_unref(relay->mod, 10);
+			bbs_module_unref(relay->mod, 11);
 		}
 	}
 	RWLIST_UNLOCK(&relays);
 }
 
-static void set_away(struct irc_user *user, const char *s)
+static void set_away(struct irc_user *user, char *s)
 {
 	/* Set user as away or back */
 	bbs_mutex_lock(&user->lock);
 	free_if(user->awaymsg);
-	if (!strlen_zero(s) && !strncmp(s, ": ", 2)) { /* Format is AWAY :optional multi-word message */
-		s += 2;
+	if (!strlen_zero(s)) { /* Format is AWAY :optional multi-word message */
+		if (!strncmp(s, ":", 1)) {
+			s++;
+		}
 	}
 	if (!strlen_zero(s)) { /* Away */
 		user->awaymsg = strdup(s);
@@ -3066,7 +3635,7 @@ static void set_away(struct irc_user *user, const char *s)
 		user->away = 0;
 	}
 	bbs_mutex_unlock(&user->lock);
-	set_away_via_relays(user, s);
+	set_away_via_relays(user, user->away ? IRC_USER_STATUS_AWAY : IRC_USER_STATUS_BACK, user->awaymsg);
 	send_numeric(user, user->away ? 306 : 305, "You %s marked as being away\r\n", user->away ? "have been" : "are no longer");
 }
 
@@ -3133,16 +3702,11 @@ static int client_welcome(struct irc_user *user)
 	struct irc_user *u;
 	char timebuf[30];
 
-	bbs_time_friendly(loadtime, starttime, sizeof(starttime));
-
-	if (user->node->user) {
-		add_user(user);
-		whowas_update(user, 0);
-	}
-
 	RWLIST_RDLOCK(&users);
-	count = RWLIST_SIZE(&users, u, entry);
+	count = RWLIST_SIZE(&users, u, entry) + 1; /* Add 1 for this user, since we're not in the users list until add_user() */
 	RWLIST_UNLOCK(&users);
+
+	bbs_time_friendly(loadtime, starttime, sizeof(starttime));
 
 	send_numeric(user, 1, "Welcome to the %s Internet Relay Chat Network %s\r\n", bbs_name(), user->nickname);
 	send_numeric(user, 2, "Your host is %s, running version %s\r\n", irc_hostname, IRC_SERVER_VERSION);
@@ -3172,7 +3736,11 @@ static int client_welcome(struct irc_user *user)
 		send_reply(user, "%s NOTICE %s :Last login was %s\r\n", irc_hostname, user->username, timebuf);
 	}
 
-	if (!user->node->user) {
+	if (user->node->user) {
+		add_user(user);
+		whowas_update(user, 0);
+		post_login(user);
+	} else {
 		if (bbs_user_exists(user->nickname)) {
 			send_reply(user, "NOTICE AUTH :*** This nickname is registered. Please choose a different nickname, or identify...\r\n");
 		} else {
@@ -3215,7 +3783,7 @@ static int do_sasl_auth(struct irc_user *user, char *s)
 	}
 	/* The prefix is nick!ident@host */
 	send_numeric(user, 903, "SASL authentication successful\r\n");
-	send_numeric(user, 900, IDENT_PREFIX_FMT " %s You are now logged in as %s\r\n", IDENT_PREFIX_ARGS(user), user->username, user->username);
+	send_numeric(user, 900, HOSTMASK_FMT " %s You are now logged in as %s\r\n", HOSTMASK_ARGS(user), user->username, user->username);
 	return 0;
 }
 
@@ -3427,7 +3995,8 @@ static void handle_client(struct irc_user *user)
 					free_if(user->username);
 					user->username = strdup(user->nickname);
 					add_user(user);
-					send_numeric(user, 900, IDENT_PREFIX_FMT " %s You are now logged in as %s\r\n", IDENT_PREFIX_ARGS(user), user->username, user->username);
+					send_numeric(user, 900, HOSTMASK_FMT " %s You are now logged in as %s\r\n", HOSTMASK_ARGS(user), user->username, user->username);
+					post_login(user);
 				}
 			/* Any remaining commands require authentication.
 			 * The nice thing about this IRC server is we authenticate using the BBS user,
@@ -3442,7 +4011,9 @@ static void handle_client(struct irc_user *user)
 				/* Can be NS IDENTIFY <password> or a regular PRIVMSG */
 				if (!strcasecmp(command, "NS")) {
 					REQUIRE_PARAMETER(user, s);
-					nickserv(user, s);
+					if (nickserv(user, s)) {
+						break;
+					}
 					continue;
 				} else if (!strcasecmp(command, "PRIVMSG")) {
 					target = strsep(&s, " ");
@@ -3462,7 +4033,7 @@ static void handle_client(struct irc_user *user)
 					send_numeric(user, 433, "Nickname is already in use\r\n");
 				}
 			} else if (!user->registered) {
-				send_numeric(user, 433, "Nickname is already in use\r\n");
+				send_numeric(user, 433, "Nickname is already in use\r\n"); /* XXX Ambassador displays "Nickname is already in use" as the username that was rejected */
 			} else if (!strcasecmp(command, "NS")) { /* NickServ alias */
 				nickserv(user, s);
 			} else if (!strcasecmp(command, "CS")) { /* ChanServ alias (much like NS ~ NickServ) */
@@ -3518,7 +4089,7 @@ static void handle_client(struct irc_user *user)
 						send_numeric2(user, 403, "%s :No such channel\r\n", channame);
 						continue;
 					}
-					kickuser = get_member_by_username(kickusername, kickchan->name);
+					kickuser = get_member_by_nickname(kickusername, kickchan->name);
 					if (!kickuser) {
 						send_numeric2(user, 401, "%s :No such nick/channel\r\n", kickchan->name);
 						continue;
@@ -3621,7 +4192,7 @@ static void handle_client(struct irc_user *user)
 				RWLIST_RDLOCK(&users);
 				RWLIST_TRAVERSE(&users, u, entry) {
 					if (u->modes & USER_MODE_WALLOPS) {
-						irc_other_thread_writef(u->node, ":" IDENT_PREFIX_FMT " %s %s :%s\r\n", IDENT_PREFIX_ARGS(user), "WALLOPS", u->nickname, s);
+						irc_other_thread_writef(u->node, ":" HOSTMASK_FMT " %s %s :%s\r\n", HOSTMASK_ARGS(user), "WALLOPS", u->nickname, s);
 					}
 				}
 				RWLIST_UNLOCK(&users);
@@ -3655,29 +4226,29 @@ quit:
 	}
 	if (user->registered) {
 		whowas_update(user, 1);
+		set_away_via_relays(user, IRC_USER_STATUS_QUIT, "Away");
 		unlink_user(user);
 	}
 }
 
-int __chanserv_exec(void *mod, char *s)
+int irc_user_exec(struct irc_user *user, char *s)
 {
-	struct irc_user *user = &user_chanserv;
 	char *command = strsep(&s, " ");
 
-	if (!chanserv_mod || mod != chanserv_mod) {
-		/* Limit this function to being called from the module that registered as ChanServ. */
-		bbs_error("Caller is not authorized to operate as ChanServ\n");
-		return -1;
-	}
-	/* Execute command as ChanServ. Thankfully, there are a limited number of commands that we need to support. */
+	bbs_assert_exists(user);
+
+	/* Execute command as a programmatic user. Thankfully, there are a limited number of commands that we need to support. */
 	if (!strcasecmp(command, "PRIVMSG")) { /* List this as high up as possible, since this is the most common command */
 		handle_privmsg(user, s, 0);
 	} else if (!strcasecmp(command, "NOTICE")) {
 		handle_privmsg(user, s, 1);
 	} else if (!strcasecmp(command, "JOIN")) {
-		join_channel(user, s); /* ChanServ will only join one channel at a time */
+		join_channel(user, s); /* ChanServ and programmatic users will only join one channel at a time */
 	} else if (!strcasecmp(command, "PART")) {
 		leave_channel(user, s);
+	/* Note that there is no QUIT handling here.
+	 * Programmatic users do not use QUIT and get freed using the appropriate interface,
+	 * e.g. irc_user_destroy or irc_chanserv_unregister. */
 	} else if (!strcasecmp(command, "MODE")) {
 		handle_modes(user, s);
 	} else if (!strcasecmp(command, "TOPIC")) {
@@ -3685,10 +4256,23 @@ int __chanserv_exec(void *mod, char *s)
 	} else if (!strcasecmp(command, "INVITE")) {
 		handle_invite(user, s);
 	} else {
-		bbs_error("Command '%s' is unsupported for ChanServ\n", command);
+		bbs_error("Command '%s' is unsupported for programmatic users\n", command);
 		return -1;
 	}
 	return 0;
+}
+
+int chanserv_exec(char *s)
+{
+	/*! \note In theory, ChanServ could probably be written to use the programmatic user interface,
+	 * which didn't exist before, but since ChanServ needs to be handled specially in many places,
+	 * it also makes sense to keep it as is. */
+	struct irc_user *user = &user_chanserv;
+	if (!chanserv_registered) {
+		bbs_error("ChanServ is not currently registered\n");
+		return -1;
+	}
+	return irc_user_exec(user, s);
 }
 
 /*! \brief Callback that allows other parts of the BBS to send a message to a user via IRC */
@@ -3739,6 +4323,9 @@ static void *ping_thread(void *unused)
 		now = time(NULL);
 		RWLIST_RDLOCK(&users);
 		RWLIST_TRAVERSE(&users, user, entry) {
+			if (user->programmatic) {
+				continue; /* No need to ping programmatic clients */
+			}
 			if (need_restart || (user->lastping && user->lastpong < now - 2 * PING_TIME)) {
 				char buf[32] = "";
 				/* Client never responded to the last ping. Disconnect it. */
@@ -3786,11 +4373,19 @@ static int cli_irc_users(struct bbs_cli_args *a)
 	bbs_dprintf(a->fdout, "%3s %2s %4s %-20s %4s %-15s %-20s %s\n", "#", "Op", "Node", "User", "Ping", "Modes", "Nick", "Hostmask");
 	RWLIST_RDLOCK(&users);
 	RWLIST_TRAVERSE(&users, user, entry) {
+		char hostmask[128];
+		char node_id[15];
 		time_t ping = user->lastpong ? now - user->lastpong : -1;
 		++i;
 		get_user_modes(modes, sizeof(modes), user);
-		bbs_dprintf(a->fdout, "%3d %2s %4d %-20s %4" TIME_T_FMT " %-15s %-20s %s\n",
-			i, user->modes & USER_MODE_OPERATOR ? "*" : "", user->node->id, bbs_username(user->node->user), ping, modes, user->nickname, user->hostname);
+		if (IS_REAL_USER(user)) {
+			snprintf(node_id, sizeof(node_id), "%d", user->node->id);
+		} else {
+			strcpy(node_id, "-");
+		}
+		snprintf(hostmask, sizeof(hostmask), HOSTMASK_FMT, HOSTMASK_ARGS(user));
+		bbs_dprintf(a->fdout, "%3d %2s %4s %-20s %4" TIME_T_FMT " %-15s %-20s %s\n",
+			i, user->modes & USER_MODE_OPERATOR ? "*" : "", node_id, user->username, ping, modes, user->nickname, hostmask);
 	}
 	RWLIST_UNLOCK(&users);
 	bbs_dprintf(a->fdout, "%d user%s online\n", i, ESS(i));
@@ -3848,8 +4443,7 @@ static int cli_irc_members(struct bbs_cli_args *a)
 	RWLIST_RDLOCK(&channel->members);
 	RWLIST_TRAVERSE(&channel->members, member, entry) {
 		get_channel_user_modes(modes, sizeof(modes), member);
-		/* Don't dereference the node, things like ChanServ and other services don't have one */
-		if (member->user->node) {
+		if (IS_REAL_USER(member->user)) {
 			bbs_dprintf(a->fdout, "%4d %-20s %-20s %s\n", member->user->node->id, modes, member->user->nickname, member->user->hostname);
 		} else {
 			bbs_dprintf(a->fdout, "%4s %-20s %-20s %s\n", "", modes, member->user->nickname, member->user->hostname);
@@ -3868,25 +4462,72 @@ static struct bbs_cli_entry cli_commands_irc[] = {
 	BBS_CLI_COMMAND(cli_irc_members, "irc members", 3, "List all members in an IRC channel", "irc members <channel>"),
 };
 
-/*! \brief Thread to handle a single IRC/IRCS client */
-static void irc_handler(struct bbs_node *node, int secure)
+struct irc_user *irc_user_create(enum user_modes modes)
 {
 	struct irc_user *user;
 
 	if (need_restart) {
-		return; /* Reject new connections. */
+		return NULL; /* Reject new connections. */
 	}
 
-	if (require_chanserv && !chanserv_mod) {
+	if (require_chanserv && !chanserv_registered) {
 		bbs_warning("Received IRC client connection prior to ChanServ initialization, rejecting\n");
-		return;
+		return NULL;
 	}
 
 	user = calloc(1, sizeof(*user));
 	if (ALLOC_FAILURE(user)) {
-		return;
+		return NULL;
 	}
 	bbs_mutex_init(&user->lock, NULL);
+
+	user->joined = time(NULL);
+	user->modes = USER_MODE_NONE;
+	user->modes |= (USER_MODE_WALLOPS | modes); /* Receive wallops by default */
+
+	user->programmatic = 1;
+	return user;
+}
+
+void irc_user_destroy(struct irc_user *user)
+{
+	leave_all_channels(user, "QUIT", "Bouncer closed the connection"); /* Silently leave any channels we're still in */
+	unlink_user(user); /* Remove from the users list */
+	user_free(user);
+}
+
+int irc_user_set_identity(struct irc_user *user, const char *username, const char *nickname, const char *realname, const char *hostname)
+{
+	if (set_or_default_nickname(user, nickname, NULL, 0)) {
+		return -1;
+	}
+	REPLACE(user->username, username);
+	REPLACE(user->realname, realname);
+	REPLACE(user->hostname, hostname);
+	if (!user->username || !user->nickname || !user->realname || !user->hostname) {
+		return -1;
+	}
+	/* Register the user so it's in the users list */
+	if (!user->registered) {
+		add_user(user);
+	}
+	return 0;
+}
+
+int irc_user_set_nickname(struct irc_user *user, const char *nickname)
+{
+	return set_nickname(user, nickname, NULL, 0);
+}
+
+/*! \brief Thread to handle a single IRC/IRCS client */
+static void irc_handler(struct bbs_node *node, int secure)
+{
+	struct irc_user *user = irc_user_create(USER_MODE_NONE);
+
+	if (!user) {
+		return;
+	}
+	user->programmatic = 0; /* Defaults to 1, so overwrite for real users */
 
 	/* Start TLS if we need to */
 	if (secure && bbs_node_starttls(node)) {
@@ -3895,10 +4536,7 @@ static void irc_handler(struct bbs_node *node, int secure)
 	}
 
 	user->node = node;
-	user->modes = USER_MODE_NONE;
-	user->joined = time(NULL);
 	user->hostname = strdup(node->ip);
-	user->modes |= USER_MODE_WALLOPS; /* Receive wallops by default */
 	if (secure) {
 		user->modes |= USER_MODE_SECURE;
 	}

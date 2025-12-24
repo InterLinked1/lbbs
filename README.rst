@@ -66,7 +66,7 @@ Key features and capabilities include:
 
 * Native realtime chat
 
-* Internet Relay Chat client and server (including ChanServ), with native IRC, Slack, and Discord relays
+* Internet Relay Chat client and server (including ChanServ), with native IRC, Slack, and Discord relays, along with IRC bouncer functionality
 
 * Queue agent position system for Asterisk
 

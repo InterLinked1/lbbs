@@ -350,6 +350,7 @@ static void push_recipients(struct stringlist *restrict slist, int *restrict cou
 	bbs_term_line(recips);
 	while ((recip = strsep(&recips, ","))) {
 		char buf[256];
+		char *name, *user, *host;
 		if (strlen_zero(recip)) {
 			continue;
 		}
@@ -357,7 +358,14 @@ static void push_recipients(struct stringlist *restrict slist, int *restrict cou
 		if (strlen_zero(recip)) {
 			continue;
 		}
-		snprintf(buf, sizeof(buf), "<%s>", recip); /* Recipients need to be surrounded by <> */
+
+		/* We just want the address, not the name, if there is one */
+		if (bbs_parse_email_address(recip, &name, &user, &host)) {
+			bbs_warning("Skipping invalid email address in header\n"); /* We butchered the address by modifying in place */
+			continue;
+		}
+
+		snprintf(buf, sizeof(buf), "<%s%s%s>", user, host ? "@" : "", S_IF(host)); /* Recipients need to be surrounded by <> */
 		bbs_debug(6, "Adding recipient '%s'\n", buf);
 		stringlist_push(slist, buf);
 		(*count)++;
@@ -423,7 +431,10 @@ int bbs_mail_message(const char *tmpfile, const char *mailfrom, struct stringlis
 				in_header = 0;
 			}
 		}
-		bbs_debug(4, "Parsed %d recipient%s from message\n", recipient_count, ESS(recipient_count));
+		if (!recipient_count) {
+			bbs_warning("No recipients explicitly passed for message %s from %s (and none found in headers)\n", tmpfile, mailfrom);
+		}
+		bbs_debug(4, "Parsed %d recipient%s from message %s from %s\n", recipient_count, ESS(recipient_count), tmpfile, mailfrom);
 		/* If there are any Bcc headers, we need to remove those recipients,
 		 * and regenerate the message. */
 		if (rewrite) {

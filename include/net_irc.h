@@ -108,12 +108,46 @@ enum user_modes {
 	USER_MODE_SECURE =		(1 << 3), /* Z: Connected via SSL/TLS */
 };
 
+struct irc_user;
+
 /*!
  * \brief Whether an IRC user is currently inactive
  * \param username Username/nickname
  * \retval -1 if the user is not logged into IRC, 1 if the user is marked as away, 0 if the user is logged in and not away
+ * \note This does not include any bouncer clients that may be masquerading as a user (those will be ignored).
  */
 int irc_user_inactive(const char *username);
+
+/*!
+ * \brief Write data to the IRC client used by a specified user
+ * \param username Username of user
+ * \param data Data to write. Ensure that it is CR LF terminated!
+ * \note Do not use this function in a loop, use irc_user_send_multiple instead
+ * \note There are no current users of this function
+ * \note Excludes programmatic users (you can't write to them anyways!)
+ */
+int irc_user_send_single(const char *username, const char *data);
+
+/*!
+ * \brief Write a single chunk of data (from the callback passed to irc_user_send_multiple)
+ * \param user The user provided to the callback function
+ * \param data Data to write. Ensure that it is CR LF terminated!
+ */
+int irc_user_send_chunk(struct irc_user *user, const char *data);
+
+/*!
+ * \brief Write data to the IRC client used by a specified user
+ * \note This is similar to irc_user_send_single, except more efficient when called in a loop.
+ *       Calling this function will pass a handle to the user to your module's callback function.
+ *       From that function, you then call irc_user_send_chunk, for each chunk of data,
+ *       and return from the callback function only once all data has been written.
+ *       The underlying user remains locked for the duration of this call.
+ * \param username Username of user
+ * \param write_cb Callback function
+ * \param obj Callback data
+ * \note Excludes programmatic users (you can't write to them anyways!)
+ */
+int irc_user_send_multiple(const char *username, int (*write_cb)(struct irc_user *user, void *obj), void *obj);
 
 /*!
  * \brief Get the channel user modes for a user
@@ -122,6 +156,13 @@ int irc_user_inactive(const char *username);
  * \retval CHANNEL_USER_MODE_NONE if not in channel, modes if in the channel
  */
 enum channel_user_modes irc_get_channel_member_modes(const char *channel, const char *username);
+
+/*!
+ * \brief Whether a string is a legal and valid IRC channel name for this server
+ * \param channel Channel name to check
+ * \retval 1 if valid, 0 if not
+ */
+int irc_valid_channel_name(const char *channel);
 
 /*!
  * \brief Get the topic of a channel
@@ -133,6 +174,13 @@ const char *irc_channel_topic(const char *channel);
 /* Forward declaration */
 struct irc_relay_message;
 
+enum irc_user_status {
+	IRC_USER_STATUS_AWAY,	/*!< User inactive. Now away, because explicitly set AWAY */
+	IRC_USER_STATUS_BACK,	/*!< User active. No longer away, because explicitly indicated back */
+	IRC_USER_STATUS_JOIN,	/*!< User active. No longer "away", because just connected and logged in to IRC */
+	IRC_USER_STATUS_QUIT,	/*!< User inactive. Now "away", because just QUIT IRC */
+};
+
 struct irc_relay_callbacks {
 	/*!< Callback function. The function should return 0 to continue processing any other relays and nonzero to stop immediately. */
 	int (*relay_send)(struct irc_relay_message *rmsg);
@@ -141,8 +189,10 @@ struct irc_relay_callbacks {
 	int (*nicklist)(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user);
 	/*!< Callback function to relay a private message to a user on another network. NULL if not applicable. */
 	int (*privmsg)(const char *recipient, const char *sender, const char *user);
-	/*!< Callback for status changes. Can be NULL. (If away == 1, msg will not be NULL; if away == 0, it will be NULL) */
-	int (*away)(const char *username, int away, const char *msg);
+	/*!< Callback for status changes. Can be NULL. */
+	int (*away)(const char *username, enum irc_user_status userstatus, const char *msg);
+	/*!< Callback for joins and leaves to a channel (JOIN/PART/QUIT), which should return 1 to suppress system messages */
+	int (*join_leave)(const char *username, const char *channel, int is_join);
 };
 
 #define irc_relay_register(callbacks) __irc_relay_register(callbacks, BBS_MODULE_SELF)
@@ -256,13 +306,98 @@ void irc_relay_who_response(struct bbs_node *node, int fd, const char *relayname
  */
 void irc_relay_names_response(struct bbs_node *node, int fd, const char *ircusername, const char *channel, const char *names);
 
+/*!
+ * \brief Create an IRC user for programmatic usage, outside of normal IRC connections and ChanServ
+ * \return user on success, or NULL if user could not be created
+ * \note If you use this, you are responsible for managing the lifecycle of this user
+ */
+struct irc_user *irc_user_create(enum user_modes modes);
+
+/*!
+ * \brief Free a user created using irc_user_create()
+ * \param user
+ */
+void irc_user_destroy(struct irc_user *user);
+
+/*!
+ * \brief Set the identity of a programmatic user
+ * \note All fields must be non-NULL
+ * \param user
+ * \param username
+ * \param nickname
+ * \param realname
+ * \param hostname
+ * \retval 0 on success, -1 if any allocations failed
+ */
+int irc_user_set_identity(struct irc_user *user, const char *username, const char *nickname, const char *realname, const char *hostname);
+
+/*!
+ * \brief Update the nickname of a programmatic user
+ * \param nickname New nickname
+ * \retval 0 on success, -1 if any allocations failed
+ */
+int irc_user_set_nickname(struct irc_user *user, const char *nickname);
+
+/*! \brief Execute an IRC command as a programmatic user */
+int irc_user_exec(struct irc_user *user, char *s);
+
+enum irc_command_callback_event {
+	IRCCMD_EVENT_NONE = 0,
+	IRCCMD_EVENT_PRIVMSG = (1 << 0),
+	IRCCMD_EVENT_JOIN = (1 << 1),
+	IRCCMD_EVENT_PART = (1 << 2),
+	IRCCMD_EVENT_QUIT = (1 << 3),
+	IRCCMD_EVENT_KICK = (1 << 4),
+	IRCCMD_EVENT_TOPIC = (1 << 5),
+	IRCCMD_EVENT_MODE = (1 << 6),
+};
+
+struct irc_event_callbacks {
+	/*!
+	 * \brief Callback for private messages (this does NOT include channel messages using PRIVMSG)
+	 * \param hostmask The hostmask of the sender
+	 * \param sender The username of the sender
+	 * \param recipient
+	 * \param msg The message. Callback is allowed to mutate it.
+	 * \note This is only called if the recipient matches, so the invocation is unique per IRC user
+	 *       and you do not need to check for a match.
+	 */
+	void (*privmsg_cb)(const char *hostmask, const char *sender, const char *recipient, char *msg);
+	/*!
+	 * \brief Callback for channel-related (or channel-affecting, in the case of QUIT) commands (just the ones in the irc_command_callback_event enum)
+	 * \param cb_username The username of the user associated with the callback
+	 * \param event
+	 * \param command The command
+	 * \param channel The channel in which the activity occured
+	 * \param hostmask The hostmask of the user associated with the event
+	 * \param username The username (not the nickname) of the user associated with the event
+	 * \param data Any data associated with the command
+	 */
+	void (*command_cb)(const char *cb_username, enum irc_command_callback_event event, const char *command, const char *channel, const char *hostmask, const char *username, const char *data);
+};
+
+/*!
+ * \brief Register programmatic user to receive events when things happen in channels
+ * \param user
+ * \param cb Callback functions
+ * \param events The events to which to subscribe and for which the callback should be triggered
+ * \note This callback is registered once per user, not once per callback function.
+ *       This allows net_irc to execute the callback only once for private messages,
+ *       since the argument passed to the callback is mutable.
+ */
+#define irc_register_programmatic_user(user, cb, events) __irc_register_programmatic_user(user, cb, events, BBS_MODULE_SELF)
+
+int __irc_register_programmatic_user(struct irc_user *user, struct irc_event_callbacks *cb, enum irc_command_callback_event events, void *mod);
+
+int irc_unregister_programmatic_user(struct irc_user *user);
+
 /*! \brief Register a ChanServ (channel services) provider */
-int irc_chanserv_register(void (*privmsg)(const char *username, char *msg), void (*eventcb)(const char *command, const char *channel, const char *username, const char *data), void *mod);
+#define irc_chanserv_register(cb) __irc_chanserv_register(cb, BBS_MODULE_SELF)
+
+int __irc_chanserv_register(struct irc_event_callbacks *cb, void *mod);
 
 /*! \brief Unregister ChanServ */
-int irc_chanserv_unregister(void (*privmsg)(const char *username, char *msg));
-
-#define chanserv_exec(s) __chanserv_exec(BBS_MODULE_SELF, s)
+int irc_chanserv_unregister(struct irc_event_callbacks *cb);
 
 /*! \brief Execute an IRC command as ChanServ */
-int __chanserv_exec(void *mod, char *s);
+int chanserv_exec(char *s);

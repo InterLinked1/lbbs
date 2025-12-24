@@ -23,6 +23,7 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <limits.h> /* use PATH_MAX */
+#include <stdarg.h>
 
 #include "include/linkedlists.h"
 #include "include/config.h"
@@ -58,6 +59,31 @@ struct bbs_config {
 };
 
 static RWLIST_HEAD_STATIC(configs, bbs_config);
+
+void __attribute__ ((format (gnu_printf, 7, 8))) __bbs_user_config_log(const char *file, int line, const char *func, struct bbs_config *cfg, enum bbs_log_level userlevel, enum bbs_log_level level, const char *fmt, ...)
+{
+	char buf[1024];
+	va_list ap;
+	size_t len;
+
+	/* Unfortunately, we don't have line number information here, but we can prefix the filename */
+	len = (size_t) snprintf(buf, sizeof(buf), "%s: ", bbs_config_filename(cfg));
+
+	va_start(ap, fmt);
+	vsnprintf(buf + len, sizeof(buf) - len, fmt, ap);
+	va_end(ap);
+
+	__bbs_log(level, 0, file, line, func, "%s", buf);
+
+	/*! \todo Email the user of this error, since the user can't see the console */
+	/*! \todo When we log this for the user, we don't want to log the full system path, just the portion relative to the user's home directory. */
+	UNUSED(userlevel);
+}
+
+const char *bbs_config_filename(struct bbs_config *cfg)
+{
+	return cfg->name;
+}
 
 const char *bbs_config_val(struct bbs_config *cfg, const char *section_name, const char *key)
 {

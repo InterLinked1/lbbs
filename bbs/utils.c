@@ -269,6 +269,15 @@ int bbs_parse_email_address(char *addr, char **name, char **user, char **host)
 	char address_buf[256]; /* Our mailbox names are definitely not super long, so using a small buffer is okay. */
 	char *start, *domain;
 
+	/* If empty or missing user portion, it's invalid */
+	if (strlen_zero(addr)) {
+		return -1;
+	}
+	if (*addr == '@') {
+		bbs_warning("Malformed email address '%s' (missing user part)\n", addr);
+		return -1;
+	}
+
 	if (!name && !user && !host) { /* If we don't want to keep the parsed result, make a stack copy and leave the original intact. */
 		safe_strncpy(address_buf, addr, sizeof(address_buf));
 		addr = address_buf;

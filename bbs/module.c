@@ -1497,7 +1497,9 @@ static int list_modulerefs(int fd, const char *name)
 				bbs_dprintf(fd, "%-30s %3d %2d %-30s %s:%d %s\n", mod->name, c,
 					r->pair, refmod ? refmod->name : "", r->file, r->line, r->func);
 #ifdef CHECK_MODULE_REFS
-				bbs_assert(module_exists_by_pointer(refmod)); /* Sanity check: if this module is still depending on is, then it must be loaded and active */
+				if (refmod) { /* Sanity check: if a module is still depending on us, then it must be loaded and active */
+					bbs_assert(module_exists_by_pointer(refmod));
+				}
 #endif
 			}
 			RWLIST_UNLOCK(&mod->refs);

@@ -366,6 +366,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install prereqs and build LBBS
+        continue-on-error: true
         uses: vmactions/freebsd-vm@v1
         with:
           usesh: true

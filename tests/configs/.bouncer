@@ -1,0 +1,8 @@
+[general]
+enabled=yes
+interactive_digest = yes
+email_digest_freq = 0
+
+[channels]
+#bouncer-test = 0 ; only flush interactively
+#bouncer-test2 = -1 ; only flush via email

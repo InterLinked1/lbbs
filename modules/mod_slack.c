@@ -1163,9 +1163,11 @@ static int set_status(struct slack_relay *relay, const char *msg)
 	return 1;
 }
 
-static int away(const char *username, int away, const char *msg)
+static int away_cb(const char *username, enum irc_user_status userstatus, const char *msg)
 {
 	struct slack_relay *relay;
+
+	UNUSED(userstatus);
 
 	/* As with mod_irc_relay, there could be multiple Slack workspaces,
 	 * so we need to iterate over relays to find all matches. */
@@ -1181,10 +1183,10 @@ static int away(const char *username, int away, const char *msg)
 			continue;
 		}
 
-		if (update_presence(relay, away)) {
-			bbs_warning("Failed to set presence for Slack relay %s to %s\n", relay->name, away ? "away" : "auto");
+		if (update_presence(relay, msg ? 1 : 0)) {
+			bbs_warning("Failed to set presence for Slack relay %s to %s\n", relay->name, msg ? "away" : "auto");
 		} else {
-			bbs_debug(4, "Set presence for Slack relay %s to %s\n", relay->name, away ? "away" : "auto");
+			bbs_debug(4, "Set presence for Slack relay %s to %s\n", relay->name, msg ? "away" : "auto");
 		}
 		set_status(relay, msg);
 	}
@@ -1711,7 +1713,7 @@ struct irc_relay_callbacks relay_callbacks = {
 	.relay_send = slack_send,
 	.nicklist = nicklist,
 	.privmsg = privmsg,
-	.away = away,
+	.away = away_cb,
 };
 
 static int load_module(void)

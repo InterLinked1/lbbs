@@ -364,6 +364,37 @@ int bbs_transfer_home_config_file(unsigned int userid, const char *name, char *b
 	return !bbs_file_exists(buf);
 }
 
+static int transfer_traverse_cb(const char *dir_name, const char *filename, int dir, void *obj)
+{
+	if (dir) { /* Don't care about any files in home dir root, only the home dirs themselves */
+		struct bbs_transfer_traversal *t = obj;
+		char fullpath[1024];
+		snprintf(fullpath, sizeof(fullpath), "%s/%s%s%s", dir_name, filename, t->filename ? "/" : "", t->filename);
+		if (t->filename && !bbs_file_exists(fullpath)) {
+			return 0;
+		}
+		/* It's a match, trigger the callback */
+		return t->callback(dir_name, filename, t->obj);
+	}
+	return 0;
+}
+
+int bbs_transfer_traverse_home_directories(struct bbs_transfer_traversal *t)
+{
+	char homedir_root[1024];
+
+	if (!rootlen) {
+		bbs_debug(3, "No transfer root directory is configured\n");
+		return -1;
+	}
+	snprintf(homedir_root, sizeof(homedir_root), "%s/home", rootdir);
+	if (!bbs_file_exists(homedir_root)) {
+		bbs_debug(3, "Home directory root does not exist at %s\n", homedir_root);
+		return -1;
+	}
+	return bbs_dir_traverse_items(homedir_root, transfer_traverse_cb, t);
+}
+
 int bbs_transfer_get_user_path(struct bbs_node *node, const char *diskpath, char *buf, size_t len)
 {
 	const char *userpath = diskpath + rootlen;

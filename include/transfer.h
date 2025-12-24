@@ -162,6 +162,19 @@ int bbs_transfer_home_config_subdir(unsigned int userid, const char *name, char 
  */
 int bbs_transfer_home_config_file(unsigned int userid, const char *name, char *buf, size_t len);
 
+struct bbs_transfer_traversal {
+	const char *filename; /*!< Filename that must exist in the home directory to process it */
+	int (*callback)(const char *dir_name, const char *filename, void *obj);
+	void *obj; /*!< Optional callback data */
+};
+
+/*!
+ * \brief Traverse all the user home directories
+ * \param t Initialized and configured traversal structure
+ * \retval 0 on success, -1 on failure
+ */
+int bbs_transfer_traverse_home_directories(struct bbs_transfer_traversal *t);
+
 /*!
  * \brief Get the user-facing transfer path from a full disk path
  * \param node

@@ -1,0 +1,42 @@
+; .bouncer - Integrated per-user IRC Bouncer
+;
+; Like a traditional IRC bouncer, this allows you to save a history of messages received
+; while you cannot be connected to IRC, which you can later access.
+; The bouncer is only compatible with local IRC channels (though these may be relayed
+; to other IRC networks or protocols).
+;
+; When the bouncer is running, it will appear as though you are present in the channel,
+; but you will be marked as away. When you are connected to an interactive session,
+; the bouncer is automatically disabled (in much the same manner that ChanServ will
+; leave a channel it is guarding as soon as you join it).
+;
+; Note that to log PMs, at least one channel must be configured.
+;
+;[general]
+;enabled=no ; Whether to enable the bouncer. Unless set to yes, this config will be ignored.
+;interactive_digest = yes ; Whether to replay all saved private messages interactively at next connect.
+;                         ; Default is yes, and this is always enabled if email digests are disabled.
+;email_digest_freq = 60 ; Frequency of email digests of private messages (0 to disable).
+
+
+; The below section lists channels for which the bouncer will be enabled.
+; Each channel can be individually configured for interactive and/or email retention.
+; interactive: When you interactively connect to this IRC channel, messages
+;              since your last session will be "replayed" to you. The log is then flushed.
+; email: Messages will be queued up and flushed to you periodically via email, based on digest frequency.
+;        You can also reply to messages via email, enabling asynchronous interaction with IRC.
+;        If there have been no messages since the last flush, no email will be sent.
+;        Starting an interactive session will flush any pending messages.
+;
+; At least one digest mode must be enabled. For both interactive and email digest mode,
+; specify the email digest period in minutes.
+; To disable interactive digests and only do email digests, negate the digest period.
+; 0 will disable email digests while keeping interactive digests enabled (default).
+;
+; Please note that the log file size is limited by your system administrator; therefore,
+; if you use interactive mode, truncation may occur if you do not regularly check the channel.
+
+;[channels]
+;#bouncer-test = 0 ; Don't send email digests, allow interactive digests only
+;#bouncer-test-2 = -720 ; Email digests only, every 12 hours
+;#bouncer-test-3 = 480 ; Both interactive digests and email digests, every 8 hours

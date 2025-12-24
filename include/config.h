@@ -19,6 +19,24 @@ struct bbs_config_section;
 struct bbs_keyval;
 
 /*!
+ * \brief Log a log-message that pertains to a user's config file. This will log normally but may in the future also notify the user via a non-logging mechanism (e.g. email)
+ * \param cfg
+ * \param userlevel Same as level, but the level to use for the end user as opposed to the BBS system logs.
+ * \param level Log level. Can be any level except debug level, since debug levels would not be appropriate for an end-user anyways.
+ * \param fmt printf-style format string
+ */
+#define bbs_user_config_log(cfg, userlevel, level, fmt, ...) __bbs_user_config_log(__FILE__, __LINE__, __func__, cfg, userlevel, level, fmt, ## __VA_ARGS__)
+
+void __attribute__ ((format (gnu_printf, 7, 8))) __bbs_user_config_log(const char *file, int line, const char *func, struct bbs_config *cfg, enum bbs_log_level userlevel, enum bbs_log_level level, const char *fmt, ...);
+
+/*!
+ * \brief Retrieve filename of config
+ * \param cfg
+ * \returns Config filename. May be relative or absolute depending on if it's a BBS system-wide or per-user config
+ */
+const char *bbs_config_filename(struct bbs_config *cfg);
+
+/*!
  * \brief Retrieve a config setting
  * \param cfg
  * \param section_name Name of section

@@ -998,30 +998,34 @@ done:
 }
 
 /*! \brief Handle PRIVMSGs from users trying to use ChanServ */
-static void process_privmsg(const char *username, char *msg)
+static void privmsg_cb(const char *hostmask, const char *sender, const char *recipient, char *msg)
 {
 	long unsigned int x;
 	char *command;
+
+	UNUSED(hostmask);
+	UNUSED(recipient);
+
 	/* We can expect that this is well-formatted or the PRIVMSG would have been rejected. */
 	/* We can also expect that username is really authorized, since users can't PRIVMSG ChanServ without being logged in,
 	 * and we don't allow nick changes in net_irc */
-	bbs_debug(8, "=> %s: %s\n", username, msg); /* Log the message before we start mangling it */
+	bbs_debug(8, "=> %s: %s\n", sender, msg); /* Log the message before we start mangling it */
 
 	command = strsep(&msg, " ");
 	/* Messages are close to the IRC protocol, but must NOT end in CR LF since the hook into net_irc is after CR LF is stripped */
 	for (x = 0; x < ARRAY_LEN(chanserv_cmds); x++) {
 		if (!strcasecmp(chanserv_cmds[x].name, command)) {
-			chanserv_cmds[x].handler(username, msg);
+			chanserv_cmds[x].handler(sender, msg);
 			break;
 		}
 	}
 
 	/* Command wasn't found */
 	if (x >= ARRAY_LEN(chanserv_cmds)) {
-		chanserv_notice(username, "Invalid ChanServ command.");
-		chanserv_notice(username, "	Use /msg ChanServ HELP for a ChanServ command listing.");
+		chanserv_notice(sender, "Invalid ChanServ command.");
+		chanserv_notice(sender, "	Use /msg ChanServ HELP for a ChanServ command listing.");
 	}
-	}
+}
 
 static void join_flags_cb(const char *username, char *const fields[], int row, void *data)
 {
@@ -1047,24 +1051,28 @@ static void join_flags_cb(const char *username, char *const fields[], int row, v
 }
 
 /*! \brief Respond to channel events, such as JOIN, TOPIC change, etc. */
-static void event_cb(const char *cmd, const char *channel, const char *username, const char *data)
+static void command_cb(const char *cb_username, enum irc_command_callback_event event, const char *cmd, const char *channel, const char *hostmask, const char *username, const char *data)
 {
+	UNUSED(hostmask);
+	UNUSED(cb_username);
+	UNUSED(cmd); /* Use event instead */
+
 	bbs_debug(3, "%s %s (%s): %s\n", cmd, channel, username, S_IF(data));
 
 	/* Case-sensitive comparisons fine here */
-	if (!strcmp(cmd, "JOIN")) {
+	if (event == IRCCMD_EVENT_JOIN) {
 		char entrymsg[256] = "";
 		sql_fetch_strings2(username, channel, username, join_flags_cb, NULL, "sss", "SELECT channel, nickname, GROUP_CONCAT(flag ORDER BY flag SEPARATOR '') AS flags FROM channel_flags WHERE channel = ? AND nickname = ? GROUP BY channel, nickname");
 		if (!channel_get_entrymsg(NULL, channel, entrymsg, sizeof(entrymsg)) && !s_strlen_zero(entrymsg)) {
 			/* Channel has an entry message. Send it to the newcomer. */
 			chanserv_notice(username, "[%s] %s", channel, entrymsg);
 		}
-	} else if (!strcmp(cmd, "TOPIC")) {
+	} else if (event == IRCCMD_EVENT_TOPIC) {
 		/* If KEEPTOPIC enabled, remember the topic */
 		/*! \todo ONLY if KEEPTOPIC enabled, remember the topic */
 		/*! \todo Only do this when we're first creating the channel... not each time mod_chanserv is reloaded (disruptive to members of the channel) */
 		update_colval(username, channel, "topic", !strlen_zero(data) ? data : NULL); /* Kind of an inverted S_IF here */
-	}
+	} /* else, don't care */
 }
 
 static int chanserv_init(void)
@@ -1174,12 +1182,17 @@ static int load_config(void)
 	return res ? -1 : 0;
 }
 
+struct irc_event_callbacks event_callbacks = {
+	.privmsg_cb = privmsg_cb,
+	.command_cb = command_cb,
+};
+
 static int load_module(void)
 {
 	if (load_config()) {
 		return -1;
 	}
-	if (irc_chanserv_register(process_privmsg, event_cb, BBS_MODULE_SELF)) {
+	if (irc_chanserv_register(&event_callbacks)) {
 		return -1;
 	}
 	bbs_run_when_started(chanserv_init, STARTUP_PRIORITY_DEPENDENT);
@@ -1193,7 +1206,7 @@ static int unload_module(void)
 	 * This may be desirable (not to), as if we reload the module,
 	 * it won't cause ChanServ to leave and immediately join the channel:
 	 * it'll be completely transparent to any channels that have ChanServ in them (due to GUARD ON) */
-	irc_chanserv_unregister(process_privmsg);
+	irc_chanserv_unregister(&event_callbacks);
 	return 0;
 }
 

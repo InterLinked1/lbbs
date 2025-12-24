@@ -689,10 +689,12 @@ static int privmsg_cb(const char *recipient, const char *sender, const char *msg
 	return 1;
 }
 
-static int away_cb(const char *username, int away, const char *msg)
+static int away_cb(const char *username, enum irc_user_status userstatus, const char *msg)
 {
 	struct chan_pair *cp = NULL;
 	struct stringlist slist;
+
+	UNUSED(userstatus);
 
 	stringlist_init(&slist);
 
@@ -723,7 +725,7 @@ static int away_cb(const char *username, int away, const char *msg)
 			continue;
 		}
 
-		bbs_debug(3, "Relaying %s to client %s\n", away ? "away" : "back", client);
+		bbs_debug(3, "Relaying %s to client %s\n", msg ? "away" : "back", client);
 		bbs_irc_client_set_away(client, msg);
 		stringlist_push(&slist, client); /* Keep track of what clients we've already relayed the AWAY to */
 	}
