@@ -80,6 +80,7 @@
 #define BBS_SYSOP_SOCKET DIRCAT(DIRCAT("/var/run", BBS_NAME), "sysop.sock")
 
 /* Global undeclarations */
+#ifndef __FreeBSD__ /* On FreeBSD, get error: "function" redefined [-Werror] errors */
 /* Forbid usage of unsafe functions */
 #if defined(BBS_IN_CORE)
 #define gets(s) Do_not_use_gets__use_fgets
@@ -117,6 +118,11 @@
 #endif /* __linux__ */
 #endif /* BBS_MAIN_FILE */
 #endif /* BBS_IN_CORE */
+#else
+#ifdef BBS_PTHREAD_WRAPPER_FILE
+/* Dummy usage to suppress unused-macros, since BBS_PTHREAD_WRAPPER_FILE is only really used in the ! __FreeBSD__ branch */
+#endif /* BBS_PTHREAD_WRAPPER_FILE */
+#endif /* __FreeBSD__ */
 
 /* BUGBUG FIXME XXX ^^^ For some reason adding ->fail(a, b, c, d) etc. on the end
  * (which does force an undeclared function warning) causes an expected = , ; asm or __attribute__ before -> token ???
