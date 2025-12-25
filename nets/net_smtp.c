@@ -2705,6 +2705,8 @@ int smtp_inject(const char *mailfrom, struct stringlist *recipients, const char 
 
 	smtp.datafile = filename;
 
+	/* String list is stack allocated, we just move the dynamically allocated contents to our container,
+	 * so smtp_destroy can conveniently clean it up afterwards. */
 	stringlist_init(&smtp.sentrecipients);
 	memcpy(&smtp.recipients, recipients, sizeof(smtp.recipients));
 

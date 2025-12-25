@@ -7,7 +7,7 @@
 # $2 = OPTIONAL For postdump command, custom path to core file. Default is 'core' in current directory.
 # For backtraces, the full backtrace is saved to full.txt in the current directory
 
-ps -aux | grep "lbbs" | grep -v "strace" | grep -v "grep"
+ps -aux | grep "lbbs" | grep -v "strace" | grep -v "grep" | grep -v "mysqld"
 
 bbspid=`cat /var/run/lbbs/bbs.pid`
 printf "BBS PID: %d\n" $bbspid

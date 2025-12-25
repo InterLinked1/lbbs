@@ -1264,6 +1264,9 @@ int imap_proxy_remote_mailbox_exclusively(struct imap_session *imap, const char 
 				bbs_error("poll failed: %s\n", strerror(errno));
 			}
 			break;
+		} else if (!pres) {
+			/* No activity from either side, go ahead and disconnect. */
+			break;
 		}
 		if (pfds[0].revents & POLLIN) {
 			ssize_t res;

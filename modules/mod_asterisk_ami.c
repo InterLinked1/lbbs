@@ -272,7 +272,7 @@ static int load_config(int open_logfile)
 	struct bbs_config *cfg;
 	char hostname[256];
 	char username[64];
-	char password[92];
+	char password[92] = ""; /* Avoid uninitialized memory access if it wasn't set */
 	char logfile[512];
 	unsigned int loglevel = 0;
 

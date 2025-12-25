@@ -366,9 +366,7 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 	if (!waiting_join) {
 #ifdef __linux__
 		struct timespec ts;
-#if defined(__GLIBC__)
 		time_t start = time(NULL);
-#endif /* __GLIBC__ */
 		/* This is suspicious... we may end up hanging if the thread doesn't exit imminently */
 		/* Don't immediately emit a warning, because the thread may be just about to exit
 		 * and thus wasn't waitingjoin when we checked. This prevents superflous warnings,
@@ -386,10 +384,16 @@ int __bbs_pthread_join(pthread_t thread, void **retval, const char *file, const 
 			/* Now, proceed as normal and do a ~blocking pthread_join */
 			/* Seems that after using pthread_timedjoin_np, you can't do a blocking pthread_join anymore? So loop */
 			while (res && res == ETIMEDOUT) {
-#if defined(__GLIBC__)
-				bbs_debug(9, "Thread %lu not yet joined after %lus\n", thread, ts.tv_sec - start);
-#endif /* __GLIBC__ */
-				clock_gettime(CLOCK_REALTIME, &ts); /* Get time again, in case a lot of delayed has occured since the last pthread_timedjoin_np */
+				time_t diff = ts.tv_sec - start;
+				if (diff > 180) {
+					/* Something is almost definitely wrong */
+					bbs_warning("Thread %d not yet joined after %lus\n", lwp, diff);
+				} else {
+					bbs_debug(4, "Thread %d not yet joined after %lus\n", lwp, diff);
+				}
+				if (clock_gettime(CLOCK_REALTIME, &ts)) { /* Get time again, in case a lot of delay has occured since the last pthread_timedjoin_np */
+					bbs_error("clock_gettime failed: %s\n", strerror(errno));
+				}
 				ts.tv_sec += 5;
 				res = pthread_timedjoin_np(thread, retval ? retval : &tmp, &ts);
 			}

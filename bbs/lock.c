@@ -189,6 +189,9 @@ int __bbs_mutex_lock(bbs_mutex_t *t, const char *filename, int lineno, const cha
 				lock_debug("Spent %ld seconds so far waiting for mutex %s (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
 					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 				start = now;
+			} else if (c == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
+				lock_error("Recursive attempt to lock %s, definite deadlock! (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
+					name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 			} else if (elapsed == 10) {
 				/* Preliminary warning if we think we've encountered a deadlock. */
 				lock_notice("Spent %ld seconds so far waiting for mutex %s, possible deadlock? (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
@@ -399,6 +402,9 @@ int __bbs_rwlock_rdlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 				lock_debug("Spent %ld seconds so far waiting to rdlock %s (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
 					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 				start = now;
+			} else if (c == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
+				lock_error("Recursive attempt to rdlock %s, definite deadlock! (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+					name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 			} else if (elapsed == 30) { /* Use a higher threshold for rwlocks than mutexes, since there could be multiple readers */
 				/* Preliminary warning if we think we've encountered a deadlock. */
 				lock_notice("Spent %ld seconds so far waiting to rdlock %s, possible deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
@@ -467,6 +473,9 @@ int __bbs_rwlock_wrlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 				lock_debug("Spent %ld seconds so far waiting to wrlock %s (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
 					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 				start = now;
+			} else if (c == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
+				lock_error("Recursive attempt to wrlock %s, definite deadlock! (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+					name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 			} else if (elapsed == 30) { /* Use a higher threshold for rwlocks than mutexes, since there could be multiple readers */
 				/* Preliminary warning if we think we've encountered a deadlock. */
 				lock_notice("Spent %ld seconds so far waiting to wrlock %s, possible deadlock? (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",

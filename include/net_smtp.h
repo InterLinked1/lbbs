@@ -525,7 +525,8 @@ int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *se
 /*!
  * \brief Inject a message to deliver via SMTP, from outside of the SMTP protocol
  * \param mailfrom MAIL FROM. Do not include <>.
- * \param recipients List of recipients for RCPT TO. Must include <>. This list will be consumed and be empty be valid upon returning.
+ * \param recipients List of recipients for RCPT TO. Must include <>. This list will be consumed and be empty and invalid upon returning.
+ *        If recipients is stack-allocated, no further cleanup is needed; otherwise, use free().
  * \param filename Entire RFC822 message
  * \return Same as expand_and_deliver's return value.
  */

@@ -79,8 +79,14 @@ int startup_run_unit_tests;
 /* Maximum amount of time for any single test duration */
 #define TEST_TIMEOUT 180
 
-/* How long to wait for BBS to exit after a test. */
-#define SHUTDOWN_TIMEOUT 15
+/* How long to wait for BBS to exit after a test.
+ * This is way longer than is needed, but if it's due to a deadlock,
+ * then this will allow lock.c to dump more info about the
+ * deadlock before we kill the BBS. */
+#define SHUTDOWN_TIMEOUT 35
+
+/* Install a handler for SIGCHLD to detect failed startups more quickly */
+#define USE_SIGCHLD_HANDLER
 
 static const char *loglevel2str(enum bbs_log_level level)
 {
@@ -424,6 +430,8 @@ static struct readline_data rldata;
 
 static int startup_run_unit_tests_started = 0;
 
+#define SUCCESS_CHAR '\n'
+
 static void *io_relay(void *varg)
 {
 	char buf[1024];
@@ -431,7 +439,7 @@ static void *io_relay(void *varg)
 	int *pipefd = varg;
 	int ready;
 	int found;
-	char c = '\n';
+	char c = SUCCESS_CHAR;
 
 	logfd = open(TEST_LOGFILE, O_CREAT | O_TRUNC, 0600);
 	if (logfd < 0) {
@@ -503,6 +511,8 @@ static void *io_relay(void *varg)
 	return NULL;
 }
 
+static int child_exited;
+
 int test_bbs_expect(const char *s, int ms)
 {
 	int res;
@@ -523,6 +533,10 @@ int test_bbs_expect(const char *s, int ms)
 	}
 	res = poll(&pfd, 1, ms);
 	bbs_expect_str = NULL;
+	if (child_exited) {
+		bbs_warning("BBS process exited before expected output received\n");
+		return -1;
+	}
 	if (do_abort || res < 0) {
 		bbs_debug(5, "poll returned %d\n", res);
 		return -1;
@@ -759,6 +773,9 @@ static int test_bbs_spawn(const char *directory)
 		return -1;
 	} else if (child == 0) {
 		int i;
+#ifdef USE_SIGCHLD_HANDLER
+		signal(SIGCHLD, SIG_DFL);
+#endif
 		close_if(notifypfd[0]);
 		close_if(notifypfd[1]);
 		close_if(bbspfd[0]); /* Close read end */
@@ -834,7 +851,8 @@ int test_load_module(const char *module)
 		bbs_error("Can't call this function now\n");
 		return -1;
 	}
-	fprintf(modulefp, "load=%s\r\n", module);
+	/* Use require= instead of load=, so test won't init if we failed to load a desired module */
+	fprintf(modulefp, "require=%s\r\n", module);
 	return 0;
 }
 
@@ -978,7 +996,9 @@ static void send_signal(pid_t pid, int sig)
 		bbs_error("Unhandled signal: %d\n", sig);
 		return;
 	}
-	kill(pid, sig);
+	if (kill(pid, sig)) {
+		bbs_error("Failed to send signal to process %lu: %s\n", (unsigned long) pid, strerror(errno));
+	}
 }
 
 static pid_t bbs_pid(pid_t childpid)
@@ -1045,6 +1065,55 @@ static void sigalrm_handler(int sig)
 	pthread_create(&child, &attr, stop_stuck_bbs, NULL); /* Not signal safe, but better than doing all that in the current thread */
 }
 
+#ifdef USE_SIGCHLD_HANDLER
+/*! \brief Callback for when the child process exits */
+static void __sigchld_handler(int num)
+{
+	int res;
+	siginfo_t infop;
+	char c = 0; /* Not SUCCESS_CHAR, that's all that matters */
+
+	UNUSED(num);
+
+	if (!current_child) {
+		return;
+	}
+
+	/* The tests can spawn other programs, which will also trigger SIGCHLD, and we need to ignore those. */
+	infop.si_pid = 0;
+	/* If we use P_PID, then waitid still returns, but infop.si_pid is 0,
+	 * which is not really helpful here, so use P_ALL to catch everything. */
+	res = waitid(P_ALL, (id_t) current_child, &infop, WEXITED | WNOHANG | WNOWAIT);
+	/* XXX Logging here technically not signal-safe */
+	if (res == -1) {
+		if (errno == ECHILD && bbs_shutting_down) {
+			/* The main thread's waitpid() call already returned */
+			return;
+		}
+		bbs_error("waitid(%d) failed: %s\n", current_child, strerror(errno));
+	} else {
+		if (infop.si_pid > 0) {
+			if (infop.si_pid != current_child) {
+				bbs_debug(1, "Non-BBS child process %d exited\n", infop.si_pid);
+			} else {
+				child_exited = 1;
+				bbs_debug(3, "BBS process %d has exited\n", current_child);
+				write(notifypfd[1], &c, 1);
+			}
+		} else {
+			bbs_warning("No child process exited?\n");
+		}
+	}
+}
+
+static struct sigaction sigchld_handler = {
+	.sa_handler = __sigchld_handler,
+	/* This is necessary to prevent the child process from getting "stuck" at shutdown in some tests (e.g. test_mailscript)
+	 * when USE_SIGCHLD_HANDLER is defined */
+	.sa_flags = SA_RESTART | SA_NOCLDSTOP,
+};
+#endif
+
 static int run_test(const char *filename, int multiple)
 {
 	int res = 0;
@@ -1098,23 +1167,17 @@ static int run_test(const char *filename, int multiple)
 				goto cleanup;
 			}
 			fprintf(modulefp, "[general]\r\nautoload=no\r\n\r\n[modules]\r\n");
-			if (use_static_auth) {
-				test_load_module("mod_auth_static.so"); /* Always load this module, unless told not to */
-			}
 			res = testmod->pre();
 			if (res) {
 				goto cleanup;
 			}
+			if (use_static_auth) {
+				test_load_module("mod_auth_static.so"); /* Always load this module, unless told not to */
+			}
 			if (option_autoload_all) {
-				/* Truncate file and start again. Most tests don't use this.
-				 * There's not really a great way to truncate a file that's already open, so just close it and start again. */
-				fclose(modulefp);
-				modulefp = fopen(modfilename, "w");
-				if (!modulefp) {
-					bbs_error("fopen(%s) failed: %s\n", modfilename, strerror(errno));
-					res = -1;
-					goto cleanup;
-				}
+				/* Truncate file and start again. Most tests don't use this. */
+				fflush(modulefp); /* Need to flush what we have first, prior to truncating */
+				ftruncate(fileno(modulefp), 0);
 				fprintf(modulefp, "[general]\r\nautoload=yes\r\n\r\n[modules]\r\n");
 				fprintf(modulefp, "noload=mod_version.so\r\n");
 			}
@@ -1156,6 +1219,7 @@ static int run_test(const char *filename, int multiple)
 		gettimeofday(&start, NULL);
 		if (!res) {
 			core_before = eaccess("core", R_OK) ? 0 : 1;
+			child_exited = 0;
 			childpid = test_bbs_spawn(TEST_CONFIG_DIR);
 			if (childpid < 0) {
 				res = -1;
@@ -1172,7 +1236,10 @@ static int run_test(const char *filename, int multiple)
 				res = testmod->run();
 				alarm(0); /* Cancel any pending alarm */
 				bbs_debug(3, "Test '%s' returned %d\n", filename, res);
+#if 1
+				/* XXX Not sure this is needed anymore? (fixed recursive locking in net_irc) */
 				usleep(25000); /* Allow the poor BBS time for catching its breath. At least test_irc under valgrind seems to need this. */
+#endif
 			} else {
 				bbs_warning("BBS didn't complete startup?\n");
 			}
@@ -1183,14 +1250,15 @@ static int run_test(const char *filename, int multiple)
 				/* If shutdown gets stuck, don't sit around waiting forever. */
 				alarm(SHUTDOWN_TIMEOUT);
 				waitpid(childpid, &wstatus, 0); /* Wait for child to exit */
+				current_child = 0;
 				if (!alarm(0)) { /* Cancel any pending alarm */
 					bbs_error("BBS did not shut down in a timely manner, possible deadlock?\n");
 					res = -1; /* Automatic fail, since shutdown was not clean */
 				}
-				current_child = 0;
 				bbs_debug(3, "Child process %d has exited\n", childpid);
 				if (WIFSIGNALED(wstatus)) { /* Child terminated by signal (probably SIGSEGV?) */
-					bbs_error("Process %d (%s) killed, signal %s\n", childpid, filename, bbs_signal_name(WTERMSIG(wstatus)));
+					int sig = WTERMSIG(wstatus);
+					bbs_error("Process %d (%s) killed, signal %d (%s)\n", childpid, filename, sig, bbs_signal_name(sig));
 				}
 			}
 			bbs_debug(3, "Test %s return code so far is %d\n", filename, res);
@@ -1202,6 +1270,7 @@ static int run_test(const char *filename, int multiple)
 		}
 		close_pipes(); /* This needs to be done before we join bbs_io_thread or it won't exit */
 		if (bbs_io_thread) {
+			bbs_debug(7, "Waiting for BBS I/O thread to exit\n");
 			pthread_join(bbs_io_thread, NULL);
 			bbs_io_thread = 0;
 		}
@@ -1318,6 +1387,9 @@ int main(int argc, char *argv[])
 	signal(SIGINT, sigint_handler); /* Catch SIGINT since cleanup could be very messy */
 	signal(SIGPIPE, SIG_IGN); /* Ignore SIGPIPE to avoid exiting on failed write to pipe */
 	signal(SIGALRM, sigalrm_handler);
+#ifdef USE_SIGCHLD_HANDLER
+	sigaction(SIGCHLD, &sigchld_handler, NULL); /* Get notified immediately when children exit */
+#endif
 
 	bbs_debug(1, "Running test suite on PID %ld, looking for tests in %s\n", (long) getpid(), XSTR(TEST_DIR));
 	if (chdir(XSTR(TEST_DIR))) {

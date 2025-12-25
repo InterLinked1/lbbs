@@ -143,9 +143,13 @@ int test_client_expect_eventually(int fd, int ms, const char *s, int line);
 int test_client_expect_eventually_buf(int fd, int ms, const char *s, int line, char *buf, size_t len);
 int test_client_drain(int fd, int ms);
 
-#define CLIENT_EXPECT(fd, s) if (test_client_expect(fd, SEC_MS(5), s, __LINE__)) { goto cleanup; }
-#define CLIENT_EXPECT_BUF(fd, s, buf) if (test_client_expect_buf(fd, SEC_MS(5), s, __LINE__, buf, sizeof(buf))) { goto cleanup; }
-#define CLIENT_EXPECT_EVENTUALLY(fd, s) if (test_client_expect_eventually(fd, SEC_MS(5), s, __LINE__)) { goto cleanup; }
+/* The bottleneck here is usually authentication when the BBS is run under valgrind,
+ * particularly on slower machines. */
+#define DEFAULT_WAIT_SEC 7
+
+#define CLIENT_EXPECT(fd, s) if (test_client_expect(fd, SEC_MS(DEFAULT_WAIT_SEC), s, __LINE__)) { goto cleanup; }
+#define CLIENT_EXPECT_BUF(fd, s, buf) if (test_client_expect_buf(fd, SEC_MS(DEFAULT_WAIT_SEC), s, __LINE__, buf, sizeof(buf))) { goto cleanup; }
+#define CLIENT_EXPECT_EVENTUALLY(fd, s) if (test_client_expect_eventually(fd, SEC_MS(DEFAULT_WAIT_SEC), s, __LINE__)) { goto cleanup; }
 /* We really may need up to 150ms when under valgrind */
 #define CLIENT_DRAIN(fd) test_client_drain(fd, 150)
 
