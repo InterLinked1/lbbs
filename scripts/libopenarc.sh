@@ -11,5 +11,5 @@ else
 fi
 git checkout develop # master branch is behind
 # https://github.com/trusteddomainproject/OpenARC/issues/118
-aclocal && autoconf && autoreconf --install && automake --add-missing && ./configure && make all
+aclocal && autoconf && autoreconf --install && automake --add-missing && ./configure && make all -j$(nproc)
 make install

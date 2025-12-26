@@ -196,6 +196,11 @@ PACKAGES_DEBIAN="$PACKAGES_DEBIAN bc"
 PACKAGES_DEBIAN="$PACKAGES_DEBIAN html2text"
 # INSTALL_LIBETPAN=0 on Fedora-based systems, so don't bother installing html2text on those.
 
+# doxygen only: env var required to enable
+if [ "$INCLUDE_DOXYGEN" = "1" ]; then
+	PACKAGES_DEBIAN="$PACKAGES_DEBIAN doxygen graphviz"
+fi
+
 # Required only for tests
 if [ "$1" = "1" ]; then
 	# mariadb-server is required for some of the test modules (test_auth_mysql, test_irc_chanserv)
@@ -306,34 +311,35 @@ scripts/libwss.sh
 # mod_slack (also depends on libwss)
 scripts/libslackrtm.sh
 
-# libdiscord (mod_discord)
-if [ "$INSTALL_LIBDISCORD" != "0" ]; then
-	# Makefile doesn't add the proper LDFLAGS on BSD and doesn't seem to obey LDFLAGS when passed in...
-	scripts/libdiscord.sh
-fi
-
-# libetpan fails to build successfully on Fedora-based distros,
-# so need to be able to skip that for now using an env var.
-if [ "$INSTALL_LIBETPAN" != "0" ]; then
-	# libetpan (mod_webmail): the package no longer suffices, since we patch the source.
-	#PACKAGES_DEBIAN="$PACKAGES_DEBIAN libetpan-dev"
-	scripts/libetpan.sh
-
-	# evergreen (door_evergreen)
-	scripts/evergreen.sh
+if [ "$INSTALL_LIBDISCORD" != "0" ] && [ "$INSTALL_LIBETPAN" != "0" ] && [ "$INSTALL_LIBOPENARC" != "0" ]; then
+	# On machines with many CPU cores, take advantage of the parallelism available by building several libraries at once
+	printf "Building libdiscord, libetpan, and libopenarc in parallel\n"
+	(trap 'kill 0' INT; scripts/libdiscord.sh & (scripts/libetpan.sh && scripts/evergreen.sh) & scripts/libopenarc.sh & wait)
 else
-	printf "Skipping libetpan install (INSTALL_LIBETPAN=%s)\n" "$INSTALL_LIBETPAN"
-fi
+	# libdiscord (mod_discord)
+	if [ "$INSTALL_LIBDISCORD" != "0" ]; then
+		# Makefile doesn't add the proper LDFLAGS on BSD and doesn't seem to obey LDFLAGS when passed in...
+		scripts/libdiscord.sh
+	fi
 
-# mod_smtp_filter_arc
-# milter pre-req can be hard to satisfy, so can be disabled using an env var
-if [ "$INSTALL_LIBOPENARC" != "0" ]; then
-	scripts/libopenarc.sh
-else
-	printf "Skipping libopenarc install (INSTALL_LIBOPENARC=%s)\n" "$INSTALL_LIBOPENARC"
-fi
+	# libetpan fails to build successfully on Fedora-based distros,
+	# so need to be able to skip that for now using an env var.
+	if [ "$INSTALL_LIBETPAN" != "0" ]; then
+		# libetpan (mod_webmail): the package no longer suffices, since we patch the source.
+		#PACKAGES_DEBIAN="$PACKAGES_DEBIAN libetpan-dev"
+		scripts/libetpan.sh
 
-# doxygen only: env var required to enable
-if [ "$INCLUDE_DOXYGEN" = "1" ]; then
-	PACKAGES_DEBIAN="$PACKAGES_DEBIAN doxygen graphviz"
+		# evergreen (door_evergreen)
+		scripts/evergreen.sh
+	else
+		printf "Skipping libetpan install (INSTALL_LIBETPAN=%s)\n" "$INSTALL_LIBETPAN"
+	fi
+
+	# mod_smtp_filter_arc
+	# milter pre-req can be hard to satisfy, so can be disabled using an env var
+	if [ "$INSTALL_LIBOPENARC" != "0" ]; then
+		scripts/libopenarc.sh
+	else
+		printf "Skipping libopenarc install (INSTALL_LIBOPENARC=%s)\n" "$INSTALL_LIBOPENARC"
+	fi
 fi

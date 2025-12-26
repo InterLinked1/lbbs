@@ -30,5 +30,5 @@ wget "https://patch-diff.githubusercontent.com/raw/dinhvh/libetpan/pull/447.diff
 git apply 447.diff
 
 ./autogen.sh --with-poll
-make
+make -j$(nproc)
 make install
