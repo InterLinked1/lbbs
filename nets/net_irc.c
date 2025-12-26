@@ -26,6 +26,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/time.h> /* use gettimeofday */
 #include <limits.h> /* use PATH_MAX */
 
 #include "include/module.h"
@@ -146,6 +147,8 @@ struct irc_user {
 	time_t lastactive;				/* Time of last JOIN, PART, PRIVMSG, NOTICE, etc. */
 	time_t lastping;				/* Last ping sent */
 	time_t lastpong;				/* Last pong received */
+	struct timeval lastping_us;		/* Lag timer start (when we sent a PING) */
+	int lag;						/* Lag, in ms (how long it took to get a PONG) */
 	bbs_mutex_t lock;				/* User lock */
 	char *awaymsg;					/* Away message */
 	unsigned int away:1;			/* User is currently away (default is 0, i.e. user is here) */
@@ -3823,6 +3826,7 @@ static void handle_client(struct irc_user *user)
 
 	for (;;) {
 		char *s = buf;
+
 		/* XXX For some reason, using \r\n as the delimiter for bbs_readline breaks Ambassador.
 		 * Doesn't seem like a bug in bbs_readline, though it is suspicious since
 		 * the RFCs are very clear that CR LF is the delimiter.
@@ -3963,11 +3967,17 @@ static void handle_client(struct irc_user *user)
 		} else { /* Post-CAP/SASL */
 			char *current, *command = strsep(&s, " ");
 			if (!strcasecmp(command, "PONG")) {
+				struct timeval now_us, diff_us;
+				gettimeofday(&now_us, NULL);
 				bbs_mutex_lock(&user->lock);
+				timersub(&now_us, &user->lastping_us, &diff_us);
+				user->lag = (int) ((1000 * diff_us.tv_sec) + (diff_us.tv_usec / 1000));
 				user->lastpong = time(NULL);
 				bbs_mutex_unlock(&user->lock);
 			} else if (!strcasecmp(command, "PING")) { /* Usually servers ping clients, but clients can ping servers too */
-				send_reply(user, "PONG %s\r\n", S_IF(s)); /* Don't add another : because it's still in s, if present. */
+				/* The server PONG response slightly differs from the client PONG response.
+				 * We include the hostname of the pinged server, before echoing back whatever was received. */
+				send_reply(user, "PONG %s %s\r\n", irc_hostname, S_IF(s)); /* Don't add another : because it's still in s, if present. */
 			} else if (!strcasecmp(command, "PASS")) {
 				REQUIRE_PARAMETER(user, s);
 				free_if(user->password);
@@ -4306,6 +4316,16 @@ static int ping_alertpipe[2] = { -1, -1 };
  * TL;DR This IRC server uses N+1 threads, where N is the number of clients connected.
  */
 
+/*! \todo RFC 1459 4.6.2 says a PING is sent... if no other activity detected from a connection.
+ * This means we don't actually need this separate thread to ping clients at all, handle_client can send PINGs if the poll timeout expires,
+ * with additional logic to disconnect if nothing further is heard afterwards. */
+static void ping_client(struct irc_user *user, time_t now)
+{
+	irc_other_thread_writef(user->node, "PING :%" TIME_T_FMT "\r\n", now);
+	user->lastping = now;
+	gettimeofday(&user->lastping_us, NULL);
+}
+
 /*! \brief Thread to periodically ping all clients and dump any that don't respond with a pong back in time */
 static void *ping_thread(void *unused)
 {
@@ -4340,8 +4360,7 @@ static void *ping_thread(void *unused)
 				bbs_debug(5, "Shutting down client on node %d\n", user->node->id);
 				bbs_socket_shutdown(user->node->fd); /* Make the client handler thread break */
 			} else {
-				irc_other_thread_writef(user->node, "PING :%" TIME_T_FMT "\r\n", now);
-				user->lastping = now;
+				ping_client(user, now);
 				clients++;
 			}
 		}
@@ -4370,11 +4389,13 @@ static int cli_irc_users(struct bbs_cli_args *a)
 	int i = 0;
 	time_t now = time(NULL);
 
-	bbs_dprintf(a->fdout, "%3s %2s %4s %-20s %4s %-15s %-20s %s\n", "#", "Op", "Node", "User", "Ping", "Modes", "Nick", "Hostmask");
+	bbs_dprintf(a->fdout, "%3s %2s %4s %-20s %4s %4s %-15s %-20s %s\n", "#", "Op", "Node", "User", "Ping", "Lag", "Modes", "Nick", "Hostmask");
 	RWLIST_RDLOCK(&users);
 	RWLIST_TRAVERSE(&users, user, entry) {
 		char hostmask[128];
 		char node_id[15];
+		char pingbuf[20];
+		char lagbuf[20]; /* min size possible */
 		time_t ping = user->lastpong ? now - user->lastpong : -1;
 		++i;
 		get_user_modes(modes, sizeof(modes), user);
@@ -4384,8 +4405,19 @@ static int cli_irc_users(struct bbs_cli_args *a)
 			strcpy(node_id, "-");
 		}
 		snprintf(hostmask, sizeof(hostmask), HOSTMASK_FMT, HOSTMASK_ARGS(user));
-		bbs_dprintf(a->fdout, "%3d %2s %4s %-20s %4" TIME_T_FMT " %-15s %-20s %s\n",
-			i, user->modes & USER_MODE_OPERATOR ? "*" : "", node_id, user->username, ping, modes, user->nickname, hostmask);
+		if (user->lastpong) {
+			int lag_sec = user->lag / 1000;
+			snprintf(lagbuf, sizeof(lagbuf), "%01d.%02d", lag_sec, (user->lag - (lag_sec * 1000)) / 10);
+		} else {
+			strcpy(lagbuf, "-");
+		}
+		if (ping != -1) {
+			snprintf(pingbuf, sizeof(pingbuf), "%" TIME_T_FMT, ping);
+		} else {
+			strcpy(pingbuf, "-");
+		}
+		bbs_dprintf(a->fdout, "%3d %2s %4s %-20s %4s %4s %-15s %-20s %s\n",
+			i, user->modes & USER_MODE_OPERATOR ? "*" : "", node_id, user->username, pingbuf, lagbuf, modes, user->nickname, hostmask);
 	}
 	RWLIST_UNLOCK(&users);
 	bbs_dprintf(a->fdout, "%d user%s online\n", i, ESS(i));

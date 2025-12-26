@@ -129,10 +129,10 @@ static int run(void)
 	SWRITE(client1, "PRIVMSG +private :Hello!\r\n");
 	SWRITE(client2, "PRIVMSG +private :Hello!\r\n");
 	SWRITE(client1, "PING :hello\r\n"); /* Something arbitrary to solicit a known response */
-	CLIENT_EXPECT(client1, "PONG :hello\r\n"); /* This should be the first thing we read, the message client2 sent should not show up! */
+	CLIENT_EXPECT(client1, "PONG " TEST_HOSTNAME " :hello\r\n"); /* This should be the first thing we read, the message client2 sent should not show up! */
 	SWRITE(client1, "PRIVMSG +private :Hey!\r\n");
 	SWRITE(client2, "PING :hello\r\n");
-	CLIENT_EXPECT(client2, "PONG :hello\r\n"); /* Likewise */
+	CLIENT_EXPECT(client2, "PONG " TEST_HOSTNAME " :hello\r\n"); /* Likewise */
 
 	/* These tests below are not very robust... they basically just ensure that something happens and the server doesn't crash. */
 	SWRITE(client1, "LIST\r\n"); /* Get channel list */
@@ -144,7 +144,7 @@ static int run(void)
 	 * since we wouldn't get a ping while the tests are running anyways.
 	 * However, we can certainly test sending a PING from *OUR* side, as we should get a PONG reply in return. */
 	SWRITE(client1, "PING :hello\r\n");
-	CLIENT_EXPECT(client1, "PONG :hello");
+	CLIENT_EXPECT(client1, "PONG " TEST_HOSTNAME " :hello");
 
 	/* Client 2 joins channel so there's a common channel to see the quit message following */
 	SWRITE(client2, "JOIN #test1\r\n");
