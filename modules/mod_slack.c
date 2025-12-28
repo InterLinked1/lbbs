@@ -731,7 +731,6 @@ static int on_message(struct slack_event *event, const char *channel, const char
 	const char *ircusername;
 	struct slack_client *slack = slack_event_get_userdata(event);
 	struct slack_relay *relay = slack_client_get_userdata(slack);
-	struct chan_pair *cp;
 	const char *destination;
 
 	UNUSED(ts);
@@ -742,22 +741,18 @@ static int on_message(struct slack_event *event, const char *channel, const char
 		return 0;
 	}
 
-	/* See if there are any mappings for this Slack channel */
-	cp = find_slack_channel(relay, channel);
+	/* If it's a direct message, it doesn't need to have an explicit channel mapping,
+	 * we'll try to deliver it to the associated (or addressed) user.
+	 *
+	 * Note that in Slack, only true DMs between two parties have the 'D' prefix.
+	 * Multi-party DMs use the 'C' prefix, and these do need to be mapped to channels
+	 * explicitly in mod_slack.conf for us to process them. */
 
-	if (!cp) {
-		bbs_debug(5, "Ignoring message from Slack channel %s (no mapping for relay %p)\n", channel, relay);
-		return 0;
-	}
-
-	u = slack_user_by_userid(relay, user, 1);
-	ircusername = u ? u->ircusername : user;
-
-	destination = cp->irc;
-
-	/* Don't echo something we just posted */
 	if (*channel == 'D') { /* Direct message */
+		u = slack_user_by_userid(relay, user, 1);
+		ircusername = u ? u->ircusername : user;
 		if (u) {
+			/* Don't echo something we just posted */
 			bbs_mutex_lock(&u->lock);
 			if (!strcmp(u->lastmsg, text)) {
 				bbs_mutex_unlock(&u->lock);
@@ -789,7 +784,17 @@ static int on_message(struct slack_event *event, const char *channel, const char
 			destination = recipient;
 			text = message;
 		}
+		bbs_debug(6, "Relaying private message to %s\n", destination);
 	} else {
+		/* See if there are any mappings for this Slack channel */
+		struct chan_pair *cp = find_slack_channel(relay, channel);
+		if (!cp) {
+			bbs_debug(5, "Ignoring message from Slack channel %s (no mapping for relay %p)\n", channel, relay);
+			return 0;
+		}
+		u = slack_user_by_userid(relay, user, 1);
+		ircusername = u ? u->ircusername : user;
+		destination = cp->irc;
 		/* We use a mutex that is separate from that
 		 * used for serializing sent messages,
 		 * since the process of sending a message
@@ -806,9 +811,8 @@ static int on_message(struct slack_event *event, const char *channel, const char
 			return 0;
 		}
 		bbs_mutex_unlock(&cp->msglock);
+		bbs_debug(4, "Relaying message from channel %s by %s (%s) to %s: %s\n", channel, user, ircusername, cp->irc, text);
 	}
-
-	bbs_debug(4, "Relaying message from channel %s by %s (%s) to %s: %s\n", channel, user, ircusername, cp->irc, text);
 
 	/* XXX ircusername is not guaranteed to be unique in the workspace. Only user IDs are unique,
 	 * no other attributes are. However, this is what will be most natural to use for the "IRC username".
@@ -1027,6 +1031,8 @@ static int slack_send(struct irc_relay_message *rmsg)
 	if (slack_channel_post_message(relay->slack, cp->slack, thread_ts, msg)) {
 		bbs_error("Failed to post message to channel %s\n", channel);
 		relay->error = 1;
+		bbs_mutex_unlock(&cp->sendlock);
+		return 1;
 	}
 	bbs_mutex_unlock(&cp->sendlock);
 	return 0;
@@ -1080,6 +1086,8 @@ static int privmsg(const char *recipient, const char *sender, const char *msg)
 	if (slack_channel_post_message(relay->slack, dmchannel, thread_ts, msg)) {
 		bbs_error("Failed to post message to channel %s\n", dmchannel);
 		relay->error = 1;
+		bbs_mutex_unlock(&relay->lock);
+		return -1;
 	}
 	bbs_mutex_unlock(&relay->lock);
 	return 1;

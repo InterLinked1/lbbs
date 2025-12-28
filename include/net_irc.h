@@ -182,12 +182,13 @@ enum irc_user_status {
 };
 
 struct irc_relay_callbacks {
-	/*!< Callback function. The function should return 0 to continue processing any other relays and nonzero to stop immediately. */
+	/*!< Callback function. The function should return 0 to continue processing any other relays, 1 if a failure occured, and -1 to stop processing (fatal error). */
 	int (*relay_send)(struct irc_relay_message *rmsg);
 	/*!< Callback function to obtain an IRC NAMES or WHO format of any users that should be displayed as channel members. NULL if not applicable.
 	     If channel is non-NULL, function should return all members in channel. Otherwise, it should return the specified user. */
 	int (*nicklist)(struct bbs_node *node, int fd, int numeric, const char *requsername, const char *channel, const char *user);
-	/*!< Callback function to relay a private message to a user on another network. NULL if not applicable. */
+	/*!< Callback function to relay a private message to a user on another network. NULL if not applicable.
+	 *   It should return 0 if it's not the right handler, 1 if it delivered the message, and -1 if delivery failed. */
 	int (*privmsg)(const char *recipient, const char *sender, const char *user);
 	/*!< Callback for status changes. Can be NULL. */
 	int (*away)(const char *username, enum irc_user_status userstatus, const char *msg);

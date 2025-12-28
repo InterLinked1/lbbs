@@ -1220,6 +1220,7 @@ static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, 
 	rmsg.sendingmod = sendingmod;
 
 	if (channel->relay) {
+		int res = 0;
 		RWLIST_RDLOCK(&relays);
 		RWLIST_TRAVERSE(&relays, relay, entry) {
 			if (sendingmod == relay->mod) {
@@ -1231,7 +1232,14 @@ static void relay_broadcast(struct irc_channel *channel, struct irc_user *user, 
 			}
 			if (relay->relay_callbacks->relay_send) {
 				bbs_module_ref(relay->mod, 4);
-				if (relay->relay_callbacks->relay_send(&rmsg)) {
+				res = relay->relay_callbacks->relay_send(&rmsg);
+				if (res == 1 && user && bbs_user_is_registered(user->node->user)) {
+					/* Delivery of this message failed.
+					 * If the sender is a local IRC user, privately notify the sender of this.
+					 * Currently, only mod_slack returns an error on failure to deliver message to Slack. */
+					send_reply(user, "NOTICE PRIVMSG :*** Your message could not be successfully relayed.\r\n");
+				}
+				if (res == -1) {
 					bbs_module_unref(relay->mod, 4);
 					break;
 				}
@@ -1691,6 +1699,7 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, char
 		struct irc_user *user2 = get_user(channame);
 		/* Private message to another user. This is super simple, there's no other overhead or anything involved. */
 		if (!user2) {
+			int res = 0;
 			struct irc_relay *relay;
 			/* Check if the user exists in any callbacks. */
 			RWLIST_RDLOCK(&relays);
@@ -1699,7 +1708,8 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, char
 					continue;
 				}
 				bbs_module_ref(relay->mod, 5);
-				if (relay->relay_callbacks->privmsg(channame, user->nickname, message)) {
+				res = relay->relay_callbacks->privmsg(channame, user->nickname, message);
+				if (res) {
 					bbs_module_unref(relay->mod, 5);
 					break;
 				}
@@ -1708,6 +1718,10 @@ static int privmsg(struct irc_user *user, const char *channame, int notice, char
 			RWLIST_UNLOCK(&relays);
 			if (!relay) { /* Didn't exist in a relay either */
 				send_numeric2(user, 401, "%s :No such nick/channel\r\n", channame);
+				return -1;
+			}
+			if (res == -1) { /* Relay tried to deliver it but failed */
+				send_numeric2(user, 401, "%s :Message delivery failed\r\n", channame);
 				return -1;
 			}
 		} else {
