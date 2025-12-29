@@ -128,9 +128,9 @@ void safe_strncpy(char *restrict dst, const char *restrict src, size_t size) __a
 
 /*!
  * \brief Copy a substring of s into buf, proceeding until a certain character is found
- * \param s Original string
- * \param[out] buf
- * \param len Length of buf
+ * \param[out] dst
+ * \param src Original string
+ * \param len Length of dst
  * \param term Terminating character (this character and any subsequent ones will not be copied)
  * \note This is a more optimized way to do the same thing as safe_strncpy followed immediately by bbs_strterm
  */

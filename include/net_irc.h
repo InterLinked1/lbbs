@@ -15,6 +15,12 @@
  *
  */
 
+/* Implementation restrictions */
+#define IRC_MAX_CHANNEL_LENGTH 50
+
+/* Protocol restrictions */
+#define IRC_MAX_MESSAGE_LENGTH 512
+
 /*! \brief RFC 2811 channel names namespace */
 /*! \note There is no real support for &, +,  and ! channels, as defined in the RFC; these are just defined here for completeness.
  * Consequently, we hijack + (modeless channels) for private namespace channels (separate namespace per user),
@@ -338,6 +344,9 @@ int irc_user_set_identity(struct irc_user *user, const char *username, const cha
  * \retval 0 on success, -1 if any allocations failed
  */
 int irc_user_set_nickname(struct irc_user *user, const char *nickname);
+
+/*! \brief Get the current nickname in use */
+const char *irc_user_get_nickname(struct irc_user *user);
 
 /*! \brief Execute an IRC command as a programmatic user */
 int irc_user_exec(struct irc_user *user, char *s);

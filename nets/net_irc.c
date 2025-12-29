@@ -55,7 +55,6 @@
 #define PING_TIME MIN_MS(2)
 
 #define MAX_TOPIC_LENGTH 390
-#define MAX_CHANNEL_LENGTH 50
 #define MAX_AWAY_LEN 90
 #define MAX_CHANNELS 50
 
@@ -1052,7 +1051,7 @@ const char *irc_channel_topic(const char *channel)
 int irc_valid_channel_name(const char *s)
 {
 	int i = 0;
-	if (!VALID_CHANNEL_NAME(s) || strlen(s) > MAX_CHANNEL_LENGTH) {
+	if (!VALID_CHANNEL_NAME(s) || strlen(s) > IRC_MAX_CHANNEL_LENGTH) {
 		return 0;
 	}
 	while (*s) {
@@ -2335,7 +2334,7 @@ static int channels_in_common(struct irc_user *u1, struct irc_user *u2)
 
 int __irc_relay_numeric_response(struct bbs_node *node, int fd, const char *fmt, ...)
 {
-	char buf[512]; /* An IRC message can't be longer than this anyways */
+	char buf[IRC_MAX_MESSAGE_LENGTH + 1]; /* An IRC message can't be longer than this anyways */
 	int len;
 	va_list ap;
 
@@ -3739,7 +3738,7 @@ static int client_welcome(struct irc_user *user)
 	send_numeric2(user, 5, "SAFELIST CHANTYPES=#& CHANMODES=%s CHANLIMIT=#:%d,&:%d :are supported by this server\r\n", chanmodes, MAX_CHANNELS, MAX_CHANNELS);
 	send_numeric2(user, 5, "PREFIX=%s KNOCK MAXLIST=%s MODES=26 CASEMAPPING=rfc1459 :are supported by this server\r\n", "(qaohv)~&@%+", DEF_MAXLIST); /* Ambassador ignores ascii for some reason but accepts rfc1459 */
 	send_numeric2(user, 5, "NICKLEN=%d MAXNICKLEN=%d USERLEN=%d ELIST=TU AWAYLEN=%d CHANNELLEN=%d HOSTLEN=%d NETWORK=%s STATUSMSG=%s TOPICLEN=%d :are supported by this server\r\n",
-		MAX_NICKLEN, MAX_NICKLEN, MAX_NICKLEN, MAX_AWAY_LEN, MAX_CHANNEL_LENGTH, MAX_HOSTLEN, bbs_name(), "&@%+", MAX_TOPIC_LENGTH);
+		MAX_NICKLEN, MAX_NICKLEN, MAX_NICKLEN, MAX_AWAY_LEN, IRC_MAX_CHANNEL_LENGTH, MAX_HOSTLEN, bbs_name(), "&@%+", MAX_TOPIC_LENGTH);
 
 	chancount = channel_count();
 
@@ -4306,7 +4305,7 @@ static int alertmsg(unsigned int userid, const char *msg)
 	int res = -1;
 
 	if (!bbs_username_from_userid(userid, username, sizeof(username))) {
-		char dup[512];
+		char dup[IRC_MAX_MESSAGE_LENGTH + 1];
 		safe_strncpy(dup, msg, sizeof(dup));
 		res = privmsg(&user_messageserv, username, 1, dup); /* Send a NOTICE to the user */
 	}
@@ -4563,6 +4562,11 @@ int irc_user_set_identity(struct irc_user *user, const char *username, const cha
 int irc_user_set_nickname(struct irc_user *user, const char *nickname)
 {
 	return set_nickname(user, nickname, NULL, 0);
+}
+
+const char *irc_user_get_nickname(struct irc_user *user)
+{
+	return user->nickname;
 }
 
 /*! \brief Thread to handle a single IRC/IRCS client */

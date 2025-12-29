@@ -983,6 +983,13 @@ static int slack_send(struct irc_relay_message *rmsg)
 	}
 	relay = cp->relay;
 
+	if (!relay->started) {
+		/* We can't use this callback until the Slack client is actually active.
+		 * If we continue, libslackrtm will call libwss with a NULL client, we need to abort. */
+		bbs_warning("Slack relay not started yet, skipping relay of this message\n");
+		return 1;
+	}
+
 	if (sender && relay->ircuser && strcasecmp(relay->ircuser, sender)) {
 		notify_unauthorized(sender, channel, relay->ircuser);
 		return 0;

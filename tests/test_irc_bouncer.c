@@ -59,7 +59,7 @@ static int pre(void)
 
 static int run(void)
 {
-	int client1 = -1, client2 = -1;
+	int client1 = -1, client2 = -1, clientfd = -1;
 	int res = -1;
 
 	client1 = test_make_socket(6667);
@@ -195,6 +195,50 @@ static int run(void)
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 1); /* Should now have a message */
 
 	SWRITE(client1, "QUIT :Hanging up\r\n");
+
+	/* Now, reply to the message via email */
+	clientfd = test_make_socket(587);
+	REQUIRE_FD(clientfd);
+
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "220 ");
+	SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
+	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
+
+	/* Log in */
+	SWRITE(clientfd, "AUTH PLAIN\r\n");
+	CLIENT_EXPECT(clientfd, "334");
+	SWRITE(clientfd, TEST_SASL "\r\n");
+	CLIENT_EXPECT(clientfd, "235");
+
+/* From mod_irc_bouncer */
+#define IRC_BOUNCER_EMAIL_USER "ircbouncer"
+
+	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL ">" ENDL);
+	CLIENT_EXPECT(clientfd, "250");
+	SWRITE(clientfd, "RCPT TO:<" IRC_BOUNCER_EMAIL_USER "@" TEST_HOSTNAME ">" ENDL);
+	CLIENT_EXPECT(clientfd, "250");
+
+	SWRITE(clientfd, "DATA" ENDL);
+	CLIENT_EXPECT(clientfd, "354");
+
+	SWRITE(clientfd, "Date: Thu, 21 May 1998 05:33:29 -0700" ENDL);
+	SWRITE(clientfd, "From: <" TEST_EMAIL ">" ENDL);
+	SWRITE(clientfd, "Subject: Re: You missed messages in #bouncertest2" ENDL);
+	SWRITE(clientfd, "To: " IRC_BOUNCER_EMAIL_USER "@" TEST_HOSTNAME ENDL);
+	SWRITE(clientfd, "Content-Type: text/plain; format=flowed" ENDL);
+	SWRITE(clientfd, "In-Reply-To: <ircbouncer-0-0-#bouncer-test2@" TEST_HOSTNAME ">" ENDL); /* The only important piece is the channel name */
+	SWRITE(clientfd, ENDL);
+	SWRITE(clientfd, "This is a test reply via SMTP. This line is long enough that it should " ENDL);
+	SWRITE(clientfd, "get unwrapped by the format=flowed line wrapping logic. " ENDL);
+	SWRITE(clientfd, "The line continuations go on and on. " ENDL);
+	SWRITE(clientfd, "We wrap even early than 72 characters, " ENDL);
+	SWRITE(clientfd, "so the message needn't be as long." ENDL); /* Full message is under 512 */
+	SWRITE(clientfd, "Now this, this is a second message!" ENDL);
+	SWRITE(clientfd, "." ENDL); /* EOM */
+
+	CLIENT_EXPECT(clientfd, "250");
+	CLIENT_EXPECT(client2, "so the message needn't be as long"); /* Both lines should be part of one message */
+
 	SWRITE(client2, "QUIT :Hanging up\r\n");
 	res = 0;
 

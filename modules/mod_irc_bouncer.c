@@ -38,12 +38,21 @@
 #include "include/transfer.h"
 #include "include/utils.h"
 #include "include/mail.h"
-#include "include/node.h" /* use bbs_hostname */
 #include "include/user.h"
 #include "include/cli.h"
 #include "include/startup.h"
 
 #include "include/net_irc.h"
+
+/* Allow replying to IRC messages via email
+ * This is optional, to allow this module to be used without net_smtp. */
+#define ALLOW_SMTP_REPLIES
+
+/* ALWAYS_LOG_SENT_MESSAGES is disabled by default, as while logging our sent messages
+ * can provider context later, it'll also trigger email digests with our
+ * message, which is not helpful.
+ * By default, we will log only if email digests are disabled. */
+#define ALWAYS_LOG_SENT_MESSAGES 0
 
 /* To avoid a conflict with the actual user's nick,
  * suffix with an underscore, and if that's taken, more can get tacked on.
@@ -71,6 +80,18 @@
  * if and only if it's defined in this file. */
 
 #define USE_REAL_NICK_WHEN_POSSIBLE
+
+#define IRC_BOUNCER_EMAIL_USER "ircbouncer"
+#define IRC_BOUNCER_HOSTNAME "IRCBouncer"
+
+#ifdef ALLOW_SMTP_REPLIES
+#include "include/net_smtp.h"
+#include "include/node.h" /* use bbs_node struct */
+#define irc_smtp_hostname smtp_hostname
+#else
+#include "include/node.h" /* use bbs_hostname */
+#define irc_smtp_hostname bbs_hostname /* We don't have a hard dependency on net_smtp, so can't use smtp_hostname() */
+#endif
 
 static int user_maxbouncers = 25; /* A user can only enable the bouncer for this many bouncers, max */
 static long int max_logfile_size = SIZE_MB(5); /* 5 MB ought to be plenty for IRC logs to get by between interactive sessions */
@@ -269,7 +290,7 @@ static int email_flush(struct bouncer_channel *bc, FILE *in_fp, time_t now)
 	 * The fix would be to have a "bbs_smtp_hostname()" function in mail.c,
 	 * and net_smtp could then register the SMTP hostname with it;
 	 * if not specified, this would default to the BBS hostname, just like smtp_hostname() does. */
-	fprintf(fp, "From: IRC Bouncer <irc@%s>\r\n", bbs_hostname()); /* We don't have a hard dependency on net_smtp, so can't use smtp_hostname() */
+	fprintf(fp, "From: IRC Bouncer <%s@%s>\r\n", IRC_BOUNCER_EMAIL_USER, irc_smtp_hostname());
 	/* Email goes to the user, and conveniently, a user's email address is, at simplest, just the user's username.
 	 * This is nice and simple, if this causes delivery issues for forwarded messages, then it may be better
 	 * to tack on a hostname, but it's not really necessary otherwise. */
@@ -282,15 +303,17 @@ static int email_flush(struct bouncer_channel *bc, FILE *in_fp, time_t now)
 
 	/* Note that we can use either our username or the channel name directly in the email header.
 	 * # and & (currently the only channel prefix characters supported in net_irc)
-	 * are both legal characters in email addresses (and by extension, the Message-ID header). */
-	fprintf(fp, "Message-ID: <%s-%s-%u-%" TIME_T_FMT "@%s>\r\n", "ircbouncer", bc->channel, bc->bu->msgid++, now, bbs_hostname()); /* Time isn't necessarily unique, but we're not going to be running this more than once a minute */
+	 * are both legal characters in email addresses (and by extension, the Message-ID header).
+	 * Because channel names can have dashes in them, we need to put it at the end,
+	 * so we can unambiguously parse out the full channel name later. */
+	fprintf(fp, "Message-ID: <%s-%u-%" TIME_T_FMT "-%s@%s>\r\n", "ircbouncer", bc->bu->msgid++, now, bc->channel, irc_smtp_hostname()); /* Time isn't necessarily unique, but we're not going to be running this more than once a minute */
 
 	/* We want mail clients to be able to thread related messages together.
 	 * Here, we use a cheap trick that requires no memory of Message-ID's over time,
 	 * deterministically referring to an ancestor that doesn't exist.
 	 * This string we can recompute on the fly and it should always be the same. */
-	fprintf(fp, "In-Reply-To: <%s-%s@%s>\r\n", "ircbouncer", bc->channel, bbs_hostname());
-	fprintf(fp, "References: <%s-%s@%s>\r\n", "ircbouncer", bc->channel, bbs_hostname());
+	fprintf(fp, "In-Reply-To: <%s-%s@%s>\r\n", "ircbouncer", bc->channel, irc_smtp_hostname());
+	fprintf(fp, "References: <%s-%s@%s>\r\n", "ircbouncer", bc->channel, irc_smtp_hostname());
 
 	fprintf(fp, "MIME-Version: 1.0\r\n");
 	fprintf(fp, "Content-Type: text/plain; format=flowed\r\n");
@@ -350,7 +373,7 @@ static int email_flush(struct bouncer_channel *bc, FILE *in_fp, time_t now)
 		}
 	}
 	fclose(fp);
-	snprintf(mailfrom, sizeof(mailfrom), "irc@%s", bbs_hostname());
+	snprintf(mailfrom, sizeof(mailfrom), "%s@%s", IRC_BOUNCER_EMAIL_USER, irc_smtp_hostname());
 	return bbs_mail_message(tmpfilename, mailfrom, NULL);
 }
 
@@ -681,6 +704,18 @@ static int open_bouncer_logfile(struct bouncer_channel *bc, const char *username
 	return 0;
 }
 
+/*! \brief Must be called locked */
+static struct bouncer_user *find_bouncer_user(unsigned int userid)
+{
+	struct bouncer_user *bu;
+	RWLIST_TRAVERSE(&bouncer_users, bu, entry) {
+		if (bu->userid == userid) {
+			return bu;
+		}
+	}
+	return NULL;
+}
+
 static void privmsg_cb(const char *hostmask, const char *sender, const char *recipient, char *msg)
 {
 	struct bouncer_user *bu;
@@ -696,12 +731,7 @@ static void privmsg_cb(const char *hostmask, const char *sender, const char *rec
 	 *  than messages in ALL channels combined!) */
 
 	RWLIST_RDLOCK(&bouncer_users);
-	RWLIST_TRAVERSE(&bouncer_users, bu, entry) {
-		if (bu->userid != userid) {
-			continue;
-		}
-		break;
-	}
+	bu = find_bouncer_user(userid);
 	if (!bu) {
 		goto done;
 	}
@@ -774,6 +804,16 @@ static void command_cb(const char *cb_username, enum irc_command_callback_event 
 		return;
 	}
 
+	/* If we sent the message, and it's a PRIVMSG event, ignore it.
+	 * We already logged it, and trying again would result in a recursive lock attempt. */
+	if (event == IRCCMD_EVENT_PRIVMSG) {
+		const char *hostname = strchr(hostmask, '@');
+		if (hostname++ && !strlen_zero(hostname) && !strcmp(hostname, IRC_BOUNCER_HOSTNAME)) {
+			bbs_debug(9, "Ignoring message that we sent\n");
+			return;
+		}
+	}
+
 	/* Find the bouncer channel that corresponds */
 	bc = find_bouncer_channel(cb_username, channel); /* returned locked, if found */
 	if (!bc) {
@@ -794,6 +834,39 @@ struct irc_event_callbacks event_callbacks = {
 	.command_cb = command_cb,
 };
 
+static int create_bouncer_client(struct bouncer_user *bu)
+{
+	const char *nickname = bu->username;
+#ifndef USE_REAL_NICK_WHEN_POSSIBLE
+	char alt_nickname[64];
+#endif
+	bbs_verb(5, "Starting bouncer client for %s\n", bu->username);
+	/* We create a sort of dummy user that will JOIN each channel.
+	 * This ensures that we have permission to join the channel
+	 * and that the user is enumerated when the bouncer is active.
+	 * By all practical purposes, the bouncer user will look and smell
+	 * mostly like the real user.
+	 * However, actual message exchange does not take place using the IRC
+	 * protocol (using file descriptors and such), but using event callbacks,
+	 * the same way that ChanServ is implemented. */
+	bu->user = irc_user_create(USER_MODE_SECURE); /* Since it's a loopback connection, treat it as secure */
+	if (!bu->user) {
+		bbs_error("Failed to create pseudo user for bouncer client\n");
+		return -1;
+	}
+#ifndef USE_REAL_NICK_WHEN_POSSIBLE
+	snprintf(alt_nickname, sizeof(alt_nickname), "%s_", bu->username);
+	nickname = alt_nickname;
+#endif
+	if (irc_user_set_identity(bu->user, bu->username, nickname, bu->username, IRC_BOUNCER_HOSTNAME)
+		|| irc_register_programmatic_user(bu->user, &event_callbacks, IRCCMD_EVENT_PRIVMSG | IRCCMD_EVENT_JOIN | IRCCMD_EVENT_PART | IRCCMD_EVENT_QUIT | IRCCMD_EVENT_KICK | IRCCMD_EVENT_TOPIC)) {
+		irc_user_destroy(bu->user);
+		bbs_error("Failed to create pseudo user for bouncer client\n");
+		return -1;
+	}
+	return 0;
+}
+
 /*! \brief Start bouncer for a regular channel (not including private messages) */
 static int start_bouncer_for_channel(struct bouncer_channel *bc)
 {
@@ -806,36 +879,9 @@ static int start_bouncer_for_channel(struct bouncer_channel *bc)
 
 	/* If we don't yet have a user, create one */
 	if (!bc->bu->user) {
-		const char *nickname = bc->bu->username;
-#ifndef USE_REAL_NICK_WHEN_POSSIBLE
-		char alt_nickname[64];
-#endif
-		bbs_verb(5, "Starting bouncer client for %s\n", bc->bu->username);
-		/* We create a sort of dummy user that will JOIN each channel.
-		 * This ensures that we have permission to join the channel
-		 * and that the user is enumerated when the bouncer is active.
-		 * By all practical purposes, the bouncer user will look and smell
-		 * mostly like the real user.
-		 * However, actual message exchange does not take place using the IRC
-		 * protocol (using file descriptors and such), but using event callbacks,
-		 * the same way that ChanServ is implemented. */
-		bc->bu->user = irc_user_create(USER_MODE_SECURE); /* Since it's a loopback connection, treat it as secure */
-		if (!bc->bu->user) {
+		if (create_bouncer_client(bc->bu)) {
 			fclose(bc->fp);
 			bbs_mutex_unlock(&bc->bu->lock);
-			bbs_error("Failed to create pseudo user for bouncer client\n");
-			return -1;
-		}
-#ifndef USE_REAL_NICK_WHEN_POSSIBLE
-		snprintf(alt_nickname, sizeof(alt_nickname), "%s_", bc->bu->username);
-		nickname = alt_nickname;
-#endif
-		if (irc_user_set_identity(bc->bu->user, bc->bu->username, nickname, bc->bu->username, "IRCBouncer")
-			|| irc_register_programmatic_user(bc->bu->user, &event_callbacks, IRCCMD_EVENT_PRIVMSG | IRCCMD_EVENT_JOIN | IRCCMD_EVENT_PART | IRCCMD_EVENT_QUIT | IRCCMD_EVENT_KICK | IRCCMD_EVENT_TOPIC)) {
-			irc_user_destroy(bc->bu->user);
-			fclose(bc->fp);
-			bbs_mutex_unlock(&bc->bu->lock);
-			bbs_error("Failed to create pseudo user for bouncer client\n");
 			return -1;
 		}
 	} else {
@@ -1157,6 +1203,339 @@ struct irc_relay_callbacks relay_callbacks = {
 	.join_leave = join_leave,
 };
 
+#ifdef ALLOW_SMTP_REPLIES
+static int exists(struct smtp_session *smtp, struct smtp_response *resp, const char *address, const char *user, const char *domain, int fromlocal, int tolocal)
+{
+	UNUSED(smtp);
+	UNUSED(resp);
+	UNUSED(address);
+	UNUSED(fromlocal);
+	return tolocal && !strcmp(user, IRC_BOUNCER_EMAIL_USER) && !strlen_zero(domain) && !strcasecmp(domain, irc_smtp_hostname());
+}
+
+/*!
+ * \internal
+ * \brief Return a full line of the body from the SMTP payload (including a line split across multiple lines with format=flowed
+ * \param[out] buf
+ * \parma[in] len
+ * \param fp
+ * \param format_flowed Whether to handle format=flowed lines
+ * \retval -1 on fatal error
+ * \returns Number of bytes in the full line, excluding CR LF
+ */
+static ssize_t get_smtp_line(char *buf, size_t len, FILE *fp, int format_flowed)
+{
+	size_t total_len = 0;
+	char *pos = buf;
+	size_t left = len;
+	if (!format_flowed) {
+		char *cr;
+		if (!fgets(buf, (int) len, fp)) { /* Suppress warn-unused-result */
+			return -1;
+		}
+		cr = strchr(buf, '\r');
+		if (!cr) {
+			return -1;
+		}
+		*cr = '\0';
+		return (cr - pos);
+	}
+	while ((fgets(pos, (int) left, fp))) {
+		size_t line_len;
+		char *cr = strchr(pos, '\r');
+		if (!cr) {
+			/* Malformed! */
+			return -1;
+		}
+		*cr = '\0';
+		line_len = (size_t) (cr - pos);
+		total_len += line_len;
+		if (total_len > IRC_MAX_MESSAGE_LENGTH) {
+			/* Once we return, we're going to throw this away anyways, so just stop now */
+			return (ssize_t) total_len;
+		}
+		if (cr > pos && *(cr - 1) == ' ') {
+			/* It's a format=flowed line continuation.
+			 * We can leave the space and go to the next line. */
+			pos += line_len;
+			left -= line_len;
+			continue;
+		}
+		return (ssize_t) total_len;
+	}
+	return -1;
+}
+
+static int handle_bouncer_reply(struct smtp_session *smtp, struct smtp_response *resp, const char *from, const char *recipient, const char *user, const char *domain, int fromlocal, int srcfd, size_t datalen, void **freedata)
+{
+	FILE *fp;
+	char buf[SMTP_MAX_BUFSIZE];
+	char subject[SMTP_MAX_BUFSIZE] = "";
+	char inreplyto[SMTP_MAX_BUFSIZE] = "";
+	char hostmask[128];
+	int generated_hostmask = 0;
+	const char *channel;
+	int format_flowed = 0;
+	int is_channel;
+	int lines_sent = 0;
+	ssize_t line_len;
+	struct bouncer_user *bu = NULL;
+	struct bouncer_channel *bc = NULL;
+	int just_joined = 0, created_client = 0;
+	int newfd;
+
+	UNUSED(from);
+	UNUSED(recipient);
+	UNUSED(datalen);
+	UNUSED(freedata);
+
+	/* We only accept replies to IRC from local users, since those are the only recipients in the first place.
+	 * This avoids having to check for email spoofing, since we know it came from one of our own authenticated users. */
+	if (strcmp(user, IRC_BOUNCER_EMAIL_USER) || strlen_zero(domain) || strcasecmp(domain, irc_smtp_hostname())) {
+		return 0; /* Not for us */
+	}
+	if (!fromlocal) {
+		bbs_notice("Rejecting bouncer reply from non-local user\n");
+		smtp_abort(resp, 550, 5.7.1, "External replies not accepted at this address");
+		return -1;
+	}
+	if (!smtp || !bbs_user_is_registered(smtp_node(smtp)->user)) {
+		bbs_notice("Rejecting bouncer reply from unauthenticated user\n");
+		smtp_abort(resp, 550, 5.7.1, "Replies to this address must be authenticated");
+		return -1;
+	}
+
+	/* It's a valid reply to the bouncer. */
+
+	/* The naive approach here would be to use fdopen so we can get a FILE* for the file descriptor.
+	 * The problem is the file descriptors needs to stay valid, and when we clean up the FILE*
+	 * with fclose, that also closes the underlying file descriptor.
+	 * There is an fdclose function, but it's non-POSIX.
+	 * The POSIX way of dealing with this is to call fdopen on a dup'd file descriptor. */
+	newfd = dup(srcfd);
+	if (newfd < 0) {
+		bbs_error("Failed to dup file descriptor %d: %s\n", srcfd, strerror(errno));
+		smtp_abort(resp, 452, 4.3.1, "Temporary system error");
+		return -1;
+	}
+	fp = fdopen(newfd, "r");
+	if (!fp) {
+		bbs_error("Failed to open file descriptor %d: %s\n", newfd, strerror(errno));
+		return -1;
+	}
+	/* Parse any needed headers */
+	while ((fgets(buf, sizeof(buf), fp))) {
+		char *tmp = buf;
+		if (STARTS_WITH(tmp, "In-Reply-To:")) {
+			tmp += STRLEN("In-Reply-To:");
+			ltrim(tmp);
+			if (!strlen_zero(tmp)) {
+				bbs_strncpy_until(inreplyto, tmp, sizeof(inreplyto), '\r');
+			}
+		} else if (STARTS_WITH(tmp, "Subject:")) {
+			tmp += STRLEN("Subject:");
+			ltrim(tmp);
+			if (!strlen_zero(tmp)) {
+				bbs_strncpy_until(subject, tmp, sizeof(subject), '\r');
+			}
+		} else if (STARTS_WITH(tmp, "Content-Type:")) {
+			tmp += STRLEN("Content-Type:");
+			ltrim(tmp);
+			if (!strlen_zero(tmp)) {
+				bbs_term_line(tmp);
+				if (!strcasestr(tmp, "text/plain")) {
+					/* No HTML or multipart messages! */
+					smtp_abort(resp, 550, 5.7.1, "Only plain text replies accepted at this address");
+					goto abort;
+				}
+				if (strcasestr(tmp, "format=flowed")) {
+					format_flowed = 1;
+				}
+			}
+		} else if (!strcmp(tmp, "\r\n")) {
+			break; /* EOH */
+		}
+	}
+
+	/* Pull the channel for the reply from the In-Reply-To header, if there is one,
+	 * or from the Subject header otherwise, to allow for posting new messages. */
+	if (!s_strlen_zero(inreplyto)) {
+		char *tmp = inreplyto;
+		/* The format we used in our Message-ID is < IRC_BOUNCER_EMAIL_USER - <monotonic ID> - <epoch> - <channel> @ <hostname > */
+		strsep(&tmp, "-"); /* bouncer email user */
+		strsep(&tmp, "-"); /* monotonic ID */
+		strsep(&tmp, "-"); /* epoch */
+		channel = strsep(&tmp, "@"); //* get rid of the rest, leaving just the channel */
+	} else {
+		channel = subject;
+		/* If 'Subject' has a 'Re:' prefix, skip it */
+		while (STARTS_WITH(channel, "Re:")) {
+			channel += STRLEN("Re:");
+			ltrim(channel);
+		}
+		if (s_strlen_zero(subject)) {
+			smtp_abort(resp, 550, 5.7.1, "Reply missing both In-Reply-To and Subject headers, unable to infer channel");
+			goto abort;
+		}
+	}
+
+	bbs_debug(5, "Processing SMTP -> IRC reply for '%s'\n", channel);
+	is_channel = irc_valid_channel_name(channel); /* Channel or private message? */
+
+	RWLIST_RDLOCK(&bouncer_users);
+	bu = find_bouncer_user(smtp_node(smtp)->user->id);
+	if (bu) {
+		if (is_channel) {
+			RWLIST_TRAVERSE(&bu->channels, bc, entry) {
+				if (!strcmp(bc->channel, channel)) {
+					break;
+				}
+			}
+		} else {
+			bc = bu->pmbc;
+		}
+		bbs_mutex_lock(&bu->lock);
+	}
+	RWLIST_UNLOCK(&bouncer_users);
+
+	/* Bouncer must be active in order to accept replies via SMTP */
+	if (!bu) {
+		smtp_abort(resp, 550, 5.7.1, "The IRC bouncer is not enabled for your account");
+		goto abort;
+	}
+	if (!bc) {
+		smtp_abort(resp, 550, 5.7.1, is_channel ? "The IRC bouncer is not enabled for this channel" : "The IRC bouncer is not enabled for private messages");
+		goto abort;
+	}
+
+	/* Now, parse the body, which is just plain text. */
+	while ((line_len = (get_smtp_line(buf, sizeof(buf), fp, format_flowed))) > 0) {
+		if (*buf == '>') {
+			break; /* Stop at the first quoted line */
+		}
+		if (lines_sent > 5) {
+			/* Don't allow a user to reply with more than 5 lines to a channel at once. */
+			smtp_abort(resp, 550, 5.7.1, "Reply contains more than five lines, the rest have been ignored\n");
+			goto abort;
+		}
+		if (line_len > IRC_MAX_MESSAGE_LENGTH - 2) {
+			bbs_debug(5, "Reply contains %ld-character line\n", line_len);
+			if (!lines_sent) {
+				/* We haven't yet sent anything back to IRC, so just reject the entire message. */
+				smtp_abort(resp, 550, 5.7.1, "Reply contains line exceeding 512 characters");
+				goto abort;
+			}
+			/* If we're already sent something back to IRC, then just silently ignore this line */
+			bbs_notice("Ignoring %lu-octet line (max permitted is %d)\n", line_len, IRC_MAX_CHANNEL_LENGTH - 2);
+			continue;
+		}
+		if (is_channel) {
+			/* Send the message to the channel using the active bouncer. */
+			if (!bc->fp) {
+				if (start_bouncer_for_channel(bc)) { /* If it's not active, then make it active */
+					smtp_abort(resp, 550, 5.7.1, "Error replying using the bouncer\n");
+					goto abort;
+				}
+				just_joined = 1;
+			}
+			if (!bouncer_send(bc->bu->user, "PRIVMSG %s :%s", bc->channel, buf)) { /* No CR LF needed */
+				lines_sent++;
+				if (ALWAYS_LOG_SENT_MESSAGES || !bc->email_frequency) {
+					/* Log the message we sent, so there's context in the logs later.
+					 * Messages we send to a channel aren't sent back to us. */
+					if (!generated_hostmask) {
+						snprintf(hostmask, sizeof(hostmask), "%s!%s@%s", irc_user_get_nickname(bu->user), bu->username, IRC_BOUNCER_HOSTNAME);
+						generated_hostmask = 1;
+					}
+					log_helper(bc, IRCCMD_EVENT_PRIVMSG, "PRIVMSG", channel, hostmask, buf);
+				}
+			} else {
+				/* Failed to send */
+				/*! \todo Would be nice if we could capture the error message and use that in the SMTP reply,
+				 * but the current architecture of net_irc doesn't permit that, since all replies expect to have a node
+				 * with a file descriptor for logging.
+				 * If we had an interface like net_smtp has, that allowed us to set SMTP repsonse data without a node,
+				 * then we could get that back here. This would require refactoring all of net_irc's command handling
+				 * to operate on a temporary data structure, which is then written out to the node or passed back to us. */
+			}
+		} else { /* in this branch, bc == bu->pmbc */
+			/* If it's a PM reply, parse out the recipient from the first word.
+			 * Since the PM digests contain all PMs from all users,
+			 * it's natural that replies to this could contain replies for multiple users,
+			 * as the headers don't indicate a specific recipient for PMs. */
+			char *msg = buf;
+			char *colon;
+			char *recip = strsep(&msg, " ");
+
+			colon = strchr(recip, ':');
+			if (!colon) {
+				if (!lines_sent) {
+					smtp_abort(resp, 550, 5.7.1, "Private messages must be replied to in <recipient>: <message> format\n");
+					goto abort;
+				}
+			}
+			*colon = '\0';
+			ltrim(msg);
+			/* If we don't have an active bouncer, set one up and we'll tear it down after we send everything. */
+			if (!bu->user) {
+				if (create_bouncer_client(bc->bu)) {
+					smtp_abort(resp, 550, 5.7.1, "Error replying using the bouncer\n");
+					goto abort;
+				}
+				created_client = 1;
+			}
+			if (!bouncer_send(bu->user, "PRIVMSG %s: %s", recip, msg)) {
+				lines_sent++;
+				if (ALWAYS_LOG_SENT_MESSAGES || !bu->pmbc->email_frequency) {
+					/* Log the message we sent, so there's context in the logs later.
+					 * Messages we send to a channel aren't sent back to us. */
+					if (!generated_hostmask) {
+						snprintf(hostmask, sizeof(hostmask), "%s!%s@%s", irc_user_get_nickname(bu->user), bu->username, IRC_BOUNCER_HOSTNAME);
+						generated_hostmask = 1;
+					}
+					log_helper(bu->pmbc, IRCCMD_EVENT_PRIVMSG, "PRIVMSG", channel, hostmask, buf);
+				}
+			} /* else, failed to send */
+		}
+	}
+
+	if (created_client) {
+		stop_bouncer_client(bu);
+	}
+	if (just_joined) {
+		stop_bouncer_for_channel(bc);
+	}
+	if (bu) {
+		bbs_mutex_unlock(&bu->lock);
+	}
+	fclose(fp);
+	if (!lines_sent) {
+		smtp_abort(resp, 550, 5.7.1, "No messages sent to IRC, reply may be ill-formed or message may have been rejected"); /* We didn't do anything */
+		return -1;
+	}
+	return 1; /* Success */
+
+abort:
+	if (created_client) {
+		stop_bouncer_client(bu);
+	}
+	if (just_joined) {
+		stop_bouncer_for_channel(bc);
+	}
+	if (bu) {
+		bbs_mutex_unlock(&bu->lock);
+	}
+	fclose(fp);
+	return -1;
+}
+
+struct smtp_delivery_agent bouncer_replies = {
+	.type = SMTP_DELIVERY_AGENT_LOCAL,
+	.exists = exists,
+	.deliver = handle_bouncer_reply,
+};
+#endif
+
 static int load_module(void)
 {
 	if (bbs_pthread_create(&email_thread, NULL, periodic_emailer, NULL)) {
@@ -1164,6 +1543,9 @@ static int load_module(void)
 		return -1;
 	}
 	bbs_run_when_started(load_and_start, STARTUP_PRIORITY_DEPENDENT);
+#ifdef ALLOW_SMTP_REPLIES
+	smtp_register_delivery_handler(&bouncer_replies, 9); /* Priority needs to be more urgent than mod_smtp_delivery_local */
+#endif
 	irc_relay_register(&relay_callbacks);
 	bbs_cli_register_multiple(cli_commands_bouncer);
 	return 0;
@@ -1173,6 +1555,9 @@ static int unload_module(void)
 {
 	unloading = 1;
 	bbs_cli_unregister_multiple(cli_commands_bouncer);
+#ifdef ALLOW_SMTP_REPLIES
+	smtp_unregister_delivery_agent(&bouncer_replies);
+#endif
 	irc_relay_unregister(&relay_callbacks);
 	bbs_pthread_interrupt(email_thread);
 	bbs_pthread_join(email_thread, NULL);
@@ -1180,4 +1565,8 @@ static int unload_module(void)
 	return 0;
 }
 
+#ifdef ALLOW_SMTP_REPLIES
+BBS_MODULE_INFO_DEPENDENT("IRC Bouncer", "net_irc.so,net_smtp.so");
+#else
 BBS_MODULE_INFO_DEPENDENT("IRC Bouncer", "net_irc.so");
+#endif

@@ -26,6 +26,12 @@
 /* Mainly for message submission agents, not encrypted by default, but may use STARTTLS */
 #define DEFAULT_SMTP_MSA_PORT 587
 
+/* RFC 2822 2.1.1: Max line length (not including CR LF) */
+#define SMTP_MAX_LINE_LENGTH 998
+
+/* Adds on CR, LF, and NUL */
+#define SMTP_MAX_BUFSIZE 1001
+
 #define _smtp_reply(smtp, fmt, ...) \
 	bbs_debug(6, "%p <= " fmt, smtp, ## __VA_ARGS__); \
 	bbs_auto_fd_writef(smtp_node(smtp), smtp_node(smtp) ? smtp_node(smtp)->wfd : -1, fmt, ## __VA_ARGS__); \
@@ -465,6 +471,7 @@ int __smtp_register_delivery_handler(struct smtp_delivery_agent *agent, int prio
  * \param agent
  * \retval 0 on success, -1 on failure
  */
+/*! \todo Why is this named differently from the registration function? */
 int smtp_unregister_delivery_agent(struct smtp_delivery_agent *agent);
 
 /*! \brief Copy of flags from original SMTP session, used for queue files and DSNs */
