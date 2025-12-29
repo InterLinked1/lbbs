@@ -48,14 +48,24 @@ static char gopher_root[256] = "";
 #define GOPHER_ERROR '3'
 #define GOPHER_INFO 'i'
 
+#define gopher_write(node, fmt, ...) bbs_node_fd_writef(node, node->fd, fmt, ## __VA_ARGS__); bbs_debug(4, "<= " fmt, ## __VA_ARGS__);
+
 static int directory_menu(const char *dir_name, const char *filename, int dir, void *obj)
 {
 	struct bbs_node *node = obj;
 	const char *parent = dir_name + strlen(gopher_root);
 
+	bbs_debug(5, "Parent '%s', file '%s'\n", parent, filename);
+
 	/* Format is <type><display string>\t<selector string>\t<hostname>\t<port>\r\n */
-	bbs_node_fd_writef(node, node->fd, "%c%s\t%s/%s\t%s\t%d\r\n", dir ? GOPHER_DIRECTORY : GOPHER_FILE, filename, parent, filename, bbs_hostname(), gopher_port);
-	bbs_debug(4, "%c%s\t%s/%s\t%s\t%d\r\n", dir ? GOPHER_DIRECTORY : GOPHER_FILE, filename, parent, filename, bbs_hostname(), gopher_port);
+	gopher_write(node,
+		"%c%s\t" /* type + display string */
+		"%s%s%s\t" /* selector string (i.e. the path for the document) */
+		"%s\t%d" /* hostname + port where the resource lives */
+		"\r\n",
+		dir ? GOPHER_DIRECTORY : GOPHER_FILE, filename, /* type + display string */
+		parent, !strcmp(parent, "/") ? "" : "/", filename, /* selector string. If the parent is just '/', no need to add a second / as the directory separator before the file */
+		bbs_hostname(), gopher_port); /* hostname + port */
 	return 0;
 }
 
@@ -87,9 +97,7 @@ static void *gopher_handler(void *varg)
 
 	/* Dangerous path request or nonexistent file */
 	if (strstr(buf, "..") || stat(fullpath, &st)) {
-		bbs_node_fd_writef(node, node->fd, "%c'%s' doesn't exist!\r\n", GOPHER_ERROR, buf);
-		bbs_node_fd_writef(node, node->fd, "%c'This resource cannot be located.\r\n", GOPHER_INFO);
-		goto cleanup;
+		goto nonexistent;
 	}
 
 	if (S_ISDIR(st.st_mode)) {
@@ -110,12 +118,14 @@ static void *gopher_handler(void *varg)
 			bbs_error("fopen failed: %s\n", strerror(errno));
 		}
 	} else { /* Anything else doesn't exist as far as the user is concerned */
-		bbs_node_fd_writef(node, node->fd, "%c'%s' doesn't exist!\r\n", GOPHER_ERROR, buf);
-		bbs_node_fd_writef(node, node->fd, "%c'This resource cannot be located.\r\n", GOPHER_INFO);
+nonexistent:
+		gopher_write(node, "%c'%s' doesn't exist!\r\n", GOPHER_ERROR, buf);
+		gopher_write(node, "%c'This resource cannot be located.\r\n", GOPHER_INFO);
 	}
 
-	/* XXX Lynx gopher client seems to display the period. Not sure why, but not all Gopher servers send the trailing period. */
-	bbs_node_fd_writef(node, node->fd, ".\r\n"); /* End with period on a line by itself */
+	/* XXX Lynx gopher client seems to display the period. Gopherus does not.
+	 * Not sure why, but not all Gopher servers send the trailing period. */
+	gopher_write(node, ".\r\n"); /* End with period on a line by itself */
 
 cleanup:
 	bbs_node_exit(node);
@@ -126,10 +136,10 @@ static int load_config(void)
 {
 	struct bbs_config *cfg = bbs_config_load("net_gopher.conf", 0);
 	if (!cfg) {
-		return 0;
+		return -1; /* Require user to specify the Gopher directory explicitly */
 	}
 
-	bbs_config_val_set_port(cfg, "gopher", "port", &gopher_port);
+	bbs_config_val_set_port(cfg, "gopher", "port", &gopher_port); /* Port has a default, can be optionally overridden */
 	if (bbs_config_val_set_path(cfg, "gopher", "root", gopher_root, sizeof(gopher_root))) {
 		bbs_config_unlock(cfg);
 		return -1;
