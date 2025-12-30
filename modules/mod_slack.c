@@ -723,6 +723,24 @@ static int substitute_mentions(const char *line, char *buf, size_t len)
 	return 0;
 }
 
+static int was_last_message(const char *sent, const char *received)
+{
+	/* !strcmp(sent, received) doesn't work if the message we posted contained a URL,
+	 * because Slack will surround the URL in <> when it comes back. */
+	while (*sent && *received) {
+		if (*sent != *received) {
+			if (*received == '<' || *received == '>') {
+				received++;
+			} else {
+				return 0;
+			}
+		}
+		sent++;
+		received++;
+	}
+	return 1;
+}
+
 static int on_message(struct slack_event *event, const char *channel, const char *thread_ts, const char *ts, const char *user, const char *text)
 {
 	char dup[4000];
@@ -754,7 +772,7 @@ static int on_message(struct slack_event *event, const char *channel, const char
 		if (u) {
 			/* Don't echo something we just posted */
 			bbs_mutex_lock(&u->lock);
-			if (!strcmp(u->lastmsg, text)) {
+			if (was_last_message(u->lastmsg, text)) {
 				bbs_mutex_unlock(&u->lock);
 				bbs_debug(4, "Not echoing our own direct message post...\n");
 				return 0;
@@ -805,7 +823,7 @@ static int on_message(struct slack_event *event, const char *channel, const char
 		 * point it will read the reply confirming the sent message
 		 * only after we give up. */
 		bbs_mutex_lock(&cp->msglock);
-		if (!strcmp(cp->lastmsg, text)) { /* For most messages (except our own posts), this should be near constant time since they'll diverge quickly */
+		if (was_last_message(cp->lastmsg, text)) { /* For most messages (except our own posts), this should be near constant time since they'll diverge quickly */
 			bbs_mutex_unlock(&cp->msglock);
 			bbs_debug(4, "Not echoing our own post...\n");
 			return 0;
