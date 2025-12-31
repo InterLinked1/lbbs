@@ -799,8 +799,14 @@ int bbs_irc_client_set_away(const char *clientname, const char *msg)
 		return -1;
 	}
 
+	if (!strlen_zero(msg)) {
+		if (bbs_assertion_failed(*msg != ':')) { /* No need to include a ':' at beginning, we do it */
+			msg++;
+		}
+	}
+
 	/* Craft the AWAY command payload */
-	snprintf(buf, sizeof(buf), "AWAY%s%s", msg ? ": " : "", S_IF(msg));
+	snprintf(buf, sizeof(buf), "AWAY%s%s", msg ? " :" : "", S_IF(msg));
 
 	/* Directly send raw message to IRC (don't relay locally) */
 	res = _client_send(client, buf);
