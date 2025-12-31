@@ -1905,6 +1905,7 @@ static int imap_client_parse_capabilities(struct bbs_tcp_client *client, int *ca
 		IGNORE_CAPABILITY("CLIENTACCESSRULES")
 		IGNORE_CAPABILITY("CLIENTNETWORKPRESENCELOCATION")
 		IGNORE_CAPABILITY("BACKENDAUTHENTICATE")
+		IGNORE_CAPABILITY("BACKENDAUTHENTICATE-IR")
 		else if (STARTS_WITH(cur, "X") || STARTS_WITH(cur, "AUTH=")) {
 			/* Don't care */
 		} else if (!strcmp(cur, "LOGINDISABLED")) { /* RFC 3501 7.2.1 */

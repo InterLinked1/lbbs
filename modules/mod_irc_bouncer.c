@@ -1096,12 +1096,12 @@ static int load_config(const char *filename, unsigned int userid)
 			const char *channel = bbs_keyval_key(keyval), *option = bbs_keyval_val(keyval);
 
 			if (i >= user_maxbouncers) {
-				bbs_user_config_log(cfg, LOG_ERROR, LOG_NOTICE, "Max bouncer bouncers exceeded for user %s\n", bu->username);
+				bbs_user_config_log(userid, cfg, LOG_ERROR, LOG_NOTICE, "Max bouncers exceeded for user %s\n", bu->username);
 				break;
 			}
 
 			if (!irc_valid_channel_name(channel)) {
-				bbs_user_config_log(cfg, LOG_ERROR, LOG_NOTICE, "Invalid IRC channel name '%s'\n", channel);
+				bbs_user_config_log(userid, cfg, LOG_ERROR, LOG_NOTICE, "Invalid IRC channel name '%s'\n", channel);
 				continue;
 			}
 
@@ -1112,7 +1112,7 @@ static int load_config(const char *filename, unsigned int userid)
 				}
 			}
 			if (bc) {
-				bbs_user_config_log(cfg, LOG_WARNING, LOG_NOTICE, "Ignoring duplicate bouncer channel %s\n", channel);
+				bbs_user_config_log(userid, cfg, LOG_WARNING, LOG_NOTICE, "Ignoring duplicate bouncer channel %s\n", channel);
 				continue;
 			}
 

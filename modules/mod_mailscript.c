@@ -39,6 +39,7 @@
 #include "include/utils.h"
 #include "include/transfer.h"
 #include "include/user.h"
+#include "include/config.h" /* use bbs_user_file_log */
 
 #include "include/mod_mail.h"
 #include "include/net_smtp.h"
@@ -120,8 +121,15 @@ static int floatcmp(const char *s, const char *expr, enum match_type matchtype)
 	return 0;
 }
 
+#define mailscript_userid(mproc) (mproc->iteration == FILTER_MAILBOX ? (mproc->userid ? mproc->userid ? mproc->mbox ? mailbox_id(mproc->mbox) : 0 : 0 : 0) : 0)
+
+/* If it's a pre or post-mailbox pass, log all errors at normal system log levels.
+ * If it's a user-controlled file, then alert the user and only log as NOTICE in the system log. */
+#define mailscript_log(mproc, loglevel, fmt, ...) \
+	bbs_user_file_log((unsigned int) mailscript_userid(mproc), filename, loglevel, mproc->iteration == FILTER_MAILBOX ? LOG_NOTICE : loglevel, fmt, ## __VA_ARGS__)
+
 /*! \brief retval -1 if no such header, 0 if not found, 1 if found */
-static int header_match(struct smtp_msg_process *mproc, const char *header, const char *find, enum match_type matchtype)
+static int header_match(struct smtp_msg_process *mproc, const char *filename, const char *header, const char *find, enum match_type matchtype)
 {
 	int found = -1;
 	size_t findlen = 0;
@@ -194,7 +202,7 @@ static int header_match(struct smtp_msg_process *mproc, const char *header, cons
 				int errcode;
 				if ((errcode = regcomp(&regexbuf, find, REG_EXTENDED | REG_NOSUB))) {
 					regerror(errcode, &regexbuf, headerval, sizeof(headerval)); /* steal headerval buf */
-					bbs_warning("Malformed expression %s: %s\n", find, headerval);
+					mailscript_log(mproc, LOG_ERROR, "Malformed expression %s: %s\n", find, headerval);
 					break; /* If the regex is invalid, we'll never be able to use it anyways */
 				}
 				regcompiled = 1;
@@ -216,7 +224,7 @@ static int header_match(struct smtp_msg_process *mproc, const char *header, cons
 	return found;
 }
 
-static void __attribute__ ((nonnull (2, 3, 4))) str_match(const char *matchtype, const char *a, const char *expr, int *restrict match)
+static void __attribute__ ((nonnull (2, 3, 4))) str_match(struct smtp_msg_process *mproc, const char *filename, const char *matchtype, const char *a, const char *expr, int *restrict match)
 {
 	if (!strcasecmp(matchtype, "EQUALS")) {
 		*match = !strcasecmp(a, expr);
@@ -228,7 +236,7 @@ static void __attribute__ ((nonnull (2, 3, 4))) str_match(const char *matchtype,
 		if ((errcode = regcomp(&regexbuf, expr, REG_EXTENDED | REG_NOSUB))) {
 			char errbuf[256];
 			regerror(errcode, &regexbuf, errbuf, sizeof(errbuf));
-			bbs_warning("Malformed expression %s: %s\n", expr, errbuf);
+			mailscript_log(mproc, LOG_ERROR, "Malformed expression %s: %s\n", expr, errbuf);
 		} else {
 #ifdef EXTRA_DEBUG
 			bbs_debug(6, "Evaluating regex: '%s' %s\n", expr, a);
@@ -237,13 +245,13 @@ static void __attribute__ ((nonnull (2, 3, 4))) str_match(const char *matchtype,
 			regfree(&regexbuf);
 		}
 	} else {
-		bbs_warning("Invalid command match type: %s\n", matchtype);
+		mailscript_log(mproc, LOG_ERROR, "Invalid command match type: %s\n", matchtype);
 	}
 }
 
 #define REQUIRE_ARG(s) \
 	if (strlen_zero(s)) { \
-		bbs_warning("Incomplete condition at %s:%d (%s must be nonempty)\n", filename, lineno, #s); \
+		mailscript_log(mproc, LOG_WARNING, "Incomplete condition at %s:%d (%s must be nonempty)\n", filename, lineno, #s); \
 		return 0; \
 	}
 
@@ -272,7 +280,7 @@ static int test_condition(struct smtp_msg_process *mproc, struct bbs_vars *vars,
 		} else if (!strcasecmp(s, "OUT")) {
 			match = mproc->direction == SMTP_MSG_DIRECTION_OUT;
 		} else {
-			bbs_warning("Invalid direction at %s:%d: %s\n", filename, lineno, s);
+			mailscript_log(mproc, LOG_ERROR, "Invalid direction at %s:%d: %s\n", filename, lineno, s);
 		}
 	} else if (!strcasecmp(next, "RETVAL")) {
 		match = numcmp(s, lastretval);
@@ -284,14 +292,14 @@ static int test_condition(struct smtp_msg_process *mproc, struct bbs_vars *vars,
 		expr = s;
 		REQUIRE_ARG(expr);
 		REQUIRE_ARG(mproc->from);
-		str_match(matchtype, mproc->from, expr, &match);
+		str_match(mproc, filename, matchtype, mproc->from, expr, &match);
 	} else if (!strcasecmp(next, "RECIPIENT")) {
 		const char *expr, *matchtype;
 		matchtype = strsep(&s, " ");
 		expr = s;
 		REQUIRE_ARG(expr);
 		REQUIRE_ARG(mproc->recipient);
-		str_match(matchtype, mproc->recipient, expr, &match);
+		str_match(mproc, filename, matchtype, mproc->recipient, expr, &match);
 	} else if (!strcasecmp(next, "HEADER")) {
 		int found;
 		const char *expr, *matchtype, *header;
@@ -299,42 +307,42 @@ static int test_condition(struct smtp_msg_process *mproc, struct bbs_vars *vars,
 		matchtype = strsep(&s, " ");
 		expr = s;
 		if (!strcasecmp(matchtype, "EXISTS")) {
-			found = header_match(mproc, header, NULL, MATCH_STRICT);
+			found = header_match(mproc, filename, header, NULL, MATCH_STRICT);
 			match = found >= 0;
 		} else if (!strcasecmp(matchtype, "EQUALS")) {
 			REQUIRE_ARG(expr);
-			found = header_match(mproc, header, expr, MATCH_STRICT);
+			found = header_match(mproc, filename, header, expr, MATCH_STRICT);
 			match = found == 1;
 		} else if (!strcasecmp(matchtype, "CONTAINS")) {
 			REQUIRE_ARG(expr);
-			found = header_match(mproc, header, expr, MATCH_SUBSTR);
+			found = header_match(mproc, filename, header, expr, MATCH_SUBSTR);
 			match = found == 1;
 		} else if (!strcasecmp(matchtype, "LIKE")) {
 			REQUIRE_ARG(expr);
-			found = header_match(mproc, header, expr, MATCH_REGEX);
+			found = header_match(mproc, filename, header, expr, MATCH_REGEX);
 			match = found == 1;
 		} else if (!strcmp(matchtype, ">=")) {
 			REQUIRE_ARG(expr);
-			found = header_match(mproc, header, expr, MATCH_GTE);
+			found = header_match(mproc, filename, header, expr, MATCH_GTE);
 			match = found == 1;
 		} else if (!strcmp(matchtype, ">")) {
 			REQUIRE_ARG(expr);
-			found = header_match(mproc, header, expr, MATCH_GT);
+			found = header_match(mproc, filename, header, expr, MATCH_GT);
 			match = found == 1;
 		} else if (!strcmp(matchtype, "<=")) {
 			REQUIRE_ARG(expr);
-			found = header_match(mproc, header, expr, MATCH_LTE);
+			found = header_match(mproc, filename, header, expr, MATCH_LTE);
 			match = found == 1;
 		} else if (!strcmp(matchtype, "<")) {
 			REQUIRE_ARG(expr);
-			found = header_match(mproc, header, expr, MATCH_LT);
+			found = header_match(mproc, filename, header, expr, MATCH_LT);
 			match = found == 1;
 		} else if (!strcmp(matchtype, "==")) {
 			REQUIRE_ARG(expr);
-			found = header_match(mproc, header, expr, MATCH_EQ);
+			found = header_match(mproc, filename, header, expr, MATCH_EQ);
 			match = found == 1;
 		} else {
-			bbs_warning("Invalid HEADER match type at %s:%d: %s\n", filename, lineno, matchtype);
+			mailscript_log(mproc, LOG_ERROR, "Invalid HEADER match type at %s:%d: %s\n", filename, lineno, matchtype);
 		}
 	} else if (!strcasecmp(next, "FILE")) {
 		char fullfile[1024];
@@ -372,7 +380,7 @@ static int test_condition(struct smtp_msg_process *mproc, struct bbs_vars *vars,
 		} else if (!strcasecmp(matchtype, "LIKE")) {
 			REQUIRE_ARG(expr);
 			if (!strlen_zero(val)) {
-				str_match(matchtype, val, expr, &match);
+				str_match(mproc, filename, matchtype, val, expr, &match);
 			}
 		} else if (!strcmp(matchtype, ">=")) {
 			REQUIRE_ARG(expr);
@@ -390,10 +398,10 @@ static int test_condition(struct smtp_msg_process *mproc, struct bbs_vars *vars,
 			REQUIRE_ARG(expr);
 			match = !strlen_zero(val) && floatcmp(val, expr, MATCH_EQ);
 		} else {
-			bbs_warning("Invalid VAR match type at %s:%d: %s\n", filename, lineno, matchtype);
+			mailscript_log(mproc, LOG_ERROR, "Invalid VAR match type at %s:%d: %s\n", filename, lineno, matchtype);
 		}
 	} else {
-		bbs_warning("Invalid condition at %s:%d: %s %s\n", filename, lineno, next, S_IF(s));
+		mailscript_log(mproc, LOG_ERROR, "Invalid condition at %s:%d: %s %s\n", filename, lineno, next, S_IF(s));
 	}
 	match = negate ? !match : match;
 #ifdef EXTRA_DEBUG

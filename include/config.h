@@ -20,14 +20,18 @@ struct bbs_keyval;
 
 /*!
  * \brief Log a log-message that pertains to a user's config file. This will log normally but may in the future also notify the user via a non-logging mechanism (e.g. email)
- * \param cfg
+ * \param userid The user ID of the user whose config file this is, or 0 if this is not a user-facing error message
+ * \param cfg The config file
  * \param userlevel Same as level, but the level to use for the end user as opposed to the BBS system logs.
  * \param level Log level. Can be any level except debug level, since debug levels would not be appropriate for an end-user anyways.
  * \param fmt printf-style format string
  */
-#define bbs_user_config_log(cfg, userlevel, level, fmt, ...) __bbs_user_config_log(__FILE__, __LINE__, __func__, cfg, userlevel, level, fmt, ## __VA_ARGS__)
+#define bbs_user_config_log(userid, cfg, userlevel, level, fmt, ...) __bbs_user_config_log(__FILE__, __LINE__, __func__, userid, bbs_config_filename(cfg), userlevel, level, fmt, ## __VA_ARGS__)
 
-void __attribute__ ((format (gnu_printf, 7, 8))) __bbs_user_config_log(const char *file, int line, const char *func, struct bbs_config *cfg, enum bbs_log_level userlevel, enum bbs_log_level level, const char *fmt, ...);
+/*! \brief Same as bbs_user_config_log, but operate directly on a config filename */
+#define bbs_user_file_log(userid, file, userlevel, level, fmt, ...) __bbs_user_config_log(__FILE__, __LINE__, __func__, userid, file, userlevel, level, fmt, ## __VA_ARGS__)
+
+void __attribute__ ((format (gnu_printf, 8, 9))) __bbs_user_config_log(const char *file, int line, const char *func, unsigned int userid, const char *filename, enum bbs_log_level userlevel, enum bbs_log_level level, const char *fmt, ...);
 
 /*!
  * \brief Retrieve filename of config
