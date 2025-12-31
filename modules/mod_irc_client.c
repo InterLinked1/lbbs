@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <sys/time.h> /* use gettimeofday */
 
 #include "include/module.h"
 #include "include/node.h"
@@ -40,7 +41,7 @@
 
 #include "include/mod_irc_client.h"
 
-#define MIN_VERSION_REQUIRED SEMVER_VERSION(0,2,1)
+#define MIN_VERSION_REQUIRED SEMVER_VERSION(1,1,0)
 #if SEMVER_VERSION(LIRC_VERSION_MAJOR, LIRC_VERSION_MINOR, LIRC_VERSION_PATCH) < MIN_VERSION_REQUIRED
 #error "lirc version too old"
 #endif
@@ -53,6 +54,8 @@ struct bbs_irc_client {
 	unsigned int log:1;					/* Log to log file */
 	unsigned int away:1;				/* Marked as AWAY */
 	unsigned int callbacks:1;			/* Execute callbacks for messages received by this client */
+	int lag;							/* The measured lag */
+	struct timeval pingstart;			/* Time we sent a PING, to measure the lag */
 	FILE *logfile;						/* Log file */
 	char name[0];						/* Unique client name */
 };
@@ -210,6 +213,7 @@ static int load_config(void)
 		}
 		irc_client_set_flags(ircl, flags);
 		client->client = ircl;
+		client->lag = -1;
 		SET_BITFIELD(client->log, logfile);
 		SET_BITFIELD(client->callbacks, callbacks);
 		client->msgscript = msgscript;
@@ -619,6 +623,39 @@ static void handle_ctcp(struct bbs_irc_client *client, struct irc_client *ircl, 
 	}
 }
 
+static void handle_pong(struct bbs_irc_client *client, struct irc_msg *msg)
+{
+	struct timeval now, diff_us;
+	const char *payload;
+
+	/* Calculate time since we sent the PING */
+	bbs_debug(8, "Received PONG response: %s\n", irc_msg_body(msg));
+
+	payload = strchr(irc_msg_body(msg), ':');
+	if (!payload) {
+		bbs_warning("Received malformed PONG response '%s'\n", irc_msg_body(msg));
+		return;
+	}
+	payload++;
+	if (strcmp(payload, "LAGTIMER")) {
+		/* We don't send any other PINGs, so we shouldn't get any other PONGs */
+		bbs_warning("Got PONG response, but with payload '%s'?\n", payload);
+		return;
+	}
+
+	gettimeofday(&now, NULL);
+	timersub(&now, &client->pingstart, &diff_us);
+	client->lag = (int) ((1000 * diff_us.tv_sec) + (diff_us.tv_usec / 1000));
+	bbs_debug(5, "Lag for client %s is %d ms\n", client->name, client->lag);
+}
+
+static void measure_lag(struct bbs_irc_client *client)
+{
+	/* Before we start, ping the server so we can measure the lag. */
+	gettimeofday(&client->pingstart, NULL);
+	irc_client_ping(client->client, "LAGTIMER"); /* This is the message Ambassador uses when it does this, so why not? */
+}
+
 static void handle_irc_msg(void *data, struct irc_msg *msg)
 {
 	struct bbs_irc_client *client = data;
@@ -676,6 +713,13 @@ static void handle_irc_msg(void *data, struct irc_msg *msg)
 		break;
 	case IRC_CMD_PING:
 		irc_client_pong(client->client, msg);
+		/* Whenever we received a PING, after we reply, in turn remeasure the lag.
+		 * The intial lag may not be accurate if the server didn't process the PING
+		 * immediately, and lag can change throughout a connection as well. */
+		measure_lag(client);
+		break;
+	case IRC_CMD_PONG:
+		handle_pong(client, msg);
 		break;
 	case IRC_CMD_JOIN:
 	case IRC_CMD_PART:
@@ -715,6 +759,7 @@ static void *client_relay(void *varg)
 		}
 	}
 
+	measure_lag(client); /* Measure initial lag when we connect */
 	irc_loop(client->client, client->logfile, handle_irc_msg, client);
 
 	bbs_debug(3, "IRC client '%s' thread has exited\n", client->name);
@@ -872,14 +917,21 @@ static int cli_irc_irc_clients(struct bbs_cli_args *a)
 {
 	struct bbs_irc_client *c;
 
-	bbs_dprintf(a->fdout, "%-20s %7s %3s %9s %-15s %s\n", "Name", "Status", "Log", "Callbacks", "Thread", "BotMsgScript");
+	bbs_dprintf(a->fdout, "%-20s %7s %5s %3s %9s %-15s %s\n", "Name", "Status", "Lag", "Log", "Callbacks", "Thread", "BotMsgScript");
 	RWLIST_RDLOCK(&irc_clients);
 	RWLIST_TRAVERSE(&irc_clients, c, entry) {
+		char lag[20]; /* Min size required */
+		if (c->lag == -1) {
+			strcpy(lag, "-"); /* Safe */
+		} else {
+			int lag_sec = c->lag / 1000;
+			snprintf(lag, sizeof(lag), "%01d.%02d", lag_sec, (c->lag - (lag_sec * 1000)) / 10);
+		}
 #if defined(__linux__) && defined(__GLIBC__)
-		bbs_dprintf(a->fdout, "%-20s %7s %3s %9s %15lu %s\n", c->name, irc_client_connected(c->client) ? c->away ? "Away" : "Online" : "Offline",
+		bbs_dprintf(a->fdout, "%-20s %7s %5s %3s %9s %15lu %s\n", c->name, irc_client_connected(c->client) ? c->away ? "Away" : "Online" : "Offline", lag,
 			BBS_YN(c->log), BBS_YN(c->callbacks), c->thread, S_IF(c->msgscript));
 #else
-		bbs_dprintf(a->fdout, "%-20s %7s %3s %9s %15s %s\n", c->name, irc_client_connected(c->client) ? c->away ? "Away" : "Online" : "Offline",
+		bbs_dprintf(a->fdout, "%-20s %7s %5s %3s %9s %15s %s\n", c->name, irc_client_connected(c->client) ? c->away ? "Away" : "Online" : "Offline", lag,
 			BBS_YN(c->log), BBS_YN(c->callbacks), "", S_IF(c->msgscript));
 #endif
 	}
