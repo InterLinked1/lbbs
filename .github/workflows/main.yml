@@ -30,12 +30,6 @@ jobs:
       - name: Run tests
         run: |
           sudo scripts/run_tests.sh
-      - name: Install service
-        run: |
-          sudo adduser -c "BBS" bbs --disabled-password --shell /usr/sbin/nologin --gecos ""
-          # Remove the bbs.log from test suite executions since that is owned by root
-          sudo rm /var/log/lbbs/bbs.log
-          sudo make service
   ubuntu-stable:
     runs-on: ubuntu-22.04
     name: Ubuntu 22.04
@@ -56,12 +50,6 @@ jobs:
       - name: Run tests
         run: |
           sudo IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh
-      - name: Install service
-        run: |
-          sudo adduser -c "BBS" bbs --disabled-password --shell /usr/sbin/nologin --gecos ""
-          # Remove the bbs.log from test suite executions since that is owned by root
-          sudo rm /var/log/lbbs/bbs.log
-          sudo make service
   without-optimization:
     runs-on: ubuntu-24.04
     name: Ubuntu 24.04, without optimization

@@ -1237,8 +1237,9 @@ static int run_test(const char *filename, int multiple)
 				alarm(0); /* Cancel any pending alarm */
 				bbs_debug(3, "Test '%s' returned %d\n", filename, res);
 #if 1
-				/* XXX Not sure this is needed anymore? (fixed recursive locking in net_irc) */
-				usleep(25000); /* Allow the poor BBS time for catching its breath. At least test_irc under valgrind seems to need this. */
+				 /* Allow the poor BBS time for catching its breath.
+				  * test_irc under valgrind no longer seems to need this due to locking fixes, but LBBS-80 is exacerbated by removing this */
+				usleep(50000);
 #endif
 			} else {
 				bbs_warning("BBS didn't complete startup?\n");
@@ -1274,7 +1275,7 @@ static int run_test(const char *filename, int multiple)
 			pthread_join(bbs_io_thread, NULL);
 			bbs_io_thread = 0;
 		}
-		sec_dif = (int64_t)(end.tv_sec - start.tv_sec) * 1000;
+		sec_dif = (int64_t) (end.tv_sec - start.tv_sec) * 1000;
 		usec_dif = (1000000 + end.tv_usec - start.tv_usec) / 1000 - 1000;
 		tot_dif = sec_dif + usec_dif;
 		if (option_errorcheck) {
