@@ -21,13 +21,14 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <unistd.h>
 #include <string.h>
 #include <fcntl.h>
 
 #include <cami/cami.h>
 
-#define MIN_VERSION_REQUIRED SEMVER_VERSION(0,2,0)
+#define MIN_VERSION_REQUIRED SEMVER_VERSION(0,3,0)
 #if !defined(CAMI_VERSION_MAJOR)
 #error "libcami version too old"
 #elif SEMVER_VERSION(CAMI_VERSION_MAJOR, CAMI_VERSION_MINOR, CAMI_VERSION_PATCH) < MIN_VERSION_REQUIRED
@@ -54,9 +55,111 @@ struct ami_callback {
 
 static RWLIST_HEAD_STATIC(callbacks, ami_callback);
 
-struct ami_session *bbs_ami_session(void)
+static int reconnecting = 0;
+
+/* If we're in the middle of a reconnect, we can't do anything
+ * We could also implement some logic here to queue momentarily,
+ * in case the connection comes back up soon; that way, the request
+ * is simply delayed, not rejected (we'd need to unlock the list,
+ * sleep a little bit, then relock and check, with a timeout). */
+#define RECONNECT_CHECKS() \
+	UNUSED(session); \
+	if (reconnecting) { \
+		bbs_warning("Rejecting AMI action during active reconnect\n"); \
+		goto cleanup; \
+	} else if (!ami_session) { \
+		bbs_warning("Rejecting AMI action - no manager session active\n"); \
+		goto cleanup; \
+	}
+
+#define AMI_SESSION_CALL_START() \
+	RWLIST_RDLOCK(&callbacks); \
+	RECONNECT_CHECKS();
+
+#define AMI_SESSION_CALL_END() \
+cleanup: \
+	RWLIST_UNLOCK(&callbacks);
+
+struct ami_response * __attribute__ ((format (printf, 3, 4))) bbs_ami_action(const char *session, const char *action, const char *fmt, ...)
 {
-	return ami_session;
+	struct ami_response *resp = NULL;
+	va_list ap;
+
+	/* This is a wrapper around libcami's ami_action to ensure safety.
+	 * We can't directly expose ami_session to other modules, because it could be NULL.
+	 * They could do a NULL check, but that would be a TOCTOU race condition.
+	 * We need to guarantee that the session will remain valid while it's being used.
+	 *
+	 * Hence, we need our own wrapper for each CAMI function we want to use.
+	 *
+	 * If each module had its own independent AMI session (as it used to), we wouldn't
+	 * have this problem.
+	 *
+	 * Here, we keep the callbacks list locked, to ensure that ami_session can't become
+	 * NULL while we're using it (in case of a reconnect). */
+
+	AMI_SESSION_CALL_START();
+	va_start(ap, fmt);
+	resp = ami_action_va(ami_session, action, fmt, ap); /* Use ami_action_va, to avoid an additional vasprintf allocation */
+	va_end(ap);
+	AMI_SESSION_CALL_END();
+
+	return resp;
+}
+
+int bbs_ami_action_setvar(const char *session, const char *variable, const char *value, const char *channel)
+{
+	int res = -1;
+
+	AMI_SESSION_CALL_START();
+	res = ami_action_setvar(ami_session, variable, value, channel);
+	AMI_SESSION_CALL_END();
+
+	return res;
+}
+
+int bbs_ami_action_getvar_buf(const char *session, const char *variable, const char *channel, char *buf, size_t len)
+{
+	int res = -1;
+
+	AMI_SESSION_CALL_START();
+	res = ami_action_getvar_buf(ami_session, variable, channel, buf, len);
+	AMI_SESSION_CALL_END();
+
+	return res;
+}
+
+int bbs_ami_action_response_result(const char *session, struct ami_response *resp)
+{
+	int res = -1;
+
+	AMI_SESSION_CALL_START();
+	res = ami_action_response_result(ami_session, resp);
+	AMI_SESSION_CALL_END();
+
+	return res;
+}
+
+char *bbs_ami_action_getvar(const char *session, const char *variable, const char *channel)
+{
+	char *var = NULL;
+
+	AMI_SESSION_CALL_START();
+	var = ami_action_getvar(ami_session, variable, channel);
+	AMI_SESSION_CALL_END();
+
+	return var;
+}
+
+int bbs_ami_action_redirect(const char *session, const char *channel, const char *context, const char *exten, const char *priority)
+{
+	int res = -1;
+
+	AMI_SESSION_CALL_START();
+	res = ami_action_redirect(ami_session, channel, context, exten, priority);
+	AMI_SESSION_CALL_END();
+
+	return res;
 }
 
 static void set_ami_status(int up)
@@ -201,8 +304,6 @@ static struct bbs_cli_entry cli_commands_ami[] = {
 
 static int load_config(int open_logfile);
 
-static int reconnecting = 0;
-
 static void cleanup_ami(void)
 {
 	struct ami_session *s = ami_session;
@@ -227,8 +328,9 @@ static void ami_disconnect_callback(struct ami_session *ami)
 		return; /* If we're unloading, don't care */
 	}
 
+	/* Write lock, since nobody can be accessing the global AMI session while we're recreating it */
 	reconnecting = 1;
-	RWLIST_RDLOCK(&callbacks);
+	RWLIST_WRLOCK(&callbacks);
 	cleanup_ami();
 	/* Perhaps Asterisk restarted (or crashed).
 	 * Try to reconnect if it comes back up. */

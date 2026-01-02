@@ -17,12 +17,24 @@
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
-/*!
- * \brief Get the global AMI session
- * \return NULL if no AMI session active
- * \return ami session
- */
-struct ami_session *bbs_ami_session(void);
+/* Wrappers around libcami functions
+ * Instead of accepting an ami_session,
+ * the "session" argument denotes a named AMI connection.
+ *
+ * This can be NULL for the default connection.
+ *
+ * Currently, only connection is supported so this argument
+ * is ignored, but if in the future multiple sessions
+ * were supported (see [LBBS-111]), then it would be used. */
+
+struct ami_response *bbs_ami_action(const char *session, const char *action, const char *fmt, ...);
+int bbs_ami_action_setvar(const char *session, const char *variable, const char *value, const char *channel);
+int bbs_ami_action_getvar_buf(const char *session, const char *variable, const char *channel, char *buf, size_t len);
+int bbs_ami_action_response_result(const char *session, struct ami_response *resp);
+char *bbs_ami_action_getvar(const char *session, const char *variable, const char *channel);
+int bbs_ami_action_redirect(const char *session, const char *channel, const char *context, const char *exten, const char *priority);
+#define bbs_ami_action_axfer(sess, chan, exten, context) bbs_ami_action(sess, "Atxfer", "Channel:%s\r\nExten:%s\r\nContext:%s", chan, exten, context)
+#define bbs_ami_action_cancel_axfer(sess, chan) bbs_ami_action(sess, "CancelAtxfer", "Channel:%s", chan)
 
 int __bbs_ami_callback_register(int (*callback)(struct ami_event *event, const char *eventname), void *mod);
 

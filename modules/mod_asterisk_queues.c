@@ -268,9 +268,9 @@ static int update_queue_stats(void)
 
 	/* If only one queue needs to be refreshed, then just ask for that one by name. */
 	if (stale_queues == 1) {
-		resp = ami_action(bbs_ami_session(), "QueueStatus", "Queue:%s", lastq->name);
+		resp = bbs_ami_action(NULL, "QueueStatus", "Queue:%s", lastq->name);
 	} else {
-		resp = ami_action(bbs_ami_session(), "QueueStatus", "");
+		resp = bbs_ami_action(NULL, "QueueStatus", "");
 	}
 
 	if (!resp || !resp->success) {
@@ -392,7 +392,7 @@ static int call_is_dead(struct queue_call *call)
 	if (call->dead) {
 		return -1;
 	}
-	val = ami_action_getvar(bbs_ami_session(), "queueuniq", call->channel);
+	val = bbs_ami_action_getvar(NULL, "queueuniq", call->channel);
 	if (!val) {
 		__mark_dead(call);
 		return 1;
@@ -580,12 +580,12 @@ static int ami_callback(struct ami_event *e, const char *eventname)
 			bbs_error("Missing mandatory fields\n");
 			return -1;
 		}
-		queueid = ami_action_getvar(bbs_ami_session(), queue_id_var, channel);
+		queueid = bbs_ami_action_getvar(NULL, queue_id_var, channel);
 		if (strlen_zero(queueid)) {
 			return -1;
 		}
-		ani2 = ami_action_getvar(bbs_ami_session(), "CALLERID(ani2)", channel);
-		dnis = ami_action_getvar(bbs_ami_session(), "CALLERID(DNID)", channel);
+		ani2 = bbs_ami_action_getvar(NULL, "CALLERID(ani2)", channel);
+		dnis = bbs_ami_action_getvar(NULL, "CALLERID(DNID)", channel);
 		new_call(queue, atoi(queueid), atoi(S_IF(ani2)), channel, callerid, callername, dnis);
 		free_if(queueid);
 		free_if(ani2);
@@ -653,7 +653,7 @@ static int ami_callback(struct ami_event *e, const char *eventname)
 static int update_member_stats(struct agent *agent)
 {
 	int i;
-	struct ami_response *resp = ami_action(bbs_ami_session(), "QueueStatus", "Member:%d", agent->id);
+	struct ami_response *resp = bbs_ami_action(NULL, "QueueStatus", "Member:%d", agent->id);
 
 	/* We still need to initialize the agent-specific stats for all queues.
 	 * This response will be smaller (maybe much smaller) than asking for everything. */
@@ -808,7 +808,7 @@ static int queue_agent_status(struct agent *agent, struct queue *queue)
 	int sel;
 
 	do {
-		resp = ami_action(bbs_ami_session(), "QueueStatus", "Queue:%s", queue->name);
+		resp = bbs_ami_action(NULL, "QueueStatus", "Queue:%s", queue->name);
 		if (!resp || !resp->success) {
 			if (resp) {
 				ami_resp_free(resp);

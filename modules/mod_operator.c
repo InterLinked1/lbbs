@@ -32,7 +32,6 @@
 #include <ctype.h>
 
 #include <cami/cami.h>
-#include <cami/cami_actions.h>
 
 #include "include/module.h"
 #include "include/config.h"
@@ -45,7 +44,7 @@
 
 #include "include/mod_curl.h"
 
-#include "include/mod_asterisk_ami.h" /* use bbs_ami_session */
+#include "include/mod_asterisk_ami.h"
 #include "include/mod_asterisk_queues.h"
 #include "include/mod_ncurses.h"
 
@@ -214,7 +213,7 @@ static int handle_default(struct queue_call_handle *qch)
 		/* It would be more efficient to just get this once, when we request the other channel variables in mod_asterisk_queues,
 		 * but this promotes better modularity since this is a queue-specific (or queue group specific) variable.
 		 * XXX Maybe we can define variables we should request in mod_asterisk_queues? */
-		val = ami_action_getvar(bbs_ami_session(), variable_cvs, qch->channel);
+		val = bbs_ami_action_getvar(NULL, variable_cvs, qch->channel);
 		cvs = atoi(S_IF(val));
 		free_if(val);
 		snprintf(subtitle, sizeof(subtitle), "%s\tII %02d [CVS %02d] (%s) %lu\n", qch->queuetitle, qch->ani2, cvs, qch->cnam, qch->ani);
@@ -267,7 +266,7 @@ static int operator_dial_number(struct queue_call_handle *qch)
 	}
 
 	/* At this point, the agent better be bridged to the caller. Otherwise, how'd we get a number? */
-	if (ami_action_getvar_buf(bbs_ami_session(), "BRIDGEPEER", qch->channel, agentchan, sizeof(agentchan))) { /* Get agent's channel (since they're bridged now) */
+	if (bbs_ami_action_getvar_buf(NULL, "BRIDGEPEER", qch->channel, agentchan, sizeof(agentchan))) { /* Get agent's channel (since they're bridged now) */
 		bbs_warning("Not connected to agent? Aborting.\n");
 		return -1;
 	}
@@ -278,7 +277,7 @@ static int operator_dial_number(struct queue_call_handle *qch)
 	/* Station-to-station call.
 	 * For some reason, xfer context wants 2 digits, so **, then call type (1/2/3), then number, then # to terminate in case <7 digits. */
 	snprintf(dialnum, sizeof(dialnum), "w1%s%sw*2", othernum, strlen(othernum) < 7 ? "#" : "");
-	if (ami_action_response_result(bbs_ami_session(), ami_action_axfer(bbs_ami_session(), agentchan, dialnum, context_operator_xfer))) {
+	if (bbs_ami_action_response_result(NULL, bbs_ami_action_axfer(NULL, agentchan, dialnum, context_operator_xfer))) {
 		bbs_warning("Failed to set up attended transfer to %s\n", dialnum);
 		return -1;
 	}
@@ -309,7 +308,7 @@ static int handle_operator(struct queue_call_handle *qch)
 		/* It would be more efficient to just get this once, when we request the other channel variables in mod_asterisk_queues,
 		 * but this promotes better modularity since this is a queue-specific (or queue group specific) variable.
 		 * XXX Maybe we can define variables we should request in mod_asterisk_queues? */
-		val = ami_action_getvar(bbs_ami_session(), variable_cvs, qch->channel);
+		val = bbs_ami_action_getvar(NULL, variable_cvs, qch->channel);
 		cvs = atoi(S_IF(val));
 		free_if(val);
 		snprintf(subtitle, sizeof(subtitle), "OPERATOR 0 MINUS\tII %02d [CVS %02d] (%s) %lu -> %lu\n", qch->ani2, cvs, qch->cnam, qch->ani, qch->dnis);
@@ -544,7 +543,7 @@ static int handle_intercept(struct queue_call_handle *qch)
 		/* If we don't get here before the agent hangs up,
 		 * trigger a recording to play on the channel,
 		 * which will happen if this variable is not set. */
-		ami_action_setvar(bbs_ami_session(), variable_intercepted_num, othernum, qch->channel);
+		bbs_ami_action_setvar(NULL, variable_intercepted_num, othernum, qch->channel);
 	}
 
 	bbs_node_substitute_vars(qch->node, url_intercept_lookup, url, sizeof(url));
@@ -782,7 +781,7 @@ static int handle_directory(struct queue_call_handle *qch)
 		return -1;
 	}
 
-	if (ami_action_getvar_buf(bbs_ami_session(), "BRIDGEPEER", qch->channel, agentchan, sizeof(agentchan))) { /* Get agent's channel (since they're bridged now) */
+	if (bbs_ami_action_getvar_buf(NULL, "BRIDGEPEER", qch->channel, agentchan, sizeof(agentchan))) { /* Get agent's channel (since they're bridged now) */
 		bbs_warning("Not connected to agent? Aborting.\n");
 		return -1;
 	}
@@ -1020,9 +1019,9 @@ static int handle_directory(struct queue_call_handle *qch)
 			switch (res) {
 				case 0:
 					snprintf(outputbuf, sizeof(outputbuf), "%c%s", main_number ? '0' : '1', number);
-					ami_action_setvar(bbs_ami_session(), "directoryresult", outputbuf, qch->channel);
+					bbs_ami_action_setvar(NULL, "directoryresult", outputbuf, qch->channel);
 					/* Automatically release the call into the announcement system without requiring agent to release first */
-					ami_action_response_result(bbs_ami_session(), ami_action(bbs_ami_session(), "Hangup", "Channel: %s\r\nCause: 16", agentchan)); /* Disconnect agent */
+					bbs_ami_action_response_result(NULL, bbs_ami_action(NULL, "Hangup", "Channel: %s\r\nCause: 16", agentchan)); /* Disconnect agent */
 					bbs_node_writef(qch->node, "POSITION RLS\n");
 					break;
 				case 1:
@@ -1058,7 +1057,7 @@ static int handle_coinzone(struct queue_call_handle *qch)
 		return 0;
 	}
 
-	coinzoneinfo = ami_action_getvar(bbs_ami_session(), variable_amount_required, qch->channel);
+	coinzoneinfo = bbs_ami_action_getvar(NULL, variable_amount_required, qch->channel);
 	if (!coinzoneinfo) {
 		bbs_warning("Variable '%s' not set on %s for Coin Zone call?\n", variable_amount_required, qch->channel);
 		return -1;
@@ -1173,7 +1172,7 @@ static int set_oni(struct queue_call_handle *qch, const char *restrict oni)
 	/* Evaluate at the given extension to check validity.
 	 * 1 = valid, anything else = invalid. */
 	snprintf(varname, sizeof(varname), "EVAL_EXTEN(%s,%s,1)", context_oni_eval, oni); /* Don't enclose in ${} or it'll be treated as a variable! */
-	res = ami_action_getvar_buf(bbs_ami_session(), varname, qch->channel, response, sizeof(response));
+	res = bbs_ami_action_getvar_buf(NULL, varname, qch->channel, response, sizeof(response));
 	if (res) {
 		return -1;
 	}
@@ -1181,7 +1180,7 @@ static int set_oni(struct queue_call_handle *qch, const char *restrict oni)
 	if (!res) {
 		/* If it's valid, actually set it on the channel.
 		 * The dialplan can then manipulate this string into whatever it needs. */
-		res = ami_action_setvar(bbs_ami_session(), variable_oni_set, oni, qch->channel);
+		res = bbs_ami_action_setvar(NULL, variable_oni_set, oni, qch->channel);
 	}
 	return res;
 }
@@ -1207,12 +1206,12 @@ static int handle_oni(struct queue_call_handle *qch)
 	bbs_node_var_set_fmt(qch->node, "QUEUE_CALL_ID", "%d", qch->id);
 	bbs_node_substitute_vars(qch->node, channel_queue_inject, inject_chan, sizeof(inject_chan));
 
-	if (ami_action_getvar_buf(bbs_ami_session(), "BRIDGEPEER", qch->channel, agent_chan, sizeof(agent_chan))) {
+	if (bbs_ami_action_getvar_buf(NULL, "BRIDGEPEER", qch->channel, agent_chan, sizeof(agent_chan))) {
 		bbs_warning("Not connected to agent? Aborting.\n");
 		return -1;
 	}
 
-	res = ami_action_response_result(bbs_ami_session(), ami_action(bbs_ami_session(), "Originate",
+	res = bbs_ami_action_response_result(NULL, bbs_ami_action(NULL, "Originate",
 		"Channel:%s\r\nContext:%s\r\nExten:%s\r\nPriority:%s\r\nVariable:%s=%s",
 		inject_chan, context_oni_digits, "s", "1", variable_queue_channel, qch->channel));
 	if (res) {
@@ -1220,7 +1219,7 @@ static int handle_oni(struct queue_call_handle *qch)
 		return 0;
 	}
 
-	res = ami_action_getvar_buf(bbs_ami_session(), variable_supervisor_channel, qch->channel, supervisor_chan, sizeof(supervisor_chan));
+	res = bbs_ami_action_getvar_buf(NULL, variable_supervisor_channel, qch->channel, supervisor_chan, sizeof(supervisor_chan));
 	if (res) {
 		bbs_error("Failed to get supervisor channel\n");
 		return 0;
@@ -1262,7 +1261,7 @@ static int handle_oni(struct queue_call_handle *qch)
 		digitbuf[0] = (char) c;
 		digitbuf[1] = '\0';
 
-		res = ami_action_redirect(bbs_ami_session(), supervisor_chan, context_oni_digits, exten, "1");
+		res = bbs_ami_action_redirect(NULL, supervisor_chan, context_oni_digits, exten, "1");
 		if (res) {
 			bbs_warning("Failed to redirect %s -> %s,%s,1\n", supervisor_chan, context_oni_digits, exten);
 			continue; /* Don't echo if we couldn't play it on the channel, for some reason */
@@ -1297,14 +1296,14 @@ error:
 		bbs_debug(3, "ONI sequence '%s' is invalid\n", oni);
 		errors++;
 		/* Code 11 tone error indicator */
-		res = ami_action_redirect(bbs_ami_session(), supervisor_chan, context_oni_digits, "11", "1");
+		res = bbs_ami_action_redirect(NULL, supervisor_chan, context_oni_digits, "11", "1");
 		oni[0] = '\0';
 		pos = oni;
 	}
 
 	/* If we're done, disconnect the agent, so the channel can proceed
 	 * immediately, as soon as ST is received and we validate it. */
-	ami_action_response_result(bbs_ami_session(), ami_action(bbs_ami_session(), "Hangup", "Channel:%s", agent_chan));
+	bbs_ami_action_response_result(NULL, bbs_ami_action(NULL, "Hangup", "Channel:%s", agent_chan));
 
 	bbs_node_writef(qch->node, "\nPOSITION RLS\n");
 	bbs_node_wait_key(qch->node, MIN_MS(2));
@@ -1440,7 +1439,7 @@ static struct tty_rx *tty_subscribe(const char *channel, struct queue_call_handl
 	 * s - Send spaces as underscores
 	 * m - Replace received audio frames with silence while TDD carrier is active
 	 */
-	if (ami_action_response_result(bbs_ami_session(), ami_action(bbs_ami_session(), "TddRx", "Channel:%s\r\nOptions:b(1)sm", channel))) {
+	if (bbs_ami_action_response_result(NULL, bbs_ami_action(NULL, "TddRx", "Channel:%s\r\nOptions:b(1)sm", channel))) {
 		/* This will fail if TTY processing is already enabled on the channel,
 		 * and that is expected.
 		 * For that reason, it should not be enabled in the dialplan prior to trying to enable via AMI.
@@ -1457,7 +1456,7 @@ static struct tty_rx *tty_subscribe(const char *channel, struct queue_call_handl
 static void tty_unsubscribe(struct tty_rx *t)
 {
 	/* Unsubscribe to TDD */
-	if (ami_action_response_result(bbs_ami_session(), ami_action(bbs_ami_session(), "TddStop", "Channel:%s", t->channel))) {
+	if (bbs_ami_action_response_result(NULL, bbs_ami_action(NULL, "TddStop", "Channel:%s", t->channel))) {
 		/* Probably somehow already unsubscribed. */
 		bbs_warning("Failed to disable TTY listener on %s\n", t->channel);
 	} else {
@@ -1496,7 +1495,7 @@ static int tty_agent_dial_number(struct queue_call_handle *qch, int inverted)
 	}
 
 	/* At this point, the agent better be bridged to the caller. Otherwise, how'd we get a number? */
-	if (ami_action_getvar_buf(bbs_ami_session(), "BRIDGEPEER", qch->channel, agentchan, sizeof(agentchan))) { /* Get agent's channel (since they're bridged now) */
+	if (bbs_ami_action_getvar_buf(NULL, "BRIDGEPEER", qch->channel, agentchan, sizeof(agentchan))) { /* Get agent's channel (since they're bridged now) */
 		bbs_warning("Not connected to agent? Aborting.\n");
 		return -1;
 	}
@@ -1510,7 +1509,7 @@ static int tty_agent_dial_number(struct queue_call_handle *qch, int inverted)
 	 * then call type (1/2/3, 1 for station to station call),
 	 * then number, then # to terminate in case < 7 digits to avoid timeout. */
 	snprintf(dialnum, sizeof(dialnum), "%s1%s%s", inverted ? "AA" : "**", othernum, strlen(othernum) < 7 ? "#" : "");
-	if (ami_action_response_result(bbs_ami_session(), ami_action_axfer(bbs_ami_session(), agentchan, dialnum, context_trs_transfer))) {
+	if (bbs_ami_action_response_result(NULL, bbs_ami_action_axfer(NULL, agentchan, dialnum, context_trs_transfer))) {
 		bbs_node_writef(qch->node, "\nFailed to set up axfer.\n");
 	} else {
 		bbs_node_writef(qch->node, "Initiating call: %s\n", othernum);
@@ -1521,9 +1520,9 @@ static int tty_agent_dial_number(struct queue_call_handle *qch, int inverted)
 			 * and the agent needs to be able to talk to the caller.
 			 * The agent can do this manually by hitting *3,
 			 * but we go ahead and do this automatically. */
-			res = ami_action_response_result(bbs_ami_session(), ami_action(bbs_ami_session(), "PlayDTMF", "Channel:%s\r\nDigit:%c\r\nReceive: true", agentchan, '*'));
+			res = bbs_ami_action_response_result(NULL, bbs_ami_action(NULL, "PlayDTMF", "Channel:%s\r\nDigit:%c\r\nReceive: true", agentchan, '*'));
 			if (!res) {
-				res = ami_action_response_result(bbs_ami_session(), ami_action(bbs_ami_session(), "PlayDTMF", "Channel:%s\r\nDigit:%c\r\nReceive: true", agentchan, '3'));
+				res = bbs_ami_action_response_result(NULL, bbs_ami_action(NULL, "PlayDTMF", "Channel:%s\r\nDigit:%c\r\nReceive: true", agentchan, '3'));
 			}
 			if (res) {
 				bbs_node_writef(qch->node, "Automatic conference setup failed: please dial *3\n");
@@ -1541,7 +1540,7 @@ static int agent_channel_alive(const char *agent_chan)
 
 	/* There's not an AMI action to check if a channel exists, per se,
 	 * but we can check for a known variable that should exist. */
-	if (ami_action_getvar_buf(bbs_ami_session(), "QUEUENAME", agent_chan, buf, sizeof(buf))) {
+	if (bbs_ami_action_getvar_buf(NULL, "QUEUENAME", agent_chan, buf, sizeof(buf))) {
 		bbs_debug(3, "Variable %s not set for channel %s, or channel does not exist\n", "QUEUENAME", agent_chan);
 		return 0;
 	}
@@ -1582,7 +1581,7 @@ static int swap_sides(struct queue_call_handle *qch, struct tty_rx **restrict t,
 #define SET_TDD_SIDE_CALLEE() \
 	c = 0; \
 	queuechannelout[0] = '\0'; \
-	while (ami_action_getvar_buf(bbs_ami_session(), variable_queuechannelout, qch->channel, queuechannelout, sizeof(queuechannelout))) { \
+	while (bbs_ami_action_getvar_buf(NULL, variable_queuechannelout, qch->channel, queuechannelout, sizeof(queuechannelout))) { \
 		if (bbs_node_safe_sleep(qch->node, 750)) { \
 			goto exit; \
 		} else if (c++ > 10) { \
@@ -1619,7 +1618,7 @@ static int handle_trs(struct queue_call_handle *qch)
 	 * If that's still ongoing, we won't be bridged yet.
 	 * In that case, wait a second or two and then try again. */
 	for (c = 0; c < 3; c++) {
-		ami_action_getvar_buf(bbs_ami_session(), "BRIDGEPEER", qch->channel, agentchan, sizeof(agentchan));
+		bbs_ami_action_getvar_buf(NULL, "BRIDGEPEER", qch->channel, agentchan, sizeof(agentchan));
 		if (!s_strlen_zero(agentchan)) {
 			break;
 		}
@@ -1648,7 +1647,7 @@ static int handle_trs(struct queue_call_handle *qch)
 	char tbuf[64]; \
 	bbs_node_writef(qch->node, fmt, __VA_ARGS__); \
 	snprintf(tbuf, sizeof(tbuf), fmt, __VA_ARGS__); \
-	ami_action_response_result(bbs_ami_session(), ami_action(bbs_ami_session(), "TddTx", "Channel:%s\r\nMessage:%s", channel, tbuf)); \
+	bbs_ami_action_response_result(NULL, bbs_ami_action(NULL, "TddTx", "Channel:%s\r\nMessage:%s", channel, tbuf)); \
 }
 
 	t = tty_subscribe(qch->channel, qch, &our_turn, SIDE_CALLER);
@@ -1707,7 +1706,7 @@ static int handle_trs(struct queue_call_handle *qch)
 				/* If this is not the first call, we need to reset this variable value
 				 * to prevent reading an old value.
 				 * See comments above SET_TDD_SIDE_CALLEE macro. */
-				if (calls && ami_action_setvar(bbs_ami_session(), variable_queuechannelout, qch->channel, NULL)) {
+				if (calls && bbs_ami_action_setvar(NULL, variable_queuechannelout, qch->channel, NULL)) {
 					bbs_warning("Failed to reset variable prior to new call\n");
 				}
 				res = tty_agent_dial_number(qch, 1);
@@ -1718,12 +1717,12 @@ static int handle_trs(struct queue_call_handle *qch)
 				SET_TDD_SIDE_CALLEE();
 				break;
 			case 'y': /* Cancel/End outgoing leg (cancel axfer) */
-				ami_action_getvar_buf(bbs_ami_session(), "BRIDGEPEER", qch->channel, agentchan, sizeof(agentchan));
+				bbs_ami_action_getvar_buf(NULL, "BRIDGEPEER", qch->channel, agentchan, sizeof(agentchan));
 				if (s_strlen_zero(agentchan)) {
 					/* If not still bridged, something must've happened */
 					bbs_node_writef(qch->node, "\nNO ACTIVE CALL\n");
 				} else {
-					if (ami_action_response_result(bbs_ami_session(), ami_action_cancel_axfer(bbs_ami_session(), agentchan))) {
+					if (bbs_ami_action_response_result(NULL, bbs_ami_action_cancel_axfer(NULL, agentchan))) {
 						bbs_node_writef(qch->node, "\nERR CALL NOT TERMINATED\n");
 					} else {
 						bbs_node_writef(qch->node, "\nCALL TERMINATED\n");
@@ -1747,7 +1746,7 @@ static int handle_trs(struct queue_call_handle *qch)
 			}
 			tbuf[0] = (char) input;
 			tbuf[1] = '\0';
-			if (ami_action_response_result(bbs_ami_session(), ami_action(bbs_ami_session(), "TddTx", "Channel:%s\r\nMessage:%s", qch->channel, tbuf))) {
+			if (bbs_ami_action_response_result(NULL, bbs_ami_action(NULL, "TddTx", "Channel:%s\r\nMessage:%s", qch->channel, tbuf))) {
 				bbs_node_writef(qch->node, "\nERR DISCONNECTED RLS\n");
 				bbs_node_wait_key(qch->node, MIN_MS(2));
 				break;
@@ -1818,7 +1817,7 @@ static int handle_emergency(struct queue_call_handle *qch)
 	}
 
 	if (!s_strlen_zero(variable_n11translations)) {
-		n11translations = ami_action_getvar(bbs_ami_session(), variable_n11translations, qch->channel);
+		n11translations = bbs_ami_action_getvar(NULL, variable_n11translations, qch->channel);
 		if (!n11translations) {
 			bbs_warning("No '%s' variable for Emergency call on %s\n", variable_n11translations, qch->channel);
 		} else {
