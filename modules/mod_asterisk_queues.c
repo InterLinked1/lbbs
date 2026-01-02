@@ -185,7 +185,7 @@ static void del_agent(struct agent *agent)
 	struct queue *queue;
 	struct member *member;
 
-	RWLIST_WRLOCK(&queues);
+	RWLIST_RDLOCK(&queues);
 	RWLIST_TRAVERSE(&queues, queue, entry) {
 		/* Remove membership in all queues */
 		RWLIST_WRLOCK(&queue->members);
@@ -733,10 +733,9 @@ static int queues_status(struct agent *agent)
 	RWLIST_RDLOCK(&queues);
 	RWLIST_TRAVERSE(&queues, queue, entry) {
 		struct member *member = queue_member(queue, agent);
-		if (!member) {
-			continue;
+		if (member) {
+			bbs_node_writef(agent->node, "%-22s %6d\t%6d\t%6d\t%6d\n", queue->title, queue->ringing, queue->completed, queue->abandoned, member->calls_taken);
 		}
-		bbs_node_writef(agent->node, "%-22s %6d\t%6d\t%6d\t%6d\n", queue->title, queue->ringing, queue->completed, queue->abandoned, member->calls_taken);
 	}
 	RWLIST_UNLOCK(&queues);
 	return 0;
