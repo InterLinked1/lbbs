@@ -83,6 +83,7 @@ static int smtps_port = DEFAULT_SMTPS_PORT;
 static int msa_port = DEFAULT_SMTP_MSA_PORT;
 
 static int smtp_enabled = 1, smtps_enabled = 1, msa_enabled = 1;
+static int smtp_accept_enabled = 1;
 
 static int accept_relay_in = 1;
 static int require_starttls = 1;
@@ -1849,6 +1850,16 @@ static int cli_filters(struct bbs_cli_args *a)
 		bbs_dprintf(a->fdout, "%-14s %3d %-13s %-8s %s\n", f->name, f->priority, smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), bbs_module_name(f->mod));
 	}
 	RWLIST_UNLOCK(&filters);
+	return 0;
+}
+
+static int cli_accept(struct bbs_cli_args *a)
+{
+	const char *s = a->argv[2];
+	int old, enable = S_TRUE(s);
+	old = smtp_accept_enabled;
+	smtp_accept_enabled = enable;
+	bbs_dprintf(a->fdout, "SMTP acceptance was %s and is %s %s\n", old ? "enabled" : "disabled", old == enable ? "still" : "now", enable ? "enabled" : "disabled");
 	return 0;
 }
 
@@ -3691,14 +3702,22 @@ static void *__smtp_handler(void *varg)
 
 	bbs_node_net_begin(node);
 
-	/* If it's secure, it's for message submission agent, MTAs are never secure by default. */
-	smtp_handler(node, secure || !strcmp(node->protname, "SMTP (MSA)"), secure); /* Actually handle the SMTP/SMTPS/message submission agent client */
+	if (!smtp_accept_enabled) {
+		/* Even if rejecting, we still need to run bbs_node_net_begin and bbs_node_exit.
+		 * Could also reply with a 421 before closing connection, but this way we don't need to potentially set up TLS for nothing. */
+		bbs_notice("Rejecting incoming %s connection, acceptance of SMTP connections temporarily disabled\n", node->protname);
+	} else {
+		/* If it's secure, it's for message submission agent, MTAs are never secure by default. */
+		smtp_handler(node, secure || !strcmp(node->protname, "SMTP (MSA)"), secure); /* Actually handle the SMTP/SMTPS/message submission agent client */
+	}
+
 	bbs_node_exit(node);
 	return NULL;
 }
 
 static struct bbs_cli_entry cli_commands_smtp[] = {
 	BBS_CLI_COMMAND(cli_filters, "smtp filters", 2, "List all SMTP filters", NULL),
+	BBS_CLI_COMMAND(cli_accept, "smtp accept", 3, "Temporarily disable/enable SMTP acceptance", "smtp accept <on|off>"),
 };
 
 static int load_config(void)
