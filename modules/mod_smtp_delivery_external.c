@@ -492,26 +492,29 @@ static int __attribute__ ((nonnull (2, 3, 9, 16))) try_send(struct smtp_session 
 	struct bbs_smtp_client smtpclient;
 	off_t send_offset;
 	char sendercopy[MAX_EMAIL_ADDRESS_LENGTH];
-	char *user, *domain, *saslstr = NULL; /* saslstr is scoped here for cleanup */
+	char *user = NULL, *domain = NULL, *saslstr = NULL; /* saslstr is scoped here for cleanup */
 
 #define SMTP_EOM "\r\n.\r\n"
 
 	bbs_assert(datafd != -1);
 	bbs_assert(writelen > 0);
 
-	/* RFC 5322 3.4.1 allows us to use IP addresses in SMTP as well (domain literal form). They just need to be enclosed in square brackets. */
-	safe_strncpy(sendercopy, sender, sizeof(sendercopy));
-
 	/* Properly parse, since if a name is present, in addition to the email address, we must exclude the name in the MAIL FROM */
-	if (bbs_parse_email_address(sendercopy, NULL, &user, &domain)) {
-		bbs_error("Invalid email address: %s\n", sender);
-		return -1;
-	}
+	/* Note that sender has the nonnull attribute, and should be non-NULL, so using strlen_zero triggers a nonnull-compare warning. */
+	if (sender[0]) {
+		/* RFC 5322 3.4.1 allows us to use IP addresses in SMTP as well (domain literal form). They just need to be enclosed in square brackets. */
+		safe_strncpy(sendercopy, sender, sizeof(sendercopy));
 
-	if (!strlen_zero(user) && strlen_zero(domain)) {
-		/* Can't pass NULL domain to bbs_hostname_is_ipv4 */
-		bbs_error("Invalid email address (user=%s, empty domain)\n", user);
-		return -1;
+		if (bbs_parse_email_address(sendercopy, NULL, &user, &domain)) {
+			bbs_error("Invalid email address: '%s'\n", sender);
+			return -1;
+		} else {
+			if (!strlen_zero(user) && strlen_zero(domain)) {
+				/* Can't pass NULL domain to bbs_hostname_is_ipv4 */
+				bbs_error("Invalid email address (user=%s, empty domain)\n", user);
+				return -1;
+			}
+		}
 	}
 
 #ifdef DEBUG_MAIL_DATA
@@ -546,7 +549,7 @@ static int __attribute__ ((nonnull (2, 3, 9, 16))) try_send(struct smtp_session 
 	bbs_get_fd_ip(smtpclient.client.fd, tx->ipaddr, sizeof(tx->ipaddr));
 	safe_strncpy(tx->hostname, hostname, sizeof(tx->hostname));
 
-	bbs_debug(3, "Attempting delivery of %lu-byte message from %s -> %s via %s\n", writelen, sender, recipient, hostname);
+	bbs_debug(3, "Attempting delivery of %lu-byte message from %s -> %s via %s\n", writelen, S_OR(sender, "<>"), recipient, hostname);
 
 	SMTP_CLIENT_EXPECT_FINAL(&smtpclient, MIN_MS(5), "220"); /* RFC 5321 4.5.3.2.1 (though for final 220, not any of them) */
 
@@ -1470,7 +1473,7 @@ static int process_queue_file(struct mailq_run *qrun, struct mailq_file *mqf)
 	} else if (res == -2 || res > 0 || attempts >= (int) max_retries) { /* Permanent failure or retries exceeded */
 permfail:
 		/* Send a delivery failure response, then delete the file. */
-		bbs_warning("Delivery of message <%s> from %s to %s has failed permanently after %d attempt%s\n", mqf->datafile, mqf->realfrom, mqf->realto, attempts, ESS(attempts));
+		bbs_warning("Delivery of message <%s> from <%s> to %s has failed permanently after %d attempt%s\n", mqf->datafile, mqf->realfrom, mqf->realto, attempts, ESS(attempts));
 		bbs_smtp_log(1, NULL, "Delivery failed permanently after queuing: <%s> -> %s (%s)\n", mqf->realfrom, mqf->realto, buf);
 		/* To the dead letter office we go */
 		/* XXX buf will only contain the last line of the SMTP transaction, since it was using the readline buffer
