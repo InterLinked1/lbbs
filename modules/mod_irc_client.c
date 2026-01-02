@@ -41,7 +41,7 @@
 
 #include "include/mod_irc_client.h"
 
-#define MIN_VERSION_REQUIRED SEMVER_VERSION(1,1,0)
+#define MIN_VERSION_REQUIRED SEMVER_VERSION(1,1,1)
 #if SEMVER_VERSION(LIRC_VERSION_MAJOR, LIRC_VERSION_MINOR, LIRC_VERSION_PATCH) < MIN_VERSION_REQUIRED
 #error "lirc version too old"
 #endif
@@ -127,6 +127,10 @@ static void __client_log(enum irc_log_level level, int sublevel, const char *fil
 			break;
 		case IRC_LOG_INFO:
 			__bbs_log(LOG_NOTICE, 0, file, line, func, "%s", msg);
+			break;
+		case IRC_LOG_VERBOSE:
+			/* sublevel is always 0, so pick a verbose level that makes sense */
+			__bbs_log(LOG_VERBOSE, 4, file, line, func, "%s", msg);
 			break;
 		case IRC_LOG_DEBUG:
 			__bbs_log(LOG_DEBUG, sublevel, file, line, func, "%s", msg);
