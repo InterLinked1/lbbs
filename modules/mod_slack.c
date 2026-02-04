@@ -572,6 +572,20 @@ static struct slack_user *slack_user_by_userid(struct slack_relay *relay, const 
 	return u;
 }
 
+/*! \brief Get the user object associated with a channel ID */
+static struct slack_user *slack_user_from_dm_id(struct slack_relay *relay, const char *dmchannel)
+{
+	struct slack_user *u = NULL;
+	RWLIST_RDLOCK(&relay->users);
+	RWLIST_TRAVERSE(&relay->users, u, entry) {
+		if (u->dmchannel && !strcmp(u->dmchannel, dmchannel)) {
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&relay->users);
+	return u;
+}
+
 /*! \brief Get the channel ID for a direct message with a user */
 static const char *slack_user_dm_id(struct slack_user *u)
 {
@@ -725,6 +739,10 @@ static int substitute_mentions(const char *line, char *buf, size_t len)
 
 static int was_last_message(const char *sent, const char *received)
 {
+	/* False if either string is empty, or we'll skip the loop entirely */
+	if (strlen_zero(sent) || strlen_zero(received)) {
+		return 0;
+	}
 	/* !strcmp(sent, received) doesn't work if the message we posted contained a URL,
 	 * because Slack will surround the URL in <> when it comes back. */
 	while (*sent && *received) {
@@ -767,10 +785,18 @@ static int on_message(struct slack_event *event, const char *channel, const char
 	 * explicitly in mod_slack.conf for us to process them. */
 
 	if (*channel == 'D') { /* Direct message */
+		/* Retrieving the user associated with a DM gives the other party in a two-party conversation. */
 		u = slack_user_by_userid(relay, user, 1);
 		ircusername = u ? u->ircusername : user;
+		/* Don't echo something we just posted.
+		 * Besides duplication, it could also lead to deadlock, if slack_send has the relay locked when we try to lock below.
+		 *
+		 * In slack_send, we store the message we send in u->lastmsg (where u corresponds to the recipient)
+		 * However, u->lastmsg here isn't for the same u (here, it's the sender).
+		 * Therefore, we need to look up the recipient.
+		 * We can do this using the Slack channel ID, which connects both of them. */
+		u = slack_user_from_dm_id(relay, channel);
 		if (u) {
-			/* Don't echo something we just posted */
 			bbs_mutex_lock(&u->lock);
 			if (was_last_message(u->lastmsg, text)) {
 				bbs_mutex_unlock(&u->lock);
@@ -1099,8 +1125,9 @@ static int privmsg(const char *recipient, const char *sender, const char *msg)
 		}
 	} /* else, it's a personal relay, don't prepend the IRC username */
 
-	bbs_debug(4, "Relaying direct message to Slack channel %s: %s\n", dmchannel, msg);
+	bbs_debug(4, "Relaying direct message to Slack channel %s (%s): %s\n", dmchannel, recipient, msg);
 
+	/* Store the last message we've sent to this user. */
 	bbs_mutex_lock(&u->lock);
 	safe_strncpy(u->lastmsg, msg, sizeof(u->lastmsg));
 	bbs_mutex_unlock(&u->lock);

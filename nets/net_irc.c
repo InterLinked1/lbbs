@@ -630,10 +630,29 @@ static void broadcast_channel_event_internal(enum irc_command_callback_event eve
 
 static int nickserv(struct irc_user *user, char *s);
 
-static int programmatic_privmsg(struct irc_user *user, const char *recipient, char *msg)
+static int _programmatic_privmsg(const char *hostmask, const char *username, const char *recipient, char *msg)
 {
 	/* We only execute one callback at max, if we find a matching one */
 	struct programmatic_user *p;
+
+	/* There is no mechanism here for writing output back to user.
+	 * ChanServ and other programmatic users will send a PRIVMSG if needed,
+	 * or very well do other things. */
+	RWLIST_RDLOCK(&programmatic_users);
+	RWLIST_TRAVERSE(&programmatic_users, p, entry) {
+		if (!strcmp(p->user->username, recipient)) {
+			bbs_module_ref(p->mod, 12);
+			p->cb->privmsg_cb(hostmask, username, recipient, msg);
+			bbs_module_unref(p->mod, 12);
+			break;
+		}
+	}
+	RWLIST_UNLOCK(&programmatic_users);
+	return p ? 1 : 0;
+}
+
+static int programmatic_privmsg(struct irc_user *user, const char *recipient, char *msg)
+{
 	char hostmask[128];
 
 	/* Special exception for NickServ, ChanServ is handled in the normal list below */
@@ -643,21 +662,7 @@ static int programmatic_privmsg(struct irc_user *user, const char *recipient, ch
 	}
 
 	snprintf(hostmask, sizeof(hostmask), HOSTMASK_FMT, HOSTMASK_ARGS(user));
-
-	/* There is no mechanism here for writing output back to user.
-	 * ChanServ and other programmatic users will send a PRIVMSG if needed,
-	 * or very well do other things. */
-	RWLIST_RDLOCK(&programmatic_users);
-	RWLIST_TRAVERSE(&programmatic_users, p, entry) {
-		if (!strcmp(p->user->username, recipient)) {
-			bbs_module_ref(p->mod, 12);
-			p->cb->privmsg_cb(hostmask, user->username, recipient, msg);
-			bbs_module_unref(p->mod, 12);
-			break;
-		}
-	}
-	RWLIST_UNLOCK(&programmatic_users);
-	return p ? 1 : 0;
+	return _programmatic_privmsg(hostmask, user->username, recipient, msg);
 }
 
 static int chanserv_msg(struct irc_user *user, char *msg)
@@ -1490,6 +1495,35 @@ int _irc_relay_send_multiline(const char *channel, enum channel_user_modes modes
 	return res;
 }
 
+#ifdef LINKED_LIST_INTEGRITY_CHECKS
+#define ENSURE_MEMBER_LIST_INTEGRITY(channel, entry) \
+	{ \
+		struct irc_member *iter_member; \
+		int _cursize = RWLIST_SIZE(&channel->members, iter_member, entry); \
+		bbs_assert(_cursize == channel->membercount); \
+	}
+#else
+#define ENSURE_MEMBER_LIST_INTEGRITY(channel, entry)
+#endif
+
+#define CHANNEL_DROP_CURRENT_MEMBER(channel, entry) \
+	ENSURE_MEMBER_LIST_INTEGRITY(channel, entry); \
+	RWLIST_REMOVE_CURRENT(entry); \
+	CHANNEL_MEMBER_COUNT_ADJUST(channel, -1); \
+	ENSURE_MEMBER_LIST_INTEGRITY(channel, entry);
+
+#define CHANNEL_DROP_MEMBER(channel, member, entry) \
+	ENSURE_MEMBER_LIST_INTEGRITY(channel, entry); \
+	RWLIST_REMOVE(&channel->members, member, entry); \
+	CHANNEL_MEMBER_COUNT_ADJUST(channel, -1); \
+	ENSURE_MEMBER_LIST_INTEGRITY(channel, entry);
+
+#define RWLIST_MOVE_TO_FRONT(list, item, entry) \
+	ENSURE_MEMBER_LIST_INTEGRITY(channel, entry); \
+	RWLIST_REMOVE(list, item, entry); \
+	RWLIST_INSERT_HEAD(list, item, entry); \
+	ENSURE_MEMBER_LIST_INTEGRITY(channel, entry);
+
 /*! \brief Somewhat condensed version of privmsg, for relay integration */
 int _irc_relay_send(const char *channel, enum channel_user_modes modes, const char *relayname, const char *sender, const char *hostsender, const char *msg, const char *ircuser, int notice, void *mod)
 {
@@ -1520,11 +1554,20 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 	/* It's not our job to filter messages, clients can do that. For example, decimal 1 is legitimate for CTCP commands. */
 
 	if (!IS_CHANNEL_NAME(channel)) {
+		char msgdup[512];
 		struct irc_user *user2 = get_user(channel);
 		/* Private message to another user. This is super simple, there's no other overhead or anything involved. */
 		if (!user2) {
 			bbs_debug(7, "No such user: %s\n", channel);
 			return -1;
+		}
+		safe_strncpy(msgdup, msg, sizeof(msgdup)); /* need to pass char * not const char */
+		if (!notice && !user2->node) { /* If the "user" we found doesn't have a node, it's programmatic. If it does have one, it isn't. */
+			char hostmask[128];
+			snprintf(hostmask, sizeof(hostmask), HOSTMASK_FMT, sender, relayname, hostname);
+			if (_programmatic_privmsg(hostmask, sender, channel, msgdup)) {
+				return 0;
+			} /* else, fall through */
 		}
 #if 0 /* No longer applies: irc_other_thread_writef handles serialization */
 		/* notice is only true when the relay module is sending a message as part of a relay callback,
@@ -1609,8 +1652,7 @@ int _irc_relay_send(const char *channel, enum channel_user_modes modes, const ch
 				continue;
 			}
 			bbs_auth("Dropping unauthorized user %s from relayed channel %s\n", kicked->nickname, c->name);
-			RWLIST_REMOVE_CURRENT(entry);
-			CHANNEL_MEMBER_COUNT_ADJUST(c, -1);
+			CHANNEL_DROP_CURRENT_MEMBER(c, entry);
 			member_free(member);
 			/* Already locked, so don't try to recursively lock: */
 			channel_broadcast_nolock(c, NULL, ":" HOSTMASK_FMT " KICK %s %s :%s\r\n", HOSTMASK_ARGS(&user_messageserv), c->name, kicked->nickname, "Not authorized to receive relayed messages");
@@ -3450,45 +3492,49 @@ static int leave_channel(struct irc_user *user, const char *name)
 		return -1;
 	}
 	RWLIST_WRLOCK_RECURSIVE(&channel->members, &channel->recurse);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&channel->members, member, entry) {
+	RWLIST_TRAVERSE(&channel->members, member, entry) {
 		if (member->user == user) {
-			/* It is important that in code blocks where
-			 * a channel member is removed from a list,
-			 * it happens at the BEGINNING of the block.
-			 *
-			 * We need to remove this from the list BEFORE
-			 * broadcast_channel_event_internal runs, since it
-			 * may recursively trigger calls back into net_irc
-			 * that end up modifiying the channel members list,
-			 * i.e. if our leaving causes a bouncer user to join.
-			 * If we didn't remove ourselves first, it would be
-			 * possible for the newly added member to be attached
-			 * to the linked list via the entry that is going to
-			 * be removed, leading to entries leaking out of the
-			 * list, not good! */
-			RWLIST_REMOVE_CURRENT(entry);
-			CHANNEL_MEMBER_COUNT_ADJUST(channel, -1);
-
-			if (BROADCAST_JOIN_LEAVE(user, channel, 0)) {
-				channel_broadcast_nolock(channel, NULL, ":" HOSTMASK_FMT " PART %s\r\n", HOSTMASK_ARGS(user), channel->name); /* Make sure leaver gets his/her own PART message! */
-				if (channel->relay) {
-					char partmsg[92];
-					snprintf(partmsg, sizeof(partmsg), HOSTMASK_FMT " has left %s", HOSTMASK_ARGS(user), channel->name);
-					relay_broadcast(channel, NULL, NULL, partmsg, NULL);
-				}
-				ENABLE_RECURSIVE_LOCKING(&channels_recurse); /* Need to allow recursive locking since channel->members is locked */
-				broadcast_channel_event_internal(IRCCMD_EVENT_PART, channel, user, NULL);
-				RESET_RECURSIVE_LOCKING(&channels_recurse);
-			} else {
-				/* Even though it's supressed for everyone else, the actual user should still get the confirmation! */
-				irc_other_thread_writef(user->node, ":" HOSTMASK_FMT " PART %s\r\n", HOSTMASK_ARGS(user), channel->name); /* Make sure leaver gets his/her own PART message! */
-			}
-			member->user->channelcount -= 1;
-			member_free(member);
 			break;
 		}
 	}
-	RWLIST_TRAVERSE_SAFE_END;
+	if (member) {
+		/* It is important that in code blocks where a channel member is removed from a list, it happens at the BEGINNING of the block.
+		 *
+		 * We need to remove this from the list BEFORE channel_broadcast_nolock runs, since it
+		 * may recursively trigger calls back into net_irc that end up modifiying the channel members list,
+		 * i.e. if our leaving causes a bouncer user to join. If we didn't remove ourselves first, it would be
+		 * possible for the newly added member to be attached to the linked list via the entry that is going to
+		 * be removed, leading to entries leaking out of the list, not good!
+		 *
+		 * However, it also needs to run AFTER channel_broadcast_nolock, or we won't get our own PART message.
+		 *
+		 * Thus, we have a stalemate, remove too early and channel_broadcast_nolock won't send us our PART message, and will whine that the channel is empty,
+		 * and remove too late and the linked list gets corrupted.
+		 *
+		 * One option is to remove early, and always send the PART message to us separately. However, channel_broadcast_nolock will still whine (which could be suppressed).
+		 *
+		 * A more elegant fix is to move the item we're going to remove to the beginning of the list,
+		 * so that further list manipulation will not result in pointers being lost.
+		 */
+		RWLIST_MOVE_TO_FRONT(&channel->members, member, entry);
+		if (BROADCAST_JOIN_LEAVE(user, channel, 0)) {
+			channel_broadcast_nolock(channel, NULL, ":" HOSTMASK_FMT " PART %s\r\n", HOSTMASK_ARGS(user), channel->name); /* Make sure leaver gets his/her own PART message! */
+			if (channel->relay) {
+				char partmsg[92];
+				snprintf(partmsg, sizeof(partmsg), HOSTMASK_FMT " has left %s", HOSTMASK_ARGS(user), channel->name);
+				relay_broadcast(channel, NULL, NULL, partmsg, NULL);
+			}
+			ENABLE_RECURSIVE_LOCKING(&channels_recurse); /* Need to allow recursive locking since channel->members is locked */
+			broadcast_channel_event_internal(IRCCMD_EVENT_PART, channel, user, NULL);
+			RESET_RECURSIVE_LOCKING(&channels_recurse);
+		} else {
+			/* Even though it's supressed for everyone else, the actual user should still get the confirmation! */
+			irc_other_thread_writef(user->node, ":" HOSTMASK_FMT " PART %s\r\n", HOSTMASK_ARGS(user), channel->name); /* Make sure leaver gets his/her own PART message! */
+		}
+		CHANNEL_DROP_MEMBER(channel, member, entry);
+		member->user->channelcount -= 1;
+		member_free(member);
+	}
 	RWLIST_UNLOCK_RECURSIVE(&channel->members, &channel->recurse);
 	if (RWLIST_EMPTY(&channel->members) && !(channel->modes & CHANNEL_MODE_PERMANENT)) {
 		remove_channel(channel);
@@ -3508,33 +3554,35 @@ static void drop_member_if_present(struct irc_channel *channel, struct irc_user 
 
 	/* If we're going to remove the user, we need a WRLOCK, so grab it from the get go. */
 	RWLIST_WRLOCK_RECURSIVE(&channel->members, &channel->recurse);
-	RWLIST_TRAVERSE_SAFE_BEGIN(&channel->members, member, entry) {
+	RWLIST_TRAVERSE(&channel->members, member, entry) {
 		if (member->user == user) {
-			/* If we're leaving ALL channels, don't relay QUIT messages to ourselves. */
-			bbs_debug(3, "Dropping user %s from channel %s\n", user->nickname, channel->name);
-			RWLIST_REMOVE_CURRENT(entry);
-			CHANNEL_MEMBER_COUNT_ADJUST(channel, -1);
-			member->user->channelcount -= 1;
-			member_free(member);
-			if (BROADCAST_JOIN_LEAVE(user, channel, 0)) {
-				/* Already locked, so don't try to recursively lock: */
-				channel_broadcast_nolock(channel, user, ":" HOSTMASK_FMT " %s %s :%s\r\n", HOSTMASK_ARGS(user), leavecmd, channel->name, S_IF(message));
-				if (channel->relay && !bbs_is_shutting_down()) { /* If BBS shutting down, don't relay a bunch of quit messages */
-					char quitmsg[92];
-					snprintf(quitmsg, sizeof(quitmsg), HOSTMASK_FMT " has quit %s%s%s%s", HOSTMASK_ARGS(user), channel->name, message ? " (" : "", S_IF(message), message ? ")" : "");
-					relay_broadcast(channel, NULL, NULL, quitmsg, NULL);
-				}
-				/* Need to allow recursive locking since channel->members is locked,
-				 * but we're called by leave_all_channels, which already enables it. */
-				broadcast_channel_event_internal(IRCCMD_EVENT_QUIT, channel, user, message);
-			} else {
-				/* Even though it's supressed for everyone else, the actual user should still get the confirmation! */
-				irc_other_thread_writef(user->node, ":" HOSTMASK_FMT " %s %s :%s\r\n", HOSTMASK_ARGS(user), leavecmd, channel->name, S_IF(message)); /* Make sure leaver gets his/her own PART message! */
-			}
 			break;
 		}
 	}
-	RWLIST_TRAVERSE_SAFE_END;
+	if (member) {
+		ENSURE_MEMBER_LIST_INTEGRITY(channel, entry);
+		/* If we're leaving ALL channels, don't relay QUIT messages to ourselves. */
+		bbs_debug(3, "Dropping user %s from channel %s\n", user->nickname, channel->name);
+		RWLIST_MOVE_TO_FRONT(&channel->members, member, entry);
+		if (BROADCAST_JOIN_LEAVE(user, channel, 0)) {
+			/* Already locked, so don't try to recursively lock: */
+			channel_broadcast_nolock(channel, user, ":" HOSTMASK_FMT " %s %s :%s\r\n", HOSTMASK_ARGS(user), leavecmd, channel->name, S_IF(message));
+			if (channel->relay && !bbs_is_shutting_down()) { /* If BBS shutting down, don't relay a bunch of quit messages */
+				char quitmsg[92];
+				snprintf(quitmsg, sizeof(quitmsg), HOSTMASK_FMT " has quit %s%s%s%s", HOSTMASK_ARGS(user), channel->name, message ? " (" : "", S_IF(message), message ? ")" : "");
+				relay_broadcast(channel, NULL, NULL, quitmsg, NULL);
+			}
+			/* Need to allow recursive locking since channel->members is locked,
+			 * but we're called by leave_all_channels, which already enables it. */
+			broadcast_channel_event_internal(IRCCMD_EVENT_QUIT, channel, user, message);
+		} else {
+			/* Even if it's supressed for everyone else, the actual user should still get the confirmation */
+			irc_other_thread_writef(user->node, ":" HOSTMASK_FMT " %s %s :%s\r\n", HOSTMASK_ARGS(user), leavecmd, channel->name, S_IF(message)); /* Make sure leaver gets his/her own PART message! */
+		}
+		CHANNEL_DROP_MEMBER(channel, member, entry);
+		member->user->channelcount -= 1;
+		member_free(member);
+	}
 	RWLIST_UNLOCK_RECURSIVE(&channel->members, &channel->recurse);
 	/* Rather than freeing channel here, we do it after this function
 	 * returns since we can more efficiently remove it from the list there. */
@@ -3555,8 +3603,7 @@ static void kick_member(struct irc_channel *channel, struct irc_user *kicker, st
 		if (member->user == kicked) {
 			/* If we're leaving ALL channels, don't relay QUIT messages to ourselves. */
 			bbs_debug(3, "Dropping user %s from channel %s\n", kicked->nickname, channel->name);
-			RWLIST_REMOVE_CURRENT(entry);
-			CHANNEL_MEMBER_COUNT_ADJUST(channel, -1);
+			CHANNEL_DROP_CURRENT_MEMBER(channel, entry);
 			member_free(member);
 			/* XXX For programmatic users, this is a bit of a weird case.
 			 * If a user has a bouncer configured to watch a channel,

@@ -231,7 +231,7 @@ static int run(void)
 	SWRITE(clientfd, "This is a test reply via SMTP. This line is long enough that it should " ENDL);
 	SWRITE(clientfd, "get unwrapped by the format=flowed line wrapping logic. " ENDL);
 	SWRITE(clientfd, "The line continuations go on and on. " ENDL);
-	SWRITE(clientfd, "We wrap even early than 72 characters, " ENDL);
+	SWRITE(clientfd, "We wrap even earlier than 72 characters, " ENDL);
 	SWRITE(clientfd, "so the message needn't be as long." ENDL); /* Full message is under 512 */
 	SWRITE(clientfd, "Now this, this is a second message!" ENDL);
 	SWRITE(clientfd, "." ENDL); /* EOM */
@@ -240,6 +240,31 @@ static int run(void)
 	CLIENT_EXPECT(client2, "so the message needn't be as long"); /* Both lines should be part of one message */
 
 	SWRITE(client2, "QUIT :Hanging up\r\n");
+
+	/* Ensure we get our own PART notice if leaving channel */
+	close_if(client1);
+	TEST_DELIMIT(1, "User 1 connects again");
+	client1 = test_make_socket(6667);
+	REQUIRE_FD(client1);
+	SWRITE(client1, "CAP LS 302\r\n");
+	SWRITE(client1, "NICK " TEST_USER ENDL);
+	SWRITE(client1, "USER " TEST_USER ENDL);
+	CLIENT_EXPECT_EVENTUALLY(client1, "CAP * LS");
+	SWRITE(client1, "CAP REQ :sasl\r\n");
+	CLIENT_EXPECT(client1, "CAP * ACK");
+	SWRITE(client1, "AUTHENTICATE PLAIN\r\n");
+	CLIENT_EXPECT(client1, "AUTHENTICATE +\r\n");
+	SWRITE(client1, "AUTHENTICATE " TEST_SASL "\r\n");
+	CLIENT_EXPECT(client1, "903");
+	SWRITE(client1, "CAP END\r\n");
+
+	TEST_DELIMIT(2, "User 1 joins and leaves");
+	SWRITE(client1, "JOIN #joinleave-test\r\n");
+	CLIENT_EXPECT_EVENTUALLY(client1, "JOIN #joinleave-test");
+
+	SWRITE(client1, "PART #joinleave-test\r\n");
+	CLIENT_EXPECT(client1, "PART #joinleave-test");
+
 	res = 0;
 
 cleanup:

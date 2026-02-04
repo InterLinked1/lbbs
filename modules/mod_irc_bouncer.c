@@ -421,7 +421,7 @@ static int periodic_channel_flush(struct bouncer_channel *bc, time_t now)
 	return 1;
 }
 
-#define TIME_TO_FLUSH(bc) (bc->last_flush < now - bc->email_frequency)
+#define TIME_TO_FLUSH(bc) (bc->last_flush < now - (60 * bc->email_frequency))
 
 static void *periodic_emailer(void *unused)
 {
@@ -1321,6 +1321,7 @@ static int handle_bouncer_reply(struct smtp_session *smtp, struct smtp_response 
 	fp = fdopen(newfd, "r");
 	if (!fp) {
 		bbs_error("Failed to open file descriptor %d: %s\n", newfd, strerror(errno));
+		smtp_abort(resp, 452, 4.3.1, "Temporary system error");
 		return -1;
 	}
 	/* Parse any needed headers */
@@ -1365,7 +1366,7 @@ static int handle_bouncer_reply(struct smtp_session *smtp, struct smtp_response 
 		strsep(&tmp, "-"); /* bouncer email user */
 		strsep(&tmp, "-"); /* monotonic ID */
 		strsep(&tmp, "-"); /* epoch */
-		channel = strsep(&tmp, "@"); //* get rid of the rest, leaving just the channel */
+		channel = strsep(&tmp, "@"); /* get rid of the rest, leaving just the channel */
 	} else {
 		channel = subject;
 		/* If 'Subject' has a 'Re:' prefix, skip it */
