@@ -26,9 +26,11 @@
 
 struct cli_cmd {
 	struct bbs_cli_entry *e;
+	const char *name;
 	void *mod;
 	size_t cmdlen;
 	RWLIST_ENTRY(cli_cmd) entry;
+	char data[];
 };
 
 static RWLIST_HEAD_STATIC(cmds, cli_cmd);
@@ -44,8 +46,8 @@ static struct cli_cmd *find_cli_cmd(const char *s)
 	struct cli_cmd *c;
 
 	RWLIST_TRAVERSE(&cmds, c, entry) {
-		if (!strncasecmp(s, c->e->command, c->cmdlen)) {
-			const char *next = c->e->command + c->cmdlen;
+		if (!strncasecmp(s, c->name, c->cmdlen)) {
+			const char *next = c->name + c->cmdlen;
 			const char *next2 = s + c->cmdlen;
 			if ((*next == '\0' || *next == ' ') && (*next2 == '\0' || *next2 == ' ')) { /* It must be a full word match */
 				return c;
@@ -62,18 +64,20 @@ static int __cli_register_locked(struct bbs_cli_entry *e, struct bbs_module *mod
 
 	c = find_cli_cmd(e->command);
 	if (c) {
-		bbs_warning("CLI command '%s' is already registered as '%s'\n", e->command, c->e->command);
+		bbs_warning("CLI command '%s' is already registered as '%s'\n", e->command, c->name);
 		return -1;
 	}
 
-	c = calloc(1, sizeof(*c));
+	c = calloc(1, sizeof(*c) + strlen(e->command) + 1);
 	if (ALLOC_FAILURE(c)) {
 		return -1;
 	}
 
 	c->e = e;
 	c->mod = mod;
-	c->cmdlen = strlen(c->e->command);
+	strcpy(c->data, e->command); /* Safe */
+	c->name = c->data;
+	c->cmdlen = strlen(c->name);
 	RWLIST_INSERT_SORTALPHA(&cmds, c, entry, e->command);
 	return 0;
 }
@@ -158,7 +162,8 @@ int bbs_cli_unregister_remaining(void)
 	RWLIST_WRLOCK(&cmds);
 	while ((c = RWLIST_REMOVE_HEAD(&cmds, entry))) {
 		if (c->mod) {
-			bbs_error("Command %s still registered at shutdown\n", c->e->command);
+			/* At this point, no modules are loaded anymore, so can't dereference c->mod or c->e at all */
+			bbs_error("Command '%s' still registered at shutdown!\n", c->name);
 		}
 		free(c);
 		removed++;
@@ -211,7 +216,7 @@ int bbs_cli_exec(int fdin, int fdout, const char *s)
 	argv[argc] = NULL; /* This value should never be read by CLI commands, but in convention with argv, NULL terminate anyways */
 
 	if (argc < c->e->minargc) {
-		bbs_dprintf(fdout, "Not enough arguments. Usage: %s\n", S_OR(c->e->usage, c->e->command));
+		bbs_dprintf(fdout, "Not enough arguments. Usage: %s\n", S_OR(c->e->usage, c->name));
 		res = -1;
 	} else {
 		struct bbs_cli_args a;
@@ -238,7 +243,7 @@ static int cli_help(struct bbs_cli_args *a)
 	RWLIST_RDLOCK(&cmds);
 	RWLIST_TRAVERSE(&cmds, c, entry) {
 		/* Since commands begin with a '/', prefix that */
-		bbs_dprintf(a->fdout, "/%-35s - %s\n", S_OR(c->e->usage, c->e->command), c->e->description);
+		bbs_dprintf(a->fdout, "/%-35s - %s\n", S_OR(c->e->usage, c->name), c->e->description);
 	}
 	RWLIST_UNLOCK(&cmds);
 

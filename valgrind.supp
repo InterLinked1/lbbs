@@ -865,3 +865,13 @@
    fun:monitor_sig_flags
    fun:main
 }
+{
+   ARCH
+   Memcheck:Leak
+   match-leak-kinds: definite,indirect
+   ...
+   fun:ossl_provider_doall_activated
+   ...
+   fun:UnknownInlinedFun
+   ...
+}
