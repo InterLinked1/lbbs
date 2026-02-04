@@ -522,6 +522,8 @@ int __bbs_tcp_connect(const char *hostname, int port, const char *file, int line
 	int lport = 0;
 
 	/* Resolve the hostname */
+	bbs_assert_exists(hostname);
+
 	memset(&hints, 0, sizeof(hints));
 	hints.ai_family = AF_UNSPEC; /* IPv4 or IPv6 */
 	hints.ai_socktype = SOCK_STREAM; /* TCP */

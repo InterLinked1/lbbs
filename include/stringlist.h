@@ -21,6 +21,8 @@
 struct stringitem;
 RWLIST_HEAD(stringlist, stringitem);
 
+/* Note: The stringlist APIs do not provide their own locking, you are responsible for thread-safety */
+
 /*! \brief Init a stringlist */
 #define stringlist_init(l) RWLIST_HEAD_INIT(l)
 
@@ -73,7 +75,7 @@ int stringlist_case_contains(struct stringlist *list, const char *s);
  */
 int stringlist_remove(struct stringlist *list, const char *s);
 
-/*! \brief Remove all items from a stringlist */
+/*! \brief Remove and free all items from a stringlist */
 void stringlist_empty(struct stringlist *list);
 
 /*!
@@ -103,7 +105,13 @@ char *stringlist_pop(struct stringlist *list);
  */
 int stringlist_push(struct stringlist *list, const char *s);
 
-/*! \brief Same as stringlist_push, but steal the reference to s, an allocated string. Do not use it after calling. */
+/*!
+ * \brief Add an item to the beginning of stringlist, stealing an existing reference
+ * \param list
+ * \param s String to add. Do not use on success. On failure, s is still valid and you are responsible for freeing it.
+ * \note Assumes list is WRLOCKed
+ * \retval 0 on success, -1 on failure
+ */
 int stringlist_push_allocated(struct stringlist *list, char *s);
 
 /*!
@@ -125,11 +133,27 @@ int stringlist_push_sorted(struct stringlist *list, const char *s);
 int stringlist_push_tail(struct stringlist *list, const char *s);
 
 /*!
+ * \brief Add an item to the end of stringlist, stealing an existing reference
+ * \param list
+ * \param s String to add. Do not use on success. On failure, s is still valid and you are responsible for freeing it.
+ * \note Assumes list is WRLOCKed
+ * \retval 0 on success, -1 on failure
+ */
+int stringlist_push_tail_allocated(struct stringlist *list, char *s);
+
+/*!
  * \brief Add all the items in a comma-separated list to a stringlist
  * \param list
  * \param s List of items to add
  * \retval 0 on total success, -1 on partial or complete failure
  */
 int stringlist_push_list(struct stringlist *list, const char *s);
+
+/*!
+ * \brief Move all the items from one stringlist into another
+ * \param list The main list to which the items will be moved
+ * \param sub The list that will have its elements moved to list
+ */
+void stringlist_merge(struct stringlist *list, struct stringlist *sub);
 
 #endif /* _STRINGLIST_H */

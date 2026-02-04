@@ -45,13 +45,11 @@ int stringlist_is_empty(struct stringlist *list)
 int stringlist_contains(struct stringlist *list, const char *s)
 {
 	struct stringitem *i;
-	RWLIST_RDLOCK(list);
 	RWLIST_TRAVERSE(list, i, entry) {
 		if (!strcmp(i->s, s)) {
 			break;
 		}
 	}
-	RWLIST_UNLOCK(list);
 	return i ? 1 : 0;
 }
 
@@ -69,20 +67,17 @@ int stringlist_contains_locked(struct stringlist *list, const char *s)
 int stringlist_case_contains(struct stringlist *list, const char *s)
 {
 	struct stringitem *i;
-	RWLIST_RDLOCK(list);
 	RWLIST_TRAVERSE(list, i, entry) {
 		if (!strcasecmp(i->s, s)) {
 			break;
 		}
 	}
-	RWLIST_UNLOCK(list);
 	return i ? 1 : 0;
 }
 
 int stringlist_remove(struct stringlist *list, const char *s)
 {
 	struct stringitem *i;
-	RWLIST_WRLOCK(list);
 	RWLIST_TRAVERSE_SAFE_BEGIN(list, i, entry) {
 		if (!strcmp(i->s, s)) {
 			RWLIST_REMOVE_CURRENT(entry);
@@ -92,19 +87,16 @@ int stringlist_remove(struct stringlist *list, const char *s)
 		}
 	}
 	RWLIST_TRAVERSE_SAFE_END;
-	RWLIST_UNLOCK(list);
 	return i ? 0 : -1;
 }
 
 void stringlist_empty(struct stringlist *list)
 {
 	struct stringitem *i;
-	RWLIST_WRLOCK(list);
 	while ((i = RWLIST_REMOVE_HEAD(list, entry))) {
 		free(i->s);
 		free(i);
 	}
-	RWLIST_UNLOCK(list);
 }
 
 const char *stringlist_next(const struct stringlist *list, struct stringitem **i)
@@ -206,6 +198,19 @@ int stringlist_push_tail(struct stringlist *list, const char *s)
 	return 0;
 }
 
+int stringlist_push_tail_allocated(struct stringlist *list, char *s)
+{
+	struct stringitem *i;
+
+	i = calloc(1, sizeof(*i));
+	if (ALLOC_FAILURE(i)) {
+		return -1;
+	}
+	i->s = s;
+	RWLIST_INSERT_TAIL(list, i, entry);
+	return 0;
+}
+
 int stringlist_push_list(struct stringlist *list, const char *s)
 {
 	struct stringitem *i;
@@ -230,4 +235,14 @@ int stringlist_push_list(struct stringlist *list, const char *s)
 
 	free(listdup);
 	return 0;
+}
+
+void stringlist_merge(struct stringlist *list, struct stringlist *sub)
+{
+	struct stringitem *i;
+
+	/* Move all the string items in sub to list */
+	while ((i = RWLIST_REMOVE_HEAD(sub, entry))) {
+		RWLIST_INSERT_HEAD(list, i, entry);
+	}
 }

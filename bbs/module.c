@@ -1838,14 +1838,14 @@ static int cli_reload(struct bbs_cli_args *a)
 		const char *s = a->argv[1];
 		/* If it's a module name, it contains an underscore */
 		if (strchr(s, '_')) {
-			return threadsafe_reload(s, 0);
+			return threadsafe_reload(s, 0) ? 1 : 0;
 		} else {
-			return reload_core(s, a->fdout);
+			return reload_core(s, a->fdout) ? 1 : 0;
 		}
 	}
 
 	/* Reload all core components */
-	return reload_core(NULL, a->fdout);
+	return reload_core(NULL, a->fdout) ? 1 : 0;
 }
 
 static int cli_reloadwait(struct bbs_cli_args *a)

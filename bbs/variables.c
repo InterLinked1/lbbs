@@ -288,8 +288,8 @@ int bbs_varlist_append(struct bbs_vars *vars, const char *key, const char *value
 		return 0;
 	} else if (!value) {
 		RWLIST_UNLOCK(vars);
-		bbs_warning("Attempted to set variable %s to NULL, but it doesn't already exist\n", key);
-		return -1;
+		bbs_debug(6, "Variable %s didn't exist, ignoring since intended value was NULL\n", key);
+		return 0;
 	}
 
 	/* Variable didn't already exist. Create a new variable */

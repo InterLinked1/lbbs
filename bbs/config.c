@@ -575,7 +575,6 @@ static struct bbs_config *config_parse_or_write(const char *name, FILE **restric
 		RWLIST_UNLOCK(&configs);
 	}
 
-	bbs_debug(1, "Parsed config %s\n", fullname);
 	return cfg;
 }
 
