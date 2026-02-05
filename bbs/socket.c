@@ -856,7 +856,6 @@ static void *tcp_multilistener(void *unused)
 	}
 
 	free_if(pfds);
-	bbs_alertpipe_close(multilistener_alertpipe);
 	RWLIST_WRLOCK_REMOVE_ALL(&listeners_local, entry, free);
 	return NULL;
 }
@@ -881,6 +880,13 @@ void tcp_listener_cleanup(void)
 	/* Synchronously wait for TCP multilistener thread to exit, to avoid warning about this thread still being registered at shutdown */
 	if (multilistener_thread) {
 		bbs_pthread_join(multilistener_thread, NULL);
+		/* Close alert pipe after we join the multilistener thread.
+		 * Otherwise, if the BBS is shutting down, a race condition is possible,
+		 * where the last network module calls bbs_stop_tcp_listener,
+		 * and then close() is called on the socket, but the multilistener
+		 * thread exits and closes the alertpipe before bbs_stop_tcp_listener can write to it,
+		 * triggering an assertion for writing to an alertpipe that isn't open. */
+		bbs_alertpipe_close(multilistener_alertpipe);
 	}
 }
 
