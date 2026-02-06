@@ -68,7 +68,8 @@ struct slack_user {
 	unsigned int active:1;			/*!< Presence status */
 	unsigned int shared:1;			/*!< Whether we share any channels with this user */
 	bbs_mutex_t lock;
-	char lastmsg[512];
+	char lastmsgsent[512];			/*!< Last message we sent to this user */
+	char lastmsgrecv[512];			/*!< Last message we received from this user */
 	char data[];
 };
 
@@ -92,7 +93,8 @@ struct chan_pair {
 	char *topic;		/*!< Slack channel topic */
 	struct members members;	/*!< Members of channel (may be incomplete, in large workspaces) */
 	unsigned int used:1;	/*!< Whether this channel has been accessed/used */
-	char lastmsg[512];
+	char lastmsgsent[512];	/*!< Last message we sent to this channel */
+	char lastmsgrecv[512];	/*!< Last message we received from this channel */
 	char data[];
 };
 
@@ -759,7 +761,7 @@ static int was_last_message(const char *sent, const char *received)
 	return 1;
 }
 
-static int on_message(struct slack_event *event, const char *channel, const char *thread_ts, const char *ts, const char *user, const char *text)
+static int handle_message(struct slack_event *event, const char *channel, const char *thread_ts, const char *ts, const char *user, const char *text, int message_changed)
 {
 	char dup[4000];
 	char prefixed[4096];
@@ -768,9 +770,6 @@ static int on_message(struct slack_event *event, const char *channel, const char
 	struct slack_client *slack = slack_event_get_userdata(event);
 	struct slack_relay *relay = slack_client_get_userdata(slack);
 	const char *destination;
-
-	UNUSED(ts);
-	UNUSED(thread_ts);
 
 	if (strlen_zero(text)) {
 		bbs_debug(2, "Ignoring message with no text\n"); /* Probably just an attachment */
@@ -787,18 +786,31 @@ static int on_message(struct slack_event *event, const char *channel, const char
 	if (*channel == 'D') { /* Direct message */
 		/* Retrieving the user associated with a DM gives the other party in a two-party conversation. */
 		u = slack_user_by_userid(relay, user, 1);
+		if (u) {
+			bbs_mutex_lock(&u->lock);
+			/* If a message on Slack contains a URL, Slack will send us the message a second time, but with 'message_changed' subtype.
+			 * This happens when a "preview" is generated for the link on Slack.
+			 * Ignore the second one. */
+			if (message_changed && was_last_message(u->lastmsgrecv, text)) {
+				bbs_mutex_unlock(&u->lock);
+				bbs_debug(4, "Modified message is the same as the original, ignoring\n");
+				return 0;
+			}
+			safe_strncpy(u->lastmsgrecv, text, sizeof(u->lastmsgrecv));
+			bbs_mutex_unlock(&u->lock);
+		}
 		ircusername = u ? u->ircusername : user;
 		/* Don't echo something we just posted.
 		 * Besides duplication, it could also lead to deadlock, if slack_send has the relay locked when we try to lock below.
 		 *
-		 * In slack_send, we store the message we send in u->lastmsg (where u corresponds to the recipient)
-		 * However, u->lastmsg here isn't for the same u (here, it's the sender).
+		 * In slack_send, we store the message we send in u->lastmsgsent (where u corresponds to the recipient)
+		 * However, u->lastmsgsent here isn't for the same u (here, it's the sender).
 		 * Therefore, we need to look up the recipient.
 		 * We can do this using the Slack channel ID, which connects both of them. */
 		u = slack_user_from_dm_id(relay, channel);
 		if (u) {
 			bbs_mutex_lock(&u->lock);
-			if (was_last_message(u->lastmsg, text)) {
+			if (was_last_message(u->lastmsgsent, text)) {
 				bbs_mutex_unlock(&u->lock);
 				bbs_debug(4, "Not echoing our own direct message post...\n");
 				return 0;
@@ -849,11 +861,20 @@ static int on_message(struct slack_event *event, const char *channel, const char
 		 * point it will read the reply confirming the sent message
 		 * only after we give up. */
 		bbs_mutex_lock(&cp->msglock);
-		if (was_last_message(cp->lastmsg, text)) { /* For most messages (except our own posts), this should be near constant time since they'll diverge quickly */
+		if (was_last_message(cp->lastmsgsent, text)) { /* For most messages (except our own posts), this should be near constant time since they'll diverge quickly */
 			bbs_mutex_unlock(&cp->msglock);
 			bbs_debug(4, "Not echoing our own post...\n");
 			return 0;
 		}
+		/* If a message on Slack contains a URL, Slack will send us the message a second time, but with 'message_changed' subtype.
+		 * This happens when a "preview" is generated for the link on Slack.
+		 * Ignore the second one. */
+		if (message_changed && was_last_message(cp->lastmsgrecv, text)) {
+			bbs_mutex_unlock(&cp->msglock);
+			bbs_debug(4, "Modified message is the same as the original, ignoring\n");
+			return 0;
+		}
+		safe_strncpy(cp->lastmsgrecv, text, sizeof(cp->lastmsgrecv));
 		bbs_mutex_unlock(&cp->msglock);
 		bbs_debug(4, "Relaying message from channel %s by %s (%s) to %s: %s\n", channel, user, ircusername, cp->irc, text);
 	}
@@ -881,6 +902,16 @@ static int on_message(struct slack_event *event, const char *channel, const char
 	}
 	irc_relay_send_multiline(destination, CHANNEL_USER_MODE_NONE, "Slack", ircusername, user, text, substitute_mentions, relay->ircuser);
 	return 0;
+}
+
+static int on_message(struct slack_event *event, const char *channel, const char *thread_ts, const char *ts, const char *user, const char *text)
+{
+	return handle_message(event, channel, thread_ts, ts, user, text, 0);
+}
+
+static int on_message_changed(struct slack_event *event, const char *channel, const char *thread_ts, const char *ts, const char *user, const char *text)
+{
+	return handle_message(event, channel, thread_ts, ts, user, text, 1);
 }
 
 static void process_presence_change(struct slack_relay *relay, const char *userid, int active)
@@ -1071,7 +1102,7 @@ static int slack_send(struct irc_relay_message *rmsg)
 	 * from elsewhere, we don't necessarily know it came from IRC */
 
 	bbs_mutex_lock(&cp->msglock);
-	safe_strncpy(cp->lastmsg, msg, sizeof(cp->lastmsg));
+	safe_strncpy(cp->lastmsgsent, msg, sizeof(cp->lastmsgsent));
 	/* We have to unlock msglock before calling slack_channel_post...
 	 * since that is not safe to hold. We instead use sendlock
 	 * to ensure serialization of sent messages. */
@@ -1129,7 +1160,7 @@ static int privmsg(const char *recipient, const char *sender, const char *msg)
 
 	/* Store the last message we've sent to this user. */
 	bbs_mutex_lock(&u->lock);
-	safe_strncpy(u->lastmsg, msg, sizeof(u->lastmsg));
+	safe_strncpy(u->lastmsgsent, msg, sizeof(u->lastmsgsent));
 	bbs_mutex_unlock(&u->lock);
 
 	/* slack_channel_post_message is not threadsafe, so we surround it with the channel lock normally;
@@ -1510,7 +1541,7 @@ static struct bbs_cli_entry cli_commands_slack[] = {
 
 struct slack_callbacks slack_callbacks = {
 	.message = on_message,
-	.message_changed = on_message, /* Treat edited message the same as a new message */
+	.message_changed = on_message_changed,
 	.presence_change = on_presence_change,
 	.presence_change_multi = on_presence_change_multi,
 };
