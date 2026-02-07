@@ -88,6 +88,14 @@ int bbs_strncount(const char *restrict s, size_t len, char c) __attribute__ ((pu
 int bbs_term_line(char *restrict c);
 
 /*!
+ * \brief Get the line ending for the string
+ * \param s a NUL-terminated string
+ * \returns Pointer to the beginning of the line ending
+ * \returns NULL if no line ending found
+ */
+const char *bbs_str_line_ending(const char *s);
+
+/*!
  * \brief Whether a string contains a CR or LF character
  * \param s A NUL-terminated string
  * \retval '\r' if CR present, '\n' if LF present, 0 if neither present

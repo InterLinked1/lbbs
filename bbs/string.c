@@ -264,15 +264,21 @@ int bbs_term_line(char *restrict c)
 	return len;
 }
 
-int bbs_str_contains_line_ending(const char *s)
+const char *bbs_str_line_ending(const char *s)
 {
 	while (*s) {
 		if (*s == '\r' || *s == '\n') {
-			return *s;
+			return s;
 		}
 		s++;
 	}
-	return 0;
+	return NULL;
+}
+
+int bbs_str_contains_line_ending(const char *s)
+{
+	const char *ending = bbs_str_line_ending(s);
+	return ending ? *ending : 0;
 }
 
 int bbs_str_contains_bare_lf(const char *s)
