@@ -86,6 +86,7 @@ static int ibbs_exec(struct bbs_node *node, const char *args)
 
 static int load_module(void)
 {
+	BBS_REQUIRE_EXTERNAL_PROGRAM("unzip");
 	return bbs_register_door("telnetbbsguide", ibbs_exec);
 }
 

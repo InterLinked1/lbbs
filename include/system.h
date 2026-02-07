@@ -16,6 +16,23 @@
 /* Forward declarations */
 struct bbs_node;
 
+/*! \brief Decline to load, rather than failing at runtime if a required program is not available */
+#define BBS_REQUIRE_EXTERNAL_PROGRAM(progname) \
+	if (!bbs_program_available(progname)) { \
+		bbs_error("'%s' is not installed, declining to load\n", progname); \
+		return -1; \
+	}
+
+/*!
+ * \brief Whether a program is available on this system or not
+ * \param progname The name of the program (path is not needed)
+ * \note Equivalent to running "which $progname" in the shell to see if the program exists
+ * \retval 1 Program exists
+ * \retval 0 Program does not exist
+ * \retval -1 Error occured, unknown as to whether program exists
+ */
+int bbs_program_available(const char *progname);
+
 /* Execution settings */
 struct bbs_exec_params {
 	/* File descriptor priority is as follows, independently for STDIN/STDOUT:
@@ -29,6 +46,7 @@ struct bbs_exec_params {
 	struct bbs_user *user;		/* Override for user. If not specified, default is the node's user. */
 	unsigned int usenode:1;		/* Whether to use the node for I/O. If FALSE, node will not be used for I/O */
 	unsigned int isolated:1;	/* Whether to create the process in an isolated container */
+	unsigned int suppresswarnings:1;	/* Don't log errors if execution fails */
 	/* Container parameters */
 	unsigned int net:1;			/* Retain network connectivity through the host, inside the container. Only applicable if isolated is TRUE. */
 };

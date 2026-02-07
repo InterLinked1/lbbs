@@ -150,6 +150,7 @@ static int sendmail_simple(SIMPLE_MAILER_PARAMS)
 
 static int load_module(void)
 {
+	BBS_REQUIRE_EXTERNAL_PROGRAM(SENDMAIL);
 	return bbs_register_mailer(sendmail_simple, sendmail_full, 10);
 }
 

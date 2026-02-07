@@ -329,6 +329,11 @@ static struct bbs_cli_entry cli_commands_events[] = {
 
 static int load_module(void)
 {
+	BBS_REQUIRE_EXTERNAL_PROGRAM("iptables");
+	if (!is_root()) {
+		BBS_REQUIRE_EXTERNAL_PROGRAM("sudo");
+	}
+
 	RWLIST_HEAD_INIT(&ip_whitelist);
 
 	if (load_config()) {

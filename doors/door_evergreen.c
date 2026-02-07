@@ -70,6 +70,8 @@ static int evergreen_exec(struct bbs_node *node, const char *args)
 
 static int load_module(void)
 {
+	/*! \todo See LBBS-11. Note that in the future if we use isonetexec to run evergreen, it only needs to exist in the container, not on the system */
+	BBS_REQUIRE_EXTERNAL_PROGRAM("evergreen");
 	return bbs_register_door("mail", evergreen_exec);
 }
 

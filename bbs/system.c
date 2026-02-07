@@ -76,6 +76,26 @@ static int maxmemory = 0;
 static int maxcpu = 0;
 static int minnice = 0;
 
+int bbs_program_available(const char *progname)
+{
+	int res;
+	struct bbs_exec_params x;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdiscarded-qualifiers"
+	char *const argv[] = { "which", progname, NULL };
+
+	if (eaccess("/usr/bin/which", X_OK)) {
+		/* If 'which' isn't available, then we don't know without trying to execute or searching in $PATH */
+		return -1;
+	}
+#pragma GCC diagnostic pop
+
+	EXEC_PARAMS_INIT_HEADLESS(x);
+	x.suppresswarnings = 1;
+	res = bbs_execvp(NULL, &x, "/usr/bin/which", argv);
+	return res ? 0 : 1;
+}
+
 static int load_config(void)
 {
 	struct bbs_config *cfg = bbs_config_load("system.conf", 0);
@@ -277,7 +297,7 @@ static int waitpid_timed(pid_t pid, int *status, int options, time_t timeout)
 	return waitpid(pid, status, options); /* Should now return nonzero (either > 0 or -1) */
 }
 
-static void waitpidexit(pid_t pid, const char *filename, int *res, time_t timeout)
+static void waitpidexit(pid_t pid, const char *filename, int *res, time_t timeout, int suppresswarnings)
 {
 	pid_t w;
 	int status;
@@ -322,8 +342,11 @@ static void waitpidexit(pid_t pid, const char *filename, int *res, time_t timeou
 			/* These are probably due to misconfigurations, and should be raised to the sysop's attention */
 			case ENOENT:
 			case EPERM:
-				bbs_warning("Command failed (%d - %s): %s\n", *res, strerror(*res), filename);
-				break;
+				if (!suppresswarnings) {
+					bbs_warning("Command failed (%d - %s): %s\n", *res, strerror(*res), filename);
+					break;
+				}
+				/* Fall through */
 			default:
 				bbs_debug(1, "Command failed (%d - %s): %s\n", *res, strerror(*res), filename);
 		}
@@ -1208,7 +1231,7 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 		}
 	}
 
-	waitpidexit(pid, filename, &res, e->exectimeout);
+	waitpidexit(pid, filename, &res, e->exectimeout, e->suppresswarnings);
 	if (res == 1) {
 		/* Check if this failed because the $TERM used is not in the termcap database. */
 		if (node && !strlen_zero(node->term) && !term_type_exists(node->term)) {
@@ -1275,7 +1298,7 @@ int __bbs_execvpe(struct bbs_node *node, struct bbs_exec_params *e, const char *
 					break; /* End of pipe */
 				}
 				/* Log the output from the exec, but we do nothing else in particular with it. */
-				bbs_debug(6, "exec output: %.*s\n", (int) nbytes, buf);
+				bbs_debug(6, "exec output: %.*s%s", (int) nbytes, buf, buf[nbytes - 1] == '\n' ? "" : "\n"); /* Don't add extra LF if it already ends with one */
 			}
 		}
 		close(pfd[0]);

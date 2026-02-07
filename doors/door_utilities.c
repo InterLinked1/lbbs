@@ -222,6 +222,7 @@ static int unload_module(void)
 static int load_module(void)
 {
 	int res = 0;
+	BBS_REQUIRE_EXTERNAL_PROGRAM("bc");
 	res |= bbs_register_door("calc", calc_exec);
 	res |= bbs_register_door("dict", dict_exec);
 	REQUIRE_FULL_LOAD(res);
