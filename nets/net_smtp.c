@@ -79,10 +79,11 @@
 #define HOP_COUNT_WARN_LEVEL 15 /* Very unlikely non-malformed/routed/looped emails would see more than a dozen hops */
 
 static int smtp_port = DEFAULT_SMTP_PORT;
+static int smarthost_port = 2525;
 static int smtps_port = DEFAULT_SMTPS_PORT;
 static int msa_port = DEFAULT_SMTP_MSA_PORT;
 
-static int smtp_enabled = 1, smtps_enabled = 1, msa_enabled = 1;
+static int smtp_enabled = 1, smarthost_enabled = 0, smtps_enabled = 1, msa_enabled = 1;
 static int smtp_accept_enabled = 1;
 
 static int accept_relay_in = 1;
@@ -218,6 +219,7 @@ struct smtp_session {
 	unsigned int ehlo:1;		/* Client supports ESMTP (EHLO) */
 	unsigned int fromlocal:1;	/* Sender is local */
 	unsigned int msa:1;			/* Whether connection was to the Message Submission Agent port (as opposed to the Mail Transfer Agent port) */
+	unsigned int smarthost:1;	/* Whether connection was to the smart host port */
 	unsigned int authorizedrelayany:1; /* Whether smtp_relay_authorized_any() is true */
 	unsigned int authorizedrelayanycached:1; /* Whether authorizedrelayany bit has been set */
 };
@@ -247,6 +249,7 @@ static void smtp_destroy(struct smtp_session *smtp)
 }
 
 static struct stringlist blacklist;
+static struct stringlist unlisted_ips;
 
 struct smtp_relay_host {
 	const char *source;			/*!< IP address, hostname, or CIDR range */
@@ -703,6 +706,11 @@ static int exempt_from_starttls(struct smtp_session *smtp)
 
 static int is_benign_ip_mismatch(struct smtp_session *smtp)
 {
+	/* The HELO/EHLO address used may be something else if this sender should be treated as unlisted */
+	if (stringlist_contains(&unlisted_ips, smtp->node->ip)) {
+		return 1;
+	}
+
 	/* Not all mismatches are malicious.
 	 * This covers the case of a private IP tunnel between two SMTP servers.
 	 * The egress IP may differ from the actual source route IP of the connecting server.
@@ -1501,7 +1509,10 @@ const char *smtp_from_domain(struct smtp_session *smtp)
 		return bbs_strcnext(smtp->fromaddr, '@');
 	}
 	/* Fall back to MAIL FROM address if not */
-	bbs_warning("RFC5322.From header address unavailable\n");
+	if (smtp->tflags.datalen) {
+		/* If we already got the message (after DATA), then we should have a From address */
+		bbs_warning("RFC5322.From header address unavailable\n");
+	}
 	if (!smtp->from) {
 		return NULL;
 	}
@@ -1535,7 +1546,7 @@ int smtp_is_message_submission(struct smtp_session *smtp)
 
 int smtp_should_preserve_privacy(struct smtp_session *smtp)
 {
-	return smtp->msa && !add_received_msa;
+	return (smtp->msa && !add_received_msa) || (smtp->node && stringlist_contains(&unlisted_ips, smtp->node->ip));
 }
 
 size_t smtp_message_estimated_size(struct smtp_session *smtp)
@@ -3669,47 +3680,70 @@ static void handle_client(struct smtp_session *smtp)
 }
 
 /*! \brief Thread to handle a single SMTP/SMTPS client */
-static void smtp_handler(struct bbs_node *node, int msa, int secure)
+static void smtp_handler(struct smtp_session *smtp, struct bbs_node *node, int secure)
 {
-	struct smtp_session smtp;
+	smtp->node = node;
+
+	if (!smtp_accept_enabled) {
+		/* Even if rejecting, we still need to run bbs_node_net_begin and bbs_node_exit.
+		 * Could also reply with a 421 before closing connection, but this way we don't need to potentially set up TLS for nothing. */
+		bbs_notice("Rejecting incoming %s connection, acceptance of SMTP connections temporarily disabled\n", node->protname);
+		return;
+	} else if (smtp->smarthost) {
+		/* The smart host port only accepts mail from authorized relays */
+		if (!smtp_relay_authorized_any(smtp)) {
+			bbs_notice("Rejecting incoming SMTP smart host connection from %s, not an authorized relay\n", smtp->node->ip);
+			/* It's definitely unwanted traffic, unless this is due to a misconfiguration */
+			bbs_event_dispatch(smtp->node, EVENT_NODE_BAD_REQUEST);
+			return;
+		}
+	}
 
 	/* Start TLS if we need to */
 	if (secure && bbs_node_starttls(node)) {
 		return;
 	}
 
-	memset(&smtp, 0, sizeof(smtp));
-	smtp.node = node;
-	SET_BITFIELD(smtp.msa, msa);
+	stringlist_init(&smtp->recipients);
+	stringlist_init(&smtp->sentrecipients);
 
-	stringlist_init(&smtp.recipients);
-	stringlist_init(&smtp.sentrecipients);
-
-	handle_client(&smtp);
+	handle_client(smtp);
 
 	/* If this was not an authenticated SMTP session, don't generate a logout event. */
 	if (bbs_user_is_registered(node->user)) {
 		mailbox_dispatch_event_basic(EVENT_LOGOUT, node, NULL, NULL);
 	}
 
-	smtp_destroy(&smtp);
+	smtp_destroy(smtp);
 }
 
 static void *__smtp_handler(void *varg)
 {
+	struct smtp_session smtp;
 	struct bbs_node *node = varg;
 	int secure = !strcmp(node->protname, "SMTPS") ? 1 : 0;
 
+	memset(&smtp, 0, sizeof(smtp));
+	SET_BITFIELD(smtp.msa, (secure || !strcmp(node->protname, "SMTP (MSA)")));
 	bbs_node_net_begin(node);
 
-	if (!smtp_accept_enabled) {
-		/* Even if rejecting, we still need to run bbs_node_net_begin and bbs_node_exit.
-		 * Could also reply with a 421 before closing connection, but this way we don't need to potentially set up TLS for nothing. */
-		bbs_notice("Rejecting incoming %s connection, acceptance of SMTP connections temporarily disabled\n", node->protname);
-	} else {
-		/* If it's secure, it's for message submission agent, MTAs are never secure by default. */
-		smtp_handler(node, secure || !strcmp(node->protname, "SMTP (MSA)"), secure); /* Actually handle the SMTP/SMTPS/message submission agent client */
-	}
+	/* If it's secure, it's for message submission agent, MTAs are never secure by default. */
+	smtp_handler(&smtp, node, secure); /* Actually handle the SMTP/SMTPS/message submission agent client */
+
+	bbs_node_exit(node);
+	return NULL;
+}
+
+static void *smarthost_handler(void *varg)
+{
+	struct smtp_session smtp;
+	struct bbs_node *node = varg;
+
+	memset(&smtp, 0, sizeof(smtp));
+	smtp.smarthost = 1;
+	bbs_node_net_begin(node);
+
+	smtp_handler(&smtp, node, 0);
 
 	bbs_node_exit(node);
 	return NULL;
@@ -3755,6 +3789,10 @@ static int load_config(void)
 	bbs_config_val_set_true(cfg, "smtp", "enabled", &smtp_enabled);
 	bbs_config_val_set_port(cfg, "smtp", "port", &smtp_port);
 
+	/* Smart Host */
+	bbs_config_val_set_true(cfg, "smarthost", "enabled", &smarthost_enabled);
+	bbs_config_val_set_port(cfg, "smarthost", "port", &smarthost_port);
+
 	/* SMTPS */
 	bbs_config_val_set_true(cfg, "smtps", "enabled", &smtps_enabled);
 	bbs_config_val_set_port(cfg, "smtps", "port", &smtps_port);
@@ -3783,6 +3821,13 @@ static int load_config(void)
 				key = bbs_keyval_key(keyval);
 				val = bbs_keyval_val(keyval);
 				add_authorized_relay(key, val);
+			}
+		} else if (!strcmp(bbs_config_section_name(section), "unlisted_ips")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				key = bbs_keyval_key(keyval);
+				if (!stringlist_contains(&unlisted_ips, key)) {
+					stringlist_push(&unlisted_ips, key);
+				}
 			}
 		} else if (!strcmp(bbs_config_section_name(section), "trusted_relays")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
@@ -3822,11 +3867,25 @@ static int load_config(void)
 	return 0;
 }
 
+static void stop_core_ports(void)
+{
+	if (smtp_enabled) {
+		bbs_stop_tcp_listener(smtp_port);
+	}
+	if (smtps_enabled) {
+		bbs_stop_tcp_listener(smtps_port);
+	}
+	if (msa_enabled) {
+		bbs_stop_tcp_listener(msa_port);
+	}
+}
+
 static int load_module(void)
 {
 	stringlist_init(&trusted_relays);
 	stringlist_init(&starttls_exempt);
 	stringlist_init(&blacklist);
+	stringlist_init(&unlisted_ips);
 
 	if (load_config()) {
 		return -1;
@@ -3862,6 +3921,12 @@ static int load_module(void)
 		bbs_singular_callback_destroy(&smtp_queue_processor);
 		goto cleanup;
 	}
+	/* The smart host port is mostly just normal SMTP, but since that's already registered, we use "SMTP2" */
+	if (smarthost_enabled && bbs_start_tcp_listener(smarthost_port, "SMTP2", smarthost_handler)) {
+		stop_core_ports();
+		bbs_singular_callback_destroy(&smtp_queue_processor);
+		goto cleanup;
+	}
 
 	bbs_register_tests(tests);
 	bbs_register_mailer(injectmail_simple, injectmail_full, 1);
@@ -3871,6 +3936,7 @@ static int load_module(void)
 
 cleanup:
 	stringlist_empty_destroy(&blacklist);
+	stringlist_empty_destroy(&unlisted_ips);
 	RWLIST_WRLOCK_REMOVE_ALL(&authorized_relays, entry, relay_free);
 	return -1;
 }
@@ -3880,16 +3946,12 @@ static int unload_module(void)
 	bbs_unregister_mailer(injectmail_simple, injectmail_full);
 	bbs_unregister_tests(tests);
 	bbs_cli_unregister_multiple(cli_commands_smtp);
-	if (smtp_enabled) {
-		bbs_stop_tcp_listener(smtp_port);
+	if (smarthost_enabled) {
+		bbs_stop_tcp_listener(smarthost_port);
 	}
-	if (smtps_enabled) {
-		bbs_stop_tcp_listener(smtps_port);
-	}
-	if (msa_enabled) {
-		bbs_stop_tcp_listener(msa_port);
-	}
+	stop_core_ports();
 	stringlist_empty_destroy(&blacklist);
+	stringlist_empty_destroy(&unlisted_ips);
 	RWLIST_WRLOCK_REMOVE_ALL(&authorized_relays, entry, relay_free);
 	RWLIST_WRLOCK_REMOVE_ALL(&authorized_identities, entry, authorized_identity_free);
 	stringlist_empty_destroy(&trusted_relays);

@@ -23,6 +23,7 @@
 
 #include "include/module.h"
 #include "include/node.h"
+#include "include/user.h" /* use bbs_node_logged_in */
 #include "include/utils.h"
 
 #include "include/net_smtp.h"
@@ -44,8 +45,11 @@ static int prepend_received(struct smtp_filter_data *f)
 		 * into any authentication that is done. In contrast, if we allowed a From header to be used,
 		 * the user was authorized to use that identity.
 		 * Additionally, using the MAIL FROM, apart from being wrong, can also leak sensitive information,
-		 * such as the primary email address of the account through which the message is being sent using another identity. */
-		const char *from = S_OR(smtp_from_address(f->smtp), f->from);
+		 * such as the primary email address of the account through which the message is being sent using another identity.
+		 *
+		 * If the sender is not authenticated, then this is a relaying host whose true IP address is being masked.
+		 * In lieu of that, we record what was provided for HELO/EHLO. */
+		const char *from = bbs_node_logged_in(f->node) ? (S_OR(smtp_from_address(f->smtp), f->from)) : smtp_sender_hostname(f->smtp);
 		/* For messages received by message submission agents, mask the sender's real IP address */
 		smtp_filter_write(f, "Received: from [HIDDEN] (Authenticated sender: %s)\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
 			from, smtp_hostname(), prot, f->recipient, timestamp);
@@ -92,6 +96,13 @@ static int relay_filter_cb(struct smtp_filter_data *f)
 	 * Since the logic we want is exactly that in prepend_received, just call that instead here. */
 	if (smtp_is_message_submission(f->smtp)) {
 		return prepend_received(f);
+	}
+
+	/* XXX BUGBUG On relayed messages, it seems sometimes we end up adding a 2nd Received header here, that isn't needed.
+	 * In the case of an unlisted IP, this is not just extraneous, but harmful, since it would expose the IP,
+	 * so until this bug is verified/addressed, explicitly bail out. */
+	if (smtp_should_preserve_privacy(f->smtp)) {
+		return 0;
 	}
 
 	prot = smtp_protname(f->smtp);
