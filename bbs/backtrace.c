@@ -115,7 +115,7 @@ static void process_section(bfd *bfdobj, asection *section, void *obj)
 	/* If we find a line, we will want to continue calling bfd_find_inliner_info
 	 * to capture any inlined functions that don't have their own stack frames. */
 	do {
-		char *fn;
+		const char *fn;
 		data->found++;
 		/* file can possibly be null even with a success result from bfd_find_nearest_line */
 		file = file ? file : "";

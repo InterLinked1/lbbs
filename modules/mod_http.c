@@ -854,7 +854,10 @@ static int process_headers(struct http_session *http)
 					continue;
 				}
 				STRIP_QUOTES(name);
-				STRIP_QUOTES(value);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
+				STRIP_QUOTES((char*) value);
+#pragma GCC diagnostic pop
 				ltrim(name); /* If we got multiple cookies, there is a space after the ; */
 				bbs_debug(4, "Cookie: %s => %s\n", name, val);
 				bbs_varlist_append(&http->req->cookies, name, val);
@@ -2147,7 +2150,7 @@ static int mime_type(const char *filename, char *buf, size_t len)
 {
 	const char *mime;
 	magic_t magic;
-	char *ext;
+	const char *ext;
 
 	magic = magic_open(MAGIC_MIME_TYPE);
 	if (!magic) {

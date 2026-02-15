@@ -918,7 +918,7 @@ enum select_type {
 
 static int on_select(const char *dir_name, const char *filename, int seqno, void *obj)
 {
-	char *flags;
+	const char *flags;
 	char newfile[512];
 	unsigned long size;
 	struct imap_traversal *traversal = obj;
@@ -2301,7 +2301,7 @@ static int process_append(struct imap_session *imap, const char *appenddir, cons
 	int res;
 	char newfilename[256];
 	char curdir[260], newdir[260];
-	char *filename;
+	const char *filename;
 	struct mailbox_event e;
 	unsigned long size;
 
@@ -4446,7 +4446,7 @@ static int malformed_store(const char *restrict s)
 	 * The logic here is thus primarily intended to guard against writing bad flags to REMOTE mailboxes,
 	 * not local ones, but we may as well prevent it everywhere. */
 
-	char *tmp = strstr(s, "FLAGS"); /* There can be parentheses in the STORE command itself, so skip those by starting with the FLAGS part */
+	const char *tmp = strstr(s, "FLAGS"); /* There can be parentheses in the STORE command itself, so skip those by starting with the FLAGS part */
 	if (!tmp) {
 		return 0; /* This command probably isn't valid either if it doesn't have FLAGS in it? But that can be dealt with later on. */
 	}

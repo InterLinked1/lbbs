@@ -1475,7 +1475,7 @@ static int list_modulerefs(int fd, const char *name)
 
 	/* Allow comparison without the .so suffix. */
 	if (!strlen_zero(name)) {
-		char *period = strchr(name, '.');
+		const char *period = strchr(name, '.');
 		if (period) {
 			compchars = (size_t) (period - name);
 		} else {

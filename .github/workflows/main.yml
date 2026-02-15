@@ -359,7 +359,7 @@ jobs:
           usesh: true
           copyback: false
           run: |
-            INSTALL_LIBDISCORD=0 ./scripts/install_prereq.sh
+            INSTALL_LIBETPAN=0 INSTALL_LIBDISCORD=0 ./scripts/install_prereq.sh
             gmake modcheck
             gmake modconfig
             gmake -j$(nproc) bbs

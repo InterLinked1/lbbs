@@ -2754,7 +2754,7 @@ static int injectmail_simple(SIMPLE_MAILER_PARAMS)
 	char tmp[80] = "/tmp/bbsmail-XXXXXX";
 	char sender[256];
 	char recipient[256];
-	char *tmpaddr;
+	const char *tmpaddr;
 
 	UNUSED(async); /* Currently they're synchronous if local and asynchronous if external, which is just fine */
 

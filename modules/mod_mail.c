@@ -1795,7 +1795,7 @@ int maildir_copy_msg_filename(struct mailbox *mbox, struct bbs_node *node, const
 
 int maildir_parse_uid_from_filename(const char *filename, unsigned int *uid)
 {
-	char *uidstr = strstr(filename, ",U=");
+	const char *uidstr = strstr(filename, ",U=");
 	if (!uidstr) {
 		return -1;
 	}

@@ -986,6 +986,7 @@ static void command_cb(const char *clientname, enum irc_callback_msg_type type, 
 					/* Don't send an autoresponse saying "please use this messaging format", since there may be other consumers */
 					return;
 				}
+				bbs_strterm(recipienttmp, ':'); /* strip : */
 				recipient = recipienttmp;
 			}
 			/* Strip <> */
@@ -995,7 +996,6 @@ static void command_cb(const char *clientname, enum irc_callback_msg_type type, 
 				return;
 			}
 			bbs_strterm(sender, '>');
-			bbs_strterm(recipient, ':'); /* strip : */
 			snprintf(sendername, sizeof(sendername), "%s/%s", clientname, sender);
 			bbs_debug(8, "Received private message: %s -> %s: %s\n", sendername, recipient, message);
 			irc_relay_send(recipient, CHANNEL_USER_MODE_NONE, clientname, sendername, NULL, message, cp ? cp->ircuser : NULL);

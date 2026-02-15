@@ -1435,7 +1435,7 @@ static int sort_compare(const void *aptr, const void *bptr, void *varg)
 	/* To avoid having to duplicate the string for every single comparison,
 	 * parse the string in place. */
 	for (criterion = sort->sortexpr; !res && !strlen_zero(criterion); criterion = strchr(criterion, ' ')) {
-		char *space;
+		const char *space;
 		int len;
 		if (*criterion == ' ') { /* All but first one */
 			criterion++;

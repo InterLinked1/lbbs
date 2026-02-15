@@ -195,7 +195,7 @@ static void __print_pos(WINDOW *win, int starty, int startx, int width, const ch
 
 static int run_menu(const char *title, const char *subtitle, int num_choices, ITEM **options, const char *optkeys, int height)
 {
-	char *curpos;
+	const char *curpos;
 	int c, offset, selected_item;
 	ITEM *selection;
 	MENU *menu;

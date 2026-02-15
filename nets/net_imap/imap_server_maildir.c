@@ -281,7 +281,7 @@ int set_maildir_readonly(struct imap_session *imap, struct imap_traversal *trave
 
 long parse_modseq_from_filename(const char *filename, unsigned long *modseq)
 {
-	char *modseqstr = strstr(filename, ",M=");
+	const char *modseqstr = strstr(filename, ",M=");
 	if (!modseqstr) {
 		/* Don't use 0 since HIGHESTMODSEQ=0 indicates persistent mod sequences not supported (RFC 7162 Section 7) */
 		*modseq = 1; /* At least since we started keeping track of MODSEQ, this file has not been modified to have it added to the filename */

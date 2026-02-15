@@ -547,7 +547,8 @@ static int on_xover(const char *dir_name, const char *filename, struct nntp_sess
 	FILE *fp;
 	char fullpath[3 * 256];
 	char subjbuf[256], authorbuf[256], datebuf[256], bytecountbuf[12] = "";
-	char *subject = subjbuf, *author = authorbuf, *date = datebuf, *msgid = NULL, *references = NULL, *bytecount = bytecountbuf, *linecount = NULL;
+	char *subject = subjbuf, *author = authorbuf, *date = datebuf, *references = NULL, *bytecount = bytecountbuf, *linecount = NULL;
+	const char *msgid = NULL;
 	struct stat st;
 
 	msgid = strchr(filename, '_');

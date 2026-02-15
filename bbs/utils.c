@@ -164,16 +164,22 @@ int bbs_parse_url(struct bbs_url *url, char *restrict s)
 			url->pass = tmp;
 		}
 	}
-	tmp = strchr(url->host, '/');
+	/* With GCC 15.2.1, if we pass a const char to strchr, we cannot save it in a char return type.
+	 * It's okay here, because to consumers, url->host should be immutable, but we want to modify it here,
+	 * so cast it, but then in turn, we'll need to suppress that warning. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wcast-qual"
+	tmp = strchr((char*) url->host, '/');
 	if (tmp) {
 		*tmp++ = '\0';
 		url->resource = tmp;
 	}
-	tmp = strchr(url->host, ':');
+	tmp = strchr((char*) url->host, ':');
 	if (tmp) {
 		*tmp++ = '\0';
 		url->port = atoi(S_IF(tmp));
 	}
+#pragma GCC diagnostic pop
 	return 0;
 }
 

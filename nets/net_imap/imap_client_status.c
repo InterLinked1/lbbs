@@ -322,7 +322,7 @@ static int status_size_fetch_incremental(struct imap_client *client, const char 
 	return 0;
 }
 
-static int append_size_item(struct imap_client *client, const char *remotename, const char *remote_status_resp, const char *tag)
+static int append_size_item(struct imap_client *client, const char *remotename, char *remote_status_resp, const char *tag)
 {
 	size_t curlen;
 	char buf[256] = ""; /* Might not be a cached STATUS */
@@ -644,7 +644,7 @@ ssize_t remote_status(struct imap_client *client, const char *remotename, const 
 int imap_client_send_converted_status_response(struct imap_client *client, const char *remotename, const char *response)
 {
 	char converted[256];
-	char *tmp;
+	const char *tmp;
 	struct imap_session *imap = client->imap;
 
 	/* Replace remote mailbox name with our name for it.
