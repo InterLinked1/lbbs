@@ -219,12 +219,42 @@ static enum http_response_code proxy_handler(struct http_session *http)
 
 	/* Want the host without the port attached */
 	if (http->req->method & HTTP_METHOD_CONNECT) {
-		if (strlen_zero(http->req->host)) {
-			bbs_warning("CONNECT request missing hostname\n");
-			return HTTP_BAD_REQUEST;
+		if (http->req->version & HTTP_VERSION_1_1_OR_NEWER) {
+			if (!strlen_zero(http->req->host)) {
+				bbs_strncpy_until(hostbuf, http->req->host, sizeof(hostbuf), ':'); /* Strip : */
+				host = hostbuf;
+			} else {
+				bbs_warning("CONNECT request missing hostname\n");
+				return HTTP_BAD_REQUEST;
+			}
+		} else {
+			/* The Host header is technically optional for HTTP 1.0,
+			 * in which case, we need to parse it out of the request line. */
+			if (!strlen_zero(http->req->host)) {
+				bbs_strncpy_until(hostbuf, http->req->host, sizeof(hostbuf), ':'); /* Strip : */
+			} else {
+				int sport;
+				const char *portstr = strchr(http->req->uri, ':');
+				/* If we are using the request URI for the hostname, we also use it for the port */
+				if (!portstr) {
+					bbs_warning("CONNECT request line URI '%s' does not include a port\n", http->req->uri);
+					return HTTP_BAD_REQUEST;
+				}
+				portstr++;
+				if (strlen_zero(portstr)) {
+					bbs_warning("CONNECT request line URI '%s' does not include a port\n", http->req->uri);
+					return HTTP_BAD_REQUEST;
+				}
+				sport = atoi(portstr);
+				if (sport < 0) {
+					bbs_warning("Rejecting invalid port %d\n", sport);
+					return HTTP_BAD_REQUEST;
+				}
+				port = (unsigned int) sport;
+				bbs_strncpy_until(hostbuf, http->req->uri, sizeof(hostbuf), ':');
+			}
+			host = hostbuf;
 		}
-		bbs_strncpy_until(hostbuf, http->req->host, sizeof(hostbuf), ':'); /* Strip : */
-		host = hostbuf;
 	} else {
 		host = http->req->host;
 	}
