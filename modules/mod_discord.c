@@ -48,7 +48,15 @@ static pthread_t discord_thread;
 
 static int expose_members = 1;
 static char token[84];
-static char configfile[84];
+
+static char configfile[84]; /* Deprecated in libdiscord 3.0.0 */
+
+static int concord_loglevel = 0;
+static char concord_tracefile_path[512] = "";
+static FILE *concord_tracefile = NULL;
+
+/* Define for extra debugging of libdiscord itself */
+/* #define CONCORD_DEBUG */
 
 #ifdef RELAY_RCV_EVENTUALLY_FAILS
 static pthread_t monitor_thread = 0;
@@ -864,7 +872,7 @@ static void on_ready(struct discord *client, const struct discord_ready *event)
 
 	discord_started = discord_ready = 1;
 	/* Bots seem to retain discriminators for now, so keep it here for now */
-	bbs_debug(1, "Succesfully connected to Discord as %s#%s\n", event->user->username, event->user->discriminator);
+	bbs_debug(1, "Successfully connected to Discord as %s#%s\n", event->user->username, event->user->discriminator);
 
 	load_channels(client, event->guilds);
 }
@@ -1736,20 +1744,90 @@ static int start_discord_relay(void)
 	return 0;
 }
 
+/* Config defaults if using discord_from_config().
+ * Define statically, since concord will memset the struct itself at cleanup,
+ * so it can't be stack allocated. */
+static struct discord_config concord_config = {
+	.token = NULL,
+	.log = {
+		/* concord's log levels are numbered the opposite of BBS log levels.
+		 * Numerically higher log levels produce less logging output. */
+		.level = __LOGMOD_LEVEL_MAX, /* Minimum logging level */
+		.quiet = 1, /* Silence terminal logging */
+		.color = 0, /* Enable color to terminal logging output */
+		.overwrite = 1, /* Overwrite existing log files */
+		.trace = NULL, /* FP* trace log file */
+		.http = NULL, /* FP* HTTP log file */
+		.ws = NULL, /* FP* websocket log file */
+		/* disable (not set) */
+	},
+};
+
+static int check_curl(void)
+{
+	const char *const *proto;
+	int wss_enabled = 0;
+	const curl_version_info_data *curl_info = curl_version_info(CURLVERSION_NOW);
+
+	bbs_debug(3, "Detected libcurl version %s\n", curl_info->version);
+	if (curl_info->version_num < 0x080701) {
+		/* If the correct version was previously compiled from source, then it's possible
+		 * that multiple versions of curl/libcurl are installed, e.g. an older one from
+		 * the system package manager and a newer one from building from source. */
+		bbs_error("libcurl version 8.7.1 or higher required (found %s)\n", curl_info->version);
+		return -1;
+	}
+	for (proto = curl_info->protocols; *proto; ++proto) {
+		if (!strncmp(*proto, "wss", 3)) {
+			wss_enabled = 1;
+		}
+	}
+	if (!wss_enabled) {
+		bbs_error("libcurl not compiled with websockets support, recompile with --enable-websockets\n");
+		return -1;
+	}
+	return 0;
+}
+
 static int load_module(void)
 {
+	/* Reproduce the libcurl compatibility check from concord, since this will cause discord_from_config to fail,
+	 * but it won't be obvious what the issue is, so check proactively here and abort if needed. */
+	if (check_curl()) {
+		return -1;
+	}
 	if (load_config()) {
 		return -1;
 	}
 
+#ifdef CONCORD_DEBUG
+	/* If needed, overwrite user settings */
+	concord_loglevel = LOGMOD_LEVEL_TRACE;
+	if (s_strlen_zero(concord_tracefile_path)) {
+		safe_strncpy(concord_tracefile_path, DIRCAT(BBS_LOG_DIR, "discord.log"), sizeof(concord_tracefile_path));
+	}
+#endif
+
 	ccord_global_init();
 	if (!s_strlen_zero(configfile)) {
-		discord_client = discord_config_init(configfile);
+		/* was renamed discord_from_json in concord commit b3a03abd473e9afd80331608d1348456b599c3c1 */
+		discord_client = discord_from_json(configfile);
 	} else {
-		discord_client = discord_init(token);
+		/* discord_init was renamed discord_from_token in concord commit b3a03abd473e9afd80331608d1348456b599c3c1,
+		 * and discord_from_config was introduced. */
+		concord_config.token = strdup(token); /* concord frees at cleanup, need to duplicate */
+		concord_config.log.level = concord_loglevel;
+		if (!s_strlen_zero(concord_tracefile_path)) {
+			concord_tracefile = fopen(concord_tracefile_path, "a");
+			if (!concord_tracefile) {
+				bbs_error("Failed to open logfile %s: %s\n", concord_tracefile_path, strerror(errno));
+			}
+			concord_config.log.trace = concord_tracefile; /* concord closes at cleanup */
+		}
+		discord_client = discord_from_config(&concord_config);
 	}
 	if (!discord_client) {
-		bbs_error("Failed to initialize Discord client using %s\n", !s_strlen_zero(configfile) ? "config file" : "token");
+		bbs_error("Failed to initialize Discord client using %s\n", !s_strlen_zero(configfile) ? "JSON config" : "token");
 		ccord_global_cleanup();
 		return -1;
 	}
@@ -1784,7 +1862,11 @@ static int unload_module(void)
 	bbs_debug(3, "Concord global cleanup finished\n");
 
 	list_cleanup();
+
+	/* discord_cleanup calls discord_config_cleanup, which cleans up everything we pass into discord_from_config.
+	 * This includes strings (which are freed) and log files (which are closed). */
+
 	return 0;
 }
 
-BBS_MODULE_INFO_DEPENDENT("Discord/IRC Relay", "net_irc.so");
+BBS_MODULE_INFO_DEPENDENT("Discord/IRC Relay", "net_irc.so,mod_curl.so");
