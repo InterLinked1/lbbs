@@ -406,6 +406,7 @@ struct irc_channel {
 	unsigned int throttlecount;			/* # of users that joined in the last throttle interval */
 	struct stringlist invited;			/* String list of invited nicks */
 	FILE *fp;							/* Optional log file to which to log all channel activity */
+	time_t loglastflush;				/* Time the log file was last flushed */
 	RWLIST_ENTRY(irc_channel) entry;	/* Next channel */
 	struct bbs_rate_limit ratelimit;	/* Time that last relayed message was sent */
 	unsigned int relay:1;				/* Enable relaying */
@@ -1188,6 +1189,14 @@ static int __channel_broadcast(int lock, struct irc_channel *channel, struct irc
 		localtime_r(&lognow, &logdate);
 		strftime(datestr, sizeof(datestr), "%Y-%m-%d %T", &logdate);
 		fprintf(channel->fp, "[%s] %s", datestr, buf); /* Assume it ends in CR LF (it better!) */
+		/* Flushing the log file to disk every message is unnecessarily expensive.
+		 * However, if messages are only received occasionally, it may make sense to flush immediately,
+		 * or in the worst case it might be days or weeks before the message is reflected in the logs.
+		 * This also helps guards against data loss if a crash occurs for some reason. */
+		if (!channel->loglastflush || (channel->loglastflush < (lognow - 300))) {
+			fflush(channel->fp);
+			channel->loglastflush = lognow;
+		}
 	}
 	/* It's possible to send to 0 users only if there's only one user in the channel and user is non NULL (don't echo to sender) */
 	if (!sent && !user) {
