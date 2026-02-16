@@ -23,7 +23,7 @@
  *
  * This can be NULL for the default connection.
  *
- * Currently, only connection is supported so this argument
+ * Currently, only one connection is supported so this argument
  * is ignored, but if in the future multiple sessions
  * were supported (see [LBBS-111]), then it would be used. */
 
@@ -35,6 +35,21 @@ char *bbs_ami_action_getvar(const char *session, const char *variable, const cha
 int bbs_ami_action_redirect(const char *session, const char *channel, const char *context, const char *exten, const char *priority);
 #define bbs_ami_action_axfer(sess, chan, exten, context) bbs_ami_action(sess, "Atxfer", "Channel:%s\r\nExten:%s\r\nContext:%s", chan, exten, context)
 #define bbs_ami_action_cancel_axfer(sess, chan) bbs_ami_action(sess, "CancelAtxfer", "Channel:%s", chan)
+
+/* Forward declaration for modules that don't need to include <cami/cami.h> */
+struct ami_event;
+
+/*!
+ * \brief Get Caller ID information for the caller associated with an incoming softmodem call via TCP
+ * \param node
+ * \param[out] numberbuf Buffer for Caller ID number. May be empty.
+ * \param num_len Length of numberbuf. Should be at least 16.
+ * \param[out] namebuf Buffer for Caller ID name. May be empty.
+ * \param num_len Length of namebuf. Should be at least 16.
+ * \retval 0 on success (successfully retrieved a session with associated Caller ID information)
+ * \retval -1 No Softmodem session corresponds with this TCP connection
+ */
+int bbs_ami_softmodem_get_callerid(struct bbs_node *node, char *numberbuf, size_t num_len, char *namebuf, size_t name_len);
 
 int __bbs_ami_callback_register(int (*callback)(struct ami_event *event, const char *eventname), void *mod);
 

@@ -40,6 +40,8 @@
 #include "include/alertpipe.h"
 #include "include/linkedlists.h"
 #include "include/cli.h"
+#include "include/node.h"
+#include "include/utils.h"
 
 #include "include/mod_asterisk_ami.h"
 
@@ -160,6 +162,58 @@ int bbs_ami_action_redirect(const char *session, const char *channel, const char
 	AMI_SESSION_CALL_END();
 
 	return res;
+}
+
+int bbs_ami_softmodem_get_callerid(struct bbs_node *node, char *numberbuf, size_t num_len, char *namebuf, size_t name_len)
+{
+	int i;
+	const char *number = NULL, *name = NULL;
+	struct ami_response *resp;
+
+	*numberbuf = '\0';
+	*namebuf = '\0';
+
+	/*
+	 * The sender is not sent as part of the payload itself via TCP.
+	 * We need to query the phone system for the caller's number/name.
+	 * If the Asterisk softmodem is being used, we need to figure this out from Asterisk.
+	 *
+	 * We can correlate the sessions because on our end, we know the TCP port number on the client side,
+	 * as opened by the Softmodem application. The Softmodem application can therefore save this
+	 * information on the channel, and we can look for a channel that has the correct port number saved.
+	 *
+	 * If we cannot determine the caller information, the application can reject the connection.
+	 * In that sense, it also functions as a partial security check, since it requires the connecting port
+	 * to be used by the softmodem (though the IP address itself is not checked here).
+	 */
+	resp = bbs_ami_action(NULL, "SoftmodemSessions", "Port:%u", node->rport);
+	if (!resp || !resp->success) {
+		bbs_warning("Failed to get caller info\n");
+		if (resp) {
+			ami_resp_free(resp);
+		}
+		return -1;
+	}
+
+	/* Since we applied a filter for only port node->rport, we'll only get back one session, at most */
+	for (i = 1; i < resp->size - 1; i++) {
+		struct ami_event *e = resp->events[i];
+		const char *event = ami_keyvalue(e, "Event");
+		if (!strcmp(event, "SoftmodemSession")) {
+			number = ami_keyvalue(e, "CallerIDNumber");
+			name = ami_keyvalue(e, "CallerIDName");
+			break;
+		}
+	}
+	bbs_debug(5, "Softmodem caller: %s (%s)\n", S_IF(number), S_IF(name));
+	if (strlen_zero(number)) {
+		safe_strncpy(numberbuf, number, num_len);
+	}
+	if (!strlen_zero(name)) {
+		safe_strncpy(namebuf, name, name_len);
+	}
+	ami_resp_free(resp);
+	return 0;
 }
 
 static void set_ami_status(int up)
