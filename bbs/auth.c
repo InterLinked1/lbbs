@@ -426,7 +426,6 @@ static int valid_temp_token(const char *username, const char *password)
 {
 	struct pw_auth_token *t;
 	time_t now;
-	int total = 0;
 	int match = 0;
 
 	now = time(NULL);
@@ -447,7 +446,6 @@ static int valid_temp_token(const char *username, const char *password)
 			}
 			/* Don't break, we still want to purge any tokens that may be stale. */
 		}
-		total++;
 	}
 	RWLIST_TRAVERSE_SAFE_END;
 	RWLIST_UNLOCK(&auth_tokens);

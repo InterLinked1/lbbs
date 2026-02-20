@@ -398,7 +398,7 @@ static char *get_article_id(struct nntp_session *nntp, int number)
 static int on_head(const char *dir_name, const char *filename, struct nntp_session *nntp, int number, int msgfilter, const char *msgidfilter)
 {
 	FILE *fp;
-	char fullpath[256];
+	char fullpath[256 * 3];
 	const char *msgid;
 	char msgbuf[1001]; /* Enough for longest possible line */
 

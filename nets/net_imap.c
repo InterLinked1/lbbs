@@ -4935,7 +4935,6 @@ static int imap_process(struct imap_session *imap, char *s, char *saved_tag, siz
 		res = handle_setacl(imap, s, 1);
 	} else if (!strcasecmp(command, "ENABLE")) {
 		char *cap;
-		int enabled = 0;
 		REQUIRE_ARGS(s);
 		/*! \todo This combined with our parsing of remote server capabilities could use a more formal capabilities flag-based int */
 		while ((cap = strsep(&s, " "))) {
@@ -4943,12 +4942,10 @@ static int imap_process(struct imap_session *imap, char *s, char *saved_tag, siz
 			if (!strcasecmp(cap, "CONDSTORE")) {
 				imap->condstore = 1;
 				imap_send(imap, "ENABLED CONDSTORE");
-				enabled++;
 			} else if (!strcasecmp(cap, "QRESYNC")) {
 				imap->condstore = 1; /* Implicitly includes CONDSTORE */
 				imap->qresync = 1;
 				imap_send(imap, "ENABLED QRESYNC CONDSTORE");
-				enabled++;
 			} else {
 				bbs_warning("Unknown capability %s\n", cap);
 			}

@@ -464,7 +464,6 @@ static void *io_relay(void *varg)
 			soft_assertions_failed++;
 		}
 		if (bbs_expect_str) {
-			int rounds = 0;
 			bbs_readline_append(&rldata, "\n", buf, (size_t) res, &ready);
 			/* Check if the line contains the expected output.
 			 * If we read multiple lines, loop until there's not a full line left in the buffer. */
@@ -484,7 +483,6 @@ static void *io_relay(void *varg)
 				}
 				/* Don't append, just shift the buffer and check if we can read immediately. */
 				bbs_readline_append(&rldata, "\n", NULL, 0, &ready);
-				rounds++;
 			}
 			if (startup_run_unit_tests_started == 1) {
 				bbs_debug(5, "Stalling until expect reactivated\n");
@@ -1237,8 +1235,8 @@ static int run_test(const char *filename, int multiple)
 				alarm(0); /* Cancel any pending alarm */
 				bbs_debug(3, "Test '%s' returned %d\n", filename, res);
 #if 1
-				 /* Allow the poor BBS time for catching its breath.
-				  * test_irc under valgrind no longer seems to need this due to locking fixes, but LBBS-80 is exacerbated by removing this */
+				/* Allow the poor BBS time for catching its breath. */
+				/* FIXME test_irc under valgrind no longer seems to need this due to locking fixes, but LBBS-80 is exacerbated by removing this */
 				usleep(50000);
 #endif
 			} else {

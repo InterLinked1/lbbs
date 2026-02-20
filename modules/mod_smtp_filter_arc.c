@@ -34,7 +34,10 @@ static ARC_LIB *lib;
 static int process_message(struct smtp_filter_data *f, ARC_MESSAGE *msg)
 {
 	ARC_STAT stat;
-	size_t headerslen, bodylen;
+	size_t headerslen;
+#ifdef EXTRA_CHECKS
+	size_t bodylen;
+#endif
 	char *headers, *header, *dup = NULL;
 	char full_header[4096];
 	char *hdrbuf;
@@ -102,10 +105,14 @@ static int process_message(struct smtp_filter_data *f, ARC_MESSAGE *msg)
 	}
 
 	body = smtp_message_body(f) + headerslen;
+#ifdef EXTRA_CHECKS
 	bodylen = f->size - headerslen;
+#endif
 	if (STARTS_WITH(body, "\r\n\r\n")) {
 		body += 2;
+#ifdef EXTRA_CHECKS
 		bodylen -= 2;
+#endif
 	}
 #ifdef EXTRA_CHECKS
 	bbs_assert(strlen(body) == bodylen);

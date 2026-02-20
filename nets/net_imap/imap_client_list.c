@@ -326,7 +326,6 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 	FILE *fp;
 	char virtfile[256];
 	char line[256];
-	int l = 0;
 	struct bbs_parallel p;
 	int lineno = 0;
 	int skip_proxied = 0;
@@ -465,7 +464,6 @@ int list_virtual(struct imap_session *imap, struct list_command *lcmd)
 			break; /* If we're excluding all proxied accounts from the LIST response, we can stop now */
 		}
 
-		l++;
 		server = line;
 		prefix = strsep(&server, "|"); /* Use pipe in case mailbox name contains spaces */
 		if (!strncmp(prefix, "#", 1)) {

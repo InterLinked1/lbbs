@@ -2400,10 +2400,10 @@ ssize_t bbs_timed_read(int fd, char *restrict buf, size_t len, int ms)
 		len -= (long unsigned) res;
 		if (len <= 0) {
 			bbs_debug(7, "Buffer (size %lu) is now full\n", len);
-			return res;
+			return bytes;
 		}
 		if (bbs_poll(fd, ms) <= 0) {
-			return res;
+			return bytes;
 		}
 	}
 	__builtin_unreachable();

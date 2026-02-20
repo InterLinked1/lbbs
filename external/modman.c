@@ -404,7 +404,6 @@ static int check_header_file(const char *dirname, const char *modname, int is_mo
 	char incpaths[sizeof(sys_include_paths)];
 	int exists = 0;
 	char *path, *paths = incpaths;
-	int num_incpaths = 0;
 	char filename[1024];
 	int common_include_file = 0;
 
@@ -428,7 +427,6 @@ static int check_header_file(const char *dirname, const char *modname, int is_mo
 
 		includedir = strchr(path, '/'); /* Skip leading whitespace, and strchr cannot return NULL. */
 		TERMINATE_AT(path, '\n');
-		num_incpaths++;
 
 		snprintf(filename, sizeof(filename), "%s/%s", includedir, incfile);
 		modman_log(8, "  Checking existence of %s\n", filename);
