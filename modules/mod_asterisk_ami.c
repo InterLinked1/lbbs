@@ -45,19 +45,25 @@
 
 #include "include/mod_asterisk_ami.h"
 
-static int asterisk_up = 0;
-static int post_reconnect = 0;
-static struct ami_session *ami_session = NULL;
-
 struct ami_callback {
 	int (*callback)(struct ami_event *event, const char *eventname);
 	void *mod;
 	RWLIST_ENTRY(ami_callback) entry;
 };
 
-static RWLIST_HEAD_STATIC(callbacks, ami_callback);
+struct bbs_ami_session {
+	struct ami_session *session;
+	int logfd;
+	unsigned int asterisk_up:1;
+	unsigned int reconnecting:1;
+	unsigned int post_reconnect:1;
+};
 
-static int reconnecting = 0;
+static struct bbs_ami_session global_bbs_ami_session = {
+	.logfd = -1,
+};
+
+static RWLIST_HEAD_STATIC(callbacks, ami_callback);
 
 /* If we're in the middle of a reconnect, we can't do anything
  * We could also implement some logic here to queue momentarily,
@@ -65,24 +71,26 @@ static int reconnecting = 0;
  * is simply delayed, not rejected (we'd need to unlock the list,
  * sleep a little bit, then relock and check, with a timeout). */
 #define RECONNECT_CHECKS() \
-	UNUSED(session); \
-	if (reconnecting) { \
+	if (ami->reconnecting) { \
 		bbs_warning("Rejecting AMI action during active reconnect\n"); \
 		goto cleanup; \
-	} else if (!ami_session) { \
+	} else if (!ami->session) { \
 		bbs_warning("Rejecting AMI action - no manager session active\n"); \
 		goto cleanup; \
 	}
 
-#define AMI_SESSION_CALL_START() \
+/* Start with a { so that we have our own scope for declaring the ami variable */
+#define AMI_SESSION_CALL_START() { \
+	struct bbs_ami_session *ami = &global_bbs_ami_session; \
+	UNUSED(session_name); \
 	RWLIST_RDLOCK(&callbacks); \
 	RECONNECT_CHECKS();
 
-#define AMI_SESSION_CALL_END() \
+#define AMI_SESSION_CALL_END() } \
 cleanup: \
 	RWLIST_UNLOCK(&callbacks);
 
-struct ami_response * __attribute__ ((format (printf, 3, 4))) bbs_ami_action(const char *session, const char *action, const char *fmt, ...)
+struct ami_response * __attribute__ ((format (printf, 3, 4))) bbs_ami_action(const char *session_name, const char *action, const char *fmt, ...)
 {
 	struct ami_response *resp = NULL;
 	va_list ap;
@@ -102,63 +110,63 @@ struct ami_response * __attribute__ ((format (printf, 3, 4))) bbs_ami_action(con
 
 	AMI_SESSION_CALL_START();
 	va_start(ap, fmt);
-	resp = ami_action_va(ami_session, action, fmt, ap); /* Use ami_action_va, to avoid an additional vasprintf allocation */
+	resp = ami_action_va(ami->session, action, fmt, ap); /* Use ami_action_va, to avoid an additional vasprintf allocation */
 	va_end(ap);
 	AMI_SESSION_CALL_END();
 
 	return resp;
 }
 
-int bbs_ami_action_setvar(const char *session, const char *variable, const char *value, const char *channel)
+int bbs_ami_action_setvar(const char *session_name, const char *variable, const char *value, const char *channel)
 {
 	int res = -1;
 
 	AMI_SESSION_CALL_START();
-	res = ami_action_setvar(ami_session, variable, value, channel);
+	res = ami_action_setvar(ami->session, variable, value, channel);
 	AMI_SESSION_CALL_END();
 
 	return res;
 }
 
-int bbs_ami_action_getvar_buf(const char *session, const char *variable, const char *channel, char *buf, size_t len)
+int bbs_ami_action_getvar_buf(const char *session_name, const char *variable, const char *channel, char *buf, size_t len)
 {
 	int res = -1;
 
 	AMI_SESSION_CALL_START();
-	res = ami_action_getvar_buf(ami_session, variable, channel, buf, len);
+	res = ami_action_getvar_buf(ami->session, variable, channel, buf, len);
 	AMI_SESSION_CALL_END();
 
 	return res;
 }
 
-int bbs_ami_action_response_result(const char *session, struct ami_response *resp)
+int bbs_ami_action_response_result(const char *session_name, struct ami_response *resp)
 {
 	int res = -1;
 
 	AMI_SESSION_CALL_START();
-	res = ami_action_response_result(ami_session, resp);
+	res = ami_action_response_result(ami->session, resp);
 	AMI_SESSION_CALL_END();
 
 	return res;
 }
 
-char *bbs_ami_action_getvar(const char *session, const char *variable, const char *channel)
+char *bbs_ami_action_getvar(const char *session_name, const char *variable, const char *channel)
 {
 	char *var = NULL;
 
 	AMI_SESSION_CALL_START();
-	var = ami_action_getvar(ami_session, variable, channel);
+	var = ami_action_getvar(ami->session, variable, channel);
 	AMI_SESSION_CALL_END();
 
 	return var;
 }
 
-int bbs_ami_action_redirect(const char *session, const char *channel, const char *context, const char *exten, const char *priority)
+int bbs_ami_action_redirect(const char *session_name, const char *channel, const char *context, const char *exten, const char *priority)
 {
 	int res = -1;
 
 	AMI_SESSION_CALL_START();
-	res = ami_action_redirect(ami_session, channel, context, exten, priority);
+	res = ami_action_redirect(ami->session, channel, context, exten, priority);
 	AMI_SESSION_CALL_END();
 
 	return res;
@@ -216,20 +224,19 @@ int bbs_ami_softmodem_get_callerid(struct bbs_node *node, char *numberbuf, size_
 	return 0;
 }
 
-static void set_ami_status(int up)
+static void set_ami_status(struct bbs_ami_session *ami, int up)
 {
-	asterisk_up = up;
+	SET_BITFIELD(ami->asterisk_up, up);
 	bbs_debug(3, "Asterisk Manager Interface is now %s\n", up ? "UP" : "DOWN");
 }
 
 /*! \brief Callback function executing asynchronously when new events are available */
-static void ami_callback(struct ami_session *ami, struct ami_event *event)
+static void ami_callback(struct ami_session *session, struct ami_event *event)
 {
 	struct ami_callback *cb;
 	int do_reload = 0;
 	const char *eventname;
-
-	UNUSED(ami);
+	struct bbs_ami_session *ami = ami_get_callback_data(session);
 
 	if (bbs_module_is_shutting_down()) {
 		ami_event_free(event);
@@ -244,10 +251,10 @@ static void ami_callback(struct ami_session *ami, struct ami_event *event)
 		 * However, I've seen that sometimes, e.g. when Asterisk restarts, we get the FullyBooted event,
 		 * but the AMI connection is dead after that. So, just to make sure it's really working,
 		 * send a dummy action and make sure we get a response. */
-		if (post_reconnect) {
+		if (ami->post_reconnect) {
 			/* This is one of the few commands that will probably work,
 			 * regardless of the permissions for this manager user. */
-			struct ami_response *resp = ami_action(ami, "ListCommands", "");
+			struct ami_response *resp = ami_action(ami->session, "ListCommands", "");
 			if (!resp) {
 				bbs_error("Failed to get response to 'ListCommands' sanity check\n");
 				/* We're probably screwed up at this point.
@@ -258,9 +265,9 @@ static void ami_callback(struct ami_session *ami, struct ami_event *event)
 			}
 			ami_resp_free(resp);
 			bbs_debug(2, "AMI reconnect sanity check succeeded\n");
-			post_reconnect = 0;
+			ami->post_reconnect = 0;
 		}
-		set_ami_status(1);
+		set_ami_status(ami, 1);
 		goto cleanup; /* No need to forward this event to listeners. */
 	}
 
@@ -332,22 +339,28 @@ int bbs_ami_callback_unregister(int (*callback)(struct ami_event *event, const c
 	return 0;
 }
 
-static int ami_log_fd = -1;
-
 static int cli_ami_loglevel(struct bbs_cli_args *a)
 {
+	const char *session_name = NULL;
 	int newlevel = atoi(a->argv[2]);
 	if (newlevel < 0 || newlevel > 10) {
 		bbs_dprintf(a->fdout, "Invalid log level: %d\n", newlevel);
 		return -1;
 	}
-	ami_set_debug_level(ami_session, newlevel);
+
+	AMI_SESSION_CALL_START();
+	ami_set_debug_level(ami->session, newlevel);
+	AMI_SESSION_CALL_END();
+
 	return 0;
 }
 
 static int cli_ami_status(struct bbs_cli_args *a)
 {
-	bbs_dprintf(a->fdout, "Asterisk Manager Interface status: %s\n", asterisk_up ? "UP" : "DOWN");
+	const char *session_name = NULL;
+	AMI_SESSION_CALL_START();
+	bbs_dprintf(a->fdout, "Asterisk Manager Interface status: %s\n", ami->asterisk_up ? "UP" : "DOWN");
+	AMI_SESSION_CALL_END();
 	return 0;
 }
 
@@ -358,24 +371,22 @@ static struct bbs_cli_entry cli_commands_ami[] = {
 
 static int load_config(int open_logfile);
 
-static void cleanup_ami(void)
+static void cleanup_ami(struct bbs_ami_session *ami)
 {
-	struct ami_session *s = ami_session;
-	ami_session = NULL;
-	if (s) {
-		ami_disconnect(s);
-		ami_destroy(s);
+	if (ami->session) {
+		ami_disconnect(ami->session);
+		ami_destroy(ami->session);
 	}
-	close_if(ami_log_fd);
+	close_if(ami->logfd);
 }
 
-static void ami_disconnect_callback(struct ami_session *ami)
+static void ami_disconnect_callback(struct ami_session *session)
 {
+	struct bbs_ami_session *ami = ami_get_callback_data(session);
 	int sleep_ms = 500;
 
-	UNUSED(ami);
+	set_ami_status(ami, 0);
 
-	set_ami_status(0);
 	bbs_warning("Asterisk Manager Interface connection lost\n");
 
 	if (bbs_module_is_shutting_down()) {
@@ -383,9 +394,9 @@ static void ami_disconnect_callback(struct ami_session *ami)
 	}
 
 	/* Write lock, since nobody can be accessing the global AMI session while we're recreating it */
-	reconnecting = 1;
+	ami->reconnecting = 1;
 	RWLIST_WRLOCK(&callbacks);
-	cleanup_ami();
+	cleanup_ami(ami);
 	/* Perhaps Asterisk restarted (or crashed).
 	 * Try to reconnect if it comes back up. */
 	for (;;) {
@@ -393,7 +404,7 @@ static void ami_disconnect_callback(struct ami_session *ami)
 		res = load_config(0);
 		if (!res) {
 			bbs_verb(4, "Asterisk Manager Interface connection re-established\n");
-			post_reconnect = 1;
+			ami->post_reconnect = 1;
 			/* No need to call set_ami_status(1) here,
 			 * when we reconnect, we'll get a FullyBooted event
 			 * which will do this. */
@@ -419,7 +430,7 @@ static void ami_disconnect_callback(struct ami_session *ami)
 		}
 	}
 	RWLIST_UNLOCK(&callbacks);
-	reconnecting = 0;
+	ami->reconnecting = 0;
 }
 
 static int load_config(int open_logfile)
@@ -431,6 +442,7 @@ static int load_config(int open_logfile)
 	char password[92] = ""; /* Avoid uninitialized memory access if it wasn't set */
 	char logfile[512];
 	unsigned int loglevel = 0;
+	struct bbs_ami_session *ami = &global_bbs_ami_session;
 
 	cfg = bbs_config_load("mod_asterisk_ami.conf", 1);
 	if (!cfg) {
@@ -442,8 +454,8 @@ static int load_config(int open_logfile)
 	res |= bbs_config_val_set_str(cfg, "ami", "password", password, sizeof(password));
 
 	if (open_logfile && !bbs_config_val_set_str(cfg, "logging", "logfile", logfile, sizeof(logfile))) {
-		ami_log_fd = open(logfile, O_WRONLY | O_CREAT | O_APPEND, 0644);
-		if (ami_log_fd != -1) {
+		ami->logfd = open(logfile, O_WRONLY | O_CREAT | O_APPEND, 0644);
+		if (ami->logfd != -1) {
 			bbs_config_val_set_uint(cfg, "logging", "loglevel", &loglevel);
 			if (loglevel > 10) {
 				bbs_warning("Maximum AMI debug level is 10\n");
@@ -459,16 +471,18 @@ static int load_config(int open_logfile)
 		if (!s) {
 			bbs_error("AMI connection failed to %s\n", hostname);
 			res = -1;
+			close_if(ami->logfd);
 			goto cleanup;
 		}
-		ami_set_debug(s, ami_log_fd);
+		ami_set_debug(s, ami->logfd);
 		ami_set_debug_level(s, (int) loglevel);
+		ami_set_callback_data(s, ami);
 		if (ami_action_login(s, username, password)) {
 			bbs_error("AMI login failed for user %s@%s\n", username, hostname);
 			ami_disconnect(s);
 			res = -1;
 		} else {
-			ami_session = s;
+			ami->session = s;
 		}
 	}
 
@@ -486,7 +500,7 @@ static int load_module(void)
 		return -1;
 	}
 	if (load_config(1)) {
-		close_if(ami_log_fd);
+		cleanup_ami(&global_bbs_ami_session);
 		bbs_alertpipe_close(ami_alert_pipe);
 		return -1;
 	}
@@ -496,6 +510,8 @@ static int load_module(void)
 
 static int unload_module(void)
 {
+	struct bbs_ami_session *ami = &global_bbs_ami_session;
+
 	/* If ami_disconnect_callback is currently being executed by some thread,
 	 * get rid of it. */
 	bbs_alertpipe_write(ami_alert_pipe); /* Wake up anything waiting in ami_disconnect_callback */
@@ -506,10 +522,10 @@ static int unload_module(void)
 		bbs_debug(3, "Attempting to lock callback list to ensure safe unload\n");
 		RWLIST_WRLOCK(&callbacks);
 		RWLIST_UNLOCK(&callbacks);
-	} while (reconnecting);
+	} while (ami->reconnecting);
 
 	bbs_cli_unregister_multiple(cli_commands_ami);
-	cleanup_ami();
+	cleanup_ami(&global_bbs_ami_session);
 	bbs_alertpipe_close(ami_alert_pipe);
 	return 0;
 }
