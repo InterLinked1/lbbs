@@ -257,7 +257,7 @@ static int http_send_headers(struct http_session *http)
 	 * since they would be duped in the header list, and not override what is sent here. */
 	HTTP_SEND_HEADER(http, "Server: %s\r\n", SERVER_NAME);
 
-	if (http->req->method & HTTP_VERSION_1_1_OR_NEWER) {
+	if (http->req->version & HTTP_VERSION_1_1_OR_NEWER) {
 		struct tm tm;
 		time_t now;
 		char datestr[30];
@@ -288,7 +288,7 @@ static int http_send_headers(struct http_session *http)
 	}
 
 	/* Include Connection header, except for websocket upgrades, which already have one */
-	if ((http->req->method & HTTP_VERSION_1_1_OR_NEWER) && http->res->code != HTTP_SWITCHING_PROTOCOLS) {
+	if ((http->req->version & HTTP_VERSION_1_1_OR_NEWER) && http->res->code != HTTP_SWITCHING_PROTOCOLS) {
 		HTTP_SEND_HEADER(http, "Connection: %s\r\n", http->req->keepalive ? "keep-alive" : "close");
 	}
 
@@ -702,7 +702,7 @@ static int parse_request_line(struct http_session *restrict http, char *s)
 	if (strlen_zero(s)) {
 		return HTTP_BAD_REQUEST;
 	}
-	if (!strcmp(s, "HTTP/1.1")) {
+	if (!strcmp(s, "HTTP/1.1")) { /* First, since it's more common */
 		http->req->version = HTTP_VERSION_1_1;
 	} else if (!strcmp(s, "HTTP/1.0")) {
 		http->req->version = HTTP_VERSION_1_0;
@@ -743,7 +743,7 @@ static int process_headers(struct http_session *http)
 			}
 		}
 	} else {
-		if (http->req->method & HTTP_VERSION_1_1) {
+		if (http->req->version & HTTP_VERSION_1_1_OR_NEWER) {
 			/* The Host request header is mandatory in HTTP 1.1. */
 			bbs_warning("HTTP 1.1 client missing Host header\n");
 			return HTTP_BAD_REQUEST;
@@ -751,7 +751,7 @@ static int process_headers(struct http_session *http)
 	}
 
 	/* Keep alive */
-	if (http->req->method & HTTP_VERSION_1_1_OR_NEWER) {
+	if (http->req->version & HTTP_VERSION_1_1_OR_NEWER) {
 		value = http_request_header(http, "Connection");
 		if (value) {
 			http->req->keepalive = !strcasecmp(value, "close") || !strcasecmp(value, "retry-after") ? 0 : 1;

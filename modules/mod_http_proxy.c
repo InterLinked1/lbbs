@@ -262,7 +262,7 @@ static enum http_response_code proxy_handler(struct http_session *http)
 	/* Determine if the client is authorized to be proxying at all. */
 	if (!proxy_client_authorized(http->node->ip, host)) {
 		bbs_debug(2, "Client %s is not authorized to proxy to %s:%u\n", http->node->ip, host, port);
-		return HTTP_UNAUTHORIZED;
+		return HTTP_FORBIDDEN;
 	}
 
 	/* If we're tunneling, only allow connections to ports 80 and 443, to avoid proxying arbitrary protocols. */
