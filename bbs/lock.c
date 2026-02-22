@@ -23,6 +23,13 @@
 #define USE_ROBUST_MUTEXES
 #define ALWAYS_INITIALIZE 1
 
+/* Temporarily uncomment to log locks/unlocks to locklog.txt
+ * This can help debug locking issues, esp. for rwlock's,
+ * where the last thread to grab a lock may not be the thread
+ * causing an issue. By analyzing lock/unlock pairs, you can
+ * more easily find the offending thread. */
+/* #define ENABLE_LOCK_LOGFILE */
+
 /* In general, there should not be *that* many readers for a lock.
  * However, tls.c currently requires a read lock for every TLS
  * connection, so this should be at least as high as maxnodes in nodes.conf,
@@ -61,6 +68,19 @@
 	safe_strncpy(t->info.filename, filename, sizeof(t->info.filename)); \
 	t->info.lineno = lineno; \
 	t->info.lwp = bbs_gettid(); 
+
+#ifdef ENABLE_LOCK_LOGFILE
+FILE *locklogfp; /* This is never closed anywhere, but this is just a hack to dump lock interactions for debugging */
+#define lock_log(res) { \
+	if (unlikely(!locklogfp)) { \
+		locklogfp = fopen(DIRCAT(BBS_LOG_DIR, "locklog.txt"), "w"); \
+	} \
+	fprintf(locklogfp, "%ld [%d] [%s:%d %s] %s(%s) = %d\n", time(NULL), bbs_gettid(), filename, lineno, func, __func__, name, res); \
+	fflush(locklogfp); \
+}
+#else
+#define lock_log(res)
+#endif
 
 static int was_statically_initialized(struct bbs_lock_info *info)
 {
@@ -189,7 +209,14 @@ int __bbs_mutex_lock(bbs_mutex_t *t, const char *filename, int lineno, const cha
 				lock_debug("Spent %ld seconds so far waiting for mutex %s (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
 					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 				start = now;
-			} else if (c == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
+			} else if (c == 1 && t->info.owners == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
+				/* We limit this check to if there is only 1 owner of the lock.
+				 * This is because the offender could grab the lock first,
+				 * then somebody else could grab it and unlock it.
+				 * The lock structure has lock info from the second caller, which no longer holds the lock,
+				 * while the first owner is the real culprit.
+				 * Without storing a linear amount of information (data for each owner),
+				 * it's hard to be more accurate here. Define ENABLE_LOCK_LOGFILE to debug these kinds of issues more accurately. */
 				lock_error("Recursive attempt to lock %s, definite deadlock! (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
 					name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 			} else if (elapsed == 10) {
@@ -215,6 +242,7 @@ int __bbs_mutex_lock(bbs_mutex_t *t, const char *filename, int lineno, const cha
 #else
 	res = pthread_mutex_lock(&t->mutex);
 #endif /* DETECT_DEADLOCKS */
+	lock_log(res);
 #ifdef USE_ROBUST_MUTEXES
 	if (unlikely(res == EOWNERDEAD)) { /* Don't use bbs_assertion_failed here since we may not be normal-log safe at the moment */
 		lock_warning("Owner of mutex %s is dead! (Acquired at %s:%d by LWP %d)\n", name, t->info.filename, t->info.lineno, t->info.lwp);
@@ -271,6 +299,7 @@ int __bbs_mutex_trylock(bbs_mutex_t *t, const char *filename, int lineno, const 
 	}
 
 	res = pthread_mutex_trylock(&t->mutex);
+	lock_log(res);
 #ifdef USE_ROBUST_MUTEXES
 	if (unlikely(res == EOWNERDEAD)) { /* Don't use bbs_assertion_failed here since we may not be normal-log safe at the moment */
 		lock_warning("Owner of mutex %s is dead! (Acquired at %s:%d by LWP %d)\n", name, t->info.filename, t->info.lineno, t->info.lwp);
@@ -311,6 +340,7 @@ int __bbs_mutex_unlock(bbs_mutex_t *t, const char *filename, int lineno, const c
 	}
 
 	res = pthread_mutex_unlock(&t->mutex);
+	lock_log(res);
 	if (unlikely(res)) {
 		lock_warning("Failed to unlock mutex %s\n", name);
 	}
@@ -402,7 +432,7 @@ int __bbs_rwlock_rdlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 				lock_debug("Spent %ld seconds so far waiting to rdlock %s (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
 					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 				start = now;
-			} else if (c == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
+			} else if (c == 1 && t->info.owners == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
 				lock_error("Recursive attempt to rdlock %s, definite deadlock! (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
 					name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 			} else if (elapsed == 30) { /* Use a higher threshold for rwlocks than mutexes, since there could be multiple readers */
@@ -425,6 +455,7 @@ int __bbs_rwlock_rdlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 #else
 	res = pthread_rwlock_rdlock(&t->lock);
 #endif /* DETECT_DEADLOCKS */
+	lock_log(res);
 	if (unlikely(res)) {
 		lock_warning("Failed to obtain rdlock %s: %s\n", name, strerror(res));
 	} else {
@@ -473,7 +504,7 @@ int __bbs_rwlock_wrlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 				lock_debug("Spent %ld seconds so far waiting to wrlock %s (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
 					diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 				start = now;
-			} else if (c == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
+			} else if (c == 1 && t->info.owners == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
 				lock_error("Recursive attempt to wrlock %s, definite deadlock! (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
 					name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
 			} else if (elapsed == 30) { /* Use a higher threshold for rwlocks than mutexes, since there could be multiple readers */
@@ -496,6 +527,7 @@ int __bbs_rwlock_wrlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 #else
 	res = pthread_rwlock_wrlock(&t->lock);
 #endif /* DETECT_DEADLOCKS */
+	lock_log(res);
 	if (unlikely(res)) {
 		lock_warning("Failed to obtain wrlock %s: %s\n", name, strerror(res));
 	} else {
@@ -521,6 +553,7 @@ int __bbs_rwlock_tryrdlock(bbs_rwlock_t *t, const char *filename, int lineno, co
 	}
 
 	res = pthread_rwlock_tryrdlock(&t->lock);
+	lock_log(res);
 	if (!res) {
 		pthread_mutex_lock(&t->intlock);
 		t->info.lastlocked = time(NULL);
@@ -545,6 +578,7 @@ int __bbs_rwlock_trywrlock(bbs_rwlock_t *t, const char *filename, int lineno, co
 	}
 
 	res = pthread_rwlock_trywrlock(&t->lock);
+	lock_log(res);
 	if (!res) {
 		/* If wrlock succeeded, we don't need to lock the internal mutex, since there can't be any readers right now */
 		t->info.lastlocked = time(NULL);
@@ -576,6 +610,7 @@ int __bbs_rwlock_unlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 	pthread_mutex_unlock(&t->intlock);
 
 	res = pthread_rwlock_unlock(&t->lock);
+	lock_log(res);
 	if (unlikely(res)) {
 		lock_warning("Failed to unlock lock %s\n", name);
 	}
