@@ -431,6 +431,18 @@ static struct autoload_module *find_autoload_module(const char *module)
 	return NULL;
 }
 
+#ifndef DLOPEN_ONLY_ONCE
+static int dependency_noloaded(const char *name)
+{
+	struct autoload_module *a = find_autoload_module(name);
+	if (a) {
+		return a->noload;
+	}
+	bbs_debug(5, "Couldn't find '%s' in autoload list?\n", name);
+	return 0;
+}
+#endif
+
 /* Forward declaration */
 static int load_resource(struct autoload_module *a, const char *restrict resource_name, unsigned int suppress_logging);
 
@@ -508,6 +520,12 @@ static struct bbs_module *load_dynamic_module(struct autoload_module *a, const c
 								res = -1;
 								break;
 							}
+						}
+						if (dependency_noloaded(d->name)) {
+							/* Either the dependency or another module upon which the dependency is dependent is noloaded */
+							bbs_error("Module %s is dependent on %s, which cannot be loaded\n", a->name, d->name);
+							res = -1;
+							break;
 						}
 						bbs_debug(1, "Preloading %s on the fly since it's required by %s\n", dependency, resource_in);
 						/* Since we automatically reorder modules with dependencies for autoload,
