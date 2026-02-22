@@ -17,6 +17,13 @@
  * \author Naveen Albert <bbs@phreaknet.org>
  */
 
+/*!
+ * \brief Get the name of the AMI session used by mod_asterisk_queues
+ * \return Named session
+ * \return NULL for default session (first session configured in mod_asterisk_ami.conf)
+ */
+const char *bbs_queue_ami_session(void);
+
 struct queue_call_handle {
 	/* Agent info */
 	struct bbs_node *node;	/*!< Node of agent handling call */

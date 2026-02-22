@@ -27,6 +27,7 @@
 #include "include/module.h"
 #include "include/config.h"
 #include "include/linkedlists.h"
+#include "include/startup.h"
 #include "include/node.h"
 #include "include/term.h"
 #include "include/user.h"
@@ -38,6 +39,15 @@
 #include "include/mod_asterisk_ami.h"
 #include "include/mod_asterisk_queues.h"
 #include "include/mod_ncurses.h"
+
+static char session_name_buf[64] = "";
+static const char *ami_session = NULL; /* Default is NULL (the default/first session in mod_asterisk_ami.conf) */
+
+const char *bbs_queue_ami_session(void)
+{
+	/* Allow any dependent modules to use the same AMI session as we do */
+	return ami_session;
+}
 
 struct queue;
 
@@ -201,9 +211,10 @@ static void del_agent(struct agent *agent)
 	}
 	RWLIST_UNLOCK(&queues);
 
-	/* Finally, remove the agent itself, now that there are no longer any references to it,
-	 * besides ours. */
-	if (!RWLIST_WRLOCK_REMOVE_BY_FIELD(&agents, id, agent->id, entry)) {
+	/* Finally, remove the agent itself, now that there are no longer any references to it, besides ours.
+	 * The agent ID is not unique if the agent is logged into multiple sessions across terminals,
+	 * but the node is, so we use that as the unique field by which we remove agents. */
+	if (!RWLIST_WRLOCK_REMOVE_BY_FIELD(&agents, node, agent->node, entry)) {
 		bbs_error("Agent to unregister not in agent list?\n");
 	}
 
@@ -268,9 +279,9 @@ static int update_queue_stats(void)
 
 	/* If only one queue needs to be refreshed, then just ask for that one by name. */
 	if (stale_queues == 1) {
-		resp = bbs_ami_action(NULL, "QueueStatus", "Queue:%s", lastq->name);
+		resp = bbs_ami_action(ami_session, "QueueStatus", "Queue:%s", lastq->name);
 	} else {
-		resp = bbs_ami_action(NULL, "QueueStatus", "");
+		resp = bbs_ami_action(ami_session, "QueueStatus", "");
 	}
 
 	if (!resp || !resp->success) {
@@ -392,7 +403,7 @@ static int call_is_dead(struct queue_call *call)
 	if (call->dead) {
 		return -1;
 	}
-	val = bbs_ami_action_getvar(NULL, "queueuniq", call->channel);
+	val = bbs_ami_action_getvar(ami_session, "queueuniq", call->channel);
 	if (!val) {
 		__mark_dead(call);
 		return 1;
@@ -580,12 +591,12 @@ static int ami_callback(struct ami_event *e, const char *eventname)
 			bbs_error("Missing mandatory fields\n");
 			return -1;
 		}
-		queueid = bbs_ami_action_getvar(NULL, queue_id_var, channel);
+		queueid = bbs_ami_action_getvar(ami_session, queue_id_var, channel);
 		if (strlen_zero(queueid)) {
 			return -1;
 		}
-		ani2 = bbs_ami_action_getvar(NULL, "CALLERID(ani2)", channel);
-		dnis = bbs_ami_action_getvar(NULL, "CALLERID(DNID)", channel);
+		ani2 = bbs_ami_action_getvar(ami_session, "CALLERID(ani2)", channel);
+		dnis = bbs_ami_action_getvar(ami_session, "CALLERID(DNID)", channel);
 		new_call(queue, atoi(queueid), atoi(S_IF(ani2)), channel, callerid, callername, dnis);
 		free_if(queueid);
 		free_if(ani2);
@@ -653,7 +664,7 @@ static int ami_callback(struct ami_event *e, const char *eventname)
 static int update_member_stats(struct agent *agent)
 {
 	int i;
-	struct ami_response *resp = bbs_ami_action(NULL, "QueueStatus", "Member:%d", agent->id);
+	struct ami_response *resp = bbs_ami_action(ami_session, "QueueStatus", "Member:%d", agent->id);
 
 	/* We still need to initialize the agent-specific stats for all queues.
 	 * This response will be smaller (maybe much smaller) than asking for everything. */
@@ -808,7 +819,7 @@ static int queue_agent_status(struct agent *agent, struct queue *queue)
 	int sel;
 
 	do {
-		resp = bbs_ami_action(NULL, "QueueStatus", "Queue:%s", queue->name);
+		resp = bbs_ami_action(ami_session, "QueueStatus", "Queue:%s", queue->name);
 		if (!resp || !resp->success) {
 			if (resp) {
 				ami_resp_free(resp);
@@ -1218,6 +1229,9 @@ static int load_config(void)
 		return -1;
 	}
 
+	if (!bbs_config_val_set_str(cfg, "general", "amisession", session_name_buf, sizeof(session_name_buf))) {
+		ami_session = session_name_buf;
+	}
 	res |= bbs_config_val_set_str(cfg, "general", "title", system_title, sizeof(system_title));
 	res |= bbs_config_val_set_str(cfg, "general", "callmenutitle", call_menu_title, sizeof(call_menu_title));
 	res |= bbs_config_val_set_str(cfg, "general", "queueidvar", queue_id_var, sizeof(queue_id_var));
@@ -1315,11 +1329,24 @@ static int load_module(void)
 		RWLIST_REMOVE_ALL(&queues, entry, free);
 		return -1;
 	}
-	if (update_queue_stats()) {
-		RWLIST_REMOVE_ALL(&queues, entry, free);
-		RWLIST_REMOVE_ALL(&calls, entry, free);
-		return -1;
+
+	/* If BBS is starting up, we need to wait until startup completes
+	 * to update queue stats, because AMI sessions don't start until
+	 * after startup completes.
+	 *
+	 * If startup is already complete, we can do it now in a blocking manner,
+	 * and decline to load if we can't do it. */
+	if (bbs_is_fully_started()) {
+		if (update_queue_stats()) {
+			bbs_ami_callback_unregister(ami_callback);
+			RWLIST_REMOVE_ALL(&queues, entry, free);
+			RWLIST_REMOVE_ALL(&calls, entry, free);
+			return -1;
+		}
+	} else {
+		bbs_run_when_started(update_queue_stats, STARTUP_PRIORITY_DEPENDENT);
 	}
+
 	if (bbs_register_door("astqueue", agent_exec)) {
 		bbs_ami_callback_unregister(ami_callback);
 		RWLIST_REMOVE_ALL(&queues, entry, free);
