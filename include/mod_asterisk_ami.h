@@ -48,6 +48,7 @@ struct ami_event;
  * \param num_len Length of namebuf. Should be at least 16.
  * \retval 0 on success (successfully retrieved a session with associated Caller ID information)
  * \retval -1 No Softmodem session corresponds with this TCP connection
+ * \note Only the default AMI session (first session in mod_asterisk_ami.conf) is used
  */
 int bbs_ami_softmodem_get_callerid(struct bbs_node *node, char *numberbuf, size_t num_len, char *namebuf, size_t name_len);
 
