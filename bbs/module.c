@@ -520,12 +520,12 @@ static struct bbs_module *load_dynamic_module(struct autoload_module *a, const c
 								res = -1;
 								break;
 							}
-						}
-						if (dependency_noloaded(d->name)) {
-							/* Either the dependency or another module upon which the dependency is dependent is noloaded */
-							bbs_error("Module %s is dependent on %s, which cannot be loaded\n", a->name, d->name);
-							res = -1;
-							break;
+							if (d && dependency_noloaded(d->name)) {
+								/* Either the dependency or another module upon which the dependency is dependent is noloaded */
+								bbs_error("Module %s is dependent on %s, which is noloaded\n", a->name, d->name);
+								res = -1;
+								break;
+							}
 						}
 						bbs_debug(1, "Preloading %s on the fly since it's required by %s\n", dependency, resource_in);
 						/* Since we automatically reorder modules with dependencies for autoload,
