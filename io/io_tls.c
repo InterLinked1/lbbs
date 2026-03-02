@@ -198,6 +198,12 @@ static void poll_init(void *varg, int *restrict fd0, int *restrict fd1)
 static int io_read_pending(void *varg)
 {
 	struct tls_client *t = varg;
+	if (bbs_assertion_failed(t != NULL)) {
+		/* XXX Crashes have been observed in this function
+		 * where t was NULL, so until that's resolved,
+		 * log a backtrace and return "no" */
+		return 0;
+	}
 	/* A previous SSL operation may have read in some data that is buffered,
 	 * and polling the file descriptor won't detect that, since there
 	 * isn't actually any new data available on the network socket itself. */
