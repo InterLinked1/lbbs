@@ -1018,6 +1018,12 @@ static void handle_session(ssh_event event, ssh_session session)
 	cdata.child_stdin = cdata.child_stdout = -1;
 
 	if (cdata.nodethread) {
+		/* Because SSH uniquely involves an additional thread, we have to manually kill any child process
+		 * prior to attempting to join the node thread. Otherwise, the child will stay running forever,
+		 * and pthread_join will hang forever. */
+		if (cdata.node) {
+			bbs_node_kill_child(cdata.node); /* Okay to call even if there's no child */
+		}
 		bbs_pthread_join(cdata.nodethread, NULL);
 	}
 	if (cdata.node && is_sftp) {
