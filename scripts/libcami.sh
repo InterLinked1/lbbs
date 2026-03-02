@@ -10,5 +10,12 @@ else
 	git stash
 	git pull
 fi
-make library
-make install
+ostype=$( uname -o )
+printf "OSTYPE: %s\n" "$ostype"
+MAKE=make
+if [ "$ostype" = "FreeBSD" ]; then
+	printf "FreeBSD detected\n"
+	MAKE=gmake
+fi
+$MAKE library
+$MAKE install
