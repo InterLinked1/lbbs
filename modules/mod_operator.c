@@ -258,8 +258,9 @@ static int handle_default(struct queue_call_handle *qch)
 static int operator_dial_number(struct queue_call_handle *qch)
 {
 	char othernum[32];
+	char anistr[16] = "";
+	char dialnum[sizeof(othernum) + sizeof(anistr) + 5]; /* min size to make gcc happy */
 	char agentchan[64];
-	char dialnum[38];
 
 	/* Node is already buffered here */
 	bbs_node_writef(qch->node, "\nSTATION-TO-STATION NBR TO DIAL: ");
@@ -276,9 +277,30 @@ static int operator_dial_number(struct queue_call_handle *qch)
 		bbs_debug(3, "Invalid number, aborting\n");
 		return 0;
 	}
+
+	/* If we don't have valid ANI for this caller, allow for Operator Number Identification */
+	if (qch->ani2 == 02) { /* ANI Failure */
+		bbs_node_writef(qch->node, "ANI FAILURE - CALLER NUMBER: ");
+		/* While tempting to insert a pause between the called number and the ANI, e.g. using 'w',
+		 * we can't do that as the 'w' is interpreted literally and would be included in the Read output.
+		 * The pause isn't needed anyways. */
+		if (bbs_node_read_line(qch->node, MIN_MS(5), anistr, sizeof(anistr)) <= 0) {
+			return 0; /* If no number entered or other issue, just bail out */
+		}
+	}
+
 	/* Station-to-station call.
-	 * For some reason, xfer context wants 2 digits, so **, then call type (1/2/3), then number, then # to terminate in case <7 digits. */
-	snprintf(dialnum, sizeof(dialnum), "w1%s%sw*2", othernum, strlen(othernum) < 7 ? "#" : "");
+	 * For some reason, xfer context wants 2 digits, so **, then call type (1/2/3), then number, then # to terminate in case < 7 digits.
+	 *
+	 * Note also that the leading 'w' is not actually valid, but should get ignored provided there is no 'w' extension in the target context,
+	 * since we use BackGround() to capture the first digit in Asterisk. If doing a multi-digit read, we cannot stuff in 'w's or they
+	 * will be interpreted as literal DTMF digits. This is because the AttendedTransfer manager action is quite primitive, and doesn't
+	 * allow for pauses between digits.
+	 *
+	 * The trailing 'w' before the *2 is not valid either, but does likewise have the effect of adding a slight pause (due to the
+	 * DTMF emulation time) and it doesn't harm anything since at that point, the call is established, and 'w' isn't
+	 * part of any valid feature sequences in features.conf. */
+	snprintf(dialnum, sizeof(dialnum), "w1%s%s%sw*2", othernum, strlen(othernum) < 7 ? "#" : "", anistr);
 	if (bbs_ami_action_response_result(ami_session, bbs_ami_action_axfer(ami_session, agentchan, dialnum, context_operator_xfer))) {
 		bbs_warning("Failed to set up attended transfer to %s\n", dialnum);
 		return -1;
