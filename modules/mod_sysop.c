@@ -196,6 +196,26 @@ static int cli_fdclose(struct bbs_cli_args *a)
 	return 0;
 }
 
+static int cli_kickmod(struct bbs_cli_args *a)
+{
+	unsigned int kicked;
+	struct bbs_module *mod;
+
+	/* Note: This command is here and not in node.c,
+	 * because bbs_require_module requires a module reference,
+	 * and node.c is part of the core and doesn't have one.
+	 * It's fine, everything we need is a public function. */
+	mod = bbs_require_module(a->argv[1]);
+	if (!mod) {
+		return -1;
+	}
+	kicked = bbs_node_shutdown_mod(mod);
+	bbs_unrequire_module(mod);
+
+	bbs_dprintf(a->fdout, "Kicked %u node%s\n", kicked, ESS(kicked));
+	return 0;
+}
+
 static int sysop_command(struct sysop_console *console, const char *s)
 {
 	int res;
@@ -877,6 +897,7 @@ static struct bbs_cli_entry cli_commands_sysop[] = {
 	BBS_CLI_COMMAND(cli_license, "license", 1, "Show license notice", NULL),
 	BBS_CLI_COMMAND(cli_warranty, "warranty", 1, "Show warranty notice", NULL),
 	BBS_CLI_COMMAND(cli_fdclose, "fdclose", 2, "Manually close a file descriptor associated with a socket", "fdclose <fd>"),
+	BBS_CLI_COMMAND(cli_kickmod, "kickmod", 2, "Kick all nodes using a module", "kickmod <module>"),
 };
 
 static int unload_module(void)

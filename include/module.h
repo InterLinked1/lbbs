@@ -98,6 +98,8 @@ void __bbs_module_unref(struct bbs_module *mod, int pair, void *refmod, const ch
 
 struct bbs_module *__bbs_require_module(const char *module, void *refmod) __attribute__ ((nonnull (1, 2)));
 
+#define bbs_unrequire_module(module) __bbs_unrequire_module(module, BBS_MODULE_SELF)
+
 /*! \brief Indicate that this module is no longer dependent on the specified module. */
 void __bbs_unrequire_module(struct bbs_module *mod, void *refmod);
 
