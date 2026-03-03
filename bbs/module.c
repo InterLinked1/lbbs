@@ -1786,6 +1786,7 @@ int bbs_reload(const char *name, int fd)
 {
 	int res = 0;
 	int reloaded = 0;
+	int match = 0;
 	struct reload_handler *r;
 
 	/* If the reload was triggered by the main thread,
@@ -1813,6 +1814,7 @@ int bbs_reload(const char *name, int fd)
 			/* These are all in the core, so no need to ref/unref a module.
 			 * Just execute the callback. */
 			rres = r->reloader(fd);
+			match++;
 			if (!res) {
 				reloaded++;
 			}
@@ -1829,22 +1831,23 @@ int bbs_reload(const char *name, int fd)
 			return 0;
 		}
 	}
-	return 1;
+	/* If we didn't match anything, then we never tried to reload anything.
+	 * If we did, and nothing reloaded successfully, then we did and it failed. */
+	return match ? 1 : -1;
 }
 
 static int reload_core(const char *name, int fd)
 {
 	int res = bbs_reload(name, fd);
-	if (res) {
+	if (res == -1 && name) {
+		/* Either something failed to reload, or we didn't actually reload anything (typo in target) */
+		bbs_dprintf(fd, "No such component to reload: '%s'\n", name);
+	} else if (res) {
 		/* Handler(s) failed to reload */
 		bbs_dprintf(fd, "%s\n", name ? "Reload failed" : "Full or partial reload failure");
 		return res;
 	}
-	if (name) {
-		/* Either something failed to reload, or we didn't actually reload anything (typo in target) */
-		bbs_dprintf(fd, "No such component to reload: '%s'\n", name);
-	}
-	return 1;
+	return res;
 }
 
 static int cli_reload(struct bbs_cli_args *a)

@@ -27,6 +27,7 @@
 #include "include/node.h" /* for node->user */
 #include "include/user.h"
 #include "include/utils.h"
+#include "include/reload.h"
 
 /*!
  * \note One thing I did not like about the original transfer implementation
@@ -780,7 +781,7 @@ int bbs_transfer_available(void)
 	return rootlen ? 1 : 0;
 }
 
-int bbs_transfer_config_load(void)
+static int load_config(void)
 {
 	char homedir[256];
 	struct bbs_config *cfg = bbs_config_load("transfers.conf", 1); /* Load cached version, since multiple transfer protocols may use this config */
@@ -832,5 +833,24 @@ int bbs_transfer_config_load(void)
 	bbs_config_val_set_int(cfg, "privs", "newdirs", &privs[TRANSFER_DESTRUCTIVE]);
 
 	bbs_config_unlock(cfg);
+	return 0;
+}
+
+static int transfer_reload(int fd)
+{
+	load_config();
+	bbs_dprintf(fd, "Reloaded transfer settings\n");
+	return 0;
+}
+
+int bbs_transfer_config_load(void)
+{
+	if (load_config()) {
+		return -1;
+	}
+
+	/* Even if we fail to initialize the transfer subsystem now,
+	 * we register the reload handler so it could be started later. */
+	bbs_register_reload_handler("transfer", "Reload transfer settings", transfer_reload);
 	return 0;
 }
