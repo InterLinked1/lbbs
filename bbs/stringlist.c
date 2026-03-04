@@ -114,6 +114,12 @@ const char *stringlist_next(const struct stringlist *list, struct stringitem **i
 	return NULL;
 }
 
+const char *stringlist_peek(const struct stringlist *list)
+{
+	struct stringitem *i = NULL;
+	return stringlist_next(list, &i);
+}
+
 char *stringlist_pop(struct stringlist *list)
 {
 	struct stringitem *i;

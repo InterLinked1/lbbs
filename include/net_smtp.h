@@ -260,6 +260,14 @@ const char *smtp_messageid(struct smtp_session *smtp);
 /*! \brief Time that message was received */
 time_t smtp_received_time(struct smtp_session *smtp);
 
+/*!
+ * \brief Get the sole recipient of an SMTP transaction
+ * \param smtp
+ * \return Recipient email address, if the transaction has only 1 recipient
+ * \return NULL if the transaction has 2 or more recipients
+ */
+const char *smtp_sole_recipient(struct smtp_session *smtp);
+
 /*! \brief Score of protocol violation or spaminess severity */
 unsigned int smtp_failure_count(struct smtp_session *smtp);
 

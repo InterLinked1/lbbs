@@ -34,6 +34,27 @@ static int prepend_received(struct smtp_filter_data *f)
 	const char *prot;
 	char timestamp[40];
 
+	/* Because the Received header is added in a filter with COMBINED scope,
+	 * we do not have access to per-recipient information yet, so if there
+	 * are multiple, we can't uniquely add recipient information here.
+	 * However, the common case for the majority of transactions is that the
+	 * transaction has only 1 recipient anyways. In that case, just use that recipient,
+	 * since it makes no difference if we add the recipient "early".
+	 *
+	 * If the transaction has multiple recipients, then we omit adding the recipients
+	 * entirely at this point. (I've observed other SMTP implementations doing this,
+	 * e.g. Purely Mail, so this seems like a reasonable approach.)
+	 *
+	 * For multi-recipient transactions, messages will not have recipient information
+	 * in the Received header; however, the same information is still available
+	 * in the "Delivered-To" header (since this is added with INDIVIDUAL scope).
+	 * So, no information is lost.
+	 *
+	 * Also, keep in mind that aside from local submissions to multiple local recipients,
+	 * multi-recipient transactions are not very common for inter-server transactions,
+	 * so this is a bit of an edge case anyways. */
+	const char *recipient = smtp_sole_recipient(f->smtp);
+
 	prot = smtp_protname(f->smtp);
 	smtp_timestamp(smtp_received_time(f->smtp), timestamp, sizeof(timestamp));
 
@@ -51,8 +72,11 @@ static int prepend_received(struct smtp_filter_data *f)
 		 * In lieu of that, we record what was provided for HELO/EHLO. */
 		const char *from = bbs_node_logged_in(f->node) ? (S_OR(smtp_from_address(f->smtp), f->from)) : smtp_sender_hostname(f->smtp);
 		/* For messages received by message submission agents, mask the sender's real IP address */
-		smtp_filter_write(f, "Received: from [HIDDEN] (Authenticated sender: %s)\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
-			from, smtp_hostname(), prot, f->recipient, timestamp);
+		smtp_filter_write(f, "Received: from [HIDDEN] (Authenticated sender: %s)\r\n\tby %s with %s%s\r\n\t%s%s%s%s\r\n",
+			from, smtp_hostname(), prot,
+			S_COR(recipient, "", ";"),
+			S_COR(recipient, "for ", ""), S_IF(recipient), S_COR(recipient, "; ", ""),
+			timestamp);
 	} else {
 		char hostname[256];
 		/* We allow for running this filter even without a node (e.g. for injected mail, such as mailing list posts). */
@@ -61,12 +85,15 @@ static int prepend_received(struct smtp_filter_data *f)
 		}
 		/* The first hostname is the HELO/EHLO hostname.
 		 * The second one is the reverse DNS hostname */
-		smtp_filter_write(f, "Received: from %s (%s [%s])\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
+		smtp_filter_write(f, "Received: from %s (%s [%s])\r\n\tby %s with %s%s\r\n\t%s%s%s%s\r\n",
 			S_OR(f->helohost, "localhost"),
 			/* Do not use S_COR for the below two: f->node is not a string */
 			f->node ? hostname : "localhost",
 			f->node ? f->node->ip : "127.0.0.1",
-			smtp_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
+			smtp_hostname(), prot,
+			S_COR(recipient, "", ";"),
+			S_COR(recipient, "for ", ""), S_IF(recipient), S_COR(recipient, "; ", ""),
+			timestamp); /* recipient already in <> */
 	}
 	return 0;
 }
@@ -86,6 +113,7 @@ static int relay_filter_cb(struct smtp_filter_data *f)
 	const char *prot;
 	char timestamp[40];
 	char hostname[256];
+	const char *recipient = smtp_sole_recipient(f->smtp);
 
 	/* XXX This is not the most elegant workaround, but is extremely critical!
 	 * This handles the case where a local user submits a message that is sent to an external party.
@@ -123,12 +151,15 @@ static int relay_filter_cb(struct smtp_filter_data *f)
 	 * then this logic may need to be refined.
 	 *
 	 * The first hostname is the HELO/EHLO hostname. The second one is the reverse DNS hostname */
-	smtp_filter_write(f, "Received: from %s (%s [%s])\r\n\tby %s with %s\r\n\tfor %s; %s\r\n",
+	smtp_filter_write(f, "Received: from %s (%s [%s])\r\n\tby %s with %s%s\r\n\t%s%s%s%s\r\n",
 		S_OR(f->helohost, "localhost"),
 		/* Do not use S_COR for the below two: f->node is not a string */
 		f->node ? hostname : "localhost",
 		f->node ? f->node->ip : "127.0.0.1",
-		smtp_hostname(), prot, f->recipient, timestamp); /* recipient already in <> */
+		smtp_hostname(), prot,
+		S_COR(recipient, "", ";"),
+		S_COR(recipient, "for ", ""), S_IF(recipient), S_COR(recipient, "; ", ""),
+		timestamp); /* recipient already in <> */
 
 	return 0;
 }

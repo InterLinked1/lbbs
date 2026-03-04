@@ -1569,6 +1569,14 @@ time_t smtp_received_time(struct smtp_session *smtp)
 	return smtp->tflags.received;
 }
 
+const char *smtp_sole_recipient(struct smtp_session *smtp)
+{
+	if (stringlist_size(&smtp->recipients) == 1) {
+		return stringlist_peek(&smtp->recipients);
+	}
+	return NULL;
+}
+
 unsigned int smtp_failure_count(struct smtp_session *smtp)
 {
 	return smtp->failures;

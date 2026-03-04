@@ -89,7 +89,17 @@ void stringlist_empty(struct stringlist *list);
 const char *stringlist_next(const struct stringlist *list, struct stringitem **i);
 
 /*!
- * \brief Pop the most recently added item to a string list
+ * \brief Retrieve the first stringlist item in a stringlist without removing it
+ * \param list
+ * \param i Initialize to NULL. The value will contain the next item so this function can be repeatedly called.
+ *        When NULL, this will return NULL again.
+ * \returns Next string, or NULL if end of list reached.
+ * \note The returned string must not be modified, since it remains in the list.
+ */
+const char *stringlist_peek(const struct stringlist *list);
+
+/*!
+ * \brief Pop the first (typically most recently added) item from a string list
  * \retval string if list is non-empty, NULL if list is empty.
  * \note Assumes list is WRLOCKed
  * \note The returned string must be freed using free()
