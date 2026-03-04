@@ -779,16 +779,12 @@ void mailbox_proxy_unlock(struct mailbox *mbox)
 
 void mailbox_watch(struct mailbox *mbox)
 {
-	mailbox_uid_lock(mbox); /* Borrow the UID lock since we need to do this atomically */
-	mbox->watchers += 1;
-	mailbox_uid_unlock(mbox);
+	bbs_atomic_fetchadd_int(&mbox->watchers, +1);
 }
 
 void mailbox_unwatch(struct mailbox *mbox)
 {
-	mailbox_uid_lock(mbox); /* Borrow the UID lock since we need to do this atomically */
-	mbox->watchers -= 1;
-	mailbox_uid_unlock(mbox);
+	bbs_atomic_fetchadd_int(&mbox->watchers, -1);
 }
 
 void mailbox_invalidate_quota_cache(struct mailbox *mbox)
