@@ -2351,7 +2351,7 @@ static int channels_in_common(struct irc_user *u1, struct irc_user *u2)
 		return 1; /* Same user */
 	}
 
-	RWLIST_RDLOCK(&channels);
+	RWLIST_RDLOCK_RECURSIVE(&channels, &channels_recurse);
 	RWLIST_TRAVERSE(&channels, channel, entry) {
 		struct irc_member *m1 = NULL, *m2 = NULL, *m;
 		/* channel->members is already RDLOCK'd */
@@ -2377,7 +2377,7 @@ static int channels_in_common(struct irc_user *u1, struct irc_user *u2)
 	} else {
 		bbs_debug(5, "Users do not share any common channels\n");
 	}
-	RWLIST_UNLOCK(&channels);
+	RWLIST_UNLOCK_RECURSIVE(&channels, &channels_recurse);
 
 	/* If channel is not NULL here, then we found a common channel. */
 	return channel ? 1 : 0;
