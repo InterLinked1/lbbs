@@ -128,6 +128,9 @@ static int floatcmp(const char *s, const char *expr, enum match_type matchtype)
 #define mailscript_log(mproc, loglevel, fmt, ...) \
 	bbs_user_file_log((unsigned int) mailscript_userid(mproc), filename, loglevel, mproc->iteration == FILTER_MAILBOX ? LOG_NOTICE : loglevel, fmt, ## __VA_ARGS__)
 
+#define mailscript_line_log(mproc, loglevel, filename, userline, fmt, ...) \
+	bbs_user_file_line_log((unsigned int) mailscript_userid(mproc), filename, userline, loglevel, mproc->iteration == FILTER_MAILBOX ? LOG_NOTICE : loglevel, fmt, ## __VA_ARGS__)
+
 /*! \brief retval -1 if no such header, 0 if not found, 1 if found */
 static int header_match(struct smtp_msg_process *mproc, const char *filename, const char *header, const char *find, enum match_type matchtype)
 {
@@ -251,7 +254,7 @@ static void __attribute__ ((nonnull (2, 3, 4))) str_match(struct smtp_msg_proces
 
 #define REQUIRE_ARG(s) \
 	if (strlen_zero(s)) { \
-		mailscript_log(mproc, LOG_WARNING, "Incomplete condition at %s:%d (%s must be nonempty)\n", filename, lineno, #s); \
+		mailscript_line_log(mproc, LOG_WARNING, filename, lineno, "Incomplete condition (%s must be nonempty)\n", #s); \
 		return 0; \
 	}
 
@@ -280,7 +283,7 @@ static int test_condition(struct smtp_msg_process *mproc, struct bbs_vars *vars,
 		} else if (!strcasecmp(s, "OUT")) {
 			match = mproc->direction == SMTP_MSG_DIRECTION_OUT;
 		} else {
-			mailscript_log(mproc, LOG_ERROR, "Invalid direction at %s:%d: %s\n", filename, lineno, s);
+			mailscript_line_log(mproc, LOG_ERROR, filename, lineno, "Invalid direction: %s\n", s);
 		}
 	} else if (!strcasecmp(next, "RETVAL")) {
 		match = numcmp(s, lastretval);
@@ -342,7 +345,7 @@ static int test_condition(struct smtp_msg_process *mproc, struct bbs_vars *vars,
 			found = header_match(mproc, filename, header, expr, MATCH_EQ);
 			match = found == 1;
 		} else {
-			mailscript_log(mproc, LOG_ERROR, "Invalid HEADER match type at %s:%d: %s\n", filename, lineno, matchtype);
+			mailscript_line_log(mproc, LOG_ERROR, filename, lineno, "Invalid HEADER match type: %s\n", matchtype);
 		}
 	} else if (!strcasecmp(next, "FILE")) {
 		char fullfile[1024];
@@ -398,10 +401,10 @@ static int test_condition(struct smtp_msg_process *mproc, struct bbs_vars *vars,
 			REQUIRE_ARG(expr);
 			match = !strlen_zero(val) && floatcmp(val, expr, MATCH_EQ);
 		} else {
-			mailscript_log(mproc, LOG_ERROR, "Invalid VAR match type at %s:%d: %s\n", filename, lineno, matchtype);
+			mailscript_line_log(mproc, LOG_ERROR, filename, lineno, "Invalid VAR match type: %s\n", matchtype);
 		}
 	} else {
-		mailscript_log(mproc, LOG_ERROR, "Invalid condition at %s:%d: %s %s\n", filename, lineno, next, S_IF(s));
+		mailscript_line_log(mproc, LOG_ERROR, filename, lineno, "Invalid condition: %s %s\n", next, S_IF(s));
 	}
 	match = negate ? !match : match;
 #ifdef EXTRA_DEBUG

@@ -28,6 +28,9 @@
 #include "include/linkedlists.h"
 #include "include/config.h"
 #include "include/utils.h"
+#include "include/user.h"
+#include "include/transfer.h"
+#include "include/mail.h"
 
 struct bbs_keyval {
 	char *key;
@@ -60,8 +63,12 @@ struct bbs_config {
 
 static RWLIST_HEAD_STATIC(configs, bbs_config);
 
-void __attribute__ ((format (gnu_printf, 8, 9))) __bbs_user_config_log(const char *file, int line, const char *func, unsigned int userid, const char *filename, enum bbs_log_level userlevel, enum bbs_log_level level, const char *fmt, ...)
+void __attribute__ ((format (gnu_printf, 9, 10))) __bbs_user_config_log(const char *file, int line, const char *func, unsigned int userid, const char *filename, int userline, enum bbs_log_level userlevel, enum bbs_log_level level, const char *fmt, ...)
 {
+	char userpath[256], username[48];
+	char subject[64], body[512];
+	static time_t last_report = 0;
+	time_t now;
 	char buf[1024];
 	va_list ap;
 	size_t len;
@@ -73,12 +80,54 @@ void __attribute__ ((format (gnu_printf, 8, 9))) __bbs_user_config_log(const cha
 	vsnprintf(buf + len, sizeof(buf) - len, fmt, ap);
 	va_end(ap);
 
+	/* Log the message for the system log */
 	__bbs_log(level, 0, file, line, func, "%s", buf);
 
-	/*! \todo Email the user of this error, since the user can't see the console */
-	UNUSED(userid);
-	/*! \todo When we log this for the user, we don't want to log the full system path, just the portion relative to the user's home directory. */
-	UNUSED(userlevel);
+	/* Now, notify the user about this.
+	 * Since users don't have access to the console (and even the sysop may not be watching it), send the error by email. */
+
+	/* First, we need to transform the path, since we want the user-facing path, not the full system path. */
+	if (bbs_transfer_get_user_path(NULL, filename, userpath, sizeof(userpath))) { /* The first arg (node) isn't used by this function anyways, so no biggie that we don't have one */
+		return;
+	}
+	if (bbs_username_from_userid(userid, username, sizeof(username))) {
+		return;
+	}
+
+	if (userline) {
+		snprintf(subject, sizeof(subject), "[Config %s] %s:%d", userlevel == LOG_ERROR ? "Error" : "Warning", bbs_basename(userpath), userline);
+		snprintf(body, sizeof(body), "%s:%d: %s", userpath, userline, buf + len);
+	} else {
+		snprintf(subject, sizeof(subject), "[Config %s] %s", userlevel == LOG_ERROR ? "Error" : "Warning", bbs_basename(userpath));
+		snprintf(body, sizeof(body), "%s: %s", userpath, buf + len);
+	}
+
+	/* We need to be careful not to recurse here (not literally in terms of the stack, but causing an email loop).
+	 * This is most likely to happen when processing a user's email filters, since an incoming message could trigger a report by email,
+	 * which triggers another report, etc. etc.
+	 * However, conceivably, this could also happen even if the config isn't email-related.
+	 *
+	 * An easy way to do this is keep track globally of when the last such email was sent.
+	 * If we wait for a reasonable amount of time before allowing another email report,
+	 * then we should successfully prevent loops. The downside is we may not send emails
+	 * for legitimate non-looping cases in close succession, with increasingly more errors
+	 * being dropped on busier systems with more users.
+	 * But, sending some errors to users is better than not sending any at all,
+	 * and it's likely (esp. in the case of email rules) that errors would get duplicated in many cases anyways. */
+
+	/* If a loop is going to occur, it probably will happen in under this amount of time */
+#define CONFIG_LOG_EMAIL_COOLDOWN_SEC 17
+
+	now = time(NULL);
+	if (last_report && last_report > now - CONFIG_LOG_EMAIL_COOLDOWN_SEC) {
+		int ago = (int) (now - last_report);
+		bbs_debug(8, "Not sending config report to user, last report globally was sent %d s ago\n", ago);
+		return;
+	}
+
+	/* If we're not potentially in a loop, go ahead and notify the user */
+	last_report = now;
+	bbs_mail(1, username, NULL, NULL, subject, body);
 }
 
 const char *bbs_config_filename(struct bbs_config *cfg)

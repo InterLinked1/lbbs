@@ -26,12 +26,18 @@ struct bbs_keyval;
  * \param level Log level. Can be any level except debug level, since debug levels would not be appropriate for an end-user anyways.
  * \param fmt printf-style format string
  */
-#define bbs_user_config_log(userid, cfg, userlevel, level, fmt, ...) __bbs_user_config_log(__FILE__, __LINE__, __func__, userid, bbs_config_filename(cfg), userlevel, level, fmt, ## __VA_ARGS__)
+#define bbs_user_config_log(userid, cfg, userlevel, level, fmt, ...) __bbs_user_config_log(__FILE__, __LINE__, __func__, userid, bbs_config_filename(cfg), 0, userlevel, level, fmt, ## __VA_ARGS__)
 
 /*! \brief Same as bbs_user_config_log, but operate directly on a config filename */
-#define bbs_user_file_log(userid, file, userlevel, level, fmt, ...) __bbs_user_config_log(__FILE__, __LINE__, __func__, userid, file, userlevel, level, fmt, ## __VA_ARGS__)
+#define bbs_user_file_log(userid, file, userlevel, level, fmt, ...) __bbs_user_config_log(__FILE__, __LINE__, __func__, userid, file, 0, userlevel, level, fmt, ## __VA_ARGS__)
 
-void __attribute__ ((format (gnu_printf, 8, 9))) __bbs_user_config_log(const char *file, int line, const char *func, unsigned int userid, const char *filename, enum bbs_log_level userlevel, enum bbs_log_level level, const char *fmt, ...);
+/*! \brief Same as above bbs_user_config_log, but pass in the line number in the user config file */
+#define bbs_user_config_line_log(userid, cfg, userline, userlevel, level, fmt, ...) __bbs_user_config_log(__FILE__, __LINE__, __func__, userid, bbs_config_filename(cfg), userline, userlevel, level, fmt, ## __VA_ARGS__)
+
+/*! \brief Same as above bbs_user_file_log, but pass in the line number in the user config file */
+#define bbs_user_file_line_log(userid, file, userline, userlevel, level, fmt, ...) __bbs_user_config_log(__FILE__, __LINE__, __func__, userid, file, userline, userlevel, level, fmt, ## __VA_ARGS__)
+
+void __attribute__ ((format (gnu_printf, 9, 10))) __bbs_user_config_log(const char *file, int line, const char *func, unsigned int userid, const char *filename, int userline, enum bbs_log_level userlevel, enum bbs_log_level level, const char *fmt, ...);
 
 /*!
  * \brief Retrieve filename of config
