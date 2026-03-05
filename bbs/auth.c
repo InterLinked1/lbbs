@@ -579,6 +579,7 @@ static int bbs_node_authenticate(struct bbs_node *node, const char *username, co
 		node->user = bbs_user_info_by_username(username); /* Get the actual user from the DB */
 		if (!node->user) {
 			bbs_warning("Login cached for nonexistent user %s?\n", username);
+			return -1;
 		} else {
 			bbs_auth("User %s successfully authenticated (cached)\n", bbs_username(node->user));
 			return 0;
@@ -589,6 +590,7 @@ static int bbs_node_authenticate(struct bbs_node *node, const char *username, co
 		node->user = bbs_user_info_by_username(username); /* Get the actual user from the DB */
 		if (!node->user) {
 			bbs_warning("Login cached for nonexistent user %s?\n", username);
+			return -1;
 		} else {
 			bbs_auth("User %s successfully authenticated (temp auth token)\n", bbs_username(node->user));
 			return 0;
