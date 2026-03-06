@@ -40,6 +40,7 @@
 #include "include/transfer.h"
 #include "include/user.h"
 #include "include/config.h" /* use bbs_user_file_log */
+#include "include/test.h"
 
 #include "include/mod_mail.h"
 #include "include/net_smtp.h"
@@ -131,7 +132,108 @@ static int floatcmp(const char *s, const char *expr, enum match_type matchtype)
 #define mailscript_line_log(mproc, loglevel, filename, userline, fmt, ...) \
 	bbs_user_file_line_log((unsigned int) mailscript_userid(mproc), filename, userline, loglevel, mproc->iteration == FILTER_MAILBOX ? LOG_NOTICE : loglevel, fmt, ## __VA_ARGS__)
 
-/*! \brief retval -1 if no such header, 0 if not found, 1 if found */
+/*! \brief Get number of recipients in a single header line */
+static int line_recipient_count(char *s)
+{
+	int recipcount = 1; /* We assume that if the line is non-empty, it has at least one recipient */
+	int in_quotes = 0;
+	int last_char_was_backslash = 0;
+
+	/* Recipients are comma-separated (RFC 5322 3.6.3), but the recipients themselves may contain commas in the name portion, e.g.
+	 *
+	 * "Smith, John" <john.smith@example.com>, "Jane Smith" <jane.smith@example.com>, <bob@example.com>, charlie@example.com
+	 *
+	 * Double quotes in the name portion or backslashes can be escaped with a backslash.
+	 *
+	 * We don't use bbs_parse_email_address, because that only works if we have a single email address.
+	 * quotesep doesn't help because not all the recipients may be quoted.
+	 */
+
+	while (*s) {
+		if (*s == '"') {
+			if (!last_char_was_backslash) {
+				in_quotes = !in_quotes;
+			}
+		} else if (*s == ',') {
+			if (!in_quotes) {
+				recipcount++;
+			}
+		}
+		last_char_was_backslash = *s == '\\';
+		s++;
+	}
+
+	return recipcount;
+}
+
+static int test_recipient_count(void)
+{
+	char buf[512];
+	int recip;
+
+	strcpy(buf, "\"Smith, John\" <john.smith@example.com>\r\n");
+	recip = line_recipient_count(buf);
+	bbs_test_assert_equals(1, recip);
+
+	strcpy(buf, "\"Smith, John\" <john.smith@example.com>, \"Smith, Jane\" <jane.smith@example.com>\r\n");
+	recip = line_recipient_count(buf);
+	bbs_test_assert_equals(2, recip);
+
+	strcpy(buf, "\"Smith, John\" <john.smith@example.com>, \"Smith, Jane\" <jane.smith@example.com>, alice@example.com, <bob@example.com>\r\n");
+	recip = line_recipient_count(buf);
+	bbs_test_assert_equals(4, recip);
+
+	return 0;
+
+cleanup:
+	return -1;
+}
+
+/*! \brief Get number of recipients in To and Cc headers */
+static int recipient_count(struct smtp_msg_process *mproc)
+{
+	/* Allow users to match based on the number of recipients a message has, at least according to the mail headers.
+	 * Bcc doesn't count (that's envelope information, and we don't leak other recipients to user). */
+	char headerval[1000];
+	int recipcount = 0;
+	int in_to = 0, in_cc = 0;
+
+	if (!mproc->fp) {
+		mproc->fp = fopen(mproc->datafile, "r");
+		if (!mproc->fp) {
+			bbs_error("fopen(%s) failed: %s\n", mproc->datafile, strerror(errno));
+			return -1;
+		}
+	} else {
+		rewind(mproc->fp);
+	}
+	while ((fgets(headerval, sizeof(headerval), mproc->fp))) {
+		if (!strcmp(headerval, "\r\n")) {
+			break; /* End of headers */
+		}
+		if (STARTS_WITH(headerval, "To:")) {
+			/* Header names are not case-sensitive */
+			in_to = 1;
+			in_cc = 0;
+			recipcount += line_recipient_count(headerval + STRLEN("To:"));
+		} else if (STARTS_WITH(headerval, "Cc:")) {
+			in_cc = 1;
+			in_to = 0;
+			recipcount += line_recipient_count(headerval + STRLEN("Cc:"));
+		} else if (headerval[0] == ' ' || headerval[0] == '\t') {
+			/* Multi-line header continuation */
+			if (in_to || in_cc) {
+				recipcount += line_recipient_count(headerval + 1); /* Skip leading space/tab */
+			}
+		} else {
+			/* If it doesn't start with a space, it's a new header */
+			in_to = in_cc = 0;
+		}
+	}
+	return recipcount;
+}
+
+/*! \retval -1 if no such header, 0 if not found, 1 if found */
 static int header_match(struct smtp_msg_process *mproc, const char *filename, const char *header, const char *find, enum match_type matchtype)
 {
 	int found = -1;
@@ -303,6 +405,9 @@ static int test_condition(struct smtp_msg_process *mproc, struct bbs_vars *vars,
 		REQUIRE_ARG(expr);
 		REQUIRE_ARG(mproc->recipient);
 		str_match(mproc, filename, matchtype, mproc->recipient, expr, &match);
+	} else if (!strcasecmp(next, "RECIPIENTCOUNT")) {
+		int recipcount = recipient_count(mproc);
+		match = numcmp(s, recipcount);
 	} else if (!strcasecmp(next, "HEADER")) {
 		int found;
 		const char *expr, *matchtype, *header;
@@ -840,15 +945,22 @@ struct smtp_message_processor proc = {
 	.iteration = FILTER_ALL_PASSES, /* We handle all passes, with more granular logic in the callback */
 };
 
+static struct bbs_unit_test tests[] =
+{
+	{ "Recipient Count", test_recipient_count },
+};
+
 static int load_module(void)
 {
 	snprintf(before_rules, sizeof(before_rules), "%s/before.rules", mailbox_maildir(NULL));
 	snprintf(after_rules, sizeof(after_rules), "%s/after.rules", mailbox_maildir(NULL));
+	bbs_register_tests(tests);
 	return smtp_register_processor(&proc);
 }
 
 static int unload_module(void)
 {
+	bbs_unregister_tests(tests);
 	return smtp_unregister_processor(&proc);
 }
 

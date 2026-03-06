@@ -73,6 +73,14 @@ ACTION DISCARD
 ACTION EXIT
 ENDRULE
 
+# Move message to a folder, but only if this guy's the exclusive recipient (well, excluding Bcc that is)
+RULE
+MATCH DIRECTION IN
+MATCH HEADER To CONTAINS exclusive@bbs.example.com
+MATCH RECIPIENTCOUNT == 1
+ACTION MOVETO Trash
+ENDRULE
+
 RULE
 MATCH DIRECTION IN
 MATCH HEADER Subject EQUALS Test Subject 6

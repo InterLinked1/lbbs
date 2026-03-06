@@ -269,6 +269,26 @@ static int run(void)
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/2/new", 4); /* User 2 should not get anything this time */
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/3/new", 1); /* nobounce2 is an alias for testuser3 */
 
+	/* Test that we can move messages to a folder if and only if there is a single, specific recipient */
+	STANDARD_ENVELOPE_BEGIN();
+	SWRITE(clientfd, "From: " TEST_EMAIL_EXTERNAL ENDL);
+	SWRITE(clientfd, "Subject: Recipient-Based Move" ENDL);
+	SWRITE(clientfd, "To: \"Smith, John\" <exclusive@" TEST_HOSTNAME ">" ENDL); /* Include a recipient with a name with a comma, that shouldn't be confused as a recipient separator */
+	STANDARD_DATA();
+	CLIENT_EXPECT(clientfd, "250");
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3); /* Shouldn't be in Inbox */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.Trash/new", 2); /* Should have been moved */
+
+	/* But if there is another recipient as well, then it shouldn't get moved */
+	STANDARD_ENVELOPE_BEGIN(); /* Note that there's only one recipient in the envelope, but the rule doesn't look at the envelope, so that doesn't matter here */
+	SWRITE(clientfd, "From: " TEST_EMAIL_EXTERNAL ENDL);
+	SWRITE(clientfd, "Subject: Recipient-Based Move" ENDL);
+	SWRITE(clientfd, "To: <exclusive@" TEST_HOSTNAME ">, exclusive@" TEST_HOSTNAME ENDL);
+	STANDARD_DATA();
+	CLIENT_EXPECT(clientfd, "250");
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 4); /* Should be in Inbox */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/.Trash/new", 2); /* Shouldn't have been moved */
+
 	SWRITE(clientfd, "QUIT");
 	close(clientfd);
 
@@ -296,7 +316,7 @@ static int run(void)
 	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "550"); /* Since this message should get relayed, it would actually be submitted as user 2, which is not authorized to send as user 1 */
-	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3); /* Message shouldn't have been accepted */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 4); /* Message shouldn't have been accepted */
 
 	CLIENT_ENVELOPE_BEGIN();
 	SWRITE(clientfd, "From: " TEST_EMAIL2 ENDL); /* Correct From (for relaying) this time */
@@ -304,7 +324,7 @@ static int run(void)
 	SWRITE(clientfd, "To: " TEST_EMAIL ENDL);
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
-	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 4); /* Message should have been accepted this time */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 5); /* Message should have been accepted this time */
 
 	SWRITE(clientfd, "QUIT");
 
