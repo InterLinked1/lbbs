@@ -46,21 +46,21 @@ static int pre(void)
 	return 0;
 }
 
-#define ENVELOPE_BEGIN(ehlo, mailfrom) \
+#define ENVELOPE_BEGIN(ehlo, mailfrom, rcpt) \
 	SWRITE(clientfd, "RSET" ENDL); \
 	CLIENT_EXPECT(clientfd, "250"); \
 	SWRITE(clientfd, "EHLO " ehlo ENDL); \
 	CLIENT_EXPECT_EVENTUALLY(clientfd, "250 "); \
 	SWRITE(clientfd, "MAIL FROM:<" mailfrom ">\r\n"); \
 	CLIENT_EXPECT(clientfd, "250"); \
-	SWRITE(clientfd, "RCPT TO:<" TEST_EMAIL ">\r\n"); \
+	SWRITE(clientfd, "RCPT TO:<" rcpt ">\r\n"); \
 	CLIENT_EXPECT(clientfd, "250"); \
 	SWRITE(clientfd, "DATA\r\n"); \
 	CLIENT_EXPECT(clientfd, "354"); \
 	SWRITE(clientfd, "Date: Sun, 1 Jan 2023 05:33:29 -0700" ENDL);
 
-#define STANDARD_ENVELOPE_BEGIN() ENVELOPE_BEGIN(TEST_EXTERNAL_DOMAIN, TEST_EMAIL_EXTERNAL)
-#define CLIENT_ENVELOPE_BEGIN() ENVELOPE_BEGIN("127.0.0.1", TEST_EMAIL2)
+#define STANDARD_ENVELOPE_BEGIN() ENVELOPE_BEGIN(TEST_EXTERNAL_DOMAIN, TEST_EMAIL_EXTERNAL, TEST_EMAIL)
+#define CLIENT_ENVELOPE_BEGIN() ENVELOPE_BEGIN("127.0.0.1", TEST_EMAIL2, TEST_EMAIL)
 
 #define STANDARD_DATA() \
 	SWRITE(clientfd, ENDL); \
@@ -232,6 +232,42 @@ static int run(void)
 	STANDARD_DATA();
 	CLIENT_EXPECT(clientfd, "250");
 	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3); /* Message dropped silently */
+
+	/* Test [bounce_redirects] function in net_smtp.conf */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/2/new", 2);
+	ENVELOPE_BEGIN(TEST_EXTERNAL_DOMAIN, TEST_EMAIL_EXTERNAL, "nobounce@" TEST_HOSTNAME);
+	SWRITE(clientfd, "From: " TEST_EMAIL_EXTERNAL ENDL);
+	SWRITE(clientfd, "Subject: Message which won't reach the original recipient" ENDL);
+	SWRITE(clientfd, "To: nobounce@" TEST_HOSTNAME ENDL);
+	STANDARD_DATA();
+	CLIENT_EXPECT(clientfd, "250");
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3); /* Despite the 250 reply, 1 should not have gotten the message, i.e. message count should be unchanged */
+	/* (ideally, would also test that the sender did not get the bounce either, at this point) */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/2/new", 3); /* User 2 should have gotten another message (the diverted bounce) */
+
+	/* Second test for [bounce_redirects].
+	 * Repeat, as a user, so we can test that the sender doesn't get a copy of the bounce */
+	ENVELOPE_BEGIN(TEST_EXTERNAL_DOMAIN, TEST_EMAIL3, "nobounce@" TEST_HOSTNAME);
+	SWRITE(clientfd, "From: " TEST_EMAIL3 ENDL);
+	SWRITE(clientfd, "Subject: Another message which won't reach the original recipient" ENDL);
+	SWRITE(clientfd, "To: nobounce@" TEST_HOSTNAME ENDL);
+	STANDARD_DATA();
+	CLIENT_EXPECT(clientfd, "250");
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3); /* Despite the 250 reply, 1 should not have gotten the message, i.e. message count should be unchanged */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/2/new", 4); /* User 2 should have gotten another message (the diverted bounce) */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/3/new", -1); /* Actual sender should not have gotten a bounce. Directory won't even exist, so we expect -1, rather than 0. */
+
+	/* Third test for [bounce_redirects].
+	 * Send the DSN back to the forwarding user. It shouldn't cause an email loop. */
+	ENVELOPE_BEGIN(TEST_EXTERNAL_DOMAIN, TEST_EMAIL3, "nobounce2@" TEST_HOSTNAME);
+	SWRITE(clientfd, "From: " TEST_EMAIL3 ENDL);
+	SWRITE(clientfd, "Subject: Another message which won't reach the original recipient" ENDL);
+	SWRITE(clientfd, "To: nobounce2@" TEST_HOSTNAME ENDL);
+	STANDARD_DATA();
+	CLIENT_EXPECT(clientfd, "250");
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/1/new", 3); /* Despite the 250 reply, 1 should not have gotten the message, i.e. message count should be unchanged */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/2/new", 4); /* User 2 should not get anything this time */
+	DIRECTORY_EXPECT_FILE_COUNT(TEST_MAIL_DIR "/3/new", 1); /* nobounce2 is an alias for testuser3 */
 
 	SWRITE(clientfd, "QUIT");
 	close(clientfd);

@@ -117,6 +117,7 @@ struct test_module *TEST_MODULE_SELF_SYM(void);
 #define TEST_PASS3 "P@ssw0rD"
 #define TEST_HASH3 "$2y$10$0hcFFDyIUBkNcqMPw9G0t.vR.c8oBArJJOE1tK1atcPWkk9XBhvzK"
 #define TEST_SASL3 "dGVzdHVzZXIyAHRlc3R1c2VyMgBQQHNzdzByRA=="
+#define TEST_EMAIL3 TEST_USER3 "@" TEST_HOSTNAME
 
 #define TEST_USER4 "termtest"
 #define TEST_PASS4 "TERMPASS"

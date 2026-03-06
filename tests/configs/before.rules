@@ -144,3 +144,16 @@ MATCH HEADER Subject EQUALS Test Subject 12
 MATCH VAR foobar EQUALS 42
 ACTION DISCARD
 ENDRULE
+
+RULE
+MATCH DIRECTION IN
+MATCH HEADER To CONTAINS nobounce@bbs.example.com
+ACTION REJECT This is a bounce message that should go to testuser instead
+ENDRULE
+
+RULE
+MATCH DIRECTION IN
+MATCH HEADER To CONTAINS nobounce2@bbs.example.com
+MATCH HEADER Subject EQUALS Another message which won't reach the original recipient
+ACTION REJECT This is a bounce message that should go to testuser instead
+ENDRULE

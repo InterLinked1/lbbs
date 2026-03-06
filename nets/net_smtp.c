@@ -269,6 +269,15 @@ struct smtp_authorized_identity {
 
 static RWLIST_HEAD_STATIC(authorized_identities, smtp_authorized_identity);
 
+struct bounce_redirect {
+	const char *target;
+	const char *bounceaddr;
+	RWLIST_ENTRY(bounce_redirect) entry;
+	char data[];
+};
+
+static RWLIST_HEAD_STATIC(bounce_redirects, bounce_redirect);
+
 static void add_authorized_relay(const char *source, const char *domains)
 {
 	struct smtp_relay_host *h;
@@ -324,6 +333,28 @@ static void add_authorized_identity(const char *username, const char *identities
 
 	/* Head insert, so later entries override earlier ones, in case multiple match */
 	RWLIST_INSERT_HEAD(&authorized_identities, i, entry);
+}
+
+static void add_bounce_redirect(const char *target, const char *bounceaddr)
+{
+	struct bounce_redirect *r;
+	size_t targetlen = strlen(target);
+
+	/* Add 2 extra for <> around target (in addition to 2 for the NUL terminators) */
+	r = calloc(1, sizeof(*r) + targetlen + 2 + strlen(bounceaddr) + 2);
+	if (ALLOC_FAILURE(r)) {
+		return;
+	}
+
+	/* We include <> for the target because when we do comparisons with it later,
+	 * the string with which we compare has the <>, so include it here too. */
+	sprintf(r->data, "<%s>", target); /* Safe */
+
+	r->target = r->data;
+	strcpy(r->data + targetlen + 3, bounceaddr); /* Safe */
+	r->bounceaddr = r->data + targetlen + 3;
+
+	RWLIST_INSERT_HEAD(&bounce_redirects, r, entry);
 }
 
 /*!
@@ -1841,7 +1872,7 @@ void smtp_run_filters(struct smtp_filter_data *fdata, enum smtp_direction dir)
 		bbs_module_unref(f->mod, 2);
 		lseek(fdata->inputfd, 0, SEEK_SET); /* Rewind to beginning of file */
 		if (res == 1) {
-			bbs_debug(5, "Aborting execution of filter %s\n", f->name);
+			bbs_debug(5, "Aborting filter execution after filter %s\n", f->name);
 			break;
 		} else if (res < 0) {
 			bbs_warning("%s SMTP filter %s %s failed to execute\n", smtp_filter_direction_name(f->direction), smtp_filter_type_name(f->type), f->name);
@@ -2206,6 +2237,8 @@ int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *se
 	size_t length;
 	time_t t = time(NULL);
 
+	bbs_assert(n > 0);
+
 	if (!any_failures(f, n) && !sinfo->msa) {
 		/* If this is a failure, we should always dispatch a DSN.
 		 * However, for other types of notifications, such as delays,
@@ -2214,7 +2247,7 @@ int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *se
 		 * unless they have specifically requested it using the DSN extension. */
 		/*! \todo Once DSN support is fully added, also factor that into this check.
 		 * \todo For forwarded messages, we should not dispatch DSNs for ANY reason. See RFC 3464 4.2 */
-		bbs_debug(2, "Skipping DSN for this transaction\n");
+		bbs_debug(2, "Skipping DSN for this transaction (%d original recipient%s)\n", n, ESS(n));
 		return 0;
 	}
 
@@ -2353,11 +2386,6 @@ int smtp_dsn(struct smtp_session_info *sinfo, struct tm *arrival, const char *se
 		fprintf(fp, "\r\n");
 		fflush(fp);
 
-		/*! \todo We should send at least the headers, even if we are not attaching the full original message.
-		 * (Otherwise, it's hard to identify what message this was).
-		 * The DSN extension also allows this to be controlled, so the full message or just headers should just be a default.
-		 * Also, if we just include headers, message/rfc822 might not be the best Content-Type, figure out what we should use instead... */
-
 		bbs_copy_file(srcfd, fileno(fp), 0, (int) msglen);
 		fseek(fp, 0, SEEK_END);
 	}
@@ -2418,6 +2446,98 @@ int smtp_message_quarantinable(struct smtp_session *smtp)
 	return smtp->tflags.quarantine;
 }
 
+/*! \note Must be called locked */
+static const char *get_bounce_redirect_address(const char *recipient)
+{
+	struct bounce_redirect *r;
+
+	RWLIST_TRAVERSE(&bounce_redirects, r, entry) {
+		if (!strcasecmp(recipient, r->target)) {
+			return r->bounceaddr;
+		}
+	}
+	return NULL;
+}
+
+/*! \note Must be called locked */
+static int dont_bounce_to_sender(struct smtp_session *smtp)
+{
+	const char *recipient;
+	struct stringitem *i = NULL;
+
+	/* If any of the recipients of this transaction are marked as don't bounce to sender,
+	 * then we cannot reply with a 5xx error code during the transaction. */
+	while ((recipient = stringlist_next(&smtp->recipients, &i))) {
+		if (get_bounce_redirect_address(recipient)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/*!
+ * \brief Same as dont_bounce_to_sender, but iterate over a smtp_delivery_outcome struct instead
+ * \note Must be called locked
+ */
+static int dont_bounce_to_sender_outcome(struct smtp_delivery_outcome **f, int n)
+{
+	int i;
+	for (i = 0; i < n; i++) {
+		if (get_bounce_redirect_address(f[i]->recipient)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static void process_bounces(struct smtp_session *smtp, int srcfd, size_t datalen, struct smtp_delivery_outcome **bounces, int numbounces)
+{
+	struct tm tm;
+	struct smtp_session_info sinfo;
+
+	memset(&sinfo, 0, sizeof(sinfo));
+	if (!strlen_zero(smtp->helohost)) {
+		safe_strncpy(sinfo.helohost, smtp->helohost, sizeof(sinfo.helohost));
+	}
+	lseek(srcfd, 0, SEEK_SET);
+	localtime_r(&smtp->tflags.received, &tm);
+
+	RWLIST_RDLOCK(&bounce_redirects);
+	if (dont_bounce_to_sender_outcome(bounces, numbounces)) {
+		int i;
+		/* Uncommon path: at least one recipient was a nobounce address.
+		 *
+		 * Because smtp_dsn will batch all recipients together in the report,
+		 * this means we need to send a separate report for each recipient,
+		 * so we can alter the bounce address for those cases.
+		 *
+		 * (Technically, we could send all of them except for the nobounce ones
+		 *  together, but that would require making new arrays for both,
+		 *  and for such an uncommon path, it's probably not worth it.)
+		 */
+		if (strlen_zero(smtp->from)) {
+			/* If the return path was empty, then we must not autorespond.
+			 * smtp_dsn normally handles this, but since we may overwrite
+			 * the sender with the alternate bounce address to use instead,
+			 * that won't get handled there in that case, so we check now. */
+			bbs_debug(1, "Refusing to dispatch DSN report; return path was empty\n");
+		} else {
+			for (i = 0; i < numbounces; i++) {
+				const char *bounceaddress = get_bounce_redirect_address(bounces[i]->recipient);
+				if (bounceaddress) {
+					bbs_debug(3, "Diverting bounce intended for %s -> %s\n", smtp->from, bounceaddress);
+				}
+				smtp_dsn(&sinfo, &tm, bounceaddress ? bounceaddress : smtp->from, srcfd, datalen, &bounces[i], 1);
+			}
+		}
+		RWLIST_UNLOCK(&bounce_redirects);
+	} else {
+		/* Common path */
+		RWLIST_UNLOCK(&bounce_redirects);
+		smtp_dsn(&sinfo, &tm, smtp->from, srcfd, datalen, bounces, numbounces);
+	}
+}
+
 /*! \brief "Stand and deliver" that email! */
 static int expand_and_deliver(struct smtp_session *smtp, const char *filename, size_t datalen)
 {
@@ -2430,6 +2550,7 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 	int numbounces = 0;
 	struct smtp_response resp, *resp_ptr;
 	void *freedata = NULL;
+	int no_sender_bounce = 0;
 	int res;
 
 	/* Preserve the actual received time for the Received header, in case filters take a moment to run */
@@ -2440,6 +2561,8 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		bbs_error("open(%s) failed: %s\n", filename, strerror(errno));
 		return -1;
 	}
+
+	memset(&resp, 0, sizeof(resp));
 
 	/* Ordering here is important. For local delivery:
 	 * 1) First, filters are run for the message itself (SMTP_SCOPE_COMBINED). Filters may MODIFY the data, but may do nothing at all.
@@ -2466,10 +2589,53 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 	if (filterdata.reject) {
 		/* A filter has indicated that this message should be rejected.
 		 * XXX Currently, this only happens if a DMARC reject occured, so that is hardcoded here for now. */
-		close(srcfd);
-		bbs_smtp_log(2, smtp, "Message from <%s> rejected due to policy failure\n", smtp->from);
-		smtp_reply(smtp, 550, 5.7.1, "Message rejected due to policy failure");
+		resp.code = 550; /* Also hardcoded below */
+		resp.subcode = "5.7.1"; /* Also hardcoded below */
+		resp.reply = "Message rejected due to policy failure"; /* Also hardcoded below */
+
 		smtp_filter_data_cleanup(&filterdata);
+
+		RWLIST_RDLOCK(&bounce_redirects);
+		if (dont_bounce_to_sender(smtp)) {
+			/* If we can't bounce to sender, then we can't reply 5xx in the transaction itself.
+			 * Instead, we need to send bounces for every recipient individually.
+			 * The actual recipient(s) marked don't bounce will have the bounce address modified,
+			 * and the others will be left as is. */
+
+			/* This is a condensed version of the while loop below, with only the logic needed for sending bounces to all recipients */
+			while ((recipient = stringlist_pop(&smtp->recipients))) {
+				char *user, *domain, *dup;
+
+				if (duplicate_loop_avoidance(smtp, recipient)) {
+					continue;
+				} else if (*recipient != '<') {
+					bbs_warning("Malformed recipient (missing <>): %s\n", recipient);
+				}
+
+				dup = strdup(recipient);
+				if (ALLOC_SUCCESS(dup) && !bbs_parse_email_address(dup, NULL, &user, &domain)) {
+					char bouncemsg[512];
+					struct smtp_delivery_outcome *f;
+					snprintf(bouncemsg, sizeof(bouncemsg), "%d%s%s %s", resp.code, " ", resp.subcode, resp.reply);
+					bbs_smtp_log(2, smtp, "Delivery failed: <%s> -> %s: %s\n", smtp->from, recipient, bouncemsg);
+					f = smtp_delivery_outcome_new(recipient, NULL, NULL, resp.subcode, bouncemsg, "x-unix", "end of DATA", DELIVERY_FAILED, NULL);
+					if (ALLOC_SUCCESS(f)) {
+						bounces[numbounces++] = f;
+					}
+				}
+				free_if(dup);
+				free(recipient);
+			}
+			smtp_reply(smtp, 250, 2.6.0, "Message accepted (not really)");
+			bbs_smtp_log(2, smtp, "Message from <%s> rejected due to policy failure; (responded 250; not bouncing to sender)\n", smtp->from);
+			process_bounces(smtp, srcfd, datalen, bounces, numbounces);
+		} else {
+			bbs_smtp_log(2, smtp, "Message from <%s> rejected due to policy failure\n", smtp->from);
+			smtp_reply(smtp, 550, 5.7.1, "%s", resp.reply);
+		}
+		RWLIST_UNLOCK(&bounce_redirects);
+
+		close(srcfd);
 		return 0; /* Return 0 to inhibit normal failure message, since we already responded */
 	} else if (filterdata.quarantine) {
 		/* This is kind of a clunky hack.
@@ -2499,11 +2665,9 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 		return -1;
 	}
 
-	memset(&resp, 0, sizeof(resp)); /* Just in case there are no recipients? Or the first call to smtp_run_delivery_callbacks here returns nonzero. */
-
 	/* Also allow message processors to be run once, for all recipients */
 	resp_ptr = &resp;
-	res = smtp_run_delivery_callbacks(smtp, &mproc, NULL, &resp_ptr, SMTP_DIRECTION_IN, SMTP_SCOPE_COMBINED, NULL, datalen, freedata);
+	res = smtp_run_delivery_callbacks(smtp, &mproc, NULL, &resp_ptr, SMTP_DIRECTION_IN, SMTP_SCOPE_COMBINED, NULL, datalen, &freedata);
 	RWLIST_RDLOCK(&handlers); /* This is correct. When we goto finalize, the list should be locked, so we want to lock either way. */
 	if (res) {
 		if (res == 1) {
@@ -2604,8 +2768,15 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 			snprintf(bouncemsg, sizeof(bouncemsg), "%d%s%s %s",
 				resp.code ? resp.code : 451, resp.subcode ? " " : "", S_OR(resp.subcode, ""), replymsg);
 			bbs_smtp_log(2, smtp, "Delivery failed: <%s> -> %s: %s\n", smtp->from, recipient, bouncemsg);
-			if (total > 1) {
+
+			/* Normally, if there is only 1 recipient, we never send a bounce, we always reply during the transaction.
+			 * However, if this is a nobounce recipient, then we can't do that. */
+			RWLIST_RDLOCK(&bounce_redirects);
+			if (total > 1 || get_bounce_redirect_address(recipient)) {
 				struct smtp_delivery_outcome *f;
+
+				no_sender_bounce = 1;
+
 				/* Since there's more than one recipient, we need to send a bounce
 				 * to the sender. This ensures there is only one SMTP reply at the
 				 * end of the entire operation. We still send at most 1 nondelivery report here.
@@ -2621,24 +2792,17 @@ static int expand_and_deliver(struct smtp_session *smtp, const char *filename, s
 					bounces[numbounces++] = f;
 				}
 			}
+			RWLIST_UNLOCK(&bounce_redirects);
 		}
 next:
 		free_if(dup);
 		free(recipient);
 	}
 
-	if (succeeded && total > succeeded) {
+	if ((succeeded && total > succeeded) || no_sender_bounce) {
 		/* Delivery to some (but not all) recipients failed. We need to send a bounce.
 		 * We use the MAIL FROM here, and our MAIL FROM is empty (postmaster). */
-		struct tm tm;
-		struct smtp_session_info sinfo;
-		memset(&sinfo, 0, sizeof(sinfo));
-		if (!strlen_zero(smtp->helohost)) {
-			safe_strncpy(sinfo.helohost, smtp->helohost, sizeof(sinfo.helohost));
-		}
-		lseek(srcfd, 0, SEEK_SET);
-		localtime_r(&smtp->tflags.received, &tm);
-		smtp_dsn(&sinfo, &tm, smtp->from, srcfd, datalen, bounces, numbounces);
+		process_bounces(smtp, srcfd, datalen, bounces, numbounces);
 	} else {
 		/* If delivery to all recipients failed, then we can just reply with an SMTP error code.
 		 * We'll just use the error code for the last recipient attempted, even though that
@@ -2660,11 +2824,21 @@ finalize:
 		smtp_reply(smtp, 250, 2.6.0, "Message accepted for delivery");
 	} else if (resp.code && !strlen_zero(resp.subcode) && !strlen_zero(resp.reply)) { /* All deliveries failed */
 		/* We could also send a bounce in this case, but even easier, just do it in the SMTP transaction */
-		bbs_smtp_log(2, smtp, "Message from <%s> rejected in full by custom policy: %d %s %s\n", smtp->from, resp.code, resp.subcode, resp.reply);
-		smtp_resp_reply(smtp, resp.code, resp.subcode, resp.reply);
+		if (no_sender_bounce) { /* At this point, all recipients have been consumed, so we can't use dont_bounce_to_sender(), we need to check this flag */
+			smtp_reply(smtp, 250, 2.6.0, "Message accepted for delivery (not really)");
+			bbs_smtp_log(2, smtp, "Message from <%s> rejected in full by custom policy: %d %s %s (responded 250; not bouncing to sender)\n", smtp->from, resp.code, resp.subcode, resp.reply);
+			/* resp.code is set, so no need to lie and set succeeded (to avoid default failure reply) */
+		} else {
+			bbs_smtp_log(2, smtp, "Message from <%s> rejected in full by custom policy: %d %s %s\n", smtp->from, resp.code, resp.subcode, resp.reply);
+			smtp_resp_reply(smtp, resp.code, resp.subcode, resp.reply);
+		}
 	} else {
 		/* This is reachable if all deliveries fail and no custom failure code was set */
 		bbs_smtp_log(2, smtp, "Message from <%s> failed delivery to %d/%d recipient%s\n", smtp->from, succeeded, total, ESS(total));
+		if (no_sender_bounce) {
+			smtp_reply(smtp, 250, 2.6.0, "Message accepted for delivery (not really)");
+			succeeded = 1; /* Since resp.code isn't set, change the return code to avoid default failure reply */
+		}
 	}
 
 	RWLIST_UNLOCK(&handlers); /* Can't unlock while resp might still be used, and it's a RDLOCK, so okay */
@@ -3850,6 +4024,12 @@ static int load_config(void)
 				val = bbs_keyval_val(keyval);
 				add_authorized_identity(key, val);
 			}
+		} else if (!strcmp(bbs_config_section_name(section), "bounce_redirects")) {
+			while ((keyval = bbs_config_section_walk(section, keyval))) {
+				key = bbs_keyval_key(keyval);
+				val = bbs_keyval_val(keyval);
+				add_bounce_redirect(key, val);
+			}
 		} else if (!strcmp(bbs_config_section_name(section), "starttls_exempt")) {
 			while ((keyval = bbs_config_section_walk(section, keyval))) {
 				key = bbs_keyval_key(keyval);
@@ -3962,6 +4142,7 @@ static int unload_module(void)
 	stringlist_empty_destroy(&unlisted_ips);
 	RWLIST_WRLOCK_REMOVE_ALL(&authorized_relays, entry, relay_free);
 	RWLIST_WRLOCK_REMOVE_ALL(&authorized_identities, entry, authorized_identity_free);
+	RWLIST_WRLOCK_REMOVE_ALL(&bounce_redirects, entry, free);
 	stringlist_empty_destroy(&trusted_relays);
 	stringlist_empty_destroy(&starttls_exempt);
 	if (!RWLIST_EMPTY(&filters)) {
