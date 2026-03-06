@@ -615,7 +615,6 @@ static int bbs_menu_run(struct bbs_node *node, const char *menuname, const char 
 			bbs_node_buffer(node);
 			res = bbs_node_read_line(node, SEC_MS(30), menusequence, sizeof(menusequence) - 1);
 			if (res <= 0) {
-				RWLIST_UNLOCK(&menus);
 				return opt;
 			}
 			menusequence[res] = '\0'; /* Null terminate */
