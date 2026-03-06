@@ -90,6 +90,7 @@ struct imap_session {
 	unsigned int innew:1;		/* So we can use the same callback for both new and cur */
 	unsigned int readonly:1;	/* SELECT vs EXAMINE */
 	unsigned int inauth:1;
+	unsigned int exclusiveproxy:1; /* Whether this connection is exclusively proxying to another IMAP server */
 	unsigned int idle:1;		/* Whether IDLE is active */
 	unsigned int dnd:1;			/* Do Not Disturb: Whether client is executing a FETCH, STORE, or SEARCH command (EXPUNGE responses are not allowed). XXX Unused? */
 	unsigned int pending:1;		/* Delayed output is pending in pfd pipe */

@@ -260,7 +260,7 @@ static int cli_imap_sessions(struct bbs_cli_args *a)
 			}
 		}
 		bbs_dprintf(a->fdout, "%4u %14p %4s %7s %11s %-28s %s\n",
-			imap->node->id, imap, BBS_YN(imap->idle), imap->client ? "Yes" : "No", S_IF(mbox_name), S_IF(imap->folder), S_IF(imap->clientid));
+			imap->node->id, imap, BBS_YN(imap->idle), imap->exclusiveproxy ? "Excl." : imap->client ? "Yes" : "No", S_IF(mbox_name), S_IF(imap->folder), S_IF(imap->clientid));
 	}
 	RWLIST_UNLOCK(&sessions);
 	return 0;
@@ -502,6 +502,9 @@ void send_untagged_fetch(struct imap_session *imap, const char *maildir, int seq
 		if (s == imap) { /* Skip if the update was caused by the client. The STORE handler already sent a response to this client if needed. */
 			continue;
 		}
+		if (s->exclusiveproxy) {
+			continue; /* Skip if this IMAP session is exclusively proxying */
+		}
 		/* imap->folder is maybe not the same name for s.
 		 * We convert the maildir path to the name for s, though this is a little bit roundabout.
 		 * Would be easier if generate_status could accept a maildir as well instead of just a name.
@@ -558,6 +561,9 @@ static void send_untagged_expunge(struct bbs_node *node, struct mailbox *mbox, c
 		/* This one also goes to ourself... unless silent */
 		if (s->node == node && silent) {
 			continue;
+		}
+		if (s->exclusiveproxy) {
+			continue; /* Skip if this IMAP session is exclusively proxying */
 		}
 		/* We can't pass the mailbox name into send_untagged_expunge anyways,
 		 * because mailbox names might be different for different users (e.g. Other Users) */
@@ -637,6 +643,10 @@ static void send_untagged_exists(struct bbs_node *node, struct mailbox *mbox, co
 		char mboxname[256];
 		const char *fetchargs = NULL;
 
+		if (s->exclusiveproxy) {
+			continue; /* Skip if this IMAP session is exclusively proxying */
+		}
+
 		if (generate_mailbox_name(s, maildir, mboxname, sizeof(mboxname))) {
 			continue;
 		}
@@ -715,6 +725,9 @@ static void send_untagged_list(struct bbs_node *node, enum mailbox_event_type ty
 			/* RFC 5465 Section 5: avoid notifying client if this was caused by that client */
 			continue;
 		}
+		if (s->exclusiveproxy) {
+			continue; /* Skip if this IMAP session is exclusively proxying */
+		}
 
 		/* Mailbox names could be different for different users, so need to do per session, not just once */
 		if (generate_mailbox_name(s, maildir, newdir, sizeof(newdir))) {
@@ -767,6 +780,9 @@ static void send_untagged_uidvalidity(struct mailbox *mbox, const char *maildir,
 	/* Notify anyone watching this mailbox, specifically the INBOX. */
 	RWLIST_RDLOCK(&sessions);
 	RWLIST_TRAVERSE(&sessions, s, entry) {
+		if (s->exclusiveproxy) {
+			continue; /* Skip if this IMAP session is exclusively proxying */
+		}
 		if (s->mbox != mbox || strcmp(s->dir, maildir)) {
 			continue;
 		}

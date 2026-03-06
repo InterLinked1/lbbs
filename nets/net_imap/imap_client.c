@@ -1240,6 +1240,7 @@ int imap_proxy_remote_mailbox_exclusively(struct imap_session *imap, const char 
 		}
 	}
 
+	imap->exclusiveproxy = 1;
 	bbs_verb(4, "Beginning exclusively proxied session with remote mailbox '%s'\n", name);
 
 	/* The client expects a CAPABILITY response after authenticating successfully,
@@ -1312,6 +1313,7 @@ int imap_proxy_remote_mailbox_exclusively(struct imap_session *imap, const char 
 	}
 
 cleanup:
+	imap->exclusiveproxy = 0;
 	imap_client_unlink(imap, client);
 	return -1;
 }
