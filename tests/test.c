@@ -347,7 +347,7 @@ int test_client_expect_buf(int fd, int ms, const char *s, int line, char *buf, s
 		bbs_debug(10, "Contains output expected at line %d: %s", line, buf); /* Probably already ends in LF */
 		return 0;
 	}
-	bbs_warning("Failed to receive expected output at line %d: %s\n", line, s);
+	bbs_warning("Failed to receive expected output at line %d after %d ms: %s\n", line, ms, s);
 	return -1;
 }
 
@@ -392,7 +392,7 @@ int test_client_expect_eventually_buf(int fd, int ms, const char *restrict s, in
 			}
 		}
 	}
-	bbs_warning("Failed to receive expected output at line %d: %s\n", line, s);
+	bbs_warning("Failed to receive expected output at line %d after %d ms: %s\n", line, ms, s);
 	return -1;
 }
 
@@ -422,6 +422,8 @@ static const char *bbs_expect_str = NULL;
 int test_autorun = 1;
 int rand_alloc_fails = 0;
 int use_static_auth = 1;
+int listen_backlog = 0;
+int child_max_fds = 0;
 
 static int soft_assertions_failed = 0;
 
@@ -677,6 +679,8 @@ static int mysql_spawn(void)
 	return -1;
 }
 
+static char listen_backlog_str[16];
+
 static int test_bbs_spawn(const char *directory)
 {
 	pid_t child;
@@ -689,6 +693,7 @@ static int test_bbs_spawn(const char *directory)
 		"-C", (char*) directory, /* Custom config directory */
 		"-g", /* Dump core on crash */
 		"-vvvvvvvvv", /* Very verbose */
+		"-l", listen_backlog_str,
 		startup_run_unit_tests ? "-T" : "-v", /* If not, add an option that won't do anything */
 		option_debug_bbs ? option_debug_bbs_str : NULL, /* Lotsa debug... maybe */
 		NULL
@@ -706,6 +711,7 @@ static int test_bbs_spawn(const char *directory)
 		"-C", (char*) directory, /* Custom config directory */
 		"-g", /* Dump core on crash */
 		"-vvvvvvvvv", /* Very verbose */
+		"-l", listen_backlog_str,
 		rand_alloc_fails ? "-A" : "-v", /* If not, add an option that won't do anything */
 		startup_run_unit_tests ? "-T" : "-v", /* If not, add an option that won't do anything */
 		option_debug_bbs ? option_debug_bbs_str : NULL, /* Lotsa debug... maybe */
@@ -1137,6 +1143,12 @@ static int run_test(const char *filename, int multiple)
 	} else if (!testmod->run) {
 		bbs_error("Test module contains no test function?\n");
 		res = -1;
+	} else if (multiple && (testmod->flags & TEST_FLAG_NO_AUTOLOAD)) {
+		bbs_debug(1, "Skipping test %s (disabled by default)\n", filename);
+		total_fail--;
+	} else if (option_errorcheck && (testmod->flags & TEST_FLAG_NO_VALGRIND)) {
+		bbs_debug(1, "Skipping test %s (disabled under valgrind)\n", filename);
+		total_fail--;
 	} else {
 		struct timeval start, end;
 		int64_t sec_dif, usec_dif, tot_dif = 0;
@@ -1151,10 +1163,15 @@ static int run_test(const char *filename, int multiple)
 			res = -1;
 			goto cleanup;
 		}
+
+		/* Reset test options to default */
 		option_autoload_all = option_use_mysql = rand_alloc_fails = 0;
 		use_static_auth = 1;
 		test_autorun = 1;
 		startup_run_unit_tests = 0;
+		listen_backlog = 0;
+		child_max_fds = 0;
+
 		if (testmod->pre) {
 			char modfilename[256];
 			snprintf(modfilename, sizeof(modfilename), "%s/%s", TEST_CONFIG_DIR, "modules.conf");
@@ -1186,6 +1203,7 @@ static int run_test(const char *filename, int multiple)
 				fprintf(modulefp, "[bbs]\r\nhostname=%s\r\n", TEST_HOSTNAME);
 				fprintf(modulefp, "[nodes]\r\naskdimensions=no\r\n"); /* Only needed for test_menus */
 				fprintf(modulefp, "maxnodes=1024\r\n"); /* For test_telnet, to increase concurrency and speed up test */
+				fprintf(modulefp, "maxnodes_perip=1024\r\n"); /* For high concurrency tests, to increase concurrency and speed up test */
 				fclose(modulefp);
 			}
 			if (use_static_auth) {
@@ -1218,12 +1236,25 @@ static int run_test(const char *filename, int multiple)
 		if (!res) {
 			core_before = eaccess("core", R_OK) ? 0 : 1;
 			child_exited = 0;
+			snprintf(listen_backlog_str, sizeof(listen_backlog_str), "%d", listen_backlog);
+			if (listen_backlog) {
+				bbs_debug(2, "Set listen backlog to %d\n", listen_backlog);
+			}
 			childpid = test_bbs_spawn(TEST_CONFIG_DIR);
 			if (childpid < 0) {
 				res = -1;
 				goto cleanup;
 			}
 			bbs_debug(3, "Spawned child process %d (%s)\n", childpid, option_errorcheck ? "valgrind" : option_strace ? "strace" : "lbbs");
+			if (child_max_fds) {
+				char cmd[64];
+				snprintf(cmd, sizeof(cmd), "prlimit -n%d -p %d", child_max_fds, childpid);
+				if (system(cmd)) {
+					bbs_error("Failed to increase max file descriptors: %s\n", strerror(errno));
+				} else {
+					bbs_debug(2, "Increased max file descriptors to %d\n", child_max_fds);
+				}
+			}
 			/* Wait for the BBS to fully start */
 			/* XXX If we could receive this event outside of the BBS process, that would be more elegant */
 			res = test_bbs_expect("BBS is fully started", SEC_MS(STARTUP_TIMEOUT));

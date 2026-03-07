@@ -23,6 +23,8 @@
 #include <stdio.h>
 #include <string.h>
 
+extern int listen_backlog;
+
 int send_count = 0;
 
 int test_send_sample_body(int clientfd, const char *from)
@@ -50,12 +52,12 @@ cleanup:
 	return -1;
 }
 
-int test_send_message_with_extra_bytes(int clientfd, const char *recipient, size_t extrabytes)
+int test_send_message_full(int clientfd, int *sendcount, const char *from, const char *recipient, size_t extrabytes)
 {
 	char linebuf[64];
 	int len;
 
-	if (!send_count++) {
+	if (!(*sendcount)++) {
 		CLIENT_EXPECT_EVENTUALLY(clientfd, "220 ");
 		SWRITE(clientfd, "EHLO " TEST_EXTERNAL_DOMAIN ENDL);
 		CLIENT_EXPECT_EVENTUALLY(clientfd, "250 "); /* "250 " since there may be multiple "250-" responses preceding it */
@@ -64,18 +66,21 @@ int test_send_message_with_extra_bytes(int clientfd, const char *recipient, size
 		CLIENT_EXPECT(clientfd, "250");
 	}
 
-	SWRITE(clientfd, "MAIL FROM:<" TEST_EMAIL_EXTERNAL ">\r\n");
+	len = snprintf(linebuf, sizeof(linebuf), "MAIL FROM:<%s>\r\n", from);
+	write(clientfd, linebuf, (size_t) len);
 	CLIENT_EXPECT(clientfd, "250");
 
 	len = snprintf(linebuf, sizeof(linebuf), "RCPT TO:<%s>\r\n", recipient);
 	write(clientfd, linebuf, (size_t) len);
-
 	CLIENT_EXPECT(clientfd, "250");
+
 	SWRITE(clientfd, "DATA\r\n");
 	CLIENT_EXPECT(clientfd, "354");
 
 	SWRITE(clientfd, "Date: Sun, 1 Jan 2023 05:33:29 -0700" ENDL);
-	SWRITE(clientfd, "From: " TEST_EMAIL_EXTERNAL ENDL);
+
+	len = snprintf(linebuf, sizeof(linebuf), "From: %s\r\n", from);
+	write(clientfd, linebuf, (size_t) len);
 
 	len = snprintf(linebuf, sizeof(linebuf), "Subject: Message %d" ENDL, send_count);
 	write(clientfd, linebuf, (size_t) len);
@@ -94,11 +99,24 @@ int test_send_message_with_extra_bytes(int clientfd, const char *recipient, size
 		SWRITE(clientfd, ENDL);
 	}
 	SWRITE(clientfd, "." ENDL); /* EOM */
-	CLIENT_EXPECT(clientfd, "250");
+	if (listen_backlog) {
+		/* For high concurrency tests, we may need to wait a little bit longer when full debug logging is enabled.
+		 * In particular, acquiring loglock in mod_mail_events can be a bottleneck (if that module is loaded for a test). */
+		if (test_client_expect(clientfd, SEC_MS(10), "250 2.6.0 Message accepted", __LINE__)) {
+			goto cleanup;
+		}
+	} else {
+		CLIENT_EXPECT(clientfd, "250 2.6.0 Message accepted");
+	}
 	return 0;
 
 cleanup:
 	return -1;
+}
+
+int test_send_message_with_extra_bytes(int clientfd,  const char *recipient, size_t extrabytes)
+{
+	return test_send_message_full(clientfd, &send_count, TEST_EMAIL_EXTERNAL, recipient, extrabytes);
 }
 
 int test_make_messages(const char *recipient, int nummsg)

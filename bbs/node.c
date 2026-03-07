@@ -115,7 +115,7 @@ static int load_config(void)
 	bbs_config_val_set_uint(cfg, "bbs", "minuptimedisplayed", &minuptimedisplayed);
 	bbs_config_val_set_str(cfg, "bbs", "exitmsg", bbs_exitmsg, sizeof(bbs_exitmsg));
 	bbs_config_val_set_uint(cfg, "nodes", "maxnodes", &maxnodes);
-	bbs_config_val_set_uint(cfg, "nodes", "maxnodesperip", &maxnodes_perip);
+	bbs_config_val_set_uint(cfg, "nodes", "maxnodes_perip", &maxnodes_perip);
 	bbs_config_val_set_uint(cfg, "nodes", "defaultbps", &defaultbps);
 	bbs_config_val_set_uint(cfg, "nodes", "defaultrows", &default_rows);
 	bbs_config_val_set_uint(cfg, "nodes", "defaultcols", &default_cols);

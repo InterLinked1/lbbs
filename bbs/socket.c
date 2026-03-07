@@ -69,7 +69,7 @@
 #include "include/linkedlists.h"
 #include "include/startup.h"
 
-#define LISTEN_BACKLOG 64
+int listen_backlog = 64; /* set extern in bbs.c */
 
 /* These are extern in bbs.c */
 extern int option_connect_timeout;
@@ -109,7 +109,7 @@ int __bbs_make_unix_socket(int *sock, const char *sockfile, const char *perm, ui
 		close(uds_socket);
 		return -1;
 	}
-	res = listen(uds_socket, LISTEN_BACKLOG);
+	res = listen(uds_socket, listen_backlog);
 	if (res < 0) {
 		bbs_error("Unable to listen on UNIX domain socket %s: %s\n", sockfile, strerror(errno));
 		close(uds_socket);
@@ -270,7 +270,7 @@ static int __bbs_make_ip_socket(int *sock, int port, int type, const char *ip, c
 	}
 
 	if (type == SOCK_STREAM) {
-		if (listen(*sock, LISTEN_BACKLOG) < 0) {
+		if (listen(*sock, listen_backlog) < 0) {
 			bbs_error("Unable to listen on %s socket on port %d: %s\n", type == SOCK_STREAM ? "TCP" : "UDP", port, strerror(errno));
 			close(*sock);
 			*sock = -1;

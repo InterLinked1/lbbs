@@ -35,6 +35,17 @@ int test_send_sample_body(int clientfd, const char *from);
 int test_send_message_with_extra_bytes(int clientfd, const char *recipient, size_t extrabytes);
 
 /*!
+ * \brief Send a test email message to TEST_USER
+ * \param clientfd Client file descriptor for SMTP transaction (should be connected to port 25)
+ * \param send_count How many messages have been sent by this client so far
+ * \param from Envelope sender and From header sender
+ * \param recipient Recipient email
+ * \param extrabytes Number of extra 'a' bytes to include
+ * \retval 0 on success, -1 on failure
+ */
+int test_send_message_full(int clientfd, int *send_count, const char *from, const char *recipient, size_t extrabytes);
+
+/*!
  * \brief Send n sample email messages to TEST_USER
  * \param recipient Recipient email
  * \param nummsg Number of messages to send

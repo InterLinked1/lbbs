@@ -90,6 +90,10 @@ int option_debug = 0;
 int option_verbose = 0;
 int max_logfile_debug_level = MAX_DEBUG;
 
+/* High concurrency options */
+extern int listen_backlog; /* in socket.c */
+int high_concurrency_mode = 0; /* used extern in lock.c */
+
 char *rungroup = NULL, *runuser = NULL, *config_dir = NULL;
 
 static pid_t bbs_pid;
@@ -463,6 +467,7 @@ static void show_help(void)
 	printf("  -g        Dump core on crash\n");
 	printf("  -G        Specify run group\n");
 	printf("  -h        Display this help and exit\n");
+	printf("  -l        Set custom listen backlog\n");
 	printf("  -T        Run unit tests on startup\n");
 	printf("  -U        Specify run user\n");
 	printf("  -v        Increase verbosity level\n");
@@ -470,7 +475,7 @@ static void show_help(void)
 	printf("  -?        Display this help and exit\n");
 }
 
-static const char *getopt_settings = "?AbcC:dG:ghTU:Vv";
+static const char *getopt_settings = "?AbcC:dG:ghl:TU:Vv";
 
 static int parse_options_pre(int argc, char *argv[])
 {
@@ -495,6 +500,7 @@ static int parse_options_pre(int argc, char *argv[])
 static int parse_options(int argc, char *argv[])
 {
 	int c;
+	int tmp;
 
 	optind = 1; /* Reset from parse_options_pre */
 	while ((c = getopt(argc, argv, getopt_settings)) != -1) {
@@ -529,6 +535,28 @@ static int parse_options(int argc, char *argv[])
 			break;
 		case 'G':
 			REPLACE(rungroup, optarg); /* If specified by config, override */
+			break;
+		case 'l':
+			tmp = atoi(optarg);
+			/* We intentionally ignore 0 so that in tests/test.c, we can always pass in a value,
+			 * and if it's 0, that will be interpreted here as "default, no change" */
+			if (tmp < 0) {
+				fprintf(stderr, "Invalid listen backlog: %d\n", tmp);
+				return -1;
+			}
+			if (tmp) {
+				listen_backlog = tmp;
+			}
+			if (listen_backlog > 256) {
+				/* At the moment, this is not a user-adjustable setting,
+				 * since it's only required by some of the high-concurrency tests.
+				 * There is no harm to enabling it, but it MUST be enabled
+				 * or otherwise lock contention with DETECT_DEADLOCKS enabled in lock.c
+				 * will lead to extreme lock starvation.
+				 * High concurrency mode essentially disables DETECT_DEADLOCKS at runtime,
+				 * even if it is defined. */
+				high_concurrency_mode = 1;
+			}
 			break;
 		case 'T':
 			option_run_unit_tests = 1;
@@ -1170,6 +1198,10 @@ int main(int argc, char *argv[])
 
 	bbs_debug(1, "Initializing BBS on PID %d, running as user '%s' and group '%s', using '%s'\n", bbs_pid, S_IF(runuser), S_IF(rungroup), bbs_config_dir());
 	bbs_start_time = time(NULL);
+
+	if (high_concurrency_mode) {
+		bbs_debug(1, "High concurrency mode was automatically enabled\n");
+	}
 
 	if (argc > 0 && !strstr(argv[0], BBS_NAME)) {
 		/* argv[0] is typically the program name, by convention.

@@ -175,6 +175,12 @@ int test_client_drain(int fd, int ms);
 
 #define TEST_CLI_COMMAND(cmd) if (system("/usr/local/sbin/rsysop \"" cmd "\"")) { bbs_error("Command failed at line %d: %s\n", __LINE__, strerror(errno)); goto cleanup; }
 
+/*!< Do not run this test by default */
+#define TEST_FLAG_NO_AUTOLOAD (1 << 0)
+
+/*!< Do not run this test under valgrind */
+#define TEST_FLAG_NO_VALGRIND (1 << 1)
+
 struct test_module_info {
 	struct test_module *self;
 	int (*pre)(void);
@@ -223,6 +229,12 @@ static const __attribute__((unused)) struct test_module_info *test_module_info;
 /* For most modules */
 #define TEST_MODULE_INFO_STANDARD(desc)	 \
 	TEST_MODULE_INFO(0, desc,   			\
+		.pre = pre,			\
+		.run = run,			\
+	)
+
+#define TEST_MODULE_INFO_STANDARD_FLAGS(desc, modflags)	 \
+	TEST_MODULE_INFO(modflags, desc,   			\
 		.pre = pre,			\
 		.run = run,			\
 	)

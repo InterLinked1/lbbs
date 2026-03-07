@@ -18,7 +18,17 @@
  */
 
 /* Tunable settings */
+
+/* Whether to automatically detect locks.
+ * This should be disabled on high-concurrency systems as lock contention may lead to starvation.
+ * DETECT_DEADLOCKS is automatically disabled when high-concurrency mode is enabled. */
 #define DETECT_DEADLOCKS
+
+extern int high_concurrency_mode;
+
+/* Add debug messages when locks can't be acquired quickly */
+/* #define DEBUG_ACQUISITION_TIME */
+
 #define STRICT_LOCKING
 #define USE_ROBUST_MUTEXES
 #define ALWAYS_INITIALIZE 1
@@ -30,11 +40,11 @@
  * more easily find the offending thread. */
 /* #define ENABLE_LOCK_LOGFILE */
 
-/* In general, there should not be *that* many readers for a lock.
- * However, tls.c currently requires a read lock for every TLS
- * connection, so this should be at least as high as maxnodes in nodes.conf,
- * for worst case scenario of every node using TLS encryption. */
+/* Disabled by default, as this is an arbitrary limit and will result in false positives on systems with lots of concurrency.
+ * Enable for debugging if needed. */
+#ifdef MAX_READER_CHECK
 #define MAX_READERS 128
+#endif
 
 /* Start code */
 #define BBS_LOCK_WRAPPER_FILE
@@ -178,8 +188,10 @@ static inline void mutex_deadlock_check(bbs_mutex_t *t, const char *filename, in
 		 * and acquired by some other thread (not us, unfortunately).
 		 * In this case, the lock is making progress, so it's probably not a deadlock.
 		 * Reset the start time and keep retrying. */
-		lock_debug("Spent %ld seconds so far waiting for mutex %s (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
-			diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+		if (diff > 0) { /* Only report if we've actually spent a material amount of time waiting */
+			lock_debug("Spent %ld seconds so far waiting for mutex %s (Mutex acquired at %s:%d %ld s ago by LWP %d)\n",
+				diff, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+		}
 		*start = now;
 	} else if (c == 1 && t->info.owners == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
 		/* We limit this check to if there is only 1 owner of the lock.
@@ -221,8 +233,10 @@ static inline void mutex_deadlock_check(bbs_mutex_t *t, const char *filename, in
 static inline void rwlock_deadlock_check(bbs_rwlock_t *t, const char *filename, int lineno, const char *func, const char *name, int c, time_t *start, time_t now, time_t diff, time_t elapsed, const char *optype)
 {
 	if (diff < elapsed) {
-		lock_debug("Spent %ld seconds so far waiting to %s %s (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
-			diff, optype, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+		if (diff > 0) { /* Only report if we've actually spent a material amount of time waiting */
+			lock_debug("Spent %ld seconds so far waiting to %s %s (rwlock acquired at %s:%d %ld s ago by LWP %d)\n",
+				diff, optype, name, t->info.filename, t->info.lineno, elapsed, t->info.lwp);
+		}
 		*start = now;
 	} else if (c == 1 && t->info.owners == 1 && t->info.lwp == bbs_gettid()) { /* Recursive locking attempts can be detected immediately (thread is waiting on itself to release a lock) */
 		pthread_mutex_lock(&t->intlock); /* Repeat check with lock held for consistency, we may have read partially changed variables before */
@@ -258,7 +272,10 @@ int __bbs_mutex_lock(bbs_mutex_t *t, const char *filename, int lineno, const cha
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized" /* now cannot be used uninitialized since c % 1000 is 0 the first loop */
 	time_t now, elapsed, start = 0;
+#ifdef DEBUG_ACQUISITION_TIME
+	time_t abs_start = 0;
 #endif
+#endif /* DETECT_DEADLOCKS */
 
 	if (unlikely(!t->info.initialized)) {
 		lock_warning("Attempt to lock uninitialized mutex %s\n", name);
@@ -267,7 +284,27 @@ int __bbs_mutex_lock(bbs_mutex_t *t, const char *filename, int lineno, const cha
 	}
 
 #ifdef DETECT_DEADLOCKS
-	res = pthread_mutex_trylock(&t->mutex);
+#ifdef DEBUG_ACQUISITION_TIME
+	now = 0; /* Prevent uninitialized usage warning in res != EBUSY check */
+#endif
+	if (high_concurrency_mode) {
+		/* Even if DETECT_DEADLOCKS is defined, use mutex_lock if high concurrency mode is enabled.
+		 * This will ensure that starvation does not occur because DETECT_DEADLOCKS is defined.
+		 * (It also negates DETECT_DEADLOCKS, so we won't be able to detect deadlocks;
+		 *  in practice, this is not an issue as this is only used by certain tests). */
+#ifdef DEBUG_ACQUISITION_TIME
+		now = time(NULL);
+#endif
+		res = pthread_mutex_lock(&t->mutex);
+#ifdef DEBUG_ACQUISITION_TIME
+		elapsed = time(NULL) - now;
+		if (elapsed > 1) {
+			lock_debug("Took %ld s to acquire mutex %s\n", elapsed, name);
+		}
+#endif
+	} else {
+		res = pthread_mutex_trylock(&t->mutex);
+	}
 	while (res == EBUSY) {
 		time_t diff;
 		/* We sleep for 1 ms between attempts,
@@ -276,14 +313,31 @@ int __bbs_mutex_lock(bbs_mutex_t *t, const char *filename, int lineno, const cha
 			now = time(NULL); /* Only record time once a second */
 			if (!start) {
 				start = now;
+#ifdef DEBUG_ACQUISITION_TIME
+				abs_time = now;
+#endif
 			}
 			elapsed = now - start; /* Amount of time we've been waiting for this lock */
 			diff = now - t->info.lastlocked; /* Amount of time this lock has been held */
 #pragma GCC diagnostic pop
 			mutex_deadlock_check(t, filename, lineno, func, name, c, &start, now, diff, elapsed);
 		}
+		/* There is a risk of lock starvation with calling mutex_trylock in a loop; unlike mutex_lock,
+		 * there is no guarantee that lock attempts will be sequentially serialized, i.e. we could
+		 * repeatedly fail to acquire the mutex while other threads repeatedly do so.
+		 * For that reason, DETECT_DEADLOCKS should not be used on high-concurrency systems
+		 * where there will be high lock contention. */
 		usleep(1000);
 		res = pthread_mutex_trylock(&t->mutex);
+#ifdef DEBUG_ACQUISITION_TIME
+		if (res != EBUSY) {
+			diff = now - abs_start;
+			if (diff > 1) {
+				/* If the lock couldn't be acquired ~instantly, log that */
+				lock_debug("Took %ld s (%d attempts) to acquire mutex %s\n", diff, c, name);
+			}
+		}
+#endif
 	}
 #else
 	res = pthread_mutex_lock(&t->mutex);
@@ -492,9 +546,12 @@ int __bbs_rwlock_rdlock(bbs_rwlock_t *t, const char *filename, int lineno, const
 	} else {
 		pthread_mutex_lock(&t->intlock);
 		t->info.lastlocked = time(NULL);
-		if (unlikely(++t->info.owners > MAX_READERS)) {
+		t->info.owners++;
+#ifdef MAX_READER_CHECK
+		if (unlikely(t->info.owners > MAX_READERS)) {
 			lock_warning("Lock %s has %d readers?\n", name, t->info.owners);
 		}
+#endif
 		STORE_CALLER_INFO();
 		pthread_mutex_unlock(&t->intlock);
 	}
@@ -572,9 +629,12 @@ int __bbs_rwlock_tryrdlock(bbs_rwlock_t *t, const char *filename, int lineno, co
 	if (!res) {
 		pthread_mutex_lock(&t->intlock);
 		t->info.lastlocked = time(NULL);
-		if (unlikely(++t->info.owners > MAX_READERS)) {
+		t->info.owners++;
+#ifdef MAX_READER_CHECK
+		if (unlikely(t->info.owners > MAX_READERS)) {
 			lock_warning("Lock %s has %d readers?\n", name, t->info.owners);
 		}
+#endif
 		STORE_CALLER_INFO();
 		pthread_mutex_unlock(&t->intlock);
 	}
