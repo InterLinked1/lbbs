@@ -132,6 +132,7 @@ static int run(void)
 
 	res = 0;
 
+cleanup:
 	cleanup_fds(fds);
 	return res;
 }

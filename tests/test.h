@@ -154,7 +154,8 @@ int test_client_drain(int fd, int ms);
 /* We really may need up to 150ms when under valgrind */
 #define CLIENT_DRAIN(fd) test_client_drain(fd, 150)
 
-#define REQUIRE_FD(fd) if (fd < 0) { bbs_error("File descriptor is not set\n"); return -1; }
+#define REQUIRE_FD(fd) if (fd < 0) { bbs_error("File descriptor is not set\n"); goto cleanup; }
+#define REQUIRE_FD_RETURN(fd) if (fd < 0) { bbs_error("File descriptor is not set\n"); return -1; }
 
 #define DIRECTORY_EXPECT_FILE_COUNT(dir, cnt) { \
 	int _dir_cnt = test_dir_file_count(dir); \

@@ -190,7 +190,7 @@ static int parse_options(int argc, char *argv[])
 			option_debug++;
 			break;
 		case 'D':
-		if (option_debug_bbs == MAX_DEBUG) {
+			if (option_debug_bbs == MAX_DEBUG) {
 				fprintf(stderr, "Maximum BBS debug level is %d\n", MAX_DEBUG);
 				return -1;
 			}

@@ -167,7 +167,7 @@ static int make_messages(void)
 
 	send_count = 0;
 	clientfd = test_make_socket(25);
-	REQUIRE_FD(clientfd);
+	REQUIRE_FD_RETURN(clientfd);
 
 	res |= send_message(clientfd, "messages/multipart.eml");
 	res |= send_message(clientfd, "messages/multipart2.eml");

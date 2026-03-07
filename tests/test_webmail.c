@@ -178,7 +178,7 @@ static int send_messages(void)
 	int num_messages = 25;
 
 	clientfd = test_make_socket(25);
-	REQUIRE_FD(clientfd);
+	REQUIRE_FD_RETURN(clientfd);
 
 	while (num_messages--) {
 		res |= send_message(clientfd);
