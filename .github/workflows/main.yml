@@ -119,6 +119,14 @@ jobs:
       - name: Run unit tests
         run: |
           IGNORE_LIBBFD_MEMORY_LEAK_BUGS=1 scripts/run_tests.sh test_unit
+      - name: Run mail stress tests
+        run: |
+          # Different failure modes/bottlenecks are tested with low debug vs high
+          # This test with low BBS debug is also very quick (compared to w/ high debug)
+          tests/test -ttest_mail_stress -dddddddddd -D -x
+          # This test is very intensive so for efficiency, we don't run it
+          # in the bottleneck test paths and instead run it at the end here
+          NO_VALGRIND=1 scripts/run_tests.sh test_mail_stress
   debian-12:
     runs-on: ubuntu-24.04
     name: Debian 12
