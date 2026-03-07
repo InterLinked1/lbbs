@@ -190,7 +190,11 @@ static int appendmsg(struct smtp_session *smtp, struct smtp_response *resp, stru
 	}
 
 	if (rename(tmpfile, newfile)) {
-		bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
+		if (errno == ENOENT && !bbs_file_exists(tmpfile) && bbs_file_exists(newfile)) {
+			bbs_error("%s already renamed to %s?\n", tmpfile, newfile);
+		} else {
+			bbs_error("rename %s -> %s failed: %s\n", tmpfile, newfile, strerror(errno));
+		}
 		return -1;
 	} else {
 		char maildir[256];

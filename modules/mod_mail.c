@@ -991,13 +991,16 @@ int maildir_mktemp(const char *path, char *buf, size_t len, char *newbuf)
 	struct timeval tvnow;
 	struct stat st;
 	int fd;
+	static int maildir_tmp_uniqueid_suffix = 0;
 
 	for (;;) {
+		int suffix;
 #pragma GCC diagnostic ignored "-Waggregate-return"
 		tvnow = bbs_tvnow();
 #pragma GCC diagnostic pop
-		snprintf(buf, len, "%s/tmp/%lu%06lu", path, tvnow.tv_sec, tvnow.tv_usec);
-		snprintf(newbuf, len, "%s/new/%lu%06lu", path, tvnow.tv_sec, tvnow.tv_usec);
+		suffix = bbs_atomic_fetchadd_int(&maildir_tmp_uniqueid_suffix, +1); /* Use a monotonically increasing unique ID to absolutely guarantee uniqueness */
+		snprintf(buf, len, "%s/tmp/%lu%06lu_%d", path, tvnow.tv_sec, tvnow.tv_usec, suffix);
+		snprintf(newbuf, len, "%s/new/%lu%06lu_%d", path, tvnow.tv_sec, tvnow.tv_usec, suffix);
 		if (stat(buf, &st) == -1 && errno == ENOENT) {
 			/* Error means it doesn't exist. */
 			if (stat(newbuf, &st) == -1 && errno == ENOENT) {
