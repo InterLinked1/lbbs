@@ -214,6 +214,10 @@ static int setup(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restr
 		return -1;
 	}
 
+	/* In case we abort, make sure the file descriptors are valid */
+	z->rpfd[0] = z->rpfd[1] = -1;
+	z->wpfd[0] = z->wpfd[1] = -1;
+
 	z->compressor = &z->compressor_s;
 	z->decompressor = &z->decompressor_s;
 	z->level = DEFAULT_COMPRESSION_LEVEL;

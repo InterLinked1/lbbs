@@ -186,6 +186,10 @@ static int setup(int *rfd, int *wfd, enum bbs_io_transform_dir dir, void **restr
 		return -1;
 	}
 
+	/* In case we abort, make sure the file descriptors are valid */
+	l->rpfd[0] = l->rpfd[1] = -1;
+	l->wpfd[0] = l->wpfd[1] = -1;
+
 	l->fp = bbs_mkftemp(template, 0600);
 	if (!l->fp) {
 		goto fail;

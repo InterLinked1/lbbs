@@ -302,6 +302,11 @@ static struct tls_client *ssl_launch(SSL *ssl, int fd, int *rfd, int *wfd, int c
 	if (ALLOC_FAILURE(t)) {
 		return NULL;
 	}
+
+	/* In case we abort, make sure the file descriptors are valid */
+	t->readpipe[0] = t->readpipe[1] = -1;
+	t->writepipe[0] = t->writepipe[1] = -1;
+
 	t->ssl = ssl;
 	t->fd = fd;
 	if (pipe(t->readpipe)) {
